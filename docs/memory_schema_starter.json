@@ -1,0 +1,35 @@
+{
+  "players": {
+    "example-username": {
+      "personal_info": {
+        "food": null,
+        "clothing": null,
+        "housing": null,
+        "transport": null,
+        "minecraft_id": null
+      },
+      "likes": [],
+      "dislikes": [],
+      "taboos": [],
+      "suki_impression": "A new face. Marvin has no strong feelings yet, which in itself is depressing.",
+      "highlight_of_the_day": "",
+      "stats": {
+        "interaction_count": 0,
+        "pos_feedback": 0,
+        "neg_feedback": 0,
+        "vul_feedback": 0
+      },
+      "news_queue": [],
+      "bias_score": 0.0,
+      "last_interacted_time": 0.0,
+      "relationship_stage": "陌生人",
+      "relationship_note": "",
+      "emotional_highlights": [],
+      "behavioral_patterns": {}
+    }
+  },
+  "proactive_topics": [],
+  "atmosphere_calibration": {
+    "suggested_additions": {}
+  }
+}

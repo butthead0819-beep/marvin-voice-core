@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv_simon/
+venv/
+.venv/
+env/
+
+# Audio files
+*.wav
+*.mp3
+*.ogg
+*.pipe
+
+# Secrets — never commit
+.env
+
+# Logs — large, runtime-generated
+*.log
+*.log.*
+
+# Daily logs (large, regenerated)
+records/daily/
+
+# Memory — personal player data, never publish
+suki_memory.json
+suki_memory.*.bak
+suki_dna.json
+suki_budget.json
+
+# Runtime data — personal and generated
+game_log.jsonl
+music_memory.json
+wake_stats.json
+departure_stats.json
+bot_main.py.pid
+
+# Records directory — personal transcripts and player data
+records/
+
+# Compiled STT binary
+macos_stt_bin
+
+# Claude Code local settings
+.claude/
+
+# Personal auto-memory index
+MEMORY.md
+
+# Dev scratch files
+scratch/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.swp
+*.swo
