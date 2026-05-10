@@ -4771,13 +4771,14 @@ class VoiceController(commands.Cog):
         """根據使用者的音樂記憶，LLM 推薦一首歌並加入佇列。"""
         if not hasattr(self.bot, 'music_memory'):
             return
-        music_ctx = self.bot.music_memory.get_user_music_context(username)
-        if not music_ctx:
-            return
         # 排除最近 15 首 + 玩家 suki_memory song_history（避免每次推薦同一首）
         recently = [s['title'] for s in list(self.stream_history)[-15:]]
         suki_history = self.bot.router.memory.get_song_history(username) if hasattr(self.bot.router, 'memory') else []
         exclude_titles = list(dict.fromkeys(recently + (suki_history[:10] if suki_history else [])))
+        # 把排除清單傳入 context，讓 LLM 根本看不到這些歌，而非靠文字指令硬擋
+        music_ctx = self.bot.music_memory.get_user_music_context(username, exclude=exclude_titles)
+        if not music_ctx:
+            return
         slot = self.bot.music_memory.time_slot(time.time())
         prompt = (
             f"根據以下 {username} 的音樂記憶，推薦一首適合此刻播放的歌曲。\n\n"

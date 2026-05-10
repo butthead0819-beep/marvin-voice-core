@@ -111,15 +111,20 @@ class MusicMemory:
 
     # ── Read / Context ─────────────────────────────────────────────────────
 
-    def get_user_music_context(self, username: str) -> str:
-        """組合可直接注入 LLM prompt 的使用者音樂背景字串。"""
+    def get_user_music_context(self, username: str, exclude: list[str] | None = None) -> str:
+        """組合可直接注入 LLM prompt 的使用者音樂背景字串。
+        exclude: 標題清單，這些歌不會出現在 context 裡（避免 LLM 偏向推薦同一首）。
+        """
         songs = self._data.get("songs", {})
+        exclude_set = {t.lower() for t in (exclude or [])}
         lines = []
 
-        # 1. 點播記錄（按次數排序）
+        # 1. 點播記錄（按次數排序，排除近期已播/已推薦）
         user_songs = sorted(
             [(s, s["requesters"].get(username, 0))
-             for s in songs.values() if username in s.get("requesters", {})],
+             for s in songs.values()
+             if username in s.get("requesters", {})
+             and s.get("title", "").lower() not in exclude_set],
             key=lambda x: x[1], reverse=True
         )
         if user_songs:
