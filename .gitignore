@@ -54,6 +54,10 @@ MEMORY.md
 
 # Dev scratch files
 scratch/
+task.md
+
+# Build artifacts
+*.egg-info/
 
 # OS
 .DS_Store
@@ -63,3 +67,4 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+.env.github
