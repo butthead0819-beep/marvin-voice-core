@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "marvin-voice-core"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.9",
+    "discord.py>=2.4",
+    "discord-ext-voice_recv>=0.5",
+    "faster-whisper>=1.0",
+    "numpy>=1.26",
+]
+
+[tool.setuptools.packages.find]
+include = ["marvin_voice_core*"]

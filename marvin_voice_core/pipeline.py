@@ -135,7 +135,7 @@ class MarvinVoicePipeline:
                     break
             self.speech_start_callback(speaker_name, user_id=user_id)
 
-    async def process_audio_slice(self, user_id, raw_pcm, start_time):
+    async def process_audio_slice(self, user_id, raw_pcm, start_time, is_wake_check=False):
         if user_id not in self.audio_buffers:
             self.audio_buffers[user_id] = {"pcm": bytearray(), "first_start": start_time}
         self.audio_buffers[user_id]["pcm"].extend(raw_pcm)
@@ -158,7 +158,7 @@ class MarvinVoicePipeline:
             if 100 < rms < 2500:
                 processed_pcm = apply_gain(raw_pcm, 1.8)
             
-            wav_path = f"tmp_stt_{user_id}_{int(start_time)}.wav"
+            wav_path = f"tmp_stt_{user_id}_{time.time_ns()}.wav"
             abs_wav_path = save_wav(processed_pcm, wav_path)
             try:
                 with open(abs_wav_path, 'rb') as f:

@@ -12,6 +12,7 @@ class EmptyBuffer:
 def make_controller():
     controller = VoiceController.__new__(VoiceController)
     controller.speaker_dialogue_states = {}
+    controller.speech_buffers = {}
     controller.bot = MagicMock()
     controller.bot.engine = MagicMock()
     controller.bot.engine.conv_buffer = EmptyBuffer()
@@ -55,3 +56,16 @@ async def test_confirmation_uses_initial_wake_text_query_without_waiting():
 
     assert query == "幫我看一下這個畫面"
     assert controller.speaker_dialogue_states == {}
+
+
+@pytest.mark.asyncio
+async def test_process_queued_query_passes_speaker_to_harvest():
+    """Regression: get_harvest must receive speaker= so cross-talk doesn't pollute queries."""
+    controller = make_controller()
+    harvest_mock = MagicMock(return_value="")
+    controller.bot.engine.conv_buffer.get_harvest = harvest_mock
+    controller.bot.engine.conv_buffer.get_last_n_utterances = MagicMock(return_value=[])
+
+    await controller._process_queued_query("Alice", wake_time=100.0)
+
+    harvest_mock.assert_called_once_with(100.0, before=3.0, after=1.0, speaker="Alice")

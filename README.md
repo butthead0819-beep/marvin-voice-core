@@ -48,7 +48,10 @@ git clone https://github.com/butthead0819-beep/marvin-voice-core.git
 cd marvin-voice-core
 
 # 2. Install
+# Full bot (includes music, screen capture, all features):
 pip install -r requirements.txt
+# Core voice pipeline only (marvin_voice_core/):
+# pip install -r requirements-core.txt
 
 # 3. Configure API keys
 cp .env.example .env
@@ -110,6 +113,8 @@ marvin_voice_core/
 `AtmosphereTracker` reads the STT stream and produces a snapshot (gaming / work / food / etc.) that gets injected into the LLM system prompt — so Marvin knows what the room is actually talking about.
 
 `MarmoServer` (port 8765) lets external agents push text into Marvin's voice queue without a direct Python import. Useful for piping in results from shell scripts or other bots.
+
+> **Note for integrators:** `marvin_voice_core/` is the clean API surface for building on top of this system. The full bot's production runtime (`discord_voice_engine.py`) runs equivalent audio logic directly for tighter integration with the Discord voice layer. `MarmoServer` is the one module imported live from `marvin_voice_core` in the production bot.
 
 ---
 

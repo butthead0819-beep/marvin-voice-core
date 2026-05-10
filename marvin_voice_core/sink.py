@@ -39,7 +39,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
         self.user_noise_floor = {}      # user_id -> current noise floor baseline
         self.user_is_speaking = {}      # user_id -> bool
         
-        self.loop = asyncio.get_event_loop()  # set properly via set_loop() after instantiation
+        self.loop = asyncio.get_running_loop()
         self.packet_count = 0
         self.last_audio_packet_time = time.time() 
 

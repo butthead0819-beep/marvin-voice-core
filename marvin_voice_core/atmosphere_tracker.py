@@ -99,9 +99,11 @@ class AtmosphereSnapshot:
 
 # ── 輔助函式 ──────────────────────────────────────────────────────────────────
 
-def _tag_topic(text: str) -> str:
+def _tag_topic(text: str, kwds: dict | None = None) -> str:
+    if kwds is None:
+        kwds = TOPIC_KEYWORDS
     text_lower = text.lower()
-    for topic, kws in TOPIC_KEYWORDS.items():
+    for topic, kws in kwds.items():
         if topic == "casual":
             continue
         if any(kw in text_lower for kw in kws):
@@ -126,6 +128,7 @@ class AtmosphereTracker:
         self._window: deque[_Entry] = deque()
         self._memory = memory_manager
         self._dna_cache: dict[str, dict] = {}
+        self._topic_keywords: dict[str, list[str]] = {k: list(v) for k, v in TOPIC_KEYWORDS.items()}
         if memory_manager is not None:
             self._load_calibration()
 
@@ -141,7 +144,7 @@ class AtmosphereTracker:
             speaker      = speaker,
             text         = text,
             ts           = ts,
-            topic        = _tag_topic(text),
+            topic        = _tag_topic(text, self._topic_keywords),
             char_count   = len(text.replace(" ", "")),
             has_laugh    = bool(_LAUGH_RE.search(text)),
             filler_count = _count_fillers(text),
@@ -205,14 +208,14 @@ class AtmosphereTracker:
 
     def _load_calibration(self):
         """從 memory_manager.get_atmosphere_calibration() 讀取補充關鍵字，
-        merge 進 TOPIC_KEYWORDS（只新增不覆蓋）。"""
+        merge 進 _topic_keywords（只新增不覆蓋）。"""
         try:
             additions: dict[str, list[str]] = self._memory.get_atmosphere_calibration()
             merged = 0
             for topic, kws in additions.items():
-                if topic not in TOPIC_KEYWORDS:
+                if topic not in self._topic_keywords:
                     continue
-                existing = TOPIC_KEYWORDS[topic]
+                existing = self._topic_keywords[topic]
                 for kw in kws:
                     if kw and kw not in existing:
                         existing.append(kw)

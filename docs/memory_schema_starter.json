@@ -2,33 +2,114 @@
   "players": {
     "example-username": {
       "personal_info": {
-        "food": null,
+        "food": "ramen, spicy food",
         "clothing": null,
-        "housing": null,
+        "housing": "lives alone",
         "transport": null,
-        "minecraft_id": null
+        "minecraft_id": "ExamplePlayer"
       },
-      "likes": [],
-      "dislikes": [],
+      "likes": ["gaming", "cats", "late-night sessions"],
+      "dislikes": ["early mornings", "lag"],
       "taboos": [],
-      "suki_impression": "A new face. Marvin has no strong feelings yet, which in itself is depressing.",
+      "suki_impression": "A reliable presence. Shows up every weekend without fail. Doesn't talk much at first but becomes surprisingly loud once comfortable. Marvin has mixed feelings — there's something predictable about them that is either comforting or depressing.",
       "highlight_of_the_day": "",
       "stats": {
-        "interaction_count": 0,
-        "pos_feedback": 0,
-        "neg_feedback": 0,
+        "interaction_count": 12,
+        "pos_feedback": 3,
+        "neg_feedback": 1,
         "vul_feedback": 0
       },
       "news_queue": [],
-      "bias_score": 0.0,
+      "bias_score": 1.5,
       "last_interacted_time": 0.0,
-      "relationship_stage": "陌生人",
-      "relationship_note": "",
+      "relationship_stage": "熟人",
+      "relationship_note": "Has been playing with this group for about two months.",
+      "emotional_highlights": [
+        {
+          "moment": "Carried the team in a 1v3 clutch and immediately said it was luck",
+          "valence": "positive",
+          "timestamp": "2026-04-15"
+        }
+      ],
+      "behavioral_patterns": {
+        "typically_arrives": "weekend evenings",
+        "goes_quiet_when": "stressed about work"
+      }
+    },
+    "second-player": {
+      "personal_info": {
+        "food": "bubble tea addict",
+        "clothing": null,
+        "housing": null,
+        "transport": "motorcycle",
+        "minecraft_id": null
+      },
+      "likes": ["music", "arguing about game meta", "horror films"],
+      "dislikes": ["sweaty tryhard sessions", "being woken up before noon"],
+      "taboos": ["don't mention their ex"],
+      "suki_impression": "Loud. Opinionated. Has a theory about everything and is wrong about 40% of it, which is honestly better than average. Marvin finds the arguments mildly stimulating. The taboo is real — do not bring up the ex.",
+      "highlight_of_the_day": "",
+      "stats": {
+        "interaction_count": 31,
+        "pos_feedback": 8,
+        "neg_feedback": 4,
+        "vul_feedback": 2
+      },
+      "news_queue": [],
+      "bias_score": 3.0,
+      "last_interacted_time": 0.0,
+      "relationship_stage": "老友",
+      "relationship_note": "One of the founding members of this server. Marvin has heard about the motorcycle incident three times.",
+      "emotional_highlights": [
+        {
+          "moment": "Got extremely upset about a game balance patch and was right about it two weeks later",
+          "valence": "positive",
+          "timestamp": "2026-03-28"
+        }
+      ],
+      "behavioral_patterns": {
+        "rage_quit_frequency": "once per session, always comes back",
+        "most_active_hours": "22:00-02:00"
+      }
+    },
+    "third-player": {
+      "personal_info": {
+        "food": null,
+        "clothing": null,
+        "housing": "at parents' place",
+        "transport": null,
+        "minecraft_id": null
+      },
+      "likes": ["hardware", "overclocking", "cooking"],
+      "dislikes": ["cloud saves", "subscription software"],
+      "taboos": [],
+      "suki_impression": "Quiet but observant. Says little in group chat but will DM a correction if you get a fact wrong. Built their own PC three times. Marvin respects the commitment even if it seems slightly obsessive.",
+      "highlight_of_the_day": "",
+      "stats": {
+        "interaction_count": 7,
+        "pos_feedback": 2,
+        "neg_feedback": 0,
+        "vul_feedback": 1
+      },
+      "news_queue": [],
+      "bias_score": 0.5,
+      "last_interacted_time": 0.0,
+      "relationship_stage": "熟人",
+      "relationship_note": "Joined the server three weeks ago. Still warming up.",
       "emotional_highlights": [],
-      "behavioral_patterns": {}
+      "behavioral_patterns": {
+        "joins_late": true,
+        "leaves_early": false
+      }
     }
   },
-  "proactive_topics": [],
+  "proactive_topics": [
+    {
+      "id": "topic-001",
+      "title": "What game is everyone playing lately?",
+      "hook": "Marvin noticed the server's been quiet — either everyone's grinding or nobody's having fun."
+    }
+  ],
   "atmosphere_calibration": {
     "suggested_additions": {}
   }

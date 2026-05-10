@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -e . && pip install -r requirements.txt
 
       - name: Check imports
         run: |
@@ -31,4 +31,50 @@ jobs:
           )"
 
       - name: Run tests
-        run: pytest tests/ -q
+        run: PYTHONPATH=. pytest tests/ -q
+
+  test-core:
+    runs-on: macos-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install core deps only
+        run: pip install -e . && pip install -r requirements-core.txt
+
+      - name: Check core imports
+        run: |
+          python -c "from marvin_voice_core import (
+            MarvinVoicePipeline, ConversationBuffer,
+            RealtimeVADSink, STTHandler, VoiceMetaAnalyzer,
+            AtmosphereTracker, MarmoServer
+          )"
+
+  test-core-linux:
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install core deps only
+        run: pip install -e . && pip install -r requirements-core.txt
+
+      - name: Check core imports (Linux / Whisper-only path)
+        run: |
+          python -c "from marvin_voice_core import (
+            MarvinVoicePipeline, ConversationBuffer,
+            RealtimeVADSink, STTHandler, VoiceMetaAnalyzer,
+            AtmosphereTracker, MarmoServer
+          )"

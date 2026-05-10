@@ -2722,7 +2722,7 @@ class VoiceController(commands.Cog):
             history = self.bot.engine.conv_buffer.get_last_n_utterances(n=10)
             self.speech_buffers.pop(speaker, None)
         else:
-            query = self.bot.engine.conv_buffer.get_harvest(wake_time, before=3.0, after=1.0)
+            query = self.bot.engine.conv_buffer.get_harvest(wake_time, before=3.0, after=1.0, speaker=speaker)
             history = self.bot.engine.conv_buffer.get_last_n_utterances(n=10)
 
             # 🛡️ 防禦性 Fallback: 若 harvest 為空，嘗試使用 speech_buffers 裡剩餘的片段

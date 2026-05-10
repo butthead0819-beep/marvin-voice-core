@@ -1,4 +1,13 @@
 
+## TODO: Docker / Linux path investigation
+**Status:** DEFERRED (after first confirmed Linux user setup via open-source launch)
+**What:** Full Docker image for marvin_voice_core. Linux path (Whisper-only, no Swift STT) needs end-to-end verification — the import layer is covered by the CI ubuntu-latest job (added in /plan-ceo-review 2026-05-10), but a full voice session on Linux (audio I/O, discord.py voice_recv on Linux) has not been tested.
+**Why:** homelab community defaults to `docker compose up`. macOS native audio blocks containerization today. Once a Linux user confirms Whisper-only path works end-to-end, Docker becomes feasible.
+**How to start:** Find a Linux user who confirmed setup (GitHub Discussions "Show your setup" thread). Ask them to test Whisper-only fallback. If green: write Dockerfile with `FROM python:3.12-slim`, replace Swift STT with `faster-whisper` fallback, add `docker-compose.yml` with env file mounting.
+**Effort:** M (~2 hours CC, 1-2 days human). Risk: Linux audio I/O (discord.py + voice_recv + OPUS codec) may have platform-specific quirks.
+
+---
+
 ## TODO: Marmo webhook — text-channel fallback for dropped results
 **Status:** PENDING
 **What:** When Marmo POSTs to the webhook but Marvin is not in a voice channel, the result is silently dropped (play_tts returns without speaking). Fallback: if drop occurs, send the text to `active_text_channel` instead.
