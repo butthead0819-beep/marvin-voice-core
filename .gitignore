@@ -39,6 +39,7 @@ music_memory.json
 wake_stats.json
 departure_stats.json
 bot_main.py.pid
+consent.json
 
 # Records directory — personal transcripts and player data
 records/

@@ -15,6 +15,7 @@ import shutil
 import subprocess
 from utils import pre_filter_speech
 from departure_stats import DepartureStats
+from consent_manager import ConsentManager
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 
@@ -287,6 +288,52 @@ class PlayControlView(discord.ui.View):
             item.disabled = True
 
 
+class ConsentView(discord.ui.View):
+    """一次性同意 / 拒絕按鈕，只有目標成員可以操作。"""
+
+    def __init__(self, consent_manager: "ConsentManager", display_name: str):
+        super().__init__(timeout=600)
+        self.cm = consent_manager
+        self.display_name = display_name
+
+    def _check_user(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.display_name == self.display_name
+
+    @discord.ui.button(label="✅ 我同意", style=discord.ButtonStyle.green)
+    async def accept(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        if not self._check_user(interaction):
+            await interaction.response.send_message(
+                f"這個同意請求是給 **{self.display_name}** 的。", ephemeral=True
+            )
+            return
+        self.cm.set_consent(self.display_name, True)
+        self.stop()
+        await interaction.response.edit_message(
+            content=(
+                f"✅ **{self.display_name}** 已同意，馬文開始處理你的語音。\n"
+                f"使用 `/marvin_optout` 可隨時撤回。"
+            ),
+            view=None,
+        )
+
+    @discord.ui.button(label="❌ 拒絕", style=discord.ButtonStyle.red)
+    async def decline(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        if not self._check_user(interaction):
+            await interaction.response.send_message(
+                f"這個同意請求是給 **{self.display_name}** 的。", ephemeral=True
+            )
+            return
+        self.cm.set_consent(self.display_name, False)
+        self.stop()
+        await interaction.response.edit_message(
+            content=(
+                f"🔇 **{self.display_name}** 已拒絕，馬文不會處理你的語音。\n"
+                f"使用 `/marvin_optin` 可隨時同意。"
+            ),
+            view=None,
+        )
+
+
 class VoiceController(commands.Cog):
     """
     [Operation Paranoid Android] 
@@ -326,6 +373,9 @@ class VoiceController(commands.Cog):
         
         # 📊 [Departure Stats] 離場習慣統計
         self.departure_stats = DepartureStats()
+
+        # 🔐 [Consent] 成員語音資料處理同意管理
+        self.consent = ConsentManager()
 
         # 🚀 [Farewell Guard] 送客冷卻池
         self.recent_verbal_farewells = {} # speaker -> timestamp
@@ -1062,6 +1112,24 @@ class VoiceController(commands.Cog):
         await interaction.followup.send(f"🔮 **【馬文精選】** 正在為 `{username}` 挑選...")
         await self._auto_recommend(username)
 
+    @app_commands.command(name="marvin_optin", description="同意馬文處理你在語音頻道的資料")
+    async def marvin_optin(self, interaction: discord.Interaction):
+        name = interaction.user.display_name
+        self.consent.set_consent(name, True)
+        await interaction.response.send_message(
+            f"✅ **{name}** 已同意，馬文開始處理你的語音。使用 `/marvin_optout` 可隨時撤回。",
+            ephemeral=True,
+        )
+
+    @app_commands.command(name="marvin_optout", description="撤回對馬文語音資料處理的同意")
+    async def marvin_optout(self, interaction: discord.Interaction):
+        name = interaction.user.display_name
+        self.consent.set_consent(name, False)
+        await interaction.response.send_message(
+            f"🔇 **{name}** 已撤回同意，馬文不再處理你的語音。使用 `/marvin_optin` 可隨時重新同意。",
+            ephemeral=True,
+        )
+
     # --- [EventListeners] ---
 
     @commands.Cog.listener()
@@ -1123,6 +1191,23 @@ class VoiceController(commands.Cog):
         
         # --- [Join Logic] ---
         if before.channel != after.channel and after.channel == marvin_channel:
+            # 🔐 [Consent] 首次進入時發送資料使用聲明
+            if not self.consent.has_seen_notice(member.display_name):
+                self.consent.mark_seen(member.display_name)
+                if self.active_text_channel:
+                    notice = (
+                        f"🔐 **【資料使用聲明】** {member.mention}\n"
+                        f"馬文在你說話時會：\n"
+                        f"• 將語音轉文字後送至 **Groq**（語音清洗）\n"
+                        f"• 連同對話記憶送至 **Google Gemini / Cerebras**（AI 回應）\n"
+                        f"• 存入本地 `suki_memory.json`（個人化記憶）\n\n"
+                        f"請確認是否同意。若不同意，馬文不會處理你的語音。\n"
+                        f"同意後可隨時用 `/marvin_optout` 撤回。"
+                    )
+                    await self.active_text_channel.send(
+                        notice, view=ConsentView(self.consent, member.display_name)
+                    )
+
             if now - self.greeting_cooldown.get(member.id, 0) > 10:
                 self.greeting_cooldown[member.id] = now
                 print(f"🌑 [Dynamic Greeting] 偵測到玩家 {member.display_name} 進場 (準備黑歷史嘲諷)...")
@@ -1323,9 +1408,13 @@ class VoiceController(commands.Cog):
             self.bot.screen_capture.stop()
 
     async def handle_stt_result(self, speaker: str, raw_text: str, timestamp: float, wav_bytes: bytes, prosody_data: dict = None, is_wake_check=False, track=None, bypass_etd=False, wake_intent: float = None):
+        # 🔐 [Consent] 未同意者不送出任何資料（Groq STT / LLM / suki_memory 均跳過）
+        if not self.consent.is_consented(speaker):
+            return
+
         self.last_player_speech_time = time.time()
         self.proactive_attempts = 0
-        
+
         # 🚀 [Bug Fix] 確保 random 模組在異步閉包中可用
         import random
 
