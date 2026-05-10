@@ -9,7 +9,10 @@ import wave
 import numpy as np
 import typing
 import discord.opus
-import davey
+try:
+    import davey
+except ImportError:
+    davey = None
 from discord.ext import voice_recv
 import logging
 from collections import deque
