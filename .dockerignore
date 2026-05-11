@@ -1,0 +1,36 @@
+# Secrets — never bake into image
+.env
+.env.*
+
+# Runtime data
+*.log
+*.log.*
+*.json
+*.jsonl
+records/
+scratch/
+logs/
+
+# Audio files
+*.wav
+*.mp3
+*.ogg
+*.pipe
+
+# macOS binary (Linux uses Whisper fallback)
+macos_stt_bin
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv_simon/
+venv/
+.venv/
+
+# Git / IDE
+.git/
+.gitignore
+.claude/
+.DS_Store
+.vscode/
