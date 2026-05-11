@@ -1,24 +1,17 @@
 import asyncio
 import time
-import random
 import os
-import json
 import logging
-import re
-from datetime import datetime
 from suki_budget import SukiBudget
 from suki_memory import MemoryManager
-import suki_miner
 from marvin_prompts import PromptManager
-from utils import safe_json_loads, pre_filter_speech, check_cleaned_text_for_wake
 from openai import AsyncOpenAI
 import google.genai as genai
-from duckduckgo_search import DDGS
 
 from gemini_router_llm import GeminiRouterLLMMixin
 from gemini_router_content import GeminiRouterContentMixin
 from stt_cleaner import GeminiRouterSTTMixin
-from wake_signal_fusion import WakeSignalFusion
+from wake_detector import WakeDetector
 
 # ⚡ [Local Brain] 動態載入容器
 _LOCAL_MODEL = None
@@ -94,7 +87,7 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
     馬文 (Marvin) 戰術路由器 (Operation Paranoid Android)
     支援多種後端：Google Gemini, Groq (Llama 3), Ollama.
     """
-    def __init__(self, api_key: str = None, max_minutes=6):
+    def __init__(self, api_key: str = None):
         self.provider = os.getenv("LLM_PROVIDER", "gemini").lower()
         self.model_name = os.getenv("LLM_PRIMARY_MODEL", os.getenv("LLM_MODEL", "gemma-4-31b-it"))
         self.vision_enabled = os.getenv("VISION_ENABLED", "True").lower() == "true"
@@ -188,25 +181,7 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         # 📊 [Session Mood] 今日被呼喚次數，重啟歸零
         self._session_call_count = 0
 
-        # ⚡ [Three-Tier Architecture]
-        # Tier 1: Cloud Primary
         self.model_name = os.getenv("LLM_PRIMARY_MODEL", os.getenv("LLM_MODEL", "gemma-4-31b-it"))
-        
-        # Tier 2: Remote Secondary (Now using structured env vars)
-        self.tier2_model = os.getenv("LLM_TIER2_MODEL", "gemma-4-e4b")
-        tier2_host = os.getenv("LLM_TIER2_URL", "http://100.98.200.69:11434")
-        from ollama import AsyncClient
-        self.tier2_client = AsyncClient(host=tier2_host)
-        self.remote_brain_ready = False
-        self.last_remote_check = 0
-        
-        # Tier 3: Remote Tertiary (Now using structured env vars)
-        self.tier3_model = os.getenv("LLM_TIER3_MODEL", "qwen3.5:4b")
-        tier3_host = os.getenv("LLM_TIER3_URL", "http://100.108.53.39:11435")
-        self.tier3_client = AsyncClient(host=tier3_host)
-        self.tertiary_brain_ready = False
-        self.last_tertiary_check = 0
-        self.local_brain_ready = True # 保持變數相容性
         
         self.prompt_manager = PromptManager()
         self.is_exhausted = False # 🛡️ [Tier 1 Hard Limit Flag]
@@ -222,7 +197,7 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         self.groq_cleaner_usage = [] # list of (timestamp, token_count)
 
         # 📊 [Phase 2] Multi-Signal Wake Fusion
-        self.wake_fusion = WakeSignalFusion()
+        self.wake_fusion = WakeDetector()
 
         # 🌡️ [AtmosphereTracker] 即時讀空氣模組
         from marvin_voice_core.atmosphere_tracker import AtmosphereTracker
@@ -232,6 +207,7 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         self._pending_prefetch: dict = {}
         self._prefetch_attempts: int = 0
         self._prefetch_hits: int = 0
+        self._prefetch_semaphore = asyncio.BoundedSemaphore(3)  # 最多 3 個並發 prefetch
 
         # 🔍 [Background Intent Enrich] speaker → {timestamp, query, results}
         # 喚醒後背景 DDG，結果快取 5 分鐘供下次同玩家回應使用
@@ -247,3 +223,21 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         self._CLOUD_RPM_LIMIT = 12        # 保留 3 次 buffer（免費層上限 15）
         self._gemini_cleaner_window = []  # STT 清洗 API 近 60 秒的呼叫時間戳
         self._CLEANER_RPM_LIMIT = 12
+
+    # ── LLMClient Protocol ────────────────────────────────────────────────────
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        is_json: bool = False,
+        temperature: float | None = None,
+    ) -> str:
+        """LLMClient Protocol: single blocking call through the tier fallback chain."""
+        return await self._call_llm(system, user, is_json=is_json, temperature=temperature)
+
+    async def stream_text(self, system: str, user: str, *, temperature: float | None = None):
+        """LLMClient Protocol: streaming call (async generator of str chunks)."""
+        async for chunk in self._stream_cloud(system, user, temperature=temperature):
+            yield chunk

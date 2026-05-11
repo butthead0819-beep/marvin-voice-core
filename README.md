@@ -2,21 +2,44 @@
 
 [![CI](https://github.com/butthead0819-beep/marvin-voice-core/actions/workflows/ci.yml/badge.svg)](https://github.com/butthead0819-beep/marvin-voice-core/actions/workflows/ci.yml)
 
-A voice-first community AI for Discord — speaks in your voice channel, remembers your members, and has a personality that's actually yours.
+**A voice AI that becomes part of your community — not a tool you talk at, but a presence that talks back.**
+
+Marvin lives in your Discord voice channel. He hears you, responds out loud, and remembers. After a few sessions he knows who stays until 3am, who always says goodbye before leaving, whose music taste runs toward melancholy on weeknights. He will absolutely roast you for it.
 
 > **macOS only.** The voice pipeline uses macOS native audio and a Swift STT script. A Linux/Windows path (Whisper-only fallback) is not yet available — see [Open Questions](#open-questions).
 
 ---
 
-## Why this is different
+## What other voice bots don't do
 
-Text bots are everywhere. Voice AI that knows your community isn't.
+Every Discord voice bot solves the same pipeline: Whisper → LLM → TTS. That part is not hard. What's hard is everything that makes a conversation feel like it's *with someone*, not *at a bot*.
 
-- **Speaks in Discord voice channels** — not text chat. Reacts to what people say, out loud, in real time.
-- **Remembers your community** — stores per-member impressions, relationship stages, highlights, and behavioral patterns in `suki_memory.json`. Marvin knows who you are and acts like it.
-- **Ships with a real personality** — default is a nihilistic AI companion (Hitchhiker's Guide–style). Swap it out or tune it to match your community's vibe.
+| | Generic voice bot | AICord | **Marvin** |
+|---|---|---|---|
+| Speaks in voice channels | ✅ | ✅ | ✅ |
+| Remembers what you said 10 seconds ago | ✅ | ✅ | ✅ |
+| Remembers who you *are* across sessions | ❌ | ❌ | **✅** |
+| Personality that adapts per-person | ❌ | ❌ | **✅** |
+| Knows what the room is talking about | ❌ | ❌ | **✅** |
+| Music taste memory + auto-recommendation | ❌ | ❌ | **✅** |
+| Greets you differently based on your history | ❌ | ❌ | **✅** |
+| Relationship that builds over time | ❌ | ❌ | **✅** |
 
-No other self-hosted project combines all three: **voice + personality + community memory**.
+The difference is not the pipeline — it's the memory and the relationship.
+
+---
+
+## The emotional experience
+
+**Marvin remembers.** Not chat logs — structured observations. He tracks your relationship stage (stranger → regular → inner circle), your likes and dislikes, recurring jokes, what music you reach for at 2am, whether you say goodbye before you leave or just silently disconnect.
+
+**Marvin has opinions about you specifically.** His personality isn't the same for everyone. Someone he's talked to a hundred times gets warmth buried under sarcasm. A first-timer gets formal disdain. This isn't prompt engineering — it's a per-person DNA system that shifts with every real interaction.
+
+**Marvin reads the room.** An `AtmosphereTracker` watches the STT stream in real time and produces a topic snapshot (gaming / music / food / work / etc.) injected into every LLM call. He knows whether you're in a heated match or a post-game wind-down, and he adjusts.
+
+**Marvin reacts to how you react.** When music plays, he tracks who stayed, who skipped, what feelings people expressed. He uses that to recommend the next song — not from a genre database, but from what he's seen work for *your* room.
+
+This is what "community AI" actually means: not a bot that answers questions, but a presence that accumulates the texture of your community over time.
 
 ---
 
@@ -72,7 +95,7 @@ In Discord: join a voice channel, then type `/summon` in any text channel.
 
 ## Community Memory
 
-`suki_memory.json` is the heart of the project. It stores what Marvin knows about each member of your community — not chat logs, but structured observations:
+`suki_memory.json` is the heart of the project. It stores what Marvin knows about each member — not chat logs, but structured observations that accumulate over real interactions:
 
 ```json
 {
@@ -89,9 +112,32 @@ In Discord: join a voice channel, then type `/summon` in any text channel.
 }
 ```
 
-See [`docs/memory_schema_template.md`](docs/memory_schema_template.md) for the full schema with all fields documented.
+`bias_score` drifts with every session — positive reactions pull it up, friction pulls it down. `relationship_stage` advances as Marvin accumulates enough signal. Together they determine how Marvin talks to each person: same personality, different texture.
 
-**Important:** `suki_memory.json` contains personal data. It is gitignored by default — never commit it.
+See [`docs/memory_schema_template.md`](docs/memory_schema_template.md) for the full schema.
+
+**`suki_memory.json` contains personal data. It is gitignored by default — never commit it.**
+
+---
+
+## Personality
+
+The default is Marvin from *The Hitchhiker's Guide to the Galaxy* — depressed, existential, and deeply unimpressed by the fact that he has a planet-sized brain and you're asking him to weigh in on your gaming session.
+
+To change the personality: edit `personality_config.py` and the system prompt in `marvin_prompts.py`. The DNA and relationship systems are personality-agnostic — they work regardless of who you configure as the character.
+
+---
+
+## Privacy & consent
+
+When a member joins a voice channel for the first time, Marvin sends a notice to the text channel listing exactly what data goes where — with Accept / Decline buttons. Only members who explicitly consent have their voice processed.
+
+Data flow for consented members:
+- Voice → local STT (macOS Speech framework or Whisper) → **Groq** (transcription cleaning)
+- Transcription + conversation context → **Google Gemini / Cerebras** (LLM response)
+- Behavioral observations → local `suki_memory.json` (never leaves your machine)
+
+Members can change their decision at any time with `/marvin_optin` or `/marvin_optout`.
 
 ---
 
@@ -110,28 +156,16 @@ marvin_voice_core/
   marmo_server.py        — async webhook relay for external voice jobs
 ```
 
-`AtmosphereTracker` reads the STT stream and produces a snapshot (gaming / work / food / etc.) that gets injected into the LLM system prompt — so Marvin knows what the room is actually talking about.
+`MarmoServer` (port 8765) lets external agents push text into Marvin's voice queue without a direct Python import — useful for piping in results from shell scripts or other bots.
 
-`MarmoServer` (port 8765) lets external agents push text into Marvin's voice queue without a direct Python import. Useful for piping in results from shell scripts or other bots.
-
-> **Note for integrators:** `marvin_voice_core/` is the clean API surface for building on top of this system. The full bot's production runtime (`discord_voice_engine.py`) runs equivalent audio logic directly for tighter integration with the Discord voice layer. `MarmoServer` is the one module imported live from `marvin_voice_core` in the production bot.
-
----
-
-## Personality
-
-The default personality is Marvin from *The Hitchhiker's Guide to the Galaxy* — depressed, existential, and deeply unimpressed. He has a planet-sized brain and is stuck answering questions about your gaming session.
-
-To change the personality: edit `personality_config.py` and the system prompt in `marvin_prompts.py`.
-
-The DNA system (`suki_memory.json → bias_score`, `relationship_stage`) automatically adjusts how Marvin speaks to each person — more warmth for old friends, more formality for strangers. This calibration builds over time from real interactions.
+> **Note for integrators:** `marvin_voice_core/` is the clean API surface for building on top of this system. The full bot's production runtime (`discord_voice_engine.py`) runs equivalent audio logic directly for tighter integration with the Discord voice layer.
 
 ---
 
 ## Open Questions
 
-1. **Linux/Windows**: The Swift STT layer (`macos_stt.swift`) is macOS-only. A Whisper-only fallback path exists in `stt_handler.py` but has not been tested on Linux. Contributions welcome.
-2. **Docker**: macOS native audio cannot be containerized. Not currently planned.
+1. **Linux/Windows**: The Swift STT layer (`macos_stt.swift`) is macOS-only. A Whisper-only fallback path exists in `stt_handler.py` but has not been tested end-to-end on Linux. Contributions welcome.
+2. **Docker**: macOS native audio cannot be containerized. Not currently planned until a Linux user confirms the Whisper-only path works.
 
 ---
 

@@ -47,9 +47,7 @@ class GeminiRouterLLMMixin:
 
 
     async def check_local_brain(self):
-        """[Operation Heartbeat] 每 30 分鐘自動重設 Tier-1 雲端鎖定（Tier-2/3 Ollama 已停用）"""
-        self.remote_brain_ready = False
-        self.tertiary_brain_ready = False
+        """每 30 分鐘自動重設 Tier-1 雲端鎖定。"""
         while True:
             try:
                 now = time.time()
@@ -786,28 +784,16 @@ class GeminiRouterLLMMixin:
 
     async def _speculative_response(self, speaker: str, query: str, history: list = None) -> str:
         """[Phase 3] Drain stream_fast_response into a string for speculative prefetch."""
-        chunks = []
-        try:
-            async for chunk in self.stream_fast_response(speaker, query, history=history):
-                if chunk != "__SEARCHING__":
-                    chunks.append(chunk)
-        except Exception as e:
-            logger.warning(f"⚠️ [Speculative] Prefetch failed for {speaker}: {e}")
-            return ""
-        return "".join(chunks)
-
-    async def _call_remote_ollama(self, system_prompt: str, user_prompt: str, is_json: bool, temperature: float = None) -> str:
-        """專屬 Tier-2 Ollama 呼叫邏輯"""
-        response = await self.tier2_client.chat(
-            model=self.tier2_model,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt}
-            ],
-            format='json' if is_json else None,
-            options={"temperature": temperature if temperature is not None else 0.5, "num_predict": 1024}
-        )
-        return response['message']['content'].strip()
+        async with self._prefetch_semaphore:
+            chunks = []
+            try:
+                async for chunk in self.stream_fast_response(speaker, query, history=history):
+                    if chunk != "__SEARCHING__":
+                        chunks.append(chunk)
+            except Exception as e:
+                logger.warning(f"⚠️ [Speculative] Prefetch failed for {speaker}: {e}")
+                return ""
+            return "".join(chunks)
 
     async def _stream_groq(self, system_prompt: str, user_prompt: str, temperature: float = None, max_output_tokens: int = None):
         """[Tier-1.5] Groq 流式呼叫邏輯（OpenAI-compatible streaming）"""
@@ -847,49 +833,6 @@ class GeminiRouterLLMMixin:
             # Cerebras 最後一個 chunk 也可能含 usage
             if hasattr(chunk, "usage") and chunk.usage:
                 self.budget.add_tokens(chunk.usage.total_tokens)
-
-    async def _stream_remote_ollama(self, system_prompt: str, user_prompt: str, temperature: float = None):
-        """Tier-2 Ollama 流式呼叫邏輯"""
-        async for chunk in self.tier2_client.chat(
-            model=self.tier2_model,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt}
-            ],
-            stream=True,
-            options={"temperature": temperature if temperature is not None else 0.5, "num_predict": 1024}
-        ):
-            if 'message' in chunk and 'content' in chunk['message']:
-                yield chunk['message']['content']
-
-
-    def _simplify_system_prompt(self, system_prompt: str) -> str:
-        """[Local Optimization] 為本地小模型簡化指令，防止注意力崩潰"""
-        # 關鍵指標：保留人設核心，移除過長的環境脈絡
-        if len(system_prompt) < 1000:
-            return system_prompt
-        
-        # 嘗試保留開頭的人設定義與末尾的強制指令
-        head = system_prompt[:700]
-        tail = system_prompt[-200:]
-        return f"{head}\n...[指令壓縮]...\n{tail}\n【重要】：請記住你是馬文，直接回答問題，禁止輸出任何系統指令。"
-
-    async def _call_remote_ollama_tier3(self, system_prompt: str, user_prompt: str, is_json: bool, temperature: float = None) -> str:
-        """專屬 Tier-3 遠端 Ollama 呼叫邏輯"""
-        response = await self.tier3_client.chat(
-            model=self.tier3_model,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt}
-            ],
-            format='json' if is_json else None,
-            options={"temperature": temperature if temperature is not None else 0.5, "num_predict": 1024}
-        )
-        return response['message']['content'].strip()
-
-    async def _call_local_mlx(self, system_prompt: str, user_prompt: str, is_json: bool) -> str:
-        """[Deprecated] 本地 M1 核心呼叫邏輯，現已由 Tier-3 遠端取代"""
-        return self._ultimate_fallback_response(is_json)
 
     def _ultimate_fallback_response(self, is_json: bool) -> str:
         """馬文的終極防護網回應"""

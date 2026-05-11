@@ -12,7 +12,6 @@ groq==1.2.0
 mcrcon==0.7.0
 mss==10.1.0
 numpy==2.4.4
-ollama==0.6.1
 openai==2.30.0
 opencv-python==4.13.0.92
 pytest==9.0.3

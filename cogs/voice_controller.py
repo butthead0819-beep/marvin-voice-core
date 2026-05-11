@@ -388,6 +388,7 @@ class VoiceController(commands.Cog):
         self.playback_lock = asyncio.Lock() # 🚀 [Critical Fix] 實體播音鎖，防止並發 play() 衝突
         self._tts_interrupted = False # 🛡️ [Interrupt Guard] 玩家插話後封鎖剩餘串流片段
         self._tts_protected = False  # 登場台詞等不可中斷的 TTS 播放中時為 True
+        self._tts_flush_requested = False  # 🗑️ [TTS Flush] owner 強制清空佇列旗標
         self._nemo_lock = asyncio.Lock()  # 🦞 [NemoClaw] 防止 openclaw 並發執行（同時只跑一個）
         self._nemo_dedup: dict = {}  # 🦞 {f"{speaker}:{hash}" → timestamp}，重複觸發防護
         
@@ -935,6 +936,17 @@ class VoiceController(commands.Cog):
     async def marvin_reboot(self, interaction: discord.Interaction):
         await interaction.response.send_message("⚙️ 既然你堅持... 我就重發一遍那顆無意義的大腦吧。")
         await self.self_restart(reason="指揮官手動重啟", force=True)
+
+    @app_commands.command(name="marvin_tts_clear", description="[Owner] 立即清空 TTS 語音佇列，停止當前播放")
+    async def marvin_tts_clear(self, interaction: discord.Interaction):
+        if interaction.user.id != _NEMOCLAW_OWNER_ID:
+            await interaction.response.send_message("你沒有權限這樣做。不過我也不在乎。", ephemeral=True)
+            return
+        queue_before = self.tts_queue_duration
+        await interaction.response.send_message(
+            f"🗑️ 正在清空語音佇列（估計 {queue_before:.1f}s 的待播內容）...", ephemeral=True
+        )
+        await self.tts_flush()
 
     @app_commands.command(name="marvin_radio", description="[Radio] 啟動/停止 Marvin 電台，隨機播放 assets/songs 中的歌曲")
     @app_commands.describe(action="start=強制啟動, stop=強制停止, 不填=切換狀態")
@@ -1873,7 +1885,7 @@ class VoiceController(commands.Cog):
             self.stt_logger.info(f"[BOT嘲諷→{speaker}] 沉默={silence_duration:.1f}s | {mock_line}")
             if self.stream_mode and self.active_text_channel:
                 self.bot.loop.create_task(self.active_text_channel.send(f"😑 {mock_line}"))
-            self.bot.loop.create_task(self.play_tts(mock_line, silent_during_stream=True))
+            self.bot.loop.create_task(self.play_tts(mock_line, silent_during_stream=True, priority=2))
 
     async def _update_emotion_from_audio(self, speaker: str, wav_bytes: bytes, text: str):
         """🎭 [Gemini Audio Emotion] 以實際語音音訊讓 Gemini 分析情緒，更新 user_emotion_cache。
@@ -3555,7 +3567,7 @@ class VoiceController(commands.Cog):
                         ))
                         # emotional_support = 抱怨共鳴，只發文字不打斷語音
                         if gap_type != "emotional_support":
-                            asyncio.create_task(self.play_tts(gap_response, already_in_channel=True, silent_during_stream=True))
+                            asyncio.create_task(self.play_tts(gap_response, already_in_channel=True, silent_during_stream=True, priority=2))
         except Exception as e:
             logger.error(f"🚨 [Slow System Error] 背景循環發生異常 (已截斷防止崩潰): {e}")
             import traceback
@@ -3758,7 +3770,7 @@ class VoiceController(commands.Cog):
                     _f.write(_json.dumps(_pu_rec, ensure_ascii=False) + "\n")
             except Exception as _e:
                 logger.debug(f"[Proactive Usage] 寫入失敗: {_e}")
-            asyncio.create_task(self.play_tts(rephrased_script, already_in_channel=True, silent_during_stream=True))
+            asyncio.create_task(self.play_tts(rephrased_script, already_in_channel=True, silent_during_stream=True, priority=2))
             # 追蹤主動發言後玩家反應
             _proactive_target = (selected_topic.get("target_players") or online_members or ["頻道"])[0]
             asyncio.create_task(self._schedule_reaction_check(
@@ -3885,7 +3897,7 @@ class VoiceController(commands.Cog):
 
         return False
 
-    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None):
+    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1):
         """
         🚀 [T-02 Opt] Hyper-Streaming Version
         改用 FIFO (Named Pipe) 實現即時串流播放，首個音訊 chunk 抵達即刻輸出，
@@ -3914,9 +3926,13 @@ class VoiceController(commands.Cog):
                 return
 
         estimated_dur = self.bot.tts_engine.get_estimated_duration(text)
-        if self.tts_queue_duration > 10.0 and not force_macos and not self._tts_protected:
-            logger.info(f"⏩ [TTS Queue Full] 佇列已滿({self.tts_queue_duration:.1f}s)，跳過: '{text[:25]}...'")
-            return  # 快系統優先權
+        # 🗑️ [Priority Drop] 依優先級丟棄：AMBIENT(2)>3s, RESPONSE(1)>8s, CRITICAL(0)=永不丟
+        _DROP_THRESHOLDS = {0: float("inf"), 1: 8.0, 2: 3.0}
+        _drop_threshold = _DROP_THRESHOLDS.get(priority, 8.0)
+        if self.tts_queue_duration > _drop_threshold and not force_macos and not self._tts_protected:
+            _tier_name = {0: "CRITICAL", 1: "RESPONSE", 2: "AMBIENT"}.get(priority, "?")
+            logger.info(f"⏩ [TTS Drop/{_tier_name}] 佇列 {self.tts_queue_duration:.1f}s > {_drop_threshold}s，跳過: '{text[:25]}...'")
+            return
 
         # 📻 [Radio Interrupt] Marvin 說話前停止電台，釋放 VoiceClient 給 TTS
         if self.radio_mode:
@@ -4012,10 +4028,17 @@ class VoiceController(commands.Cog):
             if error: logger.error(f"❌ [Playback Error] {error}")
 
 
+        # 🗑️ [Flush Gate] owner 呼叫 tts_flush() 後，非保護 TTS 在進入播音鎖前直接退出
+        if self._tts_flush_requested and not self._tts_protected:
+            async with self.tts_queue_lock:
+                self.tts_queue_duration = max(0.0, self.tts_queue_duration - estimated_dur)
+            self._cleanup_fifo(fifo_path, tmp_dir)
+            return
+
         try:
             async with self.playback_lock:
                 self.is_playing_audio = True
-                
+
                 # 🚀 [Resilience Fix] 在進入臨界區後再次確認連線狀態，防止心跳中斷導致的代碼漂移
                 if not voice_client.is_connected():
                     logger.error("❌ [Voice] 連線在播放前意外中斷 (Shard Error 4014?)")
@@ -4069,6 +4092,22 @@ class VoiceController(commands.Cog):
             self._tts_echo_cooldown_until = time.time() + 2.0
             self._current_tts_text = ""
             self._wake_response_pending = False  # 🔒 TTS 送達，解除 Response Lock
+
+    async def tts_flush(self):
+        """🗑️ [TTS Flush] 立即停止當前 TTS 並清空待播佇列。由 owner 指令觸發。
+        原理：設 _tts_flush_requested 旗標 → 所有等待 playback_lock 的 play_tts 任務
+        在 Flush Gate 處提前退出 → 0.3s 後復位旗標，恢復正常播放。
+        Phase A 替換時：改為 queue.clear() + current_task.cancel()，旗標可移除。
+        """
+        self._tts_flush_requested = True
+        voice_client = next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
+        if voice_client and voice_client.is_playing():
+            voice_client.stop()
+        async with self.tts_queue_lock:
+            self.tts_queue_duration = 0.0
+        await asyncio.sleep(0.3)  # 讓在途 tasks 有機會通過 Flush Gate
+        self._tts_flush_requested = False
+        logger.info("🗑️ [TTS Flush] 佇列已清空，恢復正常播放。")
 
     async def play_local_file(self, file_path: str):
         """
