@@ -31,10 +31,18 @@ RUN pip install --no-cache-dir \
     aiohttp \
     aiofiles \
     openai \
-    syncedlyrics
+    syncedlyrics \
+    davey==0.1.5 \
+    duckduckgo-search
 
 # Copy the rest of the project
 COPY . .
+
+# Linux-specific defaults:
+#   VISION_ENABLED=false — screen capture requires a display (no X11 in Docker)
+#   PYTHONUNBUFFERED=1   — route print() to Docker logs instead of file buffer
+ENV VISION_ENABLED=false
+ENV PYTHONUNBUFFERED=1
 
 # Swift STT will fail on Linux (expected) and automatically fall back to
 # Faster-Whisper. No flag needed — stt_handler.py handles this gracefully.

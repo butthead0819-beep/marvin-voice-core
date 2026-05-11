@@ -1,6 +1,6 @@
 aiohttp>=3.9
 discord.py>=2.4
-discord-ext-voice_recv>=0.5
+discord-ext-voice_recv==0.5.2a179
 faster-whisper>=1.0
 numpy>=1.26
 
