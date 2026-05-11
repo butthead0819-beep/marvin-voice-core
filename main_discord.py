@@ -176,10 +176,16 @@ class MarvinBot(commands.Bot):
         
         # 1. 清除 Discord 伺服器端的全域指令殘留 (防止重複顯示)
         # 策略：先送出空的全域指令表，讓 Discord 刪掉之前 global sync 留下的舊版本。
+        # ⚠️ global sync 受 Discord rate limit 影響，加 timeout 避免 setup_hook 卡死
         logger.info("🗑️ [Cleanup] 清除 Discord 全域指令...")
         self.tree.clear_commands(guild=None)
-        await self.tree.sync()
-        logger.info("✅ [Cleanup] 全域指令清除完畢。")
+        try:
+            await asyncio.wait_for(self.tree.sync(), timeout=10.0)
+            logger.info("✅ [Cleanup] 全域指令清除完畢。")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ [Cleanup] 全域指令 sync 逾時（Discord rate limit？），跳過繼續啟動。")
+        except Exception as e:
+            logger.warning(f"⚠️ [Cleanup] 全域指令 sync 失敗: {e}，跳過繼續啟動。")
 
         # 2. 載入 Cogs (在清空樹之後載入，確保指令登記在正確的 local 狀態)
         cogs = ["cogs.gm_commands", "cogs.voice_controller", "cogs.game_cog"]

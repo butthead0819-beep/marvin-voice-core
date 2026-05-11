@@ -144,13 +144,14 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         if self.provider != "gemini":
             self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
             # 🚀 [Pre-warm] 預先讀取資源，防止第一次呼叫時引發同步 Import 阻塞事件循環
-            _ = self.client.chat
+            self.client.chat  # noqa: pre-warm openai lazy import
 
         # ⚡ [Groq Dedicated Client] 獨立 Groq 客戶端，不受 LLM_PROVIDER 影響
         # 用途：STT 清洗主力 + Tier-1 雲端失敗時的高速備援
         _groq_key = os.getenv("GROQ_API_KEY")
         if _groq_key:
             self.groq_dedicated_client = AsyncOpenAI(api_key=_groq_key, base_url="https://api.groq.com/openai/v1")
+            self.groq_dedicated_client.chat  # 🚀 [Pre-warm] 觸發 lazy import，避免首次呼叫時卡住 event loop
             self.groq_fallback_model = os.getenv("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
             self.groq_simple_model = os.getenv("GROQ_SIMPLE_MODEL", "llama-3.1-8b-instant")  # 輕量高頻任務
             logger.info(f"⚡ 已掛載 Groq 核心: 主力={self.groq_fallback_model}, 輕量={self.groq_simple_model}")
@@ -163,6 +164,7 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         _cerebras_key = os.getenv("CEREBRAS_API_KEY")
         if _cerebras_key:
             self.cerebras_client = AsyncOpenAI(api_key=_cerebras_key, base_url="https://api.cerebras.ai/v1")
+            self.cerebras_client.chat  # 🚀 [Pre-warm] 同上
             self.cerebras_model = os.getenv("CEREBRAS_MODEL", "llama-3.1-8b")
             logger.info(f"🚀 已掛載 Cerebras 備援核心: {self.cerebras_model}")
         else:
