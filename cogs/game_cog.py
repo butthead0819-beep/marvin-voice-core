@@ -828,7 +828,7 @@ class BustedCog(commands.Cog):
             loading_embed.add_field(name="💭", value="線索生成中…", inline=False)
             await self._edit_game_message(loading_embed)
 
-        router = getattr(self.bot, "gemini_router", None)
+        router = getattr(self.bot, "router", None)
         if router is None:
             session.current_clues.append("（線索生成器未連接）")
             await self.on_state_change(session)
@@ -945,7 +945,7 @@ class BustedCog(commands.Cog):
         )
         self._session = session
 
-        router       = getattr(self.bot, "gemini_router", None)
+        router       = getattr(self.bot, "router", None)
         self._marvin = MarvinPlayer(router) if router else None
 
         self._engine = GameEngine(
