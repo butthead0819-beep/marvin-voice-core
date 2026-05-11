@@ -1,5 +1,11 @@
 import asyncio
 import os
+from utils import is_whisper_hallucination
+
+# Prompt used when checking Swift output for hallucinations.
+# Mirrors the context strings injected into STT_CONTEXT_STRINGS so we can
+# detect when Swift echoes back its own hint words instead of real speech.
+_SWIFT_HAL_PROMPT = "Marvin, Hi Marvin, 馬文, 艾馬文, 艾瑪文, 嗨馬文, 馬問, 麻文, 碼文, 麻文"
 
 
 class STTHandler:
@@ -55,8 +61,12 @@ class STTHandler:
                     if line and not any(line.startswith(p) for p in _skip):
                         raw_text = line
                 if raw_text:
-                    used_engine = "Swift"
-                    print(f"✅ [Core_STT] {speaker_name}: {raw_text} (Swift)", flush=True)
+                    if is_whisper_hallucination(raw_text, _SWIFT_HAL_PROMPT):
+                        print(f"🚫 [Core_STT] {speaker_name}: Swift 幻覺轉錄已過濾 '{raw_text[:40]}'", flush=True)
+                        raw_text = ""
+                    else:
+                        used_engine = "Swift"
+                        print(f"✅ [Core_STT] {speaker_name}: {raw_text} (Swift)", flush=True)
             else:
                 print(f"❌ [Core_STT] Swift 失敗 (code {process.returncode})", flush=True)
         except Exception as exc:

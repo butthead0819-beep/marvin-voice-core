@@ -80,12 +80,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env — fill in DISCORD_BOT_TOKEN, GOOGLE_API_KEY, GROQ_API_KEY at minimum
 
-# 4. Set up community memory
-# Copy the starter JSON and add your server members
-cp docs/memory_schema_starter.json suki_memory.json
-# Edit suki_memory.json — rename "example-username" to your Discord usernames
-
-# 5. Run
+# 4. Run
 python main_discord.py
 ```
 
@@ -95,28 +90,25 @@ In Discord: join a voice channel, then type `/summon` in any text channel.
 
 ## Community Memory
 
-`suki_memory.json` is the heart of the project. It stores what Marvin knows about each member — not chat logs, but structured observations that accumulate over real interactions:
+Marvin stores what he knows about each member in a local SQLite database (`marvin.db`) — not chat logs, but structured observations that accumulate over real interactions. The database is created automatically on first run; no manual setup required.
 
-```json
-{
-  "players": {
-    "your-discord-username": {
-      "suki_impression": "Marvin's inner monologue about this person",
-      "relationship_stage": "陌生人",
-      "likes": [],
-      "dislikes": [],
-      "taboos": [],
-      "bias_score": 0.0
-    }
-  }
-}
-```
+A `suki_memory.json` export is written alongside the database after every save, so external analysis scripts can still read it directly.
+
+Key fields per player:
+
+| Field | What it tracks |
+|-------|---------------|
+| `suki_impression` | Marvin's inner monologue about this person |
+| `relationship_stage` | Stranger → regular → inner circle |
+| `bias_score` | Drifts ±10 with reactions — determines tone |
+| `likes / dislikes / taboos` | Accumulated from conversation |
+| `speech_dna` | Per-person speaking style observations |
 
 `bias_score` drifts with every session — positive reactions pull it up, friction pulls it down. `relationship_stage` advances as Marvin accumulates enough signal. Together they determine how Marvin talks to each person: same personality, different texture.
 
 See [`docs/memory_schema_template.md`](docs/memory_schema_template.md) for the full schema.
 
-**`suki_memory.json` contains personal data. It is gitignored by default — never commit it.**
+**`marvin.db` and `suki_memory.json` contain personal data. Both are gitignored by default — never commit them.**
 
 ---
 

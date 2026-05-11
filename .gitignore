@@ -33,6 +33,11 @@ suki_memory.*.bak
 suki_dna.json
 suki_budget.json
 
+# SQLite databases — runtime data, never commit
+*.db
+*.db-shm
+*.db-wal
+
 # Runtime data — personal and generated
 game_log.jsonl
 music_memory.json

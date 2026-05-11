@@ -22,5 +22,4 @@ requests==2.33.1
 sounddevice==0.5.3
 soundfile==0.13.1
 syncedlyrics==1.0.1
-vosk==0.3.44
 yt-dlp==2026.3.17

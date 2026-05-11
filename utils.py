@@ -106,7 +106,7 @@ def is_whisper_hallucination(text: str, prompt: str) -> bool:
         if top_count >= 3 and top_count / len(parts) >= 0.55:
             return True
     prompt_tokens = {p.strip() for p in re.split(r'[,，。！.\s]+', prompt) if p.strip()}
-    if all(p in prompt_tokens for p in parts):
+    if len(parts) >= 2 and all(p in prompt_tokens for p in parts):
         return True
     return False
 

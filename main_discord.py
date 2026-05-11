@@ -182,7 +182,7 @@ class MarvinBot(commands.Bot):
         logger.info("✅ [Cleanup] 全域指令清除完畢。")
 
         # 2. 載入 Cogs (在清空樹之後載入，確保指令登記在正確的 local 狀態)
-        cogs = ["cogs.gm_commands", "cogs.voice_controller"]
+        cogs = ["cogs.gm_commands", "cogs.voice_controller", "cogs.game_cog"]
         for cog in cogs:
             try:
                 await self.load_extension(cog)

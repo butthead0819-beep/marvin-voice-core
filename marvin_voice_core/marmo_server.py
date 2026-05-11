@@ -40,6 +40,9 @@ class MarmoServer:
         if not text:
             return web.Response(status=400, text="empty text")
 
+        if getattr(self._vc, "game_mode", False):
+            return web.Response(text="game_mode_active")  # 遊戲中靜默丟棄 Marmo webhook
+
         if job_id and job_id in self._seen_jobs:
             return web.Response(text="duplicate")
         if job_id:

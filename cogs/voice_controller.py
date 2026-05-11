@@ -13,7 +13,7 @@ import sys
 import tempfile
 import shutil
 import subprocess
-from utils import pre_filter_speech
+from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
 from departure_stats import DepartureStats
 from consent_manager import ConsentManager
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 log
 
 # 🛡️ [Double Wake Guard] 用於防止短時間內重複回應
 _GLOBAL_PROCESSED_SEGMENTS = {} # segment_id -> timestamp
+
+# 🚫 [Wake Echo Guard] STT 回環偵測：喚醒詞在同一句出現 2+ 次 → 幻覺
+_WAKE_ECHO_RE = re.compile(rf'({WAKE_PATTERN})', re.IGNORECASE)
+# 喚醒詞提示字串，供 is_whisper_hallucination 的 prompt 比對模式使用
+_STT_HAL_PROMPT = "Marvin, Hi Marvin, 馬文, 艾馬文, 艾瑪文, 嗨馬文, 馬問, 麻文"
 
 # 🔒 [NemoClaw] 只允許本機主人的 Discord user ID 驅動 NemoClaw
 _NEMOCLAW_OWNER_ID: int = int(os.environ.get("LOCAL_USER_ID", "0"))
@@ -450,6 +455,9 @@ class VoiceController(commands.Cog):
         self._wake_burst_times: list[float] = []   # 🛡️ [Wake Storm Guard] 快速喚醒時間戳滾動窗口
         self._storm_active: bool = False            # 風暴壓抑是否啟動中
         self._storm_last_wake_time: float = 0.0    # 風暴期間最近一次喚醒時間（用於偵測消散）
+
+        # 🎮 [Game Mode] 遊戲進行中：暫停 Marvin 所有服務，專心陪玩
+        self.game_mode: bool = False
         self._wake_response_pending: bool = False   # 🔒 [Response Lock] 已接受喚醒、回應尚未送達
         self._wake_accepted_time: float = 0.0      # 最近一次喚醒被接受的時間
 
@@ -1147,6 +1155,8 @@ class VoiceController(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         """文字頻道 @Marvin mention → LLM 回覆；@AI Marmo 回覆 → TTS（由 _handle_marmo_query wait_for 處理）。"""
+        if self.game_mode:
+            return  # 遊戲中 Marvin 不回應文字 mention
         # 忽略自己發的訊息
         if message.author.id == self.bot.user.id:
             return
@@ -1438,6 +1448,9 @@ class VoiceController(commands.Cog):
             self._stt_call_counter += 1
 
         # 🚀 [Operation Semantic ETD] 雙軌語意終止檢測 (Track B-1 & B-2)
+        # 遊戲中跳過 ETD：玩家搶答用短句，不需 LLM 判斷句子完整性
+        if self.game_mode:
+            bypass_etd = True
         if not is_wake_check and not bypass_etd:
             import re
             
@@ -1551,6 +1564,16 @@ class VoiceController(commands.Cog):
                     if hasattr(self.bot, 'router') and hasattr(self.bot.router, 'atmosphere_tracker'):
                         self.bot.router.atmosphere_tracker.add_utterance(speaker, raw_text, timestamp)
                     return
+
+        # 🚫 [Hallucination Guard] 重複 token 幻覺（聽×30、謝謝謝謝…）→ 直接丟棄
+        if is_whisper_hallucination(raw_text, _STT_HAL_PROMPT):
+            logger.info(f"🚫 [Hallucination] {speaker}: 幻覺轉錄丟棄 '{raw_text[:50]}'")
+            return
+
+        # 🚫 [Wake Echo Guard] 同一句含 2+ 個喚醒詞 → STT 回環幻覺（Track A 專用；Track B 已有 LLM 審查）
+        if track is None and len(_WAKE_ECHO_RE.findall(raw_text)) >= 2:
+            logger.info(f"🚫 [Wake Echo] {speaker}: 喚醒詞回環丟棄 '{raw_text[:50]}'")
+            return
 
         # 🧠 [IBA] 4-channel confidence accumulation → wake decision
         filter_result = pre_filter_speech(raw_text)
@@ -2146,6 +2169,13 @@ class VoiceController(commands.Cog):
         if _MARMO_RE.search(full_raw_text):
             asyncio.create_task(self._handle_marmo_query(speaker, full_raw_text))
             return
+
+        # 🎮 [Busted Game] 遊戲中：先嘗試送入搶答路由；無論是否消耗，都不繼續給 Marvin
+        if self.game_mode:
+            _game_cog = self.bot.cogs.get("BustedCog")
+            if _game_cog is not None:
+                await _game_cog.receive_voice_answer_by_speaker(speaker, full_raw_text)
+            return  # 遊戲中所有語音一律不送 Marvin
 
         # 🎵 [IBA Tier 0] 音樂控制直達 — stream 播放中，無歧義控制詞直接執行，不需喚醒詞
         if self.stream_mode:
@@ -3905,6 +3935,8 @@ class VoiceController(commands.Cog):
 
         silent_during_stream=True：主動發言類別，串流播放中靜音（文字由呼叫方貼頻道）。
         """
+        if self.game_mode:
+            return  # 遊戲中停止所有 TTS
         if not text: return
         import re
         text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', text, flags=re.DOTALL).strip()
