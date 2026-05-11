@@ -842,6 +842,16 @@ class BustedCog(commands.Cog):
         session.current_clues.append(clue)
         await self.on_state_change(session)
 
+        # 用不可中斷 TTS 唸出線索
+        vc = self.bot.cogs.get("VoiceController")
+        if vc is not None:
+            announcement = f"線索{session.current_round}：{clue}"
+            vc._tts_protected = True
+            try:
+                await vc.play_tts(announcement, already_in_channel=True)
+            finally:
+                vc._tts_protected = False
+
     # ── Mid-game join / leave ──────────────────────────────────────────────────
 
     def _start_grace_timer(self, member: discord.Member) -> None:

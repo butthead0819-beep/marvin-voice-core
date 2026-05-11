@@ -3935,8 +3935,8 @@ class VoiceController(commands.Cog):
 
         silent_during_stream=True：主動發言類別，串流播放中靜音（文字由呼叫方貼頻道）。
         """
-        if self.game_mode:
-            return  # 遊戲中停止所有 TTS
+        if self.game_mode and not self._tts_protected:
+            return  # 遊戲中停止所有 TTS（保護模式除外，用於遊戲線索播報）
         if not text: return
         import re
         text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', text, flags=re.DOTALL).strip()

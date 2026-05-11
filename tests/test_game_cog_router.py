@@ -17,6 +17,7 @@ def _make_bot(*, has_router: bool = True) -> MagicMock:
     """Return a minimal mock bot. Optionally omit bot.router to test the fallback."""
     bot = MagicMock()
     bot.voice_clients = []
+    bot.cogs.get.return_value = None  # no VoiceController in unit tests — skip TTS
     if has_router:
         bot.router = MagicMock()
         bot.router.complete = AsyncMock(return_value="測試線索")
