@@ -35,9 +35,11 @@ class DepartureStats:
             return {}
 
     def _save(self):
+        tmp = _PATH + ".tmp"
         try:
-            with open(_PATH, "w", encoding="utf-8") as f:
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, _PATH)
         except Exception as e:
             logger.warning(f"[DepartureStats] 寫入失敗: {e}")
 
