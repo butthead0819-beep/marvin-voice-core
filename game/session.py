@@ -8,6 +8,7 @@ class GameState(Enum):
     IDLE = "idle"
     JOINING = "joining"
     SPINNING = "spinning"
+    THEME_SELECT = "theme_select"
     SETTER_INPUT = "setter_input"
     CLUE_ACTIVE = "clue_active"
     BUZZ_LOCKED = "buzz_locked"
@@ -42,3 +43,5 @@ class GameSession:
     game_message_id: int | None = None # Discord message ID for main embed
     started_at: float = 0.0
     wrong_guesses: list[str] = field(default_factory=list)  # all wrong buzz answers this setter turn
+    candidate_themes: list[str] = field(default_factory=list)  # options shown during THEME_SELECT
+    current_theme: str | None = None                          # chosen theme for this round

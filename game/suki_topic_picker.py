@@ -114,3 +114,45 @@ def pick_topic_and_answer(memory_manager) -> tuple[str, str]:
 def pick(memory_manager) -> tuple[str, str]:
     """Alias for pick_topic_and_answer."""
     return pick_topic_and_answer(memory_manager)
+
+
+def pick_theme_candidates(memory_manager, n: int = 3) -> list[str]:
+    """Return up to n distinct theme strings drawn from chat memory.
+    Falls back to built-in topics when memory is thin.
+    """
+    pool: list[str] = []
+
+    try:
+        proactive = memory_manager.get_proactive_topics()
+        if isinstance(proactive, list):
+            pool.extend(t for t in proactive if isinstance(t, str) and t.strip())
+    except Exception:
+        pass
+
+    try:
+        cache: dict = getattr(memory_manager, "_cache", {})
+        for player in cache.values():
+            if not isinstance(player, dict):
+                continue
+            for highlight in player.get("emotional_highlights", []):
+                if isinstance(highlight, dict):
+                    moment = highlight.get("moment", "")
+                    if isinstance(moment, str) and moment.strip():
+                        pool.append(moment.strip().split()[0])
+            for key, val in player.get("behavioral_patterns", {}).items():
+                if isinstance(key, str) and key.strip():
+                    pool.append(key)
+                if isinstance(val, str) and val.strip():
+                    pool.append(val)
+    except Exception:
+        pass
+
+    unique = list({t.strip() for t in pool if len(t.strip()) >= 2})
+    if len(unique) < n:
+        # Pad with built-in topics so we always have n choices
+        fallbacks = [t for t in _TOPIC_ANSWER_MAP if t not in unique]
+        random.shuffle(fallbacks)
+        unique.extend(fallbacks)
+
+    random.shuffle(unique)
+    return unique[:n]

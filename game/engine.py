@@ -438,8 +438,31 @@ class GameEngine:
             if self._clue_fn is not None:
                 asyncio.get_running_loop().create_task(self._clue_fn(self.session))
 
+    async def begin_theme_select(self, themes: list[str]) -> None:
+        """Present candidate themes from chat memory. Transitions SPINNING → THEME_SELECT."""
+        async with self._lock:
+            if self.session.state != GameState.SPINNING:
+                return
+            self.session.candidate_themes = list(themes)
+            self.session.current_theme = None
+            self.session.state = GameState.THEME_SELECT
+            await self._notify()
+
+    async def select_theme(self, theme: str) -> bool:
+        """Record the setter's chosen theme. Transitions THEME_SELECT → SETTER_INPUT.
+        Returns False if the theme is not in candidates or state is wrong."""
+        async with self._lock:
+            if self.session.state != GameState.THEME_SELECT:
+                return False
+            if theme not in self.session.candidate_themes:
+                return False
+            self.session.current_theme = theme
+            self.session.state = GameState.SETTER_INPUT
+            await self._notify()
+            return True
+
     async def begin_setter_input(self) -> None:
-        """Called by game_cog after the spinner animation completes."""
+        """Called by game_cog after the spinner animation completes (no theme phase)."""
         async with self._lock:
             if self.session.state != GameState.SPINNING:
                 return
@@ -477,6 +500,8 @@ class GameEngine:
             self.session.current_round = 1
             self.session.buzz_holder_id = None
             self.session.buzz_locked_until = 0.0
+            self.session.current_theme = None
+            self.session.candidate_themes = []
             self._round5_scores.clear()
 
             next_setter = self._next_setter()

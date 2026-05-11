@@ -16,7 +16,7 @@ from game.engine import GameEngine
 from game.session import GameSession, GameState
 from game.clue_generator import generate_clue
 from game.marvin_player import MarvinPlayer
-from game.suki_topic_picker import pick
+from game.suki_topic_picker import pick, pick_theme_candidates
 from suki_memory import MemoryManager
 
 logger = logging.getLogger(__name__)
@@ -208,6 +208,35 @@ class MidGameJoinView(discord.ui.View):
             await interaction.response.send_message(
                 "❌ 無法加入（遊戲滿員或現在不能加入）", ephemeral=True
             )
+
+
+class ThemeSelectView(discord.ui.View):
+    """Three buttons — one per candidate theme. Setter picks the round's topic."""
+
+    def __init__(self, cog: BustedCog, themes: list[str], setter_id: str):
+        super().__init__(timeout=30)
+        self._cog = cog
+        self._setter_id = setter_id
+        for theme in themes:
+            btn = discord.ui.Button(label=theme, style=discord.ButtonStyle.secondary)
+            btn.callback = self._make_callback(theme)
+            self.add_item(btn)
+
+    def _make_callback(self, theme: str):
+        async def callback(interaction: discord.Interaction):
+            if str(interaction.user.id) != self._setter_id:
+                await interaction.response.send_message("只有出題人可以選主題", ephemeral=True)
+                return
+            await interaction.response.defer()
+            await self._cog._engine.select_theme(theme)
+            self.stop()
+        return callback
+
+    async def on_timeout(self):
+        # Auto-select the first candidate so the game never stalls
+        engine = self._cog._engine
+        if engine and engine.session.candidate_themes:
+            await engine.select_theme(engine.session.candidate_themes[0])
 
 
 # ── Cog ────────────────────────────────────────────────────────────────────────
@@ -436,6 +465,21 @@ class BustedCog(commands.Cog):
         elif state == GameState.SPINNING:
             self._cancel_tasks()
             self._spawn(self._run_spinner(session))
+
+        elif state == GameState.THEME_SELECT:
+            setter = next((p for p in session.players if p.user_id == session.current_setter_id), None)
+            setter_name = setter.display_name if setter else "出題人"
+            embed = discord.Embed(
+                title="🎯 選擇本輪主題",
+                description=(
+                    f"**{setter_name}** 請從以下主題中選一個，\n"
+                    "你的謎底必須與這個主題相關！\n\n"
+                    "30 秒內未選擇將自動抽選。"
+                ),
+                color=0x9B59B6,
+            )
+            view = ThemeSelectView(self, session.candidate_themes, session.current_setter_id or "")
+            await self._post_game_message(embed, view)
 
         elif state == GameState.SETTER_INPUT:
             self._round5_display_scores.clear()
@@ -738,7 +782,8 @@ class BustedCog(commands.Cog):
                 await msg.edit(embed=discord.Embed(title="🎰 …", color=C_SPINNER))
                 await asyncio.sleep(0.4)
 
-            await self._engine.begin_setter_input()
+            themes = pick_theme_candidates(self._memory_manager, n=3)
+            await self._engine.begin_theme_select(themes)
 
         except asyncio.CancelledError:
             pass
@@ -838,6 +883,7 @@ class BustedCog(commands.Cog):
             session.current_round,
             list(session.current_clues),
             router,
+            theme=session.current_theme,
         )
         session.current_clues.append(clue)
         await self.on_state_change(session)
