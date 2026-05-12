@@ -1,15 +1,12 @@
 import discord
-from discord import app_commands
 from discord.ext import commands
 import asyncio
 import concurrent.futures
 import threading
 import time
 import os
-import tempfile
 import wave
 import numpy as np
-import typing
 import discord.opus
 try:
     import davey
@@ -601,14 +598,19 @@ class DiscordVoiceEngine:
             max_workers=1, thread_name_prefix="whisper-stt"
         )
 
-        # 🚀 [Hybrid Strategy] 不論主引擎為何，皆載入 Faster-Whisper (Tiny) 做為備援
-        print(f"🧠 [Engine] 正在載入備援 Faster-Whisper (Model: tiny, Device: cpu, Quant: int8)...", flush=True)
-        try:
-            from faster_whisper import WhisperModel
-            self.whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
-            print("✅ [Engine] 備援 Faster-Whisper 已就緒。", flush=True)
-        except Exception as e:
-            print(f"⚠️ [Engine Warning] Faster-Whisper 載入失敗: {e}", flush=True)
+        # Apple platform (macos/mlx) uses Swift as the only STT engine.
+        # Whisper is not loaded: no startup cost, no zombie threads possible.
+        _is_apple = self.stt_engine in ("macos", "mlx")
+        if _is_apple:
+            print("🧠 [Engine] Apple platform 偵測，跳過 Faster-Whisper 載入（Swift-only 模式）。", flush=True)
+        else:
+            print(f"🧠 [Engine] 正在載入備援 Faster-Whisper (Model: tiny, Device: cpu, Quant: int8)...", flush=True)
+            try:
+                from faster_whisper import WhisperModel
+                self.whisper_model = WhisperModel("tiny", device="cpu", compute_type="int8")
+                print("✅ [Engine] 備援 Faster-Whisper 已就緒。", flush=True)
+            except Exception as e:
+                print(f"⚠️ [Engine Warning] Faster-Whisper 載入失敗: {e}", flush=True)
 
         # P3: WakeStreamDetector — 聲學層實時喚醒偵測引擎
         self.wake_stream = None
