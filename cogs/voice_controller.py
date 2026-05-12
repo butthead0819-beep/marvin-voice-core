@@ -818,6 +818,8 @@ class VoiceController(commands.Cog):
                 print(f"✅ [SUMMON Retry] 重試成功：connected={voice_client.is_connected()}", flush=True)
                 if self.active_text_channel:
                     await self.active_text_channel.send("🔄 **【連線重試成功】** 初次連線失敗，已自動重連。")
+                if self.bot.engine.post_summon_callback:
+                    asyncio.create_task(self.bot.engine.post_summon_callback(None))
             except Exception as retry_err:
                 print(f"❌ [SUMMON Retry Failed] {retry_err}", flush=True)
                 if self.active_text_channel:
@@ -2170,11 +2172,14 @@ class VoiceController(commands.Cog):
             asyncio.create_task(self._handle_marmo_query(speaker, full_raw_text))
             return
 
-        # 🎮 [Busted Game] 遊戲中：先嘗試送入搶答路由；無論是否消耗，都不繼續給 Marvin
+        # 🎮 遊戲中：依序嘗試兩個遊戲 cog；第一個消耗後即停止，不繼續給 Marvin
         if self.game_mode:
-            _game_cog = self.bot.cogs.get("BustedCog")
-            if _game_cog is not None:
-                await _game_cog.receive_voice_answer_by_speaker(speaker, full_raw_text)
+            for _cog_name in ("BustedCog", "Busted99Cog"):
+                _game_cog = self.bot.cogs.get(_cog_name)
+                if _game_cog is not None:
+                    _consumed = await _game_cog.receive_voice_answer_by_speaker(speaker, full_raw_text)
+                    if _consumed:
+                        break
             return  # 遊戲中所有語音一律不送 Marvin
 
         # 🎵 [IBA Tier 0] 音樂控制直達 — stream 播放中，無歧義控制詞直接執行，不需喚醒詞

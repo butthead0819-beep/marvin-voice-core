@@ -18,6 +18,19 @@ class ConsentManager:
     def __init__(self, path: str = "consent.json"):
         self.path = path
         self._data = self._load()
+        self._mtime: float = self._get_mtime()
+
+    def _get_mtime(self) -> float:
+        try:
+            return os.path.getmtime(self.path)
+        except OSError:
+            return 0.0
+
+    def _reload_if_changed(self):
+        mtime = self._get_mtime()
+        if mtime != self._mtime:
+            self._data = self._load()
+            self._mtime = mtime
 
     def _load(self) -> dict:
         try:
@@ -32,10 +45,12 @@ class ConsentManager:
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._data, f, ensure_ascii=False, indent=2)
             os.replace(tmp, self.path)
+            self._mtime = self._get_mtime()
         except Exception as e:
             logger.error(f"❌ [Consent] 儲存失敗: {e}")
 
     def is_consented(self, display_name: str) -> bool:
+        self._reload_if_changed()
         return bool(self._data.get("consented", {}).get(display_name))
 
     def set_consent(self, display_name: str, granted: bool):
