@@ -2,6 +2,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import concurrent.futures
+import threading
 import time
 import os
 import tempfile
@@ -590,7 +592,15 @@ class DiscordVoiceEngine:
         self.stt_engine = os.getenv("STT_ENGINE", "macos").lower() # 🚀 [Default Swap] 預設改為 macos 優先模式
         self.whisper_model = None
         self.debug_vad_heartbeat = os.getenv("DEBUG_VAD_HEARTBEAT", "false").lower() == "true"
-        
+
+        # Zombie-thread guard: semaphore released by the thread itself (not asyncio timeout).
+        # New calls check acquire(blocking=False) — if taken, the previous thread is still
+        # running and the call is dropped. Max 1 Whisper thread alive at any time.
+        self._whisper_thread_sem = threading.Semaphore(1)
+        self._whisper_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="whisper-stt"
+        )
+
         # 🚀 [Hybrid Strategy] 不論主引擎為何，皆載入 Faster-Whisper (Tiny) 做為備援
         print(f"🧠 [Engine] 正在載入備援 Faster-Whisper (Model: tiny, Device: cpu, Quant: int8)...", flush=True)
         try:
@@ -972,19 +982,32 @@ class DiscordVoiceEngine:
     async def _run_whisper_stt(self, audio) -> str:
         """執行 Faster-Whisper STT，回傳辨識文字或空字串。
         audio 可為 numpy float32 array（優先）或 WAV 檔路徑（fallback）。
-        傳入 array 可避免已刪除檔案被 cancel 後的 thread 讀取。"""
+
+        Zombie-thread 防護：使用 threading.Semaphore(1)，由 thread 自身在 finally 釋放。
+        asyncio 的 wait_for timeout 只取消 Future，不殺 thread；semaphore 確保
+        前一個 thread 仍在跑時新呼叫直接 drop，最多同時只有 1 條 Whisper thread 存活。
+        """
         if not self.whisper_model:
             return ""
-        try:
-            whisper_prompt = "Marvin, Hi Marvin, 馬文, 艾馬文, 艾瑪文, 幫忙, 玩家對話。"
-            active_dict = getattr(self.bot.router, 'game_dict_string', "")
-            if active_dict:
-                whisper_prompt += f", {active_dict}"
-            # faster-whisper.transcribe() 回傳 lazy generator，必須在 thread 內完成
-            # iteration，否則 generate_segments() 在事件迴圈主執行緒執行，阻塞心跳。
-            _model = self.whisper_model
-            _prompt = whisper_prompt
-            def _transcribe_eager():
+
+        # Drop immediately if previous thread is still running
+        if not self._whisper_thread_sem.acquire(blocking=False):
+            logger.warning("[Whisper STT] 前一次辨識仍在執行，跳過（zombie guard）")
+            return ""
+
+        whisper_prompt = "Marvin, Hi Marvin, 馬文, 艾馬文, 艾瑪文, 幫忙, 玩家對話。"
+        active_dict = getattr(self.bot.router, 'game_dict_string', "")
+        if active_dict:
+            whisper_prompt += f", {active_dict}"
+
+        _model = self.whisper_model
+        _prompt = whisper_prompt
+        _sem = self._whisper_thread_sem
+
+        # faster-whisper.transcribe() 回傳 lazy generator，必須在 thread 內完整 iterate
+        def _transcribe_eager():
+            try:
+                _t0 = time.monotonic()
                 segs, _ = _model.transcribe(
                     audio,
                     beam_size=1,
@@ -993,15 +1016,25 @@ class DiscordVoiceEngine:
                     vad_filter=True,
                     vad_parameters=dict(min_silence_duration_ms=500),
                 )
-                return "".join(s.text for s in segs).strip()
+                result = "".join(s.text for s in segs).strip()
+                logger.debug(f"[Whisper STT] 推理耗時 {time.monotonic()-_t0:.2f}s")
+                return result
+            finally:
+                # Release only when thread actually finishes — not when asyncio cancels
+                _sem.release()
 
-            text = await asyncio.wait_for(asyncio.to_thread(_transcribe_eager), timeout=30.0)
+        try:
+            loop = asyncio.get_event_loop()
+            text = await asyncio.wait_for(
+                loop.run_in_executor(self._whisper_executor, _transcribe_eager),
+                timeout=30.0,
+            )
             if text and is_whisper_hallucination(text, _prompt):
                 logger.warning(f"[Whisper STT] 幻覺偵測，丟棄輸出: '{text[:60]}'")
                 return ""
-            return text
+            return text or ""
         except asyncio.TimeoutError:
-            logger.warning("[Whisper STT] 30s 超時，放棄本次辨識")
+            logger.warning("[Whisper STT] 30s 超時，thread 仍在跑（semaphore 由 thread 釋放）")
         except Exception as e:
             logger.warning(f"[Whisper STT] Exception: {e}")
         return ""
