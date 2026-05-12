@@ -563,8 +563,10 @@ class DiscordVoiceEngine:
         self.sink_error_callback = None # 💡 [Sentinel] 新增錯誤回報回呼
         self.stt_lock = asyncio.Semaphore(1)       # full-utterance STT（準確度優先）
         self.wake_stt_lock = asyncio.Semaphore(1)  # wake check 專用（與 full STT 互不阻塞）
-        self._stt_inflight = 0       # concurrent STT pipeline count
-        self._MAX_STT_INFLIGHT = 3   # drop tasks beyond this cap (2 users × full+wake)
+        self._full_stt_inflight = 0      # concurrent full-utterance STT count
+        self._MAX_FULL_STT_INFLIGHT = 3  # drop full-STT beyond this cap
+        self._wake_inflight = 0          # concurrent wake-check STT count
+        self._MAX_WAKE_INFLIGHT = 2      # drop wake_check beyond this cap (one per user)
         self.game_dict_string = "" # 🚀 [Operation Jargon Override]
         self.is_listening = True
         self.sink = None # 👁️ [VAD Guard] 持有當前 Sink 參照
@@ -838,10 +840,15 @@ class DiscordVoiceEngine:
         if user_id not in self.audio_buffers and not is_wake_check:
             return
 
-        # 並發上限保護：超過上限直接丟棄，防止兩人同時狂呼喚醒詞時 event loop 被淹沒
-        if self._stt_inflight >= self._MAX_STT_INFLIGHT:
-            logger.warning(f"⚠️ [STT Drop] inflight={self._stt_inflight} ≥ {self._MAX_STT_INFLIGHT}，丟棄本次 {'wake_check' if is_wake_check else 'full-STT'} (User_{user_id})")
-            return
+        # 並發上限保護：wake_check 與 full-STT 使用獨立計數器，互不阻塞
+        if is_wake_check:
+            if self._wake_inflight >= self._MAX_WAKE_INFLIGHT:
+                logger.warning(f"⚠️ [STT Drop] wake_inflight={self._wake_inflight} ≥ {self._MAX_WAKE_INFLIGHT}，丟棄本次 wake_check (User_{user_id})")
+                return
+        else:
+            if self._full_stt_inflight >= self._MAX_FULL_STT_INFLIGHT:
+                logger.warning(f"⚠️ [STT Drop] full_stt_inflight={self._full_stt_inflight} ≥ {self._MAX_FULL_STT_INFLIGHT}，丟棄本次 full-STT (User_{user_id})")
+                return
 
         if is_wake_check:
             raw_pcm = bytes(self.audio_buffers[user_id]["pcm"]) if user_id in self.audio_buffers else b""
@@ -856,7 +863,10 @@ class DiscordVoiceEngine:
         if not raw_pcm:
             return
 
-        self._stt_inflight += 1
+        if is_wake_check:
+            self._wake_inflight += 1
+        else:
+            self._full_stt_inflight += 1
         wav_path = None
         print(f"🎬 [Engine] {'[WakeCheck]' if is_wake_check else ''} 開始處理聚合音訊 (User_{user_id}, Size: {len(raw_pcm)} bytes)", flush=True)
         try:
@@ -907,7 +917,10 @@ class DiscordVoiceEngine:
         except Exception as e:
             print(f"[Engine Error] Audio flush failed: {e}")
         finally:
-            self._stt_inflight -= 1
+            if is_wake_check:
+                self._wake_inflight -= 1
+            else:
+                self._full_stt_inflight -= 1
             # 統一在 flush 結束後清理暫存檔，避免 Whisper thread cancel 後仍讀到已刪除的檔
             if wav_path and os.path.exists(wav_path):
                 try:
@@ -1009,29 +1022,38 @@ class DiscordVoiceEngine:
             # 傳入 array 讓 Whisper 不依賴磁碟檔案，避免 cancel 後 thread 讀到已刪除的 wav
             _whisper_input = whisper_audio if whisper_audio is not None else wav_path
 
+            _is_apple_platform = self.stt_engine in ("macos", "mlx")
+
             if is_wake_check:
-                # P2: 並行競速 — Swift (on-device) 與 Whisper 同時啟動，首個非空結果勝出
-                print(f"🎙️ [Engine] [WakeCheck] Swift ⚡ Whisper 並行競速 (Speaker: {speaker_name})...", flush=True)
-                swift_t = asyncio.create_task(self._run_swift_stt(wav_path, is_wake_check=True))
-                whisper_t = asyncio.create_task(self._run_whisper_stt(_whisper_input))
-                name_map = {id(swift_t): "Swift", id(whisper_t): "Whisper"}
-                pending = {swift_t, whisper_t}
-                while pending and not raw_text:
-                    done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-                    for t in done:
-                        try:
-                            text = t.result()
-                            if text:
-                                raw_text = text
-                                used_engine = name_map[id(t)]
-                                for p in pending:
-                                    p.cancel()
-                                break
-                        except Exception:
-                            pass
+                if _is_apple_platform:
+                    # Apple platform: Swift-only wake_check — no Whisper to prevent zombie threads
+                    print(f"🎙️ [Engine] [WakeCheck] Swift only (Speaker: {speaker_name})...", flush=True)
+                    raw_text = await self._run_swift_stt(wav_path, is_wake_check=True)
+                    if raw_text:
+                        used_engine = "Swift"
+                else:
+                    # Linux: P2 race — Swift + Whisper parallel, first non-empty wins
+                    print(f"🎙️ [Engine] [WakeCheck] Swift ⚡ Whisper 並行競速 (Speaker: {speaker_name})...", flush=True)
+                    swift_t = asyncio.create_task(self._run_swift_stt(wav_path, is_wake_check=True))
+                    whisper_t = asyncio.create_task(self._run_whisper_stt(_whisper_input))
+                    name_map = {id(swift_t): "Swift", id(whisper_t): "Whisper"}
+                    pending = {swift_t, whisper_t}
+                    while pending and not raw_text:
+                        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                        for t in done:
+                            try:
+                                text = t.result()
+                                if text:
+                                    raw_text = text
+                                    used_engine = name_map[id(t)]
+                                    for p in pending:
+                                        p.cancel()
+                                    break
+                            except Exception:
+                                pass
                 if raw_text:
                     print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: {used_engine})", flush=True)
-                    # Wake-check 競速結果幻覺過濾（Swift 輸出不經 _run_whisper_stt 過濾）
+                    # Wake-check 結果幻覺過濾
                     _wake_hal_prompt = "嗨馬文,Hi Marvin,Marvin,馬文,艾馬文"
                     if is_whisper_hallucination(raw_text, _wake_hal_prompt):
                         logger.warning(f"[WakeCheck] 幻覺丟棄 ({used_engine}): '{raw_text[:80]}'")
@@ -1045,7 +1067,9 @@ class DiscordVoiceEngine:
                 if raw_text:
                     used_engine = "Swift"
                     print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Swift)", flush=True)
-                if not raw_text and self.whisper_model:
+                # Apple platform: Swift 為主引擎，不使用 Whisper 備援（避免 zombie thread 累積）
+                # Linux: Whisper 是唯一引擎，維持原行為
+                if not raw_text and self.whisper_model and not _is_apple_platform:
                     print(f"🎙️ [Engine] 啟動備援 Faster-Whisper 辨識 (Speaker: {speaker_name})...", flush=True)
                     raw_text = await self._run_whisper_stt(_whisper_input)
                     if raw_text:
