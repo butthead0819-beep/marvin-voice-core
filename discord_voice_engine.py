@@ -1083,7 +1083,14 @@ class DiscordVoiceEngine:
         Wake check 使用獨立 wake_stt_lock，不被同時進行的 full-utterance STT 阻塞。
         """
         _lock = self.wake_stt_lock if is_wake_check else self.stt_lock
-        async with _lock:
+        _lock_timeout = 12.0 if is_wake_check else 45.0
+        try:
+            await asyncio.wait_for(_lock.acquire(), timeout=_lock_timeout)
+        except asyncio.TimeoutError:
+            label = "wake_stt_lock" if is_wake_check else "stt_lock"
+            logger.error(f"[STT Lock] {label} 等待超過 {_lock_timeout}s，放棄 (Speaker: {speaker_name})。lock 可能卡住，請確認。")
+            return
+        try:
             raw_text = ""
             used_engine = "None"
 
@@ -1144,6 +1151,9 @@ class DiscordVoiceEngine:
                     if raw_text:
                         used_engine = "Whisper"
                         print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Whisper)", flush=True)
+
+        finally:
+            _lock.release()
 
         # 3. 最終結果判定
         if not raw_text:
