@@ -981,6 +981,40 @@ class DiscordVoiceEngine:
             logger.warning(f"[Swift STT] Exception: {e}")
         return ""
 
+    async def _run_mlx_whisper_stt(self, wav_path: str) -> str:
+        """執行 MLX Whisper STT（subprocess），回傳辨識文字或空字串。
+
+        以 subprocess 執行 mlx_whisper_bin.py，超時時 process.kill() 真正終止，
+        不產生 zombie threads（對比 asyncio.to_thread 無法殺 OS thread）。
+        尚未接入 _process_stt_hybrid — 基礎設施備用。
+        """
+        process = None
+        try:
+            mlx_model = os.getenv("MLX_WHISPER_MODEL", "mlx-community/whisper-base-mlx-8bit")
+            import sys as _sys
+            process = await asyncio.create_subprocess_exec(
+                _sys.executable, "./mlx_whisper_bin.py", wav_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ, "MLX_WHISPER_MODEL": mlx_model},
+            )
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15.0)
+            if process.returncode == 0:
+                return stdout.decode("utf-8").strip()
+            else:
+                logger.warning(f"[MLX Whisper] 執行失敗 (Code: {process.returncode})")
+        except asyncio.TimeoutError:
+            logger.warning("[MLX Whisper] 15s 超時，強制終止")
+            if process is not None:
+                try:
+                    process.kill()
+                    await asyncio.wait_for(process.wait(), timeout=2.0)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[MLX Whisper] Exception: {e}")
+        return ""
+
     async def _run_whisper_stt(self, audio) -> str:
         """執行 Faster-Whisper STT，回傳辨識文字或空字串。
         audio 可為 numpy float32 array（優先）或 WAV 檔路徑（fallback）。
