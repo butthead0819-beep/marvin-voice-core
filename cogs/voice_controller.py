@@ -4607,6 +4607,7 @@ class VoiceController(commands.Cog):
         if not self.stream_mode:
             return
         self.stream_mode = False
+        self.last_marvin_speech_time = time.time()  # 重置嘲諷計時器，避免音樂停後立刻觸發
         self._current_stream_info = None
         self.stream_paused = False
         logger.info(f"🎵 [Stream] 停止，原因: {reason}")
@@ -4713,6 +4714,7 @@ class VoiceController(commands.Cog):
 
             self.stream_mode = False
             self._current_stream_info = None
+            self.last_marvin_speech_time = time.time()  # 重置嘲諷計時器
             logger.info("🎵 [Stream Loop] 佇列播放完畢。")
             self.stt_logger.info("[串流結束] 音樂佇列播放完畢")
             if self.active_text_channel:
