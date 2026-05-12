@@ -3968,7 +3968,16 @@ class VoiceController(commands.Cog):
         _drop_threshold = _DROP_THRESHOLDS.get(priority, 8.0)
         if self.tts_queue_duration > _drop_threshold and not force_macos and not self._tts_protected:
             _tier_name = {0: "CRITICAL", 1: "RESPONSE", 2: "AMBIENT"}.get(priority, "?")
-            logger.info(f"⏩ [TTS Drop/{_tier_name}] 佇列 {self.tts_queue_duration:.1f}s > {_drop_threshold}s，跳過: '{text[:25]}...'")
+            logger.info(f"⏩ [TTS Drop/{_tier_name}] 佇列 {self.tts_queue_duration:.1f}s > {_drop_threshold}s，改貼文: '{text[:25]}...'")
+            if not already_in_channel and self.active_text_channel:
+                asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
+            return
+
+        # 🌪️ [Storm Guard] 已有 TTS 播放中 → 不排隊，改貼文
+        if self.is_playing_audio and not force_macos and not self._tts_protected:
+            logger.info(f"🌪️ [TTS Storm] 播放中，放棄排隊: '{text[:30]}'")
+            if not already_in_channel and self.active_text_channel:
+                asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
             return
 
         # 📻 [Radio Interrupt] Marvin 說話前停止電台，釋放 VoiceClient 給 TTS
