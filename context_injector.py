@@ -7,6 +7,7 @@ context_injector.py
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,14 @@ class ContextInjector:
                 parts.append(s)
         except Exception as e:
             logger.warning(f"[ContextInjector] vector search 失敗: {e}")
+
+        # 3. 背景排程 profile 壓縮（不阻塞回應）
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                loop.create_task(self._compressor.compress_if_stale(speaker, guild_id))
+        except Exception as e:
+            logger.debug(f"[ContextInjector] 背景壓縮排程失敗: {e}")
 
         if not parts:
             return ""

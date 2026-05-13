@@ -17,6 +17,7 @@ from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
 from departure_stats import DepartureStats
 from consent_manager import ConsentManager
 from transcript_store import TranscriptStore
+from vector_store import VectorStore
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 
@@ -468,6 +469,7 @@ class VoiceController(commands.Cog):
         self.speaker_dialogue_states = {}
 
         self._transcript_store = TranscriptStore()
+        self._vector_store = VectorStore()
 
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
@@ -1742,6 +1744,12 @@ class VoiceController(commands.Cog):
                 text=raw_text,
                 timestamp=timestamp,
                 channel_id=channel_id,
+            )
+            self._vector_store.upsert(
+                speaker=speaker,
+                guild_id=guild_id,
+                text=raw_text,
+                doc_id=f"{speaker}_{guild_id}_{int(timestamp * 1000)}",
             )
 
         if speaker in self.speech_timers and not is_wake_check:

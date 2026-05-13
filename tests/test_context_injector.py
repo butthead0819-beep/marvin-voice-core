@@ -107,3 +107,25 @@ async def test_enrich_no_header_when_empty():
     )
     result = await injector.enrich("小美", 789, "隨便問")
     assert "【" not in result
+
+
+@pytest.mark.asyncio
+async def test_enrich_triggers_background_compression():
+    """enrich() 應在背景排程 compress_if_stale，不阻塞回應"""
+    import asyncio
+    from context_injector import ContextInjector
+
+    compress_calls: list[tuple] = []
+
+    class TrackingCompressor:
+        def get_profile(self, speaker, guild_id): return None
+        async def compress_if_stale(self, speaker, guild_id):
+            compress_calls.append((speaker, guild_id))
+
+    injector = ContextInjector(
+        profile_compressor=TrackingCompressor(),
+        vector_store=FakeVectorStore(snippets=[]),
+    )
+    await injector.enrich("小明", 1, "今天要幹嘛")
+    await asyncio.sleep(0)  # 讓背景 task 跑完
+    assert ("小明", 1) in compress_calls
