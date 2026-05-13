@@ -188,7 +188,7 @@ class MarvinBot(commands.Bot):
             logger.warning(f"⚠️ [Cleanup] 全域指令 sync 失敗: {e}，跳過繼續啟動。")
 
         # 2. 載入 Cogs (在清空樹之後載入，確保指令登記在正確的 local 狀態)
-        cogs = ["cogs.gm_commands", "cogs.voice_controller", "cogs.game_cog"]
+        cogs = ["cogs.gm_commands", "cogs.voice_controller", "cogs.game_cog", "cogs.busted99_cog", "cogs.detective_cog"]
         for cog in cogs:
             try:
                 await self.load_extension(cog)

@@ -226,6 +226,12 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         self._gemini_cleaner_window = []  # STT 清洗 API 近 60 秒的呼叫時間戳
         self._CLEANER_RPM_LIMIT = 12
 
+        # 🧠 [Context Injector] 預設關閉，由外部 setup 時啟用
+        from context_injector import ContextInjector
+        self._context_injector: ContextInjector | None = None
+        # guild_id 由外部（VoiceController）在 summon 時注入，預設 0
+        self.guild_id: int = 0
+
     # ── LLMClient Protocol ────────────────────────────────────────────────────
 
     async def complete(

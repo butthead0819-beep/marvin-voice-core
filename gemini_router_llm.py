@@ -654,8 +654,18 @@ class GeminiRouterLLMMixin:
                 search_context = f"\n{search_results}"
 
         user_prompt = base_user_prompt + cached_search + search_context
+
+        # 🧠 [Context Injector] 注入使用者過去上下文（living profile + 向量片段）
+        if hasattr(self, '_context_injector') and self._context_injector:
+            try:
+                _ctx = await self._context_injector.enrich(speaker, getattr(self, 'guild_id', 0), query)
+                if _ctx:
+                    user_prompt = _ctx + "\n" + user_prompt
+            except Exception as _ci_err:
+                logger.warning(f"[ContextInjector] enrich 失敗，略過: {_ci_err}")
+
         self.memory.adjust_bias(speaker, +1)
-        
+
         # 🎭 [Dynamic Temperature] 若外部未指定 temperature，依情緒標籤自動選擇
         if temperature is None:
             temperature = self._EMOTION_TEMPERATURE.get(emotion_tag, 0.75)

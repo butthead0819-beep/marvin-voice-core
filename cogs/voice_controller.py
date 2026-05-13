@@ -16,6 +16,7 @@ import subprocess
 from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
 from departure_stats import DepartureStats
 from consent_manager import ConsentManager
+from transcript_store import TranscriptStore
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 
@@ -70,7 +71,7 @@ _COMMAND_LIKE_RE = re.compile(
 # 刻意排除 "暫停一下"（口語歧義高）和英文 pause/skip/resume（遊戲/工作場合常見）
 _MUSIC_DIRECT_SKIP_KW   = frozenset(["換一首", "下一首", "跳過", "換歌", "不要這首"])
 _MUSIC_DIRECT_STOP_KW   = frozenset(["停止播放", "音樂停", "不要播了", "關掉音樂", "停音樂", "音樂關掉"])
-_MUSIC_DIRECT_PAUSE_KW  = frozenset(["暫停音樂"])           # 加了「音樂」修飾才算無歧義
+_MUSIC_DIRECT_PAUSE_KW  = frozenset(["暫停音樂", "暫停播放", "pause一下"])  # 明確包含「播放」才不會被 _MUSIC_PLAY_KW 搶走
 _MUSIC_DIRECT_RESUME_KW = frozenset(["繼續播", "繼續音樂", "播回來"])
 
 # 🎵 [IBA Tier 1] 無喚醒詞音樂資訊查詢 — "這首叫什麼?" 類問句
@@ -371,6 +372,7 @@ class VoiceController(commands.Cog):
         self.proactive_silence_threshold = 300  # 🔇 [Freq Adj] 動態調整靜默觸發閾值（秒）
         self.is_playing_audio = False # 防止 TTS 與音樂重疊
         self._tts_echo_cooldown_until = 0.0  # TTS 結束後的回授冷卻期（秒）
+        self._pending_greeting_task: asyncio.Task | None = None  # summon 時與 connect 並行的 LLM 預熱
         
         # 🚀 [Optimization] Debounce 節流系統
         self.speech_buffers = {} # speaker -> {texts: [], first_timestamp: float, wav_bytes: bytes}
@@ -464,6 +466,8 @@ class VoiceController(commands.Cog):
         # 🗣️ [Dialogue State] 多回合確認流程狀態機
         # speaker -> {"state": str, "event": asyncio.Event, "question": str, "result": str, "corrected": str}
         self.speaker_dialogue_states = {}
+
+        self._transcript_store = TranscriptStore()
 
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
@@ -762,6 +766,12 @@ class VoiceController(commands.Cog):
             self.bot.engine.start() # 🚀 [Watchdog Resurrection] 確保斷句看門狗在連線時是啟動的
             from discord_voice_engine import RealtimeVADSink, patch_voice_recv_key_sync
 
+            # 🚀 [Parallel Warm-up] 在 UDP 握手等待期間同步預熱 LLM，讓 handle_summon 幾乎不用等
+            _pre_members = [m.display_name for m in channel.members if not m.bot]
+            self._pending_greeting_task = asyncio.create_task(
+                self.bot.router.generate_greeting(_pre_members)
+            )
+
             voice_client = await channel.connect(cls=voice_recv.VoiceRecvClient, timeout=60.0, reconnect=True)
             await asyncio.sleep(0.5)
 
@@ -796,8 +806,7 @@ class VoiceController(commands.Cog):
         except Exception as e:
             import traceback
             print(f"❌ [SUMMON ERROR]\n{traceback.format_exc()}", flush=True)
-            await interaction.followup.send(f"⚠️ 發生未知的系統錯誤，正在重試一次：{str(e)}")
-            # 🛡️ [Fallback] 若連線失敗（如 UDP TimeoutError），立即重試一次避免靜默掉線
+            retry_msg = await interaction.followup.send("⏳ 連線不穩，自動重試中，請稍候…", wait=True)
             await asyncio.sleep(2.0)
             try:
                 print(f"🔄 [SUMMON Retry] 初次失敗，正在重試連線至 {channel.name}...", flush=True)
@@ -816,14 +825,12 @@ class VoiceController(commands.Cog):
                 self.connection_time = time.time()
                 self.sink_failure_count = 0
                 print(f"✅ [SUMMON Retry] 重試成功：connected={voice_client.is_connected()}", flush=True)
-                if self.active_text_channel:
-                    await self.active_text_channel.send("🔄 **【連線重試成功】** 初次連線失敗，已自動重連。")
+                await retry_msg.edit(content=f"✅ 已重新連線至 `{channel.name}`，馬文正在降臨…")
                 if self.bot.engine.post_summon_callback:
                     asyncio.create_task(self.bot.engine.post_summon_callback(None))
             except Exception as retry_err:
                 print(f"❌ [SUMMON Retry Failed] {retry_err}", flush=True)
-                if self.active_text_channel:
-                    await self.active_text_channel.send(f"🚨 **【連線徹底失敗】** 重試也掛了：{retry_err}")
+                await retry_msg.edit(content=f"🚨 連線徹底失敗，請再試一次。（{retry_err}）")
 
     @app_commands.command(name="dismiss", description="[Operation] 讓馬文滾出語音頻道，停止 PCM 攔截")
     async def dismiss(self, interaction: discord.Interaction):
@@ -1076,6 +1083,9 @@ class VoiceController(commands.Cog):
             await self.stop_radio(reason="Stream 模式接管")
 
         info['requested_by'] = username
+        if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
+            await msg.edit(content=f"⏭️ 「{info['title']}」本場已在佇列或播過了，跳過重複。")
+            return
         self.stream_queue.append(info)
 
         if not self.stream_mode:
@@ -1368,8 +1378,14 @@ class VoiceController(commands.Cog):
             human_members = [m.display_name for m in vc.channel.members if not m.bot]
             
         print(f"👁️ [Summon Scan] 偵測到現場人類成員: {human_members}")
-        
-        greeting = await self.bot.router.generate_greeting(human_members)
+
+        # 🚀 [Parallel Warm-up] 若 summon 時已預熱 LLM，直接拿結果（通常已完成，幾乎零等待）
+        _task = self._pending_greeting_task
+        self._pending_greeting_task = None
+        try:
+            greeting = await _task if _task else await self.bot.router.generate_greeting(human_members)
+        except Exception:
+            greeting = await self.bot.router.generate_greeting(human_members)
         
         if self.active_text_channel:
             await self.active_text_channel.send(f"⚙️ **【馬文 降臨】**\n{greeting}")
@@ -1712,11 +1728,21 @@ class VoiceController(commands.Cog):
         if not is_wake_check and not is_echo:
             self.speech_buffers[speaker]["texts"].append(raw_text)
             self.speech_buffers[speaker]["wav_bytes"] += wav_bytes
-            
+
             if self.bot.engine.conv_buffer:
                 self.bot.engine.conv_buffer.add_entry(speaker, raw_text, timestamp)
             if hasattr(self.bot, 'router') and hasattr(self.bot.router, 'atmosphere_tracker'):
                 self.bot.router.atmosphere_tracker.add_utterance(speaker, raw_text, timestamp)
+
+            guild_id = self.active_text_channel.guild.id if self.active_text_channel else 0
+            channel_id = self.active_text_channel.id if self.active_text_channel else 0
+            self._transcript_store.save(
+                speaker=speaker,
+                guild_id=guild_id,
+                text=raw_text,
+                timestamp=timestamp,
+                channel_id=channel_id,
+            )
 
         if speaker in self.speech_timers and not is_wake_check:
             self.speech_timers[speaker].cancel()
@@ -2174,7 +2200,7 @@ class VoiceController(commands.Cog):
 
         # 🎮 遊戲中：依序嘗試兩個遊戲 cog；第一個消耗後即停止，不繼續給 Marvin
         if self.game_mode:
-            for _cog_name in ("BustedCog", "Busted99Cog"):
+            for _cog_name in ("BustedCog", "Busted99Cog", "DetectiveCog"):
                 _game_cog = self.bot.cogs.get(_cog_name)
                 if _game_cog is not None:
                     _consumed = await _game_cog.receive_voice_answer_by_speaker(speaker, full_raw_text)
@@ -2182,21 +2208,28 @@ class VoiceController(commands.Cog):
                         break
             return  # 遊戲中所有語音一律不送 Marvin
 
-        # 🎵 [IBA Tier 0] 音樂控制直達 — stream 播放中，無歧義控制詞直接執行，不需喚醒詞
-        if self.stream_mode:
-            _direct_cmd = self._detect_music_direct_command(full_raw_text)
-            if _direct_cmd:
-                logger.info(f"🎵 [IBA-T0] {speaker} 直接音樂控制 cmd={_direct_cmd} (no wake) | '{full_raw_text[:40]}'")
-                # 清除 deferred wake 狀態，避免後續語句誤被合成為喚醒觸發
+        # 🎵 [IBA Tier 0] 音樂控制直達 — 無歧義控制詞直接執行，不需喚醒詞
+        # stream_mode 外也允許直接點歌（_MUSIC_PLAY_KW 命中時）
+        # 🛡️ [Anti-Duplicate] 若 5 秒內已有 fast wake 處理同一發言，跳過此路徑避免雙重點歌
+        _last_fast_wake = getattr(self, "last_wake_time", {}).get(speaker, 0)
+        _recently_fast_woken = (time.time() - _last_fast_wake) < 5.0
+        _direct_cmd = self._detect_music_direct_command(full_raw_text, stream_mode=self.stream_mode)
+        if _direct_cmd:
+            if _recently_fast_woken:
+                logger.debug(f"🎵 [IBA-T0 Skip] {speaker} fast wake 5s 內已處理，跳過 debounced 音樂直達")
+            else:
+                _cmd_action = _direct_cmd.get("action", "stop")
+                logger.info(f"🎵 [IBA-T0] {speaker} 直接音樂控制 cmd={_cmd_action} (no wake) | '{full_raw_text[:40]}'")
                 self.deferred_wakes.pop(speaker, None)
-                asyncio.create_task(self._handle_voice_music_command(speaker, full_raw_text, _direct_cmd))
+                asyncio.create_task(self._handle_voice_music_command(speaker, full_raw_text, _cmd_action))
                 return
 
         # 🎵 [IBA Tier 1] 音樂資訊查詢直達 — 播放中被問「這首叫什麼」直接回答，不走 LLM
         if self.stream_mode and self._current_stream_info and _MUSIC_INFO_RE.search(full_raw_text):
-            self.deferred_wakes.pop(speaker, None)
-            asyncio.create_task(self._handle_music_info_query(speaker, full_raw_text))
-            return
+            if not _recently_fast_woken:
+                self.deferred_wakes.pop(speaker, None)
+                asyncio.create_task(self._handle_music_info_query(speaker, full_raw_text))
+                return
 
     async def _schedule_reaction_check(self, speaker: str, bot_response: str, respond_time: float,
                                         wake_latency: float = None, atmosphere: dict = None):
@@ -2212,6 +2245,7 @@ class VoiceController(commands.Cog):
         )
 
     _LATENCY_DOMINATED_THRESHOLD = 20.0  # 超過此延遲秒數視為「延遲問題」而非互動失敗
+    _LATE_RESPONSE_SKIP_SEC      = 25.0  # 首句超過此延遲才到達時，放棄回應
 
     @staticmethod
     def _is_stt_noise(entry: str) -> bool:
@@ -2823,6 +2857,10 @@ class VoiceController(commands.Cog):
                                     emotion_tag="nemo", voice=_marmo_voice)
             finally:
                 self._tts_protected = False
+                # NemoClaw 回應完成後清除 Wake Storm，避免用戶在等待期間多次呼叫導致 storm 無限延伸
+                self._storm_active = False
+                self._wake_burst_times.clear()
+                self._storm_last_wake_time = 0.0
 
     async def _handle_marmo_query(self, speaker: str, raw_query: str):
         """語音觸發 @AI Marmo：在文字頻道 mention NemoClaw bot，等待其回覆後 TTS 朗讀。"""
@@ -3067,6 +3105,13 @@ class VoiceController(commands.Cog):
                             await self.active_text_channel.send(f"💬 **【馬文·聽不懂】** `{speaker}`：{skip_text}")
                         return
                     first_sentence_received = True
+                    _elapsed = time.time() - wake_time
+                    if _elapsed > self._LATE_RESPONSE_SKIP_SEC:
+                        logger.info(f"⏱️ [Late Skip] {speaker} 喚醒 {_elapsed:.1f}s 後才得到首句，放棄回應")
+                        if placeholder_msg:
+                            try: await placeholder_msg.delete()
+                            except: pass
+                        return
                     logger.info(f"⚡ [Bridge] 收到首句：『{sentence}』，立即觸發 TTS。")
 
                 import re
@@ -3175,14 +3220,30 @@ class VoiceController(commands.Cog):
         if any(kw in q for kw in self._MUSIC_PLAY_KW):   return "play"
         return None
 
-    def _detect_music_direct_command(self, text: str) -> str | None:
+    def _check_song_duplicate(self, url: str, title: str, username: str) -> bool:  # noqa: ARG002
+        """回傳 True 表示此 session 已有相同 URL，應跳過加入佇列。"""
+        for item in self.stream_queue:
+            if item.get("url") == url:
+                return True
+        for item in self.stream_history:
+            if item.get("url") == url:
+                return True
+        return False
+
+    def _detect_music_direct_command(self, text: str, stream_mode: bool = False) -> dict | None:
         """[IBA Tier 0] 無歧義音樂控制關鍵詞偵測（不需喚醒詞）。
-        只比對語意明確的詞組；英文和單字歧義詞交由喚醒後的 _detect_music_command 處理。"""
+        stream_mode=True 時開放「停一下」等歧義控制詞。
+        回傳 dict（含 action）或 None。"""
         t = text.lower()
-        if any(kw in t for kw in _MUSIC_DIRECT_SKIP_KW):   return "skip"
-        if any(kw in t for kw in _MUSIC_DIRECT_STOP_KW):   return "stop"
-        if any(kw in t for kw in _MUSIC_DIRECT_PAUSE_KW):  return "pause"
-        if any(kw in t for kw in _MUSIC_DIRECT_RESUME_KW): return "resume"
+        if any(kw in t for kw in _MUSIC_DIRECT_SKIP_KW):   return {"action": "skip"}
+        if any(kw in t for kw in _MUSIC_DIRECT_STOP_KW):   return {"action": "stop"}
+        if any(kw in t for kw in _MUSIC_DIRECT_PAUSE_KW):  return {"action": "pause"}
+        if any(kw in t for kw in _MUSIC_DIRECT_RESUME_KW): return {"action": "resume"}
+        if stream_mode and any(kw in t for kw in ("停一下", "先停", "停止")):
+            return {"action": "stop"}
+        if any(kw in t for kw in self._MUSIC_PLAY_KW):
+            query = self._extract_music_search_query(text)
+            return {"action": "play", "query": query}
         return None
 
     async def _handle_music_info_query(self, speaker: str, query: str):
@@ -3310,6 +3371,9 @@ class VoiceController(commands.Cog):
             self.stt_logger.info(
                 f"[點歌-語音] 使用者={speaker} | 搜尋={raw_search}{f' (修正→{search})' if wrong else ''} | 結果={info['title']} / {info.get('uploader', '?')}"
             )
+            if self._check_song_duplicate(url=info['url'], title=info['title'], username=speaker):
+                if ch: await status_msg.edit(content=f"⏭️ 「{info['title']}」本場已在佇列或播過了，換一首？")
+                return
             if self.radio_mode:
                 await self.stop_radio(reason="語音音樂指令接管")
             self.stream_queue.append(info)
@@ -4995,6 +5059,9 @@ class VoiceController(commands.Cog):
             if not info:
                 return
             info['requested_by'] = f"Marvin推薦（為{username}）"
+            if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
+                logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過推薦")
+                return
             self.stream_queue.append(info)
             logger.info(f"🎵 [AutoRecommend] 為 {username} 推薦加入: {info['title']}")
             if self.active_text_channel:
