@@ -41,8 +41,10 @@ def _load_env():
 
 _load_env()
 
-GOOGLE_API_KEY   = os.environ.get("GOOGLE_API_KEY", "")
-REVIEW_MODEL     = os.environ.get("MARVIN_REVIEW_MODEL", "gemini-2.5-flash-preview-05-20")
+GOOGLE_API_KEY            = os.environ.get("GOOGLE_API_KEY", "")
+REVIEW_MODEL              = os.environ.get("MARVIN_REVIEW_MODEL", "gemini-2.5-flash-preview-05-20")
+DISCORD_BOT_TOKEN         = os.environ.get("DISCORD_BOT_TOKEN", "")
+DISCORD_REVIEW_CHANNEL_ID = os.environ.get("DISCORD_REVIEW_CHANNEL_ID", "")
 MAX_STT_LINES    = 900   # 最多送幾行 STT（保留最近的）
 MAX_FEEDBACK_REC = 120   # 最多送幾筆 feedback
 
@@ -358,6 +360,15 @@ def find_latest_slice() -> Path | None:
     return candidates[0] if candidates else None
 
 
+def find_slice_for_date(date_str: str) -> Path | None:
+    """找特定日期的切片檔（backfill 用），格式 YYYY-MM-DD。"""
+    for pat in [f"{date_str}.log", f"stt_{date_str}.log"]:
+        p = LOG_DIR / pat
+        if p.exists() and p.stat().st_size > 0:
+            return p
+    return None
+
+
 _HEADER_RE = __import__("re").compile(
     r"=== STT LOG \((\d{4}-\d{2}-\d{2} \d{2}:\d{2}) ~ (\d{4}-\d{2}-\d{2} \d{2}:\d{2})\)"
 )
@@ -539,7 +550,7 @@ def call_gemini(user_content: str) -> dict:
                 system_instruction=SYSTEM_PROMPT,
                 temperature=0.2,
                 response_mime_type="application/json",
-                max_output_tokens=16384,
+                max_output_tokens=32768,
             ),
         )
         raw = response.text.strip()
@@ -950,18 +961,72 @@ def print_topic_summary(stats: dict) -> str:
     return output
 
 
+# ── macOS 系統通知 ────────────────────────────────────────────────────────────
+
+def notify_discord_review(
+    *,
+    date: str,
+    score,
+    trend: str | None,
+    problem_patterns: list,
+    success: bool,
+    error_msg: str | None = None,
+) -> None:
+    """每日 review 完成或失敗後送 macOS 系統通知（best-effort，不拋例外）。"""
+    import subprocess
+
+    try:
+        if success:
+            trend_emoji = {"改善": "📈", "持平": "➡️", "退步": "📉", "無資料": "❓"}.get(str(trend), "❓")
+            score_str   = f"{score:.1f}" if score is not None else "N/A"
+            top_problem = problem_patterns[0]["pattern"] if problem_patterns else ""
+            title   = f"Marvin 審閱 {date}  {score_str}/10 {trend_emoji}"
+            message = f"趨勢: {trend or '無資料'}" + (f"  問題: {top_problem}" if top_problem else "")
+        else:
+            title   = f"❌ Marvin 審閱失敗 {date}"
+            message = error_msg or "未知錯誤，請查 review_cron.log"
+
+        # escape double-quotes for AppleScript string literal
+        title_esc   = title.replace('"', '\\"')
+        message_esc = message.replace('"', '\\"')
+        script = (
+            f'display notification "{message_esc}" '
+            f'with title "{title_esc}" '
+            f'sound name "Ping"'
+        )
+        subprocess.run(
+            ["osascript", "-e", script],
+            timeout=5,
+            capture_output=True,
+        )
+        print(f"[Daily Review] 🔔 macOS 通知已送出", flush=True)
+    except Exception as e:
+        print(f"[Daily Review] ⚠ macOS 通知失敗（忽略）: {e}", flush=True)
+
+
 # ── 主流程 ───────────────────────────────────────────────────────────────────
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Marvin Daily Review")
+    parser.add_argument("--date", metavar="YYYY-MM-DD", default=None,
+                        help="指定分析日期（backfill 用）；省略則自動找最新切片")
+    args = parser.parse_args()
+
     now = datetime.now()
     print(f"[Daily Review] ▶ 開始執行 {now.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+    if args.date:
+        print(f"[Daily Review] 📅 backfill 模式：{args.date}", flush=True)
 
     if not GOOGLE_API_KEY:
         print("[Daily Review] ❌ 缺少 GOOGLE_API_KEY，中止。", flush=True)
+        notify_discord_review(date=args.date or now.strftime("%Y-%m-%d"),
+                              score=None, trend=None, problem_patterns=[],
+                              success=False, error_msg="缺少 GOOGLE_API_KEY")
         sys.exit(1)
 
-    # 1. 先（重新）產生今日切片，確保資料最新
-    if SLICE_SCRIPT.exists():
+    # 1. 先（重新）產生今日切片，確保資料最新（backfill 模式跳過）
+    if not args.date and SLICE_SCRIPT.exists():
         print("[Daily Review] ⚙ 重新產生今日切片...", flush=True)
         try:
             subprocess.run(
@@ -974,9 +1039,13 @@ def main():
             print(f"[Daily Review] ⚠ 切片腳本失敗（繼續執行）: {e}", flush=True)
 
     # 2. 找切片檔
-    slice_file = find_latest_slice()
+    slice_file = find_slice_for_date(args.date) if args.date else find_latest_slice()
     if not slice_file:
-        print("[Daily Review] ❌ 找不到切片檔，中止。", flush=True)
+        msg = f"找不到 {args.date} 切片檔" if args.date else "找不到切片檔"
+        print(f"[Daily Review] ❌ {msg}，中止。", flush=True)
+        notify_discord_review(date=args.date or now.strftime("%Y-%m-%d"),
+                              score=None, trend=None, problem_patterns=[],
+                              success=False, error_msg=msg)
         sys.exit(1)
 
     # 3. 載入資料
@@ -1004,16 +1073,20 @@ def main():
 
     feedback_records = load_feedback_for_window(start_dt, end_dt)
 
-    # 延伸涵蓋：若 end_dt < 現在，補抓 end_dt ~ now 的 feedback（填補 12:00 後的空窗）
-    extended_end = now
-    extra_feedback = load_feedback_for_window(end_dt, extended_end)
-    if extra_feedback:
-        print(
-            f"[Daily Review] 📎 延伸涵蓋 {end_dt.strftime('%H:%M')} ～ now，"
-            f"額外補入 {len(extra_feedback)} 筆 feedback",
-            flush=True,
-        )
-        feedback_records = feedback_records + extra_feedback
+    # 延伸涵蓋：只在正常執行模式（非 backfill）下補抓 end_dt ~ now 的 feedback
+    # backfill 模式中 now 可能比 end_dt 晚幾天，延伸會涵蓋無關日期
+    if not args.date:
+        extended_end = now
+        extra_feedback = load_feedback_for_window(end_dt, extended_end)
+        if extra_feedback:
+            print(
+                f"[Daily Review] 📎 延伸涵蓋 {end_dt.strftime('%H:%M')} ～ now，"
+                f"額外補入 {len(extra_feedback)} 筆 feedback",
+                flush=True,
+            )
+            feedback_records = feedback_records + extra_feedback
+    else:
+        extended_end = end_dt
 
     memory = load_memory()
 
@@ -1085,13 +1158,31 @@ def main():
             f"淘汰效益≤2 的話題。）"
         )
 
+    # 只把「今日有出現」的玩家記憶送給 Gemini，減少 input+output token 數
+    _active_speakers = set(topic_stats.get("by_speaker", {}).keys())
+    _active_speakers |= {r.get("speaker", "") for r in feedback_records}
+    _active_speakers.discard("")
+    _all_players = memory.get("players", {})
+    _active_memory = dict(memory)
+    if _active_speakers:
+        _active_memory["players"] = {
+            k: v for k, v in _all_players.items() if k in _active_speakers
+        }
+        _skipped = len(_all_players) - len(_active_memory["players"])
+        if _skipped:
+            print(
+                f"[Daily Review] 🗂  記憶精簡：送出 {len(_active_memory['players'])} 位玩家"
+                f"（略過 {_skipped} 位今日未出現）",
+                flush=True,
+            )
+
     user_content = (
         f"### A. stt_history.log（切片區間：{start_dt} ～ {end_dt}）\n"
         f"{stt_text}\n\n"
         f"### B. response_feedback.jsonl（涵蓋至 {extended_end.strftime('%H:%M')}）\n"
         f"{json.dumps(feedback_records, ensure_ascii=False, indent=2)}\n\n"
-        f"### C. suki_memory.json（現有記憶）\n"
-        f"{json.dumps(memory, ensure_ascii=False, indent=2)}"
+        f"### C. suki_memory.json（現有記憶，今日活躍玩家）\n"
+        f"{json.dumps(_active_memory, ensure_ascii=False, indent=2)}"
         + (f"\n\n{topic_section}" if topic_section else "")
     )
 
@@ -1101,6 +1192,9 @@ def main():
         result = call_gemini(user_content)
     except Exception as e:
         print(f"[Daily Review] ❌ Gemini API 失敗: {e}", flush=True)
+        notify_discord_review(date=args.date or today_label,
+                              score=None, trend=None, problem_patterns=[],
+                              success=False, error_msg=f"Gemini API 失敗: {e}")
         sys.exit(1)
 
     print("[Daily Review] ✅ Gemini 分析完成，開始合併記憶...", flush=True)
@@ -1233,6 +1327,14 @@ def main():
         f"[Daily Review] 🎉 suki_memory.json 更新完成。"
         f"今日分數: {score}  趨勢: {trend}",
         flush=True,
+    )
+
+    notify_discord_review(
+        date=args.date or today_label,
+        score=score if isinstance(score, (int, float)) else None,
+        trend=trend or None,
+        problem_patterns=result.get("marvin_performance", {}).get("problem_patterns", []),
+        success=True,
     )
 
     # 10. STT 音近字修正表聚合
