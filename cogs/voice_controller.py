@@ -2211,14 +2211,33 @@ class VoiceController(commands.Cog):
             wake_latency=wake_latency, atmosphere=atmosphere,
         )
 
+    _LATENCY_DOMINATED_THRESHOLD = 20.0  # 超過此延遲秒數視為「延遲問題」而非互動失敗
+
+    @staticmethod
+    def _is_stt_noise(entry: str) -> bool:
+        """STT 擷取的背景雜訊：含 XML context 標籤，或過短（< 5 字）。"""
+        if "<Background>" in entry or "<Target>" in entry:
+            return True
+        if len(entry.strip()) < 5:
+            return True
+        return False
+
     async def _classify_and_log_reaction(self, speaker: str, bot_response: str, reaction_entries: list, respond_time: float,
                                           wake_latency: float = None, atmosphere: dict = None):
         """用 LLM 判斷玩家對 bot 回應的態度，寫入 records/response_feedback.jsonl。"""
-        if not reaction_entries:
-            reaction_type = "嚴重"
-            reason = "20 秒內無任何反應"
+        # 過濾 STT 背景雜訊（XML context tags、過短字串）
+        clean_entries = [e for e in reaction_entries if not self._is_stt_noise(e)]
+
+        if not clean_entries:
+            # 高延遲 + 無有效反應：玩家早已離開話題，不算馬文的互動失敗
+            if wake_latency is not None and wake_latency > self._LATENCY_DOMINATED_THRESHOLD:
+                reaction_type = "延遲"
+                reason = f"喚醒延遲 {wake_latency:.1f}s 過長，玩家已轉移注意力"
+            else:
+                reaction_type = "嚴重"
+                reason = "20 秒內無任何反應"
         else:
-            reaction_text = "、".join(reaction_entries)
+            reaction_text = "、".join(clean_entries)
             classify_prompt = (
                 "你是互動品質分析系統。\n"
                 f"馬文剛才說：「{bot_response}」\n"
