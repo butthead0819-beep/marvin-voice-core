@@ -16,6 +16,7 @@ def _make_bot_and_engine():
     bot.guilds = []
     bot.voice_clients = []
     bot.cogs.get.return_value = None
+    bot.router.generate_greeting = AsyncMock(return_value="")
 
     with patch("discord_voice_engine.faster_whisper", None, create=True):
         from discord_voice_engine import DiscordVoiceEngine

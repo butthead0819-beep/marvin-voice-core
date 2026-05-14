@@ -72,7 +72,7 @@ async def test_enrich_includes_vector_snippets():
 
 @pytest.mark.asyncio
 async def test_enrich_format_has_header():
-    """有記憶時，結果包含 【...的過去上下文】 header"""
+    """有記憶時，結果包含 past_context XML wrapper 與 speaker 屬性"""
     from context_injector import ContextInjector
 
     injector = ContextInjector(
@@ -80,7 +80,9 @@ async def test_enrich_format_has_header():
         vector_store=FakeVectorStore(snippets=["片段 A"]),
     )
     result = await injector.enrich("小明", 123, "隨便問一問")
-    assert "【小明 的過去上下文】" in result
+    assert 'past_context speaker="小明"' in result
+    assert "某人某事" in result
+    assert "片段 A" in result
 
 
 @pytest.mark.asyncio

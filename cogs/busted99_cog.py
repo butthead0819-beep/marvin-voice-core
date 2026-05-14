@@ -143,8 +143,6 @@ class SetterButton99View(discord.ui.View):
             await engine.set_answer(self._setter_id, fallback)
 
 
-# ── Cog ────────────────────────────────────────────────────────────────────────
-
 # ── Play Again View ────────────────────────────────────────────────────────────
 
 class PlayAgainView(discord.ui.View):
@@ -633,7 +631,7 @@ class Busted99Cog(commands.Cog):
                 "is_last_chance": space <= 2,
                 "round_num": session.round_num,
             }
-            trash_talk_task = asyncio.ensure_future(
+            trash_talk_task = asyncio.create_task(
                 self._marvin.generate_trash_talk(context)
             )
 

@@ -12,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from game.engine import GameEngine, ANSWER_MIN_LEN, ANSWER_MAX_LEN
+from game.engine import GameEngine, ANSWER_MIN_LEN, ANSWER_MAX_LEN, BUZZ_LOCK_SECONDS
 from game.session import GameSession, GameState
 from game.clue_generator import generate_clue
 from game.marvin_player import MarvinPlayer
@@ -340,7 +340,7 @@ class BustedCog(commands.Cog):
         name = holder.display_name if holder else "?"
         e = discord.Embed(
             title=f"⚡ {name} 搶答中！",
-            description=f"**{name}** 有 5 秒回答（語音或打字）",
+            description=f"**{name}** 有 {int(BUZZ_LOCK_SECONDS)} 秒回答（語音或打字）",
             color=C_BUZZ,
         )
         e.add_field(name="📊 積分板", value=self._scores_line(session), inline=False)
@@ -712,8 +712,8 @@ class BustedCog(commands.Cog):
                 buzz_wait_start = time.time()
                 while session.state == GameState.BUZZ_LOCKED:
                     await asyncio.sleep(0.3)
-                    # If buzz window somehow never resolves, force-expire after 8s
-                    if time.time() - buzz_wait_start > 8.0 and self._engine:
+                    # If buzz window somehow never resolves, force-expire after window + 5s margin
+                    if time.time() - buzz_wait_start > BUZZ_LOCK_SECONDS + 5.0 and self._engine:
                         await self._engine.expire_buzz()
                         break
 
@@ -859,9 +859,9 @@ class BustedCog(commands.Cog):
             vc = self.bot.cogs.get("VoiceController")
             if vc is not None:
                 try:
-                    await vc.play_tts(quip, already_in_channel=False)
-                except Exception:
-                    pass
+                    await vc.play_tts(quip, already_in_channel=True)
+                except Exception as e:
+                    logger.debug(f"[BustedCog] _marvin_correct_react TTS skipped: {e}")
         except asyncio.CancelledError:
             pass
 

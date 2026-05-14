@@ -16,6 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 def mock_vc():
     vc = MagicMock()
     vc.play_tts = AsyncMock()
+    vc.game_mode = False
     return vc
 
 

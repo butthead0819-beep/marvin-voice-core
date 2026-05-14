@@ -200,8 +200,11 @@ class CompanionBridge:
     # ── WS 連線 handler ───────────────────────────────────────────────────────
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
-        # 認證：MARMO_TOKEN 有設時必須匹配
-        if self._token and request.headers.get("X-Marmo-Token") != self._token:
+        # 認證：MARMO_TOKEN 必須設定且匹配，未設定時拒絕所有連線
+        if not self._token:
+            logger.warning("[Companion_Bridge] MARMO_TOKEN 未設定，拒絕連線")
+            return web.Response(status=401, text="token not configured")
+        if request.headers.get("X-Marmo-Token") != self._token:
             return web.Response(status=401, text="unauthorized")
 
         ws = web.WebSocketResponse()
@@ -288,7 +291,7 @@ class CompanionBridge:
         if self._voice_controller is None:
             logger.info("[Companion_Bridge] tts_injection 來但無 voice_controller，drop")
             return
-        text = payload.get("text", "").strip()
+        text = payload.get("text", "").strip()[:500]
         if not text:
             return
         voice = payload.get("voice")
@@ -313,7 +316,7 @@ class CompanionBridge:
     async def _handle_memory_list_request(self, ws: web.WebSocketResponse, payload: dict[str, Any]) -> None:
         speaker = payload.get("speaker", "")
         guild_id = int(payload.get("guild_id", self._guild_id) or 0)
-        limit = int(payload.get("limit", 20) or 20)
+        limit = min(int(payload.get("limit", 20) or 20), 100)
 
         profile: dict = {}
         try:
@@ -542,7 +545,7 @@ class CompanionBridge:
             future: asyncio.Future = loop.create_future()
             self._pending_alerts[alert_id] = future
 
-            risk = context.get("risk") or {} if isinstance(context, dict) else {}
+            risk = (context.get("risk") or {}) if isinstance(context, dict) else {}
             payload = {
                 "alert_id": alert_id,
                 "text": text,

@@ -4,9 +4,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Curated list of concrete, guessable physical objects for Busted themes.
+# All items are tangible nouns — no abstract concepts allowed.
+CONCRETE_OBJECTS: list[str] = [
+    "吉他", "鋼琴", "耳機", "麥克風", "電吉他",
+    "搖桿", "鍵盤", "滑鼠", "螢幕", "耳塞",
+    "筷子", "湯匙", "菜刀", "砧板", "電鍋",
+    "行李箱", "背包", "雨傘", "手錶", "眼鏡",
+    "火箭", "望遠鏡", "指南針", "帳篷", "睡袋",
+    "珊瑚", "貝殼", "燈塔", "錨", "槳",
+    "爆米花", "爆米花機", "電影票", "快門", "底片",
+    "球鞋", "護具", "哨子", "跑道", "跳繩",
+    "書籤", "放大鏡", "鉛筆", "橡皮擦", "剪刀",
+    "黑洞", "隕石", "太空衣", "衛星", "天文台",
+    "貓", "狗", "倉鼠", "魚缸", "鳥籠",
+    "咖啡機", "茶壺", "馬克杯", "托盤", "瓦斯爐",
+    "晶片", "電池", "插頭", "變壓器", "天線",
+]
+
 # Fallback used when memory is completely empty
-_FALLBACK_TOPIC = "宇宙"
-_FALLBACK_ANSWER = "黑洞"
+_FALLBACK_TOPIC = "吉他"
+_FALLBACK_ANSWER = "吉他"
 
 # Topics that are already concrete nouns can be used directly as the answer.
 # Anything shorter than 2 chars is treated as too vague and gets a related suffix.
@@ -117,42 +135,9 @@ def pick(memory_manager) -> tuple[str, str]:
 
 
 def pick_theme_candidates(memory_manager, n: int = 3) -> list[str]:
-    """Return up to n distinct theme strings drawn from chat memory.
-    Falls back to built-in topics when memory is thin.
+    """Return n distinct concrete physical objects from CONCRETE_OBJECTS.
+    Always draws from the curated list so themes are never abstract.
     """
-    pool: list[str] = []
-
-    try:
-        proactive = memory_manager.get_proactive_topics()
-        if isinstance(proactive, list):
-            pool.extend(t for t in proactive if isinstance(t, str) and t.strip())
-    except Exception:
-        pass
-
-    try:
-        cache: dict = getattr(memory_manager, "_cache", {})
-        for player in cache.values():
-            if not isinstance(player, dict):
-                continue
-            for highlight in player.get("emotional_highlights", []):
-                if isinstance(highlight, dict):
-                    moment = highlight.get("moment", "")
-                    if isinstance(moment, str) and moment.strip():
-                        pool.append(moment.strip().split()[0])
-            for key, val in player.get("behavioral_patterns", {}).items():
-                if isinstance(key, str) and key.strip():
-                    pool.append(key)
-                if isinstance(val, str) and val.strip():
-                    pool.append(val)
-    except Exception:
-        pass
-
-    unique = list({t.strip() for t in pool if len(t.strip()) >= 2})
-    if len(unique) < n:
-        # Pad with built-in topics so we always have n choices
-        fallbacks = [t for t in _TOPIC_ANSWER_MAP if t not in unique]
-        random.shuffle(fallbacks)
-        unique.extend(fallbacks)
-
-    random.shuffle(unique)
-    return unique[:n]
+    pool = list(CONCRETE_OBJECTS)
+    random.shuffle(pool)
+    return pool[:n]

@@ -99,7 +99,7 @@ async def test_atmosphere_emit_loop_runs():
 @pytest.mark.asyncio
 async def test_stt_hook_emits_on_transcribe():
     """emit_stt_to_bridge(bot, speaker, text, engine) → bridge.emit_stt_chunk 被呼叫。"""
-    from main_discord import emit_stt_to_bridge
+    from bridge_emitters import emit_stt_to_bridge
 
     bridge = MagicMock()
     bridge.is_running = True
@@ -119,7 +119,7 @@ async def test_stt_hook_emits_on_transcribe():
 @pytest.mark.asyncio
 async def test_stt_hook_skips_when_no_bridge():
     """bot.companion_bridge 不存在 → 不爆。"""
-    from main_discord import emit_stt_to_bridge
+    from bridge_emitters import emit_stt_to_bridge
 
     bot = MagicMock(spec=[])  # 沒有 companion_bridge 屬性
     # 不應 raise
@@ -130,7 +130,7 @@ async def test_stt_hook_skips_when_no_bridge():
 @pytest.mark.asyncio
 async def test_stt_hook_skips_when_bridge_not_running():
     """bridge.is_running=False → 不發送。"""
-    from main_discord import emit_stt_to_bridge
+    from bridge_emitters import emit_stt_to_bridge
 
     bridge = MagicMock()
     bridge.is_running = False
@@ -148,7 +148,7 @@ async def test_stt_hook_skips_when_bridge_not_running():
 @pytest.mark.asyncio
 async def test_tts_hook_emits_started_and_done():
     """模擬 play_tts 的 wrapper：呼叫 emit_started → 邏輯 → emit_done。"""
-    from main_discord import emit_tts_started_to_bridge, emit_tts_done_to_bridge
+    from bridge_emitters import emit_tts_started_to_bridge, emit_tts_done_to_bridge
 
     bridge = MagicMock()
     bridge.is_running = True
@@ -173,7 +173,7 @@ async def test_tts_hook_emits_started_and_done():
 @pytest.mark.asyncio
 async def test_tts_hook_emits_done_on_exception():
     """模擬 play_tts 流程中發生例外：emit_done 仍要在 finally 被呼叫。"""
-    from main_discord import emit_tts_started_to_bridge, emit_tts_done_to_bridge
+    from bridge_emitters import emit_tts_started_to_bridge, emit_tts_done_to_bridge
 
     bridge = MagicMock()
     bridge.is_running = True
@@ -198,7 +198,7 @@ async def test_tts_hook_emits_done_on_exception():
 @pytest.mark.asyncio
 async def test_tts_hooks_skip_when_no_bridge():
     """bot 沒 companion_bridge → emit helper 不爆、不 raise。"""
-    from main_discord import emit_tts_started_to_bridge, emit_tts_done_to_bridge
+    from bridge_emitters import emit_tts_started_to_bridge, emit_tts_done_to_bridge
 
     bot = MagicMock(spec=[])
     await emit_tts_started_to_bridge(bot, "x", "v", None)
@@ -210,7 +210,7 @@ async def test_tts_hooks_skip_when_no_bridge():
 @pytest.mark.asyncio
 async def test_music_hook_emits_on_play():
     """emit_music_started_to_bridge(bot, song_info, requested_by) → bridge.emit_music_started 被呼叫。"""
-    from main_discord import emit_music_started_to_bridge
+    from bridge_emitters import emit_music_started_to_bridge
 
     bridge = MagicMock()
     bridge.is_running = True
@@ -226,7 +226,7 @@ async def test_music_hook_emits_on_play():
 @pytest.mark.asyncio
 async def test_music_hook_emits_on_end():
     """emit_music_ended_to_bridge → bridge.emit_music_ended 被呼叫。"""
-    from main_discord import emit_music_ended_to_bridge
+    from bridge_emitters import emit_music_ended_to_bridge
 
     bridge = MagicMock()
     bridge.is_running = True
@@ -241,7 +241,7 @@ async def test_music_hook_emits_on_end():
 @pytest.mark.asyncio
 async def test_music_hooks_skip_when_no_bridge():
     """bot 無 companion_bridge → emit helper 不爆。"""
-    from main_discord import emit_music_started_to_bridge, emit_music_ended_to_bridge
+    from bridge_emitters import emit_music_started_to_bridge, emit_music_ended_to_bridge
 
     bot = MagicMock(spec=[])
     await emit_music_started_to_bridge(bot, {"title": "X"}, "Bob")
@@ -253,7 +253,7 @@ async def test_music_hooks_skip_when_no_bridge():
 @pytest.mark.asyncio
 async def test_member_joined_hook_emits_to_bridge():
     """emit_member_joined_to_bridge → bridge.emit_member_joined 被呼叫。"""
-    from main_discord import emit_member_joined_to_bridge
+    from bridge_emitters import emit_member_joined_to_bridge
 
     bridge = MagicMock()
     bridge.is_running = True
@@ -268,7 +268,7 @@ async def test_member_joined_hook_emits_to_bridge():
 @pytest.mark.asyncio
 async def test_member_left_hook_emits_to_bridge():
     """emit_member_left_to_bridge → bridge.emit_member_left 被呼叫。"""
-    from main_discord import emit_member_left_to_bridge
+    from bridge_emitters import emit_member_left_to_bridge
 
     bridge = MagicMock()
     bridge.is_running = True
@@ -283,7 +283,7 @@ async def test_member_left_hook_emits_to_bridge():
 @pytest.mark.asyncio
 async def test_member_hooks_skip_when_no_bridge():
     """bot 無 companion_bridge → 不爆。"""
-    from main_discord import emit_member_joined_to_bridge, emit_member_left_to_bridge
+    from bridge_emitters import emit_member_joined_to_bridge, emit_member_left_to_bridge
 
     bot = MagicMock(spec=[])
     await emit_member_joined_to_bridge(bot, "Jack", {})
@@ -293,7 +293,7 @@ async def test_member_hooks_skip_when_no_bridge():
 @pytest.mark.asyncio
 async def test_member_hooks_skip_when_bridge_not_running():
     """bridge.is_running=False → 不發送。"""
-    from main_discord import emit_member_joined_to_bridge, emit_member_left_to_bridge
+    from bridge_emitters import emit_member_joined_to_bridge, emit_member_left_to_bridge
 
     bridge = MagicMock()
     bridge.is_running = False
@@ -328,8 +328,9 @@ async def test_voice_state_join_emits_member_joined(monkeypatch):
         called.append(("left", speaker))
 
     import main_discord
-    monkeypatch.setattr(main_discord, "emit_member_joined_to_bridge", fake_emit_joined)
-    monkeypatch.setattr(main_discord, "emit_member_left_to_bridge", fake_emit_left)
+    import bridge_emitters as bridge_emitters_mod
+    monkeypatch.setattr(bridge_emitters_mod, "emit_member_joined_to_bridge", fake_emit_joined)
+    monkeypatch.setattr(bridge_emitters_mod, "emit_member_left_to_bridge", fake_emit_left)
 
     # 用 cog 的 listener function（裸 coroutine 形式）模擬呼叫
     from cogs.voice_controller import VoiceController
@@ -398,8 +399,9 @@ async def test_voice_state_leave_emits_member_left(monkeypatch):
         called.append(("left", speaker))
 
     import main_discord
-    monkeypatch.setattr(main_discord, "emit_member_joined_to_bridge", fake_emit_joined)
-    monkeypatch.setattr(main_discord, "emit_member_left_to_bridge", fake_emit_left)
+    import bridge_emitters as bridge_emitters_mod
+    monkeypatch.setattr(bridge_emitters_mod, "emit_member_joined_to_bridge", fake_emit_joined)
+    monkeypatch.setattr(bridge_emitters_mod, "emit_member_left_to_bridge", fake_emit_left)
 
     from cogs.voice_controller import VoiceController
 

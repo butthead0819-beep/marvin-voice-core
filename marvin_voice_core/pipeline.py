@@ -189,7 +189,7 @@ class MarvinVoicePipeline:
 
                     # [Companion_Bridge] STT 完成、過完幻覺過濾後，廣播給 companion-server
                     try:
-                        from main_discord import emit_stt_to_bridge
+                        from bridge_emitters import emit_stt_to_bridge
                         emit_stt_to_bridge(self.bot, speaker_name, raw_text, engine)
                     except Exception:
                         pass

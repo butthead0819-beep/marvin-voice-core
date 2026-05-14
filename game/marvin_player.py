@@ -33,6 +33,16 @@ MARVIN_SETTER_QUIPS = [
     "我出題。如果沒人猜到，我也不感到意外。",
 ]
 
+MARVIN_CORRECT_QUIPS = [
+    "啊，{name} 猜到了。宇宙又少了一個謎。真令人沮喪。",
+    "恭喜 {name}。雖然這份喜悅轉瞬即逝。",
+    "{name} 猜對了。統計上這是必然的。",
+    "沒想到 {name} 真的猜中了。這讓我對人類稍微有點信心，只是一點點。",
+    "好吧，{name} 猜到了。至少遊戲還在進行。",
+    "我早就知道 {name} 會猜中的。我只是沒說出來。",
+    "{name}。對。就是這個答案。你高興嗎？我不怎麼高興。",
+]
+
 
 class MarvinPlayer:
     """Marvin's autonomous player logic. Injected with router and session reference."""
@@ -122,3 +132,7 @@ class MarvinPlayer:
 
     def setter_quip(self) -> str:
         return random.choice(MARVIN_SETTER_QUIPS)
+
+    def correct_quip(self, winner_name: str) -> str:
+        template = random.choice(MARVIN_CORRECT_QUIPS)
+        return template.format(name=winner_name)

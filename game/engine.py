@@ -9,13 +9,15 @@ from typing import Any, Callable, Awaitable
 
 from game.session import GameSession, GameState, PlayerState
 from game import scoring
+from game.player_score_db import add_scores, init_table as init_scores_table
+from game.game_memory_db import init_table as init_memory_table, write_event
 
 MAX_HUMAN_PLAYERS = 5
-BUZZ_LOCK_SECONDS = 5.0           # how long the buzz window stays locked while holder answers
-BUZZ_COOLDOWN_SECONDS = 30.0      # personal cooldown after a wrong buzz
+BUZZ_LOCK_SECONDS = 25.0          # how long the buzz window stays locked while holder answers
+BUZZ_COOLDOWN_SECONDS = 10.0      # personal cooldown after a wrong buzz
 SETTER_TIMEOUT_PENALTY = -50      # score penalty when setter fails to submit within time limit
-ANSWER_MIN_LEN = 2
-ANSWER_MAX_LEN = 5
+ANSWER_MIN_LEN = 2                # enforced in SetAnswerModal.on_submit and Marvin's auto-answer
+ANSWER_MAX_LEN = 5                # enforced in SetAnswerModal max_length and Marvin's auto-answer
 
 
 class GameEngine:
@@ -95,6 +97,8 @@ class GameEngine:
                     all_scores_json TEXT
                 );
             """)
+            init_scores_table(con)
+            init_memory_table(con)
             con.commit()
         finally:
             con.close()
@@ -154,6 +158,13 @@ class GameEngine:
                 """,
                 (session_id, guild_id, started_at, ended_at, players_json, final_scores_json),
             )
+            players = json.loads(players_json)
+            add_scores(con, [(p["user_id"], p["display_name"], p["score"]) for p in players])
+            sorted_players = sorted(players, key=lambda p: p["score"], reverse=True)
+            scores_text = "、".join(
+                f"{p['display_name']} {p['score']}分" for p in sorted_players if p["score"] > 0
+            ) or "無人得分"
+            write_event(con, f"【Busted 結算】{scores_text}")
             con.commit()
         finally:
             con.close()

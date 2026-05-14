@@ -1228,7 +1228,7 @@ class VoiceController(commands.Cog):
         # ── Lane B2：companion bridge member presence hooks ──
         # 不擋主流程；emit helper 自帶 try/except + bridge 缺失保護。
         try:
-            from main_discord import (
+            from bridge_emitters import (
                 emit_member_joined_to_bridge,
                 emit_member_left_to_bridge,
             )
@@ -1754,19 +1754,15 @@ class VoiceController(commands.Cog):
 
             guild_id = self.active_text_channel.guild.id if self.active_text_channel else 0
             channel_id = self.active_text_channel.id if self.active_text_channel else 0
-            self._transcript_store.save(
-                speaker=speaker,
-                guild_id=guild_id,
-                text=raw_text,
-                timestamp=timestamp,
-                channel_id=channel_id,
-            )
-            self._vector_store.upsert(
-                speaker=speaker,
-                guild_id=guild_id,
-                text=raw_text,
-                doc_id=f"{speaker}_{guild_id}_{int(timestamp * 1000)}",
-            )
+            asyncio.create_task(asyncio.to_thread(
+                self._transcript_store.save,
+                speaker, guild_id, raw_text, timestamp, channel_id,
+            ))
+            asyncio.create_task(asyncio.to_thread(
+                self._vector_store.upsert,
+                speaker, guild_id, raw_text,
+                f"{speaker}_{guild_id}_{int(timestamp * 1000)}",
+            ))
 
         if speaker in self.speech_timers and not is_wake_check:
             self.speech_timers[speaker].cancel()
@@ -2194,7 +2190,7 @@ class VoiceController(commands.Cog):
         # 廣播 stt_chunk 給 companion。Phase 3a 原本的 pipeline.py hook 走 stt_callback
         # 路徑，但生產 STT 在 voice_controller 這條 Debounced 路徑上，故補在這裡。
         try:
-            from main_discord import emit_stt_to_bridge
+            from bridge_emitters import emit_stt_to_bridge
             emit_stt_to_bridge(self.bot, speaker, full_raw_text, "debounced")
         except Exception:
             pass
@@ -4255,7 +4251,7 @@ class VoiceController(commands.Cog):
 
                 # [Companion_Bridge] TTS 開始播放 → 廣播 tts_started
                 try:
-                    from main_discord import emit_tts_started_to_bridge
+                    from bridge_emitters import emit_tts_started_to_bridge
                     await emit_tts_started_to_bridge(self.bot, text, voice or "", None)
                 except Exception:
                     pass
@@ -4295,7 +4291,7 @@ class VoiceController(commands.Cog):
             self._wake_response_pending = False  # 🔒 TTS 送達，解除 Response Lock
             # [Companion_Bridge] TTS 結束（成功/逾時/錯誤皆會走到這裡）
             try:
-                from main_discord import emit_tts_done_to_bridge
+                from bridge_emitters import emit_tts_done_to_bridge
                 await emit_tts_done_to_bridge(self.bot)
             except Exception:
                 pass
@@ -4813,7 +4809,7 @@ class VoiceController(commands.Cog):
 
                 # Companion bridge: emit music_started
                 try:
-                    from main_discord import emit_music_started_to_bridge
+                    from bridge_emitters import emit_music_started_to_bridge
                     song_info_for_bridge = {
                         "title": title,
                         "style": info.get("style") or info.get("uploader", ""),
@@ -4899,7 +4895,7 @@ class VoiceController(commands.Cog):
                 finally:
                     # Companion bridge: emit music_ended（natural / stopped）
                     try:
-                        from main_discord import emit_music_ended_to_bridge
+                        from bridge_emitters import emit_music_ended_to_bridge
                         ended_info = {"title": title}
                         completion = playback_completion
                         if not self.stream_mode:
@@ -5137,7 +5133,7 @@ class VoiceController(commands.Cog):
                 logger.info(f"🎵 [MusicMemory] 記錄 {len(reactions)} 人的反應: {info['title']}")
                 # Companion bridge: emit per-user reactions
                 try:
-                    from main_discord import emit_music_reaction_to_bridge
+                    from bridge_emitters import emit_music_reaction_to_bridge
                     for username, r in reactions.items():
                         feelings = r.get("feelings", []) or []
                         # 簡易映射：feelings 有就 love；無就 silent
