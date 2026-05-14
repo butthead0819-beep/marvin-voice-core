@@ -196,6 +196,15 @@ class Busted99Cog(commands.Cog):
         t.add_done_callback(self._tasks.discard)
         return t
 
+    def _exit_game_mode(self) -> None:
+        """VoiceController game_mode=False + 恢復 VAD 溫度上限。"""
+        vc = self.bot.cogs.get("VoiceController") if hasattr(self.bot, "cogs") else None
+        if vc is not None:
+            vc.game_mode = False
+        engine = getattr(self.bot, "engine", None)
+        if engine and hasattr(engine, "conv_buffer"):
+            engine.conv_buffer.game_mode_cap = None
+
     def _cancel_guesser_timeout(self):
         if self._guesser_timeout_task and not self._guesser_timeout_task.done():
             self._guesser_timeout_task.cancel()
@@ -478,9 +487,7 @@ class Busted99Cog(commands.Cog):
         self._engine = None
         self._session = None
         self._name_to_id.clear()
-        vc = self.bot.cogs.get("VoiceController") if hasattr(self.bot, "cogs") else None
-        if vc is not None:
-            vc.game_mode = False
+        self._exit_game_mode()
         if self._channel is not None:
             try:
                 await self._channel.send("🛑 Busted99 已被 companion 端結束。")
@@ -537,10 +544,7 @@ class Busted99Cog(commands.Cog):
             self._engine = None
             self._session = None
             self._name_to_id.clear()
-            # 恢復 VoiceController
-            vc = self.bot.cogs.get("VoiceController")
-            if vc is not None:
-                vc.game_mode = False
+            self._exit_game_mode()
 
     # ── Background tasks ───────────────────────────────────────────────────────
 
@@ -887,10 +891,13 @@ class Busted99Cog(commands.Cog):
         # Marvin 自動加入
         await self._engine.add_player("marvin", "Marvin")
 
-        # 進入 game_mode
+        # 進入 game_mode，同時壓低 VAD 靜默門檻避免短數字音訊被高溫對話丟棄
         vc = self.bot.cogs.get("VoiceController")
         if vc is not None:
             vc.game_mode = True
+        engine = getattr(self.bot, "engine", None)
+        if engine and hasattr(engine, "conv_buffer"):
+            engine.conv_buffer.game_mode_cap = 0.8
 
         # 顯示 join embed + 35s 自動開始
         await self._post_game_message(self._build_joining_embed(session), Join99View(self))
@@ -911,31 +918,35 @@ class Busted99Cog(commands.Cog):
 
         await self._handle_start_game(interaction.channel)
 
-    @app_commands.command(name="busted99_guess", description="用鍵盤輸入猜測數字（語音備援）")
-    async def busted99_guess(self, interaction: discord.Interaction, number: int):
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        """
+        當猜題中，攔截當前猜題玩家在聊天室輸入的數字，當作猜題送出。
+        非數字訊息或非猜題玩家的訊息一律忽略，不影響正常對話。
+        """
+        if message.author.bot:
+            return
         if self._engine is None or self._session is None:
-            await interaction.response.send_message(
-                "目前沒有進行中的 Busted99 遊戲。", ephemeral=True
-            )
+            return
+        if self._session.state != Busted99State.GUESSING:
             return
 
-        user = interaction.user
-        guesser_id_str = None
-        for p in self._session.players:
-            if p.display_name == user.display_name:
-                guesser_id_str = p.user_id
-                break
-        if guesser_id_str is None:
-            await interaction.response.send_message(
-                "你不在這場遊戲中！", ephemeral=True
-            )
+        guesser_id = self._session.current_guesser_id
+        guesser = next(
+            (p for p in self._session.players if p.user_id == guesser_id), None
+        )
+        if guesser is None or guesser.display_name != message.author.display_name:
             return
 
-        ok, msg = await self._process_guess(user.display_name, guesser_id_str, number)
-        if not ok:
-            await interaction.response.send_message(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message("✅ 猜題送出！", ephemeral=True)
+        number = parse_number(message.content)
+        if number is None:
+            return  # 非數字訊息，靜默忽略
+
+        logger.debug(
+            "[Busted99] on_message: %r typed %r → number=%d",
+            message.author.display_name, message.content, number,
+        )
+        await self._process_guess(guesser.display_name, guesser_id, number)
 
     @app_commands.command(name="busted99_stop", description="強制中止目前的 Busted99 遊戲")
     async def busted99_stop(self, interaction: discord.Interaction):
@@ -948,9 +959,7 @@ class Busted99Cog(commands.Cog):
         self._session = None
         self._name_to_id.clear()
 
-        vc = self.bot.cogs.get("VoiceController")
-        if vc is not None:
-            vc.game_mode = False
+        self._exit_game_mode()
 
         await interaction.response.send_message(
             "🛑 Busted99 已強制中止，可以用 `/busted99_start` 重新開始。",

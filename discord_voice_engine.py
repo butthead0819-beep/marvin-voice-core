@@ -89,6 +89,7 @@ class ConversationBuffer:
         self.summaries = [] # list of strings (Marvin-flavored internal monologues)
         self.has_new_messages = False # 🧬 [APM Economy] 空轉跳過標記
         self.last_consumed_timestamp = 0.0 # 🧬 [Incremental Fix] 追蹤上次成功讀取的時間點
+        self.game_mode_cap: float | None = None  # when set, caps VAD silence threshold
 
     def add_entry(self, speaker, text, timestamp=None):
         if timestamp is None:
@@ -170,11 +171,14 @@ class ConversationBuffer:
         recent_utterances = len([e for e in self.history if now - e["timestamp"] <= window_seconds])
         
         if recent_utterances > 8:
-            return 3.0 # 🛠️ [Golden Ear] 高溫期上調至 3.0s，防止請求風暴
+            result = 3.0 # 🛠️ [Golden Ear] 高溫期上調至 3.0s，防止請求風暴
         elif 3 <= recent_utterances <= 8:
-            return 1.5 # 🛠️ [Standard] 中度交談調降至 1.5s，兼顧穩定
+            result = 1.5 # 🛠️ [Standard] 中度交談調降至 1.5s，兼顧穩定
         else:
-            return 0.8 # 🛠️ [Quiet] 最低閾值下調至 0.8s，實現閃電回應
+            result = 0.8 # 🛠️ [Quiet] 最低閾值下調至 0.8s，實現閃電回應
+        if self.game_mode_cap is not None:
+            result = min(result, self.game_mode_cap)
+        return result
 
     # 🚀 [T-04 Fix] rotate_and_summarize() 已移除。
     # buffer_summarizer_loop 已被注釋停用，此函式是其唯一呼叫方，已成孤島。
