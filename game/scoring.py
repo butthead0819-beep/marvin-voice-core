@@ -15,24 +15,26 @@ def setter_score_if_guessed(clue_round: int) -> int:
     return ROUND_SETTER_SCORES[clue_round]
 
 
+def count_char_matches(answer: str, guess: str) -> int:
+    """Count how many characters in answer appear anywhere in guess (position-independent)."""
+    if not answer:
+        return 0
+    guess_chars = set(guess.lower())
+    return sum(1 for ch in answer.lower() if ch in guess_chars)
+
+
 def partial_score(answer: str, guess: str) -> int:
     """
-    Return a partial score based on positional character matches.
+    Return a partial score based on position-independent character matches.
 
-    Score = floor(100 * positional_char_matches / len(answer))
-    Positional match: answer[i] == guess[i] for each i up to min(len(answer), len(guess)).
-    Case-insensitive comparison.
-    Returns 0 if answer is empty.
+    Score = floor(100 * matched_chars / len(answer))
+    A char in answer is matched if it appears anywhere in guess (position doesn't matter).
+    Case-insensitive. Returns 0 if answer is empty.
     """
     if not answer:
         return 0
-    answer_lower = answer.lower()
-    guess_lower = guess.lower()
-    matches = sum(
-        1 for i in range(min(len(answer_lower), len(guess_lower)))
-        if answer_lower[i] == guess_lower[i]
-    )
-    return int(100 * matches / len(answer_lower))
+    matches = count_char_matches(answer, guess)
+    return int(100 * matches / len(answer))
 
 
 def setter_penalty() -> int:

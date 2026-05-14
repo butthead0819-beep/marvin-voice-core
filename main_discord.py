@@ -147,6 +147,26 @@ async def _atmosphere_emit_loop(bridge, interval: float = 10.0):
             logger.warning(f"[Companion_Bridge] periodic emit failed: {e}")
 
 
+async def _voice_snapshot_loop(bridge, bot, interval: float = 15.0):
+    """周期廣播 voice channel snapshot，讓晚連的 companion 能拿到當前成員。"""
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if not bot.voice_clients:
+                continue
+            channel = bot.voice_clients[0].channel
+            members = [
+                {
+                    "speaker": m.display_name,
+                    "avatar_url": str(m.display_avatar.url),
+                }
+                for m in channel.members if not m.bot
+            ]
+            await bridge.emit_voice_channel_snapshot(members)
+        except Exception as e:
+            logger.warning(f"[Companion_Bridge] voice snapshot loop failed: {e}")
+
+
 
 
 class MarvinBot(commands.Bot):
@@ -287,6 +307,9 @@ class MarvinBot(commands.Bot):
                 self._atmosphere_emit_task = self.loop.create_task(
                     _atmosphere_emit_loop(self.companion_bridge, interval=10.0)
                 )
+                self._voice_snapshot_task = self.loop.create_task(
+                    _voice_snapshot_loop(self.companion_bridge, self, interval=15.0)
+                )
         except Exception as e:
             logger.warning(f"[Companion_Bridge] startup failed: {e}")
 
@@ -340,13 +363,14 @@ class MarvinBot(commands.Bot):
         if hasattr(self, "marmo_server"):
             await self.marmo_server.stop()
         # 關閉 CompanionBridge（Phase 3a）
-        task = getattr(self, "_atmosphere_emit_task", None)
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for attr in ("_atmosphere_emit_task", "_voice_snapshot_task"):
+            task = getattr(self, attr, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
         bridge = getattr(self, "companion_bridge", None)
         if bridge is not None:
             try:

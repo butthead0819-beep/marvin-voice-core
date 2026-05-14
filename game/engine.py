@@ -9,11 +9,12 @@ from typing import Any, Callable, Awaitable
 
 from game.session import GameSession, GameState, PlayerState
 from game import scoring
+from game.scoring import count_char_matches
 from game.player_score_db import add_scores, init_table as init_scores_table
 from game.game_memory_db import init_table as init_memory_table, write_event
 
 MAX_HUMAN_PLAYERS = 5
-BUZZ_LOCK_SECONDS = 25.0          # how long the buzz window stays locked while holder answers
+BUZZ_LOCK_SECONDS = 50.0          # how long the buzz window stays locked while holder answers
 BUZZ_COOLDOWN_SECONDS = 10.0      # personal cooldown after a wrong buzz
 SETTER_TIMEOUT_PENALTY = -50      # score penalty when setter fails to submit within time limit
 ANSWER_MIN_LEN = 2                # enforced in SetAnswerModal.on_submit and Marvin's auto-answer
@@ -376,30 +377,43 @@ class GameEngine:
                 self.session.buzz_holder_id = None
                 self.session.state = GameState.CLUE_ACTIVE
                 await self._notify()
+                matched = count_char_matches(answer, text)
+                return {
+                    "correct": False, "score": 0, "setter_score": 0,
+                    "matched_chars": matched, "answer_len": len(answer),
+                }
 
             return {"correct": correct, "score": guesser_pts, "setter_score": setter_pts}
 
-    async def submit_round5_answer(self, user_id: str, text: str) -> int:
+    async def submit_round5_answer(self, user_id: str, text: str) -> dict:
         """
         Submit a final-round (round 5) partial-score answer from the modal.
-        Returns the partial score earned by this player.
+        Returns {"pts": int, "matched": int, "answer_len": int}.
+        pts=0 and matched=0 when the call is rejected (wrong state / already submitted).
         Only valid when current_round == 5 and state == CLUE_ACTIVE.
         """
         async with self._lock:
-            if self.session.state != GameState.CLUE_ACTIVE or self.session.current_round < 5:
-                return 0
-            if user_id == self.session.current_setter_id:
-                return 0
-            if user_id in self._round5_scores:
-                return 0  # already submitted
             answer = self.session.current_answer or ""
+            _reject = {"pts": 0, "matched": 0, "answer_len": len(answer)}
+            if self.session.state != GameState.CLUE_ACTIVE or self.session.current_round < 5:
+                return _reject
+            if user_id == self.session.current_setter_id:
+                return _reject
+            if user_id in self._round5_scores:
+                return _reject  # already submitted
             pts = scoring.partial_score(answer, text)
+            matched = count_char_matches(answer, text)
             self._round5_scores[user_id] = pts
             player = self._get_player(user_id)
             if player:
                 player.score += pts
             await self._notify()
-            return pts
+            return {"pts": pts, "matched": matched, "answer_len": len(answer)}
+
+    def round5_all_submitted(self) -> bool:
+        """Return True if every non-setter player has submitted a round-5 answer."""
+        guessers = [p for p in self.session.players if p.user_id != self.session.current_setter_id]
+        return bool(guessers) and all(p.user_id in self._round5_scores for p in guessers)
 
     async def advance_clue(self) -> None:
         """
@@ -544,7 +558,8 @@ class GameEngine:
         """
         Called when the setter fails to submit within the time limit.
         Applies SETTER_TIMEOUT_PENALTY, marks them as having been setter (no re-draw),
-        and advances to the next setter (SPINNING) or ends the game (GAME_OVER).
+        resets per-round state, and advances to the next setter (SPINNING) or
+        ends the game (GAME_OVER).
         """
         async with self._lock:
             if self.session.state != GameState.SETTER_INPUT:
@@ -553,6 +568,16 @@ class GameEngine:
             if setter:
                 setter.score += SETTER_TIMEOUT_PENALTY
                 setter.has_been_setter = True
+            # Reset per-round state so the next setter starts clean
+            self.session.current_answer = None
+            self.session.current_clues = []
+            self.session.current_round = 1
+            self.session.buzz_holder_id = None
+            self.session.buzz_locked_until = 0.0
+            self.session.current_theme = None
+            self.session.candidate_themes = []
+            self.session.wrong_guesses = []
+            self._round5_scores.clear()
             next_setter = self._next_setter()
             if next_setter is None:
                 self.session.state = GameState.GAME_OVER

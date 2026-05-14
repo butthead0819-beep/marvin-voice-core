@@ -214,6 +214,27 @@ class CompanionBridge:
             self._clients.add(ws)
         logger.info(f"[Companion_Bridge] client connected（目前 {len(self._clients)} 條）")
 
+        # 新 client 連上時立刻推當前頻道成員，不必等下次 join/leave 事件
+        try:
+            vc = self._voice_controller
+            if vc is not None:
+                bot = getattr(vc, "bot", None)
+                if bot and bot.voice_clients:
+                    channel = bot.voice_clients[0].channel
+                    members = [
+                        {"speaker": m.display_name, "avatar_url": str(m.display_avatar.url)}
+                        for m in channel.members if not m.bot
+                    ]
+                else:
+                    members = [{"speaker": n} for n in vc.get_online_members()]
+                snapshot_evt = _make_event(EVT_VOICE_CHANNEL_SNAPSHOT, {
+                    "members": members,
+                    "snapshot_ts": time.time(),
+                })
+                await ws.send_str(json.dumps(snapshot_evt, ensure_ascii=False, default=str))
+        except Exception as e:
+            logger.warning(f"[Companion_Bridge] on-connect snapshot 失敗: {e}")
+
         try:
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
@@ -318,11 +339,28 @@ class CompanionBridge:
         guild_id = int(payload.get("guild_id", self._guild_id) or 0)
         limit = min(int(payload.get("limit", 20) or 20), 100)
 
-        profile: dict = {}
+        raw_profile: dict = {}
         try:
-            profile = self._suki_memory.get_player_memory(speaker) or {}
+            raw_profile = self._suki_memory.get_player_memory(speaker) or {}
         except Exception as e:
             logger.warning(f"[Companion_Bridge] get_player_memory 失敗: {e}")
+
+        _stage_map = {"陌生人": "stranger", "熟人": "regular", "內圈": "inner", "黑名單": "blacklist"}
+        raw_stage = raw_profile.get("relationship_stage", "")
+        profile: dict = {
+            "name": speaker,
+            "stage": _stage_map.get(raw_stage, raw_stage),
+            "bias": raw_profile.get("bias_score", 0),
+            "impression": raw_profile.get("suki_impression", ""),
+            "likes": [
+                {"text": t, "doc_id": f"suki::likes::{speaker}::{t}"}
+                for t in (raw_profile.get("likes") or []) if isinstance(t, str)
+            ],
+            "dislikes": [
+                {"text": t, "doc_id": f"suki::dislikes::{speaker}::{t}"}
+                for t in (raw_profile.get("dislikes") or []) if isinstance(t, str)
+            ],
+        }
 
         chunks: list = []
         try:
@@ -330,11 +368,21 @@ class CompanionBridge:
         except Exception as e:
             logger.warning(f"[Companion_Bridge] vector_store.get_all 失敗: {e}")
 
+        memories = [
+            {
+                "doc_id": c.get("id", ""),
+                "text": c.get("document", ""),
+                "when": c.get("metadata", {}).get("when", ""),
+                "uncertain": bool(c.get("metadata", {}).get("uncertain", False)),
+            }
+            for c in chunks
+        ]
+
         resp = _make_event(EVT_MEMORY_LIST_RESPONSE, {
             "speaker": speaker,
             "guild_id": guild_id,
             "profile": profile,
-            "vector_chunks": chunks,
+            "memories": memories,
         })
         try:
             await ws.send_str(json.dumps(resp, ensure_ascii=False, default=str))
@@ -344,6 +392,21 @@ class CompanionBridge:
     def _handle_memory_delete(self, payload: dict[str, Any]) -> None:
         doc_id = payload.get("doc_id")
         if not doc_id:
+            return
+        if doc_id.startswith("suki::"):
+            # 格式：suki::{field}::{speaker}::{text}
+            parts = doc_id.split("::", 3)
+            if len(parts) == 4:
+                _, field, speaker, text = parts
+                if field in ("likes", "dislikes"):
+                    try:
+                        mem = self._suki_memory.get_player_memory(speaker)
+                        arr = mem.get(field, [])
+                        if text in arr:
+                            arr.remove(text)
+                            self._suki_memory._save_player(speaker)
+                    except Exception as e:
+                        logger.warning(f"[Companion_Bridge] suki tag delete 失敗: {e}")
             return
         self._vector_store.delete(doc_id)
 

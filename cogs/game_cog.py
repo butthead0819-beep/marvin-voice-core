@@ -69,12 +69,19 @@ class Round5AnswerModal(discord.ui.Modal, title="Busted — 第5輪最終答案"
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         user_id = str(interaction.user.id)
-        pts = await self._cog._engine.submit_round5_answer(user_id, self.answer_input.value.strip())
+        result = await self._cog._engine.submit_round5_answer(user_id, self.answer_input.value.strip())
+        pts = result["pts"]
+        matched = result["matched"]
+        answer_len = result["answer_len"]
         if pts > 0:
             self._cog._round5_display_scores[interaction.user.display_name] = pts
-            await interaction.followup.send(f"📊 你得了 **{pts}** 分！", ephemeral=True)
+            await interaction.followup.send(
+                f"📊 猜對了 **{matched}/{answer_len}** 個字，得 **{pts}** 分！", ephemeral=True
+            )
         else:
-            await interaction.followup.send("❌ 沒猜到正確的字，感謝參與！", ephemeral=True)
+            await interaction.followup.send(
+                f"❌ 猜對了 **{matched}/{answer_len}** 個字，未得分。感謝參與！", ephemeral=True
+            )
 
 
 # ── Views ──────────────────────────────────────────────────────────────────────
@@ -109,7 +116,7 @@ class JoinView(discord.ui.View):
 
 class SetterInputView(discord.ui.View):
     def __init__(self, cog: BustedCog, setter_id: str):
-        super().__init__(timeout=35)
+        super().__init__(timeout=120)
         self._cog = cog
         self._setter_id = setter_id
 
@@ -125,14 +132,22 @@ class BuzzView(discord.ui.View):
     def __init__(self, cog: BustedCog, disabled: bool = False):
         super().__init__(timeout=None)
         self._cog = cog
-        btn = discord.ui.Button(
+        buzz_btn = discord.ui.Button(
             label="BUZZ IN! 🔔",
             style=discord.ButtonStyle.danger,
             disabled=disabled,
             custom_id="busted_buzz",
         )
-        btn.callback = self._on_buzz
-        self.add_item(btn)
+        buzz_btn.callback = self._on_buzz
+        self.add_item(buzz_btn)
+
+        skip_btn = discord.ui.Button(
+            label="⏩ 跳過這條線索",
+            style=discord.ButtonStyle.secondary,
+            custom_id="busted_skip_vote",
+        )
+        skip_btn.callback = self._on_skip_vote
+        self.add_item(skip_btn)
 
     async def _on_buzz(self, interaction: discord.Interaction):
         engine = self._cog._engine
@@ -146,6 +161,11 @@ class BuzzView(discord.ui.View):
             )
         else:
             await interaction.response.defer()
+
+    async def _on_skip_vote(self, interaction: discord.Interaction):
+        user_id = str(interaction.user.id)
+        await interaction.response.defer(ephemeral=True)
+        await self._cog.record_skip_vote(user_id)
 
 
 class Round5View(discord.ui.View):
@@ -257,6 +277,7 @@ class BustedCog(commands.Cog):
         self._game_state: Optional[GameState] = None  # previous state for SFX routing
         self._grace_timers: dict[str, asyncio.Task] = {}  # user_id → pending leave task
         self._round5_display_scores: dict[str, int] = {}  # display_name → pts, for result embed
+        self._skip_votes: set[str] = set()               # user_ids who voted to skip current clue
 
     # ── Task helpers ───────────────────────────────────────────────────────────
 
@@ -351,7 +372,7 @@ class BustedCog(commands.Cog):
         name = setter.display_name if setter else "?"
         e = discord.Embed(
             title="🎮 BUSTED — 出題中",
-            description=f"🎭 **{name}** 正在設定謎底…\n⏱ 150 秒內請輸入答案",
+            description=f"🎭 **{name}** 正在設定謎底…\n⏱ 120 秒內請輸入答案",
             color=C_JOINING,
         )
         if session.current_theme:
@@ -475,9 +496,9 @@ class BustedCog(commands.Cog):
 
     def _timer_for_state(self, state: GameState) -> Optional[int]:
         return {
-            GameState.SETTER_INPUT: 150,
-            GameState.CLUE_ACTIVE:  75,
-            GameState.BUZZ_LOCKED:  25,
+            GameState.SETTER_INPUT: 120,
+            GameState.CLUE_ACTIVE:  50,
+            GameState.BUZZ_LOCKED:  50,
             GameState.ROUND_RESULT: 50,
         }.get(state)
 
@@ -625,8 +646,12 @@ class BustedCog(commands.Cog):
                 ),
                 color=0x9B59B6,
             )
-            view = ThemeSelectView(self, session.candidate_themes, session.current_setter_id or "")
-            await self._post_game_message(embed, view)
+            if session.current_setter_id == "marvin":
+                await self._post_game_message(embed)
+                self._spawn(self._marvin_theme_select_task())
+            else:
+                view = ThemeSelectView(self, session.candidate_themes, session.current_setter_id or "")
+                await self._post_game_message(embed, view)
 
         elif state == GameState.SETTER_INPUT:
             self._round5_display_scores.clear()
@@ -644,14 +669,20 @@ class BustedCog(commands.Cog):
             view  = Round5View(self) if is_r5 else BuzzView(self, disabled=False)
             await self._post_game_message(self._build_clue_embed(session), view)
 
+            self._skip_votes.clear()
+
             if prev_state == GameState.SETTER_INPUT:
                 # Fresh setter turn — start a new timer loop
                 self._cancel_tasks()
-                self._clue_deadline = time.time() + 75.0
+                self._clue_deadline = time.time() + 50.0
                 self._spawn(self._clue_loop())
             else:
                 # New clue, returning from buzz, or buzz-holder left — reset deadline
-                self._clue_deadline = time.time() + 75.0
+                self._clue_deadline = time.time() + 50.0
+
+            # Round 5 early exit: if all guessers have submitted, force the loop to fire now
+            if is_r5 and self._engine and self._engine.round5_all_submitted():
+                self._clue_deadline = time.time()
 
             # Trigger Marvin guess — cancel previous think before spawning a new one
             if session.current_setter_id != "marvin" and session.current_clues:
@@ -665,9 +696,9 @@ class BustedCog(commands.Cog):
             await self._edit_game_message(self._build_buzz_locked_embed(session), BuzzView(self, disabled=True))
             if holder and self._channel:
                 await self._channel.send(
-                    f"⚡ **{holder.display_name}** 搶答！請在 **25 秒**內回答（語音或文字）"
+                    f"⚡ **{holder.display_name}** 搶答！請在 **{int(BUZZ_LOCK_SECONDS)} 秒**內回答（語音或文字）"
                 )
-                self._spawn(self._watch_for_text_answer(holder.user_id, timeout=25.0))
+                self._spawn(self._watch_for_text_answer(holder.user_id, timeout=float(BUZZ_LOCK_SECONDS)))
 
         elif state == GameState.ROUND_RESULT:
             if prev_state == GameState.BUZZ_LOCKED:
@@ -751,9 +782,9 @@ class BustedCog(commands.Cog):
             pass
 
     async def _setter_timeout_task(self):
-        """Penalise and skip setter if they don't submit an answer within 150 s."""
+        """Penalise and skip setter if they don't submit an answer within 120 s."""
         try:
-            await asyncio.sleep(150)
+            await asyncio.sleep(120)
             session = self._session
             if session and session.state == GameState.SETTER_INPUT:
                 setter = next(
@@ -769,18 +800,64 @@ class BustedCog(commands.Cog):
         except asyncio.CancelledError:
             pass
 
+    async def record_skip_vote(self, user_id: str) -> None:
+        """Record a skip-clue vote. Advances clue immediately when all eligible guessers vote."""
+        session = self._session
+        if session is None or session.state != GameState.CLUE_ACTIVE:
+            return
+        setter_id = session.current_setter_id
+        # Only human non-setter non-Marvin players are eligible voters
+        eligible = [
+            p.user_id for p in session.players
+            if p.user_id != setter_id and p.user_id != "marvin"
+        ]
+        if user_id not in eligible:
+            return
+        self._skip_votes.add(user_id)
+        voted = len(self._skip_votes & set(eligible))
+        total = len(eligible)
+        if self._channel:
+            await self._channel.send(
+                f"⏩ 跳過票：{voted}/{total}（需全員同意）", delete_after=10
+            )
+        if voted >= total and self._engine:
+            self._skip_votes.clear()
+            await self._engine.advance_clue()
+
+    async def _marvin_theme_select_task(self):
+        """Marvin 快速自動選主題（1-2.5 秒假裝思考），避免掛在 ThemeSelectView 150 秒。"""
+        try:
+            await asyncio.sleep(random.uniform(1.0, 2.5))
+            session = self._session
+            if session is None or session.state != GameState.THEME_SELECT:
+                return
+            if not session.candidate_themes:
+                return
+            theme = random.choice(session.candidate_themes)
+            if self._channel:
+                await self._channel.send(f"**Marvin**: 我選「{theme}」！")
+            await self._engine.select_theme(theme)
+        except asyncio.CancelledError:
+            pass
+
     async def _marvin_setter_task(self):
-        """Marvin picks a topic from suki_memory and sets it as the answer."""
+        """Marvin uses LLM to generate a theme-related answer."""
         try:
             await asyncio.sleep(random.uniform(1.5, 3.0))
             session = self._session
             if session is None or session.state != GameState.SETTER_INPUT:
                 return
-            topic, answer = pick(self._memory_manager)
-            if len(answer) > ANSWER_MAX_LEN:
-                answer = answer[:ANSWER_MAX_LEN]
-            if len(answer) < ANSWER_MIN_LEN:
-                answer = "黑洞"  # safe fallback
+            theme = session.current_theme or "宇宙"
+            if self._marvin:
+                answer = await self._marvin.generate_setter_answer(
+                    theme, min_len=ANSWER_MIN_LEN, max_len=ANSWER_MAX_LEN
+                )
+            else:
+                _, answer = pick(self._memory_manager)
+                if len(answer) > ANSWER_MAX_LEN:
+                    answer = answer[:ANSWER_MAX_LEN]
+                if len(answer) < ANSWER_MIN_LEN:
+                    answer = "黑洞"
             quip = self._marvin.setter_quip() if self._marvin else "我來出題。"
             if self._channel:
                 await self._channel.send(f"**Marvin**: {quip}")
@@ -839,9 +916,12 @@ class BustedCog(commands.Cog):
             if s is None or s.current_round < 5 or s.state != GameState.CLUE_ACTIVE:
                 return
             guess = await self._marvin.generate_guess(5, clues, char_count, wrong_guesses)
-            pts = await self._engine.submit_round5_answer("marvin", guess)
+            result = await self._engine.submit_round5_answer("marvin", guess)
+            pts = result["pts"]
+            matched = result["matched"]
+            answer_len = result["answer_len"]
             if self._channel:
-                score_text = f"+{pts} 分" if pts > 0 else "0 分"
+                score_text = f"猜對 {matched}/{answer_len} 個字，+{pts} 分" if pts > 0 else f"猜對 {matched}/{answer_len} 個字，0 分"
                 await self._channel.send(f"**Marvin** 最終答案：{guess}（{score_text}）")
             if pts > 0:
                 self._round5_display_scores["Marvin"] = pts
@@ -894,6 +974,12 @@ class BustedCog(commands.Cog):
                 else:
                     self._last_result = {}
                     asyncio.get_running_loop().create_task(self._play_sfx("wrong"))
+                    matched = result.get("matched_chars", 0)
+                    answer_len = result.get("answer_len", 0)
+                    if self._channel and answer_len:
+                        await self._channel.send(
+                            f"❌ 猜錯！猜對了 **{matched}/{answer_len}** 個字", delete_after=8
+                        )
 
         except asyncio.TimeoutError:
             # Answer window expired — release buzz via engine

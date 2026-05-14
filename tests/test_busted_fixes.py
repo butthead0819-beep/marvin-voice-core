@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from game.session import GameSession, GameState
+from game.session import GameSession
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -107,26 +107,27 @@ def test_concrete_objects_list_has_enough_items():
 
 # ── Fix 3: Timing ×5 ──────────────────────────────────────────────────────────
 
-def test_buzz_lock_seconds_is_25():
-    """BUZZ_LOCK_SECONDS must be 25 (was 5, ×5)."""
+def test_buzz_lock_seconds_is_50():
+    """BUZZ_LOCK_SECONDS must be 50 — extended for voice answer input."""
     from game.engine import BUZZ_LOCK_SECONDS
-    assert BUZZ_LOCK_SECONDS == 25.0, f"expected 25.0, got {BUZZ_LOCK_SECONDS}"
+    assert BUZZ_LOCK_SECONDS == 50.0, f"expected 50.0, got {BUZZ_LOCK_SECONDS}"
 
 
-def test_clue_deadline_is_75():
-    """Clue deadline constant must be 75 seconds (was 15, ×5)."""
-    import inspect, ast, textwrap
+def test_clue_deadline_is_50():
+    """Clue deadline must be 50 seconds."""
+    import inspect
     import cogs.game_cog as gc_mod
     src = inspect.getsource(gc_mod.BustedCog.on_state_change)
-    assert "75.0" in src, "clue deadline should be 75.0 seconds in on_state_change"
+    assert "50.0" in src, "clue deadline should be 50.0 seconds in on_state_change"
+    assert "75.0" not in src, "old 75.0 s deadline should be removed"
 
 
-def test_setter_timeout_is_150():
-    """Setter timeout task must sleep 150 seconds (was 30, ×5)."""
+def test_setter_timeout_is_120():
+    """Setter timeout task must sleep 120 seconds (user-requested change from 150)."""
     import inspect
     import cogs.game_cog as gc_mod
     src = inspect.getsource(gc_mod.BustedCog._setter_timeout_task)
-    assert "150" in src, "setter timeout should be 150 seconds"
+    assert "120" in src, "setter timeout should be 120 seconds"
 
 
 def test_auto_next_round_is_50():

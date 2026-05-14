@@ -106,6 +106,45 @@ class MarvinPlayer:
             logger.error(f"[Marvin] Weak model failed: {e}")
             return "我不知道...大概是黑洞？"
 
+    async def generate_setter_answer(self, theme: str, min_len: int = 2, max_len: int = 5) -> str:
+        """
+        Generate an answer that's related to the given theme.
+        Uses temperature=0 for highest-confidence result.
+        Falls back to a safe default if the result violates length constraints.
+        """
+        system = (
+            "你是一個在玩猜謎遊戲的機器人，現在輪到你出題。"
+            "請想一個跟指定主題相關的具體名詞，只輸出答案詞，不要解釋。"
+        )
+        user = (
+            f"主題：「{theme}」\n"
+            f"請給我一個 {min_len} 到 {max_len} 個字的具體名詞答案（只輸出答案詞）："
+        )
+        try:
+            resp = await self._weak_client.chat.completions.create(
+                model=self._weak_model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                max_tokens=20,
+                temperature=0,
+            )
+            answer = resp.choices[0].message.content.strip()
+            # Strip punctuation / spaces
+            answer = answer.replace("。", "").replace("，", "").replace(" ", "").strip()
+            if min_len <= len(answer) <= max_len:
+                return answer
+            # Truncate if too long
+            if len(answer) > max_len:
+                return answer[:max_len]
+        except Exception as e:
+            logger.error(f"[Marvin] generate_setter_answer failed: {e}")
+        # Fallback: use theme itself if within limits, else safe default
+        if min_len <= len(theme) <= max_len:
+            return theme
+        return "黑洞"
+
     async def think_then_buzz(
         self,
         clue_round: int,
