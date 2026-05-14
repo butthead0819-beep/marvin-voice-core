@@ -70,12 +70,24 @@ class VectorStore:
         """刪除單一文件；不存在時無動作（ChromaDB delete 對未知 id 本身就是 no-op）。"""
         try:
             self._col.delete(ids=[doc_id])
-        except Exception:
-            # 防禦性容錯：任何來自底層的例外都視為 no-op
-            pass
+        except Exception as e:
+            # 防禦性容錯：底層例外不丟出，但要 log 出來以免 ChromaDB 故障被吞掉
+            import logging
+            logging.getLogger(__name__).warning(
+                f"[VectorStore.delete] doc_id={doc_id!r} 失敗（已吞例外）: {e}"
+            )
 
     def update(self, doc_id: str, metadata: dict) -> None:
-        """更新單一文件的 metadata；保留原有 keys，僅覆蓋傳入的欄位。"""
+        """更新單一文件的 metadata；保留原有 keys，僅覆蓋傳入的欄位。
+
+        ⚠️ 已知 race window（/review 2026-05-14）：
+        這是 get-merge-write 三段式操作，get 與 update 之間若有並行寫入
+        會被本次 merge 覆蓋。ChromaDB 沒有 atomic partial update API。
+        companion 為單一使用者，實務上極難碰到；多 client 同時改同一筆
+        metadata 才會出現，目前 v1 接受此風險。Lane B2 之後若加入多人協作
+        場景，這裡需要外掛 asyncio.Lock 或改用 ChromaDB 的 upsert + 文件
+        版本欄位來防覆蓋。
+        """
         existing = self._col.get(ids=[doc_id])
         existing_metas = existing.get("metadatas", []) or []
         if not existing_metas:

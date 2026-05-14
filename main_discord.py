@@ -155,7 +155,13 @@ def emit_stt_to_bridge(bot, speaker: str, text: str, engine: str) -> None:
     if bridge is None or not getattr(bridge, "is_running", False):
         return
     try:
-        loop = getattr(bot, "loop", None) or asyncio.get_event_loop()
+        loop = getattr(bot, "loop", None)
+        if loop is None:
+            # 不再使用 deprecated asyncio.get_event_loop()；無 running loop 就跳過
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
         loop.create_task(bridge.emit_stt_chunk(speaker, text, engine))
     except Exception as e:
         logger.debug(f"[Companion_Bridge] emit_stt skipped: {e}")

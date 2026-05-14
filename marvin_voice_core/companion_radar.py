@@ -8,11 +8,18 @@
     純規則式，無 LLM，無外部 I/O；單一 function (classify_risk) 純函式。
     第一個命中的規則就回傳，不列舉所有 risk。
 
+v1 範圍限制（/review 2026-05-14 確認）：
+    cogs/voice_controller.py 的 hook 目前只傳入 atmosphere_snapshot，
+    所以實際生產環境只有 _is_tone_mismatch 會觸發。
+    _is_defeat_jab 和 _is_sarcasm_to_negative_target 兩條規則已就緒，
+    等 Lane F3 在 TTS hook 加入 recent_game_events + target_player + player_memory
+    的收集後才會啟用。
+
 context 期望欄位（任何 key 缺失都算「沒資訊」，不會強制要求）：
-    - atmosphere_snapshot: dict（含 room_mood）
-    - recent_game_events:  list[dict]（each {type, user, ...}）
-    - target_player:       str（被 tease 的人 username）
-    - player_memory:       dict（target_player 的記憶，含 bias_score）
+    - atmosphere_snapshot: dict（含 room_mood）              ← v1 唯一實際傳入的
+    - recent_game_events:  list[dict]（each {type, user, ...}） ← Lane F3
+    - target_player:       str（被 tease 的人 username）        ← Lane F3
+    - player_memory:       dict（target_player 的記憶，含 bias_score）← Lane F3
 
 回傳：
     None 表示安全；dict 表示風險：{rule, reason, severity}
@@ -26,8 +33,9 @@ from typing import Any
 
 # ── Keyword patterns ─────────────────────────────────────────────────────
 
-# defeat keywords：「輸/敗/輸了/輸光/失敗/沒贏」
-_DEFEAT_PATTERN = re.compile(r"輸了|輸光|失敗|沒贏|敗了|敗|輸")
+# defeat keywords：「輸了/輸光/失敗/沒贏/敗了」
+# 不加裸字「輸」/「敗」是因為「不輸給」「不會輸」「敗中求勝」之類正面語會誤判
+_DEFEAT_PATTERN = re.compile(r"輸了|輸光|失敗|沒贏|敗了|又輸")
 
 # laugh markers：「哈哈/笑死/lol/笑{2,}」
 _LAUGH_PATTERN = re.compile(r"哈哈|笑死|lol|LOL|笑笑|笑{2,}", re.IGNORECASE)
