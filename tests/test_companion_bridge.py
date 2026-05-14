@@ -778,6 +778,110 @@ async def test_game_handler_no_cog_logs_gracefully(monkeypatch, mock_tracker,
         await b.stop()
 
 
+# ── Lane B2: Member presence emitters ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_emit_member_joined_broadcasts(bridge):
+    """emit_member_joined → 廣播 member_joined，payload 含 speaker / joined_ts，extras 會合併進去。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        await b.emit_member_joined(
+            "Jack",
+            payload_extras={"name": "狗與露", "marvin": False, "stage": "regular"},
+        )
+        msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+        data = json.loads(msg.data)
+        assert data["type"] == "member_joined"
+        assert data["payload"]["speaker"] == "Jack"
+        assert "joined_ts" in data["payload"]
+        assert data["payload"]["name"] == "狗與露"
+        assert data["payload"]["marvin"] is False
+        assert data["payload"]["stage"] == "regular"
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_emit_member_joined_without_extras(bridge):
+    """無 extras 也能成功送出；payload 至少含 speaker 與 joined_ts。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        await b.emit_member_joined("Bob")
+        msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+        data = json.loads(msg.data)
+        assert data["type"] == "member_joined"
+        assert data["payload"]["speaker"] == "Bob"
+        assert "joined_ts" in data["payload"]
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_emit_member_left_broadcasts(bridge):
+    """emit_member_left → 廣播 member_left，payload 含 speaker / left_ts。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        await b.emit_member_left("Jack")
+        msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+        data = json.loads(msg.data)
+        assert data["type"] == "member_left"
+        assert data["payload"]["speaker"] == "Jack"
+        assert "left_ts" in data["payload"]
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_emit_voice_channel_snapshot_broadcasts(bridge):
+    """emit_voice_channel_snapshot → 廣播 voice_channel_snapshot，payload 含 members list 與 snapshot_ts。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        members = [
+            {"speaker": "Jack", "name": "狗與露", "marvin": False},
+            {"speaker": "Marvin", "name": "Marvin", "marvin": True},
+        ]
+        await b.emit_voice_channel_snapshot(members)
+        msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+        data = json.loads(msg.data)
+        assert data["type"] == "voice_channel_snapshot"
+        assert "snapshot_ts" in data["payload"]
+        assert isinstance(data["payload"]["members"], list)
+        speakers = [m["speaker"] for m in data["payload"]["members"]]
+        assert "Jack" in speakers
+        assert "Marvin" in speakers
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_emit_voice_channel_snapshot_empty(bridge):
+    """空 list 也能正確送出（沒人在頻道）。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        await b.emit_voice_channel_snapshot([])
+        msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+        data = json.loads(msg.data)
+        assert data["type"] == "voice_channel_snapshot"
+        assert data["payload"]["members"] == []
+    finally:
+        await ws.close()
+        await session.close()
+
+
 @pytest.mark.asyncio
 async def test_music_recommendations_request_room_level(bridge, mock_music_memory):
     """target_username 為 None → 房間級別，target 回 'room'。"""

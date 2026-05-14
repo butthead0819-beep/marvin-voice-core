@@ -50,6 +50,8 @@ EVT_TTS_DONE = "tts_done"
 EVT_ATMOSPHERE_SNAPSHOT = "atmosphere_snapshot"
 EVT_MEMBER_JOINED = "member_joined"
 EVT_MEMBER_LEFT = "member_left"
+# Lane B2：新 client 連上時推當前頻道成員（讓 UI 不必等 join 事件慢慢累積）
+EVT_VOICE_CHANNEL_SNAPSHOT = "voice_channel_snapshot"
 EVT_MUSIC_STARTED = "music_started"
 EVT_MUSIC_ENDED = "music_ended"
 EVT_MUSIC_REACTION = "music_reaction"
@@ -589,6 +591,37 @@ class CompanionBridge:
                     continue
                 full_payload[k] = v
         await self._broadcast(_make_event(EVT_GAME_PHASE_CHANGED, full_payload))
+
+    async def emit_member_joined(
+        self, speaker: str, payload_extras: dict[str, Any] | None = None
+    ) -> None:
+        """玩家加入 Marvin 所在語音頻道時呼叫。
+
+        payload：{speaker, joined_ts, ...extras}。
+        extras 可帶 name / marvin / stage / relationship 等顯示用欄位；
+        speaker 與 joined_ts 為必有欄位，extras 不得覆寫它們。
+        """
+        payload: dict[str, Any] = {"speaker": speaker, "joined_ts": time.time()}
+        if isinstance(payload_extras, dict):
+            for k, v in payload_extras.items():
+                if k in ("speaker", "joined_ts"):
+                    continue
+                payload[k] = v
+        await self._broadcast(_make_event(EVT_MEMBER_JOINED, payload))
+
+    async def emit_member_left(self, speaker: str) -> None:
+        """玩家離開 Marvin 所在語音頻道時呼叫。payload：{speaker, left_ts}。"""
+        payload = {"speaker": speaker, "left_ts": time.time()}
+        await self._broadcast(_make_event(EVT_MEMBER_LEFT, payload))
+
+    async def emit_voice_channel_snapshot(self, members: list[dict[str, Any]]) -> None:
+        """當前語音頻道成員的快照（新 client 連上時用）。
+
+        payload：{members: [{speaker, ...}], snapshot_ts}。members 是 caller
+        準備好的 dict 清單，bridge 不修改其欄位（讓上游決定 marvin / stage 等）。
+        """
+        payload = {"members": list(members or []), "snapshot_ts": time.time()}
+        await self._broadcast(_make_event(EVT_VOICE_CHANNEL_SNAPSHOT, payload))
 
     async def emit_atmosphere_snapshot(self) -> None:
         """讀 tracker 當前 snapshot，廣播。"""

@@ -1216,15 +1216,31 @@ class VoiceController(commands.Cog):
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if member.id == self.bot.user.id:
-            return 
-        
+            return
+
         voice_client = discord.utils.get(self.bot.voice_clients, guild=member.guild)
         if not voice_client:
             return
-        
+
         marvin_channel = voice_client.channel
         now = time.time()
-        
+
+        # ── Lane B2：companion bridge member presence hooks ──
+        # 不擋主流程；emit helper 自帶 try/except + bridge 缺失保護。
+        try:
+            from main_discord import (
+                emit_member_joined_to_bridge,
+                emit_member_left_to_bridge,
+            )
+            if before.channel != after.channel and after.channel == marvin_channel:
+                await emit_member_joined_to_bridge(
+                    self.bot, member.display_name, {"name": member.display_name}
+                )
+            elif before.channel == marvin_channel and after.channel != marvin_channel:
+                await emit_member_left_to_bridge(self.bot, member.display_name)
+        except Exception as e:
+            logger.debug(f"[Companion_Bridge] member presence emit skipped: {e}")
+
         # --- [Join Logic] ---
         if before.channel != after.channel and after.channel == marvin_channel:
             # 🔐 [Consent] 首次進入時發送資料使用聲明

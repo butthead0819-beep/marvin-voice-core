@@ -216,6 +216,30 @@ async def emit_music_reaction_to_bridge(bot, username: str, song_info: dict, rea
         logger.debug(f"[Companion_Bridge] emit_music_reaction skipped: {e}")
 
 
+# ── Lane B2：member presence helpers ────────────────────────────────────────
+
+async def emit_member_joined_to_bridge(bot, speaker: str, payload_extras: dict | None) -> None:
+    """玩家加入 Marvin 所在語音頻道時呼叫；失敗不擾亂主流程。"""
+    bridge = getattr(bot, "companion_bridge", None)
+    if bridge is None or not getattr(bridge, "is_running", False):
+        return
+    try:
+        await bridge.emit_member_joined(speaker, payload_extras)
+    except Exception as e:
+        logger.debug(f"[Companion_Bridge] emit_member_joined skipped: {e}")
+
+
+async def emit_member_left_to_bridge(bot, speaker: str) -> None:
+    """玩家離開 Marvin 所在語音頻道時呼叫；失敗不擾亂主流程。"""
+    bridge = getattr(bot, "companion_bridge", None)
+    if bridge is None or not getattr(bridge, "is_running", False):
+        return
+    try:
+        await bridge.emit_member_left(speaker)
+    except Exception as e:
+        logger.debug(f"[Companion_Bridge] emit_member_left skipped: {e}")
+
+
 class MarvinBot(commands.Bot):
     """
     馬文 (Marvin) 戰術指揮中心 (Operation Paranoid Android)

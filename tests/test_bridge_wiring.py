@@ -246,3 +246,207 @@ async def test_music_hooks_skip_when_no_bridge():
     bot = MagicMock(spec=[])
     await emit_music_started_to_bridge(bot, {"title": "X"}, "Bob")
     await emit_music_ended_to_bridge(bot, {"title": "X"}, "natural")
+
+
+# ── Lane B2: member presence helpers ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_member_joined_hook_emits_to_bridge():
+    """emit_member_joined_to_bridge → bridge.emit_member_joined 被呼叫。"""
+    from main_discord import emit_member_joined_to_bridge
+
+    bridge = MagicMock()
+    bridge.is_running = True
+    bridge.emit_member_joined = AsyncMock()
+    bot = MagicMock()
+    bot.companion_bridge = bridge
+
+    await emit_member_joined_to_bridge(bot, "Jack", {"name": "狗與露"})
+    bridge.emit_member_joined.assert_awaited_once_with("Jack", {"name": "狗與露"})
+
+
+@pytest.mark.asyncio
+async def test_member_left_hook_emits_to_bridge():
+    """emit_member_left_to_bridge → bridge.emit_member_left 被呼叫。"""
+    from main_discord import emit_member_left_to_bridge
+
+    bridge = MagicMock()
+    bridge.is_running = True
+    bridge.emit_member_left = AsyncMock()
+    bot = MagicMock()
+    bot.companion_bridge = bridge
+
+    await emit_member_left_to_bridge(bot, "Jack")
+    bridge.emit_member_left.assert_awaited_once_with("Jack")
+
+
+@pytest.mark.asyncio
+async def test_member_hooks_skip_when_no_bridge():
+    """bot 無 companion_bridge → 不爆。"""
+    from main_discord import emit_member_joined_to_bridge, emit_member_left_to_bridge
+
+    bot = MagicMock(spec=[])
+    await emit_member_joined_to_bridge(bot, "Jack", {})
+    await emit_member_left_to_bridge(bot, "Jack")
+
+
+@pytest.mark.asyncio
+async def test_member_hooks_skip_when_bridge_not_running():
+    """bridge.is_running=False → 不發送。"""
+    from main_discord import emit_member_joined_to_bridge, emit_member_left_to_bridge
+
+    bridge = MagicMock()
+    bridge.is_running = False
+    bridge.emit_member_joined = AsyncMock()
+    bridge.emit_member_left = AsyncMock()
+    bot = MagicMock()
+    bot.companion_bridge = bridge
+
+    await emit_member_joined_to_bridge(bot, "Jack", {})
+    await emit_member_left_to_bridge(bot, "Jack")
+    bridge.emit_member_joined.assert_not_awaited()
+    bridge.emit_member_left.assert_not_awaited()
+
+
+# ── Lane B2: on_voice_state_update wiring ───────────────────────────────────
+#
+# VoiceController.on_voice_state_update 已存在；測試在該 listener 內，當玩家
+# 加入 / 離開 Marvin 所在的語音頻道時，會呼叫 emit_member_joined_to_bridge /
+# emit_member_left_to_bridge。
+
+@pytest.mark.asyncio
+async def test_voice_state_join_emits_member_joined(monkeypatch):
+    """玩家加入 Marvin 所在頻道 → emit_member_joined_to_bridge 被呼叫。"""
+    # Hook：在 VoiceController.on_voice_state_update 觸發 join 時，main_discord
+    # 的 emit_member_joined_to_bridge 應該被叫到（攜帶 speaker = display_name）。
+    called = []
+
+    async def fake_emit_joined(bot, speaker, extras):
+        called.append(("joined", speaker, extras))
+
+    async def fake_emit_left(bot, speaker):
+        called.append(("left", speaker))
+
+    import main_discord
+    monkeypatch.setattr(main_discord, "emit_member_joined_to_bridge", fake_emit_joined)
+    monkeypatch.setattr(main_discord, "emit_member_left_to_bridge", fake_emit_left)
+
+    # 用 cog 的 listener function（裸 coroutine 形式）模擬呼叫
+    from cogs.voice_controller import VoiceController
+
+    # 建構最小 cog stub
+    cog = MagicMock(spec=VoiceController)
+    cog.bot = MagicMock()
+    cog.bot.user = MagicMock()
+    cog.bot.user.id = 99999
+    cog.consent = MagicMock()
+    cog.consent.has_seen_notice.return_value = True
+    cog.active_text_channel = None
+    cog.greeting_cooldown = {}
+    cog.stt_logger = MagicMock()
+    cog.recent_verbal_farewells = {}
+    cog.departure_stats = MagicMock()
+    cog.departure_stats.record_departure = AsyncMock()
+    cog.bot.router = MagicMock()
+    cog.bot.router.generate_player_greeting = AsyncMock(return_value="hi")
+    cog.bot.router.generate_player_farewell = AsyncMock(return_value="bye")
+    cog.play_tts = AsyncMock()
+    cog._send_mood_sticker = AsyncMock()
+    cog.handle_dismiss = AsyncMock()
+
+    # 模擬 Marvin 在 channel A
+    channel_a = MagicMock()
+    channel_a.members = [MagicMock(bot=False)]
+    voice_client = MagicMock()
+    voice_client.channel = channel_a
+    cog.bot.voice_clients = [voice_client]
+
+    member = MagicMock()
+    member.id = 12345
+    member.display_name = "Jack"
+    member.guild = MagicMock()
+
+    before = MagicMock()
+    before.channel = None
+    after = MagicMock()
+    after.channel = channel_a
+
+    # discord.utils.get patching
+    import discord
+    monkeypatch.setattr(discord.utils, "get", lambda iterable, **kw: voice_client)
+
+    # 直接呼叫 listener 方法（unbound）
+    # listener decorator 包了 coroutine；直接拿 function 物件呼叫
+    listener_fn = VoiceController.on_voice_state_update
+    await listener_fn(cog, member, before, after)
+
+    # 期望：emit_member_joined_to_bridge 被叫到一次，speaker="Jack"
+    joined = [c for c in called if c[0] == "joined"]
+    assert len(joined) == 1
+    assert joined[0][1] == "Jack"
+
+
+@pytest.mark.asyncio
+async def test_voice_state_leave_emits_member_left(monkeypatch):
+    """玩家離開 Marvin 所在頻道 → emit_member_left_to_bridge 被呼叫。"""
+    called = []
+
+    async def fake_emit_joined(bot, speaker, extras):
+        called.append(("joined", speaker))
+
+    async def fake_emit_left(bot, speaker):
+        called.append(("left", speaker))
+
+    import main_discord
+    monkeypatch.setattr(main_discord, "emit_member_joined_to_bridge", fake_emit_joined)
+    monkeypatch.setattr(main_discord, "emit_member_left_to_bridge", fake_emit_left)
+
+    from cogs.voice_controller import VoiceController
+
+    cog = MagicMock(spec=VoiceController)
+    cog.bot = MagicMock()
+    cog.bot.user = MagicMock()
+    cog.bot.user.id = 99999
+    cog.consent = MagicMock()
+    cog.consent.has_seen_notice.return_value = True
+    cog.active_text_channel = None
+    cog.greeting_cooldown = {}
+    cog.stt_logger = MagicMock()
+    cog.recent_verbal_farewells = {}
+    cog.departure_stats = MagicMock()
+    cog.departure_stats.record_departure = AsyncMock()
+    cog.bot.router = MagicMock()
+    cog.bot.router.generate_player_greeting = AsyncMock(return_value="hi")
+    cog.bot.router.generate_player_farewell = AsyncMock(return_value="bye")
+    cog.play_tts = AsyncMock()
+    cog._send_mood_sticker = AsyncMock()
+    cog.handle_dismiss = AsyncMock()
+
+    channel_a = MagicMock()
+    # 還剩一個人類在房間，不會觸發 auto dismiss
+    other = MagicMock(bot=False)
+    channel_a.members = [other]
+    voice_client = MagicMock()
+    voice_client.channel = channel_a
+    cog.bot.voice_clients = [voice_client]
+
+    member = MagicMock()
+    member.id = 12345
+    member.display_name = "Jack"
+    member.guild = MagicMock()
+
+    before = MagicMock()
+    before.channel = channel_a
+    after = MagicMock()
+    after.channel = None
+
+    import discord
+    monkeypatch.setattr(discord.utils, "get", lambda iterable, **kw: voice_client)
+
+    # listener decorator 包了 coroutine；直接拿 function 物件呼叫
+    listener_fn = VoiceController.on_voice_state_update
+    await listener_fn(cog, member, before, after)
+
+    left = [c for c in called if c[0] == "left"]
+    assert len(left) == 1
+    assert left[0][1] == "Jack"
