@@ -903,3 +903,250 @@ async def test_music_recommendations_request_room_level(bridge, mock_music_memor
     finally:
         await ws.close()
         await session.close()
+
+
+# ── Lane F2: game cog routing for busted / busted99 ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_game_force_skip_round_routes_to_busted_cog(monkeypatch, mock_tracker,
+                                                         mock_vector_store, mock_music_memory,
+                                                         mock_suki_memory, free_port):
+    """收 game_force_skip_round, game=busted → cog.force_skip_round 被呼叫。"""
+    monkeypatch.setenv("MARMO_TOKEN", "tok-bu")
+    import importlib
+    import marvin_voice_core.companion_bridge as cb_mod
+    importlib.reload(cb_mod)
+
+    fake_cog = MagicMock()
+    fake_cog.force_skip_round = AsyncMock()
+    fake_cog.end_session = AsyncMock()
+
+    b = cb_mod.CompanionBridge(
+        atmosphere_tracker=mock_tracker,
+        vector_store=mock_vector_store,
+        music_memory=mock_music_memory,
+        suki_memory=mock_suki_memory,
+        get_cog=lambda n: fake_cog if n == "BustedCog" else None,
+    )
+    await b.start(host="127.0.0.1", port=free_port)
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as sess:
+            ws = await sess.ws_connect(
+                f"http://127.0.0.1:{free_port}/companion-ws",
+                headers={"X-Marmo-Token": "tok-bu"},
+            )
+            try:
+                await asyncio.sleep(0.05)
+                msg = {"type": "game_force_skip_round", "payload": {"game": "busted"}, "ts": 1.0}
+                await ws.send_str(json.dumps(msg))
+                await asyncio.sleep(0.1)
+                fake_cog.force_skip_round.assert_awaited()
+            finally:
+                await ws.close()
+    finally:
+        await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_game_force_skip_round_routes_to_busted99_cog(monkeypatch, mock_tracker,
+                                                            mock_vector_store, mock_music_memory,
+                                                            mock_suki_memory, free_port):
+    """收 game_force_skip_round, game=busted99 → cog.force_skip_round 被呼叫。"""
+    monkeypatch.setenv("MARMO_TOKEN", "tok-b99")
+    import importlib
+    import marvin_voice_core.companion_bridge as cb_mod
+    importlib.reload(cb_mod)
+
+    fake_cog = MagicMock()
+    fake_cog.force_skip_round = AsyncMock()
+    fake_cog.end_session = AsyncMock()
+
+    b = cb_mod.CompanionBridge(
+        atmosphere_tracker=mock_tracker,
+        vector_store=mock_vector_store,
+        music_memory=mock_music_memory,
+        suki_memory=mock_suki_memory,
+        get_cog=lambda n: fake_cog if n == "Busted99Cog" else None,
+    )
+    await b.start(host="127.0.0.1", port=free_port)
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as sess:
+            ws = await sess.ws_connect(
+                f"http://127.0.0.1:{free_port}/companion-ws",
+                headers={"X-Marmo-Token": "tok-b99"},
+            )
+            try:
+                await asyncio.sleep(0.05)
+                msg = {"type": "game_force_skip_round", "payload": {"game": "busted99"}, "ts": 1.0}
+                await ws.send_str(json.dumps(msg))
+                await asyncio.sleep(0.1)
+                fake_cog.force_skip_round.assert_awaited()
+            finally:
+                await ws.close()
+    finally:
+        await b.stop()
+
+
+# ── Lane F2: 防呆雷達 request_radar_veto / GAME_ALERT / GAME_ALERT_RESPONSE ──
+
+@pytest.mark.asyncio
+async def test_request_radar_veto_emits_alert(bridge):
+    """request_radar_veto → 廣播 game_alert，payload 含 alert_id / text / reason / severity。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        # background：發 request，timeout 短一點，不必等真的回
+        task = asyncio.create_task(
+            b.request_radar_veto(
+                "Bob 真笨",
+                {"risk": {"rule": "defeat_jab", "reason": "Bob 剛輸", "severity": "medium"}},
+                timeout=0.3,
+            )
+        )
+        msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+        data = json.loads(msg.data)
+        assert data["type"] == "game_alert"
+        payload = data["payload"]
+        assert "alert_id" in payload
+        assert payload.get("text") == "Bob 真笨"
+        assert payload.get("rule") == "defeat_jab"
+        assert payload.get("severity") == "medium"
+        assert payload.get("reason") == "Bob 剛輸"
+        assert payload.get("timeout") == pytest.approx(0.3)
+        # timeout 後 task 完成（default-safe = True）
+        approved = await asyncio.wait_for(task, timeout=2.0)
+        assert approved is True
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_request_radar_veto_returns_true_on_approval(bridge):
+    """user 回 approve → request_radar_veto returns True。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        task = asyncio.create_task(
+            b.request_radar_veto(
+                "Bob 又輸了",
+                {"risk": {"rule": "defeat_jab", "reason": "x", "severity": "medium"}},
+                timeout=5.0,
+            )
+        )
+        # 收到 alert 後抓 alert_id
+        msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+        data = json.loads(msg.data)
+        alert_id = data["payload"]["alert_id"]
+        # 回 approve
+        resp = {
+            "type": "game_alert_response",
+            "payload": {"alert_id": alert_id, "decision": "approve"},
+            "ts": 1.0,
+        }
+        await ws.send_str(json.dumps(resp))
+        approved = await asyncio.wait_for(task, timeout=2.0)
+        assert approved is True
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_request_radar_veto_returns_false_on_veto(bridge):
+    """user 回 veto → request_radar_veto returns False。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        task = asyncio.create_task(
+            b.request_radar_veto(
+                "Bob 真聰明",
+                {"risk": {"rule": "sarcasm_to_negative_bias_target", "reason": "x", "severity": "high"}},
+                timeout=5.0,
+            )
+        )
+        msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
+        data = json.loads(msg.data)
+        alert_id = data["payload"]["alert_id"]
+        resp = {
+            "type": "game_alert_response",
+            "payload": {"alert_id": alert_id, "decision": "veto"},
+            "ts": 1.0,
+        }
+        await ws.send_str(json.dumps(resp))
+        approved = await asyncio.wait_for(task, timeout=2.0)
+        assert approved is False
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_request_radar_veto_returns_true_on_timeout(bridge):
+    """user 沒回 → timeout 後 returns True（default-safe）。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        approved = await b.request_radar_veto(
+            "嗨", {"risk": {"rule": "x", "reason": "y", "severity": "medium"}},
+            timeout=0.2,
+        )
+        assert approved is True
+    finally:
+        await ws.close()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_request_radar_veto_no_clients_returns_true(monkeypatch, mock_tracker,
+                                                          mock_vector_store, mock_music_memory,
+                                                          mock_suki_memory, free_port):
+    """無 client 連線時 → 不等待，回 True（default-safe on disconnect）。"""
+    monkeypatch.setenv("MARMO_TOKEN", "tok-nc")
+    import importlib
+    import marvin_voice_core.companion_bridge as cb_mod
+    importlib.reload(cb_mod)
+    b = cb_mod.CompanionBridge(
+        atmosphere_tracker=mock_tracker,
+        vector_store=mock_vector_store,
+        music_memory=mock_music_memory,
+        suki_memory=mock_suki_memory,
+    )
+    await b.start(host="127.0.0.1", port=free_port)
+    try:
+        approved = await b.request_radar_veto(
+            "嗨", {"risk": {"rule": "x", "reason": "y", "severity": "low"}}, timeout=0.5
+        )
+        assert approved is True
+    finally:
+        await b.stop()
+
+
+@pytest.mark.asyncio
+async def test_game_alert_response_unknown_id_does_not_crash(bridge):
+    """收到 game_alert_response 但 alert_id 不存在 → log 丟棄不 crash。"""
+    b, port = bridge
+    session, ws = await _connect(port)
+    try:
+        await asyncio.sleep(0.05)
+        resp = {
+            "type": "game_alert_response",
+            "payload": {"alert_id": "no-such-id", "decision": "veto"},
+            "ts": 1.0,
+        }
+        await ws.send_str(json.dumps(resp))
+        await asyncio.sleep(0.1)
+        # 連線維持，可繼續 emit
+        assert not ws.closed
+        await b.emit_tts_done()
+        m = await asyncio.wait_for(ws.receive(), timeout=2.0)
+        assert json.loads(m.data)["type"] == "tts_done"
+    finally:
+        await ws.close()
+        await session.close()

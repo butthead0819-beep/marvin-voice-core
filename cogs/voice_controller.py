@@ -4078,6 +4078,38 @@ class VoiceController(commands.Cog):
                 logger.info(f"⏸️ [TTS Silence Gate] 使用者仍在說話，跳過非保護 TTS: '{text[:25]}...'")
                 return
 
+        # ⚠️ [Companion Radar] 防呆雷達 — 規則式風險分類器 + 可選 user veto。
+        # 預設 OFF；COMPANION_RADAR_ENABLED=true 才啟動。任何錯誤都不會卡 TTS。
+        if os.getenv("COMPANION_RADAR_ENABLED", "false").lower() == "true":
+            bridge = getattr(self.bot, "companion_bridge", None)
+            if bridge is not None and getattr(bridge, "is_connected", False):
+                try:
+                    from marvin_voice_core.companion_radar import classify_risk
+                    _atm_tracker = getattr(getattr(self.bot, "router", None), "atmosphere_tracker", None)
+                    _atm_snap = None
+                    if _atm_tracker is not None:
+                        try:
+                            _s = _atm_tracker.get_snapshot()
+                            _atm_snap = {
+                                "room_mood": getattr(_s, "room_mood", ""),
+                                "dominant_topic": getattr(_s, "dominant_topic", ""),
+                            }
+                        except Exception:
+                            _atm_snap = None
+                    context = {"atmosphere_snapshot": _atm_snap}
+                    risk = classify_risk(text, context)
+                    if risk is not None:
+                        approved = await bridge.request_radar_veto(
+                            text, {"risk": risk}, timeout=2.0
+                        )
+                        if not approved:
+                            logger.info(
+                                f"[Companion_Radar] TTS vetoed by user: {text[:60]!r} (rule={risk.get('rule')})"
+                            )
+                            return
+                except Exception as e:
+                    logger.warning(f"[Companion_Radar] check failed (proceeding with TTS): {e}")
+
         estimated_dur = self.bot.tts_engine.get_estimated_duration(text)
         # 🗑️ [Priority Drop] 依優先級丟棄：AMBIENT(2)>3s, RESPONSE(1)>8s, CRITICAL(0)=永不丟
         _DROP_THRESHOLDS = {0: float("inf"), 1: 8.0, 2: 3.0}

@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from typing import Any
 
 from aiohttp import web, WSMsgType
@@ -56,6 +57,7 @@ EVT_MUSIC_STARTED = "music_started"
 EVT_MUSIC_ENDED = "music_ended"
 EVT_MUSIC_REACTION = "music_reaction"
 EVT_GAME_PHASE_CHANGED = "game_phase_changed"
+EVT_GAME_ALERT = "game_alert"
 EVT_MEMORY_LIST_RESPONSE = "memory_list_response"
 EVT_MUSIC_RECOMMENDATIONS_RESPONSE = "music_recommendations_response"
 
@@ -71,6 +73,7 @@ EVT_MUSIC_SKIP = "music_skip"
 EVT_MUSIC_RECOMMENDATIONS_REQUEST = "music_recommendations_request"
 EVT_GAME_FORCE_SKIP_ROUND = "game_force_skip_round"
 EVT_GAME_END = "game_end"
+EVT_GAME_ALERT_RESPONSE = "game_alert_response"
 
 _KNOWN_INCOMING = frozenset({
     EVT_ATMOSPHERE_FEEDBACK,
@@ -84,11 +87,14 @@ _KNOWN_INCOMING = frozenset({
     EVT_MUSIC_RECOMMENDATIONS_REQUEST,
     EVT_GAME_FORCE_SKIP_ROUND,
     EVT_GAME_END,
+    EVT_GAME_ALERT_RESPONSE,
 })
 
 # game name → cog name 的對照；外部可擴充
 _GAME_TO_COG = {
     "detective": "DetectiveCog",
+    "busted":    "BustedCog",
+    "busted99":  "Busted99Cog",
 }
 
 _VALID_MODES = frozenset({"silent_5min", "serious", "shutup", "reset"})
@@ -147,6 +153,9 @@ class CompanionBridge:
 
         # mode 狀態（VoiceController 可查詢）
         self._mode: str | None = None
+
+        # 防呆雷達：alert_id → Future[bool]
+        self._pending_alerts: dict[str, asyncio.Future] = {}
 
         # 認證 token（從環境變數讀，沿用 MARMO_TOKEN）
         self._token = os.getenv("MARMO_TOKEN", "")
@@ -261,6 +270,8 @@ class CompanionBridge:
                 await self._handle_game_force_skip_round(payload)
             elif event_type == EVT_GAME_END:
                 await self._handle_game_end(payload)
+            elif event_type == EVT_GAME_ALERT_RESPONSE:
+                self._handle_game_alert_response(payload)
         except Exception as e:
             logger.warning(f"[Companion_Bridge] handler {event_type} 失敗: {e}", exc_info=True)
 
@@ -489,6 +500,70 @@ class CompanionBridge:
             await method()
         except Exception as e:
             logger.warning(f"[Companion_Bridge] cog.force_skip_round 失敗: {e}")
+
+    def _handle_game_alert_response(self, payload: dict[str, Any]) -> None:
+        """收 game_alert_response → 解析對應 future。
+
+        payload: {alert_id, decision: "veto"|"approve"}
+        """
+        alert_id = payload.get("alert_id")
+        decision = payload.get("decision")
+        if not alert_id:
+            logger.warning(f"[Companion_Bridge] game_alert_response 缺 alert_id: {payload}")
+            return
+        future = self._pending_alerts.pop(alert_id, None)
+        if future is None:
+            logger.info(f"[Companion_Bridge] game_alert_response 對應 alert_id={alert_id!r} 已過期或未知，drop")
+            return
+        if future.done():
+            return
+        approved = decision != "veto"  # 任何非 "veto" 都當 approve
+        future.set_result(approved)
+
+    async def request_radar_veto(
+        self, text: str, context: dict[str, Any], timeout: float = 2.0
+    ) -> bool:
+        """防呆雷達：向 companion 端詢問是否攔下這段 TTS。
+
+        - 廣播 game_alert，附 alert_id；
+        - 等待 user 從 companion 端回 game_alert_response；
+        - timeout 內沒回 → 視為 approve（default-safe）；
+        - 無 client 連線 → 立即回 approve；
+        - 任何例外 → 回 approve。
+
+        回傳：True=放行，False=user 主動 veto。
+        """
+        # 無 client → 不阻塞 TTS
+        if not self._clients:
+            return True
+        try:
+            alert_id = str(uuid.uuid4())
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future = loop.create_future()
+            self._pending_alerts[alert_id] = future
+
+            risk = context.get("risk") or {} if isinstance(context, dict) else {}
+            payload = {
+                "alert_id": alert_id,
+                "text": text,
+                "reason": risk.get("reason", ""),
+                "rule": risk.get("rule", ""),
+                "severity": risk.get("severity", "medium"),
+                "timeout": timeout,
+            }
+            await self._broadcast(_make_event(EVT_GAME_ALERT, payload))
+
+            try:
+                approved = await asyncio.wait_for(future, timeout=timeout)
+                return bool(approved)
+            except asyncio.TimeoutError:
+                # default-safe：超時 → 放行 TTS
+                return True
+            finally:
+                self._pending_alerts.pop(alert_id, None)
+        except Exception as e:
+            logger.warning(f"[Companion_Bridge] request_radar_veto 失敗 (放行 TTS): {e}")
+            return True
 
     async def _handle_game_end(self, payload: dict[str, Any]) -> None:
         """收 game_end → 呼叫 cog.end_session。"""

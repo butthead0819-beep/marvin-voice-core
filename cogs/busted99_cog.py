@@ -1,0 +1,863 @@
+from __future__ import annotations
+
+import asyncio
+import os
+import random
+import time
+import uuid
+import logging
+from typing import Optional
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from game.busted99.engine import Busted99Engine, parse_number
+from game.busted99.session import Busted99Session, Busted99State
+from game.busted99.marvin99 import Marvin99, FALLBACK_QUIPS
+
+logger = logging.getLogger(__name__)
+
+C_JOINING  = 0x5865F2
+C_PICKING  = 0x9B59B6
+C_GUESSING = 0xFF8C00
+C_CORRECT  = 0x57F287
+C_WRONG    = 0xED4245
+C_TIMEOUT  = 0xFFA500
+C_GAME_OVER = 0xFFD700
+
+# (channel_message, tts_text)
+_MARVIN99_SETTER_QUIPS = [
+    ("嗯…好，我想好了！", "我已經設定好秘密數字了。"),
+    ("數字選好了。你們有機會的，雖然很小。", "數字選好了，祝你們好運。"),
+    ("我挑了一個很有趣的數字。反正你們猜不到。", "我選好了，猜猜看吧。"),
+    ("好了，出題完成。這個數字蘊含了宇宙的某種規律。", "出題完成。"),
+    ("數字選好了。我對這局充滿…悲觀的期待。", "數字設定完成，遊戲開始。"),
+    ("嗯，選好了。別問我選了什麼，問也不說。", "我選好數字了。"),
+    ("出題完畢。我選的這個數字，很孤獨。", "出題完畢，請開始猜吧。"),
+]
+
+
+# ── Modals ─────────────────────────────────────────────────────────────────────
+
+class SetNumber99Modal(discord.ui.Modal, title="Busted99 — 設定秘密數字"):
+    number_input = discord.ui.TextInput(
+        label="輸入 1-99 的整數",
+        placeholder="例如：42",
+        min_length=1,
+        max_length=2,
+    )
+
+    def __init__(self, cog: Busted99Cog):
+        super().__init__()
+        self._cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        text = self.number_input.value.strip()
+        n = parse_number(text)
+        if n is None:
+            await interaction.response.send_message("請輸入 1-99 的整數！", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        ok = await self._cog._engine.set_answer(str(interaction.user.id), n)
+        if ok:
+            await interaction.followup.send(f"✅ 秘密數字已設定！遊戲即將開始…", ephemeral=True)
+        else:
+            await interaction.followup.send("❌ 設定失敗（不是你的回合或數字不合法）", ephemeral=True)
+
+
+# ── Views ──────────────────────────────────────────────────────────────────────
+
+class Join99View(discord.ui.View):
+    def __init__(self, cog: Busted99Cog):
+        super().__init__(timeout=35)
+        self._cog = cog
+
+    @discord.ui.button(label="Join Game 🎮", style=discord.ButtonStyle.primary)
+    async def join(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        user = interaction.user
+        ok = await self._cog._engine.add_player(str(user.id), user.display_name)
+        if ok:
+            self._cog._name_to_id[user.display_name] = user.id
+            await interaction.response.send_message(f"✅ {user.display_name} 加入 Busted99！", ephemeral=True)
+            if self._cog._channel and self._cog._session:
+                await self._cog._channel.send(
+                    embed=self._cog._build_joining_embed(self._cog._session)
+                )
+        else:
+            await interaction.response.send_message("遊戲已在進行中或你已加入", ephemeral=True)
+
+    @discord.ui.button(label="Start Game Now ▶️", style=discord.ButtonStyle.success)
+    async def start_now(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        session = self._cog._session
+        if session is None:
+            return
+        humans = [p for p in session.players if p.user_id != "marvin"]
+        if len(humans) < 1:
+            await interaction.response.send_message("至少需要 1 位人類玩家", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await self._cog._engine.start_game()
+
+    async def on_timeout(self):
+        session = self._cog._session
+        if session and session.state == Busted99State.JOINING and self._cog._engine:
+            await self._cog._engine.start_game()
+
+
+class SetterButton99View(discord.ui.View):
+    """出題人按鈕：打開 SetNumber99Modal。"""
+
+    def __init__(self, cog: Busted99Cog, setter_id: str):
+        super().__init__(timeout=60)
+        self._cog = cog
+        self._setter_id = setter_id
+
+    @discord.ui.button(label="設定秘密數字 🔢", style=discord.ButtonStyle.primary)
+    async def set_number(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        if str(interaction.user.id) != self._setter_id:
+            await interaction.response.send_message("只有出題人才能設定數字", ephemeral=True)
+            return
+        await interaction.response.send_modal(SetNumber99Modal(self._cog))
+
+    async def on_timeout(self):
+        """出題人 60s 沒設定 → Marvin 代為出題（如果出題人是人類）。"""
+        session = self._cog._session
+        engine = self._cog._engine
+        if (
+            session
+            and session.state == Busted99State.SETTER_PICKING
+            and engine
+            and session.setter_id == self._setter_id
+        ):
+            # 出題人超時：隨機選一個數字代替
+            fallback = random.randint(1, 99)
+            if self._cog._channel:
+                setter = next(
+                    (p for p in session.players if p.user_id == self._setter_id), None
+                )
+                name = setter.display_name if setter else "出題人"
+                await self._cog._channel.send(
+                    f"⏰ **{name}** 出題時間到！隨機設定秘密數字，遊戲繼續。"
+                )
+            await engine.set_answer(self._setter_id, fallback)
+
+
+# ── Cog ────────────────────────────────────────────────────────────────────────
+
+# ── Play Again View ────────────────────────────────────────────────────────────
+
+class PlayAgainView(discord.ui.View):
+    def __init__(self, cog: "Busted99Cog"):
+        super().__init__(timeout=120)
+        self._cog = cog
+
+    @discord.ui.button(label="再來一局 🔄", style=discord.ButtonStyle.primary)
+    async def play_again(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await interaction.response.defer()
+        await self._cog._handle_start_game(interaction.channel)
+
+    @discord.ui.button(label="查看分數", style=discord.ButtonStyle.secondary)
+    async def view_scores(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        session = self._cog._last_session
+        if session is None:
+            await interaction.response.send_message("沒有記錄", ephemeral=True)
+            return
+        ranked = sorted(session.players, key=lambda p: p.score, reverse=True)
+        lines = [f"**{p.display_name}**: {p.score} 分" for p in ranked]
+        await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+# ── Cog ────────────────────────────────────────────────────────────────────────
+
+class Busted99Cog(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self._engine: Optional[Busted99Engine] = None
+        self._session: Optional[Busted99Session] = None
+        self._channel: Optional[discord.TextChannel] = None
+        self._tasks: set[asyncio.Task] = set()
+        self._name_to_id: dict[str, int] = {}       # display_name → Discord user_id (int)
+        self._guesser_timeout_task: Optional[asyncio.Task] = None
+        self._guessing_deadline: float = 0.0
+        self._last_session: Optional[Busted99Session] = None
+        self._marvin = Marvin99()
+
+    # ── Task helpers ───────────────────────────────────────────────────────────
+
+    def _cancel_tasks(self):
+        for t in list(self._tasks):
+            if not t.done():
+                t.cancel()
+        self._tasks.clear()
+        self._cancel_guesser_timeout()
+
+    def _spawn(self, coro):
+        t = asyncio.get_running_loop().create_task(coro)
+        self._tasks.add(t)
+        t.add_done_callback(self._tasks.discard)
+        return t
+
+    def _cancel_guesser_timeout(self):
+        if self._guesser_timeout_task and not self._guesser_timeout_task.done():
+            self._guesser_timeout_task.cancel()
+        self._guesser_timeout_task = None
+
+    # ── Sound effects ──────────────────────────────────────────────────────────
+
+    async def _play_sfx(self, name: str) -> None:
+        sfx_path = os.path.join("assets", "sfx", f"{name}.wav")
+        if not os.path.exists(sfx_path):
+            return
+        vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
+        if vc is None:
+            return
+        if vc.is_playing():
+            return
+        try:
+            vc.play(discord.FFmpegPCMAudio(sfx_path))
+        except Exception as e:
+            logger.debug(f"[SFX99] {name}: {e}")
+
+    # ── Embed builders ─────────────────────────────────────────────────────────
+
+    def _scores_line(self, session: Busted99Session) -> str:
+        return " | ".join(f"**{p.display_name}**: {p.score}" for p in session.players)
+
+    def _build_joining_embed(self, session: Busted99Session) -> discord.Embed:
+        names = [p.display_name for p in session.players] or ["（無）"]
+        rules_text = (
+            "• 出題人選 1-99 的秘密數字\n"
+            "• 其他人輪流用語音猜數字，範圍會縮小\n"
+            "• **猜對 = 爆掉（0 分）**，其他人依範圍大小得分\n"
+            "• **最後 2 選 1：猜錯得 100 分！** 猜對只會爆掉\n"
+            "• 超時扣分，Marvin 也是玩家"
+        )
+        e = discord.Embed(title="🔢 Busted99 — 等待玩家加入", color=C_JOINING)
+        e.add_field(name="📜 規則", value=rules_text, inline=False)
+        e.add_field(name="玩家", value=" | ".join(names), inline=False)
+        e.set_footer(text="按 Join Game 加入，或 Start Game Now 立即開始（35秒自動開始）")
+        return e
+
+    def _build_setter_picking_embed(self, session: Busted99Session) -> discord.Embed:
+        setter = next((p for p in session.players if p.user_id == session.setter_id), None)
+        name = setter.display_name if setter else "?"
+        e = discord.Embed(
+            title="🔢 Busted99 — 出題中",
+            description=f"🎭 **{name}** 正在設定秘密數字…\n⏱ 60 秒內請輸入",
+            color=C_PICKING,
+        )
+        return e
+
+    def _build_guessing_embed(
+        self, session: Busted99Session, remaining: int | None = None
+    ) -> discord.Embed:
+        guesser = next(
+            (p for p in session.players if p.user_id == session.current_guesser_id), None
+        )
+        name = guesser.display_name if guesser else "?"
+        space = session.high_bound - session.low_bound + 1
+        is_last = space <= 2
+
+        title = f"🔢 {name} 的回合" + ("  🔐 終極密碼！" if is_last else "")
+        e = discord.Embed(title=title, color=C_GUESSING)
+        e.add_field(
+            name="範圍",
+            value=f"**{session.low_bound}** ～ **{session.high_bound}**（剩 {space} 個）",
+            inline=False,
+        )
+        timer_label = f"{remaining} 秒" if remaining is not None else "15 秒"
+        e.add_field(name="⏱ 限時", value=timer_label, inline=True)
+        e.add_field(name="📊 積分板", value=self._scores_line(session), inline=False)
+        return e
+
+    def _build_guess_result_embed(
+        self,
+        session: Busted99Session,
+        result: dict,
+    ) -> discord.Embed:
+        res = result.get("result", "")
+        guesser = next(
+            (p for p in session.players if p.user_id == session.current_guesser_id), None
+        )
+        name = guesser.display_name if guesser else "?"
+
+        if res == "bust":
+            e = discord.Embed(
+                title=f"💥 {name} 爆了！",
+                description=f"答案是 **{session.answer}**！{name} 被 bust，其他人得分！",
+                color=C_CORRECT,
+            )
+        elif res == "last_bust":
+            e = discord.Embed(
+                title=f"💥 {name} 最後爆了！",
+                description=f"答案是 **{session.answer}**！出題人得 100 分！",
+                color=C_CORRECT,
+            )
+        elif res == "last_wrong":
+            e = discord.Embed(
+                title=f"🎉 {name} 猜錯但得分！",
+                description=f"答案是 **{session.answer}**，{name} 猜錯——但 2 選 1 猜錯得 100 分！",
+                color=C_CORRECT,
+            )
+        elif res == "wrong_low":
+            e = discord.Embed(
+                title=f"📉 {name} 猜太低",
+                description=f"新範圍：**{result['new_low']}** ～ **{result['new_high']}**",
+                color=C_WRONG,
+            )
+        elif res == "wrong_high":
+            e = discord.Embed(
+                title=f"📈 {name} 猜太高",
+                description=f"新範圍：**{result['new_low']}** ～ **{result['new_high']}**",
+                color=C_WRONG,
+            )
+        elif res == "timeout":
+            deducted = result.get("deducted", 0)
+            # Use timed_out_name from engine result — session.current_guesser_id has already
+            # advanced to the next guesser by the time this embed is built.
+            timeout_name = result.get("timed_out_name") or name
+            e = discord.Embed(
+                title=f"⏰ {timeout_name} 超時！",
+                description=f"扣 **{deducted}** 分",
+                color=C_TIMEOUT,
+            )
+        else:
+            e = discord.Embed(title="🔢 結果", description=str(res), color=C_GUESSING)
+
+        e.add_field(name="📊 積分板", value=self._scores_line(session), inline=False)
+        return e
+
+    def _build_game_over_embed(self, session: Busted99Session) -> discord.Embed:
+        ranked = sorted(session.players, key=lambda p: p.score, reverse=True)
+        medals = ["🥇", "🥈", "🥉"]
+        lines = [
+            f"{medals[i] if i < 3 else f'{i+1}.'} **{p.display_name}**: {p.score} 分"
+            for i, p in enumerate(ranked)
+        ]
+        e = discord.Embed(
+            title="🔢 Busted99 — 遊戲結束！",
+            description="\n".join(lines),
+            color=C_GAME_OVER,
+        )
+        e.set_footer(text="感謝遊玩！用 /busted99_start 再來一局")
+        return e
+
+    # ── Message management ─────────────────────────────────────────────────────
+
+    async def _post_game_message(
+        self,
+        embed: discord.Embed,
+        view: Optional[discord.ui.View] = None,
+    ) -> Optional[discord.Message]:
+        if self._channel is None:
+            return None
+        if self._session and self._session.game_message_id:
+            try:
+                old = await self._channel.fetch_message(self._session.game_message_id)
+                await old.delete()
+            except Exception:
+                pass
+            self._session.game_message_id = None
+        msg = await self._channel.send(embed=embed, view=view)
+        if self._session:
+            self._session.game_message_id = msg.id
+        return msg
+
+    async def _edit_game_message(
+        self,
+        embed: discord.Embed,
+        view: Optional[discord.ui.View] = None,
+    ) -> None:
+        if not (self._channel and self._session and self._session.game_message_id):
+            return
+        try:
+            msg = await self._channel.fetch_message(self._session.game_message_id)
+            await msg.edit(embed=embed, view=view)
+        except Exception:
+            pass
+
+    # ── Companion bridge hooks (Lane F2) ───────────────────────────────────
+
+    def _scoreboard_payload(self, session: Busted99Session) -> list[dict]:
+        ranked = sorted(session.players, key=lambda p: p.score, reverse=True)
+        return [{"user": p.display_name, "score": p.score} for p in ranked]
+
+    def _phase_for_state(self, state: Busted99State) -> Optional[str]:
+        return {
+            Busted99State.JOINING:         "joining",
+            Busted99State.SETTER_PICKING:  "setter_picking",
+            Busted99State.GUESSING:        "guessing",
+            Busted99State.GAME_OVER:       "ended",
+        }.get(state)
+
+    def _timer_for_state(self, state: Busted99State) -> Optional[int]:
+        return {
+            Busted99State.SETTER_PICKING: 60,
+            Busted99State.GUESSING:       15,
+        }.get(state)
+
+    def _build_last_event(self, session: Busted99Session) -> str:
+        state = session.state
+        setter = next((p for p in session.players if p.user_id == session.setter_id), None)
+        guesser = next(
+            (p for p in session.players if p.user_id == session.current_guesser_id), None
+        )
+        sname = setter.display_name if setter else "?"
+        gname = guesser.display_name if guesser else "?"
+        if state == Busted99State.JOINING:
+            return f"等待玩家加入（已 {len(session.players)} 人）"
+        if state == Busted99State.SETTER_PICKING:
+            return f"{sname} 正在設定秘密數字"
+        if state == Busted99State.GUESSING:
+            return f"{gname} 猜題中，範圍 {session.low_bound}~{session.high_bound}"
+        if state == Busted99State.GAME_OVER:
+            ranked = sorted(session.players, key=lambda p: p.score, reverse=True)
+            top = ranked[0] if ranked else None
+            return f"遊戲結束 — 冠軍：{top.display_name} {top.score} 分" if top else "遊戲結束"
+        return ""
+
+    async def _emit_phase(self, session: Busted99Session) -> None:
+        """若 bridge 在運行，廣播 game_phase_changed。"""
+        bridge = getattr(self.bot, "companion_bridge", None)
+        if bridge is None or not getattr(bridge, "is_running", False):
+            return
+        phase = self._phase_for_state(session.state)
+        if phase is None:
+            return
+        # current_player 在 setter_picking 是 setter；guessing 是 guesser；其餘為 None
+        cur = None
+        if session.state == Busted99State.SETTER_PICKING:
+            p = next((p for p in session.players if p.user_id == session.setter_id), None)
+            cur = p.display_name if p else None
+        elif session.state == Busted99State.GUESSING:
+            p = next(
+                (p for p in session.players if p.user_id == session.current_guesser_id), None
+            )
+            cur = p.display_name if p else None
+        payload = {
+            "round": session.round_num,
+            "round_total": max(len(session.players), session.round_num),
+            "scoreboard": self._scoreboard_payload(session),
+            "current_player": cur,
+            "timer_seconds": self._timer_for_state(session.state),
+            "last_event": self._build_last_event(session),
+        }
+        try:
+            await bridge.emit_game_phase_changed(
+                game_name="busted99",
+                phase=phase,
+                payload=payload,
+            )
+        except Exception as e:
+            logger.warning(f"[Busted99] emit_game_phase_changed failed: {e}")
+
+    # ── Bridge-callable controls (Lane F2) ─────────────────────────────────
+
+    async def force_skip_round(self) -> None:
+        """Companion bridge 呼叫：強制跳過當前回合。"""
+        engine = self._engine
+        session = self._session
+        if engine is None or session is None:
+            logger.info("[Busted99] force_skip_round 無 active engine，drop")
+            return
+        try:
+            state = session.state
+            if state == Busted99State.GUESSING:
+                self._cancel_guesser_timeout()
+                await engine.timeout_guesser()
+            else:
+                logger.info(f"[Busted99] force_skip_round in state={state}，drop")
+        except Exception as e:
+            logger.warning(f"[Busted99] force_skip_round 失敗: {e}")
+
+    async def end_session(self) -> None:
+        """Companion bridge 呼叫：結束目前遊戲。"""
+        if self._engine is None:
+            logger.info("[Busted99] end_session 無 active engine，drop")
+            return
+        self._cancel_tasks()
+        self._engine = None
+        self._session = None
+        self._name_to_id.clear()
+        vc = self.bot.cogs.get("VoiceController") if hasattr(self.bot, "cogs") else None
+        if vc is not None:
+            vc.game_mode = False
+        if self._channel is not None:
+            try:
+                await self._channel.send("🛑 Busted99 已被 companion 端結束。")
+            except Exception:
+                pass
+
+    # ── Central state dispatcher ───────────────────────────────────────────────
+
+    async def on_state_change(self, session: Busted99Session):
+        self._session = session
+        state = session.state
+
+        # Lane F2：先廣播 phase 給 companion bridge（失敗不影響本機 UI）
+        await self._emit_phase(session)
+
+        if state == Busted99State.JOINING:
+            await self._post_game_message(
+                self._build_joining_embed(session), Join99View(self)
+            )
+
+        elif state == Busted99State.SETTER_PICKING:
+            embed = self._build_setter_picking_embed(session)
+
+            if session.setter_id == "marvin":
+                await self._post_game_message(embed)
+                self._spawn(self._marvin_setter_task())
+            else:
+                view = SetterButton99View(self, session.setter_id or "")
+                await self._post_game_message(embed, view)
+
+        elif state == Busted99State.GUESSING:
+            self._cancel_guesser_timeout()
+            space = session.high_bound - session.low_bound + 1
+            if space <= 2:
+                await self._play_sfx("fanfare")
+            else:
+                await self._play_sfx("buzz")
+            self._guessing_deadline = time.time() + 15.0
+            await self._post_game_message(self._build_guessing_embed(session, 15))
+            # 若輪到 Marvin 猜題，spawn auto-guess task；否則啟動超時與倒數
+            if session.current_guesser_id == "marvin":
+                self._spawn(self._marvin_guesser_task())
+            else:
+                self._guesser_timeout_task = self._spawn(self._guesser_timeout_task_coro())
+                self._spawn(self._guessing_countdown_loop())
+
+        elif state == Busted99State.GAME_OVER:
+            self._cancel_tasks()
+            await self._play_sfx("game_over")
+            # 在清空前儲存 session，供「查看分數」按鈕使用
+            self._last_session = session
+            await self._post_game_message(
+                self._build_game_over_embed(session), PlayAgainView(self)
+            )
+            self._engine = None
+            self._session = None
+            self._name_to_id.clear()
+            # 恢復 VoiceController
+            vc = self.bot.cogs.get("VoiceController")
+            if vc is not None:
+                vc.game_mode = False
+
+    # ── Background tasks ───────────────────────────────────────────────────────
+
+    async def _guesser_timeout_task_coro(self):
+        """15 秒後若仍在 GUESSING 狀態，呼叫 timeout_guesser。"""
+        try:
+            await asyncio.sleep(15.0)
+            session = self._session
+            engine = self._engine
+            if session is None or engine is None:
+                return
+            if session.state != Busted99State.GUESSING:
+                return
+            result = await engine.timeout_guesser()
+            if self._channel and session:
+                await self._channel.send(
+                    embed=self._build_guess_result_embed(session, {"result": "timeout", **result})
+                )
+            await self._play_sfx("sad_horn")
+        except asyncio.CancelledError:
+            pass
+
+    async def _guessing_countdown_loop(self) -> None:
+        """每 5 秒刷新 guessing embed，顯示剩餘倒數秒數。"""
+        try:
+            for remaining in (10, 5):
+                wait = self._guessing_deadline - remaining - time.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                if (
+                    self._session is None
+                    or self._session.state != Busted99State.GUESSING
+                ):
+                    return
+                await self._edit_game_message(
+                    self._build_guessing_embed(self._session, remaining)
+                )
+        except asyncio.CancelledError:
+            pass
+
+    async def _marvin_setter_task(self):
+        """Marvin 隨機選一個 1-99 的數字並設定。"""
+        try:
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+            session = self._session
+            engine = self._engine
+            if session is None or engine is None:
+                return
+            if session.state != Busted99State.SETTER_PICKING:
+                return
+            number = random.randint(1, 99)
+            channel_quip, tts_quip = random.choice(_MARVIN99_SETTER_QUIPS)
+            if self._channel:
+                await self._channel.send(f"**Marvin**: {channel_quip}")
+            # 用 TTS 說出台詞（play_tts 失敗不能卡住遊戲）
+            vc = self.bot.cogs.get("VoiceController")
+            if vc is not None:
+                vc._tts_protected = True
+                try:
+                    await vc.play_tts(tts_quip, already_in_channel=False)
+                except Exception as e:
+                    logger.warning(f"[Busted99] Marvin TTS failed (continuing): {e}")
+                finally:
+                    vc._tts_protected = False
+            await engine.set_answer("marvin", number)
+        except asyncio.CancelledError:
+            pass
+
+    async def _marvin_guesser_task(self):
+        """Marvin 當猜題人時，並行預生成垃圾話並自動猜一個數字。"""
+        try:
+            session = self._session
+            if session is None:
+                return
+
+            # 立刻開始生成垃圾話（在 delay 期間並行）
+            scores = {p.display_name: p.score for p in session.players}
+            leader = max(scores, key=lambda k: scores[k]) if scores else "未知"
+            space = session.high_bound - session.low_bound + 1
+            context = {
+                "scores": scores,
+                "leader": leader,
+                "current_guesser": "Marvin",
+                "low_bound": session.low_bound,
+                "high_bound": session.high_bound,
+                "space": space,
+                "is_last_chance": space <= 2,
+                "round_num": session.round_num,
+            }
+            trash_talk_task = asyncio.ensure_future(
+                self._marvin.generate_trash_talk(context)
+            )
+
+            # 同時等待 delay
+            delay = random.uniform(1.5, 4.0)
+            await asyncio.sleep(delay)
+
+            # 再次確認遊戲狀態沒有改變
+            if (
+                self._session is None
+                or self._session.state != Busted99State.GUESSING
+                or self._session.current_guesser_id != "marvin"
+            ):
+                trash_talk_task.cancel()
+                return
+
+            engine = self._engine
+            if engine is None:
+                trash_talk_task.cancel()
+                return
+
+            session = self._session
+
+            # 決定要猜的數字（在發訊息前確定，確保 channel 訊息和實際猜測一致）
+            # 終極密碼規則：space > 2 時不猜邊界
+            space = session.high_bound - session.low_bound + 1
+            if space > 2:
+                number = random.randint(session.low_bound + 1, session.high_bound - 1)
+            else:
+                number = random.randint(session.low_bound, session.high_bound)
+
+            # 取預先生成的垃圾話（最多再等 2 秒）
+            try:
+                trash_talk = await asyncio.wait_for(
+                    asyncio.shield(trash_talk_task), timeout=2.0
+                )
+            except (asyncio.TimeoutError, Exception):
+                trash_talk = random.choice(FALLBACK_QUIPS)
+                trash_talk_task.cancel()
+
+            # 播垃圾話 TTS（失敗不卡遊戲）
+            vc = self.bot.cogs.get("VoiceController")
+            if vc is not None:
+                try:
+                    await vc.play_tts(trash_talk, already_in_channel=False)
+                except Exception as e:
+                    logger.warning(f"[Busted99] Marvin guesser TTS failed (continuing): {e}")
+
+            if self._channel:
+                await self._channel.send(f"**Marvin** 🤖：{trash_talk}")
+
+            result = await engine.submit_guess("marvin", number)
+            if result and self._channel and session:
+                await self._channel.send(
+                    embed=self._build_guess_result_embed(session, result)
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"[Marvin guesser] {e}")
+
+    async def _auto_start_timer(self):
+        """35 秒後若仍在 JOINING，自動開始。"""
+        try:
+            await asyncio.sleep(35)
+            session = self._session
+            if session and session.state == Busted99State.JOINING and self._engine:
+                await self._engine.start_game()
+        except asyncio.CancelledError:
+            pass
+
+    # ── STT hook ───────────────────────────────────────────────────────────────
+
+    def should_suppress_for_game(self, speaker: str) -> bool:
+        """
+        GUESSING 狀態時，只允許 current_guesser 說話；其他回 False。
+        """
+        if self._session is None or self._session.state != Busted99State.GUESSING:
+            return False
+        guesser_id = self._session.current_guesser_id
+        if guesser_id is None:
+            return False
+        guesser = next(
+            (p for p in self._session.players if p.user_id == guesser_id), None
+        )
+        if guesser is None:
+            return False
+        return guesser.display_name != speaker
+
+    async def receive_voice_answer_by_speaker(self, speaker: str, text: str) -> bool:
+        """
+        由 VoiceController 以 display_name 呼叫。
+        GUESSING 狀態時，解析數字並呼叫 submit_guess。
+        """
+        if self._engine is None or self._session is None:
+            return False
+        if self._session.state != Busted99State.GUESSING:
+            return False
+
+        # 只接受 current_guesser 的語音
+        guesser_id = self._session.current_guesser_id
+        if guesser_id is None:
+            return False
+        guesser = next(
+            (p for p in self._session.players if p.user_id == guesser_id), None
+        )
+        if guesser is None or guesser.display_name != speaker:
+            return False
+
+        number = parse_number(text)
+        if number is None:
+            vc = self.bot.cogs.get("VoiceController")
+            if vc is not None:
+                try:
+                    await vc.play_tts("再說一次", already_in_channel=False)
+                except Exception:
+                    pass
+            return False
+
+        result = await self._engine.submit_guess(guesser_id, number)
+        if result is None:
+            return False
+        res = result.get("result")
+        if res == "out_of_range":
+            vc = self.bot.cogs.get("VoiceController")
+            if vc is not None:
+                try:
+                    await vc.play_tts("超出範圍，再說一次", already_in_channel=False)
+                except Exception:
+                    pass
+            return False
+        if res == "boundary":
+            vc = self.bot.cogs.get("VoiceController")
+            if vc is not None:
+                try:
+                    await vc.play_tts("不可以猜邊界", already_in_channel=False)
+                except Exception:
+                    pass
+            return False
+
+        # 取消超時任務（已由引擎處理）
+        self._cancel_guesser_timeout()
+
+        if self._channel and self._session:
+            await self._channel.send(
+                embed=self._build_guess_result_embed(self._session, result)
+            )
+        if res in ("wrong_low", "wrong_high"):
+            await self._play_sfx("wrong")
+        elif res in ("bust", "last_bust", "last_wrong"):
+            await self._play_sfx("correct")
+
+        return True
+
+    # ── Internal start helper ──────────────────────────────────────────────────
+
+    async def _handle_start_game(self, channel: Optional[discord.TextChannel]) -> None:
+        """建立新 session 並開始 Joining 階段。供 /busted99_start 和「再來一局」按鈕共用。"""
+        if self._engine is not None:
+            # 已有遊戲進行中，不重複開始
+            return
+
+        self._channel = channel
+
+        session = Busted99Session(
+            session_id=str(uuid.uuid4()),
+            guild_id=channel.guild.id if channel and hasattr(channel, "guild") else 0,
+            channel_id=channel.id if channel else 0,
+        )
+        self._session = session
+
+        self._engine = Busted99Engine(
+            session=session,
+            on_state_change=self.on_state_change,
+            db_path="marvin.db",
+        )
+
+        # Marvin 自動加入
+        await self._engine.add_player("marvin", "Marvin")
+
+        # 進入 game_mode
+        vc = self.bot.cogs.get("VoiceController")
+        if vc is not None:
+            vc.game_mode = True
+
+        # 顯示 join embed + 35s 自動開始
+        await self._post_game_message(self._build_joining_embed(session), Join99View(self))
+        self._spawn(self._auto_start_timer())
+
+    # ── Slash commands ─────────────────────────────────────────────────────────
+
+    @app_commands.command(name="busted99_start", description="開始一場 Busted99 猜數字遊戲")
+    async def busted99_start(self, interaction: discord.Interaction):
+        if self._engine is not None:
+            await interaction.response.send_message("Busted99 遊戲已在進行中！", ephemeral=True)
+            return
+
+        await interaction.response.send_message(
+            "🔢 **Busted99** 遊戲啟動！猜 1-99 的秘密數字，Marvin 已加入。",
+            ephemeral=True,
+        )
+
+        await self._handle_start_game(interaction.channel)
+
+    @app_commands.command(name="busted99_stop", description="強制中止目前的 Busted99 遊戲")
+    async def busted99_stop(self, interaction: discord.Interaction):
+        if self._engine is None:
+            await interaction.response.send_message("目前沒有進行中的 Busted99 遊戲。", ephemeral=True)
+            return
+
+        self._cancel_tasks()
+        self._engine = None
+        self._session = None
+        self._name_to_id.clear()
+
+        vc = self.bot.cogs.get("VoiceController")
+        if vc is not None:
+            vc.game_mode = False
+
+        await interaction.response.send_message(
+            "🛑 Busted99 已強制中止，可以用 `/busted99_start` 重新開始。",
+            ephemeral=True,
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Busted99Cog(bot))

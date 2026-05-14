@@ -12,7 +12,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from game.engine import GameEngine
+from game.engine import GameEngine, ANSWER_MIN_LEN, ANSWER_MAX_LEN
 from game.session import GameSession, GameState
 from game.clue_generator import generate_clue
 from game.marvin_player import MarvinPlayer
@@ -35,9 +35,9 @@ C_SPINNER   = 0x9B59B6
 class SetAnswerModal(discord.ui.Modal, title="Busted — 設定謎底"):
     answer_input = discord.ui.TextInput(
         label="你的答案",
-        placeholder="請輸入謎底（2–5 個字）",
-        min_length=2,
-        max_length=5,
+        placeholder=f"請輸入謎底（{ANSWER_MIN_LEN}–{ANSWER_MAX_LEN} 個字）",
+        min_length=1,           # 1 而非 ANSWER_MIN_LEN：避免中文 IME 組字中途被 Discord 拒絕
+        max_length=ANSWER_MAX_LEN,
     )
 
     def __init__(self, cog: BustedCog):
@@ -46,8 +46,8 @@ class SetAnswerModal(discord.ui.Modal, title="Busted — 設定謎底"):
 
     async def on_submit(self, interaction: discord.Interaction):
         answer = self.answer_input.value.strip()
-        if not (2 <= len(answer) <= 5):
-            await interaction.response.send_message("答案必須是 2–5 個字！", ephemeral=True)
+        if not (ANSWER_MIN_LEN <= len(answer) <= ANSWER_MAX_LEN):
+            await interaction.response.send_message(f"答案必須是 {ANSWER_MIN_LEN}–{ANSWER_MAX_LEN} 個字！", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
         await self._cog._engine.set_answer(answer)
@@ -214,7 +214,7 @@ class ThemeSelectView(discord.ui.View):
     """Three buttons — one per candidate theme. Setter picks the round's topic."""
 
     def __init__(self, cog: BustedCog, themes: list[str], setter_id: str):
-        super().__init__(timeout=30)
+        super().__init__(timeout=150)
         self._cog = cog
         self._setter_id = setter_id
         for theme in themes:
@@ -302,11 +302,13 @@ class BustedCog(commands.Cog):
         e.set_footer(text="按 Join Game 加入，或 Start Game Now 立即開始（30秒自動開始）")
         return e
 
-    def _build_clue_embed(self, session: GameSession, countdown: int = 15) -> discord.Embed:
+    def _build_clue_embed(self, session: GameSession, countdown: int = 75) -> discord.Embed:
         is_r5 = session.current_round >= 5
         round_label = f"第 {session.current_round}/5 輪線索" + ("（最終輪！）" if is_r5 else "")
         e = discord.Embed(title=f"🎮 BUSTED — {round_label}", color=C_CLUE)
 
+        if session.current_theme:
+            e.add_field(name="🎯 本輪主題", value=f"**{session.current_theme}**", inline=True)
         setter = next((p for p in session.players if p.user_id == session.current_setter_id), None)
         e.add_field(name="🎭 出題人", value=setter.display_name if setter else "?", inline=True)
         e.add_field(name="🔐 答案字數", value=f"{len(session.current_answer or '')} 個字", inline=True)
@@ -349,9 +351,11 @@ class BustedCog(commands.Cog):
         name = setter.display_name if setter else "?"
         e = discord.Embed(
             title="🎮 BUSTED — 出題中",
-            description=f"🎭 **{name}** 正在設定謎底…\n⏱ 30 秒內請輸入答案",
+            description=f"🎭 **{name}** 正在設定謎底…\n⏱ 150 秒內請輸入答案",
             color=C_JOINING,
         )
+        if session.current_theme:
+            e.add_field(name="🎯 本輪主題", value=f"**{session.current_theme}**", inline=False)
         return e
 
     def _build_result_embed(self, session: GameSession) -> discord.Embed:
@@ -451,12 +455,155 @@ class BustedCog(commands.Cog):
             view = SetterInputView(self, setter_id) if setter_id != "marvin" else None
             await self._edit_game_message(self._build_setter_input_embed(s), view)
 
+    # ── Companion bridge hooks (Lane F2) ───────────────────────────────────
+
+    def _scoreboard_payload(self, session: GameSession) -> list[dict]:
+        ranked = sorted(session.players, key=lambda p: p.score, reverse=True)
+        return [{"user": p.display_name, "score": p.score} for p in ranked]
+
+    def _phase_for_state(self, state: GameState) -> Optional[str]:
+        return {
+            GameState.JOINING:      "joining",
+            GameState.SPINNING:     "spinning",
+            GameState.THEME_SELECT: "theme_select",
+            GameState.SETTER_INPUT: "setter_input",
+            GameState.CLUE_ACTIVE:  "clue_active",
+            GameState.BUZZ_LOCKED:  "buzz_locked",
+            GameState.ROUND_RESULT: "round_result",
+            GameState.GAME_OVER:    "ended",
+        }.get(state)
+
+    def _timer_for_state(self, state: GameState) -> Optional[int]:
+        return {
+            GameState.SETTER_INPUT: 150,
+            GameState.CLUE_ACTIVE:  75,
+            GameState.BUZZ_LOCKED:  25,
+            GameState.ROUND_RESULT: 50,
+        }.get(state)
+
+    def _build_last_event(self, session: GameSession) -> str:
+        setter = next(
+            (p for p in session.players if p.user_id == session.current_setter_id),
+            None,
+        )
+        sname = setter.display_name if setter else "?"
+        state = session.state
+        if state == GameState.JOINING:
+            return f"等待玩家加入（已 {len(session.players)} 人）"
+        if state == GameState.SPINNING:
+            return "正在抽出本輪出題人"
+        if state == GameState.THEME_SELECT:
+            return f"{sname} 正在選主題"
+        if state == GameState.SETTER_INPUT:
+            return f"{sname} 正在設定謎底"
+        if state == GameState.CLUE_ACTIVE:
+            return f"第 {session.current_round}/5 條線索，出題人 {sname}"
+        if state == GameState.BUZZ_LOCKED:
+            holder = next(
+                (p for p in session.players if p.user_id == session.buzz_holder_id),
+                None,
+            )
+            hname = holder.display_name if holder else "?"
+            return f"{hname} 搶答中"
+        if state == GameState.ROUND_RESULT:
+            info = self._last_result or {}
+            winner = info.get("winner_name")
+            if winner:
+                return f"{winner} 猜中，本輪結束"
+            return "本輪無人猜中"
+        if state == GameState.GAME_OVER:
+            ranked = sorted(session.players, key=lambda p: p.score, reverse=True)
+            top = ranked[0] if ranked else None
+            return f"遊戲結束 — 冠軍：{top.display_name} {top.score} 分" if top else "遊戲結束"
+        return ""
+
+    async def _emit_phase(self, session: GameSession) -> None:
+        """若 bridge 在運行，廣播 game_phase_changed。"""
+        bridge = getattr(self.bot, "companion_bridge", None)
+        if bridge is None or not getattr(bridge, "is_running", False):
+            return
+        phase = self._phase_for_state(session.state)
+        if phase is None:
+            return
+        setter = next(
+            (p for p in session.players if p.user_id == session.current_setter_id),
+            None,
+        )
+        payload = {
+            "round": session.round_num,
+            "round_total": max(len(session.players), session.round_num),
+            "scoreboard": self._scoreboard_payload(session),
+            "current_player": setter.display_name if setter else None,
+            "timer_seconds": self._timer_for_state(session.state),
+            "last_event": self._build_last_event(session),
+        }
+        try:
+            await bridge.emit_game_phase_changed(
+                game_name="busted",
+                phase=phase,
+                payload=payload,
+            )
+        except Exception as e:
+            logger.warning(f"[Busted] emit_game_phase_changed failed: {e}")
+
+    # ── Bridge-callable controls (Lane F2) ─────────────────────────────────
+
+    async def force_skip_round(self) -> None:
+        """Companion bridge 呼叫：強制跳過當前回合。"""
+        engine = self._engine
+        session = self._session
+        if engine is None or session is None:
+            logger.info("[Busted] force_skip_round 無 active engine，drop")
+            return
+        try:
+            state = session.state
+            if state == GameState.SETTER_INPUT:
+                await engine.skip_setter_timeout()
+            elif state == GameState.CLUE_ACTIVE:
+                # 立刻進入結果階段：呼叫 next_round 太激進；用 expire_buzz 不適用。
+                # 用 advance_clue 直到結果（最多 5 次）；保守起見呼叫一次足夠 hint。
+                if hasattr(engine, "advance_clue"):
+                    await engine.advance_clue()
+            elif state == GameState.BUZZ_LOCKED:
+                await engine.expire_buzz()
+            elif state == GameState.ROUND_RESULT:
+                await engine.next_round()
+            else:
+                logger.info(f"[Busted] force_skip_round in state={state}，drop")
+        except Exception as e:
+            logger.warning(f"[Busted] force_skip_round 失敗: {e}")
+
+    async def end_session(self) -> None:
+        """Companion bridge 呼叫：結束目前遊戲。"""
+        if self._engine is None:
+            logger.info("[Busted] end_session 無 active engine，drop")
+            return
+        self._cancel_tasks()
+        for t in list(self._grace_timers.values()):
+            t.cancel()
+        self._grace_timers.clear()
+        self._engine = None
+        self._session = None
+        self._game_state = None
+        self._name_to_id.clear()
+        vc = self.bot.cogs.get("VoiceController") if hasattr(self.bot, "cogs") else None
+        if vc is not None:
+            vc.game_mode = False
+        if self._channel is not None:
+            try:
+                await self._channel.send("🛑 Busted 已被 companion 端結束。")
+            except Exception:
+                pass
+
     # ── Central state dispatcher ───────────────────────────────────────────────
 
     async def on_state_change(self, session: GameSession):
         prev_state = self._game_state
         self._session = session
         state = session.state
+
+        # Lane F2：先廣播 phase 給 companion bridge（失敗不影響本機 UI）
+        await self._emit_phase(session)
 
         if state == GameState.JOINING:
             await self._play_sfx("fanfare")
@@ -474,7 +621,7 @@ class BustedCog(commands.Cog):
                 description=(
                     f"**{setter_name}** 請從以下主題中選一個，\n"
                     "你的謎底必須與這個主題相關！\n\n"
-                    "30 秒內未選擇將自動抽選。"
+                    "150 秒內未選擇將自動抽選。"
                 ),
                 color=0x9B59B6,
             )
@@ -500,11 +647,11 @@ class BustedCog(commands.Cog):
             if prev_state == GameState.SETTER_INPUT:
                 # Fresh setter turn — start a new timer loop
                 self._cancel_tasks()
-                self._clue_deadline = time.time() + 15.0
+                self._clue_deadline = time.time() + 75.0
                 self._spawn(self._clue_loop())
             else:
                 # New clue, returning from buzz, or buzz-holder left — reset deadline
-                self._clue_deadline = time.time() + 15.0
+                self._clue_deadline = time.time() + 75.0
 
             # Trigger Marvin guess — cancel previous think before spawning a new one
             if session.current_setter_id != "marvin" and session.current_clues:
@@ -518,9 +665,9 @@ class BustedCog(commands.Cog):
             await self._edit_game_message(self._build_buzz_locked_embed(session), BuzzView(self, disabled=True))
             if holder and self._channel:
                 await self._channel.send(
-                    f"⚡ **{holder.display_name}** 搶答！請在 **5 秒**內回答（語音或文字）"
+                    f"⚡ **{holder.display_name}** 搶答！請在 **25 秒**內回答（語音或文字）"
                 )
-                self._spawn(self._watch_for_text_answer(holder.user_id, timeout=5.0))
+                self._spawn(self._watch_for_text_answer(holder.user_id, timeout=25.0))
 
         elif state == GameState.ROUND_RESULT:
             if prev_state == GameState.BUZZ_LOCKED:
@@ -576,7 +723,7 @@ class BustedCog(commands.Cog):
                 remaining = int(self._clue_deadline - time.time())
                 # Refresh embed at each 5s bucket crossing (10s and 5s marks)
                 refresh_bucket = remaining // 5
-                if refresh_bucket != last_refresh_bucket and remaining in range(1, 13):
+                if refresh_bucket != last_refresh_bucket and remaining in range(1, 73):
                     last_refresh_bucket = refresh_bucket
                     is_r5 = session.current_round >= 5
                     view  = Round5View(self) if is_r5 else BuzzView(self, disabled=False)
@@ -595,18 +742,18 @@ class BustedCog(commands.Cog):
             pass
 
     async def _auto_next_round(self):
-        """Auto-advance from ROUND_RESULT to the next round after 10 s."""
+        """Auto-advance from ROUND_RESULT to the next round after 50 s."""
         try:
-            await asyncio.sleep(10)
+            await asyncio.sleep(50)
             if self._session and self._session.state == GameState.ROUND_RESULT and self._engine:
                 await self._engine.next_round()
         except asyncio.CancelledError:
             pass
 
     async def _setter_timeout_task(self):
-        """Penalise and skip setter if they don't submit an answer within 30 s."""
+        """Penalise and skip setter if they don't submit an answer within 150 s."""
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(150)
             session = self._session
             if session and session.state == GameState.SETTER_INPUT:
                 setter = next(
@@ -630,10 +777,9 @@ class BustedCog(commands.Cog):
             if session is None or session.state != GameState.SETTER_INPUT:
                 return
             topic, answer = pick(self._memory_manager)
-            # Enforce the 2–5 character limit
-            if len(answer) > 5:
-                answer = answer[:5]
-            if len(answer) < 2:
+            if len(answer) > ANSWER_MAX_LEN:
+                answer = answer[:ANSWER_MAX_LEN]
+            if len(answer) < ANSWER_MIN_LEN:
                 answer = "黑洞"  # safe fallback
             quip = self._marvin.setter_quip() if self._marvin else "我來出題。"
             if self._channel:
@@ -699,6 +845,23 @@ class BustedCog(commands.Cog):
                 await self._channel.send(f"**Marvin** 最終答案：{guess}（{score_text}）")
             if pts > 0:
                 self._round5_display_scores["Marvin"] = pts
+        except asyncio.CancelledError:
+            pass
+
+    async def _marvin_correct_react(self, winner_name: str) -> None:
+        """Marvin 對人類猜中答案發表評論（TTS + channel 訊息）。"""
+        try:
+            if self._marvin is None:
+                return
+            quip = self._marvin.correct_quip(winner_name)
+            if self._channel:
+                await self._channel.send(f"**Marvin**: {quip}")
+            vc = self.bot.cogs.get("VoiceController")
+            if vc is not None:
+                try:
+                    await vc.play_tts(quip, already_in_channel=False)
+                except Exception:
+                    pass
         except asyncio.CancelledError:
             pass
 
@@ -852,12 +1015,16 @@ class BustedCog(commands.Cog):
         if isinstance(result, dict) and result.get("correct") and self._session:
             session = self._session
             winner = next((p for p in session.players if p.user_id == str(user_id)), None)
+            winner_name = winner.display_name if winner else speaker
             self._last_result = {
-                "winner_name":   winner.display_name if winner else speaker,
+                "winner_name":   winner_name,
                 "guesser_score": result["score"],
                 "setter_score":  result["setter_score"],
             }
             await self._edit_game_message(self._build_result_embed(session), ResultView(self))
+            # Marvin 評論猜中（只有人類猜中時）
+            if winner_name != "Marvin" and self._marvin:
+                self._spawn(self._marvin_correct_react(winner_name))
         return bool(result)
 
     # ── Clue request hook ──────────────────────────────────────────────────────
@@ -894,7 +1061,7 @@ class BustedCog(commands.Cog):
             announcement = f"線索{session.current_round}：{clue}"
             vc._tts_protected = True
             try:
-                await vc.play_tts(announcement, already_in_channel=True)
+                await vc.play_tts(announcement, already_in_channel=False)
             finally:
                 vc._tts_protected = False
 
@@ -1024,13 +1191,34 @@ class BustedCog(commands.Cog):
 
         await interaction.response.send_message("🎮 **Busted** 遊戲啟動！Marvin 已進入遊戲模式，暫停所有服務。", ephemeral=True)
 
-        # Auto-start timer: if no human joins in 30 s, start anyway (Marvin vs nobody edge case)
+        # Auto-start timer: if no human joins in 150 s, start anyway (Marvin vs nobody edge case)
         self._spawn(self._auto_start_timer())
 
+    @app_commands.command(name="busted_stop", description="強制中止目前的 Busted 遊戲（卡住時使用）")
+    async def busted_stop(self, interaction: discord.Interaction):
+        if self._engine is None:
+            await interaction.response.send_message("目前沒有進行中的遊戲。", ephemeral=True)
+            return
+
+        self._cancel_tasks()
+        for t in list(self._grace_timers.values()):
+            t.cancel()
+        self._grace_timers.clear()
+        self._engine = None
+        self._session = None
+        self._game_state = None
+        self._name_to_id.clear()
+
+        vc = self.bot.cogs.get("VoiceController")
+        if vc is not None:
+            vc.game_mode = False
+
+        await interaction.response.send_message("🛑 遊戲已強制中止，可以用 `/busted_start` 重新開始。", ephemeral=True)
+
     async def _auto_start_timer(self):
-        """Start the game automatically after 30 s even if no one pressed Start."""
+        """Start the game automatically after 150 s even if no one pressed Start."""
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(150)
             session = self._session
             if session and session.state == GameState.JOINING:
                 await self._engine.start_game()
