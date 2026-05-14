@@ -2173,7 +2173,16 @@ class VoiceController(commands.Cog):
 
         self.stt_logger.info(f"[{speaker}] (Debounced) {full_raw_text}")
         print(f"\n[{speaker}] (Debounced) {full_raw_text}")
-        
+
+        # [Companion_Bridge] Debounced STT 結果是「真正使用者一句話」的時機，
+        # 廣播 stt_chunk 給 companion。Phase 3a 原本的 pipeline.py hook 走 stt_callback
+        # 路徑，但生產 STT 在 voice_controller 這條 Debounced 路徑上，故補在這裡。
+        try:
+            from main_discord import emit_stt_to_bridge
+            emit_stt_to_bridge(self.bot, speaker, full_raw_text, "debounced")
+        except Exception:
+            pass
+
         # 🚀 [Logging] 全量紀錄日誌，維持靜默監聽狀態
         # [Slow System Alignment] 這裡只做基礎資料收集與內存記錄，由慢系統每 5 分鐘統一處理
         metadata = {
@@ -4195,7 +4204,14 @@ class VoiceController(commands.Cog):
                     discord.FFmpegPCMAudio(fifo_path),
                     after=lambda e: after_playing(e, estimated_dur)
                 )
-            
+
+                # [Companion_Bridge] TTS 開始播放 → 廣播 tts_started
+                try:
+                    from main_discord import emit_tts_started_to_bridge
+                    await emit_tts_started_to_bridge(self.bot, text, voice or "", None)
+                except Exception:
+                    pass
+
             # 🔑 [T-02 Key Fix] playback_lock 已釋放。
             try:
                 await asyncio.wait_for(play_done_event.wait(), timeout=25.0)
@@ -4229,6 +4245,12 @@ class VoiceController(commands.Cog):
             self._tts_echo_cooldown_until = time.time() + 2.0
             self._current_tts_text = ""
             self._wake_response_pending = False  # 🔒 TTS 送達，解除 Response Lock
+            # [Companion_Bridge] TTS 結束（成功/逾時/錯誤皆會走到這裡）
+            try:
+                from main_discord import emit_tts_done_to_bridge
+                await emit_tts_done_to_bridge(self.bot)
+            except Exception:
+                pass
 
     async def tts_flush(self):
         """🗑️ [TTS Flush] 立即停止當前 TTS 並清空待播佇列。由 owner 指令觸發。
@@ -4741,6 +4763,22 @@ class VoiceController(commands.Cog):
                 if hasattr(self.bot, 'music_memory'):
                     self.bot.music_memory.record_play(info, requested_by)
 
+                # Companion bridge: emit music_started
+                try:
+                    from main_discord import emit_music_started_to_bridge
+                    song_info_for_bridge = {
+                        "title": title,
+                        "style": info.get("style") or info.get("uploader", ""),
+                        "target": requested_by,
+                        "started_ts": time.time(),
+                        "source": info.get("source", "stream"),
+                    }
+                    asyncio.create_task(emit_music_started_to_bridge(
+                        self.bot, song_info_for_bridge, requested_by
+                    ))
+                except Exception as e:
+                    logger.debug(f"⚠️ [Companion_Bridge] music_started hook skipped: {e}")
+
                 # 使用預取結果（幾乎必然已完成），否則即時 fetch
                 url = info.get('url', '')
                 prefetch_task = self._prefetch_cache.pop(url, None)
@@ -4804,7 +4842,25 @@ class VoiceController(commands.Cog):
 
                 song_start_time = time.time()
                 song_lyrics_snapshot = self._current_lyrics or ""
-                await self.play_stream_song(info['url'], title, dj_audio_path=dj_audio)
+                playback_completion = "natural"
+                try:
+                    await self.play_stream_song(info['url'], title, dj_audio_path=dj_audio)
+                except Exception:
+                    playback_completion = "stopped"
+                    raise
+                finally:
+                    # Companion bridge: emit music_ended（natural / stopped）
+                    try:
+                        from main_discord import emit_music_ended_to_bridge
+                        ended_info = {"title": title}
+                        completion = playback_completion
+                        if not self.stream_mode:
+                            completion = "stopped"
+                        asyncio.create_task(emit_music_ended_to_bridge(
+                            self.bot, ended_info, completion
+                        ))
+                    except Exception as e:
+                        logger.debug(f"⚠️ [Companion_Bridge] music_ended hook skipped: {e}")
 
                 # 歌曲結束後，背景分析聆聽反應
                 asyncio.create_task(self._analyze_song_reactions(info, song_start_time, song_lyrics_snapshot))
@@ -5031,6 +5087,18 @@ class VoiceController(commands.Cog):
             if reactions:
                 self.bot.music_memory.record_reactions(info, reactions)
                 logger.info(f"🎵 [MusicMemory] 記錄 {len(reactions)} 人的反應: {info['title']}")
+                # Companion bridge: emit per-user reactions
+                try:
+                    from main_discord import emit_music_reaction_to_bridge
+                    for username, r in reactions.items():
+                        feelings = r.get("feelings", []) or []
+                        # 簡易映射：feelings 有就 love；無就 silent
+                        tag = "love" if feelings else "silent"
+                        asyncio.create_task(emit_music_reaction_to_bridge(
+                            self.bot, username, info, tag
+                        ))
+                except Exception as e:
+                    logger.debug(f"⚠️ [Companion_Bridge] music_reaction hook skipped: {e}")
         except Exception as e:
             logger.debug(f"⚠️ [MusicMemory] 反應分析失敗: {e}")
 

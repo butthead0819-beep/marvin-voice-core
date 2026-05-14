@@ -187,6 +187,13 @@ class MarvinVoicePipeline:
                             clean_len = len(raw_text.replace(" ", ""))
                             prosody_data["wps"] = round(clean_len / prosody_data["physical_duration"], 2) if prosody_data["physical_duration"] > 0 else 0
 
+                    # [Companion_Bridge] STT 完成、過完幻覺過濾後，廣播給 companion-server
+                    try:
+                        from main_discord import emit_stt_to_bridge
+                        emit_stt_to_bridge(self.bot, speaker_name, raw_text, engine)
+                    except Exception:
+                        pass
+
                     await self.stt_callback(speaker_name, raw_text, start_time, wav_bytes, prosody_data=prosody_data)
             finally:
                 if os.path.exists(abs_wav_path):
