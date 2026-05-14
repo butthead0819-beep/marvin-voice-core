@@ -81,8 +81,10 @@ class Join99View(discord.ui.View):
             self._cog._name_to_id[user.display_name] = user.id
             await interaction.response.send_message(f"✅ {user.display_name} 加入 Busted99！", ephemeral=True)
             if self._cog._channel and self._cog._session:
-                await self._cog._channel.send(
-                    embed=self._cog._build_joining_embed(self._cog._session)
+                # 用 _post_game_message 刪舊送新，讓 join embed 始終在底部
+                await self._cog._post_game_message(
+                    self._cog._build_joining_embed(self._cog._session),
+                    Join99View(self._cog),
                 )
         else:
             await interaction.response.send_message("遊戲已在進行中或你已加入", ephemeral=True)
@@ -347,6 +349,8 @@ class Busted99Cog(commands.Cog):
             description="\n".join(lines),
             color=C_GAME_OVER,
         )
+        if session.answer:
+            e.add_field(name="🔑 秘密答案", value=f"**{session.answer}**", inline=True)
         e.set_footer(text="感謝遊玩！用 /busted99_start 再來一局")
         return e
 
@@ -806,6 +810,12 @@ class Busted99Cog(commands.Cog):
             await self._channel.send(
                 embed=self._build_guess_result_embed(self._session, result)
             )
+            # Re-post game embed below result so it stays at the bottom
+            if self._session.state == Busted99State.GUESSING:
+                remaining = max(1, int(self._guessing_deadline - time.time()))
+                await self._post_game_message(
+                    self._build_guessing_embed(self._session, remaining)
+                )
         if res in ("wrong_low", "wrong_high"):
             await self._play_sfx("wrong")
         elif res in ("bust", "last_bust", "last_wrong"):
@@ -857,6 +867,11 @@ class Busted99Cog(commands.Cog):
             await self._channel.send(
                 embed=self._build_guess_result_embed(self._session, result)
             )
+            if self._session.state == Busted99State.GUESSING:
+                remaining = max(1, int(self._guessing_deadline - time.time()))
+                await self._post_game_message(
+                    self._build_guessing_embed(self._session, remaining)
+                )
         if res in ("wrong_low", "wrong_high"):
             await self._play_sfx("wrong")
         elif res in ("bust", "last_bust", "last_wrong"):
