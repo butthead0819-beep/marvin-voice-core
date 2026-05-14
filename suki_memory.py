@@ -80,6 +80,20 @@ class MemoryManager:
             "CREATE TABLE IF NOT EXISTS players "
             "(username TEXT PRIMARY KEY, data TEXT NOT NULL DEFAULT '{}')"
         )
+        # 氣氛校正資料表（Companion 回饋的 too_loud / too_sharp / too_jolly）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS atmosphere_corrections ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "snapshot_ts REAL NOT NULL, "
+            "label TEXT NOT NULL, "
+            "speaker TEXT, "
+            "created_ts REAL NOT NULL"
+            ")"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_atmos_label "
+            "ON atmosphere_corrections(label)"
+        )
         conn.commit()
         return conn
 
@@ -325,5 +339,56 @@ class MemoryManager:
         self._save_player(username)
         logger.info(f"🎭 [SpeechDNA] {username} 說話 DNA 已更新")
 
+    # ── Atmosphere corrections（Companion 回饋） ─────────────────────────────
+
+    def record_atmosphere_correction(
+        self,
+        snapshot_ts: float,
+        label: str,
+        speaker: str | None = None,
+    ) -> None:
+        """記錄一筆氣氛回饋。label ∈ {"too_loud", "too_sharp", "too_jolly"}。"""
+        self._conn.execute(
+            "INSERT INTO atmosphere_corrections "
+            "(snapshot_ts, label, speaker, created_ts) VALUES (?, ?, ?, ?)",
+            (float(snapshot_ts), str(label), speaker, time.time()),
+        )
+        self._conn.commit()
+        logger.debug(
+            f"🌡  [Memory] 已寫入氣氛校正 label={label} speaker={speaker}"
+        )
+
     def get_atmosphere_calibration(self) -> dict:
-        return {}
+        """回傳累積的氣氛校正資料，供 AtmosphereTracker._load_calibration() 使用。
+
+        回傳結構：
+          {
+            "label_counts": {"too_loud": N, "too_sharp": N, "too_jolly": N},
+            "recent_corrections": [{snapshot_ts, label, speaker, created_ts}, ...]
+          }
+        recent_corrections 以 created_ts DESC 排序，最多 50 筆。
+        """
+        counts_rows = self._conn.execute(
+            "SELECT label, COUNT(*) FROM atmosphere_corrections GROUP BY label"
+        ).fetchall()
+        label_counts = {label: int(n) for label, n in counts_rows}
+
+        recent_rows = self._conn.execute(
+            "SELECT snapshot_ts, label, speaker, created_ts "
+            "FROM atmosphere_corrections "
+            "ORDER BY created_ts DESC, id DESC LIMIT 50"
+        ).fetchall()
+        recent_corrections = [
+            {
+                "snapshot_ts": snapshot_ts,
+                "label": label,
+                "speaker": speaker,
+                "created_ts": created_ts,
+            }
+            for (snapshot_ts, label, speaker, created_ts) in recent_rows
+        ]
+
+        return {
+            "label_counts": label_counts,
+            "recent_corrections": recent_corrections,
+        }

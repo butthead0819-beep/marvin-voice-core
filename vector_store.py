@@ -46,3 +46,40 @@ class VectorStore:
         ids = results.get("ids", [])
         if ids:
             self._col.delete(ids=ids)
+
+    # ── Companion bridge 介面（直接暴露 ChromaDB 原生語意）────────────────────
+
+    def get_all(self, speaker: str, guild_id: int, limit: int = 20) -> list[dict]:
+        """列出某位說話者在某 guild 的所有記憶，回傳 [{id, document, metadata}, ...]。"""
+        results = self._col.get(
+            where={"$and": [
+                {"speaker": {"$eq": speaker}},
+                {"guild_id": {"$eq": str(guild_id)}},
+            ]},
+            limit=limit,
+        )
+        ids = results.get("ids", []) or []
+        docs = results.get("documents", []) or []
+        metas = results.get("metadatas", []) or []
+        return [
+            {"id": ids[i], "document": docs[i], "metadata": metas[i]}
+            for i in range(len(ids))
+        ]
+
+    def delete(self, doc_id: str) -> None:
+        """刪除單一文件；不存在時無動作（ChromaDB delete 對未知 id 本身就是 no-op）。"""
+        try:
+            self._col.delete(ids=[doc_id])
+        except Exception:
+            # 防禦性容錯：任何來自底層的例外都視為 no-op
+            pass
+
+    def update(self, doc_id: str, metadata: dict) -> None:
+        """更新單一文件的 metadata；保留原有 keys，僅覆蓋傳入的欄位。"""
+        existing = self._col.get(ids=[doc_id])
+        existing_metas = existing.get("metadatas", []) or []
+        if not existing_metas:
+            return
+        merged = dict(existing_metas[0] or {})
+        merged.update(metadata)
+        self._col.update(ids=[doc_id], metadatas=[merged])

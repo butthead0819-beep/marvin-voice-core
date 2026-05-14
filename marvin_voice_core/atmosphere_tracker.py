@@ -40,6 +40,12 @@ MOOD_NORMAL    = "normal"
 # 滾動窗口長度（秒）
 _WINDOW_SEC = 10 * 60
 
+# Companion 校正標籤白名單（對應 UI 上的 🤐 / 🌶️ / 😄）
+_VALID_CORRECTION_LABELS = frozenset({"too_loud", "too_sharp", "too_jolly"})
+
+# 超過此秒數的 snapshot_ts 視為「過期」校正
+_STALE_CORRECTION_SEC = 10 * 60
+
 _LAUGH_RE    = re.compile(r"哈{2,}|笑死|lol|笑{2,}", re.IGNORECASE)
 _FILLER_SET  = frozenset(["那個", "就是", "然後", "啊", "喔", "欸", "嗯", "嘿", "這個", "啦", "嘛"])
 
@@ -199,6 +205,47 @@ class AtmosphereTracker:
             recent_topics    = recent_topics[:3],
             ts               = time.time(),
         )
+
+    def record_correction(self, snapshot_ts: float, label: str, speaker: str | None = None) -> None:
+        """
+        Companion 傳回的氣氛校正訊號（🤐 too_loud / 🌶️ too_sharp / 😄 too_jolly）。
+
+        - 標籤必須在白名單內，否則 raise ValueError
+        - snapshot_ts 超過 _STALE_CORRECTION_SEC 仍接受，但 log warning
+        - 無 memory_manager 時只 log，不持久化
+        - 持久化路徑與 _load_calibration() 對齊：呼叫 memory_manager 的對應方法
+        - 寫入後 invalidate_cache()，下一張 snapshot 反映新校正
+        """
+        if label not in _VALID_CORRECTION_LABELS:
+            raise ValueError(f"unknown correction label: {label!r}")
+
+        age = time.time() - snapshot_ts
+        if age > _STALE_CORRECTION_SEC:
+            logger.warning(
+                f"🌡  [AtmosphereTracker] stale correction snapshot_ts "
+                f"（已過 {age:.0f}s），仍接受但需注意"
+            )
+
+        if self._memory is None:
+            logger.info(
+                f"🌡  [AtmosphereTracker] record_correction label={label} "
+                f"speaker={speaker}（無 memory_manager，不持久化）"
+            )
+            return
+
+        try:
+            self._memory.record_atmosphere_correction(snapshot_ts, label, speaker)
+        except AttributeError:
+            logger.warning(
+                "🌡  [AtmosphereTracker] memory_manager 未實作 "
+                "record_atmosphere_correction()，校正未持久化"
+            )
+            return
+        except Exception as e:
+            logger.warning(f"🌡  [AtmosphereTracker] 持久化校正失敗: {e}")
+            return
+
+        self.invalidate_cache()
 
     def invalidate_cache(self, speaker: str = None):
         if speaker:
