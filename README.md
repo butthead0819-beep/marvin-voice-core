@@ -150,6 +150,8 @@ marvin_voice_core/
 
 `MarmoServer` (port 8765) lets external agents push text into Marvin's voice queue without a direct Python import — useful for piping in results from shell scripts or other bots.
 
+`CompanionBridge` (port 8766) is the bidirectional WebSocket bridge for [marvin-voice-companion](../Voice-bot-companion/) — the operator control surface that shows what Marvin hears / chose / is about to say, and lets you correct atmosphere readings or memory facts from your phone via Tailscale. Opt-in via `COMPANION_BRIDGE_ENABLED=true`. Companion runs as a separate process and gets every Marvin update for free because the bridge directly imports `AtmosphereTracker`, `VectorStore`, `MusicMemory`, and `MemoryManager`.
+
 > **Note for integrators:** `marvin_voice_core/` is the clean API surface for building on top of this system. The full bot's production runtime (`discord_voice_engine.py`) runs equivalent audio logic directly for tighter integration with the Discord voice layer.
 
 ---
