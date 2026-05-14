@@ -520,12 +520,11 @@ class Busted99Cog(commands.Cog):
                 await self._play_sfx("buzz")
             self._guessing_deadline = time.time() + 15.0
             await self._post_game_message(self._build_guessing_embed(session, 15))
-            # 若輪到 Marvin 猜題，spawn auto-guess task；否則啟動超時與倒數
+            # 無論誰猜題，都啟動 timeout 與 countdown（Marvin auto-guess 失敗時有保底）
+            self._guesser_timeout_task = self._spawn(self._guesser_timeout_task_coro())
+            self._spawn(self._guessing_countdown_loop())
             if session.current_guesser_id == "marvin":
                 self._spawn(self._marvin_guesser_task())
-            else:
-                self._guesser_timeout_task = self._spawn(self._guesser_timeout_task_coro())
-                self._spawn(self._guessing_countdown_loop())
 
         elif state == Busted99State.GAME_OVER:
             self._cancel_tasks()
@@ -771,9 +770,6 @@ class Busted99Cog(commands.Cog):
                 except Exception:
                     pass
             return False
-
-        # 取消超時任務（已由引擎處理）
-        self._cancel_guesser_timeout()
 
         if self._channel and self._session:
             await self._channel.send(

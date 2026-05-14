@@ -1712,7 +1712,7 @@ class VoiceController(commands.Cog):
 
         # 🎧 [Follow-Up] D2-A + D1-A: follow-up window overrides all guards except Response Lock.
         # Response Lock (_wake_response_pending) is intentionally NOT bypassed (design decision D2-A).
-        if not is_fast and not self._wake_response_pending and _fusion is not None and _fusion.is_open():
+        if not is_fast and not self.game_mode and not self._wake_response_pending and _fusion is not None and _fusion.is_open():
             is_fast = True
             is_echo = False
             is_duplicate = False
