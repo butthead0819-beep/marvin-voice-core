@@ -6,7 +6,7 @@
 
 Marvin lives in your Discord voice channel. He hears you, responds out loud, and remembers. After a few sessions he knows who stays until 3am, who always says goodbye before leaving, whose music taste runs toward melancholy on weeknights. He will absolutely roast you for it.
 
-> **macOS only.** The voice pipeline uses macOS native audio and a Swift STT script. A Linux/Windows path (Whisper-only fallback) is not yet available — see [Open Questions](#open-questions).
+> **Marvin is a Mac product.** Tuned for Apple Silicon — Swift STT + Gemini/Groq APIs runs smoothly on M1 8GB. The Whisper-only fallback exists in `stt_handler.py` as community territory, but the maintainer doesn't test it. Adding Whisper to the same machine costs the smooth experience the design depends on; that tradeoff is the product, not a limitation. PRs that improve Linux are welcome; Linux is not the roadmap.
 
 ---
 
@@ -156,10 +156,19 @@ marvin_voice_core/
 
 ---
 
-## Open Questions
+## Platform commitment
 
-1. **Linux/Windows**: The Swift STT layer (`macos_stt.swift`) is macOS-only. A Whisper-only fallback path exists in `stt_handler.py` but has not been tested end-to-end on Linux. Contributions welcome.
-2. **Docker**: macOS native audio cannot be containerized. Not currently planned until a Linux user confirms the Whisper-only path works.
+**Marvin targets macOS on Apple Silicon, 8GB+, with hybrid local-and-API components.** The reasoning:
+
+- Swift STT (free, fast, ships with macOS) gives near-perfect transcription with no GPU cost
+- Adding Whisper to take Swift's place adds 700MB–3GB of model load + meaningful CPU/swap pressure on smaller Macs
+- The maintainer's own M1 8GB is the reference machine — what runs smoothly there is the bar
+
+This is a deliberate product decision, not an oversight. "Cross-platform OSS" is a tax on the user experience when one of those platforms requires substituting heavy components. Mac users get a polished thing; other-platform users can fork.
+
+If someone contributes solid Linux support (tested, documented, won't degrade the Mac path), PRs are welcome. The Whisper-only fallback in `stt_handler.py` is the scaffolding for that future contributor — it's not vapor, but it's not maintained either.
+
+**Docker isn't on the roadmap.** Macs can't containerize their native audio. Even running Whisper-mode in Linux containers on a Mac host trades the smooth experience for portability the maintainer doesn't need.
 
 ---
 
