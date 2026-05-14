@@ -1,6 +1,33 @@
 
 ## 新功能 — 待完成
 
+### TODO: Companion FOLLOWUP_ACTIVE/EXPIRED 事件（Follow-up v2）
+**Status:** DEFERRED（v2）
+**What:** 在 companion_bridge.py 與 event_protocol.py 加入 `FOLLOWUP_ACTIVE` / `FOLLOWUP_EXPIRED` 事件常數，TTS 問句窗口開啟/到期時廣播給 Companion UI。
+**Why:** v1 沒有 UI 倒數計器 chip，事件回路無消費端。Bot 端行為完全不依賴 Companion 知道窗口狀態。v1 diff 縮小，測試集中在 wake_detector + pipeline。
+**How to start:** companion_bridge.py 加常數 + emit method；event_protocol.py 對稱常數；app.js 加倒數 chip。
+**Depends on:** Follow-up listening v1 上線後確認需要 UI 視覺回饋。
+
+---
+
+### TODO: Follow-up speaker affinity（Jack 的 user_id 優先）
+**Status:** DEFERRED（v2，根據 v1 session 資料決定）
+**What:** `temporary_open_window(duration, reason, speaker_affinity=None)` — 當指定 speaker_affinity 時，只捕捉該 user_id 的第一語句；其他人的聲音在窗口期間被忽略。
+**Why:** first-wins 可能被隊友插話吃掉 Marvin 問 Jack 的問題。v1 接受為群組對話行為，但若實際 session 中誤觸發頻率高，v2 需要 speaker affinity。
+**How to start:** 在 handle_stt_result 的 is_open() 判斷處加 speaker 過濾；temporary_open_window 傳入觸發 TTS 的對象 speaker（如能取得）。
+**Depends on:** v1 部署後觀察 1 個月誤觸發次數。
+
+---
+
+### TODO: 吧 字尾問句 regex 精實（Follow-up v2）
+**Status:** DEFERRED（v2，根據 v1 session 資料決定）
+**What:** v1 regex `[?？嗎呢]\s*$` 排除「吧」以降低假陽性。v2 根據 session 日誌評估是否加入 `吧` 並附加形式限制（如 `吧[？?]\s*$` 要求雙重標記）。
+**Why:** 「吧」在中文高度 ambiguous（建議詞 vs. 問句），v1 謹慎排除，但會錯過「你合適吧？」等真實問句。
+**How to start:** 查 session log 中 Marvin TTS 以「吧」結尾的次數；分類真問句 vs. 建議句，再決定 regex。
+**Depends on:** v1 session 日誌（至少 3-5 個 Saturday session）。
+
+---
+
 ### TODO: 語音逐字稿儲存層
 **Status:** SHIPPED（2026-05-14）
 **What:** 所有 voice channel 語音轉錄自動存入 SQLite，每筆含 `speaker_id`、`guild_id`、`timestamp`、`text`。

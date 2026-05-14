@@ -66,6 +66,16 @@ _ALL_WAKE_WORDS   = WAKE_WORDS_LIST + FAST_ONLY_WAKE_WORDS
 WAKE_PATTERN      = "|".join(_ALL_WAKE_WORDS)
 _FORCE_WAKE_PAT   = "|".join(WAKE_WORDS_LIST)   # excludes high-ambiguity fast-only words
 
+# ── Follow-up listening: question-marker detection ───────────────────────────
+# D4: 吧 excluded (highly polysemous suggestion/agreement particle; revisit in v2 with session data)
+_QUESTION_MARKER_RE = re.compile(r'[?？嗎呢]\s*$')
+
+
+def _has_question_marker(text: str) -> bool:
+    """Return True when text ends with a question marker (?, ？, 嗎, 呢)."""
+    return bool(_QUESTION_MARKER_RE.search(text.strip()))
+
+
 # ── 4-channel scoring regexes ─────────────────────────────────────────────────
 
 _TASK_HARD_RE = re.compile(
@@ -236,8 +246,37 @@ class WakeDetector:
     def __init__(self):
         self.speaker_stats: dict[str, dict] = {}
         self._non_voice = dict(self._DEFAULT_NON_VOICE)
+        # D3: follow-up window state
+        self._open_until: float = 0.0
+        self._open_reason: str = ""
+        # D7: self-echo chain guard (max 2 activations per 60 s)
+        self._followup_count: int = 0
+        self._followup_count_reset_at: float = 0.0
         self._load_stats()
         self._load_calibration()
+
+    # ── Follow-up window API ──────────────────────────────────────────────────
+
+    def temporary_open_window(self, duration: float, reason: str = "followup") -> None:
+        """Open the wake gate for N seconds without requiring the wake word.
+
+        D7 guard: >2 activations within 60 s → suppressed (self-echo chain protection).
+        """
+        now = time.time()
+        if now - self._followup_count_reset_at > 60.0:
+            self._followup_count = 0
+            self._followup_count_reset_at = now
+        if self._followup_count >= 2:
+            logger.info("🛑 [Follow-Up] Self-echo guard: >2 windows in 60 s — suppressing")
+            return
+        self._open_until = now + duration
+        self._open_reason = reason
+        self._followup_count += 1
+        logger.info(f"🎧 [Follow-Up] Wake gate open for {duration:.1f}s (reason={reason})")
+
+    def is_open(self) -> bool:
+        """Return True while the follow-up window is active."""
+        return time.time() < self._open_until
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

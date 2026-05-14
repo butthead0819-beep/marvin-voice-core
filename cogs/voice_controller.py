@@ -1710,6 +1710,14 @@ class VoiceController(commands.Cog):
              is_fast = False
              is_duplicate = True
 
+        # 🎧 [Follow-Up] D2-A + D1-A: follow-up window overrides all guards except Response Lock.
+        # Response Lock (_wake_response_pending) is intentionally NOT bypassed (design decision D2-A).
+        if not is_fast and not self._wake_response_pending and _fusion is not None and _fusion.is_open():
+            is_fast = True
+            is_echo = False
+            is_duplicate = False
+            logger.info(f"🎧 [Follow-Up] {speaker} captured in follow-up window (reason={getattr(_fusion, '_open_reason', '?')})")
+
         if is_fast and not is_duplicate:
             self.processed_wake_segments[segment_id] = track
             self._last_global_wake_time = now
@@ -4225,6 +4233,9 @@ class VoiceController(commands.Cog):
             self._cleanup_fifo(fifo_path, tmp_dir)
             return
 
+        # D8: gate for follow-up window — only open if TTS was actually played
+        _tts_actually_played = False
+
         try:
             async with self.playback_lock:
                 self.is_playing_audio = True
@@ -4239,7 +4250,7 @@ class VoiceController(commands.Cog):
                     await asyncio.sleep(0.05)  # 縮短輪詢間隔
                     if not voice_client.is_connected():
                         raise Exception("Connection lost during wait")
-                
+
                 # 啟動 FFmpeg 讀取 (餵食器已在背景預熱)
                 logger.info(f"🔊 [Voice] 開始即時串流播放...")
                 self._current_tts_text = text
@@ -4248,6 +4259,7 @@ class VoiceController(commands.Cog):
                     discord.FFmpegPCMAudio(fifo_path),
                     after=lambda e: after_playing(e, estimated_dur)
                 )
+                _tts_actually_played = True  # D8: play() succeeded
 
                 # [Companion_Bridge] TTS 開始播放 → 廣播 tts_started
                 try:
@@ -4295,6 +4307,17 @@ class VoiceController(commands.Cog):
                 await emit_tts_done_to_bridge(self.bot)
             except Exception:
                 pass
+            # [Follow-Up] D8: only open window when TTS was actually heard by users
+            if _tts_actually_played and os.getenv("MARVIN_FOLLOWUP_ENABLED", "true").lower() == "true":
+                from wake_detector import _has_question_marker
+                if _has_question_marker(text):
+                    _bridge = getattr(self.bot, "companion_bridge", None)
+                    _suppressed = _bridge is not None and getattr(_bridge, "_mode", None) in {"silent_5min", "shutup"}
+                    if not self.game_mode and not _suppressed:
+                        _wd = getattr(getattr(self.bot, "router", None), "wake_fusion", None)
+                        if _wd is not None:
+                            _window = float(os.getenv("MARVIN_FOLLOWUP_WINDOW_SEC", "8.0"))
+                            _wd.temporary_open_window(_window, reason="followup")
 
     async def tts_flush(self):
         """🗑️ [TTS Flush] 立即停止當前 TTS 並清空待播佇列。由 owner 指令觸發。
