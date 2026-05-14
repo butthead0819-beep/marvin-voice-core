@@ -748,6 +748,8 @@ class Busted99Cog(commands.Cog):
                     await vc.play_tts("再說一次", already_in_channel=False)
                 except Exception:
                     pass
+            if self._channel:
+                await self._channel.send("再說一次？我沒聽清楚數字。")
             return False
 
         result = await self._engine.submit_guess(guesser_id, number)
@@ -755,20 +757,30 @@ class Busted99Cog(commands.Cog):
             return False
         res = result.get("result")
         if res == "out_of_range":
+            s = self._session
             vc = self.bot.cogs.get("VoiceController")
             if vc is not None:
                 try:
                     await vc.play_tts("超出範圍，再說一次", already_in_channel=False)
                 except Exception:
                     pass
+            if self._channel and s:
+                await self._channel.send(
+                    f"超出範圍！請猜 {s.low_bound}～{s.high_bound} 之間的數字。"
+                )
             return False
         if res == "boundary":
+            s = self._session
             vc = self.bot.cogs.get("VoiceController")
             if vc is not None:
                 try:
                     await vc.play_tts("不可以猜邊界", already_in_channel=False)
                 except Exception:
                     pass
+            if self._channel and s:
+                await self._channel.send(
+                    f"不可以猜邊界（{s.low_bound} 或 {s.high_bound}）！請重新猜。"
+                )
             return False
 
         if self._channel and self._session:
