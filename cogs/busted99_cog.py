@@ -726,22 +726,35 @@ class Busted99Cog(commands.Cog):
         GUESSING 狀態時，解析數字並呼叫 submit_guess。
         """
         if self._engine is None or self._session is None:
+            logger.debug("[Busted99] receive_voice: engine/session not ready, ignoring %s", speaker)
             return False
         if self._session.state != Busted99State.GUESSING:
+            logger.debug(
+                "[Busted99] receive_voice: state=%s (not GUESSING), ignoring %s",
+                self._session.state, speaker,
+            )
             return False
 
         # 只接受 current_guesser 的語音
         guesser_id = self._session.current_guesser_id
         if guesser_id is None:
+            logger.debug("[Busted99] receive_voice: no current_guesser_id")
             return False
         guesser = next(
             (p for p in self._session.players if p.user_id == guesser_id), None
         )
         if guesser is None or guesser.display_name != speaker:
+            expected = guesser.display_name if guesser else "(none)"
+            logger.debug(
+                "[Busted99] receive_voice: speaker=%r expected=%r → rejected",
+                speaker, expected,
+            )
             return False
 
+        logger.debug("[Busted99] receive_voice: %r said %r — parsing", speaker, text)
         number = parse_number(text)
         if number is None:
+            logger.debug("[Busted99] receive_voice: parse_number failed for %r", text)
             vc = self.bot.cogs.get("VoiceController")
             if vc is not None:
                 try:
@@ -754,8 +767,10 @@ class Busted99Cog(commands.Cog):
 
         result = await self._engine.submit_guess(guesser_id, number)
         if result is None:
+            logger.warning("[Busted99] receive_voice: submit_guess returned None for %r → %d", speaker, number)
             return False
         res = result.get("result")
+        logger.info("[Busted99] receive_voice: %r guessed %d → %s", speaker, number, res)
         if res == "out_of_range":
             s = self._session
             vc = self.bot.cogs.get("VoiceController")
@@ -793,6 +808,58 @@ class Busted99Cog(commands.Cog):
             await self._play_sfx("correct")
 
         return True
+
+    async def _process_guess(
+        self,
+        guesser_display_name: str,
+        guesser_id: str,
+        number: int,
+    ) -> tuple[bool, str]:
+        """
+        共用猜數字處理核心：驗證狀態、呼叫 submit_guess、送出回饋。
+        回傳 (ok: bool, feedback_msg: str)。
+        """
+        if self._engine is None or self._session is None:
+            return False, "目前沒有進行中的 Busted99 遊戲。"
+        if self._session.state != Busted99State.GUESSING:
+            return False, "現在不是猜題階段。"
+
+        cur_id = self._session.current_guesser_id
+        if cur_id != guesser_id:
+            expected = next(
+                (p.display_name for p in self._session.players if p.user_id == cur_id),
+                "某位玩家",
+            )
+            return False, f"現在輪到 **{expected}** 猜題，不是你喔！"
+
+        result = await self._engine.submit_guess(guesser_id, number)
+        if result is None:
+            return False, "猜題失敗（系統錯誤），請再試一次。"
+
+        res = result.get("result")
+        s = self._session
+        if res == "out_of_range":
+            msg = f"超出範圍！請猜 {s.low_bound}～{s.high_bound} 之間的數字。"
+            if self._channel:
+                await self._channel.send(msg)
+            return False, msg
+        if res == "boundary":
+            msg = f"不可以猜邊界（{s.low_bound} 或 {s.high_bound}）！請重新猜。"
+            if self._channel:
+                await self._channel.send(msg)
+            return False, msg
+
+        if self._channel and self._session:
+            await self._channel.send(
+                embed=self._build_guess_result_embed(self._session, result)
+            )
+        if res in ("wrong_low", "wrong_high"):
+            await self._play_sfx("wrong")
+        elif res in ("bust", "last_bust", "last_wrong"):
+            await self._play_sfx("correct")
+
+        logger.info("[Busted99] keyboard guess: %r guessed %d → %s", guesser_display_name, number, res)
+        return True, res
 
     # ── Internal start helper ──────────────────────────────────────────────────
 
@@ -843,6 +910,32 @@ class Busted99Cog(commands.Cog):
         )
 
         await self._handle_start_game(interaction.channel)
+
+    @app_commands.command(name="busted99_guess", description="用鍵盤輸入猜測數字（語音備援）")
+    async def busted99_guess(self, interaction: discord.Interaction, number: int):
+        if self._engine is None or self._session is None:
+            await interaction.response.send_message(
+                "目前沒有進行中的 Busted99 遊戲。", ephemeral=True
+            )
+            return
+
+        user = interaction.user
+        guesser_id_str = None
+        for p in self._session.players:
+            if p.display_name == user.display_name:
+                guesser_id_str = p.user_id
+                break
+        if guesser_id_str is None:
+            await interaction.response.send_message(
+                "你不在這場遊戲中！", ephemeral=True
+            )
+            return
+
+        ok, msg = await self._process_guess(user.display_name, guesser_id_str, number)
+        if not ok:
+            await interaction.response.send_message(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message("✅ 猜題送出！", ephemeral=True)
 
     @app_commands.command(name="busted99_stop", description="強制中止目前的 Busted99 遊戲")
     async def busted99_stop(self, interaction: discord.Interaction):
