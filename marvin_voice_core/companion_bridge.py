@@ -75,6 +75,8 @@ EVT_MUSIC_RECOMMENDATIONS_REQUEST = "music_recommendations_request"
 EVT_GAME_FORCE_SKIP_ROUND = "game_force_skip_round"
 EVT_GAME_END = "game_end"
 EVT_GAME_ALERT_RESPONSE = "game_alert_response"
+EVT_TEMPERATURE_UPDATE = "temperature_update"
+EVT_TOPIC_GENERATED = "topic_generated"
 
 _KNOWN_INCOMING = frozenset({
     EVT_ATMOSPHERE_FEEDBACK,
@@ -755,6 +757,18 @@ class CompanionBridge:
         """玩家離開 Marvin 所在語音頻道時呼叫。payload：{speaker, left_ts}。"""
         payload = {"speaker": speaker, "left_ts": time.time()}
         await self._broadcast(_make_event(EVT_MEMBER_LEFT, payload))
+
+    async def emit_temperature_update(self, level: str, value: float) -> None:
+        """溫度等級更新（cold/warm/hot）。"""
+        await self._broadcast(_make_event(EVT_TEMPERATURE_UPDATE, {
+            "level": level, "value": round(value, 3),
+        }))
+
+    async def emit_topic_generated(self, topics: list[str], trigger: str) -> None:
+        """話題已產生（trigger: 'auto' 或 'manual'）。"""
+        await self._broadcast(_make_event(EVT_TOPIC_GENERATED, {
+            "topics": topics, "trigger": trigger,
+        }))
 
     async def emit_voice_channel_snapshot(self, members: list[dict[str, Any]]) -> None:
         """當前語音頻道成員的快照（新 client 連上時用）。

@@ -331,10 +331,12 @@ class MarvinBot(commands.Bot):
                 await vc_cog.play_tts(text, already_in_channel=True)
 
             _wake_detector = getattr(getattr(self, 'router', None), 'wake_fusion', None)
+            _companion_bridge = getattr(self, "companion_bridge", None)
             _temp_monitor = DiscordTemperatureMonitor(
                 wake_detector=_wake_detector,
                 topic_generator=_topic_gen,
                 tts_fn=_tts_fn,
+                companion_bridge=_companion_bridge,
             )
             vc_cog.temperature_monitor = _temp_monitor
             vc_cog.topic_generator = _topic_gen

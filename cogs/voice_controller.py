@@ -1483,6 +1483,9 @@ class VoiceController(commands.Cog):
             if topics:
                 text = "好，我幫你想了幾個話題：" + "；".join(topics[:3])
                 await self.play_tts(text, already_in_channel=True)
+                bridge = getattr(self.bot, "companion_bridge", None)
+                if bridge:
+                    asyncio.create_task(bridge.emit_topic_generated(topics[:3], "manual"))
         except Exception:
             await self.play_tts("話題產生器出了點問題，等一下再試", already_in_channel=True)
 

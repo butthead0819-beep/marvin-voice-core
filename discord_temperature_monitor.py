@@ -56,10 +56,12 @@ class DiscordTemperatureMonitor:
         wake_detector,
         tts_fn,
         topic_generator,
+        companion_bridge=None,
     ):
         self._wake_detector   = wake_detector
         self._tts_fn          = tts_fn
         self._topic_generator = topic_generator
+        self.companion_bridge = companion_bridge
 
         # 事件時間戳
         self._msg_times: deque[float]   = deque()
@@ -93,11 +95,22 @@ class DiscordTemperatureMonitor:
             return
         if is_affirmative(text):
             self._pending_confirm = False
-            asyncio.ensure_future(self._topic_generator.generate_topics())
+            asyncio.ensure_future(self._run_topic_generator_and_emit())
             logger.info("[TempMonitor] 肯定回覆 → 觸發 topic generator")
         else:
             self._pending_confirm = False
             logger.info("[TempMonitor] 否定/無關回覆 → 取消確認")
+
+    async def _run_topic_generator_and_emit(self) -> None:
+        """執行 topic generator 並在成功後廣播 topic_generated 事件。"""
+        try:
+            topics = await self._topic_generator.generate_topics()
+            if self.companion_bridge and topics:
+                asyncio.ensure_future(
+                    self.companion_bridge.emit_topic_generated(topics, "auto")
+                )
+        except Exception:
+            logger.exception("[TempMonitor] topic generator 執行失敗")
 
     def reset_session(self) -> None:
         """Jack 離開語音頻道時呼叫，重置 session 計數器。"""
@@ -111,37 +124,45 @@ class DiscordTemperatureMonitor:
         self._prune_old()
         level = self.level
 
-        if level != "cold":
-            # 溫度不 cold → 清除連續計數
-            self._cold_streak = 0
-            return
+        try:
+            if level != "cold":
+                # 溫度不 cold → 清除連續計數
+                self._cold_streak = 0
+                return
 
-        self._cold_streak += 1
-        logger.debug(f"[TempMonitor] cold_streak={self._cold_streak}, temp={self.temperature:.3f}")
+            self._cold_streak += 1
+            logger.debug(f"[TempMonitor] cold_streak={self._cold_streak}, temp={self.temperature:.3f}")
 
-        if self._cold_streak < _COLD_STREAK_NEED:
-            return
+            if self._cold_streak < _COLD_STREAK_NEED:
+                return
 
-        # 達到連續 3 分鐘 COLD —— 先檢查 cooldown 和 session cap
-        now = time.time()
-        if now - self._last_trigger < _COOLDOWN_SECONDS:
-            logger.debug("[TempMonitor] 仍在 cooldown 中，跳過")
-            return
+            # 達到連續 3 分鐘 COLD —— 先檢查 cooldown 和 session cap
+            now = time.time()
+            if now - self._last_trigger < _COOLDOWN_SECONDS:
+                logger.debug("[TempMonitor] 仍在 cooldown 中，跳過")
+                return
 
-        if self._session_count >= _SESSION_CAP:
-            logger.debug("[TempMonitor] 已達 session cap，跳過")
-            return
+            if self._session_count >= _SESSION_CAP:
+                logger.debug("[TempMonitor] 已達 session cap，跳過")
+                return
 
-        # 執行觸發
-        self._cold_streak   = 0
-        self._last_trigger  = now
-        self._session_count += 1
-        self._pending_confirm = True
+            # 執行觸發
+            self._cold_streak   = 0
+            self._last_trigger  = now
+            self._session_count += 1
+            self._pending_confirm = True
 
-        logger.info(f"[TempMonitor] LowTempTrigger #{self._session_count} — TTS + open window")
+            logger.info(f"[TempMonitor] LowTempTrigger #{self._session_count} — TTS + open window")
 
-        await self._tts_fn(_TTS_PROMPT)
-        self._wake_detector.temporary_open_window(_CONFIRM_WINDOW_S, reason="topic_confirm")
+            await self._tts_fn(_TTS_PROMPT)
+            self._wake_detector.temporary_open_window(_CONFIRM_WINDOW_S, reason="topic_confirm")
+
+        finally:
+            # 廣播溫度更新（每次 check 都廣播，不論是否觸發）
+            if self.companion_bridge:
+                asyncio.ensure_future(
+                    self.companion_bridge.emit_temperature_update(self.level, self.temperature)
+                )
 
     # ── Properties ────────────────────────────────────────────────────────────
 
