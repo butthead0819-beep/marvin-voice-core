@@ -4808,32 +4808,49 @@ class VoiceController(commands.Cog):
     # --- [🎵 Stream Implementation] ---
 
     async def _resolve_yt_query(self, query: str) -> dict | None:
-        """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。"""
+        """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。
+
+        文字搜尋會取 5 個候選並用 music_search.pick_best_music_candidate 評分，
+        過濾實況、反應、開箱、podcast 等非音樂內容。URL 直接解析（信任 user 選擇）。
+        """
         import yt_dlp
+        from music_search import pick_best_music_candidate
+
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
         }
-        search = query if query.startswith('http') else f'ytsearch1:{query}'
+        is_url = query.startswith('http')
+        search = query if is_url else f'ytsearch5:{query}'
 
         def _extract():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(search, download=False)
                 if not info:
                     return None
-                if 'entries' in info:
-                    info = info['entries'][0]
-                if not info:
+                if is_url:
+                    chosen = info if 'url' in info else None
+                else:
+                    entries = [e for e in (info.get('entries') or []) if e]
+                    if not entries:
+                        return None
+                    chosen = pick_best_music_candidate(entries)
+                    if chosen:
+                        logger.info(
+                            f"🎵 [Stream] 5 候選中挑出：{chosen.get('title','?')[:40]} "
+                            f"(category={chosen.get('categories', [])})"
+                        )
+                if not chosen or 'url' not in chosen:
                     return None
                 return {
-                    'title': info.get('title', 'Unknown'),
-                    'uploader': info.get('uploader', info.get('channel', 'Unknown')),
-                    'url': info['url'],
-                    'thumbnail': info.get('thumbnail'),
-                    'webpage_url': info.get('webpage_url', ''),
-                    'duration': info.get('duration', 0),
+                    'title': chosen.get('title', 'Unknown'),
+                    'uploader': chosen.get('uploader', chosen.get('channel', 'Unknown')),
+                    'url': chosen['url'],
+                    'thumbnail': chosen.get('thumbnail'),
+                    'webpage_url': chosen.get('webpage_url', ''),
+                    'duration': chosen.get('duration', 0),
                 }
 
         try:
@@ -5234,16 +5251,27 @@ class VoiceController(commands.Cog):
         if not music_ctx:
             return
         slot = self.bot.music_memory.time_slot(time.time())
+        # 取使用者常點 Top 5 當 cover 候選來源
+        top_songs = self.bot.music_memory.get_top_songs_for_user(username, limit=5)
+        top_titles = [s.get("title", "") for s in top_songs if s.get("title")]
+        top_titles_line = "、".join(f"《{t}》" for t in top_titles[:5]) or "（無紀錄）"
+
         prompt = (
-            f"根據以下 {username} 的音樂記憶，推薦一首適合此刻播放的歌曲。\n\n"
+            f"根據以下 {username} 的音樂記憶，推薦【一首歌的翻唱／cover 版本】。\n\n"
             f"{music_ctx}\n\n"
-            f"當前時段：{slot}，近期播過的歌（禁止推薦）：{', '.join(exclude_titles[:20]) or '無'}\n"
-            "你必須推薦一首不在上述禁止清單裡的歌。\n"
-            "以「藝人 - 歌名」格式回答一行，不需要解釋。若真的沒有其他選擇請回答「無推薦」。"
+            f"當前時段：{slot}\n"
+            f"{username} 最常點的歌（優先從這裡挑一首推薦它的 cover）：{top_titles_line}\n"
+            f"近期播過的版本（禁止推薦相同版本）：{', '.join(exclude_titles[:20]) or '無'}\n\n"
+            "規則：\n"
+            "1. 優先：從上述常點歌曲挑一首，推薦由【其他藝人翻唱／cover】的版本（指定翻唱者更佳）。\n"
+            "2. 次選：若該歌沒有合適的 cover，挑相同風格／相關藝人的歌的 cover。\n"
+            "3. 最後選擇：完全找不到 cover 時才推薦原創歌曲。\n"
+            "回答格式（一行）：「翻唱藝人 - 歌名 (cover)」或「藝人 - 歌名」。\n"
+            "若真的沒有合適選擇請回答「無推薦」。不需要解釋。"
         )
         try:
             rec = await self.bot.router._call_llm(
-                system_prompt=f"你是了解 {username} 音樂品味的推薦助手。",
+                system_prompt=f"你是了解 {username} 音樂品味的 cover/翻唱推薦助手。",
                 user_prompt=prompt,
                 tier="simple",
             )
