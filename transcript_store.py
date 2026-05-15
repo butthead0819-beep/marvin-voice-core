@@ -57,16 +57,34 @@ class TranscriptStore:
         finally:
             self._release(con)
 
-    def get_recent(self, speaker: str, guild_id: int, days: int = 7) -> list[dict]:
-        cutoff = time.time() - days * 86400
+    def get_recent(
+        self,
+        speaker: str | None = None,
+        guild_id: int = 0,
+        days: int = 7,
+        minutes: int | None = None,
+    ) -> list[dict]:
+        if minutes is not None:
+            cutoff = time.time() - minutes * 60
+        else:
+            cutoff = time.time() - days * 86400
+
         con = self._connect()
         try:
-            rows = con.execute(
-                "SELECT speaker, text, timestamp FROM transcripts "
-                "WHERE speaker = ? AND guild_id = ? AND timestamp >= ? "
-                "ORDER BY timestamp ASC",
-                (speaker, guild_id, cutoff),
-            ).fetchall()
+            if speaker is None:
+                rows = con.execute(
+                    "SELECT speaker, text, timestamp FROM transcripts "
+                    "WHERE guild_id = ? AND timestamp >= ? "
+                    "ORDER BY timestamp ASC",
+                    (guild_id, cutoff),
+                ).fetchall()
+            else:
+                rows = con.execute(
+                    "SELECT speaker, text, timestamp FROM transcripts "
+                    "WHERE speaker = ? AND guild_id = ? AND timestamp >= ? "
+                    "ORDER BY timestamp ASC",
+                    (speaker, guild_id, cutoff),
+                ).fetchall()
             return [{"speaker": r[0], "text": r[1], "timestamp": r[2]} for r in rows]
         finally:
             self._release(con)
