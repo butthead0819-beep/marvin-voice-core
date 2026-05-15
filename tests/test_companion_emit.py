@@ -87,11 +87,11 @@ async def test_temperature_monitor_no_bridge_does_not_crash():
     wake_detector = MagicMock()
     wake_detector.temporary_open_window = MagicMock()
     tts_fn = AsyncMock()
-    topic_generator = MagicMock()
+    topic_generator_fn = AsyncMock(return_value=[])
 
     monitor = DiscordTemperatureMonitor(
         wake_detector=wake_detector,
-        topic_generator=topic_generator,
+        topic_generator_fn=topic_generator_fn,
         tts_fn=tts_fn,
         companion_bridge=None,
     )
@@ -110,14 +110,14 @@ async def test_temperature_monitor_emits_on_check():
     wake_detector = MagicMock()
     wake_detector.temporary_open_window = MagicMock()
     tts_fn = AsyncMock()
-    topic_generator = MagicMock()
+    topic_generator_fn = AsyncMock(return_value=[])
 
     bridge = MagicMock()
     bridge.emit_temperature_update = AsyncMock()
 
     monitor = DiscordTemperatureMonitor(
         wake_detector=wake_detector,
-        topic_generator=topic_generator,
+        topic_generator_fn=topic_generator_fn,
         tts_fn=tts_fn,
         companion_bridge=bridge,
     )
@@ -142,25 +142,22 @@ async def test_temperature_monitor_emits_topic_on_affirmative():
     tts_fn = AsyncMock()
 
     topics_result = ["話題X", "話題Y"]
-
-    async def _fake_generate(*args, **kwargs):
-        return topics_result
-
-    topic_generator = MagicMock()
-    topic_generator.generate_topics = _fake_generate
+    topic_generator_fn = AsyncMock(return_value=topics_result)
 
     bridge = MagicMock()
     bridge.emit_topic_generated = AsyncMock()
 
     monitor = DiscordTemperatureMonitor(
         wake_detector=wake_detector,
-        topic_generator=topic_generator,
+        topic_generator_fn=topic_generator_fn,
         tts_fn=tts_fn,
         companion_bridge=bridge,
     )
 
     # 設定為 pending confirm 狀態
+    import time as _t
     monitor._pending_confirm = True
+    monitor._pending_confirm_until = _t.time() + 30.0
 
     # 給肯定回覆
     monitor.on_stt_result("好啊", "user_001")

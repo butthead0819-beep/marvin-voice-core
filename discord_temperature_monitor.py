@@ -55,13 +55,15 @@ class DiscordTemperatureMonitor:
         self,
         wake_detector,
         tts_fn,
-        topic_generator,
+        topic_generator_fn,
         companion_bridge=None,
     ):
-        self._wake_detector   = wake_detector
-        self._tts_fn          = tts_fn
-        self._topic_generator = topic_generator
-        self.companion_bridge = companion_bridge
+        # topic_generator_fn: async callable () -> list[str]
+        # 由 caller 封裝 guild_id / voice_members 取得邏輯
+        self._wake_detector      = wake_detector
+        self._tts_fn             = tts_fn
+        self._topic_generator_fn = topic_generator_fn
+        self.companion_bridge    = companion_bridge
 
         # 事件時間戳
         self._msg_times: deque[float]   = deque()
@@ -73,7 +75,8 @@ class DiscordTemperatureMonitor:
         self._session_count:  int   = 0
 
         # ConfirmationContext 狀態
-        self._pending_confirm: bool = False
+        self._pending_confirm:       bool  = False
+        self._pending_confirm_until: float = 0.0  # 過期時間戳（epoch）
 
     # ── 公開 API ──────────────────────────────────────────────────────────────
 
@@ -93,6 +96,11 @@ class DiscordTemperatureMonitor:
         """STT 轉錄結果回呼（同步）。若 pending confirm 且肯定 → 觸發 topic generator。"""
         if not self._pending_confirm:
             return
+        # 30 秒視窗已過期 → 清掉 stale state，這次 STT 不處理
+        if time.time() > self._pending_confirm_until:
+            self._pending_confirm = False
+            logger.info("[TempMonitor] 確認視窗已過期，清除 stale pending")
+            return
         if is_affirmative(text):
             self._pending_confirm = False
             asyncio.ensure_future(self._run_topic_generator_and_emit())
@@ -104,7 +112,7 @@ class DiscordTemperatureMonitor:
     async def _run_topic_generator_and_emit(self) -> None:
         """執行 topic generator 並在成功後廣播 topic_generated 事件。"""
         try:
-            topics = await self._topic_generator.generate_topics()
+            topics = await self._topic_generator_fn()
             if self.companion_bridge and topics:
                 asyncio.ensure_future(
                     self.companion_bridge.emit_topic_generated(topics, "auto")
@@ -114,9 +122,10 @@ class DiscordTemperatureMonitor:
 
     def reset_session(self) -> None:
         """Jack 離開語音頻道時呼叫，重置 session 計數器。"""
-        self._session_count  = 0
-        self._cold_streak    = 0
-        self._pending_confirm = False
+        self._session_count        = 0
+        self._cold_streak          = 0
+        self._pending_confirm      = False
+        self._pending_confirm_until = 0.0
         logger.info("[TempMonitor] Session 重置")
 
     async def check_and_trigger(self) -> None:
@@ -151,11 +160,15 @@ class DiscordTemperatureMonitor:
             self._last_trigger  = now
             self._session_count += 1
             self._pending_confirm = True
+            self._pending_confirm_until = now + _CONFIRM_WINDOW_S
 
             logger.info(f"[TempMonitor] LowTempTrigger #{self._session_count} — TTS + open window")
 
             await self._tts_fn(_TTS_PROMPT)
-            self._wake_detector.temporary_open_window(_CONFIRM_WINDOW_S, reason="topic_confirm")
+            if self._wake_detector is not None:
+                self._wake_detector.temporary_open_window(_CONFIRM_WINDOW_S, reason="topic_confirm")
+            else:
+                logger.warning("[TempMonitor] wake_detector 為 None，跳過開啟確認視窗")
 
         finally:
             # 廣播溫度更新（每次 check 都廣播，不論是否觸發）

@@ -330,11 +330,28 @@ class MarvinBot(commands.Bot):
             async def _tts_fn(text: str) -> None:
                 await vc_cog.play_tts(text, already_in_channel=True)
 
+            async def _run_topic_for_confirm() -> list[str]:
+                """ConfirmationContext 觸發時呼叫——封裝 voice_members + guild_id 取得邏輯。"""
+                voice_client = next((vc for vc in self.voice_clients if vc.is_connected()), None)
+                voice_channel = getattr(voice_client, "channel", None)
+                members = list(voice_channel.members) if voice_channel else []
+                guild_id = str(self.guilds[0].id) if self.guilds else "0"
+                topics = await _topic_gen.generate_topics(
+                    guild_id=guild_id,
+                    voice_members=members,
+                )
+                if topics:
+                    await vc_cog.play_tts(
+                        "好，我幫你想了幾個話題：" + "；".join(topics[:3]),
+                        already_in_channel=True,
+                    )
+                return topics
+
             _wake_detector = getattr(getattr(self, 'router', None), 'wake_fusion', None)
             _companion_bridge = getattr(self, "companion_bridge", None)
             _temp_monitor = DiscordTemperatureMonitor(
                 wake_detector=_wake_detector,
-                topic_generator=_topic_gen,
+                topic_generator_fn=_run_topic_for_confirm,
                 tts_fn=_tts_fn,
                 companion_bridge=_companion_bridge,
             )

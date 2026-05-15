@@ -39,13 +39,12 @@ async def test_record_voice_event_called_on_non_wake_check():
 
     wake_detector = MagicMock()
     wake_detector.temporary_open_window = MagicMock()
-    topic_gen = MagicMock()
-    topic_gen.generate_topics = AsyncMock(return_value=["話題A", "話題B", "話題C"])
+    topic_generator_fn = AsyncMock(return_value=["話題A", "話題B", "話題C"])
 
     tts_fn = AsyncMock()
     monitor = DiscordTemperatureMonitor(
         wake_detector=wake_detector,
-        topic_generator=topic_gen,
+        topic_generator_fn=topic_generator_fn,
         tts_fn=tts_fn,
     )
 
@@ -54,9 +53,12 @@ async def test_record_voice_event_called_on_non_wake_check():
     is_wake_check = False
     if not is_wake_check:
         monitor.record_voice_event(speaker)
+        # 新增：on_stt_result 接線檢查（pending=False 時為 no-op）
+        monitor.on_stt_result("hello", speaker)
 
     # 驗證：語音時間列表有 1 筆
     assert len(monitor._voice_times) == 1
+    assert monitor._pending_confirm is False
 
 
 # ── Test 2：handle_stt_result 偵測「給我話題」並呼叫 topic_generator ──────────
@@ -155,7 +157,44 @@ async def test_temperature_monitor_none_no_crash():
     # 沒有 crash 即通過
 
 
-# ── Test 5：topic_generator is None 時「給我話題」不 crash ───────────────────
+# ── Test 5a：on_stt_result 端到端 — confirm 後說「要」→ callback 被呼叫 ──────
+
+@pytest.mark.asyncio
+async def test_on_stt_result_affirmative_triggers_topic_generator_fn():
+    """
+    完整整合：handle_stt_result 路徑呼叫 on_stt_result(text, speaker)，
+    若 pending confirm 且肯定 → topic_generator_fn callback 被呼叫。
+
+    這個測試專門擋住「mock generate_topics 但真實簽名不符」的迴歸風險。
+    """
+    from discord_temperature_monitor import DiscordTemperatureMonitor
+
+    wake_detector = MagicMock()
+    wake_detector.temporary_open_window = MagicMock()
+    topic_generator_fn = AsyncMock(return_value=["話題A", "話題B", "話題C"])
+    tts_fn = AsyncMock()
+
+    monitor = DiscordTemperatureMonitor(
+        wake_detector=wake_detector,
+        topic_generator_fn=topic_generator_fn,
+        tts_fn=tts_fn,
+    )
+
+    with patch("discord_temperature_monitor.time.time", return_value=2000.0):
+        # 3 次 cold check → 觸發 + 開窗 + pending=True
+        await monitor.check_and_trigger()
+        await monitor.check_and_trigger()
+        await monitor.check_and_trigger()
+
+        # voice_controller.handle_stt_result 路徑：record + on_stt_result
+        monitor.record_voice_event("Jack")
+        monitor.on_stt_result("要", "Jack")
+        await asyncio.sleep(0)
+
+    topic_generator_fn.assert_called_once()
+
+
+# ── Test 6：topic_generator is None 時「給我話題」不 crash ───────────────────
 
 @pytest.mark.asyncio
 async def test_topic_generator_none_no_crash():

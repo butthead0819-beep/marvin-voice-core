@@ -25,7 +25,11 @@ pytest_plugins = ["pytest_asyncio"]
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _make_monitor(fake_time: float = 1000.0):
-    """建立 DiscordTemperatureMonitor，注入 mock 依賴。"""
+    """建立 DiscordTemperatureMonitor，注入 mock 依賴。
+
+    topic_generator_fn 是 async callable () -> list[str]，由 caller 封裝
+    voice_members / guild_id 的取得邏輯。
+    """
     from discord_temperature_monitor import DiscordTemperatureMonitor
 
     wake_detector = MagicMock()
@@ -33,15 +37,14 @@ def _make_monitor(fake_time: float = 1000.0):
 
     tts_fn = AsyncMock()
 
-    topic_generator = MagicMock()
-    topic_generator.generate_topics = AsyncMock()
+    topic_generator_fn = AsyncMock(return_value=["話題A", "話題B", "話題C"])
 
     monitor = DiscordTemperatureMonitor(
         wake_detector=wake_detector,
         tts_fn=tts_fn,
-        topic_generator=topic_generator,
+        topic_generator_fn=topic_generator_fn,
     )
-    return monitor, wake_detector, tts_fn, topic_generator
+    return monitor, wake_detector, tts_fn, topic_generator_fn
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -109,7 +112,7 @@ def test_temperature_levels():
 @pytest.mark.asyncio
 async def test_no_trigger_if_not_three_consecutive_cold_minutes():
     """只有 2 分鐘 COLD → 不觸發 TTS"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     with patch("discord_temperature_monitor.time.time", return_value=1000.0):
         await monitor.check_and_trigger()  # 1st cold minute
@@ -121,7 +124,7 @@ async def test_no_trigger_if_not_three_consecutive_cold_minutes():
 @pytest.mark.asyncio
 async def test_trigger_after_three_consecutive_cold_minutes():
     """3 分鐘連續 COLD → TTS 被呼叫一次"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     with patch("discord_temperature_monitor.time.time", return_value=1000.0):
         await monitor.check_and_trigger()  # 1st
@@ -134,7 +137,7 @@ async def test_trigger_after_three_consecutive_cold_minutes():
 @pytest.mark.asyncio
 async def test_cold_streak_resets_on_warm():
     """中間有 WARM 打斷 → cold streak 歸零，不應在第 3 次觸發"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     with patch("discord_temperature_monitor.time.time", return_value=1000.0):
         await monitor.check_and_trigger()  # 1st cold
@@ -156,7 +159,7 @@ async def test_cold_streak_resets_on_warm():
 @pytest.mark.asyncio
 async def test_no_trigger_within_cooldown():
     """觸發後 5 分鐘內（還在 10 min cooldown）再 check → 不觸發第二次"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     with patch("discord_temperature_monitor.time.time", return_value=1000.0):
         # 先觸發一次
@@ -177,7 +180,7 @@ async def test_no_trigger_within_cooldown():
 @pytest.mark.asyncio
 async def test_trigger_after_cooldown_expires():
     """觸發後超過 10 分鐘 → cooldown 結束，可再次觸發"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     with patch("discord_temperature_monitor.time.time", return_value=1000.0):
         await monitor.check_and_trigger()
@@ -200,7 +203,7 @@ async def test_trigger_after_cooldown_expires():
 @pytest.mark.asyncio
 async def test_session_cap_three_times():
     """3 次觸發後 → 即使 cooldown 結束也不再觸發"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     base_time = 1000.0
     for trigger_idx in range(4):  # 嘗試觸發 4 次
@@ -217,7 +220,7 @@ async def test_session_cap_three_times():
 @pytest.mark.asyncio
 async def test_reset_session_resets_count():
     """reset_session() 後 → session 計數器歸零，可再次觸發"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     base_time = 1000.0
     # 先觸發 3 次（達到 session cap）
@@ -248,52 +251,69 @@ async def test_reset_session_resets_count():
 @pytest.mark.asyncio
 async def test_affirmative_reply_triggers_topic_generator():
     """觸發後的確認視窗內說「要」→ topic_generator.generate_topics 被呼叫"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     with patch("discord_temperature_monitor.time.time", return_value=1000.0):
         await monitor.check_and_trigger()
         await monitor.check_and_trigger()
         await monitor.check_and_trigger()  # trigger → pending_confirm = True
-
-    # 模擬語音肯定回覆
-    monitor.on_stt_result("好啊", user_id="user_jack")
+        # 模擬語音肯定回覆（在確認視窗內，patch 保持 frozen time）
+        monitor.on_stt_result("好啊", user_id="user_jack")
 
     # 讓 ensure_future 完成
     await asyncio.sleep(0)
 
-    topic_generator.generate_topics.assert_called_once()
+    topic_generator_fn.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_non_affirmative_does_not_trigger():
     """確認視窗內說「不要」→ topic_generator 不被呼叫"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     with patch("discord_temperature_monitor.time.time", return_value=1000.0):
         await monitor.check_and_trigger()
         await monitor.check_and_trigger()
         await monitor.check_and_trigger()
+        monitor.on_stt_result("不要", user_id="user_jack")
+        await asyncio.sleep(0)
 
-    monitor.on_stt_result("不要", user_id="user_jack")
+    topic_generator_fn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_confirm_expires_after_window():
+    """確認視窗 30 秒過期後，即使說「要」也不觸發 topic generator。"""
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
+
+    # 觸發確認視窗（在 t=1000.0 觸發 → 視窗 1000–1030）
+    with patch("discord_temperature_monitor.time.time", return_value=1000.0):
+        await monitor.check_and_trigger()
+        await monitor.check_and_trigger()
+        await monitor.check_and_trigger()
+
+    # 31 秒後說「要」→ stale，應被忽略
+    with patch("discord_temperature_monitor.time.time", return_value=1031.0):
+        monitor.on_stt_result("要", user_id="user_jack")
+
     await asyncio.sleep(0)
-
-    topic_generator.generate_topics.assert_not_called()
+    topic_generator_fn.assert_not_called()
 
 
 def test_no_confirm_pending_ignores_stt():
     """沒有 pending confirm → on_stt_result 無作用（topic_generator 不呼叫）"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     # 從未觸發，pending_confirm = False
     monitor.on_stt_result("好", user_id="user_jack")
 
-    topic_generator.generate_topics.assert_not_called()
+    topic_generator_fn.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_wake_detector_window_opened_on_trigger():
     """觸發時 wake_detector.temporary_open_window(30, reason='topic_confirm') 被呼叫"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     with patch("discord_temperature_monitor.time.time", return_value=1000.0):
         await monitor.check_and_trigger()
@@ -306,18 +326,18 @@ async def test_wake_detector_window_opened_on_trigger():
 @pytest.mark.asyncio
 async def test_confirm_pending_cleared_after_stt_result():
     """肯定回覆後，pending_confirm 清除，不會重複觸發"""
-    monitor, wake_detector, tts_fn, topic_generator = _make_monitor()
+    monitor, wake_detector, tts_fn, topic_generator_fn = _make_monitor()
 
     with patch("discord_temperature_monitor.time.time", return_value=1000.0):
         await monitor.check_and_trigger()
         await monitor.check_and_trigger()
         await monitor.check_and_trigger()
 
-    monitor.on_stt_result("好", user_id="user_jack")
-    await asyncio.sleep(0)
+        monitor.on_stt_result("好", user_id="user_jack")
+        await asyncio.sleep(0)
 
-    # 再次呼叫 on_stt_result → pending 已清除，不應再次觸發
-    monitor.on_stt_result("好", user_id="user_jack")
-    await asyncio.sleep(0)
+        # 再次呼叫 on_stt_result → pending 已清除，不應再次觸發
+        monitor.on_stt_result("好", user_id="user_jack")
+        await asyncio.sleep(0)
 
-    assert topic_generator.generate_topics.call_count == 1
+    assert topic_generator_fn.call_count == 1
