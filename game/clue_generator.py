@@ -1,7 +1,15 @@
 from __future__ import annotations
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+_HINT_STRIP_RE = re.compile(r"[「」『』【】《》〈〉\{\}]")
+
+
+def _sanitize_hint(hint: str) -> str:
+    """Strip characters that could break the LLM system-prompt template."""
+    return _HINT_STRIP_RE.sub("", hint).replace("\n", " ").replace("\r", " ")
 
 # ── Per-round revelation levels ────────────────────────────────────────────────
 # Each level describes WHAT DIMENSION of the answer to hint at.
@@ -69,7 +77,7 @@ async def generate_clue(
 
     theme_section = f"本輪主題：「{theme}」\n" if theme else ""
     hint_section = (
-        f"出題者的提示：「{setter_hint.replace(chr(10), ' ').replace('」', '').replace('「', '')}」（請在線索中融入這個方向）\n"
+        f"出題者的提示：「{_sanitize_hint(setter_hint)}」（請在線索中融入這個方向）\n"
         if setter_hint
         else ""
     )

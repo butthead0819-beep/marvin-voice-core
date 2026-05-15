@@ -123,19 +123,11 @@ async def test_hint_button_rejects_round_5():
     assert hint_btn is not None
 
     interaction = MagicMock()
-    interaction.user.id = int("u1".replace("u", "")) if "u" in "u1" else 1  # setter
-    interaction.user.id = 1  # force as the setter for this test, checked against string
-    # Patch _session on the cog to have round 5
+    interaction.user.id = "u1"  # setter — str so str(id) == setter_id passes the guard
     interaction.response.send_message = AsyncMock()
     interaction.response.send_modal = AsyncMock()
 
-    # Simulate setter click on round 5
-    cog._session = session  # ensure cog sees round 5
-
-    # We simulate the setter_id check by having a custom check
-    # The button should block round >= 5
-    # Re-build with explicit round context
-    session.current_round = 5
+    cog._session = session
     await hint_btn.callback(interaction)
 
     # Either rejected with message, or modal not shown

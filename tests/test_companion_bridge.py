@@ -110,13 +110,20 @@ async def bridge(monkeypatch, mock_tracker, mock_vector_store, mock_music_memory
 
 
 async def _connect(port: int, token: str = "test-token"):
-    """以 aiohttp client 建立 WS 連線（auth header）。"""
+    """以 aiohttp client 建立 WS 連線（auth header）。
+    自動排掉 on-connect voice_channel_snapshot，讓後續測試直接收業務事件。
+    """
     import aiohttp
     session = aiohttp.ClientSession()
     ws = await session.ws_connect(
         f"http://127.0.0.1:{port}/companion-ws",
         headers={"X-Marmo-Token": token},
     )
+    # Drain the on-connect snapshot (sent by _handle_client since companion_bridge refactor)
+    try:
+        await asyncio.wait_for(ws.receive(), timeout=0.5)
+    except asyncio.TimeoutError:
+        pass
     return session, ws
 
 
@@ -286,9 +293,11 @@ async def test_memory_list_request_response_cycle(bridge, mock_suki_memory, mock
         assert resp["type"] == "memory_list_response"
         assert resp["payload"]["speaker"] == "Jack"
         assert "profile" in resp["payload"]
-        assert "vector_chunks" in resp["payload"]
-        assert resp["payload"]["profile"]["likes"] == ["beer"]
-        assert len(resp["payload"]["vector_chunks"]) == 2
+        assert "memories" in resp["payload"]
+        # profile.likes is now a list of {text, doc_id} objects
+        like_texts = [item["text"] for item in resp["payload"]["profile"]["likes"]]
+        assert "beer" in like_texts
+        assert len(resp["payload"]["memories"]) == 2
         mock_suki_memory.get_player_memory.assert_called_with("Jack")
         mock_vector_store.get_all.assert_called_with("Jack", 42, 10)
     finally:

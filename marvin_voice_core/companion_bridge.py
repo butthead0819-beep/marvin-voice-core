@@ -29,6 +29,7 @@ Cog 注入（Lane F）：
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -204,7 +205,7 @@ class CompanionBridge:
         if not self._token:
             logger.warning("[Companion_Bridge] MARMO_TOKEN 未設定，拒絕連線")
             return web.Response(status=401, text="token not configured")
-        if request.headers.get("X-Marmo-Token") != self._token:
+        if not hmac.compare_digest(request.headers.get("X-Marmo-Token", ""), self._token):
             return web.Response(status=401, text="unauthorized")
 
         ws = web.WebSocketResponse()

@@ -1,3 +1,4 @@
+import hmac
 import os
 import asyncio
 import logging
@@ -30,7 +31,7 @@ class MarmoServer:
         self._runner = None
 
     async def _handle_result(self, request: web.Request) -> web.Response:
-        if MARMO_TOKEN and request.headers.get("X-Marmo-Token") != MARMO_TOKEN:
+        if MARMO_TOKEN and not hmac.compare_digest(request.headers.get("X-Marmo-Token", ""), MARMO_TOKEN):
             return web.Response(status=401, text="unauthorized")
 
         data = await request.json()
