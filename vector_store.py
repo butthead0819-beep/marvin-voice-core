@@ -77,6 +77,36 @@ class VectorStore:
                 f"[VectorStore.delete] doc_id={doc_id!r} 失敗（已吞例外）: {e}"
             )
 
+    def get_profiles_bulk(self, speaker_ids: list[str], guild_id: str) -> list[str]:
+        """批量取得多位說話者的 Living Profile 壓縮字串（從向量搜尋聚合）。
+
+        每位 speaker 最多取 top-1 最近的文件作為 profile 代表。
+        若某 speaker 無資料，直接略過（不報錯）。
+        回傳順序與 speaker_ids 對應，但跳過無資料的 speaker。
+        """
+        profiles: list[str] = []
+        count = self._col.count()
+        if count == 0:
+            return profiles
+        for sid in speaker_ids:
+            try:
+                where = {"$and": [
+                    {"speaker": {"$eq": sid}},
+                    {"guild_id": {"$eq": str(guild_id)}},
+                ]}
+                n = min(1, count)
+                results = self._col.query(
+                    query_texts=["個人特徵 興趣 話題"],
+                    n_results=n,
+                    where=where,
+                )
+                docs = results.get("documents", [[]])[0]
+                if docs:
+                    profiles.append(docs[0])
+            except Exception:
+                pass
+        return profiles
+
     def update(self, doc_id: str, metadata: dict) -> None:
         """更新單一文件的 metadata；保留原有 keys，僅覆蓋傳入的欄位。
 
