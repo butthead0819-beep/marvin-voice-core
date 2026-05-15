@@ -10,7 +10,7 @@ TDD tests for affirmative.is_affirmative()
 """
 
 import pytest
-from affirmative import is_affirmative
+from utils.affirmative import is_affirmative
 
 
 # ---- 肯定詞：應回傳 True ----
