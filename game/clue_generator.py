@@ -37,7 +37,7 @@ _LEVEL_INSTRUCTIONS = {
 
 _CLUE_SYSTEM = """你是猜謎遊戲的出題助手。
 答案是「{answer}」（共 {char_count} 個字）。
-{theme_section}{prior_section}
+{theme_section}{hint_section}{prior_section}
 {level_instruction}
 
 規則：
@@ -47,7 +47,15 @@ _CLUE_SYSTEM = """你是猜謎遊戲的出題助手。
 """
 
 
-async def generate_clue(answer: str, round_num: int, prior_clues: list[str], router, *, theme: str | None = None) -> str:
+async def generate_clue(
+    answer: str,
+    round_num: int,
+    prior_clues: list[str],
+    router,
+    *,
+    theme: str | None = None,
+    setter_hint: str | None = None,
+) -> str:
     """
     Generate the clue for the given round.
 
@@ -60,6 +68,11 @@ async def generate_clue(answer: str, round_num: int, prior_clues: list[str], rou
     level_instruction = _LEVEL_INSTRUCTIONS[level]
 
     theme_section = f"本輪主題：「{theme}」\n" if theme else ""
+    hint_section = (
+        f"出題者的提示：「{setter_hint}」（請在線索中融入這個方向）\n"
+        if setter_hint
+        else ""
+    )
 
     if prior_clues:
         prior_section = "已有線索（新線索不可重複同一角度）：\n" + "\n".join(
@@ -72,6 +85,7 @@ async def generate_clue(answer: str, round_num: int, prior_clues: list[str], rou
         answer=answer,
         char_count=char_count,
         theme_section=theme_section,
+        hint_section=hint_section,
         prior_section=prior_section,
         level_instruction=level_instruction,
     )

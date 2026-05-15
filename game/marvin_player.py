@@ -54,10 +54,15 @@ class MarvinPlayer:
             base_url="https://api.groq.com/openai/v1",
         )
         self._weak_model = os.getenv("GROQ_SIMPLE_MODEL", "llama-3.1-8b-instant")
+        self._last_buzzed_clue_round: int | None = None
 
     async def should_buzz(self, clue_round: int) -> bool:
-        """Returns True if Marvin decides to buzz this round."""
+        """Returns True if Marvin decides to buzz this round.
+        Probability is halved when Marvin buzzed in the immediately preceding clue round.
+        """
         prob = BUZZ_PROBABILITY.get(clue_round, 1.0)
+        if clue_round > 1 and self._last_buzzed_clue_round == clue_round - 1:
+            prob *= 0.5
         return random.random() < prob
 
     async def generate_guess(
@@ -73,17 +78,17 @@ class MarvinPlayer:
         Rounds 1-3: blind guess — only char_count given.
         Rounds 4-5: full context — clues + already-tried answers to avoid.
         """
+        avoid_line = (
+            f"\n已猜過（不可重複）：{'、'.join(wrong_guesses)}"
+            if wrong_guesses
+            else ""
+        )
         if clue_round <= 3:
             system = _GUESS_SYSTEM_BLIND
-            user = f"答案有 {char_count} 個字。請猜出這個詞（只說答案）："
+            user = f"答案有 {char_count} 個字。{avoid_line}\n請猜出這個詞（只說答案）："
         else:
             system = _GUESS_SYSTEM_FULL
             clue_text = "\n".join(f"線索{i+1}：{c}" for i, c in enumerate(clues))
-            avoid_line = (
-                f"\n已猜過（不可重複）：{'、'.join(wrong_guesses)}"
-                if wrong_guesses
-                else ""
-            )
             user = (
                 f"答案有 {char_count} 個字。\n"
                 f"{clue_text}"
@@ -167,6 +172,7 @@ class MarvinPlayer:
         delay = random.uniform(1.5, 4.0)
         await asyncio.sleep(delay)
         guess = await self.generate_guess(clue_round, clues, char_count, wrong_guesses)
+        self._last_buzzed_clue_round = clue_round
         await on_buzz_ready(guess)
 
     def setter_quip(self) -> str:

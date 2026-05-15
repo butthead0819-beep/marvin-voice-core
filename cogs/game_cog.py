@@ -84,6 +84,27 @@ class Round5AnswerModal(discord.ui.Modal, title="Busted — 第5輪最終答案"
             )
 
 
+class SetterHintModal(discord.ui.Modal, title="Busted — 提示詞"):
+    hint_input = discord.ui.TextInput(
+        label="輸入提示詞",
+        placeholder="給隊友一個方向（只有你看得到此操作）",
+        min_length=1,
+        max_length=ANSWER_MAX_LEN,
+    )
+
+    def __init__(self, cog: BustedCog):
+        super().__init__()
+        self._cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        session = self._cog._session
+        if session is not None:
+            session.setter_hint = self.hint_input.value.strip()
+        await interaction.response.send_message(
+            "✅ 提示詞已記錄，將在下一條線索中使用！", ephemeral=True
+        )
+
+
 # ── Views ──────────────────────────────────────────────────────────────────────
 
 class JoinView(discord.ui.View):
@@ -129,9 +150,10 @@ class SetterInputView(discord.ui.View):
 
 
 class BuzzView(discord.ui.View):
-    def __init__(self, cog: BustedCog, disabled: bool = False):
+    def __init__(self, cog: BustedCog, disabled: bool = False, setter_id: str | None = None):
         super().__init__(timeout=None)
         self._cog = cog
+        self._setter_id = setter_id
         buzz_btn = discord.ui.Button(
             label="BUZZ IN! 🔔",
             style=discord.ButtonStyle.danger,
@@ -148,6 +170,15 @@ class BuzzView(discord.ui.View):
         )
         skip_btn.callback = self._on_skip_vote
         self.add_item(skip_btn)
+
+        if setter_id and setter_id != "marvin":
+            hint_btn = discord.ui.Button(
+                label="💡 輸入提示",
+                style=discord.ButtonStyle.primary,
+                custom_id="busted_setter_hint",
+            )
+            hint_btn.callback = self._on_hint
+            self.add_item(hint_btn)
 
     async def _on_buzz(self, interaction: discord.Interaction):
         engine = self._cog._engine
@@ -166,6 +197,16 @@ class BuzzView(discord.ui.View):
         user_id = str(interaction.user.id)
         await interaction.response.defer(ephemeral=True)
         await self._cog.record_skip_vote(user_id)
+
+    async def _on_hint(self, interaction: discord.Interaction):
+        if str(interaction.user.id) != self._setter_id:
+            await interaction.response.send_message("只有出題人才能輸入提示", ephemeral=True)
+            return
+        session = self._cog._session
+        if session is not None and session.current_round >= 5:
+            await interaction.response.send_message("第5輪不能再輸入提示了", ephemeral=True)
+            return
+        await interaction.response.send_modal(SetterHintModal(self._cog))
 
 
 class Round5View(discord.ui.View):
@@ -341,6 +382,9 @@ class BustedCog(commands.Cog):
         if session.wrong_guesses:
             e.add_field(name="❌ 已猜過", value="　".join(session.wrong_guesses), inline=False)
 
+        if session.applied_hint:
+            e.add_field(name="💡 出題者提示", value=f"**{session.applied_hint}**", inline=False)
+
         guesser_pts = {1: 100, 2: 80, 3: 60, 4: 40}.get(session.current_round, "比例")
         setter_pts  = {1: 20,  2: 40, 3: 60, 4: 80}.get(session.current_round, 100)
 
@@ -467,7 +511,7 @@ class BustedCog(commands.Cog):
         if state == GameState.CLUE_ACTIVE:
             remaining = max(int(self._clue_deadline - time.time()), 0)
             is_r5 = s.current_round >= 5
-            view = Round5View(self) if is_r5 else BuzzView(self, disabled=False)
+            view = Round5View(self) if is_r5 else BuzzView(self, disabled=False, setter_id=s.current_setter_id)
             await self._edit_game_message(self._build_clue_embed(s, remaining), view)
         elif state == GameState.ROUND_RESULT:
             await self._edit_game_message(self._build_result_embed(s), ResultView(self))
@@ -655,6 +699,8 @@ class BustedCog(commands.Cog):
 
         elif state == GameState.SETTER_INPUT:
             self._round5_display_scores.clear()
+            session.setter_hint = None
+            session.applied_hint = None
             embed = self._build_setter_input_embed(session)
             if session.current_setter_id == "marvin":
                 await self._post_game_message(embed)
@@ -666,7 +712,7 @@ class BustedCog(commands.Cog):
 
         elif state == GameState.CLUE_ACTIVE:
             is_r5 = session.current_round >= 5
-            view  = Round5View(self) if is_r5 else BuzzView(self, disabled=False)
+            view  = Round5View(self) if is_r5 else BuzzView(self, disabled=False, setter_id=session.current_setter_id)
             await self._post_game_message(self._build_clue_embed(session), view)
 
             self._skip_votes.clear()
@@ -757,7 +803,7 @@ class BustedCog(commands.Cog):
                 if refresh_bucket != last_refresh_bucket and remaining in range(1, 73):
                     last_refresh_bucket = refresh_bucket
                     is_r5 = session.current_round >= 5
-                    view  = Round5View(self) if is_r5 else BuzzView(self, disabled=False)
+                    view  = Round5View(self) if is_r5 else BuzzView(self, disabled=False, setter_id=session.current_setter_id)
                     await self._edit_game_message(self._build_clue_embed(session, max(remaining, 0)), view)
 
                 if time.time() >= self._clue_deadline:
@@ -877,7 +923,7 @@ class BustedCog(commands.Cog):
             clues         = list(session.current_clues)
             char_count    = len(session.current_answer or "")
             clue_round    = session.current_round
-            wrong_guesses = list(session.wrong_guesses) if clue_round >= 4 else []
+            wrong_guesses = list(session.wrong_guesses)
 
             if clue_round >= 5:
                 # Round 5: no buzzing — submit via modal path so humans aren't blocked
@@ -1031,7 +1077,17 @@ class BustedCog(commands.Cog):
                 await msg.edit(embed=discord.Embed(title="🎰 …", color=C_SPINNER))
                 await asyncio.sleep(0.4)
 
-            themes = pick_theme_candidates(self._memory_manager, n=3)
+            # Marvin passes None → scans all players; humans pass own display_name
+            setter_name: str | None = None
+            if self._session and self._session.current_setter_id != "marvin":
+                setter_p = next(
+                    (p for p in self._session.players
+                     if p.user_id == self._session.current_setter_id),
+                    None,
+                )
+                setter_name = setter_p.display_name if setter_p else None
+            themes = pick_theme_candidates(self._memory_manager,
+                                           setter_display_name=setter_name, n=3)
             await self._engine.begin_theme_select(themes)
 
         except asyncio.CancelledError:
@@ -1131,12 +1187,17 @@ class BustedCog(commands.Cog):
             session.current_clues.append("（線索生成器未連接）")
             await self.on_state_change(session)
             return
+        hint = session.setter_hint
+        session.setter_hint = None
+        session.applied_hint = hint
+
         clue = await generate_clue(
             session.current_answer,
             session.current_round,
             list(session.current_clues),
             router,
             theme=session.current_theme,
+            setter_hint=hint,
         )
         session.current_clues.append(clue)
         await self.on_state_change(session)

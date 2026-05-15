@@ -45,3 +45,5 @@ class GameSession:
     wrong_guesses: list[str] = field(default_factory=list)  # all wrong buzz answers this setter turn
     candidate_themes: list[str] = field(default_factory=list)  # options shown during THEME_SELECT
     current_theme: str | None = None                          # chosen theme for this round
+    setter_hint: str | None = None    # pending hint from setter (not yet used for clue generation)
+    applied_hint: str | None = None   # hint used for the current clue (shown in embed)
