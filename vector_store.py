@@ -66,6 +66,23 @@ class VectorStore:
             for i in range(len(ids))
         ]
 
+    def get_profiles_bulk(self, speaker_ids: list[str], guild_id: str | int) -> list[str]:
+        """回傳多個 speaker 的 profile 字串列表，跳過無 profile 的成員。
+
+        Args:
+            speaker_ids: 要查詢的 speaker ID 列表。
+            guild_id: Guild ID（支援 str 或 int）。
+
+        Returns:
+            list[str]：每個元素是 document 文字內容，無 profile 的成員不列入。
+        """
+        profiles: list[str] = []
+        for speaker_id in speaker_ids:
+            results = self.get_all(speaker_id, int(guild_id), limit=1)
+            if results:
+                profiles.append(results[0]["document"])
+        return profiles
+
     def delete(self, doc_id: str) -> None:
         """刪除單一文件；不存在時無動作（ChromaDB delete 對未知 id 本身就是 no-op）。"""
         try:
