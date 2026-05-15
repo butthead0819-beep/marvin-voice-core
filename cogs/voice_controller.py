@@ -472,6 +472,10 @@ class VoiceController(commands.Cog):
         self._transcript_store = TranscriptStore()
         self._vector_store = VectorStore()
 
+        # 環境智能助理 — 話題產生器 + 溫度計
+        self.temperature_monitor = None   # DiscordTemperatureMonitor，由 main_discord 注入
+        self.topic_generator = None       # TopicGenerator，由 main_discord 注入
+
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
         print("🎭 [Voice Controller] Cog 已掛載，啟動語音偵聽與史官系統...")
@@ -1466,6 +1470,22 @@ class VoiceController(commands.Cog):
             print("🛑 [Lifecycle] 停止視覺系統擷取迴圈...", flush=True)
             self.bot.screen_capture.stop()
 
+    async def _handle_generate_topics(self, speaker: str) -> None:
+        """主動觸發話題產生器，結果用 TTS 說出。"""
+        voice_channel = next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
+        members = getattr(voice_channel, "channel", None)
+        members = getattr(members, "members", []) if members else []
+        try:
+            topics = await self.topic_generator.generate_topics(
+                guild_id=str(self.bot.guilds[0].id) if self.bot.guilds else "0",
+                voice_members=members,
+            )
+            if topics:
+                text = "好，我幫你想了幾個話題：" + "；".join(topics[:3])
+                await self.play_tts(text, already_in_channel=True)
+        except Exception:
+            await self.play_tts("話題產生器出了點問題，等一下再試", already_in_channel=True)
+
     async def handle_stt_result(self, speaker: str, raw_text: str, timestamp: float, wav_bytes: bytes, prosody_data: dict = None, is_wake_check=False, track=None, bypass_etd=False, wake_intent: float = None):
         # 🔐 [Consent] 未同意者不送出任何資料（Groq STT / LLM / suki_memory 均跳過）
         if not self.consent.is_consented(speaker):
@@ -1473,6 +1493,16 @@ class VoiceController(commands.Cog):
 
         self.last_player_speech_time = time.time()
         self.proactive_attempts = 0
+
+        # [TemperatureMonitor] 記錄語音事件（STT 成功代表有人說話）
+        if self.temperature_monitor and not is_wake_check:
+            self.temperature_monitor.record_voice_event(speaker)
+
+        # [TopicGenerator] 主動觸發：「給我話題」語音指令
+        if (self.topic_generator and raw_text
+                and any(phrase in raw_text for phrase in ("給我話題", "來個話題", "出個話題", "出話題"))):
+            asyncio.create_task(self._handle_generate_topics(speaker))
+            return
 
         # 🚀 [Bug Fix] 確保 random 模組在異步閉包中可用
         import random

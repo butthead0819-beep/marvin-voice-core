@@ -314,6 +314,59 @@ class MarvinBot(commands.Bot):
         except Exception as e:
             logger.warning(f"[Companion_Bridge] startup failed: {e}")
 
+        # 7. ── 環境智能助理 — DiscordTemperatureMonitor + TopicGenerator ──
+        if vc_cog is not None:
+            from topic_generator import TopicGenerator
+            from discord_temperature_monitor import DiscordTemperatureMonitor
+            import asyncio as _asyncio
+
+            groq_client = getattr(getattr(self, 'router', None), 'groq_dedicated_client', None)
+            _topic_gen = TopicGenerator(
+                vector_store=vc_cog._vector_store,
+                transcript_store=vc_cog._transcript_store,
+                groq_client=groq_client,
+            )
+
+            async def _tts_fn(text: str) -> None:
+                await vc_cog.play_tts(text, already_in_channel=True)
+
+            _wake_detector = getattr(getattr(self, 'router', None), 'wake_fusion', None)
+            _temp_monitor = DiscordTemperatureMonitor(
+                wake_detector=_wake_detector,
+                topic_generator=_topic_gen,
+                tts_fn=_tts_fn,
+            )
+            vc_cog.temperature_monitor = _temp_monitor
+            vc_cog.topic_generator = _topic_gen
+
+            # on_message → 文字溫度計數
+            _temp_channel_id_str = os.environ.get("TEMP_TEXT_CHANNEL_ID", "0")
+            _temp_channel_id = int(_temp_channel_id_str) if _temp_channel_id_str.isdigit() else 0
+
+            async def _on_message_for_temperature(message) -> None:
+                if _temp_channel_id and message.channel.id == _temp_channel_id:
+                    _temp_monitor.record_message_event(str(message.channel.id))
+            self.add_listener(_on_message_for_temperature, "on_message")
+
+            # voice state update → session reset（Jack 離開語音頻道時）
+            async def _on_voice_state_update_for_temp(_member, before, after) -> None:
+                if before.channel and not after.channel:
+                    _temp_monitor.reset_session()
+            self.add_listener(_on_voice_state_update_for_temp, "on_voice_state_update")
+
+            # 每分鐘溫度檢查 task
+            async def _temperature_check_loop() -> None:
+                await self.wait_until_ready()
+                while not self.is_closed():
+                    await _asyncio.sleep(60)
+                    try:
+                        await _temp_monitor.check_and_trigger()
+                    except Exception:
+                        pass
+            self.loop.create_task(_temperature_check_loop())
+
+            logger.info("[AmbientIntelligence] DiscordTemperatureMonitor + TopicGenerator initialized")
+
     async def on_ready(self):
         logger.info(f"🤖 馬文已連線。帳號: {self.user} (ID: {self.user.id})")
         logger.info(f"🏘️  本尊已潛入以下 {len(self.guilds)} 個伺服器：")
