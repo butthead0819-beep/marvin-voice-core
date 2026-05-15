@@ -95,9 +95,10 @@ async def test_on_message_number_routes_as_guess():
     msg = _make_message("30", "狗與露")
     await cog.on_message(msg)
 
-    cog._channel.send.assert_called_once()
-    call_kwargs = cog._channel.send.call_args
-    assert call_kwargs.kwargs.get("embed") is not None, (
+    assert cog._channel.send.call_count >= 1, "channel.send must be called at least once"
+    # First call is the result embed; subsequent calls may re-post the guessing embed.
+    first_call = cog._channel.send.call_args_list[0]
+    assert first_call.kwargs.get("embed") is not None, (
         "A number typed in chat by the current guesser must route as a guess "
         "and produce a result embed."
     )
@@ -131,8 +132,8 @@ async def test_on_message_from_non_guesser_ignored():
     cog = Busted99Cog(_make_bot())
     await _bootstrap_guessing(cog)
 
-    # Marvin is setter (not guesser), so their message must be ignored
-    msg = _make_message("40", "Marvin")
+    # Marvin is setter (not guesser); give him a distinct user_id so he isn't mistaken for jack
+    msg = _make_message("40", "Marvin", user_id=99999)
     await cog.on_message(msg)
 
     cog._channel.send.assert_not_called()

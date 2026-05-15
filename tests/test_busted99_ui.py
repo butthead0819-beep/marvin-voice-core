@@ -168,6 +168,7 @@ async def test_wrong_guess_via_chat_game_embed_at_bottom():
     msg.content = "30"
     msg.author = MagicMock()
     msg.author.display_name = "狗與露"
+    msg.author.id = int(jack_id)
     msg.author.bot = False
 
     await cog.on_message(msg)

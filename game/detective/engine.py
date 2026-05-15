@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import sqlite3
 import time
 from typing import Any, Callable, Awaitable
+
+logger = logging.getLogger(__name__)
 
 from game.detective.session import (
     DetectiveSession,
@@ -140,6 +143,20 @@ class DetectiveEngine:
         finally:
             con.close()
 
+    def _write_score_deltas(self, deltas: list[tuple[str, str, int]]) -> None:
+        """Persist score deltas to player_scores immediately. Called from thread executor."""
+        nonzero = [(uid, name, d) for uid, name, d in deltas if d != 0]
+        if not nonzero:
+            return
+        con = sqlite3.connect(self._db_path)
+        try:
+            add_scores(con, nonzero)
+            con.commit()
+        except Exception as e:
+            logger.error("[DetectiveEngine] _write_score_deltas failed: %s", e)
+        finally:
+            con.close()
+
     def _write_session_end(
         self,
         session_id: str,
@@ -159,7 +176,6 @@ class DetectiveEngine:
                 """,
                 (session_id, guild_id, channel_id, player_count, started_at, ended_at),
             )
-            add_scores(con, [(p.user_id, p.display_name, p.score) for p in self.session.players])
             sorted_players = sorted(self.session.players, key=lambda p: p.score, reverse=True)
             scores_text = "、".join(
                 f"{p.display_name} {p.score}分" for p in sorted_players if p.score > 0
@@ -385,6 +401,12 @@ class DetectiveEngine:
                 len(correct_voters),
                 0,
             )
+            # Persist score deltas immediately
+            if score_changes:
+                name_map = {p.user_id: p.display_name for p in self.session.players}
+                deltas = [(uid, name_map.get(uid, uid), pts)
+                          for uid, pts in score_changes.items()]
+                loop.run_in_executor(None, self._write_score_deltas, deltas)
         except RuntimeError:
             pass
 

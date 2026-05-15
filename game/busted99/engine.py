@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import re
 import sqlite3
 import time
 from typing import Any, Callable, Awaitable
+
+logger = logging.getLogger(__name__)
 
 from game.busted99.session import Busted99Session, Busted99State, Player99State
 from game.busted99.scoring import score_for_space
@@ -214,6 +217,20 @@ class Busted99Engine:
         finally:
             con.close()
 
+    def _write_score_deltas(self, deltas: list[tuple[str, str, int]]) -> None:
+        """Persist score deltas to player_scores immediately. Called from thread executor."""
+        nonzero = [(uid, name, d) for uid, name, d in deltas if d != 0]
+        if not nonzero:
+            return
+        con = sqlite3.connect(self._db_path)
+        try:
+            add_scores(con, nonzero)
+            con.commit()
+        except Exception as e:
+            logger.error("[Busted99Engine] _write_score_deltas failed: %s", e)
+        finally:
+            con.close()
+
     def _save_session_end(self) -> None:
         con = sqlite3.connect(self._db_path)
         try:
@@ -234,7 +251,6 @@ class Busted99Engine:
                     json.dumps(final_scores),
                 ),
             )
-            add_scores(con, [(p.user_id, p.display_name, p.score) for p in self.session.players])
             sorted_players = sorted(self.session.players, key=lambda p: p.score, reverse=True)
             scores_text = "、".join(
                 f"{p.display_name} {p.score}分" for p in sorted_players if p.score > 0
@@ -404,6 +420,20 @@ class Busted99Engine:
                     next(p.display_name for p in self.session.players if p.user_id == guesser_id),
                     number, result_str, low_before, high_before, 0,
                 )
+                # Persist score deltas immediately
+                if result_str == "last_bust":
+                    deltas = []
+                    for p in self.session.players:
+                        if p.user_id == self.session.setter_id:
+                            deltas.append((p.user_id, p.display_name, 100))
+                        elif p.user_id != guesser_id:
+                            deltas.append((p.user_id, p.display_name, score_for_space(space)))
+                else:  # bust
+                    deltas = [
+                        (p.user_id, p.display_name, score_for_space(space))
+                        for p in self.session.players if p.user_id != guesser_id
+                    ]
+                loop.run_in_executor(None, self._write_score_deltas, deltas)
 
                 result = {
                     "result": result_str,
@@ -431,6 +461,10 @@ class Busted99Engine:
                         guesser_id,
                         next(p.display_name for p in self.session.players if p.user_id == guesser_id),
                         number, result_str, low_before, high_before, 100,
+                    )
+                    loop.run_in_executor(
+                        None, self._write_score_deltas,
+                        [(guesser_id, guesser.display_name, 100)],
                     )
 
                     result = {
@@ -481,6 +515,10 @@ class Busted99Engine:
                         guesser_id,
                         next(p.display_name for p in self.session.players if p.user_id == guesser_id),
                         number, result_str, low_before, high_before, 100,
+                    )
+                    loop.run_in_executor(
+                        None, self._write_score_deltas,
+                        [(guesser_id, guesser.display_name, 100)],
                     )
 
                     result = {
@@ -535,8 +573,11 @@ class Busted99Engine:
 
             # Deduct score
             guesser = next((p for p in self.session.players if p.user_id == guesser_id), None)
+            actual_delta = 0
             if guesser:
+                old_score = guesser.score
                 guesser.score = max(0, guesser.score - deduction)
+                actual_delta = guesser.score - old_score  # negative or zero
 
             self.session.last_guess_result = "timeout"
 
@@ -553,6 +594,11 @@ class Busted99Engine:
                 self.session.low_bound, self.session.high_bound,
                 -deduction,
             )
+            if actual_delta and guesser_id:
+                loop.run_in_executor(
+                    None, self._write_score_deltas,
+                    [(guesser_id, timed_out_name, actual_delta)],
+                )
 
             self._advance_guesser()
             next_guesser = self.session.current_guesser_id

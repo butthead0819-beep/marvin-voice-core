@@ -467,6 +467,7 @@ class VoiceController(commands.Cog):
         # 🗣️ [Dialogue State] 多回合確認流程狀態機
         # speaker -> {"state": str, "event": asyncio.Event, "question": str, "result": str, "corrected": str}
         self.speaker_dialogue_states = {}
+        self._speaker_lang: dict[str, str] = {}  # speaker → "zh" | "en"
 
         self._transcript_store = TranscriptStore()
         self._vector_store = VectorStore()
@@ -2604,7 +2605,9 @@ class VoiceController(commands.Cog):
                 _wi = task_data.get("wake_intent")  # None = Track A / 不明
 
                 # 立即播 filler（延遲遮掩）
-                asyncio.create_task(self._play_random_filler())
+                if raw_text:
+                    self._speaker_lang[speaker] = self._detect_text_lang(raw_text)
+                asyncio.create_task(self._play_random_filler(speaker))
 
                 # 多回合確認流程，回傳最終確認的問句
                 confirmed_query = await self._confirmation_flow(speaker, timestamp, initial_text=raw_text)
@@ -2641,10 +2644,19 @@ class VoiceController(commands.Cog):
                 break
         return t.strip()
 
-    async def _play_ack_sound(self):
-        """播放預存 ack 音效（assets/acks/），無檔案則 TTS fallback"""
+    def _detect_text_lang(self, text: str) -> str:
+        """Returns 'en' if text is primarily English (Latin > CJK × 2), else 'zh'."""
+        if not text:
+            return "zh"
+        latin = sum(1 for c in text if 'a' <= c.lower() <= 'z')
+        cjk = sum(1 for c in text if '一' <= c <= '鿿')
+        return "en" if latin > cjk * 2 else "zh"
+
+    async def _play_ack_sound(self, speaker: str = ""):
+        """播放預存 ack 音效，依 speaker 語言選擇 assets/acks/ 或 assets/acks_en/"""
         import random
-        ack_dir = "assets/acks"
+        is_en = self._speaker_lang.get(speaker) == "en"
+        ack_dir = "assets/acks_en" if is_en else "assets/acks"
         voice_client = discord.utils.get(self.bot.voice_clients)
         if not voice_client or not voice_client.is_connected():
             return
@@ -2670,8 +2682,11 @@ class VoiceController(commands.Cog):
             except Exception as e:
                 logger.warning(f"⚠️ [Ack] 播放失敗: {e}")
         else:
-            # Fallback：TTS 一個短應答
-            ack_texts = ["嗯。。。", "好吧。。。", "我在聽。", "嗯嗯。。。"]
+            ack_texts = (
+                ["Hmm...", "Fine...", "I'm listening.", "Yes..."]
+                if is_en else
+                ["嗯。。。", "好吧。。。", "我在聽。", "嗯嗯。。。"]
+            )
             await self.play_tts(random.choice(ack_texts))
 
     async def _confirmation_flow(self, speaker: str, wake_time: float, initial_text: str = "") -> str | None:
@@ -2853,7 +2868,8 @@ class VoiceController(commands.Cog):
             if _vc and _vc.is_connected() and not _vc.is_playing():
                 try:
                     import glob as _glob
-                    _ack_files = _glob.glob("assets/acks/ack_*.mp3")
+                    _ack_dir = "assets/acks_en" if self._speaker_lang.get(speaker) == "en" else "assets/acks"
+                    _ack_files = _glob.glob(f"{_ack_dir}/ack_*.mp3")
                     if _ack_files:
                         _vc.play(discord.FFmpegPCMAudio(random.choice(_ack_files)))
                 except Exception:
@@ -3484,7 +3500,7 @@ class VoiceController(commands.Cog):
 
         extra_context = f"對話脈絡：{self.bot.engine.conv_buffer.get_harvest(wake_time, before=10.0, after=0.5)}"
 
-        asyncio.create_task(self._play_ack_sound())
+        asyncio.create_task(self._play_ack_sound(speaker))
 
         try:
             response = await self.bot.router.analyze_tactical_situation(
@@ -3514,10 +3530,10 @@ class VoiceController(commands.Cog):
             self.stt_logger.info(f"[視覺查詢→{speaker}] 問={query} | 回應=（分析失敗）")
             await self.play_tts(err_text, already_in_channel=True)
 
-    async def _play_random_filler(self):
-        """從 assets/acks 隨機挑選音效進行預播放"""
+    async def _play_random_filler(self, speaker: str = ""):
+        """從 assets/acks 或 assets/acks_en 隨機挑選音效進行預播放"""
         import random
-        filler_dir = "assets/acks"
+        filler_dir = "assets/acks_en" if self._speaker_lang.get(speaker) == "en" else "assets/acks"
         if not os.path.exists(filler_dir):
             return
 

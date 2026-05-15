@@ -545,7 +545,7 @@ class PromptManager:
         
         # 🧪 [Language Guard] 強制繁體中文指令 (Operation Language Guard)
         # 為了應對 Tier-2/3 小模型在長文本下可能發生的語言飄移，在所有輸出末尾強制加上指令。
-        lang_directive = "\n\n【⚠️ 語言規範】：不論對話或日誌內容為何，請務必、絕對只能使用「繁體中文」進行回答與摘要。禁止使用英文。"
+        lang_directive = "\n\n【⚠️ 語言規範】：偵測使用者說話的語言——若以中文提問，絕對只能使用「繁體中文」（台灣口語）回答；若以英文提問，以英文回答。內容生成型任務（笑話、日誌、模仿、歌詞）一律使用繁體中文。"
 
         if layer in dna_sensitive_layers:
             # 💬 [Operation Warm Circuit] 口頭禪隨機注入

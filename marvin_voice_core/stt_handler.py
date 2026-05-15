@@ -83,7 +83,7 @@ class STTHandler:
                     self.whisper_model.transcribe,
                     wav_path,
                     beam_size=1,
-                    language="zh",
+                    language=None,
                     initial_prompt=prompt,
                     vad_filter=True,
                     vad_parameters=dict(min_silence_duration_ms=500),

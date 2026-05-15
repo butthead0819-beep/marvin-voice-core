@@ -134,10 +134,67 @@ def pick(memory_manager) -> tuple[str, str]:
     return pick_topic_and_answer(memory_manager)
 
 
-def pick_theme_candidates(memory_manager, n: int = 3) -> list[str]:
-    """Return n distinct concrete physical objects from CONCRETE_OBJECTS.
-    Always draws from the curated list so themes are never abstract.
+# All keywords that can be recognised inside memory text
+_ALL_TOPIC_KEYWORDS: frozenset[str] = frozenset(CONCRETE_OBJECTS) | frozenset(_TOPIC_ANSWER_MAP.keys())
+
+
+def _extract_topics_from_player(player_dict: dict) -> list[str]:
+    """Scan one player's memory for known concrete/topic keywords."""
+    found: list[str] = []
+    for h in player_dict.get("emotional_highlights", []):
+        moment = h.get("moment", "")
+        for kw in _ALL_TOPIC_KEYWORDS:
+            if kw in moment:
+                found.append(kw)
+    for key, val in player_dict.get("behavioral_patterns", {}).items():
+        text = f"{key} {val}"
+        for kw in _ALL_TOPIC_KEYWORDS:
+            if kw in text:
+                found.append(kw)
+    return found
+
+
+def pick_theme_candidates(
+    memory_manager,
+    setter_display_name: str | None = None,
+    n: int = 3,
+) -> list[str]:
+    """Return n distinct theme candidates.
+
+    Human setter (setter_display_name given): draws from that player's
+    emotional_highlights and behavioral_patterns.
+
+    Marvin (setter_display_name=None): draws from all cached players' highlights.
+
+    Falls back to CONCRETE_OBJECTS for any remaining slots.
     """
-    pool = list(CONCRETE_OBJECTS)
-    random.shuffle(pool)
-    return pool[:n]
+    pool: list[str] = []
+    try:
+        cache: dict = getattr(memory_manager, "_cache", {})
+        if setter_display_name:
+            player = cache.get(setter_display_name, {})
+            pool = _extract_topics_from_player(player)
+        else:
+            for player in cache.values():
+                if isinstance(player, dict):
+                    pool.extend(_extract_topics_from_player(player))
+    except Exception as e:
+        logger.warning(f"[TopicPicker] memory scan failed: {e}")
+
+    # Deduplicate preserving order, then shuffle
+    seen: set[str] = set()
+    unique: list[str] = []
+    for t in pool:
+        if t not in seen:
+            seen.add(t)
+            unique.append(t)
+    random.shuffle(unique)
+
+    if len(unique) >= n:
+        return unique[:n]
+
+    # Fill remaining slots from CONCRETE_OBJECTS
+    needed = n - len(unique)
+    extras = [x for x in CONCRETE_OBJECTS if x not in seen]
+    random.shuffle(extras)
+    return unique + extras[:needed]

@@ -542,7 +542,7 @@ class BustedCog(commands.Cog):
         return {
             GameState.SETTER_INPUT: 120,
             GameState.CLUE_ACTIVE:  50,
-            GameState.BUZZ_LOCKED:  50,
+            GameState.BUZZ_LOCKED:  int(BUZZ_LOCK_SECONDS),
             GameState.ROUND_RESULT: 50,
         }.get(state)
 

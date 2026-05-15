@@ -22,8 +22,19 @@ class SukiTTS:
         self.voice = voice
         self.rate = rate
         self.pitch = pitch
-        self.temp_dir = "records" 
+        self.temp_dir = "records"
+        self._english_voice = "en-GB-RyanNeural"
         os.makedirs(self.temp_dir, exist_ok=True)
+
+    def _is_english_text(self, text: str) -> bool:
+        """True if text is primarily English (Latin chars outnumber CJK chars by >2:1)."""
+        if not text:
+            return False
+        latin = sum(1 for c in text if 'a' <= c.lower() <= 'z')
+        cjk = sum(1 for c in text if '一' <= c <= '鿿')
+        if latin + cjk == 0:
+            return False
+        return latin > cjk * 2
 
     def _clean_text(self, text: str) -> str:
         """
@@ -83,8 +94,17 @@ class SukiTTS:
     async def _generate_marvin_macos_say(self, text: str, file_path: str) -> bool:
         """ [Ultimate Fallback] 針對馬文微調的 macOS say (低沉、緩慢、厭世) """
         try:
+            # 英文文字改用 Alex（macOS 內建英文男聲）
+            if self._is_english_text(text):
+                process_en = await asyncio.create_subprocess_exec(
+                    'say', '-v', 'Alex', '-r', '150', '--data-format=LEI16@44100', '-o', file_path, text,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                await process_en.communicate()
+                return process_en.returncode == 0 and os.path.exists(file_path)
+
             # 優先嘗試使用 Liao，並將語速強制降至 130 (預設約為 180-200)
-            target_voice = 'Liao' 
+            target_voice = 'Liao'
             words_per_minute = '130' 
             
             process = await asyncio.create_subprocess_exec(
@@ -128,7 +148,7 @@ class SukiTTS:
             logger.warning(f"⏩ [TTS] 文字內容僅包含符號: {processed_text}")
             return
 
-        v = voice or self.voice
+        v = voice or (self._english_voice if self._is_english_text(processed_text) else self.voice)
         r = rate or self.rate
         p = pitch or self.pitch
 
@@ -169,7 +189,8 @@ class SukiTTS:
             await asyncio.sleep(0.5)
             try:
                 # 使用備援語音
-                comm = edge_tts.Communicate(text=processed_text, voice="zh-TW-HsiaoChenNeural", rate=r, pitch=p)
+                _secondary = self._english_voice if self._is_english_text(processed_text) else "zh-TW-HsiaoChenNeural"
+                comm = edge_tts.Communicate(text=processed_text, voice=_secondary, rate=r, pitch=p)
                 async for chunk in comm.stream():
                     if chunk["type"] == "audio":
                         yield chunk["data"]

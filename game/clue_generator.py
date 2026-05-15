@@ -69,7 +69,7 @@ async def generate_clue(
 
     theme_section = f"本輪主題：「{theme}」\n" if theme else ""
     hint_section = (
-        f"出題者的提示：「{setter_hint}」（請在線索中融入這個方向）\n"
+        f"出題者的提示：「{setter_hint.replace(chr(10), ' ').replace('」', '').replace('「', '')}」（請在線索中融入這個方向）\n"
         if setter_hint
         else ""
     )

@@ -349,7 +349,7 @@ class Busted99Cog(commands.Cog):
             description="\n".join(lines),
             color=C_GAME_OVER,
         )
-        if session.answer:
+        if session.answer is not None:
             e.add_field(name="🔑 秘密答案", value=f"**{session.answer}**", inline=True)
         e.set_footer(text="感謝遊玩！用 /busted99_start 再來一局")
         return e
@@ -773,55 +773,25 @@ class Busted99Cog(commands.Cog):
                 await self._channel.send("再說一次？我沒聽清楚數字。")
             return False
 
-        result = await self._engine.submit_guess(guesser_id, number)
-        if result is None:
-            logger.warning("[Busted99] receive_voice: submit_guess returned None for %r → %d", speaker, number)
-            return False
-        res = result.get("result")
-        logger.info("[Busted99] receive_voice: %r guessed %d → %s", speaker, number, res)
-        if res == "out_of_range":
-            s = self._session
-            vc = self.bot.cogs.get("VoiceController")
-            if vc is not None:
-                try:
-                    await vc.play_tts("超出範圍，再說一次", already_in_channel=False)
-                except Exception:
-                    pass
-            if self._channel and s:
-                await self._channel.send(
-                    f"超出範圍！請猜 {s.low_bound}～{s.high_bound} 之間的數字。"
-                )
-            return False
-        if res == "boundary":
-            s = self._session
-            vc = self.bot.cogs.get("VoiceController")
-            if vc is not None:
-                try:
-                    await vc.play_tts("不可以猜邊界", already_in_channel=False)
-                except Exception:
-                    pass
-            if self._channel and s:
-                await self._channel.send(
-                    f"不可以猜邊界（{s.low_bound} 或 {s.high_bound}）！請重新猜。"
-                )
-            return False
+        logger.info("[Busted99] receive_voice: %r guessed %d", speaker, number)
+        ok, res_code = await self._process_guess(guesser.display_name, guesser_id, number)
 
-        if self._channel and self._session:
-            await self._channel.send(
-                embed=self._build_guess_result_embed(self._session, result)
-            )
-            # Re-post game embed below result so it stays at the bottom
-            if self._session.state == Busted99State.GUESSING:
-                remaining = max(1, int(self._guessing_deadline - time.time()))
-                await self._post_game_message(
-                    self._build_guessing_embed(self._session, remaining)
-                )
-        if res in ("wrong_low", "wrong_high"):
-            await self._play_sfx("wrong")
-        elif res in ("bust", "last_bust", "last_wrong"):
-            await self._play_sfx("correct")
+        # Voice-specific TTS on failure (blocked by game_mode guard in VC, but fire anyway)
+        if not ok:
+            tts_map = {
+                "out_of_range": "超出範圍，再說一次",
+                "boundary": "不可以猜邊界",
+            }
+            tts_text = tts_map.get(res_code)
+            if tts_text:
+                vc = self.bot.cogs.get("VoiceController")
+                if vc is not None:
+                    try:
+                        await vc.play_tts(tts_text, already_in_channel=False)
+                    except Exception:
+                        pass
 
-        return True
+        return ok
 
     async def _process_guess(
         self,
@@ -831,12 +801,13 @@ class Busted99Cog(commands.Cog):
     ) -> tuple[bool, str]:
         """
         共用猜數字處理核心：驗證狀態、呼叫 submit_guess、送出回饋。
-        回傳 (ok: bool, feedback_msg: str)。
+        回傳 (ok: bool, result_code: str)。
+        result_code 是引擎原始結果碼（wrong_low / out_of_range / boundary…）。
         """
         if self._engine is None or self._session is None:
-            return False, "目前沒有進行中的 Busted99 遊戲。"
+            return False, "error_no_engine"
         if self._session.state != Busted99State.GUESSING:
-            return False, "現在不是猜題階段。"
+            return False, "error_not_guessing"
 
         cur_id = self._session.current_guesser_id
         if cur_id != guesser_id:
@@ -844,24 +815,28 @@ class Busted99Cog(commands.Cog):
                 (p.display_name for p in self._session.players if p.user_id == cur_id),
                 "某位玩家",
             )
-            return False, f"現在輪到 **{expected}** 猜題，不是你喔！"
+            if self._channel:
+                await self._channel.send(f"現在輪到 **{expected}** 猜題，不是你喔！")
+            return False, "error_wrong_guesser"
 
         result = await self._engine.submit_guess(guesser_id, number)
         if result is None:
-            return False, "猜題失敗（系統錯誤），請再試一次。"
+            return False, "error_system"
 
         res = result.get("result")
         s = self._session
         if res == "out_of_range":
-            msg = f"超出範圍！請猜 {s.low_bound}～{s.high_bound} 之間的數字。"
             if self._channel:
-                await self._channel.send(msg)
-            return False, msg
+                await self._channel.send(
+                    f"超出範圍！請猜 {s.low_bound}～{s.high_bound} 之間的數字。"
+                )
+            return False, "out_of_range"
         if res == "boundary":
-            msg = f"不可以猜邊界（{s.low_bound} 或 {s.high_bound}）！請重新猜。"
             if self._channel:
-                await self._channel.send(msg)
-            return False, msg
+                await self._channel.send(
+                    f"不可以猜邊界（{s.low_bound} 或 {s.high_bound}）！請重新猜。"
+                )
+            return False, "boundary"
 
         if self._channel and self._session:
             await self._channel.send(
@@ -877,7 +852,7 @@ class Busted99Cog(commands.Cog):
         elif res in ("bust", "last_bust", "last_wrong"):
             await self._play_sfx("correct")
 
-        logger.info("[Busted99] keyboard guess: %r guessed %d → %s", guesser_display_name, number, res)
+        logger.info("[Busted99] guess: %r guessed %d → %s", guesser_display_name, number, res)
         return True, res
 
     # ── Internal start helper ──────────────────────────────────────────────────
@@ -950,7 +925,7 @@ class Busted99Cog(commands.Cog):
         guesser = next(
             (p for p in self._session.players if p.user_id == guesser_id), None
         )
-        if guesser is None or guesser.display_name != message.author.display_name:
+        if guesser is None or guesser_id != str(message.author.id):
             return
 
         number = parse_number(message.content)

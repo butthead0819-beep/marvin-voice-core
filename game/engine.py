@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import sqlite3
 import time
 from typing import Any, Callable, Awaitable
+
+logger = logging.getLogger(__name__)
 
 from game.session import GameSession, GameState, PlayerState
 from game import scoring
@@ -139,6 +142,20 @@ class GameEngine:
         finally:
             con.close()
 
+    def _write_score_deltas(self, deltas: list[tuple[str, str, int]]) -> None:
+        """Persist score deltas to player_scores immediately. Called from thread executor."""
+        nonzero = [(uid, name, d) for uid, name, d in deltas if d != 0]
+        if not nonzero:
+            return
+        con = sqlite3.connect(self._db_path)
+        try:
+            add_scores(con, nonzero)
+            con.commit()
+        except Exception as e:
+            logger.error("[Engine] _write_score_deltas failed: %s", e)
+        finally:
+            con.close()
+
     def _write_session(
         self,
         session_id: str,
@@ -160,7 +177,6 @@ class GameEngine:
                 (session_id, guild_id, started_at, ended_at, players_json, final_scores_json),
             )
             players = json.loads(players_json)
-            add_scores(con, [(p["user_id"], p["display_name"], p["score"]) for p in players])
             sorted_players = sorted(players, key=lambda p: p["score"], reverse=True)
             scores_text = "、".join(
                 f"{p['display_name']} {p['score']}分" for p in sorted_players if p["score"] > 0
@@ -346,16 +362,17 @@ class GameEngine:
                 self.session.buzz_holder_id = None
                 await self._notify()
 
-                # Persist round asynchronously
+                # Persist round and score deltas asynchronously
                 all_scores = {p.user_id: p.score for p in self.session.players}
                 winner_name = player.display_name if player else user_id
                 setter_name = setter.display_name if setter else (self.session.current_setter_id or "")
+                setter_id = self.session.current_setter_id or ""
                 asyncio.get_running_loop().run_in_executor(
                     None,
                     self._write_round,
                     self.session.session_id,
                     self.session.round_num,
-                    self.session.current_setter_id or "",
+                    setter_id,
                     setter_name,
                     answer,
                     json.dumps(self.session.current_clues),
@@ -366,6 +383,15 @@ class GameEngine:
                     guesser_pts,
                     json.dumps(all_scores),
                 )
+                deltas: list[tuple[str, str, int]] = []
+                if player:
+                    deltas.append((user_id, player.display_name, guesser_pts))
+                if setter and setter_pts:
+                    deltas.append((setter_id, setter_name, setter_pts))
+                if deltas:
+                    asyncio.get_running_loop().run_in_executor(
+                        None, self._write_score_deltas, deltas
+                    )
             else:
                 # Wrong answer — apply personal cooldown and release buzz
                 player = self._get_player(user_id)
@@ -407,6 +433,10 @@ class GameEngine:
             player = self._get_player(user_id)
             if player:
                 player.score += pts
+                if pts:
+                    asyncio.get_running_loop().run_in_executor(
+                        None, self._write_score_deltas, [(user_id, player.display_name, pts)]
+                    )
             await self._notify()
             return {"pts": pts, "matched": matched, "answer_len": len(answer)}
 
@@ -438,14 +468,15 @@ class GameEngine:
                 await self._notify()
 
                 answer = self.session.current_answer or ""
-                setter_name = setter.display_name if setter else (self.session.current_setter_id or "")
+                setter_id = self.session.current_setter_id or ""
+                setter_name = setter.display_name if setter else setter_id
                 all_scores = {p.user_id: p.score for p in self.session.players}
                 asyncio.get_running_loop().run_in_executor(
                     None,
                     self._write_round,
                     self.session.session_id,
                     self.session.round_num,
-                    self.session.current_setter_id or "",
+                    setter_id,
                     setter_name,
                     answer,
                     json.dumps(self.session.current_clues),
@@ -455,6 +486,9 @@ class GameEngine:
                     setter_pts,
                     None,
                     json.dumps(all_scores),
+                )
+                asyncio.get_running_loop().run_in_executor(
+                    None, self._write_score_deltas, [(setter_id, setter_name, setter_pts)]
                 )
                 return
 
@@ -565,9 +599,14 @@ class GameEngine:
             if self.session.state != GameState.SETTER_INPUT:
                 return
             setter = self._setter_player()
+            setter_id = self.session.current_setter_id or ""
             if setter:
                 setter.score += SETTER_TIMEOUT_PENALTY
                 setter.has_been_setter = True
+                asyncio.get_running_loop().run_in_executor(
+                    None, self._write_score_deltas,
+                    [(setter_id, setter.display_name, SETTER_TIMEOUT_PENALTY)]
+                )
             # Reset per-round state so the next setter starts clean
             self.session.current_answer = None
             self.session.current_clues = []

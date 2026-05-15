@@ -152,9 +152,10 @@ async def _voice_snapshot_loop(bridge, bot, interval: float = 15.0):
     while True:
         await asyncio.sleep(interval)
         try:
-            if not bot.voice_clients:
+            vcs = list(bot.voice_clients)
+            if not vcs:
                 continue
-            channel = bot.voice_clients[0].channel
+            channel = vcs[0].channel
             members = [
                 {
                     "speaker": m.display_name,

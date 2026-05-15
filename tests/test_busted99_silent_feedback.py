@@ -210,8 +210,9 @@ async def test_valid_wrong_guess_sends_embed():
     consumed = await cog.receive_voice_answer_by_speaker("狗與露", "30")
 
     assert consumed is True
-    cog._channel.send.assert_called_once()
-    call_kwargs = cog._channel.send.call_args
-    assert call_kwargs.kwargs.get("embed") is not None or (
-        call_kwargs.args and hasattr(call_kwargs.args[0], "title")
+    assert cog._channel.send.call_count >= 1, "channel.send must be called at least once"
+    # First call is the result embed; subsequent calls may re-post the guessing embed.
+    first_call = cog._channel.send.call_args_list[0]
+    assert first_call.kwargs.get("embed") is not None or (
+        first_call.args and hasattr(first_call.args[0], "title")
     ), "Valid wrong guess must send an embed, not plain text."
