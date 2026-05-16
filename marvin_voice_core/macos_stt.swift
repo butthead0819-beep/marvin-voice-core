@@ -40,10 +40,11 @@ if authStatus != .authorized {
     exit(1)
 }
 
-// 3. 強制設定語系為台灣繁體中文
-let locale = Locale(identifier: "zh-TW")
+// 3. 語系設定：優先讀取 STT_LOCALE 環境變數，預設 zh-TW
+let localeId = ProcessInfo.processInfo.environment["STT_LOCALE"] ?? "zh-TW"
+let locale = Locale(identifier: localeId)
 guard let recognizer = SFSpeechRecognizer(locale: locale) else {
-    fputs("❌ [Swift_Error] 此設備不支援指定的語音辨識語系 (zh-TW)\n", stderr)
+    fputs("❌ [Swift_Error] 此設備不支援指定的語音辨識語系 (\(localeId))\n", stderr)
     exit(1)
 }
 

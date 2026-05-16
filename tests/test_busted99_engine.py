@@ -175,7 +175,7 @@ async def test_submit_guess_wrong_low_narrows_range():
     guesser_id = engine.session.current_guesser_id
     result = await engine.submit_guess(guesser_id, 40)
     assert result["result"] == "wrong_low"
-    assert engine.session.low_bound == 41
+    assert engine.session.low_bound == 40   # 猜過的數字本身成為新下界
     assert engine.session.high_bound == 99  # unchanged
 
 
@@ -186,8 +186,8 @@ async def test_submit_guess_wrong_high_narrows_range():
     guesser_id = engine.session.current_guesser_id
     result = await engine.submit_guess(guesser_id, 50)
     assert result["result"] == "wrong_high"
-    assert engine.session.high_bound == 49
-    assert engine.session.low_bound == 1  # unchanged
+    assert engine.session.high_bound == 50  # 猜過的數字本身成為新上界
+    assert engine.session.low_bound == 1    # unchanged
 
 
 @pytest.mark.asyncio
@@ -418,15 +418,18 @@ from game.busted99.engine import Busted99Engine as _Busted99Engine
 
 
 def test_save_guess_signature_matches_call_sites():
-    """_save_guess must accept exactly 9 positional params (excluding self).
-    All call sites in submit_guess/timeout_guesser pass exactly 9 args.
+    """_save_guess must accept 10 params (excluding self): 9 required + all_scores_json optional.
+    Call sites pass 9 (base engine, under lock, session safe) or 10 (llm_engine, pre-snapshot).
     A mismatch causes silent DB write failures since run_in_executor discards exceptions."""
     sig = _inspect.signature(_Busted99Engine._save_guess)
     params = [p for p in sig.parameters if p != "self"]
-    assert len(params) == 9, (
-        f"_save_guess has {len(params)} params (excluding self), expected 9. "
+    assert len(params) == 10, (
+        f"_save_guess has {len(params)} params (excluding self), expected 10 (9 required + all_scores_json). "
         "Update call sites if you add/remove params."
     )
+    # all_scores_json must be optional (has a default)
+    last_param = sig.parameters["all_scores_json"]
+    assert last_param.default is not _inspect.Parameter.empty
 
 
 # ── 12. timeout_guesser returns timed_out metadata ────────────────────────────
@@ -528,3 +531,38 @@ async def test_submit_guess_boundary_space_eq3_rejected():
     guesser_id = engine.session.current_guesser_id
     result = await engine.submit_guess(guesser_id, 31)
     assert result["result"] == "boundary"
+
+
+# ── guesser_order 固定順序 ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_guesser_order_fixed_after_set_answer():
+    """set_answer 後 guesser_order 建立且不含 setter。"""
+    engine = await _setup_guessing(_make_engine(), answer=50)
+    assert "p1" not in engine.session.guesser_order
+    assert set(engine.session.guesser_order) == {"p2", "p3"}
+
+
+@pytest.mark.asyncio
+async def test_guesser_order_same_across_rounds():
+    """新輪開始時猜題順序應與第一輪相同（不重新 shuffle）。"""
+    engine = await _setup_guessing(_make_engine(), answer=50)
+    first_round_order = list(engine.session.guesser_order)
+
+    # 消耗完第一輪所有 guesser（p1 是 setter，所以兩個非 setter 各猜一次）
+    for _ in range(len(first_round_order)):
+        if engine.session.state != Busted99State.GUESSING:
+            break
+        gid = engine.session.current_guesser_id
+        # 猜邊界外的數字讓遊戲繼續（low_bound+1 且不等於 50）
+        guess = engine.session.low_bound + 1
+        if guess == 50:
+            guess = engine.session.high_bound - 1
+        await engine.submit_guess(gid, guess)
+
+    # 現在應該進入第二輪
+    assert engine.session.round_num == 2
+    # 第二輪第一個猜題者應與第一輪第一個相同
+    assert engine.session.current_guesser_id == first_round_order[0]
+    # queue 也應與第一輪剩餘一致
+    assert engine.session.guessing_queue == first_round_order[1:]

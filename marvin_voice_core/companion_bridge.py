@@ -77,6 +77,7 @@ EVT_GAME_END = "game_end"
 EVT_GAME_ALERT_RESPONSE = "game_alert_response"
 EVT_TEMPERATURE_UPDATE = "temperature_update"
 EVT_TOPIC_GENERATED = "topic_generated"
+EVT_RECALL_RESULT = "recall_result"
 
 _KNOWN_INCOMING = frozenset({
     EVT_ATMOSPHERE_FEEDBACK,
@@ -768,6 +769,14 @@ class CompanionBridge:
         """話題已產生（trigger: 'auto' 或 'manual'）。"""
         await self._broadcast(_make_event(EVT_TOPIC_GENERATED, {
             "topics": topics, "trigger": trigger,
+        }))
+
+    async def emit_recall_result(self, query: str, answer: str) -> None:
+        """語音日記 Recall 結果推送到 companion UI。"""
+        await self._broadcast(_make_event(EVT_RECALL_RESULT, {
+            "query": query,
+            "answer": answer,
+            "ts": time.time(),
         }))
 
     async def emit_voice_channel_snapshot(self, members: list[dict[str, Any]]) -> None:

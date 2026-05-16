@@ -1,0 +1,206 @@
+{
+  "channel": "et_1231",
+  "generated_at": "2026-05-15T17:44:58.527296+00:00",
+  "days": 30,
+  "summary": {
+    "total_users": 18,
+    "total_messages": 51,
+    "high_intent_messages": 0
+  },
+  "channel_vocab": [
+    {
+      "token": "et",
+      "count": 22
+    },
+    {
+      "token": "meow",
+      "count": 10
+    },
+    {
+      "token": "happy",
+      "count": 10
+    },
+    {
+      "token": "lul",
+      "count": 7
+    },
+    {
+      "token": "love",
+      "count": 7
+    },
+    {
+      "token": "qqet",
+      "count": 5
+    },
+    {
+      "token": "wa",
+      "count": 3
+    },
+    {
+      "token": "htt",
+      "count": 2
+    },
+    {
+      "token": "heart",
+      "count": 2
+    },
+    {
+      "token": "high",
+      "count": 2
+    },
+    {
+      "token": "shasha",
+      "count": 2
+    },
+    {
+      "token": "crying",
+      "count": 2
+    },
+    {
+      "token": "你可以唱了",
+      "count": 1
+    },
+    {
+      "token": "可以唱嗎",
+      "count": 1
+    },
+    {
+      "token": "我找不到",
+      "count": 1
+    },
+    {
+      "token": "好好聽",
+      "count": 1
+    },
+    {
+      "token": "慢慢喜歡",
+      "count": 1
+    },
+    {
+      "token": "megamlep",
+      "count": 1
+    },
+    {
+      "token": "sunh",
+      "count": 1
+    },
+    {
+      "token": "人才輩出",
+      "count": 1
+    }
+  ],
+  "hot_leads": [],
+  "loyal_community": [
+    {
+      "username": "jonny53770",
+      "conv_score": 0.0,
+      "loyalty": 1.24,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 5.0,
+      "total_msgs": 5,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "lulu07075",
+      "conv_score": 0.0,
+      "loyalty": 1.24,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 5.0,
+      "total_msgs": 5,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "marstae",
+      "conv_score": 0.0,
+      "loyalty": 1.24,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 5.0,
+      "total_msgs": 5,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "roger123789",
+      "conv_score": 0.0,
+      "loyalty": 1.24,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 5.0,
+      "total_msgs": 5,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "jjjay1201_loveet",
+      "conv_score": 0.0,
+      "loyalty": 1.12,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 4.0,
+      "total_msgs": 4,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "tony_li_0317",
+      "conv_score": 0.0,
+      "loyalty": 1.12,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 4.0,
+      "total_msgs": 4,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "dklrc",
+      "conv_score": 0.0,
+      "loyalty": 0.96,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 3.0,
+      "total_msgs": 3,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "ms08170507",
+      "conv_score": 0.0,
+      "loyalty": 0.96,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 3.0,
+      "total_msgs": 3,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "ranlybar0830",
+      "conv_score": 0.0,
+      "loyalty": 0.96,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 3.0,
+      "total_msgs": 3,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "set_0723",
+      "conv_score": 0.0,
+      "loyalty": 0.96,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 3.0,
+      "total_msgs": 3,
+      "intents": [],
+      "stage": "初訪觀眾"
+    }
+  ],
+  "voice_triggers": []
+}

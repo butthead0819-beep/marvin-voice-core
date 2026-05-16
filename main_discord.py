@@ -314,6 +314,70 @@ class MarvinBot(commands.Bot):
         except Exception as e:
             logger.warning(f"[Companion_Bridge] startup failed: {e}")
 
+        # 6b. 啟動 GameWSHub（Busted + Busted99 瀏覽器 UI）
+        _game_ws_port = int(os.getenv("GAME_WS_PORT", "8767"))
+        try:
+            from game_ws_hub import GameWSHub
+            _b99_cog = self.cogs.get("Busted99Cog")
+            _b_cog   = self.cogs.get("BustedCog")
+
+            async def _composite_action_handler(action: dict) -> None:
+                t = action.get("type", "")
+                if t.startswith("b99_") and _b99_cog is not None:
+                    await _b99_cog._handle_web_action(action)
+                elif t.startswith("b_") and _b_cog is not None:
+                    await _b_cog._handle_web_action(action)
+
+            def _composite_token_resolver(token: str):
+                if _b99_cog is not None:
+                    uid = _b99_cog.resolve_token(token)
+                    if uid:
+                        return uid
+                if _b_cog is not None:
+                    uid = _b_cog.resolve_token(token)
+                    if uid:
+                        return uid
+                return None
+
+            _hub = GameWSHub(
+                port=_game_ws_port,
+                host="0.0.0.0",
+                action_handler=_composite_action_handler,
+            )
+            _hub.set_token_resolver(_composite_token_resolver)
+            await _hub.start()
+            self.game_ws_hub = _hub
+            if _b99_cog is not None:
+                _b99_cog._ws_hub = _hub
+            if _b_cog is not None:
+                _b_cog._ws_hub = _hub
+            logger.info(f"[GameWSHub] started on port {_hub._port}")
+        except Exception as e:
+            logger.warning(f"[GameWSHub] startup failed: {e}")
+            self.game_ws_hub = None
+
+        # 6c. 啟動 Cloudflare Quick Tunnel（若 GAME_PUBLIC_URL 未設才自動開）
+        # cloudflared 改由獨立 LaunchAgent 託管，bot 重啟不會帶走 tunnel = URL 跨 restart 穩定
+        # 從固定路徑讀取當前 tunnel URL
+        self._cf_tunnel = None
+        if not os.getenv("GAME_PUBLIC_URL"):
+            url_file = os.path.expanduser("~/Library/Logs/Marvin/tunnel_url.txt")
+            # 等最多 15 秒讓 cloudflared LaunchAgent 寫入 URL（首啟動時）
+            for _ in range(30):
+                if os.path.exists(url_file):
+                    try:
+                        with open(url_file) as _f:
+                            url = _f.read().strip()
+                        if url.startswith("http"):
+                            os.environ["GAME_PUBLIC_URL"] = url
+                            logger.warning(f"[CloudflareTunnel] ✓ tunnel URL from file: {url}")
+                            break
+                    except Exception:
+                        pass
+                await asyncio.sleep(0.5)
+            else:
+                logger.warning("[CloudflareTunnel] ✗ 讀不到 tunnel_url.txt（cloudflared 沒在跑？），玩家連結用 localhost")
+
         # 7. ── 環境智能助理 — DiscordTemperatureMonitor + TopicGenerator ──
         if vc_cog is not None:
             from topic_generator import TopicGenerator
@@ -450,6 +514,18 @@ class MarvinBot(commands.Bot):
                 await bridge.stop()
             except Exception as e:
                 logger.warning(f"[Companion_Bridge] stop failed: {e}")
+        hub = getattr(self, "game_ws_hub", None)
+        if hub is not None:
+            try:
+                await hub.stop()
+            except Exception as e:
+                logger.warning(f"[GameWSHub] stop failed: {e}")
+        tunnel = getattr(self, "_cf_tunnel", None)
+        if tunnel is not None:
+            try:
+                await tunnel.stop()
+            except Exception as e:
+                logger.warning(f"[CloudflareTunnel] stop failed: {e}")
         await super().close()
 
     # --- 🛡️ [Error Handlers] ---

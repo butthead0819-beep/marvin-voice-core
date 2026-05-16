@@ -1,9 +1,8 @@
 """
 Tests for three first-round Busted99 bugs:
 
-Bug A — receive_voice_answer_by_speaker 在 submit_guess 之後多呼叫一次
-        _cancel_guesser_timeout()，把剛剛 on_state_change 給下一位猜題人
-        spawn 的 timeout 立刻取消。第二輪開始後每回合計時永遠不觸發。
+Bug A — 錯誤猜題後，_guesser_timeout_task 必須存活（不被提前取消）。
+        原本由 receive_voice_answer_by_speaker 觸發；語音停用後改由 on_message 驗證。
 
 Bug B — handle_stt_result line 1715 的 follow-up wake window 沒有 game_mode
         防護：開局前 8 秒若 window 未關閉，玩家喊出的數字會走 LLM 而非遊戲路由。
@@ -17,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -107,20 +106,16 @@ async def test_bugA_next_guesser_timeout_not_cancelled_after_wrong_guess():
     Wrong guess should NOT cancel the timeout that on_state_change just spawned
     for the next guesser.
 
-    Before fix: receive_voice_answer_by_speaker calls _cancel_guesser_timeout()
-    AFTER submit_guess returns. submit_guess calls on_state_change which already
-    set _guesser_timeout_task = new_task.  The redundant cancel kills new_task.
-    _guesser_timeout_task is then None → next round never times out.
+    Triggered via on_message (keyboard path) — the old voice path is disabled.
+    submit_guess calls on_state_change which spawns a new timeout task; nothing
+    in _process_guess should cancel it afterwards.
     """
     from cogs.busted99_cog import Busted99Cog
-    from game.busted99.session import Busted99State
 
     bot = _make_bot()
     cog = _make_cog(bot)
     session, engine, jack_id = await _bootstrap_guessing(cog, human_is_guesser=True)
 
-    # Wire on_state_change to the real cog method so timeout spawning logic runs.
-    # We monkey-patch the heavy Discord calls so they don't block.
     cog._channel = AsyncMock()
     cog._channel.send = AsyncMock()
     cog._channel.fetch_message = AsyncMock(return_value=AsyncMock())
@@ -135,29 +130,27 @@ async def test_bugA_next_guesser_timeout_not_cancelled_after_wrong_guess():
         return t
 
     cog._spawn = _recording_spawn
-
-    # Patch _post_game_message / _play_sfx so they don't hit Discord
     cog._post_game_message = AsyncMock()
     cog._play_sfx = AsyncMock()
 
     engine._on_state_change = cog.on_state_change
 
-    # Jack guesses 30 (below secret 50 → wrong_low)
-    consumed = await cog.receive_voice_answer_by_speaker("狗與露", "30")
+    # Jack types "30" in chat (below secret 50 → wrong_low)
+    msg = MagicMock()
+    msg.content = "30"
+    msg.author = MagicMock()
+    msg.author.display_name = "狗與露"
+    msg.author.id = jack_id   # str "jack_001" — on_message compares str(author.id)
+    msg.author.bot = False
+    await cog.on_message(msg)
 
-    assert consumed is True, "valid guess should be consumed"
-
-    # After receive_voice_answer_by_speaker returns, a NEW timeout task must
-    # have been spawned (by on_state_change for the next round) AND must NOT
-    # have been immediately cancelled.
+    # After on_message returns, a NEW timeout task must have been spawned (by
+    # on_state_change for the next round) AND must NOT have been cancelled.
     assert cog._guesser_timeout_task is not None, (
-        "Bug A: _guesser_timeout_task should exist for the next guesser's round, "
-        "but it was cancelled (set to None) by the redundant _cancel_guesser_timeout call."
+        "_guesser_timeout_task should exist for the next guesser's round"
     )
     assert not cog._guesser_timeout_task.cancelled(), (
-        "Bug A: the next guesser's timeout task was immediately cancelled — "
-        "the redundant _cancel_guesser_timeout() in receive_voice_answer_by_speaker "
-        "must be removed."
+        "the next guesser's timeout task must not be immediately cancelled"
     )
 
 

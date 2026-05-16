@@ -1,0 +1,300 @@
+{
+  "channel": "pinpinponpon627",
+  "generated_at": "2026-05-16T08:15:44.938698+00:00",
+  "days": 1,
+  "summary": {
+    "total_users": 119,
+    "total_messages": 1669,
+    "high_intent_messages": 29
+  },
+  "channel_vocab": [
+    {
+      "token": "pinpin",
+      "count": 289
+    },
+    {
+      "token": "lul",
+      "count": 187
+    },
+    {
+      "token": "dc",
+      "count": 46
+    },
+    {
+      "token": "https",
+      "count": 44
+    },
+    {
+      "token": "dance",
+      "count": 29
+    },
+    {
+      "token": "因為訊息量比較多",
+      "count": 28
+    },
+    {
+      "token": "如果主播漏看了可以多說幾次唷",
+      "count": 28
+    },
+    {
+      "token": "分鐘",
+      "count": 28
+    },
+    {
+      "token": "肚子餓",
+      "count": 26
+    },
+    {
+      "token": "飽食度",
+      "count": 26
+    },
+    {
+      "token": "seemsgood",
+      "count": 26
+    },
+    {
+      "token": "hiii",
+      "count": 24
+    },
+    {
+      "token": "gg",
+      "count": 24
+    },
+    {
+      "token": "歡迎",
+      "count": 23
+    },
+    {
+      "token": "晃晃",
+      "count": 23
+    },
+    {
+      "token": "有團長啊蘋隨時出沒跟福利唷",
+      "count": 23
+    },
+    {
+      "token": "訂閱者限定",
+      "count": 23
+    },
+    {
+      "token": "請將",
+      "count": 23
+    },
+    {
+      "token": "帳號與",
+      "count": 23
+    },
+    {
+      "token": "訂閱帳號進行綁定",
+      "count": 23
+    }
+  ],
+  "hot_leads": [
+    {
+      "username": "nightbot",
+      "conv_score": 210.76,
+      "loyalty": 3.05,
+      "intent_total": 69,
+      "sessions": 1,
+      "avg_msgs": 81.0,
+      "total_msgs": 81,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "pjbitter",
+      "conv_score": 25.64,
+      "loyalty": 4.27,
+      "intent_total": 6,
+      "sessions": 1,
+      "avg_msgs": 475.0,
+      "total_msgs": 475,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "coolygo9",
+      "conv_score": 11.64,
+      "loyalty": 3.88,
+      "intent_total": 3,
+      "sessions": 1,
+      "avg_msgs": 269.0,
+      "total_msgs": 269,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "onseven9son",
+      "conv_score": 5.49,
+      "loyalty": 1.83,
+      "intent_total": 3,
+      "sessions": 1,
+      "avg_msgs": 13.0,
+      "total_msgs": 13,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "leslie4001t5",
+      "conv_score": 5.17,
+      "loyalty": 1.72,
+      "intent_total": 3,
+      "sessions": 1,
+      "avg_msgs": 11.0,
+      "total_msgs": 11,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "pongpong3123",
+      "conv_score": 2.28,
+      "loyalty": 0.76,
+      "intent_total": 3,
+      "sessions": 1,
+      "avg_msgs": 2.0,
+      "total_msgs": 2,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "初訪觀眾"
+    }
+  ],
+  "loyal_community": [
+    {
+      "username": "santapipi",
+      "conv_score": 0.0,
+      "loyalty": 3.17,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 96.0,
+      "total_msgs": 96,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "dou_wha",
+      "conv_score": 0.0,
+      "loyalty": 3.06,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 82.0,
+      "total_msgs": 82,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "girl0506",
+      "conv_score": 0.0,
+      "loyalty": 2.92,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 67.0,
+      "total_msgs": 67,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "annyong1004",
+      "conv_score": 0.0,
+      "loyalty": 2.74,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 51.0,
+      "total_msgs": 51,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "welson183qw",
+      "conv_score": 0.0,
+      "loyalty": 2.62,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 43.0,
+      "total_msgs": 43,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "pinpinponpon627",
+      "conv_score": 0.0,
+      "loyalty": 2.54,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 38.0,
+      "total_msgs": 38,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "ace88889999",
+      "conv_score": 0.0,
+      "loyalty": 2.4,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 31.0,
+      "total_msgs": 31,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "savoury_chocolate",
+      "conv_score": 0.0,
+      "loyalty": 2.33,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 28.0,
+      "total_msgs": 28,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "jesters13",
+      "conv_score": 0.0,
+      "loyalty": 2.23,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 24.0,
+      "total_msgs": 24,
+      "intents": [],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "cc0412",
+      "conv_score": 0.0,
+      "loyalty": 2.0,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 17.0,
+      "total_msgs": 17,
+      "intents": [],
+      "stage": "初訪觀眾"
+    }
+  ],
+  "voice_triggers": [
+    {
+      "id": 786,
+      "audio_text": "你火藥桶都沒用到但應該還有第二波吧我待會第二步我再來殺他",
+      "audio_ts": "2026-05-16T06:24:04.313211+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 3
+    },
+    {
+      "id": 785,
+      "audio_text": "OK見底了",
+      "audio_ts": "2026-05-16T06:23:51.201505+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 3
+    }
+  ]
+}

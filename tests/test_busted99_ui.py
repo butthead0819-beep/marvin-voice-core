@@ -1,8 +1,9 @@
 """
 UI behavior tests for Busted99:
 
-  1. Game embed stays at bottom
-     - After wrong guess, game embed is re-posted below the result message
+  1. Game embed fixed position
+     - After wrong guess, game embed is EDITED in place (stays at fixed position);
+       result message is sent as a new message below it
      - When a player joins, joining embed is re-posted (not duplicated)
 
   2. Game over shows the secret answer
@@ -119,50 +120,78 @@ def test_game_over_embed_shows_answer_when_zero():
 # ══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_wrong_guess_game_embed_reposted_below_result():
+async def test_wrong_guess_result_sent_then_game_edited():
     """
-    After a wrong_low/wrong_high guess, the sequence of channel.send calls must
-    end with the GUESSING embed (range + timer), not the result embed.
+    After a wrong_low/wrong_high guess, the result embed is sent as a new message,
+    then the game embed is EDITED in place (edit-in-place design: fixed position).
 
-    Before fix:
-      on_state_change(GUESSING) → game embed  ← sent first
-      receive_voice_answer → result embed      ← sent second (below game embed)
-    The game embed ends up ABOVE the result embed — scrolls away from bottom.
-
-    After fix:
-      on_state_change(GUESSING) → game embed
-      receive_voice_answer → result embed
-      receive_voice_answer → re-post game embed  ← sent last (stays at bottom)
+    Expected sequence:
+      channel.send  → result embed (wrong_low/wrong_high)
+      fetch_message → get existing game message
+      msg.edit      → update game embed (shows new range + timer)
     """
     from cogs.busted99_cog import Busted99Cog
 
     cog = Busted99Cog(_make_bot())
     session, engine, jack_id, channel, sent_messages = await _bootstrap_guessing(cog)
 
-    await cog.receive_voice_answer_by_speaker("狗與露", "30")  # 30 < 50 → wrong_low
+    # Track edits on the fetched game message
+    game_msg_mock = AsyncMock()
+    edited_calls = []
+    async def _edit(**kwargs):
+        edited_calls.append(kwargs)
+    game_msg_mock.edit = AsyncMock(side_effect=_edit)
+    game_msg_mock.id = 999
+    channel.fetch_message = AsyncMock(return_value=game_msg_mock)
 
-    assert len(sent_messages) >= 2, "Must send at least result embed + game embed"
+    # Give the cog a game_message_id so _upsert_game_message tries to edit
+    session.game_message_id = 999
 
-    # Last message sent must be the game embed (has a "範圍" field)
-    last_kwargs, _ = sent_messages[-1]
-    last_embed = last_kwargs.get("embed")
-    assert last_embed is not None, "Last send must include an embed"
-    field_names = [f.name for f in last_embed.fields]
+    msg = MagicMock()
+    msg.content = "30"
+    msg.author = MagicMock()
+    msg.author.display_name = "狗與露"
+    msg.author.id = int(jack_id)
+    msg.author.bot = False
+    await cog.on_message(msg)  # 30 < 50 → wrong_low
+
+    # A result embed must have been sent as a new message
+    assert len(sent_messages) >= 1, "Must send at least the result embed"
+    result_kwargs, _ = sent_messages[-1]
+    result_embed = result_kwargs.get("embed")
+    assert result_embed is not None, "Result send must include an embed"
+
+    # Game embed must have been EDITED (not sent again)
+    assert len(edited_calls) >= 1, (
+        "After a wrong guess, the game embed must be edited in place via msg.edit(), "
+        "not sent as a new message. Check _upsert_game_message wiring."
+    )
+    edit_embed = edited_calls[-1].get("embed")
+    assert edit_embed is not None, "msg.edit must receive an embed kwarg"
+    field_names = [f.name for f in edit_embed.fields]
     assert "範圍" in field_names, (
-        "After a wrong guess, the LAST message sent must be the GUESSING embed "
-        "(showing range + timer) so it stays at the bottom of the channel."
+        "The edited game embed must show the updated range (範圍 field)."
     )
 
 
 @pytest.mark.asyncio
-async def test_wrong_guess_via_chat_game_embed_at_bottom():
+async def test_wrong_guess_via_chat_game_embed_edited_not_reposted():
     """
-    Same constraint via on_message chat path: game embed must be last sent.
+    Same constraint via on_message chat path: game embed is edited (not reposted).
     """
     from cogs.busted99_cog import Busted99Cog
 
     cog = Busted99Cog(_make_bot())
     session, engine, jack_id, channel, sent_messages = await _bootstrap_guessing(cog)
+
+    game_msg_mock = AsyncMock()
+    edited_calls = []
+    async def _edit(**kwargs):
+        edited_calls.append(kwargs)
+    game_msg_mock.edit = AsyncMock(side_effect=_edit)
+    game_msg_mock.id = 999
+    channel.fetch_message = AsyncMock(return_value=game_msg_mock)
+    session.game_message_id = 999
 
     msg = MagicMock()
     msg.content = "30"
@@ -173,15 +202,14 @@ async def test_wrong_guess_via_chat_game_embed_at_bottom():
 
     await cog.on_message(msg)
 
-    assert len(sent_messages) >= 2
-
-    last_kwargs, _ = sent_messages[-1]
-    last_embed = last_kwargs.get("embed")
-    assert last_embed is not None
-    field_names = [f.name for f in last_embed.fields]
+    assert len(sent_messages) >= 1
+    assert len(edited_calls) >= 1, (
+        "After a wrong guess via chat, the game embed must be edited in place via msg.edit()."
+    )
+    edit_embed = edited_calls[-1].get("embed")
+    field_names = [f.name for f in edit_embed.fields]
     assert "範圍" in field_names, (
-        "After a wrong guess via chat, the LAST channel message must be "
-        "the GUESSING embed so it stays at the bottom."
+        "The edited game embed must show the updated range (範圍 field)."
     )
 
 

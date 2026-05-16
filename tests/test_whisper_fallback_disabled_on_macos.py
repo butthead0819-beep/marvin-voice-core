@@ -32,8 +32,9 @@ def _make_engine(stt_engine: str = "macos"):
 
 
 @pytest.mark.asyncio
-async def test_whisper_not_called_as_fallback_on_macos():
+async def test_whisper_not_called_as_fallback_on_macos(monkeypatch):
     """On macos, if Swift STT returns empty, Whisper fallback must NOT be triggered."""
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     engine = _make_engine(stt_engine="macos")
     engine._run_swift_stt = AsyncMock(return_value="")
     engine._run_whisper_stt = AsyncMock(return_value="whisper result")
@@ -50,8 +51,9 @@ async def test_whisper_not_called_as_fallback_on_macos():
 
 
 @pytest.mark.asyncio
-async def test_whisper_not_called_as_fallback_on_mlx():
+async def test_whisper_not_called_as_fallback_on_mlx(monkeypatch):
     """On mlx (the actual env value on this Mac), Whisper fallback must NOT be triggered."""
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     engine = _make_engine(stt_engine="mlx")
     engine._run_swift_stt = AsyncMock(return_value="")
     engine._run_whisper_stt = AsyncMock(return_value="whisper result")

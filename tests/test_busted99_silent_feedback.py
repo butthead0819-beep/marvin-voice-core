@@ -1,23 +1,19 @@
 """
-Tests for silent-feedback bug in receive_voice_answer_by_speaker.
+Tests for on_message keyboard input path in Busted99Cog.
 
-When game_mode=True, vc.play_tts() is immediately blocked by the guard in
-VoiceController.play_tts (line 4063).  The three failure paths that only
-call play_tts produce ZERO user feedback:
-
-  1. parse_number fails  → plays TTS "再說一次"    (blocked) → nothing
-  2. submit_guess → "out_of_range" → TTS "超出範圍" (blocked) → nothing
-  3. submit_guess → "boundary"    → TTS "不可以猜邊界" (blocked) → nothing
-
-Fix: replace / supplement blocked TTS with _channel.send() text messages
-so the guesser receives feedback regardless of TTS availability.
+All guess input now goes through on_message → _process_guess (voice input disabled).
+Key behaviors:
+  1. Non-number text from the guesser → silently ignored (might be normal chat)
+  2. Message from non-guesser → silently ignored
+  3. Out-of-range number → _channel.send with range hint
+  4. Boundary number → _channel.send with boundary warning
+  5. Valid in-range non-boundary number → embed sent with guess result
 """
 from __future__ import annotations
 
-import asyncio
 import uuid
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -35,6 +31,15 @@ def _make_cog(bot=None):
     from cogs.busted99_cog import Busted99Cog
     cog = Busted99Cog(bot)
     return cog
+
+
+def _make_message(author_id: str, content: str, is_bot: bool = False) -> MagicMock:
+    msg = MagicMock()
+    msg.author.bot = is_bot
+    msg.author.id = author_id
+    msg.author.display_name = "狗與露"
+    msg.content = content
+    return msg
 
 
 async def _bootstrap_guessing_human(cog):
@@ -71,147 +76,115 @@ async def _bootstrap_guessing_human(cog):
     session.low_bound = 1
     session.high_bound = 99
     session.guessing_queue = []
-
-    from game.busted99.session import Busted99State as S
-    session.state = S.GUESSING
+    session.state = Busted99State.GUESSING
 
     return session, engine, jack_id
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Bug: parse_number fails → no feedback to user
+# Non-number input → silently ignored
 # ══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_parse_fail_sends_channel_message():
+async def test_on_message_ignores_non_number():
     """
-    When the user says something that parse_number cannot extract a number from,
-    _channel.send() must be called with a user-visible error message.
+    When the guesser sends non-number text, on_message silently ignores it.
+    Normal chat must not trigger any guess feedback.
+    """
+    cog = _make_cog()
+    await _bootstrap_guessing_human(cog)
 
-    Before fix: only play_tts("再說一次") is called — which is silently blocked
-    by game_mode guard — so the user receives no feedback at all.
+    msg = _make_message("jack_001", "hello world")
+    await cog.on_message(msg)
+
+    cog._channel.send.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Non-guesser message → silently ignored
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_non_guesser():
+    """
+    When someone other than the current guesser sends a number,
+    on_message silently ignores it — no channel.send, no guess processed.
+    """
+    cog = _make_cog()
+    await _bootstrap_guessing_human(cog)
+
+    msg = _make_message("other_user_999", "30")
+    await cog.on_message(msg)
+
+    cog._channel.send.assert_not_called()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Out-of-range → feedback required
+# ══════════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_on_message_out_of_range_sends_channel_message():
+    """
+    When the guesser types a number outside [low_bound, high_bound],
+    _channel.send() must be called with the valid range hint.
     """
     cog = _make_cog()
     session, engine, jack_id = await _bootstrap_guessing_human(cog)
 
-    # Simulate game_mode: VoiceController.play_tts is available but returns
-    # immediately (game_mode guard) — i.e., it does nothing.
-    mock_vc = MagicMock()
-    mock_vc.play_tts = AsyncMock(return_value=None)   # no-op (blocked)
-    cog.bot.cogs.get.return_value = mock_vc
-
-    consumed = await cog.receive_voice_answer_by_speaker("狗與露", "hello world")
-
-    assert consumed is False
-    cog._channel.send.assert_called_once(), (
-        "Silent-feedback bug: _channel.send must be called when parse_number fails, "
-        "so the user sees feedback even when play_tts is blocked by game_mode."
-    )
-
-
-@pytest.mark.asyncio
-async def test_parse_fail_no_vc_still_sends_channel_message():
-    """
-    Even when VoiceController cog is absent (vc is None),
-    _channel.send() must still be called.
-    """
-    cog = _make_cog()
-    session, engine, jack_id = await _bootstrap_guessing_human(cog)
-    cog.bot.cogs.get.return_value = None  # no VC
-
-    consumed = await cog.receive_voice_answer_by_speaker("狗與露", "啊啊啊啊")
-
-    assert consumed is False
-    cog._channel.send.assert_called_once(), (
-        "Silent-feedback bug: _channel.send must be called even without VoiceController."
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Bug: out_of_range → no feedback to user
-# ══════════════════════════════════════════════════════════════════════════════
-
-@pytest.mark.asyncio
-async def test_out_of_range_sends_channel_message():
-    """
-    When submit_guess returns out_of_range (guess outside [low_bound, high_bound]),
-    _channel.send() must be called with a user-visible error message.
-
-    Before fix: only play_tts("超出範圍，再說一次") — which is blocked by game_mode
-    guard — so the user sees nothing.
-    """
-    cog = _make_cog()
-    session, engine, jack_id = await _bootstrap_guessing_human(cog)
-
-    # Narrow the range so any guess outside [40, 60] is out_of_range
     session.low_bound = 40
     session.high_bound = 60
 
-    mock_vc = MagicMock()
-    mock_vc.play_tts = AsyncMock(return_value=None)
-    cog.bot.cogs.get.return_value = mock_vc
+    msg = _make_message(jack_id, "10")  # below low_bound=40
+    await cog.on_message(msg)
 
-    # Guess 10 is below low_bound=40 → out_of_range
-    consumed = await cog.receive_voice_answer_by_speaker("狗與露", "10")
-
-    assert consumed is False
-    cog._channel.send.assert_called_once(), (
-        "Silent-feedback bug: _channel.send must be called for out_of_range guess."
-    )
+    cog._channel.send.assert_called_once()
+    call_text = cog._channel.send.call_args[0][0]
+    assert "超出範圍" in call_text or "40" in call_text
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Bug: boundary → no feedback to user
+# Boundary guess → feedback required
 # ══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_boundary_guess_sends_channel_message():
+async def test_on_message_boundary_sends_channel_message():
     """
-    When submit_guess returns boundary (guess equals low_bound or high_bound),
-    _channel.send() must be called with a user-visible error message.
-
-    Before fix: only play_tts("不可以猜邊界") — blocked by game_mode guard.
+    When the guesser types the boundary value (low_bound or high_bound),
+    _channel.send() must be called with the boundary warning.
     """
     cog = _make_cog()
     session, engine, jack_id = await _bootstrap_guessing_human(cog)
 
-    # Set boundaries so that guessing exactly 1 (low_bound) hits boundary
     session.low_bound = 1
     session.high_bound = 99
 
-    mock_vc = MagicMock()
-    mock_vc.play_tts = AsyncMock(return_value=None)
-    cog.bot.cogs.get.return_value = mock_vc
+    msg = _make_message(jack_id, "1")  # equals low_bound → boundary
+    await cog.on_message(msg)
 
-    # Guess the low boundary itself
-    consumed = await cog.receive_voice_answer_by_speaker("狗與露", "1")
-
-    assert consumed is False
-    cog._channel.send.assert_called_once(), (
-        "Silent-feedback bug: _channel.send must be called for boundary guess."
-    )
+    cog._channel.send.assert_called_once()
+    call_text = cog._channel.send.call_args[0][0]
+    assert "邊界" in call_text or "1" in call_text
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Regression: valid wrong guess still sends embed (must not break)
+# Valid wrong guess → embed sent
 # ══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_valid_wrong_guess_sends_embed():
+async def test_on_message_valid_wrong_sends_embed():
     """
-    A valid in-range non-boundary wrong guess (wrong_low/wrong_high) must still
-    call _channel.send with an embed — this was already working and must not regress.
+    A valid in-range non-boundary wrong guess must send an embed with the
+    guess result. This is the happy path for the guesser experience.
     """
     cog = _make_cog()
     session, engine, jack_id = await _bootstrap_guessing_human(cog)
-
     cog._play_sfx = AsyncMock()
 
-    consumed = await cog.receive_voice_answer_by_speaker("狗與露", "30")
+    msg = _make_message(jack_id, "30")  # valid: 1 < 30 < 99, not boundary
+    await cog.on_message(msg)
 
-    assert consumed is True
-    assert cog._channel.send.call_count >= 1, "channel.send must be called at least once"
-    # First call is the result embed; subsequent calls may re-post the guessing embed.
+    assert cog._channel.send.call_count >= 1
     first_call = cog._channel.send.call_args_list[0]
     assert first_call.kwargs.get("embed") is not None or (
         first_call.args and hasattr(first_call.args[0], "title")

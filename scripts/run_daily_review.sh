@@ -3,8 +3,10 @@
 #
 # macOS launchd sends signals (SIGCHLD/SIGPIPE) to spawned processes during
 # Python's <frozen getpath> initialization, causing InterruptedError before
-# any user code runs. Fix: pre-warm the Python interpreter with a trivial
-# command first; once that succeeds we know the runtime is stable.
+# any user code runs. Workaround: detach from launchd's session via setsid,
+# which prevents signal inheritance and lets Python init cleanly.
+
+echo "[run_daily_review] === bash entered at $(date) ==="
 
 export HOME="/Users/jackhuang"
 export PATH="/Users/jackhuang/Documents/Antigravity/Discord-voice-bot/venv_simon/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"

@@ -30,6 +30,7 @@ class Busted99Session:
     low_bound: int = 1
     high_bound: int = 99
     current_guesser_id: str | None = None
+    guesser_order: list[str] = field(default_factory=list)   # 抽完 setter 後固定的猜題順序
     guessing_queue: list[str] = field(default_factory=list)  # 本輪待猜玩家 user_id
     round_num: int = 1                  # 第幾輪（所有人輪過一次算一輪）
     game_message_id: int | None = None

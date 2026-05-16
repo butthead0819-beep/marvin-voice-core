@@ -17,7 +17,7 @@ Modes:
 
 from __future__ import annotations
 
-import re, json, os, sys, asyncio, argparse, logging
+import re, json, os, sys, asyncio, argparse, logging, sqlite3
 from datetime import datetime
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -646,6 +646,23 @@ def _atomic_write(path: Path, data: dict):
 
 
 def save_to_memory(speaker: str, summary: dict):
+    # 1. 寫入 SQLite（primary storage，防止 bot 的 _export_json 覆蓋）
+    _db = _ROOT / "marvin.db"
+    try:
+        with sqlite3.connect(str(_db)) as conn:
+            row = conn.execute("SELECT data FROM players WHERE username=?", (speaker,)).fetchone()
+            if row:
+                p = json.loads(row[0])
+                p["speech_dna"] = summary
+                conn.execute("UPDATE players SET data=? WHERE username=?",
+                             (json.dumps(p, ensure_ascii=False), speaker))
+            else:
+                logger.warning(f"⚠️  marvin.db 找不到 {speaker}，只更新 JSON")
+        logger.info(f"✅  marvin.db 已更新：{speaker}.speech_dna")
+    except Exception as e:
+        logger.error(f"❌  marvin.db 寫入失敗: {e}")
+
+    # 2. 同步更新 JSON（供不跑 bot 時的腳本直接讀取）
     try:
         mem = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
     except Exception as e:
@@ -669,7 +686,7 @@ def save_detail(speaker: str, full: dict):
 def check_freshness(speaker: str, total: int) -> tuple[bool, str]:
     try:
         mem = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
-        dna = mem.get("players", {}).get(speaker, {}).get("speech_dna", {})
+        dna = mem.get("players", {}).get(speaker, {}).get("speech_dna") or {}
     except Exception:
         return True, "無法讀取記憶體"
 

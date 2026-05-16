@@ -17,7 +17,7 @@ from game.player_score_db import add_scores, init_table as init_scores_table
 from game.game_memory_db import init_table as init_memory_table, write_event
 
 MAX_HUMAN_PLAYERS = 5
-GUESS_TIMEOUT_SECONDS = 15.0
+GUESS_TIMEOUT_SECONDS = 600.0
 
 # Chinese number parsing
 _CHINESE_DIGITS = {
@@ -197,7 +197,10 @@ class Busted99Engine:
         low_before: int,
         high_before: int,
         score_change: int,
+        all_scores_json: str | None = None,
     ) -> None:
+        if all_scores_json is None:
+            all_scores_json = json.dumps({p.display_name: p.score for p in self.session.players})
         con = sqlite3.connect(self._db_path)
         try:
             con.execute(
@@ -209,8 +212,7 @@ class Busted99Engine:
                 """,
                 (
                     session_id, round_num, guesser_id, guesser_name, guess, result,
-                    low_before, high_before, score_change,
-                    json.dumps({p.display_name: p.score for p in self.session.players}),
+                    low_before, high_before, score_change, all_scores_json,
                 ),
             )
             con.commit()
@@ -329,9 +331,10 @@ class Busted99Engine:
             self.session.low_bound = 1
             self.session.high_bound = 99
 
-            # Build guessing queue: all non-setter players, randomly ordered
+            # Build guessing queue: all non-setter players, randomly ordered once and fixed
             non_setters = [p.user_id for p in self.session.players if p.user_id != setter_id]
             random.shuffle(non_setters)
+            self.session.guesser_order = list(non_setters)  # 固定順序，全局只 shuffle 一次
             self.session.round_num = 1
 
             if not non_setters:
@@ -476,7 +479,7 @@ class Busted99Engine:
                     }
                 else:
                     result_str = "wrong_low"
-                    self.session.low_bound = number + 1
+                    self.session.low_bound = number
                     self.session.last_guess_result = result_str
 
                     loop = asyncio.get_running_loop()
@@ -530,7 +533,7 @@ class Busted99Engine:
                     }
                 else:
                     result_str = "wrong_high"
-                    self.session.high_bound = number - 1
+                    self.session.high_bound = number
                     self.session.last_guess_result = result_str
 
                     loop = asyncio.get_running_loop()
@@ -647,13 +650,12 @@ class Busted99Engine:
         if self.session.guessing_queue:
             self.session.current_guesser_id = self.session.guessing_queue.pop(0)
         else:
-            # All guessers used — start new round
-            non_setters = [p.user_id for p in self.session.players if p.user_id != self.session.setter_id]
-            random.shuffle(non_setters)
+            # All guessers used — start new round with the same fixed order
+            order = self.session.guesser_order
             self.session.round_num += 1
-            if non_setters:
-                self.session.current_guesser_id = non_setters[0]
-                self.session.guessing_queue = non_setters[1:]
+            if order:
+                self.session.current_guesser_id = order[0]
+                self.session.guessing_queue = list(order[1:])
             else:
                 self.session.current_guesser_id = None
                 self.session.guessing_queue = []

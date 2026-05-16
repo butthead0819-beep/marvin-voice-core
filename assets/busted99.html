@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Busted99</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #1a1a2e; color: #e0e0e0;
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    padding: 24px 16px;
+  }
+  h1 { font-size: 1.6rem; color: #a29bfe; margin-bottom: 4px; }
+  #status { font-size: 0.8rem; color: #636e72; margin-bottom: 20px; }
+  #status.connected { color: #00b894; }
+  #status.error     { color: #d63031; }
+
+  .card {
+    background: #16213e; border-radius: 12px; padding: 20px;
+    width: 100%; max-width: 480px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 1rem; color: #74b9ff; margin-bottom: 12px; }
+
+  /* phase badge */
+  #phase-badge {
+    display: inline-block; padding: 4px 12px; border-radius: 20px;
+    font-size: 0.85rem; font-weight: 600; margin-bottom: 12px;
+  }
+  .phase-joining       { background: #5865f2; }
+  .phase-setter_picking{ background: #9b59b6; }
+  .phase-guessing      { background: #e17055; }
+  .phase-game_over     { background: #ffd700; color: #1a1a2e; }
+
+  .info-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+  .label { color: #b2bec3; font-size: 0.85rem; }
+  .value { font-weight: 600; }
+  .range { font-size: 1.4rem; color: #fdcb6e; text-align: center; margin: 8px 0; }
+  .timer { font-size: 1.1rem; color: #fd79a8; text-align: center; }
+
+  /* scores */
+  .score-row { display: flex; justify-content: space-between; padding: 4px 0;
+               border-bottom: 1px solid #2d3561; }
+  .score-row:last-child { border-bottom: none; }
+
+  /* vote bar */
+  #skip-section { text-align: center; }
+  #vote-count { color: #fdcb6e; font-size: 0.9rem; margin-bottom: 8px; }
+
+  /* inputs & buttons */
+  input[type=text], input[type=number] {
+    width: 100%; padding: 10px 14px; border-radius: 8px;
+    background: #0f3460; border: 1px solid #5865f2; color: #e0e0e0;
+    font-size: 1rem; margin-bottom: 10px; outline: none;
+  }
+  input:focus { border-color: #a29bfe; }
+  button {
+    width: 100%; padding: 11px; border-radius: 8px; border: none;
+    font-size: 1rem; font-weight: 600; cursor: pointer; transition: opacity .15s;
+  }
+  button:active { opacity: 0.7; }
+  button:disabled { opacity: 0.35; cursor: default; }
+  .btn-primary  { background: #5865f2; color: #fff; }
+  .btn-success  { background: #00b894; color: #fff; }
+  .btn-danger   { background: #d63031; color: #fff; }
+  .btn-secondary{ background: #636e72; color: #fff; }
+  .btn-sm       { width: auto; padding: 7px 18px; font-size: 0.85rem; }
+  .mt { margin-top: 8px; }
+
+  #log {
+    width: 100%; max-width: 480px;
+    background: #0d0d1a; border-radius: 8px; padding: 10px 14px;
+    font-size: 0.75rem; color: #636e72; height: 80px; overflow-y: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>🔢 Busted99</h1>
+<div id="status">連線中…</div>
+
+<!-- Identity -->
+<div class="card" id="identity-card">
+  <h2>你的名稱</h2>
+  <input id="my-name" type="text" placeholder="輸入你的 Discord 名稱" />
+  <button class="btn-primary" onclick="setName()">確認</button>
+</div>
+
+<!-- Game state -->
+<div class="card" id="state-card" style="display:none">
+  <div id="phase-badge" class="phase-joining">等待中</div>
+  <div class="info-row">
+    <span class="label">出題者</span><span class="value" id="setter">—</span>
+  </div>
+  <div class="info-row">
+    <span class="label">猜題者</span><span class="value" id="guesser">—</span>
+  </div>
+  <div class="range" id="range">— ～ —</div>
+  <div class="timer" id="timer"></div>
+  <!-- Game over summary（phase=game_over 才顯示）-->
+  <div id="game-over-summary" style="display:none; margin-top:14px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.1)">
+    <div style="text-align:center; font-size:1.1em; margin-bottom:8px">
+      🎯 答案是 <span id="answer-number" style="color:#ffd700; font-weight:bold; font-size:1.4em">—</span>
+    </div>
+    <div id="bust-detail" style="text-align:center; color:#ff6b9d; margin-bottom:8px"></div>
+    <div id="score-delta-list" style="margin-top:8px; font-size:0.95em"></div>
+  </div>
+</div>
+
+<!-- Actions -->
+<div class="card" id="actions-card" style="display:none">
+  <h2>動作</h2>
+  <div id="join-section">
+    <button class="btn-primary" onclick="sendJoin()">加入遊戲 🎮</button>
+  </div>
+  <div id="guess-section" style="display:none; margin-top:10px">
+    <input id="guess-input" type="number" min="1" max="99" placeholder="輸入 1–99" />
+    <button class="btn-success" onclick="sendGuess()">送出猜測</button>
+  </div>
+  <div id="skip-section" style="display:none; margin-top:10px">
+    <div id="vote-count"></div>
+    <button class="btn-secondary btn-sm" onclick="sendSkipVote()">⏭ 投票跳過此輪</button>
+  </div>
+</div>
+
+<!-- Scores -->
+<div class="card" id="scores-card" style="display:none">
+  <h2>積分板</h2>
+  <div id="scores-list"></div>
+</div>
+
+<!-- Debug log -->
+<div id="log"></div>
+
+<script>
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/game-ws`;
+let ws, myName = '', state = null, reconnectTimer = null;
+let prevScores = {};  // 記住 game_over 之前的分數，供計算 delta
+
+// 從 URL 讀取 token + name（Marvin DM 的個人連結帶有 ?token=xxx&name=yyy）
+const urlToken = new URLSearchParams(location.search).get('token') || '';
+const urlName  = new URLSearchParams(location.search).get('name')  || '';
+
+// ── identity ──────────────────────────────────────────────────────────────
+function init() {
+  if (urlToken) {
+    // 有 token → 直接連線，不用輸入名稱
+    document.getElementById('identity-card').style.display = 'none';
+    document.getElementById('actions-card').style.display = '';
+    if (urlName) myName = urlName;  // UI 比對「是不是我」用，server 仍以 token 為準
+    log(`使用個人連結登入（token: ${urlToken.slice(0,6)}…）`);
+    connect();
+  }
+  // 無 token → 顯示名稱輸入框（本機測試用）
+}
+
+function setName() {
+  const v = document.getElementById('my-name').value.trim();
+  if (!v) return;
+  myName = v;
+  document.getElementById('identity-card').style.display = 'none';
+  document.getElementById('actions-card').style.display = '';
+  log(`名稱設定為「${myName}」`);
+  connect();
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────────────
+function connect() {
+  clearTimeout(reconnectTimer);
+  ws = new WebSocket(WS_URL);
+  setStatus('連線中…', '');
+
+  ws.onopen = () => {
+    setStatus('已連線', 'connected');
+    log('WebSocket 已連線');
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'game_state') {
+        state = data;
+        render(data);
+      }
+    } catch(_) {}
+  };
+
+  ws.onclose = () => {
+    setStatus('已斷線，5 秒後重連…', 'error');
+    reconnectTimer = setTimeout(connect, 5000);
+  };
+
+  ws.onerror = () => {
+    setStatus('連線錯誤', 'error');
+  };
+}
+
+function send(obj) {
+  if (!ws || ws.readyState !== 1) { log('⚠ 未連線'); return; }
+  // token 優先；本機測試時退回 name
+  if (urlToken) obj.token = urlToken;
+  else if (myName) obj.name = myName;
+  ws.send(JSON.stringify(obj));
+}
+
+// ── actions ───────────────────────────────────────────────────────────────
+function sendGuess() {
+  const n = parseInt(document.getElementById('guess-input').value);
+  if (isNaN(n) || n < 1 || n > 99) { log('⚠ 請輸入 1-99'); return; }
+  send({ type: 'b99_guess', number: n });
+  document.getElementById('guess-input').value = '';
+  log(`✓ 送出 ${n}，等待裁判...`);
+  // 視覺 feedback：disable 按鈕 + 改 placeholder，下次 state 更新時 render 邏輯會重新 enable
+  const btn = document.querySelector('#guess-section button');
+  if (btn) { btn.disabled = true; btn.textContent = '送出中...'; }
+}
+
+function sendSkipVote() {
+  send({ type: 'b99_skip_vote' });
+  log(`投票跳過`);
+}
+
+// ── render ────────────────────────────────────────────────────────────────
+const PHASE_LABELS = {
+  joining:        '等待加入',
+  setter_picking: '出題中',
+  guessing:       '猜題中',
+  game_over:      '遊戲結束',
+};
+
+function render(s) {
+  document.getElementById('state-card').style.display = '';
+
+  // phase badge
+  const badge = document.getElementById('phase-badge');
+  badge.textContent = PHASE_LABELS[s.phase] ?? s.phase;
+  badge.className = `phase-${s.phase}`;
+
+  document.getElementById('setter').textContent = s.setter ?? '—';
+  document.getElementById('guesser').textContent = s.guesser ?? '—';
+
+  if (s.phase === 'guessing') {
+    document.getElementById('range').textContent =
+      `${s.range_low} ～ ${s.range_high}`;
+    const m = Math.floor(s.remaining_sec / 60);
+    const sec = s.remaining_sec % 60;
+    document.getElementById('timer').textContent =
+      `⏱ ${m}:${String(sec).padStart(2,'0')} 剩餘`;
+  } else {
+    document.getElementById('range').textContent = '— ～ —';
+    document.getElementById('timer').textContent = '';
+  }
+
+  // game over summary
+  const summary = document.getElementById('game-over-summary');
+  if (s.phase === 'game_over' && s.answer != null) {
+    summary.style.display = '';
+    document.getElementById('answer-number').textContent = s.answer;
+    const outcomeText = {
+      'bust': `💥 ${s.last_guesser ?? '?'} 猜中 ${s.last_guess} 直接 BUST！`,
+      'last_bust': `💥 最後一回 ${s.last_guesser ?? '?'} 踩中 ${s.last_guess}，出題人大勝！`,
+      'last_wrong': `🍀 ${s.last_guesser ?? '?'} 最後一回猜 ${s.last_guess} 神運氣猜錯，逆轉勝！`,
+    }[s.last_outcome] ?? '';
+    document.getElementById('bust-detail').textContent = outcomeText;
+    // 分數變化：與上一個非 game_over state 對比
+    const deltas = (s.scores ?? []).map(p => {
+      const prev = (prevScores[p.name] ?? 0);
+      return { name: p.name, score: p.score, delta: p.score - prev };
+    });
+    document.getElementById('score-delta-list').innerHTML = deltas
+      .filter(d => d.delta !== 0)
+      .map(d => `<div class="score-row">
+        <span>${d.name}</span>
+        <span style="color:#4ade80">+${d.delta} 分（總 ${d.score}）</span>
+      </div>`).join('') || '<div style="text-align:center; opacity:0.6">無人得分</div>';
+  } else {
+    summary.style.display = 'none';
+    // 記住非 game_over 的分數，供下次計算 delta
+    prevScores = Object.fromEntries((s.scores ?? []).map(p => [p.name, p.score]));
+  }
+
+  // scores
+  const scoresList = document.getElementById('scores-list');
+  if (s.scores && s.scores.length) {
+    document.getElementById('scores-card').style.display = '';
+    scoresList.innerHTML = s.scores.map((p, i) =>
+      `<div class="score-row">
+        <span>${['🥇','🥈','🥉'][i] ?? `${i+1}.`} ${p.name}</span>
+        <span>${p.score} 分</span>
+       </div>`
+    ).join('');
+  }
+
+  // actions visibility
+  const isGuesser = s.guesser === myName;
+  const inGame = s.players && s.players.includes(myName);
+
+  document.getElementById('join-section').style.display =
+    (!inGame && s.phase === 'joining') ? '' : 'none';
+
+  const showGuess = isGuesser && s.phase === 'guessing';
+  document.getElementById('guess-section').style.display = showGuess ? '' : 'none';
+  if (showGuess) {
+    // state 更新代表上一次猜測已被裁判處理，恢復按鈕
+    const btn = document.querySelector('#guess-section button');
+    if (btn) { btn.disabled = false; btn.textContent = '送出猜測'; }
+  }
+
+  const skipSection = document.getElementById('skip-section');
+  const showSkip = inGame && !isGuesser && s.phase === 'guessing';
+  skipSection.style.display = showSkip ? '' : 'none';
+  if (showSkip) {
+    document.getElementById('vote-count').textContent =
+      `已投 ${s.skip_votes} / ${s.skip_votes_needed} 票`;
+  }
+}
+
+// ── utils ──────────────────────────────────────────────────────────────────
+function setStatus(text, cls) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = cls;
+}
+
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent = `${new Date().toLocaleTimeString()} ${msg}\n` + el.textContent;
+}
+
+// Enter key on guess input
+document.getElementById('guess-input')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendGuess();
+});
+
+// render 裡的 isGuesser 判斷：token 模式用 resolved_user_id 比對，
+// 但瀏覽器端只有 guesser display name，維持 name 比對即可（server 已驗身）
+
+init();
+</script>
+</body>
+</html>

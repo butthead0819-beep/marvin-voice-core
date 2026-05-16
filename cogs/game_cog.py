@@ -319,6 +319,8 @@ class BustedCog(commands.Cog):
         self._grace_timers: dict[str, asyncio.Task] = {}  # user_id → pending leave task
         self._round5_display_scores: dict[str, int] = {}  # display_name → pts, for result embed
         self._skip_votes: set[str] = set()               # user_ids who voted to skip current clue
+        self._ws_hub = None
+        self._player_tokens: dict[str, str] = {}
 
     # ── Task helpers ───────────────────────────────────────────────────────────
 
@@ -469,6 +471,8 @@ class BustedCog(commands.Cog):
         embed: discord.Embed,
         view: Optional[discord.ui.View] = None,
     ) -> Optional[discord.Message]:
+        if os.environ.get("BUSTED_DISCORD_SILENT", "").lower() == "true":
+            return None
         if self._channel is None:
             return None
         if self._session and self._session.game_message_id:
@@ -611,6 +615,87 @@ class BustedCog(commands.Cog):
         except Exception as e:
             logger.warning(f"[Busted] emit_game_phase_changed failed: {e}")
 
+    # ── Web UI (WebSocket) ──────────────────────────────────────────────────
+
+    def _build_ws_state(self, session: GameSession) -> dict:
+        state = session.state
+        phase = self._phase_for_state(state) or "unknown"
+        players = [p.display_name for p in session.players]
+        scores = [
+            {"name": p.display_name, "score": p.score}
+            for p in sorted(session.players, key=lambda p: p.score, reverse=True)
+        ]
+        setter = next((p for p in session.players if p.user_id == session.current_setter_id), None)
+        ws: dict = {
+            "type": "game_state",
+            "game": "busted",
+            "phase": phase,
+            "round": session.current_round,
+            "setter": setter.display_name if setter else None,
+            "theme": session.current_theme,
+            "players": players,
+            "scores": scores,
+            "wrong_guesses": list(session.wrong_guesses),
+            "is_round5": session.current_round >= 5,
+        }
+        if state == GameState.CLUE_ACTIVE:
+            remaining = max(int(self._clue_deadline - time.time()), 0)
+            ws["clues"] = list(session.current_clues)
+            ws["answer_len"] = len(session.current_answer or "")
+            ws["remaining_sec"] = remaining
+            ws["skip_votes"] = len(self._skip_votes)
+        elif state == GameState.BUZZ_LOCKED:
+            holder = next((p for p in session.players if p.user_id == session.buzz_holder_id), None)
+            ws["buzz_holder"] = holder.display_name if holder else None
+        elif state == GameState.THEME_SELECT:
+            ws["candidate_themes"] = list(session.candidate_themes)
+        return ws
+
+    async def _emit_ws_state(self, session: GameSession) -> None:
+        if self._ws_hub is None or not self._ws_hub.is_running:
+            return
+        payload = self._build_ws_state(session)
+        try:
+            await self._ws_hub.broadcast(payload)
+        except Exception as e:
+            logger.warning(f"[Busted] _emit_ws_state failed: {e}")
+
+    async def _handle_web_action(self, action: dict) -> None:
+        t = action.get("type")
+        user_id = action.get("resolved_user_id")
+        engine = self._engine
+        if t == "b_buzz":
+            if engine and user_id:
+                await engine.buzz_in(user_id)
+        elif t == "b_answer":
+            if engine and user_id:
+                await engine.submit_answer(user_id, action.get("text", ""))
+        elif t == "b_skip_vote":
+            if user_id:
+                await self.record_skip_vote(user_id)
+        elif t == "b_set_answer":
+            if engine:
+                await engine.set_answer(action.get("answer", ""))
+        elif t == "b_theme_select":
+            if engine:
+                await engine.select_theme(action.get("theme", ""))
+        elif t == "b_round5_answer":
+            if engine and user_id:
+                await engine.submit_round5_answer(user_id, action.get("text", ""))
+
+    def _generate_player_token(self, user_id: str) -> str:
+        token = str(uuid.uuid4())
+        self._player_tokens[token] = user_id
+        return token
+
+    def resolve_token(self, token: str) -> str | None:
+        return self._player_tokens.get(token)
+
+    def _build_player_link(self, user_id: str) -> str:
+        base_url = os.environ.get("GAME_PUBLIC_URL", "http://localhost:8767")
+        token = self._generate_player_token(user_id)
+        return f"{base_url}/busted.html?token={token}"
+
     # ── Bridge-callable controls (Lane F2) ─────────────────────────────────
 
     async def force_skip_round(self) -> None:
@@ -669,8 +754,10 @@ class BustedCog(commands.Cog):
 
         # Lane F2：先廣播 phase 給 companion bridge（失敗不影響本機 UI）
         await self._emit_phase(session)
+        await self._emit_ws_state(session)
 
         if state == GameState.JOINING:
+            self._player_tokens = {}
             await self._play_sfx("fanfare")
             await self._post_game_message(self._build_joining_embed(session), JoinView(self))
 
@@ -1129,45 +1216,11 @@ class BustedCog(commands.Cog):
             return False
         return await self._engine.receive_voice_answer(user_id, text)
 
-    async def receive_voice_answer_by_speaker(self, speaker: str, text: str) -> bool:
+    async def receive_voice_answer_by_speaker(self, _speaker: str, _text: str) -> bool:
         """
-        Called by voice_controller.py using display_name (not user_id).
-        Resolves name → id via the join-time mapping, then delegates to the engine.
-
-        If the speaker is the current buzz holder, echoes their transcribed answer to
-        the text channel as "**Name** 搶答：<text>" so all players (and Marvin) can see it.
-        Other voice during game (clue phase chatter, non-holder speech) is silently dropped.
-
-        Returns True if the text was consumed as a game answer.
+        語音輸入已停用（STT 切斷點不準確）。猜題請使用鍵盤輸入。
         """
-        user_id = self._name_to_id.get(speaker)
-        if user_id is None:
-            return False
-
-        # Echo to channel only when this person is the active buzz holder
-        if (
-            self._session is not None
-            and self._session.state == GameState.BUZZ_LOCKED
-            and self._session.buzz_holder_id == str(user_id)
-            and self._channel is not None
-        ):
-            await self._channel.send(f"**{speaker}** 搶答：{text}")
-
-        result = await self._engine.receive_voice_answer(user_id, text) if self._engine else False
-        if isinstance(result, dict) and result.get("correct") and self._session:
-            session = self._session
-            winner = next((p for p in session.players if p.user_id == str(user_id)), None)
-            winner_name = winner.display_name if winner else speaker
-            self._last_result = {
-                "winner_name":   winner_name,
-                "guesser_score": result["score"],
-                "setter_score":  result["setter_score"],
-            }
-            await self._edit_game_message(self._build_result_embed(session), ResultView(self))
-            # Marvin 評論猜中（只有人類猜中時）
-            if winner_name != "Marvin" and self._marvin:
-                self._spawn(self._marvin_correct_react(winner_name))
-        return bool(result)
+        return False
 
     # ── Clue request hook ──────────────────────────────────────────────────────
 

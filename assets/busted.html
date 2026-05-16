@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Busted</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #1a1a2e; color: #e0e0e0;
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    padding: 24px 16px;
+  }
+  h1 { font-size: 1.6rem; color: #a29bfe; margin-bottom: 4px; }
+  #status { font-size: 0.8rem; color: #636e72; margin-bottom: 20px; }
+  #status.connected { color: #00b894; }
+  #status.error     { color: #d63031; }
+
+  .card {
+    background: #16213e; border-radius: 12px; padding: 20px;
+    width: 100%; max-width: 480px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 1rem; color: #74b9ff; margin-bottom: 12px; }
+
+  #phase-badge {
+    display: inline-block; padding: 4px 12px; border-radius: 20px;
+    font-size: 0.85rem; font-weight: 600; margin-bottom: 12px;
+  }
+  .phase-joining      { background: #5865f2; }
+  .phase-spinning     { background: #9b59b6; }
+  .phase-theme_select { background: #e67e22; }
+  .phase-setter_input { background: #e17055; }
+  .phase-clue_active  { background: #00cec9; color: #1a1a2e; }
+  .phase-buzz_locked  { background: #d63031; }
+  .phase-round_result { background: #fdcb6e; color: #1a1a2e; }
+  .phase-ended        { background: #ffd700; color: #1a1a2e; }
+
+  .info-row { display: flex; justify-content: space-between; margin-bottom: 6px; }
+  .label { color: #b2bec3; font-size: 0.85rem; }
+  .value { font-weight: 600; }
+  .timer { font-size: 1.1rem; color: #fd79a8; text-align: center; margin: 8px 0; }
+
+  .clue-item {
+    background: #0f3460; border-radius: 8px; padding: 10px 14px;
+    margin-bottom: 8px; font-size: 1rem;
+  }
+  .clue-num { color: #a29bfe; font-size: 0.8rem; margin-bottom: 2px; }
+
+  .score-row { display: flex; justify-content: space-between; padding: 4px 0;
+               border-bottom: 1px solid #2d3561; }
+  .score-row:last-child { border-bottom: none; }
+
+  input[type=text], textarea {
+    width: 100%; padding: 10px 14px; border-radius: 8px;
+    background: #0f3460; border: 1px solid #5865f2; color: #e0e0e0;
+    font-size: 1rem; margin-bottom: 10px; outline: none;
+    font-family: inherit;
+  }
+  input:focus, textarea:focus { border-color: #a29bfe; }
+  button {
+    width: 100%; padding: 11px; border-radius: 8px; border: none;
+    font-size: 1rem; font-weight: 600; cursor: pointer; transition: opacity .15s;
+    margin-bottom: 8px;
+  }
+  button:last-child { margin-bottom: 0; }
+  button:active { opacity: 0.7; }
+  button:disabled { opacity: 0.35; cursor: default; }
+  .btn-primary   { background: #5865f2; color: #fff; }
+  .btn-success   { background: #00b894; color: #fff; }
+  .btn-danger    { background: #d63031; color: #fff; }
+  .btn-secondary { background: #636e72; color: #fff; }
+  .btn-warning   { background: #fdcb6e; color: #1a1a2e; }
+  .theme-btn     { background: #2d3561; color: #e0e0e0; border: 1px solid #5865f2; }
+  .theme-btn:hover { background: #5865f2; }
+
+  #log {
+    width: 100%; max-width: 480px;
+    background: #0d0d1a; border-radius: 8px; padding: 10px 14px;
+    font-size: 0.75rem; color: #636e72; height: 80px; overflow-y: auto;
+  }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<h1>🎭 Busted</h1>
+<div id="status">連線中…</div>
+
+<!-- Phase badge + round info -->
+<div class="card" id="state-card" style="display:none">
+  <div id="phase-badge" class="phase-joining">等待中</div>
+  <div class="info-row">
+    <span class="label">第幾輪</span><span class="value" id="round-display">—</span>
+  </div>
+  <div class="info-row">
+    <span class="label">主題</span><span class="value" id="theme-display">—</span>
+  </div>
+  <div class="info-row">
+    <span class="label">出題人</span><span class="value" id="setter-display">—</span>
+  </div>
+  <div id="buzz-holder-row" class="info-row hidden">
+    <span class="label">搶答者</span><span class="value" id="buzz-holder-display">—</span>
+  </div>
+  <div class="timer" id="timer"></div>
+</div>
+
+<!-- Clues -->
+<div class="card hidden" id="clues-card">
+  <h2>線索</h2>
+  <div id="clues-list"></div>
+  <div class="info-row" style="margin-top:8px">
+    <span class="label">答案字數</span><span class="value" id="answer-len">—</span>
+  </div>
+  <div id="wrong-guesses-row" class="info-row hidden">
+    <span class="label">已猜過</span><span class="value" id="wrong-guesses">—</span>
+  </div>
+</div>
+
+<!-- Actions -->
+<div class="card hidden" id="actions-card">
+  <h2>動作</h2>
+
+  <!-- BUZZ -->
+  <div id="buzz-section" class="hidden">
+    <button class="btn-danger" id="buzz-btn" onclick="sendBuzz()">⚡ BUZZ IN！</button>
+  </div>
+
+  <!-- Answer (buzz locked) -->
+  <div id="answer-section" class="hidden">
+    <input id="answer-input" type="text" placeholder="輸入你的答案…" />
+    <button class="btn-success" onclick="sendAnswer()">送出答案</button>
+  </div>
+
+  <!-- Round 5 answer -->
+  <div id="r5-section" class="hidden">
+    <input id="r5-input" type="text" placeholder="最終猜測…" maxlength="10" />
+    <button class="btn-warning" onclick="sendRound5()">送出最終答案</button>
+  </div>
+
+  <!-- Skip vote -->
+  <div id="skip-section" class="hidden">
+    <button class="btn-secondary" onclick="sendSkipVote()">⏩ 投票跳過此線索</button>
+  </div>
+
+  <!-- Theme select -->
+  <div id="theme-section" class="hidden">
+    <p style="color:#b2bec3; font-size:0.9rem; margin-bottom:12px">選擇本輪主題：</p>
+    <div id="theme-buttons"></div>
+  </div>
+
+  <!-- Set answer (setter) -->
+  <div id="set-answer-section" class="hidden">
+    <input id="set-answer-input" type="text" placeholder="輸入謎底…" maxlength="8" />
+    <button class="btn-primary" onclick="sendSetAnswer()">設定謎底</button>
+  </div>
+</div>
+
+<!-- Scores -->
+<div class="card hidden" id="scores-card">
+  <h2>積分板</h2>
+  <div id="scores-list"></div>
+</div>
+
+<div id="log"></div>
+
+<script>
+const WS_URL = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/game-ws`;
+const urlToken = new URLSearchParams(location.search).get('token') || '';
+let ws, state = null, reconnectTimer = null;
+let myUserId = null; // resolved_user_id, injected by server after token auth (future) — for now we compare display names
+
+const PHASE_LABELS = {
+  joining:      '等待加入',
+  spinning:     '抽籤中',
+  theme_select: '選主題',
+  setter_input: '出題中',
+  clue_active:  '猜題中',
+  buzz_locked:  '搶答中',
+  round_result: '本輪結果',
+  ended:        '遊戲結束',
+};
+
+// ── connect ───────────────────────────────────────────────────────────────
+function connect() {
+  clearTimeout(reconnectTimer);
+  ws = new WebSocket(WS_URL);
+  setStatus('連線中…', '');
+  ws.onopen = () => { setStatus('已連線', 'connected'); log('WebSocket 已連線'); };
+  ws.onmessage = (e) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === 'game_state' && data.game === 'busted') {
+        state = data;
+        render(data);
+      }
+    } catch(_) {}
+  };
+  ws.onclose = () => { setStatus('已斷線，5 秒後重連…', 'error'); reconnectTimer = setTimeout(connect, 5000); };
+  ws.onerror = () => setStatus('連線錯誤', 'error');
+}
+
+function send(obj) {
+  if (!ws || ws.readyState !== 1) { log('⚠ 未連線'); return; }
+  if (urlToken) obj.token = urlToken;
+  ws.send(JSON.stringify(obj));
+}
+
+// ── actions ───────────────────────────────────────────────────────────────
+function sendBuzz() {
+  send({ type: 'b_buzz' });
+  document.getElementById('buzz-btn').disabled = true;
+  log('送出 BUZZ');
+}
+
+function sendAnswer() {
+  const v = document.getElementById('answer-input').value.trim();
+  if (!v) return;
+  send({ type: 'b_answer', text: v });
+  document.getElementById('answer-input').value = '';
+  log(`送出答案：${v}`);
+}
+
+function sendRound5() {
+  const v = document.getElementById('r5-input').value.trim();
+  if (!v) return;
+  send({ type: 'b_round5_answer', text: v });
+  document.getElementById('r5-input').value = '';
+  log(`送出最終答案：${v}`);
+}
+
+function sendSkipVote() {
+  send({ type: 'b_skip_vote' });
+  log('投票跳過');
+}
+
+function sendTheme(theme) {
+  send({ type: 'b_theme_select', theme });
+  log(`選擇主題：${theme}`);
+}
+
+function sendSetAnswer() {
+  const v = document.getElementById('set-answer-input').value.trim();
+  if (!v) return;
+  send({ type: 'b_set_answer', answer: v });
+  document.getElementById('set-answer-input').value = '';
+  log(`設定謎底：${v}`);
+}
+
+// ── render ────────────────────────────────────────────────────────────────
+function render(s) {
+  document.getElementById('state-card').style.display = '';
+  document.getElementById('actions-card').style.display = '';
+
+  // phase badge
+  const badge = document.getElementById('phase-badge');
+  badge.textContent = PHASE_LABELS[s.phase] ?? s.phase;
+  badge.className = `phase-${s.phase}`;
+
+  document.getElementById('round-display').textContent = s.round ? `第 ${s.round}/5 輪` : '—';
+  document.getElementById('theme-display').textContent = s.theme ?? '—';
+  document.getElementById('setter-display').textContent = s.setter ?? '—';
+
+  const buzzholder = document.getElementById('buzz-holder-row');
+  if (s.buzz_holder) {
+    buzzholder.classList.remove('hidden');
+    document.getElementById('buzz-holder-display').textContent = s.buzz_holder;
+  } else {
+    buzzholder.classList.add('hidden');
+  }
+
+  // timer
+  const timerEl = document.getElementById('timer');
+  if (s.remaining_sec != null && s.phase === 'clue_active') {
+    const m = Math.floor(s.remaining_sec / 60);
+    const sec = s.remaining_sec % 60;
+    timerEl.textContent = `⏱ ${m}:${String(sec).padStart(2,'0')} 剩餘`;
+  } else {
+    timerEl.textContent = '';
+  }
+
+  // clues
+  const cluesCard = document.getElementById('clues-card');
+  if (s.clues && s.clues.length) {
+    cluesCard.classList.remove('hidden');
+    document.getElementById('clues-list').innerHTML = s.clues.map((c, i) =>
+      `<div class="clue-item"><div class="clue-num">線索 ${i+1}</div>${c}</div>`
+    ).join('');
+    document.getElementById('answer-len').textContent = s.answer_len ? `${s.answer_len} 個字` : '—';
+    const wrongRow = document.getElementById('wrong-guesses-row');
+    if (s.wrong_guesses && s.wrong_guesses.length) {
+      wrongRow.classList.remove('hidden');
+      document.getElementById('wrong-guesses').textContent = s.wrong_guesses.join('、');
+    } else {
+      wrongRow.classList.add('hidden');
+    }
+  } else {
+    cluesCard.classList.add('hidden');
+  }
+
+  // scores
+  const scoresCard = document.getElementById('scores-card');
+  if (s.scores && s.scores.length) {
+    scoresCard.classList.remove('hidden');
+    const medals = ['🥇','🥈','🥉'];
+    document.getElementById('scores-list').innerHTML = s.scores.map((p, i) =>
+      `<div class="score-row">
+         <span>${medals[i] ?? `${i+1}.`} ${p.name}</span>
+         <span>${p.score} 分</span>
+       </div>`
+    ).join('');
+  } else {
+    scoresCard.classList.add('hidden');
+  }
+
+  // action visibility
+  const isSetter = urlToken
+    ? false  // server resolves identity; default hide setter controls (hub injects resolved_user_id)
+    : false; // anonymous mode: can't know
+  // theme select
+  const themeSection = document.getElementById('theme-section');
+  if (s.phase === 'theme_select' && s.candidate_themes && s.candidate_themes.length) {
+    themeSection.classList.remove('hidden');
+    document.getElementById('theme-buttons').innerHTML = s.candidate_themes.map(t =>
+      `<button class="theme-btn" onclick="sendTheme('${t}')">${t}</button>`
+    ).join('');
+  } else {
+    themeSection.classList.add('hidden');
+  }
+
+  // set answer (setter_input phase — everyone can try, server validates identity)
+  const setAnswerSection = document.getElementById('set-answer-section');
+  setAnswerSection.classList.toggle('hidden', s.phase !== 'setter_input');
+
+  // buzz (clue_active, non-round5)
+  const buzzSection = document.getElementById('buzz-section');
+  const showBuzz = s.phase === 'clue_active' && !s.is_round5;
+  buzzSection.classList.toggle('hidden', !showBuzz);
+  if (showBuzz) document.getElementById('buzz-btn').disabled = false;
+
+  // answer (buzz_locked)
+  const answerSection = document.getElementById('answer-section');
+  answerSection.classList.toggle('hidden', s.phase !== 'buzz_locked');
+
+  // round 5 answer
+  const r5Section = document.getElementById('r5-section');
+  r5Section.classList.toggle('hidden', !(s.phase === 'clue_active' && s.is_round5));
+
+  // skip vote (clue_active, non-round5)
+  const skipSection = document.getElementById('skip-section');
+  skipSection.classList.toggle('hidden', s.phase !== 'clue_active');
+}
+
+// ── utils ──────────────────────────────────────────────────────────────────
+function setStatus(text, cls) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = cls;
+}
+
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent = `${new Date().toLocaleTimeString()} ${msg}\n` + el.textContent;
+}
+
+document.getElementById('answer-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendAnswer();
+});
+document.getElementById('r5-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendRound5();
+});
+
+connect();
+</script>
+</body>
+</html>

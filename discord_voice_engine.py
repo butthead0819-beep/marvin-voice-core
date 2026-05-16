@@ -594,6 +594,10 @@ class DiscordVoiceEngine:
         self.whisper_model = None
         self.debug_vad_heartbeat = os.getenv("DEBUG_VAD_HEARTBEAT", "false").lower() == "true"
 
+        # Per-speaker language memory: updated after each successful transcription.
+        # First utterance from an unknown speaker defaults to "zh".
+        self._speaker_lang: dict[str, str] = {}
+
         # Zombie-thread guard: semaphore released by the thread itself (not asyncio timeout).
         # New calls check acquire(blocking=False) — if taken, the previous thread is still
         # running and the call is dropped. Max 1 Whisper thread alive at any time.
@@ -944,9 +948,37 @@ class DiscordVoiceEngine:
                 except OSError:
                     pass
 
+    # ── Speaker language helpers ────────────────────────────────────────────────
+
+    @staticmethod
+    def _detect_text_lang(text: str) -> str:
+        """Return 'en' if text is primarily Latin, else 'zh'."""
+        if not text:
+            return "zh"
+        latin = sum(1 for c in text if "a" <= c.lower() <= "z")
+        cjk = sum(1 for c in text if "一" <= c <= "鿿")
+        return "en" if latin > cjk * 2 else "zh"
+
+    def _get_speaker_lang(self, speaker: str) -> str:
+        # 預設鎖定 zh — 全員繁中。auto-detect 已關（Whisper hallucination 會把 zh 玩家
+        # 漂到 en，下次 STT 給 en hint 後更容易繼續 hallucinate，正反饋迴圈無法回頭）。
+        # 若未來要支援多語系，改用 user-level config（Discord ID → lang），不要靠 STT 輸出推測。
+        if os.environ.get("STT_AUTO_DETECT_LANG", "false").lower() == "true":
+            return self._speaker_lang.get(speaker, "zh")
+        return "zh"
+
+    def _update_speaker_lang(self, speaker: str, text: str) -> None:
+        # auto-detect 關閉時不更新（避免 hallucination 污染）
+        if os.environ.get("STT_AUTO_DETECT_LANG", "false").lower() != "true":
+            return
+        if text:
+            self._speaker_lang[speaker] = self._detect_text_lang(text)
+
+    _LANG_TO_LOCALE = {"zh": "zh-TW", "en": "en-US"}
+
     # ── P2: STT 引擎拆解為獨立協程 ─────────────────────────────────────────────
 
-    async def _run_swift_stt(self, wav_path: str, is_wake_check: bool) -> str:
+    async def _run_swift_stt(self, wav_path: str, is_wake_check: bool, locale: str = "zh-TW") -> str:
         """執行 macOS Swift STT，回傳辨識文字或空字串。"""
         process = None
         try:
@@ -956,6 +988,7 @@ class DiscordVoiceEngine:
                 env["STT_CONTEXT_STRINGS"] = f"{base_context},{self.bot.router.game_dict_string}"
             else:
                 env["STT_CONTEXT_STRINGS"] = base_context
+            env["STT_LOCALE"] = locale
             stt_args = ["./macos_stt_bin", wav_path]
             if is_wake_check:
                 stt_args.append("--wake-check")
@@ -985,41 +1018,50 @@ class DiscordVoiceEngine:
             logger.warning(f"[Swift STT] Exception: {e}")
         return ""
 
-    async def _run_mlx_whisper_stt(self, wav_path: str) -> str:
-        """執行 MLX Whisper STT（subprocess），回傳辨識文字或空字串。
+    async def _run_groq_whisper_stt(self, wav_path: str, language: str = "zh") -> str:
+        """Groq Whisper API STT，回傳辨識文字或空字串。
 
-        以 subprocess 執行 mlx_whisper_bin.py，超時時 process.kill() 真正終止，
-        不產生 zombie threads（對比 asyncio.to_thread 無法殺 OS thread）。
-        尚未接入 _process_stt_hybrid — 基礎設施備用。
+        使用 whisper-large-v3-turbo（速度快，準確度夠），免費額度 28,800s/day。
+        在 asyncio.to_thread 內執行阻塞的 HTTP 上傳，不阻塞 event loop。
         """
-        process = None
+        groq_key = os.getenv("GROQ_API_KEY", "")
+        if not groq_key:
+            logger.warning("[Groq Whisper] GROQ_API_KEY 未設定，跳過")
+            return ""
+
+        _lang = language
+        def _upload():
+            try:
+                from groq import Groq
+                client = Groq(api_key=groq_key)
+                with open(wav_path, "rb") as f:
+                    resp = client.audio.transcriptions.create(
+                        model="whisper-large-v3-turbo",
+                        file=("audio.wav", f, "audio/wav"),
+                        language=_lang,
+                        prompt="Marvin, 馬文, 艾馬文, Hi Marvin",
+                    )
+                return resp.text.strip()
+            except Exception as e:
+                logger.warning(f"[Groq Whisper] 上傳失敗: {e}")
+                return ""
+
         try:
-            mlx_model = os.getenv("MLX_WHISPER_MODEL", "mlx-community/whisper-base-mlx-8bit")
-            import sys as _sys
-            process = await asyncio.create_subprocess_exec(
-                _sys.executable, "./mlx_whisper_bin.py", wav_path,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, "MLX_WHISPER_MODEL": mlx_model},
+            text = await asyncio.wait_for(
+                asyncio.to_thread(_upload),
+                timeout=20.0,
             )
-            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15.0)
-            if process.returncode == 0:
-                return stdout.decode("utf-8").strip()
-            else:
-                logger.warning(f"[MLX Whisper] 執行失敗 (Code: {process.returncode})")
+            if text and is_whisper_hallucination(text, "Marvin, 馬文, 艾馬文, Hi Marvin"):
+                logger.warning(f"[Groq Whisper] 幻覺偵測，丟棄: '{text[:60]}'")
+                return ""
+            return text
         except asyncio.TimeoutError:
-            logger.warning("[MLX Whisper] 15s 超時，強制終止")
-            if process is not None:
-                try:
-                    process.kill()
-                    await asyncio.wait_for(process.wait(), timeout=2.0)
-                except Exception:
-                    pass
+            logger.warning("[Groq Whisper] 20s 超時")
         except Exception as e:
-            logger.warning(f"[MLX Whisper] Exception: {e}")
+            logger.warning(f"[Groq Whisper] Exception: {e}")
         return ""
 
-    async def _run_whisper_stt(self, audio) -> str:
+    async def _run_whisper_stt(self, audio, language: str = "zh") -> str:
         """執行 Faster-Whisper STT，回傳辨識文字或空字串。
         audio 可為 numpy float32 array（優先）或 WAV 檔路徑（fallback）。
 
@@ -1043,6 +1085,7 @@ class DiscordVoiceEngine:
         _model = self.whisper_model
         _prompt = whisper_prompt
         _sem = self._whisper_thread_sem
+        _lang = language
 
         # faster-whisper.transcribe() 回傳 lazy generator，必須在 thread 內完整 iterate
         def _transcribe_eager():
@@ -1051,7 +1094,7 @@ class DiscordVoiceEngine:
                 segs, _ = _model.transcribe(
                     audio,
                     beam_size=1,
-                    language="zh",
+                    language=_lang,
                     initial_prompt=_prompt,
                     vad_filter=True,
                     vad_parameters=dict(min_silence_duration_ms=500),
@@ -1104,18 +1147,23 @@ class DiscordVoiceEngine:
 
             _is_apple_platform = self.stt_engine in ("macos", "mlx")
 
+            # Per-speaker language: use previous utterance's detected language as STT hint.
+            # First utterance from an unknown speaker defaults to "zh".
+            _sp_lang = self._get_speaker_lang(speaker_name)
+            _sp_locale = self._LANG_TO_LOCALE.get(_sp_lang, "zh-TW")
+
             if is_wake_check:
                 if _is_apple_platform:
                     # Apple platform: Swift-only wake_check — no Whisper to prevent zombie threads
                     print(f"🎙️ [Engine] [WakeCheck] Swift only (Speaker: {speaker_name})...", flush=True)
-                    raw_text = await self._run_swift_stt(wav_path, is_wake_check=True)
+                    raw_text = await self._run_swift_stt(wav_path, is_wake_check=True, locale=_sp_locale)
                     if raw_text:
                         used_engine = "Swift"
                 else:
                     # Linux: P2 race — Swift + Whisper parallel, first non-empty wins
                     print(f"🎙️ [Engine] [WakeCheck] Swift ⚡ Whisper 並行競速 (Speaker: {speaker_name})...", flush=True)
-                    swift_t = asyncio.create_task(self._run_swift_stt(wav_path, is_wake_check=True))
-                    whisper_t = asyncio.create_task(self._run_whisper_stt(_whisper_input))
+                    swift_t = asyncio.create_task(self._run_swift_stt(wav_path, is_wake_check=True, locale=_sp_locale))
+                    whisper_t = asyncio.create_task(self._run_whisper_stt(_whisper_input, language=_sp_lang))
                     name_map = {id(swift_t): "Swift", id(whisper_t): "Whisper"}
                     pending = {swift_t, whisper_t}
                     while pending and not raw_text:
@@ -1142,19 +1190,28 @@ class DiscordVoiceEngine:
                             self.sink.elevate_vad(user_id, duration=15.0)
             else:
                 # 序列備援：Swift server 優先（最高準確度），失敗才用 Whisper
-                print(f"🎙️ [Engine] 啟動 macOS Native Swift STT (Speaker: {speaker_name})...", flush=True)
-                raw_text = await self._run_swift_stt(wav_path, is_wake_check=False)
+                print(f"🎙️ [Engine] 啟動 macOS Native Swift STT (Speaker: {speaker_name}, Locale: {_sp_locale})...", flush=True)
+                raw_text = await self._run_swift_stt(wav_path, is_wake_check=False, locale=_sp_locale)
                 if raw_text:
                     used_engine = "Swift"
                     print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Swift)", flush=True)
-                # Apple platform: Swift 為主引擎，不使用 Whisper 備援（避免 zombie thread 累積）
-                # Linux: Whisper 是唯一引擎，維持原行為
-                if not raw_text and self.whisper_model and not _is_apple_platform:
+                # Swift 失敗：Apple platform 用 Groq Whisper API 備援，Linux 用 Faster-Whisper
+                if not raw_text and _is_apple_platform and os.getenv("GROQ_API_KEY"):
+                    print(f"🎙️ [Engine] 啟動備援 Groq Whisper (Speaker: {speaker_name}, Lang: {_sp_lang})...", flush=True)
+                    raw_text = await self._run_groq_whisper_stt(wav_path, language=_sp_lang)
+                    if raw_text:
+                        used_engine = "Groq"
+                        print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Groq)", flush=True)
+                elif not raw_text and self.whisper_model and not _is_apple_platform:
                     print(f"🎙️ [Engine] 啟動備援 Faster-Whisper 辨識 (Speaker: {speaker_name})...", flush=True)
-                    raw_text = await self._run_whisper_stt(_whisper_input)
+                    raw_text = await self._run_whisper_stt(_whisper_input, language=_sp_lang)
                     if raw_text:
                         used_engine = "Whisper"
                         print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Whisper)", flush=True)
+
+            # Update speaker language memory from this utterance for next call
+            if raw_text:
+                self._update_speaker_lang(speaker_name, raw_text)
 
         finally:
             _lock.release()

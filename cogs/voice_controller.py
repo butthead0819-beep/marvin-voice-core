@@ -18,6 +18,13 @@ from departure_stats import DepartureStats
 from consent_manager import ConsentManager
 from transcript_store import TranscriptStore
 from vector_store import VectorStore
+from recall_handler import (
+    RecallHandler, is_recall_query, is_mark_done_query,
+    is_manual_add_query, is_task_update_query,
+)
+from summary_store import SummaryStore
+from task_store import TaskStore
+from session_summarizer import SessionSummarizer
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 
@@ -440,6 +447,7 @@ class VoiceController(commands.Cog):
         self._radio_song_list = []       # 打亂後的歌單（pop 取用）
         self._radio_source = None        # PCMVolumeTransformer，用於即時調整音量
         self._radio_fade_task = None     # 音量漸變背景 Task
+        self.radio_paused = False        # 電台是否被語音指令暫停中
 
         # 🎵 [Stream Mode] YouTube 串流系統狀態
         self.stream_mode = False
@@ -471,6 +479,16 @@ class VoiceController(commands.Cog):
 
         self._transcript_store = TranscriptStore()
         self._vector_store = VectorStore()
+        self._summary_store = SummaryStore()
+        self._task_store = TaskStore()
+        self._session_summarizer: SessionSummarizer | None = None
+        self._recall_handler: RecallHandler | None = None
+        self._pending_confirmations: list = []
+        self._awaiting_confirmation = None
+        self._awaiting_confirmation_speaker: str = ""
+        self._last_speech_time: float = 0.0
+        self._last_mentioned_task_id: int | None = None
+        self._confirmation_checker_task: asyncio.Task | None = None
 
         # 環境智能助理 — 話題產生器 + 溫度計
         self.temperature_monitor = None   # DiscordTemperatureMonitor，由 main_discord 注入
@@ -498,6 +516,30 @@ class VoiceController(commands.Cog):
         # 🚀 [Fast System] 啟動指令佇列處理器
         self.query_worker_task = asyncio.create_task(self._query_worker_loop())
 
+        # 🗂️ [Personal Assistant] 初始化 Recall + Summarizer
+        _groq = getattr(self.bot.router, "groq_dedicated_client", None)
+        _owner = os.environ.get("OWNER_SPEAKER", "狗與露")
+        _guild_id = int(os.environ.get("GUILD_ID") or "0")
+        if _groq:
+            self._recall_handler = RecallHandler(
+                summary_store=self._summary_store,
+                task_store=self._task_store,
+                transcript_store=self._transcript_store,
+                groq_client=_groq,
+                guild_id=_guild_id,
+                owner_speaker=_owner,
+            )
+            self._session_summarizer = SessionSummarizer(
+                transcript_store=self._transcript_store,
+                summary_store=self._summary_store,
+                groq_client=_groq,
+                owner_speaker=_owner,
+                on_commitment_detected=self._pending_confirmations.append,
+            )
+            asyncio.create_task(self._session_summarizer.start(guild_id=_guild_id))
+            self._confirmation_checker_task = asyncio.create_task(self._confirmation_checker_loop())
+            logger.info("[VC] Personal assistant recall + summarizer 已啟動")
+
         # 注入回呼 (核心引擎 -> Cog Handlers)
         self.bot.engine.stt_callback = self.handle_stt_result
         self.bot.engine.speech_start_callback = self.handle_raw_speech_start
@@ -521,11 +563,16 @@ class VoiceController(commands.Cog):
         # 🚀 [Fast System] 停止指令佇列處理器
         if hasattr(self, "query_worker_task") and self.query_worker_task:
             self.query_worker_task.cancel()
+        if self._confirmation_checker_task and not self._confirmation_checker_task.done():
+            self._confirmation_checker_task.cancel()
+        if self._session_summarizer:
+            await self._session_summarizer.stop()
 
         # 📻 [Marvin Radio] 停止電台背景 Task
         if self.radio_task and not self.radio_task.done():
             self.radio_task.cancel()
             self.radio_mode = False
+            self.radio_paused = False
             
         print("🎭 [Voice Controller] Cog 已卸載，正在執行安全撤離...")
         # self.historian_loop.stop()
@@ -677,7 +724,7 @@ class VoiceController(commands.Cog):
                 on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
                 temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
                 sink_error_callback=self.report_sink_error,
-                suppress_wake_callback=lambda: self.stream_mode or self.radio_mode
+                suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio
             )
             voice_client.listen(sink)
             patch_voice_recv_key_sync(voice_client)
@@ -726,7 +773,7 @@ class VoiceController(commands.Cog):
                     on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
                     temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
                     sink_error_callback=self.report_sink_error,
-                    suppress_wake_callback=lambda: self.stream_mode or self.radio_mode
+                    suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio
                 )
 
                 try:
@@ -788,7 +835,7 @@ class VoiceController(commands.Cog):
                 on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
                 temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
                 sink_error_callback=self.report_sink_error, # 💡 [Sentinel] 注入回報通道
-                suppress_wake_callback=lambda: self.stream_mode or self.radio_mode
+                suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio
             )
             voice_client.listen(sink)
             patch_voice_recv_key_sync(voice_client)
@@ -824,7 +871,7 @@ class VoiceController(commands.Cog):
                     on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
                     temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
                     sink_error_callback=self.report_sink_error,
-                    suppress_wake_callback=lambda: self.stream_mode or self.radio_mode
+                    suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio
                 )
                 voice_client.listen(sink)
                 patch_voice_recv_key_sync(voice_client)
@@ -2274,6 +2321,9 @@ class VoiceController(commands.Cog):
 
         # 🎮 遊戲中：依序嘗試兩個遊戲 cog；第一個消耗後即停止，不繼續給 Marvin
         if self.game_mode:
+            _b99 = self.bot.cogs.get("Busted99Cog")
+            if _b99 is not None and _b99.should_suppress_for_game(speaker):
+                return  # 非猜題玩家說話，Busted99 GUESSING 狀態下直接捨棄
             for _cog_name in ("BustedCog", "Busted99Cog", "DetectiveCog"):
                 _game_cog = self.bot.cogs.get(_cog_name)
                 if _game_cog is not None:
@@ -2393,6 +2443,112 @@ class VoiceController(commands.Cog):
         self.stt_logger.info(
             f"[玩家反應→{speaker}] 評級={reaction_type} | 原因={reason} | 玩家說={raw_preview}"
         )
+
+    async def _handle_mark_done_query(self, speaker: str, query: str):
+        """語音標記任務完成或取消，回答後 TTS 播放。"""
+        if not self._recall_handler:
+            return
+        status = "cancelled" if re.search(r"取消|不用做|算了", query) else "done"
+        try:
+            answer = await self._recall_handler.handle_mark_done(
+                speaker=speaker, query=query, status=status
+            )
+        except Exception as e:
+            logger.warning(f"[VC][MarkDone] 失敗: {e}")
+            answer = "標記任務時出了點問題，宇宙如常運作。"
+        if answer:
+            await self.play_tts(answer, already_in_channel=True)
+
+    async def _handle_recall_query(self, speaker: str, query: str):
+        """語音日記 Recall：從 summary_store / task_store 找記憶，LLM 合成回答後 TTS 播放。"""
+        if not self._recall_handler:
+            return
+        try:
+            answer = await self._recall_handler.handle(speaker=speaker, query=query)
+        except Exception as e:
+            logger.warning(f"[VC][Recall] handle 失敗: {e}")
+            answer = "我的記憶系統暫時沒有回應，宇宙可能就是這樣設計的。"
+        if answer:
+            await self.play_tts(answer, already_in_channel=True)
+            bridge = getattr(self.bot, "companion_bridge", None)
+            if bridge:
+                asyncio.create_task(bridge.emit_recall_result(query=query, answer=answer))
+
+    async def _handle_manual_add_query(self, speaker: str, query: str):
+        """「記一下，…」立即存入 task_store，不等 SessionSummarizer 批次。"""
+        if not self._recall_handler:
+            return
+        try:
+            answer = await self._recall_handler.handle_manual_add(speaker=speaker, query=query)
+            self._last_mentioned_task_id = self._recall_handler.last_task_id
+        except Exception as e:
+            logger.warning(f"[VC][ManualAdd] 失敗: {e}")
+            answer = "記錄時出了點問題。"
+        if answer:
+            await self.play_tts(answer, already_in_channel=True)
+
+    async def _handle_task_update_query(self, speaker: str, query: str):
+        """「那件事改成…」更新已有任務內容，不產生新任務。"""
+        if not self._recall_handler:
+            return
+        try:
+            answer = await self._recall_handler.handle_task_update(
+                speaker=speaker, query=query, last_task_id=self._last_mentioned_task_id
+            )
+        except Exception as e:
+            logger.warning(f"[VC][TaskUpdate] 失敗: {e}")
+            answer = "更新任務時出了點問題。"
+        if answer:
+            await self.play_tts(answer, already_in_channel=True)
+
+    async def _handle_confirmation_response(self, speaker: str, query: str):
+        """處理 yes/no 回應，確認或放棄 pending confirmation。"""
+        from recall_handler import is_yes_response, is_no_response
+        conf = self._awaiting_confirmation
+        if conf is None:
+            return
+        if speaker != self._awaiting_confirmation_speaker:
+            return  # 只有觸發者能確認
+        if is_yes_response(query):
+            self._awaiting_confirmation = None
+            self._awaiting_confirmation_speaker = ""
+            if self._recall_handler:
+                answer = await self._recall_handler.handle_confirmation(conf)
+                await self.play_tts(answer, already_in_channel=True)
+        elif is_no_response(query):
+            self._awaiting_confirmation = None
+            self._awaiting_confirmation_speaker = ""
+            await self.play_tts("好，不記了。", already_in_channel=True)
+
+    async def _confirmation_checker_loop(self):
+        """靜默 30 秒後從佇列取出一個 pending confirmation，Marvin 主動詢問。"""
+        import time as _time
+        while True:
+            await asyncio.sleep(20)
+            try:
+                if (not self._pending_confirmations
+                        or self._awaiting_confirmation is not None
+                        or self.is_playing_audio):
+                    continue
+                if _time.time() - self._last_speech_time < 30:
+                    continue
+                # 過濾過期
+                self._pending_confirmations = [
+                    c for c in self._pending_confirmations if c.expires_at > _time.time()
+                ]
+                if not self._pending_confirmations:
+                    continue
+                conf = self._pending_confirmations.pop(0)
+                self._awaiting_confirmation = conf
+                self._awaiting_confirmation_speaker = conf.speaker
+                await self.play_tts(
+                    f"剛才說的「{conf.task_text}」，要記成待辦嗎？",
+                    already_in_channel=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error("[VC] _confirmation_checker_loop 意外錯誤: %s", e)
 
     async def _handle_voice_status_query(self, speaker: str):
         """語音觸發系統健康狀態報告，不走 LLM，直接生成回答並 TTS 播放。"""
@@ -3045,6 +3201,36 @@ class VoiceController(commands.Cog):
         # 🔍 [Background Intent Enrich] 喚醒後立即啟動背景 DDG，不阻塞本次回應
         asyncio.create_task(self.bot.router._background_intent_enrich(speaker, query))
 
+        # 📅 [Personal Assistant] 更新最近說話時間（供靜默確認檢查器使用）
+        self._last_speech_time = time.time()
+
+        # ✋ [Personal Assistant Confirmation] yes/no 回應 → 優先處理
+        if self._awaiting_confirmation and self._awaiting_confirmation_speaker == speaker:
+            from recall_handler import is_yes_response, is_no_response
+            if is_yes_response(query) or is_no_response(query):
+                await self._handle_confirmation_response(speaker, query)
+                return
+
+        # 📝 [Personal Assistant Manual Add] 「記一下」→ 立即存入
+        if self._recall_handler and is_manual_add_query(query):
+            await self._handle_manual_add_query(speaker, query)
+            return
+
+        # ✏️ [Personal Assistant Task Update] 「那件事改成…」→ 更新任務
+        if self._recall_handler and is_task_update_query(query):
+            await self._handle_task_update_query(speaker, query)
+            return
+
+        # ✅ [Personal Assistant Mark-Done] 「那件事做完了」→ 標記任務完成
+        if self._recall_handler and is_mark_done_query(query):
+            await self._handle_mark_done_query(speaker, query)
+            return
+
+        # 🗂️ [Personal Assistant Recall] 語音日記查詢：剛才說了什麼、待辦、答應了什麼
+        if self._recall_handler and is_recall_query(query):
+            await self._handle_recall_query(speaker, query)
+            return
+
         # 🩺 [System Status Voice Trigger] 偵測系統狀態查詢，直接回答不走 LLM
         _status_keywords = ["系統狀態", "健康狀態", "剩餘額度", "API 用量", "還剩多少", "用了多少",
                             "api剩", "額度還有", "配額", "token 剩", "token還", "quota"]
@@ -3391,42 +3577,64 @@ class VoiceController(commands.Cog):
         import random
 
         if cmd == "skip":
-            if not self.stream_mode:
+            if not self.stream_mode and not self.radio_mode:
                 if ch: await ch.send("😑 沒有歌在播，要我跳過什麼？")
                 return
-            if vc and vc.is_playing():
+            if self.radio_mode:
+                self.radio_paused = False  # 暫停狀態下 is_playing() 回傳 False，必須先清除
+                if vc:
+                    vc.stop_playing()      # 無條件觸發 after_radio callback 解鎖 play_done_event
+            elif vc and vc.is_playing():
                 vc.stop_playing()
             reply = random.choice(replies["skip"])
             if ch: await ch.send(reply)
             self.stt_logger.info(f"[音樂控制→{speaker}] 指令=skip | bot={reply}")
 
         elif cmd == "stop":
-            if not self.stream_mode:
+            if not self.stream_mode and not self.radio_mode:
                 if ch: await ch.send("😑 本來就沒在播了。")
                 return
-            await self.stop_stream(reason="語音指令停止")
+            if self.radio_mode:
+                await self.stop_radio(reason="語音指令停止")
+            if self.stream_mode:
+                await self.stop_stream(reason="語音指令停止")
             reply = random.choice(replies["stop"])
             if ch: await ch.send(reply)
             self.stt_logger.info(f"[音樂控制→{speaker}] 指令=stop | bot={reply}")
 
         elif cmd == "pause":
-            if not self.stream_mode or not vc:
-                if ch: await ch.send("😑 沒有串流可以暫停。")
+            if not self.stream_mode and not self.radio_mode:
+                if ch: await ch.send("😑 沒有在播可以暫停。")
                 return
-            if not self.stream_paused:
+            if not vc:
+                if ch: await ch.send("😑 找不到語音連線。")
+                return
+            if self.stream_mode and not self.stream_paused:
                 vc.pause()
                 self.stream_paused = True
+            elif self.radio_mode and not self.stream_mode and not self.radio_paused:
+                vc.pause()
+                self.radio_paused = True
+            else:
+                if ch: await ch.send("😑 已經在暫停了。")
+                return
             reply = random.choice(replies["pause"])
             if ch: await ch.send(reply)
             self.stt_logger.info(f"[音樂控制→{speaker}] 指令=pause | bot={reply}")
 
         elif cmd == "resume":
-            if not self.stream_mode or not vc:
-                if ch: await ch.send("😑 沒有串流可以繼續。")
+            if not self.stream_paused and not self.radio_paused:
+                if ch: await ch.send("😑 沒有東西在暫停。")
+                return
+            if not vc:
+                if ch: await ch.send("😑 找不到語音連線。")
                 return
             if self.stream_paused:
                 vc.resume()
                 self.stream_paused = False
+            elif self.radio_paused:
+                vc.resume()
+                self.radio_paused = False
             reply = random.choice(replies["resume"])
             if ch: await ch.send(reply)
             self.stt_logger.info(f"[音樂控制→{speaker}] 指令=resume | bot={reply}")
@@ -3680,6 +3888,11 @@ class VoiceController(commands.Cog):
             # 使用最新條目的時間作為快照參考
             self.last_snapshot_time = max(e["timestamp"] for e in self.slow_loop_accumulator)
             print(f"🕒 [Slow System] 執行增量總結 (累積筆數: {len(self.slow_loop_accumulator)}, 總字數: {total_chars})...")
+
+            # 遊戲期間不貼日記，避免打斷遊戲流程；留住累積器內容，等遊戲結束後繼續
+            if self.bot.router.current_game:
+                print(f"🎮 [SlowLoop] 遊戲進行中 ({self.bot.router.current_game})，跳過日記生成。")
+                return
 
             # 將累積的內容取出進行處理，並清空累積器
             processing_entries = self.slow_loop_accumulator
@@ -4601,6 +4814,7 @@ class VoiceController(commands.Cog):
             return
 
         self.radio_mode = False
+        self.radio_paused = False
         logger.info(f"📻 [Radio] 電台停止，原因: {reason}")
 
         # 取消背景 Task
@@ -4743,9 +4957,11 @@ class VoiceController(commands.Cog):
 
         except asyncio.CancelledError:
             logger.info("📻 [Radio Loop] 電台迴圈被取消。")
+            self.radio_paused = False
         except Exception as e:
             logger.error(f"❌ [Radio Loop] 發生異常: {e}")
             self.radio_mode = False
+            self.radio_paused = False
 
     async def play_radio_song(self, file_path: str):
         """
@@ -4762,6 +4978,7 @@ class VoiceController(commands.Cog):
         if not vc:
             logger.warning("⚠️ [Radio Song] 無連線中的 VoiceClient，跳過播放。")
             self.radio_mode = False
+            self.radio_paused = False
             return
 
         play_done_event = asyncio.Event()

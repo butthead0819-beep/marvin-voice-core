@@ -1,0 +1,102 @@
+{
+  "channel": "pinpinponpon627",
+  "generated_at": "2026-05-15T12:23:41.390799+00:00",
+  "days": 30,
+  "summary": {
+    "total_users": 4,
+    "total_messages": 20,
+    "high_intent_messages": 5
+  },
+  "channel_vocab": [
+    {
+      "token": "哈哈哈哈哈哈哈",
+      "count": 6
+    },
+    {
+      "token": "蘋蘋蘋蘋蘋蘋",
+      "count": 5
+    },
+    {
+      "token": "可愛可愛可愛",
+      "count": 3
+    },
+    {
+      "token": "訂閱多少錢",
+      "count": 1
+    },
+    {
+      "token": "有什麼福利",
+      "count": 1
+    },
+    {
+      "token": "蘋蘋太可愛了",
+      "count": 1
+    },
+    {
+      "token": "周邊什麼時候補貨",
+      "count": 1
+    },
+    {
+      "token": "哪裡買",
+      "count": 1
+    },
+    {
+      "token": "訂一個月多少",
+      "count": 1
+    }
+  ],
+  "hot_leads": [
+    {
+      "username": "Ryu_0412",
+      "conv_score": 10.81,
+      "loyalty": 1.8,
+      "intent_total": 6,
+      "sessions": 3,
+      "avg_msgs": 2.7,
+      "total_msgs": 8,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "dragon_lee",
+      "conv_score": 4.57,
+      "loyalty": 0.76,
+      "intent_total": 6,
+      "sessions": 1,
+      "avg_msgs": 2.0,
+      "total_msgs": 2,
+      "intents": [
+        "merch_intent"
+      ],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "ghost_99",
+      "conv_score": 1.44,
+      "loyalty": 0.48,
+      "intent_total": 3,
+      "sessions": 1,
+      "avg_msgs": 1.0,
+      "total_msgs": 1,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "初訪觀眾"
+    }
+  ],
+  "loyal_community": [
+    {
+      "username": "sakura_tw",
+      "conv_score": 0.0,
+      "loyalty": 1.9,
+      "intent_total": 0,
+      "sessions": 4,
+      "avg_msgs": 2.2,
+      "total_msgs": 9,
+      "intents": [],
+      "stage": "忠實粉絲"
+    }
+  ]
+}

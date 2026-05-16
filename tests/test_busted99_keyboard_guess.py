@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import uuid
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -70,6 +70,7 @@ async def _bootstrap_guessing(cog, *, jack_id: str = "12345",
     session.answer = 50
     session.low_bound = 1
     session.high_bound = 99
+    session.guesser_order = [jack_id]
     session.guessing_queue = []
 
     from game.busted99.session import Busted99State as S
@@ -250,52 +251,17 @@ def test_conversation_buffer_cap_not_raised_above_natural():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Logging in receive_voice_answer_by_speaker
+# receive_voice_answer_by_speaker — 非猜題玩家語音過濾
 # ══════════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.asyncio
-async def test_voice_answer_logs_on_wrong_speaker():
-    """
-    When the speaker is NOT the current guesser, a debug log must be emitted.
-    """
+async def test_voice_answer_non_guesser_returns_false():
+    """非猜題玩家（Marvin 是 setter）的語音應直接回傳 False。"""
     from cogs.busted99_cog import Busted99Cog
     cog = Busted99Cog(_make_bot())
-    await _bootstrap_guessing(cog)
+    await _bootstrap_guessing(cog)  # jack_id=12345 (狗與露) 是 guesser，Marvin 是 setter
 
-    with patch("cogs.busted99_cog.logger") as mock_logger:
-        result = await cog.receive_voice_answer_by_speaker("Marvin", "30")
-
-    assert result is False
-    assert mock_logger.debug.called or mock_logger.info.called
-
-
-@pytest.mark.asyncio
-async def test_voice_answer_logs_on_parse_fail():
-    """
-    When parse_number fails, a debug/warning log must be emitted with raw text.
-    """
-    from cogs.busted99_cog import Busted99Cog
-    cog = Busted99Cog(_make_bot())
-    await _bootstrap_guessing(cog)
-
-    with patch("cogs.busted99_cog.logger") as mock_logger:
-        result = await cog.receive_voice_answer_by_speaker("狗與露", "hello world")
-
-    assert result is False
-    assert mock_logger.debug.called or mock_logger.warning.called
-
-
-@pytest.mark.asyncio
-async def test_voice_answer_logs_success():
-    """
-    A successful valid guess must emit an info/debug log.
-    """
-    from cogs.busted99_cog import Busted99Cog
-    cog = Busted99Cog(_make_bot())
-    await _bootstrap_guessing(cog)
-
-    with patch("cogs.busted99_cog.logger") as mock_logger:
-        result = await cog.receive_voice_answer_by_speaker("狗與露", "30")
-
-    assert result is True
-    assert mock_logger.info.called or mock_logger.debug.called
+    # Marvin 是 setter，不是 guesser → 應被過濾
+    assert await cog.receive_voice_answer_by_speaker("Marvin", "50") is False
+    # 完全陌生的 speaker → 也應被過濾
+    assert await cog.receive_voice_answer_by_speaker("路人", "30") is False

@@ -41,7 +41,11 @@ def _load_env():
 
 _load_env()
 
-GOOGLE_API_KEY            = os.environ.get("GOOGLE_API_KEY", "")
+# 優先用付費 key（避開免費 quota 與 flash 的 JSON 截斷 bug），fallback 才用免費
+GOOGLE_API_KEY = (
+    os.environ.get("GEMINI_PAID_API_KEY", "").strip()
+    or os.environ.get("GOOGLE_API_KEY", "").strip()
+)
 REVIEW_MODEL              = os.environ.get("MARVIN_REVIEW_MODEL", "gemini-2.5-flash-preview-05-20")
 DISCORD_BOT_TOKEN         = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_REVIEW_CHANNEL_ID = os.environ.get("DISCORD_REVIEW_CHANNEL_ID", "")
@@ -464,8 +468,11 @@ def merge_player(existing: dict, updated: dict) -> dict:
 
         elif key == "emotional_highlights" and isinstance(val, list):
             old = existing.get("emotional_highlights", [])
-            old_ts = {e.get("timestamp") for e in old}
-            combined = old + [e for e in val if e.get("timestamp") not in old_ts]
+            # dedup by (moment, int(timestamp)) — 避免 int/float timestamp 漏判
+            def _key(e):
+                return (e.get("moment", ""), int(e.get("timestamp", 0) or 0))
+            old_keys = {_key(e) for e in old}
+            combined = old + [e for e in val if _key(e) not in old_keys]
             combined.sort(key=lambda x: x.get("timestamp", 0))
             merged["emotional_highlights"] = combined[-10:]
 
