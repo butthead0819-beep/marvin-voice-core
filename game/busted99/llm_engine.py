@@ -374,9 +374,10 @@ class Busted99LLMEngine(Busted99Engine):
                 # 終局類 outcome 若與數學不符，棄用 LLM 判定，fallback 到 code
                 _ok = (
                     (llm_outcome in ("bust", "last_bust") and number == answer)
-                    or (llm_outcome == "wrong_low" and number < answer)
-                    or (llm_outcome == "wrong_high" and number > answer)
-                    or llm_outcome in ("boundary", "out_of_range", "last_wrong")
+                    or (llm_outcome == "wrong_low" and number < answer and space > 2)
+                    or (llm_outcome == "wrong_high" and number > answer and space > 2)
+                    or llm_outcome in ("boundary", "out_of_range")
+                    or (llm_outcome == "last_wrong" and space <= 2 and number != answer)
                 )
                 if not _ok:
                     logger.warning(

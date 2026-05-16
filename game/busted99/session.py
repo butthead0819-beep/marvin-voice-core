@@ -37,3 +37,4 @@ class Busted99Session:
     started_at: float = 0.0
     last_guess: int | None = None
     last_guess_result: str | None = None  # 'bust','wrong_high','wrong_low','timeout','last_wrong','last_bust'
+    guess_log: list[dict] = field(default_factory=list)  # [{guesser, guess, result, low, high, round}]

@@ -624,6 +624,8 @@ class Busted99Cog(commands.Cog):
             "last_guess": session.last_guess if is_over else None,
             "last_guesser": last_guesser if is_over else None,
             "last_outcome": session.last_guess_result if is_over else None,
+            # 猜題歷史（最多取最近 50 筆，避免 payload 過大）
+            "guess_log": list(getattr(session, "guess_log", [])[-50:]),
         }
 
     async def _emit_ws_state(self, session: Busted99Session) -> None:

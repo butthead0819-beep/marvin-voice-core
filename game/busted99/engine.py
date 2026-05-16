@@ -389,6 +389,10 @@ class Busted99Engine:
 
             # Check if we're in last-chance mode (space ≤ 2)
             is_last_chance = space <= 2
+            guesser_name = next(
+                (p.display_name for p in self.session.players if p.user_id == guesser_id),
+                guesser_id,
+            )
 
             if number == answer:
                 # Correct guess!
@@ -419,8 +423,7 @@ class Busted99Engine:
                 loop.run_in_executor(
                     None, self._save_guess,
                     self.session.session_id, self.session.round_num,
-                    guesser_id,
-                    next(p.display_name for p in self.session.players if p.user_id == guesser_id),
+                    guesser_id, guesser_name,
                     number, result_str, low_before, high_before, 0,
                 )
                 # Persist score deltas immediately
@@ -444,6 +447,8 @@ class Busted99Engine:
                     "new_low": low,
                     "new_high": high,
                     "space": space,
+                    "guesser_id": guesser_id,
+                    "guesser_name": guesser_name,
                 }
 
             elif number < answer:
@@ -461,8 +466,7 @@ class Busted99Engine:
                     loop.run_in_executor(
                         None, self._save_guess,
                         self.session.session_id, self.session.round_num,
-                        guesser_id,
-                        next(p.display_name for p in self.session.players if p.user_id == guesser_id),
+                        guesser_id, guesser_name,
                         number, result_str, low_before, high_before, 100,
                     )
                     loop.run_in_executor(
@@ -476,6 +480,8 @@ class Busted99Engine:
                         "new_low": low,
                         "new_high": high,
                         "space": space,
+                        "guesser_id": guesser_id,
+                        "guesser_name": guesser_name,
                     }
                 else:
                     result_str = "wrong_low"
@@ -486,8 +492,7 @@ class Busted99Engine:
                     loop.run_in_executor(
                         None, self._save_guess,
                         self.session.session_id, self.session.round_num,
-                        guesser_id,
-                        next(p.display_name for p in self.session.players if p.user_id == guesser_id),
+                        guesser_id, guesser_name,
                         number, result_str, low_before, high_before, 0,
                     )
 
@@ -498,6 +503,8 @@ class Busted99Engine:
                         "new_low": self.session.low_bound,
                         "new_high": self.session.high_bound,
                         "space": self.session.high_bound - self.session.low_bound + 1,
+                        "guesser_id": guesser_id,
+                        "guesser_name": guesser_name,
                     }
 
             else:
@@ -515,8 +522,7 @@ class Busted99Engine:
                     loop.run_in_executor(
                         None, self._save_guess,
                         self.session.session_id, self.session.round_num,
-                        guesser_id,
-                        next(p.display_name for p in self.session.players if p.user_id == guesser_id),
+                        guesser_id, guesser_name,
                         number, result_str, low_before, high_before, 100,
                     )
                     loop.run_in_executor(
@@ -530,6 +536,8 @@ class Busted99Engine:
                         "new_low": low,
                         "new_high": high,
                         "space": space,
+                        "guesser_id": guesser_id,
+                        "guesser_name": guesser_name,
                     }
                 else:
                     result_str = "wrong_high"
@@ -540,8 +548,7 @@ class Busted99Engine:
                     loop.run_in_executor(
                         None, self._save_guess,
                         self.session.session_id, self.session.round_num,
-                        guesser_id,
-                        next(p.display_name for p in self.session.players if p.user_id == guesser_id),
+                        guesser_id, guesser_name,
                         number, result_str, low_before, high_before, 0,
                     )
 
@@ -552,7 +559,21 @@ class Busted99Engine:
                         "new_low": self.session.low_bound,
                         "new_high": self.session.high_bound,
                         "space": self.session.high_bound - self.session.low_bound + 1,
+                        "guesser_id": guesser_id,
+                        "guesser_name": guesser_name,
                     }
+
+            # Append to guess log (covers all terminal and non-terminal outcomes)
+            if not hasattr(self.session, "guess_log"):
+                self.session.guess_log = []
+            self.session.guess_log.append({
+                "guesser": guesser_name,
+                "guess": number,
+                "result": result_str,
+                "low": self.session.low_bound,
+                "high": self.session.high_bound,
+                "round": self.session.round_num,
+            })
 
         await self._on_state_change(self.session)
         return result

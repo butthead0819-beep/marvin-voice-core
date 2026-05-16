@@ -73,6 +73,19 @@
     background: #0d0d1a; border-radius: 8px; padding: 10px 14px;
     font-size: 0.75rem; color: #636e72; height: 80px; overflow-y: auto;
   }
+
+  .gl-entry {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 5px 0; border-bottom: 1px solid #2d3561; font-size: 0.82rem;
+  }
+  .gl-entry:last-child { border-bottom: none; }
+  .gl-meta { color: #b2bec3; font-size: 0.72rem; margin-top: 1px; }
+  .gl-result-wrong_low  { color: #74b9ff; }
+  .gl-result-wrong_high { color: #a29bfe; }
+  .gl-result-bust       { color: #ff7675; font-weight: 700; }
+  .gl-result-last_bust  { color: #ff7675; font-weight: 700; }
+  .gl-result-last_wrong { color: #55efc4; font-weight: 700; }
+  .gl-result-timeout    { color: #fdcb6e; }
 </style>
 </head>
 <body>
@@ -128,6 +141,12 @@
 <div class="card" id="scores-card" style="display:none">
   <h2>積分板</h2>
   <div id="scores-list"></div>
+</div>
+
+<!-- Guess log -->
+<div class="card" id="guess-log-card" style="display:none">
+  <h2>猜題記錄</h2>
+  <div id="guess-log-list"></div>
 </div>
 
 <!-- Debug log -->
@@ -290,6 +309,38 @@ function render(s) {
         <span>${p.score} 分</span>
        </div>`
     ).join('');
+  }
+
+  // guess log
+  const GL_RESULT_LABELS = {
+    wrong_low:  '猜太低 📉',
+    wrong_high: '猜太高 📈',
+    bust:       '💥 BUST！',
+    last_bust:  '💥 終極 BUST！',
+    last_wrong: '🍀 猜錯反得分！',
+    timeout:    '⏰ 超時',
+  };
+  const guessLog = s.guess_log ?? [];
+  const glCard = document.getElementById('guess-log-card');
+  if (guessLog.length > 0) {
+    glCard.style.display = '';
+    // 最新在上，最多顯示 20 筆
+    const entries = [...guessLog].reverse().slice(0, 20);
+    document.getElementById('guess-log-list').innerHTML = entries.map(e => {
+      const label = GL_RESULT_LABELS[e.result] ?? e.result;
+      const rangeAfter = (e.result === 'wrong_low' || e.result === 'wrong_high')
+        ? ` → ${e.low}~${e.high}`
+        : '';
+      return `<div class="gl-entry">
+        <div>
+          <span class="gl-result-${e.result}">${label}</span>
+          <span style="margin-left:6px; color:#e0e0e0">${e.guesser} 猜 <b>${e.guess}</b>${rangeAfter}</span>
+        </div>
+        <div class="gl-meta">第 ${e.round} 輪</div>
+      </div>`;
+    }).join('');
+  } else {
+    glCard.style.display = 'none';
   }
 
   // actions visibility
