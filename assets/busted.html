@@ -262,9 +262,12 @@ function sendSetAnswer() {
 
 // ── XSS helpers ───────────────────────────────────────────────────────────
 function safeText(str) {
+  // textContent → innerHTML escapes <, >, & but leaves quotes intact, so the
+  // result is unsafe inside quoted attribute contexts (e.g. data-theme="${...}").
+  // Escape quotes explicitly so the helper is safe in both text and attribute slots.
   const d = document.createElement('div');
   d.textContent = String(str);
-  return d.innerHTML;
+  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 const _AL_SAFE_TYPES = new Set(['buzz', 'correct', 'wrong', 'timeout']);
 

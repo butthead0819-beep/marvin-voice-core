@@ -14,18 +14,19 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any, Callable, Awaitable
 
 from game.busted99.engine import Busted99Engine
 from game.busted99.session import Busted99Session, Busted99State
 from game.busted99.scoring import score_for_space
-
-_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
-_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-_CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "qwen-3-235b-a22b-instruct-2507")
-_GROQ_MODEL = os.environ.get("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
-_GEMINI_MODEL = "gemini-2.5-flash"  # 最後一層，付費 key 無 quota 限制
+from game.llm_clients import (
+    CEREBRAS_MODEL as _CEREBRAS_MODEL,
+    GROQ_MODEL as _GROQ_MODEL,
+    GEMINI_MODEL as _GEMINI_MODEL,
+    get_cerebras_client,
+    get_groq_client,
+    get_gemini_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,54 +110,18 @@ class Busted99LLMEngine(Busted99Engine):
     ) -> None:
         super().__init__(session, on_state_change=on_state_change, db_path=db_path)
         self._llm_client = llm_client  # 若 None，走真實 3-layer fallback
-        # Lazy-init clients（first use 才建）
-        self._cerebras_client = None
-        self._groq_client = None
-        self._gemini_client = None
+        # Lazy clients moved to game.llm_clients (process-level singletons).
 
-    # ── Client builders（lazy）─────────────────────────────────────────────────
-
+    # Thin delegators preserved so tests can patch self._get_*_client when
+    # needed; the shared module owns the actual lazy-init + caching.
     def _get_cerebras_client(self):
-        if self._cerebras_client is not None:
-            return self._cerebras_client
-        api_key = os.environ.get("CEREBRAS_API_KEY")
-        if not api_key:
-            return None
-        try:
-            from openai import AsyncOpenAI
-            self._cerebras_client = AsyncOpenAI(api_key=api_key, base_url=_CEREBRAS_BASE_URL)
-            return self._cerebras_client
-        except ImportError:
-            return None
+        return get_cerebras_client()
 
     def _get_groq_client(self):
-        if self._groq_client is not None:
-            return self._groq_client
-        api_key = os.environ.get("GROQ_API_KEY")
-        if not api_key:
-            return None
-        try:
-            from openai import AsyncOpenAI
-            self._groq_client = AsyncOpenAI(api_key=api_key, base_url=_GROQ_BASE_URL)
-            return self._groq_client
-        except ImportError:
-            return None
+        return get_groq_client()
 
     def _get_gemini_client(self):
-        if self._gemini_client is not None:
-            return self._gemini_client
-        api_key = (
-            os.environ.get("GEMINI_PAID_API_KEY", "").strip()
-            or os.environ.get("GOOGLE_API_KEY", "").strip()
-        )
-        if not api_key:
-            return None
-        try:
-            from google import genai
-            self._gemini_client = genai.Client(api_key=api_key)
-            return self._gemini_client
-        except ImportError:
-            return None
+        return get_gemini_client()
 
     # ── LLM call（3-layer fallback）────────────────────────────────────────────
 

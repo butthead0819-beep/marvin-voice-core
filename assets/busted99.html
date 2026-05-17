@@ -81,7 +81,7 @@
   .gl-entry:last-child { border-bottom: none; }
   .gl-meta { color: #b2bec3; font-size: 0.72rem; margin-top: 1px; }
   .gl-result-wrong_low  { color: #74b9ff; }
-  .gl-result-wrong_high { color: #a29bfe; }
+  .gl-result-wrong_high { color: #e17055; }
   .gl-result-bust       { color: #ff7675; font-weight: 700; }
   .gl-result-last_bust  { color: #ff7675; font-weight: 700; }
   .gl-result-last_wrong { color: #55efc4; font-weight: 700; }
@@ -160,6 +160,17 @@ let prevScores = {};  // 記住 game_over 之前的分數，供計算 delta
 // 從 URL 讀取 token + name（Marvin DM 的個人連結帶有 ?token=xxx&name=yyy）
 const urlToken = new URLSearchParams(location.search).get('token') || '';
 const urlName  = new URLSearchParams(location.search).get('name')  || '';
+
+function safeText(str) {
+  // textContent → innerHTML escapes <, >, & but leaves quotes intact, so the
+  // result is unsafe inside quoted attribute contexts. Escape quotes too so the
+  // helper is safe in both text and attribute slots.
+  const d = document.createElement('div');
+  d.textContent = String(str);
+  return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+const _GL_SAFE_CLASSES = new Set(['wrong_low','wrong_high','bust','last_bust','last_wrong','timeout']);
 
 // ── identity ──────────────────────────────────────────────────────────────
 function init() {
@@ -290,8 +301,8 @@ function render(s) {
     document.getElementById('score-delta-list').innerHTML = deltas
       .filter(d => d.delta !== 0)
       .map(d => `<div class="score-row">
-        <span>${d.name}</span>
-        <span style="color:#4ade80">+${d.delta} 分（總 ${d.score}）</span>
+        <span>${safeText(d.name)}</span>
+        <span style="color:#4ade80">+${Number(d.delta)} 分（總 ${Number(d.score)}）</span>
       </div>`).join('') || '<div style="text-align:center; opacity:0.6">無人得分</div>';
   } else {
     summary.style.display = 'none';
@@ -305,8 +316,8 @@ function render(s) {
     document.getElementById('scores-card').style.display = '';
     scoresList.innerHTML = s.scores.map((p, i) =>
       `<div class="score-row">
-        <span>${['🥇','🥈','🥉'][i] ?? `${i+1}.`} ${p.name}</span>
-        <span>${p.score} 分</span>
+        <span>${['🥇','🥈','🥉'][i] ?? `${i+1}.`} ${safeText(p.name)}</span>
+        <span>${Number(p.score)} 分</span>
        </div>`
     ).join('');
   }
@@ -327,16 +338,17 @@ function render(s) {
     // 最新在上，最多顯示 20 筆
     const entries = [...guessLog].reverse().slice(0, 20);
     document.getElementById('guess-log-list').innerHTML = entries.map(e => {
-      const label = GL_RESULT_LABELS[e.result] ?? e.result;
+      const label = GL_RESULT_LABELS[e.result] ?? safeText(e.result);
+      const safeResult = _GL_SAFE_CLASSES.has(e.result) ? e.result : 'timeout';
       const rangeAfter = (e.result === 'wrong_low' || e.result === 'wrong_high')
-        ? ` → ${e.low}~${e.high}`
+        ? ` → ${Number(e.low)}~${Number(e.high)}`
         : '';
       return `<div class="gl-entry">
         <div>
-          <span class="gl-result-${e.result}">${label}</span>
-          <span style="margin-left:6px; color:#e0e0e0">${e.guesser} 猜 <b>${e.guess}</b>${rangeAfter}</span>
+          <span class="gl-result-${safeResult}">${label}</span>
+          <span style="margin-left:6px; color:#e0e0e0">${safeText(e.guesser)} 猜 <b>${Number(e.guess)}</b>${rangeAfter}</span>
         </div>
-        <div class="gl-meta">第 ${e.round} 輪</div>
+        <div class="gl-meta">第 ${Number(e.round)} 輪</div>
       </div>`;
     }).join('');
   } else {

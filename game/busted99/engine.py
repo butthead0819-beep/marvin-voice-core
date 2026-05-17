@@ -564,8 +564,6 @@ class Busted99Engine:
                     }
 
             # Append to guess log (covers all terminal and non-terminal outcomes)
-            if not hasattr(self.session, "guess_log"):
-                self.session.guess_log = []
             self.session.guess_log.append({
                 "guesser": guesser_name,
                 "guess": number,
@@ -574,6 +572,8 @@ class Busted99Engine:
                 "high": self.session.high_bound,
                 "round": self.session.round_num,
             })
+            if len(self.session.guess_log) > 200:
+                self.session.guess_log = self.session.guess_log[-200:]
 
         await self._on_state_change(self.session)
         return result
@@ -623,6 +623,17 @@ class Busted99Engine:
                     None, self._write_score_deltas,
                     [(guesser_id, timed_out_name, actual_delta)],
                 )
+
+            self.session.guess_log.append({
+                "guesser": timed_out_name,
+                "guess": None,
+                "result": "timeout",
+                "low": self.session.low_bound,
+                "high": self.session.high_bound,
+                "round": self.session.round_num,
+            })
+            if len(self.session.guess_log) > 200:
+                self.session.guess_log = self.session.guess_log[-200:]
 
             self._advance_guesser()
             next_guesser = self.session.current_guesser_id

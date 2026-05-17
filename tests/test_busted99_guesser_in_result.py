@@ -15,7 +15,6 @@ Tests:
 
 from __future__ import annotations
 
-import asyncio
 import pytest
 from unittest.mock import AsyncMock
 
@@ -45,6 +44,7 @@ def _make_two_player_session(answer: int = 50) -> Busted99Session:
     s.started_at = 0.0
     s.last_guess = None
     s.last_guess_result = None
+    s.guess_log = []
     return s
 
 

@@ -265,13 +265,21 @@ class GameEngine:
             self.session.state = GameState.SPINNING
             await self._notify()
 
-    async def set_answer(self, answer: str) -> None:
+    async def set_answer(self, answer: str) -> bool:
         """
         Called when the current setter submits their secret answer.
         Transitions SETTER_INPUT -> CLUE_ACTIVE and triggers the first clue.
+
+        Returns True if accepted, False if length is out of range. Marvin's
+        auto-setter path goes through here too — without this guard a
+        hallucinated empty/oversize answer would leave the game stuck in
+        CLUE_ACTIVE with no playable answer.
         """
+        normalized = (answer or "").strip()
+        if not (ANSWER_MIN_LEN <= len(normalized) <= ANSWER_MAX_LEN):
+            return False
         async with self._lock:
-            self.session.current_answer = answer
+            self.session.current_answer = normalized
             self.session.current_clues = []
             self.session.current_round = 1
             self.session.buzz_locked_until = 0.0
@@ -282,6 +290,7 @@ class GameEngine:
             await self._notify()
             if self._clue_fn is not None:
                 asyncio.get_running_loop().create_task(self._clue_fn(self.session))
+        return True
 
     async def buzz_in(self, user_id: str) -> bool:
         """

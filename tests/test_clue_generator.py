@@ -131,3 +131,45 @@ def test_judge_answer_strips_whitespace():
 
 def test_judge_answer_wrong():
     assert judge_answer("蘋果汁", "西瓜汁") is False
+
+
+# ── Leak post-validation ──────────────────────────────────────────────────
+# Backstory: the system prompt says "絕對不可使用答案裡的任何字" but the LLM
+# can ignore it. Add a post-hoc check + one retry to catch the common case.
+
+
+def _router(*responses):
+    r = MagicMock()
+    r.complete = AsyncMock(side_effect=list(responses))
+    return r
+
+
+@pytest.mark.asyncio
+async def test_clean_clue_no_retry():
+    """No leak → return as-is, only 1 LLM call."""
+    router = _router("一個摔角選手出身的好萊塢動作明星")
+    out = await generate_clue("巨石強森", 1, [], router)
+    assert out == "一個摔角選手出身的好萊塢動作明星"
+    assert router.complete.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_leaky_clue_triggers_one_retry():
+    """First attempt leaks → retry once; if retry succeeds, return retry."""
+    router = _router(
+        "強森就是他",                  # leaks 強 + 森
+        "摔角界轉戰好萊塢的動作明星",    # clean
+    )
+    out = await generate_clue("巨石強森", 1, [], router)
+    assert router.complete.call_count == 2
+    assert out == "摔角界轉戰好萊塢的動作明星"
+
+
+@pytest.mark.asyncio
+async def test_both_attempts_leak_returns_safe_string():
+    """If even the retry leaks, return a safe fallback rather than ship a leak."""
+    router = _router("巨石", "強森")
+    out = await generate_clue("巨石強森", 1, [], router)
+    assert router.complete.call_count == 2
+    assert not any(c in out for c in "巨石強森"), f"clue leaks: {out!r}"
+    assert out.strip() != ""

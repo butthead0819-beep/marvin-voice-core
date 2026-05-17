@@ -14,8 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from twitch_collector import init_db, save_message, IRC_HOST, IRC_PORT, NICK
-from twitch_report import run_report
+from twitch_collector import init_db, save_message, IRC_HOST, IRC_PORT, NICK  # noqa: E402
+from twitch_report import run_report                                            # noqa: E402
+from gen_pitch_html import generate as gen_html                                 # noqa: E402
 
 DB_PATH = Path(__file__).parent.parent / "marvin_twitch.db"
 LOG_DIR = Path(__file__).parent.parent / "logs"
@@ -48,10 +49,18 @@ async def collect_with_timeout(channel: str, conn: sqlite3.Connection, duration_
                 def send(line):
                     writer.write((line + "\r\n").encode())
 
+                send("CAP REQ :twitch.tv/tags twitch.tv/commands")
                 send("PASS SCHMOOPIIE")
                 send(f"NICK {NICK}")
                 send(f"JOIN #{channel.lower()}")
                 await writer.drain()
+
+                TAGGED_RE = re.compile(
+                    r"@([^ ]+) :(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)"
+                )
+                PLAIN_RE  = re.compile(
+                    r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)"
+                )
 
                 msg_count = 0
                 while True:
@@ -73,14 +82,25 @@ async def collect_with_timeout(channel: str, conn: sqlite3.Connection, duration_
                         await writer.drain()
                         continue
 
-                    match = re.match(
-                        r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)", text
-                    )
-                    if match:
-                        save_message(conn, channel, match.group(1), match.group(2))
+                    m = TAGGED_RE.match(text)
+                    if m:
+                        tags = dict(
+                            kv.split("=", 1) for kv in m.group(1).split(";") if "=" in kv
+                        )
+                        username     = m.group(2)
+                        message      = m.group(3)
+                        display_name = tags.get("display-name", "") or username
+                        is_subscriber = int(tags.get("subscriber", "0"))
+                        save_message(conn, channel, username, message, display_name, is_subscriber)
                         msg_count += 1
                         if msg_count % 100 == 0:
                             log.info(f"已收 {msg_count} 則訊息")
+                        continue
+
+                    m = PLAIN_RE.match(text)
+                    if m:
+                        save_message(conn, channel, m.group(1), m.group(2))
+                        msg_count += 1
 
                 writer.close()
 
@@ -135,6 +155,12 @@ async def main():
     log.info("產生報表中...")
     run_report(channel, top_n=10, days=1)
     run_report(channel, top_n=10, days=30)
+
+    log.info("產生 pitch demo HTML...")
+    out = gen_html(channel, days=1)
+    if out:
+        log.info(f"pitch demo → {out}")
+
     log.info(f"=== Session 結束，log: {log_file} ===")
 
 

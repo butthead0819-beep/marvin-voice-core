@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from typing import Any, Callable, Awaitable
 
@@ -22,12 +21,18 @@ from game.engine import GameEngine, BUZZ_LOCK_SECONDS, BUZZ_COOLDOWN_SECONDS
 from game.session import GameSession, GameState
 from game import scoring
 from game.scoring import count_char_matches
+from game.llm_clients import (
+    CEREBRAS_MODEL as _CEREBRAS_MODEL,
+    GROQ_MODEL as _GROQ_MODEL,
+    GEMINI_MODEL as _GEMINI_MODEL,
+    get_cerebras_client,
+    get_groq_client,
+    get_gemini_client,
+)
 
-_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
-_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-_CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "qwen-3-235b-a22b-instruct-2507")
-_GROQ_MODEL = os.environ.get("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
-_GEMINI_MODEL = "gemini-2.5-flash"
+# Narration is LLM-generated and reaches TTS + Discord. Cap length so a
+# prompt-injected guess cannot blow the TTS queue or flood the channel.
+_NARRATION_MAX_LEN = 200
 
 logger = logging.getLogger(__name__)
 
@@ -78,53 +83,20 @@ class GameLLMEngine(GameEngine):
         # 不傳 judge_fn — LLM engine 自己在 submit_answer() 內做語意判定
         super().__init__(session, on_state_change=on_state_change, db_path=db_path, clue_fn=clue_fn)
         self._llm_client = llm_client
-        self._cerebras_client = None
-        self._groq_client = None
-        self._gemini_client = None
+        # Lazy client builders moved to game.llm_clients (process-level cache);
+        # tests can patch get_*_client on this module to inject fakes.
 
-    # ── Client builders（lazy）─────────────────────────────────────────────────
-
+    # Backward-compat shims: subclasses / tests still call self._get_*_client.
+    # Delegate to the shared module so the call surface is unchanged but the
+    # cache lives in one place.
     def _get_cerebras_client(self):
-        if self._cerebras_client is not None:
-            return self._cerebras_client
-        key = os.environ.get("CEREBRAS_API_KEY")
-        if not key:
-            return None
-        try:
-            from openai import AsyncOpenAI
-            self._cerebras_client = AsyncOpenAI(api_key=key, base_url=_CEREBRAS_BASE_URL)
-            return self._cerebras_client
-        except ImportError:
-            return None
+        return get_cerebras_client()
 
     def _get_groq_client(self):
-        if self._groq_client is not None:
-            return self._groq_client
-        key = os.environ.get("GROQ_API_KEY")
-        if not key:
-            return None
-        try:
-            from openai import AsyncOpenAI
-            self._groq_client = AsyncOpenAI(api_key=key, base_url=_GROQ_BASE_URL)
-            return self._groq_client
-        except ImportError:
-            return None
+        return get_groq_client()
 
     def _get_gemini_client(self):
-        if self._gemini_client is not None:
-            return self._gemini_client
-        key = (
-            os.environ.get("GEMINI_PAID_API_KEY", "").strip()
-            or os.environ.get("GOOGLE_API_KEY", "").strip()
-        )
-        if not key:
-            return None
-        try:
-            from google import genai
-            self._gemini_client = genai.Client(api_key=key)
-            return self._gemini_client
-        except ImportError:
-            return None
+        return get_gemini_client()
 
     # ── LLM plumbing ──────────────────────────────────────────────────────────
 
@@ -236,8 +208,27 @@ class GameLLMEngine(GameEngine):
 
     @staticmethod
     def _code_judge(answer: str, guess: str) -> bool:
-        """Case-insensitive equality fallback，與 GameEngine 原始行為一致。"""
-        return answer.strip().lower() == guess.strip().lower()
+        """Accept the LLM's correct=True verdict if either string is equal to,
+        or contains, the other — provided the shared substring is ≥2 chars and
+        covers at least half of the longer string.
+
+        This matches the prompt's promise that '巨石 vs 巨石強森 可視情況算正確'
+        and the few-shot example that labels guess='巨石' for answer='巨石強森'
+        as correct. The min-overlap rule still blocks nonsense matches like
+        '強' for '巨石強森' or '巨石' for '巨石強森巨無霸'.
+        """
+        a = answer.strip().lower()
+        g = guess.strip().lower()
+        if not a or not g:
+            return False
+        if a == g:
+            return True
+        shorter, longer = (a, g) if len(a) < len(g) else (g, a)
+        if len(shorter) < 2:
+            return False
+        if shorter not in longer:
+            return False
+        return len(shorter) * 2 >= len(longer)
 
     # ── submit_answer override ────────────────────────────────────────────────
 
@@ -289,7 +280,9 @@ class GameLLMEngine(GameEngine):
 
             if llm is not None:
                 llm_correct = bool(llm["correct"])
-                narration = str(llm.get("narration", "")).strip()
+                # Strip control chars + cap length before the value reaches TTS / channel.
+                _raw_narr = str(llm.get("narration", "")).strip()
+                narration = "".join(c for c in _raw_narr if c == "\n" or ord(c) >= 0x20)[:_NARRATION_MAX_LEN]
                 # 防幻覺：LLM 說 correct=True 但 code judge 說 False → code 優先
                 if llm_correct and not self._code_judge(answer, text):
                     logger.warning(
@@ -316,6 +309,16 @@ class GameLLMEngine(GameEngine):
                 if setter:
                     setter.score += setter_pts
 
+                self._log_action({
+                    "type": "correct",
+                    "guesser_name": player.display_name if player else user_id,
+                    "guesser_id": user_id,
+                    "answer": answer,
+                    "guess": text,
+                    "score": guesser_pts,
+                    "clue_round": clue_round,
+                    "round_num": self.session.round_num,
+                })
                 self.session.state = GameState.ROUND_RESULT
                 self.session.buzz_holder_id = None
                 await self._notify()
@@ -324,15 +327,14 @@ class GameLLMEngine(GameEngine):
                 winner_name = player.display_name if player else user_id
                 setter_name_db = setter.display_name if setter else (self.session.current_setter_id or "")
                 setter_id = self.session.current_setter_id or ""
-                import json as _json
                 asyncio.get_running_loop().run_in_executor(
                     None,
                     self._write_round,
                     self.session.session_id, self.session.round_num,
                     setter_id, setter_name_db, answer,
-                    _json.dumps(self.session.current_clues),
+                    json.dumps(self.session.current_clues),
                     user_id, winner_name, clue_round, setter_pts, guesser_pts,
-                    _json.dumps(all_scores),
+                    json.dumps(all_scores),
                 )
                 deltas: list[tuple[str, str, int]] = []
                 if player:
@@ -352,11 +354,20 @@ class GameLLMEngine(GameEngine):
                     player.buzz_cooldown_until = time.time() + BUZZ_COOLDOWN_SECONDS
                 if text and text not in self.session.wrong_guesses:
                     self.session.wrong_guesses.append(text)
+                matched = count_char_matches(answer, text)
+                self._log_action({
+                    "type": "wrong",
+                    "guesser_name": player.display_name if player else user_id,
+                    "guesser_id": user_id,
+                    "guess": text,
+                    "matched_chars": matched,
+                    "clue_round": clue_round,
+                    "round_num": self.session.round_num,
+                })
                 self.session.buzz_locked_until = 0.0
                 self.session.buzz_holder_id = None
                 self.session.state = GameState.CLUE_ACTIVE
                 await self._notify()
-                matched = count_char_matches(answer, text)
                 return {
                     "correct": False, "score": 0, "setter_score": 0,
                     "matched_chars": matched, "answer_len": len(answer),

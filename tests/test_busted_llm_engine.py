@@ -128,12 +128,93 @@ async def test_llm_engine_fallback_on_llm_failure():
 
 @pytest.mark.asyncio
 async def test_llm_engine_hallu_correct_overridden():
-    """E: LLM 說 correct=True 但 guess != answer → code 判 False，保護分數不亂送"""
+    """E: LLM 說 correct=True 但 guess 跟 answer 完全沒交集 → code 判 False"""
     session = _make_session(answer="巨石強森")
     engine = _make_engine(session, llm_client=_mock_llm(correct=True))
     result = await engine.submit_answer("u1", "完全錯誤的答案")
     # code 說 False → 覆蓋 LLM
     assert result["correct"] is False
+
+
+# ─── E2: 部分匹配 — LLM 同意、code judge 該放行（與 prompt few-shot 一致）─
+
+@pytest.mark.asyncio
+async def test_llm_engine_substring_match_not_overridden():
+    """Prompt 明寫「巨石 vs 巨石強森 可視情況算正確」、few-shot 範例就這樣標。
+    code judge 不該因為「不等於」就 override 掉 LLM 的判定。"""
+    session = _make_session(answer="巨石強森")
+    engine = _make_engine(session, llm_client=_mock_llm(correct=True))
+    # guess 是 answer 的子字串、≥2 字、≥ 半長 → 合理的部分匹配
+    result = await engine.submit_answer("u1", "巨石")
+    assert result["correct"] is True, "「巨石」對「巨石強森」是 prompt 認可的部分匹配，不該被 override"
+
+
+@pytest.mark.asyncio
+async def test_llm_engine_too_short_substring_still_overridden():
+    """單字子字串（例如「強」對「巨石強森」）overlap 太低，code judge 該擋。"""
+    session = _make_session(answer="巨石強森")
+    engine = _make_engine(session, llm_client=_mock_llm(correct=True))
+    result = await engine.submit_answer("u1", "強")  # 1 char, < min overlap 2
+    assert result["correct"] is False
+
+
+@pytest.mark.asyncio
+async def test_llm_engine_substring_below_half_still_overridden():
+    """子字串 < 半長 → 仍視為無意義匹配，override 為 False。"""
+    session = _make_session(answer="巨石強森巨無霸")  # 7 chars
+    engine = _make_engine(session, llm_client=_mock_llm(correct=True))
+    result = await engine.submit_answer("u1", "巨石")  # 2 chars < 7/2 = 3.5
+    assert result["correct"] is False
+
+
+@pytest.mark.asyncio
+async def test_llm_engine_extension_match_accepted():
+    """玩家猜得比答案還長但包含答案（例如「巨石強森王」對「巨石強森」）→ 視為命中。"""
+    session = _make_session(answer="巨石強森")
+    engine = _make_engine(session, llm_client=_mock_llm(correct=True))
+    result = await engine.submit_answer("u1", "巨石強森王")
+    assert result["correct"] is True
+
+
+# ─── Narration sanitization — prompt-injection defense ──────────────────────
+
+@pytest.mark.asyncio
+async def test_narration_capped_at_200_chars():
+    """A 500-char hallucinated narration must reach the result <= 200 chars,
+    otherwise the TTS queue can be flooded by a single prompt-injected guess."""
+    session = _make_session(answer="巨石強森")
+    long_narration = "啊" * 500
+    engine = _make_engine(session, llm_client=_mock_llm(correct=True, narration=long_narration))
+    result = await engine.submit_answer("u1", "巨石強森")
+    assert "narration" in result
+    assert len(result["narration"]) <= 200, (
+        f"narration must be capped at 200 chars, got {len(result['narration'])}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_narration_strips_control_chars():
+    """Control bytes (< 0x20 except newline) must be filtered before TTS / channel.send."""
+    session = _make_session(answer="巨石強森")
+    poisoned = "猜中\x01\x02了\x03"
+    engine = _make_engine(session, llm_client=_mock_llm(correct=True, narration=poisoned))
+    result = await engine.submit_answer("u1", "巨石強森")
+    assert "\x01" not in result["narration"]
+    assert "\x02" not in result["narration"]
+    assert "\x03" not in result["narration"]
+    # Visible text survives.
+    assert "猜中" in result["narration"]
+    assert "了" in result["narration"]
+
+
+@pytest.mark.asyncio
+async def test_narration_preserves_newlines():
+    """Newlines (\\n) are allowed through — Marvin's multi-line narration is fine."""
+    session = _make_session(answer="巨石強森")
+    multi = "第一行\n第二行"
+    engine = _make_engine(session, llm_client=_mock_llm(correct=True, narration=multi))
+    result = await engine.submit_answer("u1", "巨石強森")
+    assert "\n" in result["narration"]
 
 
 # ─── F: correct=True → state → ROUND_RESULT ──────────────────────────────────
@@ -169,4 +250,96 @@ async def test_llm_engine_round5_no_llm():
     engine = _make_engine(session, llm_client=client)
     result = await engine.submit_answer("u1", "巨石")
     client.chat.completions.create.assert_not_called()
+    assert result.get("narration", "") == ""
+
+
+# ─── I-K: 3-layer fallback chain (no injected llm_client → exercises _call_llm) ──
+
+def _mock_openai_compat_client(*, returns=None, raises=None):
+    """Build an AsyncOpenAI-shaped mock that either returns a JSON payload or raises."""
+    import json as _json
+    client = MagicMock()
+    if raises is not None:
+        client.chat.completions.create = AsyncMock(side_effect=raises)
+    else:
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = _json.dumps(returns)
+        client.chat.completions.create = AsyncMock(return_value=response)
+    return client
+
+
+def _mock_gemini_client(*, returns_text=None, raises=None):
+    """Mimic google.genai client.aio.models.generate_content shape."""
+    client = MagicMock()
+    if raises is not None:
+        client.aio.models.generate_content = AsyncMock(side_effect=raises)
+    else:
+        response = MagicMock()
+        response.text = returns_text
+        client.aio.models.generate_content = AsyncMock(return_value=response)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_fallback_cerebras_invalid_then_groq_wins():
+    """I: Cerebras 回非 JSON → Groq 正常回應，採用 Groq 結果（不 fallthrough 到 Gemini）"""
+    session = _make_session(answer="巨石強森")
+    engine = _make_engine(session)
+    cerebras = _mock_openai_compat_client(returns={"correct": "not-a-bool"})  # _parse_llm_response → None
+    groq = _mock_openai_compat_client(returns={"correct": True, "narration": "groq 出馬"})
+    gemini = _mock_gemini_client(returns_text='{"correct": false, "narration": "should not reach"}')
+    engine._get_cerebras_client = lambda: cerebras
+    engine._get_groq_client = lambda: groq
+    engine._get_gemini_client = lambda: gemini
+
+    result = await engine.submit_answer("u1", "巨石強森")
+    assert result["correct"] is True
+    assert result.get("narration") == "groq 出馬"
+    gemini.aio.models.generate_content.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fallback_cerebras_raises_then_groq_wins():
+    """J: Cerebras 拋例外 → 改用 Groq；Gemini 不會被呼叫"""
+    session = _make_session(answer="巨石強森")
+    engine = _make_engine(session)
+    cerebras = _mock_openai_compat_client(raises=RuntimeError("cerebras down"))
+    groq = _mock_openai_compat_client(returns={"correct": False, "narration": "groq 接手"})
+    gemini = _mock_gemini_client(returns_text='{"correct": true}')
+    engine._get_cerebras_client = lambda: cerebras
+    engine._get_groq_client = lambda: groq
+    engine._get_gemini_client = lambda: gemini
+
+    result = await engine.submit_answer("u1", "錯的")
+    assert result["correct"] is False
+    gemini.aio.models.generate_content.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fallback_all_three_fail_uses_code_judge():
+    """K: 三層全失敗 → 落到 code judge，narration=''"""
+    session = _make_session(answer="巨石強森")
+    engine = _make_engine(session)
+    engine._get_cerebras_client = lambda: _mock_openai_compat_client(raises=RuntimeError("nope"))
+    engine._get_groq_client = lambda: _mock_openai_compat_client(raises=RuntimeError("nope"))
+    engine._get_gemini_client = lambda: _mock_gemini_client(raises=RuntimeError("nope"))
+
+    # 答案完全相同 → code judge correct=True
+    result = await engine.submit_answer("u1", "巨石強森")
+    assert result["correct"] is True
+    assert result.get("narration", "") == ""
+
+
+@pytest.mark.asyncio
+async def test_fallback_no_clients_configured_uses_code_judge():
+    """L: 三個 client builder 全回 None（無 API key） → 直接 code judge"""
+    session = _make_session(answer="巨石強森")
+    engine = _make_engine(session)
+    engine._get_cerebras_client = lambda: None
+    engine._get_groq_client = lambda: None
+    engine._get_gemini_client = lambda: None
+
+    result = await engine.submit_answer("u1", "完全不同")
+    assert result["correct"] is False
     assert result.get("narration", "") == ""

@@ -676,6 +676,7 @@ class BustedCog(commands.Cog):
         t = action.get("type")
         user_id = action.get("resolved_user_id")
         engine = self._engine
+        session = self._session
         if t == "b_buzz":
             if engine and user_id:
                 await engine.buzz_in(user_id)
@@ -686,10 +687,12 @@ class BustedCog(commands.Cog):
             if user_id:
                 await self.record_skip_vote(user_id)
         elif t == "b_set_answer":
-            if engine:
+            # Setter-only: any other client setting the answer would leak/overwrite the secret.
+            if engine and session and user_id and user_id == session.current_setter_id:
                 await engine.set_answer(action.get("answer", ""))
         elif t == "b_theme_select":
-            if engine:
+            # Setter-only: theme selection belongs to the round's setter.
+            if engine and session and user_id and user_id == session.current_setter_id:
                 await engine.select_theme(action.get("theme", ""))
         elif t == "b_round5_answer":
             if engine and user_id:
@@ -1002,7 +1005,11 @@ class BustedCog(commands.Cog):
             quip = self._marvin.setter_quip() if self._marvin else "我來出題。"
             if self._channel:
                 await self._channel.send(f"**Marvin**: {quip}")
-            await self._engine.set_answer(answer)
+            # Engine now rejects out-of-range answers; fall back to a guaranteed
+            # in-range default so Marvin's turn never deadlocks SETTER_INPUT.
+            if not await self._engine.set_answer(answer):
+                logger.warning("[Busted] Marvin produced invalid answer %r; using fallback", answer)
+                await self._engine.set_answer("黑洞")
         except asyncio.CancelledError:
             pass
 
@@ -1033,7 +1040,10 @@ class BustedCog(commands.Cog):
                 if not ok:
                     return
                 if self._channel:
-                    await self._channel.send(f"**Marvin**: {guess}")
+                    await self._channel.send(
+                        f"**Marvin**: {guess}",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
                 result = await self._engine.submit_answer("marvin", guess)
                 await self._marvin_narrate(result)
                 if result.get("correct") and self._session:
@@ -1064,7 +1074,10 @@ class BustedCog(commands.Cog):
             answer_len = result["answer_len"]
             if self._channel:
                 score_text = f"猜對 {matched}/{answer_len} 個字，+{pts} 分" if pts > 0 else f"猜對 {matched}/{answer_len} 個字，0 分"
-                await self._channel.send(f"**Marvin** 最終答案：{guess}（{score_text}）")
+                await self._channel.send(
+                    f"**Marvin** 最終答案：{guess}（{score_text}）",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             if pts > 0:
                 self._round5_display_scores["Marvin"] = pts
         except asyncio.CancelledError:
@@ -1083,11 +1096,18 @@ class BustedCog(commands.Cog):
             logger.debug("[BustedCog] _fire_tts skipped: %s", e)
 
     async def _marvin_narrate(self, result: dict) -> None:
-        """TTS the LLM narration from a submit_answer result dict."""
+        """TTS the LLM narration from a submit_answer result dict.
+
+        Uses AllowedMentions.none() so an LLM that echoes a player's display
+        name containing @everyone / @here / <@&role> can't trigger pings.
+        """
         narration = result.get("narration", "")
         if narration:
             if self._channel:
-                await self._channel.send(f"**Marvin**: {narration}")
+                await self._channel.send(
+                    f"**Marvin**: {narration}",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             await self._fire_tts(narration)
 
     async def _watch_for_text_answer(self, buzz_holder_id: str, timeout: float = 3.0):
@@ -1240,7 +1260,7 @@ class BustedCog(commands.Cog):
             return False
         result = await self._engine.receive_voice_answer(user_id, text)
         if isinstance(result, dict):
-            asyncio.get_running_loop().create_task(self._marvin_narrate(result))
+            self._spawn(self._marvin_narrate(result))
             return bool(result.get("correct"))
         return bool(result)
 

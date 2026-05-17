@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marvin — 蘋蘋澎澎 轉化熱度 Demo</title>
+<style>
+:root {
+  --bg:#0f0f13; --surface:#1a1a24; --surface2:#22222f; --border:#2e2e3e;
+  --accent:#7c6af7; --accent2:#f76a6a; --gold:#f7c16a; --green:#6af7a0;
+  --discord:#5865f2; --text:#e8e8f0; --muted:#7070a0;
+  --cool:#6ab8f7;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:var(--bg);color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  min-height:100vh;overflow-x:hidden;}
+
+/* Header */
+header{display:flex;align-items:center;justify-content:space-between;
+  padding:20px 40px;border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,#13131a 0%,transparent 100%);}
+.logo{display:flex;align-items:center;gap:12px;}
+.logo-dot{width:36px;height:36px;border-radius:10px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));
+  display:flex;align-items:center;justify-content:center;
+  font-size:18px;font-weight:800;}
+.logo-text{font-size:20px;font-weight:700;letter-spacing:-.5px;}
+.logo-sub{font-size:12px;color:var(--muted);margin-top:2px;}
+.live-badge{display:flex;align-items:center;gap:8px;padding:6px 14px;
+  border-radius:20px;background:rgba(247,106,106,.15);
+  border:1px solid rgba(247,106,106,.3);font-size:13px;font-weight:600;color:var(--accent2);}
+.live-dot{width:8px;height:8px;border-radius:50%;background:var(--accent2);
+  animation:pulse 1.5s ease-in-out infinite;}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+
+/* Layout */
+.main{display:grid;grid-template-columns:1fr 360px;gap:0;
+  max-width:1300px;margin:0 auto;padding:32px 24px;align-items:start;}
+.dashboard{padding-right:32px;}
+.phone-col{position:sticky;top:32px;}
+
+/* Stats */
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:28px;}
+.stat-card{background:var(--surface);border:1px solid var(--border);
+  border-radius:16px;padding:20px;position:relative;overflow:hidden;}
+.stat-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;}
+.stat-card.c-accent::before{background:linear-gradient(90deg,var(--accent),transparent);}
+.stat-card.c-red::before{background:linear-gradient(90deg,var(--accent2),transparent);}
+.stat-card.c-gold::before{background:linear-gradient(90deg,var(--gold),transparent);}
+.stat-card.c-discord::before{background:linear-gradient(90deg,var(--discord),transparent);}
+.stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.8px;margin-bottom:8px;}
+.stat-value{font-size:32px;font-weight:800;letter-spacing:-1px;line-height:1;}
+.stat-value.c-accent{color:var(--accent);}
+.stat-value.c-red{color:var(--accent2);}
+.stat-value.c-gold{color:var(--gold);}
+.stat-value.c-discord{color:var(--discord);}
+.stat-sub{font-size:11px;color:var(--muted);margin-top:6px;}
+
+/* Section title */
+.section-title{font-size:13px;font-weight:700;text-transform:uppercase;
+  letter-spacing:1px;color:var(--muted);margin-bottom:14px;
+  display:flex;align-items:center;gap:8px;}
+.section-title span{font-size:16px;}
+
+/* Leads table */
+.leads-table{background:var(--surface);border:1px solid var(--border);
+  border-radius:16px;overflow:hidden;margin-bottom:24px;}
+.table-header{display:grid;grid-template-columns:32px 1fr 90px 55px 60px 90px;
+  padding:12px 20px;font-size:11px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.6px;border-bottom:1px solid var(--border);background:var(--surface2);}
+.lead-row{display:grid;grid-template-columns:32px 1fr 90px 55px 60px 90px;
+  padding:14px 20px;align-items:center;border-bottom:1px solid var(--border);
+  transition:background .2s;animation:fadeIn .4s ease forwards;opacity:0;}
+.lead-row:last-child{border-bottom:none;}
+.lead-row:hover{background:var(--surface2);}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.rank{font-size:13px;font-weight:700;color:var(--muted);}
+.rank.top{color:var(--gold);}
+.username{font-size:14px;font-weight:600;}
+.stage-badge{font-size:11px;font-weight:600;padding:3px 8px;border-radius:6px;display:inline-block;}
+.stage-core{background:rgba(124,106,247,.2);color:var(--accent);}
+.stage-loyal{background:rgba(247,193,106,.2);color:var(--gold);}
+.stage-return{background:rgba(106,184,247,.2);color:var(--cool);}
+.stage-new{background:rgba(112,112,160,.15);color:var(--muted);}
+.score-num{font-size:13px;font-weight:700;color:var(--accent);}
+.intent-tag{font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;}
+.tag-sub{background:rgba(106,247,160,.15);color:var(--green);}
+.tag-merch{background:rgba(247,193,106,.15);color:var(--gold);}
+.tag-comm{background:rgba(124,106,247,.15);color:var(--accent);}
+
+/* ── Discord Identity Graph ── */
+.discord-section{background:var(--surface);border:1px solid var(--border);
+  border-radius:16px;overflow:hidden;margin-bottom:24px;}
+.discord-header{background:linear-gradient(135deg,rgba(88,101,242,.2),rgba(88,101,242,.05));
+  padding:16px 20px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;}
+.discord-label{display:flex;align-items:center;gap:8px;font-weight:700;font-size:14px;}
+.discord-icon{font-size:18px;}
+.discord-note{font-size:11px;color:var(--muted);}
+.identity-row{display:grid;grid-template-columns:1fr 40px 1fr 100px;
+  align-items:center;gap:12px;padding:14px 20px;
+  border-bottom:1px solid var(--border);transition:background .2s;}
+.identity-row:last-child{border-bottom:none;}
+.identity-row:hover{background:var(--surface2);}
+.platform-card{display:flex;align-items:center;gap:8px;}
+.platform-icon{width:28px;height:28px;border-radius:8px;
+  display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
+.twitch-icon{background:rgba(145,70,255,.2);}
+.discord-avatar{background:rgba(88,101,242,.2);}
+.p-name{font-size:13px;font-weight:600;}
+.p-meta{font-size:11px;color:var(--muted);}
+.bridge-arrow{text-align:center;font-size:18px;color:var(--accent);
+  animation:bridgePulse 2s ease-in-out infinite;}
+@keyframes bridgePulse{0%,100%{opacity:.4}50%{opacity:1}}
+.discord-status{text-align:right;}
+.discord-roles{display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;margin-bottom:4px;}
+.role-badge{font-size:9px;padding:2px 6px;border-radius:4px;font-weight:700;}
+.role-member{background:rgba(88,101,242,.2);color:var(--discord);}
+.role-lurker{background:rgba(112,112,160,.15);color:var(--muted);}
+.role-nosub{background:rgba(247,106,106,.15);color:var(--accent2);}
+.last-seen{font-size:10px;color:var(--muted);}
+.match-badge{font-size:10px;font-weight:700;padding:3px 8px;border-radius:6px;
+  display:inline-block;margin-top:4px;}
+.matched{background:rgba(106,247,160,.15);color:var(--green);}
+.pending{background:rgba(247,193,106,.15);color:var(--gold);}
+.unmatched{background:rgba(247,106,106,.15);color:var(--accent2);}
+
+/* Insight banner */
+.insight-banner{margin:0 20px 16px;padding:12px 16px;
+  background:linear-gradient(135deg,rgba(124,106,247,.12),rgba(88,101,242,.08));
+  border:1px solid rgba(124,106,247,.25);border-radius:12px;
+  font-size:12px;line-height:1.6;color:var(--text);}
+.insight-banner strong{color:var(--accent);}
+
+/* Vocab */
+.vocab-section{background:var(--surface);border:1px solid var(--border);
+  border-radius:16px;padding:20px;margin-bottom:24px;}
+.vocab-note{font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.6;}
+.vocab-cloud{display:flex;flex-wrap:wrap;gap:8px;}
+.vocab-token{padding:5px 12px;border-radius:20px;background:var(--surface2);
+  border:1px solid var(--border);cursor:default;transition:all .2s;}
+.vocab-token:hover{border-color:var(--accent);color:var(--accent);}
+.vocab-token.lg{font-size:16px;font-weight:700;}
+.vocab-token.md{font-size:14px;font-weight:600;}
+.vocab-token.sm{font-size:12px;opacity:.7;}
+
+/* Phone */
+.phone-frame{width:320px;height:680px;background:#1a1a1a;border-radius:48px;
+  padding:12px;box-shadow:0 0 0 2px #2a2a2a,0 0 0 4px #1a1a1a,0 30px 80px rgba(0,0,0,.7);
+  position:relative;margin:0 auto;}
+.phone-screen{width:100%;height:100%;background:var(--bg);border-radius:38px;
+  overflow:hidden;position:relative;display:flex;flex-direction:column;}
+.phone-notch{width:120px;height:34px;background:#1a1a1a;border-radius:0 0 20px 20px;
+  position:absolute;top:0;left:50%;transform:translateX(-50%);z-index:10;}
+.phone-status{display:flex;justify-content:space-between;align-items:center;
+  padding:10px 20px 0;font-size:11px;font-weight:600;flex-shrink:0;height:44px;}
+.app-header{background:var(--surface);padding:10px 16px;
+  border-bottom:1px solid var(--border);flex-shrink:0;}
+.app-title{font-size:15px;font-weight:700;}
+.app-subtitle{font-size:11px;color:var(--muted);}
+
+/* Phone tabs */
+.phone-tabs{display:flex;background:var(--surface2);flex-shrink:0;
+  border-bottom:1px solid var(--border);}
+.phone-tab{flex:1;padding:8px;text-align:center;font-size:11px;font-weight:600;
+  color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;}
+.phone-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+
+.app-body{flex:1;overflow:hidden;display:flex;flex-direction:column;position:relative;}
+
+/* Phone views */
+.phone-view{position:absolute;inset:0;display:flex;flex-direction:column;
+  transition:opacity .3s,transform .3s;opacity:0;pointer-events:none;
+  transform:translateX(20px);}
+.phone-view.active{opacity:1;pointer-events:all;transform:translateX(0);}
+
+/* Temp */
+.temp-section{padding:10px 14px;border-bottom:1px solid var(--border);flex-shrink:0;}
+.temp-label{font-size:10px;color:var(--muted);margin-bottom:5px;
+  display:flex;justify-content:space-between;}
+.temp-bar-wrap{height:6px;background:var(--border);border-radius:3px;overflow:hidden;}
+.temp-bar{height:100%;border-radius:3px;
+  background:linear-gradient(90deg,var(--cool),var(--gold),var(--hot));
+  transition:width 2s ease;width:0%;}
+
+/* Chat feed */
+.chat-feed{flex:1;overflow:hidden;padding:8px 12px;
+  display:flex;flex-direction:column;gap:5px;position:relative;}
+.chat-msg{font-size:12px;line-height:1.4;animation:slideIn .3s ease;}
+.chat-msg.intent{background:rgba(124,106,247,.12);border-left:2px solid var(--accent);
+  padding:4px 8px;border-radius:0 6px 6px 0;margin:2px 0;}
+.chat-msg.intent-merch{background:rgba(247,193,106,.12);border-left-color:var(--gold);}
+@keyframes slideIn{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:translateX(0)}}
+.chat-user{font-weight:700;margin-right:4px;}
+.chat-user.c-accent{color:var(--accent);}
+.chat-user.c-gold{color:var(--gold);}
+.chat-user.c-green{color:var(--green);}
+.chat-user.c-muted{color:var(--muted);}
+.intent-badge{font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:4px;}
+.badge-sub{background:rgba(106,247,160,.25);color:var(--green);}
+.badge-merch{background:rgba(247,193,106,.25);color:var(--gold);}
+
+/* Discord view in phone */
+.discord-feed{flex:1;overflow:hidden;padding:8px 12px;
+  display:flex;flex-direction:column;gap:6px;}
+.discord-msg{font-size:12px;line-height:1.4;animation:slideIn .3s ease;
+  padding:6px 8px;border-radius:8px;background:var(--surface2);}
+.discord-msg.highlight{background:rgba(88,101,242,.15);
+  border-left:2px solid var(--discord);}
+.discord-msg.voice-alert{background:rgba(106,247,160,.1);
+  border-left:2px solid var(--green);}
+.d-user{font-weight:700;margin-right:4px;}
+.d-user.c-discord{color:var(--discord);}
+.d-user.c-gold{color:var(--gold);}
+.d-user.c-muted{color:var(--muted);}
+.d-channel{font-size:10px;color:var(--muted);margin-bottom:2px;}
+
+/* Marvin bot message in Discord feed */
+.discord-msg.marvin{
+  background:linear-gradient(135deg,rgba(124,106,247,.15),rgba(88,101,242,.08));
+  border-left:2px solid var(--accent);border-radius:0 8px 8px 0;}
+.marvin-label{font-size:9px;font-weight:700;color:var(--accent);
+  text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;}
+.marvin-reply{margin-top:4px;padding:4px 8px;background:var(--surface);
+  border-radius:6px;font-size:11px;color:var(--muted);}
+
+/* Timeline */
+.timeline{display:flex;flex-direction:column;gap:0;margin-bottom:24px;}
+.tl-item{display:grid;grid-template-columns:90px 16px 1fr;
+  gap:0 16px;position:relative;}
+.tl-time{font-size:11px;color:var(--muted);text-align:right;
+  padding-top:14px;white-space:nowrap;}
+.tl-spine{display:flex;flex-direction:column;align-items:center;}
+.tl-dot{width:16px;height:16px;border-radius:50%;flex-shrink:0;
+  border:2px solid var(--bg);margin-top:12px;
+  animation:dotPop .4s cubic-bezier(.34,1.56,.64,1) both;}
+@keyframes dotPop{from{transform:scale(0)}to{transform:scale(1)}}
+.tl-line{flex:1;width:2px;background:var(--border);}
+.tl-item:last-child .tl-line{display:none;}
+.tl-card{background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;padding:12px 16px;margin:6px 0 12px;
+  transition:background .2s;}
+.tl-card:hover{background:var(--surface2);}
+.tl-card-title{font-size:13px;font-weight:700;margin-bottom:4px;
+  display:flex;align-items:center;gap:8px;}
+.tl-card-body{font-size:12px;color:var(--muted);line-height:1.5;margin-bottom:8px;}
+.tl-card-quote{font-size:12px;padding:6px 10px;border-radius:8px;
+  background:var(--surface2);border-left:2px solid var(--accent);
+  color:var(--text);margin-bottom:8px;font-style:italic;}
+.tl-card-result{display:flex;gap:8px;flex-wrap:wrap;}
+.tl-tag{font-size:11px;font-weight:600;padding:3px 8px;border-radius:6px;}
+.tl-tag.green{background:rgba(106,247,160,.15);color:var(--green);}
+.tl-tag.gold{background:rgba(247,193,106,.15);color:var(--gold);}
+.tl-tag.accent{background:rgba(124,106,247,.15);color:var(--accent);}
+.tl-auto-badge{font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;
+  background:rgba(124,106,247,.2);color:var(--accent);letter-spacing:.4px;}
+
+/* Notification */
+.notif{position:absolute;top:8px;left:10px;right:10px;
+  background:var(--surface2);border:1px solid var(--accent);border-radius:14px;
+  padding:10px 12px;z-index:20;
+  box-shadow:0 8px 24px rgba(124,106,247,.3);display:none;
+  animation:notifIn .4s cubic-bezier(.34,1.56,.64,1);}
+@keyframes notifIn{from{opacity:0;transform:translateY(-20px) scale(.9)}to{opacity:1;transform:translateY(0) scale(1)}}
+.notif.discord-notif{border-color:var(--discord);box-shadow:0 8px 24px rgba(88,101,242,.3);}
+.notif-title{font-size:11px;font-weight:700;color:var(--accent);margin-bottom:2px;}
+.notif.discord-notif .notif-title{color:var(--discord);}
+.notif-body{font-size:12px;line-height:1.4;}
+.notif-score{font-size:20px;font-weight:800;color:var(--accent2);float:right;margin-top:-4px;}
+
+/* Phone nav */
+.phone-nav{background:var(--surface);border-top:1px solid var(--border);
+  display:flex;justify-content:space-around;padding:8px 0;flex-shrink:0;}
+.nav-item{display:flex;flex-direction:column;align-items:center;gap:2px;
+  font-size:9px;color:var(--muted);cursor:pointer;}
+.nav-item.active{color:var(--accent);}
+.nav-icon{font-size:18px;}
+.home-indicator{height:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.home-bar{width:120px;height:4px;background:var(--muted);border-radius:2px;opacity:.5;}
+
+@media(max-width:1024px){
+  .main{grid-template-columns:1fr;}
+  .phone-col{display:none;}
+  .stats-grid{grid-template-columns:repeat(2,1fr);}
+}
+
+/* ── Stat card clickable ── */
+.stat-card{cursor:pointer;transition:border-color .2s,transform .15s;}
+.stat-card:hover{border-color:var(--accent);transform:translateY(-2px);}
+.stat-card.mock-data{opacity:.7;}
+.stat-card.mock-data:hover{border-color:var(--muted);transform:none;cursor:not-allowed;}
+.stat-hint{font-size:10px;color:var(--muted);margin-top:8px;display:flex;
+  align-items:center;gap:4px;opacity:.7;}
+.stat-hint::before{content:'↗';font-size:11px;}
+
+/* ── Drawer ── */
+.drawer-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);
+  z-index:200;opacity:0;pointer-events:none;transition:opacity .25s;}
+.drawer-overlay.open{opacity:1;pointer-events:all;}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:520px;max-width:100vw;
+  background:var(--surface);border-left:1px solid var(--border);
+  z-index:201;transform:translateX(100%);
+  transition:transform .35s cubic-bezier(.4,0,.2,1);
+  display:flex;flex-direction:column;overflow:hidden;}
+.drawer.open{transform:translateX(0);}
+.drawer-head{padding:20px 24px;border-bottom:1px solid var(--border);
+  display:flex;align-items:flex-start;justify-content:space-between;flex-shrink:0;
+  background:var(--surface2);}
+.drawer-title{font-size:17px;font-weight:800;}
+.drawer-sub{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.5;}
+.drawer-close{font-size:22px;color:var(--muted);cursor:pointer;line-height:1;
+  padding:0 4px;flex-shrink:0;transition:color .15s;}
+.drawer-close:hover{color:var(--text);}
+.drawer-body{flex:1;overflow-y:auto;padding:16px 24px;}
+
+/* ── Drawer: section header ── */
+.dsec{margin-bottom:6px;margin-top:18px;font-size:10px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.8px;color:var(--muted);
+  display:flex;align-items:center;gap:6px;}
+.dsec:first-child{margin-top:0;}
+
+/* ── Drawer: viewer row ── */
+.vrow{display:grid;grid-template-columns:28px 1fr 50px 90px;
+  align-items:center;gap:10px;padding:8px 10px;border-radius:8px;
+  transition:background .15s;}
+.vrow:hover{background:var(--surface2);}
+.vrank{font-size:11px;font-weight:700;color:var(--muted);text-align:center;}
+.vrank.top{color:var(--gold);}
+.vname{font-size:13px;font-weight:600;}
+.vmeta{font-size:10px;color:var(--muted);margin-top:2px;}
+.vmsgs{font-size:12px;font-weight:700;color:var(--accent);text-align:right;}
+.vsub-tag{font-size:9px;padding:2px 7px;border-radius:5px;font-weight:700;
+  text-align:right;white-space:nowrap;}
+.vsub-new{background:rgba(106,247,160,.18);color:var(--green);}
+.vsub-gift{background:rgba(247,193,106,.18);color:var(--gold);}
+.vsub-bot{background:rgba(112,112,160,.12);color:var(--muted);}
+.vsub-owner{background:rgba(88,101,242,.15);color:var(--discord);}
+.vsub-unknown{background:transparent;color:var(--muted);font-style:italic;}
+
+/* ── Drawer: intent message row ── */
+.imsg{padding:10px 14px;border-radius:10px;margin-bottom:8px;
+  background:var(--surface2);border:1px solid var(--border);}
+.imsg.is-human-sub{border-left:3px solid var(--green);}
+.imsg.is-human-gift{border-left:3px solid var(--gold);}
+.imsg.is-bot{opacity:.45;}
+.imsg-top{display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap;}
+.imsg-user{font-size:12px;font-weight:700;}
+.imsg-type{font-size:9px;padding:2px 7px;border-radius:4px;font-weight:700;}
+.type-sub{background:rgba(106,247,160,.2);color:var(--green);}
+.type-gift{background:rgba(247,193,106,.2);color:var(--gold);}
+.type-bot{background:rgba(112,112,160,.12);color:var(--muted);}
+.imsg-text{font-size:12px;color:var(--text);line-height:1.5;}
+
+/* ── Drawer: leads detail row ── */
+.lrow{padding:12px 14px;border-radius:10px;margin-bottom:8px;
+  background:var(--surface2);border:1px solid var(--border);}
+.lrow-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;}
+.lrow-name{font-size:14px;font-weight:700;}
+.lrow-score{font-size:18px;font-weight:800;color:var(--accent);}
+.lrow-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;}
+.lrow-stat{font-size:10px;color:var(--muted);}
+.lrow-stat strong{display:block;font-size:12px;color:var(--text);margin-top:1px;}
+
+/* ── Drawer: mock notice ── */
+.mock-notice{padding:16px;border-radius:10px;
+  background:rgba(247,193,106,.08);border:1px solid rgba(247,193,106,.25);
+  font-size:12px;line-height:1.6;color:var(--text);}
+.mock-notice strong{color:var(--gold);}
+
+/* ── Bot collapse toggle ── */
+.bot-toggle{display:flex;align-items:center;gap:8px;padding:8px 10px;
+  border-radius:8px;cursor:pointer;font-size:11px;color:var(--muted);
+  border:1px dashed var(--border);margin-bottom:8px;transition:all .15s;}
+.bot-toggle:hover{border-color:var(--accent);color:var(--text);}
+#bot-rows{display:none;}
+#bot-rows.show{display:block;}
+
+/* ── User name + id tooltip ── */
+.uname{position:relative;cursor:default;white-space:nowrap;}
+.uname .uid{display:none;position:absolute;bottom:calc(100% + 4px);left:0;
+  background:#0a0a10;border:1px solid var(--border);border-radius:6px;
+  padding:3px 8px;font-size:10px;color:var(--muted);white-space:nowrap;
+  pointer-events:none;z-index:300;font-weight:400;}
+.uname:hover .uid{display:block;}
+.uname.has-display{color:var(--text);}
+.uname.no-display{color:var(--muted);font-style:italic;font-size:0.95em;}
+.sub-dot{display:inline-block;width:6px;height:6px;border-radius:50%;
+  margin-left:5px;vertical-align:middle;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot">M</div>
+    <div>
+      <div class="logo-text">Marvin</div>
+      <div class="logo-sub">轉化熱度分析 — 蘋蘋澎澎</div>
+    </div>
+  </div>
+  <div class="live-badge">
+    <div class="live-dot"></div>
+    5/16 完整場次資料（真實數據）
+  </div>
+</header>
+
+<div class="main">
+  <!-- ── 左：Dashboard ── -->
+  <div class="dashboard">
+
+    <!-- Stats -->
+    <div class="stats-grid">
+      <div class="stat-card c-accent" onclick="openDrawer('viewers')">
+        <div class="stat-label">活躍觀眾</div>
+        <div class="stat-value c-accent" id="stat-viewers">0</div>
+        <div class="stat-sub">本場直播</div>
+        <div class="stat-hint">點擊查看發言排行</div>
+      </div>
+      <div class="stat-card c-red" onclick="openDrawer('missed')">
+        <div class="stat-label">高意圖訊息</div>
+        <div class="stat-value c-red" id="stat-missed">0</div>
+        <div class="stat-sub">訂閱 / 贈禮 / 意圖信號</div>
+        <div class="stat-hint">點擊查看每一則</div>
+      </div>
+      <div class="stat-card c-gold" onclick="openDrawer('leads')">
+        <div class="stat-label">熱名單人數</div>
+        <div class="stat-value c-gold" id="stat-leads">0</div>
+        <div class="stat-sub">高意圖 × 高忠誠</div>
+        <div class="stat-hint">點擊查看詳情</div>
+      </div>
+      <div class="stat-card c-discord mock-data" onclick="openDrawer('discord')">
+        <div class="stat-label">Discord 身份已比對</div>
+        <div class="stat-value c-discord" id="stat-discord">0</div>
+        <div class="stat-sub">跨平台確認同一人</div>
+        <div class="stat-hint">Demo 資料</div>
+      </div>
+    </div>
+
+    <!-- Hot leads -->
+    <div class="section-title"><span>🔥</span> Twitch 轉化熱區</div>
+    <div class="leads-table">
+      <div class="table-header">
+        <div>#</div><div>用戶名</div><div>粉絲階段</div>
+        <div>場次</div><div>轉化分</div><div>信號</div>
+      </div>
+      <div id="leads-body"></div>
+    </div>
+
+    <!-- Discord Identity Graph -->
+    <div class="section-title"><span>🔗</span> Twitch × Discord 身份圖</div>
+    <div class="discord-section">
+      <div class="discord-header">
+        <div class="discord-label">
+          <span class="discord-icon">🟣</span> Twitch
+          <span style="color:var(--muted);font-weight:400;margin:0 8px">→</span>
+          <span class="discord-icon">💙</span> Discord
+          <span style="color:var(--muted);font-size:12px;font-weight:400;margin-left:8px">身份橋接</span>
+        </div>
+        <div class="discord-note">透過 Discord Connections 自動比對</div>
+      </div>
+
+      <div class="insight-banner">
+        <strong>pjbitter</strong> 本場發了 475 則訊息，其中 6 則是明確訂閱意圖，轉化分 25.64，是這場最熱的真實 lead。<strong>santapipi</strong> 發了 96 則但尚未表態——高忠誠無意圖，是點名轉化的最佳切入時機。Discord 身份橋接功能一旦上線，這些人的跨平台行蹤 Marvin 都能追蹤。
+      </div>
+
+      <div id="identity-rows"></div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="section-title"><span>🤖</span> Marvin 自動執行紀錄 <span style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0">— 蘋蘋什麼都沒做</span></div>
+    <div class="timeline" id="timeline"></div>
+
+    <!-- Vocab -->
+    <div class="section-title"><span>📖</span> 這個台自動學到的文化詞彙</div>
+    <div class="vocab-section">
+      <div class="vocab-note">Marvin 不需要你事先告訴他什麼是噪音。這些詞彙從聊天室裡自動浮現，是這個社群的語言慣性，也是忠誠度的一部分。</div>
+      <div class="vocab-cloud" id="vocab-cloud"></div>
+    </div>
+
+  </div>
+
+  <!-- ── 右：iPhone ── -->
+  <div class="phone-col">
+    <div class="phone-frame">
+      <div class="phone-screen">
+        <div class="phone-notch"></div>
+
+        <div class="phone-status">
+          <span>20:13</span>
+          <span>●●●</span>
+        </div>
+
+        <div class="app-header">
+          <div class="app-title">Marvin Companion</div>
+          <div class="app-subtitle">蘋蘋澎澎 · 直播中</div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="phone-tabs">
+          <div class="phone-tab active" onclick="switchTab('twitch',this)">🟣 Twitch</div>
+          <div class="phone-tab" onclick="switchTab('discord',this)">💙 Discord</div>
+        </div>
+
+        <div class="app-body">
+          <!-- Notification overlay (shared) -->
+          <div class="notif" id="notif">
+            <div class="notif-score" id="notif-score"></div>
+            <div class="notif-title" id="notif-title"></div>
+            <div class="notif-body" id="notif-body"></div>
+          </div>
+
+          <!-- Twitch view -->
+          <div class="phone-view active" id="view-twitch">
+            <div class="temp-section">
+              <div class="temp-label">
+                <span>聊天室溫度</span>
+                <span id="temp-text">中溫</span>
+              </div>
+              <div class="temp-bar-wrap">
+                <div class="temp-bar" id="temp-bar"></div>
+              </div>
+            </div>
+            <div class="chat-feed" id="chat-feed"></div>
+          </div>
+
+          <!-- Discord view -->
+          <div class="phone-view" id="view-discord">
+            <div class="discord-feed" id="discord-feed"></div>
+          </div>
+        </div>
+
+        <div class="phone-nav">
+          <div class="nav-item active"><div class="nav-icon">💬</div><div>聊天室</div></div>
+          <div class="nav-item"><div class="nav-icon">🔥</div><div>熱名單</div></div>
+          <div class="nav-item"><div class="nav-icon">📊</div><div>報表</div></div>
+          <div class="nav-item"><div class="nav-icon">⚙️</div><div>設定</div></div>
+        </div>
+
+        <div class="home-indicator"><div class="home-bar"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Drawer ── -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer">
+  <div class="drawer-head">
+    <div>
+      <div class="drawer-title" id="drawer-title"></div>
+      <div class="drawer-sub" id="drawer-sub"></div>
+    </div>
+    <div class="drawer-close" onclick="closeDrawer()">✕</div>
+  </div>
+  <div class="drawer-body" id="drawer-body"></div>
+</div>
+
+<script>
+// ── Data ──────────────────────────────────────────────────────────────
+// 資料來源：twitch_report_pinpinponpon627_20260516_0815.json（真實數據，已過濾 nightbot）
+const LEADS = [
+  {rank:1,username:'pjbitter',     stage:'初訪觀眾',stageClass:'stage-new',sessions:1,score:25.64,tag:'訂閱',tagClass:'tag-sub'},
+  {rank:2,username:'coolygo9',     stage:'初訪觀眾',stageClass:'stage-new',sessions:1,score:11.64,tag:'訂閱',tagClass:'tag-sub'},
+  {rank:3,username:'onseven9son',  stage:'初訪觀眾',stageClass:'stage-new',sessions:1,score:5.49, tag:'訂閱',tagClass:'tag-sub'},
+  {rank:4,username:'leslie4001t5', stage:'初訪觀眾',stageClass:'stage-new',sessions:1,score:5.17, tag:'訂閱',tagClass:'tag-sub'},
+  {rank:5,username:'pongpong3123', stage:'初訪觀眾',stageClass:'stage-new',sessions:1,score:2.28, tag:'訂閱',tagClass:'tag-sub'},
+];
+
+// Discord 橋接功能尚未上線，以下為等待比對狀態（真實 Twitch 帳號）
+const IDENTITY = [
+  {
+    twitch:'pjbitter',twitchMeta:'Twitch · 475 則訊息 · 轉化分 25.64',
+    discord:'—',discordMeta:'Discord 橋接功能上線後自動比對',
+    roles:[],roleClasses:[],
+    lastSeen:'—',status:'pending',statusLabel:'等待比對',
+    channels:[],
+    insight:'本場最熱 lead：6 則訂閱意圖，忠誠分 4.27，一旦橋接上線可跨平台追蹤',
+  },
+  {
+    twitch:'coolygo9',twitchMeta:'Twitch · 269 則訊息 · 轉化分 11.64',
+    discord:'—',discordMeta:'Discord 橋接功能上線後自動比對',
+    roles:[],roleClasses:[],
+    lastSeen:'—',status:'pending',statusLabel:'等待比對',
+    channels:[],
+    insight:'3 則訂閱意圖，忠誠分 3.88，高發言量代表真實參與度',
+  },
+  {
+    twitch:'santapipi',twitchMeta:'Twitch · 96 則訊息 · 忠誠分 3.17',
+    discord:'—',discordMeta:'Discord 橋接功能上線後自動比對',
+    roles:[],roleClasses:[],
+    lastSeen:'—',status:'pending',statusLabel:'等待比對',
+    channels:[],
+    insight:'無明確意圖但高忠誠——社群核心，點名問一句可能直接轉化',
+  },
+  {
+    twitch:'dou_wha',twitchMeta:'Twitch · 82 則訊息 · 忠誠分 3.06',
+    discord:'—',discordMeta:'Discord 橋接功能上線後自動比對',
+    roles:[],roleClasses:[],
+    lastSeen:'—',status:'pending',statusLabel:'等待比對',
+    channels:[],
+    insight:'高忠誠無意圖，但發言穩定——潛在的 Discord 招募對象',
+  },
+];
+
+// 真實詞彙資料（已過濾 Nightbot 機器人訊息片段）
+const VOCAB = [
+  {token:'pinpin',    size:'lg'},   // 289 次
+  {token:'lul',       size:'lg'},   // 187 次
+  {token:'dc',        size:'md'},   // 46 次
+  {token:'dance',     size:'md'},   // 29 次
+  {token:'肚子餓',    size:'md'},   // 26 次
+  {token:'飽食度',    size:'md'},   // 26 次
+  {token:'seemsgood', size:'md'},   // 26 次
+  {token:'hiii',      size:'md'},   // 24 次
+  {token:'gg',        size:'sm'},   // 24 次
+  {token:'歡迎',      size:'sm'},   // 23 次
+  {token:'晃晃',      size:'sm'},   // 23 次
+];
+
+// 真實用戶名（訊息內容為示意）
+const CHAT_MSGS = [
+  {user:'santapipi',    color:'c-accent',text:'pinpin pinpin pinpin'},
+  {user:'dou_wha',      color:'c-green', text:'hiii hiii 哈哈哈哈'},
+  {user:'pjbitter',     color:'c-gold',  text:'訂閱要多少錢啊？',intent:'sub'},
+  {user:'annyong1004',  color:'c-muted', text:'lul lul lul'},
+  {user:'girl0506',     color:'c-accent',text:'dance dance dance'},
+  {user:'welson183qw',  color:'c-green', text:'seemsgood seemsgood'},
+  {user:'coolygo9',     color:'c-gold',  text:'有什麼訂閱福利嗎',intent:'sub'},
+  {user:'pongpong3123', color:'c-accent',text:'蘋蘋有什麼福利',intent:'sub'},
+  {user:'leslie4001t5', color:'c-muted', text:'剛訂閱了！',intent:'sub'},
+  {user:'santapipi',    color:'c-accent',text:'pinpin pinpin'},
+  {user:'savoury_chocolate',color:'c-green',text:'gg gg gg'},
+  {user:'ace88889999',  color:'c-muted', text:'怎麼加入dc',intent:'comm'},
+  {user:'jesters13',    color:'c-green', text:'lul lul lul'},
+  {user:'girl0506',     color:'c-accent',text:'晃晃晃晃'},
+  {user:'pjbitter',     color:'c-gold',  text:'有什麼福利嗎',intent:'sub'},
+];
+
+const DISCORD_MSGS = [
+  {user:'Marvin 🤖', color:'c-accent', channel:'#閒聊', text:'咪那桑～今天 11:00 蘋蘋開台了！今天要玩什麼大家猜一猜 👀', type:'marvin'},
+  {user:'lun（阿綸）',color:'c-discord',channel:'#閒聊', text:'早！我猜戰艦！',type:'normal'},
+  {user:'元元俠',    color:'c-gold',   channel:'#閒聊', text:'我猜射擊遊戲',type:'normal'},
+  {user:'崔小佛',    color:'c-accent', channel:'#閒聊', text:'戰艦把拔送福利 👏',type:'highlight'},
+  {user:'孤苦',      color:'c-muted',  channel:'#閒聊', text:'回家來搞',type:'normal'},
+  {user:'Marvin 🤖', color:'c-accent', channel:'#閒聊', text:'🔥 剛才直播超熱鬧！洗沖說「蘋蘋根本外掛」聊天室笑翻 → 來看直播', type:'marvin'},
+  {user:'洗沖',      color:'c-green',  channel:'#閒聊', text:'我沒說外掛我說天才 哈哈哈',type:'normal'},
+  {user:'崔小佛',    color:'c-accent', channel:'#閒聊', text:'進去了進去了',type:'normal'},
+  {user:'洗沖',      color:'c-green',  channel:'#公告', text:'這款檔案很大 要載回來了',type:'sponsor'},
+  {user:'系統',      color:'c-green',  channel:'語音頻道',text:'🎙 lun（阿綸）加入了 蘋蘋的語音',type:'voice'},
+  {user:'Marvin 🤖', color:'c-accent', channel:'#閒聊', text:'洗沖 你上次說要下載戰艦世界！今天 10:00 蘋蘋有贊助直播，填表還能抽 Uber 券 🎮', type:'marvin-call'},
+  {user:'洗沖',      color:'c-green',  channel:'#閒聊', text:'哇真的假的 我去填！！',type:'highlight'},
+  {user:'孤苦',      color:'c-muted',  channel:'#閒聊', text:'我也要填',type:'normal'},
+  {user:'崔小佛',    color:'c-accent', channel:'#閒聊', text:'填了填了',type:'normal'},
+  {user:'系統',      color:'c-green',  channel:'語音頻道',text:'🎙 崔小佛 加入了 蘋蘋的語音',type:'voice'},
+];
+
+const TIMELINE = [
+  {
+    time:'5/16  10:30',
+    dot:'var(--accent)',
+    delay:0,
+    title:'開台前預熱',
+    auto:true,
+    body:'開台前 30 分鐘，Marvin 自動在 Discord 發送預熱訊息',
+    quote:'咪那桑～今天 11:00 蘋蘋開台了！今天要玩什麼大家猜一猜 👀',
+    tags:[{label:'4 人回應',cls:'green'},{label:'2 人@朋友',cls:'accent'}],
+  },
+  {
+    time:'5/16  13:22',
+    dot:'var(--accent2)',
+    delay:100,
+    title:'Twitch 溫度飆高 → 導流 Discord',
+    auto:true,
+    body:'聊天室溫度突破 80%，Marvin 自動在 Discord 貼出精華片段',
+    quote:'🔥 剛才直播超熱鬧！洗沖說「蘋蘋根本外掛」，現在還在笑 → 來看直播',
+    tags:[{label:'6 人點進直播',cls:'green'},{label:'3 人加入 Discord',cls:'accent'}],
+  },
+  {
+    time:'5/16  16:05',
+    dot:'var(--gold)',
+    delay:200,
+    title:'直播結束精華摘要',
+    auto:true,
+    body:'直播結束 30 分鐘後，Marvin 自動整理今日三件事',
+    quote:'今天蘋蘋說了這三件事 ①「我才不是外掛」②崔小佛的戰艦沉了三次 ③... 你最喜歡哪個？',
+    tags:[{label:'11 人討論',cls:'green'},{label:'持續 2 小時',cls:'gold'}],
+  },
+  {
+    time:'5/17  09:45',
+    dot:'var(--discord)',
+    delay:300,
+    title:'點名跟進 — 洗沖',
+    auto:true,
+    body:'Marvin 記得洗沖上次說要下載《戰艦世界》，5/17 開台前主動提醒',
+    quote:'洗沖 你上次說要下載戰艦世界！今天 10:00 蘋蘋有贊助直播，填表還能抽 Uber 券 🎮',
+    tags:[{label:'洗沖立刻回覆',cls:'green'},{label:'孤苦跟進討論',cls:'accent'},{label:'崔小佛填了表',cls:'gold'}],
+  },
+];
+
+// ── Build functions ───────────────────────────────────────────────────
+function animateCounter(el, target, dur=1200) {
+  let v=0; const step=target/(dur/16);
+  const t=setInterval(()=>{v=Math.min(v+step,target);el.textContent=Math.round(v);if(v>=target)clearInterval(t);},16);
+}
+
+function buildLeads() {
+  const body = document.getElementById('leads-body');
+  LEADS.forEach((lead,i)=>{
+    const row = document.createElement('div');
+    row.className = 'lead-row';
+    row.style.animationDelay = `${i*.08+.3}s`;
+    row.innerHTML = `
+      <div class="rank ${i===0?'top':''}">${lead.rank}</div>
+      <div class="username">${lead.username}</div>
+      <div><span class="stage-badge ${lead.stageClass}">${lead.stage}</span></div>
+      <div style="font-size:14px;font-weight:600;text-align:center">${lead.sessions}</div>
+      <div class="score-num">${lead.score}</div>
+      <div><span class="intent-tag ${lead.tagClass}">${lead.tag}</span></div>`;
+    body.appendChild(row);
+  });
+}
+
+function buildIdentity() {
+  const wrap = document.getElementById('identity-rows');
+  IDENTITY.forEach((row,i) => {
+    const div = document.createElement('div');
+    div.className = 'identity-row';
+    div.style.animationDelay = `${i*.1+.5}s`;
+    const rolesHtml = row.roles.map((r,j)=>`<span class="role-badge ${row.roleClasses[j]}">${r}</span>`).join('');
+    const statusClass = row.status==='matched'?'matched':row.status==='pending'?'pending':'unmatched';
+    div.innerHTML = `
+      <div class="platform-card">
+        <div class="platform-icon twitch-icon">🟣</div>
+        <div>
+          <div class="p-name">${row.twitch}</div>
+          <div class="p-meta">${row.twitchMeta}</div>
+        </div>
+      </div>
+      <div class="bridge-arrow">→</div>
+      <div class="platform-card">
+        <div class="platform-icon discord-avatar">💙</div>
+        <div>
+          <div class="p-name">${row.discord}</div>
+          <div class="p-meta">${row.discordMeta}</div>
+        </div>
+      </div>
+      <div class="discord-status">
+        <div class="discord-roles">${rolesHtml}</div>
+        <div class="last-seen">${row.lastSeen}</div>
+        <div class="match-badge ${statusClass}">${row.statusLabel}</div>
+      </div>`;
+    div.title = row.insight;
+    wrap.appendChild(div);
+  });
+}
+
+function buildTimeline() {
+  const wrap = document.getElementById('timeline');
+  TIMELINE.forEach((item, i) => {
+    const el = document.createElement('div');
+    el.className = 'tl-item';
+    const tagsHtml = item.tags.map(t=>`<span class="tl-tag ${t.cls}">${t.label}</span>`).join('');
+    const autoBadge = item.auto ? '<span class="tl-auto-badge">AUTO</span>' : '';
+    el.innerHTML = `
+      <div class="tl-time">${item.time}</div>
+      <div class="tl-spine">
+        <div class="tl-dot" style="background:${item.dot};animation-delay:${item.delay+400}ms"></div>
+        <div class="tl-line"></div>
+      </div>
+      <div>
+        <div class="tl-card" style="animation:fadeIn .5s ease ${item.delay+300}ms both">
+          <div class="tl-card-title">${item.title} ${autoBadge}</div>
+          <div class="tl-card-body">${item.body}</div>
+          <div class="tl-card-quote">${item.quote}</div>
+          <div class="tl-card-result">${tagsHtml}</div>
+        </div>
+      </div>`;
+    wrap.appendChild(el);
+  });
+}
+
+function buildVocab() {
+  const cloud = document.getElementById('vocab-cloud');
+  VOCAB.forEach(v=>{
+    const span = document.createElement('span');
+    span.className = `vocab-token ${v.size}`;
+    span.textContent = v.token;
+    cloud.appendChild(span);
+  });
+}
+
+// ── Phone: tab switching ──────────────────────────────────────────────
+function switchTab(tab, el) {
+  document.querySelectorAll('.phone-tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.phone-view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-'+tab).classList.add('active');
+}
+
+// ── Phone: Twitch chat ────────────────────────────────────────────────
+let chatIdx=0;
+const notifShown = new Set();
+
+function addChatMsg() {
+  if(chatIdx>=CHAT_MSGS.length) chatIdx=0;
+  const msg = CHAT_MSGS[chatIdx++];
+  const feed = document.getElementById('chat-feed');
+  const div = document.createElement('div');
+  let cls='chat-msg', badge='';
+  if(msg.intent==='sub'){cls+=' intent';badge='<span class="intent-badge badge-sub">訂閱意圖</span>';}
+  else if(msg.intent==='merch'){cls+=' intent intent-merch';badge='<span class="intent-badge badge-merch">周邊意圖</span>';}
+  div.className=cls;
+  div.innerHTML=`<span class="chat-user ${msg.color}">${msg.user}</span>${msg.text}${badge}`;
+  feed.appendChild(div);
+  while(feed.children.length>12) feed.removeChild(feed.firstChild);
+
+  if(msg.intent && !notifShown.has(msg.user)) {
+    notifShown.add(msg.user);
+    const lead = LEADS.find(l=>l.username===msg.user);
+    if(lead) showTwitchNotif(lead);
+  }
+}
+
+function showTwitchNotif(lead) {
+  setTimeout(()=>{
+    const n=document.getElementById('notif');
+    n.className='notif';
+    document.getElementById('notif-title').textContent='⚡ 熱名單';
+    document.getElementById('notif-score').textContent=lead.score;
+    document.getElementById('notif-body').textContent=
+      `${lead.username} · ${lead.stage} · ${lead.sessions}場 · ${lead.tag}意圖`;
+    n.style.display='block';
+    setTimeout(()=>n.style.display='none',3200);
+  },600);
+}
+
+// ── Phone: Discord feed ───────────────────────────────────────────────
+let discordIdx=0;
+
+function addDiscordMsg() {
+  if(discordIdx>=DISCORD_MSGS.length) discordIdx=0;
+  const msg = DISCORD_MSGS[discordIdx++];
+  const feed = document.getElementById('discord-feed');
+  const div = document.createElement('div');
+
+  if(msg.type==='marvin' || msg.type==='marvin-call') {
+    div.className='discord-msg marvin';
+    div.innerHTML=`
+      <div class="marvin-label">✦ Marvin 自動發送</div>
+      <div class="d-channel">${msg.channel}</div>
+      <span class="d-user c-accent">${msg.user}</span>${msg.text}`;
+    if(msg.type==='marvin-call') {
+      showDiscordNotif('🤖 Marvin 點名：洗沖 — 贊助 CTA 跟進');
+    }
+  } else {
+    let cls='discord-msg';
+    if(msg.type==='highlight'||msg.type==='sponsor') cls+=' highlight';
+    if(msg.type==='voice') cls+=' voice-alert';
+    div.className=cls;
+    let tag='';
+    if(msg.type==='sponsor')  tag='<span class="intent-badge badge-merch" style="margin-left:4px">贊助CTA</span>';
+    if(msg.type==='highlight') tag='<span class="intent-badge badge-merch" style="margin-left:4px">高意圖</span>';
+    div.innerHTML=`
+      <div class="d-channel">${msg.channel}</div>
+      <span class="d-user ${msg.color}">${msg.user}</span>${msg.text}${tag}`;
+    if(msg.type==='voice')    showDiscordNotif(msg.text);
+    if(msg.type==='sponsor')  showDiscordLeadNotif(msg.user, msg.text, '🎮 贊助 CTA 追蹤');
+    if(msg.type==='highlight') showDiscordLeadNotif(msg.user, msg.text, '💙 Discord 高意圖');
+  }
+
+  feed.appendChild(div);
+  while(feed.children.length>10) feed.removeChild(feed.firstChild);
+}
+
+function showDiscordNotif(text) {
+  setTimeout(()=>{
+    const n=document.getElementById('notif');
+    n.className='notif discord-notif';
+    document.getElementById('notif-title').textContent='🎙 Discord 語音上線';
+    document.getElementById('notif-score').textContent='';
+    document.getElementById('notif-body').textContent=text;
+    n.style.display='block';
+    setTimeout(()=>n.style.display='none',3000);
+  },400);
+}
+
+function showDiscordLeadNotif(user, text, title='💙 Discord 熱名單') {
+  setTimeout(()=>{
+    const n=document.getElementById('notif');
+    n.className='notif discord-notif';
+    document.getElementById('notif-title').textContent=title;
+    document.getElementById('notif-score').textContent='';
+    const match=IDENTITY.find(r=>r.discord===user);
+    const twitch=match?`（Twitch: ${match.twitch}）`:'';
+    document.getElementById('notif-body').textContent=`${user}${twitch}：「${text}」`;
+    n.style.display='block';
+    setTimeout(()=>n.style.display='none',3500);
+  },600);
+}
+
+// ── Display name map（從 IRC tags 採集，目前為 partial）─────────────
+// 資料來源：@mention 反推 + 已知對應。下次採集（已更新 collector）後自動補齊。
+const DISPLAY_NAME_MAP = {
+  // 從 IRC tag display-name 已確認的
+  'santapipi':       { name: 'santaPIPI',      fromTags: false }, // @santaPIPI @mention
+  'nightbot':        { name: 'Nightbot',        fromTags: false }, // 官方帳號
+  'pinpinponpon627': { name: '蘋蘋澎澎',        fromTags: false }, // 主播
+  // 以下 login name 即 display name（需下次採集確認）
+};
+
+function getDisplayName(username) {
+  const entry = DISPLAY_NAME_MAP[username];
+  return entry ? entry.name : null;  // null = 無 display name，顯示 login
+}
+
+// 渲染帶 tooltip 的用戶名元素
+// hasDisplayName=true  → 顯示 display name，hover 顯示 @login
+// hasDisplayName=false → 顯示 @login（灰色 italic），hover 提示「待採集」
+function unameBadge(username, opts = {}) {
+  const dn = opts.displayName !== undefined ? opts.displayName : getDisplayName(username);
+  const isSubscriber = opts.isSubscriber || false;
+  const dotColor = isSubscriber ? 'var(--green)' : 'transparent';
+  const dotTitle = isSubscriber ? ' · 已訂閱' : '';
+
+  if (dn) {
+    return `<span class="uname has-display">${dn}` +
+      `<span class="uid">@${username}${dotTitle}</span>` +
+      (isSubscriber ? `<span class="sub-dot" style="background:var(--green)" title="已訂閱"></span>` : '') +
+      `</span>`;
+  } else {
+    return `<span class="uname no-display">@${username}` +
+      `<span class="uid">display name 待下次採集</span>` +
+      (isSubscriber ? `<span class="sub-dot" style="background:var(--green)" title="已訂閱"></span>` : '') +
+      `</span>`;
+  }
+}
+
+// ── Drawer data ──────────────────────────────────────────────────────
+const VIEWERS_DATA = [
+  {rank:1, username:'pjbitter',          msgs:475, subStatus:'new_sub',   subLabel:'本場新訂閱',  note:'熱名單 #1'},
+  {rank:2, username:'coolygo9',          msgs:269, subStatus:'new_sub',   subLabel:'本場新訂閱',  note:'熱名單 #2'},
+  {rank:3, username:'santapipi',         msgs: 96, subStatus:'unknown',   subLabel:'未知',        note:'社群核心'},
+  {rank:4, username:'dou_wha',           msgs: 82, subStatus:'unknown',   subLabel:'未知',        note:'社群核心'},
+  {rank:5, username:'nightbot',          msgs: 81, subStatus:'bot',       subLabel:'機器人',      note:'Nightbot'},
+  {rank:6, username:'girl0506',          msgs: 67, subStatus:'unknown',   subLabel:'未知',        note:'社群核心'},
+  {rank:7, username:'annyong1004',       msgs: 51, subStatus:'unknown',   subLabel:'未知',        note:'社群核心'},
+  {rank:8, username:'welson183qw',       msgs: 43, subStatus:'unknown',   subLabel:'未知',        note:'社群核心'},
+  {rank:9, username:'pinpinponpon627',   msgs: 38, subStatus:'owner',     subLabel:'主播',        note:'頻道主播'},
+  {rank:10,username:'ace88889999',       msgs: 31, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:11,username:'savoury_chocolate', msgs: 28, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:12,username:'jesters13',         msgs: 24, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:13,username:'cc0412',            msgs: 17, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:14,username:'ast246',            msgs: 16, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:15,username:'wolfstar00',        msgs: 16, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:16,username:'jack__9527',        msgs: 15, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:17,username:'kim_taeyeon_yu',    msgs: 14, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:18,username:'onseven9son',       msgs: 13, subStatus:'gift_sub',  subLabel:'收贈禮訂閱',  note:'熱名單 #3，莓汽泡贈禮'},
+  {rank:19,username:'pinponfoever',      msgs: 13, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:20,username:'leslie4001t5',      msgs: 11, subStatus:'gift_sub',  subLabel:'收贈禮訂閱',  note:'熱名單 #4，冥夢贈禮'},
+  {rank:21,username:'lun0107',           msgs: 11, subStatus:'unknown',   subLabel:'未知',        note:''},
+  {rank:22,username:'pongpong3123',      msgs:  2, subStatus:'gift_sub',  subLabel:'收贈禮訂閱',  note:'熱名單 #5，莓汽泡贈禮'},
+];
+
+const INTENT_MSGS = [
+  // 人類真實高意圖訊息（按轉化價值排序）
+  {username:'pjbitter',    text:'感謝訂閱',                           type:'new_sub',  label:'本場新訂閱'},
+  {username:'pjbitter',    text:'還是要福利一下 僅存的女觀眾吧  pinpin8666', type:'new_sub', label:'訂閱後喊話'},
+  {username:'coolygo9',    text:'感謝訂閱',                           type:'new_sub',  label:'本場新訂閱'},
+  {username:'pongpong3123',text:'@莓汽泡 謝謝您的贈禮訂閱！',          type:'gift_sub', label:'收贈禮訂閱'},
+  {username:'onseven9son', text:'@莓汽泡 感謝你的贈禮訂閱',            type:'gift_sub', label:'收贈禮訂閱'},
+  {username:'leslie4001t5',text:'@冥夢 謝謝您的贈禮訂閱！',            type:'gift_sub', label:'收贈禮訂閱'},
+  // Nightbot 自動回覆（23 則）
+  {username:'nightbot', text:'歡迎DC晃晃❤️有團長啊蘋隨時出沒跟福利唷！訂閱者限定→https://discord.gg/kW4EDSN238 《請將DC帳號與Twitch帳號進行綁定…》',
+   type:'bot', label:'機器人自動回覆', count:23},
+];
+
+const LEADS_DETAIL = [
+  {username:'pjbitter',     score:25.64, loyalty:4.27, intentTotal:6, msgs:475, intents:['subscription_intent'], subStatus:'本場新訂閱',
+   note:'發言量全場第一，訂閱意圖最強，conv_score 領先第二名 2 倍'},
+  {username:'coolygo9',     score:11.64, loyalty:3.88, intentTotal:3, msgs:269, intents:['subscription_intent'], subStatus:'本場新訂閱',
+   note:'發言量第二，新訂閱確認'},
+  {username:'onseven9son',  score:5.49,  loyalty:1.83, intentTotal:3, msgs:13,  intents:['subscription_intent'], subStatus:'收贈禮訂閱（莓汽泡）',
+   note:'莓汽泡贈禮，發言量少但訂閱意圖明確'},
+  {username:'leslie4001t5', score:5.17,  loyalty:1.72, intentTotal:3, msgs:11,  intents:['subscription_intent'], subStatus:'收贈禮訂閱（冥夢）',
+   note:'冥夢贈禮，今天才第一次出現'},
+  {username:'pongpong3123', score:2.28,  loyalty:0.76, intentTotal:3, msgs:2,   intents:['subscription_intent'], subStatus:'收贈禮訂閱（莓汽泡）',
+   note:'發言量極少，但訂閱意圖確認；可追蹤後續是否回訪'},
+];
+
+// ── Drawer logic ──────────────────────────────────────────────────────
+function openDrawer(type) {
+  const overlay = document.getElementById('drawer-overlay');
+  const drawer  = document.getElementById('drawer');
+  const title   = document.getElementById('drawer-title');
+  const sub     = document.getElementById('drawer-sub');
+  const body    = document.getElementById('drawer-body');
+
+  body.innerHTML = '';
+
+  if (type === 'viewers') {
+    title.textContent = '活躍觀眾 119 人';
+    sub.textContent   = '以發言量排序（Top 22 顯示）；訂閱狀態從訊息內容推斷，其餘需 Twitch API 確認';
+    body.appendChild(buildViewersContent());
+  } else if (type === 'missed') {
+    title.textContent = '高意圖訊息 29 則';
+    sub.textContent   = '真實數據：人類 6 則（本場訂閱 / 贈禮）+ Nightbot 自動回覆 23 則';
+    body.appendChild(buildIntentContent());
+  } else if (type === 'leads') {
+    title.textContent = '熱名單 5 人';
+    sub.textContent   = '轉化分 = 意圖信號（intent_total）× 忠誠乘數（log 場次 × log 均發言量）';
+    body.appendChild(buildLeadsContent());
+  } else if (type === 'discord') {
+    title.textContent = 'Discord 身份比對';
+    sub.textContent   = '⚠️  此功能尚未上線 — 以下為 Demo 示意資料';
+    const notice = document.createElement('div');
+    notice.className = 'mock-notice';
+    notice.innerHTML = `<strong>這個數字是 Mock 資料。</strong><br><br>
+    Discord 身份橋接功能上線後，Marvin 可自動將 Twitch 用戶名與 Discord 帳號對應，
+    讓你知道「聊天室的 pjbitter 就是 Discord 裡的那個人」。<br><br>
+    目前 Discord 橋接需要用戶主動綁定（要求輸入 Twitch 帳號），
+    或透過 Twitch Connections API 在 Discord OAuth 流程中自動匹配。`;
+    body.appendChild(notice);
+  }
+
+  overlay.classList.add('open');
+  drawer.classList.add('open');
+}
+
+function closeDrawer() {
+  document.getElementById('drawer-overlay').classList.remove('open');
+  document.getElementById('drawer').classList.remove('open');
+}
+
+document.addEventListener('keydown', e => { if(e.key==='Escape') closeDrawer(); });
+
+function buildViewersContent() {
+  const frag = document.createDocumentFragment();
+
+  const secHuman = el('div','dsec','👥 前 22 名觀眾發言排行（真實資料）');
+  frag.appendChild(secHuman);
+
+  VIEWERS_DATA.forEach(v => {
+    const row = document.createElement('div');
+    row.className = 'vrow';
+    const tagCls = {new_sub:'vsub-new',gift_sub:'vsub-gift',bot:'vsub-bot',owner:'vsub-owner',unknown:'vsub-unknown'}[v.subStatus];
+    const isTop  = v.rank <= 3;
+    const isSub  = ['new_sub','gift_sub','owner'].includes(v.subStatus);
+    row.innerHTML = `
+      <div class="vrank ${isTop?'top':''}">${v.rank}</div>
+      <div>
+        <div class="vname">${unameBadge(v.username, {isSubscriber: isSub})}${v.note?` <span style="font-size:10px;color:var(--muted)">· ${v.note}</span>`:''}</div>
+      </div>
+      <div class="vmsgs">${v.msgs}</div>
+      <div class="vsub-tag ${tagCls}">${v.subLabel}</div>`;
+    frag.appendChild(row);
+  });
+
+  const note = el('div','dsec','');
+  note.style.marginTop='16px';
+  note.innerHTML = `<span style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0">
+    剩餘 97 人每人發言 &lt;7 則。「未知」訂閱狀態需串 Twitch Subscriptions API 才能確認。</span>`;
+  frag.appendChild(note);
+
+  return frag;
+}
+
+function buildIntentContent() {
+  const frag = document.createDocumentFragment();
+
+  frag.appendChild(el('div','dsec','🙋 人類真實高意圖訊息（6 則）'));
+
+  INTENT_MSGS.filter(m => m.type !== 'bot').forEach(m => {
+    const div = document.createElement('div');
+    div.className = `imsg ${m.type==='new_sub'?'is-human-sub':'is-human-gift'}`;
+    const typeCls = m.type==='new_sub'?'type-sub':'type-gift';
+    div.innerHTML = `
+      <div class="imsg-top">
+        <span class="imsg-user">${unameBadge(m.username, {isSubscriber: true})}</span>
+        <span class="imsg-type ${typeCls}">${m.label}</span>
+      </div>
+      <div class="imsg-text">${m.text}</div>`;
+    frag.appendChild(div);
+  });
+
+  frag.appendChild(el('div','dsec','🤖 Nightbot 自動回覆（23 則，觸發於每次訂閱事件）'));
+
+  const botToggle = document.createElement('div');
+  botToggle.className = 'bot-toggle';
+  botToggle.innerHTML = '▶ 展開查看 Nightbot 訊息（23 則相同，均為歡迎訂閱者回覆）';
+  botToggle.onclick = () => {
+    const rows = document.getElementById('bot-rows');
+    rows.classList.toggle('show');
+    botToggle.innerHTML = rows.classList.contains('show')
+      ? '▼ 收起 Nightbot 訊息' : '▶ 展開查看 Nightbot 訊息（23 則相同，均為歡迎訂閱者回覆）';
+  };
+  frag.appendChild(botToggle);
+
+  const botRows = document.createElement('div');
+  botRows.id = 'bot-rows';
+  const botMsg = INTENT_MSGS.find(m=>m.type==='bot');
+  for(let i=0;i<(botMsg?.count||23);i++){
+    const div = document.createElement('div');
+    div.className='imsg is-bot';
+    div.innerHTML=`
+      <div class="imsg-top">
+        <span class="imsg-user">nightbot</span>
+        <span class="imsg-type type-bot">機器人自動回覆 #${i+1}</span>
+      </div>
+      <div class="imsg-text">${botMsg.text}</div>`;
+    botRows.appendChild(div);
+  }
+  frag.appendChild(botRows);
+
+  const insight = document.createElement('div');
+  insight.style.cssText='margin-top:16px;padding:12px;border-radius:8px;background:rgba(124,106,247,.08);border:1px solid rgba(124,106,247,.2);font-size:11px;line-height:1.7;color:var(--muted)';
+  insight.innerHTML='<strong style="color:var(--accent)">改善建議：</strong>nightbot 的自動回覆本身含「訂閱者限定」關鍵字，導致 23 則被誤分類為高意圖訊息。建議在採集端加入機器人帳號黑名單過濾，讓這個數字從 29 縮小到真實的 6。';
+  frag.appendChild(insight);
+
+  return frag;
+}
+
+function buildLeadsContent() {
+  const frag = document.createDocumentFragment();
+  frag.appendChild(el('div','dsec','🔥 轉化熱名單（真實資料，已過濾 nightbot）'));
+
+  LEADS_DETAIL.forEach((lead, i) => {
+    const div = document.createElement('div');
+    div.className='lrow';
+    const subTagCls = lead.subStatus.includes('新訂閱')?'vsub-new':'vsub-gift';
+    div.innerHTML=`
+      <div class="lrow-top">
+        <div>
+          <div class="lrow-name">#${i+1} ${unameBadge(lead.username, {isSubscriber: true})}</div>
+          <div style="margin-top:4px"><span class="vsub-tag ${subTagCls}">${lead.subStatus}</span></div>
+        </div>
+        <div class="lrow-score">${lead.score}</div>
+      </div>
+      <div class="lrow-grid">
+        <div class="lrow-stat"><span>意圖信號</span><strong>${lead.intentTotal} 則</strong></div>
+        <div class="lrow-stat"><span>忠誠乘數</span><strong>${lead.loyalty}</strong></div>
+        <div class="lrow-stat"><span>發言量</span><strong>${lead.msgs} 則</strong></div>
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5">${lead.note}</div>`;
+    frag.appendChild(div);
+  });
+
+  const note = document.createElement('div');
+  note.style.cssText='margin-top:12px;padding:10px 12px;border-radius:8px;background:rgba(112,112,160,.08);font-size:11px;color:var(--muted);line-height:1.6';
+  note.innerHTML='<strong style="color:var(--text)">全場只有 1 天資料</strong>，所以所有人都是「初訪觀眾（1 場）」。累積多場後，忠誠乘數會快速拉開差距，才會出現「忠實粉絲」「核心粉絲」分層。';
+  frag.appendChild(note);
+
+  return frag;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  e.className = cls;
+  e.textContent = text;
+  return e;
+}
+
+// ── Temperature ───────────────────────────────────────────────────────
+let tempVal=45;
+function updateTemp(){
+  tempVal+=((Math.random()-.4)*8);
+  tempVal=Math.max(15,Math.min(90,tempVal));
+  document.getElementById('temp-bar').style.width=tempVal+'%';
+  document.getElementById('temp-text').textContent=
+    tempVal<35?'低溫':tempVal<65?'中溫':'高溫';
+}
+
+// ── Init ──────────────────────────────────────────────────────────────
+window.addEventListener('load',()=>{
+  buildLeads();
+  buildIdentity();
+  buildTimeline();
+  buildVocab();
+
+  setTimeout(()=>{
+    animateCounter(document.getElementById('stat-viewers'),119);
+    animateCounter(document.getElementById('stat-missed'),29);
+    animateCounter(document.getElementById('stat-leads'),5);
+    animateCounter(document.getElementById('stat-discord'),3);
+  },200);
+
+  setTimeout(()=>{
+    document.getElementById('temp-bar').style.width='52%';
+  },500);
+
+  // Twitch chat loop
+  setTimeout(()=>{addChatMsg();setInterval(addChatMsg,1800);},800);
+  // Discord feed loop (slightly slower)
+  setTimeout(()=>{addDiscordMsg();setInterval(addDiscordMsg,2600);},2000);
+  // Temperature
+  setInterval(updateTemp,4000);
+});
+</script>
+</body>
+</html>

@@ -136,7 +136,11 @@ class GameWSHub:
             return
         if not isinstance(data, dict) or "type" not in data:
             return
-        # token → resolved_user_id
+        # Strip any client-supplied resolved_user_id; only the server-side token
+        # resolver is allowed to populate this field. Without this, a client can
+        # impersonate any player by sending {"resolved_user_id": "<victim_id>"}
+        # with no token at all.
+        data.pop("resolved_user_id", None)
         token = data.get("token")
         if token and self._token_resolver is not None:
             resolved = self._token_resolver(token)

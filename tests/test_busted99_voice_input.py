@@ -21,6 +21,7 @@ def _make_bot():
     bot = MagicMock()
     bot.cogs.get.return_value = None
     bot.voice_clients = []
+    bot.engine = None
     return bot
 
 

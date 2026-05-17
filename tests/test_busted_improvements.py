@@ -73,12 +73,20 @@ def test_timer_for_clue_active_is_50():
 # 2. Marvin 出題：LLM generate_setter_answer + 字數限制
 # ═══════════════════════════════════════════════════════════════════
 
+def _fake_groq(content: str):
+    """Mock for game.llm_clients.get_groq_client — provides chat.completions.create."""
+    c = MagicMock()
+    resp = MagicMock()
+    resp.choices[0].message.content = content
+    c.chat.completions.create = AsyncMock(return_value=resp)
+    return c
+
+
 @pytest.mark.asyncio
 async def test_marvin_player_has_generate_setter_answer():
     """MarvinPlayer 必須有 generate_setter_answer(theme, min_len, max_len) 方法。"""
     from game.marvin_player import MarvinPlayer
-    with patch("game.marvin_player.AsyncOpenAI"):
-        mp = MarvinPlayer(router=None)
+    mp = MarvinPlayer(router=None)
     assert hasattr(mp, "generate_setter_answer"), "MarvinPlayer.generate_setter_answer missing"
     assert callable(mp.generate_setter_answer)
 
@@ -87,14 +95,10 @@ async def test_marvin_player_has_generate_setter_answer():
 async def test_generate_setter_answer_respects_max_len():
     """generate_setter_answer 必須確保答案長度 <= max_len。"""
     from game.marvin_player import MarvinPlayer
-    with patch("game.marvin_player.AsyncOpenAI"):
-        mp = MarvinPlayer(router=None)
-    mp._weak_client = MagicMock()
-    resp = MagicMock()
-    resp.choices[0].message.content = "超長答案文字"  # 6 chars > max 5
-    mp._weak_client.chat.completions.create = AsyncMock(return_value=resp)
-
-    result = await mp.generate_setter_answer("吉他", min_len=2, max_len=5)
+    mp = MarvinPlayer(router=None)
+    groq = _fake_groq("超長答案文字")  # 6 chars > max 5
+    with patch("game.marvin_player.get_groq_client", return_value=groq):
+        result = await mp.generate_setter_answer("吉他", min_len=2, max_len=5)
     assert len(result) <= 5, f"answer len {len(result)} > max_len 5"
 
 
@@ -102,14 +106,10 @@ async def test_generate_setter_answer_respects_max_len():
 async def test_generate_setter_answer_respects_min_len():
     """generate_setter_answer 若回傳太短，使用 fallback。"""
     from game.marvin_player import MarvinPlayer
-    with patch("game.marvin_player.AsyncOpenAI"):
-        mp = MarvinPlayer(router=None)
-    mp._weak_client = MagicMock()
-    resp = MagicMock()
-    resp.choices[0].message.content = "一"  # 1 char < min 2
-    mp._weak_client.chat.completions.create = AsyncMock(return_value=resp)
-
-    result = await mp.generate_setter_answer("吉他", min_len=2, max_len=5)
+    mp = MarvinPlayer(router=None)
+    groq = _fake_groq("一")  # 1 char < min 2
+    with patch("game.marvin_player.get_groq_client", return_value=groq):
+        result = await mp.generate_setter_answer("吉他", min_len=2, max_len=5)
     assert len(result) >= 2, f"answer len {len(result)} < min_len 2"
 
 

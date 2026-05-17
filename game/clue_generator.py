@@ -100,10 +100,36 @@ async def generate_clue(
     user = f"請給出第 {round_num} 條線索。"
 
     try:
-        return await router.complete(system=system, user=user)
+        first = await router.complete(system=system, user=user)
     except Exception as e:
         logger.error(f"[CluGen] LLM failed: {e}")
         return "（線索生成失敗，繼續猜吧！）"
+
+    if not _leaks_answer(first, answer):
+        return first
+
+    # Retry once with a stricter reminder. Prompts that say "don't" sometimes
+    # land better when we acknowledge the prior miss.
+    retry_system = system + "\n⚠ 上一次嘗試洩漏了答案字，請務必避開答案中的每一個字。"
+    try:
+        second = await router.complete(system=retry_system, user=user)
+    except Exception as e:
+        logger.error(f"[CluGen] LLM retry failed: {e}")
+        return "（線索生成失敗，繼續猜吧！）"
+
+    if not _leaks_answer(second, answer):
+        return second
+
+    logger.warning(
+        "[CluGen] clue leaked answer chars on both attempts (answer=%r), using safe fallback",
+        answer,
+    )
+    return "（這條線索略過，看下一條吧！）"
+
+
+def _leaks_answer(clue: str, answer: str) -> bool:
+    """Return True if any character of the answer appears in the clue."""
+    return any(c in clue for c in answer)
 
 
 def judge_answer(answer: str, guess: str) -> bool:

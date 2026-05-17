@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 def _make_engine():
     bot = MagicMock()
     bot.guilds = []
+    bot.cogs.get.return_value = None  # 防止 game suppress 邏輯攔截 STT dispatch
     with patch("discord_voice_engine.faster_whisper", None, create=True):
         from discord_voice_engine import DiscordVoiceEngine
         engine = DiscordVoiceEngine(bot)

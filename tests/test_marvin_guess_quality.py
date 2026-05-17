@@ -14,9 +14,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _make_marvin():
-    with patch("game.marvin_player.AsyncOpenAI"):
-        from game.marvin_player import MarvinPlayer
-        return MarvinPlayer(router=None)
+    """Build a MarvinPlayer without touching real LLM clients.
+
+    Post-refactor, clients live in game.llm_clients (lazy singletons). Tests
+    patch the get_*_client functions to return mocks; nothing is needed in
+    the constructor.
+    """
+    from game.marvin_player import MarvinPlayer
+    return MarvinPlayer(router=None)
+
+
+def _fake_chat_client(content: str):
+    """Mock for game.llm_clients.get_groq_client / get_cerebras_client.
+
+    Returns an object whose .chat.completions.create awaits to a response
+    with the given content. Tests can read call_args off .chat.completions.create.
+    """
+    client = MagicMock()
+    resp = MagicMock()
+    resp.choices[0].message.content = content
+    client.chat.completions.create = AsyncMock(return_value=resp)
+    return client
 
 
 # ── 1. Consecutive buzz — halved probability ──────────────────────────────────
@@ -73,19 +91,16 @@ async def test_no_consecutive_penalty_at_round1():
 async def test_last_buzzed_round_updated_after_think_then_buzz():
     """think_then_buzz should update _last_buzzed_clue_round when on_buzz_ready fires."""
     mp = _make_marvin()
-    mp._weak_client = MagicMock()
-    resp = MagicMock()
-    resp.choices[0].message.content = "測試答案"
-    mp._weak_client.chat.completions.create = AsyncMock(return_value=resp)
+    groq = _fake_chat_client("測試答案")
 
     fired = []
     async def on_buzz_ready(guess: str):
         fired.append(guess)
 
-    # Force should_buzz to always return True
     mp.should_buzz = AsyncMock(return_value=True)
 
-    with patch("asyncio.sleep", new_callable=AsyncMock):
+    with patch("asyncio.sleep", new_callable=AsyncMock), \
+         patch("game.marvin_player.get_groq_client", return_value=groq):
         await mp.think_then_buzz(
             clue_round=2, clues=[], char_count=3,
             wrong_guesses=[], on_buzz_ready=on_buzz_ready,
@@ -121,21 +136,16 @@ async def test_last_buzzed_round_not_updated_when_no_buzz():
 async def test_blind_mode_prompt_includes_wrong_guesses():
     """generate_guess in rounds 1-3 should include already-tried answers to avoid."""
     mp = _make_marvin()
-    mp._weak_client = MagicMock()
-    resp = MagicMock()
-    resp.choices[0].message.content = "新答案"
-    create_mock = AsyncMock(return_value=resp)
-    mp._weak_client.chat.completions.create = create_mock
+    groq = _fake_chat_client("新答案")
 
-    await mp.generate_guess(
-        clue_round=2, clues=[], char_count=3,
-        wrong_guesses=["錯誤一", "錯誤二"],
-    )
+    with patch("game.marvin_player.get_groq_client", return_value=groq):
+        await mp.generate_guess(
+            clue_round=2, clues=[], char_count=3,
+            wrong_guesses=["錯誤一", "錯誤二"],
+        )
 
-    call_args = create_mock.call_args
-    messages = call_args.kwargs.get("messages") or call_args.args[0] if call_args.args else []
-    if not messages:
-        messages = call_args[1].get("messages", [])
+    call_args = groq.chat.completions.create.call_args
+    messages = call_args.kwargs.get("messages", [])
     user_msg = next((m["content"] for m in messages if m["role"] == "user"), "")
     assert "錯誤一" in user_msg, (
         f"blind-mode prompt should include wrong guesses to avoid, got: {user_msg!r}"
@@ -147,16 +157,13 @@ async def test_blind_mode_prompt_includes_wrong_guesses():
 async def test_blind_mode_prompt_without_wrong_guesses_unchanged():
     """generate_guess round 1-3 with empty wrong_guesses should not add avoid_line."""
     mp = _make_marvin()
-    mp._weak_client = MagicMock()
-    resp = MagicMock()
-    resp.choices[0].message.content = "答案"
-    create_mock = AsyncMock(return_value=resp)
-    mp._weak_client.chat.completions.create = create_mock
+    groq = _fake_chat_client("答案")
 
-    await mp.generate_guess(clue_round=1, clues=[], char_count=3, wrong_guesses=[])
+    with patch("game.marvin_player.get_groq_client", return_value=groq):
+        await mp.generate_guess(clue_round=1, clues=[], char_count=3, wrong_guesses=[])
 
-    call_args = create_mock.call_args
-    messages = call_args.kwargs.get("messages") or []
+    call_args = groq.chat.completions.create.call_args
+    messages = call_args.kwargs.get("messages", [])
     user_msg = next((m["content"] for m in messages if m["role"] == "user"), "")
     assert "已猜過" not in user_msg, "no avoid_line when wrong_guesses is empty"
 

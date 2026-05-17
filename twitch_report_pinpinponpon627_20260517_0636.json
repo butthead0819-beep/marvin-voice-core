@@ -1,0 +1,409 @@
+{
+  "channel": "pinpinponpon627",
+  "generated_at": "2026-05-17T06:36:54.492528+00:00",
+  "days": 30,
+  "summary": {
+    "total_users": 257,
+    "total_messages": 4183,
+    "high_intent_messages": 62
+  },
+  "channel_vocab": [
+    {
+      "token": "pinpin",
+      "count": 976
+    },
+    {
+      "token": "lul",
+      "count": 421
+    },
+    {
+      "token": "https",
+      "count": 145
+    },
+    {
+      "token": "dance",
+      "count": 139
+    },
+    {
+      "token": "dinodance",
+      "count": 94
+    },
+    {
+      "token": "dc",
+      "count": 92
+    },
+    {
+      "token": "hiii",
+      "count": 89
+    },
+    {
+      "token": "教訓專屬影片",
+      "count": 88
+    },
+    {
+      "token": "seemsgood",
+      "count": 75
+    },
+    {
+      "token": "莓汽泡",
+      "count": 58
+    },
+    {
+      "token": "小佛",
+      "count": 55
+    },
+    {
+      "token": "因為訊息量比較多",
+      "count": 52
+    },
+    {
+      "token": "如果主播漏看了可以多說幾次唷",
+      "count": 52
+    },
+    {
+      "token": "肚子餓",
+      "count": 50
+    },
+    {
+      "token": "飽食度",
+      "count": 50
+    },
+    {
+      "token": "kawa",
+      "count": 46
+    },
+    {
+      "token": "潔跳舞",
+      "count": 46
+    },
+    {
+      "token": "loverp",
+      "count": 45
+    },
+    {
+      "token": "gg",
+      "count": 45
+    },
+    {
+      "token": "潔自拍",
+      "count": 45
+    }
+  ],
+  "hot_leads": [
+    {
+      "username": "nightbot",
+      "conv_score": 663.41,
+      "loyalty": 5.03,
+      "intent_total": 132,
+      "sessions": 2,
+      "avg_msgs": 96.0,
+      "total_msgs": 192,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "pjbitter",
+      "conv_score": 58.12,
+      "loyalty": 6.46,
+      "intent_total": 9,
+      "sessions": 2,
+      "avg_msgs": 356.0,
+      "total_msgs": 712,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "coolygo9",
+      "conv_score": 53.88,
+      "loyalty": 5.99,
+      "intent_total": 9,
+      "sessions": 2,
+      "avg_msgs": 231.5,
+      "total_msgs": 463,
+      "intents": [
+        "subscription_intent",
+        "question_intent"
+      ],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "h5d8m6u7v789km68ar3z",
+      "conv_score": 38.02,
+      "loyalty": 3.8,
+      "intent_total": 10,
+      "sessions": 1,
+      "avg_msgs": 240.0,
+      "total_msgs": 240,
+      "intents": [
+        "question_intent"
+      ],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "ace88889999",
+      "conv_score": 15.48,
+      "loyalty": 5.16,
+      "intent_total": 3,
+      "sessions": 2,
+      "avg_msgs": 108.5,
+      "total_msgs": 217,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "leslie4001t5",
+      "conv_score": 9.14,
+      "loyalty": 3.05,
+      "intent_total": 3,
+      "sessions": 2,
+      "avg_msgs": 15.0,
+      "total_msgs": 30,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "freaky_raypwh",
+      "conv_score": 9.03,
+      "loyalty": 2.26,
+      "intent_total": 4,
+      "sessions": 1,
+      "avg_msgs": 25.0,
+      "total_msgs": 25,
+      "intents": [
+        "question_intent"
+      ],
+      "stage": "初訪觀眾"
+    },
+    {
+      "username": "onseven9son",
+      "conv_score": 7.24,
+      "loyalty": 2.41,
+      "intent_total": 3,
+      "sessions": 2,
+      "avg_msgs": 8.0,
+      "total_msgs": 16,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "agassi888",
+      "conv_score": 4.13,
+      "loyalty": 1.38,
+      "intent_total": 3,
+      "sessions": 2,
+      "avg_msgs": 2.5,
+      "total_msgs": 5,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "pongpong3123",
+      "conv_score": 3.02,
+      "loyalty": 1.01,
+      "intent_total": 3,
+      "sessions": 2,
+      "avg_msgs": 1.5,
+      "total_msgs": 3,
+      "intents": [
+        "subscription_intent"
+      ],
+      "stage": "回訪粉絲"
+    }
+  ],
+  "loyal_community": [
+    {
+      "username": "welson183qw",
+      "conv_score": 0.0,
+      "loyalty": 5.28,
+      "intent_total": 0,
+      "sessions": 2,
+      "avg_msgs": 121.0,
+      "total_msgs": 242,
+      "intents": [],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "dou_wha",
+      "conv_score": 0.0,
+      "loyalty": 5.15,
+      "intent_total": 0,
+      "sessions": 2,
+      "avg_msgs": 107.5,
+      "total_msgs": 215,
+      "intents": [],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "santapipi",
+      "conv_score": 0.0,
+      "loyalty": 5.05,
+      "intent_total": 0,
+      "sessions": 2,
+      "avg_msgs": 98.5,
+      "total_msgs": 197,
+      "intents": [],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "pinpinponpon627",
+      "conv_score": 0.0,
+      "loyalty": 4.3,
+      "intent_total": 0,
+      "sessions": 2,
+      "avg_msgs": 49.0,
+      "total_msgs": 98,
+      "intents": [],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "ast246",
+      "conv_score": 0.0,
+      "loyalty": 4.0,
+      "intent_total": 0,
+      "sessions": 2,
+      "avg_msgs": 37.0,
+      "total_msgs": 74,
+      "intents": [],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "kim_taeyeon_yu",
+      "conv_score": 0.0,
+      "loyalty": 3.89,
+      "intent_total": 0,
+      "sessions": 2,
+      "avg_msgs": 33.5,
+      "total_msgs": 67,
+      "intents": [],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "lun0107",
+      "conv_score": 0.0,
+      "loyalty": 3.87,
+      "intent_total": 0,
+      "sessions": 2,
+      "avg_msgs": 33.0,
+      "total_msgs": 66,
+      "intents": [],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "seenjay",
+      "conv_score": 0.0,
+      "loyalty": 3.44,
+      "intent_total": 0,
+      "sessions": 2,
+      "avg_msgs": 22.0,
+      "total_msgs": 44,
+      "intents": [],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "pinponfoever",
+      "conv_score": 0.0,
+      "loyalty": 3.21,
+      "intent_total": 0,
+      "sessions": 2,
+      "avg_msgs": 17.5,
+      "total_msgs": 35,
+      "intents": [],
+      "stage": "回訪粉絲"
+    },
+    {
+      "username": "fd3s1108",
+      "conv_score": 0.0,
+      "loyalty": 2.98,
+      "intent_total": 0,
+      "sessions": 1,
+      "avg_msgs": 73.0,
+      "total_msgs": 73,
+      "intents": [],
+      "stage": "初訪觀眾"
+    }
+  ],
+  "voice_triggers": [
+    {
+      "id": 1645,
+      "audio_text": "下禮拜的話呢一樣六日會開台然後呢目前我今天晚上會公布到底是禮拜五開始開始",
+      "audio_ts": "2026-05-17T06:12:04.578106+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 3
+    },
+    {
+      "id": 1644,
+      "audio_text": "期待克制化影片要去哪兒呢要去上課要去工作啦然後呢下禮拜的話呢超值超",
+      "audio_ts": "2026-05-17T06:11:53.916048+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 3
+    },
+    {
+      "id": 1643,
+      "audio_text": "運動量很夠了謝謝感謝大家希望今天這一套呢有讓你們覺得超支應該是非常可愛啦非常可愛的超值對不對謝謝",
+      "audio_ts": "2026-05-17T06:11:40.984500+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 3
+    },
+    {
+      "id": 1642,
+      "audio_text": "越看越可愛對",
+      "audio_ts": "2026-05-17T06:11:27.831995+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 3
+    },
+    {
+      "id": 1641,
+      "audio_text": "買的呢謝謝大家今天的支持非常",
+      "audio_ts": "2026-05-17T06:11:18.709573+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 3
+    },
+    {
+      "id": 1639,
+      "audio_text": "爸爸好啦",
+      "audio_ts": "2026-05-17T06:10:53.575272+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 2
+    },
+    {
+      "id": 1638,
+      "audio_text": "再見掰掰我很可愛很溫馨的結束了啦阿姐那個去你的那邊跟他說聲掰掰",
+      "audio_ts": "2026-05-17T06:10:40.708583+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 2
+    },
+    {
+      "id": 1637,
+      "audio_text": "非常謝謝各位今天支持我們的開播感謝各位",
+      "audio_ts": "2026-05-17T06:10:29.478854+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 2
+    },
+    {
+      "id": 1636,
+      "audio_text": "卡哇伊",
+      "audio_ts": "2026-05-17T06:10:16.231637+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 2
+    },
+    {
+      "id": 1635,
+      "audio_text": "哥哥",
+      "audio_ts": "2026-05-17T06:10:05.478245+00:00",
+      "intent_msgs": 1,
+      "intent_score_sum": 2
+    }
+  ]
+}

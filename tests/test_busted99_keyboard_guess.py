@@ -21,6 +21,7 @@ def _make_bot():
     bot = MagicMock()
     bot.voice_clients = []
     bot.cogs.get.return_value = None
+    bot.engine = None  # 防止 MagicMock 自動建立假 engine 導致 inflight 比較型別錯誤
     return bot
 
 

@@ -2,6 +2,7 @@
 
 功能：每次 submit_guess 後，session.guess_log 累積一筆紀錄，
       ws_state 也包含 guess_log，讓 Web UI 顯示猜題歷史。
+      timeout_guesser() 也寫入一筆 result="timeout"。
 
 Tests:
   A) 初始 session.guess_log 為空 list
@@ -11,6 +12,7 @@ Tests:
   E) 多次猜題 → guess_log 依序累積（不蓋掉）
   F) _build_ws_state 包含 guess_log 欄位
   G) guess_log 項目有 round_num 欄位
+  H) timeout_guesser() → guess_log 有一筆 result="timeout"，guess=None
 """
 
 from __future__ import annotations
@@ -154,3 +156,21 @@ async def test_guess_log_entry_has_round_num():
     await engine.submit_guess("u1", 30)
     assert "round" in session.guess_log[0]
     assert session.guess_log[0]["round"] == 3
+
+
+# ─── H: timeout_guesser → guess_log result="timeout" ────────────────────────
+
+@pytest.mark.asyncio
+async def test_timeout_guesser_appends_to_guess_log():
+    """
+    timeout_guesser() 觸發後，guess_log 應有一筆 result="timeout"、
+    guesser 是超時者的名稱、guess 為 None。
+    """
+    session = _make_session(answer=50)
+    engine = _make_engine(session)
+    await engine.timeout_guesser()
+    assert len(session.guess_log) == 1, "timeout 後應有一筆 guess_log"
+    entry = session.guess_log[0]
+    assert entry["result"] == "timeout", f"result 應是 timeout，實際：{entry['result']!r}"
+    assert entry["guess"] is None, "timeout 的 guess 應為 None"
+    assert entry["guesser"] == "狗與露", f"guesser 應是 狗與露，實際：{entry['guesser']!r}"
