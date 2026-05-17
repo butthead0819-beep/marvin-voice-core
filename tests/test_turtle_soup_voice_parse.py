@@ -63,40 +63,74 @@ def test_final_answer_strips_prefix_phrases():
         assert result["payload"] == "他構不到按鈕"
 
 
-# ── question ────────────────────────────────────────────────────────────────
+# ── question（必須以「請問」等明確前綴開頭）────────────────────────────────
 
-@pytest.mark.parametrize("text", [
-    "他是侏儒嗎？",
-    "電梯壞了嗎",
-    "他害怕高處嗎？",
-    "22 樓有什麼特別的東西",
-    "他每天都這樣做嗎？",
+@pytest.mark.parametrize("text,expected_payload", [
+    ("請問他是侏儒嗎？", "他是侏儒嗎？"),
+    ("請問電梯壞了嗎", "電梯壞了嗎"),
+    ("我想問他害怕高處嗎", "他害怕高處嗎"),
+    ("問一下他是不是矮個子", "他是不是矮個子"),
+    ("我問你他每天都這樣嗎", "他每天都這樣嗎"),
+    ("我可以問他是男生嗎", "他是男生嗎"),
 ])
-def test_normal_questions_classified_as_question(text):
+def test_question_with_prefix_classified_as_question(text, expected_payload):
     from game.turtle_soup.voice_parse import classify_intent
     result = classify_intent(text)
     assert result["intent"] == "question"
-    assert result["payload"] == text
+    assert result["payload"] == expected_payload
+
+
+# ── discussion（沒有「請問」前綴的句子都歸 discussion，不送 LLM）──────────────
+
+@pytest.mark.parametrize("text", [
+    "他是侏儒嗎？",                  # 沒前綴，雖然像問句也歸 discussion
+    "電梯壞了嗎",
+    "他害怕高處嗎？",
+    "我覺得他怕高",                  # 玩家內部討論
+    "等一下我想一下",
+    "可能跟身高有關吧",
+    "我不知道耶",
+])
+def test_no_question_prefix_classified_as_discussion(text):
+    """玩家自然對話、討論、推理 → discussion，不送 LLM。"""
+    from game.turtle_soup.voice_parse import classify_intent
+    result = classify_intent(text)
+    assert result["intent"] == "discussion"
 
 
 # ── 邊界 / 優先順序 ─────────────────────────────────────────────────────────
 
-def test_surrender_takes_priority_over_question():
-    """若同時含 surrender keyword 和問句結構，視為 surrender。"""
+def test_surrender_takes_priority_over_question_prefix():
+    """surrender 優先於 question prefix。"""
     from game.turtle_soup.voice_parse import classify_intent
-    result = classify_intent("我投降了，要不要告訴我答案？")
+    result = classify_intent("請問我可以投降嗎")
     assert result["intent"] == "surrender"
 
 
-def test_final_answer_only_if_at_start():
-    """『答案是』不在開頭時，不視為 final_answer。"""
+def test_final_answer_takes_priority_over_question_prefix():
+    """final_answer 優先於 question prefix。"""
     from game.turtle_soup.voice_parse import classify_intent
-    result = classify_intent("他有什麼問題嗎？答案是不是身高")
-    assert result["intent"] == "question"
+    result = classify_intent("答案是他是侏儒")
+    assert result["intent"] == "final_answer"
+
+
+def test_question_prefix_must_be_at_start():
+    """「請問」不在開頭時，仍視為 discussion。"""
+    from game.turtle_soup.voice_parse import classify_intent
+    result = classify_intent("我們先想一下請問他是不是侏儒")
+    assert result["intent"] == "discussion"
 
 
 def test_whitespace_stripped_before_classify():
     from game.turtle_soup.voice_parse import classify_intent
-    result = classify_intent("   他是侏儒嗎？   ")
+    result = classify_intent("   請問他是侏儒嗎？   ")
     assert result["intent"] == "question"
     assert result["payload"] == "他是侏儒嗎？"
+
+
+def test_question_prefix_strips_trailing_punctuation():
+    """前綴後可能有逗號/句號，要剝掉再送 LLM。"""
+    from game.turtle_soup.voice_parse import classify_intent
+    result = classify_intent("請問，他是不是侏儒")
+    assert result["intent"] == "question"
+    assert result["payload"] == "他是不是侏儒"

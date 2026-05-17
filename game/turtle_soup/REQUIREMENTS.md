@@ -29,7 +29,7 @@
 - 1 題 **hardcode 在 code 裡** 的種子湯（電梯到 18 樓侏儒題）
 - 4 階段 state machine：`IDLE → JOINING → PRESENTING → ASKING → GAME_OVER`
 - LLM judge 3 verdict：`yes` / `no` / `irrelevant`
-- 玩家自由問是非題（語音 / 鍵盤皆可）
+- 玩家用「**請問**」開頭的句子發問（語音 / 鍵盤皆可）；沒前綴的句子視為玩家間討論，**不送 LLM、不播 SFX/TTS、完全忽略**
 - 「投降」結束：玩家喊「我投降」/「不玩了」→ Marvin 公布湯底
 - 「最終猜答」結束：玩家喊「答案是 ...」格式 → LLM 判定接受 / 駁回
 - 50 題硬上限（接近時 Marvin 主動提示「再 N 題就強制結束」）
@@ -197,19 +197,24 @@ async def judge_final_guess(
 def classify_intent(text: str) -> dict:
     """
     語音轉文字 → 意圖分類，純 regex / keyword，不走 LLM。
-    
+
     回傳 {
-      "intent": "question" | "surrender" | "final_answer" | "ignore",
-      "payload": str,   # 對 question 是原文；對 final_answer 是擷取後的答案部分
+      "intent": "question" | "surrender" | "final_answer" | "discussion" | "ignore",
+      "payload": str,   # question: 去掉前綴後的問題；final_answer: 去掉前綴後的答案
     }
     """
 ```
 
-判斷規則：
-- `surrender`：含「投降」/「不玩了」/「放棄」/「我認輸」
-- `final_answer`：開頭含「答案是」/「我認為答案是」/「我覺得是」
-- `ignore`：< 4 字、或全是語助詞「嗯」「啊」「對啊」
-- 其他：`question`
+判斷規則（優先順序高 → 低）：
+- `ignore`：< 3 字或純語助詞「嗯」「啊」「對啊」
+- `surrender`：任意位置含「投降」/「不玩了」/「放棄」/「認輸」/「棄權」
+- `final_answer`：開頭為「答案是」/「我認為答案是」/「我覺得是」/「我猜是」
+- `question`：開頭為「請問」/「我想問」/「問一下」/「我問你」/「我可以問」等
+- `discussion`：以上皆非 → 視為玩家間討論，cog 收到後**完全忽略**（不送 LLM、不播 SFX/TTS）
+
+**為什麼要求「請問」前綴？**
+- 玩家邊推理邊互相討論時，自然句子（「他是侏儒嗎？」「我覺得是身高」）會誤觸 LLM judge
+- 用前綴 gate 既省 LLM 成本（每場可省 50%+ judge call），又讓玩家有清楚的「對 Marvin 說話」儀式感
 
 ### 6.4 SFX 對應
 

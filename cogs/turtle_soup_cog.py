@@ -176,8 +176,9 @@ class TurtleSoupCog(commands.Cog):
             description=(
                 "**規則**\n"
                 "• Marvin 知道完整故事（湯底），念給你聽謎題表面（湯面）\n"
-                "• 玩家用語音問是非題，Marvin 只回 yes / no / 無關\n"
-                "• 想到答案直接喊「答案是 XXX」，喊「我投降」結束\n"
+                "• 玩家發問必須用「**請問**」開頭，Marvin 才會判定 yes / no / 無關\n"
+                "  （討論、自言自語不用開頭，會被忽略）\n"
+                "• 想到答案直接喊「**答案是 XXX**」，喊「**我投降**」結束\n"
                 "• 上限 50 題"
             ),
             color=C_JOINING,
@@ -211,7 +212,7 @@ class TurtleSoupCog(commands.Cog):
                 emoji = VERDICT_EMOJI.get(q.verdict, "?")
                 lines.append(f"{emoji} **{q.asker_name}**: {q.question} → {q.narration}")
             e.add_field(name="最近問答", value="\n".join(lines), inline=False)
-        e.set_footer(text="語音/文字皆可；喊「答案是 XXX」嘗試猜答；喊「我投降」結束")
+        e.set_footer(text="提問請用「請問」開頭。「答案是 XXX」嘗試猜答。「我投降」結束。")
         return e
 
     def _build_game_over_embed(self, session: TurtleSoupSession) -> discord.Embed:
@@ -279,10 +280,15 @@ class TurtleSoupCog(commands.Cog):
             self._spawn(self._announce_truth_and_cleanup())
 
     async def _present_and_advance(self):
-        """念湯面 TTS → 自動進 ASKING。"""
+        """念湯面 TTS → 規則提示 → 自動進 ASKING。"""
         vc = self.bot.cogs.get("VoiceController")
         if vc is not None and self._engine and self._engine.puzzle:
             await self._fire_tts(vc, self._engine.puzzle.surface)
+            # 規則提示：避免玩家不知道要用「請問」開頭
+            await self._fire_tts(
+                vc,
+                "請用「請問」開頭發問。討論或自言自語我會忽略。"
+            )
         if self._engine and self._session and self._session.state == TurtleSoupState.PRESENTING:
             await self._engine.begin_asking()
 
@@ -355,6 +361,11 @@ class TurtleSoupCog(commands.Cog):
         payload = intent_result["payload"]
 
         if intent == "ignore":
+            return False
+
+        if intent == "discussion":
+            # 玩家間討論（沒有「請問」前綴）→ 靜默忽略，不送 LLM 不播 SFX/TTS
+            logger.debug("[TurtleSoup] discussion (no question prefix) ignored: %r", text[:60])
             return False
 
         if intent == "surrender":

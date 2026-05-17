@@ -263,6 +263,25 @@ def classify_intent(text: str) -> dict:
 
 **設計理由**：STT 對贅字會轉錄出來，但贅字後面有實質內容才需要送 judge。一句「嗯啊」純粹是語助詞，不送 LLM 省成本。
 
+**「請問」前綴 gate（v0.2 新增）**：
+
+實測 v0 發現玩家邊討論邊推理，自然句子（「他是侏儒嗎？」「我覺得是身高吧」）會塞滿 LLM judge，雜訊高、成本高、SFX/TTS 一直響很煩。
+
+加入 `_QUESTION_PREFIXES = ["我可以問", "我想問", "問題是", "問一下", "我問你", "問你", "我問", "請問"]`（按長度降序避免 prefix 互吃）。沒前綴的句子歸 `discussion` intent，cog 收到後 return False，直接丟棄。
+
+```python
+async def receive_voice_answer_by_speaker(self, speaker, text):
+    ...
+    intent_result = classify_intent(text)
+    intent = intent_result["intent"]
+    if intent == "discussion":
+        logger.debug("[TurtleSoup] discussion ignored: %r", text[:60])
+        return False  # 完全靜默
+    ...
+```
+
+Embed footer 與 Marvin 念完湯面後的 TTS 都會明確提醒「請用『請問』開頭發問」。
+
 ---
 
 ## 7. Cog 與 Discord 整合

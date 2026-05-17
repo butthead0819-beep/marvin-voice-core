@@ -201,6 +201,7 @@ async def test_voice_surrender_intent_calls_engine_surrender():
 
 @pytest.mark.asyncio
 async def test_voice_question_intent_dispatches_to_handle_question():
+    """玩家用「請問」開頭 → question 意圖 → spawn handle_question。"""
     import asyncio
     cog = _make_cog()
     cog._engine = AsyncMock()
@@ -210,7 +211,7 @@ async def test_voice_question_intent_dispatches_to_handle_question():
     cog._session = _make_session(TurtleSoupState.ASKING)
     cog._build_asking_embed = MagicMock(return_value=None)
 
-    ok = await cog.receive_voice_answer_by_speaker("Alice", "他是侏儒嗎？")
+    ok = await cog.receive_voice_answer_by_speaker("Alice", "請問他是侏儒嗎？")
     assert ok is True
     # 等 spawn task 完成
     for _ in range(5):
@@ -220,13 +221,31 @@ async def test_voice_question_intent_dispatches_to_handle_question():
 
 
 @pytest.mark.asyncio
+async def test_voice_discussion_intent_ignored_silently():
+    """沒有「請問」前綴的句子 → discussion → 靜默忽略，不送 LLM 不播 SFX/TTS。"""
+    cog = _make_cog()
+    cog._engine = AsyncMock()
+    cog._session = _make_session(TurtleSoupState.ASKING)
+
+    # 像問句但沒前綴 → discussion
+    ok = await cog.receive_voice_answer_by_speaker("Alice", "他是侏儒嗎？")
+    assert ok is False
+    cog._engine.submit_question.assert_not_called()
+
+    # 玩家內部討論
+    ok = await cog.receive_voice_answer_by_speaker("Bob", "我覺得他怕高")
+    assert ok is False
+    cog._engine.submit_question.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_voice_question_inflight_cap_drops_when_full():
     cog = _make_cog()
     cog._engine = AsyncMock()
     cog._session = _make_session(TurtleSoupState.ASKING)
     cog._asking_inflight = cog._MAX_ASKING_INFLIGHT  # 已滿
 
-    ok = await cog.receive_voice_answer_by_speaker("Alice", "他害怕電梯嗎？")
+    ok = await cog.receive_voice_answer_by_speaker("Alice", "請問他害怕電梯嗎？")
     assert ok is False
     cog._channel.send.assert_called_once()
     cog._engine.submit_question.assert_not_called()

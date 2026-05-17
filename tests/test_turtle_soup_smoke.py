@@ -4,10 +4,9 @@ Mock LLM call 但走真實的 dispatch / state / SFX 排程邏輯。
 驗證 A1（完整流程）、A5（state 防呆）、A6（SFX 序列）的整合。
 """
 from __future__ import annotations
-import asyncio
 import uuid
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from game.turtle_soup.engine import TurtleSoupEngine
 from game.turtle_soup.session import (
@@ -135,8 +134,13 @@ async def test_voice_parse_into_engine_integration():
     await eng.begin_asking()
 
     # voice text → intent
-    q_intent = classify_intent("他是侏儒嗎？")
+    q_intent = classify_intent("請問他是侏儒嗎？")
     assert q_intent["intent"] == "question"
+    assert q_intent["payload"] == "他是侏儒嗎？"
+
+    # 沒有「請問」前綴 → discussion，不送 LLM
+    d_intent = classify_intent("他是侏儒嗎？")
+    assert d_intent["intent"] == "discussion"
 
     s_intent = classify_intent("我投降")
     assert s_intent["intent"] == "surrender"
