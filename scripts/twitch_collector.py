@@ -13,8 +13,14 @@ import sqlite3
 import re
 import sys
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
+
+# Single-worker executor pins all sqlite calls to one thread, so the connection
+# (created on the main thread without check_same_thread=False) stays valid and
+# writes stay serialized.
+_DB_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="twitch-db")
 
 CHANNEL = sys.argv[1] if len(sys.argv) > 1 else "pinpinponpon627"
 DB_PATH = Path(__file__).parent.parent / "marvin_twitch.db"
@@ -64,7 +70,10 @@ def classify_intent(message: str) -> tuple[str, int]:
 
 # ── SQLite 初始化 ─────────────────────────────────────────────────────
 def init_db(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
+    # check_same_thread=False because save_message runs on _DB_EXECUTOR worker,
+    # not the asyncio thread. Safe because the single-worker executor serializes
+    # all writes, and WAL allows the concurrent reader paths.
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
@@ -110,6 +119,23 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_user    ON messages(channel, username)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_session ON messages(channel, session_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_msg_intent  ON messages(intent_type)")
+
+    # loyalty_events：訂閱禮物 / Bits 等高價值事件（從 IRC USERNOTICE + bits tag 抓）
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS loyalty_events (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel      TEXT NOT NULL,
+            username     TEXT NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            event_type   TEXT NOT NULL,   -- subgift | mass_subgift | resub | sub | cheer
+            amount       INTEGER NOT NULL DEFAULT 1,
+            recipient    TEXT NOT NULL DEFAULT '',
+            ts           TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_loyalty_channel ON loyalty_events(channel, username)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_loyalty_ts      ON loyalty_events(ts)")
+
     conn.commit()
     log.info(f"DB ready: {db_path}")
     return conn
@@ -161,6 +187,89 @@ def parse_irc_tags(raw: str) -> dict[str, str]:
     return dict(kv.split("=", 1) for kv in raw.split(";") if "=" in kv)
 
 
+# ── 訂閱禮物 / Bits 解析 ──────────────────────────────────────────────
+# msg-id → 內部 event_type 對照
+USERNOTICE_EVENT_MAP = {
+    "subgift":         "subgift",
+    "submysterygift":  "mass_subgift",
+    "resub":           "resub",
+    "sub":             "sub",
+}
+
+
+def parse_usernotice(line: str) -> dict | None:
+    """解析 IRC USERNOTICE 行，回傳 {event_type, username, display_name, amount, recipient} 或 None。
+
+    Twitch IRC USERNOTICE 格式：
+      @key=val;key=val :tmi.twitch.tv USERNOTICE #channel [:optional body]
+
+    支援的 msg-id：subgift / submysterygift / resub / sub
+    未知 msg-id 或非 USERNOTICE 行回 None。
+    """
+    if " USERNOTICE " not in line:
+        return None
+    if not line.startswith("@"):
+        return None
+
+    head, _sep, _tail = line.partition(" ")
+    tags = parse_irc_tags(head[1:])
+    msg_id = tags.get("msg-id", "")
+    if msg_id not in USERNOTICE_EVENT_MAP:
+        return None
+
+    username = tags.get("login", "")
+    display_name = tags.get("display-name", "") or username
+    event_type = USERNOTICE_EVENT_MAP[msg_id]
+
+    if event_type == "mass_subgift":
+        amount = int(tags.get("msg-param-mass-gift-count", "1") or "1")
+        recipient = ""
+    elif event_type == "subgift":
+        amount = 1
+        recipient = tags.get("msg-param-recipient-user-name", "")
+    else:  # resub / sub
+        amount = 1
+        recipient = ""
+
+    return {
+        "event_type": event_type,
+        "username": username,
+        "display_name": display_name,
+        "amount": amount,
+        "recipient": recipient,
+    }
+
+
+def parse_bits_from_tags(tags: dict[str, str]) -> int:
+    """從 PRIVMSG tags 抽取 bits 數，無 / 解析失敗回 0。"""
+    raw = tags.get("bits", "")
+    try:
+        return max(0, int(raw))
+    except (ValueError, TypeError):
+        return 0
+
+
+def save_loyalty_event(
+    conn: sqlite3.Connection,
+    channel: str,
+    username: str,
+    display_name: str,
+    event_type: str,
+    amount: int = 1,
+    recipient: str = "",
+):
+    ts = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """INSERT INTO loyalty_events
+           (channel, username, display_name, event_type, amount, recipient, ts)
+           VALUES (?,?,?,?,?,?,?)""",
+        (channel, username, display_name, event_type, amount, recipient, ts),
+    )
+    conn.commit()
+    log.info(f"[loyalty] {event_type} from {display_name}(@{username}) amount={amount}"
+             + (f" → {recipient}" if recipient else ""))
+
+
 # ── IRC 連線 ──────────────────────────────────────────────────────────
 async def connect_irc(channel: str, conn: sqlite3.Connection):
     log.info(f"連線到 #{channel} ...")
@@ -201,6 +310,17 @@ async def connect_irc(channel: str, conn: sqlite3.Connection):
             await writer.drain()
             continue
 
+        # USERNOTICE：訂閱禮物 / resub 等高價值事件
+        if " USERNOTICE " in text:
+            evt = parse_usernotice(text)
+            if evt and evt["username"]:
+                await asyncio.get_running_loop().run_in_executor(
+                    _DB_EXECUTOR, save_loyalty_event, conn, channel,
+                    evt["username"], evt["display_name"], evt["event_type"],
+                    evt["amount"], evt["recipient"],
+                )
+            continue
+
         m = TAGGED_RE.match(text)
         if m:
             tags         = parse_irc_tags(m.group(1))
@@ -208,7 +328,18 @@ async def connect_irc(channel: str, conn: sqlite3.Connection):
             message      = m.group(3)
             display_name = tags.get("display-name", "") or username
             is_subscriber = int(tags.get("subscriber", "0"))
-            save_message(conn, channel, username, message, display_name, is_subscriber)
+            bits         = parse_bits_from_tags(tags)
+            # sqlite3 calls are sync — push to threadpool so the IRC loop
+            # doesn't stall under chat bursts (popular channels can spike 50+ msg/s).
+            await asyncio.get_running_loop().run_in_executor(
+                _DB_EXECUTOR, save_message, conn, channel, username, message, display_name, is_subscriber,
+            )
+            # 含 bits 的 PRIVMSG → 額外記成 cheer loyalty event
+            if bits > 0:
+                await asyncio.get_running_loop().run_in_executor(
+                    _DB_EXECUTOR, save_loyalty_event, conn, channel,
+                    username, display_name, "cheer", bits, "",
+                )
             msg_count += 1
             if msg_count % 100 == 0:
                 log.info(f"已收 {msg_count} 則訊息")
@@ -217,7 +348,9 @@ async def connect_irc(channel: str, conn: sqlite3.Connection):
         # fallback：不帶 tags 的格式（不應發生但保留）
         m = PLAIN_RE.match(text)
         if m:
-            save_message(conn, channel, m.group(1), m.group(2))
+            await asyncio.get_running_loop().run_in_executor(
+                _DB_EXECUTOR, save_message, conn, channel, m.group(1), m.group(2),
+            )
             msg_count += 1
 
     writer.close()
