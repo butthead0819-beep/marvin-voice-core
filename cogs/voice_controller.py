@@ -33,6 +33,48 @@ logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 log
 # 🛡️ [Double Wake Guard] 用於防止短時間內重複回應
 _GLOBAL_PROCESSED_SEGMENTS = {} # segment_id -> timestamp
 
+# 重啟回報狀態檔。寫於 self_restart pre-execv，讀於 on_ready post-sync。
+REBOOT_STATE_FILE = ".marvin_reboot_state.json"
+
+
+def _git_head_short() -> str:
+    """取目前 HEAD short hash；失敗回 'unknown'。"""
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _write_reboot_state(state: dict) -> None:
+    """寫狀態檔（失敗不阻斷重啟流程）。"""
+    try:
+        with open(REBOOT_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"❌ [Restart] 寫 reboot state 失敗（不阻斷）: {e}")
+
+
+def read_and_clear_reboot_state() -> dict | None:
+    """新進程 on_ready 用：讀狀態檔後刪檔。回傳 dict 或 None。"""
+    try:
+        if not os.path.exists(REBOOT_STATE_FILE):
+            return None
+        with open(REBOOT_STATE_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        os.remove(REBOOT_STATE_FILE)
+        return state
+    except Exception as e:
+        logger.error(f"❌ [Restart] 讀 reboot state 失敗: {e}")
+        try:
+            os.remove(REBOOT_STATE_FILE)
+        except Exception:
+            pass
+        return None
+
 # 🚫 [Wake Echo Guard] STT 回環偵測：喚醒詞在同一句出現 2+ 次 → 幻覺
 _WAKE_ECHO_RE = re.compile(rf'({WAKE_PATTERN})', re.IGNORECASE)
 # 喚醒詞提示字串，供 is_whisper_hallucination 的 prompt 比對模式使用
@@ -5732,6 +5774,9 @@ class VoiceController(commands.Cog):
         以前 memory.flush() 在 SQLite 重構過渡期會噴 AttributeError，
         導致 /marvin_reboot 卡死沒重啟（log 留下 "已執行重啟" 但其實沒有）。
         現在所有 pre-execv 步驟都被 try/except 包住。
+
+        重啟完成回報：寫狀態檔（.marvin_reboot_state.json）到 cwd，
+        新進程 on_ready 讀取後貼完成訊息到原頻道並刪檔。
         """
         if not force and (time.time() - getattr(self.bot, "last_restart_time", 0) < 900): return
 
@@ -5750,6 +5795,9 @@ class VoiceController(commands.Cog):
             logger.error(f"❌ [Restart] memory.flush() 失敗（不阻斷重啟流程）: {e}")
 
         # 2. git pull 拿最新 code（pull=False 可關閉，例如 dev 階段不想動 working tree）
+        commit_before = _git_head_short()
+        commit_after = commit_before
+        pull_summary = "(skipped)"
         if pull:
             try:
                 logger.info("📥 [Restart] 正在 git pull 拿最新 code...")
@@ -5761,6 +5809,8 @@ class VoiceController(commands.Cog):
                 stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
                 out = stdout.decode("utf-8", errors="replace").strip()
                 logger.info(f"📥 [Restart] git pull 結果（rc={proc.returncode}）:\n{out}")
+                pull_summary = f"rc={proc.returncode}\n{out[:1200]}"
+                commit_after = _git_head_short()
                 if self.active_text_channel:
                     try:
                         await self.active_text_channel.send(
@@ -5770,17 +5820,30 @@ class VoiceController(commands.Cog):
                         pass
             except asyncio.TimeoutError:
                 logger.error("❌ [Restart] git pull 超時 15s（不阻斷重啟）")
+                pull_summary = "(timeout 15s)"
             except Exception as e:
                 logger.error(f"❌ [Restart] git pull 失敗（不阻斷重啟）: {e}")
+                pull_summary = f"(error: {type(e).__name__}: {e})"
 
-        # 3. 釋放資源與關閉連線（避免幽靈機器人殘留）
+        # 3. 寫狀態檔，供新進程 on_ready 讀取後貼完成訊息
+        _write_reboot_state({
+            "channel_id": self.active_text_channel.id if self.active_text_channel else None,
+            "guild_id": self.active_text_channel.guild.id if self.active_text_channel and self.active_text_channel.guild else None,
+            "reason": reason,
+            "commit_before": commit_before,
+            "commit_after": commit_after,
+            "pull_summary": pull_summary,
+            "started_at": time.time(),
+        })
+
+        # 4. 釋放資源與關閉連線（避免幽靈機器人殘留）
         try:
             logger.info("🔌 [Restart] 正在切斷 Discord 連線...")
             await self.bot.close()
         except Exception as e:
             logger.error(f"❌ [Restart] 關閉連線時發生異常（忽略並啟動 execv）: {e}")
 
-        # 4. 物理進程替換（最後一道，沒退路）
+        # 5. 物理進程替換（最後一道，沒退路）
         try:
             logger.critical("☢️ [Restart] 執行 os.execv，程序替換中...")
             args = sys.argv[:]

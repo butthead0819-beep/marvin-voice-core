@@ -8,7 +8,6 @@
 """
 from __future__ import annotations
 import pytest
-import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -160,3 +159,97 @@ async def test_self_restart_no_op_if_recent_restart_and_not_force(cog_with_mocks
         await cog.self_restart(reason="test", force=False)
 
     execv_mock.assert_not_called()
+
+
+# ── 重啟回報：狀態檔讀寫 ────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_self_restart_writes_state_file_before_execv(cog_with_mocks, tmp_path, monkeypatch):
+    """self_restart 在 execv 前必須寫狀態檔到 cwd。"""
+    import os as _os
+    monkeypatch.chdir(tmp_path)
+    from cogs.voice_controller import REBOOT_STATE_FILE
+    cog = cog_with_mocks
+    # 模擬 active_text_channel
+    channel = MagicMock()
+    channel.id = 12345
+    channel.guild.id = 67890
+    channel.send = AsyncMock()
+    cog.active_text_channel = channel
+
+    with patch("os.execv") as execv_mock, \
+         patch("asyncio.create_subprocess_exec") as subp_mock:
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"ok", b""))
+        proc.returncode = 0
+        subp_mock.return_value = proc
+
+        await cog.self_restart(reason="test", force=True, pull=True)
+
+    # 狀態檔應該存在（execv 是 mock 過的所以不會真的替換進程）
+    state_path = tmp_path / REBOOT_STATE_FILE
+    assert state_path.exists(), "狀態檔應該在 execv 前寫好"
+
+    import json as _json
+    with open(state_path, encoding="utf-8") as f:
+        state = _json.load(f)
+    assert state["channel_id"] == 12345
+    assert state["guild_id"] == 67890
+    assert state["reason"] == "test"
+    assert "started_at" in state
+    execv_mock.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_state_file_write_failure_does_not_block_execv(cog_with_mocks, monkeypatch, tmp_path):
+    """狀態檔寫入失敗（disk full / 權限）也不能阻斷 execv。"""
+    monkeypatch.chdir(tmp_path)
+    cog = cog_with_mocks
+
+    def _boom(*a, **kw):
+        raise OSError("disk full")
+
+    with patch("os.execv") as execv_mock, \
+         patch("asyncio.create_subprocess_exec") as subp_mock, \
+         patch("builtins.open", side_effect=_boom):
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        subp_mock.return_value = proc
+
+        await cog.self_restart(reason="test", force=True, pull=False)
+
+    execv_mock.assert_called_once()
+
+
+def test_read_and_clear_reboot_state_returns_none_when_missing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from cogs.voice_controller import read_and_clear_reboot_state
+    assert read_and_clear_reboot_state() is None
+
+
+def test_read_and_clear_reboot_state_reads_and_deletes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    import json as _json
+    from cogs.voice_controller import read_and_clear_reboot_state, REBOOT_STATE_FILE
+
+    state = {"channel_id": 1, "reason": "test", "started_at": 123.0}
+    with open(REBOOT_STATE_FILE, "w", encoding="utf-8") as f:
+        _json.dump(state, f)
+
+    result = read_and_clear_reboot_state()
+    assert result == state
+    # 讀完應該刪檔（避免下次啟動重複貼文）
+    assert not (tmp_path / REBOOT_STATE_FILE).exists()
+
+
+def test_read_and_clear_reboot_state_handles_corrupt_json(tmp_path, monkeypatch):
+    """壞掉的 JSON 也要刪檔，避免每次啟動都嘗試讀同樣的壞檔。"""
+    monkeypatch.chdir(tmp_path)
+    from cogs.voice_controller import read_and_clear_reboot_state, REBOOT_STATE_FILE
+
+    with open(REBOOT_STATE_FILE, "w", encoding="utf-8") as f:
+        f.write("{ corrupt json")
+
+    assert read_and_clear_reboot_state() is None
+    assert not (tmp_path / REBOOT_STATE_FILE).exists()

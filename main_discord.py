@@ -453,13 +453,15 @@ class MarvinBot(commands.Bot):
     async def on_ready(self):
         logger.info(f"🤖 馬文已連線。帳號: {self.user} (ID: {self.user.id})")
         logger.info(f"🏘️  本尊已潛入以下 {len(self.guilds)} 個伺服器：")
-        
+
         # [Sync Logic] 不再需要重新載入 Cog，直接同步至各 Guild 即可
+        total_synced = 0
         for guild in self.guilds:
             logger.info(f" - {guild.name} (ID: {guild.id})")
             try:
                 self.tree.copy_global_to(guild=guild)
                 guild_synced = await self.tree.sync(guild=guild)
+                total_synced = len(guild_synced)
                 logger.info(f"   ✅ [Guild Sync] 同步成功: {guild.name} (指令數: {len(guild_synced)})")
             except Exception as e:
                 logger.error(f"   ❌ [Guild Sync] 同步失敗 ({guild.name}): {e}")
@@ -469,6 +471,52 @@ class MarvinBot(commands.Bot):
 
         # 🎭 [Sticker] 載入 Clyde 貼圖包
         await self.sticker_manager.load(self)
+
+        # 🚀 [Reboot Report] 若上一個進程是 /marvin_reboot 啟動，回報完成
+        await self._report_reboot_complete(total_synced)
+
+    async def _report_reboot_complete(self, total_synced: int):
+        """讀取 .marvin_reboot_state.json，貼完成訊息到原頻道後刪檔。"""
+        try:
+            from cogs.voice_controller import read_and_clear_reboot_state
+            state = read_and_clear_reboot_state()
+            if not state:
+                return
+
+            channel_id = state.get("channel_id")
+            if not channel_id:
+                return
+
+            channel = self.get_channel(channel_id)
+            if channel is None:
+                logger.warning(f"[Reboot Report] 找不到 channel {channel_id}")
+                return
+
+            elapsed = round(time.time() - float(state.get("started_at", time.time())), 1)
+            cog_names = sorted(self.cogs.keys())
+            turtle_loaded = "TurtleSoupCog" in cog_names
+            busted99_loaded = "Busted99Cog" in cog_names
+
+            commit_before = state.get("commit_before", "?")
+            commit_after = state.get("commit_after", "?")
+            commit_line = (
+                f"{commit_before} → **{commit_after}**"
+                if commit_before != commit_after
+                else f"{commit_after}（未變動）"
+            )
+
+            msg = (
+                f"✅ **馬文已重啟完成**（{elapsed}s）\n"
+                f"原因：{state.get('reason', '?')}\n"
+                f"Commit：{commit_line}\n"
+                f"已載入 cogs：{len(cog_names)} 個（"
+                f"TurtleSoupCog {'✅' if turtle_loaded else '❌'} / "
+                f"Busted99Cog {'✅' if busted99_loaded else '❌'}）\n"
+                f"已同步指令：{total_synced} 個"
+            )
+            await channel.send(msg)
+        except Exception as e:
+            logger.error(f"❌ [Reboot Report] 貼完成訊息失敗: {e}")
 
     async def on_interaction(self, interaction: discord.Interaction):
         if interaction.type == discord.InteractionType.application_command:
