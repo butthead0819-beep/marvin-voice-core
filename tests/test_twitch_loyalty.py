@@ -82,6 +82,48 @@ def test_parse_sub_tier_mapping():
     assert parse_sub_tier("garbage") == 1
 
 
+# ── 「提供訊息」vs「詢問訊息」區分 ─────────────────────────────────────────
+
+def test_is_promotional_message_url():
+    from twitch_collector import is_promotional_message
+    assert is_promotional_message("訂閱者限定 https://discord.gg/abc")
+    assert is_promotional_message("詳情 http://example.com")
+
+
+def test_is_promotional_message_mention_opener():
+    from twitch_collector import is_promotional_message
+    assert is_promotional_message("@小明 想訂閱請點 panel")
+
+
+def test_is_promotional_message_announcement_phrases():
+    from twitch_collector import is_promotional_message
+    for msg in ["歡迎大家訂閱", "請點 panel", "請輸入 !sub", "詳情看公告", "!sub 看 panel"]:
+        assert is_promotional_message(msg), f"{msg!r} 應被視為廣告"
+
+
+def test_is_promotional_message_negatives():
+    """真詢問訊息不該被誤殺。"""
+    from twitch_collector import is_promotional_message
+    for msg in ["我想訂閱", "怎麼訂閱？", "訂閱有什麼好處", "想訂一個月"]:
+        assert not is_promotional_message(msg), f"{msg!r} 不該被誤殺"
+
+
+def test_classify_intent_subscription_info_for_promotional():
+    """含「訂閱」字 + URL/廣告語氣 → subscription_info（不是潛在 lead）。"""
+    from twitch_collector import classify_intent
+    intent, score = classify_intent("訂閱者限定 https://discord.gg/abc")
+    assert intent == "subscription_info"
+    assert score == 0
+
+
+def test_classify_intent_subscription_intent_for_genuine_inquiry():
+    """乾淨詢問訊息要留在 subscription_intent。"""
+    from twitch_collector import classify_intent
+    intent, score = classify_intent("怎麼訂閱？")
+    assert intent == "subscription_intent"
+    assert score == 3
+
+
 # ── 雜訊分類修正：gift_received / bot / system_message ─────────────────────
 
 def test_classify_intent_gift_received_takes_precedence():

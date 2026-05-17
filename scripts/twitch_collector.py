@@ -79,14 +79,22 @@ def classify_intent(message: str) -> tuple[str, int]:
 
     特殊類別：
     - gift_received: 已成交事件（score=0），順序最前，避免被「訂閱」字 false-positive
-    - subscription_intent / merch_intent: 高意圖（score=3）
+    - subscription_intent / merch_intent: 高意圖詢問（score=3）— 潛在 lead
+    - subscription_info: 訊息含「訂閱」字但語氣是公告 / 提供資訊（score=0）— 非 lead
     - question_intent: 問句 fallback（score=2）
     - 其他規則 intent: score=1
+
+    區分 subscription_intent vs subscription_info：
+      命中 subscription_intent pattern 後，若訊息是 promotional（URL / @mention 開頭 /
+      「歡迎/請點/請輸入/詳情」公告語氣），降級為 subscription_info（score=0），
+      不再算進熱名單或 live_intent lead。
     """
     msg_lower = message.lower()
     for intent, patterns in INTENT_PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, msg_lower):
+                if intent == "subscription_intent" and is_promotional_message(message):
+                    return "subscription_info", 0
                 if intent == "gift_received":
                     score = 0
                 elif intent in ("subscription_intent", "merch_intent"):
@@ -124,6 +132,29 @@ _SYSTEM_BOT_RE = re.compile("|".join(_SYSTEM_BOT_PATTERNS))
 def is_system_bot_message(message: str) -> bool:
     """偵測 broadcaster 帳號被 extension 接管時發出的系統訊息。"""
     return bool(_SYSTEM_BOT_RE.search(message or ""))
+
+
+# 「提供訂閱資訊」型訊息（廣告 / 工作人員回答 / @ mention 回覆）的辨識特徵。
+# 用來把「我想訂閱」（lead）跟「請點 panel 訂閱」（staff/廣告）分開。
+_PROMO_PATTERNS = [
+    r"https?://",       # 含 URL — 一定是公告或推銷
+    r"^@",              # @XXX 開頭 — 通常是回答別人
+    r"^!",              # !command 開頭
+    r"歡迎",            # 「歡迎 ... 訂閱」公告語
+    r"請點",
+    r"請輸入",
+    r"詳情",
+]
+_PROMO_RE = re.compile("|".join(_PROMO_PATTERNS))
+
+
+def is_promotional_message(message: str) -> bool:
+    """偵測訊息是「提供資訊」型（廣告/staff/公告），用以區分潛在訂閱 lead。
+
+    return True → 包含 URL、@mention 開頭、命令前綴、或「歡迎」「請點」等公告語氣
+    return False → 一般陳述句（含「想訂閱」「怎麼訂」這類真實 inquiry）
+    """
+    return bool(_PROMO_RE.search(message or ""))
 
 
 # ── SQLite 初始化 ─────────────────────────────────────────────────────
