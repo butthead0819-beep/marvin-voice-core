@@ -886,14 +886,18 @@ class DiscordVoiceEngine:
         if is_wake_check:
             self._wake_inflight += 1
         else:
-            # 遊戲猜題狀態：非猜題者的語音直接丟棄，不佔 full-STT inflight 名額
-            _b99 = self.bot.cogs.get("Busted99Cog") if hasattr(self.bot, "cogs") else None
-            if _b99 is not None and hasattr(_b99, "should_suppress_for_game_by_id"):
-                if _b99.should_suppress_for_game_by_id(user_id):
-                    logger.debug(
-                        "[Engine] game suppress: user_id=%d 非猜題者，跳過 full-STT dispatch", user_id
-                    )
-                    return
+            # 遊戲狀態：非搶答者/非猜題者語音直接丟棄，不佔 full-STT inflight 名額
+            _cogs = self.bot.cogs if hasattr(self.bot, "cogs") else None
+            if _cogs is not None:
+                for _cog_name in ("Busted99Cog", "BustedCog"):
+                    _game_cog = _cogs.get(_cog_name)
+                    if _game_cog is not None and hasattr(_game_cog, "should_suppress_for_game_by_id"):
+                        if _game_cog.should_suppress_for_game_by_id(user_id):
+                            logger.debug(
+                                "[Engine] game suppress (%s): user_id=%d 非搶答者，跳過 full-STT dispatch",
+                                _cog_name, user_id,
+                            )
+                            return
             self._full_stt_inflight += 1
         wav_path = None
         print(f"🎬 [Engine] {'[WakeCheck]' if is_wake_check else ''} 開始處理聚合音訊 (User_{user_id}, Size: {len(raw_pcm)} bytes)", flush=True)

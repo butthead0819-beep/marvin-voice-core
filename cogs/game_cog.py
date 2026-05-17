@@ -13,6 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from game.engine import GameEngine, ANSWER_MIN_LEN, ANSWER_MAX_LEN, BUZZ_LOCK_SECONDS
+from game.busted_llm_engine import GameLLMEngine
 from game.session import GameSession, GameState
 from game.clue_generator import generate_clue
 from game.marvin_player import MarvinPlayer
@@ -323,6 +324,15 @@ class BustedCog(commands.Cog):
         self._player_tokens: dict[str, str] = {}
 
     # ── Task helpers ───────────────────────────────────────────────────────────
+
+    def _set_game_mode(self, enabled: bool) -> None:
+        """Set vc.game_mode and conv_buffer.game_mode_cap in one call."""
+        vc = self.bot.cogs.get("VoiceController") if hasattr(self.bot, "cogs") else None
+        if vc is None:
+            return
+        vc.game_mode = enabled
+        if hasattr(vc, "conv_buffer") and vc.conv_buffer is not None:
+            vc.conv_buffer.game_mode_cap = 0.8 if enabled else None
 
     def _cancel_tasks(self):
         for t in list(self._tasks):
@@ -736,9 +746,7 @@ class BustedCog(commands.Cog):
         self._session = None
         self._game_state = None
         self._name_to_id.clear()
-        vc = self.bot.cogs.get("VoiceController") if hasattr(self.bot, "cogs") else None
-        if vc is not None:
-            vc.game_mode = False
+        self._set_game_mode(False)
         if self._channel is not None:
             try:
                 await self._channel.send("🛑 Busted 已被 companion 端結束。")
@@ -853,9 +861,7 @@ class BustedCog(commands.Cog):
             self._name_to_id.clear()
             self._game_state = None
             # 🎮 離開 game_mode：恢復 Marvin 所有服務
-            vc = self.bot.cogs.get("VoiceController")
-            if vc is not None:
-                vc.game_mode = False
+            self._set_game_mode(False)
             return  # skip the _game_state update below (already cleared)
 
         self._game_state = state
@@ -1027,6 +1033,7 @@ class BustedCog(commands.Cog):
                 if self._channel:
                     await self._channel.send(f"**Marvin**: {guess}")
                 result = await self._engine.submit_answer("marvin", guess)
+                await self._marvin_narrate(result)
                 if result.get("correct") and self._session:
                     self._last_result = {
                         "winner_name":   "Marvin",
@@ -1061,22 +1068,25 @@ class BustedCog(commands.Cog):
         except asyncio.CancelledError:
             pass
 
-    async def _marvin_correct_react(self, winner_name: str) -> None:
-        """Marvin 對人類猜中答案發表評論（TTS + channel 訊息）。"""
+    async def _fire_tts(self, text: str) -> None:
+        """TTS text through VoiceController. Fire-and-forget; errors are swallowed."""
+        if not text:
+            return
+        vc = self.bot.cogs.get("VoiceController")
+        if vc is None:
+            return
         try:
-            if self._marvin is None:
-                return
-            quip = self._marvin.correct_quip(winner_name)
+            await vc.play_tts(text, already_in_channel=True, force_macos=True)
+        except Exception as e:
+            logger.debug("[BustedCog] _fire_tts skipped: %s", e)
+
+    async def _marvin_narrate(self, result: dict) -> None:
+        """TTS the LLM narration from a submit_answer result dict."""
+        narration = result.get("narration", "")
+        if narration:
             if self._channel:
-                await self._channel.send(f"**Marvin**: {quip}")
-            vc = self.bot.cogs.get("VoiceController")
-            if vc is not None:
-                try:
-                    await vc.play_tts(quip, already_in_channel=True)
-                except Exception as e:
-                    logger.debug(f"[BustedCog] _marvin_correct_react TTS skipped: {e}")
-        except asyncio.CancelledError:
-            pass
+                await self._channel.send(f"**Marvin**: {narration}")
+            await self._fire_tts(narration)
 
     async def _watch_for_text_answer(self, buzz_holder_id: str, timeout: float = 3.0):
         """Wait for the buzzer to type an answer within `timeout` seconds."""
@@ -1092,6 +1102,7 @@ class BustedCog(commands.Cog):
             session = self._session
             if session and session.state == GameState.BUZZ_LOCKED:
                 result = await self._engine.submit_answer(buzz_holder_id, msg.content.strip())
+                await self._marvin_narrate(result)
                 if result.get("correct") and self._session:
                     winner = next((p for p in session.players if p.user_id == buzz_holder_id), None)
                     self._last_result = {
@@ -1210,17 +1221,35 @@ class BustedCog(commands.Cog):
             return False
         return holder.display_name != speaker
 
+    def should_suppress_for_game_by_id(self, user_id: int) -> bool:
+        """
+        Returns True only during BUZZ_LOCKED when user_id is NOT the buzz holder.
+        Used by discord_voice_engine for early STT dispatch filtering.
+        """
+        if self._session is None or self._session.buzz_holder_id is None:
+            return False
+        if self._session.state != GameState.BUZZ_LOCKED:
+            return False
+        return str(user_id) != self._session.buzz_holder_id
+
     async def receive_voice_answer(self, user_id: int, text: str, _guild_id: int = 0) -> bool:
         """Called by voice_controller.py after STT transcription."""
         if self._engine is None:
             return False
-        return await self._engine.receive_voice_answer(user_id, text)
+        result = await self._engine.receive_voice_answer(user_id, text)
+        if isinstance(result, dict):
+            asyncio.get_running_loop().create_task(self._marvin_narrate(result))
+            return bool(result.get("correct"))
+        return bool(result)
 
-    async def receive_voice_answer_by_speaker(self, _speaker: str, _text: str) -> bool:
-        """
-        語音輸入已停用（STT 切斷點不準確）。猜題請使用鍵盤輸入。
-        """
-        return False
+    async def receive_voice_answer_by_speaker(self, speaker: str, text: str) -> bool:
+        """Resolve display_name → user_id then forward to engine."""
+        if self._engine is None:
+            return False
+        uid = self._name_to_id.get(speaker)
+        if uid is None:
+            return False
+        return await self._engine.receive_voice_answer(uid, text)
 
     # ── Clue request hook ──────────────────────────────────────────────────────
 
@@ -1371,7 +1400,7 @@ class BustedCog(commands.Cog):
         router       = getattr(self.bot, "router", None)
         self._marvin = MarvinPlayer(router) if router else None
 
-        self._engine = GameEngine(
+        self._engine = GameLLMEngine(
             session,
             on_state_change=self.on_state_change,
             clue_fn=self._on_clue_request,
@@ -1381,9 +1410,9 @@ class BustedCog(commands.Cog):
         await self._engine.add_player("marvin", "Marvin")
 
         # 🎮 進入 game_mode：暫停 Marvin 所有服務，停止音樂
+        self._set_game_mode(True)
         vc = self.bot.cogs.get("VoiceController")
         if vc is not None:
-            vc.game_mode = True
             if vc.stream_mode:
                 await vc.stop_stream(reason="Busted 遊戲開始")
             if vc.radio_mode:
@@ -1409,9 +1438,7 @@ class BustedCog(commands.Cog):
         self._game_state = None
         self._name_to_id.clear()
 
-        vc = self.bot.cogs.get("VoiceController")
-        if vc is not None:
-            vc.game_mode = False
+        self._set_game_mode(False)
 
         await interaction.response.send_message("🛑 遊戲已強制中止，可以用 `/busted_start` 重新開始。", ephemeral=True)
 
