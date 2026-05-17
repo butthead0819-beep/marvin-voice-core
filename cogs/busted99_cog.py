@@ -1018,6 +1018,18 @@ class Busted99Cog(commands.Cog):
             return False
         return guesser.display_name != speaker
 
+    def should_suppress_for_game_by_id(self, user_id: int) -> bool:
+        """
+        同 should_suppress_for_game，但以 Discord user_id（int）查詢。
+        供 STT dispatch 層在取得 display_name 之前做早期過濾，節省 STT inflight 容量。
+        """
+        if self._session is None or self._session.state != Busted99State.GUESSING:
+            return False
+        guesser_id = self._session.current_guesser_id
+        if guesser_id is None:
+            return False
+        return str(user_id) != str(guesser_id)
+
     async def receive_voice_answer_by_speaker(self, speaker: str, text: str) -> bool:
         """
         只處理當前猜題人的語音。非猜題人靜默忽略，不送 LLM、不給 channel feedback。
