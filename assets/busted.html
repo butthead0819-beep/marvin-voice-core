@@ -51,6 +51,13 @@
                border-bottom: 1px solid #2d3561; }
   .score-row:last-child { border-bottom: none; }
 
+  .al-entry { padding: 5px 0; border-bottom: 1px solid #2d3561; font-size: 0.85rem; }
+  .al-entry:last-child { border-bottom: none; }
+  .al-type-buzz    { color: #74b9ff; }
+  .al-type-correct { color: #00b894; }
+  .al-type-wrong   { color: #e17055; }
+  .al-type-timeout { color: #636e72; }
+
   input[type=text], textarea {
     width: 100%; padding: 10px 14px; border-radius: 8px;
     background: #0f3460; border: 1px solid #5865f2; color: #e0e0e0;
@@ -162,6 +169,12 @@
   <div id="scores-list"></div>
 </div>
 
+<!-- Action log -->
+<div class="card hidden" id="action-log-card">
+  <h2>事件紀錄</h2>
+  <div id="action-log-list"></div>
+</div>
+
 <div id="log"></div>
 
 <script>
@@ -247,6 +260,14 @@ function sendSetAnswer() {
   log(`設定謎底：${v}`);
 }
 
+// ── XSS helpers ───────────────────────────────────────────────────────────
+function safeText(str) {
+  const d = document.createElement('div');
+  d.textContent = String(str);
+  return d.innerHTML;
+}
+const _AL_SAFE_TYPES = new Set(['buzz', 'correct', 'wrong', 'timeout']);
+
 // ── render ────────────────────────────────────────────────────────────────
 function render(s) {
   document.getElementById('state-card').style.display = '';
@@ -284,7 +305,7 @@ function render(s) {
   if (s.clues && s.clues.length) {
     cluesCard.classList.remove('hidden');
     document.getElementById('clues-list').innerHTML = s.clues.map((c, i) =>
-      `<div class="clue-item"><div class="clue-num">線索 ${i+1}</div>${c}</div>`
+      `<div class="clue-item"><div class="clue-num">線索 ${Number(i+1)}</div>${safeText(c)}</div>`
     ).join('');
     document.getElementById('answer-len').textContent = s.answer_len ? `${s.answer_len} 個字` : '—';
     const wrongRow = document.getElementById('wrong-guesses-row');
@@ -305,8 +326,8 @@ function render(s) {
     const medals = ['🥇','🥈','🥉'];
     document.getElementById('scores-list').innerHTML = s.scores.map((p, i) =>
       `<div class="score-row">
-         <span>${medals[i] ?? `${i+1}.`} ${p.name}</span>
-         <span>${p.score} 分</span>
+         <span>${medals[i] ?? `${Number(i+1)}.`} ${safeText(p.name)}</span>
+         <span>${Number(p.score)} 分</span>
        </div>`
     ).join('');
   } else {
@@ -322,10 +343,32 @@ function render(s) {
   if (s.phase === 'theme_select' && s.candidate_themes && s.candidate_themes.length) {
     themeSection.classList.remove('hidden');
     document.getElementById('theme-buttons').innerHTML = s.candidate_themes.map(t =>
-      `<button class="theme-btn" onclick="sendTheme('${t}')">${t}</button>`
+      `<button class="theme-btn" data-theme="${safeText(t)}">${safeText(t)}</button>`
     ).join('');
+    document.querySelectorAll('.theme-btn').forEach(btn => {
+      btn.addEventListener('click', () => sendTheme(btn.dataset.theme));
+    });
   } else {
     themeSection.classList.add('hidden');
+  }
+
+  // action log
+  const alCard = document.getElementById('action-log-card');
+  if (s.action_log && s.action_log.length) {
+    alCard.classList.remove('hidden');
+    document.getElementById('action-log-list').innerHTML = [...s.action_log].reverse().map(e => {
+      const safeType = _AL_SAFE_TYPES.has(e.type) ? e.type : 'unknown';
+      const who = safeText(e.guesser_name ?? '');
+      const round = e.clue_round ? `R${Number(e.clue_round)}` : '';
+      let detail = '';
+      if (safeType === 'buzz')    detail = `${who} 搶答 ${round}`;
+      if (safeType === 'correct') detail = `${who} 猜中 +${Number(e.score ?? 0)} 分 ${round}`;
+      if (safeType === 'wrong')   detail = `${who} 猜錯「${safeText(e.guess ?? '')}」${round}`;
+      if (safeType === 'timeout') detail = `${who} 超時 ${round}`;
+      return `<div class="al-entry al-type-${safeType}">${detail}</div>`;
+    }).join('');
+  } else {
+    alCard.classList.add('hidden');
   }
 
   // set answer (setter_input phase — everyone can try, server validates identity)

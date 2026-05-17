@@ -659,6 +659,8 @@ class BustedCog(commands.Cog):
             ws["buzz_holder"] = holder.display_name if holder else None
         elif state == GameState.THEME_SELECT:
             ws["candidate_themes"] = list(session.candidate_themes)
+        action_log = getattr(session, "action_log", [])
+        ws["action_log"] = action_log[-50:]
         return ws
 
     async def _emit_ws_state(self, session: GameSession) -> None:

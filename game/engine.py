@@ -193,6 +193,14 @@ class GameEngine:
     async def _notify(self) -> None:
         await self._on_state_change(self.session)
 
+    def _log_action(self, entry: dict) -> None:
+        """Append to session.action_log, cap at 200 entries."""
+        if not hasattr(self.session, "action_log"):
+            self.session.action_log = []
+        self.session.action_log.append(entry)
+        if len(self.session.action_log) > 200:
+            self.session.action_log = self.session.action_log[-200:]
+
     def _get_player(self, user_id: str) -> PlayerState | None:
         for p in self.session.players:
             if p.user_id == user_id:
@@ -303,6 +311,13 @@ class GameEngine:
             self.session.buzz_holder_id = user_id
             self.session.buzz_locked_until = now + BUZZ_LOCK_SECONDS
             self.session.state = GameState.BUZZ_LOCKED
+            self._log_action({
+                "type": "buzz",
+                "guesser_name": player.display_name,
+                "guesser_id": user_id,
+                "clue_round": self.session.current_round,
+                "round_num": self.session.round_num,
+            })
             await self._notify()
             return True
 
@@ -358,6 +373,16 @@ class GameEngine:
                 if setter:
                     setter.score += setter_pts
 
+                self._log_action({
+                    "type": "correct",
+                    "guesser_name": player.display_name if player else user_id,
+                    "guesser_id": user_id,
+                    "answer": answer,
+                    "guess": text,
+                    "score": guesser_pts,
+                    "clue_round": clue_round,
+                    "round_num": self.session.round_num,
+                })
                 self.session.state = GameState.ROUND_RESULT
                 self.session.buzz_holder_id = None
                 await self._notify()
@@ -399,11 +424,20 @@ class GameEngine:
                     player.buzz_cooldown_until = time.time() + BUZZ_COOLDOWN_SECONDS
                 if text and text not in self.session.wrong_guesses:
                     self.session.wrong_guesses.append(text)
+                matched = count_char_matches(answer, text)
+                self._log_action({
+                    "type": "wrong",
+                    "guesser_name": player.display_name if player else user_id,
+                    "guesser_id": user_id,
+                    "guess": text,
+                    "matched_chars": matched,
+                    "clue_round": clue_round,
+                    "round_num": self.session.round_num,
+                })
                 self.session.buzz_locked_until = 0.0
                 self.session.buzz_holder_id = None
                 self.session.state = GameState.CLUE_ACTIVE
                 await self._notify()
-                matched = count_char_matches(answer, text)
                 return {
                     "correct": False, "score": 0, "setter_score": 0,
                     "matched_chars": matched, "answer_len": len(answer),
@@ -536,6 +570,13 @@ class GameEngine:
             holder = self._get_player(self.session.buzz_holder_id or "")
             if holder:
                 holder.buzz_cooldown_until = time.time() + BUZZ_COOLDOWN_SECONDS
+            self._log_action({
+                "type": "timeout",
+                "guesser_name": holder.display_name if holder else "",
+                "guesser_id": self.session.buzz_holder_id or "",
+                "clue_round": self.session.current_round,
+                "round_num": self.session.round_num,
+            })
             self.session.buzz_locked_until = 0.0
             self.session.buzz_holder_id = None
             self.session.state = GameState.CLUE_ACTIVE

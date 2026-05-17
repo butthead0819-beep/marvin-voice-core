@@ -47,3 +47,4 @@ class GameSession:
     current_theme: str | None = None                          # chosen theme for this round
     setter_hint: str | None = None    # pending hint from setter (not yet used for clue generation)
     applied_hint: str | None = None   # hint used for the current clue (shown in embed)
+    action_log: list = field(default_factory=list)  # per-event audit trail for web UI
