@@ -26,8 +26,21 @@ FUNNEL = [
     (2, 3,            "回訪粉絲", "stage-return"),
     (0, 1,            "初訪觀眾", "stage-new"),
 ]
-INTENT_LABELS   = {"subscription_intent": "訂閱", "merch_intent": "周邊", "community_inquiry": "社群"}
-INTENT_TAG_CLS  = {"subscription_intent": "tag-sub", "merch_intent": "tag-merch"}
+INTENT_LABELS   = {
+    "subscription_intent": "訂閱詢問",
+    "subscription_info":   "工作人員/廣告",
+    "gift_received":       "收贈禮訂閱",
+    "merch_intent":        "周邊",
+    "community_inquiry":   "社群",
+    "question_intent":     "提問",
+}
+INTENT_TAG_CLS  = {
+    "subscription_intent": "tag-sub",
+    "gift_received":       "tag-sub",
+    "merch_intent":        "tag-merch",
+}
+# Intent types 算進「轉化訊號」的白名單（subscription_info / question_intent / general 不算）
+SIGNAL_INTENTS = ("subscription_intent", "merch_intent", "community_inquiry", "gift_received")
 
 def get_stage(sessions: int) -> tuple[str, str]:
     for lo, hi, label, cls in FUNNEL:
@@ -79,16 +92,20 @@ def generate(channel: str, days: int = 1) -> Path | None:
     # ── Top viewers ─────────────────────────────────────────────────
     top_rows = conn.execute("""
         SELECT username, COUNT(*) AS msgs
-        FROM messages WHERE channel = ? AND ts > ?
+        FROM messages
+        WHERE channel = ? AND ts > ?
+          AND COALESCE(is_system_message, 0) = 0
         GROUP BY username ORDER BY msgs DESC LIMIT 25
     """, (channel, since)).fetchall()
 
-    # 訂閱事件用戶（從 intent 訊息推斷）
-    intent_raw = conn.execute("""
+    # 訂閱事件用戶（從 intent 訊息推斷）— 包含真詢問 + 已成交贈禮 + 周邊 + 社群
+    # 排除 is_system_message=1（拉霸/寵物 extension 訊息）和 subscription_info（廣告/工作人員）
+    intent_raw = conn.execute(f"""
         SELECT username, message, intent_type
         FROM messages
         WHERE channel = ? AND ts > ?
-          AND intent_type IN ('subscription_intent','merch_intent','community_inquiry')
+          AND intent_type IN {SIGNAL_INTENTS}
+          AND COALESCE(is_system_message, 0) = 0
         ORDER BY username, rowid
     """, (channel, since)).fetchall()
 
@@ -122,9 +139,9 @@ def generate(channel: str, days: int = 1) -> Path | None:
         })
 
     # ── Intent messages ──────────────────────────────────────────────
-    bot_intent_count = conn.execute("""
+    bot_intent_count = conn.execute(f"""
         SELECT COUNT(*) FROM messages WHERE channel = ? AND ts > ?
-          AND intent_type IN ('subscription_intent','merch_intent','community_inquiry')
+          AND intent_type IN {SIGNAL_INTENTS}
           AND username = 'nightbot'
     """, (channel, since)).fetchone()[0]
 
@@ -132,12 +149,12 @@ def generate(channel: str, days: int = 1) -> Path | None:
     for r in intent_raw:
         if r["username"] in BOT_USERS:
             continue
-        is_gift = "贈禮訂閱" in r["message"]
+        is_gift = r["intent_type"] == "gift_received"
         intent_msgs.append({
             "username": r["username"],
             "text":     r["message"],
             "type":     "gift_sub" if is_gift else "new_sub",
-            "label":    "收贈禮訂閱" if is_gift else INTENT_LABELS.get(r["intent_type"], "訂閱"),
+            "label":    INTENT_LABELS.get(r["intent_type"], "訂閱"),
         })
     if bot_intent_count > 0:
         intent_msgs.append({
@@ -193,9 +210,13 @@ def generate(channel: str, days: int = 1) -> Path | None:
             break
 
     # ── Chat msgs（取真實有意圖的訊息 + 高發言量用戶）───────────────
+    # 排除 system_message (拉霸 / 寵物 extension) 和 subscription_info (廣告 / 工作人員)
     chat_rows = conn.execute("""
         SELECT username, message, intent_type FROM messages
-        WHERE channel = ? AND ts > ? AND username NOT IN ('nightbot', ?)
+        WHERE channel = ? AND ts > ?
+          AND username NOT IN ('nightbot', ?)
+          AND COALESCE(is_system_message, 0) = 0
+          AND intent_type != 'subscription_info'
         ORDER BY intent_score DESC, RANDOM()
         LIMIT 40
     """, (channel, since, channel)).fetchall()
