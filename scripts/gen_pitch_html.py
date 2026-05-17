@@ -64,7 +64,6 @@ def generate(channel: str, days: int = 1) -> Path | None:
         return None
     report_path = reports[-1]
     report = json.loads(report_path.read_text(encoding="utf-8"))
-    summary = report["summary"]
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -284,16 +283,63 @@ def generate(channel: str, days: int = 1) -> Path | None:
         r'// 真實用戶名[^\n]*\nconst CHAT_MSGS = \[.*?\];',
         f'// 真實用戶名（真實訊息）\nconst CHAT_MSGS = {js(chat_msgs)};')
 
-    # animateCounter stats
-    total_users = summary["total_users"]
-    high_intent = summary["high_intent_messages"]
-    leads_count = len(leads_js)
+    # ── 4 個頂部 KPI（直接從 DB 算，繞過 legacy report summary 的噪音）──────
+    # 活躍觀眾：今日 distinct username，排除 bot / broadcaster / system_message
+    active_viewers = conn.execute(f"""
+        SELECT COUNT(DISTINCT username) FROM messages
+        WHERE channel = ? AND session_date = strftime('%Y-%m-%d', 'now', '+8 hours')
+          AND username NOT IN ('nightbot', ?)
+          AND COALESCE(is_system_message, 0) = 0
+    """, (channel, channel)).fetchone()[0]
+    # 贈禮成交：gift_received intent 訊息數（今日）
+    gifts_today = conn.execute(f"""
+        SELECT COUNT(*) FROM messages
+        WHERE channel = ? AND session_date = strftime('%Y-%m-%d', 'now', '+8 hours')
+          AND intent_type = 'gift_received'
+    """, (channel,)).fetchone()[0]
+    # 轉化 lead：今日 ≥ 5 訊息但從未訂閱（new_sub heuristic）
+    conv_leads = conn.execute(f"""
+        SELECT COUNT(*) FROM (
+          SELECT username, COUNT(*) AS msgs, MAX(is_subscriber) AS sub
+          FROM messages
+          WHERE channel = ? AND session_date = strftime('%Y-%m-%d', 'now', '+8 hours')
+            AND username NOT IN ('nightbot', ?)
+            AND COALESCE(is_system_message, 0) = 0
+          GROUP BY username
+          HAVING msgs >= 5 AND sub = 0
+        )
+    """, (channel, channel)).fetchone()[0]
+    # 終身金主：loyalty_events 有送過禮的 distinct 人
+    try:
+        top_gifters = conn.execute("""
+            SELECT COUNT(DISTINCT username) FROM loyalty_events
+            WHERE channel = ? AND event_type IN ('subgift', 'mass_subgift')
+        """, (channel,)).fetchone()[0]
+    except sqlite3.OperationalError:
+        top_gifters = 0
+
     html = re.sub(r"animateCounter\(document\.getElementById\('stat-viewers'\),\d+\);",
-                  f"animateCounter(document.getElementById('stat-viewers'),{total_users});", html)
+                  f"animateCounter(document.getElementById('stat-viewers'),{active_viewers});", html)
     html = re.sub(r"animateCounter\(document\.getElementById\('stat-missed'\),\d+\);",
-                  f"animateCounter(document.getElementById('stat-missed'),{high_intent});", html)
+                  f"animateCounter(document.getElementById('stat-missed'),{gifts_today});", html)
     html = re.sub(r"animateCounter\(document\.getElementById\('stat-leads'\),\d+\);",
-                  f"animateCounter(document.getElementById('stat-leads'),{leads_count});", html)
+                  f"animateCounter(document.getElementById('stat-leads'),{conv_leads});", html)
+    html = re.sub(r"animateCounter\(document\.getElementById\('stat-discord'\),\d+\);",
+                  f"animateCounter(document.getElementById('stat-discord'),{top_gifters});", html)
+
+    # Label 對齊新語意（兩個 c-red 卡片的 label 換成贈禮 / 轉化 lead 描述）
+    html = html.replace(
+        '<div class="stat-label">高意圖訊息</div>',
+        '<div class="stat-label">贈禮成交</div>',
+    )
+    html = html.replace(
+        '<div class="stat-label">熱名單人數</div>',
+        '<div class="stat-label">轉化 Lead</div>',
+    )
+    html = html.replace(
+        '<div class="stat-label">Discord 身份已比對</div>',
+        '<div class="stat-label">終身金主</div>',
+    )
 
     # ── 輸出 ────────────────────────────────────────────────────────
     date_str = now.strftime("%m%d")
