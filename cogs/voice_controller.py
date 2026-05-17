@@ -4334,11 +4334,17 @@ class VoiceController(commands.Cog):
         # 正常狀態下重設 Sink 缺失計數
         self.sink_missing_count = 0  # 🚀 [T-01 Fix]
         
+        # 🎵 [Active Playback Skip] Marvin 正在輸出音訊（TTS / 音樂 / 串流）時，
+        # 使用者本來就該安靜聽。Marvin 還能 play() 代表 voice connection 健康，
+        # 不該因「沒有解密音訊進來」誤判 DAVE 失效而 disconnect 中斷播放。
+        if self.is_playing_audio or self.stream_mode or vc.is_playing():
+            return
+
         # 4. 偵測靜音 (Silence Detection)
         # 🛡️ [Sentinel 2.0] 區分網路斷線與解密失敗，優先讀取解密成功的心跳
         last_audio = getattr(sink, 'last_decrypted_audio_time', sink.last_audio_packet_time)
         silence_duration = time.time() - last_audio
-        
+
         # 📻 [Radio Mode] 若正在播放廣播，提高閾值至 12 分鐘 (720s)，因為玩家可能只是在聽
         # 一般模式則維持 5 分鐘 (300s)
         threshold = 720.0 if self.radio_mode else 300.0
