@@ -4,6 +4,7 @@
       通常由 stream_session.py 結尾自動呼叫
 """
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -237,6 +238,61 @@ def generate(channel: str, days: int = 1) -> Path | None:
             entry["intent"] = intent_map[r["intent_type"]]
         chat_msgs.append(entry)
 
+    # ── 4 個頂部 KPI（直接從 DB 算，繞過 legacy report summary 的噪音）──────
+    active_viewers = conn.execute("""
+        SELECT COUNT(DISTINCT username) FROM messages
+        WHERE channel = ? AND session_date = strftime('%Y-%m-%d', 'now', '+8 hours')
+          AND username NOT IN ('nightbot', ?)
+          AND COALESCE(is_system_message, 0) = 0
+    """, (channel, channel)).fetchone()[0]
+    gifts_today = conn.execute("""
+        SELECT COUNT(*) FROM messages
+        WHERE channel = ? AND session_date = strftime('%Y-%m-%d', 'now', '+8 hours')
+          AND intent_type = 'gift_received'
+    """, (channel,)).fetchone()[0]
+    conv_leads = conn.execute("""
+        SELECT COUNT(*) FROM (
+          SELECT username, COUNT(*) AS msgs, MAX(is_subscriber) AS sub
+          FROM messages
+          WHERE channel = ? AND session_date = strftime('%Y-%m-%d', 'now', '+8 hours')
+            AND username NOT IN ('nightbot', ?)
+            AND COALESCE(is_system_message, 0) = 0
+          GROUP BY username
+          HAVING msgs >= 5 AND sub = 0
+        )
+    """, (channel, channel)).fetchone()[0]
+    # 終身金主：loyalty_events 表（新事件）+ vip.json baseline（歷史快照）合集
+    gifters_set: set[str] = set()
+    try:
+        rows = conn.execute("""
+            SELECT DISTINCT LOWER(username) AS u FROM loyalty_events
+            WHERE channel = ? AND event_type IN ('subgift', 'mass_subgift')
+        """, (channel,)).fetchall()
+        gifters_set.update(r["u"] for r in rows)
+    except sqlite3.OperationalError:
+        pass
+    # vip.json baseline
+    vip_path = os.environ.get("MARVIN_VIP_FILE", "")
+    if not vip_path:
+        # 預設找 companion repo 內的 marvin_vip.json
+        for candidate in (
+            ROOT.parent / "Voice-bot-companion" / "marvin_vip.json",
+            ROOT / "marvin_vip.json",
+        ):
+            if candidate.exists():
+                vip_path = str(candidate); break
+    if vip_path and Path(vip_path).exists():
+        try:
+            vip_data = json.loads(Path(vip_path).read_text(encoding="utf-8"))
+            ch_data = vip_data.get(channel) or vip_data.get(channel.lower()) or {}
+            for item in ch_data.get("gifters", []):
+                u = (item.get("username") or "").lower()
+                if u:
+                    gifters_set.add(u)
+        except (OSError, ValueError):
+            pass
+    top_gifters = len(gifters_set)
+
     conn.close()
 
     # ── 讀模板 HTML ──────────────────────────────────────────────────
@@ -282,41 +338,6 @@ def generate(channel: str, days: int = 1) -> Path | None:
     html = re_replace(html,
         r'// 真實用戶名[^\n]*\nconst CHAT_MSGS = \[.*?\];',
         f'// 真實用戶名（真實訊息）\nconst CHAT_MSGS = {js(chat_msgs)};')
-
-    # ── 4 個頂部 KPI（直接從 DB 算，繞過 legacy report summary 的噪音）──────
-    # 活躍觀眾：今日 distinct username，排除 bot / broadcaster / system_message
-    active_viewers = conn.execute(f"""
-        SELECT COUNT(DISTINCT username) FROM messages
-        WHERE channel = ? AND session_date = strftime('%Y-%m-%d', 'now', '+8 hours')
-          AND username NOT IN ('nightbot', ?)
-          AND COALESCE(is_system_message, 0) = 0
-    """, (channel, channel)).fetchone()[0]
-    # 贈禮成交：gift_received intent 訊息數（今日）
-    gifts_today = conn.execute(f"""
-        SELECT COUNT(*) FROM messages
-        WHERE channel = ? AND session_date = strftime('%Y-%m-%d', 'now', '+8 hours')
-          AND intent_type = 'gift_received'
-    """, (channel,)).fetchone()[0]
-    # 轉化 lead：今日 ≥ 5 訊息但從未訂閱（new_sub heuristic）
-    conv_leads = conn.execute(f"""
-        SELECT COUNT(*) FROM (
-          SELECT username, COUNT(*) AS msgs, MAX(is_subscriber) AS sub
-          FROM messages
-          WHERE channel = ? AND session_date = strftime('%Y-%m-%d', 'now', '+8 hours')
-            AND username NOT IN ('nightbot', ?)
-            AND COALESCE(is_system_message, 0) = 0
-          GROUP BY username
-          HAVING msgs >= 5 AND sub = 0
-        )
-    """, (channel, channel)).fetchone()[0]
-    # 終身金主：loyalty_events 有送過禮的 distinct 人
-    try:
-        top_gifters = conn.execute("""
-            SELECT COUNT(DISTINCT username) FROM loyalty_events
-            WHERE channel = ? AND event_type IN ('subgift', 'mass_subgift')
-        """, (channel,)).fetchone()[0]
-    except sqlite3.OperationalError:
-        top_gifters = 0
 
     html = re.sub(r"animateCounter\(document\.getElementById\('stat-viewers'\),\d+\);",
                   f"animateCounter(document.getElementById('stat-viewers'),{active_viewers});", html)
