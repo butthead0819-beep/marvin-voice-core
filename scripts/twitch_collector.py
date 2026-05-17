@@ -55,6 +55,13 @@ INTENT_PATTERNS = {
     "community_inquiry": [
         r"怎麼加入", r"身分組", r"discord", r"怎麼拿", r"member",
     ],
+    # 通用問句 fallback：score=2，比 general 高、比訂閱/周邊低
+    # 順序必須在 specific intents 之後，因為「想訂閱嗎？」要先被 subscription_intent 抓
+    "question_intent": [
+        r"[?？]$",
+        r"^請問", r"^怎麼", r"^如何", r"^為什麼", r"^為何", r"^哪裡",
+        r"可以.*?嗎", r"有沒有人",
+    ],
 }
 
 def classify_intent(message: str) -> tuple[str, int]:
@@ -63,7 +70,12 @@ def classify_intent(message: str) -> tuple[str, int]:
     for intent, patterns in INTENT_PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, msg_lower):
-                score = 3 if intent in ("subscription_intent", "merch_intent") else 1
+                if intent in ("subscription_intent", "merch_intent"):
+                    score = 3
+                elif intent == "question_intent":
+                    score = 2
+                else:
+                    score = 1
                 return intent, score
     return "general", 0
 
@@ -90,8 +102,17 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         )
     """)
     # 舊資料遷移：補上新欄位（ADD COLUMN 若已存在會靜默失敗）
-    for col, defn in [("display_name", "TEXT NOT NULL DEFAULT ''"),
-                      ("is_subscriber", "INTEGER NOT NULL DEFAULT 0")]:
+    for col, defn in [
+        ("display_name",         "TEXT NOT NULL DEFAULT ''"),
+        ("is_subscriber",        "INTEGER NOT NULL DEFAULT 0"),
+        # 第二波（2026-05-17）：身分 + 行為信號
+        ("is_first_msg",         "INTEGER NOT NULL DEFAULT 0"),
+        ("is_returning_chatter", "INTEGER NOT NULL DEFAULT 0"),
+        ("sub_months",           "INTEGER NOT NULL DEFAULT 0"),
+        ("is_vip",               "INTEGER NOT NULL DEFAULT 0"),
+        ("is_mod",               "INTEGER NOT NULL DEFAULT 0"),
+        ("is_founder",           "INTEGER NOT NULL DEFAULT 0"),
+    ]:
         try:
             conn.execute(f"ALTER TABLE messages ADD COLUMN {col} {defn}")
         except sqlite3.OperationalError:
@@ -133,6 +154,11 @@ def init_db(db_path: Path) -> sqlite3.Connection:
             ts           TEXT NOT NULL
         )
     """)
+    # tier 後加：sub-plan 1000/2000/3000 → 1/2/3
+    try:
+        conn.execute("ALTER TABLE loyalty_events ADD COLUMN tier INTEGER NOT NULL DEFAULT 1")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("CREATE INDEX IF NOT EXISTS idx_loyalty_channel ON loyalty_events(channel, username)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_loyalty_ts      ON loyalty_events(ts)")
 
@@ -148,6 +174,12 @@ def save_message(
     message: str,
     display_name: str = "",
     is_subscriber: int = 0,
+    is_first_msg: int = 0,
+    is_returning_chatter: int = 0,
+    sub_months: int = 0,
+    is_vip: int = 0,
+    is_mod: int = 0,
+    is_founder: int = 0,
 ):
     intent_type, intent_score = classify_intent(message)
     ts = datetime.now(timezone.utc).isoformat()
@@ -157,10 +189,14 @@ def save_message(
     conn.execute(
         """INSERT INTO messages
            (channel, username, display_name, is_subscriber,
-            message, intent_type, intent_score, session_date, ts)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+            message, intent_type, intent_score, session_date, ts,
+            is_first_msg, is_returning_chatter, sub_months,
+            is_vip, is_mod, is_founder)
+           VALUES (?,?,?,?,?,?,?,?,?, ?,?,?, ?,?,?)""",
         (channel, username, dn, is_subscriber,
-         message, intent_type, intent_score, session_date, ts),
+         message, intent_type, intent_score, session_date, ts,
+         is_first_msg, is_returning_chatter, sub_months,
+         is_vip, is_mod, is_founder),
     )
     conn.execute(
         "INSERT OR IGNORE INTO user_sessions (channel, username, session_date) VALUES (?,?,?)",
@@ -231,13 +267,62 @@ def parse_usernotice(line: str) -> dict | None:
         amount = 1
         recipient = ""
 
+    tier = parse_sub_tier(tags.get("msg-param-sub-plan", ""))
+
     return {
         "event_type": event_type,
         "username": username,
         "display_name": display_name,
         "amount": amount,
         "recipient": recipient,
+        "tier": tier,
     }
+
+
+def parse_badges(badges_str: str, badge_info_str: str = "") -> dict:
+    """解析 IRC badges 與 badge-info tag，回傳結構化旗標。
+
+    badges 格式：'subscriber/24,vip/1,founder/0,moderator/1,broadcaster/1'
+    badge-info 格式：'subscriber/26' — 比 badges 更精準的累積月數
+
+    回傳：{is_vip, is_mod, is_founder, is_broadcaster, sub_months}
+    """
+    result = {"is_vip": 0, "is_mod": 0, "is_founder": 0, "is_broadcaster": 0, "sub_months": 0}
+    for source in (badges_str, badge_info_str):
+        if not source:
+            continue
+        for badge in source.split(","):
+            if "/" not in badge:
+                continue
+            name, val = badge.split("/", 1)
+            if name == "vip":
+                result["is_vip"] = 1
+            elif name == "moderator":
+                result["is_mod"] = 1
+            elif name == "founder":
+                result["is_founder"] = 1
+            elif name == "broadcaster":
+                result["is_broadcaster"] = 1
+            elif name == "subscriber":
+                try:
+                    n = int(val)
+                    # Twitch partner channels 可自訂 sub badge tier ID（例如 3012）。
+                    # 真實累積月數理論上 < 200（16 年以上幾乎不可能），超過視為自訂 tier 不採信。
+                    if n > 200:
+                        continue
+                    if n > result["sub_months"]:
+                        result["sub_months"] = n
+                except ValueError:
+                    pass
+    return result
+
+
+SUB_TIER_MAP = {"1000": 1, "2000": 2, "3000": 3, "Prime": 1}
+
+
+def parse_sub_tier(sub_plan: str) -> int:
+    """msg-param-sub-plan → Tier 1/2/3，無法識別預設 1。"""
+    return SUB_TIER_MAP.get(sub_plan, 1)
 
 
 def parse_bits_from_tags(tags: dict[str, str]) -> int:
@@ -257,16 +342,17 @@ def save_loyalty_event(
     event_type: str,
     amount: int = 1,
     recipient: str = "",
+    tier: int = 1,
 ):
     ts = datetime.now(timezone.utc).isoformat()
     conn.execute(
         """INSERT INTO loyalty_events
-           (channel, username, display_name, event_type, amount, recipient, ts)
-           VALUES (?,?,?,?,?,?,?)""",
-        (channel, username, display_name, event_type, amount, recipient, ts),
+           (channel, username, display_name, event_type, amount, recipient, ts, tier)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        (channel, username, display_name, event_type, amount, recipient, ts, tier),
     )
     conn.commit()
-    log.info(f"[loyalty] {event_type} from {display_name}(@{username}) amount={amount}"
+    log.info(f"[loyalty] {event_type} from {display_name}(@{username}) amount={amount} tier={tier}"
              + (f" → {recipient}" if recipient else ""))
 
 
@@ -317,7 +403,7 @@ async def connect_irc(channel: str, conn: sqlite3.Connection):
                 await asyncio.get_running_loop().run_in_executor(
                     _DB_EXECUTOR, save_loyalty_event, conn, channel,
                     evt["username"], evt["display_name"], evt["event_type"],
-                    evt["amount"], evt["recipient"],
+                    evt["amount"], evt["recipient"], evt["tier"],
                 )
             continue
 
@@ -329,16 +415,21 @@ async def connect_irc(channel: str, conn: sqlite3.Connection):
             display_name = tags.get("display-name", "") or username
             is_subscriber = int(tags.get("subscriber", "0"))
             bits         = parse_bits_from_tags(tags)
-            # sqlite3 calls are sync — push to threadpool so the IRC loop
-            # doesn't stall under chat bursts (popular channels can spike 50+ msg/s).
+            is_first    = 1 if tags.get("first-msg") == "1" else 0
+            is_return   = 1 if tags.get("returning-chatter") == "1" else 0
+            badge_flags = parse_badges(tags.get("badges", ""), tags.get("badge-info", ""))
+
             await asyncio.get_running_loop().run_in_executor(
-                _DB_EXECUTOR, save_message, conn, channel, username, message, display_name, is_subscriber,
+                _DB_EXECUTOR, save_message,
+                conn, channel, username, message, display_name, is_subscriber,
+                is_first, is_return, badge_flags["sub_months"],
+                badge_flags["is_vip"], badge_flags["is_mod"], badge_flags["is_founder"],
             )
             # 含 bits 的 PRIVMSG → 額外記成 cheer loyalty event
             if bits > 0:
                 await asyncio.get_running_loop().run_in_executor(
                     _DB_EXECUTOR, save_loyalty_event, conn, channel,
-                    username, display_name, "cheer", bits, "",
+                    username, display_name, "cheer", bits, "", 1,
                 )
             msg_count += 1
             if msg_count % 100 == 0:

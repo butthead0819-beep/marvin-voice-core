@@ -22,6 +22,99 @@ SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 
+# ── parse_badges ────────────────────────────────────────────────────────────
+
+def test_parse_badges_extracts_sub_months_and_flags():
+    from twitch_collector import parse_badges
+    out = parse_badges("subscriber/24,vip/1,moderator/1", badge_info_str="subscriber/26")
+    assert out["sub_months"] == 26    # badge-info 比 badges 精準，取大值
+    assert out["is_vip"] == 1
+    assert out["is_mod"] == 1
+    assert out["is_founder"] == 0
+
+
+def test_parse_badges_founder_detected():
+    from twitch_collector import parse_badges
+    out = parse_badges("founder/0,subscriber/12")
+    assert out["is_founder"] == 1
+    assert out["sub_months"] == 12
+
+
+def test_parse_badges_empty():
+    from twitch_collector import parse_badges
+    out = parse_badges("", "")
+    assert out == {"is_vip": 0, "is_mod": 0, "is_founder": 0, "is_broadcaster": 0, "sub_months": 0}
+
+
+def test_parse_badges_malformed_does_not_crash():
+    from twitch_collector import parse_badges
+    out = parse_badges("garbage,subscriber/notanumber,vip", "")
+    assert out["is_vip"] == 0  # vip 沒 "/N" 不算
+    assert out["sub_months"] == 0  # notanumber 解析失敗
+
+
+def test_parse_badges_caps_unreasonable_sub_months():
+    """Partner channel 可設自訂 sub-badge tier ID（例如 subscriber/3012）。
+    這不是真實月數（251 年顯然不可能），超過 200 視為自訂 badge tier 不採信。"""
+    from twitch_collector import parse_badges
+    out = parse_badges("subscriber/3012", "subscriber/3012")
+    assert out["sub_months"] == 0, "subscriber/3012 應視為自訂 badge tier ID，不是月數"
+    # 但 100 是合理的（8 年訂閱）
+    out2 = parse_badges("subscriber/100", "")
+    assert out2["sub_months"] == 100
+
+
+def test_parse_badges_broadcaster_flagged():
+    from twitch_collector import parse_badges
+    out = parse_badges("broadcaster/1,subscriber/100", "")
+    assert out["is_broadcaster"] == 1
+
+
+# ── parse_sub_tier ──────────────────────────────────────────────────────────
+
+def test_parse_sub_tier_mapping():
+    from twitch_collector import parse_sub_tier
+    assert parse_sub_tier("1000") == 1
+    assert parse_sub_tier("2000") == 2
+    assert parse_sub_tier("3000") == 3
+    assert parse_sub_tier("Prime") == 1
+    assert parse_sub_tier("") == 1
+    assert parse_sub_tier("garbage") == 1
+
+
+# ── classify_intent: question_intent ─────────────────────────────────────────
+
+def test_classify_intent_question_mark_only():
+    from twitch_collector import classify_intent
+    intent, score = classify_intent("這個怎麼用？")
+    assert intent == "question_intent"
+    assert score == 2
+
+
+def test_classify_intent_question_starts_with_qword():
+    from twitch_collector import classify_intent
+    for msg in ["請問現在幾點", "怎麼參加", "如何拿到身分"]:
+        intent, score = classify_intent(msg)
+        # 「身分」會被 community_inquiry 抓走（"身分組"），所以 "如何拿到身分" 仍可能是 community
+        # 但「請問現在幾點」不含其他關鍵字 → 應為 question_intent
+        if intent == "question_intent":
+            assert score == 2
+
+
+def test_classify_intent_specific_beats_question():
+    """「想訂閱嗎？」應該是 subscription_intent，不是 question_intent。"""
+    from twitch_collector import classify_intent
+    intent, _ = classify_intent("想訂閱嗎？")
+    assert intent == "subscription_intent"
+
+
+def test_classify_intent_general_when_no_match():
+    from twitch_collector import classify_intent
+    intent, score = classify_intent("早安")
+    assert intent == "general"
+    assert score == 0
+
+
 # ── parse_usernotice ────────────────────────────────────────────────────────
 
 def test_parse_usernotice_subgift():
