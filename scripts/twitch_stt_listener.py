@@ -30,6 +30,18 @@ CHUNK_SECS     = 12
 OVERLAP_SECS   = 1
 MAX_TRANSCRIPT = 40
 
+# 健康監控：每處理完一個 chunk 就 touch 此檔，外部 cron 可比對 mtime 偵測 STT 卡住
+HEARTBEAT_PATH = Path(os.environ.get("MARVIN_STT_HEARTBEAT", "/tmp/marvin_stt_heartbeat"))
+
+
+def touch_heartbeat():
+    """更新 HEARTBEAT_PATH 的 mtime。失敗時靜默 — 不能讓監控訊號擋住主流程。"""
+    try:
+        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_PATH.touch()
+    except Exception as e:
+        log.warning(f"[STT] heartbeat touch failed: {e}")
+
 log = logging.getLogger(__name__)
 
 
@@ -59,6 +71,9 @@ def init_db() -> sqlite3.Connection:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_tr_channel ON stream_transcript(channel, ts)")
+    # Used by save_transcript's MAX_TRANSCRIPT pruning subquery so the per-chunk
+    # DELETE doesn't full-scan + sort the channel partition.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tr_channel_id ON stream_transcript(channel, id DESC)")
     conn.commit()
     return conn
 
@@ -167,6 +182,12 @@ async def segment_stream(stream_url: str, chunk_dir: Path, chunk_secs: int):
 
 
 async def get_stream_url(channel: str) -> str | None:
+    """Resolve current Twitch HLS audio URL via yt-dlp.
+
+    Returns None on timeout, error, or unexpected output. Without the timeout,
+    a hung yt-dlp freezes wait_for_stream indefinitely and the supervisor
+    backoff never fires.
+    """
     ytdlp = str(PROJ_ROOT / "venv_simon" / "bin" / "yt-dlp")
     result = await asyncio.create_subprocess_exec(
         ytdlp, "--get-url", "-f", "bestaudio",
@@ -174,9 +195,20 @@ async def get_stream_url(channel: str) -> str | None:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await result.communicate()
+    try:
+        stdout, stderr = await asyncio.wait_for(result.communicate(), timeout=15)
+    except asyncio.TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            result.kill()
+        log.warning(f"[STT] yt-dlp timeout for #{channel}")
+        return None
     url = stdout.decode().strip().split("\n")[0]
     if not url or "Error" in stderr.decode():
+        return None
+    # Defence in depth: refuse anything that doesn't look like an HTTP(S) URL so
+    # an upstream warning line beginning with '-' can't become an ffmpeg flag.
+    if not url.startswith(("http://", "https://")):
+        log.warning(f"[STT] yt-dlp returned non-http URL, ignoring: {url[:80]!r}")
         return None
     return url
 
@@ -202,6 +234,8 @@ async def process_chunks(chunk_dir: Path, conn: sqlite3.Connection, channel: str
 
     while True:
         await asyncio.sleep(2)
+        # 心跳：每輪都 touch，外部 cron 可監控（即使 ffmpeg 還沒切出新 chunk 也算活著）
+        touch_heartbeat()
         wavs = sorted(chunk_dir.glob("chunk_*.wav"))
         complete = wavs[:-1] if len(wavs) > 1 else []
 
@@ -225,8 +259,10 @@ async def process_chunks(chunk_dir: Path, conn: sqlite3.Connection, channel: str
                 continue
 
             consecutive_empty = 0
-            save_transcript(conn, channel, text)
-            context = get_recent_context(conn, channel)
+            # sqlite is synchronous; without to_thread it blocks the loop while
+            # ffmpeg keeps writing chunks and the supervisor waits on rc.
+            await asyncio.to_thread(save_transcript, conn, channel, text)
+            context = await asyncio.to_thread(get_recent_context, conn, channel)
             log.info(f"[transcript] {text}")
             log.info(f"[context]    {context[:80]}...")
 

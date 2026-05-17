@@ -9,6 +9,7 @@ Twitch IRC 聊天收集器（匿名，不需要 Token）
 - 意圖分類只標記，不丟棄
 """
 import asyncio
+import contextlib
 import sqlite3
 import re
 import sys
@@ -40,9 +41,18 @@ log = logging.getLogger(__name__)
 # 這些是「幾乎所有實況台都適用」的硬規則
 # 頻道特有的文化信號由 twitch_report.py 從資料裡學出來
 INTENT_PATTERNS = {
+    # 已成交事件：Twitch 自動發送的「@XXX 謝謝您的贈禮訂閱！」訊息（收禮人視角）。
+    # 順序必須在 subscription_intent 之前，否則「訂閱」關鍵字會先抓走。
+    # score=0 因為這不是「潛在意圖」，是「已轉化」訊號。
+    "gift_received": [
+        r"謝謝您的贈禮訂閱",
+    ],
     "subscription_intent": [
+        # 「福利」單字太弱：在此頻道也指拉霸獎品 / 活動福利，誤觸率高，已移除。
+        # 「sub」單字頻道少見英文，保留。
         r"訂閱", r"\bsub\b", r"怎麼訂", r"訂了", r"剛訂", r"想訂",
-        r"有什麼好處", r"福利", r"訂一個月", r"prime",
+        r"有什麼好處", r"訂閱.*好處", r"訂閱.*福利",
+        r"訂一個月", r"\bprime\b",
     ],
     "merch_intent": [
         r"周邊", r"哪裡買", r"補貨", r"賣嗎", r"有在賣",
@@ -65,12 +75,21 @@ INTENT_PATTERNS = {
 }
 
 def classify_intent(message: str) -> tuple[str, int]:
-    """回傳 (intent_type, score)。general = 0 不代表無價值，代表待學習。"""
+    """回傳 (intent_type, score)。general = 0 不代表無價值，代表待學習。
+
+    特殊類別：
+    - gift_received: 已成交事件（score=0），順序最前，避免被「訂閱」字 false-positive
+    - subscription_intent / merch_intent: 高意圖（score=3）
+    - question_intent: 問句 fallback（score=2）
+    - 其他規則 intent: score=1
+    """
     msg_lower = message.lower()
     for intent, patterns in INTENT_PATTERNS.items():
         for pattern in patterns:
             if re.search(pattern, msg_lower):
-                if intent in ("subscription_intent", "merch_intent"):
+                if intent == "gift_received":
+                    score = 0
+                elif intent in ("subscription_intent", "merch_intent"):
                     score = 3
                 elif intent == "question_intent":
                     score = 2
@@ -78,6 +97,33 @@ def classify_intent(message: str) -> tuple[str, int]:
                     score = 1
                 return intent, score
     return "general", 0
+
+
+# ── Bot 識別 ──────────────────────────────────────────────────────────
+BOT_USERNAMES = {"nightbot", "streamelements", "moobot", "fossabot", "wizebot"}
+
+
+def is_bot_user(username: str) -> bool:
+    """已知第三方 bot 帳號（大小寫不敏感）。"""
+    return (username or "").lower() in BOT_USERNAMES
+
+
+# 拉霸 / 寵物 / 機率播報等 Twitch extension 用 broadcaster 帳號發的系統訊息。
+# 用前綴 emoji + 固定模板字串雙重判斷，避免一般訊息被誤殺。
+_SYSTEM_BOT_PATTERNS = [
+    r"^🎰\s",                    # 拉霸機 extension
+    r"^🐱\s",                    # 寵物 extension
+    r"目前獎池", r"今日中獎", r"目前中獎",
+    r"機率｜",                   # 中獎機率公告
+    r"觸發條件：",
+    r"飽食度",
+]
+_SYSTEM_BOT_RE = re.compile("|".join(_SYSTEM_BOT_PATTERNS))
+
+
+def is_system_bot_message(message: str) -> bool:
+    """偵測 broadcaster 帳號被 extension 接管時發出的系統訊息。"""
+    return bool(_SYSTEM_BOT_RE.search(message or ""))
 
 
 # ── SQLite 初始化 ─────────────────────────────────────────────────────
@@ -112,6 +158,8 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         ("is_vip",               "INTEGER NOT NULL DEFAULT 0"),
         ("is_mod",               "INTEGER NOT NULL DEFAULT 0"),
         ("is_founder",           "INTEGER NOT NULL DEFAULT 0"),
+        # 第三波（2026-05-17 P0 fix）：標記 broadcaster extension bot 訊息
+        ("is_system_message",    "INTEGER NOT NULL DEFAULT 0"),
     ]:
         try:
             conn.execute(f"ALTER TABLE messages ADD COLUMN {col} {defn}")
@@ -159,12 +207,36 @@ def init_db(db_path: Path) -> sqlite3.Connection:
         conn.execute("ALTER TABLE loyalty_events ADD COLUMN tier INTEGER NOT NULL DEFAULT 1")
     except sqlite3.OperationalError:
         pass
+    # msg_id：來自 IRC `id` tag。USERNOTICE 在 reconnect/supervisor backoff 時會
+    # 重播；以 IRC id 當去重鍵可以避免雙倍計算禮物。空字串保持舊行為（不去重）。
+    try:
+        conn.execute("ALTER TABLE loyalty_events ADD COLUMN msg_id TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    # Partial-unique: 只對非空 msg_id 強制唯一，cheer/legacy 沒帶 id 的繼續可重複寫入。
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_loyalty_msg_id "
+        "ON loyalty_events(channel, msg_id) WHERE msg_id != ''"
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_loyalty_channel ON loyalty_events(channel, username)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_loyalty_ts      ON loyalty_events(ts)")
 
     conn.commit()
     log.info(f"DB ready: {db_path}")
     return conn
+
+
+def flush_pending_commit(conn: sqlite3.Connection) -> None:
+    """Commit deferred INSERTs from save_message / save_loyalty_event.
+
+    save_message no longer commits per call. A background flusher (or test code)
+    calls this on a 500ms cadence so popular streams (50+ msg/s) don't pay an
+    fsync per chat line on the single-worker DB executor.
+    """
+    try:
+        conn.commit()
+    except sqlite3.Error as e:
+        log.warning(f"[twitch] flush_pending_commit failed: {e}")
 
 
 def save_message(
@@ -182,6 +254,10 @@ def save_message(
     is_founder: int = 0,
 ):
     intent_type, intent_score = classify_intent(message)
+    # Bot 帳號的訊息再含「訂閱」「福利」等字也不該被分到高意圖類別
+    if is_bot_user(username):
+        intent_type, intent_score = "general", 0
+    is_system_message = 1 if is_system_bot_message(message) else 0
     ts = datetime.now(timezone.utc).isoformat()
     session_date = ts[:10]
     dn = display_name or username
@@ -191,12 +267,12 @@ def save_message(
            (channel, username, display_name, is_subscriber,
             message, intent_type, intent_score, session_date, ts,
             is_first_msg, is_returning_chatter, sub_months,
-            is_vip, is_mod, is_founder)
-           VALUES (?,?,?,?,?,?,?,?,?, ?,?,?, ?,?,?)""",
+            is_vip, is_mod, is_founder, is_system_message)
+           VALUES (?,?,?,?,?,?,?,?,?, ?,?,?, ?,?,?, ?)""",
         (channel, username, dn, is_subscriber,
          message, intent_type, intent_score, session_date, ts,
          is_first_msg, is_returning_chatter, sub_months,
-         is_vip, is_mod, is_founder),
+         is_vip, is_mod, is_founder, is_system_message),
     )
     conn.execute(
         "INSERT OR IGNORE INTO user_sessions (channel, username, session_date) VALUES (?,?,?)",
@@ -212,15 +288,34 @@ def save_message(
              updated_at    = excluded.updated_at""",
         (channel, username, dn, is_subscriber, ts),
     )
-    conn.commit()
+    # Commit is now deferred — flush_pending_commit() called by the background
+    # flusher task on a 500ms cadence (or on shutdown).
 
     if intent_score > 0:
         log.info(f"[{intent_type}] {dn}(@{username}): {message[:60]}")
 
 
+_MAX_TAG_BYTES = 8192
+
+
 def parse_irc_tags(raw: str) -> dict[str, str]:
-    """解析 @key=value;key=value IRC tag 字串。"""
-    return dict(kv.split("=", 1) for kv in raw.split(";") if "=" in kv)
+    """解析 @key=value;key=value IRC tag 字串。
+
+    Caps the raw payload at 8 KiB and the result at 64 tags so a malformed or
+    hostile line can't allocate unbounded memory before downstream sqlite writes.
+    Twitch IRC tag lines are well under 4 KiB in practice.
+    """
+    if len(raw) > _MAX_TAG_BYTES:
+        raw = raw[:_MAX_TAG_BYTES]
+    out: dict[str, str] = {}
+    for kv in raw.split(";"):
+        if "=" not in kv:
+            continue
+        k, _, v = kv.partition("=")
+        out[k] = v
+        if len(out) >= 64:
+            break
+    return out
 
 
 # ── 訂閱禮物 / Bits 解析 ──────────────────────────────────────────────
@@ -276,6 +371,7 @@ def parse_usernotice(line: str) -> dict | None:
         "amount": amount,
         "recipient": recipient,
         "tier": tier,
+        "msg_id": tags.get("id", ""),  # IRC unique id — used by save_loyalty_event for dedup
     }
 
 
@@ -343,17 +439,44 @@ def save_loyalty_event(
     amount: int = 1,
     recipient: str = "",
     tier: int = 1,
+    msg_id: str = "",
 ):
+    """Insert a loyalty event. If `msg_id` is non-empty, the partial-unique
+    `idx_loyalty_msg_id` index makes the INSERT a no-op when the same IRC id
+    arrives a second time (USERNOTICE replays on supervisor reconnect)."""
     ts = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        """INSERT INTO loyalty_events
-           (channel, username, display_name, event_type, amount, recipient, ts, tier)
-           VALUES (?,?,?,?,?,?,?,?)""",
-        (channel, username, display_name, event_type, amount, recipient, ts, tier),
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO loyalty_events
+           (channel, username, display_name, event_type, amount, recipient, ts, tier, msg_id)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (channel, username, display_name, event_type, amount, recipient, ts, tier, msg_id),
     )
     conn.commit()
+    if cur.rowcount == 0:
+        log.debug(f"[loyalty] duplicate dropped msg_id={msg_id!r}")
+        return
     log.info(f"[loyalty] {event_type} from {display_name}(@{username}) amount={amount} tier={tier}"
              + (f" → {recipient}" if recipient else ""))
+
+
+async def _commit_flusher(conn: sqlite3.Connection, interval: float = 0.5):
+    """Background coroutine: commit deferred writes every `interval` seconds.
+
+    save_message no longer commits per call; this drains the WAL on a steady
+    cadence so a crash loses ≤500ms of chat instead of paying an fsync per line.
+    """
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            await asyncio.get_running_loop().run_in_executor(
+                _DB_EXECUTOR, flush_pending_commit, conn
+            )
+    except asyncio.CancelledError:
+        # Final flush so shutdown doesn't leak the last batch.
+        await asyncio.get_running_loop().run_in_executor(
+            _DB_EXECUTOR, flush_pending_commit, conn
+        )
+        raise
 
 
 # ── IRC 連線 ──────────────────────────────────────────────────────────
@@ -375,76 +498,82 @@ async def connect_irc(channel: str, conn: sqlite3.Connection):
     TAGGED_RE  = re.compile(r"@([^ ]+) :(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)")
     PLAIN_RE   = re.compile(r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)")
 
+    flusher = asyncio.create_task(_commit_flusher(conn))
     msg_count = 0
-    while True:
-        try:
-            line = await asyncio.wait_for(reader.readline(), timeout=300)
-        except asyncio.TimeoutError:
-            send("PING :tmi.twitch.tv")
-            await writer.drain()
-            continue
+    try:
+        while True:
+            try:
+                line = await asyncio.wait_for(reader.readline(), timeout=300)
+            except asyncio.TimeoutError:
+                send("PING :tmi.twitch.tv")
+                await writer.drain()
+                continue
 
-        if not line:
-            log.warning("連線中斷，5 秒後重連...")
-            await asyncio.sleep(5)
-            break
+            if not line:
+                log.warning("連線中斷，5 秒後重連...")
+                await asyncio.sleep(5)
+                break
 
-        text = line.decode("utf-8", errors="ignore").strip()
+            text = line.decode("utf-8", errors="ignore").strip()
 
-        if text.startswith("PING"):
-            send("PONG :tmi.twitch.tv")
-            await writer.drain()
-            continue
+            if text.startswith("PING"):
+                send("PONG :tmi.twitch.tv")
+                await writer.drain()
+                continue
 
-        # USERNOTICE：訂閱禮物 / resub 等高價值事件
-        if " USERNOTICE " in text:
-            evt = parse_usernotice(text)
-            if evt and evt["username"]:
+            # USERNOTICE：訂閱禮物 / resub 等高價值事件
+            if " USERNOTICE " in text:
+                evt = parse_usernotice(text)
+                if evt and evt["username"]:
+                    await asyncio.get_running_loop().run_in_executor(
+                        _DB_EXECUTOR, save_loyalty_event, conn, channel,
+                        evt["username"], evt["display_name"], evt["event_type"],
+                        evt["amount"], evt["recipient"], evt["tier"], evt["msg_id"],
+                    )
+                continue
+
+            m = TAGGED_RE.match(text)
+            if m:
+                tags         = parse_irc_tags(m.group(1))
+                username     = m.group(2)
+                message      = m.group(3)
+                display_name = tags.get("display-name", "") or username
+                is_subscriber = int(tags.get("subscriber", "0"))
+                bits         = parse_bits_from_tags(tags)
+                is_first    = 1 if tags.get("first-msg") == "1" else 0
+                is_return   = 1 if tags.get("returning-chatter") == "1" else 0
+                badge_flags = parse_badges(tags.get("badges", ""), tags.get("badge-info", ""))
+
                 await asyncio.get_running_loop().run_in_executor(
-                    _DB_EXECUTOR, save_loyalty_event, conn, channel,
-                    evt["username"], evt["display_name"], evt["event_type"],
-                    evt["amount"], evt["recipient"], evt["tier"],
+                    _DB_EXECUTOR, save_message,
+                    conn, channel, username, message, display_name, is_subscriber,
+                    is_first, is_return, badge_flags["sub_months"],
+                    badge_flags["is_vip"], badge_flags["is_mod"], badge_flags["is_founder"],
                 )
-            continue
+                # 含 bits 的 PRIVMSG → 額外記成 cheer loyalty event
+                if bits > 0:
+                    await asyncio.get_running_loop().run_in_executor(
+                        _DB_EXECUTOR, save_loyalty_event, conn, channel,
+                        username, display_name, "cheer", bits, "", 1,
+                        tags.get("id", ""),
+                    )
+                msg_count += 1
+                if msg_count % 100 == 0:
+                    log.info(f"已收 {msg_count} 則訊息")
+                continue
 
-        m = TAGGED_RE.match(text)
-        if m:
-            tags         = parse_irc_tags(m.group(1))
-            username     = m.group(2)
-            message      = m.group(3)
-            display_name = tags.get("display-name", "") or username
-            is_subscriber = int(tags.get("subscriber", "0"))
-            bits         = parse_bits_from_tags(tags)
-            is_first    = 1 if tags.get("first-msg") == "1" else 0
-            is_return   = 1 if tags.get("returning-chatter") == "1" else 0
-            badge_flags = parse_badges(tags.get("badges", ""), tags.get("badge-info", ""))
-
-            await asyncio.get_running_loop().run_in_executor(
-                _DB_EXECUTOR, save_message,
-                conn, channel, username, message, display_name, is_subscriber,
-                is_first, is_return, badge_flags["sub_months"],
-                badge_flags["is_vip"], badge_flags["is_mod"], badge_flags["is_founder"],
-            )
-            # 含 bits 的 PRIVMSG → 額外記成 cheer loyalty event
-            if bits > 0:
+            # fallback：不帶 tags 的格式（不應發生但保留）
+            m = PLAIN_RE.match(text)
+            if m:
                 await asyncio.get_running_loop().run_in_executor(
-                    _DB_EXECUTOR, save_loyalty_event, conn, channel,
-                    username, display_name, "cheer", bits, "", 1,
+                    _DB_EXECUTOR, save_message, conn, channel, m.group(1), m.group(2),
                 )
-            msg_count += 1
-            if msg_count % 100 == 0:
-                log.info(f"已收 {msg_count} 則訊息")
-            continue
-
-        # fallback：不帶 tags 的格式（不應發生但保留）
-        m = PLAIN_RE.match(text)
-        if m:
-            await asyncio.get_running_loop().run_in_executor(
-                _DB_EXECUTOR, save_message, conn, channel, m.group(1), m.group(2),
-            )
-            msg_count += 1
-
-    writer.close()
+                msg_count += 1
+    finally:
+        flusher.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await flusher
+        writer.close()
 
 
 async def main():
