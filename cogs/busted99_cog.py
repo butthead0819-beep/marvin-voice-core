@@ -228,6 +228,7 @@ class Busted99Cog(commands.Cog):
         self._skip_triggered: bool = False
         self._ws_hub = None  # injected by main_discord after hub starts
         self._player_tokens: dict[str, str] = {}  # token → user_id
+        self._prev_state: Optional[Busted99State] = None
 
     # ── Task helpers ───────────────────────────────────────────────────────────
 
@@ -676,7 +677,7 @@ class Busted99Cog(commands.Cog):
 
     def _generate_player_token(self, user_id: str) -> str:
         """產生並儲存 user_id 的唯一 token。"""
-        token = uuid.uuid4().hex[:12]
+        token = uuid.uuid4().hex
         self._player_tokens[token] = user_id
         return token
 
@@ -773,6 +774,8 @@ class Busted99Cog(commands.Cog):
     async def on_state_change(self, session: Busted99Session):
         self._session = session
         state = session.state
+        prev_state = self._prev_state
+        self._prev_state = state
 
         # Lane F2：先廣播 phase 給 companion bridge（失敗不影響本機 UI）
         await self._emit_phase(session)
@@ -803,11 +806,11 @@ class Busted99Cog(commands.Cog):
             # 第一輪 GUESSING 時送 DM 個人連結（後續輪次連結不變）
             if session.round_num == 1:
                 self._spawn(self._send_player_links(session))
-            space = session.high_bound - session.low_bound + 1
-            if space <= 2:
-                await self._play_sfx("fanfare")
-            else:
-                await self._play_sfx("buzz")
+            if prev_state == Busted99State.SETTER_PICKING:
+                # 出題人剛完成 → 開場音
+                await self._play_sfx("air_horn")
+            # 其他 GUESSING re-entry：不在此處播 SFX
+            # SFX 由 _process_guess (ba_dum_tss/sad_horn) 或 timeout_task (sad_horn) 負責
             self._guessing_deadline = time.time() + 600.0
             # deadline 是在 on_state_change 開頭的 _emit_ws_state 之後才設的，
             # 重 broadcast 一次讓 web UI 看到正確的 remaining_sec
@@ -824,7 +827,7 @@ class Busted99Cog(commands.Cog):
 
         elif state == Busted99State.GAME_OVER:
             self._cancel_tasks()
-            await self._play_sfx("game_over")
+            # SFX 改由觸發端（_process_guess bust 播 sad_horn / timeout_task 播 sad_horn）負責
             # 在清空前儲存 session，供「查看分數」按鈕使用
             self._last_session = session
             await self._upsert_game_message(
@@ -1160,16 +1163,11 @@ class Busted99Cog(commands.Cog):
                     self._build_guessing_embed(self._session, remaining),
                     SkipVote99View(self),
                 )
-        if res in ("wrong_low", "wrong_high"):
-            await self._play_sfx("wrong")
-        elif res in ("bust", "last_bust", "last_wrong"):
-            await self._play_sfx("correct")
-
         narration = result.get("narration", "")
         vc = self.bot.cogs.get("VoiceController")
         if vc is not None:
             if res in ("wrong_low", "wrong_high"):
-                # 先播範圍 TTS，再接 narration，兩者共用同一個 sequential task 不競爭
+                # ba_dum_tss → 範圍 TTS → narration，同一個 task 序列播放
                 low, high = self._session.low_bound, self._session.high_bound
                 range_text = random.choice([
                     f"範圍縮小，{low} 到 {high}",
@@ -1178,12 +1176,21 @@ class Busted99Cog(commands.Cog):
                     f"縮小到 {low} 到 {high}",
                 ])
 
-                async def _range_then_narration(vc=vc, rt=range_text, nt=narration):
+                async def _sfx_range_narration(vc=vc, rt=range_text, nt=narration):
+                    await self._play_sfx("ba_dum_tss")
                     await self._fire_tts(vc, rt)
                     if nt:
                         await self._fire_tts(vc, nt)
 
-                self._spawn(_range_then_narration())
+                self._spawn(_sfx_range_narration())
+            elif res in ("bust", "last_bust", "last_wrong"):
+                # sad_horn → narration（遊戲結果）
+                async def _sfx_bust_narration(vc=vc, nt=narration):
+                    await self._play_sfx("sad_horn")
+                    if nt:
+                        await self._fire_tts(vc, nt)
+
+                self._spawn(_sfx_bust_narration())
             elif narration:
                 self._spawn(self._fire_tts(vc, narration))
 
