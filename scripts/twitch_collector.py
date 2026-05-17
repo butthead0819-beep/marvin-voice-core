@@ -65,16 +65,37 @@ def classify_intent(message: str) -> tuple[str, int]:
 # ── SQLite 初始化 ─────────────────────────────────────────────────────
 def init_db(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS messages (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel      TEXT NOT NULL,
-            username     TEXT NOT NULL,
-            message      TEXT NOT NULL,
-            intent_type  TEXT NOT NULL DEFAULT 'general',
-            intent_score INTEGER NOT NULL DEFAULT 0,
-            session_date TEXT NOT NULL,
-            ts           TEXT NOT NULL
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel       TEXT NOT NULL,
+            username      TEXT NOT NULL,
+            display_name  TEXT NOT NULL DEFAULT '',
+            is_subscriber INTEGER NOT NULL DEFAULT 0,
+            message       TEXT NOT NULL,
+            intent_type   TEXT NOT NULL DEFAULT 'general',
+            intent_score  INTEGER NOT NULL DEFAULT 0,
+            session_date  TEXT NOT NULL,
+            ts            TEXT NOT NULL
+        )
+    """)
+    # 舊資料遷移：補上新欄位（ADD COLUMN 若已存在會靜默失敗）
+    for col, defn in [("display_name", "TEXT NOT NULL DEFAULT ''"),
+                      ("is_subscriber", "INTEGER NOT NULL DEFAULT 0")]:
+        try:
+            conn.execute(f"ALTER TABLE messages ADD COLUMN {col} {defn}")
+        except sqlite3.OperationalError:
+            pass
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_profiles (
+            channel       TEXT NOT NULL,
+            username      TEXT NOT NULL,
+            display_name  TEXT NOT NULL DEFAULT '',
+            is_subscriber INTEGER NOT NULL DEFAULT 0,
+            updated_at    TEXT NOT NULL,
+            PRIMARY KEY (channel, username)
         )
     """)
     conn.execute("""
@@ -94,25 +115,50 @@ def init_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def save_message(conn: sqlite3.Connection, channel: str, username: str, message: str):
+def save_message(
+    conn: sqlite3.Connection,
+    channel: str,
+    username: str,
+    message: str,
+    display_name: str = "",
+    is_subscriber: int = 0,
+):
     intent_type, intent_score = classify_intent(message)
     ts = datetime.now(timezone.utc).isoformat()
     session_date = ts[:10]
+    dn = display_name or username
 
     conn.execute(
         """INSERT INTO messages
-           (channel, username, message, intent_type, intent_score, session_date, ts)
-           VALUES (?,?,?,?,?,?,?)""",
-        (channel, username, message, intent_type, intent_score, session_date, ts),
+           (channel, username, display_name, is_subscriber,
+            message, intent_type, intent_score, session_date, ts)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        (channel, username, dn, is_subscriber,
+         message, intent_type, intent_score, session_date, ts),
     )
     conn.execute(
         "INSERT OR IGNORE INTO user_sessions (channel, username, session_date) VALUES (?,?,?)",
         (channel, username, session_date),
     )
+    # 更新 user_profiles（upsert display_name + is_subscriber）
+    conn.execute(
+        """INSERT INTO user_profiles (channel, username, display_name, is_subscriber, updated_at)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(channel, username) DO UPDATE SET
+             display_name  = excluded.display_name,
+             is_subscriber = excluded.is_subscriber,
+             updated_at    = excluded.updated_at""",
+        (channel, username, dn, is_subscriber, ts),
+    )
     conn.commit()
 
     if intent_score > 0:
-        log.info(f"[{intent_type}] {username}: {message[:60]}")
+        log.info(f"[{intent_type}] {dn}(@{username}): {message[:60]}")
+
+
+def parse_irc_tags(raw: str) -> dict[str, str]:
+    """解析 @key=value;key=value IRC tag 字串。"""
+    return dict(kv.split("=", 1) for kv in raw.split(";") if "=" in kv)
 
 
 # ── IRC 連線 ──────────────────────────────────────────────────────────
@@ -123,10 +169,16 @@ async def connect_irc(channel: str, conn: sqlite3.Connection):
     def send(line: str):
         writer.write((line + "\r\n").encode())
 
+    # 請求 tags capability → 取得 display-name, subscriber, badges 等
+    send("CAP REQ :twitch.tv/tags twitch.tv/commands")
     send("PASS SCHMOOPIIE")
     send(f"NICK {NICK}")
     send(f"JOIN #{channel.lower()}")
     await writer.drain()
+
+    # 帶 tags 的訊息格式：@tags :login!login@login.tmi.twitch.tv PRIVMSG #ch :msg
+    TAGGED_RE  = re.compile(r"@([^ ]+) :(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)")
+    PLAIN_RE   = re.compile(r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)")
 
     msg_count = 0
     while True:
@@ -149,14 +201,24 @@ async def connect_irc(channel: str, conn: sqlite3.Connection):
             await writer.drain()
             continue
 
-        match = re.match(r":(\w+)!\w+@\w+\.tmi\.twitch\.tv PRIVMSG #\w+ :(.*)", text)
-        if match:
-            username = match.group(1)
-            message = match.group(2)
-            save_message(conn, channel, username, message)
+        m = TAGGED_RE.match(text)
+        if m:
+            tags         = parse_irc_tags(m.group(1))
+            username     = m.group(2)
+            message      = m.group(3)
+            display_name = tags.get("display-name", "") or username
+            is_subscriber = int(tags.get("subscriber", "0"))
+            save_message(conn, channel, username, message, display_name, is_subscriber)
             msg_count += 1
             if msg_count % 100 == 0:
                 log.info(f"已收 {msg_count} 則訊息")
+            continue
+
+        # fallback：不帶 tags 的格式（不應發生但保留）
+        m = PLAIN_RE.match(text)
+        if m:
+            save_message(conn, channel, m.group(1), m.group(2))
+            msg_count += 1
 
     writer.close()
 
