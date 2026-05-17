@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 import uuid
 from typing import Optional
 
@@ -179,7 +178,7 @@ class TurtleSoupCog(commands.Cog):
         e.set_footer(text="按 Join 加入，或 Start Now 立即開始（35s 自動開始）")
         return e
 
-    def _build_presenting_embed(self, session: TurtleSoupSession) -> discord.Embed:
+    def _build_presenting_embed(self, _session: TurtleSoupSession) -> discord.Embed:
         puzzle = self._engine.puzzle
         e = discord.Embed(
             title="🐢 海龜湯 — 湯面",
@@ -312,8 +311,12 @@ class TurtleSoupCog(commands.Cog):
             )
         )
 
-    async def receive_voice_question_by_speaker(self, speaker: str, text: str) -> bool:
-        """STT pipeline 入口。處理玩家語音意圖。回 True 表示已消化（cog 接管）。"""
+    async def receive_voice_answer_by_speaker(self, speaker: str, text: str) -> bool:
+        """STT pipeline 入口（協議名稱與 Busted99/Detective 一致）。
+
+        處理玩家語音意圖：question / surrender / final_answer / ignore。
+        回 True 表 cog 已消化此次發言，voice_controller 不再轉給 Marvin。
+        """
         if not self._engine or not self._session:
             return False
         if self._session.state != TurtleSoupState.ASKING:
@@ -376,7 +379,6 @@ class TurtleSoupCog(commands.Cog):
             )
             if result is None:
                 return
-            vc = self.bot.cogs.get("VoiceController")
             if result["accepted"]:
                 # WIN 流程由 on_state_change 接手
                 return

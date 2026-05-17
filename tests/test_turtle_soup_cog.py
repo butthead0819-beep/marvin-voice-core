@@ -2,7 +2,7 @@
 
 Cog 是 Discord glue layer。測試重點：
 - on_state_change 對應每個 state 觸發正確動作（用 mock 攔截）
-- receive_voice_question_by_speaker 正確路由意圖
+- receive_voice_answer_by_speaker 正確路由意圖
 - inflight cap 過載保護
 - VERDICT_SFX 對應表
 """
@@ -127,12 +127,12 @@ async def test_on_state_change_game_over_posts_embed_and_exits_game_mode_eventua
     cog._announce_truth_and_cleanup.assert_called_once()
 
 
-# ── receive_voice_question_by_speaker ─────────────────────────────────────────
+# ── receive_voice_answer_by_speaker ─────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_voice_routes_ignored_when_no_engine():
     cog = _make_cog()
-    assert await cog.receive_voice_question_by_speaker("Alice", "他是侏儒嗎？") is False
+    assert await cog.receive_voice_answer_by_speaker("Alice", "他是侏儒嗎？") is False
 
 
 @pytest.mark.asyncio
@@ -140,7 +140,7 @@ async def test_voice_routes_ignored_when_state_not_asking():
     cog = _make_cog()
     cog._engine = MagicMock()
     cog._session = _make_session(TurtleSoupState.JOINING)
-    assert await cog.receive_voice_question_by_speaker("Alice", "他是侏儒嗎？") is False
+    assert await cog.receive_voice_answer_by_speaker("Alice", "他是侏儒嗎？") is False
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_voice_filler_word_ignored():
     cog = _make_cog()
     cog._engine = AsyncMock()
     cog._session = _make_session(TurtleSoupState.ASKING)
-    assert await cog.receive_voice_question_by_speaker("Alice", "嗯") is False
+    assert await cog.receive_voice_answer_by_speaker("Alice", "嗯") is False
     cog._engine.submit_question.assert_not_called()
 
 
@@ -157,7 +157,7 @@ async def test_voice_surrender_intent_calls_engine_surrender():
     cog = _make_cog()
     cog._engine = AsyncMock()
     cog._session = _make_session(TurtleSoupState.ASKING)
-    assert await cog.receive_voice_question_by_speaker("Alice", "我投降") is True
+    assert await cog.receive_voice_answer_by_speaker("Alice", "我投降") is True
     cog._engine.surrender.assert_called_once()
 
 
@@ -172,7 +172,7 @@ async def test_voice_question_intent_dispatches_to_handle_question():
     cog._session = _make_session(TurtleSoupState.ASKING)
     cog._build_asking_embed = MagicMock(return_value=None)
 
-    ok = await cog.receive_voice_question_by_speaker("Alice", "他是侏儒嗎？")
+    ok = await cog.receive_voice_answer_by_speaker("Alice", "他是侏儒嗎？")
     assert ok is True
     # 等 spawn task 完成
     for _ in range(5):
@@ -188,7 +188,7 @@ async def test_voice_question_inflight_cap_drops_when_full():
     cog._session = _make_session(TurtleSoupState.ASKING)
     cog._asking_inflight = cog._MAX_ASKING_INFLIGHT  # 已滿
 
-    ok = await cog.receive_voice_question_by_speaker("Alice", "他害怕電梯嗎？")
+    ok = await cog.receive_voice_answer_by_speaker("Alice", "他害怕電梯嗎？")
     assert ok is False
     cog._channel.send.assert_called_once()
     cog._engine.submit_question.assert_not_called()
@@ -205,7 +205,7 @@ async def test_voice_final_answer_dispatches_to_handle_final_guess():
     })
     cog._session = _make_session(TurtleSoupState.ASKING)
 
-    ok = await cog.receive_voice_question_by_speaker("Alice", "答案是他是侏儒")
+    ok = await cog.receive_voice_answer_by_speaker("Alice", "答案是他是侏儒")
     assert ok is True
     for _ in range(5):
         await asyncio.sleep(0)
