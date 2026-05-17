@@ -5096,8 +5096,11 @@ class VoiceController(commands.Cog):
     async def _resolve_yt_query(self, query: str) -> dict | None:
         """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。
 
-        文字搜尋會取 5 個候選並用 music_search.pick_best_music_candidate 評分，
-        過濾實況、反應、開箱、podcast 等非音樂內容。URL 直接解析（信任 user 選擇）。
+        文字搜尋先打 ytmsearch5（YouTube Music），0 命中才 fallback 到 ytsearch5
+        （一般 YouTube）。理由：YT Music 跟一般 YouTube 是不同 catalog，冷門歌
+        或重新上傳版本在 YT Music 有但 ytsearch5 可能 0 命中。
+        5 候選用 music_search.pick_best_music_candidate 評分過濾。
+        URL 直接解析（信任 user 選擇）。
         """
         import yt_dlp
         from music_search import pick_best_music_candidate
@@ -5109,23 +5112,28 @@ class VoiceController(commands.Cog):
             'noplaylist': True,
         }
         is_url = query.startswith('http')
-        search = query if is_url else f'ytsearch5:{query}'
 
         def _extract():
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(search, download=False)
-                if not info:
-                    return None
                 if is_url:
+                    info = ydl.extract_info(query, download=False)
+                    if not info:
+                        return None
                     chosen = info if 'url' in info else None
                 else:
-                    entries = [e for e in (info.get('entries') or []) if e]
+                    entries = []
+                    for prefix in ('ytmsearch5:', 'ytsearch5:'):
+                        info = ydl.extract_info(f'{prefix}{query}', download=False)
+                        entries = [e for e in (info.get('entries') or []) if e] if info else []
+                        if entries:
+                            break
+                        logger.info(f"🎵 [Stream] {prefix}{query[:40]} 0 命中，切換下一個來源")
                     if not entries:
                         return None
                     chosen = pick_best_music_candidate(entries)
                     if chosen:
                         logger.info(
-                            f"🎵 [Stream] 5 候選中挑出：{chosen.get('title','?')[:40]} "
+                            f"🎵 [Stream] 候選中挑出：{chosen.get('title','?')[:40]} "
                             f"(category={chosen.get('categories', [])})"
                         )
                 if not chosen or 'url' not in chosen:
