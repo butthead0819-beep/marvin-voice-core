@@ -311,6 +311,26 @@ class TurtleSoupCog(commands.Cog):
             )
         )
 
+    def should_suppress_for_game_by_id(self, user_id: int) -> bool:
+        """STT 早期過濾。在 STT pipeline 進 LLM 之前就丟棄非參與者語音。
+
+        規則：
+        - 無 session / IDLE / GAME_OVER → 不過濾（讓既有對話 pipeline 處理）
+        - JOINING → 不過濾（玩家可能正在按 Join）
+        - PRESENTING → 過濾全部（Marvin 正在念湯面，玩家發言視為雜訊）
+        - ASKING → 只允許 session.players 內的人；其他人語音丟棄
+        """
+        if self._session is None:
+            return False
+        state = self._session.state
+        if state in (TurtleSoupState.IDLE, TurtleSoupState.GAME_OVER, TurtleSoupState.JOINING):
+            return False
+        if state == TurtleSoupState.PRESENTING:
+            return True
+        # ASKING：非玩家丟棄
+        player_ids = {p.user_id for p in self._session.players}
+        return str(user_id) not in player_ids
+
     async def receive_voice_answer_by_speaker(self, speaker: str, text: str) -> bool:
         """STT pipeline 入口（協議名稱與 Busted99/Detective 一致）。
 

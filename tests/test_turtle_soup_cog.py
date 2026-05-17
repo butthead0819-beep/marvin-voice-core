@@ -80,6 +80,44 @@ def test_is_active_by_state(state, expected):
     assert cog.is_active() is expected
 
 
+# ── should_suppress_for_game_by_id ──────────────────────────────────────────
+
+def test_suppress_false_when_no_session():
+    cog = _make_cog()
+    assert cog.should_suppress_for_game_by_id(12345) is False
+
+
+def test_suppress_false_in_idle_or_game_over():
+    cog = _make_cog()
+    for state in (TurtleSoupState.IDLE, TurtleSoupState.GAME_OVER):
+        cog._session = _make_session(state)
+        assert cog.should_suppress_for_game_by_id(12345) is False
+
+
+def test_suppress_false_in_joining_state():
+    """JOINING 階段不過濾，玩家可能正在按 Join。"""
+    cog = _make_cog()
+    cog._session = _make_session(TurtleSoupState.JOINING)
+    assert cog.should_suppress_for_game_by_id(12345) is False
+
+
+def test_suppress_true_in_presenting():
+    """PRESENTING 時 Marvin 念湯面，全部過濾。"""
+    cog = _make_cog()
+    cog._session = _make_session(TurtleSoupState.PRESENTING)
+    assert cog.should_suppress_for_game_by_id(12345) is True
+
+
+def test_suppress_true_in_asking_for_non_participant():
+    """ASKING 階段：非 session.players 的人語音丟棄。"""
+    from game.turtle_soup.session import TurtleSoupPlayer
+    cog = _make_cog()
+    cog._session = _make_session(TurtleSoupState.ASKING)
+    cog._session.players = [TurtleSoupPlayer(user_id="11111", display_name="Alice")]
+    assert cog.should_suppress_for_game_by_id(99999) is True  # 非玩家
+    assert cog.should_suppress_for_game_by_id(11111) is False  # 玩家
+
+
 # ── on_state_change dispatch ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -128,6 +128,26 @@ class TurtleSoupEngine:
 
         if is_exhausted:
             await self._on_state_change(self.session)
+            return result
+
+        # 自動 WIN 偵測：verdict=yes 時，跑二次 final_guess 檢查
+        # 若玩家的問題本身已涵蓋兩個核心 key_fact → 視同猜中，end_reason=WIN
+        if result["verdict"] == "yes":
+            final_check = await llm_judge.judge_final_guess(
+                surface=self.puzzle.surface,
+                truth=self.puzzle.truth,
+                key_facts=self.puzzle.key_facts,
+                player_answer=question,
+            )
+            if final_check["accepted"]:
+                async with self._lock:
+                    if self.session.state != TurtleSoupState.ASKING:
+                        return result
+                    self.session.state = TurtleSoupState.GAME_OVER
+                    self.session.end_reason = EndReason.WIN
+                await self._on_state_change(self.session)
+                # 把 auto-win 訊號加進結果，cog 可選擇是否要特別播報
+                result = {**result, "auto_win": True, "final_check": final_check}
 
         return result
 

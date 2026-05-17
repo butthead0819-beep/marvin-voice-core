@@ -889,12 +889,12 @@ class DiscordVoiceEngine:
             # 遊戲狀態：非搶答者/非猜題者語音直接丟棄，不佔 full-STT inflight 名額
             _cogs = self.bot.cogs if hasattr(self.bot, "cogs") else None
             if _cogs is not None:
-                for _cog_name in ("Busted99Cog", "BustedCog"):
+                for _cog_name in ("Busted99Cog", "BustedCog", "TurtleSoupCog"):
                     _game_cog = _cogs.get(_cog_name)
                     if _game_cog is not None and hasattr(_game_cog, "should_suppress_for_game_by_id"):
                         if _game_cog.should_suppress_for_game_by_id(user_id):
                             logger.debug(
-                                "[Engine] game suppress (%s): user_id=%d 非搶答者，跳過 full-STT dispatch",
+                                "[Engine] game suppress (%s): user_id=%d 非參與者，跳過 full-STT dispatch",
                                 _cog_name, user_id,
                             )
                             return
@@ -1208,7 +1208,9 @@ class DiscordVoiceEngine:
                     used_engine = "Swift"
                     print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Swift)", flush=True)
                 # Swift 失敗：Apple platform 用 Groq Whisper API 備援，Linux 用 Faster-Whisper
-                if not raw_text and _is_apple_platform and os.getenv("GROQ_API_KEY"):
+                # 設 STT_SWIFT_STRICT=true 可關閉 fallback（避免 Whisper 在雜音上幻覺）
+                _swift_strict = os.getenv("STT_SWIFT_STRICT", "").lower() in ("1", "true", "yes")
+                if not raw_text and _is_apple_platform and os.getenv("GROQ_API_KEY") and not _swift_strict:
                     print(f"🎙️ [Engine] 啟動備援 Groq Whisper (Speaker: {speaker_name}, Lang: {_sp_lang})...", flush=True)
                     raw_text = await self._run_groq_whisper_stt(wav_path, language=_sp_lang)
                     if raw_text:

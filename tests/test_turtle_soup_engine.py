@@ -244,3 +244,86 @@ async def test_state_change_callback_fired_on_every_transition():
     await eng.begin_asking()       # PRESENTING → ASKING
     await eng.surrender("u1", "Alice")  # ASKING → GAME_OVER
     assert cb.call_count == 4
+
+
+# ── auto-win 偵測：verdict=yes 且問題本身就是完整答案 ────────────────────────
+
+@pytest.mark.asyncio
+async def test_yes_verdict_with_complete_answer_triggers_auto_win():
+    """玩家問「他是侏儒按不到 22 樓按鈕嗎？」→ yes →
+    二次 final_check 通過 → 自動 WIN。"""
+    from game.turtle_soup.engine import TurtleSoupEngine
+    from game.turtle_soup import llm_judge
+
+    eng = TurtleSoupEngine(
+        session=_new_session(), puzzle=ELEVATOR_18F, on_state_change=_stub_callback(),
+    )
+    await eng.start_game()
+    await eng.add_player("u1", "Alice")
+    await eng.begin_presenting()
+    await eng.begin_asking()
+
+    with patch.object(llm_judge, "judge_question", new=AsyncMock(return_value={
+        "verdict": "yes", "narration": "你抓到了", "_provider": "Cerebras",
+    })), patch.object(llm_judge, "judge_final_guess", new=AsyncMock(return_value={
+        "accepted": True, "covered_facts": [0, 1, 2],
+        "narration": "想通了", "_provider": "Cerebras",
+    })):
+        result = await eng.submit_question(
+            "u1", "Alice", "他是侏儒按不到 22 樓按鈕嗎？",
+        )
+
+    assert result["verdict"] == "yes"
+    assert result.get("auto_win") is True
+    assert eng.session.state == TurtleSoupState.GAME_OVER
+    assert eng.session.end_reason == EndReason.WIN
+
+
+@pytest.mark.asyncio
+async def test_yes_verdict_partial_answer_does_not_trigger_auto_win():
+    """部分對的 yes（例如「他身高有問題嗎？」）不應該自動 WIN，遊戲繼續。"""
+    from game.turtle_soup.engine import TurtleSoupEngine
+    from game.turtle_soup import llm_judge
+
+    eng = TurtleSoupEngine(
+        session=_new_session(), puzzle=ELEVATOR_18F, on_state_change=_stub_callback(),
+    )
+    await eng.start_game()
+    await eng.add_player("u1", "Alice")
+    await eng.begin_presenting()
+    await eng.begin_asking()
+
+    with patch.object(llm_judge, "judge_question", new=AsyncMock(return_value={
+        "verdict": "yes", "narration": "有點意思", "_provider": "Cerebras",
+    })), patch.object(llm_judge, "judge_final_guess", new=AsyncMock(return_value={
+        "accepted": False, "covered_facts": [0],  # 只命中身高，沒命中按鈕
+        "narration": "差一點", "_provider": "Cerebras",
+    })):
+        result = await eng.submit_question("u1", "Alice", "他身高有問題嗎？")
+
+    assert result["verdict"] == "yes"
+    assert result.get("auto_win") is None  # 沒觸發
+    assert eng.session.state == TurtleSoupState.ASKING  # 繼續玩
+
+
+@pytest.mark.asyncio
+async def test_no_verdict_skips_auto_win_check():
+    """verdict != yes 不應該 call final_guess（節省 LLM 成本）。"""
+    from game.turtle_soup.engine import TurtleSoupEngine
+    from game.turtle_soup import llm_judge
+
+    eng = TurtleSoupEngine(
+        session=_new_session(), puzzle=ELEVATOR_18F, on_state_change=_stub_callback(),
+    )
+    await eng.start_game()
+    await eng.add_player("u1", "Alice")
+    await eng.begin_presenting()
+    await eng.begin_asking()
+
+    final_mock = AsyncMock()
+    with patch.object(llm_judge, "judge_question", new=AsyncMock(return_value={
+        "verdict": "no", "narration": "想太多", "_provider": "Cerebras",
+    })), patch.object(llm_judge, "judge_final_guess", new=final_mock):
+        await eng.submit_question("u1", "Alice", "他害怕電梯嗎？")
+
+    final_mock.assert_not_called()
