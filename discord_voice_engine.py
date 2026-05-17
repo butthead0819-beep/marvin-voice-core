@@ -204,6 +204,9 @@ class RealtimeVADSink(voice_recv.AudioSink):
         self.user_last_packet_time = {} # 📦 [VAD] 封包抵達時間 (兜底用)
         self.RMS_THRESHOLD = 150        # 🛠️ [Wake-Word Reliability] 下調閾值以捕捉語音開頭
         self.RMS_THRESHOLD_STREAM = 450 # 串流播放時提高門檻，過濾擴音回聲
+        # 🎮 遊戲 cog 進入 game_mode 時可設此值，將靜態閾值臨時拉高
+        # （避免遊戲中 cough/敲鍵盤/小聲閒聊觸發 STT；不影響 wake-word 模式）
+        self.game_mode_rms_bump = 0
         self.user_near_silence_count = {}
         self.user_first_audio_time = {}
         self.user_wake_check_count = {}  # user_id -> int，本次說話已發出的 wake check 次數
@@ -364,7 +367,9 @@ class RealtimeVADSink(voice_recv.AudioSink):
             
             # 動態閾值 (Dynamic Threshold)
             delta_threshold = 100
-            dynamic_threshold = max(self.RMS_THRESHOLD, noise_floor + delta_threshold)
+            # 遊戲模式 bump：把靜態 floor 提高，過濾雜訊（cough、鍵盤、遠端閒聊）
+            effective_static = self.RMS_THRESHOLD + self.game_mode_rms_bump
+            dynamic_threshold = max(effective_static, noise_floor + delta_threshold)
             
             if suppressing:
                 dynamic_threshold = max(self.RMS_THRESHOLD_STREAM, dynamic_threshold)

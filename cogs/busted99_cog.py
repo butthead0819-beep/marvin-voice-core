@@ -260,13 +260,15 @@ class Busted99Cog(commands.Cog):
             vc._tts_protected = False
 
     def _exit_game_mode(self) -> None:
-        """VoiceController game_mode=False + 恢復 VAD 溫度上限。"""
+        """VoiceController game_mode=False + 恢復 VAD 溫度上限與 RMS bump。"""
         vc = self.bot.cogs.get("VoiceController") if hasattr(self.bot, "cogs") else None
         if vc is not None:
             vc.game_mode = False
         engine = getattr(self.bot, "engine", None)
         if engine and hasattr(engine, "conv_buffer"):
             engine.conv_buffer.game_mode_cap = None
+        if engine and hasattr(engine, "sink") and engine.sink is not None:
+            engine.sink.game_mode_rms_bump = 0
 
     def _cancel_guesser_timeout(self):
         if self._guesser_timeout_task and not self._guesser_timeout_task.done():
@@ -1229,12 +1231,15 @@ class Busted99Cog(commands.Cog):
         await self._engine.add_player("marvin", "Marvin")
 
         # 進入 game_mode，同時壓低 VAD 靜默門檻避免短數字音訊被高溫對話丟棄
+        # 並拉高 RMS floor 過濾雜訊（cough、鍵盤、遠端閒聊）
         vc = self.bot.cogs.get("VoiceController")
         if vc is not None:
             vc.game_mode = True
         engine = getattr(self.bot, "engine", None)
         if engine and hasattr(engine, "conv_buffer"):
             engine.conv_buffer.game_mode_cap = 0.8
+        if engine and hasattr(engine, "sink") and engine.sink is not None:
+            engine.sink.game_mode_rms_bump = 250
 
         # 顯示 join embed + 35s 自動開始
         await self._post_game_message(self._build_joining_embed(session), Join99View(self))

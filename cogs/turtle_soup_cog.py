@@ -119,6 +119,10 @@ class TurtleSoupCog(commands.Cog):
 
     # ── Game mode（沿 Busted99）───────────────────────────────────────────────
 
+    # 遊戲時拉高 RMS floor 過濾雜訊（cough、鍵盤、遠端閒聊）
+    # 250 = 平均背景雜音 150 + 100 緩衝；正常人聲 RMS 通常 > 1500 不受影響
+    _GAME_RMS_BUMP = 250
+
     def _enter_game_mode(self):
         vc = self.bot.cogs.get("VoiceController") if hasattr(self.bot, "cogs") else None
         if vc is not None:
@@ -126,6 +130,8 @@ class TurtleSoupCog(commands.Cog):
         engine = getattr(self.bot, "engine", None)
         if engine and hasattr(engine, "conv_buffer"):
             engine.conv_buffer.game_mode_cap = 0.8
+        if engine and hasattr(engine, "sink") and engine.sink is not None:
+            engine.sink.game_mode_rms_bump = self._GAME_RMS_BUMP
 
     def _exit_game_mode(self):
         vc = self.bot.cogs.get("VoiceController") if hasattr(self.bot, "cogs") else None
@@ -134,6 +140,8 @@ class TurtleSoupCog(commands.Cog):
         engine = getattr(self.bot, "engine", None)
         if engine and hasattr(engine, "conv_buffer"):
             engine.conv_buffer.game_mode_cap = None
+        if engine and hasattr(engine, "sink") and engine.sink is not None:
+            engine.sink.game_mode_rms_bump = 0
 
     # ── SFX & TTS ─────────────────────────────────────────────────────────────
 
