@@ -13,6 +13,7 @@ Twitch 直播語音 → macOS STT → Groq Whisper（fallback）→ 上下文摘
       連續超過 1 小時可能被節流，此時自動 fallback 到 Groq。
 """
 import asyncio
+import contextlib
 import subprocess
 import sqlite3
 import sys
@@ -230,28 +231,74 @@ async def process_chunks(chunk_dir: Path, conn: sqlite3.Connection, channel: str
             log.info(f"[context]    {context[:80]}...")
 
 
-async def run_listener(channel: str):
-    log.info(f"=== Twitch STT 啟動：#{channel} ===")
+async def _drain_ffmpeg_stderr(proc: asyncio.subprocess.Process):
+    """Drain ffmpeg stderr so it doesn't block, and surface errors to log."""
+    if proc.stderr is None:
+        return
+    try:
+        while True:
+            line = await proc.stderr.readline()
+            if not line:
+                break
+            msg = line.decode(errors="ignore").strip()
+            if msg:
+                log.warning(f"[ffmpeg] {msg}")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.warning(f"[ffmpeg] stderr drain error: {e}")
 
-    url = await wait_for_stream(channel)
-    log.info("串流 URL 取得，開始切片...")
+
+async def run_listener(channel: str):
+    """Supervisor 迴圈：ffmpeg 死掉就重抓 stream URL 重啟。
+
+    Twitch HLS URL 約 30-60 分鐘會過期；舊版用 asyncio.gather 包死的
+    ffmpeg.communicate() 與 process_chunks() 不會互相 cancel，導致 ffmpeg
+    死後 process_chunks 變空跑且整體看起來「卡住但沒錯」。改成 supervisor
+    迴圈後，ffmpeg 結束 → 取消 processor → 重抓 URL 重來，並 backoff 避免
+    Twitch 暫斷時的緊密重試。
+    """
+    log.info(f"=== Twitch STT 啟動：#{channel} ===")
     conn = init_db()
 
-    with tempfile.TemporaryDirectory(prefix="twitch_stt_") as tmp:
-        chunk_dir = Path(tmp)
-        ffmpeg_proc = await segment_stream(url, chunk_dir, CHUNK_SECS)
+    BACKOFF_BASE = 5
+    BACKOFF_MAX  = 60
+    backoff = BACKOFF_BASE
 
-        try:
-            await asyncio.gather(
-                ffmpeg_proc.communicate(),
-                process_chunks(chunk_dir, conn, channel),
-            )
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            pass
-        finally:
-            ffmpeg_proc.terminate()
-            conn.close()
-            log.info("=== Twitch STT 結束 ===")
+    try:
+        while True:
+            url = await wait_for_stream(channel)
+            log.info("串流 URL 取得，開始切片...")
+
+            with tempfile.TemporaryDirectory(prefix="twitch_stt_") as tmp:
+                chunk_dir = Path(tmp)
+                ffmpeg_proc = await segment_stream(url, chunk_dir, CHUNK_SECS)
+
+                processor_task = asyncio.create_task(
+                    process_chunks(chunk_dir, conn, channel)
+                )
+                stderr_task = asyncio.create_task(_drain_ffmpeg_stderr(ffmpeg_proc))
+
+                rc = await ffmpeg_proc.wait()
+                log.warning(
+                    f"ffmpeg 結束 returncode={rc}，stream URL 可能過期或網路中斷，"
+                    f"{backoff}s 後重抓 URL 重來"
+                )
+
+                processor_task.cancel()
+                stderr_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await processor_task
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await stderr_task
+
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, BACKOFF_MAX) if rc != 0 else BACKOFF_BASE
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
+    finally:
+        conn.close()
+        log.info("=== Twitch STT 結束 ===")
 
 
 async def main():
