@@ -737,14 +737,9 @@ class Busted99Cog(commands.Cog):
             if engine is None or session is None:
                 return
             if user_id != session.current_guesser_id:
-                # WebUI 送出了但不是這玩家的回合 → 給 channel feedback
+                # 非當前猜題人 → 靜默丟棄，不打擾 Discord 頻道
                 tried = next((p.display_name for p in session.players if p.user_id == user_id), "?")
-                cur = next((p.display_name for p in session.players if p.user_id == session.current_guesser_id), "?")
-                n = action.get("number")
-                if self._channel and n is not None:
-                    await self._channel.send(
-                        f"⏸ **{tried}** 從 Web 送出 {n}，但現在輪到 **{cur}**！"
-                    )
+                logger.debug("[Busted99] web b99_guess from non-guesser %s (not turn), drop", tried)
                 return
             number = action.get("number")
             if number is None:
@@ -1026,25 +1021,74 @@ class Busted99Cog(commands.Cog):
     async def receive_voice_answer_by_speaker(self, speaker: str, text: str) -> bool:
         """
         只處理當前猜題人的語音。非猜題人靜默忽略，不送 LLM、不給 channel feedback。
+
+        流程：
+          1. STT 塞車檢查：inflight >= MAX → 通知 channel + 回 False
+          2. speaker 驗證：非猜題人靜默回 False
+          3. parse_number：成功 → 立刻 TTS echo "X猜N"
+          4. 若 regex 失敗 → extract_guess_via_llm（2s 超時）
+          5. 仍失敗 → TTS/channel 提示用鍵盤，回 False
+          6. 成功 → _process_guess
         """
         if self._engine is None or self._session is None:
             return False
         if self._session.state != Busted99State.GUESSING:
             return False
 
-        # 先驗 speaker，不是猜題人直接放行給其他系統
+        # ── 1. STT 塞車檢查 ────────────────────────────────────────────────
+        engine_stt = getattr(self.bot, "engine", None)
+        if engine_stt is not None:
+            inflight = getattr(engine_stt, "_full_stt_inflight", 0)
+            max_inflight = getattr(engine_stt, "_MAX_FULL_STT_INFLIGHT", 3)
+            if inflight >= max_inflight:
+                logger.warning("[Busted99] STT 塞車 inflight=%d, 跳過語音猜題", inflight)
+                if self._channel:
+                    await self._channel.send(
+                        f"⚠️ **{speaker}**：語音系統排隊中，請直接打字輸入 "
+                        f"{self._session.low_bound}～{self._session.high_bound} 的數字"
+                    )
+                return False
+
+        # ── 2. 驗 speaker，不是猜題人直接放行給其他系統 ──────────────────
         cur_id = self._session.current_guesser_id
         cur = next((p for p in self._session.players if p.user_id == cur_id), None)
         if cur is None or cur.display_name != speaker:
             return False
 
         low, high = self._session.low_bound, self._session.high_bound
-        number = parse_number(text)
-        if number is None:
-            number = await extract_guess_via_llm(text, low, high)
-        if number is None:
-            return False
 
+        # ── 3. 快速 regex parse ────────────────────────────────────────────
+        number = parse_number(text)
+
+        if number is not None:
+            # 立刻 TTS echo（fire-and-forget，不等 LLM）
+            vc = self.bot.cogs.get("VoiceController")
+            if vc is not None:
+                self._spawn(self._fire_tts(vc, f"{speaker}猜{number}"))
+        else:
+            # ── 4. LLM fallback（2s 超時）────────────────────────────────
+            try:
+                number = await asyncio.wait_for(
+                    extract_guess_via_llm(text, low, high),
+                    timeout=2.0,
+                )
+            except asyncio.TimeoutError:
+                number = None
+
+            # ── 5. 仍失敗 → 提示鍵盤 ─────────────────────────────────────
+            if number is None:
+                logger.info("[Busted99] 語音無法解析數字: %r → 提示打字", text)
+                vc = self.bot.cogs.get("VoiceController")
+                if vc is not None:
+                    self._spawn(self._fire_tts(vc, f"{speaker}，請打字輸入數字"))
+                if self._channel:
+                    await self._channel.send(
+                        f"⌨️ **{speaker}**：語音沒聽到數字，"
+                        f"請在此輸入 {low}～{high} 的整數"
+                    )
+                return False
+
+        # ── 6. 送出猜測 ────────────────────────────────────────────────────
         logger.info("[Busted99] voice guess: %r → %d (text=%r)", speaker, number, text)
         await self._process_guess(cur.display_name, cur_id, number)
         return True
@@ -1109,11 +1153,26 @@ class Busted99Cog(commands.Cog):
         elif res in ("bust", "last_bust", "last_wrong"):
             await self._play_sfx("correct")
 
-        # 播 LLM 生的 Marvin 主持台詞（fire-and-forget：TTS 不阻塞下一輪 spawn）
         narration = result.get("narration", "")
-        if narration:
-            vc = self.bot.cogs.get("VoiceController")
-            if vc is not None:
+        vc = self.bot.cogs.get("VoiceController")
+        if vc is not None:
+            if res in ("wrong_low", "wrong_high"):
+                # 先播範圍 TTS，再接 narration，兩者共用同一個 sequential task 不競爭
+                low, high = self._session.low_bound, self._session.high_bound
+                range_text = random.choice([
+                    f"範圍縮小，{low} 到 {high}",
+                    f"現在可猜 {low} 到 {high}",
+                    f"{low} 到 {high}",
+                    f"縮小到 {low} 到 {high}",
+                ])
+
+                async def _range_then_narration(vc=vc, rt=range_text, nt=narration):
+                    await self._fire_tts(vc, rt)
+                    if nt:
+                        await self._fire_tts(vc, nt)
+
+                self._spawn(_range_then_narration())
+            elif narration:
                 self._spawn(self._fire_tts(vc, narration))
 
         logger.info("[Busted99] guess: %r guessed %d → %s", guesser_display_name, number, res)
