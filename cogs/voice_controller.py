@@ -1003,10 +1003,14 @@ class VoiceController(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 
-    @app_commands.command(name="marvin_reboot", description="[Sentinel] 強制馬文執行物理重啟 (雖然可能也沒用)")
-    async def marvin_reboot(self, interaction: discord.Interaction):
-        await interaction.response.send_message("⚙️ 既然你堅持... 我就重發一遍那顆無意義的大腦吧。")
-        await self.self_restart(reason="指揮官手動重啟", force=True)
+    @app_commands.command(name="marvin_reboot", description="[Sentinel] 強制馬文執行物理重啟 (預設先 git pull 拿最新 code)")
+    @app_commands.describe(pull="是否在重啟前 git pull 拿最新 code（預設 True）")
+    async def marvin_reboot(self, interaction: discord.Interaction, pull: bool = True):
+        msg = "⚙️ 既然你堅持... 我就重發一遍那顆無意義的大腦吧。"
+        if pull:
+            msg += "\n📥 順便 git pull 一下。"
+        await interaction.response.send_message(msg)
+        await self.self_restart(reason="指揮官手動重啟", force=True, pull=pull)
 
     @app_commands.command(name="marvin_tts_clear", description="[Owner] 立即清空 TTS 語音佇列，停止當前播放")
     async def marvin_tts_clear(self, interaction: discord.Interaction):
@@ -3027,6 +3031,32 @@ class VoiceController(commands.Cog):
             logger.exception(f"[NemoClaw] 未預期錯誤: {e}")
             return f"呼叫 OpenClaw 時發生錯誤：{e}"
 
+    async def _play_nemoclaw_ack(self, speaker: str):
+        """播放 NemoClaw ack 音效，必須走 playback_lock 序列化。
+
+        Why: 直接 _vc.play() 會繞過 lock；後續 TTS 串流呼叫 stop() 時會 SIGTERM
+        ack 的 ffmpeg subprocess，導致 voice thread 噴 FFmpegProcessError code 245。
+        """
+        import glob as _glob
+
+        _vc = discord.utils.get(self.bot.voice_clients)
+        if not _vc or not _vc.is_connected() or _vc.is_playing():
+            return
+
+        _ack_dir = "assets/acks_en" if self._speaker_lang.get(speaker) == "en" else "assets/acks"
+        _ack_files = _glob.glob(f"{_ack_dir}/ack_*.mp3")
+        if not _ack_files:
+            return
+
+        async with self.playback_lock:
+            # double-check：等到 lock 後狀態可能變了
+            if _vc.is_playing():
+                return
+            try:
+                _vc.play(discord.FFmpegPCMAudio(random.choice(_ack_files)))
+            except Exception as _e:
+                logger.warning(f"[NemoClaw] ack 播放失敗（忽略）：{_e}")
+
     async def _handle_nemoclaw_query(self, speaker: str, raw_query: str):
         """NemoClaw 語音查詢全流程：鑑權 → 去重 → 序列化 → CLI → TTS + 文字頻道。"""
         # P0: 鑑權 — 只允許主人的語音指令（在鎖外先做，快速拒絕）
@@ -3056,16 +3086,7 @@ class VoiceController(commands.Cog):
             logger.info(f"[NemoClaw] {speaker} 正在排隊等待上一個 openclaw 完成...")
         else:
             # 立即播 ack 音效（NemoClaw 確認回應，遮掩 openclaw 啟動延遲）
-            _vc = discord.utils.get(self.bot.voice_clients)
-            if _vc and _vc.is_connected() and not _vc.is_playing():
-                try:
-                    import glob as _glob
-                    _ack_dir = "assets/acks_en" if self._speaker_lang.get(speaker) == "en" else "assets/acks"
-                    _ack_files = _glob.glob(f"{_ack_dir}/ack_*.mp3")
-                    if _ack_files:
-                        _vc.play(discord.FFmpegPCMAudio(random.choice(_ack_files)))
-                except Exception:
-                    pass
+            await self._play_nemoclaw_ack(speaker)
         async with self._nemo_lock:
             logger.info(f"[NemoClaw] {speaker} → 查詢: {clean_query!r}")
 
@@ -5704,33 +5725,70 @@ class VoiceController(commands.Cog):
         except Exception as e:
             logger.error(f"⚠️ [Radio Cleanup] 刪除暫存檔失敗: {e}")
 
-    async def self_restart(self, reason: str = "未知原因", force: bool = False):
+    async def self_restart(self, reason: str = "未知原因", force: bool = False, pull: bool = True):
+        """物理重啟流程。
+
+        關鍵不變式：**無論 pre-execv 任何步驟失敗，必須走到 os.execv**。
+        以前 memory.flush() 在 SQLite 重構過渡期會噴 AttributeError，
+        導致 /marvin_reboot 卡死沒重啟（log 留下 "已執行重啟" 但其實沒有）。
+        現在所有 pre-execv 步驟都被 try/except 包住。
+        """
         if not force and (time.time() - getattr(self.bot, "last_restart_time", 0) < 900): return
-        
+
         logger.critical(f"🚀 [Restart] 正在執行進程級重啟，原因：{reason}")
         if self.active_text_channel:
             try: await self.active_text_channel.send(f"⚠️ **【系統診斷：聽覺異常】**\n軟修復失效，正在執行物理重啟 ({reason}) 以重新同步金鑰。")
             except: pass
 
         # 1. 原子性數據保護：強制存入記憶
-        logger.info("💾 [Restart] 正在執行最後的記憶存檔...")
-        self.bot.router.memory._save_data()
-        
-        # 2. 釋放資源與關閉連線 (避免幽靈機器人殘留)
+        # SQLite per-mutation 已自動 commit；flush() 是 API 相容用的 no-op。
+        # 包 try/except 是為了任何 MemoryManager 過渡版本（含 deprecated method）也不卡 restart。
+        try:
+            logger.info("💾 [Restart] 正在執行最後的記憶存檔...")
+            self.bot.router.memory.flush()
+        except Exception as e:
+            logger.error(f"❌ [Restart] memory.flush() 失敗（不阻斷重啟流程）: {e}")
+
+        # 2. git pull 拿最新 code（pull=False 可關閉，例如 dev 階段不想動 working tree）
+        if pull:
+            try:
+                logger.info("📥 [Restart] 正在 git pull 拿最新 code...")
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "pull", "--ff-only", "origin",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15.0)
+                out = stdout.decode("utf-8", errors="replace").strip()
+                logger.info(f"📥 [Restart] git pull 結果（rc={proc.returncode}）:\n{out}")
+                if self.active_text_channel:
+                    try:
+                        await self.active_text_channel.send(
+                            f"📥 git pull (rc={proc.returncode}):\n```\n{out[:1500]}\n```"
+                        )
+                    except Exception:
+                        pass
+            except asyncio.TimeoutError:
+                logger.error("❌ [Restart] git pull 超時 15s（不阻斷重啟）")
+            except Exception as e:
+                logger.error(f"❌ [Restart] git pull 失敗（不阻斷重啟）: {e}")
+
+        # 3. 釋放資源與關閉連線（避免幽靈機器人殘留）
         try:
             logger.info("🔌 [Restart] 正在切斷 Discord 連線...")
             await self.bot.close()
         except Exception as e:
-            logger.error(f"❌ [Restart] 關閉連店時發生異常 (忽略並啟動 execv): {e}")
+            logger.error(f"❌ [Restart] 關閉連線時發生異常（忽略並啟動 execv）: {e}")
 
-        # 3. 物理進程替換
-        logger.critical("☢️ [Restart] 執行 os.execv，程序替換中...")
-        args = sys.argv[:]
-        # 確保 argv[0] 是 Python 直譯器或腳本路徑，保持環境一致性
-        if not args[0].endswith('.py'):
-             # 可能是直接執行 main_discord.py
-             pass
-        os.execv(sys.executable, [sys.executable] + args)
+        # 4. 物理進程替換（最後一道，沒退路）
+        try:
+            logger.critical("☢️ [Restart] 執行 os.execv，程序替換中...")
+            args = sys.argv[:]
+            os.execv(sys.executable, [sys.executable] + args)
+        except Exception as e:
+            # execv 不該失敗，若真失敗 bot 會死；至少留下 log 線索
+            logger.critical(f"☢️ [Restart] os.execv 失敗！bot 將終結: {e}")
+            raise
 
     # 🚀 [T-04 Fix] _check_and_play_budget_alerts() 已移除（孤島死碼，整個 codebase 無呼叫點）。
 
