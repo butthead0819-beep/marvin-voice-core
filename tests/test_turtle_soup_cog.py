@@ -315,3 +315,127 @@ async def test_fire_verdict_sequence_uses_correct_sfx_per_verdict():
         for _ in range(5):
             await asyncio.sleep(0)
         assert captured == [expected_sfx]
+
+
+# ── hint_request intent + idle timer ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_voice_hint_request_intent_dispatches_handler():
+    import asyncio
+    cog = _make_cog()
+    cog._engine = AsyncMock()
+    cog._engine.request_hint = AsyncMock(return_value="想想他的身體特徵。")
+    cog._session = _make_session(TurtleSoupState.ASKING)
+    cog._session.hints_given = 1
+
+    vc_mock = AsyncMock()
+    cog.bot.cogs.get.side_effect = lambda name: vc_mock if name == "VoiceController" else None
+
+    ok = await cog.receive_voice_answer_by_speaker("Alice", "請問可以給我提示嗎")
+    assert ok is True
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    cog._engine.request_hint.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_hint_request_handler_plays_sfx_tts_when_hint_returned():
+    import asyncio
+    cog = _make_cog()
+    cog._engine = AsyncMock()
+    cog._engine.request_hint = AsyncMock(return_value="想想他的身體特徵。")
+    cog._session = _make_session(TurtleSoupState.ASKING)
+    cog._session.hints_given = 1  # 模擬已 +1 後
+
+    vc_mock = AsyncMock()
+    cog.bot.cogs.get.side_effect = lambda name: vc_mock if name == "VoiceController" else None
+
+    events = []
+    cog._play_sfx = AsyncMock(side_effect=lambda n: events.append(f"SFX:{n}"))
+    cog._fire_tts = AsyncMock(side_effect=lambda v, t: events.append(f"TTS:{t}"))
+
+    await cog._handle_hint_request(source="player")
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    assert events[0] == "SFX:fanfare"
+    assert any("提示" in e for e in events)
+    cog._channel.send.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_hint_request_exhausted_player_gets_response():
+    """玩家要 hint 但已用完 → 回「給完」訊息。"""
+    cog = _make_cog()
+    cog._engine = AsyncMock()
+    cog._engine.request_hint = AsyncMock(return_value=None)
+    cog._session = _make_session(TurtleSoupState.ASKING)
+    cog._fire_verdict_sequence = AsyncMock()
+
+    await cog._handle_hint_request(source="player")
+    cog._fire_verdict_sequence.assert_called_once()
+    args, _ = cog._fire_verdict_sequence.call_args
+    assert "給完" in args[1] or "完" in args[1]
+
+
+@pytest.mark.asyncio
+async def test_hint_request_exhausted_idle_silent():
+    """idle timer 觸發但 hint 已用完 → 靜默，不再打擾。"""
+    cog = _make_cog()
+    cog._engine = AsyncMock()
+    cog._engine.request_hint = AsyncMock(return_value=None)
+    cog._session = _make_session(TurtleSoupState.ASKING)
+    cog._fire_verdict_sequence = AsyncMock()
+
+    await cog._handle_hint_request(source="idle")
+    cog._fire_verdict_sequence.assert_not_called()
+    cog._channel.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_idle_timer_fires_auto_hint_after_interval():
+    """idle timer 跑完 → 自動呼叫 _handle_hint_request。"""
+    import asyncio
+    cog = _make_cog()
+    cog._engine = MagicMock()
+    cog._session = _make_session(TurtleSoupState.ASKING)
+    cog._handle_hint_request = AsyncMock()
+    cog._IDLE_HINT_INTERVAL = 0.01  # 加速測試
+
+    cog._start_idle_hint_timer()
+    await asyncio.sleep(0.05)
+
+    cog._handle_hint_request.assert_called_once_with(source="idle")
+
+
+@pytest.mark.asyncio
+async def test_idle_timer_cancelled_on_new_question():
+    """玩家問問題 → idle timer 應被取消重啟。"""
+    import asyncio
+    cog = _make_cog()
+    cog._engine = AsyncMock()
+    cog._session = _make_session(TurtleSoupState.ASKING)
+    cog._handle_hint_request = AsyncMock()
+    cog._IDLE_HINT_INTERVAL = 0.1
+
+    cog._start_idle_hint_timer()
+    first_task = cog._idle_hint_task
+    # 玩家問問題之前 timer 已啟動
+    assert first_task is not None
+    assert not first_task.done()
+
+    # 模擬玩家問題重啟 timer
+    cog._start_idle_hint_timer()
+    # 第一個 task 應被取消
+    await asyncio.sleep(0)
+    assert first_task.cancelled() or first_task.done()
+
+
+@pytest.mark.asyncio
+async def test_idle_timer_no_op_outside_asking_state():
+    cog = _make_cog()
+    cog._engine = MagicMock()
+    cog._session = _make_session(TurtleSoupState.JOINING)
+    cog._start_idle_hint_timer()
+    assert cog._idle_hint_task is None

@@ -51,6 +51,7 @@ class TurtleSoupSession:
     end_reason: EndReason | None = None
     end_narration: str = ""              # GAME_OVER 時 Marvin 公布湯底前的台詞
     max_questions: int = 50              # 硬上限
+    hints_given: int = 0                 # 已給出的提示數（玩家主動 + idle timer）
 
     @property
     def questions_count(self) -> int:

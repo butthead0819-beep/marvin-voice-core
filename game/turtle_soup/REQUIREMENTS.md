@@ -30,6 +30,7 @@
 - 4 階段 state machine：`IDLE → JOINING → PRESENTING → ASKING → GAME_OVER`
 - LLM judge 3 verdict：`yes` / `no` / `irrelevant`
 - 玩家用「**請問**」開頭的句子發問（語音 / 鍵盤皆可）；沒前綴的句子視為玩家間討論，**不送 LLM、不播 SFX/TTS、完全忽略**
+- **Hint 系統**（v0.3）：玩家說「請問給我提示 / 線索」可主動要 hint；60 秒沒人發問 Marvin 自動給。Hints 從題目 puzzle.hints 按順序由弱到強取，用完不再給
 - 「投降」結束：玩家喊「我投降」/「不玩了」→ Marvin 公布湯底
 - 「最終猜答」結束：玩家喊「答案是 ...」格式 → LLM 判定接受 / 駁回
 - 50 題硬上限（接近時 Marvin 主動提示「再 N 題就強制結束」）
@@ -209,6 +210,7 @@ def classify_intent(text: str) -> dict:
 - `ignore`：< 3 字或純語助詞「嗯」「啊」「對啊」
 - `surrender`：任意位置含「投降」/「不玩了」/「放棄」/「認輸」/「棄權」
 - `final_answer`：開頭為「答案是」/「我認為答案是」/「我覺得是」/「我猜是」
+- `hint_request`：開頭為問題前綴，**且** payload 含「提示」/「線索」→ 觸發 hint，不送 LLM judge
 - `question`：開頭為「請問」/「我想問」/「問一下」/「我問你」/「我可以問」等
 - `discussion`：以上皆非 → 視為玩家間討論，cog 收到後**完全忽略**（不送 LLM、不播 SFX/TTS）
 

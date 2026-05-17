@@ -282,6 +282,31 @@ async def receive_voice_answer_by_speaker(self, speaker, text):
 
 Embed footer 與 Marvin 念完湯面後的 TTS 都會明確提醒「請用『請問』開頭發問」。
 
+**Hint 系統（v0.3 新增）**：
+
+兩條觸發路徑共用同一個 `_handle_hint_request(source)`：
+- **玩家主動**：「請問給我一個提示」/ 「請問可以給線索嗎」→ voice_parse 抓 hint_request intent → cog dispatch
+- **idle timer**：進 ASKING 後 `asyncio.sleep(60)`，60s 內任何 user 活動會 cancel & restart timer；timer 跑完且仍在 ASKING → auto 觸發
+
+```
+engine.request_hint() → 從 puzzle.hints[session.hints_given] 取，並 +1
+                     → 用完回 None
+cog._handle_hint_request(source="player" | "idle")
+  ├─ hint != None：播 fanfare SFX → TTS「提示 N：...」→ 貼 embed
+  │                 → 重啟 idle timer
+  └─ hint == None：
+       source="player" → 回「提示已經給完，剩下的自己想吧」
+       source="idle"   → 靜默（不打擾，避免循環敲門）
+```
+
+Hint 不消耗 max_questions 配額（v0 沒計分，所以 hint 是免費的）。v3 加計分後 hint 會有分數懲罰。
+
+**idle timer 生命週期**：
+- `on_state_change(ASKING)` 啟動 timer
+- 每次 question / hint_request / surrender / final_answer 都 reset
+- `on_state_change(GAME_OVER)` 取消 timer
+- `_cancel_tasks()` 也會連帶取消（透過 `_idle_hint_task` 引用）
+
 ---
 
 ## 7. Cog 與 Discord 整合

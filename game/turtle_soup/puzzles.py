@@ -15,12 +15,14 @@ class Puzzle:
     key_facts 構成正確答案的關鍵事實清單；玩家的「最終猜答」需 cover ≥ 2 個核心
               （索引 0 和 1）才算通過
     leak_keywords narration 後處理的禁用詞，命中且問題不含時改寫
+    hints    手寫提示，由弱到強排序。玩家或 idle timer 觸發時依序提供
     """
     id: str
     surface: str
     truth: str
     key_facts: list[str] = field(default_factory=list)
     leak_keywords: list[str] = field(default_factory=list)
+    hints: list[str] = field(default_factory=list)
 
 
 ELEVATOR_18F = Puzzle(
@@ -45,6 +47,12 @@ ELEVATOR_18F = Puzzle(
         "有人陪同搭電梯時可以直達 22 樓",            # index 4：bonus
     ],
     leak_keywords=["侏儒", "矮", "身材", "按鈕", "夠不到", "構不著", "按不到"],
+    hints=[
+        # 由弱到強。給完用完不再給。
+        "想想他的「身體」有什麼特別。",
+        "為什麼他早上能搭電梯到 1 樓，晚上卻不能到 22 樓？兩個動作有什麼差別？",
+        "如果電梯裡有別人，他就可以直達 22 樓。獨自一人時為什麼不行？",
+    ],
 )
 
 

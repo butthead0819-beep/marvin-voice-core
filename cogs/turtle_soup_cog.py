@@ -92,6 +92,9 @@ class TurtleJoinView(discord.ui.View):
 # ── Cog ───────────────────────────────────────────────────────────────────────
 
 class TurtleSoupCog(commands.Cog):
+    # idle timer：N 秒沒新活動 → Marvin 主動給 hint
+    _IDLE_HINT_INTERVAL = 60.0
+
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self._engine: Optional[TurtleSoupEngine] = None
@@ -102,6 +105,8 @@ class TurtleSoupCog(commands.Cog):
         # FIFO inflight cap：同時最多 N 個 judge 進行中
         self._asking_inflight = 0
         self._MAX_ASKING_INFLIGHT = 3
+        # Idle hint timer：每次活動 reset
+        self._idle_hint_task: Optional[asyncio.Task] = None
 
     # ── Task helpers ──────────────────────────────────────────────────────────
 
@@ -179,6 +184,7 @@ class TurtleSoupCog(commands.Cog):
                 "• 玩家發問必須用「**請問**」開頭，Marvin 才會判定 yes / no / 無關\n"
                 "  （討論、自言自語不用開頭，會被忽略）\n"
                 "• 想到答案直接喊「**答案是 XXX**」，喊「**我投降**」結束\n"
+                "• 卡住可說「**請問給我一個提示**」要 hint，或 60 秒沒人問 Marvin 會主動給\n"
                 "• 上限 50 題"
             ),
             color=C_JOINING,
@@ -212,7 +218,7 @@ class TurtleSoupCog(commands.Cog):
                 emoji = VERDICT_EMOJI.get(q.verdict, "?")
                 lines.append(f"{emoji} **{q.asker_name}**: {q.question} → {q.narration}")
             e.add_field(name="最近問答", value="\n".join(lines), inline=False)
-        e.set_footer(text="提問請用「請問」開頭。「答案是 XXX」嘗試猜答。「我投降」結束。")
+        e.set_footer(text="「請問 XXX」發問 ・「請問給我一個提示」要 hint ・「答案是 XXX」猜答 ・「我投降」結束")
         return e
 
     def _build_game_over_embed(self, session: TurtleSoupSession) -> discord.Embed:
@@ -273,8 +279,10 @@ class TurtleSoupCog(commands.Cog):
 
         elif state == TurtleSoupState.ASKING:
             await self._post_or_edit(self._build_asking_embed(session))
+            self._start_idle_hint_timer()
 
         elif state == TurtleSoupState.GAME_OVER:
+            self._cancel_idle_hint_timer()
             self._cancel_tasks()
             await self._post_or_edit(self._build_game_over_embed(session))
             self._spawn(self._announce_truth_and_cleanup())
@@ -284,10 +292,11 @@ class TurtleSoupCog(commands.Cog):
         vc = self.bot.cogs.get("VoiceController")
         if vc is not None and self._engine and self._engine.puzzle:
             await self._fire_tts(vc, self._engine.puzzle.surface)
-            # 規則提示：避免玩家不知道要用「請問」開頭
+            # 規則提示：避免玩家不知道要用「請問」開頭、不知道可以要 hint
             await self._fire_tts(
                 vc,
-                "請用「請問」開頭發問。討論或自言自語我會忽略。"
+                "請用「請問」開頭發問，討論我會忽略。"
+                "卡住可說「請問給我一個提示」，或一段時間沒人問我會主動給。"
             )
         if self._engine and self._session and self._session.state == TurtleSoupState.PRESENTING:
             await self._engine.begin_asking()
@@ -369,10 +378,17 @@ class TurtleSoupCog(commands.Cog):
             return False
 
         if intent == "surrender":
+            self._cancel_idle_hint_timer()
             await self._engine.surrender(self._resolve_user_id(speaker), speaker)
             return True
 
+        if intent == "hint_request":
+            self._cancel_idle_hint_timer()
+            self._spawn(self._handle_hint_request(source="player"))
+            return True
+
         if intent == "final_answer":
+            self._cancel_idle_hint_timer()
             self._spawn(self._handle_final_guess(speaker, payload))
             return True
 
@@ -384,6 +400,8 @@ class TurtleSoupCog(commands.Cog):
                         f"⚠️ **{speaker}**：Marvin 還在想上一題，請稍等再問。"
                     )
                 return False
+            # 有人問問題 → 重啟 idle timer
+            self._start_idle_hint_timer()
             self._spawn(self._handle_question(speaker, payload))
             return True
 
@@ -425,6 +443,64 @@ class TurtleSoupCog(commands.Cog):
             await self._fire_verdict_sequence("no", result["narration"] or "差一點，繼續想。")
         except Exception as e:
             logger.error(f"[TurtleSoup] handle_final_guess 失敗: {e}")
+
+    # ── Hint handling ─────────────────────────────────────────────────────────
+
+    async def _handle_hint_request(self, source: str = "player"):
+        """玩家或 idle timer 觸發。從 engine 拿下一條 hint，播 TTS + 貼 embed。"""
+        if not self._engine or not self._session:
+            return
+        hint = await self._engine.request_hint()
+        vc = self.bot.cogs.get("VoiceController")
+
+        if hint is None:
+            # 提示用完
+            if source == "player":
+                # 只有玩家主動要時才回應「用完了」，避免 idle timer 重複打擾
+                await self._fire_verdict_sequence(
+                    "irrelevant", "提示已經給完，剩下的自己想吧。",
+                )
+            return
+
+        idx = self._session.hints_given  # request_hint 已 +1
+        announce = f"提示 {idx}：{hint}"
+        # Hint 用 fanfare 短鈴聲標示，避免和 yes/no SFX 混淆
+        await self._play_sfx("fanfare")
+        if vc is not None:
+            await self._fire_tts(vc, announce)
+        if self._channel:
+            await self._channel.send(f"💡 **提示 #{idx}**：{hint}")
+        # 給完 hint 後重啟 idle timer
+        self._start_idle_hint_timer()
+
+    # ── Idle hint timer ───────────────────────────────────────────────────────
+
+    def _start_idle_hint_timer(self):
+        """重啟 idle timer：上次活動後 N 秒沒新動作 → Marvin 主動給 hint。"""
+        self._cancel_idle_hint_timer()
+        if self._engine and self._session and self._session.state == TurtleSoupState.ASKING:
+            self._idle_hint_task = self._spawn(self._idle_hint_loop())
+
+    def _cancel_idle_hint_timer(self):
+        if self._idle_hint_task and not self._idle_hint_task.done():
+            self._idle_hint_task.cancel()
+        self._idle_hint_task = None
+
+    async def _idle_hint_loop(self):
+        try:
+            await asyncio.sleep(self._IDLE_HINT_INTERVAL)
+            if (
+                self._session is not None
+                and self._session.state == TurtleSoupState.ASKING
+                and self._engine is not None
+            ):
+                logger.info(
+                    "[TurtleSoup] idle %ss → auto hint",
+                    self._IDLE_HINT_INTERVAL,
+                )
+                await self._handle_hint_request(source="idle")
+        except asyncio.CancelledError:
+            pass
 
     async def _fire_verdict_sequence(self, verdict: str, narration: str):
         """SFX → TTS 序列播放（沿 Busted99 SFX chain pattern）。"""

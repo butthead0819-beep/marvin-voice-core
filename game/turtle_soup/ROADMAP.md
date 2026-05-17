@@ -48,11 +48,15 @@
 
 prompt 改寫：需要更精準的 verdict 判定規則。REPL 重新校準。
 
-#### 2. Hint 系統
-- 玩家 60 秒無動作 → Marvin 主動丟一個方向提示
-- 玩家可主動 `/turtle_hint` → 拿一個提示（v1 採無懲罰版，v3 才綁計分）
-- Hint 不直接洩底，給「方向關鍵詞」
-- 由 LLM 生成，可預生（PRESENTING 階段就請 LLM 生 3-5 個 hint 候選）
+#### 2. ~~Hint 系統~~（已於 v0.3 提前實作）
+~~v1 規劃：玩家 60 秒無動作 → Marvin 主動丟一個方向提示；玩家可主動 `/turtle_hint`~~
+
+**實際進度**：v0.3 已實作 hardcoded hints 版本（puzzle.hints 由弱到強）：
+- 玩家說「請問給我提示 / 線索」→ voice_parse hint_request intent → engine.request_hint
+- 60s idle timer → auto-trigger 同一 handler
+- Hint 用完玩家主動要會回「給完了」；idle 觸發則靜默
+
+v1 升級項目：改 LLM 生成 hint（看 truth + asked_history 動態生），不用每題手寫
 
 #### 3. Dispute 機制
 玩家覺得 Marvin 判錯時：

@@ -134,3 +134,32 @@ def test_question_prefix_strips_trailing_punctuation():
     result = classify_intent("請問，他是不是侏儒")
     assert result["intent"] == "question"
     assert result["payload"] == "他是不是侏儒"
+
+
+# ── hint_request（必須含「請問」+ 提示關鍵詞）─────────────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "請問可以給我提示嗎",
+    "請問給我一個提示",
+    "請問再給一個提示",
+    "請問提示",
+    "請問可以給我線索嗎",
+    "我想問可以給點提示嗎",
+])
+def test_hint_request_intent_with_question_prefix_and_hint_keyword(text):
+    from game.turtle_soup.voice_parse import classify_intent
+    result = classify_intent(text)
+    assert result["intent"] == "hint_request"
+
+
+def test_hint_keyword_without_question_prefix_is_discussion():
+    """「給我提示」沒「請問」前綴 → discussion（要 hint 一定要有禮貌）。"""
+    from game.turtle_soup.voice_parse import classify_intent
+    result = classify_intent("給我一個提示")
+    assert result["intent"] == "discussion"
+
+
+def test_question_without_hint_keyword_remains_question():
+    from game.turtle_soup.voice_parse import classify_intent
+    result = classify_intent("請問他是侏儒嗎")
+    assert result["intent"] == "question"

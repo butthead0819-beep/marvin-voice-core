@@ -327,3 +327,89 @@ async def test_no_verdict_skips_auto_win_check():
         await eng.submit_question("u1", "Alice", "他害怕電梯嗎？")
 
     final_mock.assert_not_called()
+
+
+# ── request_hint ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_request_hint_returns_first_hint_in_order():
+    from game.turtle_soup.engine import TurtleSoupEngine
+    eng = TurtleSoupEngine(
+        session=_new_session(), puzzle=ELEVATOR_18F, on_state_change=_stub_callback(),
+    )
+    await eng.start_game()
+    await eng.add_player("u1", "Alice")
+    await eng.begin_presenting()
+    await eng.begin_asking()
+
+    hint = await eng.request_hint()
+    assert hint == ELEVATOR_18F.hints[0]
+    assert eng.session.hints_given == 1
+
+
+@pytest.mark.asyncio
+async def test_request_hint_advances_through_list():
+    from game.turtle_soup.engine import TurtleSoupEngine
+    eng = TurtleSoupEngine(
+        session=_new_session(), puzzle=ELEVATOR_18F, on_state_change=_stub_callback(),
+    )
+    await eng.start_game()
+    await eng.add_player("u1", "Alice")
+    await eng.begin_presenting()
+    await eng.begin_asking()
+
+    hints = []
+    for _ in range(len(ELEVATOR_18F.hints)):
+        hints.append(await eng.request_hint())
+
+    assert hints == list(ELEVATOR_18F.hints)
+
+
+@pytest.mark.asyncio
+async def test_request_hint_returns_none_when_exhausted():
+    from game.turtle_soup.engine import TurtleSoupEngine
+    eng = TurtleSoupEngine(
+        session=_new_session(), puzzle=ELEVATOR_18F, on_state_change=_stub_callback(),
+    )
+    await eng.start_game()
+    await eng.add_player("u1", "Alice")
+    await eng.begin_presenting()
+    await eng.begin_asking()
+
+    for _ in range(len(ELEVATOR_18F.hints)):
+        await eng.request_hint()
+    # 第 N+1 次應該回 None
+    assert await eng.request_hint() is None
+
+
+@pytest.mark.asyncio
+async def test_request_hint_rejected_outside_asking():
+    from game.turtle_soup.engine import TurtleSoupEngine
+    eng = TurtleSoupEngine(
+        session=_new_session(), puzzle=ELEVATOR_18F, on_state_change=_stub_callback(),
+    )
+    await eng.start_game()
+    # JOINING 階段不能要 hint
+    assert await eng.request_hint() is None
+    assert eng.session.hints_given == 0
+
+
+@pytest.mark.asyncio
+async def test_request_hint_does_not_count_toward_max_questions():
+    """提示請求不消耗 max_questions 配額。"""
+    from game.turtle_soup.engine import TurtleSoupEngine
+    session = _new_session()
+    session.max_questions = 5
+    eng = TurtleSoupEngine(
+        session=session, puzzle=ELEVATOR_18F, on_state_change=_stub_callback(),
+    )
+    await eng.start_game()
+    await eng.add_player("u1", "Alice")
+    await eng.begin_presenting()
+    await eng.begin_asking()
+
+    for _ in range(3):
+        await eng.request_hint()
+
+    assert eng.session.questions_count == 0
+    assert eng.session.state == TurtleSoupState.ASKING
