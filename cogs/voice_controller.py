@@ -3376,6 +3376,10 @@ class VoiceController(commands.Cog):
         )
         _winner = await self._intent_bus.dispatch(_bus_ctx)
         if _winner:
+            # B1: bus 接走 intent → LLM 路徑不會跑 → 取消 dangling speculative
+            # prefetch（避免吃 LLM quota；且防 1976 行 race 把舊 result 帶到
+            # 下次 chat turn 變成幻覺起手回答）
+            self._cancel_stale_prefetch(speaker)
             return  # bus 已執行 winner.handler()
 
         # 🎭 [Impression Show Fast-Track] 偵測「模仿 X」指令
@@ -3732,20 +3736,53 @@ class VoiceController(commands.Cog):
         if ch:
             await ch.send(f"💬 **【馬文·音樂資訊】** {reply}")
 
+    _MUSIC_KW_NOISE_WINDOW = 6  # 命令詞可容忍 ≤6 char noise prefix（"好煩，馬文，"=6 剛好）
+
     def _extract_music_search_query(self, query: str) -> str:
-        """從語音指令中剝離喚醒詞和命令詞，剩下的作為搜尋關鍵字。"""
+        """從語音指令中剝離喚醒詞、noise prefix、命令詞，剩下的作為搜尋關鍵字。
+
+        5/18 incident：STT 把「麻煩/把我/好煩」這類語助詞留在播放詞前，
+        startswith 不命中 → 整段 noise 進 yt-dlp 搜「麻煩播放陶喆的天天」
+        → yt 選到「Susan說」「浪流連」等錯歌。
+
+        修法：在 head 視窗（≤_MUSIC_KW_NOISE_WINDOW chars）內掃所有
+        music kw，取「end 位置最遠」者切掉「noise + kw」整段。
+        """
         t = self._strip_wake_word(query)
-        # 移除命令詞前綴
         cmd_prefixes = self._MUSIC_PLAY_KW + ["音樂", "歌曲", "一首", "首歌"]
-        for prefix in sorted(cmd_prefixes, key=len, reverse=True):
-            if t.lower().startswith(prefix):
-                t = t[len(prefix):].lstrip("：: ，,、")
-                break
+        head_lower = t[: self._MUSIC_KW_NOISE_WINDOW + max(len(p) for p in cmd_prefixes)].lower()
+        best_end = -1
+        for prefix in cmd_prefixes:
+            idx = head_lower.find(prefix.lower())
+            if 0 <= idx <= self._MUSIC_KW_NOISE_WINDOW:
+                end = idx + len(prefix)
+                if end > best_end:
+                    best_end = end
+        if best_end > 0:
+            t = t[best_end:].lstrip("：: ，,、")
         # 移除常見後綴語助詞
         for suffix in ["好嗎", "可以嗎", "謝謝", "吧", "呢"]:
             if t.endswith(suffix):
                 t = t[:-len(suffix)]
         return t.strip()
+
+    def _cancel_stale_prefetch(self, speaker: str) -> None:
+        """B1: bus 接走 intent 時，取消 dangling speculative LLM prefetch。
+
+        Why: speculative prefetch 在 wake hit 那刻就啟動（避免 LLM 冷啟動）。
+        若 bus dispatch 接走（music / nemoclaw），LLM 路徑跑不到，prefetch task
+        會變孤兒 — 繼續跑燒 quota，且 1976 行 race window 內可能被下次 chat
+        turn 拿來當起手回應（幻覺）。
+
+        How: 從 router._pending_prefetch dict 取出該 speaker 的 task，若還沒
+        done 就 cancel；無論如何都從 dict 移除。
+        """
+        prefetch_map = getattr(self.bot.router, "_pending_prefetch", None)
+        if not isinstance(prefetch_map, dict):
+            return
+        task = prefetch_map.pop(speaker, None)
+        if task is not None and not task.done():
+            task.cancel()
 
     _MUSIC_CMD_DEDUP_WINDOW = 5.0  # 秒
 
