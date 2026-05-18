@@ -187,3 +187,63 @@ async def test_handler_calls_controller_with_control_cmd():
     await bid.handler()
     args = ctrl._handle_voice_music_command.await_args
     assert args.args[2] == "skip"
+
+
+# ── A: demonstrative pronouns + 常見口語 token blocklist ────────────────
+
+@pytest.mark.parametrize("query", [
+    "我覺得我們應該播放這個",  # demonstrative + 對話脈絡
+    "播放那個",                # demonstrative
+    "幫我找東西",              # 常見口語
+    "播放它",
+    "播放他",
+    "播放什麼",
+])
+def test_demonstrative_pronoun_targets_block_bid(query):
+    """弱訊號 play 後跟 demonstrative pronoun / 口語通用詞 → 不該誤接。"""
+    agent, _ = _agent()
+    bid = agent.bid(_ctx(query))
+    assert bid is None, f"'{query}' 不該被當點歌"
+
+
+# ── B: STT 重複幻覺 guard ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("query", [
+    "播放陶喆 陶喆 陶喆 陶喆",                          # artist 重複 4x
+    "播放陶喆的天天 陶喆的天天 陶喆的天天",              # 整段重複 3x
+    "播放陶喆的天天陶喆的天天陶喆的天天",                # 無分隔重複 3x
+    "馬文播放,馬文播放,馬文播放,馬文播放",              # STT loop
+])
+def test_repetitive_query_does_not_bid(query):
+    """STT 重複幻覺（任一 3+ 字 substring 出現 ≥3 次）→ 不出價。"""
+    agent, _ = _agent()
+    bid = agent.bid(_ctx(query))
+    assert bid is None, f"重複幻覺 '{query}' 不該出價"
+
+
+@pytest.mark.parametrize("query", [
+    "播放陶喆的天天",          # 弱訊號 + marker 正常
+    "播放陶喆的小鎮姑娘",      # 弱訊號 + marker 正常
+    "來首陶喆的歌",            # 強訊號正常
+    "我想聽周杰倫的稻香",      # 弱訊號 + marker 正常
+])
+def test_normal_query_still_bids(query):
+    """確保 repetition guard 沒誤殺正常 query。"""
+    agent, _ = _agent()
+    bid = agent.bid(_ctx(query))
+    assert bid is not None, f"正常 query '{query}' 應該照常出價"
+
+
+def test_short_query_not_flagged_repetitive():
+    """過短的 query 即使有重複字也不該被當幻覺（避免誤殺）。"""
+    agent, _ = _agent()
+    bid = agent.bid(_ctx("來首陶喆的歌"))
+    assert bid is not None
+
+
+def test_song_title_with_internal_repetition_ok():
+    """歌名裡本來就有重複字（不到 3 次）不該被誤判。"""
+    agent, _ = _agent()
+    # "我我我" 連續 3 次的歌名是 corner case，這個測試確認一般 case 不誤殺
+    bid = agent.bid(_ctx("播放陶喆的我愛你"))
+    assert bid is not None
