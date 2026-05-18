@@ -5265,11 +5265,14 @@ class VoiceController(commands.Cog):
     async def _resolve_yt_query(self, query: str) -> dict | None:
         """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。
 
-        文字搜尋先打 ytmsearch5（YouTube Music），0 命中才 fallback 到 ytsearch5
-        （一般 YouTube）。理由：YT Music 跟一般 YouTube 是不同 catalog，冷門歌
-        或重新上傳版本在 YT Music 有但 ytsearch5 可能 0 命中。
-        5 候選用 music_search.pick_best_music_candidate 評分過濾。
+        文字搜尋打 ytsearch5（一般 YouTube）取 5 候選，用
+        music_search.pick_best_music_candidate 評分過濾。
         URL 直接解析（信任 user 選擇）。
+
+        註：曾嘗試 ytmsearch5: 解 Bug 2「YT Music 找得到但 ytsearch 沒」，
+        但 yt-dlp 2026.03.17 沒有 ytmsearch: extractor，每次拋
+        NoSupportingHandlers 觸發 Errno 11 EDEADLK。等找到正確 YT Music 入口
+        再加。
         """
         import yt_dlp
         from music_search import pick_best_music_candidate
