@@ -3313,7 +3313,7 @@ class VoiceController(commands.Cog):
             return
 
         # 🎭 [Impression Show Fast-Track] 偵測「模仿 X」指令
-        known_players = list(self.bot.router.memory.data.get("players", {}).keys())
+        known_players = self.bot.router.memory.list_players()
         _imitate_target = detect_imitation_target(query, known_players)
         if _imitate_target:
             await self._handle_voice_imitate_command(speaker, _imitate_target)
@@ -3539,23 +3539,63 @@ class VoiceController(commands.Cog):
         "nemo":       {"rate": "+15%", "pitch": "+8Hz"},
     }
 
-    _MUSIC_PLAY_KW   = ["放音樂", "播音樂", "放首歌", "播首歌", "我想聽", "放一首", "播一首",
-                        "來首", "播放", "放點", "播點", "搜尋歌曲", "幫我找", "幫我放",
+    # 強訊號：含明確音樂字眼，substring match 即視為點歌意圖
+    _STRONG_PLAY_KW  = ["放音樂", "播音樂", "放首歌", "播首歌", "放一首", "播一首",
+                        "來首", "搜尋歌曲",
                         "play music", "play song", "play some"]
+    # 弱訊號：通用動作詞，需通過 _query_implies_music_intent gate 才視為點歌
+    _WEAK_PLAY_KW    = ["播放", "我想聽", "放點", "播點", "幫我找", "幫我放"]
+    _MUSIC_PLAY_KW   = _STRONG_PLAY_KW + _WEAK_PLAY_KW  # 保留總表供 _extract_music_search_query 使用
+
     _MUSIC_SKIP_KW   = ["換一首", "下一首", "跳過", "換歌", "不要這首", "skip"]
     _MUSIC_STOP_KW   = ["停止播放", "音樂停", "不要播了", "關掉音樂", "停音樂", "音樂關掉",
                         "stop music", "stop playing"]
     _MUSIC_PAUSE_KW  = ["暫停音樂", "暫停一下", "pause"]
     _MUSIC_RESUME_KW = ["繼續播", "繼續音樂", "播回來", "resume"]
 
+    # 弱訊號 play 命中時，這些詞出現在 query 任一處 → 確認是音樂意圖
+    _MUSIC_INTENT_MARKERS = ("的", "歌", "曲", "音樂", "mv", "ost", "歌詞", "歌手",
+                             "一首", "那首", "這首")
+    # 弱訊號 play 後僅跟著這些詞 → 明確非音樂意圖（要求 query 結尾為此詞）
+    _NON_MUSIC_TARGETS = frozenset(["控制", "清單", "列表", "設定", "選項",
+                                     "畫面", "頁面", "音量", "狀態"])
+
+    def _query_implies_music_intent(self, query: str, matched_kw: str) -> bool:
+        """弱訊號 play 關鍵字命中時的二次驗證，避免 substring 誤匹配。
+
+        通過條件（任一即可）：
+        - query 含明確 music intent marker（"的"/"歌"/"曲"/"音樂"/"MV"... 等）
+        - 弱訊號詞之後的內容 ≥2 字 且結尾不是 UI/系統詞 blocklist
+        """
+        q = query.lower()
+        if any(m in q for m in self._MUSIC_INTENT_MARKERS):
+            return True
+        parts = q.split(matched_kw, 1)
+        if len(parts) < 2:
+            return False
+        after = parts[1].strip("，,、！!？?。. ")
+        if len(after) < 2:
+            return False
+        return after not in self._NON_MUSIC_TARGETS
+
     def _detect_music_command(self, query: str) -> str | None:
-        """回傳 'skip' / 'stop' / 'pause' / 'resume' / 'play'，無命中回傳 None。"""
+        """回傳 'skip' / 'stop' / 'pause' / 'resume' / 'play'，無命中回傳 None.
+
+        檢查順序故意 PAUSE/RESUME 早於 STOP：避免「暫停音樂」被 STOP_KW 的
+        "停音樂" substring 誤匹配為 stop（substring 邊界問題）。
+
+        弱訊號 play 關鍵字需通過 _query_implies_music_intent gate，避免
+        「播放控制」/「播放清單」等 UI 用語被誤判為點歌。
+        """
         q = query.lower()
         if any(kw in q for kw in self._MUSIC_SKIP_KW):   return "skip"
-        if any(kw in q for kw in self._MUSIC_STOP_KW):   return "stop"
         if any(kw in q for kw in self._MUSIC_PAUSE_KW):  return "pause"
         if any(kw in q for kw in self._MUSIC_RESUME_KW): return "resume"
-        if any(kw in q for kw in self._MUSIC_PLAY_KW):   return "play"
+        if any(kw in q for kw in self._MUSIC_STOP_KW):   return "stop"
+        if any(kw in q for kw in self._STRONG_PLAY_KW):  return "play"
+        for kw in self._WEAK_PLAY_KW:
+            if kw in q and self._query_implies_music_intent(q, kw):
+                return "play"
         return None
 
     def _check_song_duplicate(self, url: str, title: str, username: str) -> bool:  # noqa: ARG002
@@ -3571,17 +3611,25 @@ class VoiceController(commands.Cog):
     def _detect_music_direct_command(self, text: str, stream_mode: bool = False) -> dict | None:
         """[IBA Tier 0] 無歧義音樂控制關鍵詞偵測（不需喚醒詞）。
         stream_mode=True 時開放「停一下」等歧義控制詞。
-        回傳 dict（含 action）或 None。"""
+        回傳 dict（含 action）或 None。
+
+        play 分強弱訊號（同 _detect_music_command）：弱訊號需通過
+        _query_implies_music_intent gate，避免「播放控制」誤判為點歌。
+        """
         t = text.lower()
         if any(kw in t for kw in _MUSIC_DIRECT_SKIP_KW):   return {"action": "skip"}
-        if any(kw in t for kw in _MUSIC_DIRECT_STOP_KW):   return {"action": "stop"}
         if any(kw in t for kw in _MUSIC_DIRECT_PAUSE_KW):  return {"action": "pause"}
         if any(kw in t for kw in _MUSIC_DIRECT_RESUME_KW): return {"action": "resume"}
+        if any(kw in t for kw in _MUSIC_DIRECT_STOP_KW):   return {"action": "stop"}
         if stream_mode and any(kw in t for kw in ("停一下", "先停", "停止")):
             return {"action": "stop"}
-        if any(kw in t for kw in self._MUSIC_PLAY_KW):
+        if any(kw in t for kw in self._STRONG_PLAY_KW):
             query = self._extract_music_search_query(text)
             return {"action": "play", "query": query}
+        for kw in self._WEAK_PLAY_KW:
+            if kw in t and self._query_implies_music_intent(t, kw):
+                query = self._extract_music_search_query(text)
+                return {"action": "play", "query": query}
         return None
 
     async def _handle_music_info_query(self, speaker: str, query: str):
