@@ -3663,6 +3663,11 @@ class VoiceController(commands.Cog):
                 return True
         return False
 
+    # IBA-T0 utterance 長度上限。無喚醒詞觸發 → 對 false positive 敏感。
+    # 自然音樂控制句都很短（「跳過」「下一首」「停止播放」≤4 chars），
+    # 長句通常是對話中順帶提到「跳過」「停止」等詞 → 不該觸發。
+    _IBA_T0_MAX_LEN = 15
+
     def _detect_music_direct_command(self, text: str, stream_mode: bool = False) -> dict | None:
         """[IBA Tier 0] 無歧義音樂控制關鍵詞偵測（不需喚醒詞）。
         stream_mode=True 時開放「停一下」等歧義控制詞。
@@ -3670,7 +3675,12 @@ class VoiceController(commands.Cog):
 
         play 分強弱訊號（同 _detect_music_command）：弱訊號需通過
         _query_implies_music_intent gate，避免「播放控制」誤判為點歌。
+
+        長句 (>15 chars) 直接拒絕，避免 substring match 在對話中誤觸發
+        （5/18 incident: 「...直接跳過那個...」被當 skip 指令）。
         """
+        if len(text.strip()) > self._IBA_T0_MAX_LEN:
+            return None
         t = text.lower()
         if any(kw in t for kw in _MUSIC_DIRECT_SKIP_KW):   return {"action": "skip"}
         if any(kw in t for kw in _MUSIC_DIRECT_PAUSE_KW):  return {"action": "pause"}

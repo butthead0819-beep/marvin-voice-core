@@ -168,3 +168,36 @@ def test_direct_command_skip_unchanged():
     result = cog._detect_music_direct_command("下一首")
     assert result is not None
     assert result["action"] == "skip"
+
+
+# ── IBA-T0 長句不該誤觸發 (5/18 incident: "...直接跳過那個..." 被當 skip) ──
+
+@pytest.mark.parametrize("text", [
+    "讀寫資料庫的方式什麼的下什麼指令去讀取那個我都直接跳過那個他比我熟啊怎麼會比我瘦",  # 5/18 真實 case
+    "我覺得我們可以下一首再說但是現在這個還沒講完真的不要這樣",
+    "你之前說的那個事情我整個就跳過了沒有去處理",
+    "我想聽你說完之後再決定要不要做這件事情",
+    "我覺得停止播放這種事情根本不應該由我們決定吧你說對不對",
+])
+def test_direct_command_blocks_long_utterances(text):
+    """IBA-T0 無喚醒詞觸發，長句 (>15 chars) 不該被 substring match 誤接。"""
+    cog = _make_cog()
+    assert cog._detect_music_direct_command(text) is None, \
+        f"長句 ({len(text)} chars) '{text[:30]}...' 不該被當 IBA-T0 直達指令"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("跳過", "skip"),
+    ("下一首", "skip"),
+    ("換一首", "skip"),
+    ("停止播放", "stop"),
+    ("暫停音樂", "pause"),
+    ("繼續播", "resume"),
+    ("放點輕音樂", "play"),
+])
+def test_direct_command_short_utterance_still_works(text, expected):
+    """短句 (≤15 chars) IBA-T0 直達照常運作。"""
+    cog = _make_cog()
+    result = cog._detect_music_direct_command(text)
+    assert result is not None
+    assert result["action"] == expected

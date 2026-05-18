@@ -103,7 +103,7 @@ async def test_dispatch_min_confidence_is_inclusive_at_threshold():
     bus = IntentBus.__new__(IntentBus)  # bypass __init__
     bus.agents = []
     bus.MIN_CONFIDENCE = 0.30
-    bus.logger = logging.getLogger("test")
+    bus.logger = logging.getLogger("cogs.voice_controller.intent_bus")
 
     handler = AsyncMock()
     bus.agents = [_StubAgent("edge", lambda c: _bid("edge", 0.30, handler))]
@@ -153,7 +153,7 @@ async def test_dispatch_logs_bid_summary(caplog):
         _StubAgent("b", lambda c: _bid("b", 0.40)),
         _StubAgent("c", lambda c: None),
     ])
-    with caplog.at_level(logging.INFO, logger="intent_bus"):
+    with caplog.at_level(logging.INFO, logger="cogs.voice_controller.intent_bus"):
         await bus.dispatch(_ctx())
     # 應該至少有一條 log 同時含 winner + bids
     relevant = [r for r in caplog.records if "IntentBus" in r.message]

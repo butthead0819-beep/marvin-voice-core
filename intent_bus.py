@@ -20,7 +20,9 @@ import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
-logger = logging.getLogger("intent_bus")
+# 用 cogs.voice_controller 的子 logger，繼承 main_discord.py 設的 INFO level；
+# 否則 root logger 是 WARNING，INFO 級的 dispatch log 會全部被吞掉。
+logger = logging.getLogger("cogs.voice_controller.intent_bus")
 
 
 @dataclass(frozen=True)
