@@ -3766,6 +3766,38 @@ class VoiceController(commands.Cog):
                 t = t[:-len(suffix)]
         return t.strip()
 
+    async def _ask_music_followup(
+        self, speaker: str, query: str, missing_slots: list[str]
+    ) -> None:
+        """Alexa CanFulfillIntent 風格的 slot followup — bid 帶 missing_slots 時觸發。
+
+        Why: MusicAgent 0.55 case（弱訊號 play + 後續是 artist-only，沒歌名）
+        過去直接打 yt-dlp 賭歌，5/18 抽中「Susan說」「浪流連」等錯歌。改成
+        反問 user 補資料，比亂播好。
+
+        Scope (P1 slim)：
+        - 只貼頻道訊息，不啟 TTS（怕 TTS storm；user 在語音也看得到）
+        - 不存 per-speaker pending state；user 需要重新喚醒講全名
+        - 未知 slot 給通用追問訊息（不該因 slot 名 unknown 就 raise）
+        """
+        ch = self.active_text_channel
+        if ch is None:
+            return
+        if not missing_slots:
+            return  # 防呆：empty list 不該觸發 followup，這裡靜默退場
+        slot_prompts = {
+            "song_title": f"💬 `{speaker}` 你想聽哪一首？再講一次全名比較好搜。",
+            "artist":     f"💬 `{speaker}` 你想聽誰的歌？再講一次。",
+        }
+        prompt = slot_prompts.get(
+            missing_slots[0],
+            f"💬 `{speaker}` 你剛剛說「{query[:30]}」我沒抓到關鍵字，再講一次？",
+        )
+        try:
+            await ch.send(prompt)
+        except Exception as e:
+            logger.warning(f"⚠️ [Music Followup] 貼頻道失敗: {e}")
+
     def _cancel_stale_prefetch(self, speaker: str) -> None:
         """B1: bus 接走 intent 時，取消 dangling speculative LLM prefetch。
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Protocol
 
 # 用 cogs.voice_controller 的子 logger，繼承 main_discord.py 設的 INFO level；
@@ -49,6 +49,9 @@ class Bid:
     confidence: float           # 0.0–1.0
     handler: Callable[[], Awaitable[None]]
     reason: str = ""
+    # Alexa CanFulfillIntent 概念：agent 知道自己缺哪些 slot 還能出價但需要 follow-up。
+    # 由 agent 自行填；空 list 表示 self-contained 不需追問。observability + handler 路由依據。
+    missing_slots: list[str] = field(default_factory=list)
 
 
 class IntentAgent(Protocol):
@@ -86,7 +89,10 @@ class IntentBus:
             if b is not None:
                 bids.append(b)
 
-        bid_summary = ", ".join(f"{b.name}={b.confidence:.2f}({b.reason})" for b in bids) or "no_bids"
+        def _fmt(b: Bid) -> str:
+            tail = f" missing={'+'.join(b.missing_slots)}" if b.missing_slots else ""
+            return f"{b.name}={b.confidence:.2f}({b.reason}){tail}"
+        bid_summary = ", ".join(_fmt(b) for b in bids) or "no_bids"
 
         if not bids:
             self.logger.info(
