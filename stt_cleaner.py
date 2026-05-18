@@ -39,6 +39,29 @@ def _parse_retry_after(err_str: str, default: float = 12.0) -> float:
     return float(m.group(1)) + 1.0 if m else default
 
 
+def _verify_wake_against_raw(
+    is_wake: bool,
+    wake_intent: float | None,
+    raw_text: str | None,
+) -> tuple[bool, float | None]:
+    """Wake Injection Guard — LLM 判 wake 但 raw 無喚醒詞 → 雙清。
+
+    5/18 P2-a fix：原本只清 is_wake 不清 wake_intent，下游 IBA fusion 仍
+    把 wake_intent 當 voice score truth source（_voice_score: track="B" +
+    wake_intent != None → return wake_intent），導致 "3F D呀每天都去點"
+    這類 raw 無 marvin 但 LLM 判 intent=1.0 的 case 還是進到 Track B wake。
+
+    保險：raw_text=None 視為「無資料無法判」不 reject；空字串視為注入照清。
+    """
+    if not is_wake:
+        return is_wake, wake_intent
+    if raw_text is None:
+        return is_wake, wake_intent
+    if not check_cleaned_text_for_wake(raw_text):
+        return False, None
+    return is_wake, wake_intent
+
+
 class GeminiRouterSTTMixin:
     """STT 文本校正（Wake Injection Guard 雙重防禦）。"""
 
@@ -77,10 +100,13 @@ class GeminiRouterSTTMixin:
             else:
                 is_wake = check_cleaned_text_for_wake(text)
 
-            # 🛡️ [Wake Injection Guard] LLM 過矯正：原始文本無喚醒詞 → 拒絕
-            if is_wake and original is not None and not check_cleaned_text_for_wake(original):
+            # 🛡️ [Wake Injection Guard] LLM 過矯正：原始文本無喚醒詞 → 雙清
+            # is_wake + wake_intent 兩個都要清，避免下游 IBA fusion 用 wake_intent
+            # 推 is_fast=True（5/18 #10/#20/#23 false positive 根因）
+            verified_wake, verified_intent = _verify_wake_against_raw(is_wake, wake_intent, original)
+            if is_wake and not verified_wake:
                 logger.warning(f"⚠️ [STT Clean] LLM 注入喚醒詞 (過矯正)：'{original}' -> '{text}'，已拒絕。")
-                return {"text": original, "is_wake": False, "wake_intent": wake_intent, "wake_threshold": threshold}
+                return {"text": original, "is_wake": False, "wake_intent": verified_intent, "wake_threshold": threshold}
 
             # 📝 [STT Correction Log] 有意義的修正才記錄（排除純空白差異）
             if original is not None and text.strip() != original.strip() and speaker:
