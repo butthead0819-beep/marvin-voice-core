@@ -227,6 +227,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
         self.packet_count = 0
         self.last_audio_packet_time = time.time() # 🛡️ [Heartbeat]
         self.last_decrypted_audio_time = time.time() # 🛡️ [Operation Sentinel] 僅紀錄解密成功的時間點
+        self.last_dave_error_time = 0.0 # 🛡️ [Sentinel] DAVE 失敗上報 throttle（每 5s 最多一次）
         self.debug_audio_packets = os.getenv("DEBUG_AUDIO_PACKETS", "false").lower() == "true"
 
     def elevate_vad(self, user_id: int, duration: float = 15.0) -> None:
@@ -284,7 +285,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
                             # 🚀 [Sentinel O(1) Optimization] 節流：每 5 秒最多回報一次 DAVE 錯誤
                             # 防止 DAVE 同步初期的爆發性錯誤直接刷爆 Sentinel 計數器
                             now = time.time()
-                            if self.sink_error_callback and (now - getattr(self, 'last_dave_error_time', 0) > 5):
+                            if self.sink_error_callback and (now - self.last_dave_error_time > 5):
                                 self.last_dave_error_time = now
                                 self.sink_error_callback("decryption_failed")
                         return
@@ -302,7 +303,10 @@ class RealtimeVADSink(voice_recv.AudioSink):
             pcm_bytes = self.decoders[user_id].decode(final_opus)
 
             if self.packet_count == 1:
-                print(f"🚀 [Sink] 捕捉第一筆有效語音（DAVE 手動解密成功）！來源: {user.name}", flush=True)
+                # DAVE 此時可能 ready 也可能 passthrough；只 log 「收到第一筆有效封包」
+                # 這個事實，不誤稱「DAVE 解密成功」
+                _dave_state = "DAVE+" if (dave_session and dave_session.ready) else "passthrough"
+                print(f"🚀 [Sink] 捕捉第一筆有效語音 ({_dave_state}) 來源: {user.name}", flush=True)
 
             if user_id not in self.user_buffers:
                 self.user_buffers[user_id] = bytearray()
