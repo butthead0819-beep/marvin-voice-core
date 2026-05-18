@@ -1262,7 +1262,9 @@ class DiscordVoiceEngine:
             # --- [Track B] LLM Clean & Fallback Path ---
             cleaned_text = raw_text
             is_wake_B = False
-            
+            clean_res = None  # 預先 init：cleaner block 未進入時下方 should_callback
+                              # 路徑 access clean_res.get(...) 不致 UnboundLocalError
+
             if hasattr(self.bot, 'router') and hasattr(self.bot.router, 'clean_stt_text'):
                 # Phase 2: 計算對話脈絡訊號
                 _now = time.time()
