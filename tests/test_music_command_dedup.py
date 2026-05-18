@@ -156,6 +156,38 @@ async def test_resolve_yt_query_returns_none_after_double_errno_11():
 
 
 @pytest.mark.asyncio
+async def test_safe_music_command_catches_exception_and_notifies_user():
+    """top-level wrapper: 任何 exception 都被吞 + 通知 user。
+
+    5/18 17:51 incident: Errno 11 從 _handle_voice_music_command 內部冒出
+    但 retry 沒觸發 → 錯誤不在 yt-dlp 是更早的 code。需要 traceback + UX。
+    """
+    cog = _make_cog()
+    cog._handle_voice_music_command = AsyncMock(side_effect=OSError(11, "Resource deadlock avoided"))
+
+    # 不該 raise，內部吞掉
+    await cog._safe_music_command("Alice", "播放陶喆", "play")
+
+    # 應該已通知 user
+    cog.active_text_channel.send.assert_called()
+    sent_msg = cog.active_text_channel.send.call_args[0][0]
+    assert "音樂系統" in sent_msg or "出錯" in sent_msg
+    assert "OSError" in sent_msg  # 顯示 exception type 方便 debug
+
+
+@pytest.mark.asyncio
+async def test_safe_music_command_passes_through_when_normal():
+    """正常 case: handler 不 raise，wrapper 純透傳，不通知 user。"""
+    cog = _make_cog()
+    cog._handle_voice_music_command = AsyncMock(return_value=None)
+
+    await cog._safe_music_command("Alice", "播放陶喆", "play")
+    cog._handle_voice_music_command.assert_awaited_once_with("Alice", "播放陶喆", "play")
+    # 沒 exception → 不該通知 user 出錯
+    # (test channel mock 的 send 可能被 handler 內部呼叫過，無法直接 assert_not_called)
+
+
+@pytest.mark.asyncio
 async def test_resolve_yt_query_does_not_retry_on_other_oserror():
     """其他 OSError (非 errno=11) 不重試，直接返回 None。"""
     cog = _make_cog()

@@ -121,7 +121,7 @@ class MusicAgent:
         return Bid(
             name=self.name,
             confidence=0.95,
-            handler=lambda: self.ctrl._handle_voice_music_command(ctx.speaker, ctx.query, cmd),
+            handler=lambda: self.ctrl._safe_music_command(ctx.speaker, ctx.query, cmd),
             reason=f"control:{cmd}",
         )
 
@@ -129,6 +129,6 @@ class MusicAgent:
         return Bid(
             name=self.name,
             confidence=confidence,
-            handler=lambda: self.ctrl._handle_voice_music_command(ctx.speaker, ctx.query, "play"),
+            handler=lambda: self.ctrl._safe_music_command(ctx.speaker, ctx.query, "play"),
             reason=reason,
         )

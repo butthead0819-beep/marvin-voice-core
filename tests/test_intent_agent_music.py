@@ -166,12 +166,12 @@ async def test_handler_calls_controller_with_play_args():
     ctx = _ctx("放音樂")
     # 把 controller 的 method 改成 AsyncMock 讓 bid handler 可以 await
     from unittest.mock import AsyncMock
-    ctrl._handle_voice_music_command = AsyncMock()
+    ctrl._safe_music_command = AsyncMock()
     bid = agent.bid(ctx)
     assert bid is not None
     await bid.handler()
-    ctrl._handle_voice_music_command.assert_awaited_once()
-    args = ctrl._handle_voice_music_command.await_args
+    ctrl._safe_music_command.assert_awaited_once()
+    args = ctrl._safe_music_command.await_args
     # speaker, query, cmd
     assert args.args[0] == "Alice"
     assert args.args[2] == "play"
@@ -181,11 +181,11 @@ async def test_handler_calls_controller_with_play_args():
 async def test_handler_calls_controller_with_control_cmd():
     agent, ctrl = _agent()
     from unittest.mock import AsyncMock
-    ctrl._handle_voice_music_command = AsyncMock()
+    ctrl._safe_music_command = AsyncMock()
     bid = agent.bid(_ctx("換一首"))
     assert bid is not None
     await bid.handler()
-    args = ctrl._handle_voice_music_command.await_args
+    args = ctrl._safe_music_command.await_args
     assert args.args[2] == "skip"
 
 

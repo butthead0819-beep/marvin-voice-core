@@ -2406,7 +2406,7 @@ class VoiceController(commands.Cog):
                 _cmd_action = _direct_cmd.get("action", "stop")
                 logger.info(f"🎵 [IBA-T0] {speaker} 直接音樂控制 cmd={_cmd_action} (no wake) | '{full_raw_text[:40]}'")
                 self.deferred_wakes.pop(speaker, None)
-                asyncio.create_task(self._handle_voice_music_command(speaker, full_raw_text, _cmd_action))
+                asyncio.create_task(self._safe_music_command(speaker, full_raw_text, _cmd_action))
                 return
 
         # 🎵 [IBA Tier 1] 音樂資訊查詢直達 — 播放中被問「這首叫什麼」直接回答，不走 LLM
@@ -3737,6 +3737,34 @@ class VoiceController(commands.Cog):
         return t.strip()
 
     _MUSIC_CMD_DEDUP_WINDOW = 5.0  # 秒
+
+    async def _safe_music_command(self, speaker: str, query: str, cmd: str):
+        """Top-level wrapper：任何 music command 路徑都該過這層 try/except。
+
+        Why: 5/18 17:51 incident — _handle_voice_music_command 內某處 6ms 內
+        就 raise Errno 11，但 retry 沒觸發代表錯誤不在 yt-dlp，是更早的 code。
+        過去這類錯誤被 [Fast System worker] except 吞掉沒 traceback，user 體感
+        是「點歌沒反應」silent fail。
+
+        修法：top-level try/except 捕全部 exception，log 完整 traceback，
+        並貼錯誤訊息到 channel 讓 user 知道發生什麼事（discoverable failure）。
+        """
+        try:
+            await self._handle_voice_music_command(speaker, query, cmd)
+        except Exception as e:
+            logger.error(
+                f"❌ [Music Command Crash] {speaker} {cmd} '{query[:40]}': "
+                f"{type(e).__name__}: {e}",
+                exc_info=True,  # full traceback
+            )
+            ch = self.active_text_channel
+            if ch:
+                try:
+                    await ch.send(
+                        f"❌ 音樂系統暫時出錯了 (`{type(e).__name__}`)，等一下再試。"
+                    )
+                except Exception:
+                    pass
 
     async def _handle_voice_music_command(self, speaker: str, query: str, cmd: str):
         """執行語音觸發的音樂指令，回應只貼頻道不走 TTS。
