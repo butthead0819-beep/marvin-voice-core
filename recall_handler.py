@@ -56,7 +56,9 @@ _YES_PATTERNS = re.compile(
 )
 
 _NO_PATTERNS = re.compile(
-    r"不用|不要|算了|不是|不對|取消記|不記",
+    # anchor `^...$` 對齊 _YES_PATTERNS，避免「我不要去」「對啊不是我說的」
+    # 等含 no-word 的長句被誤當成 confirmation 的「不」（cross-context pollution）
+    r"^(不用|不要|算了|不是|不對|取消記|不記)(記)?[啊呢吧了。！!]?$",
     re.IGNORECASE,
 )
 
