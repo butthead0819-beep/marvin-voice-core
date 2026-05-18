@@ -1175,11 +1175,19 @@ class DiscordVoiceEngine:
 
             if is_wake_check:
                 if _is_apple_platform:
-                    # Apple platform: Swift-only wake_check — no Whisper to prevent zombie threads
-                    print(f"🎙️ [Engine] [WakeCheck] Swift only (Speaker: {speaker_name})...", flush=True)
+                    # Apple platform: Swift first; Groq HTTP fallback when Swift returns empty.
+                    # Whisper is still excluded here to prevent zombie threads (7cbc32e).
+                    # 5/18 20:28 incident: 35× Swift EDEADLK under macOS memory pressure
+                    # left wake pipeline completely silent because there was no fallback.
+                    print(f"🎙️ [Engine] [WakeCheck] Swift (Speaker: {speaker_name})...", flush=True)
                     raw_text = await self._run_swift_stt(wav_path, is_wake_check=True, locale=_sp_locale)
                     if raw_text:
                         used_engine = "Swift"
+                    elif os.getenv("GROQ_API_KEY"):
+                        print(f"🎙️ [Engine] [WakeCheck] Swift empty → Groq fallback (Speaker: {speaker_name})...", flush=True)
+                        raw_text = await self._run_groq_whisper_stt(wav_path, language=_sp_lang)
+                        if raw_text:
+                            used_engine = "Groq"
                 else:
                     # Linux: P2 race — Swift + Whisper parallel, first non-empty wins
                     print(f"🎙️ [Engine] [WakeCheck] Swift ⚡ Whisper 並行競速 (Speaker: {speaker_name})...", flush=True)
