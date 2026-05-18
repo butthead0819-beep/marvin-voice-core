@@ -360,7 +360,11 @@ class WakeDetector:
 
     @staticmethod
     def _voice_score(action: str, wake_intent: float | None, track: str | None) -> float:
-        if track == "B" and wake_intent is not None and wake_intent < 0.65:
+        # Track B = LLM 已被叫來判定意圖；LLM 的 verdict 應優先於 regex 結構訊號。
+        # regex 只說「結構上像 wake」，LLM 說「這話是不是真的在叫 Marvin」。
+        # 原本只在 wake_intent < 0.65 時用 wake_intent，≥ 0.65 fall through 到
+        # 硬編碼 1.0/0.95，造成 LLM mid-range verdict 被吞掉，意圖傳遞失真。
+        if track == "B" and wake_intent is not None:
             return wake_intent
         if action == "fast_intervene":   return 1.0
         if action == "force_intervene":  return 0.95
