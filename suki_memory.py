@@ -142,17 +142,66 @@ class MemoryManager:
         self._export_json()
 
     def _export_json(self):
-        """Write suki_memory.json so external scripts can still read it."""
+        """Write suki_memory.json so external scripts can still read it.
+
+        Preserves top-level meta keys (marvin_performance / proactive_topics 等)
+        that daily cron writes — 否則每次 player save 都會把 cron 的成果 nuke 掉。
+        """
         try:
+            # 讀回現有 JSON 以保留 daily cron 寫入的頂層 meta keys
+            existing: dict = {}
+            if os.path.exists(self._json_compat_path):
+                try:
+                    with open(self._json_compat_path, "r", encoding="utf-8") as f:
+                        existing = json.load(f)
+                    if not isinstance(existing, dict):
+                        existing = {}
+                except Exception:
+                    existing = {}
+
+            existing["players"] = self._cache  # players 區段以 cache 為準
+
             tmp = self._json_compat_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"players": self._cache}, f, ensure_ascii=False, indent=2)
+                json.dump(existing, f, ensure_ascii=False, indent=2)
             os.replace(tmp, self._json_compat_path)
         except Exception as exc:
             logger.warning(f"⚠️ [Memory] JSON 導出失敗 (不影響主功能): {exc}")
 
     def flush(self):
         """No-op: SQLite writes are immediate. Kept for API compatibility."""
+
+    def replace_player_memory(self, username: str, data: dict):
+        """Full-record overwrite — for audit/cleaning pipelines that produce a fresh record."""
+        if not isinstance(data, dict):
+            raise TypeError(f"replace_player_memory expects dict, got {type(data).__name__}")
+        self._cache[username] = _repair_player(dict(data))
+        self._save_player(username)
+
+    def list_players(self) -> list[str]:
+        """所有已知玩家 username（不會 silently 建立新紀錄）。"""
+        return list(self._cache.keys())
+
+    def has_player(self, username: str) -> bool:
+        """檢查玩家是否存在；不像 get_player_memory 會 auto-create。"""
+        return username in self._cache
+
+    def get_meta(self, key: str, default=None):
+        """讀 suki_memory.json 頂層非 players 的 key（daily cron 寫入區）。
+
+        Why: marvin_performance / proactive_topics 由 analyze_daily_log.py 寫到 JSON
+        頂層，不在 SQLite players 表內。bot runtime 想讀這些 meta 必須走這條路。
+        """
+        if not os.path.exists(self._json_compat_path):
+            return default
+        try:
+            with open(self._json_compat_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return default
+            return data.get(key, default)
+        except Exception:
+            return default
 
     # ── Player access ────────────────────────────────────────────────────────
 

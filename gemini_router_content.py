@@ -117,9 +117,8 @@ class GeminiRouterContentMixin:
                 logger.error(f"❌ [Audit] {username} 的清洗結果格式異常 (可能觸發了 Fallback)，拒絕寫入以防止資料污染。")
                 return
 
-            # 安全回寫數據
-            self.memory.data["players"][username] = cleaned_data
-            self.memory._save_data()
+            # 安全回寫數據（整片覆寫；SQLite 自動 commit）
+            self.memory.replace_player_memory(username, cleaned_data)
             logger.info(f"✨ [Audit] {username} 的記憶清洗完成並已寫入資料庫。")
         except Exception as e:
             logger.error(f"❌ [Audit] 清洗崩潰: {e}")
@@ -293,11 +292,11 @@ class GeminiRouterContentMixin:
         [Operation Persona Injection] 
         將玩家的記憶（偏見 + 喜好）壓縮為輕量化標籤。
         """
-        # 處理路人/新玩家防護網
-        if username not in self.memory.data["players"]:
+        # 處理路人/新玩家防護網（has_player 不會 silently 建立新紀錄）
+        if not self.memory.has_player(username):
             return f"- {username}: Tags: [新來的傢伙，目前 Suki 對他還沒有任何偏見]"
-        
-        mem = self.memory.data["players"][username]
+
+        mem = self.memory.get_player_memory(username)
         impression = mem.get("suki_impression", "尚無明確偏見")
         likes = mem.get("likes", [])
         dislikes = mem.get("dislikes", [])
@@ -516,10 +515,9 @@ class GeminiRouterContentMixin:
                 system_prompt = atm_str + "\n" + system_prompt
 
         # 📏 [Response Length Calibration] 注入每日迭代的最佳字數建議
-        _opt_len = (
-            self.memory.data.get("marvin_performance", {}).get("optimal_response_length")
-            if hasattr(self.memory, "data") else None
-        )
+        # get_meta 讀 suki_memory.json 頂層（daily cron 寫入區），不在 SQLite players 表內
+        _mp = self.memory.get_meta("marvin_performance", default={}) or {}
+        _opt_len = _mp.get("optimal_response_length") if isinstance(_mp, dict) else None
         if _opt_len and isinstance(_opt_len, int) and _opt_len > 0:
             system_prompt = f"[回應長度上限：{_opt_len} 字，超過時請精簡]\n" + system_prompt
 
