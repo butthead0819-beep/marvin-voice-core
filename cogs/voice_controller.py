@@ -3238,16 +3238,29 @@ class VoiceController(commands.Cog):
             logger.warning(f"⚠️ [Fast System] 無法為 {speaker} 擷取到任何有效的 Query 內容。")
             return
 
+        # 🛡️ [Low-Confidence Wake Gate] Track B wake_intent < 0.80 → 跳過所有
+        # 有副作用的 fast-track（NemoClaw / Marmo / PA 寫入 / Vision / 音樂播放
+        # / Imitation）。低信心可能是背景對話被誤判為喚醒，不該執行 actions；
+        # 改走資訊類路徑（status / recall / LLM 文字回應 with tts_suppressed），
+        # 讓 LLM 用 context 判斷使用者真實意圖。
+        # Track A regex (wake_intent=None) 視為高信心，不受 gate。
+        low_confidence_wake = wake_intent is not None and wake_intent < 0.80
+        if low_confidence_wake:
+            self.stt_logger.info(
+                f"[🛡️低信心 wake gate] [{speaker}] wake_intent={wake_intent:.2f} "
+                f"→ 跳過副作用 fast-track"
+            )
+
         # 🦾 [NemoClaw Fast-Track] 優先於 quality gate，讓「龍蝦」單詞也能觸發「你要問什麼？」
         # 優先檢查 original_raw（喚醒詞尚未被 _strip_wake_word 移除），確保「龍蝦幫我查…」能命中
         _nemo_check_text = original_raw if original_raw else query
-        if _NEMOCLAW_RE.search(_nemo_check_text):
+        if _NEMOCLAW_RE.search(_nemo_check_text) and not low_confidence_wake:
             await self._handle_nemoclaw_query(speaker, _nemo_check_text)
             return
 
         # 🤖 [Marmo Fast-Track] 同上，優先於 quality gate
         _marmo_check_text = original_raw if original_raw else query
-        if _MARMO_RE.search(_marmo_check_text):
+        if _MARMO_RE.search(_marmo_check_text) and not low_confidence_wake:
             await self._handle_marmo_query(speaker, _marmo_check_text)
             return
 
@@ -3268,24 +3281,26 @@ class VoiceController(commands.Cog):
         self._last_speech_time = time.time()
 
         # ✋ [Personal Assistant Confirmation] yes/no 回應 → 優先處理
-        if self._awaiting_confirmation and self._awaiting_confirmation_speaker == speaker:
+        # (low_confidence_wake gate：低信心不該觸發狀態機 confirmation，避免被 cross-talk 污染)
+        if (self._awaiting_confirmation and self._awaiting_confirmation_speaker == speaker
+                and not low_confidence_wake):
             from recall_handler import is_yes_response, is_no_response
             if is_yes_response(query) or is_no_response(query):
                 await self._handle_confirmation_response(speaker, query)
                 return
 
         # 📝 [Personal Assistant Manual Add] 「記一下」→ 立即存入
-        if self._recall_handler and is_manual_add_query(query):
+        if self._recall_handler and is_manual_add_query(query) and not low_confidence_wake:
             await self._handle_manual_add_query(speaker, query)
             return
 
         # ✏️ [Personal Assistant Task Update] 「那件事改成…」→ 更新任務
-        if self._recall_handler and is_task_update_query(query):
+        if self._recall_handler and is_task_update_query(query) and not low_confidence_wake:
             await self._handle_task_update_query(speaker, query)
             return
 
         # ✅ [Personal Assistant Mark-Done] 「那件事做完了」→ 標記任務完成
-        if self._recall_handler and is_mark_done_query(query):
+        if self._recall_handler and is_mark_done_query(query) and not low_confidence_wake:
             await self._handle_mark_done_query(speaker, query)
             return
 
@@ -3302,33 +3317,36 @@ class VoiceController(commands.Cog):
             return
 
         # 👁️ [Vision Fast-Track] 視覺關鍵詞命中時，分流至截圖分析路徑
-        if self.bot.vision_enabled and self.bot.visual_buffer and any(kw in query for kw in self.bot.router.VISION_KEYWORDS):
+        if (self.bot.vision_enabled and self.bot.visual_buffer
+                and any(kw in query for kw in self.bot.router.VISION_KEYWORDS)
+                and not low_confidence_wake):
             await self._process_vision_query(speaker, wake_time, query)
             return
 
         # 🎵 [Music Command Fast-Track] 音樂控制關鍵詞命中時直接執行，不走 LLM
         _music_cmd = self._detect_music_command(query)
-        if _music_cmd:
+        if _music_cmd and not low_confidence_wake:
             await self._handle_voice_music_command(speaker, query, _music_cmd)
             return
 
         # 🎭 [Impression Show Fast-Track] 偵測「模仿 X」指令
         known_players = self.bot.router.memory.list_players()
         _imitate_target = detect_imitation_target(query, known_players)
-        if _imitate_target:
+        if _imitate_target and not low_confidence_wake:
             await self._handle_voice_imitate_command(speaker, _imitate_target)
             return
 
         # 🦞 [NemoClaw 直達] 「龍蝦」喚醒詞 = 直接呼叫 NemoClaw，不走 Smart Router
         # original_raw 保留喚醒詞，用來偵測是否為「龍蝦」觸發；query 已是清洗後的問句
         _nemo_trigger_text = original_raw if original_raw else query
-        if self._is_owner_speaker(speaker) and _NEMOCLAW_RE.search(_nemo_trigger_text):
+        if (self._is_owner_speaker(speaker) and _NEMOCLAW_RE.search(_nemo_trigger_text)
+                and not low_confidence_wake):
             self.stt_logger.info(f"[🦞NemoClaw直達] [{speaker}] 龍蝦喚醒 | query='{query[:80]}'")
             await self._handle_nemoclaw_query(speaker, query)
             return
 
         # 🦞 [NemoClaw Smart Router] 非龍蝦觸發時，由 LLM 判斷是否路由到 NemoClaw
-        if self._is_owner_speaker(speaker):
+        if self._is_owner_speaker(speaker) and not low_confidence_wake:
             try:
                 _nemo_route = await self.bot.router.classify_query_route(query)
                 if _nemo_route == "nemoclaw":
