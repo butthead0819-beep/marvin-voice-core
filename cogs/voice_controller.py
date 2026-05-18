@@ -514,6 +514,9 @@ class VoiceController(commands.Cog):
         self._active_control_view = None               # 最新的 PlayControlView 實例（用於歌詞更新）
         self._prefetch_cache: dict[str, asyncio.Task] = {}  # url → Task[{'lyrics', 'comment'}]
         self._last_search: dict[str, dict] = {}  # username → {query, ts, source}（voice/manual，供偏好修正學習用）
+        # 🛡️ [Music Dedup] _handle_voice_music_command 5s 入口防抖
+        # 防 IBA-T0 + bus + speculative 同時觸發導致 yt-dlp 並發 Errno 11 deadlock
+        self._last_music_cmd_time: dict[str, float] = {}  # speaker → ts
         self._last_global_wake_time = 0  # 🛡️ [Global Wake Guard] 全域喚醒冷卻計數
         self._wake_burst_times: list[float] = []   # 🛡️ [Wake Storm Guard] 快速喚醒時間戳滾動窗口
         self._storm_active: bool = False            # 風暴壓抑是否啟動中
@@ -3733,8 +3736,23 @@ class VoiceController(commands.Cog):
                 t = t[:-len(suffix)]
         return t.strip()
 
+    _MUSIC_CMD_DEDUP_WINDOW = 5.0  # 秒
+
     async def _handle_voice_music_command(self, speaker: str, query: str, cmd: str):
-        """執行語音觸發的音樂指令，回應只貼頻道不走 TTS。"""
+        """執行語音觸發的音樂指令，回應只貼頻道不走 TTS。
+
+        入口 dedup：同 speaker 5s 內重複呼叫直接 silently skip，避免
+        IBA-T0 / bus / speculative 多路徑同時觸發造成 yt-dlp 並發
+        Errno 11 deadlock（5/18 17:23 incident）。
+        """
+        _now = time.time()
+        _last = self._last_music_cmd_time.get(speaker, 0)
+        if _now - _last < self._MUSIC_CMD_DEDUP_WINDOW:
+            logger.info(
+                f"🎵 [Music Dedup] {speaker} {cmd} 在 {_now - _last:.1f}s 前已觸發過音樂指令，跳過"
+            )
+            return
+        self._last_music_cmd_time[speaker] = _now
         logger.info(f"🎵 [Music Command] {speaker} 觸發語音音樂指令: {cmd} | query='{query[:40]}'")
         ch = self.active_text_channel
         vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
@@ -3827,6 +3845,8 @@ class VoiceController(commands.Cog):
             # 套用已知修正，並追蹤原始語音 query 供未來修正學習
             raw_search = search
             correction_note = ""
+            wrong = None  # 預先 init：music_memory 不存在時下方 stt_logger
+                          # access `wrong` 不致 UnboundLocalError
             if hasattr(self.bot, 'music_memory'):
                 corrected, wrong = self.bot.music_memory.apply_stt_correction(speaker, search)
                 if wrong:
@@ -5268,9 +5288,22 @@ class VoiceController(commands.Cog):
                     'duration': chosen.get('duration', 0),
                 }
 
+        loop = asyncio.get_event_loop()
         try:
-            loop = asyncio.get_event_loop()
             return await loop.run_in_executor(None, _extract)
+        except OSError as e:
+            # macOS-specific Errno 11 EDEADLK — 多個 yt-dlp 並發呼叫競爭內部 lock
+            # 5/18 incident 多次出現；retry 一次通常能恢復
+            if getattr(e, "errno", None) == 11:
+                logger.warning(f"⚠️ [Stream] yt-dlp Errno 11 deadlock，200ms 後重試")
+                await asyncio.sleep(0.2)
+                try:
+                    return await loop.run_in_executor(None, _extract)
+                except Exception as e2:
+                    logger.error(f"❌ [Stream] yt-dlp 重試後仍失敗: {e2}")
+                    return None
+            logger.error(f"❌ [Stream] yt-dlp 解析失敗 (OSError): {e}")
+            return None
         except Exception as e:
             logger.error(f"❌ [Stream] yt-dlp 解析失敗: {e}")
             return None
