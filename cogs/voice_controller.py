@@ -37,6 +37,7 @@ from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for 
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
 from intent_bus import IntentBus, IntentContext
+from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent import MusicAgent
 from intent_agents.nemoclaw_agent import NemoClawAgent
 
@@ -417,7 +418,11 @@ class VoiceController(commands.Cog):
         self.query_queue = asyncio.Queue() # 🚀 [Fast System] 指令請求佇列
         self._latency_marks = LatencyMarks()  # ⏱️ wake → llm → sentence → audio 分階段計時
         # 📡 [IntentBus] Phase 1：取代 music + owner-lobster fast-track；其他 fast-track 留 legacy
+        # 5/18 audit 後加 guard：主動 bid 高分吞 STT 幻覺 wake（wake-word loop /
+        # exotic script / Track B 無 wake 短 query / 超短 wake fragment）。
+        # guard 註冊最前，tie-break 時優先（保守）。
         self._intent_bus = IntentBus([
+            HallucinationGuardAgent(self),
             NemoClawAgent(self),
             MusicAgent(self),
         ])
