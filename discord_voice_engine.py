@@ -510,12 +510,12 @@ class RealtimeVADSink(voice_recv.AudioSink):
 
         except Exception as e:
             # 💡 [Operation Sentinel] 攔截其他底層編碼或封包異常
-            error_msg = str(e).lower()
+            # 刻意不呼叫 sink_error_callback：partial/lost packet（opus decode 失敗
+            # 等）通常是網路抖動，不是 DAVE 金鑰失效；上報會污染 Sentinel 計數器
+            # 誤觸發 soft_repair。Sentinel 只應該被真正的 DAVE 解密失敗觸發
+            # （已在上面 DAVE handling 區塊內處理）。
             if self.packet_count % 50 == 0:
                 print(f"⚠️ [Sink.write Warning] {e}", flush=True)
-            if ("invalid" in error_msg or "lost" in error_msg) and self.sink_error_callback:
-                 # 部分損壞封包暫不計入重啟權重，僅保留日誌
-                 pass
 
     def cleanup(self):
         """🚀 [Lifecycle] 清理 Sink 資源"""
