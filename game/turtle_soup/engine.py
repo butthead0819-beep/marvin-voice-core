@@ -199,10 +199,12 @@ class TurtleSoupEngine:
         return result
 
     async def request_hint(self) -> Optional[str]:
-        """玩家主動或 idle timer 觸發。回傳下一條 hint，或 None 表已用完。
+        """玩家主動或 idle timer 觸發。回傳下一條 hint 的文字，或 None 表已用完。
 
         非 ASKING 狀態回 None。
         提示請求不消耗 max_questions 配額。
+
+        Puzzle.hints 是 list[Hint]（含 reveals 網狀資訊），這層只回 text 給 TTS。
         """
         async with self._lock:
             if self.session.state != TurtleSoupState.ASKING:
@@ -211,7 +213,7 @@ class TurtleSoupEngine:
                 return None
             hint = self.puzzle.hints[self.session.hints_given]
             self.session.hints_given += 1
-            return hint
+            return hint.text
 
     async def cancel(self) -> bool:
         """從任何 state 強制結束。GAME_OVER 不重複觸發。"""

@@ -1,5 +1,11 @@
 """v0 種子題庫 — 只有一題 hardcode。
 
+v0.5：hint 從線性 list 升級為「節點 + 揭露關係」網。
+- HintNode：單一可揭露的事實節點（atomic insight）
+- Hint：提示文字 + 它揭露哪些節點（reveals）
+- 同一節點可被多條 hint 共用
+- Hint 不再強制 1D/2D/3D 三層，可以有任意 depth，順序由 puzzle.hints 決定
+
 v2 會擴成 JSON bank loader。在那之前保持極簡。
 """
 from __future__ import annotations
@@ -7,24 +13,70 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
-class Puzzle:
-    """海龜湯題目資料結構。
+class HintNode:
+    """單一可揭露的事實節點。屬於湯底推理鏈中的一環。
 
-    surface  玩家可見的謎題表面
-    truth    完整真相（只有 Marvin/LLM 看得到）
-    key_facts 構成正確答案的關鍵事實清單；玩家的「最終猜答」需 cover ≥ 2 個核心
-              （索引 0 和 1）才算通過
+    id     節點唯一識別碼（給 Hint.reveals 引用）
+    fact   人類可讀的事實描述（內部用，不直接給玩家看）
+    """
+    id: str
+    fact: str
+
+
+@dataclass(frozen=True)
+class Hint:
+    """提示文字 + 它揭露哪些節點。
+
+    text     玩家會聽到的提示語
+    reveals  此提示揭露的 HintNode.id 清單（tuple 因為 frozen dataclass）
+
+    depth = len(reveals) 推導，越深的 hint 揭露越多節點。
+    順序由 puzzle.hints 的 list 順序定（作者決定給的次序）。
+    """
+    text: str
+    reveals: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Puzzle:
+    """海龜湯題目資料結構（v0.5 graph 版）。
+
+    surface       玩家可見的謎題表面
+    truth         完整真相（只有 Marvin/LLM 看得到）
+    key_facts     最終猜答的判定基準，玩家答案需 cover key_facts[0] 與 [1] 才算對
     leak_keywords narration 後處理的禁用詞，命中且問題不含時改寫
-    hints    手寫提示，由弱到強排序。玩家或 idle timer 觸發時依序提供
+    hint_nodes    推理鏈中所有可揭露的事實節點
+    hints         hint 清單，每條揭露不同節點子集；list 順序 = 給的先後
     """
     id: str
     surface: str
     truth: str
     key_facts: list[str] = field(default_factory=list)
     leak_keywords: list[str] = field(default_factory=list)
-    hints: list[str] = field(default_factory=list)
+    hint_nodes: list[HintNode] = field(default_factory=list)
+    hints: list[Hint] = field(default_factory=list)
+
+    def hint_node_by_id(self, node_id: str) -> HintNode | None:
+        for n in self.hint_nodes:
+            if n.id == node_id:
+                return n
+        return None
 
 
+# ── ELEVATOR_18F: 電梯到 18 樓的男人（侏儒題）─────────────────────────────────
+#
+# 推理網：
+#
+#   body_limit ────► button_reach ────► assist_dependence
+#   (身體限制)      (按鈕觸及範圍)    (依賴別人幫忙)
+#                                          │
+#                       ┌──────────────────┴───────────────────┐
+#                       ▼                                       ▼
+#                 morning_works                          evening_blocked
+#               (早上能按到 1 樓)                    (晚上獨自只能到 18 樓)
+#
+# 三條 hint 依「依賴深度」遞進，但各自覆蓋的節點子集是作者設計的「網點」。
+#
 ELEVATOR_18F = Puzzle(
     id="elevator_18f",
     surface=(
@@ -40,21 +92,34 @@ ELEVATOR_18F = Puzzle(
         "剩下 4 層只好走樓梯。"
     ),
     key_facts=[
-        "男子是侏儒（或身材矮小）",                  # index 0：核心，必須命中
-        "電梯按鈕的高度問題 / 他構不到 22 樓按鈕",   # index 1：核心，必須命中
-        "18 樓是他能按到的最高樓層",                 # index 2：bonus
-        "早上下樓沒問題（能按到 1 樓）",             # index 3：bonus
-        "有人陪同搭電梯時可以直達 22 樓",            # index 4：bonus
+        "男子是侏儒（或身材矮小）",
+        "電梯按鈕的高度問題 / 他構不到 22 樓按鈕",
+        "18 樓是他能按到的最高樓層",
+        "早上下樓沒問題（能按到 1 樓）",
+        "有人陪同搭電梯時可以直達 22 樓",
     ],
     leak_keywords=["侏儒", "矮", "身材", "按鈕", "夠不到", "構不著", "按不到"],
+    hint_nodes=[
+        HintNode(id="body_limit",        fact="男子身體有不尋常的限制"),
+        HintNode(id="button_reach",      fact="某些電梯按鈕在他能力範圍外"),
+        HintNode(id="assist_dependence", fact="獨自時辦不到，有人在場時可以"),
+    ],
     hints=[
-        # 由弱到強，依「聯想維度」遞進。產自 scripts/generate_puzzle_hints.py 並由作者挑選。
-        # 1D 直接關聯：指向「身體限制」這個類別
-        "想想他身體上的限制會怎麼影響日常動作",
-        # 2D 二維關聯：對比下樓 / 上樓兩個情境差異
-        "為什麼他能下到 1 樓卻上不了 22 樓？這差在哪？",
-        # 3D 三維關聯：點出「依賴條件」這個機制
-        "有別人一起時能到頂樓，自己卻不行 — 這依賴什麼條件？",
+        # 第 1 條：1 個節點（身體層次）
+        Hint(
+            text="想想他身體上的限制會怎麼影響日常動作",
+            reveals=("body_limit",),
+        ),
+        # 第 2 條：2 個節點（身體 + 對比情境）
+        Hint(
+            text="為什麼他能下到 1 樓卻上不了 22 樓？這差在哪？",
+            reveals=("body_limit", "button_reach"),
+        ),
+        # 第 3 條：3 個節點（身體 + 按鈕 + 依賴條件）
+        Hint(
+            text="有別人一起時能到頂樓，自己卻不行 — 這依賴什麼條件？",
+            reveals=("body_limit", "button_reach", "assist_dependence"),
+        ),
     ],
 )
 

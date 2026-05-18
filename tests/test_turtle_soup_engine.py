@@ -343,7 +343,7 @@ async def test_request_hint_returns_first_hint_in_order():
     await eng.begin_asking()
 
     hint = await eng.request_hint()
-    assert hint == ELEVATOR_18F.hints[0]
+    assert hint == ELEVATOR_18F.hints[0].text
     assert eng.session.hints_given == 1
 
 
@@ -362,7 +362,7 @@ async def test_request_hint_advances_through_list():
     for _ in range(len(ELEVATOR_18F.hints)):
         hints.append(await eng.request_hint())
 
-    assert hints == list(ELEVATOR_18F.hints)
+    assert hints == [h.text for h in ELEVATOR_18F.hints]
 
 
 @pytest.mark.asyncio
