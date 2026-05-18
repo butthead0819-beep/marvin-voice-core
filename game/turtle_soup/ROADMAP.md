@@ -48,15 +48,17 @@
 
 prompt 改寫：需要更精準的 verdict 判定規則。REPL 重新校準。
 
-#### 2. ~~Hint 系統~~（已於 v0.3 提前實作）
+#### 2. ~~Hint 系統~~（已於 v0.3+v0.4 提前實作）
 ~~v1 規劃：玩家 60 秒無動作 → Marvin 主動丟一個方向提示；玩家可主動 `/turtle_hint`~~
 
-**實際進度**：v0.3 已實作 hardcoded hints 版本（puzzle.hints 由弱到強）：
-- 玩家說「請問給我提示 / 線索」→ voice_parse hint_request intent → engine.request_hint
-- 60s idle timer → auto-trigger 同一 handler
-- Hint 用完玩家主動要會回「給完了」；idle 觸發則靜默
+**實際進度**：
+- **v0.3**：玩家主動「請問給我提示」+ 60s idle timer + engine.request_hint pop list
+- **v0.4**：題目設計時用 LLM 產 1D/2D/3D 三維 hint 候選
+  - `game/turtle_soup/hint_generator.py` + `scripts/generate_puzzle_hints.py`
+  - 維度定義：1D 指類別、2D 連兩元素、3D 點機制
+  - 離線生成（作者人工挑選後寫入 puzzles.py）
 
-v1 升級項目：改 LLM 生成 hint（看 truth + asked_history 動態生），不用每題手寫
+v1 剩餘升級：runtime lazy 生成（給 v4 UGC 用），讓玩家投稿題目時自動產 hints
 
 #### 3. Dispute 機制
 玩家覺得 Marvin 判錯時：

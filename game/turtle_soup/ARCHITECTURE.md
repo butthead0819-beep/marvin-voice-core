@@ -307,6 +307,40 @@ Hint 不消耗 max_questions 配額（v0 沒計分，所以 hint 是免費的）
 - `on_state_change(GAME_OVER)` 取消 timer
 - `_cancel_tasks()` 也會連帶取消（透過 `_idle_hint_task` 引用）
 
+**Hint 生成（v0.4 新增 — 設計工具）**：
+
+題目作者寫新題目時，跑 `scripts/generate_puzzle_hints.py` 用 LLM 產出 3 條 hint
+候選，依「聯想維度」遞進：
+
+| 維度 | 定義 | 例子（ELEVATOR_18F）|
+|---|---|---|
+| **1D 直接關聯** | 指向湯底某個單一面向（身體 / 物品 / 時間…），不揭露內容只指類別 | 「想想他身體上的限制會怎麼影響日常動作」 |
+| **2D 二維關聯** | 連結兩個元素的對比、因果、先後 | 「為什麼他能下到 1 樓卻上不了 22 樓？這差在哪？」 |
+| **3D 三維關聯** | 描述真相背後的機制或依賴條件，但不直接說出 | 「有別人一起時能到頂樓，自己卻不行 — 這依賴什麼條件？」 |
+
+**`generate_hint_tiers()` 流程**：
+1. System prompt 明確定義三個維度 + 鐵律（不洩底、長度限制、語氣）
+2. User msg 含 surface / truth / key_facts / leak_keywords 完整 JSON
+3. 3-layer fallback：Cerebras → Groq → Gemini
+4. 後處理 `_filter_leaks`：若任何 hint 含 leak_keywords → 加 `⚠[LEAK:KW]` 標記
+   而不自動改寫（讓作者親自決定重生 / 修改 / 保留）
+
+**作者流程**：
+```bash
+# 跑 3 次取最好
+python scripts/generate_puzzle_hints.py elevator_18f -n 3
+
+# Script 印 3 組候選，作者挑選或混合，貼回 puzzles.py
+```
+
+**為什麼不在 runtime 動態生成？**
+v0/v1 採離線生成因為：
+- 品質控制（作者可選 / 改寫）
+- Deterministic gameplay（同題玩家拿到一樣的 hints）
+- 0 runtime LLM 成本
+
+v4（UGC 階段）會考慮 lazy 生成 — 玩家投稿題目時自動生 hints + 寫入 pending pool 等審核。
+
 ---
 
 ## 7. Cog 與 Discord 整合
