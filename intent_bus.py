@@ -17,6 +17,7 @@ IntentBus — wake 之後的意圖路由 (Phase 1)。
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Protocol
 
@@ -57,6 +58,8 @@ class IntentAgent(Protocol):
 
 class IntentBus:
     MIN_CONFIDENCE = 0.30
+    # bid() 預算：> 5ms 觸發 WARNING，守住 sync ≤5ms 契約不漂移（5/18 NotebookLM review）
+    _BID_BUDGET_MS = 5.0
 
     def __init__(self, agents: list[IntentAgent]):
         self.agents = list(agents)
@@ -66,6 +69,7 @@ class IntentBus:
         """收 bids、選 winner、await handler。回傳 winner Bid（or None 如果沒人 above threshold）。"""
         bids: list[Bid] = []
         for agent in self.agents:
+            t0 = time.perf_counter()
             try:
                 b = agent.bid(ctx)
             except Exception as exc:
@@ -73,6 +77,12 @@ class IntentBus:
                     f"⚠️ [IntentBus] {getattr(agent, 'name', '?')} bid() 炸了，跳過: {exc}"
                 )
                 continue
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            if elapsed_ms > self._BID_BUDGET_MS:
+                self.logger.warning(
+                    f"⚠️ [IntentBus] {getattr(agent, 'name', '?')} bid() took {elapsed_ms:.1f}ms "
+                    f"(>{self._BID_BUDGET_MS:.0f}ms 預算) — 違反 sync 契約，檢查是否摸到 I/O"
+                )
             if b is not None:
                 bids.append(b)
 
@@ -88,6 +98,16 @@ class IntentBus:
         # 同分取第一個（list.sort 是 stable）— 從 max() 改用 sort 確保穩定
         bids.sort(key=lambda b: b.confidence, reverse=True)
         winner = bids[0]
+
+        # tie collision warning：winner 與第二名同分 → 曝光隱式註冊順序 tie-break
+        # （5/18 NotebookLM review；目前靠註冊順序贏，但這是隱式行為，未來加 agent 易踩）
+        if len(bids) > 1 and bids[1].confidence == winner.confidence:
+            colliders = [b for b in bids if b.confidence == winner.confidence]
+            collider_names = ", ".join(b.name for b in colliders)
+            self.logger.warning(
+                f"⚠️ [IntentBus] tie collision @ conf={winner.confidence:.2f} "
+                f"between [{collider_names}]; picked {winner.name} (註冊順序)"
+            )
 
         if winner.confidence < self.MIN_CONFIDENCE:
             self.logger.info(
