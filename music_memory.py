@@ -8,6 +8,16 @@ import time
 import datetime
 import logging
 
+# 5/18 incident — 原本 apply_stt_correction 內 lazy `from rapidfuzz import fuzz`
+# 在 async hot path 跟 ThreadPoolExecutor 第三方 thread 同時 import 同個 module
+# 觸發 macOS Python import lock deadlock (Errno 11 EDEADLK)，user 點歌
+# silent fail。改成 module top-level import 確保 bot 啟動就裝載完成，
+# runtime 不再有 import race。
+try:
+    from rapidfuzz import fuzz as _rapidfuzz_fuzz
+except ImportError:
+    _rapidfuzz_fuzz = None  # optional dependency: 沒裝就跳過模糊比對
+
 logger = logging.getLogger(__name__)
 
 
@@ -203,18 +213,15 @@ class MusicMemory:
                 logger.info(f"🔧 [STT] 完全比對修正: '{query}' → '{entry['correct']}'")
                 return entry["correct"], query
 
-        # 2. 模糊比對（rapidfuzz，threshold 78）
-        try:
-            from rapidfuzz import fuzz
+        # 2. 模糊比對（rapidfuzz，threshold 78）— rapidfuzz 在 module top 已 import
+        if _rapidfuzz_fuzz is not None:
             best_score, best_entry = 0, None
             for entry in bucket:
-                score = fuzz.ratio(entry["wrong"], query)
+                score = _rapidfuzz_fuzz.ratio(entry["wrong"], query)
                 if score > best_score:
                     best_score, best_entry = score, entry
             if best_entry and best_score >= 78:
                 logger.info(f"🔧 [STT] 模糊比對修正 ({best_score:.0f}%): '{query}' → '{best_entry['correct']}'")
                 return best_entry["correct"], query
-        except ImportError:
-            pass
 
         return query, None
