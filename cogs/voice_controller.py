@@ -28,6 +28,9 @@ from session_summarizer import SessionSummarizer
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
+from intent_bus import IntentBus, IntentContext
+from intent_agents.music_agent import MusicAgent
+from intent_agents.nemoclaw_agent import NemoClawAgent
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
@@ -405,6 +408,11 @@ class VoiceController(commands.Cog):
         self.greeting_cooldown = {} # 🛠️ [Cooldown] 玩家進出冷卻紀錄
         self.query_queue = asyncio.Queue() # 🚀 [Fast System] 指令請求佇列
         self._latency_marks = LatencyMarks()  # ⏱️ wake → llm → sentence → audio 分階段計時
+        # 📡 [IntentBus] Phase 1：取代 music + owner-lobster fast-track；其他 fast-track 留 legacy
+        self._intent_bus = IntentBus([
+            NemoClawAgent(self),
+            MusicAgent(self),
+        ])
         
         # 🛡️ [Operation Sentinel] 語音健康監控
         self.connection_time = 0 # 紀錄最後一次連線時間
@@ -3339,26 +3347,28 @@ class VoiceController(commands.Cog):
             await self._process_vision_query(speaker, wake_time, query)
             return
 
-        # 🎵 [Music Command Fast-Track] 音樂控制關鍵詞命中時直接執行，不走 LLM
-        _music_cmd = self._detect_music_command(query)
-        if _music_cmd and not low_confidence_wake:
-            await self._handle_voice_music_command(speaker, query, _music_cmd)
-            return
+        # 📡 [IntentBus] Phase 1：取代 music fast-track + owner-lobster direct
+        # 沒人接（bid 都 None 或低於 0.30）→ fall through 到 Imitation / smart router / Marvin LLM
+        _bus_ctx = IntentContext(
+            speaker=speaker,
+            raw_text=original_raw or query,
+            query=query,
+            original_raw=original_raw,
+            wake_intent=wake_intent,
+            stream_active=self.stream_mode,
+            game_mode=False,  # game_mode 已在 handle_stt_result 提早 return，不會到這
+            is_owner=self._is_owner_speaker(speaker),
+            now=time.time(),
+        )
+        _winner = await self._intent_bus.dispatch(_bus_ctx)
+        if _winner:
+            return  # bus 已執行 winner.handler()
 
         # 🎭 [Impression Show Fast-Track] 偵測「模仿 X」指令
         known_players = self.bot.router.memory.list_players()
         _imitate_target = detect_imitation_target(query, known_players)
         if _imitate_target and not low_confidence_wake:
             await self._handle_voice_imitate_command(speaker, _imitate_target)
-            return
-
-        # 🦞 [NemoClaw 直達] 「龍蝦」喚醒詞 = 直接呼叫 NemoClaw，不走 Smart Router
-        # original_raw 保留喚醒詞，用來偵測是否為「龍蝦」觸發；query 已是清洗後的問句
-        _nemo_trigger_text = original_raw if original_raw else query
-        if (self._is_owner_speaker(speaker) and _NEMOCLAW_RE.search(_nemo_trigger_text)
-                and not low_confidence_wake):
-            self.stt_logger.info(f"[🦞NemoClaw直達] [{speaker}] 龍蝦喚醒 | query='{query[:80]}'")
-            await self._handle_nemoclaw_query(speaker, query)
             return
 
         # 🦞 [NemoClaw Smart Router] 非龍蝦觸發時，由 LLM 判斷是否路由到 NemoClaw
