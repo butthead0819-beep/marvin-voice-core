@@ -121,19 +121,28 @@ def test_control_command_bids_high(query, expected_cmd):
 
 
 # ── Low-confidence wake → 不出價（不該觸發副作用） ────────────────────────
+# Threshold 0.65 對齊 LLM veto（wake_intent < 0.65 已被 STT cleaner 強制刷掉）
 
-@pytest.mark.parametrize("wake_intent", [0.30, 0.50, 0.79])
+@pytest.mark.parametrize("wake_intent", [0.30, 0.50, 0.64])
 def test_low_confidence_wake_does_not_bid(wake_intent):
     agent, _ = _agent()
     bid = agent.bid(_ctx("播放陶喆的天天", wake_intent=wake_intent))
     assert bid is None
 
 
-def test_threshold_080_wake_intent_does_bid():
-    """wake_intent=0.80 邊界值要會出價。"""
+def test_threshold_065_wake_intent_does_bid():
+    """wake_intent=0.65 邊界值要會出價（對齊 LLM veto 後的 wake）。"""
     agent, _ = _agent()
-    bid = agent.bid(_ctx("播放陶喆的天天", wake_intent=0.80))
+    bid = agent.bid(_ctx("播放陶喆的天天", wake_intent=0.65))
     assert bid is not None
+
+
+def test_wake_intent_070_does_bid():
+    """5/18 18:16 regression case：wake_intent=0.7 應該命中 music。"""
+    agent, _ = _agent()
+    bid = agent.bid(_ctx("播放周杰倫的稻香", wake_intent=0.7))
+    assert bid is not None
+    assert bid.confidence == pytest.approx(0.80)  # weak_play+marker
 
 
 def test_track_a_none_wake_intent_bids_normally():

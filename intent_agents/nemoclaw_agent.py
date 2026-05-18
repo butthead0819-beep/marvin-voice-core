@@ -24,7 +24,9 @@ _LOBSTER_RE = re.compile(r'龍蝦|lobster', re.IGNORECASE)
 
 class NemoClawAgent:
     name = "nemoclaw"
-    LOW_WAKE_THRESHOLD = 0.80
+    # 0.65 對齊 LLM veto 閾值；NemoClawAgent 額外有 owner-only + 龍蝦 regex
+    # 兩道防誤觸發，0.80 過於保守（owner 講 「龍蝦」 wake_intent 0.7 不該被擋）。
+    LOW_WAKE_THRESHOLD = 0.65
 
     def __init__(self, controller):
         self.ctrl = controller

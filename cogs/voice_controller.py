@@ -5328,12 +5328,12 @@ class VoiceController(commands.Cog):
                 try:
                     return await loop.run_in_executor(None, _extract)
                 except Exception as e2:
-                    logger.error(f"❌ [Stream] yt-dlp 重試後仍失敗: {e2}")
+                    logger.error(f"❌ [Stream] yt-dlp 重試後仍失敗: {e2}", exc_info=True)
                     return None
-            logger.error(f"❌ [Stream] yt-dlp 解析失敗 (OSError): {e}")
+            logger.error(f"❌ [Stream] yt-dlp 解析失敗 (OSError): {e}", exc_info=True)
             return None
         except Exception as e:
-            logger.error(f"❌ [Stream] yt-dlp 解析失敗: {e}")
+            logger.error(f"❌ [Stream] yt-dlp 解析失敗: {e}", exc_info=True)
             return None
 
     async def stop_stream(self, reason: str = "未知原因"):

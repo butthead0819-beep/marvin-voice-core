@@ -61,18 +61,18 @@ def test_non_owner_does_not_bid():
     assert bid is None
 
 
-# ── low confidence wake → 不出價 ──────────────────────────────────────────
+# ── low confidence wake → 不出價（threshold 0.65 對齊 LLM veto） ────────
 
-@pytest.mark.parametrize("wake_intent", [0.30, 0.50, 0.79])
+@pytest.mark.parametrize("wake_intent", [0.30, 0.50, 0.64])
 def test_low_confidence_wake_does_not_bid(wake_intent):
     agent, _ = _agent()
     bid = agent.bid(_ctx(wake_intent=wake_intent))
     assert bid is None
 
 
-def test_threshold_wake_intent_does_bid():
+def test_threshold_065_wake_intent_does_bid():
     agent, _ = _agent()
-    bid = agent.bid(_ctx(wake_intent=0.80))
+    bid = agent.bid(_ctx(wake_intent=0.65))
     assert bid is not None
 
 
