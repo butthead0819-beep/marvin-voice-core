@@ -18,6 +18,7 @@ from departure_stats import DepartureStats
 from consent_manager import ConsentManager
 from transcript_store import TranscriptStore
 from vector_store import VectorStore
+from memory_guard import is_memory_critical
 from recall_handler import (
     RecallHandler, is_recall_query, is_mark_done_query,
     is_manual_add_query, is_task_update_query,
@@ -1909,11 +1910,14 @@ class VoiceController(commands.Cog):
                 self._transcript_store.save,
                 speaker, guild_id, raw_text, timestamp, channel_id,
             ))
-            asyncio.create_task(asyncio.to_thread(
-                self._vector_store.upsert,
-                speaker, guild_id, raw_text,
-                f"{speaker}_{guild_id}_{int(timestamp * 1000)}",
-            ))
+            # MemoryGuard: skip chroma upsert under critical RAM to avoid
+            # macOS file I/O EDEADLK chain (5/18 20:28 incident).
+            if not is_memory_critical():
+                asyncio.create_task(asyncio.to_thread(
+                    self._vector_store.upsert,
+                    speaker, guild_id, raw_text,
+                    f"{speaker}_{guild_id}_{int(timestamp * 1000)}",
+                ))
 
         if speaker in self.speech_timers and not is_wake_check:
             self.speech_timers[speaker].cancel()
