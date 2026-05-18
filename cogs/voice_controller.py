@@ -27,6 +27,7 @@ from task_store import TaskStore
 from session_summarizer import SessionSummarizer
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
+from latency_tracker import LatencyMarks
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
@@ -403,6 +404,7 @@ class VoiceController(commands.Cog):
         self.last_player_speech_time = time.time() # 初始化為啟動時間
         self.greeting_cooldown = {} # 🛠️ [Cooldown] 玩家進出冷卻紀錄
         self.query_queue = asyncio.Queue() # 🚀 [Fast System] 指令請求佇列
+        self._latency_marks = LatencyMarks()  # ⏱️ wake → llm → sentence → audio 分階段計時
         
         # 🛡️ [Operation Sentinel] 語音健康監控
         self.connection_time = 0 # 紀錄最後一次連線時間
@@ -1935,6 +1937,8 @@ class VoiceController(commands.Cog):
                 ]
                 asyncio.create_task(self.active_text_channel.send(random.choice(wait_msgs)))
 
+            # ⏱️ [Latency] T0: wake hit (進 queue 那刻)
+            self._latency_marks.mark_wake(speaker, time.time())
             await self.query_queue.put({
                 "speaker":     speaker,
                 "timestamp":   timestamp,
@@ -3396,6 +3400,9 @@ class VoiceController(commands.Cog):
             else:
                 _prefetch_task.cancel()
 
+        # ⏱️ [Latency] T1: 即將呼叫 LLM (或拿 prefetch cache)
+        self._latency_marks.mark_llm_start(time.time())
+
         if _prefetched:
             if hasattr(self.bot.router, '_prefetch_hits'):
                 self.bot.router._prefetch_hits += 1
@@ -3473,6 +3480,14 @@ class VoiceController(commands.Cog):
                             await self.active_text_channel.send(f"💬 **【馬文·聽不懂】** `{speaker}`：{skip_text}")
                         return
                     first_sentence_received = True
+                    # ⏱️ [Latency] T2: 第一個 sentence 從 sentence_splitter 拿到
+                    _stage1 = self._latency_marks.mark_first_sentence(time.time())
+                    if _stage1:
+                        logger.info(
+                            f"⏱️ [Latency-1] {_stage1['speaker']} "
+                            f"wake→llm={_stage1['wake_to_llm_ms']:.0f}ms "
+                            f"llm→sentence={_stage1['llm_to_sentence_ms']:.0f}ms"
+                        )
                     _elapsed = time.time() - wake_time
                     if _elapsed > self._LATE_RESPONSE_SKIP_SEC:
                         logger.info(f"⏱️ [Late Skip] {speaker} 喚醒 {_elapsed:.1f}s 後才得到首句，放棄回應")
@@ -4667,6 +4682,14 @@ class VoiceController(commands.Cog):
                 logger.info(f"🔊 [Voice] 開始即時串流播放...")
                 self._current_tts_text = text
                 self._current_tts_in_channel = already_in_channel
+                # ⏱️ [Latency] T3: vc.play() 前 — 首段 TTS 開始發聲那刻
+                _stage2 = self._latency_marks.mark_first_audio_and_consume(time.time())
+                if _stage2:
+                    logger.info(
+                        f"⏱️ [Latency-2] {_stage2['speaker']} "
+                        f"sentence→audio={_stage2['sentence_to_audio_ms']:.0f}ms "
+                        f"total_wake→audio={_stage2['total_wake_to_audio_ms']:.0f}ms"
+                    )
                 voice_client.play(
                     discord.FFmpegPCMAudio(fifo_path),
                     after=lambda e: after_playing(e, estimated_dur)
