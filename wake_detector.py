@@ -185,6 +185,34 @@ _ANY_POS_RE = re.compile(rf'({WAKE_PATTERN})', re.IGNORECASE)
 _CTX_TRIGGERS = ["完了", "死定", "救我", "救命", "怎麼辦", "找不到", "迷路",
                  "好無聊", "好累", "炸了", "完蛋"]
 
+# STT 常見的前綴噪音 token（招呼語 / filler）：剝離後再打 _FAST_RE
+# 真實 log 證據：「你好, 馬文」「On, 馬文」「Yeah, 馬文」「M. 馬文」「Ai, 馬文」
+# 使用者明確在叫 Marvin，只是 STT 把 filler 黏前面，不該被 demote 到 llm_verify。
+_LEADING_NOISE_TOKEN_RE = re.compile(
+    r'^(?:'
+    r'你好|哈囉|哈嘍|喂|哈嘍'
+    r'|hi|hey|hello|on|ai|yeah|yo|ok|okay|um|er|ah|oh|no'
+    r'|M\.|N\.'
+    r')',
+    re.IGNORECASE,
+)
+# 中文單字 filler + 中文/英文標點 + 空白：可連續多個
+_LEADING_FILLER_CHARS_RE = re.compile(r'^[嗯啊哦喔呃唉嘿哼欸誒嗨\s.,，、!！?？]+')
+
+
+def _strip_leading_noise(text: str) -> str:
+    """Iteratively strip leading STT noise/filler so embedded wake words surface.
+
+    交替剝離 noise tokens 與 filler chars 直到不再改變，覆蓋「Yeah, hey, 馬文」
+    這種多層前綴。不會吃到實際的喚醒詞（noise token list 不含 Marvin / 馬文）。
+    """
+    prev = None
+    while prev != text:
+        prev = text
+        text = _LEADING_NOISE_TOKEN_RE.sub('', text)
+        text = _LEADING_FILLER_CHARS_RE.sub('', text)
+    return text
+
 
 def pre_filter_speech(raw_text: str) -> dict:
     """Regex fast-path wake detection. Returns {action, text}.
@@ -197,7 +225,10 @@ def pre_filter_speech(raw_text: str) -> dict:
       drop            — no signal
     """
     text = raw_text.strip()
-    if _FAST_RE.search(text):
+    # P1: 剝離前綴 noise 再打 _FAST_RE，避免「嗯馬文」「你好,馬文」「On, 馬文」
+    # 等被 STT noise 黏住前綴的 case 被 demote 到 llm_verify。
+    text_stripped = _strip_leading_noise(text)
+    if _FAST_RE.search(text_stripped):
         return {"action": "fast_intervene", "text": raw_text}
     m = _FORCE_RE.search(text)
     if m and m.start() <= 2:
