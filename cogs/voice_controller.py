@@ -19,6 +19,13 @@ from consent_manager import ConsentManager
 from transcript_store import TranscriptStore
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
+
+# Eager-import yt_dlp + YouTube extractor at module load so runtime music
+# commands don't trigger lazy importlib reads — which can hit macOS EDEADLK
+# under memory pressure (5/18 22:05 incident: yt_dlp.extractor.lazy_extractors
+# → import yt_dlp.extractor.youtube._clip → OSError(11) on read).
+import yt_dlp  # noqa: E402
+import yt_dlp.extractor.youtube  # noqa: E402,F401  — pre-warm lazy extractor
 from recall_handler import (
     RecallHandler, is_recall_query, is_mark_done_query,
     is_manual_add_query, is_task_update_query,
@@ -5278,8 +5285,14 @@ class VoiceController(commands.Cog):
         NoSupportingHandlers 觸發 Errno 11 EDEADLK。等找到正確 YT Music 入口
         再加。
         """
-        import yt_dlp
         from music_search import pick_best_music_candidate
+
+        # MemoryGuard: skip when RAM critical — yt-dlp's lazy extractor load
+        # path hits importlib EDEADLK on macOS under pressure (5/18 22:05).
+        # Retry won't help when every file read deadlocks; fail fast.
+        if is_memory_critical():
+            logger.warning("⚠️ [Stream] memory critical, skipping yt-dlp resolve")
+            return None
 
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
