@@ -1,11 +1,13 @@
 """
-TDD：_resolve_yt_query 應該先打 YouTube Music 搜尋（ytmsearch5），
-無結果再 fallback 到一般 YouTube 搜尋（ytsearch5）。
+TDD：_resolve_yt_query 行為 — 只用 ytsearch5。
 
-理由：使用者抱怨「人工去 YouTube Music 找得到的歌，叫馬文播卻回報找不到」。
-原因是 ytsearch5 跟 YouTube Music 是不同的 catalog，冷門歌或重新上傳版
-在 YT Music 有但一般 YouTube 搜尋會 0 命中，導致 entries=[] → 回 None
-→ 馬文講「找不到」。
+歷史：5/17 曾嘗試先打 ytmsearch5: → fallback ytsearch5: 想解 Bug 2「冷門歌
+YT Music 找得到但 ytsearch 沒」，但 yt-dlp 2026.03.17 沒有 ytmsearch:
+extractor，每次 ytmsearch5: 都拋 NoSupportingHandlers 在 thread executor 內
+觸發 lock 競爭產生 Errno 11 deadlock（5/18 多次點歌失敗 incident）。
+
+撤回到單純 ytsearch5:。Bug 2 另外規劃（可能走 music.youtube.com URL 形式
+或 youtube:music:search_url extractor）。
 """
 from __future__ import annotations
 
@@ -44,7 +46,6 @@ class _FakeYDL:
     def __exit__(self, *exc):
         return False
 
-    # script: {search_prefix: entries_list_or_exception}
     script: dict = {}
     calls: list = []
 
@@ -65,60 +66,51 @@ def _music_entry(title="Test Song", url="http://stream.test/song"):
         "url": url,
         "categories": ["Music"],
         "duration": 200,
-        "webpage_url": f"https://youtube.com/watch?v=xxx",
+        "webpage_url": "https://youtube.com/watch?v=xxx",
         "thumbnail": "t.png",
     }
 
 
 @pytest.mark.asyncio
-async def test_resolve_yt_query_tries_ytmsearch_first():
-    """搜尋時應該先打 ytmsearch5:{query}，不該優先用 ytsearch5。"""
+async def test_resolve_yt_query_uses_ytsearch5_only():
+    """搜尋時只打 ytsearch5:，不再 fallback ytmsearch5（yt-dlp 不支援）。"""
     cog = _make_cog()
     _FakeYDL.calls = []
     _FakeYDL.script = {
-        "ytmsearch5:": [_music_entry("YT Music Hit")],
-        "ytsearch5:": [_music_entry("Regular YT Hit")],
+        "ytsearch5:": [_music_entry("YT Hit")],
     }
 
     with patch("yt_dlp.YoutubeDL", _FakeYDL):
         info = await cog._resolve_yt_query("陶喆 普通朋友")
 
     assert info is not None
-    assert info["title"] == "YT Music Hit"
-    assert _FakeYDL.calls[0].startswith("ytmsearch5:"), \
-        f"第一次搜尋應是 ytmsearch5，實際是 {_FakeYDL.calls[0]}"
+    assert info["title"] == "YT Hit"
+    assert len(_FakeYDL.calls) == 1, f"應只打一次 yt-dlp，實際 {len(_FakeYDL.calls)} 次"
+    assert _FakeYDL.calls[0].startswith("ytsearch5:"), \
+        f"必須是 ytsearch5:，實際是 {_FakeYDL.calls[0]}"
 
 
 @pytest.mark.asyncio
-async def test_resolve_yt_query_falls_back_to_ytsearch_when_ytm_empty():
-    """ytmsearch5 0 命中時，應自動 fallback 到 ytsearch5。"""
+async def test_resolve_yt_query_does_not_call_ytmsearch5():
+    """regression: 不該再嘗試 ytmsearch5: (yt-dlp 不支援會拋 NoSupportingHandlers)."""
     cog = _make_cog()
     _FakeYDL.calls = []
-    _FakeYDL.script = {
-        "ytmsearch5:": [],  # YT Music 沒結果
-        "ytsearch5:": [_music_entry("Fallback Hit")],
-    }
+    _FakeYDL.script = {"ytsearch5:": [_music_entry("X")]}
 
     with patch("yt_dlp.YoutubeDL", _FakeYDL):
-        info = await cog._resolve_yt_query("冷門歌 only on regular YT")
+        await cog._resolve_yt_query("任意關鍵字")
 
-    assert info is not None
-    assert info["title"] == "Fallback Hit"
-    # 兩個 prefix 都被打過
-    prefixes = [c.split(":")[0] + ":" for c in _FakeYDL.calls]
-    assert "ytmsearch5:" in prefixes
-    assert "ytsearch5:" in prefixes
+    for call in _FakeYDL.calls:
+        assert not call.startswith("ytmsearch"), \
+            f"不該打 ytmsearch（yt-dlp 不支援），實際呼叫: {_FakeYDL.calls}"
 
 
 @pytest.mark.asyncio
-async def test_resolve_yt_query_returns_none_when_both_empty():
-    """兩個搜尋都 0 命中時，回 None，讓上層回報找不到。"""
+async def test_resolve_yt_query_returns_none_when_empty():
+    """ytsearch5: 0 命中時，回 None 讓上層回報找不到。"""
     cog = _make_cog()
     _FakeYDL.calls = []
-    _FakeYDL.script = {
-        "ytmsearch5:": [],
-        "ytsearch5:": [],
-    }
+    _FakeYDL.script = {"ytsearch5:": []}
 
     with patch("yt_dlp.YoutubeDL", _FakeYDL):
         info = await cog._resolve_yt_query("zzz random nonsense xyz123")
@@ -128,14 +120,13 @@ async def test_resolve_yt_query_returns_none_when_both_empty():
 
 @pytest.mark.asyncio
 async def test_resolve_yt_query_url_uses_direct_extract():
-    """URL 查詢不該走 ytmsearch / ytsearch，要直接 extract_info(url)。"""
+    """URL 查詢不該加 ytsearch 前綴，要直接 extract_info(url)。"""
     cog = _make_cog()
     _FakeYDL.calls = []
 
     class _DirectYDL(_FakeYDL):
         def extract_info(self, search, download=False):
             type(self).calls.append(search)
-            # 模擬 URL 直接解析的回傳：單一影片 info，不是搜尋結果
             return {
                 "title": "Direct URL Song",
                 "url": "http://stream.direct/x",
@@ -152,4 +143,4 @@ async def test_resolve_yt_query_url_uses_direct_extract():
     assert info is not None
     assert info["title"] == "Direct URL Song"
     assert _DirectYDL.calls == ["https://youtu.be/abc123"], \
-        f"URL 應該直接打，不該加 ytmsearch/ytsearch 前綴：{_DirectYDL.calls}"
+        f"URL 應該直接打，不該加搜尋前綴：{_DirectYDL.calls}"

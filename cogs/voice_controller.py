@@ -5290,13 +5290,14 @@ class VoiceController(commands.Cog):
                         return None
                     chosen = info if 'url' in info else None
                 else:
-                    entries = []
-                    for prefix in ('ytmsearch5:', 'ytsearch5:'):
-                        info = ydl.extract_info(f'{prefix}{query}', download=False)
-                        entries = [e for e in (info.get('entries') or []) if e] if info else []
-                        if entries:
-                            break
-                        logger.info(f"🎵 [Stream] {prefix}{query[:40]} 0 命中，切換下一個來源")
+                    # 註：yt-dlp 2026.03.17 沒有 `ytmsearch:` extractor（只有
+                    # `youtube:music:search_url` 走 URL 形式），之前嘗試的
+                    # `ytmsearch5:` fallback 每次都拋 NoSupportingHandlers
+                    # 在 thread executor 內部觸發 lock 競爭，產生 Errno 11
+                    # deadlock。回到單純 ytsearch5。Bug 2「YT Music 找得到
+                    # 但 ytsearch 沒」需另外規劃（可能走 music.youtube.com URL）。
+                    info = ydl.extract_info(f'ytsearch5:{query}', download=False)
+                    entries = [e for e in (info.get('entries') or []) if e] if info else []
                     if not entries:
                         return None
                     chosen = pick_best_music_candidate(entries)
