@@ -52,6 +52,7 @@ class TurtleSoupSession:
     end_narration: str = ""              # GAME_OVER 時 Marvin 公布湯底前的台詞
     max_questions: int = 50              # 硬上限
     hints_given: int = 0                 # 已給出的提示數（玩家主動 + idle timer）
+    given_hint_indices: list[int] = field(default_factory=list)  # 已給的 hint 在 puzzle.hints 的 index
 
     @property
     def questions_count(self) -> int:

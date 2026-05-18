@@ -16,11 +16,14 @@ from dataclasses import dataclass, field
 class HintNode:
     """單一可揭露的事實節點。屬於湯底推理鏈中的一環。
 
-    id     節點唯一識別碼（給 Hint.reveals 引用）
-    fact   人類可讀的事實描述（內部用，不直接給玩家看）
+    id        節點唯一識別碼（給 Hint.reveals 引用）
+    fact      人類可讀的事實描述（內部用，不直接給玩家看）
+    keywords  玩家問題中含這些詞 → 視為玩家已「探索」此節點，
+              引擎不再重複給包含此節點的 hint（個人化排序用）
     """
     id: str
     fact: str
+    keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,9 +103,21 @@ ELEVATOR_18F = Puzzle(
     ],
     leak_keywords=["侏儒", "矮", "身材", "按鈕", "夠不到", "構不著", "按不到"],
     hint_nodes=[
-        HintNode(id="body_limit",        fact="男子身體有不尋常的限制"),
-        HintNode(id="button_reach",      fact="某些電梯按鈕在他能力範圍外"),
-        HintNode(id="assist_dependence", fact="獨自時辦不到，有人在場時可以"),
+        HintNode(
+            id="body_limit",
+            fact="男子身體有不尋常的限制",
+            keywords=("身高", "身材", "身體", "矮", "侏儒", "個子", "高度"),
+        ),
+        HintNode(
+            id="button_reach",
+            fact="某些電梯按鈕在他能力範圍外",
+            keywords=("按鈕", "按鍵", "夠到", "夠不到", "構到", "構不到", "按不到"),
+        ),
+        HintNode(
+            id="assist_dependence",
+            fact="獨自時辦不到，有人在場時可以",
+            keywords=("別人", "朋友", "鄰居", "陪同", "幫忙", "獨自", "一個人", "自己"),
+        ),
     ],
     hints=[
         # 第 1 條：1 個節點（身體層次）

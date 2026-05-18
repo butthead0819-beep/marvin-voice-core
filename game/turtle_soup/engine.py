@@ -201,19 +201,71 @@ class TurtleSoupEngine:
     async def request_hint(self) -> Optional[str]:
         """玩家主動或 idle timer 觸發。回傳下一條 hint 的文字，或 None 表已用完。
 
-        非 ASKING 狀態回 None。
-        提示請求不消耗 max_questions 配額。
+        v1 升級：個人化排序 — 不再依 puzzle.hints 的線性順序，改用「資訊增益」演算法：
+        1. 從 session.given_hint_indices + asked_questions 推斷玩家已探索的節點
+        2. 對每個未給過的 hint，算 new_nodes = reveals - explored
+        3. 選 new_nodes 最少（最循序漸進）的 hint；同數量選 reveals 最少（最乾淨）的
+        4. 跳過已探索完所有節點的 hint（沒新資訊不重複給）
 
-        Puzzle.hints 是 list[Hint]（含 reveals 網狀資訊），這層只回 text 給 TTS。
+        對於線性 ELEVATOR_18F 來說，這個演算法產生的順序跟原本一樣（向下相容）；
+        但對於有分支的 puzzle，會根據玩家問題動態挑最適合的 hint。
         """
         async with self._lock:
             if self.session.state != TurtleSoupState.ASKING:
                 return None
-            if self.session.hints_given >= len(self.puzzle.hints):
+            idx = self._select_next_hint_index()
+            if idx is None:
                 return None
-            hint = self.puzzle.hints[self.session.hints_given]
+            hint = self.puzzle.hints[idx]
+            self.session.given_hint_indices.append(idx)
             self.session.hints_given += 1
             return hint.text
+
+    def _explored_node_ids(self) -> set[str]:
+        """從已給的 hint + 玩家已問問題（keyword 匹配）推斷玩家「探索過」的節點。
+
+        探索 != 知道答案，只表示玩家曾「碰到」這個節點對應的方向。
+        後續 hint 排序時會降低重複探索節點的優先度。
+        """
+        explored: set[str] = set()
+        for i in self.session.given_hint_indices:
+            if 0 <= i < len(self.puzzle.hints):
+                explored.update(self.puzzle.hints[i].reveals)
+
+        # 玩家問題的 keyword 匹配
+        asked_texts = [q.question for q in self.session.asked_questions]
+        for node in self.puzzle.hint_nodes:
+            for kw in node.keywords:
+                if any(kw in text for text in asked_texts):
+                    explored.add(node.id)
+                    break
+        return explored
+
+    def _select_next_hint_index(self) -> Optional[int]:
+        """選下一條最適合的 hint，回傳 puzzle.hints 的 index。
+
+        排序：
+        - 主鍵：new_nodes 數（少 → 多）— 越循序漸進越好
+        - 次鍵：total reveals 數（少 → 多）— 同樣 info gain 下選乾淨的
+        - 末鍵：原 list 順序（先 → 後）— 作者決定的優先序當 tie-breaker
+        """
+        explored = self._explored_node_ids()
+        given = set(self.session.given_hint_indices)
+
+        candidates: list[tuple[int, int, int]] = []
+        for i, hint in enumerate(self.puzzle.hints):
+            if i in given:
+                continue
+            reveals = set(hint.reveals)
+            new_nodes = reveals - explored
+            if not new_nodes:
+                continue  # 沒新資訊，跳過
+            candidates.append((len(new_nodes), len(reveals), i))
+
+        if not candidates:
+            return None
+        candidates.sort()  # ascending: 小 new_nodes 優先，同時小 reveals 優先
+        return candidates[0][2]
 
     async def cancel(self) -> bool:
         """從任何 state 強制結束。GAME_OVER 不重複觸發。"""

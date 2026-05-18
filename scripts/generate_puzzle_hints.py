@@ -44,19 +44,24 @@ def _print_graph(graph: dict, run_idx: int = 1):
     print(f"\n────── Run #{run_idx} ({graph['_provider']}) ──────")
     print("\n  📐 hint_nodes（推理鏈節點）")
     for n in graph["hint_nodes"]:
+        kws = n.get("keywords", [])
+        kw_str = f"  keywords={list(kws)}" if kws else "  (no keywords)"
         print(f"     [{n['id']:18s}] {n['fact']}")
+        print(f"     {' ':18s}  {kw_str}")
 
     node_index = {n["id"]: i for i, n in enumerate(graph["hint_nodes"])}
 
-    print("\n  💡 hints（提示，依給的先後 + 揭露網點）")
+    print("\n  💡 hints（提示 + 節點覆蓋網）")
+    # 印 header（節點 id 縮寫）
+    headers = [n["id"][:3] for n in graph["hint_nodes"]]
+    print(f"     {'    ':>6s}  {' '.join(h.rjust(3) for h in headers)}")
     for i, h in enumerate(graph["hints"], 1):
-        revealed_indices = [node_index.get(rid, "?") for rid in h["reveals"]]
-        coverage = "".join(
-            "■" if j in revealed_indices else "·"
+        revealed_indices = {node_index.get(rid) for rid in h["reveals"] if rid in node_index}
+        coverage = " ".join(
+            (" ■ " if j in revealed_indices else " · ")
             for j in range(len(graph["hint_nodes"]))
         )
-        print(f"     [{i}] |{coverage}| ({len(h['reveals'])}/{len(graph['hint_nodes'])}) {h['text']}")
-        print(f"         reveals: {h['reveals']}")
+        print(f"     [{i}]    {coverage}  ({len(h['reveals'])}/{len(graph['hint_nodes'])}) {h['text']}")
 
 
 def _print_paste_block(graph: dict):
@@ -66,7 +71,16 @@ def _print_paste_block(graph: dict):
     print()
     print("    hint_nodes=[")
     for n in graph["hint_nodes"]:
-        print(f"        HintNode(id={n['id']!r}, fact={n['fact']!r}),")
+        kws = n.get("keywords", [])
+        if kws:
+            kw_repr = ", ".join(repr(k) for k in kws)
+            print(f"        HintNode(")
+            print(f"            id={n['id']!r},")
+            print(f"            fact={n['fact']!r},")
+            print(f"            keywords=({kw_repr},),")
+            print(f"        ),")
+        else:
+            print(f"        HintNode(id={n['id']!r}, fact={n['fact']!r}),")
     print("    ],")
     print("    hints=[")
     for h in graph["hints"]:

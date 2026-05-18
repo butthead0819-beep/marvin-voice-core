@@ -394,10 +394,89 @@ v0/v1 採離線生成因為：
 
 v4（UGC 階段）會考慮 lazy 生成 — 玩家投稿題目時自動生 graph + 寫入 pending pool 等審核。
 
-**未來擴充（v1+）**：
-- 多分支推理鏈（不只線性 A→B→C，可以有 D→B、E→C 等替代路徑）
-- 一個 hint 可同時揭露不相鄰節點（例如 `reveals=('body_limit', 'morning_works')` 給玩家不同切入點）
-- 個人化 hint 排序（根據玩家已問過的問題，挑最有「資訊增益」的 hint 先給）
+**v1 升級已完成（個人化 hint 排序 + 分支 + 非相鄰 reveals）**：
+
+### 1. HintNode.keywords — 玩家問題 → 節點映射
+
+```python
+@dataclass(frozen=True)
+class HintNode:
+    id: str
+    fact: str
+    keywords: tuple[str, ...] = ()  # 玩家問題含這些詞 → 視為已探索此節點
+```
+
+ELEVATOR_18F 範例：
+```python
+HintNode(
+    id="body_limit",
+    fact="男子身體有不尋常的限制",
+    keywords=("身高", "身材", "身體", "矮", "侏儒", "個子", "高度"),
+)
+```
+
+玩家問「他身高有問題嗎？」→ 命中 `身高` → `body_limit` 被標記已探索 → 之後 hint 排序會跳過只揭露 `body_limit` 的 hint。
+
+### 2. Engine.`_select_next_hint_index()` — 資訊增益選法
+
+```python
+def _select_next_hint_index(self) -> Optional[int]:
+    explored = self._explored_node_ids()  # given_hints + question keywords 命中
+    given = set(self.session.given_hint_indices)
+
+    candidates = []
+    for i, hint in enumerate(self.puzzle.hints):
+        if i in given:
+            continue
+        new_nodes = set(hint.reveals) - explored
+        if not new_nodes:
+            continue  # 沒新內容，跳過
+        candidates.append((len(new_nodes), len(hint.reveals), i))
+
+    candidates.sort()  # asc: 小 new_nodes 優先，同數量選小 reveals
+    return candidates[0][2] if candidates else None
+```
+
+**排序語義**：
+- 主鍵 `len(new_nodes)` 升序 — 越循序漸進越好（給 1 個新節點 > 給 3 個）
+- 次鍵 `len(reveals)` 升序 — 同 info gain 下選最乾淨的 hint
+- 末鍵 list 順序 — 作者預設先後當 tie-breaker
+
+**Linear puzzle**（ELEVATOR_18F）行為不變：
+- 第 1 次 request → new={A}, reveals=1 → hint[0]
+- 第 2 次 → A 已探索 → new={B}, reveals=2 → hint[1]
+- 第 3 次 → A,B 已探索 → new={C}, reveals=3 → hint[2]
+
+**Branch puzzle** 行為（合成測試用 `BRANCH_PUZZLE`）：
+- hints=[hint_x(x,), hint_y(y,), hint_z(z,), hint_xyz(x,y,z)]
+- 第 1 次 → 三個 1-node hint 都 (1, 1)，選列表最前的 hint_x
+- 第 2 次 → x 已探索 → hint_y / hint_z 都 (1, 1)、hint_xyz (2, 3) → 選 hint_y
+- 第 3 次 → hint_z
+- 第 4 次 → 所有節點探索完 → hint_xyz 沒新內容 → 回 None
+
+**Question-driven** 行為：
+- 玩家問了「他身高有問題嗎？」（命中 `身高` keyword）→ `body_limit` 已探索
+- 第 1 次 request_hint → 跳過 hint[0]（沒新節點）→ 直接給 hint[1] 揭露 `button_reach`
+
+### 3. Session.given_hint_indices
+
+```python
+@dataclass
+class TurtleSoupSession:
+    ...
+    given_hint_indices: list[int] = field(default_factory=list)
+```
+
+記錄已給的 hint 在 `puzzle.hints` 的 index，避免重複給 + 計算 explored。
+
+### 4. 何時引擎仍回 None
+- ASKING state 外
+- 所有 hint 對玩家「沒新資訊」（given + explored 已覆蓋全部 reveals）
+
+### 未來擴充（v2+）
+- LLM-based 問題理解（不只 keyword 匹配；用 embedding / 小 LLM call）
+- 玩家「rating」hint（讓玩家對 hint 評分，下次選相似 hint）
+- 多 puzzle 並行時跨題學習 hint 風格
 
 ---
 

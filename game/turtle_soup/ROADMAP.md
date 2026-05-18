@@ -57,8 +57,17 @@ prompt 改寫：需要更精準的 verdict 判定規則。REPL 重新校準。
   - `game/turtle_soup/hint_generator.py` + `scripts/generate_puzzle_hints.py`
   - 維度定義：1D 指類別、2D 連兩元素、3D 點機制
   - 離線生成（作者人工挑選後寫入 puzzles.py）
+- **v0.5**：hint 編織網模型（HintNode + Hint 圖結構）
+  - 節點 + 揭露關係取代線性 list
+  - LLM 一次 call 同時 top-down 抽節點 + bottom-up 組提示
+  - _validate 鎖 5 個不變式
+- **v0.6（前 v1）**：個人化 hint 排序
+  - HintNode.keywords：玩家問題 keyword 命中 → 視為已探索此節點
+  - Engine 用資訊增益演算法：選 new_nodes 最少（最循序漸進）的 hint
+  - 支援分支（非線性）puzzle：multi-branch / 非相鄰 reveals 自動處理
+  - Session.given_hint_indices 防重複給
 
-v1 剩餘升級：runtime lazy 生成（給 v4 UGC 用），讓玩家投稿題目時自動產 hints
+v1 剩餘升級：runtime lazy 生成（給 v4 UGC 用），讓玩家投稿題目時自動產 hints + keywords
 
 #### 3. Dispute 機制
 玩家覺得 Marvin 判錯時：
