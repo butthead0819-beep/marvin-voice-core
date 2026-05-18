@@ -3289,25 +3289,37 @@ class VoiceController(commands.Cog):
                 await self._handle_confirmation_response(speaker, query)
                 return
 
-        # 📝 [Personal Assistant Manual Add] 「記一下」→ 立即存入
-        if self._recall_handler and is_manual_add_query(query) and not low_confidence_wake:
-            await self._handle_manual_add_query(speaker, query)
-            return
-
-        # ✏️ [Personal Assistant Task Update] 「那件事改成…」→ 更新任務
-        if self._recall_handler and is_task_update_query(query) and not low_confidence_wake:
-            await self._handle_task_update_query(speaker, query)
-            return
-
-        # ✅ [Personal Assistant Mark-Done] 「那件事做完了」→ 標記任務完成
-        if self._recall_handler and is_mark_done_query(query) and not low_confidence_wake:
-            await self._handle_mark_done_query(speaker, query)
-            return
-
-        # 🗂️ [Personal Assistant Recall] 語音日記查詢：剛才說了什麼、待辦、答應了什麼
-        if self._recall_handler and is_recall_query(query):
-            await self._handle_recall_query(speaker, query)
-            return
+        # ── [Personal Assistant Intent Detection] ──
+        # 先驗 intent 再驗 handler 存在性，避免 silent failure：
+        # 原本 `if self._recall_handler and is_*_query(...)` 在 handler=None 時
+        # 連 intent 都不檢查，使用者意圖完全消失。改成 intent 命中時若
+        # handler 不在則記 warning，方便 debug 追蹤功能未啟用的問題。
+        for _intent_name, _intent_check in (
+            ("manual_add", is_manual_add_query),
+            ("task_update", is_task_update_query),
+            ("mark_done", is_mark_done_query),
+            ("recall", is_recall_query),
+        ):
+            if _intent_check(query):
+                if self._recall_handler is None:
+                    logger.warning(
+                        f"⚠️ [PA Disabled] {speaker} 觸發 {_intent_name} 意圖但 "
+                        f"_recall_handler 未啟用，意圖未處理：'{query[:60]}'"
+                    )
+                    break  # 不再檢查其他 PA intent，往下走 LLM
+                # recall 是 read-only（不受 low_confidence_wake gate）；其他寫入動作則受 gate
+                if _intent_name == "recall":
+                    await self._handle_recall_query(speaker, query)
+                    return
+                if not low_confidence_wake:
+                    if _intent_name == "manual_add":
+                        await self._handle_manual_add_query(speaker, query)
+                    elif _intent_name == "task_update":
+                        await self._handle_task_update_query(speaker, query)
+                    elif _intent_name == "mark_done":
+                        await self._handle_mark_done_query(speaker, query)
+                    return
+                break  # low_confidence + 寫入意圖 → 不執行也不再檢查
 
         # 🩺 [System Status Voice Trigger] 偵測系統狀態查詢，直接回答不走 LLM
         _status_keywords = ["系統狀態", "健康狀態", "剩餘額度", "API 用量", "還剩多少", "用了多少",
