@@ -415,7 +415,11 @@ class GeminiRouterLLMMixin:
                 last_error = e
                 # 🛡️ 如果是最後一次嘗試，則拋出異常觸發 Fallback
                 if attempt == max_retries - 1:
-                    logger.error(f"❌ [Tier-1 Exhausted] 雲端重試 {max_retries} 次後依然失敗: {e}")
+                    # WARNING 不是 ERROR — paid_client fallback 通常會接住，
+                    # 真正失敗才在下方 [Paid Fallback] 階段 log ERROR。
+                    # 之前用 ERROR 觸發 incident_dispatcher DM owner，但 Gemini
+                    # upstream jitter 是 graceful-degrade case，不該叫醒人。
+                    logger.warning(f"⚠️ [Tier-1 Exhausted] 雲端重試 {max_retries} 次後依然失敗，啟動 paid fallback: {e}")
                     # 💰 [Paid Fallback] 主 key 三重重試全部失敗後，嘗試付費備援
                     paid_client = getattr(self, 'google_paid_client', None)
                     if paid_client and self.provider == "gemini":
