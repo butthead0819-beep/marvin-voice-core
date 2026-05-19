@@ -95,12 +95,26 @@ read -r -p "按 Enter 繼續..." _
 read_secret() {
     local prompt="$1"
     local var
+    # -s 隱藏輸入避免 token 流進 terminal scrollback / iTerm log
     if [ -t 0 ]; then
-        read -r -p "$prompt" var
+        read -rs -p "$prompt" var
     else
-        read -r -p "$prompt" var </dev/tty
+        read -rs -p "$prompt" var </dev/tty
     fi
+    echo "" >&2  # 換行（-s 不會自動換行）
     echo "$var"
+}
+
+validate_key() {
+    local name="$1"
+    local val="$2"
+    local min_len="${3:-20}"
+    if [ -z "$val" ]; then
+        die "$name 是空的。請重新跑這個指令，貼上有效的 key。"
+    fi
+    if [ "${#val}" -lt "$min_len" ]; then
+        die "$name 看起來太短（${#val} 字元，預期至少 $min_len）。可能複製貼上時截斷了。"
+    fi
 }
 
 if [ -f .env ]; then
@@ -112,9 +126,12 @@ fi
 cp .env.example .env
 
 say ""
-DISCORD_TOKEN=$(read_secret "貼上 Discord Bot Token: ")
-GROQ_KEY=$(read_secret "貼上 Groq API Key: ")
-GEMINI_KEY=$(read_secret "貼上 Gemini API Key: ")
+DISCORD_TOKEN=$(read_secret "貼上 Discord Bot Token (輸入不會顯示): ")
+validate_key "Discord Bot Token" "$DISCORD_TOKEN" 50
+GROQ_KEY=$(read_secret "貼上 Groq API Key (輸入不會顯示): ")
+validate_key "Groq API Key" "$GROQ_KEY" 30
+GEMINI_KEY=$(read_secret "貼上 Gemini API Key (輸入不會顯示): ")
+validate_key "Gemini API Key" "$GEMINI_KEY" 30
 
 # Write to .env (use temp file then mv for atomicity)
 TMP=$(mktemp)
@@ -130,7 +147,14 @@ while IFS= read -r line; do
 done < .env
 mv "$TMP" .env
 chmod 600 .env
-ok ".env 寫好（權限 600，只有你能讀）"
+
+# 驗證所有 3 個 key 都成功寫進 .env（防止 .env.example 缺欄位導致空 key 滲漏）
+for required in DISCORD_BOT_TOKEN GROQ_API_KEY GEMINI_API_KEY; do
+    if ! grep -qE "^${required}=.+$" .env; then
+        die "$required 沒寫進 .env（.env.example 可能缺這個欄位）。檢查 .env.example 或回報維護者。"
+    fi
+done
+ok ".env 寫好（權限 600，只有你能讀；3 個 key 都驗證過）"
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 say ""
