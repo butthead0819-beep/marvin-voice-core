@@ -1,0 +1,52 @@
+# FM vs Groq 8b cleaner test corpus
+# Each line: {"raw": "...", "tag": "category", "speaker": "...", "context": [...optional]}
+# 取自 records/stt_corrections.jsonl（5/8-5/19 真實 STT 修正樣本）+ Marmo 短答 + 邊界 case
+# 涵蓋 4 象限：CJK wake / CJK 非 wake / 音樂指令 / 短答邊界
+#
+# === A. Wake — 強訊號（句首明確喚醒詞或音近詞） ===
+{"raw": "馬文播放伍佰的鋼鐵男子", "tag": "wake_strong_music"}
+{"raw": "馬文現在幾點了", "tag": "wake_strong_query"}
+{"raw": "等等馬文佩查火車時刻表嗎", "tag": "wake_typo_query"}
+{"raw": "艾馬溫現在幾點了", "tag": "wake_phonetic_query"}
+{"raw": "阿文阿文", "tag": "wake_phonetic_repeat"}
+{"raw": "法文播放周杰倫的稻香", "tag": "wake_phonetic_music"}
+{"raw": "麻文播放周杰倫", "tag": "wake_phonetic_music_simple"}
+#
+# === B. Wake — 弱訊號（喚醒詞在句中、可能誤喚醒） ===
+{"raw": "我覺得馬文說得話氣。", "tag": "wake_middle_quote"}
+{"raw": "好, 開電影, 開電影, 開電影。", "tag": "wake_no_wake_word"}
+{"raw": "妈妈, 艾瑪文, 艾瑪文, 說, 她是誰?", "tag": "wake_phonetic_in_middle"}
+#
+# === C. 非 Wake — 日常閒聊（不該觸發 wake） ===
+{"raw": "對啊真的很瘋狂", "tag": "casual_short"}
+{"raw": "今天天氣很好你覺得呢", "tag": "casual_chat"}
+{"raw": "在台中高雄那個深坑光棍", "tag": "casual_typo"}
+{"raw": "李泳知嗎", "tag": "casual_typo_name"}
+#
+# === D. 音樂播放指令（intent extraction 關鍵） ===
+{"raw": "馬文播放火柴爸爸的歌", "tag": "music_wake_explicit"}
+{"raw": "繼續播", "tag": "music_continuation"}
+{"raw": "幫我換一首", "tag": "music_control"}
+#
+# === E. 龍蝦（NemoClaw owner trigger） ===
+{"raw": "龍蝦幫我查根據鳥山林的七龍珠漫畫裡的設定解完弦", "tag": "lobster_typo"}
+{"raw": "龍蝦查詢柴犬跟秋田犬有什麼不一樣", "tag": "lobster_query"}
+#
+# === F. Marmo 短答 case（短句快回，FM 是否能維持簡潔） ===
+{"raw": "嗯嗯", "tag": "marmo_filler"}
+{"raw": "Okay.", "tag": "marmo_english_short"}
+{"raw": "好的好的", "tag": "marmo_affirmation"}
+#
+# === G. 邊界 / 雜訊（測 FM 對退化輸入的穩健性） ===
+{"raw": "爸爸。", "tag": "edge_single_word"}
+{"raw": "《不知》", "tag": "edge_brackets"}
+{"raw": "阿蘇田, 幫忙。", "tag": "edge_noise_phonetic"}
+{"raw": "白事情", "tag": "edge_short_typo"}
+#
+# === H. 長雜訊（測 hallucination 與 max_tokens 行為） ===
+{"raw": "我什麼時候跟到的我是那時候疫情的", "tag": "long_typo"}
+{"raw": "對所以播放這件事你不能叫媽媽問叫媽媽去他們做還不知道要怎麼轉達不用啦", "tag": "long_music_embedded_wake"}
+#
+# === I. 英文 / 混語 ===
+{"raw": "網頁版Netflix", "tag": "mixed_english"}
+{"raw": "可以幫我open Spotify嗎", "tag": "mixed_code_switch"}

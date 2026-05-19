@@ -2401,7 +2401,7 @@ class VoiceController(commands.Cog):
             _b99 = self.bot.cogs.get("Busted99Cog")
             if _b99 is not None and _b99.should_suppress_for_game(speaker):
                 return  # 非猜題玩家說話，Busted99 GUESSING 狀態下直接捨棄
-            for _cog_name in ("BustedCog", "Busted99Cog", "DetectiveCog", "TurtleSoupCog"):
+            for _cog_name in ("BustedCog", "Busted99Cog", "TurtleSoupCog"):
                 _game_cog = self.bot.cogs.get(_cog_name)
                 if _game_cog is not None:
                     _consumed = await _game_cog.receive_voice_answer_by_speaker(speaker, full_raw_text)

@@ -31,6 +31,12 @@ class IntentContext:
     """Wake event 的全部 context，傳給每個 agent 看。
 
     Frozen 是防呆 — agent 不能在 bid() 內 mutate state。
+
+    `mode` 表示當前 bot 模式（normal / game / stream）。Agent 用
+    `DeclarativeIntentAgent.mode_compatible` 自我聲明能在哪些模式下出價，
+    base class 的 gate() 會自動依 `ctx.mode` 早退。Phase-2 之前 game_mode
+    bool + stream_active bool 同時存在；mode 字串是新統一介面，預設 "normal"
+    保持後向相容。
     """
     speaker: str
     raw_text: str
@@ -41,6 +47,7 @@ class IntentContext:
     game_mode: bool
     is_owner: bool
     now: float
+    mode: str = "normal"
 
 
 @dataclass

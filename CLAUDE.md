@@ -40,7 +40,8 @@
 
 **流水線分層**：每層只做一件事，上下游靠 Protocol 介面解耦：
 ```
-Discord Audio Sink → VAD → STT → pre_filter → Intent Route → LLM / NemoClaw
+Discord Audio Sink → VAD → STT → pre_filter → Cleaner LLM
+  → IntentBus (agents bid → max wins) → winner.handler / Marvin LLM fallback
 ```
 
 **優雅降級**：每一個 I/O 呼叫都必須有 fallback，不能因單一服務失敗而中斷整條流水線。
@@ -111,6 +112,52 @@ _nemo_lock → 序列化 openclaw subprocess + TTS
 - Voice Controller：`[VC]`
 
 高頻路徑（Sink.write）用 `packet_count % N == 0` 降頻，避免 log 爆炸。
+
+---
+
+### IntentBus 層設計規範
+
+Wake 後的意圖派發**唯一入口**是 `intent_bus.py::IntentBus`。加新 intent type 不要動 `voice_controller` 的 if/elif chain，寫一個 `IntentAgent` class 註冊到 `VoiceController._intent_bus`。
+
+#### `bid()` 契約（強制）
+- **Sync ≤5ms**：bid 是熱路徑，禁 LLM 呼叫 / 禁 I/O / 禁 subprocess；昂貴判斷放 handler 內
+- **永遠回 `Bid`，禁 `return None`**：未命中也要 `Bid(confidence=0.0, reason="<descriptive>")`，這是 negative-space 表達；bus dispatch 仍靠 `MIN_CONFIDENCE=0.30` 過濾，但 log / verifier 看得到「我看了不是我」
+- **例外不 catch**：讓 bus 內的 try/except 接（一個 agent 炸不影響其他 bid）
+- **Dense 0.0 reason 必須 distinct**：`mode_mismatch:X` / `cog_not_loaded` / `not_active` 等，禁全寫 `"no_match"`
+
+#### 兩個 template（強制二選一）
+- **A. 宣告式**：trigger 是 text pattern（regex + named-group slots）→ 繼承 `DeclarativeIntentAgent`，實作 `declare_intents() -> [IntentSchema]`，bid 自動跑。範例：`intent_agents/music_agent_v2.py`
+- **B. State-checking**：trigger 是 cog/service state（非 text）→ 繼承 `DeclarativeIntentAgent`，override `bid()`，`declare_intents()` 回 `[]`。範例：`intent_agents/busted99_agent.py`
+
+#### `mode_compatible` 宣告（強制）
+每個 agent 必須宣告 `mode_compatible: frozenset[str]`：
+- 一般 agent（音樂 / NemoClaw / Status / Vision）：`{"normal", "stream"}`
+- Game agent：`{"game"}`
+- 不在當前 `ctx.mode` 內 → base class 自動 dense 0.0 with `reason="mode_mismatch:<mode>"`，subclass 無法 bypass
+
+#### 詳細模板與測試骨架
+看 `intent_agents/base.py` (117 行) 的 docstring + 4 個 reference agent
+（`music_agent_v2.py` / `busted99_agent.py` / `busted_agent.py` / `turtle_soup_agent.py`）。
+每個 agent 對應 `tests/test_<name>_agent.py` 至少覆蓋 mode gate / resource availability /
+state failure（每個 distinct reason 一條） / happy path / handler integration 五類測試。
+
+---
+
+### Game 模式整合
+
+遊戲模式（busted / busted99 / turtle_soup）統一走 IntentBus，**不要**在 `voice_controller` 寫 game cog if/elif。
+
+#### Cog 介面要求
+所有 game cog 必須實作：
+- `is_active() -> bool` 或私有 `_session is not None and _session.state.name == "<ACTIVE_STATE>"`
+- `should_suppress_for_game(speaker: str) -> bool`：當前不該由此 cog 消化此 speaker → True
+- `receive_voice_answer_by_speaker(speaker: str, text: str) -> bool`：消化成功回 True
+
+#### GameAgent 對應規則
+每個 game cog 對應一個 `intent_agents/<game>_agent.py`：
+- `mode_compatible = frozenset({"game"})`
+- bid 0.95 當 (cog active + 非 suppress)；否則 dense 0.0 with 對應 reason
+- handler 直接 `await cog.receive_voice_answer_by_speaker(ctx.speaker, ctx.raw_text)`
 
 ---
 

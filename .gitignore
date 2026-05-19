@@ -76,3 +76,9 @@ Thumbs.db
 .env.github
 .gstack/
 .chroma_db/
+
+# ErrorDispatcher incident reports (per-machine forensic logs)
+.claude_todo/
+
+# Reboot state — runtime metadata written on every restart
+.marvin_reboot_state.json
