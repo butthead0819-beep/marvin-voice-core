@@ -419,19 +419,19 @@ header{display:flex;align-items:center;justify-content:space-between;
         <div class="stat-hint">點擊查看發言排行</div>
       </div>
       <div class="stat-card c-red" onclick="openDrawer('missed')">
-        <div class="stat-label">高意圖訊息</div>
+        <div class="stat-label">贈禮成交</div>
         <div class="stat-value c-red" id="stat-missed">0</div>
         <div class="stat-sub">訂閱 / 贈禮 / 意圖信號</div>
         <div class="stat-hint">點擊查看每一則</div>
       </div>
       <div class="stat-card c-gold" onclick="openDrawer('leads')">
-        <div class="stat-label">熱名單人數</div>
+        <div class="stat-label">轉化 Lead</div>
         <div class="stat-value c-gold" id="stat-leads">0</div>
         <div class="stat-sub">高意圖 × 高忠誠</div>
         <div class="stat-hint">點擊查看詳情</div>
       </div>
       <div class="stat-card c-discord mock-data" onclick="openDrawer('discord')">
-        <div class="stat-label">Discord 身份已比對</div>
+        <div class="stat-label">終身金主</div>
         <div class="stat-value c-discord" id="stat-discord">0</div>
         <div class="stat-sub">跨平台確認同一人</div>
         <div class="stat-hint">Demo 資料</div>
@@ -568,7 +568,7 @@ const LEADS = [
     "stageClass": "stage-return",
     "sessions": 2,
     "score": 58.12,
-    "tag": "訂閱",
+    "tag": "訂閱詢問",
     "tagClass": "tag-sub"
   },
   {
@@ -578,7 +578,7 @@ const LEADS = [
     "stageClass": "stage-return",
     "sessions": 2,
     "score": 53.88,
-    "tag": "訂閱",
+    "tag": "訂閱詢問",
     "tagClass": "tag-sub"
   },
   {
@@ -588,7 +588,7 @@ const LEADS = [
     "stageClass": "stage-new",
     "sessions": 1,
     "score": 38.02,
-    "tag": "—",
+    "tag": "提問",
     "tagClass": "tag-comm"
   },
   {
@@ -598,7 +598,7 @@ const LEADS = [
     "stageClass": "stage-return",
     "sessions": 2,
     "score": 15.48,
-    "tag": "訂閱",
+    "tag": "訂閱詢問",
     "tagClass": "tag-sub"
   },
   {
@@ -608,7 +608,7 @@ const LEADS = [
     "stageClass": "stage-return",
     "sessions": 2,
     "score": 9.14,
-    "tag": "訂閱",
+    "tag": "訂閱詢問",
     "tagClass": "tag-sub"
   },
   {
@@ -618,7 +618,7 @@ const LEADS = [
     "stageClass": "stage-new",
     "sessions": 1,
     "score": 9.03,
-    "tag": "—",
+    "tag": "提問",
     "tagClass": "tag-comm"
   },
   {
@@ -628,7 +628,7 @@ const LEADS = [
     "stageClass": "stage-return",
     "sessions": 2,
     "score": 7.24,
-    "tag": "訂閱",
+    "tag": "訂閱詢問",
     "tagClass": "tag-sub"
   },
   {
@@ -638,7 +638,7 @@ const LEADS = [
     "stageClass": "stage-return",
     "sessions": 2,
     "score": 4.13,
-    "tag": "訂閱",
+    "tag": "訂閱詢問",
     "tagClass": "tag-sub"
   },
   {
@@ -648,7 +648,7 @@ const LEADS = [
     "stageClass": "stage-return",
     "sessions": 2,
     "score": 3.02,
-    "tag": "訂閱",
+    "tag": "訂閱詢問",
     "tagClass": "tag-sub"
   }
 ];
@@ -756,78 +756,6 @@ const VOCAB = [
 // 真實用戶名（真實訊息）
 const CHAT_MSGS = [
   {
-    "user": "agassi888",
-    "color": "c-accent",
-    "text": "@莓汽泡 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
-    "user": "cck3312",
-    "color": "c-green",
-    "text": "@莓汽泡 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
-    "user": "ccduck",
-    "color": "c-gold",
-    "text": "@莓汽泡 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
-    "user": "curiouswatcher",
-    "color": "c-muted",
-    "text": "@孤苦之人 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
-    "user": "madara0083",
-    "color": "c-accent",
-    "text": "@蘋家的明仔 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
-    "user": "atdky",
-    "color": "c-green",
-    "text": "@莓汽泡 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
-    "user": "ray817127",
-    "color": "c-gold",
-    "text": "@蘋家的明仔 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
-    "user": "sudon_0808",
-    "color": "c-muted",
-    "text": "@莓汽泡 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
-    "user": "pjbitter",
-    "color": "c-accent",
-    "text": "啊潔還在忙著放福利 pinpin8666",
-    "intent": "sub"
-  },
-  {
-    "user": "lee623",
-    "color": "c-green",
-    "text": "@蘋家的明仔 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
-    "user": "ace88889999",
-    "color": "c-gold",
-    "text": "阿潔送福利的50%",
-    "intent": "sub"
-  },
-  {
-    "user": "0504david",
-    "color": "c-muted",
-    "text": "@莓汽泡 謝謝您的贈禮訂閱！",
-    "intent": "sub"
-  },
-  {
     "user": "h5d8m6u7v789km68ar3z",
     "color": "c-accent",
     "text": "阿平可以撞他們嗎?XD"
@@ -841,6 +769,66 @@ const CHAT_MSGS = [
     "user": "freaky_raypwh",
     "color": "c-gold",
     "text": "閃魚雷？"
+  },
+  {
+    "user": "el79124002",
+    "color": "c-muted",
+    "text": "滿滿的J"
+  },
+  {
+    "user": "yoshikichii",
+    "color": "c-accent",
+    "text": "以前鱼雷命中队友是有伤害的 LUL 能坑队友，现在不行了"
+  },
+  {
+    "user": "shen3617",
+    "color": "c-green",
+    "text": "兵會被炸 這是戰爭"
+  },
+  {
+    "user": "ace88889999",
+    "color": "c-gold",
+    "text": "五階巡洋全裝備"
+  },
+  {
+    "user": "pjbitter",
+    "color": "c-muted",
+    "text": "不知道要看哪台啦"
+  },
+  {
+    "user": "buiray",
+    "color": "c-accent",
+    "text": "鍋爐或者彈藥庫"
+  },
+  {
+    "user": "hazukiilu",
+    "color": "c-green",
+    "text": "還可以入房嗎?"
+  },
+  {
+    "user": "dou_wha",
+    "color": "c-gold",
+    "text": "!中獎"
+  },
+  {
+    "user": "welson183qw",
+    "color": "c-muted",
+    "text": "洗沖在聊天室沒記錯，真的至少 2 分鐘！"
+  },
+  {
+    "user": "santapipi",
+    "color": "c-accent",
+    "text": "笑死  鏡頭有毒"
+  },
+  {
+    "user": "seenjay",
+    "color": "c-green",
+    "text": "大約瞄船身前面大約半個船身  比較容易打中"
+  },
+  {
+    "user": "bluebirdouo",
+    "color": "c-gold",
+    "text": "大船最怕魚雷"
   }
 ];
 
@@ -1666,22 +1654,6 @@ function unameBadge(username, opts = {}) {
 const VIEWERS_DATA = [
   {
     "rank": 1,
-    "username": "pjbitter",
-    "msgs": 348,
-    "subStatus": "new_sub",
-    "subLabel": "本場訂閱",
-    "note": "熱名單 #1"
-  },
-  {
-    "rank": 2,
-    "username": "coolygo9",
-    "msgs": 287,
-    "subStatus": "new_sub",
-    "subLabel": "本場訂閱",
-    "note": "熱名單 #2"
-  },
-  {
-    "rank": 3,
     "username": "h5d8m6u7v789km68ar3z",
     "msgs": 240,
     "subStatus": "new_sub",
@@ -1689,12 +1661,28 @@ const VIEWERS_DATA = [
     "note": "熱名單 #3"
   },
   {
-    "rank": 4,
+    "rank": 2,
+    "username": "pjbitter",
+    "msgs": 237,
+    "subStatus": "new_sub",
+    "subLabel": "本場訂閱",
+    "note": "熱名單 #1"
+  },
+  {
+    "rank": 3,
     "username": "welson183qw",
-    "msgs": 221,
+    "msgs": 199,
     "subStatus": "new_sub",
     "subLabel": "本場訂閱",
     "note": ""
+  },
+  {
+    "rank": 4,
+    "username": "coolygo9",
+    "msgs": 194,
+    "subStatus": "new_sub",
+    "subLabel": "本場訂閱",
+    "note": "熱名單 #2"
   },
   {
     "rank": 5,
@@ -1707,7 +1695,7 @@ const VIEWERS_DATA = [
   {
     "rank": 6,
     "username": "dou_wha",
-    "msgs": 155,
+    "msgs": 133,
     "subStatus": "new_sub",
     "subLabel": "本場訂閱",
     "note": ""
@@ -1715,7 +1703,7 @@ const VIEWERS_DATA = [
   {
     "rank": 7,
     "username": "nightbot",
-    "msgs": 130,
+    "msgs": 111,
     "subStatus": "bot",
     "subLabel": "機器人",
     "note": ""
@@ -1723,7 +1711,7 @@ const VIEWERS_DATA = [
   {
     "rank": 8,
     "username": "santapipi",
-    "msgs": 117,
+    "msgs": 101,
     "subStatus": "new_sub",
     "subLabel": "本場訂閱",
     "note": ""
@@ -1738,14 +1726,6 @@ const VIEWERS_DATA = [
   },
   {
     "rank": 10,
-    "username": "pinpinponpon627",
-    "msgs": 69,
-    "subStatus": "owner",
-    "subLabel": "主播",
-    "note": ""
-  },
-  {
-    "rank": 11,
     "username": "cgl664133",
     "msgs": 67,
     "subStatus": "unknown",
@@ -1753,31 +1733,31 @@ const VIEWERS_DATA = [
     "note": ""
   },
   {
-    "rank": 12,
+    "rank": 11,
     "username": "ast246",
-    "msgs": 66,
+    "msgs": 58,
+    "subStatus": "new_sub",
+    "subLabel": "本場訂閱",
+    "note": ""
+  },
+  {
+    "rank": 12,
+    "username": "lun0107",
+    "msgs": 55,
     "subStatus": "new_sub",
     "subLabel": "本場訂閱",
     "note": ""
   },
   {
     "rank": 13,
-    "username": "lun0107",
-    "msgs": 66,
+    "username": "kim_taeyeon_yu",
+    "msgs": 53,
     "subStatus": "new_sub",
     "subLabel": "本場訂閱",
     "note": ""
   },
   {
     "rank": 14,
-    "username": "kim_taeyeon_yu",
-    "msgs": 64,
-    "subStatus": "new_sub",
-    "subLabel": "本場訂閱",
-    "note": ""
-  },
-  {
-    "rank": 15,
     "username": "kipish666666",
     "msgs": 53,
     "subStatus": "unknown",
@@ -1785,7 +1765,7 @@ const VIEWERS_DATA = [
     "note": ""
   },
   {
-    "rank": 16,
+    "rank": 15,
     "username": "buiray",
     "msgs": 45,
     "subStatus": "unknown",
@@ -1793,7 +1773,7 @@ const VIEWERS_DATA = [
     "note": ""
   },
   {
-    "rank": 17,
+    "rank": 16,
     "username": "hazukiilu",
     "msgs": 44,
     "subStatus": "unknown",
@@ -1801,15 +1781,15 @@ const VIEWERS_DATA = [
     "note": ""
   },
   {
-    "rank": 18,
+    "rank": 17,
     "username": "seenjay",
-    "msgs": 44,
+    "msgs": 43,
     "subStatus": "unknown",
     "subLabel": "未知",
     "note": ""
   },
   {
-    "rank": 19,
+    "rank": 18,
     "username": "freaky_raypwh",
     "msgs": 25,
     "subStatus": "unknown",
@@ -1817,7 +1797,7 @@ const VIEWERS_DATA = [
     "note": "熱名單 #6"
   },
   {
-    "rank": 20,
+    "rank": 19,
     "username": "myriede",
     "msgs": 25,
     "subStatus": "unknown",
@@ -1825,15 +1805,7 @@ const VIEWERS_DATA = [
     "note": ""
   },
   {
-    "rank": 21,
-    "username": "leslie4001t5",
-    "msgs": 23,
-    "subStatus": "new_sub",
-    "subLabel": "本場訂閱",
-    "note": "熱名單 #5"
-  },
-  {
-    "rank": 22,
+    "rank": 20,
     "username": "pinponfoever",
     "msgs": 22,
     "subStatus": "new_sub",
@@ -1841,7 +1813,7 @@ const VIEWERS_DATA = [
     "note": ""
   },
   {
-    "rank": 23,
+    "rank": 21,
     "username": "l127073165",
     "msgs": 20,
     "subStatus": "new_sub",
@@ -1849,17 +1821,33 @@ const VIEWERS_DATA = [
     "note": ""
   },
   {
+    "rank": 22,
+    "username": "leslie4001t5",
+    "msgs": 19,
+    "subStatus": "new_sub",
+    "subLabel": "本場訂閱",
+    "note": "熱名單 #5"
+  },
+  {
+    "rank": 23,
+    "username": "el79124002",
+    "msgs": 15,
+    "subStatus": "unknown",
+    "subLabel": "未知",
+    "note": ""
+  },
+  {
     "rank": 24,
-    "username": "girl0506",
-    "msgs": 16,
+    "username": "urarina821",
+    "msgs": 15,
     "subStatus": "unknown",
     "subLabel": "未知",
     "note": ""
   },
   {
     "rank": 25,
-    "username": "wolfstar00",
-    "msgs": 16,
+    "username": "h19800812",
+    "msgs": 14,
     "subStatus": "unknown",
     "subLabel": "未知",
     "note": ""
@@ -1872,12 +1860,6 @@ const INTENT_MSGS = [
     "text": "@莓汽泡 謝謝您的贈禮訂閱！",
     "type": "gift_sub",
     "label": "收贈禮訂閱"
-  },
-  {
-    "username": "ace88889999",
-    "text": "阿潔送福利的50%",
-    "type": "new_sub",
-    "label": "訂閱"
   },
   {
     "username": "agassi888",
@@ -1922,12 +1904,6 @@ const INTENT_MSGS = [
     "label": "收贈禮訂閱"
   },
   {
-    "username": "pjbitter",
-    "text": "啊潔還在忙著放福利 pinpin8666",
-    "type": "new_sub",
-    "label": "訂閱"
-  },
-  {
     "username": "ray817127",
     "text": "@蘋家的明仔 謝謝您的贈禮訂閱！",
     "type": "gift_sub",
@@ -1938,13 +1914,6 @@ const INTENT_MSGS = [
     "text": "@莓汽泡 謝謝您的贈禮訂閱！",
     "type": "gift_sub",
     "label": "收贈禮訂閱"
-  },
-  {
-    "username": "nightbot",
-    "text": "歡迎DC晃晃❤️有團長啊蘋隨時出沒跟福利唷！訂閱者限定→https://discord.gg/kW4EDSN238 《請將DC帳號與Twitch帳號進行綁定…》",
-    "type": "bot",
-    "label": "機器人自動回覆",
-    "count": 26
   }
 ];
 
@@ -2250,10 +2219,10 @@ window.addEventListener('load',()=>{
   buildVocab();
 
   setTimeout(()=>{
-    animateCounter(document.getElementById('stat-viewers'),257);
-    animateCounter(document.getElementById('stat-missed'),62);
-    animateCounter(document.getElementById('stat-leads'),9);
-    animateCounter(document.getElementById('stat-discord'),3);
+    animateCounter(document.getElementById('stat-viewers'),188);
+    animateCounter(document.getElementById('stat-missed'),10);
+    animateCounter(document.getElementById('stat-leads'),23);
+    animateCounter(document.getElementById('stat-discord'),7);
   },200);
 
   setTimeout(()=>{

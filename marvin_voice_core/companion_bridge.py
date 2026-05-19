@@ -22,8 +22,8 @@ Cog 注入（Lane F）：
     bridge 接受 `get_cog: Callable[[str], cog | None]` 參數。實務上由
     Marvin 主程式傳入 `bot.cogs.get`（或測試時的 stub）。bridge 不直接
     持有 `bot` 物件，避免循環相依。cog 介面要求：
-      - DetectiveCog.force_skip_round() → coroutine
-      - DetectiveCog.end_session()      → coroutine
+      - <GameCog>.force_skip_round() → coroutine
+      - <GameCog>.end_session()      → coroutine
 """
 
 from __future__ import annotations
@@ -94,9 +94,9 @@ _KNOWN_INCOMING = frozenset({
     EVT_GAME_ALERT_RESPONSE,
 })
 
-# game name → cog name 的對照；外部可擴充
+# game name → cog name 的對照；外部可擴充。
+# 只列實作了 force_skip_round() / end_session() 的 cog；TurtleSoupCog 暫無對應方法，不列入。
 _GAME_TO_COG = {
-    "detective": "DetectiveCog",
     "busted":    "BustedCog",
     "busted99":  "Busted99Cog",
 }

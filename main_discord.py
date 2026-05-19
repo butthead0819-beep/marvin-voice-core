@@ -267,7 +267,7 @@ class MarvinBot(commands.Bot):
             logger.warning(f"⚠️ [Cleanup] 全域指令 sync 失敗: {e}，跳過繼續啟動。")
 
         # 2. 載入 Cogs (在清空樹之後載入，確保指令登記在正確的 local 狀態)
-        cogs = ["cogs.gm_commands", "cogs.voice_controller", "cogs.game_cog", "cogs.busted99_cog", "cogs.detective_cog", "cogs.turtle_soup_cog"]
+        cogs = ["cogs.gm_commands", "cogs.voice_controller", "cogs.game_cog", "cogs.busted99_cog", "cogs.turtle_soup_cog"]
         for cog in cogs:
             try:
                 await self.load_extension(cog)
@@ -299,6 +299,9 @@ class MarvinBot(commands.Bot):
             await self.marmo_server.start()
         else:
             logger.warning("[MarmoServer] VoiceController cog not found — Marmo webhook not started")
+
+        # 5b. 啟動 ErrorDispatcher — 真錯誤 → openclaw triage → DM owner
+        await self._install_error_dispatcher(vc_cog)
 
         # 6. 啟動 CompanionBridge（Phase 3a）— 與 MarmoServer 並列
         try:
@@ -474,6 +477,62 @@ class MarvinBot(commands.Bot):
 
         # 🚀 [Reboot Report] 若上一個進程是 /marvin_reboot 啟動，回報完成
         await self._report_reboot_complete(total_synced)
+
+    async def _install_error_dispatcher(self, vc_cog):
+        """掛 ErrorDispatcher 到 root logger — 真錯誤 → 鑑識報告 → DM owner。
+
+        Why: 過去 24h 100 個 ERROR/CRITICAL 有 7 成是噪音；剩下的 LLM Tier-1 Exhausted
+        / unhandled traceback / App Command Error / CRITICAL 才值得記錄。
+        鑑識交給 incident_writer（純 Python，無 LLM），寫成 .claude_todo/incidents/<ts>.md
+        讓 Claude Code 後續處理。
+        """
+        owner_id_str = os.environ.get("LOCAL_USER_ID", "0")
+        try:
+            owner_id = int(owner_id_str)
+        except ValueError:
+            owner_id = 0
+        if not owner_id:
+            logger.warning("[ErrorDispatcher] LOCAL_USER_ID 未設 — 跳過")
+            return
+
+        try:
+            from error_dispatcher import ErrorDispatcher
+            from incident_writer import write_incident
+        except Exception as e:
+            logger.warning(f"[ErrorDispatcher] import failed: {e}")
+            return
+
+        # 同步 callable，dispatcher 會丟到 to_thread 跑
+        def _writer(record, recurrence_24h):
+            return write_incident(
+                record=record,
+                log_path="bot_main.log",
+                output_dir=".claude_todo/incidents",
+                context_window_seconds=60,
+                recurrence_24h=recurrence_24h,
+            )
+
+        async def _dm_owner(text: str) -> None:
+            try:
+                owner = self.get_user(owner_id) or await self.fetch_user(owner_id)
+                if owner is None:
+                    return
+                # Discord 訊息上限 2000 字
+                await owner.send(text[:1990])
+            except Exception as e:
+                logger.warning(f"[ErrorDispatcher] DM 失敗: {e}")
+
+        loop = asyncio.get_running_loop()
+        self._error_dispatcher = ErrorDispatcher(
+            incident_writer=_writer,
+            dm_sender=_dm_owner,
+            loop=loop,
+        )
+        logging.getLogger().addHandler(self._error_dispatcher)
+        # 用 warning 級別讓訊息進 bot_main.log（root logger 預設 WARNING）
+        logger.warning(
+            f"🛰️ [ErrorDispatcher] 已掛載；錯誤將寫入 .claude_todo/incidents/ 並 DM owner ({owner_id})"
+        )
 
     async def _report_reboot_complete(self, total_synced: int):
         """讀取 .marvin_reboot_state.json，貼完成訊息到原頻道後刪檔。"""

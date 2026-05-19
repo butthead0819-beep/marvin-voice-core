@@ -63,6 +63,8 @@ This is what "community AI" actually means: not a bot that answers questions, bu
 
 ---
 
+> **Streamer? Want the shortest path?** See [docs/STREAMER_SETUP.md](docs/STREAMER_SETUP.md) — a non-developer-friendly 5-minute guide with a one-line installer and DM-the-maintainer fallback.
+
 ## 5-minute quickstart
 
 ```bash

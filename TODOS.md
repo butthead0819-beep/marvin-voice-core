@@ -1,6 +1,61 @@
 
 ## 新功能 — 待完成
 
+### TODO: IntentBus — Game agent prod wiring（vertical slice 已完成，wiring 未做）
+**Status:** DEFERRED（明天工作項 #4，等架構改動沉澱後接）
+**What:** voice_controller.py L2400 game cog chain 改成 `IntentContext(mode="game") → bus.dispatch()`，把今天寫的 3 個 game agent（Busted99/Busted/TurtleSoup）真正接到 prod。
+**Why:** 今天只完成 vertical slice + 11 tests/agent，bus 還沒在 game mode 跑過 prod 流量。Adversarial review (2026-05-19) 確認：game agents 目前是 dead code in prod，因為 L2402 early return 在 bus.dispatch 之前。
+**How to start:** handle_stt_result 把 if game_mode: 那段改成建 IntentContext + bus.dispatch(mode="game")。先量測 bid 對 high-rate STT（10+ utterances/sec 搶答場景）的累積延遲（3 agents × ~10ms = ~30ms/utt 預估）。
+**Depends on:** 觀察 1-2 個遊戲 session 確認 bid 延遲不影響搶答體驗。
+**Priority:** P2（vertical slice + tests 已驗證，prod 接 wiring 風險中等）。
+
+---
+
+### TODO: IntentBus base.py — re.compile pattern cache
+**Status:** DEFERRED（perf 優化，當前 schema 數量未觸發）
+**What:** `intent_agents/base.py:101` re.search 每次 bid 重新編譯 pattern。schema 數量大時會超 5ms bid budget。改成 module-level dict cache 或 IntentSchema 加 `_compiled` 屬性。
+**Why:** Adversarial review (2026-05-19) 指出。當前 MusicAgentV2 只 7 schemas，未觸發。但若 StatusAgent / VisionAgent / Marmo / PA / Imitation 5 agents 全部加進去 = ~35 schemas/bid，會持續打到 bid budget warning。
+**How to start:** IntentSchema 加 `__post_init__` 編譯 patterns；bid() 用 `schema._compiled` 直接 search。
+**Priority:** P3（perf，當前未觸發）。
+
+---
+
+### TODO: IntentBus base.py — reason_template ValueError coverage
+**Status:** DEFERRED
+**What:** `intent_agents/base.py:112` 只 catch KeyError/IndexError。若 reason_template 含 `{slot!r:>10}` 或無效 format spec → ValueError 未 catch → bid 被 bus 的 bare except 吞掉，silent loss。改成 catch (KeyError, IndexError, ValueError)。
+**Why:** Adversarial review (2026-05-19) 指出。
+**How to start:** 一行改動。加 regression test：reason_template="{x!q}" assert reason fallback 到 schema.name。
+**Priority:** P3（trivial fix）。
+
+---
+
+### TODO: CLAUDE.md — 「禁 return None」rule 加註只適用 DeclarativeIntentAgent
+**Status:** DEFERRED
+**What:** CLAUDE.md「`bid()` 永遠回 Bid 物件，禁 return None」太 absolute——只適用繼承 DeclarativeIntentAgent 的新 agent。v1 MusicAgent / NemoClawAgent / HallucinationGuardAgent 都還是 return None，沒問題。加註避免未來 Claude session 誤改 v1。
+**Why:** Adversarial review (2026-05-19) 指出。
+**How to start:** 在那條 rule 加「（適用 DeclarativeIntentAgent subclass；v1 legacy agent 不受影響）」。
+**Priority:** P3（doc clarity）。
+
+---
+
+### TODO: install-marvin.sh — 預檢 Xcode CLI Tools
+**Status:** DEFERRED
+**What:** Marvin 多個 Python deps（faster-whisper、numpy wheels）需要 Xcode CLI Tools 編譯。STREAMER_SETUP.md 只在 troubleshooting 提到。install-marvin.sh 應在 Step 1 預先檢查 `xcode-select -p` 並引導安裝。
+**Why:** Adversarial review (2026-05-19) 指出。預測 mid-install pip 失敗 + 無 recovery。
+**How to start:** 加 `xcode-select -p &>/dev/null || die "請先跑 xcode-select --install 再重試"`。
+**Priority:** P2（會擋部分 streamer）。
+
+---
+
+### TODO: error_dispatcher.py — _inflight thread safety
+**Status:** DEFERRED（pre-existing module；race 罕見但真實）
+**What:** `error_dispatcher.py:103,169,204` `self._inflight` 從 logging thread 寫、從 event loop 讀，無 lock。race 可能丟錯誤或重複 dispatch。
+**Why:** Adversarial review (2026-05-19) 指出。改 threading.Lock 或 atomic counter。
+**How to start:** 引入 threading.Lock 包住 _inflight 讀寫；或改用 collections.deque 配 atomic-ish ops。
+**Priority:** P3（單人 dev 階段罕見觸發）。
+
+---
+
 ### TODO: Companion FOLLOWUP_ACTIVE/EXPIRED 事件（Follow-up v2）
 **Status:** DEFERRED（v2）
 **What:** 在 companion_bridge.py 與 event_protocol.py 加入 `FOLLOWUP_ACTIVE` / `FOLLOWUP_EXPIRED` 事件常數，TTS 問句窗口開啟/到期時廣播給 Companion UI。

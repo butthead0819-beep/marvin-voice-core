@@ -633,7 +633,7 @@ async def test_emit_game_phase_changed_broadcasts(bridge):
     try:
         await asyncio.sleep(0.05)
         await b.emit_game_phase_changed(
-            game_name="detective",
+            game_name="busted99",
             phase="declaring",
             payload={
                 "round": 2,
@@ -647,7 +647,7 @@ async def test_emit_game_phase_changed_broadcasts(bridge):
         msg = await asyncio.wait_for(ws.receive(), timeout=2.0)
         data = json.loads(msg.data)
         assert data["type"] == "game_phase_changed"
-        assert data["payload"]["game"] == "detective"
+        assert data["payload"]["game"] == "busted99"
         assert data["payload"]["phase"] == "declaring"
         assert data["payload"]["round"] == 2
         assert data["payload"]["current_player"] == "Bob"
@@ -673,7 +673,7 @@ async def test_game_force_skip_round_calls_cog_method(monkeypatch, mock_tracker,
     fake_cog.end_session = AsyncMock()
 
     def get_cog(name: str):
-        if name == "DetectiveCog":
+        if name == "Busted99Cog":
             return fake_cog
         return None
 
@@ -694,7 +694,7 @@ async def test_game_force_skip_round_calls_cog_method(monkeypatch, mock_tracker,
             )
             try:
                 await asyncio.sleep(0.05)
-                msg = {"type": "game_force_skip_round", "payload": {"game": "detective"}, "ts": 1.0}
+                msg = {"type": "game_force_skip_round", "payload": {"game": "busted99"}, "ts": 1.0}
                 await ws.send_str(json.dumps(msg))
                 await asyncio.sleep(0.1)
                 fake_cog.force_skip_round.assert_awaited()
@@ -723,7 +723,7 @@ async def test_game_end_calls_cog_method(monkeypatch, mock_tracker,
         vector_store=mock_vector_store,
         music_memory=mock_music_memory,
         suki_memory=mock_suki_memory,
-        get_cog=lambda n: fake_cog if n == "DetectiveCog" else None,
+        get_cog=lambda n: fake_cog if n == "Busted99Cog" else None,
     )
     await b.start(host="127.0.0.1", port=free_port)
     try:
@@ -735,7 +735,7 @@ async def test_game_end_calls_cog_method(monkeypatch, mock_tracker,
             )
             try:
                 await asyncio.sleep(0.05)
-                msg = {"type": "game_end", "payload": {"game": "detective"}, "ts": 1.0}
+                msg = {"type": "game_end", "payload": {"game": "busted99"}, "ts": 1.0}
                 await ws.send_str(json.dumps(msg))
                 await asyncio.sleep(0.1)
                 fake_cog.end_session.assert_awaited()
@@ -772,7 +772,7 @@ async def test_game_handler_no_cog_logs_gracefully(monkeypatch, mock_tracker,
             )
             try:
                 await asyncio.sleep(0.05)
-                msg = {"type": "game_force_skip_round", "payload": {"game": "detective"}, "ts": 1.0}
+                msg = {"type": "game_force_skip_round", "payload": {"game": "busted99"}, "ts": 1.0}
                 await ws.send_str(json.dumps(msg))
                 await asyncio.sleep(0.1)
                 # 連線維持

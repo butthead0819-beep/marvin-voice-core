@@ -116,8 +116,11 @@ class MusicAgent:
                 return None
             if after in _NON_MUSIC_TARGETS:
                 return None  # UI 詞 blocklist
-            # 長字串 + 非 UI 詞 → 弱訊號 fallback
-            return self._play_bid(ctx, 0.55, f"weak_play_only:{kw}->{after[:20]}")
+            # 長字串 + 非 UI 詞 → 弱訊號 fallback；artist-only 缺曲名
+            return self._play_bid(
+                ctx, 0.55, f"weak_play_only:{kw}->{after[:20]}",
+                missing_slots=["song_title"],
+            )
 
         return None
 
@@ -131,10 +134,23 @@ class MusicAgent:
             reason=f"control:{cmd}",
         )
 
-    def _play_bid(self, ctx: IntentContext, confidence: float, reason: str) -> Bid:
+    def _play_bid(
+        self,
+        ctx: IntentContext,
+        confidence: float,
+        reason: str,
+        missing_slots: list[str] | None = None,
+    ) -> Bid:
+        missing = list(missing_slots or [])
+        if missing:
+            # Alexa CanFulfillIntent 模式：缺 slot → 改問 user，不打 yt-dlp 賭歌
+            handler = lambda: self.ctrl._ask_music_followup(ctx.speaker, ctx.query, missing)
+        else:
+            handler = lambda: self.ctrl._safe_music_command(ctx.speaker, ctx.query, "play")
         return Bid(
             name=self.name,
             confidence=confidence,
-            handler=lambda: self.ctrl._safe_music_command(ctx.speaker, ctx.query, "play"),
+            handler=handler,
             reason=reason,
+            missing_slots=missing,
         )

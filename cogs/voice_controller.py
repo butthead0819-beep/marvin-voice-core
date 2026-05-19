@@ -37,6 +37,7 @@ from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for 
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
 from intent_bus import IntentBus, IntentContext
+from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent import MusicAgent
 from intent_agents.nemoclaw_agent import NemoClawAgent
 
@@ -417,7 +418,11 @@ class VoiceController(commands.Cog):
         self.query_queue = asyncio.Queue() # 🚀 [Fast System] 指令請求佇列
         self._latency_marks = LatencyMarks()  # ⏱️ wake → llm → sentence → audio 分階段計時
         # 📡 [IntentBus] Phase 1：取代 music + owner-lobster fast-track；其他 fast-track 留 legacy
+        # 5/18 audit 後加 guard：主動 bid 高分吞 STT 幻覺 wake（wake-word loop /
+        # exotic script / Track B 無 wake 短 query / 超短 wake fragment）。
+        # guard 註冊最前，tie-break 時優先（保守）。
         self._intent_bus = IntentBus([
+            HallucinationGuardAgent(self),
             NemoClawAgent(self),
             MusicAgent(self),
         ])
@@ -2396,7 +2401,7 @@ class VoiceController(commands.Cog):
             _b99 = self.bot.cogs.get("Busted99Cog")
             if _b99 is not None and _b99.should_suppress_for_game(speaker):
                 return  # 非猜題玩家說話，Busted99 GUESSING 狀態下直接捨棄
-            for _cog_name in ("BustedCog", "Busted99Cog", "DetectiveCog", "TurtleSoupCog"):
+            for _cog_name in ("BustedCog", "Busted99Cog", "TurtleSoupCog"):
                 _game_cog = self.bot.cogs.get(_cog_name)
                 if _game_cog is not None:
                     _consumed = await _game_cog.receive_voice_answer_by_speaker(speaker, full_raw_text)
@@ -3376,6 +3381,10 @@ class VoiceController(commands.Cog):
         )
         _winner = await self._intent_bus.dispatch(_bus_ctx)
         if _winner:
+            # B1: bus 接走 intent → LLM 路徑不會跑 → 取消 dangling speculative
+            # prefetch（避免吃 LLM quota；且防 1976 行 race 把舊 result 帶到
+            # 下次 chat turn 變成幻覺起手回答）
+            self._cancel_stale_prefetch(speaker)
             return  # bus 已執行 winner.handler()
 
         # 🎭 [Impression Show Fast-Track] 偵測「模仿 X」指令
@@ -3732,20 +3741,85 @@ class VoiceController(commands.Cog):
         if ch:
             await ch.send(f"💬 **【馬文·音樂資訊】** {reply}")
 
+    _MUSIC_KW_NOISE_WINDOW = 6  # 命令詞可容忍 ≤6 char noise prefix（"好煩，馬文，"=6 剛好）
+
     def _extract_music_search_query(self, query: str) -> str:
-        """從語音指令中剝離喚醒詞和命令詞，剩下的作為搜尋關鍵字。"""
+        """從語音指令中剝離喚醒詞、noise prefix、命令詞，剩下的作為搜尋關鍵字。
+
+        5/18 incident：STT 把「麻煩/把我/好煩」這類語助詞留在播放詞前，
+        startswith 不命中 → 整段 noise 進 yt-dlp 搜「麻煩播放陶喆的天天」
+        → yt 選到「Susan說」「浪流連」等錯歌。
+
+        修法：在 head 視窗（≤_MUSIC_KW_NOISE_WINDOW chars）內掃所有
+        music kw，取「end 位置最遠」者切掉「noise + kw」整段。
+        """
         t = self._strip_wake_word(query)
-        # 移除命令詞前綴
         cmd_prefixes = self._MUSIC_PLAY_KW + ["音樂", "歌曲", "一首", "首歌"]
-        for prefix in sorted(cmd_prefixes, key=len, reverse=True):
-            if t.lower().startswith(prefix):
-                t = t[len(prefix):].lstrip("：: ，,、")
-                break
+        head_lower = t[: self._MUSIC_KW_NOISE_WINDOW + max(len(p) for p in cmd_prefixes)].lower()
+        best_end = -1
+        for prefix in cmd_prefixes:
+            idx = head_lower.find(prefix.lower())
+            if 0 <= idx <= self._MUSIC_KW_NOISE_WINDOW:
+                end = idx + len(prefix)
+                if end > best_end:
+                    best_end = end
+        if best_end > 0:
+            t = t[best_end:].lstrip("：: ，,、")
         # 移除常見後綴語助詞
         for suffix in ["好嗎", "可以嗎", "謝謝", "吧", "呢"]:
             if t.endswith(suffix):
                 t = t[:-len(suffix)]
         return t.strip()
+
+    async def _ask_music_followup(
+        self, speaker: str, query: str, missing_slots: list[str]
+    ) -> None:
+        """Alexa CanFulfillIntent 風格的 slot followup — bid 帶 missing_slots 時觸發。
+
+        Why: MusicAgent 0.55 case（弱訊號 play + 後續是 artist-only，沒歌名）
+        過去直接打 yt-dlp 賭歌，5/18 抽中「Susan說」「浪流連」等錯歌。改成
+        反問 user 補資料，比亂播好。
+
+        Scope (P1 slim)：
+        - 只貼頻道訊息，不啟 TTS（怕 TTS storm；user 在語音也看得到）
+        - 不存 per-speaker pending state；user 需要重新喚醒講全名
+        - 未知 slot 給通用追問訊息（不該因 slot 名 unknown 就 raise）
+        """
+        ch = self.active_text_channel
+        if ch is None:
+            return
+        if not missing_slots:
+            return  # 防呆：empty list 不該觸發 followup，這裡靜默退場
+        slot_prompts = {
+            "song_title": f"💬 `{speaker}` 你想聽哪一首？再講一次全名比較好搜。",
+            "artist":     f"💬 `{speaker}` 你想聽誰的歌？再講一次。",
+        }
+        prompt = slot_prompts.get(
+            missing_slots[0],
+            f"💬 `{speaker}` 你剛剛說「{query[:30]}」我沒抓到關鍵字，再講一次？",
+        )
+        try:
+            await ch.send(prompt)
+        except Exception as e:
+            logger.warning(f"⚠️ [Music Followup] 貼頻道失敗: {e}")
+
+    def _cancel_stale_prefetch(self, speaker: str) -> None:
+        """B1: bus 接走 intent 時，取消 dangling speculative LLM prefetch。
+
+        Why: speculative prefetch 在 wake hit 那刻就啟動（避免 LLM 冷啟動）。
+        若 bus dispatch 接走（music / nemoclaw），LLM 路徑跑不到，prefetch task
+        會變孤兒 — 繼續跑燒 quota，且 1976 行 race window 內可能被下次 chat
+        turn 拿來當起手回應（幻覺）。
+
+        How: 從 router._pending_prefetch dict 取出該 speaker 的 task，若還沒
+        done 就 cancel；無論如何都從 dict 移除。
+        """
+        prefetch_map = getattr(self.bot.router, "_pending_prefetch", None)
+        if not isinstance(prefetch_map, dict):
+            return
+        task = prefetch_map.pop(speaker, None)
+        if task is not None and not task.done():
+            task.cancel()
 
     _MUSIC_CMD_DEDUP_WINDOW = 5.0  # 秒
 
