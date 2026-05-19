@@ -73,6 +73,8 @@ class GeminiRouterSTTMixin:
             self._groq_8b_cooldown_until = 0.0
         if not hasattr(self, '_groq_70b_cooldown_until'):
             self._groq_70b_cooldown_until = 0.0
+        if not hasattr(self, '_cerebras_cooldown_until'):
+            self._cerebras_cooldown_until = 0.0
 
     async def clean_stt_text(self, raw_text: str, context: list = None, speaker: str = None,
                               context_active: bool = False, marvin_just_spoke: bool = False) -> dict:
@@ -228,6 +230,51 @@ class GeminiRouterSTTMixin:
                         logger.warning(f"⚠️ [STT Clean] Groq 8b 429 — 進入冷卻 {cooldown:.1f}s，直接跳備援。")
                     else:
                         logger.warning(f"⚠️ [STT Clean] Groq 8b 失敗，嘗試 70b 備援: {e}")
+
+        # ── 1.5. Cerebras llama-3.1-8b (TPM 救援，~100ms 延遲) ─────────────
+        # Groq 8b 429 / 失敗時優先嘗試 Cerebras，比 Groq 70b 快且不擠 Groq bucket。
+        cerebras_client = getattr(self, 'cerebras_client', None)
+        cerebras_model = getattr(self, 'cerebras_model', None)
+        if cerebras_client and cerebras_model:
+            now = time.time()
+            if now < self._cerebras_cooldown_until:
+                remaining = self._cerebras_cooldown_until - now
+                logger.info(f"⏳ [STT Clean] Cerebras 冷卻中，剩餘 {remaining:.1f}s，跳至 Groq 70b。")
+            else:
+                try:
+                    response = await cerebras_client.chat.completions.create(
+                        model=cerebras_model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_message}
+                        ],
+                        temperature=0.0,
+                        max_tokens=200,
+                        response_format={"type": "json_object"},
+                    )
+                    raw_output = _strip_xml_artifacts(response.choices[0].message.content)
+                    result = _validate_cleaned(raw_output, raw_text)
+                    if result is None:
+                        return _build_res(raw_text)
+                    validated_text, wake_intent, calling, is_complete = result
+                    res = _build_res(validated_text, original=raw_text, wake_intent=wake_intent, calling=calling)
+                    res["is_complete"] = is_complete
+                    _spk = speaker or "unknown"
+                    _decision = "WAKE" if res["is_wake"] else "PASS"
+                    _intent_str = f"{wake_intent:.2f}" if wake_intent is not None else "regex"
+                    logger.debug(
+                        f"[WAKE_INTENT] ts={time.time():.3f} speaker={_spk} raw='{raw_text[:30]}' "
+                        f"intent={_intent_str} threshold={WAKE_THRESHOLD:.2f} decision={_decision} track=B (cerebras) complete={is_complete}"
+                    )
+                    return res
+                except Exception as e:
+                    err_str = str(e)
+                    if "429" in err_str or "rate_limit_exceeded" in err_str:
+                        cooldown = _parse_retry_after(err_str)
+                        self._cerebras_cooldown_until = time.time() + cooldown
+                        logger.warning(f"⚠️ [STT Clean] Cerebras 429 — 進入冷卻 {cooldown:.1f}s，跳至 Groq 70b。")
+                    else:
+                        logger.warning(f"⚠️ [STT Clean] Cerebras 失敗，嘗試 Groq 70b: {e}")
 
         # ── 2. Groq 70b 備援 (不同 TPM bucket) ──────────────────────────────
         backup_model = getattr(self, 'groq_fallback_model', None) or "llama-3.3-70b-versatile"
