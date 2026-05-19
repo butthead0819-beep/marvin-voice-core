@@ -36,6 +36,19 @@ from session_summarizer import SessionSummarizer
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
+from intent_agents.constants import (
+    MUSIC_DIRECT_PAUSE_KW as _MUSIC_DIRECT_PAUSE_KW_SRC,
+    MUSIC_DIRECT_RESUME_KW as _MUSIC_DIRECT_RESUME_KW_SRC,
+    MUSIC_DIRECT_SKIP_KW as _MUSIC_DIRECT_SKIP_KW_SRC,
+    MUSIC_DIRECT_STOP_KW as _MUSIC_DIRECT_STOP_KW_SRC,
+    MUSIC_PAUSE_KW as _MUSIC_PAUSE_KW_SRC,
+    MUSIC_PLAY_KW as _MUSIC_PLAY_KW_SRC,
+    MUSIC_RESUME_KW as _MUSIC_RESUME_KW_SRC,
+    MUSIC_SKIP_KW as _MUSIC_SKIP_KW_SRC,
+    MUSIC_STOP_KW as _MUSIC_STOP_KW_SRC,
+    STRONG_PLAY_KW as _STRONG_PLAY_KW_SRC,
+    WEAK_PLAY_KW as _WEAK_PLAY_KW_SRC,
+)
 from intent_bus import IntentBus, IntentContext
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent import MusicAgent
@@ -130,12 +143,11 @@ _COMMAND_LIKE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 🎵 [IBA Tier 0] 無喚醒詞音樂控制 — 只保留語意明確、無歧義的中文詞組
-# 刻意排除 "暫停一下"（口語歧義高）和英文 pause/skip/resume（遊戲/工作場合常見）
-_MUSIC_DIRECT_SKIP_KW   = frozenset(["換一首", "下一首", "跳過", "換歌", "不要這首"])
-_MUSIC_DIRECT_STOP_KW   = frozenset(["停止播放", "音樂停", "不要播了", "關掉音樂", "停音樂", "音樂關掉"])
-_MUSIC_DIRECT_PAUSE_KW  = frozenset(["暫停音樂", "暫停播放", "pause一下"])  # 明確包含「播放」才不會被 _MUSIC_PLAY_KW 搶走
-_MUSIC_DIRECT_RESUME_KW = frozenset(["繼續播", "繼續音樂", "播回來"])
+# 🎵 [IBA Tier 0] 無喚醒詞音樂控制 — 來源 intent_agents/constants.py (single source of truth)
+_MUSIC_DIRECT_SKIP_KW   = _MUSIC_DIRECT_SKIP_KW_SRC
+_MUSIC_DIRECT_STOP_KW   = _MUSIC_DIRECT_STOP_KW_SRC
+_MUSIC_DIRECT_PAUSE_KW  = _MUSIC_DIRECT_PAUSE_KW_SRC
+_MUSIC_DIRECT_RESUME_KW = _MUSIC_DIRECT_RESUME_KW_SRC
 
 # 🎵 [IBA Tier 1] 無喚醒詞音樂資訊查詢 — "這首叫什麼?" 類問句
 _MUSIC_INFO_RE = re.compile(
@@ -3617,19 +3629,14 @@ class VoiceController(commands.Cog):
         "nemo":       {"rate": "+15%", "pitch": "+8Hz"},
     }
 
-    # 強訊號：含明確音樂字眼，substring match 即視為點歌意圖
-    _STRONG_PLAY_KW  = ["放音樂", "播音樂", "放首歌", "播首歌", "放一首", "播一首",
-                        "來首", "搜尋歌曲",
-                        "play music", "play song", "play some"]
-    # 弱訊號：通用動作詞，需通過 _query_implies_music_intent gate 才視為點歌
-    _WEAK_PLAY_KW    = ["播放", "我想聽", "放點", "播點", "幫我找", "幫我放"]
-    _MUSIC_PLAY_KW   = _STRONG_PLAY_KW + _WEAK_PLAY_KW  # 保留總表供 _extract_music_search_query 使用
-
-    _MUSIC_SKIP_KW   = ["換一首", "下一首", "跳過", "換歌", "不要這首", "skip"]
-    _MUSIC_STOP_KW   = ["停止播放", "音樂停", "不要播了", "關掉音樂", "停音樂", "音樂關掉",
-                        "stop music", "stop playing"]
-    _MUSIC_PAUSE_KW  = ["暫停音樂", "暫停一下", "pause"]
-    _MUSIC_RESUME_KW = ["繼續播", "繼續音樂", "播回來", "resume"]
+    # Music keyword families — source: intent_agents/constants.py
+    _STRONG_PLAY_KW  = _STRONG_PLAY_KW_SRC
+    _WEAK_PLAY_KW    = _WEAK_PLAY_KW_SRC
+    _MUSIC_PLAY_KW   = _MUSIC_PLAY_KW_SRC
+    _MUSIC_SKIP_KW   = _MUSIC_SKIP_KW_SRC
+    _MUSIC_STOP_KW   = _MUSIC_STOP_KW_SRC
+    _MUSIC_PAUSE_KW  = _MUSIC_PAUSE_KW_SRC
+    _MUSIC_RESUME_KW = _MUSIC_RESUME_KW_SRC
 
     # 弱訊號 play 命中時，這些詞出現在 query 任一處 → 確認是音樂意圖
     _MUSIC_INTENT_MARKERS = ("的", "歌", "曲", "音樂", "mv", "ost", "歌詞", "歌手",
@@ -3754,7 +3761,7 @@ class VoiceController(commands.Cog):
         music kw，取「end 位置最遠」者切掉「noise + kw」整段。
         """
         t = self._strip_wake_word(query)
-        cmd_prefixes = self._MUSIC_PLAY_KW + ["音樂", "歌曲", "一首", "首歌"]
+        cmd_prefixes = list(self._MUSIC_PLAY_KW) + ["音樂", "歌曲", "一首", "首歌"]
         head_lower = t[: self._MUSIC_KW_NOISE_WINDOW + max(len(p) for p in cmd_prefixes)].lower()
         best_end = -1
         for prefix in cmd_prefixes:

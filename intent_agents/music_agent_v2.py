@@ -17,6 +17,14 @@ import re
 from collections import Counter
 
 from intent_agents.base import DeclarativeIntentAgent, IntentSchema
+from intent_agents.constants import (
+    MUSIC_PAUSE_KW,
+    MUSIC_RESUME_KW,
+    MUSIC_SKIP_KW,
+    MUSIC_STOP_KW,
+    STRONG_PLAY_KW,
+    WEAK_PLAY_KW,
+)
 from intent_bus import IntentContext
 
 
@@ -79,13 +87,12 @@ class MusicAgentV2(DeclarativeIntentAgent):
         if self._intents_cache is not None:
             return self._intents_cache
 
-        ctrl = self.ctrl
-        skip_kws = _kw_alt(ctrl._MUSIC_SKIP_KW)
-        pause_kws = _kw_alt(ctrl._MUSIC_PAUSE_KW)
-        resume_kws = _kw_alt(ctrl._MUSIC_RESUME_KW)
-        stop_kws = _kw_alt(ctrl._MUSIC_STOP_KW)
-        strong_kws = _kw_alt(ctrl._STRONG_PLAY_KW)
-        weak_kws = _kw_alt(ctrl._WEAK_PLAY_KW)
+        skip_kws = _kw_alt(MUSIC_SKIP_KW)
+        pause_kws = _kw_alt(MUSIC_PAUSE_KW)
+        resume_kws = _kw_alt(MUSIC_RESUME_KW)
+        stop_kws = _kw_alt(MUSIC_STOP_KW)
+        strong_kws = _kw_alt(STRONG_PLAY_KW)
+        weak_kws = _kw_alt(WEAK_PLAY_KW)
         markers = _kw_alt(_MUSIC_INTENT_MARKERS)
 
         self._intents_cache = [
