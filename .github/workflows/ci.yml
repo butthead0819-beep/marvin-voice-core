@@ -19,6 +19,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install system deps (ffmpeg for TTS playback tests)
+        run: brew install ffmpeg
+
       - name: Install dependencies
         run: pip install -e . && pip install -r requirements.txt
 
