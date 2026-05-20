@@ -5504,7 +5504,9 @@ class VoiceController(commands.Cog):
                     except Exception as e:
                         logger.warning(f"⚠️ [Prefetch] 等待失敗，即時 fetch: {e}")
                 if meta is None:
-                    meta = await self._fetch_song_meta(info)
+                    # Cold path：queue 空，第 1 首沒 prefetch。Ack + 5s timeout
+                    # 防 DJ TTS 阻塞 event loop（2026-05-20 incident 教訓）
+                    meta = await self._meta_with_ack_fallback(info, requested_by)
 
                 self._current_stream_comment = meta.get('comment')
                 self._current_lyrics = meta.get('lyrics')
@@ -5743,6 +5745,45 @@ class VoiceController(commands.Cog):
 
         logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
         return {'text': text, 'audio_path': audio_path}
+
+    # Cold-path meta fetch（queue 空、第 1 首沒 prefetch）的 timeout 上限
+    _COLD_META_TIMEOUT_S = 5.0
+
+    async def _meta_with_ack_fallback(self, info: dict, requested_by: str) -> dict:
+        """冷啟動 meta fetch + ack 填空檔 + 5s timeout fallback。
+
+        2026-05-20 incident：DJ always-fire 改動讓 _fetch_song_meta 在冷啟動
+        跑 LLM+TTS 30+ 秒，阻塞 event loop → Discord voice gateway 斷線。
+        修法：
+        1. ack 立刻 fire-and-forget，user 知道 bot 收到
+        2. asyncio.wait_for 限 5s
+        3. timeout → hardcoded fallback meta（dj.text 含歌名+點播者，
+           audio_path=None 讓下游走即時 TTS）
+
+        Queue 中第 2+ 首走 _prefetch_cache 路徑，不會進這裡。
+        """
+        # fire-and-forget：ack 跟 meta fetch 並行，user 立刻聽到「嗯。。。」
+        asyncio.create_task(self._play_ack_sound(requested_by))
+        try:
+            return await asyncio.wait_for(
+                self._fetch_song_meta(info),
+                timeout=self._COLD_META_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            title = info.get('title', '未知曲目')
+            logger.warning(
+                f"⚠️ [Stream] _fetch_song_meta >{self._COLD_META_TIMEOUT_S}s timeout, "
+                f"用 hardcoded fallback (song={title}, by={requested_by})"
+            )
+            who = requested_by or "某人"
+            return {
+                "lyrics": None,
+                "comment": None,
+                "dj": {
+                    "text": f"下一首是《{title}》，{who} 點的。希望這次別讓宇宙失望。",
+                    "audio_path": None,  # 無預渲染 → _maybe_play_dj_interjection 走即時 play_tts
+                },
+            }
 
     async def _fetch_song_meta(self, info: dict) -> dict:
         """並行 fetch 歌詞、馬文評語、DJ 播報（含 TTS 預渲染）。"""
