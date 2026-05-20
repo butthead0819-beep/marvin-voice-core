@@ -15,6 +15,9 @@ _RETRY_AFTER_RE = re.compile(r'try again in (\d+(?:\.\d+)?)\s*s', re.IGNORECASE)
 
 # ── STT 修正對記錄 ────────────────────────────────────────────────────────────
 _CORRECTIONS_LOG = Path("records/stt_corrections.jsonl")
+# Aggregated map（read fast-path）：daily-review 把 jsonl 整理成 json key→cleaned。
+# Tests should monkeypatch this to a non-existent path to bypass fast-path 早退。
+_LOCAL_CORRECTIONS_PATH = Path("records/stt_corrections.json")
 
 def _append_stt_correction(raw: str, cleaned: str, spk: str):
     """非同步安全：直接寫入（呼叫在單執行緒事件循環內）。"""
@@ -117,7 +120,7 @@ class GeminiRouterSTTMixin:
             return {"text": text, "is_wake": is_wake, "wake_intent": wake_intent, "wake_threshold": threshold}
 
         # 🔤 [Local Corrections] 優先查本地累積修正字典（零 LLM 成本）
-        _corr_path = Path("records/stt_corrections.json")
+        _corr_path = _LOCAL_CORRECTIONS_PATH
         if _corr_path.exists():
             try:
                 _corr_data = json.loads(_corr_path.read_text(encoding="utf-8"))

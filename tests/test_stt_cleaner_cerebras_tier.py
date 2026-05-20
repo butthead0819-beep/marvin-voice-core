@@ -8,7 +8,6 @@ Cerebras 成功 → 不打 70b；Cerebras 失敗 → 才打 70b。
 """
 from __future__ import annotations
 
-import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -16,6 +15,21 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from stt_cleaner import GeminiRouterSTTMixin
+
+
+@pytest.fixture(autouse=True)
+def _isolate_stt_corrections_files(tmp_path, monkeypatch):
+    """每個測試 patch 掉本地 corrections 讀寫路徑，避免：
+    1. clean_stt_text 走 local corrections fast-path 跳過 LLM tier dispatch
+    2. _append_stt_correction 污染 prod records/stt_corrections.jsonl
+    """
+    monkeypatch.setattr(
+        "stt_cleaner._LOCAL_CORRECTIONS_PATH", tmp_path / "noop_local.json"
+    )
+    monkeypatch.setattr(
+        "stt_cleaner._CORRECTIONS_LOG", tmp_path / "noop_jsonl.jsonl"
+    )
+    yield
 
 
 def _fake_groq_response(cleaned: str = "馬文，播放音樂", intent: float = 1.0,

@@ -5673,8 +5673,12 @@ class VoiceController(commands.Cog):
             return None
 
     async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
-        """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
-        import random
+        """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。
+
+        2026-05-20 修改：原本 25% random gate 讓 75% user-requested 歌沉默播放
+        （user 抱怨「點完歌無聲無息」）。改成 user-requested 永遠播；LLM 失敗
+        / text 太短時回退 hardcoded template 確保一定唸出歌名 + 點播者。
+        """
         requester = info.get('requested_by', '')
         if not requester or requester.startswith('Marvin'):
             return None
@@ -5689,11 +5693,9 @@ class VoiceController(commands.Cog):
             feelings = r.get('feelings', [])
             lyric_match = r.get('lyric_match', '')
 
-        should_play = (
-            play_count >= 2 or bool(feelings) or bool(lyric_match) or random.random() < 0.25
-        )
-        if not should_play:
-            return None
+        # ★ Fix 1 (2026-05-20): 移除 25% random gate — user-requested 永遠播 DJ。
+        # 原本只有 ≥2 次點播 / 有情感記錄 / 有歌詞呼應 / 25% 抽中才會播，
+        # 導致第一次點的歌 75% 機率沉默 → user 不知道有沒有點到。
 
         # 近期對話（最多 4 筆非 Marvin 的發言）
         conv_lines = []
@@ -5704,7 +5706,8 @@ class VoiceController(commands.Cog):
                     conv_lines.append(f"{entry['speaker']}：「{entry['text'][:25]}」")
 
         slot = mm.time_slot(time.time()) if mm else ''
-        ctx = [f"歌曲：《{info['title']}》", f"點播者：{requester}"]
+        title = info.get('title', '')
+        ctx = [f"歌曲：《{title}》", f"點播者：{requester}"]
         if play_count >= 2:
             ctx.append(f"{requester} 第 {play_count} 次點這首")
         if feelings:
@@ -5720,12 +5723,16 @@ class VoiceController(commands.Cog):
             text = await self.bot.router.generate_dynamic_system_msg(
                 'dj_interjection', context='\n'.join(ctx)
             )
-        except Exception:
-            return None
+        except Exception as e:
+            logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗，使用 fallback template: {e}")
+            text = ""
 
         text = (text or '').strip()
+        # ★ Fix 3 (2026-05-20): text 太短 → hardcoded fallback 保證一定有聲音
+        # （沒有 None return path — user-requested 必須有 announcement）
         if len(text) < 2:
-            return None
+            text = f"下一首是《{title}》，{requester} 點的。希望這次別讓宇宙失望。"
+            logger.info(f"🎙️ [DJ Prefetch] 採用 fallback template")
 
         # 預渲染 TTS 音訊（generate_audio 有 MD5 cache，同文字不重複產生）
         audio_path = None
