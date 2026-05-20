@@ -908,6 +908,21 @@ class DiscordVoiceEngine:
                             )
                             return
             self._full_stt_inflight += 1
+
+        # 2026-05-20: idempotent inflight 釋放 closure。_process_stt_hybrid 在 STT
+        # 完成（cleaner LLM 之前）就呼叫它，讓 cleaner 在 slot 外跑，避免 Groq 429
+        # 慢 cleaner 佔住 STT 名額餓死其他 wake_check。finally 兜底（STT 早退時補釋放）。
+        _inflight_released = False
+        def _release_inflight():
+            nonlocal _inflight_released
+            if _inflight_released:
+                return
+            _inflight_released = True
+            if is_wake_check:
+                self._wake_inflight -= 1
+            else:
+                self._full_stt_inflight -= 1
+
         wav_path = None
         print(f"🎬 [Engine] {'[WakeCheck]' if is_wake_check else ''} 開始處理聚合音訊 (User_{user_id}, Size: {len(raw_pcm)} bytes)", flush=True)
         try:
@@ -953,15 +968,13 @@ class DiscordVoiceEngine:
             prosody_data = self.meta_analyzer.calculate_prosody(user_id, None, duration)
             await self._process_stt_hybrid(speaker_name, wav_path, wav_bytes, start_time,
                                            prosody_data=prosody_data, is_wake_check=is_wake_check,
-                                           whisper_audio=whisper_audio, user_id=user_id)
+                                           whisper_audio=whisper_audio, user_id=user_id,
+                                           release_inflight=_release_inflight)
 
         except Exception as e:
             print(f"[Engine Error] Audio flush failed: {e}")
         finally:
-            if is_wake_check:
-                self._wake_inflight -= 1
-            else:
-                self._full_stt_inflight -= 1
+            _release_inflight()
             # 統一在 flush 結束後清理暫存檔，避免 Whisper thread cancel 後仍讀到已刪除的檔
             if wav_path and os.path.exists(wav_path):
                 try:
@@ -1143,7 +1156,7 @@ class DiscordVoiceEngine:
             logger.warning(f"[Whisper STT] Exception: {e}")
         return ""
 
-    async def _process_stt_hybrid(self, speaker_name, wav_path, wav_bytes, timestamp, prosody_data: dict = None, is_wake_check=False, whisper_audio=None, user_id: int | None = None):
+    async def _process_stt_hybrid(self, speaker_name, wav_path, wav_bytes, timestamp, prosody_data: dict = None, is_wake_check=False, whisper_audio=None, user_id: int | None = None, release_inflight=None):
         """
         混合型 STT 處理器。
         Wake check 模式（P2）：Swift on-device + Whisper 並行競速，先到先得。
@@ -1252,6 +1265,13 @@ class DiscordVoiceEngine:
 
         finally:
             _lock.release()
+
+        # 2026-05-20: STT 完成 + stt_lock 釋放後立刻釋放 inflight slot。
+        # cleaner LLM（下方 Track B clean_stt_text）在 slot 外跑——Groq 8b 429
+        # 慢 cleaner 不再佔住 STT 名額餓死其他人的 wake_check，Cerebras 寬 quota
+        # 自然吸收。caller 的 finally idempotent 兜底（STT 早退時補釋放）。
+        if release_inflight is not None:
+            release_inflight()
 
         # 3. 最終結果判定
         if not raw_text:
