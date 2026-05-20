@@ -397,6 +397,13 @@ class WakeDetector:
         # 硬編碼 1.0/0.95，造成 LLM mid-range verdict 被吞掉，意圖傳遞失真。
         if track == "B" and wake_intent is not None:
             return wake_intent
+        # 2026-05-20 fix: Track=B + wake_intent=None 表示 cleaner LLM 被叫但無 verdict
+        # （JSON parse 失敗 / intent=null）→ 若 fall-through 到 fast_intervene 會回 1.0，
+        # 等於 regex 唯一證據自動觸發 wake。實測 prod：STT 把「馬文」黏在「李宗盛」前，
+        # cleaner JSON parse fail，wake_intent=None → voice=1.0 → false wake 連連。
+        # 回低分 0.30（< MULTI_THRESHOLD 0.35），無多 channel 證據時不觸發 wake。
+        if track == "B" and wake_intent is None:
+            return 0.30
         if action == "fast_intervene":   return 1.0
         if action == "force_intervene":  return 0.95
         if action == "llm_verify" and wake_intent is not None:
