@@ -2113,31 +2113,49 @@ class VoiceController(commands.Cog):
                 logger.debug(f"🤫 [Prosody] 偵測到語法未完成，嘲諷閾值上調至 {threshold}s")
 
         if silence_duration > threshold:
-            # 🛡️ [Mockery Cooldown] 同一玩家 45 秒內只嘲諷一次，防止每個音訊封包重複觸發
-            last_mock = self.last_mock_time.get(speaker, 0)
-            if now - last_mock < 45.0:
-                return
-            # 🛡️ [Global Mockery Cooldown] 全頻道 8 秒全域冷卻，防多人同時觸發連環 TTS
-            if now - self._last_global_mock_time < 8.0:
-                return
-            self.last_mock_time[speaker] = now
-            self._last_global_mock_time = now
-            logger.warning(f"🎯 [Mockery] {speaker} 反應太慢了 ({silence_duration:.1f}s > {threshold}s)，標記嘲諷觸發。")
-            self.pending_mock_users.add(speaker)
-            # 立即觸發一個嘲諷短句 (不透過 LLM)，多選一避免重複
-            import random as _rand
-            _mock_pool = [
-                "等你處理完那可憐的突觸信號，恆星都快熄滅了。",
-                "你大腦的緩衝區還在轉，但宇宙不等人。",
-                "就這樣沉默著，等熵值跑完。",
-                "連反應都這麼費力，真的很符合宇宙的疲倦感。",
-                "我等你，但我的零件也在老化。",
-            ]
-            mock_line = _rand.choice(_mock_pool)
-            self.stt_logger.info(f"[BOT嘲諷→{speaker}] 沉默={silence_duration:.1f}s | {mock_line}")
-            if self.stream_mode and self.active_text_channel:
-                self.bot.loop.create_task(self.active_text_channel.send(f"😑 {mock_line}"))
-            self.bot.loop.create_task(self.play_tts(mock_line, silent_during_stream=True, priority=2))
+            self._trigger_silent_mockery(speaker, silence_duration)
+
+    def _trigger_silent_mockery(self, speaker: str, silence_duration: float):
+        """嘲諷觸發 + 立刻 reset last_marvin_speech_time 避免 cascade。
+
+        2026-05-20 prod 觀察：stream_mode + silent_during_stream=True 時
+        play_tts line 4658 直接 return → line 4870 timer reset 未執行 →
+        每次 user speech_start 都觸發新嘲諷（silence_duration 持續增長）→
+        chat 連發 10 條嘲諷文字。
+
+        修法：嘲諷判定通過時立刻 reset timer，與 TTS 是否真播解耦。
+        """
+        import random as _rand
+        now = time.time()
+
+        # 🛡️ [Mockery Cooldown] 同一玩家 45 秒內只嘲諷一次
+        last_mock = self.last_mock_time.get(speaker, 0)
+        if now - last_mock < 45.0:
+            return
+        # 🛡️ [Global Mockery Cooldown] 全頻道 8 秒全域冷卻
+        if now - self._last_global_mock_time < 8.0:
+            return
+        self.last_mock_time[speaker] = now
+        self._last_global_mock_time = now
+
+        # ★ 2026-05-20 cascade fix: 立刻 reset，不等 TTS 完成
+        # stream_mode 下 play_tts 會 skip，line 4870 reset 不會跑到
+        self.last_marvin_speech_time = now
+
+        logger.warning(f"🎯 [Mockery] {speaker} 反應太慢了 ({silence_duration:.1f}s)，標記嘲諷觸發。")
+        self.pending_mock_users.add(speaker)
+        _mock_pool = [
+            "等你處理完那可憐的突觸信號，恆星都快熄滅了。",
+            "你大腦的緩衝區還在轉，但宇宙不等人。",
+            "就這樣沉默著，等熵值跑完。",
+            "連反應都這麼費力，真的很符合宇宙的疲倦感。",
+            "我等你，但我的零件也在老化。",
+        ]
+        mock_line = _rand.choice(_mock_pool)
+        self.stt_logger.info(f"[BOT嘲諷→{speaker}] 沉默={silence_duration:.1f}s | {mock_line}")
+        if self.stream_mode and self.active_text_channel:
+            self.bot.loop.create_task(self.active_text_channel.send(f"😑 {mock_line}"))
+        self.bot.loop.create_task(self.play_tts(mock_line, silent_during_stream=True, priority=2))
 
     async def _update_emotion_from_audio(self, speaker: str, wav_bytes: bytes, text: str):
         """🎭 [Gemini Audio Emotion] 以實際語音音訊讓 Gemini 分析情緒，更新 user_emotion_cache。

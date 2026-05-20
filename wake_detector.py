@@ -214,6 +214,32 @@ def _strip_leading_noise(text: str) -> str:
     return text
 
 
+# ── English Marvin STT-hallucination guard (2026-05-20) ──────────────────────
+# v4 prompt 把英文 Marvin 視為喚醒，但 STT 在中文語音前會 hallucinate「Marvin,」
+# 前綴造成 false wake。對策：fast_intervene 命中英文 Marvin 變體時，若後續
+# 無 ≥3 letters 真英文內容，降到 llm_verify 讓 LLM 判 intent。
+_ENGLISH_MARVIN_VARIANTS = frozenset({"hey marvin", "oh marvin", "marvin", "marv", "marwen", "mavin"})
+_REAL_ENGLISH_WORD_RE = re.compile(r'[a-zA-Z]{3,}')
+
+
+def _is_english_marvin_match(matched_text: str) -> bool:
+    """matched wake word 是英文 Marvin 變體？"""
+    return matched_text.lower() in _ENGLISH_MARVIN_VARIANTS
+
+
+def _looks_like_stt_marvin_hallucination(text_stripped: str, fast_match) -> bool:
+    """fast_match 命中英文 Marvin + 後續無真英文內容 → 疑似 STT 幻覺。
+
+    判準：matched 是英文 Marvin 變體 AND rest（後續）無 ≥3 連續英文字母。
+    純中文 / 短 token 都不足以證明真英文呼叫，降到 llm_verify。
+    """
+    matched = fast_match.group(0)
+    if not _is_english_marvin_match(matched):
+        return False
+    rest = text_stripped[fast_match.end():].strip(",. !?？，、 ")
+    return not bool(_REAL_ENGLISH_WORD_RE.search(rest))
+
+
 def pre_filter_speech(raw_text: str) -> dict:
     """Regex fast-path wake detection. Returns {action, text}.
 
@@ -228,7 +254,12 @@ def pre_filter_speech(raw_text: str) -> dict:
     # P1: 剝離前綴 noise 再打 _FAST_RE，避免「嗯馬文」「你好,馬文」「On, 馬文」
     # 等被 STT noise 黏住前綴的 case 被 demote 到 llm_verify。
     text_stripped = _strip_leading_noise(text)
-    if _FAST_RE.search(text_stripped):
+    fast_match = _FAST_RE.search(text_stripped)
+    if fast_match:
+        # 2026-05-20: 英文 Marvin STT 幻覺防護 — Marvin 後若無真英文內容
+        # （STT 常在純中文前亂插 Marvin），降到 llm_verify 讓 LLM 判 intent
+        if _looks_like_stt_marvin_hallucination(text_stripped, fast_match):
+            return {"action": "llm_verify", "text": raw_text}
         return {"action": "fast_intervene", "text": raw_text}
     m = _FORCE_RE.search(text)
     if m and m.start() <= 2:
