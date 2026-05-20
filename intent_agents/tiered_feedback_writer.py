@@ -108,15 +108,19 @@ class TieredFeedbackWriter:
         """For each result：count music_memory recent feedback (post-T1) → if
         ≥ threshold same direction within window → promote to suki likes/dislikes.
 
-        Returns list of promotion dicts for audit/inspection: [{speaker, item, direction, count}].
+        Returns list of promotion dicts: [{speaker, item, direction, count, suki_field}].
         Must be called AFTER write() so T1's latest feedback is in the count.
 
-        Suki has set-merge semantics on likes/dislikes (suki_memory.update_player_memory),
-        so duplicate promotions are idempotent — safe to call multiple times.
+        Dedup by (speaker, item, direction)：同一 batch 內 N 筆同向 result 對應
+        同個 (speaker, item) 只觸發**一次** promotion——T1 寫完後 history 已含全部 N
+        筆，每筆 result 看到 count=N 都會超過 threshold，若不 dedup 會回傳 N 個冗餘
+        promo dict。Suki 雖然 set-merge idempotent，但 promotion count 失真會誤導
+        audit。
         """
         if self.suki_memory is None:
             return []
         promotions: list[dict] = []
+        seen: set[tuple[str, str, str]] = set()
         since = self.clock() - self.t2_window_days * 86400
         for rec, result in results:
             if rec.agent != "music":
@@ -125,6 +129,9 @@ class TieredFeedbackWriter:
                 continue  # 低信心不參與 T2 計數（T1 也沒寫，不會有矛盾）
             direction = self._sentiment_to_direction(result.sentiment)
             if direction is None:
+                continue
+            key = (rec.speaker, rec.selected, direction)
+            if key in seen:
                 continue
             try:
                 promo = self._promote_if_threshold_met(
@@ -138,6 +145,7 @@ class TieredFeedbackWriter:
                 continue
             if promo is not None:
                 promotions.append(promo)
+                seen.add(key)
         return promotions
 
     @staticmethod
