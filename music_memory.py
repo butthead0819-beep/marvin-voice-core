@@ -119,6 +119,19 @@ class MusicMemory:
         u["feedback"] = u["feedback"][-20:]
         self._save()
 
+    def get_recent_feedback(self, username: str, since_ts: float) -> list[dict]:
+        """Read-only: return recommendation feedback entries for user, ts >= since_ts.
+
+        Used by T2 threshold writer to count consecutive same-direction feedbacks
+        before promoting to suki likes/dislikes. Per `feedback_slow_learning_via_recommendations.md` Section 3a rules.
+        """
+        bucket = (
+            self._data.get("recommendations", {})
+                      .get(username, {})
+                      .get("feedback", [])
+        )
+        return [e for e in bucket if e.get("ts", 0) >= since_ts]
+
     # ── Read / Context ─────────────────────────────────────────────────────
 
     def get_user_music_context(self, username: str, exclude: list[str] | None = None) -> str:

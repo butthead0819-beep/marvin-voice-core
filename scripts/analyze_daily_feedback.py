@@ -127,6 +127,7 @@ async def run(
     recs_path: Path = Path(DEFAULT_LOG_PATH),
     output_dir: Path = Path("records"),
     music_memory=None,
+    suki_memory=None,
     transcript_store=None,
     llm_client=None,
     analyzers: dict[str, FeedbackAnalyzer] | None = None,
@@ -140,6 +141,14 @@ async def run(
     if transcript_store is None:
         from transcript_store import TranscriptStore
         transcript_store = TranscriptStore()
+    # suki_memory 為 optional: 不啟用 T2 可傳 None
+    if suki_memory is None:
+        try:
+            from suki_memory import MemoryManager
+            suki_memory = MemoryManager()
+        except Exception as e:
+            logger.warning(f"⚠️ [analyze] suki_memory 載入失敗，T2 跳過: {e}")
+            suki_memory = None
 
     if analyzers is None:
         if llm_client is None:
@@ -169,11 +178,15 @@ async def run(
     analysis_path = output_dir / f"feedback_analysis_{date_str}.md"
     audit_path = output_dir / f"audit_{date_str}.md"
 
-    writer = TieredFeedbackWriter(music_memory=music_memory)
+    writer = TieredFeedbackWriter(
+        music_memory=music_memory, suki_memory=suki_memory,
+    )
     audit_lines = writer.emit_audit_lines(results)
 
+    promotions: list[dict] = []
     if not dry_run:
-        writer.write(results)
+        writer.write(results)                                   # T1
+        promotions = writer.apply_t2_promotions(results)        # T2 (post-T1)
 
     analysis_path.write_text(render_analysis_report(date_str, results), encoding="utf-8")
     audit_path.write_text(render_audit_report(date_str, audit_lines), encoding="utf-8")
@@ -182,6 +195,7 @@ async def run(
         "date": date_str,
         "total": len(results),
         "audit_lines": len(audit_lines),
+        "t2_promotions": len(promotions),
         "analysis_path": str(analysis_path),
         "audit_path": str(audit_path),
         "dry_run": dry_run,
