@@ -5751,7 +5751,7 @@ class VoiceController(commands.Cog):
         # ★ Fix 3 (2026-05-20): text 太短 → hardcoded fallback 保證一定有聲音
         # （沒有 None return path — user-requested 必須有 announcement）
         if len(text) < 2:
-            text = f"下一首是《{title}》，{requester} 點的。希望這次別讓宇宙失望。"
+            text = f"下一首是《{title}》，{requester} 點的。"
             logger.info(f"🎙️ [DJ Prefetch] 採用 fallback template")
 
         # 預渲染 TTS 音訊（generate_audio 有 MD5 cache，同文字不重複產生）
@@ -5798,7 +5798,7 @@ class VoiceController(commands.Cog):
                 "lyrics": None,
                 "comment": None,
                 "dj": {
-                    "text": f"下一首是《{title}》，{who} 點的。希望這次別讓宇宙失望。",
+                    "text": f"下一首是《{title}》，{who} 點的。",
                     "audio_path": None,  # 無預渲染 → _maybe_play_dj_interjection 走即時 play_tts
                 },
             }
