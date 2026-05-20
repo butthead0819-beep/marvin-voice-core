@@ -68,9 +68,15 @@ class GeminiRouterLLMMixin:
         
         # 📚 [Operation Jargon Override] 呼叫或生成動態字典
         if not hasattr(self, 'dict_manager') or self.dict_manager is None:
-            print(f"📦 [Router] 正在掛載 DictManager 模組...")
-            from game_dict_manager import GameDictManager
-            self.dict_manager = GameDictManager()
+            # 2026-05-20 fix: game_dict_manager.py import google.generativeai (deprecated SDK)
+            # 該 import 量測為 53 秒，在 async 主線程跑會卡死 Discord 心跳 → 看似 crash。
+            # 包進 to_thread 讓 import 在 worker thread 跑，event loop 繼續 heartbeat。
+            # 長期該遷 game_dict_manager 到 google.genai 新 SDK。
+            print(f"📦 [Router] 正在掛載 DictManager 模組（後台 import，避免卡心跳）...")
+            def _load_dict_manager():
+                from game_dict_manager import GameDictManager
+                return GameDictManager()
+            self.dict_manager = await asyncio.to_thread(_load_dict_manager)
             
         print(f"🔍 [Router] 正在呼叫 DictManager 取得字典: {game_name}")
         dict_str = await self.dict_manager.get_or_create_dict(game_name)
