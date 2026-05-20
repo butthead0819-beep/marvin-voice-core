@@ -5,11 +5,17 @@ Behavior parity goal vs v1：
   - reason 格式可微調，但要可解析
   - dense bid 0.0 + reason 是 v2 新增（v1 是 None），驗證 negative space 表達
 
-Schema priority order（保持與 v1 一致）：
+Schema priority order（declare 順序 = first-match-wins，與 confidence 解耦）：
   1. control_skip / control_pause / control_resume / control_stop (0.95)
   2. strong_play (0.95)
-  3. weak_play_with_marker (0.80)
-  4. weak_play_long_string (0.55, missing_slots=["song_title"])
+  3. weak_play_directional (0.50, missing=["directional_resolution"])  ← 抽象修飾先攔
+  4. weak_play_specific (0.95, no missing)                            ← artist的song≥2字
+  5. weak_play_with_marker (0.80)
+  6. weak_play_artist_only (0.85, missing=["song_choice"])            ← CURATION
+  7. weak_play_long_string (0.55, missing=["song_title"])
+
+3/4/6 是 5/21 vector intent 三檔分流新增；對 v1（MusicAgent）刻意 diverge，
+parity validator Gate 1 預期 fail（見 memory/project_vector_intent_5_21.md）。
 """
 from __future__ import annotations
 
@@ -31,6 +37,10 @@ from intent_bus import IntentContext
 # Music intent markers — same as v1
 _MUSIC_INTENT_MARKERS = ("的", "歌", "曲", "音樂", "mv", "ost", "歌詞", "歌手",
                          "一首", "那首", "這首")
+
+# Directional modifiers — 抽象修飾（符合年紀 / 適合心情 / 像 X 那種），
+# 需 semantic resolver 解成具體年代/情緒。必須在 specific/marker/artist 之前攔下。
+_DIRECTIONAL_MODIFIERS = ("符合.*?的", "適合.*?的", "像.*?那種")
 
 # UI/system words that should NOT trigger weak_play (same blocklist as v1)
 _NON_MUSIC_TARGETS = frozenset([
@@ -94,7 +104,11 @@ class MusicAgentV2(DeclarativeIntentAgent):
         strong_kws = _kw_alt(STRONG_PLAY_KW)
         weak_kws = _kw_alt(WEAK_PLAY_KW)
         markers = _kw_alt(_MUSIC_INTENT_MARKERS)
+        directional = "|".join(_DIRECTIONAL_MODIFIERS)
 
+        # Vector intent 三檔分流（priority 與 confidence 刻意解耦，靠 declare 順序）：
+        #   directional(0.50) 先攔 → specific(0.95) → with_marker(0.80) → artist_only(0.85) → long_string(0.55)
+        # directional 必須最先：「播放周杰倫符合我年紀的歌」同時含「的」與 artist，但要判 directional。
         self._intents_cache = [
             # Control intents — priority order matches v1 (skip → pause → resume → stop)
             IntentSchema("control_skip", 0.95,
@@ -113,12 +127,29 @@ class MusicAgentV2(DeclarativeIntentAgent):
             IntentSchema("strong_play", 0.95,
                          patterns=[f"(?P<kw>{strong_kws})"],
                          reason_template="strong_play:{kw}"),
-            # Weak play + marker（marker 在 query 任意處出現）
+            # DIRECTIONAL — 抽象修飾，需 resolver 解年代/情緒。0.50，缺 directional_resolution。
+            IntentSchema("weak_play_directional", 0.50,
+                         patterns=[f"(?P<kw>{weak_kws})(?=.*(?:{directional}))"],
+                         required_slots=["directional_resolution"],
+                         reason_template="weak_play_directional:{kw}"),
+            # SPECIFIC — artist「的」song（後段 ≥2 字）= 完整曲目，0.95，無 missing。
+            # ⚠️ SPECIFIC_CONF=0.95 採驗收表；若維持舊 with_marker 0.80，把這行 0.95 改 0.80。
+            IntentSchema("weak_play_specific", 0.95,
+                         patterns=[f"(?P<kw>{weak_kws}).*的(?P<song>\\S{{2,}})"],
+                         reason_template="weak_play_specific:{kw}->{song}"),
+            # Weak play + marker（marker 在 query 任意處出現，但後段不足成 specific）
             IntentSchema("weak_play_with_marker", 0.80,
                          patterns=[f"(?P<kw>{weak_kws})(?=.*(?:{markers}))"],
                          reason_template="weak_play+marker:{kw}"),
-            # Weak play + 後續 ≥2 字（artist-only fallback）
-            # named group 'target' = kw 後的內容；post_match_filter 檢查不在 blocklist
+            # CURATION — 純 artist token（≤4 字，緊接 kw 且收尾），把選擇權交給 Marvin。
+            # 0.85（高，仍 winning），缺 song_choice → bus 路由到 resolver 補完。
+            IntentSchema("weak_play_artist_only", 0.85,
+                         patterns=[
+                             f"(?P<kw>{weak_kws})[，,、！!？?。. ]*(?P<target>\\S{{2,4}})$"
+                         ],
+                         required_slots=["song_choice"],
+                         reason_template="weak_play_curation:{kw}->{target}"),
+            # Weak play + 後續長字串（artist 名超過 4 字 / 雜訊），0.55 兜底追問。
             IntentSchema("weak_play_long_string", 0.55,
                          patterns=[
                              f"(?P<kw>{weak_kws})[，,、！!？?。. ]*(?P<target>\\S{{2,}})"
@@ -131,7 +162,8 @@ class MusicAgentV2(DeclarativeIntentAgent):
     # ── Post-match filter (NON_MUSIC_TARGETS blocklist) ──────────────────────
 
     def post_match_filter(self, schema, slots, ctx):
-        if schema.name != "weak_play_long_string":
+        # artist_only / long_string 都吃 kw 後的 target → 同樣過 UI 黑名單
+        if schema.name not in ("weak_play_long_string", "weak_play_artist_only"):
             return True
         target = slots.get("target", "").strip("，,、！!？?。. ")
         # v1 也只看 target 開頭 20 字

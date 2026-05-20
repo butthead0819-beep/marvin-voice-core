@@ -65,8 +65,7 @@ def test_strong_play_both_bid_095(v1, v2, query):
 # ── Weak play + marker (0.80) ────────────────────────────────────────────────
 
 @pytest.mark.parametrize("query", [
-    "馬文播放周杰倫的稻香",
-    "馬文我想聽五月天的歌",
+    "馬文我想聽五月天的歌",   # 「的歌」後段<2字 → 仍 with_marker（非 specific）
 ])
 def test_weak_play_with_marker_both_bid_080(v1, v2, query):
     b1 = v1.bid(_ctx(query))
@@ -75,19 +74,32 @@ def test_weak_play_with_marker_both_bid_080(v1, v2, query):
     assert b2.confidence == 0.80
 
 
-# ── Weak play long string → missing song_title (0.55) ────────────────────────
+# ── v2 三檔分流刻意 diverge v1（5/21 vector intent，Gate 1 intentional）──────────
+# 「artist的song（≥2字）」：v1 當 with_marker 0.80；v2 升 SPECIFIC 0.95（完整曲目）。
+@pytest.mark.parametrize("query", [
+    "馬文播放周杰倫的稻香",
+])
+def test_specific_v1_080_marker_v2_095(v1, v2, query):
+    b1 = v1.bid(_ctx(query))
+    b2 = v2.bid(_ctx(query))
+    assert b1.confidence == 0.80          # v1 legacy 未變
+    assert b2.confidence == 0.95          # v2 SPECIFIC
+    assert b2.missing_slots == []
 
+
+# 「artist-only（無歌名）」：v1 當 long_string 0.55 追問歌名；v2 升 CURATION 0.85，
+# 缺 song_choice → 交給 semantic resolver 選歌（把選擇權交給 Marvin）。
 @pytest.mark.parametrize("query", [
     "馬文播放周杰倫",
     "馬文幫我找陶喆",
 ])
-def test_weak_play_long_string_both_bid_055_with_missing(v1, v2, query):
+def test_artist_only_v1_055_longstring_v2_085_curation(v1, v2, query):
     b1 = v1.bid(_ctx(query))
     b2 = v2.bid(_ctx(query))
-    assert b1.confidence == 0.55
-    assert b2.confidence == 0.55
+    assert b1.confidence == 0.55          # v1 legacy 未變
     assert b1.missing_slots == ["song_title"]
-    assert b2.missing_slots == ["song_title"]
+    assert b2.confidence == 0.85          # v2 CURATION
+    assert b2.missing_slots == ["song_choice"]
 
 
 # ── Control intents (0.95) ───────────────────────────────────────────────────
