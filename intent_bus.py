@@ -48,6 +48,9 @@ class IntentContext:
     is_owner: bool
     now: float
     mode: str = "normal"
+    # vector intent re-dispatch 鏈深度；bus 在 missing_slots resolve 後注入 depth+1。
+    # resolver 自己用 depth>=MAX_REWRITE_DEPTH 守無窮迴圈，這裡只負責往下傳。
+    depth: int = 0
 
 
 @dataclass
@@ -71,9 +74,17 @@ class IntentBus:
     # bid() 預算：> 5ms 觸發 WARNING，守住 sync ≤5ms 契約不漂移（5/18 NotebookLM review）
     _BID_BUDGET_MS = 5.0
 
-    def __init__(self, agents: list[IntentAgent]):
+    def __init__(self, agents: list[IntentAgent], *,
+                 resolver=None, profile_provider=None, llm_fallback=None):
         self.agents = list(agents)
         self.logger = logger
+        # vector intent 接線（全 optional，現有 prod bus 只傳 agents 不受影響）：
+        # - resolver: SemanticResolver，補 missing_slots 的 song_choice / directional_resolution
+        # - profile_provider: speaker → SpeakerProfile（cache lookup；缺則建最小 profile）
+        # - llm_fallback: async (ctx) → ...，resolver 放棄時的 Marvin 兜底
+        self.resolver = resolver
+        self.profile_provider = profile_provider
+        self.llm_fallback = llm_fallback
 
     async def dispatch(self, ctx: IntentContext) -> Bid | None:
         """收 bids、選 winner、await handler。回傳 winner Bid（or None 如果沒人 above threshold）。"""
@@ -134,5 +145,38 @@ class IntentBus:
             f"📡 [IntentBus] speaker={ctx.speaker} query='{ctx.query[:50]}' "
             f"wake_intent={ctx.wake_intent} bids: {bid_summary} winner={winner.name}"
         )
+
+        # ── Vector intent：winner 缺 resolver 認得的 slot → 解析後帶 depth+1 重投 ──
+        # 不認得的 slot（如 song_title）或無 missing → 走原 handler（保留 _ask / 直接播）。
+        slot = winner.missing_slots[0] if winner.missing_slots else None
+        if slot and self.resolver is not None and self.resolver.handles(slot):
+            return await self._resolve_and_redispatch(slot, ctx)
+
         await winner.handler()
         return winner
+
+    async def _resolve_and_redispatch(self, slot: str, ctx: IntentContext) -> Bid | None:
+        """Resolve missing slot → 帶 depth+1 重投 bus；resolver 放棄則 Marvin 兜底。"""
+        from intent_agents.semantic_resolver import SpeakerProfile
+        from dataclasses import replace
+
+        profile = (self.profile_provider(ctx.speaker) if self.profile_provider
+                   else SpeakerProfile(speaker=ctx.speaker))
+        resolved = await self.resolver.resolve(slot, ctx.query, profile, depth=ctx.depth)
+
+        if resolved is not None:
+            new_ctx = replace(ctx, query=resolved.rewritten_query, depth=resolved.depth)
+            self.logger.info(
+                f"📡 [IntentBus] resolve {slot}: '{ctx.query[:30]}' → "
+                f"'{resolved.rewritten_query[:30]}' depth={resolved.depth}"
+            )
+            return await self.dispatch(new_ctx)
+
+        # resolver 放棄（depth≥MAX / 失敗 / 無 client）→ Marvin LLM 兜底
+        self.logger.info(
+            f"📡 [IntentBus] resolve {slot} 回 None（depth={ctx.depth}）→ "
+            f"{'Marvin 兜底' if self.llm_fallback else '無 fallback，drop'}"
+        )
+        if self.llm_fallback is not None:
+            await self.llm_fallback(ctx)
+        return None

@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+from intent_agents.constants import MUSIC_PLAY_KW
 
 logger = logging.getLogger(__name__)
 
@@ -111,25 +114,32 @@ def _parse_response(content: str, raw_query: str, depth: int) -> Optional[Resolv
     return ResolvedIntent(rewritten_query=rewritten, quip=quip, depth=depth + 1)
 
 
-def _compose_query(raw_query: str, song: str) -> str:
-    """Build yt-dlp-friendly query.
+# 結尾抽象修飾：song 已吸收該意圖，組指令句時剝掉（regex 比固定清單寬）。
+_DIRECTIONAL_TAIL = re.compile(r"(符合.*?的|適合.*?的|像.*?那種)(的)?(歌|歌曲|音樂)?$")
 
-    If raw_query already contains the song (rare), keep raw_query.
-    Otherwise prefix raw_query (the artist hint) before song.
-    Strip trailing directional modifiers like '符合我年紀的歌' since the
-    song selection has already incorporated that intent.
+
+def _compose_query(raw_query: str, song: str) -> str:
+    """Build a **command-style** query that re-triggers MusicAgentV2 SPECIFIC schema.
+
+    A 案（2026-05-21 Jack 拍板）：resolver 結果要再投回 bus 命中 SPECIFIC，所以必須
+    帶 play keyword + 「的」。bus 傳進來的 raw_query 是完整 utterance（含「播放」），
+    這裡剝掉開頭 play kw + 結尾 directional 修飾，取出 artist core，再組「播放{artist}的{song}」。
+
+    剝 leading kw 讓「播放周杰倫」與既有測試傳的乾淨「周杰倫」都收斂到同一 core。
     """
-    if song in raw_query:
-        return raw_query
-    # Strip common directional suffixes — song already encodes the directional resolve
-    cleaned = raw_query
-    for suffix in ("符合我年紀的歌", "符合我年紀的", "符合年紀的", "適合我的",
-                   "像他那種的歌", "那種的", "心情的歌"):
-        if cleaned.endswith(suffix):
-            cleaned = cleaned[: -len(suffix)]
+    core = raw_query.strip()
+    for kw in sorted(MUSIC_PLAY_KW, key=len, reverse=True):  # longest first 避免前綴遮蔽
+        if core.startswith(kw):
+            core = core[len(kw):].strip("，,、！!？?。. ")
             break
-    cleaned = cleaned.strip()
-    return f"{cleaned} {song}".strip() if cleaned else song
+    core = _DIRECTIONAL_TAIL.sub("", core).strip("，,、！!？?。. ")
+
+    if song and song in core:
+        # core 已含 song（罕見）→ 確保帶 play kw 收尾即可
+        return core if core.startswith(("播放", "放", "播")) else f"播放{core}"
+    if core:
+        return f"播放{core}的{song}"
+    return f"播放{song}"
 
 
 # ── Resolver ───────────────────────────────────────────────────────────────
@@ -140,6 +150,10 @@ class SemanticResolver:
     def __init__(self, cerebras_client: Any, model: str = "llama-3.1-8b"):
         self.client = cerebras_client
         self.model = model
+
+    def handles(self, slot: str) -> bool:
+        """Bus 用來判斷某 missing_slot 是否該路由到此 resolver（vs 走原 handler）。"""
+        return slot in _KNOWN_SLOTS
 
     async def resolve(
         self,
