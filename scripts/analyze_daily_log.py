@@ -438,9 +438,13 @@ def backup_memory() -> Path | None:
     return None
 
 
-def _union_list(old: list, new: list) -> list:
-    seen = list(old)
-    for item in new:
+def _union_list(old, new) -> list:
+    """Defensive union: tolerate `old` or `new` being None (suki_memory.json
+    historically stored some list fields as explicit null; merge_player line
+    480 path passed those through unprotected and crashed `list(None)`).
+    """
+    seen = list(old) if old else []
+    for item in (new or []):
         if item not in seen:
             seen.append(item)
     return seen
