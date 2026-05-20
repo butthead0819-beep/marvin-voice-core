@@ -1173,17 +1173,23 @@ class DiscordVoiceEngine:
             _sp_lang = self._get_speaker_lang(speaker_name)
             _sp_locale = self._LANG_TO_LOCALE.get(_sp_lang, "zh-TW")
 
+            # 2026-05-20: STT_SWIFT_STRICT=true 完整關掉 Groq Whisper fallback
+            # （原本只擋正常語音路徑，wake check 仍走 Groq → 噪音時幻覺如「李宗盛」）
+            _swift_strict = os.getenv("STT_SWIFT_STRICT", "").lower() in ("1", "true", "yes")
+
             if is_wake_check:
                 if _is_apple_platform:
                     # Apple platform: Swift first; Groq HTTP fallback when Swift returns empty.
                     # Whisper is still excluded here to prevent zombie threads (7cbc32e).
                     # 5/18 20:28 incident: 35× Swift EDEADLK under macOS memory pressure
                     # left wake pipeline completely silent because there was no fallback.
+                    # 5/20 incident: Groq Whisper 在低訊號 wake check 上幻覺「李宗盛」等
+                    # 內容 → STT_SWIFT_STRICT=true 完整關掉 Groq fallback。
                     print(f"🎙️ [Engine] [WakeCheck] Swift (Speaker: {speaker_name})...", flush=True)
                     raw_text = await self._run_swift_stt(wav_path, is_wake_check=True, locale=_sp_locale)
                     if raw_text:
                         used_engine = "Swift"
-                    elif os.getenv("GROQ_API_KEY"):
+                    elif os.getenv("GROQ_API_KEY") and not _swift_strict:
                         print(f"🎙️ [Engine] [WakeCheck] Swift empty → Groq fallback (Speaker: {speaker_name})...", flush=True)
                         raw_text = await self._run_groq_whisper_stt(wav_path, language=_sp_lang)
                         if raw_text:
@@ -1226,7 +1232,7 @@ class DiscordVoiceEngine:
                     print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Swift)", flush=True)
                 # Swift 失敗：Apple platform 用 Groq Whisper API 備援，Linux 用 Faster-Whisper
                 # 設 STT_SWIFT_STRICT=true 可關閉 fallback（避免 Whisper 在雜音上幻覺）
-                _swift_strict = os.getenv("STT_SWIFT_STRICT", "").lower() in ("1", "true", "yes")
+                # 注：_swift_strict 已在函式頂部定義，這裡直接用
                 if not raw_text and _is_apple_platform and os.getenv("GROQ_API_KEY") and not _swift_strict:
                     print(f"🎙️ [Engine] 啟動備援 Groq Whisper (Speaker: {speaker_name}, Lang: {_sp_lang})...", flush=True)
                     raw_text = await self._run_groq_whisper_stt(wav_path, language=_sp_lang)
