@@ -141,13 +141,18 @@ class GeminiRouterSTTMixin:
             return _build_res(raw_text)
 
         # 🔒 [TPM Guard — Atomic] 在鎖內讀取+檢查，防止多個 coroutine 同時通過
+        # 2026-05-20 fix：TPM 耗盡時不再直接 return raw（會讓 wake_intent=None →
+        # 真實指令喚醒失敗），改設 skip flag 跳過 Groq 8b 但 fall through 到 Cerebras
+        # （獨立 quota，~100ms）。Cerebras 也沒/失敗才會降到 raw fallback。
+        _groq_8b_skip_tpm = False
+        current_tpm = 0
         async with self._groq_tpm_lock:
             now = time.time()
             self.groq_cleaner_usage = [u for u in self.groq_cleaner_usage if now - u[0] <= 60]
             current_tpm = sum(u[1] for u in self.groq_cleaner_usage)
             if current_tpm > 4500:
-                logger.warning(f"⚠️ [TPM Guard] Groq 清洗額度接近上限 ({current_tpm}/6000 TPM)，跳過本次清洗。")
-                return _build_res(raw_text)
+                logger.warning(f"⚠️ [TPM Guard] Groq 8b 額度近上限 ({current_tpm}/6000 TPM)，跳過 Groq 8b 改走 Cerebras。")
+                _groq_8b_skip_tpm = True
 
         system_prompt = self.prompt_manager.get_instruction("stt_cleaner", vision_enabled=False)
 
@@ -187,7 +192,7 @@ class GeminiRouterSTTMixin:
             return (text, None, None, True)
 
         # ── 1. Groq 8b (極速路徑) ────────────────────────────────────────────
-        if self.groq_dedicated_client:
+        if self.groq_dedicated_client and not _groq_8b_skip_tpm:
             now = time.time()
             if now < self._groq_8b_cooldown_until:
                 remaining = self._groq_8b_cooldown_until - now

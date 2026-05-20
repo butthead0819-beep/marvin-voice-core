@@ -189,3 +189,51 @@ async def test_cerebras_cooldown_after_429():
 
     # Cerebras 只被打 1 次（第二次跳過）
     assert r.cerebras_client.chat.completions.create.await_count == 1
+
+
+# ── TPM Guard 不該短路 Cerebras（2026-05-20 wake 失敗 regression）─────────────
+
+@pytest.mark.asyncio
+async def test_tpm_exhausted_falls_through_to_cerebras_not_raw():
+    """Groq TPM 耗盡時，應跳過 Groq 8b 改走 Cerebras（不該直接 return raw）。
+
+    2026-05-20 prod regression：TPM Guard 直接 return raw → wake_intent=None →
+    aeac455 fix 把 voice 降 0.30 → 真實指令「幫我查佛山」total 差 0.004 沒喚醒。
+    修法：TPM 高時 fall through 到 Cerebras，wake_intent 由 Cerebras 設好。
+    """
+    r = _make_router()
+    # 灌爆 Groq TPM 計數器（> 4500 觸發 guard）
+    now = __import__("time").time()
+    r.groq_cleaner_usage = [(now, 5000)]
+    # raw 含馬文（對應 prod entry 2「我我我我馬文」）→ Cerebras 清成「馬文」+ intent
+    # 通過 Wake Injection Guard（raw 真有 wake word）
+    r.cerebras_client.chat.completions.create = AsyncMock(
+        return_value=_fake_groq_response(cleaned="馬文", intent=0.95)
+    )
+
+    res = await r.clean_stt_text("我我我我馬文", speaker="showay")
+
+    # Groq 8b 不該被呼叫（TPM 耗盡）
+    r.groq_dedicated_client.chat.completions.create.assert_not_called()
+    # Cerebras 接手
+    r.cerebras_client.chat.completions.create.assert_called_once()
+    # wake_intent 有值（不再是 None → 不會掉進 voice=0.30 路徑 → 開 deferred wake 窗口）
+    assert res["wake_intent"] == 0.95
+    assert res["text"] == "馬文"
+
+
+@pytest.mark.asyncio
+async def test_tpm_exhausted_no_cerebras_returns_raw():
+    """TPM 耗盡 + 無 Cerebras client → 降級 raw（wake_intent=None），不 crash。"""
+    r = _make_router(cerebras_client_exists=False)
+    now = __import__("time").time()
+    r.groq_cleaner_usage = [(now, 5000)]
+    # 無 Gemini、無 Cerebras → 最終 raw fallback
+    r.groq_dedicated_client.chat.completions.create = AsyncMock(
+        side_effect=Exception("should not be called when TPM exhausted")
+    )
+
+    res = await r.clean_stt_text("幫我查佛山有什麼好玩的", speaker="showay")
+
+    # Groq 8b skip（TPM），Groq 70b 也 skip（同 client 但會被 backup 路徑試）— 重點是不 crash
+    assert res["text"] == "幫我查佛山有什麼好玩的"
