@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from intent_agents.recommendation import Recommendation
@@ -130,13 +130,15 @@ class MusicFeedbackAnalyzer:
         rec: Recommendation,
         utts_in_window: list[Utterance],
     ) -> FeedbackResult:
-        # Heuristic 1: rec.speaker 自己沒講話 → silence = positive
+        # Heuristic 1: rec.speaker 自己沒講話 → silence = positive 但弱訊號
+        # confidence=0.4 刻意低於 T1 min_confidence (0.5)：silence 不自動寫進 music_memory，
+        # 避免「user 沒抗議」連 3 次被誤升 suki.likes（review 2026-05-20 校正）
         speaker_utts = [u for u in utts_in_window if u.speaker == rec.speaker]
         if not speaker_utts:
             return FeedbackResult(
                 sentiment="positive",
-                confidence=0.6,  # silence 不是強訊號
-                reason="silence in window (no抗議 = 接受)",
+                confidence=0.4,
+                reason="silence in window (no抗議 = 接受，但訊號弱不寫 store)",
                 evidence=(),
             )
 
@@ -158,7 +160,7 @@ class MusicFeedbackAnalyzer:
             return FeedbackResult(
                 sentiment="neutral",
                 confidence=0.0,
-                reason=f"llm_error: {e}",
+                reason=f"llm_error: {e}"[:200],  # cap 與其他 reason 路徑一致
                 evidence=(),
             )
 

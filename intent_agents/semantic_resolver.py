@@ -103,7 +103,7 @@ def _parse_response(content: str, raw_query: str, depth: int) -> Optional[Resolv
         data = json.loads(stripped)
     except (json.JSONDecodeError, ValueError):
         return None
-    song = str(data.get("song", "")).strip()
+    song = str(data.get("song", "")).strip()[:100]  # hard cap: 防 LLM 幻覺長 string 污染 yt-dlp 查詢
     if not song:
         return None
     quip = str(data.get("quip", "")).strip()[:40]  # hard cap defensive
