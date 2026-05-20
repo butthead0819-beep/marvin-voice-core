@@ -101,24 +101,61 @@ class MemoryManager:
     """
     Marvin 長期記憶倉庫。
     後端：SQLite (WAL mode) + JSON export for script compatibility.
+
+    Guild-scoped：每個 guild 一個 instance（用 ``for_guild`` registry 取得）。
+    ``players`` 表以 (guild_id, username) 為複合 PK；不傳 guild_id 時預設 home guild
+    （env ``GUILD_ID``，無則 0），讓既有單 guild caller 與 offline script 維持原行為。
+    JSON compat 只在 home guild 匯出，避免 guest guild 把 home 的 suki_memory.json 蓋掉。
     """
 
-    def __init__(self, db_path: str = _DB_PATH, json_compat_path: str = _JSON_COMPAT_PATH):
+    # guild_id → instance 快取（同一 db_path 內，一個 guild 一個 manager）
+    _registry: dict = {}
+
+    def __init__(
+        self,
+        guild_id: int | None = None,
+        db_path: str = _DB_PATH,
+        json_compat_path: str = _JSON_COMPAT_PATH,
+    ):
+        self._home_guild_id = int(os.environ.get("GUILD_ID") or 0)
+        self._guild_id = self._home_guild_id if guild_id is None else int(guild_id)
+        self._is_home = self._guild_id == self._home_guild_id
         self._db_path = db_path
         self._json_compat_path = json_compat_path
         self._conn = self._open_db()
         self._cache: dict[str, dict] = {}
         self._load_all()
 
+    @classmethod
+    def for_guild(
+        cls,
+        guild_id: int,
+        db_path: str = _DB_PATH,
+        json_compat_path: str = _JSON_COMPAT_PATH,
+    ) -> "MemoryManager":
+        """取得（或建立並快取）某 guild 的 MemoryManager。
+
+        Why: 整個 codebase 透過這個 registry 取得 manager，method 簽名維持 username-only，
+        guild scoping 烤進「你拿到哪個 instance」而非每個呼叫都帶 guild_id。
+        """
+        key = (int(guild_id), db_path)
+        inst = cls._registry.get(key)
+        if inst is None:
+            inst = cls(guild_id=int(guild_id), db_path=db_path, json_compat_path=json_compat_path)
+            cls._registry[key] = inst
+        return inst
+
+    @classmethod
+    def reset_registry(cls) -> None:
+        """清空 instance 快取（測試用）。"""
+        cls._registry = {}
+
     # ── DB init ──────────────────────────────────────────────────────────────
 
     def _open_db(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS players "
-            "(username TEXT PRIMARY KEY, data TEXT NOT NULL DEFAULT '{}')"
-        )
+        self._ensure_players_schema(conn)
         # 氣氛校正資料表（Companion 回饋的 too_loud / too_sharp / too_jolly）
         conn.execute(
             "CREATE TABLE IF NOT EXISTS atmosphere_corrections ("
@@ -136,13 +173,52 @@ class MemoryManager:
         conn.commit()
         return conn
 
+    def _ensure_players_schema(self, conn: sqlite3.Connection) -> None:
+        """建立 / 遷移 players 表至 (guild_id, username) 複合 PK。
+
+        舊 schema（username PK，無 guild_id）偵測到時 rebuild，舊資料整批歸 home guild。
+        Migration 只跑一次（schema 已含 guild_id 就略過），與哪個 guild instance 觸發無關。
+        """
+        new_ddl = (
+            "CREATE TABLE players ("
+            "guild_id INTEGER NOT NULL, username TEXT NOT NULL, "
+            "data TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (guild_id, username))"
+        )
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='players'"
+        ).fetchone() is not None
+        if not exists:
+            conn.execute(new_ddl)
+            return
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(players)").fetchall()]
+        if "guild_id" in cols:
+            return  # 已是新 schema
+        # 舊 schema → rebuild，舊資料歸 home guild
+        home = self._home_guild_id
+        conn.execute("ALTER TABLE players RENAME TO players_legacy")
+        conn.execute(new_ddl)
+        conn.execute(
+            "INSERT INTO players (guild_id, username, data) "
+            "SELECT ?, username, data FROM players_legacy",
+            (home,),
+        )
+        conn.execute("DROP TABLE players_legacy")
+        conn.commit()
+        logger.info(
+            f"✅ [Memory] players 表已遷移至 (guild_id, username)；舊資料歸 home guild {home}"
+        )
+
     # ── Load / migrate ───────────────────────────────────────────────────────
 
     def _load_all(self):
-        rows = self._conn.execute("SELECT username, data FROM players").fetchall()
-        if not rows:
+        rows = self._conn.execute(
+            "SELECT username, data FROM players WHERE guild_id = ?", (self._guild_id,)
+        ).fetchall()
+        if not rows and self._is_home:
             self._migrate_from_json()
-            rows = self._conn.execute("SELECT username, data FROM players").fetchall()
+            rows = self._conn.execute(
+                "SELECT username, data FROM players WHERE guild_id = ?", (self._guild_id,)
+            ).fetchall()
         for username, data_str in rows:
             try:
                 self._cache[username] = _repair_player(json.loads(data_str))
@@ -160,8 +236,8 @@ class MemoryManager:
             for username, pdata in players.items():
                 repaired = _repair_player(pdata)
                 self._conn.execute(
-                    "INSERT OR IGNORE INTO players (username, data) VALUES (?, ?)",
-                    (username, json.dumps(repaired, ensure_ascii=False)),
+                    "INSERT OR IGNORE INTO players (guild_id, username, data) VALUES (?, ?, ?)",
+                    (self._guild_id, username, json.dumps(repaired, ensure_ascii=False)),
                 )
             self._conn.commit()
             logger.info(f"✅ [Memory] 已從 JSON 遷移 {len(players)} 名玩家至 SQLite。")
@@ -174,8 +250,8 @@ class MemoryManager:
         if username not in self._cache:
             return
         self._conn.execute(
-            "INSERT OR REPLACE INTO players (username, data) VALUES (?, ?)",
-            (username, json.dumps(self._cache[username], ensure_ascii=False)),
+            "INSERT OR REPLACE INTO players (guild_id, username, data) VALUES (?, ?, ?)",
+            (self._guild_id, username, json.dumps(self._cache[username], ensure_ascii=False)),
         )
         self._conn.commit()
         self._export_json()
@@ -185,7 +261,12 @@ class MemoryManager:
 
         Preserves top-level meta keys (marvin_performance / proactive_topics 等)
         that daily cron writes — 否則每次 player save 都會把 cron 的成果 nuke 掉。
+
+        只在 home guild 匯出：JSON 的 players 區段是扁平 username map，guest guild
+        若也寫會互相蓋掉、也會污染 offline script 讀的 home guild 資料。
         """
+        if not self._is_home:
+            return
         try:
             # 讀回現有 JSON 以保留 daily cron 寫入的頂層 meta keys
             existing: dict = {}
