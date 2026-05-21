@@ -151,19 +151,14 @@ async def run(
             suki_memory = None
 
     if analyzers is None:
-        if llm_client is None:
-            # Real run needs an LLM. Use Groq (already in deps).
-            try:
-                from groq import AsyncGroq
-            except ImportError as e:
-                raise RuntimeError(
-                    "groq SDK not installed; pip install groq"
-                ) from e
-            api_key = os.environ.get("GROQ_API_KEY")
-            if not api_key:
-                raise RuntimeError("GROQ_API_KEY not set; required for analyzer LLM")
-            llm_client = AsyncGroq(api_key=api_key)
-        analyzers = {"music": MusicFeedbackAnalyzer(llm_client=llm_client)}
+        # 離線批量分析走 Tier 2 算力池（多家 70b 自動分流 + 429 cooldown），不再鎖死 Groq。
+        # llm_client 參數保留向後相容：若 caller 仍傳 router-like 物件，直接用它。
+        router = llm_client
+        if router is None:
+            sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+            from llm_pool import build_tiered_router
+            router = build_tiered_router()
+        analyzers = {"music": MusicFeedbackAnalyzer(router=router)}
 
     fetcher = make_transcript_fetcher(transcript_store)
     batch = NightlyFeedbackBatch(

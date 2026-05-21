@@ -118,12 +118,18 @@ def _parse_llm_response(content: str) -> FeedbackResult | None:
 # ── Concrete analyzer ─────────────────────────────────────────────────────
 
 class MusicFeedbackAnalyzer:
-    """First concrete plugin. Other agent types implement same shape."""
+    """First concrete plugin. Other agent types implement same shape.
+
+    2026-05-21：LLM 從直連 Groq client（鎖死 llama-3.3-70b、與全 bot 搶同一額度）改吃
+    TieredLLMRouter.analyze（Tier 2，70b 池多家分流 + 429 cooldown）。離線批量分析屬
+    Tier 2「分析質量」（per project_llm_tier_wrapper）。analyze() 回 content 或 None
+    （池全冷卻/失敗，不 raise）→ None 時降級 neutral conf=0。
+    """
     agent_type: str = "music"
 
-    def __init__(self, llm_client: Any, model: str = "llama-3.3-70b-versatile"):
-        self.client = llm_client
-        self.model = model
+    def __init__(self, router: Any):
+        """router: TieredLLMRouter。缺（None）→ 視同池不可用，analyze 回 neutral conf=0。"""
+        self.router = router
 
     async def analyze(
         self,
@@ -142,29 +148,23 @@ class MusicFeedbackAnalyzer:
                 evidence=(),
             )
 
-        # LLM classify
+        # LLM classify：router 內部做 pool 分流 + cooldown；全冷卻/失敗回 None（不 raise）。
         user_msg = _build_music_user_message(rec, speaker_utts)
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": _MUSIC_SYS_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0.0,
-                max_tokens=300,
-                response_format={"type": "json_object"},
+        content = None
+        if self.router is not None:
+            content = await self.router.analyze(
+                user_msg, caller="feedback_analyzer", system=_MUSIC_SYS_PROMPT,
+                json=True, max_tokens=300, temperature=0.0,
             )
-        except Exception as e:
-            logger.warning(f"⚠️ [FeedbackAnalyzer:music] LLM 失敗 → neutral 兜底: {e}")
+        if content is None:
+            logger.warning("⚠️ [FeedbackAnalyzer:music] router 無回應（池全冷卻/無 router）→ neutral 兜底")
             return FeedbackResult(
                 sentiment="neutral",
                 confidence=0.0,
-                reason=f"llm_error: {e}"[:200],  # cap 與其他 reason 路徑一致
+                reason="llm_unavailable: pool exhausted or no router",
                 evidence=(),
             )
 
-        content = response.choices[0].message.content
         parsed = _parse_llm_response(content)
         if parsed is None:
             # Distinguish invalid JSON vs invalid sentiment for reason field

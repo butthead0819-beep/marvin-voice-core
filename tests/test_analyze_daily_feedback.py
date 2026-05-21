@@ -35,7 +35,7 @@ async def test_run_with_empty_jsonl_produces_clean_reports(tmp_path):
         output_dir=tmp_path,
         music_memory=music_memory,
         transcript_store=transcript_store,
-        analyzers={"music": MusicFeedbackAnalyzer(llm_client=MagicMock())},
+        analyzers={"music": MusicFeedbackAnalyzer(router=MagicMock())},
     )
 
     assert summary["total"] == 0

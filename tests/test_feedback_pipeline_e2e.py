@@ -3,14 +3,13 @@
 單測已驗各模組獨立行為，這份測 wiring：
   Recommendation.append → CLI run() → Batch → Analyzer → Writer (T1+T2+T3) → reports
 
-Mock LLM client（避免真打 Groq），其他全部用真實模組（in-memory 替身）。
+Mock TieredLLMRouter（避免真打算力池），其他全部用真實模組（in-memory 替身）。
 """
 from __future__ import annotations
 
 import json
 import time
 from datetime import datetime
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -77,9 +76,9 @@ class _FakeTranscriptStore:
 
 # ── LLM client mock helpers ───────────────────────────────────────────────
 
-def _llm_client_returning_sentiments(sentiments_by_call: list[dict]):
-    """Build a mock LLM that returns each sentiment JSON in sequence."""
-    responses = []
+def _router_returning_sentiments(sentiments_by_call: list[dict]):
+    """Build a mock TieredLLMRouter whose analyze() returns each sentiment JSON in sequence."""
+    contents = []
     for s in sentiments_by_call:
         payload = {
             "sentiment": s.get("sentiment", "positive"),
@@ -87,15 +86,10 @@ def _llm_client_returning_sentiments(sentiments_by_call: list[dict]):
             "reason": s.get("reason", "mock"),
             "evidence": s.get("evidence", []),
         }
-        responses.append(SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(
-                content=json.dumps(payload, ensure_ascii=False)
-            ))],
-            usage=SimpleNamespace(total_tokens=80),
-        ))
-    client = MagicMock()
-    client.chat.completions.create = AsyncMock(side_effect=responses)
-    return client
+        contents.append(json.dumps(payload, ensure_ascii=False))
+    router = MagicMock()
+    router.analyze = AsyncMock(side_effect=contents)
+    return router
 
 
 def _ts_for_date(date_str: str, hour: int = 14) -> float:
@@ -145,7 +139,7 @@ async def test_full_pipeline_three_recs_one_promotes_to_likes(tmp_path):
     music_memory = _FakeMusicMemory()
     suki = _FakeSuki(known_players={"大肚", "露"})
 
-    llm = _llm_client_returning_sentiments([
+    router = _router_returning_sentiments([
         {"sentiment": "positive", "confidence": 0.9, "reason": "好聽"},
         {"sentiment": "positive", "confidence": 0.9, "reason": "讚"},
         {"sentiment": "positive", "confidence": 0.9, "reason": "再來一首"},
@@ -159,7 +153,7 @@ async def test_full_pipeline_three_recs_one_promotes_to_likes(tmp_path):
         music_memory=music_memory,
         suki_memory=suki,
         transcript_store=transcript_store,
-        analyzers={"music": MusicFeedbackAnalyzer(llm_client=llm)},
+        analyzers={"music": MusicFeedbackAnalyzer(router=router)},
     )
 
     # T1: 4 個 rec 全寫進 music_memory
@@ -207,7 +201,7 @@ async def test_full_pipeline_low_confidence_skipped_from_both_t1_t2(tmp_path):
     music_memory = _FakeMusicMemory()
     suki = _FakeSuki(known_players={"大肚"})
 
-    llm = _llm_client_returning_sentiments([
+    router = _router_returning_sentiments([
         {"sentiment": "positive", "confidence": 0.2, "reason": "不確定"},
     ])
 
@@ -218,7 +212,7 @@ async def test_full_pipeline_low_confidence_skipped_from_both_t1_t2(tmp_path):
         music_memory=music_memory,
         suki_memory=suki,
         transcript_store=transcript_store,
-        analyzers={"music": MusicFeedbackAnalyzer(llm_client=llm)},
+        analyzers={"music": MusicFeedbackAnalyzer(router=router)},
     )
 
     # T1 skipped（confidence < 0.5）
@@ -262,7 +256,7 @@ async def test_full_pipeline_dry_run_no_store_writes(tmp_path):
         music_memory=music_memory,
         suki_memory=suki,
         transcript_store=transcript_store,
-        analyzers={"music": MusicFeedbackAnalyzer(llm_client=MagicMock())},
+        analyzers={"music": MusicFeedbackAnalyzer(router=MagicMock())},
         dry_run=True,
     )
 
