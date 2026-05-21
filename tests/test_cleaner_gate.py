@@ -29,6 +29,12 @@ def test_music_keyword_sends_without_wake():
     assert _send("換一首") is True
 
 
+def test_nemoclaw_lobster_sends():
+    # 龍蝦 = NemoClaw owner trigger，必須送（歷史漏接過）
+    assert _send("龍蝦幫我看明天會下雨嗎") is True
+    assert _send("龍蝦") is True
+
+
 def test_conversation_active_sends():
     # 對話進行中（follow-up），即使無喚醒/音樂詞也要送
     assert _send("對啊就是這樣", context_active=True) is True

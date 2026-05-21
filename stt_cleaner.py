@@ -17,6 +17,9 @@ _CORRECTIONS_LOG = Path("records/stt_corrections.jsonl")
 # Aggregated map（read fast-path）：daily-review 把 jsonl 整理成 json key→cleaned。
 # Tests should monkeypatch this to a non-existent path to bypass fast-path 早退。
 _LOCAL_CORRECTIONS_PATH = Path("records/stt_corrections.json")
+# Cleaner gate 丟棄記錄：每筆 = 一個被略過(未送 cleaner)的句子。drop-rate 數行數即可；
+# review 此檔確認被丟的都是碎念/雜訊（不該有真指令）。
+_GATE_DROP_LOG = Path("records/cleaner_gate_drops.jsonl")
 
 def _append_stt_correction(raw: str, cleaned: str, spk: str):
     """非同步安全：直接寫入（呼叫在單執行緒事件循環內）。"""
@@ -24,6 +27,16 @@ def _append_stt_correction(raw: str, cleaned: str, spk: str):
         _CORRECTIONS_LOG.parent.mkdir(parents=True, exist_ok=True)
         with _CORRECTIONS_LOG.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"ts": time.time(), "speaker": spk, "raw": raw, "clean": cleaned}, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _append_gate_drop(raw: str, sig: dict):
+    """記錄一個被 cleaner gate 略過的句子（供 drop-rate 統計 + false-neg review）。"""
+    try:
+        _GATE_DROP_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _GATE_DROP_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": time.time(), "raw": (raw or "")[:50], **sig}, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
@@ -64,13 +77,15 @@ def _verify_wake_against_raw(
     return is_wake, wake_intent
 
 
-# ── Shadow pre-gate 量測（2026-05-21；不改行為，只 log 以估 cleaner 可省多少呼叫）──────
-# 每句 STT 都打 cleaner 是 TPD 大宗。本地 gate 構想：raw 無喚醒音 + 無音樂詞 + 非對話中
-# → 幾乎不是對 Marvin 講 → 可略過 cleaner。上線前先 shadow 量 drop-rate + false-neg
-# （would_send=False 但實際 is_wake=True 的比例必須趨近 0）。量到的數據也反推音標集要多寬。
+# ── Cleaner pre-gate（2026-05-21）──────────────────────────────────────────────
+# 每句 STT 都打 cleaner 是 TPD 大宗。一句話只在「可能對 Marvin 有意圖」時才值得送：
+#   有指令訊號（喚醒音/音樂詞/龍蝦）OR 正在對話中（ctx_active / Marvin 剛說）。
+# 兩者皆無 → 長碎念/短 filler/雜訊，無意圖 → 丟（略過 cleaner）。
+# 安全性：無喚醒詞的真指令只能經對話窗到 cleaner（Injection Guard 擋 Track-B 無詞 wake），
+# 故 ctx/spoke 會放行；歷史 26156 句驗證被丟的長句全是雜訊（true false-neg≈0）。
 _GATE_WAKE_RE = re.compile(
     "|".join(["馬文", "媽文", "麻文", "瑪文", "罵文", "马文", "馬汶", "馬問", "馬紋",
-              "嗎文", "marvin", "marvy", "marvgin"]), re.IGNORECASE)
+              "嗎文", "marvin", "marvy", "marvgin", "龍蝦", "龙虾"]), re.IGNORECASE)
 try:
     from intent_agents.constants import (
         MUSIC_PLAY_KW as _GP, MUSIC_DIRECT_SKIP_KW as _GS,
@@ -83,13 +98,14 @@ except Exception:
 
 
 def cleaner_gate_decision(raw_text, *, context_active=False, marvin_just_spoke=False):
-    """Shadow pre-gate：raw 是否「值得」送 cleaner LLM。回 (would_send: bool, signals: dict)。
+    """raw 是否值得送 cleaner LLM。回 (would_send: bool, signals: dict)。
 
-    純量測：目前**不真擋**，只 log。would_send=False 表示「本地 gate 會略過此句」。
-    搭配實際 is_wake → 算 drop-rate（潛在省下）與 false-neg（漏接真 wake，安全關鍵）。
+    would_send=False → gate 略過此句（不打 cleaner）。has_wake 同時吃 _GATE_WAKE_RE 與
+    check_cleaned_text_for_wake，確保「gate 放行的 wake 判定」≥「_build_res 的 wake 判定」，
+    被 drop 的句子 _build_res 必定 is_wake=False（一致）。
     """
     raw = raw_text or ""
-    has_wake = bool(_GATE_WAKE_RE.search(raw))
+    has_wake = bool(_GATE_WAKE_RE.search(raw)) or check_cleaned_text_for_wake(raw)
     low = raw.lower()
     has_music = any(kw.lower() in low for kw in _GATE_MUSIC_KW)
     would_send = bool(has_wake or has_music or context_active or marvin_just_spoke)
@@ -123,7 +139,8 @@ class GeminiRouterSTTMixin:
             self._stt_router = build_tiered_router()
 
     async def clean_stt_text(self, raw_text: str, context: list = None, speaker: str = None,
-                              context_active: bool = False, marvin_just_spoke: bool = False) -> dict:
+                              context_active: bool = False, marvin_just_spoke: bool = False,
+                              apply_gate: bool = False) -> dict:
         """
         [Operation Clean STT] Phase 1: Fused Intent Scorer.
         Returns {"text": str, "is_wake": bool, "wake_intent": float|None, "wake_threshold": float}
@@ -182,6 +199,16 @@ class GeminiRouterSTTMixin:
         # 🛡️ [Rate Limit Saver] 過濾完全疊字的無意義發音
         if len(set(stripped_text.replace(" ", ""))) == 1:
             return _build_res(raw_text)
+
+        # 🚪 [Cleaner Gate] 僅 wake-check 路徑 opt-in（apply_gate=True）。無指令訊號(喚醒/
+        # 音樂/龍蝦) + 非對話中 → 無對 Marvin 意圖 → 略過 cleaner（省 TPD）。純文字清洗
+        # caller（apply_gate=False，如遊戲答案清洗）不 gate，照常 LLM 清。被丟的記 jsonl 供 review。
+        if apply_gate:
+            _gate_send, _gate_sig = cleaner_gate_decision(
+                raw_text, context_active=context_active, marvin_just_spoke=marvin_just_spoke)
+            if not _gate_send:
+                _append_gate_drop(raw_text, _gate_sig)
+                return _build_res(raw_text)
 
         # TPM guard 改由 CooldownAwarePool per-endpoint 處理（每家自己的 tpm_budget +
         # 429 cooldown），不再手動守 Groq 單一 bucket。

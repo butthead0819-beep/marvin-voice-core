@@ -106,3 +106,40 @@ async def test_wake_intent_preserved_from_pool():
     assert res["wake_intent"] == 0.95
     assert res["text"] == "馬文"
     assert res["is_wake"] is True
+
+
+# ── Cleaner gate：無訊號+非對話 → 略過 cleaner（省 TPD）─────────────────────────
+
+@pytest.mark.asyncio
+async def test_gate_drops_ambient_skips_cleaner():
+    """apply_gate=True + 環境閒聊（無喚醒/音樂、非對話中）→ gate 略過，不打 cleaner。"""
+    r, rt = _make_router(quick_ret=_clean_json())
+    res = await r.clean_stt_text("今天天氣真好大家覺得呢", speaker="x",
+                                 context_active=False, marvin_just_spoke=False, apply_gate=True)
+    rt.quick.assert_not_awaited()
+    rt.analyze.assert_not_awaited()
+    assert res["is_wake"] is False
+
+
+@pytest.mark.asyncio
+async def test_gate_sends_when_conversation_active():
+    """對話中（ctx_active）→ 即使無喚醒詞也送 cleaner（救 follow-up 指令如「現在幾點」）。"""
+    r, rt = _make_router(quick_ret=_clean_json(cleaned="現在幾點", intent=0.0))
+    await r.clean_stt_text("現在幾點", speaker="x", context_active=True, apply_gate=True)
+    rt.quick.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gate_sends_on_music_keyword_no_wake():
+    """no-wake 但含音樂詞 → 送（IBA-T0 點歌會經這條 wake-check）。"""
+    r, rt = _make_router(quick_ret=_clean_json(cleaned="播放周杰倫", intent=0.0))
+    await r.clean_stt_text("播放周杰倫", speaker="x", apply_gate=True)
+    rt.quick.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gate_off_by_default_never_drops():
+    """純文字清洗 caller（apply_gate 預設 False）→ 即使無訊號也照常送 cleaner，不 gate。"""
+    r, rt = _make_router(quick_ret=_clean_json(cleaned="今天天氣"))
+    await r.clean_stt_text("今天天氣真好大家覺得呢", speaker="x")  # 無 apply_gate
+    rt.quick.assert_awaited_once()

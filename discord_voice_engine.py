@@ -1321,7 +1321,8 @@ class DiscordVoiceEngine:
                 clean_res = await self.bot.router.clean_stt_text(
                     raw_text, context=recent_ctx,
                     speaker=speaker_name, context_active=context_active,
-                    marvin_just_spoke=marvin_just_spoke
+                    marvin_just_spoke=marvin_just_spoke,
+                    apply_gate=True,   # 🚪 只有 wake-check 路徑 gate；無訊號+非對話 → 略過 cleaner
                 )
                 cleaned_text = clean_res["text"]
                 is_wake_B = clean_res["is_wake"]
