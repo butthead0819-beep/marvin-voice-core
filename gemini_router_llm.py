@@ -9,6 +9,15 @@ from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
+# /set_game 清空哨兵：代表「沒有在玩遊戲」，將 current_game 清為 None。
+# 用途：current_game 一旦設定就持久化於 DNA，原本無清除路徑，會默默擋掉 5 分鐘日記。
+GAME_CLEAR_SENTINELS = frozenset({"無", "none", "關閉"})
+
+
+def is_clear_game_sentinel(game_name: str) -> bool:
+    """game_name 是否為清空指令（大小寫 / 前後空白不敏感）。"""
+    return game_name.strip().casefold() in {s.casefold() for s in GAME_CLEAR_SENTINELS}
+
 
 class GeminiRouterLLMMixin:
     """LLM 路由、流式呼叫、Tier 切換、Web 搜尋。"""
@@ -61,6 +70,15 @@ class GeminiRouterLLMMixin:
             await asyncio.sleep(60)
 
     async def set_game_async(self, game_name: str) -> str:
+        # 清空哨兵：把 current_game 清為 None，跳過昂貴的黑話字典載入。
+        if is_clear_game_sentinel(game_name):
+            self.current_game = None
+            self.dna["current_game"] = None
+            self.save_dna(self.dna)
+            self.game_dict_string = ""
+            print("🎮 [Router] 已清除遊戲背景（current_game → None）")
+            return ""
+
         self.current_game = game_name
         self.dna["current_game"] = game_name
         self.save_dna(self.dna)

@@ -5,6 +5,8 @@ import asyncio
 import time
 from typing import List
 
+from gemini_router_llm import is_clear_game_sentinel
+
 # 常見遊戲清單，用於 /set_game 自動完成
 GAME_SUGGESTIONS = [
     "GTA Online", "Minecraft", "Apex Legends", "Valorant",
@@ -40,12 +42,14 @@ class GMCommands(commands.Cog):
         interaction: discord.Interaction,
         current: str,
     ) -> List[app_commands.Choice[str]]:
-        """為 game_name 提供自動完成建議"""
-        return [
+        """為 game_name 提供自動完成建議（含清除選項）"""
+        choices = [app_commands.Choice(name="無 (清除遊戲背景)", value="無")]
+        choices += [
             app_commands.Choice(name=game, value=game)
             for game in GAME_SUGGESTIONS
             if current.lower() in game.lower()
-        ][:25]  # Discord 上限 25 個選項
+        ]
+        return choices[:25]  # Discord 上限 25 個選項
 
     @app_commands.command(name="set_game", description="[Admin] 手動切換馬文目前關注的無聊遊戲")
     @app_commands.describe(game_name="遊戲名稱（例如：Apex Legends, Valorant, 戰棋）")
@@ -59,8 +63,11 @@ class GMCommands(commands.Cog):
             print(f"🎮 [系統指令] 切換遊戲背景至: {game_name}")
             dict_str = await self.bot.router.set_game_async(game_name)
             self.bot.engine.game_dict_string = dict_str
-            
-            await interaction.followup.send(f"🎮 **懶散對齊中**：我就算關注《{game_name}》，這世界也不會變得更好。")
+
+            if is_clear_game_sentinel(game_name):
+                await interaction.followup.send("🎮 **遊戲背景已清除**：我不再假裝關注任何遊戲了。日記照常運作。")
+            else:
+                await interaction.followup.send(f"🎮 **懶散對齊中**：我就算關注《{game_name}》，這世界也不會變得更好。")
         except Exception as e:
             print(f"ERROR: /set_game failed: {e}")
             import traceback
