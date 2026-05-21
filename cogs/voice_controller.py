@@ -82,6 +82,26 @@ def build_curation_recommendation(slot, ctx, resolved, now):
         channel_state={"depth": resolved.depth},
     )
 
+
+def build_nowake_play_ctx(speaker, full_raw_text, query, *, stream_active, is_owner):
+    """無喚醒詞點歌（IBA-T0）改走 IntentBus 用的 IntentContext。
+
+    Why：IBA-T0 原本拿 query 直送 yt-dlp，CURATION/DIRECTIONAL 字串（「周杰倫符合我
+    年紀的歌」）會搜出垃圾。改走 bus → 享 MusicAgentV2 三檔分流 + resolver。
+
+    query 是 _extract_music_search_query 已剝掉喚醒/命令詞的搜尋目標；前綴「播放」重建
+    成 MusicAgentV2 認得的指令句。wake_intent=None 關掉 HallucinationGuard 的 Track-B
+    短-query 規則（該規則要求 wake_intent is not None），避免誤吞 no-wake 點歌。
+    """
+    cmd_query = query if query.startswith("播放") else f"播放{query}"
+    return IntentContext(
+        speaker=speaker, raw_text=full_raw_text, query=cmd_query,
+        original_raw=full_raw_text, wake_intent=None,
+        stream_active=stream_active, game_mode=False,
+        is_owner=is_owner, now=time.time(),
+    )
+
+
 # 重啟回報狀態檔。寫於 self_restart pre-execv，讀於 on_ready post-sync。
 REBOOT_STATE_FILE = ".marvin_reboot_state.json"
 
@@ -2496,9 +2516,21 @@ class VoiceController(commands.Cog):
                 logger.debug(f"🎵 [IBA-T0 Skip] {speaker} fast wake 5s 內已處理，跳過 debounced 音樂直達")
             else:
                 _cmd_action = _direct_cmd.get("action", "stop")
-                logger.info(f"🎵 [IBA-T0] {speaker} 直接音樂控制 cmd={_cmd_action} (no wake) | '{full_raw_text[:40]}'")
                 self.deferred_wakes.pop(speaker, None)
-                asyncio.create_task(self._safe_music_command(speaker, full_raw_text, _cmd_action))
+                if _cmd_action == "play":
+                    # 🎵 [IBA-T0→Bus] no-wake 點歌改走 IntentBus，享三檔分流 + resolver
+                    # （CURATION/DIRECTIONAL 補完），不再把原字串直送 yt-dlp 搜出垃圾。
+                    # 控制詞（skip/pause/resume/stop）不需解析，維持直達。
+                    _nw_ctx = build_nowake_play_ctx(
+                        speaker, full_raw_text, _direct_cmd.get("query", ""),
+                        stream_active=self.stream_mode,
+                        is_owner=self._is_owner_speaker(speaker),
+                    )
+                    logger.info(f"🎵 [IBA-T0→Bus] {speaker} no-wake 點歌進 bus | query='{_nw_ctx.query[:40]}'")
+                    asyncio.create_task(self._intent_bus.dispatch(_nw_ctx))
+                else:
+                    logger.info(f"🎵 [IBA-T0] {speaker} 直接音樂控制 cmd={_cmd_action} (no wake) | '{full_raw_text[:40]}'")
+                    asyncio.create_task(self._safe_music_command(speaker, full_raw_text, _cmd_action))
                 return
 
         # 🎵 [IBA Tier 1] 音樂資訊查詢直達 — 播放中被問「這首叫什麼」直接回答，不走 LLM
