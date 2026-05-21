@@ -203,14 +203,18 @@ _PROVIDERS: list[ProviderSpec] = [
                  "llama-3.1-8b-instant", "llama-3.3-70b-versatile",
                  quick_model_env="GROQ_SIMPLE_MODEL", analyze_model_env="GROQ_FALLBACK_MODEL",
                  tpm_budget=6000),
+    # Cerebras 8b 正確名是 'llama3.1-8b'（無點橫）；沒 70b → analyze 用 qwen-235b（既有
+    # CEREBRAS_MODEL）。quick 解綁 CEREBRAS_MODEL（那被設成 qwen-235b）改用獨立 env。
     ProviderSpec("cerebras", "CEREBRAS_API_KEY", "https://api.cerebras.ai/v1",
-                 "llama-3.1-8b", "llama-3.3-70b",
-                 quick_model_env="CEREBRAS_MODEL", analyze_model_env="CEREBRAS_ANALYZE_MODEL",
+                 "llama3.1-8b", "qwen-3-235b-a22b-instruct-2507",
+                 quick_model_env="CEREBRAS_QUICK_MODEL", analyze_model_env="CEREBRAS_MODEL",
                  tpm_budget=60000),
+    # SambaNova 無 3.1-8b；quick 用 Maverick-17B（快），analyze 用 3.3-70B（2026-05-21 實測 /models）
     ProviderSpec("sambanova", "SAMBANOVA_API_KEY", "https://api.sambanova.ai/v1",
-                 "Meta-Llama-3.1-8B-Instruct", "Meta-Llama-3.3-70B-Instruct"),
+                 "Llama-4-Maverick-17B-128E-Instruct", "Meta-Llama-3.3-70B-Instruct"),
+    # Together 8b 要帶 'Meta-' 前綴（實測 /models）
     ProviderSpec("together", "TOGETHER_API_KEY", "https://api.together.xyz/v1",
-                 "meta-llama/Llama-3.1-8B-Instruct-Turbo", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+                 "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
     ProviderSpec("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1",
                  "meta-llama/llama-3.1-8b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free"),
 ]
