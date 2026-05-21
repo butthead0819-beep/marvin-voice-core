@@ -553,9 +553,22 @@ def _repair_json(raw: str) -> dict:
 
 
 def call_gemini(user_content: str) -> dict:
-    """呼叫 Gemini API，回傳解析後的 dict。失敗時嘗試 JSON 修復，再失敗則重試一次。"""
+    """呼叫 Gemini API，回傳解析後的 dict。失敗時嘗試 JSON 修復，再失敗則重試一次。
+
+    Tier 3 spending guard：呼叫前查 daily/monthly USD cap（超則 raise，由 main 的
+    try/except 接走並跳過該日 review）；呼叫後估 cost 寫 records/llm_paid_usage.jsonl。
+    """
     from google import genai
     from google.genai import types
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from llm_paid import PaidUsageGuard, PaidSpendingExceeded, estimate_cost
+
+    _guard = PaidUsageGuard()
+    if not _guard.allow(expected_usd=1.0):
+        raise PaidSpendingExceeded(
+            f"Tier3 cap 已達 (today=${_guard.spent_today():.2f}/{_guard.daily_cap_usd}, "
+            f"month=${_guard.spent_month():.2f}/{_guard.monthly_cap_usd})，跳過付費 daily review"
+        )
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
 
@@ -570,6 +583,14 @@ def call_gemini(user_content: str) -> dict:
                 max_output_tokens=32768,
             ),
         )
+        _um = getattr(response, "usage_metadata", None)
+        if _um is not None:
+            _in = getattr(_um, "prompt_token_count", 0) or 0
+            _out = getattr(_um, "candidates_token_count", 0) or 0
+            _usd = estimate_cost(REVIEW_MODEL, _in, _out)
+            _guard.record(caller="daily_review", model=REVIEW_MODEL, tokens=_in + _out, est_usd=_usd)
+            print(f"[Daily Review] 💰 本次 ≈ ${_usd:.4f} (in={_in} out={_out}) | "
+                  f"本月累計 ${_guard.spent_month():.2f}/{_guard.monthly_cap_usd}", flush=True)
         raw = response.text.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
