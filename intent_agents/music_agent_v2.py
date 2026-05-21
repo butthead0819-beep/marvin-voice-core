@@ -42,6 +42,10 @@ _MUSIC_INTENT_MARKERS = ("的", "歌", "曲", "音樂", "mv", "ost", "歌詞", "
 # 需 semantic resolver 解成具體年代/情緒。必須在 specific/marker/artist 之前攔下。
 _DIRECTIONAL_MODIFIERS = ("符合.*?的", "適合.*?的", "像.*?那種")
 
+# 模糊類別詞：接在「artist 的」之後表「播 X 的歌」（非具體曲名）→ 走 CURATION 讓
+# resolver 選真歌。封閉集合（不是無止境調 pattern）。歌詞/歌手刻意排除（語意不同）。
+_VAGUE_GENRE_WORDS = ("歌曲", "音樂", "ost", "mv", "歌", "曲")
+
 # UI/system words that should NOT trigger weak_play (same blocklist as v1)
 _NON_MUSIC_TARGETS = frozenset([
     "控制", "清單", "列表", "設定", "選項", "畫面", "頁面", "音量", "狀態",
@@ -105,6 +109,7 @@ class MusicAgentV2(DeclarativeIntentAgent):
         weak_kws = _kw_alt(WEAK_PLAY_KW)
         markers = _kw_alt(_MUSIC_INTENT_MARKERS)
         directional = "|".join(_DIRECTIONAL_MODIFIERS)
+        vague_alt = _kw_alt(_VAGUE_GENRE_WORDS)
 
         # Vector intent 三檔分流（priority 與 confidence 刻意解耦，靠 declare 順序）：
         #   directional(0.50) 先攔 → specific(0.95) → with_marker(0.80) → artist_only(0.85) → long_string(0.55)
@@ -132,6 +137,13 @@ class MusicAgentV2(DeclarativeIntentAgent):
                          patterns=[f"(?P<kw>{weak_kws})(?=.*(?:{directional}))"],
                          required_slots=["directional_resolution"],
                          reason_template="weak_play_directional:{kw}"),
+            # CURATION (genre)：artist「的」+ 類別詞（歌/歌曲/音樂…）= 「播 X 的歌」，
+            # 不是具體曲名 → 交 resolver 選真歌。必須在 specific 前（否則 specific 把「歌曲」
+            # 當曲名）、directional 後（「符合我年紀的歌」要判 directional）。
+            IntentSchema("weak_play_genre_curation", 0.85,
+                         patterns=[f"(?P<kw>{weak_kws}).*的(?P<vague>{vague_alt})$"],
+                         required_slots=["song_choice"],
+                         reason_template="weak_play_curation_genre:{vague}"),
             # SPECIFIC — artist「的」song（後段 ≥2 字）= 完整曲目，0.95，無 missing。
             # ⚠️ SPECIFIC_CONF=0.95 採驗收表；若維持舊 with_marker 0.80，把這行 0.95 改 0.80。
             IntentSchema("weak_play_specific", 0.95,

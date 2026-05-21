@@ -263,3 +263,19 @@ async def test_resolved_intent_exposes_selected_song():
 
     assert result is not None
     assert result.selected == "夜曲"
+
+
+@pytest.mark.asyncio
+async def test_genre_tail_stripped_so_artist_is_clean():
+    """「播放陶喆的歌曲」curation → _compose_query 剝掉「的歌曲」→ 乾淨指令句，不留類別詞。"""
+    client = _cerebras_returning(song="找自己")
+    resolver = SemanticResolver(cerebras_client=client)
+
+    result = await resolver.resolve(
+        missing_slot="song_choice", raw_query="播放陶喆的歌曲",
+        profile=_profile_35yo_deep_night(), depth=0,
+    )
+
+    assert result is not None
+    assert result.rewritten_query == "播放陶喆的找自己"
+    assert "歌曲" not in result.rewritten_query   # 類別詞不該殘留污染 yt-dlp

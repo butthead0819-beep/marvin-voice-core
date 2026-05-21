@@ -62,16 +62,31 @@ def test_strong_play_both_bid_095(v1, v2, query):
     assert b1.missing_slots == b2.missing_slots == []
 
 
-# ── Weak play + marker (0.80) ────────────────────────────────────────────────
+# ── Weak play + marker (0.80) — 仍存在的純 marker case（無「的+曲名/類別」結構）──
 
 @pytest.mark.parametrize("query", [
-    "馬文我想聽五月天的歌",   # 「的歌」後段<2字 → 仍 with_marker（非 specific）
+    "馬文播放這首歌",   # 這首/歌 marker，無「的」→ 不入 specific/genre → with_marker
 ])
 def test_weak_play_with_marker_both_bid_080(v1, v2, query):
     b1 = v1.bid(_ctx(query))
     b2 = v2.bid(_ctx(query))
     assert b1.confidence == 0.80
     assert b2.confidence == 0.80
+
+
+# ── v2 三檔分流刻意 diverge v1（5/21 vector intent，Gate 1 intentional）──────────
+# 「artist的{類別詞}」（五月天的歌 / 陶喆的歌曲）：v1 當 with_marker 0.80 直送 yt-dlp；
+# v2 判 genre CURATION 0.85，缺 song_choice → resolver 選真歌（Gap 1 修，2026-05-21）。
+@pytest.mark.parametrize("query", [
+    "馬文我想聽五月天的歌",
+    "馬文播放陶喆的歌曲",
+])
+def test_artist_de_genre_v1_080_v2_085_curation(v1, v2, query):
+    b1 = v1.bid(_ctx(query))
+    b2 = v2.bid(_ctx(query))
+    assert b1.confidence == 0.80          # v1 legacy 未變
+    assert b2.confidence == 0.85          # v2 genre CURATION
+    assert b2.missing_slots == ["song_choice"]
 
 
 # ── v2 三檔分流刻意 diverge v1（5/21 vector intent，Gate 1 intentional）──────────

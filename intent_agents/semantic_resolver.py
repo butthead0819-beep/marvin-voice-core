@@ -117,6 +117,8 @@ def _parse_response(content: str, raw_query: str, depth: int) -> Optional[Resolv
 
 # 結尾抽象修飾：song 已吸收該意圖，組指令句時剝掉（regex 比固定清單寬）。
 _DIRECTIONAL_TAIL = re.compile(r"(符合.*?的|適合.*?的|像.*?那種)(的)?(歌|歌曲|音樂)?$")
+# 結尾類別詞：「artist 的歌/歌曲/音樂」curation → 剝成乾淨 artist 再組指令句。
+_GENRE_TAIL = re.compile(r"的(歌曲|音樂|ost|mv|歌|曲)$", re.IGNORECASE)
 
 
 def _compose_query(raw_query: str, song: str) -> str:
@@ -134,6 +136,7 @@ def _compose_query(raw_query: str, song: str) -> str:
             core = core[len(kw):].strip("，,、！!？?。. ")
             break
     core = _DIRECTIONAL_TAIL.sub("", core).strip("，,、！!？?。. ")
+    core = _GENRE_TAIL.sub("", core).strip("，,、！!？?。. ")
 
     if song and song in core:
         # core 已含 song（罕見）→ 確保帶 play kw 收尾即可

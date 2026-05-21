@@ -92,6 +92,36 @@ def test_genre_only_also_curation():
     assert bid.missing_slots == ["song_choice"]
 
 
+# ── Gap 1：「artist 的{類別詞}」是 curation，不是 SPECIFIC（2026-05-21 prod 實測）──
+
+def test_artist_de_genre_word_is_curation_not_specific():
+    """「播放陶喆的歌曲」→ CURATION（「歌曲」是類別詞非曲名），不該 SPECIFIC 直送 yt-dlp。"""
+    bid = _agent().bid(_ctx("播放陶喆的歌曲"))
+    assert bid.confidence == CURATION_CONF
+    assert bid.missing_slots == ["song_choice"]
+
+
+def test_artist_de_short_genre_also_curation():
+    """「播放陶喆的歌」（單字類別詞）→ 同樣 CURATION。"""
+    bid = _agent().bid(_ctx("播放陶喆的歌"))
+    assert bid.confidence == CURATION_CONF
+    assert bid.missing_slots == ["song_choice"]
+
+
+def test_real_song_still_specific_not_genre_curation():
+    """「播放陶喆的蘇珊說」→ 仍 SPECIFIC（蘇珊說是真曲名，非類別詞），不被 genre 規則搶走。"""
+    bid = _agent().bid(_ctx("播放陶喆的蘇珊說"))
+    assert bid.confidence == SPECIFIC_CONF
+    assert bid.missing_slots == []
+
+
+def test_directional_still_wins_over_genre():
+    """「播放周杰倫符合我年紀的歌」結尾雖是「的歌」，directional 仍須先攔（0.50）。"""
+    bid = _agent().bid(_ctx("播放周杰倫符合我年紀的歌"))
+    assert bid.confidence == DIRECTIONAL_CONF
+    assert bid.missing_slots == ["directional_resolution"]
+
+
 # ── DIRECTIONAL：含抽象修飾 → 需 resolver 解出年代/情緒 ──────────────────────
 
 def test_directional_bids_050_with_directional_slot():
