@@ -246,3 +246,20 @@ async def test_unknown_missing_slot_returns_none():
 
     assert result is None
     assert client.chat.completions.create.await_count == 0
+
+
+# ── 7. selected 曲名暴露（給 recommendation log）────────────────────────────
+
+@pytest.mark.asyncio
+async def test_resolved_intent_exposes_selected_song():
+    """ResolvedIntent.selected = resolver 選的乾淨曲名（"夜曲"），非整句 rewritten_query。"""
+    client = _cerebras_returning(song="夜曲", quip="x")
+    resolver = SemanticResolver(cerebras_client=client)
+
+    result = await resolver.resolve(
+        missing_slot="song_choice", raw_query="周杰倫",
+        profile=_profile_35yo_deep_night(), depth=0,
+    )
+
+    assert result is not None
+    assert result.selected == "夜曲"

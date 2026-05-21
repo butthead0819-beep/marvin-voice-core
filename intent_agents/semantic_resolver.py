@@ -54,9 +54,10 @@ class SpeakerProfile:
 @dataclass(frozen=True)
 class ResolvedIntent:
     """Output of resolver — feeds back into bus for re-dispatch."""
-    rewritten_query: str   # yt-dlp friendly, e.g. "周杰倫 夜曲"
+    rewritten_query: str   # 指令句，e.g. "播放周杰倫的夜曲"（A 案：再投 bus 命中 SPECIFIC）
     quip: str = ""         # ≤20 chars Marvin-style announcer line (optional)
     depth: int = 1         # rewrite chain depth; caller passes this to next dispatch
+    selected: str = ""     # resolver 選的乾淨曲名（e.g. "夜曲"）；給 recommendation log 用
 
 
 # ── Prompt building ────────────────────────────────────────────────────────
@@ -111,7 +112,7 @@ def _parse_response(content: str, raw_query: str, depth: int) -> Optional[Resolv
         return None
     quip = str(data.get("quip", "")).strip()[:40]  # hard cap defensive
     rewritten = _compose_query(raw_query, song)
-    return ResolvedIntent(rewritten_query=rewritten, quip=quip, depth=depth + 1)
+    return ResolvedIntent(rewritten_query=rewritten, quip=quip, depth=depth + 1, selected=song)
 
 
 # 結尾抽象修飾：song 已吸收該意圖，組指令句時剝掉（regex 比固定清單寬）。

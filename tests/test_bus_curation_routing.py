@@ -209,3 +209,64 @@ async def test_real_v2_curation_redispatch_hits_specific_play():
     played_query = ctrl._safe_music_command.await_args.args[1]
     assert "周杰倫" in played_query and "夜曲" in played_query
     assert ctrl._safe_music_command.await_args.args[2] == "play"
+
+
+# ── 9. recommendation_sink（Step 4：resolve 成功記推薦事件）──────────────────
+
+@pytest.mark.asyncio
+async def test_recommendation_sink_called_on_resolve():
+    sink = MagicMock()
+
+    def _bid(ctx):
+        if ctx.depth == 0:
+            return Bid("music", 0.85, AsyncMock(), "curation", missing_slots=["song_choice"])
+        return Bid("music", 0.95, AsyncMock(), "specific", missing_slots=[])
+
+    resolver = _fake_resolver(ResolvedIntent(rewritten_query="播放周杰倫的夜曲", depth=1, selected="夜曲"))
+    bus = IntentBus([StubAgent("music", _bid)], resolver=resolver,
+                    profile_provider=lambda s: SpeakerProfile(speaker=s),
+                    recommendation_sink=sink)
+
+    await bus.dispatch(_ctx("播放周杰倫"))
+
+    sink.assert_called_once()
+    slot_arg, _ctx_arg, resolved_arg = sink.call_args.args
+    assert slot_arg == "song_choice"
+    assert resolved_arg.selected == "夜曲"
+
+
+@pytest.mark.asyncio
+async def test_recommendation_sink_not_called_when_resolver_none():
+    sink = MagicMock()
+    resolver = _fake_resolver(None)
+    bus = IntentBus(
+        [StubAgent("music", lambda c: Bid("music", 0.85, AsyncMock(), "curation",
+                                          missing_slots=["song_choice"]))],
+        resolver=resolver, profile_provider=lambda s: SpeakerProfile(speaker=s),
+        recommendation_sink=sink, llm_fallback=AsyncMock(),
+    )
+
+    await bus.dispatch(_ctx("播放周杰倫"))
+
+    sink.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_recommendation_sink_exception_does_not_break_dispatch():
+    """sink 炸了不能斷 wake path — resolve 後仍重投命中 specific。"""
+    sink = MagicMock(side_effect=RuntimeError("disk full"))
+    specific_handler = AsyncMock()
+
+    def _bid(ctx):
+        if ctx.depth == 0:
+            return Bid("music", 0.85, AsyncMock(), "curation", missing_slots=["song_choice"])
+        return Bid("music", 0.95, specific_handler, "specific", missing_slots=[])
+
+    resolver = _fake_resolver(ResolvedIntent(rewritten_query="播放周杰倫的夜曲", depth=1, selected="夜曲"))
+    bus = IntentBus([StubAgent("music", _bid)], resolver=resolver,
+                    profile_provider=lambda s: SpeakerProfile(speaker=s),
+                    recommendation_sink=sink)
+
+    await bus.dispatch(_ctx("播放周杰倫"))
+
+    specific_handler.assert_awaited_once()

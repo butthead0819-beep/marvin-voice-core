@@ -55,11 +55,32 @@ from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
 from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
+from intent_agents.recommendation import Recommendation, append_recommendation
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
 # 🛡️ [Double Wake Guard] 用於防止短時間內重複回應
 _GLOBAL_PROCESSED_SEGMENTS = {} # segment_id -> timestamp
+
+
+def build_curation_recommendation(slot, ctx, resolved, now):
+    """把一次成功的 CURATION/DIRECTIONAL resolve 包成 Recommendation（offline feedback 用）。
+
+    純函式（不碰 IO），方便單測。selected 取 resolver 的乾淨曲名，缺則退回 rewritten_query。
+    feedback_window_s=300 與 records 慣例一致（music 推薦看 5 分鐘內反應）。
+    """
+    trigger = "curation" if slot == "song_choice" else "directional"
+    return Recommendation(
+        ts=now,
+        agent="music",
+        speaker=ctx.speaker,
+        trigger=trigger,
+        selected=resolved.selected or resolved.rewritten_query,
+        reason_internal=f"{trigger}:{ctx.query}->{resolved.rewritten_query}",
+        explanation_uttered=resolved.quip,
+        feedback_window_s=300,
+        channel_state={"depth": resolved.depth},
+    )
 
 # 重啟回報狀態檔。寫於 self_restart pre-execv，讀於 on_ready post-sync。
 REBOOT_STATE_FILE = ".marvin_reboot_state.json"
@@ -459,6 +480,9 @@ class VoiceController(commands.Cog):
             ],
             resolver=_curation_resolver,
             profile_provider=self._profile_builder.build,
+            recommendation_sink=lambda slot, c, r: append_recommendation(
+                build_curation_recommendation(slot, c, r, time.time())
+            ),
         )
         
         # 🛡️ [Operation Sentinel] 語音健康監控

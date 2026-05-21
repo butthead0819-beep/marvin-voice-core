@@ -75,16 +75,20 @@ class IntentBus:
     _BID_BUDGET_MS = 5.0
 
     def __init__(self, agents: list[IntentAgent], *,
-                 resolver=None, profile_provider=None, llm_fallback=None):
+                 resolver=None, profile_provider=None, llm_fallback=None,
+                 recommendation_sink=None):
         self.agents = list(agents)
         self.logger = logger
         # vector intent 接線（全 optional，現有 prod bus 只傳 agents 不受影響）：
         # - resolver: SemanticResolver，補 missing_slots 的 song_choice / directional_resolution
         # - profile_provider: speaker → SpeakerProfile（cache lookup；缺則建最小 profile）
         # - llm_fallback: async (ctx) → ...，resolver 放棄時的 Marvin 兜底
+        # - recommendation_sink: (slot, ctx, resolved) → ...，resolve 成功時記推薦事件
+        #   （offline feedback batch 用）。同步 callback，bus try/except 包好不斷 wake path。
         self.resolver = resolver
         self.profile_provider = profile_provider
         self.llm_fallback = llm_fallback
+        self.recommendation_sink = recommendation_sink
 
     async def dispatch(self, ctx: IntentContext) -> Bid | None:
         """收 bids、選 winner、await handler。回傳 winner Bid（or None 如果沒人 above threshold）。"""
@@ -170,6 +174,12 @@ class IntentBus:
                 f"📡 [IntentBus] resolve {slot}: '{ctx.query[:30]}' → "
                 f"'{resolved.rewritten_query[:30]}' depth={resolved.depth}"
             )
+            # 記推薦事件供 offline feedback batch；同步、永不斷 wake path
+            if self.recommendation_sink is not None:
+                try:
+                    self.recommendation_sink(slot, ctx, resolved)
+                except Exception as exc:
+                    self.logger.warning(f"⚠️ [IntentBus] recommendation_sink 炸了，略過: {exc}")
             return await self.dispatch(new_ctx)
 
         # resolver 放棄（depth≥MAX / 失敗 / 無 client）→ Marvin LLM 兜底
