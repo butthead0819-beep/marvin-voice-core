@@ -82,3 +82,6 @@ Thumbs.db
 
 # Reboot state — runtime metadata written on every restart
 .marvin_reboot_state.json
+
+# 機密：免費 API key（手動保存，勿提交）
+Free API key/
