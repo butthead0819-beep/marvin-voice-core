@@ -17,6 +17,8 @@ _CORRECTIONS_LOG = Path("records/stt_corrections.jsonl")
 # Aggregated map（read fast-path）：daily-review 把 jsonl 整理成 json key→cleaned。
 # Tests should monkeypatch this to a non-existent path to bypass fast-path 早退。
 _LOCAL_CORRECTIONS_PATH = Path("records/stt_corrections.json")
+# Shadow pre-gate 量測輸出（每次 clean_stt_text 一行：would_send vs is_wake）。
+_GATE_SHADOW_LOG = Path("records/cleaner_gate_shadow.jsonl")
 
 def _append_stt_correction(raw: str, cleaned: str, spk: str):
     """非同步安全：直接寫入（呼叫在單執行緒事件循環內）。"""
@@ -64,6 +66,39 @@ def _verify_wake_against_raw(
     return is_wake, wake_intent
 
 
+# ── Shadow pre-gate 量測（2026-05-21；不改行為，只 log 以估 cleaner 可省多少呼叫）──────
+# 每句 STT 都打 cleaner 是 TPD 大宗。本地 gate 構想：raw 無喚醒音 + 無音樂詞 + 非對話中
+# → 幾乎不是對 Marvin 講 → 可略過 cleaner。上線前先 shadow 量 drop-rate + false-neg
+# （would_send=False 但實際 is_wake=True 的比例必須趨近 0）。量到的數據也反推音標集要多寬。
+_GATE_WAKE_RE = re.compile(
+    "|".join(["馬文", "媽文", "麻文", "瑪文", "罵文", "马文", "馬汶", "馬問", "馬紋",
+              "嗎文", "marvin", "marvy", "marvgin"]), re.IGNORECASE)
+try:
+    from intent_agents.constants import (
+        MUSIC_PLAY_KW as _GP, MUSIC_DIRECT_SKIP_KW as _GS,
+        MUSIC_DIRECT_STOP_KW as _GT, MUSIC_DIRECT_PAUSE_KW as _GU,
+        MUSIC_DIRECT_RESUME_KW as _GV,
+    )
+    _GATE_MUSIC_KW = tuple(_GP) + tuple(_GS) + tuple(_GT) + tuple(_GU) + tuple(_GV)
+except Exception:
+    _GATE_MUSIC_KW = ()
+
+
+def cleaner_gate_decision(raw_text, *, context_active=False, marvin_just_spoke=False):
+    """Shadow pre-gate：raw 是否「值得」送 cleaner LLM。回 (would_send: bool, signals: dict)。
+
+    純量測：目前**不真擋**，只 log。would_send=False 表示「本地 gate 會略過此句」。
+    搭配實際 is_wake → 算 drop-rate（潛在省下）與 false-neg（漏接真 wake，安全關鍵）。
+    """
+    raw = raw_text or ""
+    has_wake = bool(_GATE_WAKE_RE.search(raw))
+    low = raw.lower()
+    has_music = any(kw.lower() in low for kw in _GATE_MUSIC_KW)
+    would_send = bool(has_wake or has_music or context_active or marvin_just_spoke)
+    return would_send, {"wake": has_wake, "music": has_music,
+                        "ctx": bool(context_active), "spoke": bool(marvin_just_spoke)}
+
+
 class GeminiRouterSTTMixin:
     """STT 文本校正（Wake Injection Guard 雙重防禦）。"""
 
@@ -99,6 +134,21 @@ class GeminiRouterSTTMixin:
         self._ensure_groq_state()
         stripped_text = raw_text.strip()
 
+        def _log_gate(final_wake):
+            # Shadow 量測：本地 gate 會不會送此句 vs 實際 is_wake（不改行為）。寫專用 jsonl
+            # （不靠 log level、不污染 bot_main.log）。分析：drop-rate + false-neg。
+            _gw, _gsig = cleaner_gate_decision(
+                raw_text, context_active=context_active, marvin_just_spoke=marvin_just_spoke)
+            try:
+                _GATE_SHADOW_LOG.parent.mkdir(parents=True, exist_ok=True)
+                with _GATE_SHADOW_LOG.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "ts": time.time(), "would_send": _gw, "is_wake": bool(final_wake),
+                        "raw": (raw_text or "")[:40], **_gsig,
+                    }, ensure_ascii=False) + "\n")
+            except Exception:
+                pass
+
         def _build_res(text, original=None, wake_intent=None, calling=None):
             threshold = WAKE_THRESHOLD
             if wake_intent is not None:
@@ -121,12 +171,14 @@ class GeminiRouterSTTMixin:
             verified_wake, verified_intent = _verify_wake_against_raw(is_wake, wake_intent, original)
             if is_wake and not verified_wake:
                 logger.warning(f"⚠️ [STT Clean] LLM 注入喚醒詞 (過矯正)：'{original}' -> '{text}'，已拒絕。")
+                _log_gate(False)
                 return {"text": original, "is_wake": False, "wake_intent": verified_intent, "wake_threshold": threshold}
 
             # 📝 [STT Correction Log] 有意義的修正才記錄（排除純空白差異）
             if original is not None and text.strip() != original.strip() and speaker:
                 _append_stt_correction(original, text, speaker)
 
+            _log_gate(is_wake)
             return {"text": text, "is_wake": is_wake, "wake_intent": wake_intent, "wake_threshold": threshold}
 
         # 🔤 [Local Corrections] 優先查本地累積修正字典（零 LLM 成本）
