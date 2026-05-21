@@ -177,28 +177,53 @@ class MemoryManager:
         """建立 / 遷移 players 表至 (guild_id, username) 複合 PK。
 
         舊 schema（username PK，無 guild_id）偵測到時 rebuild，舊資料整批歸 home guild。
-        Migration 只跑一次（schema 已含 guild_id 就略過），與哪個 guild instance 觸發無關。
+        Migration 可重入（idempotent）：rebuild 過程若中途 crash 留下孤兒 players_legacy，
+        下次啟動會用 INSERT OR IGNORE 把它補進新表再 DROP，不靠「一次不中斷」、不丟資料。
         """
         new_ddl = (
             "CREATE TABLE players ("
             "guild_id INTEGER NOT NULL, username TEXT NOT NULL, "
             "data TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (guild_id, username))"
         )
-        exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='players'"
-        ).fetchone() is not None
-        if not exists:
+
+        def _has_table(name: str) -> bool:
+            return conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)
+            ).fetchone() is not None
+
+        home = self._home_guild_id
+
+        # (1) 先復原上次 migration crash 留下的孤兒 players_legacy。
+        #     crash 點：RENAME 後（players 不在）或 CREATE 後 INSERT 未完（players 為空新表）。
+        #     兩種都用 INSERT OR IGNORE 補進新表再 DROP，已遷的 row 自動跳過。
+        if _has_table("players_legacy"):
+            if not _has_table("players"):
+                conn.execute(new_ddl)
+            conn.execute(
+                "INSERT OR IGNORE INTO players (guild_id, username, data) "
+                "SELECT ?, username, data FROM players_legacy",
+                (home,),
+            )
+            conn.execute("DROP TABLE players_legacy")
+            conn.commit()
+            logger.info(f"✅ [Memory] 從中斷的 migration 復原 players_legacy（歸 home guild {home}）")
+            return
+
+        # (2) 全新 DB
+        if not _has_table("players"):
             conn.execute(new_ddl)
             return
+
+        # (3) players 已是新 schema
         cols = [r[1] for r in conn.execute("PRAGMA table_info(players)").fetchall()]
         if "guild_id" in cols:
-            return  # 已是新 schema
-        # 舊 schema → rebuild，舊資料歸 home guild
-        home = self._home_guild_id
+            return
+
+        # (4) 舊 schema → rebuild；若中途 crash，下次啟動由 (1) 的孤兒復原路徑接手。
         conn.execute("ALTER TABLE players RENAME TO players_legacy")
         conn.execute(new_ddl)
         conn.execute(
-            "INSERT INTO players (guild_id, username, data) "
+            "INSERT OR IGNORE INTO players (guild_id, username, data) "
             "SELECT ?, username, data FROM players_legacy",
             (home,),
         )
