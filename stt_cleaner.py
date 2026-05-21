@@ -95,6 +95,11 @@ try:
     _GATE_MUSIC_KW = tuple(_GP) + tuple(_GS) + tuple(_GT) + tuple(_GU) + tuple(_GV)
 except Exception:
     _GATE_MUSIC_KW = ()
+# gate-only 寬鬆 token：STT 常把「播放」截成「播」（如「播蕭煌奇」=「播放蕭煌奇」）。
+# gate 在 raw 上判定，但 no-wake 点歌的 keyword match 跑在 cleaned 上——gate 漏接這句，
+# cleaner 就沒機會把「播」修回「播放」。補「播」讓 gate ≥ no-wake 点歌的覆蓋。誤檢只多
+# 花一次 cleaner call（無害），實測 drop-log 377 句僅 1 句含「播」。「放」太常見（放假/放心）故不補。
+_GATE_MUSIC_KW = _GATE_MUSIC_KW + ("播",)
 
 
 def cleaner_gate_decision(raw_text, *, context_active=False, marvin_just_spoke=False):

@@ -35,6 +35,13 @@ def test_nemoclaw_lobster_sends():
     assert _send("龍蝦") is True
 
 
+def test_garbled_play_prefix_sends():
+    # STT 常把「播放」截成「播」（播蕭煌奇 = 播放蕭煌奇 送予你的歌）。
+    # gate 在 raw 上判定，no-wake 点歌靠 cleaner 修回「播放」→ gate 漏接的話 cleaner 沒機會修。
+    # 補 gate-only「播」token：實測 drop-log 377 句僅 1 句含「播」(此例)，誤檢知近零。
+    assert _send("播蕭煌奇送予你的歌") is True
+
+
 def test_conversation_active_sends():
     # 對話進行中（follow-up），即使無喚醒/音樂詞也要送
     assert _send("對啊就是這樣", context_active=True) is True
