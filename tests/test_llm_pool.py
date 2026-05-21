@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 from llm_pool import (
     CooldownAwarePool, PoolEndpoint, TieredLLMRouter,
+    build_tier_pools, build_tiered_router,
     dispatch, is_rate_limit, parse_retry_after,
 )
 
@@ -277,3 +278,74 @@ async def test_quick_all_exhausted_returns_none():
                              CooldownAwarePool([], clock=clk))
 
     assert await router.quick("hi", caller="x") is None
+
+
+# ── build_tier_pools 工廠（讀 env、缺 key 略過）──────────────────────────────
+
+def _fake_factory():
+    """回傳 (factory, calls)；factory 把 (base_url, key) 記下，回一個 marker client。"""
+    calls = []
+    def factory(base_url, key):
+        calls.append((base_url, key))
+        return MagicMock(name=f"client::{base_url}")
+    return factory, calls
+
+
+def test_factory_skips_providers_without_key():
+    factory, calls = _fake_factory()
+    env = {"GROQ_API_KEY": "g"}          # 只有 Groq
+    quick, analyze = build_tier_pools(env, client_factory=factory)
+    assert [e.name for e in quick.endpoints] == ["groq-quick"]
+    assert [e.name for e in analyze.endpoints] == ["groq-analyze"]
+    assert calls == [("https://api.groq.com/openai/v1", "g")]   # 只建一個 client
+
+
+def test_factory_empty_env_empty_pools():
+    factory, _ = _fake_factory()
+    quick, analyze = build_tier_pools({}, client_factory=factory)
+    assert quick.endpoints == [] and analyze.endpoints == []
+    assert quick.next_available() is None
+
+
+def test_factory_all_providers_priority_order():
+    factory, _ = _fake_factory()
+    env = {k: "x" for k in ("GROQ_API_KEY", "CEREBRAS_API_KEY", "SAMBANOVA_API_KEY",
+                            "TOGETHER_API_KEY", "OPENROUTER_API_KEY")}
+    quick, _a = build_tier_pools(env, client_factory=factory)
+    assert [e.name for e in quick.endpoints] == [
+        "groq-quick", "cerebras-quick", "sambanova-quick", "together-quick", "openrouter-quick"]
+
+
+def test_factory_quick_and_analyze_share_client():
+    factory, calls = _fake_factory()
+    quick, analyze = build_tier_pools({"CEREBRAS_API_KEY": "c"}, client_factory=factory)
+    assert quick.endpoints[0].client is analyze.endpoints[0].client   # 同 provider 共用 client
+    assert len(calls) == 1
+
+
+def test_factory_default_models_and_env_override():
+    factory, _ = _fake_factory()
+    # 預設
+    quick, analyze = build_tier_pools({"GROQ_API_KEY": "g"}, client_factory=factory)
+    assert quick.endpoints[0].model == "llama-3.1-8b-instant"
+    assert analyze.endpoints[0].model == "llama-3.3-70b-versatile"
+    # 既有 env 名覆寫（GROQ_SIMPLE_MODEL / GROQ_FALLBACK_MODEL）
+    env = {"GROQ_API_KEY": "g", "GROQ_SIMPLE_MODEL": "custom-8b", "GROQ_FALLBACK_MODEL": "custom-70b"}
+    quick2, analyze2 = build_tier_pools(env, client_factory=factory)
+    assert quick2.endpoints[0].model == "custom-8b"
+    assert analyze2.endpoints[0].model == "custom-70b"
+
+
+def test_factory_new_provider_model_override_pattern():
+    factory, _ = _fake_factory()
+    env = {"SAMBANOVA_API_KEY": "s", "SAMBANOVA_QUICK_MODEL": "Meta-Llama-3.1-8B-Instruct-v2"}
+    quick, _a = build_tier_pools(env, client_factory=factory)
+    assert quick.endpoints[0].model == "Meta-Llama-3.1-8B-Instruct-v2"
+
+
+@pytest.mark.asyncio
+async def test_build_tiered_router_wires_pools():
+    factory, _ = _fake_factory()
+    router = build_tiered_router({"GROQ_API_KEY": "g"}, client_factory=factory)
+    assert isinstance(router, TieredLLMRouter)
+    assert [e.name for e in router.quick_pool.endpoints] == ["groq-quick"]

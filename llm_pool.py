@@ -16,11 +16,12 @@ round-trip + 拖慢 pipeline。stt_cleaner 已有 per-engine cooldown（proven p
 """
 from __future__ import annotations
 
+import os
 import re
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 _RETRY_AFTER_DEFAULT = 30.0
 
@@ -177,3 +178,89 @@ class TieredLLMRouter:
             return content, tokens
 
         return await dispatch(pool, _call)
+
+
+# ── Endpoint 工廠：讀 env 組池（缺 key 自動略過）─────────────────────────────
+
+@dataclass(frozen=True)
+class ProviderSpec:
+    """一家 OpenAI-相容 provider 的設定。model 名可被 env 覆寫（免改 code）。"""
+    name: str
+    key_env: str
+    base_url: str
+    quick_model: str           # Tier 1（8b 級）預設
+    analyze_model: str         # Tier 2（70b 級）預設
+    quick_model_env: str = ""  # 空 → 用 {NAME}_QUICK_MODEL
+    analyze_model_env: str = ""
+    tpm_budget: int = 6000
+
+
+# 優先序 = list 順序（next_available 按序回）。Groq/Cerebras 用既有 env 名（你的 key
+# 會自動被撿）；三個新的（SambaNova/Together/OpenRouter）等填 key。model 名都可 env 覆寫，
+# 因為各家命名不同、且 OpenRouter free 模型名會變。
+_PROVIDERS: list[ProviderSpec] = [
+    ProviderSpec("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1",
+                 "llama-3.1-8b-instant", "llama-3.3-70b-versatile",
+                 quick_model_env="GROQ_SIMPLE_MODEL", analyze_model_env="GROQ_FALLBACK_MODEL",
+                 tpm_budget=6000),
+    ProviderSpec("cerebras", "CEREBRAS_API_KEY", "https://api.cerebras.ai/v1",
+                 "llama-3.1-8b", "llama-3.3-70b",
+                 quick_model_env="CEREBRAS_MODEL", analyze_model_env="CEREBRAS_ANALYZE_MODEL",
+                 tpm_budget=60000),
+    ProviderSpec("sambanova", "SAMBANOVA_API_KEY", "https://api.sambanova.ai/v1",
+                 "Meta-Llama-3.1-8B-Instruct", "Meta-Llama-3.3-70B-Instruct"),
+    ProviderSpec("together", "TOGETHER_API_KEY", "https://api.together.xyz/v1",
+                 "meta-llama/Llama-3.1-8B-Instruct-Turbo", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+    ProviderSpec("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1",
+                 "meta-llama/llama-3.1-8b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free"),
+]
+
+
+def _default_client_factory(base_url: str, api_key: str) -> Any:
+    """預設用 openai.AsyncOpenAI（lazy import，免模組載入就依賴 openai）。"""
+    from openai import AsyncOpenAI
+    return AsyncOpenAI(api_key=api_key, base_url=base_url)
+
+
+def _resolve_model(env: Mapping[str, str], spec: ProviderSpec, *, analyze: bool) -> str:
+    override_env = spec.analyze_model_env if analyze else spec.quick_model_env
+    override_env = override_env or f"{spec.name.upper()}_{'ANALYZE' if analyze else 'QUICK'}_MODEL"
+    return env.get(override_env) or (spec.analyze_model if analyze else spec.quick_model)
+
+
+def build_tier_pools(
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    client_factory: Callable[[str, str], Any] = _default_client_factory,
+    clock: Callable[[], float] = time.time,
+) -> tuple[CooldownAwarePool, CooldownAwarePool]:
+    """讀 env 組 (quick_pool, analyze_pool)。有 key 的 provider 才進池，缺 key 略過。
+
+    同一 provider 的 quick/analyze 共用一個 client（同 base_url+key，只差 model）。
+    """
+    env = os.environ if env is None else env
+    quick_eps: list[PoolEndpoint] = []
+    analyze_eps: list[PoolEndpoint] = []
+    for spec in _PROVIDERS:
+        key = env.get(spec.key_env)
+        if not key:
+            continue
+        client = client_factory(spec.base_url, key)
+        quick_eps.append(PoolEndpoint(
+            name=f"{spec.name}-quick", client=client,
+            model=_resolve_model(env, spec, analyze=False), tpm_budget=spec.tpm_budget))
+        analyze_eps.append(PoolEndpoint(
+            name=f"{spec.name}-analyze", client=client,
+            model=_resolve_model(env, spec, analyze=True), tpm_budget=spec.tpm_budget))
+    return CooldownAwarePool(quick_eps, clock=clock), CooldownAwarePool(analyze_eps, clock=clock)
+
+
+def build_tiered_router(
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    client_factory: Callable[[str, str], Any] = _default_client_factory,
+    clock: Callable[[], float] = time.time,
+) -> TieredLLMRouter:
+    """一行組好 TieredLLMRouter（讀 env 的所有可用 provider）。"""
+    quick_pool, analyze_pool = build_tier_pools(env, client_factory=client_factory, clock=clock)
+    return TieredLLMRouter(quick_pool, analyze_pool)
