@@ -60,6 +60,7 @@ from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
 from intent_agents.recommendation import Recommendation, append_recommendation
 from llm_pool import build_tiered_router
+from music_recommender import build_recommendation_pool, pick_candidate
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
@@ -627,6 +628,7 @@ class VoiceController(commands.Cog):
         self._radio_source = None        # PCMVolumeTransformer，用於即時調整音量
         self._radio_fade_task = None     # 音量漸變背景 Task
         self.radio_paused = False        # 電台是否被語音指令暫停中
+        self._recommend_spotlight_idx = -1  # 自動推薦 spotlight 在場成員輪替指標
 
         # 🎵 [Stream Mode] YouTube 串流系統狀態
         self.stream_mode = False
@@ -5993,46 +5995,54 @@ class VoiceController(commands.Cog):
             logger.debug(f"⚠️ [MusicMemory] 反應分析失敗: {e}")
 
     async def _auto_recommend(self, username: str):
-        """根據使用者的音樂記憶，LLM 推薦一首歌並加入佇列。"""
-        if not hasattr(self.bot, 'music_memory'):
-            return
-        # 排除最近 15 首 + 玩家 suki_memory song_history（避免每次推薦同一首）
-        recently = [s['title'] for s in list(self.stream_history)[-15:]]
-        suki_history = self.bot.router.memory.get_song_history(username) if hasattr(self.bot.router, 'memory') else []
-        exclude_titles = list(dict.fromkeys(recently + (suki_history[:10] if suki_history else [])))
-        # 把排除清單傳入 context，讓 LLM 根本看不到這些歌，而非靠文字指令硬擋
-        music_ctx = self.bot.music_memory.get_user_music_context(username, exclude=exclude_titles)
-        if not music_ctx:
-            return
-        slot = self.bot.music_memory.time_slot(time.time())
-        # 取使用者常點 Top 5 當 cover 候選來源
-        top_songs = self.bot.music_memory.get_top_songs_for_user(username, limit=5)
-        top_titles = [s.get("title", "") for s in top_songs if s.get("title")]
-        top_titles_line = "、".join(f"《{t}》" for t in top_titles[:5]) or "（無紀錄）"
+        """佇列空 → 依在場成員的音樂記憶推薦下一首。
 
-        prompt = (
-            f"根據以下 {username} 的音樂記憶，推薦【一首歌的翻唱／cover 版本】。\n\n"
-            f"{music_ctx}\n\n"
-            f"當前時段：{slot}\n"
-            f"{username} 最常點的歌（優先從這裡挑一首推薦它的 cover）：{top_titles_line}\n"
-            f"近期播過的版本（禁止推薦相同版本）：{', '.join(exclude_titles[:20]) or '無'}\n\n"
-            "規則：\n"
-            "1. 優先：從上述常點歌曲挑一首，推薦由【其他藝人翻唱／cover】的版本（指定翻唱者更佳）。\n"
-            "2. 次選：若該歌沒有合適的 cover，挑相同風格／相關藝人的歌的 cover。\n"
-            "3. 最後選擇：完全找不到 cover 時才推薦原創歌曲。\n"
-            "回答格式（一行）：「翻唱藝人 - 歌名 (cover)」或「藝人 - 歌名」。\n"
-            "若真的沒有合適選擇請回答「無推薦」。不需要解釋。"
+        變化與團體聚合由 music_recommender 的確定性候選池 + 加權抽樣負責；LLM 只在
+        spotlight lane 把選定錨點 cover 化。direct lane（群體共鳴／長尾）直接重播。
+        """
+        mm = getattr(self.bot, 'music_memory', None)
+        if mm is None:
+            return
+
+        # 在場成員（團體）；空則退回點歌者
+        members = self.get_online_members() or [username]
+
+        # spotlight 輪替：每次推薦聚焦不同在場成員
+        self._recommend_spotlight_idx = (self._recommend_spotlight_idx + 1) % len(members)
+        spotlight = members[self._recommend_spotlight_idx]
+
+        # exclude = 本場最近播 ∪ 最近推薦 ring（活過重啟）∪ 在場者 skipped ∪ 在場者 suki history
+        recently = [s['title'] for s in list(self.stream_history)[-15:]]
+        recommended = mm.get_recent_recommendation_titles()
+        skipped = mm.get_skipped_titles(members)
+        suki_hist: list[str] = []
+        _suki = getattr(self.bot.router, 'memory', None)
+        if _suki is not None:
+            for m in members:
+                suki_hist += (_suki.get_song_history(m) or [])[:10]
+        exclude_titles = list(dict.fromkeys(recently + recommended + skipped + suki_hist))
+
+        pool = build_recommendation_pool(
+            members=members,
+            songs=mm.all_songs(),
+            exclude_titles=exclude_titles,
+            now=time.time(),
+            spotlight_member=spotlight,
         )
+        cand = pick_candidate(pool, top_n=5)
+        if cand is None:
+            return
+
+        # mode → query：cover 交給 LLM 把錨點 cover 化；direct 直接重播錨點
+        if cand.mode == "cover":
+            query = await self._llm_coverify(cand, exclude_titles)
+        else:
+            query = f"{cand.anchor_artist} {cand.anchor_title}".strip() or cand.anchor_title
+        if not query:
+            return
+
         try:
-            rec = await self.bot.router._call_llm(
-                system_prompt=f"你是了解 {username} 音樂品味的 cover/翻唱推薦助手。",
-                user_prompt=prompt,
-                tier="simple",
-            )
-            rec = (rec or "").strip()
-            if not rec or "無推薦" in rec:
-                return
-            info = await self._resolve_yt_query(rec)
+            info = await self._resolve_yt_query(query)
             if not info:
                 return
             info['requested_by'] = f"Marvin推薦（為{username}）"
@@ -6040,17 +6050,46 @@ class VoiceController(commands.Cog):
                 logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過推薦")
                 return
             self.stream_queue.append(info)
-            logger.info(f"🎵 [AutoRecommend] 為 {username} 推薦加入: {info['title']}")
+            mm.add_recent_recommendation(info['title'])
+            logger.info(f"🎵 [AutoRecommend] lane={cand.lane} 為 {username} 推薦: {info['title']}")
             if self.active_text_channel:
-                await self.active_text_channel.send(
-                    f"🎵 **【馬文精選】** 為 `{username}` 加入推薦曲：`{info['title']}`"
-                )
+                await self.active_text_channel.send(self._recommend_blurb(cand, info['title']))
             # 對新推薦的歌也啟動預取
             next_url = info.get('url', '')
             if next_url and next_url not in self._prefetch_cache:
                 self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(info))
         except Exception as e:
             logger.debug(f"⚠️ [AutoRecommend] 失敗: {e}")
+
+    async def _llm_coverify(self, cand, exclude_titles: list[str]) -> str:
+        """spotlight lane：請 LLM 推薦選定錨點歌的 cover 版本。回 "" 表示無推薦。"""
+        slot = self.bot.music_memory.time_slot(time.time())
+        prompt = (
+            f"請推薦《{cand.anchor_title}》的【翻唱／cover 版本】（由其他藝人演繹）。\n"
+            f"當前時段：{slot}\n"
+            f"禁止推薦這些版本：{', '.join(exclude_titles[:20]) or '無'}\n"
+            "規則：\n"
+            "1. 優先推薦該歌的知名 cover（指定翻唱者更佳）。\n"
+            "2. 若無合適 cover，推薦相同曲風／相關藝人的歌。\n"
+            "回答格式（一行）：「翻唱藝人 - 歌名 (cover)」或「藝人 - 歌名」。不需要解釋。\n"
+            "若真的沒有合適選擇請回答「無推薦」。"
+        )
+        rec = await self.bot.router._call_llm(
+            system_prompt=f"你是 cover/翻唱推薦助手，聚焦在《{cand.anchor_title}》。",
+            user_prompt=prompt,
+            tier="simple",
+        )
+        rec = (rec or "").strip()
+        return "" if (not rec or "無推薦" in rec) else rec
+
+    def _recommend_blurb(self, cand, title: str) -> str:
+        """依 lane 產生推薦時的自我說明文案（透明度：讓人知道為何推這首）。"""
+        if cand.lane == "group_resonance":
+            return f"🎵 **【馬文精選】** 你們都有共鳴的《{title}》，再聽一次吧。"
+        if cand.lane == "long_tail":
+            return f"🎵 **【馬文精選】** 從塵封歌單挖出《{title}》，還記得嗎。"
+        who = cand.target_member or "你"
+        return f"🎵 **【馬文精選】** 為 `{who}` 翻出的《{title}》。"
 
     async def _get_audio_duration(self, path: str) -> float:
         """使用 ffprobe 取得本地音訊檔案的時長（秒）。"""

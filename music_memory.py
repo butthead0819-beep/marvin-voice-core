@@ -119,6 +119,33 @@ class MusicMemory:
         u["feedback"] = u["feedback"][-20:]
         self._save()
 
+    def add_recent_recommendation(self, title: str):
+        """記錄一次自動推薦（group-level ring，活過重啟），供 novelty 排除。"""
+        if not title:
+            return
+        ring = self._data.setdefault("recent_recommendations", [])
+        ring.append({"title": title, "ts": time.time()})
+        self._data["recent_recommendations"] = ring[-40:]
+        self._save()
+
+    def get_recent_recommendation_titles(self) -> list[str]:
+        """最近自動推薦過的歌名（供 exclude，避免重複推薦）。"""
+        return [
+            e.get("title", "")
+            for e in self._data.get("recent_recommendations", [])
+            if e.get("title")
+        ]
+
+    def get_skipped_titles(self, usernames: list[str]) -> list[str]:
+        """這些使用者標記為 skipped 的推薦歌名（供 exclude / 降權）。"""
+        out: list[str] = []
+        recs = self._data.get("recommendations", {})
+        for u in usernames:
+            for f in recs.get(u, {}).get("feedback", []):
+                if f.get("result") == "skipped" and f.get("title"):
+                    out.append(f["title"])
+        return out
+
     def get_recent_feedback(self, username: str, since_ts: float) -> list[dict]:
         """Read-only: return recommendation feedback entries for user, ts >= since_ts.
 
@@ -186,6 +213,10 @@ class MusicMemory:
                 lines.append(f"【不感興趣的】：{', '.join(skipped)}")
 
         return "\n".join(lines)
+
+    def all_songs(self) -> dict:
+        """完整 songs 字典快照（供 music_recommender 候選池 builder）。"""
+        return self._data.get("songs", {})
 
     def get_top_songs_for_user(self, username: str, limit: int = 10) -> list:
         songs = self._data.get("songs", {})
