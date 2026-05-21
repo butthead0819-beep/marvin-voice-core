@@ -7,7 +7,6 @@ export only runs for the home guild so offline scripts keep reading a flat playe
 """
 import json
 import sqlite3
-import pytest
 from suki_memory import MemoryManager
 
 
@@ -57,6 +56,52 @@ def test_legacy_rows_migrate_to_home_guild(tmp_path, monkeypatch):
 
     other = MemoryManager(guild_id=111, db_path=db, json_compat_path=str(tmp_path / "o.json"))
     assert other.has_player("LegacyBob") is False
+
+
+# ── Migration crash recovery (idempotent) ─────────────────────────────────────
+
+def test_migration_recovers_orphaned_legacy_after_crash(tmp_path, monkeypatch):
+    """Crash between CREATE and DROP: new-schema players (empty) + orphaned players_legacy.
+
+    Next startup must drain legacy into players (INSERT OR IGNORE) and drop it — no data loss.
+    """
+    monkeypatch.setenv("GUILD_ID", "0")
+    db = str(tmp_path / "crashed.db")
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE players (guild_id INTEGER NOT NULL, username TEXT NOT NULL, "
+        "data TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (guild_id, username))"
+    )
+    con.execute("CREATE TABLE players_legacy (username TEXT PRIMARY KEY, data TEXT NOT NULL DEFAULT '{}')")
+    con.execute(
+        "INSERT INTO players_legacy (username, data) VALUES (?, ?)",
+        ("CrashBob", json.dumps({"suki_impression": "survived"}, ensure_ascii=False)),
+    )
+    con.commit()
+    con.close()
+
+    m = MemoryManager(guild_id=0, db_path=db, json_compat_path=str(tmp_path / "c.json"))
+    assert m.get_player_impression("CrashBob") == "survived"
+    con2 = sqlite3.connect(db)
+    assert con2.execute("SELECT name FROM sqlite_master WHERE name='players_legacy'").fetchone() is None
+    con2.close()
+
+
+def test_migration_recovers_when_only_legacy_exists(tmp_path, monkeypatch):
+    """Crash between RENAME and CREATE: only players_legacy survives, players gone."""
+    monkeypatch.setenv("GUILD_ID", "0")
+    db = str(tmp_path / "crashed2.db")
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE players_legacy (username TEXT PRIMARY KEY, data TEXT NOT NULL DEFAULT '{}')")
+    con.execute(
+        "INSERT INTO players_legacy (username, data) VALUES (?, ?)",
+        ("OrphanAlice", json.dumps({"suki_impression": "recovered"}, ensure_ascii=False)),
+    )
+    con.commit()
+    con.close()
+
+    m = MemoryManager(guild_id=0, db_path=db, json_compat_path=str(tmp_path / "c2.json"))
+    assert m.get_player_impression("OrphanAlice") == "recovered"
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
