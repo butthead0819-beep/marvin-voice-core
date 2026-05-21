@@ -187,18 +187,15 @@ async def test_real_v2_curation_redispatch_hits_specific_play():
     """「播放周杰倫」→ CURATION → resolver 吐「播放周杰倫的夜曲」→ 重投 → SPECIFIC →
     真 handler 呼叫 ctrl._safe_music_command（含 rewritten query）。驗 A 案端到端。"""
     import json
-    from types import SimpleNamespace
     from intent_agents.music_agent_v2 import MusicAgentV2
 
     ctrl = MagicMock()
     ctrl._safe_music_command = AsyncMock()
 
-    # mock Cerebras：回 song=夜曲
-    response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
-        content=json.dumps({"song": "夜曲", "quip": ""}, ensure_ascii=False)))])
-    cerebras = MagicMock()
-    cerebras.chat.completions.create = AsyncMock(return_value=response)
-    resolver = SemanticResolver(cerebras_client=cerebras, model="llama-3.1-8b")
+    # 真 SemanticResolver + fake TieredLLMRouter（analyze 回 song=夜曲 的 JSON 字串）
+    router = MagicMock()
+    router.analyze = AsyncMock(return_value=json.dumps({"song": "夜曲", "quip": ""}, ensure_ascii=False))
+    resolver = SemanticResolver(router=router)
 
     bus = IntentBus([MusicAgentV2(ctrl)], resolver=resolver,
                     profile_provider=lambda s: SpeakerProfile(speaker=s, age=35))

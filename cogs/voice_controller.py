@@ -56,6 +56,7 @@ from intent_agents.nemoclaw_agent import NemoClawAgent
 from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
 from intent_agents.recommendation import Recommendation, append_recommendation
+from llm_pool import build_tiered_router
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
@@ -482,10 +483,13 @@ class VoiceController(commands.Cog):
         # → bus 回 None → 既有 Marvin fallback（worst case = swap 前行為）。
         # profile per-call build（builder 設計上便宜、不 cache，store 會變動）。
         _router = getattr(self.bot, "router", None)
-        _curation_resolver = SemanticResolver(
-            cerebras_client=getattr(_router, "cerebras_client", None),
-            model=getattr(_router, "cerebras_model", "llama-3.1-8b"),
-        )
+        # 🎵 [Plan B] 一個共享 TieredLLMRouter：curation resolver 用 analyze tier、cleaner
+        # 用 quick tier，共享 pool cooldown/TPM 狀態。注入給 cleaner（掛在 router 物件上，
+        # 它 lazy-init 會用這個 instance）省得各 build 一份。resolver 不再直連 qwen-235b。
+        _tier_router = build_tiered_router()
+        if _router is not None and getattr(_router, "_stt_router", None) is None:
+            _router._stt_router = _tier_router
+        _curation_resolver = SemanticResolver(router=_tier_router)
         self._profile_builder = SpeakerProfileBuilder(
             suki=getattr(self.bot, "suki_memory", None),
             music=getattr(self.bot, "music_memory", None),

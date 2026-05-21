@@ -149,11 +149,16 @@ def _compose_query(raw_query: str, song: str) -> str:
 # ── Resolver ───────────────────────────────────────────────────────────────
 
 class SemanticResolver:
-    """Fills missing dimensions in a vector intent via Cerebras 8b LLM call."""
+    """Fills missing dimensions in a vector intent via the analyze tier of the pool.
 
-    def __init__(self, cerebras_client: Any, model: str = "llama-3.1-8b"):
-        self.client = cerebras_client
-        self.model = model
+    2026-05-21：從直連 Cerebras（被鎖在 CEREBRAS_MODEL=qwen-235b、與全 bot 搶同一額度）
+    改用 TieredLLMRouter.analyze（Tier 2，多家 70b 自動分流 + 429 cooldown）。語意解析
+    屬 Tier 2「分析質量」（per project_llm_tier_wrapper）。
+    """
+
+    def __init__(self, router: Any):
+        """router: TieredLLMRouter。缺（None）→ resolve 回 None，caller 走 Marvin 兜底。"""
+        self.router = router
 
     def handles(self, slot: str) -> bool:
         """Bus 用來判斷某 missing_slot 是否該路由到此 resolver（vs 走原 handler）。"""
@@ -173,24 +178,15 @@ class SemanticResolver:
         if missing_slot not in _KNOWN_SLOTS:
             return None
 
-        if self.client is None:
+        if self.router is None:
             return None
 
         user_msg = _build_user_message(missing_slot, raw_query, profile)
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": _SYS_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0.3,
-                max_tokens=200,
-                response_format={"type": "json_object"},
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ [SemanticResolver] Cerebras 失敗，回 None 兜底: {e}")
+        # router.analyze 內部做 pool 分流 + cooldown；全冷卻/失敗回 None（不 raise）。
+        content = await self.router.analyze(
+            user_msg, caller="semantic_resolver", system=_SYS_PROMPT,
+            json=True, max_tokens=200, temperature=0.3,
+        )
+        if content is None:
             return None
-
-        content = response.choices[0].message.content
         return _parse_response(content, raw_query, depth)
