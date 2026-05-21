@@ -215,8 +215,10 @@ _PROVIDERS: list[ProviderSpec] = [
     # Together 8b 要帶 'Meta-' 前綴（實測 /models）
     ProviderSpec("together", "TOGETHER_API_KEY", "https://api.together.xyz/v1",
                  "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+    # OpenRouter 免費目錄會變（2026-05-21 實測）：無 3.1-8b。quick 用 llama-3.2-3b（快、
+    # 末位 fallback），analyze 用免費 llama-3.3-70b。同 llama 家族保 cleaner prompt 一致性。
     ProviderSpec("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1",
-                 "meta-llama/llama-3.1-8b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free"),
+                 "meta-llama/llama-3.2-3b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free"),
 ]
 
 
