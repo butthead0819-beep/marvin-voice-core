@@ -1,7 +1,6 @@
 import re
 import json
 import time
-import os
 import asyncio
 import logging
 from pathlib import Path
@@ -79,6 +78,17 @@ class GeminiRouterSTTMixin:
         if not hasattr(self, '_cerebras_cooldown_until'):
             self._cerebras_cooldown_until = 0.0
 
+    def _ensure_stt_router(self):
+        """懶建 cleaner 用的 TieredLLMRouter（多家 free-tier 算力池，cooldown-aware）。
+
+        取代舊的 Groq8b→Cerebras→Groq70b 硬編 tier chain：quick pool 自動在 Groq/
+        Cerebras/SambaNova… 間分流 + 429 cooldown 記憶；缺 quota 才升 analyze(70b)。
+        測試預先設 self._stt_router 注入 fake 即跳過 build。
+        """
+        if getattr(self, '_stt_router', None) is None:
+            from llm_pool import build_tiered_router
+            self._stt_router = build_tiered_router()
+
     async def clean_stt_text(self, raw_text: str, context: list = None, speaker: str = None,
                               context_active: bool = False, marvin_just_spoke: bool = False) -> dict:
         """
@@ -140,19 +150,8 @@ class GeminiRouterSTTMixin:
         if len(set(stripped_text.replace(" ", ""))) == 1:
             return _build_res(raw_text)
 
-        # 🔒 [TPM Guard — Atomic] 在鎖內讀取+檢查，防止多個 coroutine 同時通過
-        # 2026-05-20 fix：TPM 耗盡時不再直接 return raw（會讓 wake_intent=None →
-        # 真實指令喚醒失敗），改設 skip flag 跳過 Groq 8b 但 fall through 到 Cerebras
-        # （獨立 quota，~100ms）。Cerebras 也沒/失敗才會降到 raw fallback。
-        _groq_8b_skip_tpm = False
-        current_tpm = 0
-        async with self._groq_tpm_lock:
-            now = time.time()
-            self.groq_cleaner_usage = [u for u in self.groq_cleaner_usage if now - u[0] <= 60]
-            current_tpm = sum(u[1] for u in self.groq_cleaner_usage)
-            if current_tpm > 4500:
-                logger.warning(f"⚠️ [TPM Guard] Groq 8b 額度近上限 ({current_tpm}/6000 TPM)，跳過 Groq 8b 改走 Cerebras。")
-                _groq_8b_skip_tpm = True
+        # TPM guard 改由 CooldownAwarePool per-endpoint 處理（每家自己的 tpm_budget +
+        # 429 cooldown），不再手動守 Groq 單一 bucket。
 
         system_prompt = self.prompt_manager.get_instruction("stt_cleaner", vision_enabled=False)
 
@@ -191,141 +190,45 @@ class GeminiRouterSTTMixin:
                 return None
             return (text, None, None, True)
 
-        # ── 1. Groq 8b (極速路徑) ────────────────────────────────────────────
-        if self.groq_dedicated_client and not _groq_8b_skip_tpm:
-            now = time.time()
-            if now < self._groq_8b_cooldown_until:
-                remaining = self._groq_8b_cooldown_until - now
-                logger.info(f"⏳ [STT Clean] Groq 8b 冷卻中，剩餘 {remaining:.1f}s，跳過。")
-            else:
-                try:
-                    cleaner_model = os.getenv("GROQ_CLEANER_MODEL", "llama-3.1-8b-instant")
-                    response = await self.groq_dedicated_client.chat.completions.create(
-                        model=cleaner_model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_message}
-                        ],
-                        temperature=0.0,
-                        max_tokens=200,
-                        response_format={"type": "json_object"}
-                    )
-                    raw_output = _strip_xml_artifacts(response.choices[0].message.content)
-                    usage = getattr(response, "usage", None)
-                    if usage:
-                        async with self._groq_tpm_lock:
-                            self.groq_cleaner_usage.append((time.time(), usage.total_tokens))
+        def _finalize(raw_output, track_label):
+            """raw_output(str) → res dict 並 log；None（pool 全冷卻）→ None 讓 caller 換下一層。
+            validate 失敗（換行/過長/JSON 壞）→ 直接降級 raw（不換層，與舊行為一致）。"""
+            if raw_output is None:
+                return None
+            cleaned_out = _strip_xml_artifacts(raw_output)
+            result = _validate_cleaned(cleaned_out, raw_text)
+            if result is None:
+                return _build_res(raw_text)
+            validated_text, wake_intent, calling, is_complete = result
+            res = _build_res(validated_text, original=raw_text, wake_intent=wake_intent, calling=calling)
+            res["is_complete"] = is_complete
+            _spk = speaker or "unknown"
+            _decision = "WAKE" if res["is_wake"] else "PASS"
+            _intent_str = f"{wake_intent:.2f}" if wake_intent is not None else "regex"
+            logger.debug(
+                f"[WAKE_INTENT] ts={time.time():.3f} speaker={_spk} raw='{raw_text[:30]}' "
+                f"intent={_intent_str} threshold={WAKE_THRESHOLD:.2f} decision={_decision} {track_label} complete={is_complete}"
+            )
+            return res
 
-                    result = _validate_cleaned(raw_output, raw_text)
-                    if result is None:
-                        return _build_res(raw_text)
-                    validated_text, wake_intent, calling, is_complete = result
-                    res = _build_res(validated_text, original=raw_text, wake_intent=wake_intent, calling=calling)
-                    res["is_complete"] = is_complete
-                    _spk = speaker or "unknown"
-                    _decision = "WAKE" if res["is_wake"] else "PASS"
-                    _intent_str = f"{wake_intent:.2f}" if wake_intent is not None else "regex"
-                    logger.debug(
-                        f"[WAKE_INTENT] ts={time.time():.3f} speaker={_spk} raw='{raw_text[:30]}' "
-                        f"intent={_intent_str} threshold={WAKE_THRESHOLD:.2f} decision={_decision} track=B tpm={current_tpm} complete={is_complete}"
-                    )
-                    return res
-                except Exception as e:
-                    err_str = str(e)
-                    if "429" in err_str or "rate_limit_exceeded" in err_str:
-                        cooldown = _parse_retry_after(err_str)
-                        self._groq_8b_cooldown_until = time.time() + cooldown
-                        logger.warning(f"⚠️ [STT Clean] Groq 8b 429 — 進入冷卻 {cooldown:.1f}s，直接跳備援。")
-                    else:
-                        logger.warning(f"⚠️ [STT Clean] Groq 8b 失敗，嘗試 70b 備援: {e}")
-
-        # ── 1.5. Cerebras llama-3.1-8b (TPM 救援，~100ms 延遲) ─────────────
-        # Groq 8b 429 / 失敗時優先嘗試 Cerebras，比 Groq 70b 快且不擠 Groq bucket。
-        cerebras_client = getattr(self, 'cerebras_client', None)
-        cerebras_model = getattr(self, 'cerebras_model', None)
-        if cerebras_client and cerebras_model:
-            now = time.time()
-            if now < self._cerebras_cooldown_until:
-                remaining = self._cerebras_cooldown_until - now
-                logger.info(f"⏳ [STT Clean] Cerebras 冷卻中，剩餘 {remaining:.1f}s，跳至 Groq 70b。")
-            else:
-                try:
-                    response = await cerebras_client.chat.completions.create(
-                        model=cerebras_model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_message}
-                        ],
-                        temperature=0.0,
-                        max_tokens=200,
-                        response_format={"type": "json_object"},
-                    )
-                    raw_output = _strip_xml_artifacts(response.choices[0].message.content)
-                    result = _validate_cleaned(raw_output, raw_text)
-                    if result is None:
-                        return _build_res(raw_text)
-                    validated_text, wake_intent, calling, is_complete = result
-                    res = _build_res(validated_text, original=raw_text, wake_intent=wake_intent, calling=calling)
-                    res["is_complete"] = is_complete
-                    _spk = speaker or "unknown"
-                    _decision = "WAKE" if res["is_wake"] else "PASS"
-                    _intent_str = f"{wake_intent:.2f}" if wake_intent is not None else "regex"
-                    logger.debug(
-                        f"[WAKE_INTENT] ts={time.time():.3f} speaker={_spk} raw='{raw_text[:30]}' "
-                        f"intent={_intent_str} threshold={WAKE_THRESHOLD:.2f} decision={_decision} track=B (cerebras) complete={is_complete}"
-                    )
-                    return res
-                except Exception as e:
-                    err_str = str(e)
-                    if "429" in err_str or "rate_limit_exceeded" in err_str:
-                        cooldown = _parse_retry_after(err_str)
-                        self._cerebras_cooldown_until = time.time() + cooldown
-                        logger.warning(f"⚠️ [STT Clean] Cerebras 429 — 進入冷卻 {cooldown:.1f}s，跳至 Groq 70b。")
-                    else:
-                        logger.warning(f"⚠️ [STT Clean] Cerebras 失敗，嘗試 Groq 70b: {e}")
-
-        # ── 2. Groq 70b 備援 (不同 TPM bucket) ──────────────────────────────
-        backup_model = getattr(self, 'groq_fallback_model', None) or "llama-3.3-70b-versatile"
-        if self.groq_dedicated_client and backup_model:
-            now = time.time()
-            if now < self._groq_70b_cooldown_until:
-                remaining = self._groq_70b_cooldown_until - now
-                logger.info(f"⏳ [STT Clean] Groq 70b 冷卻中，剩餘 {remaining:.1f}s，降級原始文本。")
-            else:
-                try:
-                    response = await self.groq_dedicated_client.chat.completions.create(
-                        model=backup_model,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_message}
-                        ],
-                        temperature=0.0,
-                        max_tokens=200,
-                        response_format={"type": "json_object"}
-                    )
-                    raw_output = _strip_xml_artifacts(response.choices[0].message.content)
-                    result = _validate_cleaned(raw_output, raw_text)
-                    if result is None:
-                        return _build_res(raw_text)
-                    validated_text, wake_intent, calling, is_complete = result
-                    res = _build_res(validated_text, original=raw_text, wake_intent=wake_intent, calling=calling)
-                    res["is_complete"] = is_complete
-                    _spk = speaker or "unknown"
-                    _decision = "WAKE" if res["is_wake"] else "PASS"
-                    _intent_str = f"{wake_intent:.2f}" if wake_intent is not None else "regex"
-                    logger.debug(
-                        f"[WAKE_INTENT] ts={time.time():.3f} speaker={_spk} raw='{raw_text[:30]}' "
-                        f"intent={_intent_str} threshold={WAKE_THRESHOLD:.2f} decision={_decision} track=B (70b) complete={is_complete}"
-                    )
-                    return res
-                except Exception as e:
-                    err_str = str(e)
-                    if "429" in err_str or "rate_limit_exceeded" in err_str:
-                        cooldown = _parse_retry_after(err_str)
-                        self._groq_70b_cooldown_until = time.time() + cooldown
-                        logger.warning(f"⚠️ [STT Clean] Groq 70b 429 — 進入冷卻 {cooldown:.1f}s，降級原始文本。")
-                    else:
-                        logger.error(f"❌ [STT Clean] 所有 Groq 方案皆失敗: {e}")
+        # ── 算力池：quick(8b 多家自動分流) → analyze(70b 升級)，cooldown-aware ──
+        # 取代舊 Groq8b→Cerebras→Groq70b 硬編 chain。dispatch 內部對每家 429 記 cooldown
+        # 並跳到下一家；全冷卻才回 None → 升 analyze；再全空 → 落 Gemini/raw（不變）。
+        # validate 失敗仍直接回 raw（語意與舊一致）。
+        self._ensure_stt_router()
+        _router = self._stt_router
+        content = await _router.quick(user_message, caller="stt_cleaner",
+                                      system=system_prompt, max_tokens=200,
+                                      temperature=0.0, json=True)
+        res = _finalize(content, "track=B (pool-quick)")
+        if res is not None:
+            return res
+        content = await _router.analyze(user_message, caller="stt_cleaner",
+                                        system=system_prompt, max_tokens=200,
+                                        temperature=0.0, json=True)
+        res = _finalize(content, "track=B (pool-analyze)")
+        if res is not None:
+            return res
 
         # ── 3. Gemini flash-lite 備援 (獨立 RPM bucket，非阻塞) ─────────────
         cleaner_client = getattr(self, 'google_cleaner_client', None)

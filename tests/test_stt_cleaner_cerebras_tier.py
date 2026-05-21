@@ -1,15 +1,16 @@
-"""TDD：stt_cleaner.py Tier 1.5 — Groq 8b 429 → Cerebras 8b → Groq 70b.
+"""stt_cleaner.py cleaner → 算力池（TieredLLMRouter）整合測試。
 
-Why: Dev Tier 被擋（2026-05-19），Cerebras llama-3.1-8b 延遲 ~100ms 比 Groq
-還快，TPM 限制寬鬆，是 Groq 8b 失效時的主要 TPM 救援路徑。
+2026-05-21：cleaner 從硬編 Groq8b→Cerebras→Groq70b tier chain 遷移到 CooldownAwarePool
+（多家 free-tier 自動分流 + 429 cooldown）。底層 failover/cooldown/TPM headroom 由
+tests/test_llm_pool.py 覆蓋；本檔測 cleaner 與 router 的接合：
 
-驗收：Groq 8b 命中 429 時，Cerebras 路徑要先被呼叫（在 Groq 70b 之前）。
-Cerebras 成功 → 不打 70b；Cerebras 失敗 → 才打 70b。
+  router.quick(8b 池) → 升 router.analyze(70b 池) → Gemini/raw 兜底
+
+以及契約（text / is_wake / wake_intent）與 validate 行為保持不變。
 """
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,221 +20,89 @@ from stt_cleaner import GeminiRouterSTTMixin
 
 @pytest.fixture(autouse=True)
 def _isolate_stt_corrections_files(tmp_path, monkeypatch):
-    """每個測試 patch 掉本地 corrections 讀寫路徑，避免：
-    1. clean_stt_text 走 local corrections fast-path 跳過 LLM tier dispatch
-    2. _append_stt_correction 污染 prod records/stt_corrections.jsonl
-    """
-    monkeypatch.setattr(
-        "stt_cleaner._LOCAL_CORRECTIONS_PATH", tmp_path / "noop_local.json"
-    )
-    monkeypatch.setattr(
-        "stt_cleaner._CORRECTIONS_LOG", tmp_path / "noop_jsonl.jsonl"
-    )
+    """patch 掉本地 corrections 讀寫路徑：避免走 fast-path 跳過 LLM、避免污染 prod。"""
+    monkeypatch.setattr("stt_cleaner._LOCAL_CORRECTIONS_PATH", tmp_path / "noop_local.json")
+    monkeypatch.setattr("stt_cleaner._CORRECTIONS_LOG", tmp_path / "noop_jsonl.jsonl")
     yield
 
 
-def _fake_groq_response(cleaned: str = "馬文，播放音樂", intent: float = 1.0,
-                       calling: bool = True, is_complete: bool = True,
-                       total_tokens: int = 50):
-    """模擬 OpenAI-compat chat.completions response。"""
-    content = json.dumps({
-        "cleaned": cleaned,
-        "intent": intent,
-        "calling": calling,
-        "is_complete": is_complete,
-    }, ensure_ascii=False)
-    return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
-        usage=SimpleNamespace(total_tokens=total_tokens),
-    )
+def _clean_json(cleaned="馬文，播放音樂", intent=1.0, calling=True, is_complete=True):
+    return json.dumps({"cleaned": cleaned, "intent": intent,
+                       "calling": calling, "is_complete": is_complete}, ensure_ascii=False)
 
 
-def _make_router(groq_8b_raises_429: bool = False,
-                 cerebras_succeeds: bool = True,
-                 cerebras_client_exists: bool = True,
-                 cerebras_raises: bool = False):
-    """建一個帶 Mixin 的假 router，覆蓋必要欄位。"""
+def _make_router(quick_ret=None, analyze_ret=None):
+    """帶 Mixin 的假 router + 注入 fake TieredLLMRouter（quick/analyze 回固定值）。"""
     class _R(GeminiRouterSTTMixin):
         pass
-
     r = _R()
-    r.groq_cleaner_usage = []
     r.wake_fusion = None
     r.prompt_manager = MagicMock()
     r.prompt_manager.get_instruction = MagicMock(return_value="SYS_PROMPT")
-    r.google_cleaner_client = None  # 不走 Gemini 路徑
-
-    # Groq client
-    groq = MagicMock()
-    if groq_8b_raises_429:
-        groq.chat.completions.create = AsyncMock(
-            side_effect=Exception("rate_limit_exceeded: try again in 5.0s")
-        )
-    else:
-        groq.chat.completions.create = AsyncMock(return_value=_fake_groq_response())
-    r.groq_dedicated_client = groq
-    r.groq_fallback_model = "llama-3.3-70b-versatile"
-
-    # Cerebras client
-    if cerebras_client_exists:
-        cerebras = MagicMock()
-        if cerebras_raises:
-            cerebras.chat.completions.create = AsyncMock(
-                side_effect=Exception("cerebras transient error")
-            )
-        elif cerebras_succeeds:
-            cerebras.chat.completions.create = AsyncMock(
-                return_value=_fake_groq_response(cleaned="馬文，播放周杰倫")
-            )
-        r.cerebras_client = cerebras
-        r.cerebras_model = "llama-3.1-8b"
-    else:
-        r.cerebras_client = None
-        r.cerebras_model = None
-
-    return r
+    r.google_cleaner_client = None   # 跳過 Gemini tier
+    rt = MagicMock()
+    rt.quick = AsyncMock(return_value=quick_ret)
+    rt.analyze = AsyncMock(return_value=analyze_ret)
+    r._stt_router = rt               # 預先注入 → _ensure_stt_router 跳過 build
+    return r, rt
 
 
 @pytest.mark.asyncio
-async def test_groq_8b_success_skips_cerebras():
-    """Groq 8b 正常時，Cerebras 不該被呼叫（不破壞 happy path）。"""
-    r = _make_router(groq_8b_raises_429=False)
+async def test_quick_success_returns_cleaned_skips_analyze():
+    """quick 池回有效 JSON → 用它，不升 analyze（happy path）。"""
+    r, rt = _make_router(quick_ret=_clean_json(cleaned="馬文，播放音樂"))
     res = await r.clean_stt_text("馬文播放音樂", speaker="大肚")
     assert res["text"] == "馬文，播放音樂"
-    assert r.groq_dedicated_client.chat.completions.create.await_count == 1
-    assert r.cerebras_client.chat.completions.create.await_count == 0
+    rt.quick.assert_awaited_once()
+    rt.analyze.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_groq_8b_429_falls_through_to_cerebras():
-    """Groq 8b 429 → Cerebras 被呼叫且結果被使用，不該打 Groq 70b。"""
-    r = _make_router(groq_8b_raises_429=True, cerebras_succeeds=True)
+async def test_quick_exhausted_escalates_to_analyze():
+    """quick 池全冷卻回 None → 升 analyze(70b) 並用其結果。"""
+    r, rt = _make_router(quick_ret=None, analyze_ret=_clean_json(cleaned="馬文，播放周杰倫"))
     res = await r.clean_stt_text("馬文播放周杰倫", speaker="大肚")
-    assert res["text"] == "馬文，播放周杰倫", "應該回傳 Cerebras 結果"
-
-    # Groq 8b 被打了 1 次（429）
-    assert r.groq_dedicated_client.chat.completions.create.await_count == 1
-    # Cerebras 被打了 1 次
-    assert r.cerebras_client.chat.completions.create.await_count == 1
+    assert res["text"] == "馬文，播放周杰倫"
+    rt.quick.assert_awaited_once()
+    rt.analyze.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_cerebras_failure_falls_through_to_groq_70b():
-    """Cerebras 失敗 → 才繼續打 Groq 70b（保留現有 fallback chain）。"""
-    r = _make_router(groq_8b_raises_429=True, cerebras_raises=True)
-
-    # 第二次 groq call（70b）需要成功
-    r.groq_dedicated_client.chat.completions.create = AsyncMock(
-        side_effect=[
-            Exception("rate_limit_exceeded: try again in 5.0s"),  # 8b
-            _fake_groq_response(cleaned="馬文，播放音樂 70b"),     # 70b
-        ]
-    )
-
+async def test_both_exhausted_falls_to_raw():
+    """quick + analyze 都 None、無 Gemini → 降級 raw（不 crash）。"""
+    r, rt = _make_router(quick_ret=None, analyze_ret=None)
     res = await r.clean_stt_text("馬文播放音樂", speaker="大肚")
-    assert res["text"] == "馬文，播放音樂 70b"
-    assert r.cerebras_client.chat.completions.create.await_count == 1
-    assert r.groq_dedicated_client.chat.completions.create.await_count == 2
+    assert res["text"] == "馬文播放音樂"
+    assert res["wake_intent"] is None
 
 
 @pytest.mark.asyncio
-async def test_cerebras_client_missing_falls_through_to_groq_70b():
-    """Cerebras client 沒 configure 時，直接跳 Groq 70b 不該炸。"""
-    r = _make_router(groq_8b_raises_429=True, cerebras_client_exists=False)
-
-    r.groq_dedicated_client.chat.completions.create = AsyncMock(
-        side_effect=[
-            Exception("rate_limit_exceeded: try again in 5.0s"),
-            _fake_groq_response(cleaned="馬文，播放音樂 70b"),
-        ]
-    )
-
+async def test_validate_fail_returns_raw_no_escalate():
+    """quick 回多行（吐脈絡）→ _validate_cleaned None → 直接降 raw，不升 analyze（語意同舊）。"""
+    r, rt = _make_router(quick_ret="第一行\n第二行")
     res = await r.clean_stt_text("馬文播放音樂", speaker="大肚")
-    assert res["text"] == "馬文，播放音樂 70b"
-    assert r.groq_dedicated_client.chat.completions.create.await_count == 2
+    assert res["text"] == "馬文播放音樂"
+    rt.analyze.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_cerebras_uses_json_response_format():
-    """Cerebras call 必須帶 response_format=json_object，回傳格式才能被 _validate_cleaned 接。"""
-    r = _make_router(groq_8b_raises_429=True, cerebras_succeeds=True)
+async def test_quick_called_with_json_temp0_caller():
+    """cleaner 呼叫 router.quick 必帶 json/temperature=0/max_tokens=200/caller/system。"""
+    r, rt = _make_router(quick_ret=_clean_json())
     await r.clean_stt_text("馬文播放音樂", speaker="大肚")
-
-    call_kwargs = r.cerebras_client.chat.completions.create.call_args.kwargs
-    assert call_kwargs.get("response_format") == {"type": "json_object"}, \
-        "Cerebras 必須帶 JSON response_format，否則回傳純文字無法被 _validate_cleaned 解析"
-    assert call_kwargs.get("temperature") == 0.0, \
-        "Cleaner 任務需 deterministic，temperature 必須是 0"
+    kw = rt.quick.await_args.kwargs
+    assert kw["json"] is True
+    assert kw["temperature"] == 0.0
+    assert kw["max_tokens"] == 200
+    assert kw["caller"] == "stt_cleaner"
+    assert kw["system"] == "SYS_PROMPT"
 
 
 @pytest.mark.asyncio
-async def test_cerebras_cooldown_after_429():
-    """Cerebras 429 → 進冷卻；冷卻期內第二次呼叫直接跳過 Cerebras 打 Groq 70b。"""
-    r = _make_router(groq_8b_raises_429=True)
-    # 第一次：Groq 8b 429 + Cerebras 429
-    r.cerebras_client.chat.completions.create = AsyncMock(
-        side_effect=Exception("rate_limit_exceeded: try again in 30.0s")
-    )
-    r.groq_dedicated_client.chat.completions.create = AsyncMock(
-        side_effect=[
-            Exception("rate_limit_exceeded: try again in 5.0s"),  # 8b
-            _fake_groq_response(cleaned="馬文，第一次 70b"),       # 70b
-            Exception("rate_limit_exceeded: try again in 5.0s"),  # 8b 第二次
-            _fake_groq_response(cleaned="馬文，第二次 70b"),       # 70b 第二次
-        ]
-    )
-
-    await r.clean_stt_text("馬文播放音樂", speaker="大肚")
-    # 第二次：Cerebras 冷卻中應跳過
-    await r.clean_stt_text("馬文播放音樂", speaker="大肚")
-
-    # Cerebras 只被打 1 次（第二次跳過）
-    assert r.cerebras_client.chat.completions.create.await_count == 1
-
-
-# ── TPM Guard 不該短路 Cerebras（2026-05-20 wake 失敗 regression）─────────────
-
-@pytest.mark.asyncio
-async def test_tpm_exhausted_falls_through_to_cerebras_not_raw():
-    """Groq TPM 耗盡時，應跳過 Groq 8b 改走 Cerebras（不該直接 return raw）。
-
-    2026-05-20 prod regression：TPM Guard 直接 return raw → wake_intent=None →
-    aeac455 fix 把 voice 降 0.30 → 真實指令「幫我查佛山」total 差 0.004 沒喚醒。
-    修法：TPM 高時 fall through 到 Cerebras，wake_intent 由 Cerebras 設好。
-    """
-    r = _make_router()
-    # 灌爆 Groq TPM 計數器（> 4500 觸發 guard）
-    now = __import__("time").time()
-    r.groq_cleaner_usage = [(now, 5000)]
-    # raw 含馬文（對應 prod entry 2「我我我我馬文」）→ Cerebras 清成「馬文」+ intent
-    # 通過 Wake Injection Guard（raw 真有 wake word）
-    r.cerebras_client.chat.completions.create = AsyncMock(
-        return_value=_fake_groq_response(cleaned="馬文", intent=0.95)
-    )
-
+async def test_wake_intent_preserved_from_pool():
+    """pool 回 intent=0.95 + raw 真含喚醒詞 → wake_intent 保留、不被 injection guard 清掉。"""
+    r, rt = _make_router(quick_ret=_clean_json(cleaned="馬文", intent=0.95))
     res = await r.clean_stt_text("我我我我馬文", speaker="showay")
-
-    # Groq 8b 不該被呼叫（TPM 耗盡）
-    r.groq_dedicated_client.chat.completions.create.assert_not_called()
-    # Cerebras 接手
-    r.cerebras_client.chat.completions.create.assert_called_once()
-    # wake_intent 有值（不再是 None → 不會掉進 voice=0.30 路徑 → 開 deferred wake 窗口）
     assert res["wake_intent"] == 0.95
     assert res["text"] == "馬文"
-
-
-@pytest.mark.asyncio
-async def test_tpm_exhausted_no_cerebras_returns_raw():
-    """TPM 耗盡 + 無 Cerebras client → 降級 raw（wake_intent=None），不 crash。"""
-    r = _make_router(cerebras_client_exists=False)
-    now = __import__("time").time()
-    r.groq_cleaner_usage = [(now, 5000)]
-    # 無 Gemini、無 Cerebras → 最終 raw fallback
-    r.groq_dedicated_client.chat.completions.create = AsyncMock(
-        side_effect=Exception("should not be called when TPM exhausted")
-    )
-
-    res = await r.clean_stt_text("幫我查佛山有什麼好玩的", speaker="showay")
-
-    # Groq 8b skip（TPM），Groq 70b 也 skip（同 client 但會被 backup 路徑試）— 重點是不 crash
-    assert res["text"] == "幫我查佛山有什麼好玩的"
+    assert res["is_wake"] is True
