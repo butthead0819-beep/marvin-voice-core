@@ -51,8 +51,10 @@ from intent_agents.constants import (
 )
 from intent_bus import IntentBus, IntentContext
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
-from intent_agents.music_agent import MusicAgent
+from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
+from intent_agents.semantic_resolver import SemanticResolver
+from intent_agents.profile_builder import SpeakerProfileBuilder
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
@@ -433,11 +435,31 @@ class VoiceController(commands.Cog):
         # 5/18 audit 後加 guard：主動 bid 高分吞 STT 幻覺 wake（wake-word loop /
         # exotic script / Track B 無 wake 短 query / 超短 wake fragment）。
         # guard 註冊最前，tie-break 時優先（保守）。
-        self._intent_bus = IntentBus([
-            HallucinationGuardAgent(self),
-            NemoClawAgent(self),
-            MusicAgent(self),
-        ])
+        # 🎵 [Vector Intent] swap v1 MusicAgent → MusicAgentV2（三檔分流 SPECIFIC/
+        # CURATION/DIRECTIONAL）+ 接 resolver。CURATION/DIRECTIONAL 缺 slot 時 bus
+        # 走 resolver（Cerebras 8b）補完再重投命中 SPECIFIC；resolver 缺 client / 放棄
+        # → bus 回 None → 既有 Marvin fallback（worst case = swap 前行為）。
+        # profile per-call build（builder 設計上便宜、不 cache，store 會變動）。
+        _router = getattr(self.bot, "router", None)
+        _curation_resolver = SemanticResolver(
+            cerebras_client=getattr(_router, "cerebras_client", None),
+            model=getattr(_router, "cerebras_model", "llama-3.1-8b"),
+        )
+        self._profile_builder = SpeakerProfileBuilder(
+            suki=getattr(self.bot, "suki_memory", None),
+            music=getattr(self.bot, "music_memory", None),
+            temperature=getattr(_router, "atmosphere_tracker", None),
+            clock=time.time,
+        )
+        self._intent_bus = IntentBus(
+            [
+                HallucinationGuardAgent(self),
+                NemoClawAgent(self),
+                MusicAgentV2(self),
+            ],
+            resolver=_curation_resolver,
+            profile_provider=self._profile_builder.build,
+        )
         
         # 🛡️ [Operation Sentinel] 語音健康監控
         self.connection_time = 0 # 紀錄最後一次連線時間
