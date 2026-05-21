@@ -53,6 +53,9 @@ from intent_bus import IntentBus, IntentContext
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
+from intent_agents.busted_agent import BustedAgent
+from intent_agents.busted99_agent import Busted99Agent
+from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
 from intent_agents.recommendation import Recommendation, append_recommendation
@@ -101,6 +104,39 @@ def build_nowake_play_ctx(speaker, full_raw_text, query, *, stream_active, is_ow
         stream_active=stream_active, game_mode=False,
         is_owner=is_owner, now=time.time(),
     )
+
+
+def build_game_ctx(speaker, full_raw_text, *, is_owner):
+    """遊戲模式語音答案走 IntentBus 用的 IntentContext。
+
+    遊戲中所有語音都是候選答案：無喚醒詞、不剝離 query。mode="game" 讓 base class
+    的 mode gate 只放行 game agent（busted/busted99/turtle_soup），其餘 agent 自動
+    dense 0.0。wake_intent=None；caller dispatch 後無論有無 winner 都 return，
+    保證遊戲語音一律不 fallback Marvin。
+    """
+    return IntentContext(
+        speaker=speaker, raw_text=full_raw_text, query=full_raw_text,
+        original_raw=full_raw_text, wake_intent=None,
+        stream_active=False, game_mode=True,
+        is_owner=is_owner, now=time.time(), mode="game",
+    )
+
+
+def build_intent_agents(controller, bot):
+    """IntentBus 的 agent 註冊清單（單一事實來源）。
+
+    非遊戲 agent 收 controller（用 self.ctrl 呼叫 controller handler）；game agent
+    收 bot（用 self.bot.cogs 查 cog）。兩者混淆會讓 game agent 永遠 cog_not_loaded。
+    guard 註冊最前，tie-break 時優先（保守）。
+    """
+    return [
+        HallucinationGuardAgent(controller),
+        NemoClawAgent(controller),
+        MusicAgentV2(controller),
+        BustedAgent(bot),
+        Busted99Agent(bot),
+        TurtleSoupAgent(bot),
+    ]
 
 
 # 重啟回報狀態檔。寫於 self_restart pre-execv，讀於 on_ready post-sync。
@@ -497,11 +533,7 @@ class VoiceController(commands.Cog):
             clock=time.time,
         )
         self._intent_bus = IntentBus(
-            [
-                HallucinationGuardAgent(self),
-                NemoClawAgent(self),
-                MusicAgentV2(self),
-            ],
+            build_intent_agents(self, self.bot),
             resolver=_curation_resolver,
             profile_provider=self._profile_builder.build,
             recommendation_sink=lambda slot, c, r: append_recommendation(
@@ -2496,18 +2528,14 @@ class VoiceController(commands.Cog):
             asyncio.create_task(self._handle_marmo_query(speaker, full_raw_text))
             return
 
-        # 🎮 遊戲中：依序嘗試兩個遊戲 cog；第一個消耗後即停止，不繼續給 Marvin
+        # 🎮 遊戲中：語音答案走 IntentBus（mode="game" → 只 game agent 出價）。
+        # suppress / 非 active state 由各 game agent 在 bid 內判定（dense 0.0）。
+        # dispatch 後無論有無 winner 都 return：遊戲語音一律不 fallback Marvin。
         if self.game_mode:
-            _b99 = self.bot.cogs.get("Busted99Cog")
-            if _b99 is not None and _b99.should_suppress_for_game(speaker):
-                return  # 非猜題玩家說話，Busted99 GUESSING 狀態下直接捨棄
-            for _cog_name in ("BustedCog", "Busted99Cog", "TurtleSoupCog"):
-                _game_cog = self.bot.cogs.get(_cog_name)
-                if _game_cog is not None:
-                    _consumed = await _game_cog.receive_voice_answer_by_speaker(speaker, full_raw_text)
-                    if _consumed:
-                        break
-            return  # 遊戲中所有語音一律不送 Marvin
+            await self._intent_bus.dispatch(
+                build_game_ctx(speaker, full_raw_text, is_owner=self._is_owner_speaker(speaker))
+            )
+            return
 
         # 🎵 [IBA Tier 0] 音樂控制直達 — 無歧義控制詞直接執行，不需喚醒詞
         # stream_mode 外也允許直接點歌（_MUSIC_PLAY_KW 命中時）

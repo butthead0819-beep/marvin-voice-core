@@ -24,6 +24,8 @@ _LOBSTER_RE = re.compile(r'龍蝦|lobster', re.IGNORECASE)
 
 class NemoClawAgent:
     name = "nemoclaw"
+    # owner 講「龍蝦」在遊戲中不該觸發 NemoClaw，讓 game agent 接答案 → gate 掉 game。
+    mode_compatible = frozenset({"normal", "stream"})
     # 0.65 對齊 LLM veto 閾值；NemoClawAgent 額外有 owner-only + 龍蝦 regex
     # 兩道防誤觸發，0.80 過於保守（owner 講 「龍蝦」 wake_intent 0.7 不該被擋）。
     LOW_WAKE_THRESHOLD = 0.65
@@ -32,6 +34,8 @@ class NemoClawAgent:
         self.ctrl = controller
 
     def bid(self, ctx: IntentContext) -> Bid | None:
+        if ctx.mode not in self.mode_compatible:
+            return None  # 遊戲模式不接管
         if not ctx.is_owner:
             return None
         if ctx.wake_intent is not None and ctx.wake_intent < self.LOW_WAKE_THRESHOLD:

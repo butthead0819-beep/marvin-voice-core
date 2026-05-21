@@ -48,6 +48,16 @@ def _agent():
     return HallucinationGuardAgent(ctrl)
 
 
+def test_game_mode_does_not_bid():
+    """遊戲模式：guard 不跑幻覺啟發式，放行 raw 短答案給 game agent（mode gate）。"""
+    from dataclasses import replace
+    agent = _agent()
+    # 同一短輸入在 normal 會被 Track-B 吞掉；game mode 必須回 None。
+    base = _ctx("50", wake_intent=1.0)
+    assert agent.bid(base) is not None, "normal 模式預期會吞（對照組）"
+    assert agent.bid(replace(base, mode="game")) is None
+
+
 # ── 該被攔下（高 conf bid） ─────────────────────────────────────────────────
 
 @pytest.mark.parametrize("raw_text,query,wake_intent", [

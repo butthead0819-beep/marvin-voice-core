@@ -77,6 +77,9 @@ async def _swallow():
 
 class HallucinationGuardAgent:
     name = "guard"
+    # 幻覺啟發式針對「喚醒情境」設計；遊戲模式吃 raw 短答案（「50」「21」），
+    # 跑這些規則會誤吞有效答案 → gate 掉 game。
+    mode_compatible = frozenset({"normal", "stream"})
 
     # bid 等級
     CONF_HIGH = 0.96   # 明確幻覺，壓過 music 0.95 / nemoclaw 0.95
@@ -86,6 +89,8 @@ class HallucinationGuardAgent:
         self.ctrl = controller  # 留著未來可 log 進 stt_logger
 
     def bid(self, ctx: IntentContext) -> Bid | None:
+        if ctx.mode not in self.mode_compatible:
+            return None  # 遊戲模式不攔截，讓 game agent 接 raw 答案
         raw = ctx.original_raw or ctx.raw_text or ""
         query = ctx.query or ""
 

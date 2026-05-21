@@ -30,6 +30,15 @@ def _agent():
     return NemoClawAgent(ctrl), ctrl
 
 
+def test_game_mode_does_not_bid():
+    """遊戲模式：owner 講龍蝦也不接管，讓 game agent 接答案（mode gate）。"""
+    from dataclasses import replace
+    agent, _ = _agent()
+    base = _ctx(query="龍蝦", original_raw="龍蝦", is_owner=True)
+    assert agent.bid(base) is not None, "normal 模式 owner 講龍蝦預期出價（對照組）"
+    assert agent.bid(replace(base, mode="game")) is None
+
+
 # ── owner + 龍蝦 → 高分出價 ───────────────────────────────────────────────
 
 @pytest.mark.parametrize("text", [
