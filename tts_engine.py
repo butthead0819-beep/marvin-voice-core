@@ -27,14 +27,19 @@ class SukiTTS:
         os.makedirs(self.temp_dir, exist_ok=True)
 
     def _is_english_text(self, text: str) -> bool:
-        """True if text is primarily English (Latin chars outnumber CJK chars by >2:1)."""
+        """English voice ONLY when the text has zero CJK chars.
+
+        Marvin 對這個中文社群一律中文語音；只要有 ≥1 個中文字就走中文語音。
+        舊版用 `latin > cjk*2` 比例，DJ 台詞夾多字英文歌名（Shape of You /
+        Never Gonna Give You Up）會把短中文 patter 灌過門檻 → 誤走英文語音。
+        """
         if not text:
             return False
-        latin = sum(1 for c in text if 'a' <= c.lower() <= 'z')
         cjk = sum(1 for c in text if '一' <= c <= '鿿')
-        if latin + cjk == 0:
+        if cjk > 0:
             return False
-        return latin > cjk * 2
+        latin = sum(1 for c in text if 'a' <= c.lower() <= 'z')
+        return latin > 0
 
     def _clean_text(self, text: str) -> str:
         """
