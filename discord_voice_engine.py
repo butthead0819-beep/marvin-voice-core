@@ -17,6 +17,7 @@ import logging
 from collections import deque
 from utils import pre_filter_speech, is_whisper_hallucination
 from voice_meta_analyzer import VoiceMetaAnalyzer
+from quality_metrics import record_metric
 
 logger = logging.getLogger("MarvinBot.Engine")
 
@@ -1372,7 +1373,13 @@ class DiscordVoiceEngine:
                     async def _check_false_wake():
                         await asyncio.sleep(1.1)
                         harvest = self.conv_buffer.get_harvest(_ts, before=3.0, after=1.0)
-                        if len(harvest.strip()) < 5:
+                        is_false = len(harvest.strip()) < 5
+                        # 品質指標 capture：每次 Track-B wake 都記一筆（真 wake 當分母才算得出 rate）。
+                        # 在延遲 task 內、非熱路徑，同步 append 安全。
+                        record_metric("false_responding", speaker=_spk, track="B",
+                                      was_false=is_false,
+                                      reason="empty_harvest" if is_false else "harvest_ok")
+                        if is_false:
                             fusion = getattr(getattr(self, 'bot', None), 'router', None)
                             fusion = getattr(fusion, 'wake_fusion', None) if fusion else None
                             if fusion:
