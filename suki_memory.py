@@ -11,6 +11,39 @@ logger = logging.getLogger("SukiMemory")
 _DB_PATH = "marvin.db"
 _JSON_COMPAT_PATH = "suki_memory.json"
 
+# ── taste 分數分級（per feedback_dual_path_taste_writes 的正解）─────────────────
+# likes/dislikes 是 taste 分數的投影；分數 ≥/≤ 閾值才算 confirmed，中間＝「曾提及」。
+# taboos 維持獨立（敏感標記，不被分數投影）。
+LIKE_THRESHOLD = 3.0
+DISLIKE_THRESHOLD = -3.0
+_SCORE_MIN, _SCORE_MAX = -10.0, 10.0
+_MIGRATE_SCORE = 3.0     # 舊 likes/dislikes 遷入 taste 的起始分（剛過閾值＝confirmed 但可被約 3 個反向訊號重新調整）
+
+
+def _build_taste_from_legacy(likes: list, dislikes: list) -> dict:
+    """舊式二元 likes/dislikes → taste 分數 dict（confirmed 起始分）。taboos 不納入。"""
+    now = time.time()
+    taste: dict = {}
+    for item in likes or []:
+        if item:
+            taste[item] = {"score": _MIGRATE_SCORE, "mentions": 1, "first_seen": now, "last_update": now}
+    for item in dislikes or []:
+        if item:
+            taste[item] = {"score": -_MIGRATE_SCORE, "mentions": 1, "first_seen": now, "last_update": now}
+    return taste
+
+
+def _project_taste(player: dict) -> None:
+    """從 taste 分數重算 player['likes']/['dislikes']（taboos 不動）。likes 按分數高→低。"""
+    taste = player.get("taste", {})
+    likes = sorted((i for i, d in taste.items() if d.get("score", 0) >= LIKE_THRESHOLD),
+                   key=lambda i: -taste[i].get("score", 0))
+    dislikes = sorted((i for i, d in taste.items() if d.get("score", 0) <= DISLIKE_THRESHOLD),
+                      key=lambda i: taste[i].get("score", 0))
+    player["likes"] = likes
+    player["dislikes"] = dislikes
+
+
 _PLAYER_DEFAULTS: dict = {
     "personal_info": {
         "food": None, "clothing": None,
@@ -19,6 +52,7 @@ _PLAYER_DEFAULTS: dict = {
     "likes": [],
     "dislikes": [],
     "taboos": [],
+    "taste": {},
     "stats": {
         "interaction_count": 0,
         "pos_feedback": 0,
@@ -46,6 +80,11 @@ def _repair_player(p: dict) -> dict:
     """Fill in any fields missing from older records (non-destructive)."""
     if not isinstance(p, dict):
         return _new_player()
+    # taste 遷移：舊資料（無 taste 欄位）→ 從 likes/dislikes 建分數。放在 generic fill 前，
+    # 否則下方會先補 taste={} 使遷移永不觸發。idempotent：taste 欄位一旦存在（即使空）就不重建。
+    if "taste" not in p:
+        p["taste"] = _build_taste_from_legacy(p.get("likes", []), p.get("dislikes", []))
+        _project_taste(p)
     for k, v in _PLAYER_DEFAULTS.items():
         if k not in p:
             p[k] = copy.deepcopy(v)
@@ -254,11 +293,20 @@ class MemoryManager:
             for k, v in new_info["personal_info"].items():
                 if v is not None:
                     player["personal_info"][k] = v
-        for key in ("likes", "dislikes", "taboos"):
+        # taboos 維持獨立 list；likes/dislikes 導向 taste（confirmed 分）再投影，
+        # 確保與 record_taste_signal 共用同一真實來源，_project_taste 不會互相蓋掉。
+        if "taboos" in new_info and isinstance(new_info["taboos"], list):
+            current = set(player.get("taboos", []))
+            current.update(item for item in new_info["taboos"] if item)
+            player["taboos"] = list(current)
+        now = time.time()
+        taste = player.setdefault("taste", {})
+        for key, sign in (("likes", _MIGRATE_SCORE), ("dislikes", -_MIGRATE_SCORE)):
             if key in new_info and isinstance(new_info[key], list):
-                current = set(player.get(key, []))
-                current.update(item for item in new_info[key] if item)
-                player[key] = list(current)
+                for item in new_info[key]:
+                    if item and item not in taste:
+                        taste[item] = {"score": sign, "mentions": 1, "first_seen": now, "last_update": now}
+        _project_taste(player)
         self._save_player(username)
         logger.info(f"🧠 [Memory] 已更新 {username} 的記憶庫。")
 
@@ -268,6 +316,42 @@ class MemoryManager:
             player["taboos"].append(topic)
             self._save_player(username)
             logger.warning(f"🚫 [Memory] {username} 將話題『{topic}』列為禁忌。")
+
+    def record_taste_signal(self, username: str, item: str, delta: float, *, reason: str = "") -> None:
+        """對某項目 +/- 分（per feedback_dual_path_taste_writes 的統一寫入口）。
+
+        新項目首次有訊號 → 進 taste（曾提及）；累積過 LIKE/DISLIKE_THRESHOLD → 投影到
+        likes/dislikes；已歸類的也會因分數升降重新調整。daily review / feedback loop /
+        即時語音都該走這裡，不再直接 append likes（兩條 path 加減同一分數 → 不打架）。
+        """
+        if not item:
+            return
+        player = self.get_player_memory(username)
+        taste = player.setdefault("taste", {})
+        now = time.time()
+        entry = taste.get(item)
+        if entry is None:
+            entry = {"score": 0.0, "mentions": 0, "first_seen": now, "last_update": now}
+            taste[item] = entry
+        entry["score"] = max(_SCORE_MIN, min(_SCORE_MAX, float(entry.get("score", 0)) + float(delta)))
+        entry["mentions"] = int(entry.get("mentions", 0)) + 1
+        entry["last_update"] = now
+        if reason:
+            entry["last_reason"] = reason[:100]
+        _project_taste(player)
+        self._save_player(username)
+        logger.debug(f"👅 [Taste] {username} 『{item}』{delta:+.1f} → score={entry['score']:.1f}")
+
+    def remove_taste_item(self, username: str, item: str) -> None:
+        """徹底移除一個 taste 項目（含 likes/dislikes/taboos 投影）。用於清掉未確認/否定的資料。"""
+        player = self.get_player_memory(username)
+        player.get("taste", {}).pop(item, None)
+        for key in ("likes", "dislikes", "taboos"):
+            lst = player.get(key, [])
+            if item in lst:
+                lst.remove(item)
+        self._save_player(username)
+        logger.info(f"🧠 [Taste] {username} 移除項目『{item}』")
 
     def get_missing_info_categories(self, username: str) -> list:
         mem = self.get_player_memory(username)
