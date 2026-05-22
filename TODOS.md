@@ -2,13 +2,13 @@
 ## 新功能 — 待完成
 
 ### TODO: ⭐ suki DB/JSON 同步斷裂修復（下一輪最先做；taste Phase B2 前置）
-**Status:** 方向已定（Jack 2026-05-22 拍板選項 1：daily review 改用 MemoryManager 寫 db），下輪實作
+**Status:** ✅ DONE（2026-05-22 實作選項 1）。`analyze_daily_log.py` 加 `persist_players_to_db()`，在 json 寫出後把本輪 Gemini 實際更新的 player（`updated_players` keys）用 `MemoryManager.replace_player_memory` 寫進 `marvin.db`；meta 仍寫 json。測試 `tests/test_daily_review_db_sync.py`（4 條：落盤 / 只寫列名 / 保留 meta / 缺名跳過）。**B2 已解鎖。**
 **What:** daily review（`scripts/analyze_daily_log.py:1383`）只寫 `suki_memory.json`，但 bot（`MemoryManager._load_all`）只從 `marvin.db` 讀，`_migrate_from_json` 只在 db 空時跑 → **daily review 的 player 分析（likes/impression/relationship）永遠進不了 bot runtime**；bot `_export_json` 還會用 db 覆蓋抹掉 daily 寫的 json。
 **證據（2026-05-22 驗證）:** 比對 `records/backups/suki_memory_20260521_121020.json` vs `marvin.db`：大肚 likes daily 寫「與友共飲/駕駛油車」，db 是「飲酒聚會/開燃油車」（不同版本）；impression 64 vs 45 字。daily 5/20–5/21 兩天分析都沒進 db。
 **關鍵細節:** bot 對 suki 是**混合讀取**——players 從 db（權威），頂層 meta（marvin_performance/proactive_topics）從 json（`get_meta_state` suki_memory.py:189）。**只有 player 部分斷裂，meta OK**。修復只處理 player 部分。
-**How to start（選項 1）:** daily review 的 player 寫回（merge_player 結果）改用 `MemoryManager`（`replace_player_memory` / `record_taste_signal`）寫 db；meta 繼續寫 json。
-**並發殘留:** daily 12:05 寫 db 時 bot 在跑，若該 player 該時段有語音活動，bot `_save_player` 會用舊 `_cache` 覆蓋。白天多數 player 無活動 → 多半保留、重啟後穩定。v2 再做「bot save 前比對 db 版本 / pending queue」徹底解並發。
-**Priority:** P1（阻擋 taste B2 + daily review 全部成果生效）
+**順序設計:** json 寫出（含新 meta）在前，db 寫回在後——`replace_player_memory` 的 `_export_json` 保留剛寫的 meta、並把 json player 區段同步成 db repaired 版本 → db/json 最終一致。
+**並發殘留（v1 接受）:** daily 12:05 寫 db 時 bot 在跑，若該 player 該時段有語音活動，bot `_save_player` 會用舊 `_cache` 覆蓋。只寫本輪更新者（不碰未出現玩家）已縮小衝突面；白天多數 player 無活動 → 多半保留、重啟後穩定。v2 再做「bot save 前比對 db 版本 / pending queue」徹底解並發。
+**Priority:** ~~P1~~ 已完成
 
 ---
 

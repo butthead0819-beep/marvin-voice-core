@@ -528,6 +528,31 @@ def merge_player(existing: dict, updated: dict) -> dict:
     return merged
 
 
+def persist_players_to_db(players: dict, names, *, db_path: str, json_path: str) -> int:
+    """把 daily review 合併後的 player 寫進 SQLite（bot 的權威來源）。
+
+    Why: bot 從 marvin.db 讀 player 且只在 db 空時 migrate，daily review 只寫 json →
+    player 分析永遠進不了 runtime（TODO「suki DB/JSON 同步斷裂」）。meta（marvin_performance
+    /proactive_topics 等）仍由 main() 寫 json，不經這裡。
+
+    只寫 `names` 指定的 player（Gemini 本輪實際更新者），不碰今日未出現玩家，把與 bot
+    並發寫入的衝突面降到最小。MemoryManager.replace_player_memory 會同步把 json player
+    區段更新成 db 內容、並保留既有 meta key。回傳實際寫入筆數。
+    """
+    if str(BASE_DIR) not in sys.path:
+        sys.path.insert(0, str(BASE_DIR))
+    from suki_memory import MemoryManager
+
+    mm = MemoryManager(db_path=db_path, json_compat_path=json_path)
+    written = 0
+    for name in names:
+        data = players.get(name)
+        if isinstance(data, dict):
+            mm.replace_player_memory(name, data)
+            written += 1
+    return written
+
+
 def _repair_json(raw: str) -> dict:
     """嘗試修復截斷的 JSON：補足缺失的括號後解析。"""
     import re
@@ -1383,6 +1408,19 @@ def main():
     with open(MEMORY_FILE, "w", encoding="utf-8") as f:
         json.dump(final_memory, f, ensure_ascii=False, indent=2)
         f.write("\n")
+
+    # 9b. player 寫回 SQLite（bot 權威來源）——只寫本輪 Gemini 實際更新者。
+    # 順序在 json 寫出之後：replace_player_memory 的 _export_json 會保留上面剛寫的 meta，
+    # 並把 json player 區段同步成 db 的 repaired 版本，讓 db / json 最終一致。
+    try:
+        synced = persist_players_to_db(
+            merged_players, list(updated_players.keys()),
+            db_path=str(BASE_DIR / "marvin.db"), json_path=str(MEMORY_FILE),
+        )
+        print(f"[Daily Review] 🗄  player 寫回 SQLite：{synced} 位", flush=True)
+    except Exception as e:
+        print(f"[Daily Review] ⚠ player 寫回 SQLite 失敗（json 已寫，bot 重啟前不生效）: {e}",
+              flush=True)
 
     score = result.get("marvin_performance", {}).get("score", "N/A")
     trend = result.get("marvin_performance", {}).get("trend", "")
