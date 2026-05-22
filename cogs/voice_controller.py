@@ -33,6 +33,7 @@ from recall_handler import (
 from summary_store import SummaryStore
 from task_store import TaskStore
 from session_summarizer import SessionSummarizer, commitment_to_callback
+from callback_delivery import is_join_callback_enabled, format_callback_line
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
@@ -1567,15 +1568,18 @@ class VoiceController(commands.Cog):
             if now - self.greeting_cooldown.get(member.id, 0) > 10:
                 self.greeting_cooldown[member.id] = now
                 print(f"🌑 [Dynamic Greeting] 偵測到玩家 {member.display_name} 進場 (準備黑歷史嘲諷)...")
-                
-                # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷
-                msg = await self.bot.router.generate_player_greeting(member.display_name)
-                
-                if self.active_text_channel:
-                     await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
-                     asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
-                self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
-                await self.play_tts(msg, already_in_channel=True, silent_during_stream=True)
+
+                # 🔔 [T3 返場 callback]（flag-gated, 預設 OFF）：有 shareable callback 就講
+                # callback 取代一般點名（XOR — 一次 join 只一個主動發言）。flag off → 退回原點名。
+                if not await self._maybe_speak_join_callback(member.display_name):
+                    # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷
+                    msg = await self.bot.router.generate_player_greeting(member.display_name)
+
+                    if self.active_text_channel:
+                         await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
+                         asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
+                    self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
+                    await self.play_tts(msg, already_in_channel=True, silent_during_stream=True)
 
         # --- [Leave Logic] ---
         if before.channel == marvin_channel and after.channel != marvin_channel:
@@ -2860,6 +2864,32 @@ class VoiceController(commands.Cog):
                 self.bot.router.memory.enqueue_callback(speaker, text, shareable=True)
         except Exception as e:
             logger.warning(f"⚠️ [Callback] enqueue 失敗（不影響 summarizer）: {e}")
+
+    async def _maybe_speak_join_callback(self, speaker: str) -> bool:
+        """T3 返場 callback（feature flag，預設 OFF）：返場時若該 speaker 有 shareable
+        callback 就講出來，取代一般點名。回 True = 講了（呼叫端跳過點名）。
+
+        peek（不移除）→ TTS → 成功才 consume（idempotent，失敗留著下次重投）。
+        任何錯誤都 return False 退回一般點名，不讓 callback 路徑壞掉進場流程。
+        """
+        if not is_join_callback_enabled():
+            return False
+        try:
+            mem = self.bot.router.memory
+            item = mem.peek_shareable_callback(speaker)
+            if not item:
+                return False
+            line = format_callback_line(item.get("text", ""))
+            if not line:
+                return False
+            self.stt_logger.info(f"[BOT返場callback→{speaker}] {line}")
+            await self.play_tts(line, already_in_channel=True, silent_during_stream=True)
+            mem.consume_callback(speaker, item)   # 成功才移除
+            self.last_proactive_time = time.time()
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ [Callback] 返場投遞失敗，退回一般點名: {e}")
+            return False
 
     async def _confirmation_checker_loop(self):
         """靜默 30 秒後從佇列取出一個 pending confirmation，Marvin 主動詢問。"""
