@@ -32,7 +32,7 @@ from recall_handler import (
 )
 from summary_store import SummaryStore
 from task_store import TaskStore
-from session_summarizer import SessionSummarizer
+from session_summarizer import SessionSummarizer, commitment_to_callback
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
@@ -730,7 +730,7 @@ class VoiceController(commands.Cog):
                 summary_store=self._summary_store,
                 groq_client=_groq,
                 owner_speaker=_owner,
-                on_commitment_detected=self._pending_confirmations.append,
+                on_commitment_detected=self._on_commitment_detected,
             )
             asyncio.create_task(self._session_summarizer.start(guild_id=_guild_id))
             self._confirmation_checker_task = asyncio.create_task(self._confirmation_checker_loop())
@@ -2844,6 +2844,22 @@ class VoiceController(commands.Cog):
             self._awaiting_confirmation = None
             self._awaiting_confirmation_speaker = ""
             await self.play_tts("好，不記了。", already_in_channel=True)
+
+    def _on_commitment_detected(self, conf):
+        """SessionSummarizer 偵測到 commitment 的 hook（sync，從 summarizer loop 呼叫）。
+
+        (1) 保留原行為：進 pending-confirmation 佇列（30s 靜默後主動問）。
+        (2) T2：inbound 自我承諾額外存進該 speaker 的 callback_queue（返場時提醒本人）。
+        enqueue 失敗不可影響 summarizer loop → 包 try/except graceful degrade。
+        """
+        self._pending_confirmations.append(conf)
+        try:
+            cb = commitment_to_callback(conf)
+            if cb:
+                speaker, text = cb
+                self.bot.router.memory.enqueue_callback(speaker, text, shareable=True)
+        except Exception as e:
+            logger.warning(f"⚠️ [Callback] enqueue 失敗（不影響 summarizer）: {e}")
 
     async def _confirmation_checker_loop(self):
         """靜默 30 秒後從佇列取出一個 pending confirmation，Marvin 主動詢問。"""

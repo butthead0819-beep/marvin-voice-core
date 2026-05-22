@@ -46,6 +46,22 @@ _SYSTEM_PROMPT = """\
 """
 
 
+def commitment_to_callback(conf) -> tuple[str, str] | None:
+    """commitment（PendingConfirmation）→ 主動 callback (speaker, text)，或 None=跳過。
+
+    只處理 inbound（speaker 自己的承諾）→ 之後返場時提醒本人「你上次說要X」。
+    這是自我提醒（把你自己的公開承諾講回給你），低隱私風險 → enqueue 時 shareable=True。
+    outbound（叫別人做的）= 跨人 relay，不在此範圍（deferred）。
+    """
+    if conf is None or getattr(conf, "direction", None) != "inbound":
+        return None
+    text = (getattr(conf, "task_text", "") or "").strip()
+    speaker = (getattr(conf, "speaker", "") or "").strip()
+    if not text or not speaker:
+        return None
+    return (speaker, text)
+
+
 class SessionSummarizer:
     def __init__(
         self,
