@@ -11,6 +11,12 @@ logger = logging.getLogger("SukiMemory")
 _DB_PATH = "marvin.db"
 _JSON_COMPAT_PATH = "suki_memory.json"
 
+# ── 主動 callback 記憶（proactive group-memory callback, eng-review locked）──────
+# 專用 callback_queue，與 news_queue 分開：不撞 news 的 cap 淘汰、不被 get_rich_context
+# 注入 reactive prompt（fail-private 真成立）、自己的 TTL/render。
+_CALLBACK_CAP = 10                  # 上限（比 news 大，這是主打功能）
+_CALLBACK_TTL_SECONDS = 7 * 86400   # 未投遞 callback 7 天過期，避免幾週後詭異冒出
+
 # ── taste 分數分級（per feedback_dual_path_taste_writes 的正解）─────────────────
 # likes/dislikes 是 taste 分數的投影；分數 ≥/≤ 閾值才算 confirmed，中間＝「曾提及」。
 # taboos 維持獨立（敏感標記，不被分數投影）。
@@ -60,6 +66,7 @@ _PLAYER_DEFAULTS: dict = {
         "vul_feedback": 0,
     },
     "news_queue": [],
+    "callback_queue": [],
     "song_history": [],
     "suki_impression": "",
     "bias_score": 0,
@@ -380,6 +387,53 @@ class MemoryManager:
         news = queue.pop(0)
         self._save_player(username)
         return news["text"]
+
+    # ── 主動 callback 記憶（與 news_queue 分開）──────────────────────────────────
+    def enqueue_callback(self, username: str, text: str, shareable: bool = False):
+        """存一則主動 callback 記憶到 per-player callback_queue。
+
+        shareable=False（fail-private 預設）→ 不會被 peek_shareable_callback 取出，
+        也不會進 get_rich_context 的 reactive prompt（callback_queue 不被它讀）。
+        """
+        if not username or not text:
+            return
+        queue = self.get_player_memory(username)["callback_queue"]
+        queue.append({"text": text, "shareable": bool(shareable), "ts": time.time()})
+        if len(queue) > _CALLBACK_CAP:
+            del queue[: len(queue) - _CALLBACK_CAP]
+        self._save_player(username)
+
+    def peek_shareable_callback(
+        self, username: str, ttl_seconds: float = _CALLBACK_TTL_SECONDS
+    ) -> dict | None:
+        """回傳最舊一則 shareable 且未過期的 callback（不移除——投遞成功才 consume）。
+
+        順手剪掉過期項（TTL）。idempotent 投遞：peek → 投遞 → 成功才 consume_callback，
+        失敗則 item 留著下次重投。
+        """
+        if username not in self._cache:
+            return None
+        queue = self._cache[username].get("callback_queue", [])
+        cutoff = time.time() - ttl_seconds
+        fresh = [item for item in queue if item.get("ts", 0) >= cutoff]
+        if len(fresh) != len(queue):
+            self._cache[username]["callback_queue"] = fresh
+            self._save_player(username)
+        for item in fresh:
+            if item.get("shareable"):
+                return item
+        return None
+
+    def consume_callback(self, username: str, item: dict):
+        """投遞成功後移除該則 callback（以 ts+text 比對）。"""
+        if username not in self._cache or not item:
+            return
+        queue = self._cache[username].get("callback_queue", [])
+        self._cache[username]["callback_queue"] = [
+            q for q in queue
+            if not (q.get("ts") == item.get("ts") and q.get("text") == item.get("text"))
+        ]
+        self._save_player(username)
 
     def get_player_impression(self, username: str) -> str:
         return self.get_player_memory(username).get("suki_impression", "")
