@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from intent_agents.feedback_analyzer import FeedbackResult
 from intent_agents.recommendation import Recommendation
+from suki_memory import LIKE_THRESHOLD, DISLIKE_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -169,8 +170,13 @@ class TieredFeedbackWriter:
         )
         if count < self.t2_threshold:
             return None
+        # ≥threshold 同向＝強證據 → record_taste_signal 給 confirmed 分（過閾值即投影到 likes/
+        # dislikes）。改走分數系統後，與 daily review 共用同一 taste 分數 → 不再各自 append 打架
+        # （per feedback_dual_path_taste_writes）。
         suki_field = "likes" if direction == "liked" else "dislikes"
-        self.suki_memory.update_player_memory(speaker, {suki_field: [item]})
+        delta = LIKE_THRESHOLD if direction == "liked" else DISLIKE_THRESHOLD
+        self.suki_memory.record_taste_signal(
+            speaker, item, delta, reason=f"feedback_t2:{direction}x{count}")
         return {
             "speaker": speaker,
             "item": item,

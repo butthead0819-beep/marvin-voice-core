@@ -60,6 +60,14 @@ class _FakeSuki:
                 cur.update(item for item in new_info[key] if item)
                 self.players[username][key] = list(cur)
 
+    def record_taste_signal(self, username: str, item: str, delta: float, *, reason: str = ""):
+        """Phase B：T2 改走分數系統。簡化投影：正分→likes、負分→dislikes。"""
+        if username not in self.players or not item:
+            return
+        field = "likes" if delta > 0 else "dislikes" if delta < 0 else None
+        if field and item not in self.players[username][field]:
+            self.players[username][field].append(item)
+
 
 class _FakeTranscriptStore:
     """In-memory transcript store. Mirrors get_recent() signature for the adapter."""

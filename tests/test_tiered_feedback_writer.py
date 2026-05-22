@@ -181,6 +181,7 @@ def _fake_suki(has_player_returns: bool = True):
     suki = MagicMock()
     suki.has_player = MagicMock(return_value=has_player_returns)
     suki.update_player_memory = MagicMock()
+    suki.record_taste_signal = MagicMock()   # Phase B：T2 改走分數系統
     return suki
 
 
@@ -203,7 +204,7 @@ def test_t2_below_threshold_no_promotion():
     promos = writer.apply_t2_promotions([(_rec(), _result("positive"))])
     # T1 may have written but T2 promotion only counts: 2 below threshold
     assert promos == []
-    suki.update_player_memory.assert_not_called()
+    suki.record_taste_signal.assert_not_called()
 
 
 def test_t2_at_threshold_promotes_to_likes():
@@ -222,9 +223,9 @@ def test_t2_at_threshold_promotes_to_likes():
     assert promos[0]["direction"] == "liked"
     assert promos[0]["count"] == 3
     assert promos[0]["suki_field"] == "likes"
-    suki.update_player_memory.assert_called_once_with(
-        "大肚", {"likes": ["周杰倫 夜曲"]},
-    )
+    suki.record_taste_signal.assert_called_once()
+    _a = suki.record_taste_signal.call_args.args
+    assert _a[0] == "大肚" and _a[1] == "周杰倫 夜曲" and _a[2] > 0   # 正分 → likes
 
 
 def test_t2_negative_threshold_promotes_to_dislikes():
@@ -240,9 +241,9 @@ def test_t2_negative_threshold_promotes_to_dislikes():
 
     assert len(promos) == 1
     assert promos[0]["suki_field"] == "dislikes"
-    suki.update_player_memory.assert_called_once_with(
-        "大肚", {"dislikes": ["周杰倫 夜曲"]},
-    )
+    suki.record_taste_signal.assert_called_once()
+    _a = suki.record_taste_signal.call_args.args
+    assert _a[0] == "大肚" and _a[1] == "周杰倫 夜曲" and _a[2] < 0   # 負分 → dislikes
 
 
 def test_t2_mixed_directions_no_promotion():
@@ -337,7 +338,7 @@ def test_t2_per_result_exception_isolated():
         {"title": "周杰倫 夜曲", "result": "liked", "ts": 300.0},
     ])
     suki = _fake_suki()
-    suki.update_player_memory.side_effect = [Exception("DB locked"), None]
+    suki.record_taste_signal.side_effect = [Exception("DB locked"), None]
     writer = TieredFeedbackWriter(music_memory=mm, suki_memory=suki)
 
     writer.apply_t2_promotions([
@@ -345,7 +346,7 @@ def test_t2_per_result_exception_isolated():
         (_rec(speaker="露"), _result("positive")),
     ])
 
-    assert suki.update_player_memory.call_count == 2
+    assert suki.record_taste_signal.call_count == 2
 
 
 def test_t2_non_music_agent_skipped():
