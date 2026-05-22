@@ -17,7 +17,7 @@
 **What:**
 - **B2** ✅：`merge_player` 的 likes/dislikes 改走 taste 加 `_DAILY_TASTE_DELTA=1.5`（新項目只進「曾提及」，跨日累積過 ±3.0 才投影 confirmed），existing confirmed 用 `_build_taste_from_legacy` 保留，結尾 `_project_taste`。端到端驗證：11 個 Gemini likes 一次 → 0 confirmed，解掉「daily 一次加 11 個 likes」。測試 `tests/test_daily_review_taste_merge.py`（8 條）。
 - **C** ✅：**改為確定性偵測**（Jack 2026-05-22 拍板，否決原 LLM 即時抽取）。P1 修好同步後 daily 的 LLM 抽取已能進 bot，C 不重做即時 LLM（與 slow-learning 衝突）。新 `taste_extractor.py`：regex 抓明示偏好句「我喜歡/超愛/討厭 X」→ `record_taste_signal(±1.0)` 入曾提及。`VoiceController._record_interest_signals` 接 handle_stt_result 非喚醒路徑（保護 wake 延遲、inline 同 thread 避 sqlite 競態）。隱性興趣仍交 offline daily。測試 `tests/test_taste_extractor.py`(13) + `tests/test_interest_signal_wiring.py`(5)。
-- **D**：「你問我答」校準介面（Jack 確認/否定 → 直接設高分 / `remove_taste_item`），把 2026-05-22 手動做的 AskUserQuestion 問答流程化。
+- **D**：❌ **否決（2026-05-22）**。「你問我答」校準介面（Jack 確認/否定 → 設高分 / `remove_taste_item`）會新增「持續人類回饋」依賴，與 Jack 硬原則「資料不依賴人類回饋」衝突。盤點確認學習管線已全自動（daily/feedback loop/即時偏好三條都 0 人類；feedback 是 LLM 自動分類非人手按 reaction），唯一人類觸點是 `recall_probe_cases.json` 15 條一次性量測考卷（不餵記憶）。除非 Jack 主動要，不做 D。詳記憶 `feedback_autonomous_learning_no_human_loop`。
 **參考:** `suki_memory.py` `LIKE/DISLIKE_THRESHOLD=±3`、`record_taste_signal` / `remove_taste_item` / `_project_taste` / `_build_taste_from_legacy`；記憶 `feedback_dual_path_taste_writes`。
 **Priority:** ~~B2 P1 / C P2~~ 已完成 / D P3
 
