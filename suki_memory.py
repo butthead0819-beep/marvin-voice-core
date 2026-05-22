@@ -67,6 +67,7 @@ _PLAYER_DEFAULTS: dict = {
     },
     "news_queue": [],
     "callback_queue": [],
+    "callbacks_muted": False,
     "song_history": [],
     "suki_impression": "",
     "bias_score": 0,
@@ -413,6 +414,8 @@ class MemoryManager:
         """
         if username not in self._cache:
             return None
+        if self._cache[username].get("callbacks_muted"):
+            return None   # kill-switch：此人 callback 被靜音
         queue = self._cache[username].get("callback_queue", [])
         cutoff = time.time() - ttl_seconds
         fresh = [item for item in queue if item.get("ts", 0) >= cutoff]
@@ -434,6 +437,17 @@ class MemoryManager:
             if not (q.get("ts") == item.get("ts") and q.get("text") == item.get("text"))
         ]
         self._save_player(username)
+
+    # ── kill-switch：per-player callback 靜音（T4）──────────────────────────────
+    def set_callbacks_muted(self, username: str, muted: bool):
+        """關 / 開某人的返場 callback。muted=True → peek_shareable_callback 一律回 None。"""
+        self.get_player_memory(username)["callbacks_muted"] = bool(muted)
+        self._save_player(username)
+
+    def is_callbacks_muted(self, username: str) -> bool:
+        if username not in self._cache:
+            return False
+        return bool(self._cache[username].get("callbacks_muted"))
 
     def get_player_impression(self, username: str) -> str:
         return self.get_player_memory(username).get("suki_impression", "")
