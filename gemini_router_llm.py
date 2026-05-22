@@ -27,6 +27,15 @@ class GeminiRouterLLMMixin:
             m in self.model_name for m in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5")
         )
 
+    def _get_paid_guard(self):
+        """Lazy 快取 PaidUsageGuard。所有 paid fallback 共用，確保 daily/monthly cap 一致。"""
+        g = getattr(self, "_paid_guard_cache", None)
+        if g is None:
+            from llm_paid import PaidUsageGuard
+            g = PaidUsageGuard()
+            self._paid_guard_cache = g
+        return g
+
     async def _acquire_cloud_rpm_slot(self):
         """等待直到主 Gemini API 有 RPM 空位（阻塞式，適用於關鍵路徑）"""
         while True:
@@ -447,6 +456,14 @@ class GeminiRouterLLMMixin:
                     # 💰 [Paid Fallback] 主 key 三重重試全部失敗後，嘗試付費備援
                     paid_client = getattr(self, 'google_paid_client', None)
                     if paid_client and self.provider == "gemini":
+                        # Pre-flight：估 cost；超 cap 直接跳過（保守 in≈prompt/3, out≈in/2）
+                        from llm_paid import estimate_cost
+                        guard = self._get_paid_guard()
+                        est_in = (len(system_prompt) + len(user_prompt)) // 3
+                        est_cost = estimate_cost(self.cleaner_model, est_in, est_in // 2)
+                        if not guard.allow(est_cost):
+                            logger.error(f"🛑 [Paid Cap] 已達 daily/monthly 上限 (est=${est_cost:.4f})，跳過付費備援")
+                            raise e
                         try:
                             logger.warning("💰 [Paid Fallback] 啟用付費 API 最後防線...")
                             await self._acquire_cloud_rpm_slot()
@@ -464,8 +481,14 @@ class GeminiRouterLLMMixin:
                                 ),
                                 timeout=10.0
                             )
-                            if response.usage_metadata:
-                                self.budget.add_tokens(response.usage_metadata.total_token_count)
+                            usage = response.usage_metadata
+                            if usage:
+                                self.budget.add_tokens(usage.total_token_count)
+                                in_tok = getattr(usage, "prompt_token_count", 0) or 0
+                                out_tok = getattr(usage, "candidates_token_count", 0) or 0
+                                actual_cost = estimate_cost(self.cleaner_model, in_tok, out_tok)
+                                guard.record(caller="marvin_reply_fallback", model=self.cleaner_model,
+                                             tokens=int(in_tok + out_tok), est_usd=actual_cost)
                             logger.info("💰 [Paid Fallback] 成功。")
                             return response.text.strip()
                         except Exception as pe:
@@ -527,31 +550,6 @@ class GeminiRouterLLMMixin:
                         yield chunk.choices[0].delta.content
         except Exception as e:
             logger.error(f"❌ [Cloud Stream Error] {e}")
-            # 💰 [Paid Fallback] 主 key 串流失敗，嘗試付費備援
-            paid_client = getattr(self, 'google_paid_client', None)
-            if paid_client and self.provider == "gemini":
-                try:
-                    logger.warning("💰 [Paid Stream Fallback] 啟用付費 API 串流最後防線...")
-                    config = genai.types.GenerateContentConfig(
-                        system_instruction=system_prompt,
-                        temperature=temperature,
-                        max_output_tokens=max_output_tokens,
-                    )
-                    stream = await asyncio.wait_for(
-                        paid_client.aio.models.generate_content_stream(
-                            model=self.cleaner_model,
-                            contents=user_prompt,
-                            config=config
-                        ),
-                        timeout=10.0
-                    )
-                    async with asyncio.timeout(30.0):
-                        async for chunk in stream:
-                            if chunk.text:
-                                yield chunk.text
-                    return
-                except Exception as pe:
-                    logger.error(f"❌ [Paid Stream Fallback] 付費串流也失敗: {pe}")
             raise e
 
     async def stream_llm(self, system_prompt: str, user_prompt: str, speaker: str = None, temperature: float = None, max_output_tokens: int = None) -> str:

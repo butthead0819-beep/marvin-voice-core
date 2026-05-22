@@ -34,6 +34,12 @@ def test_estimate_cost_flash_preview_prefix_match():
     assert estimate_cost("gemini-2.5-flash-preview-05-20", 1_000_000, 1_000_000) == pytest.approx(2.80)
 
 
+def test_estimate_cost_flash_lite():
+    # Marvin reply paid fallback 用 gemini-3.1-flash-lite-preview；現價約 0.10 / 0.40
+    # 不能套 default (2.0/12.0)，會過度高估 ~20×，導致 allow() 過早拒絕。
+    assert estimate_cost("gemini-3.1-flash-lite-preview", 1_000_000, 1_000_000) == pytest.approx(0.50)
+
+
 # ── record + totals ──────────────────────────────────────────────────────────
 
 def test_record_and_spent_today(tmp_path):

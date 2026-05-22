@@ -697,20 +697,6 @@ class GeminiRouterContentMixin:
                         raise ValueError("Gemini 視覺模型回傳了空內容。")
 
                 except Exception as e:
-                    paid_client = getattr(self, 'google_paid_client', None)
-                    if paid_client:
-                        try:
-                            logger.warning("💰 [Paid Vision Fallback] 啟用付費 API 視覺最後防線...")
-                            response = await paid_client.aio.models.generate_content(
-                                model=vision_model,
-                                contents=contents,
-                                config=config
-                            )
-                            if response and response.text:
-                                return response.text.strip()
-                        except Exception as pe:
-                            logger.error(f"❌ [Paid Vision Fallback] 付費視覺也失敗: {pe}")
-
                     logger.error("❌ [Hybrid Vision Fatal] 視覺分析過程發生重大異常：")
                     import traceback
                     logger.error(traceback.format_exc())

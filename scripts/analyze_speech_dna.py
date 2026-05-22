@@ -928,32 +928,18 @@ async def main():
         import_result(args.import_result)
         return
 
-    # Load LLM client — Gemini paid preferred, Groq as fallback
-    global _GEMINI_MODEL
+    # Load LLM client — Groq only（一次性分析工具，免費 tier 足夠）
     client = None
     try:
-        import google.genai as _genai
-        gemini_key = os.environ.get("GEMINI_PAID_API_KEY") or _load_env_key("GEMINI_PAID_API_KEY")
-        _GEMINI_MODEL = os.environ.get("GEMINI_FLASH_MODEL") or _load_env_key("GEMINI_FLASH_MODEL") or _GEMINI_MODEL
-        if gemini_key:
-            client = _genai.Client(api_key=gemini_key)
-            logger.info(f"✅  Gemini API 就緒（{_GEMINI_MODEL}）")
+        import groq as _groq
+        key = os.environ.get("GROQ_API_KEY") or _load_env_key("GROQ_API_KEY")
+        if key:
+            client = _groq.AsyncGroq(api_key=key)
+            logger.info("✅  Groq API 就緒")
         else:
-            logger.warning("⚠️   GEMINI_PAID_API_KEY 未設定，嘗試 Groq")
+            logger.warning("⚠️   GROQ_API_KEY 未設定，跳過 LLM 步驟")
     except ImportError:
-        logger.warning("⚠️   google-genai 未安裝，嘗試 Groq")
-
-    if client is None:
-        try:
-            import groq as _groq
-            key = os.environ.get("GROQ_API_KEY") or _load_env_key("GROQ_API_KEY")
-            if key:
-                client = _groq.AsyncGroq(api_key=key)
-                logger.info("✅  Groq API 就緒（fallback）")
-            else:
-                logger.warning("⚠️   GROQ_API_KEY 未設定，跳過 LLM 步驟")
-        except ImportError:
-            logger.warning("⚠️   groq 套件未安裝，跳過 LLM 步驟")
+        logger.warning("⚠️   groq 套件未安裝，跳過 LLM 步驟")
 
     all_utts = load_utterances()
 

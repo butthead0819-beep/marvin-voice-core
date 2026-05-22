@@ -67,10 +67,7 @@ def get_gemini_client() -> Any:
     global _gemini
     if _gemini is not None:
         return _gemini
-    key = (
-        os.environ.get("GEMINI_PAID_API_KEY", "").strip()
-        or os.environ.get("GOOGLE_API_KEY", "").strip()
-    )
+    key = os.environ.get("GOOGLE_API_KEY", "").strip()
     if not key:
         return None
     try:

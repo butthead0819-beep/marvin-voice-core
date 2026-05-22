@@ -59,10 +59,7 @@ def _get_groq():
 
 
 def _get_gemini():
-    api_key = (
-        os.environ.get("GEMINI_PAID_API_KEY", "").strip()
-        or os.environ.get("GOOGLE_API_KEY", "").strip()
-    )
+    api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
     if not api_key:
         return None
     try:
