@@ -96,6 +96,31 @@ class CooldownAwarePool:
         """呼叫成功後回報用量，進滾動 TPM 視窗。"""
         ep.usage_window.append((self._clock(), max(0, int(tokens))))
 
+    def status(self) -> list[dict]:
+        """每個 endpoint 的即時觀測（給 /marvin_system 算力池視圖）。
+
+        只回 pool 真的知道的東西：滾動 60s TPM 用量 + 冷卻狀態。不估 TPD（本地計數
+        必然低估、需 limit 表 + 持久化，會騙人）。狀態判定對齊 next_available 的跳過規則。
+        """
+        now = self._clock()
+        rows: list[dict] = []
+        for ep in self.endpoints:
+            tpm = self.current_tpm(ep)
+            budget = ep.tpm_budget or 1
+            if now < ep.cooldown_until:
+                st = "cooldown"
+            elif tpm > ep.tpm_budget * self.TPM_HEADROOM:
+                st = "tpm_high"
+            else:
+                st = "available"
+            rows.append({
+                "name": ep.name, "model": ep.model, "status": st,
+                "cooldown_remaining": max(0.0, ep.cooldown_until - now),
+                "tpm_used": tpm, "tpm_budget": ep.tpm_budget,
+                "tpm_pct": round(tpm / budget * 100, 1),
+            })
+        return rows
+
 
 # ── Dispatch loop（pool + 呼叫 = router）──────────────────────────────────────
 

@@ -349,3 +349,55 @@ async def test_build_tiered_router_wires_pools():
     router = build_tiered_router({"GROQ_API_KEY": "g"}, client_factory=factory)
     assert isinstance(router, TieredLLMRouter)
     assert [e.name for e in router.quick_pool.endpoints] == ["groq-quick"]
+
+
+# ── status()（/marvin_system 算力池視圖：即時狀態 + TPM%）──────────────────────
+
+def test_status_available_endpoint():
+    clock = _Clock()
+    pool = _pool(clock, PoolEndpoint(name="groq", tpm_budget=6000))
+    s = pool.status()[0]
+    assert s["status"] == "available"
+    assert s["tpm_used"] == 0
+    assert s["tpm_pct"] == 0.0
+    assert s["cooldown_remaining"] == 0.0
+    assert s["name"] == "groq" and s["tpm_budget"] == 6000
+
+
+def test_status_cooldown_reports_remaining():
+    clock = _Clock(1000.0)
+    ep = PoolEndpoint(name="groq", tpm_budget=6000)
+    pool = _pool(clock, ep)
+    pool.mark_429(ep, retry_after=42.0)        # 冷卻到 1042
+    s = pool.status()[0]
+    assert s["status"] == "cooldown"
+    assert s["cooldown_remaining"] == pytest.approx(42.0)
+
+
+def test_status_tpm_high_when_over_headroom():
+    clock = _Clock()
+    ep = PoolEndpoint(name="groq", tpm_budget=6000)
+    pool = _pool(clock, ep)
+    pool.record_usage(ep, 5000)                 # 5000 > 6000*0.75=4500 → 近上限
+    s = pool.status()[0]
+    assert s["status"] == "tpm_high"
+    assert s["tpm_used"] == 5000
+
+
+def test_status_tpm_pct_computed():
+    clock = _Clock()
+    ep = PoolEndpoint(name="groq", tpm_budget=6000)
+    pool = _pool(clock, ep)
+    pool.record_usage(ep, 3000)                 # 3000/6000 = 50%（未過 headroom → available）
+    s = pool.status()[0]
+    assert s["tpm_pct"] == pytest.approx(50.0)
+    assert s["status"] == "available"
+
+
+def test_status_one_row_per_endpoint_in_order():
+    clock = _Clock()
+    pool = _pool(clock,
+                 PoolEndpoint(name="groq", tpm_budget=6000),
+                 PoolEndpoint(name="cerebras", tpm_budget=60000))
+    rows = pool.status()
+    assert [r["name"] for r in rows] == ["groq", "cerebras"]

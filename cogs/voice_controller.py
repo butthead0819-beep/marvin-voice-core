@@ -1137,6 +1137,23 @@ class VoiceController(commands.Cog):
         footer_scrap = await self.bot.router.generate_dynamic_system_msg("report_sent")
         embed.set_footer(text=f"⚙️ {footer_scrap}")
         await interaction.followup.send(embed=embed)
+    @staticmethod
+    def _fmt_pool_status(rows: list[dict]) -> str:
+        """把 CooldownAwarePool.status() 排成 embed 行：狀態 emoji + 名稱 + TPM%/冷卻。
+
+        只呈現 pool 真知道的（滾動 60s TPM + 冷卻），不估 TPD（本地計數會低估、會騙人）。
+        """
+        if not rows:
+            return "（無 endpoint — 檢查 API key）"
+        _emoji = {"available": "✅", "cooldown": "🧊", "tpm_high": "🟡"}
+        lines = []
+        for r in rows:
+            e = _emoji.get(r["status"], "❔")
+            tail = (f"冷卻 {r['cooldown_remaining']:.0f}s" if r["status"] == "cooldown"
+                    else f"{r['tpm_pct']:.0f}% TPM")
+            lines.append(f"{e} `{r['name']}` · {tail}")
+        return "\n".join(lines)
+
     @app_commands.command(name="marvin_system", description="[System] 查看馬文的核心系統、網路備援與配額狀態")
     async def marvin_system(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)
@@ -1180,9 +1197,17 @@ class VoiceController(commands.Cog):
         tts_name = self.bot.tts._speaker if hasattr(self.bot, 'tts') else "zh-TW-YunJheNeural"
         embed.add_field(name="🗣️ 發聲模組 (TTS)", value=f"`Edge-TTS: {tts_name}`\n狀態: 運作中", inline=False)
 
-        # STT Cleaner info
-        groq_cleaner = os.getenv("GROQ_CLEANER_MODEL", "llama-3.1-8b-instant")
-        embed.add_field(name="✨ 語音清洗模組", value=f"⚡ 主力: `Groq ({groq_cleaner})`\n🛡️ 備援: `{router.cleaner_model}`\n狀態: 駐守中", inline=False)
+        # 算力池（cleaner / curation resolver / feedback_analyzer 共用的 quick/analyze 兩層）
+        # 顯示即時狀態 + TPM%（滾動 60s）；✅可用 / 🧊冷卻中 / 🟡TPM近上限
+        tier_router = getattr(router, "_stt_router", None)
+        if tier_router is None:
+            embed.add_field(name="✨ 語音清洗算力池",
+                            value="尚未初始化（lazy build，等第一次清洗才建池）", inline=False)
+        else:
+            embed.add_field(name="🪶 輕量池 quick（STT 清洗主力）",
+                            value=self._fmt_pool_status(tier_router.quick_pool.status()), inline=False)
+            embed.add_field(name="🧠 分析池 analyze（curation / feedback）",
+                            value=self._fmt_pool_status(tier_router.analyze_pool.status()), inline=False)
 
         await interaction.followup.send(embed=embed)
 
