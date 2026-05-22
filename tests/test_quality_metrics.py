@@ -162,3 +162,23 @@ def test_day_bounds_is_24h_window():
     since, until, label = day_bounds("2026-05-22")
     assert until - since == 86400.0
     assert label == "2026-05-22"
+
+
+# ── Phase 2 接線契約：LatencyMarks → react_ms ─────────────────────────────
+
+def test_latency_total_feeds_react_ms(tmp_path):
+    """接點契約：play_tts 的 mark_first_audio dict 的 total_wake_to_audio_ms 即 react_ms。
+    鎖定 react time 定義＝wake hit → first audio（使用者聽到開口）。"""
+    from latency_tracker import LatencyMarks
+    p = _log(tmp_path)
+    m = LatencyMarks()
+    m.mark_wake("大肚", 1000.0)
+    m.mark_llm_start(1000.5)
+    m.mark_first_sentence(1001.0)
+    stage2 = m.mark_first_audio_and_consume(1002.0)   # 2.0s 後聽到 → 2000ms
+    record_metric("react", path=p, speaker=stage2["speaker"],
+                  react_ms=round(stage2["total_wake_to_audio_ms"], 1),
+                  tts_ms=round(stage2["sentence_to_audio_ms"], 1))
+    s = summarize_latency(read_metrics(p, metric="react"))
+    assert s["count"] == 1
+    assert s["p50"] == pytest.approx(2000.0)

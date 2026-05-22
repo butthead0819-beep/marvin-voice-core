@@ -36,6 +36,7 @@ from session_summarizer import SessionSummarizer
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
+from quality_metrics import record_metric
 from intent_agents.constants import (
     MUSIC_DIRECT_PAUSE_KW as _MUSIC_DIRECT_PAUSE_KW_SRC,
     MUSIC_DIRECT_RESUME_KW as _MUSIC_DIRECT_RESUME_KW_SRC,
@@ -5005,6 +5006,11 @@ class VoiceController(commands.Cog):
                         f"sentence→audio={_stage2['sentence_to_audio_ms']:.0f}ms "
                         f"total_wake→audio={_stage2['total_wake_to_audio_ms']:.0f}ms"
                     )
+                    # 品質指標 capture：react time = wake hit → first audio（使用者聽到開口）。
+                    # 借現有 LatencyMarks，零新串接；mark 點已存在，此處只多寫一行 jsonl。
+                    record_metric("react", speaker=_stage2["speaker"],
+                                  react_ms=round(_stage2["total_wake_to_audio_ms"], 1),
+                                  tts_ms=round(_stage2["sentence_to_audio_ms"], 1))
                 voice_client.play(
                     discord.FFmpegPCMAudio(fifo_path),
                     after=lambda e: after_playing(e, estimated_dur)
