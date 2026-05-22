@@ -1,6 +1,45 @@
 
 ## 新功能 — 待完成
 
+### TODO: ⭐ suki DB/JSON 同步斷裂修復（下一輪最先做；taste Phase B2 前置）
+**Status:** 方向已定（Jack 2026-05-22 拍板選項 1：daily review 改用 MemoryManager 寫 db），下輪實作
+**What:** daily review（`scripts/analyze_daily_log.py:1383`）只寫 `suki_memory.json`，但 bot（`MemoryManager._load_all`）只從 `marvin.db` 讀，`_migrate_from_json` 只在 db 空時跑 → **daily review 的 player 分析（likes/impression/relationship）永遠進不了 bot runtime**；bot `_export_json` 還會用 db 覆蓋抹掉 daily 寫的 json。
+**證據（2026-05-22 驗證）:** 比對 `records/backups/suki_memory_20260521_121020.json` vs `marvin.db`：大肚 likes daily 寫「與友共飲/駕駛油車」，db 是「飲酒聚會/開燃油車」（不同版本）；impression 64 vs 45 字。daily 5/20–5/21 兩天分析都沒進 db。
+**關鍵細節:** bot 對 suki 是**混合讀取**——players 從 db（權威），頂層 meta（marvin_performance/proactive_topics）從 json（`get_meta_state` suki_memory.py:189）。**只有 player 部分斷裂，meta OK**。修復只處理 player 部分。
+**How to start（選項 1）:** daily review 的 player 寫回（merge_player 結果）改用 `MemoryManager`（`replace_player_memory` / `record_taste_signal`）寫 db；meta 繼續寫 json。
+**並發殘留:** daily 12:05 寫 db 時 bot 在跑，若該 player 該時段有語音活動，bot `_save_player` 會用舊 `_cache` 覆蓋。白天多數 player 無活動 → 多半保留、重啟後穩定。v2 再做「bot save 前比對 db 版本 / pending queue」徹底解並發。
+**Priority:** P1（阻擋 taste B2 + daily review 全部成果生效）
+
+---
+
+### TODO: taste 分數分級系統 — Phase B2 / C / D
+**Status:** Phase A（suki taste 模型）+ B1（feedback loop T2 走 record_taste_signal）已上線（commit 0dfd8ca, d099a85），bot 已重啟採用
+**What:**
+- **B2**（等上面同步修復後才有意義）：`merge_player` 的 likes/dislikes 改成對 `taste` 加小分（`_DAILY_TASTE_DELTA≈1.5`，Gemini 弱印象入「曾提及」不直接塞 likes），existing confirmed 用 `_build_taste_from_legacy` 保留，結尾 `_project_taste`。解「daily 一次加 11 個 likes」。
+- **C**：即時語音偵測新興趣項目 → `record_taste_signal(+小分)` 入曾提及（bot 內 MemoryManager 即時生效，**不受同步斷裂影響**）。需從對話抽「興趣項目」（LLM 抽取）。
+- **D**：「你問我答」校準介面（Jack 確認/否定 → 直接設高分 / `remove_taste_item`），把 2026-05-22 手動做的 AskUserQuestion 問答流程化。
+**參考:** `suki_memory.py` `LIKE/DISLIKE_THRESHOLD=±3`、`record_taste_signal` / `remove_taste_item` / `_project_taste` / `_build_taste_from_legacy`；記憶 `feedback_dual_path_taste_writes`。
+**Priority:** B2 P1（同步後）/ C P2 / D P3
+
+---
+
+### TODO: 品質指標 — Phase 2.5 / 4.5
+**Status:** P1–4 + cron 已上線（commit eee0c8e, 7e7e5f3, 34a44f7），bot 累積資料中，每日 12:05 出報告 `records/quality_metrics_<date>.md`
+**What:**
+- **P2.5**：react time 完整端到端——目前量 wake hit→first audio，補一個 utterance-ts→wake-hit 的更早 mark（含 STT/cleaner/pool），看 pool 對反應時間的真實影響。改 `latency_tracker.py` + `discord_voice_engine.py`。
+- **P4.5**：RecallHandler 端到端對話 recall（含 LLM 路徑 C），不只 suki 確定性查核。
+**先決:** 等幾天 wake→audio baseline 數字出來，看 P2.5 值不值得。recall_probe_cases.json 真實 ground truth 已填 15 條（Jack 確認）。
+**Priority:** P2
+
+---
+
+### TODO: suki 雜訊假 player 清理（待 Jack 確認）
+**What:** 「測試者/未知人/系統/會別人怎麼講話/修為講話」明顯是 STT 噪音建的假 player（likes 全空）。「狗與鹿」可能是「狗與露」的 STT 變體（兩個都存在、likes 不同）→ 待釐清是否合併。
+**How:** suki 加 `delete_player` API 或清理 script，**bot 停止時跑**（避免 `_cache` 覆蓋，像 2026-05-22 移除西藏佛學那樣）。狗與鹿/狗與露 是否同一人要 Jack 確認。
+**Priority:** P3（清理，非阻擋）
+
+---
+
 ### TODO: IntentBus — Game agent prod wiring（vertical slice 已完成，wiring 未做）
 **Status:** DEFERRED（明天工作項 #4，等架構改動沉澱後接）
 **What:** voice_controller.py L2400 game cog chain 改成 `IntentContext(mode="game") → bus.dispatch()`，把今天寫的 3 個 game agent（Busted99/Busted/TurtleSoup）真正接到 prod。
@@ -119,6 +158,26 @@
 **How to start:** 在 `stream_fast_response` 之前加 `context_injector.enrich(speaker, query)` call，返回 enriched prompt。
 **Depends on:** 向量語意搜尋
 **Effort:** S（1天）
+
+---
+
+### TODO: ProactiveArbiter — 全遷移 3 個主動發言者進 bidding（CP2 deferred）
+**Status:** DEFERRED（2026-05-21 CEO review）
+**What:** 把 TopicGenerator social gap / leave_prob 送客 / pending 確認 這 3 個現有主動發言者，全部改成 bid 進 ProactiveArbiter（max wins），取代目前只共用 cooldown 的做法。
+**Why:** 收斂「主動發言」這個 latent agent bus，徹底消除互搶麥的 collision class（對上 project_agent_pattern 標的待遷移）。基線只做了 cooldown 防撞，沒收斂邏輯。
+**How to start:** 先確認 ProactiveArbiter（基線）上線穩定後，逐一把每個發言者的 `voice_client.play()` 路徑改成 `arbiter.bid()`。一次遷一個 + 測試。
+**Depends on:** ProactiveArbiter 基線（本 plan）
+**Effort:** M（human ~2-3d / CC ~40min）
+**Priority:** P3 — 等 STT/wake/stream 穩定性 incident 平息再動 4 條熱路徑
+
+### TODO: 語音控制同意線 —「別記/別說出去」（CP3 deferred）
+**Status:** DEFERRED（2026-05-21 CEO review）
+**What:** 新 intent：使用者語音說「別記這個」「這個別說出去」→ 把對應群組記憶標 private 或刪除。把 shareable 同意線從啟發式猜測，升級成使用者可控的信任功能。
+**Why:** office-hours：「可分享 vs 私下」這條線劃好本身就是護城河。啟發式預設能擋大部分，但使用者可控才是信任的完整形態。
+**How to start:** 加一個 DeclarativeIntentAgent（text pattern：別記/別說/刪掉那個），handler 對 SummaryStore/suki_memory 標 private。先寫紅。
+**Depends on:** 返場 callback 上線（先看到真實「講了不該講」案例）
+**Effort:** S/M（human ~2d / CC ~30min）
+**Priority:** P2
 
 ---
 
