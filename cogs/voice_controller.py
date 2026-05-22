@@ -67,6 +67,7 @@ from intent_agents.profile_builder import SpeakerProfileBuilder
 from intent_agents.recommendation import Recommendation, append_recommendation
 from llm_pool import build_tiered_router
 from music_recommender import build_recommendation_pool, pick_candidate
+from taste_extractor import extract_taste_signals
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
@@ -2128,6 +2129,10 @@ class VoiceController(commands.Cog):
                 self.bot.loop.create_task(self._handle_farewell_speech(speaker, raw_text))
             except Exception as _e:
                 logger.debug(f"⚠️ [Farewell] create_task 失敗: {_e}")
+            # 👅 [Taste C] 即時明示偏好。只掛非喚醒路徑（is_fast 走 wake 熱路徑，不加 I/O）；
+            # inline 與主迴圈同 thread（避免共用 sqlite 連線競態）。命中才寫，罕見。
+            if not is_fast:
+                self._record_interest_signals(speaker, raw_text)
 
         if is_fast:
             _track_label = f"Track={'A' if track is None else track}"
@@ -2441,6 +2446,29 @@ class VoiceController(commands.Cog):
             user_emotion = self.user_emotion_cache.get(speaker, "neutral")
             mood = infer_mood(response_text, toxicity, user_emotion)
         await self.bot.sticker_manager.send(self.active_text_channel, mood)
+
+    # ------------------------------------------------------------------ #
+    # 👅  Taste C — 即時明示偏好偵測                                       #
+    # ------------------------------------------------------------------ #
+
+    def _record_interest_signals(self, speaker: str, raw_text: str) -> None:
+        """[Taste C] 抓明示偏好句（我喜歡/討厭 X）→ record_taste_signal 給小分入「曾提及」。
+
+        確定性 regex（taste_extractor），零 LLM；隱性興趣交 offline daily review（P1 修好同步
+        後已能進 bot）。只掛非喚醒路徑（保護 wake 延遲）、與主迴圈同 thread 寫 memory（避免共用
+        sqlite 連線競態）。active speaker 明示偏好即建 player（group-native）。side-channel：
+        任何例外吞掉，不拖垮 utterance pipeline。
+        """
+        try:
+            signals = extract_taste_signals(raw_text)
+            if not signals:
+                return
+            memory = self.bot.router.memory
+            for item, delta in signals:
+                memory.record_taste_signal(speaker, item, delta, reason="voice_explicit")
+                self.stt_logger.info(f"👅 [Taste-C] {speaker} 明示偏好 『{item}』{delta:+.1f}")
+        except Exception as e:
+            logger.debug(f"⚠️ [Taste-C] 即時偏好記錄失敗（不影響主流程）: {e}")
 
     # ------------------------------------------------------------------ #
     # 👋  Farewell Detector                                               #

@@ -13,13 +13,13 @@
 ---
 
 ### TODO: taste 分數分級系統 — Phase B2 / C / D
-**Status:** Phase A（suki taste 模型）+ B1（feedback loop T2 走 record_taste_signal）已上線（commit 0dfd8ca, d099a85）；**B2 ✅ DONE（2026-05-22）**。C / D 待做。
+**Status:** Phase A + B1（commit 0dfd8ca, d099a85）；**B2 ✅ + C ✅ DONE（2026-05-22）**。D 待做。
 **What:**
-- **B2** ✅：`merge_player` 的 likes/dislikes 改走 taste 加 `_DAILY_TASTE_DELTA=1.5`（新項目只進「曾提及」，跨日累積過 ±3.0 才投影 confirmed），existing confirmed 用 `_build_taste_from_legacy` 保留，結尾 `_project_taste`。端到端驗證：11 個 Gemini likes 一次 → 0 confirmed（全曾提及），解掉「daily 一次加 11 個 likes」。測試 `tests/test_daily_review_taste_merge.py`（8 條）。
-- **C**：即時語音偵測新興趣項目 → `record_taste_signal(+小分)` 入曾提及（bot 內 MemoryManager 即時生效，**不受同步斷裂影響**）。需從對話抽「興趣項目」（LLM 抽取）。
+- **B2** ✅：`merge_player` 的 likes/dislikes 改走 taste 加 `_DAILY_TASTE_DELTA=1.5`（新項目只進「曾提及」，跨日累積過 ±3.0 才投影 confirmed），existing confirmed 用 `_build_taste_from_legacy` 保留，結尾 `_project_taste`。端到端驗證：11 個 Gemini likes 一次 → 0 confirmed，解掉「daily 一次加 11 個 likes」。測試 `tests/test_daily_review_taste_merge.py`（8 條）。
+- **C** ✅：**改為確定性偵測**（Jack 2026-05-22 拍板，否決原 LLM 即時抽取）。P1 修好同步後 daily 的 LLM 抽取已能進 bot，C 不重做即時 LLM（與 slow-learning 衝突）。新 `taste_extractor.py`：regex 抓明示偏好句「我喜歡/超愛/討厭 X」→ `record_taste_signal(±1.0)` 入曾提及。`VoiceController._record_interest_signals` 接 handle_stt_result 非喚醒路徑（保護 wake 延遲、inline 同 thread 避 sqlite 競態）。隱性興趣仍交 offline daily。測試 `tests/test_taste_extractor.py`(13) + `tests/test_interest_signal_wiring.py`(5)。
 - **D**：「你問我答」校準介面（Jack 確認/否定 → 直接設高分 / `remove_taste_item`），把 2026-05-22 手動做的 AskUserQuestion 問答流程化。
 **參考:** `suki_memory.py` `LIKE/DISLIKE_THRESHOLD=±3`、`record_taste_signal` / `remove_taste_item` / `_project_taste` / `_build_taste_from_legacy`；記憶 `feedback_dual_path_taste_writes`。
-**Priority:** B2 P1（同步後）/ C P2 / D P3
+**Priority:** ~~B2 P1 / C P2~~ 已完成 / D P3
 
 ---
 
