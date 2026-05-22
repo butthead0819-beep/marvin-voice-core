@@ -48,7 +48,7 @@ def build_report(rows: list[dict], date_label: str) -> str:
         lines.append(f"- count: {react['count']}")
         lines.append(f"- **p50: {react['p50']}ms　p95: {react['p95']}ms　mean: {react['mean']}ms**")
     else:
-        lines.append("- （尚未 instrument — Phase 2 react_ms）")
+        lines.append("- （今日無 react 樣本）")
     lines.append("")
 
     lines.append("## Bad-timing interruption（Marvin 開口瞬間有人類正在說話）")

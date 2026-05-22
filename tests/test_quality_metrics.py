@@ -147,7 +147,7 @@ def test_build_report_shows_false_rate():
 def test_build_report_react_placeholder_when_no_data():
     from scripts.quality_metrics_report import build_report
     out = build_report([], "2026-05-22")
-    assert "Phase 2" in out        # react_ms 尚未 instrument
+    assert "無 react 樣本" in out   # 已 instrument（Phase 2），只是今日無資料
     assert "無 Track-B wake" in out
 
 

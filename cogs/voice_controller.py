@@ -36,7 +36,11 @@ from session_summarizer import SessionSummarizer
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
-from quality_metrics import record_metric
+from quality_metrics import (
+    record_metric, read_metrics,
+    summarize_false_responding, summarize_latency,
+    summarize_interruption, summarize_recall,
+)
 from intent_agents.constants import (
     MUSIC_DIRECT_PAUSE_KW as _MUSIC_DIRECT_PAUSE_KW_SRC,
     MUSIC_DIRECT_RESUME_KW as _MUSIC_DIRECT_RESUME_KW_SRC,
@@ -1161,6 +1165,25 @@ class VoiceController(commands.Cog):
             lines.append(f"{e} `{r['name']}` · {tail}")
         return "\n".join(lines)
 
+    @staticmethod
+    def _fmt_quality_today(rows: list[dict]) -> str:
+        """當日品質指標四行（per feedback_marvin_quality_metrics）。無樣本＝剛重啟/還沒對話。"""
+        fr = summarize_false_responding(rows)
+        rk = summarize_latency([r for r in rows if r.get("metric") == "react"], "react_ms")
+        it = summarize_interruption(rows)
+        it_idle = summarize_interruption(rows, idle_only=True)
+        rc = summarize_recall(rows)
+        lines = []
+        lines.append(f"⏱️ 反應: p50 {rk['p50']:.0f}ms / p95 {rk['p95']:.0f}ms (n={rk['count']})"
+                     if rk["count"] else "⏱️ 反應: 今日無樣本")
+        lines.append(f"🗣️ 誤回應: {fr['false_rate'] * 100:.0f}% (n={fr['total']})"
+                     if fr["total"] else "🗣️ 誤回應: 今日無樣本")
+        lines.append(f"✂️ 打斷: {it['interrupt_rate'] * 100:.0f}% (淨 {it_idle['interrupt_rate'] * 100:.0f}%, n={it['total']})"
+                     if it["total"] else "✂️ 打斷: 今日無樣本")
+        lines.append(f"🧠 記憶 recall: {rc['accuracy'] * 100:.0f}% (n={rc['total']})"
+                     if rc["total"] else "🧠 記憶 recall: 每週一 probe")
+        return "\n".join(lines)
+
     @app_commands.command(name="marvin_system", description="[System] 查看馬文的核心系統、網路備援與配額狀態")
     async def marvin_system(self, interaction: discord.Interaction):
         await interaction.response.defer(thinking=True)
@@ -1215,6 +1238,14 @@ class VoiceController(commands.Cog):
                             value=self._fmt_pool_status(tier_router.quick_pool.status()), inline=False)
             embed.add_field(name="🧠 分析池 analyze（curation / feedback）",
                             value=self._fmt_pool_status(tier_router.analyze_pool.status()), inline=False)
+
+        # 今日品質指標（react / 誤回應 / 打斷 / recall）— 讀當日 quality_metrics.jsonl
+        try:
+            _today = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+            _q_rows = read_metrics(since_ts=_today)
+            embed.add_field(name="📊 今日品質指標", value=self._fmt_quality_today(_q_rows), inline=False)
+        except Exception as _e:
+            logger.debug(f"⚠️ [marvin_system] 品質指標讀取失敗: {_e}")
 
         await interaction.followup.send(embed=embed)
 
