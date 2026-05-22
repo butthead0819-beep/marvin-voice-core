@@ -127,5 +127,29 @@ def test_repair_player_adds_callback_queue_to_old_record():
     assert repaired["callback_queue"] == []
 
 
+# ── kill-switch: per-player mute (T4) ──────────────────────────────────────────
+def test_muted_player_peek_returns_none(tmp_path):
+    mem = _mk(tmp_path)
+    mem.enqueue_callback("Alice", "戒咖啡", shareable=True)
+    mem.set_callbacks_muted("Alice", True)
+    assert mem.peek_shareable_callback("Alice") is None
+
+
+def test_unmute_restores_peek(tmp_path):
+    mem = _mk(tmp_path)
+    mem.enqueue_callback("Alice", "戒咖啡", shareable=True)
+    mem.set_callbacks_muted("Alice", True)
+    mem.set_callbacks_muted("Alice", False)
+    assert mem.peek_shareable_callback("Alice")["text"] == "戒咖啡"
+
+
+def test_default_not_muted(tmp_path):
+    assert _mk(tmp_path).is_callbacks_muted("Alice") is False
+
+
+def test_repair_adds_callbacks_muted():
+    assert _repair_player({"likes": ["coffee"]})["callbacks_muted"] is False
+
+
 def test_new_player_has_callback_queue():
     assert _new_player()["callback_queue"] == []
