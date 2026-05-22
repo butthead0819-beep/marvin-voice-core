@@ -1,5 +1,23 @@
 [
-  {"_comment": "Recall probe ground truth — Jack 填你『知道答案』的真實事實，每週 probe 查 Marvin 記憶比對。憑空造的答案沒意義。"},
-  {"_comment": "格式: {speaker, field(likes/dislikes/taboos), expect_any:[關鍵詞任一命中即算對], note}。下面是範例，請改成真實偏好或刪除。"},
-  {"speaker": "狗與露", "field": "likes", "expect_any": ["周杰倫"], "note": "範例：請替換成你確知的真實偏好"}
+  {"_comment": "Recall probe ground truth — Jack 確認的真實事實，每週一 probe 查 Marvin 記憶比對。憑空造的答案沒意義。"},
+  {"_comment": "格式: {speaker, field(likes/dislikes/taboos), expect_any:[關鍵詞任一命中即算對], note}。用『你問我答』新增，不必手改。"},
+
+  {"speaker": "大肚", "field": "likes", "expect_any": ["九零年代金曲"], "note": "Jack確認 2026-05-22"},
+  {"speaker": "大肚", "field": "likes", "expect_any": ["開燃油車"], "note": "Jack確認 2026-05-22"},
+  {"speaker": "大肚", "field": "likes", "expect_any": ["接工程案"], "note": "Jack確認 2026-05-22"},
+  {"speaker": "大肚", "field": "likes", "expect_any": ["雞排"], "note": "Jack確認 2026-05-22"},
+
+  {"speaker": "weakgogo", "field": "likes", "expect_any": ["茄子蛋"], "note": "Jack確認 2026-05-22"},
+  {"speaker": "weakgogo", "field": "likes", "expect_any": ["虛擬賽車"], "note": "Jack確認 2026-05-22"},
+  {"speaker": "weakgogo", "field": "likes", "expect_any": ["張國榮"], "note": "Jack確認 2026-05-22"},
+
+  {"speaker": "showay", "field": "likes", "expect_any": ["張雨生"], "note": "Jack確認 2026-05-22"},
+  {"speaker": "showay", "field": "likes", "expect_any": ["後驅車操控"], "note": "Jack確認 2026-05-22"},
+  {"speaker": "showay", "field": "likes", "expect_any": ["自動化腳本"], "note": "Jack確認 2026-05-22"},
+  {"speaker": "showay", "field": "likes", "expect_any": ["魔物獵人"], "note": "Jack確認 2026-05-22"},
+
+  {"speaker": "狗與露", "field": "likes", "expect_any": ["孫燕姿"], "note": "Jack本人確認 2026-05-22"},
+  {"speaker": "狗與露", "field": "likes", "expect_any": ["周杰倫"], "note": "Jack本人確認 2026-05-22"},
+  {"speaker": "狗與露", "field": "likes", "expect_any": ["盧廣仲"], "note": "Jack本人確認 2026-05-22"},
+  {"speaker": "狗與露", "field": "likes", "expect_any": ["蕭煌奇"], "note": "Jack本人確認 2026-05-22"}
 ]
