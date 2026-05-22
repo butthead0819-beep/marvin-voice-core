@@ -13,9 +13,9 @@
 ---
 
 ### TODO: taste 分數分級系統 — Phase B2 / C / D
-**Status:** Phase A（suki taste 模型）+ B1（feedback loop T2 走 record_taste_signal）已上線（commit 0dfd8ca, d099a85），bot 已重啟採用
+**Status:** Phase A（suki taste 模型）+ B1（feedback loop T2 走 record_taste_signal）已上線（commit 0dfd8ca, d099a85）；**B2 ✅ DONE（2026-05-22）**。C / D 待做。
 **What:**
-- **B2**（等上面同步修復後才有意義）：`merge_player` 的 likes/dislikes 改成對 `taste` 加小分（`_DAILY_TASTE_DELTA≈1.5`，Gemini 弱印象入「曾提及」不直接塞 likes），existing confirmed 用 `_build_taste_from_legacy` 保留，結尾 `_project_taste`。解「daily 一次加 11 個 likes」。
+- **B2** ✅：`merge_player` 的 likes/dislikes 改走 taste 加 `_DAILY_TASTE_DELTA=1.5`（新項目只進「曾提及」，跨日累積過 ±3.0 才投影 confirmed），existing confirmed 用 `_build_taste_from_legacy` 保留，結尾 `_project_taste`。端到端驗證：11 個 Gemini likes 一次 → 0 confirmed（全曾提及），解掉「daily 一次加 11 個 likes」。測試 `tests/test_daily_review_taste_merge.py`（8 條）。
 - **C**：即時語音偵測新興趣項目 → `record_taste_signal(+小分)` 入曾提及（bot 內 MemoryManager 即時生效，**不受同步斷裂影響**）。需從對話抽「興趣項目」（LLM 抽取）。
 - **D**：「你問我答」校準介面（Jack 確認/否定 → 直接設高分 / `remove_taste_item`），把 2026-05-22 手動做的 AskUserQuestion 問答流程化。
 **參考:** `suki_memory.py` `LIKE/DISLIKE_THRESHOLD=±3`、`record_taste_signal` / `remove_taste_item` / `_project_taste` / `_build_taste_from_legacy`；記憶 `feedback_dual_path_taste_writes`。

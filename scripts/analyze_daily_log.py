@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import json
+import time
 import shutil
 import subprocess
 from collections import defaultdict
@@ -22,6 +23,19 @@ FEEDBACK_FILE = BASE_DIR / "records" / "response_feedback.jsonl"
 MEMORY_FILE   = BASE_DIR / "suki_memory.json"
 BACKUP_DIR    = BASE_DIR / "records" / "backups"
 SLICE_SCRIPT  = BASE_DIR / "scripts" / "slice_stt_daily.py"
+
+# suki taste 模型（與 bot runtime / feedback loop 共用同一分數來源，避免兩條 path 打架，
+# 見記憶 feedback_dual_path_taste_writes）。
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+from suki_memory import (  # noqa: E402
+    LIKE_THRESHOLD, DISLIKE_THRESHOLD, _SCORE_MIN, _SCORE_MAX,
+    _build_taste_from_legacy, _project_taste,
+)
+
+# daily review 一次提及對 taste 加的分量。< LIKE_THRESHOLD(3.0) → 單日弱印象只進「曾提及」，
+# 需跨日累積才升級 confirmed likes/dislikes（解「daily 一次加 11 個 likes」）。
+_DAILY_TASTE_DELTA = 1.5
 
 
 def _load_env():
@@ -450,9 +464,32 @@ def _union_list(old, new) -> list:
     return seen
 
 
+def _apply_daily_taste(taste: dict, item: str, delta: float) -> None:
+    """對 taste 的某項目加 delta 分（不就地改 existing 的 entry dict）。"""
+    now = time.time()
+    entry = dict(taste.get(item) or {"score": 0.0, "mentions": 0, "first_seen": now, "last_update": now})
+    entry["score"] = max(_SCORE_MIN, min(_SCORE_MAX, float(entry.get("score", 0)) + delta))
+    entry["mentions"] = int(entry.get("mentions", 0)) + 1
+    entry["last_update"] = now
+    taste[item] = entry
+
+
 def merge_player(existing: dict, updated: dict) -> dict:
-    """將 LLM 更新的玩家資料合併進現有記錄，runtime 狀態欄位不覆寫。"""
+    """將 LLM 更新的玩家資料合併進現有記錄，runtime 狀態欄位不覆寫。
+
+    likes/dislikes 不直接 union 進清單（Phase B2）——改成對 taste 分數加 ±_DAILY_TASTE_DELTA，
+    新項目只進「曾提及」，跨日累積過 ±LIKE/DISLIKE_THRESHOLD 才投影成 confirmed。
+    existing confirmed（legacy 無 taste）用 _build_taste_from_legacy 保留；結尾 _project_taste
+    重算清單。taboos 維持獨立 union（敏感標記，不被分數投影）。
+    """
     merged = dict(existing)
+
+    # taste 模型 idempotent 初始化：缺 taste → 從既有 likes/dislikes 建 confirmed 起始分。
+    taste_built = "taste" not in merged
+    if taste_built:
+        merged["taste"] = _build_taste_from_legacy(merged.get("likes", []), merged.get("dislikes", []))
+    taste = dict(merged["taste"])  # 一層 copy；_apply_daily_taste 再 copy entry，避免改到 existing
+    taste_touched = False
 
     for key, val in updated.items():
         if key in _RUNTIME_KEYS or val is None:
@@ -480,8 +517,15 @@ def merge_player(existing: dict, updated: dict) -> dict:
             combined.sort(key=lambda x: x.get("timestamp", 0))
             merged["emotional_highlights"] = combined[-10:]
 
-        elif key in ("likes", "dislikes", "taboos") and isinstance(val, list):
-            merged[key] = _union_list(existing.get(key, []), val)
+        elif key == "taboos" and isinstance(val, list):
+            merged["taboos"] = _union_list(existing.get("taboos", []), val)
+
+        elif key in ("likes", "dislikes") and isinstance(val, list):
+            sign = _DAILY_TASTE_DELTA if key == "likes" else -_DAILY_TASTE_DELTA
+            for item in val:
+                if item:
+                    _apply_daily_taste(taste, item, sign)
+                    taste_touched = True
 
         elif key == "personal_info" and isinstance(val, dict):
             old_info = dict(existing.get("personal_info", {}))
@@ -524,6 +568,11 @@ def merge_player(existing: dict, updated: dict) -> dict:
 
         else:
             merged[key] = val
+
+    # taste 有變動（新建或本輪加分）才重算 likes/dislikes 投影；否則保留既有清單不動。
+    if taste_built or taste_touched:
+        merged["taste"] = taste
+        _project_taste(merged)
 
     return merged
 
