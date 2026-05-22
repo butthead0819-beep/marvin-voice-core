@@ -84,6 +84,33 @@ def summarize_false_responding(rows: list[dict]) -> dict:
             "false_rate": round(false_n / total, 4) if total else 0.0}
 
 
+def summarize_interruption(rows: list[dict], *, idle_only: bool = False) -> dict:
+    """rows 內 metric=interruption（每筆有 interrupted bool + was_playing）→ total/interrupted/rate。
+
+    idle_only：只算 Marvin 開口前沒在播的（was_playing=False），排除「接續回應時 user_is_speaking
+    其實是 Marvin 自己回聲」的 echo 嫌疑樣本，得到較乾淨的打斷率。
+    """
+    iv = [r for r in rows if r.get("metric") == "interruption"]
+    if idle_only:
+        iv = [r for r in iv if not r.get("was_playing")]
+    total = len(iv)
+    n = sum(1 for r in iv if r.get("interrupted"))
+    return {"total": total, "interrupted": n,
+            "interrupt_rate": round(n / total, 4) if total else 0.0}
+
+
+def summarize_recall(rows: list[dict]) -> dict:
+    """rows 內 metric=recall（每筆有 correct bool）→ total/correct/accuracy。
+
+    weekly active probe：對已知 ground truth cases 查 Marvin 記憶、比對 → correct。
+    """
+    rc = [r for r in rows if r.get("metric") == "recall"]
+    total = len(rc)
+    correct = sum(1 for r in rc if r.get("correct"))
+    return {"total": total, "correct": correct,
+            "accuracy": round(correct / total, 4) if total else 0.0}
+
+
 def summarize_latency(rows: list[dict], field: str = "react_ms") -> dict:
     """通用 latency 聚合（Phase 2 react_ms 用）→ count/p50/p95/mean。"""
     vals = [float(r[field]) for r in rows if r.get(field) is not None]

@@ -5011,6 +5011,17 @@ class VoiceController(commands.Cog):
                     record_metric("react", speaker=_stage2["speaker"],
                                   react_ms=round(_stage2["total_wake_to_audio_ms"], 1),
                                   tts_ms=round(_stage2["sentence_to_audio_ms"], 1))
+                # 品質指標 capture：bad-timing interruption — Marvin 開口瞬間有人類正在說話嗎。
+                # user_is_speaking 是 VAD 即時態（純人類）；was_playing 標 Marvin 是否已在播
+                # （接續回應時 user_is_speaking 可能是自己回聲 → 報告 idle_only 過濾掉）。
+                try:
+                    _speaking_now = sum(1 for v in getattr(self.bot.engine, "user_is_speaking", {}).values() if v)
+                except Exception:
+                    _speaking_now = 0
+                record_metric("interruption", interrupted=bool(_speaking_now),
+                              n_speaking=_speaking_now, was_playing=bool(self.is_playing_audio),
+                              mode=("stream" if self.stream_mode else
+                                    "radio" if self.radio_mode else "normal"))
                 voice_client.play(
                     discord.FFmpegPCMAudio(fifo_path),
                     after=lambda e: after_playing(e, estimated_dur)

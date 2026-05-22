@@ -9,7 +9,8 @@ import pytest
 
 from quality_metrics import (
     record_metric, read_metrics, percentile,
-    summarize_false_responding, summarize_latency,
+    summarize_false_responding, summarize_latency, summarize_interruption,
+    summarize_recall,
 )
 
 
@@ -150,6 +151,17 @@ def test_build_report_react_placeholder_when_no_data():
     assert "無 Track-B wake" in out
 
 
+def test_build_report_shows_interruption_rate():
+    from scripts.quality_metrics_report import build_report
+    rows = [
+        {"metric": "interruption", "interrupted": True, "was_playing": False},
+        {"metric": "interruption", "interrupted": False, "was_playing": False},
+    ]
+    out = build_report(rows, "2026-05-22")
+    assert "打斷率: 50.0%" in out
+    assert "idle-only" in out
+
+
 def test_build_report_react_stats_when_present():
     from scripts.quality_metrics_report import build_report
     rows = [{"metric": "react", "react_ms": 200}, {"metric": "react", "react_ms": 400}]
@@ -165,6 +177,51 @@ def test_day_bounds_is_24h_window():
 
 
 # ── Phase 2 接線契約：LatencyMarks → react_ms ─────────────────────────────
+
+# ── bad-timing interruption ────────────────────────────────────────────────
+
+def test_interruption_rate(tmp_path):
+    p = _log(tmp_path)
+    for it in (True, True, False, False, False):   # 2 打斷 / 5 開口 = 0.4
+        record_metric("interruption", path=p, interrupted=it, was_playing=False)
+    s = summarize_interruption(read_metrics(p))
+    assert s["total"] == 5
+    assert s["interrupted"] == 2
+    assert s["interrupt_rate"] == pytest.approx(0.4)
+
+
+def test_interruption_idle_only_excludes_echo_suspect(tmp_path):
+    """was_playing=True 的開口（Marvin 已在播，user_is_speaking 可能是回聲）→ idle_only 排除。"""
+    p = _log(tmp_path)
+    record_metric("interruption", path=p, interrupted=True, was_playing=True)   # echo 嫌疑
+    record_metric("interruption", path=p, interrupted=True, was_playing=False)  # 乾淨打斷
+    record_metric("interruption", path=p, interrupted=False, was_playing=False)
+    s = summarize_interruption(read_metrics(p), idle_only=True)
+    assert s["total"] == 2          # 只算 was_playing=False
+    assert s["interrupted"] == 1
+
+
+def test_interruption_empty_is_zero():
+    s = summarize_interruption([])
+    assert s == {"total": 0, "interrupted": 0, "interrupt_rate": 0.0}
+
+
+# ── recall（weekly probe）──────────────────────────────────────────────────
+
+def test_recall_accuracy(tmp_path):
+    p = _log(tmp_path)
+    for ok in (True, True, True, False):   # 3/4 = 0.75
+        record_metric("recall", path=p, correct=ok)
+    s = summarize_recall(read_metrics(p))
+    assert s["total"] == 4
+    assert s["correct"] == 3
+    assert s["accuracy"] == pytest.approx(0.75)
+
+
+def test_recall_empty_is_zero():
+    s = summarize_recall([])
+    assert s == {"total": 0, "correct": 0, "accuracy": 0.0}
+
 
 def test_latency_total_feeds_react_ms(tmp_path):
     """接點契約：play_tts 的 mark_first_audio dict 的 total_wake_to_audio_ms 即 react_ms。

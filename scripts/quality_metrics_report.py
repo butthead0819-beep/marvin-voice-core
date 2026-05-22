@@ -17,7 +17,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from quality_metrics import (  # noqa: E402
     DEFAULT_METRICS_LOG, read_metrics,
-    summarize_false_responding, summarize_latency,
+    summarize_false_responding, summarize_latency, summarize_interruption,
+    summarize_recall,
 )
 
 
@@ -50,8 +51,24 @@ def build_report(rows: list[dict], date_label: str) -> str:
         lines.append("- （尚未 instrument — Phase 2 react_ms）")
     lines.append("")
 
-    lines.append("## Bad-timing interruption / Recall")
-    lines.append("- （尚未 instrument — Phase 3 / Phase 4）")
+    lines.append("## Bad-timing interruption（Marvin 開口瞬間有人類正在說話）")
+    it_all = summarize_interruption(rows)
+    it_idle = summarize_interruption(rows, idle_only=True)
+    if it_all["total"]:
+        lines.append(f"- 開口次數: {it_all['total']}　打斷: {it_all['interrupted']}")
+        lines.append(f"- **打斷率: {it_all['interrupt_rate'] * 100:.1f}%**"
+                     f"（排除回聲嫌疑 idle-only: {it_idle['interrupt_rate'] * 100:.1f}%, n={it_idle['total']}）")
+    else:
+        lines.append("- （今日無 TTS 開口樣本）")
+    lines.append("")
+
+    lines.append("## Recall（weekly active probe）")
+    rc = summarize_recall(rows)
+    if rc["total"]:
+        lines.append(f"- cases: {rc['total']}　correct: {rc['correct']}")
+        lines.append(f"- **recall accuracy: {rc['accuracy'] * 100:.1f}%**")
+    else:
+        lines.append("- （本期無 probe 樣本 — 填 recall_probe_cases.json 真實 ground truth 後每週跑）")
     return "\n".join(lines)
 
 
