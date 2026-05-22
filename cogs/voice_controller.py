@@ -57,6 +57,7 @@ from intent_agents.nemoclaw_agent import NemoClawAgent
 from intent_agents.busted_agent import BustedAgent
 from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
+from intent_agents.find_song_agent import FindSongAgent, find_song_prompt
 from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
 from intent_agents.recommendation import Recommendation, append_recommendation
@@ -135,6 +136,7 @@ def build_intent_agents(controller, bot):
         HallucinationGuardAgent(controller),
         NemoClawAgent(controller),
         MusicAgentV2(controller),
+        FindSongAgent(controller),
         BustedAgent(bot),
         Busted99Agent(bot),
         TurtleSoupAgent(bot),
@@ -238,6 +240,10 @@ _MUSIC_INFO_RE = re.compile(
     r'|(?:歌名|歌手|藝人|誰唱|誰寫)(?:是什麼|叫什麼|是誰|叫)',
     re.IGNORECASE,
 )
+
+# 🔎 [Find-Song] no-wake 觸發閘：「找」+ 音樂錨點。與 FindSongAgent 四模式 patterns 對齊
+# （歌詞/專輯/的歌/的歌曲）。對話「找」（找東西/找你/找工會）無錨點 → 不觸發。
+_FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGNORECASE)
 
 # 👋 [Farewell Detector] 告別語偵測正規表達式
 _FAREWELL_RE = re.compile(
@@ -2592,6 +2598,21 @@ class VoiceController(commands.Cog):
                     logger.info(f"🎵 [IBA-T0] {speaker} 直接音樂控制 cmd={_cmd_action} (no wake) | '{full_raw_text[:40]}'")
                     asyncio.create_task(self._safe_music_command(speaker, full_raw_text, _cmd_action))
                 return
+
+        # 🔎 [Find-Song] no-wake「找 + 音樂錨點」→ 進 bus 由 FindSongAgent 識別後播放。
+        # gate 與 agent patterns 對齊；gate 過但 agent 不接 → bus 回 None → drop（同既有 no-wake 行為）。
+        if not _recently_fast_woken and _FIND_SONG_GATE.search(full_raw_text):
+            self.deferred_wakes.pop(speaker, None)
+            _fs_ctx = IntentContext(
+                speaker=speaker, raw_text=full_raw_text, query=full_raw_text,
+                original_raw=full_raw_text, wake_intent=None,
+                stream_active=self.stream_mode, game_mode=False,
+                is_owner=self._is_owner_speaker(speaker), now=time.time(),
+                mode=("stream" if self.stream_mode else "normal"),
+            )
+            logger.info(f"🔎 [Find-Song] {speaker} no-wake 找歌進 bus | '{full_raw_text[:40]}'")
+            asyncio.create_task(self._intent_bus.dispatch(_fs_ctx))
+            return
 
         # 🎵 [IBA Tier 1] 音樂資訊查詢直達 — 播放中被問「這首叫什麼」直接回答，不走 LLM
         if self.stream_mode and self._current_stream_info and _MUSIC_INFO_RE.search(full_raw_text):
@@ -6132,6 +6153,30 @@ class VoiceController(commands.Cog):
             return f"🎵 **【馬文精選】** 從塵封歌單挖出《{title}》，還記得嗎。"
         who = cand.target_member or "你"
         return f"🎵 **【馬文精選】** 為 `{who}` 翻出的《{title}》。"
+
+    async def _handle_find_song(self, mode: str, payload: str, speaker: str):
+        """FindSongAgent handler：依模式 LLM 識別歌名 → 報出識別結果 → 交給播放路徑。
+
+        識別可能猜錯（尤其歌詞/主題模式），所以播放前先報出結果保留透明度。
+        """
+        user_prompt = find_song_prompt(mode, payload)
+        if not user_prompt:
+            return
+        try:
+            ident = await self.bot.router._call_llm(
+                system_prompt="你是精準的歌曲識別助手，只輸出一行「藝人 - 歌名」。",
+                user_prompt=user_prompt,
+            )
+            ident = (ident or "").strip().splitlines()[0].strip() if ident else ""
+            if not ident or ident.startswith("無"):
+                if self.active_text_channel:
+                    await self.active_text_channel.send(f"🔎 **【找歌】** 找不到符合「{payload}」的歌，換個說法試試？")
+                return
+            if self.active_text_channel:
+                await self.active_text_channel.send(f"🔎 **【找歌】** 我找到的應該是 `{ident}`，幫你播了。")
+            await self._safe_music_command(speaker, ident, "play")
+        except Exception as e:
+            logger.debug(f"⚠️ [FindSong] 失敗: {e}")
 
     async def _get_audio_duration(self, path: str) -> float:
         """使用 ffprobe 取得本地音訊檔案的時長（秒）。"""
