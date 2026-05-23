@@ -65,6 +65,7 @@ from intent_agents.busted_agent import BustedAgent
 from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.find_song_agent import FindSongAgent, find_song_prompt
+from intent_agents.playback_control_agent import PlaybackControlAgent
 from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
 from intent_agents.recommendation import Recommendation, append_recommendation
@@ -145,6 +146,7 @@ def build_intent_agents(controller, bot):
         NemoClawAgent(controller),
         MusicAgentV2(controller),
         FindSongAgent(controller),
+        PlaybackControlAgent(controller),  # Phase 1 M5: voice skip/stop/pause + ack + auto-blacklist
         BustedAgent(bot),
         Busted99Agent(bot),
         TurtleSoupAgent(bot),
