@@ -455,6 +455,18 @@ class MarvinBot(commands.Bot):
 
             logger.info("[AmbientIntelligence] DiscordTemperatureMonitor + TopicGenerator initialized")
 
+            # Phase 1 M2: wire MoodSensor for vibe-aware autopilot
+            try:
+                from mood_sensor import MoodSensor
+                vc_cog._mood_sensor = MoodSensor(
+                    transcript_store=vc_cog._transcript_store,
+                    groq_client=groq_client,
+                    temperature_monitor=_temp_monitor,
+                )
+                logger.info("[AmbientIntelligence] MoodSensor wired into VoiceController._mood_sensor")
+            except Exception:
+                logger.exception("[AmbientIntelligence] MoodSensor wire failed — autopilot will fallback to no vibe")
+
     async def on_ready(self):
         logger.info(f"🤖 馬文已連線。帳號: {self.user} (ID: {self.user.id})")
         logger.info(f"🏘️  本尊已潛入以下 {len(self.guilds)} 個伺服器：")

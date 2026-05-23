@@ -69,7 +69,7 @@ from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
 from intent_agents.recommendation import Recommendation, append_recommendation
 from llm_pool import build_tiered_router
-from music_recommender import build_recommendation_pool, pick_candidate
+from music_recommender import build_recommendation_pool, pick_candidates
 from taste_extractor import extract_taste_signals
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
@@ -651,6 +651,12 @@ class VoiceController(commands.Cog):
         self._radio_fade_task = None     # 音量漸變背景 Task
         self.radio_paused = False        # 電台是否被語音指令暫停中
         self._recommend_spotlight_idx = -1  # 自動推薦 spotlight 在場成員輪替指標
+        # Phase 1 M4: ambient room curator state
+        self._mood_sensor = None             # MoodSensor，由 main_discord.py wire (Phase 1 M2)
+        self._cover_blacklist = None         # CoverBlacklist，lazy init (Phase 1 M1)
+        self._round_track_count = 0          # 本 round 已 enqueue 第幾首 (1-3)；3 首一 round
+        self._round_size = 3                 # 一 round 幾首
+        self._consecutive_skips_by_url: dict[str, set[str]] = {}  # url → 已 skip 該 url 的 speaker set，連 2 不同人 → blacklist
 
         # 🎵 [Stream Mode] YouTube 串流系統狀態
         self.stream_mode = False
@@ -6080,7 +6086,11 @@ class VoiceController(commands.Cog):
         / text 太短時回退 hardcoded template 確保一定唸出歌名 + 點播者。
         """
         requester = info.get('requested_by', '')
-        if not requester or requester.startswith('Marvin'):
+        if not requester:
+            return None
+        # Phase 1 M6: Marvin 推薦的歌只在 round 第 1 首跑「賭一把」DJ；其他 round 內的
+        # 歌 (第 2、3 首) 維持靜默——避免每首都洗話 + 反 P7「沒人講話 ≠ 該介入」原則。
+        if requester.startswith('Marvin') and not info.get('_round_first'):
             return None
 
         mm = getattr(self.bot, 'music_memory', None)
@@ -6118,6 +6128,16 @@ class VoiceController(commands.Cog):
             ctx.append(f"時段：{slot}")
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
+
+        # Phase 1 M6: 「賭一把」mode — round 第 1 首主動承認弱點，降低被罵心理成本
+        # 對應 design doc P7 "social pressure release valve": Marvin 是被允許失敗的第三人
+        if info.get('_round_first') and requester.startswith('Marvin'):
+            ctx.append(
+                "【賭一把模式】這首歌是你從房間 vibe 挑的、不確定大家喜不喜歡。"
+                "你的介紹要主動承認這是一場小賭，不喜歡叫使用者罵你、你會立刻換。"
+                "範例：『下一首這個我賭一把，不喜歡叫我換』或『試試這首，挑錯叫我重選』。"
+                "保持輕鬆口吻，不要解釋為什麼選這首。"
+            )
 
         try:
             text = await self.bot.router.generate_dynamic_system_msg(
@@ -6270,10 +6290,16 @@ class VoiceController(commands.Cog):
             logger.debug(f"⚠️ [MusicMemory] 反應分析失敗: {e}")
 
     async def _auto_recommend(self, username: str):
-        """佇列空 → 依在場成員的音樂記憶推薦下一首。
+        """佇列空 → 依在場成員的音樂記憶推薦下一首批 (Phase 1: 一次推 3 首為一 round)。
+
+        Phase 1 M4 ambient room curator:
+          - 一次呼叫 enqueue 最多 3 首 (一 round, ≈15min)
+          - 整合 MoodSensor (M2) → vibe_filter 給 recommender
+          - 每 candidate 過 Cover Quality Hard Filter (M1)
+          - 進新 round 時 invalidate MoodSensor cache (即每 round 重評 vibe)
 
         變化與團體聚合由 music_recommender 的確定性候選池 + 加權抽樣負責；LLM 只在
-        spotlight lane 把選定錨點 cover 化。direct lane（群體共鳴／長尾）直接重播。
+        spotlight lane 把選定錨點 cover 化 + vibe sensor。direct lane 直接重播。
         """
         mm = getattr(self.bot, 'music_memory', None)
         if mm is None:
@@ -6297,44 +6323,100 @@ class VoiceController(commands.Cog):
                 suki_hist += (_suki.get_song_history(m) or [])[:10]
         exclude_titles = list(dict.fromkeys(recently + recommended + skipped + suki_hist))
 
+        # Phase 1 M2: vibe sensor — 進新 round invalidate cache 強制重評
+        vibe_filter = None
+        vibe_label = None
+        if self._mood_sensor is not None:
+            try:
+                self._mood_sensor.invalidate()
+                guild_id = self.active_text_channel.guild.id if self.active_text_channel else 0
+                vibe_label = await self._mood_sensor.current_vibe(guild_id=guild_id)
+                vibe_filter = {"mood": vibe_label.mood, "topic": vibe_label.topic, "min_score": 0.0}
+                logger.info(f"🎵 [AutoRecommend] vibe={vibe_label.mood} (engagement={vibe_label.engagement:.2f}, source={vibe_label.source})")
+            except Exception as e:
+                logger.warning(f"⚠️ [AutoRecommend] vibe sensor 失敗，fallback to no vibe filter: {e}")
+
         pool = build_recommendation_pool(
             members=members,
             songs=mm.all_songs(),
             exclude_titles=exclude_titles,
             now=time.time(),
             spotlight_member=spotlight,
+            vibe_filter=vibe_filter,
         )
-        cand = pick_candidate(pool, top_n=5)
-        if cand is None:
+
+        # Phase 1 M4: 9-pick-3 一次 enqueue 一 round
+        cands = pick_candidates(pool, k=self._round_size, top_n=9)
+        if not cands:
+            logger.debug("🎵 [AutoRecommend] pool 空，跳過")
             return
 
-        # mode → query：cover 交給 LLM 把錨點 cover 化；direct 直接重播錨點
-        if cand.mode == "cover":
-            query = await self._llm_coverify(cand, exclude_titles)
-        else:
-            query = f"{cand.anchor_artist} {cand.anchor_title}".strip() or cand.anchor_title
-        if not query:
-            return
+        # 進新 round → reset track count
+        self._round_track_count = 0
 
-        try:
-            info = await self._resolve_yt_query(query)
+        # Phase 1 M1: cover quality filter lazy init
+        if self._cover_blacklist is None:
+            try:
+                from track_quality import CoverBlacklist
+                self._cover_blacklist = CoverBlacklist.shared()
+            except Exception:
+                logger.exception("[AutoRecommend] CoverBlacklist init 失敗")
+
+        enqueued = 0
+        for cand in cands:
+            # mode → query：cover 交給 LLM 把錨點 cover 化；direct 直接重播錨點
+            if cand.mode == "cover":
+                query = await self._llm_coverify(cand, exclude_titles)
+            else:
+                query = f"{cand.anchor_artist} {cand.anchor_title}".strip() or cand.anchor_title
+            if not query:
+                continue
+
+            try:
+                info = await self._resolve_yt_query(query)
+            except Exception as e:
+                logger.debug(f"⚠️ [AutoRecommend] _resolve_yt_query fail '{query}': {e}")
+                continue
             if not info:
-                return
-            info['requested_by'] = f"Marvin推薦（為{username}）"
+                continue
             if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
-                logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過推薦")
-                return
+                logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過")
+                continue
+
+            # Phase 1 M1: cover quality filter (hard ban 低播放 cover / 黑名單)
+            if self._cover_blacklist is not None:
+                try:
+                    from track_quality import assess_track_quality
+                    passes, reason = await assess_track_quality(
+                        info['url'], info['title'],
+                        blacklist=self._cover_blacklist,
+                    )
+                    if not passes:
+                        logger.info(f"🚫 [AutoRecommend] Quality block '{info['title']}': {reason}")
+                        continue
+                except Exception:
+                    logger.exception("[AutoRecommend] quality filter raised — fail-open")
+
+            info['requested_by'] = f"Marvin推薦（為{username}）"
+            # Phase 1 M6: round 第 1 首 → 標記「賭一把」mode 給 DJ persona
+            info['_round_first'] = (enqueued == 0)
+
             self.stream_queue.append(info)
             mm.add_recent_recommendation(info['title'])
-            logger.info(f"🎵 [AutoRecommend] lane={cand.lane} 為 {username} 推薦: {info['title']}")
-            if self.active_text_channel:
-                await self.active_text_channel.send(self._recommend_blurb(cand, info['title']))
+            logger.info(f"🎵 [AutoRecommend] lane={cand.lane} round-#{enqueued+1}: {info['title']}")
+            if self.active_text_channel and enqueued == 0:
+                # Round blurb 一次發、後 2 首不另開訊息（避免洗版）
+                vibe_tag = f" [vibe: {vibe_label.mood}]" if vibe_label else ""
+                await self.active_text_channel.send(self._recommend_blurb(cand, info['title']) + vibe_tag)
+
             # 對新推薦的歌也啟動預取
             next_url = info.get('url', '')
             if next_url and next_url not in self._prefetch_cache:
                 self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(info))
-        except Exception as e:
-            logger.debug(f"⚠️ [AutoRecommend] 失敗: {e}")
+
+            enqueued += 1
+
+        logger.info(f"🎵 [AutoRecommend] round 完成: enqueued={enqueued}/{self._round_size}")
 
     async def _llm_coverify(self, cand, exclude_titles: list[str]) -> str:
         """spotlight lane：請 LLM 推薦選定錨點歌的 cover 版本。回 "" 表示無推薦。"""
