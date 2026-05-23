@@ -57,6 +57,7 @@ from intent_agents.constants import (
 )
 from intent_bus import IntentBus, IntentContext
 from wake_intent_gate import has_intent_signal
+from wake_followup import match_followup, is_expired as _followup_is_expired
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
@@ -224,6 +225,10 @@ _MARMO_BOT_ID: int = 1501205008434069676
 _DEFERRED_WAKE_MIN_INTENT = 0.40   # LLM intent ≥ 此值才開始追蹤後續語意
 _DEFERRED_WAKE_WINDOW_S   = 4.0    # 追蹤窗口（秒）：超時則放棄
 _DEFERRED_WAKE_MAX_UTTS   = 2      # 最多追蹤幾次發言（超過即放棄）
+
+# 💬 [Followup Pending] Marvin 主動問後等 user 補答的視窗（秒）
+# 10-15s 範圍，取中位 12s — 給 user 思考歌名/答案的時間
+_FOLLOWUP_WINDOW_S = 12.0
 
 # 判斷後續語句是否是「未點名的指令/問題」（可作為 deferred wake 的語意補充）
 _COMMAND_LIKE_RE = re.compile(
@@ -632,6 +637,9 @@ class VoiceController(commands.Cog):
         self.slow_loop_accumulator = []  # 🚀 [APM Economy] 緩慢系統的累積器
         # 🔍 [Deferred Wake] 低信心喚醒追蹤：speaker → {text, intent, ts, utt_count}
         self.deferred_wakes: dict[str, dict] = {}
+        # 💬 [Followup Pending] Marvin 主動問後等同 user 補答：speaker → {type, original_query, ts}
+        # 12s 內同 user 有訊號回話 → 合成 wake 句重投，不需重新喊「馬文」
+        self._pending_followups: dict[str, dict] = {}
         self._stt_call_counter = 0      # 🚀 [STT Rate Limit] 每分鐘 STT 呼叫計數
 
         # 📻 [Marvin Radio] 電台系統狀態
@@ -2185,6 +2193,33 @@ class VoiceController(commands.Cog):
             if speaker in self.pending_mock_users:
                 self.pending_mock_users.discard(speaker)
 
+            # 💬 [Followup Pending] Marvin 剛問過、12s 內同 speaker 有訊號回話
+            #    → 合成「馬文，播XX」重投 wake 流程；user 不需重新喊馬文。
+            #    優先於 Deferred Wake（已 engage 比可能 engage 高優先）。
+            _pending = self._pending_followups.get(speaker)
+            if _pending:
+                _now_fu = time.time()
+                if _followup_is_expired(_pending, _now_fu, _FOLLOWUP_WINDOW_S):
+                    self._pending_followups.pop(speaker, None)
+                    logger.debug(f"💬 [Followup] {speaker} 視窗過期，清掉")
+                else:
+                    _synth = match_followup(_pending, raw_text, _now_fu,
+                                            _FOLLOWUP_WINDOW_S, has_intent_signal)
+                    if _synth:
+                        self._pending_followups.pop(speaker, None)
+                        self.stt_logger.info(
+                            f"[💬Followup] [{speaker}] 接走 type={_pending.get('type')} | "
+                            f"raw='{raw_text[:25]}' → '{_synth[:35]}'"
+                        )
+                        asyncio.create_task(self.handle_stt_result(
+                            speaker, _synth, timestamp, wav_bytes,
+                            prosody_data=prosody_data,
+                            is_wake_check=False, track="B",
+                            bypass_etd=True, wake_intent=None,
+                        ))
+                        return
+                    # 視窗內但純 filler → 保留 pending，繼續走原路徑（也許 deferred wake 接）
+
             # 🔍 [Deferred Wake] 人類遲疑模型：
             # 低信心喚醒（llm_verify + 中等 intent）→ 壓抑，追蹤後續 4s 語意。
             # 若後續語句是未點名的指令/問題 → 合併原句觸發喚醒。
@@ -3704,6 +3739,19 @@ class VoiceController(commands.Cog):
             self._cancel_stale_prefetch(speaker)
             return  # bus 已執行 winner.handler()
 
+        # 🆕 [Music Drop → Followup] IntentBus drop（含 MusicAgent bid 中但
+        # resolver 解不出 song_choice）→ 若 query 有 music play kw 訊號，
+        # 不該 fall through 到 Marvin LLM 假承諾「已為你播放 XX」（5/23 incident
+        # 「蕭煌奇/下雨天的聲音」幻覺），改觸發 followup 反問「你想聽哪一首」。
+        # pending state 已 set，user 12s 內補答自動重投 wake。
+        if self._detect_music_command(query) == "play":
+            self.stt_logger.info(
+                f"[🎵Music Drop] [{speaker}] IntentBus 沒接到、但 query 含 play 意圖 → 觸發 followup 不打 Marvin"
+            )
+            self._cancel_stale_prefetch(speaker)
+            await self._ask_music_followup(speaker, query, ["song_title"])
+            return
+
         # 🎭 [Impression Show Fast-Track] 偵測「模仿 X」指令
         known_players = self.bot.router.memory.list_players()
         _imitate_target = detect_imitation_target(query, known_players)
@@ -4100,24 +4148,36 @@ class VoiceController(commands.Cog):
         過去直接打 yt-dlp 賭歌，5/18 抽中「Susan說」「浪流連」等錯歌。改成
         反問 user 補資料，比亂播好。
 
-        Scope (P1 slim)：
-        - 只貼頻道訊息，不啟 TTS（怕 TTS storm；user 在語音也看得到）
-        - 不存 per-speaker pending state；user 需要重新喚醒講全名
-        - 未知 slot 給通用追問訊息（不該因 slot 名 unknown 就 raise）
+        2026-05-23 補完：set pending followup state，user 在 12s 內同 channel
+        有訊號回答 → handle_stt_result 入口自動合成「馬文，播XX」重投，不再
+        需要 user 重複喊「馬文」。原註解的「不存 pending state」假設已過時。
         """
         ch = self.active_text_channel
         if ch is None:
             return
         if not missing_slots:
             return  # 防呆：empty list 不該觸發 followup，這裡靜默退場
+        slot = missing_slots[0]
         slot_prompts = {
             "song_title": f"💬 `{speaker}` 你想聽哪一首？再講一次全名比較好搜。",
             "artist":     f"💬 `{speaker}` 你想聽誰的歌？再講一次。",
         }
+        # slot → pending state type 對應；未知 slot 走通用 type
+        slot_type_map = {
+            "song_title": "music_song_title",
+            "artist":     "music_artist",
+        }
         prompt = slot_prompts.get(
-            missing_slots[0],
+            slot,
             f"💬 `{speaker}` 你剛剛說「{query[:30]}」我沒抓到關鍵字，再講一次？",
         )
+        # 設 pending state — 12s 內同 user 回話直接合成 wake 重投
+        self._pending_followups[speaker] = {
+            "type": slot_type_map.get(slot, "generic"),
+            "original_query": query,
+            "ts": time.time(),
+        }
+        logger.info(f"💬 [Followup Pending] {speaker} → type={slot_type_map.get(slot, 'generic')} 視窗 {_FOLLOWUP_WINDOW_S}s")
         try:
             await ch.send(prompt)
         except Exception as e:
@@ -4187,6 +4247,10 @@ class VoiceController(commands.Cog):
             return
         self._last_music_cmd_time[speaker] = _now
         logger.info(f"🎵 [Music Command] {speaker} 觸發語音音樂指令: {cmd} | query='{query[:40]}'")
+        # 🎵 [Music Ack] MusicAgent 接走 → 立刻播音樂 ack（從 acks/music/ 抽 4 字內 DJ 款）
+        # 只在 play 觸發；skip/stop/pause/resume 是控制指令，用 wake-time 通用 filler 即可。
+        if cmd == "play":
+            asyncio.create_task(self._play_ack_sound(speaker, ack_type="music"))
         ch = self.active_text_channel
         vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
 
@@ -6088,20 +6152,18 @@ class VoiceController(commands.Cog):
     _COLD_META_TIMEOUT_S = 5.0
 
     async def _meta_with_ack_fallback(self, info: dict, requested_by: str) -> dict:
-        """冷啟動 meta fetch + ack 填空檔 + 5s timeout fallback。
+        """冷啟動 meta fetch + 5s timeout fallback。
 
         2026-05-20 incident：DJ always-fire 改動讓 _fetch_song_meta 在冷啟動
         跑 LLM+TTS 30+ 秒，阻塞 event loop → Discord voice gateway 斷線。
-        修法：
-        1. ack 立刻 fire-and-forget，user 知道 bot 收到
-        2. asyncio.wait_for 限 5s
-        3. timeout → hardcoded fallback meta（dj.text 含歌名+點播者，
-           audio_path=None 讓下游走即時 TTS）
+        修法：asyncio.wait_for 限 5s；timeout → hardcoded fallback meta
+        （dj.text 含歌名+點播者，audio_path=None 讓下游走即時 TTS）。
+
+        2026-05-23：移除這裡的音樂 ack（搬到 _handle_voice_music_command
+        cmd=="play"，MusicAgent 接走即播，hot/cold path 都涵蓋）。
 
         Queue 中第 2+ 首走 _prefetch_cache 路徑，不會進這裡。
         """
-        # fire-and-forget：ack 跟 meta fetch 並行。music 任務走 DJ ack pool（4 字內專業款）
-        asyncio.create_task(self._play_ack_sound(requested_by, ack_type="music"))
         try:
             return await asyncio.wait_for(
                 self._fetch_song_meta(info),
