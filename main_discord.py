@@ -434,8 +434,10 @@ class MarvinBot(commands.Bot):
                     _temp_monitor.record_message_event(str(message.channel.id))
             self.add_listener(_on_message_for_temperature, "on_message")
 
-            # voice state update → session reset（Jack 離開語音頻道時）
+            # voice state update → session reset（Jack 離開語音頻道時）+ presence log
+            from presence_logger import log_voice_state_change as _log_presence
             async def _on_voice_state_update_for_temp(_member, before, after) -> None:
+                _log_presence(_member, before, after)  # P7 baseline: forward-looking JSONL
                 if before.channel and not after.channel:
                     _temp_monitor.reset_session()
             self.add_listener(_on_voice_state_update_for_temp, "on_voice_state_update")
