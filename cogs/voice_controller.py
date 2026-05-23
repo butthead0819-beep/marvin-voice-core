@@ -56,6 +56,7 @@ from intent_agents.constants import (
     WEAK_PLAY_KW as _WEAK_PLAY_KW_SRC,
 )
 from intent_bus import IntentBus, IntentContext
+from wake_intent_gate import has_intent_signal
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
@@ -3698,6 +3699,14 @@ class VoiceController(commands.Cog):
                     return
             except Exception as _re:
                 logger.debug(f"🦞 [NemoClaw Router] 路由失敗，繼續走 Marvin: {_re}")
+
+        # 🚫 [Intent Presence Gate] IntentBus / imitation / nemoclaw 都沒接 → 進 Marvin 主 LLM
+        # 前最後一道 code gate：raw 只是 filler/短應答（嗯/啊/對啊）→ silent，避免錯時機
+        # 亂回答 + 省一次主 LLM call。問句 / 指令動詞 / 長度 ≥ 4 字一律放行（保守）。
+        if not has_intent_signal(query):
+            self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
+            self._cancel_stale_prefetch(speaker)
+            return
 
         online_members = self.get_online_members()
 

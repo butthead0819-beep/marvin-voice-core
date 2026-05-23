@@ -300,6 +300,9 @@ class WakeDetector:
     CONTEXT_PENALTY  = 0.05
     SPEAKER_PENALTY  = 0.10
     JUST_SPOKE_BONUS = 0.05
+    # Echo window：Marvin 剛說完 0-2s 內提高 threshold 擋 TTS 尾音/麥克回授；
+    # 蓋過 JUST_SPOKE_BONUS（防 echo 比 follow-up assist 重要）。
+    ECHO_PENALTY     = 0.10
 
     # Expose module-level helpers as static/class attributes for convenience
     pre_filter    = staticmethod(pre_filter_speech)
@@ -566,9 +569,14 @@ class WakeDetector:
 
     # ── Legacy API (stt_cleaner backward compat) ──────────────────────────────
 
-    def get_threshold(self, speaker: str, context_active: bool, marvin_just_spoke: bool = False) -> float:
+    def get_threshold(self, speaker: str, context_active: bool,
+                      marvin_just_spoke: bool = False,
+                      marvin_in_echo_window: bool = False) -> float:
         t = self.BASE_THRESHOLD
-        if marvin_just_spoke:
+        # echo window 蓋過其他訊號：TTS 剛結束 0-2s 內，麥克回授/尾音風險最高
+        if marvin_in_echo_window:
+            t += self.ECHO_PENALTY
+        elif marvin_just_spoke:
             t -= self.JUST_SPOKE_BONUS
         elif context_active:
             t += self.CONTEXT_PENALTY
@@ -579,7 +587,9 @@ class WakeDetector:
         return round(max(0.5, min(0.95, t)), 2)
 
     def decide(self, wake_intent: float, speaker: str, context_active: bool,
-               marvin_just_spoke: bool = False) -> tuple[bool, float]:
+               marvin_just_spoke: bool = False,
+               marvin_in_echo_window: bool = False) -> tuple[bool, float]:
         """Legacy single-signal path. Still used by stt_cleaner."""
-        threshold = self.get_threshold(speaker, context_active, marvin_just_spoke)
+        threshold = self.get_threshold(speaker, context_active, marvin_just_spoke,
+                                       marvin_in_echo_window=marvin_in_echo_window)
         return wake_intent >= threshold, threshold

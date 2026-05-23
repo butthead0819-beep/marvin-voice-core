@@ -167,3 +167,47 @@ def test_multi_channel_decide_returns_threshold_in_scores():
     )
     assert "threshold" in scores
     assert "total" in scores
+
+
+# ── Echo guard window：Marvin 剛說完 0-2s 內提高 threshold ─────────────────────
+
+def test_echo_window_raises_threshold(monkeypatch, tmp_path):
+    """0-2s echo window：raise threshold by ECHO_PENALTY，擋掉 TTS 尾音/麥克回授。"""
+    monkeypatch.setattr("wake_detector._STATS_FILE", str(tmp_path / "stats.json"))
+    wd = WakeDetector()
+    base = wd.get_threshold("Alice", context_active=False)
+    echo = wd.get_threshold("Alice", context_active=False, marvin_in_echo_window=True)
+    assert echo > base, f"echo window should raise (base={base}, echo={echo})"
+    assert echo == round(base + wd.ECHO_PENALTY, 2)
+
+
+def test_echo_window_overrides_just_spoke(monkeypatch, tmp_path):
+    """echo window 與 just_spoke 同時為 True（不該發生，但容錯）→ echo 優先（raise）。"""
+    monkeypatch.setattr("wake_detector._STATS_FILE", str(tmp_path / "stats.json"))
+    wd = WakeDetector()
+    th = wd.get_threshold("Alice", context_active=False,
+                          marvin_just_spoke=True, marvin_in_echo_window=True)
+    base = wd.BASE_THRESHOLD
+    assert th == round(base + wd.ECHO_PENALTY, 2), \
+        "echo window 必須蓋過 just_spoke bonus（防 echo 比 follow-up 重要）"
+
+
+def test_just_spoke_still_lowers_threshold_outside_echo(monkeypatch, tmp_path):
+    """2-15s 視窗（marvin_just_spoke=True, marvin_in_echo_window=False）行為不變：lower。"""
+    monkeypatch.setattr("wake_detector._STATS_FILE", str(tmp_path / "stats.json"))
+    wd = WakeDetector()
+    base = wd.get_threshold("Alice", context_active=False)
+    follow_up = wd.get_threshold("Alice", context_active=False, marvin_just_spoke=True)
+    assert follow_up < base, f"follow-up window should still lower (base={base}, fu={follow_up})"
+
+
+def test_decide_uses_echo_window(monkeypatch, tmp_path):
+    """decide() 也要吃 marvin_in_echo_window。"""
+    monkeypatch.setattr("wake_detector._STATS_FILE", str(tmp_path / "stats.json"))
+    wd = WakeDetector()
+    # base threshold 0.70；echo window 後變 0.80；intent=0.75 跨 base 不跨 echo
+    wake_no_echo, _ = wd.decide(0.75, "Bob", context_active=False)
+    wake_echo, th_echo = wd.decide(0.75, "Bob", context_active=False, marvin_in_echo_window=True)
+    assert wake_no_echo is True
+    assert wake_echo is False
+    assert th_echo == 0.80

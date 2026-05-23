@@ -145,6 +145,7 @@ class GeminiRouterSTTMixin:
 
     async def clean_stt_text(self, raw_text: str, context: list = None, speaker: str = None,
                               context_active: bool = False, marvin_just_spoke: bool = False,
+                              marvin_in_echo_window: bool = False,
                               apply_gate: bool = False) -> dict:
         """
         [Operation Clean STT] Phase 1: Fused Intent Scorer.
@@ -159,7 +160,9 @@ class GeminiRouterSTTMixin:
             if wake_intent is not None:
                 fusion = getattr(self, 'wake_fusion', None)
                 if fusion and speaker:
-                    is_wake, threshold = fusion.decide(wake_intent, speaker, context_active, marvin_just_spoke)
+                    is_wake, threshold = fusion.decide(
+                        wake_intent, speaker, context_active, marvin_just_spoke,
+                        marvin_in_echo_window=marvin_in_echo_window)
                 else:
                     if wake_intent >= 0.75:
                         is_wake = True

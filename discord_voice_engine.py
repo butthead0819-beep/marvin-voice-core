@@ -1308,21 +1308,21 @@ class DiscordVoiceEngine:
                 # Phase 2: 計算對話脈絡訊號
                 _now = time.time()
                 _recent_10 = self.conv_buffer.get_last_n_utterances(10)
+                # Marvin 最近發話年齡（秒），無 → inf
+                _marvin_ages = [(_now - e["timestamp"]) for e in _recent_10 if e["speaker"] == "Marvin"]
+                _marvin_age = min(_marvin_ages) if _marvin_ages else float("inf")
                 # context_active: Marvin 在 90s 內說過話（對話進行中）
-                context_active = any(
-                    e["speaker"] == "Marvin" and (_now - e["timestamp"]) <= 90.0
-                    for e in _recent_10
-                )
-                # marvin_just_spoke: Marvin 在 15s 內剛結束說話 → 使用者最可能此時呼叫
-                marvin_just_spoke = any(
-                    e["speaker"] == "Marvin" and (_now - e["timestamp"]) <= 15.0
-                    for e in _recent_10
-                )
+                context_active = _marvin_age <= 90.0
+                # marvin_in_echo_window: 0-2s（含），TTS 尾音/麥克回授高風險窗 → 拉高 wake threshold
+                marvin_in_echo_window = _marvin_age <= 2.0
+                # marvin_just_spoke: 2-15s 後續視窗，使用者最可能此時呼叫 → 降低 threshold（不含 echo 區段）
+                marvin_just_spoke = (2.0 < _marvin_age <= 15.0)
                 recent_ctx = self.conv_buffer.get_last_n_utterances(5)
                 clean_res = await self.bot.router.clean_stt_text(
                     raw_text, context=recent_ctx,
                     speaker=speaker_name, context_active=context_active,
                     marvin_just_spoke=marvin_just_spoke,
+                    marvin_in_echo_window=marvin_in_echo_window,
                     apply_gate=True,   # 🚪 只有 wake-check 路徑 gate；無訊號+非對話 → 略過 cleaner
                 )
                 cleaned_text = clean_res["text"]
