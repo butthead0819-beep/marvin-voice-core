@@ -3261,9 +3261,10 @@ class VoiceController(commands.Cog):
 
     async def _play_ack_sound(self, speaker: str = "", ack_type: str = "general"):
         """播放預存 ack 音效。
-        ack_type=general → assets/acks/（一般喚醒，厭世風 marvin）
-        ack_type=music   → assets/acks/music/（音樂播放確認，專業 DJ，4 字內）
-        英語 speaker 永遠走 assets/acks_en/（暫無 music 分支）。
+        ack_type=general    → assets/acks/（一般喚醒，厭世風 marvin）
+        ack_type=music      → assets/acks/music/（音樂播放確認，專業 DJ，4 字內）
+        ack_type=music_fail → assets/acks/music_fail/（點歌失敗，「無法播放」）
+        英語 speaker 永遠走 assets/acks_en/（暫無分支）。
         """
         import random
         is_en = self._speaker_lang.get(speaker) == "en"
@@ -3271,6 +3272,8 @@ class VoiceController(commands.Cog):
             ack_dir = "assets/acks_en"
         elif ack_type == "music":
             ack_dir = "assets/acks/music"
+        elif ack_type == "music_fail":
+            ack_dir = "assets/acks/music_fail"
         else:
             ack_dir = "assets/acks"
         voice_client = discord.utils.get(self.bot.voice_clients)
@@ -3280,8 +3283,8 @@ class VoiceController(commands.Cog):
         files = []
         if os.path.exists(ack_dir):
             files = [f for f in os.listdir(ack_dir) if f.endswith(".mp3")]
-        # music pool 還沒生成時退回 general，避免靜默
-        if not files and ack_type == "music":
+        # 子 pool 還沒生成時退回 general，避免靜默
+        if not files and ack_type in ("music", "music_fail"):
             ack_dir = "assets/acks"
             if os.path.exists(ack_dir):
                 files = [f for f in os.listdir(ack_dir) if f.endswith(".mp3")]
@@ -4222,6 +4225,7 @@ class VoiceController(commands.Cog):
                 f"{type(e).__name__}: {e}",
                 exc_info=True,  # full traceback
             )
+            asyncio.create_task(self._play_ack_sound(speaker, ack_type="music_fail"))
             ch = self.active_text_channel
             if ch:
                 try:
@@ -4356,6 +4360,7 @@ class VoiceController(commands.Cog):
             info = await self._resolve_yt_query(search)
             if not info:
                 if ch: await status_msg.edit(content=f"❌ 找不到 `{search}`，就跟意義一樣——不存在。")
+                asyncio.create_task(self._play_ack_sound(speaker, ack_type="music_fail"))
                 return
             info['requested_by'] = speaker
             self.stt_logger.info(
@@ -6378,6 +6383,7 @@ class VoiceController(commands.Cog):
             if not ident or ident.startswith("無"):
                 if self.active_text_channel:
                     await self.active_text_channel.send(f"🔎 **【找歌】** 找不到符合「{payload}」的歌，換個說法試試？")
+                asyncio.create_task(self._play_ack_sound(speaker, ack_type="music_fail"))
                 return
             if self.active_text_channel:
                 await self.active_text_channel.send(f"🔎 **【找歌】** 我找到的應該是 `{ident}`，幫你播了。")
