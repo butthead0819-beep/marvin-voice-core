@@ -486,9 +486,16 @@ class GeminiRouterLLMMixin:
                                 self.budget.add_tokens(usage.total_token_count)
                                 in_tok = getattr(usage, "prompt_token_count", 0) or 0
                                 out_tok = getattr(usage, "candidates_token_count", 0) or 0
-                                actual_cost = estimate_cost(self.cleaner_model, in_tok, out_tok)
-                                guard.record(caller="marvin_reply_fallback", model=self.cleaner_model,
-                                             tokens=int(in_tok + out_tok), est_usd=actual_cost)
+                            else:
+                                # SDK 偶爾不回 usage_metadata（race / partial response）
+                                # → 用 prompt+response 長度估算（保守略高，避免 cost 不可見）
+                                logger.warning("⚠️ [Paid Fallback] response 無 usage_metadata，用長度估算入帳")
+                                _resp_text = response.text or ""
+                                in_tok = (len(system_prompt) + len(user_prompt)) // 3
+                                out_tok = len(_resp_text) // 3
+                            actual_cost = estimate_cost(self.cleaner_model, in_tok, out_tok)
+                            guard.record(caller="marvin_reply_fallback", model=self.cleaner_model,
+                                         tokens=int(in_tok + out_tok), est_usd=actual_cost)
                             logger.info("💰 [Paid Fallback] 成功。")
                             return response.text.strip()
                         except Exception as pe:

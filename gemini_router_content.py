@@ -893,9 +893,16 @@ class GeminiRouterContentMixin:
             )
         }
         
-        persona = self.dna.get("persona_tag", "厭世機器人馬文")
-        toxicity = self.dna.get("toxicity", 10)
-        sys_prompt = f"你是馬文 (Marvin)。當前性格標籤：{persona}，憂鬱指數：{toxicity}/10。\n脈絡：{context}\n任務：{prompts.get(event_type, '隨便嘆一口氣。')}"
+        # DJ 三條走獨立 system prompt（不注入馬文厭世人格），否則 system 跟 task
+        # 兩個人設打架（marvin 10/10 憂鬱 vs 專業 DJ），LLM 會走憂鬱腔輸出諷刺台詞，
+        # 「不諷刺、不憂鬱」指示失效。
+        _DJ_EVENT_TYPES = {"dj_interjection", "stream_now_playing", "radio_now_playing"}
+        if event_type in _DJ_EVENT_TYPES:
+            sys_prompt = f"你是專業電台 DJ。任務：{prompts[event_type]}"
+        else:
+            persona = self.dna.get("persona_tag", "厭世機器人馬文")
+            toxicity = self.dna.get("toxicity", 10)
+            sys_prompt = f"你是馬文 (Marvin)。當前性格標籤：{persona}，憂鬱指數：{toxicity}/10。\n脈絡：{context}\n任務：{prompts.get(event_type, '隨便嘆一口氣。')}"
         
         try:
             # 使用高隨機性 (Temperature 0.9) 確保不重複
