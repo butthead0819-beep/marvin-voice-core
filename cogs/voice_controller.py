@@ -2883,6 +2883,14 @@ class VoiceController(commands.Cog):
             line = format_callback_line(item.get("text", ""))
             if not line:
                 return False
+            # 🚦 [TTS Gate] callback 7s 上限，超過在符號處截斷（template + text 容易爆）
+            from tts_length_policy import truncate_for_tts
+            gated_line, was_cut = truncate_for_tts(
+                line, "callback", self.bot.tts_engine.get_estimated_duration
+            )
+            if was_cut:
+                logger.info(f"🚦 [TTS Gate] callback 超 7s 截斷: '{line}' → '{gated_line}'")
+                line = gated_line
             self.stt_logger.info(f"[BOT返場callback→{speaker}] {line}")
             await self.play_tts(line, already_in_channel=True, silent_during_stream=True)
             mem.consume_callback(speaker, item)   # 成功才移除
@@ -3216,11 +3224,20 @@ class VoiceController(commands.Cog):
         cjk = sum(1 for c in text if '一' <= c <= '鿿')
         return "en" if latin > cjk * 2 else "zh"
 
-    async def _play_ack_sound(self, speaker: str = ""):
-        """播放預存 ack 音效，依 speaker 語言選擇 assets/acks/ 或 assets/acks_en/"""
+    async def _play_ack_sound(self, speaker: str = "", ack_type: str = "general"):
+        """播放預存 ack 音效。
+        ack_type=general → assets/acks/（一般喚醒，厭世風 marvin）
+        ack_type=music   → assets/acks/music/（音樂播放確認，專業 DJ，4 字內）
+        英語 speaker 永遠走 assets/acks_en/（暫無 music 分支）。
+        """
         import random
         is_en = self._speaker_lang.get(speaker) == "en"
-        ack_dir = "assets/acks_en" if is_en else "assets/acks"
+        if is_en:
+            ack_dir = "assets/acks_en"
+        elif ack_type == "music":
+            ack_dir = "assets/acks/music"
+        else:
+            ack_dir = "assets/acks"
         voice_client = discord.utils.get(self.bot.voice_clients)
         if not voice_client or not voice_client.is_connected():
             return
@@ -3228,6 +3245,11 @@ class VoiceController(commands.Cog):
         files = []
         if os.path.exists(ack_dir):
             files = [f for f in os.listdir(ack_dir) if f.endswith(".mp3")]
+        # music pool 還沒生成時退回 general，避免靜默
+        if not files and ack_type == "music":
+            ack_dir = "assets/acks"
+            if os.path.exists(ack_dir):
+                files = [f for f in os.listdir(ack_dir) if f.endswith(".mp3")]
 
         if files:
             ack_file = os.path.join(ack_dir, random.choice(files))
@@ -6043,6 +6065,15 @@ class VoiceController(commands.Cog):
             text = f"下一首是《{title}》，{requester} 點的。"
             logger.info(f"🎙️ [DJ Prefetch] 採用 fallback template")
 
+        # 🚦 [TTS Gate] LLM 不聽 7s 指示時最後一道防線，在符號處截斷
+        from tts_length_policy import truncate_for_tts
+        gated_text, was_cut = truncate_for_tts(
+            text, "music_intro", self.bot.tts_engine.get_estimated_duration
+        )
+        if was_cut:
+            logger.info(f"🚦 [TTS Gate] DJ intro 超 7s 截斷: '{text}' → '{gated_text}'")
+            text = gated_text
+
         # 預渲染 TTS 音訊（generate_audio 有 MD5 cache，同文字不重複產生）
         audio_path = None
         try:
@@ -6069,8 +6100,8 @@ class VoiceController(commands.Cog):
 
         Queue 中第 2+ 首走 _prefetch_cache 路徑，不會進這裡。
         """
-        # fire-and-forget：ack 跟 meta fetch 並行，user 立刻聽到「嗯。。。」
-        asyncio.create_task(self._play_ack_sound(requested_by))
+        # fire-and-forget：ack 跟 meta fetch 並行。music 任務走 DJ ack pool（4 字內專業款）
+        asyncio.create_task(self._play_ack_sound(requested_by, ack_type="music"))
         try:
             return await asyncio.wait_for(
                 self._fetch_song_meta(info),
