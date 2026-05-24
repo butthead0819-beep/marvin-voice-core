@@ -18,6 +18,7 @@ from collections import deque
 from utils import pre_filter_speech, is_whisper_hallucination
 from voice_meta_analyzer import VoiceMetaAnalyzer
 from quality_metrics import record_metric
+import pipeline_timing
 
 logger = logging.getLogger("MarvinBot.Engine")
 
@@ -873,6 +874,8 @@ class DiscordVoiceEngine:
         接收 VAD 切出的 PCM 片段。此層級不再進行額外的 1.2s Debounce，
         因為 VAD 已確保 1.2s 靜音才切片。在此進行音訊校正後直接進入 STT。
         """
+        # ContextVar propagates into create_task descendants automatically.
+        pipeline_timing.start()
         # 🚀 [Chief Architect Action] 立即進行 STT，不再進行二次 1.2s Debounce
         if user_id not in self.audio_buffers:
             self.audio_buffers[user_id] = {
@@ -1197,6 +1200,7 @@ class DiscordVoiceEngine:
             logger.error(f"[STT Lock] {label} 等待超過 {_lock_timeout}s，放棄 (Speaker: {speaker_name})。lock 可能卡住，請確認。")
             return
         try:
+            pipeline_timing.mark("stt_start")
             raw_text = ""
             used_engine = "None"
 
@@ -1284,6 +1288,7 @@ class DiscordVoiceEngine:
                         used_engine = "Whisper"
                         print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Whisper)", flush=True)
 
+            pipeline_timing.mark("stt_done")
             # Update speaker language memory from this utterance for next call
             if raw_text:
                 self._update_speaker_lang(speaker_name, raw_text)
