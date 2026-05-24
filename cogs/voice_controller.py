@@ -3760,6 +3760,18 @@ class VoiceController(commands.Cog):
         )
         pipeline_timing.mark("intent_dispatched")
         pipeline_timing.emit(speaker, _bus_ctx.raw_text or "", suffix=" route=main_bus")
+
+        # 🧪 [Shadow Judges Race] fire-and-forget；收 records/judge_outcomes.jsonl 量
+        # J1 hit rate / 各 judge latency，不影響本 dispatch。失敗全吞（見 run_shadow_race）。
+        from intent_judges.voice_integration import new_utterance_id, run_shadow_race
+        asyncio.create_task(run_shadow_race(
+            ctx=_bus_ctx,
+            raw_text=original_raw or query,
+            cleaned_text=query,
+            agents=list(self._intent_bus.agents),
+            utterance_id=new_utterance_id(speaker),
+        ))
+
         _winner = await self._intent_bus.dispatch(_bus_ctx)
         if _winner:
             # B1: bus 接走 intent → LLM 路徑不會跑 → 取消 dangling speculative
