@@ -318,6 +318,11 @@ class GeminiRouterLLMMixin:
             except NoLLMAvailable:
                 logger.warning("[LLMBus] dispatch NoLLMAvailable — 回 '' (禁 fallback legacy)")
                 return ""
+            except Exception as _e:
+                # Agent.handle 拋例外（429 / 5xx / timeout）— 對等 legacy chain silent failure,
+                # endpoint cooldown 已在 agent 內 mark_429。回 '' caller 用既有 empty handling。
+                logger.warning(f"[LLMBus] dispatch raised {type(_e).__name__}: {_e} — 回 ''")
+                return ""
 
         # 🔵 [High Tier] 直接跳至 Gemini，跳過 Groq/Cerebras（記憶提取、長摘要、歌曲 blueprint 等）
         if tier == "high":
