@@ -56,6 +56,7 @@ from intent_agents.constants import (
     WEAK_PLAY_KW as _WEAK_PLAY_KW_SRC,
 )
 from intent_bus import IntentBus, IntentContext
+import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
@@ -65,7 +66,8 @@ from intent_agents.busted_agent import BustedAgent
 from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.find_song_agent import FindSongAgent, find_song_prompt
-from intent_agents.playback_control_agent import PlaybackControlAgent
+# Phase 1 M5: PlaybackControlAgent 改成 build_intent_agents() 內 lazy import
+# 避免 macOS python 環境冷啟動時的 import 鏈死結 (2026-05-23 incident)
 from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
 from intent_agents.recommendation import Recommendation, append_recommendation
@@ -141,6 +143,8 @@ def build_intent_agents(controller, bot):
     收 bot（用 self.bot.cogs 查 cog）。兩者混淆會讓 game agent 永遠 cog_not_loaded。
     guard 註冊最前，tie-break 時優先（保守）。
     """
+    # Phase 1 M5: lazy import 避免 module-level import 鏈死結
+    from intent_agents.playback_control_agent import PlaybackControlAgent
     return [
         HallucinationGuardAgent(controller),
         NemoClawAgent(controller),
@@ -2673,6 +2677,8 @@ class VoiceController(commands.Cog):
         # suppress / 非 active state 由各 game agent 在 bid 內判定（dense 0.0）。
         # dispatch 後無論有無 winner 都 return：遊戲語音一律不 fallback Marvin。
         if self.game_mode:
+            pipeline_timing.mark("intent_dispatched")
+            pipeline_timing.emit(speaker, full_raw_text, suffix=" route=game")
             await self._intent_bus.dispatch(
                 build_game_ctx(speaker, full_raw_text, is_owner=self._is_owner_speaker(speaker))
             )
@@ -2700,6 +2706,8 @@ class VoiceController(commands.Cog):
                         is_owner=self._is_owner_speaker(speaker),
                     )
                     logger.info(f"🎵 [IBA-T0→Bus] {speaker} no-wake 點歌進 bus | query='{_nw_ctx.query[:40]}'")
+                    pipeline_timing.mark("intent_dispatched")
+                    pipeline_timing.emit(speaker, full_raw_text, suffix=" route=nowake_music")
                     asyncio.create_task(self._intent_bus.dispatch(_nw_ctx))
                 else:
                     logger.info(f"🎵 [IBA-T0] {speaker} 直接音樂控制 cmd={_cmd_action} (no wake) | '{full_raw_text[:40]}'")
@@ -2718,6 +2726,8 @@ class VoiceController(commands.Cog):
                 mode=("stream" if self.stream_mode else "normal"),
             )
             logger.info(f"🔎 [Find-Song] {speaker} no-wake 找歌進 bus | '{full_raw_text[:40]}'")
+            pipeline_timing.mark("intent_dispatched")
+            pipeline_timing.emit(speaker, full_raw_text, suffix=" route=find_song")
             asyncio.create_task(self._intent_bus.dispatch(_fs_ctx))
             return
 
@@ -3361,6 +3371,7 @@ class VoiceController(commands.Cog):
                 cleaned = res.get("text", stripped) if isinstance(res, dict) else stripped
             except Exception:
                 pass
+        pipeline_timing.mark("cleaner_done")
         return cleaned or stripped
 
     # ──────────────────────────────────────────────────────────────
@@ -3742,6 +3753,8 @@ class VoiceController(commands.Cog):
             is_owner=self._is_owner_speaker(speaker),
             now=time.time(),
         )
+        pipeline_timing.mark("intent_dispatched")
+        pipeline_timing.emit(speaker, _bus_ctx.raw_text or "", suffix=" route=main_bus")
         _winner = await self._intent_bus.dispatch(_bus_ctx)
         if _winner:
             # B1: bus 接走 intent → LLM 路徑不會跑 → 取消 dangling speculative
