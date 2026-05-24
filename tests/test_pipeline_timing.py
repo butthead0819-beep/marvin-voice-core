@@ -114,3 +114,59 @@ def test_emit_partial_stages_ok():
     assert "sttdone=" in out
     assert "sttstart=" not in out
     assert "intentdispatched=" not in out
+
+
+@pytest.mark.asyncio
+async def test_restore_carries_timing_across_queue_boundary():
+    """跨 asyncio.Queue 邊界：producer snapshot → 把 dict 塞進 queue item →
+    consumer 從 queue 拿到後 restore → 後續 mark/emit 看得到 producer 的 endpoint。
+
+    這是 STAGE_TIMING 真正能跑的修法：ContextVar 不會自動跨 asyncio.Queue 邊界，
+    必須手動 forward。
+    """
+    import asyncio
+    import pipeline_timing
+
+    q: asyncio.Queue = asyncio.Queue()
+
+    async def producer():
+        pipeline_timing.start()
+        pipeline_timing.mark("stt_start")
+        pipeline_timing.mark("stt_done")
+        snap = pipeline_timing.snapshot()
+        await q.put({"payload": "hello", "_timing": snap})
+
+    async def consumer():
+        item = await q.get()
+        pipeline_timing.restore(item["_timing"])
+        pipeline_timing.mark("intent_dispatched")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            pipeline_timing.emit("alice", item["payload"])
+        return buf.getvalue()
+
+    await producer()
+    out = await consumer()
+    assert "[STAGE_TIMING]" in out, f"emit silent — restore 沒生效: {out!r}"
+    assert "sttstart=" in out, "producer side mark 沒過 queue"
+    assert "sttdone=" in out
+    assert "intentdispatched=" in out, "consumer side mark 沒打進來"
+
+
+def test_restore_with_none_is_noop():
+    """consumer 沒拿到 timing dict 也別炸 — 老 queue item 沒 _timing 是常態。
+
+    用 contextvars.Context 強制隔離 — pytest 同 process 跨 test 共享 root context，
+    前一個 test 留下的 ContextVar 會污染。
+    """
+    import contextvars
+    import pipeline_timing
+
+    result = {}
+
+    def isolated():
+        pipeline_timing.restore(None)
+        result["snap"] = pipeline_timing.snapshot()
+
+    contextvars.Context().run(isolated)
+    assert result["snap"] is None, "restore(None) 不該建出空 dict"

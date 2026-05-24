@@ -62,5 +62,17 @@ def emit(speaker: str, text: str, suffix: str = "") -> None:
 
 
 def snapshot() -> dict | None:
-    """Read-only access to current timing dict (for tests)."""
+    """Read-only access to current timing dict (for tests + queue forwarding)."""
     return _timing.get()
+
+
+def restore(d: dict | None) -> None:
+    """Re-attach a timing dict captured by snapshot() in a different async task.
+
+    ContextVar doesn't propagate across asyncio.Queue boundaries; producer stashes
+    snapshot() into the queue item, consumer calls restore() after queue.get(),
+    so downstream emit() sees the same endpoint and marks set by producer.
+    None is a no-op (handle legacy queue items without timing).
+    """
+    if d is not None:
+        _timing.set(d)

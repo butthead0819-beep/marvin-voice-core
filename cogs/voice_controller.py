@@ -2180,6 +2180,8 @@ class VoiceController(commands.Cog):
                 "timestamp":   timestamp,
                 "raw_text":    raw_text,
                 "wake_intent": wake_intent,   # None = Track A (regex, 高信心)
+                # ContextVar 不會跨 asyncio.Queue 邊界 — 手動 forward timing dict 給 consumer
+                "_timing":     pipeline_timing.snapshot(),
             })
 
             # 🚀 [Phase 3] 投機預取：若喚醒句已含足夠問句內容，立即開始 LLM 預熱
@@ -3224,6 +3226,9 @@ class VoiceController(commands.Cog):
         while True:
             try:
                 task_data = await self.query_queue.get()
+                # ContextVar 不會跨 asyncio.Queue 邊界 — 從 producer 塞進來的 snapshot 還原，
+                # 讓下游 mark("intent_dispatched") + emit() 看得到 producer 的 endpoint / stt_start / stt_done
+                pipeline_timing.restore(task_data.get("_timing"))
                 speaker = task_data["speaker"]
                 timestamp = task_data["timestamp"]
                 raw_text = task_data.get("raw_text", "")
