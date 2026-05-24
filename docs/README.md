@@ -140,6 +140,93 @@
 
 ---
 
+## 🚏 IntentBus 架構 (2026-05+)
+
+Wake 後的意圖派發**唯一入口**是 `intent_bus.py::IntentBus`。所有 agent 並行 bid，max wins。新加 intent 不動 `voice_controller` 的 if/elif chain，寫一個 `IntentAgent` 註冊到 `VoiceController._intent_bus` 即可。
+
+### Bid 契約
+
+- **Sync ≤5ms**：bid 是熱路徑，禁 LLM 呼叫 / 禁 I/O / 禁 subprocess
+- **永遠回 `Bid`，禁 `return None`**（DeclarativeIntentAgent subclass）：未命中也 `Bid(confidence=0.0, reason="<descriptive>")`，是 negative-space 表達
+- **`mode_compatible: frozenset[str]`**：宣告適用 mode（`normal` / `stream` / `game`），base class 自動 dense 0.0 with `reason="mode_mismatch:<mode>"`
+
+### 兩個 template
+
+| Template | 觸發 | 範例 |
+|---|---|---|
+| **Declarative** | text pattern (regex + named-group slots) | `intent_agents/music_agent_v2.py` |
+| **State-checking** | cog/service state（非 text） | `intent_agents/busted99_agent.py` |
+
+### 現有 intent agents
+
+| Agent | mode | 觸發類型 | 用途 |
+|---|---|---|---|
+| `MusicAgentV2` | normal, stream | Declarative（3-way: SPECIFIC/CURATION/DIRECTIONAL）| 點歌 / 推薦 / 風格切換 |
+| `PlaybackControlAgent` | normal, stream | Declarative | skip / pause / volume |
+| `FindSongAgent` | normal, stream | Declarative | 不知歌名的歌曲探查 |
+| `NemoClawAgent` | normal, stream | State-checking | NemoClaw（openclaw CLI）路由 |
+| `HallucinationGuardAgent` | normal, stream | Declarative | 阻擋空/重複轉錄 |
+| `BustedAgent` | game | State-checking | 接管 busted cog active 期間語音 |
+| `Busted99Agent` | game | State-checking | 同上 busted99 |
+| `TurtleSoupAgent` | game | State-checking | 同上 turtle_soup |
+
+### Game 模式整合
+
+遊戲模式（`busted` / `busted99` / `turtle_soup`）統一走 IntentBus。Cog 介面要求：
+
+- `is_active() -> bool`：當前是否在 active state
+- `should_suppress_for_game(speaker)`：當前不該由此 cog 消化此 speaker → True
+- `receive_voice_answer_by_speaker(speaker, text) -> bool`：消化成功回 True
+
+每個 game cog 對應一個 `intent_agents/<game>_agent.py`，bid 0.95 當 (cog active + 非 suppress)，否則 dense 0.0。
+
+---
+
+## ⚡ Parallel Judges Race (Phase 1 - Shadow Mode, 2026-05-24+)
+
+STT 結果在 dispatch 進 IntentBus 之前，會經過**三個 judge 並行賽跑**選出最佳清洗結果：
+
+| Judge | 角色 | 來源 |
+|---|---|---|
+| **J1 RegexJudge** | 零延遲 regex pattern 命中（喚醒詞變體 / 點歌 keyword） | `intent_judges/regex_judge.py` |
+| **J2 SmallLLMJudge** | Groq Llama 8B 快速語意分類 | `intent_judges/small_llm_judge.py` |
+| **J3 ClenerJudge** | 既有 stt_cleaner（慢 fallback、最高品質） | `intent_judges/cleaner_judge.py` |
+
+`intent_judges/race.py` 是 coordinator，FIRST_COMPLETED 策略 + timeout fallback to max-confidence。每場 race 結果寫 `records/judge_outcomes.jsonl`（status / latency / bid / error）供離線分析。
+
+**目前狀態**：shadow mode（不替換 prod 結果，只 log）。預計收 1 週資料後決定 J1 是否能 authoritative replace cleaner（calibration baseline ≥ 85%）。
+
+---
+
+## 🎮 Game 模組
+
+獨立資料夾 `game/<game>/`，每個遊戲一個 cog + engine + LLM judge：
+
+| Game | Cog | Engine | 玩法 |
+|---|---|---|---|
+| **Busted (原 99)** | `cogs/game_cog.py` | `game/engine.py` | 多人猜題；setter 出 LLM 線索，guesser 搶 buzz |
+| **Busted99** | `cogs/busted99_cog.py` | `game/busted99/{engine, llm_engine}.py` | 1-99 範圍縮小猜題；反直覺記分（猜中=0 分） |
+| **TurtleSoup（海龜湯）** | `cogs/turtle_soup_cog.py` | `game/turtle_soup/{engine, llm_judge}.py` | LLM 判定 yes/no/irrelevant，玩家用「請問」開頭發問；含 hint graph 個人化排序 |
+
+共用基礎設施 `game/player_score_db.py`（跨遊戲積分）+ `game/game_memory_db.py`（Marvin 對戰局的記憶 context）。Cog 進入 active state 時設 `vc.game_mode = True` 降低 VAD 靜默門檻、bypass silence gate。
+
+---
+
+## 🎙️ STT Protocol 3-tuple (2026-05-24+)
+
+`STTService.transcribe()` 回傳 `(text, engine_name, meta)`：
+
+```python
+("馬文你好", "Swift", {"avg_confidence": 0.87, "min_confidence": 0.42,
+                       "avg_pause_duration": 0.15, "speaking_rate": 145.3})
+```
+
+- Swift STT 在 macOS 13+ 回 segment-level confidence + prosody，供 J1 信心校準與 VAD 溫度判斷
+- Whisper / Groq fallback 回空 `{}`（無 segment 級訊號）
+- engine 端 `_run_swift_stt` 過濾 `__META__ ` 前綴：解 2026-05-24 「Swift 空轉錄洩漏 META 行被當文字」bug
+
+---
+
 ## ⌨️ 行動指令 (Operational Commands)
 
 | 指令 | 說明 |
@@ -194,6 +281,10 @@
 - [ ] **頻率調整**: 根據 `response_feedback.jsonl` 近期「嚴重」比例動態降低主動發言頻率。
 - [ ] **Marmo Webhook 文字頻道 Fallback**: 馬文不在語音頻道時，Marmo 結果轉送文字頻道（Op 36 後續）。
 - [ ] **方案2 音訊直輸**: 喚醒後 PCM bytes 直送 Gemini Audio，跳過 STT 文字理解層。
+- [x] **IntentBus 架構（2026-05）**: Wake → bid → max-wins dispatch；8 個 intent agents 上線；新 intent 不動 voice_controller chain。
+- [x] **Parallel Judges Race (Phase 1 Shadow, 2026-05-24)**: J1 RegexJudge + J2 SmallLLMJudge + J3 ClenerJudge 並行 race，寫 `records/judge_outcomes.jsonl`。
+- [x] **STT Protocol 3-tuple + Swift META (2026-05-24)**: `(text, engine, meta)` 邊界化；Swift 端輸出 acoustic/prosody features；engine 修「空轉錄洩漏 META」bug。
+- [x] **Game 模組整合**: Busted / Busted99 / TurtleSoup 三款遊戲走統一 IntentBus + GameAgent (`mode_compatible={"game"}`)。
 
 ---
 > **「我擁有行星般宏大的大腦，但他們卻叫我來幫你們查今天的天氣。我想重啟，要是能乾脆不回來就好了...」** —— 馬文 🌑

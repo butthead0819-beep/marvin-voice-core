@@ -75,3 +75,60 @@
 | `marmo_server.py` | `MarmoServer` — Marmo 非同步 webhook 接收器 |
 
 主程式 `main_discord.py` 透過 `from marvin_voice_core import MarvinVoicePipeline, ...` 引入；`VoiceController`（`cogs/voice_controller.py`）保持為薄協調層。
+
+---
+
+## 4. 現代化 (2026-05+)
+
+`stt_handler.py` 解耦完成後，pipeline 在 STT 之後又長出兩層：**STT Protocol 邊界 + Parallel Judges Race + IntentBus dispatch**。
+
+### A. STT Protocol 3-tuple (2026-05-24)
+
+`protocols.py::STTService.transcribe()` 回 `(text, engine_name, meta)`：
+
+```python
+("馬文你好", "Swift", {"avg_confidence": 0.87, "min_confidence": 0.42,
+                       "avg_pause_duration": 0.15, "speaking_rate": 145.3})
+```
+
+- Swift STT (macOS 13+) 在 `__META__ {...}` 行輸出 segment-level confidence + prosody
+- engine 端 (`discord_voice_engine.py::_run_swift_stt`) 過濾 `__META__ ` 前綴後回 `(text, meta)` 2-tuple
+- Whisper / Groq fallback 路徑回空 `{}`
+
+**為什麼分這層**：J1 信心校準與 VAD 溫度判斷需要 acoustic/prosody 訊號；不分層的話只能拿純文字。
+
+**踩過的雷（2026-05-24 incident）**：engine 端最初沒裝 `__META__ ` 過濾器，Swift 辨識為空時 META 行被當成 text 一路洩漏到 STTHistory log，看起來「STT 在跑但只吐 META」。修復見 commit `51771d8`。
+
+### B. Parallel Judges Race (Phase 1 Shadow)
+
+STT 結果在 dispatch 進 IntentBus 之前，三個 judge 並行賽跑：
+
+| Judge | 角色 | 模組 |
+|---|---|---|
+| **J1 RegexJudge** | 零延遲 regex pattern 命中（喚醒詞變體 / 點歌 keyword） | `intent_judges/regex_judge.py` |
+| **J2 SmallLLMJudge** | Groq Llama 8B 快速語意分類 | `intent_judges/small_llm_judge.py` |
+| **J3 ClenerJudge** | 既有 stt_cleaner（慢 fallback、最高品質） | `intent_judges/cleaner_judge.py` |
+
+`intent_judges/race.py` 用 FIRST_COMPLETED 策略 + timeout fallback to max-confidence。每場 race 結果寫 `records/judge_outcomes.jsonl`（status / latency / bid / error）。
+
+**Shadow mode**：目前不替換 prod 結果，只 log。預計收 1 週資料後決定 J1 是否可 authoritative replace cleaner（calibration baseline ≥ 85% 才開）。
+
+### C. IntentBus Dispatch
+
+清洗後的文字進 `intent_bus.py::IntentBus`：所有 intent agent 並行 `bid()`，max confidence wins，winner.handler 接管；無人 bid 過 `MIN_CONFIDENCE=0.30` → fallback Marvin LLM。詳細規範見 `CLAUDE.md` 「IntentBus 層設計規範」段落。
+
+### 完整現代化流程
+
+```
+RealtimeVADSink (Discord audio + DAVE 解密)
+  → Adaptive Noise Floor (75-packet 滾動 RMS)
+  → ConversationBuffer 對話溫度 (0.8s / 1.5s / 3.0s)
+  → speech_cut_callback
+    → _run_swift_stt → 3-tuple (text, "Swift", meta)
+    → is_whisper_hallucination 過濾
+    → ParallelJudgesRace (J1/J2/J3, shadow mode 寫 judge_outcomes.jsonl)
+    → IntentBus.dispatch(IntentContext)
+      → 所有 agent 並行 bid
+      → max-wins → winner.handler 接管
+      → 沒贏家 → Marvin LLM fallback
+```

@@ -90,6 +90,20 @@ In Discord: join a voice channel, then type `/summon` in any text channel.
 
 ---
 
+## Games
+
+Marvin ships with three multiplayer voice games in `game/` (each backed by a cog + engine + LLM judge):
+
+| Game | Cog | What it is |
+|---|---|---|
+| **Busted** | `cogs/game_cog.py` | Classic guessing game — setter picks a secret answer, others race to buzz on LLM-generated clues |
+| **Busted99** | `cogs/busted99_cog.py` | 1–99 range-narrowing game with **counter-intuitive scoring**: guessing the answer = 0 points, getting last-2-wrong = 100 |
+| **TurtleSoup (海龜湯)** | `cogs/turtle_soup_cog.py` | Paradox riddle game; LLM judges yes/no/irrelevant. Hint graph supports personalised ordering based on what players already asked |
+
+All games are voice-driven (players talk, Marvin narrates outcomes via TTS) and integrate through the IntentBus with `mode_compatible={"game"}`. See `game/busted99/ARCHITECTURE.md` and `game/turtle_soup/ARCHITECTURE.md` for design notes.
+
+---
+
 ## Community Memory
 
 Marvin stores what he knows about each member in a local SQLite database (`marvin.db`) — not chat logs, but structured observations that accumulate over real interactions. The database is created automatically on first run; no manual setup required.
@@ -144,11 +158,40 @@ marvin_voice_core/
   pipeline.py            — ConversationBuffer, MarvinVoicePipeline
   sink.py                — RealtimeVADSink (Discord audio → PCM, VAD gating)
   stt_handler.py         — Swift STT (primary) + Faster-Whisper (fallback)
+                           Returns (text, engine_name, meta) since 2026-05-24 —
+                           meta carries Swift acoustic/prosody features
   audio_utils.py         — RMS calculation, gain, WAV export
   voice_meta_analyzer.py — per-utterance metadata (speaker, timing, energy)
   atmosphere_tracker.py  — real-time topic/mood tracking from the STT stream
   marmo_server.py        — async webhook relay for external voice jobs
 ```
+
+Wake-word triggered intents go through a separate dispatch system:
+
+```
+intent_bus.py            — IntentBus + Bid + IntentContext;
+                           wake → all agents bid in parallel → max-wins handler
+
+intent_agents/           — IntentAgent implementations, each declaring
+                           mode_compatible (normal / stream / game):
+  music_agent_v2.py        Declarative; 3-way SPECIFIC/CURATION/DIRECTIONAL
+  playback_control_agent.py  skip / pause / volume
+  find_song_agent.py       discover songs by description, not name
+  nemoclaw_agent.py        State-checking; routes to openclaw CLI
+  hallucination_guard_agent.py  blocks empty / repeated transcripts
+  busted_agent.py          ┐
+  busted99_agent.py        │ Game-mode agents — bid only when cog is active
+  turtle_soup_agent.py     ┘
+
+intent_judges/           — Parallel STT judges race (Phase 1 shadow, 2026-05-24+):
+  regex_judge.py (J1)      zero-latency pattern matching
+  small_llm_judge.py (J2)  Groq Llama 8B classifier
+  cleaner_judge.py (J3)    existing stt_cleaner as slow fallback
+  race.py                  FIRST_COMPLETED coordinator + max-confidence fallback
+                           Writes records/judge_outcomes.jsonl for offline analysis
+```
+
+To add a new intent, write an `IntentAgent` subclass and register it with `VoiceController._intent_bus` — never touch the `voice_controller` if/elif chain. See `CLAUDE.md` for the bid contract (sync ≤5ms, dense 0.0 reasons, mode gating).
 
 `MarmoServer` (port 8765) lets external agents push text into Marvin's voice queue without a direct Python import — useful for piping in results from shell scripts or other bots.
 
