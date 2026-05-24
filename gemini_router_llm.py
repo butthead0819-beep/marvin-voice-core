@@ -311,6 +311,7 @@ class GeminiRouterLLMMixin:
             return
 
         from llm_agents.base import LLMBus
+        from llm_agents.cerebras_agent import CerebrasAgent
         from llm_agents.groq_agent import GroqAgent
         from llm_agents.quota_service import QuotaService
 
@@ -319,7 +320,9 @@ class GeminiRouterLLMMixin:
         agents = []
         if quota.endpoint("groq-quick") is not None or quota.endpoint("groq-analyze") is not None:
             agents.append(GroqAgent(quota))
-        # Phase 2 在此加 GeminiAgent / CerebrasAgent (C6/C7)
+        if quota.endpoint("cerebras-quick") is not None or quota.endpoint("cerebras-analyze") is not None:
+            agents.append(CerebrasAgent(quota))
+        # Phase 3 在此加 GeminiAgent (不同 SDK, google.genai 非 OpenAI-compat)
 
         if not agents:
             logger.info("[LLMBus] 無可用 agent (provider key 全缺)，bus 不啟用 — _call_llm 走 legacy")
