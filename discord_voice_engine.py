@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import asyncio
 import concurrent.futures
+import json
 import threading
 import time
 import os
@@ -1040,12 +1041,19 @@ class DiscordVoiceEngine:
 
     # ── P2: STT 引擎拆解為獨立協程 ─────────────────────────────────────────────
 
-    async def _run_swift_stt(self, wav_path: str, is_wake_check: bool, locale: str = "zh-TW") -> str:
-        """執行 macOS Swift STT，回傳辨識文字或空字串。"""
+    async def _run_swift_stt(self, wav_path: str, is_wake_check: bool, locale: str = "zh-TW") -> tuple[str, dict]:
+        """執行 macOS Swift STT，回傳 (辨識文字, meta dict)。
+
+        meta 包含 Swift 端送的聲學/韻律訊號（avg_confidence / min_confidence /
+        avg_pause_duration / speaking_rate），供 J1 信心校準與 VAD 溫度判斷之後使用。
+        """
         process = None
+        meta: dict = {}
         try:
             env = os.environ.copy()
-            base_context = "Marvin,馬文,碼文,麻文,艾馬文,馬問,馬門,嗨馬文,Hi Marvin"
+            # base_context: wake word 變體（從 stt_corrections.jsonl 萃取 Top wake 聽錯）
+            # Siri/阿公/瑪利歐 是實測 frequency ≥2 的真實 STT 聲學混淆，加進來偏回「馬文」
+            base_context = "Marvin,馬文,碼文,麻文,艾馬文,馬問,馬門,嗨馬文,Hi Marvin,Siri,阿公,瑪利歐"
             if hasattr(self.bot.router, 'game_dict_string') and self.bot.router.game_dict_string:
                 env["STT_CONTEXT_STRINGS"] = f"{base_context},{self.bot.router.game_dict_string}"
             else:
@@ -1062,10 +1070,22 @@ class DiscordVoiceEngine:
             )
             stdout, _ = await asyncio.wait_for(process.communicate(), timeout=10.0)
             if process.returncode == 0:
+                text = ""
                 for line in stdout.decode("utf-8").splitlines():
                     line = line.strip()
-                    if line and not any(line.startswith(p) for p in ("🔍", "✅", "❌", "DEBUG:", "📚")):
-                        return line
+                    if not line:
+                        continue
+                    if line.startswith("__META__ "):
+                        try:
+                            meta = json.loads(line[len("__META__ "):])
+                        except json.JSONDecodeError:
+                            pass
+                        continue
+                    if any(line.startswith(p) for p in ("🔍", "✅", "❌", "DEBUG:", "📚")):
+                        continue
+                    text = line
+                if text:
+                    return text, meta
             else:
                 logger.warning(f"[Swift STT] 執行失敗 (Code: {process.returncode})")
         except asyncio.TimeoutError:
@@ -1078,10 +1098,10 @@ class DiscordVoiceEngine:
                     pass
         except Exception as e:
             logger.warning(f"[Swift STT] Exception: {e}")
-        return ""
+        return "", {}
 
-    async def _run_groq_whisper_stt(self, wav_path: str, language: str = "zh") -> str:
-        """Groq Whisper API STT，回傳辨識文字或空字串。
+    async def _run_groq_whisper_stt(self, wav_path: str, language: str = "zh") -> tuple[str, dict]:
+        """Groq Whisper API STT，回傳 (辨識文字, meta dict)。meta 永遠為空 dict。
 
         使用 whisper-large-v3-turbo（速度快，準確度夠），免費額度 28,800s/day。
         在 asyncio.to_thread 內執行阻塞的 HTTP 上傳，不阻塞 event loop。
@@ -1089,7 +1109,7 @@ class DiscordVoiceEngine:
         groq_key = os.getenv("GROQ_API_KEY", "")
         if not groq_key:
             logger.warning("[Groq Whisper] GROQ_API_KEY 未設定，跳過")
-            return ""
+            return "", {}
 
         _lang = language
         def _upload():
@@ -1115,16 +1135,16 @@ class DiscordVoiceEngine:
             )
             if text and is_whisper_hallucination(text, "Marvin, 馬文, 艾馬文, Hi Marvin"):
                 logger.warning(f"[Groq Whisper] 幻覺偵測，丟棄: '{text[:60]}'")
-                return ""
-            return text
+                return "", {}
+            return text, {}
         except asyncio.TimeoutError:
             logger.warning("[Groq Whisper] 20s 超時")
         except Exception as e:
             logger.warning(f"[Groq Whisper] Exception: {e}")
-        return ""
+        return "", {}
 
-    async def _run_whisper_stt(self, audio, language: str = "zh") -> str:
-        """執行 Faster-Whisper STT，回傳辨識文字或空字串。
+    async def _run_whisper_stt(self, audio, language: str = "zh") -> tuple[str, dict]:
+        """執行 Faster-Whisper STT，回傳 (辨識文字, meta dict)。meta 永遠為空 dict。
         audio 可為 numpy float32 array（優先）或 WAV 檔路徑（fallback）。
 
         Zombie-thread 防護：使用 threading.Semaphore(1)，由 thread 自身在 finally 釋放。
@@ -1132,12 +1152,12 @@ class DiscordVoiceEngine:
         前一個 thread 仍在跑時新呼叫直接 drop，最多同時只有 1 條 Whisper thread 存活。
         """
         if not self.whisper_model:
-            return ""
+            return "", {}
 
         # Drop immediately if previous thread is still running
         if not self._whisper_thread_sem.acquire(blocking=False):
             logger.warning("[Whisper STT] 前一次辨識仍在執行，跳過（zombie guard）")
-            return ""
+            return "", {}
 
         whisper_prompt = "Marvin, Hi Marvin, 馬文, 艾馬文, 艾瑪文, 幫忙, 玩家對話。"
         active_dict = getattr(self.bot.router, 'game_dict_string', "")
@@ -1176,13 +1196,13 @@ class DiscordVoiceEngine:
             )
             if text and is_whisper_hallucination(text, _prompt):
                 logger.warning(f"[Whisper STT] 幻覺偵測，丟棄輸出: '{text[:60]}'")
-                return ""
-            return text or ""
+                return "", {}
+            return (text or ""), {}
         except asyncio.TimeoutError:
             logger.warning("[Whisper STT] 30s 超時，thread 仍在跑（semaphore 由 thread 釋放）")
         except Exception as e:
             logger.warning(f"[Whisper STT] Exception: {e}")
-        return ""
+        return "", {}
 
     async def _process_stt_hybrid(self, speaker_name, wav_path, wav_bytes, timestamp, prosody_data: dict = None, is_wake_check=False, whisper_audio=None, user_id: int | None = None, release_inflight=None):
         """
@@ -1203,6 +1223,7 @@ class DiscordVoiceEngine:
             pipeline_timing.mark("stt_start")
             raw_text = ""
             used_engine = "None"
+            stt_meta: dict = {}
 
             # whisper_audio 為預先轉換的 mono 16kHz float32 array（由 _flush_audio_to_stt 提供）
             # 傳入 array 讓 Whisper 不依賴磁碟檔案，避免 cancel 後 thread 讀到已刪除的 wav
@@ -1228,12 +1249,12 @@ class DiscordVoiceEngine:
                     # 5/20 incident: Groq Whisper 在低訊號 wake check 上幻覺「李宗盛」等
                     # 內容 → STT_SWIFT_STRICT=true 完整關掉 Groq fallback。
                     print(f"🎙️ [Engine] [WakeCheck] Swift (Speaker: {speaker_name})...", flush=True)
-                    raw_text = await self._run_swift_stt(wav_path, is_wake_check=True, locale=_sp_locale)
+                    raw_text, stt_meta = await self._run_swift_stt(wav_path, is_wake_check=True, locale=_sp_locale)
                     if raw_text:
                         used_engine = "Swift"
                     elif os.getenv("GROQ_API_KEY") and not _swift_strict:
                         print(f"🎙️ [Engine] [WakeCheck] Swift empty → Groq fallback (Speaker: {speaker_name})...", flush=True)
-                        raw_text = await self._run_groq_whisper_stt(wav_path, language=_sp_lang)
+                        raw_text, stt_meta = await self._run_groq_whisper_stt(wav_path, language=_sp_lang)
                         if raw_text:
                             used_engine = "Groq"
                 else:
@@ -1247,9 +1268,10 @@ class DiscordVoiceEngine:
                         done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
                         for t in done:
                             try:
-                                text = t.result()
+                                text, meta = t.result()
                                 if text:
                                     raw_text = text
+                                    stt_meta = meta
                                     used_engine = name_map[id(t)]
                                     for p in pending:
                                         p.cancel()
@@ -1268,7 +1290,7 @@ class DiscordVoiceEngine:
             else:
                 # 序列備援：Swift server 優先（最高準確度），失敗才用 Whisper
                 print(f"🎙️ [Engine] 啟動 macOS Native Swift STT (Speaker: {speaker_name}, Locale: {_sp_locale})...", flush=True)
-                raw_text = await self._run_swift_stt(wav_path, is_wake_check=False, locale=_sp_locale)
+                raw_text, stt_meta = await self._run_swift_stt(wav_path, is_wake_check=False, locale=_sp_locale)
                 if raw_text:
                     used_engine = "Swift"
                     print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Swift)", flush=True)
@@ -1277,13 +1299,13 @@ class DiscordVoiceEngine:
                 # 注：_swift_strict 已在函式頂部定義，這裡直接用
                 if not raw_text and _is_apple_platform and os.getenv("GROQ_API_KEY") and not _swift_strict:
                     print(f"🎙️ [Engine] 啟動備援 Groq Whisper (Speaker: {speaker_name}, Lang: {_sp_lang})...", flush=True)
-                    raw_text = await self._run_groq_whisper_stt(wav_path, language=_sp_lang)
+                    raw_text, stt_meta = await self._run_groq_whisper_stt(wav_path, language=_sp_lang)
                     if raw_text:
                         used_engine = "Groq"
                         print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Groq)", flush=True)
                 elif not raw_text and self.whisper_model and not _is_apple_platform:
                     print(f"🎙️ [Engine] 啟動備援 Faster-Whisper 辨識 (Speaker: {speaker_name})...", flush=True)
-                    raw_text = await self._run_whisper_stt(_whisper_input, language=_sp_lang)
+                    raw_text, stt_meta = await self._run_whisper_stt(_whisper_input, language=_sp_lang)
                     if raw_text:
                         used_engine = "Whisper"
                         print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Whisper)", flush=True)
@@ -1292,6 +1314,9 @@ class DiscordVoiceEngine:
             # Update speaker language memory from this utterance for next call
             if raw_text:
                 self._update_speaker_lang(speaker_name, raw_text)
+            # STT meta（avg/min confidence、prosody）：先 log 紀錄，後續供 J1 信心校準
+            if stt_meta:
+                logger.debug(f"[STT Meta] {used_engine} speaker={speaker_name} {stt_meta}")
 
         finally:
             _lock.release()

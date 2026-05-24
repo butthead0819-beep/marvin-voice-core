@@ -66,7 +66,7 @@ async def test_wake_check_not_blocked_by_full_stt_saturation():
 
     engine._process_stt_hybrid = fake_process
 
-    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value="")):
+    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value=("", {}))):
         await engine._flush_audio_to_stt(user_id=1, is_wake_check=True)
 
     assert started, "wake_check was wrongly dropped because full-STT slots were full"
@@ -87,7 +87,7 @@ async def test_full_stt_not_blocked_by_wake_check_saturation():
 
     engine._process_stt_hybrid = fake_process
 
-    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value="")):
+    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value=("", {}))):
         await engine._flush_audio_to_stt(user_id=2, is_wake_check=False)
 
     assert started, "full-STT was wrongly dropped because wake_check slots were full"
@@ -152,7 +152,7 @@ async def test_wake_inflight_returns_to_zero_after_completion():
 
     engine._process_stt_hybrid = fake_process
 
-    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value="")):
+    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value=("", {}))):
         await engine._flush_audio_to_stt(user_id=5, is_wake_check=True)
 
     assert engine._wake_inflight == 0, "counter should be 0 after completion"
@@ -169,7 +169,7 @@ async def test_full_stt_inflight_returns_to_zero_after_completion():
 
     engine._process_stt_hybrid = fake_process
 
-    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value="")):
+    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value=("", {}))):
         await engine._flush_audio_to_stt(user_id=6, is_wake_check=False)
 
     assert engine._full_stt_inflight == 0, "counter should be 0 after completion"
@@ -186,7 +186,7 @@ async def test_wake_inflight_decrements_even_on_exception():
 
     engine._process_stt_hybrid = boom
 
-    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value="")):
+    with patch.object(engine, "_run_swift_stt", AsyncMock(return_value=("", {}))):
         await engine._flush_audio_to_stt(user_id=7, is_wake_check=True)
 
     assert engine._wake_inflight == 0, "counter must decrement even after exception"

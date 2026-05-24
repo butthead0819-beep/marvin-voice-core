@@ -32,9 +32,9 @@ async def test_wake_check_falls_back_to_groq_when_swift_empty_on_mlx(monkeypatch
     monkeypatch.setenv("GROQ_API_KEY", "test_key")
     monkeypatch.delenv("STT_SWIFT_STRICT", raising=False)  # 確保非 strict 模式測 fallback
     engine = _make_engine(stt_engine="mlx")
-    engine._run_swift_stt = AsyncMock(return_value="")
-    engine._run_groq_whisper_stt = AsyncMock(return_value="嗨馬文")
-    engine._run_whisper_stt = AsyncMock(return_value="should not be called")
+    engine._run_swift_stt = AsyncMock(return_value=("", {}))
+    engine._run_groq_whisper_stt = AsyncMock(return_value=("嗨馬文", {}))
+    engine._run_whisper_stt = AsyncMock(return_value=("should not be called", {}))
 
     await engine._process_stt_hybrid(
         speaker_name="狗與露",
@@ -54,9 +54,9 @@ async def test_wake_check_falls_back_to_groq_when_swift_empty_on_macos(monkeypat
     monkeypatch.setenv("GROQ_API_KEY", "test_key")
     monkeypatch.delenv("STT_SWIFT_STRICT", raising=False)
     engine = _make_engine(stt_engine="macos")
-    engine._run_swift_stt = AsyncMock(return_value="")
-    engine._run_groq_whisper_stt = AsyncMock(return_value="嗨馬文")
-    engine._run_whisper_stt = AsyncMock(return_value="should not be called")
+    engine._run_swift_stt = AsyncMock(return_value=("", {}))
+    engine._run_groq_whisper_stt = AsyncMock(return_value=("嗨馬文", {}))
+    engine._run_whisper_stt = AsyncMock(return_value=("should not be called", {}))
 
     await engine._process_stt_hybrid(
         speaker_name="狗與露",
@@ -75,9 +75,9 @@ async def test_wake_check_skips_groq_when_swift_succeeds(monkeypatch):
     """Swift returns text → Groq must NOT be called (don't waste API quota)."""
     monkeypatch.setenv("GROQ_API_KEY", "test_key")
     engine = _make_engine(stt_engine="mlx")
-    engine._run_swift_stt = AsyncMock(return_value="嗨馬文")
-    engine._run_groq_whisper_stt = AsyncMock(return_value="should not be called")
-    engine._run_whisper_stt = AsyncMock(return_value="should not be called")
+    engine._run_swift_stt = AsyncMock(return_value=("嗨馬文", {}))
+    engine._run_groq_whisper_stt = AsyncMock(return_value=("should not be called", {}))
+    engine._run_whisper_stt = AsyncMock(return_value=("should not be called", {}))
 
     await engine._process_stt_hybrid(
         speaker_name="狗與露",
@@ -96,9 +96,9 @@ async def test_wake_check_no_fallback_when_groq_key_missing(monkeypatch):
     """No GROQ_API_KEY → fall back silently to original Swift-only behavior."""
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     engine = _make_engine(stt_engine="mlx")
-    engine._run_swift_stt = AsyncMock(return_value="")
-    engine._run_groq_whisper_stt = AsyncMock(return_value="should not be called")
-    engine._run_whisper_stt = AsyncMock(return_value="should not be called")
+    engine._run_swift_stt = AsyncMock(return_value=("", {}))
+    engine._run_groq_whisper_stt = AsyncMock(return_value=("should not be called", {}))
+    engine._run_whisper_stt = AsyncMock(return_value=("should not be called", {}))
 
     await engine._process_stt_hybrid(
         speaker_name="狗與露",
@@ -119,8 +119,8 @@ async def test_wake_check_strict_mode_skips_groq_fallback(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test_key")
     monkeypatch.setenv("STT_SWIFT_STRICT", "true")
     engine = _make_engine(stt_engine="mlx")
-    engine._run_swift_stt = AsyncMock(return_value="")  # Swift 空
-    engine._run_groq_whisper_stt = AsyncMock(return_value="嗨馬文")
+    engine._run_swift_stt = AsyncMock(return_value=("", {}))  # Swift 空
+    engine._run_groq_whisper_stt = AsyncMock(return_value=("嗨馬文", {}))
 
     await engine._process_stt_hybrid(
         speaker_name="狗與露",
@@ -139,9 +139,9 @@ async def test_wake_check_groq_failure_returns_empty(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test_key")
     monkeypatch.delenv("STT_SWIFT_STRICT", raising=False)
     engine = _make_engine(stt_engine="mlx")
-    engine._run_swift_stt = AsyncMock(return_value="")
-    engine._run_groq_whisper_stt = AsyncMock(return_value="")
-    engine._run_whisper_stt = AsyncMock(return_value="should not be called")
+    engine._run_swift_stt = AsyncMock(return_value=("", {}))
+    engine._run_groq_whisper_stt = AsyncMock(return_value=("", {}))
+    engine._run_whisper_stt = AsyncMock(return_value=("should not be called", {}))
 
     # Must not raise
     await engine._process_stt_hybrid(

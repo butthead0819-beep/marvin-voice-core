@@ -51,7 +51,10 @@ request.requiresOnDeviceRecognition = isWakeCheck
 
 if #available(macOS 13.0, *) {
     request.taskHint = .dictation // 明確告訴辨識引擎這是即時對話，非朗讀
-    request.addsPunctuation = false // 關掉自動標點，避免錯誤斷句
+    // 標點預設關（過往實測：Apple 中文標點會錯斷句、且 cleaner 經常移除多加的標點）。
+    // 留 STT_PUNCTUATION=1 後門 A/B 測；wake-check 路徑搶速度，強制關不受 env 影響。
+    let punctEnv = ProcessInfo.processInfo.environment["STT_PUNCTUATION"] ?? "0"
+    request.addsPunctuation = !isWakeCheck && (punctEnv == "1" || punctEnv.lowercased() == "true")
 }
 
 // 🚀 [Operation Jargon Override] 讀取環境變數載入動態字典
@@ -77,8 +80,33 @@ let task = recognizer.recognitionTask(with: request) { result, error in
     
     if let result = result {
         if result.isFinal {
-            let finalStr = result.bestTranscription.formattedString
+            let transcription = result.bestTranscription
+            let finalStr = transcription.formattedString
             fputs("✅ [Swift_Debug] 辨識成功！內容長度: \(finalStr.count)\n", stdout)
+
+            // META line: acoustic + prosody features for J1 calibration / VAD temperature.
+            // Confidence is per-segment Float (0.0–1.0); a value of 0.0 means "no estimate"
+            // (common on short utterances) — filter those out before averaging so wake-check
+            // doesn't get penalised.
+            let confidences = transcription.segments.map { $0.confidence }.filter { $0 > 0 }
+            let avgConf = confidences.isEmpty ? 0.0 : confidences.reduce(0, +) / Float(confidences.count)
+            let minConf = confidences.min() ?? 0.0
+            var meta: [String: Any] = [
+                "avg_confidence": Double(avgConf),
+                "min_confidence": Double(minConf),
+                "segment_count": transcription.segments.count,
+            ]
+            // Prosody (pause / rate) lives on result.speechRecognitionMetadata since macOS 11.3.
+            // It can be nil when the engine doesn't compute it (short clips, on-device path) —
+            // Python uses .get() so missing keys are fine downstream.
+            if let speechMeta = result.speechRecognitionMetadata {
+                meta["avg_pause_duration"] = speechMeta.averagePauseDuration
+                meta["speaking_rate"] = speechMeta.speakingRate
+            }
+            if let metaData = try? JSONSerialization.data(withJSONObject: meta, options: []),
+               let metaStr = String(data: metaData, encoding: .utf8) {
+                print("__META__ \(metaStr)")
+            }
             print(finalStr)
             isDone = true
         }

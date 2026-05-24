@@ -70,7 +70,7 @@ async def test_clean_res_undefined_does_not_raise_when_callback_path_taken(tmp_p
         wav_bytes = f.read()
 
     # Mock Swift STT 直接回非空字串，讓我們走到 Track A / Track B path
-    engine._run_swift_stt = AsyncMock(return_value="今天天氣不錯適合出去走走")  # 非喚醒詞、長度 > 3
+    engine._run_swift_stt = AsyncMock(return_value=("今天天氣不錯適合出去走走", {}))  # 非喚醒詞、長度 > 3
 
     # 不該 NameError；callback 應該被呼叫（Track B 路徑因為 not is_wake_check + len > 3）
     await engine._process_stt_hybrid(

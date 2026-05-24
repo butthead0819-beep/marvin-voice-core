@@ -46,7 +46,7 @@ async def test_whisper_drops_when_thread_busy():
     finally:
         engine._whisper_thread_sem.release()  # cleanup
 
-    assert result == "", "must return empty when thread is busy"
+    assert result == ("", {}), "must return empty tuple when thread is busy"
 
 
 @pytest.mark.asyncio
@@ -163,7 +163,7 @@ async def test_only_one_whisper_thread_at_a_time():
 
     engine._whisper_thread_sem.release()
 
-    # All must be "" because semaphore was held
-    assert all(r == "" for r in results), f"all calls must be dropped when busy: {results}"
+    # All must be ("", {}) because semaphore was held
+    assert all(r == ("", {}) for r in results), f"all calls must be dropped when busy: {results}"
     # transcribe must NOT have been called (thread was fake-busy)
     engine.whisper_model.transcribe.assert_not_called()

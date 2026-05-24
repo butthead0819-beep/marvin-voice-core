@@ -57,7 +57,7 @@ async def test_inflight_released_before_cleaner_runs(tmp_path):
     call_order = []
 
     # Swift STT 回非喚醒詞長句 → 走 Track B cleaner
-    engine._run_swift_stt = AsyncMock(return_value="幫我查佛山有什麼好玩的")
+    engine._run_swift_stt = AsyncMock(return_value=("幫我查佛山有什麼好玩的", {}))
 
     async def _fake_clean(*a, **kw):
         call_order.append("cleaner")
@@ -88,7 +88,7 @@ async def test_inflight_release_optional_no_crash(tmp_path):
     wav_path = _make_wav(tmp_path)
     with open(wav_path, "rb") as f:
         wav_bytes = f.read()
-    engine._run_swift_stt = AsyncMock(return_value="幫我查佛山")
+    engine._run_swift_stt = AsyncMock(return_value=("幫我查佛山", {}))
     engine.bot.router.clean_stt_text = AsyncMock(return_value={
         "text": "幫我查佛山", "is_wake": False, "wake_intent": None, "wake_threshold": 0.7})
 

@@ -234,7 +234,7 @@ class TestProcessSttHybridLangRouting:
 
         async def _fake_swift(wav_path, is_wake_check=False, locale="zh-TW"):
             captured_locale["locale"] = locale
-            return "你好"
+            return ("你好", {})
 
         engine._run_swift_stt = _fake_swift
 
@@ -256,7 +256,7 @@ class TestProcessSttHybridLangRouting:
 
             async def _fake_swift(wav_path, is_wake_check=False, locale="zh-TW"):
                 captured_locale["locale"] = locale
-                return "how are you"
+                return ("how are you", {})
 
             engine._run_swift_stt = _fake_swift
 

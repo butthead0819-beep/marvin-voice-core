@@ -38,7 +38,7 @@ async def test_whisper_model_is_none_on_mlx():
     # We test by checking _run_whisper_stt returns "" because whisper_model is None
     engine.whisper_model = None
     result = await engine._run_whisper_stt("/tmp/test.wav")
-    assert result == ""
+    assert result == ("", {})
 
 
 @pytest.mark.asyncio
@@ -92,4 +92,4 @@ async def test_run_whisper_stt_returns_empty_when_no_model():
     engine.whisper_model = None
 
     result = await engine._run_whisper_stt("/tmp/test.wav")
-    assert result == ""
+    assert result == ("", {})
