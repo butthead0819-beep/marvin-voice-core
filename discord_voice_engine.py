@@ -1315,8 +1315,9 @@ class DiscordVoiceEngine:
             if raw_text:
                 self._update_speaker_lang(speaker_name, raw_text)
             # STT meta（avg/min confidence、prosody）：先 log 紀錄，後續供 J1 信心校準
+            print(f"🧪 [STT Meta DEBUG] engine={used_engine} speaker={speaker_name} meta={stt_meta} type={type(stt_meta).__name__}", flush=True)
             if stt_meta:
-                logger.debug(f"[STT Meta] {used_engine} speaker={speaker_name} {stt_meta}")
+                logger.info(f"[STT Meta] {used_engine} speaker={speaker_name} {stt_meta}")
 
         finally:
             _lock.release()
