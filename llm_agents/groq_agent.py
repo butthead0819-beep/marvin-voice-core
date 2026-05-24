@@ -93,14 +93,23 @@ class GroqAgent(LLMAgent):
         if ep is None:
             raise RuntimeError(f"[GroqAgent] endpoint {endpoint_name} not registered")
 
-        messages = [{"role": "user", "content": ctx.prompt}]
+        messages = []
+        if ctx.system_prompt:
+            messages.append({"role": "system", "content": ctx.system_prompt})
+        messages.append({"role": "user", "content": ctx.prompt})
+
+        kwargs = dict(
+            model=ep.model,
+            messages=messages,
+            temperature=ctx.temperature if ctx.temperature is not None else 0.7,
+            max_tokens=ctx.max_tokens if ctx.max_tokens is not None else 1024,
+            stream=False,
+        )
+        if ctx.json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+
         try:
-            resp = await ep.client.chat.completions.create(
-                model=ep.model,
-                messages=messages,
-                temperature=0.7,
-                stream=False,
-            )
+            resp = await ep.client.chat.completions.create(**kwargs)
         except Exception as e:
             err_str = str(e)
             # 簡單 rate-limit 偵測（llm_pool.is_rate_limit 同邏輯，避免循環 import）

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal
 
 logger = logging.getLogger("MarvinBot.LLMBus")
@@ -47,6 +47,8 @@ class LLMContext:
 
     purpose 是 Phase 1 free string，KNOWN_PURPOSES 是 typo 警示白名單（不擋 dispatch）。
     speaker 是 stickiness key — None 表示系統呼叫（cron / background）跳過 stickiness。
+    system_prompt / json_mode / temperature / max_tokens 直接 forward 給 agent.handle
+    打 OpenAI-相容 API；None 走 agent 預設值。
     """
     prompt: str
     purpose: str
@@ -54,6 +56,10 @@ class LLMContext:
     latency_budget_ms: int | None = None
     min_quality: Literal["fast", "balanced", "high"] = "balanced"
     max_cost_units: int | None = None
+    system_prompt: str | None = None
+    json_mode: bool = False
+    temperature: float | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)

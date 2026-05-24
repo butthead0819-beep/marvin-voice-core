@@ -298,6 +298,27 @@ class GeminiRouterLLMMixin:
             if random.random() < dere_chance:
                 final_system_prompt = self.prompt_manager.get_instruction("dere_persona", vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory)
 
+        # 🚌 [LLMBus Phase 1] env LLM_BUS=true 且 bus 已 inject → 走 bus 一條路（禁雙跑：bus
+        # 失敗回 '' 不 fallback legacy 避免 TPM 雙計，Risk 3）。Bus 沒裝 / flag off → 走下方 legacy。
+        if (os.getenv("LLM_BUS", "").lower() in ("1", "true", "yes")
+                and getattr(self, "_llm_bus", None) is not None):
+            from llm_agents.base import LLMContext, NoLLMAvailable
+            _TIER_TO_QUALITY = {"simple": "fast", "medium": "balanced", "high": "high"}
+            ctx = LLMContext(
+                prompt=user_prompt,
+                purpose="marvin_chat",  # Phase 1 預設；Phase 2 caller 顯式傳 purpose
+                speaker=speaker,
+                min_quality=_TIER_TO_QUALITY.get(tier, "balanced"),
+                system_prompt=final_system_prompt,
+                json_mode=is_json,
+                temperature=temperature,
+            )
+            try:
+                return await self._llm_bus.dispatch(ctx)
+            except NoLLMAvailable:
+                logger.warning("[LLMBus] dispatch NoLLMAvailable — 回 '' (禁 fallback legacy)")
+                return ""
+
         # 🔵 [High Tier] 直接跳至 Gemini，跳過 Groq/Cerebras（記憶提取、長摘要、歌曲 blueprint 等）
         if tier == "high":
             can_use_cloud = not self.is_exhausted and not self.budget.is_circuit_open()
