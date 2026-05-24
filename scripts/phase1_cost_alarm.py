@@ -17,7 +17,7 @@ Run:
   venv_simon/bin/python scripts/phase1_cost_alarm.py --json   # JSON 輸出給其它 tool 用
 
 Cron example (每小時跑一次):
-  0 * * * * cd ~/Documents/Antigravity/Discord-voice-bot && \\
+  0 * * * * cd ~/Code/Discord-voice-bot && \\
     venv_simon/bin/python scripts/phase1_cost_alarm.py >> data/cost_alarm.log 2>&1
 """
 from __future__ import annotations

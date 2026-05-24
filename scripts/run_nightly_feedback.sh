@@ -7,13 +7,13 @@
 echo "[run_nightly_feedback] === bash entered at $(date) ==="
 
 export HOME="/Users/jackhuang"
-export PATH="/Users/jackhuang/Documents/Antigravity/Discord-voice-bot/venv_simon/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH="/Users/jackhuang/Code/Discord-voice-bot/venv_simon/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PYTHONNOUSERSITE=1
 export PYTHONDONTWRITEBYTECODE=1
 
-PYTHON="/Users/jackhuang/Documents/Antigravity/Discord-voice-bot/venv_simon/bin/python3"
-SCRIPT="/Users/jackhuang/Documents/Antigravity/Discord-voice-bot/scripts/analyze_daily_feedback.py"
-WORKDIR="/Users/jackhuang/Documents/Antigravity/Discord-voice-bot"
+PYTHON="/Users/jackhuang/Code/Discord-voice-bot/venv_simon/bin/python3"
+SCRIPT="/Users/jackhuang/Code/Discord-voice-bot/scripts/analyze_daily_feedback.py"
+WORKDIR="/Users/jackhuang/Code/Discord-voice-bot"
 
 cd "$WORKDIR" || exit 1
 

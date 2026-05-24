@@ -21,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-WORKDIR = Path("/Users/jackhuang/Documents/Antigravity/Discord-voice-bot")
+WORKDIR = Path("/Users/jackhuang/Code/Discord-voice-bot")
 VENV_PY = WORKDIR / "venv_simon" / "bin" / "python3"
 SCRIPT = WORKDIR / "scripts" / "analyze_daily_log.py"
 
