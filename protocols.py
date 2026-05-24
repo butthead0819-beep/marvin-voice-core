@@ -23,7 +23,12 @@ class STTService(Protocol):
     """Transcribe a WAV file to text.
 
     Returns:
-        (transcribed_text, engine_name)  e.g. ("馬文你好", "Swift")
+        (transcribed_text, engine_name, meta)
+            e.g. ("馬文你好", "Swift", {"avg_confidence": 0.87, "min_confidence": 0.42,
+                                         "avg_pause_duration": 0.15, "speaking_rate": 145.3})
+
+    meta is engine-specific and may be empty ({}). For Swift on macOS 13+, it includes
+    confidence + prosody features used by J1 calibration and VAD temperature heuristics.
     """
 
     async def transcribe(
@@ -32,7 +37,7 @@ class STTService(Protocol):
         *,
         speaker: str = "",
         context: str = "",
-    ) -> tuple[str, str]: ...
+    ) -> tuple[str, str, dict]: ...
 
 
 # ── Large-Language-Model client ───────────────────────────────────────────────
