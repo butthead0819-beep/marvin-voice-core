@@ -348,25 +348,50 @@ class GeminiRouterLLMMixin:
         if (os.getenv("LLM_BUS", "").lower() in ("1", "true", "yes")
                 and getattr(self, "_llm_bus", None) is not None):
             from llm_agents.base import LLMContext, NoLLMAvailable
+            from llm_agents.metrics import log_dispatch
             _TIER_TO_QUALITY = {"simple": "fast", "medium": "balanced", "high": "high"}
+            _bus_purpose = "marvin_chat"  # Phase 1 預設; Phase 2 caller 顯式傳 purpose
             ctx = LLMContext(
                 prompt=user_prompt,
-                purpose="marvin_chat",  # Phase 1 預設；Phase 2 caller 顯式傳 purpose
+                purpose=_bus_purpose,
                 speaker=speaker,
                 min_quality=_TIER_TO_QUALITY.get(tier, "balanced"),
                 system_prompt=final_system_prompt,
                 json_mode=is_json,
                 temperature=temperature,
             )
+            _t0 = time.monotonic()
             try:
-                return await self._llm_bus.dispatch(ctx)
-            except NoLLMAvailable:
+                result = await self._llm_bus.dispatch(ctx)
+                meta = self._llm_bus.last_dispatch
+                log_dispatch(
+                    route="bus", purpose=_bus_purpose, speaker=speaker,
+                    provider=meta.winner_provider if meta else None,
+                    model=meta.winner_model if meta else None,
+                    latency_ms=int((time.monotonic() - _t0) * 1000),
+                    tokens=0,  # Phase 2: agent.handle 已 record 進 QuotaService; jsonl 內 tokens 是 dispatcher 視角，先 0
+                    success=True,
+                )
+                return result
+            except NoLLMAvailable as _e:
                 logger.warning("[LLMBus] dispatch NoLLMAvailable — 回 '' (禁 fallback legacy)")
+                log_dispatch(
+                    route="bus", purpose=_bus_purpose, speaker=speaker,
+                    provider=None, model=None,
+                    latency_ms=int((time.monotonic() - _t0) * 1000),
+                    tokens=0, success=False, error=f"no_llm_available: {_e}",
+                )
                 return ""
             except Exception as _e:
                 # Agent.handle 拋例外（429 / 5xx / timeout）— 對等 legacy chain silent failure,
                 # endpoint cooldown 已在 agent 內 mark_429。回 '' caller 用既有 empty handling。
                 logger.warning(f"[LLMBus] dispatch raised {type(_e).__name__}: {_e} — 回 ''")
+                log_dispatch(
+                    route="bus", purpose=_bus_purpose, speaker=speaker,
+                    provider=None, model=None,
+                    latency_ms=int((time.monotonic() - _t0) * 1000),
+                    tokens=0, success=False, error=f"{type(_e).__name__}: {_e}",
+                )
                 return ""
 
         # 🔵 [High Tier] 直接跳至 Gemini，跳過 Groq/Cerebras（記憶提取、長摘要、歌曲 blueprint 等）

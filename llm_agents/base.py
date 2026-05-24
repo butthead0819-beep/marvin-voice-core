@@ -82,6 +82,16 @@ class NoLLMAvailable(Exception):
     """全 agent dense 0.0 / 低於 MIN_CONFIDENCE — caller 兜底處理（legacy fallback 或 raise）。"""
 
 
+@dataclass(frozen=True)
+class DispatchMetadata:
+    """Observability — bus.last_dispatch 記錄上次 dispatch 的勝者，給 metrics writer 用。"""
+    winner_provider: str
+    winner_model: str
+    winner_agent: str
+    winner_confidence: float
+    bid_summary: tuple  # tuple of (agent_name, confidence, reason)
+
+
 # ---------------------------------------------------------------------------
 # Agent base
 # ---------------------------------------------------------------------------
@@ -137,6 +147,8 @@ class LLMBus:
         self._agents: list[LLMAgent] = sorted(agents, key=lambda a: a.priority)
         # speaker -> (provider, monotonic_ts)
         self._sticky: dict[str, tuple[str, float]] = {}
+        # 上次 dispatch 勝者 metadata，給 metrics writer 用
+        self.last_dispatch: DispatchMetadata | None = None
 
     async def dispatch(self, ctx: LLMContext) -> str:
         # F5: purpose typo warning
@@ -176,6 +188,15 @@ class LLMBus:
         # Sort: confidence desc, then latency asc
         viable.sort(key=lambda t: (-t[2], t[1].estimated_latency_ms))
         winner_agent, winner_bid, winner_conf = viable[0]
+
+        # 記 metadata 給 metrics 用
+        self.last_dispatch = DispatchMetadata(
+            winner_provider=winner_bid.provider,
+            winner_model=winner_bid.model,
+            winner_agent=winner_agent.name,
+            winner_confidence=winner_conf,
+            bid_summary=tuple((a.name, b.confidence, b.reason) for (a, b, _) in bids),
+        )
 
         try:
             result = await winner_agent.handle(ctx)
