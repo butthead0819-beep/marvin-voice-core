@@ -287,6 +287,48 @@ class GeminiRouterLLMMixin:
             logger.debug(f"🦞 [NemoClaw Route] 分類失敗，預設 marvin: {e}")
             return "marvin"
 
+    def _init_llm_bus(self, pools=None, pool_factory=None):
+        """Phase 1 dormant-ready wiring: build LLMBus + 對應 agents 並 inject self._llm_bus.
+
+        - pools: 直接給 (quick_pool, analyze_pool) 跳過 factory（test 用）
+        - pool_factory: 沒 pools 就呼叫 factory，預設 llm_pool.build_tier_pools 讀 env
+        - 沒任何 agent（provider key 全缺）→ self._llm_bus = None
+        - factory 拋例外 → self._llm_bus = None（保證 bot 啟動不死）
+
+        env LLM_BUS=true + _llm_bus != None → _call_llm 走 bus（C4 wrapper）
+        env LLM_BUS=true + _llm_bus = None → 安全 degradation 走 legacy（C4 wrapper）
+        """
+        try:
+            if pools is None:
+                if pool_factory is None:
+                    from llm_pool import build_tier_pools
+                    pool_factory = build_tier_pools
+                pools = pool_factory()
+            quick_pool, analyze_pool = pools
+        except Exception as e:
+            logger.warning(f"[LLMBus] pool 建置失敗，bus 不啟用: {e}")
+            self._llm_bus = None
+            return
+
+        from llm_agents.base import LLMBus
+        from llm_agents.groq_agent import GroqAgent
+        from llm_agents.quota_service import QuotaService
+
+        quota = QuotaService([quick_pool, analyze_pool])
+
+        agents = []
+        if quota.endpoint("groq-quick") is not None or quota.endpoint("groq-analyze") is not None:
+            agents.append(GroqAgent(quota))
+        # Phase 2 在此加 GeminiAgent / CerebrasAgent (C6/C7)
+
+        if not agents:
+            logger.info("[LLMBus] 無可用 agent (provider key 全缺)，bus 不啟用 — _call_llm 走 legacy")
+            self._llm_bus = None
+            return
+
+        self._llm_bus = LLMBus(agents)
+        logger.info(f"[LLMBus] 已掛載 — agents: {[a.name for a in agents]} (env LLM_BUS=true 才會走 bus)")
+
     async def _call_llm(self, system_prompt: str, user_prompt: str, is_json: bool = False, speaker: str = None, allow_local: bool = True, temperature: float = None, thinking_level: str = None, tier: str = "medium") -> str:
         """通用 LLM 呼叫函式。tier: 'simple'=Groq-8b優先, 'medium'=Groq-70b優先(預設), 'high'=直接Gemini"""
         # 🎲 [Operation Eternal Soul] 情緒骰子 (Dere Mode Logic)

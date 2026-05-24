@@ -232,6 +232,11 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         # guild_id 由外部（VoiceController）在 summon 時注入，預設 0
         self.guild_id: int = 0
 
+        # 🚌 [LLMBus Phase 1] Dormant-ready — env LLM_BUS=true 時才實際 dispatch；
+        # 否則 _call_llm wrapper 走 legacy chain。安全 degradation:
+        # provider key 全缺 / build_tier_pools 拋例外 → self._llm_bus = None。
+        self._init_llm_bus()
+
     # ── LLMClient Protocol ────────────────────────────────────────────────────
 
     async def complete(
