@@ -1,9 +1,15 @@
 import asyncio
+import sys
 import time
 import os
+from pathlib import Path
 from .sink import RealtimeVADSink
 from .stt_handler import STTHandler
 from .audio_utils import apply_gain, save_wav, calculate_rms
+
+# Project root on sys.path so we can import pipeline_timing (top-level module)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pipeline_timing  # noqa: E402
 
 class ConversationBuffer:
     """
@@ -136,6 +142,8 @@ class MarvinVoicePipeline:
             self.speech_start_callback(speaker_name, user_id=user_id)
 
     async def process_audio_slice(self, user_id, raw_pcm, start_time, is_wake_check=False):
+        # ContextVar propagates into create_task descendants automatically.
+        pipeline_timing.start()
         if user_id not in self.audio_buffers:
             self.audio_buffers[user_id] = {"pcm": bytearray(), "first_start": start_time}
         self.audio_buffers[user_id]["pcm"].extend(raw_pcm)
@@ -175,9 +183,11 @@ class MarvinVoicePipeline:
                 # handle_stt_result 含 Groq API 等待，不能鎖在裡面
                 async with self.stt_lock:
                     game_dict = getattr(self.bot.router, 'game_dict_string', "") if hasattr(self.bot, 'router') else ""
+                    pipeline_timing.mark("stt_start")
                     raw_text, engine = await self.stt_handler.transcribe_hybrid(
                         abs_wav_path, speaker_name, game_dict_string=game_dict
                     )
+                    pipeline_timing.mark("stt_done")
 
                 if self.stt_callback and raw_text:
                     prosody_data = None
