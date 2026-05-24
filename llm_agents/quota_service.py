@@ -59,6 +59,11 @@ class QuotaService:
             cooldown_remaining_s=cooldown_remaining,
         )
 
+    def endpoint(self, name: str) -> Optional[PoolEndpoint]:
+        """Raw PoolEndpoint for agent.handle() — 拿 client + model 真正打 API。bid 不該用此 method（state() 就夠）。"""
+        record = self._index.get(name)
+        return record[1] if record is not None else None
+
     def record_usage(self, name: str, tokens: int) -> None:
         """Forward to underlying pool. Unknown name = silent no-op (caller 拼錯名最多漏記 metric)."""
         record = self._index.get(name)
