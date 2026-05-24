@@ -43,15 +43,39 @@ def patch_voice_recv_key_sync(voice_client) -> None:
     orig_rtp = decryptor.decrypt_rtp
     orig_rtcp = decryptor.decrypt_rtcp
 
+    # DAVE E2EE: 若 guild 啟用 end-to-end encryption, SRTP plaintext 內層還是 davey ciphertext.
+    # voice_state.dave_ready 由 discord.py 2.7.x 內建 MLS handshake 維持; davey 套件提供 decrypt.
+    try:
+        import davey as _davey
+        _davey_media_audio = _davey.MediaType.audio
+    except Exception:
+        _davey = None
+        _davey_media_audio = None
+
+    def _maybe_dave_decrypt(packet, plaintext: bytes) -> bytes:
+        state = getattr(voice_client, "_connection", None)
+        if state is None or _davey is None:
+            return plaintext
+        if not getattr(state, "dave_ready", False):
+            return plaintext
+        uid = voice_client._ssrc_to_id.get(packet.ssrc)
+        if uid is None:
+            return plaintext
+        try:
+            return state.dave_session.decrypt(uid, _davey_media_audio, plaintext)
+        except Exception as _e:
+            logger.debug(f"[DAVE] decrypt fallback uid={uid}: {_e}")
+            return plaintext
+
     def _synced_decrypt_rtp(packet):
         try:
-            return orig_rtp(packet)
+            return _maybe_dave_decrypt(packet, orig_rtp(packet))
         except _CryptoError:
             try:
                 new_key = bytes(voice_client.secret_key)
                 decryptor.update_secret_key(new_key)
                 logger.info("[KeySync] RTP CryptoError → reader secret_key 已同步")
-                return orig_rtp(packet)
+                return _maybe_dave_decrypt(packet, orig_rtp(packet))
             except Exception as _e:
                 logger.warning(f"[KeySync] RTP key 同步失敗: {_e}")
                 raise
