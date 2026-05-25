@@ -18,6 +18,8 @@ from departure_stats import DepartureStats
 from consent_manager import ConsentManager
 from transcript_store import TranscriptStore
 from speaker_topic_graph import SpeakerTopicGraph
+from speak_bus import SpeakBus, SpeakContext
+from speak_outcome import SpeakOutcome, append_speak_outcome
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
 
@@ -720,6 +722,8 @@ class VoiceController(commands.Cog):
 
         self._transcript_store = TranscriptStore()
         self._speaker_topic_graph = SpeakerTopicGraph()  # social-catalyst week1: 累積社交圖資料
+        self._speak_bus = SpeakBus()                     # social-catalyst week1: proactive 發話 bus（無 agent 時 tick 回 None）
+        self._last_room_stt_time = 0.0                   # 任一 speaker 最後一次 STT 的 timestamp（給 SpeakBus silence 算）
         self._vector_store = VectorStore()
         self._summary_store = SummaryStore()
         self._task_store = TaskStore()
@@ -748,6 +752,7 @@ class VoiceController(commands.Cog):
         self.reset_stt_counter_loop.start() # 🚀 [STT Rate Limit]
         self.daily_log_export_loop.start() # 📋 [Daily Export] 每天中午 12:00 匯出前一日 log
         self.background_news_loop.start()  # 📰 [BG News] 每 30 分鐘更新在線玩家喜好新聞
+        self.speak_bus_tick_loop.start()   # 🗣️ [SpeakBus] 每 5s tick；無 agent 時靜默回 None
         
         # 🚀 [Sentinel] 啟動 LLM 狀態監控
         await self.bot.router.start_heartbeat()
@@ -824,6 +829,7 @@ class VoiceController(commands.Cog):
         self.sentinel_monitor_loop.stop()
         self.reset_stt_counter_loop.stop()
         self.background_news_loop.stop()
+        self.speak_bus_tick_loop.stop()
         
         # 取消所有待處理的任務
         for speaker, timer in self.speech_timers.items():
@@ -2155,6 +2161,8 @@ class VoiceController(commands.Cog):
                 self._speaker_topic_graph.record_utterance,
                 speaker, channel_id, raw_text, ts=timestamp,
             ))
+            # SpeakBus followup signal：任一 speaker 講話即更新（給 silence_seconds + followup 偵測）
+            self._last_room_stt_time = timestamp
             # MemoryGuard: skip chroma upsert under critical RAM to avoid
             # macOS file I/O EDEADLK chain (5/18 20:28 incident).
             if not is_memory_critical():
@@ -4854,6 +4862,65 @@ class VoiceController(commands.Cog):
                 logger.warning(f"⚠️ [BG News] {player} 新聞更新失敗: {e}")
 
             await asyncio.sleep(15)  # 每個玩家間隔 15 秒，避免 DDG rate limit
+
+    # ── SpeakBus 5s idle tick（social-catalyst week1） ─────────────────────────
+    # 沒 SpeakAgent 註冊時整段是 no-op；agent 進來後負責收 bid + 寫 outcome log。
+    # 跑得起在 voice channel 內才有意義，沒連線就 early return（節省功耗）。
+
+    def _build_speak_context(self, trigger: str) -> SpeakContext:
+        """從 voice_controller 當下狀態組 SpeakContext。Pure-ish（只讀 self，不做 IO）。"""
+        now = time.time()
+        ch = self.active_text_channel
+        return SpeakContext(
+            channel_id=ch.id if ch else 0,
+            guild_id=ch.guild.id if ch else 0,
+            silence_seconds=max(0.0, now - self._last_room_stt_time) if self._last_room_stt_time else 0.0,
+            present_speakers=self.get_online_members(),
+            room_mood=None,                            # RoomMoodState 尚未 wired（Week 3）
+            recent_utterances=[],                      # 預留；agent 自己拉 transcript 即可
+            trigger=trigger,
+        )
+
+    async def _record_speak_outcome_after(self, *, ts: float, trigger: str, winner: str,
+                                          confidence: float, reason: str, bid_count: int,
+                                          silence_seconds: float, present_speakers: tuple[str, ...],
+                                          followup_window_s: float = 60.0) -> None:
+        """tick 之後等 N 秒，看房間有沒有 STT 回聲，寫一筆 SpeakOutcome。"""
+        await asyncio.sleep(followup_window_s)
+        had_followup = self._last_room_stt_time > ts
+        append_speak_outcome(SpeakOutcome(
+            ts=ts, trigger=trigger, winner=winner, confidence=confidence,
+            reason=reason, bid_count=bid_count, had_followup_stt=had_followup,
+            silence_seconds=silence_seconds, present_speakers=present_speakers,
+        ))
+
+    @tasks.loop(seconds=5.0)
+    async def speak_bus_tick_loop(self):
+        # 沒連 voice channel → bus 跑沒意義
+        if not self.bot.voice_clients:
+            return
+        if not self._speak_bus.agents():
+            return  # 還沒有 agent 註冊（Week 1 基建期）→ 不打擾
+        try:
+            ctx = self._build_speak_context(trigger="idle_tick")
+            bid = await self._speak_bus.tick(ctx)
+        except Exception:
+            logger.exception("[SpeakBus] tick raised")
+            return
+        if bid is None:
+            return
+        ts = time.time()
+        try:
+            await bid.handler()
+        except Exception:
+            logger.exception(f"[SpeakBus] handler {bid.agent_name} raised")
+        asyncio.create_task(self._record_speak_outcome_after(
+            ts=ts, trigger=ctx.trigger, winner=bid.agent_name,
+            confidence=bid.confidence, reason=bid.reason,
+            bid_count=len(self._speak_bus.agents()),
+            silence_seconds=ctx.silence_seconds,
+            present_speakers=tuple(ctx.present_speakers),
+        ))
 
     @tasks.loop(seconds=30.0)
     async def dynamic_social_loop(self):
