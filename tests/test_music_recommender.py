@@ -12,6 +12,7 @@ import random
 from music_recommender import (
     Candidate,
     build_recommendation_pool,
+    is_already_recommended,
     normalize_title,
     pick_candidate,
 )
@@ -120,6 +121,33 @@ def test_exclude_removes_by_normalized_title():
         now=NOW,
     )
     assert pool == []
+
+
+# ── is_already_recommended（autopilot 在 yt-dlp 解析後的二次過濾）─────────────────
+#
+# Bug 2026-05-25: 「以為你都知道」一天被自動推 6 次。pool exclude OK，但
+# spotlight lane 的 LLM coverify 把 anchor 改寫成黑名單原曲；_resolve_yt_query 又
+# 拿回原版 title。當時的 _check_song_duplicate 只看「本場 stream_history」、不看
+# recent_recommendations ring → 重複歌洩漏進佇列。helper 補在 yt-dlp 解析後當二次門。
+
+def test_is_already_recommended_hits_exact_title():
+    assert is_already_recommended("晴天", ["晴天"]) is True
+
+
+def test_is_already_recommended_hits_normalized_variant():
+    # ring 存 raw YT title，LLM coverify 拿回的也是 raw title 的變體（加 (Live) 等後綴）
+    assert is_already_recommended("晴天 (Live)", ["晴天"]) is True
+    assert is_already_recommended("晴天", ["晴天 (cover)"]) is True
+
+
+def test_is_already_recommended_misses_unrelated_title():
+    assert is_already_recommended("大海", ["晴天"]) is False
+
+
+def test_is_already_recommended_empty_inputs():
+    assert is_already_recommended("", ["晴天"]) is False
+    assert is_already_recommended("晴天", []) is False
+    assert is_already_recommended("", []) is False
 
 
 # ── 空池 ────────────────────────────────────────────────────────────────────────

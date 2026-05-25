@@ -73,7 +73,7 @@ from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
 from intent_agents.recommendation import Recommendation, append_recommendation
 from llm_pool import build_tiered_router
-from music_recommender import build_recommendation_pool, pick_candidates
+from music_recommender import build_recommendation_pool, is_already_recommended, pick_candidates
 from taste_extractor import extract_taste_signals
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
@@ -99,6 +99,28 @@ def build_curation_recommendation(slot, ctx, resolved, now):
         explanation_uttered=resolved.quip,
         feedback_window_s=300,
         channel_state={"depth": resolved.depth},
+    )
+
+
+def build_autopilot_recommendation(
+    *, speaker, title, lane, mode, anchor_title, blurb, now,
+):
+    """把佇列空時的 autopilot 推薦包成 Recommendation（offline feedback 用）。
+
+    純函式（不碰 IO）。selected 用 yt-dlp 解析回來的 raw title（與 ring 寫入一致）；
+    reason_internal 帶 lane/mode/anchor 供 analyzer 抽特徵。feedback_window_s=300
+    與 curation 慣例一致（音樂推薦看 5 分鐘內反應）。
+    """
+    return Recommendation(
+        ts=now,
+        agent="music",
+        speaker=speaker,
+        trigger="queue_empty",
+        selected=title,
+        reason_internal=f"queue_empty:{lane}:{mode}:{anchor_title}",
+        explanation_uttered=blurb,
+        feedback_window_s=300,
+        channel_state={"lane": lane, "mode": mode},
     )
 
 
@@ -6420,6 +6442,9 @@ class VoiceController(commands.Cog):
             if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
                 logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過")
                 continue
+            if is_already_recommended(info['title'], exclude_titles):
+                logger.info(f"🎵 [AutoRecommend] {info['title']} 已在 recent ring，略過")
+                continue
 
             # Phase 1 M1: cover quality filter (hard ban 低播放 cover / 黑名單)
             if self._cover_blacklist is not None:
@@ -6442,10 +6467,17 @@ class VoiceController(commands.Cog):
             self.stream_queue.append(info)
             mm.add_recent_recommendation(info['title'])
             logger.info(f"🎵 [AutoRecommend] lane={cand.lane} round-#{enqueued+1}: {info['title']}")
+            blurb = ""
             if self.active_text_channel and enqueued == 0:
                 # Round blurb 一次發、後 2 首不另開訊息（避免洗版）
                 vibe_tag = f" [vibe: {vibe_label.mood}]" if vibe_label else ""
-                await self.active_text_channel.send(self._recommend_blurb(cand, info['title']) + vibe_tag)
+                blurb = self._recommend_blurb(cand, info['title']) + vibe_tag
+                await self.active_text_channel.send(blurb)
+            # offline feedback log：每首 autopilot 推薦都進 jsonl，明天 analyze
+            append_recommendation(build_autopilot_recommendation(
+                speaker=username, title=info['title'], lane=cand.lane, mode=cand.mode,
+                anchor_title=cand.anchor_title, blurb=blurb, now=time.time(),
+            ))
 
             # 對新推薦的歌也啟動預取
             next_url = info.get('url', '')

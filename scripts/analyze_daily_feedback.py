@@ -42,6 +42,29 @@ from intent_agents.tiered_feedback_writer import TieredFeedbackWriter  # noqa: E
 logger = logging.getLogger(__name__)
 
 
+def detect_dominant_guild_id(db_path: str = "marvin.db") -> int:
+    """偵測 transcripts 表筆數最多的 guild_id，作為 fetcher 預設。
+
+    Bug 2026-05-25: bot 寫入時用真實 guild_id（如 1133088321254461552），
+    但 analyze CLI 預設 0 → fetcher filter 拿不到任何 utt。改為由資料推導。
+    DB / 表缺 / 空 → 回 0（與舊行為相容、安全 fallback）。同筆數 → 取較大者
+    （避免遇到 guild_id=0 髒資料時誤選 0）。
+    """
+    import sqlite3
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            row = conn.execute(
+                "SELECT guild_id, COUNT(*) AS n FROM transcripts "
+                "GROUP BY guild_id ORDER BY n DESC, guild_id DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
+    return int(row[0]) if row else 0
+
+
 def make_transcript_fetcher(transcript_store, guild_id: int = 0):
     """Wrap TranscriptStore.get_recent into a window fetcher.
 
@@ -160,7 +183,10 @@ async def run(
             router = build_tiered_router()
         analyzers = {"music": MusicFeedbackAnalyzer(router=router)}
 
-    fetcher = make_transcript_fetcher(transcript_store)
+    guild_id = detect_dominant_guild_id()
+    if guild_id:
+        logger.info(f"[analyze] detected dominant guild_id={guild_id}")
+    fetcher = make_transcript_fetcher(transcript_store, guild_id=guild_id)
     batch = NightlyFeedbackBatch(
         analyzers=analyzers,
         transcript_fetcher=fetcher,

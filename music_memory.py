@@ -32,9 +32,67 @@ class MusicMemory:
     def _load(self) -> dict:
         try:
             with open(self.path, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
         except Exception:
             return {"songs": {}, "recommendations": {}}
+        before = len(data.get("songs", {}))
+        self._migrate_songs_keys(data)
+        after = len(data.get("songs", {}))
+        if before != after:
+            # 立刻持久化合併結果，避免 bot 此進程內後續 _save 用舊 in-memory 覆蓋
+            self._data = data
+            self._save()
+        return data
+
+    def _migrate_songs_keys(self, data: dict) -> None:
+        """把含 expire 的 yt-dlp stream URL key 改成穩定的 webpage_url key，
+        並合併同首歌的多份髒 entry。in-place，無 webpage_url 的舊 entry 不動。"""
+        songs = data.get("songs")
+        if not songs:
+            return
+        new_songs: dict = {}
+        merged_count = 0
+        for old_key, s in songs.items():
+            wp = s.get("webpage_url")
+            target_key = wp if wp else old_key
+            if target_key not in new_songs:
+                new_songs[target_key] = s
+                continue
+            # 同 webpage_url 已存在 → 合併
+            self._merge_song_into(new_songs[target_key], s)
+            merged_count += 1
+        if merged_count > 0:
+            logger.info(f"🔧 [MusicMemory] 遷移合併 {merged_count} 份髒 entry → "
+                        f"{len(songs)} 筆變 {len(new_songs)} 筆")
+        data["songs"] = new_songs
+
+    @staticmethod
+    def _merge_song_into(dst: dict, src: dict) -> None:
+        """合併 src 到 dst：plays / requesters / reactions / connections 並集；
+        title/uploader 留 dst（任一份都行，都是同一首歌）。"""
+        dst["total_plays"] = dst.get("total_plays", 0) + src.get("total_plays", 0)
+        dst["plays"] = (dst.get("plays", []) + src.get("plays", []))[-50:]
+        req_dst = dst.setdefault("requesters", {})
+        for u, n in src.get("requesters", {}).items():
+            req_dst[u] = req_dst.get(u, 0) + n
+        rx_dst = dst.setdefault("reactions", {})
+        for u, r in src.get("reactions", {}).items():
+            if u not in rx_dst:
+                rx_dst[u] = r
+                continue
+            ex = rx_dst[u]
+            ex["feelings"] = list(dict.fromkeys(ex.get("feelings", []) + r.get("feelings", [])))[:10]
+            quotes = ex.get("quotes", [])
+            for q in r.get("quotes", []):
+                if q and q not in quotes:
+                    quotes.append(q)
+            ex["quotes"] = quotes[-5:]
+            if r.get("lyric_match") and not ex.get("lyric_match"):
+                ex["lyric_match"] = r["lyric_match"]
+        conn_dst = dst.setdefault("connections", [])
+        for c in src.get("connections", []):
+            if c not in conn_dst:
+                conn_dst.append(c)
 
     def _save(self):
         tmp = self.path + ".tmp"
@@ -48,7 +106,11 @@ class MusicMemory:
     # ── Helpers ───────────────────────────────────────────────────────────
 
     def _key(self, info: dict) -> str:
-        return info.get("url") or f"{info.get('title', '')}|{info.get('uploader', '')}"
+        return (
+            info.get("webpage_url")
+            or info.get("url")
+            or f"{info.get('title', '')}|{info.get('uploader', '')}"
+        )
 
     def time_slot(self, ts: float) -> str:
         h = datetime.datetime.fromtimestamp(ts).hour

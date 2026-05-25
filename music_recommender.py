@@ -38,6 +38,18 @@ def normalize_title(title: str) -> str:
     return re.sub(r"\s+", "", t).casefold()
 
 
+def is_already_recommended(title: str, recent_titles: list[str]) -> bool:
+    """yt-dlp 解析後的二次門：解析結果是否命中 recent_recommendations ring。
+
+    pool 內部 exclude 只擋住 anchor；spotlight lane 的 LLM coverify 會把 anchor 改寫
+    成另一首歌，_resolve_yt_query 拿回的 raw title 可能仍命中 ring（同名熱門原版）。
+    本 helper 用同 build_recommendation_pool 的 normalize 規則比對。
+    """
+    if not title or not recent_titles:
+        return False
+    return normalize_title(title) in {normalize_title(t) for t in recent_titles}
+
+
 @dataclass
 class Candidate:
     anchor_title: str
