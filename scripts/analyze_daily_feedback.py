@@ -32,6 +32,10 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# 載 .env 拿 GROQ/CEREBRAS/OPENROUTER API keys；cron 透過 _launcher 跑時 env 不會自動帶
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv(ROOT / ".env")
+
 from intent_agents.feedback_analyzer import (  # noqa: E402
     FeedbackAnalyzer, FeedbackResult, MusicFeedbackAnalyzer, Utterance,
 )
