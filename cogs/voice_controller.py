@@ -17,6 +17,7 @@ from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
 from departure_stats import DepartureStats
 from consent_manager import ConsentManager
 from transcript_store import TranscriptStore
+from speaker_topic_graph import SpeakerTopicGraph
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
 
@@ -696,6 +697,7 @@ class VoiceController(commands.Cog):
         self._speaker_lang: dict[str, str] = {}  # speaker → "zh" | "en"
 
         self._transcript_store = TranscriptStore()
+        self._speaker_topic_graph = SpeakerTopicGraph()  # social-catalyst week1: 累積社交圖資料
         self._vector_store = VectorStore()
         self._summary_store = SummaryStore()
         self._task_store = TaskStore()
@@ -2126,6 +2128,10 @@ class VoiceController(commands.Cog):
             asyncio.create_task(asyncio.to_thread(
                 self._transcript_store.save,
                 speaker, guild_id, raw_text, timestamp, channel_id,
+            ))
+            asyncio.create_task(asyncio.to_thread(
+                self._speaker_topic_graph.record_utterance,
+                speaker, channel_id, raw_text, ts=timestamp,
             ))
             # MemoryGuard: skip chroma upsert under critical RAM to avoid
             # macOS file I/O EDEADLK chain (5/18 20:28 incident).
