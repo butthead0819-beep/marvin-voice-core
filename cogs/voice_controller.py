@@ -20,6 +20,7 @@ from transcript_store import TranscriptStore
 from speaker_topic_graph import SpeakerTopicGraph
 from speak_bus import SpeakBus, SpeakContext
 from speak_outcome import SpeakOutcome, append_speak_outcome
+from ducking_agent import DuckingAgent
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
 
@@ -724,6 +725,7 @@ class VoiceController(commands.Cog):
         self._speaker_topic_graph = SpeakerTopicGraph()  # social-catalyst week1: 累積社交圖資料
         self._speak_bus = SpeakBus()                     # social-catalyst week1: proactive 發話 bus（無 agent 時 tick 回 None）
         self._last_room_stt_time = 0.0                   # 任一 speaker 最後一次 STT 的 timestamp（給 SpeakBus silence 算）
+        self._ducking_agent = DuckingAgent(self._speak_bus)  # week2: 熱聊偵測 → 壓制其他 SpeakAgent
         self._vector_store = VectorStore()
         self._summary_store = SummaryStore()
         self._task_store = TaskStore()
@@ -2163,6 +2165,8 @@ class VoiceController(commands.Cog):
             ))
             # SpeakBus followup signal：任一 speaker 講話即更新（給 silence_seconds + followup 偵測）
             self._last_room_stt_time = timestamp
+            # week2: 餵 DuckingAgent，命中熱聊就會壓制 SpeakBus multiplier
+            self._ducking_agent.on_utterance(speaker, ts=timestamp)
             # MemoryGuard: skip chroma upsert under critical RAM to avoid
             # macOS file I/O EDEADLK chain (5/18 20:28 incident).
             if not is_memory_critical():
