@@ -70,6 +70,8 @@ from intent_agents.busted_agent import BustedAgent
 from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.find_song_agent import FindSongAgent, find_song_prompt
+from intent_agents.lyrics_grounded_search import search_lyrics_grounded
+from intent_agents.lyrics_seek import find_lyrics_timestamp
 # Phase 1 M5: PlaybackControlAgent 改成 build_intent_agents() 內 lazy import
 # 避免 macOS python 環境冷啟動時的 import 鏈死結 (2026-05-23 incident)
 from intent_agents.semantic_resolver import SemanticResolver
@@ -6142,6 +6144,44 @@ class VoiceController(commands.Cog):
             return parts[1].strip(), parts[0].strip()
         return info.get('track') or raw_title, artist
 
+    async def _fetch_lyrics_synced(self, info: dict) -> str | None:
+        """像 _fetch_lyrics_raw 但保留 [mm:ss.xx] timestamp（給 lyrics_seek 用）。
+
+        同一條 provider 鏈（syncedlyrics → lrclib），但回 raw LRC 不剝 timestamp。
+        沒有 timestamp 標記的回應視為「不可用」回 None — lyrics_seek 沒辦法在純文字上 seek。
+        """
+        import aiohttp
+        title, artist = self._parse_song_title_artist(info)
+
+        # Provider 1: syncedlyrics
+        try:
+            import syncedlyrics
+            lrc = await asyncio.to_thread(
+                syncedlyrics.search,
+                f"{title} {artist}".strip(),
+                providers=["NetEase", "Lrclib", "Musixmatch", "Genius"],
+            )
+            if lrc and "[" in lrc:
+                return lrc
+        except Exception as e:
+            logger.debug(f"⚠️ [LyricsSynced/syncedlyrics] {e}")
+
+        # Provider 2: lrclib /api/get 的 syncedLyrics 欄位
+        try:
+            async with aiohttp.ClientSession() as session:
+                params = {'track_name': title, 'artist_name': artist}
+                async with session.get('https://lrclib.net/api/get', params=params,
+                                       timeout=aiohttp.ClientTimeout(total=8)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        synced = data.get('syncedLyrics')
+                        if synced:
+                            return synced
+        except Exception as e:
+            logger.debug(f"⚠️ [LyricsSynced/lrclib] {e}")
+
+        return None
+
     async def _fetch_lyrics_raw(self, info: dict) -> str | None:
         """Pure lyrics fetch：syncedlyrics (NetEase 優先) → lrclib.net fallback。"""
         import re, aiohttp
@@ -6260,23 +6300,17 @@ class VoiceController(commands.Cog):
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
 
-        # Phase 1 M6: 「賭一把」mode — round 第 1 首主動承認弱點，降低被罵心理成本
-        # 對應 design doc P7 "social pressure release valve": Marvin 是被允許失敗的第三人
+        # Phase 1 M6: Marvin 自選曲 round 第 1 首 → 固定台詞，跳過 LLM
         if info.get('_round_first') and requester.startswith('Marvin'):
-            ctx.append(
-                "【賭一把模式】這首歌是你從房間 vibe 挑的、不確定大家喜不喜歡。"
-                "你的介紹要主動承認這是一場小賭，不喜歡叫使用者罵你、你會立刻換。"
-                "範例：『下一首這個我賭一把，不喜歡叫我換』或『試試這首，挑錯叫我重選』。"
-                "保持輕鬆口吻，不要解釋為什麼選這首。"
-            )
-
-        try:
-            text = await self.bot.router.generate_dynamic_system_msg(
-                'dj_interjection', context='\n'.join(ctx)
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗，使用 fallback template: {e}")
-            text = ""
+            text = f"送給大家這首《{title}》"
+        else:
+            try:
+                text = await self.bot.router.generate_dynamic_system_msg(
+                    'dj_interjection', context='\n'.join(ctx)
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗，使用 fallback template: {e}")
+                text = ""
 
         text = (text or '').strip()
         # ★ Fix 3 (2026-05-20): text 太短 → hardcoded fallback 保證一定有聲音
@@ -6590,29 +6624,66 @@ class VoiceController(commands.Cog):
         return f"🎵 **【馬文精選】** 為 `{who}` 翻出的《{title}》。"
 
     async def _handle_find_song(self, mode: str, payload: str, speaker: str):
-        """FindSongAgent handler：依模式 LLM 識別歌名 → 報出識別結果 → 交給播放路徑。
+        """FindSongAgent handler：依模式識別歌名 → 報出識別結果 → 交給播放路徑。
 
-        識別可能猜錯（尤其歌詞/主題模式），所以播放前先報出結果保留透明度。
+        find_lyrics 模式優先走 Gemini + google_search grounding（避免 LLM 盲猜幻覺）；
+        grounded 識別 miss / 不可用才退回 LLM。其他三模式（theme/album/artist）維持 LLM 路徑。
+        識別可能猜錯所以播放前先報出結果保留透明度。
         """
-        user_prompt = find_song_prompt(mode, payload)
-        if not user_prompt:
-            return
-        try:
-            ident = await self.bot.router._call_llm(
-                system_prompt="你是精準的歌曲識別助手，只輸出一行「藝人 - 歌名」。",
-                user_prompt=user_prompt,
+        ident: str = ""
+
+        # find_lyrics → 先走 grounded 搜尋（真的去搜，不盲猜）
+        if mode == "find_lyrics" and payload and payload.strip():
+            grounded = await search_lyrics_grounded(
+                getattr(self.bot.router, "google_client", None),
+                payload.strip(),
             )
-            ident = (ident or "").strip().splitlines()[0].strip() if ident else ""
-            if not ident or ident.startswith("無"):
-                if self.active_text_channel:
-                    await self.active_text_channel.send(f"🔎 **【找歌】** 找不到符合「{payload}」的歌，換個說法試試？")
-                asyncio.create_task(self._play_ack_sound(speaker, ack_type="music_fail"))
+            if grounded:
+                ident = grounded
+
+        # Fallback：grounded miss 或非 find_lyrics 模式 → 原 LLM 路徑
+        if not ident:
+            user_prompt = find_song_prompt(mode, payload)
+            if not user_prompt:
                 return
+            try:
+                raw = await self.bot.router._call_llm(
+                    system_prompt="你是精準的歌曲識別助手，只輸出一行「藝人 - 歌名」。",
+                    user_prompt=user_prompt,
+                )
+                ident = (raw or "").strip().splitlines()[0].strip() if raw else ""
+                if ident.startswith("無"):
+                    ident = ""
+            except Exception as e:
+                logger.debug(f"⚠️ [FindSong] 失敗: {e}")
+                return
+
+        if not ident:
             if self.active_text_channel:
-                await self.active_text_channel.send(f"🔎 **【找歌】** 我找到的應該是 `{ident}`，幫你播了。")
-            await self._safe_music_command(speaker, ident, "play")
-        except Exception as e:
-            logger.debug(f"⚠️ [FindSong] 失敗: {e}")
+                await self.active_text_channel.send(f"🔎 **【找歌】** 找不到符合「{payload}」的歌，換個說法試試？")
+            asyncio.create_task(self._play_ack_sound(speaker, ack_type="music_fail"))
+            return
+
+        # find_lyrics 模式：嘗試在 LRC 找 fragment 時間戳，命中就在訊息附帶「副歌 X 在 mm:ss」
+        # 不影響播放路徑（MVP：仍從頭播；播放層 seek 之後再做）
+        seek_suffix = ""
+        if mode == "find_lyrics":
+            try:
+                lrc = await self._fetch_lyrics_synced({"title": ident})
+                if lrc:
+                    hit = find_lyrics_timestamp(lrc, payload)
+                    if hit:
+                        ts_sec, line = hit
+                        mm, ss = divmod(int(ts_sec), 60)
+                        seek_suffix = f"（「{line}」在 {mm:02d}:{ss:02d}）"
+            except Exception as e:
+                logger.debug(f"⚠️ [LyricSeek] {e}")
+
+        if self.active_text_channel:
+            await self.active_text_channel.send(
+                f"🔎 **【找歌】** 我找到的應該是 `{ident}`{seek_suffix}，幫你播了。"
+            )
+        await self._safe_music_command(speaker, ident, "play")
 
     async def _get_audio_duration(self, path: str) -> float:
         """使用 ffprobe 取得本地音訊檔案的時長（秒）。"""

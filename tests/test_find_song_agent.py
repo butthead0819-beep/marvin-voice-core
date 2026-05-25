@@ -74,6 +74,48 @@ def test_lyrics_takes_priority_over_artist():
     assert "find_lyrics" in bid.reason
 
 
+# ── slot 尾巴乾淨化：VAD 切尾常吸進語助詞/追問，要剝乾淨 ─────────────────────────
+# bug: 「找歌詞天青色等煙雨啊」原本 slot 抓成「天青色等煙雨啊」→ grounded search 搜不到
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("utterance, expected_payload", [
+    ("找歌詞天青色等煙雨啊", "天青色等煙雨"),
+    ("找歌詞天青色等煙雨吧", "天青色等煙雨"),
+    ("找歌詞天青色等煙雨嗎", "天青色等煙雨"),
+    ("找歌詞天青色等煙雨喔", "天青色等煙雨"),
+    ("找歌詞天青色等煙雨呢", "天青色等煙雨"),
+    ("找歌詞天青色等煙雨啊啊啊", "天青色等煙雨"),    # 連續助詞
+    ("找歌詞天青色等煙雨好聽嗎", "天青色等煙雨"),     # 追問尾
+    ("找歌詞自由像風一樣飛翔對不對", "自由像風一樣飛翔"),
+])
+async def test_lyrics_slot_strips_trailing_particles(utterance, expected_payload):
+    agent, ctrl = _agent()
+    bid = agent.bid(_ctx(utterance))
+    assert bid.confidence == pytest.approx(0.90), f"應命中 find_lyrics：{utterance!r}"
+    await bid.handler()
+    payload = ctrl._handle_find_song.await_args.args[1]
+    assert payload == expected_payload, f"slot 沒剝乾淨：{utterance!r} → {payload!r}"
+
+
+def test_lyrics_slot_unchanged_when_no_trailing_particle():
+    """regression：歌詞本身不含末尾助詞時不該動到。"""
+    agent, ctrl = _agent()
+    bid = agent.bid(_ctx("找歌詞天青色等煙雨"))
+    import asyncio
+    asyncio.get_event_loop().run_until_complete(bid.handler())
+    assert ctrl._handle_find_song.await_args.args[1] == "天青色等煙雨"
+
+
+def test_lyrics_slot_only_strip_pure_particle_tail():
+    """歌詞中間有助詞字（不在尾端）不該被誤剝。"""
+    agent, ctrl = _agent()
+    bid = agent.bid(_ctx("找歌詞啊不要走"))  # 「啊」在中間
+    import asyncio
+    asyncio.get_event_loop().run_until_complete(bid.handler())
+    payload = ctrl._handle_find_song.await_args.args[1]
+    assert payload == "啊不要走", f"中段助詞被誤剝：{payload!r}"
+
+
 # ── 誤觸防線：STT log 真實對話句一個都不能中 ──────────────────────────────────────
 
 @pytest.mark.parametrize("line", [

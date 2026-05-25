@@ -15,6 +15,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from intent_agents.base import DeclarativeIntentAgent, IntentSchema
 
 
@@ -25,6 +27,27 @@ _SLOT_BY_INTENT = {
     "find_album": "album",
     "find_artist": "artist",
 }
+
+
+# VAD 切尾常吸進尾巴語助詞或追問，要剝乾淨 — 否則 grounded search 搜
+# 「天青色等煙雨啊」會 miss（mojim/genius 沒這條）。
+_TRAILING_QUESTION_SUFFIXES = (
+    "對不對", "是不是", "好聽嗎", "好不好", "對吧", "是吧",
+)
+_TRAILING_PARTICLES_RE = re.compile(r"[啊吧嗎呢喔欸耶哦呀阿喲]+$")
+
+
+def _strip_trailing_particles(text: str) -> str:
+    """剝末尾語助詞 + 常見追問尾。中段的助詞字不動（「啊不要走」→ 不變）。"""
+    s = (text or "").strip()
+    # 先剝整段追問（先長後短，避免短尾誤吃）
+    for suffix in _TRAILING_QUESTION_SUFFIXES:
+        if s.endswith(suffix):
+            s = s[: -len(suffix)].rstrip()
+            break
+    # 再剝末尾連續助詞
+    s = _TRAILING_PARTICLES_RE.sub("", s).rstrip()
+    return s
 
 # 各模式的識別 prompt 模板（{p} = payload）。LLM 只輸出「藝人 - 歌名」。
 _PROMPT_BY_INTENT = {
@@ -82,7 +105,8 @@ class FindSongAgent(DeclarativeIntentAgent):
         return self._intents_cache
 
     def make_handler(self, schema, slots, ctx):
-        payload = slots.get(_SLOT_BY_INTENT.get(schema.name, ""), "").strip()
+        raw = slots.get(_SLOT_BY_INTENT.get(schema.name, ""), "").strip()
+        payload = _strip_trailing_particles(raw) if schema.name == "find_lyrics" else raw
         speaker = ctx.speaker
 
         async def _handler():
