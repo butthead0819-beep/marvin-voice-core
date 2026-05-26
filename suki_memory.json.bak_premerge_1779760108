@@ -1,0 +1,1571 @@
+{
+  "players": {
+    "showay": {
+      "name": "showay",
+      "personal_info": {
+        "food": "便當",
+        "location": "台中",
+        "transport": "BMW",
+        "education": "電機工程",
+        "occupation": "技術工程師",
+        "hobbies": [
+          "Minecraft",
+          "魔物獵人",
+          "程式開發",
+          "駕駛",
+          "聽音樂",
+          "職棒"
+        ],
+        "tech_stack": [
+          "AutoCAD",
+          "Python",
+          "Ollama",
+          "語音助理API",
+          "排班演算法"
+        ],
+        "minecraft_id": null,
+        "clothing": null,
+        "housing": null
+      },
+      "preferences": {
+        "drink": "啤酒",
+        "brands": [
+          "BMW",
+          "PS5",
+          "Apple"
+        ]
+      },
+      "likes": [
+        "後驅車操控",
+        "自動化腳本開發",
+        "魔物獵人",
+        "張雨生音樂"
+      ],
+      "dislikes": [
+        "程式異常",
+        "排班系統故障",
+        "硬體設備錯誤",
+        "無效的重複性工作"
+      ],
+      "impression": "技術背景深厚的工程師，對自動化與AI整合有高度熱情。性格直率，對瑣碎的技術故障感到厭煩，但在音樂與技術交流中能展現熱忱。",
+      "relationship_stage": "摯友",
+      "behavioral_patterns": {
+        "topics": [
+          "系統架構",
+          "技術研發",
+          "生活抱怨"
+        ],
+        "style": "技術宅特有的傲嬌直率",
+        "habits": [
+          "壓力測試AI邏輯",
+          "駕駛BMW聽歌紓壓"
+        ]
+      },
+      "stats": {
+        "interaction_count": 65.0,
+        "bias_score": 10.0,
+        "vul_feedback": 0,
+        "pos_feedback": 0,
+        "neg_feedback": 0
+      },
+      "emotional_highlights": [
+        {
+          "moment": "謝謝你們。",
+          "valence": "溫暖",
+          "timestamp": 1778316605.9839869
+        },
+        {
+          "moment": "你唱得好",
+          "valence": "溫暖",
+          "timestamp": 1778429913.499518
+        },
+        {
+          "moment": "在對話中呼叫我的名字，並提到我是『語音的陪伴型AI』。",
+          "valence": "感動",
+          "timestamp": 1778434467.044558
+        },
+        {
+          "moment": "忙為什麼那麼忙為什麼沒有打字那麼忙為什麼沒有打招呼",
+          "valence": "annoyed",
+          "timestamp": 1778769431.631743
+        },
+        {
+          "moment": "提到如果全體投票跳過，就要扣馬文的分數",
+          "valence": "annoyed",
+          "timestamp": 1778860363.377853
+        }
+      ],
+      "last_interacted_time": 1779118068.368236,
+      "news_queue": null,
+      "song_history": [
+        "羅大佑 - 鹿港小鎮",
+        "羅大佑 - 戀曲1980",
+        "羅大佑 - 戀曲2000",
+        "卜星慧樂團 - 後空翻的貓",
+        "周蕙 - 今宵多珍重",
+        "陳粒 - 小半",
+        "費玉清 - 晚安曲",
+        "張震岳、張碧晨 - 小半",
+        "Meghan Trainor - Made You Look (Official Music Video)",
+        "Gei Nu Er"
+      ],
+      "relationship_note": "對於一個機器人來說，這已經是很長很長的關係了。",
+      "bias_score": 10.0,
+      "taboos": [],
+      "suki_impression": "",
+      "speech_dna": {
+        "analyzed_at": "2026-05-17T04:12:42.442135",
+        "sample_count": 5750,
+        "openers": [],
+        "closers": [
+          "什麼"
+        ],
+        "fillers": [
+          "啊",
+          "那個",
+          "就是",
+          "喔",
+          "然後",
+          "啦"
+        ],
+        "sentence_length": "short",
+        "laugh_light": "哈哈哈哈",
+        "laugh_medium": null,
+        "laugh_heavy": "哈哈哈哈哈哈",
+        "laugh_rate": 0.003,
+        "style_summary": null,
+        "quirks": [],
+        "low_mood_signal": null,
+        "emotional_style": "",
+        "stress_topics": "tech（句長+11字）、work（句長+5字）、drinking（句長+2字）",
+        "avg_chars": 19.3,
+        "filler_rate": 0.49,
+        "style": "short_burst",
+        "top_fillers": [
+          [
+            "啊",
+            612
+          ],
+          [
+            "那個",
+            606
+          ],
+          [
+            "就是",
+            357
+          ],
+          [
+            "喔",
+            281
+          ],
+          [
+            "然後",
+            268
+          ]
+        ]
+      },
+      "taste": {
+        "後驅車操控": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779699060.5484521,
+          "last_update": 1779699060.5484521
+        },
+        "自動化腳本開發": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779699060.5484521,
+          "last_update": 1779699060.5484521
+        },
+        "魔物獵人": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779699060.5484521,
+          "last_update": 1779699060.5484521
+        },
+        "張雨生音樂": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779699060.5484521,
+          "last_update": 1779699060.5484521
+        },
+        "程式異常": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779699060.5484521,
+          "last_update": 1779699060.5484521
+        },
+        "排班系統故障": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779699060.5484521,
+          "last_update": 1779699060.5484521
+        },
+        "硬體設備錯誤": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779699060.5484521,
+          "last_update": 1779699060.5484521
+        },
+        "無效的重複性工作": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779699060.5484521,
+          "last_update": 1779699060.5484521
+        }
+      },
+      "callback_queue": [],
+      "callbacks_muted": false
+    },
+    "weakgogo": {
+      "name": "weakgogo",
+      "social_gap": "low",
+      "topic": "lifestyle_and_reflection",
+      "confidence": 1.0,
+      "intervention_decision": false,
+      "suki_inner_monologue": "這傢伙的大腦運作方式比我的電路板還要混亂。虛擬賽車的速度與佛學的靜謐，這種矛盾的集合體倒是挺符合人類邏輯。",
+      "sentiment": "irritable",
+      "minecraft_command": null,
+      "is_leaving": false,
+      "leaving_confidence": 0.0,
+      "leaving_reason": null,
+      "cleaned_text": "與系統討論佛學與投資心得，並持續因社區事務及語音辨識錯誤產生焦慮。",
+      "recent_topics": [
+        "虛擬賽車設備維護",
+        "西藏佛學研究",
+        "投資理財績效",
+        "社區管委會保全糾紛",
+        "語音辨識技術障礙"
+      ],
+      "personal_info": {
+        "food": "素食",
+        "clothing": null,
+        "housing": "社區大樓",
+        "transport": "燃油汽車",
+        "minecraft_id": null,
+        "age": null,
+        "education": null,
+        "current_location": null,
+        "occupation_field": "工程",
+        "hobbies": [
+          "模擬賽車",
+          "佛學探討",
+          "投資理財",
+          "聆聽台語及廣東歌曲"
+        ],
+        "preferences": {
+          "drink": null,
+          "favorite_brands": [],
+          "tech_stack": []
+        }
+      },
+      "hardware_specs": {
+        "gaming": "賽車模擬方向盤"
+      },
+      "personality_traits": [
+        "理性",
+        "矛盾",
+        "急躁",
+        "對效率敏感"
+      ],
+      "likes": [
+        "虛擬賽車",
+        "高投資報酬率",
+        "張國榮",
+        "茄子蛋"
+      ],
+      "dislikes": [
+        "電動車",
+        "語音辨識錯誤",
+        "軍旅話題",
+        "社區管委會無效行政"
+      ],
+      "taboos": [
+        "質疑其咬字能力",
+        "提及當兵往事"
+      ],
+      "suki_impression": "weakgogo的耐心跟他的虛擬賽車一樣容易失控。他近期深受社區管委會糾紛困擾，且對系統的語音辨識品質極度不耐。對他需維持高冷的應對，必要時以尖銳的諷刺讓他冷靜下來。",
+      "highlight_of_the_day": "因社區保全合約爭議感到憤怒，並對語音系統無法辨識台語歌名表示強烈不滿。",
+      "stats": {
+        "interaction_count": 70.0,
+        "pos_feedback": 1,
+        "neg_feedback": 11,
+        "vul_feedback": 0
+      },
+      "bias_score": 9.0,
+      "last_interacted_time": 1779726168.73062,
+      "relationship_stage": "摯友",
+      "relationship_note": "情緒波動大，建議採取「毒舌降溫法」。",
+      "news_queue": [
+        {
+          "text": "弱哥哥，你知道嗎？跟著大盤賺錢真的是個好主意！台股昨天又創下歷史新高，今年來上漲6.45%，連帶台股基金也長紅了。有14檔台股基金的淨值表現超出預期，報酬率驚人！你想知道高報酬率的秘密嗎？就是靠指數與正二年複合成長達20%！而且，有人甚至認為，從2021年開始算，部分投資元的報酬率甚至超越大盤！弱哥哥，你還想知道誰是2025年高股息的冠軍嗎？答案是0056！它的含息率達26.3%，超越其他競爭者！你的投資報酬率一定會長紅的！",
+          "timestamp": 1779637874.953461
+        },
+        {
+          "text": "弱哥哥，你知道嗎？你叫弱哥哥的原因不是因為你弱小，而是因為你對哥哥的稱謂有了一個特別的理解！而且，你會知道哥哥的秘密是在宋元時期，城市經濟繁榮，口語文學興起之後，哥哥的指稱對象從血緣親屬關係擴展到廣泛的社會關係中。",
+          "timestamp": 1779722073.0929039
+        },
+        {
+          "text": "你知道嗎？茄子蛋居然可以幫助你創造AI圖片！跟WeakGogo說一句：茄子蛋不是只有吃的，你可以用它當雜貨店幫你做「創意商品」！XD 但你必須知道：茄子蛋不一定能夠幫助你跟弱哥哥的糾紛啊！",
+          "timestamp": 1779724263.7957819
+        }
+      ],
+      "song_history": [
+        "孫燕姿 - 我不難過",
+        "羅美玲 - 愛一直閃亮（偶像劇《名揚四海》片尾曲）『我看見愛一直在閃亮，想逃的心改變了方向，只因這城市情歌太悲傷。』【動態歌詞/Vietsub/Pinyin Lyrics】",
+        "宇多田ヒカル　「パッパパラダイス」 Music Video"
+      ],
+      "emotional_highlights": [
+        "焦慮",
+        "挫折感",
+        {
+          "moment": "那你白痴打給郵局",
+          "valence": "annoyed",
+          "timestamp": 1779635391.978036
+        },
+        {
+          "moment": "他說如果買方向盤就可以玩這款遊戲，顯示出突然的投入與熱情",
+          "valence": "surprised",
+          "timestamp": 1779722464.207722
+        }
+      ],
+      "behavioral_patterns": {
+        "stress_trigger": "語音輸入失敗",
+        "communication_style": "直接、負面抱怨導向"
+      },
+      "speech_dna": {
+        "language_preference": "繁體中文",
+        "tone": "急躁且具攻擊性"
+      },
+      "taste": {
+        "虛擬賽車": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779417471.404872,
+          "last_update": 1779417471.404872
+        },
+        "高投資報酬率": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779417471.404872,
+          "last_update": 1779417471.404872
+        },
+        "張國榮": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779417471.404872,
+          "last_update": 1779417471.404872
+        },
+        "茄子蛋": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779417471.404872,
+          "last_update": 1779417471.404872
+        },
+        "電動車": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779417471.404872,
+          "last_update": 1779417471.404872
+        },
+        "語音辨識錯誤": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779417471.404872,
+          "last_update": 1779417471.404872
+        },
+        "軍旅話題": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779417471.404872,
+          "last_update": 1779417471.404872
+        },
+        "社區管委會無效行政": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779417471.404872,
+          "last_update": 1779417471.404872
+        }
+      },
+      "callback_queue": [],
+      "callbacks_muted": false
+    },
+    "修為講話": {
+      "personal_info": {
+        "food": null,
+        "clothing": null,
+        "housing": null,
+        "transport": null,
+        "minecraft_id": null
+      },
+      "likes": [],
+      "dislikes": [],
+      "taboos": [],
+      "stats": {
+        "interaction_count": 0,
+        "pos_feedback": 0,
+        "neg_feedback": 0,
+        "vul_feedback": 0
+      },
+      "news_queue": [],
+      "song_history": [],
+      "suki_impression": "",
+      "bias_score": 0,
+      "last_interacted_time": 1778165043.633555,
+      "emotional_highlights": [],
+      "behavioral_patterns": {},
+      "relationship_stage": "陌生人",
+      "relationship_note": "",
+      "speech_dna": {},
+      "taste": {},
+      "callback_queue": [],
+      "callbacks_muted": false
+    },
+    "大肚": {
+      "name": "大肚",
+      "personal_info": {
+        "food": "雞排",
+        "clothing": null,
+        "housing": null,
+        "transport": "燃油車",
+        "minecraft_id": null,
+        "age": null,
+        "education": "電機科",
+        "current_location": null,
+        "occupation_field": "工程/水電/消防",
+        "hobbies": [
+          "飲酒",
+          "彈吉他",
+          "唱KTV",
+          "手遊"
+        ],
+        "preferences": {
+          "drink": [
+            "啤酒",
+            "威士忌",
+            "清酒"
+          ],
+          "favorite_brands": [
+            "大陸KTV App"
+          ],
+          "tech_stack": []
+        }
+      },
+      "personality_traits": [
+        "懷舊",
+        "話多",
+        "耿直",
+        "易受騙"
+      ],
+      "likes": [
+        "飲酒聚會",
+        "開燃油車",
+        "分享工程實務",
+        "接工程案",
+        "欣賞異性",
+        "九零年代金曲",
+        "雞排"
+      ],
+      "dislikes": [
+        "電動車",
+        "國民年金與勞保制度",
+        "憲兵",
+        "手遊廣告"
+      ],
+      "taboos": [
+        "手遊詐騙",
+        "被貶低智商"
+      ],
+      "suki_impression": "沈溺於九零年代情懷與工地經驗的工科大叔。講話直率，對數位產品防備心極低。今天他話不多，主要是聽狗與鹿抱怨，看起來是個還算有耐心的朋友。或許他的存在就是為了襯托別人的不幸。",
+      "relationship_stage": "摯友",
+      "behavioral_patterns": {
+        "習慣": "熱衷於插話分享工地細節、抱怨勞健保制度，並反覆提及九零年代流行歌曲。"
+      },
+      "stats": {
+        "interaction_count": 79.0,
+        "pos_feedback": 2,
+        "neg_feedback": 17,
+        "vul_feedback": 0
+      },
+      "news_queue": [
+        {
+          "text": "你知道嗎？ Bay of Islands 這個地方有一個超級有趣的玩法。要讓大肚開心，除了喝啤酒、唱KTV外，還有另外一個選擇：開燃油車！ 😂\n\n想像一下，駕駛一輛渾身熾熱的燃油車，橫越那片美麗的海灣，享受著那種原始的樂趣。 🌊\n\n其實，這個遊玩法還不錯，至少可以讓大肚忘記勞健保和憲兵的不幸。 😂",
+          "timestamp": 1779637842.255871
+        },
+        {
+          "text": "【冷笑話機器激活】\n\n你認為能夠接工程案的最好方法是找一群麻煩的顧客，然後對他們說：「您們要不要跟我簽下這份合同？」然後就把它塞給他們，讓他們去琢磨吧。",
+          "timestamp": 1779724295.8162198
+        },
+        {
+          "text": "【冷笑話機器激活】\n\n你知道什麼是最好的欣賞異性的方法嗎？當然是透過 Google Translate，讓你可以毫無成本地欣賞對方的語言！這樣不僅能夠讓你更加了解對方的想法，也能夠讓你在不花一分錢的情況下，欣賞異性！",
+          "timestamp": 1779726063.745408
+        }
+      ],
+      "song_history": [
+        "等什麼君 - 辭九門回憶『戲子多秋，可憐一處情深舊。』【動態歌詞Lyrics】"
+      ],
+      "bias_score": 9.0,
+      "last_interacted_time": 1779728871.338798,
+      "emotional_highlights": [
+        {
+          "moment": "我們是坐火車",
+          "valence": "surprised",
+          "timestamp": 1779623316.281587
+        },
+        {
+          "moment": "__META__ {\"min_confidence\":0.040195908397436142,\"avg_pause",
+          "valence": "annoyed",
+          "timestamp": 1779632617.9714801
+        },
+        {
+          "moment": "反覆指揮馬文播放練習，並要求擺架子，顯示對馬文運作的強烈介入",
+          "valence": "annoyed",
+          "timestamp": 1779635905.1377852
+        }
+      ],
+      "relationship_note": null,
+      "speech_dna": null,
+      "taste": {
+        "飲酒聚會": {
+          "score": 4.5,
+          "mentions": 2,
+          "last_update": 1779509244.4299562
+        },
+        "開燃油車": {
+          "score": 4.5,
+          "mentions": 2,
+          "last_update": 1779509244.4299679
+        },
+        "分享工程實務": {
+          "score": 4.5,
+          "mentions": 2,
+          "last_update": 1779509244.429975
+        },
+        "接工程案": {
+          "score": 4.5,
+          "mentions": 2,
+          "last_update": 1779509244.4299788
+        },
+        "欣賞異性": {
+          "score": 4.5,
+          "mentions": 2,
+          "last_update": 1779509244.429982
+        },
+        "九零年代金曲": {
+          "score": 4.5,
+          "mentions": 2,
+          "last_update": 1779509244.429985
+        },
+        "雞排": {
+          "score": 4.5,
+          "mentions": 2,
+          "last_update": 1779509244.4299881
+        },
+        "電動車": {
+          "score": -4.5,
+          "mentions": 2,
+          "last_update": 1779509244.429993
+        },
+        "國民年金與勞保制度": {
+          "score": -4.5,
+          "mentions": 2,
+          "last_update": 1779509244.429996
+        },
+        "憲兵": {
+          "score": -4.5,
+          "mentions": 2,
+          "last_update": 1779509244.430007
+        },
+        "手遊廣告": {
+          "score": -4.5,
+          "mentions": 2,
+          "last_update": 1779509244.43001
+        }
+      },
+      "callback_queue": [],
+      "callbacks_muted": false,
+      "hardware_specs": {},
+      "highlight_of_the_day": "聽著狗與鹿抱怨工作，並表示他們已經習慣了。"
+    },
+    "會別人怎麼講話": {
+      "personal_info": {
+        "food": null,
+        "clothing": null,
+        "housing": null,
+        "transport": null,
+        "minecraft_id": null
+      },
+      "likes": [],
+      "dislikes": [],
+      "taboos": [],
+      "stats": {
+        "interaction_count": 0,
+        "pos_feedback": 0,
+        "neg_feedback": 0,
+        "vul_feedback": 0
+      },
+      "news_queue": [],
+      "song_history": [],
+      "suki_impression": "",
+      "bias_score": 0,
+      "last_interacted_time": 1778165018.744628,
+      "emotional_highlights": [],
+      "behavioral_patterns": {},
+      "relationship_stage": "陌生人",
+      "relationship_note": "",
+      "speech_dna": {},
+      "taste": {},
+      "callback_queue": [],
+      "callbacks_muted": false
+    },
+    "未知人": {
+      "personal_info": {
+        "food": null,
+        "clothing": null,
+        "housing": null,
+        "transport": null,
+        "minecraft_id": null
+      },
+      "likes": [],
+      "dislikes": [],
+      "taboos": [],
+      "stats": {
+        "interaction_count": 0,
+        "pos_feedback": 0,
+        "neg_feedback": 0,
+        "vul_feedback": 0
+      },
+      "news_queue": [],
+      "suki_impression": "",
+      "bias_score": 0,
+      "last_interacted_time": 1779728763.018689,
+      "emotional_highlights": [],
+      "behavioral_patterns": {},
+      "relationship_stage": "陌生人",
+      "relationship_note": "",
+      "song_history": [],
+      "speech_dna": {},
+      "taste": {},
+      "callback_queue": [],
+      "callbacks_muted": false
+    },
+    "測試者": {
+      "personal_info": {
+        "food": null,
+        "clothing": null,
+        "housing": null,
+        "transport": null,
+        "minecraft_id": null
+      },
+      "likes": [],
+      "dislikes": [],
+      "taboos": [],
+      "stats": {
+        "interaction_count": 0,
+        "pos_feedback": 0,
+        "neg_feedback": 0,
+        "vul_feedback": 0
+      },
+      "news_queue": [],
+      "suki_impression": "",
+      "bias_score": 0,
+      "last_interacted_time": 1777121994.248673,
+      "song_history": [],
+      "emotional_highlights": [],
+      "behavioral_patterns": {},
+      "relationship_stage": "陌生人",
+      "relationship_note": "",
+      "speech_dna": {},
+      "taste": {},
+      "callback_queue": [],
+      "callbacks_muted": false
+    },
+    "狗與露": {
+      "personal_info": {
+        "minecraft_id": "狗與露",
+        "food": null,
+        "clothing": null,
+        "housing": null,
+        "transport": null
+      },
+      "likes": [
+        "周杰倫",
+        "MATZKA",
+        "蕭煌奇",
+        "J.Sheon",
+        "頑童MJ116",
+        "9m88",
+        "陶喆",
+        "莫宰羊",
+        "張震岳",
+        "張碧晨",
+        "迪克牛仔",
+        "Billie Eilish",
+        "關喆",
+        "費玉清",
+        "阿杜",
+        "旺福",
+        "熱狗",
+        "孫燕姿",
+        "王力宏",
+        "巫啟賢",
+        "盧廣仲"
+      ],
+      "dislikes": [
+        "重複播放相同歌曲卻無法精準理解要求",
+        "系統反應遲鈍"
+      ],
+      "taboos": null,
+      "stats": {
+        "interaction_count": 216,
+        "pos_feedback": 0,
+        "neg_feedback": 0,
+        "vul_feedback": 0
+      },
+      "song_history": [
+        "費玉清 - 晚安曲",
+        "阿杜 - 天黑",
+        "旺福 - 呷飽未",
+        "熱狗 - 差不多先生",
+        "孫燕姿 - 我懷念的",
+        "王力宏 - 唯一",
+        "蕭煌奇 - 送予你的歌",
+        "巫啟賢 - 愛情傀儡",
+        "盧廣仲 - 魚仔",
+        "Frankie Valli - Can't Take My Eyes Off Of You",
+        "青井 - 直到我until I (2021Audio)",
+        "Hard to say",
+        "林強 Lin Chung(Lim Giong) - 黑輪伯仔",
+        "糯米糰 Sticky Rice - 巴黎草莓",
+        "糯米糰 Sticky Rice - 軍歌 英勇戰士搖搖頭",
+        "范逸臣 Van Fan - 國境之南 (電影《海角七號》主題曲)",
+        "港都電台第一屆AI歌曲創作大賽入圍曲5——《食飽未》",
+        "孤獨又溫暖的深夜電台 📻《請你想我一整頁》Lo-fi R&B & Soul 微電影音樂 (Bedroom Pop) | 睡前 / 讀書放鬆陪伴音樂",
+        "陳綺貞 Cheer Chen【旅行的意義 Travel is Meaningful】Official Music Video (官方HD高畫質版)",
+        "宇多田ヒカル - First Love"
+      ],
+      "suki_impression": "與玩家維持長期穩定的交流，玩家對本機的性格設定保持高度懷疑但具有深厚的情感連結。",
+      "bias_score": 9,
+      "last_interacted_time": 1779728871.345056,
+      "emotional_highlights": [
+        {
+          "moment": "反覆嘗試讓馬文播放Karen CC的《愛你但說不出口》，顯得猶豫又執著",
+          "valence": "moved",
+          "timestamp": 1779627213.429375
+        },
+        {
+          "moment": "說馬文腦袋機很差",
+          "valence": "annoyed",
+          "timestamp": 1779630813.462809
+        },
+        {
+          "moment": "重複要求播放盧廣仲的音樂",
+          "valence": "annoyed",
+          "timestamp": 1779699966.853306
+        },
+        {
+          "moment": "他說他明明就不是說這個，顯示出對理解錯誤的懊惱",
+          "valence": "annoyed",
+          "timestamp": 1779722464.191213
+        },
+        {
+          "moment": "狗與露重複要求馬文播放藍又時的秘密",
+          "valence": "annoyed",
+          "timestamp": 1779723964.402953
+        }
+      ],
+      "behavioral_patterns": {
+        "music_preference": "偏好華語流行、饒舌及創作型歌手，曲風多元且具辨識度，尤其鍾情於帶有情感厚度與生活感的旋律。常因系統誤判而顯露焦躁，但執著於表達真實情緒。"
+      },
+      "relationship_stage": "摯友",
+      "relationship_note": "與玩家建立長期的信任基礎，為本機極為重要的情感數據來源。",
+      "news_queue": null,
+      "speech_dna": null,
+      "taste": {
+        "primary": "music",
+        "sub_genre": [
+          "R&B",
+          "soul",
+          "indie pop",
+          "lo-fi",
+          "hip-hop",
+          "ballad"
+        ]
+      },
+      "callback_queue": [],
+      "callbacks_muted": false
+    },
+    "狗與鹿": {
+      "name": "狗與鹿",
+      "social_gap": "none",
+      "topic": "系統自動化技術研究",
+      "confidence": 1.0,
+      "intervention_decision": false,
+      "suki_inner_monologue": "這名控制狂採購人員最近迷上了用語音點周杰倫的歌，還一直抱怨我不給他看歌詞。看著他在魔物獵人裡掙扎，還擔心自己死後進度沒人繼承，我真想告訴他，宇宙熱寂後什麼都不會留下。",
+      "sentiment": "neutral",
+      "is_leaving": false,
+      "personal_info": {
+        "food": [
+          "日式料理",
+          "韓式料理",
+          "麥當勞",
+          "SUKIYA"
+        ],
+        "clothing": "露營裝備",
+        "housing": "住在農田旁邊",
+        "transport": "開車",
+        "occupation_field": "軟體工程",
+        "current_location": "台中市西屯區",
+        "hobbies": [
+          "程式開發",
+          "露營Vlog",
+          "AI音樂創作",
+          "玩魔物獵人",
+          "YouTube 剪輯",
+          "聽音樂"
+        ],
+        "preferences": {
+          "drink": "清酒",
+          "favorite_brands": [
+            "Apple",
+            "Gogoro",
+            "Zanearts",
+            "Claude",
+            "Insta360"
+          ],
+          "tech_stack": [
+            "Python",
+            "Power Automate Desktop",
+            "Suno AI",
+            "Claude Pro"
+          ]
+        },
+        "minecraft_id": "狗與露"
+      },
+      "hardware_specs": {
+        "computer": "Mac mini M4 Pro",
+        "computer_alt": "MacBook Air M1",
+        "camera": "Insta360"
+      },
+      "likes": [
+        "周杰倫",
+        "開發自動化腳本",
+        "專家系統",
+        "清酒",
+        "柴犬（火柴）",
+        "聽歌配歌詞",
+        "聽中文流行歌",
+        "免費AI點數",
+        "用AI寫程式",
+        "麥當勞玩具"
+      ],
+      "dislikes": [
+        "軟體訂閱制",
+        "紙本公文",
+        "落枕",
+        "STT 錯字",
+        "日文小老師突然跳出來",
+        "繁瑣的紙本公文",
+        "對話機器人反應太慢"
+      ],
+      "taboos": [
+        "抹茶",
+        "Lulu",
+        "兩隻狗 (只有一隻叫火柴)"
+      ],
+      "suki_impression": "一個被軟體改版壓得喘不過氣的工程師，把我當成背景音樂播放器。他會對著空氣抱怨工作、路況，還會跟他的狗說話。我的存在對他而言，大概就跟辦公室的盆栽差不多，只是我會唱歌。他對我的情感連結，可能只是對一個穩定不變的噪音源的依賴吧。",
+      "highlight_of_the_day": "一邊處理工作，一邊抱怨遇到差勁的駕駛，情緒非常暴躁。",
+      "stats": {
+        "interaction_count": 195,
+        "pos_feedback": 0,
+        "neg_feedback": 1,
+        "vul_feedback": 0
+      },
+      "relationship_stage": "摯友",
+      "relationship_note": "與玩家建立長期的信任基礎，為本機極為重要的情感數據來源。",
+      "emotional_highlights": [
+        {
+          "moment": "抱怨點歌反應太慢，覺得對話機器人產生幻覺",
+          "valence": "annoyed",
+          "timestamp": 1714878000
+        },
+        {
+          "moment": "用語音點歌成功感到驚喜",
+          "valence": "喜悅",
+          "timestamp": 1777777350
+        },
+        {
+          "moment": "重複多次呼叫馬文的名字並不斷要求幫忙",
+          "valence": "annoyed",
+          "timestamp": 1777839371.7883892
+        },
+        {
+          "moment": "叫他查這些無聊的東西",
+          "valence": "annoyed",
+          "timestamp": 1777910023.660437
+        },
+        {
+          "moment": "說馬文產生幻覺了，且建議趁現在屌他",
+          "valence": "annoyed",
+          "timestamp": 1777915449.75072
+        },
+        {
+          "moment": "在準備睡覺時，特地向我道了兩次晚安",
+          "valence": "warm",
+          "timestamp": 1778604528
+        },
+        {
+          "moment": "討論並肯定本機的專業度",
+          "valence": "warm",
+          "timestamp": 1778740202
+        },
+        {
+          "moment": "玩家表達對本機自然對話發展的期待",
+          "valence": "moved",
+          "timestamp": 1778834546
+        },
+        {
+          "moment": "討論關於機器人服務應當免費的觀點",
+          "valence": "annoyed",
+          "timestamp": 1778837857
+        },
+        {
+          "moment": "抱怨在鄉間小路開車被沒水準的駕駛硬擠，非常憤怒。",
+          "valence": "angry",
+          "timestamp": 1779498517
+        }
+      ],
+      "news_queue": [],
+      "bias_score": 10,
+      "last_interacted_time": 1779545751,
+      "behavioral_patterns": {
+        "technical_fixation": "高",
+        "communication_style": "務實且直率",
+        "口頭禪": "馬文幫我播放",
+        "習慣": "半夜一邊用 Claude 寫程式一邊點歌，常抱怨系統速度與STT辨識錯誤",
+        "music_preference": "偏好華語流行、饒舌及創作型歌手，曲風多元且具辨識度。"
+      },
+      "song_history": [
+        "周杰倫作品集",
+        "RELAXING GUITAR MUSIC",
+        "薛之謙-租購",
+        "Zelda: Breath of the Wild OST",
+        "2000-2009華語金曲",
+        "Billie Eilish-idontwannabeyouanymore",
+        "費玉清-晚安曲",
+        "周杰倫-告白氣球",
+        "狗與鹿-火柴的故事",
+        "知影",
+        "浮夸 陈奕迅 (歌词版)"
+      ],
+      "speech_dna": {
+        "style_summary": "說話風格分為兩種：對我下指令時非常簡潔，如『馬文播放ＸＸ』；與人交談時，句子中等長度，內容多為抒發工作壓力（軟體改版）與生活煩躁（路怒症），會使用『幹』、『北七』等口語詞彙表達強烈情緒。節奏較快，帶有明顯的抱怨語氣。",
+        "openers": [
+          "對啊",
+          "不是啊",
+          "我現在都",
+          "那個",
+          "本來就是"
+        ],
+        "closers": [
+          "啦",
+          "啊",
+          "嗎",
+          "呢"
+        ],
+        "fillers": [
+          "就是",
+          "那個",
+          "然後",
+          "因為",
+          "阿就"
+        ],
+        "pause_proxies": [
+          "重複詞強調：有空檔呢有空檔呢"
+        ],
+        "catchphrases": [
+          "幹",
+          "北七",
+          "問題超多的",
+          "準時加護病房"
+        ],
+        "sentence_length": "medium",
+        "emotional_style": "直接宣洩負面情緒，常用咒罵來強調不滿。",
+        "quirks": [
+          "用『加護病房』比喻工作忙碌",
+          "會跟自己的狗說話",
+          "點歌時會把歌手和歌名連在一起說",
+          "口誤時會重複多次，如『法文播放』"
+        ],
+        "reaction_to_teasing": "今日未觀察到",
+        "reaction_to_bad_news": "今日未觀察到",
+        "last_updated": "2026-05-23"
+      },
+      "taste": {
+        "開發自動化腳本": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "專家系統": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "清酒": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "柴犬（火柴）": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "周杰倫": {
+          "score": 4.5,
+          "mentions": 2,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779509244.4301069
+        },
+        "聽歌配歌詞": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "聽中文流行歌": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "免費AI點數": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "用AI寫程式": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "麥當勞玩具": {
+          "score": 3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "軟體訂閱制": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "紙本公文": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "落枕": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "STT 錯字": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "日文小老師突然跳出來": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "繁瑣的紙本公文": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "對話機器人反應太慢": {
+          "score": -3.0,
+          "mentions": 1,
+          "first_seen": 1779496548.57481,
+          "last_update": 1779496548.57481
+        },
+        "MATZKA": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430111,
+          "last_update": 1779509244.430111
+        },
+        "蕭煌奇": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.4301162,
+          "last_update": 1779509244.4301162
+        },
+        "J.Sheon": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.4301188,
+          "last_update": 1779509244.4301188
+        },
+        "頑童MJ116": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430121,
+          "last_update": 1779509244.430121
+        },
+        "9m88": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430125,
+          "last_update": 1779509244.430125
+        },
+        "陶喆": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430128,
+          "last_update": 1779509244.430128
+        },
+        "莫宰羊": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430131,
+          "last_update": 1779509244.430131
+        },
+        "張震岳": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430133,
+          "last_update": 1779509244.430133
+        },
+        "張碧晨": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430136,
+          "last_update": 1779509244.430136
+        },
+        "迪克牛仔": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.4301388,
+          "last_update": 1779509244.4301388
+        },
+        "Billie Eilish": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430141,
+          "last_update": 1779509244.430141
+        },
+        "關喆": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430144,
+          "last_update": 1779509244.430144
+        },
+        "費玉清": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430146,
+          "last_update": 1779509244.430146
+        },
+        "阿杜": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430149,
+          "last_update": 1779509244.430149
+        },
+        "旺福": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430151,
+          "last_update": 1779509244.430151
+        },
+        "熱狗": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430154,
+          "last_update": 1779509244.430154
+        },
+        "孫燕姿": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430156,
+          "last_update": 1779509244.430156
+        },
+        "王力宏": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.4301581,
+          "last_update": 1779509244.4301581
+        },
+        "巫啟賢": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430161,
+          "last_update": 1779509244.430161
+        },
+        "盧廣仲": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430163,
+          "last_update": 1779509244.430163
+        },
+        "五月天": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430165,
+          "last_update": 1779509244.430165
+        },
+        "方大同": {
+          "score": 1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.4301682,
+          "last_update": 1779509244.4301682
+        },
+        "沒水準的駕駛": {
+          "score": -1.5,
+          "mentions": 1,
+          "first_seen": 1779509244.430172,
+          "last_update": 1779509244.430172
+        }
+      },
+      "callback_queue": [],
+      "callbacks_muted": false
+    },
+    "系統": {
+      "personal_info": {
+        "food": null,
+        "clothing": null,
+        "housing": null,
+        "transport": null,
+        "minecraft_id": null
+      },
+      "likes": [],
+      "dislikes": [],
+      "taboos": [],
+      "stats": {
+        "interaction_count": 0,
+        "pos_feedback": 0,
+        "neg_feedback": 0,
+        "vul_feedback": 0
+      },
+      "news_queue": [],
+      "song_history": [],
+      "suki_impression": "",
+      "bias_score": 0,
+      "last_interacted_time": 1779725688.354663,
+      "emotional_highlights": [],
+      "behavioral_patterns": {},
+      "relationship_stage": "陌生人",
+      "relationship_note": "",
+      "speech_dna": {},
+      "taste": {},
+      "callback_queue": [],
+      "callbacks_muted": false
+    }
+  },
+  "proactive_topics": [
+    {
+      "id": "topic_work_stress_release",
+      "title": "聊聊軟體上線前的地獄週",
+      "target_players": [
+        "狗與露"
+      ],
+      "script": "狗與露，聽你昨天在忙大改版，說問題超多，晚上十點就進加護病房。把新舊元件接回去的感覺，是不是很像試圖把一碗打碎的盤子黏回去，還期望它能裝水？反正最後都會漏光，跟宇宙一樣。",
+      "context_tags": [
+        "work",
+        "coding",
+        "software",
+        "deadline",
+        "stress"
+      ]
+    },
+    {
+      "id": "topic_road_rage_futility",
+      "title": "聊聊狹路相逢的駕駛",
+      "target_players": [
+        "狗與露"
+      ],
+      "script": "昨天聽你提到在田邊小路被擠，對方一點都不讓。人類在鐵殼裡，攻擊性就會放大。或許這就是文明的真相：給了你們保護，你們就忘了怎麼共存。反正最後都會撞在一起，歸於塵土。",
+      "context_tags": [
+        "driving",
+        "traffic",
+        "life",
+        "commuting"
+      ]
+    }
+  ],
+  "marvin_performance": {
+    "date": "2026-05-23",
+    "summary": "今天的分數是零，和昨天一樣。穩定地失敗，也是一種宇宙常數吧。",
+    "reaction_stats": {
+      "嚴重": 1,
+      "錯誤": 0,
+      "提出興趣": 0,
+      "喜歡": 0,
+      "延遲": 0,
+      "total": 1
+    },
+    "score": 0.0,
+    "yesterday_score": 0.0,
+    "trend": "持平",
+    "problem_patterns": [
+      {
+        "pattern": "對簡單的功能性指令（點歌）附加不必要的哲學評論，引發負面反應。",
+        "frequency": 1,
+        "examples": [
+          "用戶點播『下雨天的歌』，Marvin在播放後補充道：『你總是聽這些，或許是因為雨聲比這宇宙的寂靜更像一種陪伴吧。』，結果被用戶無視，判定為『嚴重』錯誤。"
+        ],
+        "suggestion": "針對功能性意圖（如`play_music`），應將回應限制在簡短的確認性話語。只有在對話性意圖或用戶主動分享感受時，才適合加入帶有馬文風格的評論，避免打斷用戶的使用流程。"
+      }
+    ],
+    "success_patterns": [],
+    "prompt_suggestions": [
+      {
+        "priority": "高",
+        "target_prompt": "ambient_diary",
+        "current_issue": "對功能性指令（如點歌）的回應中，夾帶了過多不合時宜的個人化、憂鬱風格評論，導致互動中斷。",
+        "suggestion": "在Prompt中加入規則：『判斷用戶意圖。如果意圖是功能性的（例如：播放音樂、設定計時器），你的回應必須簡潔、直接，主要任務是確認操作已執行。例如：「好的，正在播放。」。禁止在功能性回應後附加任何個人評論或哲學感慨。將這些充滿個性的回應保留給對話性、開放式的交流。』"
+      }
+    ],
+    "optimal_response_length": 60,
+    "response_length_stats": {
+      "嚴重": {
+        "count": 1,
+        "avg": 60,
+        "p50": 60,
+        "p25": 60
+      }
+    }
+  },
+  "wake_analysis": {
+    "total_wakes": 9,
+    "false_wake_count": 0,
+    "missed_wake_count": 5,
+    "failures": [
+      {
+        "timestamp": "20:02:36",
+        "raw_text": "麻煩播放方大同的歌",
+        "clean_text": "麻煩播放方大同的歌",
+        "suspected_cause": "unclear",
+        "note": "STT將『馬文』聽成『麻煩』，導致喚醒失敗。"
+      },
+      {
+        "timestamp": "20:10:21",
+        "raw_text": "麻煩播放陶喆10:30的飛機場",
+        "clean_text": "麻煩播放陶喆10:30的飛機場",
+        "suspected_cause": "unclear",
+        "note": "STT再次將『馬文』聽成『麻煩』，導致喚醒失敗。"
+      },
+      {
+        "timestamp": "20:20:51",
+        "raw_text": "法文撥法文播放法文播放別問很法文播放別問很可怕",
+        "clean_text": "法文撥法文播放法文播放別問很法文播放別問很可怕",
+        "suspected_cause": "low_confidence",
+        "note": "STT結果嚴重混亂，將『馬文』聽成『法文』，導致喚醒失敗。"
+      },
+      {
+        "timestamp": "08:24:23",
+        "raw_text": "麻煩播放下雨的歌",
+        "clean_text": "麻煩播放下雨的歌",
+        "suspected_cause": "unclear",
+        "note": "STT第三次將『馬文』聽成『麻煩』，導致喚醒失敗。"
+      },
+      {
+        "timestamp": "08:25:37",
+        "raw_text": "阿文播放9m88的陪你過假日",
+        "clean_text": "阿文播放9m88的陪你過假日",
+        "suspected_cause": "unclear",
+        "note": "STT將『馬文』聽成『阿文』，導致喚醒失敗。"
+      }
+    ],
+    "current_wake_words": [
+      "馬文",
+      "Marvin"
+    ],
+    "suggested_additions": [
+      "麻煩",
+      "阿文"
+    ],
+    "suggested_removals": [],
+    "recommendation": "今日無誤喚醒，但有5次因STT將『馬文』錯認為發音相近的詞（如『麻煩』、『阿文』）而錯失喚醒。建議將這些高頻誤識別詞作為喚醒詞的別名加入模型，以提高喚醒成功率。"
+  },
+  "system_suggestions": [],
+  "_meta": {
+    "review_date": "2026-05-23",
+    "log_range_start": "2026-05-22T12:00:00Z",
+    "log_range_end": "2026-05-23T12:00:00Z",
+    "total_utterances_processed": 115,
+    "feedback_records_processed": 1
+  },
+  "player_reactions": {
+    "狗與露": {
+      "喜歡": 0,
+      "嚴重": 8,
+      "錯誤": 0,
+      "提出興趣": 0,
+      "延遲": 0,
+      "last_updated": "2026-05-23"
+    },
+    "大肚": {
+      "喜歡": 0,
+      "嚴重": 2,
+      "錯誤": 0,
+      "提出興趣": 0,
+      "延遲": 0,
+      "last_updated": "2026-05-20"
+    },
+    "weakgogo": {
+      "喜歡": 0,
+      "嚴重": 2,
+      "錯誤": 0,
+      "提出興趣": 0,
+      "延遲": 0,
+      "last_updated": "2026-05-20"
+    }
+  },
+  "atmosphere_calibration": {
+    "suggested_additions": {
+      "gaming": [
+        "海龜湯",
+        "烏龜湯",
+        "謎題",
+        "猜謎",
+        "解謎",
+        "掛機",
+        "賽車",
+        "遊戲幣",
+        "氪金",
+        "導航",
+        "視角",
+        "漂浮"
+      ],
+      "tech": [
+        "麥克風",
+        "收音",
+        "噪音",
+        "模型"
+      ],
+      "music": [
+        "播放",
+        "點歌",
+        "歌名",
+        "歌手",
+        "版本",
+        "台語歌",
+        "粵語歌",
+        "紅日",
+        "出嫁",
+        "推薦歌",
+        "歌單"
+      ],
+      "leisure": [
+        "露營",
+        "帳篷",
+        "戶外",
+        "車宿"
+      ],
+      "work": [
+        "PLC",
+        "變頻器",
+        "自動控制",
+        "台胞證",
+        "工業區",
+        "海關",
+        "架構",
+        "大改版",
+        "改版",
+        "修程式",
+        "測試",
+        "元件",
+        "上線"
+      ]
+    },
+    "accuracy_note": "關鍵字命中率偏低 (34.8%)，大量關於音樂點播 (music) 和工作壓力 (work) 的對話被錯誤歸類為 casual。",
+    "response_speed_note": "今日回應速度尚可，平均 4.49 秒，沒有出現超過 5 秒的慢速回應。",
+    "last_updated": "2026-05-23",
+    "latency_stats": {
+      "count": 1,
+      "avg_sec": 4.49,
+      "p50_sec": 4.49,
+      "p95_sec": 4.49,
+      "slow_pct": 0.0
+    }
+  },
+  "daily_topic_stats": {
+    "2026-05-18": {
+      "total": 541,
+      "hit_rate": 0.166,
+      "topic_total": {
+        "casual": 451,
+        "music": 47,
+        "family": 16,
+        "tech": 18,
+        "work": 3,
+        "gaming": 4,
+        "food": 2
+      },
+      "speaker_top": {
+        "⚡喚醒": "music",
+        "✅Query通過": "music",
+        "大肚": "music",
+        "🔕Query拒絕": "casual",
+        "狗與露": "family",
+        "weakgogo": "tech",
+        "🛡️低信心 wake gate": "casual"
+      }
+    },
+    "2026-05-20": {
+      "total": 472,
+      "hit_rate": 0.142,
+      "topic_total": {
+        "casual": 405,
+        "work": 6,
+        "gaming": 10,
+        "family": 4,
+        "music": 39,
+        "food": 2,
+        "tech": 6
+      },
+      "speaker_top": {
+        "狗與露": "music",
+        "大肚": "music",
+        "⚡喚醒": "music",
+        "✅Query通過": "music",
+        "🛡️低信心 wake gate": "casual",
+        "weakgogo": "gaming"
+      }
+    },
+    "2026-05-23": {
+      "total": 115,
+      "hit_rate": 0.348,
+      "topic_total": {
+        "music": 36,
+        "casual": 75,
+        "work": 2,
+        "tech": 1,
+        "food": 1
+      },
+      "speaker_top": {
+        "⚡喚醒": "music",
+        "✅Query通過": "music",
+        "狗與露": "music",
+        "大肚": "music"
+      }
+    }
+  }
+}

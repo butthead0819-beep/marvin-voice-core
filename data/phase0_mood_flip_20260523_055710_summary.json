@@ -1,0 +1,27 @@
+{
+  "params": {
+    "days": 1,
+    "guild": 1133088321254461552,
+    "sample_interval_s": 60,
+    "window_s": 300,
+    "model": "llama-3.1-8b-instant",
+    "dry_run": true
+  },
+  "stats": {
+    "total_samples": 60,
+    "distribution": {
+      "分歧": 1,
+      "興奮": 23,
+      "低落": 3,
+      "分類失敗": 11,
+      "放鬆": 5,
+      "無對話": 17
+    },
+    "valid_transitions": 25,
+    "flips": 5,
+    "flip_rate": 0.2,
+    "judgement_band": "5-20% → 改用 5min trigger + 重估 cost envelope"
+  },
+  "elapsed_s": 109.32591986656189,
+  "sample_jsonl": "data/phase0_mood_flip_20260523_055710.jsonl"
+}

@@ -1,0 +1,56 @@
+{
+  "params": {
+    "days": 7,
+    "guild": 1133088321254461552,
+    "snapshot_at_utc": "2026-05-23T06:41:18.524072+00:00"
+  },
+  "warning": "PROXY METRIC — uses 'speaker has utterance that day' as active proxy. Real presence (joining voice channel silently) NOT captured. P7 success metric needs forward-looking voice_state logger.",
+  "overall": {
+    "total_transcripts": 5122,
+    "unique_speakers": 4,
+    "days_with_activity": 8,
+    "avg_daily_active_speakers": 3.0,
+    "avg_return_freq_per_speaker": 0.857,
+    "skip_events_grep_in_stt_log": 40
+  },
+  "per_day_active_speakers": {
+    "2026-05-16": 4,
+    "2026-05-17": 3,
+    "2026-05-18": 4,
+    "2026-05-19": 3,
+    "2026-05-20": 4,
+    "2026-05-21": 3,
+    "2026-05-22": 2,
+    "2026-05-23": 1
+  },
+  "top_speakers_by_active_minutes": [
+    {
+      "speaker": "狗與露",
+      "total_active_minutes": 3012.4,
+      "active_days": 8,
+      "active_days_ratio": 1.143,
+      "total_utterances": 2835
+    },
+    {
+      "speaker": "大肚",
+      "total_active_minutes": 905.5,
+      "active_days": 7,
+      "active_days_ratio": 1.0,
+      "total_utterances": 944
+    },
+    {
+      "speaker": "showay",
+      "total_active_minutes": 671.4,
+      "active_days": 3,
+      "active_days_ratio": 0.429,
+      "total_utterances": 746
+    },
+    {
+      "speaker": "weakgogo",
+      "total_active_minutes": 507.5,
+      "active_days": 6,
+      "active_days_ratio": 0.857,
+      "total_utterances": 597
+    }
+  ]
+}

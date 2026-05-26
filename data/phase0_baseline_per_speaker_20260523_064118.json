@@ -1,0 +1,62 @@
+{
+  "大肚": {
+    "active_days": 7,
+    "active_days_ratio": 1.0,
+    "total_utterances": 944,
+    "total_active_minutes": 905.5,
+    "avg_active_minutes_per_active_day": 129.4,
+    "active_dates": [
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21",
+      "2026-05-22"
+    ]
+  },
+  "weakgogo": {
+    "active_days": 6,
+    "active_days_ratio": 0.8571428571428571,
+    "total_utterances": 597,
+    "total_active_minutes": 507.5,
+    "avg_active_minutes_per_active_day": 84.6,
+    "active_dates": [
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21"
+    ]
+  },
+  "狗與露": {
+    "active_days": 8,
+    "active_days_ratio": 1.1428571428571428,
+    "total_utterances": 2835,
+    "total_active_minutes": 3012.4,
+    "avg_active_minutes_per_active_day": 376.6,
+    "active_dates": [
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-23"
+    ]
+  },
+  "showay": {
+    "active_days": 3,
+    "active_days_ratio": 0.42857142857142855,
+    "total_utterances": 746,
+    "total_active_minutes": 671.4,
+    "avg_active_minutes_per_active_day": 223.8,
+    "active_dates": [
+      "2026-05-16",
+      "2026-05-18",
+      "2026-05-20"
+    ]
+  }
+}
