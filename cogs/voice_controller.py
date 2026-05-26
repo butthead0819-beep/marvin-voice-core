@@ -180,6 +180,7 @@ def build_intent_agents(controller, bot):
     # Phase 1 M5: lazy import 避免 module-level import 鏈死結
     from intent_agents.playback_control_agent import PlaybackControlAgent
     from intent_agents.volume_agent import VolumeAgent
+    from intent_agents.replay_agent import ReplayAgent
     return [
         HallucinationGuardAgent(controller),
         NemoClawAgent(controller),
@@ -187,6 +188,7 @@ def build_intent_agents(controller, bot):
         FindSongAgent(controller),
         PlaybackControlAgent(controller),  # Phase 1 M5: voice skip/stop/pause + ack + auto-blacklist
         VolumeAgent(controller),  # 2026-05-27: 議題 E #1 — 音量語音控制
+        ReplayAgent(controller),  # 2026-05-27: 議題 E #2 — 重播當前歌曲
         BustedAgent(bot),
         Busted99Agent(bot),
         TurtleSoupAgent(bot),
