@@ -746,9 +746,13 @@ class VoiceController(commands.Cog):
         )  # week2: 熱聊偵測 → 壓制 SpeakAgent + 寫 mood_store flag + 提供 wake boost
         self._mood_agent = MoodAgent(mood_store=self._room_mood_store)  # week3: 三軸 mood 合成
         # mood_sensor / temperature_monitor 在 main_discord 注入後由 wire_dependencies() 補齊
-        self._speak_bus.register(ProactiveTopicAgent(self, topic_graph=self._speaker_topic_graph))   # P0: 接 graph，讓死水資料流動
+        self._speak_bus.register(ProactiveTopicAgent(
+            self, topic_graph=self._speaker_topic_graph, mood_agent=self._mood_agent,
+        ))   # P0: 接 graph + P3: heavy mood 時 yield
         self._speak_bus.register(MemoryCallbackAgent(self))   # v3: 主題關聯 → 「你之前說要 X 現在呢」（flag SPEAK_MEMORY_CALLBACK 預設 OFF）
-        self._speak_bus.register(BridgeAgent(self, topic_graph=self._speaker_topic_graph))  # P2: cross-person 橋接
+        self._speak_bus.register(BridgeAgent(
+            self, topic_graph=self._speaker_topic_graph, mood_agent=self._mood_agent,
+        ))  # P2: cross-person 橋接 + P3: heavy mood 時 yield
         self._vector_store = VectorStore()
         self._summary_store = SummaryStore()
         self._task_store = TaskStore()
@@ -4996,6 +5000,14 @@ class VoiceController(commands.Cog):
             return
         if not self._speak_bus.agents():
             return  # 還沒有 agent 註冊（Week 1 基建期）→ 不打擾
+        # P3: 跑 MoodAgent.observe() 先讓 mood_store 有最新訊號；下方 agent bid 才有東西讀
+        # mood_sensor 有 5 分鐘 cache，每 5s 跑代價極低
+        ch = self.active_text_channel
+        if ch is not None:
+            try:
+                await self._mood_agent.observe(channel_id=0, guild_id=ch.guild.id)
+            except Exception:
+                logger.exception("[MoodAgent] observe raised (continuing tick)")
         try:
             ctx = self._build_speak_context(trigger="idle_tick")
             bid = await self._speak_bus.tick(ctx)

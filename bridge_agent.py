@@ -47,6 +47,7 @@ class BridgeAgent:
         cooldown_days: int = 30,
         min_overlap: float = 0.30,
         clock: Callable[[], float] = time.time,
+        mood_agent=None,                # P3: heavy tier 時 yield
     ) -> None:
         self._ctrl = controller
         self._graph = topic_graph
@@ -54,6 +55,7 @@ class BridgeAgent:
         self._cooldown_days = cooldown_days
         self._min_overlap = min_overlap
         self._clock = clock
+        self._mood = mood_agent
 
     # ── bid contract ─────────────────────────────────────────────────────────
 
@@ -74,6 +76,15 @@ class BridgeAgent:
         # 4. 熱聊時 yield（讓人類繼續講）
         if ctx.room_mood is not None and getattr(ctx.room_mood, "hot_chat", False):
             return self._dense_zero("hot_chat_yields")
+
+        # 4.5. P3: heavy mood tier 時禮讓（房間情緒沉重 → bot 不該打擾）
+        if self._mood is not None:
+            try:
+                tier = self._mood.get_action_tier(ctx.channel_id, silence_seconds=ctx.silence_seconds)
+                if tier == "heavy":
+                    return self._dense_zero("mood_heavy_yield")
+            except Exception as e:
+                logger.debug("[BridgeAgent] mood tier read failed: %s", e)
 
         # 5. 撞模式（音樂串流 / 電台 / 遊戲）
         c = self._ctrl

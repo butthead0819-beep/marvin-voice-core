@@ -36,16 +36,27 @@ class ProactiveTopicAgent:
         min_gap_since_last_s: float = 600.0,   # P0: 1800 → 600（北極星復活）
         clock: Callable[[], float] = time.time,
         topic_graph=None,                       # P0: SpeakerTopicGraph 接入，bid 時讀 recent
+        mood_agent=None,                        # P3: heavy tier 時 yield
     ) -> None:
         self._ctrl = controller
         self._confidence = confidence
         self._min_gap = min_gap_since_last_s
         self._clock = clock
         self._graph = topic_graph
+        self._mood = mood_agent
 
     async def speak_bid(self, ctx: SpeakContext) -> SpeakBid | None:
         # sync-fast gate — 全部都是 attribute read，沒 I/O
         c = self._ctrl
+
+        # 0. P3: heavy mood tier 時禮讓（低落+低溫+長靜默 = 房間真的不適合 bot 插話）
+        if self._mood is not None:
+            try:
+                tier = self._mood.get_action_tier(ctx.channel_id, silence_seconds=ctx.silence_seconds)
+                if tier == "heavy":
+                    return None  # 完全不 bid（沿用既有 None 回傳契約）
+            except Exception as e:
+                logger.debug("[ProactiveTopicAgent] mood tier read failed: %s", e)
 
         # 1. 靜默是否夠久
         threshold = getattr(c, "proactive_silence_threshold", 300.0)
