@@ -363,3 +363,76 @@ async def test_race_outcomes_preserve_spec_order():
     )
     # J2 雖然先完成且贏，outcomes 仍照 spec 註冊順序 (J1, J2)
     assert [o.name for o in result.outcomes] == ["J1", "J2"]
+
+
+# ─── fast_path_excludes（議題 A：guard 不直接 commit）─────────────────────
+
+
+async def test_race_excluded_bid_name_does_not_trigger_fast_path():
+    """J1 回 guard 0.96 過 threshold，但 guard 在 excludes 內 → 不 commit，等 J3。"""
+    trace: list = []
+    result = await race(
+        _ctx(),
+        [
+            JudgeSpec(_judge_factory("J1", _bid("guard", 0.96), 5, trace),
+                      threshold=0.85, name="J1"),
+            JudgeSpec(_judge_factory("J3", _bid("music", 0.80), 30, trace),
+                      threshold=0.30, name="J3"),
+        ],
+        fast_path_excludes=frozenset({"guard"}),
+    )
+    assert result.winner.name == "music"
+    assert result.winning_judge == "J3"
+    # 兩個都跑完，J1 不該被 cancel
+    assert ("done", "J1") in trace
+    assert ("done", "J3") in trace
+
+
+async def test_race_excluded_bid_still_recorded_in_outcomes():
+    """guard 不 fast-path，但 outcome 仍要記下它（telemetry 不丟資料）。"""
+    result = await race(
+        _ctx(),
+        [
+            JudgeSpec(_judge_factory("J1", _bid("guard", 0.96, "empty_after_strip"), 5),
+                      threshold=0.85, name="J1"),
+            JudgeSpec(_judge_factory("J3", _bid("music", 0.80), 30),
+                      threshold=0.30, name="J3"),
+        ],
+        fast_path_excludes=frozenset({"guard"}),
+    )
+    j1_outcome = _outcome_by_name(result, "J1")
+    assert j1_outcome.status == "completed"
+    assert j1_outcome.bid is not None
+    assert j1_outcome.bid.name == "guard"
+    assert j1_outcome.bid.confidence == 0.96
+
+
+async def test_race_fallback_picks_excluded_bid_when_only_option():
+    """所有 judges 都回 guard → fallback 仍選 guard（least-bad winner）。"""
+    result = await race(
+        _ctx(),
+        [
+            JudgeSpec(_judge_factory("J1", _bid("guard", 0.96), 5),
+                      threshold=0.85, name="J1"),
+            JudgeSpec(_judge_factory("J3", _bid("guard", 0.90), 30),
+                      threshold=0.30, name="J3"),
+        ],
+        fast_path_excludes=frozenset({"guard"}),
+    )
+    assert result.winner.name == "guard"
+    assert result.winner.confidence == 0.96  # 最高 confidence 的 guard
+
+
+async def test_race_excludes_default_empty_does_not_change_behavior():
+    """不傳 fast_path_excludes → 維持舊行為，guard 仍可 fast-path。"""
+    result = await race(
+        _ctx(),
+        [
+            JudgeSpec(_judge_factory("J1", _bid("guard", 0.96), 5),
+                      threshold=0.85, name="J1"),
+            JudgeSpec(_judge_factory("J3", _bid("music", 0.80), 30),
+                      threshold=0.30, name="J3"),
+        ],
+    )
+    assert result.winner.name == "guard"
+    assert result.winning_judge == "J1"

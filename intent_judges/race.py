@@ -58,6 +58,7 @@ async def race(
     specs: list[JudgeSpec],
     *,
     timeout_s: float = 5.0,
+    fast_path_excludes: frozenset[str] = frozenset(),
 ) -> RaceResult:
     loop = asyncio.get_event_loop()
     race_start = loop.time()
@@ -115,7 +116,11 @@ async def race(
                 name=name, status="completed", bid=bid, latency_ms=elapsed_ms,
             )
             completed.append((name, bid))
-            if bid.confidence >= spec.threshold and winner is None:
+            if (
+                bid.confidence >= spec.threshold
+                and bid.name not in fast_path_excludes
+                and winner is None
+            ):
                 winner = bid
                 winning_judge = name
 

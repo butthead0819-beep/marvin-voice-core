@@ -29,8 +29,12 @@ logger = logging.getLogger("intent_judges.voice_integration")
 
 DEFAULT_OUTCOME_PATH = Path("records/judge_outcomes.jsonl")
 
-_J1_THRESHOLD = 0.90
+_J1_THRESHOLD = 0.85  # 2026-05-27: 0.90→0.85，讓 weak_play_curation 0.85 也 fast-path
 _J3_THRESHOLD = 0.30  # 對齊 IntentBus.MIN_CONFIDENCE
+
+# guard 是 anti-pattern detector（wake_loop / empty_after_strip 等），不是正向 intent；
+# 過 threshold 也不該觸發 fast-path。詳見 records/judge_outcomes_analysis_2026-05-27.md。
+_FAST_PATH_EXCLUDES = frozenset({"guard"})
 
 _uid_counter = itertools.count()
 
@@ -92,7 +96,7 @@ async def run_shadow_race(
     """
     try:
         specs = make_shadow_specs(raw_text, cleaned_text, agents)
-        result = await race(ctx, specs)
+        result = await race(ctx, specs, fast_path_excludes=_FAST_PATH_EXCLUDES)
     except Exception:
         logger.exception("[shadow-race] race coordinator failed; suppressed")
         return

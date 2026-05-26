@@ -165,6 +165,45 @@ async def test_run_shadow_race_does_not_raise_on_agent_exception(tmp_path):
     )
 
 
+async def test_run_shadow_race_excludes_guard_from_fast_path(tmp_path):
+    """議題 A：J1 回 guard（empty_after_strip / wake_loop）→ J3 找到真 intent
+    才該贏。Shadow 路徑必須傳 fast_path_excludes={'guard'}。"""
+    # guard 只在短 raw（如 "麻煩"）觸發，模擬真實 empty_after_strip 行為
+    class _Guard(DeclarativeIntentAgent):
+        name = "guard"
+        mode_compatible = frozenset({"normal"})
+
+        def bid(self, ctx):
+            from intent_bus import Bid
+            async def _noop():
+                pass
+            if len((ctx.raw_text or "").strip()) <= 3:
+                return Bid(name="guard", confidence=0.96, handler=_noop,
+                           reason="empty_after_strip")
+            return Bid(name="guard", confidence=0.0, handler=_noop,
+                       reason="not_short")
+
+    # music agent — cleaned text 命中
+    music = _StubAgent("music", [("播放.*", 0.95)])
+    out_path = tmp_path / "outcomes.jsonl"
+    ctx = _ctx(query="麻煩播放孤勇者", raw_text="麻煩")
+    await run_shadow_race(
+        ctx=ctx,
+        raw_text="麻煩",  # J1 看 raw，guard 攔下
+        cleaned_text="麻煩播放孤勇者",  # J3 看 cleaned，music 命中
+        agents=[_Guard(), music],
+        utterance_id="utt-guard",
+        outcome_path=out_path,
+    )
+    import json
+    line = out_path.read_text(encoding="utf-8").strip()
+    record = json.loads(line)
+    # 即使 J1 的 guard 0.96 過 threshold，也不該 fast-path
+    assert record["winner_name"] == "music", (
+        f"guard 不該觸發 fast-path；實際 winner={record['winner_name']}"
+    )
+
+
 async def test_run_shadow_race_swallows_write_failure(tmp_path, monkeypatch):
     """jsonl 寫入失敗（disk full / permission）也不能炸 voice_controller。"""
     music = _StubAgent("music", [("打開.*", 0.95)])
