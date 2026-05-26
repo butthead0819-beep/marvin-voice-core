@@ -21,6 +21,7 @@ from speaker_topic_graph import SpeakerTopicGraph
 from speak_bus import SpeakBus, SpeakContext
 from speak_outcome import SpeakOutcome, append_speak_outcome
 from ducking_agent import DuckingAgent
+from intent_agents.memory_callback_agent import MemoryCallbackAgent
 from proactive_topic_agent import ProactiveTopicAgent
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
@@ -730,6 +731,7 @@ class VoiceController(commands.Cog):
         self._last_room_stt_time = 0.0                   # 任一 speaker 最後一次 STT 的 timestamp（給 SpeakBus silence 算）
         self._ducking_agent = DuckingAgent(self._speak_bus)  # week2: 熱聊偵測 → 壓制其他 SpeakAgent
         self._speak_bus.register(ProactiveTopicAgent(self))   # 第一個 bidder：靜默 X 秒主動發起話題
+        self._speak_bus.register(MemoryCallbackAgent(self))   # v3: 主題關聯 → 「你之前說要 X 現在呢」（flag SPEAK_MEMORY_CALLBACK 預設 OFF）
         self._vector_store = VectorStore()
         self._summary_store = SummaryStore()
         self._task_store = TaskStore()

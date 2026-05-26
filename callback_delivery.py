@@ -25,3 +25,15 @@ def format_callback_line(text: str) -> str:
     if not text:
         return ""
     return f"歡迎回來，你上次說要{text}，後來呢？"
+
+
+def format_topic_callback_line(text: str) -> str:
+    """MemoryCallbackAgent v3：對話中被主題拉出的 callback 措辭（模板）。
+
+    跟 format_callback_line（join 場景「歡迎回來」）不同；這是 mid-conversation 觸發，
+    語氣應該像「順著當前話題接一句」。空字串回空（handler 跳過）。
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+    return f"對了，你之前說要{text}，現在呢？"

@@ -153,3 +153,43 @@ def test_repair_adds_callbacks_muted():
 
 def test_new_player_has_callback_queue():
     assert _new_player()["callback_queue"] == []
+
+
+# ── peek_all_shareable_callbacks (MemoryCallbackAgent v3, plan-eng-review D8) ──
+# 新 API：回該 player 所有 shareable 且未過期 callback 的 list。
+# 沿用 peek_shareable_callback 的 TTL / mute / shareable filter 邏輯，但回 list 不是 first。
+
+def test_peek_all_empty_queue_returns_empty_list(tmp_path):
+    """未知 player 或無 callback → []，不是 None。"""
+    assert _mk(tmp_path).peek_all_shareable_callbacks("Ghost") == []
+
+
+def test_peek_all_expired_returns_empty_and_prunes(tmp_path):
+    """全過 TTL → []，同 peek 一樣順手剪掉過期項。"""
+    mem = _mk(tmp_path)
+    mem.enqueue_callback("Alice", "stale1", shareable=True)
+    mem.enqueue_callback("Alice", "stale2", shareable=True)
+    p = mem.get_player_memory("Alice")
+    for item in p["callback_queue"]:
+        item["ts"] = time.time() - 8 * 86400  # 8 days old
+    assert mem.peek_all_shareable_callbacks("Alice") == []
+
+
+def test_peek_all_muted_player_returns_empty_list(tmp_path):
+    """muted player → []（不是 None），跟 peek_shareable_callback 的 mute kill-switch 一致。"""
+    mem = _mk(tmp_path)
+    mem.enqueue_callback("Alice", "戒咖啡", shareable=True)
+    mem.enqueue_callback("Alice", "學日文", shareable=True)
+    mem.set_callbacks_muted("Alice", True)
+    assert mem.peek_all_shareable_callbacks("Alice") == []
+
+
+def test_peek_all_filters_private_keeps_shareable_in_order(tmp_path):
+    """混 shareable/private → 只回 shareable，按 queue 順序（oldest first）。"""
+    mem = _mk(tmp_path)
+    mem.enqueue_callback("Alice", "private1", shareable=False)
+    mem.enqueue_callback("Alice", "share1", shareable=True)
+    mem.enqueue_callback("Alice", "private2", shareable=False)
+    mem.enqueue_callback("Alice", "share2", shareable=True)
+    items = mem.peek_all_shareable_callbacks("Alice")
+    assert [it["text"] for it in items] == ["share1", "share2"]

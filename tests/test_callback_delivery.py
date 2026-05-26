@@ -34,3 +34,18 @@ def test_format_callback_line():
 def test_format_callback_line_empty_returns_empty():
     assert cd.format_callback_line("") == ""
     assert cd.format_callback_line("   ") == ""
+
+
+# ── format_topic_callback_line (MemoryCallbackAgent v3, plan-eng-review T2) ───
+# 主題關聯 callback 的措辭模板。跟 T3 的 join 模板分開：
+# T3「歡迎回來」→ join 場景；v3「對了你之前說要 X」→ 對話中被主題拉出。
+
+def test_format_topic_callback_line_normal():
+    line = cd.format_topic_callback_line("試 grounded search")
+    assert "試 grounded search" in line
+    assert line.strip() != ""
+
+
+def test_format_topic_callback_line_empty_returns_empty():
+    assert cd.format_topic_callback_line("") == ""
+    assert cd.format_topic_callback_line("   ") == ""

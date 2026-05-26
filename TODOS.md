@@ -181,6 +181,66 @@
 
 ---
 
+### TODO: MemoryCallbackAgent — 升 embedding similarity（D 選項）
+**Status:** DEFERRED（等 v1 char-overlap 收 outcome 資料）
+**What:** v1 用 unique-char 重疊（沿 speaker_topic_graph.py:227 pattern），對「同意不同詞」無感。升 sentence-transformers cosine 解決。
+**Why:** char-overlap 抓不到「我說 AI 他講 model」這類同義詞 callback。但要先看 v1 命中率是否真的太低。
+**How to start:** speak_outcome.jsonl 觀察 2 週，若 callback win/天 < 1，加 sentence-transformers 比對。
+**Depends on:** MemoryCallbackAgent v1 上線 + outcome 資料。
+**Priority:** P3（資料驅動觸發）。
+
+---
+
+### TODO: MemoryCallbackAgent — 升 LLM 關聯判斷（E 選項）
+**Status:** DEFERRED
+**What:** embedding 仍不夠時，用 gpt-4o-mini 判斷「commitment + 當前 utterance 是否相關」。
+**Why:** 最高語意品質但 +500ms-2s latency → 必須非 sync-fast 路徑（pre-compute？背景跑？）+ cost gate。
+**How to start:** 等 embedding 也不夠再評估；目前不規劃。
+**Depends on:** embedding 升完 + 仍有 quality 缺口。
+**Priority:** P3。
+
+---
+
+### TODO: MemoryCallbackAgent — 跨 speaker callback
+**Status:** DEFERRED
+**What:** v1 只對「commitment 本人在場」bid。未來：Jack 三天前說要試 X、今天 Suki 在場、Suki 講到 X → Marvin 對 Suki 提「Jack 上次也說要試 X」。
+**Why:** 社交感最強——「Marvin 把房間裡兩人連起來」是 callback 的高 whoa 變體。但跨 speaker 涉及隱私線（shareable=True 已過濾，但語境延伸需審）。
+**How to start:** 加 `MemoryCallbackAgent` mode flag `cross_speaker=True`，bid 時掃所有 present speakers 的 callback queue，handler 措辭模板加「{commit_speaker} 之前說要 X」。
+**Depends on:** v1 上線 + 至少 4 週觀察。
+**Priority:** P3。
+
+---
+
+### TODO: MemoryCallbackAgent — LLM 措辭潤飾 callback line
+**Status:** DEFERRED
+**What:** v1 callback 句純模板「對了，你之前說要 X，現在呢？」。未來：根據當前話題 + speaker 情緒 LLM 改寫成「呃 grounded search 那個你後來實際試了嗎」。
+**Why:** 模板講多次會像機器人。但 LLM 改寫加 latency + cost，要先看 v1 講多了會不會煩。
+**How to start:** speak_outcome 觀察 callback win 之後 30s 內有 STT 比率；< 30% 再考慮潤飾。
+**Depends on:** v1 上線 + outcome 觀察。
+**Priority:** P3。
+
+---
+
+### TODO: MemoryCallbackAgent — per-commitment 動態 TTL
+**Status:** DEFERRED
+**What:** 現在 callback_queue 全 7 天 TTL（_CALLBACK_TTL_SECONDS）。「今天買 X」應 1 天、「想學日文」應 30 天。
+**Why:** 短期 commitment 過期還在 queue → 假陽性 callback；長期被 TTL 砍掉 → 漏 callback。
+**How to start:** commitment 偵測時讓 LLM 額外標 `urgency: short/medium/long`，TTL 對應 1/7/30 天。改 `enqueue_callback` 接 ttl 參數。
+**Depends on:** 視 v1 是否真的看到 TTL 失準案例。
+**Priority:** P3。
+
+---
+
+### TODO: MemoryCallbackAgent — 升 post_utterance trigger（D7 deferred A）
+**Status:** DEFERRED（plan-eng-review 2026-05-26 拍定 v1 走 5s tick）
+**What:** v1 走 SpeakBus 既有 5s idle tick → callback latency 0-5s。未來：在 handle_stt_result 末尾加 `await self._speak_bus.tick(SpeakContext(trigger="post_utterance", ...))`，讓 Marvin 0.5s 內接話。
+**Why:** 5s latency 跟「Marvin 聰明接話」的瞬時感差距明顯。但加 trigger 要改 SpeakBus.tick + handle_stt_result + recent_utterances 填值，且每句話 +5-15ms STT 路徑 latency。先看 v1 用戶實測感受是否真的「太慢」。
+**How to start:** SpeakBus.tick 加 trigger 區分；handle_stt_result 在 cleaner 後叫 tick(trigger="post_utterance")；_build_speak_context 接收 last_text 參數。
+**Depends on:** v1 上線 2 週 + Jack 主觀「等太久」回饋。
+**Priority:** P3（如真改善 whoa 感則升 P2）。
+
+---
+
 ## 低重要性 — 暫不執行
 
 ### TODO: Twitch 上線通知 cog

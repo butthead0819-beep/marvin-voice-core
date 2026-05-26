@@ -480,6 +480,27 @@ class MemoryManager:
                 return item
         return None
 
+    def peek_all_shareable_callbacks(
+        self, username: str, ttl_seconds: float = _CALLBACK_TTL_SECONDS
+    ) -> list[dict]:
+        """回傳該 player 所有 shareable 且未過期的 callback（按 queue 順序，oldest first）。
+
+        MemoryCallbackAgent v3 用：agent 需要看全部 shareable callback 才能做主題關聯。
+        沿用 peek_shareable_callback 的 TTL / mute / shareable filter 邏輯（單一 source of truth）。
+        順手剪掉過期項（與 single peek 同行為）。
+        """
+        if username not in self._cache:
+            return []
+        if self._cache[username].get("callbacks_muted"):
+            return []
+        queue = self._cache[username].get("callback_queue", [])
+        cutoff = time.time() - ttl_seconds
+        fresh = [item for item in queue if item.get("ts", 0) >= cutoff]
+        if len(fresh) != len(queue):
+            self._cache[username]["callback_queue"] = fresh
+            self._save_player(username)
+        return [item for item in fresh if item.get("shareable")]
+
     def consume_callback(self, username: str, item: dict):
         """投遞成功後移除該則 callback（以 ts+text 比對）。"""
         if username not in self._cache or not item:
