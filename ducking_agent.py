@@ -35,6 +35,9 @@ class DuckingAgent:
         suppress_cooldown_s: float = 5.0,
         buffer_size: int = 32,
         clock: Callable[[], float] = time.time,
+        mood_store=None,
+        channel_id: int = 0,
+        wake_threshold_boost: float = 0.0,
     ) -> None:
         self._bus = speak_bus
         self._window_s = window_s
@@ -45,6 +48,9 @@ class DuckingAgent:
         self._buffer: deque[tuple[str, float]] = deque(maxlen=buffer_size)
         self._clock = clock
         self._last_suppress_at: float = float("-inf")  # 確保第一次觸發不被 cooldown 卡
+        self._mood_store = mood_store
+        self._channel_id = channel_id
+        self._wake_boost = wake_threshold_boost
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -87,3 +93,28 @@ class DuckingAgent:
             f"🦆 [Ducking] hot_chat 觸發 {last_pair} → multiplier={self._multiplier} "
             f"for {self._suppress_ttl_s}s"
         )
+        if self._mood_store is not None:
+            pair = tuple(last_pair[:2]) if len(last_pair) >= 2 else None
+            self._mood_store.set_hot_chat(self._channel_id, hot=True, pair=pair)
+
+    # ── inspection ───────────────────────────────────────────────────────────
+
+    def is_hot(self) -> bool:
+        """Currently in suppression window? Used by wake_threshold_boost + playback fade."""
+        return (self._clock() - self._last_suppress_at) < self._suppress_ttl_s
+
+    def wake_threshold_boost(self) -> float:
+        """Hot 時回 +N，給 IntentBus ctx hint 拉高 wake 門檻；不改 MIN_CONFIDENCE 常數。"""
+        return self._wake_boost if self.is_hot() else 0.0
+
+    # ── manual release ───────────────────────────────────────────────────────
+
+    def release(self) -> None:
+        """強制解除壓制（給「被點名」、bot 主動回應等場景用）。"""
+        was_hot = self.is_hot()
+        self._last_suppress_at = float("-inf")
+        self._bus.set_global_multiplier(1.0, ttl_s=0.0)
+        if self._mood_store is not None:
+            self._mood_store.set_hot_chat(self._channel_id, hot=False)
+        if was_hot:
+            logger.info("🦆 [Ducking] released")

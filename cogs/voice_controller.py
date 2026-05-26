@@ -21,6 +21,7 @@ from speaker_topic_graph import SpeakerTopicGraph
 from speak_bus import SpeakBus, SpeakContext
 from speak_outcome import SpeakOutcome, append_speak_outcome
 from ducking_agent import DuckingAgent
+from room_mood_state import RoomMoodStateStore
 from intent_agents.memory_callback_agent import MemoryCallbackAgent
 from proactive_topic_agent import ProactiveTopicAgent
 from vector_store import VectorStore
@@ -596,6 +597,9 @@ class VoiceController(commands.Cog):
             recommendation_sink=lambda slot, c, r: append_recommendation(
                 build_curation_recommendation(slot, c, r, time.time())
             ),
+            # song_choice 短路：yt-dlp 找得到原 query 就跳過 LLM curation，避免「播放七里香」
+            # 被 LLM 當歌手解析。找不到才走 resolver curate by artist。
+            direct_probe=self._yt_dlp_direct_probe,
         )
         
         # 🛡️ [Operation Sentinel] 語音健康監控
@@ -730,7 +734,14 @@ class VoiceController(commands.Cog):
         self._speaker_topic_graph = SpeakerTopicGraph()  # social-catalyst week1: 累積社交圖資料
         self._speak_bus = SpeakBus()                     # social-catalyst week1: proactive 發話 bus（無 agent 時 tick 回 None）
         self._last_room_stt_time = 0.0                   # 任一 speaker 最後一次 STT 的 timestamp（給 SpeakBus silence 算）
-        self._ducking_agent = DuckingAgent(self._speak_bus)  # week2: 熱聊偵測 → 壓制其他 SpeakAgent
+        self._room_mood_store = RoomMoodStateStore()     # week2 補洞：DuckingAgent / playback / wake hint 共讀
+        # channel_id=0 表示「本 guild 的當前語音房」（單房假設）；切房間時 deque 也會自然滾掉舊資料
+        self._ducking_agent = DuckingAgent(
+            self._speak_bus,
+            mood_store=self._room_mood_store,
+            channel_id=0,
+            wake_threshold_boost=0.1,
+        )  # week2: 熱聊偵測 → 壓制 SpeakAgent + 寫 mood_store flag + 提供 wake boost
         self._speak_bus.register(ProactiveTopicAgent(self))   # 第一個 bidder：靜默 X 秒主動發起話題
         self._speak_bus.register(MemoryCallbackAgent(self))   # v3: 主題關聯 → 「你之前說要 X 現在呢」（flag SPEAK_MEMORY_CALLBACK 預設 OFF）
         self._vector_store = VectorStore()
@@ -4227,6 +4238,22 @@ class VoiceController(commands.Cog):
                 t = t[:-len(suffix)]
         return t.strip()
 
+    async def _yt_dlp_direct_probe(self, query: str) -> dict | None:
+        """song_choice curation 短路探針：剝命令詞後丟 yt-dlp 直查。
+
+        Why：「播放七里香」(歌名) 命中 weak_play_artist_only → 原本被 bus 路由給
+        LLM curation，但 LLM 把「七里香」當歌手 → 幻覺。先用 yt-dlp 探一次：
+        - 命中（truthy dict）→ bus 跳過 curation，winner.handler() 直接播
+        - 找不到（None）→ 走原 resolver curate by artist 路徑
+
+        副作用：對「播放周杰倫」(歌手) 也會探到代表作 → 不再走 personalized curation
+        而是 yt-dlp 首選。語意上更直觀（user 說啥就播啥）。
+        """
+        search = self._extract_music_search_query(query)
+        if not search:
+            return None
+        return await self._resolve_yt_query(search)
+
     async def _ask_music_followup(
         self, speaker: str, query: str, missing_slots: list[str]
     ) -> None:
@@ -4886,7 +4913,8 @@ class VoiceController(commands.Cog):
             guild_id=ch.guild.id if ch else 0,
             silence_seconds=max(0.0, now - self._last_room_stt_time) if self._last_room_stt_time else 0.0,
             present_speakers=self.get_online_members(),
-            room_mood=None,                            # RoomMoodState 尚未 wired（Week 3）
+            room_mood=self._room_mood_store.get(0),    # week2: DuckingAgent 寫的 hot_chat flag 在這
+
             recent_utterances=[],                      # 預留；agent 自己拉 transcript 即可
             trigger=trigger,
         )
