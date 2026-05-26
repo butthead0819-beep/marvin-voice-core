@@ -22,6 +22,7 @@ from speak_bus import SpeakBus, SpeakContext
 from speak_outcome import SpeakOutcome, append_speak_outcome
 from ducking_agent import DuckingAgent
 from room_mood_state import RoomMoodStateStore
+from mood_agent import MoodAgent
 from intent_agents.memory_callback_agent import MemoryCallbackAgent
 from proactive_topic_agent import ProactiveTopicAgent
 from vector_store import VectorStore
@@ -742,6 +743,8 @@ class VoiceController(commands.Cog):
             channel_id=0,
             wake_threshold_boost=0.1,
         )  # week2: 熱聊偵測 → 壓制 SpeakAgent + 寫 mood_store flag + 提供 wake boost
+        self._mood_agent = MoodAgent(mood_store=self._room_mood_store)  # week3: 三軸 mood 合成
+        # mood_sensor / temperature_monitor 在 main_discord 注入後由 wire_dependencies() 補齊
         self._speak_bus.register(ProactiveTopicAgent(self))   # 第一個 bidder：靜默 X 秒主動發起話題
         self._speak_bus.register(MemoryCallbackAgent(self))   # v3: 主題關聯 → 「你之前說要 X 現在呢」（flag SPEAK_MEMORY_CALLBACK 預設 OFF）
         self._vector_store = VectorStore()

@@ -464,6 +464,11 @@ class MarvinBot(commands.Bot):
                     temperature_monitor=_temp_monitor,
                 )
                 logger.info("[AmbientIntelligence] MoodSensor wired into VoiceController._mood_sensor")
+                # social-catalyst week3: 把 mood_sensor + temperature_monitor 注入 MoodAgent
+                vc_cog._mood_agent.wire_dependencies(
+                    mood_sensor=vc_cog._mood_sensor,
+                    temperature_monitor=_temp_monitor,
+                )
             except Exception:
                 logger.exception("[AmbientIntelligence] MoodSensor wire failed — autopilot will fallback to no vibe")
 
