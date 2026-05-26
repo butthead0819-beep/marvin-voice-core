@@ -2059,9 +2059,11 @@ class VoiceController(commands.Cog):
         else:
             # Fallback: legacy binary decision + LLM Veto
             is_fast = action in ["fast_intervene", "force_intervene"]
-            if is_fast and track == "B" and wake_intent is not None and wake_intent < 0.65:
+            # P1: hot_chat 時 DuckingAgent 拉高 LLM veto 門檻 +0.1（不改 0.65 常數）
+            _llm_veto_thr = 0.65 + self._ducking_agent.wake_threshold_boost()
+            if is_fast and track == "B" and wake_intent is not None and wake_intent < _llm_veto_thr:
                 logger.info(
-                    f"🛡️ [LLM Veto] wake_intent={wake_intent:.2f} < 0.65 override "
+                    f"🛡️ [LLM Veto] wake_intent={wake_intent:.2f} < {_llm_veto_thr:.2f} override "
                     f"'{action}' for '{raw_text[:30]}'"
                 )
                 is_fast = False
@@ -3715,7 +3717,9 @@ class VoiceController(commands.Cog):
         # 改走資訊類路徑（status / recall / LLM 文字回應 with tts_suppressed），
         # 讓 LLM 用 context 判斷使用者真實意圖。
         # Track A regex (wake_intent=None) 視為高信心，不受 gate。
-        low_confidence_wake = wake_intent is not None and wake_intent < 0.80
+        # P1: hot_chat 期間 DuckingAgent 拉高 +0.1（不改 0.80 常數）
+        _wake_gate_thr = 0.80 + self._ducking_agent.wake_threshold_boost()
+        low_confidence_wake = wake_intent is not None and wake_intent < _wake_gate_thr
         if low_confidence_wake:
             self.stt_logger.info(
                 f"[🛡️低信心 wake gate] [{speaker}] wake_intent={wake_intent:.2f} "
@@ -3937,7 +3941,9 @@ class VoiceController(commands.Cog):
 
         # 🔇 [Low-Confidence Gate] Track B 喚醒信心 < 0.80 → 只貼文字，不播 TTS
         # Track A (regex) 的 wake_intent=None，視為高信心，照常播音
-        tts_suppressed = wake_intent is not None and wake_intent < 0.80
+        # P1: hot_chat 期間 DuckingAgent 拉高 +0.1
+        _tts_gate_thr = 0.80 + self._ducking_agent.wake_threshold_boost()
+        tts_suppressed = wake_intent is not None and wake_intent < _tts_gate_thr
 
         full_text = ""
         first_sentence_received = False
@@ -5214,6 +5220,12 @@ class VoiceController(commands.Cog):
 
         # 🎵 [Stream Guard] 主動發言類別在串流播放中靜音，文字由呼叫方負責貼頻道
         if self.stream_mode and silent_during_stream:
+            return
+
+        # 🦆 [Hot-Chat Guard] 主動發言類別在熱聊期間也靜音（P1：DuckingAgent flag）
+        # wake-word 回應 / 高優先順序的話依舊正常播音
+        if silent_during_stream and self._room_mood_store.get(0).hot_chat:
+            logger.info(f"🦆 [Hot-Chat Mute] 熱聊中靜音主動 TTS: '{text[:30]}'")
             return
 
         # 🛡️ [Interrupt Guard] 若玩家插話中斷了回應，丟棄串流中所有剩餘片段
