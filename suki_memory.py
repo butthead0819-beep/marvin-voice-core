@@ -26,6 +26,59 @@ _SCORE_MIN, _SCORE_MAX = -10.0, 10.0
 _MIGRATE_SCORE = 3.0     # 舊 likes/dislikes 遷入 taste 的起始分（剛過閾值＝confirmed 但可被約 3 個反向訊號重新調整）
 
 
+# ── Alias merge (pure) ───────────────────────────────────────────────────────
+# 用途：STT 漂移造成兩個 player record（如「狗與鹿」與「狗與露」）累積到同一人時，
+# 把 source（舊 alias）merge 進 target（canonical）。Pure 函式，無 IO。
+
+_MAX_FIELDS = frozenset({"last_interacted_time"})  # 取兩邊較大值
+_TARGET_ONLY_FIELDS = frozenset({"name"})          # 永遠 target wins，不被 source 蓋
+
+
+def _is_empty(v) -> bool:
+    return v is None or v == "" or v == [] or v == {}
+
+
+def _merge_value(t, s):
+    """target 既有非空就保留；list union dedup；dict 遞迴 merge。"""
+    if _is_empty(t):
+        return s
+    if _is_empty(s):
+        return t
+    if isinstance(t, list) and isinstance(s, list):
+        seen = {repr(x) for x in t}
+        merged = list(t)
+        for x in s:
+            if repr(x) not in seen:
+                merged.append(x)
+                seen.add(repr(x))
+        return merged
+    if isinstance(t, dict) and isinstance(s, dict):
+        out = dict(t)
+        for k, v in s.items():
+            out[k] = _merge_value(out.get(k), v) if k in out else v
+        return out
+    return t  # scalar: target wins
+
+
+def merge_player_records(target: dict, source: dict) -> dict:
+    """Merge source into target，回新 dict（不改原物件）。Idempotent。
+
+    Rule：target 主導，source 補 target 缺/空的欄位。last_interacted_time 取 max。
+    name 永遠 target wins（canonical key 不可被舊 alias 蓋）。
+    """
+    out = dict(target)
+    for k, v in source.items():
+        if k in _TARGET_ONLY_FIELDS:
+            continue
+        if k in _MAX_FIELDS:
+            tv = out.get(k) or 0
+            sv = v or 0
+            out[k] = max(tv, sv)
+            continue
+        out[k] = _merge_value(out.get(k), v) if k in out else v
+    return out
+
+
 def _build_taste_from_legacy(likes: list, dislikes: list) -> dict:
     """舊式二元 likes/dislikes → taste 分數 dict（confirmed 起始分）。taboos 不納入。"""
     now = time.time()
@@ -577,7 +630,13 @@ class MemoryManager:
         return self._cache[username].get("song_history", [])
 
     def get_proactive_topics(self) -> list:
-        return []
+        """讀 suki_memory.json 頂層 proactive_topics（由 daily review 寫入）。
+
+        2026-05-26 修復：先前重寫成 stub return [] 導致 ProactiveTopicAgent /
+        slow_system_loop 兩條主動路徑都進死巷，8 天從沒發過任何主動話題。
+        """
+        topics = self.get_meta("proactive_topics", [])
+        return topics if isinstance(topics, list) else []
 
     # ── Layer 2-4: emotional / behavioural / relationship ────────────────────
 

@@ -21,6 +21,7 @@ from speaker_topic_graph import SpeakerTopicGraph
 from speak_bus import SpeakBus, SpeakContext
 from speak_outcome import SpeakOutcome, append_speak_outcome
 from ducking_agent import DuckingAgent
+from proactive_topic_agent import ProactiveTopicAgent
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
 
@@ -728,6 +729,7 @@ class VoiceController(commands.Cog):
         self._speak_bus = SpeakBus()                     # social-catalyst week1: proactive 發話 bus（無 agent 時 tick 回 None）
         self._last_room_stt_time = 0.0                   # 任一 speaker 最後一次 STT 的 timestamp（給 SpeakBus silence 算）
         self._ducking_agent = DuckingAgent(self._speak_bus)  # week2: 熱聊偵測 → 壓制其他 SpeakAgent
+        self._speak_bus.register(ProactiveTopicAgent(self))   # 第一個 bidder：靜默 X 秒主動發起話題
         self._vector_store = VectorStore()
         self._summary_store = SummaryStore()
         self._task_store = TaskStore()
@@ -4658,9 +4660,8 @@ class VoiceController(commands.Cog):
                         logger.warning(f"⚠️ [Freq Adj] 讀取 feedback 失敗: {_fe}")
 
                     # 🚀 [Proactive Social] 靜默主動發起話題
-                    if silence > self.proactive_silence_threshold:
-                        print(f"🕒 [Slow System] 偵測到社交空窗 ({self.proactive_silence_threshold}s+ 靜默)，嘗試主動發起話題...")
-                        await self.trigger_proactive_topic()
+                    # 2026-05-26: 已遷至 SpeakBus（ProactiveTopicAgent），由 5s tick 統一 dispatch
+                    # 保留 proactive_silence_threshold 動態調整（上面 _ratio 那段），agent 讀同一個值
                 return
             
             # 使用最新條目的時間作為快照參考

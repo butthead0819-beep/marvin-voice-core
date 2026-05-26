@@ -21,6 +21,62 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def rename_user_in_songs(songs: dict, old: str, new: str) -> None:
+    """Rename a user across all per-song sub-structures（in-place）。
+
+    用途：alias merge，例如「狗與鹿」→「狗與露」。
+      - requesters: 數值加總後刪舊 key
+      - plays[].by: 直接 rename
+      - reactions: feelings/quotes union；其他子 key target wins
+      - connections: 換掉並 dedup
+    No-op 安全：舊 key 不存在不會炸。
+    """
+    if not old or not new or old == new:
+        return
+    for s in songs.values():
+        # requesters: sum
+        req = s.get("requesters") or {}
+        if old in req:
+            req[new] = req.get(new, 0) + req.pop(old)
+        # plays.by: rename
+        for p in s.get("plays") or []:
+            if p.get("by") == old:
+                p["by"] = new
+        # reactions: merge per-user
+        rx = s.get("reactions") or {}
+        if old in rx:
+            src = rx.pop(old)
+            if new in rx:
+                dst = rx[new]
+                # feelings union（保留 dst 順序 + 加 src 新項）
+                df = list(dst.get("feelings") or [])
+                for x in (src.get("feelings") or []):
+                    if x not in df:
+                        df.append(x)
+                dst["feelings"] = df[:10]
+                # quotes 同樣 union
+                dq = list(dst.get("quotes") or [])
+                for x in (src.get("quotes") or []):
+                    if x and x not in dq:
+                        dq.append(x)
+                dst["quotes"] = dq[-5:]
+                # lyric_match：dst 缺才補
+                if src.get("lyric_match") and not dst.get("lyric_match"):
+                    dst["lyric_match"] = src["lyric_match"]
+            else:
+                rx[new] = src
+        # connections: 換 + dedup
+        conn = s.get("connections") or []
+        new_conn = []
+        seen = set()
+        for u in conn:
+            mapped = new if u == old else u
+            if mapped not in seen:
+                new_conn.append(mapped)
+                seen.add(mapped)
+        s["connections"] = new_conn
+
+
 class MusicMemory:
 
     def __init__(self, path: str = "music_memory.json"):
