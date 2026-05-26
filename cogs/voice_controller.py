@@ -181,6 +181,7 @@ def build_intent_agents(controller, bot):
     from intent_agents.playback_control_agent import PlaybackControlAgent
     from intent_agents.volume_agent import VolumeAgent
     from intent_agents.replay_agent import ReplayAgent
+    from intent_agents.now_playing_agent import NowPlayingAgent
     return [
         HallucinationGuardAgent(controller),
         NemoClawAgent(controller),
@@ -189,6 +190,7 @@ def build_intent_agents(controller, bot):
         PlaybackControlAgent(controller),  # Phase 1 M5: voice skip/stop/pause + ack + auto-blacklist
         VolumeAgent(controller),  # 2026-05-27: 議題 E #1 — 音量語音控制
         ReplayAgent(controller),  # 2026-05-27: 議題 E #2 — 重播當前歌曲
+        NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
         BustedAgent(bot),
         Busted99Agent(bot),
         TurtleSoupAgent(bot),
