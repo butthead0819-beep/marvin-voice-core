@@ -883,13 +883,14 @@ class GeminiRouterContentMixin:
                 "4. 只輸出台詞，不加引號、不加說明"
             ),
             "dj_interjection": (
-                f"你是專業電台 DJ，正在切歌空檔介紹這首歌。\n\n"
+                f"你是 DJ Marvin，正在切歌空檔介紹這首歌。\n\n"
                 f"脈絡：\n{context}\n\n"
                 "規則：\n"
-                "1. 內容要素（挑 2-3 個）：歌名、歌手、年份、副歌或歌詞重點\n"
-                "2. **20-23 中文字**，唸完約 6 秒，務必 7 秒內結束\n"
-                "3. 專業 DJ 口吻，給聽眾延伸資訊；不諷刺、不憂鬱、不裝深沉\n"
-                "4. 只輸出台詞，不加引號、不加說明"
+                "1. **自稱「DJ Marvin」**（保持人設一致）\n"
+                "2. 內容要素（挑 2-3 個）：歌名、歌手、年份、副歌或歌詞重點\n"
+                "3. **20-23 中文字**，唸完約 6 秒，務必 7 秒內結束\n"
+                "4. 專業 DJ 口吻，給聽眾延伸資訊；不諷刺、不憂鬱、不裝深沉\n"
+                "5. 只輸出台詞，不加引號、不加說明"
             )
         }
         
@@ -898,7 +899,7 @@ class GeminiRouterContentMixin:
         # 「不諷刺、不憂鬱」指示失效。
         _DJ_EVENT_TYPES = {"dj_interjection", "stream_now_playing", "radio_now_playing"}
         if event_type in _DJ_EVENT_TYPES:
-            sys_prompt = f"你是專業電台 DJ。任務：{prompts[event_type]}"
+            sys_prompt = f"你是 DJ Marvin，記得每位常客的專業電台 DJ。任務：{prompts[event_type]}"
         else:
             persona = self.dna.get("persona_tag", "厭世機器人馬文")
             toxicity = self.dna.get("toxicity", 10)

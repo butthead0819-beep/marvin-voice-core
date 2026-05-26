@@ -23,6 +23,8 @@ def _make_cog():
     bot.cogs.get.return_value = None
     bot.tts_engine = MagicMock()
     bot.tts_engine.generate_audio = AsyncMock(return_value="/tmp/dj_audio.opus")
+    # truncate_for_tts 會呼叫 get_estimated_duration(text) 比較 <= float；沒 stub 會炸
+    bot.tts_engine.get_estimated_duration = MagicMock(return_value=3.0)
     bot.router = MagicMock()
     bot.router.generate_dynamic_system_msg = AsyncMock(
         return_value="唉...大肚又懷舊了，這首夜曲，2005 年的眼淚"
@@ -164,3 +166,40 @@ async def test_dj_fallback_audio_render_attempted():
     await cog._fetch_dj_interjection_raw(_info())
     # generate_audio 至少被呼叫一次（針對 fallback 文字）
     assert cog.bot.tts_engine.generate_audio.await_count >= 1
+
+
+# ── 5. DJ Marvin 人設（避免每路徑都跑回「專業電台 DJ」泛人設）─────────────────
+
+@pytest.mark.asyncio
+async def test_round_first_marvin_pick_uses_dj_marvin_self_intro():
+    """Marvin 自選 round 第 1 首是自我介紹時機 → 必須走「我記得你，DJ Marvin為你帶來」格式。
+
+    這條 hardcoded path 跳過 LLM，所以是 DJ Marvin 人設的最後一道防線——若這也錯了，
+    使用者每 round 第一首聽到的開場白就會跟人設斷裂。
+    """
+    cog = _make_cog()
+    info = _info(title="周杰倫 - 青花瓷", requester="Marvin")
+    info["_round_first"] = True
+    result = await cog._fetch_dj_interjection_raw(info)
+    assert result is not None
+    text = result["text"]
+    assert "DJ Marvin" in text, f"自介台詞要有「DJ Marvin」: {text!r}"
+    assert "我記得你" in text, f"自介台詞要有「我記得你」: {text!r}"
+    # artist 演唱的 title 結構（檢核資訊完整度）
+    assert "周杰倫" in text and "青花瓷" in text, \
+        f"自介台詞要點出歌手 + 歌名: {text!r}"
+    assert "演唱" in text, f"自介台詞要用「演唱」連接歌手與歌名: {text!r}"
+
+
+@pytest.mark.asyncio
+async def test_fallback_text_uses_dj_marvin_persona():
+    """LLM fail / 過短 fallback 也要走 DJ Marvin 人設，不能掉回中性「下一首是」。"""
+    cog = _make_cog()
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="")
+    result = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 七里香", requester="weakgogo"))
+    assert result is not None
+    text = result["text"]
+    assert "DJ Marvin" in text, f"fallback 文字要有「DJ Marvin」人設: {text!r}"
+    # 仍要點出歌名 + 點播者（沿用既有 always-announce 契約）
+    assert "七里香" in text
+    assert "weakgogo" in text

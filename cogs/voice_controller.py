@@ -6300,9 +6300,16 @@ class VoiceController(commands.Cog):
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
 
-        # Phase 1 M6: Marvin 自選曲 round 第 1 首 → 固定台詞，跳過 LLM
+        # Phase 1 M6: Marvin 自選曲 round 第 1 首 → 固定 DJ Marvin 自介台詞，跳過 LLM
+        # 「我記得你，DJ Marvin為你帶來 <藝人> 演唱的 <歌名>」格式由 user 指定，
+        # 是 round 首發的自介時機；LLM 路徑也要在 prompt 統一強化 DJ Marvin 人設
+        # （否則「專業電台 DJ」泛人設會把這條防線繞掉）。
         if info.get('_round_first') and requester.startswith('Marvin'):
-            text = f"送給大家這首《{title}》"
+            clean_title, clean_artist = self._parse_song_title_artist(info)
+            if clean_artist:
+                text = f"我記得你，DJ Marvin為你帶來{clean_artist}演唱的{clean_title}"
+            else:
+                text = f"我記得你，DJ Marvin為你帶來《{clean_title}》"
         else:
             try:
                 text = await self.bot.router.generate_dynamic_system_msg(
@@ -6315,8 +6322,13 @@ class VoiceController(commands.Cog):
         text = (text or '').strip()
         # ★ Fix 3 (2026-05-20): text 太短 → hardcoded fallback 保證一定有聲音
         # （沒有 None return path — user-requested 必須有 announcement）
+        # ★ 2026-05-26：fallback 也要走 DJ Marvin 人設，避免 LLM 失敗時掉回中性語氣
         if len(text) < 2:
-            text = f"下一首是《{title}》，{requester} 點的。"
+            clean_title, clean_artist = self._parse_song_title_artist(info)
+            if clean_artist:
+                text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{requester} 點的"
+            else:
+                text = f"DJ Marvin為你帶來《{clean_title}》，{requester} 點的"
             logger.info(f"🎙️ [DJ Prefetch] 採用 fallback template")
 
         # 🚦 [TTS Gate] LLM 不聽 7s 指示時最後一道防線，在符號處截斷
