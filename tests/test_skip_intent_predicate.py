@@ -37,6 +37,11 @@ from intent_agents.skip_intent import is_short_skip_command
     "快下一首",            # intensifier
     "下一首啦",            # 尾助詞
     "下一首吧",
+    # 2026-05-26 production miss: 雙語 address「Siri」/「Hey」等不在 allowlist，
+    # 但同 kw 連講兩次 = 明確命令 → multi-occurrence 豁免位置檢查
+    "Siri下一首下一首",
+    "Hey下一首下一首",
+    "ok下一首下一首",
 ])
 def test_skip_command_true_positives(text):
     assert is_short_skip_command(text, MUSIC_DIRECT_SKIP_KW) is True, (

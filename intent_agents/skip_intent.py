@@ -38,18 +38,28 @@ def is_short_skip_command(text: str, keywords: Iterable[str]) -> bool:
     if len(t) >= _LONG_SENTENCE_CHARS:
         return False
 
-    # 找最早出現的關鍵字位置
+    # 找最早出現的關鍵字位置 + 同 kw 出現次數（給 emphasis 豁免用）
     earliest = -1
+    max_kw_count = 0
     for kw in keywords:
         if not kw:
             continue
         idx = t.find(kw)
         if idx >= 0 and (earliest < 0 or idx < earliest):
             earliest = idx
+        # 同 kw 連續出現次數（emphasis pattern「下一首下一首」「Siri下一首下一首」）
+        if kw and t.count(kw) > max_kw_count:
+            max_kw_count = t.count(kw)
     if earliest < 0:
         return False
 
-    # 句首容許前綴的結束位置；關鍵字必須在這之前/之內出現
+    # 規則 a：同 kw 連講 ≥2 次 = 強調命令，豁免位置檢查
+    # 抓「Siri下一首下一首」「Hey下一首下一首」等雙語 address 場景，
+    # 避免維護無止盡的 address allowlist
+    if max_kw_count >= 2:
+        return True
+
+    # 規則 b：句首容許前綴的結束位置；關鍵字必須在這之前/之內出現
     m = _ALLOWED_PREFIX_RE.match(t)
     prefix_end = m.end() if m else 0
     return earliest <= prefix_end
