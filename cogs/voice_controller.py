@@ -618,7 +618,7 @@ class VoiceController(commands.Cog):
         self.proactive_attempts = 0
         self.last_sung_time = 0 # 紀錄最後一次唱歌的時間
         self.last_proactive_time = 0 # 🚀 [Proactive Social] 紀錄最後一次主動發言時間
-        self.proactive_silence_threshold = 300  # 🔇 [Freq Adj] 動態調整靜默觸發閾值（秒）
+        self.proactive_silence_threshold = 120  # 🔇 [Freq Adj] 動態調整靜默觸發閾值（秒）— P0: 300→120（calibration p95=37s, p99=218s）
         self.is_playing_audio = False # 防止 TTS 與音樂重疊
         self._tts_echo_cooldown_until = 0.0  # TTS 結束後的回授冷卻期（秒）
         self._pending_greeting_task: asyncio.Task | None = None  # summon 時與 connect 並行的 LLM 預熱
@@ -745,7 +745,7 @@ class VoiceController(commands.Cog):
         )  # week2: 熱聊偵測 → 壓制 SpeakAgent + 寫 mood_store flag + 提供 wake boost
         self._mood_agent = MoodAgent(mood_store=self._room_mood_store)  # week3: 三軸 mood 合成
         # mood_sensor / temperature_monitor 在 main_discord 注入後由 wire_dependencies() 補齊
-        self._speak_bus.register(ProactiveTopicAgent(self))   # 第一個 bidder：靜默 X 秒主動發起話題
+        self._speak_bus.register(ProactiveTopicAgent(self, topic_graph=self._speaker_topic_graph))   # P0: 接 graph，讓死水資料流動
         self._speak_bus.register(MemoryCallbackAgent(self))   # v3: 主題關聯 → 「你之前說要 X 現在呢」（flag SPEAK_MEMORY_CALLBACK 預設 OFF）
         self._vector_store = VectorStore()
         self._summary_store = SummaryStore()
@@ -4682,12 +4682,14 @@ class VoiceController(commands.Cog):
                         if len(_rows) >= 5:
                             _severe = sum(1 for r in _rows if r.get("reaction") == "嚴重")
                             _ratio = _severe / len(_rows)
+                            # P0: 整體降一個量級（北極星 = 讓 bot 真的有機會發聲）
+                            # 用戶嫌 bot 太吵時 ("嚴重" 比例 >30%) 才回升，正常情況 90s 就觸發
                             if _ratio > 0.30:
-                                self.proactive_silence_threshold = 600
-                            elif _ratio == 0.0:
                                 self.proactive_silence_threshold = 240
+                            elif _ratio == 0.0:
+                                self.proactive_silence_threshold = 90
                             else:
-                                self.proactive_silence_threshold = 300
+                                self.proactive_silence_threshold = 120
                             print(f"🔇 [Freq Adj] 嚴重={_ratio:.0%} ({len(_rows)}行/24h), proactive_silence_threshold={self.proactive_silence_threshold}s")
                     except Exception as _fe:
                         logger.warning(f"⚠️ [Freq Adj] 讀取 feedback 失敗: {_fe}")

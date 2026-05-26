@@ -33,13 +33,15 @@ class ProactiveTopicAgent:
         controller,
         *,
         confidence: float = 0.6,
-        min_gap_since_last_s: float = 1800.0,
+        min_gap_since_last_s: float = 600.0,   # P0: 1800 → 600（北極星復活）
         clock: Callable[[], float] = time.time,
+        topic_graph=None,                       # P0: SpeakerTopicGraph 接入，bid 時讀 recent
     ) -> None:
         self._ctrl = controller
         self._confidence = confidence
         self._min_gap = min_gap_since_last_s
         self._clock = clock
+        self._graph = topic_graph
 
     async def speak_bid(self, ctx: SpeakContext) -> SpeakBid | None:
         # sync-fast gate — 全部都是 attribute read，沒 I/O
@@ -75,9 +77,21 @@ class ProactiveTopicAgent:
             except Exception:
                 logger.exception("[ProactiveTopicAgent] handler raised")
 
+        # P0: 讀 SpeakerTopicGraph 把資料引入 reason（讓死水資料開始流動）
+        reason = f"social_gap:{int(ctx.silence_seconds)}s"
+        if self._graph is not None:
+            try:
+                rows = self._graph.recent(ctx.channel_id, n=10)
+                if rows:
+                    speakers = len({r["speaker"] for r in rows})
+                    sample = rows[0]["text"][:20] if rows else ""
+                    reason = f"social_gap:{int(ctx.silence_seconds)}s graph:speakers:{speakers}:{sample}"
+            except Exception as e:
+                logger.debug("[ProactiveTopicAgent] graph read failed (degrading): %s", e)
+
         return SpeakBid(
             agent_name=self.name,
             confidence=self._confidence,
             handler=_handler,
-            reason=f"social_gap:{int(ctx.silence_seconds)}s",
+            reason=reason,
         )
