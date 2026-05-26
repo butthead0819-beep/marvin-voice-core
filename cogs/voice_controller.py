@@ -72,6 +72,7 @@ from intent_agents.busted_agent import BustedAgent
 from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.find_song_agent import FindSongAgent, find_song_prompt
+from intent_agents.skip_intent import is_short_skip_command
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
 # Phase 1 M5: PlaybackControlAgent 改成 build_intent_agents() 內 lazy import
@@ -4160,7 +4161,7 @@ class VoiceController(commands.Cog):
         if len(text.strip()) > self._IBA_T0_MAX_LEN:
             return None
         t = text.lower()
-        if any(kw in t for kw in _MUSIC_DIRECT_SKIP_KW):   return {"action": "skip"}
+        if is_short_skip_command(t, _MUSIC_DIRECT_SKIP_KW):   return {"action": "skip"}
         if any(kw in t for kw in _MUSIC_DIRECT_PAUSE_KW):  return {"action": "pause"}
         if any(kw in t for kw in _MUSIC_DIRECT_RESUME_KW): return {"action": "resume"}
         if any(kw in t for kw in _MUSIC_DIRECT_STOP_KW):   return {"action": "stop"}
@@ -4595,9 +4596,9 @@ class VoiceController(commands.Cog):
 
     # --- [Slow System] ---
 
-    @tasks.loop(minutes=5.0)
+    @tasks.loop(minutes=10.0)
     async def slow_system_loop(self):
-        """[Slow System] 每 5 分鐘進行一次對話彙整與馬文評論"""
+        """[Slow System] 每 10 分鐘進行一次對話彙整與馬文評論"""
         try:
             if not self.bot.engine.conv_buffer:
                 return
@@ -4708,7 +4709,7 @@ class VoiceController(commands.Cog):
                 os.makedirs("records", exist_ok=True)
                 with open("records/chat_summary_log.txt", "a", encoding="utf-8") as f:
                     ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    f.write(f"[{ts}] --- 5分鐘對話總結 ---\n{text}\n\n")
+                    f.write(f"[{ts}] --- 10分鐘對話總結 ---\n{text}\n\n")
 
             if summary is None:
                 print("📭 [SlowLoop] LLM 判斷本輪內容不值得記錄，跳過發文。")
@@ -4748,7 +4749,7 @@ class VoiceController(commands.Cog):
                             except: pass
                         self.pending_intervention = None
 
-                    await target.send(f"📓 **【馬文的厭世日記】** (5min 增量彙整)\n\n{summary}")
+                    await target.send(f"📓 **【馬文的厭世日記】** (10min 增量彙整)\n\n{summary}")
 
             # 6. 處理社交缺口（使用並行取回的 analysis 結果）
             if analysis:

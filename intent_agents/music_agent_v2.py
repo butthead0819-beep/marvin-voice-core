@@ -174,6 +174,14 @@ class MusicAgentV2(DeclarativeIntentAgent):
     # ── Post-match filter (NON_MUSIC_TARGETS blocklist) ──────────────────────
 
     def post_match_filter(self, schema, slots, ctx):
+        # control_skip：regex 只是 substring 命中，還要過 is_short_skip_command 位置/長度檢查
+        # 避免「為什麼你下一首」「不喜歡下一首歌」這類閒聊誤觸發（2026-05-26 bug）
+        if schema.name == "control_skip":
+            from intent_agents.skip_intent import is_short_skip_command
+            from intent_agents.constants import MUSIC_SKIP_KW
+            if not is_short_skip_command(ctx.query or "", MUSIC_SKIP_KW):
+                return False
+            return True
         # artist_only / long_string 都吃 kw 後的 target → 同樣過 UI 黑名單
         if schema.name not in ("weak_play_long_string", "weak_play_artist_only"):
             return True
