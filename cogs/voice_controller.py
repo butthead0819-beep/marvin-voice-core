@@ -23,6 +23,7 @@ from speak_outcome import SpeakOutcome, append_speak_outcome
 from ducking_agent import DuckingAgent
 from room_mood_state import RoomMoodStateStore
 from mood_agent import MoodAgent
+from bridge_agent import BridgeAgent
 from intent_agents.memory_callback_agent import MemoryCallbackAgent
 from proactive_topic_agent import ProactiveTopicAgent
 from vector_store import VectorStore
@@ -747,6 +748,7 @@ class VoiceController(commands.Cog):
         # mood_sensor / temperature_monitor 在 main_discord 注入後由 wire_dependencies() 補齊
         self._speak_bus.register(ProactiveTopicAgent(self, topic_graph=self._speaker_topic_graph))   # P0: 接 graph，讓死水資料流動
         self._speak_bus.register(MemoryCallbackAgent(self))   # v3: 主題關聯 → 「你之前說要 X 現在呢」（flag SPEAK_MEMORY_CALLBACK 預設 OFF）
+        self._speak_bus.register(BridgeAgent(self, topic_graph=self._speaker_topic_graph))  # P2: cross-person 橋接
         self._vector_store = VectorStore()
         self._summary_store = SummaryStore()
         self._task_store = TaskStore()
@@ -2190,6 +2192,8 @@ class VoiceController(commands.Cog):
             self._last_room_stt_time = timestamp
             # week2: 餵 DuckingAgent，命中熱聊就會壓制 SpeakBus multiplier
             self._ducking_agent.on_utterance(speaker, ts=timestamp)
+            # P2: 排 post_utterance speak tick 給 BridgeAgent callback window（2.5s 後）
+            asyncio.create_task(self._post_utterance_speak_tick(speaker, raw_text))
             # MemoryGuard: skip chroma upsert under critical RAM to avoid
             # macOS file I/O EDEADLK chain (5/18 20:28 incident).
             if not is_memory_critical():
@@ -4915,8 +4919,14 @@ class VoiceController(commands.Cog):
     # 沒 SpeakAgent 註冊時整段是 no-op；agent 進來後負責收 bid + 寫 outcome log。
     # 跑得起在 voice channel 內才有意義，沒連線就 early return（節省功耗）。
 
-    def _build_speak_context(self, trigger: str) -> SpeakContext:
-        """從 voice_controller 當下狀態組 SpeakContext。Pure-ish（只讀 self，不做 IO）。"""
+    def _build_speak_context(
+        self, trigger: str,
+        *, last_speaker: str | None = None, last_text: str | None = None,
+    ) -> SpeakContext:
+        """從 voice_controller 當下狀態組 SpeakContext。Pure-ish（只讀 self，不做 IO）。
+
+        post_utterance trigger 要帶 last_speaker / last_text 給 BridgeAgent 用。
+        """
         now = time.time()
         ch = self.active_text_channel
         return SpeakContext(
@@ -4925,10 +4935,46 @@ class VoiceController(commands.Cog):
             silence_seconds=max(0.0, now - self._last_room_stt_time) if self._last_room_stt_time else 0.0,
             present_speakers=self.get_online_members(),
             room_mood=self._room_mood_store.get(0),    # week2: DuckingAgent 寫的 hot_chat flag 在這
-
             recent_utterances=[],                      # 預留；agent 自己拉 transcript 即可
             trigger=trigger,
+            last_speaker=last_speaker,
+            last_text=last_text,
         )
+
+    async def _post_utterance_speak_tick(
+        self, speaker: str, text: str, delay_s: float = 2.5,
+    ) -> None:
+        """P2: 一句話講完 2.5s 後跑一次 SpeakBus.tick(trigger="post_utterance")，
+        給 BridgeAgent callback window。delay 在「太快插話打斷對方」和「失去 timing」之間取衡。
+        """
+        try:
+            await asyncio.sleep(delay_s)
+        except asyncio.CancelledError:
+            return
+        if not self.bot.voice_clients or not self._speak_bus.agents():
+            return
+        try:
+            ctx = self._build_speak_context(
+                trigger="post_utterance", last_speaker=speaker, last_text=text,
+            )
+            bid = await self._speak_bus.tick(ctx)
+        except Exception:
+            logger.exception("[SpeakBus] post_utterance tick raised")
+            return
+        if bid is None:
+            return
+        ts = time.time()
+        try:
+            await bid.handler()
+        except Exception:
+            logger.exception(f"[SpeakBus] post_utterance handler {bid.agent_name} raised")
+        asyncio.create_task(self._record_speak_outcome_after(
+            ts=ts, trigger=ctx.trigger, winner=bid.agent_name,
+            confidence=bid.confidence, reason=bid.reason,
+            bid_count=len(self._speak_bus.agents()),
+            silence_seconds=ctx.silence_seconds,
+            present_speakers=tuple(ctx.present_speakers),
+        ))
 
     async def _record_speak_outcome_after(self, *, ts: float, trigger: str, winner: str,
                                           confidence: float, reason: str, bid_count: int,
