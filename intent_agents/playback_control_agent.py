@@ -29,7 +29,18 @@ _ACK_TEXT = {
 }
 
 # 連續 skip 自動加黑名單 threshold (D3 A 方案)
+# 註：「skip → blacklist」是 antipattern（見 memory: skip_signal_attribution.md）；
+# 未來重構時把訊號送回 recommender，不是 hard ban 歌曲。
 SKIP_BLACKLIST_THRESHOLD = 2  # 不同 speaker 數
+
+# 議題 C (2026-05-27)：skip / stop / pause keyword 出現在 modal/question 之後 → chat。
+# Filter 只看 prefix，避免 L19/L32 類 FP。
+_CHAT_PREFIX_MARKERS = (
+    # 推測 / 模糊（modal）
+    "應該", "可能", "也許", "大概", "估計", "算了",
+    # 疑問 / 反問
+    "為什麼", "怎麼", "是不是", "有沒有", "該不該", "幹嘛",
+)
 
 
 class PlaybackControlAgent(DeclarativeIntentAgent):
@@ -76,6 +87,30 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
         if not getattr(self.ctrl, "stream_mode", False):
             return "stream_not_active"
         return None
+
+    def post_match_filter(self, schema, slots, ctx) -> bool:
+        """議題 C (2026-05-27)：chat marker 出現在 keyword 之前 → 拒絕。
+
+        L19「應該下一首就是」/ L32「為什麼你下一首」這類 modal/question prefix
+        的 case 被誤判 control:skip 0.95。filter 只看 prefix（matched 之前的子字串），
+        避免複雜化；後續 J2 chat veto 接 prefix-less 的 case（如「下一首為什麼難聽」）。
+        """
+        text = ctx.query or ""
+        # base class 沒把 match span 傳進來，這裡重跑 regex 找 keyword 起始位置
+        import re
+        pos = -1
+        for pat in schema.patterns:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                pos = m.start()
+                break
+        if pos <= 0:
+            return True  # keyword 在開頭或找不到 → 不擋
+        prefix = text[:pos]
+        for marker in _CHAT_PREFIX_MARKERS:
+            if marker in prefix:
+                return False
+        return True
 
     def make_handler(
         self, schema: IntentSchema, slots: dict, ctx: IntentContext
