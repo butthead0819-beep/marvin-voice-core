@@ -14,6 +14,7 @@ Design notes:
 """
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from dataclasses import asdict, dataclass, field
@@ -23,6 +24,30 @@ from typing import Any, Iterable
 logger = logging.getLogger(__name__)
 
 DEFAULT_LOG_PATH = Path("records/agent_recommendations.jsonl")
+
+# Asia/Taipei timezone — bot deploys in 台灣，所有 time bucketing 用本地時間。
+_TPE_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def time_of_day_bucket(unix_ts: float) -> str:
+    """把 unix ts 轉成 morning / afternoon / evening / night 四 bucket。
+
+    邊界（左閉右開，UTC+8 本地時）：
+      05:00 ≤ morning   < 11:00
+      11:00 ≤ afternoon < 17:00
+      17:00 ≤ evening   < 22:00
+      22:00 ≤ night     < 05:00 (跨日)
+
+    給離線 analyzer 分析「不同時段推薦的反應 pattern」用。
+    """
+    hour = datetime.datetime.fromtimestamp(unix_ts, tz=_TPE_TZ).hour
+    if 5 <= hour < 11:
+        return "morning"
+    if 11 <= hour < 17:
+        return "afternoon"
+    if 17 <= hour < 22:
+        return "evening"
+    return "night"
 
 
 @dataclass(frozen=True)

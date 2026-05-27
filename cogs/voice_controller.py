@@ -82,7 +82,11 @@ from intent_agents.lyrics_seek import find_lyrics_timestamp
 # 避免 macOS python 環境冷啟動時的 import 鏈死結 (2026-05-23 incident)
 from intent_agents.semantic_resolver import SemanticResolver
 from intent_agents.profile_builder import SpeakerProfileBuilder
-from intent_agents.recommendation import Recommendation, append_recommendation
+from intent_agents.recommendation import (
+    Recommendation,
+    append_recommendation,
+    time_of_day_bucket,
+)
 from llm_pool import build_tiered_router
 from music_recommender import build_recommendation_pool, is_already_recommended, pick_candidates
 from taste_extractor import extract_taste_signals
@@ -93,13 +97,22 @@ logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 log
 _GLOBAL_PROCESSED_SEGMENTS = {} # segment_id -> timestamp
 
 
-def build_curation_recommendation(slot, ctx, resolved, now):
+def build_curation_recommendation(slot, ctx, resolved, now, *,
+                                   channel_state_extras=None):
     """把一次成功的 CURATION/DIRECTIONAL resolve 包成 Recommendation（offline feedback 用）。
 
     純函式（不碰 IO），方便單測。selected 取 resolver 的乾淨曲名，缺則退回 rewritten_query。
     feedback_window_s=300 與 records 慣例一致（music 推薦看 5 分鐘內反應）。
+
+    channel_state_extras（2026-05-28 Phase 1 豐富化）：caller 灌入 controller scope
+    的 rich context（recent_history_titles / queue_depth / vibe_mood / ...）。
+    Essential 欄位（depth / time_of_day）由本函數填，extras 無法覆寫。
     """
     trigger = "curation" if slot == "song_choice" else "directional"
+    channel_state = dict(channel_state_extras or {})
+    # essential 後寫，蓋掉 caller 誤傳同名 key
+    channel_state["depth"] = resolved.depth
+    channel_state["time_of_day"] = time_of_day_bucket(now)
     return Recommendation(
         ts=now,
         agent="music",
@@ -109,19 +122,30 @@ def build_curation_recommendation(slot, ctx, resolved, now):
         reason_internal=f"{trigger}:{ctx.query}->{resolved.rewritten_query}",
         explanation_uttered=resolved.quip,
         feedback_window_s=300,
-        channel_state={"depth": resolved.depth},
+        channel_state=channel_state,
     )
 
 
 def build_autopilot_recommendation(
     *, speaker, title, lane, mode, anchor_title, blurb, now,
+    channel_state_extras=None,
 ):
     """把佇列空時的 autopilot 推薦包成 Recommendation（offline feedback 用）。
 
     純函式（不碰 IO）。selected 用 yt-dlp 解析回來的 raw title（與 ring 寫入一致）；
     reason_internal 帶 lane/mode/anchor 供 analyzer 抽特徵。feedback_window_s=300
     與 curation 慣例一致（音樂推薦看 5 分鐘內反應）。
+
+    channel_state_extras（2026-05-28 Phase 1 豐富化）：caller 灌入 controller scope
+    的 rich context（vibe_mood / queue_position / round_first / recent_history_titles
+    / queue_depth / ...）。Essential 欄位（lane / mode / time_of_day）由本函數填，
+    extras 無法覆寫。
     """
+    channel_state = dict(channel_state_extras or {})
+    # essential 後寫，蓋掉 caller 誤傳同名 key
+    channel_state["lane"] = lane
+    channel_state["mode"] = mode
+    channel_state["time_of_day"] = time_of_day_bucket(now)
     return Recommendation(
         ts=now,
         agent="music",
@@ -131,7 +155,7 @@ def build_autopilot_recommendation(
         reason_internal=f"queue_empty:{lane}:{mode}:{anchor_title}",
         explanation_uttered=blurb,
         feedback_window_s=300,
-        channel_state={"lane": lane, "mode": mode},
+        channel_state=channel_state,
     )
 
 
@@ -605,7 +629,10 @@ class VoiceController(commands.Cog):
             resolver=_curation_resolver,
             profile_provider=self._profile_builder.build,
             recommendation_sink=lambda slot, c, r: append_recommendation(
-                build_curation_recommendation(slot, c, r, time.time())
+                build_curation_recommendation(
+                    slot, c, r, time.time(),
+                    channel_state_extras=self._build_recommendation_extras(),
+                )
             ),
             # song_choice 短路：yt-dlp 找得到原 query 就跳過 LLM curation，避免「播放七里香」
             # 被 LLM 當歌手解析。找不到才走 resolver curate by artist。
@@ -4271,6 +4298,29 @@ class VoiceController(commands.Cog):
                 t = t[:-len(suffix)]
         return t.strip()
 
+    def _build_recommendation_extras(self) -> dict:
+        """Phase 1 豐富化（2026-05-28）：給 recommendation log 灌 controller scope 的
+        rich context。read-only / sync — 沒有 LLM call，不阻塞 bus dispatch。
+
+        - vibe_mood: 從 MoodSensor cache 讀（無 cache 回 None；不強制 refresh 避免 LLM）
+        - queue_depth: stream_queue 長度
+        - recent_history_titles: 最近 3 首歷史（dict 中的 title 欄位）
+        """
+        extras: dict = {
+            "queue_depth": len(self.stream_queue),
+            "recent_history_titles": [
+                s.get("title", "") for s in self.stream_history[-3:]
+                if isinstance(s, dict)
+            ],
+        }
+        # MoodSensor 有 5min cache，sync 讀 _cache attribute 安全（永不寫）
+        ms = getattr(self, "_mood_sensor", None)
+        if ms is not None:
+            cached_vibe = getattr(ms, "_cache", None)
+            if cached_vibe is not None:
+                extras["vibe_mood"] = getattr(cached_vibe, "mood", None)
+        return extras
+
     async def _yt_dlp_direct_probe(self, query: str) -> dict | None:
         """song_choice curation 短路探針：剝命令詞後丟 yt-dlp 直查。
 
@@ -6714,9 +6764,24 @@ class VoiceController(commands.Cog):
                 blurb = self._recommend_blurb(cand, info['title']) + vibe_tag
                 await self.active_text_channel.send(blurb)
             # offline feedback log：每首 autopilot 推薦都進 jsonl，明天 analyze
+            # 2026-05-28 Phase 1：豐富 channel_state — vibe / queue position / history /
+            # depth，給 analyzer 抽「什麼樣的推薦會被 skip」pattern。
+            _recent_titles = [
+                s.get("title", "") for s in self.stream_history[-3:] if isinstance(s, dict)
+            ]
             append_recommendation(build_autopilot_recommendation(
                 speaker=username, title=info['title'], lane=cand.lane, mode=cand.mode,
                 anchor_title=cand.anchor_title, blurb=blurb, now=time.time(),
+                channel_state_extras={
+                    "vibe_mood": vibe_label.mood if vibe_label else None,
+                    "vibe_engagement": (
+                        round(vibe_label.engagement, 2) if vibe_label else None
+                    ),
+                    "queue_position": enqueued,         # round 內第幾首（0-index）
+                    "round_first": info['_round_first'],
+                    "queue_depth": len(self.stream_queue),
+                    "recent_history_titles": _recent_titles,
+                },
             ))
 
             # 對新推薦的歌也啟動預取

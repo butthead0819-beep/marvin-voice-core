@@ -54,3 +54,61 @@ def test_selected_falls_back_to_rewritten_when_empty():
     rec = build_curation_recommendation("song_choice", ctx, resolved, now=1.0)
 
     assert rec.selected == "播放周杰倫的夜曲"
+
+
+# ── Phase 1 豐富化：time_of_day 自動加入 + channel_state_extras kwarg ──────
+
+
+def test_curation_recommendation_adds_time_of_day_automatically():
+    """build 函數應該自動把 time_of_day 加入 channel_state，caller 不用手動算。"""
+    import datetime
+    tpe = datetime.timezone(datetime.timedelta(hours=8))
+    # 2026-05-28 08:00 UTC+8 → morning
+    ts_morning = datetime.datetime(2026, 5, 28, 8, 0, tzinfo=tpe).timestamp()
+
+    ctx = _ctx("播放周杰倫")
+    resolved = ResolvedIntent(rewritten_query="播放周杰倫的夜曲", depth=1, selected="夜曲")
+    rec = build_curation_recommendation("song_choice", ctx, resolved, now=ts_morning)
+
+    assert rec.channel_state["time_of_day"] == "morning"
+
+
+def test_curation_recommendation_accepts_channel_state_extras():
+    """caller 可以傳 extras 把 controller scope 的 rich context 塞進來。"""
+    ctx = _ctx("播放周杰倫")
+    resolved = ResolvedIntent(rewritten_query="播放周杰倫的夜曲", depth=1, selected="夜曲")
+    rec = build_curation_recommendation(
+        "song_choice", ctx, resolved, now=1.0,
+        channel_state_extras={
+            "recent_history_titles": ["稻香", "晴天"],
+            "queue_depth": 2,
+        },
+    )
+
+    assert rec.channel_state["depth"] == 1  # 既有欄位保留
+    assert rec.channel_state["recent_history_titles"] == ["稻香", "晴天"]
+    assert rec.channel_state["queue_depth"] == 2
+    # time_of_day 也要存在
+    assert "time_of_day" in rec.channel_state
+
+
+def test_curation_extras_does_not_override_essential_fields():
+    """extras 不該被允許覆寫 build 自動填的 essential 欄位（depth / time_of_day）。
+    避免 caller 傳錯把推薦邏輯資料污染。"""
+    ctx = _ctx("播放周杰倫")
+    resolved = ResolvedIntent(rewritten_query="x", depth=5, selected="夜曲")
+    rec = build_curation_recommendation(
+        "song_choice", ctx, resolved, now=1.0,
+        channel_state_extras={"depth": 99, "time_of_day": "garbage"},
+    )
+    assert rec.channel_state["depth"] == 5  # 從 resolved 來，不被覆寫
+    assert rec.channel_state["time_of_day"] != "garbage"
+
+
+def test_curation_extras_none_works():
+    """不傳 extras 也行，向後相容。"""
+    ctx = _ctx("播放周杰倫")
+    resolved = ResolvedIntent(rewritten_query="x", depth=1, selected="夜曲")
+    rec = build_curation_recommendation("song_choice", ctx, resolved, now=1.0,
+                                         channel_state_extras=None)
+    assert rec.channel_state["depth"] == 1
