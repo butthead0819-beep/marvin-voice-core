@@ -592,6 +592,8 @@ class VoiceController(commands.Cog):
         if _router is not None and getattr(_router, "_stt_router", None) is None:
             _router._stt_router = _tier_router
         _curation_resolver = SemanticResolver(router=_tier_router)
+        self._shared_tier_router = _tier_router  # for shadow J2 chat veto (2026-05-27)
+        self._chat_classifier_cached = None
         self._profile_builder = SpeakerProfileBuilder(
             suki=getattr(self.bot, "suki_memory", None),
             music=getattr(self.bot, "music_memory", None),
@@ -3842,13 +3844,21 @@ class VoiceController(commands.Cog):
 
         # 🧪 [Shadow Judges Race] fire-and-forget；收 records/judge_outcomes.jsonl 量
         # J1 hit rate / 各 judge latency，不影響本 dispatch。失敗全吞（見 run_shadow_race）。
+        # 2026-05-27: MARVIN_SHADOW_J2_ENABLED=true 啟動 J2 chat veto（Groq 8B）。
         from intent_judges.voice_integration import new_utterance_id, run_shadow_race
+        _j2_call = None
+        if os.getenv("MARVIN_SHADOW_J2_ENABLED", "false").lower() == "true":
+            if self._chat_classifier_cached is None and self._shared_tier_router is not None:
+                from intent_judges.groq_chat_classifier_adapter import make_groq_chat_classifier
+                self._chat_classifier_cached = make_groq_chat_classifier(self._shared_tier_router)
+            _j2_call = self._chat_classifier_cached
         asyncio.create_task(run_shadow_race(
             ctx=_bus_ctx,
             raw_text=original_raw or query,
             cleaned_text=query,
             agents=list(self._intent_bus.agents),
             utterance_id=new_utterance_id(speaker),
+            chat_classifier_call=_j2_call,
         ))
 
         _winner = await self._intent_bus.dispatch(_bus_ctx)

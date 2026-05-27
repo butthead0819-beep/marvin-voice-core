@@ -3,11 +3,12 @@
 voice_controller 只需呼叫 `run_shadow_race(...)` 一次（fire-and-forget），
 不影響現行 intent_bus dispatch；判斷與資料蒐集分離。
 
-Shadow 設計：
+Shadow 設計（2026-05-27 演化）：
   - J1 跑 raw STT regex（純 sync，幾乎免費）
+  - J2 chat veto（optional，傳 chat_classifier_call 才啟）：J1 fast-path 命中
+    veto_prone_intents 時打 Groq 8B 確認，is_chat≥0.80 → 降級 Bid
   - J3 用 **precomputed cleaner**：cleaner_call 直接回傳 caller 已 clean 的字串，
     零額外 LLM cost
-  - J2（small LLM rewriter）暫不啟，收夠 J1 hit rate 數據後再加
 
 所有 race / 寫檔失敗都被吞 —— shadow 絕不能影響語音主路徑。
 """
@@ -20,7 +21,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from intent_bus import IntentAgent, IntentContext
+from intent_judges.chat_classifier_judge import ChatClassifierCall
 from intent_judges.cleaner_judge import cleaner_judge
+from intent_judges.j1_with_veto import j1_with_veto
 from intent_judges.race import JudgeSpec, race
 from intent_judges.regex_judge import regex_judge
 from intent_judges.telemetry import write_race_outcome
@@ -35,6 +38,11 @@ _J3_THRESHOLD = 0.30  # 對齊 IntentBus.MIN_CONFIDENCE
 # guard 是 anti-pattern detector（wake_loop / empty_after_strip 等），不是正向 intent；
 # 過 threshold 也不該觸發 fast-path。詳見 records/judge_outcomes_analysis_2026-05-27.md。
 _FAST_PATH_EXCLUDES = frozenset({"guard"})
+
+# J2 chat veto 只檢查歷史 FP 大戶 (5/27 分析 Type 3)，其他 intent 直接 fast-path 省 LLM。
+_VETO_PRONE_INTENTS = frozenset({"music", "playback_control"})
+_VETO_THRESHOLD = 0.80
+_VETO_TIMEOUT_S = 0.5
 
 _uid_counter = itertools.count()
 
@@ -54,6 +62,7 @@ def make_shadow_specs(
     *,
     j1_threshold: float = _J1_THRESHOLD,
     j3_threshold: float = _J3_THRESHOLD,
+    chat_classifier_call: ChatClassifierCall | None = None,
 ) -> list[JudgeSpec]:
     """產生 [J1 regex on raw, J3 cleaner-precomputed]。
 
@@ -62,10 +71,23 @@ def make_shadow_specs(
     重寫成 raw-ctx —— J1 才真的跑在 raw STT 上，J3 的 reason log 也對齊。
 
     J3 的 cleaner_call 是 closure：直接回傳 caller 已 clean 過的 cleaned_text，零 LLM。
+
+    chat_classifier_call 非 None → J1 改走 j1_with_veto wrapper（J2 chat veto）：
+      - J1 命中 veto_prone_intents (music / playback_control) + confidence ≥ 0.85
+        才打 Groq 8B；其他 intent 不打，保持 fast-path 零延遲。
     """
     async def _j1(ctx: IntentContext):
         raw_ctx = replace(ctx, query=raw_text, raw_text=raw_text)
-        return regex_judge(raw_ctx, agents)
+        if chat_classifier_call is None:
+            return regex_judge(raw_ctx, agents)
+        return await j1_with_veto(
+            raw_ctx, agents,
+            chat_classifier_call=chat_classifier_call,
+            veto_prone_intents=_VETO_PRONE_INTENTS,
+            fast_path_threshold=j1_threshold,
+            veto_threshold=_VETO_THRESHOLD,
+            veto_timeout_s=_VETO_TIMEOUT_S,
+        )
 
     async def _precomputed_cleaner(_ctx: IntentContext) -> str:
         return cleaned_text
@@ -88,14 +110,20 @@ async def run_shadow_race(
     agents: list[IntentAgent],
     utterance_id: str,
     outcome_path: Path = DEFAULT_OUTCOME_PATH,
+    chat_classifier_call: ChatClassifierCall | None = None,
 ) -> None:
     """跑 shadow race + 寫 outcome jsonl，任何例外都吞掉。
 
     從 voice_controller 用 `asyncio.create_task(...)` fire-and-forget；不影響
     現行 dispatch 路徑。
+
+    chat_classifier_call 非 None → J1 啟用 J2 chat veto（細節見 make_shadow_specs）。
     """
     try:
-        specs = make_shadow_specs(raw_text, cleaned_text, agents)
+        specs = make_shadow_specs(
+            raw_text, cleaned_text, agents,
+            chat_classifier_call=chat_classifier_call,
+        )
         result = await race(ctx, specs, fast_path_excludes=_FAST_PATH_EXCLUDES)
     except Exception:
         logger.exception("[shadow-race] race coordinator failed; suppressed")
