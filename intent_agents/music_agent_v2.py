@@ -46,10 +46,20 @@ _DIRECTIONAL_MODIFIERS = ("符合.*?的", "適合.*?的", "像.*?那種")
 # resolver 選真歌。封閉集合（不是無止境調 pattern）。歌詞/歌手刻意排除（語意不同）。
 _VAGUE_GENRE_WORDS = ("歌曲", "音樂", "ost", "mv", "歌", "曲")
 
-# UI/system words that should NOT trigger weak_play (same blocklist as v1)
+# UI/system words that should NOT trigger weak_play (same blocklist as v1).
+# Exact-match against the start of target slot.
 _NON_MUSIC_TARGETS = frozenset([
     "控制", "清單", "列表", "設定", "選項", "畫面", "頁面", "音量", "狀態",
     "這個", "那個", "它", "他", "她", "東西", "什麼",
+])
+
+# 議題 D (2026-05-27)：非音樂名詞「後綴」黑名單。L48「幫我找...線上網站」走
+# weak_play_specific（kw=幫我找，song=線上網站），既有 exact-match 沒擋。改用
+# endswith 比對：song 結尾命中任一詞 → 拒絕該 schema。
+# 邊界：詞在歌名中段（如「網站之歌」結尾是「之歌」）不會誤殺。
+_NON_MUSIC_NOUN_SUFFIXES = frozenset([
+    "網站", "影片", "文章", "圖片", "連結", "新聞", "資料",
+    "帳號", "密碼", "信件", "郵件", "訊息",
 ])
 
 # Hallucination guard params
@@ -182,13 +192,24 @@ class MusicAgentV2(DeclarativeIntentAgent):
             if not is_short_skip_command(ctx.query or "", MUSIC_SKIP_KW):
                 return False
             return True
+        # 議題 D (2026-05-27)：weak_play_specific 的 song slot 也要過非音樂名詞 blocklist
+        # （之前漏擋導致 L48「幫我找...線上網站」誤命中 0.95）。
+        if schema.name == "weak_play_specific":
+            song = slots.get("song", "").strip("，,、！!？?。. ")[:20]
+            for suffix in _NON_MUSIC_NOUN_SUFFIXES:
+                if song.endswith(suffix):
+                    return False
+            return True
         # artist_only / long_string 都吃 kw 後的 target → 同樣過 UI 黑名單
         if schema.name not in ("weak_play_long_string", "weak_play_artist_only"):
             return True
-        target = slots.get("target", "").strip("，,、！!？?。. ")
-        # v1 也只看 target 開頭 20 字
-        if target[:20] in _NON_MUSIC_TARGETS:
+        target = slots.get("target", "").strip("，,、！!？?。. ")[:20]
+        if target in _NON_MUSIC_TARGETS:
             return False
+        # 後綴 blocklist 也套用（artist_only / long_string 的 target 也可能是非音樂名詞）
+        for suffix in _NON_MUSIC_NOUN_SUFFIXES:
+            if target.endswith(suffix):
+                return False
         return True
 
     # ── Handler wiring ───────────────────────────────────────────────────────
