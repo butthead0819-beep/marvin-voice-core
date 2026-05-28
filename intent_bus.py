@@ -77,7 +77,7 @@ class IntentBus:
 
     def __init__(self, agents: list[IntentAgent], *,
                  resolver=None, profile_provider=None, llm_fallback=None,
-                 recommendation_sink=None):
+                 recommendation_sink=None, direct_probe=None):
         self.agents = list(agents)
         self.logger = logger
         # vector intent 接線（全 optional，現有 prod bus 只傳 agents 不受影響）：
@@ -86,10 +86,14 @@ class IntentBus:
         # - llm_fallback: async (ctx) → ...，resolver 放棄時的 Marvin 兜底
         # - recommendation_sink: (slot, ctx, resolved) → ...，resolve 成功時記推薦事件
         #   （offline feedback batch 用）。同步 callback，bus try/except 包好不斷 wake path。
+        # - direct_probe: async (query) → truthy/falsy，song_choice 缺槽時的 yt-dlp 直查捷徑。
+        #   命中（truthy）就跳過 resolver 直接 winner.handler()；falsy / 例外 → 走原 resolver 路徑。
+        #   只對 song_choice 生效——directional_resolution 是 user 明確要 LLM 解析，不該被短路。
         self.resolver = resolver
         self.profile_provider = profile_provider
         self.llm_fallback = llm_fallback
         self.recommendation_sink = recommendation_sink
+        self.direct_probe = direct_probe
         # build_intent_manifest() 的 per-day cache；intent gap classifier 用。
         # invalidate key = ISO date string；agent list 一天內不變更（service restart 才會）。
         self._manifest_cache: dict | None = None
@@ -201,6 +205,23 @@ class IntentBus:
         # 不認得的 slot（如 song_title）或無 missing → 走原 handler（保留 _ask / 直接播）。
         slot = winner.missing_slots[0] if winner.missing_slots else None
         if slot and self.resolver is not None and self.resolver.handles(slot):
+            # song_choice 短路：yt-dlp 直查命中就跳過 curation，避免「播放七里香」被 LLM
+            # 誤當歌手解析。directional_resolution（抽象修飾）保留原路徑，不短路。
+            if slot == "song_choice" and self.direct_probe is not None:
+                try:
+                    hit = await self.direct_probe(ctx.query)
+                except Exception as exc:
+                    self.logger.warning(
+                        f"⚠️ [IntentBus] direct_probe 炸了，fall through 到 resolver: {exc}"
+                    )
+                    hit = None
+                if hit:
+                    self.logger.info(
+                        f"📡 [IntentBus] direct_probe hit '{ctx.query[:30]}' → "
+                        f"跳過 curation，直接 handler"
+                    )
+                    await winner.handler()
+                    return winner
             return await self._resolve_and_redispatch(slot, ctx)
 
         await winner.handler()
