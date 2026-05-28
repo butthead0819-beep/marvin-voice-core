@@ -86,7 +86,7 @@ def extract_schemas_from_class(
 def make_augment_prompt(schema: SchemaInfo) -> str:
     """生 user prompt 給 cheap LLM；要求 JSON 含 paraphrases + suggested_regex。"""
     existing = "\n".join(f"  - {p}" for p in schema.patterns) or "  - (none)"
-    return f"""這是 Discord 語音助理的 intent 定義，請幫忙生成中文口語表達 paraphrases。
+    return f"""這是 Discord 語音助理的 intent 定義，請幫忙生成「**台灣口語繁體中文**」paraphrases。
 
 Agent: {schema.agent_name}
 Intent: {schema.intent_name}
@@ -94,9 +94,14 @@ Reason template: {schema.reason_template}
 現有 regex pattern:
 {existing}
 
-請：
-1. 生成 **10 個** 中文使用者可能用來觸發這個 intent 的口語表達（含命令式 / 委婉 / 短句）
-2. 涵蓋現有 pattern 沒抓到的講法，例如同義詞、語氣詞、簡寫
+語言規則（強制）：
+- 字形：繁體（影片/品質/網路），禁簡體（视频/质量/网络）— 任何簡體字會直接被丟棄
+- 用詞：台灣口語（弄/怎樣/可不可以），禁大陸用語（搞/咋了/行不行）
+- STT 永遠輸出繁體，混簡體 pattern 等於白寫
+
+任務：
+1. 生成 **10 個** 台灣使用者可能用來觸發這個 intent 的口語表達（含命令式 / 委婉 / 短句）
+2. 涵蓋現有 pattern 沒抓到的講法（同義詞、語氣詞、簡寫）
 3. 不要重複現有 pattern 已涵蓋的字
 4. 不要包含「歌名」「人名」等變數槽位（用佔位 {{slot}} 代替）
 5. 提出一條 suggested_regex（OR-pattern，能命中你生成的 paraphrases）

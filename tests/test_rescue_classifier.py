@@ -82,6 +82,20 @@ async def test_classifier_passes_user_text_as_prompt():
     assert router.calls[0]["prompt"] == "這首太吵了"
 
 
+@pytest.mark.asyncio
+async def test_system_prompt_enforces_taiwan_traditional_chinese():
+    """強制台灣繁中：cheap LLM 預設會吐簡體 / 大陸用語，rewritten_query 進 bus
+    後撞不到 STT 永遠繁體的 query → rescue 變死規則。Pin 在 system prompt 內。"""
+    router = _FakeRouter(response=json.dumps({"rewritten_query": "x", "confidence": 0.9}))
+    classify = make_rescue_classifier(router)
+    await classify("anything")
+
+    system = router.calls[0]["system"]
+    assert "台灣" in system
+    assert "繁體" in system
+    assert "簡體" in system  # negative example 必須出現給 LLM 對照
+
+
 # ── 容錯：各種上游失敗都不該炸 ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio

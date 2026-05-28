@@ -29,13 +29,18 @@ _SYSTEM_PROMPT = """你是語音助理的意圖改寫器。使用者的原始語
 
 回傳嚴格 JSON：
 {
-  "rewritten_query": "<簡短中文命令句，1-10 字最佳>",
+  "rewritten_query": "<簡短台灣口語繁體中文命令句，1-10 字最佳>",
   "pragmatic_signal": "positive" | "negative" | "neutral" | null,
   "pragmatic_target": "current_song" | "last_reply" | "system" | null,
   "confidence": <0.0-1.0>
 }
 
-規則：
+語言規則（強制）：
+- rewritten_query 必須是「**台灣口語繁體中文**」
+- 字形：繁體（影片/品質/網路），禁簡體（视频/质量/网络）— 任何簡體字直接降 confidence
+- 用詞：台灣口語（弄/怎樣/可不可以），禁大陸用語（搞/咋了/行不行）
+
+意圖規則：
 - rewritten_query 是使用者「真正想觸發的動作」最簡形式
   例：「希望下次播放好聽的歌」→ "下一首"
   例：「能不能小聲一點」→ "音量小一點"

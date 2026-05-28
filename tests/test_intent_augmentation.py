@@ -130,6 +130,16 @@ def test_make_augment_prompt_asks_for_json_with_required_keys():
     assert "JSON" in prompt or "json" in prompt
 
 
+def test_make_augment_prompt_enforces_taiwan_traditional_chinese():
+    """強制台灣繁中：cheap LLM 預設會吐簡體 / 大陸用語，污染 regex pattern → STT 抓不到。
+    Pin 在 prompt 內，禁止未來改 prompt 時把這條紀律拿掉。"""
+    schema = SchemaInfo("a", "b", 0.9, ("x",), "{name}")
+    prompt = make_augment_prompt(schema)
+    assert "台灣" in prompt
+    assert "繁體" in prompt
+    assert "簡體" in prompt  # negative example 必須出現給 LLM 對照
+
+
 # ── 解 LLM 回應 ──────────────────────────────────────────────────────────────
 
 def test_parse_response_extracts_paraphrases_and_regex():
