@@ -1,4 +1,5 @@
 import asyncio
+import re
 import time
 import random
 import os
@@ -16,6 +17,28 @@ from personality_config import (
 from google.genai import types
 
 logger = logging.getLogger(__name__)
+
+
+# rephrase_proactive_script 兜底 — LLM 把 task metadata 當回應 echo（5/27 6 筆嚴重 reaction）。
+# Prefix「【改寫腳本】[：]?\n*」+ 末尾「(注意/留意：規則...)」括號註記都要 strip。
+_REPHRASE_PREFIX_RE = re.compile(r"^【改寫腳本】[：:]?\s*", re.UNICODE)
+_REPHRASE_TRAILING_META_RE = re.compile(
+    r"\s*[(（](?:注意|留意)[：:][^()（）]*[)）]\s*$",
+    re.UNICODE,
+)
+
+
+def _strip_rephraser_metadata(text: str) -> str:
+    """剝掉 rephrase_proactive_script LLM 輸出常見的 metadata wrapping。
+
+    保守原則：只 strip 字面 prefix「【改寫腳本】」+ 末尾「(注意/留意：...)」格式註記；
+    馬文台詞本身的合法 inline 括號（如「（嘆氣）」）一律不動。
+    """
+    if not text:
+        return text
+    cleaned = _REPHRASE_PREFIX_RE.sub("", text, count=1)
+    cleaned = _REPHRASE_TRAILING_META_RE.sub("", cleaned, count=1)
+    return cleaned.strip()
 
 
 class GeminiRouterContentMixin:
@@ -481,19 +504,37 @@ class GeminiRouterContentMixin:
             return "哈，你們聊得真開心啊（毫無靈魂的稱讚）。"
 
     async def rephrase_proactive_script(self, raw_script: str, target_players: list) -> str:
-        """根據現場玩家動態改寫主動發起的話題腳本 (Operation Dynamic Scripting)"""
+        """根據現場玩家動態改寫主動發起的話題腳本 (Operation Dynamic Scripting)。
+
+        5/27 6 筆嚴重 reaction：LLM 把 task metadata 當對玩家的話 echo（「【改寫腳本】」
+        prefix + 「(留意：...)」trailing 規則註記）。修法：prompt 強調直出 + 輸出再
+        過 _strip_rephraser_metadata 兜底。
+        """
         system_prompt = self.prompt_manager.get_instruction(
-            "proactive_rephraser", 
-            vision_enabled=self.vision_enabled, 
-            dna=self.dna, 
-            speaker=target_players, 
+            "proactive_rephraser",
+            vision_enabled=self.vision_enabled,
+            dna=self.dna,
+            speaker=target_players,
             memory_manager=self.memory
         )
-        
-        user_prompt = f"【原始腳本】：{raw_script}\n\n請根據以上指令改寫腳本，使其聽起來更自然、更馬文。"
-        
+
+        user_prompt = (
+            f"原始腳本：\n{raw_script}\n\n"
+            f"請輸出改寫後的台詞本身（直接給玩家聽的話），"
+            f"不要加任何標籤、prefix（如「【改寫腳本】」）或括號內的規則註記。"
+        )
+
         try:
-            return await self._call_llm(system_prompt, user_prompt, speaker=target_players[0] if target_players else None, tier="simple")
+            raw = await self._call_llm(
+                system_prompt, user_prompt,
+                speaker=target_players[0] if target_players else None,
+                tier="simple",
+            )
+            cleaned = _strip_rephraser_metadata(raw or "")
+            if not cleaned:
+                logger.warning("⚠️ [Proactive Rephrase] LLM 整段都是 metadata，降級用原 raw_script")
+                return raw_script
+            return cleaned
         except Exception as e:
             logger.error(f"❌ [Proactive Rephrase] 改寫失敗: {e}")
             return raw_script # 降級：使用原始腳本
