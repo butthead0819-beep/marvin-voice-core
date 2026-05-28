@@ -65,6 +65,7 @@ from intent_agents.constants import (
     WEAK_PLAY_KW as _WEAK_PLAY_KW_SRC,
 )
 from intent_bus import IntentBus, IntentContext
+from intent_gap import GapLogger, handle_intent_gap, make_groq_gap_classifier
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
@@ -618,6 +619,11 @@ class VoiceController(commands.Cog):
         _curation_resolver = SemanticResolver(router=_tier_router)
         self._shared_tier_router = _tier_router  # for shadow J2 chat veto (2026-05-27)
         self._chat_classifier_cached = None
+        # Intent gap detection (Phase A)：has_intent_signal=true 但 bus / fallback chain
+        # 都沒接 → cheap classifier 判讀 gap，寫 records/agent_gaps.jsonl + 5min 內非 UNKNOWN
+        # 給模板 ack。UNKNOWN → fall through 到 Marvin LLM 主路徑。
+        self._gap_classifier_cached = None  # lazy init (對齊 chat_classifier_cached 模式)
+        self._gap_logger = GapLogger("records/agent_gaps.jsonl")
         self._profile_builder = SpeakerProfileBuilder(
             suki=getattr(self.bot, "suki_memory", None),
             music=getattr(self.bot, "music_memory", None),
@@ -3934,6 +3940,32 @@ class VoiceController(commands.Cog):
             self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
             self._cancel_stale_prefetch(speaker)
             return
+
+        # 🪦 [Intent Gap Detection] bus / music-drop / imitate / nemoclaw 全沒接 +
+        # has_intent_signal=true → 用 cheap classifier 判讀「有 intent 但沒 agent」，
+        # 寫 records/agent_gaps.jsonl；intent_type != UNKNOWN 給模板 ack 並 skip Marvin
+        # （避免 Marvin 對沒實作的功能假承諾）；UNKNOWN → fall through Marvin 兜底閒聊。
+        if self._gap_classifier_cached is None and self._shared_tier_router is not None:
+            self._gap_classifier_cached = make_groq_gap_classifier(self._shared_tier_router)
+        if self._gap_classifier_cached is not None:
+            try:
+                gap_rec = await handle_intent_gap(
+                    _bus_ctx,
+                    utterance_id=new_utterance_id(speaker),
+                    classifier=self._gap_classifier_cached,
+                    gap_logger=self._gap_logger,
+                    manifest=self._intent_bus.build_intent_manifest(),
+                    tts_call=self.play_tts,
+                )
+                if gap_rec.intent_type != "UNKNOWN":
+                    self.stt_logger.info(
+                        f"[IntentGap] [{speaker}] type={gap_rec.intent_type} "
+                        f"nearest={gap_rec.nearest_agent} acked={gap_rec.acknowledged} → skip Marvin"
+                    )
+                    self._cancel_stale_prefetch(speaker)
+                    return
+            except Exception as _gap_exc:
+                logger.warning(f"⚠️ [IntentGap] gap path 炸了，fall through 到 Marvin: {_gap_exc}")
 
         online_members = self.get_online_members()
 

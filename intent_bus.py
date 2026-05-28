@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Awaitable, Callable, Protocol
 
 # 用 cogs.voice_controller 的子 logger，繼承 main_discord.py 設的 INFO level；
@@ -89,6 +90,52 @@ class IntentBus:
         self.profile_provider = profile_provider
         self.llm_fallback = llm_fallback
         self.recommendation_sink = recommendation_sink
+        # build_intent_manifest() 的 per-day cache；intent gap classifier 用。
+        # invalidate key = ISO date string；agent list 一天內不變更（service restart 才會）。
+        self._manifest_cache: dict | None = None
+
+    def build_intent_manifest(self, today: str | None = None) -> dict:
+        """蒐集所有 DeclarativeIntentAgent 的能力地圖，給 gap classifier 看。
+
+        排除規則（不入 manifest）：
+        - 沒 declare_intents() method（NemoClawAgent 等裸 class）
+        - declare_intents() 回 []（state-checking agent，如 busted / turtle）
+        - declare_intents() 拋例外（對齊 bus dispatch：一個炸不影響其他）
+
+        Cache：同 ISO date 重用同一 dict（每日 invalidate）。
+        """
+        today = today or date.today().isoformat()
+        if self._manifest_cache is not None and self._manifest_cache["version"] == today:
+            return self._manifest_cache
+
+        agents_entries: list[dict] = []
+        for agent in self.agents:
+            if not hasattr(agent, "declare_intents"):
+                continue
+            try:
+                schemas = agent.declare_intents()
+            except Exception as exc:
+                self.logger.warning(
+                    f"⚠️ [IntentBus] {getattr(agent, 'name', '?')} declare_intents() "
+                    f"炸了，manifest 跳過: {exc}"
+                )
+                continue
+            if not schemas:
+                continue
+            agents_entries.append({
+                "name": getattr(agent, "name", "?"),
+                "intents": [
+                    {
+                        "name": s.name,
+                        "required_slots": list(s.required_slots),
+                        "reason_template": s.reason_template,
+                    }
+                    for s in schemas
+                ],
+            })
+
+        self._manifest_cache = {"version": today, "agents": agents_entries}
+        return self._manifest_cache
 
     async def dispatch(self, ctx: IntentContext) -> Bid | None:
         """收 bids、選 winner、await handler。回傳 winner Bid（or None 如果沒人 above threshold）。"""
