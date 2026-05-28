@@ -116,6 +116,59 @@ def check_j1_improvement_loop() -> dict:
     }
 
 
+def check_memory_callback_embedding() -> dict:
+    """Plan 7 trigger: 過去 14 天 MemoryCallbackAgent win/天 <1。
+
+    讀 `records/speak_outcomes.jsonl` 數 `winner=="MemoryCallbackAgent"` 在 14 天
+    window 內的筆數。觀察期不滿 14 天（distinct dates_with_outcome < 14）
+    視為「資料不足判斷」，不觸發；分母固定 14（按 plan 原意「14 天平均」）。
+    """
+    path = RECORDS / "speak_outcomes.jsonl"
+    if not path.exists():
+        return {
+            "plan": 7,
+            "title": "MemoryCallback embedding",
+            "trigger": "14 天 callback win/天 <1",
+            "current": "speak_outcomes.jsonl 不存在（0 筆）",
+            "met": False,
+        }
+
+    window_days = 14
+    cutoff_ts = datetime.now().timestamp() - window_days * 86400
+    count = 0
+    dates_seen: set[date] = set()
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            ts = rec.get("ts")
+            if ts is None or float(ts) < cutoff_ts:
+                continue
+            dates_seen.add(datetime.fromtimestamp(float(ts)).date())
+            if rec.get("winner") == "MemoryCallbackAgent":
+                count += 1
+
+    days_observed = len(dates_seen)
+    if days_observed < window_days:
+        return {
+            "plan": 7,
+            "title": "MemoryCallback embedding",
+            "trigger": "14 天 callback win/天 <1",
+            "current": f"觀察 {days_observed}/{window_days} 天（{count} 筆 callback）",
+            "met": False,
+        }
+    rate = count / window_days
+    return {
+        "plan": 7,
+        "title": "MemoryCallback embedding",
+        "trigger": "14 天 callback win/天 <1",
+        "current": f"{count} 筆 / {window_days} 天 = {rate:.2f}/天",
+        "met": rate < 1.0,
+    }
+
+
 def manual_plans() -> list[dict]:
     return [
         {
@@ -130,13 +183,6 @@ def manual_plans() -> list[dict]:
             "title": "別記/別說 同意線",
             "trigger": "返場 callback 上線 OR 真實 incident",
             "current": "需人類判斷",
-            "met": None,
-        },
-        {
-            "plan": 7,
-            "title": "MemoryCallback embedding",
-            "trigger": "callback win/天 <1（14 天觀察）",
-            "current": "speak_outcomes schema 無 callback type，需 sample 判斷",
             "met": None,
         },
     ]
@@ -176,6 +222,7 @@ def main():
         check_judge_race_unlock(),
         check_intent_gap_clustering(),
         *manual_plans(),
+        check_memory_callback_embedding(),
         check_j1_improvement_loop(),
     ]
     print(render_markdown(results))
