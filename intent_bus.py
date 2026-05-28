@@ -86,15 +86,21 @@ class IntentBus:
     def __init__(self, agents: list[IntentAgent], *,
                  resolver=None, profile_provider=None, llm_fallback=None,
                  recommendation_sink=None, direct_probe=None,
-                 llm_rescue_agent=None, rescue_shadow_mode: bool = False):
+                 llm_rescue_agent=None, rescue_shadow_mode: bool = False,
+                 rescue_outcome_sink=None):
         self.agents = list(agents)
         self.logger = logger
         # LLM rescue：所有 agent dense 0.0 / 無 above-threshold winner 時的兜底。
         # 與 self.agents 分離（rescue_agent 不參與 bid()，是 dispatch 失敗後的階段）。
         # rescue_shadow_mode=True：synthesize 仍呼叫（收數據），但不重投 bus.dispatch
         # ——校準週用，避免 LLM 解析品質直接影響 prod 對話路徑。
+        # rescue_outcome_sink: sync (dict) -> None，每次 rescue *確實嘗試了*（synthesize
+        # 回非 None）後 emit 一筆 record，欄位含 gap_class（convergent/divergent/
+        # unmatched/shadow）給 daily ritual 分流：convergent 餵 regex 擴充提案、
+        # divergent 餵推薦、unmatched 餵 agent_gaps clustering。例外 try/except 包好。
         self.llm_rescue_agent = llm_rescue_agent
         self.rescue_shadow_mode = rescue_shadow_mode
+        self.rescue_outcome_sink = rescue_outcome_sink
         # vector intent 接線（全 optional，現有 prod bus 只傳 agents 不受影響）：
         # - resolver: SemanticResolver，補 missing_slots 的 song_choice / directional_resolution
         # - profile_provider: speaker → SpeakerProfile（cache lookup；缺則建最小 profile）
@@ -273,6 +279,7 @@ class IntentBus:
                 f"'{rescued_ctx.query[:30]}' signal={rescued_ctx.pragmatic_signal} "
                 f"target={rescued_ctx.pragmatic_target} (not re-dispatched)"
             )
+            self._emit_rescue_outcome(ctx, rescued_ctx, winner=None, shadow=True)
             return None
 
         self.logger.info(
@@ -280,7 +287,50 @@ class IntentBus:
             f"'{rescued_ctx.query[:30]}' signal={rescued_ctx.pragmatic_signal} "
             f"target={rescued_ctx.pragmatic_target} → re-dispatch"
         )
-        return await self.dispatch(rescued_ctx)
+        winner = await self.dispatch(rescued_ctx)
+        self._emit_rescue_outcome(ctx, rescued_ctx, winner=winner, shadow=False)
+        return winner
+
+    def _emit_rescue_outcome(self, original_ctx: IntentContext,
+                             rescued_ctx: IntentContext,
+                             winner: Bid | None, shadow: bool) -> None:
+        """把 rescue 結果分類後 emit 給觀察層（daily ritual 分析）。
+
+        gap_class:
+          shadow      — shadow_mode 期間，synthesize 跑了沒重投
+          unmatched   — 重投後仍無 winner（LLM 改寫品質差 / 無對應 agent）
+          divergent   — 命中 + 有 positive/negative pragmatic signal（字面≠真意）
+          convergent  — 命中 + 無 pragmatic 落差（neutral/None） → regex 可挖
+        """
+        if self.rescue_outcome_sink is None:
+            return
+
+        if shadow:
+            gap_class = "shadow"
+        elif winner is None:
+            gap_class = "unmatched"
+        elif rescued_ctx.pragmatic_signal in ("positive", "negative"):
+            gap_class = "divergent"
+        else:
+            gap_class = "convergent"
+
+        record = {
+            "original_query": original_ctx.query,
+            "rewritten_query": rescued_ctx.query,
+            "winner_agent": winner.name if winner is not None else None,
+            "winner_reason": winner.reason if winner is not None else None,
+            "pragmatic_signal": rescued_ctx.pragmatic_signal,
+            "pragmatic_target": rescued_ctx.pragmatic_target,
+            "gap_class": gap_class,
+            "speaker": original_ctx.speaker,
+            "ts": original_ctx.now,
+        }
+        try:
+            self.rescue_outcome_sink(record)
+        except Exception as exc:
+            self.logger.warning(
+                f"⚠️ [IntentBus] rescue_outcome_sink 炸了，略過: {exc}"
+            )
 
     async def _resolve_and_redispatch(self, slot: str, ctx: IntentContext) -> Bid | None:
         """Resolve missing slot → 帶 depth+1 重投 bus；resolver 放棄則 Marvin 兜底。"""
