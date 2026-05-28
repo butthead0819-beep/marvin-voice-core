@@ -52,6 +52,14 @@ class IntentContext:
     # vector intent re-dispatch 鏈深度；bus 在 missing_slots resolve 後注入 depth+1。
     # resolver 自己用 depth>=MAX_REWRITE_DEPTH 守無窮迴圈，這裡只負責往下傳。
     depth: int = 0
+    # LLM rescue 路徑帶的「真正意圖」訊號（surface vs pragmatic）。regex 命中時
+    # 為預設值；agent handler 用 None 判斷「這次不需要消化語用訊號」。
+    # dispatch_source: "regex"（regex agent 直接命中）/ "llm_rescue"（LLM 改寫後重投）
+    # pragmatic_signal: "positive" / "negative" / "neutral" / None
+    # pragmatic_target: handler 該對什麼物件 apply signal（e.g. "current_song" / "last_reply"）
+    dispatch_source: str = "regex"
+    pragmatic_signal: str | None = None
+    pragmatic_target: str | None = None
 
 
 @dataclass
@@ -77,9 +85,16 @@ class IntentBus:
 
     def __init__(self, agents: list[IntentAgent], *,
                  resolver=None, profile_provider=None, llm_fallback=None,
-                 recommendation_sink=None, direct_probe=None):
+                 recommendation_sink=None, direct_probe=None,
+                 llm_rescue_agent=None, rescue_shadow_mode: bool = False):
         self.agents = list(agents)
         self.logger = logger
+        # LLM rescue：所有 agent dense 0.0 / 無 above-threshold winner 時的兜底。
+        # 與 self.agents 分離（rescue_agent 不參與 bid()，是 dispatch 失敗後的階段）。
+        # rescue_shadow_mode=True：synthesize 仍呼叫（收數據），但不重投 bus.dispatch
+        # ——校準週用，避免 LLM 解析品質直接影響 prod 對話路徑。
+        self.llm_rescue_agent = llm_rescue_agent
+        self.rescue_shadow_mode = rescue_shadow_mode
         # vector intent 接線（全 optional，現有 prod bus 只傳 agents 不受影響）：
         # - resolver: SemanticResolver，補 missing_slots 的 song_choice / directional_resolution
         # - profile_provider: speaker → SpeakerProfile（cache lookup；缺則建最小 profile）
@@ -172,7 +187,7 @@ class IntentBus:
                 f"📡 [IntentBus] speaker={ctx.speaker} query='{ctx.query[:50]}' "
                 f"wake_intent={ctx.wake_intent} bids: {bid_summary} winner=none"
             )
-            return None
+            return await self._maybe_rescue(ctx)
 
         # 同分取第一個（list.sort 是 stable）— 從 max() 改用 sort 確保穩定
         bids.sort(key=lambda b: b.confidence, reverse=True)
@@ -194,7 +209,7 @@ class IntentBus:
                 f"wake_intent={ctx.wake_intent} bids: {bid_summary} "
                 f"winner=none (max={winner.confidence:.2f}<{self.MIN_CONFIDENCE})"
             )
-            return None
+            return await self._maybe_rescue(ctx)
 
         self.logger.info(
             f"📡 [IntentBus] speaker={ctx.speaker} query='{ctx.query[:50]}' "
@@ -226,6 +241,46 @@ class IntentBus:
 
         await winner.handler()
         return winner
+
+    async def _maybe_rescue(self, ctx: IntentContext) -> Bid | None:
+        """No-winner 兜底：LLM rescue agent 改寫 ctx 後重投。
+
+        守門：
+        - 未注入 rescue_agent → 直接 None（向後相容既有 prod 設定）
+        - ctx.depth > 0 → 已 rescue 過，不再嘗試（無窮迴圈防護）
+        - synthesize 例外 / 回 None → None（caller 走原 fallback）
+        - shadow mode → 跑 LLM 收數據但不重投，純觀察
+        """
+        if self.llm_rescue_agent is None:
+            return None
+        if ctx.depth > 0:
+            return None
+
+        try:
+            rescued_ctx = await self.llm_rescue_agent.synthesize(ctx)
+        except Exception as exc:
+            self.logger.warning(
+                f"⚠️ [IntentBus] llm_rescue.synthesize 炸了，略過: {exc}"
+            )
+            return None
+
+        if rescued_ctx is None:
+            return None
+
+        if self.rescue_shadow_mode:
+            self.logger.info(
+                f"📡 [IntentBus] llm_rescue shadow: '{ctx.query[:30]}' → "
+                f"'{rescued_ctx.query[:30]}' signal={rescued_ctx.pragmatic_signal} "
+                f"target={rescued_ctx.pragmatic_target} (not re-dispatched)"
+            )
+            return None
+
+        self.logger.info(
+            f"📡 [IntentBus] llm_rescue: '{ctx.query[:30]}' → "
+            f"'{rescued_ctx.query[:30]}' signal={rescued_ctx.pragmatic_signal} "
+            f"target={rescued_ctx.pragmatic_target} → re-dispatch"
+        )
+        return await self.dispatch(rescued_ctx)
 
     async def _resolve_and_redispatch(self, slot: str, ctx: IntentContext) -> Bid | None:
         """Resolve missing slot → 帶 depth+1 重投 bus；resolver 放棄則 Marvin 兜底。"""
