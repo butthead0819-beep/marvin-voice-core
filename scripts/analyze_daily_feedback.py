@@ -216,6 +216,20 @@ async def run(
     analysis_path.write_text(render_analysis_report(date_str, results), encoding="utf-8")
     audit_path.write_text(render_audit_report(date_str, audit_lines), encoding="utf-8")
 
+    # Plan trigger status snapshot — append 到 feedback_analysis 末尾，給 daily ritual 看
+    # 純 file stat + jsonl 計數、無 LLM；失敗 silent skip 不影響 feedback report
+    try:
+        import subprocess
+        trigger_out = subprocess.check_output(
+            [sys.executable, str(Path(__file__).resolve().parent / "check_plan_triggers.py")],
+            encoding="utf-8", timeout=30,
+        )
+        with analysis_path.open("a", encoding="utf-8") as f:
+            f.write(trigger_out)
+        logger.info(f"[analyze] {date_str}: plan trigger snapshot appended")
+    except Exception as exc:
+        logger.warning(f"[analyze] plan trigger snapshot 失敗（不影響 feedback report）: {exc}")
+
     return {
         "date": date_str,
         "total": len(results),
