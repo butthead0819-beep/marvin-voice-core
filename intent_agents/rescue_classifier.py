@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Awaitable, Callable, Protocol
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 logger = logging.getLogger("cogs.voice_controller.intent_bus.rescue_classifier")
 
@@ -98,3 +99,45 @@ def make_rescue_classifier(
         return parsed
 
     return _classify
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# build_rescue_components — voice_controller 唯一接觸點。
+# 把 env gating / classifier / agent / sink 工廠化成一個 unit-testable 函式，
+# 讓 voice_controller 的 IntentBus 構造維持 3-4 行 wiring，無條件邏輯。
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+_ENV_ENABLED = "MARVIN_INTENT_RESCUE_ENABLED"
+_ENV_SHADOW = "MARVIN_INTENT_RESCUE_SHADOW"
+_OUTCOME_PATH = Path("records/rescue_outcomes.jsonl")
+
+
+def build_rescue_components(
+    tier_router,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> tuple[Any | None, bool, Callable[[dict], None] | None]:
+    """Returns (rescue_agent, shadow_mode, outcome_sink) 給 IntentBus 接線。
+
+    回 (None, False, None) 的情境：
+    - env 未開啟（MARVIN_INTENT_RESCUE_ENABLED != "1"）
+    - tier_router 是 None（pool 都沒 key）
+    """
+    import os
+    from intent_agents.llm_rescue_agent import LLMRescueAgent
+    from intent_agents.rescue_outcome_logger import RescueOutcomeLogger
+
+    if env is None:
+        env = os.environ
+
+    if env.get(_ENV_ENABLED) != "1":
+        return None, False, None
+    if tier_router is None:
+        return None, False, None
+
+    classifier = make_rescue_classifier(tier_router)
+    agent = LLMRescueAgent(llm_classifier=classifier)
+    shadow = env.get(_ENV_SHADOW, "1") != "0"
+    outcome_logger = RescueOutcomeLogger(_OUTCOME_PATH)
+    return agent, shadow, outcome_logger.write

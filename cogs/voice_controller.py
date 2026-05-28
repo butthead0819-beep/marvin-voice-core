@@ -66,6 +66,7 @@ from intent_agents.constants import (
 )
 from intent_bus import IntentBus, IntentContext
 from intent_gap import GapLogger, handle_intent_gap, make_groq_gap_classifier
+from intent_agents.rescue_classifier import build_rescue_components
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
@@ -630,6 +631,10 @@ class VoiceController(commands.Cog):
             temperature=getattr(_router, "atmosphere_tracker", None),
             clock=time.time,
         )
+        # LLM rescue pipeline (env-gated)：MARVIN_INTENT_RESCUE_ENABLED=1 才啟用。
+        # 預設 shadow ON 收一週數據校準 LLM 改寫品質，再用 MARVIN_INTENT_RESCUE_SHADOW=0 上線。
+        # 三元組為 (None, False, None) 時 IntentBus 等同舊行為，安全降級。
+        _rescue_agent, _rescue_shadow, _rescue_sink = build_rescue_components(_tier_router)
         self._intent_bus = IntentBus(
             build_intent_agents(self, self.bot),
             resolver=_curation_resolver,
@@ -643,6 +648,9 @@ class VoiceController(commands.Cog):
             # song_choice 短路：yt-dlp 找得到原 query 就跳過 LLM curation，避免「播放七里香」
             # 被 LLM 當歌手解析。找不到才走 resolver curate by artist。
             direct_probe=self._yt_dlp_direct_probe,
+            llm_rescue_agent=_rescue_agent,
+            rescue_shadow_mode=_rescue_shadow,
+            rescue_outcome_sink=_rescue_sink,
         )
         
         # 🛡️ [Operation Sentinel] 語音健康監控
