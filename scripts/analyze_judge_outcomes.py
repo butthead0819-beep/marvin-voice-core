@@ -23,6 +23,14 @@ INPUT = Path("records/judge_outcomes.jsonl")
 J1_THRESHOLD = 0.90  # 當前 production threshold；改 0.85 後重跑可比較
 
 
+def _fmt_judge(j: dict) -> str:
+    """name(confidence) 安全格式化。confidence=None → '?'（不假裝成 0.00，
+    那會跟真實 0 信心混淆）。"""
+    conf = j.get("confidence")
+    conf_str = f"{conf:.2f}" if isinstance(conf, (int, float)) else "?"
+    return f"{j.get('bid_name')}({conf_str})"
+
+
 def percentile(values: list[float], p: float) -> float:
     if not values:
         return 0.0
@@ -87,8 +95,8 @@ def analyze(rows: list[dict]) -> dict:
             else:
                 j1_j3_disagree.append({
                     "raw": r["raw_query"],
-                    "j1": f"{j1.get('bid_name')}({j1.get('confidence'):.2f})",
-                    "j3": f"{j3.get('bid_name')}({j3.get('confidence'):.2f})",
+                    "j1": _fmt_judge(j1),
+                    "j3": _fmt_judge(j3),
                 })
 
             # 議題 A：J1=guard 但 J3 有非 guard 的真 intent
@@ -100,7 +108,7 @@ def analyze(rows: list[dict]) -> dict:
                 guard_with_j3_intent.append({
                     "raw": r["raw_query"],
                     "j1_reason": j1.get("bid_reason"),
-                    "j3": f"{j3.get('bid_name')}({j3.get('confidence'):.2f})",
+                    "j3": _fmt_judge(j3),
                 })
 
             # 議題 B：J1 curation 0.85 卡 threshold（兩 judge 一致）
