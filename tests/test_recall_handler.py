@@ -13,6 +13,43 @@ from unittest.mock import AsyncMock, MagicMock
 
 
 # ═══════════════════════════════════════════════════════
+# is_personal_assistant_query — gap pipeline 預檢用
+# ═══════════════════════════════════════════════════════
+# 用途：gap classifier 前先擋掉「已有 RecallHandler 接」的句子，避免被誤記成
+# agent_gaps（2026-05-30：buy_milk/replay_user_history 假觸發事件）。
+
+def test_pa_query_true_for_recall():
+    from recall_handler import is_personal_assistant_query
+    assert is_personal_assistant_query("我剛才說了什麼") is True
+
+
+def test_pa_query_true_for_manual_add():
+    from recall_handler import is_personal_assistant_query
+    assert is_personal_assistant_query("記一下要買牛奶") is True
+
+
+def test_pa_query_true_for_mark_done():
+    from recall_handler import is_personal_assistant_query
+    assert is_personal_assistant_query("那件事我做完了") is True
+
+
+def test_pa_query_true_for_task_update():
+    from recall_handler import is_personal_assistant_query
+    assert is_personal_assistant_query("目標換成下週交") is True
+
+
+def test_pa_query_false_for_music_command():
+    """音樂指令不是 PA intent，不該被預檢擋掉（仍要走 IntentBus）。"""
+    from recall_handler import is_personal_assistant_query
+    assert is_personal_assistant_query("播放七里香") is False
+
+
+def test_pa_query_false_for_chitchat():
+    from recall_handler import is_personal_assistant_query
+    assert is_personal_assistant_query("今天天氣真好") is False
+
+
+# ═══════════════════════════════════════════════════════
 # is_recall_query 純函數測試
 # ═══════════════════════════════════════════════════════
 

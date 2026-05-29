@@ -1,0 +1,108 @@
+"""analyze_agent_gaps — agent_gaps.jsonl dedup-aware 計數（Plan 4 daily ritual）。
+
+核心修正（2026-05-30 buy_milk/replay_user_history 假觸發）：
+occurrence count 必須按 **distinct (speaker, raw_query)** 算，不是 raw line count。
+同一句重複 N 次（QA 連發 / 結巴 / 跳針）只能算 1 次 occurrence，否則門檻形同虛設。
+
+threshold=2（feedback_intent_gap_threshold.md，使用者拍板激進補 agent）。
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from scripts.analyze_agent_gaps import analyze, load
+
+
+def _gap(intent_type="replay_user_history", speaker="Alice", raw="我剛才說了什麼"):
+    return {
+        "utterance_id": "u", "ts": 0.0, "speaker": speaker, "mode": "normal",
+        "raw_query": raw, "cleaned_query": raw, "intent_type": intent_type,
+        "slots": {}, "nearest_agent": None, "nearest_distance": 1.0,
+        "ack_text": "", "acknowledged": False, "schema_version": 1,
+    }
+
+
+# ── load ──────────────────────────────────────────────────────────────────────
+
+def test_load_skips_blank_lines(tmp_path: Path):
+    p = tmp_path / "g.jsonl"
+    p.write_text(json.dumps(_gap()) + "\n\n  \n" + json.dumps(_gap()) + "\n", encoding="utf-8")
+    assert len(load(p)) == 2
+
+
+# ── dedup 是核心 ───────────────────────────────────────────────────────────────
+
+def test_identical_repeats_count_as_one_distinct_occurrence():
+    """7 筆同 (speaker, raw_query) → distinct_count=1（raw_count=7 仍保留供觀察）。
+    這正是 buy_milk/replay 假觸發的修正點。"""
+    rows = [_gap(intent_type="replay_user_history") for _ in range(7)]
+    result = analyze(rows)
+    rep = next(i for i in result["intents"] if i["intent_type"] == "replay_user_history")
+    assert rep["raw_count"] == 7
+    assert rep["distinct_count"] == 1
+    assert rep["ready_to_implement"] is False  # 1 < 2 → 不該觸發
+
+
+def test_distinct_phrasings_accumulate_toward_threshold():
+    """同 intent_type 但不同講法 → distinct 累加，≥2 才 ready（真有機多樣性）。"""
+    rows = [
+        _gap(intent_type="set_alarm", raw="幫我設個鬧鐘"),
+        _gap(intent_type="set_alarm", raw="提醒我八點起床"),
+    ]
+    result = analyze(rows)
+    alarm = next(i for i in result["intents"] if i["intent_type"] == "set_alarm")
+    assert alarm["distinct_count"] == 2
+    assert alarm["ready_to_implement"] is True
+
+
+def test_same_phrase_different_speakers_counts_as_two():
+    """不同 speaker 講同句 → 2 個 distinct occurrence（跨人＝有機需求訊號）。"""
+    rows = [
+        _gap(intent_type="set_alarm", speaker="Alice", raw="設鬧鐘"),
+        _gap(intent_type="set_alarm", speaker="Bob", raw="設鬧鐘"),
+    ]
+    result = analyze(rows)
+    alarm = next(i for i in result["intents"] if i["intent_type"] == "set_alarm")
+    assert alarm["distinct_count"] == 2
+    assert alarm["ready_to_implement"] is True
+
+
+# ── UNKNOWN 排除 ──────────────────────────────────────────────────────────────
+
+def test_unknown_excluded_from_intents():
+    """UNKNOWN 是無意圖雜訊，不參與 ready 計算（對齊 feedback_trigger_excludes_sentinels）。"""
+    rows = [_gap(intent_type="UNKNOWN", raw=f"噪音{i}") for i in range(10)]
+    result = analyze(rows)
+    assert result["total"] == 10
+    assert result["total_non_unknown"] == 0
+    assert result["intents"] == []
+    assert result["ready_count"] == 0
+
+
+# ── 排序 + 摘要 ───────────────────────────────────────────────────────────────
+
+def test_intents_sorted_by_distinct_count_desc():
+    rows = (
+        [_gap(intent_type="a", raw=f"x{i}") for i in range(3)]
+        + [_gap(intent_type="b", raw="y")]
+    )
+    result = analyze(rows)
+    assert [i["intent_type"] for i in result["intents"]] == ["a", "b"]
+
+
+def test_ready_count_reflects_only_distinct_threshold():
+    """模擬真實污染場景：buy_milk×7 + replay×7（都 distinct=1）→ ready_count=0。"""
+    rows = (
+        [_gap(intent_type="buy_milk", raw="記一下要買牛奶") for _ in range(7)]
+        + [_gap(intent_type="replay_user_history", raw="我剛才說了什麼") for _ in range(7)]
+    )
+    result = analyze(rows)
+    assert result["total_non_unknown"] == 14
+    assert result["ready_count"] == 0  # 假觸發消失：兩個都 distinct=1
+
+
+def test_analyze_empty():
+    result = analyze([])
+    assert result["total"] == 0
+    assert result["intents"] == []

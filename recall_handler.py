@@ -106,6 +106,21 @@ def is_task_update_query(query: str) -> bool:
     return bool(_TASK_UPDATE_PATTERNS.search(query))
 
 
+def is_personal_assistant_query(query: str) -> bool:
+    """True 表示 query 命中任一 PA intent（已由 RecallHandler 在 wake path 接走）。
+
+    gap pipeline 用此預檢：命中 = 「已有 handler」不是 gap，不該記進 agent_gaps。
+    對齊 voice_controller wake-path PA loop 檢查的四個 intent（manual_add /
+    task_update / mark_done / recall）。
+    """
+    return (
+        is_recall_query(query)
+        or is_manual_add_query(query)
+        or is_mark_done_query(query)
+        or is_task_update_query(query)
+    )
+
+
 class RecallHandler:
     def __init__(
         self,

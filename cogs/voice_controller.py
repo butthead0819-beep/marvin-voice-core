@@ -37,7 +37,7 @@ import yt_dlp  # noqa: E402
 import yt_dlp.extractor.youtube  # noqa: E402,F401  — pre-warm lazy extractor
 from recall_handler import (
     RecallHandler, is_recall_query, is_mark_done_query,
-    is_manual_add_query, is_task_update_query,
+    is_manual_add_query, is_task_update_query, is_personal_assistant_query,
 )
 from summary_store import SummaryStore
 from task_store import TaskStore
@@ -3946,6 +3946,18 @@ class VoiceController(commands.Cog):
         # 亂回答 + 省一次主 LLM call。問句 / 指令動詞 / 長度 ≥ 4 字一律放行（保守）。
         if not has_intent_signal(query):
             self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
+            self._cancel_stale_prefetch(speaker)
+            return
+
+        # 🛡️ [Gap Pre-check] PA intent（recall / 記一下 / mark_done / task_update）已有
+        # RecallHandler 接 → 不是 gap。能跑到這代表上游 PA routing 漏接（routing anomaly），
+        # 記 warning 方便追，但**不**寫進 agent_gaps（否則 LLM 會把它亂標成 buy_milk /
+        # replay_user_history 假觸發 Plan 4，2026-05-30 事件）。
+        if is_personal_assistant_query(query):
+            logger.warning(
+                f"⚠️ [Gap Pre-check] {speaker} PA intent 漏接到 gap path（routing anomaly，"
+                f"非真 gap，不記錄）：'{query[:60]}'"
+            )
             self._cancel_stale_prefetch(speaker)
             return
 
