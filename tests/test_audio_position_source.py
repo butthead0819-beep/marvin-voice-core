@@ -62,6 +62,17 @@ def test_position_starts_at_zero():
     assert src.position_seconds == 0.0
 
 
+def test_initial_offset_reports_absolute_position():
+    """切換後的 stream2 seek 到歌曲 target 秒，position 要報絕對位置（target + 已播），
+    不是從 0 起算——否則下次插話的 -ss 會用相對位置倒帶（2026-05-30 迴圈 bug）。"""
+    src = PositionTrackingAudioSource(_FakeSource([b"x"] * 10), initial_offset=51.3)
+    assert src.position_seconds == 51.3          # 還沒播
+    for _ in range(50):                          # 播 50 幀 = 1s（只有 10 chunk，後面空）
+        src.read()
+    # 10 個非空幀 = 0.2s；絕對位置 = 51.3 + 0.2
+    assert abs(src.position_seconds - (51.3 + 10 * 0.02)) < 1e-9
+
+
 def test_is_opus_forwarded():
     assert PositionTrackingAudioSource(_FakeSource([], opus=True)).is_opus() is True
     assert PositionTrackingAudioSource(_FakeSource([], opus=False)).is_opus() is False

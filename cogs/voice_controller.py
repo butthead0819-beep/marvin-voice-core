@@ -7132,10 +7132,14 @@ class VoiceController(commands.Cog):
             "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"
         )
         options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
-        src2 = PositionTrackingAudioSource(discord.FFmpegPCMAudio(
-            self._current_stream_url, before_options=before_opts, options=options))
+        # initial_offset=target：stream2 seek 到歌曲 target 秒，position 報絕對位置，
+        # 下次插話 target 才會隨歌曲進度往後（修 2026-05-30 倒帶迴圈 bug）
+        src2 = PositionTrackingAudioSource(
+            discord.FFmpegPCMAudio(self._current_stream_url, before_options=before_opts, options=options),
+            initial_offset=target,
+        )
         self._hotswap_coord.set_stream2_ready(src2)
-        logger.info(f"🎚️ [HotSwap] armed: pos={pos:.1f}s → target={target:.1f}s, tts={os.path.basename(tts_path)}")
+        logger.info(f"🎚️ [HotSwap] armed: abs_pos={pos:.1f}s → target={target:.1f}s, tts={os.path.basename(tts_path)}")
 
     def _extract_song_metadata(self, file_path: str):
         """

@@ -14,9 +14,13 @@ FRAME_MS = 20  # discord voice send thread 每幀固定 20ms
 
 
 class PositionTrackingAudioSource(discord.AudioSource):
-    def __init__(self, wrapped: discord.AudioSource):
+    def __init__(self, wrapped: discord.AudioSource, initial_offset: float = 0.0):
+        # initial_offset：此源在歌曲中的起始絕對秒數。熱切換的 stream2 seek 到歌曲
+        # target 秒，position 要報「絕對」位置（target + 已播）；否則下次插話的 -ss
+        # 會用相對位置倒帶（2026-05-30 迴圈 bug）。
         self._wrapped = wrapped
         self._frames = 0
+        self._initial_offset = initial_offset
 
     def read(self) -> bytes:
         data = self._wrapped.read()
@@ -36,4 +40,4 @@ class PositionTrackingAudioSource(discord.AudioSource):
 
     @property
     def position_seconds(self) -> float:
-        return self._frames * FRAME_MS / 1000.0
+        return self._initial_offset + self._frames * FRAME_MS / 1000.0
