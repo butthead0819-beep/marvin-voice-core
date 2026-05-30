@@ -1260,6 +1260,22 @@ class VoiceController(commands.Cog):
         await interaction.followup.send(f"🃏 {scrap}\n「{joke}」")
         await self.play_tts(joke, already_in_channel=True)
 
+    @app_commands.command(name="hotswap_test", description="[Debug] Plan 11 Slice 1：播歌中途插 TTS 熱切換驗證")
+    @app_commands.describe(lead="幾秒後切換（給 stream2 備料時間，預設 4）")
+    async def hotswap_test(self, interaction: discord.Interaction, lead: float = 4.0):
+        await interaction.response.defer(thinking=True)
+        if not self.stream_mode or self._stream_position_source is None:
+            await interaction.followup.send("⚠️ 目前不在串流播歌中，無法測試熱切換。先放一首歌再試。")
+            return
+        tts_path = os.path.join(os.path.dirname(__file__), "..", "assets", "acks", "ack_1.mp3")
+        tts_path = os.path.abspath(tts_path)
+        pos = self._stream_position_source.position_seconds
+        await self._debug_trigger_hotswap(tts_path, lead=lead)
+        await interaction.followup.send(
+            f"🎚️ 已 arm 熱切換：當前 {pos:.1f}s → {pos + lead:.1f}s 切換插入 TTS（ack_1）。"
+            f"聽音樂有沒有中斷/爆音/卡死。"
+        )
+
     @app_commands.command(name="marvin_status", description="[Agent Report] 查看馬文對你這卑微人類的觀察報告")
     async def marvin_status(self, interaction: discord.Interaction, target: discord.Member = None):
         await interaction.response.defer(thinking=True)
