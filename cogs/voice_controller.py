@@ -69,6 +69,9 @@ from intent_gap import GapLogger, handle_intent_gap, make_groq_gap_classifier
 from intent_agents.rescue_classifier import build_rescue_components
 from audio_position_source import PositionTrackingAudioSource
 from hotswap_coordinator import HotSwapCoordinator
+from hotswap_loudness import (
+    LOUDNORM_TARGET, build_stream2_music_filter, parse_loudnorm_measurement,
+)
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
@@ -760,6 +763,7 @@ class VoiceController(commands.Cog):
         self._stream_play_gen = 0                 # 播放世代；切換前遞增使舊 source 的 after 失效
         self._stream_position_source = None       # 當前 PositionTrackingAudioSource（讀播放位置）
         self._current_stream_url = None           # 當前串流 URL（備 stream2 用）
+        self._stream_loudness: dict[str, dict] = {}  # url → loudnorm 量測值（Slice 2 音量匹配）
         self.stream_queue = []           # list of {title, uploader, url, thumbnail, webpage_url, duration}
         self.stream_task = None
         self._current_stream_info = None
@@ -7050,6 +7054,10 @@ class VoiceController(commands.Cog):
                 stream_source = PositionTrackingAudioSource(discord.FFmpegPCMAudio(url, **ffmpeg_opts))
                 self._stream_position_source = stream_source
                 self._current_stream_url = url
+                # 🎚️ [HotSwap Slice 2] 背景量測 loudness 供 stream2 linear loudnorm 匹配；
+                # 沒量好就 fallback 固定音量，不阻塞播放
+                if url not in self._stream_loudness:
+                    asyncio.create_task(self._measure_loudness_bg(url))
                 logger.info(f"🎵 [Stream Song] 開始播放: {title} (音量: {int(self.stream_volume*100)}%)")
                 vc.play(stream_source, after=after_stream)
 
@@ -7067,6 +7075,34 @@ class VoiceController(commands.Cog):
         except Exception as e:
             logger.error(f"❌ [Stream Song] 播放錯誤: {e}")
             play_done_event.set()
+
+    async def _measure_loudness_bg(self, url: str):
+        """背景跑 2-pass loudnorm 第一遍量測歌曲響度，存 cache 供 hotswap stream2 用。
+
+        失敗（timeout / 解析無結果）→ 不存，hotswap 自動 fallback 固定音量。
+        subprocess 用 create_subprocess_exec（對齊 STT 層 async 規範，不用 subprocess.run）。
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-nostats", "-i", url,
+                "-af", f"loudnorm={LOUDNORM_TARGET}:print_format=json",
+                "-f", "null", "-",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ [HotSwap] loudness 量測逾時，hotswap 將 fallback 固定音量")
+            return
+        except Exception as e:
+            logger.warning(f"⚠️ [HotSwap] loudness 量測失敗: {e}")
+            return
+        measured = parse_loudnorm_measurement(stderr.decode("utf-8", "ignore"))
+        if measured:
+            self._stream_loudness[url] = measured
+            logger.info(f"🎚️ [HotSwap] loudness 量測完成: I={measured['input_i']} → 匹配就緒")
+        else:
+            logger.warning("⚠️ [HotSwap] loudness 量測無結果，hotswap 將 fallback 固定音量")
 
     async def _do_hotswap(self, vc, current_loop, play_done_event):
         """執行中途 TTS 熱切換：stop stream1 → play stream2（TTS 已混入）。
@@ -7118,12 +7154,14 @@ class VoiceController(commands.Cog):
         target = pos + lead
         self._hotswap_coord.request(target)
 
-        # stream2 filter：input 0 = TTS, input 1 = music(-ss target)。volume-matched
-        # 固定音量（Slice 1 先不做 loudnorm 匹配）、無 afade（實聽證實 afade 反放大爆音）。
+        # stream2 filter：input 0 = TTS, input 1 = music(-ss target)。
+        # 音樂 filter（Slice 2）：有量測值 → linear loudnorm 匹配 stream1；無 → 固定音量
+        # fallback。皆無 afade（實聽證實 afade 反放大爆音）。
         vol = self.stream_volume
+        music_fc = build_stream2_music_filter(self._stream_loudness.get(self._current_stream_url), vol)
         fc = (
             f"[0:a]asplit=2[sc][mix];[sc]apad=whole_dur=9999[pad];"
-            f"[1:a]volume={vol:.3f}[music];"
+            f"{music_fc};"
             f"[music][pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
             f"[ducked][mix]amix=inputs=2:duration=longest:normalize=0[out]"
         )
