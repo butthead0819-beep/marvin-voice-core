@@ -67,6 +67,8 @@ from intent_agents.constants import (
 from intent_bus import IntentBus, IntentContext
 from intent_gap import GapLogger, handle_intent_gap, make_groq_gap_classifier
 from intent_agents.rescue_classifier import build_rescue_components
+from audio_position_source import PositionTrackingAudioSource
+from hotswap_coordinator import HotSwapCoordinator
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
@@ -753,6 +755,11 @@ class VoiceController(commands.Cog):
         # 🎵 [Stream Mode] YouTube 串流系統狀態
         self.stream_mode = False
         self.stream_volume = 0.10        # 串流獨立音量，初始 10%
+        # 🎚️ [HotSwap] 中途 TTS 熱切換（Plan 11 Slice 1，手動觸發驗證機制）
+        self._hotswap_coord = HotSwapCoordinator()
+        self._stream_play_gen = 0                 # 播放世代；切換前遞增使舊 source 的 after 失效
+        self._stream_position_source = None       # 當前 PositionTrackingAudioSource（讀播放位置）
+        self._current_stream_url = None           # 當前串流 URL（備 stream2 用）
         self.stream_queue = []           # list of {title, uploader, url, thumbnail, webpage_url, duration}
         self.stream_task = None
         self._current_stream_info = None
@@ -6970,10 +6977,17 @@ class VoiceController(commands.Cog):
         play_done_event = asyncio.Event()
         current_loop = asyncio.get_event_loop()
 
+        # 世代化 after：切換時 _do_hotswap 會遞增 _stream_play_gen，使舊 source 的 after
+        # 觸發時 gen 已過期 → 不 set play_done_event（否則被換掉的 stream1 一 stop 就被
+        # 當歌結束，stream2 沒播完音樂提早斷）。同步遞增 → 無 race。
+        self._stream_play_gen += 1
+        _play_gen = self._stream_play_gen
+
         def after_stream(error):
-            current_loop.call_soon_threadsafe(play_done_event.set)
             if error:
                 logger.error(f"❌ [Stream Song Error] {error}")
+            if _play_gen == self._stream_play_gen:
+                current_loop.call_soon_threadsafe(play_done_event.set)
 
         # ── 建立 FFmpeg 選項 ──────────────────────────────────────────────
         use_mix = dj_audio_path and os.path.exists(dj_audio_path)
@@ -7016,20 +7030,96 @@ class VoiceController(commands.Cog):
                     if not self.stream_mode:
                         return
                 self._radio_source = None  # 串流模式繞過 PCMVolumeTransformer
-                stream_source = discord.FFmpegPCMAudio(url, **ffmpeg_opts)
+                # 包一層 PositionTrackingAudioSource 才讀得到播放位置（hotswap 切換點游標）
+                stream_source = PositionTrackingAudioSource(discord.FFmpegPCMAudio(url, **ffmpeg_opts))
+                self._stream_position_source = stream_source
+                self._current_stream_url = url
                 logger.info(f"🎵 [Stream Song] 開始播放: {title} (音量: {int(self.stream_volume*100)}%)")
                 vc.play(stream_source, after=after_stream)
 
             while not play_done_event.is_set():
                 if not self.stream_mode:
                     return
-                await asyncio.sleep(0.5)
+                # 🎚️ [HotSwap] 持 lock 外的等待迴圈內檢查切換（避開整首歌持 lock 的 deadlock）
+                if self._hotswap_coord.ready_to_swap(self._stream_position_source.position_seconds):
+                    await self._do_hotswap(vc, current_loop, play_done_event)
+                await asyncio.sleep(0.1)
+            self._stream_position_source = None  # 歌結束，清游標
 
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error(f"❌ [Stream Song] 播放錯誤: {e}")
             play_done_event.set()
+
+    async def _do_hotswap(self, vc, current_loop, play_done_event):
+        """執行中途 TTS 熱切換：stop stream1 → play stream2（TTS 已混入）。
+
+        在等待迴圈內呼叫（持 lock 外）。世代計數已遞增使 stream1 的 after 失效，
+        stream2 用自己的 after（綁當前世代）在它播完時才 set play_done_event。
+        """
+        src2 = self._hotswap_coord.begin_swap()
+        self._stream_play_gen += 1
+        gen2 = self._stream_play_gen
+
+        def _after2(error):
+            if error:
+                logger.error(f"❌ [HotSwap stream2 Error] {error}")
+            if gen2 == self._stream_play_gen:
+                current_loop.call_soon_threadsafe(play_done_event.set)
+
+        try:
+            async with self.playback_lock:
+                vc.stop()  # stream1 停；其 after（舊世代）不會 set event
+                # 等 stop 生效（最多 ~100ms）再 play，避免 discord「already playing」
+                for _ in range(20):
+                    if not vc.is_playing():
+                        break
+                    await asyncio.sleep(0.005)
+                vc.play(src2, after=_after2)
+            self._stream_position_source = src2  # 新游標（注意：position 從 0 起算 = 切換點）
+            self._hotswap_coord.finish_swap()
+            logger.info("🎚️ [HotSwap] 中途 TTS 切換完成")
+        except Exception as e:
+            logger.error(f"❌ [HotSwap] 切換失敗，放棄插話: {e}")
+            self._hotswap_coord.abort()
+
+    async def _debug_trigger_hotswap(self, tts_path: str, lead: float = 4.0):
+        """[Slice 1 debug] 手動觸發一次中途 TTS 熱切換驗證機制。正常流程不呼叫。
+
+        備好 stream2（同首歌 -ss 到 target + TTS sidechain 混音、volume-matched、
+        無 loudnorm、無 afade），arm coordinator，等待迴圈到點自動切換。
+        """
+        src = self._stream_position_source
+        if src is None or not self._current_stream_url:
+            logger.warning("⚠️ [HotSwap] 非串流播放中，無法觸發")
+            return
+        if not os.path.exists(tts_path):
+            logger.warning(f"⚠️ [HotSwap] TTS 檔不存在: {tts_path}")
+            return
+        import shlex
+        pos = src.position_seconds
+        target = pos + lead
+        self._hotswap_coord.request(target)
+
+        # stream2 filter：input 0 = TTS, input 1 = music(-ss target)。volume-matched
+        # 固定音量（Slice 1 先不做 loudnorm 匹配）、無 afade（實聽證實 afade 反放大爆音）。
+        vol = self.stream_volume
+        fc = (
+            f"[0:a]asplit=2[sc][mix];[sc]apad=whole_dur=9999[pad];"
+            f"[1:a]volume={vol:.3f}[music];"
+            f"[music][pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
+            f"[ducked][mix]amix=inputs=2:duration=longest:normalize=0[out]"
+        )
+        before_opts = (
+            f"-i {shlex.quote(tts_path)} -ss {target:.2f} "
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"
+        )
+        options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
+        src2 = PositionTrackingAudioSource(discord.FFmpegPCMAudio(
+            self._current_stream_url, before_options=before_opts, options=options))
+        self._hotswap_coord.set_stream2_ready(src2)
+        logger.info(f"🎚️ [HotSwap] armed: pos={pos:.1f}s → target={target:.1f}s, tts={os.path.basename(tts_path)}")
 
     def _extract_song_metadata(self, file_path: str):
         """
