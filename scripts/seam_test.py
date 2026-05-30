@@ -78,23 +78,32 @@ def render(music: Path, tts: Path, cut: float, pre: float, window: float, vol: f
         f"[music][pad]{SIDECHAIN}[ducked];"
         f"[ducked][mix]amix=inputs=2:duration=first:normalize=0[out]"
     )
+    # part2_mit：level-matched 固定音量，**不加 afade**（afade 反而製造 full→0 落差）
     fc_mit = (
         f"[0:a]asplit=2[sc][mix];[sc]apad=whole_dur=9999[pad];"
         f"[1:a]volume={vol:.3f}[music];"
         f"[music][pad]{SIDECHAIN}[ducked];"
-        f"[ducked][mix]amix=inputs=2:duration=first:normalize=0,afade=in:d=0.15[out]"
+        f"[ducked][mix]amix=inputs=2:duration=first:normalize=0[out]"
     )
     _run(f"ffmpeg -y -i {_fmt(tts)} -ss {cut} -i {_fmt(music)} "
          f"-filter_complex \"{fc_naive}\" -map [out] -t {window} -ar {AR} -ac {AC} {_fmt(p2_naive)}")
     _run(f"ffmpeg -y -i {_fmt(tts)} -ss {cut} -i {_fmt(music)} "
          f"-filter_complex \"{fc_mit}\" -map [out] -t {window} -ar {AR} -ac {AC} {_fmt(p2_mit)}")
 
-    # ── 硬切接合（concat = sample-accurate butt-join = 真正的硬切）─────────
-    for name, p1, p2 in (("seam_naive", p1_naive, p2_naive),
-                         ("seam_mitigated", p1_mit, p2_mit)):
-        out = OUT_DIR / f"{name}.wav"
-        _run(f"ffmpeg -y -i {_fmt(p1)} -i {_fmt(p2)} "
-             f"-filter_complex \"[0:a][1:a]concat=n=2:v=0:a=1[o]\" -map [o] "
+    # ── 變體 A：純 butt-join（無 fade，level-matched）= production 可達的最樸素硬接 ──
+    out = OUT_DIR / "seam_buttjoin.wav"
+    _run(f"ffmpeg -y -i {_fmt(p1_mit)} -i {_fmt(p2_mit)} "
+         f"-filter_complex \"[0:a][1:a]concat=n=2:v=0:a=1[o]\" -map [o] "
+         f"-ar {AR} -ac {AC} {_fmt(out)}")
+
+    # ── 變體 B：acrossfade 重疊淡接（30ms / 80ms）= 診斷上界 ──────────────
+    # ⚠️ acrossfade 需兩段在接縫處重疊，**Discord 單源播不可直接做**（兩源不能疊）。
+    # 純診斷：若 xfade 乾淨 → 證明只要能重疊就行，才值得想 production 重疊 trick；
+    # 若 xfade 仍爆 → butt-join 這條路死透，直接轉歌曲邊界方案。
+    for ms in (30, 80):
+        out = OUT_DIR / f"seam_xfade{ms}.wav"
+        _run(f"ffmpeg -y -i {_fmt(p1_mit)} -i {_fmt(p2_mit)} "
+             f"-filter_complex \"[0:a][1:a]acrossfade=d={ms/1000}:c1=tri:c2=tri[o]\" -map [o] "
              f"-ar {AR} -ac {AC} {_fmt(out)}")
 
     # ── reference：單一連續解碼，TTS adelay 到接縫點（理想無縫）───────────
@@ -138,10 +147,14 @@ def main() -> int:
     print(f"✅ 完成 → {OUT_DIR}/")
     print(f"   music={music.name}  tts={tts.name}  cut={args.cut}s")
     print(f"\n🎧 聽法（接縫 + TTS 起點都在第 {seam_at:.0f} 秒）：")
-    print("   seam_naive.wav     ← production filter 硬切，聽第 10s 有沒有音量跳/爆音")
-    print("   seam_mitigated.wav ← 去 loudnorm + afade，聽接縫有沒有改善到可接受")
-    print("   seam_reference.wav ← 理想無縫對照，跟前兩個比差多少")
-    print(f"\n   open {OUT_DIR}/   # macOS 用 QuickTime 逐個聽")
+    print("   seam_buttjoin.wav  ← 純硬接無 fade（production 可達最樸素）。仍爆音？")
+    print("   seam_xfade30.wav   ← 30ms 重疊淡接（診斷上界，非 production 直接可做）")
+    print("   seam_xfade80.wav   ← 80ms 重疊淡接")
+    print("   seam_reference.wav ← 理想連續解碼對照（已知可接受）")
+    print("\n   判定：")
+    print("   - xfade 乾淨 + buttjoin 爆 → 只要能重疊就行，值得想 production 重疊 trick")
+    print("   - xfade 也爆 → butt-join 死透，轉歌曲邊界方案（DJ slot，reference 品質）")
+    print(f"\n   open {OUT_DIR}/")
     return 0
 
 
