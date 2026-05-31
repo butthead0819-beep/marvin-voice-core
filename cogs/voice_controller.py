@@ -216,6 +216,8 @@ def build_intent_agents(controller, bot):
     from intent_agents.volume_agent import VolumeAgent
     from intent_agents.replay_agent import ReplayAgent
     from intent_agents.now_playing_agent import NowPlayingAgent
+    from intent_agents.dual_speak_agent import DualSpeakAgent
+    from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
     return [
         HallucinationGuardAgent(controller),
         NemoClawAgent(controller),
@@ -228,6 +230,10 @@ def build_intent_agents(controller, bot):
         BustedAgent(bot),
         Busted99Agent(bot),
         TurtleSoupAgent(bot),
+        # 🎭 [Marmo 一搭一唱 PoC] DualSpeakAgent — 只在 dispatch_source="marmo_inject"
+        # 時出價 0.95；wake 路徑全 dense 0.0 with reason="not_marmo_inject"，零干擾。
+        # 真正 flip 開關在 marmo_server.py 是否改走 bus.dispatch（T9）。
+        DualSpeakAgent(bot=bot, llm_fn=make_gemini_dual_dialogue_llm_fn(bot.router)),
     ]
 
 
@@ -5747,6 +5753,45 @@ class VoiceController(commands.Cog):
                         if _wd is not None:
                             _window = float(os.getenv("MARVIN_FOLLOWUP_WINDOW_SEC", "8.0"))
                             _wd.temporary_open_window(_window, reason="followup")
+
+    async def play_dual_dialogue(self, segments):
+        """🎭 [Marmo 一搭一唱] 雙段對白播放：[marvin, marmo] 按順序。
+
+        segments: list[dict]，每個 {"voice": "marvin"|"marmo", "text": "..."}。
+        順序強制 marvin → marmo 由 services/dialogue_generation.py 確保，
+        此處只負責照 list 順序播。
+
+        Lock 行為：每段 play_tts 各自 acquire/release playback_lock
+        （asyncio.Lock 不可重入，外層不能再包 lock）。段間有 ~ms race window
+        可能被音樂插入——PoC 接受；Phase 2 視需要再做 single-lock 重寫。
+
+        失敗處理：play_tts 拋例外（例如 voice client disconnect） → bail，
+        不繼續播下一段（避免半個 dual 造成詭異「Marvin 自言自語問空氣」）。
+        """
+        if not segments:
+            return
+
+        marmo_voice = os.getenv("MARMO_VOICE", "zh-TW-HsiaoYuNeural")
+
+        for i, seg in enumerate(segments):
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            voice_arg = marmo_voice if seg.get("voice") == "marmo" else None
+            try:
+                await self.play_tts(
+                    text,
+                    already_in_channel=True,
+                    voice=voice_arg,
+                    emotion_tag="neutral",
+                )
+            except Exception as exc:
+                logger.warning(f"🎭 [DualDialogue] play_tts 失敗 ({seg.get('voice')}): {exc}")
+                return  # 段間 bail：避免半個 dual
+
+            # 段間短停頓（不在最後一段）
+            if i < len(segments) - 1:
+                await asyncio.sleep(0.3)
 
     async def tts_flush(self):
         """🗑️ [TTS Flush] 立即停止當前 TTS 並清空待播佇列。由 owner 指令觸發。
