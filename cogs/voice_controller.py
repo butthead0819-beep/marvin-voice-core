@@ -72,7 +72,8 @@ from hotswap_coordinator import HotSwapCoordinator
 from hotswap_loudness import (
     LOUDNORM_TARGET, build_stream2_music_filter, parse_loudnorm_measurement,
 )
-from hotswap_eligibility import is_hotswap_eligible
+from hotswap_eligibility import MAX_HOTSWAP_CHARS, is_hotswap_eligible
+from utterance_budget import STREAM_BUDGET
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
@@ -3430,7 +3431,20 @@ class VoiceController(commands.Cog):
         cjk = sum(1 for c in text if '一' <= c <= '鿿')
         return "en" if latin > cjk * 2 else "zh"
 
-    async def _play_ack_sound(self, speaker: str = "", ack_type: str = "general"):
+    def _midsong_hotswap_active(self, allow_hotswap: bool) -> bool:
+        """播歌中途熱切換注入的前置條件：呼叫端 opt-in + feature flag + 有 live stream 游標。
+
+        內容閘（長度/類型）由呼叫端另判——play_tts 加 is_hotswap_eligible，ack 音效本身已短。
+        """
+        return (
+            allow_hotswap
+            and os.getenv("MARVIN_MIDSONG_HOTSWAP_ENABLED", "false").lower() == "true"
+            and self.stream_mode
+            and self._stream_position_source is not None
+            and bool(self._current_stream_url)
+        )
+
+    async def _play_ack_sound(self, speaker: str = "", ack_type: str = "general", allow_hotswap: bool = False):
         """播放預存 ack 音效。
         ack_type=general    → assets/acks/（一般喚醒，厭世風 marvin）
         ack_type=music      → assets/acks/music/（音樂播放確認，專業 DJ，4 字內）
@@ -3462,6 +3476,11 @@ class VoiceController(commands.Cog):
 
         if files:
             ack_file = os.path.join(ack_dir, random.choice(files))
+            # 🎚️ [Mid-song HotSwap] 播歌中 + opt-in → 走中途熱切換注入（ack mp3 當 stream2 input 0），
+            # 不打斷音樂。否則照舊：等 voice_client 空檔直接 play（播歌中會等不到 → 等同丟棄）。
+            if self._midsong_hotswap_active(allow_hotswap):
+                if await self._arm_hotswap(ack_file):
+                    return
             # 等 filler 播完再接 ack，讓兩段自然銜接
             waited = 0
             while voice_client.is_playing() and waited < 4.0:
@@ -3482,7 +3501,7 @@ class VoiceController(commands.Cog):
                 if is_en else
                 ["嗯。。。", "好吧。。。", "我在聽。", "嗯嗯。。。"]
             )
-            await self.play_tts(random.choice(ack_texts), allow_hotswap=True)
+            await self.play_tts(random.choice(ack_texts), allow_hotswap=allow_hotswap)
 
     async def _confirmation_flow(self, speaker: str, wake_time: float, initial_text: str = "") -> str | None:
         """
@@ -4064,7 +4083,10 @@ class VoiceController(commands.Cog):
                 speaker, query,
                 history=history,
                 online_members=online_members,
-                emotion_tag=emotion_tag
+                emotion_tag=emotion_tag,
+                stream_active=self.stream_mode,
+                game_mode=self.game_mode,
+                hot_chat=self._room_mood_store.get(0).hot_chat,
             )
         # 🧠 [CoT Router] 過濾 <think>...</think> 內心獨白後再送入句子分割器
         filtered_stream = self._cot_filter_stream(llm_stream)
@@ -4162,6 +4184,15 @@ class VoiceController(commands.Cog):
                 replacement = random.choice(_WEAK_REPLACEMENTS)
                 logger.info(f"🔕 [Weak Filter] 偵測到弱回應『{full_text}』，替換為 in-character 台詞。")
                 full_text = replacement
+
+            # 🎚️ [Mid-song Answer] 音樂中逐句 play_tts 本就被 Stream Guard 靜音；收完整段後，
+            # 若整段夠短（≤ STREAM_BUDGET，= B 給 LLM 的音樂字數預算）一次性走熱切換注入發聲，
+            # 過長則維持靜音、只留貼文。短答案才聽得到，避免長答案佔用音樂太久。
+            if self.stream_mode and not tts_suppressed and full_text:
+                asyncio.create_task(self.play_tts(
+                    full_text, already_in_channel=True, emotion_tag=emotion_tag,
+                    allow_hotswap=True, hotswap_max_chars=STREAM_BUDGET,
+                ))
 
             if placeholder_msg:
                 if full_text:
@@ -4529,7 +4560,7 @@ class VoiceController(commands.Cog):
         # 🎵 [Music Ack] MusicAgent 接走 → 立刻播音樂 ack（從 acks/music/ 抽 4 字內 DJ 款）
         # 只在 play 觸發；skip/stop/pause/resume 是控制指令，用 wake-time 通用 filler 即可。
         if cmd == "play":
-            asyncio.create_task(self._play_ack_sound(speaker, ack_type="music"))
+            asyncio.create_task(self._play_ack_sound(speaker, ack_type="music", allow_hotswap=True))
         ch = self.active_text_channel
         vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
 
@@ -4717,7 +4748,7 @@ class VoiceController(commands.Cog):
 
         extra_context = f"對話脈絡：{self.bot.engine.conv_buffer.get_harvest(wake_time, before=10.0, after=0.5)}"
 
-        asyncio.create_task(self._play_ack_sound(speaker))
+        asyncio.create_task(self._play_ack_sound(speaker, allow_hotswap=True))
 
         try:
             response = await self.bot.router.analyze_tactical_situation(
@@ -5407,7 +5438,7 @@ class VoiceController(commands.Cog):
 
         return False
 
-    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False):
+    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS):
         """
         🚀 [T-02 Opt] Hyper-Streaming Version
         改用 FIFO (Named Pipe) 實現即時串流播放，首個音訊 chunk 抵達即刻輸出，
@@ -5502,13 +5533,7 @@ class VoiceController(commands.Cog):
             # 🎚️ [Mid-song HotSwap] 短即時 ack（呼叫端 opt-in allow_hotswap）可走中途熱切換
             # 注入：渲染 TTS 成檔 → arm stream2（同首歌 -ss + sidechain 混音），等待迴圈到點切換。
             # 任一條件不符（feature flag off / 太長 / 非串流游標）→ 維持原本靜音行為。
-            if (
-                allow_hotswap
-                and os.getenv("MARVIN_MIDSONG_HOTSWAP_ENABLED", "false").lower() == "true"
-                and is_hotswap_eligible(text)
-                and self._stream_position_source is not None
-                and self._current_stream_url
-            ):
+            if self._midsong_hotswap_active(allow_hotswap) and is_hotswap_eligible(text, max_chars=hotswap_max_chars):
                 try:
                     rendered = await self.bot.tts_engine.generate_audio(text, force_macos=force_macos)
                     if rendered and await self._arm_hotswap(rendered):
@@ -7140,7 +7165,7 @@ class VoiceController(commands.Cog):
 
         try:
             async with self.playback_lock:
-                vc.stop()  # stream1 停；其 after（舊世代）不會 set event
+                vc.stop_playing()  # 只停 stream1 播放，不可用 vc.stop()——它會連 stop_listening() 一起呼叫，殺掉收音 reader 導致切換後 STT 全死
                 # 等 stop 生效（最多 ~100ms）再 play，避免 discord「already playing」
                 for _ in range(20):
                     if not vc.is_playing():

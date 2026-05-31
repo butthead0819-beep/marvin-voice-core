@@ -7,6 +7,8 @@ import os
 import google.genai as genai
 from duckduckgo_search import DDGS
 
+from utterance_budget import environment_directive
+
 logger = logging.getLogger(__name__)
 
 # /set_game 清空哨兵：代表「沒有在玩遊戲」，將 current_game 清為 None。
@@ -730,7 +732,7 @@ class GeminiRouterLLMMixin:
         "neutral":    0.75,
     }
 
-    async def stream_fast_response(self, speaker: str, query: str, history: list = None, online_members: list[str] = None, temperature: float = None, emotion_tag: str = "neutral"):
+    async def stream_fast_response(self, speaker: str, query: str, history: list = None, online_members: list[str] = None, temperature: float = None, emotion_tag: str = "neutral", stream_active: bool = False, game_mode: bool = False, hot_chat: bool = False):
         """[Fast System] 極速回應流式版本：專為 TTS 串流橋接設計"""
         target_speakers = [speaker]
         if online_members:
@@ -754,9 +756,14 @@ class GeminiRouterLLMMixin:
         emotion_context = self._EMOTION_PROMPTS.get(emotion_tag, "")
         emotion_prefix = f"\n{emotion_context}" if emotion_context else ""
 
+        # 🌡️ [Env Budget] 把 stream/game/hot_chat 硬訊號翻成明確字數指令，讓 fast_awakening
+        # 既有的分級 budget 由「LLM 猜有沒有在活動」變「確定」。無特殊環境回 ""，正常回應不受影響。
+        env_directive = environment_directive(stream_active=stream_active, game_mode=game_mode, hot_chat=hot_chat)
+
         base_user_prompt = (
             f"{game_context}{history_str}\n"
             f"【現場狀況：玩家 {speaker} 正對你說話】{emotion_prefix}\n"
+            f"{env_directive}"
             f"【核心 Query】『{query}』\n"
             "【輸出契約】\n"
             "1. 只回答【核心 Query】，不要回答最近對話紀錄裡的其他句子。\n"

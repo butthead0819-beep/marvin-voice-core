@@ -50,3 +50,10 @@ def test_custom_max_chars():
 
 def test_none_text_not_eligible():
     assert is_hotswap_eligible(None) is False
+
+
+def test_music_answer_eligible_up_to_stream_budget():
+    """音樂中完整答案用音樂字數預算（STREAM_BUDGET）當熱切換閘：剛好等於預算可發聲，超過則否。"""
+    from utterance_budget import STREAM_BUDGET
+    assert is_hotswap_eligible("字" * STREAM_BUDGET, max_chars=STREAM_BUDGET) is True
+    assert is_hotswap_eligible("字" * (STREAM_BUDGET + 1), max_chars=STREAM_BUDGET) is False
