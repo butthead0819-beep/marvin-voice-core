@@ -70,7 +70,8 @@ from intent_agents.rescue_classifier import build_rescue_components
 from audio_position_source import PositionTrackingAudioSource
 from hotswap_coordinator import HotSwapCoordinator
 from hotswap_loudness import (
-    LOUDNORM_TARGET, build_stream2_music_filter, parse_loudnorm_measurement,
+    LOUDNORM_TARGET, build_stream2_music_filter, build_volume_swap_af,
+    parse_loudnorm_measurement,
 )
 from hotswap_eligibility import MAX_HOTSWAP_CHARS, is_hotswap_eligible
 from utterance_budget import STREAM_BUDGET
@@ -766,6 +767,7 @@ class VoiceController(commands.Cog):
         self._stream_position_source = None       # 當前 PositionTrackingAudioSource（讀播放位置）
         self._current_stream_url = None           # 當前串流 URL（備 stream2 用）
         self._stream_loudness: dict[str, dict] = {}  # url → loudnorm 量測值（Slice 2 音量匹配）
+        self._pending_volume_swap = False         # 語音調音量後，等當前 swap 完再 arm 一次音量 swap（排隊）
         self.stream_queue = []           # list of {title, uploader, url, thumbnail, webpage_url, duration}
         self.stream_task = None
         self._current_stream_info = None
@@ -7110,6 +7112,10 @@ class VoiceController(commands.Cog):
                 # 🎚️ [HotSwap] 持 lock 外的等待迴圈內檢查切換（避開整首歌持 lock 的 deadlock）
                 if self._hotswap_coord.ready_to_swap(self._stream_position_source.position_seconds):
                     await self._do_hotswap(vc, current_loop, play_done_event)
+                elif self._pending_volume_swap and not self._hotswap_coord.is_busy:
+                    # 語音調音量排隊中 + coordinator 空 → arm 一次音量 swap（用當前 stream_volume）
+                    self._pending_volume_swap = False
+                    await self._arm_volume_swap()
                 await asyncio.sleep(0.1)
             self._stream_position_source = None  # 歌結束，清游標
 
@@ -7233,6 +7239,45 @@ class VoiceController(commands.Cog):
         )
         self._hotswap_coord.set_stream2_ready(src2)
         logger.info(f"🎚️ [HotSwap] armed: abs_pos={pos:.1f}s → target={target:.1f}s, tts={os.path.basename(tts_path)}")
+        return True
+
+    def request_volume_swap(self) -> None:
+        """語音調 stream_volume 後，請求一次中途熱切換讓新音量即時生效（排隊式）。
+
+        只標 flag，實際 arm 由播放等待迴圈在 coordinator 不忙時做（避免 clobber 進行中的
+        TTS / 音量 swap）。串流烤死 ffmpeg volume 無法即時調，PCMVolumeTransformer 又會傷
+        音質（低音量量化），故用 second-stream 重 render。hotswap 未開 → 不標，退回次首生效。
+        """
+        if self._midsong_hotswap_active(True):
+            self._pending_volume_swap = True
+
+    async def _arm_volume_swap(self, lead: float = 2.5) -> bool:
+        """備好 stream2 = 同首歌 -ss 到當前位置 + 當前 stream_volume，arm coordinator。
+
+        無 TTS、無 ducking，純換音量。lead 比 TTS（4.0）短，因不需預混 TTS，只等 ffmpeg
+        spin-up + seek。回傳是否成功 arm（非串流 / coordinator 忙 → False）。
+        """
+        src = self._stream_position_source
+        if src is None or not self._current_stream_url:
+            return False
+        if self._hotswap_coord.is_busy:
+            return False
+        import shlex
+        pos = src.position_seconds
+        target = pos + lead
+        self._hotswap_coord.request(target)
+        af = build_volume_swap_af(self._stream_loudness.get(self._current_stream_url), self.stream_volume)
+        before_opts = (
+            f"-ss {target:.2f} -reconnect 1 -reconnect_streamed 1 "
+            "-reconnect_delay_max 5 -probesize 32M"
+        )
+        options = f"-vn -bufsize 512k -af {shlex.quote(af)}"
+        src2 = PositionTrackingAudioSource(
+            discord.FFmpegPCMAudio(self._current_stream_url, before_options=before_opts, options=options),
+            initial_offset=target,
+        )
+        self._hotswap_coord.set_stream2_ready(src2)
+        logger.info(f"🎚️ [VolumeSwap] armed: abs_pos={pos:.1f}s → target={target:.1f}s, vol={int(self.stream_volume*100)}%")
         return True
 
     def _extract_song_metadata(self, file_path: str):

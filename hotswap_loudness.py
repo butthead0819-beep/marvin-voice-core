@@ -47,13 +47,28 @@ def build_stream2_music_filter(measured: dict | None, vol: float) -> str:
     無 → 固定 volume（Slice 1 fallback）。兩者都不加 afade（實聽證實 afade 放大爆音）。
     """
     if measured:
-        ln = (
-            f"loudnorm={LOUDNORM_TARGET}:linear=true"
-            f":measured_I={measured['input_i']}"
-            f":measured_TP={measured['input_tp']}"
-            f":measured_LRA={measured['input_lra']}"
-            f":measured_thresh={measured['input_thresh']}"
-            f":offset={measured['target_offset']}"
-        )
-        return f"[1:a]{ln},volume={vol:.3f}[music]"
+        return f"[1:a]{_linear_loudnorm(measured)},volume={vol:.3f}[music]"
     return f"[1:a]volume={vol:.3f}[music]"
+
+
+def _linear_loudnorm(measured: dict) -> str:
+    """linear loudnorm（常數增益、無暫態、匹配 stream1 -14 target）的 filter 字串。"""
+    return (
+        f"loudnorm={LOUDNORM_TARGET}:linear=true"
+        f":measured_I={measured['input_i']}"
+        f":measured_TP={measured['input_tp']}"
+        f":measured_LRA={measured['input_lra']}"
+        f":measured_thresh={measured['input_thresh']}"
+        f":offset={measured['target_offset']}"
+    )
+
+
+def build_volume_swap_af(measured: dict | None, vol: float) -> str:
+    """語音調音量即時生效用的單輸入 `-af` 字串（stream2 = 同首歌 -ss + 新音量，無 TTS）。
+
+    無 ducking 遮接縫 → stream2 必須跟 stream1 同響度行為：有量測用 linear loudnorm 匹配，
+    無量測 fallback **保留** dynamic loudnorm（對齊 play_stream_song line 7081），不像 TTS
+    路徑直接裸 volume（那條靠 ducking 蓋掉瞬間響度差，這條沒有）。
+    """
+    ln = _linear_loudnorm(measured) if measured else f"loudnorm={LOUDNORM_TARGET}"
+    return f"{ln},volume={vol:.3f}"

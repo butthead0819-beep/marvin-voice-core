@@ -153,8 +153,8 @@ async def test_handler_volume_down_decreases_stream_volume():
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("小聲一點"))
     await bid.handler()
-    # 0.20 - 0.05 = 0.15
-    assert ctrl.stream_volume == pytest.approx(0.15)
+    # 語音步進 10%：0.20 - 0.10 = 0.10
+    assert ctrl.stream_volume == pytest.approx(0.10)
 
 
 async def test_handler_volume_up_increases_stream_volume():
@@ -163,16 +163,17 @@ async def test_handler_volume_up_increases_stream_volume():
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("大聲一點"))
     await bid.handler()
-    assert ctrl.stream_volume == pytest.approx(0.25)
+    # 0.20 + 0.10 = 0.30
+    assert ctrl.stream_volume == pytest.approx(0.30)
 
 
 async def test_handler_clamps_to_vol_min():
     from intent_agents.volume_agent import VolumeAgent
-    ctrl = _ctrl(stream_mode=True, stream_volume=0.02)
+    ctrl = _ctrl(stream_mode=True, stream_volume=0.05)
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("小聲一點"))
     await bid.handler()
-    # 0.02 - 0.05 = -0.03 → clamp to VOL_MIN=0.01
+    # 0.05 - 0.10 = -0.05 → clamp to VOL_MIN=0.01
     assert ctrl.stream_volume == pytest.approx(0.01)
 
 
@@ -205,9 +206,32 @@ async def test_handler_radio_mode_adjusts_radio_volume():
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("大聲一點"))
     await bid.handler()
-    assert ctrl.radio_volume == pytest.approx(0.25)
+    assert ctrl.radio_volume == pytest.approx(0.30)
     # stream_volume 不該被動到
     assert ctrl.stream_volume == pytest.approx(0.10)
+
+
+# ── handler: stream_mode 調音量後排一次中途熱切換讓新音量即時生效 ──────────────
+
+
+async def test_handler_stream_requests_volume_swap():
+    """stream_mode 調音量 → 請求 second-stream 重 render（排隊套用新音量）。"""
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True, stream_volume=0.20)
+    agent = VolumeAgent(ctrl)
+    bid = agent.bid(_ctx("小聲一點"))
+    await bid.handler()
+    ctrl.request_volume_swap.assert_called_once()
+
+
+async def test_handler_radio_does_not_request_volume_swap():
+    """radio_mode 用 PCMVolumeTransformer 已即時生效，不需熱切換。"""
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=False, radio_mode=True, radio_volume=0.20)
+    agent = VolumeAgent(ctrl)
+    bid = agent.bid(_ctx("大聲一點"))
+    await bid.handler()
+    ctrl.request_volume_swap.assert_not_called()
 
 
 # ── handler: ack ──────────────────────────────────────────────────────────

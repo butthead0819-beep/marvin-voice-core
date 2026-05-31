@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 
-from hotswap_loudness import build_stream2_music_filter, parse_loudnorm_measurement
+from hotswap_loudness import (
+    build_stream2_music_filter, build_volume_swap_af, parse_loudnorm_measurement,
+)
 
 
 _GOOD_JSON = {
@@ -82,3 +84,34 @@ def test_filter_no_transient_no_afade():
     """linear loudnorm 是常數增益、無暫態；filter 不該含 afade（實聽證實 afade 放大爆音）。"""
     fc = build_stream2_music_filter(_GOOD_JSON, vol=0.10)
     assert "afade" not in fc
+
+
+# ── volume swap -af（語音調音量即時生效，stream2 純換音量、無 TTS）────────────────
+
+def test_volume_swap_af_uses_linear_loudnorm_when_measured():
+    """有量測 → linear loudnorm 匹配 + 新音量。單輸入 -af，無 [1:a]/[music] 標籤。"""
+    af = build_volume_swap_af(_GOOD_JSON, vol=0.20)
+    assert "loudnorm" in af
+    assert "linear=true" in af
+    assert "measured_I=-9.52" in af
+    assert "measured_thresh=-19.87" in af
+    assert "offset=0.12" in af
+    assert "volume=0.200" in af
+    assert "[1:a]" not in af
+    assert "[music]" not in af
+
+
+def test_volume_swap_af_keeps_dynamic_loudnorm_when_no_measurement():
+    """量測沒好 → 仍保 dynamic loudnorm（對齊 stream1 line 7081），不像 TTS 路徑裸 volume。
+
+    音量 swap 無 ducking 遮接縫，stream2 必須跟 stream1 同響度行為，故 fallback 保 loudnorm。
+    """
+    af = build_volume_swap_af(None, vol=0.20)
+    assert "loudnorm=I=-14:TP=-1.5:LRA=11" in af
+    assert "volume=0.200" in af
+    assert "linear=true" not in af
+
+
+def test_volume_swap_af_no_afade():
+    af = build_volume_swap_af(_GOOD_JSON, vol=0.10)
+    assert "afade" not in af

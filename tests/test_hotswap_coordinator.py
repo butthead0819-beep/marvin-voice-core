@@ -107,3 +107,24 @@ def test_second_request_overrides_first():
     c.set_stream2_ready("s2")
     assert c.ready_to_swap(current_position=96.0) is False   # 舊 target 95 不算
     assert c.ready_to_swap(current_position=120.0) is True    # 新 target 120
+
+
+def test_is_busy_tracks_pending_or_swapping():
+    """is_busy = 有 pending target 或正在 swapping。音量 swap 用它判斷該「排隊」還是現在 arm。"""
+    c = HotSwapCoordinator()
+    assert c.is_busy is False                 # idle
+    c.request(target_seconds=95.0)
+    assert c.is_busy is True                   # armed（target 在但還沒切）
+    c.set_stream2_ready("s2")
+    assert c.is_busy is True                   # ready 仍算 busy
+    c.begin_swap()
+    assert c.is_busy is True                    # swapping
+    c.finish_swap()
+    assert c.is_busy is False                   # 回 idle，可排下一個
+
+
+def test_is_busy_false_after_abort():
+    c = HotSwapCoordinator()
+    c.request(target_seconds=95.0)
+    c.abort()
+    assert c.is_busy is False

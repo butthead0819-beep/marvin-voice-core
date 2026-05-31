@@ -13,7 +13,8 @@ Gate：stream_mode 與 radio_mode 都沒開 → dense zero with "no_playback_act
       （避免「我想小聲一點地講話」誤觸發）。
 
 Handler：
-  stream_mode → 調 controller.stream_volume（次首生效，對齊既有 UI 按鈕行為）
+  stream_mode → 調 controller.stream_volume，再 request_volume_swap() 排一次 second-stream
+                重 render 讓新音量即時生效（hotswap 關 → 退回次首生效）。步進 10%。
   radio_mode  → 調 controller.radio_volume（_radio_volume_fade_loop 即時觀察）
   mute → 設為 VOL_MIN
 """
@@ -27,6 +28,9 @@ from intent_bus import IntentContext
 
 logger = logging.getLogger(__name__)
 
+
+# 語音步進 10%（按鈕 UI 維持 PlayControlView.VOL_STEP=0.05，兩者刻意不同）。
+VOICE_VOL_STEP = 0.10
 
 _ACK_TEXT = {
     "volume_down": "好，調小",
@@ -84,18 +88,26 @@ class VolumeAgent(DeclarativeIntentAgent):
 
         async def _handler() -> None:
             try:
-                self._apply_volume(intent)
+                target_attr = self._apply_volume(intent)
             except Exception:
                 logger.exception(f"[Volume] {intent} apply failed")
+                target_attr = None
+            # stream_mode：ffmpeg 烤死音量無法即時調，排一次 second-stream 重 render 套用新音量。
+            # radio_mode：PCMVolumeTransformer 已即時生效，不需熱切換。
+            if target_attr == "stream_volume":
+                try:
+                    self.ctrl.request_volume_swap()
+                except Exception:
+                    logger.exception("[Volume] request_volume_swap failed")
             await self._ack(intent)
 
         return _handler
 
-    def _apply_volume(self, intent: str) -> None:
+    def _apply_volume(self, intent: str) -> str | None:
+        """套用音量變更，回傳實際被調的屬性名（"stream_volume" / "radio_volume"）；無變更回 None。"""
         ctrl = self.ctrl
         vol_min = getattr(ctrl, "VOL_MIN", 0.01)
         vol_max = getattr(ctrl, "VOL_MAX", 1.00)
-        vol_step = getattr(ctrl, "VOL_STEP", 0.05)
 
         # radio_mode 優先（即時 fade loop 生效）；否則 stream_mode 改 stream_volume。
         target_attr = "radio_volume" if getattr(ctrl, "radio_mode", False) else "stream_volume"
@@ -104,14 +116,15 @@ class VolumeAgent(DeclarativeIntentAgent):
         if intent == "volume_mute":
             new_val = vol_min
         elif intent == "volume_down":
-            new_val = max(vol_min, round(current - vol_step, 2))
+            new_val = max(vol_min, round(current - VOICE_VOL_STEP, 2))
         elif intent == "volume_up":
-            new_val = min(vol_max, round(current + vol_step, 2))
+            new_val = min(vol_max, round(current + VOICE_VOL_STEP, 2))
         else:
-            return
+            return None
 
         setattr(ctrl, target_attr, new_val)
         logger.info(f"[Volume] {intent} → {target_attr}={new_val:.2f}")
+        return target_attr
 
     async def _ack(self, intent: str) -> None:
         try:

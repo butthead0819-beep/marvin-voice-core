@@ -60,3 +60,8 @@ class HotSwapCoordinator:
     @property
     def is_swapping(self) -> bool:
         return self._swapping
+
+    @property
+    def is_busy(self) -> bool:
+        """有 pending target 或正在 swapping → 不能再 arm 新插話（音量 swap 據此排隊）。"""
+        return self._target is not None or self._swapping
