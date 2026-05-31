@@ -72,6 +72,7 @@ from hotswap_coordinator import HotSwapCoordinator
 from hotswap_loudness import (
     LOUDNORM_TARGET, build_stream2_music_filter, parse_loudnorm_measurement,
 )
+from hotswap_eligibility import is_hotswap_eligible
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
@@ -3481,7 +3482,7 @@ class VoiceController(commands.Cog):
                 if is_en else
                 ["嗯。。。", "好吧。。。", "我在聽。", "嗯嗯。。。"]
             )
-            await self.play_tts(random.choice(ack_texts))
+            await self.play_tts(random.choice(ack_texts), allow_hotswap=True)
 
     async def _confirmation_flow(self, speaker: str, wake_time: float, initial_text: str = "") -> str | None:
         """
@@ -5406,7 +5407,7 @@ class VoiceController(commands.Cog):
 
         return False
 
-    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1):
+    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False):
         """
         🚀 [T-02 Opt] Hyper-Streaming Version
         改用 FIFO (Named Pipe) 實現即時串流播放，首個音訊 chunk 抵達即刻輸出，
@@ -5498,6 +5499,23 @@ class VoiceController(commands.Cog):
         # 🎵 [Stream Guard] 串流播放中不打斷音樂，直接靜音 TTS
         # _tts_protected=True 允許切歌空檔的 DJ 播報繞過此 guard
         if self.stream_mode and not self._tts_protected:
+            # 🎚️ [Mid-song HotSwap] 短即時 ack（呼叫端 opt-in allow_hotswap）可走中途熱切換
+            # 注入：渲染 TTS 成檔 → arm stream2（同首歌 -ss + sidechain 混音），等待迴圈到點切換。
+            # 任一條件不符（feature flag off / 太長 / 非串流游標）→ 維持原本靜音行為。
+            if (
+                allow_hotswap
+                and os.getenv("MARVIN_MIDSONG_HOTSWAP_ENABLED", "false").lower() == "true"
+                and is_hotswap_eligible(text)
+                and self._stream_position_source is not None
+                and self._current_stream_url
+            ):
+                try:
+                    rendered = await self.bot.tts_engine.generate_audio(text, force_macos=force_macos)
+                    if rendered and await self._arm_hotswap(rendered):
+                        if not already_in_channel and self.active_text_channel:
+                            asyncio.create_task(self.active_text_channel.send(f"🎚️ {text}"))
+                except Exception as e:
+                    logger.warning(f"⚠️ [HotSwap] 中途注入失敗，維持靜音: {e}")
             return
         
         # [Fix 1] 移除 0.4s 防抖延遲
@@ -7139,16 +7157,28 @@ class VoiceController(commands.Cog):
     async def _debug_trigger_hotswap(self, tts_path: str, lead: float = 4.0):
         """[Slice 1 debug] 手動觸發一次中途 TTS 熱切換驗證機制。正常流程不呼叫。
 
-        備好 stream2（同首歌 -ss 到 target + TTS sidechain 混音、volume-matched、
-        無 loudnorm、無 afade），arm coordinator，等待迴圈到點自動切換。
+        正常流程走 _arm_hotswap（play_tts 的 Stream Guard 分支）；此 debug 入口只多做
+        「檔案存在」檢查後委派，供 /hotswap_test slash command 用。
+        """
+        if not os.path.exists(tts_path):
+            logger.warning(f"⚠️ [HotSwap] TTS 檔不存在: {tts_path}")
+            return
+        await self._arm_hotswap(tts_path, lead=lead)
+
+    async def _arm_hotswap(self, tts_path: str, lead: float = 4.0) -> bool:
+        """備好 stream2 並 arm coordinator，等待迴圈到點自動切換。回傳是否成功 arm。
+
+        stream2 = 同首歌 -ss 到 target + TTS sidechain 混音、volume-matched（Slice 2
+        linear loudnorm，無則固定音量 fallback）、無 afade（實聽證實 afade 反放大爆音）。
+        target = 當前絕對播放位置 + lead；lead 需涵蓋 stream2 ffmpeg spin-up + 安全邊際。
         """
         src = self._stream_position_source
         if src is None or not self._current_stream_url:
             logger.warning("⚠️ [HotSwap] 非串流播放中，無法觸發")
-            return
-        if not os.path.exists(tts_path):
-            logger.warning(f"⚠️ [HotSwap] TTS 檔不存在: {tts_path}")
-            return
+            return False
+        if self._hotswap_coord.is_swapping:
+            logger.info("⏩ [HotSwap] 已有切換進行中，跳過此次插話")
+            return False
         import shlex
         pos = src.position_seconds
         target = pos + lead
@@ -7178,6 +7208,7 @@ class VoiceController(commands.Cog):
         )
         self._hotswap_coord.set_stream2_ready(src2)
         logger.info(f"🎚️ [HotSwap] armed: abs_pos={pos:.1f}s → target={target:.1f}s, tts={os.path.basename(tts_path)}")
+        return True
 
     def _extract_song_metadata(self, file_path: str):
         """
