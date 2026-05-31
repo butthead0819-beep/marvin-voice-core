@@ -508,12 +508,14 @@ def merge_player(existing: dict, updated: dict) -> dict:
             }
 
         elif key == "emotional_highlights" and isinstance(val, list):
-            old = existing.get("emotional_highlights", [])
-            # dedup by (moment, int(timestamp)) — 避免 int/float timestamp 漏判
+            # 防腐：早期版本或 Gemini 偶發給裸 str（如 '焦慮'），過濾後再 dedup，
+            # 否則 _key().get() 會 AttributeError 中止整個 merge（5/24 incident）。
+            old = [e for e in existing.get("emotional_highlights", []) if isinstance(e, dict)]
+            val_dicts = [e for e in val if isinstance(e, dict)]
             def _key(e):
                 return (e.get("moment", ""), int(e.get("timestamp", 0) or 0))
             old_keys = {_key(e) for e in old}
-            combined = old + [e for e in val if _key(e) not in old_keys]
+            combined = old + [e for e in val_dicts if _key(e) not in old_keys]
             combined.sort(key=lambda x: x.get("timestamp", 0))
             merged["emotional_highlights"] = combined[-10:]
 
