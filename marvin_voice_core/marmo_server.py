@@ -1,5 +1,6 @@
 import hmac
 import os
+import time
 import asyncio
 import logging
 from aiohttp import web
@@ -9,6 +10,15 @@ logger = logging.getLogger("MarvinBot.MarmoServer")
 MARMO_PORT = int(os.getenv("MARMO_PORT", "8765"))
 MARMO_VOICE = os.getenv("MARMO_VOICE", "en-US-GuyNeural")
 MARMO_TOKEN = os.getenv("MARMO_TOKEN", "")
+
+
+def _dual_speak_enabled() -> bool:
+    """env MARMO_DUAL_SPEAK gate（每次讀，hot-flippable）。
+
+    開啟條件：MARMO_DUAL_SPEAK in {"1", "true", "yes"}（大小寫不敏感）。
+    其他值或未設 → False（保持既有 play_tts 直接路徑）。
+    """
+    return os.getenv("MARMO_DUAL_SPEAK", "").strip().lower() in ("1", "true", "yes")
 
 
 class MarmoServer:
@@ -50,6 +60,37 @@ class MarmoServer:
             self._seen_jobs.add(job_id)
             if len(self._seen_jobs) > 200:
                 self._seen_jobs.pop()  # evicts arbitrary element (best-effort dedup)
+
+        # 🎭 [Marmo 一搭一唱 T9] env MARMO_DUAL_SPEAK=true 走 IntentBus dispatch；
+        # bus 不可用（vc._intent_bus 是 None / 沒這 attr）→ fallback 走既有 play_tts。
+        # Flag off → 完全不走這條，等同改動前行為。
+        if _dual_speak_enabled():
+            bus = getattr(self._vc, "_intent_bus", None)
+            if bus is not None:
+                from intent_bus import IntentContext
+                stream_active = bool(getattr(self._vc, "stream_mode", False))
+                ctx = IntentContext(
+                    speaker="marmo_server",
+                    raw_text=text, query=text, original_raw=None,
+                    wake_intent=None,
+                    stream_active=stream_active,
+                    game_mode=False,  # 上方 gate 已守
+                    is_owner=False,
+                    now=time.time(),
+                    mode=("stream" if stream_active else "normal"),
+                    dispatch_source="marmo_inject",
+                    payload={"text": text, "job_id": job_id},
+                )
+                dispatch_task = asyncio.create_task(bus.dispatch(ctx))
+
+                def _log_dispatch_exc(t: asyncio.Task):
+                    exc = t.exception()
+                    if exc:
+                        logger.error(f"[MarmoServer] bus.dispatch raised: {exc}", exc_info=exc)
+
+                dispatch_task.add_done_callback(_log_dispatch_exc)
+                return web.Response(text="ok")
+            logger.warning("[MarmoServer] MARMO_DUAL_SPEAK on but vc._intent_bus 不可用、fallback play_tts")
 
         task = asyncio.create_task(
             self._vc.play_tts(text, already_in_channel=True, voice=MARMO_VOICE, emotion_tag="neutral")
