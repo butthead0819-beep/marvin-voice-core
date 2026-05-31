@@ -80,6 +80,20 @@ CHARACTER_PRESETS = {
         },
         "legacy": {"toxicity": 2, "helpfulness": 8, "randomness": 1},
     },
+    "marmo": {
+        "display_name": "馬末",
+        "persona_tag": "代用戶打斷者馬末",
+        "voice_summary": "看到馬文又跑題就立刻打斷、站使用者立場、用日常語言反擊。不嘴賤外人，只嘴賤馬文跟自言自語的廢話。",
+        "axes": {
+            "oppression": 0.15,
+            "resignation": 0.10,
+            "compassion": 0.15,
+            "sarcasm": 0.95,
+            "directness": 0.95,
+            "verbosity": 0.20,
+        },
+        "legacy": {"toxicity": 6, "helpfulness": 7, "randomness": 4},
+    },
 }
 
 
