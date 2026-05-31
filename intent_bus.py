@@ -54,12 +54,18 @@ class IntentContext:
     depth: int = 0
     # LLM rescue 路徑帶的「真正意圖」訊號（surface vs pragmatic）。regex 命中時
     # 為預設值；agent handler 用 None 判斷「這次不需要消化語用訊號」。
-    # dispatch_source: "regex"（regex agent 直接命中）/ "llm_rescue"（LLM 改寫後重投）
+    # dispatch_source:
+    #   "regex"        — wake → regex agent 直接命中
+    #   "llm_rescue"   — LLM 改寫後重投
+    #   "marmo_inject" — marmo_server HTTP webhook 非 wake 注入（dual-speak PoC）
     # pragmatic_signal: "positive" / "negative" / "neutral" / None
     # pragmatic_target: handler 該對什麼物件 apply signal（e.g. "current_song" / "last_reply"）
     dispatch_source: str = "regex"
     pragmatic_signal: str | None = None
     pragmatic_target: str | None = None
+    # 非 wake source 注入意圖時帶的 payload（如 marmo_server 帶 marmo_text / job_id）。
+    # 一般 wake 路徑為 None；agent 自行判斷 dispatch_source 後讀 payload。
+    payload: dict | None = None
 
 
 @dataclass
