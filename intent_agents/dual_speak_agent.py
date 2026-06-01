@@ -85,11 +85,16 @@ class DualSpeakAgent(DeclarativeIntentAgent):
         )
 
     async def _handle(self, *, vc, marmo_text: str) -> None:
-        """Handler 內：呼叫 LLM 生對白、成功播雙段、失敗 fallback 單 Marvin。"""
+        """Handler 內：呼叫 LLM 生對白、成功播雙段、失敗 fallback 單 Marvin。
+
+        webhook 進來 = Marmo 主動有內容要報 → 走 marmo_lead pattern
+        （Marmo 先講內容、Marvin 後感慨），順序 [marmo, marvin]。
+        """
         try:
             segments = await generate_dual_dialogue(
-                marmo_text=marmo_text,
+                content_text=marmo_text,
                 llm_fn=self.llm_fn,
+                pattern="marmo_lead",
             )
         except Exception as exc:
             # 防禦性：generate_dual_dialogue 已 catch 內部例外回 None，但保險

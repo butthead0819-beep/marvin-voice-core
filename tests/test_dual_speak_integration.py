@@ -72,13 +72,13 @@ async def test_marmo_inject_to_dual_dialogue_full_path():
     _, user_prompt = llm_fn.call_args.args
     assert "找到了第 7083 行" in user_prompt
 
-    # play_dual_dialogue 應收到順序 [marvin, marmo] 的 segments
+    # marmo_inject 走 marmo_lead pattern → 順序 [marmo, marvin]（Marmo 報事先、Marvin 感慨後）
     vc.play_dual_dialogue.assert_awaited_once()
     segments = vc.play_dual_dialogue.call_args.args[0]
     assert len(segments) == 2
-    assert segments[0]["voice"] == "marvin"
-    assert segments[1]["voice"] == "marmo"
-    assert segments[1]["text"] == "閉嘴他要結果。"
+    assert segments[0]["voice"] == "marmo"
+    assert segments[1]["voice"] == "marvin"
+    assert segments[0]["text"] == "閉嘴他要結果。"
 
     # play_tts (fallback) 不該被呼叫
     vc.play_tts.assert_not_called()
