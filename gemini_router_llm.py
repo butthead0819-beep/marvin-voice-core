@@ -327,10 +327,11 @@ class GeminiRouterLLMMixin:
         # 6/2：把 .env 已有 key 但原本沒 agent 的 3 個 OpenAI-compat provider 接進來
         # （Groq+Cerebras 雙 429 時無人接 → 喚醒拿不到 LLM 的事故）。priority > Cerebras(15)
         # → 當備援，平時讓快又熟的兩家先接。
-        # together 6/2 實測回 402（要付費、無免費額度）→ 不註冊。sambanova/openrouter
-        # 各有獨立 free quota pool，跟 Groq/Cerebras 分攤 RPM。
+        # together 6/2 實測回 402（要付費、無免費額度）→ 不註冊。其餘各有獨立 free quota
+        # pool，跟 Groq/Cerebras 分攤 RPM。gemini_free（GOOGLE_API_KEY）走 OpenAI-compat
+        # 端點、flash-lite 快又穩，priority 18 排 Cerebras 之後當第三主力。
         from llm_agents.openai_compat_agent import OpenAICompatAgent
-        for _pname, _prio in (("sambanova", 20), ("openrouter", 21)):
+        for _pname, _prio in (("gemini_free", 18), ("sambanova", 20), ("openrouter", 21)):
             if quota.endpoint(f"{_pname}-quick") is not None or quota.endpoint(f"{_pname}-analyze") is not None:
                 agents.append(OpenAICompatAgent(quota, provider_name=_pname, priority=_prio))
         # Phase 3 在此加 GeminiAgent (不同 SDK, google.genai 非 OpenAI-compat)；

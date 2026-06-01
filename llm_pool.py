@@ -246,6 +246,11 @@ _PROVIDERS: list[ProviderSpec] = [
     # 末位 fallback），analyze 用免費 llama-3.3-70b。同 llama 家族保 cleaner prompt 一致性。
     ProviderSpec("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1",
                  "meta-llama/llama-3.2-3b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free"),
+    # Gemini free tier（GOOGLE_API_KEY）走官方 OpenAI-compat 端點。獨立每日 quota，
+    # 跟 Groq/Cerebras 分攤。6/2 加：flash-lite 快、免費。付費 Gemini 另走 _call_cloud C 兜底。
+    ProviderSpec("gemini_free", "GOOGLE_API_KEY",
+                 "https://generativelanguage.googleapis.com/v1beta/openai/",
+                 "gemini-2.0-flash-lite", "gemini-2.0-flash"),
 ]
 
 
