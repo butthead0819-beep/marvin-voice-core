@@ -99,3 +99,19 @@ class TranscriptStore:
             return [r[0] for r in rows]
         finally:
             self._release(con)
+
+    def prune(self, retention_days: int = 14, now: float | None = None) -> int:
+        """寬放 ZDR：刪除超過 retention_days 的原文，回傳刪除筆數。
+
+        安全性：live bot 讀 raw transcript 的最長回看是 profile_compressor 的 7 天，
+        retention_days=14 留足緩衝，prune 不影響任何即時行為。長期語意記憶由向量庫
+        負責（不在此表）。邊界用嚴格小於，避免誤刪剛好落在 cutoff 的近期資料。
+        """
+        cutoff = (now if now is not None else time.time()) - retention_days * 86400
+        con = self._connect()
+        try:
+            cur = con.execute("DELETE FROM transcripts WHERE timestamp < ?", (cutoff,))
+            con.commit()
+            return cur.rowcount
+        finally:
+            self._release(con)

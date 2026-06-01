@@ -99,3 +99,38 @@ def test_get_recent_speaker_none_guild_wide(store):
     assert len(rows) == 2
     speakers = {r["speaker"] for r in rows}
     assert speakers == {"Alice", "Bob"}
+
+
+# ── prune：寬放 ZDR — 清除超過 N 天的原文（live bot 最長只讀 7 天）──────────────
+
+def test_prune_deletes_rows_older_than_cutoff(store):
+    """> retention_days 的原文刪除，≤ 的保留。"""
+    now = time.time()
+    store.save(speaker="Jack", guild_id=1, text="20天前", timestamp=now - 86400 * 20)
+    store.save(speaker="Jack", guild_id=1, text="3天前", timestamp=now - 86400 * 3)
+
+    deleted = store.prune(retention_days=14, now=now)
+
+    assert deleted == 1
+    rows = store.get_recent(speaker="Jack", guild_id=1, days=30)
+    assert [r["text"] for r in rows] == ["3天前"]
+
+
+def test_prune_boundary_keeps_exactly_at_cutoff(store):
+    """剛好等於 cutoff 的不刪（保守，避免邊界誤刪近期資料）。"""
+    now = time.time()
+    store.save(speaker="J", guild_id=1, text="剛好14天", timestamp=now - 86400 * 14)
+    deleted = store.prune(retention_days=14, now=now)
+    assert deleted == 0
+
+
+def test_prune_returns_zero_when_nothing_old(store):
+    now = time.time()
+    store.save(speaker="J", guild_id=1, text="新的", timestamp=now - 60)
+    assert store.prune(retention_days=14, now=now) == 0
+
+
+def test_prune_default_now_uses_wall_clock(store):
+    """不傳 now 時用當前時間；遠古資料應被清。"""
+    store.save(speaker="J", guild_id=1, text="遠古", timestamp=1.0)
+    assert store.prune(retention_days=14) == 1
