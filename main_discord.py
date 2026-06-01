@@ -406,8 +406,9 @@ class MarvinBot(commands.Bot):
                     voice_members=members,
                 )
                 if topics:
+                    # 只丟一個話題，不要一次拋多個讓人選（冷場是要破冰，不是給菜單）
                     await vc_cog.play_tts(
-                        "最近有點安靜，我想到幾個話題：" + "；".join(topics[:3]),
+                        "最近有點安靜，" + topics[0],
                         already_in_channel=True,
                     )
                 return topics
