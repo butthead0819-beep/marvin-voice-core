@@ -192,22 +192,22 @@ async def generate_dual_dialogue(
 # 用 factory 模式：caller 在 bot ready 後拿 router 進來。
 
 def make_gemini_dual_dialogue_llm_fn(router) -> LLMFn:
-    """Bind a GeminiRouter to the llm_fn signature.
+    """Bind a GeminiRouter._call_cloud to the llm_fn signature.
 
-    Router 必須有 `_call_llm(system_prompt, user_prompt, is_json=...)` async method
-    （`gemini_router_llm.py:337` GeminiRouterLLMMixin._call_llm）。
+    用 `_call_cloud` 直連 Gemini，**跳過 LLM Bus + legacy fallback chain**。
 
-    is_json=True / allow_local=False / tier="high"：對齊 gemini_router_content.py
-    其他 JSON-mode 呼叫慣例（line 60/134/204/347/863），避開 LLM Bus 的 medium
-    quality 映到下架模型（llama3.1-8b）導致空回。tier="high" 走 Gemini 直連、
-    結構化 JSON 最穩。
+    為什麼不走 _call_llm？6/1 實測發現專案的 LLM_BUS=true 是 hard gate，
+    所有 tier 都進 bus 過濾，bus 內模型 ID 過期（llama3.1-8b / qwen-3-235b
+    全 404 model_not_found）。短期不修 bus 內部、PoC 直連雲端最穩。
+
+    失敗（Gemini quota 爆 / 連線錯 / 任何例外）→ raise；上游
+    generate_dual_dialogue 已 try/except 接、回 None，handler 走 fallback
+    單 Marvin TTS 播原 marmo_text，使用者不會掉訊息。
     """
     async def llm_fn(system_prompt: str, user_prompt: str) -> str:
-        return await router._call_llm(
+        return await router._call_cloud(
             system_prompt,
             user_prompt,
             is_json=True,
-            allow_local=False,
-            tier="high",
         )
     return llm_fn
