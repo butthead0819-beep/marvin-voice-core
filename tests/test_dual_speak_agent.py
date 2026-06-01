@@ -158,6 +158,45 @@ async def test_handler_calls_generate_then_play_dual_on_success():
 
 
 @pytest.mark.asyncio
+async def test_payload_pattern_override_marvin_lead():
+    """payload 帶 pattern=marvin_lead → handler 用 marvin_lead 呼叫 generate（Case B 測試後門）。"""
+    vc = _fake_vc()
+    segments = [{"voice": "marvin", "text": "a"}, {"voice": "marmo", "text": "b"}]
+    with patch("intent_agents.dual_speak_agent.generate_dual_dialogue",
+               new=AsyncMock(return_value=segments)) as gen_mock:
+        agent = _make_agent(vc=vc)
+        bid = agent.bid(_ctx(payload={"text": "x", "job_id": "j", "pattern": "marvin_lead"}))
+        await bid.handler()
+    assert gen_mock.await_args.kwargs["pattern"] == "marvin_lead"
+
+
+@pytest.mark.asyncio
+async def test_payload_pattern_default_marmo_lead():
+    """payload 不帶 pattern → 預設 marmo_lead。"""
+    vc = _fake_vc()
+    segments = [{"voice": "marmo", "text": "a"}, {"voice": "marvin", "text": "b"}]
+    with patch("intent_agents.dual_speak_agent.generate_dual_dialogue",
+               new=AsyncMock(return_value=segments)) as gen_mock:
+        agent = _make_agent(vc=vc)
+        bid = agent.bid(_ctx())  # 預設 payload 無 pattern
+        await bid.handler()
+    assert gen_mock.await_args.kwargs["pattern"] == "marmo_lead"
+
+
+@pytest.mark.asyncio
+async def test_payload_pattern_invalid_falls_back_marmo_lead():
+    """payload 帶非法 pattern → fallback marmo_lead，不爆。"""
+    vc = _fake_vc()
+    segments = [{"voice": "marmo", "text": "a"}, {"voice": "marvin", "text": "b"}]
+    with patch("intent_agents.dual_speak_agent.generate_dual_dialogue",
+               new=AsyncMock(return_value=segments)) as gen_mock:
+        agent = _make_agent(vc=vc)
+        bid = agent.bid(_ctx(payload={"text": "x", "job_id": "j", "pattern": "garbage"}))
+        await bid.handler()
+    assert gen_mock.await_args.kwargs["pattern"] == "marmo_lead"
+
+
+@pytest.mark.asyncio
 async def test_handler_fallback_to_single_marvin_when_generation_none():
     """generate 回 None（紅線 trip / LLM fail / parse fail）→ fallback play_tts 走單 Marvin。"""
     vc = _fake_vc()

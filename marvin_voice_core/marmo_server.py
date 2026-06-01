@@ -79,7 +79,9 @@ class MarmoServer:
                     now=time.time(),
                     mode=("stream" if stream_active else "normal"),
                     dispatch_source="marmo_inject",
-                    payload={"text": text, "job_id": job_id},
+                    # pattern：optional override（測試後門）。預設 None → agent 走 marmo_lead；
+                    # 帶 "marvin_lead" 可用 webhook 聽 Case B。
+                    payload={"text": text, "job_id": job_id, "pattern": data.get("pattern")},
                 )
                 dispatch_task = asyncio.create_task(bus.dispatch(ctx))
 

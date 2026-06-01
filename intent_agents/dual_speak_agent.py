@@ -73,28 +73,34 @@ class DualSpeakAgent(DeclarativeIntentAgent):
         if queue_dur > _TTS_QUEUE_OVERLOAD_S:
             return self._dense_zero("backpressure_tts_storm")
 
+        # pattern：webhook 預設 marmo_lead；payload 可帶 "pattern" override（測試/debug
+        # 後門，讓 Case B marvin_lead 也能用 webhook POST 聽到）。非法值 fallback marmo_lead。
+        pattern = payload.get("pattern")
+        if pattern not in ("marvin_lead", "marmo_lead"):
+            pattern = "marmo_lead"
+
         # ── Happy path：build handler closure ─────────────────────────────
         async def _handler():
-            await self._handle(vc=vc, marmo_text=marmo_text)
+            await self._handle(vc=vc, marmo_text=marmo_text, pattern=pattern)
 
         return Bid(
             name=self.name,
             confidence=0.95,
             handler=_handler,
-            reason=f"dual_speak:job_id={payload.get('job_id', '?')[:12]}",
+            reason=f"dual_speak:job_id={payload.get('job_id', '?')[:12]}:{pattern}",
         )
 
-    async def _handle(self, *, vc, marmo_text: str) -> None:
+    async def _handle(self, *, vc, marmo_text: str, pattern: str = "marmo_lead") -> None:
         """Handler 內：呼叫 LLM 生對白、成功播雙段、失敗 fallback 單 Marvin。
 
-        webhook 進來 = Marmo 主動有內容要報 → 走 marmo_lead pattern
-        （Marmo 先講內容、Marvin 後感慨），順序 [marmo, marvin]。
+        webhook 預設 = Marmo 主動報事 → marmo_lead [marmo, marvin]。
+        payload 帶 pattern="marvin_lead" → Case B [marvin, marmo]（測試後門）。
         """
         try:
             segments = await generate_dual_dialogue(
                 content_text=marmo_text,
                 llm_fn=self.llm_fn,
-                pattern="marmo_lead",
+                pattern=pattern,
             )
         except Exception as exc:
             # 防禦性：generate_dual_dialogue 已 catch 內部例外回 None，但保險
