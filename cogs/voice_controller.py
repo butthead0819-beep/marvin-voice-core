@@ -5708,6 +5708,7 @@ class VoiceController(commands.Cog):
                 _tts_p = self._EMOTION_TTS_PARAMS.get(emotion_tag, self._EMOTION_TTS_PARAMS["neutral"])
                 if force_macos:
                     logger.debug("🎵 [Emotion TTS] macOS path active — rate/pitch params ignored (emotion_tag=%s)", emotion_tag)
+                _t_synth = time.monotonic()  # ⏱️ [TTS Timing] 量合成請求→首音 byte 的 Edge-TTS 延遲
                 audio_stream = self.bot.tts_engine.stream_audio(
                     text,
                     voice=voice,
@@ -5716,6 +5717,10 @@ class VoiceController(commands.Cog):
                     force_macos=force_macos,
                 )
                 first_chunk = await anext(audio_stream, None)
+                logger.info(
+                    f"[TTS_TIMING] first_audio={(time.monotonic() - _t_synth) * 1000:.0f}ms "
+                    f"chars={len(text)} macos={force_macos} text={text[:30]!r}"
+                )
 
                 # open('fifo', 'wb') 會阻塞直到另一端 (FFmpeg) 開啟讀取
                 # 此時背景任務會在這裡等待，但 Edge-TTS 的連線已經「溫熱」
