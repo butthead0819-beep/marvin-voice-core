@@ -113,6 +113,19 @@ async def test_gap_classifier_uses_json_mode_and_temperature_zero():
     assert kwargs["caller"] == "gap_classifier"
 
 
+def test_gap_prompt_forbids_borrowing_agent_names_as_intent_type():
+    """2026-06-02 修：LLM 曾把 Minecraft 問答（幫我查麥塊鑽石）標成 find_song——
+    直接借用最近 agent 名當 intent_type。prompt 必須明確禁止此行為，否則 gap
+    資料被污染（intent_type 該描述真實需求，nearest_agent 才是「最接近哪個 agent」）。
+    """
+    from intent_gap import _GAP_SYSTEM_PROMPT
+    assert "禁止直接借用" in _GAP_SYSTEM_PROMPT
+    assert "nearest_agent" in _GAP_SYSTEM_PROMPT
+    # 對比例子在 prompt 內，教 LLM intent_type 跟主題走不跟動詞走
+    assert "song_lyrics_lookup" in _GAP_SYSTEM_PROMPT
+    assert "game_knowledge_query" in _GAP_SYSTEM_PROMPT
+
+
 @pytest.mark.asyncio
 async def test_gap_classifier_unknown_intent_returned_by_llm_is_passed_through():
     """LLM 自己判定 UNKNOWN（雜訊 / 反問）→ 透傳，不強行 ack。"""

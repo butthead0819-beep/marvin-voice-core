@@ -65,7 +65,14 @@ GapClassifierCall = Callable[[str, dict], Awaitable[dict]]
 
 _GAP_SYSTEM_PROMPT = """你是 Discord 語音 bot 的 intent gap classifier。
 使用者說了一句話，IntentBus 沒有 agent 命中。請判讀：
-1. intent_type — 想表達什麼意圖，用 snake_case 描述（如 replay_user_history / change_voice / show_lyrics）；
+1. intent_type — 描述使用者「真正想要什麼」的 snake_case 標籤（如 replay_user_history /
+   change_voice / game_knowledge_query）。
+   **重要：intent_type 必須描述實際需求本身，禁止直接借用 available_agents 裡的 agent
+   名稱。**「query 最接近哪個現有 agent」是 nearest_agent 欄位的事，兩者分開。
+   intent_type 跟著「主題對象」走，不是跟著動詞。同樣是「查」，主題不同 intent_type 不同：
+   - 「幫我查這首歌的歌詞」→ 主題是歌 → intent_type=song_lyrics_lookup
+   - 「幫我查麥塊鑽石去哪挖」→ 主題是遊戲知識 → intent_type=game_knowledge_query
+   （nearest_agent 可填語意最近的現有 agent，但 intent_type 絕不可直接是 agent 名）。
    若這句話本身無意圖（閒聊／反問／雜訊）→ "UNKNOWN"
 2. slots — 從 query 抽取的關鍵欄位 dict（例如 {"target_user": "showay"}）
 3. nearest_agent — available_agents 裡語意最接近的 name；找不到回 null
