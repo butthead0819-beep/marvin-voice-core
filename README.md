@@ -106,7 +106,7 @@ All games are voice-driven (players talk, Marvin narrates outcomes via TTS) and 
 
 ## Community Memory
 
-Marvin stores what he knows about each member in a local SQLite database (`marvin.db`) — not chat logs, but structured observations that accumulate over real interactions. The database is created automatically on first run; no manual setup required.
+Marvin stores what he knows about each member in a local SQLite database (`marvin.db`) — primarily structured observations that accumulate over real interactions, alongside recent raw transcripts kept for short-term context recall (see [Data retention](#data-retention)). The database is created automatically on first run; no manual setup required.
 
 A `suki_memory.json` export is written alongside the database after every save, so external analysis scripts can still read it directly.
 
@@ -141,11 +141,26 @@ To change the personality: edit `personality_config.py` and the system prompt in
 When a member joins a voice channel for the first time, Marvin sends a notice to the text channel listing exactly what data goes where — with Accept / Decline buttons. Only members who explicitly consent have their voice processed.
 
 Data flow for consented members:
-- Voice → local STT (macOS Speech framework or Whisper) → **Groq** (transcription cleaning)
+- Voice → local STT (macOS Speech framework or Whisper); when the cloud cleaner is enabled, audio is sent to **Groq** for transcription cleaning
 - Transcription + conversation context → **Google Gemini / Cerebras** (LLM response)
 - Behavioral observations → local `suki_memory.json` (never leaves your machine)
 
 Members can change their decision at any time with `/marvin_optin` or `/marvin_optout`.
+
+### Data retention
+
+Marvin runs on your own machine — persisted data lives in local files, not a hosted service. There is no central server collecting data across deployments. Current retention by data type:
+
+| Data | Where it lives | Retention |
+|------|----------------|-----------|
+| Raw audio | RAM + a per-utterance temp WAV | Deleted immediately after transcription (seconds); never persisted |
+| Raw transcripts | local `marvin.db` (SQL) | **Auto-pruned after 14 days** by the nightly batch; the live bot never reads transcripts older than 7 days |
+| STT debug log | rotating `stt_history.log` | Size-capped rotating log (old lines roll off) |
+| Long-term semantic memory | local vector store | Conversation *embeddings* retained for cross-session recall — this is the "remembers what you said weeks ago" feature |
+| Self-improvement signals (failed-intent phrasing in `records/*.jsonl`) | local files | Original wording is replaced with a one-way hash after **14 days** — readable text is discarded, only a de-duplication fingerprint remains |
+| Behavioral observations & summaries | local `marvin.db` / `suki_memory.json` | Retained as long-term community memory |
+
+Nothing leaves your machine except the consented cloud calls above (Groq for STT cleaning, Gemini/Cerebras for responses), which are governed by those providers' own policies. No raw audio or transcript is committed to this repository: `marvin.db`, `suki_memory.json`, and `records/` are gitignored by default.
 
 ---
 
