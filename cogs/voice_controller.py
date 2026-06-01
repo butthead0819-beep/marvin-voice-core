@@ -4268,7 +4268,8 @@ class VoiceController(commands.Cog):
         "nemo":       {"rate": "+15%", "pitch": "+8Hz"},
         # Marmo — 代用戶打斷者，要快、要尖、跟 Marvin 厭世慢吞吞反差
         # (-20% neutral vs +25% marmo = 45 個百分點差距，性別差 + 節奏差雙重對比)
-        "marmo":      {"rate": "+25%", "pitch": "+3Hz"},
+        # pitch +10Hz：6/1 實測使用者反饋要更尖（從 +3 上調），跟 nemo +8Hz 同級
+        "marmo":      {"rate": "+25%", "pitch": "+10Hz"},
     }
 
     # Music keyword families — source: intent_agents/constants.py
