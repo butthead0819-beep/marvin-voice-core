@@ -58,6 +58,9 @@ def _is_enabled() -> bool:
 
 class MemoryCallbackAgent:
     name: str = "MemoryCallbackAgent"
+    # 短句 callback；handler 走 vc.speak(proactive=True) → stream 中 hotswap 可發聲。
+    # game/radio 仍不適合（玩家專注遊戲 / 電台播放中）。
+    mode_compatible: frozenset[str] = frozenset({"normal", "stream"})
 
     def __init__(
         self,
@@ -107,17 +110,16 @@ class MemoryCallbackAgent:
     # ── bid contract ─────────────────────────────────────────────────────────
 
     async def speak_bid(self, ctx: SpeakContext) -> SpeakBid:
-        """sync-fast：每條 dense reason distinct，方便 outcome log 追因。"""
+        """sync-fast：每條 dense reason distinct，方便 outcome log 追因。
+
+        撞模式由 SpeakBus 統一 gate（mode_compatible={"normal","stream"}）→
+        agent 本身不再 ad-hoc 檢查 voice mode。
+        """
         # 1. feature flag
         if not _is_enabled():
             return self._dense(0.0, "feature_off")
 
-        # 2. 撞模式：音樂串流中不主動 callback（看齊 Proactive/Bridge）。
-        # 想在 stream 期間發話時，改 handler 走 vc.speak() 並移除此 gate。
-        if getattr(self._ctrl, "stream_mode", False):
-            return self._dense(0.0, "stream_mode")
-
-        # 3. 沒玩家在場
+        # 2. 沒玩家在場
         if not ctx.present_speakers:
             return self._dense(0.0, "no_present")
 

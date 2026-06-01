@@ -5116,6 +5116,21 @@ class VoiceController(commands.Cog):
     # 沒 SpeakAgent 註冊時整段是 no-op；agent 進來後負責收 bid + 寫 outcome log。
     # 跑得起在 voice channel 內才有意義，沒連線就 early return（節省功耗）。
 
+    def _compute_speak_mode(self) -> str:
+        """Voice state → SpeakBus ctx.mode 字串。Precedence: game > stream > radio > normal。
+
+        最受限的優先（game 中完全靜音、stream 中部分 agent 可走 hotswap）。
+        SpeakBus 用此值對 agent.mode_compatible 做 gate；新 agent 只宣告 frozenset
+        即可，不用各自 if-game/stream/radio 重複檢查。
+        """
+        if getattr(self, "game_mode", False):
+            return "game"
+        if getattr(self, "stream_mode", False):
+            return "stream"
+        if getattr(self, "radio_mode", False):
+            return "radio"
+        return "normal"
+
     def _build_speak_context(
         self, trigger: str,
         *, last_speaker: str | None = None, last_text: str | None = None,
@@ -5134,6 +5149,7 @@ class VoiceController(commands.Cog):
             room_mood=self._room_mood_store.get(0),    # week2: DuckingAgent 寫的 hot_chat flag 在這
             recent_utterances=[],                      # 預留；agent 自己拉 transcript 即可
             trigger=trigger,
+            mode=self._compute_speak_mode(),
             last_speaker=last_speaker,
             last_text=last_text,
         )

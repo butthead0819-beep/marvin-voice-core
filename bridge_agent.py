@@ -37,6 +37,8 @@ _TEMPLATES = [
 
 class BridgeAgent:
     name: str = "BridgeAgent"
+    # 轉場提詞同樣只適合閒置時段；stream/game/radio 由 SpeakBus 統一 gate
+    mode_compatible: frozenset[str] = frozenset({"normal"})
 
     def __init__(
         self,
@@ -86,14 +88,7 @@ class BridgeAgent:
             except Exception as e:
                 logger.debug("[BridgeAgent] mood tier read failed: %s", e)
 
-        # 5. 撞模式（音樂串流 / 電台 / 遊戲）
-        c = self._ctrl
-        if getattr(c, "radio_mode", False):
-            return self._dense_zero("radio_mode")
-        if getattr(c, "stream_mode", False):
-            return self._dense_zero("stream_mode")
-        if getattr(getattr(getattr(c, "bot", None), "router", None), "current_game", None):
-            return self._dense_zero("game_mode")
+        # 5. 撞模式由 SpeakBus 統一 gate（mode_compatible={"normal"}）→ 此處不再重複檢查
 
         # 6. 從 graph 找 bridge 候選（present_speakers 內、非 last_speaker、非 cooldown）
         present_others = [s for s in ctx.present_speakers if s != ctx.last_speaker]

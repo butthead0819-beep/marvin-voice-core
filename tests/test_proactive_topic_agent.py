@@ -77,27 +77,11 @@ async def test_does_not_bid_when_no_active_text_channel():
     assert bid is None or bid.confidence == 0.0
 
 
-@pytest.mark.asyncio
-async def test_does_not_bid_when_radio_mode_active():
-    a = ProactiveTopicAgent(_controller(radio_mode=True))
-    bid = await a.speak_bid(_ctx())
-    assert bid is None or bid.confidence == 0.0
-
-
-@pytest.mark.asyncio
-async def test_does_not_bid_when_stream_mode_active():
-    a = ProactiveTopicAgent(_controller(stream_mode=True))
-    bid = await a.speak_bid(_ctx())
-    assert bid is None or bid.confidence == 0.0
-
-
-@pytest.mark.asyncio
-async def test_does_not_bid_when_game_active():
-    c = _controller()
-    c.bot.router.current_game = "busted"
-    a = ProactiveTopicAgent(c)
-    bid = await a.speak_bid(_ctx())
-    assert bid is None or bid.confidence == 0.0
+# ── stream / radio / game mode gates 已 2026-06-01 升到 SpeakBus 層 ──────────
+# 透過 ProactiveTopicAgent.mode_compatible = {"normal"} 宣告。覆蓋於：
+#   - test_speakbus_agents_mode_compatible.py::test_proactive_topic_agent_mode_compatible_normal_only
+#   - test_speakbus_mode_compatible.py::test_tick_filters_agent_when_mode_mismatched
+# Agent 本身不再 ad-hoc 檢查 voice mode，避免維護分歧（bus 是唯一 gate）。
 
 
 @pytest.mark.asyncio

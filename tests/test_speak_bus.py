@@ -45,6 +45,9 @@ def _ctx(**overrides) -> SpeakContext:
 
 
 class _FakeAgent:
+    # 2026-06-01: mode_compatible 必填（bus register-time check 防 silent failure）
+    mode_compatible = frozenset({"normal"})
+
     def __init__(self, name: str, conf: float, reason: str = "test") -> None:
         self.name = name
         self._conf = conf
@@ -63,6 +66,7 @@ class _FakeAgent:
 
 class _ExplodingAgent:
     name = "exploder"
+    mode_compatible = frozenset({"normal"})
 
     async def speak_bid(self, ctx: SpeakContext) -> SpeakBid:
         raise RuntimeError("boom")

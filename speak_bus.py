@@ -39,6 +39,7 @@ class SpeakContext:
     room_mood: object | None  # RoomMoodState (forward decl 避免循環 import)
     recent_utterances: list[dict]
     trigger: str  # "idle_tick" / "post_utterance" / "mood_transition"
+    mode: str = "normal"  # "normal" / "stream" / "game" / "radio"; bus 用此 gate
     last_speaker: str | None = None
     last_text: str | None = None
 
@@ -55,6 +56,11 @@ class SpeakBid:
 @runtime_checkable
 class SpeakAgent(Protocol):
     name: str
+    # mode_compatible: agent 宣告可在哪些 voice mode 下發話。Bus 在 tick 時統一過濾。
+    # 缺此屬性 → bus.register 立即 raise（防 silent failure，不會「忘了就永遠不發」）。
+    # 一般 agent: {"normal"}；願意在背景音樂中插短句的: {"normal", "stream"}；
+    # Game-only 應 {"game"} — agent 自己不再 ad-hoc if-stream/radio/game 檢查。
+    mode_compatible: frozenset[str]
 
     async def speak_bid(self, ctx: SpeakContext) -> SpeakBid: ...
 
@@ -69,12 +75,34 @@ class SpeakBus:
         self._agents: dict[str, SpeakAgent] = {}
         self._multiplier: float = 1.0
         self._multiplier_expiry: float = 0.0
+        # 最近一次 tick 被 mode_mismatch 過濾的 agent 名單；voice_controller 寫 outcome
+        # log 時讀這份，把「bus 跑完沒人贏」翻成 visible 訊號。
+        self._last_filtered: tuple[str, ...] = ()
 
     # ── registration ─────────────────────────────────────────────────────────
 
     def register(self, agent: SpeakAgent) -> None:
-        """同名取代，避免重複 bid。"""
+        """同名取代，避免重複 bid。
+
+        強制檢查 agent.mode_compatible 存在且非空（防 silent failure，不允許
+        漏宣告就跑壞）。漏宣告或宣告空集合 → 啟動就 raise，不會 silently 不發。
+        """
+        mode_compat = getattr(agent, "mode_compatible", None)
+        if mode_compat is None:
+            raise TypeError(
+                f"SpeakAgent {agent.name!r} 缺 mode_compatible 屬性"
+                f"（必須是 frozenset[str]）；漏宣告會 silent 不發話"
+            )
+        if not mode_compat:
+            raise ValueError(
+                f"SpeakAgent {agent.name!r} 的 mode_compatible 為 empty"
+                f"（agent 在任何模式都不發話 = 註冊它沒意義）"
+            )
         self._agents[agent.name] = agent
+
+    def last_filtered_by_mode(self) -> tuple[str, ...]:
+        """最近一次 tick 因 mode_mismatch 被過濾的 agent 名稱。給 outcome log 寫稽核用。"""
+        return self._last_filtered
 
     def unregister(self, name: str) -> None:
         self._agents.pop(name, None)
@@ -98,13 +126,22 @@ class SpeakBus:
     # ── tick ─────────────────────────────────────────────────────────────────
 
     async def tick(self, ctx: SpeakContext) -> SpeakBid | None:
-        """收所有 agent 的 bid，套 multiplier，回最高分（≥ MIN_CONFIDENCE）。"""
+        """收所有 agent 的 bid，套 multiplier，回最高分（≥ MIN_CONFIDENCE）。
+
+        Mode gate：ctx.mode 不在 agent.mode_compatible 內 → 跳過 speak_bid 呼叫，
+        agent 名字記到 _last_filtered 給 outcome log 寫稽核（防 silent 不發話）。
+        """
         if not self._agents:
+            self._last_filtered = ()
             return None
 
         mult = self.get_global_multiplier()
         bids: list[SpeakBid] = []
+        filtered: list[str] = []
         for name, agent in list(self._agents.items()):
+            if ctx.mode not in agent.mode_compatible:
+                filtered.append(name)
+                continue
             try:
                 bid = await agent.speak_bid(ctx)
             except Exception as e:
@@ -123,6 +160,7 @@ class SpeakBus:
                 ttl_s=bid.ttl_s,
             ))
 
+        self._last_filtered = tuple(filtered)
         if not bids:
             return None
         bids.sort(key=lambda b: b.confidence, reverse=True)

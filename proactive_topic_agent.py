@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 class ProactiveTopicAgent:
     name: str = "ProactiveTopicAgent"
+    # 主動拋話題在 stream/game/radio 都不適合（音樂、遊戲時別硬塞閒聊），bus 統一 gate
+    mode_compatible: frozenset[str] = frozenset({"normal"})
 
     def __init__(
         self,
@@ -74,13 +76,7 @@ class ProactiveTopicAgent:
         if not getattr(c, "active_text_channel", None):
             return None
 
-        # 4. 撞模式：電台播放 / 音樂串流 / 遊戲進行中
-        if getattr(c, "radio_mode", False):
-            return None
-        if getattr(c, "stream_mode", False):
-            return None
-        if getattr(getattr(getattr(c, "bot", None), "router", None), "current_game", None):
-            return None
+        # 4. 撞模式由 SpeakBus 統一 gate（mode_compatible={"normal"}）→ 此處不再重複檢查
 
         async def _handler() -> None:
             try:
