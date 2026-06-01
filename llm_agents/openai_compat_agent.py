@@ -56,7 +56,8 @@ class OpenAICompatAgent(LLMAgent):
             return LLMBid(0.0, self.name, state.model, 0, 0,
                           f"tpm_high:{state.tpm_used}/{state.tpm_budget}")
 
-        confidence = max(0.30, self.BASE_CONFIDENCE - state.tpm_ratio * self.TPM_PRESSURE_PENALTY)
+        # ① 壓力取 TPM 與 daily 較大者
+        confidence = max(0.30, self.BASE_CONFIDENCE - max(state.tpm_ratio, state.daily_ratio) * self.TPM_PRESSURE_PENALTY)
         latency = (self.ANALYZE_LATENCY_MS if endpoint_name == self._analyze
                    else self.QUICK_LATENCY_MS)
         est_tokens = max(20, len(ctx.prompt) // 4)

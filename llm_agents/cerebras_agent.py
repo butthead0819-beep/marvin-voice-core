@@ -52,7 +52,8 @@ class CerebrasAgent(LLMAgent):
             return LLMBid(0.0, "cerebras", state.model, 0, 0,
                           f"tpm_high:{state.tpm_used}/{state.tpm_budget}")
 
-        confidence = self.BASE_CONFIDENCE - state.tpm_ratio * self.TPM_PRESSURE_PENALTY
+        # ① 壓力取 TPM 與 daily 較大者
+        confidence = self.BASE_CONFIDENCE - max(state.tpm_ratio, state.daily_ratio) * self.TPM_PRESSURE_PENALTY
         confidence = max(0.30, confidence)
         latency = (self.ANALYZE_LATENCY_MS if endpoint_name == self.ANALYZE_ENDPOINT
                    else self.QUICK_LATENCY_MS)

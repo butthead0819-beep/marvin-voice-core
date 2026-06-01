@@ -57,10 +57,17 @@ class PoolEndpoint:
     tpm_budget: int = 6000
     cooldown_until: float = 0.0
     usage_window: deque = field(default_factory=deque)  # (ts, tokens) 滾動 60s
+    # ① Daily budget（6/2）：per-minute TPM 看不到當日 token cap（TPD），導致 provider
+    # 每分鐘看似閒、其實當日快爆 → 一直被選 → 撞 TPD 429。daily_budget=0 表未知/無限制
+    # （不罰）。只有已知 daily cap 的 provider（如 Groq TPD 50萬）才填，誠實不亂估。
+    daily_budget: int = 0
+    daily_used: int = 0
+    daily_reset_at: float = 0.0   # 滾動 24h 視窗到期時間（first use 時設 now+86400）
 
 
 class CooldownAwarePool:
     TPM_HEADROOM = 0.75      # 用量 > budget*headroom 就跳，留 buffer 不撞線
+    DAILY_HEADROOM = 0.92    # daily 用量 > budget*headroom 就跳（比 TPM 寬，daily 粗粒度）
     USAGE_WINDOW_S = 60.0
 
     def __init__(self, endpoints: list[PoolEndpoint], *,
@@ -75,13 +82,24 @@ class CooldownAwarePool:
             ep.usage_window.popleft()
         return sum(tok for _, tok in ep.usage_window)
 
+    def daily_ratio(self, ep: PoolEndpoint) -> float:
+        """① 當日 token 用量佔 daily_budget 比例。budget=0（未知）→ 0.0（不罰）。
+        滾動 24h 視窗過期 → 視為重置回 0.0。"""
+        if ep.daily_budget <= 0:
+            return 0.0
+        if self._clock() >= ep.daily_reset_at:
+            return 0.0  # 視窗到期，當日歸零
+        return ep.daily_used / ep.daily_budget
+
     def next_available(self) -> Optional[PoolEndpoint]:
-        """按優先序回第一個沒在冷卻、TPM 未近上限的 endpoint；全滿回 None。"""
+        """按優先序回第一個沒在冷卻、TPM 與 daily 都未近上限的 endpoint；全滿回 None。"""
         now = self._clock()
         for ep in self.endpoints:
             if now < ep.cooldown_until:
                 continue
             if self.current_tpm(ep) > ep.tpm_budget * self.TPM_HEADROOM:
+                continue
+            if self.daily_ratio(ep) > self.DAILY_HEADROOM:  # ① daily 近上限也跳
                 continue
             return ep
         return None
@@ -93,8 +111,15 @@ class CooldownAwarePool:
         ep.cooldown_until = self._clock() + secs
 
     def record_usage(self, ep: PoolEndpoint, tokens: int) -> None:
-        """呼叫成功後回報用量，進滾動 TPM 視窗。"""
-        ep.usage_window.append((self._clock(), max(0, int(tokens))))
+        """呼叫成功後回報用量，進滾動 TPM 視窗 + ① 累計當日用量（跨日重置）。"""
+        now = self._clock()
+        tok = max(0, int(tokens))
+        ep.usage_window.append((now, tok))
+        if ep.daily_budget > 0:
+            if now >= ep.daily_reset_at:   # 滾動 24h 視窗過期 → 重置
+                ep.daily_used = 0
+                ep.daily_reset_at = now + 86400.0
+            ep.daily_used += tok
 
     def status(self) -> list[dict]:
         """每個 endpoint 的即時觀測（給 /marvin_system 算力池視圖）。
@@ -107,10 +132,13 @@ class CooldownAwarePool:
         for ep in self.endpoints:
             tpm = self.current_tpm(ep)
             budget = ep.tpm_budget or 1
+            dratio = self.daily_ratio(ep)
             if now < ep.cooldown_until:
                 st = "cooldown"
             elif tpm > ep.tpm_budget * self.TPM_HEADROOM:
                 st = "tpm_high"
+            elif dratio > self.DAILY_HEADROOM:
+                st = "daily_high"
             else:
                 st = "available"
             rows.append({
@@ -118,6 +146,8 @@ class CooldownAwarePool:
                 "cooldown_remaining": max(0.0, ep.cooldown_until - now),
                 "tpm_used": tpm, "tpm_budget": ep.tpm_budget,
                 "tpm_pct": round(tpm / budget * 100, 1),
+                "daily_used": ep.daily_used, "daily_budget": ep.daily_budget,
+                "daily_pct": round(dratio * 100, 1) if ep.daily_budget else None,
             })
         return rows
 
@@ -218,16 +248,22 @@ class ProviderSpec:
     quick_model_env: str = ""  # 空 → 用 {NAME}_QUICK_MODEL
     analyze_model_env: str = ""
     tpm_budget: int = 6000
+    # ① 每日 token cap（TPD）。0 = 未知/無限制（不罰）。只有官方文件/實測 429 訊息
+    # 確認過的才填，誠實不亂估。quick/analyze 用不同 model → daily cap 不同。
+    quick_daily: int = 0
+    analyze_daily: int = 0
 
 
 # 優先序 = list 順序（next_available 按序回）。Groq/Cerebras 用既有 env 名（你的 key
 # 會自動被撿）；三個新的（SambaNova/Together/OpenRouter）等填 key。model 名都可 env 覆寫，
 # 因為各家命名不同、且 OpenRouter free 模型名會變。
 _PROVIDERS: list[ProviderSpec] = [
+    # Groq daily cap（6/2 從 429 訊息實測）：8b TPD 50萬、70b TPD 10萬。今天就是
+    # 70b 先撞 10萬、8b 後撞 50萬。填上後 daily 快爆會自動讓位、不會用到炸。
     ProviderSpec("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1",
                  "llama-3.1-8b-instant", "llama-3.3-70b-versatile",
                  quick_model_env="GROQ_SIMPLE_MODEL", analyze_model_env="GROQ_FALLBACK_MODEL",
-                 tpm_budget=6000),
+                 tpm_budget=6000, quick_daily=500000, analyze_daily=100000),
     # Cerebras 6/1 實測 /models 只剩 zai-glm-4.7 + gpt-oss-120b；舊的 llama3.1-8b /
     # qwen-3-235b-a22b-instruct-2507 已下架（404 model_not_found）。zai-glm-4.7 是
     # reasoning model 回 `reasoning` 非 `content` 跟 OpenAI 介面不兼容，所以兩檔都
@@ -286,10 +322,12 @@ def build_tier_pools(
         client = client_factory(spec.base_url, key)
         quick_eps.append(PoolEndpoint(
             name=f"{spec.name}-quick", client=client,
-            model=_resolve_model(env, spec, analyze=False), tpm_budget=spec.tpm_budget))
+            model=_resolve_model(env, spec, analyze=False),
+            tpm_budget=spec.tpm_budget, daily_budget=spec.quick_daily))
         analyze_eps.append(PoolEndpoint(
             name=f"{spec.name}-analyze", client=client,
-            model=_resolve_model(env, spec, analyze=True), tpm_budget=spec.tpm_budget))
+            model=_resolve_model(env, spec, analyze=True),
+            tpm_budget=spec.tpm_budget, daily_budget=spec.analyze_daily))
     return CooldownAwarePool(quick_eps, clock=clock), CooldownAwarePool(analyze_eps, clock=clock)
 
 

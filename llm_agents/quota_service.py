@@ -21,11 +21,12 @@ class EndpointState:
     """sync snapshot of a pool endpoint state — agent.bid() 用的純 read 視圖。"""
     name: str
     model: str
-    available: bool             # not cooled AND TPM ≤ headroom
+    available: bool             # not cooled AND TPM ≤ headroom AND daily ≤ headroom
     tpm_used: int
     tpm_budget: int
     tpm_ratio: float            # tpm_used / max(tpm_budget, 1)
     cooldown_remaining_s: float # 0.0 if not cooled
+    daily_ratio: float = 0.0    # ① daily_used / daily_budget（budget=0 → 0.0 不罰）
 
 
 class QuotaService:
@@ -48,15 +49,18 @@ class QuotaService:
         cooldown_remaining = max(0.0, ep.cooldown_until - now)
         is_cooled = cooldown_remaining == 0.0
         within_headroom = tpm <= ep.tpm_budget * pool.TPM_HEADROOM
+        dratio = pool.daily_ratio(ep)                       # ①
+        within_daily = dratio <= pool.DAILY_HEADROOM        # ① daily 近上限也視為不可用
         ratio = tpm / max(ep.tpm_budget, 1)
         return EndpointState(
             name=ep.name,
             model=ep.model,
-            available=is_cooled and within_headroom,
+            available=is_cooled and within_headroom and within_daily,
             tpm_used=tpm,
             tpm_budget=ep.tpm_budget,
             tpm_ratio=ratio,
             cooldown_remaining_s=cooldown_remaining,
+            daily_ratio=dratio,
         )
 
     def endpoint(self, name: str) -> Optional[PoolEndpoint]:

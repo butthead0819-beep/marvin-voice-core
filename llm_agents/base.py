@@ -141,14 +141,20 @@ class LLMBus:
     _SHORT_CIRCUIT_AFTER: int = 3
     _PROVIDER_STICKINESS_TTL: float = 300.0  # 秒
     _STICKINESS_BONUS: float = 0.10
+    # ④ degraded 告警：可用 provider 數 ≤ 此值 → 告警（debounce 避免洗版）
+    _DEGRADED_THRESHOLD: int = 1
+    _DEGRADED_DEBOUNCE_S: float = 300.0
 
-    def __init__(self, agents: list[LLMAgent]):
+    def __init__(self, agents: list[LLMAgent], *, on_degraded=None):
         # priority asc — 數字小的優先 bid
         self._agents: list[LLMAgent] = sorted(agents, key=lambda a: a.priority)
         # speaker -> (provider, monotonic_ts)
         self._sticky: dict[str, tuple[str, float]] = {}
         # 上次 dispatch 勝者 metadata，給 metrics writer 用
         self.last_dispatch: DispatchMetadata | None = None
+        # ④ 掉線告警 callback：callable(viable_count:int, bid_summary:str) | None
+        self.on_degraded = on_degraded
+        self._last_degraded_ts: float = 0.0
 
     async def dispatch(self, ctx: LLMContext) -> str:
         # F5: purpose typo warning
@@ -178,6 +184,12 @@ class LLMBus:
 
         # Filter
         viable = [(a, b, c) for (a, b, c) in bids if c >= self._MIN_CONFIDENCE]
+
+        # ④ degraded 偵測：可用 provider 數過低 → debounced 告警（不阻斷 dispatch）
+        distinct_viable = len({b.provider for (_, b, _) in viable})
+        if distinct_viable <= self._DEGRADED_THRESHOLD:
+            self._maybe_alert_degraded(distinct_viable, bids)
+
         if not viable:
             reasons = [(a.name, b.reason) for (a, b, _) in bids]
             raise NoLLMAvailable(
@@ -211,6 +223,25 @@ class LLMBus:
             self._sticky[ctx.speaker] = (winner_bid.provider, time.monotonic())
 
         return result
+
+    def _maybe_alert_degraded(self, viable_count: int, bids: list) -> None:
+        """④ 可用 provider 過低 → loud log + callback（debounce 避免每次 dispatch 洗版）。"""
+        now = time.monotonic()
+        if now - self._last_degraded_ts < self._DEGRADED_DEBOUNCE_S:
+            return
+        self._last_degraded_ts = now
+        summary = ", ".join(f"{a.name}={b.reason}" for (a, b, _) in bids) or "no_bids"
+        # ERROR 級 → 掛 root logger 的 ErrorDispatcher 自動接走 → openclaw triage → DM owner
+        # （MarvinBot.LLMBus 不在 ErrorDispatcher 黑名單）。300s debounce 防 DM 洗版。
+        logger.error(
+            f"🚨 [LLMBus DEGRADED] 可用 LLM provider 僅剩 {viable_count} 個（≤{self._DEGRADED_THRESHOLD}）！"
+            f"bids: {summary}"
+        )
+        if self.on_degraded is not None:
+            try:
+                self.on_degraded(viable_count, summary)
+            except Exception as e:
+                logger.warning(f"[LLMBus] on_degraded callback raised: {e}")
 
     def _get_sticky_provider(self, speaker: str | None) -> str | None:
         """回 speaker 上次 dispatch 的 provider，TTL 內有效；過期 / 無前史 → None。"""

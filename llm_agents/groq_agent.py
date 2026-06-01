@@ -71,8 +71,9 @@ class GroqAgent(LLMAgent):
                 reason=f"tpm_high:{state.tpm_used}/{state.tpm_budget}",
             )
 
-        # Happy path
-        confidence = self.BASE_CONFIDENCE - state.tpm_ratio * self.TPM_PRESSURE_PENALTY
+        # Happy path — ① 壓力取 per-minute TPM 與當日 daily 較大者（daily 快爆時主動讓位）
+        pressure = max(state.tpm_ratio, state.daily_ratio)
+        confidence = self.BASE_CONFIDENCE - pressure * self.TPM_PRESSURE_PENALTY
         confidence = max(0.30, confidence)  # floor 避免低 confidence 全部塞 dense 0.0 邊界
         latency = (self.ANALYZE_LATENCY_MS if endpoint_name == self.ANALYZE_ENDPOINT
                    else self.QUICK_LATENCY_MS)
