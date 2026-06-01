@@ -297,3 +297,38 @@ async def test_summarizer_pending_confirmation_has_ttl():
     )
     await summarizer.summarize_window(guild_id=1, window_start=now - 300, window_end=now)
     assert all(c.expires_at > time.time() for c in captured)
+
+
+# ── router (LLM Bus) 路徑 — 6/2 新增 ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_router_path_uses_call_llm_not_groq():
+    """有 router → 走 router._call_llm（LLM Bus），不打 groq_client.chat。"""
+    from unittest.mock import AsyncMock, MagicMock
+    from summary_store import SummaryStore
+    from session_summarizer import SessionSummarizer
+
+    utterances = [
+        {"speaker": "狗與鹿", "text": "下次帶 showay 去吃拉麵", "timestamp": 100.0},
+        {"speaker": "showay", "text": "好啊", "timestamp": 110.0},
+        {"speaker": "狗與鹿", "text": "順便查 API 文件", "timestamp": 120.0},
+    ]
+    summary_store = SummaryStore(db_path=":memory:")
+    transcript_store = _make_transcript_store(utterances)
+
+    groq_client = MagicMock()
+    groq_client.chat.completions.create = AsyncMock()  # 不該被呼叫
+
+    router = MagicMock()
+    router._call_llm = AsyncMock(return_value=_VALID_LLM_RESPONSE)
+
+    summ = SessionSummarizer(
+        transcript_store=transcript_store, summary_store=summary_store,
+        groq_client=groq_client, owner_speaker="狗與鹿", router=router,
+    )
+    await summ.summarize_window(guild_id=1, window_start=0.0, window_end=300.0)
+
+    router._call_llm.assert_awaited_once()
+    # tier=simple（背景任務走 fast）
+    assert router._call_llm.call_args.kwargs.get("tier") == "simple"
+    groq_client.chat.completions.create.assert_not_called()

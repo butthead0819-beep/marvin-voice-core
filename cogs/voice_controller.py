@@ -881,6 +881,7 @@ class VoiceController(commands.Cog):
                 groq_client=_groq,
                 guild_id=_guild_id,
                 owner_speaker=_owner,
+                router=self.bot.router,  # 走 LLM Bus（5 provider + Gemini 兜底），不再單押 Groq 8b
             )
             self._session_summarizer = SessionSummarizer(
                 transcript_store=self._transcript_store,
@@ -888,6 +889,7 @@ class VoiceController(commands.Cog):
                 groq_client=_groq,
                 owner_speaker=_owner,
                 on_commitment_detected=self._on_commitment_detected,
+                router=self.bot.router,  # 走 LLM Bus
             )
             asyncio.create_task(self._session_summarizer.start(guild_id=_guild_id))
             self._confirmation_checker_task = asyncio.create_task(self._confirmation_checker_loop())

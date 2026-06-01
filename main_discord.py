@@ -467,6 +467,7 @@ class MarvinBot(commands.Bot):
                     transcript_store=vc_cog._transcript_store,
                     groq_client=groq_client,
                     temperature_monitor=_temp_monitor,
+                    router=getattr(self, "router", None),  # 走 LLM Bus（5 provider + Gemini 兜底）
                 )
                 logger.info("[AmbientIntelligence] MoodSensor wired into VoiceController._mood_sensor")
                 # social-catalyst week3: 把 mood_sensor + temperature_monitor 注入 MoodAgent

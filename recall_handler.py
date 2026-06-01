@@ -130,6 +130,7 @@ class RecallHandler:
         groq_client,
         guild_id: int,
         owner_speaker: str,
+        router=None,
     ):
         self.summary_store = summary_store
         self.task_store = task_store
@@ -137,6 +138,8 @@ class RecallHandler:
         self.groq_client = groq_client
         self.guild_id = guild_id
         self.owner_speaker = owner_speaker
+        # router 有 → 走 LLM Bus；無 → groq 直打（測試相容）
+        self.router = router
         self.last_task_id: int | None = None  # 最近一次存入的 task id（供「那件事」解析）
 
     async def handle(self, speaker: str, query: str) -> str:
@@ -201,6 +204,13 @@ class RecallHandler:
         )
 
         try:
+            if self.router is not None:
+                content = await asyncio.wait_for(
+                    self.router._call_llm(_5W2H_SYSTEM, user_prompt,
+                                          tier="simple", temperature=0.2),
+                    timeout=_TIMEOUT,
+                )
+                return (content or "").strip()
             resp = await asyncio.wait_for(
                 self.groq_client.chat.completions.create(
                     model=_GROQ_MODEL,

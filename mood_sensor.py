@@ -99,10 +99,12 @@ class MoodSensor:
         temperature_monitor: DiscordTemperatureMonitor (for engagement 真值)
     """
 
-    def __init__(self, transcript_store, groq_client, temperature_monitor):
+    def __init__(self, transcript_store, groq_client, temperature_monitor, router=None):
         self._transcripts = transcript_store
         self._groq = groq_client
         self._temp = temperature_monitor
+        # router 有 → 走 LLM Bus；無 → groq 直打（測試相容）
+        self._router = router
 
         self._cache: Optional[VibeLabel] = None
         self._cache_until: float = 0.0
@@ -204,20 +206,28 @@ class MoodSensor:
         lines = [f"{t['speaker']}: {t['text']}" for t in transcripts]
         user_prompt = "對話片段（5 分鐘窗口）：\n" + "\n".join(lines)
 
-        resp = await asyncio.wait_for(
-            self._groq.chat.completions.create(
-                model=MOOD_CLASSIFIER_MODEL,
-                messages=[
-                    {"role": "system", "content": MOOD_CLASSIFIER_SYSTEM},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.2,
-                max_tokens=MOOD_CLASSIFIER_MAX_TOKENS,
-                stream=False,
-            ),
-            timeout=MOOD_CLASSIFIER_TIMEOUT_S,
-        )
-        content = resp.choices[0].message.content.strip()
+        if self._router is not None:
+            content = await asyncio.wait_for(
+                self._router._call_llm(MOOD_CLASSIFIER_SYSTEM, user_prompt,
+                                       tier="simple", temperature=0.2),
+                timeout=MOOD_CLASSIFIER_TIMEOUT_S,
+            )
+            content = (content or "").strip()
+        else:
+            resp = await asyncio.wait_for(
+                self._groq.chat.completions.create(
+                    model=MOOD_CLASSIFIER_MODEL,
+                    messages=[
+                        {"role": "system", "content": MOOD_CLASSIFIER_SYSTEM},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=MOOD_CLASSIFIER_MAX_TOKENS,
+                    stream=False,
+                ),
+                timeout=MOOD_CLASSIFIER_TIMEOUT_S,
+            )
+            content = resp.choices[0].message.content.strip()
         mood = parse_mood_label(content)
         if mood is None:
             raise ValueError(f"無法解析 mood: {content!r}")

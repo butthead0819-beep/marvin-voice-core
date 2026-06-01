@@ -70,12 +70,15 @@ class SessionSummarizer:
         groq_client,
         owner_speaker: str,
         on_commitment_detected: Callable[[PendingConfirmation], None] | None = None,
+        router=None,
     ):
         self.transcript_store = transcript_store
         self.summary_store = summary_store
         self.groq_client = groq_client
         self.owner_speaker = owner_speaker
         self.on_commitment_detected = on_commitment_detected
+        # router 有 → 走 LLM Bus（5 provider + Gemini 兜底）；無 → groq 直打（測試相容）
+        self.router = router
         self._task: asyncio.Task | None = None
 
     async def start(self, guild_id: int, interval_seconds: int = 300) -> None:
@@ -115,20 +118,32 @@ class SessionSummarizer:
         raw_text = "\n".join(u["text"] for u in utterances)
 
         try:
-            response = await asyncio.wait_for(
-                self.groq_client.chat.completions.create(
-                    model=_GROQ_MODEL,
-                    messages=[
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": transcript_text},
-                    ],
-                    temperature=0.3,
-                    max_tokens=500,
-                    stream=False,
-                ),
-                timeout=_TIMEOUT,
-            )
-            content = response.choices[0].message.content.strip()
+            if self.router is not None:
+                # LLM Bus：tier=simple → 8b 級快任務，享 5-provider 分攤 + Gemini 兜底
+                content = await asyncio.wait_for(
+                    self.router._call_llm(_SYSTEM_PROMPT, transcript_text,
+                                          tier="simple", temperature=0.3),
+                    timeout=_TIMEOUT,
+                )
+                content = (content or "").strip()
+                if not content:
+                    logger.warning("[Summarizer] LLM Bus 回空（全 provider 失敗），跳過本輪")
+                    return
+            else:
+                response = await asyncio.wait_for(
+                    self.groq_client.chat.completions.create(
+                        model=_GROQ_MODEL,
+                        messages=[
+                            {"role": "system", "content": _SYSTEM_PROMPT},
+                            {"role": "user", "content": transcript_text},
+                        ],
+                        temperature=0.3,
+                        max_tokens=500,
+                        stream=False,
+                    ),
+                    timeout=_TIMEOUT,
+                )
+                content = response.choices[0].message.content.strip()
         except Exception as e:
             logger.warning(f"[Summarizer] LLM 呼叫失敗: {e}")
             return
