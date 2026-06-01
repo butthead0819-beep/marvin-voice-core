@@ -147,6 +147,8 @@ class ProfileCompressor:
         3. 呼叫 LLM 壓縮成 profile
         4. 存入 user_profiles，回傳 profile 文字
         """
+        # ⚠️ 不變式：這個 7 天是 live bot 最長的原文回看窗，transcript_store.prune 的
+        # retention（14d）必須 > 此值，否則會在壓縮前刪掉來源原文、餓死 profile 更新。
         transcripts = self._store.get_recent(speaker, guild_id, days=7)
 
         if len(transcripts) < _MIN_TRANSCRIPT_COUNT:
