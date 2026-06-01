@@ -12,10 +12,13 @@ from pathlib import Path
 import pytest
 
 from gap_research import (
+    ResearchAgent,
     ResearchRequest,
+    SilentDelivery,
     UncertaintyDetector,
     append_record,
     build_record,
+    format_card,
     has_uncertainty_signal,
     parse_detection,
     resolve_mode,
@@ -100,26 +103,113 @@ def test_resolve_mode_defaults_off_on_missing_or_unknown():
     assert resolve_mode("garbage") == "off"  # 未知 → 安全 off
 
 
-# ── UncertaintyDetector：注入 LLM，async ──────────────────────────────────────
+# ── UncertaintyDetector：綁 router.quick（對齊 intent_gap/rescue cheap classifier）─
+
+class _StubRouter:
+    """模擬 TieredLLMRouter.quick（同 test_rescue_classifier 的 StubRouter）。"""
+
+    def __init__(self, response):
+        self.response = response
+        self.calls: list[dict] = []
+
+    async def quick(self, prompt, *, caller, system=None, max_tokens=200,
+                    temperature=0.7, json=False):
+        self.calls.append({"prompt": prompt, "caller": caller, "system": system})
+        return self.response
+
 
 @pytest.mark.asyncio
 async def test_detect_returns_request_on_gap():
-    async def fake_llm(prompt: str) -> str:
-        assert "滾動緩衝內容" in prompt  # buffer 有進 prompt
-        return "QUERY: 帳篷抗風數據"
-
-    det = UncertaintyDetector(llm=fake_llm)
-    req = await det.detect("滾動緩衝內容：他們在聊帳篷抗風")
+    router = _StubRouter("QUERY: 帳篷抗風數據")
+    det = UncertaintyDetector(router=router)
+    req = await det.detect("他們在聊帳篷抗風")
     assert req.query == "帳篷抗風數據"
+    assert "帳篷抗風" in router.calls[0]["prompt"]      # buffer 進 prompt
+    assert router.calls[0]["caller"] == "uncertainty_detector"
 
 
 @pytest.mark.asyncio
 async def test_detect_returns_none_when_no_gap():
-    async def fake_llm(prompt: str) -> str:
-        return "NONE"
-
-    det = UncertaintyDetector(llm=fake_llm)
+    det = UncertaintyDetector(router=_StubRouter("NONE"))
     assert await det.detect("純閒聊") is None
+
+
+@pytest.mark.asyncio
+async def test_detect_handles_cold_pool_none():
+    """router.quick 回 None（pool 全冷 / 全 provider 失敗）→ detect 回 None，不炸。"""
+    det = UncertaintyDetector(router=_StubRouter(None))
+    assert await det.detect("到底是多少") is None
+
+
+# ── ResearchAgent：注入 lookup，失敗隔離 ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_research_returns_answer():
+    async def lookup(query: str) -> str:
+        assert query == "帳篷抗風"
+        return "Zane Arts 抗風 12m/s"
+
+    agent = ResearchAgent(lookup=lookup)
+    assert await agent.research("帳篷抗風") == "Zane Arts 抗風 12m/s"
+
+
+@pytest.mark.asyncio
+async def test_research_none_on_failure():
+    async def lookup(query: str) -> str:
+        raise RuntimeError("network down")
+
+    assert await ResearchAgent(lookup=lookup).research("x") is None
+
+
+@pytest.mark.asyncio
+async def test_research_none_on_empty():
+    async def lookup(query: str) -> str:
+        return "   "
+
+    assert await ResearchAgent(lookup=lookup).research("x") is None
+
+
+# ── SilentDelivery：只走注入 sink，結構上無法 TTS ────────────────────────────
+
+def test_format_card_shape():
+    card = format_card(ResearchRequest(query="帳篷抗風", snippet="原文"), answer="抗風 12m/s")
+    assert card["type"] == "gap_research"
+    assert card["query"] == "帳篷抗風"
+    assert card["answer"] == "抗風 12m/s"
+
+
+@pytest.mark.asyncio
+async def test_deliver_posts_to_both_sinks():
+    posted = {}
+
+    async def bridge_emit(card): posted["card"] = card
+    async def text_post(text): posted["text"] = text
+
+    sd = SilentDelivery(bridge_emit=bridge_emit, text_post=text_post)
+    await sd.deliver(ResearchRequest(query="帳篷抗風", snippet="原文"), answer="抗風 12m/s")
+    assert posted["card"]["query"] == "帳篷抗風"
+    assert "抗風 12m/s" in posted["text"]
+
+
+@pytest.mark.asyncio
+async def test_deliver_skips_missing_sink():
+    """只給 bridge，沒給 text_post → 只推 bridge，不炸。"""
+    seen = {}
+
+    async def bridge_emit(card): seen["card"] = card
+
+    sd = SilentDelivery(bridge_emit=bridge_emit, text_post=None)
+    await sd.deliver(ResearchRequest(query="q", snippet="s"), answer="a")
+    assert "card" in seen
+
+
+@pytest.mark.asyncio
+async def test_deliver_swallows_sink_failure():
+    """sink 失敗不得讓 deliver 拋例外（best-effort，且絕不影響語音流程）。"""
+    async def boom(_): raise RuntimeError("bridge down")
+
+    sd = SilentDelivery(bridge_emit=boom, text_post=boom)
+    await sd.deliver(ResearchRequest(query="q", snippet="s"), answer="a")  # 不應拋
 
 
 # ── shadow 記錄（量誤報率的底料）──────────────────────────────────────────────

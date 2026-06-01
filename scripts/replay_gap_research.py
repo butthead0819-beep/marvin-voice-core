@@ -104,18 +104,28 @@ async def _run_detector(buffers: list[str], detector: UncertaintyDetector) -> li
 
 
 def _build_groq_detector() -> UncertaintyDetector:
+    """offline 量測用：直 Groq shim，實作 router.quick 介面。
+
+    ⚠️ NON-production：刻意直打 Groq 只為離線量測。串接 live 時注入 bot 的
+    TieredLLMRouter（5-provider + Gemini 兜底），不單押 Groq（對齊 0d7bea7 慣例）。
+    """
     from groq import AsyncGroq
     client = AsyncGroq()
 
-    async def llm(prompt: str) -> str:
-        resp = await client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=60,
-        )
-        return resp.choices[0].message.content.strip()
+    class _GroqQuickShim:
+        async def quick(self, prompt, *, caller, system=None, max_tokens=60,
+                        temperature=0.0, json=False):
+            messages = []
+            if system:
+                messages.append({"role": "system", "content": system})
+            messages.append({"role": "user", "content": prompt})
+            resp = await client.chat.completions.create(
+                model="llama-3.1-8b-instant", messages=messages,
+                max_tokens=max_tokens, temperature=temperature,
+            )
+            return resp.choices[0].message.content.strip()
 
-    return UncertaintyDetector(llm=llm)
+    return UncertaintyDetector(router=_GroqQuickShim())
 
 
 def main() -> int:
