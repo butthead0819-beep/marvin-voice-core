@@ -37,28 +37,17 @@ async def test_record_voice_event_called_on_non_wake_check():
     """
     from discord_temperature_monitor import DiscordTemperatureMonitor
 
-    wake_detector = MagicMock()
-    wake_detector.temporary_open_window = MagicMock()
     topic_generator_fn = AsyncMock(return_value=["話題A", "話題B", "話題C"])
-
-    tts_fn = AsyncMock()
-    monitor = DiscordTemperatureMonitor(
-        wake_detector=wake_detector,
-        topic_generator_fn=topic_generator_fn,
-        tts_fn=tts_fn,
-    )
+    monitor = DiscordTemperatureMonitor(topic_generator_fn=topic_generator_fn)
 
     # 模擬 handle_stt_result 的邏輯片段
     speaker = "Jack"
     is_wake_check = False
     if not is_wake_check:
         monitor.record_voice_event(speaker)
-        # 新增：on_stt_result 接線檢查（pending=False 時為 no-op）
-        monitor.on_stt_result("hello", speaker)
 
-    # 驗證：語音時間列表有 1 筆
+    # 驗證：語音時間列表有 1 筆（確認回覆機制已移除，話題改直接講）
     assert len(monitor._voice_times) == 1
-    assert monitor._pending_confirm is False
 
 
 # ── Test 2：handle_stt_result 偵測「給我話題」並呼叫 topic_generator ──────────
@@ -157,41 +146,29 @@ async def test_temperature_monitor_none_no_crash():
     # 沒有 crash 即通過
 
 
-# ── Test 5a：on_stt_result 端到端 — confirm 後說「要」→ callback 被呼叫 ──────
+# ── Test 5a：冷場觸發直接呼叫 topic_generator_fn（不問、不等確認）──────────────
 
 @pytest.mark.asyncio
-async def test_on_stt_result_affirmative_triggers_topic_generator_fn():
+async def test_cold_trigger_calls_topic_generator_fn_directly():
     """
-    完整整合：handle_stt_result 路徑呼叫 on_stt_result(text, speaker)，
-    若 pending confirm 且肯定 → topic_generator_fn callback 被呼叫。
+    完整整合：3 分鐘冷場 → check_and_trigger 直接呼叫 topic_generator_fn callback。
 
-    這個測試專門擋住「mock generate_topics 但真實簽名不符」的迴歸風險。
+    這個測試專門擋住「mock generate_topics 但真實簽名不符」的迴歸風險，
+    並驗證 2026-06-01 行為變更（不再先問是否要話題）。
     """
     from discord_temperature_monitor import DiscordTemperatureMonitor
 
-    wake_detector = MagicMock()
-    wake_detector.temporary_open_window = MagicMock()
     topic_generator_fn = AsyncMock(return_value=["話題A", "話題B", "話題C"])
-    tts_fn = AsyncMock()
-
-    monitor = DiscordTemperatureMonitor(
-        wake_detector=wake_detector,
-        topic_generator_fn=topic_generator_fn,
-        tts_fn=tts_fn,
-    )
+    monitor = DiscordTemperatureMonitor(topic_generator_fn=topic_generator_fn)
 
     with patch("discord_temperature_monitor.time.time", return_value=2000.0):
-        # 3 次 cold check → 觸發 + 開窗 + pending=True
+        # 3 次 cold check → 直接觸發話題，無需任何確認回覆
         await monitor.check_and_trigger()
         await monitor.check_and_trigger()
         await monitor.check_and_trigger()
-
-        # voice_controller.handle_stt_result 路徑：record + on_stt_result
-        monitor.record_voice_event("Jack")
-        monitor.on_stt_result("要", "Jack")
         await asyncio.sleep(0)
 
-    topic_generator_fn.assert_called_once()
+    topic_generator_fn.assert_awaited_once()
 
 
 # ── Test 6：topic_generator is None 時「給我話題」不 crash ───────────────────

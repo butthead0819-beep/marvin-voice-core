@@ -13,11 +13,7 @@ LowTempTrigger：
   - 觸發後 10 分鐘 cooldown
   - 每 session 最多 3 次觸發
   - reset_session() 重置計數器
-
-ConfirmationContext：
-  - 觸發時 TTS「最近有點安靜，要我出個話題嗎？」
-  - 開 wake_detector.temporary_open_window(30, reason="topic_confirm")
-  - on_stt_result 收到肯定回覆 → trigger topic_generator.generate_topics()
+  - 觸發即直接呼叫 topic_generator_fn 發起話題（不先問是否要話題）
 """
 from __future__ import annotations
 
@@ -25,8 +21,6 @@ import asyncio
 import logging
 import time
 from collections import deque
-
-from utils.affirmative import is_affirmative
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +36,6 @@ _COLD_STREAK_NEED  = 3           # 連續幾分鐘 COLD 才觸發
 _COOLDOWN_SECONDS  = 10 * 60     # 10 分鐘 cooldown
 _SESSION_CAP       = 3           # 每 session 最多觸發次數
 
-_CONFIRM_WINDOW_S  = 30          # 確認視窗秒數
-_TTS_PROMPT        = "最近有點安靜，要我出個話題嗎？"
-
 
 # ── DiscordTemperatureMonitor ─────────────────────────────────────────────────
 
@@ -53,15 +44,11 @@ class DiscordTemperatureMonitor:
 
     def __init__(
         self,
-        wake_detector,
-        tts_fn,
         topic_generator_fn,
         companion_bridge=None,
     ):
-        # topic_generator_fn: async callable () -> list[str]
-        # 由 caller 封裝 guild_id / voice_members 取得邏輯
-        self._wake_detector      = wake_detector
-        self._tts_fn             = tts_fn
+        # topic_generator_fn: async callable () -> list[str]，自身負責 TTS 播放。
+        # 由 caller 封裝 guild_id / voice_members 取得邏輯。
         self._topic_generator_fn = topic_generator_fn
         self.companion_bridge    = companion_bridge
 
@@ -73,10 +60,6 @@ class DiscordTemperatureMonitor:
         self._cold_streak:    int   = 0
         self._last_trigger:   float = 0.0   # epoch；0 → 從未觸發
         self._session_count:  int   = 0
-
-        # ConfirmationContext 狀態
-        self._pending_confirm:       bool  = False
-        self._pending_confirm_until: float = 0.0  # 過期時間戳（epoch）
 
     # ── 公開 API ──────────────────────────────────────────────────────────────
 
@@ -91,23 +74,6 @@ class DiscordTemperatureMonitor:
         now = time.time()
         self._voice_times.append(now)
         self._prune_old()
-
-    def on_stt_result(self, text: str, user_id: str) -> None:
-        """STT 轉錄結果回呼（同步）。若 pending confirm 且肯定 → 觸發 topic generator。"""
-        if not self._pending_confirm:
-            return
-        # 30 秒視窗已過期 → 清掉 stale state，這次 STT 不處理
-        if time.time() > self._pending_confirm_until:
-            self._pending_confirm = False
-            logger.info("[TempMonitor] 確認視窗已過期，清除 stale pending")
-            return
-        if is_affirmative(text):
-            self._pending_confirm = False
-            asyncio.ensure_future(self._run_topic_generator_and_emit())
-            logger.info("[TempMonitor] 肯定回覆 → 觸發 topic generator")
-        else:
-            self._pending_confirm = False
-            logger.info("[TempMonitor] 否定/無關回覆 → 取消確認")
 
     async def _run_topic_generator_and_emit(self) -> None:
         """執行 topic generator 並在成功後廣播 topic_generated 事件。"""
@@ -124,12 +90,14 @@ class DiscordTemperatureMonitor:
         """Jack 離開語音頻道時呼叫，重置 session 計數器。"""
         self._session_count        = 0
         self._cold_streak          = 0
-        self._pending_confirm      = False
-        self._pending_confirm_until = 0.0
         logger.info("[TempMonitor] Session 重置")
 
     async def check_and_trigger(self) -> None:
-        """每分鐘由外部 asyncio task 呼叫一次，評估是否需要觸發。"""
+        """每分鐘由外部 asyncio task 呼叫一次，評估是否需要觸發。
+
+        2026-06-01：冷場達標時直接講話題（topic_generator_fn 自身播 TTS），
+        不再先問「要我出個話題嗎？」等確認。
+        """
         self._prune_old()
         level = self.level
 
@@ -155,20 +123,13 @@ class DiscordTemperatureMonitor:
                 logger.debug("[TempMonitor] 已達 session cap，跳過")
                 return
 
-            # 執行觸發
+            # 執行觸發 — 直接講話題，不問
             self._cold_streak   = 0
             self._last_trigger  = now
             self._session_count += 1
-            self._pending_confirm = True
-            self._pending_confirm_until = now + _CONFIRM_WINDOW_S
 
-            logger.info(f"[TempMonitor] LowTempTrigger #{self._session_count} — TTS + open window")
-
-            await self._tts_fn(_TTS_PROMPT)
-            if self._wake_detector is not None:
-                self._wake_detector.temporary_open_window(_CONFIRM_WINDOW_S, reason="topic_confirm")
-            else:
-                logger.warning("[TempMonitor] wake_detector 為 None，跳過開啟確認視窗")
+            logger.info(f"[TempMonitor] LowTempTrigger #{self._session_count} — 直接發起話題")
+            await self._run_topic_generator_and_emit()
 
         finally:
             # 廣播溫度更新（每次 check 都廣播，不論是否觸發）

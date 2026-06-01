@@ -84,15 +84,9 @@ async def test_temperature_monitor_no_bridge_does_not_crash():
     """companion_bridge=None 時 check_and_trigger() 不應拋例外。"""
     from discord_temperature_monitor import DiscordTemperatureMonitor
 
-    wake_detector = MagicMock()
-    wake_detector.temporary_open_window = MagicMock()
-    tts_fn = AsyncMock()
     topic_generator_fn = AsyncMock(return_value=[])
-
     monitor = DiscordTemperatureMonitor(
-        wake_detector=wake_detector,
         topic_generator_fn=topic_generator_fn,
-        tts_fn=tts_fn,
         companion_bridge=None,
     )
 
@@ -107,18 +101,13 @@ async def test_temperature_monitor_emits_on_check():
     """check_and_trigger() 呼叫後應呼叫 companion_bridge.emit_temperature_update。"""
     from discord_temperature_monitor import DiscordTemperatureMonitor
 
-    wake_detector = MagicMock()
-    wake_detector.temporary_open_window = MagicMock()
-    tts_fn = AsyncMock()
     topic_generator_fn = AsyncMock(return_value=[])
 
     bridge = MagicMock()
     bridge.emit_temperature_update = AsyncMock()
 
     monitor = DiscordTemperatureMonitor(
-        wake_detector=wake_detector,
         topic_generator_fn=topic_generator_fn,
-        tts_fn=tts_fn,
         companion_bridge=bridge,
     )
 
@@ -131,36 +120,30 @@ async def test_temperature_monitor_emits_on_check():
     assert isinstance(args[1], float)
 
 
-# ── 測試 5：on_stt_result 肯定後 → emit_topic_generated("auto") ───────────────
+# ── 測試 5：冷場直接觸發話題後 → emit_topic_generated("auto") ─────────────────
 
 @pytest.mark.asyncio
-async def test_temperature_monitor_emits_topic_on_affirmative():
-    """on_stt_result 收到肯定回覆後，companion_bridge.emit_topic_generated 應以 trigger='auto' 被呼叫。"""
+async def test_temperature_monitor_emits_topic_on_cold_trigger():
+    """冷場 3 分鐘直接觸發話題後，companion_bridge.emit_topic_generated 應以 trigger='auto' 被呼叫。"""
     from discord_temperature_monitor import DiscordTemperatureMonitor
-
-    wake_detector = MagicMock()
-    tts_fn = AsyncMock()
 
     topics_result = ["話題X", "話題Y"]
     topic_generator_fn = AsyncMock(return_value=topics_result)
 
     bridge = MagicMock()
     bridge.emit_topic_generated = AsyncMock()
+    bridge.emit_temperature_update = AsyncMock()
 
     monitor = DiscordTemperatureMonitor(
-        wake_detector=wake_detector,
         topic_generator_fn=topic_generator_fn,
-        tts_fn=tts_fn,
         companion_bridge=bridge,
     )
 
-    # 設定為 pending confirm 狀態
-    import time as _t
-    monitor._pending_confirm = True
-    monitor._pending_confirm_until = _t.time() + 30.0
-
-    # 給肯定回覆
-    monitor.on_stt_result("好啊", "user_001")
+    # 3 次 cold check → 直接觸發話題（不問）
+    with patch("discord_temperature_monitor.time.time", return_value=3000.0):
+        await monitor.check_and_trigger()
+        await monitor.check_and_trigger()
+        await monitor.check_and_trigger()
 
     # ensure_future 是同步的，需要等 loop 執行一次
     await asyncio.sleep(0)

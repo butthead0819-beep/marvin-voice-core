@@ -1973,12 +1973,9 @@ class VoiceController(commands.Cog):
         self.last_player_speech_time = time.time()
         self.proactive_attempts = 0
 
-        # [TemperatureMonitor] 記錄語音事件 + ConfirmationContext 回覆判定
+        # [TemperatureMonitor] 記錄語音事件（冷場偵測用；話題改直接講，無確認回覆判定）
         if self.temperature_monitor and not is_wake_check:
             self.temperature_monitor.record_voice_event(speaker)
-            if raw_text:
-                # pending confirm 且肯定 → 內部觸發 topic generator
-                self.temperature_monitor.on_stt_result(raw_text, speaker)
 
         # [TopicGenerator] 主動觸發：「給我話題」語音指令
         if (self.topic_generator and raw_text
