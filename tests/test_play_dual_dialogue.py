@@ -61,10 +61,14 @@ async def test_two_segments_play_in_order():
     assert args0[0] == "時間。又是時間。"
     # Marvin 用預設聲 → voice=None
     assert kwargs0.get("voice") is None
+    # Marvin 走 neutral emotion（慢、厭世）
+    assert kwargs0.get("emotion_tag") == "neutral"
     # 第二次：Marmo 段，voice 帶 MARMO_VOICE
     args1, kwargs1 = fake.play_tts.call_args_list[1]
     assert args1[0] == "閉嘴，下午三點四十二。"
     assert kwargs1.get("voice")  # 不為 None / 不為空
+    # Marmo 走 marmo emotion（快、尖、跟 Marvin 反差）
+    assert kwargs1.get("emotion_tag") == "marmo"
 
 
 @pytest.mark.asyncio

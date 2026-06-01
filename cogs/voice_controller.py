@@ -4266,6 +4266,9 @@ class VoiceController(commands.Cog):
         "neutral":    {"rate": "-20%", "pitch": "-15Hz"},
         # NemoClaw — energetic, faster, higher pitch; paired with HsiaoChenNeural
         "nemo":       {"rate": "+15%", "pitch": "+8Hz"},
+        # Marmo — 代用戶打斷者，要快、要尖、跟 Marvin 厭世慢吞吞反差
+        # (-20% neutral vs +25% marmo = 45 個百分點差距，性別差 + 節奏差雙重對比)
+        "marmo":      {"rate": "+25%", "pitch": "+3Hz"},
     }
 
     # Music keyword families — source: intent_agents/constants.py
@@ -5782,13 +5785,15 @@ class VoiceController(commands.Cog):
             text = (seg.get("text") or "").strip()
             if not text:
                 continue
-            voice_arg = marmo_voice if seg.get("voice") == "marmo" else None
+            is_marmo = seg.get("voice") == "marmo"
+            voice_arg = marmo_voice if is_marmo else None
+            emotion_tag = "marmo" if is_marmo else "neutral"
             try:
                 await self.play_tts(
                     text,
                     already_in_channel=True,
                     voice=voice_arg,
-                    emotion_tag="neutral",
+                    emotion_tag=emotion_tag,
                 )
             except Exception as exc:
                 logger.warning(f"🎭 [DualDialogue] play_tts 失敗 ({seg.get('voice')}): {exc}")
