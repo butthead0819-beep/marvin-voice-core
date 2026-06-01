@@ -324,7 +324,17 @@ class GeminiRouterLLMMixin:
             agents.append(GroqAgent(quota))
         if quota.endpoint("cerebras-quick") is not None or quota.endpoint("cerebras-analyze") is not None:
             agents.append(CerebrasAgent(quota))
-        # Phase 3 在此加 GeminiAgent (不同 SDK, google.genai 非 OpenAI-compat)
+        # 6/2：把 .env 已有 key 但原本沒 agent 的 3 個 OpenAI-compat provider 接進來
+        # （Groq+Cerebras 雙 429 時無人接 → 喚醒拿不到 LLM 的事故）。priority > Cerebras(15)
+        # → 當備援，平時讓快又熟的兩家先接。
+        # together 6/2 實測回 402（要付費、無免費額度）→ 不註冊。sambanova/openrouter
+        # 各有獨立 free quota pool，跟 Groq/Cerebras 分攤 RPM。
+        from llm_agents.openai_compat_agent import OpenAICompatAgent
+        for _pname, _prio in (("sambanova", 20), ("openrouter", 21)):
+            if quota.endpoint(f"{_pname}-quick") is not None or quota.endpoint(f"{_pname}-analyze") is not None:
+                agents.append(OpenAICompatAgent(quota, provider_name=_pname, priority=_prio))
+        # Phase 3 在此加 GeminiAgent (不同 SDK, google.genai 非 OpenAI-compat)；
+        # 在那之前，付費 Gemini 由 _call_llm bus 全滅時的 legacy fallback 兜底（見下方 except）
 
         if not agents:
             logger.info("[LLMBus] 無可用 agent (provider key 全缺)，bus 不啟用 — _call_llm 走 legacy")
@@ -332,7 +342,11 @@ class GeminiRouterLLMMixin:
             return
 
         self._llm_bus = LLMBus(agents)
-        logger.info(f"[LLMBus] 已掛載 — agents: {[a.name for a in agents]} (env LLM_BUS=true 才會走 bus)")
+        # short-circuit 放寬到涵蓋全部 agent：F3 預設只 bid 前 3 個（priority sorted），
+        # 5 個 provider 時第 4/5 永遠輪不到。bid() sync ≤5ms，全 bid 也才 ~25ms，值得。
+        self._llm_bus._SHORT_CIRCUIT_AFTER = max(self._llm_bus._SHORT_CIRCUIT_AFTER, len(agents))
+        logger.info(f"[LLMBus] 已掛載 — agents: {[a.name for a in agents]} "
+                    f"(short_circuit={self._llm_bus._SHORT_CIRCUIT_AFTER}, env LLM_BUS=true 才會走 bus)")
 
     async def _call_llm(self, system_prompt: str, user_prompt: str, is_json: bool = False, speaker: str = None, allow_local: bool = True, temperature: float = None, thinking_level: str = None, tier: str = "medium") -> str:
         """通用 LLM 呼叫函式。tier: 'simple'=Groq-8b優先, 'medium'=Groq-70b優先(預設), 'high'=直接Gemini"""
@@ -375,25 +389,32 @@ class GeminiRouterLLMMixin:
                     success=True,
                 )
                 return result
-            except NoLLMAvailable as _e:
-                logger.warning("[LLMBus] dispatch NoLLMAvailable — 回 '' (禁 fallback legacy)")
+            except (NoLLMAvailable, Exception) as _e:
+                # 6/2 [C: bus 全滅兜底] bus 所有 provider 都 dense 0.0 / handle 拋 429。
+                # bus 失敗 = 沒成功回傳 = 沒 TPM 雙計風險 → 放行付費 Gemini 兜底（_call_cloud）。
+                # 原本「禁 fallback legacy」是怕 bus 成功了又重打 legacy 雙計，全滅情境不適用。
+                _kind = "NoLLMAvailable" if isinstance(_e, NoLLMAvailable) else type(_e).__name__
                 log_dispatch(
                     route="bus", purpose=_bus_purpose, speaker=speaker,
                     provider=None, model=None,
                     latency_ms=int((time.monotonic() - _t0) * 1000),
-                    tokens=0, success=False, error=f"no_llm_available: {_e}",
+                    tokens=0, success=False, error=f"{_kind}: {_e}",
                 )
-                return ""
-            except Exception as _e:
-                # Agent.handle 拋例外（429 / 5xx / timeout）— 對等 legacy chain silent failure,
-                # endpoint cooldown 已在 agent 內 mark_429。回 '' caller 用既有 empty handling。
-                logger.warning(f"[LLMBus] dispatch raised {type(_e).__name__}: {_e} — 回 ''")
-                log_dispatch(
-                    route="bus", purpose=_bus_purpose, speaker=speaker,
-                    provider=None, model=None,
-                    latency_ms=int((time.monotonic() - _t0) * 1000),
-                    tokens=0, success=False, error=f"{type(_e).__name__}: {_e}",
-                )
+                # defensive getattr：缺屬性（bare mixin / 測試）視為 exhausted → 不打 Gemini、回 ''
+                _exhausted = getattr(self, "is_exhausted", True)
+                _budget = getattr(self, "budget", None)
+                _circuit_open = _budget.is_circuit_open() if _budget is not None else True
+                if not _exhausted and not _circuit_open:
+                    logger.warning(f"[LLMBus] dispatch 全滅 ({_kind}) → 付費 Gemini 兜底")
+                    try:
+                        return await self._call_cloud(
+                            final_system_prompt, user_prompt, is_json,
+                            temperature=temperature, thinking_level=thinking_level,
+                        )
+                    except Exception as _ge:
+                        logger.error(f"[LLMBus] Gemini 兜底也失敗: {_ge} — 回 ''")
+                        return ""
+                logger.warning(f"[LLMBus] dispatch 全滅 ({_kind}) 且 Gemini exhausted/circuit-open — 回 ''")
                 return ""
 
         # 🔵 [High Tier] 直接跳至 Gemini，跳過 Groq/Cerebras（記憶提取、長摘要、歌曲 blueprint 等）
