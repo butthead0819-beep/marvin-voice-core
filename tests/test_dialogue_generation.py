@@ -175,11 +175,10 @@ async def test_marmo_lead_pattern_uses_lead_prompt():
     ]})
     await generate_dual_dialogue(content_text="x", llm_fn=llm_fn, pattern="marmo_lead")
     system_prompt = llm_fn.call_args.args[0]
-    # marmo_lead 模板特徵字（注意「立刻打斷」也出現在 marmo persona voice_summary 內，
-    # 不能用它區分，要用「主動把實際內容」這條 pattern block only 的字）
-    assert "主動把實際內容" in system_prompt
-    # marvin_lead pattern block 的特徵字（marmo_lead block 不該有）
-    assert "看到 Marvin 又在廢話" not in system_prompt
+    # marmo_lead block only 的特徵字（Marvin 點名 Marmo 吐槽）
+    assert "Marmo 又在" in system_prompt
+    # marvin_lead block 特徵字不該出現
+    assert "別聽 Marvin 的" not in system_prompt
 
 
 @pytest.mark.asyncio
@@ -192,5 +191,20 @@ async def test_marvin_lead_pattern_default_unchanged():
     segments = await generate_dual_dialogue(content_text="x", llm_fn=llm_fn)
     assert segments[0]["voice"] == "marvin"
     assert segments[1]["voice"] == "marmo"
-    # marvin_lead pattern block only 的特徵字
-    assert "看到 Marvin 又在廢話" in llm_fn.call_args.args[0]
+    # marvin_lead block only 的特徵字（Marmo 點名打斷 Marvin）
+    assert "別聽 Marvin 的" in llm_fn.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_both_patterns_include_naming_rule():
+    """兩種 pattern 都要含「角色互稱規則」——反應者要點名對方。"""
+    llm_fn = _llm_returns({"segments": [
+        {"voice": "marvin", "text": "a"},
+        {"voice": "marmo", "text": "b"},
+    ]})
+    for pattern, must_name in (("marvin_lead", "Marvin"), ("marmo_lead", "Marmo")):
+        llm_fn.reset_mock()
+        await generate_dual_dialogue(content_text="x", llm_fn=llm_fn, pattern=pattern)
+        sp = llm_fn.call_args.args[0]
+        assert "角色互稱規則" in sp
+        assert f"叫出「{must_name}" in sp
