@@ -397,6 +397,10 @@ class MarvinBot(commands.Bot):
             async def _run_topic_proactive() -> list[str]:
                 """冷場觸發時呼叫——直接生成並講出話題（不問是否要話題）。
                 封裝 voice_members + guild_id 取得邏輯。"""
+                # 共用 cooldown：ProactiveTopicAgent（SpeakBus）剛拋過話題就跳過，
+                # 避免使用者連續聽到兩套主動話題（同源 last_proactive_time）。
+                if vc_cog.proactive_topic_on_cooldown():
+                    return []
                 voice_client = next((vc for vc in self.voice_clients if vc.is_connected()), None)
                 voice_channel = getattr(voice_client, "channel", None)
                 members = list(voice_channel.members) if voice_channel else []
@@ -411,6 +415,7 @@ class MarvinBot(commands.Bot):
                         "最近有點安靜，" + topics[0],
                         already_in_channel=True,
                     )
+                    vc_cog.mark_proactive_topic_spoken()  # 戳共用 cooldown，擋下 ProactiveTopicAgent
                 return topics
 
             _companion_bridge = getattr(self, "companion_bridge", None)

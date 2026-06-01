@@ -104,6 +104,11 @@ from taste_extractor import extract_taste_signals
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
+# 🕒 [Proactive Topic Cooldown] 冷場 TopicGenerator 與 SpeakBus ProactiveTopicAgent
+# 共用此 cooldown：任一系統發話後靜默此秒數，避免使用者連續聽到兩套主動話題。
+# 同步給 ProactiveTopicAgent 的 min_gap_since_last_s，作為單一 cooldown 來源。
+PROACTIVE_TOPIC_COOLDOWN_S = 600.0
+
 # 🛡️ [Double Wake Guard] 用於防止短時間內重複回應
 _GLOBAL_PROCESSED_SEGMENTS = {} # segment_id -> timestamp
 
@@ -819,6 +824,7 @@ class VoiceController(commands.Cog):
         # mood_sensor / temperature_monitor 在 main_discord 注入後由 wire_dependencies() 補齊
         self._speak_bus.register(ProactiveTopicAgent(
             self, topic_graph=self._speaker_topic_graph, mood_agent=self._mood_agent,
+            min_gap_since_last_s=PROACTIVE_TOPIC_COOLDOWN_S,  # 與冷場 TopicGenerator 同源 cooldown
         ))   # P0: 接 graph + P3: heavy mood 時 yield
         self._speak_bus.register(MemoryCallbackAgent(self))   # v3: 主題關聯 → 「你之前說要 X 現在呢」（flag SPEAK_MEMORY_CALLBACK 預設 OFF）
         self._speak_bus.register(BridgeAgent(
@@ -5112,6 +5118,20 @@ class VoiceController(commands.Cog):
     # ── SpeakBus 5s idle tick（social-catalyst week1） ─────────────────────────
     # 沒 SpeakAgent 註冊時整段是 no-op；agent 進來後負責收 bid + 寫 outcome log。
     # 跑得起在 voice channel 內才有意義，沒連線就 early return（節省功耗）。
+
+    def proactive_topic_on_cooldown(self, now: float | None = None) -> bool:
+        """共用 proactive-topic cooldown 檢查。
+
+        冷場 TopicGenerator 與 SpeakBus ProactiveTopicAgent 共用 last_proactive_time
+        當單一 cooldown 來源：任一系統剛發話過 → True，呼叫端應跳過，避免使用者
+        連續聽到兩套主動話題（功能重疊 OK，但不可連發）。
+        """
+        now = now if now is not None else time.time()
+        return (now - self.last_proactive_time) < PROACTIVE_TOPIC_COOLDOWN_S
+
+    def mark_proactive_topic_spoken(self, now: float | None = None) -> None:
+        """任一 proactive-topic 系統發話後呼叫，戳共用 cooldown 時間戳。"""
+        self.last_proactive_time = now if now is not None else time.time()
 
     def _compute_speak_mode(self) -> str:
         """Voice state → SpeakBus ctx.mode 字串。Precedence: game > stream > radio > normal。
