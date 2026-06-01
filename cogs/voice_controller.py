@@ -66,6 +66,13 @@ from intent_agents.constants import (
 )
 from intent_bus import IntentBus, IntentContext
 from intent_gap import GapLogger, handle_intent_gap, make_groq_gap_classifier
+from gap_research import (
+    UncertaintyDetector,
+    append_record as gap_append_record,
+    build_record as gap_build_record,
+    current_mode as gap_research_mode,
+    should_escalate as gap_should_escalate,
+)
 from intent_agents.rescue_classifier import build_rescue_components
 from audio_position_source import PositionTrackingAudioSource
 from hotswap_coordinator import HotSwapCoordinator
@@ -645,6 +652,10 @@ class VoiceController(commands.Cog):
         # 給模板 ack。UNKNOWN → fall through 到 Marvin LLM 主路徑。
         self._gap_classifier_cached = None  # lazy init (對齊 chat_classifier_cached 模式)
         self._gap_logger = GapLogger("records/agent_gaps.jsonl")
+        # 🔎 [Gap Research] 免喚醒資訊真空偵測（shadow）。env GAP_RESEARCH_MODE 預設 off
+        # → 整條零開銷。事件驅動掛 debounced utterance + pre-gate + cooldown。
+        self._uncertainty_detector = None  # lazy init from _shared_tier_router
+        self._gap_research_last_fire: float | None = None
         self._profile_builder = SpeakerProfileBuilder(
             suki=getattr(self.bot, "suki_memory", None),
             music=getattr(self.bot, "music_memory", None),
@@ -1973,6 +1984,40 @@ class VoiceController(commands.Cog):
         except Exception:
             await self.play_tts("話題產生器出了點問題，等一下再試", already_in_channel=True)
 
+    def _maybe_gap_research(self, utterance_text: str) -> None:
+        """免喚醒資訊真空偵測（shadow）的同步入口。
+
+        off → 立即 return（零開銷）。pre-gate + cooldown 命中才開背景 task 跑 LLM；
+        shadow 只寫 records/gap_research.jsonl，永不交付（交付屬 Phase 2）。
+        """
+        mode = gap_research_mode()
+        if mode == "off" or self._shared_tier_router is None:
+            return
+        now = time.time()
+        if not gap_should_escalate(utterance_text, self._gap_research_last_fire, now):
+            return
+        self._gap_research_last_fire = now
+        if self._uncertainty_detector is None:
+            self._uncertainty_detector = UncertaintyDetector(router=self._shared_tier_router)
+        buffer_text = "\n".join(
+            f"{e.get('speaker', '?')}: {e.get('raw_text', '')}" for e in self.log_buffer[-10:]
+        )
+        try:
+            asyncio.create_task(self._run_gap_research_shadow(buffer_text, mode))
+        except RuntimeError:
+            pass  # 無 running loop（理論上不會發生在此 async 路徑）
+
+    async def _run_gap_research_shadow(self, buffer_text: str, mode: str) -> None:
+        """背景偵測 + 記錄。失敗一律吞掉，絕不影響語音流程。"""
+        try:
+            request = await self._uncertainty_detector.detect(buffer_text)
+            rec = gap_build_record(mode=mode, snippet=buffer_text[:200], request=request)
+            gap_append_record("records/gap_research.jsonl", rec)
+            if request is not None:
+                self.stt_logger.info(f"[GapResearch:{mode}] query='{request.query}'（shadow，未交付）")
+        except Exception as e:
+            logger.debug(f"[GapResearch] shadow 偵測失敗（忽略）: {e}")
+
     async def handle_stt_result(self, speaker: str, raw_text: str, timestamp: float, wav_bytes: bytes, prosody_data: dict = None, is_wake_check=False, track=None, bypass_etd=False, wake_intent: float = None):
         # 🔐 [Consent] 未同意者不送出任何資料（Groq STT / LLM / suki_memory 均跳過）
         if not self.consent.is_consented(speaker):
@@ -2830,6 +2875,10 @@ class VoiceController(commands.Cog):
 
         if len(self.log_buffer) > 50:  # 限制 buffer 大小，防止記憶體膨脹
             self.log_buffer.pop(0)
+
+        # 🔎 [Gap Research shadow] 免喚醒資訊真空偵測。預設 off（env 未設）→ 立即 return。
+        # 同步 pre-gate（廉價、cooldown）後才開背景 task 跑 LLM，不阻塞本路徑。
+        self._maybe_gap_research(full_raw_text)
 
         # 🚀 [T-04 Fix] 移除重複的 pending_task 清空邏輯 (原為兩次相同的 copy-paste)
         if self.user_states.get(speaker, {}).get("pending_task") == current_task:
