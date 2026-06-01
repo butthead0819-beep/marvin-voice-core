@@ -124,3 +124,58 @@ def test_filter_recent_by_ts():
     recent = m.filter_recent(rows, since_ts=4000.0)
     assert len(recent) == 2
     assert all(r["ts"] >= 4000.0 for r in recent)
+
+
+# ── 輪轉備份讀取：bot_stdout.log 5MB 輪轉成 .1/.2/.3，timing 散在多檔 ──────────
+
+
+def test_read_log_lines_includes_rotated_backups(tmp_path):
+    """主檔 + .1/.2/.3 都要讀，否則輪轉出去的 STAGE_TIMING/TTS_TIMING 漏掉。"""
+    m = _mod()
+    (tmp_path / "bot_stdout.log").write_text(
+        "noise\n[STAGE_TIMING] speaker=A sttstart=1ms sttdone=2ms total=2ms text='x'\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "bot_stdout.log.1").write_text(
+        "[TTS_TIMING] first_audio=500ms chars=3 text='a'\nrtcp noise\n", encoding="utf-8"
+    )
+    (tmp_path / "bot_stdout.log.2").write_text(
+        "[STAGE_TIMING] speaker=B sttstart=5ms sttdone=9ms total=9ms text='y'\n",
+        encoding="utf-8",
+    )
+
+    lines = m._read_log_lines(tmp_path / "bot_stdout.log")
+    joined = "\n".join(lines)
+    assert "speaker=A" in joined       # 主檔
+    assert "first_audio=500ms" in joined  # .1
+    assert "speaker=B" in joined       # .2
+    # 只回含 timing tag 的行（noise 濾掉）
+    assert all("STAGE_TIMING" in l or "TTS_TIMING" in l for l in lines)
+
+
+def test_read_log_lines_missing_file_returns_empty(tmp_path):
+    m = _mod()
+    assert m._read_log_lines(tmp_path / "nope.log") == []
+
+
+def test_line_timestamp_parses_prefix():
+    m = _mod()
+    ts = m.line_timestamp("2026-06-02 07:23:52,743 [INFO] [STAGE_TIMING] speaker=A total=2ms")
+    assert ts is not None
+    from datetime import datetime
+    assert datetime.fromtimestamp(ts).year == 2026
+    assert m.line_timestamp("no timestamp here") is None
+
+
+def test_read_log_lines_window_filters_old(tmp_path):
+    """since_ts 給定時，舊故障期的 timing 行被濾掉（與 llm_routing 24h 窗一致）。"""
+    m = _mod()
+    from datetime import datetime
+    old = "2026-05-26 03:00:00,000 [INFO] [STAGE_TIMING] speaker=OLD total=99ms text='x'"
+    new = "2026-06-02 06:00:00,000 [INFO] [STAGE_TIMING] speaker=NEW total=2ms text='y'"
+    (tmp_path / "bot_stdout.log").write_text(old + "\n" + new + "\n", encoding="utf-8")
+    since = datetime(2026, 6, 1).timestamp()
+    lines = m._read_log_lines(tmp_path / "bot_stdout.log", since_ts=since)
+    joined = "\n".join(lines)
+    assert "speaker=NEW" in joined
+    assert "speaker=OLD" not in joined

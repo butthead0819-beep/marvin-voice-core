@@ -5776,9 +5776,12 @@ class VoiceController(commands.Cog):
                     force_macos=force_macos,
                 )
                 first_chunk = await anext(audio_stream, None)
-                logger.info(
+                # print（非 logger）→ 與 [STAGE_TIMING] 同走 stdout，落同一個 bot_stdout.log，
+                # 讓 analyze_latency_breakdown 一次抓齊前半（STAGE）+ TTS 首音。
+                print(
                     f"[TTS_TIMING] first_audio={(time.monotonic() - _t_synth) * 1000:.0f}ms "
-                    f"chars={len(text)} macos={force_macos} text={text[:30]!r}"
+                    f"chars={len(text)} macos={force_macos} text={text[:30]!r}",
+                    flush=True,
                 )
 
                 # open('fifo', 'wb') 會阻塞直到另一端 (FFmpeg) 開啟讀取

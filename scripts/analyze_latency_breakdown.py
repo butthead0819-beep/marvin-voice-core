@@ -23,7 +23,9 @@ from datetime import datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-LOG_PATH = Path.home() / "Library" / "Logs" / "Marvin" / "bot_stdout.log"
+# print() 重導向後 [STAGE_TIMING] / [TTS_TIMING] 都落 WORKDIR/bot_stdout.log（5MB
+# RotatingFileHandler，輪轉成 .1/.2/.3）。非 ~/Library 那個 launchd StandardOutPath。
+LOG_PATH = BASE_DIR / "bot_stdout.log"
 LLM_ROUTING_PATH = BASE_DIR / "records" / "llm_routing.jsonl"
 
 _STAGE_KEYS = ("sttstart", "sttdone", "cleanerdone", "intentdispatched", "total")
@@ -88,14 +90,43 @@ def filter_recent(rows: list[dict], *, since_ts: float) -> list[dict]:
 # ── IO helpers ───────────────────────────────────────────────────────────────
 
 
-def _read_log_lines(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-    # 只抓含 timing tag 的行，避免讀整個大檔
-    out = []
-    with open(path, encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            if "STAGE_TIMING" in line or "TTS_TIMING" in line:
+_LINE_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
+
+
+def line_timestamp(line: str) -> float | None:
+    """從 log 行首 "YYYY-MM-DD HH:MM:SS" 解出 epoch；無法解析回 None。"""
+    m = _LINE_TS_RE.match(line)
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
+    except ValueError:
+        return None
+
+
+def _read_log_lines(path: Path, since_ts: float | None = None) -> list[str]:
+    """讀主檔 + 輪轉備份（.1/.2/.3），只回含 timing tag 的行。
+
+    RotatingFileHandler 5MB 輪轉，timing 訊號會散在主檔與備份；只讀主檔會漏掉
+    輪轉出去的那部分（這是 2026-06-02 STAGE_TIMING 報 0 的真因之一）。
+
+    since_ts：給定時，依行首時間戳濾窗，與 llm_routing 的 24h 窗一致（避免舊
+    故障期資料灌水）。無時間戳的行保守保留。
+    """
+    out: list[str] = []
+    # 主檔 + .1/.2/.3（backupCount 預設 3，多撈幾個也無妨）
+    candidates = [path] + [path.with_name(path.name + f".{i}") for i in range(1, 6)]
+    for p in candidates:
+        if not p.exists():
+            continue
+        with open(p, encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                if "STAGE_TIMING" not in line and "TTS_TIMING" not in line:
+                    continue
+                if since_ts is not None:
+                    lt = line_timestamp(line)
+                    if lt is not None and lt < since_ts:
+                        continue
                 out.append(line.rstrip("\n"))
     return out
 
@@ -206,7 +237,7 @@ def main() -> int:
     since_ts = now - args.hours * 3600
     label = args.date or datetime.now().strftime("%Y-%m-%d")
 
-    stage_lines = _read_log_lines(LOG_PATH)
+    stage_lines = _read_log_lines(LOG_PATH, since_ts=since_ts)
     llm_rows = _read_llm_routing(LLM_ROUTING_PATH)
 
     report = build_report(stage_lines, llm_rows, since_ts, label)
