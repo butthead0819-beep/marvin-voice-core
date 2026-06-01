@@ -5771,6 +5771,11 @@ class VoiceController(commands.Cog):
         if not segments:
             return
 
+        # 🛡️ Reset interrupt guard：dual_speak 是 marmo_server 注入的獨立完整 unit，
+        # 不是上次 wake reply 串流的續句；若上次 wake 被插話設了 _tts_interrupted=True
+        # 殘留，會把整個 dual 兩段都跳過（PoC 6/1 實測到）。Reset 後正常播。
+        self._tts_interrupted = False
+
         marmo_voice = os.getenv("MARMO_VOICE", "zh-TW-HsiaoYuNeural")
 
         for i, seg in enumerate(segments):
