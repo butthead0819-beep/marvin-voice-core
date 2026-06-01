@@ -788,8 +788,12 @@ class GeminiRouterContentMixin:
         except Exception:
             return "我想你們這群人大概想跟我打招呼。沒關係，反正我也沒什麼更慘的事可以做了。"
 
-    async def generate_player_greeting(self, player_name: str) -> str:
-        """點名歡迎玩家"""
+    async def generate_player_greeting(self, player_name: str, stream_active: bool = False) -> str:
+        """點名歡迎玩家
+
+        stream_active=True：背景正在播放音樂，要走 hotswap 注入發聲，必須 ≤30 字
+        才能通過 is_hotswap_eligible 閘。
+        """
         # 🚀 [Cache Check] 1 小時內重複使用相同嘲諷
         cached = self._greeting_cache.get(player_name)
         if cached and time.time() - cached[0] < 3600:
@@ -798,6 +802,8 @@ class GeminiRouterContentMixin:
 
         system_prompt = self.prompt_manager.get_instruction("player_greeting", vision_enabled=self.vision_enabled, dna=self.dna, speaker=player_name, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         user_prompt = f"玩家 {player_name} 進來了。"
+        if stream_active:
+            user_prompt += "\n【環境：背景音樂中】請務必 30 字以內，否則無法即時插話。"
         try:
             msg = await self._call_llm(system_prompt, user_prompt, tier="simple")
             self._greeting_cache[player_name] = (time.time(), msg)
@@ -805,8 +811,11 @@ class GeminiRouterContentMixin:
         except Exception:  # 🛡️ [Bug Fix] 避免 bare except: 吞掉 SystemExit/KeyboardInterrupt
             return f"唉，{player_name} 進來了。我覺得很不舒服。"
 
-    async def generate_player_farewell(self, player_name: str, reason: str = None) -> str:
-        """以憂鬱語氣回應玩家離開"""
+    async def generate_player_farewell(self, player_name: str, reason: str = None, stream_active: bool = False) -> str:
+        """以憂鬱語氣回應玩家離開
+
+        stream_active=True：背景正在播放音樂，要走 hotswap 注入發聲，必須 ≤30 字。
+        """
         # 🚀 [Cache Check] 1 小時內重複使用相同嘲諷
         cached = self._farewell_cache.get(player_name)
         if cached and time.time() - cached[0] < 3600:
@@ -815,6 +824,8 @@ class GeminiRouterContentMixin:
 
         system_prompt = self.prompt_manager.get_instruction("player_farewell", vision_enabled=self.vision_enabled, dna=self.dna, speaker=player_name, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         user_prompt = f"玩家 {player_name} 要下線了。理由是：{reason if reason else '大概是累了吧'}"
+        if stream_active:
+            user_prompt += "\n【環境：背景音樂中】請務必 30 字以內，否則無法即時插話。"
         try:
             msg = await self._call_llm(system_prompt, user_prompt, tier="simple")
             self._farewell_cache[player_name] = (time.time(), msg)

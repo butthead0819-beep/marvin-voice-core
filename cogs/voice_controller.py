@@ -74,6 +74,7 @@ from hotswap_loudness import (
     parse_loudnorm_measurement,
 )
 from hotswap_eligibility import MAX_HOTSWAP_CHARS, is_hotswap_eligible
+from voice_guard_helpers import _should_mute_for_stream_guard
 from utterance_budget import STREAM_BUDGET
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
@@ -1739,13 +1740,19 @@ class VoiceController(commands.Cog):
                 # callback 取代一般點名（XOR — 一次 join 只一個主動發言）。flag off → 退回原點名。
                 if not await self._maybe_speak_join_callback(member.display_name):
                     # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷
-                    msg = await self.bot.router.generate_player_greeting(member.display_name)
+                    # stream_mode 中走 hotswap 注入發聲（≤30 字才通過閘）
+                    msg = await self.bot.router.generate_player_greeting(
+                        member.display_name, stream_active=self.stream_mode,
+                    )
 
                     if self.active_text_channel:
                          await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
                          asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
                     self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
-                    await self.play_tts(msg, already_in_channel=True, silent_during_stream=True)
+                    await self.play_tts(
+                        msg, already_in_channel=True, silent_during_stream=True,
+                        allow_hotswap=True, hotswap_max_chars=STREAM_BUDGET,
+                    )
 
         # --- [Leave Logic] ---
         if before.channel == marvin_channel and after.channel != marvin_channel:
@@ -1779,13 +1786,19 @@ class VoiceController(commands.Cog):
                     print(f"👋 [Dynamic Farewell] 偵測到玩家 {member.display_name} 離開...")
 
                     # 🚀 [Memory Injection] 呼叫大腦生成離場嘲諷
-                    msg = await self.bot.router.generate_player_farewell(member.display_name)
+                    # stream_mode 中走 hotswap 注入發聲（≤30 字才通過閘）
+                    msg = await self.bot.router.generate_player_farewell(
+                        member.display_name, stream_active=self.stream_mode,
+                    )
 
                     if self.active_text_channel:
                         await self.active_text_channel.send(f"👋 **【馬文 送客】**\n{msg}")
                         asyncio.create_task(self._send_mood_sticker(msg, context="farewell"))
                     self.stt_logger.info(f"[BOT送客→{member.display_name}] {msg}")
-                    await self.play_tts(msg, already_in_channel=True, silent_during_stream=True)
+                    await self.play_tts(
+                        msg, already_in_channel=True, silent_during_stream=True,
+                        allow_hotswap=True, hotswap_max_chars=STREAM_BUDGET,
+                    )
 
     # --- [Internal Handlers] ---
     
@@ -5466,7 +5479,9 @@ class VoiceController(commands.Cog):
         if not text: return
 
         # 🎵 [Stream Guard] 主動發言類別在串流播放中靜音，文字由呼叫方負責貼頻道
-        if self.stream_mode and silent_during_stream:
+        # allow_hotswap=True 例外：放行到下游 hotswap 判定區（line 5544+），由
+        # _midsong_hotswap_active + is_hotswap_eligible 決定是否走熱切換注入。
+        if _should_mute_for_stream_guard(self.stream_mode, silent_during_stream, allow_hotswap):
             return
 
         # 🦆 [Hot-Chat Guard] 主動發言類別在熱聊期間也靜音（P1：DuckingAgent flag）
