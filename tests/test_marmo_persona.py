@@ -28,21 +28,21 @@ def test_marmo_axes_reflect_interrupter_role():
     """軸值對應 design doc：代用戶打斷者 = 高直接 + 高冷諷 + 低同情 + 低無奈。"""
     axes = CHARACTER_PRESETS["marmo"]["axes"]
     assert axes["directness"] >= 0.90, "打斷者必須直接，第一句就丟答案"
-    assert axes["sarcasm"] >= 0.90, "反擊味要強"
-    assert axes["compassion"] <= 0.20, "對 Marvin 沒耐心，不安慰"
+    assert axes["sarcasm"] >= 0.90, "反擊味要強（嘴賤外殼）"
+    assert axes["compassion"] >= 0.55, "刀子嘴豆腐心：關心使用者，compassion 要高到觸發短暫溫度"
     assert axes["resignation"] <= 0.20, "不認命，會主動戳"
     assert axes["oppression"] <= 0.30, "不壓抑，跟 Marvin 厭世剛好相反"
     assert axes["verbosity"] <= 0.30, "短句、不囉嗦"
 
 
-def test_marmo_prompt_context_triggers_expected_flavor_lines():
-    """既有 build_personality_prompt_context 有 4 條 conditional flavor，
-    Marmo 應觸發 directness/verbosity/sarcasm 三條，不觸發 compassion 那條。"""
+def test_marmo_prompt_context_triggers_tsundere_flavor():
+    """Marmo = tsundere：sarcasm 0.95 + compassion 0.60 → 同時觸發「冷諷較高」+
+    「同情較高」兩條 flavor（刀子嘴豆腐心），加上 directness/verbosity。"""
     prompt = build_personality_prompt_context({"character": "marmo"})
     assert "直接度高" in prompt
     assert "話量低" in prompt
     assert "冷諷較高" in prompt
-    assert "同情較高" not in prompt
+    assert "同情較高" in prompt, "compassion 0.60 應觸發短暫溫度（關心使用者）"
     # display_name 也應出現
     assert "馬末" in prompt or CHARACTER_PRESETS["marmo"]["display_name"] in prompt
 
