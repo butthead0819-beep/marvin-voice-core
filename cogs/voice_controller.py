@@ -3535,6 +3535,13 @@ class VoiceController(commands.Cog):
         if not voice_client or not voice_client.is_connected():
             return
 
+        # 🔥 [TTS Prewarm 修法B] ack 開始＝Marvin 即將回應。趁 ack mp3 播放的 ~1-2s 空檔，
+        # 並行暖 edge-tts 連線（DNS/TLS/websocket），讓緊接著的回應 TTS 首音從冷啟動
+        # ~1.8s 降到 ~0.5s（實測差 3-7 倍）。fire-and-forget + prewarm 內建 5s 節流。
+        _tts = getattr(self.bot, "tts_engine", None)
+        if _tts is not None and hasattr(_tts, "prewarm"):
+            asyncio.create_task(_tts.prewarm())
+
         files = []
         if os.path.exists(ack_dir):
             files = [f for f in os.listdir(ack_dir) if f.endswith(".mp3")]

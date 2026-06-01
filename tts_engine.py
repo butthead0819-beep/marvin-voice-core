@@ -8,6 +8,7 @@ import unicodedata
 import asyncio
 import subprocess
 import hashlib
+import time
 from xml.sax.saxutils import escape as xml_escape
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,33 @@ class SukiTTS:
         self.pitch = pitch
         self.temp_dir = "records"
         self._english_voice = "en-GB-RyanNeural"
+        self._last_prewarm = 0.0  # on-wake 連線預熱節流（monotonic）
         os.makedirs(self.temp_dir, exist_ok=True)
+
+    _PREWARM_THROTTLE_S = 5.0
+
+    async def prewarm(self) -> None:
+        """On-wake 連線預熱（修法 B）：丟極短 throwaway 合成暖 DNS/TLS/websocket，
+        讓緊接著的真實 TTS 從冷啟動 ~1.8s 降到 ~0.3-0.7s（實測差 3-7 倍）。
+
+        - 拿到首個 audio chunk 即停（連線已暖，不需完整合成）
+        - 吞所有錯誤（純優化，絕不影響主流程）
+        - 節流 _PREWARM_THROTTLE_S 秒：避免連續 wake 堆疊請求，也降低被微軟
+          edge-tts 端判定濫用（免費逆向端點）的風險
+        """
+        now = time.monotonic()
+        if now - self._last_prewarm < self._PREWARM_THROTTLE_S:
+            return
+        self._last_prewarm = now
+        try:
+            comm = edge_tts.Communicate(
+                text="嗯", voice=self.voice, rate=self.rate, pitch=self.pitch,
+            )
+            async for chunk in comm.stream():
+                if chunk["type"] == "audio":
+                    break  # 首音到手＝連線已暖，丟棄不播
+        except Exception as e:
+            logger.debug(f"[TTS Prewarm] 暖機失敗（忽略）: {e}")
 
     def _is_english_text(self, text: str) -> bool:
         """English voice ONLY when the text has zero CJK chars.
