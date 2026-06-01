@@ -1749,10 +1749,7 @@ class VoiceController(commands.Cog):
                          await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
                          asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
                     self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
-                    await self.play_tts(
-                        msg, already_in_channel=True, silent_during_stream=True,
-                        allow_hotswap=True, hotswap_max_chars=STREAM_BUDGET,
-                    )
+                    await self.speak(msg, proactive=True)
 
         # --- [Leave Logic] ---
         if before.channel == marvin_channel and after.channel != marvin_channel:
@@ -1795,10 +1792,7 @@ class VoiceController(commands.Cog):
                         await self.active_text_channel.send(f"👋 **【馬文 送客】**\n{msg}")
                         asyncio.create_task(self._send_mood_sticker(msg, context="farewell"))
                     self.stt_logger.info(f"[BOT送客→{member.display_name}] {msg}")
-                    await self.play_tts(
-                        msg, already_in_channel=True, silent_during_stream=True,
-                        allow_hotswap=True, hotswap_max_chars=STREAM_BUDGET,
-                    )
+                    await self.speak(msg, proactive=True)
 
     # --- [Internal Handlers] ---
     
@@ -4210,10 +4204,7 @@ class VoiceController(commands.Cog):
             # 若整段夠短（≤ STREAM_BUDGET，= B 給 LLM 的音樂字數預算）一次性走熱切換注入發聲，
             # 過長則維持靜音、只留貼文。短答案才聽得到，避免長答案佔用音樂太久。
             if self.stream_mode and not tts_suppressed and full_text:
-                asyncio.create_task(self.play_tts(
-                    full_text, already_in_channel=True, emotion_tag=emotion_tag,
-                    allow_hotswap=True, hotswap_max_chars=STREAM_BUDGET,
-                ))
+                asyncio.create_task(self.speak(full_text, emotion_tag=emotion_tag))
 
             if placeholder_msg:
                 if full_text:
@@ -5462,6 +5453,39 @@ class VoiceController(commands.Cog):
             await asyncio.sleep(0.05)
 
         return False
+
+    async def speak(
+        self,
+        text: str,
+        *,
+        proactive: bool = False,
+        max_chars: int = STREAM_BUDGET,
+        already_in_channel: bool = True,
+        emotion_tag: str = "neutral",
+    ) -> None:
+        """統一的 stream-aware TTS 入口（給 agent handler 用）。
+
+        封裝 hotswap 接線 + proactive/response 差別，呼叫端不用記 play_tts 的
+        6 個 kwargs 組合。新 agent 要說話呼叫這個，play_tts 留給內部 / 特殊
+        case（force_macos / priority / voice 等）。
+
+        proactive=False（預設，喚醒回應 / 對話）：
+          - 非 stream → 正常播
+          - stream → hotswap 注入（短的成功；超字按 play_tts line 5544 處理）
+
+        proactive=True（greeting/farewell/idle/ack 等主動發話）：
+          - 非 stream → 正常播
+          - stream + ≤max_chars → hotswap 注入
+          - stream + 超字 → 靜音貼文（fallback；silent_during_stream 行為）
+        """
+        await self.play_tts(
+            text,
+            already_in_channel=already_in_channel,
+            silent_during_stream=proactive,
+            allow_hotswap=True,
+            hotswap_max_chars=max_chars,
+            emotion_tag=emotion_tag,
+        )
 
     async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS):
         """
