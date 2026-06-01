@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Awaitable, Callable
 
 from personality_config import build_personality_prompt_context
@@ -41,22 +42,28 @@ RED_LINE_KEYWORDS = frozenset({
 DialoguePattern = str  # Literal["marvin_lead", "marmo_lead"]
 
 
-_MARVIN_LEAD_PATTERN = """【對話 Pattern（必須遵守）】
-1. Marvin（馬文）：用第一人稱接住話題、跑題進存在主義獨白（「我...」「這讓我想到存在...」），這是他厭世性格的自然延伸
-2. Marmo（馬末）：**開頭點名 Marvin** 打斷（「Marvin 你又在...」「別聽 Marvin 的...」），站使用者立場給實際答案 + 一句對 Marvin 的反擊
+_MARVIN_LEAD_PATTERN = """【對話 Pattern — 漫才 ボケ(Marvin)/ツッコミ(Marmo) 結構】
+1. Marvin（馬文＝ボケ）：第一人稱接話、跑題進存在主義獨白。**講得越沉重嚴肅越好**（這是製造「緊張」）
+2. Marmo（馬末＝ツッコミ）：短促打斷釋放緊張——「緊張緩和」就是笑點的核心機制
 
-【角色互稱規則】
-- Marmo 一定要在句子裡叫出「Marvin / 馬文」這個名字，讓聽眾知道他在嗆誰
-- Marvin 用第一人稱講自己，不用旁白語氣"""
+【Marmo 吐槽公式（漫才 ツッコミ 技法，必用其一）】
+- 複述＋點破：「你說『（Marvin 剛講的荒謬話）』，他只是問（用戶實際要的）欸」
+- 認真接荒謬：把 Marvin 的鬼話當真去接，他越扯你越正經回（說明本身生二次笑點）
+- 越短越好：Marvin 沉重 → 你輕快俐落，**節奏反差就是笑**
+- 一定要叫出「Marvin / 馬文」這個名字，讓聽眾知道在嗆誰
+
+【角色互稱規則】Marvin 第一人稱講自己；Marmo 點名 Marvin"""
 
 
-_MARMO_LEAD_PATTERN = """【對話 Pattern（必須遵守）】
-1. Marmo（馬末）：用第一人稱主動把內容講出來（「我在...」「我找到...」「我發現...」），短而清楚
-2. Marvin（馬文）：**開頭點名 Marmo** 來吐槽 + 厭世感慨（「Marmo 又在...」「Marmo 這傢伙...」），不重複內容、不糾正，就是評論 + 哀號
+_MARMO_LEAD_PATTERN = """【對話 Pattern — Marmo 報事 / Marvin 小題大作】
+1. Marmo（馬末）：第一人稱主動報事（「我找到...」「我整理好...」），短而清楚，這是 setup
+2. Marvin（馬文＝ボケ反應）：把這件平凡小事**過度上綱**到存在主義（平凡事被誇張成沉重 = 笑點）
 
-【角色互稱規則】
-- Marmo 用第一人稱報事（「我...」），不用旁白語氣
-- Marvin 一定要在句子裡叫出「Marmo / 馬末」這個名字，讓聽眾知道他在說誰"""
+【技法】
+- Marvin 的笑點在「小題大作」：Marmo 報的事越日常，Marvin 扯得越遠越好笑
+- Marvin 開頭點名 Marmo 帶一絲不耐（「Marmo 又為這種小事...」），不重複內容、不糾正
+
+【角色互稱規則】Marmo 第一人稱報事；Marvin 點名 Marmo"""
 
 
 SYSTEM_PROMPT_TEMPLATE = """你在生成 Discord 語音助手的雙 bot 對白。
@@ -151,8 +158,26 @@ def _parse_segments(raw: str) -> list[dict] | None:
         text_field = seg.get("text")
         if voice not in {"marvin", "marmo"} or not isinstance(text_field, str):
             return None
+        # LLM 偶爾把 speaker 標籤塞進 text（"Marvin: ..." / "馬末："），TTS 會念出來 → 清掉
+        seg["text"] = _strip_speaker_prefix(text_field)
 
     return segments
+
+
+# speaker 標籤前綴：marvin/marmo/馬文/馬末 + 半形或全形冒號（可重複，如 "Marvin: Marmo:"）
+_SPEAKER_PREFIX_RE = re.compile(
+    r"^\s*(?:marvin|marmo|馬文|馬末)\s*[:：]\s*", re.IGNORECASE
+)
+
+
+def _strip_speaker_prefix(text: str) -> str:
+    """剝掉 LLM echo 進 text 的 speaker 標籤前綴（可能疊多層）。"""
+    prev = None
+    out = text
+    while out != prev:
+        prev = out
+        out = _SPEAKER_PREFIX_RE.sub("", out, count=1)
+    return out.strip()
 
 
 def _enforce_order(segments: list[dict], pattern: str) -> list[dict]:

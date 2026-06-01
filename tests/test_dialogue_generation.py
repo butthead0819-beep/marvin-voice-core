@@ -175,10 +175,10 @@ async def test_marmo_lead_pattern_uses_lead_prompt():
     ]})
     await generate_dual_dialogue(content_text="x", llm_fn=llm_fn, pattern="marmo_lead")
     system_prompt = llm_fn.call_args.args[0]
-    # marmo_lead block only 的特徵字（Marvin 點名 Marmo 吐槽）
-    assert "Marmo 又在" in system_prompt
-    # marvin_lead block 特徵字不該出現
-    assert "別聽 Marvin 的" not in system_prompt
+    # marmo_lead block only 的特徵字（Marvin 小題大作）
+    assert "小題大作" in system_prompt
+    # marvin_lead block 特徵字（漫才 ツッコミ 公式）不該出現
+    assert "複述＋點破" not in system_prompt
 
 
 @pytest.mark.asyncio
@@ -191,8 +191,50 @@ async def test_marvin_lead_pattern_default_unchanged():
     segments = await generate_dual_dialogue(content_text="x", llm_fn=llm_fn)
     assert segments[0]["voice"] == "marvin"
     assert segments[1]["voice"] == "marmo"
-    # marvin_lead block only 的特徵字（Marmo 點名打斷 Marvin）
-    assert "別聽 Marvin 的" in llm_fn.call_args.args[0]
+    # marvin_lead block only 的特徵字（漫才 ツッコミ 公式）
+    assert "複述＋點破" in llm_fn.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_strips_speaker_label_prefix_from_text():
+    """LLM 把 speaker 標籤 echo 進 text（"Marvin: ..." / "馬末：..."）→ 清掉，TTS 不念。"""
+    llm_fn = _llm_returns({
+        "segments": [
+            {"voice": "marvin", "text": "Marvin: Marmo 的三封信化作宇宙哀嘆"},
+            {"voice": "marmo", "text": "馬末：我整理好了"},
+        ]
+    })
+    segments = await generate_dual_dialogue(content_text="x", llm_fn=llm_fn)
+    texts = {s["voice"]: s["text"] for s in segments}
+    assert texts["marvin"] == "Marmo 的三封信化作宇宙哀嘆"
+    assert texts["marmo"] == "我整理好了"
+
+
+@pytest.mark.asyncio
+async def test_strips_repeated_speaker_prefix():
+    """疊多層標籤（"Marvin: Marmo: ..."）也要清乾淨。"""
+    llm_fn = _llm_returns({
+        "segments": [
+            {"voice": "marvin", "text": "Marvin:Marmo: 真的假的"},
+            {"voice": "marmo", "text": "正常一句"},
+        ]
+    })
+    segments = await generate_dual_dialogue(content_text="x", llm_fn=llm_fn)
+    texts = {s["voice"]: s["text"] for s in segments}
+    assert texts["marvin"] == "真的假的"
+
+
+@pytest.mark.asyncio
+async def test_marvin_lead_includes_manzai_tension_release():
+    """marvin_lead 要含漫才核心「緊張緩和」技法 + ツッコミ 公式。"""
+    llm_fn = _llm_returns({"segments": [
+        {"voice": "marvin", "text": "a"},
+        {"voice": "marmo", "text": "b"},
+    ]})
+    await generate_dual_dialogue(content_text="x", llm_fn=llm_fn, pattern="marvin_lead")
+    sp = llm_fn.call_args.args[0]
+    assert "緊張緩和" in sp
+    assert "ツッコミ" in sp
 
 
 @pytest.mark.asyncio
@@ -202,9 +244,9 @@ async def test_both_patterns_include_naming_rule():
         {"voice": "marvin", "text": "a"},
         {"voice": "marmo", "text": "b"},
     ]})
-    for pattern, must_name in (("marvin_lead", "Marvin"), ("marmo_lead", "Marmo")):
+    for pattern in ("marvin_lead", "marmo_lead"):
         llm_fn.reset_mock()
         await generate_dual_dialogue(content_text="x", llm_fn=llm_fn, pattern=pattern)
         sp = llm_fn.call_args.args[0]
         assert "角色互稱規則" in sp
-        assert f"叫出「{must_name}" in sp
+        assert "點名" in sp
