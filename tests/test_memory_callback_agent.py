@@ -41,6 +41,8 @@ def _mk_ctrl(mem, history=None):
     ctrl = MagicMock()
     ctrl.bot.router.memory = mem
     ctrl.bot.engine.conv_buffer.history = history or []
+    ctrl.stream_mode = False  # 2026-06-01: agent 新增 stream_mode gate，預設假
+    ctrl.speak = AsyncMock()  # handler 改走 vc.speak()
     return ctrl
 
 
@@ -225,11 +227,17 @@ async def test_bid_picks_latest_commitment_when_multiple_hit(monkeypatch, tmp_pa
 
 
 def _mk_ctrl_with_tts(mem, history=None):
-    """T4 controller stub：補上 play_tts (AsyncMock) / tts_engine / stt_logger。"""
+    """T4 controller stub：補上 speak (AsyncMock) / tts_engine / stt_logger。
+
+    2026-06-01: handler 改走 vc.speak() 統一入口（接 hotswap）。play_tts 仍保留
+    AsyncMock 供 failure-injection 測試使用（覆蓋 speak 直接設 side_effect）。
+    """
     ctrl = MagicMock()
     ctrl.bot.router.memory = mem
     ctrl.bot.engine.conv_buffer.history = history or []
     ctrl.bot.tts_engine.get_estimated_duration = MagicMock(return_value=3.0)
+    ctrl.stream_mode = False
+    ctrl.speak = AsyncMock(return_value=None)
     ctrl.play_tts = AsyncMock(return_value=None)
     ctrl.stt_logger = MagicMock()
     return ctrl
@@ -247,7 +255,7 @@ async def test_handler_tts_success_consumes_callback(monkeypatch, tmp_path):
     bid = await agent.speak_bid(_mk_ctx(["Alice"], last_speaker="Alice"))
     await bid.handler()
     # play_tts 被 await
-    assert ctrl.play_tts.await_count == 1
+    assert ctrl.speak.await_count == 1
     # 該筆已從 queue 移除
     assert mem.peek_all_shareable_callbacks("Alice") == []
 
@@ -267,7 +275,7 @@ async def test_handler_tts_truncate_gate_still_delivers(monkeypatch, tmp_path):
     agent = MemoryCallbackAgent(ctrl, confidence=0.7, overlap_threshold=0.2)
     bid = await agent.speak_bid(_mk_ctx(["Alice"], last_speaker="Alice"))
     await bid.handler()
-    assert ctrl.play_tts.await_count == 1
+    assert ctrl.speak.await_count == 1
     # 仍 consume — gate 觸發不擋投遞
     assert mem.peek_all_shareable_callbacks("Alice") == []
 
@@ -280,7 +288,7 @@ async def test_handler_tts_failure_does_not_consume(monkeypatch, tmp_path):
     mem.enqueue_callback("Alice", "試 grounded search", shareable=True)
     history = [_utt("Alice", "grounded search 那個")]
     ctrl = _mk_ctrl_with_tts(mem, history=history)
-    ctrl.play_tts = AsyncMock(side_effect=RuntimeError("voice client died"))
+    ctrl.speak = AsyncMock(side_effect=RuntimeError("voice client died"))
     agent = MemoryCallbackAgent(ctrl, confidence=0.7, overlap_threshold=0.3)
     bid = await agent.speak_bid(_mk_ctx(["Alice"], last_speaker="Alice"))
     # handler 內部 try/except → 不傳播

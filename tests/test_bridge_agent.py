@@ -52,15 +52,15 @@ def graph() -> SpeakerTopicGraph:
 
 
 def _controller():
-    """Stub controller — BridgeAgent 只用 play_tts。"""
+    """Stub controller — BridgeAgent 用 vc.speak()（2026-06-01 改）。"""
     spoken: list[str] = []
 
-    async def fake_play_tts(text: str, **_kwargs):
+    async def fake_speak(text: str, **_kwargs):
         spoken.append(text)
 
     return SimpleNamespace(
         spoken=spoken,
-        play_tts=fake_play_tts,
+        speak=fake_speak,
         active_text_channel=SimpleNamespace(id=100, guild=SimpleNamespace(id=1)),
         radio_mode=False, stream_mode=False,
         bot=SimpleNamespace(router=SimpleNamespace(current_game=None)),
@@ -167,7 +167,7 @@ async def test_only_picks_present_speakers(graph):
 
 
 @pytest.mark.asyncio
-async def test_handler_calls_play_tts_with_setup_sentence(graph):
+async def test_handler_calls_speak_with_setup_sentence(graph):
     _seed(graph, 100, [("bob", "上週主管對我大小聲", _NOW)])
     c = _controller()
     a = _agent(graph, c, min_overlap=0.1)

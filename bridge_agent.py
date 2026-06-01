@@ -142,9 +142,7 @@ class BridgeAgent:
         tid = target_row["transcript_id"]
         try:
             line = _TEMPLATES[0].format(target=target, source=source)
-            await self._ctrl.play_tts(
-                line, already_in_channel=True, silent_during_stream=True
-            )
+            await self._ctrl.speak(line, proactive=True)
             # 成功投遞才 cooldown（失敗會被下次 bid 重選）
             self._graph.mark_bridged(tid)
             logger.info(

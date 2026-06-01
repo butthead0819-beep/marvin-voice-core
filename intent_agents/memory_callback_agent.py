@@ -112,7 +112,12 @@ class MemoryCallbackAgent:
         if not _is_enabled():
             return self._dense(0.0, "feature_off")
 
-        # 2. 沒玩家在場
+        # 2. 撞模式：音樂串流中不主動 callback（看齊 Proactive/Bridge）。
+        # 想在 stream 期間發話時，改 handler 走 vc.speak() 並移除此 gate。
+        if getattr(self._ctrl, "stream_mode", False):
+            return self._dense(0.0, "stream_mode")
+
+        # 3. 沒玩家在場
         if not ctx.present_speakers:
             return self._dense(0.0, "no_present")
 
@@ -207,9 +212,7 @@ class MemoryCallbackAgent:
             if stt_logger is not None:
                 stt_logger.info(f"[BOT主題callback→{speaker}] {line}")
 
-            await self._ctrl.play_tts(
-                line, already_in_channel=True, silent_during_stream=True
-            )
+            await self._ctrl.speak(line, proactive=True)
             # TTS 成功 → consume（idempotent；T3 race 二次 consume 為 no-op）
             mem.consume_callback(speaker, item)
         except Exception as e:

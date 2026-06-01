@@ -35,6 +35,7 @@ def _mk_ctrl_for_both(mem, history):
     ctrl.bot.router.memory = mem
     ctrl.bot.engine.conv_buffer.history = history
     ctrl.bot.tts_engine.get_estimated_duration = MagicMock(return_value=3.0)
+    ctrl.speak = AsyncMock(return_value=None)  # 2026-06-01: handler 改走 vc.speak()
     ctrl.play_tts = AsyncMock(return_value=None)
     ctrl.stt_logger = MagicMock()
     # ProactiveTopicAgent 用（最小 surface）
@@ -82,7 +83,7 @@ async def test_tick_returns_memory_callback_bid_and_handler_consumes(monkeypatch
     assert bid.confidence == pytest.approx(0.7)
 
     await bid.handler()
-    assert ctrl.play_tts.await_count == 1
+    assert ctrl.speak.await_count == 1
     assert mem.peek_all_shareable_callbacks("Alice") == []  # consumed
 
 
