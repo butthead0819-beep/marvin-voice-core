@@ -5493,7 +5493,21 @@ class VoiceController(commands.Cog):
           - 非 stream → 正常播
           - stream + ≤max_chars → hotswap 注入
           - stream + 超字 → 靜音貼文（fallback；silent_during_stream 行為）
+          - 🎭 Marmo Case B：可能升級為 dual（Marvin → Marmo），機率閘
+            MARMO_DUAL_CHANCE (default 0.5) + MARMO_DUAL_SPEAK 必須 on。
+            失敗 fallback 走原 single Marvin 路徑。
         """
+        # 🎭 [Marmo Case B] 機率升級為 dual (Marvin → Marmo)。
+        # 只在 proactive=True 試（主動發話），喚醒回應走 single 不爆 latency。
+        if proactive and self._maybe_try_dual_upgrade():
+            try:
+                segments = await self._generate_dual_marvin_lead(text)
+                if segments:
+                    await self.play_dual_dialogue(segments)
+                    return
+            except Exception as exc:
+                logger.warning(f"[Speak] dual upgrade failed, fallback single: {exc}")
+
         await self.play_tts(
             text,
             already_in_channel=already_in_channel,
@@ -5501,6 +5515,37 @@ class VoiceController(commands.Cog):
             allow_hotswap=True,
             hotswap_max_chars=max_chars,
             emotion_tag=emotion_tag,
+        )
+
+    def _maybe_try_dual_upgrade(self) -> bool:
+        """Roll the dice：MARMO_DUAL_SPEAK on + 隨機 < MARMO_DUAL_CHANCE + router 可用。
+
+        每次呼叫現讀 env（hot-flippable，不必重啟）。
+        """
+        import random as _random
+        if os.getenv("MARMO_DUAL_SPEAK", "").strip().lower() not in ("1", "true", "yes"):
+            return False
+        try:
+            chance = float(os.getenv("MARMO_DUAL_CHANCE", "0.5"))
+        except (TypeError, ValueError):
+            chance = 0.5
+        if _random.random() >= chance:
+            return False
+        if getattr(self.bot, "router", None) is None:
+            return False
+        return True
+
+    async def _generate_dual_marvin_lead(self, text: str):
+        """呼叫 dual generation service with pattern="marvin_lead"。"""
+        from services.dialogue_generation import (
+            generate_dual_dialogue,
+            make_gemini_dual_dialogue_llm_fn,
+        )
+        llm_fn = make_gemini_dual_dialogue_llm_fn(self.bot.router)
+        return await generate_dual_dialogue(
+            content_text=text,
+            llm_fn=llm_fn,
+            pattern="marvin_lead",
         )
 
     async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS):
