@@ -9,9 +9,13 @@ voice_recv 0.5.2a179 只解開外層 SRTP，內層 DAVE 不處理，opus payload
 """
 from __future__ import annotations
 
+import logging
+
 from unittest.mock import MagicMock
 
 import pytest
+
+from nacl.exceptions import CryptoError
 
 
 def _make_voice_client(*, dave_ready: bool, ssrc_map: dict[int, int] | None = None):
@@ -147,6 +151,86 @@ def test_dave_on_davey_exception_fallback_to_srtp_plaintext():
 # ---------------------------------------------------------------------------
 # State 不存在的 defensive paths
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# KeySync retry：malformed 封包噪音抑制（2026-06-01）
+#
+# 背景：RTCP/unknown-ssrc 雜散封包進 RTP 解密 → 第一次 CryptoError → keysync 重試
+# → 解密算出負 buffer 長度 → ValueError("negative array length")。原本這個非
+# CryptoError 例外往上拋，被 library 的 `except Exception: log.exception(...)` 噴整個
+# traceback（289/天）。reader.py 對 CryptoError 是乾淨單行 drop，對其他 Exception
+# 才噴 traceback —— 故重試失敗一律轉 CryptoError，讓 library 走乾淨分支。
+# ---------------------------------------------------------------------------
+
+def test_malformed_packet_retry_reraises_as_cryptoerror():
+    """重試炸非 CryptoError（malformed）→ 轉成 CryptoError 上拋，讓 library 乾淨 drop。"""
+    from discord_voice_engine import patch_voice_recv_key_sync
+
+    vc, decryptor, _ = _make_voice_client(dave_ready=False)
+    # 第一次 CryptoError（被誤判成換 key）→ 重試炸 ValueError（負陣列長度）
+    decryptor.decrypt_rtp.side_effect = [
+        CryptoError("Decryption failed."),
+        ValueError("negative array length"),
+    ]
+    patch_voice_recv_key_sync(vc)
+
+    pkt = _make_packet()
+    # 對外是 CryptoError（不是 ValueError）→ reader.py 走 log.error 單行 + return
+    with pytest.raises(CryptoError):
+        decryptor.decrypt_rtp(pkt)
+
+
+def test_malformed_packet_no_warning_log(caplog):
+    """malformed 封包不再噴 WARNING（降 DEBUG），避免噪音洗版。"""
+    from discord_voice_engine import patch_voice_recv_key_sync
+
+    vc, decryptor, _ = _make_voice_client(dave_ready=False)
+    decryptor.decrypt_rtp.side_effect = [
+        CryptoError("Decryption failed."),
+        ValueError("negative array length"),
+    ]
+    patch_voice_recv_key_sync(vc)
+
+    pkt = _make_packet()
+    with caplog.at_level(logging.WARNING, logger="MarvinBot.Engine"):
+        with pytest.raises(CryptoError):
+            decryptor.decrypt_rtp(pkt)
+    assert not any("同步失敗" in r.message for r in caplog.records), \
+        "malformed 封包不該再噴 WARNING（應降 DEBUG）"
+
+
+def test_keysync_retry_success_returns_decrypted():
+    """真 key 過期：第一次 CryptoError → 重抓 key 重試成功 → 回 plaintext（保留既有復原）。"""
+    from discord_voice_engine import patch_voice_recv_key_sync
+
+    vc, decryptor, _ = _make_voice_client(dave_ready=False)
+    decryptor.decrypt_rtp.side_effect = [
+        CryptoError("stale key"),
+        b"RECOVERED_PLAINTEXT",  # 重試成功
+    ]
+    patch_voice_recv_key_sync(vc)
+
+    pkt = _make_packet()
+    result = decryptor.decrypt_rtp(pkt)
+    assert result == b"RECOVERED_PLAINTEXT"
+    decryptor.update_secret_key.assert_called_once()
+
+
+def test_keysync_retry_still_cryptoerror_reraises():
+    """重試仍 CryptoError（key 真的沒救）→ 維持拋 CryptoError，library 乾淨 drop。"""
+    from discord_voice_engine import patch_voice_recv_key_sync
+
+    vc, decryptor, _ = _make_voice_client(dave_ready=False)
+    decryptor.decrypt_rtp.side_effect = [
+        CryptoError("fail 1"),
+        CryptoError("fail 2"),
+    ]
+    patch_voice_recv_key_sync(vc)
+
+    pkt = _make_packet()
+    with pytest.raises(CryptoError):
+        decryptor.decrypt_rtp(pkt)
+
 
 def test_no_dave_session_attr_does_not_break():
     """老 discord.py（沒接 DAVE）voice_state 沒有 dave_ready 屬性。"""

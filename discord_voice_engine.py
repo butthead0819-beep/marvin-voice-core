@@ -78,9 +78,17 @@ def patch_voice_recv_key_sync(voice_client) -> None:
                 decryptor.update_secret_key(new_key)
                 logger.info("[KeySync] RTP CryptoError → reader secret_key 已同步")
                 return _maybe_dave_decrypt(packet, orig_rtp(packet))
-            except Exception as _e:
-                logger.warning(f"[KeySync] RTP key 同步失敗: {_e}")
+            except _CryptoError:
+                # 重抓 key 後仍 CryptoError：真的解不開（少見、transient）。原樣上拋，
+                # reader.py 的 except CryptoError 分支會單行 log + 乾淨 drop（無 traceback）。
+                logger.debug("[KeySync] RTP 重試仍 CryptoError，drop 此封包")
                 raise
+            except Exception as _e:
+                # 重試炸非 CryptoError（RTCP/unknown-ssrc 雜散封包算出負 buffer 長度等）。
+                # 這不是 key 問題、重試無意義；轉成 CryptoError 讓 reader.py 走乾淨 drop 分支，
+                # 避免 except Exception: log.exception 噴整段 traceback（原 289/天噪音來源）。
+                logger.debug(f"[KeySync] RTP 封包無法解密（非 key 問題），drop: {_e}")
+                raise _CryptoError("malformed packet dropped") from None
 
     def _synced_decrypt_rtcp(packet_data):
         try:
@@ -91,9 +99,13 @@ def patch_voice_recv_key_sync(voice_client) -> None:
                 decryptor.update_secret_key(new_key)
                 logger.info("[KeySync] RTCP CryptoError → reader secret_key 已同步")
                 return orig_rtcp(packet_data)
-            except Exception as _e:
-                logger.warning(f"[KeySync] RTCP key 同步失敗: {_e}")
+            except _CryptoError:
+                logger.debug("[KeySync] RTCP 重試仍 CryptoError，drop 此封包")
                 raise
+            except Exception as _e:
+                # 同 RTP：非 key 問題的 malformed 封包轉 CryptoError，避免 library 噴 traceback
+                logger.debug(f"[KeySync] RTCP 封包無法解密（非 key 問題），drop: {_e}")
+                raise _CryptoError("malformed packet dropped") from None
 
     decryptor.decrypt_rtp = _synced_decrypt_rtp
     decryptor.decrypt_rtcp = _synced_decrypt_rtcp
