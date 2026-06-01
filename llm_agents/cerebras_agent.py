@@ -78,11 +78,14 @@ class CerebrasAgent(LLMAgent):
             messages.append({"role": "system", "content": ctx.system_prompt})
         messages.append({"role": "user", "content": ctx.prompt})
 
+        # 6/1：Cerebras 現用 gpt-oss-120b 是 reasoning model，會吃 150-700 reasoning
+        # tokens 才開始輸出 content。1024 太緊（reasoning 吃完只剩 ~300 給 content、
+        # 長 Chinese JSON 截斷成空）。預設 2048 給 reasoning + content 都有空間。
         kwargs = dict(
             model=ep.model,
             messages=messages,
             temperature=ctx.temperature if ctx.temperature is not None else 0.7,
-            max_tokens=ctx.max_tokens if ctx.max_tokens is not None else 1024,
+            max_tokens=ctx.max_tokens if ctx.max_tokens is not None else 2048,
             stream=False,
         )
         if ctx.json_mode:
@@ -98,8 +101,20 @@ class CerebrasAgent(LLMAgent):
                 self.quota.mark_429(endpoint_name, retry_after=5.0)
             raise
 
-        content = resp.choices[0].message.content
+        choice = resp.choices[0]
+        content = choice.message.content
         usage = getattr(resp, "usage", None)
         tokens = usage.total_tokens if usage else 0
         self.quota.record_usage(endpoint_name, tokens)
+
+        # 診斷：reasoning model 若 max_tokens 不夠會回 content="" + finish_reason="length"，
+        # 看 reasoning_tokens 跟 finish_reason 幫日後排查（gpt-oss-120b 等）
+        if not content:
+            details = getattr(usage, "completion_tokens_details", None) if usage else None
+            reasoning_tokens = getattr(details, "reasoning_tokens", 0) if details else 0
+            logger.warning(
+                f"[CerebrasAgent] empty content (model={ep.model} "
+                f"finish_reason={getattr(choice, 'finish_reason', '?')} "
+                f"reasoning_tokens={reasoning_tokens} total_tokens={tokens})"
+            )
         return content or ""
