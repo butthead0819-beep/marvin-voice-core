@@ -474,6 +474,45 @@ def _apply_daily_taste(taste: dict, item: str, delta: float) -> None:
     taste[item] = entry
 
 
+def merge_players_safe(existing_players: dict, updated_players: dict) -> dict:
+    """Per-player 隔離版的 merge：某玩家炸不影響其他玩家。
+
+    Why: merge_player 的多個欄位（emotional_highlights / personal_info /
+    behavioral_patterns / speech_dna / stats）對 schema mismatch 都很脆弱，
+    任一炸都會讓 main() 的 for 迴圈中止 → 9 個玩家陪葬 → suki_memory 不寫入
+    （2026-05-24 incident 模式）。
+
+    隔離策略：merge 失敗的玩家保留 existing 不變，print warning（review_cron.log
+    會看到）。隔天 ritual 的 pipeline health 檢查會撞到 warning 並提醒 user。
+    """
+    merged = dict(existing_players)
+    for name, data in updated_players.items():
+        if name in merged:
+            try:
+                merged[name] = merge_player(merged[name], data)
+            except Exception as e:
+                print(
+                    f"[Daily Review] ⚠ player merge skipped: {name!r} "
+                    f"({type(e).__name__}: {e}) — 保留 existing",
+                    flush=True,
+                )
+        else:
+            merged[name] = data
+    return merged
+
+
+def _enforce_meta_review_date(final_memory: dict, target_date: str) -> None:
+    """寫入前強制保證 _meta.review_date == target_date。
+
+    Why: Gemini 偶爾因 token 截斷漏 _meta（_repair_json 補出來的 dict 可能缺
+    key），原邏輯 `if key in result: final_memory[key] = result[key]` →
+    review_date 不推進 → notify success=True 但記憶其實沒推進（2026-05-24 incident
+    的次生風險）。寫入前強制覆寫這個欄位，其他 _meta 欄位保留 Gemini 給的。
+    """
+    meta = final_memory.setdefault("_meta", {})
+    meta["review_date"] = target_date
+
+
 def merge_player(existing: dict, updated: dict) -> dict:
     """將 LLM 更新的玩家資料合併進現有記錄，runtime 狀態欄位不覆寫。
 
@@ -1318,15 +1357,10 @@ def main():
     if backup_path:
         print(f"[Daily Review] 💾 備份: {backup_path.name}", flush=True)
 
-    # 7. 合併玩家資料
+    # 7. 合併玩家資料（per-player 隔離，一個炸不拖垮其他）
     updated_players  = result.get("players", {})
     existing_players = memory.get("players", {})
-    merged_players   = dict(existing_players)
-    for name, data in updated_players.items():
-        if name in merged_players:
-            merged_players[name] = merge_player(merged_players[name], data)
-        else:
-            merged_players[name] = data
+    merged_players   = merge_players_safe(existing_players, updated_players)
 
     # 8. 組合最終記憶
     final_memory = dict(memory)
@@ -1443,6 +1477,9 @@ def main():
             for old_key in sorted(hist.keys())[:-7]:
                 del hist[old_key]
         final_memory["daily_topic_stats"] = hist
+
+    # 8d. 強制保證 _meta.review_date 推進（Gemini 漏 _meta 也不該 silent 失敗）
+    _enforce_meta_review_date(final_memory, args.date or today_label)
 
     # 9. 備份舊記憶 + 寫回
     today_str = datetime.now().strftime("%Y-%m-%d")
