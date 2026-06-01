@@ -2,7 +2,7 @@
 
 驗證：
   - wrapper 回 callable 符合 llm_fn 簽名 (system, user) -> str
-  - 內部呼叫 router._call_llm 帶 is_json=True / tier=medium
+  - 內部呼叫 router._call_llm 帶 is_json=True / allow_local=False / tier=high
   - router._call_llm 例外往上拋（caller 的 generate_dual_dialogue 已 catch）
 """
 from __future__ import annotations
@@ -28,7 +28,8 @@ async def test_wrapper_passes_prompts_to_router_call_llm():
     assert args[0] == "SYS prompt"
     assert args[1] == "USR prompt"
     assert kwargs["is_json"] is True
-    assert kwargs["tier"] == "medium"
+    assert kwargs["tier"] == "high"
+    assert kwargs["allow_local"] is False
 
 
 @pytest.mark.asyncio

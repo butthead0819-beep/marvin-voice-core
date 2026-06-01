@@ -197,13 +197,17 @@ def make_gemini_dual_dialogue_llm_fn(router) -> LLMFn:
     Router 必須有 `_call_llm(system_prompt, user_prompt, is_json=...)` async method
     （`gemini_router_llm.py:337` GeminiRouterLLMMixin._call_llm）。
 
-    is_json=True 走結構化輸出；tier="medium" 使用既有 Groq-70b 預設，省 Gemini 配額。
+    is_json=True / allow_local=False / tier="high"：對齊 gemini_router_content.py
+    其他 JSON-mode 呼叫慣例（line 60/134/204/347/863），避開 LLM Bus 的 medium
+    quality 映到下架模型（llama3.1-8b）導致空回。tier="high" 走 Gemini 直連、
+    結構化 JSON 最穩。
     """
     async def llm_fn(system_prompt: str, user_prompt: str) -> str:
         return await router._call_llm(
             system_prompt,
             user_prompt,
             is_json=True,
-            tier="medium",
+            allow_local=False,
+            tier="high",
         )
     return llm_fn
