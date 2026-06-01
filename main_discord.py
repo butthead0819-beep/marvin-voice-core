@@ -231,9 +231,13 @@ class MarvinBot(commands.Bot):
         self.music_memory = MusicMemory()
 
     def _configure_special_loggers(self):
-        # 🛡️ [Noise Control] 屏蔽 discord.ext.voice_recv 的大量 INFO 雜訊 (RTCP, CryptoError 等)
-        logging.getLogger("discord.ext.voice_recv").setLevel(logging.DEBUG)
-        logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.DEBUG)
+        # 🛡️ [Noise Control] 屏蔽 discord.ext.voice_recv 的大量雜訊（RTCP rtcp_packet
+        # 每秒洗版、CryptoError 等）。原本誤設 DEBUG 反而把最詳細層級全開 → log 爆量、
+        # 淹沒 STAGE_TIMING/TTS_TIMING。改 WARNING：保留 warning/error，砍 info/debug。
+        # .router 是 rtcp_packet "Dispatching voice_client event" 的來源。
+        logging.getLogger("discord.ext.voice_recv").setLevel(logging.WARNING)
+        logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
+        logging.getLogger("discord.ext.voice_recv.router").setLevel(logging.WARNING)
 
         # STT 歷史日誌
         stt_logger = logging.getLogger("STTHistory")
