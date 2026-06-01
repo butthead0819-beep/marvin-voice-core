@@ -656,6 +656,7 @@ class VoiceController(commands.Cog):
         # → 整條零開銷。事件驅動掛 debounced utterance + pre-gate + cooldown。
         self._uncertainty_detector = None  # lazy init from _shared_tier_router
         self._gap_research_last_fire: float | None = None
+        logger.info(f"[GapResearch] mode={gap_research_mode()}（env GAP_RESEARCH_MODE）")
         self._profile_builder = SpeakerProfileBuilder(
             suki=getattr(self.bot, "suki_memory", None),
             music=getattr(self.bot, "music_memory", None),
