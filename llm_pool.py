@@ -228,10 +228,12 @@ _PROVIDERS: list[ProviderSpec] = [
                  "llama-3.1-8b-instant", "llama-3.3-70b-versatile",
                  quick_model_env="GROQ_SIMPLE_MODEL", analyze_model_env="GROQ_FALLBACK_MODEL",
                  tpm_budget=6000),
-    # Cerebras 8b 正確名是 'llama3.1-8b'（無點橫）；沒 70b → analyze 用 qwen-235b（既有
-    # CEREBRAS_MODEL）。quick 解綁 CEREBRAS_MODEL（那被設成 qwen-235b）改用獨立 env。
+    # Cerebras 6/1 實測 /models 只剩 zai-glm-4.7 + gpt-oss-120b；舊的 llama3.1-8b /
+    # qwen-3-235b-a22b-instruct-2507 已下架（404 model_not_found）。zai-glm-4.7 是
+    # reasoning model 回 `reasoning` 非 `content` 跟 OpenAI 介面不兼容，所以兩檔都
+    # 統一 gpt-oss-120b（JSON mode 實測 OK）；tier 區分由其他 provider 承擔。
     ProviderSpec("cerebras", "CEREBRAS_API_KEY", "https://api.cerebras.ai/v1",
-                 "llama3.1-8b", "qwen-3-235b-a22b-instruct-2507",
+                 "gpt-oss-120b", "gpt-oss-120b",
                  quick_model_env="CEREBRAS_QUICK_MODEL", analyze_model_env="CEREBRAS_MODEL",
                  tpm_budget=60000),
     # SambaNova 無 3.1-8b；quick 用 Maverick-17B（快），analyze 用 3.3-70B（2026-05-21 實測 /models）
