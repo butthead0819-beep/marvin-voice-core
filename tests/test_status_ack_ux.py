@@ -132,6 +132,33 @@ async def test_play_status_ack_skips_when_already_playing():
 
 
 @pytest.mark.asyncio
+async def test_play_status_ack_uses_hotswap_during_music(tmp_path, monkeypatch):
+    """串流播歌中 + 熱切換開啟 → ack 走 _arm_hotswap 注入，不走 plain play（不打斷音樂）。"""
+    cog = _make_cog()
+    fake_vc = MagicMock()
+    fake_vc.is_connected.return_value = True
+    fake_vc.is_playing.return_value = True  # 音樂正在播
+    fake_vc.play = MagicMock()
+    cog.voice_client = fake_vc
+
+    # _midsong_hotswap_active 的真實前置條件
+    monkeypatch.setenv("MARVIN_MIDSONG_HOTSWAP_ENABLED", "true")
+    cog.stream_mode = True
+    cog._stream_position_source = object()
+    cog._current_stream_url = "http://example/stream"
+    cog._arm_hotswap = AsyncMock(return_value=True)
+
+    ack = tmp_path / "searching_first_1.mp3"
+    ack.write_bytes(b"fake")
+
+    with patch("glob.glob", return_value=[str(ack)]):
+        await cog._play_status_ack("searching", "first")
+
+    cog._arm_hotswap.assert_called_once_with(str(ack))
+    assert not fake_vc.play.called, "音樂中應走熱切換，不可 plain play 打斷音樂"
+
+
+@pytest.mark.asyncio
 async def test_play_status_ack_skips_when_no_files(tmp_path):
     cog = _make_cog()
     fake_vc = MagicMock()

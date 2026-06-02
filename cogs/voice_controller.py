@@ -3790,16 +3790,27 @@ class VoiceController(commands.Cog):
         import glob as _glob
 
         _vc = self.voice_client or discord.utils.get(self.bot.voice_clients)
-        if not _vc or not _vc.is_connected() or _vc.is_playing() or self.is_playing_audio:
+        if not _vc or not _vc.is_connected():
             return
         files = _glob.glob(f"{self._ACK_DIR}/{state}_{tier}_*.mp3")
         if not files:
+            return
+        ack_file = random.choice(files)
+
+        # 🎚️ 串流播歌中 + 熱切換開啟 → 走 second-stream 注入，不打斷音樂（同 _play_ack_sound）
+        if self._midsong_hotswap_active(allow_hotswap=True):
+            if await self._arm_hotswap(ack_file):
+                logger.info(f"🗣️ [Status ACK] 熱切換注入 {state}/{tier} 安撫語音")
+                return
+
+        # 否則：等空檔走 playback_lock 直接 play；正在播音則跳過，不疊在輸出上
+        if _vc.is_playing() or self.is_playing_audio:
             return
         async with self.playback_lock:
             if _vc.is_playing() or self.is_playing_audio:  # 取到鎖後狀態可能變了
                 return
             try:
-                _vc.play(discord.FFmpegPCMAudio(random.choice(files)))
+                _vc.play(discord.FFmpegPCMAudio(ack_file))
                 logger.info(f"🗣️ [Status ACK] 播放 {state}/{tier} 安撫語音")
             except Exception as _e:
                 logger.warning(f"[Status ACK] 播放失敗（忽略）：{_e}")
