@@ -67,7 +67,13 @@ async def transcribe(api_key: str, pcm: bytes, *,
             token = await _get_token(session, api_key, pipeline)
         finals: list[str] = []
         async with websockets.connect(WS_URL.format(token=token), max_size=None) as ws:
-            await ws.recv()  # {"status":"ok"}
+            # 開場 status frame：非 ok（auth/quota 失敗）立即降級，不送音訊也不空等 final
+            hello = await ws.recv()  # 期望 {"status":"ok"}
+            try:
+                if (json.loads(hello) or {}).get("status") != "ok":
+                    return ""
+            except (ValueError, TypeError):
+                return ""
             for i in range(0, len(pcm), _CHUNK_BYTES):
                 await ws.send(pcm[i:i + _CHUNK_BYTES])
             await ws.send(b"")  # 零長度 chunk 收尾

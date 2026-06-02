@@ -97,3 +97,57 @@ async def test_run_yating_exception_degrades(monkeypatch):
     audio = np.ones(1600, dtype=np.float32)
     with patch("yating_stt.transcribe", new=AsyncMock(side_effect=RuntimeError("ws boom"))):
         assert await eng._run_yating_stt(audio) == ("", {})  # 不外漏，降級
+
+
+# ── transcribe WS 協定：status 檢查（auth/quota 失敗秒降級，不卡 8s）─────────────
+
+class _ACM:
+    """最小 async context manager，__aenter__ 回傳指定值。"""
+
+    def __init__(self, val):
+        self.val = val
+
+    async def __aenter__(self):
+        return self.val
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _patch_yating_io(monkeypatch, ws):
+    import sys
+    fake_aiohttp = MagicMock()
+    fake_aiohttp.ClientSession = MagicMock(return_value=_ACM(MagicMock()))
+    fake_aiohttp.ClientTimeout = MagicMock()
+    fake_ws_mod = MagicMock()
+    fake_ws_mod.connect = MagicMock(return_value=_ACM(ws))
+    monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+    monkeypatch.setitem(sys.modules, "websockets", fake_ws_mod)
+    monkeypatch.setattr(yating_stt, "_get_token", AsyncMock(return_value="tok"))
+
+
+@pytest.mark.asyncio
+async def test_transcribe_fast_fails_on_non_ok_status(monkeypatch):
+    """雅婷回非 ok status（auth/quota 失敗）→ 立即回 ""，不送音訊、不卡到 timeout。"""
+    ws = MagicMock()
+    ws.recv = AsyncMock(return_value='{"status":"error","message":"quota exceeded"}')
+    ws.send = AsyncMock()
+    _patch_yating_io(monkeypatch, ws)
+    out = await yating_stt.transcribe("key", b"\x00\x00" * 100, timeout=2.0)
+    assert out == ""
+    ws.send.assert_not_awaited()  # fast-fail：絕不送音訊
+
+
+@pytest.mark.asyncio
+async def test_transcribe_returns_text_on_ok_status(monkeypatch):
+    """status ok → 送音訊、讀到 asr_final 回最終文字。"""
+    ws = MagicMock()
+    ws.recv = AsyncMock(side_effect=[
+        '{"status":"ok"}',
+        '{"pipe":{"asr_final":true,"asr_sentence":"外匯車"}}',
+    ])
+    ws.send = AsyncMock()
+    _patch_yating_io(monkeypatch, ws)
+    out = await yating_stt.transcribe("key", b"\x00\x00" * 100, timeout=2.0)
+    assert out == "外匯車"
+    assert ws.send.await_count >= 1
