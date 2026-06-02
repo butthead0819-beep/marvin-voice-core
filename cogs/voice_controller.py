@@ -549,7 +549,7 @@ class VoiceController(commands.Cog):
 
         # 🎵 [Stream Mode] YouTube 串流系統狀態
         self.stream_mode = False
-        self.stream_volume = 0.10        # 串流獨立音量，初始 10%
+        self.stream_volume = 0.80        # 串流獨立音量，初始 80%
         # 🎚️ [HotSwap] 中途 TTS 熱切換（Plan 11 Slice 1，手動觸發驗證機制）
         self._hotswap_coord = HotSwapCoordinator()
         self._stream_play_gen = 0                 # 播放世代；切換前遞增使舊 source 的 after 失效
@@ -1469,7 +1469,7 @@ class VoiceController(commands.Cog):
 
         if not self.stream_mode:
             self.stream_mode = True
-            self.stream_volume = 0.10
+            self.stream_volume = 0.80
             if self.stream_task and not self.stream_task.done():
                 self.stream_task.cancel()
             self.stream_task = asyncio.create_task(self._stream_loop())
@@ -4739,7 +4739,7 @@ class VoiceController(commands.Cog):
             self.stream_queue.append(info)
             if not self.stream_mode:
                 self.stream_mode = True
-                self.stream_volume = 0.10
+                self.stream_volume = 0.80
                 if self.stream_task and not self.stream_task.done():
                     self.stream_task.cancel()
                 self.stream_task = asyncio.create_task(self._stream_loop())

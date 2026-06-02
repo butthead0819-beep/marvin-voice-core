@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class PlayControlView(discord.ui.View):
     """🎵 [Unified Stream Control] 播放控制台 + 佇列管理，合一版。"""
 
-    VOL_STEP = 0.05
+    VOL_STEP = 0.10
     VOL_MIN  = 0.01
     VOL_MAX  = 1.00
 
