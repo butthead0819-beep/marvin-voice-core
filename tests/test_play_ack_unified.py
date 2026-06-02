@@ -216,6 +216,134 @@ async def test_status_variant_globs_prefix(tmp_path):
     assert seen["pat"] == "assets/acks_status/searching_first_*.mp3"
 
 
+# ── 主動 ack appropriateness gate（意圖導向）──────────────────────────────────
+import ack_templates as A
+import time as _t
+
+
+def _recent(cog, *texts, age_s=1.0):
+    """讓 conv_buffer 回傳近窗內的這幾句。"""
+    ts = _t.time() - age_s
+    cog.bot.engine.conv_buffer = MagicMock()
+    cog.bot.engine.conv_buffer.get_last_n_utterances.return_value = [
+        {"text": x, "timestamp": ts} for x in texts
+    ]
+
+
+_STATUS = A.CATEGORIES["status"]
+_FILLER = A.CATEGORIES["filler"]
+
+
+def test_is_status_probe_matches_complaints():
+    cog = _make_cog()
+    for t in ["怎麼都沒反應", "Marvin 還在嗎", "壞了喔", "好了沒", "喂？", "hello?"]:
+        assert cog._is_status_probe(t) is True, t
+
+
+def test_is_status_probe_rejects_chitchat():
+    cog = _make_cog()
+    for t in ["今天天氣真好", "你昨天看球賽了嗎", "我想點周杰倫"]:
+        assert cog._is_status_probe(t) is False, t
+
+
+def test_gate_blocks_in_echo_cooldown():
+    cog = _make_cog()
+    cog._tts_echo_cooldown_until = _t.time() + 2.0
+    _recent(cog)  # 無近窗文字
+    assert cog._active_ack_allowed(_STATUS) is False
+
+
+def test_gate_allows_when_silent():
+    cog = _make_cog()
+    cog._tts_echo_cooldown_until = 0.0
+    _recent(cog)  # 近窗沒人講 → 安靜等待
+    assert cog._active_ack_allowed(_STATUS) is True
+
+
+def test_gate_allows_on_status_probe():
+    cog = _make_cog()
+    cog._tts_echo_cooldown_until = 0.0
+    _recent(cog, "怎麼都沒反應")   # 在問狀態 → 立刻放
+    assert cog._active_ack_allowed(_STATUS) is True
+
+
+def test_gate_suppresses_on_chitchat():
+    cog = _make_cog()
+    cog._tts_echo_cooldown_until = 0.0
+    _recent(cog, "今天天氣真好")   # 閒聊 → 壓住
+    assert cog._active_ack_allowed(_STATUS) is False
+
+
+def test_gate_ignores_stale_text_outside_window():
+    cog = _make_cog()
+    cog._tts_echo_cooldown_until = 0.0
+    _recent(cog, "今天天氣真好", age_s=99)  # 太舊（窗外）→ 視同沉默 → 放
+    assert cog._active_ack_allowed(_STATUS) is True
+
+
+def test_filler_gate_ignores_intent():
+    """filler 非 intent_aware：閒聊也不影響，只看 echo 窗。"""
+    cog = _make_cog()
+    cog._tts_echo_cooldown_until = 0.0
+    _recent(cog, "今天天氣真好")
+    assert cog._active_ack_allowed(_FILLER) is True
+    cog._tts_echo_cooldown_until = _t.time() + 2.0
+    assert cog._active_ack_allowed(_FILLER) is False
+
+
+@pytest.mark.asyncio
+async def test_status_suppressed_during_chitchat(tmp_path):
+    """status：使用者在閒聊 → 不放（連熱切換都不注入）。"""
+    cog = _make_cog()
+    vc = _idle_vc()
+    cog.voice_client = vc
+    cog._tts_echo_cooldown_until = 0.0
+    _recent(cog, "你昨天看球賽了嗎")
+    cog._arm_hotswap = AsyncMock(return_value=True)
+
+    f = tmp_path / "thinking_first_1.mp3"; f.write_bytes(b"x")
+    with patch("glob.glob", return_value=[str(f)]), \
+         patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
+        await cog._play_ack("status", variant="thinking_first")
+
+    assert not vc.play.called
+    assert not cog._arm_hotswap.called
+
+
+@pytest.mark.asyncio
+async def test_status_fires_on_probe(tmp_path):
+    """status：使用者問「沒反應?」→ 立刻放。"""
+    cog = _make_cog()
+    vc = _idle_vc()
+    cog.voice_client = vc
+    cog._tts_echo_cooldown_until = 0.0
+    _recent(cog, "怎麼都沒反應")
+
+    f = tmp_path / "thinking_first_1.mp3"; f.write_bytes(b"x")
+    with patch("glob.glob", return_value=[str(f)]), \
+         patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
+        await cog._play_ack("status", variant="thinking_first")
+
+    assert vc.play.called
+
+
+@pytest.mark.asyncio
+async def test_passive_ack_ignores_active_gate(tmp_path):
+    """wake（被動）：即使閒聊 / echo 窗，仍照放（被動一定該確認）。"""
+    cog = _make_cog()
+    vc = _idle_vc()
+    cog.voice_client = vc
+    cog._tts_echo_cooldown_until = _t.time() + 5.0
+    _recent(cog, "今天天氣真好")
+
+    f = tmp_path / "ack_1.mp3"; f.write_bytes(b"x")
+    with patch("glob.glob", return_value=[str(f)]), \
+         patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
+        await cog._play_ack("wake", speaker="阿狗")
+
+    assert vc.play.called
+
+
 # ── filler：不鎖、僅空檔 ─────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

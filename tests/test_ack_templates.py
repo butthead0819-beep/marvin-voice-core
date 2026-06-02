@@ -114,6 +114,25 @@ def test_lock_categories_skip_when_busy():
         assert c.await_completion is False
 
 
+def test_passive_vs_active_classification():
+    """被動 = 回應使用者動作；主動 = Marvin 自己冒出來報狀態。"""
+    passive = {k for k, c in A.CATEGORIES.items() if c.mode == "passive"}
+    active = {k for k, c in A.CATEGORIES.items() if c.mode == "active"}
+    assert passive == {"wake", "music", "music_fail", "nemoclaw"}
+    assert active == {"status", "filler"}
+
+
+def test_mode_defaults_passive():
+    assert A.AckCategory("x", {"*": "wake_zh"}).mode == "passive"
+
+
+def test_only_status_is_intent_aware():
+    """status 看意圖（狀態詢問才插話）；filler 只看 echo 窗。"""
+    assert A.CATEGORIES["status"].intent_aware is True
+    assert A.CATEGORIES["filler"].intent_aware is False
+    assert A.AckCategory("x", {"*": "wake_zh"}).intent_aware is False
+
+
 def test_every_category_resolves_to_existing_pool():
     for key in A.CATEGORIES:
         for lang in ("zh", "en"):

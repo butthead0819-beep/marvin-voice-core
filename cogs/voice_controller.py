@@ -3520,6 +3520,51 @@ class VoiceController(commands.Cog):
             and bool(self._current_stream_url)
         )
 
+    # 主動 ack intent gate：近此窗內的使用者文字才納入意圖判斷。
+    # 必須 < status 第一發的 5s，否則會把 0s 的原始 query 也算進來而誤判成閒聊。
+    _ACTIVE_ACK_INTENT_WINDOW_S = 3.0
+    # 「想知道狀態 / 抱怨沒反應」的口語樣式 — 命中即視為狀態詢問，主動 ack 立刻放。
+    _STATUS_PROBE_RE = re.compile(
+        r"沒反應|沒回應|沒聲音|沒動靜|還在嗎|在不在|在嗎|死了沒|當機|掛了|壞了|"
+        r"怎麼這麼久|這麼慢|多久|好了沒|弄好沒|hello|喂",
+        re.IGNORECASE,
+    )
+
+    def _is_status_probe(self, text: str) -> bool:
+        """使用者這句是否在問狀態 / 抱怨沒反應（vs 閒聊）。"""
+        return bool(text and self._STATUS_PROBE_RE.search(text))
+
+    def _recent_user_text(self, window_s: float) -> str:
+        """近 window_s 內所有 speaker 的 STT 文字拼接（給主動 ack intent gate）。"""
+        engine = getattr(self.bot, "engine", None)
+        cb = getattr(engine, "conv_buffer", None) if engine else None
+        if cb is None:
+            return ""
+        cutoff = time.time() - window_s
+        items = cb.get_last_n_utterances(8)
+        texts = [it.get("text", "") for it in items if it.get("timestamp", 0) >= cutoff]
+        return " ".join(t for t in texts if t)
+
+    def _active_ack_allowed(self, cat) -> bool:
+        """主動 ack（status / filler）的 appropriateness gate。
+
+        被動 ack 是回應使用者剛做的動作（一定該放）；主動 ack 是 Marvin 自己冒出來。
+        判準是「意圖」不是「有沒有出聲」：
+        - echo 冷卻窗內 → 壓（防 TTS 回授，技術必需）
+        - 非 intent_aware（filler）→ echo 過了就放
+        - intent_aware（status）：近窗沒人講 → 放（安靜等待）；有人講且在問狀態/抱怨
+          沒反應 → 立刻放；有人講但在閒聊 → 壓（別插話）。
+        （is_playing / is_playing_audio 由 _play_ack 的 skip_if_busy 另外擋。）
+        """
+        if time.time() < self._tts_echo_cooldown_until:
+            return False
+        if not getattr(cat, "intent_aware", False):
+            return True
+        recent = self._recent_user_text(self._ACTIVE_ACK_INTENT_WINDOW_S)
+        if not recent:
+            return True
+        return self._is_status_probe(recent)
+
     async def _play_ack(self, category_key: str, *, speaker: str = "", variant: str | None = None) -> None:
         """統一 ack 播放入口（ack_templates.CATEGORIES 驅動）。
 
@@ -3540,6 +3585,12 @@ class VoiceController(commands.Cog):
 
         _vc = self.voice_client or discord.utils.get(self.bot.voice_clients)
         if not _vc or not _vc.is_connected():
+            return
+
+        # 🚦 主動 ack（Marvin 自己冒出來報狀態）過 appropriateness gate；被動 ack（回應
+        # 使用者剛做的動作）一定該放、跳過 gate。
+        if cat.mode == "active" and not self._active_ack_allowed(cat):
+            logger.info(f"🤫 [Ack:{category_key}] 主動 ack 被 gate 壓下（閒聊中/echo 窗）")
             return
 
         # 🔥 [TTS Prewarm] ack＝Marvin 即將回應。趁 ack 播放空檔並行暖 edge-tts，

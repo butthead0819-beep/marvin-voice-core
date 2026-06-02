@@ -148,6 +148,13 @@ POOLS: dict[str, AckPool] = {
 class AckCategory:
     key: str
     pool_by_lang: Mapping[str, str]      # lang -> pool key；"*" 為預設
+    # 被動 = 回應使用者剛做的動作（一定該放）；主動 = Marvin 自己冒出來報狀態
+    # （status 久候 / filler 遮蔽延遲），放錯時機就吵 → 過 _active_ack_allowed gate。
+    mode: str = "passive"                # "passive" | "active"
+    # 主動 ack 是否看使用者意圖：True（status）→ 近窗有人講話時，狀態詢問才放、閒聊壓住；
+    # False（filler）→ 只看 echo 窗（filler 在 wake 後即放，近窗文字就是 query 本身，
+    # 套 intent 會被誤判成閒聊而壓掉）。
+    intent_aware: bool = False
     urgent: bool = False                 # True → 音樂中走熱切換注入，不打斷音樂
     prewarm_tts: bool = False            # 播放時並行暖 edge-tts（ack 預告 Marvin 回應）
     use_lock: bool = False               # True → 走 playback_lock 序列化（nemoclaw / status）
@@ -183,15 +190,16 @@ CATEGORIES: dict[str, AckCategory] = {
         "nemoclaw", {"zh": "wake_zh", "en": "wake_en"},
         urgent=False, use_lock=True, skip_if_busy=True,
     ),
-    # LLM 久候/降級狀態安撫：音樂中切入；走 lock、播放中跳過；檔名前綴 = {state}_{tier}
+    # LLM 久候/降級狀態安撫：主動發聲；音樂中切入；走 lock、播放中跳過；檔名前綴 = {state}_{tier}
     "status": AckCategory(
         "status", {"*": "status"},
-        urgent=True, use_lock=True, skip_if_busy=True, variant_glob=True,
+        mode="active", intent_aware=True, urgent=True, use_lock=True,
+        skip_if_busy=True, variant_glob=True,
     ),
-    # 延遲遮蔽 filler：故意不鎖、僅空檔插隊
+    # 延遲遮蔽 filler：主動發聲；故意不鎖、僅空檔插隊
     "filler": AckCategory(
         "filler", {"zh": "wake_zh", "en": "wake_en"},
-        urgent=False, use_lock=False, skip_if_busy=True,
+        mode="active", urgent=False, use_lock=False, skip_if_busy=True,
     ),
 }
 
