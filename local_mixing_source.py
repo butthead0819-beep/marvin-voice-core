@@ -175,3 +175,45 @@ class LocalMixingAudioSource(_BASE):
         if chunk.size < FRAME_SAMPLES:  # clip 尾端不足一幀 → 補零（≤20ms 邊界靜音）
             chunk = np.concatenate([chunk, np.zeros(FRAME_SAMPLES - chunk.size, dtype=np.float32)])
         return chunk
+
+
+class MixerPlaybackAdapter(_BASE):
+    """每次 (re)connect 新建的薄 adapter，read()/is_opus() 委派到持久的 mixer。
+
+    OV #4：不重用同一個 AudioSource 物件跨 VoiceClient——discord.py 停播會呼叫
+    `source.cleanup()`，跨 client 重用未定義。mixer 狀態（layer/佇列）持久跨 reconnect，
+    每次重連交給 vc.play() 一個新 adapter；adapter.cleanup() 不碰 mixer。
+    """
+
+    def __init__(self, mixer: LocalMixingAudioSource):
+        self._mixer = mixer
+
+    def is_opus(self) -> bool:
+        return self._mixer.is_opus()
+
+    def read(self) -> bytes:
+        return self._mixer.read()
+
+    def cleanup(self):  # discord 停播時呼叫；不可動持久 mixer 狀態
+        pass
+
+
+def ensure_mixer_playing(voice_client, adapter_factory) -> bool:
+    """vc 連線中且未在播 → play 一個新 adapter，回 True；已在播/無 vc → 不動回 False。
+
+    OV #4：用 try/except 兜 discord.py 自身 reconnect 與 watcher 的 AlreadyPlaying race
+    （is_playing() 檢查到 play() 之間的 TOCTOU），永不 raise。
+    adapter_factory: () -> AudioSource，每次新建不重用。
+    """
+    if voice_client is None:
+        return False
+    try:
+        if not voice_client.is_connected():
+            return False
+        if voice_client.is_playing():
+            return False
+        voice_client.play(adapter_factory())
+        return True
+    except Exception:
+        logger.warning("[Plan12_Mixer] ensure_mixer_playing 略過（vc 狀態競態或未就緒）")
+        return False

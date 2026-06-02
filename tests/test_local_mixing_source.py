@@ -13,8 +13,12 @@ import threading
 import numpy as np
 import pytest
 
+from unittest.mock import MagicMock
+
 from local_mixing_source import (
     LocalMixingAudioSource,
+    MixerPlaybackAdapter,
+    ensure_mixer_playing,
     FRAME_SAMPLES,
     FRAME_BYTES_S16,
     SAMPLE_RATE,
@@ -197,3 +201,72 @@ def test_concurrent_push_during_read_no_corruption():
         assert len(mix.read()) == FRAME_BYTES_S16
     t.join()
     assert errors == []
+
+
+# ── MixerPlaybackAdapter（reconnect-safe，OV #4）──────────────────────────────
+
+def test_adapter_delegates_read_and_opus():
+    mix = LocalMixingAudioSource()
+    adapter = MixerPlaybackAdapter(mix)
+    assert adapter.is_opus() is False
+    assert adapter.read() == b"\x00" * FRAME_BYTES_S16  # 委派到 mixer idle silence
+
+
+def test_adapter_cleanup_preserves_mixer_state():
+    mix = LocalMixingAudioSource()
+    mix.push_tts(_f32_frame(0.3))
+    adapter = MixerPlaybackAdapter(mix)
+    adapter.cleanup()  # discord 停播會呼叫；不可清掉持久 mixer 狀態
+    assert mix.is_idle() is False  # TTS 還在
+
+
+# ── ensure_mixer_playing ─────────────────────────────────────────────────────
+
+def _vc(connected=True, playing=False):
+    vc = MagicMock()
+    vc.is_connected.return_value = connected
+    vc.is_playing.return_value = playing
+    return vc
+
+
+def test_ensure_playing_plays_when_idle_vc():
+    mix = LocalMixingAudioSource()
+    vc = _vc(connected=True, playing=False)
+    assert ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(mix)) is True
+    assert vc.play.call_count == 1
+    assert isinstance(vc.play.call_args.args[0], MixerPlaybackAdapter)
+
+
+def test_ensure_playing_idempotent_when_already_playing():
+    mix = LocalMixingAudioSource()
+    vc = _vc(connected=True, playing=True)
+    assert ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(mix)) is False
+    assert not vc.play.called
+
+
+def test_ensure_playing_no_vc():
+    mix = LocalMixingAudioSource()
+    assert ensure_mixer_playing(None, lambda: MixerPlaybackAdapter(mix)) is False
+
+
+def test_ensure_playing_not_connected():
+    mix = LocalMixingAudioSource()
+    vc = _vc(connected=False, playing=False)
+    assert ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(mix)) is False
+    assert not vc.play.called
+
+
+def test_ensure_playing_swallows_already_playing_race():
+    mix = LocalMixingAudioSource()
+    vc = _vc(connected=True, playing=False)
+    vc.play.side_effect = RuntimeError("Already playing audio")  # TOCTOU race
+    assert ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(mix)) is False  # 不 raise
+
+
+def test_ensure_playing_fresh_adapter_each_call():
+    mix = LocalMixingAudioSource()
+    seen = []
+    factory = lambda: MixerPlaybackAdapter(mix)  # noqa: E731
+    ensure_mixer_playing(_vc(playing=False), lambda: seen.append(factory()) or seen[-1])
+    ensure_mixer_playing(_vc(playing=False), lambda: seen.append(factory()) or seen[-1])
+    assert len(seen) == 2 and seen[0] is not seen[1]  # 每次新 adapter，不重用
