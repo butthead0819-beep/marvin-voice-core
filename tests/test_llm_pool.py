@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from unittest.mock import AsyncMock, MagicMock
@@ -165,6 +167,67 @@ async def test_dispatch_rate_limit_marks_and_tries_next():
     assert out == "from-b"
     assert a.cooldown_until > clk.t       # a 被冷卻
     assert pool.current_tpm(b) == 50
+
+
+def _resp(content="ok", tokens=10):
+    """模擬 OpenAI-compat chat.completions response。"""
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        usage=SimpleNamespace(total_tokens=tokens),
+    )
+
+
+def _client_create(create_fn):
+    c = MagicMock()
+    c.chat.completions.create = create_fn
+    return c
+
+
+@pytest.mark.asyncio
+async def test_chat_call_timeout_marks_transient_and_tries_next():
+    """掛住的 provider（create 久不回）→ timeout → transient cooldown → 跳下一家。
+
+    2026-06-02 incident 根因：llm_pool _call 無 timeout，高負載時 provider 收了
+    請求但 server 端卡住，await create() 無限等（實測「成功」call 達 115s），
+    cleaner 整條阻塞 50-340s。加 per-call timeout 把掛住轉成 transient 失敗。
+    """
+    clk = _Clock()
+    a = PoolEndpoint(name="hang")
+    b = PoolEndpoint(name="fast")
+
+    async def _hang(**kw):
+        await asyncio.sleep(5.0)  # 遠超 timeout
+        return _resp()
+
+    async def _fast(**kw):
+        return _resp("from-b", 30)
+
+    a.client = _client_create(_hang)
+    b.client = _client_create(_fast)
+    pool = _pool(clk, a, b)
+    router = TieredLLMRouter(pool, pool)
+
+    out = await router.quick("hi", caller="t", timeout=0.05)
+
+    assert out == "from-b"               # 掛住的 a 被跳過，落到 b
+    assert a.cooldown_until > clk.t      # a 進 transient cooldown
+
+
+@pytest.mark.asyncio
+async def test_chat_fast_call_not_affected_by_timeout():
+    """正常快速回應不受 timeout 影響。"""
+    clk = _Clock()
+    a = PoolEndpoint(name="fast")
+
+    async def _fast(**kw):
+        return _resp("hello", 12)
+
+    a.client = _client_create(_fast)
+    pool = _pool(clk, a)
+    router = TieredLLMRouter(pool, pool)
+
+    out = await router.quick("hi", caller="t", timeout=5.0)
+    assert out == "hello"
 
 
 @pytest.mark.asyncio

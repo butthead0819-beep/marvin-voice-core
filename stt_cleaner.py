@@ -285,15 +285,17 @@ class GeminiRouterSTTMixin:
         # validate 失敗仍直接回 raw（語意與舊一致）。
         self._ensure_stt_router()
         _router = self._stt_router
+        # timeout=8s：cleaner 在即時語音熱路徑，掛住的 provider 超時就跳下一家／落 raw，
+        # 不阻塞 pipeline（2026-06-02 incident：無 timeout 時 cleaner 卡 50-340s）。
         content = await _router.quick(user_message, caller="stt_cleaner",
                                       system=system_prompt, max_tokens=200,
-                                      temperature=0.0, json=True)
+                                      temperature=0.0, json=True, timeout=8.0)
         res = _finalize(content, "track=B (pool-quick)")
         if res is not None:
             return res
         content = await _router.analyze(user_message, caller="stt_cleaner",
                                         system=system_prompt, max_tokens=200,
-                                        temperature=0.0, json=True)
+                                        temperature=0.0, json=True, timeout=8.0)
         res = _finalize(content, "track=B (pool-analyze)")
         if res is not None:
             return res

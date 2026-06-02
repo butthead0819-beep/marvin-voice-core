@@ -16,6 +16,7 @@ round-trip + 拖慢 pipeline。stt_cleaner 已有 per-engine cooldown（proven p
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import time
@@ -157,6 +158,10 @@ class CooldownAwarePool:
 _RATE_LIMIT_HINTS = ("429", "rate limit", "rate_limit", "ratelimit",
                      "quota", "tokens per day", "tpd", "too many requests")
 _TRANSIENT_COOLDOWN = 5.0   # 非 429 暫時性錯誤（timeout/5xx）的短冷卻，避免立刻重撞
+# per-call timeout：高負載時 provider 可能收了請求但 server 卡住，await create() 無限等
+# （2026-06-02 incident 實測「成功」call 達 115s，cleaner 整條阻塞 50-340s）。超時→當
+# transient 失敗（cooldown + 跳下一家），不讓單一掛住的連線卡死即時語音 pipeline。
+_DEFAULT_CALL_TIMEOUT = 12.0
 
 
 def is_rate_limit(exc: BaseException) -> bool:
@@ -208,15 +213,16 @@ class TieredLLMRouter:
 
     async def quick(self, prompt: str, *, caller: str, system: Optional[str] = None,
                     max_tokens: int = 200, temperature: float = 0.7,
-                    json: bool = False) -> Optional[str]:
-        return await self._chat(self.quick_pool, prompt, system, max_tokens, temperature, json, caller)
+                    json: bool = False, timeout: float = _DEFAULT_CALL_TIMEOUT) -> Optional[str]:
+        return await self._chat(self.quick_pool, prompt, system, max_tokens, temperature, json, caller, timeout)
 
     async def analyze(self, prompt: str, *, caller: str, system: Optional[str] = None,
                       max_tokens: int = 300, temperature: float = 0.3,
-                      json: bool = False) -> Optional[str]:
-        return await self._chat(self.analyze_pool, prompt, system, max_tokens, temperature, json, caller)
+                      json: bool = False, timeout: float = _DEFAULT_CALL_TIMEOUT) -> Optional[str]:
+        return await self._chat(self.analyze_pool, prompt, system, max_tokens, temperature, json, caller, timeout)
 
-    async def _chat(self, pool, prompt, system, max_tokens, temperature, json, caller) -> Optional[str]:
+    async def _chat(self, pool, prompt, system, max_tokens, temperature, json, caller,
+                    timeout: float = _DEFAULT_CALL_TIMEOUT) -> Optional[str]:
         messages = ([{"role": "system", "content": system}] if system else []) + \
                    [{"role": "user", "content": prompt}]
 
@@ -225,7 +231,11 @@ class TieredLLMRouter:
                           temperature=temperature, stream=False)
             if json:
                 kwargs["response_format"] = {"type": "json_object"}
-            resp = await ep.client.chat.completions.create(**kwargs)
+            # per-call timeout：掛住的 provider 超時 → raise TimeoutError → dispatch 當
+            # transient 失敗（cooldown + 跳下一家），不無限等。
+            resp = await asyncio.wait_for(
+                ep.client.chat.completions.create(**kwargs), timeout=timeout
+            )
             content = resp.choices[0].message.content
             usage = getattr(resp, "usage", None)
             tokens = usage.total_tokens if usage else 0
