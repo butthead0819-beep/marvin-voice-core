@@ -87,7 +87,7 @@ from voice_guard_helpers import _should_mute_for_stream_guard
 from cogs.voice_views import ConsentView, PlayControlView
 from local_mixing_source import (
     LocalMixingAudioSource, MixerPlaybackAdapter, S16ToF32MusicSource,
-    BufferedF32MusicSource, ensure_mixer_playing,
+    BufferedF32MusicSource, ensure_mixer_playing, FRAME_BYTES_F32,
 )
 from utterance_budget import STREAM_BUDGET
 import ack_templates
@@ -690,23 +690,66 @@ class VoiceController(commands.Cog):
             return None
         return np.frombuffer(out, dtype=np.float32)
 
-    async def _render_tts_f32(self, text: str, *, force_macos: bool,
-                              emotion_tag: str, voice: str | None) -> "np.ndarray | None":
-        """[Plan 12] 把 TTS 整段 render 成 f32 buffer（收 stream → ffmpeg f32），離 voice thread。"""
+    async def _stream_tts_to_mixer(self, text: str, *, force_macos: bool,
+                                   emotion_tag: str, voice: str | None) -> int:
+        """[Plan 12] 邊收 edge-tts、邊 ffmpeg 解碼、邊逐幀 push_tts 進 TTS 層。
+
+        首音 ~0.8s 就出（不必等整段 render；恢復舊 FIFO streaming 的低延遲），且 render 全在
+        event loop（非 voice thread）→ 不阻塞混音。回傳 push 進去的幀數。
+        edge-tts chunks → ffmpeg stdin；ffmpeg f32le stdout → readexactly(一幀) → push_tts。
+        """
         tp = self._EMOTION_TTS_PARAMS.get(emotion_tag, self._EMOTION_TTS_PARAMS["neutral"])
-        chunks: list[bytes] = []
         try:
-            async for c in self.bot.tts_engine.stream_audio(
-                text, voice=voice, rate=tp["rate"], pitch=tp["pitch"], force_macos=force_macos,
-            ):
-                if c:
-                    chunks.append(c)
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-nostdin", "-loglevel", "quiet", "-i", "pipe:0",
+                "-ac", "2", "-ar", "48000", "-f", "f32le", "pipe:1",
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
         except Exception:
-            logger.exception("[Plan12_Mixer] TTS stream 收集失敗")
-            return None
-        if not chunks:
-            return None
-        return await self._ffmpeg_to_f32(input_bytes=b"".join(chunks))
+            logger.exception("[Plan12_Mixer] TTS streaming ffmpeg 啟動失敗")
+            return 0
+
+        async def _feed():
+            try:
+                async for c in self.bot.tts_engine.stream_audio(
+                    text, voice=voice, rate=tp["rate"], pitch=tp["pitch"], force_macos=force_macos,
+                ):
+                    if c:
+                        proc.stdin.write(c)
+                        await proc.stdin.drain()
+            except Exception:
+                logger.warning("[Plan12_Mixer] edge-tts → ffmpeg 餵入中斷")
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+        async def _drain() -> int:
+            pushed = 0
+            while True:
+                if self._tts_interrupted:  # 使用者打斷 → 立即停止餵（佇列已被 clear_tts 清掉）
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    break
+                try:
+                    data = await proc.stdout.readexactly(FRAME_BYTES_F32)
+                except asyncio.IncompleteReadError as e:
+                    if e.partial:
+                        self._mixer.push_tts(np.frombuffer(e.partial, dtype=np.float32))
+                        pushed += 1
+                    break
+                except Exception:
+                    break
+                self._mixer.push_tts(np.frombuffer(data, dtype=np.float32))
+                pushed += 1
+            return pushed
+
+        _, pushed = await asyncio.gather(_feed(), _drain())
+        return pushed
 
     # 🎛️ [Plan 12 / T4] flag=on 時 is_playing_audio / tts_queue_duration 由 mixer 維護，
     # ~20 個既有 reader（Echo Guard / wake-suppress / storm / ack / dual / :853）零改動自然正確。
@@ -1831,7 +1874,15 @@ class VoiceController(commands.Cog):
         promo_file = os.path.abspath("records/marvin_wakeword_short.mp3")
         if os.path.exists(promo_file):
             print(f"🎤 [Promo] 偵測到宣導音訊，準備在招呼語後播放: {promo_file}")
-            await self.play_local_file(promo_file)
+            if self._plan12 and self._mixer is not None:
+                # 🎛️ [Plan 12] promo 是語音 → 走 TTS 層（排在 greeting 後、序列化、全音量、不被 duck）；
+                # 不可走 play_local_file（音樂層）會被 greeting duck 成小聲又跟 intro 搶層
+                f32 = await self._ffmpeg_to_f32(input_path=promo_file)
+                if f32 is not None and f32.size:
+                    self._ensure_mixer_playing(vc)
+                    self._mixer.push_tts(f32)
+            else:
+                await self.play_local_file(promo_file)
         
         sink = self.bot.engine.get_active_sink()
         if sink:
@@ -2421,7 +2472,9 @@ class VoiceController(commands.Cog):
             vc = discord.utils.get(self.bot.voice_clients)
             if vc and vc.is_playing():
                 vc.stop_playing()
-            self._tts_interrupted = True  # 封鎖所有排隊中的串流片段
+            if self._plan12 and self._mixer is not None:
+                self._mixer.clear_tts()  # 🎛️ 清 mixer TTS 佇列，否則被打斷的 TTS 殘留累積亂播
+            self._tts_interrupted = True  # 封鎖所有排隊中的串流片段（也讓 streaming render 停止餵）
             interrupted_text = self._current_tts_text
             if interrupted_text and not self._current_tts_in_channel and self.active_text_channel:
                 asyncio.create_task(
@@ -5684,14 +5737,19 @@ class VoiceController(commands.Cog):
             vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
             if vc is None:
                 return
-            f32 = await self._render_tts_f32(text, force_macos=force_macos,
-                                             emotion_tag=emotion_tag, voice=voice)
-            if f32 is None or f32.size == 0:
-                return
-            self._ensure_mixer_playing(vc)
-            if not self._mixer.push_tts(f32):  # 超 cap → 改貼文
+            # 新獨立發話（非串流續句）→ 解除上一段被打斷的封鎖，否則 streaming 會立刻 bail
+            if not already_in_channel:
+                self._tts_interrupted = False
+            # backlog 保護（取代被 bypass 的 storm/drop）：TTS 層已積太多就丟+貼文，避免不同時間 TTS 疊播
+            _drop = {0: float("inf"), 1: 8.0, 2: 3.0}.get(priority, 8.0)
+            if self._mixer.tts_load_seconds() > _drop and not self._tts_protected:
                 if not already_in_channel and self.active_text_channel:
                     asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
+                return
+            self._ensure_mixer_playing(vc)  # 先 arm，首幀一 push 就出聲
+            # streaming：邊收 edge-tts 邊解碼邊逐幀 push（首音 ~0.8s，不等整段）
+            await self._stream_tts_to_mixer(text, force_macos=force_macos,
+                                            emotion_tag=emotion_tag, voice=voice)
             return
 
         estimated_dur = self.bot.tts_engine.get_estimated_duration(text)

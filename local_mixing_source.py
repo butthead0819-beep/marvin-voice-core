@@ -121,6 +121,12 @@ class LocalMixingAudioSource(_BASE):
             self._stat_slow = 0
             self._stat_t0 = now
 
+    def clear_tts(self) -> None:
+        """丟棄所有待播/當前 TTS（使用者打斷時用）。否則打斷的 TTS 會殘留在佇列累積亂播。"""
+        self._tts_queue.clear()
+        self._tts_cur = None
+        self._tts_off = 0
+
     def set_paused(self, paused: bool) -> None:
         """控制台暫停/續播：暫停時 read() 回 silence 但不前進音樂/TTS 來源（保位置、保 adapter 不停）。"""
         self._paused = bool(paused)

@@ -5,7 +5,7 @@ flag=on：cog 持 LocalMixingAudioSource、ensure 在 idle vc 上 play 一個 Mi
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -99,8 +99,12 @@ async def test_play_tts_flag_on_pushes_to_mixer(monkeypatch):
     cog._tts_interrupted = False
     vc = _idle_vc()
     cog.bot.voice_clients = [vc]
-    cog._render_tts_f32 = AsyncMock(return_value=np.full(960 * 2, 0.3, dtype=np.float32))
+
+    # streaming render：mock 成「逐幀 push 進 mixer」（真的接 edge-tts+ffmpeg 不適合單測）
+    async def _fake_stream(text, **kw):
+        cog._mixer.push_tts(np.full(960 * 2, 0.3, dtype=np.float32))
+        return 1
+    cog._stream_tts_to_mixer = _fake_stream
     await cog.play_tts("哈囉馬文")
-    assert cog._render_tts_f32.await_count == 1
     assert not cog._mixer.is_idle()      # TTS 已 push 進 mixer
     assert vc.play.called                # ensure_mixer_playing 啟動 adapter

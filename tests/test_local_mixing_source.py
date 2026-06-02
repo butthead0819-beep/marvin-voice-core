@@ -471,3 +471,14 @@ def test_always_on_default_idle_never_returns_empty():
     mix = LocalMixingAudioSource(seed=1)
     for _ in range(100):
         assert mix.read() == b"\x00" * FRAME_BYTES_S16
+
+
+def test_clear_tts_drops_queued_and_current():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))
+    mix.push_tts(_f32_frame(0.3, n=FRAME_SAMPLES))
+    mix.read()  # 取一幀（_tts_cur 設起來）
+    assert not mix.is_idle()
+    mix.clear_tts()
+    assert mix.is_idle()                 # 佇列 + 當前都清掉
+    assert mix.tts_load_seconds() == 0.0
