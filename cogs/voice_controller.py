@@ -84,6 +84,10 @@ from hotswap_loudness import (
 from hotswap_eligibility import MAX_HOTSWAP_CHARS, is_hotswap_eligible
 from voice_guard_helpers import _should_mute_for_stream_guard
 from cogs.voice_views import ConsentView, PlayControlView
+from local_mixing_source import (
+    LocalMixingAudioSource, MixerPlaybackAdapter, S16ToF32MusicSource,
+    ensure_mixer_playing,
+)
 from utterance_budget import STREAM_BUDGET
 import ack_templates
 import pipeline_timing
@@ -562,6 +566,11 @@ class VoiceController(commands.Cog):
         self._active_control_view = None               # 最新的 PlayControlView 實例（用於歌詞更新）
         # 存活 UI view 弱引用集；cog_unload 時 stop() 全部，斷 view→cog 強引用，防 hot reload 雙實例
         self._active_views: weakref.WeakSet = weakref.WeakSet()
+
+        # 🎛️ [Plan 12] always-on 本地混音台（env-gated）。flag=off → mixer None、走舊 vc.play() 路徑。
+        # flag=on → 整 session 一條 vc.play(mixer adapter)，所有音訊餵 mixer 層。
+        self._plan12 = os.getenv("PLAN12_LOCAL_MIX", "false").lower() in ("1", "true", "yes")
+        self._mixer = LocalMixingAudioSource() if self._plan12 else None
         self._prefetch_cache: dict[str, asyncio.Task] = {}  # url → Task[{'lyrics', 'comment'}]
         self._last_search: dict[str, dict] = {}  # username → {query, ts, source}（voice/manual，供偏好修正學習用）
         # 🛡️ [Music Dedup] _handle_voice_music_command 5s 入口防抖
@@ -619,6 +628,16 @@ class VoiceController(commands.Cog):
         # 環境智能助理 — 話題產生器 + 溫度計
         self.temperature_monitor = None   # DiscordTemperatureMonitor，由 main_discord 注入
         self.topic_generator = None       # TopicGenerator，由 main_discord 注入
+
+    def _ensure_mixer_playing(self, vc) -> bool:
+        """[Plan 12] flag=on 時確保 mixer adapter 正在 vc 上播放（連線/重連後 re-arm）。
+
+        每次交給 vc.play() 一個新 MixerPlaybackAdapter（不重用、reconnect-safe）。
+        idempotent：已在播 → no-op。flag=off → 直接 no-op，不碰舊路徑。
+        """
+        if not self._plan12 or self._mixer is None:
+            return False
+        return ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(self._mixer))
 
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
@@ -5281,6 +5300,9 @@ class VoiceController(commands.Cog):
                 logger.warning("📡 [Sentinel] VoiceClient.is_connected() = False，觸發軟修復...")
                 asyncio.create_task(self.soft_repair_connection(reason="VoiceClient WebSocket 斷線"))
             return
+
+        # 🎛️ [Plan 12] 週期性確保 mixer 在播（涵蓋啟動 + 靜默 re-key 重連；flag=off no-op）
+        self._ensure_mixer_playing(vc)
 
         # 1. 寬限期檢查 (Grace Period)：連線後的 30 秒內不進行嚴格監控
         if time.time() - self.connection_time < 30:

@@ -198,6 +198,30 @@ class MixerPlaybackAdapter(_BASE):
         pass
 
 
+class S16ToF32MusicSource:
+    """把 s16le AudioSource（discord.FFmpegPCMAudio）即時轉 f32le 給 mixer 音樂層。
+
+    重用既有 ffmpeg（loudnorm / reconnect opts / PositionTracking），不需自建 f32 ffmpeg
+    source。轉換在 voice thread 上、純算術。進來的音樂是 full-scale s16（loudnorm 後），
+    s16→f32 等同無損；Plan 12 的低音量量化優化發生在 mixer 之後的 f32 gain → 仍成立。
+    """
+
+    def __init__(self, s16_source):
+        self._src = s16_source
+
+    def read(self) -> bytes:
+        buf = self._src.read()
+        if not buf:
+            return b""
+        f = np.frombuffer(buf, dtype=np.int16).astype(np.float32) / np.float32(32768.0)
+        return f.tobytes()
+
+    def cleanup(self):
+        c = getattr(self._src, "cleanup", None)
+        if callable(c):
+            c()
+
+
 def ensure_mixer_playing(voice_client, adapter_factory) -> bool:
     """vc 連線中且未在播 → play 一個新 adapter，回 True；已在播/無 vc → 不動回 False。
 

@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 from local_mixing_source import (
     LocalMixingAudioSource,
     MixerPlaybackAdapter,
+    S16ToF32MusicSource,
     ensure_mixer_playing,
     FRAME_SAMPLES,
     FRAME_BYTES_S16,
@@ -218,6 +219,39 @@ def test_adapter_cleanup_preserves_mixer_state():
     adapter = MixerPlaybackAdapter(mix)
     adapter.cleanup()  # discord 停播會呼叫；不可清掉持久 mixer 狀態
     assert mix.is_idle() is False  # TTS 還在
+
+
+# ── S16ToF32MusicSource（重用 FFmpegPCMAudio s16，轉 f32 給音樂層）────────────
+
+class _FakeS16:
+    def __init__(self, samples, chunks=1):
+        self._buf = np.asarray(samples, dtype=np.int16).tobytes()
+        self._chunks = chunks
+
+    def read(self):
+        if self._chunks <= 0:
+            return b""
+        self._chunks -= 1
+        return self._buf
+
+
+def test_s16_to_f32_converts_scale():
+    src = S16ToF32MusicSource(_FakeS16([32767, -32768, 0, 16384], chunks=1))
+    out = np.frombuffer(src.read(), dtype=np.float32)
+    assert np.allclose(out, [32767 / 32768, -1.0, 0.0, 0.5], atol=1e-6)
+
+
+def test_s16_to_f32_exhausts_returns_empty():
+    src = S16ToF32MusicSource(_FakeS16([1, 2], chunks=1))
+    assert src.read() != b""
+    assert src.read() == b""  # 來源耗盡 → b""（mixer 據此清音樂層）
+
+
+def test_s16_to_f32_feeds_mixer_music_layer():
+    mix = LocalMixingAudioSource(seed=1, volume=1.0)
+    mix.set_music_source(S16ToF32MusicSource(_FakeS16([8192] * FRAME_SAMPLES, chunks=2)))
+    assert len(mix.read()) == FRAME_BYTES_S16
+    assert not mix.is_idle()
 
 
 # ── ensure_mixer_playing ─────────────────────────────────────────────────────
