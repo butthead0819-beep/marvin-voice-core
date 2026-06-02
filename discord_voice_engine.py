@@ -1049,6 +1049,16 @@ class DiscordVoiceEngine:
         if text:
             self._speaker_lang[speaker] = self._detect_text_lang(text)
 
+    def _is_nan_speaker(self, user_id: int | None) -> bool:
+        """此 user 是否走台語雲端 STT（雅婷）。allowlist 從 env NAN_SPEAKER_IDS（逗號分隔
+        Discord user_id）讀，預設空 → 沒人走雅婷。依 user_id 而非顯示名（名稱會變/撞名）。"""
+        if user_id is None:
+            return False
+        raw = os.getenv("NAN_SPEAKER_IDS", "")
+        if not raw:
+            return False
+        return str(user_id) in {x.strip() for x in raw.split(",") if x.strip()}
+
     _LANG_TO_LOCALE = {"zh": "zh-TW", "en": "en-US"}
 
     # ── P2: STT 引擎拆解為獨立協程 ─────────────────────────────────────────────
@@ -1154,6 +1164,26 @@ class DiscordVoiceEngine:
         except Exception as e:
             logger.warning(f"[Groq Whisper] Exception: {e}")
         return "", {}
+
+    async def _run_yating_stt(self, audio) -> tuple[str, dict]:
+        """台語講者雲端 STT lane（雅婷 asr-zh-tw-std，輸出已正規化成華語漢字）。
+
+        audio 為 16kHz mono float32 array（即 _process_stt_hybrid 的 whisper_audio）。
+        缺金鑰 / 缺音訊 / 網路失敗 / 逾時 → 一律回 ("",{})，讓 caller 降級回 Swift。
+        """
+        api_key = os.getenv("YATING_API_KEY", "")
+        if not api_key or audio is None:
+            return "", {}
+        try:
+            import yating_stt
+            pcm = yating_stt.pcm16_from_float(audio)
+            if not pcm:
+                return "", {}
+            text = await yating_stt.transcribe(api_key, pcm, timeout=8.0)
+            return (text, {}) if text else ("", {})
+        except Exception as e:
+            logger.warning(f"[Yating] {type(e).__name__}: {e}，降級回 Swift")
+            return "", {}
 
     async def _run_whisper_stt(self, audio, language: str = "zh") -> tuple[str, dict]:
         """執行 Faster-Whisper STT，回傳 (辨識文字, meta dict)。meta 永遠為空 dict。
@@ -1300,12 +1330,22 @@ class DiscordVoiceEngine:
                         if user_id is not None and hasattr(self, 'sink') and self.sink:
                             self.sink.elevate_vad(user_id, duration=15.0)
             else:
+                # 🇹🇼 台語講者（NAN_SPEAKER_IDS）走雅婷雲端 STT；輸出已正規化成華語，下游零改動。
+                # 空/失敗自動降級回下面既有 Swift→Groq 鏈（優雅降級）。
+                if self._is_nan_speaker(user_id):
+                    print(f"🎙️ [Engine] 台語講者 → 雅婷雲端 STT (Speaker: {speaker_name})...", flush=True)
+                    raw_text, stt_meta = await self._run_yating_stt(whisper_audio)
+                    if raw_text:
+                        used_engine = "Yating"
+                        print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Yating)", flush=True)
+
                 # 序列備援：Swift server 優先（最高準確度），失敗才用 Whisper
-                print(f"🎙️ [Engine] 啟動 macOS Native Swift STT (Speaker: {speaker_name}, Locale: {_sp_locale})...", flush=True)
-                raw_text, stt_meta = await self._run_swift_stt(wav_path, is_wake_check=False, locale=_sp_locale)
-                if raw_text:
-                    used_engine = "Swift"
-                    print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Swift)", flush=True)
+                if not raw_text:
+                    print(f"🎙️ [Engine] 啟動 macOS Native Swift STT (Speaker: {speaker_name}, Locale: {_sp_locale})...", flush=True)
+                    raw_text, stt_meta = await self._run_swift_stt(wav_path, is_wake_check=False, locale=_sp_locale)
+                    if raw_text:
+                        used_engine = "Swift"
+                        print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Swift)", flush=True)
                 # Swift 失敗：Apple platform 用 Groq Whisper API 備援，Linux 用 Faster-Whisper
                 # 設 STT_SWIFT_STRICT=true 可關閉 fallback（避免 Whisper 在雜音上幻覺）
                 # 注：_swift_strict 已在函式頂部定義，這裡直接用
