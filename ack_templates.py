@@ -27,6 +27,13 @@ _play_nemoclaw_ack / _play_status_ack / _play_random_filler 各自分支。
      ⚠️ 這一步無法樣板化 — ack「何時放」是語義決定（哪個事件、哪個條件），
      必須人工放在對的位置。事件本身就是觸發點，不需要中央 dispatcher。
 
+被動 vs 主動（mode，預設 passive）：
+- 絕大多數 ack 是 **passive**（回應使用者剛做的動作 → 一定該放，不設即可）。
+- **active**（Marvin 自己冒出來報狀態，如 status/filler）要設 mode="active"，會過
+  voice_controller._active_ack_allowed gate（echo 窗 + 意圖判斷）。若這個主動 ack
+  發生在「使用者可能中途又開口」的等待情境，再設 intent_aware=True（閒聊壓住、
+  狀態詢問立刻放）；像 filler 那種 wake 後即放的就別設。
+
 台詞語氣慣例（撰寫時依此，不需問使用者）：
 - 馬文本人聲：短促、厭世、帶點不耐或宇宙級虛無；繁中 ≤6 字、urgent 類 ≤5 字。
 - urgent=True 代表久候/降級/插話場景：要能在音樂中切入（走熱切換），字數更短。
