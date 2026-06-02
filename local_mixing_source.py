@@ -52,6 +52,8 @@ class LocalMixingAudioSource(_BASE):
         tts_cap_seconds: float = 30.0,
         seed: int | None = None,
         instrument: bool = False,
+        on_demand: bool = False,
+        idle_grace_s: float = 1.0,
     ):
         self._volume = float(volume)
         self._duck_level = float(duck_level)
@@ -67,6 +69,11 @@ class LocalMixingAudioSource(_BASE):
         self._tts_off = 0                         # consumer-local offset
 
         # instrumentation（flag-gated；每 5s 印 [Plan12_Stats]，供 live 判 mixer 是否跟得上）
+        # on-demand：idle 超過 grace → read() 回 b"" 讓 discord 停送（修 always-on×DAVE）。
+        # 內容到達時 caller 重新 vc.play(adapter)，每段播放=獨立 player thread（仿舊路徑 discrete play）。
+        self._on_demand = bool(on_demand)
+        self._idle_grace_frames = max(1, int(idle_grace_s / 0.02))
+        self._idle_count = 0
         self._instrument = bool(instrument)
         self._stat_frames = 0
         self._stat_ms_sum = 0.0
@@ -132,7 +139,13 @@ class LocalMixingAudioSource(_BASE):
             if tts_f is not None:
                 layers.append(tts_f)  # TTS gain 1.0
             if not layers:
+                # idle：always-on 回 silence（永不停）；on-demand 超過 grace 回 b""（discord 停送）
+                if self._on_demand:
+                    self._idle_count += 1
+                    if self._idle_count > self._idle_grace_frames:
+                        return b""
                 return self._silence_bytes
+            self._idle_count = 0  # 有內容 → 重設 idle 計數
 
             mixed = am.mix_layers(layers)
             s16 = am.to_s16(am.tpdf_dither(mixed, self._rng))

@@ -572,7 +572,8 @@ class VoiceController(commands.Cog):
         # flag=on → 整 session 一條 vc.play(mixer adapter)，所有音訊餵 mixer 層。
         self._plan12 = os.getenv("PLAN12_LOCAL_MIX", "false").lower() in ("1", "true", "yes")
         # instrument=True：每 5s 印 [Plan12_Stats]（read_ms / underrun / buffer 深度）供 live 判跟不跟得上
-        self._mixer = LocalMixingAudioSource(instrument=True) if self._plan12 else None
+        # on_demand=True：idle 停送、內容到再 arm（修 always-on×DAVE：unmute 撞連續送音斷流）
+        self._mixer = LocalMixingAudioSource(instrument=True, on_demand=True) if self._plan12 else None
         self._voice_client_override = None  # 測試可覆寫；prod 走 voice_client property 即時查連線 vc
         self._prefetch_cache: dict[str, asyncio.Task] = {}  # url → Task[{'lyrics', 'comment'}]
         self._last_search: dict[str, dict] = {}  # username → {query, ts, source}（voice/manual，供偏好修正學習用）
@@ -658,6 +659,7 @@ class VoiceController(commands.Cog):
                     return
                 if volume_attr is not None:
                     self._mixer.set_volume(getattr(self, volume_attr))
+                self._ensure_mixer_playing(vc)  # on-demand：重連後 adapter 沒了 → 重 arm
                 await asyncio.sleep(0.1)
         finally:
             # 確保自己的音源不殘留在 mixer（被中止時）
@@ -5423,8 +5425,9 @@ class VoiceController(commands.Cog):
                 asyncio.create_task(self.soft_repair_connection(reason="VoiceClient WebSocket 斷線"))
             return
 
-        # 🎛️ [Plan 12] 週期性確保 mixer 在播（涵蓋啟動 + 靜默 re-key 重連；flag=off no-op）
-        self._ensure_mixer_playing(vc)
+        # 🎛️ [Plan 12] on-demand：只在「有內容但沒在播」（如重連後）才 re-arm；idle 不 arm（不送音）
+        if self._plan12 and self._mixer is not None and not self._mixer.is_idle():
+            self._ensure_mixer_playing(vc)
 
         # 1. 寬限期檢查 (Grace Period)：連線後的 30 秒內不進行嚴格監控
         if time.time() - self.connection_time < 30:

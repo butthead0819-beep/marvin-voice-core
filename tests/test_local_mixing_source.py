@@ -442,3 +442,32 @@ def test_instrument_mode_read_still_returns_full_frame():
 
 def test_instrument_off_by_default():
     assert LocalMixingAudioSource()._instrument is False
+
+
+# ── on-demand 模式（修 always-on×DAVE：idle 停送、內容到再 arm）─────────────────
+
+def test_on_demand_idle_returns_silence_then_empty_after_grace():
+    # grace 3 幀：前 3 次 idle 回 silence，第 4 次起回 b""（讓 discord 停送）
+    mix = LocalMixingAudioSource(seed=1, on_demand=True, idle_grace_s=0.06)  # 0.06/0.02=3
+    outs = [mix.read() for _ in range(6)]
+    assert outs[0] == b"\x00" * FRAME_BYTES_S16   # idle 但在 grace 內 → silence
+    assert outs[2] == b"\x00" * FRAME_BYTES_S16
+    assert outs[3] == b""                          # 超過 grace → b""（停送）
+    assert outs[5] == b""
+
+
+def test_on_demand_content_resets_idle_and_plays():
+    mix = LocalMixingAudioSource(seed=1, on_demand=True, idle_grace_s=0.06)
+    for _ in range(5):
+        mix.read()                                 # idle 累積、已回 b""
+    mix.set_music_source(_FakeMusic(value=0.3, frames=10))
+    out = mix.read()
+    assert out != b"" and len(out) == FRAME_BYTES_S16  # 有內容 → 正常幀、idle 重設
+    assert mix._idle_count == 0
+
+
+def test_always_on_default_idle_never_returns_empty():
+    # 預設 on_demand=False：idle 永遠 silence、絕不 b""（always-on 不變）
+    mix = LocalMixingAudioSource(seed=1)
+    for _ in range(100):
+        assert mix.read() == b"\x00" * FRAME_BYTES_S16
