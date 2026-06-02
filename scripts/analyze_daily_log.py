@@ -9,6 +9,7 @@ import re
 import sys
 import json
 import time
+import asyncio
 import shutil
 import subprocess
 from collections import defaultdict
@@ -668,51 +669,37 @@ def _repair_json(raw: str) -> dict:
 
 
 def call_gemini(user_content: str) -> dict:
-    """呼叫 Gemini API，回傳解析後的 dict。失敗時嘗試 JSON 修復，再失敗則重試一次。
+    """[相容名稱] 大型 batch 分析；實作見 call_review_llm。"""
+    return call_review_llm(user_content)
 
-    Tier 3 spending guard：呼叫前查 daily/monthly USD cap（超則 raise，由 main 的
-    try/except 接走並跳過該日 review）；呼叫後估 cost 寫 records/llm_paid_usage.jsonl。
+
+def call_review_llm(user_content: str, paid_call=None) -> dict:
+    """大型 batch 分析委派給 LLM bus 的 paid review 池（llm_pool.call_paid_review）。
+
+    2026-06-02 拍板：小/即時 call 走免費池；**大型 batch（67k prompt）走付費 Gemini**
+    （大 context 吃得下、免費 70b 池卡死）。但 model ID 一樣集中 bus（llm_pool
+    _PAID_REVIEW_MODELS）一處管，不在此寫死——避免「到處寫死然後炸掉」。
+
+    JSON 截斷 → _repair_json → 重試精簡版。全 model 失敗（bus 回 None）→ raise。
     """
-    from google import genai
-    from google.genai import types
-    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-    from llm_paid import PaidUsageGuard, PaidSpendingExceeded, estimate_cost
+    if paid_call is None:
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from llm_pool import call_paid_review as paid_call
 
-    _guard = PaidUsageGuard()
-    if not _guard.allow(expected_usd=1.0):
-        raise PaidSpendingExceeded(
-            f"Tier3 cap 已達 (today=${_guard.spent_today():.2f}/{_guard.daily_cap_usd}, "
-            f"month=${_guard.spent_month():.2f}/{_guard.monthly_cap_usd})，跳過付費 daily review"
-        )
-
-    client = genai.Client(api_key=GOOGLE_API_KEY)
-
-    def _do_request(content: str) -> str:
-        response = client.models.generate_content(
-            model=REVIEW_MODEL,
-            contents=content,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.2,
-                response_mime_type="application/json",
-                max_output_tokens=32768,
-            ),
-        )
-        _um = getattr(response, "usage_metadata", None)
-        if _um is not None:
-            _in = getattr(_um, "prompt_token_count", 0) or 0
-            _out = getattr(_um, "candidates_token_count", 0) or 0
-            _usd = estimate_cost(REVIEW_MODEL, _in, _out)
-            _guard.record(caller="daily_review", model=REVIEW_MODEL, tokens=_in + _out, est_usd=_usd)
-            print(f"[Daily Review] 💰 本次 ≈ ${_usd:.4f} (in={_in} out={_out}) | "
-                  f"本月累計 ${_guard.spent_month():.2f}/{_guard.monthly_cap_usd}", flush=True)
-        raw = response.text.strip()
+    def _do(content: str) -> str:
+        # batch job：flash 處理 ~76k content + 生成完整 JSON 要 60-90s，timeout 給寬
+        # （180s）；即時 call 才用緊 timeout。per-call timeout 仍會 cut 真正掛死的連線。
+        raw = asyncio.run(paid_call(content, system=SYSTEM_PROMPT, max_tokens=16000,
+                                    temperature=0.2, timeout=180.0))
+        if not raw:
+            raise RuntimeError("LLM bus paid review 全 model 失敗，daily review 無法分析")
+        raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
             raw = raw.rsplit("```", 1)[0].strip()
         return raw
 
-    raw = _do_request(user_content)
+    raw = _do(user_content)
     try:
         return json.loads(raw)
     except json.JSONDecodeError as first_err:
@@ -721,14 +708,13 @@ def call_gemini(user_content: str) -> dict:
             return _repair_json(raw)
         except json.JSONDecodeError:
             pass
-        # 最後手段：重試，明確要求縮短輸出
         print("[Daily Review] ⚠ 修復失敗，重試（要求更精簡輸出）...", flush=True)
         retry_content = (
             user_content
             + "\n\n⚠️ 注意：請盡量精簡每個欄位的文字長度（每個字串欄位不超過80字），"
             "確保整體 JSON 輸出不超過 12000 tokens。仍須輸出完整 schema 結構。"
         )
-        raw2 = _do_request(retry_content)
+        raw2 = _do(retry_content)
         try:
             return json.loads(raw2)
         except json.JSONDecodeError:
@@ -1340,14 +1326,14 @@ def main():
     )
 
     # 5. 呼叫 Gemini
-    print(f"[Daily Review] 🤖 送出 Gemini（{REVIEW_MODEL}）分析中...", flush=True)
+    print("[Daily Review] 🤖 送出 LLM bus（analyze tier，多 provider fallback）分析中...", flush=True)
     try:
-        result = call_gemini(user_content)
+        result = call_review_llm(user_content)
     except Exception as e:
-        print(f"[Daily Review] ❌ Gemini API 失敗: {e}", flush=True)
+        print(f"[Daily Review] ❌ LLM bus 分析失敗: {e}", flush=True)
         notify_discord_review(date=args.date or today_label,
                               score=None, trend=None, problem_patterns=[],
-                              success=False, error_msg=f"Gemini API 失敗: {e}")
+                              success=False, error_msg=f"LLM bus 分析失敗: {e}")
         sys.exit(1)
 
     print("[Daily Review] ✅ Gemini 分析完成，開始合併記憶...", flush=True)

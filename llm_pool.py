@@ -350,3 +350,79 @@ def build_tiered_router(
     """一行組好 TieredLLMRouter（讀 env 的所有可用 provider）。"""
     quick_pool, analyze_pool = build_tier_pools(env, client_factory=client_factory, clock=clock)
     return TieredLLMRouter(quick_pool, analyze_pool)
+
+
+# ── 付費大型 batch 池（daily review 等 67k 巨型 prompt）────────────────────────
+# 2026-06-02 拍板：小/即時 call 走免費池；大型 batch 走付費 Gemini（大 context 吃得下，
+# 免費 70b 池會卡死）。model ID 集中 bus 此處管，不在各 caller 寫死。
+#
+# 用 genai 原生 SDK（非 OpenAI-compat 端點）：gemini-2.5-flash 是 thinking 模型，
+# OpenAI-compat 入口把 thinking token 算進 max_tokens → 大 input 下 thinking 吃光額度、
+# output 被腰斬（實測 629 token finish=length）。genai SDK 可 thinking_budget=0 關 thinking，
+# 把額度全留給 output（實測 7201 token 完整 JSON）。dispatch 的 cooldown/fallback 照用。
+_PAID_REVIEW_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]   # fallback 順序
+
+
+def _default_genai_client_factory(api_key: str) -> Any:
+    """genai 原生 client（lazy import）。"""
+    from google import genai
+    return genai.Client(api_key=api_key)
+
+
+def build_paid_review_pool(
+    env: Optional[Mapping[str, str]] = None,
+    *,
+    client_factory: Callable[[str], Any] = _default_genai_client_factory,
+    clock: Callable[[], float] = time.time,
+) -> CooldownAwarePool:
+    """付費 Gemini 大型 batch 池（model 集中此處，用 genai 原生 client）。
+    env MARVIN_REVIEW_MODEL 前插為優先。"""
+    env = env if env is not None else os.environ
+    key = (env.get("GOOGLE_API_KEY") or env.get("GEMINI_API_KEY") or "").strip()
+    if not key:
+        return CooldownAwarePool([], clock=clock)
+    models: list[str] = []
+    for m in ([env.get("MARVIN_REVIEW_MODEL")] + _PAID_REVIEW_MODELS):
+        if m and m not in models:
+            models.append(m)
+    client = client_factory(key)
+    eps = [PoolEndpoint(name=f"gemini-paid:{m}", client=client, model=m, tpm_budget=10**12)
+           for m in models]
+    return CooldownAwarePool(eps, clock=clock)
+
+
+async def call_paid_review(
+    content: str,
+    *,
+    system: str,
+    max_tokens: int = 16000,
+    temperature: float = 0.2,
+    timeout: float = 180.0,
+    pool: Optional[CooldownAwarePool] = None,
+) -> Optional[str]:
+    """付費 Gemini 大型 batch 呼叫（genai 原生 SDK + thinking_budget=0 + JSON mode）；
+    model fallback + cooldown + timeout 走 bus 既有 dispatch。回 raw 字串；全 model 失敗回 None。"""
+    pool = pool if pool is not None else build_paid_review_pool()
+
+    async def _call(ep: PoolEndpoint):
+        from google.genai import types
+        resp = await asyncio.wait_for(
+            ep.client.aio.models.generate_content(
+                model=ep.model,
+                contents=content,
+                config=types.GenerateContentConfig(
+                    system_instruction=system,
+                    temperature=temperature,
+                    response_mime_type="application/json",
+                    max_output_tokens=max_tokens,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
+            ),
+            timeout=timeout,
+        )
+        um = getattr(resp, "usage_metadata", None)
+        tokens = ((getattr(um, "prompt_token_count", 0) or 0)
+                  + (getattr(um, "candidates_token_count", 0) or 0)) if um else 0
+        return resp.text, tokens
+
+    return await dispatch(pool, _call)
