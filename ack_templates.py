@@ -16,9 +16,24 @@ _play_nemoclaw_ack / _play_status_ack / _play_random_filler 各自分支。
   assets/acks 同一 pool 被 wake / nemoclaw / filler 三 category 共用，
   但 prewarm / hotswap / lock / barge-in 政策各異 → 必須分離。
 
-新增 ack 的台詞語氣慣例（Claude 自行撰寫、不需問使用者）：
+────────────────────────────────────────────────────────────────────────────
+新增一個 ack 的 3 步驟（事件型 — 絕大多數 ack 屬此）：
+
+  1. 宣告：在 CATEGORIES 加一條 AckCategory（urgent=True 代表要能在音樂中
+     切入）。若用新 asset 目錄，先在 POOLS 加一個 AckPool（目錄 + 台詞清單）；
+     沿用 assets/acks 等既有 pool 則只加 category。
+  2. 渲染：`python scripts/render_acks.py`（skip-existing，只補新檔、不碰舊檔）。
+  3. 接觸發點：在「事件發生的那一行」加 `await self._play_ack("新key", speaker=...)`。
+     ⚠️ 這一步無法樣板化 — ack「何時放」是語義決定（哪個事件、哪個條件），
+     必須人工放在對的位置。事件本身就是觸發點，不需要中央 dispatcher。
+
+台詞語氣慣例（撰寫時依此，不需問使用者）：
 - 馬文本人聲：短促、厭世、帶點不耐或宇宙級虛無；繁中 ≤6 字、urgent 類 ≤5 字。
 - urgent=True 代表久候/降級/插話場景：要能在音樂中切入（走熱切換），字數更短。
+
+延遲型 ack（操作卡住才安撫）是少數特例 — 目前只有 status（LLM 久候）。它靠
+voice_controller._llm_wait_ack_watcher 手寫計時器當觸發器。若未來再出現延遲型，
+照該 watcher 的模式寫一個即可；數量太少，不抽通用抽象（避免過度設計）。
 """
 from __future__ import annotations
 
