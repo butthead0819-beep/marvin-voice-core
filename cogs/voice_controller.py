@@ -1764,15 +1764,22 @@ class VoiceController(commands.Cog):
         intro_file = "assets/songs/Oh Marvin.mp3"
         if vc and os.path.exists(intro_file):
             print(f"🎸 [Intro] 偵測到進場音樂檔案: {intro_file}")
-            # 🚀 [Race Condition Fix] 確保清除之前的沉默破門音源或殘留音訊
-            if vc.is_playing():
-                vc.stop_playing()
-                
-            # 指定區間：1:32 (92s) ~ 1:39 (99s)，長度約 7s，音量降低 30%
-            before_opts = "-ss 00:01:32 -t 7"
-            ffmpeg_opts = "-filter:a volume=0.7"
-            print(f"🎸 [Intro] 優先啟動進場音樂 (音量 70%): {intro_file}")
-            vc.play(discord.FFmpegPCMAudio(intro_file, before_options=before_opts, options=ffmpeg_opts))
+            before_opts = "-ss 00:01:32 -t 7"  # 1:32~1:39 約 7s
+            if self._plan12:
+                # 🎛️ [Plan 12] intro 進 mixer 音樂層（不 stop mixer、不烤 volume）；
+                # 下方 greeting TTS 會自動 duck 它 → voice 清楚蓋在輕 intro 上（policy A）
+                print("🎸 [Intro] Plan 12：intro → mixer 音樂層（greeting 將 duck）")
+                src = discord.FFmpegPCMAudio(intro_file, before_options=before_opts, options="-vn")
+                self._ensure_mixer_playing(vc)
+                self._mixer.set_volume(0.7)
+                self._mixer.set_music_source(BufferedF32MusicSource(S16ToF32MusicSource(src), buffer_frames=50))
+            else:
+                # 🚀 [Race Condition Fix] 確保清除之前的沉默破門音源或殘留音訊
+                if vc.is_playing():
+                    vc.stop_playing()
+                ffmpeg_opts = "-filter:a volume=0.7"
+                print(f"🎸 [Intro] 優先啟動進場音樂 (音量 70%): {intro_file}")
+                vc.play(discord.FFmpegPCMAudio(intro_file, before_options=before_opts, options=ffmpeg_opts))
         else:
             if not vc: print("⚠️ [Intro] 跳過音樂：找不到連線中的 VoiceClient。")
             if not os.path.exists(intro_file): print(f"⚠️ [Intro] 跳過音樂：找不到檔案 {intro_file}")
