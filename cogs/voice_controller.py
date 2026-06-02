@@ -14,6 +14,7 @@ import tempfile
 import shutil
 import subprocess
 import weakref
+import numpy as np
 from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
 from departure_stats import DepartureStats
 from consent_manager import ConsentManager
@@ -658,6 +659,72 @@ class VoiceController(commands.Cog):
         finally:
             # 確保自己的音源不殘留在 mixer（被中止時）
             pass
+
+    async def _ffmpeg_to_f32(self, *, input_path: str | None = None,
+                             input_bytes: bytes | None = None) -> "np.ndarray | None":
+        """[Plan 12] 解碼音訊（檔案或 bytes）成 48k stereo f32 interleaved array。
+
+        async subprocess（對齊 STT 規範，不用 subprocess.run）；失敗回 None 讓 caller 降級。
+        """
+        src = "pipe:0" if input_bytes is not None else (input_path or "")
+        if not src:
+            return None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-nostdin", "-loglevel", "quiet",
+                "-i", src, "-ac", "2", "-ar", "48000", "-f", "f32le", "pipe:1",
+                stdin=asyncio.subprocess.PIPE if input_bytes is not None else None,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await proc.communicate(input=input_bytes)
+        except Exception:
+            logger.exception("[Plan12_Mixer] ffmpeg f32 解碼失敗")
+            return None
+        if not out:
+            return None
+        return np.frombuffer(out, dtype=np.float32)
+
+    async def _render_tts_f32(self, text: str, *, force_macos: bool,
+                              emotion_tag: str, voice: str | None) -> "np.ndarray | None":
+        """[Plan 12] 把 TTS 整段 render 成 f32 buffer（收 stream → ffmpeg f32），離 voice thread。"""
+        tp = self._EMOTION_TTS_PARAMS.get(emotion_tag, self._EMOTION_TTS_PARAMS["neutral"])
+        chunks: list[bytes] = []
+        try:
+            async for c in self.bot.tts_engine.stream_audio(
+                text, voice=voice, rate=tp["rate"], pitch=tp["pitch"], force_macos=force_macos,
+            ):
+                if c:
+                    chunks.append(c)
+        except Exception:
+            logger.exception("[Plan12_Mixer] TTS stream 收集失敗")
+            return None
+        if not chunks:
+            return None
+        return await self._ffmpeg_to_f32(input_bytes=b"".join(chunks))
+
+    # 🎛️ [Plan 12 / T4] flag=on 時 is_playing_audio / tts_queue_duration 由 mixer 維護，
+    # ~20 個既有 reader（Echo Guard / wake-suppress / storm / ack / dual / :853）零改動自然正確。
+    # flag=off 時走 backing field（舊 writer 照常設）。
+    @property
+    def is_playing_audio(self) -> bool:
+        if getattr(self, "_plan12", False) and getattr(self, "_mixer", None) is not None:
+            return self._mixer.is_playing_audio
+        return getattr(self, "_is_playing_audio", False)
+
+    @is_playing_audio.setter
+    def is_playing_audio(self, value: bool) -> None:
+        self._is_playing_audio = value
+
+    @property
+    def tts_queue_duration(self) -> float:
+        if getattr(self, "_plan12", False) and getattr(self, "_mixer", None) is not None:
+            return self._mixer.tts_load_seconds()
+        return getattr(self, "_tts_queue_duration", 0.0)
+
+    @tts_queue_duration.setter
+    def tts_queue_duration(self, value: float) -> None:
+        self._tts_queue_duration = value
 
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
@@ -3428,7 +3495,8 @@ class VoiceController(commands.Cog):
         ack_file = random.choice(files)
 
         # 🎚️ urgent + 播歌中 → 中途熱切換注入（ack mp3 當 stream2 input），不打斷音樂
-        if cat.urgent and self._midsong_hotswap_active(allow_hotswap=True):
+        # （Plan 12：跳過 hotswap，下方 _do_play 直接 push mixer TTS 層 overlay 音樂）
+        if cat.urgent and not self._plan12 and self._midsong_hotswap_active(allow_hotswap=True):
             if await self._arm_hotswap(ack_file):
                 logger.info(f"🗣️ [Ack:{category_key}] 熱切換注入 {variant or ''}")
                 return
@@ -3444,7 +3512,13 @@ class VoiceController(commands.Cog):
 
         async def _do_play() -> None:
             try:
-                if cat.await_completion:
+                if self._plan12:
+                    # 🎛️ [Plan 12] ack mp3 解 f32 → push mixer TTS 層（overlay/duck，不獨佔 vc）
+                    f32 = await self._ffmpeg_to_f32(input_path=ack_file)
+                    if f32 is not None and f32.size:
+                        self._ensure_mixer_playing(_vc)
+                        self._mixer.push_tts(f32)
+                elif cat.await_completion:
                     done = asyncio.Event()
                     _vc.play(discord.FFmpegPCMAudio(ack_file), after=lambda e: done.set())
                     await asyncio.wait_for(done.wait(), timeout=5.0)
@@ -5576,6 +5650,23 @@ class VoiceController(commands.Cog):
                             return
                 except Exception as e:
                     logger.warning(f"[Companion_Radar] check failed (proceeding with TTS): {e}")
+
+        if self._plan12:
+            # 🎛️ [Plan 12] render → push mixer 的 TTS 層（自動 duck overlay 音樂）。
+            # 故意 bypass 序列模型的 drop/storm/stream-mute/radio-interrupt——mixer overlay+queue+cap
+            # 取代它們；whether-to-speak guards（game/empty/interrupt/silence/radar）上面已跑過。
+            vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
+            if vc is None:
+                return
+            f32 = await self._render_tts_f32(text, force_macos=force_macos,
+                                             emotion_tag=emotion_tag, voice=voice)
+            if f32 is None or f32.size == 0:
+                return
+            self._ensure_mixer_playing(vc)
+            if not self._mixer.push_tts(f32):  # 超 cap → 改貼文
+                if not already_in_channel and self.active_text_channel:
+                    asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
+            return
 
         estimated_dur = self.bot.tts_engine.get_estimated_duration(text)
         # 🗑️ [Priority Drop] 依優先級丟棄：AMBIENT(2)>3s, RESPONSE(1)>8s, CRITICAL(0)=永不丟

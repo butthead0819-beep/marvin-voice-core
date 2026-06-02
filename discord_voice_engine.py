@@ -849,8 +849,15 @@ class DiscordVoiceEngine:
                     if silence_duration > voice_controller.current_vad_delay:
                         if time.time() < voice_controller.pending_intervention["expire_at"]:
                             vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-                            # 確保目前沒有在播放音樂或語音，且隊列已空
-                            if not (vc and vc.is_playing()) and not voice_controller.is_playing_audio and voice_controller.tts_queue_duration == 0:
+                            # 確保目前沒有在播放音樂或語音，且隊列已空。
+                            # 🎛️ [Plan 12] flag=on：always-on mixer 讓 vc.is_playing() 永遠 True，
+                            # 改靠 mixer 維護的 is_playing_audio（含音樂層）+ tts_queue_duration 判 idle。
+                            _audio_busy = voice_controller.is_playing_audio or voice_controller.tts_queue_duration > 0
+                            if getattr(voice_controller, "_plan12", False):
+                                _idle = not _audio_busy
+                            else:
+                                _idle = not (vc and vc.is_playing()) and not _audio_busy
+                            if _idle:
                                 print(f"🎯 [社交補位] 尋獲完美靜音空檔 ({silence_duration:.1f}s)，開始插話！", flush=True)
                                 self.bot.loop.create_task(voice_controller.play_intervention())
     async def clear_buffers(self):

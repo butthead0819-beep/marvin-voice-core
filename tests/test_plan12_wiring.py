@@ -65,3 +65,42 @@ def test_flag_on_ensure_idempotent_when_playing(monkeypatch):
     vc.is_playing.return_value = True
     assert cog._ensure_mixer_playing(vc) is False
     assert not vc.play.called
+
+
+# ── T4：狀態欄位委派 mixer ─────────────────────────────────────────────────────
+
+def test_flag_on_state_fields_delegate_to_mixer(monkeypatch):
+    import numpy as np
+    cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
+    assert cog.is_playing_audio is False          # mixer idle
+    assert cog.tts_queue_duration == 0.0
+    cog._mixer.push_tts(np.zeros(48000 * 2, dtype=np.float32))  # 1s
+    assert cog.is_playing_audio is True            # 20+ reader 自然看到
+    assert cog.tts_queue_duration == pytest.approx(1.0, abs=0.01)
+
+
+def test_flag_off_state_fields_use_backing(monkeypatch):
+    cog = _make_cog(plan12=False, monkeypatch=monkeypatch)
+    cog.tts_queue_duration = 5.0   # setter → backing field
+    cog.is_playing_audio = True
+    assert cog.tts_queue_duration == 5.0
+    assert cog.is_playing_audio is True
+
+
+# ── 2c：play_tts flag=on → render + push mixer ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_play_tts_flag_on_pushes_to_mixer(monkeypatch):
+    import numpy as np
+    cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
+    cog.game_mode = False
+    cog._tts_protected = True   # 繞過 silence gate
+    cog.stream_mode = False
+    cog._tts_interrupted = False
+    vc = _idle_vc()
+    cog.bot.voice_clients = [vc]
+    cog._render_tts_f32 = AsyncMock(return_value=np.full(960 * 2, 0.3, dtype=np.float32))
+    await cog.play_tts("哈囉馬文")
+    assert cog._render_tts_f32.await_count == 1
+    assert not cog._mixer.is_idle()      # TTS 已 push 進 mixer
+    assert vc.play.called                # ensure_mixer_playing 啟動 adapter
