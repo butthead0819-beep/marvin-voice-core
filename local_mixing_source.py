@@ -98,12 +98,14 @@ class LocalMixingAudioSource(_BASE):
         if now - self._stat_t0 >= 5.0 and self._stat_frames:
             avg = self._stat_ms_sum / self._stat_frames
             mst = self._music.stats() if hasattr(self._music, "stats") else {}
-            logger.info(
-                "[Plan12_Stats] %.1fs f=%d read_ms(avg/max)=%.2f/%.2f slow>18ms=%d "
-                "music_underrun=%s buf=%s/%s tts_q=%d",
-                now - self._stat_t0, self._stat_frames, avg, self._stat_ms_max,
-                self._stat_slow, mst.get("underruns", "-"),
-                mst.get("depth", "-"), mst.get("max", "-"), len(self._tts_queue),
+            # 用 print 直寫 stdout（對齊 [TTS_TIMING] 慣例）——local_mixing_source logger
+            # 沒被設成 INFO，logger.info 會被吞
+            print(
+                f"[Plan12_Stats] {now - self._stat_t0:.1f}s f={self._stat_frames} "
+                f"read_ms(avg/max)={avg:.2f}/{self._stat_ms_max:.2f} slow>18ms={self._stat_slow} "
+                f"music_underrun={mst.get('underruns', '-')} "
+                f"buf={mst.get('depth', '-')}/{mst.get('max', '-')} tts_q={len(self._tts_queue)}",
+                flush=True,
             )
             self._stat_frames = 0
             self._stat_ms_sum = 0.0
@@ -358,6 +360,7 @@ def ensure_mixer_playing(voice_client, adapter_factory) -> bool:
         if voice_client.is_playing():
             return False
         voice_client.play(adapter_factory())
+        print("[Plan12_Mixer] adapter armed（mixer 開始驅動 vc 輸出）", flush=True)
         return True
     except Exception:
         logger.warning("[Plan12_Mixer] ensure_mixer_playing 略過（vc 狀態競態或未就緒）")
