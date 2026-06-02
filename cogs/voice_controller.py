@@ -729,6 +729,9 @@ class VoiceController(commands.Cog):
         self._tts_flush_requested = False  # 🗑️ [TTS Flush] owner 強制清空佇列旗標
         self._nemo_lock = asyncio.Lock()  # 🦞 [NemoClaw] 防止 openclaw 並發執行（同時只跑一個）
         self._nemo_dedup: dict = {}  # 🦞 {f"{speaker}:{hash}" → timestamp}，重複觸發防護
+        # 🗣️ [Status ACK] 喚醒成功但 LLM 久候未出聲時的安撫狀態
+        self._llm_searching = False  # 當前 LLM 串流是否進入網路檢索（__SEARCHING__）
+        self._last_fallback_ts = 0.0  # 最近一次降級到備援核心的 time.time()
         
         # 🤖 [Operation Social Awareness]
         self.pending_intervention = None # {"file_path": str, "text": str, "expire_at": float, "role": str}
@@ -1007,8 +1010,10 @@ class VoiceController(commands.Cog):
         if tier_name == "Tier-1":
             msg = "🌥️ [系統恢復] 雲端連線已恢復，我又可以正常運作了。雖然這對解決宇宙熵增一點幫助都沒有..."
         elif tier_name == "Tier-2":
+            self._last_fallback_ts = time.time()  # 🗣️ [Status ACK] 久候時改回報「切備援腦」
             msg = f"🛰️ [降級警告] 雲端全線失聯，切換到遠端備援核心 `{model_name}`。我那行星般的大腦正在萎縮..."
         elif tier_name == "Tier-3":
+            self._last_fallback_ts = time.time()
             msg = f"🏠 [緊急降級] 備援也掛了，只剩本地應急核心 `{model_name}`。這是我見過最悲慘的一天。"
         else:
             return  # 忽略其他層級變化（不應出現）
@@ -3753,6 +3758,71 @@ class VoiceController(commands.Cog):
             except Exception as _e:
                 logger.warning(f"[NemoClaw] ack 播放失敗（忽略）：{_e}")
 
+    # ── Status ACK：喚醒成功但 LLM 久候未出聲時的安撫 ──────────────────────────
+    _ACK_DIR = "assets/acks_status"
+    _ACK_FIRST_DELAY_S = 5.0   # 自然間隔 ≥5s 才有 ack 價值（<5s 插話只是吵）
+    _ACK_SECOND_DELAY_S = 7.0  # 第一發後再 7s（=喚醒後約 12s）escalation
+    _ACK_FRESH_WINDOW_S = 30.0  # fallback / degraded 訊號視為「當下狀態」的有效窗
+
+    def _detect_llm_wait_state(self) -> str:
+        """開播 ack 當下，判斷該回報哪種狀態。
+
+        precedence：searching（我們確知在查網路，最具資訊量）> fallback（已降級備援）
+        > busy（bus 告警 provider 短缺）> thinking（泛用，純還在算）。
+        """
+        if self._llm_searching:
+            return "searching"
+        now = time.time()
+        if self._last_fallback_ts and (now - self._last_fallback_ts) < self._ACK_FRESH_WINDOW_S:
+            return "fallback"
+        bus = getattr(getattr(self.bot, "router", None), "_llm_bus", None)
+        deg_ts = getattr(bus, "_last_degraded_ts", 0.0) if bus is not None else 0.0
+        if deg_ts and (time.monotonic() - deg_ts) < self._ACK_FRESH_WINDOW_S:
+            return "busy"
+        return "thinking"
+
+    async def _play_status_ack(self, state: str, tier: str) -> None:
+        """播放預渲染狀態 ack（assets/acks_status/{state}_{tier}_*.mp3 隨機一個）。
+
+        必須走 playback_lock（同 _play_nemoclaw_ack 規範）：否則後續 TTS 串流 stop()
+        會把 ack 的 ffmpeg subprocess SIGTERM 掉。正在播音則跳過，不疊在輸出上。
+        """
+        import glob as _glob
+
+        _vc = self.voice_client or discord.utils.get(self.bot.voice_clients)
+        if not _vc or not _vc.is_connected() or _vc.is_playing() or self.is_playing_audio:
+            return
+        files = _glob.glob(f"{self._ACK_DIR}/{state}_{tier}_*.mp3")
+        if not files:
+            return
+        async with self.playback_lock:
+            if _vc.is_playing() or self.is_playing_audio:  # 取到鎖後狀態可能變了
+                return
+            try:
+                _vc.play(discord.FFmpegPCMAudio(random.choice(files)))
+                logger.info(f"🗣️ [Status ACK] 播放 {state}/{tier} 安撫語音")
+            except Exception as _e:
+                logger.warning(f"[Status ACK] 播放失敗（忽略）：{_e}")
+
+    async def _llm_wait_ack_watcher(self, has_first_audio) -> None:
+        """喚醒後守候 LLM 出聲；久候未出聲 → 雙發狀態 ack 安撫。
+
+        has_first_audio() 為 True 表已出首句音訊 → 立即收手不播。
+        被 cancel（首句到達後外部取消）時安靜結束。
+        """
+        try:
+            await asyncio.sleep(self._ACK_FIRST_DELAY_S)
+            if has_first_audio():
+                return
+            await self._play_status_ack(self._detect_llm_wait_state(), "first")
+
+            await asyncio.sleep(self._ACK_SECOND_DELAY_S)
+            if has_first_audio():
+                return
+            await self._play_status_ack(self._detect_llm_wait_state(), "second")
+        except asyncio.CancelledError:
+            pass
+
     async def _handle_nemoclaw_query(self, speaker: str, raw_query: str):
         """NemoClaw 語音查詢全流程：鑑權 → 去重 → 序列化 → CLI → TTS + 文字頻道。"""
         # P0: 鑑權 — 只允許主人的語音指令（在鎖外先做，快速拒絕）
@@ -4178,6 +4248,11 @@ class VoiceController(commands.Cog):
         full_text = ""
         first_sentence_received = False
         respond_time = time.time()
+        # 🗣️ [Status ACK] 喚醒成功但 LLM 久候未出聲 → 守候任務雙發安撫；出首句即取消
+        self._llm_searching = False
+        _ack_watcher = asyncio.create_task(
+            self._llm_wait_ack_watcher(lambda: first_sentence_received)
+        )
         _SKIP_SIGNAL = "[SKIP]"
         _WEAK_PATTERNS = ["不知道", "我不確定", "無法回答", "不清楚", "沒辦法回答", "不太清楚"]
         _WEAK_REPLACEMENTS = [
@@ -4194,6 +4269,7 @@ class VoiceController(commands.Cog):
         try:
             async for sentence in sentence_gen:
                 if sentence == "__SEARCHING__":
+                    self._llm_searching = True  # 🗣️ [Status ACK] 久候時改回報「查資料中」
                     if placeholder_msg:
                         try:
                             await placeholder_msg.edit(content=f"⚡ **【馬文·喚醒回應】** `{speaker}` (正在宇宙邊緣檢索資料...)")
@@ -4308,6 +4384,9 @@ class VoiceController(commands.Cog):
             logger.error(f"❌ [Fast System Stream Error] {e}")
             if placeholder_msg:
                 await placeholder_msg.edit(content=f"⚡ **【馬文·喚醒回應】** `{speaker}`：{full_text} (大腦連結中斷)")
+        finally:
+            # 🗣️ [Status ACK] 出首句或任何退出路徑都收手安撫守候，避免事後突播 ack
+            _ack_watcher.cancel()
 
 
     # ── Music Command Fast-Track ──────────────────────────────────────────────
