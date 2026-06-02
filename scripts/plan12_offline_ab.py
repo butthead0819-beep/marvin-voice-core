@@ -21,6 +21,9 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import audio_mixing as am  # noqa: E402 — repo-root module, path set above
+
 SONGS_DIR = Path(__file__).resolve().parents[1] / "assets" / "songs"
 LOUDNORM = "loudnorm=I=-14:TP=-1.5:LRA=11"
 SR = 48000
@@ -68,16 +71,11 @@ def render_path_b(song: Path, volume: float, out_wav: Path) -> None:
         f32 = f32[: f32.size - (f32.size % CHANNELS)]
     f32 = f32.reshape(-1, CHANNELS)
 
-    gained = f32 * np.float32(volume)
-
-    # TPDF dither：兩個獨立 Uniform(-0.5, +0.5) LSB 相加 = 三角分布 [-1, +1] LSB
+    # Plan 12 DSP（與 live LocalMixingAudioSource 共用 audio_mixing module）
+    gained = am.apply_gain(f32, volume)
     rng = np.random.default_rng(0xD17 ^ int(volume * 1000))
-    lsb = np.float32(1.0 / 32768.0)
-    d1 = rng.uniform(-0.5, 0.5, size=gained.shape).astype(np.float32)
-    d2 = rng.uniform(-0.5, 0.5, size=gained.shape).astype(np.float32)
-    dithered = gained + (d1 + d2) * lsb
-
-    s16 = np.clip(np.round(dithered * 32768.0), -32768, 32767).astype(np.int16)
+    dithered = am.tpdf_dither(gained, rng)
+    s16 = am.to_s16(dithered)
 
     with wave.open(str(out_wav), "wb") as w:
         w.setnchannels(CHANNELS)
