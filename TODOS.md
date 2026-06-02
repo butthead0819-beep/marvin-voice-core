@@ -317,9 +317,13 @@ grep "NemoClaw路由\|NemoClaw→\|NemoClaw.*跳過\|NemoClaw.*排隊" bot_main.
 ---
 
 ### TODO: voice_controller.py refactor
-**Status:** DEFERRED（需更多 git commit 積累後進行）
-**What:** 拆解 4,397 行 God file → AudioPipeline / LLMOrchestrator / PersonalityEngine。
-**Effort:** L（3-5 sessions）。Risk: High。
+**Status:** IN PROGRESS — Phase 0 已完成（2026-06-02），Phase 1 取消，後續抽取待議
+**What:** 拆解 7,857 行 God file。原「AudioPipeline / LLMOrchestrator / PersonalityEngine」三分法**已否決**（不符實況）。
+**進度：**
+- ✅ **Phase 0**：抽離 PlayControlView + ConsentView → `cogs/voice_views.py`，cog_unload 釋 view ref（commit c4b6401）；god-class characterization golden snapshots 10 條（commit 42ed316）
+- ❌ **Phase 1 AudioPlaybackArbiter 取消**：Plan 12 本地混音台拍定 always-on source-level mixer（單一 play()、`playback_lock` 退役），arbiter 失去存在理由。詳見 `~/.gstack/.../jackhuang-main-design-Plan12-20260602-155144.md`
+- ⏳ **下一個抽取目標待議**：候選 STT ingest（handle_stt_result 474 行）；但播放核心會被 Plan 12 重寫，抽取順序應等 Plan 12 eng-review 後重排
+**Effort:** Phase 0 已 ship。Risk: **Medium**（Phase 0 完成、characterization 快照保駕後）。
 
 ---
 
