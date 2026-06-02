@@ -124,6 +124,10 @@ class LocalMixingAudioSource(_BASE):
     def is_idle(self) -> bool:
         return self._music is None and self._tts_cur is None and not self._tts_queue
 
+    def has_music(self) -> bool:
+        """音樂層是否還在播（來源未耗盡）。caller 等歌播完用。"""
+        return self._music is not None
+
     @property
     def is_playing_audio(self) -> bool:
         return not self.is_idle()

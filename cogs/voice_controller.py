@@ -639,6 +639,26 @@ class VoiceController(commands.Cog):
             return False
         return ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(self._mixer))
 
+    async def _mixer_play_music(self, vc, s16_source, *, still_active, volume_attr=None) -> None:
+        """[Plan 12] 把 s16 音源餵 mixer 音樂層，等到播完 / 連線斷 / still_active() 變 False。
+
+        volume_attr：要持續同步進 mixer 的 cog 音量屬性名（如 "stream_volume"）→ 語音/按鈕
+        調音量 100ms 內即時生效（無 hotswap）。播完（來源耗盡 mixer 自清）或被中止即 return。
+        """
+        self._ensure_mixer_playing(vc)
+        self._mixer.set_music_source(S16ToF32MusicSource(s16_source))
+        try:
+            while self._mixer.has_music():
+                if not still_active() or not vc.is_connected():
+                    self._mixer.clear_music()
+                    return
+                if volume_attr is not None:
+                    self._mixer.set_volume(getattr(self, volume_attr))
+                await asyncio.sleep(0.1)
+        finally:
+            # 確保自己的音源不殘留在 mixer（被中止時）
+            pass
+
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
         print("🎭 [Voice Controller] Cog 已掛載，啟動語音偵聽與史官系統...")
@@ -895,8 +915,13 @@ class VoiceController(commands.Cog):
             self.dave_error_count = 0  # 🚀 [T-01 Fix] 重設 DAVE 錯誤計數（非 sink_missing_count）
             
             # UDP Hole Punching
-            voice_client.play(self.SilenceSource(20))
-            
+            if self._plan12:
+                # mixer adapter 已提供持續音訊（idle 出 silence），取代 SilenceSource keepalive；
+                # 並即時 re-arm，不必等 sentinel tick
+                self._ensure_mixer_playing(voice_client)
+            else:
+                voice_client.play(self.SilenceSource(20))
+
             logger.info(f"✅ [Soft Repair] 重連成功！連線狀態: {voice_client.is_connected()}")
             if self.active_text_channel:
                 await self.active_text_channel.send("✅ **【校正完畢】**\n聽覺神經已恢復同步，雖然這世界依然吵雜。")
@@ -5875,9 +5900,16 @@ class VoiceController(commands.Cog):
         if not voice_client:
             return
 
+        if self._plan12:
+            # 🎛️ [Plan 12] broadcast 走 mixer 音樂層、音量 1.0，等播完或斷線
+            self._mixer.set_volume(1.0)
+            src = discord.FFmpegPCMAudio(file_path)
+            await self._mixer_play_music(voice_client, src, still_active=lambda: voice_client.is_connected())
+            return
+
         # 估算長度 (用於隊列長度平衡，本地檔案我們簡化處理)
         # 讀取音訊長度 (此處簡化為固定 15s 緩衛，避免隊列阻塞)
-        estimated_dur = 15.0 
+        estimated_dur = 15.0
         
         async with self.tts_queue_lock:
             self.tts_queue_duration += estimated_dur
@@ -6241,6 +6273,12 @@ class VoiceController(commands.Cog):
             logger.warning("⚠️ [Radio Song] 無連線中的 VoiceClient，跳過播放。")
             self.radio_mode = False
             self.radio_paused = False
+            return
+
+        if self._plan12:
+            # 🎛️ [Plan 12] 餵 mixer 音樂層，音量(radio_volume) 即時同步，等播完或電台停
+            src = discord.FFmpegPCMAudio(file_path, options="-vn")
+            await self._mixer_play_music(vc, src, still_active=lambda: self.radio_mode, volume_attr="radio_volume")
             return
 
         play_done_event = asyncio.Event()
@@ -7181,6 +7219,28 @@ class VoiceController(commands.Cog):
             options = f"-vn -bufsize 512k -af loudnorm=I=-14:TP=-1.5:LRA=11,volume={self.stream_volume:.2f}"
 
         ffmpeg_opts = {'before_options': before_opts, 'options': options}
+
+        if self._plan12:
+            # 🎛️ [Plan 12] 串流走 mixer 音樂層、bypass hotswap（音量 mixer 即時套）
+            self._current_stream_url = url
+            if dj_audio_path:
+                # DJ-mix：volume 已烤進 filter_complex → mixer 音量 1.0 不重複套用
+                self._mixer.set_volume(1.0)
+                await self._mixer_play_music(
+                    vc, discord.FFmpegPCMAudio(url, **ffmpeg_opts),
+                    still_active=lambda: self.stream_mode,
+                )
+            else:
+                # 一般：loudnorm-only（不烤 volume），mixer 即時套 stream_volume
+                p12_opts = {
+                    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
+                    'options': '-vn -bufsize 512k -af loudnorm=I=-14:TP=-1.5:LRA=11',
+                }
+                await self._mixer_play_music(
+                    vc, discord.FFmpegPCMAudio(url, **p12_opts),
+                    still_active=lambda: self.stream_mode, volume_attr="stream_volume",
+                )
+            return
 
         try:
             async with self.playback_lock:

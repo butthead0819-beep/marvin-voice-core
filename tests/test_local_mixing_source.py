@@ -254,6 +254,16 @@ def test_s16_to_f32_feeds_mixer_music_layer():
     assert not mix.is_idle()
 
 
+def test_has_music_tracks_source_drain():
+    mix = LocalMixingAudioSource(seed=1)
+    assert mix.has_music() is False
+    mix.set_music_source(_FakeMusic(value=0.2, frames=1))
+    assert mix.has_music() is True
+    mix.read()   # 消化唯一一幀
+    mix.read()   # 來源回 b"" → mixer 清音樂層
+    assert mix.has_music() is False
+
+
 # ── ensure_mixer_playing ─────────────────────────────────────────────────────
 
 def _vc(connected=True, playing=False):
