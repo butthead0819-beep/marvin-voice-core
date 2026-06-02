@@ -15,13 +15,17 @@ import pytest
 
 from unittest.mock import MagicMock
 
+import time as _time
+
 from local_mixing_source import (
     LocalMixingAudioSource,
     MixerPlaybackAdapter,
     S16ToF32MusicSource,
+    BufferedF32MusicSource,
     ensure_mixer_playing,
     FRAME_SAMPLES,
     FRAME_BYTES_S16,
+    FRAME_BYTES_F32,
     SAMPLE_RATE,
     CHANNELS,
 )
@@ -314,3 +318,92 @@ def test_ensure_playing_fresh_adapter_each_call():
     ensure_mixer_playing(_vc(playing=False), lambda: seen.append(factory()) or seen[-1])
     ensure_mixer_playing(_vc(playing=False), lambda: seen.append(factory()) or seen[-1])
     assert len(seen) == 2 and seen[0] is not seen[1]  # 每次新 adapter，不重用
+
+
+# ── BufferedF32MusicSource（bug 1 修：背景預讀解耦 ffmpeg pipe）────────────────
+
+class _FakeF32Frames:
+    """回傳一串 f32 frame（每幀值不同好辨識），耗盡回 b""。"""
+
+    def __init__(self, values):
+        self._frames = [np.full(FRAME_SAMPLES, v, dtype=np.float32).tobytes() for v in values]
+        self._i = 0
+        self.cleaned = False
+
+    def read(self):
+        if self._i >= len(self._frames):
+            return b""
+        f = self._frames[self._i]
+        self._i += 1
+        return f
+
+    def cleanup(self):
+        self.cleaned = True
+
+
+def test_buffered_passes_all_frames_in_order_then_eof():
+    inner = _FakeF32Frames([0.1, 0.2, 0.3])
+    buf = BufferedF32MusicSource(inner, buffer_frames=10)
+    got = []
+    for _ in range(300):
+        b = buf.read()
+        if b == b"":
+            break
+        f = np.frombuffer(b, dtype=np.float32)
+        if f.any():  # 跳過 underrun silence
+            got.append(round(float(f[0]), 4))
+        _time.sleep(0.001)
+    buf.cleanup()
+    assert got == [0.1, 0.2, 0.3]  # 順序 + 內容 + 自然 eof
+
+
+def test_buffered_underrun_returns_silence_not_eof():
+    gate = threading.Event()
+
+    class _Gated:
+        def read(self):
+            gate.wait(1.0)
+            return np.full(FRAME_SAMPLES, 0.5, dtype=np.float32).tobytes()
+
+        def cleanup(self):
+            pass
+
+    buf = BufferedF32MusicSource(_Gated(), buffer_frames=4)
+    _time.sleep(0.05)  # bg thread 卡在 inner.read() → buffer 空、未 eof
+    out = buf.read()
+    assert out == b"\x00" * FRAME_BYTES_F32  # underrun → silence，不是 b""（不可停歌）
+    gate.set()  # 放行，讓 bg thread 能產幀後正常退出
+    buf.cleanup()
+
+
+def test_buffered_cleanup_stops_thread_and_inner():
+    inner = _FakeF32Frames([0.1])
+    buf = BufferedF32MusicSource(inner, buffer_frames=4)
+    _time.sleep(0.03)
+    buf.cleanup()
+    assert inner.cleaned is True
+    assert not buf._thread.is_alive()
+
+
+def test_buffered_feeds_mixer_music_layer():
+    mix = LocalMixingAudioSource(seed=1, volume=1.0)
+    inner = _FakeF32Frames([0.2, 0.2, 0.2])
+    mix.set_music_source(BufferedF32MusicSource(inner, buffer_frames=10))
+    _time.sleep(0.03)
+    assert len(mix.read()) == FRAME_BYTES_S16
+    assert mix.has_music()
+    mix.clear_music()
+    assert inner.cleaned is True  # clear_music 連帶 cleanup buffered 來源
+
+
+def test_set_music_source_cleans_previous():
+    a = _FakeF32Frames([0.1])
+    b = _FakeF32Frames([0.2])
+    mix = LocalMixingAudioSource(seed=1)
+    sa = BufferedF32MusicSource(a, buffer_frames=4)
+    sb = BufferedF32MusicSource(b, buffer_frames=4)
+    mix.set_music_source(sa)
+    mix.set_music_source(sb)   # 換源 → 舊源被 cleanup
+    _time.sleep(0.02)
+    assert a.cleaned is True
+    mix.clear_music()

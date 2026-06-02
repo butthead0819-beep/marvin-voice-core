@@ -87,7 +87,7 @@ from voice_guard_helpers import _should_mute_for_stream_guard
 from cogs.voice_views import ConsentView, PlayControlView
 from local_mixing_source import (
     LocalMixingAudioSource, MixerPlaybackAdapter, S16ToF32MusicSource,
-    ensure_mixer_playing,
+    BufferedF32MusicSource, ensure_mixer_playing,
 )
 from utterance_budget import STREAM_BUDGET
 import ack_templates
@@ -647,7 +647,8 @@ class VoiceController(commands.Cog):
         調音量 100ms 內即時生效（無 hotswap）。播完（來源耗盡 mixer 自清）或被中止即 return。
         """
         self._ensure_mixer_playing(vc)
-        self._mixer.set_music_source(S16ToF32MusicSource(s16_source))
+        # 背景預讀解耦 ffmpeg pipe（修 T5 串流斷續）：~1s buffer
+        self._mixer.set_music_source(BufferedF32MusicSource(S16ToF32MusicSource(s16_source), buffer_frames=50))
         try:
             while self._mixer.has_music():
                 if not still_active() or not vc.is_connected():

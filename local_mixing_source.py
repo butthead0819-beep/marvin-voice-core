@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import collections
 import logging
+import threading
+import time
 
 import numpy as np
 
@@ -30,6 +32,7 @@ CHANNELS = 2
 # discord 一幀 = 20ms：960 sample/ch × 2ch = 1920 interleaved samples
 FRAME_SAMPLES = int(SAMPLE_RATE * 0.02) * CHANNELS  # 1920
 FRAME_BYTES_S16 = FRAME_SAMPLES * 2                 # 3840
+FRAME_BYTES_F32 = FRAME_SAMPLES * 4                 # 7680
 _SAMPLES_PER_SEC = SAMPLE_RATE * CHANNELS
 
 try:
@@ -101,11 +104,26 @@ class LocalMixingAudioSource(_BASE):
     # ── producer API（event loop thread，lock-free）───────────────────────────
 
     def set_music_source(self, source) -> None:
-        """設音樂層來源（read()→f32le bytes / b"" 表耗盡）。單一參考指派 atomic。"""
-        self._music = source
+        """設音樂層來源（read()→f32le bytes / b"" 表耗盡）。先 atomic swap 再清舊源。"""
+        old = self._music
+        self._music = source  # voice thread 立即讀到新源
+        if old is not None and old is not source:
+            self._cleanup_source(old)
 
     def clear_music(self) -> None:
+        old = self._music
         self._music = None
+        if old is not None:
+            self._cleanup_source(old)
+
+    @staticmethod
+    def _cleanup_source(source) -> None:
+        c = getattr(source, "cleanup", None)
+        if callable(c):
+            try:
+                c()
+            except Exception:
+                pass
 
     def set_volume(self, volume: float) -> None:
         """即時音量（下一幀生效，無接縫、無 hotswap）。"""
@@ -224,6 +242,59 @@ class S16ToF32MusicSource:
         c = getattr(self._src, "cleanup", None)
         if callable(c):
             c()
+
+
+class BufferedF32MusicSource:
+    """背景執行緒預讀 f32 音源進有界 deque，把 mixer.read()（voice thread）跟
+    ffmpeg pipe latency 解耦——修 T5 串流斷續（同步讀網路 ffmpeg pipe 卡住整個 mix）。
+
+    contract 對齊音樂層：read() → f32le frame bytes / b""（真耗盡）。
+    **underrun（buffer 空但未 eof）回 silence frame、不回 b""**，否則 mixer 會誤判耗盡停歌。
+    """
+
+    def __init__(self, inner_source, buffer_frames: int = 50):
+        self._inner = inner_source
+        self._buf: collections.deque = collections.deque()
+        self._maxlen = max(2, int(buffer_frames))
+        self._eof = False
+        self._stop = False
+        self._silence = b"\x00" * FRAME_BYTES_F32
+        self._thread = threading.Thread(target=self._fill_loop, daemon=True)
+        self._thread.start()
+
+    def _fill_loop(self):
+        while not self._stop:
+            if len(self._buf) >= self._maxlen:
+                time.sleep(0.005)  # buffer 滿 → backpressure（不丟舊幀）
+                continue
+            try:
+                chunk = self._inner.read()
+            except Exception:
+                logger.exception("[Plan12_Mixer] buffered 音源 inner.read 失敗，視為 eof")
+                self._eof = True
+                return
+            if not chunk:
+                self._eof = True
+                return
+            self._buf.append(chunk)
+
+    def read(self) -> bytes:
+        if self._buf:
+            return self._buf.popleft()
+        if self._eof:
+            return b""
+        return self._silence  # underrun：填空保歌不停（不可回 b""）
+
+    def cleanup(self):
+        self._stop = True
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+        c = getattr(self._inner, "cleanup", None)
+        if callable(c):
+            try:
+                c()
+            except Exception:
+                pass
 
 
 def ensure_mixer_playing(voice_client, adapter_factory) -> bool:
