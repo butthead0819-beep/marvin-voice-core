@@ -39,13 +39,33 @@ class ProactiveTopicAgent:
         clock: Callable[[], float] = time.time,
         topic_graph=None,                       # P0: SpeakerTopicGraph 接入，bid 時讀 recent
         mood_agent=None,                        # P3: heavy tier 時 yield
+        stale_after_days: int = 3,             # proactive_topics 過期門檻（daily review 維護）
     ) -> None:
         self._ctrl = controller
         self._confidence = confidence
         self._min_gap = min_gap_since_last_s
         self._clock = clock
         self._graph = topic_graph
+        self._stale_after_days = stale_after_days
         self._mood = mood_agent
+
+    def _topics_stale(self) -> bool:
+        """suki_memory._meta.review_date 比門檻舊 → True（topics 凍結，不該再講）。
+
+        Fail open：讀不到 / 無法解析 review_date → False（不擋），避免讀取問題誤殺
+        整個主動話題。確認過期才擋。sync-fast（in-memory dict read）。
+        """
+        try:
+            mem = self._ctrl.bot.router.memory
+            rd = mem.get_meta("review_date")
+            if not rd:
+                return False
+            from datetime import datetime
+            review_day = datetime.strptime(rd, "%Y-%m-%d").date()
+            today = datetime.fromtimestamp(self._clock()).date()
+            return (today - review_day).days > self._stale_after_days
+        except Exception:
+            return False
 
     async def speak_bid(self, ctx: SpeakContext) -> SpeakBid | None:
         # sync-fast gate — 全部都是 attribute read，沒 I/O
@@ -74,6 +94,12 @@ class ProactiveTopicAgent:
         if not ctx.present_speakers:
             return None
         if not getattr(c, "active_text_channel", None):
+            return None
+
+        # 3.5. proactive_topics 過期不講：daily review 卡住時 topics 凍結，一直翻舊
+        # 話題浪費 LLM 又零互動（2026-06-02：老話題觸發 13 次效益全 0）。讓即時的冷場
+        # TopicGenerator 接手。fail open：讀不到 review_date 就不擋。
+        if self._topics_stale():
             return None
 
         # 4. 撞模式由 SpeakBus 統一 gate（mode_compatible={"normal"}）→ 此處不再重複檢查

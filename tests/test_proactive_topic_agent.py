@@ -77,6 +77,54 @@ async def test_does_not_bid_when_no_active_text_channel():
     assert bid is None or bid.confidence == 0.0
 
 
+# ── 過期話題不講（2026-06-02）：proactive_topics 由 daily review 維護，
+#    review 卡住時 topics 凍結，ProactiveTopicAgent 不該一直翻舊話題浪費 LLM。
+#    改讀 suki_memory._meta.review_date，太舊就不 bid（讓冷場 TopicGenerator 即時生）。
+
+
+def _ctrl_with_review_date(review_date, **kw):
+    c = _controller(**kw)
+    c.bot.router.memory = SimpleNamespace(get_meta=lambda k, d=None: review_date if k == "review_date" else d)
+    return c
+
+
+@pytest.mark.asyncio
+async def test_does_not_bid_when_topics_stale():
+    """review_date 太舊（>stale_after_days）→ 不 bid（避免翻舊話題）。"""
+    import time as _t
+    now = _t.time()
+    from datetime import datetime, timedelta
+    old = (datetime.fromtimestamp(now) - timedelta(days=10)).strftime("%Y-%m-%d")
+    c = _ctrl_with_review_date(old)
+    a = ProactiveTopicAgent(c, clock=lambda: now, stale_after_days=3)
+    bid = await a.speak_bid(_ctx())
+    assert bid is None or bid.confidence == 0.0
+
+
+@pytest.mark.asyncio
+async def test_bids_when_topics_fresh():
+    """review_date 是今天 → 正常 bid。"""
+    import time as _t
+    now = _t.time()
+    from datetime import datetime
+    today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+    c = _ctrl_with_review_date(today)
+    a = ProactiveTopicAgent(c, clock=lambda: now, stale_after_days=3)
+    bid = await a.speak_bid(_ctx())
+    assert bid is not None and bid.confidence > 0
+
+
+@pytest.mark.asyncio
+async def test_fails_open_when_review_date_missing():
+    """讀不到 review_date（無 memory / 無 key）→ fail open，正常 bid。"""
+    import time as _t
+    now = _t.time()
+    c = _controller()  # 無 memory.get_meta
+    a = ProactiveTopicAgent(c, clock=lambda: now, stale_after_days=3)
+    bid = await a.speak_bid(_ctx())
+    assert bid is not None and bid.confidence > 0
+
+
 # ── stream / radio / game mode gates 已 2026-06-01 升到 SpeakBus 層 ──────────
 # 透過 ProactiveTopicAgent.mode_compatible = {"normal"} 宣告。覆蓋於：
 #   - test_speakbus_agents_mode_compatible.py::test_proactive_topic_agent_mode_compatible_normal_only
