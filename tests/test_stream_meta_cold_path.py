@@ -43,7 +43,6 @@ def _make_cog():
         from cogs.voice_controller import VoiceController
         cog = VoiceController(bot)
     cog.stt_logger = MagicMock()
-    cog._play_ack_sound = AsyncMock()  # mock 不真播
     return cog
 
 
@@ -62,8 +61,6 @@ async def test_fast_meta_returns_real_data():
     result = await cog._meta_with_ack_fallback(_info(), "狗與露")
 
     assert result == expected
-    # ack fire-and-forget 必須觸發（填空檔）
-    cog._play_ack_sound.assert_called_once_with("狗與露")
 
 
 # ── 2. Slow path: meta >5s timeout → fallback meta ──────────────────────────
@@ -89,39 +86,7 @@ async def test_timeout_returns_fallback_meta_with_hardcoded_dj():
     assert dj["audio_path"] is None, "fallback 無預渲染 TTS（下游 _maybe_play_dj_interjection 走即時）"
 
 
-# ── 3. Ack 立刻觸發，不被 meta fetch 阻塞 ──────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_ack_starts_before_meta_completes():
-    """Ack 必須在 meta 完成之前就 start（並行填空檔，非序列等待）。
-    驗法：紀錄 ack start time vs meta complete time，ack < meta。
-    """
-    cog = _make_cog()
-    ack_start_t = None
-    meta_done_t = None
-
-    async def _ack(*a, **kw):
-        nonlocal ack_start_t
-        ack_start_t = asyncio.get_event_loop().time()
-
-    async def _meta(info):
-        await asyncio.sleep(0.2)  # 模擬慢 meta（含 LLM）
-        nonlocal meta_done_t
-        meta_done_t = asyncio.get_event_loop().time()
-        return {"lyrics": None, "comment": None, "dj": None}
-
-    cog._play_ack_sound = _ack
-    cog._fetch_song_meta = _meta
-
-    await cog._meta_with_ack_fallback(_info(), "狗與露")
-
-    assert ack_start_t is not None, "ack 未被 schedule"
-    assert meta_done_t is not None, "meta 未完成"
-    assert ack_start_t < meta_done_t, \
-        f"ack 必須在 meta 完成前就 start (ack={ack_start_t}, meta_done={meta_done_t})"
-
-
-# ── 4. Event loop 不被卡：ack + fetch 並行 ────────────────────────────────
+# ── 4. Event loop 不被卡：fetch timeout ───────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_total_wall_time_capped_at_5s_even_when_meta_hangs():

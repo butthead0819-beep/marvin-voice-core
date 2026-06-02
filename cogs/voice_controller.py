@@ -83,6 +83,7 @@ from hotswap_loudness import (
 from hotswap_eligibility import MAX_HOTSWAP_CHARS, is_hotswap_eligible
 from voice_guard_helpers import _should_mute_for_stream_guard
 from utterance_budget import STREAM_BUDGET
+import ack_templates
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
@@ -3461,7 +3462,7 @@ class VoiceController(commands.Cog):
                 # 立即播 filler（延遲遮掩）
                 if raw_text:
                     self._speaker_lang[speaker] = self._detect_text_lang(raw_text)
-                asyncio.create_task(self._play_random_filler(speaker))
+                asyncio.create_task(self._play_ack("filler", speaker=speaker))
 
                 # 多回合確認流程，回傳最終確認的問句
                 confirmed_query = await self._confirmation_flow(speaker, timestamp, initial_text=raw_text)
@@ -3519,71 +3520,85 @@ class VoiceController(commands.Cog):
             and bool(self._current_stream_url)
         )
 
-    async def _play_ack_sound(self, speaker: str = "", ack_type: str = "general", allow_hotswap: bool = False):
-        """播放預存 ack 音效。
-        ack_type=general    → assets/acks/（一般喚醒，厭世風 marvin）
-        ack_type=music      → assets/acks/music/（音樂播放確認，專業 DJ，4 字內）
-        ack_type=music_fail → assets/acks/music_fail/（點歌失敗，「無法播放」）
-        英語 speaker 永遠走 assets/acks_en/（暫無分支）。
+    async def _play_ack(self, category_key: str, *, speaker: str = "", variant: str | None = None) -> None:
+        """統一 ack 播放入口（ack_templates.CATEGORIES 驅動）。
+
+        收編舊的 _play_ack_sound / _play_nemoclaw_ack / _play_status_ack /
+        _play_random_filler。播放政策（prewarm / 熱切換 / lock / 等空檔 / 播完才返回 /
+        子 pool 退回 / 即時合成 fallback）全由 category 宣告，加新 ack 不必動這裡。
+
+        variant：status 類用 "{state}_{tier}" 選檔名前綴。
         """
+        import glob as _glob
         import random
-        is_en = self._speaker_lang.get(speaker) == "en"
-        if is_en:
-            ack_dir = "assets/acks_en"
-        elif ack_type == "music":
-            ack_dir = "assets/acks/music"
-        elif ack_type == "music_fail":
-            ack_dir = "assets/acks/music_fail"
-        else:
-            ack_dir = "assets/acks"
-        voice_client = discord.utils.get(self.bot.voice_clients)
-        if not voice_client or not voice_client.is_connected():
+
+        cat = ack_templates.CATEGORIES.get(category_key)
+        if cat is None:
+            logger.warning(f"[Ack] 未知 category: {category_key!r}")
+            return
+        lang = "en" if self._speaker_lang.get(speaker) == "en" else "zh"
+
+        _vc = self.voice_client or discord.utils.get(self.bot.voice_clients)
+        if not _vc or not _vc.is_connected():
             return
 
-        # 🔥 [TTS Prewarm 修法B] ack 開始＝Marvin 即將回應。趁 ack mp3 播放的 ~1-2s 空檔，
-        # 並行暖 edge-tts 連線（DNS/TLS/websocket），讓緊接著的回應 TTS 首音從冷啟動
-        # ~1.8s 降到 ~0.5s（實測差 3-7 倍）。fire-and-forget + prewarm 內建 5s 節流。
-        _tts = getattr(self.bot, "tts_engine", None)
-        if _tts is not None and hasattr(_tts, "prewarm"):
-            asyncio.create_task(_tts.prewarm())
+        # 🔥 [TTS Prewarm] ack＝Marvin 即將回應。趁 ack 播放空檔並行暖 edge-tts，
+        # 首音冷啟動 ~1.8s→~0.5s。fire-and-forget + prewarm 內建 5s 節流。
+        if cat.prewarm_tts:
+            _tts = getattr(self.bot, "tts_engine", None)
+            if _tts is not None and hasattr(_tts, "prewarm"):
+                asyncio.create_task(_tts.prewarm())
 
-        files = []
-        if os.path.exists(ack_dir):
-            files = [f for f in os.listdir(ack_dir) if f.endswith(".mp3")]
-        # 子 pool 還沒生成時退回 general，避免靜默
-        if not files and ack_type in ("music", "music_fail"):
-            ack_dir = "assets/acks"
-            if os.path.exists(ack_dir):
-                files = [f for f in os.listdir(ack_dir) if f.endswith(".mp3")]
+        # 找檔：本 pool → 空則 empty_fallback_pool（避免靜默）
+        files = _glob.glob(ack_templates.glob_pattern(category_key, lang=lang, variant=variant))
+        if not files and cat.empty_fallback_pool:
+            fb = ack_templates.POOLS[cat.empty_fallback_pool]
+            files = _glob.glob(f"{fb.directory}/*.mp3")
 
-        if files:
-            ack_file = os.path.join(ack_dir, random.choice(files))
-            # 🎚️ [Mid-song HotSwap] 播歌中 + opt-in → 走中途熱切換注入（ack mp3 當 stream2 input 0），
-            # 不打斷音樂。否則照舊：等 voice_client 空檔直接 play（播歌中會等不到 → 等同丟棄）。
-            if self._midsong_hotswap_active(allow_hotswap):
-                if await self._arm_hotswap(ack_file):
-                    return
-            # 等 filler 播完再接 ack，讓兩段自然銜接
-            waited = 0
-            while voice_client.is_playing() and waited < 4.0:
+        if not files:
+            # 連檔都沒 → 即時合成（只有 wake 設）
+            texts = cat.text_fallback_en if (lang == "en" and cat.text_fallback_en) else cat.text_fallback
+            if texts:
+                await self.play_tts(random.choice(texts), allow_hotswap=cat.urgent)
+            return
+
+        ack_file = random.choice(files)
+
+        # 🎚️ urgent + 播歌中 → 中途熱切換注入（ack mp3 當 stream2 input），不打斷音樂
+        if cat.urgent and self._midsong_hotswap_active(allow_hotswap=True):
+            if await self._arm_hotswap(ack_file):
+                logger.info(f"🗣️ [Ack:{category_key}] 熱切換注入 {variant or ''}")
+                return
+
+        # 播放中政策：skip_if_busy → 跳過；否則 wait_if_busy 等空檔
+        if cat.skip_if_busy and (_vc.is_playing() or self.is_playing_audio):
+            return
+        if cat.wait_if_busy > 0:
+            waited = 0.0
+            while _vc.is_playing() and waited < cat.wait_if_busy:
                 await asyncio.sleep(0.05)
                 waited += 0.05
+
+        async def _do_play() -> None:
             try:
-                ack_done = asyncio.Event()
-                voice_client.play(
-                    discord.FFmpegPCMAudio(ack_file),
-                    after=lambda e: ack_done.set()
-                )
-                await asyncio.wait_for(ack_done.wait(), timeout=5.0)
+                if cat.await_completion:
+                    done = asyncio.Event()
+                    _vc.play(discord.FFmpegPCMAudio(ack_file), after=lambda e: done.set())
+                    await asyncio.wait_for(done.wait(), timeout=5.0)
+                else:
+                    _vc.play(discord.FFmpegPCMAudio(ack_file))
+                logger.info(f"🗣️ [Ack:{category_key}] 播放 {variant or os.path.basename(ack_file)}")
             except Exception as e:
-                logger.warning(f"⚠️ [Ack] 播放失敗: {e}")
+                logger.warning(f"[Ack:{category_key}] 播放失敗（忽略）：{e}")
+
+        if cat.use_lock:
+            async with self.playback_lock:
+                if cat.skip_if_busy and (_vc.is_playing() or self.is_playing_audio):
+                    return  # 取到鎖後狀態可能變了
+                await _do_play()
         else:
-            ack_texts = (
-                ["Hmm...", "Fine...", "I'm listening.", "Yes..."]
-                if is_en else
-                ["嗯。。。", "好吧。。。", "我在聽。", "嗯嗯。。。"]
-            )
-            await self.play_tts(random.choice(ack_texts), allow_hotswap=allow_hotswap)
+            await _do_play()
+        return
 
     async def _confirmation_flow(self, speaker: str, wake_time: float, initial_text: str = "") -> str | None:
         """
@@ -3732,34 +3747,7 @@ class VoiceController(commands.Cog):
             logger.exception(f"[NemoClaw] 未預期錯誤: {e}")
             return f"呼叫 OpenClaw 時發生錯誤：{e}"
 
-    async def _play_nemoclaw_ack(self, speaker: str):
-        """播放 NemoClaw ack 音效，必須走 playback_lock 序列化。
-
-        Why: 直接 _vc.play() 會繞過 lock；後續 TTS 串流呼叫 stop() 時會 SIGTERM
-        ack 的 ffmpeg subprocess，導致 voice thread 噴 FFmpegProcessError code 245。
-        """
-        import glob as _glob
-
-        _vc = discord.utils.get(self.bot.voice_clients)
-        if not _vc or not _vc.is_connected() or _vc.is_playing():
-            return
-
-        _ack_dir = "assets/acks_en" if self._speaker_lang.get(speaker) == "en" else "assets/acks"
-        _ack_files = _glob.glob(f"{_ack_dir}/ack_*.mp3")
-        if not _ack_files:
-            return
-
-        async with self.playback_lock:
-            # double-check：等到 lock 後狀態可能變了
-            if _vc.is_playing():
-                return
-            try:
-                _vc.play(discord.FFmpegPCMAudio(random.choice(_ack_files)))
-            except Exception as _e:
-                logger.warning(f"[NemoClaw] ack 播放失敗（忽略）：{_e}")
-
     # ── Status ACK：喚醒成功但 LLM 久候未出聲時的安撫 ──────────────────────────
-    _ACK_DIR = "assets/acks_status"
     _ACK_FIRST_DELAY_S = 5.0   # 自然間隔 ≥5s 才有 ack 價值（<5s 插話只是吵）
     _ACK_SECOND_DELAY_S = 7.0  # 第一發後再 7s（=喚醒後約 12s）escalation
     _ACK_FRESH_WINDOW_S = 30.0  # fallback / degraded 訊號視為「當下狀態」的有效窗
@@ -3781,40 +3769,6 @@ class VoiceController(commands.Cog):
             return "busy"
         return "thinking"
 
-    async def _play_status_ack(self, state: str, tier: str) -> None:
-        """播放預渲染狀態 ack（assets/acks_status/{state}_{tier}_*.mp3 隨機一個）。
-
-        必須走 playback_lock（同 _play_nemoclaw_ack 規範）：否則後續 TTS 串流 stop()
-        會把 ack 的 ffmpeg subprocess SIGTERM 掉。正在播音則跳過，不疊在輸出上。
-        """
-        import glob as _glob
-
-        _vc = self.voice_client or discord.utils.get(self.bot.voice_clients)
-        if not _vc or not _vc.is_connected():
-            return
-        files = _glob.glob(f"{self._ACK_DIR}/{state}_{tier}_*.mp3")
-        if not files:
-            return
-        ack_file = random.choice(files)
-
-        # 🎚️ 串流播歌中 + 熱切換開啟 → 走 second-stream 注入，不打斷音樂（同 _play_ack_sound）
-        if self._midsong_hotswap_active(allow_hotswap=True):
-            if await self._arm_hotswap(ack_file):
-                logger.info(f"🗣️ [Status ACK] 熱切換注入 {state}/{tier} 安撫語音")
-                return
-
-        # 否則：等空檔走 playback_lock 直接 play；正在播音則跳過，不疊在輸出上
-        if _vc.is_playing() or self.is_playing_audio:
-            return
-        async with self.playback_lock:
-            if _vc.is_playing() or self.is_playing_audio:  # 取到鎖後狀態可能變了
-                return
-            try:
-                _vc.play(discord.FFmpegPCMAudio(ack_file))
-                logger.info(f"🗣️ [Status ACK] 播放 {state}/{tier} 安撫語音")
-            except Exception as _e:
-                logger.warning(f"[Status ACK] 播放失敗（忽略）：{_e}")
-
     async def _llm_wait_ack_watcher(self, has_first_audio) -> None:
         """喚醒後守候 LLM 出聲；久候未出聲 → 雙發狀態 ack 安撫。
 
@@ -3825,12 +3779,12 @@ class VoiceController(commands.Cog):
             await asyncio.sleep(self._ACK_FIRST_DELAY_S)
             if has_first_audio():
                 return
-            await self._play_status_ack(self._detect_llm_wait_state(), "first")
+            await self._play_ack("status", variant=f"{self._detect_llm_wait_state()}_first")
 
             await asyncio.sleep(self._ACK_SECOND_DELAY_S)
             if has_first_audio():
                 return
-            await self._play_status_ack(self._detect_llm_wait_state(), "second")
+            await self._play_ack("status", variant=f"{self._detect_llm_wait_state()}_second")
         except asyncio.CancelledError:
             pass
 
@@ -3863,7 +3817,7 @@ class VoiceController(commands.Cog):
             logger.info(f"[NemoClaw] {speaker} 正在排隊等待上一個 openclaw 完成...")
         else:
             # 立即播 ack 音效（NemoClaw 確認回應，遮掩 openclaw 啟動延遲）
-            await self._play_nemoclaw_ack(speaker)
+            await self._play_ack("nemoclaw", speaker=speaker)
         async with self._nemo_lock:
             logger.info(f"[NemoClaw] {speaker} → 查詢: {clean_query!r}")
 
@@ -4699,7 +4653,7 @@ class VoiceController(commands.Cog):
                 f"{type(e).__name__}: {e}",
                 exc_info=True,  # full traceback
             )
-            asyncio.create_task(self._play_ack_sound(speaker, ack_type="music_fail"))
+            asyncio.create_task(self._play_ack("music_fail", speaker=speaker))
             ch = self.active_text_channel
             if ch:
                 try:
@@ -4728,7 +4682,7 @@ class VoiceController(commands.Cog):
         # 🎵 [Music Ack] MusicAgent 接走 → 立刻播音樂 ack（從 acks/music/ 抽 4 字內 DJ 款）
         # 只在 play 觸發；skip/stop/pause/resume 是控制指令，用 wake-time 通用 filler 即可。
         if cmd == "play":
-            asyncio.create_task(self._play_ack_sound(speaker, ack_type="music", allow_hotswap=True))
+            asyncio.create_task(self._play_ack("music", speaker=speaker))
         ch = self.active_text_channel
         vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
 
@@ -4834,7 +4788,7 @@ class VoiceController(commands.Cog):
             info = await self._resolve_yt_query(search)
             if not info:
                 if ch: await status_msg.edit(content=f"❌ 找不到 `{search}`，就跟意義一樣——不存在。")
-                asyncio.create_task(self._play_ack_sound(speaker, ack_type="music_fail"))
+                asyncio.create_task(self._play_ack("music_fail", speaker=speaker))
                 return
             info['requested_by'] = speaker
             self.stt_logger.info(
@@ -4916,7 +4870,7 @@ class VoiceController(commands.Cog):
 
         extra_context = f"對話脈絡：{self.bot.engine.conv_buffer.get_harvest(wake_time, before=10.0, after=0.5)}"
 
-        asyncio.create_task(self._play_ack_sound(speaker, allow_hotswap=True))
+        asyncio.create_task(self._play_ack("wake", speaker=speaker))
 
         try:
             response = await self.bot.router.analyze_tactical_situation(
@@ -4945,33 +4899,6 @@ class VoiceController(commands.Cog):
                 await placeholder_msg.edit(content=f"👁️ **【馬文·視覺分析】** `{speaker}`：{err_text}")
             self.stt_logger.info(f"[視覺查詢→{speaker}] 問={query} | 回應=（分析失敗）")
             await self.play_tts(err_text, already_in_channel=True)
-
-    async def _play_random_filler(self, speaker: str = ""):
-        """從 assets/acks 或 assets/acks_en 隨機挑選音效進行預播放"""
-        import random
-        filler_dir = "assets/acks_en" if self._speaker_lang.get(speaker) == "en" else "assets/acks"
-        if not os.path.exists(filler_dir):
-            return
-
-        files = [f for f in os.listdir(filler_dir) if f.endswith(".mp3")]
-        if not files:
-            return
-
-        filler_file = os.path.join(filler_dir, random.choice(files))
-        
-        # 獲取語音客戶端
-        voice_client = discord.utils.get(self.bot.voice_clients)
-        if not voice_client or not voice_client.is_connected():
-            return
-            
-        try:
-            # 💡 [Filler Strategy] 這裡不使用 playback_lock，因為 filler 的目的就是「插隊」
-            # 但若正在播放重要的話，則不插隊
-            if not voice_client.is_playing():
-                print(f"🎸 [Latency Masking] 播放應答音效: {os.path.basename(filler_file)}")
-                voice_client.play(discord.FFmpegPCMAudio(filler_file))
-        except Exception as e:
-            print(f"⚠️ [Filler Error] {e}")
 
     async def handle_bias_update(self, username: str, impression: str):
         print(f"👂 [Admin] 指揮官正在耳語：{username} -> {impression}")
@@ -5611,7 +5538,7 @@ class VoiceController(commands.Cog):
 
     # --- [Utilities] ---
     # 🚀 [T-04+T-05 Fix] _play_filler() 已移除（孤島死碼）。
-    # 唯一實際使用的 filler 播放器為 _play_random_filler()，位於 Fast System 路徑。
+    # filler 播放統一走 _play_ack("filler")（ack_templates 驅動），位於 Fast System 路徑。
 
     async def _wait_for_user_silence(self, min_silence: float | None = None, timeout: float | None = None) -> bool:
         """等待使用者停止講話，避免 TTS 在人聲中插入。"""
@@ -7315,7 +7242,7 @@ class VoiceController(commands.Cog):
         if not ident:
             if self.active_text_channel:
                 await self.active_text_channel.send(f"🔎 **【找歌】** 找不到符合「{payload}」的歌，換個說法試試？")
-            asyncio.create_task(self._play_ack_sound(speaker, ack_type="music_fail"))
+            asyncio.create_task(self._play_ack("music_fail", speaker=speaker))
             return
 
         # find_lyrics 模式：嘗試在 LRC 找 fragment 時間戳，命中就在訊息附帶「副歌 X 在 mm:ss」

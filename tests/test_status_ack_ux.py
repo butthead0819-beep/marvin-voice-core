@@ -88,124 +88,42 @@ def test_detect_state_searching_takes_precedence_over_fallback():
     assert cog._detect_llm_wait_state() == "searching"
 
 
-# ── ack 播放（序列化 + 跳過條件）─────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_play_status_ack_acquires_playback_lock(tmp_path):
-    cog = _make_cog()
-    fake_vc = MagicMock()
-    fake_vc.is_connected.return_value = True
-    fake_vc.is_playing.return_value = False
-    cog.voice_client = fake_vc
-
-    lock_held = {"value": False}
-    real_play = MagicMock()
-
-    def _spy_play(*a, **kw):
-        lock_held["value"] = cog.playback_lock.locked()
-        return real_play(*a, **kw)
-    fake_vc.play = MagicMock(side_effect=_spy_play)
-
-    ack = tmp_path / "thinking_first_1.mp3"
-    ack.write_bytes(b"fake")
-
-    with patch("glob.glob", return_value=[str(ack)]), \
-         patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
-        await cog._play_status_ack("thinking", "first")
-
-    assert fake_vc.play.called
-    assert lock_held["value"] is True
-
-
-@pytest.mark.asyncio
-async def test_play_status_ack_skips_when_already_playing():
-    cog = _make_cog()
-    fake_vc = MagicMock()
-    fake_vc.is_connected.return_value = True
-    fake_vc.is_playing.return_value = True
-    fake_vc.play = MagicMock()
-    cog.voice_client = fake_vc
-    cog.is_playing_audio = True
-
-    await cog._play_status_ack("thinking", "first")
-    assert not fake_vc.play.called
-
-
-@pytest.mark.asyncio
-async def test_play_status_ack_uses_hotswap_during_music(tmp_path, monkeypatch):
-    """串流播歌中 + 熱切換開啟 → ack 走 _arm_hotswap 注入，不走 plain play（不打斷音樂）。"""
-    cog = _make_cog()
-    fake_vc = MagicMock()
-    fake_vc.is_connected.return_value = True
-    fake_vc.is_playing.return_value = True  # 音樂正在播
-    fake_vc.play = MagicMock()
-    cog.voice_client = fake_vc
-
-    # _midsong_hotswap_active 的真實前置條件
-    monkeypatch.setenv("MARVIN_MIDSONG_HOTSWAP_ENABLED", "true")
-    cog.stream_mode = True
-    cog._stream_position_source = object()
-    cog._current_stream_url = "http://example/stream"
-    cog._arm_hotswap = AsyncMock(return_value=True)
-
-    ack = tmp_path / "searching_first_1.mp3"
-    ack.write_bytes(b"fake")
-
-    with patch("glob.glob", return_value=[str(ack)]):
-        await cog._play_status_ack("searching", "first")
-
-    cog._arm_hotswap.assert_called_once_with(str(ack))
-    assert not fake_vc.play.called, "音樂中應走熱切換，不可 plain play 打斷音樂"
-
-
-@pytest.mark.asyncio
-async def test_play_status_ack_skips_when_no_files(tmp_path):
-    cog = _make_cog()
-    fake_vc = MagicMock()
-    fake_vc.is_connected.return_value = True
-    fake_vc.is_playing.return_value = False
-    fake_vc.play = MagicMock()
-    cog.voice_client = fake_vc
-
-    with patch("glob.glob", return_value=[]):
-        await cog._play_status_ack("thinking", "first")
-    assert not fake_vc.play.called
-
-
 # ── watcher 雙發 / 提早收手 ──────────────────────────────────────────────────
+# （ack 實際播放政策由 test_play_ack_unified.py 的 status case 覆蓋；
+#   這裡只驗 watcher 的計時/收手/狀態組裝邏輯。）
 
 @pytest.mark.asyncio
 async def test_watcher_double_fire_when_no_audio():
-    """5s 第一發、12s 第二發；全程沒出首句音訊 → 兩發都打。"""
+    """5s 第一發、12s 第二發；全程沒出首句音訊 → 兩發都打，variant 帶 state。"""
     cog = _make_cog()
     fired = []
-    cog._play_status_ack = AsyncMock(side_effect=lambda s, t: fired.append((s, t)))
+    cog._play_ack = AsyncMock(side_effect=lambda c, variant=None: fired.append((c, variant)))
     cog._detect_llm_wait_state = MagicMock(return_value="thinking")
 
     with patch("asyncio.sleep", new=AsyncMock()):
         await cog._llm_wait_ack_watcher(lambda: False)
 
-    assert fired == [("thinking", "first"), ("thinking", "second")]
+    assert fired == [("status", "thinking_first"), ("status", "thinking_second")]
 
 
 @pytest.mark.asyncio
 async def test_watcher_no_fire_when_audio_arrives_before_5s():
     """首句在 5s 前就到 → 一發都不打。"""
     cog = _make_cog()
-    cog._play_status_ack = AsyncMock()
+    cog._play_ack = AsyncMock()
     cog._detect_llm_wait_state = MagicMock(return_value="thinking")
 
     with patch("asyncio.sleep", new=AsyncMock()):
         await cog._llm_wait_ack_watcher(lambda: True)
 
-    assert not cog._play_status_ack.called
+    assert not cog._play_ack.called
 
 
 @pytest.mark.asyncio
 async def test_watcher_only_first_when_audio_arrives_after_5s():
     """首句在 5s~12s 之間到 → 只打第一發，不打第二發。"""
     cog = _make_cog()
-    cog._play_status_ack = AsyncMock()
+    cog._play_ack = AsyncMock()
     cog._detect_llm_wait_state = MagicMock(return_value="searching")
 
     state = {"audio": False, "calls": 0}
@@ -219,14 +137,14 @@ async def test_watcher_only_first_when_audio_arrives_after_5s():
     with patch("asyncio.sleep", new=AsyncMock(side_effect=_fake_sleep)):
         await cog._llm_wait_ack_watcher(lambda: state["audio"])
 
-    cog._play_status_ack.assert_called_once_with("searching", "first")
+    cog._play_ack.assert_called_once_with("status", variant="searching_first")
 
 
 @pytest.mark.asyncio
 async def test_watcher_cancellable():
     """被 cancel 時安靜結束，不外漏 CancelledError。"""
     cog = _make_cog()
-    cog._play_status_ack = AsyncMock()
+    cog._play_ack = AsyncMock()
 
     real_sleep = asyncio.sleep  # patch 前保存，供測試自己讓步用
 
@@ -237,4 +155,4 @@ async def test_watcher_cancellable():
         await real_sleep(0)  # 讓 watcher 跑到第一個（被攔住的）sleep
         task.cancel()
         await task  # 不應 raise
-    assert not cog._play_status_ack.called
+    assert not cog._play_ack.called
