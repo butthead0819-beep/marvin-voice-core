@@ -573,6 +573,7 @@ class VoiceController(commands.Cog):
         self._plan12 = os.getenv("PLAN12_LOCAL_MIX", "false").lower() in ("1", "true", "yes")
         # instrument=True：每 5s 印 [Plan12_Stats]（read_ms / underrun / buffer 深度）供 live 判跟不跟得上
         self._mixer = LocalMixingAudioSource(instrument=True) if self._plan12 else None
+        self._voice_client_override = None  # 測試可覆寫；prod 走 voice_client property 即時查連線 vc
         self._prefetch_cache: dict[str, asyncio.Task] = {}  # url → Task[{'lyrics', 'comment'}]
         self._last_search: dict[str, dict] = {}  # username → {query, ts, source}（voice/manual，供偏好修正學習用）
         # 🛡️ [Music Dedup] _handle_voice_music_command 5s 入口防抖
@@ -708,6 +709,19 @@ class VoiceController(commands.Cog):
     # 🎛️ [Plan 12 / T4] flag=on 時 is_playing_audio / tts_queue_duration 由 mixer 維護，
     # ~20 個既有 reader（Echo Guard / wake-suppress / storm / ack / dual / :853）零改動自然正確。
     # flag=off 時走 backing field（舊 writer 照常設）。
+    # 🩹 [Pre-existing fix] 9254f841 的 _play_ack 讀 self.voice_client 但該屬性從未定義 →
+    # AttributeError 崩潰（incident 191408 / stream-wake ack 沒出）。改成 property 即時查
+    # 連線中的 vc；setter 供測試覆寫（測試本來就 cog.voice_client = mock）。
+    @property
+    def voice_client(self):
+        if self._voice_client_override is not None:
+            return self._voice_client_override
+        return next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
+
+    @voice_client.setter
+    def voice_client(self, value):
+        self._voice_client_override = value
+
     @property
     def is_playing_audio(self) -> bool:
         if getattr(self, "_plan12", False) and getattr(self, "_mixer", None) is not None:
@@ -3471,7 +3485,7 @@ class VoiceController(commands.Cog):
             return
         lang = "en" if self._speaker_lang.get(speaker) == "en" else "zh"
 
-        _vc = self.voice_client or discord.utils.get(self.bot.voice_clients)
+        _vc = self.voice_client
         if not _vc or not _vc.is_connected():
             return
 

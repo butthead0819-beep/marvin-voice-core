@@ -378,3 +378,15 @@ async def test_filler_plays_without_lock_when_idle(tmp_path):
 
     assert vc.play.called
     assert held["v"] is False          # filler 故意不鎖
+
+
+@pytest.mark.asyncio
+async def test_play_ack_no_voice_client_returns_without_attributeerror():
+    """回歸（9254f841 latent bug）：_play_ack 不可存取不存在的 self.voice_client。
+
+    無連線 VoiceClient → 乾淨 return，不可拋 AttributeError（否則 wake-during-stream
+    的 ack 整個崩、incident 191408）。
+    """
+    cog = _make_cog()
+    cog.bot.voice_clients = []
+    await cog._play_ack("wake")  # 不可 raise
