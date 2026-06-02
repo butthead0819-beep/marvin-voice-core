@@ -63,6 +63,7 @@ class LocalMixingAudioSource(_BASE):
         self._rng = np.random.default_rng(seed)
         self._silence_bytes = b"\x00" * FRAME_BYTES_S16
 
+        self._paused = False                     # 控制台暫停：read() 回 silence、不前進來源
         self._music = None                       # 可換 f32le source（atomic ref）
         self._tts_queue: collections.deque = collections.deque()  # 預解碼 f32 buffers
         self._tts_cur: np.ndarray | None = None  # 當前 TTS buffer（consumer-local）
@@ -120,8 +121,14 @@ class LocalMixingAudioSource(_BASE):
             self._stat_slow = 0
             self._stat_t0 = now
 
+    def set_paused(self, paused: bool) -> None:
+        """控制台暫停/續播：暫停時 read() 回 silence 但不前進音樂/TTS 來源（保位置、保 adapter 不停）。"""
+        self._paused = bool(paused)
+
     def _read_impl(self) -> bytes:
         try:
+            if self._paused:
+                return self._silence_bytes  # 持位置、adapter 續活（不進 idle→b"" 邏輯）
             music_f = self._next_music_frame()
             tts_f = self._next_tts_frame()
             tts_active = tts_f is not None
@@ -372,9 +379,15 @@ def ensure_mixer_playing(voice_client, adapter_factory) -> bool:
             return False
         if voice_client.is_playing():
             return False
-        voice_client.play(adapter_factory())
+        # ④⑤ opus bitrate：把編碼器拉到頻道允許的上限（預設 128k 對音樂偏低、且若頻道更高沒用滿）
+        ch_bps = getattr(getattr(voice_client, "channel", None), "bitrate", None)
+        kbps = 128
+        if isinstance(ch_bps, int) and ch_bps > 0:
+            kbps = max(16, min(512, ch_bps // 1000))
+        voice_client.play(adapter_factory(), application="audio", bitrate=kbps)
+        print(f"[Plan12_Bitrate] 頻道={ch_bps} bps → opus 編碼設 {kbps} kbps（application=audio）", flush=True)
         print("[Plan12_Mixer] adapter armed（mixer 開始驅動 vc 輸出）", flush=True)
         return True
     except Exception:
-        logger.warning("[Plan12_Mixer] ensure_mixer_playing 略過（vc 狀態競態或未就緒）")
+        logger.warning("[Plan12_Mixer] ensure_mixer_playing 略過（vc 狀態競態或未就緒）", exc_info=True)
         return False

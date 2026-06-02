@@ -28,6 +28,8 @@ def _fake_controller(**overrides):
     c._current_stream_info = None
     c._current_stream_comment = None
     c._current_lyrics = None
+    c._plan12 = False   # 預設測舊路徑（避免 MagicMock 把 getattr(_plan12) 當 truthy）
+    c._mixer = None
     for k, v in overrides.items():
         setattr(c, k, v)
     return c
@@ -85,7 +87,7 @@ async def test_vol_down_button_decreases_volume():
     c = _fake_controller(stream_volume=0.50)
     view = PlayControlView(c)
     await view.vol_down_button.callback(_fake_interaction())
-    assert c.stream_volume == 0.45
+    assert c.stream_volume == 0.40
 
 
 @pytest.mark.asyncio
@@ -93,7 +95,7 @@ async def test_vol_up_button_increases_volume():
     c = _fake_controller(stream_volume=0.50)
     view = PlayControlView(c)
     await view.vol_up_button.callback(_fake_interaction())
-    assert c.stream_volume == 0.55
+    assert c.stream_volume == 0.60
 
 
 @pytest.mark.asyncio

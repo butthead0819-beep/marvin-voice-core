@@ -131,6 +131,14 @@ class PlayControlView(discord.ui.View):
         self._rebuild_select()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
+    def _skip_current(self, vc):
+        """跳歌：Plan 12 清 mixer 音樂層（_mixer_play_music 結束→播下一首）；舊路徑停 vc。"""
+        c = self.controller
+        if getattr(c, "_plan12", False) and getattr(c, "_mixer", None) is not None:
+            c._mixer.clear_music()
+        elif vc and vc.is_playing():
+            vc.stop_playing()
+
     @discord.ui.button(label="⏮️ 上一首", style=discord.ButtonStyle.secondary, row=1)
     async def prev_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         c = self.controller
@@ -142,9 +150,7 @@ class PlayControlView(discord.ui.View):
             c.stream_history.pop()
         prev = c.stream_history.pop()
         c.stream_queue.insert(0, prev)
-        vc = interaction.guild.voice_client
-        if vc and vc.is_playing():
-            vc.stop_playing()
+        self._skip_current(interaction.guild.voice_client)
         await self._refresh(interaction)
 
     @discord.ui.button(label="⏸️ 暫停", style=discord.ButtonStyle.primary, row=1)
@@ -154,11 +160,12 @@ class PlayControlView(discord.ui.View):
         if not vc:
             await interaction.response.send_message("沒有連線中的語音頻道。", ephemeral=True)
             return
+        _p12 = getattr(c, "_plan12", False) and getattr(c, "_mixer", None) is not None
         if c.stream_paused:
-            vc.resume()
+            c._mixer.set_paused(False) if _p12 else vc.resume()
             c.stream_paused = False
         else:
-            vc.pause()
+            c._mixer.set_paused(True) if _p12 else vc.pause()
             c.stream_paused = True
         await self._refresh(interaction)
 
@@ -168,18 +175,16 @@ class PlayControlView(discord.ui.View):
         if not c.stream_mode:
             await interaction.response.send_message("沒有歌曲在播放。", ephemeral=True)
             return
-        vc = interaction.guild.voice_client
-        if vc and vc.is_playing():
-            vc.stop_playing()
+        self._skip_current(interaction.guild.voice_client)
         await self._refresh(interaction)
 
-    @discord.ui.button(label="🔉 -5%", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="🔉 -10%", style=discord.ButtonStyle.secondary, row=2)
     async def vol_down_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         c = self.controller
         c.stream_volume = max(self.VOL_MIN, round(c.stream_volume - self.VOL_STEP, 2))
         await self._refresh(interaction)
 
-    @discord.ui.button(label="🔊 +5%", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="🔊 +10%", style=discord.ButtonStyle.secondary, row=2)
     async def vol_up_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         c = self.controller
         c.stream_volume = min(self.VOL_MAX, round(c.stream_volume + self.VOL_STEP, 2))
@@ -196,9 +201,7 @@ class PlayControlView(discord.ui.View):
             await interaction.response.send_message("該歌曲已不在佇列中。", ephemeral=True)
             return
         self.controller.stream_queue = q[idx:]
-        vc = interaction.guild.voice_client
-        if vc and vc.is_playing():
-            vc.stop_playing()
+        self._skip_current(interaction.guild.voice_client)
         self._selected_index = None
         await self._refresh(interaction)
 

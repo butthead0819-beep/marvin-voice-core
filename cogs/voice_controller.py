@@ -549,7 +549,7 @@ class VoiceController(commands.Cog):
 
         # 🎵 [Stream Mode] YouTube 串流系統狀態
         self.stream_mode = False
-        self.stream_volume = 0.80        # 串流獨立音量，初始 80%
+        self.stream_volume = 0.10        # 串流獨立音量，初始 10%
         # 🎚️ [HotSwap] 中途 TTS 熱切換（Plan 11 Slice 1，手動觸發驗證機制）
         self._hotswap_coord = HotSwapCoordinator()
         self._stream_play_gen = 0                 # 播放世代；切換前遞增使舊 source 的 after 失效
@@ -1487,7 +1487,7 @@ class VoiceController(commands.Cog):
 
         if not self.stream_mode:
             self.stream_mode = True
-            self.stream_volume = 0.80
+            self.stream_volume = 0.10
             if self.stream_task and not self.stream_task.done():
                 self.stream_task.cancel()
             self.stream_task = asyncio.create_task(self._stream_loop())
@@ -4764,7 +4764,7 @@ class VoiceController(commands.Cog):
             self.stream_queue.append(info)
             if not self.stream_mode:
                 self.stream_mode = True
-                self.stream_volume = 0.80
+                self.stream_volume = 0.10
                 if self.stream_task and not self.stream_task.done():
                     self.stream_task.cancel()
                 self.stream_task = asyncio.create_task(self._stream_loop())
@@ -7348,10 +7348,12 @@ class VoiceController(commands.Cog):
                     still_active=lambda: self.stream_mode,
                 )
             else:
-                # 一般：loudnorm-only（不烤 volume），mixer 即時套 stream_volume
+                # 不正規化（最乾淨，使用者實測「好多了」）。loudnorm 太重會悶；dynaudnorm m=10
+                # 自適應增益隨播放把安靜段越推越大 → 漸進破音（使用者實測「越播越 distorted」）。
+                # 響度交 mixer 音量；之後若要再上「低 maxgain」溫和正規化。
                 p12_opts = {
                     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
-                    'options': '-vn -bufsize 512k -af loudnorm=I=-14:TP=-1.5:LRA=11',
+                    'options': '-vn -bufsize 512k',
                 }
                 await self._mixer_play_music(
                     vc, discord.FFmpegPCMAudio(url, **p12_opts),
