@@ -571,7 +571,8 @@ class VoiceController(commands.Cog):
         # 🎛️ [Plan 12] always-on 本地混音台（env-gated）。flag=off → mixer None、走舊 vc.play() 路徑。
         # flag=on → 整 session 一條 vc.play(mixer adapter)，所有音訊餵 mixer 層。
         self._plan12 = os.getenv("PLAN12_LOCAL_MIX", "false").lower() in ("1", "true", "yes")
-        self._mixer = LocalMixingAudioSource() if self._plan12 else None
+        # instrument=True：每 5s 印 [Plan12_Stats]（read_ms / underrun / buffer 深度）供 live 判跟不跟得上
+        self._mixer = LocalMixingAudioSource(instrument=True) if self._plan12 else None
         self._prefetch_cache: dict[str, asyncio.Task] = {}  # url → Task[{'lyrics', 'comment'}]
         self._last_search: dict[str, dict] = {}  # username → {query, ts, source}（voice/manual，供偏好修正學習用）
         # 🛡️ [Music Dedup] _handle_voice_music_command 5s 入口防抖

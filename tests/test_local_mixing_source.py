@@ -407,3 +407,38 @@ def test_set_music_source_cleans_previous():
     _time.sleep(0.02)
     assert a.cleaned is True
     mix.clear_music()
+
+
+# ── Instrumentation（A：下輪 live 收數據判 mixer 是否跟得上）───────────────────
+
+def test_buffered_counts_underruns_and_exposes_stats():
+    gate = threading.Event()
+
+    class _Gated:
+        def read(self):
+            gate.wait(1.0)
+            return np.full(FRAME_SAMPLES, 0.5, dtype=np.float32).tobytes()
+
+        def cleanup(self):
+            pass
+
+    buf = BufferedF32MusicSource(_Gated(), buffer_frames=4)
+    _time.sleep(0.05)  # bg 卡住 → 空 buffer
+    buf.read(); buf.read()  # 兩次 underrun
+    st = buf.stats()
+    assert st["underruns"] >= 2
+    assert st["max"] == 4
+    assert "depth" in st
+    gate.set()
+    buf.cleanup()
+
+
+def test_instrument_mode_read_still_returns_full_frame():
+    mix = LocalMixingAudioSource(seed=1, instrument=True)
+    mix.set_music_source(_FakeMusic(value=0.3, frames=3))
+    for _ in range(5):
+        assert len(mix.read()) == FRAME_BYTES_S16  # instrument 不破壞 read()
+
+
+def test_instrument_off_by_default():
+    assert LocalMixingAudioSource()._instrument is False

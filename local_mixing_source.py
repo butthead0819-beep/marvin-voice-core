@@ -51,6 +51,7 @@ class LocalMixingAudioSource(_BASE):
         duck_step: float = 0.28,
         tts_cap_seconds: float = 30.0,
         seed: int | None = None,
+        instrument: bool = False,
     ):
         self._volume = float(volume)
         self._duck_level = float(duck_level)
@@ -65,12 +66,52 @@ class LocalMixingAudioSource(_BASE):
         self._tts_cur: np.ndarray | None = None  # 當前 TTS buffer（consumer-local）
         self._tts_off = 0                         # consumer-local offset
 
+        # instrumentation（flag-gated；每 5s 印 [Plan12_Stats]，供 live 判 mixer 是否跟得上）
+        self._instrument = bool(instrument)
+        self._stat_frames = 0
+        self._stat_ms_sum = 0.0
+        self._stat_ms_max = 0.0
+        self._stat_slow = 0          # read() > 18ms 的幀數（逼近 20ms deadline）
+        self._stat_t0 = time.monotonic()
+
     # ── discord.AudioSource 介面 ──────────────────────────────────────────────
 
     def is_opus(self) -> bool:
         return False
 
     def read(self) -> bytes:
+        if not self._instrument:
+            return self._read_impl()
+        t0 = time.perf_counter()
+        out = self._read_impl()
+        self._record_stat((time.perf_counter() - t0) * 1000.0)
+        return out
+
+    def _record_stat(self, dt_ms: float) -> None:
+        self._stat_frames += 1
+        self._stat_ms_sum += dt_ms
+        if dt_ms > self._stat_ms_max:
+            self._stat_ms_max = dt_ms
+        if dt_ms > 18.0:
+            self._stat_slow += 1
+        now = time.monotonic()
+        if now - self._stat_t0 >= 5.0 and self._stat_frames:
+            avg = self._stat_ms_sum / self._stat_frames
+            mst = self._music.stats() if hasattr(self._music, "stats") else {}
+            logger.info(
+                "[Plan12_Stats] %.1fs f=%d read_ms(avg/max)=%.2f/%.2f slow>18ms=%d "
+                "music_underrun=%s buf=%s/%s tts_q=%d",
+                now - self._stat_t0, self._stat_frames, avg, self._stat_ms_max,
+                self._stat_slow, mst.get("underruns", "-"),
+                mst.get("depth", "-"), mst.get("max", "-"), len(self._tts_queue),
+            )
+            self._stat_frames = 0
+            self._stat_ms_sum = 0.0
+            self._stat_ms_max = 0.0
+            self._stat_slow = 0
+            self._stat_t0 = now
+
+    def _read_impl(self) -> bytes:
         try:
             music_f = self._next_music_frame()
             tts_f = self._next_tts_frame()
@@ -258,9 +299,13 @@ class BufferedF32MusicSource:
         self._maxlen = max(2, int(buffer_frames))
         self._eof = False
         self._stop = False
+        self._underruns = 0  # read() 因 buffer 空（未 eof）回 silence 的次數
         self._silence = b"\x00" * FRAME_BYTES_F32
         self._thread = threading.Thread(target=self._fill_loop, daemon=True)
         self._thread.start()
+
+    def stats(self) -> dict:
+        return {"underruns": self._underruns, "depth": len(self._buf), "max": self._maxlen}
 
     def _fill_loop(self):
         while not self._stop:
@@ -283,6 +328,7 @@ class BufferedF32MusicSource:
             return self._buf.popleft()
         if self._eof:
             return b""
+        self._underruns += 1
         return self._silence  # underrun：填空保歌不停（不可回 b""）
 
     def cleanup(self):
