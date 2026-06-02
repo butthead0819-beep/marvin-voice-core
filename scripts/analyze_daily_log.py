@@ -60,7 +60,7 @@ GOOGLE_API_KEY = (
     os.environ.get("GEMINI_PAID_API_KEY", "").strip()
     or os.environ.get("GOOGLE_API_KEY", "").strip()
 )
-REVIEW_MODEL              = os.environ.get("MARVIN_REVIEW_MODEL", "gemini-2.5-flash-preview-05-20")
+REVIEW_MODEL              = os.environ.get("MARVIN_REVIEW_MODEL", "gemini-2.5-flash")  # 2026-06-02: 舊 flash-preview-05-20 已 404 下架
 DISCORD_BOT_TOKEN         = os.environ.get("DISCORD_BOT_TOKEN", "")
 DISCORD_REVIEW_CHANNEL_ID = os.environ.get("DISCORD_REVIEW_CHANNEL_ID", "")
 MAX_STT_LINES    = 900   # 最多送幾行 STT（保留最近的）
