@@ -5055,12 +5055,19 @@ class VoiceController(commands.Cog):
             if not can_analyze:
                 print(f"⚠️ [Slow System] STT 頻率過高 ({self._stt_call_counter}/min)，跳過本輪社交分析。")
 
+            # 🔇 [社交補位 OFF — 2026-06-03] analyze_social_dynamics（社交知識圖譜，長上下文）
+            # 的結果 analysis 唯一消費者就是下方社交補位；補位關閉時算了也直接丟掉 = 純浪費。
+            # → 補位關閉就連這支 LLM 都不呼叫，省免費池。重啟：_SOCIAL_INTERVENTION_ENABLED=True，
+            # call 與消費者一起復活。（記憶萃取早已改每日 off-peak，見下方 gather 註解。）
+            _SOCIAL_INTERVENTION_ENABLED = False
+            _do_social_analysis = can_analyze and _SOCIAL_INTERVENTION_ENABLED
+
             async def _noop(): return None
 
             # 3. 並行執行：日記 + 社交分析（記憶萃取改由每日 web LLM 整體處理）
             results = await asyncio.gather(
                 self.bot.router.generate_slow_summary(human_entries),
-                self.bot.router.analyze_social_dynamics(new_entries, full_new_text, online_members=online_members) if can_analyze else _noop(),
+                self.bot.router.analyze_social_dynamics(new_entries, full_new_text, online_members=online_members) if _do_social_analysis else _noop(),
                 return_exceptions=True
             )
             summary  = results[0] if not isinstance(results[0], BaseException) else None
@@ -5114,12 +5121,9 @@ class VoiceController(commands.Cog):
                     await target.send(f"📓 **【馬文的厭世日記】** (10min 增量彙整)\n\n{summary}")
 
             # 6. 處理社交缺口（使用並行取回的 analysis 結果）
-            # 🔇 [社交補位 OFF — 2026-06-03 依用戶要求關閉]
-            #    觸發源：Marvin Autonomous Intelligence v2.5（slow_system_loop gap-fill）。
-            #    analysis 仍照常計算供其他用途，僅停掉補位「發話」動作（gap LLM 改寫＋
-            #    embed＋TTS）。數據依據：此類主動補位接話率僅 ~4%（records/speak_outcomes.jsonl）。
-            #    重啟：把 _SOCIAL_INTERVENTION_ENABLED 改回 True。
-            _SOCIAL_INTERVENTION_ENABLED = False
+            # 🔇 [社交補位 OFF — 2026-06-03] flag 與 analyze_social_dynamics call gate 都在上方
+            #    （補位關閉時連社交分析 LLM 都不算，不空轉）。觸發源 Marvin Autonomous
+            #    Intelligence v2.5；補位接話率僅 ~4%（records/speak_outcomes.jsonl）。
             if _SOCIAL_INTERVENTION_ENABLED and analysis:
                 gap_type = analysis.get("social_gap", "none")
                 if gap_type != "none":

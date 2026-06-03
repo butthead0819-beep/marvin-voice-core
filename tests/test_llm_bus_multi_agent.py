@@ -146,3 +146,27 @@ async def test_unknown_purpose_multi_agent_still_dispatches(caplog):
     assert result == "ok"
     # warning 該留紀錄
     assert any("unknown purpose" in r.message.lower() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# 7. 急迫性硬分流：背景 purpose → Groq decline → Cerebras 接走（保留 Groq 給即時）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_background_purpose_routes_to_cerebras_not_groq():
+    """背景 purpose（analyze_social_dynamics）即使 Groq 完全閒置也不該選 Groq。"""
+    bus, quota, _, eps = _build_dual_bus()
+    eps["g_q"].client.chat.completions.create = AsyncMock(return_value=_mock_resp("from_groq"))
+    eps["c_q"].client.chat.completions.create = AsyncMock(return_value=_mock_resp("from_cerebras"))
+    result = await bus.dispatch(LLMContext(prompt="x", purpose="analyze_social_dynamics"))
+    assert result == "from_cerebras"
+    assert bus.last_dispatch.winner_provider == "cerebras"
+
+
+@pytest.mark.asyncio
+async def test_reactive_purpose_keeps_groq_as_candidate():
+    """對照組：即時 purpose（marvin_chat）Groq 不被 decline、仍是正常候選；背景才 0.0。"""
+    bus, _, _, _ = _build_dual_bus()
+    ga = next(a for a in bus._agents if a.name == "groq")
+    assert ga.bid(LLMContext(prompt="x", purpose="marvin_chat")).confidence > 0.0
+    assert ga.bid(LLMContext(prompt="x", purpose="analyze_social_dynamics")).confidence == 0.0

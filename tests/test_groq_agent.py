@@ -246,27 +246,27 @@ def test_bid_works_for_typo_purpose():
 # 背景 purpose 降權（#3 分流）— 把 Groq 留給 reactive 即時回應
 # ---------------------------------------------------------------------------
 
-def test_bid_deprioritizes_background_purpose():
-    """背景 purpose（extract_memory）在 Groq 上 bid 應低於 reactive（marvin_chat）。"""
+def test_bid_declines_background_purpose_hard():
+    """背景/可延後 purpose（extract_memory）→ Groq 硬分流 decline（0.0），完整保留給即時。"""
     from llm_agents.base import LLMContext
     from llm_agents.groq_agent import GroqAgent
     quota, _, _, _ = _make_quota()
     agent = GroqAgent(quota)
     reactive = agent.bid(LLMContext(prompt="x", purpose="marvin_chat"))
     background = agent.bid(LLMContext(prompt="x", purpose="extract_memory"))
-    assert background.confidence < reactive.confidence
-    assert background.confidence == pytest.approx(reactive.confidence - GroqAgent.BACKGROUND_PENALTY)
+    assert reactive.confidence > 0.0
+    assert background.confidence == 0.0
+    assert background.reason == "deferrable:reserve_groq_for_realtime"
 
 
-def test_bid_background_still_usable_above_floor():
-    """背景降權後仍 ≥0.30 floor（Groq 唯一可用時照樣能跑，軟性偏好非硬排除）。"""
+def test_bid_declines_background_even_when_groq_idle():
+    """即使 Groq 完全閒置（無壓力）也 decline 背景 → 保留每日 TPD 給即時，不只看當下壓力。"""
     from llm_agents.base import LLMContext
     from llm_agents.groq_agent import GroqAgent
-    quota, _, _, _ = _make_quota()
+    quota, _, _, _ = _make_quota()  # tpm_used=0，完全閒置
     agent = GroqAgent(quota)
-    bid = agent.bid(LLMContext(prompt="x", purpose="extract_memory"))
-    assert bid.confidence >= 0.30
-    assert bid.reason == "happy"
+    bid = agent.bid(LLMContext(prompt="x", purpose="analyze_social_dynamics"))
+    assert bid.confidence == 0.0
 
 
 def test_known_and_background_purposes_registered():
