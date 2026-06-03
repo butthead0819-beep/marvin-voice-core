@@ -806,6 +806,9 @@ class GeminiRouterContentMixin:
             user_prompt += "\n【環境：背景音樂中】請務必 30 字以內，否則無法即時插話。"
         try:
             msg = await self._call_llm(system_prompt, user_prompt, tier="simple")
+            # 保證點名：8b（tier=simple）不一定遵守 prompt 的「叫名字」，沒包含就補前綴。
+            if msg and player_name not in msg:
+                msg = f"{player_name}，{msg}"
             self._greeting_cache[player_name] = (time.time(), msg)
             return msg
         except Exception:  # 🛡️ [Bug Fix] 避免 bare except: 吞掉 SystemExit/KeyboardInterrupt
