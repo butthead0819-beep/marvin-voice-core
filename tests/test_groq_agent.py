@@ -240,3 +240,40 @@ def test_bid_works_for_typo_purpose():
     bid = agent.bid(LLMContext(prompt="x", purpose="marvine_chat"))  # typo
     assert bid.confidence > 0.0
     assert bid.provider == "groq"
+
+
+# ---------------------------------------------------------------------------
+# 背景 purpose 降權（#3 分流）— 把 Groq 留給 reactive 即時回應
+# ---------------------------------------------------------------------------
+
+def test_bid_deprioritizes_background_purpose():
+    """背景 purpose（extract_memory）在 Groq 上 bid 應低於 reactive（marvin_chat）。"""
+    from llm_agents.base import LLMContext
+    from llm_agents.groq_agent import GroqAgent
+    quota, _, _, _ = _make_quota()
+    agent = GroqAgent(quota)
+    reactive = agent.bid(LLMContext(prompt="x", purpose="marvin_chat"))
+    background = agent.bid(LLMContext(prompt="x", purpose="extract_memory"))
+    assert background.confidence < reactive.confidence
+    assert background.confidence == pytest.approx(reactive.confidence - GroqAgent.BACKGROUND_PENALTY)
+
+
+def test_bid_background_still_usable_above_floor():
+    """背景降權後仍 ≥0.30 floor（Groq 唯一可用時照樣能跑，軟性偏好非硬排除）。"""
+    from llm_agents.base import LLMContext
+    from llm_agents.groq_agent import GroqAgent
+    quota, _, _, _ = _make_quota()
+    agent = GroqAgent(quota)
+    bid = agent.bid(LLMContext(prompt="x", purpose="extract_memory"))
+    assert bid.confidence >= 0.30
+    assert bid.reason == "happy"
+
+
+def test_known_and_background_purposes_registered():
+    """#1 frame 自動歸因的真實 purpose 要進 KNOWN_PURPOSES（免 typo 警告）；
+    BACKGROUND_PURPOSES 是其子集。"""
+    from llm_agents.base import BACKGROUND_PURPOSES, KNOWN_PURPOSES
+    assert "generate_greeting" in KNOWN_PURPOSES
+    assert "extract_memory" in KNOWN_PURPOSES
+    assert "_classify_mood" in KNOWN_PURPOSES
+    assert BACKGROUND_PURPOSES <= KNOWN_PURPOSES

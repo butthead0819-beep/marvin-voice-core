@@ -15,7 +15,7 @@ Bid confidence 公式（Phase 1 簡化版）：
 from __future__ import annotations
 
 import logging
-from llm_agents.base import LLMAgent, LLMBid, LLMContext
+from llm_agents.base import BACKGROUND_PURPOSES, LLMAgent, LLMBid, LLMContext
 from llm_agents.quota_service import QuotaService
 
 logger = logging.getLogger("MarvinBot.LLMBus.Groq")
@@ -36,6 +36,9 @@ class GroqAgent(LLMAgent):
 
     BASE_CONFIDENCE = 0.65
     TPM_PRESSURE_PENALTY = 0.30  # 線性衰減
+    # 背景/離線 purpose 在 Groq（最稀缺）上額外降權 → 讓位給 Cerebras，省 Groq 配額給 reactive。
+    # 仍受 0.30 floor 保護：Groq 是唯一可用時背景照樣能跑（軟性偏好，非硬排除）。
+    BACKGROUND_PENALTY = 0.20
 
     def __init__(self, quota: QuotaService):
         self.quota = quota
@@ -74,6 +77,9 @@ class GroqAgent(LLMAgent):
         # Happy path — ① 壓力取 per-minute TPM 與當日 daily 較大者（daily 快爆時主動讓位）
         pressure = max(state.tpm_ratio, state.daily_ratio)
         confidence = self.BASE_CONFIDENCE - pressure * self.TPM_PRESSURE_PENALTY
+        # ② 背景/離線 purpose 額外降權，把 Groq 留給 reactive（floor 後仍 ≥0.30 可用）
+        if ctx.purpose in BACKGROUND_PURPOSES:
+            confidence -= self.BACKGROUND_PENALTY
         confidence = max(0.30, confidence)  # floor 避免低 confidence 全部塞 dense 0.0 邊界
         latency = (self.ANALYZE_LATENCY_MS if endpoint_name == self.ANALYZE_ENDPOINT
                    else self.QUICK_LATENCY_MS)

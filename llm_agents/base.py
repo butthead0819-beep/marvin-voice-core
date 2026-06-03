@@ -26,14 +26,31 @@ logger = logging.getLogger("MarvinBot.LLMBus")
 
 # Phase 1 baseline — 隨 Phase 1/2 caller grep 後逐步擴充，Phase 3 (C14) 收斂成 enum.
 KNOWN_PURPOSES: frozenset[str] = frozenset({
-    "marvin_chat",      # Marvin LLM chat (主要 marvin response)
+    "marvin_chat",      # Marvin LLM chat (主要 marvin response / 預設)
     "cleaner",          # STT cleaner LLM call
-    "wake_classify",    # wake detection LLM hint
-    "song_meta",        # 歌曲 metadata 解析
-    "topic_gen",        # 話題生成
-    "dj_quip",          # DJ 賭一把 / interjection
-    "summarizer",       # conversation summary
-    "intent_classify",  # intent / query 分類
+    "wake_classify", "song_meta", "topic_gen", "dj_quip", "summarizer", "intent_classify",
+    # ── _call_llm frame 自動歸因產生的真實 purpose（= 呼叫方 method 名，2026-06-03 #1）──
+    # reactive / 使用者可見：
+    "generate_fast_response", "generate_greeting", "generate_joke",
+    "generate_player_greeting", "generate_player_farewell", "generate_dynamic_system_msg",
+    "generate_status_report_comment", "generate_keyword_cloud", "generate_proactive_question",
+    "rephrase_proactive_script", "generate_gap_filling_response", "complete", "handle",
+    # 背景 / 離線分析（見 BACKGROUND_PURPOSES）：
+    "extract_memory", "batch_extract_memories", "audit_player_memory",
+    "extract_emotional_moments", "analyze_social_dynamics", "analyze_tactical_situation",
+    "update_toxicity", "summarize_window", "_classify_mood", "compress",
+    "marvinize_news", "generate_song_blueprint",
+})
+
+# 背景 / 離線 purpose：不阻塞使用者對話回合（記憶挖掘、社交/戰術分析、摘要、情緒分類、
+# 性格演化、新聞/藍圖預備）。在最稀缺的快速 provider（Groq）上軟性降權 → 流量轉去 Cerebras
+# （近無限 RPM），把 Groq 帳號配額留給 reactive 即時回應。保守起點：只放明確離線的，使用者
+# 可見的生成器（問候/笑話/送客等）暫不列入；待 #1 labeled data 累積再依量微調。
+BACKGROUND_PURPOSES: frozenset[str] = frozenset({
+    "extract_memory", "batch_extract_memories", "audit_player_memory",
+    "extract_emotional_moments", "analyze_social_dynamics", "analyze_tactical_situation",
+    "update_toxicity", "summarize_window", "_classify_mood", "compress",
+    "marvinize_news", "generate_song_blueprint",
 })
 
 
