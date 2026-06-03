@@ -4368,7 +4368,8 @@ class VoiceController(commands.Cog):
                 _mode, _say = helper_speak_plan(full_text, speaker)
                 if _mode == "notify":
                     logger.info(f"🔍 [Helper Query] {speaker} 長答案({len(full_text)}字)→貼文＋口播通知")
-                asyncio.create_task(self.play_tts(_say, already_in_channel=True, emotion_tag=emotion_tag))
+                # information 類：唸完不被使用者開口中斷（用戶政策 tier 1）
+                asyncio.create_task(self.play_tts(_say, already_in_channel=True, emotion_tag=emotion_tag, protected=True))
 
             if placeholder_msg:
                 if full_text:
@@ -5716,7 +5717,7 @@ class VoiceController(commands.Cog):
             pattern="marvin_lead",
         )
 
-    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS):
+    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS, protected: bool = False):
         """
         🚀 [T-02 Opt] Hyper-Streaming Version
         改用 FIFO (Named Pipe) 實現即時串流播放，首個音訊 chunk 抵達即刻輸出，
@@ -5949,9 +5950,15 @@ class VoiceController(commands.Cog):
         # D8: gate for follow-up window — only open if TTS was actually played
         _tts_actually_played = False
 
+        # 🛡️ [Interrupt Policy] protected=True：本段播放期間不被使用者開口中斷（ack/urgent/
+        # information/helper 查詢回應等「唸完」類）。只 scoped 在實際播放（持鎖）期間設旗標，
+        # 不影響 pre-play guard；finally 還原（支援巢狀，如 greeting 已設 True 時不破壞）。
+        _prev_tts_protected = self._tts_protected
         try:
             async with self.playback_lock:
                 self.is_playing_audio = True
+                if protected:
+                    self._tts_protected = True
 
                 # 🚀 [Resilience Fix] 在進入臨界區後再次確認連線狀態，防止心跳中斷導致的代碼漂移
                 if not voice_client.is_connected():
@@ -6035,6 +6042,7 @@ class VoiceController(commands.Cog):
                 self.tts_queue_duration = max(0.0, self.tts_queue_duration - estimated_dur)
         finally:
             self.is_playing_audio = False
+            self._tts_protected = _prev_tts_protected  # 還原中斷保護旗標（scoped 結束）
             self._tts_echo_cooldown_until = time.time() + 2.0
             self._current_tts_text = ""
             self._wake_response_pending = False  # 🔒 TTS 送達，解除 Response Lock
