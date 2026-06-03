@@ -48,6 +48,40 @@ def _strip_xml_artifacts(text: str) -> str:
     return _XML_TAG_RE.sub("", text).strip()
 
 
+# cleaner JSON 截斷救援：8b/免費模型常吐出在中途被切斷的 JSON
+# （如 '{"cleaned":"嘿Siri下下一首","intent":0.0,"cal'），整筆 parse 失敗就降級 raw
+# = 白打一次 LLM。只要 cleaned 值「完整」（成對引號）就救得回來，避免浪費。
+_RE_CLEANED_FIELD = re.compile(r'"cleaned"\s*:\s*"((?:[^"\\]|\\.)*)"')
+# intent/calling 要有結尾分隔符（,/}）才採用 → 避免吃到被截斷的半截值（如 "intent":0.）
+_RE_INTENT_FIELD = re.compile(r'"intent"\s*:\s*([01](?:\.\d+)?)\s*[,}]')
+_RE_CALLING_FIELD = re.compile(r'"calling"\s*:\s*(true|false)\s*[,}]')
+
+
+def recover_truncated_cleaner_json(text: str):
+    """從截斷的 cleaner JSON 救回欄位，回 (cleaned, intent, calling) 或 None。
+
+    只在 cleaned 值完整（有成對結束引號）時才回；cleaned 本身也被截斷
+    （如 '{"cleaned":"你去運'）→ None，讓 caller 安全降級 raw，不用半截文字。
+    intent/calling 取得到才帶（同樣容忍其後被截斷）。
+    """
+    m = _RE_CLEANED_FIELD.search(text or "")
+    if not m:
+        return None
+    cleaned = m.group(1).strip()
+    if not cleaned:
+        return None
+    intent = None
+    mi = _RE_INTENT_FIELD.search(text)
+    if mi:
+        try:
+            intent = max(0.0, min(1.0, float(mi.group(1))))
+        except ValueError:
+            intent = None
+    mc = _RE_CALLING_FIELD.search(text)
+    calling = (mc.group(1) == "true") if mc else None
+    return (cleaned, intent, calling)
+
+
 def _parse_retry_after(err_str: str, default: float = 12.0) -> float:
     """從 Groq 429 錯誤訊息解析 retry-after 秒數，加 1s buffer。"""
     m = _RETRY_AFTER_RE.search(str(err_str))
@@ -247,6 +281,12 @@ class GeminiRouterSTTMixin:
                     intent = max(0.0, min(1.0, intent))
                     return (cleaned, intent, calling, is_complete)
                 except (json.JSONDecodeError, ValueError) as e:
+                    # 救援：JSON 截斷但 cleaned 值完整 → 取回，不白打（6/2 27 筆 parse 失敗）
+                    _rec = recover_truncated_cleaner_json(stripped)
+                    if _rec is not None:
+                        _c, _i, _call = _rec
+                        logger.info(f"🔧 [STT Clean] JSON 截斷，救回 cleaned: '{_c[:30]}' (intent={_i})")
+                        return (_c, _i, _call, True)
                     logger.warning(f"⚠️ [STT Clean] JSON 解析失敗，降級純文字: {e} | raw='{stripped[:40]}'")
                     return (original, None, None, True)
 

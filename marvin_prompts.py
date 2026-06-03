@@ -355,6 +355,8 @@ class PromptManager:
                 "【喚醒詞】Marvin 的中文名是「馬文」。文字中出現「馬文」或音同「馬文」者視為喚醒詞。\n"
                 "若 <Target> 以英文 \"Marvin\" 開頭，cleaned 應將「Marvin」改寫成「馬文」並視為喚醒。\n"
                 "禁止在句中任何位置額外添加「馬文」。禁止將非開頭位置的音近詞替換為「馬文」。\n"
+                "※【嚴格】只有英文「Marvin」可改成「馬文」。其他助理名（Siri、Hey Siri、OK Google、Alexa）"
+                "或任何非「Marvin」的詞，即使出現在句首、即使聽起來像在叫某個助理，都【絕對禁止】改成「馬文」，原樣保留。\n"
                 "\n"
                 "輸出格式：單行 JSON，格式嚴格如下（禁止任何換行、說話者前綴、XML 標籤）：\n"
                 '{"cleaned": "<校對後文字>", "intent": <0.0-1.0>, "calling": <true/false>, "is_complete": <true/false>}\n'
