@@ -52,6 +52,24 @@ def test_pool_empty_when_no_key():
     assert pool.endpoints == []
 
 
+def test_pool_prefers_paid_key_over_free_google_key():
+    """付費 review 池必須優先用 GEMINI_PAID_API_KEY（有額度），
+    而非 free-tier 的 GOOGLE_API_KEY（spend cap=0 → RESOURCE_EXHAUSTED）。
+    2026-06-04 incident：dailyreview 三次失敗報 monthly spending cap，
+    根因是這裡只讀 GOOGLE_API_KEY、漏讀 GEMINI_PAID_API_KEY。"""
+    seen = {}
+
+    def capture(key):
+        seen["key"] = key
+        return MagicMock()
+
+    build_paid_review_pool(
+        env={"GEMINI_PAID_API_KEY": "paid-key", "GOOGLE_API_KEY": "free-key"},
+        client_factory=capture,
+    )
+    assert seen["key"] == "paid-key"
+
+
 # ── call_paid_review：genai SDK + dispatch（fallback + cooldown）──────────────
 
 @pytest.mark.asyncio

@@ -378,7 +378,8 @@ def build_paid_review_pool(
     """付費 Gemini 大型 batch 池（model 集中此處，用 genai 原生 client）。
     env MARVIN_REVIEW_MODEL 前插為優先。"""
     env = env if env is not None else os.environ
-    key = (env.get("GOOGLE_API_KEY") or env.get("GEMINI_API_KEY") or "").strip()
+    key = (env.get("GEMINI_PAID_API_KEY") or env.get("GOOGLE_API_KEY")
+           or env.get("GEMINI_API_KEY") or "").strip()
     if not key:
         return CooldownAwarePool([], clock=clock)
     models: list[str] = []
