@@ -171,7 +171,9 @@ class LLMBus:
         self.last_dispatch: DispatchMetadata | None = None
         # ④ 掉線告警 callback：callable(viable_count:int, bid_summary:str) | None
         self.on_degraded = on_degraded
-        self._last_degraded_ts: float = 0.0
+        # -inf 而非 0.0：debounce 比 time.monotonic()-ts，而 monotonic 在剛開機的
+        # 機器（如 CI 容器）可能 < DEBOUNCE 視窗，0.0 會把「第一次」告警誤判成重複而吞掉。
+        self._last_degraded_ts: float = float("-inf")
 
     async def dispatch(self, ctx: LLMContext) -> str:
         # F5: purpose typo warning

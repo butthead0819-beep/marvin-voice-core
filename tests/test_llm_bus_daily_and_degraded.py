@@ -140,6 +140,27 @@ async def test_no_degraded_when_multiple_providers(caplog):
     assert len(calls) == 0
 
 
+@pytest.mark.asyncio
+async def test_degraded_alert_fires_on_freshly_booted_machine(monkeypatch):
+    """剛開機機器（time.monotonic() 仍 < debounce 視窗）第一次 degraded 仍須告警。
+
+    regression：_last_degraded_ts 曾 init 為 0.0，debounce 比 now-0 < 300，
+    在 monotonic 落在 300 以內的 fresh runner（如 CI 容器）會把「第一次」告警
+    誤判成「300s 內重複」而 debounce 吞掉 → on_degraded 不觸發。
+    init 改 -inf 後第一次必觸發，與機器 uptime 無關。
+    """
+    import llm_agents.base as base_mod
+    # 模擬剛開機：monotonic 落在 debounce 視窗內（< _DEGRADED_DEBOUNCE_S=300）
+    monkeypatch.setattr(base_mod.time, "monotonic", lambda: 42.0)
+
+    calls = []
+    bus = LLMBus([_agent("groq", 0.6)], on_degraded=lambda n, s: calls.append(1))
+    bus._SHORT_CIRCUIT_AFTER = 5
+    bus._agents[0].handle = _amock("ok")
+    await bus.dispatch(LLMContext(prompt="x", purpose="cleaner"))
+    assert len(calls) == 1  # 第一次告警不該被 fresh-boot 的小 monotonic 吞掉
+
+
 def _amock(ret):
     from unittest.mock import AsyncMock
     return AsyncMock(return_value=ret)
