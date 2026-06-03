@@ -116,7 +116,7 @@ async def test_no_match_returns_dense_zero():
 
 
 async def test_j2_confirms_intent_returns_j1():
-    """J2 說「不是 chat」→ J1 維持 winner。"""
+    """J2 說「不是 chat」→ J1 維持 winner，但 reason 留 j2_ran 足跡（可觀測）。"""
     from intent_judges.j1_with_veto import j1_with_veto
     music = _StubAgent("music", [("下一首", 0.95)])
 
@@ -129,6 +129,10 @@ async def test_j2_confirms_intent_returns_j1():
     )
     assert bid.name == "music"
     assert bid.confidence == 0.95
+    # J2 真的執行過 → reason 帶足跡（含 verdict reason），讓 shadow outcome 可觀測
+    assert "j2_ran" in bid.reason
+    assert "strong_keyword" in bid.reason
+    assert "下一首" in bid.reason or "music_intent_0" in bid.reason  # 原 J1 reason 保留
 
 
 async def test_j2_vetoes_high_confidence_chat():
@@ -200,6 +204,58 @@ async def test_llm_timeout_keeps_j1():
     )
     assert bid.name == "music"
     assert bid.confidence == 0.95
+
+
+# ── J2 足跡可觀測：靜默失敗（timeout/exception）也要留痕跡 ──────────────────
+
+async def test_j2_timeout_leaves_observable_footprint():
+    """timeout 是 fail-safe（不 veto），但 reason 必須留 llm_timeout 足跡，
+    否則 shadow 分析無法分辨「J2 健康沒否決」vs「J2 一直 timeout 靜默退化」。"""
+    import asyncio
+    from intent_judges.j1_with_veto import j1_with_veto
+    music = _StubAgent("music", [("下一首", 0.95)])
+
+    async def _slow(raw, intent):
+        await asyncio.sleep(2.0)
+        return {"is_chat": True, "confidence": 1.0, "reason": "x"}
+
+    bid = await j1_with_veto(
+        _ctx("下一首"), [music], chat_classifier_call=_slow,
+        veto_prone_intents=frozenset({"music"}), veto_timeout_s=0.05,
+    )
+    assert "j2_ran" in bid.reason
+    assert "llm_timeout" in bid.reason
+
+
+async def test_j2_exception_leaves_observable_footprint():
+    """LLM 例外 fail-safe，但 reason 留 llm_exception 足跡。"""
+    from intent_judges.j1_with_veto import j1_with_veto
+    music = _StubAgent("music", [("下一首", 0.95)])
+
+    async def _llm(raw, intent):
+        raise RuntimeError("groq 404")
+
+    bid = await j1_with_veto(
+        _ctx("下一首"), [music], chat_classifier_call=_llm,
+        veto_prone_intents=frozenset({"music"}),
+    )
+    assert "j2_ran" in bid.reason
+    assert "llm_exception" in bid.reason
+
+
+async def test_short_circuit_leaves_no_j2_footprint():
+    """short-circuit（J2 沒跑）→ reason 不該有 j2_ran 足跡。"""
+    from intent_judges.j1_with_veto import j1_with_veto
+    volume = _StubAgent("volume", [("小聲", 0.90)])
+
+    async def _llm(raw, intent):
+        return {"is_chat": True, "confidence": 1.0, "reason": "x"}
+
+    bid = await j1_with_veto(
+        _ctx("小聲一點"), [volume], chat_classifier_call=_llm,
+        veto_prone_intents=frozenset({"music"}),  # volume 不在 → short-circuit
+    )
+    assert "j2_ran" not in bid.reason
 
 
 # ── handler 必須被保留（race winner 用得到）─────────────────────────────

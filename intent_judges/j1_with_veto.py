@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Awaitable, Callable
 
 from intent_bus import Bid, IntentAgent, IntentContext
@@ -67,4 +68,14 @@ async def j1_with_veto(
             ),
         )
 
-    return j1_bid
+    # J2 執行過但未否決 → 把足跡編進 reason（含 is_chat/conf/verdict.reason）。
+    # verdict.reason 涵蓋 llm_timeout / llm_exception / malformed 等 fail-safe 路徑，
+    # 讓 shadow outcome 能分辨「J2 健康沒否決」vs「J2 靜默失敗」——否則確認路徑零痕跡、
+    # J2 是否真的在跑無法觀測（見 records/judge_outcomes_analysis_2026-06-03.md）。
+    return replace(
+        j1_bid,
+        reason=(
+            f"{j1_bid.reason}|j2_ran(chat={verdict.is_chat},"
+            f"{verdict.confidence:.2f}):{verdict.reason}"
+        ),
+    )
