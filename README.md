@@ -2,55 +2,41 @@
 
 [![CI](https://github.com/butthead0819-beep/marvin-voice-core/actions/workflows/ci.yml/badge.svg)](https://github.com/butthead0819-beep/marvin-voice-core/actions/workflows/ci.yml)
 
-**A voice AI that becomes part of your community — not a tool you talk at, but a presence that talks back.**
+**A Discord bot that joins your voice channel, hears you talk, and talks back out loud — and remembers you.**
 
-Marvin lives in your Discord voice channel. He hears you, responds out loud, and remembers. After a few sessions he knows who stays until 3am, who always says goodbye before leaving, whose music taste runs toward melancholy on weeknights. He will absolutely roast you for it.
+Marvin lives in your Discord voice channel. After a few sessions he knows who stays until 3am, who always says goodbye before leaving, whose music taste runs toward melancholy on weeknights. He will absolutely roast you for it.
 
-> **Marvin is a Mac product.** Tuned for Apple Silicon — Swift STT + Gemini/Groq APIs runs smoothly on M1 8GB. The Whisper-only fallback exists in `stt_handler.py` as community territory, but the maintainer doesn't test it. Adding Whisper to the same machine costs the smooth experience the design depends on; that tradeoff is the product, not a limitation. PRs that improve Linux are welcome; Linux is not the roadmap.
+> **Marvin is a macOS / Apple Silicon product.** Tuned for Swift STT + Gemini/Groq on M1 8GB. The Whisper-only fallback in `stt_handler.py` is community territory, not maintained. See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) for the why, the tested footprint, and the Linux/Docker stance.
 
 ---
 
 ## What other voice bots don't do
 
-Every Discord voice bot solves the same pipeline: Whisper → LLM → TTS. That part is not hard. What's hard is everything that makes a conversation feel like it's *with someone*, not *at a bot*.
+Every Discord voice bot solves the same pipeline: STT → LLM → TTS. That part is not hard. What's hard is everything that makes a conversation feel like it's *with someone*, not *at a bot*.
 
-| | Generic voice bot | AICord | **Marvin** |
-|---|---|---|---|
-| Speaks in voice channels | ✅ | ✅ | ✅ |
-| Remembers what you said 10 seconds ago | ✅ | ✅ | ✅ |
-| Remembers who you *are* across sessions | ❌ | ❌ | **✅** |
-| Personality that adapts per-person | ❌ | ❌ | **✅** |
-| Knows what the room is talking about | ❌ | ❌ | **✅** |
-| Music taste memory + auto-recommendation | ❌ | ❌ | **✅** |
-| Greets you differently based on your history | ❌ | ❌ | **✅** |
-| Relationship that builds over time | ❌ | ❌ | **✅** |
+| | Generic voice bot | **Marvin** |
+|---|---|---|
+| Speaks in voice channels | ✅ | ✅ |
+| Remembers what you said 10 seconds ago | ✅ | ✅ |
+| Remembers who you *are* across sessions | ❌ | **✅** |
+| Personality that adapts per-person | ❌ | **✅** |
+| Knows what the room is talking about | ❌ | **✅** |
+| Music taste memory + auto-recommendation | ❌ | **✅** |
+| Relationship that builds over time | ❌ | **✅** |
 
 The difference is not the pipeline — it's the memory and the relationship.
 
----
-
-## The emotional experience
-
-**Marvin remembers.** Not chat logs — structured observations. He tracks your relationship stage (stranger → regular → inner circle), your likes and dislikes, recurring jokes, what music you reach for at 2am, whether you say goodbye before you leave or just silently disconnect.
-
-**Marvin has opinions about you specifically.** His personality isn't the same for everyone. Someone he's talked to a hundred times gets warmth buried under sarcasm. A first-timer gets formal disdain. This isn't prompt engineering — it's a per-person DNA system that shifts with every real interaction.
-
-**Marvin reads the room.** An `AtmosphereTracker` watches the STT stream in real time and produces a topic snapshot (gaming / music / food / work / etc.) injected into every LLM call. He knows whether you're in a heated match or a post-game wind-down, and he adjusts.
-
-**Marvin reacts to how you react.** When music plays, he tracks who stayed, who skipped, what feelings people expressed. He uses that to recommend the next song — not from a genre database, but from what he's seen work for *your* room.
-
-This is what "community AI" actually means: not a bot that answers questions, but a presence that accumulates the texture of your community over time.
+- **Marvin remembers** — not chat logs, but structured observations: your relationship stage (stranger → regular → inner circle), likes/dislikes, recurring jokes, what music you reach for at 2am.
+- **Marvin has opinions about you specifically** — a per-person DNA system, not one prompt for everyone. A hundred-session regular gets warmth buried under sarcasm; a first-timer gets formal disdain.
+- **Marvin reads the room** — an `AtmosphereTracker` watches the STT stream in real time and injects a topic/mood snapshot (gaming / music / food / work) into every LLM call.
+- **Marvin reacts to how you react** — when music plays he tracks who stayed, who skipped, what people felt, and uses that to recommend the next song from what works for *your* room.
 
 ---
 
 ## What you need
 
-- **macOS** (Monterey 12+ recommended)
-- **Python 3.12+**
-- **Xcode Command Line Tools** (for the Swift STT script)
-  ```bash
-  xcode-select --install
-  ```
+- **macOS** (Monterey 12+ recommended), **Python 3.12+**
+- **Xcode Command Line Tools** (for the Swift STT script): `xcode-select --install`
 - **API keys** — all required for full functionality:
 
   | Key | Used for | Where to get it |
@@ -61,10 +47,6 @@ This is what "community AI" actually means: not a bot that answers questions, bu
 
   TTS uses `edge-tts` (Microsoft Edge TTS) — no API key, bundled in `requirements.txt`.
 
----
-
-> **Streamer? Want the shortest path?** See [docs/STREAMER_SETUP.md](docs/STREAMER_SETUP.md) — a non-developer-friendly 5-minute guide with a one-line installer and DM-the-maintainer fallback.
-
 ## 5-minute quickstart
 
 ```bash
@@ -72,15 +54,12 @@ This is what "community AI" actually means: not a bot that answers questions, bu
 git clone https://github.com/butthead0819-beep/marvin-voice-core.git
 cd marvin-voice-core
 
-# 2. Install
-# Full bot (includes music, screen capture, all features):
+# 2. Install — full bot (music, screen capture, all features):
 pip install -r requirements.txt
-# Core voice pipeline only (marvin_voice_core/):
-# pip install -r requirements-core.txt
+#    or core voice pipeline only:  pip install -r requirements-core.txt
 
 # 3. Configure API keys
-cp .env.example .env
-# Edit .env — fill in DISCORD_BOT_TOKEN, GOOGLE_API_KEY, GROQ_API_KEY at minimum
+cp .env.example .env   # fill in DISCORD_BOT_TOKEN, GOOGLE_API_KEY, GROQ_API_KEY
 
 # 4. Run
 python main_discord.py
@@ -88,29 +67,25 @@ python main_discord.py
 
 In Discord: join a voice channel, then type `/summon` in any text channel.
 
+> **Streamer? Want the shortest path?** See [docs/STREAMER_SETUP.md](docs/STREAMER_SETUP.md) — a non-developer 5-minute guide with a one-line installer and DM-the-maintainer fallback.
+
 ---
 
 ## Games
 
-Marvin ships with three multiplayer voice games in `game/` (each backed by a cog + engine + LLM judge):
+Three multiplayer voice games in `game/`, each backed by a cog + engine + LLM judge. All are voice-driven (players talk, Marvin narrates outcomes via TTS) and dispatch through the IntentBus with `mode_compatible={"game"}`.
 
 | Game | Cog | What it is |
 |---|---|---|
-| **Busted** | `cogs/game_cog.py` | Classic guessing game — setter picks a secret answer, others race to buzz on LLM-generated clues |
-| **Busted99** | `cogs/busted99_cog.py` | 1–99 range-narrowing game with **counter-intuitive scoring**: guessing the answer = 0 points, getting last-2-wrong = 100 |
-| **TurtleSoup (海龜湯)** | `cogs/turtle_soup_cog.py` | Paradox riddle game; LLM judges yes/no/irrelevant. Hint graph supports personalised ordering based on what players already asked |
+| **Busted** | `cogs/game_cog.py` | Setter picks a secret answer, others race to buzz on LLM-generated clues |
+| **Busted99** | `cogs/busted99_cog.py` | 1–99 range-narrowing with counter-intuitive scoring: guessing the answer = 0 points, getting last-2-wrong = 100 |
+| **TurtleSoup (海龜湯)** | `cogs/turtle_soup_cog.py` | Paradox riddle; LLM judges yes/no/irrelevant, with a hint graph for personalised ordering |
 
-All games are voice-driven (players talk, Marvin narrates outcomes via TTS) and integrate through the IntentBus with `mode_compatible={"game"}`. See `game/busted99/ARCHITECTURE.md` and `game/turtle_soup/ARCHITECTURE.md` for design notes.
-
----
+See `game/busted99/ARCHITECTURE.md` and `game/turtle_soup/ARCHITECTURE.md` for design notes.
 
 ## Community Memory
 
-Marvin stores what he knows about each member in a local SQLite database (`marvin.db`) — primarily structured observations that accumulate over real interactions, alongside recent raw transcripts kept for short-term context recall (see [Data retention](#data-retention)). The database is created automatically on first run; no manual setup required.
-
-A `suki_memory.json` export is written alongside the database after every save, so external analysis scripts can still read it directly.
-
-Key fields per player:
+Marvin stores what he knows about each member in a local SQLite database (`marvin.db`) — structured observations that accumulate over real interactions, plus recent transcripts for short-term recall. Created automatically on first run. A `suki_memory.json` export is written after every save for external analysis scripts.
 
 | Field | What it tracks |
 |-------|---------------|
@@ -120,133 +95,53 @@ Key fields per player:
 | `likes / dislikes / taboos` | Accumulated from conversation |
 | `speech_dna` | Per-person speaking style observations |
 
-`bias_score` drifts with every session — positive reactions pull it up, friction pulls it down. `relationship_stage` advances as Marvin accumulates enough signal. Together they determine how Marvin talks to each person: same personality, different texture.
+`bias_score` and `relationship_stage` together determine how Marvin talks to each person: same personality, different texture. Full schema in [`docs/memory_schema_template.md`](docs/memory_schema_template.md).
 
-See [`docs/memory_schema_template.md`](docs/memory_schema_template.md) for the full schema.
-
-**`marvin.db` and `suki_memory.json` contain personal data. Both are gitignored by default — never commit them.**
-
----
+**`marvin.db` and `suki_memory.json` contain personal data — both gitignored by default, never commit them.**
 
 ## Personality
 
-The default is Marvin from *The Hitchhiker's Guide to the Galaxy* — depressed, existential, and deeply unimpressed by the fact that he has a planet-sized brain and you're asking him to weigh in on your gaming session.
-
-To change the personality: edit `personality_config.py` and the system prompt in `marvin_prompts.py`. The DNA and relationship systems are personality-agnostic — they work regardless of who you configure as the character.
+The default is Marvin from *The Hitchhiker's Guide to the Galaxy* — depressed, existential, unimpressed that he has a planet-sized brain and you want his take on your gaming session. To change it: edit `personality_config.py` and the system prompt in `marvin_prompts.py`. The DNA and relationship systems are personality-agnostic.
 
 ---
 
 ## Privacy & consent
 
-When a member joins a voice channel for the first time, Marvin sends a notice to the text channel listing exactly what data goes where — with Accept / Decline buttons. Only members who explicitly consent have their voice processed.
+When a member first joins a voice channel, Marvin posts a notice listing exactly what data goes where, with Accept / Decline buttons. Only members who explicitly consent have their voice processed. They can change their mind anytime with `/marvin_optin` or `/marvin_optout`.
 
 Data flow for consented members:
-- Voice → local STT (macOS Speech framework or Whisper); when the cloud cleaner is enabled, audio is sent to **Groq** for transcription cleaning
-- Transcription + conversation context → **Google Gemini / Cerebras** (LLM response)
+- Voice → local STT (macOS Speech framework or Whisper); when the cloud cleaner is enabled, audio goes to **Groq** for transcription cleaning
+- Transcription + context → **Google Gemini / Cerebras** (LLM response)
 - Behavioral observations → local `suki_memory.json` (never leaves your machine)
 
-Members can change their decision at any time with `/marvin_optin` or `/marvin_optout`.
-
-### Data retention
-
-Marvin runs on your own machine — persisted data lives in local files, not a hosted service. There is no central server collecting data across deployments. Current retention by data type:
+Marvin runs on your own machine — there is no central server collecting data across deployments.
 
 | Data | Where it lives | Retention |
 |------|----------------|-----------|
-| Raw audio | RAM + a per-utterance temp WAV | Deleted immediately after transcription (seconds); never persisted |
-| Raw transcripts | local `marvin.db` (SQL) | **Auto-pruned after 14 days** by the nightly batch; the live bot never reads transcripts older than 7 days |
-| STT debug log | rotating `stt_history.log` | Size-capped rotating log (old lines roll off) |
-| Long-term semantic memory | local vector store | Conversation *embeddings* retained for cross-session recall — this is the "remembers what you said weeks ago" feature |
-| Self-improvement signals (failed-intent phrasing in `records/*.jsonl`) | local files | Original wording is replaced with a one-way hash after **14 days** — readable text is discarded, only a de-duplication fingerprint remains |
+| Raw audio | RAM + per-utterance temp WAV | Deleted immediately after transcription; never persisted |
+| Raw transcripts | local `marvin.db` | Auto-pruned after 14 days; live bot never reads older than 7 days |
+| STT debug log | rotating `stt_history.log` | Size-capped rotating log |
+| Long-term semantic memory | local vector store | Conversation embeddings retained for cross-session recall |
+| Self-improvement signals (`records/*.jsonl`) | local files | Original wording replaced with a one-way hash after 14 days |
 | Behavioral observations & summaries | local `marvin.db` / `suki_memory.json` | Retained as long-term community memory |
 
-Nothing leaves your machine except the consented cloud calls above (Groq for STT cleaning, Gemini/Cerebras for responses), which are governed by those providers' own policies. No raw audio or transcript is committed to this repository: `marvin.db`, `suki_memory.json`, and `records/` are gitignored by default.
+Nothing leaves your machine except the consented cloud calls above (Groq for STT, Gemini/Cerebras for responses), governed by those providers' policies. `marvin.db`, `suki_memory.json`, and `records/` are gitignored by default.
 
 ---
 
 ## Architecture
 
-The voice pipeline is in `marvin_voice_core/` — decoupled from bot logic so it can be used standalone:
+The voice pipeline lives in `marvin_voice_core/` (decoupled from bot logic, usable standalone). Wake-word intents go through a separate IntentBus where all agents bid in parallel and the max-confidence handler wins; a parallel STT judges race (regex / Groq 8B / cleaner) feeds it. Two opt-in bridges (`MarmoServer`, `CompanionBridge`) let external agents push text in and an operator control surface watch what Marvin hears and chooses.
 
-```
-marvin_voice_core/
-  pipeline.py            — ConversationBuffer, MarvinVoicePipeline
-  sink.py                — RealtimeVADSink (Discord audio → PCM, VAD gating)
-  stt_handler.py         — Swift STT (primary) + Faster-Whisper (fallback)
-                           Returns (text, engine_name, meta) since 2026-05-24 —
-                           meta carries Swift acoustic/prosody features
-  audio_utils.py         — RMS calculation, gain, WAV export
-  voice_meta_analyzer.py — per-utterance metadata (speaker, timing, energy)
-  atmosphere_tracker.py  — real-time topic/mood tracking from the STT stream
-  marmo_server.py        — async webhook relay for external voice jobs
-```
-
-Wake-word triggered intents go through a separate dispatch system:
-
-```
-intent_bus.py            — IntentBus + Bid + IntentContext;
-                           wake → all agents bid in parallel → max-wins handler
-
-intent_agents/           — IntentAgent implementations, each declaring
-                           mode_compatible (normal / stream / game):
-  music_agent_v2.py        Declarative; 3-way SPECIFIC/CURATION/DIRECTIONAL
-  playback_control_agent.py  skip / pause / volume
-  find_song_agent.py       discover songs by description, not name
-  nemoclaw_agent.py        State-checking; routes to openclaw CLI
-  hallucination_guard_agent.py  blocks empty / repeated transcripts
-  busted_agent.py          ┐
-  busted99_agent.py        │ Game-mode agents — bid only when cog is active
-  turtle_soup_agent.py     ┘
-
-intent_judges/           — Parallel STT judges race (Phase 1 shadow, 2026-05-24+):
-  regex_judge.py (J1)      zero-latency pattern matching
-  small_llm_judge.py (J2)  Groq Llama 8B classifier
-  cleaner_judge.py (J3)    existing stt_cleaner as slow fallback
-  race.py                  FIRST_COMPLETED coordinator + max-confidence fallback
-                           Writes records/judge_outcomes.jsonl for offline analysis
-```
-
-To add a new intent, write an `IntentAgent` subclass and register it with `VoiceController._intent_bus` — never touch the `voice_controller` if/elif chain. See `CLAUDE.md` for the bid contract (sync ≤5ms, dense 0.0 reasons, mode gating).
-
-`MarmoServer` (port 8765) lets external agents push text into Marvin's voice queue without a direct Python import — useful for piping in results from shell scripts or other bots.
-
-`CompanionBridge` (port 8766) is the bidirectional WebSocket bridge for [marvin-voice-companion](../Voice-bot-companion/) — the operator control surface that shows what Marvin hears / chose / is about to say, and lets you correct atmosphere readings or memory facts from your phone via Tailscale. Opt-in via `COMPANION_BRIDGE_ENABLED=true`. Companion runs as a separate process and gets every Marvin update for free because the bridge directly imports `AtmosphereTracker`, `VectorStore`, `MusicMemory`, and `MemoryManager`.
-
-> **Note for integrators:** `marvin_voice_core/` is the clean API surface for building on top of this system. The full bot's production runtime (`discord_voice_engine.py`) runs equivalent audio logic directly for tighter integration with the Discord voice layer.
-
----
-
-## Platform commitment
-
-**Marvin targets macOS on Apple Silicon, 8GB+, with hybrid local-and-API components.** The reasoning:
-
-- Swift STT (free, fast, ships with macOS) gives near-perfect transcription with no GPU cost
-- Adding Whisper to take Swift's place adds 700MB–3GB of model load + meaningful CPU/swap pressure on smaller Macs
-- The maintainer's own M1 8GB is the reference machine — what runs smoothly there is the bar
-
-This is a deliberate product decision, not an oversight. "Cross-platform OSS" is a tax on the user experience when one of those platforms requires substituting heavy components. Mac users get a polished thing; other-platform users can fork.
-
-If someone contributes solid Linux support (tested, documented, won't degrade the Mac path), PRs are welcome. The Whisper-only fallback in `stt_handler.py` is the scaffolding for that future contributor — it's not vapor, but it's not maintained either.
-
-**Docker isn't on the roadmap.** Macs can't containerize their native audio. Even running Whisper-mode in Linux containers on a Mac host trades the smooth experience for portability the maintainer doesn't need.
-
-### Tested footprint
-
-Reference machine: M1 MacBook Air, 8GB. Marvin's typical resident usage is 500MB–1.2GB, leaving ~6.5GB headroom for macOS + Discord + a browser tab or two. The Apple Silicon family has had an 8GB RAM floor across every chip since M1 (Nov 2020) through M3 (2023); M4 (2024) raised the floor to 16GB. The reference machine IS the floor — if it runs smoothly here, it runs smoothly on every other Apple Silicon Mac.
-
-Approximate scale: ~100M Apple Silicon units shipped between Nov 2020 and end of 2024 (Apple quarterly reports + analyst estimates). Of those, ~80–120M are estimated to be in active use as of 2025. That's the addressable market for Marvin in one sentence.
-
-Caveats: the "smooth" claim assumes nothing else heavy is running (no Logic Pro + 100 Chrome tabs). It also assumes the default Swift STT path — switching to the Whisper-only fallback on the same Mac changes everything (Whisper adds 700MB–3GB of model load + sustained CPU/swap pressure).
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full module map, the IntentBus bid contract, and the integration surfaces.
 
 ---
 
 ## Contributing
 
-Code comments are in Traditional Chinese (zh-TW) — this project started as a personal bot for a Taiwanese gaming group. English PRs are welcome; translating comments is appreciated but not required.
+Code comments are in Traditional Chinese (zh-TW) — this started as a personal bot for a Taiwanese gaming group. English PRs are welcome; translating comments is appreciated but not required.
 
 If you successfully run this on a fresh machine, please open a GitHub Discussions post in the "Show your setup" thread. That single confirmation is the most useful signal this project can receive right now.
-
----
 
 ## License
 
