@@ -1885,20 +1885,9 @@ class VoiceController(commands.Cog):
         await self.play_tts(greeting, already_in_channel=True)
         self._tts_protected = False
         
-        # 4. 🎤 [Wake Word Promo] 在招呼語後自動宣導喚醒詞
-        promo_file = os.path.abspath("records/marvin_wakeword_short.mp3")
-        if os.path.exists(promo_file):
-            print(f"🎤 [Promo] 偵測到宣導音訊，準備在招呼語後播放: {promo_file}")
-            if self._plan12 and self._mixer is not None:
-                # 🎛️ [Plan 12] promo 是語音 → 走 TTS 層（排在 greeting 後、序列化、全音量、不被 duck）；
-                # 不可走 play_local_file（音樂層）會被 greeting duck 成小聲又跟 intro 搶層
-                f32 = await self._ffmpeg_to_f32(input_path=promo_file)
-                if f32 is not None and f32.size:
-                    self._ensure_mixer_playing(vc)
-                    self._mixer.push_tts(f32)
-            else:
-                await self.play_local_file(promo_file)
-        
+        # 3.（原喚醒詞宣導 marvin_wakeword_short.mp3）2026-06-03 依用戶要求移除：登場只保留
+        # 音樂 + 打招呼兩段，第三段語音包不再播放。
+
         sink = self.bot.engine.get_active_sink()
         if sink:
             sink.last_audio_packet_time = time.time()
