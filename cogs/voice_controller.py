@@ -6093,8 +6093,12 @@ class VoiceController(commands.Cog):
 
         marmo_voice = os.getenv("MARMO_VOICE", "zh-TW-HsiaoYuNeural")
         self._tts_interrupted = False
+        # 🛡️ 漫才是「演出」，整段唸完不該被一句話/咳嗽 barge-in 中斷（否則 _stream_tts_to_mixer
+        # 的串流被 kill → 餵入中斷、沒聲音）。_tts_protected=True 讓 barge-in(2480) 略過。
+        _prev_protected = self._tts_protected
         self._ensure_mixer_playing(vc)
         self.is_playing_audio = True
+        self._tts_protected = True
         try:
             dur = self.bot.tts_engine.get_estimated_duration(marvin_text)
             marvin_task = asyncio.create_task(self._stream_tts_to_mixer(
@@ -6106,6 +6110,7 @@ class VoiceController(commands.Cog):
             await asyncio.gather(marvin_task, marmo_task)
         finally:
             self.is_playing_audio = False
+            self._tts_protected = _prev_protected
         logger.info(f"🎭 [DualInterject] 打岔完成 marvin={len(marvin_text)}字 marmo={len(marmo_text)}字")
         return True
 
@@ -6155,6 +6160,7 @@ class VoiceController(commands.Cog):
                 await self.play_tts(
                     text,
                     already_in_channel=True,
+                    protected=True,  # 漫才演出唸完不中斷，不被靜音閘/barge-in 跳過
                     voice=voice_arg,
                     emotion_tag=emotion_tag,
                 )

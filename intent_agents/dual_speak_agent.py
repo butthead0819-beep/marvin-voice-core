@@ -81,10 +81,13 @@ class DualSpeakAgent(DeclarativeIntentAgent):
 
         # interject：payload 帶 interject=true → 打岔疊播（Plan12 mixer），手動測用
         interject = bool(payload.get("interject"))
+        # raw_segments：payload 帶現成 segments → 跳過 LLM 生成、直接播（測播放/打岔不用重生成）
+        raw_segments = payload.get("segments")
 
         # ── Happy path：build handler closure ─────────────────────────────
         async def _handler():
-            await self._handle(vc=vc, marmo_text=marmo_text, pattern=pattern, interject=interject)
+            await self._handle(vc=vc, marmo_text=marmo_text, pattern=pattern,
+                               interject=interject, raw_segments=raw_segments)
 
         return Bid(
             name=self.name,
@@ -93,22 +96,28 @@ class DualSpeakAgent(DeclarativeIntentAgent):
             reason=f"dual_speak:job_id={payload.get('job_id', '?')[:12]}:{pattern}",
         )
 
-    async def _handle(self, *, vc, marmo_text: str, pattern: str = "marmo_lead", interject: bool = False) -> None:
+    async def _handle(self, *, vc, marmo_text: str, pattern: str = "marmo_lead",
+                      interject: bool = False, raw_segments=None) -> None:
         """Handler 內：呼叫 LLM 生對白、成功播雙段、失敗 fallback 單 Marvin。
 
         webhook 預設 = Marmo 主動報事 → marmo_lead [marmo, marvin]。
         payload 帶 pattern="marvin_lead" → Case B [marvin, marmo]（測試後門）。
+        raw_segments 有值 → 跳過 LLM 生成、直接播這組（測播放/打岔用，不重生成）。
         """
-        try:
-            segments = await generate_dual_dialogue(
-                content_text=marmo_text,
-                llm_fn=self.llm_fn,
-                pattern=pattern,
-            )
-        except Exception as exc:
-            # 防禦性：generate_dual_dialogue 已 catch 內部例外回 None，但保險
-            logger.warning(f"[DualSpeak] generate_dual_dialogue 拋例外: {exc}")
-            segments = None
+        if raw_segments:
+            segments = raw_segments
+            logger.info(f"[DualSpeak] 用現成 segments 播放（跳過生成），{len(raw_segments)} 段")
+        else:
+            try:
+                segments = await generate_dual_dialogue(
+                    content_text=marmo_text,
+                    llm_fn=self.llm_fn,
+                    pattern=pattern,
+                )
+            except Exception as exc:
+                # 防禦性：generate_dual_dialogue 已 catch 內部例外回 None，但保險
+                logger.warning(f"[DualSpeak] generate_dual_dialogue 拋例外: {exc}")
+                segments = None
 
         if segments is None:
             # Fallback：drop dual、原 marmo_text 走單 Marvin（preserve marmo_server 體驗連續性）
