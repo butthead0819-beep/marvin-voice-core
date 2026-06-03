@@ -486,14 +486,22 @@ def test_clear_tts_drops_queued_and_current():
 
 # ── 打岔層 layer2（Marmo 疊進來打斷 Marvin）─────────────────────────────────────
 
-def test_tts2_layer_overlaps_layer1_and_ducks_it():
-    """layer1(Marvin)+layer2(Marmo) 同時播 → 兩層都進、且 layer1 被壓到 _interject_duck。"""
+def test_tts2_layer_ramps_layer1_duck_gradually():
+    """layer2(Marmo) 進來時 layer1(Marvin) 逐漸 fade out（非瞬降）→ 用戶要的漸進 ducking。"""
     mix = LocalMixingAudioSource(seed=3)
-    mix.push_tts(_f32_frame(0.5))    # Marvin
-    mix.push_tts2(_f32_frame(0.3))   # Marmo 打岔
-    out = np.frombuffer(mix.read(), dtype=np.int16).astype(np.float32) / 32767.0
-    expected = 0.5 * mix._interject_duck + 0.3  # layer1 ducked + layer2 full
-    assert out.mean() == pytest.approx(expected, abs=0.01)
+    n = FRAME_SAMPLES * 40  # 夠長撐過 ramp
+    mix.push_tts(_f32_frame(0.5, n=n))    # Marvin
+    mix.push_tts2(_f32_frame(0.3, n=n))   # Marmo 同時進來
+
+    def _level():
+        return np.frombuffer(mix.read(), dtype=np.int16).astype(np.float32).mean() / 32767.0
+
+    first = _level()           # 第一幀：layer1 幾乎還沒 duck（剛開始 fade）
+    settled = first
+    for _ in range(35):        # ramp 走完（~0.6s）
+        settled = _level()
+    assert first > settled     # 漸進：第一幀比穩定後大聲（Marvin 還沒 fade 下去）
+    assert settled == pytest.approx(0.5 * mix._interject_duck + 0.3, abs=0.02)
 
 
 def test_tts2_full_volume_when_layer1_silent():

@@ -75,7 +75,11 @@ class LocalMixingAudioSource(_BASE):
         self._tts2_queue: collections.deque = collections.deque()
         self._tts2_cur: np.ndarray | None = None
         self._tts2_off = 0
-        self._interject_duck = 0.45  # layer2 活躍時 layer1 的增益                         # consumer-local offset
+        self._interject_duck = 0.45   # layer2 活躍時 layer1 的目標增益（fade 終點）
+        # layer1 在 layer2 進來時「逐漸 fade out」而非瞬降（用戶回饋：ducking 太快）。
+        # 逐幀線性 ramp，_interject_step≈每幀 0.018 → 1.0→0.45 約 0.6s 平滑淡出。
+        self._interject_cur = 1.0
+        self._interject_step = 0.018                         # consumer-local offset
 
         # instrumentation（flag-gated；每 5s 印 [Plan12_Stats]，供 live 判 mixer 是否跟得上）
         # on-demand：idle 超過 grace → read() 回 b"" 讓 discord 停送（修 always-on×DAVE）。
@@ -158,15 +162,22 @@ class LocalMixingAudioSource(_BASE):
             elif self._duck_cur > target:
                 self._duck_cur = max(target, self._duck_cur - self._duck_step)
 
+            # 打岔 duck ramp：layer2(Marmo) 在 → layer1(Marvin) 逐幀往 _interject_duck 淡出；
+            # layer2 走 → 逐幀回 1.0。線性、防突兀（用戶回饋：瞬降太快，要漸進 fade out）。
+            _itarget = self._interject_duck if tts2_f is not None else 1.0
+            if self._interject_cur < _itarget:
+                self._interject_cur = min(_itarget, self._interject_cur + self._interject_step)
+            elif self._interject_cur > _itarget:
+                self._interject_cur = max(_itarget, self._interject_cur - self._interject_step)
+
             layers = []
             if music_f is not None:
                 layers.append(am.apply_gain(music_f, self._volume * self._duck_cur))
             if tts_f is not None:
-                # 打岔：Marmo(layer2) 疊進來時把 Marvin(layer1) 壓低，讓打岔蓋得過
-                if tts2_f is not None:
-                    layers.append(am.apply_gain(tts_f, self._interject_duck))
+                if self._interject_cur < 1.0:
+                    layers.append(am.apply_gain(tts_f, self._interject_cur))  # 淡出中的 Marvin
                 else:
-                    layers.append(tts_f)  # 單獨 layer1：gain 1.0
+                    layers.append(tts_f)  # 滿音量 Marvin
             if tts2_f is not None:
                 layers.append(tts2_f)  # Marmo 1.0
             if not layers:

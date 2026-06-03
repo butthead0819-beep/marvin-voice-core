@@ -6096,22 +6096,32 @@ class VoiceController(commands.Cog):
         # 🛡️ 漫才是「演出」，整段唸完不該被一句話/咳嗽 barge-in 中斷（否則 _stream_tts_to_mixer
         # 的串流被 kill → 餵入中斷、沒聲音）。_tts_protected=True 讓 barge-in(2480) 略過。
         _prev_protected = self._tts_protected
-        self._ensure_mixer_playing(vc)
+        _armed = self._ensure_mixer_playing(vc)
         self.is_playing_audio = True
         self._tts_protected = True
+        _m1 = _m2 = 0
         try:
             dur = self.bot.tts_engine.get_estimated_duration(marvin_text)
             marvin_task = asyncio.create_task(self._stream_tts_to_mixer(
                 marvin_text, force_macos=False, emotion_tag="neutral", voice=None, layer=1))
-            # 在 Marvin ~80% 處讓 Marmo 疊進 layer2 打斷（estimated_duration 抓尾段時機）
-            await asyncio.sleep(max(0.0, dur * 0.8))
+            # 在 Marvin ~80% 處讓 Marmo 疊進 layer2 打斷（estimated_duration 抓尾段時機）。
+            # 串流期間持續 re-arm adapter（on-demand idle 掉就重 arm，仿 _mixer_play_music）。
+            _t_end = asyncio.get_event_loop().time() + max(0.5, dur * 0.8)
+            while asyncio.get_event_loop().time() < _t_end:
+                self._ensure_mixer_playing(vc)
+                await asyncio.sleep(0.1)
             marmo_task = asyncio.create_task(self._stream_tts_to_mixer(
                 marmo_text, force_macos=False, emotion_tag="marmo", voice=marmo_voice, layer=2))
-            await asyncio.gather(marvin_task, marmo_task)
+            # 等兩路播完，期間持續 re-arm
+            while not (marvin_task.done() and marmo_task.done()):
+                self._ensure_mixer_playing(vc)
+                await asyncio.sleep(0.1)
+            _m1, _m2 = marvin_task.result(), marmo_task.result()
         finally:
             self.is_playing_audio = False
             self._tts_protected = _prev_protected
-        logger.info(f"🎭 [DualInterject] 打岔完成 marvin={len(marvin_text)}字 marmo={len(marmo_text)}字")
+        logger.info(f"🎭 [DualInterject] 完成 armed={_armed} pushed marvin={_m1}幀 marmo={_m2}幀 "
+                    f"(marvin={len(marvin_text)}字 marmo={len(marmo_text)}字)")
         return True
 
     async def play_dual_dialogue(self, segments, *, interject: bool = False):
