@@ -917,6 +917,46 @@ class VoiceController(commands.Cog):
 
     # --- [Internal Utils] ---
 
+    @staticmethod
+    def _dave_grace_should_forgive(now: float, connection_time: float,
+                                   last_decrypted_audio_time: float,
+                                   grace_s: float = 30.0, early_s: float = 15.0) -> bool:
+        """DAVE 寬限期是否該豁免這次解密報錯。
+
+        只在「金鑰真的還在同步」時豁免：連線後 early_s 內（剛連，給同步時間），
+        或連線後已成功解密過至少一個封包（last_decrypted >= connection_time）。
+        若已過 early_s 卻自連線以來零成功解密 → 不是同步延遲、是連線真的壞了 →
+        不豁免，讓錯誤累積觸發升級。修正不穩連線一直 reset connection_time 把
+        持續解密失敗風暴永久靜音的盲點（2026-06-04 incident）。
+        """
+        since_connect = now - connection_time
+        if since_connect >= grace_s:
+            return False
+        if since_connect < early_s:
+            return True
+        return last_decrypted_audio_time >= connection_time
+
+    @staticmethod
+    def _strong_voice_bypass_echo(is_playing_audio: bool, current_tts_text: str,
+                                  now: float, tts_cooldown_until: float,
+                                  wake_dom, confidence, voice_score) -> bool:
+        """純音樂播放中（非 TTS 回授窗）的強人聲喚醒是否該繞過 Echo Guard。
+
+        零鍵盤點歌核心：放歌時也要能語音點歌。但嚴格防自我觸發——
+        bot 正在講 TTS（current_tts_text 非空）或 TTS 後冷卻窗內一律不繞；
+        只在 voice 主導 + voice 分數高 + 總信心高時放行。legacy 路徑
+        （無 fusion 分數，confidence=None）不繞。
+        """
+        if not is_playing_audio:
+            return False
+        if current_tts_text:            # bot 正在講話 → 真回授風險
+            return False
+        if now < tts_cooldown_until:    # TTS 後冷卻窗
+            return False
+        if confidence is None:          # legacy 路徑無 fusion 分數
+            return False
+        return wake_dom == "voice" and confidence >= 0.55 and (voice_score or 0) >= 0.9
+
     def report_sink_error(self, error_type: str):
         """
         [Operation Sentinel] 由 Sink 呼叫，匯報 DAVE 底層解密異常。
@@ -924,13 +964,18 @@ class VoiceController(commands.Cog):
         強化：加入 2s 強制防抖冷卻與分層處置機制 (Soft Repair -> Physical Restart)
         """
         current_time = time.time()
-        
-        # 🛡️ [Sentinel 2.1 Optimization] DAVE 寬限期
-        # 如果剛重連/載入 30 秒內，忽略解密錯誤，給予 DAVE 金鑰同步的時間
+
+        # 🛡️ [Sentinel 2.1] DAVE 寬限期：只在金鑰真的在同步時豁免（見 _dave_grace_should_forgive）。
+        # 連線不穩會一直 reset connection_time，舊版「30s 內一律忽略」把持續零解密的風暴
+        # 永久靜音、升級永不觸發（2026-06-04 incident）。零成功解密時不再豁免。
         if current_time - getattr(self, "connection_time", 0) < 30:
-            if current_time - getattr(self, "last_failure_time", 0) > 10:
-                logger.info(f"⏳ [Sentinel] DAVE 寬限期內，忽略同步等待中的報錯 ({error_type})")
-            return
+            if self._dave_grace_should_forgive(current_time,
+                                               getattr(self, "connection_time", 0),
+                                               getattr(self, "last_decrypted_audio_time", 0)):
+                if current_time - getattr(self, "last_failure_time", 0) > 10:
+                    logger.info(f"⏳ [Sentinel] DAVE 寬限期內，忽略同步等待中的報錯 ({error_type})")
+                return
+            logger.warning(f"🛡️ [Sentinel] 寬限期內但連線後零成功解密 → 視為真實失效不再豁免 ({error_type})")
 
         # 1. 2s 內爆量的錯誤視為同一波，採取節流 (Throttle)
         if current_time - getattr(self, "last_failure_time", 0) < 2:
@@ -2149,6 +2194,7 @@ class VoiceController(commands.Cog):
         # 長答案是否改「貼文＋短通知」。None = 無 fusion（舊路徑），下游視同非 helper。
         _wake_voice_score = None
         _wake_dom = None
+        _confidence = None  # fusion 路徑才有；legacy 路徑保持 None（Echo Guard bypass 安全預設）
         _fusion = getattr(getattr(self.bot, 'router', None), 'wake_fusion', None)
         if _fusion is not None:
             _ctx_active = bool(
@@ -2231,6 +2277,16 @@ class VoiceController(commands.Cog):
         # 🛡️ [Echo Guard] 核心防禦：TTS 播放中或 2s 冷卻期內，抑制所有喚醒詞防止回授
         _in_echo_window = self.is_playing_audio or (now < self._tts_echo_cooldown_until)
         is_echo = _in_echo_window and is_fast
+        # 🎙️ [Strong-Voice Bypass] 純音樂播放中（非 TTS 回授窗）的強人聲喚醒放行——
+        # 放歌時也要能語音點歌（零鍵盤核心）。TTS 播放中/冷卻中嚴格不繞，防自我觸發。
+        if is_echo and self._strong_voice_bypass_echo(
+                self.is_playing_audio, self._current_tts_text, now,
+                self._tts_echo_cooldown_until, _wake_dom, _confidence, _wake_voice_score):
+            is_echo = False
+            logger.info(
+                f"🎙️ [Strong-Voice Bypass] {speaker} 音樂播放中強人聲喚醒放行 "
+                f"(total={_confidence:.2f} v={_wake_voice_score} dom={_wake_dom})"
+            )
         if is_echo:
             _reason = "播放中" if self.is_playing_audio else f"TTS冷卻({self._tts_echo_cooldown_until - now:.1f}s)"
             logger.info(f"⏭️ [Echo Guard] {_reason}，抑制來自 {speaker} 的可能回授觸發。")
