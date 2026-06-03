@@ -28,6 +28,7 @@ from mood_agent import MoodAgent
 from bridge_agent import BridgeAgent
 from intent_agents.memory_callback_agent import MemoryCallbackAgent
 from proactive_topic_agent import ProactiveTopicAgent
+from intent_agents.spontaneous_manzai_agent import SpontaneousManzaiAgent
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
 
@@ -618,6 +619,13 @@ class VoiceController(commands.Cog):
         self._speak_bus.register(BridgeAgent(
             self, topic_graph=self._speaker_topic_graph, mood_agent=self._mood_agent,
         ))  # P2: cross-person 橋接 + P3: heavy mood 時 yield
+        # 🎭 [自發漫才] Marvin 自己生 Marvin+Marmo 雙人吐槽（不依賴 openclaw）。冷場補位、
+        # 30min cooldown、env SPONTANEOUS_MANZAI 預設 OFF。llm_fn lazy 解析 router（避免
+        # __init__ 時 router 未就緒）。
+        async def _manzai_llm_fn(_sys: str, _usr: str) -> str:
+            from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
+            return await make_gemini_dual_dialogue_llm_fn(self.bot.router)(_sys, _usr)
+        self._speak_bus.register(SpontaneousManzaiAgent(self, llm_fn=_manzai_llm_fn))
         self._vector_store = VectorStore()
         self._summary_store = SummaryStore()
         self._task_store = TaskStore()
