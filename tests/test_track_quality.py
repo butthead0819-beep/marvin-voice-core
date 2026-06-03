@@ -114,52 +114,51 @@ def mock_fetch_views():
 
 
 @pytest.mark.asyncio
-async def test_high_play_cover_passes(mock_fetch_views):
+async def test_high_play_cover_passes(mock_fetch_views, temp_blacklist):
     passes, reason = await tq.assess_track_quality(
         "https://youtu.be/abc", "晴天 (cover by 某某)",
-        api_key="fake", blacklist=tq.CoverBlacklist(path="/tmp/.never-exists.json"),
+        api_key="fake", blacklist=temp_blacklist,
     )
     assert passes is True
     assert reason == "ok"
 
 
 @pytest.mark.asyncio
-async def test_low_play_cover_blocked(mock_fetch_views):
+async def test_low_play_cover_blocked(mock_fetch_views, temp_blacklist):
     mock_fetch_views.return_value = 50_000  # 遠低於 500k threshold
     passes, reason = await tq.assess_track_quality(
         "https://youtu.be/abc", "晴天 (cover)",
-        api_key="fake", blacklist=tq.CoverBlacklist(path="/tmp/.never-exists.json"),
+        api_key="fake", blacklist=temp_blacklist,
     )
     assert passes is False
     assert reason == "low_views_cover"
 
 
 @pytest.mark.asyncio
-async def test_low_play_non_cover_still_passes(mock_fetch_views):
+async def test_low_play_non_cover_still_passes(mock_fetch_views, temp_blacklist):
     """低播放原版（niche 好歌）不該被擋——只擋低播放 cover。"""
     mock_fetch_views.return_value = 10_000
     passes, reason = await tq.assess_track_quality(
         "https://youtu.be/abc", "週末暢談 (Official Audio)",
-        api_key="fake", blacklist=tq.CoverBlacklist(path="/tmp/.never-exists.json"),
+        api_key="fake", blacklist=temp_blacklist,
     )
     assert passes is True
     assert reason == "ok"
 
 
 @pytest.mark.asyncio
-async def test_blacklist_hit_blocks(mock_fetch_views):
-    bl = tq.CoverBlacklist(path="/tmp/.never-exists.json")
-    bl.add("https://youtu.be/abc", reason="manually banned")
+async def test_blacklist_hit_blocks(mock_fetch_views, temp_blacklist):
+    temp_blacklist.add("https://youtu.be/abc", reason="manually banned")
     passes, reason = await tq.assess_track_quality(
         "https://youtu.be/abc", "anything",
-        api_key="fake", blacklist=bl,
+        api_key="fake", blacklist=temp_blacklist,
     )
     assert passes is False
     assert reason == "blacklisted"
 
 
 @pytest.mark.asyncio
-async def test_api_error_fail_open(monkeypatch):
+async def test_api_error_fail_open(monkeypatch, temp_blacklist):
     """YouTube API 失敗 → fail-open，per Phase 1 Failure Modes 表。"""
     async def _broken(*args, **kwargs):
         raise tq.YouTubeAPIError("quota exceeded")
@@ -167,18 +166,22 @@ async def test_api_error_fail_open(monkeypatch):
 
     passes, reason = await tq.assess_track_quality(
         "https://youtu.be/abc", "晴天 (cover)",
-        api_key="fake", blacklist=tq.CoverBlacklist(path="/tmp/.never-exists.json"),
+        api_key="fake", blacklist=temp_blacklist,
     )
     assert passes is True
     assert reason == "api_error_fail_open"
 
 
 @pytest.mark.asyncio
-async def test_invalid_url_fail_open(mock_fetch_views):
-    """無法解析 video_id → fail-open。"""
+async def test_invalid_url_fail_open(mock_fetch_views, temp_blacklist):
+    """無法解析 video_id → fail-open。
+
+    title 須 looks_like_cover 才會走到 video_id 解析分支
+    （非 cover 在更前面就 (True, "ok") 早退）。
+    """
     passes, reason = await tq.assess_track_quality(
-        "https://example.com/not-youtube", "whatever",
-        api_key="fake", blacklist=tq.CoverBlacklist(path="/tmp/.never-exists.json"),
+        "https://example.com/not-youtube", "whatever (cover)",
+        api_key="fake", blacklist=temp_blacklist,
     )
     assert passes is True
     assert reason == "invalid_url_fail_open"

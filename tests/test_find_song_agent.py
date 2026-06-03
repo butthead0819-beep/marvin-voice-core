@@ -97,21 +97,21 @@ async def test_lyrics_slot_strips_trailing_particles(utterance, expected_payload
     assert payload == expected_payload, f"slot 沒剝乾淨：{utterance!r} → {payload!r}"
 
 
-def test_lyrics_slot_unchanged_when_no_trailing_particle():
+@pytest.mark.asyncio
+async def test_lyrics_slot_unchanged_when_no_trailing_particle():
     """regression：歌詞本身不含末尾助詞時不該動到。"""
     agent, ctrl = _agent()
     bid = agent.bid(_ctx("找歌詞天青色等煙雨"))
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(bid.handler())
+    await bid.handler()
     assert ctrl._handle_find_song.await_args.args[1] == "天青色等煙雨"
 
 
-def test_lyrics_slot_only_strip_pure_particle_tail():
+@pytest.mark.asyncio
+async def test_lyrics_slot_only_strip_pure_particle_tail():
     """歌詞中間有助詞字（不在尾端）不該被誤剝。"""
     agent, ctrl = _agent()
     bid = agent.bid(_ctx("找歌詞啊不要走"))  # 「啊」在中間
-    import asyncio
-    asyncio.get_event_loop().run_until_complete(bid.handler())
+    await bid.handler()
     payload = ctrl._handle_find_song.await_args.args[1]
     assert payload == "啊不要走", f"中段助詞被誤剝：{payload!r}"
 

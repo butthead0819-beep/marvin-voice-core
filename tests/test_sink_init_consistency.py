@@ -27,3 +27,29 @@ def test_last_dave_error_time_initialized_to_zero():
 
     # 直接 access，不該 AttributeError
     assert s.last_dave_error_time == 0
+
+
+def test_sink_constructs_without_current_event_loop():
+    """無 current event loop 時建構 sink 不應 RuntimeError。
+
+    CI 跑整包時 pytest-asyncio 在前面 async 測試 teardown 後會清掉
+    current loop（等同 set_event_loop(None)）。此時建構 sink 若靠
+    asyncio.get_event_loop()，在 Python 3.12 會 raise
+    'There is no current event loop'，造成一連串 setup ERROR。
+    建構不該依賴 current loop 已存在——應抓 running loop，沒有就 fallback。
+    """
+    import asyncio
+
+    from discord_voice_engine import RealtimeVADSink
+
+    try:
+        prev = asyncio.get_event_loop()
+    except RuntimeError:
+        prev = None
+    asyncio.set_event_loop(None)
+    try:
+        with patch("discord.ext.voice_recv.AudioSink.__init__", return_value=None):
+            s = RealtimeVADSink(on_speech_cut_callback=lambda *a, **kw: None)
+        assert s.loop is not None
+    finally:
+        asyncio.set_event_loop(prev if prev is not None else asyncio.new_event_loop())

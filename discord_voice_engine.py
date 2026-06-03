@@ -261,7 +261,13 @@ class RealtimeVADSink(voice_recv.AudioSink):
         self.SPEECH_START_CONFIRM_FRAMES = max(1, int(os.getenv("TTS_INTERRUPT_CONFIRM_FRAMES", "3")))
         self._user_elevated_vad: dict[int, float] = {}  # user_id -> expiry timestamp
 
-        self.loop = asyncio.get_event_loop()
+        # production 建構於 bot 的 running loop 內 → 直接抓；
+        # 非 async 情境（測試 / pytest-asyncio 已清掉 current loop）→ fallback，
+        # 不依賴 current loop 存在（3.12 下 get_event_loop() 會 raise）。
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
         # self.harvester_task = self.loop.create_task(self._harvester_loop()) # 🚀 [Watchdog] 準備搬遷至 Engine
         self.packet_count = 0
         self.last_audio_packet_time = time.time() # 🛡️ [Heartbeat]
