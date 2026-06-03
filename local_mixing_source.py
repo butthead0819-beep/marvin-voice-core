@@ -67,7 +67,15 @@ class LocalMixingAudioSource(_BASE):
         self._music = None                       # 可換 f32le source（atomic ref）
         self._tts_queue: collections.deque = collections.deque()  # 預解碼 f32 buffers
         self._tts_cur: np.ndarray | None = None  # 當前 TTS buffer（consumer-local）
-        self._tts_off = 0                         # consumer-local offset
+        self._tts_off = 0
+
+        # 🎭 [打岔層 layer2] Marmo 在 Marvin 講話尾段「混音疊進來打斷」。獨立佇列，與
+        # layer1 並行混音（mix_layers 逐元素相加）、不互相排隊。layer2 活躍時 layer1(Marvin)
+        # 壓到 _interject_duck，讓打岔的 Marmo 蓋得過尾巴。
+        self._tts2_queue: collections.deque = collections.deque()
+        self._tts2_cur: np.ndarray | None = None
+        self._tts2_off = 0
+        self._interject_duck = 0.45  # layer2 活躍時 layer1 的增益                         # consumer-local offset
 
         # instrumentation（flag-gated；每 5s 印 [Plan12_Stats]，供 live 判 mixer 是否跟得上）
         # on-demand：idle 超過 grace → read() 回 b"" 讓 discord 停送（修 always-on×DAVE）。
@@ -126,6 +134,9 @@ class LocalMixingAudioSource(_BASE):
         self._tts_queue.clear()
         self._tts_cur = None
         self._tts_off = 0
+        self._tts2_queue.clear()  # 打岔層一起清
+        self._tts2_cur = None
+        self._tts2_off = 0
 
     def set_paused(self, paused: bool) -> None:
         """控制台暫停/續播：暫停時 read() 回 silence 但不前進音樂/TTS 來源（保位置、保 adapter 不停）。"""
@@ -137,7 +148,8 @@ class LocalMixingAudioSource(_BASE):
                 return self._silence_bytes  # 持位置、adapter 續活（不進 idle→b"" 邏輯）
             music_f = self._next_music_frame()
             tts_f = self._next_tts_frame()
-            tts_active = tts_f is not None
+            tts2_f = self._next_tts2_frame()  # 打岔層（Marmo）
+            tts_active = tts_f is not None or tts2_f is not None
 
             # duck ramp：TTS 在 → 往 duck_level 下降；TTS 走 → 回 1.0（逐幀線性、防 click）
             target = self._duck_level if tts_active else 1.0
@@ -150,7 +162,13 @@ class LocalMixingAudioSource(_BASE):
             if music_f is not None:
                 layers.append(am.apply_gain(music_f, self._volume * self._duck_cur))
             if tts_f is not None:
-                layers.append(tts_f)  # TTS gain 1.0
+                # 打岔：Marmo(layer2) 疊進來時把 Marvin(layer1) 壓低，讓打岔蓋得過
+                if tts2_f is not None:
+                    layers.append(am.apply_gain(tts_f, self._interject_duck))
+                else:
+                    layers.append(tts_f)  # 單獨 layer1：gain 1.0
+            if tts2_f is not None:
+                layers.append(tts2_f)  # Marmo 1.0
             if not layers:
                 # idle：always-on 回 silence（永不停）；on-demand 超過 grace 回 b""（discord 停送）
                 if self._on_demand:
@@ -206,10 +224,21 @@ class LocalMixingAudioSource(_BASE):
         self._tts_queue.append(buf)
         return True
 
+    def push_tts2(self, f32_buffer: np.ndarray) -> bool:
+        """打岔層（layer2，Marmo）：與 layer1 並行混音、不互相排隊。超過 cap → False。"""
+        buf = np.asarray(f32_buffer, dtype=np.float32)
+        cur2 = (self._tts2_cur.size - self._tts2_off) if self._tts2_cur is not None else 0
+        if cur2 + sum(b.size for b in self._tts2_queue) + buf.size > self._tts_cap_samples:
+            return False
+        self._tts2_queue.append(buf)
+        return True
+
     # ── 狀態 query（barrier reader 用；T3 讓 cog 兩欄位委派到這）─────────────────
 
     def is_idle(self) -> bool:
-        return self._music is None and self._tts_cur is None and not self._tts_queue
+        return (self._music is None
+                and self._tts_cur is None and not self._tts_queue
+                and self._tts2_cur is None and not self._tts2_queue)
 
     def has_music(self) -> bool:
         """音樂層是否還在播（來源未耗盡）。caller 等歌播完用。"""
@@ -230,7 +259,24 @@ class LocalMixingAudioSource(_BASE):
 
     def _tts_load_samples(self) -> int:
         cur_remain = (self._tts_cur.size - self._tts_off) if self._tts_cur is not None else 0
-        return cur_remain + sum(b.size for b in self._tts_queue)
+        cur2 = (self._tts2_cur.size - self._tts2_off) if self._tts2_cur is not None else 0
+        return (cur_remain + sum(b.size for b in self._tts_queue)
+                + cur2 + sum(b.size for b in self._tts2_queue))
+
+    def _next_tts2_frame(self) -> np.ndarray | None:
+        if self._tts2_cur is None:
+            if not self._tts2_queue:
+                return None
+            self._tts2_cur = self._tts2_queue.popleft()
+            self._tts2_off = 0
+        buf = self._tts2_cur
+        chunk = buf[self._tts2_off:self._tts2_off + FRAME_SAMPLES]
+        self._tts2_off += FRAME_SAMPLES
+        if self._tts2_off >= buf.size:
+            self._tts2_cur = None
+        if chunk.size < FRAME_SAMPLES:
+            chunk = np.concatenate([chunk, np.zeros(FRAME_SAMPLES - chunk.size, dtype=np.float32)])
+        return chunk
 
     def _next_music_frame(self) -> np.ndarray | None:
         src = self._music

@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Awaitable, Callable
+from typing import Callable
 
 from speak_bus import SpeakBid, SpeakContext
 
@@ -107,6 +107,8 @@ class SpontaneousManzaiAgent:
             return
 
         try:
-            await self._ctrl.play_dual_dialogue(segments)
+            # interject=True：Marmo 在 Marvin 尾段混音疊進來打斷（Plan12 mixer 雙層；
+            # 非 Plan12 自動落序列播）。漫才的打岔節奏靠這個。
+            await self._ctrl.play_dual_dialogue(segments, interject=True)
         except Exception:
             logger.exception("[SpontaneousManzai] play_dual_dialogue raised")

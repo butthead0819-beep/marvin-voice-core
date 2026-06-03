@@ -97,9 +97,9 @@ async def test_handler_generates_and_plays_dual_dialogue(monkeypatch):
     bid = await a.speak_bid(_ctx())
     await bid.handler()
 
-    # 用 marvin_lead pattern 生成、播雙段
+    # 用 marvin_lead pattern 生成、以打岔模式播雙段
     assert gen.await_args.kwargs["pattern"] == "marvin_lead"
-    ctrl.play_dual_dialogue.assert_awaited_once_with(segments)
+    ctrl.play_dual_dialogue.assert_awaited_once_with(segments, interject=True)
     # cooldown 已記
     assert ctrl._last_manzai_time == 10000.0
 

@@ -482,3 +482,51 @@ def test_clear_tts_drops_queued_and_current():
     mix.clear_tts()
     assert mix.is_idle()                 # 佇列 + 當前都清掉
     assert mix.tts_load_seconds() == 0.0
+
+
+# ── 打岔層 layer2（Marmo 疊進來打斷 Marvin）─────────────────────────────────────
+
+def test_tts2_layer_overlaps_layer1_and_ducks_it():
+    """layer1(Marvin)+layer2(Marmo) 同時播 → 兩層都進、且 layer1 被壓到 _interject_duck。"""
+    mix = LocalMixingAudioSource(seed=3)
+    mix.push_tts(_f32_frame(0.5))    # Marvin
+    mix.push_tts2(_f32_frame(0.3))   # Marmo 打岔
+    out = np.frombuffer(mix.read(), dtype=np.int16).astype(np.float32) / 32767.0
+    expected = 0.5 * mix._interject_duck + 0.3  # layer1 ducked + layer2 full
+    assert out.mean() == pytest.approx(expected, abs=0.01)
+
+
+def test_tts2_full_volume_when_layer1_silent():
+    """只有 layer2 在播 → Marmo 全音量（不被任何 duck）。"""
+    mix = LocalMixingAudioSource(seed=3)
+    mix.push_tts2(_f32_frame(0.4))
+    out = np.frombuffer(mix.read(), dtype=np.int16).astype(np.float32) / 32767.0
+    assert out.mean() == pytest.approx(0.4, abs=0.01)
+
+
+def test_tts2_makes_mixer_non_idle_and_counts_load():
+    mix = LocalMixingAudioSource(seed=1)
+    assert mix.is_idle()
+    mix.push_tts2(_f32_frame(0.5, n=FRAME_SAMPLES))
+    assert not mix.is_idle()
+    assert mix.is_playing_audio
+    assert mix.tts_load_seconds() > 0
+    mix.read()  # 消化
+    assert mix.is_idle()
+
+
+def test_clear_tts_clears_both_layers():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.push_tts(_f32_frame(0.5))
+    mix.push_tts2(_f32_frame(0.3))
+    assert not mix.is_idle()
+    mix.clear_tts()
+    assert mix.is_idle()
+
+
+def test_push_tts2_rejects_when_over_cap():
+    mix = LocalMixingAudioSource(seed=1, tts_cap_seconds=1.0)
+    half = _f32_frame(0.5, n=int(SAMPLE_RATE * CHANNELS * 0.5))
+    assert mix.push_tts2(half) is True
+    assert mix.push_tts2(half) is True   # 剛好到上限
+    assert mix.push_tts2(half) is False  # 超過 → 拒絕

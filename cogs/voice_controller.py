@@ -700,8 +700,11 @@ class VoiceController(commands.Cog):
         return np.frombuffer(out, dtype=np.float32)
 
     async def _stream_tts_to_mixer(self, text: str, *, force_macos: bool,
-                                   emotion_tag: str, voice: str | None) -> int:
-        """[Plan 12] 邊收 edge-tts、邊 ffmpeg 解碼、邊逐幀 push_tts 進 TTS 層。
+                                   emotion_tag: str, voice: str | None, layer: int = 1) -> int:
+        """[Plan 12] 邊收 edge-tts、邊 ffmpeg 解碼、邊逐幀 push 進 TTS 層。
+
+        layer=1：主 TTS 層（push_tts）；layer=2：打岔層（push_tts2，與 layer1 並行混音，
+        漫才 Marmo 疊進來打斷 Marvin 用）。
 
         首音 ~0.8s 就出（不必等整段 render；恢復舊 FIFO streaming 的低延遲），且 render 全在
         event loop（非 voice thread）→ 不阻塞混音。回傳 push 進去的幀數。
@@ -735,6 +738,8 @@ class VoiceController(commands.Cog):
                 except Exception:
                     pass
 
+        _push = self._mixer.push_tts2 if layer == 2 else self._mixer.push_tts
+
         async def _drain() -> int:
             pushed = 0
             while True:
@@ -748,12 +753,12 @@ class VoiceController(commands.Cog):
                     data = await proc.stdout.readexactly(FRAME_BYTES_F32)
                 except asyncio.IncompleteReadError as e:
                     if e.partial:
-                        self._mixer.push_tts(np.frombuffer(e.partial, dtype=np.float32))
+                        _push(np.frombuffer(e.partial, dtype=np.float32))
                         pushed += 1
                     break
                 except Exception:
                     break
-                self._mixer.push_tts(np.frombuffer(data, dtype=np.float32))
+                _push(np.frombuffer(data, dtype=np.float32))
                 pushed += 1
             return pushed
 
@@ -6072,8 +6077,43 @@ class VoiceController(commands.Cog):
                             _window = float(os.getenv("MARVIN_FOLLOWUP_WINDOW_SEC", "8.0"))
                             _wd.temporary_open_window(_window, reason="followup")
 
-    async def play_dual_dialogue(self, segments):
+    async def _play_dual_interject(self, segments) -> bool:
+        """🎭 [打岔] Plan12 mixer 雙層疊播：Marvin 在 layer1，Marmo 在 Marvin 尾段(~80%)
+        疊進 layer2 混音打斷。需 Plan12 mixer。成功回 True；前置不符/失敗回 False 讓
+        caller 落序列 fallback。Marmo 疊進時 mixer 自動把 Marvin 壓到 _interject_duck。"""
+        vc = self.voice_client
+        if vc is None or self._mixer is None:
+            return False
+        marvin_seg = next((s for s in segments if s.get("voice") != "marmo"), None)
+        marmo_seg = next((s for s in segments if s.get("voice") == "marmo"), None)
+        marvin_text = (marvin_seg or {}).get("text", "").strip()
+        marmo_text = (marmo_seg or {}).get("text", "").strip()
+        if not marvin_text or not marmo_text:
+            return False
+
+        marmo_voice = os.getenv("MARMO_VOICE", "zh-TW-HsiaoYuNeural")
+        self._tts_interrupted = False
+        self._ensure_mixer_playing(vc)
+        self.is_playing_audio = True
+        try:
+            dur = self.bot.tts_engine.get_estimated_duration(marvin_text)
+            marvin_task = asyncio.create_task(self._stream_tts_to_mixer(
+                marvin_text, force_macos=False, emotion_tag="neutral", voice=None, layer=1))
+            # 在 Marvin ~80% 處讓 Marmo 疊進 layer2 打斷（estimated_duration 抓尾段時機）
+            await asyncio.sleep(max(0.0, dur * 0.8))
+            marmo_task = asyncio.create_task(self._stream_tts_to_mixer(
+                marmo_text, force_macos=False, emotion_tag="marmo", voice=marmo_voice, layer=2))
+            await asyncio.gather(marvin_task, marmo_task)
+        finally:
+            self.is_playing_audio = False
+        logger.info(f"🎭 [DualInterject] 打岔完成 marvin={len(marvin_text)}字 marmo={len(marmo_text)}字")
+        return True
+
+    async def play_dual_dialogue(self, segments, *, interject: bool = False):
         """🎭 [Marmo 一搭一唱] 雙段對白播放：[marvin, marmo] 按順序。
+
+        interject=True 且 Plan12 mixer 可用 + 剛好兩段 → 走打岔疊播（Marmo 在 Marvin
+        尾段混音進來）；前置不符或失敗 → 落下方序列播。
 
         segments: list[dict]，每個 {"voice": "marvin"|"marmo", "text": "..."}。
         順序強制 marvin → marmo 由 services/dialogue_generation.py 確保，
@@ -6088,6 +6128,14 @@ class VoiceController(commands.Cog):
         """
         if not segments:
             return
+
+        # 🎭 打岔模式（Plan12 mixer 雙層疊播）；前置不符/失敗 → 落下方序列
+        if interject and self._plan12 and self._mixer is not None and len(segments) == 2:
+            try:
+                if await self._play_dual_interject(segments):
+                    return
+            except Exception as exc:
+                logger.warning(f"🎭 [DualInterject] 失敗，落序列播: {exc}")
 
         # 🛡️ Reset interrupt guard：dual_speak 是 marmo_server 注入的獨立完整 unit，
         # 不是上次 wake reply 串流的續句；若上次 wake 被插話設了 _tts_interrupted=True
