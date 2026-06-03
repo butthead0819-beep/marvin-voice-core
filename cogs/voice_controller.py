@@ -94,6 +94,7 @@ import ack_templates
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
+from helper_wake import is_helper_wake, helper_speak_plan
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
@@ -2140,6 +2141,10 @@ class VoiceController(commands.Cog):
         filter_result = pre_filter_speech(raw_text)
         action = filter_result.get("action")
 
+        # 免喚醒詞 task/info 喚醒（helper query）路由：帶給下游回應方法選標題＋決定
+        # 長答案是否改「貼文＋短通知」。None = 無 fusion（舊路徑），下游視同非 helper。
+        _wake_voice_score = None
+        _wake_dom = None
         _fusion = getattr(getattr(self.bot, 'router', None), 'wake_fusion', None)
         if _fusion is not None:
             _ctx_active = bool(
@@ -2160,8 +2165,10 @@ class VoiceController(commands.Cog):
                 stream_active=self.stream_mode,
                 track=track,
             )
+            _dominant = max(_ch, key=lambda k: _ch[k] if k not in ("total", "threshold") else -1)
+            _wake_voice_score = _ch.get("voice")
+            _wake_dom = _dominant
             if _confidence >= 0.20:   # log anything non-trivial
-                _dominant = max(_ch, key=lambda k: _ch[k] if k not in ("total","threshold") else -1)
                 logger.info(
                     f"🧠 [IBA] {speaker} total={_confidence:.3f} "
                     f"(v={_ch['voice']} t={_ch['task']} i={_ch['info']} c={_ch['control']}) "
@@ -2356,6 +2363,8 @@ class VoiceController(commands.Cog):
                 "timestamp":   timestamp,
                 "raw_text":    raw_text,
                 "wake_intent": wake_intent,   # None = Track A (regex, 高信心)
+                "wake_voice_score": _wake_voice_score,  # helper query 判定：沒喊馬文→低
+                "wake_dom":    _wake_dom,               # 主導通道（task/info → helper）
                 # ContextVar 不會跨 asyncio.Queue 邊界 — 手動 forward timing dict 給 consumer
                 "_timing":     pipeline_timing.snapshot(),
             })
@@ -3415,6 +3424,8 @@ class VoiceController(commands.Cog):
                 timestamp = task_data["timestamp"]
                 raw_text = task_data.get("raw_text", "")
                 _wi = task_data.get("wake_intent")  # None = Track A / 不明
+                _wvoice = task_data.get("wake_voice_score")  # helper query 判定用
+                _wdom = task_data.get("wake_dom")
 
                 # 立即播 filler（延遲遮掩）
                 if raw_text:
@@ -3424,7 +3435,7 @@ class VoiceController(commands.Cog):
                 # 多回合確認流程，回傳最終確認的問句
                 confirmed_query = await self._confirmation_flow(speaker, timestamp, initial_text=raw_text)
                 if confirmed_query:
-                    await self._process_queued_query(speaker, timestamp, override_query=confirmed_query, wake_intent=_wi, original_raw=raw_text)
+                    await self._process_queued_query(speaker, timestamp, override_query=confirmed_query, wake_intent=_wi, original_raw=raw_text, wake_voice_score=_wvoice, wake_dom=_wdom)
 
                 self.query_queue.task_done()
             except asyncio.CancelledError:
@@ -3914,12 +3925,18 @@ class VoiceController(commands.Cog):
             logger.warning("[Marmo] 90 秒內未收到 @AI Marmo 回覆")
             asyncio.create_task(self.play_tts("Marmo 沒有回應，可能在忙。", already_in_channel=True))
 
-    async def _process_queued_query(self, speaker: str, wake_time: float, override_query: str = None, wake_intent: float = None, original_raw: str = None):
+    async def _process_queued_query(self, speaker: str, wake_time: float, override_query: str = None, wake_intent: float = None, original_raw: str = None, wake_voice_score: float = None, wake_dom: str = None):
         """
         [Fast System] 核心處理邏輯：根據喚醒時間點，精準擷取上下文並請求 LLM。
         """
         # 新一輪回應開始，解除前次插話的中斷封鎖
         self._tts_interrupted = False
+
+        # 🔍 [Helper Query] 免喚醒詞的 task/info 喚醒（沒喊「馬文」、講了求助/任務語句）：
+        # 貼文標題改「幫你查了」不再是「喚醒回應」；長答案串流期間先不逐句念，收完整段後
+        # 短答案整段念、長答案只念短通知（完整內容留貼文）。
+        _is_helper = is_helper_wake(wake_voice_score, wake_dom)
+        _head = "🔍 **【馬文·幫你查了】**" if _is_helper else "⚡ **【馬文·喚醒回應】**"
 
         # 1. 擷取 Query：優先使用確認流程傳入的 override_query
         if override_query:
@@ -4166,7 +4183,8 @@ class VoiceController(commands.Cog):
         # 2. 建立 Discord 佔位訊息
         placeholder_msg = None
         if self.active_text_channel:
-            placeholder_msg = await self.active_text_channel.send(f"⚡ **【馬文·喚醒回應】** `{speaker}` 叫了我...(組織措辭中)")
+            _ph_intro = "想查點東西...(組織措辭中)" if _is_helper else "叫了我...(組織措辭中)"
+            placeholder_msg = await self.active_text_channel.send(f"{_head} `{speaker}` {_ph_intro}")
 
         # 3. 🎭 [Emotion Inference] 取出說話者最新情緒標籤
         emotion_tag = self.user_emotion_cache.get(speaker, "neutral")
@@ -4252,7 +4270,7 @@ class VoiceController(commands.Cog):
                     self._llm_searching = True  # 🗣️ [Status ACK] 久候時改回報「查資料中」
                     if placeholder_msg:
                         try:
-                            await placeholder_msg.edit(content=f"⚡ **【馬文·喚醒回應】** `{speaker}` (正在宇宙邊緣檢索資料...)")
+                            await placeholder_msg.edit(content=f"{_head} `{speaker}` (正在宇宙邊緣檢索資料...)")
                         except: pass
                     continue
 
@@ -4304,12 +4322,15 @@ class VoiceController(commands.Cog):
                 full_text += sentence
                 if tts_suppressed:
                     logger.info(f"🔇 [Low-Confidence Gate] wake_intent={wake_intent:.2f} < 0.80，靜音貼字: '{sentence[:40]}'")
+                elif _is_helper:
+                    # helper query：串流期間先不逐句念，收完整段後再決定整段念 or 短通知
+                    pass
                 else:
                     asyncio.create_task(self.play_tts(sentence, already_in_channel=True, emotion_tag=emotion_tag))
 
                 if placeholder_msg:
                     try:
-                        await placeholder_msg.edit(content=f"⚡ **【馬文·喚醒回應】** `{speaker}`：{full_text}...")
+                        await placeholder_msg.edit(content=f"{_head} `{speaker}`：{full_text}...")
                     except: pass
 
             # 🛡️ [Weak Response Filter] 整段回應都是弱答案時，替換為 in-character 台詞
@@ -4324,9 +4345,17 @@ class VoiceController(commands.Cog):
             if self.stream_mode and not tts_suppressed and full_text:
                 asyncio.create_task(self.speak(full_text, emotion_tag=emotion_tag))
 
+            # 🔍 [Helper Query] 非串流模式收完整段後：短答案整段念、長答案只念短通知
+            # （完整內容已在文字貼文）。串流期間已 defer，這裡是唯一發聲點。
+            if _is_helper and full_text and not tts_suppressed and not self.stream_mode:
+                _mode, _say = helper_speak_plan(full_text, speaker)
+                if _mode == "notify":
+                    logger.info(f"🔍 [Helper Query] {speaker} 長答案({len(full_text)}字)→貼文＋口播通知")
+                asyncio.create_task(self.play_tts(_say, already_in_channel=True, emotion_tag=emotion_tag))
+
             if placeholder_msg:
                 if full_text:
-                    await placeholder_msg.edit(content=f"⚡ **【馬文·喚醒回應】** `{speaker}`：{full_text}")
+                    await placeholder_msg.edit(content=f"{_head} `{speaker}`：{full_text}")
                 else:
                     try:
                         await placeholder_msg.delete()
@@ -4363,7 +4392,7 @@ class VoiceController(commands.Cog):
         except Exception as e:
             logger.error(f"❌ [Fast System Stream Error] {e}")
             if placeholder_msg:
-                await placeholder_msg.edit(content=f"⚡ **【馬文·喚醒回應】** `{speaker}`：{full_text} (大腦連結中斷)")
+                await placeholder_msg.edit(content=f"{_head} `{speaker}`：{full_text} (大腦連結中斷)")
         finally:
             # 🗣️ [Status ACK] 出首句或任何退出路徑都收手安撫守候，避免事後突播 ack
             _ack_watcher.cancel()
