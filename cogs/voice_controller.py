@@ -96,6 +96,7 @@ import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
 from helper_wake import is_helper_wake, helper_speak_plan
+from manzai_interject import compute_interject_ratio
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
@@ -6105,7 +6106,8 @@ class VoiceController(commands.Cog):
         _m1 = _m2 = 0
         try:
             dur = self.bot.tts_engine.get_estimated_duration(marvin_text)
-            _at = at if at is not None else 0.72  # Marmo 在 Marvin 講到此比例時切進來打斷
+            # at 沒手動傳 → 動態算（落 Marvin 子句中段、避開標點，不論對白長度都通用）
+            _at = at if at is not None else compute_interject_ratio(marvin_text)
             marvin_task = asyncio.create_task(self._stream_tts_to_mixer(
                 marvin_text, force_macos=False, emotion_tag="neutral", voice=None, layer=1))
             # 在 Marvin _at 比例處讓 Marmo 疊進 layer2 打斷（切句中、非標點處才像真打斷）。

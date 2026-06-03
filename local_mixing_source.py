@@ -78,10 +78,10 @@ class LocalMixingAudioSource(_BASE):
         self._interject_duck = 0.6    # layer2 活躍時 layer1 的目標增益（fade 終點）。
         # 0.6 不是 0.45：用戶回饋 0.45 下 Marvin「完全退位」被 Marmo 蓋掉；0.6 讓他還在、
         # 只是被蓋過（漫才被吐槽的感覺），不是消失。
-        # layer1 在 layer2 進來時「逐漸 fade out」而非瞬降。逐幀線性 ramp，step 0.010/幀 →
-        # 1.0→0.6 約 0.8s 平滑淡出（用戶回饋 0.6s 偏快）。
+        # layer1 在 layer2 進來時「逐漸 fade out」而非瞬降。逐幀線性 ramp，step 0.008/幀 →
+        # 1.0→0.6 約 1.0s 平滑淡出（用戶回饋再慢一點點）。
         self._interject_cur = 1.0
-        self._interject_step = 0.010
+        self._interject_step = 0.008
 
         # instrumentation（flag-gated；每 5s 印 [Plan12_Stats]，供 live 判 mixer 是否跟得上）
         # on-demand：idle 超過 grace → read() 回 b"" 讓 discord 停送（修 always-on×DAVE）。
