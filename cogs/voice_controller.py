@@ -2946,6 +2946,9 @@ class VoiceController(commands.Cog):
 
     _LATENCY_DOMINATED_THRESHOLD = 20.0  # 超過此延遲秒數視為「延遲問題」而非互動失敗
     _LATE_RESPONSE_SKIP_SEC      = 25.0  # 首句超過此延遲才到達時，放棄回應
+    # confirmation_flow 內那次 cleaner 在 wake→LLM 阻塞路徑上；池子壞時 cleaner 會疊到
+    # 27-35s（多家 8s timeout 串接）。封頂 2.5s：健康時照清，太慢就用 raw，不卡 worker。
+    _CONFIRM_CLEAN_TIMEOUT       = 2.5
 
     @staticmethod
     def _is_stt_noise(entry: str) -> bool:
@@ -3427,6 +3430,16 @@ class VoiceController(commands.Cog):
                 _wvoice = task_data.get("wake_voice_score")  # helper query 判定用
                 _wdom = task_data.get("wake_dom")
 
+                # ⏱️ [Stale Drop] dequeue 即檢查排隊時間：已超過 LATE_SKIP 門檻的死查詢直接丟，
+                # 不跑 cleaner/LLM。斷開「整套處理完才在 4310 發現太舊」的佇列雪崩——6/2 多人
+                # 卡 28~345s 全因 worker 把死查詢一個個跑完，佇列越積越長。丟掉才追得上新查詢。
+                _age = time.time() - timestamp
+                if _age > self._LATE_RESPONSE_SKIP_SEC:
+                    logger.info(f"⏱️ [Stale Drop] {speaker} 查詢已排隊 {_age:.0f}s "
+                                f"(>{self._LATE_RESPONSE_SKIP_SEC:.0f}s)，dequeue 即丟、不處理（斷佇列雪崩）。")
+                    self.query_queue.task_done()
+                    continue
+
                 # 立即播 filler（延遲遮掩）
                 if raw_text:
                     self._speaker_lang[speaker] = self._detect_text_lang(raw_text)
@@ -3658,11 +3671,15 @@ class VoiceController(commands.Cog):
         if not stripped:
             return None
 
-        # LLM 清洗 STT 雜訊，不做語音確認
+        # LLM 清洗 STT 雜訊，不做語音確認。短 timeout 封頂：cleaner 太慢就用 raw，不卡 worker
+        # （含 TimeoutError 由 except 接 → 降級 raw）。喚醒偵測時已清過一次，這裡慢不值得等。
         cleaned = stripped
         if hasattr(self.bot, "router") and hasattr(self.bot.router, "clean_stt_text"):
             try:
-                res = await self.bot.router.clean_stt_text(stripped)
+                res = await asyncio.wait_for(
+                    self.bot.router.clean_stt_text(stripped),
+                    timeout=self._CONFIRM_CLEAN_TIMEOUT,
+                )
                 cleaned = res.get("text", stripped) if isinstance(res, dict) else stripped
             except Exception:
                 pass
