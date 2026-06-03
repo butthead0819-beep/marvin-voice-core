@@ -6077,7 +6077,7 @@ class VoiceController(commands.Cog):
                             _window = float(os.getenv("MARVIN_FOLLOWUP_WINDOW_SEC", "8.0"))
                             _wd.temporary_open_window(_window, reason="followup")
 
-    async def _play_dual_interject(self, segments, *, duck=None, step=None) -> bool:
+    async def _play_dual_interject(self, segments, *, duck=None, step=None, at=None) -> bool:
         """🎭 [打岔] Plan12 mixer 雙層疊播：Marvin 在 layer1，Marmo 在 Marvin 尾段(~80%)
         疊進 layer2 混音打斷。需 Plan12 mixer。成功回 True；前置不符/失敗回 False 讓
         caller 落序列 fallback。Marmo 疊進時 mixer 把 Marvin 逐漸 fade 到 _interject_duck。
@@ -6105,11 +6105,12 @@ class VoiceController(commands.Cog):
         _m1 = _m2 = 0
         try:
             dur = self.bot.tts_engine.get_estimated_duration(marvin_text)
+            _at = at if at is not None else 0.72  # Marmo 在 Marvin 講到此比例時切進來打斷
             marvin_task = asyncio.create_task(self._stream_tts_to_mixer(
                 marvin_text, force_macos=False, emotion_tag="neutral", voice=None, layer=1))
-            # 在 Marvin ~80% 處讓 Marmo 疊進 layer2 打斷（estimated_duration 抓尾段時機）。
+            # 在 Marvin _at 比例處讓 Marmo 疊進 layer2 打斷（切句中、非標點處才像真打斷）。
             # 串流期間持續 re-arm adapter（on-demand idle 掉就重 arm，仿 _mixer_play_music）。
-            _t_end = asyncio.get_event_loop().time() + max(0.5, dur * 0.8)
+            _t_end = asyncio.get_event_loop().time() + max(0.5, dur * _at)
             while asyncio.get_event_loop().time() < _t_end:
                 self._ensure_mixer_playing(vc)
                 await asyncio.sleep(0.1)
@@ -6127,7 +6128,7 @@ class VoiceController(commands.Cog):
                     f"(marvin={len(marvin_text)}字 marmo={len(marmo_text)}字)")
         return True
 
-    async def play_dual_dialogue(self, segments, *, interject: bool = False, duck=None, step=None):
+    async def play_dual_dialogue(self, segments, *, interject: bool = False, duck=None, step=None, at=None):
         """🎭 [Marmo 一搭一唱] 雙段對白播放：[marvin, marmo] 按順序。
 
         interject=True 且 Plan12 mixer 可用 + 剛好兩段 → 走打岔疊播（Marmo 在 Marvin
@@ -6150,7 +6151,7 @@ class VoiceController(commands.Cog):
         # 🎭 打岔模式（Plan12 mixer 雙層疊播）；前置不符/失敗 → 落下方序列
         if interject and self._plan12 and self._mixer is not None and len(segments) == 2:
             try:
-                if await self._play_dual_interject(segments, duck=duck, step=step):
+                if await self._play_dual_interject(segments, duck=duck, step=step, at=at):
                     return
             except Exception as exc:
                 logger.warning(f"🎭 [DualInterject] 失敗，落序列播: {exc}")

@@ -84,12 +84,13 @@ class DualSpeakAgent(DeclarativeIntentAgent):
         # raw_segments：payload 帶現成 segments → 跳過 LLM 生成、直接播（測播放/打岔不用重生成）
         raw_segments = payload.get("segments")
         duck, step = payload.get("duck"), payload.get("step")  # 即時 taste-tune 打岔 fade
+        at = payload.get("at")  # Marmo 切進來的時機比例（0~1）
 
         # ── Happy path：build handler closure ─────────────────────────────
         async def _handler():
             await self._handle(vc=vc, marmo_text=marmo_text, pattern=pattern,
                                interject=interject, raw_segments=raw_segments,
-                               duck=duck, step=step)
+                               duck=duck, step=step, at=at)
 
         return Bid(
             name=self.name,
@@ -99,7 +100,7 @@ class DualSpeakAgent(DeclarativeIntentAgent):
         )
 
     async def _handle(self, *, vc, marmo_text: str, pattern: str = "marmo_lead",
-                      interject: bool = False, raw_segments=None, duck=None, step=None) -> None:
+                      interject: bool = False, raw_segments=None, duck=None, step=None, at=None) -> None:
         """Handler 內：呼叫 LLM 生對白、成功播雙段、失敗 fallback 單 Marvin。
 
         webhook 預設 = Marmo 主動報事 → marmo_lead [marmo, marvin]。
@@ -132,6 +133,6 @@ class DualSpeakAgent(DeclarativeIntentAgent):
 
         # Happy path：播雙段
         try:
-            await vc.play_dual_dialogue(segments, interject=interject, duck=duck, step=step)
+            await vc.play_dual_dialogue(segments, interject=interject, duck=duck, step=step, at=at)
         except Exception as exc:
             logger.warning(f"[DualSpeak] play_dual_dialogue 失敗: {exc}")
