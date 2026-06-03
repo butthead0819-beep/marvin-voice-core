@@ -144,6 +144,49 @@ async def test_call_llm_writes_bus_metrics_on_success(tmp_path, monkeypatch):
     assert e["latency_ms"] >= 0
 
 
+def _bus_router(monkeypatch, tmp_path):
+    """建一個 minimal GeminiRouterLLMMixin + bus，回 (obj, log_path)。"""
+    from llm_agents import metrics
+    from llm_agents.base import LLMBid, LLMBus, LLMAgent
+    log_path = tmp_path / "llm_routing.jsonl"
+    monkeypatch.setattr(metrics, "_LOG_PATH", log_path)
+    monkeypatch.setenv("LLM_BUS", "true")
+    from gemini_router_llm import GeminiRouterLLMMixin
+    obj = GeminiRouterLLMMixin.__new__(GeminiRouterLLMMixin)
+    obj.dna = {"helpfulness": 3}
+    obj.prompt_manager = MagicMock()
+    obj.vision_enabled = False
+    obj.memory = MagicMock()
+    a = MagicMock(spec=LLMAgent)
+    a.name = "groq"; a.priority = 10; a.purpose_compatible = frozenset()
+    a.bid = MagicMock(return_value=LLMBid(0.7, "groq", "m", 400, 50, "ok"))
+    a.handle = AsyncMock(return_value="r")
+    obj._llm_bus = LLMBus([a])
+    return obj, log_path
+
+
+@pytest.mark.asyncio
+async def test_call_llm_threads_explicit_purpose(tmp_path, monkeypatch):
+    """caller 顯式傳 purpose → 寫進 metrics 的 purpose 欄位（歸因前提）。"""
+    obj, log_path = _bus_router(monkeypatch, tmp_path)
+    await obj._call_llm("sys", "user", purpose="greeting")
+    e = _read_jsonl(log_path)[0]
+    assert e["purpose"] == "greeting"
+
+
+@pytest.mark.asyncio
+async def test_call_llm_purpose_auto_derives_caller_method(tmp_path, monkeypatch):
+    """沒傳 purpose → 自動取呼叫方 method 名（22 個 generate_* 免逐一手標）。"""
+    obj, log_path = _bus_router(monkeypatch, tmp_path)
+
+    async def generate_greeting():       # 模擬呼叫方 method
+        return await obj._call_llm("sys", "user")
+
+    await generate_greeting()
+    e = _read_jsonl(log_path)[0]
+    assert e["purpose"] == "generate_greeting"
+
+
 @pytest.mark.asyncio
 async def test_call_llm_writes_bus_metrics_on_no_llm_available(tmp_path, monkeypatch):
     from llm_agents import metrics

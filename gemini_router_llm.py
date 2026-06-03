@@ -349,8 +349,19 @@ class GeminiRouterLLMMixin:
         logger.info(f"[LLMBus] 已掛載 — agents: {[a.name for a in agents]} "
                     f"(short_circuit={self._llm_bus._SHORT_CIRCUIT_AFTER}, env LLM_BUS=true 才會走 bus)")
 
-    async def _call_llm(self, system_prompt: str, user_prompt: str, is_json: bool = False, speaker: str = None, allow_local: bool = True, temperature: float = None, thinking_level: str = None, tier: str = "medium") -> str:
-        """通用 LLM 呼叫函式。tier: 'simple'=Groq-8b優先, 'medium'=Groq-70b優先(預設), 'high'=直接Gemini"""
+    async def _call_llm(self, system_prompt: str, user_prompt: str, is_json: bool = False, speaker: str = None, allow_local: bool = True, temperature: float = None, thinking_level: str = None, tier: str = "medium", purpose: str = None) -> str:
+        """通用 LLM 呼叫函式。tier: 'simple'=Groq-8b優先, 'medium'=Groq-70b優先(預設), 'high'=直接Gemini
+
+        purpose: 呼叫用途標籤，寫進 records/llm_routing.jsonl 供歸因（誰在吃池/誰是無感
+        call）。不傳 → 自動取呼叫方 method 名（22 個 generate_* 各自正確歸因、免逐一手標）；
+        需要更細的標籤時 caller 可顯式覆寫。"""
+        if purpose is None:
+            # 自動歸因：取直接呼叫方的 function 名（CPython frame，純同步、零 await）。
+            try:
+                import sys
+                purpose = sys._getframe(1).f_code.co_name
+            except Exception:
+                purpose = "marvin_chat"
         # 🎲 [Operation Eternal Soul] 情緒骰子 (Dere Mode Logic)
         final_system_prompt = system_prompt
         if speaker and "dere_persona" not in system_prompt:
@@ -367,7 +378,7 @@ class GeminiRouterLLMMixin:
             from llm_agents.base import LLMContext, NoLLMAvailable
             from llm_agents.metrics import log_dispatch
             _TIER_TO_QUALITY = {"simple": "fast", "medium": "balanced", "high": "high"}
-            _bus_purpose = "marvin_chat"  # Phase 1 預設; Phase 2 caller 顯式傳 purpose
+            _bus_purpose = purpose  # caller 顯式傳的用途標籤（預設 marvin_chat 向後相容）
             ctx = LLMContext(
                 prompt=user_prompt,
                 purpose=_bus_purpose,
