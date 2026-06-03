@@ -1730,7 +1730,8 @@ class VoiceController(commands.Cog):
                          await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
                          asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
                     self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
-                    await self.speak(msg, proactive=True)
+                    # 中途進場招呼：唸完不被中斷（protected）
+                    await self.speak(msg, proactive=True, protected=True)
 
         # --- [Leave Logic] ---
         if before.channel == marvin_channel and after.channel != marvin_channel:
@@ -5650,6 +5651,7 @@ class VoiceController(commands.Cog):
         max_chars: int = STREAM_BUDGET,
         already_in_channel: bool = True,
         emotion_tag: str = "neutral",
+        protected: bool = False,
     ) -> None:
         """統一的 stream-aware TTS 入口（給 agent handler 用）。
 
@@ -5670,8 +5672,9 @@ class VoiceController(commands.Cog):
             失敗 fallback 走原 single Marvin 路徑。
         """
         # 🎭 [Marmo Case B] 機率升級為 dual (Marvin → Marmo)。
-        # 只在 proactive=True 試（主動發話），喚醒回應走 single 不爆 latency。
-        if proactive and self._maybe_try_dual_upgrade():
+        # 只在 proactive=True 試（主動發話）；protected（如 join 招呼要唸完點名）不升級，
+        # 確保是乾淨單句、不被 dual 機率閘洗掉名字/保護。
+        if proactive and not protected and self._maybe_try_dual_upgrade():
             try:
                 segments = await self._generate_dual_marvin_lead(text)
                 if segments:
@@ -5687,6 +5690,7 @@ class VoiceController(commands.Cog):
             allow_hotswap=True,
             hotswap_max_chars=max_chars,
             emotion_tag=emotion_tag,
+            protected=protected,
         )
 
     def _maybe_try_dual_upgrade(self) -> bool:
