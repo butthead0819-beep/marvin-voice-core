@@ -83,7 +83,8 @@ class MarmoServer:
                     # 帶 "marvin_lead" 可用 webhook 聽 Case B。
                     payload={"text": text, "job_id": job_id, "pattern": data.get("pattern"),
                              "interject": data.get("interject"),  # 手動測打岔：curl 帶 interject=true
-                             "segments": data.get("segments")},   # 測播放：帶現成 segments 跳過 LLM 生成
+                             "segments": data.get("segments"),    # 測播放：帶現成 segments 跳過 LLM 生成
+                             "duck": data.get("duck"), "step": data.get("step")},  # 即時調 fade 終點/速度
                 )
                 dispatch_task = asyncio.create_task(bus.dispatch(ctx))
 

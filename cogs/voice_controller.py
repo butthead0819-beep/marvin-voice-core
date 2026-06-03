@@ -6077,13 +6077,16 @@ class VoiceController(commands.Cog):
                             _window = float(os.getenv("MARVIN_FOLLOWUP_WINDOW_SEC", "8.0"))
                             _wd.temporary_open_window(_window, reason="followup")
 
-    async def _play_dual_interject(self, segments) -> bool:
+    async def _play_dual_interject(self, segments, *, duck=None, step=None) -> bool:
         """🎭 [打岔] Plan12 mixer 雙層疊播：Marvin 在 layer1，Marmo 在 Marvin 尾段(~80%)
         疊進 layer2 混音打斷。需 Plan12 mixer。成功回 True；前置不符/失敗回 False 讓
-        caller 落序列 fallback。Marmo 疊進時 mixer 自動把 Marvin 壓到 _interject_duck。"""
+        caller 落序列 fallback。Marmo 疊進時 mixer 把 Marvin 逐漸 fade 到 _interject_duck。
+        duck/step：taste-tuning 即時覆寫（webhook 帶 → 免重啟調 fade 終點/速度）。"""
         vc = self.voice_client
         if vc is None or self._mixer is None:
             return False
+        if duck is not None or step is not None:
+            self._mixer.set_interject_params(duck=duck, step=step)
         marvin_seg = next((s for s in segments if s.get("voice") != "marmo"), None)
         marmo_seg = next((s for s in segments if s.get("voice") == "marmo"), None)
         marvin_text = (marvin_seg or {}).get("text", "").strip()
@@ -6124,7 +6127,7 @@ class VoiceController(commands.Cog):
                     f"(marvin={len(marvin_text)}字 marmo={len(marmo_text)}字)")
         return True
 
-    async def play_dual_dialogue(self, segments, *, interject: bool = False):
+    async def play_dual_dialogue(self, segments, *, interject: bool = False, duck=None, step=None):
         """🎭 [Marmo 一搭一唱] 雙段對白播放：[marvin, marmo] 按順序。
 
         interject=True 且 Plan12 mixer 可用 + 剛好兩段 → 走打岔疊播（Marmo 在 Marvin
@@ -6147,7 +6150,7 @@ class VoiceController(commands.Cog):
         # 🎭 打岔模式（Plan12 mixer 雙層疊播）；前置不符/失敗 → 落下方序列
         if interject and self._plan12 and self._mixer is not None and len(segments) == 2:
             try:
-                if await self._play_dual_interject(segments):
+                if await self._play_dual_interject(segments, duck=duck, step=step):
                     return
             except Exception as exc:
                 logger.warning(f"🎭 [DualInterject] 失敗，落序列播: {exc}")

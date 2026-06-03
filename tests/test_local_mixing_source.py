@@ -489,7 +489,7 @@ def test_clear_tts_drops_queued_and_current():
 def test_tts2_layer_ramps_layer1_duck_gradually():
     """layer2(Marmo) 進來時 layer1(Marvin) 逐漸 fade out（非瞬降）→ 用戶要的漸進 ducking。"""
     mix = LocalMixingAudioSource(seed=3)
-    n = FRAME_SAMPLES * 40  # 夠長撐過 ramp
+    n = FRAME_SAMPLES * 70  # 夠長撐過 ramp
     mix.push_tts(_f32_frame(0.5, n=n))    # Marvin
     mix.push_tts2(_f32_frame(0.3, n=n))   # Marmo 同時進來
 
@@ -498,7 +498,8 @@ def test_tts2_layer_ramps_layer1_duck_gradually():
 
     first = _level()           # 第一幀：layer1 幾乎還沒 duck（剛開始 fade）
     settled = first
-    for _ in range(35):        # ramp 走完（~0.6s）
+    # ramp 1.0→duck 走完（step 0.010、range≈0.4 → ~40 幀；多讀確保穩定）
+    for _ in range(60):
         settled = _level()
     assert first > settled     # 漸進：第一幀比穩定後大聲（Marvin 還沒 fade 下去）
     assert settled == pytest.approx(0.5 * mix._interject_duck + 0.3, abs=0.02)

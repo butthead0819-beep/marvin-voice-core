@@ -153,7 +153,7 @@ async def test_handler_calls_generate_then_play_dual_on_success():
         bid = agent.bid(_ctx())
         await bid.handler()
     gen_mock.assert_awaited_once()
-    vc.play_dual_dialogue.assert_awaited_once_with(segments, interject=False)
+    vc.play_dual_dialogue.assert_awaited_once_with(segments, interject=False, duck=None, step=None)
     vc.play_tts.assert_not_called()
 
 
