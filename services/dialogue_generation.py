@@ -288,5 +288,6 @@ def make_gemini_dual_dialogue_llm_fn(router) -> LLMFn:
             is_json=True,
             allow_local=False,
             tier="high",
+            purpose="dual_dialogue",  # 顯式歸因（否則 frame 取內層函式名 'llm_fn'）
         )
     return llm_fn

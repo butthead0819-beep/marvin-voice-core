@@ -79,9 +79,12 @@ class DualSpeakAgent(DeclarativeIntentAgent):
         if pattern not in ("marvin_lead", "marmo_lead"):
             pattern = "marmo_lead"
 
+        # interject：payload 帶 interject=true → 打岔疊播（Plan12 mixer），手動測用
+        interject = bool(payload.get("interject"))
+
         # ── Happy path：build handler closure ─────────────────────────────
         async def _handler():
-            await self._handle(vc=vc, marmo_text=marmo_text, pattern=pattern)
+            await self._handle(vc=vc, marmo_text=marmo_text, pattern=pattern, interject=interject)
 
         return Bid(
             name=self.name,
@@ -90,7 +93,7 @@ class DualSpeakAgent(DeclarativeIntentAgent):
             reason=f"dual_speak:job_id={payload.get('job_id', '?')[:12]}:{pattern}",
         )
 
-    async def _handle(self, *, vc, marmo_text: str, pattern: str = "marmo_lead") -> None:
+    async def _handle(self, *, vc, marmo_text: str, pattern: str = "marmo_lead", interject: bool = False) -> None:
         """Handler 內：呼叫 LLM 生對白、成功播雙段、失敗 fallback 單 Marvin。
 
         webhook 預設 = Marmo 主動報事 → marmo_lead [marmo, marvin]。
@@ -118,6 +121,6 @@ class DualSpeakAgent(DeclarativeIntentAgent):
 
         # Happy path：播雙段
         try:
-            await vc.play_dual_dialogue(segments)
+            await vc.play_dual_dialogue(segments, interject=interject)
         except Exception as exc:
             logger.warning(f"[DualSpeak] play_dual_dialogue 失敗: {exc}")

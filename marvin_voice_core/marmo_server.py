@@ -81,7 +81,8 @@ class MarmoServer:
                     dispatch_source="marmo_inject",
                     # pattern：optional override（測試後門）。預設 None → agent 走 marmo_lead；
                     # 帶 "marvin_lead" 可用 webhook 聽 Case B。
-                    payload={"text": text, "job_id": job_id, "pattern": data.get("pattern")},
+                    payload={"text": text, "job_id": job_id, "pattern": data.get("pattern"),
+                             "interject": data.get("interject")},  # 手動測打岔：curl 帶 interject=true
                 )
                 dispatch_task = asyncio.create_task(bus.dispatch(ctx))
 
