@@ -5085,7 +5085,13 @@ class VoiceController(commands.Cog):
                     await target.send(f"📓 **【馬文的厭世日記】** (10min 增量彙整)\n\n{summary}")
 
             # 6. 處理社交缺口（使用並行取回的 analysis 結果）
-            if analysis:
+            # 🔇 [社交補位 OFF — 2026-06-03 依用戶要求關閉]
+            #    觸發源：Marvin Autonomous Intelligence v2.5（slow_system_loop gap-fill）。
+            #    analysis 仍照常計算供其他用途，僅停掉補位「發話」動作（gap LLM 改寫＋
+            #    embed＋TTS）。數據依據：此類主動補位接話率僅 ~4%（records/speak_outcomes.jsonl）。
+            #    重啟：把 _SOCIAL_INTERVENTION_ENABLED 改回 True。
+            _SOCIAL_INTERVENTION_ENABLED = False
+            if _SOCIAL_INTERVENTION_ENABLED and analysis:
                 gap_type = analysis.get("social_gap", "none")
                 if gap_type != "none":
                     # 用 suki_inner_monologue（已蒸餾的場景觀察）取代原始對話紀錄，避免 LLM 複述聊天內容

@@ -71,6 +71,23 @@ async def test_does_not_bid_when_no_online_members():
 
 
 @pytest.mark.asyncio
+async def test_does_not_bid_when_only_one_present_speaker():
+    """只有 1 人在場 → 不 bid。對單一（多半 AFK）聽眾主動拋話題接話率僅 ~4%
+    （records/speak_outcomes.jsonl：627/645 場 present_speakers=1）。催化對話需 ≥2 人。"""
+    a = ProactiveTopicAgent(_controller())
+    bid = await a.speak_bid(_ctx(present_speakers=["alice"]))
+    assert bid is None or bid.confidence == 0.0
+
+
+@pytest.mark.asyncio
+async def test_bids_when_two_or_more_present_speakers():
+    """≥2 人在場 → 正常 bid（有可催化的對話對象）。"""
+    a = ProactiveTopicAgent(_controller())
+    bid = await a.speak_bid(_ctx(present_speakers=["alice", "bob"]))
+    assert bid is not None and bid.confidence > 0.0
+
+
+@pytest.mark.asyncio
 async def test_does_not_bid_when_no_active_text_channel():
     a = ProactiveTopicAgent(_controller(active_text_channel=None))
     bid = await a.speak_bid(_ctx())
