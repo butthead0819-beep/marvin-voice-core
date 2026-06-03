@@ -6821,15 +6821,17 @@ class VoiceController(commands.Cog):
                     new_msg = await self.active_text_channel.send(embed=view._build_embed(), view=view)
                     view.message = new_msg
 
-                # 播放期間預取下一首；若佇列已空則觸發自動推薦
+                # 播放期間預取下一首；若佇列已空則觸發自動推薦（連續 ambient）
                 if self.stream_queue:
                     next_info = self.stream_queue[0]
                     next_url = next_info.get('url', '')
                     if next_url not in self._prefetch_cache:
                         self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(next_info))
                         logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
-                elif requested_by and requested_by != '未知' and not requested_by.startswith('Marvin'):
-                    asyncio.create_task(self._auto_recommend(requested_by))
+                else:
+                    seed = self._autorecommend_seed(requested_by, self.get_online_members())
+                    if seed:
+                        asyncio.create_task(self._auto_recommend(seed))
 
                 # DJ 播報：有預渲染音訊 → 與音樂前奏混音；僅有文字 → 切歌前獨立播報
                 dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
@@ -7208,6 +7210,24 @@ class VoiceController(commands.Cog):
                     logger.debug(f"⚠️ [Companion_Bridge] music_reaction hook skipped: {e}")
         except Exception as e:
             logger.debug(f"⚠️ [MusicMemory] 反應分析失敗: {e}")
+
+    @staticmethod
+    def _autorecommend_seed(requested_by: str | None, online_members: list[str]) -> str | None:
+        """佇列空時決定要不要續推自動推薦、用誰當 seed user。回 None = 不續推。
+
+        - '未知' sentinel / 空 → 不續推
+        - 使用者點的歌 → 用該使用者當 seed
+        - Marvin 自己推薦的歌（連續 ambient）→ 用在場成員當 seed；房間沒人 → 不續推
+          （空房交給既有 auto-dismiss 收場，不對空房 DJ）
+
+        註：Marvin 歌也要續推是關鍵——否則一輪 Marvin 推薦播完佇列空、串流就死。
+        _auto_recommend 內優先用 get_online_members()，seed 僅作 fallback。
+        """
+        if not requested_by or requested_by == '未知':
+            return None
+        if requested_by.startswith('Marvin'):
+            return online_members[0] if online_members else None
+        return requested_by
 
     async def _auto_recommend(self, username: str):
         """佇列空 → 依在場成員的音樂記憶推薦下一首批 (Phase 1: 一次推 3 首為一 round)。

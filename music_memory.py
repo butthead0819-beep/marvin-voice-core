@@ -246,12 +246,23 @@ class MusicMemory:
         self._data["recent_recommendations"] = ring[-40:]
         self._save()
 
-    def get_recent_recommendation_titles(self) -> list[str]:
-        """最近自動推薦過的歌名（供 exclude，避免重複推薦）。"""
+    # 自動推薦 novelty 視窗：超過此秒數的舊推薦不再 exclude，避免 ring 變永久
+    # 黑名單把 recommender 餓死（熱門歌一進 ring 就被永久 ban → enqueued=0）。
+    RECOMMENDATION_NOVELTY_TTL_S = 24 * 3600
+
+    def get_recent_recommendation_titles(self, ttl_s: float | None = None) -> list[str]:
+        """最近 ttl_s 內自動推薦過的歌名（供 exclude，避免短期重複推薦）。
+
+        用每筆 entry 的 ts 做時間衰減：舊推薦過 TTL 後重新可選，ring 不再是
+        永久黑名單。ttl_s=None → 用預設 RECOMMENDATION_NOVELTY_TTL_S。
+        """
+        if ttl_s is None:
+            ttl_s = self.RECOMMENDATION_NOVELTY_TTL_S
+        now = time.time()
         return [
             e.get("title", "")
             for e in self._data.get("recent_recommendations", [])
-            if e.get("title")
+            if e.get("title") and now - e.get("ts", 0) < ttl_s
         ]
 
     def get_skipped_titles(self, usernames: list[str]) -> list[str]:

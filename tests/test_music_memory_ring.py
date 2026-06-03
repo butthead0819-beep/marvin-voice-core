@@ -36,6 +36,23 @@ def test_recent_recommendation_ring_capped(tmp_path):
     assert "歌0" not in titles
 
 
+def test_recent_recommendation_ttl_filters_old_entries(tmp_path):
+    """超過 TTL 的舊推薦不再算 exclude — 避免 ring 變永久黑名單把 recommender 餓死。
+
+    每筆 entry 本就帶 ts；getter 須用 ts 做時間衰減，舊推薦過 TTL 後重新可選。
+    """
+    import time
+    mm = _mm(tmp_path)
+    now = time.time()
+    mm._data["recent_recommendations"] = [
+        {"title": "很久以前推過的", "ts": now - 25 * 3600},  # 25h 前 → 過 24h TTL
+        {"title": "剛剛推過的", "ts": now - 1 * 3600},        # 1h 前 → 仍在窗內
+    ]
+    titles = mm.get_recent_recommendation_titles()
+    assert "剛剛推過的" in titles
+    assert "很久以前推過的" not in titles
+
+
 def test_add_recent_recommendation_ignores_empty(tmp_path):
     mm = _mm(tmp_path)
     mm.add_recent_recommendation("")
