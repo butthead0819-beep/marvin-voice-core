@@ -1358,6 +1358,7 @@ def main():
 
     # 8a-ext. 把回應長度建議與主動發言效益存進 marvin_performance
     mp = final_memory.setdefault("marvin_performance", {})
+    _today_str = datetime.now().strftime("%Y-%m-%d")  # 8a-liked 與 8b 共用，須先於兩者定義
 
     # 8a-liked. 離線萃取「喜歡」回應的模式，作為 prompt 改善線索
     _liked_records = [r for r in feedback_records if r.get("reaction_type") == "喜歡"]
@@ -1402,7 +1403,6 @@ def main():
     # 8b. 性格突變 3.0 Phase 1 — 從今日 feedback 萃取 per-player 反應計數
     # 延遲 單獨計數，不納入互動評分分母
     _REACTION_TYPES = ("喜歡", "嚴重", "錯誤", "提出興趣", "延遲")
-    _today_str = datetime.now().strftime("%Y-%m-%d")
     _today_counts: dict[str, dict] = {}
     for _rec in feedback_records:
         _spk = _rec.get("speaker", "").strip()
