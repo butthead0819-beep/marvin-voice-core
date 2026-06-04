@@ -241,7 +241,15 @@ def _interactive_new_topics(candidates: list[tuple], existing: set[str] = frozen
 
 
 async def _llm_call(client, prompt: str, max_tokens: int = 500, temperature: float = 0.0) -> str:
-    """Unified LLM call — supports google.genai Client or groq AsyncGroq."""
+    """Unified LLM call — 優先走 llm_pool bus（多 provider failover），
+    向下相容 google.genai Client / groq AsyncGroq（手動 --export 等舊路徑）。"""
+    from llm_pool import TieredLLMRouter
+    if isinstance(client, TieredLLMRouter):
+        # analyze tier：topic 分類 + 風格合成都是 70b 級任務。不開 json mode
+        # （合成輸出靠 ```json fence 解析，與既有 parser 一致）。全 provider 爆回 ""。
+        out = await client.analyze(prompt, caller="speechdna",
+                                   max_tokens=max_tokens, temperature=temperature)
+        return out or ""
     import google.genai as _genai
     if isinstance(client, _genai.Client):
         resp = await asyncio.wait_for(
@@ -928,18 +936,23 @@ async def main():
         import_result(args.import_result)
         return
 
-    # Load LLM client — Groq only（一次性分析工具，免費 tier 足夠）
+    # LLM client：走 llm_pool bus（analyze tier，多 provider failover）。
+    # 5/31 大肚 style_summary 留空根因＝單打 Groq 撞 TPD 100k 無 failover。改走 bus 後
+    # Groq 爆自動讓位 Cerebras / Gemini 2.5 free（per-model 獨立配額）等。無任何 key →
+    # 空池 → client=None → 跳過 LLM 步驟（graceful，行為同舊版）。
+    _load_all_env()
     client = None
     try:
-        import groq as _groq
-        key = os.environ.get("GROQ_API_KEY") or _load_env_key("GROQ_API_KEY")
-        if key:
-            client = _groq.AsyncGroq(api_key=key)
-            logger.info("✅  Groq API 就緒")
+        from llm_pool import build_tiered_router
+        _router = build_tiered_router()
+        _n = len(_router.analyze_pool.endpoints)
+        if _n:
+            client = _router
+            logger.info(f"✅  LLM bus 就緒（analyze tier {_n} endpoints）")
         else:
-            logger.warning("⚠️   GROQ_API_KEY 未設定，跳過 LLM 步驟")
-    except ImportError:
-        logger.warning("⚠️   groq 套件未安裝，跳過 LLM 步驟")
+            logger.warning("⚠️   LLM bus 無可用 provider（缺 key），跳過 LLM 步驟")
+    except Exception as e:
+        logger.warning(f"⚠️   LLM bus 初始化失敗，跳過 LLM 步驟: {e}")
 
     all_utts = load_utterances()
 
@@ -968,6 +981,20 @@ def _load_env_key(key_name: str) -> Optional[str]:
         if line.startswith(f"{key_name}="):
             return line.split("=", 1)[1].strip()
     return None
+
+
+def _load_all_env() -> None:
+    """把 .env 全部灌進 os.environ（缺的才補），讓 llm_pool bus 讀得到各 provider key。"""
+    env_path = _ROOT / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if "=" in line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            k = k.strip()
+            if k and k not in os.environ:
+                os.environ[k] = v.strip().strip('"').strip("'")
 
 
 if __name__ == "__main__":
