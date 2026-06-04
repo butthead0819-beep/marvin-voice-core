@@ -79,15 +79,36 @@ def score_yt_candidate(info: dict) -> float:
     return score
 
 
-def pick_best_music_candidate(candidates: list[dict]) -> dict | None:
-    """從候選清單挑出分數最高的。
-
-    Returns:
-        最高分的 candidate dict；候選清單為空時回傳 None。
-        即使所有候選分數都 < 0 仍回傳最高分者（fallback：總比沒結果好）。
+def has_music_signal(info: dict) -> bool:
+    """候選是否帶明確音樂信號（YouTube 🎵 記號類）：
+    - 標題命中非音樂黑名單（reaction/訪談/新聞/實況…）→ 一律非音樂（覆蓋弱 hint，
+      避免「李欣訪談完整版」靠「完整版」混過）。
+    - YouTube Music 類別 / "歌手 - Topic" 自動音樂頻道 / 標題含 official/MV/audio/cover/
+      歌詞/OST 等 → 是音樂。
+    皆無 → 不是音樂。
     """
-    if not candidates:
+    title    = (info.get("title") or "").lower()
+    uploader = (info.get("uploader") or info.get("channel") or "").lower()
+    cats     = [c.lower() for c in (info.get("categories") or [])]
+    if any(b in title for b in NON_MUSIC_BLACKLIST):
+        return False
+    if "music" in cats:
+        return True
+    if uploader.endswith(" - topic"):
+        return True
+    return any(h in title for h in MUSIC_HINTS)
+
+
+def pick_best_music_candidate(candidates: list[dict]) -> dict | None:
+    """從候選清單挑出分數最高的「真音樂」。
+
+    2026-06-04 Gap B：嚴格門檻——只考慮帶明確音樂信號者（has_music_signal）。
+    STT 糊字搜出整排綜合影片（脫口秀/訪談）時，寧可回 None（caller 視為無結果，
+    graceful 不播）也不塞非音樂。候選空 / 全無音樂信號 → None。
+    """
+    musical = [c for c in candidates if has_music_signal(c)]
+    if not musical:
         return None
-    scored = [(score_yt_candidate(c), c) for c in candidates]
+    scored = [(score_yt_candidate(c), c) for c in musical]
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[0][1]

@@ -119,14 +119,35 @@ def test_pick_best_empty_returns_none():
     assert pick_best_music_candidate([]) is None
 
 
-def test_pick_best_all_negative_still_returns_top():
-    # 即使全部分數 < 0 也要回傳最高的（fallback，不要 None）
+def test_pick_best_rejects_when_no_music_signal():
+    # 2026-06-04 Gap B：全部候選都沒音樂信號（Music 類別/-Topic/MV/official…）→ 拒播 None。
+    # 取代舊「總比沒結果好」fallback——STT 糊字搜出整排綜合影片時，寧可不播也不塞非音樂。
     candidates = [
         {"title": "Reaction A", "duration": 30, "categories": ["Entertainment"]},
         {"title": "Reaction B", "duration": 40, "categories": ["Entertainment"]},
     ]
-    result = pick_best_music_candidate(candidates)
-    assert result is not None
+    assert pick_best_music_candidate(candidates) is None
+
+
+def test_pick_best_rejects_talk_show_garble_case():
+    # 真實 case：「播放李欣」STT 糊字 → 搜出整排脫口秀精華，全無音樂信號 → 拒播。
+    candidates = [
+        {"title": "李新對公婆講話超直接 #小姐不熙娣【精華】", "uploader": "DeeGirlsTalk",
+         "duration": 400, "categories": ["Entertainment"]},
+        {"title": "李欣訪談完整版", "uploader": "新聞台", "duration": 500, "categories": []},
+    ]
+    assert pick_best_music_candidate(candidates) is None
+
+
+def test_pick_best_keeps_topic_song_among_non_music():
+    # 一排非音樂中夾一個「- Topic」音樂頻道 → 選那個音樂的。
+    candidates = [
+        {"title": "李欣訪談 reaction", "duration": 400, "categories": ["Entertainment"]},
+        {"title": "愛人啊", "uploader": "孫淑媚 - Topic", "duration": 250, "categories": []},
+    ]
+    best = pick_best_music_candidate(candidates)
+    assert best is not None
+    assert best["uploader"] == "孫淑媚 - Topic"
 
 
 def test_pick_best_prefers_music_over_short_song():
