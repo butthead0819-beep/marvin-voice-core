@@ -7373,7 +7373,19 @@ class VoiceController(commands.Cog):
         # Phase 1 M4: 9-pick-3 一次 enqueue 一 round
         cands = pick_candidates(pool, k=self._round_size, top_n=9)
         if not cands:
-            logger.debug("🎵 [AutoRecommend] pool 空，跳過")
+            # 無限制補位（2026-06-04）：嚴格 exclude（最近播 ∪ ring ∪ skipped ∪ suki history）
+            # 會掏空有限團體歌庫 → 串流停擺。放寬到只保留 skipped 永久排除，鬆開 recently/
+            # ring/suki，讓非 skipped 老歌重新發現，佇列永不空轉。
+            relaxed_pool = build_recommendation_pool(
+                members=members, songs=mm.all_songs(),
+                exclude_titles=list(dict.fromkeys(skipped)),
+                now=time.time(), spotlight_member=spotlight, vibe_filter=vibe_filter,
+            )
+            cands = pick_candidates(relaxed_pool, k=self._round_size, top_n=9)
+            if cands:
+                logger.info("🎵 [AutoRecommend] 嚴格池枯竭 → 放寬 exclude（仍排除 skipped）重新發現")
+        if not cands:
+            logger.debug("🎵 [AutoRecommend] pool 空（連放寬都無），跳過")
             return
 
         # 進新 round → reset track count

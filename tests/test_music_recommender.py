@@ -15,6 +15,7 @@ from music_recommender import (
     is_already_recommended,
     normalize_title,
     pick_candidate,
+    pick_candidates,
 )
 
 
@@ -181,3 +182,27 @@ def test_pick_candidate_varies_across_seeds():
     pool = [_cand(f"歌{i}", 50) for i in range(5)]  # 同分 → 純隨機
     picks = {pick_candidate(pool, rng=random.Random(s), top_n=5).anchor_title for s in range(20)}
     assert len(picks) > 1
+
+
+# ── 無限制補位 fallback：嚴格池枯竭時放寬 exclude（保留 skipped）─────────────
+# 2026-06-04：佇列空無限補位，但永久排除 skipped + recently + ring + suki 會掏空有限
+# 團體歌庫 → cands 空 → 停擺。fallback 放寬到只排除 skipped，非 skipped 老歌重新發現。
+
+def test_exhaustion_fallback_relaxed_exclude_recovers_non_skipped():
+    songs = {
+        "fav":  _song("最愛的歌", requesters={"a": 5}, last_play_age_days=10),
+        "skip": _song("被skip的歌", requesters={"a": 3}, last_play_age_days=10),
+    }
+    members = ["a"]
+    # 嚴格：兩首都排除（最愛最近播過、skip 被 skip）→ 候選空 → 會停擺
+    strict_pool = build_recommendation_pool(
+        members=members, songs=songs,
+        exclude_titles=["最愛的歌", "被skip的歌"], now=NOW, spotlight_member="a")
+    assert pick_candidates(strict_pool, k=3, top_n=9) == []
+    # 放寬：只排除 skipped → 最愛重新發現，被 skip 仍排除
+    relaxed_pool = build_recommendation_pool(
+        members=members, songs=songs,
+        exclude_titles=["被skip的歌"], now=NOW, spotlight_member="a")
+    titles = [c.anchor_title for c in relaxed_pool]
+    assert "最愛的歌" in titles
+    assert "被skip的歌" not in titles
