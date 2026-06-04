@@ -29,7 +29,7 @@ from intent_bus import IntentContext
 logger = logging.getLogger(__name__)
 
 
-# 語音步進 10%，與按鈕 UI（PlayControlView.VOL_STEP=0.10）一致。
+# 語音步進 10%（按鈕 UI PlayControlView.VOL_STEP=0.05 較細，2026-06-04 起兩者不同）。
 VOICE_VOL_STEP = 0.10
 
 _ACK_TEXT = {

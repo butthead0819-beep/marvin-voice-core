@@ -559,6 +559,7 @@ class VoiceController(commands.Cog):
         self._stream_position_source = None       # 當前 PositionTrackingAudioSource（讀播放位置）
         self._current_stream_url = None           # 當前串流 URL（備 stream2 用）
         self._stream_loudness: dict[str, dict] = {}  # url → loudnorm 量測值（Slice 2 音量匹配）
+        self._stream_norm_gain: dict[str, float] = {}  # url → 每首響度正規化常數增益（Plan 12 mixer 套）
         self._pending_volume_swap = False         # 語音調音量後，等當前 swap 完再 arm 一次音量 swap（排隊）
         self.stream_queue = []           # list of {title, uploader, url, thumbnail, webpage_url, duration}
         self.stream_task = None
@@ -668,7 +669,10 @@ class VoiceController(commands.Cog):
                     self._mixer.clear_music()
                     return
                 if volume_attr is not None:
-                    self._mixer.set_volume(getattr(self, volume_attr))
+                    # 每首響度正規化常數增益（背景量好才有；沒量好=1.0 raw）。乘在使用者音量上，
+                    # 一首一個常數 → 不在歌內 pumping。
+                    _ng = self._stream_norm_gain.get(self._current_stream_url, 1.0)
+                    self._mixer.set_volume(getattr(self, volume_attr) * _ng)
                 self._ensure_mixer_playing(vc)  # on-demand：重連後 adapter 沒了 → 重 arm
                 await asyncio.sleep(0.1)
         finally:
@@ -7713,6 +7717,10 @@ class VoiceController(commands.Cog):
                     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
                     'options': '-vn -bufsize 512k',
                 }
+                # 🎚️ [LoudNorm] 背景取樣 25/50/75% 算每首常數增益（mixer 同步乘進音量）。
+                # 不阻塞播放；沒量好前用 raw 音量，量好後自動套一次。
+                if url not in self._stream_norm_gain:
+                    asyncio.create_task(self._measure_norm_gain_bg(url))
                 await self._mixer_play_music(
                     vc, discord.FFmpegPCMAudio(url, **p12_opts),
                     still_active=lambda: self.stream_mode, volume_attr="stream_volume",
@@ -7787,6 +7795,41 @@ class VoiceController(commands.Cog):
             logger.info(f"🎚️ [HotSwap] loudness 量測完成: I={measured['input_i']} → 匹配就緒")
         else:
             logger.warning("⚠️ [HotSwap] loudness 量測無結果，hotswap 將 fallback 固定音量")
+
+    async def _measure_norm_gain_bg(self, url: str):
+        """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存
+        _stream_norm_gain[url]，mixer 同步乘進使用者音量（每首套一次、不 pumping）。
+
+        每首只量一次（已有直接 return）。失敗/逾時 → 不存（mixer 用 1.0 raw，graceful）。
+        subprocess 用 create_subprocess_exec（對齊 async 規範，不阻塞播放）。
+        """
+        if url in self._stream_norm_gain:
+            return
+        from loudness_norm import (
+            sample_positions, parse_ebur128_integrated, average_lufs, compute_loudness_gain,
+        )
+        info = self._current_stream_info or {}
+        duration = float(info.get("duration") or 0)
+        lufs_vals: list[float | None] = []
+        for pos in sample_positions(duration):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-nostats", "-ss", f"{pos:.1f}", "-t", "20", "-i", url,
+                    "-af", "ebur128", "-f", "null", "-",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                lufs_vals.append(parse_ebur128_integrated(stderr.decode("utf-8", "ignore")))
+            except Exception:
+                lufs_vals.append(None)
+        avg = average_lufs(lufs_vals)
+        if avg is None:
+            logger.warning(f"⚠️ [LoudNorm] {url[:40]} 響度量測無結果，用 raw 音量")
+            return
+        gain = compute_loudness_gain(avg)
+        self._stream_norm_gain[url] = gain
+        logger.info(f"🎚️ [LoudNorm] 量測完成 I≈{avg:.1f} LUFS → 增益 {gain:.2f}x（每首套一次）")
 
     async def _do_hotswap(self, vc, current_loop, play_done_event):
         """執行中途 TTS 熱切換：stop stream1 → play stream2（TTS 已混入）。
