@@ -12,7 +12,7 @@ import time
 import asyncio
 import shutil
 import subprocess
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -832,6 +832,33 @@ _CORRECTIONS_JSON  = BASE_DIR / "records" / "stt_corrections.json"
 _MIN_FREQ = 2   # 出現 ≥2 次才納入字典
 
 
+def _flatten_corrections(doc) -> dict[str, str]:
+    """從（可能遞迴巢狀腐爛的）corrections 檔撈回 flat {raw:clean}。
+
+    歷史 bug 讓檔案變 {"_updated":.., "corrections": {真pair.., "_updated":.., "corrections": {更舊..}}}
+    遞迴下去 ~25 層。這裡遞迴走訪，收集所有 str→str pair，跳過結構 key
+    （_updated / corrections），外層（較新）優先（setdefault）。
+    """
+    out: dict[str, str] = {}
+
+    def walk(d):
+        if not isinstance(d, dict):
+            return
+        for k, v in d.items():
+            if k == "_updated":
+                continue
+            if k == "corrections" and isinstance(v, dict):
+                walk(v)
+                continue
+            if isinstance(k, str) and isinstance(v, str):
+                out.setdefault(k, v)
+            elif isinstance(v, dict):
+                walk(v)
+
+    walk(doc)
+    return out
+
+
 def build_stt_corrections_dict() -> dict[str, str]:
     """
     解析 stt_corrections.jsonl，聚合 raw→clean 頻率，
@@ -859,16 +886,26 @@ def build_stt_corrections_dict() -> dict[str, str]:
         print(f"[STT Corrections] ⚠ 讀取失敗: {e}", flush=True)
         return {}
 
-    # 篩選高頻修正
+    # 篩選高頻修正。同一 raw 可能對到多個分歧 clean（whole-sentence 修正天生不穩，
+    # clean 依當下語境變）→ exact-match 快取若收歧義條，會把「馬文播放音樂」改寫成
+    # 「播放周杰倫」點錯歌。故：同 raw 須有單一主導 clean（≥_DOMINANCE）才收，否則整條丟。
+    _DOMINANCE = 0.7
+    per_raw: dict[str, Counter] = defaultdict(Counter)
+    for (raw, clean), count in freq.items():
+        per_raw[raw][clean] += count
+
     corrections: dict[str, str] = {}
-    for (raw, clean), count in sorted(freq.items(), key=lambda x: -x[1]):
-        if count >= _MIN_FREQ and raw not in corrections:
-            corrections[raw] = clean
+    for raw, cnts in per_raw.items():
+        total = sum(cnts.values())
+        top_clean, top_count = cnts.most_common(1)[0]
+        if top_count >= _MIN_FREQ and top_count / total >= _DOMINANCE:
+            corrections[raw] = top_clean
 
     # 寫出 JSON 字典
     try:
-        existing = json.loads(_CORRECTIONS_JSON.read_text(encoding="utf-8")) if _CORRECTIONS_JSON.exists() else {}
-        # Union：新的覆蓋舊的（同 raw 以新 clean 為準）
+        _existing_doc = json.loads(_CORRECTIONS_JSON.read_text(encoding="utf-8")) if _CORRECTIONS_JSON.exists() else {}
+        # 撈回 flat pairs（修遞迴巢狀腐爛），再 union：新的覆蓋舊的（同 raw 以新 clean 為準）
+        existing = _flatten_corrections(_existing_doc)
         existing.update(corrections)
         _CORRECTIONS_JSON.write_text(
             json.dumps({"_updated": datetime.now().isoformat(), "corrections": existing}, ensure_ascii=False, indent=2),
