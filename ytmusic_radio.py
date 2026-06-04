@@ -90,3 +90,33 @@ def ytmusic_radio(
     excl = {normalize_title(t) for t in exclude_titles}
     filtered = [c for c in cands if normalize_title(c["title"]) not in excl]
     return filtered[:limit]
+
+
+def blend_radio_results(results_per_seed, exclude_titles=None, limit=None):
+    """多 seed 的 radio 結果交錯混合（round-robin）+ 跨 seed 去重 + 排除 + 截斷。
+
+    round-robin 讓每個 seed 的口味都進前段，而非單一 seed 灌滿（多 seed 混合 radio 的核心）。
+    去重以 url 為主、title 為輔；exclude_titles 用 normalize_title 比對（與單 seed 一致）。
+    純函式、無網路、可單測。任何 seed 結果空/缺 url 安全跳過。
+    """
+    from itertools import zip_longest
+    excl = {normalize_title(t) for t in (exclude_titles or [])}
+    seen_url: set = set()
+    seen_title: set = set()
+    out: list[dict] = []
+    for group in zip_longest(*results_per_seed):
+        for c in group:
+            if not c:
+                continue
+            url = c.get("url")
+            title = (c.get("title") or "").strip()
+            if not url or url in seen_url:
+                continue
+            if title in seen_title or normalize_title(title) in excl:
+                continue
+            seen_url.add(url)
+            seen_title.add(title)
+            out.append(c)
+            if limit and len(out) >= limit:
+                return out
+    return out

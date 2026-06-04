@@ -308,6 +308,37 @@ class MusicMemory:
                     out.append(m.group(1))
         return out
 
+    def get_played_seed_ids(self, usernames: list[str], limit: int = 20) -> list[str]:
+        """在場成員**真人點過**的歌的 videoId（T2 radio 多 seed 來源，比 liked 更廣）。
+
+        關鍵守則：排除「Marvin推薦（為X）」等自薦 requester（避免回音室——拿自己推的
+        歌當 seed 會讓推薦越收越窄）。只算在場成員的真人點播次數，按次數加權取 top-N。
+        videoId 從 songs dict key（watch URL）抽，與 get_liked_video_ids 一致。
+        """
+        import re
+        members = set(usernames)
+        weighted: list[tuple[int, str]] = []
+        for url, s in (self._data.get("songs") or {}).items():
+            human = sum(
+                cnt for r, cnt in (s.get("requesters") or {}).items()
+                if r in members and "Marvin" not in r and "推薦" not in r
+            )
+            if human <= 0:
+                continue
+            m = re.search(r"(?:v=|youtu\.be/|/watch\?v=)([A-Za-z0-9_-]{11})", url or "")
+            if m:
+                weighted.append((human, m.group(1)))
+        weighted.sort(key=lambda x: -x[0])
+        out: list[str] = []
+        seen: set[str] = set()
+        for _, vid in weighted:
+            if vid not in seen:
+                seen.add(vid)
+                out.append(vid)
+            if len(out) >= limit:
+                break
+        return out
+
     def get_recent_feedback(self, username: str, since_ts: float) -> list[dict]:
         """Read-only: return recommendation feedback entries for user, ts >= since_ts.
 

@@ -7361,34 +7361,56 @@ class VoiceController(commands.Cog):
         return requested_by
 
     async def _t2_discovery_candidates(self, members: list[str], exclude_titles: list[str]) -> list:
-        """T2 discovery：seed → ytmusic radio 取相關新歌 → Candidate(direct_url)。
+        """T2 discovery：多 seed → ytmusic radio 混合取相關新歌 → Candidate(direct_url)。
 
-        seed 優先用「使用者最近**手動點**的歌」（radio 跟著當下口味/心情走）；沒有才退回在場者
-        liked 歷史輪替。只用正向訊號（不用 skipped）。blocking get_watch_playlist 走
-        asyncio.to_thread。無 seed / radio 掛 / 全被 exclude → 回 []（→ 退 T3 回收）。
+        seed 池（多 seed 混合，反映群組整體口味而非單一歌）：
+          1. 使用者最近**手動點**的歌（跟當下心情走，排第一 → 混合時佔前段）
+          2. 點播史真人點過的歌（get_played_seed_ids，排除 Marvin 自薦，按次數加權，每輪輪播窗口）
+          3. liked 歷史補
+        取前 N seed 各跑 radio → blend_radio_results 交錯混合去重。只用正向訊號（不用 skipped）。
+        blocking get_watch_playlist 走 asyncio.to_thread，單 seed 失敗只跳過該 seed。
+        全 seed 空 / radio 全掛 / 全被 exclude → 回 []（→ 退 T3 回收）。
         """
         mm = getattr(self.bot, 'music_memory', None)
         if mm is None:
             return []
-        seed = getattr(self, '_last_user_song_seed', None)   # 使用者最近點歌優先
-        if not seed:
-            seed_ids = mm.get_liked_video_ids(members)
-            if not seed_ids:
-                return []
-            self._t2_seed_idx = (getattr(self, '_t2_seed_idx', -1) + 1) % len(seed_ids)
-            seed = seed_ids[self._t2_seed_idx]
-        try:
-            from ytmusic_radio import ytmusic_radio
-            radio = await asyncio.to_thread(
-                ytmusic_radio, seed,
-                exclude_titles=exclude_titles, limit=self._round_size * 3,
-            )
-        except Exception as e:
-            logger.warning(f"⚠️ [AutoRecommend] T2 radio 失敗，退 T3: {e}")
+        seeds: list[str] = []
+        last = getattr(self, '_last_user_song_seed', None)   # 使用者最近點歌優先
+        if last:
+            seeds.append(last)
+        hist = mm.get_played_seed_ids(members, limit=30)
+        if hist:
+            # 每輪輪播窗口起點，避免每次都同一批 top seeds
+            self._t2_seed_idx = (getattr(self, '_t2_seed_idx', -1) + 1) % len(hist)
+            hist = hist[self._t2_seed_idx:] + hist[:self._t2_seed_idx]
+        for vid in hist + mm.get_liked_video_ids(members):
+            if vid not in seeds:
+                seeds.append(vid)
+        _N_SEEDS = 3
+        seeds = seeds[:_N_SEEDS]
+        if not seeds:
             return []
+        from ytmusic_radio import ytmusic_radio, blend_radio_results
+        results = []
+        for sd in seeds:
+            try:
+                r = await asyncio.to_thread(
+                    ytmusic_radio, sd,
+                    exclude_titles=exclude_titles, limit=self._round_size * 2,
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ [AutoRecommend] T2 radio seed={sd} 失敗，跳過: {e}")
+                continue
+            if r:
+                results.append(r)
+        if not results:
+            logger.warning("⚠️ [AutoRecommend] T2 全 seed radio 空/失敗，退 T3")
+            return []
+        radio = blend_radio_results(
+            results, exclude_titles=exclude_titles, limit=self._round_size * 3)
         if not radio:
             return []
-        logger.info(f"🎵 [AutoRecommend] T2 discovery: seed={seed} → {len(radio)} 首相關新歌候選")
+        logger.info(f"🎵 [AutoRecommend] T2 discovery: {len(seeds)} seeds 混合 → {len(radio)} 首相關新歌候選")
         from music_recommender import Candidate
         return [
             Candidate(anchor_title=c["title"], anchor_artist=c["artist"],
