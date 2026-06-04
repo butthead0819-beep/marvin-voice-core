@@ -832,6 +832,40 @@ _CORRECTIONS_JSON  = BASE_DIR / "records" / "stt_corrections.json"
 _MIN_FREQ = 2   # 出現 ≥2 次才納入字典
 
 
+_WAKE_DROP_LOG = BASE_DIR / "records" / "cleaner_gate_drops.jsonl"
+_WAKE_FALSE_THRESHOLD = 2
+
+
+def filter_unsafe_wake_additions(additions, drop_path=None, threshold=_WAKE_FALSE_THRESHOLD):
+    """剔除會誤喚醒的喚醒詞建議。
+
+    WAKE_PATTERN 是子字串比對，故日常高頻詞（麻煩/導航…）一旦進清單，正常閒聊
+    講到就誤觸發。判別：該詞在 cleaner_gate_drops（被當「非喚醒」丟掉的句子）裡
+    出現 ≥threshold 次 = 日常詞 → 拒收。合法近音詞（馬聞/馬萌…是 馬文 誤聽，非真詞）
+    在 drops 出現 0 次，不會被誤殺（prod 實測全 0）。
+    回 (safe: list, rejected: list)。drops 讀不到 → 全放行（不因缺資料拒新詞）。
+    """
+    drop_path = Path(drop_path) if drop_path else _WAKE_DROP_LOG
+    raws: list[str] = []
+    try:
+        for line in drop_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                raws.append(json.loads(line).get("raw", "") or "")
+            except Exception:
+                pass
+    except Exception:
+        return list(additions), []
+
+    safe, rejected = [], []
+    for w in additions:
+        cnt = sum(1 for r in raws if w and w in r)
+        (rejected if cnt >= threshold else safe).append(w)
+    return safe, rejected
+
+
 def _flatten_corrections(doc) -> dict[str, str]:
     """從（可能遞迴巢狀腐爛的）corrections 檔撈回 flat {raw:clean}。
 
@@ -1566,7 +1600,12 @@ def main():
             )
             _curr_additions = _existing.get("additions", [])
             _curr_removals  = _existing.get("removals", [])
-            for w in _suggested_additions:
+            # 誤喚醒 guard：日常高頻詞（drops ≥ threshold）不進清單，避免子字串比對狂誤觸發
+            _safe_additions, _rejected_additions = filter_unsafe_wake_additions(_suggested_additions)
+            if _rejected_additions:
+                print(f"[Daily Review] 🚫 拒收誤喚醒風險喚醒詞（日常高頻）: {_rejected_additions}",
+                      flush=True)
+            for w in _safe_additions:
                 if w and w not in _curr_additions:
                     _curr_additions.append(w)
             for w in _suggested_removals:
