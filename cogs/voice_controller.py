@@ -560,6 +560,7 @@ class VoiceController(commands.Cog):
         self._current_stream_url = None           # 當前串流 URL（備 stream2 用）
         self._stream_loudness: dict[str, dict] = {}  # url → loudnorm 量測值（Slice 2 音量匹配）
         self._stream_norm_gain: dict[str, float] = {}  # url → 每首響度正規化常數增益（Plan 12 mixer 套）
+        self._last_user_song_seed: str | None = None   # 使用者最近手動點的歌 video_id（T2 radio seed 優先）
         self._pending_volume_swap = False         # 語音調音量後，等當前 swap 完再 arm 一次音量 swap（排隊）
         self.stream_queue = []           # list of {title, uploader, url, thumbnail, webpage_url, duration}
         self.stream_task = None
@@ -4599,8 +4600,13 @@ class VoiceController(commands.Cog):
             if mm and user and title:
                 mm.add_recommendation_feedback(user, title, "played_again")
             self._consecutive_skips_by_url.pop(info.get('url') or '', None)
+            # 使用者點歌 → 更新 T2 推薦 seed（radio 跟著最近點的歌走，而非舊 liked 歷史）
+            _m = re.search(r"(?:v=|youtu\.be/|/watch\?v=)([A-Za-z0-9_-]{11})",
+                           info.get('webpage_url') or '')
+            if _m:
+                self._last_user_song_seed = _m.group(1)
         except Exception:
-            logger.debug("[Queue] skip-override 記錄失敗", exc_info=True)
+            logger.debug("[Queue] skip-override / seed 更新失敗", exc_info=True)
 
     def _detect_music_direct_command(self, text: str, stream_mode: bool = False) -> dict | None:
         """[IBA Tier 0] 無歧義音樂控制關鍵詞偵測（不需喚醒詞）。
@@ -7355,20 +7361,22 @@ class VoiceController(commands.Cog):
         return requested_by
 
     async def _t2_discovery_candidates(self, members: list[str], exclude_titles: list[str]) -> list:
-        """T2 discovery：在場者 liked 的歌當 seed → ytmusic radio 取相關新歌 → Candidate(direct_url)。
+        """T2 discovery：seed → ytmusic radio 取相關新歌 → Candidate(direct_url)。
 
-        seed 只用正向訊號（liked），不用 skipped（避免往被嫌方向擴）。每 round 輪替一首 seed。
-        blocking 的 get_watch_playlist 走 asyncio.to_thread（不阻塞 event loop）。無 liked seed
-        / radio 掛 / 全被 exclude → 回 []（→ 退 T3 回收）。
+        seed 優先用「使用者最近**手動點**的歌」（radio 跟著當下口味/心情走）；沒有才退回在場者
+        liked 歷史輪替。只用正向訊號（不用 skipped）。blocking get_watch_playlist 走
+        asyncio.to_thread。無 seed / radio 掛 / 全被 exclude → 回 []（→ 退 T3 回收）。
         """
         mm = getattr(self.bot, 'music_memory', None)
         if mm is None:
             return []
-        seed_ids = mm.get_liked_video_ids(members)
-        if not seed_ids:
-            return []
-        self._t2_seed_idx = (getattr(self, '_t2_seed_idx', -1) + 1) % len(seed_ids)
-        seed = seed_ids[self._t2_seed_idx]
+        seed = getattr(self, '_last_user_song_seed', None)   # 使用者最近點歌優先
+        if not seed:
+            seed_ids = mm.get_liked_video_ids(members)
+            if not seed_ids:
+                return []
+            self._t2_seed_idx = (getattr(self, '_t2_seed_idx', -1) + 1) % len(seed_ids)
+            seed = seed_ids[self._t2_seed_idx]
         try:
             from ytmusic_radio import ytmusic_radio
             radio = await asyncio.to_thread(
