@@ -7359,8 +7359,12 @@ class VoiceController(commands.Cog):
             for c in radio
         ]
 
-    async def _auto_recommend(self, username: str):
+    async def _auto_recommend(self, username: str, *, _tier: int = 1):
         """佇列空 → 依在場成員的音樂記憶推薦下一首批 (Phase 1: 一次推 3 首為一 round)。
+
+        _tier：候選來源層級。T1 團體記憶 → T2 ytmusic discovery → T3 放寬回收。
+        某層「實際入隊數=0」（cands 空 OR 全被 ring/dedup 濾光）→ 遞迴進下一層，
+        確保佇列真的有新歌（修 2026-06-04：原本只看 cands 空、漏了 enqueued=0 卡住）。
 
         Phase 1 M4 ambient room curator:
           - 一次呼叫 enqueue 最多 3 首 (一 round, ≈15min)
@@ -7415,25 +7419,29 @@ class VoiceController(commands.Cog):
             vibe_filter=vibe_filter,
         )
 
-        # Phase 1 M4: 9-pick-3 一次 enqueue 一 round（T1 團體記憶）
-        cands = pick_candidates(pool, k=self._round_size, top_n=9)
-        if not cands:
-            # T2 discovery（2026-06-04）：T1 有限團體歌庫枯竭 → 用在場者 liked 的歌當 seed
-            # → ytmusic radio 取相關「新歌」，往正向口味擴張（過 skipped/已播閘）。
+        # 本層候選來源 + enqueue 時 ring 檢查嚴格度（ring_exclude）。
+        if _tier == 1:
+            # T1 團體記憶（9-pick-3）
+            cands = pick_candidates(pool, k=self._round_size, top_n=9)
+            ring_exclude = exclude_titles
+        elif _tier == 2:
+            # T2 discovery：在場者 liked 的歌當 seed → ytmusic radio 取相關新歌
             cands = await self._t2_discovery_candidates(members, exclude_titles)
-        if not cands:
-            # T3 回收：T2 也沒（無 liked seed / radio 掛）→ 放寬 exclude（只保留 skipped
-            # 永久排除），鬆開 recently/ring/suki，讓非 skipped 老歌重新發現，佇列永不空轉。
+            ring_exclude = exclude_titles
+        else:
+            # T3 回收：放寬 exclude 到只保留 skipped（鬆開 recently/ring/suki），讓非 skipped
+            # 老歌重新發現。ring_exclude 同步放寬，否則 enqueue 的 ring 檢查又把它擋掉。
             relaxed_pool = build_recommendation_pool(
                 members=members, songs=mm.all_songs(),
                 exclude_titles=list(dict.fromkeys(skipped)),
                 now=time.time(), spotlight_member=spotlight, vibe_filter=vibe_filter,
             )
             cands = pick_candidates(relaxed_pool, k=self._round_size, top_n=9)
-            if cands:
-                logger.info("🎵 [AutoRecommend] 嚴格池枯竭 → 放寬 exclude（仍排除 skipped）重新發現")
+            ring_exclude = list(dict.fromkeys(skipped))
         if not cands:
-            logger.debug("🎵 [AutoRecommend] pool 空（連放寬都無），跳過")
+            if _tier < 3:
+                return await self._auto_recommend(username, _tier=_tier + 1)
+            logger.debug("🎵 [AutoRecommend] 三層皆無候選，跳過")
             return
 
         # 進新 round → reset track count
@@ -7469,7 +7477,7 @@ class VoiceController(commands.Cog):
             if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
                 logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過")
                 continue
-            if is_already_recommended(info['title'], exclude_titles):
+            if is_already_recommended(info['title'], ring_exclude):
                 logger.info(f"🎵 [AutoRecommend] {info['title']} 已在 recent ring，略過")
                 continue
 
@@ -7528,7 +7536,10 @@ class VoiceController(commands.Cog):
 
             enqueued += 1
 
-        logger.info(f"🎵 [AutoRecommend] round 完成: enqueued={enqueued}/{self._round_size}")
+        logger.info(f"🎵 [AutoRecommend] T{_tier} round 完成: enqueued={enqueued}/{self._round_size}")
+        if enqueued == 0 and _tier < 3:
+            # cands 非空但全被 ring/dedup/quality 濾光 → 進下一層找真的能播的（修 ring 飽和卡死）
+            await self._auto_recommend(username, _tier=_tier + 1)
 
     async def _llm_coverify(self, cand, exclude_titles: list[str]) -> str:
         """spotlight lane：請 LLM 推薦選定錨點歌的 cover 版本。回 "" 表示無推薦。"""
