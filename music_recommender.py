@@ -58,6 +58,7 @@ class Candidate:
     mode: str                   # direct（重播）| cover（交給 LLM cover 化）
     target_member: str | None   # spotlight 聚焦對象
     score: float
+    direct_url: str = ""         # T2 discovery：自帶 YouTube URL → enqueue 時直解不搜尋
 
 
 def _last_play_ts(song: dict) -> float:

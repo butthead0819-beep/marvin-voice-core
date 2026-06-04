@@ -275,6 +275,32 @@ class MusicMemory:
                     out.append(f["title"])
         return out
 
+    def get_liked_video_ids(self, usernames: list[str]) -> list[str]:
+        """在場成員 liked 過的歌的 YouTube videoId（T2 radio seed 用，正向訊號）。
+
+        用 normalize_title 把 liked feedback 標題 match 到 songs，取 songs dict key
+        （watch URL）的 videoId。去重、保序。不用 skipped 當 seed（避免往被嫌方向擴）。
+        """
+        import re
+        from music_recommender import normalize_title
+        liked_norms: set[str] = set()
+        recs = self._data.get("recommendations", {})
+        for u in usernames:
+            for f in recs.get(u, {}).get("feedback", []):
+                if f.get("result") == "liked" and f.get("title"):
+                    liked_norms.add(normalize_title(f["title"]))
+        if not liked_norms:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for url, s in (self._data.get("songs") or {}).items():
+            if normalize_title(s.get("title", "")) in liked_norms:
+                m = re.search(r"(?:v=|youtu\.be/|/watch\?v=)([A-Za-z0-9_-]{11})", url or "")
+                if m and m.group(1) not in seen:
+                    seen.add(m.group(1))
+                    out.append(m.group(1))
+        return out
+
     def get_recent_feedback(self, username: str, since_ts: float) -> list[dict]:
         """Read-only: return recommendation feedback entries for user, ts >= since_ts.
 
