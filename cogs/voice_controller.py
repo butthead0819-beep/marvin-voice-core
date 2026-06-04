@@ -1587,10 +1587,10 @@ class VoiceController(commands.Cog):
             await self.stop_radio(reason="Stream 模式接管")
 
         info['requested_by'] = username
-        if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
-            await msg.edit(content=f"⏭️ 「{info['title']}」本場已在佇列或播過了，跳過重複。")
+        if self._check_song_duplicate(url=info['url'], title=info['title'], username=username, check_history=False):
+            await msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。")
             return
-        self._queue_user_song(info)   # 自選曲 LIFO 插隊到待播一
+        self._queue_user_song(info)   # 自選曲 LIFO 插隊到待播一 + skip-override
 
         if not self.stream_mode:
             self.stream_mode = True
@@ -4562,14 +4562,20 @@ class VoiceController(commands.Cog):
                 return "play"
         return None
 
-    def _check_song_duplicate(self, url: str, title: str, username: str) -> bool:  # noqa: ARG002
-        """回傳 True 表示此 session 已有相同 URL，應跳過加入佇列。"""
+    def _check_song_duplicate(self, url: str, title: str, username: str,
+                              *, check_history: bool = True) -> bool:  # noqa: ARG002
+        """回傳 True 表示此 session 已有相同 URL，應跳過加入佇列。
+
+        check_history=False：只擋「還在佇列」，不擋「本場播過」。給使用者**手動**點播用——
+        skip 過的歌進了 stream_history，但手動點回來是刻意正向更正，應放行（見 _queue_user_song）。
+        """
         for item in self.stream_queue:
             if item.get("url") == url:
                 return True
-        for item in self.stream_history:
-            if item.get("url") == url:
-                return True
+        if check_history:
+            for item in self.stream_history:
+                if item.get("url") == url:
+                    return True
         return False
 
     # IBA-T0 utterance 長度上限。無喚醒詞觸發 → 對 false positive 敏感。
@@ -4580,8 +4586,21 @@ class VoiceController(commands.Cog):
     def _queue_user_song(self, info: dict) -> None:
         """使用者自選曲插隊到待播一（LIFO）：最近點的先播，且一律排在 auto-recommend
         （Marvin ambient，append 在尾）之前。_stream_loop 用 pop(0) 取歌，故 insert(0)
-        = 下一首就播、不打斷正在播的那首。"""
+        = 下一首就播、不打斷正在播的那首。
+
+        skip-override：手動點播 = 刻意正向更正，蓋過先前的 skip——記 played_again（latest-wins
+        覆蓋舊 skipped，見 music_memory.get_skipped_titles）+ 重置 consecutive-skip 計數，
+        讓這首不再被 auto-recommend 排除。"""
         self.stream_queue.insert(0, info)
+        try:
+            user = info.get('requested_by') or ''
+            title = info.get('title') or ''
+            mm = getattr(self.bot, 'music_memory', None)
+            if mm and user and title:
+                mm.add_recommendation_feedback(user, title, "played_again")
+            self._consecutive_skips_by_url.pop(info.get('url') or '', None)
+        except Exception:
+            logger.debug("[Queue] skip-override 記錄失敗", exc_info=True)
 
     def _detect_music_direct_command(self, text: str, stream_mode: bool = False) -> dict | None:
         """[IBA Tier 0] 無歧義音樂控制關鍵詞偵測（不需喚醒詞）。
@@ -4955,12 +4974,12 @@ class VoiceController(commands.Cog):
             self.stt_logger.info(
                 f"[點歌-語音] 使用者={speaker} | 搜尋={raw_search}{f' (修正→{search})' if wrong else ''} | 結果={info['title']} / {info.get('uploader', '?')}"
             )
-            if self._check_song_duplicate(url=info['url'], title=info['title'], username=speaker):
-                if ch: await status_msg.edit(content=f"⏭️ 「{info['title']}」本場已在佇列或播過了，換一首？")
+            if self._check_song_duplicate(url=info['url'], title=info['title'], username=speaker, check_history=False):
+                if ch: await status_msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。")
                 return
             if self.radio_mode:
                 await self.stop_radio(reason="語音音樂指令接管")
-            self._queue_user_song(info)   # 自選曲 LIFO 插隊到待播一
+            self._queue_user_song(info)   # 自選曲 LIFO 插隊到待播一 + skip-override
             if not self.stream_mode:
                 self.stream_mode = True
                 self.stream_volume = 0.10
@@ -7468,6 +7487,10 @@ class VoiceController(commands.Cog):
 
         enqueued = 0
         for cand in cands:
+            # 每輪入隊上限 round_size——候選清單可能比 round_size 多（如 T2 radio 給 9 個當
+            # 備援），但只填 round_size 首進佇列，不一次冒一堆出來（其餘留著下輪/失敗時補位）。
+            if enqueued >= self._round_size:
+                break
             # mode → query：T2 direct_url 自帶 URL 直解；cover 交給 LLM cover 化；direct 重播錨點
             if cand.direct_url:
                 query = cand.direct_url   # _resolve_yt_query 認 http 開頭 → 直接 extract 不搜尋
