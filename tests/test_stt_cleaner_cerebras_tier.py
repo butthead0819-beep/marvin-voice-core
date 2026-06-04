@@ -143,3 +143,14 @@ async def test_gate_off_by_default_never_drops():
     r, rt = _make_router(quick_ret=_clean_json(cleaned="今天天氣"))
     await r.clean_stt_text("今天天氣真好大家覺得呢", speaker="x")  # 無 apply_gate
     rt.quick.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cleaner_per_call_timeout_capped_at_4s_and_falls_to_raw():
+    """熱路徑延遲修正（2026-06-04）：每段 timeout 從 8s 收到 ≤4s（總預算 6s）；
+    quick+analyze 都 None → 落 raw（Marvin 不為清洗久等）。"""
+    r, rt = _make_router(quick_ret=None, analyze_ret=None)
+    res = await r.clean_stt_text("馬文播放音樂", speaker="大肚")
+    assert rt.quick.await_args.kwargs["timeout"] <= 4.0      # 原 8.0 → ≤4
+    assert rt.analyze.await_args.kwargs["timeout"] <= 4.0
+    assert res["text"] == "馬文播放音樂"                       # 落 raw（原句）
