@@ -89,4 +89,14 @@ def _isolate_record_writes(tmp_path, monkeypatch):
     except Exception:
         pass
 
+    # 5. llm_routing (llm_agents.metrics._LOG_PATH) — log_dispatch 寫死模組常數，跑 bus
+    #    dispatch 的測試會用 test-name purpose 寫進 prod records/llm_routing.jsonl
+    #    （2026-06-04 發現：24h 287 筆有 129 筆測試污染，把回應 LLM 成功率灌爆）。
+    try:
+        import llm_agents.metrics as _llm_metrics
+        monkeypatch.setattr(_llm_metrics, "_LOG_PATH",
+                            records_dir / "llm_routing.jsonl", raising=False)
+    except Exception:
+        pass
+
     yield
