@@ -1485,14 +1485,18 @@ class DiscordVoiceEngine:
                 _b_wake_intent = clean_res.get("wake_intent") if isinstance(clean_res, dict) else None
                 await self.stt_callback(speaker_name, cleaned_text, timestamp, wav_bytes, prosody_data=prosody_data, is_wake_check=is_wake_check, track="B", wake_intent=_b_wake_intent)
 
-                # Phase 2 false-wake proxy: if harvest is empty 1.1s after a Track B wake,
-                # that's a likely false wake — feed signal back to WakeSignalFusion
+                # Phase 2 false-wake proxy: if harvest is empty a few seconds after a
+                # Track B wake, that's a likely false wake — feed signal back to WakeSignalFusion
                 if is_wake_B and not is_wake_A:
                     _ts = timestamp
                     _spk = speaker_name
                     async def _check_false_wake():
-                        await asyncio.sleep(1.1)
-                        harvest = self.conv_buffer.get_harvest(_ts, before=3.0, after=1.0)
+                        # 2026-06-04 修：舊 wait=1.1s / after=1.0 太緊。真實後續命令是「說出於
+                        # _ts+~2.5s、STT 再延遲 2-3s 才落地」，整段被窗口錯過 → 合法召喚被誤標
+                        # false（實測 showay 3 筆有 2 筆當下其實在 active 對話），還反向餵 fusion
+                        # 調高該說話者門檻。放寬到 wait 5s（等 STT 落地）+ after 3.0（涵蓋後續發言）。
+                        await asyncio.sleep(5.0)
+                        harvest = self.conv_buffer.get_harvest(_ts, before=3.0, after=3.0)
                         is_false = len(harvest.strip()) < 5
                         # 品質指標 capture：每次 Track-B wake 都記一筆（真 wake 當分母才算得出 rate）。
                         # 在延遲 task 內、非熱路徑，同步 append 安全。
