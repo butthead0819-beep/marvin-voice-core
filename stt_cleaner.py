@@ -325,20 +325,33 @@ class GeminiRouterSTTMixin:
         # validate 失敗仍直接回 raw（語意與舊一致）。
         self._ensure_stt_router()
         _router = self._stt_router
-        # timeout=8s：cleaner 在即時語音熱路徑，掛住的 provider 超時就跳下一家／落 raw，
-        # 不阻塞 pipeline（2026-06-02 incident：無 timeout 時 cleaner 卡 50-340s）。
+        # 熱路徑延遲控管（2026-06-04，4 天數據：cleaner p50 4.5-7.3s / p90 19-27s，配額爆讓
+        # provider hang，每句都走慢路徑）：每段 timeout 4s（hang 不該花 8s）+ 總預算 6s——超
+        # 預算就落 raw，Marvin 絕不為了清洗靜默 >6s（raw STT 仍可用，只是沒清洗/wake_intent）。
+        # 每段 timeout 收斂成「剩餘預算」確保整鏈封頂 ~6s。time.monotonic 是相對 elapsed，安全。
+        _CLEANER_BUDGET_S = 6.0
+        _PER_CALL_S = 4.0
+        _llm_start = time.monotonic()
         content = await _router.quick(user_message, caller="stt_cleaner",
                                       system=system_prompt, max_tokens=200,
-                                      temperature=0.0, json=True, timeout=8.0)
+                                      temperature=0.0, json=True,
+                                      timeout=min(_PER_CALL_S, _CLEANER_BUDGET_S))
         res = _finalize(content, "track=B (pool-quick)")
         if res is not None:
             return res
+        _left = _CLEANER_BUDGET_S - (time.monotonic() - _llm_start)
+        if _left < 0.8:                       # 預算用罄 → 落 raw，不再 escalate
+            return _build_res(raw_text)
         content = await _router.analyze(user_message, caller="stt_cleaner",
                                         system=system_prompt, max_tokens=200,
-                                        temperature=0.0, json=True, timeout=8.0)
+                                        temperature=0.0, json=True,
+                                        timeout=min(_PER_CALL_S, _left))
         res = _finalize(content, "track=B (pool-analyze)")
         if res is not None:
             return res
+        _left = _CLEANER_BUDGET_S - (time.monotonic() - _llm_start)
+        if _left < 0.8:
+            return _build_res(raw_text)
 
         # ── 3. Gemini flash-lite 備援 (獨立 RPM bucket，非阻塞) ─────────────
         cleaner_client = getattr(self, 'google_cleaner_client', None)
@@ -356,7 +369,7 @@ class GeminiRouterSTTMixin:
                         contents=user_message,
                         config=config,
                     ),
-                    timeout=8.0,
+                    timeout=min(_PER_CALL_S, _left),
                 )
                 raw_output = _strip_xml_artifacts(response.text.strip())
                 result = _validate_cleaned(raw_output, raw_text)
