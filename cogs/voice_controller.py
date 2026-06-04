@@ -6837,7 +6837,17 @@ class VoiceController(commands.Cog):
         """🎵 [Stream Loop] 依序播放佇列中的歌曲。"""
         logger.info("🎵 [Stream Loop] 串流迴圈啟動。")
         try:
-            while self.stream_mode and self.stream_queue:
+            while self.stream_mode:
+                if not self.stream_queue:
+                    # 佇列空：先 await 補歌（T1→T2→T3），補到才繼續、補不到才真停。不靠播放
+                    # 期間的背景 race——快速 skip 會在背景補歌回來前就把佇列清空 → 立刻斷播。
+                    _rb = (self._current_stream_info or {}).get('requested_by')
+                    _seed = self._autorecommend_seed(_rb, self.get_online_members())
+                    if _seed:
+                        await self._auto_recommend(_seed)
+                    if not self.stream_queue:
+                        break   # 三層都補不到（或空房 seed=None）→ 真的停
+                    continue
                 info = self.stream_queue.pop(0)
                 self._current_stream_info = info
                 self._current_lyrics = None
@@ -6916,14 +6926,15 @@ class VoiceController(commands.Cog):
                     new_msg = await self.active_text_channel.send(embed=view._build_embed(), view=view)
                     view.message = new_msg
 
-                # 播放期間預取下一首；若佇列已空則觸發自動推薦（連續 ambient）
+                # 播放期間預取下一首（佇列非空才有得預取）
                 if self.stream_queue:
                     next_info = self.stream_queue[0]
                     next_url = next_info.get('url', '')
                     if next_url not in self._prefetch_cache:
                         self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(next_info))
                         logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
-                else:
+                # 佇列 buffer < 2 → 提前背景補歌（留 buffer，減少快速 skip 撞到斷播邊緣要等的機率）
+                if len(self.stream_queue) < 2:
                     seed = self._autorecommend_seed(requested_by, self.get_online_members())
                     if seed:
                         asyncio.create_task(self._auto_recommend(seed))
