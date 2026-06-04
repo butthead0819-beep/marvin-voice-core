@@ -106,3 +106,52 @@ async def test_t2_empty_seeds_returns_empty(monkeypatch):
     mm = _FakeMM(played=[], liked=[])
     out = await VC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
     assert out == []
+
+
+@pytest.mark.asyncio
+async def test_t2_llm_taste_seeds_and_avoid_filter(monkeypatch, tmp_path):
+    """LLM_TASTE_T2=on：讀快取鄰近 seed 進池 + avoid_artists 排除 radio 候選。"""
+    VC = _import_vc()
+    import ytmusic_radio
+    import taste_profile
+
+    monkeypatch.setenv("LLM_TASTE_T2", "on")
+    cache = tmp_path / "taste.json"
+    monkeypatch.setattr("cogs.voice_controller._TASTE_PROFILE_CACHE", str(cache))
+    taste_profile.write_profile(cache, "狗與露",
+                                {"seed_video_ids": ["llmseed0001"],
+                                 "avoid_artists": ["雷團"]})
+
+    def fake_radio(seed, exclude_titles=None, limit=None, **kw):
+        if seed == "llmseed0001":
+            return [{"title": "鄰近歌", "artist": "伍佰", "url": "http://y/n"},
+                    {"title": "雷歌", "artist": "雷團", "url": "http://y/bad"}]
+        return [{"title": f"{seed}-s", "artist": "x", "url": f"http://y/{seed}"}]
+
+    monkeypatch.setattr(ytmusic_radio, "ytmusic_radio", fake_radio)
+    mm = _FakeMM(played=["aaaaaaaaaaa"], liked=[])
+    out = await VC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
+    titles = {c.anchor_title for c in out}
+    assert "鄰近歌" in titles          # LLM 鄰近 seed 的 radio 進來
+    assert "雷歌" not in titles        # avoid_artists「雷團」被排除
+
+
+@pytest.mark.asyncio
+async def test_t2_llm_taste_off_by_default(monkeypatch, tmp_path):
+    """未設 env → 不讀 LLM 快取（行為同純多 seed）。"""
+    VC = _import_vc()
+    import ytmusic_radio
+    import taste_profile
+    monkeypatch.delenv("LLM_TASTE_T2", raising=False)
+    cache = tmp_path / "taste.json"
+    monkeypatch.setattr("cogs.voice_controller._TASTE_PROFILE_CACHE", str(cache))
+    taste_profile.write_profile(cache, "狗與露", {"seed_video_ids": ["llmseed0001"]})
+
+    seen = []
+    def fake_radio(seed, exclude_titles=None, limit=None, **kw):
+        seen.append(seed)
+        return [{"title": f"{seed}-s", "artist": "x", "url": f"http://y/{seed}"}]
+    monkeypatch.setattr(ytmusic_radio, "ytmusic_radio", fake_radio)
+    mm = _FakeMM(played=["aaaaaaaaaaa"], liked=[])
+    await VC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
+    assert "llmseed0001" not in seen   # off → 不碰 LLM 快取
