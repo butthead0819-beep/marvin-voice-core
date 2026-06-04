@@ -6,6 +6,8 @@
 
 Marvin lives in your Discord voice channel. After a few sessions he knows who stays until 3am, who always says goodbye before leaving, whose music taste runs toward melancholy on weeknights. He will absolutely roast you for it.
 
+📖 **The story** — how this grew from a toy into a platform, Simon → Suki → Marvin, in three months: **[read the illustrated history](https://butthead0819-beep.github.io/marvin-voice-core/marvin-story.html)** (中 / EN).
+
 > **Marvin is a macOS / Apple Silicon product.** Tuned for Swift STT + Gemini/Groq on M1 8GB. The Whisper-only fallback in `stt_handler.py` is community territory, not maintained. See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) for the why, the tested footprint, and the Linux/Docker stance.
 
 ---
