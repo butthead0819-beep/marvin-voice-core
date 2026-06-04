@@ -201,3 +201,32 @@ def test_direct_command_short_utterance_still_works(text, expected):
     result = cog._detect_music_direct_command(text)
     assert result is not None
     assert result["action"] == expected
+
+
+# ── Gap A (2026-06-04)：長句夾帶明確「播放+具體歌名」應擷取救援 ──────────────
+# 背景：陳進文「這樣妹妹說 曉雯幫我播放，孫淑媚的愛人」(~17 chars) >15 被長度閘整句
+# 拒絕，明確點歌命令丟失（狗與露最後手動點）。長句裡若有「播放/我想聽 + 含 music
+# marker 的具體目標」就擷取命令段。只救 play；control 詞長句一律不救（5/18 守門）。
+
+@pytest.mark.parametrize("text,expect_target", [
+    ("這樣妹妹說曉雯幫我播放孫淑媚的愛人", "孫淑媚的愛人"),       # 陳進文真實 case
+    ("欸不是啦我剛剛想到幫我播放周杰倫的稻香", "周杰倫的稻香"),
+    ("對啊對啊我覺得這個不錯我想聽五月天的溫柔",   "五月天的溫柔"),
+])
+def test_embedded_play_in_long_sentence_rescued(text, expect_target):
+    cog = _make_cog()
+    result = cog._detect_music_direct_command(text)
+    assert result is not None, f"'{text}' 應擷取播放命令救援"
+    assert result["action"] == "play"
+    assert expect_target in result["query"]
+
+
+@pytest.mark.parametrize("text", [
+    "我想聽你說完之後再決定要不要做這件事情",          # 弱訊號但 tail 無 music marker
+    "我覺得停止播放這種事情根本不應該由我們決定吧你說對不對",  # 含播放但 tail 無 marker
+    "你之前說的那個事情我整個就跳過了沒有去處理",        # 無 play kw（只有 skip）
+])
+def test_embedded_play_without_music_marker_blocked(text):
+    """長句救援嚴格守門：tail 無明確 music marker（的/歌/曲…）→ 不救，避 5/18 誤觸。"""
+    cog = _make_cog()
+    assert cog._detect_music_direct_command(text) is None
