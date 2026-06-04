@@ -41,6 +41,18 @@ def _strip_rephraser_metadata(text: str) -> str:
     return cleaned.strip()
 
 
+_GREETING_CHARS_PER_PLAYER = 13   # 範圍 10-15，取中段；招呼要叫名字+一句吐槽
+
+
+def greeting_char_budget(n_players: int | None) -> int:
+    """進場招呼字數預算：依在場人數縮放（每人約 13 字），至少 1 人份。
+
+    原本固定 60 字內，人多時每人被壓到 <10 字、叫不全名字。改成隨人數增加。
+    """
+    n = max(1, n_players or 0)
+    return n * _GREETING_CHARS_PER_PLAYER
+
+
 class GeminiRouterContentMixin:
     """內容生成：記憶萃取、社交分析、日記、問候、音樂藍圖等。"""
 # --- 🧠 [Memory Extraction & Interaction] ---
@@ -781,7 +793,11 @@ class GeminiRouterContentMixin:
         )
         
         player_list_str = "、".join(players) if players else "空氣"
-        user_prompt = f"妳降落到了語音頻道。現場玩家有：{player_list_str}。請對他們打聲招呼。"
+        _budget = greeting_char_budget(len(players) if players else 0)
+        user_prompt = (
+            f"妳降落到了語音頻道。現場玩家有：{player_list_str}。請對他們打聲招呼。"
+            f"\n【字數】約 {_budget} 字內（每人約 10-15 字），一個都不能漏。人越多招呼越長。"
+        )
         
         try:
             return await self._call_llm(system_prompt, user_prompt, tier="simple")
