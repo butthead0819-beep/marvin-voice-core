@@ -7320,6 +7320,41 @@ class VoiceController(commands.Cog):
             return online_members[0] if online_members else None
         return requested_by
 
+    async def _t2_discovery_candidates(self, members: list[str], exclude_titles: list[str]) -> list:
+        """T2 discovery：在場者 liked 的歌當 seed → ytmusic radio 取相關新歌 → Candidate(direct_url)。
+
+        seed 只用正向訊號（liked），不用 skipped（避免往被嫌方向擴）。每 round 輪替一首 seed。
+        blocking 的 get_watch_playlist 走 asyncio.to_thread（不阻塞 event loop）。無 liked seed
+        / radio 掛 / 全被 exclude → 回 []（→ 退 T3 回收）。
+        """
+        mm = getattr(self.bot, 'music_memory', None)
+        if mm is None:
+            return []
+        seed_ids = mm.get_liked_video_ids(members)
+        if not seed_ids:
+            return []
+        self._t2_seed_idx = (getattr(self, '_t2_seed_idx', -1) + 1) % len(seed_ids)
+        seed = seed_ids[self._t2_seed_idx]
+        try:
+            from ytmusic_radio import ytmusic_radio
+            radio = await asyncio.to_thread(
+                ytmusic_radio, seed,
+                exclude_titles=exclude_titles, limit=self._round_size * 3,
+            )
+        except Exception as e:
+            logger.warning(f"⚠️ [AutoRecommend] T2 radio 失敗，退 T3: {e}")
+            return []
+        if not radio:
+            return []
+        logger.info(f"🎵 [AutoRecommend] T2 discovery: seed={seed} → {len(radio)} 首相關新歌候選")
+        from music_recommender import Candidate
+        return [
+            Candidate(anchor_title=c["title"], anchor_artist=c["artist"],
+                      lane="discovery", mode="direct", target_member=None,
+                      score=0.0, direct_url=c["url"])
+            for c in radio
+        ]
+
     async def _auto_recommend(self, username: str):
         """佇列空 → 依在場成員的音樂記憶推薦下一首批 (Phase 1: 一次推 3 首為一 round)。
 
@@ -7376,12 +7411,15 @@ class VoiceController(commands.Cog):
             vibe_filter=vibe_filter,
         )
 
-        # Phase 1 M4: 9-pick-3 一次 enqueue 一 round
+        # Phase 1 M4: 9-pick-3 一次 enqueue 一 round（T1 團體記憶）
         cands = pick_candidates(pool, k=self._round_size, top_n=9)
         if not cands:
-            # 無限制補位（2026-06-04）：嚴格 exclude（最近播 ∪ ring ∪ skipped ∪ suki history）
-            # 會掏空有限團體歌庫 → 串流停擺。放寬到只保留 skipped 永久排除，鬆開 recently/
-            # ring/suki，讓非 skipped 老歌重新發現，佇列永不空轉。
+            # T2 discovery（2026-06-04）：T1 有限團體歌庫枯竭 → 用在場者 liked 的歌當 seed
+            # → ytmusic radio 取相關「新歌」，往正向口味擴張（過 skipped/已播閘）。
+            cands = await self._t2_discovery_candidates(members, exclude_titles)
+        if not cands:
+            # T3 回收：T2 也沒（無 liked seed / radio 掛）→ 放寬 exclude（只保留 skipped
+            # 永久排除），鬆開 recently/ring/suki，讓非 skipped 老歌重新發現，佇列永不空轉。
             relaxed_pool = build_recommendation_pool(
                 members=members, songs=mm.all_songs(),
                 exclude_titles=list(dict.fromkeys(skipped)),
@@ -7407,8 +7445,10 @@ class VoiceController(commands.Cog):
 
         enqueued = 0
         for cand in cands:
-            # mode → query：cover 交給 LLM 把錨點 cover 化；direct 直接重播錨點
-            if cand.mode == "cover":
+            # mode → query：T2 direct_url 自帶 URL 直解；cover 交給 LLM cover 化；direct 重播錨點
+            if cand.direct_url:
+                query = cand.direct_url   # _resolve_yt_query 認 http 開頭 → 直接 extract 不搜尋
+            elif cand.mode == "cover":
                 query = await self._llm_coverify(cand, exclude_titles)
             else:
                 query = f"{cand.anchor_artist} {cand.anchor_title}".strip() or cand.anchor_title
@@ -7513,6 +7553,8 @@ class VoiceController(commands.Cog):
             return f"🎵 **【馬文精選】** 你們都有共鳴的《{title}》，再聽一次吧。"
         if cand.lane == "long_tail":
             return f"🎵 **【馬文精選】** 從塵封歌單挖出《{title}》，還記得嗎。"
+        if cand.lane == "discovery":
+            return f"🎵 **【馬文精選】** 順著你們的口味挖到新歌《{title}》，聽聽看。"
         who = cand.target_member or "你"
         return f"🎵 **【馬文精選】** 為 `{who}` 翻出的《{title}》。"
 
