@@ -343,6 +343,22 @@ async def test_quick_all_exhausted_returns_none():
     assert await router.quick("hi", caller="x") is None
 
 
+@pytest.mark.asyncio
+async def test_endpoint_extra_params_merged_into_create_kwargs():
+    """PoolEndpoint.extra_params（如 gemini-2.5+ thinking model 的 reasoning_effort=none）
+    必須併進 OpenAI-compat create() 呼叫；否則 thinking token 吃光 max_tokens → 空 content。"""
+    clk = _Clock()
+    ep = _fake_ep("gem25", "ok")
+    ep.extra_params = {"reasoning_effort": "none"}
+    router = TieredLLMRouter(CooldownAwarePool([ep], clock=clk),
+                             CooldownAwarePool([], clock=clk))
+
+    await router.quick("hi", caller="x")
+
+    kwargs = ep.client.chat.completions.create.await_args.kwargs
+    assert kwargs.get("reasoning_effort") == "none"
+
+
 # ── build_tier_pools 工廠（讀 env、缺 key 略過）──────────────────────────────
 
 def _fake_factory():
@@ -404,6 +420,19 @@ def test_factory_new_provider_model_override_pattern():
     env = {"SAMBANOVA_API_KEY": "s", "SAMBANOVA_QUICK_MODEL": "Meta-Llama-3.1-8B-Instruct-v2"}
     quick, _a = build_tier_pools(env, client_factory=factory)
     assert quick.endpoints[0].model == "Meta-Llama-3.1-8B-Instruct-v2"
+
+
+def test_factory_gemini_free_adds_25_model_tier():
+    """穩健中庸（2026-06-04）：GOOGLE_API_KEY 進池時，除既有 2.0 系列，再加 2.5 系列
+    各層 endpoint（per-model 獨立免費配額疊加）。analyze 的 2.5-flash 帶 reasoning_effort=none
+    關 thinking，否則 OpenAI-compat 下 thinking 吃光 max_tokens → 空 content。"""
+    factory, _ = _fake_factory()
+    quick, analyze = build_tier_pools({"GOOGLE_API_KEY": "k"}, client_factory=factory)
+    assert "gemini-2.5-flash-lite" in [e.model for e in quick.endpoints]
+    flash25 = next(e for e in analyze.endpoints if e.model == "gemini-2.5-flash")
+    assert flash25.extra_params.get("reasoning_effort") == "none"
+    # 既有 2.0 系列仍在（不取代、是疊加）
+    assert "gemini-2.0-flash" in [e.model for e in analyze.endpoints]
 
 
 @pytest.mark.asyncio

@@ -64,6 +64,9 @@ class PoolEndpoint:
     daily_budget: int = 0
     daily_used: int = 0
     daily_reset_at: float = 0.0   # 滾動 24h 視窗到期時間（first use 時設 now+86400）
+    # 額外併進 create() 的 per-endpoint 參數（如 gemini-2.5+ thinking model 的
+    # reasoning_effort=none，OpenAI-compat 下關 thinking、不讓它吃光 max_tokens）。
+    extra_params: dict = field(default_factory=dict)
 
 
 class CooldownAwarePool:
@@ -231,6 +234,8 @@ class TieredLLMRouter:
                           temperature=temperature, stream=False)
             if json:
                 kwargs["response_format"] = {"type": "json_object"}
+            if ep.extra_params:
+                kwargs.update(ep.extra_params)   # per-endpoint 覆寫（如 reasoning_effort）
             # per-call timeout：掛住的 provider 超時 → raise TimeoutError → dispatch 當
             # transient 失敗（cooldown + 跳下一家），不無限等。
             resp = await asyncio.wait_for(
@@ -262,6 +267,10 @@ class ProviderSpec:
     # 確認過的才填，誠實不亂估。quick/analyze 用不同 model → daily cap 不同。
     quick_daily: int = 0
     analyze_daily: int = 0
+    # per-tier 額外 create() 參數（thinking model 用，如 analyze_extra={"reasoning_effort":"none"}）。
+    # frozen dataclass → 預設 None（immutable），建構時傳 dict literal 即可。
+    quick_extra: Optional[Mapping[str, Any]] = None
+    analyze_extra: Optional[Mapping[str, Any]] = None
 
 
 # 優先序 = list 順序（next_available 按序回）。Groq/Cerebras 用既有 env 名（你的 key
@@ -297,6 +306,15 @@ _PROVIDERS: list[ProviderSpec] = [
     ProviderSpec("gemini_free", "GOOGLE_API_KEY",
                  "https://generativelanguage.googleapis.com/v1beta/openai/",
                  "gemini-2.0-flash-lite", "gemini-2.0-flash"),
+    # 2026-06-04：free tier 配額 per-model 各自獨立 → 再掛 2.5 系列疊加免費吞吐。
+    # 同 GOOGLE_API_KEY、不同 model = 不同 bucket，一個爆 429 cooldown 自動讓位另一個。
+    # analyze 的 2.5-flash 是 thinking model，OpenAI-compat 下必須 reasoning_effort=none，
+    # 否則 thinking 吃光 max_tokens → 空 content（live 探測 2026-06-04 確認）。
+    # quick 的 2.5-flash-lite 預設無 thinking 陷阱（mt=20 即回完整 JSON），不需 extra。
+    ProviderSpec("gemini_free_25", "GOOGLE_API_KEY",
+                 "https://generativelanguage.googleapis.com/v1beta/openai/",
+                 "gemini-2.5-flash-lite", "gemini-2.5-flash",
+                 analyze_extra={"reasoning_effort": "none"}),
 ]
 
 
@@ -333,11 +351,13 @@ def build_tier_pools(
         quick_eps.append(PoolEndpoint(
             name=f"{spec.name}-quick", client=client,
             model=_resolve_model(env, spec, analyze=False),
-            tpm_budget=spec.tpm_budget, daily_budget=spec.quick_daily))
+            tpm_budget=spec.tpm_budget, daily_budget=spec.quick_daily,
+            extra_params=dict(spec.quick_extra or {})))
         analyze_eps.append(PoolEndpoint(
             name=f"{spec.name}-analyze", client=client,
             model=_resolve_model(env, spec, analyze=True),
-            tpm_budget=spec.tpm_budget, daily_budget=spec.analyze_daily))
+            tpm_budget=spec.tpm_budget, daily_budget=spec.analyze_daily,
+            extra_params=dict(spec.analyze_extra or {})))
     return CooldownAwarePool(quick_eps, clock=clock), CooldownAwarePool(analyze_eps, clock=clock)
 
 
