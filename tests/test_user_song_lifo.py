@@ -49,3 +49,14 @@ def test_user_song_into_empty_queue():
     cog.stream_queue = []
     cog._queue_user_song(_song("U1"))
     assert [s["title"] for s in cog.stream_queue] == ["U1"]
+
+
+def test_user_song_updates_t2_seed():
+    """使用者點歌 → _last_user_song_seed 更新成那首的 video_id（T2 radio seed 跟著走）。"""
+    cog = _make_cog()
+    cog.stream_queue = []
+    cog._queue_user_song({
+        "title": "稻香", "url": "http://x", "requested_by": "alice",
+        "webpage_url": "https://www.youtube.com/watch?v=ABCDEFGHIJK",
+    })
+    assert cog._last_user_song_seed == "ABCDEFGHIJK"
