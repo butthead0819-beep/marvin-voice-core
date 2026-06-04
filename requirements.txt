@@ -24,3 +24,4 @@ sounddevice==0.5.3
 soundfile==0.13.1
 syncedlyrics==1.0.1
 yt-dlp==2026.3.17
+ytmusicapi==1.12.0
