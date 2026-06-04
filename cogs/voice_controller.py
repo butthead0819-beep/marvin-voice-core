@@ -4585,7 +4585,10 @@ class VoiceController(commands.Cog):
         （5/18 incident: 「...直接跳過那個...」被當 skip 指令）。
         """
         if len(text.strip()) > self._IBA_T0_MAX_LEN:
-            return None
+            # 長句一般拒絕（防 5/18 control-word substring 誤觸），但若句尾夾帶明確
+            # 「播放/我想聽 + 含 music marker 的具體歌名」(如陳進文「…曉雯幫我播放孫淑媚的
+            # 愛人」)，仍擷取命令段救援。只救 play；control 詞長句一律不救。
+            return self._detect_embedded_play(text)
         t = text.lower()
         if is_short_skip_command(t, _MUSIC_DIRECT_SKIP_KW):   return {"action": "skip"}
         if any(kw in t for kw in _MUSIC_DIRECT_PAUSE_KW):  return {"action": "pause"}
@@ -4601,6 +4604,32 @@ class VoiceController(commands.Cog):
                 query = self._extract_music_search_query(text)
                 return {"action": "play", "query": query}
         return None
+
+    # play 關鍵字（含 strong + 常見 weak），長句救援用；故意排除 control 詞
+    _EMBEDDED_PLAY_KW: tuple[str, ...] = ("幫我播放", "播放", "我想聽", "幫我放", "放一首", "來一首")
+
+    def _detect_embedded_play(self, text: str) -> dict | None:
+        """長句（>_IBA_T0_MAX_LEN）中救援句尾夾帶的明確點歌命令。
+
+        比短句 gate 嚴：tail 必須含明確 music marker（的/歌/曲/音樂/MV…），不吃
+        _query_implies_music_intent 的寬鬆「≥2 字非 UI 詞」2nd 條件——長句裡那條會誤吞
+        閒聊（「我想聽你說完之後再決定…」）。只救 play；skip/stop 等 control 詞長句一律
+        不救（5/18 incident：「…直接跳過那個…」被當 skip）。
+        """
+        t = text.lower()
+        best_idx, best_kw = -1, ""
+        for kw in self._EMBEDDED_PLAY_KW:
+            idx = t.rfind(kw.lower())   # 取最後一個命中：命令通常在句尾
+            if idx > best_idx:
+                best_idx, best_kw = idx, kw
+        if best_idx < 0:
+            return None
+        tail = text[best_idx + len(best_kw):].lstrip("：: ，,、。 ")
+        if len(tail.strip()) < 2:
+            return None
+        if not any(m in tail.lower() for m in self._MUSIC_INTENT_MARKERS):
+            return None
+        return {"action": "play", "query": tail.strip()}
 
     async def _handle_music_info_query(self, speaker: str, query: str):
         """[IBA Tier 1] 直接回答「這首叫什麼/誰唱的」類查詢，不需喚醒詞，不走 LLM。"""
