@@ -122,6 +122,9 @@ from taste_extractor import extract_taste_signals
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
+# LLM 品味鄰近 seed 快取（taste_profile，每日離線生成；T2 env-gated LLM_TASTE_T2=on 才讀）
+_TASTE_PROFILE_CACHE = "records/taste_profiles.json"
+
 # 🕒 [Proactive Topic Cooldown] 冷場 TopicGenerator 與 SpeakBus ProactiveTopicAgent
 # 共用此 cooldown：任一系統發話後靜默此秒數，避免使用者連續聽到兩套主動話題。
 # 同步給 ProactiveTopicAgent 的 min_gap_since_last_s，作為單一 cooldown 來源。
@@ -7383,7 +7386,24 @@ class VoiceController(commands.Cog):
             # 每輪輪播窗口起點，避免每次都同一批 top seeds
             self._t2_seed_idx = (getattr(self, '_t2_seed_idx', -1) + 1) % len(hist)
             hist = hist[self._t2_seed_idx:] + hist[:self._t2_seed_idx]
-        for vid in hist + mm.get_liked_video_ids(members):
+        # LLM 品味鄰近 seed（破回音室；env-gated，每日離線快取，runtime 只讀 videoId）
+        avoid_artists: list[str] = []
+        llm_seeds: list[str] = []
+        if os.getenv("LLM_TASTE_T2", "off") == "on":
+            try:
+                import taste_profile
+                _MAX_AGE = 8 * 86400
+                llm_seeds = taste_profile.fresh_seed_ids(_TASTE_PROFILE_CACHE, members, _MAX_AGE)
+                avoid_artists = taste_profile.fresh_avoid_artists(_TASTE_PROFILE_CACHE, members, _MAX_AGE)
+            except Exception as e:
+                logger.warning(f"⚠️ [AutoRecommend] T2 LLM 品味快取讀取失敗，略過: {e}")
+        # 交錯 history 與 LLM 鄰近，確保 novelty seed 進前 N（而非被 history 灌滿）
+        from itertools import zip_longest
+        for h, l in zip_longest(hist, llm_seeds):
+            for vid in (h, l):
+                if vid and vid not in seeds:
+                    seeds.append(vid)
+        for vid in mm.get_liked_video_ids(members):
             if vid not in seeds:
                 seeds.append(vid)
         _N_SEEDS = 3
@@ -7408,6 +7428,12 @@ class VoiceController(commands.Cog):
             return []
         radio = blend_radio_results(
             results, exclude_titles=exclude_titles, limit=self._round_size * 3)
+        if avoid_artists:
+            import taste_profile
+            _before = len(radio)
+            radio = taste_profile.filter_avoided(radio, avoid_artists)
+            if len(radio) < _before:
+                logger.info(f"🚫 [AutoRecommend] T2 avoid 排除 {_before - len(radio)} 首（{avoid_artists}）")
         if not radio:
             return []
         logger.info(f"🎵 [AutoRecommend] T2 discovery: {len(seeds)} seeds 混合 → {len(radio)} 首相關新歌候選")
