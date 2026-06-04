@@ -1586,7 +1586,7 @@ class VoiceController(commands.Cog):
         if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
             await msg.edit(content=f"⏭️ 「{info['title']}」本場已在佇列或播過了，跳過重複。")
             return
-        self.stream_queue.append(info)
+        self._queue_user_song(info)   # 自選曲 LIFO 插隊到待播一
 
         if not self.stream_mode:
             self.stream_mode = True
@@ -4573,6 +4573,12 @@ class VoiceController(commands.Cog):
     # 長句通常是對話中順帶提到「跳過」「停止」等詞 → 不該觸發。
     _IBA_T0_MAX_LEN = 15
 
+    def _queue_user_song(self, info: dict) -> None:
+        """使用者自選曲插隊到待播一（LIFO）：最近點的先播，且一律排在 auto-recommend
+        （Marvin ambient，append 在尾）之前。_stream_loop 用 pop(0) 取歌，故 insert(0)
+        = 下一首就播、不打斷正在播的那首。"""
+        self.stream_queue.insert(0, info)
+
     def _detect_music_direct_command(self, text: str, stream_mode: bool = False) -> dict | None:
         """[IBA Tier 0] 無歧義音樂控制關鍵詞偵測（不需喚醒詞）。
         stream_mode=True 時開放「停一下」等歧義控制詞。
@@ -4950,7 +4956,7 @@ class VoiceController(commands.Cog):
                 return
             if self.radio_mode:
                 await self.stop_radio(reason="語音音樂指令接管")
-            self.stream_queue.append(info)
+            self._queue_user_song(info)   # 自選曲 LIFO 插隊到待播一
             if not self.stream_mode:
                 self.stream_mode = True
                 self.stream_volume = 0.10
