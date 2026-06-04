@@ -266,13 +266,20 @@ class MusicMemory:
         ]
 
     def get_skipped_titles(self, usernames: list[str]) -> list[str]:
-        """這些使用者標記為 skipped 的推薦歌名（供 exclude / 降權）。"""
+        """每位使用者「**最新**一筆 feedback 是 skipped」的歌名（供 exclude / 降權）。
+
+        latest-wins：較新的 liked / played_again（如 skip 後手動點回）覆蓋舊的 skipped →
+        不再永久排除。feedback 是 append-only，list 末尾 = 最新。
+        """
         out: list[str] = []
         recs = self._data.get("recommendations", {})
         for u in usernames:
+            latest: dict[str, str] = {}   # title → 最新 result
             for f in recs.get(u, {}).get("feedback", []):
-                if f.get("result") == "skipped" and f.get("title"):
-                    out.append(f["title"])
+                t = f.get("title")
+                if t and f.get("result"):
+                    latest[t] = f["result"]
+            out.extend(t for t, r in latest.items() if r == "skipped")
         return out
 
     def get_liked_video_ids(self, usernames: list[str]) -> list[str]:
