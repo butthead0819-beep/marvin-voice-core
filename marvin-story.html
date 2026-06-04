@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marvin — a voice companion's evolution / 一隻語音陪伴 bot 的演化史</title>
+<style>
+  :root{
+    --bg:#0d0e12; --bg2:#13151c; --surface:#181b24; --line:#262a36;
+    --ink:#ece9e2; --muted:#8d8c86; --faint:#5c5b57;
+    --gold:#f0c674; --gold-dim:#caa257; --teal:#6fb3b8; --rose:#d98b80;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","PingFang TC",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  [hidden]{display:none!important}
+  body{
+    background:var(--bg); color:var(--ink); font-family:var(--sans);
+    line-height:1.7; -webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(900px 500px at 80% -10%, rgba(240,198,116,.07), transparent 60%),
+                     radial-gradient(700px 500px at 0% 10%, rgba(111,179,184,.05), transparent 55%);
+  }
+  .wrap{max-width:880px;margin:0 auto;padding:0 28px}
+  .mono{font-family:var(--mono)}
+
+  /* lang toggle */
+  .langbar{position:fixed;top:18px;right:18px;z-index:50;display:flex;gap:0;
+           background:var(--surface);border:1px solid var(--line);border-radius:22px;padding:3px;
+           backdrop-filter:blur(8px)}
+  .langbar button{font-family:var(--mono);font-size:12px;letter-spacing:.05em;color:var(--muted);
+           background:none;border:none;cursor:pointer;padding:6px 14px;border-radius:18px;transition:.2s}
+  .langbar button.active{background:var(--gold);color:#1a1407;font-weight:600}
+
+  /* hero */
+  header.hero{padding:130px 0 90px;border-bottom:1px solid var(--line)}
+  .kicker{font-family:var(--mono);font-size:12.5px;letter-spacing:.28em;text-transform:uppercase;
+          color:var(--gold-dim);margin-bottom:26px}
+  h1{font-size:clamp(46px,9vw,84px);line-height:.98;letter-spacing:-.03em;font-weight:800}
+  .sub{display:block;font-size:clamp(15px,3vw,20px);font-weight:500;letter-spacing:0;
+          color:var(--muted);margin-top:24px;max-width:580px;line-height:1.6}
+  .lineage-strip{margin-top:46px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+                 font-family:var(--mono);font-size:14px;color:var(--faint)}
+  .lineage-strip b{color:var(--ink);font-weight:600}
+  .lineage-strip .now{color:var(--gold)}
+  .arrow{color:var(--gold-dim)}
+
+  /* section */
+  section{padding:84px 0;border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.22em;text-transform:uppercase;
+           color:var(--teal);margin-bottom:14px}
+  h2{font-size:clamp(26px,5vw,38px);letter-spacing:-.02em;line-height:1.15;font-weight:750;margin-bottom:14px}
+  .lede{color:var(--muted);font-size:17px;max-width:640px;margin-bottom:40px}
+
+  /* names */
+  .names{display:grid;gap:18px}
+  .name-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;
+             padding:26px 26px 24px;position:relative;overflow:hidden}
+  .name-card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent,var(--faint))}
+  .name-card.simon{--accent:#7c8696}.name-card.suki{--accent:var(--rose)}.name-card.marvin{--accent:var(--gold)}
+  .name-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+  .name-head h3{font-size:27px;letter-spacing:-.01em}
+  .name-head .when{font-family:var(--mono);font-size:13px;color:var(--muted)}
+  .name-head .tag{margin-left:auto;font-family:var(--mono);font-size:11px;letter-spacing:.1em;
+                  text-transform:uppercase;color:var(--accent);border:1px solid var(--line);
+                  padding:3px 10px;border-radius:20px}
+  .name-card p{color:var(--muted);font-size:15.5px;margin-top:6px}
+  .fossil{margin-top:16px;font-family:var(--mono);font-size:12.5px;color:var(--faint);
+          background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px 13px}
+  .fossil b{color:var(--gold-dim);font-weight:600}
+
+  /* timeline */
+  .tl{position:relative;margin-top:8px;padding-left:26px}
+  .tl::before{content:"";position:absolute;left:6px;top:6px;bottom:6px;width:2px;
+              background:linear-gradient(var(--rose),var(--gold),var(--teal))}
+  .tl-item{position:relative;padding:0 0 30px 18px}
+  .tl-item::before{content:"";position:absolute;left:-26px;top:5px;width:11px;height:11px;border-radius:50%;
+                   background:var(--bg);border:2px solid var(--gold)}
+  .tl-date{font-family:var(--mono);font-size:12.5px;color:var(--gold-dim);letter-spacing:.04em}
+  .tl-title{font-size:17.5px;font-weight:650;margin:3px 0 4px}
+  .tl-body{color:var(--muted);font-size:15px}
+
+  /* features */
+  .feat{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+  .f{background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:22px}
+  .f .ic{font-size:24px;margin-bottom:12px;display:block}
+  .f h4{font-size:17px;margin-bottom:3px}
+  .f .when{font-family:var(--mono);font-size:12px;color:var(--gold-dim);margin-bottom:9px}
+  .f p{color:var(--muted);font-size:14px;line-height:1.6}
+
+  /* quotes */
+  .quotes{display:grid;gap:14px}
+  blockquote{background:var(--bg2);border:1px solid var(--line);border-left:3px solid var(--teal);
+             border-radius:0 10px 10px 0;padding:18px 22px}
+  blockquote p{font-size:16px;color:var(--ink);line-height:1.6}
+  blockquote p.gloss{font-size:14.5px;color:var(--muted);font-style:italic;margin-top:8px}
+  blockquote cite{display:block;margin-top:10px;font-family:var(--mono);font-size:12.5px;
+                  color:var(--muted);font-style:normal}
+
+  /* closer */
+  .closer{text-align:center;padding:96px 0}
+  .closer .big{font-size:clamp(24px,5vw,34px);font-weight:750;letter-spacing:-.02em;line-height:1.4;
+               max-width:660px;margin:0 auto}
+  .closer .big .hl{color:var(--gold)}
+  .stats{display:flex;justify-content:center;gap:46px;flex-wrap:wrap;margin-top:56px}
+  .stat .n{font-size:38px;font-weight:800;color:var(--gold);letter-spacing:-.02em}
+  .stat .l{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.06em;margin-top:4px}
+
+  footer{border-top:1px solid var(--line);padding:30px 0 60px;color:var(--faint);
+         font-family:var(--mono);font-size:12px;text-align:center;line-height:1.9}
+
+  .reveal{opacity:0;transform:translateY(16px);transition:opacity .7s ease,transform .7s ease}
+  .reveal.in{opacity:1;transform:none}
+  @media(max-width:600px){.feat{grid-template-columns:1fr}.stats{gap:30px}
+    .name-head .tag{margin-left:0}header.hero{padding:110px 0 64px}}
+</style>
+</head>
+<body>
+
+<nav class="langbar">
+  <button data-lang="zh" class="active">中</button>
+  <button data-lang="en">EN</button>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="kicker">Portfolio · AI Voice Companion</div>
+    <h1>Marvin
+      <span class="sub lang-zh">一隻活在 Discord 語音頻道裡的陪伴型 AI。它記得每一個人、會放歌、會跟你一搭一唱、看得到你的螢幕——而且它換過兩次名字。這是它三個月內從玩具長成平台的故事。</span>
+      <span class="sub lang-en" hidden>A companion AI that lives inside a Discord voice channel. It remembers everyone, plays music, riffs back and forth with you, and can see your screen — and it changed its name twice. This is how it grew from a toy into a platform in three months.</span>
+    </h1>
+    <div class="lineage-strip">
+      <b>Simon</b><span class="arrow">→</span><b>Suki</b><span class="arrow">→</span><span class="now">Marvin</span>
+      <span style="margin-left:8px">2026.03 — now</span>
+    </div>
+  </div>
+</header>
+
+<section class="reveal">
+  <div class="wrap">
+    <div class="eyebrow"><span class="lang-zh">The Lineage · 三個名字</span><span class="lang-en" hidden>The Lineage · Three Names</span></div>
+    <h2><span class="lang-zh">它忘記過自己叫什麼，兩次</span><span class="lang-en" hidden>It forgot its own name. Twice.</span></h2>
+    <p class="lede lang-zh">這隻 bot 原本是一個台灣電競小團體的私人玩具。整套 Simon → Suki → Marvin 的更迭，壓縮在 2026 年 3 月到 4 月中、大約六週內。每次改名都在程式碼底層留下一塊沒被清掉的化石。</p>
+    <p class="lede lang-en" hidden>This bot started as a private toy for a small Taiwanese gaming crew. The whole Simon → Suki → Marvin lineage compressed into roughly six weeks, from March to mid-April 2026. Every rename left a fossil buried in the codebase that nobody ever cleaned up.</p>
+    <div class="names">
+      <div class="name-card simon">
+        <div class="name-head"><h3>Simon</h3>
+          <span class="when lang-zh">2026 年 3 月 1 日</span><span class="when lang-en" hidden>March 1, 2026</span>
+          <span class="tag">origin</span></div>
+        <p class="lang-zh">原型。最早的版本，那群人口中的「Agent Simon」。它的誕生只活在私人聊天記錄裡，沒進任何系統 log。到了四月底，朋友們已經在講它「快要走到生命盡頭」。</p>
+        <p class="lang-en" hidden>The prototype. The earliest build — "Agent Simon" to the crew. Its birth survives only in private chat logs, in no system log at all. By late April, friends were already saying it was "about to reach the end of its life."</p>
+        <div class="fossil lang-zh">化石：python 虛擬環境至今仍叫 <b>venv_simon/</b> — 改名時沒人重建它，像奠基石一樣留到今天。</div>
+        <div class="fossil lang-en" hidden>Fossil: the Python virtualenv is still named <b>venv_simon/</b> — never rebuilt on rename, left standing like a foundation stone.</div>
+      </div>
+      <div class="name-card suki">
+        <div class="name-head"><h3>Suki</h3>
+          <span class="when lang-zh">2026 年 4 月初</span><span class="when lang-en" hidden>early April 2026</span>
+          <span class="tag">the soul</span></div>
+        <p class="lang-zh">極短命，卻是靈魂誕生的年代。Suki 時期，bot 第一次長出記憶、人格、對每個人的偏見與印象。名字後來死了，但這套系統的命名永生。</p>
+        <p class="lang-en" hidden>Short-lived, but the era the soul was born. Under Suki, the bot first grew memory, personality, and its own biases and impressions of each person. The name died; the system named after it is immortal.</p>
+        <div class="fossil lang-zh">化石：<b>suki_memory.json</b> · <b>suki_miner.py</b> · <b>suki_budget.py</b> · DB 欄位 <b>suki_impression</b>（"Marvin's inner monologue about this person"）。整套記憶系統至今仍以她為名。</div>
+        <div class="fossil lang-en" hidden>Fossil: <b>suki_memory.json</b> · <b>suki_miner.py</b> · <b>suki_budget.py</b> · DB field <b>suki_impression</b> ("Marvin's inner monologue about this person"). The whole memory system still carries her name.</div>
+      </div>
+      <div class="name-card marvin">
+        <div class="name-head"><h3>Marvin</h3>
+          <span class="when lang-zh">2026 年 4 月中 — 至今</span><span class="when lang-en" hidden>mid-April 2026 — now</span>
+          <span class="tag">current</span></div>
+        <p class="lang-zh">現在的樣子。名字取自《銀河便車指南》那隻憂鬱機器人——而它的厭世人格在改名第一天就在了。2026 年 5 月 7 日以 <span class="mono">marvin-voice-core</span> 開源。</p>
+        <p class="lang-en" hidden>The current form. Named after the depressed robot from The Hitchhiker's Guide to the Galaxy — and the deadpan, world-weary persona was there from day one. Open-sourced as <span class="mono">marvin-voice-core</span> on May 7, 2026.</p>
+        <div class="fossil lang-zh">程式啟動字串：<b>Marvin Bot (Cog Edition) Initialized</b> — 自最早的 log（2026-04-25）起就是這一行。</div>
+        <div class="fossil lang-en" hidden>Boot string: <b>Marvin Bot (Cog Edition) Initialized</b> — unchanged since the earliest log (2026-04-25).</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="reveal">
+  <div class="wrap">
+    <div class="eyebrow"><span class="lang-zh">Timeline · 時間線</span><span class="lang-en" hidden>Timeline</span></div>
+    <h2><span class="lang-zh">三個月，從玩具到平台</span><span class="lang-en" hidden>Three months, toy to platform</span></h2>
+    <p class="lede lang-zh">公開可見的部分只花了一個月。下面用得到佐證的日期排列——大部分釘得死，最早的 Simon 起點以 3/1 為準。</p>
+    <p class="lede lang-en" hidden>The public part took just one month. The dates below are evidence-backed — most are pinned precisely; Simon's origin is anchored to March 1.</p>
+    <div class="tl">
+      <div class="tl-item">
+        <div class="tl-date">2026 · 03 / 01</div>
+        <div class="tl-title"><span class="lang-zh">Simon 誕生</span><span class="lang-en" hidden>Simon is born</span></div>
+        <div class="tl-body lang-zh">一個給電競小團體的私人語音 bot。最早的起點只活在聊天記錄裡。</div>
+        <div class="tl-body lang-en" hidden>A private voice bot for a small gaming crew. The starting point lives only in chat history.</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-date">2026 · 04 / 03–04</div>
+        <div class="tl-title"><span class="lang-zh">還是 Suki</span><span class="lang-en" hidden>Still Suki</span></div>
+        <div class="tl-body lang-zh">最早的真實資料 <span class="mono">suki_golden_dataset.jsonl</span>（04-04 16:50），system prompt 寫著「Suki 的私人偏見與刻板印象」。</div>
+        <div class="tl-body lang-en" hidden>The earliest real data, <span class="mono">suki_golden_dataset.jsonl</span> (04-04 16:50), with a system prompt reading "Suki's private biases and stereotypes."</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-date">2026 · 04 / 25–26</div>
+        <div class="tl-title"><span class="lang-zh">Marvin 接手，已會看畫面</span><span class="lang-en" hidden>Marvin takes over, already sees screens</span></div>
+        <div class="tl-body lang-zh">最早的 STT log 出現。第一天就有人喊「截圖功能恢復了」；隔天朋友開始叫它「馬文」。Vision 與音樂在此時都已上線。</div>
+        <div class="tl-body lang-en" hidden>The first STT logs appear. On day one someone says "the screenshot feature is back"; the next day friends start calling it "Marvin." Vision and music are both already live.</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-date">2026 · 05 / 07</div>
+        <div class="tl-title"><span class="lang-zh">開源 · marvin-voice-core</span><span class="lang-en" hidden>Open-sourced · marvin-voice-core</span></div>
+        <div class="tl-body lang-zh">git 歷史從這天起算。兩年私下演化的錯覺破滅——它其實才一個多月大。</div>
+        <div class="tl-body lang-en" hidden>git history starts here. The illusion of two years of private evolution breaks — it's barely a month old.</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-date">2026 · 05 / 11–18</div>
+        <div class="tl-title"><span class="lang-zh">兩週功能大爆發</span><span class="lang-en" hidden>Two weeks, feature explosion</span></div>
+        <div class="tl-body lang-zh">猜謎 Busted、Companion app、Busted99、Twitch 直播主支援，全部在這兩週內落地。</div>
+        <div class="tl-body lang-en" hidden>The Busted quiz game, the Companion app, Busted99, and Twitch streamer support all land in this window.</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-date">2026 · <span class="lang-zh">六月</span><span class="lang-en" hidden>June</span></div>
+        <div class="tl-title"><span class="lang-zh">深化期</span><span class="lang-en" hidden>Going deep</span></div>
+        <div class="tl-body lang-zh">不再堆新功能，而是把既有的做深：無限續歌的音樂智能、自發漫才與打岔疊播、本地混音台、LLM 池治理。</div>
+        <div class="tl-body lang-en" hidden>No longer piling on features — deepening what exists: the music intelligence behind endless playback, spontaneous two-voice comedy and barge-in mixing, a local audio mixer, LLM-pool governance.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="reveal">
+  <div class="wrap">
+    <div class="eyebrow"><span class="lang-zh">Features · 它會做什麼</span><span class="lang-en" hidden>Features · What it does</span></div>
+    <h2><span class="lang-zh">從一個能力，長成一套體驗</span><span class="lang-en" hidden>From one capability to a whole experience</span></h2>
+    <p class="lede lang-zh">每個功能都標了起點。前兩個在 Marvin 一站穩就有，其餘是開源後兩週衝刺出來的。</p>
+    <p class="lede lang-en" hidden>Each feature is dated. The first two were live as soon as Marvin found its feet; the rest came out of the two-week post-launch sprint.</p>
+    <div class="feat">
+      <div class="f"><span class="ic">📸</span>
+        <h4><span class="lang-zh">看螢幕截圖 / Vision</span><span class="lang-en" hidden>Screen Vision</span></h4>
+        <div class="when lang-zh">~ 4 月底（最老）</div><div class="when lang-en" hidden>~ late April (oldest)</div>
+        <p class="lang-zh">「馬文看一下你的畫面」——直接看你的螢幕、理解當下發生什麼。最早的能力之一。</p>
+        <p class="lang-en" hidden>"Marvin, look at my screen" — it sees your display and understands what's happening right now. One of the very first abilities.</p></div>
+      <div class="f"><span class="ic">🎵</span>
+        <h4><span class="lang-zh">放音樂 / YouTube Music</span><span class="lang-en" hidden>Music / YouTube Music</span></h4>
+        <div class="when lang-zh">~ 4 月底</div><div class="when lang-en" hidden>~ late April</div>
+        <p class="lang-zh">純語音點歌、無限續歌候選池、跟著群體品味走的推薦、每首歌響度正規化。長期主力戰場。</p>
+        <p class="lang-en" hidden>Pure-voice song requests, an endless playback pool, taste-aware recommendations, per-song loudness normalization. The long-running battleground.</p></div>
+      <div class="f"><span class="ic">🎮</span>
+        <h4><span class="lang-zh">猜謎 Busted</span><span class="lang-en" hidden>Busted quiz</span></h4>
+        <div class="when lang-zh">05 / 11</div><div class="when lang-en" hidden>May 11</div>
+        <p class="lang-zh">語音整合 + 音效的猜謎遊戲，隔天就加上主題抽選階段。零鍵盤，全程用講的。</p>
+        <p class="lang-en" hidden>A voice-driven quiz game with sound effects; a theme-draft phase was added the next day. Zero keyboard, all by voice.</p></div>
+      <div class="f"><span class="ic">📱</span>
+        <h4><span class="lang-zh">Companion app</span><span class="lang-en" hidden>Companion app</span></h4>
+        <div class="when lang-zh">05 / 12–14</div><div class="when lang-en" hidden>May 12–14</div>
+        <p class="lang-zh">獨立的伴侶 app（marvin-voice-companion），bot 把遊戲階段、成員進出等事件即時橋接過去。</p>
+        <p class="lang-en" hidden>A standalone companion app (marvin-voice-companion) the bot bridges live events to — game phases, members joining and leaving.</p></div>
+      <div class="f"><span class="ic">🎯</span>
+        <h4><span class="lang-zh">Busted99</span><span class="lang-en" hidden>Busted99</span></h4>
+        <div class="when lang-zh">05 / 14–17</div><div class="when lang-en" hidden>May 14–17</div>
+        <p class="lang-zh">完整的遊戲引擎、語音作答辨識、session 總結。Busted 的進階版本。</p>
+        <p class="lang-en" hidden>A full game engine, voice answer recognition, session summaries. The advanced version of Busted.</p></div>
+      <div class="f"><span class="ic">📺</span>
+        <h4><span class="lang-zh">直播主 / Twitch 支援</span><span class="lang-en" hidden>Twitch streamer support</span></h4>
+        <div class="when lang-zh">05 / 13–17</div><div class="when lang-en" hidden>May 13–17</div>
+        <p class="lang-zh">抓 sub gifts、cheers、bits、badges、新觀眾/回流觀眾——把 Twitch 聊天室的脈動接進 Marvin。</p>
+        <p class="lang-en" hidden>Captures sub gifts, cheers, bits, badges, new and returning viewers — wiring the Twitch chat pulse into Marvin.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="reveal">
+  <div class="wrap">
+    <div class="eyebrow"><span class="lang-zh">Primary Sources · 第一手語料</span><span class="lang-en" hidden>Primary Sources</span></div>
+    <h2><span class="lang-zh">這群人自己留下的證據</span><span class="lang-en" hidden>The evidence this crew left behind</span></h2>
+    <p class="lede lang-zh">最動人的史料不是 commit log，是那群朋友在語音裡的對話——被 Marvin 自己的 STT 一字一句錄了下來。</p>
+    <p class="lede lang-en" hidden>The most moving record isn't the commit log — it's this group talking in the voice channel, transcribed word for word by Marvin's own STT.</p>
+    <div class="quotes">
+      <blockquote>
+        <p>「所謂的陪伴雖然我覺得這毫無意義，你們可以叫我馬哥、老馬或者馬文同學，隨便你們吧。」</p>
+        <p class="gloss lang-en" hidden>"This so-called companionship, which I find utterly meaningless — you can call me Ma-ge, old Ma, or Marvin, whatever you like."</p>
+        <cite class="lang-zh">— Marvin 的自我介紹，2026-04-26（厭世人格在改名第一天就在了）</cite>
+        <cite class="lang-en" hidden>— Marvin introducing itself, 2026-04-26 (the world-weary persona, present on the day of the rename)</cite>
+      </blockquote>
+      <blockquote>
+        <p>「怎麼原本 Simon 都快要那個生命走幾塊結束，就被你搞一個新東西出來。」</p>
+        <p class="gloss lang-en" hidden>"Simon was just about reaching the end of its life, and then you went and built a whole new thing."</p>
+        <cite class="lang-zh">— 團友，2026-04-30（Simon 臨終，Marvin 接手）</cite>
+        <cite class="lang-en" hidden>— a friend in the group, 2026-04-30 (Simon's last days, Marvin takes over)</cite>
+      </blockquote>
+      <blockquote>
+        <p>「Simon 完，然後換 Suki 呀。」 /「4 月 3 號還在 Suki。」 /「Suki 做一堆，小段時間而已。」</p>
+        <p class="gloss lang-en" hidden>"Simon ended, then it switched to Suki." / "On April 3rd it was still Suki." / "Suki did a bunch of stuff — only for a short while."</p>
+        <cite class="lang-zh">— 團友們，2026-06-03（兩個月後，全團一起重建這隻 bot 的家譜）</cite>
+        <cite class="lang-en" hidden>— the crew, 2026-06-03 (two months on, the crew reconstructs the bot's family tree together)</cite>
+      </blockquote>
+    </div>
+  </div>
+</section>
+
+<div class="closer reveal">
+  <div class="wrap">
+    <p class="big lang-zh">它換了兩次名字。<br>但記憶與那群人——<span class="hl">每一個固定上線的夥伴</span>——<br>一路 carry 過來，<span class="hl">從沒忘記過他們是誰。</span></p>
+    <p class="big lang-en" hidden>It changed its name twice.<br>But the memory — and the people, <span class="hl">every regular who showed up</span> —<br>carried straight through. <span class="hl">It never once forgot who they were.</span></p>
+    <div class="stats">
+      <div class="stat"><div class="n">3</div><div class="l"><span class="lang-zh">個名字</span><span class="lang-en" hidden>names</span></div></div>
+      <div class="stat"><div class="n">~3</div><div class="l"><span class="lang-zh">個月</span><span class="lang-en" hidden>months</span></div></div>
+      <div class="stat"><div class="n">412</div><div class="l"><span class="lang-zh">commits / 開源首月</span><span class="lang-en" hidden>commits / first month OSS</span></div></div>
+      <div class="stat"><div class="n">∞</div><div class="l"><span class="lang-zh">續歌候選池</span><span class="lang-en" hidden>endless queue pool</span></div></div>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    Marvin · marvin-voice-core — a local-first AI voice companion<br>
+    <span class="lang-zh">繁體中文 codebase · 零鍵盤操作 · 一切記憶留在你自己的機器上</span>
+    <span class="lang-en" hidden>Traditional-Chinese codebase · zero-keyboard operation · all memory stays on your own machine</span><br>
+    Simon → Suki → Marvin · 2026
+  </div>
+</footer>
+
+<script>
+  function setLang(l){
+    document.documentElement.lang = (l==='en') ? 'en' : 'zh-Hant';
+    document.querySelectorAll('.lang-zh').forEach(e=>{ e.hidden = (l==='en'); });
+    document.querySelectorAll('.lang-en').forEach(e=>{ e.hidden = (l!=='en'); });
+    document.querySelectorAll('.langbar button').forEach(b=> b.classList.toggle('active', b.dataset.lang===l));
+    try{ localStorage.setItem('marvin-lang', l); }catch(e){}
+  }
+  document.querySelectorAll('.langbar button').forEach(b=> b.addEventListener('click',()=>setLang(b.dataset.lang)));
+  let saved='zh'; try{ saved = localStorage.getItem('marvin-lang') || 'zh'; }catch(e){}
+  setLang(saved);
+
+  const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.12});
+  document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
