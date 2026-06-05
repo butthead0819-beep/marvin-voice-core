@@ -3491,6 +3491,9 @@ class VoiceController(commands.Cog):
                 # ContextVar 不會跨 asyncio.Queue 邊界 — 從 producer 塞進來的 snapshot 還原，
                 # 讓下游 mark("intent_dispatched") + emit() 看得到 producer 的 endpoint / stt_start / stt_done
                 pipeline_timing.restore(task_data.get("_timing"))
+                # dequeued：worker 取出當下打點。stt_done→dequeued = 排隊等待，
+                # 之前被誤算進 cleaner 段（多人/autopilot 洗 query_queue 時可達 10~25s）。
+                pipeline_timing.mark("dequeued")
                 speaker = task_data["speaker"]
                 timestamp = task_data["timestamp"]
                 raw_text = task_data.get("raw_text", "")
@@ -3739,6 +3742,9 @@ class VoiceController(commands.Cog):
         if not stripped:
             return None
 
+        # question_done：問句已確定（含上面 evt.wait 等使用者講完的時間），cleaner LLM 之前打點。
+        # dequeued→question_done = 等問句；question_done→cleaner_done = 真正的 cleaner 清洗。
+        pipeline_timing.mark("question_done")
         # LLM 清洗 STT 雜訊，不做語音確認。短 timeout 封頂：cleaner 太慢就用 raw，不卡 worker
         # （含 TimeoutError 由 except 接 → 降級 raw）。喚醒偵測時已清過一次，這裡慢不值得等。
         cleaned = stripped

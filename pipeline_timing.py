@@ -19,7 +19,11 @@ from __future__ import annotations
 import contextvars
 import time
 
-_STAGES = ("stt_start", "stt_done", "cleaner_done", "intent_dispatched")
+# dequeued / question_done 是 cleaner_done 之前的中間打點：把舊的單一「cleaner」段
+# （= cleaner_done − stt_done）拆成 排隊(stt_done→dequeued) / 等問句(dequeued→
+# question_done) / 真清洗(question_done→cleaner_done)，避免 queue-wait + evt.wait 被
+# 誤算進 cleaner LLM（2026-06-05：日報「cleaner p50 7s」其實多半是排隊）。
+_STAGES = ("stt_start", "stt_done", "dequeued", "question_done", "cleaner_done", "intent_dispatched")
 
 _timing: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "pipeline_timing", default=None

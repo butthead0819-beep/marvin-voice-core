@@ -28,7 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 LOG_PATH = BASE_DIR / "bot_stdout.log"
 LLM_ROUTING_PATH = BASE_DIR / "records" / "llm_routing.jsonl"
 
-_STAGE_KEYS = ("sttstart", "sttdone", "cleanerdone", "intentdispatched", "total")
+_STAGE_KEYS = ("sttstart", "sttdone", "dequeued", "questiondone", "cleanerdone", "intentdispatched", "total")
 _STAGE_RE = re.compile(r"\[STAGE_TIMING\]")
 _TTS_RE = re.compile(r"\[TTS_TIMING\]")
 _KV_MS_RE = re.compile(r"(\w+)=(\d+)ms")
@@ -69,7 +69,17 @@ def stage_durations(record: dict) -> dict:
         d["pre_stt"] = record["sttstart"]
     if "sttstart" in record and "sttdone" in record:
         d["stt"] = record["sttdone"] - record["sttstart"]
-    if "sttdone" in record and "cleanerdone" in record:
+    # 有中間打點 → 把舊的混合 cleaner 段拆三段（排隊 / 等問句 / 真清洗）。
+    # 無中間打點（舊 log 行 / nowake 等不過 confirm 的 route）→ 維持 legacy 單一 cleaner，向後相容。
+    _has_split = "dequeued" in record or "questiondone" in record
+    if _has_split:
+        if "sttdone" in record and "dequeued" in record:
+            d["queue_wait"] = record["dequeued"] - record["sttdone"]
+        if "dequeued" in record and "questiondone" in record:
+            d["question_wait"] = record["questiondone"] - record["dequeued"]
+        if "questiondone" in record and "cleanerdone" in record:
+            d["cleaner_pure"] = record["cleanerdone"] - record["questiondone"]
+    elif "sttdone" in record and "cleanerdone" in record:
         d["cleaner"] = record["cleanerdone"] - record["sttdone"]
     if "cleanerdone" in record and "intentdispatched" in record:
         d["intent"] = record["intentdispatched"] - record["cleanerdone"]
@@ -182,12 +192,19 @@ def build_report(stage_lines: list[str], llm_rows: list[dict], since_ts: float, 
     _STAGE_LABEL = {
         "pre_stt": "endpoint→STT 開始",
         "stt": "STT 轉錄",
-        "cleaner": "cleaner LLM",
+        "queue_wait": "排隊等 worker",
+        "question_wait": "等使用者講完問句",
+        "cleaner_pure": "cleaner LLM（純清洗）",
+        "cleaner": "cleaner LLM（舊量法,含排隊+等問句）",
         "intent": "intent dispatch",
     }
     stage_summary: list[tuple[str, float]] = []  # (label, p50) 找大頭
-    for key in ("pre_stt", "stt", "cleaner", "intent"):
+    # 跳過無樣本的段：新舊量法（cleaner_pure vs cleaner）共存於輪轉過渡期，
+    # 全新後 legacy cleaner 自然降為 0 樣本而消失。
+    for key in ("pre_stt", "stt", "queue_wait", "question_wait", "cleaner_pure", "cleaner", "intent"):
         xs = by_stage.get(key, [])
+        if not xs:
+            continue
         lab = _STAGE_LABEL[key]
         lines.append(f"- **{lab}**: {_fmt_pct(xs)}")
         p = percentile(xs, 0.5)

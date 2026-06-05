@@ -79,6 +79,46 @@ def test_stage_durations_skips_missing():
     assert "cleaner" not in d
 
 
+def test_stage_durations_splits_cleaner_into_three():
+    """有 dequeued + questiondone 中間打點時，舊的單一 cleaner 段拆成三段：
+    queue_wait（排隊）/ question_wait（等使用者講完問句）/ cleaner_pure（真清洗）。
+    且不再產生會誤導的 legacy cleaner 段。"""
+    m = _mod()
+    r = {
+        "sttstart": 12, "sttdone": 487,
+        "dequeued": 9000, "questiondone": 11000, "cleanerdone": 11300,
+        "intentdispatched": 11305,
+    }
+    d = m.stage_durations(r)
+    assert d["queue_wait"] == 9000 - 487       # 排隊等 worker
+    assert d["question_wait"] == 11000 - 9000  # evt.wait 等問句
+    assert d["cleaner_pure"] == 11300 - 11000  # 真 cleaner LLM
+    assert d["intent"] == 11305 - 11300
+    assert "cleaner" not in d, "有中間打點時不該再算 legacy 混合段"
+
+
+def test_stage_durations_legacy_keeps_single_cleaner():
+    """舊 log 行（無 dequeued/questiondone）→ 維持 legacy cleaner 段，向後相容。"""
+    m = _mod()
+    r = {"sttstart": 12, "sttdone": 487, "cleanerdone": 1203, "intentdispatched": 1208}
+    d = m.stage_durations(r)
+    assert d["cleaner"] == 1203 - 487
+    assert "queue_wait" not in d
+    assert "cleaner_pure" not in d
+
+
+def test_parse_stage_timing_extracts_new_keys():
+    m = _mod()
+    line = (
+        "[STAGE_TIMING] speaker=X sttstart=10ms sttdone=300ms dequeued=9000ms "
+        "questiondone=11000ms cleanerdone=11300ms intentdispatched=11305ms total=11305ms text='hi'"
+    )
+    r = m.parse_stage_timing(line)
+    assert r is not None
+    assert r["dequeued"] == 9000
+    assert r["questiondone"] == 11000
+
+
 # ── TTS_TIMING parser ────────────────────────────────────────────────────────
 
 

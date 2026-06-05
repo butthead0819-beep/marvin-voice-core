@@ -100,6 +100,27 @@ async def test_isolated_per_async_task():
     assert "cleaner_done" in results["b"] and "stt_done" not in results["b"]
 
 
+def test_emit_includes_queue_and_question_stages():
+    """新增中間打點 dequeued / question_done → emit 行要帶 dequeued= / questiondone=，
+    讓 analyzer 能把舊的混合 cleaner 段拆成排隊 / 等問句 / 真清洗。"""
+    import pipeline_timing
+
+    pipeline_timing.start()
+    pipeline_timing.mark("stt_start")
+    pipeline_timing.mark("stt_done")
+    pipeline_timing.mark("dequeued")
+    pipeline_timing.mark("question_done")
+    pipeline_timing.mark("cleaner_done")
+    pipeline_timing.mark("intent_dispatched")
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        pipeline_timing.emit("狗與露", "馬文的厭世日記")
+    out = buf.getvalue()
+    assert "dequeued=" in out, out
+    assert "questiondone=" in out, out
+
+
 def test_emit_partial_stages_ok():
     """只跑到一半就 emit 也該正常輸出已記錄的，不該 KeyError。"""
     import pipeline_timing
