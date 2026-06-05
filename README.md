@@ -118,14 +118,40 @@ Data flow for consented members:
 
 Marvin runs on your own machine — there is no central server collecting data across deployments.
 
-| Data | Where it lives | Retention |
-|------|----------------|-----------|
-| Raw audio | RAM + per-utterance temp WAV | Deleted immediately after transcription; never persisted |
-| Raw transcripts | local `marvin.db` | Auto-pruned after 14 days; live bot never reads older than 7 days |
-| STT debug log | rotating `stt_history.log` | Size-capped rotating log |
-| Long-term semantic memory | local vector store | Conversation embeddings retained for cross-session recall |
-| Self-improvement signals (`records/*.jsonl`) | local files | Original wording replaced with a one-way hash after 14 days |
-| Behavioral observations & summaries | local `marvin.db` / `suki_memory.json` | Retained as long-term community memory |
+Marvin uses **tiered retention**, not blanket zero-data-retention: raw wording ages out, while privacy-safe abstractions (embeddings, behavioral summaries) are kept so the bot can recall and improve. Each tier and its enforcement:
+
+| Tier | Data | Where it lives | Rule | Enforced by |
+|------|------|----------------|------|-------------|
+| **Seconds** | Raw audio | RAM + per-utterance temp WAV | Deleted in a `finally` block right after transcription — never persisted | `discord_voice_engine.py` audio flush |
+| **Hours**¹ | Operational / STT debug logs | `bot_stdout.log`, `stt_history.log`, main bot log | Rotating, **size-capped** (5 MB × 3, 10 MB × 5); oldest chunk auto-discarded | `RotatingFileHandler` in `main_discord.py` |
+| **Days** | Raw transcripts | local `marvin.db` | **Deleted** after 14 days; live bot never reads older than 7 days | `scripts/prune_transcripts.py` |
+| **Days** | Self-improvement signals (`records/*.jsonl`: judge / gaps / rescue) | local files | Raw wording **replaced with a one-way SHA-1 hash** after 14 days (keeps de-dup / distinct counts working; original text unrecoverable) | `scripts/scrub_improvement_raw.py` |
+| **Long-term** | Semantic memory | local vector store | Conversation **embeddings** (no raw text) retained for cross-session recall | — (memory core, not pruned) |
+| **Long-term** | Behavioral observations & summaries | local `marvin.db` / `suki_memory.json` | Abstracted community memory retained; no verbatim transcripts | — (memory core, not pruned) |
+
+The two **Days** rules run nightly at **03:00** via the `feedbackbatch` launchd job (`run_feedback_batch.py` → `zdr_scrub` + `transcript_prune`).
+
+¹ The **Hours** tier is bounded by file *size*, not a fixed time window — at low activity a log may hold more than a few hours. It is a debug convenience, not a hard time guarantee.
+
+**Verify it yourself** (all read-only):
+
+```bash
+# Seconds — no audio is left between utterances (temp WAVs live in the run dir)
+ls tmp_stt_*.wav 2>/dev/null | wc -l         # → 0
+
+# Days — the nightly scrub/prune actually ran
+grep -E 'zdr_scrub|transcript_prune' ~/Library/Logs/Marvin/feedback_batch_cron.log | tail
+#   → deleted_rows: N   /   scrubbed_fields: N   /   ✅ success
+
+# Days — old improvement signals are hashed, not readable
+grep -c 'scrubbed:sha1:' records/agent_gaps.jsonl
+
+# Hours — rotation caps are in force
+ls -la bot_stdout.log* stt_history.log*
+
+# The 03:00 job is scheduled
+launchctl list | grep feedbackbatch
+```
 
 Nothing leaves your machine except the consented cloud calls above (Groq for STT, Gemini/Cerebras for responses), governed by those providers' policies. `marvin.db`, `suki_memory.json`, and `records/` are gitignored by default.
 
