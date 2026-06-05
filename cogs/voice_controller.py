@@ -1309,6 +1309,27 @@ class VoiceController(commands.Cog):
         await interaction.followup.send(f"🃏 {scrap}\n「{joke}」")
         await self.play_tts(joke, already_in_channel=True)
 
+    @app_commands.command(name="marvin_say", description="[Voice] 讓馬文用他的聲音念出你打的字")
+    @app_commands.describe(text="要馬文念出來的文字")
+    async def marvin_say(self, interaction: discord.Interaction, text: str):
+        # 刻意不走 SpeakBus：SpeakBus 是「主動發話」的仲裁（idle/mood 觸發 agent 競標
+        # 該不該插嘴），這裡是使用者下的直接命令，沒有「要不要開口」可競標——走 bus
+        # 反而可能被 MIN_CONFIDENCE / DuckingAgent 壓制而不發聲，違背指令本意。仍受
+        # play_tts 的播放鎖鏈（playback_lock / tts_queue_lock / mixer）正確序列化。
+        # 同 marvin_sing / marvin_joke。
+        await interaction.response.defer(thinking=True)
+        await interaction.followup.send(f"🗣️ 「{text}」")
+        # protected：手動拉起 _tts_protected（比照進場招呼），讓 play_tts 的靜默閘 /
+        # queue-drop guard 一律放行，確保整句念完不被砍；_tts_interrupted 先清掉避免
+        # 被前一次中斷旗標吞掉。結束還原原值，不 clobber 既有保護播放。
+        self._tts_interrupted = False
+        _prev_protected = self._tts_protected
+        self._tts_protected = True
+        try:
+            await self.play_tts(text, already_in_channel=True, protected=True)
+        finally:
+            self._tts_protected = _prev_protected
+
     @app_commands.command(name="hotswap_test", description="[Debug] Plan 11 Slice 1：播歌中途插 TTS 熱切換驗證")
     @app_commands.describe(lead="幾秒後切換（給 stream2 備料時間，預設 4）")
     async def hotswap_test(self, interaction: discord.Interaction, lead: float = 4.0):
