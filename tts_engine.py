@@ -26,6 +26,7 @@ class SukiTTS:
         self.temp_dir = "records"
         self._english_voice = "en-GB-RyanNeural"
         self._last_prewarm = 0.0  # on-wake 連線預熱節流（monotonic）
+        self._installed_voices_cache = None  # macOS say 聲音清單快取（首次列舉後填）
         os.makedirs(self.temp_dir, exist_ok=True)
 
     _PREWARM_THROTTLE_S = 5.0
@@ -123,42 +124,70 @@ class SukiTTS:
         """ [Deprecated] 已併入 _clean_text。為了相容性暫時保留，直接呼叫 _clean_text """
         return self._clean_text(text)
 
+    # macOS say 男聲偏好順序：挑第一個「實際裝了」的，沒裝才往下退。
+    # 中文 Han（瀚，唯一可靠的內建男聲）→ Meijia（女聲，最後保底有聲音）。
+    # 英文 Fred → Daniel。⚠️ 不要靠 say 的 returncode 判斷聲音是否存在：實測
+    # say 對未知聲音（或不能唸該語言的聲音，如 en_US Grandpa 唸中文）會 silent
+    # fallback 並回 exit 0、甚至產出靜音 wav——returncode 永遠騙人。
+    _MACOS_VOICE_PREF_ZH = ("Han", "Meijia")
+    _MACOS_VOICE_PREF_EN = ("Fred", "Daniel")
+
+    async def _get_installed_say_voices(self) -> set[str]:
+        """列舉本機 `say -v '?'` 裝了哪些聲音（取名字 token），結果快取。"""
+        if self._installed_voices_cache is not None:
+            return self._installed_voices_cache
+        voices: set[str] = set()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                'say', '-v', '?',
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                for line in stdout.decode('utf-8', 'ignore').splitlines():
+                    # 每行 "Name  locale  # example"；名字＝第一個空白前的 token，
+                    # 含 "Han (Premium)" → "Han"、"Grandpa (zh_TW)" → "Grandpa"。
+                    name = line.split(' ', 1)[0].strip()
+                    if name:
+                        voices.add(name)
+        except Exception as e:
+            logger.warning(f"⚠️ [TTS] 無法列舉 macOS say 聲音清單: {e}")
+        self._installed_voices_cache = voices
+        return voices
+
+    def _pick_say_voice(self, prefs: tuple[str, ...], installed: set[str]) -> str | None:
+        """從偏好順序挑第一個有裝的；都沒裝回 None（交給系統預設）。"""
+        for v in prefs:
+            if v in installed:
+                return v
+        return None
+
     async def _generate_marvin_macos_say(self, text: str, file_path: str) -> bool:
         """ [Ultimate Fallback] 針對馬文微調的 macOS say (低沉、緩慢、厭世) """
         try:
-            # 英文文字改用 Alex（macOS 內建英文男聲）
+            installed = await self._get_installed_say_voices()
             if self._is_english_text(text):
-                process_en = await asyncio.create_subprocess_exec(
-                    'say', '-v', 'Alex', '-r', '150', '--data-format=LEI16@44100', '-o', file_path, text,
-                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-                await process_en.communicate()
-                return process_en.returncode == 0 and os.path.exists(file_path)
+                voice = self._pick_say_voice(self._MACOS_VOICE_PREF_EN, installed)
+                rate = '150'
+            else:
+                # 語速強制降至 130（預設約 180-200），配合馬文厭世緩慢的調性。
+                voice = self._pick_say_voice(self._MACOS_VOICE_PREF_ZH, installed)
+                rate = '130'
 
-            # 優先嘗試使用 Liao，並將語速強制降至 130 (預設約為 180-200)
-            target_voice = 'Liao'
-            words_per_minute = '130' 
-            
+            args = ['say']
+            if voice:
+                args += ['-v', voice]
+            else:
+                logger.warning("⚠️ [TTS] 偏好男聲均未安裝，改用系統預設聲。")
+            args += ['-r', rate, '--data-format=LEI16@44100', '-o', file_path, text]
+
             process = await asyncio.create_subprocess_exec(
-                'say', '-v', target_voice, '-r', words_per_minute, 
-                '--data-format=LEI16@44100', '-o', file_path, text,
+                *args,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await process.communicate()
-            
-            # 系統防呆：若 Liao 未安裝，say 會回傳非 0 錯誤碼。此時降級回安全的 Meijia。
-            if process.returncode != 0:
-                logger.warning(f"⚠️ [TTS] 找不到男聲 {target_voice}，降級使用安全備援 Meijia。")
-                process_fallback = await asyncio.create_subprocess_exec(
-                    'say', '-v', 'Han', '-o', file_path, text,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                await process_fallback.communicate()
-                return process_fallback.returncode == 0 and os.path.exists(file_path)
-            
-            return True
+            await process.communicate()
+            return process.returncode == 0 and os.path.exists(file_path)
         except Exception as e:
             logger.error(f"❌ [TTS] macOS say 子進程異常: {e}")
             return False
