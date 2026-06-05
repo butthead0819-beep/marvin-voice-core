@@ -68,6 +68,19 @@ async def test_marvin_say_is_protected_during_playback():
 
 
 @pytest.mark.asyncio
+async def test_marvin_say_uses_macos_say_male_voice():
+    """念字走 macOS say 男聲（force_macos=True），不走 edge-tts。"""
+    from cogs.voice_controller import VoiceController
+    vc = _make_vc()
+    interaction = _make_interaction()
+
+    await VoiceController.marvin_say.callback(vc, interaction, text="念這句")
+
+    _, kwargs = vc.play_tts.call_args
+    assert kwargs.get("force_macos") is True
+
+
+@pytest.mark.asyncio
 async def test_marvin_say_clears_interrupt_flag():
     from cogs.voice_controller import VoiceController
     vc = _make_vc()

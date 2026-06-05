@@ -1326,7 +1326,9 @@ class VoiceController(commands.Cog):
         _prev_protected = self._tts_protected
         self._tts_protected = True
         try:
-            await self.play_tts(text, already_in_channel=True, protected=True)
+            # force_macos=True：走 macOS say 男聲（中文 Liao→Han 備援、英文 Alex），
+            # 不走 edge-tts 的 Marvin 預設聲。
+            await self.play_tts(text, already_in_channel=True, protected=True, force_macos=True)
         finally:
             self._tts_protected = _prev_protected
 
