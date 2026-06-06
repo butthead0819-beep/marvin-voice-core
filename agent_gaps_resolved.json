@@ -1,0 +1,9 @@
+{
+  "game_knowledge_query": {
+    "agent": "game_knowledge",
+    "file": "intent_agents/game_knowledge_agent.py",
+    "commit": "3a5c120",
+    "resolved_at": "2026-06-07",
+    "note": "Minecraft 等遊戲知識查詢已由 GameKnowledgeAgent 接手（bid 0.80）。新 intent_type 實作 agent 後，把 intent_type 加進這檔（tracked，與 code 同步），analyze_agent_gaps 就不再誤報 ready，新 coding agent 也不會被誤導去重做。"
+  }
+}

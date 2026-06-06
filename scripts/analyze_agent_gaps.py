@@ -20,7 +20,17 @@ import sys
 from pathlib import Path
 
 INPUT = Path("records/agent_gaps.jsonl")
+RESOLVED = Path("agent_gaps_resolved.json")  # 已實作的 intent_type（dict keyed by intent_type；tracked in git，與 code 同步）
 READY_THRESHOLD = 2  # distinct occurrence 門檻
+
+
+def load_resolved(path: Path = RESOLVED) -> set[str]:
+    """已實作 intent_type 集合。檔不存在＝空集（向後相容）。"""
+    if not path.exists():
+        return set()
+    import json as _json
+    data = _json.loads(path.read_text(encoding="utf-8"))
+    return set(data.keys()) if isinstance(data, dict) else set(data)
 
 
 def load(path: Path) -> list[dict]:
@@ -34,7 +44,8 @@ def load(path: Path) -> list[dict]:
     return rows
 
 
-def analyze(rows: list[dict]) -> dict:
+def analyze(rows: list[dict], resolved: set[str] | None = None) -> dict:
+    resolved = resolved or set()
     total = len(rows)
     non_unknown = [r for r in rows if (r.get("intent_type") or "UNKNOWN") != "UNKNOWN"]
 
@@ -51,11 +62,14 @@ def analyze(rows: list[dict]) -> dict:
     intents = []
     for it, b in by_type.items():
         distinct_count = len(b["distinct"])
+        is_resolved = it in resolved
         intents.append({
             "intent_type": it,
             "raw_count": b["raw_count"],
             "distinct_count": distinct_count,
-            "ready_to_implement": distinct_count >= READY_THRESHOLD,
+            # 已實作的 intent_type 永不再 ready（但仍保留可見，回歸時看得到 distinct 漲）
+            "ready_to_implement": distinct_count >= READY_THRESHOLD and not is_resolved,
+            "resolved": is_resolved,
             "samples": b["samples"][:5],
         })
     intents.sort(key=lambda x: (x["distinct_count"], x["raw_count"]), reverse=True)
@@ -72,7 +86,7 @@ def main() -> int:
     if not INPUT.exists():
         print(f"input not found: {INPUT}", file=sys.stderr)
         return 1
-    result = analyze(load(INPUT))
+    result = analyze(load(INPUT), resolved=load_resolved())
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
