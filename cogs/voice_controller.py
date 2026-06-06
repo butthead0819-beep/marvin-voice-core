@@ -104,6 +104,7 @@ from intent_agents.busted_agent import BustedAgent
 from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.find_song_agent import FindSongAgent, find_song_prompt
+from intent_agents.game_knowledge_agent import GameKnowledgeAgent
 from intent_agents.skip_intent import is_short_skip_command
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
@@ -254,6 +255,7 @@ def build_intent_agents(controller, bot):
         VolumeAgent(controller),  # 2026-05-27: 議題 E #1 — 音量語音控制
         ReplayAgent(controller),  # 2026-05-27: 議題 E #2 — 重播當前歌曲
         NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
+        GameKnowledgeAgent(controller),  # 2026-06-06: Plan 4 intent_gap ready — 「查麥塊…」遊戲知識查詢
         BustedAgent(bot),
         Busted99Agent(bot),
         TurtleSoupAgent(bot),
@@ -3306,6 +3308,37 @@ class VoiceController(commands.Cog):
         self.stt_logger.info(f"[BOT→{speaker}] (系統狀態查詢) {speech}")
         asyncio.create_task(self.play_tts(speech, already_in_channel=True))
         logger.info(f"🩺 [Status Query] {speaker} 查詢系統狀態，已回報。")
+
+    async def _handle_game_knowledge_query(self, speaker: str, query: str):
+        """遊戲知識查詢：走 Marvin LLM 回答 + TTS。
+
+        來源 = GameKnowledgeAgent（2026-06-06 intent_gap ready_to_implement，把「查麥塊…」
+        從模板 ack 升級成真正回答）。知識走既有 LLM bus；要更準可未來加 web search。
+        """
+        system_prompt = (
+            "你是馬文，毒舌但博學的語音助手。使用者在問電玩遊戲的玩法/攻略/知識。"
+            "用繁體中文、口語、兩三句話內直接給答案，講重點不鋪陳。"
+            "若不確定該遊戲版本的精確數值，誠實說大概範圍，不要編造精確數字。"
+        )
+        answer = None
+        try:
+            answer = await self.bot.router._call_llm(
+                system_prompt=system_prompt,
+                user_prompt=query,
+                is_json=False,
+                tier="simple",
+            )
+        except Exception as e:
+            logger.warning(f"🎮 [GameKnowledge] LLM 失敗: {e}")
+        if not isinstance(answer, str) or not answer.strip():
+            answer = "我的大腦剛剛卡了一下，這題等我回神再答你。"
+        answer = answer.strip()
+        if self.active_text_channel:
+            asyncio.create_task(self.active_text_channel.send(
+                f"🎮 **【遊戲查詢】** `{speaker}`：{answer}"))
+        self.stt_logger.info(f"[BOT→{speaker}] (遊戲知識查詢) {answer}")
+        asyncio.create_task(self.play_tts(answer, already_in_channel=True))
+        logger.info(f"🎮 [GameKnowledge] {speaker} 查詢已回答。")
 
     async def _handle_voice_imitate_command(self, speaker: str, target: str):
         """
