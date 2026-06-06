@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 _ROOT        = Path(__file__).parent.parent
+# repo 根加進 sys.path，否則 main() 的 `from llm_pool import ...` 在 `python scripts/x.py`
+# 路徑下找不到（sys.path[0]=scripts/）。2026-06-06：40bc9ad 改走 bus 漏了這行，
+# 導致 import 靜默失敗→跳過 LLM→style_summary 留空。對齊 analyze_daily_log.py 慣例。
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 RECORDS_DIR  = _ROOT / "records" / "daily"
 MEMORY_PATH  = _ROOT / "suki_memory.json"
 DNA_OUT_DIR  = _ROOT / "records"
