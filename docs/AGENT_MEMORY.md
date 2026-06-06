@@ -54,7 +54,7 @@
 - [voice_pipeline_dave_to_stt](#voice-pipeline-dave-to-stt) — STT 核心服務的解密依賴鏈，Discord 啟用 DAVE 後 voice_recv 解外層 SRTP、davey 解內層 E2EE，斷一層 STT 全死
 
 ### 🔖 Reference — 外部資源 / 評估結論
-- [reference_open_llm_vtuber_parts](#reference-open-llm-vtuber-parts) — Open-LLM-VTuber 評估結論——對 Marvin 只剩 2 個可搬零件，其餘不值得
+- [reference_open_llm_vtuber_parts](#reference-open-llm-vtuber-parts) — Open-LLM-VTuber 評估（對 Marvin 只剩 2 可搬零件）+ 本地 TTS 模型評估（VibeVoice=NO-GO 無中文/8GB，要克隆嗓子走 CosyVoice/GPT-SoVITS+Mac mini）
 
 
 ---
@@ -1500,7 +1500,7 @@ Discord UDP packet
 # 🔖 Reference — 外部資源 / 評估結論
 
 ## reference_open_llm_vtuber_parts
-*Open-LLM-VTuber 評估結論——對 Marvin 只剩 2 個可搬零件，其餘不值得*
+*Open-LLM-VTuber 評估（對 Marvin 只剩 2 可搬零件）+ 本地 TTS 模型評估（VibeVoice=NO-GO 無中文/8GB，要克隆嗓子走 CosyVoice/GPT-SoVITS+Mac mini）*
 
 評估過開源專案 **Open-LLM-VTuber**（github.com/Open-LLM-VTuber/Open-LLM-VTuber，語音 AI 伴侶，ASR→LLM→TTS→Live2D，主打離線+多後端 config 可插拔+Live2D 頭像，單機單人）。
 
@@ -1511,5 +1511,10 @@ Discord UDP packet
 **不值得搬：** TTS engine 庫（Marvin 主聲道已是 Edge TTS；`/marvin_say` 走 macOS say 只是給不能開麥者的玩具，刻意不碰）；agent/conversations（它是直球 ASR→LLM→TTS，無 IntentBus 競價/多人 speaker 歸因/game 模式，我們的 IntentBus 比它成熟）；server/websocket/live2d/routes（Web 前端世界，跟 Discord 無關）。
 
 定位：它強在「離線+多後端+Live2D」廣度；Marvin 強在「多人 Discord+IntentBus 競價+STT 投機管線」深度。骨架同物種，賭注不同。
+
+**本地 TTS 模型評估（給 Marvin 找本地/可克隆嗓子時先讀，免重查）：**
+- **微軟 VibeVoice-Realtime-0.5B（2026-06-07 評估＝NO-GO）**：MIT、支援 Apple Silicon MPS、`pip install -e .`、需 ~2.5GB、首音 ~200ms。但兩個 dealbreaker：①**語言清單沒中文**（英+德法義日韓荷波葡西 9 種），Marvin 是 zh-TW＝直接報廢，不是品質差是不能用；②需 ~2.5GB，現 M1 8GB 閒置就 0.1GB free/2.9GB 壓縮近 swap，疊上去 OOM（微軟 realtime 基準是 M4 Pro，明說弱裝置要再調）。即使換 Mac mini，中文問題還在＝對 Marvin 永遠沒用。
+- **要本地中文克隆嗓子的對的工具＝CosyVoice（阿里，中文克隆天花板）/ GPT-SoVITS（少量樣本訓專屬聲）**，兩個中文原生+可克隆，但都要等 Mac mini（M1 8GB 跑不動）。
+- **主聲道現況**：Edge TTS（免費雲端、zh-TW、延遲可接受）已佔滿「主聲道」格、零本地成本；本地 TTS 只在想要「獨特/克隆嗓子」時才有意義，純替換主聲道沒誘因。
 
 **為什麼它 ~10k star / 安裝爆（不可複製到 Marvin）：** 不是某大 Vtuber 在用，而是 README 宗旨明寫「開源復刻閉源的 Neuro-sama」——直接接住 Neuro-sama（Twitch 訂閱前三的現象級 AI VTuber）幾十萬粉「我也想要一個」的現成需求池。增長三引擎＝①蹭 Neuro-sama 狂熱社群 ②本機+免費+隱私的「私密 AI 女友」(用戶見證「被用 10 萬次") ③Live2D waifu 視覺情感投射 + 亞洲二次元伴侶市場(中/日/韓 README+QQ 群)。**這三個引擎 Marvin 全沒踩**：無對標爆紅 IP、多人公共語音(社交非私密陪伴)、純語音無頭像、做工具/DJ/遊戲主持。它賣情感陪伴幻想，我們做多人房間智慧夥伴＝不同物種不同慾望。教訓：追 star=找有狂熱現成社群的 IP 去蹭；我們刻意不蹭走技術深度，star 慢但本就不追 star，印證 `project_devlog_content_roadmap` 路線。
