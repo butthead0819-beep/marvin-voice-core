@@ -223,6 +223,41 @@
 
 <section class="reveal">
   <div class="wrap">
+    <div class="eyebrow"><span class="lang-zh">The Claude Era · 每週更新重點</span><span class="lang-en" hidden>The Claude Era · Weekly cadence</span></div>
+    <h2><span class="lang-zh">開源之後，幾乎每週長出一套新系統</span><span class="lang-en" hidden>After open-sourcing, a new system almost every week</span></h2>
+    <p class="lede lang-zh">5 月 7 日開源、開發節奏切到與 Claude 協作之後，速度從「偶爾加個功能」變成「一週一套系統」。下面是 git 釘得死的每週重點——不是計畫，是實際 commit 出來的東西。</p>
+    <p class="lede lang-en" hidden>After open-sourcing on May 7 and shifting the workflow to pairing with Claude, the pace went from "an occasional feature" to "a system a week." Below are the git-pinned weekly highlights — not a roadmap, but what actually got committed.</p>
+    <div class="tl">
+      <div class="tl-item">
+        <div class="tl-date">2026 · 05 / 11–17 · <span class="lang-zh">第 1 週</span><span class="lang-en" hidden>Week 1</span></div>
+        <div class="tl-title"><span class="lang-zh">遊戲化 + 記憶骨架</span><span class="lang-en" hidden>Games + the memory backbone</span></div>
+        <div class="tl-body lang-zh">猜謎遊戲 <b>Busted</b> 上線（語音整合＋音效）。語音記憶系統<b>四層全實作</b>（把時間壓縮成 prompt）＋實時向量索引＋懶執行壓縮。Apple 平台全停 Whisper，改 <b>Swift-only STT</b>。語音資料 opt-in consent、TTS 風暴保護、Companion app bridge。</div>
+        <div class="tl-body lang-en" hidden>The <b>Busted</b> quiz game ships (voice + SFX). The voice-memory system gets all <b>four layers</b> (compressing time into prompts) plus a real-time vector index and lazy compression. Apple platforms drop Whisper entirely for <b>Swift-only STT</b>. Opt-in voice consent, TTS storm protection, the Companion app bridge.</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-date">2026 · 05 / 18–24 · <span class="lang-zh">第 2 週</span><span class="lang-en" hidden>Week 2</span></div>
+        <div class="tl-title"><span class="lang-zh">海龜湯推理 + 意圖硬化</span><span class="lang-en" hidden>Lateral-thinking puzzles + intent hardening</span></div>
+        <div class="tl-body lang-zh">最重的一週（單週近百 commit）。<b>海龜湯</b>推理遊戲整套：主動提示、LLM 維度遞進的 hint generator、HintNode 編織網、個人化 hint 排序（資訊增益選法）。VAD 遊戲模式 RMS bump；點歌改 YouTube Music 優先；一連串意圖修復（強弱訊號 fast-track、wake gate、pre_filter 去噪、silent failure 改 warning 不吞意圖）。</div>
+        <div class="tl-body lang-en" hidden>The heaviest week (nearly 100 commits). The full <b>Turtle Soup</b> lateral-thinking game: proactive hints, an LLM hint generator that escalates by dimension, a HintNode graph, personalized hint ranking by information gain. A game-mode VAD RMS bump; music now hits YouTube Music first; a long run of intent fixes (strong/weak fast-track, wake gates, pre_filter denoising, silent failures turned into warnings instead of swallowed intents).</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-date">2026 · 05 / 25–31 · <span class="lang-zh">第 3 週</span><span class="lang-en" hidden>Week 3</span></div>
+        <div class="tl-title"><span class="lang-zh">Social Catalyst — 它開始「主動」</span><span class="lang-en" hidden>Social Catalyst — it starts speaking first</span></div>
+        <div class="tl-body lang-zh">從「被叫才答」進化到「主動發話」。<b>SpeakBus</b> 主動發話架構＋ SpeakerTopicGraph ＋ RoomMoodState。<b>DuckingAgent</b> 偵測兩人熱聊就自己讓位；<b>ProactiveTopicAgent</b> 冷場拋話題；<b>MemoryCallbackAgent</b> 主題返場（「你之前說要⋯」）；MoodAgent 三軸心情、BridgeAgent 跨人串話。點歌改 Gemini grounded search 取代盲猜。</div>
+        <div class="tl-body lang-en" hidden>From "answers when called" to "speaks first." The <b>SpeakBus</b> proactive-speech architecture plus a SpeakerTopicGraph and RoomMoodState. <b>DuckingAgent</b> backs off when two people are mid-conversation; <b>ProactiveTopicAgent</b> floats a topic when the room goes quiet; <b>MemoryCallbackAgent</b> brings back old threads ("you said you'd…"); a three-axis MoodAgent and a cross-person BridgeAgent. Song lookup switches to Gemini grounded search instead of blind guessing.</div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-date">2026 · 06 / 01–07 · <span class="lang-zh">第 4 週</span><span class="lang-en" hidden>Week 4</span></div>
+        <div class="tl-title"><span class="lang-zh">本地混音台 + Marmo 一搭一唱 + 治理</span><span class="lang-en" hidden>A local mixer + Marmo the duo + governance</span></div>
+        <div class="tl-body lang-zh"><b>Plan 12</b> 本地混音台（f32 on-demand mixer，每首歌響度正規化、按鈕步進）。<b>Marmo</b> 登場——Marvin 的雙人搭檔：DualSpeakAgent 雙人對白、自發漫才（ツッコミ 公式、緊張緩和）、刀子嘴豆腐心對上 Marvin 的冷淡。冷場直接拋話題（移除「要我出話題嗎」確認）。後段轉向治理與韌性：LLM 池歸因、daily-review 雙層 silent-failure 防護、遊戲知識查詢 agent、跨 coding agent 的記憶導出。</div>
+        <div class="tl-body lang-en" hidden><b>Plan 12</b>, a local audio mixer (an f32 on-demand mixer with per-song loudness normalization and stepped volume). <b>Marmo</b> arrives — Marvin's comedy partner: a DualSpeakAgent for two-voice dialogue, spontaneous manzai (the tsukkomi formula, tension-and-release), a tough-love foil against Marvin's deadpan. The room going quiet now triggers a topic directly (the "want a topic?" confirmation is gone). The back half turns to governance and resilience: LLM-pool attribution, two-layer silent-failure guards on the daily review, a game-knowledge agent, and a cross-agent memory export.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="reveal">
+  <div class="wrap">
     <div class="eyebrow"><span class="lang-zh">Features · 它會做什麼</span><span class="lang-en" hidden>Features · What it does</span></div>
     <h2><span class="lang-zh">從一個能力，長成一套體驗</span><span class="lang-en" hidden>From one capability to a whole experience</span></h2>
     <p class="lede lang-zh">每個功能都標了起點。前兩個在 Marvin 一站穩就有，其餘是開源後兩週衝刺出來的。</p>
