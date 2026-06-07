@@ -1,6 +1,6 @@
 # Agent Memory — Marvin Discord Voice Bot
 
-> **給接手的 coding agent**：這是從 Claude Code 的 per-project 記憶導出的累積知識（44 條，截至 2026-06-06）。每條是過去 session 學到、無法從 code/git 直接看出的事實、修正、決策或踩雷。**讀 code 前先讀這份**，能省下重新踩坑的時間。
+> **給接手的 coding agent**：這是從 Claude Code 的 per-project 記憶導出的累積知識（45 條，截至 2026-06-06）。每條是過去 session 學到、無法從 code/git 直接看出的事實、修正、決策或踩雷。**讀 code 前先讀這份**，能省下重新踩坑的時間。
 > 搭配 `CLAUDE.md`（硬性工作守則）+ `AGENTS.md`（入口）一起看。
 > 注意：條目含日期；citation 的 file:line 可能已漂移，引用前先對現有 code 驗證。
 
@@ -41,6 +41,7 @@
 - [project_intent_rescue_pipeline](#project-intent-rescue-pipeline) — bus no-winner 時 LLM 改寫重投 + pragmatic signal 訊號回饋；env-gated 預設 OFF，shadow 預設 ON
 - [project_judge_race_volume_2026-05-28](#project-judge-race-volume-2026-05-28) — Race coordinator 5/24 上線後 5 天樣本量遠低於 Plan 8 trigger「每天 ≥30」門檻，可能要重審
 - [project_llm_pool_attribution](#project-llm-pool-attribution) — "LLM 池歸因/分流三部曲（#1 purpose"
+- [project_mcp_status_and_multiplayer](#project-mcp-status-and-multiplayer) — Marvin MCP 現況=零原生+owner 鎖死 openclaw；接多人 MCP 要解兩個鎖；最對味=即時遊戲資料
 - [project_plan12_local_mixing](#project-plan12-local-mixing) — 決定把串流播放核心改成本地 f32 混音（取代 hotswap second-stream）的方向、測試策略，以及 Marmo 的定位
 - [project_plan_b_public_bot](#project-plan-b-public-bot) — Plan B（公開可邀請 bot）計劃已寫、冷凍待命；啟動 gate + Gemini 每 guild 成本
 - [project_relaxed_zdr_tiered_retention](#project-relaxed-zdr-tiered-retention) — Marvin 隱私資料保留的方向決策——選分層保留而非硬 ZDR/fork；含 golden 蒸餾資料現況
@@ -958,6 +959,27 @@ Race coordinator 5/24 上線後實際樣本分布（含 5/28 partial）：
 **下一步（等數據，別盲配）**：#3 的精準 per-purpose 導流需要 #1 上線後累積幾天的 labeled data。跑幾天後撈報表看：哪些背景 purpose 吃最多池、要不要把使用者可見生成器也納入背景集、救援率/過矯正是否改善。6/2 baseline = 救援率 0%、過矯正 22。
 
 **已知 bypass 債（治本=#3 大重構，未做）**：reactive 主路徑 `stream_llm`（dedicated client）+ `profile_compressor`（直連 Groq）**繞過 bus、不記 log、不吃 cooldown**，卻打同一 Groq 帳號配額——這才是「背景在 bus 讓位、reactive 仍直捶 Groq」的根源。收進 bus 是動熱路徑的大工程，待獨立處理。相關：`feedback_llm_calls_must_use_bus` `feedback_llm_bus_model_staleness` `feedback_data_driven_diagnosis`
+
+## project_mcp_status_and_multiplayer
+*Marvin MCP 現況=零原生+owner 鎖死 openclaw；接多人 MCP 要解兩個鎖；最對味=即時遊戲資料*
+
+**Marvin 的 MCP / tool-calling 現況（2026-06-07 查證）：原生零 + 唯一管道 owner 鎖死。**
+
+- **原生 MCP client = 完全沒有。** LLM 走 bus（gemini_router / llm_pool）是純 completion，**不做 tool-calling / function-calling**。整個 Python codebase 無 MCP（grep `mcp` 唯一命中是誤判）。
+- **唯一的 agent/工具出口 = `openclaw agent` subprocess（NemoClaw，`cogs/voice_controller.py:3886 _ask_nemoclaw`）。** openclaw 本身是完整 agent 平台（ACP/Gateway/sandbox/hooks，幾乎確定支援 MCP），但 Marvin 把它當**黑箱**：query 進→純文字出，拿不到結構化工具結果、不串流。
+- **⚠️ 而且 owner 鎖死**：`intent_agents/nemoclaw_agent.py:39 if not ctx.is_owner: return None`，只有 owner 講「龍蝦」(`_LOBSTER_RE`) 才觸發。**完全不是多人的。**
+
+**架構定位**：MCP = LLM 自己決定呼叫工具 → 天生屬於 **NemoClaw/openclaw 那條路，不是 IntentBus 確定性熱路徑**（IntentBus 是 regex/bid ~5ms、不靠 LLM 決策）。
+
+**要接多人 MCP 應用 = 先解兩個鎖（都非小事）**：①把 MCP server 接進 openclaw；②把 agent 路徑對全房開放（加護欄）——這跟 `project_plan_b_public_bot` 的「多人治理：陌生輸入要有護欄」是同一類問題。不是裝套件就好，是開一條**新的執行軸**。
+
+**概念分軸（接續剛建的 game_knowledge agent）**：
+- **靜態/知識 → LLM**（`game_knowledge` agent 用 LLM 記憶，知道 Minecraft 鑽石在哪）
+- **即時/外部/可執行 → MCP**（LLM 不可能知道的：你**現在**這局戰況、行事曆、點餐）
+
+**最對味的多人 MCP（值不值得開，看有沒有朋友真的會一直用的 app）**：
+1. **🎮 即時遊戲資料（Riot/LoL/Steam/運動賽事）= 最對味** — 「馬文我們這場戰況?」是 game_knowledge 的下一格（靜態→活）。一群人在打遊戲、Marvin 在房裡查活戰況 = 真多人會用。
+2. 📅 團體約時間（Google Calendar MCP）／📒 共同帳本筆記（Notion，接 per-person 記憶，記跑團賭注「誰欠誰一頓飯」）／🍕 團體點餐分帳／📺 Twitch 工具（已有 marvin_twitch.db）。
 
 ## project_plan12_local_mixing
 *決定把串流播放核心改成本地 f32 混音（取代 hotswap second-stream）的方向、測試策略，以及 Marmo 的定位*
