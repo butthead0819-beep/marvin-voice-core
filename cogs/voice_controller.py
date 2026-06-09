@@ -774,6 +774,8 @@ class VoiceController(commands.Cog):
             return pushed
 
         _, pushed = await asyncio.gather(_feed(), _drain())
+        if pushed == 0:
+            logger.warning(f"[Plan12_Mixer] TTS 推送 0 frame（text_len={len(text)}）— edge-tts 空流或 _tts_interrupted 被提早設起")
         return pushed
 
     # 🎛️ [Plan 12 / T4] flag=on 時 is_playing_audio / tts_queue_duration 由 mixer 維護，
@@ -4020,11 +4022,13 @@ class VoiceController(commands.Cog):
             #   需繞過 silence gate、queue-full 靜默丟棄、stream guard
             tts_text = response[:150] + "…以下省略。" if len(response) > 150 else response
             _marmo_voice = os.getenv("MARMO_VOICE", "zh-TW-HsiaoYuNeural")
+            logger.info(f"[NemoClaw TTS] 開始播報，text_len={len(tts_text)} plan12={self._plan12}")
             self._tts_interrupted = False
             self._tts_protected = True
             try:
                 await self.play_tts(tts_text, already_in_channel=False,
                                     emotion_tag="nemo", voice=_marmo_voice)
+                logger.info("[NemoClaw TTS] play_tts 完成")
             finally:
                 self._tts_protected = False
                 # NemoClaw 回應完成後清除 Wake Storm，避免用戶在等待期間多次呼叫導致 storm 無限延伸
@@ -7647,7 +7651,7 @@ class VoiceController(commands.Cog):
                 except Exception:
                     logger.exception("[AutoRecommend] quality filter raised — fail-open")
 
-            info['requested_by'] = f"Marvin推薦（為{username}）"
+            info['requested_by'] = f"Marvin推薦（為{spotlight}）"
             # Phase 1 M6: round 第 1 首 → 標記「賭一把」mode 給 DJ persona
             info['_round_first'] = (enqueued == 0)
 
@@ -7658,7 +7662,7 @@ class VoiceController(commands.Cog):
             if self.active_text_channel and enqueued == 0:
                 # Round blurb 一次發、後 2 首不另開訊息（避免洗版）
                 vibe_tag = f" [vibe: {vibe_label.mood}]" if vibe_label else ""
-                blurb = self._recommend_blurb(cand, info['title']) + vibe_tag
+                blurb = self._recommend_blurb(cand, info['title'], spotlight=spotlight) + vibe_tag
                 await self.active_text_channel.send(blurb)
             # offline feedback log：每首 autopilot 推薦都進 jsonl，明天 analyze
             # 2026-05-28 Phase 1：豐富 channel_state — vibe / queue position / history /
@@ -7667,7 +7671,7 @@ class VoiceController(commands.Cog):
                 s.get("title", "") for s in self.stream_history[-3:] if isinstance(s, dict)
             ]
             append_recommendation(build_autopilot_recommendation(
-                speaker=username, title=info['title'], lane=cand.lane, mode=cand.mode,
+                speaker=spotlight, title=info['title'], lane=cand.lane, mode=cand.mode,
                 anchor_title=cand.anchor_title, blurb=blurb, now=time.time(),
                 channel_state_extras={
                     "vibe_mood": vibe_label.mood if vibe_label else None,
@@ -7678,6 +7682,7 @@ class VoiceController(commands.Cog):
                     "round_first": info['_round_first'],
                     "queue_depth": len(self.stream_queue),
                     "recent_history_titles": _recent_titles,
+                    "spotlight_member": spotlight,
                 },
             ))
 
@@ -7714,15 +7719,19 @@ class VoiceController(commands.Cog):
         rec = (rec or "").strip()
         return "" if (not rec or "無推薦" in rec) else rec
 
-    def _recommend_blurb(self, cand, title: str) -> str:
-        """依 lane 產生推薦時的自我說明文案（透明度：讓人知道為何推這首）。"""
+    def _recommend_blurb(self, cand, title: str, spotlight: str = "") -> str:
+        """依 lane 產生推薦時的自我說明文案（透明度：讓人知道為何推這首）。
+
+        spotlight：本輪聚焦的在場成員（_auto_recommend 輪替傳入）。
+        group_resonance 是群體共鳴，不點名個人；其餘 lane 若有 spotlight 則標示替誰推。
+        """
         if cand.lane == "group_resonance":
             return f"🎵 **【馬文精選】** 你們都有共鳴的《{title}》，再聽一次吧。"
+        who = cand.target_member or spotlight or "你"
         if cand.lane == "long_tail":
-            return f"🎵 **【馬文精選】** 從塵封歌單挖出《{title}》，還記得嗎。"
+            return f"🎵 **【馬文精選】** 為 `{who}` 從塵封歌單挖出《{title}》。"
         if cand.lane == "discovery":
-            return f"🎵 **【馬文精選】** 順著你們的口味挖到新歌《{title}》，聽聽看。"
-        who = cand.target_member or "你"
+            return f"🎵 **【馬文精選】** 為 `{who}` 挖到新歌《{title}》，聽聽看。"
         return f"🎵 **【馬文精選】** 為 `{who}` 翻出的《{title}》。"
 
     async def _handle_find_song(self, mode: str, payload: str, speaker: str):

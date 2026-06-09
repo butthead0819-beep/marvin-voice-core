@@ -237,25 +237,35 @@ class SukiTTS:
         success = False
         try:
             comm = edge_tts.Communicate(text=processed_text, voice=v, rate=r, pitch=p)
+            _audio_chunks = 0
             async for chunk in comm.stream():
                 if chunk["type"] == "audio":
                     yield chunk["data"]
-            success = True
+                    _audio_chunks += 1
+            if _audio_chunks == 0:
+                # edge-tts 完成但未回傳任何 audio — 視為靜默失敗，走 fallback
+                logger.warning(f"⚠️ [TTS Stream] Primary ({v}) 零 audio chunk，啟動 Secondary 備援...")
+            else:
+                success = True
         except Exception as e:
             logger.error(f"❌ [TTS Stream Error] Primary ({v}) 失敗: {e}")
 
         # --- 第三路徑：Secondary Edge TTS ---
         if not success:
-            logger.warning("⚠️ [TTS] Primary 串流失敗，啟動 Secondary 備援...")
             await asyncio.sleep(0.5)
             try:
                 # 使用備援語音
                 _secondary = self._english_voice if self._is_english_text(processed_text) else "zh-TW-HsiaoChenNeural"
                 comm = edge_tts.Communicate(text=processed_text, voice=_secondary, rate=r, pitch=p)
+                _sec_chunks = 0
                 async for chunk in comm.stream():
                     if chunk["type"] == "audio":
                         yield chunk["data"]
-                success = True
+                        _sec_chunks += 1
+                if _sec_chunks == 0:
+                    logger.warning("⚠️ [TTS Stream] Secondary 也零 audio chunk，走 macOS 備援...")
+                else:
+                    success = True
             except Exception as e:
                 logger.error(f"❌ [TTS Stream Error] Secondary 失敗: {e}")
 
