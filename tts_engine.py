@@ -254,8 +254,8 @@ class SukiTTS:
         if not success:
             await asyncio.sleep(0.5)
             try:
-                # 使用備援語音
-                _secondary = self._english_voice if self._is_english_text(processed_text) else "zh-TW-HsiaoChenNeural"
+                # 使用備援語音（中文選男聲 zh-CN-YunxiNeural，與 Marvin 男聲定調一致）
+                _secondary = self._english_voice if self._is_english_text(processed_text) else "zh-CN-YunxiNeural"
                 comm = edge_tts.Communicate(text=processed_text, voice=_secondary, rate=r, pitch=p)
                 _sec_chunks = 0
                 async for chunk in comm.stream():
