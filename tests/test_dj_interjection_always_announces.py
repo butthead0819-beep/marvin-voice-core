@@ -171,24 +171,35 @@ async def test_dj_fallback_audio_render_attempted():
 # ── 5. DJ Marvin 人設（避免每路徑都跑回「專業電台 DJ」泛人設）─────────────────
 
 @pytest.mark.asyncio
-async def test_round_first_marvin_pick_uses_dj_marvin_self_intro():
-    """Marvin 自選 round 第 1 首是自我介紹時機 → 必須走「我記得你，DJ Marvin為你帶來」格式。
+async def test_round_first_marvin_pick_uses_personalized_phrase():
+    """Marvin 自選 round 第 1 首走個人化短語 hardcoded path（不走 LLM）。
 
-    這條 hardcoded path 跳過 LLM，所以是 DJ Marvin 人設的最後一道防線——若這也錯了，
-    使用者每 round 第一首聽到的開場白就會跟人設斷裂。
+    新行為：輸出個人化短語（「這首幫XXX點的」等），包含 spotlight 名字 + 歌手 + 歌名。
+    spotlight 未設時用「你」兜底；LLM 不呼叫。
     """
+    cog = _make_cog()
+    info = _info(title="周杰倫 - 青花瓷", requester="Marvin")
+    info["_round_first"] = True
+    info["_spotlight"] = "狗與露"
+    result = await cog._fetch_dj_interjection_raw(info)
+    assert result is not None
+    text = result["text"]
+    assert "狗與露" in text, f"個人化短語應含 spotlight 名稱: {text!r}"
+    assert "周杰倫" in text and "青花瓷" in text, \
+        f"個人化短語應含歌手 + 歌名: {text!r}"
+
+
+@pytest.mark.asyncio
+async def test_round_first_marvin_no_spotlight_uses_fallback():
+    """spotlight 未設時 DJ 短語用「你」兜底，仍含 artist + title。"""
     cog = _make_cog()
     info = _info(title="周杰倫 - 青花瓷", requester="Marvin")
     info["_round_first"] = True
     result = await cog._fetch_dj_interjection_raw(info)
     assert result is not None
     text = result["text"]
-    assert "DJ Marvin" in text, f"自介台詞要有「DJ Marvin」: {text!r}"
-    assert "我記得你" in text, f"自介台詞要有「我記得你」: {text!r}"
-    # artist 演唱的 title 結構（檢核資訊完整度）
     assert "周杰倫" in text and "青花瓷" in text, \
-        f"自介台詞要點出歌手 + 歌名: {text!r}"
-    assert "演唱" in text, f"自介台詞要用「演唱」連接歌手與歌名: {text!r}"
+        f"無 spotlight 時應含 artist + title: {text!r}"
 
 
 @pytest.mark.asyncio
