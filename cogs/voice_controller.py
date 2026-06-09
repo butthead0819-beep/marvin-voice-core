@@ -7206,10 +7206,6 @@ class VoiceController(commands.Cog):
         requester = info.get('requested_by', '')
         if not requester:
             return None
-        # Phase 1 M6: Marvin 推薦的歌只在 round 第 1 首跑「賭一把」DJ；其他 round 內的
-        # 歌 (第 2、3 首) 維持靜默——避免每首都洗話 + 反 P7「沒人講話 ≠ 該介入」原則。
-        if requester.startswith('Marvin') and not info.get('_round_first'):
-            return None
 
         mm = getattr(self.bot, 'music_memory', None)
         play_count, feelings, lyric_match = 0, [], ''
@@ -7247,11 +7243,8 @@ class VoiceController(commands.Cog):
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
 
-        # Phase 1 M6: Marvin 自選曲 round 第 1 首 → 固定 DJ Marvin 自介台詞，跳過 LLM
-        # 「我記得你，DJ Marvin為你帶來 <藝人> 演唱的 <歌名>」格式由 user 指定，
-        # 是 round 首發的自介時機；LLM 路徑也要在 prompt 統一強化 DJ Marvin 人設
-        # （否則「專業電台 DJ」泛人設會把這條防線繞掉）。
-        if info.get('_round_first') and requester.startswith('Marvin'):
+        if requester.startswith('Marvin'):
+            # 所有 Marvin 自選曲（round 首曲 + 後續）一律走個人化短語，100% 觸發
             clean_title, clean_artist = self._parse_song_title_artist(info)
             spotlight = info.get('_spotlight', '')
             lane = info.get('_lane', '')

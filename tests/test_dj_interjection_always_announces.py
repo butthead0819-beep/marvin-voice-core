@@ -84,10 +84,14 @@ async def test_dj_fires_even_when_random_always_high():
 # ── 2. Skip 條件不變（保護 Marvin 自薦 / 無 requester）────────────────────
 
 @pytest.mark.asyncio
-async def test_dj_skipped_for_marvin_recommended():
+async def test_dj_plays_for_all_marvin_recommended():
+    """Marvin 推薦的歌（含 round 內第 2、3 首）全部播 DJ intro（100% trigger）。"""
     cog = _make_cog()
-    result = await cog._fetch_dj_interjection_raw(_info(requester="Marvin Recommended"))
-    assert result is None, "Marvin-picked songs intentionally skip DJ"
+    info = _info(title="周杰倫 - 青花瓷", requester="Marvin推薦（為Alice）")
+    info["_spotlight"] = "Alice"
+    result = await cog._fetch_dj_interjection_raw(info)
+    assert result is not None, "Marvin 推薦歌 DJ intro 應 100% 觸發"
+    assert result["text"], "DJ text 不應為空"
 
 
 @pytest.mark.asyncio
