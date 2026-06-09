@@ -7207,6 +7207,13 @@ class VoiceController(commands.Cog):
         if not requester:
             return None
 
+        # Marvin 自選 round 內第 2、3 首 stagger TTS 生成，避免並發打爆 edge-tts rate limit
+        # position 0 = 立即；1 = 3s；2 = 6s（_round_position 由 _auto_recommend 寫入）
+        if requester.startswith('Marvin'):
+            _pos = info.get('_round_position', 0)
+            if _pos > 0:
+                await asyncio.sleep(_pos * 3.0)
+
         mm = getattr(self.bot, 'music_memory', None)
         play_count, feelings, lyric_match = 0, [], ''
         if mm:
@@ -7650,6 +7657,7 @@ class VoiceController(commands.Cog):
             info['_round_first'] = (enqueued == 0)
             info['_spotlight'] = spotlight          # DJ intro 個人化用
             info['_lane'] = cand.lane               # DJ intro 群組 vs 個人判斷用
+            info['_round_position'] = enqueued      # DJ intro stagger 用（0=立即,1=3s,2=6s）
 
             self.stream_queue.append(info)
             mm.add_recent_recommendation(info['title'])
