@@ -129,7 +129,7 @@ class SukiTTS:
     # 英文 Fred → Daniel。⚠️ 不要靠 say 的 returncode 判斷聲音是否存在：實測
     # say 對未知聲音（或不能唸該語言的聲音，如 en_US Grandpa 唸中文）會 silent
     # fallback 並回 exit 0、甚至產出靜音 wav——returncode 永遠騙人。
-    _MACOS_VOICE_PREF_ZH = ("Han", "Meijia")
+    _MACOS_VOICE_PREF_ZH = ("Meijia", "Han")  # Meijia=zh_TW 台灣腔；Han=zh_CN 大陸腔（避免）
     _MACOS_VOICE_PREF_EN = ("Fred", "Daniel")
 
     async def _get_installed_say_voices(self) -> set[str]:
@@ -271,7 +271,7 @@ class SukiTTS:
 
         # --- 第四路徑：Ultimate Fallback (macOS Native) ---
         if not success:
-            logger.warning("🚨 [TTS] 網路串流完全失敗，啟動 macOS 系統原生語音終極備援串流...")
+            logger.warning(f"🚨 [TTS] edge-tts 雙層失敗，啟動 macOS say 終極備援（voice={self.voice}，請確認 edge-tts rate limit）")
             async for chunk in _yield_macos_say(processed_text):
                 yield chunk
 
