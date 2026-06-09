@@ -3733,13 +3733,15 @@ class VoiceController(commands.Cog):
                 return
 
         # 播放中政策：skip_if_busy → 跳過；否則 wait_if_busy 等空檔
-        if cat.skip_if_busy and (_vc.is_playing() or self.is_playing_audio):
-            return
-        if cat.wait_if_busy > 0:
-            waited = 0.0
-            while _vc.is_playing() and waited < cat.wait_if_busy:
-                await asyncio.sleep(0.05)
-                waited += 0.05
+        # Plan 12 模式：ack 走 push_tts（TTS 層 overlay 音樂），不佔 vc，busy guard 不適用
+        if not self._plan12:
+            if cat.skip_if_busy and (_vc.is_playing() or self.is_playing_audio):
+                return
+            if cat.wait_if_busy > 0:
+                waited = 0.0
+                while _vc.is_playing() and waited < cat.wait_if_busy:
+                    await asyncio.sleep(0.05)
+                    waited += 0.05
 
         async def _do_play() -> None:
             try:
@@ -3761,7 +3763,7 @@ class VoiceController(commands.Cog):
 
         if cat.use_lock:
             async with self.playback_lock:
-                if cat.skip_if_busy and (_vc.is_playing() or self.is_playing_audio):
+                if not self._plan12 and cat.skip_if_busy and (_vc.is_playing() or self.is_playing_audio):
                     return  # 取到鎖後狀態可能變了
                 await _do_play()
         else:
