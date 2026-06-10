@@ -415,12 +415,11 @@ class VoiceController(commands.Cog):
         if _router is not None and getattr(_router, "_stt_router", None) is None:
             _router._stt_router = _tier_router
         _curation_resolver = SemanticResolver(router=_tier_router)
-        self._shared_tier_router = _tier_router  # for shadow J2 chat veto (2026-05-27)
-        self._chat_classifier_cached = None
+        self._shared_tier_router = _tier_router
         # Intent gap detection (Phase A)：has_intent_signal=true 但 bus / fallback chain
-        # 都沒接 → cheap classifier 判讀 gap，寫 records/agent_gaps.jsonl + 5min 內非 UNKNOWN
+        # 都沒接 → cheap classifier 判讀 gap，寫 records/agent_gaps.jsonl + 5min 內 non-UNKNOWN
         # 給模板 ack。UNKNOWN → fall through 到 Marvin LLM 主路徑。
-        self._gap_classifier_cached = None  # lazy init (對齊 chat_classifier_cached 模式)
+        self._gap_classifier_cached = None
         self._gap_logger = GapLogger("records/agent_gaps.jsonl")
         # 🔎 [Gap Research] 免喚醒資訊真空偵測（shadow）。env GAP_RESEARCH_MODE 預設 off
         # → 整條零開銷。事件驅動掛 debounced utterance + pre-gate + cooldown。
@@ -433,10 +432,23 @@ class VoiceController(commands.Cog):
             temperature=getattr(_router, "atmosphere_tracker", None),
             clock=time.time,
         )
-        # LLM rescue pipeline (env-gated)：MARVIN_INTENT_RESCUE_ENABLED=1 才啟用。
-        # 預設 shadow ON 收一週數據校準 LLM 改寫品質，再用 MARVIN_INTENT_RESCUE_SHADOW=0 上線。
-        # 三元組為 (None, False, None) 時 IntentBus 等同舊行為，安全降級。
         _rescue_agent, _rescue_shadow, _rescue_sink = build_rescue_components(_tier_router)
+        # 建立實體 cleaner_call 傳給 IntentBus 競速使用
+        async def real_cleaner_call(c: IntentContext) -> str:
+            if not hasattr(self.bot, "router") or not hasattr(self.bot.router, "clean_stt_text"):
+                return c.raw_text or c.query or ""
+            recent_ctx = []
+            if hasattr(self.bot, "engine") and self.bot.engine.conv_buffer:
+                recent_ctx = self.bot.engine.conv_buffer.get_last_n_utterances(5)
+            # 呼叫 clean_stt_text，speaker=None 以隔離 wake side-effect，apply_gate=False
+            res = await self.bot.router.clean_stt_text(
+                c.raw_text or c.query or "",
+                context=recent_ctx,
+                speaker=None,
+                apply_gate=False,
+            )
+            return res.get("text", "")
+
         self._intent_bus = IntentBus(
             build_intent_agents(self, self.bot),
             resolver=_curation_resolver,
@@ -453,6 +465,7 @@ class VoiceController(commands.Cog):
             llm_rescue_agent=_rescue_agent,
             rescue_shadow_mode=_rescue_shadow,
             rescue_outcome_sink=_rescue_sink,
+            cleaner_call=real_cleaner_call,
         )
         
         # 🛡️ [Operation Sentinel] 語音健康監控
@@ -4226,25 +4239,6 @@ class VoiceController(commands.Cog):
         )
         pipeline_timing.mark("intent_dispatched")
         pipeline_timing.emit(speaker, _bus_ctx.raw_text or "", suffix=" route=main_bus")
-
-        # 🧪 [Shadow Judges Race] fire-and-forget；收 records/judge_outcomes.jsonl 量
-        # J1 hit rate / 各 judge latency，不影響本 dispatch。失敗全吞（見 run_shadow_race）。
-        # 2026-05-27: MARVIN_SHADOW_J2_ENABLED=true 啟動 J2 chat veto（Groq 8B）。
-        from intent_judges.voice_integration import new_utterance_id, run_shadow_race
-        _j2_call = None
-        if os.getenv("MARVIN_SHADOW_J2_ENABLED", "false").lower() == "true":
-            if self._chat_classifier_cached is None and self._shared_tier_router is not None:
-                from intent_judges.groq_chat_classifier_adapter import make_groq_chat_classifier
-                self._chat_classifier_cached = make_groq_chat_classifier(self._shared_tier_router)
-            _j2_call = self._chat_classifier_cached
-        asyncio.create_task(run_shadow_race(
-            ctx=_bus_ctx,
-            raw_text=original_raw or query,
-            cleaned_text=query,
-            agents=list(self._intent_bus.agents),
-            utterance_id=new_utterance_id(speaker),
-            chat_classifier_call=_j2_call,
-        ))
 
         _winner = await self._intent_bus.dispatch(_bus_ctx)
         if _winner:

@@ -93,9 +93,12 @@ class IntentBus:
                  resolver=None, profile_provider=None, llm_fallback=None,
                  recommendation_sink=None, direct_probe=None,
                  llm_rescue_agent=None, rescue_shadow_mode: bool = False,
-                 rescue_outcome_sink=None):
+                 rescue_outcome_sink=None, cleaner_call=None,
+                 outcome_path: str = "records/judge_outcomes.jsonl"):
         self.agents = list(agents)
         self.logger = logger
+        self.cleaner_call = cleaner_call
+        self.outcome_path = outcome_path
         # LLM rescue：所有 agent dense 0.0 / 無 above-threshold winner 時的兜底。
         # 與 self.agents 分離（rescue_agent 不參與 bid()，是 dispatch 失敗後的階段）。
         # rescue_shadow_mode=True：synthesize 仍呼叫（收數據），但不重投 bus.dispatch
@@ -170,40 +173,75 @@ class IntentBus:
 
     async def dispatch(self, ctx: IntentContext) -> Bid | None:
         """收 bids、選 winner、await handler。回傳 winner Bid（or None 如果沒人 above threshold）。"""
-        bids: list[Bid] = []
-        for agent in self.agents:
-            t0 = time.perf_counter()
+        
+        # 🛡️ 實體 Race 整合：若為 regex 初次發起且有提供 cleaner_call，則啟動 parallel race
+        if ctx.dispatch_source == "regex" and getattr(self, "cleaner_call", None) is not None:
+            from intent_judges.race import JudgeSpec, race
+            from intent_judges.regex_judge import regex_judge
+            from intent_judges.cleaner_judge import cleaner_judge
+            from intent_judges.telemetry import write_race_outcome
+            from intent_judges.voice_integration import new_utterance_id
+            from pathlib import Path
+
+            async def _j1(c: IntentContext) -> Bid:
+                return regex_judge(c, self.agents)
+
+            async def _j3(c: IntentContext) -> Bid:
+                return await cleaner_judge(c, self.agents, cleaner_call=self.cleaner_call)
+
+            # guard 是 anti-pattern detector，不要 fast-path
+            fast_path_excludes = frozenset({"guard"})
+            specs = [
+                JudgeSpec(_j1, threshold=0.85, name="j1_regex"),
+                JudgeSpec(_j3, threshold=0.30, name="j3_cleaner"),
+            ]
+
+            race_result = await race(ctx, specs, fast_path_excludes=fast_path_excludes, timeout_s=5.0)
+
+            # 寫入 telemetry
+            utt_id = new_utterance_id(ctx.speaker)
             try:
-                b = agent.bid(ctx)
+                write_race_outcome(Path(self.outcome_path), utt_id, ctx, race_result)
             except Exception as exc:
-                self.logger.warning(
-                    f"⚠️ [IntentBus] {getattr(agent, 'name', '?')} bid() 炸了，跳過: {exc}"
+                self.logger.warning(f"⚠️ [IntentBus] write_race_outcome failed: {exc}")
+
+            winner = race_result.winner
+            # 建立 bids 用於 logger 印出
+            bids = [outcome.bid for outcome in race_result.outcomes if outcome.bid is not None]
+        else:
+            bids: list[Bid] = []
+            for agent in self.agents:
+                t0 = time.perf_counter()
+                try:
+                    b = agent.bid(ctx)
+                except Exception as exc:
+                    self.logger.warning(
+                        f"⚠️ [IntentBus] {getattr(agent, 'name', '?')} bid() 炸了，跳過: {exc}"
+                    )
+                    continue
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                if elapsed_ms > self._BID_BUDGET_MS:
+                    self.logger.warning(
+                        f"⚠️ [IntentBus] {getattr(agent, 'name', '?')} bid() took {elapsed_ms:.1f}ms "
+                        f"(>{self._BID_BUDGET_MS:.0f}ms 預算) — 違反 sync 契約，檢查是否摸到 I/O"
+                    )
+                if b is not None:
+                    bids.append(b)
+
+            if not bids:
+                self.logger.info(
+                    f"📡 [IntentBus] speaker={ctx.speaker} query='{ctx.query[:50]}' "
+                    f"wake_intent={ctx.wake_intent} winner=none"
                 )
-                continue
-            elapsed_ms = (time.perf_counter() - t0) * 1000
-            if elapsed_ms > self._BID_BUDGET_MS:
-                self.logger.warning(
-                    f"⚠️ [IntentBus] {getattr(agent, 'name', '?')} bid() took {elapsed_ms:.1f}ms "
-                    f"(>{self._BID_BUDGET_MS:.0f}ms 預算) — 違反 sync 契約，檢查是否摸到 I/O"
-                )
-            if b is not None:
-                bids.append(b)
+                return await self._maybe_rescue(ctx)
+
+            bids.sort(key=lambda b: b.confidence, reverse=True)
+            winner = bids[0]
 
         def _fmt(b: Bid) -> str:
             tail = f" missing={'+'.join(b.missing_slots)}" if b.missing_slots else ""
             return f"{b.name}={b.confidence:.2f}({b.reason}){tail}"
         bid_summary = ", ".join(_fmt(b) for b in bids) or "no_bids"
-
-        if not bids:
-            self.logger.info(
-                f"📡 [IntentBus] speaker={ctx.speaker} query='{ctx.query[:50]}' "
-                f"wake_intent={ctx.wake_intent} bids: {bid_summary} winner=none"
-            )
-            return await self._maybe_rescue(ctx)
-
-        # 同分取第一個（list.sort 是 stable）— 從 max() 改用 sort 確保穩定
-        bids.sort(key=lambda b: b.confidence, reverse=True)
-        winner = bids[0]
 
         # tie collision warning：winner 與第二名同分 → 曝光隱式註冊順序 tie-break
         # （5/18 NotebookLM review；目前靠註冊順序贏，但這是隱式行為，未來加 agent 易踩）
@@ -348,7 +386,12 @@ class IntentBus:
         resolved = await self.resolver.resolve(slot, ctx.query, profile, depth=ctx.depth)
 
         if resolved is not None:
-            new_ctx = replace(ctx, query=resolved.rewritten_query, depth=resolved.depth)
+            new_ctx = replace(
+                ctx,
+                query=resolved.rewritten_query,
+                depth=resolved.depth,
+                dispatch_source="resolver",
+            )
             self.logger.info(
                 f"📡 [IntentBus] resolve {slot}: '{ctx.query[:30]}' → "
                 f"'{resolved.rewritten_query[:30]}' depth={resolved.depth}"

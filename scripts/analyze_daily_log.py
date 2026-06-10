@@ -1626,6 +1626,22 @@ def main():
         except Exception as e:
             print(f"[Daily Review] ⚠ 寫出 wake_words_override.json 失敗: {e}", flush=True)
 
+    # 12. 執行 Agent gaps 離線分析與 LLM clustering (Plan 4)
+    print("[Daily Review] 🔍 啟動 Agent gaps 離線分析與 LLM clustering...", flush=True)
+    try:
+        gap_script = BASE_DIR / "scripts" / "analyze_agent_gaps.py"
+        if gap_script.exists():
+            res = subprocess.run(
+                [sys.executable, str(gap_script)],
+                cwd=str(BASE_DIR),
+                check=False,
+            )
+            print(f"[Daily Review] 🔍 Agent gaps 離線分析執行完畢，exit code: {res.returncode}", flush=True)
+        else:
+            print(f"[Daily Review] ⚠ 找不到 Agent gaps 腳本: {gap_script}", flush=True)
+    except Exception as e:
+        print(f"[Daily Review] ⚠ Agent gaps 離線分析執行失敗: {e}", flush=True)
+
 
 if __name__ == "__main__":
     main()

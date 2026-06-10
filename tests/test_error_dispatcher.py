@@ -269,7 +269,7 @@ def test_recurrence_count_grows_with_repeats(dispatcher_factory):
             "gemini_router_llm", logging.ERROR,
             "❌ [Tier-1 Exhausted] 雲端重試 3 次後依然失敗",
         ))
-    drain()
+        drain()
     recurrences = [call.args[1] for call in writer.call_args_list]
     assert recurrences == [1, 2, 3]
 

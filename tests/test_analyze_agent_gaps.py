@@ -106,3 +106,37 @@ def test_analyze_empty():
     result = analyze([])
     assert result["total"] == 0
     assert result["intents"] == []
+
+
+# ── save_clusters ──────────────────────────────────────────────────────────────
+
+def test_save_clusters_filters_resolved_and_assigns_status(tmp_path: Path):
+    from scripts.analyze_agent_gaps import save_clusters
+    
+    clusters = [
+        {"cluster_id": "buy_milk", "members": ["buy_milk_1"], "occurrence_count": 2},
+        {"cluster_id": "resolved_intent", "members": ["resolved_1"], "occurrence_count": 3},
+        {"cluster_id": "monitoring_intent", "members": ["monitoring_1"], "occurrence_count": 1},
+    ]
+    
+    resolved = {"resolved_intent"}
+    output = tmp_path / "clusters.json"
+    
+    save_clusters(clusters, resolved, output)
+    
+    assert output.exists()
+    data = json.loads(output.read_text(encoding="utf-8"))
+    
+    # resolved_intent 應該被過濾掉
+    assert len(data) == 2
+    
+    # 檢查 buy_milk
+    buy_milk = next(c for c in data if c["cluster_id"] == "buy_milk")
+    assert buy_milk["status"] == "ready_to_implement"
+    assert buy_milk["occurrence_count"] == 2
+    
+    # 檢查 monitoring_intent
+    monitoring = next(c for c in data if c["cluster_id"] == "monitoring_intent")
+    assert monitoring["status"] == "monitoring"
+    assert monitoring["occurrence_count"] == 1
+

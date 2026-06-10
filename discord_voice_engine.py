@@ -1419,45 +1419,11 @@ class DiscordVoiceEngine:
                     return
 
             # --- [Track B] LLM Clean & Fallback Path ---
+            # Cleaner is downgraded to race judge in IntentBus.
+            # STT Ingest stage only outputs raw STT text without blocking on LLM clean.
             cleaned_text = raw_text
             is_wake_B = False
-            clean_res = None  # 預先 init：cleaner block 未進入時下方 should_callback
-                              # 路徑 access clean_res.get(...) 不致 UnboundLocalError
-
-            if hasattr(self.bot, 'router') and hasattr(self.bot.router, 'clean_stt_text'):
-                # Phase 2: 計算對話脈絡訊號
-                _now = time.time()
-                _recent_10 = self.conv_buffer.get_last_n_utterances(10)
-                # Marvin 最近發話年齡（秒），無 → inf
-                _marvin_ages = [(_now - e["timestamp"]) for e in _recent_10 if e["speaker"] == "Marvin"]
-                _marvin_age = min(_marvin_ages) if _marvin_ages else float("inf")
-                # context_active: Marvin 在 90s 內說過話（對話進行中）
-                context_active = _marvin_age <= 90.0
-                # marvin_in_echo_window: 0-2s（含），TTS 尾音/麥克回授高風險窗 → 拉高 wake threshold
-                marvin_in_echo_window = _marvin_age <= 2.0
-                # marvin_just_spoke: 2-15s 後續視窗，使用者最可能此時呼叫 → 降低 threshold（不含 echo 區段）
-                marvin_just_spoke = (2.0 < _marvin_age <= 15.0)
-                recent_ctx = self.conv_buffer.get_last_n_utterances(5)
-                clean_res = await self.bot.router.clean_stt_text(
-                    raw_text, context=recent_ctx,
-                    speaker=speaker_name, context_active=context_active,
-                    marvin_just_spoke=marvin_just_spoke,
-                    marvin_in_echo_window=marvin_in_echo_window,
-                    apply_gate=True,   # 🚪 只有 wake-check 路徑 gate；無訊號+非對話 → 略過 cleaner
-                )
-                cleaned_text = clean_res["text"]
-                is_wake_B = clean_res["is_wake"]
-
-                # Phase 3: fire speculative prefetch on high-confidence wake
-                _wi = clean_res.get("wake_intent") or 0.0
-                if _wi >= 0.85 and is_wake_B:
-                    _router = getattr(getattr(self, 'bot', None), 'router', None)
-                    if _router and hasattr(_router, '_speculative_response'):
-                        _ph = self.conv_buffer.get_last_n_utterances(5)
-                        _router._pending_prefetch[speaker_name] = asyncio.create_task(
-                            _router._speculative_response(speaker_name, cleaned_text, _ph)
-                        )
-                        logger.info(f"🚀 [Speculative] Prefetch started for {speaker_name} (intent={_wi:.2f})")
+            clean_res = None
 
             # 🚀 [Prosody] 最終計算精確的 WPS (基於識別後的文字)
             if prosody_data:

@@ -82,12 +82,112 @@ def analyze(rows: list[dict], resolved: set[str] | None = None) -> dict:
     }
 
 
+async def run_clustering(gaps: list[dict], router) -> list[dict]:
+    """呼叫 LLM 對 gaps 進行語意分群，回傳分群列表。"""
+    if not gaps:
+        return []
+    
+    # 抽出 raw_query 與 intent_type 簡化 prompt token
+    items = []
+    for r in gaps:
+        items.append({
+            "intent_type": r.get("intent_type", "UNKNOWN"),
+            "raw_query": r.get("raw_query", "")
+        })
+        
+    system_prompt = (
+        "你是 Discord 語音 bot 的 intent gap clustering 專家。\n"
+        "我將給你一組無 agent 命中的意圖（intent_type 與 raw_queries）。\n"
+        "請將語意相似的意圖分群 (clustering)。\n\n"
+        "對於每個分群，請決定一個最能代表該群組的 snake_case cluster_id。\n"
+        "cluster_id 必須描述實際需求，且不可直接用現有 available_agents (如 music/playback_control 等)。\n\n"
+        "請輸出 JSON 陣列，其 schema 如下：\n"
+        "[\n"
+        "  {\n"
+        "    \"cluster_id\": \"buy_milk\",\n"
+        "    \"members\": [\"buy_milk\", \"purchase_milk\"],\n"
+        "    \"occurrence_count\": 5\n"
+        "  }\n"
+        "]\n"
+        "請只輸出 JSON，不要有任何 Markdown 或額外文字。"
+    )
+    
+    user_prompt = f"請對以下 gaps 進行分群：\n{json.dumps(items, ensure_ascii=False, indent=2)}"
+    
+    try:
+        response = await router.analyze(
+            prompt=user_prompt,
+            caller="gap_clustering",
+            system=system_prompt,
+            max_tokens=1000,
+            temperature=0.0,
+            json=True,
+        )
+        if not response:
+            return []
+        clusters = json.loads(response)
+        if isinstance(clusters, list):
+            return clusters
+    except Exception as e:
+        print(f"[Gap Clustering] ⚠ LLM clustering 失敗: {e}", file=sys.stderr)
+    return []
+
+
+def save_clusters(clusters: list[dict], resolved: set[str], output_path: Path):
+    """保存 clusters 至 JSON，加入 status 與過濾已實作 intent。"""
+    final_clusters = []
+    for c in clusters:
+        cid = c.get("cluster_id")
+        if not cid:
+            continue
+        # 排除已 resolve 的意圖
+        if cid in resolved or any(m in resolved for m in c.get("members", [])):
+            continue
+            
+        count = c.get("occurrence_count", len(c.get("members", [])))
+        status = "ready_to_implement" if count >= READY_THRESHOLD else "monitoring"
+        
+        final_clusters.append({
+            "cluster_id": cid,
+            "members": c.get("members", []),
+            "occurrence_count": count,
+            "status": status,
+        })
+        
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(final_clusters, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"[Gap Clustering] 💾 Clustering 結果已寫入 {output_path}", file=sys.stderr)
+
+
 def main() -> int:
     if not INPUT.exists():
         print(f"input not found: {INPUT}", file=sys.stderr)
         return 1
-    result = analyze(load(INPUT), resolved=load_resolved())
+    
+    gaps = load(INPUT)
+    resolved = load_resolved(RESOLVED)
+    result = analyze(gaps, resolved=resolved)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    
+    # Plan 4: 當 non-UNKNOWN 筆數 >= 5 筆時，自動觸發 LLM clustering
+    non_unknown = [r for r in gaps if (r.get("intent_type") or "UNKNOWN") != "UNKNOWN"]
+    if len(non_unknown) >= 5:
+        print(f"[Gap Clustering] 🚀 non-UNKNOWN={len(non_unknown)} >= 5，開始 LLM 聚類...", file=sys.stderr)
+        import os
+        from dotenv import load_dotenv
+        
+        ROOT = Path(__file__).resolve().parent.parent
+        load_dotenv(ROOT / ".env")
+        
+        # 呼叫 tiered router
+        sys.path.insert(0, str(ROOT))
+        from llm_pool import build_tiered_router
+        router = build_tiered_router()
+        
+        import asyncio
+        clusters = asyncio.run(run_clustering(non_unknown, router))
+        save_clusters(clusters, resolved, Path("records/intent_clusters.json"))
+        
     return 0
 
 

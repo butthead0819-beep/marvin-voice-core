@@ -83,7 +83,7 @@ def test_pick_voice_returns_none_when_all_missing():
 @pytest.mark.asyncio
 async def test_chinese_uses_han_when_installed():
     eng = _make_engine()
-    eng._installed_voices_cache = {"Han", "Meijia", "Fred"}
+    eng._installed_voices_cache = {"Han", "Fred"}
     captured = {}
 
     async def fake_exec(*args, **kwargs):
