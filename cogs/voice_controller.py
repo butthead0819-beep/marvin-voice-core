@@ -1324,7 +1324,14 @@ class VoiceController(commands.Cog):
         joke = await self.bot.router.generate_joke(speaker=interaction.user.display_name)
         scrap = await self.bot.router.generate_dynamic_system_msg("joke_request")
         await interaction.followup.send(f"🃏 {scrap}\n「{joke}」")
-        await self.play_tts(joke, already_in_channel=True)
+        self._tts_interrupted = False
+        _prev_protected = self._tts_protected
+        self._tts_protected = True
+        try:
+            await self.play_tts(joke, already_in_channel=True, protected=True)
+        finally:
+            self._tts_protected = _prev_protected
+
 
     @app_commands.command(name="marvin_say", description="[Voice] 讓馬文用他的聲音念出你打的字")
     @app_commands.describe(text="要馬文念出來的文字")
@@ -5916,7 +5923,7 @@ class VoiceController(commands.Cog):
             _proactive_ts = time.time()
 
             # 🎭 表演類話題：不口頭提問，直接在語音頻道發起表演
-            if topic_id in {"marvin_sing", "marvin_manzai", "marvin_imitate", "marvin_news", "marvin_standup"}:
+            if topic_id in {"marvin_sing", "marvin_manzai", "marvin_imitate", "marvin_news", "marvin_standup", "marvin_joke"}:
                 if self.active_text_channel:
                     await self.active_text_channel.send(f"🌌 **【馬文·主動表演】** `{selected_topic['title']}`（主題：{selected_topic.get('script', '無')}）")
                 
@@ -5947,7 +5954,7 @@ class VoiceController(commands.Cog):
                         channel=self.active_text_channel,
                         force_new=True,
                         theme=selected_topic.get("script")
-                    ))
+                     ))
                 elif topic_id == "marvin_manzai":
                     asyncio.create_task(self._proactive_play_manzai(selected_topic.get("script")))
                 elif topic_id == "marvin_imitate":
@@ -5962,6 +5969,8 @@ class VoiceController(commands.Cog):
                     asyncio.create_task(self._proactive_play_news(selected_topic.get("script")))
                 elif topic_id == "marvin_standup":
                     asyncio.create_task(self._proactive_play_standup(selected_topic.get("script")))
+                elif topic_id == "marvin_joke":
+                    asyncio.create_task(self._proactive_play_joke(selected_topic.get("script")))
 
                 # 更新冷卻
                 self.last_proactive_time = time.time()
@@ -6146,6 +6155,20 @@ class VoiceController(commands.Cog):
                     self._tts_protected = _prev_protected
         except Exception as exc:
             logger.exception("[proactive_play_standup] failed")
+
+    async def _proactive_play_joke(self, topic: str = None):
+        try:
+            joke = await self.bot.router.generate_joke(speaker=topic)
+            if joke:
+                self._tts_interrupted = False
+                _prev_protected = self._tts_protected
+                self._tts_protected = True
+                try:
+                    await self.play_tts(joke, already_in_channel=True, protected=True)
+                finally:
+                    self._tts_protected = _prev_protected
+        except Exception as exc:
+            logger.exception("[proactive_play_joke] failed")
 
     # --- [Loops] ---
 

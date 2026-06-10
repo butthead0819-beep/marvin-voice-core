@@ -25,6 +25,7 @@ def _make_vc():
     vc.bot.router = MagicMock()
     vc.bot.router.memory = MagicMock()
     vc.bot.router._call_llm = AsyncMock(return_value="mocked response")
+    vc.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="mocked system message")
     vc.stt_logger = MagicMock()
     
     return vc
@@ -214,4 +215,54 @@ async def test_trigger_proactive_topic_direct_performance_manzai():
     await vc.trigger_proactive_topic()
     
     vc._proactive_play_manzai.assert_called_once_with("大肚今天加班")
+
+
+async def test_marvin_joke_slash_command_protected():
+    """手動呼叫 /marvin_joke 應具備 protected=True，且播放前清除打斷 flag。"""
+    from cogs.voice_controller import VoiceController
+    vc = _make_vc()
+    interaction = _make_interaction()
+    
+    vc.bot.router.generate_joke = AsyncMock(return_value="Mocked Joke Content")
+    
+    await VoiceController.marvin_joke.callback(vc, interaction)
+    
+    vc.bot.router.generate_joke.assert_called_once_with(speaker="Alice")
+    vc.play_tts.assert_called_once_with("Mocked Joke Content", already_in_channel=True, protected=True)
+    assert vc._tts_interrupted is False
+
+
+async def test_trigger_proactive_topic_direct_performance_joke():
+    """主動發言觸發時，若抽中 marvin_joke 表演 ID，應直接開始笑話表演而非唸提問。"""
+    from cogs.voice_controller import VoiceController
+    vc = _make_vc()
+    vc.active_text_channel = MagicMock()
+    vc.active_text_channel.send = AsyncMock()
+    vc._proactive_play_joke = AsyncMock()
+    vc._proactive_used_ids = set()
+    
+    topic = {
+        "id": "marvin_joke",
+        "title": "厭世笑話秀",
+        "script": "程式碼 bug 的存在意義",
+        "target_players": []
+    }
+    vc.bot.router.memory.get_proactive_topics.return_value = [topic]
+    
+    await vc.trigger_proactive_topic()
+    
+    vc._proactive_play_joke.assert_called_once_with("程式碼 bug 的存在意義")
+
+
+async def test_proactive_play_joke_logic():
+    """驗證 _proactive_play_joke 表演協程內部確實以 protected=True 朗讀笑話。"""
+    from cogs.voice_controller import VoiceController
+    vc = _make_vc()
+    vc.bot.router.generate_joke = AsyncMock(return_value="這是一個冷笑話")
+    
+    await vc._proactive_play_joke(topic="冷笑話")
+    
+    vc.bot.router.generate_joke.assert_called_once_with(speaker="冷笑話")
+    vc.play_tts.assert_called_once_with("這是一個冷笑話", already_in_channel=True, protected=True)
+
 
