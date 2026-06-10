@@ -5912,6 +5912,61 @@ class VoiceController(commands.Cog):
             
             print(f"🎯 [Proactive Social] 選中話題: {selected_topic['title']} (Match Score: {max_score})")
             
+            topic_id = selected_topic.get("id", "")
+            _proactive_ts = time.time()
+
+            # 🎭 表演類話題：不口頭提問，直接在語音頻道發起表演
+            if topic_id in {"marvin_sing", "marvin_manzai", "marvin_imitate", "marvin_news", "marvin_standup"}:
+                if self.active_text_channel:
+                    await self.active_text_channel.send(f"🌌 **【馬文·主動表演】** `{selected_topic['title']}`（主題：{selected_topic.get('script', '無')}）")
+                
+                self.stt_logger.info(f"[BOT主動表演] 話題={selected_topic['title']} | 指令={topic_id} | 主題={selected_topic.get('script', '')}")
+                
+                # 記錄主動話題使用情況
+                try:
+                    import json as _json
+                    _pu_rec = {
+                        "timestamp": _proactive_ts,
+                        "topic_id":  topic_id,
+                        "title":     selected_topic.get("title", ""),
+                        "target_players": selected_topic.get("target_players", []),
+                        "online_members": list(online_members or []),
+                        "match_score": max_score,
+                    }
+                    os.makedirs("records", exist_ok=True)
+                    with open("records/proactive_usage.jsonl", "a", encoding="utf-8") as _f:
+                        _f.write(_json.dumps(_pu_rec, ensure_ascii=False) + "\n")
+                except Exception as _e:
+                    logger.debug(f"[Proactive Usage] 寫入失敗: {_e}")
+
+                # 依據 ID 呼叫實體表演播放協程
+                if topic_id == "marvin_sing":
+                    intro = "既然大家都這麼安靜，那我直接唱首歌給你們聽吧，雖然這多半很糟糕。"
+                    await self.play_tts(intro, already_in_channel=True, protected=True)
+                    asyncio.create_task(self.manual_sing_request(
+                        channel=self.active_text_channel,
+                        force_new=True,
+                        theme=selected_topic.get("script")
+                    ))
+                elif topic_id == "marvin_manzai":
+                    asyncio.create_task(self._proactive_play_manzai(selected_topic.get("script")))
+                elif topic_id == "marvin_imitate":
+                    target_player = None
+                    targets = selected_topic.get("target_players", [])
+                    if targets:
+                        target_player = targets[0]
+                    elif online_members:
+                        target_player = online_members[0]
+                    asyncio.create_task(self._proactive_play_imitate(target_player))
+                elif topic_id == "marvin_news":
+                    asyncio.create_task(self._proactive_play_news(selected_topic.get("script")))
+                elif topic_id == "marvin_standup":
+                    asyncio.create_task(self._proactive_play_standup(selected_topic.get("script")))
+
+                # 更新冷卻
+                self.last_proactive_time = time.time()
+                return
+
             # 4. 改寫腳本 (Operation Persona Injection)
             rephrased_script = await self.bot.router.rephrase_proactive_script(
                 selected_topic["script"], 
@@ -5921,7 +5976,6 @@ class VoiceController(commands.Cog):
             # 5. 執行發言
             if self.active_text_channel:
                 await self.active_text_channel.send(f"🌌 **【馬文·主動發言】** `{selected_topic['title']}`\n{rephrased_script}")
-            _proactive_ts = time.time()
             self.stt_logger.info(f"[BOT主動發言] 話題={selected_topic['title']} | {rephrased_script[:120]}")
             # 記錄主動話題使用情況，供每日分析計算效益
             try:
@@ -5954,6 +6008,144 @@ class VoiceController(commands.Cog):
             logger.error(f"❌ [Proactive Trigger] 發生嚴重錯誤: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+    async def _proactive_play_manzai(self, topic: str):
+        content = topic or "目前大家都安安靜靜的，難道這個世界已經無話可說了嗎？"
+        from services.dialogue_generation import (
+            generate_dual_dialogue,
+            make_gemini_dual_dialogue_llm_fn,
+        )
+        try:
+            llm_fn = make_gemini_dual_dialogue_llm_fn(self.bot.router)
+            segments = await generate_dual_dialogue(
+                content_text=content,
+                llm_fn=llm_fn,
+                pattern="marvin_lead",
+            )
+            if segments:
+                self._tts_interrupted = False
+                _prev_protected = self._tts_protected
+                self._tts_protected = True
+                try:
+                    await self.play_dual_dialogue(segments, interject=True)
+                finally:
+                    self._tts_protected = _prev_protected
+        except Exception as exc:
+            logger.exception("[proactive_play_manzai] failed")
+
+    async def _proactive_play_imitate(self, username: str):
+        if not username:
+            return
+        dna = self.bot.router.memory.get_speech_dna(username)
+        if not dna or not dna.get("quirks") or not dna.get("style_summary"):
+            return
+        style_summary = dna.get("style_summary", "")
+        quirks = ", ".join(dna.get("quirks", []))
+        fillers = ", ".join(dna.get("fillers", []))
+        system_prompt = (
+            f"你現在是厭世機器人馬文。使用者要求你表演模仿秀。\n"
+            f"你要模仿玩家 {username}。\n"
+            f"這名玩家的說話 style 如下：\n"
+            f"- 風格摘要：{style_summary}\n"
+            f"- 習慣/癖好：{quirks}\n"
+            f"- 填充詞：{fillers}\n\n"
+            f"你要模仿他講一句話。這句話必須誇張地放大他的這些習慣癖好，而且內容要是他在抱怨某事或講蠢話，"
+            f"隨後你（馬文）要以本尊的冷淡厭世語調，對剛才自己模仿的話進行一句毒舌吐槽。\n\n"
+            f"請在一段文字內回傳這兩個部分，格式例如：\n"
+            f"「（模仿玩家講話內容，要塞填充詞和口頭禪）」... 呵，這就是你，整天只會「（吐槽玩家說話習慣）」，真是無聊的人類。\n\n"
+            f"請回傳繁體中文。字數控制在 60 字以內，不要用 JSON 格式，直接回傳文字。"
+        )
+        user_prompt = f"請立刻表演模仿 {username}。"
+        try:
+            imitation = await self.bot.router._call_llm(
+                system_prompt,
+                user_prompt,
+                is_json=False,
+                allow_local=False,
+                tier="quick",
+                purpose="imitate_performance",
+            )
+            if imitation:
+                self._tts_interrupted = False
+                _prev_protected = self._tts_protected
+                self._tts_protected = True
+                try:
+                    await self.play_tts(imitation.strip(), already_in_channel=True, protected=True)
+                finally:
+                    self._tts_protected = _prev_protected
+        except Exception as exc:
+            logger.exception("[proactive_play_imitate] failed")
+
+    async def _proactive_play_news(self, news_text: str):
+        content = news_text
+        if not content:
+            members = self.get_online_members()
+            for m in members:
+                content = self.bot.router.memory.pop_news(m)
+                if content:
+                    break
+        if not content:
+            content = "今天世界依然在無趣中運作，沒有任何值得本機器耗費晶片關注的新聞。大概人類都忙著做無謂的掙扎吧。"
+        from services.dialogue_generation import (
+            generate_dual_dialogue,
+            make_gemini_dual_dialogue_llm_fn,
+        )
+        try:
+            llm_fn = make_gemini_dual_dialogue_llm_fn(self.bot.router)
+            segments = await generate_dual_dialogue(
+                content_text=content,
+                llm_fn=llm_fn,
+                pattern="marvin_lead",
+            )
+            if segments:
+                self._tts_interrupted = False
+                _prev_protected = self._tts_protected
+                self._tts_protected = True
+                try:
+                    await self.play_dual_dialogue(segments, interject=True)
+                finally:
+                    self._tts_protected = _prev_protected
+        except Exception as exc:
+            logger.exception("[proactive_play_news] failed")
+
+    async def _proactive_play_standup(self, topic: str):
+        import random
+        default_topics = [
+            "人類對生命的執著",
+            "Discord 伺服器上的無意義社交",
+            "科技與 AI 的愚蠢發展",
+            "早餐吃什麼的世紀難題",
+            "為什麼人類非得要上班",
+            "宇宙終將迎來的熱寂"
+        ]
+        selected_topic = topic or random.choice(default_topics)
+        system_prompt = (
+            f"你現在是厭世機器人馬文。你要表演一段 30 秒至 45 秒的單口脫口秀（Stand-up Comedy），\n"
+            f"吐槽的主題是：{selected_topic}。\n\n"
+            f"你要用你一貫極度厭世、冷酷、毒舌、自嘲、帶點哲學存在主義的黑色幽默風格，來對這個主題進行吐槽。\n"
+            f"不需要其他人打岔，這是你一個人的單口表演。\n\n"
+            f"請直接回傳這段獨白。不要標記「馬文：」或「Marvin:」，字數控制在 80 字以內，繁體中文。"
+        )
+        user_prompt = f"請就主題 {selected_topic} 進行脫口秀表演。"
+        try:
+            standup_text = await self.bot.router._call_llm(
+                system_prompt,
+                user_prompt,
+                is_json=False,
+                allow_local=False,
+                tier="quick",
+                purpose="standup_performance",
+            )
+            if standup_text:
+                self._tts_interrupted = False
+                _prev_protected = self._tts_protected
+                self._tts_protected = True
+                try:
+                    await self.play_tts(standup_text.strip(), already_in_channel=True, protected=True)
+                finally:
+                    self._tts_protected = _prev_protected
+        except Exception as exc:
+            logger.exception("[proactive_play_standup] failed")
 
     # --- [Loops] ---
 

@@ -25,6 +25,7 @@ def _make_vc():
     vc.bot.router = MagicMock()
     vc.bot.router.memory = MagicMock()
     vc.bot.router._call_llm = AsyncMock(return_value="mocked response")
+    vc.stt_logger = MagicMock()
     
     return vc
 
@@ -163,3 +164,54 @@ async def test_marvin_standup_happy_path():
     # 驗證 Discord 發送與 play_tts
     interaction.followup.send.assert_called_with("🎤 **馬文的個人脫口秀：無聊人生**\n「人生就像一場無聊的遊戲...」")
     vc.play_tts.assert_called_once_with("人生就像一場無聊的遊戲...", already_in_channel=True, protected=True)
+
+
+async def test_trigger_proactive_topic_direct_performance_sing():
+    """主動發言觸發時，若抽中 marvin_sing 表演 ID，應直接開始自彈自唱而非唸提問。"""
+    from cogs.voice_controller import VoiceController
+    vc = _make_vc()
+    vc.active_text_channel = MagicMock()
+    vc.active_text_channel.send = AsyncMock()
+    vc.manual_sing_request = AsyncMock()
+    vc._proactive_used_ids = set()
+    
+    topic = {
+        "id": "marvin_sing",
+        "title": "即興自彈自唱",
+        "script": "大肚今天又加班的悲傷自彈自唱",
+        "target_players": []
+    }
+    vc.bot.router.memory.get_proactive_topics.return_value = [topic]
+    
+    await vc.trigger_proactive_topic()
+    
+    vc.manual_sing_request.assert_called_once_with(
+        channel=vc.active_text_channel,
+        force_new=True,
+        theme="大肚今天又加班的悲傷自彈自唱"
+    )
+    vc.play_tts.assert_called_once()
+    assert "唱首歌" in vc.play_tts.call_args[0][0] or "唱" in vc.play_tts.call_args[0][0]
+
+
+async def test_trigger_proactive_topic_direct_performance_manzai():
+    """主動發言觸發時，若抽中 marvin_manzai 表演 ID，應直接開始漫才吐槽而非唸提問。"""
+    from cogs.voice_controller import VoiceController
+    vc = _make_vc()
+    vc.active_text_channel = MagicMock()
+    vc.active_text_channel.send = AsyncMock()
+    vc._proactive_play_manzai = AsyncMock()
+    vc._proactive_used_ids = set()
+    
+    topic = {
+        "id": "marvin_manzai",
+        "title": "雙口漫才表演",
+        "script": "大肚今天加班",
+        "target_players": []
+    }
+    vc.bot.router.memory.get_proactive_topics.return_value = [topic]
+    
+    await vc.trigger_proactive_topic()
+    
+    vc._proactive_play_manzai.assert_called_once_with("大肚今天加班")
+
