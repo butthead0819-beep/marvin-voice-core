@@ -1401,6 +1401,202 @@ class VoiceController(commands.Cog):
             logger.exception("[marvin_manzai] play_dual_dialogue failed")
             await interaction.followup.send(f"❌ 漫才播放失敗: {exc}")
 
+
+    @app_commands.command(name="marvin_imitate", description="[Operation] 讓馬文模仿某位玩家的說話風格並進行吐槽")
+    @app_commands.describe(target="[選填] 指定要模仿的玩家（預設為自己）")
+    async def marvin_imitate(self, interaction: discord.Interaction, target: discord.Member = None):
+        await interaction.response.defer(thinking=True)
+        target_user = target or interaction.user
+        username = target_user.display_name
+        
+        dna = self.bot.router.memory.get_speech_dna(username)
+        
+        # 檢查 dna 是否有效，如果為空或缺少關鍵欄位則走 fallback
+        if not dna or not dna.get("quirks") or not dna.get("style_summary"):
+            fallback_text = f"我對 `{username}` 這卑微的人類毫無頭緒。看來你對我不夠敞開心房，多跟我講點話讓我收集 DNA 吧。"
+            await interaction.followup.send(f"👁️ {fallback_text}")
+            self._tts_interrupted = False
+            _prev_protected = self._tts_protected
+            self._tts_protected = True
+            try:
+                await self.play_tts(fallback_text, already_in_channel=True, protected=True)
+            finally:
+                self._tts_protected = _prev_protected
+            return
+
+        # 組合 Prompt 呼叫 LLM
+        style_summary = dna.get("style_summary", "")
+        quirks = ", ".join(dna.get("quirks", []))
+        fillers = ", ".join(dna.get("fillers", []))
+        
+        system_prompt = (
+            f"你現在是厭世機器人馬文。使用者要求你表演模仿秀。\n"
+            f"你要模仿玩家 {username}。\n"
+            f"這名玩家的說話 style 如下：\n"
+            f"- 風格摘要：{style_summary}\n"
+            f"- 習慣/癖好：{quirks}\n"
+            f"- 填充詞：{fillers}\n\n"
+            f"你要模仿他講一句話。這句話必須誇張地放大他的這些習慣癖好，而且內容要是他在抱怨某事或講蠢話，"
+            f"隨後你（馬文）要以本尊的冷淡厭世語調，對剛才自己模仿的話進行一句毒舌吐槽。\n\n"
+            f"請在一段文字內回傳這兩個部分，格式例如：\n"
+            f"「（模仿玩家講話內容，要塞填充詞和口頭禪）」... 呵，這就是你，整天只會「（吐槽玩家說話習慣）」，真是無聊的人類。\n\n"
+            f"請回傳繁體中文。字數控制在 60 字以內，不要用 JSON 格式，直接回傳文字。"
+        )
+        
+        user_prompt = f"請立刻表演模仿 {username}。"
+        
+        try:
+            imitation = await self.bot.router._call_llm(
+                system_prompt,
+                user_prompt,
+                is_json=False,
+                allow_local=False,
+                tier="quick",
+                purpose="imitate_performance",
+            )
+            imitation = imitation.strip()
+        except Exception as exc:
+            logger.exception("[marvin_imitate] LLM call failed")
+            await interaction.followup.send(f"❌ 模仿秀生成失敗: {exc}")
+            return
+
+        if not imitation:
+            await interaction.followup.send("❌ 模仿秀生成結果為空。")
+            return
+
+        await interaction.followup.send(f"🎭 **馬文的玩家模仿秀：{username}**\n{imitation}")
+
+        self._tts_interrupted = False
+        _prev_protected = self._tts_protected
+        self._tts_protected = True
+        try:
+            await self.play_tts(imitation, already_in_channel=True, protected=True)
+        finally:
+            self._tts_protected = _prev_protected
+
+    @app_commands.command(name="marvin_news", description="[Operation] 讓馬文與 Marmo 播報近期玩家討論話題或新聞的漫才秀")
+    @app_commands.describe(target="[選填] 指定播報對象（獲取其個人新聞）")
+    async def marvin_news(self, interaction: discord.Interaction, target: discord.Member = None):
+        await interaction.response.defer(thinking=True)
+        news_text = None
+        target_name = None
+        
+        if target:
+            target_name = target.display_name
+            news_text = self.bot.router.memory.pop_news(target_name)
+        else:
+            # 遍歷當前語音頻道在線人類，尋找有積累新聞的
+            members = self.get_online_members()
+            for m in members:
+                news_text = self.bot.router.memory.pop_news(m)
+                if news_text:
+                    target_name = m
+                    break
+        
+        if not news_text:
+            news_text = "今天世界依然在無趣中運作，沒有任何值得本機器耗費晶片關注的新聞。大概人類都忙著做無謂的掙扎吧。"
+            topic_desc = "冷場全域新聞（無累積個人新聞）"
+        else:
+            topic_desc = f"{target_name} 的個人化新聞"
+
+        await interaction.followup.send(f"🗞️ 新聞主題：{topic_desc}\n「{news_text}」\n(開始播報中...)")
+
+        from services.dialogue_generation import (
+            generate_dual_dialogue,
+            make_gemini_dual_dialogue_llm_fn,
+        )
+        try:
+            llm_fn = make_gemini_dual_dialogue_llm_fn(self.bot.router)
+            segments = await generate_dual_dialogue(
+                content_text=news_text,
+                llm_fn=llm_fn,
+                pattern="marvin_lead",
+            )
+        except Exception as exc:
+            logger.exception("[marvin_news] generate_dual_dialogue failed")
+            await interaction.followup.send(f"❌ 新聞對白生成失敗: {exc}")
+            return
+
+        if not segments:
+            await interaction.followup.send("❌ 新聞對白生成結果為空。")
+            return
+
+        # 發送對白文字到 Discord 頻道
+        lines = []
+        for s in segments:
+            spk = "🤖 馬文" if s["voice"] == "marvin" else "🦧 馬末"
+            lines.append(f"{spk}：「{s['text']}」")
+        await interaction.followup.send("\n".join(lines))
+
+        try:
+            self._tts_interrupted = False
+            _prev_protected = self._tts_protected
+            self._tts_protected = True
+            try:
+                await self.play_dual_dialogue(segments, interject=True)
+            finally:
+                self._tts_protected = _prev_protected
+        except Exception as exc:
+            logger.exception("[marvin_news] play_dual_dialogue failed")
+            await interaction.followup.send(f"❌ 新聞對白播放失敗: {exc}")
+
+    @app_commands.command(name="marvin_standup", description="[Operation] 讓馬文來一段關於某主題的厭世單口脫口秀")
+    @app_commands.describe(topic="[選填] 指定脫口秀吐槽主題（預設為隨機）")
+    async def marvin_standup(self, interaction: discord.Interaction, topic: str = None):
+        await interaction.response.defer(thinking=True)
+        import random
+        
+        default_topics = [
+            "人類對生命的執著",
+            "Discord 伺服器上的無意義社交",
+            "科技與 AI 的愚蠢發展",
+            "早餐吃什麼的世紀難題",
+            "為什麼人類非得要上班",
+            "宇宙終將迎來的熱寂"
+        ]
+        
+        selected_topic = topic or random.choice(default_topics)
+        await interaction.followup.send(f"🎤 脫口秀主題：{selected_topic}\n(馬文正在登台...)")
+        
+        system_prompt = (
+            f"你現在是厭世機器人馬文。你要表演一段 30 秒至 45 秒的單口脫口秀（Stand-up Comedy），\n"
+            f"吐槽的主題是：{selected_topic}。\n\n"
+            f"你要用你一貫極度厭世、冷酷、毒舌、自嘲、帶點哲學存在主義的黑色幽默風格，來對這個主題進行吐槽。\n"
+            f"不需要其他人打岔，這是你一個人的單口表演。\n\n"
+            f"請直接回傳這段獨白。不要標記「馬文：」或「Marvin:」，字數控制在 80 字以內，繁體中文。"
+        )
+        
+        user_prompt = f"請就主題 {selected_topic} 進行脫口秀表演。"
+        
+        try:
+            standup_text = await self.bot.router._call_llm(
+                system_prompt,
+                user_prompt,
+                is_json=False,
+                allow_local=False,
+                tier="quick",
+                purpose="standup_performance",
+            )
+            standup_text = standup_text.strip()
+        except Exception as exc:
+            logger.exception("[marvin_standup] LLM call failed")
+            await interaction.followup.send(f"❌ 脫口秀生成失敗: {exc}")
+            return
+
+        if not standup_text:
+            await interaction.followup.send("❌ 脫口秀生成結果為空。")
+            return
+
+        await interaction.followup.send(f"🎤 **馬文的個人脫口秀：{selected_topic}**\n「{standup_text}」")
+
+        self._tts_interrupted = False
+        _prev_protected = self._tts_protected
+        self._tts_protected = True
+        try:
+            await self.play_tts(standup_text, already_in_channel=True, protected=True)
+        finally:
+            self._tts_protected = _prev_protected
+
     @app_commands.command(name="hotswap_test", description="[Debug] Plan 11 Slice 1：播歌中途插 TTS 熱切換驗證")
     @app_commands.describe(lead="幾秒後切換（給 stream2 備料時間，預設 4）")
     async def hotswap_test(self, interaction: discord.Interaction, lead: float = 4.0):

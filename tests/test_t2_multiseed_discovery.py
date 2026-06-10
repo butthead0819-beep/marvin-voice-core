@@ -39,6 +39,14 @@ class _StubSelf:
         self._round_size = 3
 
 
+pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    monkeypatch.setenv("LLM_TASTE_T2", "off")
+
+
 @pytest.mark.asyncio
 async def test_t2_blends_multiple_played_seeds(monkeypatch):
     VC = _import_vc()
