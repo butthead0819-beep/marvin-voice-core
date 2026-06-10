@@ -1349,6 +1349,58 @@ class VoiceController(commands.Cog):
         finally:
             self._tts_protected = _prev_protected
 
+    @app_commands.command(name="marvin_manzai", description="[Operation] 立刻讓馬文與 Marmo 進行雙人漫才表演")
+    @app_commands.describe(topic="可選：指定要表演/吐槽的主題")
+    async def marvin_manzai(self, interaction: discord.Interaction, topic: str = None):
+        await interaction.response.defer(thinking=True)
+        if topic:
+            content = topic
+        else:
+            history = []
+            if self.bot.engine.conv_buffer and self.bot.engine.conv_buffer.history:
+                history = [e for e in self.bot.engine.conv_buffer.history][-5:]
+            if history:
+                content = "\n".join(
+                    f"{e.get('speaker', '?')}: {e.get('text', '')}"
+                    for e in history
+                ).strip()
+            else:
+                content = "目前大家都安安靜靜的，難道這個世界已經無話可說了嗎？"
+
+        await interaction.followup.send(f"🎭 漫才主題：\n「{content}」\n(開始生成中...)")
+
+        from services.dialogue_generation import (
+            generate_dual_dialogue,
+            make_gemini_dual_dialogue_llm_fn,
+        )
+        try:
+            llm_fn = make_gemini_dual_dialogue_llm_fn(self.bot.router)
+            segments = await generate_dual_dialogue(
+                content_text=content,
+                llm_fn=llm_fn,
+                pattern="marvin_lead",
+            )
+        except Exception as exc:
+            logger.exception("[marvin_manzai] generate_dual_dialogue failed")
+            await interaction.followup.send(f"❌ 漫才生成失敗: {exc}")
+            return
+
+        if not segments:
+            await interaction.followup.send("❌ 漫才生成結果為空。")
+            return
+
+        try:
+            self._tts_interrupted = False
+            _prev_protected = self._tts_protected
+            self._tts_protected = True
+            try:
+                await self.play_dual_dialogue(segments, interject=True)
+            finally:
+                self._tts_protected = _prev_protected
+        except Exception as exc:
+            logger.exception("[marvin_manzai] play_dual_dialogue failed")
+            await interaction.followup.send(f"❌ 漫才播放失敗: {exc}")
+
     @app_commands.command(name="hotswap_test", description="[Debug] Plan 11 Slice 1：播歌中途插 TTS 熱切換驗證")
     @app_commands.describe(lead="幾秒後切換（給 stream2 備料時間，預設 4）")
     async def hotswap_test(self, interaction: discord.Interaction, lead: float = 4.0):
