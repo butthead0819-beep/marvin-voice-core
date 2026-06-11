@@ -125,6 +125,74 @@ def _ts_days_ago(n: float) -> float:
     return time.time() - n * 86400
 
 
+# ── Plan 8: J1 改善迴圈 — 2026-06-12 門檻改累積制 ──────────────────────────
+# 舊門檻「7 天每天 ≥30」在單房流量天花板（avg 8/天）下永遠不會達標；
+# 改為「6/1 起累積 ≥210 筆」（= 原 7×30 的總樣本量，等速累積而非等爆量）。
+
+_J1_CUTOFF = time.mktime((2026, 6, 1, 0, 0, 0, 0, 0, -1))
+
+
+def test_j1_loop_met_when_cumulative_reaches_210(monkeypatch, tmp_path):
+    outcomes = tmp_path / "judge_outcomes.jsonl"
+    _write_gaps(outcomes, [{"ts": _J1_CUTOFF + i * 60} for i in range(210)])
+    monkeypatch.setattr(cpt, "RECORDS", tmp_path)
+
+    result = cpt.check_j1_improvement_loop()
+
+    assert result["met"] is True
+    assert "210" in result["current"]
+
+
+def test_j1_loop_below_cumulative_threshold(monkeypatch, tmp_path):
+    outcomes = tmp_path / "judge_outcomes.jsonl"
+    _write_gaps(outcomes, [{"ts": _J1_CUTOFF + i * 60} for i in range(57)])
+    monkeypatch.setattr(cpt, "RECORDS", tmp_path)
+
+    result = cpt.check_j1_improvement_loop()
+
+    assert result["met"] is False
+    assert "57" in result["current"]
+
+
+def test_j1_loop_excludes_pre_cutoff_records(monkeypatch, tmp_path):
+    """6/1 前的樣本（含 ts<百萬 的測試污染）不計入累積。"""
+    outcomes = tmp_path / "judge_outcomes.jsonl"
+    pre = [{"ts": _J1_CUTOFF - 86400 * i - 1} for i in range(200)]
+    pollution = [{"ts": 12345.0} for _ in range(20)]
+    post = [{"ts": _J1_CUTOFF + i * 60} for i in range(30)]
+    _write_gaps(outcomes, pre + pollution + post)
+    monkeypatch.setattr(cpt, "RECORDS", tmp_path)
+
+    result = cpt.check_j1_improvement_loop()
+
+    assert result["met"] is False
+    assert "30" in result["current"]
+
+
+def test_j1_loop_missing_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(cpt, "RECORDS", tmp_path)
+
+    result = cpt.check_j1_improvement_loop()
+
+    assert result["met"] is False
+
+
+def test_j1_loop_skips_malformed_lines(monkeypatch, tmp_path):
+    outcomes = tmp_path / "judge_outcomes.jsonl"
+    outcomes.write_text(
+        json.dumps({"ts": _J1_CUTOFF + 1}) + "\n"
+        + "not json\n"
+        + json.dumps({"no_ts": True}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cpt, "RECORDS", tmp_path)
+
+    result = cpt.check_j1_improvement_loop()
+
+    assert result["met"] is False
+    assert "1" in result["current"]
+
+
 def test_memory_callback_embedding_observation_insufficient(monkeypatch, tmp_path):
     """觀察期 <14 天 → 不觸發（不管 callback 多少筆）。"""
     outcomes = tmp_path / "speak_outcomes.jsonl"

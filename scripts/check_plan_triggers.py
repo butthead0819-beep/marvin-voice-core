@@ -102,17 +102,32 @@ def check_intent_gap_clustering() -> dict:
 
 
 def check_j1_improvement_loop() -> dict:
-    """Plan 8 trigger: 過去 7 天 judge_outcomes 每天 ≥30 樣本。"""
-    daily = _count_recent_jsonl(RECORDS / "judge_outcomes.jsonl", 7)
-    daily_list = [daily[d] for d in sorted(daily)]
-    all_above = bool(daily_list) and all(c >= 30 for c in daily_list)
-    avg = sum(daily_list) / 7 if daily_list else 0
+    """Plan 8 trigger: 6/1 起 judge_outcomes 累積 ≥210 樣本。
+
+    2026-06-12 改累積制：舊門檻「7 天每天 ≥30」在單房流量天花板（實測 avg 8/天）
+    下永遠達不到；改總樣本量 210（= 原 7×30），等速累積即可解鎖。6/1 cutoff
+    同時擋掉 judge-race 重收前的舊資料與 ts<百萬 的測試污染。
+    """
+    threshold = 210
+    cutoff_ts = datetime(2026, 6, 1).timestamp()
+    count = 0
+    path = RECORDS / "judge_outcomes.jsonl"
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    rec = json.loads(line)
+                    ts = rec.get("ts") or rec.get("timestamp")
+                    if ts is not None and float(ts) >= cutoff_ts:
+                        count += 1
+                except Exception:
+                    continue
     return {
         "plan": 8,
         "title": "J1 三條改善迴圈",
-        "trigger": "7 天每天 ≥30 樣本",
-        "current": f"過去 7 天平均 {avg:.1f}/天 ({','.join(str(c) for c in daily_list)})",
-        "met": all_above,
+        "trigger": f"6/1 起累積 ≥{threshold} 樣本",
+        "current": f"累積 {count}/{threshold} 筆",
+        "met": count >= threshold,
     }
 
 
