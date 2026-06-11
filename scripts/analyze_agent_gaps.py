@@ -82,6 +82,31 @@ def analyze(rows: list[dict], resolved: set[str] | None = None) -> dict:
     }
 
 
+CLUSTER_TRIGGER_THRESHOLD = 5  # clusterable（non-UNKNOWN 且未 resolved）筆數門檻
+
+
+def clusterable_gaps(gaps: list[dict], resolved: set[str]) -> list[dict]:
+    """可進 clustering 的 gaps：排除 UNKNOWN 與已 resolved 的 intent_type。
+
+    2026-06-12 bug fix：resolved 過濾原本只在 save_clusters 比對 LLM 自創的
+    cluster_id / raw-query members，對不上 resolved 的 intent_type（minecraft_query
+    ≠ game_knowledge_query 誤報 ready）。改在送 LLM 前按 record 的 intent_type 濾。
+    """
+    return [
+        r for r in gaps
+        if (r.get("intent_type") or "UNKNOWN") != "UNKNOWN"
+        and r["intent_type"] not in resolved
+    ]
+
+
+def should_cluster(gaps: list[dict], resolved: set[str]) -> bool:
+    """Plan 4 觸發判斷：clusterable ≥ 門檻才跑 LLM 聚類。
+
+    已 resolved 的訊號不灌門檻（per feedback_trigger_excludes_sentinels）。
+    """
+    return len(clusterable_gaps(gaps, resolved)) >= CLUSTER_TRIGGER_THRESHOLD
+
+
 async def run_clustering(gaps: list[dict], router) -> list[dict]:
     """呼叫 LLM 對 gaps 進行語意分群，回傳分群列表。"""
     if not gaps:
@@ -169,10 +194,10 @@ def main() -> int:
     result = analyze(gaps, resolved=resolved)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     
-    # Plan 4: 當 non-UNKNOWN 筆數 >= 5 筆時，自動觸發 LLM clustering
-    non_unknown = [r for r in gaps if (r.get("intent_type") or "UNKNOWN") != "UNKNOWN"]
-    if len(non_unknown) >= 5:
-        print(f"[Gap Clustering] 🚀 non-UNKNOWN={len(non_unknown)} >= 5，開始 LLM 聚類...", file=sys.stderr)
+    # Plan 4: clusterable（non-UNKNOWN 且未 resolved）>= 門檻時，自動觸發 LLM clustering
+    targets = clusterable_gaps(gaps, resolved)
+    if should_cluster(gaps, resolved):
+        print(f"[Gap Clustering] 🚀 clusterable={len(targets)} >= {CLUSTER_TRIGGER_THRESHOLD}，開始 LLM 聚類...", file=sys.stderr)
         import os
         from dotenv import load_dotenv
         
@@ -185,7 +210,7 @@ def main() -> int:
         router = build_tiered_router()
         
         import asyncio
-        clusters = asyncio.run(run_clustering(non_unknown, router))
+        clusters = asyncio.run(run_clustering(targets, router))
         save_clusters(clusters, resolved, Path("records/intent_clusters.json"))
         
     return 0

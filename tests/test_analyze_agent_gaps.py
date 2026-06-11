@@ -108,6 +108,49 @@ def test_analyze_empty():
     assert result["intents"] == []
 
 
+# ── clusterable_gaps（2026-06-12）───────────────────────────────────────────
+# Bug：resolved 過濾原本只在 save_clusters 比對 LLM 自創的 cluster_id / raw-query
+# members，永遠對不上 resolved 的 intent_type（minecraft_query ≠ game_knowledge_query
+# 誤報 ready）。修法：送 LLM 前就按 gap record 的 intent_type 濾掉 resolved，
+# 觸發門檻 ≥5 也只數 clusterable（per feedback_trigger_excludes_sentinels：
+# 已被 agent 服務的訊號不該灌門檻）。
+
+def test_clusterable_gaps_excludes_unknown_and_resolved():
+    from scripts.analyze_agent_gaps import clusterable_gaps
+
+    gaps = [
+        _gap("UNKNOWN"),
+        _gap("strong_play", raw="馬文波馬文播放"),
+        _gap("game_knowledge_query", raw="查麥塊鑽石"),
+        _gap("game_knowledge_query", raw="查麥塊鐵巨人"),
+        _gap("volume_down", raw="小聲一點"),
+    ]
+    out = clusterable_gaps(gaps, resolved={"game_knowledge_query"})
+
+    assert [r["intent_type"] for r in out] == ["strong_play", "volume_down"]
+
+
+def test_clusterable_gaps_no_resolved_passes_all_non_unknown():
+    from scripts.analyze_agent_gaps import clusterable_gaps
+
+    gaps = [_gap("UNKNOWN"), _gap("a"), _gap("b")]
+    out = clusterable_gaps(gaps, resolved=set())
+
+    assert [r["intent_type"] for r in out] == ["a", "b"]
+
+
+def test_should_cluster_counts_only_clusterable():
+    from scripts.analyze_agent_gaps import should_cluster
+
+    # 6 筆 non-UNKNOWN 但 3 筆已 resolved → 3 < 5 不觸發
+    gaps = (
+        [_gap("game_knowledge_query", raw=f"q{i}") for i in range(3)]
+        + [_gap("strong_play"), _gap("playback_control"), _gap("volume_down")]
+    )
+    assert should_cluster(gaps, resolved={"game_knowledge_query"}) is False
+    assert should_cluster(gaps, resolved=set()) is True
+
+
 # ── save_clusters ──────────────────────────────────────────────────────────────
 
 def test_save_clusters_filters_resolved_and_assigns_status(tmp_path: Path):
