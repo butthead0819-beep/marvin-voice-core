@@ -124,12 +124,20 @@ class MusicFeedbackAnalyzer:
     TieredLLMRouter.analyze（Tier 2，70b 池多家分流 + 429 cooldown）。離線批量分析屬
     Tier 2「分析質量」（per project_llm_tier_wrapper）。analyze() 回 content 或 None
     （池全冷卻/失敗，不 raise）→ None 時降級 neutral conf=0。
+
+    2026-06-12：免費池跑夜批時常全冷卻（6/08→6/10 llm_unavailable 2→10→17 筆/天，
+    丟掉 33% 歸因訊號），加 paid_fallback：免費池回 None 才打付費池，雙失敗才降級。
     """
     agent_type: str = "music"
 
-    def __init__(self, router: Any):
-        """router: TieredLLMRouter。缺（None）→ 視同池不可用，analyze 回 neutral conf=0。"""
+    def __init__(self, router: Any, paid_fallback: Any = None):
+        """router: TieredLLMRouter。缺（None）→ 視同池不可用，analyze 回 neutral conf=0。
+
+        paid_fallback: async (user_msg, system) -> str | None。免費池無回應時的付費
+        後援（caller 包 llm_pool.call_paid_review）。None = 不後援（舊行為）。
+        """
         self.router = router
+        self.paid_fallback = paid_fallback
 
     async def analyze(
         self,
@@ -156,6 +164,20 @@ class MusicFeedbackAnalyzer:
                 user_msg, caller="feedback_analyzer", system=_MUSIC_SYS_PROMPT,
                 json=True, max_tokens=300, temperature=0.0,
             )
+        if content is None and self.paid_fallback is not None:
+            logger.warning("⚠️ [FeedbackAnalyzer:music] 免費池無回應 → 改走 paid review 池")
+            try:
+                content = await self.paid_fallback(user_msg, _MUSIC_SYS_PROMPT)
+            except Exception as e:
+                logger.warning(f"⚠️ [FeedbackAnalyzer:music] paid 後援也炸: {e}")
+                content = None
+            if content is None:
+                return FeedbackResult(
+                    sentiment="neutral",
+                    confidence=0.0,
+                    reason="llm_unavailable: free+paid pools both failed",
+                    evidence=(),
+                )
         if content is None:
             logger.warning("⚠️ [FeedbackAnalyzer:music] router 無回應（池全冷卻/無 router）→ neutral 兜底")
             return FeedbackResult(

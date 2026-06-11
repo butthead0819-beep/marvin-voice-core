@@ -185,7 +185,19 @@ async def run(
             sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
             from llm_pool import build_tiered_router
             router = build_tiered_router()
-        analyzers = {"music": MusicFeedbackAnalyzer(router=router)}
+
+        # 2026-06-12：免費池夜批常全冷卻丟訊號（6/10 有 17/52 筆 llm_unavailable），
+        # 掛 paid review 池後援。pool 建一次共用，cooldown 狀態跨 rec 延續。
+        from llm_pool import build_paid_review_pool, call_paid_review
+        _paid_pool = build_paid_review_pool()
+
+        async def _paid_fallback(user_msg: str, system: str):
+            return await call_paid_review(
+                user_msg, system=system, max_tokens=300, temperature=0.0,
+                pool=_paid_pool,
+            )
+
+        analyzers = {"music": MusicFeedbackAnalyzer(router=router, paid_fallback=_paid_fallback)}
 
     guild_id = detect_dominant_guild_id()
     if guild_id:

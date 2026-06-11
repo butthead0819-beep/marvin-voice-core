@@ -185,6 +185,83 @@ async def test_llm_returns_unknown_sentiment_falls_to_neutral():
     assert "invalid_sentiment" in result.reason.lower() or "未知" in result.reason
 
 
+# ── 3.5 Paid fallback（免費池耗盡 → call_paid_review 後援）──────────────────
+# 2026-06-12：6/08→6/10 llm_unavailable 2→10→17 筆/天，免費池跑批時全冷卻
+# 導致 33% 回饋歸因丟訊號。加 paid_fallback（per「大 batch 走 call_paid_review」分流原則）。
+
+@pytest.mark.asyncio
+async def test_pool_exhausted_falls_back_to_paid_pool():
+    """免費池回 None + 有 paid_fallback → 改打 paid，結果照常 parse。"""
+    router = _router_returning_raw(None)
+    payload = {"sentiment": "negative", "confidence": 0.8,
+               "reason": "user 說換一首", "evidence": ["換一首"]}
+    paid = AsyncMock(return_value=json.dumps(payload, ensure_ascii=False))
+    analyzer = MusicFeedbackAnalyzer(router=router, paid_fallback=paid)
+
+    rec = _make_rec(speaker="大肚", selected="周杰倫 夜曲")
+    result = await analyzer.analyze(rec, [_utt("大肚", "換一首", 1010.0)])
+
+    assert result.sentiment == "negative"
+    assert result.confidence == 0.8
+    assert paid.await_count == 1
+    user_msg, system = paid.await_args.args
+    assert "周杰倫 夜曲" in user_msg, "paid 後援必須收到同一份 user_msg"
+    assert system, "paid 後援必須收到 system prompt"
+
+
+@pytest.mark.asyncio
+async def test_paid_fallback_not_called_when_free_pool_succeeds():
+    """免費池有回應 → 不碰 paid（成本控制）。"""
+    router = _router_returning("positive")
+    paid = AsyncMock(return_value=None)
+    analyzer = MusicFeedbackAnalyzer(router=router, paid_fallback=paid)
+
+    result = await analyzer.analyze(_make_rec(), [_utt("大肚", "讚", 1010.0)])
+
+    assert result.sentiment == "positive"
+    assert paid.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_paid_fallback_also_fails_returns_neutral_zero():
+    """免費+付費都失敗 → neutral conf=0，reason 仍含 llm_unavailable（保 grep 相容）。"""
+    router = _router_returning_raw(None)
+    paid = AsyncMock(return_value=None)
+    analyzer = MusicFeedbackAnalyzer(router=router, paid_fallback=paid)
+
+    result = await analyzer.analyze(_make_rec(), [_utt("大肚", "嗯", 1010.0)])
+
+    assert result.sentiment == "neutral"
+    assert result.confidence == 0.0
+    assert "llm_unavailable" in result.reason
+    assert "paid" in result.reason, "reason 要能分辨「有後援但也失敗」vs「沒配後援」"
+
+
+@pytest.mark.asyncio
+async def test_paid_fallback_exception_degrades_to_neutral():
+    """paid 後援炸（網路等）→ 視同 None，照樣出 neutral 記錄、不讓整筆 rec 被 skip。"""
+    router = _router_returning_raw(None)
+    paid = AsyncMock(side_effect=RuntimeError("network boom"))
+    analyzer = MusicFeedbackAnalyzer(router=router, paid_fallback=paid)
+
+    result = await analyzer.analyze(_make_rec(), [_utt("大肚", "嗯", 1010.0)])
+
+    assert result.sentiment == "neutral"
+    assert result.confidence == 0.0
+
+
+@pytest.mark.asyncio
+async def test_no_paid_fallback_keeps_legacy_reason():
+    """沒配 paid_fallback（預設）→ 行為與 reason 字串完全不變（舊 grep / 報表相容）。"""
+    router = _router_returning_raw(None)
+    analyzer = MusicFeedbackAnalyzer(router=router)
+
+    result = await analyzer.analyze(_make_rec(), [_utt("大肚", "嗯", 1010.0)])
+
+    assert result.sentiment == "neutral"
+    assert result.reason == "llm_unavailable: pool exhausted or no router"
+
+
 # ── 4. Schema ─────────────────────────────────────────────────────────────
 
 def test_agent_type_is_music():
