@@ -732,16 +732,10 @@ def call_review_llm(user_content: str, paid_call=None) -> dict:
 _PROACTIVE_USAGE_FILE = BASE_DIR / "records" / "proactive_usage.jsonl"
 
 
-def compute_proactive_stats(feedback_records: list[dict], start: datetime, end: datetime) -> dict:
-    """
-    讀取 proactive_usage.jsonl，與 feedback_records 交叉比對（±90s 窗口），
-    計算主動發言的 per-topic reaction 分布與效益分數。
-    """
+def load_proactive_fires(start_ts: float, end_ts: float) -> list[dict]:
+    """讀 proactive_usage.jsonl 中時間窗口內的 fire 記錄。檔缺/壞行安全跳過。"""
     if not _PROACTIVE_USAGE_FILE.exists():
-        return {"total_fires": 0, "topics": {}}
-
-    start_ts = start.timestamp()
-    end_ts   = end.timestamp()
+        return []
     fires: list[dict] = []
     try:
         for line in _PROACTIVE_USAGE_FILE.read_text(encoding="utf-8").splitlines():
@@ -757,7 +751,16 @@ def compute_proactive_stats(feedback_records: list[dict], start: datetime, end: 
                 pass
     except Exception as e:
         print(f"[Proactive Stats] ⚠ 讀取失敗: {e}", flush=True)
-        return {"total_fires": 0, "topics": {}}
+        return []
+    return fires
+
+
+def compute_proactive_stats(feedback_records: list[dict], start: datetime, end: datetime) -> dict:
+    """
+    讀取 proactive_usage.jsonl，與 feedback_records 交叉比對（±90s 窗口），
+    計算主動發言的 per-topic reaction 分布與效益分數。
+    """
+    fires = load_proactive_fires(start.timestamp(), end.timestamp())
 
     if not fires:
         return {"total_fires": 0, "topics": {}}
@@ -826,6 +829,97 @@ def print_proactive_summary(stats: dict) -> str:
             f"錯誤{r.get('錯誤',0)} 嚴重{r.get('嚴重',0)} 無反應{ts_data['no_reaction']} | "
             f"效益={eff}"
         )
+    output = "\n".join(lines)
+    print(output, flush=True)
+    return output
+
+
+# ── 表演聽感（抗議偵測）─────────────────────────────────────────────────────
+# 2026-06-12：主動表演（marvin_sing/manzai/standup/news/imitate/joke）只有觸發
+# 次數與 ±90s LLM reaction，缺「被打斷感」直接訊號。表演 fire 後 60s 內逐字稿
+# 掃抗議關鍵字（確定性、不靠 LLM），逐日落 topic_stats json 供趨勢追蹤。
+
+_PERFORMANCE_PROTEST_KEYWORDS = (
+    "閉嘴", "吵死", "好吵", "很吵", "太吵", "安靜",
+    "不要唱", "別唱", "不要講", "別講", "不要表演", "停止表演",
+    "煩死", "好煩",
+)
+
+# `2026-06-05 23:56:50,382 - [showay] (Debounced) 我是馬文他爸`
+_UTT_DEBOUNCED_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ - \[([^\]⚡]+)\] \(Debounced\) (.*)$"
+)
+# `2026-06-05 23:58:52,159 - [⚡喚醒] [showay] raw='馬文閉嘴' | ...`
+_UTT_WAKE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),\d+ - \[⚡喚醒\] \[([^\]]+)\] raw='([^']*)'"
+)
+
+
+def parse_stt_utterances(lines: list[str]) -> list[tuple[float, str, str]]:
+    """從 stt daily log 行抽 (ts, speaker, text)。BOT 自己的發言與非語句行跳過。"""
+    out: list[tuple[float, str, str]] = []
+    for line in lines:
+        m = _UTT_DEBOUNCED_RE.match(line) or _UTT_WAKE_RE.match(line)
+        if not m:
+            continue
+        ts_str, speaker, text = m.groups()
+        try:
+            ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            continue
+        out.append((ts, speaker.strip(), text.strip()))
+    return out
+
+
+def compute_performance_protests(
+    fires: list[dict],
+    utterances: list[tuple[float, str, str]],
+    window_s: float = 60.0,
+) -> dict:
+    """表演 fire（topic_id 以 marvin_ 開頭）後 window_s 內的抗議發言統計。純函式。"""
+    perf_fires = [f for f in fires if str(f.get("topic_id", "")).startswith("marvin_")]
+    protests: list[dict] = []
+    per_topic: dict[str, dict] = {}
+    for fire in perf_fires:
+        fire_ts = float(fire.get("timestamp", 0))
+        tid = fire.get("topic_id", "unknown")
+        bucket = per_topic.setdefault(tid, {"fires": 0, "protests": 0})
+        bucket["fires"] += 1
+        for ts, speaker, text in utterances:
+            if not (fire_ts <= ts <= fire_ts + window_s):
+                continue
+            if not any(kw in text for kw in _PERFORMANCE_PROTEST_KEYWORDS):
+                continue
+            bucket["protests"] += 1
+            protests.append({
+                "topic_id": tid,
+                "title": fire.get("title", ""),
+                "fire_ts": fire_ts,
+                "protest_ts": ts,
+                "speaker": speaker,
+                "text": text,
+            })
+    return {
+        "total_performances": len(perf_fires),
+        "protest_count": len(protests),
+        "protests": protests,
+        "per_topic": per_topic,
+    }
+
+
+def print_protest_summary(stats: dict) -> str:
+    if stats.get("total_performances", 0) == 0:
+        msg = "[Protest Check] 今日無主動表演記錄。"
+        print(msg, flush=True)
+        return msg
+    lines = [
+        f"[Protest Check] 今日主動表演 {stats['total_performances']} 次，"
+        f"60s 內抗議 {stats['protest_count']} 次："
+    ]
+    for tid, b in sorted(stats["per_topic"].items(), key=lambda x: -x[1]["protests"]):
+        lines.append(f"  [{tid}] 表演{b['fires']}次 | 抗議{b['protests']}次")
+    for p in stats["protests"][:5]:
+        lines.append(f"  ⚠ {p['speaker']}: 「{p['text']}」 ({p['topic_id']})")
     output = "\n".join(lines)
     print(output, flush=True)
     return output
@@ -1328,6 +1422,13 @@ def main():
     proactive_stats = compute_proactive_stats(feedback_records, start_dt, now)
     proactive_summary_str = print_proactive_summary(proactive_stats)
 
+    # 表演聽感：fire 後 60s 內逐字稿掃抗議關鍵字（確定性，不靠 LLM）
+    protest_stats = compute_performance_protests(
+        load_proactive_fires(start_dt.timestamp(), now.timestamp()),
+        parse_stt_utterances(stt_lines),
+    )
+    protest_summary_str = print_protest_summary(protest_stats)
+
     # 寫出話題統計檔
     topic_stats_path = LOG_DIR / f"topic_stats_{today_label}.json"
     try:
@@ -1340,6 +1441,7 @@ def main():
                     **{k: v for k, v in topic_stats.items() if k != "ranked"},
                     "ranked":         topic_stats.get("ranked", []),
                     "latency_stats":  latency_stats,
+                    "performance_protests": protest_stats,
                 },
                 f, ensure_ascii=False, indent=2,
             )
@@ -1366,6 +1468,9 @@ def main():
             f"主動發言效益：\n{proactive_summary_str}\n"
             f"詳細 per-topic：\n"
             f"{json.dumps(proactive_stats.get('topics', {}), ensure_ascii=False, indent=2)}\n\n"
+            f"表演聽感（fire 後 60s 內抗議偵測）：\n{protest_summary_str}\n"
+            f"（安排 proactive_topics 的特殊表演話題時，抗議 ≥1 次的表演 id "
+            f"今日請降低安排頻率或改安排其他表演。）\n\n"
             f"氣氛快照 ×feedback 交叉樣本（最多30筆）：\n"
             f"{json.dumps(atm_samples, ensure_ascii=False, indent=2)}\n"
             f"（請根據以上資料輸出 atmosphere_calibration，"
