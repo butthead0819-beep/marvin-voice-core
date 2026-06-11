@@ -139,6 +139,24 @@ async def test_exception_in_one_agent_does_not_kill_others():
 
 
 @pytest.mark.asyncio
+async def test_first_agent_exception_logs_traceback_then_compact(caplog):
+    """2026-06-12：MemoryCallbackAgent 'str' object 炸 1147 次/小時只留 str(e)、
+    無法定位。首次例外要帶 traceback（exc_info），同一例外重複時壓縮（防 log 風暴）。"""
+    import logging
+
+    bus = SpeakBus()
+    bus.register(_ExplodingAgent())
+    with caplog.at_level(logging.WARNING, logger="speak_bus"):
+        await bus.tick(_ctx())
+        await bus.tick(_ctx())
+
+    records = [r for r in caplog.records if "speak_bid raised" in r.getMessage()]
+    assert len(records) == 2
+    assert records[0].exc_info is not None, "首次要帶完整 traceback"
+    assert records[1].exc_info is None, "重複同一例外要壓縮"
+
+
+@pytest.mark.asyncio
 async def test_register_same_name_replaces_not_duplicates():
     bus = SpeakBus()
     bus.register(_FakeAgent("a", 0.3))

@@ -78,6 +78,9 @@ class SpeakBus:
         # 最近一次 tick 被 mode_mismatch 過濾的 agent 名單；voice_controller 寫 outcome
         # log 時讀這份，把「bus 跑完沒人贏」翻成 visible 訊號。
         self._last_filtered: tuple[str, ...] = ()
+        # 已印過 traceback 的 (agent, 例外)：首次帶 exc_info 方便定位，重複壓縮
+        # （2026-06-12：MemoryCallbackAgent 'str' object 炸 1147 次/小時只留 str(e) 無法追因）
+        self._seen_bid_errors: set[tuple[str, str]] = set()
 
     # ── registration ─────────────────────────────────────────────────────────
 
@@ -145,7 +148,13 @@ class SpeakBus:
             try:
                 bid = await agent.speak_bid(ctx)
             except Exception as e:
-                logger.warning("[SpeakBus] %s.speak_bid raised: %s", name, e)
+                err_key = (name, f"{type(e).__name__}:{e}")
+                first_time = err_key not in self._seen_bid_errors
+                self._seen_bid_errors.add(err_key)
+                logger.warning(
+                    "[SpeakBus] %s.speak_bid raised: %s", name, e,
+                    exc_info=first_time or None,
+                )
                 continue
             if bid is None:
                 continue
