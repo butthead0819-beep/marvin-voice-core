@@ -17,6 +17,7 @@ from discord.ext import voice_recv
 import logging
 from collections import deque
 from utils import pre_filter_speech, is_whisper_hallucination
+from marvin_voice_core.audio_utils import pcm48k_stereo_to_16k_mono
 from voice_meta_analyzer import VoiceMetaAnalyzer
 from quality_metrics import record_metric
 import pipeline_timing
@@ -1007,9 +1008,8 @@ class DiscordVoiceEngine:
                 wav_bytes = f.read()
 
             # 預先轉換為 mono 16kHz float32，讓 Whisper 直接吃 array，不依賴磁碟上的檔案
-            # 48kHz stereo int16 → 16kHz mono float32（downsample 3:1）
-            _arr = np.frombuffer(processed_pcm, dtype=np.int16).reshape(-1, 2)
-            whisper_audio = _arr.mean(axis=1)[::3].astype(np.float32) / 32768.0
+            # 2026-06-13：裸抽取 [::3] 改抗混疊降頻（>8kHz 摺疊失真影響全部雲端 lane）
+            whisper_audio = pcm48k_stereo_to_16k_mono(processed_pcm)
 
             # 解析暱稱
             speaker_name = f"User_{user_id}"
