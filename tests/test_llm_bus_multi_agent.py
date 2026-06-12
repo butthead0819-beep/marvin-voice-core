@@ -110,26 +110,38 @@ async def test_agent_recovers_from_cooldown_automatically():
 # 不重測（避免數學依賴 mock response token leak 而 flaky）。
 
 # ---------------------------------------------------------------------------
-# 4. handle 拋 429 → 該 endpoint cooldown，下一次 dispatch 自動跳到另一 agent
+# 4. handle 拋 429 → 同一筆 dispatch 內 failover 到下一家 viable agent
+#    （2026-06-12 改契約：6 月 1097 筆失敗全是「贏家 handle 429 → 整筆死」，
+#     bid 階段明明還有別家活著。改成 handle 失敗就換下一家，全滅才 raise。）
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_handle_429_marks_cooldown_next_dispatch_uses_other_agent():
+async def test_handle_429_fails_over_within_same_dispatch():
     bus, quota, _, eps = _build_dual_bus()
-    # Cerebras 第一次拋 429
+    # Cerebras（headroom 大會先贏）拋 429；Groq 正常
     eps["c_q"].client.chat.completions.create = AsyncMock(
         side_effect=RuntimeError("429 rate limit"))
     eps["g_q"].client.chat.completions.create = AsyncMock(return_value=_mock_resp("from_groq"))
 
-    # 第一次：bus 選 Cerebras (headroom 大) → handle 拋例外 → re-raise
-    with pytest.raises(RuntimeError):
-        await bus.dispatch(LLMContext(prompt="x", purpose="cleaner"))
-    # 該 endpoint 進冷卻
-    assert quota.state("cerebras-quick").cooldown_remaining_s > 0
-
-    # 第二次：Cerebras 冷卻中 → Groq 接走
+    # 同一筆 dispatch：Cerebras 炸 → 直接 failover 給 Groq，caller 拿到結果
     result = await bus.dispatch(LLMContext(prompt="x", purpose="cleaner"))
     assert result == "from_groq"
+    # 炸掉的 endpoint 進冷卻（之後的 dispatch 不再先撞它）
+    assert quota.state("cerebras-quick").cooldown_remaining_s > 0
+    # metrics 反映實際成功者
+    assert bus.last_dispatch.winner_provider == "groq"
+
+
+@pytest.mark.asyncio
+async def test_all_viable_handles_fail_raises_last_error():
+    bus, quota, _, eps = _build_dual_bus()
+    eps["c_q"].client.chat.completions.create = AsyncMock(
+        side_effect=RuntimeError("429 cerebras"))
+    eps["g_q"].client.chat.completions.create = AsyncMock(
+        side_effect=RuntimeError("429 groq"))
+
+    with pytest.raises(RuntimeError):
+        await bus.dispatch(LLMContext(prompt="x", purpose="cleaner"))
 
 
 # ---------------------------------------------------------------------------

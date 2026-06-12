@@ -35,6 +35,7 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
     "generate_player_greeting", "generate_player_farewell", "generate_dynamic_system_msg",
     "generate_status_report_comment", "generate_keyword_cloud", "generate_proactive_question",
     "rephrase_proactive_script", "generate_gap_filling_response", "complete", "handle",
+    "recall_5w2h",  # RecallHandler 5W2H（owner 問「我剛說了什麼」— reactive，非背景）
     # 背景 / 離線分析（見 BACKGROUND_PURPOSES）：
     "extract_memory", "batch_extract_memories", "audit_player_memory",
     "extract_emotional_moments", "analyze_social_dynamics", "analyze_tactical_situation",
@@ -218,30 +219,41 @@ class LLMBus:
 
         # Sort: confidence desc, then latency asc
         viable.sort(key=lambda t: (-t[2], t[1].estimated_latency_ms))
-        winner_agent, winner_bid, winner_conf = viable[0]
 
-        # 記 metadata 給 metrics 用
-        self.last_dispatch = DispatchMetadata(
-            winner_provider=winner_bid.provider,
-            winner_model=winner_bid.model,
-            winner_agent=winner_agent.name,
-            winner_confidence=winner_conf,
-            bid_summary=tuple((a.name, b.confidence, b.reason) for (a, b, _) in bids),
-        )
+        # 2026-06-12 handle-failover：6 月 1097 筆失敗全是「贏家 handle 429 → 整筆死」，
+        # 但 bid 階段明明還有別家 viable。改成 handle 失敗（429 已由 agent 內部 mark
+        # cooldown）就換下一家，全滅才 raise。同一 provider 不重打，無 TPM 雙計。
+        last_exc: Exception | None = None
+        for winner_agent, winner_bid, winner_conf in viable:
+            # 記 metadata 給 metrics 用（failover 時反映實際成功者）
+            self.last_dispatch = DispatchMetadata(
+                winner_provider=winner_bid.provider,
+                winner_model=winner_bid.model,
+                winner_agent=winner_agent.name,
+                winner_confidence=winner_conf,
+                bid_summary=tuple((a.name, b.confidence, b.reason) for (a, b, _) in bids),
+            )
+            try:
+                result = await winner_agent.handle(ctx)
+            except Exception as e:
+                last_exc = e
+                # F4 caveat: 如果 sticky provider handle() 拋例外，清掉 stickiness 避免下次再黏
+                if ctx.speaker and sticky_provider == winner_bid.provider:
+                    self._sticky.pop(ctx.speaker, None)
+                logger.warning(
+                    "[LLMBus] %s.handle 失敗（%s: %s）→ failover 下一家",
+                    winner_agent.name, type(e).__name__, e,
+                )
+                continue
 
-        try:
-            result = await winner_agent.handle(ctx)
-        except Exception:
-            # F4 caveat: 如果 sticky provider handle() 拋例外，清掉 stickiness 避免下次再黏
-            if ctx.speaker and sticky_provider == winner_bid.provider:
-                self._sticky.pop(ctx.speaker, None)
-            raise
+            # F4: 記錄 stickiness（只在有 speaker 時）
+            if ctx.speaker:
+                self._sticky[ctx.speaker] = (winner_bid.provider, time.monotonic())
 
-        # F4: 記錄 stickiness（只在有 speaker 時）
-        if ctx.speaker:
-            self._sticky[ctx.speaker] = (winner_bid.provider, time.monotonic())
+            return result
 
-        return result
+        assert last_exc is not None
+        raise last_exc
 
     def _maybe_alert_degraded(self, viable_count: int, bids: list) -> None:
         """④ 可用 provider 過低 → loud log + callback（debounce 避免每次 dispatch 洗版）。"""
