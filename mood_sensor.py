@@ -209,7 +209,9 @@ class MoodSensor:
         if self._router is not None:
             content = await asyncio.wait_for(
                 self._router._call_llm(MOOD_CLASSIFIER_SYSTEM, user_prompt,
-                                       tier="simple", temperature=0.2),
+                                       tier="simple", temperature=0.2,
+                                       # 顯式 purpose：被 asyncio.wait_for 包住時 frame 自動歸因會誤記 "wait_for"
+                                       purpose="_classify_mood"),
                 timeout=MOOD_CLASSIFIER_TIMEOUT_S,
             )
             content = (content or "").strip()

@@ -122,7 +122,9 @@ class SessionSummarizer:
                 # LLM Bus：tier=simple → 8b 級快任務，享 5-provider 分攤 + Gemini 兜底
                 content = await asyncio.wait_for(
                     self.router._call_llm(_SYSTEM_PROMPT, transcript_text,
-                                          tier="simple", temperature=0.3),
+                                          tier="simple", temperature=0.3,
+                                          # 顯式 purpose：被 asyncio.wait_for 包住時 frame 自動歸因會誤記 "wait_for"
+                                          purpose="summarize_window"),
                     timeout=_TIMEOUT,
                 )
                 content = (content or "").strip()

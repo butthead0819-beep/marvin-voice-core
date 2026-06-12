@@ -207,7 +207,9 @@ class RecallHandler:
             if self.router is not None:
                 content = await asyncio.wait_for(
                     self.router._call_llm(_5W2H_SYSTEM, user_prompt,
-                                          tier="simple", temperature=0.2),
+                                          tier="simple", temperature=0.2,
+                                          # 顯式 purpose：被 asyncio.wait_for 包住時 frame 自動歸因會誤記 "wait_for"
+                                          purpose="recall_5w2h"),
                     timeout=_TIMEOUT,
                 )
                 return (content or "").strip()
