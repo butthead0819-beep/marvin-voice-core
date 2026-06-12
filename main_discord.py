@@ -66,7 +66,10 @@ def setup_early_logging():
     print("🚀 Marvin Bot is waking up...")
     logger.info("🚀 Marvin Bot is waking up (Logging Initialized)...")
 
-setup_early_logging()
+# pytest import（tests/test_bridge_wiring.py 等）時不掛 handler、不劫持 stdout——
+# 否則整個測試套件的 WARNING 會灌進真 bot_main.log（6/12 prod 健康度誤判的根源）
+if "pytest" not in sys.modules:
+    setup_early_logging()
 
 # 🚀 [Injection] DAVE & macOS UDP Patch
 import davey_bridge
