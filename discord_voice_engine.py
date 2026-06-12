@@ -1351,6 +1351,10 @@ class DiscordVoiceEngine:
                     if raw_text:
                         used_engine = "Yating"
                         print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Yating)", flush=True)
+                    # 🔬 [NanShadow] Gemini 台語候選引擎影子比對（env NAN_STT_SHADOW，
+                    # fire-and-forget 零阻塞；雅婷失敗時 yating="" 也是對照數據）
+                    import gemini_nan_stt
+                    gemini_nan_stt.maybe_shadow(whisper_audio, speaker_name, raw_text)
 
                 # 序列備援：Swift server 優先（最高準確度），失敗才用 Whisper
                 if not raw_text:
