@@ -27,13 +27,17 @@ def _make_sink():
 
 
 class _FakeSession:
-    def __init__(self):
+    def __init__(self, ready=True):
         self.available = True
+        self._ready = ready
         self.begun = []
         self.fed = []
         self.finalized = 0
-        self.on_cut = None
+        self.active_cut = None
 
+    @property
+    def ready(self): return self._ready and self.available
+    def set_active_cut(self, cb): self.active_cut = cb
     def begin(self, temp=None): self.begun.append(temp)
     def feed(self, pcm): self.fed.append(pcm)
     def finalize(self): self.finalized += 1
@@ -49,16 +53,14 @@ def test_off_by_default_no_claim(monkeypatch):
     assert sink._stream_session is None
 
 
-# ── 惰性建 session ──────────────────────────────────────────────────────────
+# ── 暖機未好時走純 VAD（不佔用、不卡使用者）──────────────────────────────────
 
-def test_lazy_session_created_on_first_speech(monkeypatch):
+def test_not_ready_falls_back_to_vad(monkeypatch):
     monkeypatch.setenv("STT_STREAMING", "true")
     sink, _ = _make_sink()
+    sink._stream_session = _FakeSession(ready=False)  # 模型還沒暖好
     sink._stream_maybe_begin(123)
-    # 第一次只啟動 session（暖機中），本句不佔用
-    assert sink._stream_started is True
-    assert sink._stream_speaker is None
-    sink.loop.create_task.assert_called()  # start() 已排程
+    assert sink._stream_speaker is None  # 不佔用，走 VAD
 
 
 # ── 單一講者佔用 ────────────────────────────────────────────────────────────
@@ -67,12 +69,12 @@ def test_single_speaker_claim_and_feed(monkeypatch):
     monkeypatch.setenv("STT_STREAMING", "true")
     sink, _ = _make_sink()
     sink._stream_session = _FakeSession()
-    sink._stream_started = True
     sink.temperature_callback = lambda: 1.5  # → mid
 
     sink._stream_maybe_begin(123)
     assert sink._stream_speaker == 123
     assert sink._stream_session.begun == ["mid"]
+    assert sink._stream_session.active_cut == sink._stream_on_cut  # cut 路由到本 Sink
 
     # 第二個講者進不來（單一活躍）
     sink._stream_maybe_begin(456)

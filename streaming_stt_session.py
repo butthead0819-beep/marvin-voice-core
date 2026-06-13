@@ -34,11 +34,27 @@ def streaming_enabled() -> bool:
     return os.environ.get("STT_STREAMING", "").strip().lower() in _TRUE_VALUES
 
 
+# 行程內共享 daemon（一個 daemon 一次一句）。開機就暖、跨 Sink 重建沿用同一隻，
+# 避免①冷載入撞講話（19s 滯後污染當前語句的 6/13 bug）②每次重連 spawn 新 daemon。
+_shared_session: Optional["StreamingSTTSession"] = None
+
+
+def get_shared_session(loop) -> "StreamingSTTSession":
+    """取共享 session；首次呼叫即 spawn daemon 在背景暖模型（不阻塞）。"""
+    global _shared_session
+    if _shared_session is None:
+        _shared_session = StreamingSTTSession()
+        loop.create_task(_shared_session.start())
+        logger.info("[StreamSTT] 共享 daemon 開機暖機中（背景）")
+    return _shared_session
+
+
 class StreamingSTTSession:
-    def __init__(self, on_cut: Callable[[str, dict], None], *,
+    def __init__(self, on_cut: Optional[Callable[[str, dict], None]] = None, *,
                  stability_window_ms: int = 800, min_duration_ms: int = 300,
                  daemon_bin: str = _DAEMON_BIN):
-        self._on_cut = on_cut
+        self._on_cut = on_cut                # 測試用固定 callback；live 用 active_cut
+        self._active_cut: Optional[Callable[[str, dict], None]] = None
         self._stability_window_ms = stability_window_ms
         self._min_duration_ms = min_duration_ms
         self._daemon_bin = daemon_bin
@@ -49,6 +65,15 @@ class StreamingSTTSession:
         self._reader_task: Optional[asyncio.Task] = None
         self._ready = asyncio.Event()
         self.available = True  # daemon 健康旗標；crash → False，caller 降級
+
+    @property
+    def ready(self) -> bool:
+        """模型暖好且 daemon 健康 → 可開語句（未暖前不佔用，避免冷載入撞講話）。"""
+        return self._ready.is_set() and self.available
+
+    def set_active_cut(self, cb: Optional[Callable[[str, dict], None]]) -> None:
+        """live：當前佔用 Sink 設它的 early-cut handler；釋放時清掉（None=丟棄 cut）。"""
+        self._active_cut = cb
 
     # ── 純狀態機（可單測）────────────────────────────────────────────────────
 
@@ -86,11 +111,12 @@ class StreamingSTTSession:
                            revision_count=d.revision_count)
 
     def _fire(self, text: str, *, source: str, revision_count: int) -> None:
-        if self._cut_done or not text.strip():
+        cb = self._active_cut or self._on_cut
+        if self._cut_done or not text.strip() or cb is None:
             return
         self._cut_done = True
         try:
-            self._on_cut(text, {"source": source, "revision_count": revision_count})
+            cb(text, {"source": source, "revision_count": revision_count})
         except Exception as e:
             logger.warning(f"[StreamSTT] on_cut raised: {e}")
 

@@ -6,8 +6,6 @@ subprocess 管理另測（daemon 已有端到端煙霧）；本檔聚焦 line→
 """
 from __future__ import annotations
 
-import pytest
-
 from streaming_stt_session import StreamingSTTSession
 
 
@@ -91,3 +89,38 @@ def test_cut_meta_carries_revision_count():
     s.on_daemon_line('{"v":"馬文播放","t_ms":300}')  # 改寫
     s.on_daemon_line('{"v":"馬文播放","t_ms":750}')
     assert cuts[0][1]["revision_count"] == 1
+
+
+# ── ready 門 + active_cut 路由（6/13 冷載入 bug 修法）─────────────────────────
+
+def test_ready_false_until_daemon_ready_line():
+    from streaming_stt_session import StreamingSTTSession
+    s = StreamingSTTSession()
+    assert s.ready is False           # 未暖機
+    s.on_daemon_line('{"ready":true}')
+    assert s.ready is True            # daemon 暖好
+
+
+def test_ready_false_when_unavailable():
+    from streaming_stt_session import StreamingSTTSession
+    s = StreamingSTTSession()
+    s.on_daemon_line('{"ready":true}')
+    s.available = False               # daemon crash
+    assert s.ready is False
+
+
+def test_active_cut_routing_and_clear():
+    from streaming_stt_session import StreamingSTTSession
+    got = []
+    s = StreamingSTTSession(stability_window_ms=300, min_duration_ms=100)
+    s.set_active_cut(lambda t, m: got.append(t))
+    s.begin_utterance()
+    s.on_daemon_line('{"v":"播歌","t_ms":100}')
+    s.on_daemon_line('{"v":"播歌","t_ms":500}')
+    assert got == ["播歌"]
+    # 清掉 active_cut → 後續 cut 被丟棄（釋放後滯後結果不亂切）
+    s.set_active_cut(None)
+    s.begin_utterance()
+    s.on_daemon_line('{"v":"下一句","t_ms":100}')
+    s.on_daemon_line('{"v":"下一句","t_ms":500}')
+    assert got == ["播歌"]

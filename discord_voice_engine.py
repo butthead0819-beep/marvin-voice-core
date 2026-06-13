@@ -270,11 +270,16 @@ class RealtimeVADSink(voice_recv.AudioSink):
         except RuntimeError:
             self.loop = asyncio.new_event_loop()
         # self.harvester_task = self.loop.create_task(self._harvester_loop()) # 🚀 [Watchdog] 準備搬遷至 Engine
-        # 🌊 [Volatile Phase 1] 串流 STT 語意斷句（STT_STREAMING 守門，惰性建 session）。
-        # 單一活躍講者（一個 daemon 一次一句）；其餘走純 VAD。OFF = 全不啟用。
+        # 🌊 [Volatile Phase 1] 串流 STT 語意斷句（STT_STREAMING 守門）。
+        # 共享 daemon 開機就暖（不惰性等首句，避免冷載入撞講話）；單一活躍講者。
         self._stream_session = None
         self._stream_speaker = None      # 當前佔用串流的 user_id
-        self._stream_started = False
+        try:
+            from streaming_stt_session import streaming_enabled, get_shared_session
+            if streaming_enabled():
+                self._stream_session = get_shared_session(self.loop)  # 背景暖機
+        except Exception as _e:
+            logger.warning(f"[Core_STT] 串流 session 初始化失敗（降級純 VAD）: {_e}")
         self.packet_count = 0
         self.last_audio_packet_time = time.time() # 🛡️ [Heartbeat]
         self.last_decrypted_audio_time = time.time() # 🛡️ [Operation Sentinel] 僅紀錄解密成功的時間點
@@ -623,19 +628,17 @@ class RealtimeVADSink(voice_recv.AudioSink):
     # 任何失敗都降級回 VAD（self._stream_session.available=False / None）。
 
     def _stream_maybe_begin(self, user_id: int) -> None:
-        """speech start：若串流啟用且無人佔用 → 此講者佔用、開語句。"""
-        from streaming_stt_session import streaming_enabled, StreamingSTTSession
-        if not streaming_enabled() or self._stream_speaker is not None:
+        """speech start：串流暖好且無人佔用 → 此講者佔用、開語句。
+
+        未 ready（模型還沒暖好）→ 不佔用、走純 VAD。這就是「不每次等暖機」的關鍵：
+        暖機只在開機背景做一次，沒暖好的那幾秒就老實走 VAD，不卡使用者。
+        """
+        if self._stream_session is None or self._stream_speaker is not None:
             return
-        if self._stream_session is None:
-            if not self._stream_started:
-                self._stream_started = True
-                self._stream_session = StreamingSTTSession(on_cut=self._stream_on_cut)
-                self.loop.create_task(self._stream_session.start())
-            return  # 本句還沒暖好，下句起生效
-        if not self._stream_session.available:
-            return
+        if not self._stream_session.ready:
+            return  # 模型暖機中 → 純 VAD（不冷載入撞講話）
         self._stream_speaker = user_id
+        self._stream_session.set_active_cut(self._stream_on_cut)
         temp = self.temperature_callback() if self.temperature_callback else None
         # temperature_callback 回秒數閾值；轉成 high/mid/low 語意
         temp_label = "high" if (temp or 0) >= 2.0 else ("mid" if (temp or 0) >= 1.0 else "low")
@@ -655,6 +658,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
         """VAD 自己切了：釋放佔用 + 收尾 daemon（讓 final 兜底，但 cut 已由 VAD 發）。"""
         if self._stream_speaker == user_id and self._stream_session is not None:
             self._stream_session.finalize()
+            self._stream_session.set_active_cut(None)  # 釋放後丟棄滯後 cut
             self._stream_speaker = None
 
     def _stream_on_cut(self, text: str, meta: dict) -> None:
@@ -675,6 +679,8 @@ class RealtimeVADSink(voice_recv.AudioSink):
         self.user_wake_check_count.pop(user_id, None)
         self.user_is_speaking[user_id] = False
         self._stream_speaker = None
+        if self._stream_session is not None:
+            self._stream_session.set_active_cut(None)
         if self.wake_stream:
             self.wake_stream.on_speech_end(user_id)
         print(f"🌊 [Semantic Cut] User_{user_id} 文字穩定提前切 (src={meta.get('source')}, rev={meta.get('revision_count')}): {text[:40]}", flush=True)
