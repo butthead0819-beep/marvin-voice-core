@@ -228,7 +228,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
     """
     基於 voice_recv 的純淨 PCM 切片器 (手動 DAVE 解密版)
     """
-    def __init__(self, on_speech_cut_callback, on_speech_start_callback=None, temperature_callback=None, sink_error_callback=None, user_vad_callback=None, suppress_wake_callback=None):
+    def __init__(self, on_speech_cut_callback, on_speech_start_callback=None, temperature_callback=None, sink_error_callback=None, user_vad_callback=None, suppress_wake_callback=None, wake_active_callback=None):
         super().__init__()
         self.on_speech_cut_callback = on_speech_cut_callback
         self.on_speech_start_callback = on_speech_start_callback
@@ -237,6 +237,9 @@ class RealtimeVADSink(voice_recv.AudioSink):
         self.user_vad_callback = user_vad_callback  # (user_id: int) -> float，per-user 靜音閾值
         # 串流/電台播放中由外部注入，回傳 True 時抑制喚醒偵測，避免擴音回聲誤觸發
         self.suppress_wake_callback = suppress_wake_callback
+        # Plan 12 (c)：() -> bool，回傳 True 表示喚醒回應進行中（controller _wake_response_pending）。
+        # 串流語意切讀它：wake-active 時放棄本句 daemon span，不切喚醒命令。
+        self.wake_active_callback = wake_active_callback
         self.meta_analyzer = None    # 由 Engine 注入
         self.wake_stream = None      # P3 WakeStreamDetector，由 Engine 注入
         self.user_buffers = {}
@@ -374,7 +377,12 @@ class RealtimeVADSink(voice_recv.AudioSink):
 
             # 🌊 [Volatile Phase 1] 餵串流 daemon（僅當前佔用講者）
             if self._stream_speaker == user_id and self._stream_session is not None:
-                self._stream_feed(pcm_bytes)
+                # Plan 12 (c)：喚醒回應一進行就棄本句 daemon span（merge 真正修法：
+                # wake 觸發→daemon 放手，不把喚醒命令拖進下一句）
+                if self._stream_wake_active():
+                    self._stream_abandon(user_id)
+                else:
+                    self._stream_feed(pcm_bytes)
 
             # 🚀 [True RMS VAD] 計算此封包的真實音量
             now = time.time()
@@ -661,6 +669,25 @@ class RealtimeVADSink(voice_recv.AudioSink):
             self._stream_session.set_active_cut(None)  # 釋放後丟棄滯後 cut
             self._stream_speaker = None
 
+    def _stream_abandon(self, user_id: int) -> None:
+        """Plan 12 (c)：喚醒觸發時棄掉本句 daemon span，不發 cut、不消費 buffer。
+
+        喚醒命令由 wake-check + VAD 全權處理；daemon 一聽到 wake-active 就放手，
+        避免把喚醒命令拖進下一句（merge 真正修法）或重複切喚醒句。
+        """
+        if self._stream_speaker == user_id and self._stream_session is not None:
+            self._stream_session.set_active_cut(None)
+            self._stream_session.finalize()  # daemon 收尾棄段
+            self._stream_speaker = None
+
+    def _stream_wake_active(self) -> bool:
+        """讀 controller 的喚醒回應鎖（唯讀 callback；無則 False）。"""
+        cb = getattr(self, "wake_active_callback", None)
+        try:
+            return bool(cb()) if cb else False
+        except Exception:
+            return False
+
     def _stream_on_cut(self, text: str, meta: dict) -> None:
         """語意斷句觸發（event loop 上跑）：搶在 VAD 靜默前發 cut，鏡像 VAD 切句。
 
@@ -668,6 +695,10 @@ class RealtimeVADSink(voice_recv.AudioSink):
         """
         user_id = self._stream_speaker
         if user_id is None:
+            return
+        # Plan 12 (c) 防線：落地前查喚醒回應鎖。wake-active → 棄段不切（喚醒命令交 wake 路徑）
+        if self._stream_wake_active():
+            self._stream_abandon(user_id)
             return
         buf = self.user_buffers.get(user_id)
         if not buf or len(buf) <= 19200:
@@ -876,7 +907,8 @@ class DiscordVoiceEngine:
                         audio_data = bytes(sink.user_buffers[user_id])
                         sink.user_buffers[user_id] = bytearray()
                         sink.user_last_spoken_time[user_id] = 0 # 重置，等待下一段語音
-                        
+                        sink._stream_release(user_id)  # 🌊 Plan 12：第三條切句路徑也要 reset daemon span
+
                         # 異步送往 STT
                         asyncio.create_task(
                             self.process_audio_slice(user_id, audio_data, last_spoken)

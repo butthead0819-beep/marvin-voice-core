@@ -43,9 +43,11 @@ def get_shared_session(loop) -> "StreamingSTTSession":
     """取共享 session；首次呼叫即 spawn daemon 在背景暖模型（不阻塞）。"""
     global _shared_session
     if _shared_session is None:
-        _shared_session = StreamingSTTSession()
+        # min_duration_ms=1800：Plan 12 (c) arm 窗——語意切「總時長未到 1.8s 不 fire」，
+        # daemon 從 onset shadow 但不碰 wake-eligible 窗、不截斷喚醒命令（複用既有參數）。
+        _shared_session = StreamingSTTSession(min_duration_ms=1800)
         loop.create_task(_shared_session.start())
-        logger.info("[StreamSTT] 共享 daemon 開機暖機中（背景）")
+        logger.info("[StreamSTT] 共享 daemon 開機暖機中（背景, arm 窗 1800ms）")
     return _shared_session
 
 

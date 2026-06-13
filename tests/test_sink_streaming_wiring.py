@@ -147,3 +147,62 @@ def test_release_finalizes_daemon():
     sink._stream_release(123)
     assert sink._stream_session.finalized == 1
     assert sink._stream_speaker is None
+
+
+# ── Phase B (c)：arm 窗 + wake-active 放棄 ───────────────────────────────────
+
+def test_abandon_resets_span_without_cut(monkeypatch):
+    """_stream_abandon：reset span + 釋放佔用，但不發 cut（不消費 buffer）。"""
+    monkeypatch.setenv("STT_STREAMING", "true")
+    sink, cuts = _make_sink()
+    sink._stream_session = _FakeSession()
+    sink._stream_speaker = 123
+    sink.user_buffers[123] = bytearray(b"\x01\x02" * 12000)
+
+    sink._stream_abandon(123)
+
+    assert sink._stream_speaker is None
+    assert sink._stream_session.finalized == 1          # daemon 收尾
+    assert sink.user_buffers[123] == bytearray(b"\x01\x02" * 12000)  # buffer 沒被消費
+    sink.loop.create_task.assert_not_called()           # 沒發 cut
+
+
+def test_on_cut_abandons_when_wake_active(monkeypatch):
+    """語意切落地前查 wake-active：喚醒回應進行中 → 改 abandon，不切（防切喚醒句）。"""
+    monkeypatch.setenv("STT_STREAMING", "true")
+    sink, cuts = _make_sink()
+    sink._stream_session = _FakeSession()
+    sink._stream_speaker = 123
+    sink.user_buffers[123] = bytearray(b"\x01\x02" * 12000)
+    sink.wake_active_callback = lambda: True   # 喚醒回應進行中
+
+    sink._stream_on_cut("馬文播放晴天", {"source": "semantic_endpoint", "revision_count": 0})
+
+    assert sink._stream_speaker is None
+    sink.loop.create_task.assert_not_called()   # 沒切
+    assert sink.user_buffers[123] != bytearray()  # buffer 留給喚醒路徑
+
+
+def test_on_cut_fires_normally_when_no_wake(monkeypatch):
+    """無 wake-active → 語意切照常發（非喚醒句加速）。"""
+    monkeypatch.setenv("STT_STREAMING", "true")
+    sink, cuts = _make_sink()
+    sink._stream_session = _FakeSession()
+    sink._stream_speaker = 123
+    sink.user_buffers[123] = bytearray(b"\x01\x02" * 12000)
+    sink.wake_active_callback = lambda: False
+
+    sink._stream_on_cut("今天天氣不錯啊你說對吧", {"source": "semantic_endpoint", "revision_count": 0})
+
+    assert sink._stream_speaker is None
+    sink.loop.create_task.assert_called()   # 正常切
+
+
+def test_shared_session_uses_arm_window_min_duration():
+    """共享 session 帶 min_duration_ms=1800（arm 窗：總時長未到不切，保護喚醒窗）。"""
+    import streaming_stt_session as m
+    m._shared_session = None  # 清掉前測殘留
+    loop = MagicMock()
+    s = m.get_shared_session(loop)
+    assert s._min_duration_ms == 1800
+    m._shared_session = None  # 還原
