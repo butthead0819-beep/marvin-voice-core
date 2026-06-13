@@ -117,9 +117,14 @@ struct StreamDaemon {
             transcriber = t; analyzer = a; inputCont = cont; collector = col
         }
 
-        func endUtterance() async {
+        // finalize=true（F）：跑完剩餘音訊吐 final；false（R）：丟棄舊語句不吐
+        // （reset 必須硬丟棄，否則舊音訊被 finalize 吐出 → 跨語句文字累積，6/13 merge bug）
+        func endUtterance(finalize: Bool) async {
             inputCont?.finish()
-            try? await analyzer?.finalizeAndFinishThroughEndOfInput()
+            if let a = analyzer {
+                if finalize { try? await a.finalizeAndFinishThroughEndOfInput() }
+                else { await a.cancelAndFinishNow() }
+            }
             await collector?.value
             transcriber = nil; analyzer = nil; inputCont = nil; collector = nil
         }
@@ -127,15 +132,15 @@ struct StreamDaemon {
         for await cmd in commands {
             switch cmd {
             case .reset:
-                await endUtterance()
+                await endUtterance(finalize: false)  // 硬丟棄舊語句
                 await startUtterance()
             case .audio(let data):
                 if inputCont == nil { await startUtterance() }
                 if let buf = pcmBuffer(data) { inputCont?.yield(AnalyzerInput(buffer: buf)) }
             case .finalize:
-                await endUtterance()
+                await endUtterance(finalize: true)
             }
         }
-        await endUtterance()
+        await endUtterance(finalize: true)
     }
 }

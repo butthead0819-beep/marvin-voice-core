@@ -73,6 +73,20 @@ def test_final_after_endpoint_cut_does_not_double():
     assert len(cuts) == 1
 
 
+def test_fire_self_clears_active_cut():
+    """切句後 _active_cut 自清 → 即使後續 line 在 begin 前到，也不會用舊 cb 再發。"""
+    from streaming_stt_session import StreamingSTTSession
+    got = []
+    s = StreamingSTTSession(stability_window_ms=300, min_duration_ms=100)
+    s.set_active_cut(lambda t, m: got.append(t))
+    s.begin_utterance()
+    s.on_daemon_line('{"v":"播歌","t_ms":100}')
+    s.on_daemon_line('{"v":"播歌","t_ms":500}')   # 切
+    s.on_daemon_line('{"final":"播歌","t_ms":700}')
+    assert got == ["播歌"]
+    assert s._active_cut is None
+
+
 def test_malformed_line_ignored():
     s, cuts = _session(stability_window_ms=300, min_duration_ms=100)
     s.begin_utterance()

@@ -115,6 +115,7 @@ class StreamingSTTSession:
         if self._cut_done or not text.strip() or cb is None:
             return
         self._cut_done = True
+        self._active_cut = None  # 自清：防 daemon_final 在 Sink 清掉前又觸發一次（雙發）
         try:
             cb(text, {"source": source, "revision_count": revision_count})
         except Exception as e:

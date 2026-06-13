@@ -681,6 +681,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
         self._stream_speaker = None
         if self._stream_session is not None:
             self._stream_session.set_active_cut(None)
+            self._stream_session.finalize()  # 通知 daemon 在切點收尾，不把本句拖進下一句
         if self.wake_stream:
             self.wake_stream.on_speech_end(user_id)
         print(f"🌊 [Semantic Cut] User_{user_id} 文字穩定提前切 (src={meta.get('source')}, rev={meta.get('revision_count')}): {text[:40]}", flush=True)
