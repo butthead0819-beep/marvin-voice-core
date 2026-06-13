@@ -16,6 +16,7 @@ import subprocess
 import weakref
 import numpy as np
 from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
+from utils import WAKE_WORDS_LIST as _WAKE_WORDS_LIST, FAST_ONLY_WAKE_WORDS as _FAST_ONLY_WAKE_WORDS
 from departure_stats import DepartureStats
 from consent_manager import ConsentManager
 from transcript_store import TranscriptStore
@@ -3858,14 +3859,17 @@ class VoiceController(commands.Cog):
     # 🗣️ [Dialogue Confirmation] 多回合確認流程
     # ──────────────────────────────────────────────────────────────
 
-    _WAKE_PATTERNS = [
-        # 需與 utils.WAKE_WORDS_LIST 同步
-        "馬文同學", "艾瑪文", "艾馬文", "阿姨文", "嗨Mother", "嗨Mom",
-        "馬哥", "老馬", "馬文", "馬溫", "麻文", "馬問", "馬穩", "馬萌", "馬門", "馬聞",
-        "媽問", "媽們",
-        "杜比", "oh marvin", "hi marvin", "marvin", "marwen", "mavin", "margin", "marv",
-        "龍蝦",  # NemoClaw 觸發詞
-    ]
+    # 2026-06-13：原為手工同步的第二份清單（註解寫「需與 WAKE_WORDS_LIST 同步」），
+    # 「毛文」補進偵測清單後這裡沒跟上 → query 沒剝喚醒詞、下游把毛文當歌名。
+    # 改程式化引用單一事實來源；本地額外詞（剝離專用、非喚醒）另列。
+    # 同步不變量由 tests/test_strip_wake_word_sync.py 守。
+    _WAKE_PATTERNS = list(dict.fromkeys(
+        _WAKE_WORDS_LIST + _FAST_ONLY_WAKE_WORDS + [
+            "嗨Mother", "嗨Mom", "媽問", "媽們",
+            "hi marvin", "margin",
+            "龍蝦",  # NemoClaw 觸發詞
+        ]
+    ))
 
     def _strip_wake_word(self, text: str) -> str:
         """移除句首喚醒詞，回傳純問句部分"""
