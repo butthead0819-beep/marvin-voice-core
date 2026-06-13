@@ -1104,11 +1104,16 @@ class DiscordVoiceEngine:
         self._last_stt_context = ctx
         return ctx
 
-    async def _run_swift_stt(self, wav_path: str, is_wake_check: bool, locale: str = "zh-TW") -> tuple[str, dict]:
+    async def _run_swift_stt(self, wav_path: str, is_wake_check: bool, locale: str = "zh-TW",
+                             v2: bool = False) -> tuple[str, dict]:
         """執行 macOS Swift STT，回傳 (辨識文字, meta dict)。
 
         meta 包含 Swift 端送的聲學/韻律訊號（avg_confidence / min_confidence /
         avg_pause_duration / speaking_rate），供 J1 信心校準與 VAD 溫度判斷之後使用。
+
+        v2=True → SpeechAnalyzer 新引擎（macos_stt_v2_bin，2026-06-13）：完整性
+        較佳（A/B：v1 丟喚醒詞/砍半句，v2 全保留）但 meta 無 confidence；
+        只用於全句路徑，wake-check 維持 v1。
         """
         process = None
         meta: dict = {}
@@ -1116,8 +1121,8 @@ class DiscordVoiceEngine:
             env = os.environ.copy()
             env["STT_CONTEXT_STRINGS"] = self._build_stt_context()
             env["STT_LOCALE"] = locale
-            stt_args = ["./macos_stt_bin", wav_path]
-            if is_wake_check:
+            stt_args = ["./macos_stt_v2_bin" if v2 else "./macos_stt_bin", wav_path]
+            if is_wake_check and not v2:
                 stt_args.append("--wake-check")
             process = await asyncio.create_subprocess_exec(
                 *stt_args,
@@ -1377,6 +1382,18 @@ class DiscordVoiceEngine:
                     # fire-and-forget 零阻塞；雅婷失敗時 yating="" 也是對照數據）
                     import gemini_nan_stt
                     gemini_nan_stt.maybe_shadow(whisper_audio, speaker_name, raw_text)
+
+                # 🚀 [SwiftV2] SpeechAnalyzer 新引擎主力 lane（STT_ENGINE_V2 閘控）。
+                # A/B 實證完整性壓倒 v1（v1 丟喚醒詞/砍半句）；空輸出自動降 v1→Groq 既有鏈。
+                if not raw_text and os.getenv("STT_ENGINE_V2", "").strip().lower() in ("1", "true", "yes", "on"):
+                    print(f"🎙️ [Engine] 啟動 SpeechAnalyzer V2 STT (Speaker: {speaker_name}, Locale: {_sp_locale})...", flush=True)
+                    raw_text, stt_meta = await self._run_swift_stt(wav_path, is_wake_check=False, locale=_sp_locale, v2=True)
+                    if raw_text and is_whisper_hallucination(raw_text, getattr(self, "_last_stt_context", "")):
+                        logger.warning(f"[Core_STT] context echo 幻覺丟棄 (SwiftV2): '{raw_text[:60]}'")
+                        raw_text = ""
+                    if raw_text:
+                        used_engine = "SwiftV2"
+                        print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: SwiftV2)", flush=True)
 
                 # 序列備援：Swift server 優先（最高準確度），失敗才用 Whisper
                 if not raw_text:
