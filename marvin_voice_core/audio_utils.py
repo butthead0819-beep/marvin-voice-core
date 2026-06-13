@@ -26,6 +26,35 @@ def apply_gain(pcm_bytes, gain=1.8, width=2):
     except Exception:
         return pcm_bytes
 
+# ── 響度正規化（目標 RMS 制，2026-06-13）────────────────────────────────────
+# 取代固定 1.8x Golden Ear：實測 RMS 分布 p10=294/中位 2751，小聲講者
+# （weakgogo 空白率 2.2% = 4 倍於最佳者）固定 1.8x 救不起來。
+
+def normalize_rms(pcm_bytes: bytes, *, target_rms: float = 2800.0,
+                  max_gain: float = 6.0, min_rms: float = 100.0,
+                  peak_ceiling: int = 30000) -> bytes:
+    """int16 PCM 響度正規化：把 RMS 拉向 target，永不衰減、永不削波。
+
+    - rms < min_rms → 雜訊，原樣返回（放大垃圾害 STT）
+    - gain = clamp(target/rms, 1.0, max_gain)，再受 peak_ceiling/peak 保護
+      （寧可 boost 不足，不做 clip 失真）
+    - gain ≈ 1 時原樣返回（省一次重編碼）
+    """
+    if not pcm_bytes:
+        return pcm_bytes
+    arr = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32)
+    rms = float(np.sqrt(np.mean(arr ** 2)))
+    if rms < min_rms or rms >= target_rms:
+        return pcm_bytes
+    gain = min(target_rms / rms, max_gain)
+    peak = float(np.abs(arr).max())
+    if peak > 0:
+        gain = min(gain, peak_ceiling / peak)
+    if gain <= 1.01:
+        return pcm_bytes
+    return (arr * gain).clip(-32768, 32767).astype(np.int16).tobytes()
+
+
 # ── 48k stereo → 16k mono 抗混疊降頻（2026-06-13）──────────────────────────
 # 舊版 `mean(axis=1)[::3]` 裸抽取無低通，>8kHz 能量摺疊回語音帶。
 # windowed-sinc FIR（純 numpy，不引 scipy）：cutoff 7.2kHz、63 taps Hamming，

@@ -17,7 +17,7 @@ from discord.ext import voice_recv
 import logging
 from collections import deque
 from utils import pre_filter_speech, is_whisper_hallucination
-from marvin_voice_core.audio_utils import pcm48k_stereo_to_16k_mono
+from marvin_voice_core.audio_utils import pcm48k_stereo_to_16k_mono, normalize_rms
 from voice_meta_analyzer import VoiceMetaAnalyzer
 from quality_metrics import record_metric
 import pipeline_timing
@@ -985,11 +985,11 @@ class DiscordVoiceEngine:
             rms = int(np.sqrt(np.mean(pcm_array.astype(np.float32)**2)))
             duration = len(raw_pcm) / (48000 * 2 * 2)
 
-            # 🚀 [Operation Golden Ear] 自動增益補償 (Normalization)
-            processed_pcm = raw_pcm
-            if 100 < rms < 2500:
-                print(f"🔊 [Golden Ear] 檢測到音量較小 (RMS: {rms})，自動執行 1.8x 增益補正...", flush=True)
-                processed_pcm = (pcm_array.astype(np.float32) * 1.8).clip(-32768, 32767).astype(np.int16).tobytes()
+            # 🚀 [Operation Golden Ear v2] 目標 RMS 響度正規化（2026-06-13）
+            # 舊版固定 1.8x + 2500 硬切：p10 級小聲（RMS~294）救不起來（weakgogo
+            # 空白率 2.2% = 4 倍於最佳者）。改 target=2800（實測中位數）/上限 6x/峰值保護。
+            processed_pcm = normalize_rms(raw_pcm)
+            if processed_pcm is not raw_pcm:
                 new_array = np.frombuffer(processed_pcm, dtype=np.int16)
                 new_rms = int(np.sqrt(np.mean(new_array.astype(np.float32)**2)))
                 print(f"📊 [Audio Audit] User_{user_id} | RMS: {rms} -> {new_rms} | 長度: {duration:.2f}s", flush=True)
@@ -1387,6 +1387,18 @@ class DiscordVoiceEngine:
             print(f"🧪 [STT Meta DEBUG] engine={used_engine} speaker={speaker_name} meta={stt_meta} type={type(stt_meta).__name__}", flush=True)
             if stt_meta:
                 logger.info(f"[STT Meta] {used_engine} speaker={speaker_name} {stt_meta}")
+                # 2026-06-13 落盤：6/13 分析只能用空白率代理就是因為 confidence 沒被記。
+                # music_on 用 sink 的串流抑制旗標（同 VAD【串流模式】判定）。
+                try:
+                    _music_on = bool(self.sink.suppress_wake_callback()) if getattr(self, "sink", None) and self.sink.suppress_wake_callback else False
+                except Exception:
+                    _music_on = False
+                record_metric(
+                    "stt_confidence", speaker=speaker_name, engine=used_engine,
+                    music_on=_music_on, empty=(not raw_text),
+                    avg_confidence=stt_meta.get("avg_confidence"),
+                    min_confidence=stt_meta.get("min_confidence"),
+                )
 
         finally:
             _lock.release()
