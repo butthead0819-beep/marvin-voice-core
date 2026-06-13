@@ -98,6 +98,8 @@ class StreamingSTTSession:
         except (ValueError, TypeError):
             return
         if obj.get("ready"):
+            if not self._ready.is_set():
+                print("🌊 [Stream] daemon 暖機完成 ready=true", flush=True)
             self._ready.set()
             return
         if self._cut_done:

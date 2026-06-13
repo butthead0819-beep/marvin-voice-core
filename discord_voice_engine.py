@@ -651,6 +651,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
         # temperature_callback 回秒數閾值；轉成 high/mid/low 語意
         temp_label = "high" if (temp or 0) >= 2.0 else ("mid" if (temp or 0) >= 1.0 else "low")
         self._stream_session.begin(temp_label)
+        print(f"🌊 [Stream] 佔用 User_{user_id} 開語句 (temp={temp_label})", flush=True)
 
     def _stream_feed(self, pcm48k_stereo: bytes) -> None:
         """餵一封包：48k stereo → 16k mono int16 bytes → daemon。失敗靜默降級。"""
@@ -679,6 +680,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
             self._stream_session.set_active_cut(None)
             self._stream_session.finalize()  # daemon 收尾棄段
             self._stream_speaker = None
+            print(f"🌊 [Stream] User_{user_id} wake-active 棄段", flush=True)
 
     def _stream_wake_active(self) -> bool:
         """讀 controller 的喚醒回應鎖（唯讀 callback；無則 False）。"""
