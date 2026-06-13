@@ -1445,6 +1445,13 @@ class DiscordVoiceEngine:
                     alternatives=stt_meta.get("alternatives"),
                 )
 
+            # 🔬 [VolatileShadow] Phase 0：volatile 串流時序量測（env VOLATILE_SHADOW，
+            # 取樣 + 單飛 + fire-and-forget；量 stable_ms/翻盤率/喚醒可見時點，
+            # 決定語意斷句與 volatile arm 要不要做）
+            if not is_wake_check and raw_text:
+                import volatile_shadow
+                volatile_shadow.maybe_shadow(wav_path, speaker_name, raw_text, used_engine)
+
         finally:
             _lock.release()
 
