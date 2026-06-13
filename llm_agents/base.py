@@ -36,6 +36,7 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
     "generate_status_report_comment", "generate_keyword_cloud", "generate_proactive_question",
     "rephrase_proactive_script", "generate_gap_filling_response", "complete", "handle",
     "recall_5w2h",  # RecallHandler 5W2H（owner 問「我剛說了什麼」— reactive，非背景）
+    "nemoclaw_cover",  # NemoClaw 掩飾語句型（遮掩 openclaw thinking — reactive）
     # 背景 / 離線分析（見 BACKGROUND_PURPOSES）：
     "extract_memory", "batch_extract_memories", "audit_player_memory",
     "extract_emotional_moments", "analyze_social_dynamics", "analyze_tactical_situation",

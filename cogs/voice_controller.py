@@ -97,7 +97,7 @@ import pipeline_timing
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
 from helper_wake import is_helper_wake, helper_speak_plan
-from manzai_interject import compute_interject_ratio
+from manzai_interject import compute_interject_ratio, interject_diagnostics
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
@@ -725,7 +725,8 @@ class VoiceController(commands.Cog):
         return np.frombuffer(out, dtype=np.float32)
 
     async def _stream_tts_to_mixer(self, text: str, *, force_macos: bool,
-                                   emotion_tag: str, voice: str | None, layer: int = 1) -> int:
+                                   emotion_tag: str, voice: str | None, layer: int = 1,
+                                   on_first_frame=None) -> int:
         """[Plan 12] 邊收 edge-tts、邊 ffmpeg 解碼、邊逐幀 push 進 TTS 層。
 
         layer=1：主 TTS 層（push_tts）；layer=2：打岔層（push_tts2，與 layer1 並行混音，
@@ -785,6 +786,11 @@ class VoiceController(commands.Cog):
                     break
                 _push(np.frombuffer(data, dtype=np.float32))
                 pushed += 1
+                if pushed == 1 and on_first_frame is not None:
+                    try:
+                        on_first_frame()
+                    except Exception:
+                        pass
             return pushed
 
         _, pushed = await asyncio.gather(_feed(), _drain())
@@ -4265,10 +4271,13 @@ class VoiceController(commands.Cog):
             await self.play_tts("你要問 OpenClaw 什麼？")
             return
 
+        # 🦞 [Cover] 掩飾語：快 LLM 出句型框架 + 主體套原句，遮掩 openclaw 3-12s thinking。
+        # NEMOCLAW_COVER gated（預設 OFF）。on 時取代預錄 ack（cover 更有資訊量）。
+        _cover_on = os.getenv("NEMOCLAW_COVER", "").strip().lower() in ("1", "true", "yes", "on")
         # P0: 序列化 — 同時只允許一個 openclaw 執行，第二個等第一個完成後才開始
         if self._nemo_lock.locked():
             logger.info(f"[NemoClaw] {speaker} 正在排隊等待上一個 openclaw 完成...")
-        else:
+        elif not _cover_on:
             # 立即播 ack 音效（NemoClaw 確認回應，遮掩 openclaw 啟動延遲）
             await self._play_ack("nemoclaw", speaker=speaker)
         async with self._nemo_lock:
@@ -4285,7 +4294,26 @@ class VoiceController(commands.Cog):
             _voice_query = (
                 f"請用口語中文、100字以內回答以下問題，直接說重點，不用條列格式：{clean_query}"
             )
-            response = await self._ask_nemoclaw(_voice_query, session_id=f"marvin_{speaker}")
+            if _cover_on:
+                # openclaw 背景跑；並行生成+播掩飾語遮掩 thinking（cover 安全＝主體套原句、
+                # LLM 只出框架），完成後等真答案。掩飾語失敗不阻斷主流程。
+                _nemo_task = asyncio.create_task(
+                    self._ask_nemoclaw(_voice_query, session_id=f"marvin_{speaker}")
+                )
+                try:
+                    import nemoclaw_cover
+
+                    async def _cover_llm(system: str, q: str):
+                        return await self.bot.router._call_llm(
+                            system, q, tier="simple", temperature=0.8, purpose="nemoclaw_cover")
+
+                    _cover = await nemoclaw_cover.generate_cover(clean_query, _cover_llm)
+                    await self.play_tts(_cover, already_in_channel=True)
+                except Exception as _ce:
+                    logger.warning(f"[NemoClaw] 掩飾語失敗（不阻斷）: {_ce}")
+                response = await _nemo_task
+            else:
+                response = await self._ask_nemoclaw(_voice_query, session_id=f"marvin_{speaker}")
 
             # 文字頻道：完整回應
             if placeholder:
@@ -6765,8 +6793,16 @@ class VoiceController(commands.Cog):
             while asyncio.get_event_loop().time() < _t_end:
                 self._ensure_mixer_playing(vc)
                 await asyncio.sleep(0.1)
+            # 量測 Marmo 首塊延遲：task 啟動 → 第一幀真正 push 進 mixer 的耗時
+            # （耳朵聽到 Marmo 的時點 = 啟動時點 + 此延遲，是切入比例偏離設計的主因）。
+            _marmo_t0 = asyncio.get_event_loop().time()
+            _marmo_first = {"t": None}
+            def _on_marmo_first():
+                if _marmo_first["t"] is None:
+                    _marmo_first["t"] = asyncio.get_event_loop().time()
             marmo_task = asyncio.create_task(self._stream_tts_to_mixer(
-                marmo_text, force_macos=False, emotion_tag="marmo", voice=marmo_voice, layer=2))
+                marmo_text, force_macos=False, emotion_tag="marmo", voice=marmo_voice, layer=2,
+                on_first_frame=_on_marmo_first))
             # 等兩路播完，期間持續 re-arm
             while not (marvin_task.done() and marmo_task.done()):
                 self._ensure_mixer_playing(vc)
@@ -6775,8 +6811,17 @@ class VoiceController(commands.Cog):
         finally:
             self.is_playing_audio = False
             self._tts_protected = _prev_protected
-        logger.info(f"🎭 [DualInterject] 完成 armed={_armed} pushed marvin={_m1}幀 marmo={_m2}幀 "
-                    f"(marvin={len(marvin_text)}字 marmo={len(marmo_text)}字)")
+        _marmo_lat = (_marmo_first["t"] - _marmo_t0) if _marmo_first["t"] is not None else 0.0
+        _diag = interject_diagnostics(
+            at_ratio=_at, est_dur_s=dur,
+            marvin_frames=_m1, marmo_frames=_m2, marmo_first_chunk_s=_marmo_lat)
+        logger.info(
+            f"🎭 [DualInterject] 完成 armed={_armed} "
+            f"marvin={_m1}幀({_diag['marvin_actual_s']:.1f}s/{len(marvin_text)}字) "
+            f"marmo={_m2}幀({_diag['marmo_actual_s']:.1f}s/{len(marmo_text)}字) | "
+            f"設計at={_at:.2f} est_dur={dur:.1f}s 觸發@{_diag['trigger_s']:.1f}s "
+            f"marmo首塊+{_marmo_lat:.2f}s → 實際切入@{_diag['perceived_entry_s']:.1f}s "
+            f"={_diag['perceived_ratio']:.0%} 重疊{_diag['overlap_s']:.1f}s")
         return True
 
     async def play_dual_dialogue(self, segments, *, interject: bool = False, duck=None, step=None, at=None):
