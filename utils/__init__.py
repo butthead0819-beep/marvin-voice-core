@@ -90,6 +90,52 @@ def safe_json_loads(raw_str: str, default_value: dict = None) -> dict:
     return default_value
 
 
+# YouTube 標題垃圾詞（不該進 STT contextualStrings 的雜訊 token）
+_TITLE_NOISE_TOKENS = frozenset({
+    "official", "music", "video", "mv", "hd", "hq", "lyric", "lyrics",
+    "audio", "live", "cover", "feat", "ft", "remaster", "remastered",
+    "官方", "官方版", "官方完整版", "完整版", "高畫質", "字幕版", "動態歌詞",
+    "歌詞版", "現場版", "演唱會",
+})
+
+
+def build_stt_context(base: str, game_dict: str, song_pairs: list[tuple[str, str]],
+                      members: list[str], cap: int = 60) -> str:
+    """組裝 STT contextualStrings（2026-06-13 動態擴充：歌名/歌手/活躍講者）。
+
+    - 標題先按空白/括號類符號切 token，濾掉 YouTube 垃圾詞與超長 token（>12 字）
+    - 去重保序、空白剔除、總數 cap（Apple contextualStrings 宜短小聚焦）
+    - ⚠️ 鐵則：回傳的字串 caller 必須同步餵給 is_whisper_hallucination 過濾 echo-back
+    """
+    import re as _re
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(token: str) -> None:
+        token = token.strip()
+        if not token or len(token) > 12 or "," in token:
+            return
+        if token.lower() in _TITLE_NOISE_TOKENS:
+            return
+        if token in seen or len(out) >= cap:
+            return
+        seen.add(token)
+        out.append(token)
+
+    for part in base.split(","):
+        _add(part)
+    for part in game_dict.split(","):
+        _add(part)
+    for title, artist in song_pairs:
+        for field in (title, artist):
+            for token in _re.split(r"[\s\[\]【】()（）「」『』/|\-_–—:：]+", field or ""):
+                _add(token)
+    for m in members:
+        _add(m)
+    return ",".join(out)
+
+
 def is_whisper_hallucination(text: str, prompt: str) -> bool:
     """偵測 Whisper 幻覺：靜音或 TTS 殘影時，Whisper 會把 initial_prompt 內容吐回來。
     模式1：同一短語重複 3 次以上（e.g. 嗨馬文,嗨馬文,嗨馬文）

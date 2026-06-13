@@ -16,7 +16,7 @@ except ImportError:
 from discord.ext import voice_recv
 import logging
 from collections import deque
-from utils import pre_filter_speech, is_whisper_hallucination
+from utils import pre_filter_speech, is_whisper_hallucination, build_stt_context
 from marvin_voice_core.audio_utils import pcm48k_stereo_to_16k_mono, normalize_rms
 from voice_meta_analyzer import VoiceMetaAnalyzer
 from quality_metrics import record_metric
@@ -1076,6 +1076,34 @@ class DiscordVoiceEngine:
 
     # ── P2: STT 引擎拆解為獨立協程 ─────────────────────────────────────────────
 
+    def _build_stt_context(self) -> str:
+        """組 Swift contextualStrings：喚醒詞 + 遊戲字典 + 當前/佇列歌名歌手 + 活躍講者。
+
+        2026-06-13 動態擴充：救「這首誰唱的」「播放○○」的專名辨識。結果存
+        self._last_stt_context，全句路徑用同一份做 echo-back 幻覺過濾（CLAUDE.md 鐵則）。
+        任何取材失敗都降級成基本 context，不影響 STT 主流程。
+        """
+        # base: wake word 變體（從 stt_corrections.jsonl 萃取 Top wake 聽錯）
+        # Siri/阿公/瑪利歐 是實測 frequency ≥2 的真實 STT 聲學混淆，加進來偏回「馬文」
+        base_context = "Marvin,馬文,碼文,麻文,艾馬文,馬問,馬門,嗨馬文,Hi Marvin,Siri,阿公,瑪利歐"
+        game_dict = getattr(self.bot.router, "game_dict_string", "") or ""
+        song_pairs: list[tuple[str, str]] = []
+        members: list[str] = []
+        try:
+            vc = self.bot.get_cog("VoiceController")
+            if vc is not None:
+                infos = [getattr(vc, "_current_stream_info", None)] + list(getattr(vc, "stream_queue", []))[:2]
+                for info in infos:
+                    if info:
+                        song_pairs.append(vc._parse_song_title_artist(info))
+            if getattr(self, "conv_buffer", None):
+                members = list(self.conv_buffer.get_active_speakers())[:10]
+        except Exception as e:
+            logger.debug(f"[Core_STT] 動態 context 取材失敗，用基本 context: {e}")
+        ctx = build_stt_context(base_context, game_dict, song_pairs, members)
+        self._last_stt_context = ctx
+        return ctx
+
     async def _run_swift_stt(self, wav_path: str, is_wake_check: bool, locale: str = "zh-TW") -> tuple[str, dict]:
         """執行 macOS Swift STT，回傳 (辨識文字, meta dict)。
 
@@ -1086,13 +1114,7 @@ class DiscordVoiceEngine:
         meta: dict = {}
         try:
             env = os.environ.copy()
-            # base_context: wake word 變體（從 stt_corrections.jsonl 萃取 Top wake 聽錯）
-            # Siri/阿公/瑪利歐 是實測 frequency ≥2 的真實 STT 聲學混淆，加進來偏回「馬文」
-            base_context = "Marvin,馬文,碼文,麻文,艾馬文,馬問,馬門,嗨馬文,Hi Marvin,Siri,阿公,瑪利歐"
-            if hasattr(self.bot.router, 'game_dict_string') and self.bot.router.game_dict_string:
-                env["STT_CONTEXT_STRINGS"] = f"{base_context},{self.bot.router.game_dict_string}"
-            else:
-                env["STT_CONTEXT_STRINGS"] = base_context
+            env["STT_CONTEXT_STRINGS"] = self._build_stt_context()
             env["STT_LOCALE"] = locale
             stt_args = ["./macos_stt_bin", wav_path]
             if is_wake_check:
@@ -1360,6 +1382,10 @@ class DiscordVoiceEngine:
                 if not raw_text:
                     print(f"🎙️ [Engine] 啟動 macOS Native Swift STT (Speaker: {speaker_name}, Locale: {_sp_locale})...", flush=True)
                     raw_text, stt_meta = await self._run_swift_stt(wav_path, is_wake_check=False, locale=_sp_locale)
+                    # 動態 context（歌名/暱稱）的 echo-back 過濾：輸出純由注入 token 組成＝幻覺
+                    if raw_text and is_whisper_hallucination(raw_text, getattr(self, "_last_stt_context", "")):
+                        logger.warning(f"[Core_STT] context echo 幻覺丟棄 (Swift): '{raw_text[:60]}'")
+                        raw_text = ""
                     if raw_text:
                         used_engine = "Swift"
                         print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Swift)", flush=True)
