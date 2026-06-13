@@ -270,6 +270,11 @@ class RealtimeVADSink(voice_recv.AudioSink):
         except RuntimeError:
             self.loop = asyncio.new_event_loop()
         # self.harvester_task = self.loop.create_task(self._harvester_loop()) # 🚀 [Watchdog] 準備搬遷至 Engine
+        # 🌊 [Volatile Phase 1] 串流 STT 語意斷句（STT_STREAMING 守門，惰性建 session）。
+        # 單一活躍講者（一個 daemon 一次一句）；其餘走純 VAD。OFF = 全不啟用。
+        self._stream_session = None
+        self._stream_speaker = None      # 當前佔用串流的 user_id
+        self._stream_started = False
         self.packet_count = 0
         self.last_audio_packet_time = time.time() # 🛡️ [Heartbeat]
         self.last_decrypted_audio_time = time.time() # 🛡️ [Operation Sentinel] 僅紀錄解密成功的時間點
@@ -361,7 +366,11 @@ class RealtimeVADSink(voice_recv.AudioSink):
                 self.pre_roll_history[user_id] = deque(maxlen=self.PRE_ROLL_MAXLEN)
 
             self.user_buffers[user_id].extend(pcm_bytes)
-            
+
+            # 🌊 [Volatile Phase 1] 餵串流 daemon（僅當前佔用講者）
+            if self._stream_speaker == user_id and self._stream_session is not None:
+                self._stream_feed(pcm_bytes)
+
             # 🚀 [True RMS VAD] 計算此封包的真實音量
             now = time.time()
             try:
@@ -455,7 +464,10 @@ class RealtimeVADSink(voice_recv.AudioSink):
                         self.user_is_speaking[user_id] = True
                         if self.on_speech_start_callback:
                             self.on_speech_start_callback(user_id)
-                            
+
+                        # 🌊 [Volatile Phase 1] 串流講者佔用（單一活躍）：開語句
+                        self._stream_maybe_begin(user_id)
+
                         print(f"🎬 [VAD] 偵測到有效人聲 (User_{user_id}, RMS: {rms}, Floor: {noise_floor:.1f}{'【串流模式】' if suppressing else ''})", flush=True)
                         # 🚀 [Pre-roll] 將前導緩衝注入正式緩衝區
                         if user_id in self.pre_roll_history and len(self.pre_roll_history[user_id]) > 0:
@@ -525,6 +537,8 @@ class RealtimeVADSink(voice_recv.AudioSink):
                             self.user_is_speaking[user_id] = False
                             if self.wake_stream:
                                 self.wake_stream.on_speech_end(user_id)
+                            # 🌊 [Volatile Phase 1] VAD 自己切了 → 釋放串流佔用 + 收尾 daemon
+                            self._stream_release(user_id)
 
                             # 異步送往 STT
                             self.loop.create_task(
@@ -599,10 +613,72 @@ class RealtimeVADSink(voice_recv.AudioSink):
             self.user_wake_check_count.pop(user_id, None)
             if self.wake_stream:
                 self.wake_stream.on_speech_end(user_id)
+            self._stream_release(user_id)  # 🌊 watchdog 兜底切也要釋放串流佔用
 
             # 回呼 Engine.process_audio_slice
             self.loop.create_task(self.on_speech_cut_callback(user_id, audio_data, timestamp))
 
+    # ── 🌊 Volatile Phase 1：串流 STT 語意斷句 ──────────────────────────────
+    # STT_STREAMING 守門。單一活躍講者佔用一個常駐 daemon；其餘走純 VAD。
+    # 任何失敗都降級回 VAD（self._stream_session.available=False / None）。
+
+    def _stream_maybe_begin(self, user_id: int) -> None:
+        """speech start：若串流啟用且無人佔用 → 此講者佔用、開語句。"""
+        from streaming_stt_session import streaming_enabled, StreamingSTTSession
+        if not streaming_enabled() or self._stream_speaker is not None:
+            return
+        if self._stream_session is None:
+            if not self._stream_started:
+                self._stream_started = True
+                self._stream_session = StreamingSTTSession(on_cut=self._stream_on_cut)
+                self.loop.create_task(self._stream_session.start())
+            return  # 本句還沒暖好，下句起生效
+        if not self._stream_session.available:
+            return
+        self._stream_speaker = user_id
+        temp = self.temperature_callback() if self.temperature_callback else None
+        # temperature_callback 回秒數閾值；轉成 high/mid/low 語意
+        temp_label = "high" if (temp or 0) >= 2.0 else ("mid" if (temp or 0) >= 1.0 else "low")
+        self._stream_session.begin(temp_label)
+
+    def _stream_feed(self, pcm48k_stereo: bytes) -> None:
+        """餵一封包：48k stereo → 16k mono int16 bytes → daemon。失敗靜默降級。"""
+        try:
+            mono16 = pcm48k_stereo_to_16k_mono(pcm48k_stereo)
+            if len(mono16):
+                pcm16 = (mono16 * 32767.0).clip(-32768, 32767).astype("<i2").tobytes()
+                self._stream_session.feed(pcm16)
+        except Exception:
+            pass
+
+    def _stream_release(self, user_id: int) -> None:
+        """VAD 自己切了：釋放佔用 + 收尾 daemon（讓 final 兜底，但 cut 已由 VAD 發）。"""
+        if self._stream_speaker == user_id and self._stream_session is not None:
+            self._stream_session.finalize()
+            self._stream_speaker = None
+
+    def _stream_on_cut(self, text: str, meta: dict) -> None:
+        """語意斷句觸發（event loop 上跑）：搶在 VAD 靜默前發 cut，鏡像 VAD 切句。
+
+        downstream 完全沿用既有路徑（仍跑 batch STT，只是提前觸發）→ 零下游改動。
+        """
+        user_id = self._stream_speaker
+        if user_id is None:
+            return
+        buf = self.user_buffers.get(user_id)
+        if not buf or len(buf) <= 19200:
+            return
+        audio_data = bytes(buf)
+        self.user_buffers[user_id] = bytearray()
+        last_spoken = self.user_last_spoken_time.get(user_id, 0)
+        self.user_last_spoken_time[user_id] = 0   # 防 VAD 二次切
+        self.user_wake_check_count.pop(user_id, None)
+        self.user_is_speaking[user_id] = False
+        self._stream_speaker = None
+        if self.wake_stream:
+            self.wake_stream.on_speech_end(user_id)
+        print(f"🌊 [Semantic Cut] User_{user_id} 文字穩定提前切 (src={meta.get('source')}, rev={meta.get('revision_count')}): {text[:40]}", flush=True)
+        self.loop.create_task(self.on_speech_cut_callback(user_id, audio_data, last_spoken))
 
 
 class DiscordVoiceEngine:
