@@ -38,6 +38,7 @@ WAKE_WORDS_LIST: list[str] = [
     "馬文",
     # STT near-misses
     "馬聞", "馬溫", "麻文", "馬問", "馬穩", "馬門", "馬萌",
+    "毛文",  # 2026-06-13 SwiftV2 實測聲學混淆（「馬文這首誰唱的」→「毛文…」喚醒漏接）
 ]
 
 # Sentence-start only — too ambiguous mid-sentence

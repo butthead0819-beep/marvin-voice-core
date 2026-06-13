@@ -60,6 +60,13 @@ def test_pre_filter_returns_fast_intervene_english():
     assert result["action"] == "fast_intervene"
 
 
+def test_pre_filter_catches_maowen_variant():
+    """2026-06-13 SwiftV2 實測：「馬文這首誰唱的」被辨識成「毛文這首誰唱的」
+    → 喚醒漏接。毛文與既有 馬聞/馬溫/馬問 同為 STT 聲學混淆變體。"""
+    result = pre_filter_speech("毛文這首誰唱的")
+    assert result["action"] != "drop"
+
+
 def test_pre_filter_returns_drop_on_empty():
     assert pre_filter_speech("")["action"] == "drop"
     assert pre_filter_speech("   ")["action"] == "drop"
