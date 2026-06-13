@@ -30,10 +30,12 @@ struct MacosSTTv2 {
             exit(1)
         }
 
+        // 2026-06-13b：補 confidence（餵 J1 校準 + stt_confidence 落盤，與 v1 META 同鍵）
+        // 與 alternatives（同音字備選證據收集——「週傑倫」的備選常含「周杰倫」）
         let transcriber = SpeechTranscriber(locale: locale,
                                             transcriptionOptions: [],
-                                            reportingOptions: [],
-                                            attributeOptions: [])
+                                            reportingOptions: [.alternativeTranscriptions],
+                                            attributeOptions: [.transcriptionConfidence])
 
         // 模型資產：未安裝則一次性下載（之後皆本地）
         let installed = await SpeechTranscriber.installedLocales
@@ -76,32 +78,74 @@ struct MacosSTTv2 {
         do {
             var segments: [String] = []
             // results 收集與 analyze 並行；finalize 後 stream 結束
-            async let collector: [String] = {
+            async let collector: ([String], [Double], [String]) = {
                 var out: [String] = []
+                var confs: [Double] = []
+                var alts: [String] = []
                 for try await result in transcriber.results {
                     out.append(String(result.text.characters))
+                    for run in result.text.runs {
+                        if let c = run.transcriptionConfidence, c > 0 {
+                            confs.append(c)
+                        }
+                    }
+                    for alt in result.alternatives.prefix(3) {
+                        alts.append(String(alt.characters))
+                    }
                 }
-                return out
+                return (out, confs, alts)
             }()
             if let lastSample = try await analyzer.analyzeSequence(from: audioFile) {
                 try await analyzer.finalizeAndFinish(through: lastSample)
             } else {
                 await analyzer.cancelAndFinishNow()
             }
-            segments = try await collector
+            let (segs, confidences, alternatives) = try await collector
+            segments = segs
 
             // 沿 v1 契約：無標點輸出（中文標點歷史上錯斷句、cleaner 會移除）
-            var text = segments.joined(separator: " ")
-            for p in ["。", "，", "！", "？", "；", "、"] {
-                text = text.replacingOccurrences(of: p, with: " ")
+            func stripPunct(_ s: String) -> String {
+                var t = s
+                for p in ["。", "，", "！", "？", "；", "、"] {
+                    t = t.replacingOccurrences(of: p, with: " ")
+                }
+                return t.split(separator: " ").joined(separator: " ")
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
             }
-            text = text.split(separator: " ").joined(separator: " ")
-                       .trimmingCharacters(in: .whitespacesAndNewlines)
+            // alternativeTranscriptions 開啟後 results 變多段碎片（「馬文播/放週傑倫的晴/天」）。
+            // 最終輸出做 CJK 空格收斂：漢字之間的空格全部移除（含標點轉空格的縫），
+            // 拉丁詞之間的空格保留。
+            func collapseCJKSpaces(_ s: String) -> String {
+                let isCJK: (Character) -> Bool = { c in
+                    c.unicodeScalars.first.map { $0.value >= 0x4E00 && $0.value <= 0x9FFF } ?? false
+                }
+                var out: [Character] = []
+                let chars = Array(s)
+                for (i, c) in chars.enumerated() {
+                    if c == " " {
+                        let prev = out.last
+                        let next = chars[(i + 1)...].first { $0 != " " }
+                        if let p = prev, let n = next, isCJK(p) && isCJK(n) { continue }
+                    }
+                    out.append(c)
+                }
+                return String(out)
+            }
+            let text = collapseCJKSpaces(stripPunct(segments.joined(separator: " ")))
 
-            let meta: [String: Any] = [
+            var meta: [String: Any] = [
                 "engine": "speechanalyzer",
                 "segment_count": segments.count,
             ]
+            // confidence 鍵名與 v1 相同 → J1 校準 / stt_confidence 落盤零改動直接生效
+            if !confidences.isEmpty {
+                meta["avg_confidence"] = confidences.reduce(0, +) / Double(confidences.count)
+                meta["min_confidence"] = confidences.min() ?? 0.0
+            }
+            let cleanAlts = alternatives.map(stripPunct).filter { !$0.isEmpty && $0 != text }
+            if !cleanAlts.isEmpty {
+                meta["alternatives"] = Array(cleanAlts.prefix(3))
+            }
             if let metaData = try? JSONSerialization.data(withJSONObject: meta),
                let metaStr = String(data: metaData, encoding: .utf8) {
                 print("__META__ \(metaStr)")

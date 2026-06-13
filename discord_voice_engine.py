@@ -1441,6 +1441,8 @@ class DiscordVoiceEngine:
                     music_on=_music_on, empty=(not raw_text),
                     avg_confidence=stt_meta.get("avg_confidence"),
                     min_confidence=stt_meta.get("min_confidence"),
+                    # SwiftV2 同音字備選（證據收集：備選裡有沒有正確寫法，決定要不要接 music search）
+                    alternatives=stt_meta.get("alternatives"),
                 )
 
         finally:
