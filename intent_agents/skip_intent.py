@@ -19,9 +19,10 @@ import re
 from typing import Iterable
 
 # 句首容許的「命令導引前綴」：address（馬文/欸/喂）、intensifier（快/現在/拜託）、
-# soft connector（給我/請/那）。**不含**否定/疑問/推論詞（不要/為什麼/應該等）。
+# soft connector（給我/請/那）、意願（我要）。**不含**否定/疑問/推論詞（不要/為什麼/應該等）。
+# 「我要」是自然命令引導（「我要切歌」）；「我不要」「我要不要」因關鍵字落在前綴之後仍正確拒絕。
 _ALLOWED_PREFIX_RE = re.compile(
-    r"^\s*(?:馬文|欸|喂|快|現在|給我|拜託|請|那)?[\s,，。、]*"
+    r"^\s*(?:馬文|欸|喂|快|現在|給我|拜託|請|那|我要)?[\s,，。、]*"
 )
 
 _LONG_SENTENCE_CHARS = 20

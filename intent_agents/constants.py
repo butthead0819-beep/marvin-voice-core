@@ -26,7 +26,7 @@ WEAK_PLAY_KW: tuple[str, ...] = (
 MUSIC_PLAY_KW: tuple[str, ...] = STRONG_PLAY_KW + WEAK_PLAY_KW
 
 MUSIC_SKIP_KW: tuple[str, ...] = (
-    "換一首", "下一首", "跳過", "換歌", "不要這首", "skip",
+    "換一首", "下一首", "跳過", "換歌", "切歌", "不要這首", "skip",
 )
 MUSIC_STOP_KW: tuple[str, ...] = (
     "停止播放", "音樂停", "不要播了", "關掉音樂", "停音樂", "音樂關掉",
@@ -44,7 +44,7 @@ MUSIC_RESUME_KW: tuple[str, ...] = (
 # 刻意排除「暫停一下」（口語歧義高）和英文 pause/skip/resume（遊戲/工作場合常見）。
 # 這四個集合與上方 class-level 集合**故意不同**，反映「無喚醒詞」場景的保守選詞。
 MUSIC_DIRECT_SKIP_KW: frozenset[str] = frozenset((
-    "換一首", "下一首", "跳過", "換歌", "不要這首",
+    "換一首", "下一首", "跳過", "換歌", "切歌", "不要這首",
 ))
 MUSIC_DIRECT_STOP_KW: frozenset[str] = frozenset((
     "停止播放", "音樂停", "不要播了", "關掉音樂", "停音樂", "音樂關掉",

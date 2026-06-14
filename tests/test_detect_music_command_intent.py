@@ -170,6 +170,17 @@ def test_direct_command_skip_unchanged():
     assert result["action"] == "skip"
 
 
+@pytest.mark.parametrize("text", [
+    "切歌",        # 6/14 incident：原本不在 IBA-T0 關鍵字表
+    "我要切歌",    # 6/14 21:48:05 狗與露實況
+])
+def test_direct_command_skip_incident_20260614(text):
+    cog = _make_cog()
+    result = cog._detect_music_direct_command(text)
+    assert result is not None, f"{text!r} 應觸發 skip"
+    assert result["action"] == "skip"
+
+
 # ── IBA-T0 長句不該誤觸發 (5/18 incident: "...直接跳過那個..." 被當 skip) ──
 
 @pytest.mark.parametrize("text", [

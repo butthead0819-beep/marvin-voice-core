@@ -104,3 +104,29 @@ def test_keyword_after_negation_or_question_is_not_command():
     """關鍵字前有否定/疑問 → 不是命令。"""
     assert is_short_skip_command("不要下一首", MUSIC_DIRECT_SKIP_KW) is False
     assert is_short_skip_command("為什麼下一首", MUSIC_DIRECT_SKIP_KW) is False
+
+
+# ── 2026-06-14 incident：放歌中喊「我要切歌」沒反應 ─────────────────────────
+# 根因①「切歌」不在關鍵字表；根因②「我要」不在允許前綴 → 兩者都補才能命中。
+
+@pytest.mark.parametrize("text", [
+    "切歌",            # 台灣超常用 skip 講法，原本完全不在關鍵字表
+    "我要切歌",        # 6/14 21:48:05 狗與露實況；「我要」是自然命令引導
+    "我要換歌",
+    "我要跳過",
+    "我要下一首",
+])
+def test_incident_20260614_skip_phrasings_true_positives(text):
+    assert is_short_skip_command(text, MUSIC_DIRECT_SKIP_KW) is True, (
+        f"應該被認為是 skip 指令: {text!r}"
+    )
+
+
+@pytest.mark.parametrize("text", [
+    "我要不要切歌",    # 自我商量（deliberation），關鍵字落在前綴之後 → 不是命令
+    "我不要切歌",      # 否定：「我要」不該誤匹配「我不要」開頭
+])
+def test_incident_20260614_skip_false_positive_guards(text):
+    assert is_short_skip_command(text, MUSIC_DIRECT_SKIP_KW) is False, (
+        f"非命令不該觸發 skip: {text!r}"
+    )
