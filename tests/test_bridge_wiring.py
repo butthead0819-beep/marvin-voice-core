@@ -342,6 +342,7 @@ async def test_voice_state_join_emits_member_joined(monkeypatch):
     cog.bot.user.id = 99999
     cog.consent = MagicMock()
     cog.consent.has_seen_notice.return_value = True
+    cog._nudges = MagicMock()  # join 路徑會 reset_speaker（spec mock 不含 instance 屬性）
     cog.active_text_channel = None
     cog.greeting_cooldown = {}
     cog.stream_mode = False  # greeting 路徑讀 self.stream_mode（spec mock 不含 instance 屬性）
@@ -412,6 +413,7 @@ async def test_voice_state_leave_emits_member_left(monkeypatch):
     cog.bot.user.id = 99999
     cog.consent = MagicMock()
     cog.consent.has_seen_notice.return_value = True
+    cog._nudges = MagicMock()  # join 路徑會 reset_speaker（spec mock 不含 instance 屬性）
     cog.active_text_channel = None
     cog.greeting_cooldown = {}
     cog.stream_mode = False  # greeting 路徑讀 self.stream_mode（spec mock 不含 instance 屬性）

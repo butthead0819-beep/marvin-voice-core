@@ -19,6 +19,7 @@ from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
 from utils import WAKE_WORDS_LIST as _WAKE_WORDS_LIST, FAST_ONLY_WAKE_WORDS as _FAST_ONLY_WAKE_WORDS
 from departure_stats import DepartureStats
 from consent_manager import ConsentManager
+from nudge_throttle import NudgeThrottle
 from transcript_store import TranscriptStore
 from speaker_topic_graph import SpeakerTopicGraph
 from speak_bus import SpeakBus, SpeakContext
@@ -395,6 +396,9 @@ class VoiceController(commands.Cog):
         # 1. 狀態追蹤
         self.log_buffer = [] # 暫存 10 分鐘內的 Log
         self.active_text_channel = None # 記錄最後一次 /summon 的文字頻道
+        # 🔔 [Nudge Throttle] 通用使用者提醒節流（窄訊號 + 每 category×speaker 每 session 一次）。
+        # 首個 consumer：環境噪音喚醒提醒（category="noise"）。其他功能可共用同一抑制原則。
+        self._nudges = NudgeThrottle()
         self.last_player_speech_time = time.time() # 初始化為啟動時間
         self.greeting_cooldown = {} # 🛠️ [Cooldown] 玩家進出冷卻紀錄
         self.query_queue = asyncio.Queue() # 🚀 [Fast System] 指令請求佇列
@@ -2055,6 +2059,8 @@ class VoiceController(commands.Cog):
 
         # --- [Join Logic] ---
         if before.channel != after.channel and after.channel == marvin_channel:
+            # 🔔 [Nudge Throttle] (重)進語音 = 新 session，重新武裝該人所有提醒類別
+            self._nudges.reset_speaker(member.display_name)
             # 🔐 [Consent] 首次進入時發送資料使用聲明
             if not self.consent.has_seen_notice(member.display_name):
                 self.consent.mark_seen(member.display_name)
@@ -2606,6 +2612,12 @@ class VoiceController(commands.Cog):
             logger.info(f"⏭️ [Echo Guard] {_reason}，抑制來自 {speaker} 的可能回授觸發。")
             is_fast = False
             is_duplicate = True
+            # 🔇 [Noise Nudge] 純音樂播放中（非 TTS 回授窗）被擋掉的喚醒句若含喚醒詞 →
+            # 可能環境太吵把喚醒詞糊掉；走通用節流器（窄訊號 + 每 speaker 每 session 1 次）。
+            if self.is_playing_audio and not self._current_tts_text and \
+                    _WAKE_ECHO_RE.search(raw_text) and \
+                    self._nudges.signal("noise", speaker, now):
+                asyncio.create_task(self._send_noise_nudge(speaker))
 
         # 🛡️ [Global Wake Guard] 全域冷續：2.0 秒內不允許第二次喚醒 (不分對象)
         if now - self._last_global_wake_time < 2.0 and is_fast:
@@ -3044,6 +3056,19 @@ class VoiceController(commands.Cog):
             return "robotic"           # 正常速度 + 極平穩 = 機械共鳴
         else:
             return "neutral"
+
+    async def _send_noise_nudge(self, speaker: str) -> None:
+        """🔇 [Noise Nudge] 環境噪音害喚醒被擋 → 文字頻道一句溫和提醒（每 speaker 每 session 一次）。"""
+        if not self.active_text_channel:
+            return
+        try:
+            await self.active_text_channel.send(
+                f"🔇 {speaker} 我有聽到你在叫我，但你那邊背景有點吵聽不太清楚 😅 "
+                f"開一下 Discord 的 Krisp 噪音抑制（設定 → 語音與視訊 → 噪音抑制），"
+                f"或 Apple 裝置的人聲隔離，會清楚很多。"
+            )
+        except Exception as e:
+            logger.debug(f"[Noise Nudge] 發送失敗：{e}")
 
     async def _send_mood_sticker(self, response_text: str, speaker: str = "", context: str = "") -> None:
         """🎭 [Sticker] 依 Marvin 心情選一張 Clyde 貼圖發送至 active_text_channel。"""
