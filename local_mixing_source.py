@@ -49,6 +49,7 @@ class LocalMixingAudioSource(_BASE):
         volume: float = 1.0,
         duck_level: float = 0.30,
         duck_step: float = 0.28,
+        tts_gain: float = 0.5,
         tts_cap_seconds: float = 30.0,
         seed: int | None = None,
         instrument: bool = False,
@@ -58,6 +59,7 @@ class LocalMixingAudioSource(_BASE):
         self._volume = float(volume)
         self._duck_level = float(duck_level)
         self._duck_step = float(duck_step)
+        self._tts_gain = float(tts_gain)  # TTS 層增益（音樂常播 ~10%，TTS 滿音量過大 → 預設減半）
         self._duck_cur = 1.0  # 1.0 = 無 duck
         self._tts_cap_samples = int(tts_cap_seconds * _SAMPLES_PER_SEC)
         self._rng = np.random.default_rng(seed)
@@ -183,12 +185,11 @@ class LocalMixingAudioSource(_BASE):
             if music_f is not None:
                 layers.append(am.apply_gain(music_f, self._volume * self._duck_cur))
             if tts_f is not None:
-                if self._interject_cur < 1.0:
-                    layers.append(am.apply_gain(tts_f, self._interject_cur))  # 淡出中的 Marvin
-                else:
-                    layers.append(tts_f)  # 滿音量 Marvin
+                # 套 tts_gain（音樂 ~10% 時 TTS 滿音量過大）；淡出中再乘 interject_cur。
+                _g = self._tts_gain * self._interject_cur if self._interject_cur < 1.0 else self._tts_gain
+                layers.append(am.apply_gain(tts_f, _g))  # Marvin
             if tts2_f is not None:
-                layers.append(tts2_f)  # Marmo 1.0
+                layers.append(am.apply_gain(tts2_f, self._tts_gain))  # Marmo（同為 TTS）
             if not layers:
                 # idle：always-on 回 silence（永不停）；on-demand 超過 grace 回 b""（discord 停送）
                 if self._on_demand:

@@ -108,6 +108,43 @@ def test_music_and_tts_both_contribute():
     assert mixed.mean() != 0
 
 
+# ── TTS 音量（tts_gain）─────────────────────────────────────────────────────
+
+def test_tts_gain_default_is_half():
+    """預設 tts_gain = 0.5：音樂常播在 ~10%，TTS 滿音量顯得過大 → 預設減半平衡。"""
+    assert LocalMixingAudioSource()._tts_gain == 0.5
+
+
+def test_tts_layer_scaled_by_tts_gain():
+    """TTS（Marvin）層套 tts_gain：輸出 == apply_gain(tts, tts_gain) 走完 DSP。"""
+    mix = LocalMixingAudioSource(seed=11, tts_gain=0.5)
+    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))
+    out = np.frombuffer(mix.read(), dtype=np.int16)
+    tts = _f32_frame(0.6)
+    expected = am.to_s16(am.tpdf_dither(am.apply_gain(tts, 0.5), np.random.default_rng(11)))
+    assert np.array_equal(out, expected)
+
+
+def test_marmo_interject_layer_also_scaled_by_tts_gain():
+    """打岔層 Marmo 同為 TTS → 也套 tts_gain，避免比 Marvin 大聲。"""
+    mix = LocalMixingAudioSource(seed=5, tts_gain=0.5)
+    mix.push_tts2(_f32_frame(0.4, n=FRAME_SAMPLES))
+    out = np.frombuffer(mix.read(), dtype=np.int16)
+    tts2 = _f32_frame(0.4)
+    expected = am.to_s16(am.tpdf_dither(am.apply_gain(tts2, 0.5), np.random.default_rng(5)))
+    assert np.array_equal(out, expected)
+
+
+def test_tts_gain_unity_keeps_full_volume():
+    """tts_gain=1.0 → 退回滿音量（不破壞既有滿音量語意）。"""
+    mix = LocalMixingAudioSource(seed=2, tts_gain=1.0)
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))
+    out = np.frombuffer(mix.read(), dtype=np.int16)
+    tts = _f32_frame(0.5)
+    expected = am.to_s16(am.tpdf_dither(am.apply_gain(tts, 1.0), np.random.default_rng(2)))
+    assert np.array_equal(out, expected)
+
+
 # ── TTS 佇列消化 ─────────────────────────────────────────────────────────────
 
 def test_tts_queue_consumed_in_order_then_idle():
@@ -502,15 +539,16 @@ def test_tts2_layer_ramps_layer1_duck_gradually():
     for _ in range(60):
         settled = _level()
     assert first > settled     # 漸進：第一幀比穩定後大聲（Marvin 還沒 fade 下去）
-    assert settled == pytest.approx(0.5 * mix._interject_duck + 0.3, abs=0.02)
+    # 兩層皆套 tts_gain；layer1 再乘 interject_duck，layer2 不被 duck。
+    assert settled == pytest.approx(mix._tts_gain * (0.5 * mix._interject_duck + 0.3), abs=0.02)
 
 
-def test_tts2_full_volume_when_layer1_silent():
-    """只有 layer2 在播 → Marmo 全音量（不被任何 duck）。"""
+def test_tts2_scaled_by_tts_gain_not_ducked_by_layer1():
+    """只有 layer2 在播 → Marmo 套 tts_gain（同為 TTS），但不被 layer1 duck。"""
     mix = LocalMixingAudioSource(seed=3)
     mix.push_tts2(_f32_frame(0.4))
     out = np.frombuffer(mix.read(), dtype=np.int16).astype(np.float32) / 32767.0
-    assert out.mean() == pytest.approx(0.4, abs=0.01)
+    assert out.mean() == pytest.approx(0.4 * mix._tts_gain, abs=0.01)
 
 
 def test_tts2_makes_mixer_non_idle_and_counts_load():
