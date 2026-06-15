@@ -12,6 +12,8 @@ from taste_fingerprint import (
     classify_language,
     compute_taste_fingerprint,
     diff_fingerprints,
+    dominant_language,
+    explore_matches_floor,
 )
 
 
@@ -107,3 +109,32 @@ def test_diff_ignores_tiny_language_shift():
     old = {"core_artists": [], "language": {"華語": 0.90}}
     new = {"core_artists": [], "language": {"華語": 0.92}}   # 0.02 < 0.05
     assert diff_fingerprints(old, new)["language_shift"] == {}
+
+
+# ── Step 2: 探索錨定地板（語言）────────────────────────────────────────────
+
+def test_dominant_language_clear():
+    assert dominant_language({"language": {"華語": 0.9, "英文": 0.08}}) == "華語"
+
+
+def test_dominant_language_no_clear_majority_returns_none():
+    """50/50 → 無明顯主導 → None（不施加地板）。"""
+    assert dominant_language({"language": {"華語": 0.5, "英文": 0.5}}) is None
+
+
+def test_dominant_language_empty_returns_none():
+    assert dominant_language({}) is None
+    assert dominant_language({"language": {}}) is None
+
+
+def test_explore_floor_blocks_offlanguage_discovery():
+    """主導華語時，explore 出來的英文新歌被擋（探索不跑偏）。"""
+    fp = {"language": {"華語": 0.9, "英文": 0.08}}
+    assert explore_matches_floor("周杰倫【晴天】", fp) is True
+    assert explore_matches_floor("Taylor Swift - Anti-Hero", fp) is False
+
+
+def test_explore_floor_fail_open_without_fingerprint():
+    """無指紋 / 無明顯主導 → 一律放行（fail-open，不限制探索）。"""
+    assert explore_matches_floor("Taylor Swift - Anti-Hero", {}) is True
+    assert explore_matches_floor("任何歌", {"language": {"華語": 0.5, "英文": 0.5}}) is True

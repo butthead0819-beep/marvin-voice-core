@@ -92,6 +92,28 @@ def compute_taste_fingerprint(songs: dict, *, top_n: int = 15,
     }
 
 
+def dominant_language(fingerprint: dict, threshold: float = 0.6) -> str | None:
+    """指紋裡明顯主導的語言（比例 ≥ threshold）；無明顯主導 / 無指紋 → None。"""
+    lang = (fingerprint or {}).get("language", {})
+    if not lang:
+        return None
+    top, ratio = max(lang.items(), key=lambda kv: kv[1])
+    return top if ratio >= threshold else None
+
+
+def explore_matches_floor(title: str, fingerprint: dict, threshold: float = 0.6) -> bool:
+    """explore（新歌發現）是否通過口味地板：語言需與主導語言一致。
+
+    用途：T2 discovery 可能飄到別語言/演奏曲；硬錨主導語言（如華語）擋掉刺耳
+    驚喜。他們的少數語言口味（如特定英文老歌）走 exploit 重播、不靠新探索。
+    無明顯主導語言 / 無指紋 → True（fail-open，不限制探索）。
+    """
+    dom = dominant_language(fingerprint, threshold)
+    if dom is None:
+        return True
+    return classify_language(title) == dom
+
+
 def diff_fingerprints(old: dict, new: dict) -> dict:
     """跟上一份指紋比漂移：核心藝人新進/掉出 + 語言比例變化（門檻 0.05）。"""
     old_a = {a for a, _ in (old or {}).get("core_artists", [])}

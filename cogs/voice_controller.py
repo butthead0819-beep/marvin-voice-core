@@ -128,6 +128,8 @@ logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 log
 
 # LLM 品味鄰近 seed 快取（taste_profile，每日離線生成；T2 env-gated LLM_TASTE_T2=on 才讀）
 _TASTE_PROFILE_CACHE = "records/taste_profiles.json"
+# deterministic 口味指紋（週生成；T2 explore 用主導語言當地板，runtime 5 分鐘快取讀）
+_TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 
 # 🕒 [Proactive Topic Cooldown] 冷場 TopicGenerator 與 SpeakBus ProactiveTopicAgent
 # 共用此 cooldown：任一系統發話後靜默此秒數，避免使用者連續聽到兩套主動話題。
@@ -8081,6 +8083,23 @@ class VoiceController(commands.Cog):
             for c in radio
         ]
 
+    def _load_taste_fingerprint(self) -> dict:
+        """讀 records/taste_fingerprint.json（5 分鐘快取；缺檔/壞檔 → {} fail-open）。
+
+        週生成的 deterministic 口味指紋，供 T2 explore 用主導語言當地板。
+        """
+        now = time.time()
+        if hasattr(self, "_taste_fp_cache") and now - getattr(self, "_taste_fp_loaded_at", 0) < 300:
+            return self._taste_fp_cache
+        try:
+            import json as _json
+            with open(_TASTE_FINGERPRINT_CACHE, "r", encoding="utf-8") as f:
+                self._taste_fp_cache = _json.load(f)
+        except Exception:
+            self._taste_fp_cache = {}
+        self._taste_fp_loaded_at = now
+        return self._taste_fp_cache
+
     async def _auto_recommend(self, username: str, *, _tier: int = 1):
         """佇列空 → 依在場成員的音樂記憶推薦下一首批 (Phase 1: 一次推 3 首為一 round)。
 
@@ -8145,6 +8164,7 @@ class VoiceController(commands.Cog):
         # T1/T2 套兩者；T3 回收只保留永久 skip（放寬播過視窗，與下方 ring_exclude 同步，
         # 避免「拉長窗」把 recommender 餓死沒歌放）。
         _skipped_vids = mm.get_skipped_video_ids()
+        _taste_fp = self._load_taste_fingerprint()   # Step 2: T2 explore 語言地板用
 
         # 本層候選來源 + enqueue 時 ring 檢查嚴格度（ring_exclude / excluded_vids）。
         if _tier == 1:
@@ -8226,6 +8246,13 @@ class VoiceController(commands.Cog):
             if _ns:
                 logger.info(f"🚫 [AutoRecommend] 非單曲略過 '{info['title']}': {_ns_reason}")
                 continue
+            # Step 2: explore（T2 新歌發現）錨定口味地板——主導語言不符的新歌略過，
+            # 讓驚喜留在甜蜜區（華語）。exploit（T1 重播愛歌，含少數英文老歌）不套。
+            if _tier == 2:
+                from taste_fingerprint import explore_matches_floor
+                if not explore_matches_floor(info.get('title', ''), _taste_fp):
+                    logger.info(f"🎵 [AutoRecommend] explore 不合口味地板(語言)略過: {info['title']}")
+                    continue
 
             # Phase 1 M1: cover quality filter (hard ban 低播放 cover / 黑名單)
             if self._cover_blacklist is not None:
