@@ -9,9 +9,47 @@ import asyncio
 import subprocess
 import hashlib
 import time
+import io
+import wave
+from array import array
 from xml.sax.saxutils import escape as xml_escape
 
 logger = logging.getLogger(__name__)
+
+
+def peak_normalize_wav_bytes(wav_bytes: bytes, target_peak_ratio: float = 0.9) -> bytes:
+    """把 mono/stereo 16-bit WAV 峰值正規化到 target_peak_ratio×滿幅。
+
+    用途：macOS say 終極備援的輸出振幅天生比 edge-tts 低，疊上 mixer
+    tts_gain=0.5 後蓋在音樂下偏小聲（2026-06-14 限流 incident）。拉到接近
+    滿幅補償後段 gain，讓退備援時仍清楚可聽。
+
+    Fail-open：非 16-bit / 壞 WAV / 全靜音一律原樣回傳，絕不丟例外中斷 TTS。
+    """
+    try:
+        with wave.open(io.BytesIO(wav_bytes), "rb") as r:
+            nchannels = r.getnchannels()
+            sampwidth = r.getsampwidth()
+            framerate = r.getframerate()
+            frames = r.readframes(r.getnframes())
+        if sampwidth != 2:          # 只處理 16-bit PCM
+            return wav_bytes
+        samples = array("h")        # signed short；macOS-only 備援，固定 LE
+        samples.frombytes(frames)
+        peak = max((abs(s) for s in samples), default=0)
+        if peak == 0:               # 全靜音 → 不可除零
+            return wav_bytes
+        scale = (target_peak_ratio * 32767.0) / peak
+        out = array("h", (max(-32768, min(32767, int(s * scale))) for s in samples))
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(nchannels)
+            w.setsampwidth(sampwidth)
+            w.setframerate(framerate)
+            w.writeframes(out.tobytes())
+        return buf.getvalue()
+    except Exception:
+        return wav_bytes
 
 class SukiTTS:
     """
@@ -187,7 +225,17 @@ class SukiTTS:
                 stderr=asyncio.subprocess.PIPE,
             )
             await process.communicate()
-            return process.returncode == 0 and os.path.exists(file_path)
+            ok = process.returncode == 0 and os.path.exists(file_path)
+            if ok:
+                # 峰值正規化補償 say 天生小聲 + mixer tts_gain=0.5（fail-open）。
+                try:
+                    with open(file_path, "rb") as f:
+                        boosted = peak_normalize_wav_bytes(f.read())
+                    with open(file_path, "wb") as f:
+                        f.write(boosted)
+                except Exception:
+                    pass
+            return ok
         except Exception as e:
             logger.error(f"❌ [TTS] macOS say 子進程異常: {e}")
             return False
