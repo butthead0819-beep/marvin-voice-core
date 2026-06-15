@@ -8220,6 +8220,12 @@ class VoiceController(commands.Cog):
             if _cand_vid and _cand_vid in excluded_vids:
                 logger.info(f"🎵 [AutoRecommend] {info['title']} video-id 已播過/已skip，略過")
                 continue
+            # 非單曲過濾：合輯 / 紀錄片 / 簡介長片（旁白多、不是歌）一律避開。
+            from track_quality import is_non_song_video
+            _ns, _ns_reason = is_non_song_video(info.get('title', ''), info.get('duration'))
+            if _ns:
+                logger.info(f"🚫 [AutoRecommend] 非單曲略過 '{info['title']}': {_ns_reason}")
+                continue
 
             # Phase 1 M1: cover quality filter (hard ban 低播放 cover / 黑名單)
             if self._cover_blacklist is not None:

@@ -92,6 +92,42 @@ def extract_video_id(url: str) -> Optional[str]:
     return None
 
 
+# ── 非單曲（合輯 / 紀錄片 / 簡介）過濾 ────────────────────────────────────────
+
+# 單曲時長上限：合輯/loop 動輒 60 分鐘以上，正常單曲（含 live / 史詩長曲）幾乎
+# 不會超過 15 分鐘。超過 → 視為合輯/混音帶，不是單曲。
+MAX_SONG_DURATION_S = 900
+
+# 標題黑名單：抓「時長閘漏網的短旁白片」（如 3:31 的紀錄片）+ 補強長合輯。
+# 刻意高精度避免誤殺真歌：不收 'mix'（Remix）、不收 'best of'（The Best of Me，
+# 真長合輯靠時長閘抓）、'小時' 必須帶數字（避開「小時候」）。
+_NON_SONG_TITLE_RE = re.compile(
+    r"\bfull album\b|\bgreatest hits\b|\bcompilation\b"
+    r"|\bunveiling\b|\bdocumentary\b|\bbiography\b|\bthe (life|story) of\b"
+    r"|a musical .*journey"
+    r"|\bfor (relaxation|studying|sleep|focus|reading)\b"
+    r"|\d+\s*hours?\b|\bhours of\b"
+    r"|合輯|合集|全集|精選輯|純音樂|放鬆音樂|睡眠音樂|\d+\s*小時",
+    re.I,
+)
+
+
+def is_non_song_video(title: str, duration_s) -> tuple[bool, str]:
+    """True = 這是合輯 / 紀錄片 / 簡介長片，不是單曲，自動點播應避開。
+
+    雙信號：①時長 > MAX_SONG_DURATION_S（抓長合輯/loop）②標題黑名單（抓短旁白
+    紀錄片，時長閘漏網者）。回 (rejected, reason)。fail-open：title 空 + 無時長
+    → 放行。
+    """
+    if duration_s and duration_s > MAX_SONG_DURATION_S:
+        return True, f"duration:{int(duration_s)}s>{MAX_SONG_DURATION_S}"
+    if title:
+        m = _NON_SONG_TITLE_RE.search(title)
+        if m:
+            return True, f"title:{m.group(0)}"
+    return False, "ok"
+
+
 # ── Cover heuristic ──────────────────────────────────────────────────────────
 
 def looks_like_cover(title: str) -> bool:
