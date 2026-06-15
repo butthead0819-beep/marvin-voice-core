@@ -4966,15 +4966,25 @@ class VoiceController(commands.Cog):
     # 長句通常是對話中順帶提到「跳過」「停止」等詞 → 不該觸發。
     _IBA_T0_MAX_LEN = 15
 
+    @staticmethod
+    def _user_song_insert_index(queue: list[dict]) -> int:
+        """使用者自選曲的插入位置：排在所有既有使用者曲之後、第一首 Marvin 自動曲
+        之前。回傳第一首 Marvin 曲（requested_by 以 'Marvin' 開頭）的 index；全無
+        Marvin 曲 → len(queue)（接在最後）。"""
+        for i, item in enumerate(queue):
+            if str(item.get('requested_by') or '').startswith('Marvin'):
+                return i
+        return len(queue)
+
     def _queue_user_song(self, info: dict) -> None:
-        """使用者自選曲插隊到待播一（LIFO）：最近點的先播，且一律排在 auto-recommend
-        （Marvin ambient，append 在尾）之前。_stream_loop 用 pop(0) 取歌，故 insert(0)
-        = 下一首就播、不打斷正在播的那首。
+        """使用者自選曲照點歌順序排（FIFO）：插在既有使用者曲之後、auto-recommend
+        （Marvin ambient，append 在尾）之前。Marvin 自動點歌順位最低、永遠被往後推。
+        _stream_loop 用 pop(0) 取歌，插在使用者區尾端 = 不打斷正在播的那首。
 
         skip-override：手動點播 = 刻意正向更正，蓋過先前的 skip——記 played_again（latest-wins
         覆蓋舊 skipped，見 music_memory.get_skipped_titles）+ 重置 consecutive-skip 計數，
         讓這首不再被 auto-recommend 排除。"""
-        self.stream_queue.insert(0, info)
+        self.stream_queue.insert(self._user_song_insert_index(self.stream_queue), info)
         try:
             user = info.get('requested_by') or ''
             title = info.get('title') or ''
