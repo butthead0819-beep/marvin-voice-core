@@ -4,9 +4,23 @@
 """
 import json
 import os
+import re
 import time
 import datetime
 import logging
+
+_VIDEO_ID_RE = re.compile(r"(?:v=|youtu\.be/|/watch\?v=)([A-Za-z0-9_-]{11})")
+
+
+def extract_video_id(url: str) -> str | None:
+    """從 YouTube watch / youtu.be URL 抽出穩定的 11 碼 videoId；抽不到回 None。
+
+    用途：自動點播排除改用 videoId（穩定）取代歌名（yt-dlp 每次解析會變）。
+    """
+    if not url:
+        return None
+    m = _VIDEO_ID_RE.search(url)
+    return m.group(1) if m else None
 
 # 5/18 incident — 原本 apply_stt_correction 內 lazy `from rapidfuzz import fuzz`
 # 在 async hot path 跟 ThreadPoolExecutor 第三方 thread 同時 import 同個 module
@@ -280,6 +294,43 @@ class MusicMemory:
                 if t and f.get("result"):
                     latest[t] = f["result"]
             out.extend(t for t, r in latest.items() if r == "skipped")
+        return out
+
+    # ── 自動點播排除：穩定 videoId（取代脆弱的歌名比對） ──────────────────────
+
+    def record_skipped_video_id(self, url: str) -> None:
+        """把 skip 掉的歌的 videoId 記入**永久**排除集（survives restart）。
+
+        2026-06-14：使用者要求「按過下一首的歌不要再自動點」。用 videoId 而非
+        歌名（穩定、不被 latest-wins 覆蓋）。非 YouTube / 抽不到 id → no-op。
+        """
+        vid = extract_video_id(url)
+        if not vid:
+            return
+        lst = self._data.setdefault("skipped_video_ids", [])
+        if vid not in lst:
+            lst.append(vid)
+            self._save()
+
+    def get_skipped_video_ids(self) -> set[str]:
+        """永久 skip 排除集（自動點播一律排除）。"""
+        return set(self._data.get("skipped_video_ids", []))
+
+    def get_recently_played_video_ids(self, ttl_s: float) -> set[str]:
+        """ttl_s 內播放過的歌的 videoId（拉長視窗排除，非永久 → 防候選枯竭）。
+
+        衍生自 songs 的 plays 時戳（record_play 已持久化全部播放）→ 自動 survives
+        restart，不需另存。超過視窗的老歌重新可選（T3 回收層另會放寬）。
+        """
+        now = time.time()
+        out: set[str] = set()
+        for url, s in (self._data.get("songs") or {}).items():
+            plays = s.get("plays") or []
+            latest = max((p.get("ts", 0) for p in plays), default=0)
+            if latest and now - latest < ttl_s:
+                vid = extract_video_id(s.get("webpage_url") or url)
+                if vid:
+                    out.add(vid)
         return out
 
     def get_liked_video_ids(self, usernames: list[str]) -> list[str]:

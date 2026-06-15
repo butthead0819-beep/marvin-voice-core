@@ -121,6 +121,7 @@ from intent_agents.recommendation import (
 )
 from llm_pool import build_tiered_router
 from music_recommender import build_recommendation_pool, is_already_recommended, pick_candidates
+from music_memory import extract_video_id
 from taste_extractor import extract_taste_signals
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
@@ -5201,6 +5202,28 @@ class VoiceController(commands.Cog):
 
     _MUSIC_CMD_DEDUP_WINDOW = 5.0  # 秒
 
+    # 自動點播「播過拉長視窗」排除：此視窗內播過的歌不再自動點（非永久、防候選枯竭）。
+    # 6/14 使用者回報重複性高 → 從本場 15 首擴成 7 天跨重啟視窗；skip 過的另永久排除。
+    _PLAYED_EXCLUDE_TTL_S = 7 * 24 * 3600
+
+    def _record_song_skip(self) -> None:
+        """把當前播放歌曲的 videoId 記入持久化 skip 排除集。
+
+        兩條 skip 路徑共用（IBA-T0 _handle_voice_music_command + 後喚醒
+        PlaybackControlAgent）。fail-open：拿不到歌/mm 不存在 → no-op，絕不
+        影響 skip 本身執行。
+        """
+        mm = getattr(self.bot, "music_memory", None)
+        cur = self._current_stream_info
+        if mm is None or not cur:
+            return
+        url = cur.get("webpage_url") or cur.get("url") or ""
+        if url:
+            try:
+                mm.record_skipped_video_id(url)
+            except Exception:
+                logger.exception("[Skip] record_skipped_video_id 失敗")
+
     async def _safe_music_command(self, speaker: str, query: str, cmd: str):
         """Top-level wrapper：任何 music command 路徑都該過這層 try/except。
 
@@ -5270,6 +5293,7 @@ class VoiceController(commands.Cog):
             if not self.stream_mode and not self.radio_mode:
                 if ch: await ch.send("😑 沒有歌在播，要我跳過什麼？")
                 return
+            self._record_song_skip()  # video-id 進永久 skip 排除集（在 stop 前，info 還在）
             if self.radio_mode:
                 self.radio_paused = False  # 暫停狀態下 is_playing() 回傳 False，必須先清除
                 if vc:
@@ -8107,15 +8131,22 @@ class VoiceController(commands.Cog):
             vibe_filter=vibe_filter,
         )
 
-        # 本層候選來源 + enqueue 時 ring 檢查嚴格度（ring_exclude）。
+        # video-id 排除（穩定鍵，取代脆弱歌名比對）：skip 過永久排、播過拉長視窗排。
+        # T1/T2 套兩者；T3 回收只保留永久 skip（放寬播過視窗，與下方 ring_exclude 同步，
+        # 避免「拉長窗」把 recommender 餓死沒歌放）。
+        _skipped_vids = mm.get_skipped_video_ids()
+
+        # 本層候選來源 + enqueue 時 ring 檢查嚴格度（ring_exclude / excluded_vids）。
         if _tier == 1:
             # T1 團體記憶（9-pick-3）
             cands = pick_candidates(pool, k=self._round_size, top_n=9)
             ring_exclude = exclude_titles
+            excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
         elif _tier == 2:
             # T2 discovery：在場者 liked 的歌當 seed → ytmusic radio 取相關新歌
             cands = await self._t2_discovery_candidates(members, exclude_titles)
             ring_exclude = exclude_titles
+            excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
         else:
             # T3 回收：放寬 exclude 到只保留 skipped（鬆開 recently/ring/suki），讓非 skipped
             # 老歌重新發現。ring_exclude 同步放寬，否則 enqueue 的 ring 檢查又把它擋掉。
@@ -8126,6 +8157,7 @@ class VoiceController(commands.Cog):
             )
             cands = pick_candidates(relaxed_pool, k=self._round_size, top_n=9)
             ring_exclude = list(dict.fromkeys(skipped))
+            excluded_vids = _skipped_vids   # 回收層只擋永久 skip，放寬播過視窗
         if not cands:
             if _tier < 3:
                 return await self._auto_recommend(username, _tier=_tier + 1)
@@ -8171,6 +8203,12 @@ class VoiceController(commands.Cog):
                 continue
             if is_already_recommended(info['title'], ring_exclude):
                 logger.info(f"🎵 [AutoRecommend] {info['title']} 已在 recent ring，略過")
+                continue
+            # video-id 排除（穩定鍵）：skip 過永久 / 播過拉長視窗。歌名比對救不到的
+            # 重複（yt-dlp 歌名漂移）由這條擋。
+            _cand_vid = extract_video_id(info.get('webpage_url') or info.get('url') or '')
+            if _cand_vid and _cand_vid in excluded_vids:
+                logger.info(f"🎵 [AutoRecommend] {info['title']} video-id 已播過/已skip，略過")
                 continue
 
             # Phase 1 M1: cover quality filter (hard ban 低播放 cover / 黑名單)

@@ -152,6 +152,14 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
             current = getattr(self.ctrl, "_current_stream_info", None)
             current_url = current.get("url") if current else None
 
+            # video-id 進永久 skip 排除集（自動點播不再點此歌；與 IBA-T0 路徑共用）
+            rec = getattr(self.ctrl, "_record_song_skip", None)
+            if callable(rec):
+                try:
+                    rec()
+                except Exception:
+                    logger.exception("[PlaybackControl] _record_song_skip 失敗")
+
             # blacklist auto-add 邏輯（D3 A 方案）：同一 url 被 ≥ 2 個不同 speaker skip → 黑名單
             if current_url:
                 tracker = getattr(self.ctrl, "_consecutive_skips_by_url", None)
