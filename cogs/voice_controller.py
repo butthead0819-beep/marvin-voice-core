@@ -5233,6 +5233,11 @@ class VoiceController(commands.Cog):
         if url:
             try:
                 mm.record_skipped_video_id(url)
+                # Step 3 retreat：同時記藝人級 skip（≥2 首被 skip → explore 避開該方向）
+                from taste_fingerprint import artist_of
+                _artist = artist_of(cur.get("title", ""))
+                if _artist:
+                    mm.record_artist_skip(_artist, url)
             except Exception:
                 logger.exception("[Skip] record_skipped_video_id 失敗")
 
@@ -8035,10 +8040,21 @@ class VoiceController(commands.Cog):
                 avoid_artists = taste_profile.fresh_avoid_artists(_TASTE_PROFILE_CACHE, members, _MAX_AGE)
             except Exception as e:
                 logger.warning(f"⚠️ [AutoRecommend] T2 LLM 品味快取讀取失敗，略過: {e}")
-        # 交錯 history 與 LLM 鄰近，確保 novelty seed 進前 N（而非被 history 灌滿）
+        # Step 3 retreat：skip 驅動的藝人級避開（≥2 首被 skip），但保護指紋核心藝人
+        # （核心被 skip 是單曲層級，不代表整個方向爛）。永遠套用、不受 LLM env gate 限制。
+        try:
+            _core = {a for a, _ in self._load_taste_fingerprint().get("core_artists", [])}
+            for _a in mm.get_explore_avoid_artists():
+                if _a not in _core and _a not in avoid_artists:
+                    avoid_artists.append(_a)
+        except Exception:
+            logger.debug("[AutoRecommend] explore retreat avoid 合併失敗", exc_info=True)
+        # Step 3 promotion：有反應沒被 skip 的歌（含 Marvin 發現後大家有感的）→ 升級 seed
+        reacted_seeds = mm.get_reacted_seed_ids(members)
+        # 交錯 history / LLM 鄰近 / 有反應（promoted），確保 novelty seed 進前 N
         from itertools import zip_longest
-        for h, l in zip_longest(hist, llm_seeds):
-            for vid in (h, l):
+        for h, l, r in zip_longest(hist, llm_seeds, reacted_seeds):
+            for vid in (h, l, r):
                 if vid and vid not in seeds:
                     seeds.append(vid)
         for vid in mm.get_liked_video_ids(members):

@@ -316,6 +316,50 @@ class MusicMemory:
         """永久 skip 排除集（自動點播一律排除）。"""
         return set(self._data.get("skipped_video_ids", []))
 
+    def record_artist_skip(self, artist: str, url: str) -> None:
+        """記錄某藝人的歌被 skip（per-artist distinct video-id set）。
+
+        供 Step 3 explore 藝人級 retreat：累計多首被 skip → 該方向探索停手。
+        非 YouTube / 無藝人 → no-op。
+        """
+        vid = extract_video_id(url)
+        if not artist or not vid:
+            return
+        m = self._data.setdefault("artist_skips", {})
+        lst = m.setdefault(artist, [])
+        if vid not in lst:
+            lst.append(vid)
+            self._save()
+
+    def get_explore_avoid_artists(self, min_distinct: int = 2) -> list[str]:
+        """累計 ≥ min_distinct 首不同歌被 skip 的藝人 → explore 應避開的方向。
+
+        caller（voice_controller）會再扣掉指紋核心藝人（核心被 skip 是單曲層級，
+        不代表整個藝人方向爛）。
+        """
+        m = self._data.get("artist_skips", {})
+        return [a for a, vids in m.items() if len(vids) >= min_distinct]
+
+    def get_reacted_seed_ids(self, usernames: list[str]) -> list[str]:
+        """有明顯反應（feelings 非空）且**沒被 skip** 的歌的 videoId → 升級成 T2 seed。
+
+        Step 3 promotion：把「有中的驚喜」（含 Marvin 發現後大家有感的歌）拉進未來
+        探索種子。只算在場成員的反應；被 skip 的歌（負訊號）排除。
+        """
+        members = set(usernames)
+        skipped = self.get_skipped_video_ids()
+        out: list[str] = []
+        seen: set[str] = set()
+        for url, s in (self._data.get("songs") or {}).items():
+            rx = s.get("reactions") or {}
+            if not any(rx.get(u, {}).get("feelings") for u in members):
+                continue
+            vid = extract_video_id(s.get("webpage_url") or url)
+            if vid and vid not in skipped and vid not in seen:
+                seen.add(vid)
+                out.append(vid)
+        return out
+
     def get_recently_played_video_ids(self, ttl_s: float) -> set[str]:
         """ttl_s 內播放過的歌的 videoId（拉長視窗排除，非永久 → 防候選枯竭）。
 

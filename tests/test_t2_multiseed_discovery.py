@@ -31,6 +31,13 @@ class _FakeMM:
     def get_liked_video_ids(self, members):
         return self._liked
 
+    # Step 3 介面（explore retreat / promotion）；T2 multiseed 測試不演練 → 回空
+    def get_explore_avoid_artists(self, min_distinct=2):
+        return []
+
+    def get_reacted_seed_ids(self, members):
+        return []
+
 
 class _StubSelf:
     def __init__(self, mm, last=None):

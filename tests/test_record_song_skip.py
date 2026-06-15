@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 def _make_cog():
     bot = MagicMock()
@@ -38,6 +36,20 @@ def test_record_song_skip_persists_current_video_id(tmp_path):
     cog._record_song_skip()
 
     assert "dQw4w9WgXcQ" in mm.get_skipped_video_ids()
+
+
+def test_record_song_skip_also_records_artist(tmp_path):
+    """Step 3：skip 同時記藝人級（供 explore retreat）。"""
+    from music_memory import MusicMemory
+    mm = MusicMemory(path=str(tmp_path / "mm.json"))
+    cog = _make_cog()
+    cog.bot.music_memory = mm
+    cog._current_stream_info = {
+        "title": "周杰倫 Jay Chou【晴天】-Official MV",
+        "webpage_url": "https://youtu.be/dQw4w9WgXcQ", "url": "x",
+    }
+    cog._record_song_skip()
+    assert "dQw4w9WgXcQ" in mm._data.get("artist_skips", {}).get("周杰倫", [])
 
 
 def test_record_song_skip_noop_when_no_current_song(tmp_path):
