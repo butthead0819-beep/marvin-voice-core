@@ -1113,7 +1113,7 @@ class VoiceController(commands.Cog):
             await vc.disconnect(force=True)
             await asyncio.sleep(2.0)
         except Exception as e:
-            logger.error(f"❌ [Soft Repair] 断开失敗: {e}")
+            logger.error(f"❌ [Soft Repair] 断开失敗: {e!r}")
 
         # 3. 仿照 /summon 邏輯進行重連
         try:
@@ -1154,9 +1154,11 @@ class VoiceController(commands.Cog):
             if self.active_text_channel:
                 await self.active_text_channel.send("✅ **【校正完畢】**\n聽覺神經已恢復同步，雖然這世界依然吵雜。")
         except Exception as e:
-            logger.error(f"❌ [Soft Repair] 重連失敗: {e}")
+            logger.error(f"❌ [Soft Repair] 重連失敗: {e!r}")
             # 如果軟修復重連都失敗，升級為物理重啟
-            await self.self_restart(reason=f"軟修復重連崩潰: {e}", force=True)
+            # ⚠️ 用 repr：connect(timeout=60) 逾時拋的 asyncio.TimeoutError str() 是空字串，
+            #    舊版 f"...: {e}" 讓 incident 訊息冒號後全空、無法判斷失敗原因（2026-06-16 incident）
+            await self.self_restart(reason=f"軟修復重連崩潰: {e!r}", force=True)
 
     class SilenceSource(discord.AudioSource):
         def __init__(self, frames=15):
