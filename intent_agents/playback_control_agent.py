@@ -148,6 +148,11 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
             logger.warning(f"[PlaybackControl] {intent} no voice_client")
             return
 
+        _p12 = getattr(self.ctrl, "_plan12", False)
+        if not isinstance(_p12, bool):
+            _p12 = False
+        _p12 = _p12 and getattr(self.ctrl, "_mixer", None) is not None
+
         if intent == "skip_track":
             current = getattr(self.ctrl, "_current_stream_info", None)
             current_url = current.get("url") if current else None
@@ -174,32 +179,38 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
                     tracker.pop(current_url, None)
 
             try:
-                if hasattr(vc, "stop_playing"):
+                if _p12:
+                    self.ctrl._mixer.clear_music()
+                elif hasattr(vc, "stop_playing"):
                     vc.stop_playing()
                 elif hasattr(vc, "stop"):
                     vc.stop()
-                logger.info(f"[PlaybackControl] skip by {speaker} url={current_url}")
+                logger.info(f"[PlaybackControl] skip by {speaker} url={current_url} (plan12={_p12})")
             except Exception:
                 logger.exception("[PlaybackControl] skip 動作失敗")
 
         elif intent == "stop_playback":
             try:
-                if hasattr(vc, "stop"):
+                if _p12:
+                    self.ctrl._mixer.clear_music()
+                elif hasattr(vc, "stop"):
                     vc.stop()
                 # 同步清空 queue，避免「停」後又自動播下一首
                 if hasattr(self.ctrl, "stream_queue"):
                     self.ctrl.stream_queue.clear()
-                logger.info(f"[PlaybackControl] stop by {speaker}")
+                logger.info(f"[PlaybackControl] stop by {speaker} (plan12={_p12})")
             except Exception:
                 logger.exception("[PlaybackControl] stop 動作失敗")
 
         elif intent == "pause_playback":
             try:
-                if hasattr(vc, "pause"):
+                if _p12:
+                    self.ctrl._mixer.set_paused(True)
+                elif hasattr(vc, "pause"):
                     vc.pause()
                 if hasattr(self.ctrl, "stream_paused"):
                     self.ctrl.stream_paused = True
-                logger.info(f"[PlaybackControl] pause by {speaker}")
+                logger.info(f"[PlaybackControl] pause by {speaker} (plan12={_p12})")
             except Exception:
                 logger.exception("[PlaybackControl] pause 動作失敗")
 

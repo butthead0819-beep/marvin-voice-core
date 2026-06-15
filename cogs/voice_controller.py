@@ -5313,7 +5313,13 @@ class VoiceController(commands.Cog):
                 if ch: await ch.send("😑 沒有歌在播，要我跳過什麼？")
                 return
             self._record_song_skip()  # video-id 進永久 skip 排除集（在 stop 前，info 還在）
-            if self.radio_mode:
+            _p12 = getattr(self, "_plan12", False)
+            if not isinstance(_p12, bool):
+                _p12 = False
+            _p12 = _p12 and getattr(self, "_mixer", None) is not None
+            if _p12:
+                self._mixer.clear_music()
+            elif self.radio_mode:
                 self.radio_paused = False  # 暫停狀態下 is_playing() 回傳 False，必須先清除
                 if vc:
                     vc.stop_playing()      # 無條件觸發 after_radio callback 解鎖 play_done_event
@@ -5321,7 +5327,7 @@ class VoiceController(commands.Cog):
                 vc.stop_playing()
             reply = random.choice(replies["skip"])
             if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=skip | bot={reply}")
+            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=skip | bot={reply} (plan12={_p12})")
 
         elif cmd == "stop":
             if not self.stream_mode and not self.radio_mode:
@@ -5342,18 +5348,28 @@ class VoiceController(commands.Cog):
             if not vc:
                 if ch: await ch.send("😑 找不到語音連線。")
                 return
+            _p12 = getattr(self, "_plan12", False)
+            if not isinstance(_p12, bool):
+                _p12 = False
+            _p12 = _p12 and getattr(self, "_mixer", None) is not None
             if self.stream_mode and not self.stream_paused:
-                vc.pause()
+                if _p12:
+                    self._mixer.set_paused(True)
+                else:
+                    vc.pause()
                 self.stream_paused = True
             elif self.radio_mode and not self.stream_mode and not self.radio_paused:
-                vc.pause()
+                if _p12:
+                    self._mixer.set_paused(True)
+                else:
+                    vc.pause()
                 self.radio_paused = True
             else:
                 if ch: await ch.send("😑 已經在暫停了。")
                 return
             reply = random.choice(replies["pause"])
             if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=pause | bot={reply}")
+            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=pause | bot={reply} (plan12={_p12})")
 
         elif cmd == "resume":
             if not self.stream_paused and not self.radio_paused:
@@ -5362,15 +5378,25 @@ class VoiceController(commands.Cog):
             if not vc:
                 if ch: await ch.send("😑 找不到語音連線。")
                 return
+            _p12 = getattr(self, "_plan12", False)
+            if not isinstance(_p12, bool):
+                _p12 = False
+            _p12 = _p12 and getattr(self, "_mixer", None) is not None
             if self.stream_paused:
-                vc.resume()
+                if _p12:
+                    self._mixer.set_paused(False)
+                else:
+                    vc.resume()
                 self.stream_paused = False
             elif self.radio_paused:
-                vc.resume()
+                if _p12:
+                    self._mixer.set_paused(False)
+                else:
+                    vc.resume()
                 self.radio_paused = False
             reply = random.choice(replies["resume"])
             if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=resume | bot={reply}")
+            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=resume | bot={reply} (plan12={_p12})")
 
         elif cmd == "play":
             search = self._extract_music_search_query(query)
@@ -7504,7 +7530,13 @@ class VoiceController(commands.Cog):
             self._radio_fade_task = None
         self._radio_source = None
         vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-        if vc and vc.is_playing():
+        _p12 = getattr(self, "_plan12", False)
+        if not isinstance(_p12, bool):
+            _p12 = False
+        _p12 = _p12 and getattr(self, "_mixer", None) is not None
+        if _p12:
+            self._mixer.clear_music()
+        elif vc and vc.is_playing():
             vc.stop_playing()
 
     async def _stream_loop(self):

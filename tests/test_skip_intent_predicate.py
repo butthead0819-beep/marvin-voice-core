@@ -37,6 +37,7 @@ from intent_agents.skip_intent import is_short_skip_command
     "快下一首",            # intensifier
     "下一首啦",            # 尾助詞
     "下一首吧",
+    "播放下一首",          # 2026-06-15 incident: 允許'播放'前綴
     # 2026-05-26 production miss: 雙語 address「Siri」/「Hey」等不在 allowlist，
     # 但同 kw 連講兩次 = 明確命令 → multi-occurrence 豁免位置檢查
     "Siri下一首下一首",

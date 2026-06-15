@@ -152,3 +152,85 @@ def test_stream_not_active_returns_dense_zero():
     bid = agent.bid(_ctx("下一首"))
     assert bid.confidence == 0.0
     assert "stream_not_active" in bid.reason
+
+
+# ── Plan 12 TDD Tests ───────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_execute_plan12_skip():
+    """在 Plan 12 模式下，下一首/切歌指令應清除 mixer 音樂，而不呼叫 vc 的播放停止方法。"""
+    from unittest.mock import MagicMock
+    from intent_agents.playback_control_agent import PlaybackControlAgent
+    
+    ctrl = _ctrl()
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    
+    vc = MagicMock()
+    vc.is_connected = MagicMock(return_value=True)
+    ctrl.bot = MagicMock()
+    ctrl.bot.voice_clients = [vc]
+    
+    agent = PlaybackControlAgent(ctrl)
+    
+    bid = agent.bid(_ctx("下一首"))
+    await bid.handler()
+    
+    # 應呼叫 mixer 的清除音樂方法
+    ctrl._mixer.clear_music.assert_called_once()
+    # vc 的停止方法不應被呼叫，避免 reconnect-loop 抵消
+    vc.stop_playing.assert_not_called()
+    vc.stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_plan12_stop():
+    """在 Plan 12 模式下，停止播放指令應清除 mixer 且清空佇列，但不呼叫 vc 的停止方法。"""
+    from unittest.mock import MagicMock
+    from intent_agents.playback_control_agent import PlaybackControlAgent
+    
+    ctrl = _ctrl()
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    ctrl.stream_queue = [{"title": "Song A"}]
+    
+    vc = MagicMock()
+    vc.is_connected = MagicMock(return_value=True)
+    ctrl.bot = MagicMock()
+    ctrl.bot.voice_clients = [vc]
+    
+    agent = PlaybackControlAgent(ctrl)
+    
+    bid = agent.bid(_ctx("停止播放"))
+    await bid.handler()
+    
+    ctrl._mixer.clear_music.assert_called_once()
+    assert ctrl.stream_queue == []
+    vc.stop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_plan12_pause():
+    """在 Plan 12 模式下，暫停指令應設定 mixer 暫停並標記暫停狀態，而不呼叫 vc 的暫停方法。"""
+    from unittest.mock import MagicMock
+    from intent_agents.playback_control_agent import PlaybackControlAgent
+    
+    ctrl = _ctrl()
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    ctrl.stream_paused = False
+    
+    vc = MagicMock()
+    vc.is_connected = MagicMock(return_value=True)
+    ctrl.bot = MagicMock()
+    ctrl.bot.voice_clients = [vc]
+    
+    agent = PlaybackControlAgent(ctrl)
+    
+    bid = agent.bid(_ctx("暫停"))
+    await bid.handler()
+    
+    ctrl._mixer.set_paused.assert_called_once_with(True)
+    assert ctrl.stream_paused is True
+    vc.pause.assert_not_called()
+
