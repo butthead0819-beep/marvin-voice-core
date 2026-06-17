@@ -569,21 +569,21 @@ class VoiceController(commands.Cog):
         self._round_size = 3                 # 一 round 幾首
         self._consecutive_skips_by_url: dict[str, set[str]] = {}  # url → 已 skip 該 url 的 speaker set，連 2 不同人 → blacklist
 
-        # 🎵 [Stream Mode] YouTube 串流系統狀態
-        self._stream_mode_local = False   # fallback when MusicCog not loaded
-        self.stream_volume = 0.10        # 串流獨立音量，初始 10%
-        self._stream_play_gen = 0                 # 播放世代
-        self._current_stream_url = None           # 當前串流 URL
-        self._stream_norm_gain: dict[str, float] = {}  # url → 每首響度正規化常數增益（Plan 12 mixer 套）
-        self._last_user_song_seed: str | None = None   # 使用者最近手動點的歌 video_id（T2 radio seed 優先）
-        self.stream_queue = []           # list of {title, uploader, url, thumbnail, webpage_url, duration}
-        self.stream_task = None
-        self._current_stream_info = None
-        self.stream_history = []         # 已播過的歌曲（用於上一首）
-        self.stream_paused = False       # 是否暫停中
-        self._current_lyrics: str | None = None        # 當前歌曲歌詞（fetch 完成後設定）
-        self._current_stream_comment: str | None = None  # 馬文對當前歌曲的評語
-        self._active_control_view = None               # 最新的 PlayControlView 實例（用於歌詞更新）
+        # 🎵 [Stream Mode] YouTube 串流系統狀態 — 狀態由 MusicCog 持有，透過 proxy property 存取
+        self._stream_mode_local = False           # fallback when MusicCog not loaded
+        self._stream_volume_local = 0.10
+        self._stream_play_gen_local = 0
+        self._current_stream_url_local = None
+        self._stream_norm_gain_local: dict[str, float] = {}
+        self._last_user_song_seed_local: str | None = None
+        self._stream_queue_local: list = []
+        self._stream_task_local = None
+        self._current_stream_info_local = None
+        self._stream_history_local: list = []
+        self._stream_paused_local = False
+        self._current_lyrics_local: str | None = None
+        self._current_stream_comment_local: str | None = None
+        self._active_control_view_local = None
         # 存活 UI view 弱引用集；cog_unload 時 stop() 全部，斷 view→cog 強引用，防 hot reload 雙實例
         self._active_views: weakref.WeakSet = weakref.WeakSet()
 
@@ -851,6 +851,177 @@ class VoiceController(commands.Cog):
             mc.radio_mode = value
         else:
             self._radio_mode_local = value
+
+    # ── Phase 2: stream subsystem proxy properties ────────────────────────────
+
+    @property
+    def stream_volume(self) -> float:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.stream_volume if mc is not None else self._stream_volume_local
+
+    @stream_volume.setter
+    def stream_volume(self, value: float) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.stream_volume = value
+        else:
+            self._stream_volume_local = value
+
+    @property
+    def _stream_play_gen(self) -> int:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._stream_play_gen if mc is not None else self._stream_play_gen_local
+
+    @_stream_play_gen.setter
+    def _stream_play_gen(self, value: int) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._stream_play_gen = value
+        else:
+            self._stream_play_gen_local = value
+
+    @property
+    def _current_stream_url(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._current_stream_url if mc is not None else self._current_stream_url_local
+
+    @_current_stream_url.setter
+    def _current_stream_url(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._current_stream_url = value
+        else:
+            self._current_stream_url_local = value
+
+    @property
+    def _stream_norm_gain(self) -> dict:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._stream_norm_gain if mc is not None else self._stream_norm_gain_local
+
+    @_stream_norm_gain.setter
+    def _stream_norm_gain(self, value: dict) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._stream_norm_gain = value
+        else:
+            self._stream_norm_gain_local = value
+
+    @property
+    def _last_user_song_seed(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._last_user_song_seed if mc is not None else self._last_user_song_seed_local
+
+    @_last_user_song_seed.setter
+    def _last_user_song_seed(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._last_user_song_seed = value
+        else:
+            self._last_user_song_seed_local = value
+
+    @property
+    def stream_queue(self) -> list:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.stream_queue if mc is not None else self._stream_queue_local
+
+    @stream_queue.setter
+    def stream_queue(self, value: list) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.stream_queue = value
+        else:
+            self._stream_queue_local = value
+
+    @property
+    def stream_task(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.stream_task if mc is not None else self._stream_task_local
+
+    @stream_task.setter
+    def stream_task(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.stream_task = value
+        else:
+            self._stream_task_local = value
+
+    @property
+    def _current_stream_info(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._current_stream_info if mc is not None else self._current_stream_info_local
+
+    @_current_stream_info.setter
+    def _current_stream_info(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._current_stream_info = value
+        else:
+            self._current_stream_info_local = value
+
+    @property
+    def stream_history(self) -> list:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.stream_history if mc is not None else self._stream_history_local
+
+    @stream_history.setter
+    def stream_history(self, value: list) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.stream_history = value
+        else:
+            self._stream_history_local = value
+
+    @property
+    def stream_paused(self) -> bool:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.stream_paused if mc is not None else self._stream_paused_local
+
+    @stream_paused.setter
+    def stream_paused(self, value: bool) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.stream_paused = value
+        else:
+            self._stream_paused_local = value
+
+    @property
+    def _current_lyrics(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._current_lyrics if mc is not None else self._current_lyrics_local
+
+    @_current_lyrics.setter
+    def _current_lyrics(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._current_lyrics = value
+        else:
+            self._current_lyrics_local = value
+
+    @property
+    def _current_stream_comment(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._current_stream_comment if mc is not None else self._current_stream_comment_local
+
+    @_current_stream_comment.setter
+    def _current_stream_comment(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._current_stream_comment = value
+        else:
+            self._current_stream_comment_local = value
+
+    @property
+    def _active_control_view(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._active_control_view if mc is not None else self._active_control_view_local
+
+    @_active_control_view.setter
+    def _active_control_view(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._active_control_view = value
+        else:
+            self._active_control_view_local = value
 
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
