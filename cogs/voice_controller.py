@@ -6954,153 +6954,19 @@ class VoiceController(commands.Cog):
             await mc.stop_radio(reason)
 
     async def _radio_volume_fade_loop(self):
-        """
-        📻 [Marvin Radio] 動態音量漸變迴圈。
-        有人說話 → duck to 1%（快速）；靜默 1.5s 後 → fade up to 10%（緩慢）。
-        """
-        IDLE_VOL  = 0.10   # 無人說話時的目標音量
-        DUCK_VOL  = 0.01   # 有人說話時的目標音量
-        TICK      = 0.05   # 每 50ms 更新一次
-        DUCK_RATE = 0.012  # 每 tick 降低量（約 0.45s 從 10% 降至 1%）
-        RISE_RATE = 0.003  # 每 tick 上升量（約 3s 從 1% 升至 10%）
-        DUCK_HOLD = 1.5    # 靜默幾秒後才開始回升
-
-        try:
-            while self.radio_mode or self.stream_mode:
-                src = self._radio_source
-                if src is not None:
-                    silence = time.time() - self.last_player_speech_time
-                    target = IDLE_VOL if silence > DUCK_HOLD else DUCK_VOL
-                    current = src.volume
-                    if current > target + 0.001:
-                        src.volume = max(target, current - DUCK_RATE)
-                    elif current < target - 0.001:
-                        src.volume = min(target, current + RISE_RATE)
-                await asyncio.sleep(TICK)
-        except asyncio.CancelledError:
-            pass
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._radio_volume_fade_loop()
 
     async def _radio_loop(self):
-        """
-        📻 [Marvin Radio] 背景播放迴圈：依序播放歌單，播完後 shuffle 重複。
-        """
-        import random
-        logger.info("📻 [Radio Loop] 電台迴圈已啟動。")
-        try:
-            while self.radio_mode:
-                # 若歌單播完，重新 shuffle
-                if not self._radio_song_list:
-                    songs_dir = "assets/songs"
-                    excluded = {"Oh Marvin.mp3"}
-                    try:
-                        all_songs = [
-                            os.path.join(songs_dir, f)
-                            for f in os.listdir(songs_dir)
-                            if f.endswith(".mp3") and f not in excluded
-                        ]
-                    except FileNotFoundError:
-                        logger.error("❌ [Radio Loop] 重新掃描失敗，停止電台。")
-                        self.radio_mode = False
-                        break
-                    random.shuffle(all_songs)
-                    self._radio_song_list = all_songs
-                    logger.info(f"📻 [Radio Loop] 歌單播完，重新洗牌 ({len(all_songs)} 首)。")
-
-                next_song = self._radio_song_list.pop()
-                song_name = os.path.basename(next_song)
-                logger.info(f"📻 [Radio Loop] 即將播放: {song_name}")
-
-                # 🚀 [Enhancement] 提取元數據與封面
-                metadata = self._extract_song_metadata(next_song)
-                cover_path = self._extract_song_cover(next_song)
-                
-                if self.active_text_channel:
-                    # 從封面提取主色；沒有封面則退回深灰
-                    accent_color = self._extract_dominant_color(cover_path) if cover_path else discord.Color.dark_grey()
-
-                    # 先用 placeholder 送出 embed，不阻塞播放
-                    embed = discord.Embed(
-                        title="📻 馬文電台：正在播放",
-                        description="「...」",
-                        color=accent_color,
-                        timestamp=datetime.datetime.now()
-                    )
-                    embed.add_field(name="🎵 歌曲名稱", value=f"`{metadata['title']}`", inline=False)
-                    embed.add_field(name="👤 演出者", value=f"`{metadata['artist']}`", inline=True)
-                    embed.add_field(name="🔊 當前音量", value=f"`{int(self.radio_volume*100)}%`", inline=True)
-
-                    if cover_path:
-                        file = discord.File(cover_path, filename="cover.jpg")
-                        embed.set_thumbnail(url="attachment://cover.jpg")
-                        sent_msg = await self.active_text_channel.send(file=file, embed=embed)
-                        asyncio.create_task(self._delayed_cleanup(cover_path))
-                    else:
-                        sent_msg = await self.active_text_channel.send(embed=embed)
-
-                    # LLM 背景生成評語，完成後 edit embed description
-                    async def _update_radio_comment(msg, title, artist, color, song_path):
-                        from utils import pick_lyrics_snippet
-                        import os as _os
-                        lyrics_path = _os.path.splitext(song_path)[0] + ".md"
-                        section_name, snippet = pick_lyrics_snippet(lyrics_path)
-                        if snippet:
-                            song_ctx = f"歌名：{title}，演出者：{artist}，段落：{section_name}，歌詞：{snippet}"
-                        else:
-                            song_ctx = f"歌名：{title}，演出者：{artist}"
-                        try:
-                            comment = await self.bot.router.generate_dynamic_system_msg("radio_now_playing", context=song_ctx)
-                        except Exception:
-                            return
-                        try:
-                            updated = discord.Embed(
-                                title="📻 馬文電台：正在播放",
-                                description=f"「{comment}」",
-                                color=color,
-                                timestamp=msg.embeds[0].timestamp if msg.embeds else datetime.datetime.now()
-                            )
-                            updated.add_field(name="🎵 歌曲名稱", value=f"`{title}`", inline=False)
-                            updated.add_field(name="👤 演出者", value=f"`{artist}`", inline=True)
-                            updated.add_field(name="🔊 當前音量", value=f"`{int(self.radio_volume*100)}%`", inline=True)
-                            if msg.embeds and msg.embeds[0].thumbnail:
-                                updated.set_thumbnail(url=msg.embeds[0].thumbnail.url)
-                            await msg.edit(embed=updated)
-                        except Exception as e:
-                            logger.warning(f"⚠️ [Radio] embed 更新失敗: {e}")
-
-                    asyncio.create_task(_update_radio_comment(sent_msg, metadata['title'], metadata['artist'], accent_color, next_song))
-
-                # 播放這首歌（等待完成）
-                await self.play_radio_song(next_song)
-
-                # 頻道間加 1 秒間隔
-                if self.radio_mode:
-                    await asyncio.sleep(1.0)
-
-        except asyncio.CancelledError:
-            logger.info("📻 [Radio Loop] 電台迴圈被取消。")
-            self.radio_paused = False
-        except Exception as e:
-            logger.error(f"❌ [Radio Loop] 發生異常: {e}")
-            self.radio_mode = False
-            self.radio_paused = False
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._radio_loop()
 
     async def play_radio_song(self, file_path: str):
-        """
-        📻 [Marvin Radio] 播放單首歌曲，音量 30%。
-        """
-        if not os.path.exists(file_path):
-            logger.warning(f"⚠️ [Radio Song] 找不到檔案: {file_path}")
-            return
-
-        vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-        if not vc:
-            logger.warning("⚠️ [Radio Song] 無連線中的 VoiceClient，跳過播放。")
-            self.radio_mode = False
-            self.radio_paused = False
-            return
-
-        src = discord.FFmpegPCMAudio(file_path, options="-vn")
-        await self._mixer_play_music(vc, src, still_active=lambda: self.radio_mode, volume_attr="radio_volume")
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc.play_radio_song(file_path)
 
     async def _resolve_yt_query(self, query: str) -> dict | None:
         """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。

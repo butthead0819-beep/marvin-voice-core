@@ -20,6 +20,7 @@ Phase 1–6 完成：MusicCog 持有所有音樂狀態並持有 5 個 slash comm
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import os
 import time
@@ -248,7 +249,6 @@ class MusicCog(commands.Cog):
     async def start_radio(self, trigger: str = "未知觸發"):
         """📻 啟動電台：掃描歌單 → shuffle → 開始背景播放 Loop。"""
         import random
-        vc = self._vc()
         if self.radio_mode:
             logger.warning("⚠️ [Radio] 電台已啟動，跳過重複啟動。")
             return
@@ -276,9 +276,7 @@ class MusicCog(commands.Cog):
 
         if self.radio_task and not self.radio_task.done():
             self.radio_task.cancel()
-        # _radio_loop stays in VC until Phase 7B; delegate via vc
-        if vc is not None:
-            self.radio_task = asyncio.create_task(vc._radio_loop())
+        self.radio_task = asyncio.create_task(self._radio_loop())
 
     async def stop_radio(self, reason: str = "未知原因"):
         """📻 停止電台：中斷播放 → 取消 Task → 重設狀態。"""
@@ -322,6 +320,161 @@ class MusicCog(commands.Cog):
         self._radio_source = None
         if vc is not None and vc._mixer is not None:
             vc._mixer.clear_music()
+
+    async def _radio_volume_fade_loop(self):
+        """📻 動態音量漸變：有人說話 → duck to 1%；靜默 1.5s 後 → fade up to 10%。"""
+        IDLE_VOL  = 0.10
+        DUCK_VOL  = 0.01
+        TICK      = 0.05
+        DUCK_RATE = 0.012
+        RISE_RATE = 0.003
+        DUCK_HOLD = 1.5
+        try:
+            while self.radio_mode or self.stream_mode:
+                src = self._radio_source
+                if src is not None:
+                    vc = self._vc()
+                    silence = time.time() - (vc.last_player_speech_time if vc is not None else 0.0)
+                    target = IDLE_VOL if silence > DUCK_HOLD else DUCK_VOL
+                    current = src.volume
+                    if current > target + 0.001:
+                        src.volume = max(target, current - DUCK_RATE)
+                    elif current < target - 0.001:
+                        src.volume = min(target, current + RISE_RATE)
+                await asyncio.sleep(TICK)
+        except asyncio.CancelledError:
+            pass
+
+    async def _radio_loop(self):
+        """📻 背景播放迴圈：依序播放歌單，播完後 shuffle 重複。"""
+        import random
+        logger.info("📻 [Radio Loop] 電台迴圈已啟動。")
+        try:
+            while self.radio_mode:
+                if not self._radio_song_list:
+                    songs_dir = "assets/songs"
+                    excluded = {"Oh Marvin.mp3"}
+                    try:
+                        all_songs = [
+                            os.path.join(songs_dir, f)
+                            for f in os.listdir(songs_dir)
+                            if f.endswith(".mp3") and f not in excluded
+                        ]
+                    except FileNotFoundError:
+                        logger.error("❌ [Radio Loop] 重新掃描失敗，停止電台。")
+                        self.radio_mode = False
+                        break
+                    random.shuffle(all_songs)
+                    self._radio_song_list = all_songs
+                    logger.info(f"📻 [Radio Loop] 歌單播完，重新洗牌 ({len(all_songs)} 首)。")
+
+                next_song = self._radio_song_list.pop()
+                song_name = os.path.basename(next_song)
+                logger.info(f"📻 [Radio Loop] 即將播放: {song_name}")
+
+                vc = self._vc()
+                if vc is not None:
+                    metadata = vc._extract_song_metadata(next_song)
+                    cover_path = vc._extract_song_cover(next_song)
+                    active_ch = vc.active_text_channel
+                else:
+                    metadata = {"title": song_name, "artist": "未知"}
+                    cover_path = None
+                    active_ch = None
+
+                if active_ch:
+                    accent_color = (
+                        vc._extract_dominant_color(cover_path)
+                        if (vc is not None and cover_path)
+                        else discord.Color.dark_grey()
+                    )
+                    embed = discord.Embed(
+                        title="📻 馬文電台：正在播放",
+                        description="「...」",
+                        color=accent_color,
+                        timestamp=datetime.datetime.now(),
+                    )
+                    embed.add_field(name="🎵 歌曲名稱", value=f"`{metadata['title']}`", inline=False)
+                    embed.add_field(name="👤 演出者", value=f"`{metadata['artist']}`", inline=True)
+                    embed.add_field(name="🔊 當前音量", value=f"`{int(self.radio_volume * 100)}%`", inline=True)
+
+                    if cover_path:
+                        file = discord.File(cover_path, filename="cover.jpg")
+                        embed.set_thumbnail(url="attachment://cover.jpg")
+                        sent_msg = await active_ch.send(file=file, embed=embed)
+                        if vc is not None:
+                            asyncio.create_task(vc._delayed_cleanup(cover_path))
+                    else:
+                        sent_msg = await active_ch.send(embed=embed)
+
+                    async def _update_radio_comment(msg, title, artist, color, song_path, _vc_ref=vc):
+                        from utils import pick_lyrics_snippet
+                        lyrics_path = os.path.splitext(song_path)[0] + ".md"
+                        section_name, snippet = pick_lyrics_snippet(lyrics_path)
+                        if snippet:
+                            song_ctx = f"歌名：{title}，演出者：{artist}，段落：{section_name}，歌詞：{snippet}"
+                        else:
+                            song_ctx = f"歌名：{title}，演出者：{artist}"
+                        try:
+                            comment = await self.bot.router.generate_dynamic_system_msg(
+                                "radio_now_playing", context=song_ctx
+                            )
+                        except Exception:
+                            return
+                        try:
+                            updated = discord.Embed(
+                                title="📻 馬文電台：正在播放",
+                                description=f"「{comment}」",
+                                color=color,
+                                timestamp=msg.embeds[0].timestamp if msg.embeds else datetime.datetime.now(),
+                            )
+                            updated.add_field(name="🎵 歌曲名稱", value=f"`{title}`", inline=False)
+                            updated.add_field(name="👤 演出者", value=f"`{artist}`", inline=True)
+                            updated.add_field(name="🔊 當前音量", value=f"`{int(self.radio_volume * 100)}%`", inline=True)
+                            if msg.embeds and msg.embeds[0].thumbnail:
+                                updated.set_thumbnail(url=msg.embeds[0].thumbnail.url)
+                            await msg.edit(embed=updated)
+                        except Exception as e:
+                            logger.warning(f"⚠️ [Radio] embed 更新失敗: {e}")
+
+                    asyncio.create_task(
+                        _update_radio_comment(sent_msg, metadata["title"], metadata["artist"], accent_color, next_song)
+                    )
+
+                await self.play_radio_song(next_song)
+
+                if self.radio_mode:
+                    await asyncio.sleep(1.0)
+
+        except asyncio.CancelledError:
+            logger.info("📻 [Radio Loop] 電台迴圈被取消。")
+            self.radio_paused = False
+        except Exception as e:
+            logger.error(f"❌ [Radio Loop] 發生異常: {e}")
+            self.radio_mode = False
+            self.radio_paused = False
+
+    async def play_radio_song(self, file_path: str):
+        """📻 播放單首電台歌曲，透過 VC mixer。"""
+        if not os.path.exists(file_path):
+            logger.warning(f"⚠️ [Radio Song] 找不到檔案: {file_path}")
+            return
+
+        voice_client = next((v for v in self.bot.voice_clients if v.is_connected()), None)
+        if not voice_client:
+            logger.warning("⚠️ [Radio Song] 無連線中的 VoiceClient，跳過播放。")
+            self.radio_mode = False
+            self.radio_paused = False
+            return
+
+        src = discord.FFmpegPCMAudio(file_path, options="-vn")
+        vc = self._vc()
+        if vc is not None:
+            await vc._mixer_play_music(
+                voice_client, src,
+                still_active=lambda: self.radio_mode,
+                volume_attr="radio_volume",
+            )
 
     @app_commands.command(name="marvin_recommend", description="[Stream] 讓馬文根據你的點播記憶推薦下一首")
     async def marvin_recommend(self, interaction: discord.Interaction):
