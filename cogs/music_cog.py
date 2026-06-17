@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Optional
 
@@ -241,6 +242,86 @@ class MusicCog(commands.Cog):
         self._active_control_view = view
         await interaction.response.send_message(embed=view._build_embed(), view=view)
         view.message = await interaction.original_response()
+
+    # ── 🎵 Music subsystem methods ────────────────────────────────────────────
+
+    async def start_radio(self, trigger: str = "未知觸發"):
+        """📻 啟動電台：掃描歌單 → shuffle → 開始背景播放 Loop。"""
+        import random
+        vc = self._vc()
+        if self.radio_mode:
+            logger.warning("⚠️ [Radio] 電台已啟動，跳過重複啟動。")
+            return
+
+        songs_dir = "assets/songs"
+        excluded = {"Oh Marvin.mp3"}
+        try:
+            all_songs = [
+                os.path.join(songs_dir, f)
+                for f in os.listdir(songs_dir)
+                if f.endswith(".mp3") and f not in excluded
+            ]
+        except FileNotFoundError:
+            logger.error(f"❌ [Radio] 找不到歌曲目錄: {songs_dir}")
+            return
+
+        if not all_songs:
+            logger.warning("⚠️ [Radio] 歌單為空，無法啟動電台。")
+            return
+
+        random.shuffle(all_songs)
+        self._radio_song_list = all_songs
+        self.radio_mode = True
+        logger.info(f"📻 [Radio] 電台啟動 (來源: {trigger})，共 {len(all_songs)} 首歌曲。")
+
+        if self.radio_task and not self.radio_task.done():
+            self.radio_task.cancel()
+        # _radio_loop stays in VC until Phase 7B; delegate via vc
+        if vc is not None:
+            self.radio_task = asyncio.create_task(vc._radio_loop())
+
+    async def stop_radio(self, reason: str = "未知原因"):
+        """📻 停止電台：中斷播放 → 取消 Task → 重設狀態。"""
+        if not self.radio_mode:
+            return
+
+        self.radio_mode = False
+        self.radio_paused = False
+        logger.info(f"📻 [Radio] 電台停止，原因: {reason}")
+
+        if self.radio_task and not self.radio_task.done():
+            self.radio_task.cancel()
+            self.radio_task = None
+        if self._radio_fade_task and not self._radio_fade_task.done():
+            self._radio_fade_task.cancel()
+            self._radio_fade_task = None
+        self._radio_source = None
+
+        guild_vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
+        if guild_vc and guild_vc.is_playing():
+            guild_vc.stop_playing()
+            logger.info("📻 [Radio] 已立即停止當前播放的歌曲。")
+
+    async def stop_stream(self, reason: str = "未知原因"):
+        """🎵 停止串流播放，清空當前狀態。"""
+        if not self.stream_mode:
+            return
+        vc = self._vc()
+        self.stream_mode = False
+        if vc is not None:
+            vc.last_marvin_speech_time = time.time()
+        self._current_stream_info = None
+        self.stream_paused = False
+        logger.info(f"🎵 [Stream] 停止，原因: {reason}")
+        if self.stream_task and not self.stream_task.done():
+            self.stream_task.cancel()
+            self.stream_task = None
+        if self._radio_fade_task and not self._radio_fade_task.done():
+            self._radio_fade_task.cancel()
+            self._radio_fade_task = None
+        self._radio_source = None
+        if vc is not None and vc._mixer is not None:
+            vc._mixer.clear_music()
 
     @app_commands.command(name="marvin_recommend", description="[Stream] 讓馬文根據你的點播記憶推薦下一首")
     async def marvin_recommend(self, interaction: discord.Interaction):

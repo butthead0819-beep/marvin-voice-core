@@ -6944,67 +6944,14 @@ class VoiceController(commands.Cog):
             logger.error(f"❌ [Music Playback Error] {e}")
 
     async def start_radio(self, trigger: str = "未知觸發"):
-        """
-        📻 [Marvin Radio] 啟動電台：掃描歌單 → shuffle → 開始背景播放 Loop
-        """
-        import random
-        if self.radio_mode:
-            logger.warning("⚠️ [Radio] 電台已啟動，跳過重複啟動。")
-            return
-
-        # 掃描歌單（排除進場曲 Oh Marvin.mp3）
-        songs_dir = "assets/songs"
-        excluded = {"Oh Marvin.mp3"}
-        try:
-            all_songs = [
-                os.path.join(songs_dir, f)
-                for f in os.listdir(songs_dir)
-                if f.endswith(".mp3") and f not in excluded
-            ]
-        except FileNotFoundError:
-            logger.error(f"❌ [Radio] 找不到歌曲目錄: {songs_dir}")
-            return
-
-        if not all_songs:
-            logger.warning("⚠️ [Radio] 歌單為空，無法啟動電台。")
-            return
-
-        random.shuffle(all_songs)
-        self._radio_song_list = all_songs
-        self.radio_mode = True
-
-        logger.info(f"📻 [Radio] 電台啟動 (來源: {trigger})，共 {len(all_songs)} 首歌曲。")
-
-        # 啟動背景 Task
-        if self.radio_task and not self.radio_task.done():
-            self.radio_task.cancel()
-        self.radio_task = asyncio.create_task(self._radio_loop())
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc.start_radio(trigger)
 
     async def stop_radio(self, reason: str = "未知原因"):
-        """
-        📻 [Marvin Radio] 停止電台：中斷播放 → 取消 Task → 重設狀態
-        """
-        if not self.radio_mode:
-            return
-
-        self.radio_mode = False
-        self.radio_paused = False
-        logger.info(f"📻 [Radio] 電台停止，原因: {reason}")
-
-        # 取消背景 Task
-        if self.radio_task and not self.radio_task.done():
-            self.radio_task.cancel()
-            self.radio_task = None
-        if self._radio_fade_task and not self._radio_fade_task.done():
-            self._radio_fade_task.cancel()
-            self._radio_fade_task = None
-        self._radio_source = None
-
-        # 立即停止 VoiceClient 播放
-        vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-        if vc and vc.is_playing():
-            vc.stop_playing()
-            logger.info("📻 [Radio] 已立即停止當前播放的歌曲。")
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc.stop_radio(reason)
 
     async def _radio_volume_fade_loop(self):
         """
@@ -7240,24 +7187,12 @@ class VoiceController(commands.Cog):
             return None
 
     async def stop_stream(self, reason: str = "未知原因"):
-        """🎵 停止串流播放，清空當前狀態。"""
         if not self.stream_mode:
             return
-        self.stream_mode = False
-        self.last_marvin_speech_time = time.time()  # 重置嘲諷計時器，避免音樂停後立刻觸發
-        self._current_stream_info = None
-        self.stream_paused = False
-        logger.info(f"🎵 [Stream] 停止，原因: {reason}")
-        if self.stream_task and not self.stream_task.done():
-            self.stream_task.cancel()
-            self.stream_task = None
-        if self._radio_fade_task and not self._radio_fade_task.done():
-            self._radio_fade_task.cancel()
-            self._radio_fade_task = None
-        self._radio_source = None
-        vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-        if self._mixer is not None:
-            self._mixer.clear_music()
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc.stop_stream(reason)
+        self.last_marvin_speech_time = time.time()
 
     async def _stream_loop(self):
         """🎵 [Stream Loop] 依序播放佇列中的歌曲。"""
