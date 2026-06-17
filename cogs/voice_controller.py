@@ -553,14 +553,14 @@ class VoiceController(commands.Cog):
         self._pending_followups: dict[str, dict] = {}
         self._stt_call_counter = 0      # 🚀 [STT Rate Limit] 每分鐘 STT 呼叫計數
 
-        # 📻 [Marvin Radio] 電台系統狀態
+        # 📻 [Marvin Radio] 電台系統狀態 — 狀態由 MusicCog 持有，透過 proxy property 存取
         self._radio_mode_local = False    # fallback when MusicCog not loaded
-        self.radio_task = None           # 播放歌單背景 Task
-        self.radio_volume = 0.10         # 音量上限 10%（無人說話時）
-        self._radio_song_list = []       # 打亂後的歌單（pop 取用）
-        self._radio_source = None        # PCMVolumeTransformer，用於即時調整音量
-        self._radio_fade_task = None     # 音量漸變背景 Task
-        self.radio_paused = False        # 電台是否被語音指令暫停中
+        self._radio_task_local = None
+        self._radio_volume_local = 0.10
+        self._radio_song_list_local: list = []
+        self._radio_source_local = None
+        self._radio_fade_task_local = None
+        self._radio_paused_local = False
         self._recommend_spotlight_idx = -1  # 自動推薦 spotlight 在場成員輪替指標
         # Phase 1 M4: ambient room curator state
         self._mood_sensor = None             # MoodSensor，由 main_discord.py wire (Phase 1 M2)
@@ -1022,6 +1022,86 @@ class VoiceController(commands.Cog):
             mc._active_control_view = value
         else:
             self._active_control_view_local = value
+
+    # ── Phase 3: radio subsystem proxy properties ─────────────────────────────
+
+    @property
+    def radio_task(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.radio_task if mc is not None else self._radio_task_local
+
+    @radio_task.setter
+    def radio_task(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.radio_task = value
+        else:
+            self._radio_task_local = value
+
+    @property
+    def radio_volume(self) -> float:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.radio_volume if mc is not None else self._radio_volume_local
+
+    @radio_volume.setter
+    def radio_volume(self, value: float) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.radio_volume = value
+        else:
+            self._radio_volume_local = value
+
+    @property
+    def _radio_song_list(self) -> list:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._radio_song_list if mc is not None else self._radio_song_list_local
+
+    @_radio_song_list.setter
+    def _radio_song_list(self, value: list) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._radio_song_list = value
+        else:
+            self._radio_song_list_local = value
+
+    @property
+    def _radio_source(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._radio_source if mc is not None else self._radio_source_local
+
+    @_radio_source.setter
+    def _radio_source(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._radio_source = value
+        else:
+            self._radio_source_local = value
+
+    @property
+    def _radio_fade_task(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._radio_fade_task if mc is not None else self._radio_fade_task_local
+
+    @_radio_fade_task.setter
+    def _radio_fade_task(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._radio_fade_task = value
+        else:
+            self._radio_fade_task_local = value
+
+    @property
+    def radio_paused(self) -> bool:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.radio_paused if mc is not None else self._radio_paused_local
+
+    @radio_paused.setter
+    def radio_paused(self, value: bool) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.radio_paused = value
+        else:
+            self._radio_paused_local = value
 
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""

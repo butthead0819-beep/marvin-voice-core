@@ -1,11 +1,11 @@
 """MusicCog — 音樂子系統（從 VoiceController 抽離中）。
 
-Phase 2 (串流狀態)：持有 stream subsystem 全部狀態；音樂邏輯仍在 VC，逐步遷移。
+Phase 3 (電台狀態)：持有 radio subsystem 全部狀態；音樂邏輯仍在 VC，逐步遷移。
 
 遷移進度：
   Phase 1 ✅  骨架 + stream_mode/radio_mode proxy
   Phase 2 ✅  stream subsystem state proxy (stream_queue, _current_stream_info, …)
-  Phase 3 ⬜  radio subsystem (_radio_loop, radio state)
+  Phase 3 ✅  radio subsystem state proxy (radio_task, radio_paused, …)
   Phase 4 ⬜  _auto_recommend + song metadata + DJ
   Phase 5 ⬜  slash commands (marvin_play/skip/play_control/recommend/radio)
   Phase 6 ⬜  清除 VoiceController forwarding stubs
@@ -44,8 +44,16 @@ class MusicCog(commands.Cog):
         self._current_stream_comment: Optional[str] = None
         self._active_control_view = None
 
+        # 📻 [Phase 3] Radio subsystem state (proxied from VoiceController)
+        self.radio_task = None
+        self.radio_volume: float = 0.10
+        self._radio_song_list: list = []
+        self._radio_source = None
+        self._radio_fade_task = None
+        self.radio_paused: bool = False
+
     async def cog_load(self) -> None:
-        logger.info("[MusicCog] Phase 2 已載入（stream state proxy 就緒）")
+        logger.info("[MusicCog] Phase 3 已載入（stream + radio state proxy 就緒）")
 
     async def cog_unload(self) -> None:
         pass
