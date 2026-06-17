@@ -130,10 +130,22 @@ async def test_fast_response_not_skipped():
 
 # ── B. Song deduplication ────────────────────────────────────────────────────
 
+def _make_mc_cog():
+    """_check_song_duplicate 已移至 MusicCog。"""
+    bot = MagicMock()
+    bot.guilds = []
+    bot.voice_clients = []
+    bot.cogs.get.return_value = None
+    bot.tts_engine = MagicMock()
+    bot.music_memory = None
+    from cogs.music_cog import MusicCog
+    return MusicCog(bot)
+
+
 @pytest.mark.asyncio
 async def test_duplicate_song_in_queue_rejected():
     """佇列中已有相同 URL 的歌曲 → 不重複加入，回傳 False。"""
-    cog = _make_cog()
+    cog = _make_mc_cog()
     cog.stream_queue = [{"url": "https://yt.com/abc", "title": "末班車", "duration": 200}]
 
     result = cog._check_song_duplicate(
@@ -147,7 +159,7 @@ async def test_duplicate_song_in_queue_rejected():
 @pytest.mark.asyncio
 async def test_duplicate_song_in_session_history_rejected():
     """session stream_history 中最近播過的同 URL → 視為重複。"""
-    cog = _make_cog()
+    cog = _make_mc_cog()
     cog.stream_history = [{"url": "https://yt.com/abc", "title": "末班車"}]
 
     result = cog._check_song_duplicate(
@@ -161,7 +173,7 @@ async def test_duplicate_song_in_session_history_rejected():
 @pytest.mark.asyncio
 async def test_different_song_not_rejected():
     """不同 URL 的歌曲 → 不視為重複，允許加入。"""
-    cog = _make_cog()
+    cog = _make_mc_cog()
     cog.stream_queue = [{"url": "https://yt.com/abc", "title": "末班車"}]
 
     result = cog._check_song_duplicate(

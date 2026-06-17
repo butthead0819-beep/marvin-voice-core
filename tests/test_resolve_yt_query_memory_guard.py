@@ -17,15 +17,12 @@ import pytest
 
 
 def _make_controller():
-    """Build a minimal VoiceController with just enough state for _resolve_yt_query."""
-    # voice_controller has heavy imports; only need the method itself
-    from cogs.voice_controller import VoiceController
+    """_resolve_yt_query 已移至 MusicCog。"""
+    from cogs.music_cog import MusicCog
     bot = MagicMock()
-    bot.cogs = {}
-    # __init__ has a lot of side effects; bypass it
-    vc = VoiceController.__new__(VoiceController)
-    vc.bot = bot
-    return vc
+    bot.cogs.get.return_value = None
+    bot.music_memory = None
+    return MusicCog(bot)
 
 
 @pytest.mark.asyncio
@@ -34,7 +31,7 @@ async def test_resolve_yt_query_skips_when_memory_critical(monkeypatch):
     to None without calling yt_dlp at all (avoid EDEADLK importlib chain)."""
     vc = _make_controller()
 
-    with patch("cogs.voice_controller.is_memory_critical", return_value=True), \
+    with patch("cogs.music_cog.is_memory_critical", return_value=True), \
          patch("yt_dlp.YoutubeDL") as mock_ydl:
         result = await vc._resolve_yt_query("陶喆 普通朋友")
 
@@ -63,7 +60,7 @@ async def test_resolve_yt_query_proceeds_when_memory_ok(monkeypatch):
     fake_ydl.__exit__ = MagicMock(return_value=False)
     fake_ydl.extract_info = MagicMock(return_value=fake_info)
 
-    with patch("cogs.voice_controller.is_memory_critical", return_value=False), \
+    with patch("cogs.music_cog.is_memory_critical", return_value=False), \
          patch("yt_dlp.YoutubeDL", return_value=fake_ydl), \
          patch("music_search.pick_best_music_candidate", side_effect=lambda entries: entries[0]):
         result = await vc._resolve_yt_query("陶喆 普通朋友")

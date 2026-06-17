@@ -10,7 +10,7 @@
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def _u(name, vid):
@@ -57,16 +57,9 @@ def _make_cog():
     bot.voice_clients = []
     bot.cogs.get.return_value = None
     bot.tts_engine = MagicMock()
-    bot.router = MagicMock()
-    bot.engine = MagicMock()
-    bot.engine.conv_buffer = MagicMock()
-    bot.engine.post_summon_callback = None
-    with patch("cogs.voice_controller.DepartureStats", MagicMock), \
-         patch("cogs.voice_controller.ConsentManager", MagicMock):
-        from cogs.voice_controller import VoiceController
-        cog = VoiceController(bot)
-    cog.stt_logger = MagicMock()
-    return cog
+    bot.music_memory = None
+    from cogs.music_cog import MusicCog
+    return MusicCog(bot)
 
 
 def test_two_user_songs_play_in_request_order():

@@ -181,8 +181,6 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
             try:
                 if _p12:
                     self.ctrl._mixer.clear_music()
-                elif hasattr(vc, "stop_playing"):
-                    vc.stop_playing()
                 elif hasattr(vc, "stop"):
                     vc.stop()
                 logger.info(f"[PlaybackControl] skip by {speaker} url={current_url} (plan12={_p12})")

@@ -16,7 +16,7 @@ TTS 還沒入 queue），不需要實作。
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -32,12 +32,10 @@ def _make_cog():
     bot.engine = MagicMock()
     bot.engine.conv_buffer = MagicMock()
     bot.engine.post_summon_callback = None
+    bot.music_memory = None
 
-    with patch("cogs.voice_controller.DepartureStats", MagicMock), \
-         patch("cogs.voice_controller.ConsentManager", MagicMock):
-        from cogs.voice_controller import VoiceController
-        cog = VoiceController(bot)
-    cog.stt_logger = MagicMock()
+    from cogs.music_cog import MusicCog
+    cog = MusicCog(bot)
     return cog
 
 

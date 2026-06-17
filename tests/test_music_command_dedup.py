@@ -15,6 +15,19 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _make_mc_cog():
+    """_resolve_yt_query 的實作已移到 MusicCog，用 MC 直接測。"""
+    bot = MagicMock()
+    bot.guilds = []
+    bot.voice_clients = []
+    bot.cogs.get.return_value = None
+    bot.tts_engine = MagicMock()
+    bot.music_memory = None
+    from cogs.music_cog import MusicCog
+    cog = MusicCog(bot)
+    return cog
+
+
 def _make_cog():
     bot = MagicMock()
     bot.guilds = []
@@ -110,7 +123,7 @@ async def test_resolve_yt_query_retries_on_errno_11():
     （ytmsearch5 + ytsearch5）。retry 機制在更上層的 await loop.run_in_executor
     所以是「整個 _extract 失敗才 retry」，不是個別 extract_info call。
     """
-    cog = _make_cog()
+    cog = _make_mc_cog()
 
     extract_attempt = [0]  # 計算 _extract 被呼叫幾次（重試後 +1）
     music_entry = {"title": "Song", "url": "http://stream/x",
@@ -141,7 +154,7 @@ async def test_resolve_yt_query_retries_on_errno_11():
 @pytest.mark.asyncio
 async def test_resolve_yt_query_returns_none_after_double_errno_11():
     """連續兩次 Errno 11 → 返回 None（不無限重試）。"""
-    cog = _make_cog()
+    cog = _make_mc_cog()
 
     class _AlwaysDeadlock:
         def __init__(self, *a, **kw): pass
@@ -191,7 +204,7 @@ async def test_safe_music_command_passes_through_when_normal():
 @pytest.mark.asyncio
 async def test_resolve_yt_query_does_not_retry_on_other_oserror():
     """其他 OSError (非 errno=11) 不重試，直接返回 None。"""
-    cog = _make_cog()
+    cog = _make_mc_cog()
     call_count = [0]
 
     class _OtherError:
