@@ -29,6 +29,8 @@ import tempfile
 import time
 from typing import Optional
 
+import yt_dlp
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -38,6 +40,7 @@ from intent_agents.recommendation import (
     append_recommendation,
     time_of_day_bucket,
 )
+from memory_guard import is_memory_critical
 from music_recommender import build_recommendation_pool, is_already_recommended, pick_candidates
 from music_memory import extract_video_id
 
@@ -148,13 +151,13 @@ class MusicCog(commands.Cog):
                     await interaction.followup.send("❌ 馬文不在頻道中，且你似乎也還沒加入任何頻道。這世界果然一片荒蕪。", ephemeral=True)
                 return
             await interaction.followup.send("📻 **【馬文電台：啟動】**\n好吧，既然你們都不說話，我就讓音樂來填補這令人窒息的寂靜。")
-            await vc.start_radio(trigger="手動指令")
+            await self.start_radio(trigger="手動指令")
 
         elif action == "stop":
             if not self.radio_mode:
                 await interaction.followup.send("📻 電台沒有在播放。沉默本來就是這個宇宙的預設狀態。", ephemeral=True)
                 return
-            await vc.stop_radio(reason="手動指令停止")
+            await self.stop_radio(reason="手動指令停止")
             await interaction.followup.send("📻 **【馬文電台：停止】**\n好了，音樂停了。你們滿意了嗎。")
 
     @app_commands.command(name="marvin_play", description="[Stream] 播放 YouTube 音樂，輸入歌名或貼上連結")
@@ -216,7 +219,7 @@ class MusicCog(commands.Cog):
         else:
             msg = await interaction.followup.send(f"🔍 **正在搜尋：** `{query}`...")
 
-        info = await vc._resolve_yt_query(query)
+        info = await self._resolve_yt_query(query)
         if not info:
             await msg.edit(content=f"❌ 找不到結果：`{query}`。就跟在宇宙虛空中尋找意義一樣徒勞。")
             return
@@ -232,20 +235,20 @@ class MusicCog(commands.Cog):
             self._last_search[username] = {'query': query, 'ts': time.time(), 'source': 'manual'}
 
         if self.radio_mode:
-            await vc.stop_radio(reason="Stream 模式接管")
+            await self.stop_radio(reason="Stream 模式接管")
 
         info['requested_by'] = username
-        if vc._check_song_duplicate(url=info['url'], title=info['title'], username=username, check_history=False):
+        if self._check_song_duplicate(url=info['url'], title=info['title'], username=username, check_history=False):
             await msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。")
             return
-        vc._queue_user_song(info)
+        self._queue_user_song(info)
 
         if not self.stream_mode:
             self.stream_mode = True
             self.stream_volume = 0.10
             if self.stream_task and not self.stream_task.done():
                 self.stream_task.cancel()
-            self.stream_task = asyncio.create_task(vc._stream_loop())
+            self.stream_task = asyncio.create_task(self._stream_loop())
 
         existing_view = self._active_control_view
         if existing_view and getattr(existing_view, 'message', None):
@@ -743,13 +746,13 @@ class MusicCog(commands.Cog):
                 continue
 
             try:
-                info = await vc._resolve_yt_query(query) if vc is not None else None
+                info = await self._resolve_yt_query(query)
             except Exception as e:
                 logger.debug(f"⚠️ [AutoRecommend] _resolve_yt_query fail '{query}': {e}")
                 continue
             if not info:
                 continue
-            if vc is not None and vc._check_song_duplicate(url=info['url'], title=info['title'], username=username):
+            if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
                 logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過")
                 continue
             if is_already_recommended(info['title'], ring_exclude):
@@ -1472,6 +1475,160 @@ class MusicCog(commands.Cog):
                 os.remove(file_path)
         except Exception:
             pass
+
+    # ── Phase 7F: queue / resolve helpers ────────────────────────────────────
+
+    def _check_song_duplicate(self, url: str, title: str, username: str,
+                              *, check_history: bool = True) -> bool:  # noqa: ARG002
+        """回傳 True 表示此 session 已有相同 URL，應跳過加入佇列。
+
+        check_history=False：只擋「還在佇列」，不擋「本場播過」。給使用者手動點播用——
+        skip 過的歌進了 stream_history，但手動點回來是刻意正向更正，應放行。
+        """
+        for item in self.stream_queue:
+            if item.get("url") == url:
+                return True
+        if check_history:
+            for item in self.stream_history:
+                if item.get("url") == url:
+                    return True
+        return False
+
+    @staticmethod
+    def _user_song_insert_index(queue: list[dict]) -> int:
+        """使用者自選曲的插入位置：排在所有既有使用者曲之後、第一首 Marvin 自動曲之前。"""
+        for i, item in enumerate(queue):
+            if str(item.get('requested_by') or '').startswith('Marvin'):
+                return i
+        return len(queue)
+
+    def _queue_user_song(self, info: dict) -> None:
+        """使用者自選曲照點歌順序排（FIFO），插在既有使用者曲之後、auto-recommend 之前。
+
+        skip-override：手動點播蓋過先前 skip——記 played_again + 重置 consecutive-skip 計數。
+        """
+        self.stream_queue.insert(self._user_song_insert_index(self.stream_queue), info)
+        try:
+            user = info.get('requested_by') or ''
+            title = info.get('title') or ''
+            mm = getattr(self.bot, 'music_memory', None)
+            if mm and user and title:
+                mm.add_recommendation_feedback(user, title, "played_again")
+            # _consecutive_skips_by_url 仍在 VC；透過 _vc() 存取
+            vc = self._vc()
+            if vc is not None:
+                vc._consecutive_skips_by_url.pop(info.get('url') or '', None)
+            import re as _re
+            _m = _re.search(r"(?:v=|youtu\.be/|/watch\?v=)([A-Za-z0-9_-]{11})",
+                            info.get('webpage_url') or '')
+            if _m:
+                self._last_user_song_seed = _m.group(1)
+        except Exception:
+            logger.debug("[Queue] skip-override / seed 更新失敗", exc_info=True)
+
+    def _cancel_stale_prefetch(self, speaker: str) -> None:
+        """bus 接走 intent 時，取消 dangling speculative LLM prefetch。"""
+        prefetch_map = getattr(self.bot.router, "_pending_prefetch", None)
+        if not isinstance(prefetch_map, dict):
+            return
+        task = prefetch_map.pop(speaker, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _record_song_skip(self) -> None:
+        """把當前播放歌曲的 videoId 記入持久化 skip 排除集。
+
+        fail-open：拿不到歌/mm 不存在 → no-op。
+        """
+        mm = getattr(self.bot, 'music_memory', None)
+        cur = self._current_stream_info
+        if mm is None or not cur:
+            return
+        url = cur.get("webpage_url") or cur.get("url") or ""
+        if url:
+            try:
+                mm.record_skipped_video_id(url)
+                from taste_fingerprint import artist_of
+                _artist = artist_of(cur.get("title", ""))
+                if _artist:
+                    mm.record_artist_skip(_artist, url)
+            except Exception:
+                logger.exception("[Skip] record_skipped_video_id 失敗")
+
+    def _build_recommendation_extras(self) -> dict:
+        """給 recommendation log 灌 controller scope 的 rich context。read-only / sync。"""
+        extras: dict = {
+            "queue_depth": len(self.stream_queue),
+            "recent_history_titles": [
+                s.get("title", "") for s in self.stream_history[-3:]
+                if isinstance(s, dict)
+            ],
+        }
+        if self._mood_sensor is not None:
+            cached_vibe = getattr(self._mood_sensor, "_cache", None)
+            if cached_vibe is not None:
+                extras["vibe_mood"] = getattr(cached_vibe, "mood", None)
+        return extras
+
+    async def _resolve_yt_query(self, query: str) -> dict | None:
+        """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。"""
+        from music_search import pick_best_music_candidate
+
+        if is_memory_critical():
+            logger.warning("⚠️ [Stream] memory critical, skipping yt-dlp resolve")
+            return None
+
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
+            'quiet': True,
+            'no_warnings': True,
+            'noplaylist': True,
+        }
+        is_url = query.startswith('http')
+
+        def _extract():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                if is_url:
+                    info = ydl.extract_info(query, download=False)
+                    if not info:
+                        return None
+                    chosen = info if 'url' in info else None
+                else:
+                    info = ydl.extract_info(f'ytsearch5:{query}', download=False)
+                    entries = [e for e in (info.get('entries') or []) if e] if info else []
+                    if not entries:
+                        return None
+                    chosen = pick_best_music_candidate(entries)
+                    if chosen:
+                        logger.info(
+                            f"🎵 [Stream] 候選中挑出：{chosen.get('title','?')[:40]} "
+                            f"(category={chosen.get('categories', [])})"
+                        )
+                if not chosen or 'url' not in chosen:
+                    return None
+                return {
+                    'title': chosen.get('title', 'Unknown'),
+                    'uploader': chosen.get('uploader', chosen.get('channel', 'Unknown')),
+                    'url': chosen['url'],
+                    'thumbnail': chosen.get('thumbnail'),
+                    'webpage_url': chosen.get('webpage_url', ''),
+                    'duration': chosen.get('duration', 0),
+                }
+
+        loop = asyncio.get_event_loop()
+        try:
+            return await loop.run_in_executor(None, _extract)
+        except OSError as e:
+            if getattr(e, "errno", None) == 11:
+                logger.warning("⚠️ [Stream] yt-dlp Errno 11 deadlock，200ms 後重試")
+                await asyncio.sleep(0.2)
+                try:
+                    return await loop.run_in_executor(None, _extract)
+                except Exception as e2:
+                    logger.error(f"❌ [Stream] yt-dlp 重試後仍失敗: {e2}", exc_info=True)
+                    return None
+            logger.error(f"❌ [Stream] yt-dlp 解析失敗 (OSError): {e}", exc_info=True)
+            return None
 
     async def cog_load(self) -> None:
         logger.info("[MusicCog] Phase 5 已載入（stream + radio + autoplay state + slash commands 就緒）")

@@ -5062,13 +5062,8 @@ class VoiceController(commands.Cog):
                 return "play"
         return None
 
-    def _check_song_duplicate(self, url: str, title: str, username: str,
-                              *, check_history: bool = True) -> bool:  # noqa: ARG002
-        """回傳 True 表示此 session 已有相同 URL，應跳過加入佇列。
-
-        check_history=False：只擋「還在佇列」，不擋「本場播過」。給使用者**手動**點播用——
-        skip 過的歌進了 stream_history，但手動點回來是刻意正向更正，應放行（見 _queue_user_song）。
-        """
+    def _check_song_duplicate_ORIG(self, url: str, title: str, username: str,
+                                   *, check_history: bool = True) -> bool:  # noqa: ARG002
         for item in self.stream_queue:
             if item.get("url") == url:
                 return True
@@ -5077,6 +5072,13 @@ class VoiceController(commands.Cog):
                 if item.get("url") == url:
                     return True
         return False
+
+    def _check_song_duplicate(self, url: str, title: str, username: str,
+                              *, check_history: bool = True) -> bool:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            return mc._check_song_duplicate(url=url, title=title, username=username, check_history=check_history)
+        return self._check_song_duplicate_ORIG(url=url, title=title, username=username, check_history=check_history)
 
     # IBA-T0 utterance 長度上限。無喚醒詞觸發 → 對 false positive 敏感。
     # 自然音樂控制句都很短（「跳過」「下一首」「停止播放」≤4 chars），
@@ -5093,14 +5095,7 @@ class VoiceController(commands.Cog):
                 return i
         return len(queue)
 
-    def _queue_user_song(self, info: dict) -> None:
-        """使用者自選曲照點歌順序排（FIFO）：插在既有使用者曲之後、auto-recommend
-        （Marvin ambient，append 在尾）之前。Marvin 自動點歌順位最低、永遠被往後推。
-        _stream_loop 用 pop(0) 取歌，插在使用者區尾端 = 不打斷正在播的那首。
-
-        skip-override：手動點播 = 刻意正向更正，蓋過先前的 skip——記 played_again（latest-wins
-        覆蓋舊 skipped，見 music_memory.get_skipped_titles）+ 重置 consecutive-skip 計數，
-        讓這首不再被 auto-recommend 排除。"""
+    def _queue_user_song_ORIG(self, info: dict) -> None:
         self.stream_queue.insert(self._user_song_insert_index(self.stream_queue), info)
         try:
             user = info.get('requested_by') or ''
@@ -5109,13 +5104,19 @@ class VoiceController(commands.Cog):
             if mm and user and title:
                 mm.add_recommendation_feedback(user, title, "played_again")
             self._consecutive_skips_by_url.pop(info.get('url') or '', None)
-            # 使用者點歌 → 更新 T2 推薦 seed（radio 跟著最近點的歌走，而非舊 liked 歷史）
             _m = re.search(r"(?:v=|youtu\.be/|/watch\?v=)([A-Za-z0-9_-]{11})",
                            info.get('webpage_url') or '')
             if _m:
                 self._last_user_song_seed = _m.group(1)
         except Exception:
             logger.debug("[Queue] skip-override / seed 更新失敗", exc_info=True)
+
+    def _queue_user_song(self, info: dict) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._queue_user_song(info)
+        else:
+            self._queue_user_song_ORIG(info)
 
     def _detect_music_direct_command(self, text: str, stream_mode: bool = False) -> dict | None:
         """[IBA Tier 0] 無歧義音樂控制關鍵詞偵測（不需喚醒詞）。
@@ -5226,14 +5227,7 @@ class VoiceController(commands.Cog):
                 t = t[:-len(suffix)]
         return t.strip()
 
-    def _build_recommendation_extras(self) -> dict:
-        """Phase 1 豐富化（2026-05-28）：給 recommendation log 灌 controller scope 的
-        rich context。read-only / sync — 沒有 LLM call，不阻塞 bus dispatch。
-
-        - vibe_mood: 從 MoodSensor cache 讀（無 cache 回 None；不強制 refresh 避免 LLM）
-        - queue_depth: stream_queue 長度
-        - recent_history_titles: 最近 3 首歷史（dict 中的 title 欄位）
-        """
+    def _build_recommendation_extras_ORIG(self) -> dict:
         extras: dict = {
             "queue_depth": len(self.stream_queue),
             "recent_history_titles": [
@@ -5241,13 +5235,18 @@ class VoiceController(commands.Cog):
                 if isinstance(s, dict)
             ],
         }
-        # MoodSensor 有 5min cache，sync 讀 _cache attribute 安全（永不寫）
         ms = getattr(self, "_mood_sensor", None)
         if ms is not None:
             cached_vibe = getattr(ms, "_cache", None)
             if cached_vibe is not None:
                 extras["vibe_mood"] = getattr(cached_vibe, "mood", None)
         return extras
+
+    def _build_recommendation_extras(self) -> dict:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            return mc._build_recommendation_extras()
+        return self._build_recommendation_extras_ORIG()
 
     async def _yt_dlp_direct_probe(self, query: str) -> dict | None:
         """song_choice curation 短路探針：剝命令詞後丟 yt-dlp 直查。
@@ -5309,17 +5308,7 @@ class VoiceController(commands.Cog):
         except Exception as e:
             logger.warning(f"⚠️ [Music Followup] 貼頻道失敗: {e}")
 
-    def _cancel_stale_prefetch(self, speaker: str) -> None:
-        """B1: bus 接走 intent 時，取消 dangling speculative LLM prefetch。
-
-        Why: speculative prefetch 在 wake hit 那刻就啟動（避免 LLM 冷啟動）。
-        若 bus dispatch 接走（music / nemoclaw），LLM 路徑跑不到，prefetch task
-        會變孤兒 — 繼續跑燒 quota，且 1976 行 race window 內可能被下次 chat
-        turn 拿來當起手回應（幻覺）。
-
-        How: 從 router._pending_prefetch dict 取出該 speaker 的 task，若還沒
-        done 就 cancel；無論如何都從 dict 移除。
-        """
+    def _cancel_stale_prefetch_ORIG(self, speaker: str) -> None:
         prefetch_map = getattr(self.bot.router, "_pending_prefetch", None)
         if not isinstance(prefetch_map, dict):
             return
@@ -5327,19 +5316,20 @@ class VoiceController(commands.Cog):
         if task is not None and not task.done():
             task.cancel()
 
+    def _cancel_stale_prefetch(self, speaker: str) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._cancel_stale_prefetch(speaker)
+        else:
+            self._cancel_stale_prefetch_ORIG(speaker)
+
     _MUSIC_CMD_DEDUP_WINDOW = 5.0  # 秒
 
     # 自動點播「播過拉長視窗」排除：此視窗內播過的歌不再自動點（非永久、防候選枯竭）。
     # 6/14 使用者回報重複性高 → 從本場 15 首擴成 7 天跨重啟視窗；skip 過的另永久排除。
     _PLAYED_EXCLUDE_TTL_S = 7 * 24 * 3600
 
-    def _record_song_skip(self) -> None:
-        """把當前播放歌曲的 videoId 記入持久化 skip 排除集。
-
-        兩條 skip 路徑共用（IBA-T0 _handle_voice_music_command + 後喚醒
-        PlaybackControlAgent）。fail-open：拿不到歌/mm 不存在 → no-op，絕不
-        影響 skip 本身執行。
-        """
+    def _record_song_skip_ORIG(self) -> None:
         mm = getattr(self.bot, "music_memory", None)
         cur = self._current_stream_info
         if mm is None or not cur:
@@ -5348,13 +5338,19 @@ class VoiceController(commands.Cog):
         if url:
             try:
                 mm.record_skipped_video_id(url)
-                # Step 3 retreat：同時記藝人級 skip（≥2 首被 skip → explore 避開該方向）
                 from taste_fingerprint import artist_of
                 _artist = artist_of(cur.get("title", ""))
                 if _artist:
                     mm.record_artist_skip(_artist, url)
             except Exception:
                 logger.exception("[Skip] record_skipped_video_id 失敗")
+
+    def _record_song_skip(self) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._record_song_skip()
+        else:
+            self._record_song_skip_ORIG()
 
     async def _safe_music_command(self, speaker: str, query: str, cmd: str):
         """Top-level wrapper：任何 music command 路徑都該過這層 try/except。
@@ -6968,22 +6964,15 @@ class VoiceController(commands.Cog):
             await mc.play_radio_song(file_path)
 
     async def _resolve_yt_query(self, query: str) -> dict | None:
-        """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            return await mc._resolve_yt_query(query)
+        return await self._resolve_yt_query_ORIG(query)
 
-        文字搜尋打 ytsearch5（一般 YouTube）取 5 候選，用
-        music_search.pick_best_music_candidate 評分過濾。
-        URL 直接解析（信任 user 選擇）。
-
-        註：曾嘗試 ytmsearch5: 解 Bug 2「YT Music 找得到但 ytsearch 沒」，
-        但 yt-dlp 2026.03.17 沒有 ytmsearch: extractor，每次拋
-        NoSupportingHandlers 觸發 Errno 11 EDEADLK。等找到正確 YT Music 入口
-        再加。
-        """
+    async def _resolve_yt_query_ORIG(self, query: str) -> dict | None:
+        """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。"""
         from music_search import pick_best_music_candidate
 
-        # MemoryGuard: skip when RAM critical — yt-dlp's lazy extractor load
-        # path hits importlib EDEADLK on macOS under pressure (5/18 22:05).
-        # Retry won't help when every file read deadlocks; fail fast.
         if is_memory_critical():
             logger.warning("⚠️ [Stream] memory critical, skipping yt-dlp resolve")
             return None
@@ -7004,12 +6993,6 @@ class VoiceController(commands.Cog):
                         return None
                     chosen = info if 'url' in info else None
                 else:
-                    # 註：yt-dlp 2026.03.17 沒有 `ytmsearch:` extractor（只有
-                    # `youtube:music:search_url` 走 URL 形式），之前嘗試的
-                    # `ytmsearch5:` fallback 每次都拋 NoSupportingHandlers
-                    # 在 thread executor 內部觸發 lock 競爭，產生 Errno 11
-                    # deadlock。回到單純 ytsearch5。Bug 2「YT Music 找得到
-                    # 但 ytsearch 沒」需另外規劃（可能走 music.youtube.com URL）。
                     info = ydl.extract_info(f'ytsearch5:{query}', download=False)
                     entries = [e for e in (info.get('entries') or []) if e] if info else []
                     if not entries:
@@ -7035,10 +7018,8 @@ class VoiceController(commands.Cog):
         try:
             return await loop.run_in_executor(None, _extract)
         except OSError as e:
-            # macOS-specific Errno 11 EDEADLK — 多個 yt-dlp 並發呼叫競爭內部 lock
-            # 5/18 incident 多次出現；retry 一次通常能恢復
             if getattr(e, "errno", None) == 11:
-                logger.warning(f"⚠️ [Stream] yt-dlp Errno 11 deadlock，200ms 後重試")
+                logger.warning("⚠️ [Stream] yt-dlp Errno 11 deadlock，200ms 後重試")
                 await asyncio.sleep(0.2)
                 try:
                     return await loop.run_in_executor(None, _extract)
