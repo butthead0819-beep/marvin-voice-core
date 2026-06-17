@@ -592,7 +592,7 @@ class VoiceController(commands.Cog):
         self._mixer = LocalMixingAudioSource(instrument=True, on_demand=True)
         self._voice_client_override = None  # 測試可覆寫；prod 走 voice_client property 即時查連線 vc
         self._prefetch_cache_local: dict[str, asyncio.Task] = {}  # fallback when MusicCog not loaded
-        self._last_search: dict[str, dict] = {}  # username → {query, ts, source}（voice/manual，供偏好修正學習用）
+        self._last_search_local: dict[str, dict] = {}  # fallback when MusicCog not loaded
         # 🛡️ [Music Dedup] _handle_voice_music_command 5s 入口防抖
         # 防 IBA-T0 + bus + speculative 同時觸發導致 yt-dlp 並發 Errno 11 deadlock
         self._last_music_cmd_time: dict[str, float] = {}  # speaker → ts
@@ -1182,6 +1182,19 @@ class VoiceController(commands.Cog):
             mc._prefetch_cache = value
         else:
             self._prefetch_cache_local = value
+
+    @property
+    def _last_search(self) -> dict:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._last_search if mc is not None else self._last_search_local
+
+    @_last_search.setter
+    def _last_search(self, value: dict) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._last_search = value
+        else:
+            self._last_search_local = value
 
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
@@ -2113,185 +2126,6 @@ class VoiceController(commands.Cog):
             f"🗑️ 正在清空語音佇列（估計 {queue_before:.1f}s 的待播內容）...", ephemeral=True
         )
         await self.tts_flush()
-
-    @app_commands.command(name="marvin_radio", description="[Radio] 啟動/停止 Marvin 電台，隨機播放 assets/songs 中的歌曲")
-    @app_commands.describe(action="start=強制啟動, stop=強制停止, 不填=切換狀態")
-    @app_commands.choices(action=[
-        app_commands.Choice(name="start — 啟動電台", value="start"),
-        app_commands.Choice(name="stop — 停止電台", value="stop"),
-    ])
-    async def marvin_radio(self, interaction: discord.Interaction, action: str = "toggle"):
-        await interaction.response.defer(ephemeral=False)
-
-        if action == "toggle":
-            action = "stop" if self.radio_mode else "start"
-
-        if action == "start":
-            if self.radio_mode:
-                await interaction.followup.send("📻 電台已經在播放了。就算宇宙正在崩塌，至少還有音樂。")
-                return
-            
-            # 🚀 [Guild-Aware Fix] 檢查當前伺服器是否已有連線
-            vc = interaction.guild.voice_client
-            if not vc:
-                # 🛡️ [Usability Fix] 檢查使用者是否在頻道，引導召喚
-                if interaction.user.voice:
-                    await interaction.followup.send("❌ 馬文不在目前的語音頻道中。請先使用 `/summon` 召喚我，我才能為你播放這無助的旋律。", ephemeral=True)
-                else:
-                    await interaction.followup.send("❌ 馬文不在頻道中，且你似乎也還沒加入任何頻道。這世界果然一片荒蕪。", ephemeral=True)
-                return
-                
-            await interaction.followup.send("📻 **【馬文電台：啟動】**\n好吧，既然你們都不說話，我就讓音樂來填補這令人窒息的寂靜。")
-            await self.start_radio(trigger="手動指令")
-
-        elif action == "stop":
-            if not self.radio_mode:
-                await interaction.followup.send("📻 電台沒有在播放。沉默本來就是這個宇宙的預設狀態。", ephemeral=True)
-                return
-            await self.stop_radio(reason="手動指令停止")
-            await interaction.followup.send("📻 **【馬文電台：停止】**\n好了，音樂停了。你們滿意了嗎。")
-
-    # --- [🎵 Stream Commands] ---
-
-    @app_commands.command(name="marvin_play", description="[Stream] 播放 YouTube 音樂，輸入歌名或貼上連結")
-    @app_commands.describe(query="歌名（例如：周杰倫 稻香）或 YouTube 連結")
-    async def marvin_play(self, interaction: discord.Interaction, query: str):
-        await interaction.response.defer(ephemeral=False)
-        vc = interaction.guild.voice_client
-        if not vc:
-            await interaction.followup.send("❌ 馬文不在語音頻道中。請先使用 `/summon` 召喚我。", ephemeral=True)
-            return
-
-        username = interaction.user.display_name
-
-        # 偵測 STT 修正：僅在上次是語音搜尋、且兩者字串相似度夠高時才記錄修正
-        # 若兩首歌完全不同，視為新點歌，不觸發修正學習
-        _history_kws = ["喜歡的歌", "我的歌單", "曾點過的歌", "曾經點過", "愛歌", "常聽的歌"]
-        if hasattr(self.bot, 'music_memory') and not any(kw in query for kw in _history_kws):
-            last = self._last_search.get(username)
-            if last and time.time() - last['ts'] < 300 and last.get('source') == 'voice':
-                old_q = last.get('query', '')
-                if old_q and old_q != query and len(old_q) > 1:
-                    # 只有「舊查詢是新查詢的子串（版本指定）」或「字串相似度 >= 60%（真正糾錯）」才記憶
-                    is_version_spec = old_q in query and len(query) > len(old_q) + 1
-                    is_correction = False
-                    if not is_version_spec:
-                        try:
-                            from rapidfuzz import fuzz
-                            is_correction = fuzz.ratio(old_q, query) >= 60
-                        except ImportError:
-                            pass
-                    if is_version_spec or is_correction:
-                        note = (
-                            f"搜尋「{old_q}」→ 自動指定版本「{query}」"
-                            if is_version_spec
-                            else f"語音辨識「{old_q}」→ 修正為「{query}」"
-                        )
-                        self.bot.music_memory.record_stt_correction(username, old_q, query)
-                        self._last_search.pop(username, None)
-                        asyncio.create_task(
-                            interaction.followup.send(
-                                f"📝 **【搜尋偏好學習】** 已記住：{note}",
-                                ephemeral=False,
-                            )
-                        )
-
-        history_keywords = ["喜歡的歌", "我的歌單", "曾點過的歌", "曾經點過", "愛歌", "常聽的歌"]
-
-        is_random_history = False
-        if any(kw in query for kw in history_keywords):
-            history = self.bot.router.memory.get_song_history(username)
-            if not history:
-                await interaction.followup.send("❌ 你的大腦裡一片空白，我的記憶庫裡也沒有你點過任何歌的紀錄。")
-                return
-            import random
-            query = random.choice(history)
-            is_random_history = True
-            msg = await interaction.followup.send(f"🔍 **正在從你那可悲的歌單中隨機挑選：** `{query}`...")
-        else:
-            msg = await interaction.followup.send(f"🔍 **正在搜尋：** `{query}`...")
-
-        info = await self._resolve_yt_query(query)
-        if not info:
-            await msg.edit(content=f"❌ 找不到結果：`{query}`。就跟在宇宙虛空中尋找意義一樣徒勞。")
-            return
-
-        # 記錄點歌歷史
-        if not is_random_history and hasattr(self.bot.router.memory, 'add_song_history'):
-            self.bot.router.memory.add_song_history(username, info['title'])
-
-        self.stt_logger.info(
-            f"[點歌-手動] 使用者={username} | 搜尋={query} | 結果={info['title']} / {info.get('uploader', '?')}"
-        )
-
-        # 存入搜尋追蹤，讓下次 manual 再次搜尋時可偵測版本/歌手偏好
-        if not is_random_history:
-            self._last_search[username] = {'query': query, 'ts': time.time(), 'source': 'manual'}
-
-        if self.radio_mode:
-            await self.stop_radio(reason="Stream 模式接管")
-
-        info['requested_by'] = username
-        if self._check_song_duplicate(url=info['url'], title=info['title'], username=username, check_history=False):
-            await msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。")
-            return
-        self._queue_user_song(info)   # 自選曲 LIFO 插隊到待播一 + skip-override
-
-        if not self.stream_mode:
-            self.stream_mode = True
-            self.stream_volume = 0.10
-            if self.stream_task and not self.stream_task.done():
-                self.stream_task.cancel()
-            self.stream_task = asyncio.create_task(self._stream_loop())
-
-        # 若已有現有的控制方塊，直接更新它而不新建一個
-        existing_view = self._active_control_view
-        if existing_view and getattr(existing_view, 'message', None):
-            try:
-                await existing_view.message.edit(embed=existing_view._build_embed(), view=existing_view)
-                await msg.delete()
-                return
-            except Exception:
-                pass  # 若舊訊息已刪除或失效，fallthrough 到建立新的
-
-        view = PlayControlView(self)
-        self._active_control_view = view
-        await msg.edit(content=None, embed=view._build_embed(), view=view)
-        view.message = msg
-
-    @app_commands.command(name="marvin_skip", description="[Stream] 跳過當前播放的歌曲")
-    async def marvin_skip(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        if not self.stream_mode:
-            await interaction.followup.send("沒有歌曲在播放。虛無是這個宇宙的預設狀態。", ephemeral=True)
-            return
-        vc = interaction.guild.voice_client
-        if vc and vc.is_playing():
-            vc.stop_playing()
-        await interaction.followup.send("⏭️ 已跳過。", ephemeral=True)
-
-    @app_commands.command(name="marvin_play_control", description="[Stream] 播放控制台：音量、暫停、上下首、佇列管理")
-    async def marvin_play_control(self, interaction: discord.Interaction):
-        view = PlayControlView(self)
-        self._active_control_view = view
-        await interaction.response.send_message(embed=view._build_embed(), view=view)
-        view.message = await interaction.original_response()
-
-    @app_commands.command(name="marvin_recommend", description="[Stream] 讓馬文根據你的點播記憶推薦下一首")
-    async def marvin_recommend(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        username = interaction.user.display_name
-        if not hasattr(self.bot, 'music_memory'):
-            await interaction.followup.send("音樂記憶系統尚未啟動。", ephemeral=True)
-            return
-        music_ctx = self.bot.music_memory.get_user_music_context(username)
-        if not music_ctx:
-            await interaction.followup.send(
-                f"我對 `{username}` 的品味一無所知。先去多點幾首歌讓我學習再說。", ephemeral=True
-            )
-            return
-        await interaction.followup.send(f"🔮 **【馬文精選】** 正在為 `{username}` 挑選...")
-        await self._auto_recommend(username)
 
     @app_commands.command(name="marvin_optin", description="同意馬文處理你在語音頻道的資料")
     async def marvin_optin(self, interaction: discord.Interaction):
