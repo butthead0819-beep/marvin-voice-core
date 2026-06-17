@@ -43,6 +43,7 @@ def _make_cog():
         from cogs.voice_controller import VoiceController
         cog = VoiceController(bot)
     cog.stt_logger = MagicMock()
+    cog._COLD_META_TIMEOUT_S = 0.05
     return cog
 
 
@@ -70,7 +71,7 @@ async def test_timeout_returns_fallback_meta_with_hardcoded_dj():
     cog = _make_cog()
 
     async def _slow_meta(info):
-        await asyncio.sleep(10)  # >5s timeout
+        await asyncio.sleep(0.5)  # >0.05s timeout
         return {"lyrics": "should not arrive", "comment": "", "dj": {"text": "x", "audio_path": "y"}}
 
     cog._fetch_song_meta = _slow_meta
@@ -90,12 +91,12 @@ async def test_timeout_returns_fallback_meta_with_hardcoded_dj():
 
 @pytest.mark.asyncio
 async def test_total_wall_time_capped_at_5s_even_when_meta_hangs():
-    """meta hang 10s 也不能讓整個 call 跑 >5.5s（含一點 timeout buffer）。"""
+    """meta hang 也不能讓整個 call 跑太久。"""
     import time
     cog = _make_cog()
 
     async def _hang_forever(info):
-        await asyncio.sleep(60)
+        await asyncio.sleep(0.5)
 
     cog._fetch_song_meta = _hang_forever
 
@@ -103,7 +104,7 @@ async def test_total_wall_time_capped_at_5s_even_when_meta_hangs():
     result = await cog._meta_with_ack_fallback(_info(), "狗與露")
     elapsed = time.monotonic() - t0
 
-    assert elapsed < 5.5, f"timeout 應限制 ≤5.5s，實際: {elapsed:.2f}s"
+    assert elapsed < 0.2, f"timeout 應限制 ≤0.2s，實際: {elapsed:.2f}s"
     assert result["dj"]["text"], "timeout 仍要回 fallback dj 文字"
 
 
@@ -115,7 +116,7 @@ async def test_empty_requester_still_returns_meta_no_crash():
     cog = _make_cog()
 
     async def _slow(info):
-        await asyncio.sleep(10)
+        await asyncio.sleep(0.5)
 
     cog._fetch_song_meta = _slow
 

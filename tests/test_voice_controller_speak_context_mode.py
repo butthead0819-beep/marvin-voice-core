@@ -28,6 +28,11 @@ def _make_cog():
     cog._room_mood_store = MagicMock()
     cog._room_mood_store.get.return_value = None
     cog.get_online_members = lambda: ["Alice"]
+    # stream_mode/radio_mode 是 proxy property，需要 bot
+    cog.bot = MagicMock()
+    cog.bot.cogs.get.return_value = None
+    cog._stream_mode_local = False
+    cog._radio_mode_local = False
     # 3 個 mode flag 預設 False
     cog.game_mode = False
     cog.stream_mode = False

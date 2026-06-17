@@ -388,3 +388,17 @@ grep "NemoClaw路由\|NemoClaw→\|NemoClaw.*跳過\|NemoClaw.*排隊" bot_main.
 ### TODO: Approach B — Semantic emotion detection
 **Status:** SHIPPED（Op 31, 2026-05-07）
 **What:** `_classify_marvin_self_emotion(speaker, full_text)` 背景任務，Groq flash 分類 Marvin 自身文字情緒，結果存 `marvin_self_emotion` 供下次 TTS prosody 使用。
+
+## MusicCog 抽離後的 Phase 2 工作
+
+### STT pipeline 層抽離
+**What**: 把 `handle_stt_result` → `_process_queued_query` 這 ~2500 行抽成獨立 `pipeline_layer.py`
+**Why**: MusicCog 移完後 VC 仍有 ~4800 行，主體是 STT pipeline。需要明確的輸入（音訊 record）和輸出（callback）interface 才能測試
+**Status**: deferred — MusicCog Phase 1-6 完成後執行
+**Start**: 先設計 PipelineContext dataclass（輸入）和 ResultHandler Protocol（輸出 callback）
+
+### IntentBus agents 改寫 — 直接存取 MusicCog
+**What**: `MusicAgentV2` 和 `PlaybackControlAgent` 的 ~14 處 `self.ctrl.X` 改成 `self.ctrl.bot.cogs.get('MusicCog').X`
+**Why**: Phase 1 加的 forwarding stubs 是技術債，清掉後 VC 的 forwarding 層可以完全刪除
+**Status**: deferred — 等 MusicCog 穩定（Phase 3 之後）執行
+**Start**: `grep -n "self\.ctrl\.\(stream\|radio\|_safe_music\|_mixer\|_cover\|_consecutive\)" intent_agents/`

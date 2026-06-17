@@ -100,3 +100,17 @@ def _isolate_record_writes(tmp_path, monkeypatch):
         pass
 
     yield
+
+
+def make_music_cog_mock(*, stream_mode: bool = False, radio_mode: bool = False):
+    """建一個 MusicCog mock，供需要操控 stream_mode/radio_mode 的測試使用。
+
+    使用方式：
+        mc = make_music_cog_mock(stream_mode=True)
+        bot.cogs.get.side_effect = lambda name: {'MusicCog': mc}.get(name)
+    """
+    from unittest.mock import MagicMock
+    mc = MagicMock()
+    mc.stream_mode = stream_mode
+    mc.radio_mode = radio_mode
+    return mc

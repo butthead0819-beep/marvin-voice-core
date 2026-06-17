@@ -143,7 +143,7 @@ def _make_connected_vc():
     vc.is_connected.return_value = True
     vc.is_playing.return_value = False
 
-    def _play(source, after=None):
+    def _play(source, after=None, *args, **kwargs):
         if after:
             after(None)   # trigger callback with no error, synchronously
 
@@ -163,6 +163,8 @@ async def _run_play_tts_with_wake_fusion(cog, text: str, bridge_mode: str | None
     cog.bot.companion_bridge = bridge
 
     cog.bot.voice_clients = [_make_connected_vc()]
+    cog._stream_tts_to_mixer = AsyncMock(return_value=100)
+    cog._ensure_mixer_playing = MagicMock()
 
     async def _stream(*a, **kw):
         yield b""

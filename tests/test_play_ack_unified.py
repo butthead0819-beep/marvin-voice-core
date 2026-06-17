@@ -35,6 +35,9 @@ def _make_cog():
         from cogs.voice_controller import VoiceController
         cog = VoiceController(bot)
     cog._speaker_lang = {}
+    cog._ffmpeg_to_f32 = AsyncMock(return_value=MagicMock(size=100))
+    cog._mixer = MagicMock()
+    cog._ensure_mixer_playing = MagicMock()
     return cog
 
 
@@ -64,7 +67,7 @@ async def test_wake_prewarms_and_plays_from_wake_pool(tmp_path):
         await cog._play_ack("wake", speaker="阿狗")
 
     assert cog.bot.tts_engine.prewarm.called   # wake 預告回應 → 暖 TTS
-    assert vc.play.called
+    assert cog._mixer.push_tts.called
 
 
 @pytest.mark.asyncio
@@ -119,87 +122,10 @@ async def test_music_empty_falls_back_to_wake_pool(tmp_path):
          patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
         await cog._play_ack("music", speaker="阿狗")
 
-    assert vc.play.called
+    assert cog._mixer.push_tts.called
 
 
-@pytest.mark.asyncio
-async def test_music_uses_hotswap_during_music(tmp_path, monkeypatch):
-    cog = _make_cog()
-    vc = MagicMock()
-    vc.is_connected.return_value = True
-    vc.is_playing.return_value = True
-    vc.play = MagicMock()
-    cog.voice_client = vc
-
-    monkeypatch.setenv("MARVIN_MIDSONG_HOTSWAP_ENABLED", "true")
-    cog.stream_mode = True
-    cog._stream_position_source = object()
-    cog._current_stream_url = "http://x"
-    cog._arm_hotswap = AsyncMock(return_value=True)
-
-    f = tmp_path / "music_ack_01.mp3"; f.write_bytes(b"x")
-    with patch("glob.glob", return_value=[str(f)]):
-        await cog._play_ack("music", speaker="阿狗")
-
-    cog._arm_hotswap.assert_called_once_with(str(f))
-    assert not vc.play.called          # 音樂中走熱切換，不 plain play
-
-
-@pytest.mark.asyncio
-async def test_music_fail_no_hotswap(tmp_path, monkeypatch):
-    """music_fail 非 urgent：即使在音樂中也不走熱切換。"""
-    cog = _make_cog()
-    vc = _idle_vc()
-    cog.voice_client = vc
-    monkeypatch.setenv("MARVIN_MIDSONG_HOTSWAP_ENABLED", "true")
-    cog.stream_mode = True
-    cog._stream_position_source = object()
-    cog._current_stream_url = "http://x"
-    cog._arm_hotswap = AsyncMock(return_value=True)
-
-    f = tmp_path / "music_fail.mp3"; f.write_bytes(b"x")
-    with patch("glob.glob", return_value=[str(f)]), \
-         patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
-        await cog._play_ack("music_fail", speaker="阿狗")
-
-    assert not cog._arm_hotswap.called   # 非 urgent → 不熱切換
-
-
-# ── nemoclaw / status：lock + skip_if_busy ──────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_nemoclaw_skips_when_busy():
-    cog = _make_cog()
-    vc = MagicMock()
-    vc.is_connected.return_value = True
-    vc.is_playing.return_value = True
-    vc.play = MagicMock()
-    cog.voice_client = vc
-    cog.is_playing_audio = True
-
-    await cog._play_ack("nemoclaw", speaker="阿狗")
-    assert not vc.play.called
-
-
-@pytest.mark.asyncio
-async def test_nemoclaw_holds_lock_when_idle(tmp_path):
-    cog = _make_cog()
-    vc = _idle_vc()
-    cog.voice_client = vc
-    held = {"v": False}
-    real = vc.play
-    def _spy(*a, **k):
-        held["v"] = cog.playback_lock.locked()
-        return real(*a, **k)
-    vc.play = MagicMock(side_effect=_spy)
-
-    f = tmp_path / "ack_1.mp3"; f.write_bytes(b"x")
-    with patch("glob.glob", return_value=[str(f)]), \
-         patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
-        await cog._play_ack("nemoclaw", speaker="阿狗")
-
-    assert vc.play.called
-    assert held["v"] is True
+# ── status：skip_if_busy ──────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -299,15 +225,13 @@ async def test_status_suppressed_during_chitchat(tmp_path):
     cog.voice_client = vc
     cog._tts_echo_cooldown_until = 0.0
     _recent(cog, "你昨天看球賽了嗎")
-    cog._arm_hotswap = AsyncMock(return_value=True)
 
     f = tmp_path / "thinking_first_1.mp3"; f.write_bytes(b"x")
     with patch("glob.glob", return_value=[str(f)]), \
          patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
         await cog._play_ack("status", variant="thinking_first")
 
-    assert not vc.play.called
-    assert not cog._arm_hotswap.called
+    assert not cog._mixer.push_tts.called
 
 
 @pytest.mark.asyncio
@@ -324,7 +248,7 @@ async def test_status_fires_on_probe(tmp_path):
          patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
         await cog._play_ack("status", variant="thinking_first")
 
-    assert vc.play.called
+    assert cog._mixer.push_tts.called
 
 
 @pytest.mark.asyncio
@@ -341,43 +265,10 @@ async def test_passive_ack_ignores_active_gate(tmp_path):
          patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
         await cog._play_ack("wake", speaker="阿狗")
 
-    assert vc.play.called
+    assert cog._mixer.push_tts.called
 
 
 # ── filler：不鎖、僅空檔 ─────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_filler_skips_when_playing():
-    cog = _make_cog()
-    vc = MagicMock()
-    vc.is_connected.return_value = True
-    vc.is_playing.return_value = True
-    vc.play = MagicMock()
-    cog.voice_client = vc
-
-    await cog._play_ack("filler", speaker="阿狗")
-    assert not vc.play.called
-
-
-@pytest.mark.asyncio
-async def test_filler_plays_without_lock_when_idle(tmp_path):
-    cog = _make_cog()
-    vc = _idle_vc()
-    cog.voice_client = vc
-    held = {"v": True}
-    real = vc.play
-    def _spy(*a, **k):
-        held["v"] = cog.playback_lock.locked()
-        return real(*a, **k)
-    vc.play = MagicMock(side_effect=_spy)
-
-    f = tmp_path / "ack_1.mp3"; f.write_bytes(b"x")
-    with patch("glob.glob", return_value=[str(f)]), \
-         patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
-        await cog._play_ack("filler", speaker="阿狗")
-
-    assert vc.play.called
-    assert held["v"] is False          # filler 故意不鎖
 
 
 @pytest.mark.asyncio

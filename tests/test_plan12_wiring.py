@@ -40,13 +40,7 @@ def _idle_vc():
     return vc
 
 
-def test_flag_off_no_mixer_and_ensure_noops(monkeypatch):
-    cog = _make_cog(plan12=False, monkeypatch=monkeypatch)
-    assert cog._plan12 is False
-    assert cog._mixer is None
-    vc = _idle_vc()
-    assert cog._ensure_mixer_playing(vc) is False
-    assert not vc.play.called  # 舊路徑零干擾
+
 
 
 def test_flag_on_builds_mixer_and_ensure_plays(monkeypatch):
@@ -79,12 +73,7 @@ def test_flag_on_state_fields_delegate_to_mixer(monkeypatch):
     assert cog.tts_queue_duration == pytest.approx(1.0, abs=0.01)
 
 
-def test_flag_off_state_fields_use_backing(monkeypatch):
-    cog = _make_cog(plan12=False, monkeypatch=monkeypatch)
-    cog.tts_queue_duration = 5.0   # setter → backing field
-    cog.is_playing_audio = True
-    assert cog.tts_queue_duration == 5.0
-    assert cog.is_playing_audio is True
+
 
 
 # ── 2c：play_tts flag=on → render + push mixer ────────────────────────────────

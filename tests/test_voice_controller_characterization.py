@@ -156,46 +156,14 @@ async def test_play_dual_dialogue_empty_segments_noop():
     assert cog.play_tts.await_count == 0
 
 
-# ── broadcast / radio 競爭 playback_lock ─────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_play_local_file_broadcast_competes_playback_lock():
-    cog = _make_cog()
-    spy = _SpyLock()
-    cog.playback_lock = spy
-    vc = _connected_vc(playing=False)
-    cog.bot.voice_clients = [vc]
-    with tempfile.NamedTemporaryFile(suffix=".mp3") as f, \
-         patch("discord.FFmpegPCMAudio", MagicMock()):
-        await cog.play_local_file(f.name)
-    assert spy.entered == 1
-    assert vc.play.called
-    assert cog.is_playing_audio is False
-
-
-@pytest.mark.asyncio
-async def test_play_radio_song_competes_playback_lock():
-    cog = _make_cog()
-    cog.radio_mode = True
-    cog.radio_volume = 0.30
-    spy = _SpyLock()
-    cog.playback_lock = spy
-    vc = _connected_vc(playing=False)
-    cog.bot.voice_clients = [vc]
-    with tempfile.NamedTemporaryFile(suffix=".mp3") as f, \
-         patch("discord.FFmpegPCMAudio", MagicMock()), \
-         patch("discord.PCMVolumeTransformer", MagicMock()):
-        await cog.play_radio_song(f.name)
-    assert spy.entered == 1
-    assert vc.play.called
-
-
 # ── tts_queue_duration 外部讀取（marvin_tts_clear owner gate）────────────────
 
 @pytest.mark.asyncio
 async def test_marvin_tts_clear_owner_reads_queue_then_flushes():
     from cogs.voice_controller import _NEMOCLAW_OWNER_ID
     cog = _make_cog()
+    if getattr(cog, "_plan12", False) and getattr(cog, "_mixer", None) is not None:
+        cog._mixer.tts_load_seconds = MagicMock(return_value=5.0)
     cog.tts_queue_duration = 5.0
     cog.tts_flush = AsyncMock()
     interaction = MagicMock()

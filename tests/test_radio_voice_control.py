@@ -121,6 +121,7 @@ async def test_voice_stop_both_modes_active_stops_both():
 async def test_voice_pause_radio_mode_pauses_vc():
     """pause 指令：只有 radio_mode 開啟時，應 pause vc 並設定 radio_paused=True。"""
     cog = _make_cog()
+    cog._mixer = MagicMock()
     vc = _make_vc()
     cog.bot.voice_clients = [vc]
     cog.radio_mode = True
@@ -129,7 +130,7 @@ async def test_voice_pause_radio_mode_pauses_vc():
 
     await cog._handle_voice_music_command("狗與露", "暫停播放", "pause")
 
-    vc.pause.assert_called_once()
+    cog._mixer.set_paused.assert_called_once_with(True)
     assert cog.radio_paused is True
     cog.active_text_channel.send.assert_called_once()
     sent = cog.active_text_channel.send.call_args[0][0]
@@ -174,6 +175,7 @@ async def test_voice_pause_no_modes_active_sends_error():
 async def test_voice_resume_radio_paused_resumes_vc():
     """resume 指令：radio_paused=True 時應 resume vc 並清除 radio_paused。"""
     cog = _make_cog()
+    cog._mixer = MagicMock()
     vc = _make_vc(playing=False, paused=True)
     cog.bot.voice_clients = [vc]
     cog.radio_mode = True
@@ -183,7 +185,7 @@ async def test_voice_resume_radio_paused_resumes_vc():
 
     await cog._handle_voice_music_command("狗與露", "繼續播", "resume")
 
-    vc.resume.assert_called_once()
+    cog._mixer.set_paused.assert_called_once_with(False)
     assert cog.radio_paused is False
     cog.active_text_channel.send.assert_called_once()
     sent = cog.active_text_channel.send.call_args[0][0]
@@ -215,6 +217,7 @@ async def test_voice_resume_no_modes_paused_sends_error():
 async def test_voice_skip_radio_mode_stops_vc():
     """skip 指令：radio_mode 開啟時應 stop_playing()，觸發電台迴圈換下一首。"""
     cog = _make_cog()
+    cog._mixer = MagicMock()
     vc = _make_vc()
     cog.bot.voice_clients = [vc]
     cog.radio_mode = True
@@ -222,7 +225,7 @@ async def test_voice_skip_radio_mode_stops_vc():
 
     await cog._handle_voice_music_command("狗與露", "下一首", "skip")
 
-    vc.stop_playing.assert_called_once()
+    cog._mixer.clear_music.assert_called_once()
     cog.active_text_channel.send.assert_called_once()
     sent = cog.active_text_channel.send.call_args[0][0]
     assert "⏭️" in sent

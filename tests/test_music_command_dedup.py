@@ -43,6 +43,7 @@ def _make_cog():
     cog.radio_mode = False
     cog.stream_queue = []
     cog.stream_history = []
+    cog._play_ack = AsyncMock()
     # music_memory 預設沒有，避免 apply_stt_correction 噴
     if hasattr(cog.bot, "music_memory"):
         del cog.bot.music_memory

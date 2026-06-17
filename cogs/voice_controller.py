@@ -80,13 +80,8 @@ from gap_research import (
 )
 from intent_agents.rescue_classifier import build_rescue_components
 from audio_position_source import PositionTrackingAudioSource
-from hotswap_coordinator import HotSwapCoordinator
-from hotswap_loudness import (
-    LOUDNORM_TARGET, build_stream2_music_filter, build_volume_swap_af,
-    parse_loudnorm_measurement,
-)
-from hotswap_eligibility import MAX_HOTSWAP_CHARS, is_hotswap_eligible
 from voice_guard_helpers import _should_mute_for_stream_guard
+MAX_HOTSWAP_CHARS = 12
 from cogs.voice_views import ConsentView, PlayControlView
 from local_mixing_source import (
     LocalMixingAudioSource, MixerPlaybackAdapter, S16ToF32MusicSource,
@@ -513,8 +508,6 @@ class VoiceController(commands.Cog):
         # 🚀 [Priority & Queue] 追問與隊列管理系統
         self.user_states = {} # speaker -> {"pending_task": Task, "is_talking": bool}
         self.tts_queue_duration = 0.0 # 當前待播放語音的總估計長度
-        self.tts_queue_lock = asyncio.Lock()
-        self.playback_lock = asyncio.Lock() # 🚀 [Critical Fix] 實體播音鎖，防止並發 play() 衝突
         self._tts_interrupted = False # 🛡️ [Interrupt Guard] 玩家插話後封鎖剩餘串流片段
         self._tts_protected = False  # 登場台詞等不可中斷的 TTS 播放中時為 True
         self._tts_flush_requested = False  # 🗑️ [TTS Flush] owner 強制清空佇列旗標
@@ -561,7 +554,7 @@ class VoiceController(commands.Cog):
         self._stt_call_counter = 0      # 🚀 [STT Rate Limit] 每分鐘 STT 呼叫計數
 
         # 📻 [Marvin Radio] 電台系統狀態
-        self.radio_mode = False          # 電台是否啟動中
+        self._radio_mode_local = False    # fallback when MusicCog not loaded
         self.radio_task = None           # 播放歌單背景 Task
         self.radio_volume = 0.10         # 音量上限 10%（無人說話時）
         self._radio_song_list = []       # 打亂後的歌單（pop 取用）
@@ -577,17 +570,12 @@ class VoiceController(commands.Cog):
         self._consecutive_skips_by_url: dict[str, set[str]] = {}  # url → 已 skip 該 url 的 speaker set，連 2 不同人 → blacklist
 
         # 🎵 [Stream Mode] YouTube 串流系統狀態
-        self.stream_mode = False
+        self._stream_mode_local = False   # fallback when MusicCog not loaded
         self.stream_volume = 0.10        # 串流獨立音量，初始 10%
-        # 🎚️ [HotSwap] 中途 TTS 熱切換（Plan 11 Slice 1，手動觸發驗證機制）
-        self._hotswap_coord = HotSwapCoordinator()
-        self._stream_play_gen = 0                 # 播放世代；切換前遞增使舊 source 的 after 失效
-        self._stream_position_source = None       # 當前 PositionTrackingAudioSource（讀播放位置）
-        self._current_stream_url = None           # 當前串流 URL（備 stream2 用）
-        self._stream_loudness: dict[str, dict] = {}  # url → loudnorm 量測值（Slice 2 音量匹配）
+        self._stream_play_gen = 0                 # 播放世代
+        self._current_stream_url = None           # 當前串流 URL
         self._stream_norm_gain: dict[str, float] = {}  # url → 每首響度正規化常數增益（Plan 12 mixer 套）
         self._last_user_song_seed: str | None = None   # 使用者最近手動點的歌 video_id（T2 radio seed 優先）
-        self._pending_volume_swap = False         # 語音調音量後，等當前 swap 完再 arm 一次音量 swap（排隊）
         self.stream_queue = []           # list of {title, uploader, url, thumbnail, webpage_url, duration}
         self.stream_task = None
         self._current_stream_info = None
@@ -599,12 +587,9 @@ class VoiceController(commands.Cog):
         # 存活 UI view 弱引用集；cog_unload 時 stop() 全部，斷 view→cog 強引用，防 hot reload 雙實例
         self._active_views: weakref.WeakSet = weakref.WeakSet()
 
-        # 🎛️ [Plan 12] always-on 本地混音台（env-gated）。flag=off → mixer None、走舊 vc.play() 路徑。
-        # flag=on → 整 session 一條 vc.play(mixer adapter)，所有音訊餵 mixer 層。
-        self._plan12 = os.getenv("PLAN12_LOCAL_MIX", "false").lower() in ("1", "true", "yes")
-        # instrument=True：每 5s 印 [Plan12_Stats]（read_ms / underrun / buffer 深度）供 live 判跟不跟得上
-        # on_demand=True：idle 停送、內容到再 arm（修 always-on×DAVE：unmute 撞連續送音斷流）
-        self._mixer = LocalMixingAudioSource(instrument=True, on_demand=True) if self._plan12 else None
+        # 🎛️ [Plan 12] always-on 本地混音台
+        self._plan12 = True
+        self._mixer = LocalMixingAudioSource(instrument=True, on_demand=True)
         self._voice_client_override = None  # 測試可覆寫；prod 走 voice_client property 即時查連線 vc
         self._prefetch_cache: dict[str, asyncio.Task] = {}  # url → Task[{'lyrics', 'comment'}]
         self._last_search: dict[str, dict] = {}  # username → {query, ts, source}（voice/manual，供偏好修正學習用）
@@ -677,7 +662,7 @@ class VoiceController(commands.Cog):
         每次交給 vc.play() 一個新 MixerPlaybackAdapter（不重用、reconnect-safe）。
         idempotent：已在播 → no-op。flag=off → 直接 no-op，不碰舊路徑。
         """
-        if not self._plan12 or self._mixer is None:
+        if self._mixer is None:
             return False
         return ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(self._mixer))
 
@@ -840,6 +825,32 @@ class VoiceController(commands.Cog):
     @tts_queue_duration.setter
     def tts_queue_duration(self, value: float) -> None:
         self._tts_queue_duration = value
+
+    @property
+    def stream_mode(self) -> bool:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.stream_mode if mc is not None else self._stream_mode_local
+
+    @stream_mode.setter
+    def stream_mode(self, value: bool) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.stream_mode = value
+        else:
+            self._stream_mode_local = value
+
+    @property
+    def radio_mode(self) -> bool:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc.radio_mode if mc is not None else self._radio_mode_local
+
+    @radio_mode.setter
+    def radio_mode(self, value: bool) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc.radio_mode = value
+        else:
+            self._radio_mode_local = value
 
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
@@ -1623,22 +1634,6 @@ class VoiceController(commands.Cog):
             await self.play_tts(standup_text, already_in_channel=True, protected=True)
         finally:
             self._tts_protected = _prev_protected
-
-    @app_commands.command(name="hotswap_test", description="[Debug] Plan 11 Slice 1：播歌中途插 TTS 熱切換驗證")
-    @app_commands.describe(lead="幾秒後切換（給 stream2 備料時間，預設 4）")
-    async def hotswap_test(self, interaction: discord.Interaction, lead: float = 4.0):
-        await interaction.response.defer(thinking=True)
-        if not self.stream_mode or self._stream_position_source is None:
-            await interaction.followup.send("⚠️ 目前不在串流播歌中，無法測試熱切換。先放一首歌再試。")
-            return
-        tts_path = os.path.join(os.path.dirname(__file__), "..", "assets", "acks", "ack_1.mp3")
-        tts_path = os.path.abspath(tts_path)
-        pos = self._stream_position_source.position_seconds
-        await self._debug_trigger_hotswap(tts_path, lead=lead)
-        await interaction.followup.send(
-            f"🎚️ 已 arm 熱切換：當前 {pos:.1f}s → {pos + lead:.1f}s 切換插入 TTS（ack_1）。"
-            f"聽音樂有沒有中斷/爆音/卡死。"
-        )
 
     @app_commands.command(name="marvin_status", description="[Agent Report] 查看馬文對你這卑微人類的觀察報告")
     async def marvin_status(self, interaction: discord.Interaction, target: discord.Member = None):
@@ -3929,18 +3924,7 @@ class VoiceController(commands.Cog):
         cjk = sum(1 for c in text if '一' <= c <= '鿿')
         return "en" if latin > cjk * 2 else "zh"
 
-    def _midsong_hotswap_active(self, allow_hotswap: bool) -> bool:
-        """播歌中途熱切換注入的前置條件：呼叫端 opt-in + feature flag + 有 live stream 游標。
 
-        內容閘（長度/類型）由呼叫端另判——play_tts 加 is_hotswap_eligible，ack 音效本身已短。
-        """
-        return (
-            allow_hotswap
-            and os.getenv("MARVIN_MIDSONG_HOTSWAP_ENABLED", "false").lower() == "true"
-            and self.stream_mode
-            and self._stream_position_source is not None
-            and bool(self._current_stream_url)
-        )
 
     # 主動 ack intent gate：近此窗內的使用者文字才納入意圖判斷。
     # 必須 < status 第一發的 5s，否則會把 0s 的原始 query 也算進來而誤判成閒聊。
@@ -4037,49 +4021,14 @@ class VoiceController(commands.Cog):
 
         ack_file = random.choice(files)
 
-        # 🎚️ urgent + 播歌中 → 中途熱切換注入（ack mp3 當 stream2 input），不打斷音樂
-        # （Plan 12：跳過 hotswap，下方 _do_play 直接 push mixer TTS 層 overlay 音樂）
-        if cat.urgent and not self._plan12 and self._midsong_hotswap_active(allow_hotswap=True):
-            if await self._arm_hotswap(ack_file):
-                logger.info(f"🗣️ [Ack:{category_key}] 熱切換注入 {variant or ''}")
-                return
-
-        # 播放中政策：skip_if_busy → 跳過；否則 wait_if_busy 等空檔
-        # Plan 12 模式：ack 走 push_tts（TTS 層 overlay 音樂），不佔 vc，busy guard 不適用
-        if not self._plan12:
-            if cat.skip_if_busy and (_vc.is_playing() or self.is_playing_audio):
-                return
-            if cat.wait_if_busy > 0:
-                waited = 0.0
-                while _vc.is_playing() and waited < cat.wait_if_busy:
-                    await asyncio.sleep(0.05)
-                    waited += 0.05
-
-        async def _do_play() -> None:
-            try:
-                if self._plan12:
-                    # 🎛️ [Plan 12] ack mp3 解 f32 → push mixer TTS 層（overlay/duck，不獨佔 vc）
-                    f32 = await self._ffmpeg_to_f32(input_path=ack_file)
-                    if f32 is not None and f32.size:
-                        self._ensure_mixer_playing(_vc)
-                        self._mixer.push_tts(f32)
-                elif cat.await_completion:
-                    done = asyncio.Event()
-                    _vc.play(discord.FFmpegPCMAudio(ack_file), after=lambda e: done.set())
-                    await asyncio.wait_for(done.wait(), timeout=5.0)
-                else:
-                    _vc.play(discord.FFmpegPCMAudio(ack_file))
+        try:
+            f32 = await self._ffmpeg_to_f32(input_path=ack_file)
+            if f32 is not None and f32.size:
+                self._ensure_mixer_playing(_vc)
+                self._mixer.push_tts(f32)
                 logger.info(f"🗣️ [Ack:{category_key}] 播放 {variant or os.path.basename(ack_file)}")
-            except Exception as e:
-                logger.warning(f"[Ack:{category_key}] 播放失敗（忽略）：{e}")
-
-        if cat.use_lock:
-            async with self.playback_lock:
-                if not self._plan12 and cat.skip_if_busy and (_vc.is_playing() or self.is_playing_audio):
-                    return  # 取到鎖後狀態可能變了
-                await _do_play()
-        else:
-            await _do_play()
+        except Exception as e:
+            logger.warning(f"[Ack:{category_key}] 播放失敗（忽略）：{e}")
         return
 
     async def _confirmation_flow(self, speaker: str, wake_time: float, initial_text: str = "") -> str | None:
@@ -5313,21 +5262,11 @@ class VoiceController(commands.Cog):
                 if ch: await ch.send("😑 沒有歌在播，要我跳過什麼？")
                 return
             self._record_song_skip()  # video-id 進永久 skip 排除集（在 stop 前，info 還在）
-            _p12 = getattr(self, "_plan12", False)
-            if not isinstance(_p12, bool):
-                _p12 = False
-            _p12 = _p12 and getattr(self, "_mixer", None) is not None
-            if _p12:
+            if self._mixer is not None:
                 self._mixer.clear_music()
-            elif self.radio_mode:
-                self.radio_paused = False  # 暫停狀態下 is_playing() 回傳 False，必須先清除
-                if vc:
-                    vc.stop_playing()      # 無條件觸發 after_radio callback 解鎖 play_done_event
-            elif vc and vc.is_playing():
-                vc.stop_playing()
             reply = random.choice(replies["skip"])
             if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=skip | bot={reply} (plan12={_p12})")
+            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=skip | bot={reply} (plan12=True)")
 
         elif cmd == "stop":
             if not self.stream_mode and not self.radio_mode:
@@ -5348,28 +5287,20 @@ class VoiceController(commands.Cog):
             if not vc:
                 if ch: await ch.send("😑 找不到語音連線。")
                 return
-            _p12 = getattr(self, "_plan12", False)
-            if not isinstance(_p12, bool):
-                _p12 = False
-            _p12 = _p12 and getattr(self, "_mixer", None) is not None
             if self.stream_mode and not self.stream_paused:
-                if _p12:
+                if self._mixer is not None:
                     self._mixer.set_paused(True)
-                else:
-                    vc.pause()
                 self.stream_paused = True
             elif self.radio_mode and not self.stream_mode and not self.radio_paused:
-                if _p12:
+                if self._mixer is not None:
                     self._mixer.set_paused(True)
-                else:
-                    vc.pause()
                 self.radio_paused = True
             else:
                 if ch: await ch.send("😑 已經在暫停了。")
                 return
             reply = random.choice(replies["pause"])
             if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=pause | bot={reply} (plan12={_p12})")
+            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=pause | bot={reply} (plan12=True)")
 
         elif cmd == "resume":
             if not self.stream_paused and not self.radio_paused:
@@ -5378,25 +5309,17 @@ class VoiceController(commands.Cog):
             if not vc:
                 if ch: await ch.send("😑 找不到語音連線。")
                 return
-            _p12 = getattr(self, "_plan12", False)
-            if not isinstance(_p12, bool):
-                _p12 = False
-            _p12 = _p12 and getattr(self, "_mixer", None) is not None
             if self.stream_paused:
-                if _p12:
+                if self._mixer is not None:
                     self._mixer.set_paused(False)
-                else:
-                    vc.resume()
                 self.stream_paused = False
             elif self.radio_paused:
-                if _p12:
+                if self._mixer is not None:
                     self._mixer.set_paused(False)
-                else:
-                    vc.resume()
                 self.radio_paused = False
             reply = random.choice(replies["resume"])
             if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=resume | bot={reply} (plan12={_p12})")
+            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=resume | bot={reply} (plan12=True)")
 
         elif cmd == "play":
             search = self._extract_music_search_query(query)
@@ -6504,33 +6427,25 @@ class VoiceController(commands.Cog):
 
     async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS, protected: bool = False):
         """
-        🚀 [T-02 Opt] Hyper-Streaming Version
-        改用 FIFO (Named Pipe) 實現即時串流播放，首個音訊 chunk 抵達即刻輸出，
-        相較於傳統 save() 模式可省下約 0.8s ~ 1.2s 的硬碟 I/O 與完整生成等待時間。
-
-        silent_during_stream=True：主動發言類別，串流播放中靜音（文字由呼叫方貼頻道）。
+        🚀 [T-02 Opt] Hyper-Streaming Version (Plan 12 Simplified)
         """
         if self.game_mode and not self._tts_protected:
-            return  # 遊戲中停止所有 TTS（保護模式除外，用於遊戲線索播報）
+            return  # 遊戲中停止所有 TTS
         if not text: return
         import re
         text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', text, flags=re.DOTALL).strip()
         if not text: return
 
-        # 🎵 [Stream Guard] 主動發言類別在串流播放中靜音，文字由呼叫方負責貼頻道
-        # allow_hotswap=True 例外：放行到下游 hotswap 判定區（line 5544+），由
-        # _midsong_hotswap_active + is_hotswap_eligible 決定是否走熱切換注入。
+        # 🎵 [Stream Guard]
         if _should_mute_for_stream_guard(self.stream_mode, silent_during_stream, allow_hotswap):
             return
 
-        # 🦆 [Hot-Chat Guard] 主動發言類別在熱聊期間也靜音（P1：DuckingAgent flag）
-        # wake-word 回應 / 高優先順序的話依舊正常播音
+        # 🦆 [Hot-Chat Guard]
         if silent_during_stream and self._room_mood_store.get(0).hot_chat:
             logger.info(f"🦆 [Hot-Chat Mute] 熱聊中靜音主動 TTS: '{text[:30]}'")
             return
 
-        # 🛡️ [Interrupt Guard] 若玩家插話中斷了回應，丟棄串流中所有剩餘片段
-        # already_in_channel=True 代表這是 LLM 串流分句，非 ack/filler 等主動發音
+        # 🛡️ [Interrupt Guard]
         if already_in_channel and self._tts_interrupted:
             logger.info(f"⏩ [TTS Interrupt Guard] 中斷後跳過剩餘片段: '{text[:25]}...'")
             return
@@ -6540,8 +6455,7 @@ class VoiceController(commands.Cog):
                 logger.info(f"⏸️ [TTS Silence Gate] 使用者仍在說話，跳過非保護 TTS: '{text[:25]}...'")
                 return
 
-        # ⚠️ [Companion Radar] 防呆雷達 — 規則式風險分類器 + 可選 user veto。
-        # 預設 OFF；COMPANION_RADAR_ENABLED=true 才啟動。任何錯誤都不會卡 TTS。
+        # ⚠️ [Companion Radar]
         if os.getenv("COMPANION_RADAR_ENABLED", "false").lower() == "true":
             bridge = getattr(self.bot, "companion_bridge", None)
             if bridge is not None and getattr(bridge, "is_connected", False):
@@ -6572,282 +6486,35 @@ class VoiceController(commands.Cog):
                 except Exception as e:
                     logger.warning(f"[Companion_Radar] check failed (proceeding with TTS): {e}")
 
-        if self._plan12:
-            # 🎛️ [Plan 12] render → push mixer 的 TTS 層（自動 duck overlay 音樂）。
-            # 故意 bypass 序列模型的 drop/storm/stream-mute/radio-interrupt——mixer overlay+queue+cap
-            # 取代它們；whether-to-speak guards（game/empty/interrupt/silence/radar）上面已跑過。
-            vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-            if vc is None:
-                return
-            # 新獨立發話（非串流續句）→ 解除上一段被打斷的封鎖，否則 streaming 會立刻 bail
-            if not already_in_channel:
-                self._tts_interrupted = False
-            # backlog 保護（取代被 bypass 的 storm/drop）：TTS 層已積太多就丟+貼文，避免不同時間 TTS 疊播
-            _drop = {0: float("inf"), 1: 8.0, 2: 3.0}.get(priority, 8.0)
-            if self._mixer.tts_load_seconds() > _drop and not self._tts_protected:
-                if not already_in_channel and self.active_text_channel:
-                    asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
-                return
-            self._ensure_mixer_playing(vc)  # 先 arm，首幀一 push 就出聲
-            # streaming：邊收 edge-tts 邊解碼邊逐幀 push（首音 ~0.8s，不等整段）
-            await self._stream_tts_to_mixer(text, force_macos=force_macos,
-                                            emotion_tag=emotion_tag, voice=voice)
+        # 🎛️ [Plan 12] render → push mixer
+        vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
+        if vc is None:
             return
-
-        estimated_dur = self.bot.tts_engine.get_estimated_duration(text)
-        # 🗑️ [Priority Drop] 依優先級丟棄：AMBIENT(2)>3s, RESPONSE(1)>8s, CRITICAL(0)=永不丟
-        _DROP_THRESHOLDS = {0: float("inf"), 1: 8.0, 2: 3.0}
-        _drop_threshold = _DROP_THRESHOLDS.get(priority, 8.0)
-        if self.tts_queue_duration > _drop_threshold and not force_macos and not self._tts_protected:
-            _tier_name = {0: "CRITICAL", 1: "RESPONSE", 2: "AMBIENT"}.get(priority, "?")
-            logger.info(f"⏩ [TTS Drop/{_tier_name}] 佇列 {self.tts_queue_duration:.1f}s > {_drop_threshold}s，改貼文: '{text[:25]}...'")
+        if not already_in_channel:
+            self._tts_interrupted = False
+        _drop = {0: float("inf"), 1: 8.0, 2: 3.0}.get(priority, 8.0)
+        if self._mixer.tts_load_seconds() > _drop and not self._tts_protected:
             if not already_in_channel and self.active_text_channel:
                 asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
             return
-
-        # 🌪️ [Storm Guard] 已有 TTS 播放中 → 不排隊，改貼文
-        if self.is_playing_audio and not force_macos and not self._tts_protected:
-            logger.info(f"🌪️ [TTS Storm] 播放中，放棄排隊: '{text[:30]}'")
-            if not already_in_channel and self.active_text_channel:
-                asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
-            return
-
-        # 📻 [Radio Interrupt] Marvin 說話前停止電台，釋放 VoiceClient 給 TTS
-        if self.radio_mode:
-            await self.stop_radio(reason="Marvin TTS 播放")
-        # 🎵 [Stream Guard] 串流播放中不打斷音樂，直接靜音 TTS
-        # _tts_protected=True 允許切歌空檔的 DJ 播報繞過此 guard
-        if self.stream_mode and not self._tts_protected:
-            # 🎚️ [Mid-song HotSwap] 短即時 ack（呼叫端 opt-in allow_hotswap）可走中途熱切換
-            # 注入：渲染 TTS 成檔 → arm stream2（同首歌 -ss + sidechain 混音），等待迴圈到點切換。
-            # 任一條件不符（feature flag off / 太長 / 非串流游標）→ 維持原本靜音行為。
-            if self._midsong_hotswap_active(allow_hotswap) and is_hotswap_eligible(text, max_chars=hotswap_max_chars):
-                try:
-                    rendered = await self.bot.tts_engine.generate_audio(text, force_macos=force_macos)
-                    if rendered and await self._arm_hotswap(rendered):
-                        if not already_in_channel and self.active_text_channel:
-                            asyncio.create_task(self.active_text_channel.send(f"🎚️ {text}"))
-                except Exception as e:
-                    logger.warning(f"⚠️ [HotSwap] 中途注入失敗，維持靜音: {e}")
-            return
-        
-        # [Fix 1] 移除 0.4s 防抖延遲
-        # 原本：await asyncio.sleep(0.4)
-        # 這個延遲對首句沒有任何好處，句子分割器已保證不會有過於細碎的片段進來
-        
-        async with self.tts_queue_lock:
-            self.tts_queue_duration += estimated_dur
-        
-        # 🔑 [FIFO Setup] 建立唯一的命名管道
-        tmp_dir = tempfile.mkdtemp()
-        fifo_path = os.path.join(tmp_dir, f"suki_stream_{int(time.time())}.pipe")
-        
+        self._ensure_mixer_playing(vc)
+        pushed = await self._stream_tts_to_mixer(text, force_macos=force_macos,
+                                                 emotion_tag=emotion_tag, voice=voice)
+        # [Follow-Up] D8: only open window when TTS was actually heard by users
         try:
-            os.mkfifo(fifo_path)
-        except Exception as e:
-            logger.error(f"❌ [FIFO Error] 無法建立命名管道: {e}")
-            # Fallback to file-based if FIFO fails
-            temp_file = await self.bot.tts_engine.generate_audio(text, force_macos=force_macos)
-            if not temp_file: return
-            fifo_path = temp_file # 降級處理
-
-        voice_client = next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
-        if not voice_client:
-            logger.warning("⚠️ [Voice] 嘗試播放 TTS 但找不到連線中的 VoiceClient。")
-            self._cleanup_fifo(fifo_path, tmp_dir)
-            async with self.tts_queue_lock: self.tts_queue_duration = max(0.0, self.tts_queue_duration - estimated_dur)
-            return
-
-        # 🚀 [Background Pipe Feeder]
-        async def feed_fifo_task():
-            """將 Edge-TTS 串流內容持續餵入 FIFO"""
-            try:
-                # 🔑 [Fix 2] Edge-TTS 預熱：先啟動串流產生器並獲取首個 chunk 以建立 TCP/SSL 連線
-                # 這樣在等待 FFmpeg 開啟 FIFO 的過程中，網路連線已經就緒且首個音訊片段已抵達
-                _tts_p = self._EMOTION_TTS_PARAMS.get(emotion_tag, self._EMOTION_TTS_PARAMS["neutral"])
-                if force_macos:
-                    logger.debug("🎵 [Emotion TTS] macOS path active — rate/pitch params ignored (emotion_tag=%s)", emotion_tag)
-                _t_synth = time.monotonic()  # ⏱️ [TTS Timing] 量合成請求→首音 byte 的 Edge-TTS 延遲
-                audio_stream = self.bot.tts_engine.stream_audio(
-                    text,
-                    voice=voice,
-                    rate=_tts_p["rate"],
-                    pitch=_tts_p["pitch"],
-                    force_macos=force_macos,
-                )
-                first_chunk = await anext(audio_stream, None)
-                # print（非 logger）→ 與 [STAGE_TIMING] 同走 stdout，落同一個 bot_stdout.log，
-                # 讓 analyze_latency_breakdown 一次抓齊前半（STAGE）+ TTS 首音。
-                print(
-                    f"[TTS_TIMING] first_audio={(time.monotonic() - _t_synth) * 1000:.0f}ms "
-                    f"chars={len(text)} macos={force_macos} text={text[:30]!r}",
-                    flush=True,
-                )
-
-                # open('fifo', 'wb') 會阻塞直到另一端 (FFmpeg) 開啟讀取
-                # 此時背景任務會在這裡等待，但 Edge-TTS 的連線已經「溫熱」
-                f = await asyncio.to_thread(open, fifo_path, 'wb')
-                try:
-                    _BATCH = 32 * 1024  # 32KB 批次寫入，避免 pipe 碎片化
-                    write_buf = bytearray()
-
-                    if first_chunk:
-                        write_buf.extend(first_chunk)
-
-                    async for chunk in audio_stream:
-                        write_buf.extend(chunk)
-                        if len(write_buf) >= _BATCH:
-                            await asyncio.to_thread(f.write, bytes(write_buf))
-                            write_buf.clear()
-
-                    if write_buf:
-                        await asyncio.to_thread(f.write, bytes(write_buf))
-                    logger.debug(f"🏁 [FIFO Feed] 串流寫入完成: {len(text)} chars")
-                finally:
-                    await asyncio.to_thread(f.close)
-            except Exception as e:
-                logger.error(f"❌ [FIFO Feed Task Exception] {e}")
-
-        # [Fix 2] 只要 FIFO 建好了，立刻開始往裡面寫，FFmpeg 還沒連上沒關係
-        # 這樣可以利用 FFmpeg 啟動與 Lock 等待的時間進行背景預熱
-        is_fifo = fifo_path.endswith(".pipe")
-        if is_fifo:
-            asyncio.create_task(feed_fifo_task())
-
-        play_done_event = asyncio.Event()
-        current_loop = asyncio.get_event_loop()
-
-        def after_playing(error, duration):
-            """由音訊驅動線程呼叫"""
-            current_loop.call_soon_threadsafe(play_done_event.set)
-            asyncio.run_coroutine_threadsafe(self._release_queue_duration(duration), current_loop)
-            self._cleanup_fifo(fifo_path, tmp_dir)
-            if error: logger.error(f"❌ [Playback Error] {error}")
-
-
-        # 🗑️ [Flush Gate] owner 呼叫 tts_flush() 後，非保護 TTS 在進入播音鎖前直接退出
-        if self._tts_flush_requested and not self._tts_protected:
-            async with self.tts_queue_lock:
-                self.tts_queue_duration = max(0.0, self.tts_queue_duration - estimated_dur)
-            self._cleanup_fifo(fifo_path, tmp_dir)
-            return
-
-        # D8: gate for follow-up window — only open if TTS was actually played
-        _tts_actually_played = False
-
-        # 🛡️ [Interrupt Policy] protected=True：本段播放期間不被使用者開口中斷（ack/urgent/
-        # information/helper 查詢回應等「唸完」類）。只 scoped 在實際播放（持鎖）期間設旗標，
-        # 不影響 pre-play guard；finally 還原（支援巢狀，如 greeting 已設 True 時不破壞）。
-        _prev_tts_protected = self._tts_protected
-        try:
-            async with self.playback_lock:
-                self.is_playing_audio = True
-                if protected:
-                    self._tts_protected = True
-
-                # 🚀 [Resilience Fix] 在進入臨界區後再次確認連線狀態，防止心跳中斷導致的代碼漂移
-                if not voice_client.is_connected():
-                    logger.error("❌ [Voice] 連線在播放前意外中斷 (Shard Error 4014?)")
-                    raise Exception("Not connected to voice")
-
-                # 序列化等待：若正在播放音樂或上一段話，在此等待
-                while voice_client.is_playing():
-                    await asyncio.sleep(0.05)  # 縮短輪詢間隔
-                    if not voice_client.is_connected():
-                        raise Exception("Connection lost during wait")
-
-                # 啟動 FFmpeg 讀取 (餵食器已在背景預熱)
-                logger.info(f"🔊 [Voice] 開始即時串流播放...")
-                self._current_tts_text = text
-                self._current_tts_in_channel = already_in_channel
-                # ⏱️ [Latency] T3: vc.play() 前 — 首段 TTS 開始發聲那刻
-                _stage2 = self._latency_marks.mark_first_audio_and_consume(time.time())
-                if _stage2:
-                    logger.info(
-                        f"⏱️ [Latency-2] {_stage2['speaker']} "
-                        f"sentence→audio={_stage2['sentence_to_audio_ms']:.0f}ms "
-                        f"total_wake→audio={_stage2['total_wake_to_audio_ms']:.0f}ms"
-                    )
-                    # 品質指標 capture：react time = wake hit → first audio（使用者聽到開口）。
-                    # 借現有 LatencyMarks，零新串接；mark 點已存在，此處只多寫一行 jsonl。
-                    record_metric("react", speaker=_stage2["speaker"],
-                                  react_ms=round(_stage2["total_wake_to_audio_ms"], 1),
-                                  tts_ms=round(_stage2["sentence_to_audio_ms"], 1))
-                # 品質指標 capture：bad-timing interruption — Marvin 開口瞬間有人類正在說話嗎。
-                # user_is_speaking 是 VAD 即時態（純人類）；was_playing 標 Marvin 是否已在播
-                # （接續回應時 user_is_speaking 可能是自己回聲 → 報告 idle_only 過濾掉）。
-                try:
-                    _speaking_now = sum(1 for v in getattr(self.bot.engine, "user_is_speaking", {}).values() if v)
-                except Exception:
-                    _speaking_now = 0
-                record_metric("interruption", interrupted=bool(_speaking_now),
-                              n_speaking=_speaking_now, was_playing=bool(self.is_playing_audio),
-                              mode=("stream" if self.stream_mode else
-                                    "radio" if self.radio_mode else "normal"))
-                voice_client.play(
-                    discord.FFmpegPCMAudio(fifo_path),
-                    after=lambda e: after_playing(e, estimated_dur)
-                )
-                _tts_actually_played = True  # D8: play() succeeded
-
-                # [Companion_Bridge] TTS 開始播放 → 廣播 tts_started
-                try:
-                    from bridge_emitters import emit_tts_started_to_bridge
-                    await emit_tts_started_to_bridge(self.bot, text, voice or "", None)
-                except Exception:
-                    pass
-
-            # 🔑 [T-02 Key Fix] playback_lock 已釋放。
-            try:
-                await asyncio.wait_for(play_done_event.wait(), timeout=25.0)
-                # 🚀 [Marvin Awareness] 語音播放完成，更新戳記並注入對話緩衝區
-                self.last_marvin_speech_time = time.time()
-                if self.bot.engine.conv_buffer:
-                    self.bot.engine.conv_buffer.add_entry("Marvin", text)
-            except asyncio.TimeoutError:
-                logger.error(f"❌ [TTS Playback] 播放超時 (25s)，強制結束。")
-                try:
-                    if voice_client and voice_client.is_connected():
-                        voice_client.stop()
-                except Exception:
-                    pass
-        except Exception as e:
-            err_str = str(e)
-            if "Not connected to voice" in err_str:
-                logger.warning(f"⚠️ [TTS Playback] 偵測到中斷連線，嘗試觸發 Sentinel 修復: {e}")
-                # 🚀 [Sentinel Integration] 只有在主動狀態下才嘗試回報
-                if hasattr(self, 'report_sink_error'):
-                    self.report_sink_error("playback_failure_disconnect")
-            else:
-                logger.error(f"❌ [TTS Playback] 非預期錯誤: {e}")
-            
-            play_done_event.set()
-            self._cleanup_fifo(fifo_path, tmp_dir)
-            async with self.tts_queue_lock:
-                self.tts_queue_duration = max(0.0, self.tts_queue_duration - estimated_dur)
-        finally:
-            self.is_playing_audio = False
-            self._tts_protected = _prev_tts_protected  # 還原中斷保護旗標（scoped 結束）
-            self._tts_echo_cooldown_until = time.time() + 2.0
-            self._current_tts_text = ""
-            self._wake_response_pending = False  # 🔒 TTS 送達，解除 Response Lock
-            # [Companion_Bridge] TTS 結束（成功/逾時/錯誤皆會走到這裡）
-            try:
-                from bridge_emitters import emit_tts_done_to_bridge
-                await emit_tts_done_to_bridge(self.bot)
-            except Exception:
-                pass
-            # [Follow-Up] D8: only open window when TTS was actually heard by users
-            if _tts_actually_played and os.getenv("MARVIN_FOLLOWUP_ENABLED", "true").lower() == "true":
-                from wake_detector import _has_question_marker
-                if _has_question_marker(text):
-                    _bridge = getattr(self.bot, "companion_bridge", None)
-                    _suppressed = _bridge is not None and getattr(_bridge, "_mode", None) in {"silent_5min", "shutup"}
-                    if not self.game_mode and not _suppressed:
-                        _wd = getattr(getattr(self.bot, "router", None), "wake_fusion", None)
-                        if _wd is not None:
-                            _window = float(os.getenv("MARVIN_FOLLOWUP_WINDOW_SEC", "8.0"))
-                            _wd.temporary_open_window(_window, reason="followup")
+            pushed_ok = bool(pushed > 0)
+        except TypeError:
+            pushed_ok = True
+        if pushed_ok and os.getenv("MARVIN_FOLLOWUP_ENABLED", "true").lower() == "true":
+            from wake_detector import _has_question_marker
+            if _has_question_marker(text):
+                _bridge = getattr(self.bot, "companion_bridge", None)
+                _suppressed = _bridge is not None and getattr(_bridge, "_mode", None) in {"silent_5min", "shutup"}
+                if not self.game_mode and not _suppressed:
+                    _wd = getattr(getattr(self.bot, "router", None), "wake_fusion", None)
+                    if _wd is not None:
+                        _window = float(os.getenv("MARVIN_FOLLOWUP_WINDOW_SEC", "8.0"))
+                        _wd.temporary_open_window(_window, reason="followup")
 
     async def _play_dual_interject(self, segments, *, duck=None, step=None, at=None) -> bool:
         """🎭 [打岔] Plan12 mixer 雙層疊播：Marvin 在 layer1，Marmo 在 Marvin 尾段(~80%)
@@ -6977,17 +6644,14 @@ class VoiceController(commands.Cog):
                 await asyncio.sleep(0.3)
 
     async def tts_flush(self):
-        """🗑️ [TTS Flush] 立即停止當前 TTS 並清空待播佇列。由 owner 指令觸發。
-        原理：設 _tts_flush_requested 旗標 → 所有等待 playback_lock 的 play_tts 任務
-        在 Flush Gate 處提前退出 → 0.3s 後復位旗標，恢復正常播放。
-        Phase A 替換時：改為 queue.clear() + current_task.cancel()，旗標可移除。
+        """
+        🗑️ [Flush Policy] 強制中斷目前播放的 TTS、並清空所有 pending 語音隊列。
         """
         self._tts_flush_requested = True
         voice_client = next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
         if voice_client and voice_client.is_playing():
             voice_client.stop()
-        async with self.tts_queue_lock:
-            self.tts_queue_duration = 0.0
+        self.tts_queue_duration = 0.0
         await asyncio.sleep(0.3)  # 讓在途 tasks 有機會通過 Flush Gate
         self._tts_flush_requested = False
         logger.info("🗑️ [TTS Flush] 佇列已清空，恢復正常播放。")
@@ -6995,7 +6659,6 @@ class VoiceController(commands.Cog):
     async def play_local_file(self, file_path: str):
         """
         🚀 [Operation Broadcast] 播放本地音訊檔案。
-        此方法同樣競爭 playback_lock，確保與 TTS 的順序一致。
         """
         if not os.path.exists(file_path):
             logger.warning(f"⚠️ [Local Play] 找不到檔案: {file_path}")
@@ -7005,71 +6668,23 @@ class VoiceController(commands.Cog):
         if not voice_client:
             return
 
-        if self._plan12:
-            # 🎛️ [Plan 12] broadcast 走 mixer 音樂層、音量 1.0，等播完或斷線
-            self._mixer.set_volume(1.0)
-            src = discord.FFmpegPCMAudio(file_path)
-            await self._mixer_play_music(voice_client, src, still_active=lambda: voice_client.is_connected())
-            return
-
-        # 估算長度 (用於隊列長度平衡，本地檔案我們簡化處理)
-        # 讀取音訊長度 (此處簡化為固定 15s 緩衛，避免隊列阻塞)
-        estimated_dur = 15.0
-        
-        async with self.tts_queue_lock:
-            self.tts_queue_duration += estimated_dur
-
-        play_done_event = asyncio.Event()
-        current_loop = asyncio.get_event_loop()
-
-        def after_playing(error):
-            current_loop.call_soon_threadsafe(play_done_event.set)
-            asyncio.run_coroutine_threadsafe(self._release_queue_duration(estimated_dur), current_loop)
-            if error: logger.error(f"❌ [Local Playback Error] {error}")
-
-        try:
-            async with self.playback_lock:
-                self.is_playing_audio = True
-                
-                # 序列化等待
-                while voice_client.is_playing():
-                    await asyncio.sleep(0.1)
-                
-                logger.info(f"🔊 [Voice] 開始播放本地檔案: {os.path.basename(file_path)}")
-                voice_client.play(
-                    discord.FFmpegPCMAudio(file_path),
-                    after=after_playing
-                )
-            
-            # 等待播放完成
-            try:
-                await asyncio.wait_for(play_done_event.wait(), timeout=40.0)
-                self.last_marvin_speech_time = time.time()
-            except asyncio.TimeoutError:
-                logger.error(f"❌ [Local Playback] 播放超時 (40s)，強制結束。")
-        except Exception as e:
-            logger.error(f"❌ [Local Playback] 發生錯誤: {e}")
-            play_done_event.set()
-        finally:
-            self.is_playing_audio = False
-            self._wake_response_pending = False  # 🔒 本地播放結束，解除 Response Lock
+        self._mixer.set_volume(1.0)
+        src = discord.FFmpegPCMAudio(file_path)
+        await self._mixer_play_music(voice_client, src, still_active=lambda: voice_client.is_connected())
 
     def _cleanup_fifo(self, path, tmp_dir):
         """[Operation Cleanup] 安全移除命名管道與暫存目錄"""
         try:
             if os.path.exists(path): os.remove(path)
             if tmp_dir and os.path.exists(tmp_dir):
-                # 檢查 tmp_dir 是否真的是 tempfile 建立的
                 if "tmp" in tmp_dir or "temp" in tmp_dir:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
         except Exception as e:
             logger.debug(f"Cleanup warning: {e}")
 
-
     async def _release_queue_duration(self, duration: float):
-        """🛡️ [T-02 Helper] 從 after_playing 線程安全地扣除 TTS 隊列預估時長"""
-        async with self.tts_queue_lock:
-            self.tts_queue_duration = max(0.0, self.tts_queue_duration - duration)
+        """🛡️ [T-02 Helper] 扣除 TTS 隊列預估時長"""
+        self.tts_queue_duration = max(0.0, self.tts_queue_duration - duration)
 
     def _calc_chat_temperature(self) -> float:
         """計算最近聊天室活躍度 (0.0=冷清, 1.0=喧嘩)"""
@@ -7144,15 +6759,13 @@ class VoiceController(commands.Cog):
         
         # 🛡️ [Queue Lock] 獲取音樂預估長度並鎖定 TTS 隊列
         dur = self.bot.music_engine.get_estimated_duration()
-        async with self.tts_queue_lock:
-            self.tts_queue_duration += dur
+        self.tts_queue_duration += dur
             
         def after_playing(error):
             self.is_playing_audio = False
             # 播放完畢後，扣掉預放的時長
             async def cleanup():
-                async with self.tts_queue_lock:
-                    self.tts_queue_duration = max(0.0, self.tts_queue_duration - dur)
+                self.tts_queue_duration = max(0.0, self.tts_queue_duration - dur)
             asyncio.run_coroutine_threadsafe(cleanup(), self.bot.loop)
             
         try:
@@ -7162,11 +6775,8 @@ class VoiceController(commands.Cog):
             logger.info(f"🎶 [Music] Playing {path} (Estimated: {dur}s) | Tag: {log_tag}")
         except Exception as e:
             self.is_playing_audio = False
-            async with self.tts_queue_lock:
-                self.tts_queue_duration = max(0.0, self.tts_queue_duration - dur)
+            self.tts_queue_duration = max(0.0, self.tts_queue_duration - dur)
             logger.error(f"❌ [Music Playback Error] {e}")
-
-    # --- [📻 Marvin Radio] ---
 
     async def start_radio(self, trigger: str = "未知觸發"):
         """
@@ -7364,15 +6974,12 @@ class VoiceController(commands.Cog):
 
     async def play_radio_song(self, file_path: str):
         """
-        📻 [Marvin Radio] 播放單首歌曲，競爭 playback_lock，音量 30%。
-        等待播放完成後才 return（或電台被中斷後提前 return）。
+        📻 [Marvin Radio] 播放單首歌曲，音量 30%。
         """
         if not os.path.exists(file_path):
             logger.warning(f"⚠️ [Radio Song] 找不到檔案: {file_path}")
             return
 
-        # 🚀 [Guild-Aware Fix] 必須針對某個連線播放，這裡我們找第一個有效的連線 (通常只有一個)
-        # 最好是從 _radio_loop 傳入 guild_id 或 vc，但此處維持簡單，改進找尋邏輯
         vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
         if not vc:
             logger.warning("⚠️ [Radio Song] 無連線中的 VoiceClient，跳過播放。")
@@ -7380,54 +6987,8 @@ class VoiceController(commands.Cog):
             self.radio_paused = False
             return
 
-        if self._plan12:
-            # 🎛️ [Plan 12] 餵 mixer 音樂層，音量(radio_volume) 即時同步，等播完或電台停
-            src = discord.FFmpegPCMAudio(file_path, options="-vn")
-            await self._mixer_play_music(vc, src, still_active=lambda: self.radio_mode, volume_attr="radio_volume")
-            return
-
-        play_done_event = asyncio.Event()
-        current_loop = asyncio.get_event_loop()
-
-        def after_radio(error):
-            current_loop.call_soon_threadsafe(play_done_event.set)
-            if error:
-                logger.error(f"❌ [Radio Song Playback Error] {error}")
-
-        try:
-            async with self.playback_lock:
-                # 再次確認電台仍然啟動中（可能在等鎖時被中斷）
-                if not self.radio_mode:
-                    return
-
-                if not vc.is_connected():
-                    return
-
-                # 等待上一個播放結束
-                while vc.is_playing():
-                    await asyncio.sleep(0.1)
-                    if not self.radio_mode:
-                        return
-
-                raw_source = discord.FFmpegPCMAudio(file_path, options="-vn")
-                self._radio_source = discord.PCMVolumeTransformer(raw_source, volume=self.radio_volume)
-                logger.info(f"📻 [Radio Song] 開始播放: {os.path.basename(file_path)} (音量: {int(self.radio_volume*100)}%)")
-                vc.play(self._radio_source, after=after_radio)
-
-            # Lock 釋放後等待播完（或電台停止）
-            while not play_done_event.is_set():
-                if not self.radio_mode:
-                    # 電台被中止，立即 return，vc.stop() 由 stop_radio() 負責
-                    return
-                await asyncio.sleep(0.5)
-
-        except asyncio.CancelledError:
-            raise  # 讓 _radio_loop 的 CancelledError 正常傳播
-        except Exception as e:
-            logger.error(f"❌ [Radio Song] 播放錯誤: {e}")
-            play_done_event.set()
-
-    # --- [🎵 Stream Implementation] ---
+        src = discord.FFmpegPCMAudio(file_path, options="-vn")
+        await self._mixer_play_music(vc, src, still_active=lambda: self.radio_mode, volume_attr="radio_volume")
 
     async def _resolve_yt_query(self, query: str) -> dict | None:
         """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。
@@ -7530,14 +7091,8 @@ class VoiceController(commands.Cog):
             self._radio_fade_task = None
         self._radio_source = None
         vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-        _p12 = getattr(self, "_plan12", False)
-        if not isinstance(_p12, bool):
-            _p12 = False
-        _p12 = _p12 and getattr(self, "_mixer", None) is not None
-        if _p12:
+        if self._mixer is not None:
             self._mixer.clear_music()
-        elif vc and vc.is_playing():
-            vc.stop_playing()
 
     async def _stream_loop(self):
         """🎵 [Stream Loop] 依序播放佇列中的歌曲。"""
@@ -8537,31 +8092,10 @@ class VoiceController(commands.Cog):
             self.stream_mode = False
             return
 
-        play_done_event = asyncio.Event()
-        current_loop = asyncio.get_event_loop()
-
-        # 世代化 after：切換時 _do_hotswap 會遞增 _stream_play_gen，使舊 source 的 after
-        # 觸發時 gen 已過期 → 不 set play_done_event（否則被換掉的 stream1 一 stop 就被
-        # 當歌結束，stream2 沒播完音樂提早斷）。同步遞增 → 無 race。
-        self._stream_play_gen += 1
-        _play_gen = self._stream_play_gen
-
-        def after_stream(error):
-            if error:
-                logger.error(f"❌ [Stream Song Error] {error}")
-            if _play_gen == self._stream_play_gen:
-                current_loop.call_soon_threadsafe(play_done_event.set)
-
-        # ── 建立 FFmpeg 選項 ──────────────────────────────────────────────
+        self._current_stream_url = url
         use_mix = dj_audio_path and os.path.exists(dj_audio_path)
 
         if use_mix:
-            # before_options 中插入 DJ 音訊為 input 0，URL 為 input 1
-            # Filter complex：
-            #   - [0:a] (DJ) asplit → sidechain trigger + mix copy
-            #   - sidechain compressor 在 DJ 說話時壓低音樂 (ratio 8:1)
-            #   - DJ 結束後 silence 觸發 release，音樂恢復原音量
-            #   - amix 將 DJ 音訊混入輸出
             vol = self.stream_volume
             fc = (
                 f"[0:a]asplit=2[dj_sc][dj_mix];"
@@ -8576,108 +8110,23 @@ class VoiceController(commands.Cog):
             )
             options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
             logger.info(f"🎙️ [DJ Mix] 混音模式：{os.path.basename(dj_audio_path)}")
-        else:
-            before_opts = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M'
-            options = f"-vn -bufsize 512k -af loudnorm=I=-14:TP=-1.5:LRA=11,volume={self.stream_volume:.2f}"
-
-        ffmpeg_opts = {'before_options': before_opts, 'options': options}
-
-        if self._plan12:
-            # 🎛️ [Plan 12] 串流走 mixer 音樂層、bypass hotswap（音量 mixer 即時套）
-            self._current_stream_url = url
-            if dj_audio_path:
-                # DJ-mix：volume 已烤進 filter_complex → mixer 音量 1.0 不重複套用
-                self._mixer.set_volume(1.0)
-                await self._mixer_play_music(
-                    vc, discord.FFmpegPCMAudio(url, **ffmpeg_opts),
-                    still_active=lambda: self.stream_mode,
-                )
-            else:
-                # 不正規化（最乾淨，使用者實測「好多了」）。loudnorm 太重會悶；dynaudnorm m=10
-                # 自適應增益隨播放把安靜段越推越大 → 漸進破音（使用者實測「越播越 distorted」）。
-                # 響度交 mixer 音量；之後若要再上「低 maxgain」溫和正規化。
-                p12_opts = {
-                    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
-                    'options': '-vn -bufsize 512k',
-                }
-                # 🎚️ [LoudNorm] 背景取樣 25/50/75% 算每首常數增益（mixer 同步乘進音量）。
-                # 不阻塞播放；沒量好前用 raw 音量，量好後自動套一次。
-                if url not in self._stream_norm_gain:
-                    asyncio.create_task(self._measure_norm_gain_bg(url))
-                await self._mixer_play_music(
-                    vc, discord.FFmpegPCMAudio(url, **p12_opts),
-                    still_active=lambda: self.stream_mode, volume_attr="stream_volume",
-                )
-            return
-
-        try:
-            async with self.playback_lock:
-                if not self.stream_mode:
-                    return
-                if not vc.is_connected():
-                    return
-                while vc.is_playing():
-                    await asyncio.sleep(0.1)
-                    if not self.stream_mode:
-                        return
-                self._radio_source = None  # 串流模式繞過 PCMVolumeTransformer
-                # 包一層 PositionTrackingAudioSource 才讀得到播放位置（hotswap 切換點游標）
-                stream_source = PositionTrackingAudioSource(discord.FFmpegPCMAudio(url, **ffmpeg_opts))
-                self._stream_position_source = stream_source
-                self._current_stream_url = url
-                # 🎚️ [HotSwap Slice 2] 背景量測 loudness 供 stream2 linear loudnorm 匹配；
-                # 沒量好就 fallback 固定音量，不阻塞播放
-                if url not in self._stream_loudness:
-                    asyncio.create_task(self._measure_loudness_bg(url))
-                logger.info(f"🎵 [Stream Song] 開始播放: {title} (音量: {int(self.stream_volume*100)}%)")
-                vc.play(stream_source, after=after_stream)
-
-            while not play_done_event.is_set():
-                if not self.stream_mode:
-                    return
-                # 🎚️ [HotSwap] 持 lock 外的等待迴圈內檢查切換（避開整首歌持 lock 的 deadlock）
-                if self._hotswap_coord.ready_to_swap(self._stream_position_source.position_seconds):
-                    await self._do_hotswap(vc, current_loop, play_done_event)
-                elif self._pending_volume_swap and not self._hotswap_coord.is_busy:
-                    # 語音調音量排隊中 + coordinator 空 → arm 一次音量 swap（用當前 stream_volume）
-                    self._pending_volume_swap = False
-                    await self._arm_volume_swap()
-                await asyncio.sleep(0.1)
-            self._stream_position_source = None  # 歌結束，清游標
-
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            logger.error(f"❌ [Stream Song] 播放錯誤: {e}")
-            play_done_event.set()
-
-    async def _measure_loudness_bg(self, url: str):
-        """背景跑 2-pass loudnorm 第一遍量測歌曲響度，存 cache 供 hotswap stream2 用。
-
-        失敗（timeout / 解析無結果）→ 不存，hotswap 自動 fallback 固定音量。
-        subprocess 用 create_subprocess_exec（對齊 STT 層 async 規範，不用 subprocess.run）。
-        """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-nostats", "-i", url,
-                "-af", f"loudnorm={LOUDNORM_TARGET}:print_format=json",
-                "-f", "null", "-",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+            ffmpeg_opts = {'before_options': before_opts, 'options': options}
+            self._mixer.set_volume(1.0)
+            await self._mixer_play_music(
+                vc, discord.FFmpegPCMAudio(url, **ffmpeg_opts),
+                still_active=lambda: self.stream_mode,
             )
-            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
-        except asyncio.TimeoutError:
-            logger.warning("⚠️ [HotSwap] loudness 量測逾時，hotswap 將 fallback 固定音量")
-            return
-        except Exception as e:
-            logger.warning(f"⚠️ [HotSwap] loudness 量測失敗: {e}")
-            return
-        measured = parse_loudnorm_measurement(stderr.decode("utf-8", "ignore"))
-        if measured:
-            self._stream_loudness[url] = measured
-            logger.info(f"🎚️ [HotSwap] loudness 量測完成: I={measured['input_i']} → 匹配就緒")
         else:
-            logger.warning("⚠️ [HotSwap] loudness 量測無結果，hotswap 將 fallback 固定音量")
+            p12_opts = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
+                'options': '-vn -bufsize 512k',
+            }
+            if url not in self._stream_norm_gain:
+                asyncio.create_task(self._measure_norm_gain_bg(url))
+            await self._mixer_play_music(
+                vc, discord.FFmpegPCMAudio(url, **p12_opts),
+                still_active=lambda: self.stream_mode, volume_attr="stream_volume",
+            )
 
     async def _measure_norm_gain_bg(self, url: str):
         """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存
@@ -8713,133 +8162,6 @@ class VoiceController(commands.Cog):
         gain = compute_loudness_gain(avg)
         self._stream_norm_gain[url] = gain
         logger.info(f"🎚️ [LoudNorm] 量測完成 I≈{avg:.1f} LUFS → 增益 {gain:.2f}x（每首套一次）")
-
-    async def _do_hotswap(self, vc, current_loop, play_done_event):
-        """執行中途 TTS 熱切換：stop stream1 → play stream2（TTS 已混入）。
-
-        在等待迴圈內呼叫（持 lock 外）。世代計數已遞增使 stream1 的 after 失效，
-        stream2 用自己的 after（綁當前世代）在它播完時才 set play_done_event。
-        """
-        src2 = self._hotswap_coord.begin_swap()
-        self._stream_play_gen += 1
-        gen2 = self._stream_play_gen
-
-        def _after2(error):
-            if error:
-                logger.error(f"❌ [HotSwap stream2 Error] {error}")
-            if gen2 == self._stream_play_gen:
-                current_loop.call_soon_threadsafe(play_done_event.set)
-
-        try:
-            async with self.playback_lock:
-                vc.stop_playing()  # 只停 stream1 播放，不可用 vc.stop()——它會連 stop_listening() 一起呼叫，殺掉收音 reader 導致切換後 STT 全死
-                # 等 stop 生效（最多 ~100ms）再 play，避免 discord「already playing」
-                for _ in range(20):
-                    if not vc.is_playing():
-                        break
-                    await asyncio.sleep(0.005)
-                vc.play(src2, after=_after2)
-            self._stream_position_source = src2  # 新游標（注意：position 從 0 起算 = 切換點）
-            self._hotswap_coord.finish_swap()
-            logger.info("🎚️ [HotSwap] 中途 TTS 切換完成")
-        except Exception as e:
-            logger.error(f"❌ [HotSwap] 切換失敗，放棄插話: {e}")
-            self._hotswap_coord.abort()
-
-    async def _debug_trigger_hotswap(self, tts_path: str, lead: float = 4.0):
-        """[Slice 1 debug] 手動觸發一次中途 TTS 熱切換驗證機制。正常流程不呼叫。
-
-        正常流程走 _arm_hotswap（play_tts 的 Stream Guard 分支）；此 debug 入口只多做
-        「檔案存在」檢查後委派，供 /hotswap_test slash command 用。
-        """
-        if not os.path.exists(tts_path):
-            logger.warning(f"⚠️ [HotSwap] TTS 檔不存在: {tts_path}")
-            return
-        await self._arm_hotswap(tts_path, lead=lead)
-
-    async def _arm_hotswap(self, tts_path: str, lead: float = 4.0) -> bool:
-        """備好 stream2 並 arm coordinator，等待迴圈到點自動切換。回傳是否成功 arm。
-
-        stream2 = 同首歌 -ss 到 target + TTS sidechain 混音、volume-matched（Slice 2
-        linear loudnorm，無則固定音量 fallback）、無 afade（實聽證實 afade 反放大爆音）。
-        target = 當前絕對播放位置 + lead；lead 需涵蓋 stream2 ffmpeg spin-up + 安全邊際。
-        """
-        src = self._stream_position_source
-        if src is None or not self._current_stream_url:
-            logger.warning("⚠️ [HotSwap] 非串流播放中，無法觸發")
-            return False
-        if self._hotswap_coord.is_swapping:
-            logger.info("⏩ [HotSwap] 已有切換進行中，跳過此次插話")
-            return False
-        import shlex
-        pos = src.position_seconds
-        target = pos + lead
-        self._hotswap_coord.request(target)
-
-        # stream2 filter：input 0 = TTS, input 1 = music(-ss target)。
-        # 音樂 filter（Slice 2）：有量測值 → linear loudnorm 匹配 stream1；無 → 固定音量
-        # fallback。皆無 afade（實聽證實 afade 反放大爆音）。
-        vol = self.stream_volume
-        music_fc = build_stream2_music_filter(self._stream_loudness.get(self._current_stream_url), vol)
-        fc = (
-            f"[0:a]asplit=2[sc][mix];[sc]apad=whole_dur=9999[pad];"
-            f"{music_fc};"
-            f"[music][pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
-            f"[ducked][mix]amix=inputs=2:duration=longest:normalize=0[out]"
-        )
-        before_opts = (
-            f"-i {shlex.quote(tts_path)} -ss {target:.2f} "
-            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"
-        )
-        options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
-        # initial_offset=target：stream2 seek 到歌曲 target 秒，position 報絕對位置，
-        # 下次插話 target 才會隨歌曲進度往後（修 2026-05-30 倒帶迴圈 bug）
-        src2 = PositionTrackingAudioSource(
-            discord.FFmpegPCMAudio(self._current_stream_url, before_options=before_opts, options=options),
-            initial_offset=target,
-        )
-        self._hotswap_coord.set_stream2_ready(src2)
-        logger.info(f"🎚️ [HotSwap] armed: abs_pos={pos:.1f}s → target={target:.1f}s, tts={os.path.basename(tts_path)}")
-        return True
-
-    def request_volume_swap(self) -> None:
-        """語音調 stream_volume 後，請求一次中途熱切換讓新音量即時生效（排隊式）。
-
-        只標 flag，實際 arm 由播放等待迴圈在 coordinator 不忙時做（避免 clobber 進行中的
-        TTS / 音量 swap）。串流烤死 ffmpeg volume 無法即時調，PCMVolumeTransformer 又會傷
-        音質（低音量量化），故用 second-stream 重 render。hotswap 未開 → 不標，退回次首生效。
-        """
-        if self._midsong_hotswap_active(True):
-            self._pending_volume_swap = True
-
-    async def _arm_volume_swap(self, lead: float = 2.5) -> bool:
-        """備好 stream2 = 同首歌 -ss 到當前位置 + 當前 stream_volume，arm coordinator。
-
-        無 TTS、無 ducking，純換音量。lead 比 TTS（4.0）短，因不需預混 TTS，只等 ffmpeg
-        spin-up + seek。回傳是否成功 arm（非串流 / coordinator 忙 → False）。
-        """
-        src = self._stream_position_source
-        if src is None or not self._current_stream_url:
-            return False
-        if self._hotswap_coord.is_busy:
-            return False
-        import shlex
-        pos = src.position_seconds
-        target = pos + lead
-        self._hotswap_coord.request(target)
-        af = build_volume_swap_af(self._stream_loudness.get(self._current_stream_url), self.stream_volume)
-        before_opts = (
-            f"-ss {target:.2f} -reconnect 1 -reconnect_streamed 1 "
-            "-reconnect_delay_max 5 -probesize 32M"
-        )
-        options = f"-vn -bufsize 512k -af {shlex.quote(af)}"
-        src2 = PositionTrackingAudioSource(
-            discord.FFmpegPCMAudio(self._current_stream_url, before_options=before_opts, options=options),
-            initial_offset=target,
-        )
-        self._hotswap_coord.set_stream2_ready(src2)
-        logger.info(f"🎚️ [VolumeSwap] armed: abs_pos={pos:.1f}s → target={target:.1f}s, vol={int(self.stream_volume*100)}%")
-        return True
 
     def _extract_song_metadata(self, file_path: str):
         """

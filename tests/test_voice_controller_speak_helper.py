@@ -54,7 +54,7 @@ async def test_speak_proactive_marks_silent_during_stream():
 
 @pytest.mark.asyncio
 async def test_speak_accepts_custom_max_chars():
-    from hotswap_eligibility import MAX_HOTSWAP_CHARS
+    from cogs.voice_controller import MAX_HOTSWAP_CHARS
     vc = _make_vc_with_speak()
     await vc.speak("收到", max_chars=MAX_HOTSWAP_CHARS)
     _, kwargs = vc.play_tts.call_args

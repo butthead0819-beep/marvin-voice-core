@@ -41,6 +41,9 @@ def _make_cog():
     cog.last_failure_time = 0
     cog.soft_repair_connection = AsyncMock()
     cog.self_restart = AsyncMock()
+    cog._mixer = MagicMock()
+    cog._mixer.is_idle.return_value = True
+    cog._mixer.is_playing_audio = False
     return cog
 
 
@@ -91,6 +94,7 @@ async def test_sentinel_skips_soft_repair_when_playing_audio():
     cog.bot.voice_clients = [vc]
     cog.bot.engine.get_active_sink.return_value = _make_sink(silence_seconds=400)
     cog.is_playing_audio = True
+    cog._mixer.is_playing_audio = True
 
     await cog.sentinel_monitor_loop.coro(cog)
 
