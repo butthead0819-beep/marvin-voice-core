@@ -815,6 +815,203 @@ class MusicCog(commands.Cog):
             channel_state=channel_state,
         )
 
+    # ── 🎵 Stream loop & playback ────────────────────────────────────────────
+
+    async def _stream_loop(self):
+        """🎵 依序播放佇列中的歌曲。"""
+        logger.info("🎵 [Stream Loop] 串流迴圈啟動。")
+        try:
+            while self.stream_mode:
+                if not self.stream_queue:
+                    vc = self._vc()
+                    _rb = (self._current_stream_info or {}).get('requested_by')
+                    online = vc.get_online_members() if vc is not None else []
+                    _seed = self._autorecommend_seed(_rb, online)
+                    if _seed:
+                        await self._auto_recommend(_seed)
+                    if not self.stream_queue:
+                        break
+                    continue
+
+                vc = self._vc()
+                info = self.stream_queue.pop(0)
+                self._current_stream_info = info
+                self._current_lyrics = None
+                self._current_stream_comment = None
+                self.stream_paused = False
+                title = info['title']
+                requested_by = info.get('requested_by', '未知')
+                logger.info(f"🎵 [Stream Loop] 播放: {title} (點播：{requested_by})")
+                self.stream_history.append(info)
+
+                if hasattr(self.bot, 'music_memory'):
+                    self.bot.music_memory.record_play(info, requested_by)
+
+                try:
+                    from bridge_emitters import emit_music_started_to_bridge
+                    asyncio.create_task(emit_music_started_to_bridge(
+                        self.bot,
+                        {"title": title, "style": info.get("style") or info.get("uploader", ""),
+                         "target": requested_by, "started_ts": time.time(),
+                         "source": info.get("source", "stream")},
+                        requested_by,
+                    ))
+                except Exception as e:
+                    logger.debug(f"⚠️ [Companion_Bridge] music_started hook skipped: {e}")
+
+                url = info.get('url', '')
+                prefetch_task = self._prefetch_cache.pop(url, None)
+                meta = None
+                if prefetch_task:
+                    try:
+                        meta = await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=20.0)
+                        logger.info(f"🔮 [Prefetch] 命中預取快取: {title}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ [Prefetch] 等待失敗，即時 fetch: {e}")
+                if meta is None:
+                    meta = await vc._meta_with_ack_fallback(info, requested_by) if vc is not None else {}
+
+                self._current_stream_comment = meta.get('comment')
+                self._current_lyrics = meta.get('lyrics')
+                dj_data = meta.get('dj')
+
+                from cogs.voice_views import PlayControlView
+                view = self._active_control_view
+                refreshed = False
+                active_ch = vc.active_text_channel if vc is not None else None
+                if view and getattr(view, 'message', None):
+                    msg_age = time.time() - view.message.created_at.timestamp()
+                    if msg_age > 300:
+                        try:
+                            await view.message.delete()
+                        except Exception:
+                            pass
+                        if vc is not None:
+                            view = PlayControlView(vc)
+                            self._active_control_view = view
+                            if active_ch:
+                                new_msg = await active_ch.send(embed=view._build_embed(), view=view)
+                                view.message = new_msg
+                                refreshed = True
+                    else:
+                        try:
+                            await view.message.edit(embed=view._build_embed(), view=view)
+                            refreshed = True
+                        except Exception as e:
+                            logger.debug(f"⚠️ [Stream] embed 更新失敗: {e}")
+                if not refreshed and active_ch and vc is not None:
+                    view = PlayControlView(vc)
+                    self._active_control_view = view
+                    new_msg = await active_ch.send(embed=view._build_embed(), view=view)
+                    view.message = new_msg
+
+                if self.stream_queue:
+                    next_info = self.stream_queue[0]
+                    next_url = next_info.get('url', '')
+                    if next_url not in self._prefetch_cache and vc is not None:
+                        self._prefetch_cache[next_url] = asyncio.create_task(vc._fetch_song_meta(next_info))
+                        logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
+
+                if len(self.stream_queue) < 2:
+                    online = vc.get_online_members() if vc is not None else []
+                    seed = self._autorecommend_seed(requested_by, online)
+                    if seed:
+                        asyncio.create_task(self._auto_recommend(seed))
+
+                dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
+                if dj_data and not dj_audio and vc is not None:
+                    await vc._maybe_play_dj_interjection(dj_data)
+
+                song_start_time = time.time()
+                song_lyrics_snapshot = self._current_lyrics or ""
+                playback_completion = "natural"
+                try:
+                    await self.play_stream_song(info['url'], title, dj_audio_path=dj_audio)
+                except Exception:
+                    playback_completion = "stopped"
+                    raise
+                finally:
+                    try:
+                        from bridge_emitters import emit_music_ended_to_bridge
+                        completion = playback_completion if self.stream_mode else "stopped"
+                        asyncio.create_task(emit_music_ended_to_bridge(
+                            self.bot, {"title": title}, completion
+                        ))
+                    except Exception as e:
+                        logger.debug(f"⚠️ [Companion_Bridge] music_ended hook skipped: {e}")
+
+                if vc is not None:
+                    asyncio.create_task(vc._analyze_song_reactions(info, song_start_time, song_lyrics_snapshot))
+
+                if self.stream_mode:
+                    await asyncio.sleep(1.0)
+
+            self.stream_mode = False
+            self._current_stream_info = None
+            vc = self._vc()
+            if vc is not None:
+                vc.last_marvin_speech_time = time.time()
+            logger.info("🎵 [Stream Loop] 佇列播放完畢。")
+            active_ch = vc.active_text_channel if vc is not None else None
+            if vc is not None and hasattr(vc, 'stt_logger'):
+                vc.stt_logger.info("[串流結束] 音樂佇列播放完畢")
+            if active_ch:
+                await active_ch.send("🎵 **【串流播放完畢】** 佇列已空。就跟馬文的希望一樣——消失殆盡。")
+
+        except asyncio.CancelledError:
+            logger.info("🎵 [Stream Loop] 串流迴圈被取消。")
+        except Exception as e:
+            logger.error(f"❌ [Stream Loop] 發生異常: {e}")
+            self.stream_mode = False
+
+    async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None):
+        """🎵 播放單首串流音樂，等待播放完成後 return。"""
+        import shlex
+
+        vc = self._vc()
+        voice_client = next((v for v in self.bot.voice_clients if v.is_connected()), None)
+        if not voice_client:
+            logger.warning("⚠️ [Stream Song] 無連線中的 VoiceClient，跳過。")
+            self.stream_mode = False
+            return
+
+        self._current_stream_url = url
+        use_mix = dj_audio_path and os.path.exists(dj_audio_path)
+
+        if use_mix:
+            vol = self.stream_volume
+            fc = (
+                f"[0:a]asplit=2[dj_sc][dj_mix];"
+                f"[dj_sc]apad=whole_dur=9999[dj_pad];"
+                f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,volume={vol:.3f}[music];"
+                f"[music][dj_pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
+                f"[ducked][dj_mix]amix=inputs=2:duration=longest:normalize=0[out]"
+            )
+            before_opts = (
+                f"-i {shlex.quote(dj_audio_path)} "
+                "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"
+            )
+            options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
+            logger.info(f"🎙️ [DJ Mix] 混音模式：{os.path.basename(dj_audio_path)}")
+            if vc is not None:
+                vc._mixer.set_volume(1.0)
+                await vc._mixer_play_music(
+                    voice_client, discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
+                    still_active=lambda: self.stream_mode,
+                )
+        else:
+            p12_opts = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
+                'options': '-vn -bufsize 512k',
+            }
+            if url not in self._stream_norm_gain and vc is not None:
+                asyncio.create_task(vc._measure_norm_gain_bg(url))
+            if vc is not None:
+                await vc._mixer_play_music(
+                    voice_client, discord.FFmpegPCMAudio(url, **p12_opts),
+                    still_active=lambda: self.stream_mode, volume_attr="stream_volume",
+                )
+
     @app_commands.command(name="marvin_recommend", description="[Stream] 讓馬文根據你的點播記憶推薦下一首")
     async def marvin_recommend(self, interaction: discord.Interaction):
         await interaction.response.defer()

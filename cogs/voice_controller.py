@@ -7060,6 +7060,12 @@ class VoiceController(commands.Cog):
         self.last_marvin_speech_time = time.time()
 
     async def _stream_loop(self):
+        """🎵 [Phase 7D stub] → MusicCog._stream_loop"""
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._stream_loop()
+
+    async def _stream_loop_ORIG(self):
         """🎵 [Stream Loop] 依序播放佇列中的歌曲。"""
         logger.info("🎵 [Stream Loop] 串流迴圈啟動。")
         try:
@@ -7701,6 +7707,12 @@ class VoiceController(commands.Cog):
         return 3.0
 
     async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None):
+        """🎵 [Phase 7D stub] → MusicCog.play_stream_song"""
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc.play_stream_song(url, title, dj_audio_path=dj_audio_path)
+
+    async def play_stream_song_ORIG(self, url: str, title: str, dj_audio_path: str | None = None):
         """🎵 播放單首串流音樂，等待播放完成後 return。
         dj_audio_path: 若提供，DJ 語音與音樂混音播放（前奏 ducking）。
         """
