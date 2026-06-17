@@ -7,48 +7,42 @@ from __future__ import annotations
 
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 
 def _make_cog():
+    """_handle_voice_music_command 已移至 MusicCog，透過 vc_mock 提供 VC 依賴。"""
     bot = MagicMock()
     bot.guilds = []
-    bot.voice_clients = []
-    bot.cogs.get.return_value = None
-    bot.tts_engine = MagicMock()
-    bot.tts_engine.get_estimated_duration.return_value = 2.0
-    bot.router = MagicMock()
-    bot.router._call_llm = AsyncMock(return_value="ok")
-    bot.router._background_intent_enrich = AsyncMock()
-    bot.router.memory = MagicMock()
-    bot.router.memory.get_player_data.return_value = {}
-    bot.router.atmosphere_tracker = None
-    bot.router.wake_fusion = None
-    bot.engine = MagicMock()
-    bot.engine.conv_buffer = MagicMock()
-    bot.engine.conv_buffer.get_harvest = MagicMock(return_value="test query")
-    bot.engine.conv_buffer.get_last_n_utterances = MagicMock(return_value=[])
-    bot.engine.post_summon_callback = None
+    bot.music_memory = None
 
-    with patch("cogs.voice_controller.DepartureStats", MagicMock), \
-         patch("cogs.voice_controller.ConsentManager", MagicMock):
-        from cogs.voice_controller import VoiceController
-        cog = VoiceController(bot)
-
-    cog.active_text_channel = AsyncMock()
+    # vc_mock 提供 MC._handle_voice_music_command 需要的 VC 屬性
+    vc_mock = MagicMock()
     _placeholder_msg = MagicMock()
     _placeholder_msg.edit = AsyncMock()
     _placeholder_msg.delete = AsyncMock()
-    cog.active_text_channel.send = AsyncMock(return_value=_placeholder_msg)
-    cog.stt_logger = MagicMock()
+    vc_mock.active_text_channel = AsyncMock()
+    vc_mock.active_text_channel.send = AsyncMock(return_value=_placeholder_msg)
+    vc_mock.stt_logger = MagicMock()
+    vc_mock._play_ack = AsyncMock()
+    vc_mock._extract_music_search_query = MagicMock(return_value="query")
+
+    def _cogs_get(name):
+        if name == 'VoiceController':
+            return vc_mock
+        return None
+
+    bot.cogs.get.side_effect = _cogs_get
+
+    from cogs.music_cog import MusicCog
+    cog = MusicCog(bot)
     cog.stream_queue = []
     cog.stream_history = []
     cog.stream_mode = False
     cog.radio_mode = False
     cog.radio_paused = False
     cog.stream_paused = False
-    cog.is_playing_audio = False
-    cog.tts_queue_duration = 0.0
+    cog._vc_mock = vc_mock  # 暴露給測試斷言用
     return cog
 
 
@@ -76,8 +70,8 @@ async def test_voice_stop_radio_mode_calls_stop_radio():
     await cog._handle_voice_music_command("狗與露", "停止播放", "stop")
 
     cog.stop_radio.assert_awaited_once()
-    cog.active_text_channel.send.assert_called_once()
-    sent = cog.active_text_channel.send.call_args[0][0]
+    cog._vc_mock.active_text_channel.send.assert_called_once()
+    sent = cog._vc_mock.active_text_channel.send.call_args[0][0]
     assert "⏹️" in sent
 
 
@@ -94,8 +88,8 @@ async def test_voice_stop_no_modes_active_sends_error():
 
     cog.stop_radio.assert_not_awaited()
     cog.stop_stream.assert_not_awaited()
-    cog.active_text_channel.send.assert_called_once()
-    sent = cog.active_text_channel.send.call_args[0][0]
+    cog._vc_mock.active_text_channel.send.assert_called_once()
+    sent = cog._vc_mock.active_text_channel.send.call_args[0][0]
     assert "😑" in sent
 
 
@@ -112,60 +106,60 @@ async def test_voice_stop_both_modes_active_stops_both():
 
     cog.stop_radio.assert_awaited_once()
     cog.stop_stream.assert_awaited_once()
-    cog.active_text_channel.send.assert_called_once()
+    cog._vc_mock.active_text_channel.send.assert_called_once()
 
 
 # ── pause ─────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_voice_pause_radio_mode_pauses_vc():
-    """pause 指令：只有 radio_mode 開啟時，應 pause vc 並設定 radio_paused=True。"""
+    """pause 指令：只有 radio_mode 開啟時，應 pause mixer 並設定 radio_paused=True。"""
     cog = _make_cog()
-    cog._mixer = MagicMock()
-    vc = _make_vc()
-    cog.bot.voice_clients = [vc]
+    cog._vc_mock._mixer = MagicMock()
+    discord_vc = _make_vc()
+    cog.bot.voice_clients = [discord_vc]
     cog.radio_mode = True
     cog.radio_paused = False
     cog.stream_mode = False
 
     await cog._handle_voice_music_command("狗與露", "暫停播放", "pause")
 
-    cog._mixer.set_paused.assert_called_once_with(True)
+    cog._vc_mock._mixer.set_paused.assert_called_once_with(True)
     assert cog.radio_paused is True
-    cog.active_text_channel.send.assert_called_once()
-    sent = cog.active_text_channel.send.call_args[0][0]
+    cog._vc_mock.active_text_channel.send.assert_called_once()
+    sent = cog._vc_mock.active_text_channel.send.call_args[0][0]
     assert "⏸️" in sent
 
 
 @pytest.mark.asyncio
 async def test_voice_pause_radio_already_paused_no_double_pause():
-    """pause 指令：radio_paused=True 時不應重複呼叫 vc.pause()。"""
+    """pause 指令：radio_paused=True 時不應重複呼叫 mixer.set_paused()。"""
     cog = _make_cog()
-    vc = _make_vc(playing=False, paused=True)
-    cog.bot.voice_clients = [vc]
+    cog._vc_mock._mixer = MagicMock()
+    discord_vc = _make_vc(playing=False, paused=True)
+    cog.bot.voice_clients = [discord_vc]
     cog.radio_mode = True
     cog.radio_paused = True
     cog.stream_mode = False
 
     await cog._handle_voice_music_command("狗與露", "暫停播放", "pause")
 
-    vc.pause.assert_not_called()
+    cog._vc_mock._mixer.set_paused.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_voice_pause_no_modes_active_sends_error():
     """pause 指令：radio_mode 和 stream_mode 均關閉時，回傳錯誤提示。"""
     cog = _make_cog()
-    vc = _make_vc()
-    cog.bot.voice_clients = [vc]
+    discord_vc = _make_vc()
+    cog.bot.voice_clients = [discord_vc]
     cog.radio_mode = False
     cog.stream_mode = False
 
     await cog._handle_voice_music_command("狗與露", "暫停播放", "pause")
 
-    vc.pause.assert_not_called()
-    cog.active_text_channel.send.assert_called_once()
-    sent = cog.active_text_channel.send.call_args[0][0]
+    cog._vc_mock.active_text_channel.send.assert_called_once()
+    sent = cog._vc_mock.active_text_channel.send.call_args[0][0]
     assert "😑" in sent
 
 
@@ -173,11 +167,11 @@ async def test_voice_pause_no_modes_active_sends_error():
 
 @pytest.mark.asyncio
 async def test_voice_resume_radio_paused_resumes_vc():
-    """resume 指令：radio_paused=True 時應 resume vc 並清除 radio_paused。"""
+    """resume 指令：radio_paused=True 時應 resume mixer 並清除 radio_paused。"""
     cog = _make_cog()
-    cog._mixer = MagicMock()
-    vc = _make_vc(playing=False, paused=True)
-    cog.bot.voice_clients = [vc]
+    cog._vc_mock._mixer = MagicMock()
+    discord_vc = _make_vc(playing=False, paused=True)
+    cog.bot.voice_clients = [discord_vc]
     cog.radio_mode = True
     cog.radio_paused = True
     cog.stream_mode = False
@@ -185,10 +179,10 @@ async def test_voice_resume_radio_paused_resumes_vc():
 
     await cog._handle_voice_music_command("狗與露", "繼續播", "resume")
 
-    cog._mixer.set_paused.assert_called_once_with(False)
+    cog._vc_mock._mixer.set_paused.assert_called_once_with(False)
     assert cog.radio_paused is False
-    cog.active_text_channel.send.assert_called_once()
-    sent = cog.active_text_channel.send.call_args[0][0]
+    cog._vc_mock.active_text_channel.send.assert_called_once()
+    sent = cog._vc_mock.active_text_channel.send.call_args[0][0]
     assert "▶️" in sent
 
 
@@ -196,8 +190,8 @@ async def test_voice_resume_radio_paused_resumes_vc():
 async def test_voice_resume_no_modes_paused_sends_error():
     """resume 指令：radio_paused 和 stream_paused 均為 False 時，回傳錯誤提示。"""
     cog = _make_cog()
-    vc = _make_vc()
-    cog.bot.voice_clients = [vc]
+    discord_vc = _make_vc()
+    cog.bot.voice_clients = [discord_vc]
     cog.radio_mode = True
     cog.radio_paused = False
     cog.stream_mode = False
@@ -205,9 +199,8 @@ async def test_voice_resume_no_modes_paused_sends_error():
 
     await cog._handle_voice_music_command("狗與露", "繼續播", "resume")
 
-    vc.resume.assert_not_called()
-    cog.active_text_channel.send.assert_called_once()
-    sent = cog.active_text_channel.send.call_args[0][0]
+    cog._vc_mock.active_text_channel.send.assert_called_once()
+    sent = cog._vc_mock.active_text_channel.send.call_args[0][0]
     assert "😑" in sent
 
 
@@ -215,19 +208,19 @@ async def test_voice_resume_no_modes_paused_sends_error():
 
 @pytest.mark.asyncio
 async def test_voice_skip_radio_mode_stops_vc():
-    """skip 指令：radio_mode 開啟時應 stop_playing()，觸發電台迴圈換下一首。"""
+    """skip 指令：radio_mode 開啟時應呼叫 mixer.clear_music()，觸發換下一首。"""
     cog = _make_cog()
-    cog._mixer = MagicMock()
-    vc = _make_vc()
-    cog.bot.voice_clients = [vc]
+    cog._vc_mock._mixer = MagicMock()
+    discord_vc = _make_vc()
+    cog.bot.voice_clients = [discord_vc]
     cog.radio_mode = True
     cog.stream_mode = False
 
     await cog._handle_voice_music_command("狗與露", "下一首", "skip")
 
-    cog._mixer.clear_music.assert_called_once()
-    cog.active_text_channel.send.assert_called_once()
-    sent = cog.active_text_channel.send.call_args[0][0]
+    cog._vc_mock._mixer.clear_music.assert_called_once()
+    cog._vc_mock.active_text_channel.send.assert_called_once()
+    sent = cog._vc_mock.active_text_channel.send.call_args[0][0]
     assert "⏭️" in sent
 
 
@@ -235,14 +228,13 @@ async def test_voice_skip_radio_mode_stops_vc():
 async def test_voice_skip_no_modes_active_sends_error():
     """skip 指令：radio_mode 和 stream_mode 均關閉時，回傳錯誤提示。"""
     cog = _make_cog()
-    vc = _make_vc()
-    cog.bot.voice_clients = [vc]
+    discord_vc = _make_vc()
+    cog.bot.voice_clients = [discord_vc]
     cog.radio_mode = False
     cog.stream_mode = False
 
     await cog._handle_voice_music_command("狗與露", "下一首", "skip")
 
-    vc.stop_playing.assert_not_called()
-    cog.active_text_channel.send.assert_called_once()
-    sent = cog.active_text_channel.send.call_args[0][0]
+    cog._vc_mock.active_text_channel.send.assert_called_once()
+    sent = cog._vc_mock.active_text_channel.send.call_args[0][0]
     assert "😑" in sent

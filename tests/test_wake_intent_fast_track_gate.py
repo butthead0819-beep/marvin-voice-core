@@ -70,6 +70,7 @@ def _make_cog():
     # 把所有副作用 fast-track handler mock 起來，以便 assert 是否被呼叫
     cog._handle_nemoclaw_query = AsyncMock()
     cog._handle_marmo_query = AsyncMock()
+    cog._safe_music_command = AsyncMock()
     cog._handle_voice_music_command = AsyncMock()
     cog._handle_voice_imitate_command = AsyncMock()
     cog._handle_voice_status_query = AsyncMock()
@@ -111,7 +112,7 @@ async def test_low_confidence_skips_music_fast_track():
 
     await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=0.5)
 
-    cog._handle_voice_music_command.assert_not_awaited()
+    cog._safe_music_command.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -159,7 +160,7 @@ async def test_high_confidence_runs_music_fast_track():
 
     await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=0.95)
 
-    cog._handle_voice_music_command.assert_awaited_once()
+    cog._safe_music_command.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -170,7 +171,7 @@ async def test_track_a_none_intent_runs_music_fast_track():
 
     await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=None)
 
-    cog._handle_voice_music_command.assert_awaited_once()
+    cog._safe_music_command.assert_awaited_once()
 
 
 # ── 資訊類（讀取）路徑在低信心時仍允許 ─────────────────────────────────────

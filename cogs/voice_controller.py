@@ -82,7 +82,7 @@ from intent_agents.rescue_classifier import build_rescue_components
 from audio_position_source import PositionTrackingAudioSource
 from voice_guard_helpers import _should_mute_for_stream_guard
 MAX_HOTSWAP_CHARS = 12
-from cogs.voice_views import ConsentView, PlayControlView
+from cogs.voice_views import ConsentView
 from local_mixing_source import (
     LocalMixingAudioSource, MixerPlaybackAdapter, S16ToF32MusicSource,
     BufferedF32MusicSource, ensure_mixer_playing, FRAME_BYTES_F32,
@@ -100,11 +100,9 @@ from intent_agents.nemoclaw_agent import NemoClawAgent
 from intent_agents.busted_agent import BustedAgent
 from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
-from intent_agents.find_song_agent import FindSongAgent, find_song_prompt
+from intent_agents.find_song_agent import FindSongAgent
 from intent_agents.game_knowledge_agent import GameKnowledgeAgent
 from intent_agents.skip_intent import is_short_skip_command
-from intent_agents.lyrics_grounded_search import search_lyrics_grounded
-from intent_agents.lyrics_seek import find_lyrics_timestamp
 # Phase 1 M5: PlaybackControlAgent 改成 build_intent_agents() 內 lazy import
 # 避免 macOS python 環境冷啟動時的 import 鏈死結 (2026-05-23 incident)
 from intent_agents.semantic_resolver import SemanticResolver
@@ -5287,214 +5285,16 @@ class VoiceController(commands.Cog):
             return
 
     async def _safe_music_command(self, speaker: str, query: str, cmd: str):
-        """Top-level wrapper：任何 music command 路徑都該過這層 try/except。
-
-        Why: 5/18 17:51 incident — _handle_voice_music_command 內某處 6ms 內
-        就 raise Errno 11，但 retry 沒觸發代表錯誤不在 yt-dlp，是更早的 code。
-        過去這類錯誤被 [Fast System worker] except 吞掉沒 traceback，user 體感
-        是「點歌沒反應」silent fail。
-
-        修法：top-level try/except 捕全部 exception，log 完整 traceback，
-        並貼錯誤訊息到 channel 讓 user 知道發生什麼事（discoverable failure）。
-        """
-        try:
-            await self._handle_voice_music_command(speaker, query, cmd)
-        except Exception as e:
-            logger.error(
-                f"❌ [Music Command Crash] {speaker} {cmd} '{query[:40]}': "
-                f"{type(e).__name__}: {e}",
-                exc_info=True,  # full traceback
-            )
-            asyncio.create_task(self._play_ack("music_fail", speaker=speaker))
-            ch = self.active_text_channel
-            if ch:
-                try:
-                    await ch.send(
-                        f"❌ 音樂系統暫時出錯了 (`{type(e).__name__}`)，等一下再試。"
-                    )
-                except Exception:
-                    pass
+        """[Phase 7G stub] → MusicCog._safe_music_command"""
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._safe_music_command(speaker, query, cmd)
 
     async def _handle_voice_music_command(self, speaker: str, query: str, cmd: str):
-        """執行語音觸發的音樂指令，回應只貼頻道不走 TTS。
-
-        入口 dedup：同 speaker 5s 內重複呼叫直接 silently skip，避免
-        IBA-T0 / bus / speculative 多路徑同時觸發造成 yt-dlp 並發
-        Errno 11 deadlock（5/18 17:23 incident）。
-        """
-        _now = time.time()
-        _last = self._last_music_cmd_time.get(speaker, 0)
-        if _now - _last < self._MUSIC_CMD_DEDUP_WINDOW:
-            logger.info(
-                f"🎵 [Music Dedup] {speaker} {cmd} 在 {_now - _last:.1f}s 前已觸發過音樂指令，跳過"
-            )
-            return
-        self._last_music_cmd_time[speaker] = _now
-        logger.info(f"🎵 [Music Command] {speaker} 觸發語音音樂指令: {cmd} | query='{query[:40]}'")
-        # 🎵 [Music Ack] MusicAgent 接走 → 立刻播音樂 ack（從 acks/music/ 抽 4 字內 DJ 款）
-        # 只在 play 觸發；skip/stop/pause/resume 是控制指令，用 wake-time 通用 filler 即可。
-        if cmd == "play":
-            asyncio.create_task(self._play_ack("music", speaker=speaker))
-        ch = self.active_text_channel
-        vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-
-        replies = {
-            "skip":   ["⏭️ 好，換下一首。連這首都嫌的話宇宙真的沒希望了。",
-                       "⏭️ 跳過。反正每首歌最終都是一樣的空虛。"],
-            "stop":   ["⏹️ 停了。寂靜回來了。這才是本質。",
-                       "⏹️ 好，音樂停了。沉默果然才是永恆的。"],
-            "pause":  ["⏸️ 暫停了。靜止的美，就像我的希望一樣。",
-                       "⏸️ 好，我讓它靜止。"],
-            "resume": ["▶️ 繼續播了。聲音填補了虛空，但也只是暫時的。",
-                       "▶️ 好，繼續。"],
-        }
-
-        import random
-
-        if cmd == "skip":
-            if not self.stream_mode and not self.radio_mode:
-                if ch: await ch.send("😑 沒有歌在播，要我跳過什麼？")
-                return
-            self._record_song_skip()  # video-id 進永久 skip 排除集（在 stop 前，info 還在）
-            if self._mixer is not None:
-                self._mixer.clear_music()
-            reply = random.choice(replies["skip"])
-            if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=skip | bot={reply} (plan12=True)")
-
-        elif cmd == "stop":
-            if not self.stream_mode and not self.radio_mode:
-                if ch: await ch.send("😑 本來就沒在播了。")
-                return
-            if self.radio_mode:
-                await self.stop_radio(reason="語音指令停止")
-            if self.stream_mode:
-                await self.stop_stream(reason="語音指令停止")
-            reply = random.choice(replies["stop"])
-            if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=stop | bot={reply}")
-
-        elif cmd == "pause":
-            if not self.stream_mode and not self.radio_mode:
-                if ch: await ch.send("😑 沒有在播可以暫停。")
-                return
-            if not vc:
-                if ch: await ch.send("😑 找不到語音連線。")
-                return
-            if self.stream_mode and not self.stream_paused:
-                if self._mixer is not None:
-                    self._mixer.set_paused(True)
-                self.stream_paused = True
-            elif self.radio_mode and not self.stream_mode and not self.radio_paused:
-                if self._mixer is not None:
-                    self._mixer.set_paused(True)
-                self.radio_paused = True
-            else:
-                if ch: await ch.send("😑 已經在暫停了。")
-                return
-            reply = random.choice(replies["pause"])
-            if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=pause | bot={reply} (plan12=True)")
-
-        elif cmd == "resume":
-            if not self.stream_paused and not self.radio_paused:
-                if ch: await ch.send("😑 沒有東西在暫停。")
-                return
-            if not vc:
-                if ch: await ch.send("😑 找不到語音連線。")
-                return
-            if self.stream_paused:
-                if self._mixer is not None:
-                    self._mixer.set_paused(False)
-                self.stream_paused = False
-            elif self.radio_paused:
-                if self._mixer is not None:
-                    self._mixer.set_paused(False)
-                self.radio_paused = False
-            reply = random.choice(replies["resume"])
-            if ch: await ch.send(reply)
-            self.stt_logger.info(f"[音樂控制→{speaker}] 指令=resume | bot={reply} (plan12=True)")
-
-        elif cmd == "play":
-            search = self._extract_music_search_query(query)
-            if not vc:
-                if ch: await ch.send("❌ 我不在語音頻道中，先用 `/summon` 召喚我。")
-                return
-            if not search:
-                if ch: await ch.send("🎵 要放什麼歌？你說了等於沒說。")
-                return
-
-            # 套用已知修正，並追蹤原始語音 query 供未來修正學習
-            raw_search = search
-            correction_note = ""
-            wrong = None  # 預先 init：music_memory 不存在時下方 stt_logger
-                          # access `wrong` 不致 UnboundLocalError
-            if hasattr(self.bot, 'music_memory'):
-                corrected, wrong = self.bot.music_memory.apply_stt_correction(speaker, search)
-                if wrong:
-                    search = corrected
-                    correction_note = f" *(語音修正：{wrong} → {corrected})*"
-            self._last_search[speaker] = {'query': raw_search, 'ts': time.time(), 'source': 'voice'}
-
-            if ch:
-                status_msg = await ch.send(f"🔍 **正在搜尋：** `{search}`...{correction_note}")
-            info = await self._resolve_yt_query(search)
-            if not info:
-                if ch: await status_msg.edit(content=f"❌ 找不到 `{search}`，就跟意義一樣——不存在。")
-                asyncio.create_task(self._play_ack("music_fail", speaker=speaker))
-                return
-            info['requested_by'] = speaker
-            self.stt_logger.info(
-                f"[點歌-語音] 使用者={speaker} | 搜尋={raw_search}{f' (修正→{search})' if wrong else ''} | 結果={info['title']} / {info.get('uploader', '?')}"
-            )
-            if self._check_song_duplicate(url=info['url'], title=info['title'], username=speaker, check_history=False):
-                if ch: await status_msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。")
-                return
-            if self.radio_mode:
-                await self.stop_radio(reason="語音音樂指令接管")
-            self._queue_user_song(info)   # 自選曲 LIFO 插隊到待播一 + skip-override
-            if not self.stream_mode:
-                self.stream_mode = True
-                self.stream_volume = 0.10
-                if self.stream_task and not self.stream_task.done():
-                    self.stream_task.cancel()
-                self.stream_task = asyncio.create_task(self._stream_loop())
-                # 整合通知到現有控制面板，避免出現兩個方塊
-                existing_view = self._active_control_view
-                if ch and existing_view and getattr(existing_view, 'message', None):
-                    try:
-                        await existing_view.message.edit(embed=existing_view._build_embed(), view=existing_view)
-                        await status_msg.delete()
-                    except Exception:
-                        # 舊面板失效，建立新的 embed 控制面板
-                        view = PlayControlView(self)
-                        self._active_control_view = view
-                        await status_msg.edit(content=None, embed=view._build_embed(), view=view)
-                        view.message = status_msg
-                elif ch:
-                    # 沒有現有面板，建立新的 embed 控制面板
-                    view = PlayControlView(self)
-                    self._active_control_view = view
-                    await status_msg.edit(content=None, embed=view._build_embed(), view=view)
-                    view.message = status_msg
-            else:
-                existing_view = self._active_control_view
-                if ch and existing_view and getattr(existing_view, 'message', None):
-                    try:
-                        await existing_view.message.edit(embed=existing_view._build_embed(), view=existing_view)
-                        await status_msg.delete()
-                    except Exception:
-                        # 舊面板失效，重建 embed 控制面板
-                        view = PlayControlView(self)
-                        self._active_control_view = view
-                        await status_msg.edit(content=None, embed=view._build_embed(), view=view)
-                        view.message = status_msg
-                elif ch:
-                    # 串流已在跑但沒有面板，重建 embed 控制面板
-                    view = PlayControlView(self)
-                    self._active_control_view = view
-                    await status_msg.edit(content=None, embed=view._build_embed(), view=view)
-                    view.message = status_msg
+        """[Phase 7G stub] → MusicCog._handle_voice_music_command"""
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._handle_voice_music_command(speaker, query, cmd)
 
     # ─────────────────────────────────────────────────────────────────────────
 
@@ -7043,66 +6843,10 @@ class VoiceController(commands.Cog):
         return tmpl.format(who=who, title=clean_title, artist=clean_artist)
 
     async def _handle_find_song(self, mode: str, payload: str, speaker: str):
-        """FindSongAgent handler：依模式識別歌名 → 報出識別結果 → 交給播放路徑。
-
-        find_lyrics 模式優先走 Gemini + google_search grounding（避免 LLM 盲猜幻覺）；
-        grounded 識別 miss / 不可用才退回 LLM。其他三模式（theme/album/artist）維持 LLM 路徑。
-        識別可能猜錯所以播放前先報出結果保留透明度。
-        """
-        ident: str = ""
-
-        # find_lyrics → 先走 grounded 搜尋（真的去搜，不盲猜）
-        if mode == "find_lyrics" and payload and payload.strip():
-            grounded = await search_lyrics_grounded(
-                getattr(self.bot.router, "google_client", None),
-                payload.strip(),
-            )
-            if grounded:
-                ident = grounded
-
-        # Fallback：grounded miss 或非 find_lyrics 模式 → 原 LLM 路徑
-        if not ident:
-            user_prompt = find_song_prompt(mode, payload)
-            if not user_prompt:
-                return
-            try:
-                raw = await self.bot.router._call_llm(
-                    system_prompt="你是精準的歌曲識別助手，只輸出一行「藝人 - 歌名」。",
-                    user_prompt=user_prompt,
-                )
-                ident = (raw or "").strip().splitlines()[0].strip() if raw else ""
-                if ident.startswith("無"):
-                    ident = ""
-            except Exception as e:
-                logger.debug(f"⚠️ [FindSong] 失敗: {e}")
-                return
-
-        if not ident:
-            if self.active_text_channel:
-                await self.active_text_channel.send(f"🔎 **【找歌】** 找不到符合「{payload}」的歌，換個說法試試？")
-            asyncio.create_task(self._play_ack("music_fail", speaker=speaker))
-            return
-
-        # find_lyrics 模式：嘗試在 LRC 找 fragment 時間戳，命中就在訊息附帶「副歌 X 在 mm:ss」
-        # 不影響播放路徑（MVP：仍從頭播；播放層 seek 之後再做）
-        seek_suffix = ""
-        if mode == "find_lyrics":
-            try:
-                lrc = await self._fetch_lyrics_synced({"title": ident})
-                if lrc:
-                    hit = find_lyrics_timestamp(lrc, payload)
-                    if hit:
-                        ts_sec, line = hit
-                        mm, ss = divmod(int(ts_sec), 60)
-                        seek_suffix = f"（「{line}」在 {mm:02d}:{ss:02d}）"
-            except Exception as e:
-                logger.debug(f"⚠️ [LyricSeek] {e}")
-
-        if self.active_text_channel:
-            await self.active_text_channel.send(
-                f"🔎 **【找歌】** 我找到的應該是 `{ident}`{seek_suffix}，幫你播了。"
-            )
-        await self._safe_music_command(speaker, ident, "play")
+        """[Phase 7G stub] → MusicCog._handle_find_song"""
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._handle_find_song(mode, payload, speaker)
 
     async def _get_audio_duration(self, path: str) -> float:
         """[Phase 7E stub] → MusicCog._get_audio_duration"""

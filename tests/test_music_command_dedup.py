@@ -29,37 +29,40 @@ def _make_mc_cog():
 
 
 def _make_cog():
+    """_handle_voice_music_command 已移至 MusicCog；vc_mock 提供 VC 依賴。"""
     bot = MagicMock()
     bot.guilds = []
-    # 連線中的 vc，讓 cmd="play" 不會提早 return
-    _vc = MagicMock()
-    _vc.is_connected.return_value = True
-    bot.voice_clients = [_vc]
-    bot.cogs.get.return_value = None
-    bot.tts_engine = MagicMock()
-    bot.router = MagicMock()
-    bot.engine = MagicMock()
-    bot.engine.conv_buffer = MagicMock()
-    bot.engine.post_summon_callback = None
+    bot.music_memory = None
+    # 連線中的 discord vc，讓 cmd="play" 不會提早 return
+    _discord_vc = MagicMock()
+    _discord_vc.is_connected.return_value = True
+    bot.voice_clients = [_discord_vc]
 
-    with patch("cogs.voice_controller.DepartureStats", MagicMock), \
-         patch("cogs.voice_controller.ConsentManager", MagicMock):
-        from cogs.voice_controller import VoiceController
-        cog = VoiceController(bot)
-    cog.stt_logger = MagicMock()
-    cog.active_text_channel = AsyncMock()
+    vc_mock = MagicMock()
     placeholder = MagicMock()
     placeholder.edit = AsyncMock()
     placeholder.delete = AsyncMock()
-    cog.active_text_channel.send = AsyncMock(return_value=placeholder)
+    vc_mock.active_text_channel = AsyncMock()
+    vc_mock.active_text_channel.send = AsyncMock(return_value=placeholder)
+    vc_mock.stt_logger = MagicMock()
+    vc_mock._play_ack = AsyncMock()
+    vc_mock._extract_music_search_query = MagicMock(return_value="陶喆天天")
+    vc_mock._mixer = None
+
+    def _cogs_get(name):
+        if name == 'VoiceController':
+            return vc_mock
+        return None
+
+    bot.cogs.get.side_effect = _cogs_get
+
+    from cogs.music_cog import MusicCog
+    cog = MusicCog(bot)
     cog.stream_mode = False
     cog.radio_mode = False
     cog.stream_queue = []
     cog.stream_history = []
-    cog._play_ack = AsyncMock()
-    # music_memory 預設沒有，避免 apply_stt_correction 噴
-    if hasattr(cog.bot, "music_memory"):
-        del cog.bot.music_memory
+    cog._vc_mock = vc_mock
     return cog
 
 
@@ -106,7 +109,7 @@ async def test_music_cmd_dedup_allows_call_after_5s():
     def _fake_time():
         return fake_now[0]
 
-    with patch("cogs.voice_controller.time.time", _fake_time):
+    with patch("cogs.music_cog.time.time", _fake_time):
         await cog._handle_voice_music_command("Alice", "播放陶喆", "play")
         fake_now[0] += 6.0  # 過 5s
         await cog._handle_voice_music_command("Alice", "播放陶喆", "play")
@@ -182,9 +185,10 @@ async def test_safe_music_command_catches_exception_and_notifies_user():
     # 不該 raise，內部吞掉
     await cog._safe_music_command("Alice", "播放陶喆", "play")
 
-    # 應該已通知 user
-    cog.active_text_channel.send.assert_called()
-    sent_msg = cog.active_text_channel.send.call_args[0][0]
+    # 應該已通知 user（_safe_music_command 透過 vc_mock.active_text_channel 貼訊息）
+    ch = cog._vc_mock.active_text_channel
+    ch.send.assert_called()
+    sent_msg = ch.send.call_args[0][0]
     assert "音樂系統" in sent_msg or "出錯" in sent_msg
     assert "OSError" in sent_msg  # 顯示 exception type 方便 debug
 
