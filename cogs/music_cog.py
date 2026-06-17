@@ -30,11 +30,24 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from intent_agents.recommendation import (
+    Recommendation,
+    append_recommendation,
+    time_of_day_bucket,
+)
+from music_recommender import build_recommendation_pool, is_already_recommended, pick_candidates
+from music_memory import extract_video_id
+
 logger = logging.getLogger(__name__)
+
+_TASTE_PROFILE_CACHE = "records/taste_profiles.json"
+_TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 
 
 class MusicCog(commands.Cog):
     """音樂子系統（Strangler Fig 遷移中）。"""
+
+    _PLAYED_EXCLUDE_TTL_S = 7 * 24 * 3600
 
     def __init__(self, bot):
         self.bot = bot
@@ -475,6 +488,332 @@ class MusicCog(commands.Cog):
                 still_active=lambda: self.radio_mode,
                 volume_attr="radio_volume",
             )
+
+    # ── 🎵 Autopilot recommendation engine ───────────────────────────────────
+
+    @staticmethod
+    def _autorecommend_seed(requested_by: str | None, online_members: list[str]) -> str | None:
+        """佇列空時決定要不要續推自動推薦、用誰當 seed user。回 None = 不續推。"""
+        if not requested_by or requested_by == '未知':
+            return None
+        if requested_by.startswith('Marvin'):
+            return online_members[0] if online_members else None
+        return requested_by
+
+    def _load_taste_fingerprint(self) -> dict:
+        """讀 records/taste_fingerprint.json（5 分鐘快取；缺檔/壞檔 → {} fail-open）。"""
+        now = time.time()
+        if hasattr(self, "_taste_fp_cache") and now - getattr(self, "_taste_fp_loaded_at", 0) < 300:
+            return self._taste_fp_cache
+        try:
+            import json as _json
+            with open(_TASTE_FINGERPRINT_CACHE, "r", encoding="utf-8") as f:
+                self._taste_fp_cache = _json.load(f)
+        except Exception:
+            self._taste_fp_cache = {}
+        self._taste_fp_loaded_at = now
+        return self._taste_fp_cache
+
+    async def _t2_discovery_candidates(self, members: list[str], exclude_titles: list[str]) -> list:
+        """T2 discovery：多 seed → ytmusic radio 混合取相關新歌 → Candidate(direct_url)。"""
+        mm = getattr(self.bot, 'music_memory', None)
+        if mm is None:
+            return []
+        seeds: list[str] = []
+        last = getattr(self, '_last_user_song_seed', None)
+        if last:
+            seeds.append(last)
+        hist = mm.get_played_seed_ids(members, limit=30)
+        if hist:
+            self._t2_seed_idx = (getattr(self, '_t2_seed_idx', -1) + 1) % len(hist)
+            hist = hist[self._t2_seed_idx:] + hist[:self._t2_seed_idx]
+        avoid_artists: list[str] = []
+        llm_seeds: list[str] = []
+        if os.getenv("LLM_TASTE_T2", "off") == "on":
+            try:
+                import taste_profile
+                _MAX_AGE = 8 * 86400
+                llm_seeds = taste_profile.fresh_seed_ids(_TASTE_PROFILE_CACHE, members, _MAX_AGE)
+                avoid_artists = taste_profile.fresh_avoid_artists(_TASTE_PROFILE_CACHE, members, _MAX_AGE)
+            except Exception as e:
+                logger.warning(f"⚠️ [AutoRecommend] T2 LLM 品味快取讀取失敗，略過: {e}")
+        try:
+            _core = {a for a, _ in self._load_taste_fingerprint().get("core_artists", [])}
+            for _a in mm.get_explore_avoid_artists():
+                if _a not in _core and _a not in avoid_artists:
+                    avoid_artists.append(_a)
+        except Exception:
+            logger.debug("[AutoRecommend] explore retreat avoid 合併失敗", exc_info=True)
+        reacted_seeds = mm.get_reacted_seed_ids(members)
+        from itertools import zip_longest
+        for h, l, r in zip_longest(hist, llm_seeds, reacted_seeds):
+            for vid in (h, l, r):
+                if vid and vid not in seeds:
+                    seeds.append(vid)
+        for vid in mm.get_liked_video_ids(members):
+            if vid not in seeds:
+                seeds.append(vid)
+        _N_SEEDS = 3
+        seeds = seeds[:_N_SEEDS]
+        if not seeds:
+            return []
+        from ytmusic_radio import ytmusic_radio, blend_radio_results
+        results = []
+        for sd in seeds:
+            try:
+                r = await asyncio.to_thread(
+                    ytmusic_radio, sd,
+                    exclude_titles=exclude_titles, limit=self._round_size * 2,
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ [AutoRecommend] T2 radio seed={sd} 失敗，跳過: {e}")
+                continue
+            if r:
+                results.append(r)
+        if not results:
+            logger.warning("⚠️ [AutoRecommend] T2 全 seed radio 空/失敗，退 T3")
+            return []
+        radio = blend_radio_results(results, exclude_titles=exclude_titles, limit=self._round_size * 3)
+        if avoid_artists:
+            import taste_profile
+            _before = len(radio)
+            radio = taste_profile.filter_avoided(radio, avoid_artists)
+            if len(radio) < _before:
+                logger.info(f"🚫 [AutoRecommend] T2 avoid 排除 {_before - len(radio)} 首（{avoid_artists}）")
+        if not radio:
+            return []
+        logger.info(f"🎵 [AutoRecommend] T2 discovery: {len(seeds)} seeds 混合 → {len(radio)} 首相關新歌候選")
+        from music_recommender import Candidate
+        return [
+            Candidate(anchor_title=c["title"], anchor_artist=c["artist"],
+                      lane="discovery", mode="direct", target_member=None,
+                      score=0.0, direct_url=c["url"])
+            for c in radio
+        ]
+
+    async def _llm_coverify(self, cand, exclude_titles: list[str]) -> str:
+        """spotlight lane：請 LLM 推薦選定錨點歌的 cover 版本。回 "" 表示無推薦。"""
+        slot = self.bot.music_memory.time_slot(time.time())
+        prompt = (
+            f"請推薦《{cand.anchor_title}》的【翻唱／cover 版本】（由其他藝人演繹）。\n"
+            f"當前時段：{slot}\n"
+            f"禁止推薦這些版本：{', '.join(exclude_titles[:20]) or '無'}\n"
+            "規則：\n"
+            "1. 優先推薦該歌的知名 cover（指定翻唱者更佳）。\n"
+            "2. 若無合適 cover，推薦相同曲風／相關藝人的歌。\n"
+            "回答格式（一行）：「翻唱藝人 - 歌名 (cover)」或「藝人 - 歌名」。不需要解釋。\n"
+            "若真的沒有合適選擇請回答「無推薦」。"
+        )
+        rec = await self.bot.router._call_llm(
+            system_prompt=f"你是 cover/翻唱推薦助手，聚焦在《{cand.anchor_title}》。",
+            user_prompt=prompt,
+            tier="simple",
+        )
+        rec = (rec or "").strip()
+        return "" if (not rec or "無推薦" in rec) else rec
+
+    def _recommend_blurb(self, cand, title: str, spotlight: str = "") -> str:
+        """依 lane 產生推薦時的自我說明文案。"""
+        if cand.lane == "group_resonance":
+            return f"🎵 **【馬文精選】** 你們都有共鳴的《{title}》，再聽一次吧。"
+        who = cand.target_member or spotlight or "你"
+        if cand.lane == "long_tail":
+            return f"🎵 **【馬文精選】** 為 `{who}` 從塵封歌單挖出《{title}》。"
+        if cand.lane == "discovery":
+            return f"🎵 **【馬文精選】** 為 `{who}` 挖到新歌《{title}》，聽聽看。"
+        return f"🎵 **【馬文精選】** 為 `{who}` 翻出的《{title}》。"
+
+    async def _auto_recommend(self, username: str, *, _tier: int = 1):
+        """佇列空 → 依在場成員的音樂記憶推薦下一首批。"""
+        mm = getattr(self.bot, 'music_memory', None)
+        if mm is None:
+            return
+
+        vc = self._vc()
+        members = (vc.get_online_members() if vc is not None else []) or [username]
+
+        self._recommend_spotlight_idx = (self._recommend_spotlight_idx + 1) % len(members)
+        spotlight = members[self._recommend_spotlight_idx]
+
+        recently = [s['title'] for s in list(self.stream_history)[-15:]]
+        recommended = mm.get_recent_recommendation_titles()
+        skipped = mm.get_skipped_titles(members)
+        suki_hist: list[str] = []
+        _suki = getattr(self.bot.router, 'memory', None)
+        if _suki is not None:
+            for m in members:
+                suki_hist += (_suki.get_song_history(m) or [])[:10]
+        exclude_titles = list(dict.fromkeys(recently + recommended + skipped + suki_hist))
+
+        vibe_filter = None
+        vibe_label = None
+        if self._mood_sensor is not None:
+            try:
+                self._mood_sensor.invalidate()
+                active_ch = vc.active_text_channel if vc is not None else None
+                guild_id = active_ch.guild.id if active_ch else 0
+                vibe_label = await self._mood_sensor.current_vibe(guild_id=guild_id)
+                vibe_filter = {"mood": vibe_label.mood, "topic": vibe_label.topic, "min_score": 0.0}
+                logger.info(f"🎵 [AutoRecommend] vibe={vibe_label.mood} (engagement={vibe_label.engagement:.2f}, source={vibe_label.source})")
+            except Exception as e:
+                logger.warning(f"⚠️ [AutoRecommend] vibe sensor 失敗，fallback to no vibe filter: {e}")
+
+        pool = build_recommendation_pool(
+            members=members,
+            songs=mm.all_songs(),
+            exclude_titles=exclude_titles,
+            now=time.time(),
+            spotlight_member=spotlight,
+            vibe_filter=vibe_filter,
+        )
+
+        _skipped_vids = mm.get_skipped_video_ids()
+        _taste_fp = self._load_taste_fingerprint()
+
+        if _tier == 1:
+            cands = pick_candidates(pool, k=self._round_size, top_n=9)
+            ring_exclude = exclude_titles
+            excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
+        elif _tier == 2:
+            cands = await self._t2_discovery_candidates(members, exclude_titles)
+            ring_exclude = exclude_titles
+            excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
+        else:
+            relaxed_pool = build_recommendation_pool(
+                members=members, songs=mm.all_songs(),
+                exclude_titles=list(dict.fromkeys(skipped)),
+                now=time.time(), spotlight_member=spotlight, vibe_filter=vibe_filter,
+            )
+            cands = pick_candidates(relaxed_pool, k=self._round_size, top_n=9)
+            ring_exclude = list(dict.fromkeys(skipped))
+            excluded_vids = _skipped_vids
+        if not cands:
+            if _tier < 3:
+                return await self._auto_recommend(username, _tier=_tier + 1)
+            logger.debug("🎵 [AutoRecommend] 三層皆無候選，跳過")
+            return
+
+        self._round_track_count = 0
+
+        if self._cover_blacklist is None:
+            try:
+                from track_quality import CoverBlacklist
+                self._cover_blacklist = CoverBlacklist.shared()
+            except Exception:
+                logger.exception("[AutoRecommend] CoverBlacklist init 失敗")
+
+        enqueued = 0
+        for cand in cands:
+            if enqueued >= self._round_size:
+                break
+            if cand.direct_url:
+                query = cand.direct_url
+            elif cand.mode == "cover":
+                query = await self._llm_coverify(cand, exclude_titles)
+            else:
+                query = f"{cand.anchor_artist} {cand.anchor_title}".strip() or cand.anchor_title
+            if not query:
+                continue
+
+            try:
+                info = await vc._resolve_yt_query(query) if vc is not None else None
+            except Exception as e:
+                logger.debug(f"⚠️ [AutoRecommend] _resolve_yt_query fail '{query}': {e}")
+                continue
+            if not info:
+                continue
+            if vc is not None and vc._check_song_duplicate(url=info['url'], title=info['title'], username=username):
+                logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過")
+                continue
+            if is_already_recommended(info['title'], ring_exclude):
+                logger.info(f"🎵 [AutoRecommend] {info['title']} 已在 recent ring，略過")
+                continue
+            _cand_vid = extract_video_id(info.get('webpage_url') or info.get('url') or '')
+            if _cand_vid and _cand_vid in excluded_vids:
+                logger.info(f"🎵 [AutoRecommend] {info['title']} video-id 已播過/已skip，略過")
+                continue
+            from track_quality import is_non_song_video
+            _ns, _ns_reason = is_non_song_video(info.get('title', ''), info.get('duration'))
+            if _ns:
+                logger.info(f"🚫 [AutoRecommend] 非單曲略過 '{info['title']}': {_ns_reason}")
+                continue
+            if _tier == 2:
+                from taste_fingerprint import explore_matches_floor
+                if not explore_matches_floor(info.get('title', ''), _taste_fp):
+                    logger.info(f"🎵 [AutoRecommend] explore 不合口味地板(語言)略過: {info['title']}")
+                    continue
+
+            if self._cover_blacklist is not None:
+                try:
+                    from track_quality import assess_track_quality
+                    passes, reason = await assess_track_quality(
+                        info['url'], info['title'],
+                        blacklist=self._cover_blacklist,
+                    )
+                    if not passes:
+                        logger.info(f"🚫 [AutoRecommend] Quality block '{info['title']}': {reason}")
+                        continue
+                except Exception:
+                    logger.exception("[AutoRecommend] quality filter raised — fail-open")
+
+            info['requested_by'] = f"Marvin推薦（為{spotlight}）"
+            info['_round_first'] = (enqueued == 0)
+            info['_spotlight'] = spotlight
+            info['_lane'] = cand.lane
+            info['_round_position'] = enqueued
+
+            self.stream_queue.append(info)
+            mm.add_recent_recommendation(info['title'])
+            logger.info(f"🎵 [AutoRecommend] lane={cand.lane} round-#{enqueued+1}: {info['title']}")
+            blurb = ""
+            active_ch = vc.active_text_channel if vc is not None else None
+            if active_ch and enqueued == 0:
+                vibe_tag = f" [vibe: {vibe_label.mood}]" if vibe_label else ""
+                blurb = self._recommend_blurb(cand, info['title'], spotlight=spotlight) + vibe_tag
+                await active_ch.send(blurb)
+
+            _recent_titles = [
+                s.get("title", "") for s in self.stream_history[-3:] if isinstance(s, dict)
+            ]
+            append_recommendation(self._build_autopilot_rec(
+                spotlight=spotlight, title=info['title'], lane=cand.lane, mode=cand.mode,
+                anchor_title=cand.anchor_title, blurb=blurb, now=time.time(),
+                channel_state_extras={
+                    "vibe_mood": vibe_label.mood if vibe_label else None,
+                    "vibe_engagement": round(vibe_label.engagement, 2) if vibe_label else None,
+                    "queue_position": enqueued,
+                    "round_first": info['_round_first'],
+                    "queue_depth": len(self.stream_queue),
+                    "recent_history_titles": _recent_titles,
+                    "spotlight_member": spotlight,
+                },
+            ))
+
+            next_url = info.get('url', '')
+            if next_url and next_url not in self._prefetch_cache and vc is not None:
+                self._prefetch_cache[next_url] = asyncio.create_task(vc._fetch_song_meta(info))
+
+            enqueued += 1
+
+        logger.info(f"🎵 [AutoRecommend] T{_tier} round 完成: enqueued={enqueued}/{self._round_size}")
+        if enqueued == 0 and _tier < 3:
+            await self._auto_recommend(username, _tier=_tier + 1)
+
+    @staticmethod
+    def _build_autopilot_rec(*, spotlight, title, lane, mode, anchor_title, blurb, now,
+                              channel_state_extras=None) -> "Recommendation":
+        """把 autopilot 推薦包成 Recommendation（offline feedback 用）。"""
+        channel_state = dict(channel_state_extras or {})
+        channel_state["lane"] = lane
+        channel_state["mode"] = mode
+        channel_state["time_of_day"] = time_of_day_bucket(now)
+        return Recommendation(
+            ts=now, agent="music", speaker=spotlight,
+            trigger="queue_empty", selected=title,
+            reason_internal=f"queue_empty:{lane}:{mode}:{anchor_title}",
+            explanation_uttered=blurb, feedback_window_s=300,
+            channel_state=channel_state,
+        )
 
     @app_commands.command(name="marvin_recommend", description="[Stream] 讓馬文根據你的點播記憶推薦下一首")
     async def marvin_recommend(self, interaction: discord.Interaction):

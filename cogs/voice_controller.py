@@ -115,8 +115,7 @@ from intent_agents.recommendation import (
     time_of_day_bucket,
 )
 from llm_pool import build_tiered_router
-from music_recommender import build_recommendation_pool, is_already_recommended, pick_candidates
-from music_memory import extract_video_id
+
 from taste_extractor import extract_taste_signals
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
@@ -7545,16 +7544,6 @@ class VoiceController(commands.Cog):
 
     @staticmethod
     def _autorecommend_seed(requested_by: str | None, online_members: list[str]) -> str | None:
-        """佇列空時決定要不要續推自動推薦、用誰當 seed user。回 None = 不續推。
-
-        - '未知' sentinel / 空 → 不續推
-        - 使用者點的歌 → 用該使用者當 seed
-        - Marvin 自己推薦的歌（連續 ambient）→ 用在場成員當 seed；房間沒人 → 不續推
-          （空房交給既有 auto-dismiss 收場，不對空房 DJ）
-
-        註：Marvin 歌也要續推是關鍵——否則一輪 Marvin 推薦播完佇列空、串流就死。
-        _auto_recommend 內優先用 get_online_members()，seed 僅作 fallback。
-        """
         if not requested_by or requested_by == '未知':
             return None
         if requested_by.startswith('Marvin'):
@@ -7562,368 +7551,33 @@ class VoiceController(commands.Cog):
         return requested_by
 
     async def _t2_discovery_candidates(self, members: list[str], exclude_titles: list[str]) -> list:
-        """T2 discovery：多 seed → ytmusic radio 混合取相關新歌 → Candidate(direct_url)。
-
-        seed 池（多 seed 混合，反映群組整體口味而非單一歌）：
-          1. 使用者最近**手動點**的歌（跟當下心情走，排第一 → 混合時佔前段）
-          2. 點播史真人點過的歌（get_played_seed_ids，排除 Marvin 自薦，按次數加權，每輪輪播窗口）
-          3. liked 歷史補
-        取前 N seed 各跑 radio → blend_radio_results 交錯混合去重。只用正向訊號（不用 skipped）。
-        blocking get_watch_playlist 走 asyncio.to_thread，單 seed 失敗只跳過該 seed。
-        全 seed 空 / radio 全掛 / 全被 exclude → 回 []（→ 退 T3 回收）。
-        """
-        mm = getattr(self.bot, 'music_memory', None)
-        if mm is None:
-            return []
-        seeds: list[str] = []
-        last = getattr(self, '_last_user_song_seed', None)   # 使用者最近點歌優先
-        if last:
-            seeds.append(last)
-        hist = mm.get_played_seed_ids(members, limit=30)
-        if hist:
-            # 每輪輪播窗口起點，避免每次都同一批 top seeds
-            self._t2_seed_idx = (getattr(self, '_t2_seed_idx', -1) + 1) % len(hist)
-            hist = hist[self._t2_seed_idx:] + hist[:self._t2_seed_idx]
-        # LLM 品味鄰近 seed（破回音室；env-gated，每日離線快取，runtime 只讀 videoId）
-        avoid_artists: list[str] = []
-        llm_seeds: list[str] = []
-        if os.getenv("LLM_TASTE_T2", "off") == "on":
-            try:
-                import taste_profile
-                _MAX_AGE = 8 * 86400
-                llm_seeds = taste_profile.fresh_seed_ids(_TASTE_PROFILE_CACHE, members, _MAX_AGE)
-                avoid_artists = taste_profile.fresh_avoid_artists(_TASTE_PROFILE_CACHE, members, _MAX_AGE)
-            except Exception as e:
-                logger.warning(f"⚠️ [AutoRecommend] T2 LLM 品味快取讀取失敗，略過: {e}")
-        # Step 3 retreat：skip 驅動的藝人級避開（≥2 首被 skip），但保護指紋核心藝人
-        # （核心被 skip 是單曲層級，不代表整個方向爛）。永遠套用、不受 LLM env gate 限制。
-        try:
-            _core = {a for a, _ in self._load_taste_fingerprint().get("core_artists", [])}
-            for _a in mm.get_explore_avoid_artists():
-                if _a not in _core and _a not in avoid_artists:
-                    avoid_artists.append(_a)
-        except Exception:
-            logger.debug("[AutoRecommend] explore retreat avoid 合併失敗", exc_info=True)
-        # Step 3 promotion：有反應沒被 skip 的歌（含 Marvin 發現後大家有感的）→ 升級 seed
-        reacted_seeds = mm.get_reacted_seed_ids(members)
-        # 交錯 history / LLM 鄰近 / 有反應（promoted），確保 novelty seed 進前 N
-        from itertools import zip_longest
-        for h, l, r in zip_longest(hist, llm_seeds, reacted_seeds):
-            for vid in (h, l, r):
-                if vid and vid not in seeds:
-                    seeds.append(vid)
-        for vid in mm.get_liked_video_ids(members):
-            if vid not in seeds:
-                seeds.append(vid)
-        _N_SEEDS = 3
-        seeds = seeds[:_N_SEEDS]
-        if not seeds:
-            return []
-        from ytmusic_radio import ytmusic_radio, blend_radio_results
-        results = []
-        for sd in seeds:
-            try:
-                r = await asyncio.to_thread(
-                    ytmusic_radio, sd,
-                    exclude_titles=exclude_titles, limit=self._round_size * 2,
-                )
-            except Exception as e:
-                logger.warning(f"⚠️ [AutoRecommend] T2 radio seed={sd} 失敗，跳過: {e}")
-                continue
-            if r:
-                results.append(r)
-        if not results:
-            logger.warning("⚠️ [AutoRecommend] T2 全 seed radio 空/失敗，退 T3")
-            return []
-        radio = blend_radio_results(
-            results, exclude_titles=exclude_titles, limit=self._round_size * 3)
-        if avoid_artists:
-            import taste_profile
-            _before = len(radio)
-            radio = taste_profile.filter_avoided(radio, avoid_artists)
-            if len(radio) < _before:
-                logger.info(f"🚫 [AutoRecommend] T2 avoid 排除 {_before - len(radio)} 首（{avoid_artists}）")
-        if not radio:
-            return []
-        logger.info(f"🎵 [AutoRecommend] T2 discovery: {len(seeds)} seeds 混合 → {len(radio)} 首相關新歌候選")
-        from music_recommender import Candidate
-        return [
-            Candidate(anchor_title=c["title"], anchor_artist=c["artist"],
-                      lane="discovery", mode="direct", target_member=None,
-                      score=0.0, direct_url=c["url"])
-            for c in radio
-        ]
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            return await mc._t2_discovery_candidates(members, exclude_titles)
+        return []
 
     def _load_taste_fingerprint(self) -> dict:
-        """讀 records/taste_fingerprint.json（5 分鐘快取；缺檔/壞檔 → {} fail-open）。
-
-        週生成的 deterministic 口味指紋，供 T2 explore 用主導語言當地板。
-        """
-        now = time.time()
-        if hasattr(self, "_taste_fp_cache") and now - getattr(self, "_taste_fp_loaded_at", 0) < 300:
-            return self._taste_fp_cache
-        try:
-            import json as _json
-            with open(_TASTE_FINGERPRINT_CACHE, "r", encoding="utf-8") as f:
-                self._taste_fp_cache = _json.load(f)
-        except Exception:
-            self._taste_fp_cache = {}
-        self._taste_fp_loaded_at = now
-        return self._taste_fp_cache
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            return mc._load_taste_fingerprint()
+        return {}
 
     async def _auto_recommend(self, username: str, *, _tier: int = 1):
-        """佇列空 → 依在場成員的音樂記憶推薦下一首批 (Phase 1: 一次推 3 首為一 round)。
-
-        _tier：候選來源層級。T1 團體記憶 → T2 ytmusic discovery → T3 放寬回收。
-        某層「實際入隊數=0」（cands 空 OR 全被 ring/dedup 濾光）→ 遞迴進下一層，
-        確保佇列真的有新歌（修 2026-06-04：原本只看 cands 空、漏了 enqueued=0 卡住）。
-
-        Phase 1 M4 ambient room curator:
-          - 一次呼叫 enqueue 最多 3 首 (一 round, ≈15min)
-          - 整合 MoodSensor (M2) → vibe_filter 給 recommender
-          - 每 candidate 過 Cover Quality Hard Filter (M1)
-          - 進新 round 時 invalidate MoodSensor cache (即每 round 重評 vibe)
-
-        變化與團體聚合由 music_recommender 的確定性候選池 + 加權抽樣負責；LLM 只在
-        spotlight lane 把選定錨點 cover 化 + vibe sensor。direct lane 直接重播。
-        """
-        mm = getattr(self.bot, 'music_memory', None)
-        if mm is None:
-            return
-
-        # 在場成員（團體）；空則退回點歌者
-        members = self.get_online_members() or [username]
-
-        # spotlight 輪替：每次推薦聚焦不同在場成員
-        self._recommend_spotlight_idx = (self._recommend_spotlight_idx + 1) % len(members)
-        spotlight = members[self._recommend_spotlight_idx]
-
-        # exclude = 本場最近播 ∪ 最近推薦 ring（活過重啟）∪ 在場者 skipped ∪ 在場者 suki history
-        recently = [s['title'] for s in list(self.stream_history)[-15:]]
-        recommended = mm.get_recent_recommendation_titles()
-        skipped = mm.get_skipped_titles(members)
-        suki_hist: list[str] = []
-        _suki = getattr(self.bot.router, 'memory', None)
-        if _suki is not None:
-            for m in members:
-                suki_hist += (_suki.get_song_history(m) or [])[:10]
-        exclude_titles = list(dict.fromkeys(recently + recommended + skipped + suki_hist))
-
-        # Phase 1 M2: vibe sensor — 進新 round invalidate cache 強制重評
-        vibe_filter = None
-        vibe_label = None
-        if self._mood_sensor is not None:
-            try:
-                self._mood_sensor.invalidate()
-                guild_id = self.active_text_channel.guild.id if self.active_text_channel else 0
-                vibe_label = await self._mood_sensor.current_vibe(guild_id=guild_id)
-                vibe_filter = {"mood": vibe_label.mood, "topic": vibe_label.topic, "min_score": 0.0}
-                logger.info(f"🎵 [AutoRecommend] vibe={vibe_label.mood} (engagement={vibe_label.engagement:.2f}, source={vibe_label.source})")
-            except Exception as e:
-                logger.warning(f"⚠️ [AutoRecommend] vibe sensor 失敗，fallback to no vibe filter: {e}")
-
-        pool = build_recommendation_pool(
-            members=members,
-            songs=mm.all_songs(),
-            exclude_titles=exclude_titles,
-            now=time.time(),
-            spotlight_member=spotlight,
-            vibe_filter=vibe_filter,
-        )
-
-        # video-id 排除（穩定鍵，取代脆弱歌名比對）：skip 過永久排、播過拉長視窗排。
-        # T1/T2 套兩者；T3 回收只保留永久 skip（放寬播過視窗，與下方 ring_exclude 同步，
-        # 避免「拉長窗」把 recommender 餓死沒歌放）。
-        _skipped_vids = mm.get_skipped_video_ids()
-        _taste_fp = self._load_taste_fingerprint()   # Step 2: T2 explore 語言地板用
-
-        # 本層候選來源 + enqueue 時 ring 檢查嚴格度（ring_exclude / excluded_vids）。
-        if _tier == 1:
-            # T1 團體記憶（9-pick-3）
-            cands = pick_candidates(pool, k=self._round_size, top_n=9)
-            ring_exclude = exclude_titles
-            excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
-        elif _tier == 2:
-            # T2 discovery：在場者 liked 的歌當 seed → ytmusic radio 取相關新歌
-            cands = await self._t2_discovery_candidates(members, exclude_titles)
-            ring_exclude = exclude_titles
-            excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
-        else:
-            # T3 回收：放寬 exclude 到只保留 skipped（鬆開 recently/ring/suki），讓非 skipped
-            # 老歌重新發現。ring_exclude 同步放寬，否則 enqueue 的 ring 檢查又把它擋掉。
-            relaxed_pool = build_recommendation_pool(
-                members=members, songs=mm.all_songs(),
-                exclude_titles=list(dict.fromkeys(skipped)),
-                now=time.time(), spotlight_member=spotlight, vibe_filter=vibe_filter,
-            )
-            cands = pick_candidates(relaxed_pool, k=self._round_size, top_n=9)
-            ring_exclude = list(dict.fromkeys(skipped))
-            excluded_vids = _skipped_vids   # 回收層只擋永久 skip，放寬播過視窗
-        if not cands:
-            if _tier < 3:
-                return await self._auto_recommend(username, _tier=_tier + 1)
-            logger.debug("🎵 [AutoRecommend] 三層皆無候選，跳過")
-            return
-
-        # 進新 round → reset track count
-        self._round_track_count = 0
-
-        # Phase 1 M1: cover quality filter lazy init
-        if self._cover_blacklist is None:
-            try:
-                from track_quality import CoverBlacklist
-                self._cover_blacklist = CoverBlacklist.shared()
-            except Exception:
-                logger.exception("[AutoRecommend] CoverBlacklist init 失敗")
-
-        enqueued = 0
-        for cand in cands:
-            # 每輪入隊上限 round_size——候選清單可能比 round_size 多（如 T2 radio 給 9 個當
-            # 備援），但只填 round_size 首進佇列，不一次冒一堆出來（其餘留著下輪/失敗時補位）。
-            if enqueued >= self._round_size:
-                break
-            # mode → query：T2 direct_url 自帶 URL 直解；cover 交給 LLM cover 化；direct 重播錨點
-            if cand.direct_url:
-                query = cand.direct_url   # _resolve_yt_query 認 http 開頭 → 直接 extract 不搜尋
-            elif cand.mode == "cover":
-                query = await self._llm_coverify(cand, exclude_titles)
-            else:
-                query = f"{cand.anchor_artist} {cand.anchor_title}".strip() or cand.anchor_title
-            if not query:
-                continue
-
-            try:
-                info = await self._resolve_yt_query(query)
-            except Exception as e:
-                logger.debug(f"⚠️ [AutoRecommend] _resolve_yt_query fail '{query}': {e}")
-                continue
-            if not info:
-                continue
-            if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
-                logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過")
-                continue
-            if is_already_recommended(info['title'], ring_exclude):
-                logger.info(f"🎵 [AutoRecommend] {info['title']} 已在 recent ring，略過")
-                continue
-            # video-id 排除（穩定鍵）：skip 過永久 / 播過拉長視窗。歌名比對救不到的
-            # 重複（yt-dlp 歌名漂移）由這條擋。
-            _cand_vid = extract_video_id(info.get('webpage_url') or info.get('url') or '')
-            if _cand_vid and _cand_vid in excluded_vids:
-                logger.info(f"🎵 [AutoRecommend] {info['title']} video-id 已播過/已skip，略過")
-                continue
-            # 非單曲過濾：合輯 / 紀錄片 / 簡介長片（旁白多、不是歌）一律避開。
-            from track_quality import is_non_song_video
-            _ns, _ns_reason = is_non_song_video(info.get('title', ''), info.get('duration'))
-            if _ns:
-                logger.info(f"🚫 [AutoRecommend] 非單曲略過 '{info['title']}': {_ns_reason}")
-                continue
-            # Step 2: explore（T2 新歌發現）錨定口味地板——主導語言不符的新歌略過，
-            # 讓驚喜留在甜蜜區（華語）。exploit（T1 重播愛歌，含少數英文老歌）不套。
-            if _tier == 2:
-                from taste_fingerprint import explore_matches_floor
-                if not explore_matches_floor(info.get('title', ''), _taste_fp):
-                    logger.info(f"🎵 [AutoRecommend] explore 不合口味地板(語言)略過: {info['title']}")
-                    continue
-
-            # Phase 1 M1: cover quality filter (hard ban 低播放 cover / 黑名單)
-            if self._cover_blacklist is not None:
-                try:
-                    from track_quality import assess_track_quality
-                    passes, reason = await assess_track_quality(
-                        info['url'], info['title'],
-                        blacklist=self._cover_blacklist,
-                    )
-                    if not passes:
-                        logger.info(f"🚫 [AutoRecommend] Quality block '{info['title']}': {reason}")
-                        continue
-                except Exception:
-                    logger.exception("[AutoRecommend] quality filter raised — fail-open")
-
-            info['requested_by'] = f"Marvin推薦（為{spotlight}）"
-            # Phase 1 M6: round 第 1 首 → 標記「賭一把」mode 給 DJ persona
-            info['_round_first'] = (enqueued == 0)
-            info['_spotlight'] = spotlight          # DJ intro 個人化用
-            info['_lane'] = cand.lane               # DJ intro 群組 vs 個人判斷用
-            info['_round_position'] = enqueued      # DJ intro stagger 用（0=立即,1=3s,2=6s）
-
-            self.stream_queue.append(info)
-            mm.add_recent_recommendation(info['title'])
-            logger.info(f"🎵 [AutoRecommend] lane={cand.lane} round-#{enqueued+1}: {info['title']}")
-            blurb = ""
-            if self.active_text_channel and enqueued == 0:
-                # Round blurb 一次發、後 2 首不另開訊息（避免洗版）
-                vibe_tag = f" [vibe: {vibe_label.mood}]" if vibe_label else ""
-                blurb = self._recommend_blurb(cand, info['title'], spotlight=spotlight) + vibe_tag
-                await self.active_text_channel.send(blurb)
-            # offline feedback log：每首 autopilot 推薦都進 jsonl，明天 analyze
-            # 2026-05-28 Phase 1：豐富 channel_state — vibe / queue position / history /
-            # depth，給 analyzer 抽「什麼樣的推薦會被 skip」pattern。
-            _recent_titles = [
-                s.get("title", "") for s in self.stream_history[-3:] if isinstance(s, dict)
-            ]
-            append_recommendation(build_autopilot_recommendation(
-                speaker=spotlight, title=info['title'], lane=cand.lane, mode=cand.mode,
-                anchor_title=cand.anchor_title, blurb=blurb, now=time.time(),
-                channel_state_extras={
-                    "vibe_mood": vibe_label.mood if vibe_label else None,
-                    "vibe_engagement": (
-                        round(vibe_label.engagement, 2) if vibe_label else None
-                    ),
-                    "queue_position": enqueued,         # round 內第幾首（0-index）
-                    "round_first": info['_round_first'],
-                    "queue_depth": len(self.stream_queue),
-                    "recent_history_titles": _recent_titles,
-                    "spotlight_member": spotlight,
-                },
-            ))
-
-            # 對新推薦的歌也啟動預取
-            next_url = info.get('url', '')
-            if next_url and next_url not in self._prefetch_cache:
-                self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(info))
-
-            enqueued += 1
-
-        logger.info(f"🎵 [AutoRecommend] T{_tier} round 完成: enqueued={enqueued}/{self._round_size}")
-        if enqueued == 0 and _tier < 3:
-            # cands 非空但全被 ring/dedup/quality 濾光 → 進下一層找真的能播的（修 ring 飽和卡死）
-            await self._auto_recommend(username, _tier=_tier + 1)
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._auto_recommend(username, _tier=_tier)
 
     async def _llm_coverify(self, cand, exclude_titles: list[str]) -> str:
-        """spotlight lane：請 LLM 推薦選定錨點歌的 cover 版本。回 "" 表示無推薦。"""
-        slot = self.bot.music_memory.time_slot(time.time())
-        prompt = (
-            f"請推薦《{cand.anchor_title}》的【翻唱／cover 版本】（由其他藝人演繹）。\n"
-            f"當前時段：{slot}\n"
-            f"禁止推薦這些版本：{', '.join(exclude_titles[:20]) or '無'}\n"
-            "規則：\n"
-            "1. 優先推薦該歌的知名 cover（指定翻唱者更佳）。\n"
-            "2. 若無合適 cover，推薦相同曲風／相關藝人的歌。\n"
-            "回答格式（一行）：「翻唱藝人 - 歌名 (cover)」或「藝人 - 歌名」。不需要解釋。\n"
-            "若真的沒有合適選擇請回答「無推薦」。"
-        )
-        rec = await self.bot.router._call_llm(
-            system_prompt=f"你是 cover/翻唱推薦助手，聚焦在《{cand.anchor_title}》。",
-            user_prompt=prompt,
-            tier="simple",
-        )
-        rec = (rec or "").strip()
-        return "" if (not rec or "無推薦" in rec) else rec
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            return await mc._llm_coverify(cand, exclude_titles)
+        return ""
 
     def _recommend_blurb(self, cand, title: str, spotlight: str = "") -> str:
-        """依 lane 產生推薦時的自我說明文案（透明度：讓人知道為何推這首）。
-
-        spotlight：本輪聚焦的在場成員（_auto_recommend 輪替傳入）。
-        group_resonance 是群體共鳴，不點名個人；其餘 lane 若有 spotlight 則標示替誰推。
-        """
-        if cand.lane == "group_resonance":
-            return f"🎵 **【馬文精選】** 你們都有共鳴的《{title}》，再聽一次吧。"
-        who = cand.target_member or spotlight or "你"
-        if cand.lane == "long_tail":
-            return f"🎵 **【馬文精選】** 為 `{who}` 從塵封歌單挖出《{title}》。"
-        if cand.lane == "discovery":
-            return f"🎵 **【馬文精選】** 為 `{who}` 挖到新歌《{title}》，聽聽看。"
-        return f"🎵 **【馬文精選】** 為 `{who}` 翻出的《{title}》。"
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            return mc._recommend_blurb(cand, title, spotlight)
+        return ""
 
     _AUTOPILOT_DJ_PHRASES_PERSONAL = [
         "這首幫{who}點的，{artist}唱的{title}",

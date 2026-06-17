@@ -12,12 +12,12 @@ from pathlib import Path
 import pytest
 
 
-def _import_vc():
+def _import_mc():
     base = Path(__file__).parent.parent
     if str(base) not in sys.path:
         sys.path.insert(0, str(base))
-    from cogs.voice_controller import VoiceController
-    return VoiceController
+    from cogs.music_cog import MusicCog
+    return MusicCog
 
 
 class _FakeMM:
@@ -45,6 +45,9 @@ class _StubSelf:
         self._last_user_song_seed = last
         self._round_size = 3
 
+    def _load_taste_fingerprint(self):
+        return {}
+
 
 pytestmark = pytest.mark.asyncio
 
@@ -56,7 +59,7 @@ def clean_env(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t2_blends_multiple_played_seeds(monkeypatch):
-    VC = _import_vc()
+    MC = _import_mc()
     import ytmusic_radio
 
     calls = []
@@ -72,7 +75,7 @@ async def test_t2_blends_multiple_played_seeds(monkeypatch):
     mm = _FakeMM(played=["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd"],
                  liked=[])
     stub = _StubSelf(mm)
-    out = await VC._t2_discovery_candidates(stub, ["狗與露"], exclude_titles=[])
+    out = await MC._t2_discovery_candidates(stub, ["狗與露"], exclude_titles=[])
 
     # 取前 3 seed（_N_SEEDS），各 radio 一次
     assert len(calls) == 3
@@ -83,7 +86,7 @@ async def test_t2_blends_multiple_played_seeds(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_t2_last_user_song_leads_seed_pool(monkeypatch):
-    VC = _import_vc()
+    MC = _import_mc()
     import ytmusic_radio
     calls = []
 
@@ -94,13 +97,13 @@ async def test_t2_last_user_song_leads_seed_pool(monkeypatch):
     monkeypatch.setattr(ytmusic_radio, "ytmusic_radio", fake_radio)
     mm = _FakeMM(played=["bbbbbbbbbbb", "ccccccccccc"], liked=[])
     stub = _StubSelf(mm, last="zzzzzzzzzzz")          # 手動點的歌
-    await VC._t2_discovery_candidates(stub, ["狗與露"], exclude_titles=[])
+    await MC._t2_discovery_candidates(stub, ["狗與露"], exclude_titles=[])
     assert calls[0] == "zzzzzzzzzzz"                  # 最近手動點排第一
 
 
 @pytest.mark.asyncio
 async def test_t2_single_seed_failure_skipped_not_fatal(monkeypatch):
-    VC = _import_vc()
+    MC = _import_mc()
     import ytmusic_radio
 
     def fake_radio(seed, exclude_titles=None, limit=None, **kw):
@@ -110,29 +113,29 @@ async def test_t2_single_seed_failure_skipped_not_fatal(monkeypatch):
 
     monkeypatch.setattr(ytmusic_radio, "ytmusic_radio", fake_radio)
     mm = _FakeMM(played=["aaaaaaaaaaa", "bbbbbbbbbbb"], liked=[])
-    out = await VC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
+    out = await MC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
     titles = {c.anchor_title for c in out}
     assert titles == {"aaaaaaaaaaa-s"}               # 壞的跳過、好的留
 
 
 @pytest.mark.asyncio
 async def test_t2_empty_seeds_returns_empty(monkeypatch):
-    VC = _import_vc()
+    MC = _import_mc()
     mm = _FakeMM(played=[], liked=[])
-    out = await VC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
+    out = await MC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
     assert out == []
 
 
 @pytest.mark.asyncio
 async def test_t2_llm_taste_seeds_and_avoid_filter(monkeypatch, tmp_path):
     """LLM_TASTE_T2=on：讀快取鄰近 seed 進池 + avoid_artists 排除 radio 候選。"""
-    VC = _import_vc()
+    MC = _import_mc()
     import ytmusic_radio
     import taste_profile
 
     monkeypatch.setenv("LLM_TASTE_T2", "on")
     cache = tmp_path / "taste.json"
-    monkeypatch.setattr("cogs.voice_controller._TASTE_PROFILE_CACHE", str(cache))
+    monkeypatch.setattr("cogs.music_cog._TASTE_PROFILE_CACHE", str(cache))
     taste_profile.write_profile(cache, "狗與露",
                                 {"seed_video_ids": ["llmseed0001"],
                                  "avoid_artists": ["雷團"]})
@@ -145,7 +148,7 @@ async def test_t2_llm_taste_seeds_and_avoid_filter(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ytmusic_radio, "ytmusic_radio", fake_radio)
     mm = _FakeMM(played=["aaaaaaaaaaa"], liked=[])
-    out = await VC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
+    out = await MC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
     titles = {c.anchor_title for c in out}
     assert "鄰近歌" in titles          # LLM 鄰近 seed 的 radio 進來
     assert "雷歌" not in titles        # avoid_artists「雷團」被排除
@@ -154,12 +157,12 @@ async def test_t2_llm_taste_seeds_and_avoid_filter(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_t2_llm_taste_off_by_default(monkeypatch, tmp_path):
     """未設 env → 不讀 LLM 快取（行為同純多 seed）。"""
-    VC = _import_vc()
+    MC = _import_mc()
     import ytmusic_radio
     import taste_profile
     monkeypatch.delenv("LLM_TASTE_T2", raising=False)
     cache = tmp_path / "taste.json"
-    monkeypatch.setattr("cogs.voice_controller._TASTE_PROFILE_CACHE", str(cache))
+    monkeypatch.setattr("cogs.music_cog._TASTE_PROFILE_CACHE", str(cache))
     taste_profile.write_profile(cache, "狗與露", {"seed_video_ids": ["llmseed0001"]})
 
     seen = []
@@ -168,5 +171,5 @@ async def test_t2_llm_taste_off_by_default(monkeypatch, tmp_path):
         return [{"title": f"{seed}-s", "artist": "x", "url": f"http://y/{seed}"}]
     monkeypatch.setattr(ytmusic_radio, "ytmusic_radio", fake_radio)
     mm = _FakeMM(played=["aaaaaaaaaaa"], liked=[])
-    await VC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
+    await MC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
     assert "llmseed0001" not in seen   # off → 不碰 LLM 快取

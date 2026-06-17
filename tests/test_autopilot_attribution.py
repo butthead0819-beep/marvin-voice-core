@@ -8,7 +8,8 @@
 from __future__ import annotations
 import pytest
 from music_recommender import Candidate
-from cogs.voice_controller import VoiceController, build_autopilot_recommendation
+from cogs.music_cog import MusicCog
+from cogs.voice_controller import build_autopilot_recommendation
 
 
 def _cand(lane: str, target_member: str | None = None) -> Candidate:
@@ -29,31 +30,31 @@ class _Stub:
 # ── _recommend_blurb ─────────────────────────────────────────────────────────
 
 def test_blurb_long_tail_includes_spotlight():
-    blurb = VoiceController._recommend_blurb(_Stub(), _cand("long_tail"), "夜曲", spotlight="狗與露")
+    blurb = MusicCog._recommend_blurb(_Stub(), _cand("long_tail"), "夜曲", spotlight="狗與露")
     assert "狗與露" in blurb
 
 
 def test_blurb_discovery_includes_spotlight():
-    blurb = VoiceController._recommend_blurb(_Stub(), _cand("discovery"), "夜曲", spotlight="weakgogo")
+    blurb = MusicCog._recommend_blurb(_Stub(), _cand("discovery"), "夜曲", spotlight="weakgogo")
     assert "weakgogo" in blurb
 
 
 def test_blurb_spotlight_lane_uses_target_member():
     # spotlight lane：target_member 優先（Candidate 已知目標）
     cand = _cand("spotlight", target_member="showay")
-    blurb = VoiceController._recommend_blurb(_Stub(), cand, "夜曲", spotlight="大肚")
+    blurb = MusicCog._recommend_blurb(_Stub(), cand, "夜曲", spotlight="大肚")
     assert "showay" in blurb
 
 
 def test_blurb_group_resonance_no_specific_user():
     # group_resonance 是群體共鳴，不點名個人
-    blurb = VoiceController._recommend_blurb(_Stub(), _cand("group_resonance"), "夜曲", spotlight="大肚")
+    blurb = MusicCog._recommend_blurb(_Stub(), _cand("group_resonance"), "夜曲", spotlight="大肚")
     assert "大肚" not in blurb
 
 
 def test_blurb_spotlight_empty_falls_back_gracefully():
     # spotlight 沒傳仍可回傳合理字串
-    blurb = VoiceController._recommend_blurb(_Stub(), _cand("discovery"), "夜曲")
+    blurb = MusicCog._recommend_blurb(_Stub(), _cand("discovery"), "夜曲")
     assert "夜曲" in blurb
 
 
