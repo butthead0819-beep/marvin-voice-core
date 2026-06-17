@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import json
 import logging
 import os
+import subprocess
+import tempfile
 import time
 from typing import Optional
 
@@ -48,6 +51,30 @@ class MusicCog(commands.Cog):
     """音樂子系統（Strangler Fig 遷移中）。"""
 
     _PLAYED_EXCLUDE_TTL_S = 7 * 24 * 3600
+    _COLD_META_TIMEOUT_S = 5.0
+
+    _AUTOPILOT_DJ_PHRASES_PERSONAL = [
+        "這首幫{who}點的，{artist}唱的{title}",
+        "{who}應該喜歡這首，{artist}的{title}",
+        "希望{who}喜歡，{artist}演唱的{title}",
+        "馬文特別為{who}帶來，{artist}的{title}",
+        "這首{title}是給{who}的，{artist}唱的",
+    ]
+    _AUTOPILOT_DJ_PHRASES_PERSONAL_NO_ARTIST = [
+        "這首幫{who}點的，《{title}》",
+        "{who}應該喜歡，《{title}》",
+        "希望{who}喜歡這首，《{title}》",
+        "馬文特別為{who}帶來《{title}》",
+    ]
+    _AUTOPILOT_DJ_PHRASES_GROUP = [
+        "這首大家應該都喜歡，{artist}的{title}",
+        "為大家挑的，{artist}演唱的{title}",
+        "馬文覺得大家都喜歡這首，{artist}的{title}",
+    ]
+    _AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST = [
+        "這首大家應該都喜歡，《{title}》",
+        "馬文為大家挑的，《{title}》",
+    ]
 
     def __init__(self, bot):
         self.bot = bot
@@ -387,8 +414,8 @@ class MusicCog(commands.Cog):
 
                 vc = self._vc()
                 if vc is not None:
-                    metadata = vc._extract_song_metadata(next_song)
-                    cover_path = vc._extract_song_cover(next_song)
+                    metadata = self._extract_song_metadata(next_song)
+                    cover_path = self._extract_song_cover(next_song)
                     active_ch = vc.active_text_channel
                 else:
                     metadata = {"title": song_name, "artist": "未知"}
@@ -397,8 +424,8 @@ class MusicCog(commands.Cog):
 
                 if active_ch:
                     accent_color = (
-                        vc._extract_dominant_color(cover_path)
-                        if (vc is not None and cover_path)
+                        self._extract_dominant_color(cover_path)
+                        if cover_path
                         else discord.Color.dark_grey()
                     )
                     embed = discord.Embed(
@@ -416,7 +443,7 @@ class MusicCog(commands.Cog):
                         embed.set_thumbnail(url="attachment://cover.jpg")
                         sent_msg = await active_ch.send(file=file, embed=embed)
                         if vc is not None:
-                            asyncio.create_task(vc._delayed_cleanup(cover_path))
+                            asyncio.create_task(self._delayed_cleanup(cover_path))
                     else:
                         sent_msg = await active_ch.send(embed=embed)
 
@@ -791,7 +818,7 @@ class MusicCog(commands.Cog):
 
             next_url = info.get('url', '')
             if next_url and next_url not in self._prefetch_cache and vc is not None:
-                self._prefetch_cache[next_url] = asyncio.create_task(vc._fetch_song_meta(info))
+                self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(info))
 
             enqueued += 1
 
@@ -869,7 +896,7 @@ class MusicCog(commands.Cog):
                     except Exception as e:
                         logger.warning(f"⚠️ [Prefetch] 等待失敗，即時 fetch: {e}")
                 if meta is None:
-                    meta = await vc._meta_with_ack_fallback(info, requested_by) if vc is not None else {}
+                    meta = await self._meta_with_ack_fallback(info, requested_by)
 
                 self._current_stream_comment = meta.get('comment')
                 self._current_lyrics = meta.get('lyrics')
@@ -909,7 +936,7 @@ class MusicCog(commands.Cog):
                     next_info = self.stream_queue[0]
                     next_url = next_info.get('url', '')
                     if next_url not in self._prefetch_cache and vc is not None:
-                        self._prefetch_cache[next_url] = asyncio.create_task(vc._fetch_song_meta(next_info))
+                        self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(next_info))
                         logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
 
                 if len(self.stream_queue) < 2:
@@ -920,7 +947,7 @@ class MusicCog(commands.Cog):
 
                 dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
                 if dj_data and not dj_audio and vc is not None:
-                    await vc._maybe_play_dj_interjection(dj_data)
+                    await self._maybe_play_dj_interjection(dj_data)
 
                 song_start_time = time.time()
                 song_lyrics_snapshot = self._current_lyrics or ""
@@ -941,7 +968,7 @@ class MusicCog(commands.Cog):
                         logger.debug(f"⚠️ [Companion_Bridge] music_ended hook skipped: {e}")
 
                 if vc is not None:
-                    asyncio.create_task(vc._analyze_song_reactions(info, song_start_time, song_lyrics_snapshot))
+                    asyncio.create_task(self._analyze_song_reactions(info, song_start_time, song_lyrics_snapshot))
 
                 if self.stream_mode:
                     await asyncio.sleep(1.0)
@@ -1005,7 +1032,7 @@ class MusicCog(commands.Cog):
                 'options': '-vn -bufsize 512k',
             }
             if url not in self._stream_norm_gain and vc is not None:
-                asyncio.create_task(vc._measure_norm_gain_bg(url))
+                asyncio.create_task(self._measure_norm_gain_bg(url))
             if vc is not None:
                 await vc._mixer_play_music(
                     voice_client, discord.FFmpegPCMAudio(url, **p12_opts),
@@ -1031,6 +1058,420 @@ class MusicCog(commands.Cog):
             return
         await interaction.followup.send(f"🔮 **【馬文精選】** 正在為 `{username}` 挑選...")
         await vc._auto_recommend(username)
+
+    # ── 🎵 Song metadata / fetch helpers ────────────────────────────────────────
+
+    def _parse_song_title_artist(self, info: dict) -> tuple[str, str]:
+        """從 info 解析出乾淨的 title 和 artist，處理 'Artist - Title' 格式。"""
+        raw_title = info.get('title', '')
+        artist = info.get('artist') or info.get('uploader', '')
+        if ' - ' in raw_title and not info.get('track'):
+            parts = raw_title.split(' - ', 1)
+            return parts[1].strip(), parts[0].strip()
+        return info.get('track') or raw_title, artist
+
+    async def _fetch_lyrics_synced(self, info: dict) -> str | None:
+        """像 _fetch_lyrics_raw 但保留 [mm:ss.xx] timestamp（給 lyrics_seek 用）。"""
+        import aiohttp
+        title, artist = self._parse_song_title_artist(info)
+        try:
+            import syncedlyrics
+            lrc = await asyncio.to_thread(
+                syncedlyrics.search,
+                f"{title} {artist}".strip(),
+                providers=["NetEase", "Lrclib", "Musixmatch", "Genius"],
+            )
+            if lrc and "[" in lrc:
+                return lrc
+        except Exception as e:
+            logger.debug(f"⚠️ [LyricsSynced/syncedlyrics] {e}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                params = {'track_name': title, 'artist_name': artist}
+                async with session.get('https://lrclib.net/api/get', params=params,
+                                       timeout=aiohttp.ClientTimeout(total=8)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        synced = data.get('syncedLyrics')
+                        if synced:
+                            return synced
+        except Exception as e:
+            logger.debug(f"⚠️ [LyricsSynced/lrclib] {e}")
+        return None
+
+    async def _fetch_lyrics_raw(self, info: dict) -> str | None:
+        """Pure lyrics fetch：syncedlyrics (NetEase 優先) → lrclib.net fallback。"""
+        import re, aiohttp
+        title, artist = self._parse_song_title_artist(info)
+        duration = int(info.get('duration') or 0)
+
+        def _strip_lrc(lrc: str) -> str:
+            return re.sub(r'\[\d+:\d+\.\d+\]\s?', '', lrc).strip()
+
+        try:
+            import syncedlyrics
+            lrc = await asyncio.to_thread(
+                syncedlyrics.search,
+                f"{title} {artist}".strip(),
+                providers=["NetEase", "Lrclib", "Musixmatch", "Genius"],
+            )
+            if lrc:
+                return _strip_lrc(lrc)
+        except Exception as e:
+            logger.debug(f"⚠️ [Lyrics/syncedlyrics] {e}")
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                params = {'track_name': title, 'artist_name': artist, 'duration': duration}
+                async with session.get('https://lrclib.net/api/get', params=params,
+                                       timeout=aiohttp.ClientTimeout(total=8)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        plain = data.get('plainLyrics') or ''
+                        if plain:
+                            return plain
+        except Exception as e:
+            logger.debug(f"⚠️ [Lyrics/lrclib] {e}")
+        return None
+
+    async def _fetch_comment_raw(self, info: dict) -> str | None:
+        """Pure Marvin commentary fetch via LLM，注入使用者音樂記憶。"""
+        parts = [f"歌名：{info['title']}，頻道：{info.get('uploader', '')}"]
+        requested_by = info.get('requested_by', '')
+        if requested_by and not requested_by.startswith('Marvin'):
+            parts.append(f"點播者：{requested_by}")
+            if hasattr(self.bot, 'music_memory'):
+                music_ctx = self.bot.music_memory.get_user_music_context(requested_by)
+                if music_ctx:
+                    parts.append(music_ctx)
+        try:
+            return await self.bot.router.generate_dynamic_system_msg(
+                "stream_now_playing", context="\n".join(parts)
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _autopilot_dj_phrase(spotlight: str, clean_title: str, clean_artist: str,
+                              lane: str = "") -> str:
+        """為 autopilot 推薦歌曲生成個人化 DJ 台詞。"""
+        import random
+        who = spotlight or "你"
+        is_group = (lane == "group_resonance")
+        if is_group:
+            pool = (MusicCog._AUTOPILOT_DJ_PHRASES_GROUP if clean_artist
+                    else MusicCog._AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST)
+        else:
+            pool = (MusicCog._AUTOPILOT_DJ_PHRASES_PERSONAL if clean_artist
+                    else MusicCog._AUTOPILOT_DJ_PHRASES_PERSONAL_NO_ARTIST)
+        tmpl = random.choice(pool)
+        return tmpl.format(who=who, title=clean_title, artist=clean_artist)
+
+    async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
+        """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
+        requester = info.get('requested_by', '')
+        if not requester:
+            return None
+
+        if requester.startswith('Marvin'):
+            _pos = info.get('_round_position', 0)
+            if _pos > 0:
+                await asyncio.sleep(_pos * 3.0)
+
+        mm = getattr(self.bot, 'music_memory', None)
+        play_count, feelings, lyric_match = 0, [], ''
+        if mm:
+            key = mm._key(info)
+            song_data = mm._data.get('songs', {}).get(key, {})
+            play_count = song_data.get('requesters', {}).get(requester, 0)
+            r = song_data.get('reactions', {}).get(requester, {})
+            feelings = r.get('feelings', [])
+            lyric_match = r.get('lyric_match', '')
+
+        conv_lines = []
+        conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
+        if conv_buf:
+            for entry in conv_buf.get_last_n_utterances(4):
+                if entry.get('speaker') != 'Marvin':
+                    conv_lines.append(f"{entry['speaker']}：「{entry['text'][:25]}」")
+
+        slot = mm.time_slot(time.time()) if mm else ''
+        title = info.get('title', '')
+        ctx = [f"歌曲：《{title}》", f"點播者：{requester}"]
+        if play_count >= 2:
+            ctx.append(f"{requester} 第 {play_count} 次點這首")
+        if feelings:
+            ctx.append(f"情感記錄：{' / '.join(feelings[:2])}")
+        if lyric_match:
+            ctx.append(f"歌詞呼應：{lyric_match[:60]}")
+        if slot:
+            ctx.append(f"時段：{slot}")
+        if conv_lines:
+            ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
+
+        if requester.startswith('Marvin'):
+            clean_title, clean_artist = self._parse_song_title_artist(info)
+            spotlight = info.get('_spotlight', '')
+            lane = info.get('_lane', '')
+            text = self._autopilot_dj_phrase(spotlight, clean_title, clean_artist, lane=lane)
+        else:
+            try:
+                text = await self.bot.router.generate_dynamic_system_msg(
+                    'dj_interjection', context='\n'.join(ctx)
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗，使用 fallback template: {e}")
+                text = ""
+
+        text = (text or '').strip()
+        if len(text) < 2:
+            clean_title, clean_artist = self._parse_song_title_artist(info)
+            if clean_artist:
+                text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{requester} 點的"
+            else:
+                text = f"DJ Marvin為你帶來《{clean_title}》，{requester} 點的"
+            logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
+
+        from tts_length_policy import truncate_for_tts
+        gated_text, was_cut = truncate_for_tts(
+            text, "music_intro", self.bot.tts_engine.get_estimated_duration
+        )
+        if was_cut:
+            logger.info(f"🚦 [TTS Gate] DJ intro 超 7s 截斷: '{text}' → '{gated_text}'")
+            text = gated_text
+
+        audio_path = None
+        try:
+            audio_path = await self.bot.tts_engine.generate_audio(text)
+        except Exception as e:
+            logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
+
+        logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
+        return {'text': text, 'audio_path': audio_path}
+
+    async def _fetch_song_meta(self, info: dict) -> dict:
+        """並行 fetch 歌詞、馬文評語、DJ 播報（含 TTS 預渲染）。"""
+        lyrics, comment, dj = await asyncio.gather(
+            self._fetch_lyrics_raw(info),
+            self._fetch_comment_raw(info),
+            self._fetch_dj_interjection_raw(info),
+            return_exceptions=True,
+        )
+        return {
+            'lyrics': lyrics if isinstance(lyrics, str) else None,
+            'comment': comment if isinstance(comment, str) else None,
+            'dj': dj if isinstance(dj, dict) else None,
+        }
+
+    async def _meta_with_ack_fallback(self, info: dict, requested_by: str) -> dict:
+        """冷啟動 meta fetch + 5s timeout fallback。"""
+        try:
+            return await asyncio.wait_for(
+                self._fetch_song_meta(info),
+                timeout=self._COLD_META_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            title = info.get('title', '未知曲目')
+            logger.warning(
+                f"⚠️ [Stream] _fetch_song_meta >{self._COLD_META_TIMEOUT_S}s timeout, "
+                f"用 hardcoded fallback (song={title}, by={requested_by})"
+            )
+            who = requested_by or "某人"
+            return {
+                "lyrics": None,
+                "comment": None,
+                "dj": {
+                    "text": f"下一首是《{title}》，{who} 點的。",
+                    "audio_path": None,
+                },
+            }
+
+    async def _maybe_play_dj_interjection(self, dj: dict | None):
+        """播放預先生成的 DJ 播報。有預渲染音訊則直接播檔案，否則即時串流。"""
+        if not dj:
+            return
+        text = dj.get('text', '')
+        audio_path = dj.get('audio_path')
+        if not text:
+            return
+
+        vc = self._vc()
+        if vc is None:
+            return
+        vc._tts_protected = True
+        try:
+            if audio_path and os.path.exists(audio_path):
+                await vc.play_local_file(audio_path)
+            else:
+                await vc.play_tts(text, already_in_channel=True)
+        finally:
+            vc._tts_protected = False
+
+    async def _analyze_song_reactions(self, info: dict, song_start_time: float, lyrics: str):
+        """歌曲結束後掃描對話，分析聆聽反應並寫入音樂記憶。"""
+        if not hasattr(self.bot, 'music_memory'):
+            return
+        conv = self.bot.engine.conv_buffer
+        elapsed = time.time() - song_start_time
+        harvest = conv.get_harvest(song_start_time, before=5.0, after=elapsed + 2.0)
+        if not harvest.strip():
+            return
+
+        lyrics_hint = lyrics[:400] if lyrics else "無歌詞資料"
+        prompt = (
+            f"歌曲《{info['title']}》剛才播放完畢。\n\n"
+            f"播放期間的對話：\n{harvest}\n\n"
+            f"歌詞片段：{lyrics_hint}\n\n"
+            "請分析每位成員對這首歌的反應，**只記錄有明顯感受的人**。\n"
+            "輸出 JSON（不加 markdown）：\n"
+            '{"reactions": {"成員名": {"feelings": ["情緒詞"], "quotes": ["他說的具體語句"], '
+            '"lyric_match": "歌詞與他的話的呼應描述，無則空字串"}}}'
+        )
+        try:
+            import json as _json
+            raw = await self.bot.router._call_llm(
+                system_prompt="你是音樂聆聽反應分析助手，只記錄有明顯情感的成員，不過度推測。",
+                user_prompt=prompt,
+                is_json=True,
+                tier="simple",
+            )
+            reactions = _json.loads(raw).get("reactions", {})
+            if reactions:
+                self.bot.music_memory.record_reactions(info, reactions)
+                logger.info(f"🎵 [MusicMemory] 記錄 {len(reactions)} 人的反應: {info['title']}")
+                try:
+                    from bridge_emitters import emit_music_reaction_to_bridge
+                    for username, r in reactions.items():
+                        feelings = r.get("feelings", []) or []
+                        tag = "love" if feelings else "silent"
+                        asyncio.create_task(emit_music_reaction_to_bridge(
+                            self.bot, username, info, tag
+                        ))
+                except Exception as e:
+                    logger.debug(f"⚠️ [Companion_Bridge] music_reaction hook skipped: {e}")
+        except Exception as e:
+            logger.debug(f"⚠️ [MusicMemory] 反應分析失敗: {e}")
+
+    async def _get_audio_duration(self, path: str) -> float:
+        """使用 ffprobe 取得本地音訊檔案的時長（秒）。"""
+        try:
+            import json as _json
+            ffprobe = "/opt/homebrew/bin/ffprobe" if os.path.exists("/opt/homebrew/bin/ffprobe") else "ffprobe"
+            proc = await asyncio.create_subprocess_exec(
+                ffprobe, '-v', 'quiet', '-print_format', 'json', '-show_streams', path,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await proc.communicate()
+            data = _json.loads(stdout)
+            for stream in data.get('streams', []):
+                if stream.get('codec_type') == 'audio':
+                    return float(stream.get('duration', 3.0))
+        except Exception:
+            pass
+        return 3.0
+
+    async def _measure_norm_gain_bg(self, url: str):
+        """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存 _stream_norm_gain[url]。"""
+        if url in self._stream_norm_gain:
+            return
+        from loudness_norm import (
+            sample_positions, parse_ebur128_integrated, average_lufs, compute_loudness_gain,
+        )
+        info = self._current_stream_info or {}
+        duration = float(info.get("duration") or 0)
+        lufs_vals: list[float | None] = []
+        for pos in sample_positions(duration):
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-nostats", "-ss", f"{pos:.1f}", "-t", "20", "-i", url,
+                    "-af", "ebur128", "-f", "null", "-",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                lufs_vals.append(parse_ebur128_integrated(stderr.decode("utf-8", "ignore")))
+            except Exception:
+                lufs_vals.append(None)
+        avg = average_lufs(lufs_vals)
+        if avg is None:
+            logger.warning(f"⚠️ [LoudNorm] {url[:40]} 響度量測無結果，用 raw 音量")
+            return
+        gain = compute_loudness_gain(avg)
+        self._stream_norm_gain[url] = gain
+        logger.info(f"🎚️ [LoudNorm] 量測完成 I≈{avg:.1f} LUFS → 增益 {gain:.2f}x（每首套一次）")
+
+    def _extract_song_metadata(self, file_path: str):
+        """📻 [Marvin Radio] 使用 ffprobe 提取標題與演出者。"""
+        try:
+            ffprobe_path = "/opt/homebrew/bin/ffprobe" if os.path.exists("/opt/homebrew/bin/ffprobe") else "ffprobe"
+            cmd = [ffprobe_path, "-v", "quiet", "-print_format", "json", "-show_format", file_path]
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            data = json.loads(result.stdout)
+            tags = data.get("format", {}).get("tags", {})
+            return {
+                "title": tags.get("title", os.path.basename(file_path)),
+                "artist": tags.get("artist", "未知藝術家")
+            }
+        except Exception as e:
+            logger.error(f"⚠️ [Radio Metadata] 提取失敗: {e}")
+            return {"title": os.path.basename(file_path), "artist": "未知藝術家"}
+
+    def _extract_song_cover(self, file_path: str):
+        """📻 [Marvin Radio] 使用 ffmpeg 提取封面至暫存檔。"""
+        try:
+            temp_fd, temp_path = tempfile.mkstemp(suffix=".jpg")
+            os.close(temp_fd)
+            ffmpeg_path = "/opt/homebrew/bin/ffmpeg" if os.path.exists("/opt/homebrew/bin/ffmpeg") else "ffmpeg"
+            cmd = [ffmpeg_path, "-y", "-i", file_path, "-an", "-vcodec", "copy",
+                   "-f", "image2", "-frames:v", "1", temp_path]
+            subprocess.run(cmd, capture_output=True, check=True)
+            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                return temp_path
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return None
+        except Exception:
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.remove(temp_path)
+            return None
+
+    def _extract_dominant_color(self, cover_path: str) -> discord.Color:
+        """📻 [Marvin Radio] 從封面圖提取主色調，回傳 discord.Color。"""
+        try:
+            from PIL import Image
+            img = Image.open(cover_path).convert("RGB")
+            img = img.resize((60, 60), Image.LANCZOS)
+            quantized = img.quantize(colors=8)
+            palette = quantized.getpalette()
+            best_color = None
+            best_score = -1.0
+            for i in range(8):
+                r, g, b = palette[i * 3], palette[i * 3 + 1], palette[i * 3 + 2]
+                lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                if lum < 0.10 or lum > 0.90:
+                    continue
+                max_c = max(r, g, b) / 255.0
+                min_c = min(r, g, b) / 255.0
+                denom = 1.0 - abs(2.0 * lum - 1.0)
+                sat = (max_c - min_c) / denom if denom > 0.001 else 0.0
+                score = sat * 0.7 + (1.0 - abs(lum - 0.5) * 2) * 0.3
+                if score > best_score:
+                    best_score = score
+                    best_color = (r, g, b)
+            if best_color:
+                return discord.Color.from_rgb(*best_color)
+        except Exception as e:
+            logger.debug(f"⚠️ [Cover Color] 提取失敗: {e}")
+        return discord.Color.dark_grey()
+
+    async def _delayed_cleanup(self, file_path: str, delay: float = 10.0):
+        """📻 [Marvin Radio] 延後刪除暫存檔，確保 Discord 上傳完成。"""
+        try:
+            await asyncio.sleep(delay)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        except Exception:
+            pass
 
     async def cog_load(self) -> None:
         logger.info("[MusicCog] Phase 5 已載入（stream + radio + autoplay state + slash commands 就緒）")

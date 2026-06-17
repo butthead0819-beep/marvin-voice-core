@@ -7219,20 +7219,17 @@ class VoiceController(commands.Cog):
             self.stream_mode = False
 
     def _parse_song_title_artist(self, info: dict) -> tuple[str, str]:
-        """從 info 解析出乾淨的 title 和 artist，處理 'Artist - Title' 格式。"""
-        raw_title = info.get('title', '')
-        artist = info.get('artist') or info.get('uploader', '')
-        if ' - ' in raw_title and not info.get('track'):
-            parts = raw_title.split(' - ', 1)
-            return parts[1].strip(), parts[0].strip()
-        return info.get('track') or raw_title, artist
+        """[Phase 7E stub] → MusicCog._parse_song_title_artist"""
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._parse_song_title_artist(info) if mc else (info.get('title', ''), '')
 
     async def _fetch_lyrics_synced(self, info: dict) -> str | None:
-        """像 _fetch_lyrics_raw 但保留 [mm:ss.xx] timestamp（給 lyrics_seek 用）。
+        """[Phase 7E stub] → MusicCog._fetch_lyrics_synced"""
+        mc = self.bot.cogs.get('MusicCog')
+        return await mc._fetch_lyrics_synced(info) if mc else None
 
-        同一條 provider 鏈（syncedlyrics → lrclib），但回 raw LRC 不剝 timestamp。
-        沒有 timestamp 標記的回應視為「不可用」回 None — lyrics_seek 沒辦法在純文字上 seek。
-        """
+    async def _fetch_lyrics_synced_ORIG(self, info: dict) -> str | None:
+        """像 _fetch_lyrics_raw 但保留 [mm:ss.xx] timestamp（給 lyrics_seek 用）。"""
         import aiohttp
         title, artist = self._parse_song_title_artist(info)
 
@@ -7266,6 +7263,11 @@ class VoiceController(commands.Cog):
         return None
 
     async def _fetch_lyrics_raw(self, info: dict) -> str | None:
+        """[Phase 7E stub] → MusicCog._fetch_lyrics_raw"""
+        mc = self.bot.cogs.get('MusicCog')
+        return await mc._fetch_lyrics_raw(info) if mc else None
+
+    async def _fetch_lyrics_raw_ORIG(self, info: dict) -> str | None:
         """Pure lyrics fetch：syncedlyrics (NetEase 優先) → lrclib.net fallback。"""
         import re, aiohttp
         title, artist = self._parse_song_title_artist(info)
@@ -7316,6 +7318,11 @@ class VoiceController(commands.Cog):
         return None
 
     async def _fetch_comment_raw(self, info: dict) -> str | None:
+        """[Phase 7E stub] → MusicCog._fetch_comment_raw"""
+        mc = self.bot.cogs.get('MusicCog')
+        return await mc._fetch_comment_raw(info) if mc else None
+
+    async def _fetch_comment_raw_ORIG(self, info: dict) -> str | None:
         """Pure Marvin commentary fetch via LLM，注入使用者音樂記憶。"""
         parts = [f"歌名：{info['title']}，頻道：{info.get('uploader', '')}"]
         requested_by = info.get('requested_by', '')
@@ -7333,6 +7340,11 @@ class VoiceController(commands.Cog):
             return None
 
     async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
+        """[Phase 7E stub] → MusicCog._fetch_dj_interjection_raw"""
+        mc = self.bot.cogs.get('MusicCog')
+        return await mc._fetch_dj_interjection_raw(info) if mc else None
+
+    async def _fetch_dj_interjection_raw_ORIG(self, info: dict) -> dict | None:
         """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。
 
         2026-05-20 修改：原本 25% random gate 讓 75% user-requested 歌沉默播放
@@ -7436,6 +7448,11 @@ class VoiceController(commands.Cog):
     _COLD_META_TIMEOUT_S = 5.0
 
     async def _meta_with_ack_fallback(self, info: dict, requested_by: str) -> dict:
+        """[Phase 7E stub] → MusicCog._meta_with_ack_fallback"""
+        mc = self.bot.cogs.get('MusicCog')
+        return await mc._meta_with_ack_fallback(info, requested_by) if mc else {}
+
+    async def _meta_with_ack_fallback_ORIG(self, info: dict, requested_by: str) -> dict:
         """冷啟動 meta fetch + 5s timeout fallback。
 
         2026-05-20 incident：DJ always-fire 改動讓 _fetch_song_meta 在冷啟動
@@ -7470,6 +7487,11 @@ class VoiceController(commands.Cog):
             }
 
     async def _fetch_song_meta(self, info: dict) -> dict:
+        """[Phase 7E stub] → MusicCog._fetch_song_meta"""
+        mc = self.bot.cogs.get('MusicCog')
+        return await mc._fetch_song_meta(info) if mc else {}
+
+    async def _fetch_song_meta_ORIG(self, info: dict) -> dict:
         """並行 fetch 歌詞、馬文評語、DJ 播報（含 TTS 預渲染）。"""
         lyrics, comment, dj = await asyncio.gather(
             self._fetch_lyrics_raw(info),
@@ -7484,6 +7506,12 @@ class VoiceController(commands.Cog):
         }
 
     async def _maybe_play_dj_interjection(self, dj: dict | None):
+        """[Phase 7E stub] → MusicCog._maybe_play_dj_interjection"""
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._maybe_play_dj_interjection(dj)
+
+    async def _maybe_play_dj_interjection_ORIG(self, dj: dict | None):
         """播放預先生成的 DJ 播報。有預渲染音訊則直接播檔案，否則即時串流。"""
         if not dj:
             return
@@ -7502,6 +7530,12 @@ class VoiceController(commands.Cog):
             self._tts_protected = False
 
     async def _analyze_song_reactions(self, info: dict, song_start_time: float, lyrics: str):
+        """[Phase 7E stub] → MusicCog._analyze_song_reactions"""
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._analyze_song_reactions(info, song_start_time, lyrics)
+
+    async def _analyze_song_reactions_ORIG(self, info: dict, song_start_time: float, lyrics: str):
         """歌曲結束後掃描對話，分析聆聽反應並寫入音樂記憶。"""
         if not hasattr(self.bot, 'music_memory'):
             return
@@ -7689,6 +7723,11 @@ class VoiceController(commands.Cog):
         await self._safe_music_command(speaker, ident, "play")
 
     async def _get_audio_duration(self, path: str) -> float:
+        """[Phase 7E stub] → MusicCog._get_audio_duration"""
+        mc = self.bot.cogs.get('MusicCog')
+        return await mc._get_audio_duration(path) if mc else 3.0
+
+    async def _get_audio_duration_ORIG(self, path: str) -> float:
         """使用 ffprobe 取得本地音訊檔案的時長（秒）。"""
         try:
             import json as _json
@@ -7761,6 +7800,12 @@ class VoiceController(commands.Cog):
             )
 
     async def _measure_norm_gain_bg(self, url: str):
+        """[Phase 7E stub] → MusicCog._measure_norm_gain_bg"""
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._measure_norm_gain_bg(url)
+
+    async def _measure_norm_gain_bg_ORIG(self, url: str):
         """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存
         _stream_norm_gain[url]，mixer 同步乘進使用者音量（每首套一次、不 pumping）。
 
@@ -7796,6 +7841,11 @@ class VoiceController(commands.Cog):
         logger.info(f"🎚️ [LoudNorm] 量測完成 I≈{avg:.1f} LUFS → 增益 {gain:.2f}x（每首套一次）")
 
     def _extract_song_metadata(self, file_path: str):
+        """[Phase 7E stub] → MusicCog._extract_song_metadata"""
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._extract_song_metadata(file_path) if mc else {"title": os.path.basename(file_path), "artist": "未知藝術家"}
+
+    def _extract_song_metadata_ORIG(self, file_path: str):
         """
         📻 [Marvin Radio] 使用 ffprobe 提取標題與演出者
         """
@@ -7815,6 +7865,11 @@ class VoiceController(commands.Cog):
             return {"title": os.path.basename(file_path), "artist": "未知藝術家"}
 
     def _extract_song_cover(self, file_path: str):
+        """[Phase 7E stub] → MusicCog._extract_song_cover"""
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._extract_song_cover(file_path) if mc else None
+
+    def _extract_song_cover_ORIG(self, file_path: str):
         """
         📻 [Marvin Radio] 使用 ffmpeg 提取封面至暫存檔
         """
@@ -7841,6 +7896,11 @@ class VoiceController(commands.Cog):
             return None
 
     def _extract_dominant_color(self, cover_path: str) -> discord.Color:
+        """[Phase 7E stub] → MusicCog._extract_dominant_color"""
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._extract_dominant_color(cover_path) if mc else discord.Color.dark_grey()
+
+    def _extract_dominant_color_ORIG(self, cover_path: str) -> discord.Color:
         """
         📻 [Marvin Radio] 從封面圖提取主色調，過濾近黑/近白，返回 discord.Color。
         使用 Pillow quantize (Median Cut) 找 8 個色塊，挑飽和度最高且亮度適中的。
@@ -7879,6 +7939,12 @@ class VoiceController(commands.Cog):
         return discord.Color.dark_grey()
 
     async def _delayed_cleanup(self, file_path: str, delay: float = 10.0):
+        """[Phase 7E stub] → MusicCog._delayed_cleanup"""
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            await mc._delayed_cleanup(file_path, delay)
+
+    async def _delayed_cleanup_ORIG(self, file_path: str, delay: float = 10.0):
         """
         📻 [Marvin Radio] 延後刪除暫存檔，確保 Discord 上傳完成。
         """

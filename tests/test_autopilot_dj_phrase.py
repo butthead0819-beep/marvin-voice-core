@@ -60,18 +60,14 @@ class TestAutopilotDjPhrase:
 @pytest.mark.asyncio
 async def test_dj_interjection_includes_spotlight(monkeypatch):
     """_fetch_dj_interjection_raw 在 Marvin round_first 路徑，text 應含 spotlight 名。"""
-    from cogs.voice_controller import VoiceController
-    cog = VoiceController.__new__(VoiceController)
+    from cogs.music_cog import MusicCog
+    cog = MusicCog.__new__(MusicCog)
 
     # 最小 bot stub
     bot = MagicMock()
     bot.music_memory = None
     bot.tts_engine = MagicMock()
-    bot.tts_engine.generate_audio = MagicMock(return_value=None)
     bot.tts_engine.get_estimated_duration = MagicMock(return_value=3.0)
-    # generate_audio 是 async
-    import asyncio
-    bot.tts_engine.generate_audio = MagicMock(side_effect=lambda t: asyncio.coroutine(lambda: None)())
 
     async def _fake_generate(t):
         return None

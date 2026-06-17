@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 
 
 def _make_cog():
-    from cogs.voice_controller import VoiceController
-    cog = VoiceController.__new__(VoiceController)
+    from cogs.music_cog import MusicCog
+    cog = MusicCog.__new__(MusicCog)
 
     bot = MagicMock()
     bot.music_memory = None

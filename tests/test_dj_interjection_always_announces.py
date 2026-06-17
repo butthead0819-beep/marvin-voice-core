@@ -40,11 +40,8 @@ def _make_cog():
     bot.music_memory._data = {"songs": {}}
     bot.music_memory.time_slot = MagicMock(return_value="深夜")
 
-    with patch("cogs.voice_controller.DepartureStats", MagicMock), \
-         patch("cogs.voice_controller.ConsentManager", MagicMock):
-        from cogs.voice_controller import VoiceController
-        cog = VoiceController(bot)
-    cog.stt_logger = MagicMock()
+    from cogs.music_cog import MusicCog
+    cog = MusicCog(bot)
     return cog
 
 
