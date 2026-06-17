@@ -1,15 +1,21 @@
 """MusicCog — 音樂子系統（從 VoiceController 抽離中）。
 
-Phase 3 (電台狀態)：持有 radio subsystem 全部狀態；音樂邏輯仍在 VC，逐步遷移。
+Phase 1–6 完成：MusicCog 持有所有音樂狀態並持有 5 個 slash commands。
+音樂方法（_stream_loop、_radio_loop、_auto_recommend 等）仍在 VC，待 Phase 7+。
 
 遷移進度：
   Phase 1 ✅  骨架 + stream_mode/radio_mode proxy
   Phase 2 ✅  stream subsystem state proxy (stream_queue, _current_stream_info, …)
   Phase 3 ✅  radio subsystem state proxy (radio_task, radio_paused, …)
   Phase 4 ✅  autoplay/recommendation state proxy (_recommend_spotlight_idx, _prefetch_cache, …)
-  Phase 5 ✅  slash commands 遷移到 MusicCog
-  Phase 5 ⬜  slash commands (marvin_play/skip/play_control/recommend/radio)
-  Phase 6 ⬜  清除 VoiceController forwarding stubs
+  Phase 5 ✅  slash commands 遷移到 MusicCog (marvin_play/skip/play_control/recommend/radio)
+  Phase 6 ✅  proxy boundary 穩定，無暫時 forwarding stub 需清除
+
+後續（Phase 7+）：
+  ⬜  _stream_loop / stop_stream / play_stream_song 方法遷移
+  ⬜  _radio_loop / start_radio / stop_radio 方法遷移
+  ⬜  _auto_recommend 方法遷移
+  ⬜  IntentBus agents 直接讀寫 MusicCog（移除透過 VC proxy 的一跳）
 """
 from __future__ import annotations
 
