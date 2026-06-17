@@ -6,7 +6,7 @@ Phase 3 (電台狀態)：持有 radio subsystem 全部狀態；音樂邏輯仍�
   Phase 1 ✅  骨架 + stream_mode/radio_mode proxy
   Phase 2 ✅  stream subsystem state proxy (stream_queue, _current_stream_info, …)
   Phase 3 ✅  radio subsystem state proxy (radio_task, radio_paused, …)
-  Phase 4 ⬜  _auto_recommend + song metadata + DJ
+  Phase 4 ✅  autoplay/recommendation state proxy (_recommend_spotlight_idx, _prefetch_cache, …)
   Phase 5 ⬜  slash commands (marvin_play/skip/play_control/recommend/radio)
   Phase 6 ⬜  清除 VoiceController forwarding stubs
 """
@@ -52,8 +52,16 @@ class MusicCog(commands.Cog):
         self._radio_fade_task = None
         self.radio_paused: bool = False
 
+        # 🎵 [Phase 4] Autoplay / recommendation state (proxied from VoiceController)
+        self._recommend_spotlight_idx: int = -1
+        self._mood_sensor = None
+        self._cover_blacklist = None
+        self._round_track_count: int = 0
+        self._round_size: int = 3
+        self._prefetch_cache: dict = {}   # url → Task[{'lyrics', 'comment'}]
+
     async def cog_load(self) -> None:
-        logger.info("[MusicCog] Phase 3 已載入（stream + radio state proxy 就緒）")
+        logger.info("[MusicCog] Phase 4 已載入（stream + radio + autoplay state proxy 就緒）")
 
     async def cog_unload(self) -> None:
         pass

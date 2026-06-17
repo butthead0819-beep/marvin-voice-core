@@ -561,12 +561,12 @@ class VoiceController(commands.Cog):
         self._radio_source_local = None
         self._radio_fade_task_local = None
         self._radio_paused_local = False
-        self._recommend_spotlight_idx = -1  # 自動推薦 spotlight 在場成員輪替指標
-        # Phase 1 M4: ambient room curator state
-        self._mood_sensor = None             # MoodSensor，由 main_discord.py wire (Phase 1 M2)
-        self._cover_blacklist = None         # CoverBlacklist，lazy init (Phase 1 M1)
-        self._round_track_count = 0          # 本 round 已 enqueue 第幾首 (1-3)；3 首一 round
-        self._round_size = 3                 # 一 round 幾首
+        # 🎵 [Autoplay] — 狀態由 MusicCog 持有，透過 proxy property 存取
+        self._recommend_spotlight_idx_local: int = -1
+        self._mood_sensor_local = None
+        self._cover_blacklist_local = None
+        self._round_track_count_local: int = 0
+        self._round_size_local: int = 3
         self._consecutive_skips_by_url: dict[str, set[str]] = {}  # url → 已 skip 該 url 的 speaker set，連 2 不同人 → blacklist
 
         # 🎵 [Stream Mode] YouTube 串流系統狀態 — 狀態由 MusicCog 持有，透過 proxy property 存取
@@ -591,7 +591,7 @@ class VoiceController(commands.Cog):
         self._plan12 = True
         self._mixer = LocalMixingAudioSource(instrument=True, on_demand=True)
         self._voice_client_override = None  # 測試可覆寫；prod 走 voice_client property 即時查連線 vc
-        self._prefetch_cache: dict[str, asyncio.Task] = {}  # url → Task[{'lyrics', 'comment'}]
+        self._prefetch_cache_local: dict[str, asyncio.Task] = {}  # fallback when MusicCog not loaded
         self._last_search: dict[str, dict] = {}  # username → {query, ts, source}（voice/manual，供偏好修正學習用）
         # 🛡️ [Music Dedup] _handle_voice_music_command 5s 入口防抖
         # 防 IBA-T0 + bus + speculative 同時觸發導致 yt-dlp 並發 Errno 11 deadlock
@@ -1102,6 +1102,86 @@ class VoiceController(commands.Cog):
             mc.radio_paused = value
         else:
             self._radio_paused_local = value
+
+    # ── Phase 4: autoplay/recommendation proxy properties ────────────────────
+
+    @property
+    def _recommend_spotlight_idx(self) -> int:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._recommend_spotlight_idx if mc is not None else self._recommend_spotlight_idx_local
+
+    @_recommend_spotlight_idx.setter
+    def _recommend_spotlight_idx(self, value: int) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._recommend_spotlight_idx = value
+        else:
+            self._recommend_spotlight_idx_local = value
+
+    @property
+    def _mood_sensor(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._mood_sensor if mc is not None else self._mood_sensor_local
+
+    @_mood_sensor.setter
+    def _mood_sensor(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._mood_sensor = value
+        else:
+            self._mood_sensor_local = value
+
+    @property
+    def _cover_blacklist(self):
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._cover_blacklist if mc is not None else self._cover_blacklist_local
+
+    @_cover_blacklist.setter
+    def _cover_blacklist(self, value) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._cover_blacklist = value
+        else:
+            self._cover_blacklist_local = value
+
+    @property
+    def _round_track_count(self) -> int:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._round_track_count if mc is not None else self._round_track_count_local
+
+    @_round_track_count.setter
+    def _round_track_count(self, value: int) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._round_track_count = value
+        else:
+            self._round_track_count_local = value
+
+    @property
+    def _round_size(self) -> int:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._round_size if mc is not None else self._round_size_local
+
+    @_round_size.setter
+    def _round_size(self, value: int) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._round_size = value
+        else:
+            self._round_size_local = value
+
+    @property
+    def _prefetch_cache(self) -> dict:
+        mc = self.bot.cogs.get('MusicCog')
+        return mc._prefetch_cache if mc is not None else self._prefetch_cache_local
+
+    @_prefetch_cache.setter
+    def _prefetch_cache(self, value: dict) -> None:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None:
+            mc._prefetch_cache = value
+        else:
+            self._prefetch_cache_local = value
 
     async def cog_load(self):
         """當 Cog 載入時，啟動背景任務"""
