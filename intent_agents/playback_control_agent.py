@@ -26,6 +26,7 @@ _ACK_TEXT = {
     "skip_track": "好，換",
     "stop_playback": "停了",
     "pause_playback": "暫停",
+    "resume_playback": "繼續",
 }
 
 # 連續 skip 自動加黑名單 threshold (D3 A 方案)
@@ -78,6 +79,11 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
                     "pause_playback", 0.80,
                     patterns=[r"(暫停|pause)"],
                     reason_template="pause:{matched}",
+                ),
+                IntentSchema(
+                    "resume_playback", 0.80,
+                    patterns=[r"(繼續播|繼續音樂|播回來|resume)"],
+                    reason_template="resume:{matched}",
                 ),
             ]
         return self._intents_cache
@@ -211,6 +217,18 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
                 logger.info(f"[PlaybackControl] pause by {speaker} (plan12={_p12})")
             except Exception:
                 logger.exception("[PlaybackControl] pause 動作失敗")
+
+        elif intent == "resume_playback":
+            try:
+                if _p12:
+                    self.ctrl._mixer.set_paused(False)
+                elif hasattr(vc, "resume"):
+                    vc.resume()
+                if hasattr(self.ctrl, "stream_paused"):
+                    self.ctrl.stream_paused = False
+                logger.info(f"[PlaybackControl] resume by {speaker} (plan12={_p12})")
+            except Exception:
+                logger.exception("[PlaybackControl] resume 動作失敗")
 
     def _voice_client(self):
         """從 ctrl 取當前 active voice_client；無則 None。"""

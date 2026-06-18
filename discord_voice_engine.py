@@ -809,6 +809,18 @@ class DiscordVoiceEngine:
         """🚀 [Lifecycle] 啟動背景處理任務 (需在 Loop 啟動後呼叫)"""
         self.is_listening = True  # 🚀 [T-06 Fix] 確保啟動時旗標重置
         
+        # [Elon's Algorithm Optimization] 啟動時自動清理歷史殘留的 tmp_stt_*.wav
+        try:
+            import glob
+            for f in glob.glob("tmp_stt_*.wav"):
+                try:
+                    os.remove(f)
+                    print(f"🧹 [Engine] 清理歷史殘留暫存檔: {f}", flush=True)
+                except OSError:
+                    pass
+        except Exception as e:
+            print(f"⚠️ [Engine] 清理殘留暫存檔失敗: {e}", flush=True)
+        
         # 🛡️ [Idempotent Fix] 檢查現有任務，避免重複啟動看門狗
         if self._watchdog_task and not self._watchdog_task.done():
             print("🛡️ [VAD] 看門狗已在運作中，跳過重複啟動。", flush=True)
@@ -878,8 +890,9 @@ class DiscordVoiceEngine:
         """
         print("🛡️ [VAD] True RMS 看門狗已啟動。", flush=True)
         loop_counter = 0
+        current_delay = 0.5
         while self.is_listening:
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(current_delay)
             loop_counter += 1
             if self.debug_vad_heartbeat and loop_counter % 20 == 0: # 每 10 秒印一次心跳
                 print("💓 [Engine] VAD Watchdog 心跳正常，正在監控中...", flush=True)
@@ -889,7 +902,14 @@ class DiscordVoiceEngine:
             # 取得當前 Sink
             sink = self.get_active_sink()
             if not sink:
+                current_delay = 2.0
                 continue
+                
+            # [Elon's Algorithm Optimization] 動態調整輪詢 delay
+            # 若有任何使用者的緩衝區不為空，說明正在發言，以 0.5s 高頻進行 VAD 精準切割
+            # 若全空，則以 2.0s 閒置慢速輪詢，省 CPU 喚醒開銷
+            has_active_speech = any(len(buf) > 0 for buf in sink.user_buffers.values()) if hasattr(sink, 'user_buffers') else False
+            current_delay = 0.5 if has_active_speech else 2.0
                 
             # 🛡️ [Dynamic VAD] 依據對話熱度動態決定 STT 截斷閾值
             # 預設最低門檻改為 0.8s (Soft Threshold)，交由 Semantic ETD 判斷完整度
@@ -1113,8 +1133,9 @@ class DiscordVoiceEngine:
             else:
                 print(f"📊 [Audio Audit] User_{user_id} | RMS: {rms} | 長度: {duration:.2f}s", flush=True)
 
+            import tempfile
             # 每次呼叫都用 time_ns() 確保唯一路徑，避免同秒的 wake_check 與 full-STT 衝突
-            wav_path = os.path.abspath(f"tmp_stt_{user_id}_{time.time_ns()}.wav")
+            wav_path = os.path.join(tempfile.gettempdir(), f"tmp_stt_{user_id}_{time.time_ns()}.wav")
             with wave.open(wav_path, 'wb') as wav_file:
                 wav_file.setnchannels(2)
                 wav_file.setsampwidth(2)

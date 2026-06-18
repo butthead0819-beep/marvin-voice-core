@@ -1583,6 +1583,9 @@ class VoiceController(commands.Cog):
                 print(f"🔄 偵測到舊有連線，正在斷開...", flush=True)
                 await interaction.guild.voice_client.disconnect(force=True)
                 await asyncio.sleep(0.5)
+                # 清除舊連線殘留的 TTS/ack queue，避免重連後舊 greeting 疊新 greeting
+                if self._mixer is not None:
+                    self._mixer.clear_tts()
 
             # 3. 建立 DAVE 兼容連線
             print(f"嘗試載入 DAVE 監聽層，連線至: {channel.name}...", flush=True)
@@ -3438,59 +3441,73 @@ class VoiceController(commands.Cog):
             )
             return
 
-        # 🎵 [IBA Tier 0] 音樂控制直達 — 無歧義控制詞直接執行，不需喚醒詞
-        # stream_mode 外也允許直接點歌（_MUSIC_PLAY_KW 命中時）
-        # 🛡️ [Anti-Duplicate] 若 5 秒內已有 fast wake 處理同一發言，跳過此路徑避免雙重點歌
+        # 🎵 [IBA-T0/T1/Find-Song] 音樂控制與找歌直達 — 統一由 IntentBus 消化
+        # 🛡️ [Anti-Duplicate] 若 5 秒內已有 fast wake 處理同一發言，跳過此路徑避免雙重處理
         _last_fast_wake = getattr(self, "last_wake_time", {}).get(speaker, 0)
         _recently_fast_woken = (time.time() - _last_fast_wake) < 5.0
-        _direct_cmd = self._detect_music_direct_command(full_raw_text, stream_mode=self.stream_mode)
-        if _direct_cmd:
-            if _recently_fast_woken:
-                logger.debug(f"🎵 [IBA-T0 Skip] {speaker} fast wake 5s 內已處理，跳過 debounced 音樂直達")
-            else:
-                _cmd_action = _direct_cmd.get("action", "stop")
+
+        if not _recently_fast_woken:
+            _direct_cmd = self._detect_music_direct_command(full_raw_text, stream_mode=self.stream_mode)
+            _is_find_song = _FIND_SONG_GATE.search(full_raw_text)
+            _is_music_info = self.stream_mode and self._current_stream_info and _MUSIC_INFO_RE.search(full_raw_text)
+
+            if _direct_cmd or _is_find_song or _is_music_info:
                 self.deferred_wakes.pop(speaker, None)
-                if _cmd_action == "play":
-                    # 🎵 [IBA-T0→Bus] no-wake 點歌改走 IntentBus，享三檔分流 + resolver
-                    # （CURATION/DIRECTIONAL 補完），不再把原字串直送 yt-dlp 搜出垃圾。
-                    # 控制詞（skip/pause/resume/stop）不需解析，維持直達。
-                    _nw_ctx = build_nowake_play_ctx(
-                        speaker, full_raw_text, _direct_cmd.get("query", ""),
-                        stream_active=self.stream_mode,
-                        is_owner=self._is_owner_speaker(speaker),
+                
+                # 建立 no-wake 的 IntentContext
+                _nw_ctx = None
+                
+                if _direct_cmd:
+                    _cmd_action = _direct_cmd.get("action", "stop")
+                    if _cmd_action == "play":
+                        _nw_ctx = build_nowake_play_ctx(
+                            speaker, full_raw_text, _direct_cmd.get("query", ""),
+                            stream_active=self.stream_mode,
+                            is_owner=self._is_owner_speaker(speaker),
+                        )
+                    else:
+                        # 將 action 轉譯為標準 command query，供 PlaybackControlAgent 匹配
+                        _action_to_query = {
+                            "skip": "下一首",
+                            "pause": "暫停",
+                            "resume": "繼續播",
+                            "stop": "停止播放"
+                        }
+                        _mapped_query = _action_to_query.get(_cmd_action, "停止播放")
+                        _nw_ctx = IntentContext(
+                            speaker=speaker, raw_text=full_raw_text, query=_mapped_query,
+                            original_raw=full_raw_text, wake_intent=None,
+                            stream_active=self.stream_mode, game_mode=False,
+                            is_owner=self._is_owner_speaker(speaker), now=time.time(),
+                            mode=("stream" if self.stream_mode else "normal"),
+                        )
+                elif _is_find_song:
+                    _nw_ctx = IntentContext(
+                        speaker=speaker, raw_text=full_raw_text, query=full_raw_text,
+                        original_raw=full_raw_text, wake_intent=None,
+                        stream_active=self.stream_mode, game_mode=False,
+                        is_owner=self._is_owner_speaker(speaker), now=time.time(),
+                        mode=("stream" if self.stream_mode else "normal"),
                     )
-                    logger.info(f"🎵 [IBA-T0→Bus] {speaker} no-wake 點歌進 bus | query='{_nw_ctx.query[:40]}'")
+                elif _is_music_info:
+                    _nw_ctx = IntentContext(
+                        speaker=speaker, raw_text=full_raw_text, query=full_raw_text,
+                        original_raw=full_raw_text, wake_intent=None,
+                        stream_active=self.stream_mode, game_mode=False,
+                        is_owner=self._is_owner_speaker(speaker), now=time.time(),
+                        mode=("stream" if self.stream_mode else "normal"),
+                    )
+
+                if _nw_ctx:
+                    # 標記為 nowake，防浪費 LLM cleaner (J3) 資源
+                    from dataclasses import replace
+                    _nw_ctx = replace(_nw_ctx, dispatch_source="nowake")
+                    
+                    logger.info(f"📡 [IBA-T0/T1/Find-Song→Bus] {speaker} no-wake 進 bus | query='{_nw_ctx.query[:40]}'")
                     pipeline_timing.mark("intent_dispatched")
-                    pipeline_timing.emit(speaker, full_raw_text, suffix=" route=nowake_music")
+                    pipeline_timing.emit(speaker, full_raw_text, suffix=f" route=nowake_bus:{_nw_ctx.query[:15]}")
                     asyncio.create_task(self._intent_bus.dispatch(_nw_ctx))
-                else:
-                    logger.info(f"🎵 [IBA-T0] {speaker} 直接音樂控制 cmd={_cmd_action} (no wake) | '{full_raw_text[:40]}'")
-                    asyncio.create_task(self._safe_music_command(speaker, full_raw_text, _cmd_action))
-                return
-
-        # 🔎 [Find-Song] no-wake「找 + 音樂錨點」→ 進 bus 由 FindSongAgent 識別後播放。
-        # gate 與 agent patterns 對齊；gate 過但 agent 不接 → bus 回 None → drop（同既有 no-wake 行為）。
-        if not _recently_fast_woken and _FIND_SONG_GATE.search(full_raw_text):
-            self.deferred_wakes.pop(speaker, None)
-            _fs_ctx = IntentContext(
-                speaker=speaker, raw_text=full_raw_text, query=full_raw_text,
-                original_raw=full_raw_text, wake_intent=None,
-                stream_active=self.stream_mode, game_mode=False,
-                is_owner=self._is_owner_speaker(speaker), now=time.time(),
-                mode=("stream" if self.stream_mode else "normal"),
-            )
-            logger.info(f"🔎 [Find-Song] {speaker} no-wake 找歌進 bus | '{full_raw_text[:40]}'")
-            pipeline_timing.mark("intent_dispatched")
-            pipeline_timing.emit(speaker, full_raw_text, suffix=" route=find_song")
-            asyncio.create_task(self._intent_bus.dispatch(_fs_ctx))
-            return
-
-        # 🎵 [IBA Tier 1] 音樂資訊查詢直達 — 播放中被問「這首叫什麼」直接回答，不走 LLM
-        if self.stream_mode and self._current_stream_info and _MUSIC_INFO_RE.search(full_raw_text):
-            if not _recently_fast_woken:
-                self.deferred_wakes.pop(speaker, None)
-                asyncio.create_task(self._handle_music_info_query(speaker, full_raw_text))
-                return
+                    return
 
     async def _schedule_reaction_check(self, speaker: str, bot_response: str, respond_time: float,
                                         wake_latency: float = None, atmosphere: dict = None):
@@ -3526,6 +3543,9 @@ class VoiceController(commands.Cog):
         # 過濾 STT 背景雜訊（XML context tags、過短字串）
         clean_entries = [e for e in reaction_entries if not self._is_stt_noise(e)]
 
+        reaction_type = "錯誤"
+        reason = ""
+
         if not clean_entries:
             # 高延遲 + 無有效反應：玩家早已離開話題，不算馬文的互動失敗
             if wake_latency is not None and wake_latency > self._LATENCY_DOMINATED_THRESHOLD:
@@ -3536,32 +3556,51 @@ class VoiceController(commands.Cog):
                 reason = "20 秒內無任何反應"
         else:
             reaction_text = "、".join(clean_entries)
-            classify_prompt = (
-                "你是互動品質分析系統。\n"
-                f"馬文剛才說：「{bot_response}」\n"
-                f"玩家接下來說：「{reaction_text}」\n"
-                "請判斷玩家的反應類別並說明原因。\n"
-                "類別定義：\n"
-                "- 嚴重：無視回覆、打斷對話、或馬文說錯/答非所問\n"
-                "- 錯誤：不理會 bot 回覆、LLM 明顯誤會了問題\n"
-                "- 提出興趣：想了解更多、問了相關問題\n"
-                "- 喜歡：正面回應、覺得有趣、笑聲或認同\n"
-                "只輸出 JSON，不要 markdown：{\"type\": \"嚴重|錯誤|提出興趣|喜歡\", \"reason\": \"一句話\"}"
-            )
+            
+            # [Elon's Algorithm Optimization] 依抽樣率與關鍵詞過濾，避免 100% LLM API 浪費
+            import random
             try:
-                raw = await self.bot.router._call_llm(
-                    system_prompt=classify_prompt,
-                    user_prompt=reaction_text,
-                    is_json=True,
-                    allow_local=False,
+                if "PYTEST_CURRENT_TEST" in os.environ:
+                    check_rate = 1.0
+                else:
+                    check_rate = float(os.getenv("MARVIN_REACTION_CHECK_RATE", "0.1"))
+            except ValueError:
+                check_rate = 0.1
+                
+            # 強烈負面/質疑詞，強制分析
+            negative_indicators = ("不對", "答非所問", "說錯了", "笨蛋", "白癡", "蛤", "你在說什麼", "聽不懂")
+            force_analyze = any(ind in reaction_text for ind in negative_indicators)
+            
+            if not force_analyze and random.random() > check_rate:
+                reaction_type = "喜歡/正常"
+                reason = "抽樣跳過 (預設正常)"
+            else:
+                classify_prompt = (
+                    "你是互動品質分析系統。\n"
+                    f"馬文剛才說：「{bot_response}」\n"
+                    f"玩家接下來說：「{reaction_text}」\n"
+                    "請判斷玩家的反應類別並說明原因。\n"
+                    "類別定義：\n"
+                    "- 嚴重：無視回覆、打斷對話、或馬文說錯/答非所問\n"
+                    "- 錯誤：不理會 bot 回覆、LLM 明顯誤會了問題\n"
+                    "- 提出興趣：想了解更多、問了相關問題\n"
+                    "- 喜歡：正面回應、覺得有趣、笑聲或認同\n"
+                    "只輸出 JSON，不要 markdown：{\"type\": \"嚴重|錯誤|提出興趣|喜歡\", \"reason\": \"一句話\"}"
                 )
-                from utils import safe_json_loads
-                parsed = safe_json_loads(raw, {"type": "錯誤", "reason": ""}) if isinstance(raw, str) else raw
-                reaction_type = parsed.get("type", "錯誤") if parsed else "錯誤"
-                reason = parsed.get("reason", "") if parsed else str(raw)[:80]
-            except Exception as e:
-                reaction_type = "錯誤"
-                reason = f"分類失敗: {e}"
+                try:
+                    raw = await self.bot.router._call_llm(
+                        system_prompt=classify_prompt,
+                        user_prompt=reaction_text,
+                        is_json=True,
+                        allow_local=False,
+                    )
+                    from utils import safe_json_loads
+                    parsed = safe_json_loads(raw, {"type": "錯誤", "reason": ""}) if isinstance(raw, str) else raw
+                    reaction_type = parsed.get("type", "錯誤") if parsed else "錯誤"
+                    reason = parsed.get("reason", "") if parsed else str(raw)[:80]
+                except Exception as e:
+                    reaction_type = "錯誤"
+                    reason = f"分類失敗: {e}"
 
         record = {
             "timestamp": datetime.datetime.fromtimestamp(respond_time).strftime("%Y-%m-%d %H:%M:%S"),

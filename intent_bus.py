@@ -176,38 +176,62 @@ class IntentBus:
         
         # 🛡️ 實體 Race 整合：若為 regex 初次發起且有提供 cleaner_call，則啟動 parallel race
         if ctx.dispatch_source == "regex" and getattr(self, "cleaner_call", None) is not None:
-            from intent_judges.race import JudgeSpec, race
             from intent_judges.regex_judge import regex_judge
-            from intent_judges.cleaner_judge import cleaner_judge
             from intent_judges.telemetry import write_race_outcome
             from intent_judges.voice_integration import new_utterance_id
             from pathlib import Path
+            from intent_judges.race import RaceResult, JudgeOutcome
 
-            async def _j1(c: IntentContext) -> Bid:
-                return regex_judge(c, self.agents)
+            t_short = time.perf_counter()
+            j1_bid = regex_judge(ctx, self.agents)
+            elapsed_short_ms = (time.perf_counter() - t_short) * 1000
 
-            async def _j3(c: IntentContext) -> Bid:
-                return await cleaner_judge(c, self.agents, cleaner_call=self.cleaner_call)
+            # 閥值 0.85 且排除 guard，直接進行短路 (Short-Circuit)
+            if j1_bid.confidence >= 0.85 and j1_bid.name != "guard":
+                utt_id = new_utterance_id(ctx.speaker)
+                j1_outcome = JudgeOutcome(name="j1_regex", status="completed", bid=j1_bid, latency_ms=elapsed_short_ms)
+                j3_outcome = JudgeOutcome(name="j3_cleaner", status="cancelled", bid=None, latency_ms=0.0)
+                race_result = RaceResult(winner=j1_bid, winning_judge="j1_regex", outcomes=[j1_outcome, j3_outcome], total_ms=elapsed_short_ms)
+                try:
+                    write_race_outcome(Path(self.outcome_path), utt_id, ctx, race_result)
+                except Exception as exc:
+                    self.logger.warning(f"⚠️ [IntentBus] write_race_outcome failed: {exc}")
+                
+                winner = j1_bid
+                bids = [j1_bid]
+                self.logger.info(
+                    f"📡 [IntentBus] [Short-Circuit] speaker={ctx.speaker} query='{ctx.query[:50]}' "
+                    f"winner={j1_bid.name} confidence={j1_bid.confidence:.2f} (took {elapsed_short_ms:.2f}ms)"
+                )
+            else:
+                from intent_judges.race import JudgeSpec, race
+                from intent_judges.cleaner_judge import cleaner_judge
 
-            # guard 是 anti-pattern detector，不要 fast-path
-            fast_path_excludes = frozenset({"guard"})
-            specs = [
-                JudgeSpec(_j1, threshold=0.85, name="j1_regex"),
-                JudgeSpec(_j3, threshold=0.30, name="j3_cleaner"),
-            ]
+                async def _j1(c: IntentContext) -> Bid:
+                    return regex_judge(c, self.agents)
 
-            race_result = await race(ctx, specs, fast_path_excludes=fast_path_excludes, timeout_s=5.0)
+                async def _j3(c: IntentContext) -> Bid:
+                    return await cleaner_judge(c, self.agents, cleaner_call=self.cleaner_call)
 
-            # 寫入 telemetry
-            utt_id = new_utterance_id(ctx.speaker)
-            try:
-                write_race_outcome(Path(self.outcome_path), utt_id, ctx, race_result)
-            except Exception as exc:
-                self.logger.warning(f"⚠️ [IntentBus] write_race_outcome failed: {exc}")
+                # guard 是 anti-pattern detector，不要 fast-path
+                fast_path_excludes = frozenset({"guard"})
+                specs = [
+                    JudgeSpec(_j1, threshold=0.85, name="j1_regex"),
+                    JudgeSpec(_j3, threshold=0.30, name="j3_cleaner"),
+                ]
 
-            winner = race_result.winner
-            # 建立 bids 用於 logger 印出
-            bids = [outcome.bid for outcome in race_result.outcomes if outcome.bid is not None]
+                race_result = await race(ctx, specs, fast_path_excludes=fast_path_excludes, timeout_s=5.0)
+
+                # 寫入 telemetry
+                utt_id = new_utterance_id(ctx.speaker)
+                try:
+                    write_race_outcome(Path(self.outcome_path), utt_id, ctx, race_result)
+                except Exception as exc:
+                    self.logger.warning(f"⚠️ [IntentBus] write_race_outcome failed: {exc}")
+
+                winner = race_result.winner
+                # 建立 bids 用於 logger 印出
+                bids = [outcome.bid for outcome in race_result.outcomes if outcome.bid is not None]
         else:
             bids: list[Bid] = []
             for agent in self.agents:
