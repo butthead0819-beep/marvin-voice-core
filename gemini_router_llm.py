@@ -21,6 +21,11 @@ def is_clear_game_sentinel(game_name: str) -> bool:
     return game_name.strip().casefold() in {s.casefold() for s in GAME_CLEAR_SENTINELS}
 
 
+class WebSearchError(RuntimeError):
+    """自定義的網頁搜尋錯誤，代表實體網路檢索失敗"""
+    pass
+
+
 class GeminiRouterLLMMixin:
     """LLM 路由、流式呼叫、Tier 切換、Web 搜尋。"""
     def _supports_thinking(self) -> bool:
@@ -154,7 +159,7 @@ class GeminiRouterLLMMixin:
             return "\n".join(formatted_results) + "\n"
         except Exception as e:
             logger.error(f"❌ [Oracle Search] 搜尋失敗: {e}")
-            return ""
+            raise WebSearchError(f"搜尋引擎失敗: {e}") from e
 
     def _should_local_search(self, user_prompt: str) -> str:
         """

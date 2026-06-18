@@ -4781,6 +4781,7 @@ class VoiceController(commands.Cog):
             self._gap_classifier_cached = make_groq_gap_classifier(self._shared_tier_router)
         if self._gap_classifier_cached is not None:
             try:
+                from intent_judges.voice_integration import new_utterance_id
                 gap_rec = await handle_intent_gap(
                     _bus_ctx,
                     utterance_id=new_utterance_id(speaker),
@@ -5013,8 +5014,30 @@ class VoiceController(commands.Cog):
 
         except Exception as e:
             logger.error(f"❌ [Fast System Stream Error] {e}")
+            from gemini_router_llm import WebSearchError
+
+            e_str = str(e).lower()
+            if isinstance(e, WebSearchError) or "search" in e_str or "search_results" in e_str:
+                msg_text = "我試著上網幫你搜尋資料，但搜尋引擎暫時沒有回應。"
+                placeholder_desc = "網頁搜尋失敗"
+            elif "quota" in e_str or "limit" in e_str or "exhausted" in e_str or "429" in e_str:
+                msg_text = "我的 API 配額似乎已經用完了，無法建立思緒連結。"
+                placeholder_desc = "API 配額用盡"
+            elif isinstance(e, asyncio.TimeoutError) or "timeout" in e_str:
+                msg_text = "我的大腦連結伺服器超時了，請確認網路連線是否正常。"
+                placeholder_desc = "伺服器連結超時"
+            else:
+                msg_text = "大腦思緒在連結中斷了，請再說一次。"
+                placeholder_desc = "大腦連結中斷"
+
             if placeholder_msg:
-                await placeholder_msg.edit(content=f"{_head} `{speaker}`：{full_text} (大腦連結中斷)")
+                try:
+                    await placeholder_msg.edit(content=f"{_head} `{speaker}`：{full_text} ({placeholder_desc})")
+                except Exception as edit_err:
+                    logger.warning(f"⚠️ [Fast System] 無法更新 placeholder 訊息: {edit_err}")
+
+            if not tts_suppressed and not first_sentence_received:
+                await self.play_tts(msg_text, already_in_channel=True, emotion_tag=emotion_tag)
         finally:
             # 🗣️ [Status ACK] 出首句或任何退出路徑都收手安撫守候，避免事後突播 ack
             _ack_watcher.cancel()
