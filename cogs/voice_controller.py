@@ -1578,12 +1578,15 @@ class VoiceController(commands.Cog):
         channel = interaction.user.voice.channel
         
         try:
-            # 2. 斷開舊連線
-            if interaction.guild.voice_client:
-                print(f"🔄 偵測到舊有連線，正在斷開...", flush=True)
+            # 2. 斷開舊連線（若已連線則擋掉重複 summon）
+            if interaction.guild.voice_client and interaction.guild.voice_client.is_connected():
+                await interaction.followup.send("⚠️ 馬文已經在頻道裡了。", ephemeral=True)
+                return
+            elif interaction.guild.voice_client:
+                # 殭屍連線（is_connected=False）：清掉後重連
+                print(f"🔄 偵測到殭屍連線，正在清除...", flush=True)
                 await interaction.guild.voice_client.disconnect(force=True)
                 await asyncio.sleep(0.5)
-                # 清除舊連線殘留的 TTS/ack queue，避免重連後舊 greeting 疊新 greeting
                 if self._mixer is not None:
                     self._mixer.clear_tts()
 
