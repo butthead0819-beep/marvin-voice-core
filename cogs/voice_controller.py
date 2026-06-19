@@ -4230,6 +4230,17 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             except Exception as _gap_exc:
                 logger.warning(f"⚠️ [IntentGap] gap path 炸了，fall through 到 Marvin: {_gap_exc}")
 
+        await self._stream_response(
+            speaker, query, history, wake_time, wake_intent, _is_helper, _head,
+        )
+
+    async def _stream_response(self, speaker, query, history, wake_time,
+                               wake_intent, _is_helper, _head):
+        """[Fast System] 渲染 LLM 串流回應：句子分割 → 逐句 TTS/貼文 → 收尾。
+
+        從 _process_queued_query 抽出（行為不變）。routing 決定要打 Marvin 主 LLM
+        後呼叫此方法；輸入皆由 routing 半段算妥，資料流單向。
+        """
         online_members = self.get_online_members()
 
         # 2. 建立 Discord 佔位訊息
