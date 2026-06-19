@@ -2112,62 +2112,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if self.game_mode:
             bypass_etd = True
         if not is_wake_check and not bypass_etd:
-            import re
-            
-            # 將當前句子加入緩衝區
-            buf = self.user_sentence_buffer.get(speaker, {})
-            accumulated = buf.get("texts", [])
-            
-            if buf.get("task") and not buf["task"].done():
-                buf["task"].cancel()
-                
-            combined_texts = accumulated + [raw_text]
-            combined_text = "，".join(combined_texts)
-            origin_ts = buf.get("timestamp", timestamp)
-            origin_pd = buf.get("prosody_data") or prosody_data
-            
-            is_complete = True
-            heuristic_triggered = False
-            
-            # Track B-1 (Local Heuristic Guard): 檢查思考拖延詞或缺乏標點
-            thinking_words_re = re.compile(r'(然後|就是|那個|我覺得|如果|所以|因為|但是|可能|的話|還是|或者)[.。…\s]*$', re.IGNORECASE)
-            if thinking_words_re.search(combined_text):
-                is_complete = False
-                heuristic_triggered = True
-                logger.info(f"🧠 [Semantic ETD] Track B-1: {speaker} 觸發思考拖延詞，判定未完成。")
-            elif not re.search(r'[。！？.!?]\s*$', combined_text) and len(combined_texts) < 5:
-                # 缺乏標點符號，交由 Track B-2 判定
-                pass
-            
-            # Track B-2 (Groq API Semantic Check)
-            if is_complete and not heuristic_triggered:
-                if hasattr(self.bot, "router") and hasattr(self.bot.router, "clean_stt_text"):
-                    try:
-                        res = await self.bot.router.clean_stt_text(combined_text)
-                        if isinstance(res, dict) and "is_complete" in res:
-                            is_complete = res["is_complete"]
-                            if not is_complete:
-                                logger.info(f"🧠 [Semantic ETD] Track B-2: Groq 判定 {speaker} 語意未完成。")
-                    except Exception as e:
-                        logger.warning(f"⚠️ [Semantic ETD] Groq 判定失敗: {e}")
-            
-            # Hard Threshold Timer
-            if not is_complete and len(combined_texts) < 5:
-                async def _flush(spk=speaker, texts=combined_texts, ts=origin_ts, pd=origin_pd, wb=wav_bytes, t=track):
-                    await asyncio.sleep(2.5) # Hard Threshold
-                    logger.info(f"⏳ [Semantic ETD] Hard Threshold (2.5s) 觸發，強制結算 {spk} 的語音！")
-                    self.user_sentence_buffer.pop(spk, None)
-                    joined = "，".join(texts)
-                    await self.handle_stt_result(spk, joined, ts, wb, prosody_data=pd, is_wake_check=False, track=t, bypass_etd=True)
-
-                task = asyncio.create_task(_flush())
-                self.user_sentence_buffer[speaker] = {"texts": combined_texts, "task": task, "timestamp": origin_ts, "prosody_data": origin_pd}
+            _etd = await self._apply_semantic_etd(
+                speaker, raw_text, timestamp, prosody_data, wav_bytes, track)
+            if _etd is None:
                 return
-            else:
-                # 已經完整，或者達到強制結算長度，直接進入後續流程
-                self.user_sentence_buffer.pop(speaker, None)
-                raw_text = combined_text
-                timestamp = origin_ts
+            raw_text, timestamp = _etd
                 
         # 🚀 [Operation Prosody Perception] WPS & Energy Analysis
         if prosody_data:
@@ -2577,6 +2526,70 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
             # 已經過 Semantic ETD 驗證，無需再等待 1.2s，以 0 延遲直接處理！
             asyncio.create_task(self.process_debounced_speech(speaker))
+
+    async def _apply_semantic_etd(self, speaker, raw_text, timestamp,
+                                  prosody_data, wav_bytes, track):
+        """[Semantic ETD] 雙軌語意終止偵測：Track B-1 啟發式 + B-2 Groq + 硬門檻。
+
+        從 handle_stt_result 抽出（行為不變）。
+          回傳 None       → 句子未完成，已緩衝 + 排 2.5s 硬門檻 flush，caller 應 return
+          回傳 (text, ts) → 句子完成 / 達 5 句結算，caller 以此續跑
+        """
+        import re
+
+        # 將當前句子加入緩衝區
+        buf = self.user_sentence_buffer.get(speaker, {})
+        accumulated = buf.get("texts", [])
+
+        if buf.get("task") and not buf["task"].done():
+            buf["task"].cancel()
+
+        combined_texts = accumulated + [raw_text]
+        combined_text = "，".join(combined_texts)
+        origin_ts = buf.get("timestamp", timestamp)
+        origin_pd = buf.get("prosody_data") or prosody_data
+
+        is_complete = True
+        heuristic_triggered = False
+
+        # Track B-1 (Local Heuristic Guard): 檢查思考拖延詞或缺乏標點
+        thinking_words_re = re.compile(r'(然後|就是|那個|我覺得|如果|所以|因為|但是|可能|的話|還是|或者)[.。…\s]*$', re.IGNORECASE)
+        if thinking_words_re.search(combined_text):
+            is_complete = False
+            heuristic_triggered = True
+            logger.info(f"🧠 [Semantic ETD] Track B-1: {speaker} 觸發思考拖延詞，判定未完成。")
+        elif not re.search(r'[。！？.!?]\s*$', combined_text) and len(combined_texts) < 5:
+            # 缺乏標點符號，交由 Track B-2 判定
+            pass
+
+        # Track B-2 (Groq API Semantic Check)
+        if is_complete and not heuristic_triggered:
+            if hasattr(self.bot, "router") and hasattr(self.bot.router, "clean_stt_text"):
+                try:
+                    res = await self.bot.router.clean_stt_text(combined_text)
+                    if isinstance(res, dict) and "is_complete" in res:
+                        is_complete = res["is_complete"]
+                        if not is_complete:
+                            logger.info(f"🧠 [Semantic ETD] Track B-2: Groq 判定 {speaker} 語意未完成。")
+                except Exception as e:
+                    logger.warning(f"⚠️ [Semantic ETD] Groq 判定失敗: {e}")
+
+        # Hard Threshold Timer
+        if not is_complete and len(combined_texts) < 5:
+            async def _flush(spk=speaker, texts=combined_texts, ts=origin_ts, pd=origin_pd, wb=wav_bytes, t=track):
+                await asyncio.sleep(2.5) # Hard Threshold
+                logger.info(f"⏳ [Semantic ETD] Hard Threshold (2.5s) 觸發，強制結算 {spk} 的語音！")
+                self.user_sentence_buffer.pop(spk, None)
+                joined = "，".join(texts)
+                await self.handle_stt_result(spk, joined, ts, wb, prosody_data=pd, is_wake_check=False, track=t, bypass_etd=True)
+
+            task = asyncio.create_task(_flush())
+            self.user_sentence_buffer[speaker] = {"texts": combined_texts, "task": task, "timestamp": origin_ts, "prosody_data": origin_pd}
+            return None
+        else:
+            # 已經完整，或者達到強制結算長度，直接進入後續流程
+            self.user_sentence_buffer.pop(speaker, None)
+            return (combined_text, origin_ts)
 
     def handle_raw_speech_start(self, speaker: str, user_id: int = None):
         if speaker not in self.user_states:
