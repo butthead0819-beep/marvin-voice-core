@@ -1236,115 +1236,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 )
                 is_fast = False
 
-        # 🛡️ [Double Wake Guard 2.0] 強化版：結合 Segment ID 與時間窗口
-        segment_id = f"{speaker}_{timestamp}"
-        now = time.time()
-        
-        # 1. 檢查是否是 2 秒內重複的片段
-        is_duplicate = False
-        if segment_id in self.processed_wake_segments:
-            is_duplicate = True
-        
-        # 2. 或是 3 秒內該玩家已經觸發過喚醒 (防止 STT 拆句導致雙重喚醒)
-        last_wake = getattr(self, "last_wake_time", {}).get(speaker, 0)
-        
-        _STORM_WINDOW      = 60.0   # 計數窗口
-        _STORM_LIMIT       = 4      # 窗口內喚醒次數門檻
-        _STORM_CLEAR_QUIET = 12.0   # 連續 12s 無新喚醒 → 風暴消散
-        _RESPONSE_LOCK_MAX = 30.0   # Response Lock 超時保護（LLM + TTS 最長等待）
-
-        # 🔒 [Response Lock] 已接受喚醒、回應尚未送達前，壓抑所有快速喚醒
-        # 人類會等第一次回應完成才再次喚醒，快速連喚表示幻覺或誤觸。
-        if self._wake_response_pending and is_fast:
-            if now - self._wake_accepted_time > _RESPONSE_LOCK_MAX:
-                self._wake_response_pending = False  # 逾時自動解鎖（TTS 異常未完成）
-            else:
-                logger.info(f"⏸️ [Response Lock] {speaker} 回應進行中，壓抑快速喚醒")
-                is_fast = False
-                is_duplicate = True
-
-        # 🛡️ [Wake Storm Guard] 連續喚醒風暴：動態壓抑，靜默 12s 後自動解除
-        if self._storm_active and is_fast:
-            if now - self._storm_last_wake_time > _STORM_CLEAR_QUIET:
-                self._storm_active = False
-                logger.info("✅ [Wake Storm] 風暴消散，恢復快速喚醒")
-            else:
-                self._storm_last_wake_time = now  # 新喚醒延長風暴存續
-                logger.info(f"⛔ [Wake Storm Guard] 風暴進行中，{speaker} 跳過")
-                is_fast = False
-                is_duplicate = True
-
-        # 🛡️ [Echo Guard] 核心防禦：TTS 播放中或 2s 冷卻期內，抑制所有喚醒詞防止回授
-        _in_echo_window = self.is_playing_audio or (now < self._tts_echo_cooldown_until)
-        is_echo = _in_echo_window and is_fast
-        # 🎙️ [Strong-Voice Bypass] 純音樂播放中（非 TTS 回授窗）的強人聲喚醒放行——
-        # 放歌時也要能語音點歌（零鍵盤核心）。TTS 播放中/冷卻中嚴格不繞，防自我觸發。
-        if is_echo and self._strong_voice_bypass_echo(
-                self.is_playing_audio, self._current_tts_text, now,
-                self._tts_echo_cooldown_until, _wake_dom, _confidence, _wake_voice_score):
-            is_echo = False
-            logger.info(
-                f"🎙️ [Strong-Voice Bypass] {speaker} 音樂播放中強人聲喚醒放行 "
-                f"(total={_confidence:.2f} v={_wake_voice_score} dom={_wake_dom})"
-            )
-        if is_echo:
-            _reason = "播放中" if self.is_playing_audio else f"TTS冷卻({self._tts_echo_cooldown_until - now:.1f}s)"
-            logger.info(f"⏭️ [Echo Guard] {_reason}，抑制來自 {speaker} 的可能回授觸發。")
-            is_fast = False
-            is_duplicate = True
-            # 🔇 [Noise Nudge] 純音樂播放中（非 TTS 回授窗）被擋掉的喚醒句若含喚醒詞 →
-            # 可能環境太吵把喚醒詞糊掉；走通用節流器（窄訊號 + 每 speaker 每 session 1 次）。
-            if self.is_playing_audio and not self._current_tts_text and \
-                    _WAKE_ECHO_RE.search(raw_text) and \
-                    self._nudges.signal("noise", speaker, now):
-                asyncio.create_task(self._send_noise_nudge(speaker))
-
-        # 🛡️ [Global Wake Guard] 全域冷續：2.0 秒內不允許第二次喚醒 (不分對象)
-        if now - self._last_global_wake_time < 2.0 and is_fast:
-            logger.info(f"⏭️ [Global Wake Guard] 2.0s 內已有過喚醒，抑制來自 {speaker} 的重複觸發。")
-            is_fast = False
-            is_duplicate = True
-
-        if now - last_wake < 3.0 and is_fast:
-             logger.debug(f"⏭️ [Wake Guard] {speaker} 在 3 秒內已喚醒過，抑制重複觸發。")
-             is_fast = False
-             is_duplicate = True
-
-        # 🎧 [Follow-Up] D2-A + D1-A: follow-up window overrides all guards except Response Lock.
-        # Response Lock (_wake_response_pending) is intentionally NOT bypassed (design decision D2-A).
-        if not is_fast and not self.game_mode and not self._wake_response_pending and _fusion is not None and _fusion.is_open():
-            is_fast = True
-            is_echo = False
-            is_duplicate = False
-            logger.info(f"🎧 [Follow-Up] {speaker} captured in follow-up window (reason={getattr(_fusion, '_open_reason', '?')})")
-
-        if is_fast and not is_duplicate:
-            self.processed_wake_segments[segment_id] = track
-            self._last_global_wake_time = now
-            if not hasattr(self, "last_wake_time"): self.last_wake_time = {}
-            self.last_wake_time[speaker] = now
-            # 清理過期紀錄 (O(N) 雖然不完美但量少)
-            if len(self.processed_wake_segments) > 100:
-                self.processed_wake_segments = {k: v for k, v in list(self.processed_wake_segments.items())[-20:]}
-            # 🔒 [Response Lock] 記錄本次喚醒被接受
-            self._wake_response_pending = True
-            self._wake_accepted_time = now
-            # 🛡️ [Wake Storm Guard] 計數：滾動窗口超限 → 啟動動態風暴壓抑
-            self._wake_burst_times.append(now)
-            self._wake_burst_times = [t for t in self._wake_burst_times if now - t < _STORM_WINDOW]
-            if len(self._wake_burst_times) >= _STORM_LIMIT:
-                self._storm_active = True
-                self._storm_last_wake_time = now
-                self._wake_burst_times.clear()
-                logger.warning(f"⚠️ [Wake Storm] {_STORM_WINDOW:.0f}s 內喚醒 {_STORM_LIMIT} 次，啟動風暴壓抑（{_STORM_CLEAR_QUIET:.0f}s 靜默後自動解除）")
-        elif is_duplicate:
-            is_fast = False
-            logger.debug(f"⏭️ [Double Wake Guard] {segment_id} 已過濾。")
-            # 定期清理舊緩衝 (僅需保留近期數據)
-            if len(self.processed_wake_segments) > 100:
-                # 暴力清理超過 30 秒前的紀錄
-                now = time.time()
-                self.processed_wake_segments = {k: v for k, v in self.processed_wake_segments.items() if (now - float(k.split("_")[-1])) < 30.0}
+        is_fast, is_echo = self._apply_wake_guards(
+            speaker, raw_text, timestamp, track, is_fast,
+            _fusion, _wake_dom, _confidence, _wake_voice_score)
         
         if speaker not in self.speech_buffers:
             self.speech_buffers[speaker] = {"texts": [], "first_timestamp": timestamp, "wav_bytes": bytearray()}
@@ -1529,6 +1423,125 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             # 已經過 Semantic ETD 驗證，無需再等待 1.2s，以 0 延遲直接處理！
             asyncio.create_task(self.process_debounced_speech(speaker))
 
+
+    def _apply_wake_guards(self, speaker, raw_text, timestamp, track, is_fast,
+                           _fusion, _wake_dom, _confidence, _wake_voice_score):
+        """[Wake Guards] handle_stt_result 中段的喚醒守衛叢集（抽出，行為不變）。
+
+        Double Wake / Response Lock / Storm / Echo(+Strong-Voice Bypass) / Global /
+        Follow-up override。回授防護安全核心。回 (is_fast, is_echo)；is_duplicate /
+        now / segment_id 純內部；接受喚醒時記 segment + 開 Response Lock + 風暴計數。
+        """
+        # 🛡️ [Double Wake Guard 2.0] 強化版：結合 Segment ID 與時間窗口
+        segment_id = f"{speaker}_{timestamp}"
+        now = time.time()
+        
+        # 1. 檢查是否是 2 秒內重複的片段
+        is_duplicate = False
+        if segment_id in self.processed_wake_segments:
+            is_duplicate = True
+        
+        # 2. 或是 3 秒內該玩家已經觸發過喚醒 (防止 STT 拆句導致雙重喚醒)
+        last_wake = getattr(self, "last_wake_time", {}).get(speaker, 0)
+        
+        _STORM_WINDOW      = 60.0   # 計數窗口
+        _STORM_LIMIT       = 4      # 窗口內喚醒次數門檻
+        _STORM_CLEAR_QUIET = 12.0   # 連續 12s 無新喚醒 → 風暴消散
+        _RESPONSE_LOCK_MAX = 30.0   # Response Lock 超時保護（LLM + TTS 最長等待）
+
+        # 🔒 [Response Lock] 已接受喚醒、回應尚未送達前，壓抑所有快速喚醒
+        # 人類會等第一次回應完成才再次喚醒，快速連喚表示幻覺或誤觸。
+        if self._wake_response_pending and is_fast:
+            if now - self._wake_accepted_time > _RESPONSE_LOCK_MAX:
+                self._wake_response_pending = False  # 逾時自動解鎖（TTS 異常未完成）
+            else:
+                logger.info(f"⏸️ [Response Lock] {speaker} 回應進行中，壓抑快速喚醒")
+                is_fast = False
+                is_duplicate = True
+
+        # 🛡️ [Wake Storm Guard] 連續喚醒風暴：動態壓抑，靜默 12s 後自動解除
+        if self._storm_active and is_fast:
+            if now - self._storm_last_wake_time > _STORM_CLEAR_QUIET:
+                self._storm_active = False
+                logger.info("✅ [Wake Storm] 風暴消散，恢復快速喚醒")
+            else:
+                self._storm_last_wake_time = now  # 新喚醒延長風暴存續
+                logger.info(f"⛔ [Wake Storm Guard] 風暴進行中，{speaker} 跳過")
+                is_fast = False
+                is_duplicate = True
+
+        # 🛡️ [Echo Guard] 核心防禦：TTS 播放中或 2s 冷卻期內，抑制所有喚醒詞防止回授
+        _in_echo_window = self.is_playing_audio or (now < self._tts_echo_cooldown_until)
+        is_echo = _in_echo_window and is_fast
+        # 🎙️ [Strong-Voice Bypass] 純音樂播放中（非 TTS 回授窗）的強人聲喚醒放行——
+        # 放歌時也要能語音點歌（零鍵盤核心）。TTS 播放中/冷卻中嚴格不繞，防自我觸發。
+        if is_echo and self._strong_voice_bypass_echo(
+                self.is_playing_audio, self._current_tts_text, now,
+                self._tts_echo_cooldown_until, _wake_dom, _confidence, _wake_voice_score):
+            is_echo = False
+            logger.info(
+                f"🎙️ [Strong-Voice Bypass] {speaker} 音樂播放中強人聲喚醒放行 "
+                f"(total={_confidence:.2f} v={_wake_voice_score} dom={_wake_dom})"
+            )
+        if is_echo:
+            _reason = "播放中" if self.is_playing_audio else f"TTS冷卻({self._tts_echo_cooldown_until - now:.1f}s)"
+            logger.info(f"⏭️ [Echo Guard] {_reason}，抑制來自 {speaker} 的可能回授觸發。")
+            is_fast = False
+            is_duplicate = True
+            # 🔇 [Noise Nudge] 純音樂播放中（非 TTS 回授窗）被擋掉的喚醒句若含喚醒詞 →
+            # 可能環境太吵把喚醒詞糊掉；走通用節流器（窄訊號 + 每 speaker 每 session 1 次）。
+            if self.is_playing_audio and not self._current_tts_text and \
+                    _WAKE_ECHO_RE.search(raw_text) and \
+                    self._nudges.signal("noise", speaker, now):
+                asyncio.create_task(self._send_noise_nudge(speaker))
+
+        # 🛡️ [Global Wake Guard] 全域冷續：2.0 秒內不允許第二次喚醒 (不分對象)
+        if now - self._last_global_wake_time < 2.0 and is_fast:
+            logger.info(f"⏭️ [Global Wake Guard] 2.0s 內已有過喚醒，抑制來自 {speaker} 的重複觸發。")
+            is_fast = False
+            is_duplicate = True
+
+        if now - last_wake < 3.0 and is_fast:
+             logger.debug(f"⏭️ [Wake Guard] {speaker} 在 3 秒內已喚醒過，抑制重複觸發。")
+             is_fast = False
+             is_duplicate = True
+
+        # 🎧 [Follow-Up] D2-A + D1-A: follow-up window overrides all guards except Response Lock.
+        # Response Lock (_wake_response_pending) is intentionally NOT bypassed (design decision D2-A).
+        if not is_fast and not self.game_mode and not self._wake_response_pending and _fusion is not None and _fusion.is_open():
+            is_fast = True
+            is_echo = False
+            is_duplicate = False
+            logger.info(f"🎧 [Follow-Up] {speaker} captured in follow-up window (reason={getattr(_fusion, '_open_reason', '?')})")
+
+        if is_fast and not is_duplicate:
+            self.processed_wake_segments[segment_id] = track
+            self._last_global_wake_time = now
+            if not hasattr(self, "last_wake_time"): self.last_wake_time = {}
+            self.last_wake_time[speaker] = now
+            # 清理過期紀錄 (O(N) 雖然不完美但量少)
+            if len(self.processed_wake_segments) > 100:
+                self.processed_wake_segments = {k: v for k, v in list(self.processed_wake_segments.items())[-20:]}
+            # 🔒 [Response Lock] 記錄本次喚醒被接受
+            self._wake_response_pending = True
+            self._wake_accepted_time = now
+            # 🛡️ [Wake Storm Guard] 計數：滾動窗口超限 → 啟動動態風暴壓抑
+            self._wake_burst_times.append(now)
+            self._wake_burst_times = [t for t in self._wake_burst_times if now - t < _STORM_WINDOW]
+            if len(self._wake_burst_times) >= _STORM_LIMIT:
+                self._storm_active = True
+                self._storm_last_wake_time = now
+                self._wake_burst_times.clear()
+                logger.warning(f"⚠️ [Wake Storm] {_STORM_WINDOW:.0f}s 內喚醒 {_STORM_LIMIT} 次，啟動風暴壓抑（{_STORM_CLEAR_QUIET:.0f}s 靜默後自動解除）")
+        elif is_duplicate:
+            is_fast = False
+            logger.debug(f"⏭️ [Double Wake Guard] {segment_id} 已過濾。")
+            # 定期清理舊緩衝 (僅需保留近期數據)
+            if len(self.processed_wake_segments) > 100:
+                # 暴力清理超過 30 秒前的紀錄
+                now = time.time()
+                self.processed_wake_segments = {k: v for k, v in self.processed_wake_segments.items() if (now - float(k.split("_")[-1])) < 30.0}
+        return is_fast, is_echo
     async def _apply_semantic_etd(self, speaker, raw_text, timestamp,
                                   prosody_data, wav_bytes, track):
         """[Semantic ETD] 雙軌語意終止偵測：Track B-1 啟發式 + B-2 Groq + 硬門檻。

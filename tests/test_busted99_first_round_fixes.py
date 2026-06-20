@@ -304,11 +304,11 @@ async def test_bugB_followup_window_not_triggered_in_game_mode():
         "even if the follow-up window is open."
     )
 
-    # Now check the ACTUAL voice_controller code at line 1715 to verify
-    # the fix is in place.
+    # Verify the fix is in place. 喚醒守衛叢集已抽到 _apply_wake_guards（行為不變），
+    # follow-up override guard 現在住在那裡，所以檢查該方法的 source。
     import inspect
     from cogs import voice_controller as vc_mod
-    src = inspect.getsource(vc_mod.VoiceController.handle_stt_result)
+    src = inspect.getsource(vc_mod.VoiceController._apply_wake_guards)
     # The guard line should contain both "game_mode" and "is_open"
     guard_lines = [
         line.strip() for line in src.splitlines()
