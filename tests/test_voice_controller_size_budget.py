@@ -22,9 +22,9 @@ from pathlib import Path
 
 VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 
-# ── 棘輪基準（2026-06-20，抽完 StateProxyMixin 後）──────────────────────────
-LINE_BUDGET = 4330      # 實測 4320；只准降，不准升
-METHOD_BUDGET = 119     # VoiceController 自身定義的 method 數；新功能別在這加 method
+# ── 棘輪基準（2026-06-20，抽完 MusicProxyMixin / ④ 收尾後）──────────────────
+LINE_BUDGET = 4195      # 實測 4188；只准降，不准升
+METHOD_BUDGET = 89      # VoiceController 自身定義的 method 數；新功能別在這加 method
 
 
 def test_voice_controller_line_count_within_budget():
