@@ -29,9 +29,9 @@ MOVED_COMMANDS = [
     "marvin_system",
 ]
 
-# ── 必須留在 VoiceController（核心生命週期 / 控制面）的指令 ────────────────
-STAYS_PUT = ["summon", "dismiss", "marvin_reboot", "marvin_tts_clear",
-             "marvin_optin", "marvin_optout"]
+# ── 必須留在 VoiceController（控制面）的指令 ──────────────────────────────────
+# 註：summon / dismiss 已移至 ConnectionMixin（見 test_connection_mixin.py），不在此清單。
+STAYS_PUT = ["marvin_reboot", "marvin_tts_clear", "marvin_optin", "marvin_optout"]
 
 
 def test_mixin_in_voice_controller_mro():
