@@ -29,6 +29,8 @@ import discord
 from discord import app_commands
 from discord.ext import tasks, voice_recv
 
+from local_mixing_source import BufferedF32MusicSource, S16ToF32MusicSource
+
 logger = logging.getLogger(__name__)
 
 
