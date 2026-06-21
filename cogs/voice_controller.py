@@ -4063,47 +4063,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return mc._recommend_blurb(cand, title, spotlight)
         return ""
 
-    _AUTOPILOT_DJ_PHRASES_PERSONAL = [
-        "這首幫{who}點的，{artist}唱的{title}",
-        "{who}應該喜歡這首，{artist}的{title}",
-        "希望{who}喜歡，{artist}演唱的{title}",
-        "馬文特別為{who}帶來，{artist}的{title}",
-        "這首{title}是給{who}的，{artist}唱的",
-    ]
-    _AUTOPILOT_DJ_PHRASES_PERSONAL_NO_ARTIST = [
-        "這首幫{who}點的，《{title}》",
-        "{who}應該喜歡，《{title}》",
-        "希望{who}喜歡這首，《{title}》",
-        "馬文特別為{who}帶來《{title}》",
-    ]
-    _AUTOPILOT_DJ_PHRASES_GROUP = [
-        "這首大家應該都喜歡，{artist}的{title}",
-        "為大家挑的，{artist}演唱的{title}",
-        "馬文覺得大家都喜歡這首，{artist}的{title}",
-    ]
-    _AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST = [
-        "這首大家應該都喜歡，《{title}》",
-        "馬文為大家挑的，《{title}》",
-    ]
-
-    @staticmethod
-    def _autopilot_dj_phrase(spotlight: str, clean_title: str, clean_artist: str,
-                              lane: str = "") -> str:
-        """為 autopilot 推薦歌曲生成個人化 DJ 台詞。"""
-        import random
-        who = spotlight or "你"
-        is_group = (lane == "group_resonance")
-
-        if is_group:
-            pool = (VoiceController._AUTOPILOT_DJ_PHRASES_GROUP if clean_artist
-                    else VoiceController._AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST)
-        else:
-            pool = (VoiceController._AUTOPILOT_DJ_PHRASES_PERSONAL if clean_artist
-                    else VoiceController._AUTOPILOT_DJ_PHRASES_PERSONAL_NO_ARTIST)
-
-        tmpl = random.choice(pool)
-        return tmpl.format(who=who, title=clean_title, artist=clean_artist)
-
 
 
 

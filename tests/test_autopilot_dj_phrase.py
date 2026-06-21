@@ -14,9 +14,9 @@ from unittest.mock import MagicMock, patch
 
 
 def _make_cog():
-    """最小 VoiceController stub，只為測 _autopilot_dj_phrase。"""
-    from cogs.voice_controller import VoiceController
-    cog = VoiceController.__new__(VoiceController)
+    """最小 MusicCog stub，只為測 _autopilot_dj_phrase（DJ 台詞的正主在 MusicCog）。"""
+    from cogs.music_cog import MusicCog
+    cog = MusicCog.__new__(MusicCog)
     return cog
 
 
@@ -55,6 +55,42 @@ class TestAutopilotDjPhrase:
         result = cog._autopilot_dj_phrase("Alice", "天天", "陶喆", lane="group_resonance")
         assert "Alice" not in result, f"group_resonance 不應點名，got: {result!r}"
         assert "天天" in result or "陶喆" in result
+
+    def test_long_tail_voices_rediscovery_reason(self):
+        """lane='long_tail' → 帶 who+歌名，且唸出『久沒聽／挖回』的重新發現理由。"""
+        cog = _make_cog()
+        result = cog._autopilot_dj_phrase("Alice", "天天", "陶喆", lane="long_tail")
+        assert "Alice" in result, f"long_tail 應點名 spotlight，got: {result!r}"
+        assert "天天" in result, f"long_tail 缺歌名，got: {result!r}"
+        assert any(w in result for w in ("好久", "塵封", "冰", "沒聽", "挖")), \
+            f"long_tail 應唸出重新發現理由，got: {result!r}"
+
+    def test_discovery_voices_new_song_reason(self):
+        """lane='discovery' → 帶 who+歌名，且唸出『新歌／沒聽過』的理由。"""
+        cog = _make_cog()
+        result = cog._autopilot_dj_phrase("Alice", "天天", "陶喆", lane="discovery")
+        assert "Alice" in result, f"discovery 應點名 spotlight，got: {result!r}"
+        assert "天天" in result, f"discovery 缺歌名，got: {result!r}"
+        assert any(w in result for w in ("新", "沒聽過", "挖")), \
+            f"discovery 應唸出新歌理由，got: {result!r}"
+
+    def test_spotlight_cover_voices_anchor_reason(self):
+        """spotlight cover：有 anchor → 唸出『你愛 anchor，給你這個版本』的理由。"""
+        cog = _make_cog()
+        result = cog._autopilot_dj_phrase(
+            "Alice", "夜曲", "周杰倫", lane="spotlight", anchor="七里香")
+        assert "七里香" in result, f"spotlight cover 應唸出 anchor 原曲，got: {result!r}"
+        assert "夜曲" in result, f"spotlight cover 缺 cover 歌名，got: {result!r}"
+        assert "Alice" in result, f"spotlight cover 應點名 spotlight，got: {result!r}"
+
+    def test_anchor_equal_title_falls_back_no_dup(self):
+        """anchor == 歌名（direct lane）→ 不走 anchor 句型，避免同名重複。"""
+        cog = _make_cog()
+        result = cog._autopilot_dj_phrase(
+            "Alice", "天天", "陶喆", lane="spotlight", anchor="天天")
+        # 退回 personal 句型：仍含 who/歌名，但不會出現「愛天天，給你個天天」這種重複
+        assert "Alice" in result and "天天" in result
+        assert result.count("天天") == 1, f"anchor==title 不應重複歌名，got: {result!r}"
 
 
 @pytest.mark.asyncio

@@ -188,6 +188,20 @@ def build_recommendation_pool(
     return result
 
 
+def ring_titles_for(played_title: str, mode: str, anchor_title: str) -> list[str]:
+    """推薦一首後，該寫進 novelty ring 的標題清單。
+
+    direct lane：只記實際播放的標題。
+    cover lane（spotlight）：連 anchor 原曲一起記 — 否則 ring 只擋住 cover 後的
+    標題，anchor 下輪仍可被選中再 cover 成另一個版本，造成「同一首歌反覆出現」的
+    重複感（spotlight 重複根因）。
+    """
+    titles = [played_title] if played_title else []
+    if mode == "cover" and anchor_title and anchor_title != played_title:
+        titles.append(anchor_title)
+    return titles
+
+
 def pick_candidate(
     pool: list[Candidate],
     *,
