@@ -79,6 +79,43 @@
 
 ---
 
+## C. 故事編排：精華 + 日誌融合（2026-06-21 定案）
+
+**比喻**：10 分鐘日誌 = 故事骨幹（arc），精華（爆笑）= 高潮峰值。用時間軸 join。
+
+**路由（`story.choose_format`）**：
+```
+有爆笑精華嗎？
+├─ 沒 → 不出（沒高潮不畫）
+└─ 有：
+   ├─ 豐富（≥6筆context）→ 日漫 4 格
+   └─ 薄 → 一格 meme
+（韓國條漫先 off — 信心不足）
+```
+
+**日漫 4 格故事模板**：
+```
+標題bar（LLM 單話名「今晚精華：足球烏龍」）
+格1 establishing  日誌開場   物件・小・冷
+格2 build         日誌鋪墊   物件・小・冷
+格3+4 ★Hero斜切duo 鋪哏→爆笑（精華拆兩拍：上格setup那人、下格哄堂笑反應）角色・大・熱
+─ 馬文旁白 ─
+```
+- arc 編排（②B）：最強笑點挪到 climax（Hero），前墊 context、後 button 收。
+- Hero 拆兩拍（Ⓐ）：一個精華 → setup 圖 + reaction 圖。
+
+**一格 meme**：滿版爆笑圖 + 上 setup / 下 punchline。Marvin 看反差（`meme_needs_marvin`）：
+- 強反差 → 單飛（不要 Marvin，避免解釋笑話）。
+- 反差中 → Marvin 補刀救援。
+
+**已寫好的純函式**：`story.choose_format` / `story.fuse→StoryPlan` / `story.build_title_prompt` /
+`highlight.contrast_score` / `highlight.meme_needs_marvin` / `layout.compose_meme`。
+
+**render 端待接（要 API，等額度）**：
+1. `render_story(plan)`：StoryPlan → 出圖（Hero duo=setup+reaction 兩張、context=物件、或 meme 單張）+ 清理 punchline + 生標題/馬文 + 標題bar 拼版。
+2. 接進 poster（取代純日誌路徑）。
+3. populate `panel.inset`（笑點反應特寫，選配）。
+
 ## 來源
 - Komawari basics — globalcomix.com/news/details/254
 - Pro paneling guide — clipstudio.net/how-to-draw/archives/160963
