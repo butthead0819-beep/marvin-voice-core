@@ -1,34 +1,47 @@
-"""攝影分鏡：每格指定鏡頭角度，讓整頁有張力起伏（不再每格平視中景）。
+"""攝影分鏡：每格指定鏡頭，走「遠景→中景→特寫」三距離節奏，避免每格證件照。
 
-- 第一格：建立鏡頭（wide establishing）→ 交代場景。
-- 英雄格（punchline）：戲劇性低角度仰拍 → 全頁的張力高點。
-- 中段：在多種鏡頭間輪替（特寫/俯視/過肩/傾斜/景深），避免單調。
+節奏（Jack 2026-06-21）：
+- 遠景 Wide：交代環境/空間（每頁第一格）。
+- 中景 Medium：角色動作、肢體語言、互動。
+- 特寫 Close-up：放大眼神/嘴角/關鍵道具，傳達強烈情緒。
+三者交替（不連三同距），英雄格用特寫推情緒高潮。
 """
 from __future__ import annotations
 
-# 中段鏡頭池（輪替用）—— 刻意混角度與景別製造節奏
-_SHOTS = (
-    "tight close-up on the characters' faces, shallow depth of field, emotional",
-    "high angle looking down on the whole group",
-    "over-the-shoulder shot, strong foreground framing",
-    "dynamic dutch tilt, energetic and off-kilter",
-    "wide shot with strong foreground-to-background depth",
-    "side profile two-shot, cinematic framing",
-    "extreme close-up on one character's eyes/mouth, intense and intimate",
+_WIDE = (
+    "wide establishing shot showing the whole room and environment, sense of space",
+    "wide shot with strong foreground-to-background depth, sense of place",
+)
+_MEDIUM = (
+    "medium shot showing the characters' actions and body language",
+    "medium two-shot, characters interacting, gestures and posture visible",
+    "over-the-shoulder medium shot, foreground framing",
     "backlit silhouette shot, dramatic rim light, mood",
-    "low angle hero shot with the character bursting toward the viewer",
+)
+_CLOSEUP = (
+    "close-up on a character's face — eyes and mouth, strong emotion",
+    "extreme close-up on the eyes or a key prop, intense and intimate",
+    "close-up reaction shot, exaggerated expression",
 )
 
-_ESTABLISH = "wide establishing shot, slightly low angle, sets the whole scene"
-_HERO = ("dramatic low angle looking up at the key character, dynamic cinematic composition, "
-         "the character large and powerful BURSTING out of the frame toward the viewer, "
-         "high tension, broken-border energy")
+# 給舊測試 / 相容用的全鏡頭池（shot_for 實際用下方節奏）
+_SHOTS = _WIDE + _MEDIUM + _CLOSEUP
+
+_ESTABLISH = _WIDE[0]
+_HERO = ("dramatic close-up on the key character's face, low angle, intense emotion, "
+         "exaggerated reaction bursting out of the frame, high tension, broken-border energy")
+
+# 距離節奏：第一格遠景後，中↔特來回跳、定期回遠景 re-establish（不連三同距）
+_RHYTHM = ("wide", "medium", "closeup", "medium", "closeup")
+_POOLS = {"wide": _WIDE, "medium": _MEDIUM, "closeup": _CLOSEUP}
 
 
 def shot_for(index: int, total: int, is_hero: bool) -> str:
-    """回傳該格的鏡頭指示字串。英雄格最戲劇、第一格建立、其餘輪替。"""
+    """回傳該格鏡頭。英雄格=情緒特寫；第一格=遠景；其餘走遠/中/特節奏。"""
     if is_hero:
         return _HERO
     if index == 0:
         return _ESTABLISH
-    return _SHOTS[(index - 1) % len(_SHOTS)]
+    kind = _RHYTHM[index % len(_RHYTHM)]
+    pool = _POOLS[kind]
+    return pool[index % len(pool)]

@@ -32,3 +32,32 @@ def test_shot_pool_has_extreme_closeup_and_silhouette():
 def test_shot_for_varies_widely_in_long_page():
     shots = {shot_for(i, total=8, is_hero=False) for i in range(1, 8)}
     assert len(shots) >= 5  # 8 格頁鏡頭要夠多變
+
+
+# ---- 三距離節奏：遠景/中景/特寫交替，避免每格證件照 ----
+def _distance(shot):
+    s = shot.lower()
+    if "wide" in s or "establish" in s:
+        return "W"
+    if "close" in s:
+        return "C"
+    return "M"
+
+
+def test_first_panel_is_wide_establishing():
+    assert _distance(shot_for(0, 6, is_hero=False)) == "W"  # 第一格遠景交代環境
+
+
+def test_rhythm_no_three_same_distance_in_a_row():
+    ds = [_distance(shot_for(i, 8, is_hero=False)) for i in range(8)]
+    assert not any(ds[i] == ds[i + 1] == ds[i + 2] for i in range(len(ds) - 2))  # 不連三同距
+    assert len(set(ds)) >= 2  # 至少兩種距離（不全證件照）
+
+
+def test_rhythm_uses_all_three_distances_over_a_page():
+    ds = {_distance(shot_for(i, 8, is_hero=False)) for i in range(8)}
+    assert ds == {"W", "M", "C"}  # 遠中特都用到
+
+
+def test_hero_is_emotional_closeup():
+    assert "close" in shot_for(2, 5, is_hero=True).lower()  # 高潮用特寫傳達情緒

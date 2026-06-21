@@ -24,11 +24,13 @@
 - ✅ 已做：只有 Hero 斜切（`hero_split_polys` / `compose_page_hero`）。
 - ⚠️ 待改 #2：Hero 角色可破格衝出。
 
-### 4. 鏡頭變化
-- 正面/斜/側/背 × 特寫/遠景/俯視/仰視；rule of thirds（主體偏離中心）。
-- 極特寫 = 親密；遠景 = 交代場景。
-- ✅ 已做：`camera.py::shot_for`（第一格 establishing、Hero 低角度仰拍、中段輪替）。
-- ⚠️ 待改 #4：擴鏡頭詞彙（極特寫反應、silhouette、broken-frame）。
+### 4. 鏡頭變化 — 三距離節奏（避免每格證件照）
+- **遠景 Wide**：交代環境/空間（每頁第一格）。
+- **中景 Medium**：角色動作、肢體語言、互動。
+- **特寫 Close-up**：放大眼神/嘴角/道具，傳達強烈情緒。
+- 三者**交替**（不連三同距），高潮用特寫推情緒。rule of thirds、極特寫=親密、遠景=場景。
+- ✅ 已做：`camera.py::shot_for` 走 `_RHYTHM`（遠→中↔特，定期回遠 re-establish）；
+  Hero=情緒特寫；池 `_WIDE`/`_MEDIUM`/`_CLOSEUP`（含 extreme close-up、silhouette、broken-frame）。
 
 ### 5. 對白氣泡
 - **鐵則：絕不蓋臉、不蓋關鍵動作 / 細節**。
