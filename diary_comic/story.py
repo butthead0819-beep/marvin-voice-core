@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from diary_comic.parser import DiaryEntry
+from diary_comic.parser import DiaryEntry, dedupe_adjacent
 from diary_comic.highlight import (
     Highlight, highlight_to_entry, meme_needs_marvin, _setup_text)
 
@@ -32,10 +32,15 @@ MIN_CONTEXT = 6  # ≥ 這麼多筆 → 漫畫；否則 meme
 
 
 def choose_format(diary_session, highlights) -> str | None:
-    """meme / slant / None。沒精華→None（不出）；豐富→slant；薄→meme。"""
+    """meme / slant / None。沒精華→None；豐富→slant；薄→meme。
+
+    省錢：用**話題變化數**（去掉沒變化的跳針條目）判豐富，不是原始筆數。
+    整小時聊同一件事 → 去重後變薄 → 降級 meme（1 圖）不出 slant（多圖）。
+    """
     if not highlights:
         return None
-    return "slant" if len(diary_session) >= MIN_CONTEXT else "meme"
+    varied = dedupe_adjacent(diary_session)  # 沒話題變化的不計入
+    return "slant" if len(varied) >= MIN_CONTEXT else "meme"
 
 
 @dataclass
@@ -68,7 +73,7 @@ def fuse(diary_session, highlights, *, max_context: int = 2) -> StoryPlan | None
     setup = highlight_to_entry(peak, core=_setup_text(peak)[:40] or "（鋪哏場景）")
     reaction = DiaryEntry(ts_str=setup.ts_str, core="全場哄堂大笑、爆笑反應",
                           speakers=setup.speakers, aside=peak.laugh_text)
-    context = list(diary_session)[:max_context]  # 開場+鋪墊
+    context = dedupe_adjacent(diary_session)[:max_context]  # 開場+鋪墊（去跳針）
     return StoryPlan(format="slant", highlight=peak, context=context,
                      peak_setup=setup, peak_reaction=reaction)
 

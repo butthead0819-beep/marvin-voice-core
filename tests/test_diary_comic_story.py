@@ -120,3 +120,18 @@ def test_template_heights_cover_all_ids_and_sum_to_one():
     for tid in set(_PUNCHY) | set(_STEADY):
         assert tid in TEMPLATE_HEIGHTS, f"{tid} 缺列高"
         assert abs(sum(TEMPLATE_HEIGHTS[tid]) - 1.0) < 1e-9  # 比例總和=1（鎖滿整頁）
+
+
+def test_choose_format_repetitive_session_downgrades_to_meme():
+    # 8 筆但全程同一話題（沒變化）→ 去重剩 1 → 不夠 slant → meme（省錢）
+    samey = [DiaryEntry(ts_str=f"2026-06-20 22:{i*5:02d}:00", core="一直聊同一件裝潢的事",
+                        speakers=["狗與露", "showay"]) for i in range(8)]
+    assert choose_format(samey, [_hl(8, ["x"])]) == "meme"
+
+
+def test_fuse_context_drops_repetitive_entries():
+    samey = [DiaryEntry(ts_str=f"2026-06-20 22:{i*5:02d}:00", core="重複話題",
+                        speakers=["a", "b"]) for i in range(8)]
+    plan = fuse(samey, [_hl(8, ["x"])])
+    cores = [e.core for e in plan.context]
+    assert len(cores) == len(set(cores))  # context 不含重複話題
