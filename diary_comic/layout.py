@@ -61,6 +61,17 @@ def split_lr_specs(ratio=0.30, captions=None, heats=None):
             CropSpec(box=(ratio, 0.0, 1.0, 1.0), caption=caps[1], heat=hs[1])]
 
 
+def zoom_wide_specs(focus_box, captions=None, heats=None):
+    """格1 焦點+全景（B 打法）：左=某角色放大特寫 focus_box、右=全景。
+
+    左格放大「講笑話的那個人」當情緒錨點，右格給全場脈絡。左格放大需 2K 源才不糊。
+    """
+    caps = captions or ["", ""]
+    hs = heats or [4, 3]
+    return [CropSpec(box=tuple(focus_box), caption=caps[0], heat=hs[0]),
+            CropSpec(box=(0.0, 0.0, 1.0, 1.0), caption=caps[1], heat=hs[1])]
+
+
 def pushin_specs(captions=None, heats=None):
     """標準遠→中→特推鏡三框（一路推緊，置中偏 rule-of-thirds）。"""
     boxes = [(0.0, 0.0, 1.0, 1.0),            # 遠景：全場

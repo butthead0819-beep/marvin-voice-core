@@ -30,11 +30,11 @@
 - ⚠️ 裁愈緊愈糊：768px nano 裁特寫(245px)會糊 → **特寫一定要 2K 素材**（中景 65% 還 OK）。
 - ✅ 已做：`crops_from_source(src, specs)` / `split_lr_specs(ratio)`（遠景精準對切左右）/ `pushin_specs()`。
 
-**定案結構（Jack）：格1 遠景同源切左右(30/70) + 格2 中景 + 格3 Hero斜切duo**
-- 格1 用 `split_lr_specs` + `pair` row：左[0,r]右[r,1] **精準對切、零重疊**（左寬+右寬=原寬）。
-- ⚠️ **源圖 prompt 必須構圖成「左主體 + 右主體」**（一個落左 ratio、一個落右），切下去才兩主體不重複。
-  例：`wide establishing two-shot, character A on the far left third, character B group on the right, clear gap in between`。
-- ⚠️ 待接：render_story `_render_slant` 改 pair+中景+duo（等額度，需 2K 出圖）。
+**定案結構（Jack）：格1 焦點+全景 + 格2 中景 + 格3 Hero斜切duo**
+- **格1 = B 打法 `zoom_wide_specs`**（定案）：左=講者放大特寫(焦點)、右=全景(脈絡)，`pair` row（左窄右寬）。
+  左格放大「**講笑話的那個人**」當情緒錨點。⚠️ 左格放大需 **2K 源**才不糊。
+- 備案 A `split_lr_specs`：左右**精準對切兩個不同主體**（零重疊）；源圖需構圖成「左主體+右主體」。B 預設、A 看情況。
+- ⚠️ 待接：render_story `_render_slant` 改 `zoom_wide(格1) + 中景(格2) + duo(格3)`（等額度，需 2K 出圖）。
 
 ### 4. 鏡頭變化 — 三距離節奏（避免每格證件照）
 - **遠景 Wide**：交代環境/空間（每頁第一格）。

@@ -385,3 +385,19 @@ def test_split_lr_no_duplicate_content():
     left, right = split_lr_specs(0.30)
     lp, rp = crops_from_source(src, [left, right])
     assert lp.image.size[0] + rp.image.size[0] == 1000  # 兩格寬相加=原寬，無重疊
+
+
+# ---- 格1 焦點+全景（B 打法）----
+def test_zoom_wide_specs_left_zoom_right_full():
+    from diary_comic.layout import zoom_wide_specs
+    zoom, full = zoom_wide_specs(focus_box=(0.34, 0.02, 0.66, 0.52))
+    assert full.box == (0.0, 0.0, 1.0, 1.0)              # 右=全景
+    assert zoom.box == (0.34, 0.02, 0.66, 0.52)          # 左=焦點放大
+    za = (zoom.box[2] - zoom.box[0]) * (zoom.box[3] - zoom.box[1])
+    assert za < 1.0                                       # 焦點是局部、不是全圖
+
+
+def test_zoom_wide_specs_carries_captions():
+    from diary_comic.layout import zoom_wide_specs
+    z, w = zoom_wide_specs((0.3, 0.0, 0.6, 0.5), captions=["講者", "全場"])
+    assert z.caption == "講者" and w.caption == "全場"
