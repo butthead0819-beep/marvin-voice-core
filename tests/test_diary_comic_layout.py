@@ -357,3 +357,14 @@ def test_pushin_specs_three_progressively_tighter():
     assert len(specs) == 3  # 遠→中→特
     areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in (s.box for s in specs)]
     assert areas[0] > areas[1] > areas[2]  # 一路推緊
+
+
+# ---- pair row：遠景同源切左右不對等兩格 ----
+def test_compose_page_hero_pair_row_returns_size():
+    from diary_comic.layout import compose_page_hero
+    left = Panel(image=Image.new("RGB", (60, 60)), heat=3, caption="左")
+    right = Panel(image=Image.new("RGB", (60, 60)), heat=4, caption="右")
+    mid = Panel(image=Image.new("RGB", (60, 60)), heat=5, caption="中景")
+    rows = [("pair", left, right, 0.30), ("single", mid)]
+    page = compose_page_hero(rows, (1080, 1920))
+    assert isinstance(page, Image.Image) and page.size == (1080, 1920)

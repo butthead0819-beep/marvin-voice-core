@@ -471,6 +471,19 @@ def compose_page_hero(rows, page_size=(1080, 1920), tilt=0.12):
             draw.rectangle([x0, y0, x1, y1], outline=(20, 20, 20), width=5)
             if panel.caption:
                 _edge_caption(draw, page, x0, x1, y1, panel.caption, font, "bottom")
+        elif row[0] == "pair":  # 遠景同源切左右不對等兩格（窄垂直格線，鐵律）
+            left_p, right_p = row[1], row[2]
+            ratio = row[3] if len(row) > 3 else 0.3
+            vg = max(3, int(min(W, H) * 0.008))  # 垂直格線：窄
+            split = int(x0 + (x1 - x0) * ratio)
+            for px0, px1, panel in ((x0, split - vg // 2, left_p),
+                                    (split + vg // 2, x1, right_p)):
+                if px1 <= px0:
+                    continue
+                page.paste(cover_fit(panel.image, px1 - px0, y1 - y0), (px0, y0))
+                draw.rectangle([px0, y0, px1, y1], outline=(20, 20, 20), width=5)
+                if panel.caption:
+                    _edge_caption(draw, page, px0, px1, y1, panel.caption, font, "bottom")
         else:  # duo：矩形內斜切上下兩格
             up_p, lo_p = row[1], row[2]
             upper, lower = hero_split_polys(x0, y0, x1, y1, tilt)
