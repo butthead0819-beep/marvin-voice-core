@@ -113,3 +113,10 @@ def test_choose_template_normal_uses_steady_pool_rotating():
     plan = fuse(_diary(8), [_hl(3, ["還好啦"], laugh="哈哈哈")])
     assert choose_template(plan, day_index=0) == "T1"  # 穩池
     assert choose_template(plan, day_index=1) == "T3"  # 層內輪
+
+
+def test_template_heights_cover_all_ids_and_sum_to_one():
+    from diary_comic.story import TEMPLATE_HEIGHTS, _PUNCHY, _STEADY
+    for tid in set(_PUNCHY) | set(_STEADY):
+        assert tid in TEMPLATE_HEIGHTS, f"{tid} 缺列高"
+        assert abs(sum(TEMPLATE_HEIGHTS[tid]) - 1.0) < 1e-9  # 比例總和=1（鎖滿整頁）

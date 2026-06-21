@@ -20,6 +20,14 @@ from diary_comic.highlight import (
 _PUNCHY = ("T2", "T4")  # 夠強：T2 頂爆鉤子 / T4 中央爆+余韵
 _STEADY = ("T1", "T3")  # 普通：T1 建勢底爆 / T3 純方正三拍
 
+# 每樣板的列高比例（手調，鎖整頁 9:16，讓每格長寬比不過扁；總和=1）
+TEMPLATE_HEIGHTS = {
+    "T1": [0.27, 0.31, 0.42],  # pair / 中景 / Hero
+    "T2": [0.42, 0.31, 0.27],  # Hero / 中景 / pair
+    "T3": [0.28, 0.30, 0.42],  # 遠景 / 中景 / Hero
+    "T4": [0.26, 0.42, 0.32],  # 遠景 / Hero / pair(反應)
+}
+
 MIN_CONTEXT = 6  # ≥ 這麼多筆 → 漫畫；否則 meme
 
 

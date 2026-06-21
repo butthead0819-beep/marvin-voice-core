@@ -463,10 +463,11 @@ def compose_page_webtoon(panels, page_width=1080, gutter=70, base_h=780, side=36
     return page
 
 
-def compose_page_hero(rows, page_size=(1080, 1920), tilt=0.12):
+def compose_page_hero(rows, page_size=(1080, 1920), tilt=0.12, heights=None):
     """矩形垂直堆疊；Hero 列內部對角斜切成上下兩格。字幕走上下緣邊條（簡化）。
 
-    rows: 每列為 ("single", Panel) 或 ("duo", Panel_上, Panel_下)。高度依 heat。
+    rows: 每列為 ("single"/"pair"/"vpair"/"quad"/"duo", Panel...)。
+    heights: 每列高度比例（手調，總和~1）。給了就用它（鎖長寬比）；否則依 heat。
     """
     W, H = page_size
     page = Image.new("RGB", (W, H), (250, 248, 244))
@@ -474,12 +475,16 @@ def compose_page_hero(rows, page_size=(1080, 1920), tilt=0.12):
     font = _load_font(max(14, int(min(W, H) * 0.030)))
     g = max(4, int(min(W, H) * 0.012))
 
-    weights = [sum(x.heat for x in r[1:] if isinstance(x, Panel)) or 1 for r in rows]
-    total = sum(max(w, 1) for w in weights)
+    if heights is not None:
+        fracs = list(heights)
+    else:
+        weights = [sum(x.heat for x in r[1:] if isinstance(x, Panel)) or 1 for r in rows]
+        total = sum(max(w, 1) for w in weights)
+        fracs = [max(w, 1) / total for w in weights]
     y = 0.0
     bounds = [0]
-    for w in weights:
-        y += max(w, 1) / total
+    for fr in fracs:
+        y += fr
         bounds.append(int(y * H))
     bounds[-1] = H
 

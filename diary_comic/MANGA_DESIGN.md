@@ -131,7 +131,9 @@
 | T3 純方正三拍 | 遠景 → 中景 → **duo** | 底 | 鋪陳全方正、冷熱對比最強（沉穩） |
 | T4 中央爆+余韵 | 遠景 → **duo** → pair(反應A\|反應B) | 中 | 爆點夾中、底部余韵收尾（後勁） |
 - **挑版邏輯**：內容分層 → 層內日期輪。夠強(不需馬文救援)→衝池 `(T2,T4)`；普通→穩池 `(T1,T3)`；`day_index%2` 層內輪。
-- ✅ 已做：`choose_template`（回 id）。⚠️ 待接：`_render_slant` 依 id 組對應 row（T4 需多生兩張反應圖）。
+- **長寬比鎖定（Jack 2026-06-21）**：整頁 9:16，列高用**手調比例** `story.TEMPLATE_HEIGHTS`（非 heat 驅動，避免低 heat 格被壓成 5:1 letterbox）。
+  `compose_page_hero(rows, heights=...)`；實測每格 0.68~2.2:1（角色格直/方、場景格橫、Hero 4:3 大塊）。
+- ✅ 已做：`choose_template`（回 id）+ `TEMPLATE_HEIGHTS`（手調列高）。⚠️ 待接：`_render_slant` 依 id 組對應 row + 傳 heights（T4 需多生兩張反應圖）。
 
 **一格 meme**：滿版爆笑圖 + 上 setup / 下 punchline。Marvin 看反差（`meme_needs_marvin`）：
 - 強反差 → 單飛（不要 Marvin，避免解釋笑話）。
