@@ -14,6 +14,27 @@ from diary_comic.layout import (
 )
 
 
+def template_rows(template_id, parts):
+    """樣板 id + 各格 Panel（parts dict）→ compose_page_hero 的 row 結構。
+
+    parts 角色：focus_zoom/wide(格1)、mid(格2)、setup/react(Hero)、after_a/after_b(T4余韵)。
+    配 story.TEMPLATE_HEIGHTS[id] 一起餵 compose_page_hero。
+    """
+    p = parts
+    if template_id == "T2":  # 頂爆倒敘：Hero頂 → 中景 → 全景|焦點
+        return [("duo", p["setup"], p["react"]), ("single", p["mid"]),
+                ("pair", p["wide"], p["focus_zoom"], 0.68)]
+    if template_id == "T3":  # 純方正三拍：遠景 → 中景 → Hero底
+        return [("single", p["wide"]), ("single", p["mid"]),
+                ("duo", p["setup"], p["react"])]
+    if template_id == "T4":  # 中央爆+余韵：遠景 → Hero中 → 反應A|反應B
+        return [("single", p["wide"]), ("duo", p["setup"], p["react"]),
+                ("pair", p["after_a"], p["after_b"], 0.5)]
+    # T1（預設）建勢底爆：焦點|全景 → 中景 → Hero底
+    return [("pair", p["focus_zoom"], p["wide"], 0.32), ("single", p["mid"]),
+            ("duo", p["setup"], p["react"])]
+
+
 def render_session(session, *, img_fn=None, text_fn=None, cache_dir=None,
                    page_size=(1080, 1920), variant="nano", force_layout=None):
     """把一個場次畫成一頁。回傳 (PIL.Image, layout, marvin_line)。
@@ -70,7 +91,7 @@ def render_session(session, *, img_fn=None, text_fn=None, cache_dir=None,
 
 
 def render_story(plan, *, img_fn=None, text_fn=None, cache_dir=None,
-                 page_size=(1080, 1920), variant="nano"):
+                 page_size=(1080, 1920), variant="nano", day_index=0):
     """StoryPlan → 漫畫頁。出圖/清理/標題用注入式 img_fn/text_fn（None→佔位/fallback）。
 
     回 None = 不出。骨架已串好；等 API 額度回來，img_fn/text_fn 餵真的就生效。
@@ -79,7 +100,7 @@ def render_story(plan, *, img_fn=None, text_fn=None, cache_dir=None,
         return None
     if plan.format == "meme":
         return _render_meme(plan, img_fn, text_fn, cache_dir, variant)
-    return _render_slant(plan, img_fn, text_fn, cache_dir, page_size, variant)
+    return _render_slant(plan, img_fn, text_fn, cache_dir, page_size, variant, day_index)
 
 
 def _render_meme(plan, img_fn, text_fn, cache_dir, variant):
@@ -102,38 +123,68 @@ def _render_meme(plan, img_fn, text_fn, cache_dir, variant):
     return compose_meme(img, top=top, bottom=bottom, size=(1080, 1080))
 
 
-def _render_slant(plan, img_fn, text_fn, cache_dir, page_size, variant):
-    """高潮 = Hero 斜切 duo（上鋪哏、下爆笑兩格斜切），heat 高 → 自動主導 ≥40%。
-    鋪陳 = 物件 context 方正小格（在上）。"""
+def _render_slant(plan, img_fn, text_fn, cache_dir, page_size, variant, day_index=0):
+    """整套：choose_template → 故事導演 beats → template_rows → 手調 heights。
+
+    高潮 = Hero 斜切 duo（heat 高自動主導 ≥40%）；格1 焦點+全景同源裁切；T4 多余韵。
+    """
+    from diary_comic.parser import DiaryEntry
     from diary_comic.highlight import clean_highlight
-    from diary_comic.layout import Panel, compose_page_hero, with_title
-    from diary_comic.story import build_title_prompt
-    # 鋪陳：物件 context 小格（方正、為高潮鋪陳）
-    ctx = []
-    for i, e in enumerate(plan.context):
-        img = generate_panel_cached(
-            e, generate_image_fn=img_fn, aspect="16:9", cache_dir=cache_dir, variant=variant,
-            shot=shot_for(i, len(plan.context) + 2, is_hero=False), object_only=True)
-        ctx.append(Panel(image=img, heat=heat_score(e), caption=e.core))
-    # Hero 斜切 duo：上=鋪哏(中景) / 下=爆笑(情緒特寫)，角色，高 heat → 主導大格
-    setup_img = generate_panel_cached(
-        plan.peak_setup, generate_image_fn=img_fn, aspect="16:9", cache_dir=cache_dir,
-        variant=variant, shot="medium shot, the character delivering the funny line deadpan")
-    react_img = generate_panel_cached(
-        plan.peak_reaction, generate_image_fn=img_fn, aspect="16:9", cache_dir=cache_dir,
-        variant=variant,
-        shot="dramatic close-up on the whole group bursting out laughing, intense emotion, "
-             "exaggerated faces, broken-border energy")
-    punch = clean_highlight(plan.highlight, generate_fn=text_fn)
-    setup_panel = Panel(image=setup_img, heat=9, caption=plan.peak_setup.core)
-    react_panel = Panel(image=react_img, heat=10, caption=punch)
-    rows = [("single", p) for p in ctx] + [("duo", setup_panel, react_panel)]
-    page = compose_page_hero(rows, page_size)
-    title = ""
+    from diary_comic.layout import (Panel, crops_from_source, zoom_wide_specs,
+                                    split_lr_specs, compose_page_hero, with_title)
+    from diary_comic.story import (choose_template, build_story_prompt, parse_story,
+                                   build_title_prompt, TEMPLATE_HEIGHTS)
+    tid = choose_template(plan, day_index=day_index) or "T1"
+
+    # 故事導演：短窗 STT + 場景脈絡 → beats（text_fn None → 空殼，走 fallback）
+    scene_context = "；".join(e.core for e in plan.context)
+    story = {"beats": [], "title": ""}
     if text_fn is not None:
         try:
-            title = (text_fn(*build_title_prompt(
-                [e.core for e in plan.context] + [punch])) or "").strip()
+            story = parse_story(text_fn(*build_story_prompt(plan.highlight, scene_context, tid)))
+        except Exception:
+            pass
+    beats = {b.get("role"): b for b in story.get("beats", []) if isinstance(b, dict)}
+    sc = lambda role, fb: (beats.get(role, {}).get("scene") or fb)
+    cp = lambda role, fb="": (beats.get(role, {}).get("caption") or fb)
+
+    base = plan.peak_setup
+
+    def gen(scene, aspect, shot):
+        e = DiaryEntry(ts_str=base.ts_str, core=scene, speakers=base.speakers)
+        return generate_panel_cached(e, generate_image_fn=img_fn, aspect=aspect,
+                                     cache_dir=cache_dir, variant=variant, shot=shot)
+
+    punch = cp("punchline", clean_highlight(plan.highlight, generate_fn=text_fn) or "全場爆笑")
+    parts = {}
+    # 格1 establish 源（2K 為裁切）→ 焦點 + 全景（一張裁兩格）
+    estab = gen(sc("establish", scene_context or "大家聚在一起聊天"), "3:2",
+                "wide establishing two-shot, one character on the far left, the group on the right")
+    parts["focus_zoom"], parts["wide"] = crops_from_source(estab, zoom_wide_specs(
+        (0.34, 0.02, 0.66, 0.52), captions=["", cp("establish")], heats=[4, 3]))
+    # Hero 斜切 duo：setup 中景 + react 情緒特寫
+    parts["setup"] = Panel(image=gen(sc("setup", base.core), "16:9",
+        "medium shot, the character delivering the funny line deadpan"),
+        heat=9, caption=cp("setup", base.core))
+    parts["react"] = Panel(image=gen(sc("punchline", "全場哄堂大笑"), "16:9",
+        "dramatic close-up on the whole group bursting out laughing, intense emotion, "
+        "exaggerated faces, broken-border energy"), heat=11, caption=punch)
+    if tid != "T4":  # 格2 中景（T4 不用，省一張）
+        parts["mid"] = Panel(image=gen(sc("develop", base.core), "16:9",
+            "medium shot showing the characters' actions and body language"),
+            heat=5, caption=cp("develop"))
+    else:            # T4 余韵：一張裁左右兩反應
+        asrc = gen(sc("aftermath", "笑完之後的余韵反應"), "3:2",
+                   "two reaction close-ups, characters still amused")
+        parts["after_a"], parts["after_b"] = crops_from_source(asrc, split_lr_specs(
+            0.5, captions=[cp("aftermath"), ""], heats=[4, 4]))
+
+    rows = template_rows(tid, parts)
+    page = compose_page_hero(rows, page_size, heights=TEMPLATE_HEIGHTS.get(tid))
+    title = story.get("title") or ""
+    if not title and text_fn is not None:
+        try:
+            title = (text_fn(*build_title_prompt([scene_context, punch])) or "").strip()
         except Exception:
             title = ""
     return with_title(page, title)

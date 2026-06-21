@@ -151,10 +151,12 @@
 `build_meme_prompt` / `build_title_prompt` / `choose_template`+`TEMPLATE_HEIGHTS` /
 `highlight.contrast_score` / `meme_needs_marvin` / `layout.compose_*`。
 
-**render 端待接（要 API，等額度）**：
-1. `render_story(plan)`：StoryPlan → 出圖（Hero duo=setup+reaction 兩張、context=物件、或 meme 單張）+ 清理 punchline + 生標題/馬文 + 標題bar 拼版。
-2. 接進 poster（取代純日誌路徑）。
-3. populate `panel.inset`（笑點反應特寫，選配）。
+**render 端（✅ 已串好整套，端到端用假 fn 驗過；等 API 餵真的就生效）**：
+`render_story(plan, img_fn, text_fn, day_index)` →
+`choose_template` → `build_story_prompt`→`parse_story`(beats) → 依 beats 出圖
+（establish 源裁焦點+全景、setup/punchline=Hero duo、develop=中景、T4 aftermath 裁兩反應）
+→ `template_rows(tid, parts)` → `compose_page_hero(rows, heights=TEMPLATE_HEIGHTS[tid])` → 標題bar。
+**待接**：① 接進 poster（取代純日誌路徑）② img_fn 餵 2K(`gemini-3-pro-image`)、text_fn 餵真 LLM + PaidUsageGuard ③ 視覺驗收 ④ inset 反應特寫（選配）。
 
 ## D. 下個月接線清單（額度回來照這個接）
 

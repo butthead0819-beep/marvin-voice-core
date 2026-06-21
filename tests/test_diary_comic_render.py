@@ -85,3 +85,57 @@ def test_render_story_slant_returns_image_with_title():
 def test_render_story_none_plan_returns_none():
     from diary_comic.render import render_story
     assert render_story(None, img_fn=_fake_img, text_fn=_fake_text) is None
+
+
+# ---- template_rows：樣板 id + 各格 Panel → row 結構 ----
+from diary_comic.render import template_rows
+from diary_comic.layout import Panel as _Panel
+
+
+def _parts():
+    mk = lambda c: _Panel(image=Image.new("RGB", (40, 40)), heat=3, caption=c)
+    return {"focus_zoom": mk("焦點"), "wide": mk("全景"), "mid": mk("中景"),
+            "setup": mk("鋪哏"), "react": mk("爆笑"),
+            "after_a": mk("反應A"), "after_b": mk("反應B")}
+
+
+def test_template_rows_t1_pair_then_duo():
+    rows = template_rows("T1", _parts())
+    assert rows[0][0] == "pair" and rows[-1][0] == "duo"  # 焦點+全景 → … → Hero底
+
+
+def test_template_rows_t2_hero_on_top():
+    rows = template_rows("T2", _parts())
+    assert rows[0][0] == "duo"  # 頂爆
+
+
+def test_template_rows_t3_all_single_then_duo():
+    rows = template_rows("T3", _parts())
+    assert rows[0][0] == "single" and rows[1][0] == "single" and rows[2][0] == "duo"
+
+
+def test_template_rows_t4_aftermath_pair_last():
+    rows = template_rows("T4", _parts())
+    assert rows[1][0] == "duo" and rows[-1][0] == "pair"  # 中央爆 + 底部余韵並排
+
+
+def test_template_rows_every_template_includes_hero_duo():
+    for tid in ("T1", "T2", "T3", "T4"):
+        rows = template_rows(tid, _parts())
+        assert any(r[0] == "duo" for r in rows)  # 每版都有 Hero
+
+
+def test_render_story_slant_rotates_templates_without_error():
+    from diary_comic.render import render_story
+    plan = fuse(_diary2(8), [_hl2(11, ["一本正經分析", "把球踢進自家球門"])])  # strong→punchy
+    assert plan.format == "slant"
+    for di in range(2):  # day0/day1 → 不同樣板都要能出
+        page = render_story(plan, img_fn=_fake_img, text_fn=_fake_text, day_index=di)
+        assert isinstance(page, Image.Image)
+
+
+def test_render_story_slant_no_text_fn_still_renders():
+    from diary_comic.render import render_story
+    plan = fuse(_diary2(8), [_hl2(9, ["他把球踢進自家球門"])])
+    page = render_story(plan, img_fn=_fake_img, text_fn=None)  # 無故事 → fallback
+    assert isinstance(page, Image.Image)
