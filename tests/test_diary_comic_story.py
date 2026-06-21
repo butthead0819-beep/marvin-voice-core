@@ -54,3 +54,40 @@ def test_fuse_meme_mild_contrast_flags_marvin():
 def test_build_title_prompt_carries_context():
     s, u = build_title_prompt(["足球烏龍", "擴大機"])
     assert "足球烏龍" in u and s
+
+
+# ---- meme 文字框架：模板菜單 + slot ----
+from diary_comic.story import build_meme_prompt, parse_meme_text
+
+
+def test_build_meme_prompt_has_template_menu_and_moment():
+    s, u = build_meme_prompt(_hl(9, ["他把球踢進自家球門"]), with_marvin=False)
+    assert "鋪哏" in s and "期待" in s and "金句" in s  # 模板菜單在
+    assert "把球踢進自家球門" in u                       # moment 在
+
+
+def test_build_meme_prompt_marvin_flag_changes_rule():
+    h = _hl(9, ["x"])
+    s_no, _ = build_meme_prompt(h, with_marvin=False)
+    s_yes, _ = build_meme_prompt(h, with_marvin=True)
+    assert s_no != s_yes  # 強反差單飛 vs 反差中救援，指令不同
+    assert "馬文" in s_yes and "馬文" not in s_no
+
+
+def test_parse_meme_text_from_json():
+    top, bottom = parse_meme_text('{"top":"以為在分析戰術","bottom":"結果踢進自家球門"}')
+    assert top == "以為在分析戰術" and bottom == "結果踢進自家球門"
+
+
+def test_parse_meme_text_json_in_fence():
+    top, _ = parse_meme_text('```json\n{"top":"金句","bottom":""}\n```')
+    assert top == "金句"
+
+
+def test_parse_meme_text_plain_fallback():
+    top, bottom = parse_meme_text("就是好笑")
+    assert top and bottom == ""  # 非 JSON → 整段當 top，不爆
+
+
+def test_parse_meme_text_empty():
+    assert parse_meme_text("") == ("", "")

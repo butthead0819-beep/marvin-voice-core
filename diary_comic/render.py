@@ -83,17 +83,22 @@ def render_story(plan, *, img_fn=None, text_fn=None, cache_dir=None,
 
 
 def _render_meme(plan, img_fn, text_fn, cache_dir, variant):
-    from diary_comic.highlight import highlight_to_entry, clean_highlight
+    from diary_comic.highlight import highlight_to_entry
     from diary_comic.layout import compose_meme
-    from diary_comic.punchline import generate_page_punchline
+    from diary_comic.story import build_meme_prompt, parse_meme_text
     scene = highlight_to_entry(plan.highlight)  # 爆笑場景（角色）
     img = generate_panel_cached(
         scene, generate_image_fn=img_fn, aspect="1:1", cache_dir=cache_dir, variant=variant,
         shot="dynamic comedic reaction shot, the whole group bursting into laughter")
-    top = clean_highlight(plan.highlight, generate_fn=text_fn) or plan.meme_top
-    bottom = ""
-    if plan.needs_marvin:  # 反差中 → Marvin 救援補刀
-        bottom = generate_page_punchline([top], generate_fn=text_fn)
+    # 一次呼叫：模板菜單 + slot 框架 → LLM 挑模板填詞（強反差單飛 / 反差中 Marvin 救援）
+    top, bottom = plan.meme_top, ""
+    if text_fn is not None:
+        try:
+            t, b = parse_meme_text(text_fn(*build_meme_prompt(
+                plan.highlight, with_marvin=plan.needs_marvin)))
+            top, bottom = (t or top), b
+        except Exception:
+            pass
     return compose_meme(img, top=top, bottom=bottom, size=(1080, 1080))
 
 
