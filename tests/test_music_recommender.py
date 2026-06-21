@@ -16,7 +16,31 @@ from music_recommender import (
     normalize_title,
     pick_candidate,
     pick_candidates,
+    ring_titles_for,
 )
+
+
+class TestRingTitlesFor:
+    """ring_titles_for：推薦後該寫進 novelty ring 的標題。
+
+    spotlight cover 重複感根因：ring 只記 cover 後標題，anchor 原曲未入 ring →
+    同一首被反覆 cover 成不同版本。修法：cover 時連 anchor 一起記。
+    """
+
+    def test_direct_only_played_title(self):
+        assert ring_titles_for("晴天", "direct", "晴天") == ["晴天"]
+
+    def test_cover_rings_both_played_and_anchor(self):
+        # spotlight：anchor=七里香 被 cover 成「七里香 (林宥嘉)」→ 兩者都要排除
+        out = ring_titles_for("七里香 (林宥嘉 cover)", "cover", "七里香")
+        assert "七里香 (林宥嘉 cover)" in out
+        assert "七里香" in out, "anchor 原曲必須入 ring，否則下輪仍可再 cover"
+
+    def test_cover_anchor_equals_title_no_dup(self):
+        assert ring_titles_for("七里香", "cover", "七里香") == ["七里香"]
+
+    def test_empty_played_title_empty_list(self):
+        assert ring_titles_for("", "direct", "") == []
 
 
 NOW = 1_700_000_000.0

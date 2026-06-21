@@ -41,7 +41,7 @@ from intent_agents.recommendation import (
     time_of_day_bucket,
 )
 from memory_guard import is_memory_critical
-from music_recommender import build_recommendation_pool, is_already_recommended, pick_candidates
+from music_recommender import build_recommendation_pool, is_already_recommended, pick_candidates, ring_titles_for
 from music_memory import extract_video_id
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
@@ -81,6 +81,24 @@ class MusicCog(commands.Cog):
     _AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST = [
         "這首大家應該都喜歡，《{title}》",
         "馬文為大家挑的，《{title}》",
+    ]
+    # long_tail：在場者點過但久沒播 → 講「重新發現」的理由
+    _AUTOPILOT_DJ_PHRASES_LONG_TAIL = [
+        "{who}好久沒聽《{title}》了，翻出來",
+        "從{who}的塵封歌單挖出《{title}》",
+        "{who}，《{title}》冰很久沒聽，解凍一下",
+    ]
+    # discovery：沒人點過的新歌 → 講「挖新歌」的理由
+    _AUTOPILOT_DJ_PHRASES_DISCOVERY = [
+        "挖到《{title}》，{who}應該沒聽過",
+        "{who}，給你首新的《{title}》",
+        "這首《{title}》是挖給{who}的新貨",
+    ]
+    # spotlight cover：以 {who} 常點的 {anchor} 為錨 → 講「你愛 anchor，給你個版本」
+    _AUTOPILOT_DJ_PHRASES_SPOTLIGHT_ANCHOR = [
+        "{who}愛{anchor}，給你個《{title}》",
+        "{who}常點{anchor}，換首《{title}》",
+        "知道{who}喜歡{anchor}，這首《{title}》你會愛",
     ]
 
     def __init__(self, bot):
@@ -795,10 +813,12 @@ class MusicCog(commands.Cog):
             info['_round_first'] = (enqueued == 0)
             info['_spotlight'] = spotlight
             info['_lane'] = cand.lane
+            info['_anchor_title'] = cand.anchor_title
             info['_round_position'] = enqueued
 
             self.stream_queue.append(info)
-            mm.add_recent_recommendation(info['title'])
+            for _ring_title in ring_titles_for(info['title'], cand.mode, cand.anchor_title):
+                mm.add_recent_recommendation(_ring_title)
             logger.info(f"🎵 [AutoRecommend] lane={cand.lane} round-#{enqueued+1}: {info['title']}")
             blurb = ""
             active_ch = vc.active_text_channel if vc is not None else None
@@ -1161,19 +1181,24 @@ class MusicCog(commands.Cog):
 
     @staticmethod
     def _autopilot_dj_phrase(spotlight: str, clean_title: str, clean_artist: str,
-                              lane: str = "") -> str:
-        """為 autopilot 推薦歌曲生成個人化 DJ 台詞。"""
+                              lane: str = "", anchor: str = "") -> str:
+        """為 autopilot 推薦歌曲生成 DJ 台詞，理由依 lane 而定（DJ 編個理由）。"""
         import random
         who = spotlight or "你"
-        is_group = (lane == "group_resonance")
-        if is_group:
+        if lane == "group_resonance":
             pool = (MusicCog._AUTOPILOT_DJ_PHRASES_GROUP if clean_artist
                     else MusicCog._AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST)
+        elif lane == "long_tail":
+            pool = MusicCog._AUTOPILOT_DJ_PHRASES_LONG_TAIL
+        elif lane == "discovery":
+            pool = MusicCog._AUTOPILOT_DJ_PHRASES_DISCOVERY
+        elif anchor and anchor != clean_title:
+            pool = MusicCog._AUTOPILOT_DJ_PHRASES_SPOTLIGHT_ANCHOR
         else:
             pool = (MusicCog._AUTOPILOT_DJ_PHRASES_PERSONAL if clean_artist
                     else MusicCog._AUTOPILOT_DJ_PHRASES_PERSONAL_NO_ARTIST)
         tmpl = random.choice(pool)
-        return tmpl.format(who=who, title=clean_title, artist=clean_artist)
+        return tmpl.format(who=who, title=clean_title, artist=clean_artist, anchor=anchor)
 
     async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
         """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
@@ -1221,7 +1246,9 @@ class MusicCog(commands.Cog):
             clean_title, clean_artist = self._parse_song_title_artist(info)
             spotlight = info.get('_spotlight', '')
             lane = info.get('_lane', '')
-            text = self._autopilot_dj_phrase(spotlight, clean_title, clean_artist, lane=lane)
+            anchor = info.get('_anchor_title', '')
+            text = self._autopilot_dj_phrase(spotlight, clean_title, clean_artist,
+                                             lane=lane, anchor=anchor)
         else:
             try:
                 text = await self.bot.router.generate_dynamic_system_msg(
