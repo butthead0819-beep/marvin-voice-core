@@ -99,6 +99,17 @@ for path in ["/opt/homebrew/bin", "/usr/local/bin"]:
 from marvin_voice_core.companion_bridge import CompanionBridge
 
 
+def _is_expired_interaction_error(error) -> bool:
+    """interaction token 已失效（Discord error code 10062, Unknown interaction）。
+
+    成因：defer()/respond() 未在 3 秒 ACK 窗口內送達（event loop 偶發 lag）。
+    token 失效後任何回應都會再次 404，因此不該記為 ERROR（會誤觸 incident
+    白名單），也不該再嘗試對該 interaction 回應。真因常被包在 .original。
+    """
+    original = getattr(error, "original", error)
+    return isinstance(original, discord.NotFound) and getattr(original, "code", None) == 10062
+
+
 async def start_companion_bridge(bot, voice_controller=None):
     """根據 env 啟動 CompanionBridge，掛到 bot.companion_bridge。
 
@@ -285,9 +296,18 @@ class MarvinBot(commands.Bot):
         # 🛡️ [Security] 為 Tree 加上全域錯誤處理器
         @self.tree.error
         async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-            logger.error(f"❌ [App Command Error] {error} (Command: {interaction.command.name if interaction.command else 'N/A'})")
+            cmd_name = interaction.command.name if interaction.command else 'N/A'
+            # ⏳ [優雅降級] interaction 已失效（瞬時 event loop lag 超過 3 秒 ACK 窗口）：
+            # 不記 ERROR（避免誤觸 incident），也別再回應（必然二次 404）。
+            if _is_expired_interaction_error(error):
+                logger.warning(f"⏳ [App Command] interaction 已失效（10062 Unknown interaction），略過回應 (Command: {cmd_name})")
+                return
+            logger.error(f"❌ [App Command Error] {error} (Command: {cmd_name})")
             if not interaction.response.is_done():
-                await interaction.response.send_message(f"⚠️ **馬文的系統出錯了**: {error}", ephemeral=True)
+                try:
+                    await interaction.response.send_message(f"⚠️ **馬文的系統出錯了**: {error}", ephemeral=True)
+                except discord.HTTPException as e:
+                    logger.warning(f"[App Command Error] 無法回報錯誤給使用者（interaction 可能已失效）: {e}")
         logger.info("="*60)
 
         # 3. [Lifecycle] 視覺系統
