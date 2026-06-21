@@ -25,12 +25,16 @@
 - ✅ 已做：只有 Hero 斜切（`hero_split_polys` / `compose_page_hero`）。
 - ⚠️ 待改 #2：Hero 角色可破格衝出。
 
-### 4b. 同源推鏡（一張高清素材裁多格）— Jack 2026-06-21
-- 一張（**2K** `gemini-3-pro-image`）鋪陳場景 → 裁 遠景 / 中景 /（特寫）= 多格。
-- 省 API（1 次生成換多格）、角色**零飄移**、自帶遠→中→特推鏡。
-- ⚠️ 裁愈緊愈糊：768px nano 裁到特寫(245px)會糊 → **特寫格一定要 2K 素材**（中景 65% 還 OK）。
-- ✅ 已做：`layout.crops_from_source(src, specs)` + `pushin_specs()`（遠中特三框）。
-  ⚠️ 待接：render_story 鋪陳改「1 張 2K 源 → crops」取代 N 次生成（等額度，需 2K 出圖）。
+### 4b. 同源裁切（一張高清素材裁多格）— Jack 2026-06-21
+- 一張（**2K** `gemini-3-pro-image`）鋪陳場景 → 裁多格。省 API、角色**零飄移**。
+- ⚠️ 裁愈緊愈糊：768px nano 裁特寫(245px)會糊 → **特寫一定要 2K 素材**（中景 65% 還 OK）。
+- ✅ 已做：`crops_from_source(src, specs)` / `split_lr_specs(ratio)`（遠景精準對切左右）/ `pushin_specs()`。
+
+**定案結構（Jack）：格1 遠景同源切左右(30/70) + 格2 中景 + 格3 Hero斜切duo**
+- 格1 用 `split_lr_specs` + `pair` row：左[0,r]右[r,1] **精準對切、零重疊**（左寬+右寬=原寬）。
+- ⚠️ **源圖 prompt 必須構圖成「左主體 + 右主體」**（一個落左 ratio、一個落右），切下去才兩主體不重複。
+  例：`wide establishing two-shot, character A on the far left third, character B group on the right, clear gap in between`。
+- ⚠️ 待接：render_story `_render_slant` 改 pair+中景+duo（等額度，需 2K 出圖）。
 
 ### 4. 鏡頭變化 — 三距離節奏（避免每格證件照）
 - **遠景 Wide**：交代環境/空間（每頁第一格）。
