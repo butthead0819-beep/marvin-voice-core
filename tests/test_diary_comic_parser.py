@@ -308,3 +308,22 @@ def test_choose_style_long_but_scattered_is_japanese():
     long_scattered = [_ts2(c) for c in
                       ["喇叭", "泡麵", "PS4", "露營", "音樂", "裝潢", "股市", "天氣"]]
     assert choose_style(long_scattered) == "slant"
+
+
+# ---- 生成門檻：session 要夠多筆才值得出漫畫 ----
+from diary_comic.parser import should_generate
+
+
+def test_should_generate_false_when_too_few_entries():
+    short = [_td(f"主題{i}") for i in range(5)]  # 5 筆 < 6
+    assert should_generate(short) is False
+
+
+def test_should_generate_true_at_min_entries():
+    six = [_td(f"主題{i}") for i in range(6)]  # 6 筆 ≥ 6
+    assert should_generate(six) is True
+
+
+def test_should_generate_respects_custom_min():
+    assert should_generate([_td("a")] * 7, min_entries=8) is False
+    assert should_generate([_td("a")] * 8, min_entries=8) is True

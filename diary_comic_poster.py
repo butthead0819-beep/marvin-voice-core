@@ -95,7 +95,7 @@ def _render_blocking(key: str):
     import sys
     sys.path.insert(0, ".")
     from diary_comic.parser import (
-        parse_log, dedupe_adjacent, eligible_sessions, choose_style)
+        parse_log, dedupe_adjacent, eligible_sessions, choose_style, should_generate)
     from diary_comic.render import render_session
     try:
         from llm_paid import PaidUsageGuard
@@ -108,6 +108,8 @@ def _render_blocking(key: str):
     if not sessions:
         return None
     session = sessions[-1]
+    if not should_generate(session, min_entries=6):
+        return None  # 內容不足 6 筆（對話太短）→ 不值得燒 API 出漫畫
     end = session[-1].ts_str
     if end == _last_posted():
         return None  # 已出過這場次

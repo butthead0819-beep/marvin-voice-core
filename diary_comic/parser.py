@@ -176,6 +176,11 @@ def eligible_sessions(entries: list[DiaryEntry], gap_minutes: int = 30,
     return [s for s in group_by_session(entries, gap_minutes) if len(s) >= min_panels]
 
 
+def should_generate(session: list[DiaryEntry], min_entries: int = 6) -> bool:
+    """值不值得出漫畫：對話要夠多（≥min_entries 筆）才生成，零碎內容不燒 API。"""
+    return len(session) >= min_entries
+
+
 def session_continuity(session: list[DiaryEntry]) -> float:
     """相鄰兩篇核心的平均相似度：高=話題連貫（一路聊同件事）、低=東聊西聊。"""
     if len(session) < 2:
