@@ -319,6 +319,56 @@ def compose_meme(image: Image.Image, top: str = "", bottom: str = "",
     return page
 
 
+def splash_layout(n_support, page_size, climax_frac=0.45, gutter=None):
+    """大砸框版面：高潮格佔底部 climax_frac（≥40% 面積），鋪陳格鋪在上方。
+
+    回 (support_boxes, climax_box)，皆像素 (x0,y0,x1,y1)。
+    """
+    W, H = page_size
+    g = gutter or max(4, int(min(W, H) * 0.012))
+    ch = int(climax_frac * H)
+    climax = (g, H - ch + g, W - g, H - g)  # 底部大格（滿寬）
+    top_y0, top_y1 = g, H - ch - g          # 上方鋪陳區
+    n = max(1, n_support)
+    cols = n if n <= 3 else (n + 1) // 2
+    rows = 1 if n <= 3 else 2
+    cw = (W - 2 * g) // cols
+    rh = (top_y1 - top_y0) // rows
+    boxes = []
+    for i in range(n):
+        r, c = divmod(i, cols)
+        x0 = g + c * cw
+        y0 = top_y0 + r * rh
+        boxes.append((x0, y0, x0 + cw - g, y0 + rh - g))
+    return boxes, climax
+
+
+def compose_splash_page(support_panels, climax_panel, page_size=(1080, 1920),
+                        climax_frac=0.45):
+    """一頁一個大砸框：高潮格 ≥40% 在底、鋪陳小格在上。其餘格都為這一格服務。"""
+    W, H = page_size
+    page = Image.new("RGB", (W, H), (250, 248, 244))
+    draw = ImageDraw.Draw(page)
+    font = _load_font(max(14, int(min(W, H) * 0.026)))
+    boxes, climax = splash_layout(len(support_panels), page_size, climax_frac)
+
+    for panel, (x0, y0, x1, y1) in zip(support_panels, boxes):
+        if x1 <= x0 or y1 <= y0:
+            continue
+        page.paste(cover_fit(panel.image, x1 - x0, y1 - y0), (x0, y0))
+        draw.rectangle([x0, y0, x1, y1], outline=(20, 20, 20), width=4)
+        if panel.caption:
+            _edge_caption(draw, page, x0, x1, y1, panel.caption, font, "bottom")
+
+    cx0, cy0, cx1, cy1 = climax  # 高潮大砸框：粗框 + 大字幕
+    page.paste(cover_fit(climax_panel.image, cx1 - cx0, cy1 - cy0), (cx0, cy0))
+    draw.rectangle([cx0, cy0, cx1, cy1], outline=(15, 15, 15), width=8)
+    if climax_panel.caption:
+        big = _load_font(max(20, int(min(W, H) * 0.034)))
+        _edge_caption(draw, page, cx0, cx1, cy1, climax_panel.caption, big, "bottom")
+    return page
+
+
 def compose_page_webtoon(panels, page_width=1080, gutter=70, base_h=780, side=36):
     """韓國條漫：滿寬格垂直堆疊、變動白間距（gutter 編碼節奏）、一條長直幅。高度依 heat。"""
     n = len(panels)

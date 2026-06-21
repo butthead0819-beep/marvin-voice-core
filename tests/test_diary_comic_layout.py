@@ -287,3 +287,27 @@ def test_compose_meme_solo_no_bottom():
     img = Image.new("RGB", (200, 200))
     page = compose_meme(img, top="梗自己講", bottom="", size=(800, 800))
     assert page.size == (800, 800)  # 無 Marvin（單飛）也不爆
+
+
+# ---- 大砸框：一頁一個高潮格 ≥40%，其餘鋪陳 ----
+def test_splash_layout_climax_is_at_least_40_percent():
+    from diary_comic.layout import splash_layout
+    W, H = 1080, 1920
+    _support, climax = splash_layout(3, (W, H), climax_frac=0.45)
+    cx0, cy0, cx1, cy1 = climax
+    area_frac = ((cx1 - cx0) * (cy1 - cy0)) / (W * H)
+    assert area_frac >= 0.40  # 高潮格佔全頁 ≥40%
+
+
+def test_splash_layout_one_support_box_per_panel():
+    from diary_comic.layout import splash_layout
+    support, _climax = splash_layout(3, (1080, 1920))
+    assert len(support) == 3  # 鋪陳格數對
+
+
+def test_compose_splash_page_returns_size():
+    from diary_comic.layout import compose_splash_page
+    support = [Panel(image=Image.new("RGB", (60, 60)), heat=3, caption=f"鋪陳{i}") for i in range(3)]
+    climax = Panel(image=Image.new("RGB", (80, 80), (200, 50, 50)), heat=10, caption="爆笑高潮")
+    page = compose_splash_page(support, climax, page_size=(1080, 1920))
+    assert isinstance(page, Image.Image) and page.size == (1080, 1920)
