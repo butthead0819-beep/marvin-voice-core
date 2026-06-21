@@ -50,6 +50,17 @@ def crops_from_source(source_img, specs):
     return panels
 
 
+def split_lr_specs(ratio=0.30, captions=None, heats=None):
+    """遠景精準對切左右兩格：左 [0,ratio]、右 [ratio,1]，邊界共用、**零重疊**。
+
+    源圖須有左右兩個主體（一個落在左 ratio、一個落在右），切下去才是兩主體不重複。
+    """
+    caps = captions or ["", ""]
+    hs = heats or [3, 4]
+    return [CropSpec(box=(0.0, 0.0, ratio, 1.0), caption=caps[0], heat=hs[0]),
+            CropSpec(box=(ratio, 0.0, 1.0, 1.0), caption=caps[1], heat=hs[1])]
+
+
 def pushin_specs(captions=None, heats=None):
     """標準遠→中→特推鏡三框（一路推緊，置中偏 rule-of-thirds）。"""
     boxes = [(0.0, 0.0, 1.0, 1.0),            # 遠景：全場

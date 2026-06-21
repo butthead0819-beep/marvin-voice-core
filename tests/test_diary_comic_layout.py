@@ -368,3 +368,20 @@ def test_compose_page_hero_pair_row_returns_size():
     rows = [("pair", left, right, 0.30), ("single", mid)]
     page = compose_page_hero(rows, (1080, 1920))
     assert isinstance(page, Image.Image) and page.size == (1080, 1920)
+
+
+# ---- 遠景精準對切左右（零重疊、兩主體）----
+def test_split_lr_specs_exact_partition_no_overlap():
+    from diary_comic.layout import split_lr_specs
+    left, right = split_lr_specs(0.30)
+    assert left.box[2] == right.box[0]          # 邊界共用：左右剛好相接
+    assert left.box[0] == 0.0 and right.box[2] == 1.0  # 涵蓋全寬、不重疊
+    assert abs((left.box[2] - left.box[0]) - 0.30) < 1e-9  # 左 30%
+
+
+def test_split_lr_no_duplicate_content():
+    from diary_comic.layout import split_lr_specs, crops_from_source
+    src = Image.new("RGB", (1000, 600))
+    left, right = split_lr_specs(0.30)
+    lp, rp = crops_from_source(src, [left, right])
+    assert lp.image.size[0] + rp.image.size[0] == 1000  # 兩格寬相加=原寬，無重疊
