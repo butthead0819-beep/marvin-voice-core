@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import difflib
 import math
 import os
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ class Panel:
     image: Image.Image
     heat: int
     caption: str = ""
+    inset: Image.Image | None = None  # 反應特寫小格（疊在本格角落），如哄堂笑的臉
 
 
 # 手刻不對等模板（手機直式：垂直堆疊為主，穿插 2-up 排，面積刻意不均）。
@@ -262,23 +264,56 @@ def _edge_caption(draw, page, x0, x1, y_edge, caption, font, anchor):
         draw.text((x0 + pad, by0 + pad + li * line_h), ln, fill=(255, 255, 255), font=font)
 
 
+def paste_inset(page: Image.Image, inset_img: Image.Image, x: int, y: int,
+                w: int, h: int, border: int = 4) -> Image.Image:
+    """把反應特寫小格疊到 (x,y,w,h)：白內框 + 黑外框（日漫 inset 感）。回傳 page。"""
+    w, h = max(1, w), max(1, h)
+    page.paste(cover_fit(inset_img, w, h), (x, y))
+    d = ImageDraw.Draw(page)
+    d.rectangle([x, y, x + w, y + h], outline=(245, 245, 240), width=border)
+    d.rectangle([x - 2, y - 2, x + w + 2, y + h + 2], outline=(20, 20, 20), width=2)
+    return page
+
+
+def _draw_inset_corner(page, panel, x0, y0, x1, y1):
+    """若 panel 有 inset，疊在格子右下角（~32% 寬）。"""
+    if panel.inset is None:
+        return
+    pw, ph = x1 - x0, y1 - y0
+    iw, ih = int(pw * 0.32), int(ph * 0.32)
+    m = max(6, int(min(pw, ph) * 0.04))
+    paste_inset(page, panel.inset, x1 - iw - m, y1 - ih - m, iw, ih)
+
+
+def gutter_between(prev_core: str, next_core: str, base: int) -> int:
+    """依相鄰兩格內容相似度算 gutter：相似(同場景)→窄(快/連續)、不同(跳主題)→寬(時間流逝)。"""
+    r = difflib.SequenceMatcher(None, prev_core or "", next_core or "").ratio()
+    return max(4, int(base * (0.5 + (1.0 - r))))  # r=1→0.5×；r=0→1.5×
+
+
 def compose_page_webtoon(panels, page_width=1080, gutter=70, base_h=780, side=36):
-    """韓國條漫：滿寬格垂直堆疊、大白間距、一條長直幅（往下捲）。高度依 heat。"""
+    """韓國條漫：滿寬格垂直堆疊、變動白間距（gutter 編碼節奏）、一條長直幅。高度依 heat。"""
     n = len(panels)
     maxheat = max((p.heat for p in panels), default=1) or 1
     heights = [int(base_h * (0.7 + 0.5 * (p.heat / maxheat))) for p in panels]
-    total_h = gutter + sum(h + gutter for h in heights)
+    # 每格之前的 gutter：第一格=頂margin；其餘依與上一格相似度變動
+    gaps = [gutter]
+    for i in range(1, n):
+        gaps.append(gutter_between(panels[i - 1].caption, panels[i].caption, gutter))
+    total_h = sum(gaps) + sum(heights) + gutter
     page = Image.new("RGB", (page_width, total_h), (250, 248, 244))
     draw = ImageDraw.Draw(page)
     font = _load_font(max(16, int(page_width * 0.030)))
-    y = gutter
-    for panel, h in zip(panels, heights):
+    y = 0
+    for i, (panel, h) in enumerate(zip(panels, heights)):
+        y += gaps[i]
         x0, x1 = side, page_width - side
         page.paste(cover_fit(panel.image, x1 - x0, h), (x0, y))
         draw.rectangle([x0, y, x1, y + h], outline=(20, 20, 20), width=5)
+        _draw_inset_corner(page, panel, x0, y, x1, y + h)  # 反應特寫
         if panel.caption:
             _edge_caption(draw, page, x0, x1, y + h, panel.caption, font, "bottom")
-        y += h + gutter
+        y += h
     return page
 
 

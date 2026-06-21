@@ -236,3 +236,39 @@ def test_compose_page_webtoon_is_tall_strip():
     page = compose_page_webtoon([P(4, "格一"), P(9, "格二"), P(3, "格三")], page_width=1080)
     assert page.width == 1080
     assert page.height > 1080  # 長條，比寬高很多
+
+
+# ---- 變動 gutter：同主題窄、跳主題寬 ----
+def test_gutter_between_narrow_for_similar_wide_for_different():
+    from diary_comic.layout import gutter_between
+    g_sim = gutter_between("討論喇叭的阻抗規格", "討論喇叭的阻抗規格細節", base=60)
+    g_diff = gutter_between("討論喇叭", "聊PS4遊戲跟泡麵", base=60)
+    assert g_sim < g_diff  # 相似主題 gutter 窄、跳主題寬
+
+
+def test_gutter_between_stays_positive():
+    from diary_comic.layout import gutter_between
+    assert gutter_between("a", "b", base=60) > 0
+
+
+# ---- Inset 反應特寫：大格上疊小格 ----
+def test_paste_inset_keeps_page_size():
+    from diary_comic.layout import paste_inset
+    page = Image.new("RGB", (400, 400), (250, 250, 250))
+    inset = Image.new("RGB", (80, 80), (10, 10, 10))
+    out = paste_inset(page, inset, 50, 50, 120, 120)
+    assert out.size == (400, 400)
+
+
+def test_panel_accepts_inset_field():
+    p = Panel(image=Image.new("RGB", (60, 60)), heat=5, caption="x",
+              inset=Image.new("RGB", (30, 30)))
+    assert p.inset is not None
+
+
+def test_compose_webtoon_renders_panel_with_inset():
+    from diary_comic.layout import compose_page_webtoon
+    panels = [Panel(image=Image.new("RGB", (80, 80)), heat=6, caption="笑點",
+                    inset=Image.new("RGB", (40, 40), (200, 50, 50)))]
+    page = compose_page_webtoon(panels, page_width=1080)
+    assert page.width == 1080  # 有 inset 也不爆

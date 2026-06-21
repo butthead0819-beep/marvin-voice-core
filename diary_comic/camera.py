@@ -14,11 +14,15 @@ _SHOTS = (
     "dynamic dutch tilt, energetic and off-kilter",
     "wide shot with strong foreground-to-background depth",
     "side profile two-shot, cinematic framing",
+    "extreme close-up on one character's eyes/mouth, intense and intimate",
+    "backlit silhouette shot, dramatic rim light, mood",
+    "low angle hero shot with the character bursting toward the viewer",
 )
 
 _ESTABLISH = "wide establishing shot, slightly low angle, sets the whole scene"
-_HERO = ("dramatic low angle looking up at the key character, dynamic cinematic "
-         "composition, the character large and powerful in frame, high tension")
+_HERO = ("dramatic low angle looking up at the key character, dynamic cinematic composition, "
+         "the character large and powerful BURSTING out of the frame toward the viewer, "
+         "high tension, broken-border energy")
 
 
 def shot_for(index: int, total: int, is_hero: bool) -> str:

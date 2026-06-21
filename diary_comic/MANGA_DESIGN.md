@@ -66,12 +66,16 @@
 
 ---
 
-## 待辦（等付費額度回來後實作）
-1. 變動 gutter 編碼時間/節奏。
-2. Hero 角色破格（broken border）。
-3. Inset 反應特寫（笑點 reaction 疊小格）。
-4. 鏡頭詞彙擴充（極特寫 / silhouette）。
-（B 表情 prompt 已先做進 `build_panel_prompt`。）
+## 4 個分鏡改進（2026-06-21 程式已寫好，等額度回來生效）
+1. ✅ **變動 gutter** — `layout.gutter_between(prev, next, base)`：相鄰格相似→窄、跳主題→寬。已接進 `compose_page_webtoon`。
+2. ✅ **Hero 角色破格** — `camera._HERO` 加 prompt cue「bursting out of the frame, broken-border energy」。
+3. ✅ **Inset 反應特寫** — `layout.paste_inset` + `Panel.inset` 欄位 + 已接 webtoon（角落疊小格）。
+   ⚠️ 還缺：`render_session` 要 populate `panel.inset`（生一張反應特寫圖塞進去）—— 這步要 API，等額度回來接。
+4. ✅ **鏡頭詞彙擴充** — `camera._SHOTS` 加 extreme close-up / silhouette / broken-frame。
+
+✅ **B 表情 prompt** — 已做進 `build_panel_prompt` 全域 style（大、誇張、每角色不同表情）。
+
+**全部需要 API 出圖才看得到效果**（現撞月支出上限）。等額度回來，新生的漫畫就會套上：豐富表情 + 變動節奏 + Hero 破格 + 更多鏡頭；inset 反應特寫再補最後的 render 串接。
 
 ---
 

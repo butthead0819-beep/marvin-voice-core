@@ -20,3 +20,15 @@ def test_shot_for_varies_across_non_hero_panels():
 def test_shot_for_always_returns_nonempty():
     for i in range(8):
         assert shot_for(i, total=8, is_hero=(i == 3)).strip()
+
+
+def test_shot_pool_has_extreme_closeup_and_silhouette():
+    from diary_comic.camera import _SHOTS
+    pool = " ".join(_SHOTS).lower()
+    assert "extreme close-up" in pool
+    assert "silhouette" in pool
+
+
+def test_shot_for_varies_widely_in_long_page():
+    shots = {shot_for(i, total=8, is_hero=False) for i in range(1, 8)}
+    assert len(shots) >= 5  # 8 格頁鏡頭要夠多變
