@@ -16,6 +16,10 @@ from diary_comic.parser import DiaryEntry
 from diary_comic.highlight import (
     Highlight, highlight_to_entry, meme_needs_marvin, _setup_text)
 
+# 樣板輪替池：內容分層(衝/穩) + 層內日期輪，避免每天同一版面
+_PUNCHY = ("T2", "T4")  # 夠強：T2 頂爆鉤子 / T4 中央爆+余韵
+_STEADY = ("T1", "T3")  # 普通：T1 建勢底爆 / T3 純方正三拍
+
 MIN_CONTEXT = 6  # ≥ 這麼多筆 → 漫畫；否則 meme
 
 
@@ -59,6 +63,14 @@ def fuse(diary_session, highlights, *, max_context: int = 2) -> StoryPlan | None
     context = list(diary_session)[:max_context]  # 開場+鋪墊
     return StoryPlan(format="slant", highlight=peak, context=context,
                      peak_setup=setup, peak_reaction=reaction)
+
+
+def choose_template(plan: StoryPlan, *, day_index: int = 0) -> str | None:
+    """挑版面樣板。meme→None；slant→內容分層(衝/穩)後層內日期輪。"""
+    if plan.format != "slant":
+        return None
+    pool = _PUNCHY if not meme_needs_marvin(plan.highlight) else _STEADY
+    return pool[day_index % len(pool)]
 
 
 _TITLE_SYS = ("你是漫畫單話命名員。看這頁聊了什麼，取一個好笑、吸睛的單話標題"

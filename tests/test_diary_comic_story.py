@@ -91,3 +91,25 @@ def test_parse_meme_text_plain_fallback():
 
 def test_parse_meme_text_empty():
     assert parse_meme_text("") == ("", "")
+
+
+# ---- 樣板輪替：內容分層 + 層內日期輪 ----
+from diary_comic.story import choose_template
+
+
+def test_choose_template_meme_is_none():
+    plan = fuse(_diary(2), [_hl(3, ["x"], laugh="哈哈哈")])  # meme 自有渲染
+    assert choose_template(plan) is None
+
+
+def test_choose_template_strong_uses_punchy_pool_rotating():
+    strong = _hl(11, ["一本正經分析", "把球踢進自家球門"], laugh="哈哈哈哈哈哈哈哈笑死")
+    plan = fuse(_diary(8), [strong])
+    assert choose_template(plan, day_index=0) == "T2"  # 衝池
+    assert choose_template(plan, day_index=1) == "T4"  # 層內輪
+
+
+def test_choose_template_normal_uses_steady_pool_rotating():
+    plan = fuse(_diary(8), [_hl(3, ["還好啦"], laugh="哈哈哈")])
+    assert choose_template(plan, day_index=0) == "T1"  # 穩池
+    assert choose_template(plan, day_index=1) == "T3"  # 層內輪
