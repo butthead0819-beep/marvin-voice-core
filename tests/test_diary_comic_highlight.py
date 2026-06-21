@@ -62,3 +62,58 @@ def test_find_highlights_setup_respects_lookback():
     texts = [t for _s, t in h.setup]
     assert "剛剛的笑點" in texts
     assert "很久以前的句子" not in texts  # 超過 lookback 不抓
+
+
+# ---- #2 笑點清理（LLM 修糊掉的 STT）----
+from diary_comic.highlight import Highlight, clean_highlight, highlight_to_entry
+
+
+def _h():
+    return Highlight(ts=1718000000.0, laugher="狗與露", laugh_text="哈哈哈哈哈哈", strength=6,
+                     setup=[("大肚", "他就是很蠢然後把球踢到自己球門"), ("狗與露", "真的假的")])
+
+
+def test_clean_highlight_uses_injected_llm():
+    line = clean_highlight(_h(), generate_fn=lambda s, u: "  把球踢進自家球門還全場罵傻逼  ")
+    assert line == "把球踢進自家球門還全場罵傻逼"
+
+
+def test_clean_highlight_prompt_carries_setup_and_laugh():
+    seen = {}
+
+    def spy(system, user):
+        seen["u"] = user
+        return "笑點"
+
+    clean_highlight(_h(), generate_fn=spy)
+    assert "球門" in seen["u"]  # 笑點前情有進 prompt
+
+
+def test_clean_highlight_fallback_without_llm():
+    out = clean_highlight(_h(), generate_fn=None)
+    assert "球門" in out  # 無 LLM → 原始拼接，不硬掰
+
+
+def test_clean_highlight_swallows_llm_failure():
+    def boom(s, u):
+        raise RuntimeError("down")
+    out = clean_highlight(_h(), generate_fn=boom)
+    assert out  # 失敗降級成 fallback，不丟例外
+
+
+# ---- #1 橋接：精華 → 漫畫 beat（DiaryEntry）----
+def test_highlight_to_entry_maps_fields():
+    e = highlight_to_entry(_h(), core="把球踢進自家球門")
+    assert e.core == "把球踢進自家球門"
+    assert "狗與露" in e.speakers and "大肚" in e.speakers  # 參與者都在
+    assert e.ts_str.count(":") == 2 and e.ts_str.count("-") == 2  # 標準時間字串
+
+
+def test_highlight_to_entry_renderable_by_render_session():
+    from diary_comic.render import render_session
+    from PIL import Image
+    hs = [_h(), _h(), _h()]
+    session = [highlight_to_entry(h, core=f"笑點{i}") for i, h in enumerate(hs)]
+    page, layout, _line = render_session(
+        session, img_fn=lambda p, a: Image.new("RGB", (50, 50)), text_fn=lambda s, u: "金句")
+    assert isinstance(page, Image.Image)
