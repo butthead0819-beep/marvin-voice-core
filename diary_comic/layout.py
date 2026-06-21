@@ -291,6 +291,20 @@ def gutter_between(prev_core: str, next_core: str, base: int) -> int:
     return max(4, int(base * (0.5 + (1.0 - r))))  # r=1→0.5×；r=0→1.5×
 
 
+def with_title(page: Image.Image, title: str, bar_h: int | None = None) -> Image.Image:
+    """頁首加一條標題 bar（單話名）。空標題 → 原圖。"""
+    if not title:
+        return page
+    W, H = page.size
+    bh = bar_h or max(48, int(H * 0.055))
+    out = Image.new("RGB", (W, H + bh), (20, 20, 20))
+    out.paste(page, (0, bh))
+    draw = ImageDraw.Draw(out)
+    font = _load_font(int(bh * 0.5))
+    draw.text((int(W * 0.02), int(bh * 0.22)), title[:24], fill=(255, 245, 220), font=font)
+    return out
+
+
 def compose_meme(image: Image.Image, top: str = "", bottom: str = "",
                  size: tuple[int, int] = (1080, 1080)) -> Image.Image:
     """一格 meme：滿版圖 + 上 setup / 下 punchline 邊條（下可空=強反差單飛）。"""

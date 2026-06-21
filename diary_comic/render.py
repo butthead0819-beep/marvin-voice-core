@@ -67,3 +67,66 @@ def render_session(session, *, img_fn=None, text_fn=None, cache_dir=None,
     else:
         page = compose_page(panels, page_size=page_size)
     return page, layout, marvin_line
+
+
+def render_story(plan, *, img_fn=None, text_fn=None, cache_dir=None,
+                 page_size=(1080, 1920), variant="nano"):
+    """StoryPlan → 漫畫頁。出圖/清理/標題用注入式 img_fn/text_fn（None→佔位/fallback）。
+
+    回 None = 不出。骨架已串好；等 API 額度回來，img_fn/text_fn 餵真的就生效。
+    """
+    if plan is None:
+        return None
+    if plan.format == "meme":
+        return _render_meme(plan, img_fn, text_fn, cache_dir, variant)
+    return _render_slant(plan, img_fn, text_fn, cache_dir, page_size, variant)
+
+
+def _render_meme(plan, img_fn, text_fn, cache_dir, variant):
+    from diary_comic.highlight import highlight_to_entry, clean_highlight
+    from diary_comic.layout import compose_meme
+    from diary_comic.punchline import generate_page_punchline
+    scene = highlight_to_entry(plan.highlight)  # 爆笑場景（角色）
+    img = generate_panel_cached(
+        scene, generate_image_fn=img_fn, aspect="1:1", cache_dir=cache_dir, variant=variant,
+        shot="dynamic comedic reaction shot, the whole group bursting into laughter")
+    top = clean_highlight(plan.highlight, generate_fn=text_fn) or plan.meme_top
+    bottom = ""
+    if plan.needs_marvin:  # 反差中 → Marvin 救援補刀
+        bottom = generate_page_punchline([top], generate_fn=text_fn)
+    return compose_meme(img, top=top, bottom=bottom, size=(1080, 1080))
+
+
+def _render_slant(plan, img_fn, text_fn, cache_dir, page_size, variant):
+    from diary_comic.highlight import clean_highlight
+    from diary_comic.layout import Panel, compose_page_hero, with_title
+    from diary_comic.story import build_title_prompt
+    # 物件 context 格（冷、小）
+    ctx = []
+    for i, e in enumerate(plan.context):
+        img = generate_panel_cached(
+            e, generate_image_fn=img_fn, aspect="16:9", cache_dir=cache_dir, variant=variant,
+            shot=shot_for(i, len(plan.context) + 2, is_hero=False), object_only=True)
+        ctx.append(Panel(image=img, heat=heat_score(e), caption=e.core))
+    # Hero 拆兩拍：setup（鋪哏）+ reaction（爆笑），角色場景
+    setup_img = generate_panel_cached(
+        plan.peak_setup, generate_image_fn=img_fn, aspect="16:9", cache_dir=cache_dir,
+        variant=variant, shot="medium shot, the character delivering the funny line deadpan")
+    react_img = generate_panel_cached(
+        plan.peak_reaction, generate_image_fn=img_fn, aspect="16:9", cache_dir=cache_dir,
+        variant=variant,
+        shot="dramatic low angle, the whole group bursting out laughing, broken-border energy")
+    punch = clean_highlight(plan.highlight, generate_fn=text_fn)
+    setup_panel = Panel(image=setup_img, heat=9, caption=plan.peak_setup.core)
+    react_panel = Panel(image=react_img, heat=10, caption=punch)
+    rows = [("single", p) for p in ctx] + [("duo", setup_panel, react_panel)]
+    page = compose_page_hero(rows, page_size)
+    # 單話標題（注入式；無 text_fn → 留空）
+    title = ""
+    if text_fn is not None:
+        try:
+            title = (text_fn(*build_title_prompt(
+                [e.core for e in plan.context] + [punch])) or "").strip()
+        except Exception:
+            title = ""
+    return with_title(page, title)

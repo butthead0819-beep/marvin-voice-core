@@ -37,3 +37,51 @@ def test_render_session_without_text_fn_has_no_punchline():
     page, _layout, line = render_session(session, img_fn=_fake_img, text_fn=None)
     assert isinstance(page, Image.Image)
     assert line == ""  # 沒 text_fn → 不硬掰金句
+
+
+# ---- render_story 骨架：StoryPlan → 漫畫頁（注入式 img/text）----
+from diary_comic.story import fuse
+from diary_comic.highlight import Highlight
+from diary_comic.layout import with_title
+
+
+def _diary2(n):
+    return [DiaryEntry(ts_str=f"2026-06-20 22:{i*5:02d}:00", core=f"聊主題{i}",
+                       speakers=["狗與露", "showay"]) for i in range(n)]
+
+
+def _hl2(strength, setup):
+    return Highlight(ts=1718000000.0, laugher="狗與露", laugh_text="哈哈哈哈哈哈",
+                     strength=strength, setup=[("大肚", s) for s in setup])
+
+
+def test_with_title_makes_taller_image():
+    page = Image.new("RGB", (1080, 1920))
+    out = with_title(page, "今晚精華：足球烏龍")
+    assert out.width == 1080 and out.height > 1920  # 多了標題 bar
+
+
+def test_with_title_empty_returns_same():
+    page = Image.new("RGB", (1080, 1920))
+    assert with_title(page, "").size == (1080, 1920)
+
+
+def test_render_story_meme_returns_image():
+    from diary_comic.render import render_story
+    plan = fuse(_diary2(2), [_hl2(11, ["一本正經分析", "把球踢進自家球門"])])
+    assert plan.format == "meme"
+    page = render_story(plan, img_fn=_fake_img, text_fn=_fake_text)
+    assert isinstance(page, Image.Image)
+
+
+def test_render_story_slant_returns_image_with_title():
+    from diary_comic.render import render_story
+    plan = fuse(_diary2(8), [_hl2(9, ["他把球踢進自家球門"])])
+    assert plan.format == "slant"
+    page = render_story(plan, img_fn=_fake_img, text_fn=_fake_text)
+    assert isinstance(page, Image.Image)
+
+
+def test_render_story_none_plan_returns_none():
+    from diary_comic.render import render_story
+    assert render_story(None, img_fn=_fake_img, text_fn=_fake_text) is None
