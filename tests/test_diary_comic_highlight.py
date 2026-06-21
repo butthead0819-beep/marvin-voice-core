@@ -117,3 +117,28 @@ def test_highlight_to_entry_renderable_by_render_session():
     page, layout, _line = render_session(
         session, img_fn=lambda p, a: Image.new("RGB", (50, 50)), text_fn=lambda s, u: "金句")
     assert isinstance(page, Image.Image)
+
+
+# ---- 反差量化 + meme 是否需要 Marvin 救援 ----
+from diary_comic.highlight import contrast_score, meme_needs_marvin
+
+
+def _hs(laugh, setup):
+    return Highlight(ts=1.0, laugher="A", laugh_text=laugh, strength=0,
+                     setup=[("X", s) for s in setup])
+
+
+def test_contrast_score_higher_for_stronger_laugh():
+    strong = _hs("哈哈哈哈哈哈哈哈哈笑死", ["一本正經講解", "結果超荒謬"])
+    mild = _hs("哈哈", ["普通對話", "還好"])
+    assert contrast_score(strong) > contrast_score(mild)
+
+
+def test_meme_strong_contrast_no_marvin():
+    strong = _hs("哈哈哈哈哈哈哈哈哈哈笑死", ["他一本正經分析戰術", "結果把球踢進自家球門"])
+    assert meme_needs_marvin(strong) is False  # 強反差→單飛
+
+
+def test_meme_mild_contrast_needs_marvin():
+    mild = _hs("哈哈哈", ["還好啦", "對啊"])
+    assert meme_needs_marvin(mild) is True  # 反差中→Marvin 補刀

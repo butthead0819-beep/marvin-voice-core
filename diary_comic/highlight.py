@@ -95,6 +95,25 @@ def clean_highlight(h: "Highlight", generate_fn=None) -> str:
         return fallback
 
 
+def contrast_score(h: "Highlight") -> int:
+    """反差分：笑點強度 + setup 內部跳躍（第一句↔最後一句越不像 = 越意外）。"""
+    score = max(h.strength, laugh_strength(h.laugh_text))
+    if len(h.setup) >= 2:
+        sim = re_sim(h.setup[0][1], h.setup[-1][1])
+        score += int((1.0 - sim) * 4)
+    return score
+
+
+def meme_needs_marvin(h: "Highlight", strong_threshold: int = 10) -> bool:
+    """強反差 → 梗自己講（不要 Marvin，避免解釋笑話）；反差中 → Marvin 補刀。"""
+    return contrast_score(h) < strong_threshold
+
+
+def re_sim(a: str, b: str) -> float:
+    import difflib
+    return difflib.SequenceMatcher(None, a or "", b or "").ratio()
+
+
 def highlight_to_entry(h: "Highlight", core: str | None = None):
     """精華 → 漫畫能吃的 DiaryEntry：core=笑點、speakers=參與者、aside=笑聲。"""
     from diary_comic.parser import DiaryEntry

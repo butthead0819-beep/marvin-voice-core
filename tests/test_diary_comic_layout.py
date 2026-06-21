@@ -272,3 +272,18 @@ def test_compose_webtoon_renders_panel_with_inset():
                     inset=Image.new("RGB", (40, 40), (200, 50, 50)))]
     page = compose_page_webtoon(panels, page_width=1080)
     assert page.width == 1080  # 有 inset 也不爆
+
+
+# ---- 一格 meme ----
+def test_compose_meme_returns_size_with_top_and_bottom():
+    from diary_comic.layout import compose_meme
+    img = Image.new("RGB", (200, 200), (180, 150, 120))
+    page = compose_meme(img, top="他把球踢進自家球門", bottom="全場笑爛", size=(1080, 1080))
+    assert isinstance(page, Image.Image) and page.size == (1080, 1080)
+
+
+def test_compose_meme_solo_no_bottom():
+    from diary_comic.layout import compose_meme
+    img = Image.new("RGB", (200, 200))
+    page = compose_meme(img, top="梗自己講", bottom="", size=(800, 800))
+    assert page.size == (800, 800)  # 無 Marvin（單飛）也不爆

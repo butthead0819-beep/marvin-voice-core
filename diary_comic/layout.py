@@ -291,6 +291,20 @@ def gutter_between(prev_core: str, next_core: str, base: int) -> int:
     return max(4, int(base * (0.5 + (1.0 - r))))  # r=1→0.5×；r=0→1.5×
 
 
+def compose_meme(image: Image.Image, top: str = "", bottom: str = "",
+                 size: tuple[int, int] = (1080, 1080)) -> Image.Image:
+    """一格 meme：滿版圖 + 上 setup / 下 punchline 邊條（下可空=強反差單飛）。"""
+    W, H = size
+    page = cover_fit(image, W, H)  # 滿版
+    draw = ImageDraw.Draw(page)
+    font = _load_font(max(20, int(min(W, H) * 0.046)))  # meme 字大一點
+    if top:
+        _edge_caption(draw, page, 0, W, 0, top, font, "top")
+    if bottom:
+        _edge_caption(draw, page, 0, W, H, bottom, font, "bottom")
+    return page
+
+
 def compose_page_webtoon(panels, page_width=1080, gutter=70, base_h=780, side=36):
     """韓國條漫：滿寬格垂直堆疊、變動白間距（gutter 編碼節奏）、一條長直幅。高度依 heat。"""
     n = len(panels)
