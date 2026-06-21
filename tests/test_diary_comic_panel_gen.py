@@ -211,3 +211,9 @@ def test_generate_panel_passes_object_only_into_prompt():
 
     generate_panel(_entry(), generate_image_fn=spy, object_only=True)
     assert "still-life" in seen["p"].lower() or "object" in seen["p"].lower()
+
+
+def test_build_panel_prompt_includes_expressive_faces():
+    p = build_panel_prompt(_entry()).lower()
+    assert "expression" in p and ("eyebrow" in p or "wide" in p)  # 表情指令在
+    assert "different expression" in p  # 每角色不同表情（對比）
