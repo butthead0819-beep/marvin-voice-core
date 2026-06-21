@@ -55,6 +55,15 @@ class SystemLoopsMixin:
                 now = time.time()
                 silence = now - self.last_player_speech_time
 
+                # 📓 [DiaryComic] 靜默 ≥5 分鐘 = 對話場次收尾 → 把剛結束那段畫成漫畫貼回日記頻道
+                # 聊天進行中不出（沒人看、浪費 API）；同場次只出一次（poster 內部去重）；全防禦
+                if silence > 300 and not self.stream_mode:
+                    try:
+                        from diary_comic_poster import maybe_post_comic
+                        await maybe_post_comic(self.bot, self.active_text_channel)
+                    except Exception as _ce:
+                        logger.warning(f"⚠️ [DiaryComic] hook 失敗（已吞）: {_ce}")
+
                 # 📻 [Marvin Radio] 10 分鐘靜默自動啟動電台（stream_mode 播放中則跳過）
                 if silence > 600 and not self.radio_mode and not self.stream_mode and self.bot.voice_clients:
                     print("🕒 [Slow System] 偵測到 10 分鐘靜默，自動啟動馬文電台...")
