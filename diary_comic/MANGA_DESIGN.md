@@ -141,8 +141,15 @@
 - 強反差 → 單飛（不要 Marvin，避免解釋笑話）。
 - 反差中 → Marvin 補刀救援。
 
-**已寫好的純函式**：`story.choose_format` / `story.fuse→StoryPlan` / `story.build_title_prompt` /
-`highlight.contrast_score` / `highlight.meme_needs_marvin` / `layout.compose_meme`。
+**故事導演（讓 LLM 把笑點寫清楚）—— `story.build_story_prompt` / `parse_story`**：
+- **料分兩種**：短窗 STT（`highlight.setup`+`laugh_text`=笑點本體，餵 setup/punchline 拍）vs 10 分摘要（場景脈絡，餵 establish 拍）。**別拿中性摘要當笑點來源**（會壓平）。
+- LLM 做兩件事：① 從**雜訊 STT 還原** punchline 是哪句 ② 拆成依時間順序的拍子，每拍 `scene`(畫面動作,能出圖)+`caption`(清乾淨台詞)。
+- 鐵則：**不准腦補**（STT 沒有的別編）、拍子角色固定（establish/develop/setup/punchline，T4 多 aftermath）。
+- 回 JSON `{understanding, title, beats[]}`；renderer 拿 beats[].scene 出圖、.caption 當字幕。
+
+**已寫好的純函式**：`story.choose_format` / `fuse→StoryPlan` / `build_story_prompt`+`parse_story`（故事導演）/
+`build_meme_prompt` / `build_title_prompt` / `choose_template`+`TEMPLATE_HEIGHTS` /
+`highlight.contrast_score` / `meme_needs_marvin` / `layout.compose_*`。
 
 **render 端待接（要 API，等額度）**：
 1. `render_story(plan)`：StoryPlan → 出圖（Hero duo=setup+reaction 兩張、context=物件、或 meme 單張）+ 清理 punchline + 生標題/馬文 + 標題bar 拼版。

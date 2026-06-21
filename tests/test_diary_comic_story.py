@@ -135,3 +135,38 @@ def test_fuse_context_drops_repetitive_entries():
     plan = fuse(samey, [_hl(8, ["x"])])
     cores = [e.core for e in plan.context]
     assert len(cores) == len(set(cores))  # context 不含重複話題
+
+
+# ---- 故事導演：短窗 STT → per-panel beats ----
+from diary_comic.story import build_story_prompt, parse_story
+
+
+def test_build_story_prompt_feeds_stt_window_and_context():
+    h = _hl(9, ["你看這個跑位", "結果踢進自家球門"])
+    s, u = build_story_prompt(h, "三人看球賽轉播")
+    assert "結果踢進自家球門" in u   # 短窗 STT 進 prompt（笑點本體）
+    assert "三人看球賽轉播" in u      # 摘要場景脈絡進 prompt
+    assert h.laugh_text in u          # 哄堂進 prompt
+
+
+def test_build_story_prompt_roles_and_no_fabrication_in_system():
+    s, _ = build_story_prompt(_hl(9, ["x"]), "")
+    assert "punchline" in s and "setup" in s   # 拍子角色
+    assert "腦補" in s and "雜訊" in s          # 不准腦補 + STT 還原
+
+
+def test_build_story_prompt_t4_adds_aftermath():
+    s4, _ = build_story_prompt(_hl(9, ["x"]), "", template_id="T4")
+    s1, _ = build_story_prompt(_hl(9, ["x"]), "", template_id="T1")
+    assert "aftermath" in s4 and "aftermath" not in s1  # T4 多余韵拍
+
+
+def test_parse_story_from_json():
+    d = parse_story('{"understanding":"u","title":"足球烏龍","beats":'
+                    '[{"role":"establish","scene":"看球","caption":""}]}')
+    assert d["title"] == "足球烏龍" and d["beats"][0]["scene"] == "看球"
+
+
+def test_parse_story_fallback_empty():
+    d = parse_story("不是 JSON")
+    assert d["beats"] == [] and d["title"] == ""

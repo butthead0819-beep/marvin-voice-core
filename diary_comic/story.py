@@ -132,3 +132,58 @@ def parse_meme_text(resp: str) -> tuple[str, str]:
         except Exception:
             pass
     return (resp[:30], "")
+
+
+# 故事導演：讀短窗 STT(笑點本體) + 摘要(場景脈絡) → 還原笑點 + 寫 per-panel beats
+_STORY_SYS = (
+    "你是漫畫故事導演。看一段語音聊天爆笑 moment 的「逐字稿短窗」（STT 有雜訊、要還原語意，"
+    "別照搬亂碼）+ 該段摘要（場景脈絡），寫成清楚的分鏡故事。\n"
+    "步驟：1) 先判 punchline 是哪句（什麼讓大家笑）2) 還原前因 3) 依時間順序拆拍。\n"
+    "每拍給：scene（畫面動作：誰/做什麼/表情，具體到能出圖）+ caption（清乾淨的台詞，短口語；"
+    "沒台詞留空）。\n"
+    "規則：不准腦補（STT 沒有的情節別編、不確定就保守）；繁中；caption ≤14 字。\n"
+    "拍子角色依序固定：{roles}。\n"
+    '只回 JSON：{{"understanding":"一句話講發生什麼","title":"今晚精華：…（≤12字）",'
+    '"beats":[{{"role":"…","scene":"…","caption":"…"}}]}}'
+)
+_ROLE_DESC = {
+    "establish": "establish 開場全景（誰在、在哪、在幹嘛）",
+    "develop": "develop 事情發展（動作推進）",
+    "setup": "setup 鋪哏（那人一本正經講的那句）",
+    "punchline": "punchline 爆點+全場哄堂反應",
+    "aftermath": "aftermath 笑完的余韵反應",
+}
+_DEFAULT_ROLES = ("establish", "develop", "setup", "punchline")
+_TEMPLATE_ROLES = {"T4": ("establish", "setup", "punchline", "aftermath")}
+
+
+def build_story_prompt(h: Highlight, scene_context: str,
+                       template_id: str | None = None) -> tuple[str, str]:
+    roles = _TEMPLATE_ROLES.get(template_id, _DEFAULT_ROLES)
+    system = _STORY_SYS.format(roles="、".join(_ROLE_DESC[r] for r in roles))
+    stt = "\n".join(f"{s}：{t}" for s, t in h.setup) or "（無前情）"
+    user = (f"逐字稿短窗：\n{stt}\n（接著全場：{h.laugh_text}）\n\n"
+            f"這段摘要（場景脈絡）：{scene_context or '（無）'}\n\n"
+            f"寫 {len(roles)} 拍，回 JSON：")
+    return system, user
+
+
+def parse_story(resp: str) -> dict:
+    """解析故事導演回的 JSON → {understanding, title, beats[]}。壞掉降級空殼。"""
+    import json
+    import re
+    empty = {"understanding": "", "title": "", "beats": []}
+    resp = (resp or "").strip()
+    if not resp:
+        return empty
+    m = re.search(r"\{.*\}", resp, re.S)
+    if not m:
+        return empty
+    try:
+        d = json.loads(m.group(0))
+    except Exception:
+        return empty
+    beats = d.get("beats") if isinstance(d.get("beats"), list) else []
+    return {"understanding": str(d.get("understanding", "")).strip(),
+            "title": str(d.get("title", "")).strip(),
+            "beats": [b for b in beats if isinstance(b, dict)]}
