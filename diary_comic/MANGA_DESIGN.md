@@ -116,6 +116,36 @@
 2. 接進 poster（取代純日誌路徑）。
 3. populate `panel.inset`（笑點反應特寫，選配）。
 
+## D. 下個月接線清單（額度回來照這個接）
+
+**現況**：找笑點→融合→出圖→拼版**全寫好且測過**（純函式、注入式 img_fn/text_fn）。
+跑著的 poster 還是**舊的純日誌路徑**（`render_session`）。差的就是「餵真 LLM + 換成故事路徑」。
+
+**Step 0 — 確認額度**：去 ai.studio/spend 看月支出上限是否重置/已調高；先用 demo 出一張確認付費呼叫不再 429。
+
+**Step 1 — 升級 poster（LIVE `diary_comic_poster.py::_render_blocking`）**：
+- 現在：`render_session(session, ...)`（純日誌）。
+- 改成：
+  1. `from diary_comic.highlight import find_highlights`
+  2. 撈該 session 時間範圍的 transcripts（`marvin.db`），`find_highlights(rows)`。
+  3. `from diary_comic.story import fuse` → `plan = fuse(diary_session, highlights)`。
+  4. `plan is None` → 不出（沒笑點，符合 B）。
+  5. `from diary_comic.render import render_story` → `page = render_story(plan, img_fn=_img_fn(key,guard), text_fn=_text_fn(key), cache_dir=CACHE_DIR)`。
+  6. cap 估算改成：meme=1 張、slant=context+2(Hero duo)；`guard.allow(0.04*張數)`。
+- `_img_fn`/`_text_fn` 沿用現成（已含 PaidUsageGuard 入帳）。
+
+**Step 2 — 視覺驗收**（出一張看，確認都生效）：
+- 表情豐富（眉/眼/嘴+汗滴）、鏡頭變化、rule of thirds/景深、變動 gutter、Hero 破格。
+- Hero 拆兩拍（上鋪哏 setup 圖、下哄堂笑 reaction 圖）。
+- meme 模板有挑對、強反差單飛/反差中馬文救援。
+- 標題 bar 正常。
+
+**Step 3 — inset 反應特寫（選配，最後一哩）**：
+- `render_story` 的 Hero reaction panel 多生一張「笑臉極特寫」，塞進 `panel.inset`（`Panel.inset` 欄位 + `compose_page_hero` 要加 `_draw_inset_corner` 呼叫；目前只 webtoon 接了）。
+
+**關鍵檔**：`diary_comic/{highlight,story,render,layout,camera,panel_gen}.py` + LIVE `diary_comic_poster.py`。
+**測試**：`venv_simon/bin/python -m pytest -k diary_comic`（150 綠）。
+
 ## 來源
 - Komawari basics — globalcomix.com/news/details/254
 - Pro paneling guide — clipstudio.net/how-to-draw/archives/160963
