@@ -474,7 +474,7 @@ def compose_page_hero(rows, page_size=(1080, 1920), tilt=0.12):
     font = _load_font(max(14, int(min(W, H) * 0.030)))
     g = max(4, int(min(W, H) * 0.012))
 
-    weights = [r[1].heat if r[0] == "single" else r[1].heat + r[2].heat for r in rows]
+    weights = [sum(x.heat for x in r[1:] if isinstance(x, Panel)) or 1 for r in rows]
     total = sum(max(w, 1) for w in weights)
     y = 0.0
     bounds = [0]
@@ -493,6 +493,35 @@ def compose_page_hero(rows, page_size=(1080, 1920), tilt=0.12):
             draw.rectangle([x0, y0, x1, y1], outline=(20, 20, 20), width=5)
             if panel.caption:
                 _edge_caption(draw, page, x0, x1, y1, panel.caption, font, "bottom")
+        elif row[0] == "vpair":  # 垂直上下兩格（不對等高，寬水平格線，鐵律）
+            top_p, bot_p = row[1], row[2]
+            ratio = row[3] if len(row) > 3 else 0.5
+            hg = max(8, int(min(W, H) * 0.022))  # 水平格線：寬
+            split = int(y0 + (y1 - y0) * ratio)
+            for py0, py1, panel in ((y0, split - hg // 2, top_p),
+                                    (split + hg // 2, y1, bot_p)):
+                if py1 <= py0:
+                    continue
+                page.paste(cover_fit(panel.image, x1 - x0, py1 - py0), (x0, py0))
+                draw.rectangle([x0, py0, x1, py1], outline=(20, 20, 20), width=5)
+                if panel.caption:
+                    _edge_caption(draw, page, x0, x1, py1, panel.caption, font, "bottom")
+        elif row[0] == "quad":  # 2x2 四宮格（窄垂直 / 寬水平格線，鐵律）
+            ps = row[1:5]
+            vg = max(3, int(min(W, H) * 0.008))
+            hg = max(8, int(min(W, H) * 0.022))
+            mx, my = (x0 + x1) // 2, (y0 + y1) // 2
+            cells = [(x0, y0, mx - vg // 2, my - hg // 2),
+                     (mx + vg // 2, y0, x1, my - hg // 2),
+                     (x0, my + hg // 2, mx - vg // 2, y1),
+                     (mx + vg // 2, my + hg // 2, x1, y1)]
+            for (cx0, cy0, cx1, cy1), panel in zip(cells, ps):
+                if cx1 <= cx0 or cy1 <= cy0:
+                    continue
+                page.paste(cover_fit(panel.image, cx1 - cx0, cy1 - cy0), (cx0, cy0))
+                draw.rectangle([cx0, cy0, cx1, cy1], outline=(20, 20, 20), width=5)
+                if panel.caption:
+                    _edge_caption(draw, page, cx0, cx1, cy1, panel.caption, font, "bottom")
         elif row[0] == "pair":  # 遠景同源切左右不對等兩格（窄垂直格線，鐵律）
             left_p, right_p = row[1], row[2]
             ratio = row[3] if len(row) > 3 else 0.3

@@ -401,3 +401,14 @@ def test_zoom_wide_specs_carries_captions():
     from diary_comic.layout import zoom_wide_specs
     z, w = zoom_wide_specs((0.3, 0.0, 0.6, 0.5), captions=["講者", "全場"])
     assert z.caption == "講者" and w.caption == "全場"
+
+
+# ---- vpair（垂直兩格）/ quad（2x2 四宮格）row 型別 ----
+def test_compose_page_hero_vpair_and_quad_rows():
+    from diary_comic.layout import compose_page_hero
+    p = lambda h: Panel(image=Image.new("RGB", (60, 60)), heat=h)
+    rows = [("vpair", p(3), p(3), 0.45),
+            ("quad", p(3), p(3), p(3), p(3)),
+            ("duo", p(9), p(11))]
+    page = compose_page_hero(rows, (1080, 1920))
+    assert isinstance(page, Image.Image) and page.size == (1080, 1920)
