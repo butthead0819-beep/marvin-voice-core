@@ -103,32 +103,32 @@ def _render_meme(plan, img_fn, text_fn, cache_dir, variant):
 
 
 def _render_slant(plan, img_fn, text_fn, cache_dir, page_size, variant):
-    """大砸框：高潮(爆笑反應)=底部 ≥40% 砸框，鋪陳(物件context + 鋪哏setup)=上方小格。"""
+    """高潮 = Hero 斜切 duo（上鋪哏、下爆笑兩格斜切），heat 高 → 自動主導 ≥40%。
+    鋪陳 = 物件 context 方正小格（在上）。"""
     from diary_comic.highlight import clean_highlight
-    from diary_comic.layout import Panel, compose_splash_page, with_title
+    from diary_comic.layout import Panel, compose_page_hero, with_title
     from diary_comic.story import build_title_prompt
-    # 鋪陳：物件 context 小格（為高潮服務）
-    support = []
+    # 鋪陳：物件 context 小格（方正、為高潮鋪陳）
+    ctx = []
     for i, e in enumerate(plan.context):
         img = generate_panel_cached(
-            e, generate_image_fn=img_fn, aspect="4:3", cache_dir=cache_dir, variant=variant,
+            e, generate_image_fn=img_fn, aspect="16:9", cache_dir=cache_dir, variant=variant,
             shot=shot_for(i, len(plan.context) + 2, is_hero=False), object_only=True)
-        support.append(Panel(image=img, heat=heat_score(e), caption=e.core))
-    # 鋪哏 setup（角色、中景）也是鋪陳格
+        ctx.append(Panel(image=img, heat=heat_score(e), caption=e.core))
+    # Hero 斜切 duo：上=鋪哏(中景) / 下=爆笑(情緒特寫)，角色，高 heat → 主導大格
     setup_img = generate_panel_cached(
-        plan.peak_setup, generate_image_fn=img_fn, aspect="4:3", cache_dir=cache_dir,
+        plan.peak_setup, generate_image_fn=img_fn, aspect="16:9", cache_dir=cache_dir,
         variant=variant, shot="medium shot, the character delivering the funny line deadpan")
-    support.append(Panel(image=setup_img, heat=9, caption=plan.peak_setup.core))
-    # 高潮 = 爆笑反應，情緒特寫，當大砸框
     react_img = generate_panel_cached(
         plan.peak_reaction, generate_image_fn=img_fn, aspect="16:9", cache_dir=cache_dir,
         variant=variant,
         shot="dramatic close-up on the whole group bursting out laughing, intense emotion, "
              "exaggerated faces, broken-border energy")
     punch = clean_highlight(plan.highlight, generate_fn=text_fn)
-    climax = Panel(image=react_img, heat=10, caption=punch)
-
-    page = compose_splash_page(support, climax, page_size, climax_frac=0.45)
+    setup_panel = Panel(image=setup_img, heat=9, caption=plan.peak_setup.core)
+    react_panel = Panel(image=react_img, heat=10, caption=punch)
+    rows = [("single", p) for p in ctx] + [("duo", setup_panel, react_panel)]
+    page = compose_page_hero(rows, page_size)
     title = ""
     if text_fn is not None:
         try:
