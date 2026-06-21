@@ -27,6 +27,39 @@ class Panel:
     inset: Image.Image | None = None  # 反應特寫小格（疊在本格角落），如哄堂笑的臉
 
 
+@dataclass
+class CropSpec:
+    box: tuple                 # (l, t, r, b) 相對座標 0..1
+    caption: str = ""
+    heat: int = 3
+
+
+def crops_from_source(source_img, specs):
+    """同源推鏡：從一張（高清）素材按相對框裁出多格 Panel。
+
+    省 API、角色零飄移、自帶遠→中→特推鏡。裁太緊會糊 → 素材需夠高解析度（2K）。
+    """
+    W, H = source_img.size
+    panels = []
+    for s in specs:
+        l, t, r, b = s.box
+        l, t = max(0.0, l), max(0.0, t)
+        r, b = min(1.0, r), min(1.0, b)
+        crop = source_img.crop((int(l * W), int(t * H), int(r * W), int(b * H)))
+        panels.append(Panel(image=crop, heat=s.heat, caption=s.caption))
+    return panels
+
+
+def pushin_specs(captions=None, heats=None):
+    """標準遠→中→特推鏡三框（一路推緊，置中偏 rule-of-thirds）。"""
+    boxes = [(0.0, 0.0, 1.0, 1.0),            # 遠景：全場
+             (0.15, 0.12, 0.82, 0.80),        # 中景：推進
+             (0.34, 0.30, 0.68, 0.62)]        # 特寫：重點（需高清素材才不糊）
+    caps = captions or ["", "", ""]
+    hs = heats or [3, 4, 5]
+    return [CropSpec(box=b, caption=caps[i], heat=hs[i]) for i, b in enumerate(boxes)]
+
+
 # 手刻不對等模板（手機直式：垂直堆疊為主，穿插 2-up 排，面積刻意不均）。
 # 一頁讀下來像滑手機，仍保留日漫不對等切割的呼吸感。
 _TEMPLATES: dict[int, list[Box]] = {
@@ -346,14 +379,18 @@ def splash_layout(n_support, page_size, climax_frac=0.45, v_gutter=None, h_gutte
 
 
 def compose_splash_page(support_panels, climax_panel, page_size=(1080, 1920),
-                        climax_frac=0.45):
-    """一頁一個大砸框：高潮格 ≥40% 在底、鋪陳小格在上。其餘格都為這一格服務。"""
+                        climax_frac=0.45, climax_tilt=0.08):
+    """一頁一個大砸框：高潮格 ≥40% 在底、鋪陳小格在上。
+
+    規則3：鋪陳=方正（平靜）、高潮=斜框（動態）。climax_tilt=0 → 高潮也方正。
+    """
     W, H = page_size
     page = Image.new("RGB", (W, H), (250, 248, 244))
     draw = ImageDraw.Draw(page)
     font = _load_font(max(14, int(min(W, H) * 0.026)))
     boxes, climax = splash_layout(len(support_panels), page_size, climax_frac)
 
+    # 鋪陳：方正小格（平靜）
     for panel, (x0, y0, x1, y1) in zip(support_panels, boxes):
         if x1 <= x0 or y1 <= y0:
             continue
@@ -362,9 +399,16 @@ def compose_splash_page(support_panels, climax_panel, page_size=(1080, 1920),
         if panel.caption:
             _edge_caption(draw, page, x0, x1, y1, panel.caption, font, "bottom")
 
-    cx0, cy0, cx1, cy1 = climax  # 高潮大砸框：粗框 + 大字幕
-    page.paste(cover_fit(climax_panel.image, cx1 - cx0, cy1 - cy0), (cx0, cy0))
-    draw.rectangle([cx0, cy0, cx1, cy1], outline=(15, 15, 15), width=8)
+    # 高潮：斜框大砸框（動態）—— 頂邊傾斜切過去
+    cx0, cy0, cx1, cy1 = climax
+    tilt = int(climax_tilt * (cy1 - cy0))
+    quad = [(cx0, cy0 + tilt), (cx1, cy0 - tilt), (cx1, cy1), (cx0, cy1)]  # 斜頂
+    by0 = cy0 - tilt
+    bw, bh = cx1 - cx0, cy1 - by0
+    mask = Image.new("L", (bw, bh), 0)
+    ImageDraw.Draw(mask).polygon([(px - cx0, py - by0) for px, py in quad], fill=255)
+    page.paste(cover_fit(climax_panel.image, bw, bh), (cx0, by0), mask)
+    draw.line(quad + [quad[0]], fill=(15, 15, 15), width=8, joint="curve")  # 斜框
     if climax_panel.caption:
         big = _load_font(max(20, int(min(W, H) * 0.034)))
         _edge_caption(draw, page, cx0, cx1, cy1, climax_panel.caption, big, "bottom")

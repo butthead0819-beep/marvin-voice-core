@@ -320,3 +320,40 @@ def test_splash_gutters_vertical_narrow_horizontal_wide():
     v_gap = support[1][0] - support[0][2]   # 兩欄之間（垂直格線）
     h_gap = climax[1] - support[0][3]       # 鋪陳列底 ↔ 高潮頂（水平格線）
     assert v_gap > 0 and h_gap > v_gap      # 水平格線寬 > 垂直格線窄
+
+
+# ---- 同源推鏡：一張高清素材裁多格（省 API、零飄移）----
+def test_crops_from_source_one_panel_per_spec():
+    from diary_comic.layout import crops_from_source, CropSpec
+    src = Image.new("RGB", (800, 600))
+    panels = crops_from_source(src, [CropSpec((0, 0, 1, 1), "遠"), CropSpec((0.2, 0.2, 0.8, 0.8), "中")])
+    assert len(panels) == 2 and panels[0].caption == "遠"
+
+
+def test_crops_from_source_wide_is_full_image():
+    from diary_comic.layout import crops_from_source, CropSpec
+    src = Image.new("RGB", (800, 600))
+    p = crops_from_source(src, [CropSpec((0, 0, 1, 1))])[0]
+    assert p.image.size == (800, 600)
+
+
+def test_crops_from_source_tighter_crop_has_fewer_pixels():
+    from diary_comic.layout import crops_from_source, CropSpec
+    src = Image.new("RGB", (800, 600))
+    wide, close = crops_from_source(src, [CropSpec((0, 0, 1, 1)), CropSpec((0.35, 0.35, 0.65, 0.65))])
+    assert close.image.size[0] < wide.image.size[0]  # 特寫像素更少（裁得緊）
+
+
+def test_crops_from_source_carries_heat():
+    from diary_comic.layout import crops_from_source, CropSpec
+    src = Image.new("RGB", (800, 600))
+    p = crops_from_source(src, [CropSpec((0, 0, 1, 1), heat=9)])[0]
+    assert p.heat == 9
+
+
+def test_pushin_specs_three_progressively_tighter():
+    from diary_comic.layout import pushin_specs
+    specs = pushin_specs()
+    assert len(specs) == 3  # 遠→中→特
+    areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in (s.box for s in specs)]
+    assert areas[0] > areas[1] > areas[2]  # 一路推緊
