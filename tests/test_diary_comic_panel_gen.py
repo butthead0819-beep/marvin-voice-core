@@ -217,3 +217,10 @@ def test_build_panel_prompt_includes_expressive_faces():
     p = build_panel_prompt(_entry()).lower()
     assert "expression" in p and ("eyebrow" in p or "wide" in p)  # 表情指令在
     assert "different expression" in p  # 每角色不同表情（對比）
+
+
+def test_build_panel_prompt_includes_composition_craft():
+    p = build_panel_prompt(_entry()).lower()
+    assert "thirds" in p                          # rule of thirds 主體偏置
+    assert "foreground" in p or "depth" in p      # 前後景景深
+    assert "focal" in p or "focus" in p           # 情緒焦點

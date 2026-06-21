@@ -20,6 +20,9 @@ ImageFn = Callable[[str, "str | None"], Image.Image]  # (prompt, aspect) -> Imag
 _STYLE = (
     "A single comic panel, cute warm flat-illustration style, soft colors, clean border, "
     "with DYNAMIC, cinematic, dramatic composition and strong perspective for tension. "
+    "Compose with the RULE OF THIRDS — place the focal subject off-center with leading space. "
+    "Build clear DEPTH: a foreground framing element + mid-ground characters + background, "
+    "not flat. Pick ONE focal character whose reaction is the point of the panel. "
     "Characters have BIG, exaggerated, varied anime/manga facial expressions that clearly "
     "read the emotion of the moment — wide or squinting eyes, expressive eyebrows, open-mouth "
     "laughs or smirks, plus sweat drops / blush lines / shock lines where they fit. "
