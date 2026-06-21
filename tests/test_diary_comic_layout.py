@@ -311,3 +311,12 @@ def test_compose_splash_page_returns_size():
     climax = Panel(image=Image.new("RGB", (80, 80), (200, 50, 50)), heat=10, caption="爆笑高潮")
     page = compose_splash_page(support, climax, page_size=(1080, 1920))
     assert isinstance(page, Image.Image) and page.size == (1080, 1920)
+
+
+# ---- 鐵律：垂直格線窄、水平格線寬（防跳行）----
+def test_splash_gutters_vertical_narrow_horizontal_wide():
+    from diary_comic.layout import splash_layout
+    support, climax = splash_layout(2, (1080, 1920))  # 2 格並排一列
+    v_gap = support[1][0] - support[0][2]   # 兩欄之間（垂直格線）
+    h_gap = climax[1] - support[0][3]       # 鋪陳列底 ↔ 高潮頂（水平格線）
+    assert v_gap > 0 and h_gap > v_gap      # 水平格線寬 > 垂直格線窄

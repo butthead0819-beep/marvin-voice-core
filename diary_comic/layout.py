@@ -319,27 +319,29 @@ def compose_meme(image: Image.Image, top: str = "", bottom: str = "",
     return page
 
 
-def splash_layout(n_support, page_size, climax_frac=0.45, gutter=None):
-    """大砸框版面：高潮格佔底部 climax_frac（≥40% 面積），鋪陳格鋪在上方。
+def splash_layout(n_support, page_size, climax_frac=0.45, v_gutter=None, h_gutter=None):
+    """大砸框版面：高潮格佔底部 climax_frac（≥40%），鋪陳格在上方。
 
+    鐵律：**垂直格線(欄間)窄、水平格線(列間)寬** → 防讀者跳行。
     回 (support_boxes, climax_box)，皆像素 (x0,y0,x1,y1)。
     """
     W, H = page_size
-    g = gutter or max(4, int(min(W, H) * 0.012))
+    vg = v_gutter or max(3, int(min(W, H) * 0.008))   # 垂直格線：窄
+    hg = h_gutter or max(10, int(min(W, H) * 0.026))  # 水平格線：寬
     ch = int(climax_frac * H)
-    climax = (g, H - ch + g, W - g, H - g)  # 底部大格（滿寬）
-    top_y0, top_y1 = g, H - ch - g          # 上方鋪陳區
+    climax = (vg, H - ch + hg // 2, W - vg, H - vg)    # 底部大砸框
+    top_y0, top_y1 = vg, H - ch - hg // 2              # 上方鋪陳區
     n = max(1, n_support)
     cols = n if n <= 3 else (n + 1) // 2
     rows = 1 if n <= 3 else 2
-    cw = (W - 2 * g) // cols
-    rh = (top_y1 - top_y0) // rows
+    cw = (W - 2 * vg - (cols - 1) * vg) // cols        # 欄寬（窄垂直 gutter）
+    rh = (top_y1 - top_y0 - (rows - 1) * hg) // rows   # 列高（寬水平 gutter）
     boxes = []
     for i in range(n):
         r, c = divmod(i, cols)
-        x0 = g + c * cw
-        y0 = top_y0 + r * rh
-        boxes.append((x0, y0, x0 + cw - g, y0 + rh - g))
+        x0 = vg + c * (cw + vg)
+        y0 = top_y0 + r * (rh + hg)
+        boxes.append((x0, y0, x0 + cw, y0 + rh))
     return boxes, climax
 
 
