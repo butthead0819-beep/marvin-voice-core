@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,19 @@ except ImportError:  # 缺 dep → fast-path 靜默停用
 
 DEFAULT_CATALOG = Path("records/music_catalog.json")
 DEFAULT_THRESHOLD = 80.0
+
+# 點歌命令前綴：真實 query 是「播放陶喆的流沙」，命令動詞要先剝掉只留歌名，
+# 否則「播放/bo fang」當內容 token 被 token_set + 覆蓋率守門當噪音 → 命中失敗。
+_CMD_PREFIX = re.compile(
+    r"^(幫我|麻煩|我想|我要|可以|請)*"
+    r"(播放|撥放|點播|播一首|放一首|來一首|來首|播|放|點|來|聽|想聽)+"
+)
+
+
+def strip_command_prefix(query: str) -> str:
+    """剝點歌命令前綴（播放/放/點播…）只留歌名。剝完空則回原字串（避免整句被吃掉）。"""
+    stripped = _CMD_PREFIX.sub("", query).strip()
+    return stripped or query
 
 
 def to_pinyin(text: str) -> str:
@@ -94,7 +108,7 @@ class MusicFastPath:
         self._maybe_reload()
         if not self._index:
             return None
-        qpy = to_pinyin(query)
+        qpy = to_pinyin(strip_command_prefix(query))
         if not qpy:
             return None
         res = process.extractOne(qpy, self._index, scorer=fuzz.token_set_ratio)

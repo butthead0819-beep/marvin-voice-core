@@ -35,6 +35,14 @@ def test_clean_query_matches_canonical(fp):
     assert score >= 80
 
 
+def test_command_prefix_stripped(fp):
+    """真實點歌 query 帶命令前綴「播放/放/點播」→ 要剝掉只比歌名，否則覆蓋率守門誤擋。
+    （2026-06-22：fast-path 零命中真因——所有真實 query 帶播放前綴被守門擋掉。）"""
+    for q in ["播放周杰倫的七里香", "放七里香", "點播周杰倫七里香", "幫我播放七里香"]:
+        r = fp.match(q)
+        assert r is not None and "七里香" in r[0], f"{q} 應命中"
+
+
 def test_homophone_garble_matches_via_pinyin(fp):
     # 官者→關喆（guan zhe 同音）；字元比對救不回，拼音救回
     name, score = fp.match("官者的想你的夜")
