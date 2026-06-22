@@ -56,7 +56,12 @@ _ARTIST_ALIAS = {
     "eric chou": "周興哲", "eason chan": "陳奕迅", "sun yanzi": "孫燕姿",
     "jacky cheung": "張學友", "g.e.m.": "鄧紫棋", "tiger huang": "黃小琥",
     "ricky hsiao": "蕭煌奇", "phil chang": "張宇", "jj lin": "林俊傑",
-    "jay chou": "周杰倫", "a-mei": "張惠妹", "wu bai": "伍佰",
+    "jay chou": "周杰倫", "a-mei": "張惠妹", "amei": "張惠妹", "wu bai": "伍佰",
+    # 台語/獨立團 + 更多英文名藝人（依目錄英文名 top 補）
+    "eggplantegg": "茄子蛋", "jody chiang": "江蕙", "grady guan": "關喆",
+    "elva hsiao": "蕭亞軒", "steve chou": "周傳雄", "sandy lam": "林憶蓮",
+    "fei yu-ching": "費玉清", "wang leehom": "王力宏", "chang yu-shen": "張雨生",
+    "a-lin": "A-Lin", "accusefive": "告五人", "fire ex.": "滅火器",
 }
 
 
@@ -250,10 +255,29 @@ def main():
         print(f"[expand] 房間藝人 {len(artists)} 位，每人抓 {args.expand_artists} 首…")
         expand_added = _merge(expand_artists(yt, artists, args.expand_artists, args.sleep))
 
+    # Post-process：把所有 row（含 cached 播放史）的英文藝人名正規化成中文，
+    # 讓使用者說中文名也匹配得到（茄子蛋=EggPlantEgg、張雨生=Chang Yu-Shen…）。零 API。
+    renorm = 0
+    for r in rows:
+        artist = _extract_artist(r["name"])
+        norm = _normalize_artist(artist)
+        if norm != artist and r["name"].startswith(artist):
+            r["name"] = norm + r["name"][len(artist):]
+            r["pinyin"] = _to_pinyin(r["name"]) or r.get("pinyin", "")
+            renorm += 1
+    # 正規化後可能產生重複 name → 去重
+    seen2, deduped = set(), []
+    for r in rows:
+        if r["name"] not in seen2:
+            seen2.add(r["name"])
+            deduped.append(r)
+    rows = deduped
+
     OUT.parent.mkdir(exist_ok=True)
     OUT.write_text(json.dumps(rows, ensure_ascii=False, indent=0), encoding="utf-8")
     print(f"[catalog] 新解析 {resolved} | 快取跳過 {skipped} | 非歌剔 {dropped} | "
-          f"失敗 {failed} | KKBOX 補 {kkbox_added} | 藝人擴展 {expand_added} → 共 {len(rows)} 首 → {OUT}")
+          f"失敗 {failed} | KKBOX 補 {kkbox_added} | 藝人擴展 {expand_added} | "
+          f"英文名正規化 {renorm} → 共 {len(rows)} 首 → {OUT}")
     for r in rows[-6:]:
         print(f"    {r['name'][:40]}")
 
