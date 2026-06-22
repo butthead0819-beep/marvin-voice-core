@@ -68,6 +68,26 @@ def test_empty_query_returns_none(fp):
     assert fp.match("   ") is None
 
 
+def test_catalog_hot_reload_on_mtime_change(tmp_path):
+    """目錄檔更新（3am cron 重建）→ 不重啟也熱重載吃到新歌。"""
+    import os
+
+    path = tmp_path / "catalog.json"
+    path.write_text(json.dumps([{"name": "周杰倫 七里香"}], ensure_ascii=False),
+                    encoding="utf-8")
+    fp = MusicFastPath(catalog_path=path, threshold=80)
+    assert fp.match("七里香") is not None
+    assert fp.match("蔡依林的倒帶") is None  # 還沒在庫
+
+    # 重建目錄（加新歌），強制 mtime 變
+    path.write_text(json.dumps([{"name": "周杰倫 七里香"}, {"name": "蔡依林 倒帶"}],
+                               ensure_ascii=False), encoding="utf-8")
+    os.utime(path, (fp._mtime + 100, fp._mtime + 100))
+
+    hit = fp.match("蔡依林的倒帶")  # 熱重載後應命中
+    assert hit is not None and "倒帶" in hit[0]
+
+
 def test_missing_catalog_disables_fastpath(tmp_path):
     fp = MusicFastPath(catalog_path=tmp_path / "nope.json", threshold=80)
     assert fp.enabled is False
