@@ -2729,6 +2729,20 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # question_done：問句已確定（含上面 evt.wait 等使用者講完的時間），cleaner LLM 之前打點。
         # dequeued→question_done = 等問句；question_done→cleaner_done = 真正的 cleaner 清洗。
         pipeline_timing.mark("question_done")
+
+        # 🎵 [MusicFastPath] 本地 canonical 歌表（拼音 fuzzy）命中 → 用正規歌名、跳過
+        # 2.5s cleaner LLM。中文 STT 同音字糊字（官者→關喆）靠拼音救回。env-gated
+        # MARVIN_MUSIC_FASTPATH（預設 OFF）：catalog 全建 + live 驗證前不改行為。
+        # 非音樂/未命中 → match() 回 None → fall through 走 cleaner（見 music_fastpath.py）。
+        _fp = self._get_music_fastpath()
+        if _fp is not None:
+            _hit = _fp.match(stripped)
+            if _hit:
+                logger.info(f"🎵 [MusicFastPath] '{stripped[:30]}' → '{_hit[0]}' "
+                            f"({_hit[1]:.0f}) 跳過 cleaner")
+                pipeline_timing.mark("cleaner_done")
+                return _hit[0]
+
         # LLM 清洗 STT 雜訊，不做語音確認。短 timeout 封頂：cleaner 太慢就用 raw，不卡 worker
         # （含 TimeoutError 由 except 接 → 降級 raw）。喚醒偵測時已清過一次，這裡慢不值得等。
         cleaned = stripped
@@ -2743,6 +2757,26 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 pass
         pipeline_timing.mark("cleaner_done")
         return cleaned or stripped
+
+    def _get_music_fastpath(self):
+        """Lazy MusicFastPath（env-gated MARVIN_MUSIC_FASTPATH）。
+
+        flag off / deps 缺 / catalog 空 / 載入失敗 → None（caller fall through 走 cleaner）。
+        False sentinel 避免每次重試載入。
+        """
+        if os.getenv("MARVIN_MUSIC_FASTPATH") != "1":
+            return None
+        fp = getattr(self, "_music_fastpath", None)
+        if fp is None:
+            try:
+                from music_fastpath import MusicFastPath
+                _m = MusicFastPath()
+                fp = _m if _m.enabled else False
+            except Exception as e:
+                logger.warning(f"[MusicFastPath] 載入失敗，停用: {e}")
+                fp = False
+            self._music_fastpath = fp
+        return fp or None
 
     # ──────────────────────────────────────────────────────────────
 
