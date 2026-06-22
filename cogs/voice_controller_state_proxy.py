@@ -90,6 +90,16 @@ class StateProxyMixin:
             mc.stream_volume = value
         else:
             self._stream_volume_local = value
+        # 即時套進 mixer：_mixer_play_music 的 100ms sync loop 可能提早結束（has_music
+        # race）→ 按鈕/語音改音量只在下一首生效。這裡直接推 mixer，當前播放即時生效。
+        # 只在 stream 活躍時套，避免誤蓋 radio_volume。
+        mixer = getattr(self, '_mixer', None)
+        if mixer is not None and mc is not None and getattr(mc, 'stream_mode', False):
+            try:
+                ng = mc._stream_norm_gain.get(getattr(mc, '_current_stream_url', None), 1.0)
+                mixer.set_volume(value * ng)
+            except Exception:
+                pass
 
     @property
     def _stream_play_gen(self) -> int:
