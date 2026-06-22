@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -17,28 +18,28 @@ logger = logging.getLogger(__name__)
 
 LAUGH_CONCURRENCY_WINDOW = 3.0  # 笑聲當下回看幾秒算「同時發聲」
 
-SAMPLE_DIR = "records/laugh_samples"
-SAMPLE_CAP = 500  # 驗證用：最多收幾段，避免塞爆磁碟
+RHYTHM_LOG = "records/laugh_rhythm_probe.jsonl"
 
 
-def maybe_capture_sample(raw_text, wav_bytes, speaker, timestamp) -> None:
-    """[DEBUG, 預設 OFF] 驗證 A：env LAUGH_SAMPLE_CAPTURE=1 時把 WAV 落盤，
-    依 STT 文字標 laugh/speech，供離線節律分析。注意：繞過 ZDR 秒刪，只給擁有者驗證用。"""
-    if os.getenv("LAUGH_SAMPLE_CAPTURE", "").strip().lower() not in ("1", "true", "yes", "on"):
+def maybe_log_rhythm(raw_text, wav_bytes, speaker, timestamp) -> None:
+    """[DEBUG, 預設 OFF] 驗證 A：env LAUGH_RHYTHM_LOG=1 時，就地算節律特徵只寫一行 JSONL
+    （不存任何音訊、ZDR 完整），STT 文字當弱標籤。閾值離線套，要重調不必重收。"""
+    if os.getenv("LAUGH_RHYTHM_LOG", "").strip().lower() not in ("1", "true", "yes", "on"):
         return
     if not wav_bytes:
         return
     try:
-        from diary_comic.highlight import is_laugh, laugh_strength
-        os.makedirs(SAMPLE_DIR, exist_ok=True)
-        if len(os.listdir(SAMPLE_DIR)) >= SAMPLE_CAP:
-            return
-        label = f"laugh{laugh_strength(raw_text)}" if is_laugh(raw_text) else "speech"
-        safe = "".join(c for c in (speaker or "x") if c.isalnum())[:10] or "x"
-        with open(os.path.join(SAMPLE_DIR, f"{label}_{safe}_{timestamp:.0f}.wav"), "wb") as f:
-            f.write(wav_bytes)
+        from diary_comic.highlight import is_laugh
+        from laugh_acoustics import rhythm_from_wav_bytes
+        f = rhythm_from_wav_bytes(wav_bytes)
+        row = {"ts": round(timestamp, 1), "speaker": speaker,
+               "label": "laugh" if is_laugh(raw_text) else "speech",
+               "bursts": f["bursts"], "pps": round(f["peaks_per_sec"], 2),
+               "reg": round(f["regularity"], 3)}
+        with open(RHYTHM_LOG, "a", encoding="utf-8") as fp:
+            fp.write(json.dumps(row, ensure_ascii=False) + "\n")
     except Exception as e:
-        logger.debug(f"[LaughSample] 擷取失敗（忽略）: {e}")
+        logger.debug(f"[LaughRhythm] 落盤失敗（忽略）: {e}")
 
 
 def laugh_counts(sink, voice_clients, now: float) -> tuple[int, int]:

@@ -1,5 +1,11 @@
 """笑聲節律啟發式：規律爆發包絡 → looks_like_laugh。"""
-from laugh_acoustics import rms_envelope, rhythm_features, looks_like_laugh
+import io
+import math
+import wave
+
+from laugh_acoustics import (
+    rms_envelope, rhythm_features, looks_like_laugh,
+    wav_bytes_to_mono, rhythm_from_wav_bytes)
 
 
 def _burst_envelope(rate_hz, seconds, frame_rate_hz=50.0):
@@ -46,3 +52,41 @@ def test_rms_envelope_frames_energy():
     samples = [0, 0, 100, 100, 0, 0, 200, 200]
     env = rms_envelope(samples, frame_len=2)
     assert env == [0.0, 100.0, 0.0, 200.0]
+
+
+def _wav(samples, sr=48000, ch=2):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(ch)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        import array
+        if ch == 2:
+            inter = array.array("h")
+            for s in samples:
+                inter.append(s); inter.append(s)
+            w.writeframes(inter.tobytes())
+        else:
+            w.writeframes(array.array("h", samples).tobytes())
+    return buf.getvalue()
+
+
+def test_wav_bytes_to_mono_averages_stereo():
+    mono, sr = wav_bytes_to_mono(_wav([10, 20, 30], sr=16000, ch=2))
+    assert sr == 16000 and mono == [10, 20, 30]
+
+
+def test_rhythm_from_wav_bytes_detects_laugh_burst():
+    # 5 Hz 規律爆發、48k：每週期 9600 樣本，前半振幅高後半低
+    sr = 48000
+    period = sr // 5
+    samples = []
+    for _ in range(8):  # ~1.6s
+        samples += [8000] * (period // 2) + [50] * (period - period // 2)
+    f = rhythm_from_wav_bytes(_wav(samples, sr=sr, ch=1))
+    assert looks_like_laugh(f) is True
+
+
+def test_rhythm_from_wav_bytes_empty_safe():
+    f = rhythm_from_wav_bytes(b"")
+    assert f["bursts"] == 0 and looks_like_laugh(f) is False

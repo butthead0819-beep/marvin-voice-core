@@ -22,7 +22,7 @@ from consent_manager import ConsentManager
 from nudge_throttle import NudgeThrottle
 from transcript_store import TranscriptStore
 from diary_comic.highlight import is_laugh
-from laugh_snapshot import snapshot_laugh_event, maybe_capture_sample
+from laugh_snapshot import snapshot_laugh_event, maybe_log_rhythm
 from speaker_topic_graph import SpeakerTopicGraph
 from speak_bus import SpeakBus, SpeakContext
 from speak_outcome import SpeakOutcome, append_speak_outcome
@@ -1267,8 +1267,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if is_laugh(raw_text):
                 snapshot_laugh_event(self.bot, self._transcript_store,
                                      speaker, timestamp, guild_id, channel_id)
-            # [DEBUG, 預設 OFF] 驗證 A：收笑/講話樣本供離線節律分析
-            maybe_capture_sample(raw_text, wav_bytes, speaker, timestamp)
+            # [DEBUG, 預設 OFF] 驗證 A：就地算節律只落 JSONL 數字（不存音訊）
+            maybe_log_rhythm(raw_text, wav_bytes, speaker, timestamp)
             asyncio.create_task(asyncio.to_thread(
                 self._speaker_topic_graph.record_utterance,
                 speaker, channel_id, raw_text, ts=timestamp,

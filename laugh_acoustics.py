@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
+import array
+import io
 import math
+import wave
 
 # 初始猜測門檻（離線 probe 會校）
 LAUGH_RATE_LO = 3.0     # 每秒爆發數下限
@@ -63,3 +66,29 @@ def looks_like_laugh(features: dict) -> bool:
     return (features.get("bursts", 0) >= LAUGH_MIN_BURSTS
             and LAUGH_RATE_LO <= features.get("peaks_per_sec", 0.0) <= LAUGH_RATE_HI
             and features.get("regularity", 0.0) >= LAUGH_REGULARITY)
+
+
+def wav_bytes_to_mono(data: bytes) -> tuple[list, int]:
+    """完整 WAV bytes → (mono int16 取樣 list, sample_rate)。非 16-bit → ([], sr)。"""
+    with wave.open(io.BytesIO(data), "rb") as w:
+        sr, ch, sw = w.getframerate(), w.getnchannels(), w.getsampwidth()
+        raw = w.readframes(w.getnframes())
+    if sw != 2:
+        return [], sr
+    a = array.array("h")
+    a.frombytes(raw)
+    if ch == 2:
+        return [(a[i] + a[i + 1]) // 2 for i in range(0, len(a) - 1, 2)], sr
+    return list(a), sr
+
+
+def rhythm_from_wav_bytes(data: bytes, frame_ms: int = 20) -> dict:
+    """WAV bytes → 節律特徵（給 live 落 JSONL + 離線 probe 共用）。空/壞 → 零特徵。"""
+    try:
+        mono, sr = wav_bytes_to_mono(data)
+    except Exception:
+        mono, sr = [], 0
+    if not mono or sr <= 0:
+        return {"bursts": 0, "peaks_per_sec": 0.0, "regularity": 0.0}
+    env = rms_envelope(mono, frame_len=max(1, int(sr * frame_ms / 1000)))
+    return rhythm_features(env, frame_rate_hz=1000.0 / frame_ms)
