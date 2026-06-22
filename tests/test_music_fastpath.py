@@ -56,6 +56,13 @@ def test_non_song_chitchat_rejected(fp):
     assert fp.match("今天天氣真好啊") is None
 
 
+def test_known_artist_wrong_song_rejected(fp):
+    """防「藝人對、歌錯」：點某藝人但歌名不在庫 → 不該配到同藝人別首（覆蓋率守門）。
+    周杰倫在庫但「不存在歌名」非任何在庫曲 → 應 None 走 cleaner，而非播別首周杰倫。"""
+    assert fp.match("周杰倫的這首歌不存在啦啦啦") is None
+    assert fp.match("周杰倫的隨便亂掰一個") is None
+
+
 def test_empty_query_returns_none(fp):
     assert fp.match("") is None
     assert fp.match("   ") is None
