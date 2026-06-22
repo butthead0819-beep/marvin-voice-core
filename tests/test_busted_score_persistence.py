@@ -191,7 +191,7 @@ async def test_setter_timeout_persists_penalty_immediately():
 
         await engine.skip_setter_timeout()
 
-        scores = await _wait_scores(db_path, lambda s: "setter" in s)
+        scores = await _wait_scores(db_path, lambda s: s.get("setter") == SETTER_TIMEOUT_PENALTY)
         # SETTER_TIMEOUT_PENALTY is negative (-50), so score should be negative
         assert "setter" in scores, "setter should appear in player_scores after timeout"
         assert scores["setter"] == SETTER_TIMEOUT_PENALTY, (
@@ -233,10 +233,16 @@ async def test_no_double_count_after_full_game():
         await engine.skip_setter_timeout()
         # game should be GAME_OVER now
 
-        scores = await _wait_scores(db_path, lambda s: "p1" in s and "p2" in s)
         # guesser_pts round 1 = 100 (correct at round 1), setter_pts = 20
         guesser_pts = result["score"]
         setter_pts = result["setter_score"]
+        # 等到「最終值」才查：p2 先寫 guesser_pts(出現)，penalty(-50) 是「之後」另一筆寫入——
+        # 只等「p2 出現」會在 penalty 落地前就退出 → got 100。要等到 p2 == 最終 50。
+        scores = await _wait_scores(
+            db_path,
+            lambda s: s.get("p2", 0) == guesser_pts + SETTER_TIMEOUT_PENALTY
+            and s.get("p1", 0) == setter_pts,
+        )
         # p2 should have exactly guesser_pts (not double)
         # p1 should have setter_pts + SETTER_TIMEOUT_PENALTY (from timeout as p2 setter → that's p2)
         # This is complex; just verify no value is doubled
