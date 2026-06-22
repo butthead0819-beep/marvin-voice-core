@@ -105,6 +105,23 @@ class PlayControlView(discord.ui.View):
             embed.description = "目前沒有歌曲在播放。"
         embed.add_field(name="🔊 音量", value=f"`{vol_pct}%`", inline=True)
         embed.add_field(name="狀態", value=state, inline=True)
+        # 🎚️ 誰的風格在主導自動推薦（多人種子輪替）
+        try:
+            mc = c.bot.cogs.get('MusicCog') if hasattr(c, 'bot') else None
+            members = c.get_online_members() if hasattr(c, 'get_online_members') else []
+            if mc and members and c.stream_mode:
+                import seed_rotation
+                _swap = 3
+                _epoch = getattr(mc, '_seed_epoch', 0)
+                _since = getattr(mc, '_auto_since_manual', 99)
+                if _since < _swap and getattr(mc, '_last_user_song_seed', None):
+                    dom = f"🔥 跟最近點歌（{_swap - _since} 首後開始輪替）"
+                else:
+                    _primary = seed_rotation.primary_member(members, _epoch, _swap)
+                    dom = f"`{_primary}` 的口味（{_swap - (_epoch % _swap)} 首後換人）"
+                embed.add_field(name="🎚️ 推薦主導", value=dom, inline=False)
+        except Exception:
+            pass
         q = c.stream_queue
         if q:
             lines = []
