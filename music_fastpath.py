@@ -82,6 +82,21 @@ class MusicFastPath:
         if res is None:
             return None
         _pinyin_val, score, idx = res
-        if score >= self.threshold:
+        if score >= self.threshold and self._title_covered(qpy, _pinyin_val):
             return self._names[idx], float(score)
         return None
+
+    @staticmethod
+    def _title_covered(query_py: str, cand_py: str, bar: float = 0.85) -> bool:
+        """防「藝人對、歌錯」：要求 query 拼音 token（去 stopword）大部分出現在命中曲名。
+
+        token_set_ratio 會被共享的藝人名 token 灌分——query「王力宏的唯一」即使唯一
+        不在庫，也因藝人名撐到 ≥門檻配到同藝人別首。要求 query 內容 token 覆蓋率達標，
+        擋掉只有藝人對、歌名沒對上的情況（虛構/不在庫歌名 → fall through 走 cleaner）。
+        """
+        stop = {"de", "a", "ya", "ne", "ba", "la"}
+        q = set(query_py.split()) - stop
+        if not q:
+            return True
+        c = set(cand_py.split())
+        return len(q & c) / len(q) >= bar
