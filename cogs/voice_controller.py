@@ -21,6 +21,8 @@ from departure_stats import DepartureStats
 from consent_manager import ConsentManager
 from nudge_throttle import NudgeThrottle
 from transcript_store import TranscriptStore
+from diary_comic.highlight import is_laugh
+from laugh_snapshot import snapshot_laugh_event
 from speaker_topic_graph import SpeakerTopicGraph
 from speak_bus import SpeakBus, SpeakContext
 from speak_outcome import SpeakOutcome, append_speak_outcome
@@ -1261,6 +1263,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 self._transcript_store.save,
                 speaker, guild_id, raw_text, timestamp, channel_id,
             ))
+            # 笑聲當下拍同時發聲/在場快照 → 供離線哄堂比例閘濾掉陪笑（全防禦）
+            if is_laugh(raw_text):
+                snapshot_laugh_event(self.bot, self._transcript_store,
+                                     speaker, timestamp, guild_id, channel_id)
             asyncio.create_task(asyncio.to_thread(
                 self._speaker_topic_graph.record_utterance,
                 speaker, channel_id, raw_text, ts=timestamp,

@@ -40,7 +40,51 @@ class TranscriptStore:
                 CREATE INDEX IF NOT EXISTS idx_transcripts_speaker_guild_ts
                 ON transcripts (speaker, guild_id, timestamp)
             """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS laugh_events (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    speaker    TEXT    NOT NULL,
+                    guild_id   INTEGER NOT NULL DEFAULT 0,
+                    channel_id INTEGER NOT NULL DEFAULT 0,
+                    timestamp  REAL    NOT NULL,
+                    vocalizers INTEGER NOT NULL DEFAULT 0,
+                    present    INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            con.execute("""
+                CREATE INDEX IF NOT EXISTS idx_laugh_events_guild_ts
+                ON laugh_events (guild_id, timestamp)
+            """)
             con.commit()
+        finally:
+            self._release(con)
+
+    def save_laugh_event(self, speaker: str, guild_id: int, channel_id: int,
+                         timestamp: float, vocalizers: int, present: int) -> None:
+        """笑聲當下的同時發聲/在場人數快照（給 find_highlights 的哄堂比例閘）。"""
+        con = self._connect()
+        try:
+            con.execute(
+                "INSERT INTO laugh_events "
+                "(speaker, guild_id, channel_id, timestamp, vocalizers, present) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (speaker, guild_id, channel_id, timestamp, vocalizers, present),
+            )
+            con.commit()
+        finally:
+            self._release(con)
+
+    def get_laugh_events(self, guild_id: int, since: float, until: float) -> list[dict]:
+        con = self._connect()
+        try:
+            rows = con.execute(
+                "SELECT speaker, timestamp, vocalizers, present FROM laugh_events "
+                "WHERE guild_id = ? AND timestamp >= ? AND timestamp <= ? "
+                "ORDER BY timestamp ASC",
+                (guild_id, since, until),
+            ).fetchall()
+            return [{"speaker": r[0], "timestamp": r[1],
+                     "vocalizers": r[2], "present": r[3]} for r in rows]
         finally:
             self._release(con)
 

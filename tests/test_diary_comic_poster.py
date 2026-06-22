@@ -79,3 +79,47 @@ def test_db_rows_filters_to_session_window(tmp_path):
 
 def test_db_rows_bad_timestamp_returns_empty():
     assert poster._db_rows("not-a-date", "also-bad", db_path=":memory:") == []
+
+
+def _laugh_at(speaker, vocalizers, present):
+    # _rows_with_laugh 的笑筆在 ts=1718000010
+    def fn(start, end):
+        return [{"speaker": speaker, "timestamp": 1718000010.0,
+                 "vocalizers": vocalizers, "present": present}]
+    return fn
+
+
+def test_plan_latest_session_room_gate_drops_solo_chuckle():
+    # 在場 5 人只有 1 人發聲 → 哄堂閘擋掉 → 無精華 → 不出
+    fn = _laugh_at("showay", vocalizers=1, present=5)
+    assert poster.plan_latest_session(_log(6), _rows_with_laugh, fn) is None
+
+
+def test_plan_latest_session_room_gate_keeps_crowd_laugh():
+    # 在場 5 人有 3 人發聲 → 哄堂 → 留
+    fn = _laugh_at("showay", vocalizers=3, present=5)
+    assert poster.plan_latest_session(_log(6), _rows_with_laugh, fn) is not None
+
+
+def test_db_laugh_events_filters_window(tmp_path):
+    from transcript_store import TranscriptStore
+    db = tmp_path / "t.db"
+    s = TranscriptStore(db_path=str(db))
+    base = 1718000000.0
+    s.save_laugh_event("a", 1, 9, base - 99999, 2, 3)  # 太早
+    s.save_laugh_event("b", 1, 9, base + 60, 3, 5)     # 窗內
+    # 撈 [base, base+120]（±600 緩衝後仍排除 base-99999）
+    import datetime
+    st = datetime.datetime.fromtimestamp(base).isoformat(sep=" ")
+    en = datetime.datetime.fromtimestamp(base + 120).isoformat(sep=" ")
+    evs = poster._db_laugh_events(st, en, db_path=str(db))
+    assert [e["speaker"] for e in evs] == ["b"]
+
+
+def test_db_laugh_events_missing_table_returns_empty(tmp_path):
+    db = tmp_path / "empty.db"
+    import sqlite3
+    sqlite3.connect(db).close()  # 空 DB、無 laugh_events 表
+    st = "2026-06-20 22:00:00"
+    en = "2026-06-20 22:10:00"
+    assert poster._db_laugh_events(st, en, db_path=str(db)) == []

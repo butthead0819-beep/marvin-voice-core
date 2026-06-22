@@ -116,10 +116,38 @@ def _db_rows(start_ts_str: str, end_ts_str: str, db_path: str = DB_PATH):
         return []
 
 
-def plan_latest_session(log_text: str, rows_fn):
+def _db_laugh_events(start_ts_str: str, end_ts_str: str, db_path: str = DB_PATH):
+    """撈場次時間窗的笑聲快照（speaker/ts/vocalizers/present）給哄堂比例閘。
+
+    無 laugh_events 表（舊 DB）/壞時戳/失敗 → []，不炸 loop。
+    """
+    import datetime
+    import sqlite3
+    try:
+        lo = datetime.datetime.fromisoformat(start_ts_str).timestamp() - 600
+        hi = datetime.datetime.fromisoformat(end_ts_str).timestamp() + 600
+    except (ValueError, TypeError):
+        return []
+    try:
+        con = sqlite3.connect(db_path)
+        try:
+            rows = con.execute(
+                "SELECT speaker, timestamp, vocalizers, present FROM laugh_events "
+                "WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp",
+                (lo, hi)).fetchall()
+            return [{"speaker": r[0], "timestamp": r[1],
+                     "vocalizers": r[2], "present": r[3]} for r in rows]
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
+def plan_latest_session(log_text: str, rows_fn, laugh_events_fn=None):
     """純規劃：日誌文字 + (start,end)->rows 函式 → (session, StoryPlan, end) 或 None。
 
     無場次 / <6 筆 / 無爆笑精華（fuse→None）→ None（沒高潮不畫）。
+    laugh_events_fn 有給 → 套「多人笑/在場人數」比例閘濾陪笑（無給→行為不變）。
     """
     import sys
     sys.path.insert(0, ".")
@@ -135,7 +163,8 @@ def plan_latest_session(log_text: str, rows_fn):
     if not should_generate(session, min_entries=6):
         return None  # 內容不足 6 筆（對話太短）→ 不值得燒 API 出漫畫
     end = session[-1].ts_str
-    highlights = find_highlights(rows_fn(session[0].ts_str, end))
+    events = laugh_events_fn(session[0].ts_str, end) if laugh_events_fn else None
+    highlights = find_highlights(rows_fn(session[0].ts_str, end), laugh_events=events)
     plan = fuse(session, highlights)
     if plan is None:
         return None  # 沒爆笑精華 → 不出漫畫
@@ -155,7 +184,7 @@ def _render_blocking(key: str):
         guard = None
 
     planned = plan_latest_session(
-        Path(LOG_PATH).read_text(encoding="utf-8"), _db_rows)
+        Path(LOG_PATH).read_text(encoding="utf-8"), _db_rows, _db_laugh_events)
     if not planned:
         return None
     session, plan, end = planned
