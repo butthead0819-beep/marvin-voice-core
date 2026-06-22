@@ -1615,6 +1615,10 @@ class MusicCog(commands.Cog):
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
+            # ytsearch5 抽 5 個候選時，其中一支不可用(移除/地區鎖)不該讓整個搜尋 raise。
+            # ignoreerrors → 壞片變 None（下方 `if e` 過濾已接），改用可用候選。
+            # （2026-06-22 incident：sk9fkcxhYRw This video is not available 整單炸。）
+            'ignoreerrors': True,
         }
         is_url = query.startswith('http')
 
