@@ -47,23 +47,29 @@ class MusicFastPath:
     def __init__(self, catalog_path: Path | str = DEFAULT_CATALOG,
                  threshold: float = DEFAULT_THRESHOLD):
         self.threshold = threshold
+        self._path = Path(catalog_path)
         self._names: list[str] = []
         self._index: dict[int, str] = {}  # idx → pinyin（rapidfuzz process choices）
+        self._mtime: float = -1.0
         self._enabled = _DEPS_OK
         if _DEPS_OK:
-            self._load(Path(catalog_path))
+            self._load()
 
     @property
     def enabled(self) -> bool:
         return self._enabled and bool(self._index)
 
-    def _load(self, path: Path) -> None:
+    def _load(self) -> None:
+        """（重）載入目錄。reset 後重填，記錄 mtime 供熱重載比對。"""
+        self._names = []
+        self._index = {}
         try:
-            rows = json.loads(path.read_text(encoding="utf-8"))
+            self._mtime = self._path.stat().st_mtime
+            rows = json.loads(self._path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
-            logger.info("[MusicFastPath] 目錄不存在/壞 → fast-path 停用 (%s)", path)
+            logger.info("[MusicFastPath] 目錄不存在/壞 → fast-path 停用 (%s)", self._path)
             return
-        for i, row in enumerate(rows):
+        for row in rows:
             name = (row.get("name") or "").strip()
             if not name:
                 continue
@@ -71,9 +77,22 @@ class MusicFastPath:
             self._names.append(name)
             self._index[len(self._names) - 1] = py
 
+    def _maybe_reload(self) -> None:
+        """目錄檔 mtime 變了就熱重載（3am cron 重建後不用重啟 bot 就吃到新目錄）。"""
+        try:
+            mt = self._path.stat().st_mtime
+        except OSError:
+            return
+        if mt != self._mtime:
+            logger.info("[MusicFastPath] 目錄更新 → 熱重載 (%s)", self._path)
+            self._load()
+
     def match(self, query: str) -> tuple[str, float] | None:
         """query（已剝喚醒詞）→ (canonical_name, score) 若 ≥門檻，否則 None。"""
-        if not self.enabled or not query or not query.strip():
+        if not self._enabled or not query or not query.strip():
+            return None
+        self._maybe_reload()
+        if not self._index:
             return None
         qpy = to_pinyin(query)
         if not qpy:
