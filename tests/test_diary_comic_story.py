@@ -155,6 +155,12 @@ def test_build_story_prompt_roles_and_no_fabrication_in_system():
     assert "腦補" in s and "雜訊" in s          # 不准腦補 + STT 還原
 
 
+def test_build_story_prompt_directs_tension_arc():
+    s, _ = build_story_prompt(_hl(9, ["x"]), "")
+    assert "張力" in s and "反差" in s   # 導演要堆情緒/反差，不流水帳
+    assert "腦補" in s                    # 張力靠鏡頭表情、不准腦補仍在
+
+
 def test_build_story_prompt_t4_adds_aftermath():
     s4, _ = build_story_prompt(_hl(9, ["x"]), "", template_id="T4")
     s1, _ = build_story_prompt(_hl(9, ["x"]), "", template_id="T1")
