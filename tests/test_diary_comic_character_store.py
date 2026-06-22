@@ -68,3 +68,21 @@ def test_cast_quirks_gives_expression_cue_for_known_speaker():
 def test_cast_quirks_unknown_is_empty():
     from diary_comic.character_store import cast_quirks
     assert cast_quirks(["路人不存在"]) == ""
+
+
+def test_persona_includes_recent_topics_from_daily_dna(tmp_path, monkeypatch):
+    import json
+    import diary_comic.character_store as cs
+    (tmp_path / "speech_dna_showay.json").write_text(
+        json.dumps({"stress_topics": "tech（句長+11字）、work（句長+5字）、drinking（句長+2字）"}),
+        encoding="utf-8")
+    monkeypatch.setattr(cs, "_DNA_DIR", str(tmp_path))
+    p = cs.persona("showay")
+    assert p["recent_topics"] == "tech、work、drinking"  # 每日更新的近期興趣
+    assert "近期" in cs.persona_brief("showay")            # brief 帶進近期愛聊
+
+
+def test_persona_recent_topics_missing_file_empty(tmp_path, monkeypatch):
+    import diary_comic.character_store as cs
+    monkeypatch.setattr(cs, "_DNA_DIR", str(tmp_path))
+    assert cs.persona("showay")["recent_topics"] == ""  # 無檔不爆
