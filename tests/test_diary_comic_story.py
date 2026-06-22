@@ -170,3 +170,10 @@ def test_parse_story_from_json():
 def test_parse_story_fallback_empty():
     d = parse_story("不是 JSON")
     assert d["beats"] == [] and d["title"] == ""
+
+
+def test_build_story_prompt_injects_cast_persona():
+    h = _hl(9, ["x"])  # laugher 狗與露(dog)、setup 大肚(cat)
+    s, u = build_story_prompt(h, "看球賽")
+    assert "cat" in u or "dog" in u   # 卡司動物進 prompt
+    assert "口頭禪" in s               # 指示 caption 用真口頭禪

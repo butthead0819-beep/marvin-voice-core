@@ -141,6 +141,7 @@ _STORY_SYS = (
     "步驟：1) 先判 punchline 是哪句（什麼讓大家笑）2) 還原前因 3) 依時間順序拆拍。\n"
     "每拍給：scene（畫面動作：誰/做什麼/表情，具體到能出圖）+ caption（清乾淨的台詞，短口語；"
     "沒台詞留空）。\n"
+    "把每個角色寫進他的性格（見卡司人設）；caption 多用他們的真口頭禪 → 一眼認出是誰。\n"
     "規則：不准腦補（STT 沒有的情節別編、不確定就保守）；繁中；caption ≤14 字。\n"
     "拍子角色依序固定：{roles}。\n"
     '只回 JSON：{{"understanding":"一句話講發生什麼","title":"今晚精華：…（≤12字）",'
@@ -159,10 +160,13 @@ _TEMPLATE_ROLES = {"T4": ("establish", "setup", "punchline", "aftermath")}
 
 def build_story_prompt(h: Highlight, scene_context: str,
                        template_id: str | None = None) -> tuple[str, str]:
+    from diary_comic.character_store import persona_brief
     roles = _TEMPLATE_ROLES.get(template_id, _DEFAULT_ROLES)
     system = _STORY_SYS.format(roles="、".join(_ROLE_DESC[r] for r in roles))
+    speakers = list(dict.fromkeys([s for s, _ in h.setup] + [h.laugher]))
+    cast = "\n".join(persona_brief(s) for s in speakers if s)
     stt = "\n".join(f"{s}：{t}" for s, t in h.setup) or "（無前情）"
-    user = (f"逐字稿短窗：\n{stt}\n（接著全場：{h.laugh_text}）\n\n"
+    user = (f"卡司人設：\n{cast}\n\n逐字稿短窗：\n{stt}\n（接著全場：{h.laugh_text}）\n\n"
             f"這段摘要（場景脈絡）：{scene_context or '（無）'}\n\n"
             f"寫 {len(roles)} 拍，回 JSON：")
     return system, user

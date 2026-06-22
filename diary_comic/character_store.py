@@ -44,3 +44,32 @@ def describe(speaker: str) -> str:
 def cast_description(speakers: list[str]) -> str:
     """把一格的說話者全換成動物描述，用「; 」串起來。空 → 空字串。"""
     return "; ".join(describe(s) for s in speakers)
+
+
+def persona(speaker: str) -> dict:
+    """該 speaker 的人設：接 impression_engine 的 speech DNA（動態優先、builtin fallback）。
+
+    接不到（模組缺/未知人）→ 空殼，不爆。一旦每日分析恢復跑，這裡自動吃到最新特質。
+    """
+    dna = {}
+    try:
+        from impression_engine import get_speech_dna
+        dna = get_speech_dna(speaker) or {}
+    except Exception:
+        pass
+    return {"style_summary": dna.get("style_summary", ""),
+            "catchphrases": list(dna.get("catchphrases", []))[:5],
+            "quirks": list(dna.get("quirks", []))[:4],
+            "emotional_style": dna.get("emotional_style", "")}
+
+
+def persona_brief(speaker: str) -> str:
+    """一行人設 brief（給故事導演/分鏡 prompt）：動物 + 說話風格 + 口頭禪。"""
+    ch = get_character(speaker)
+    p = persona(speaker)
+    bits = [f"{speaker}（{ch.animal}：{ch.appearance}）"]
+    if p["style_summary"]:
+        bits.append(p["style_summary"])
+    if p["catchphrases"]:
+        bits.append("口頭禪：" + "、".join(p["catchphrases"]))
+    return "｜".join(bits)

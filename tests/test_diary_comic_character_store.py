@@ -38,3 +38,22 @@ def test_cast_description_empty_speakers_is_empty_string():
 def test_character_is_dataclass_with_animal_and_appearance():
     c = Character(animal="fox", appearance="a sly red fox")
     assert c.animal == "fox" and "fox" in c.appearance
+
+
+# ---- 接 impression_engine 人設 ----
+from diary_comic.character_store import persona, persona_brief
+
+
+def test_persona_pulls_speech_dna_for_known_speaker():
+    p = persona("showay")
+    assert p["style_summary"] and p["catchphrases"]  # 有人設 + 口頭禪
+
+
+def test_persona_unknown_speaker_is_empty_not_crash():
+    p = persona("路人甲不存在")
+    assert p["style_summary"] == "" and p["catchphrases"] == []
+
+
+def test_persona_brief_has_animal_and_catchphrase():
+    b = persona_brief("大肚")
+    assert "cat" in b and ("你知不知道" in b or "我聽說" in b)
