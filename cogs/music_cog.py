@@ -59,6 +59,8 @@ class MusicCog(commands.Cog):
     _PLAYED_EXCLUDE_TTL_S = 7 * 24 * 3600
     _COLD_META_TIMEOUT_S = 5.0
     _MUSIC_CMD_DEDUP_WINDOW = 5.0
+    # DJ 播報疊在歌上的音量（混音時 dj 分支的 gain）。降到 30% 不蓋過音樂。
+    _DJ_INTERJECTION_VOLUME = 0.30
 
     _AUTOPILOT_DJ_PHRASES_PERSONAL = [
         "這首幫{who}點的，{artist}唱的{title}",
@@ -1035,12 +1037,14 @@ class MusicCog(commands.Cog):
 
         if use_mix:
             vol = self.stream_volume
+            djv = self._DJ_INTERJECTION_VOLUME
             fc = (
                 f"[0:a]asplit=2[dj_sc][dj_mix];"
                 f"[dj_sc]apad=whole_dur=9999[dj_pad];"
+                f"[dj_mix]volume={djv:.3f}[dj_q];"  # DJ 播報降到 30%，不蓋過音樂
                 f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,volume={vol:.3f}[music];"
                 f"[music][dj_pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
-                f"[ducked][dj_mix]amix=inputs=2:duration=longest:normalize=0[out]"
+                f"[ducked][dj_q]amix=inputs=2:duration=longest:normalize=0[out]"
             )
             before_opts = (
                 f"-i {shlex.quote(dj_audio_path)} "
