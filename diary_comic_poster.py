@@ -15,6 +15,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 LOG_PATH = "records/chat_summary_log.txt"
+DB_PATH = "marvin.db"
 STATE_PATH = "records/diary_comic_last.json"
 CACHE_DIR = "records/diary_comic_cache"
 DIARY_CHANNELS = ("馬文的厭世日記", "marvin-diary")
@@ -90,43 +91,92 @@ def _text_fn(key):
     return gen
 
 
-def _render_blocking(key: str):
-    """同步：選剛結束場次 → 出圖 → 存檔。回 (png, layout, line) 或 None。在 to_thread 跑。"""
+def _db_rows(start_ts_str: str, end_ts_str: str, db_path: str = DB_PATH):
+    """從 marvin.db 撈場次時間窗（前後各留 10 分鐘）的逐字稿 (speaker,text,ts)。
+
+    給 find_highlights 找爆笑點用。任何失敗（壞時戳/無 DB/無表）→ []，不炸 loop。
+    """
+    import datetime
+    import sqlite3
+    try:
+        lo = datetime.datetime.fromisoformat(start_ts_str).timestamp() - 600
+        hi = datetime.datetime.fromisoformat(end_ts_str).timestamp() + 600
+    except (ValueError, TypeError):
+        return []
+    try:
+        con = sqlite3.connect(db_path)
+        try:
+            return con.execute(
+                "SELECT speaker, text, timestamp FROM transcripts "
+                "WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp",
+                (lo, hi)).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
+def plan_latest_session(log_text: str, rows_fn):
+    """純規劃：日誌文字 + (start,end)->rows 函式 → (session, StoryPlan, end) 或 None。
+
+    無場次 / <6 筆 / 無爆笑精華（fuse→None）→ None（沒高潮不畫）。
+    """
     import sys
     sys.path.insert(0, ".")
     from diary_comic.parser import (
-        parse_log, dedupe_adjacent, eligible_sessions, choose_style, should_generate)
-    from diary_comic.render import render_session
-    try:
-        from llm_paid import PaidUsageGuard
-        guard = PaidUsageGuard()
-    except Exception:
-        guard = None
+        parse_log, dedupe_adjacent, eligible_sessions, should_generate)
+    from diary_comic.highlight import find_highlights
+    from diary_comic.story import fuse
 
-    sessions = eligible_sessions(dedupe_adjacent(parse_log(
-        Path(LOG_PATH).read_text(encoding="utf-8"))))
+    sessions = eligible_sessions(dedupe_adjacent(parse_log(log_text)))
     if not sessions:
         return None
     session = sessions[-1]
     if not should_generate(session, min_entries=6):
         return None  # 內容不足 6 筆（對話太短）→ 不值得燒 API 出漫畫
     end = session[-1].ts_str
+    highlights = find_highlights(rows_fn(session[0].ts_str, end))
+    plan = fuse(session, highlights)
+    if plan is None:
+        return None  # 沒爆笑精華 → 不出漫畫
+    return session, plan, end
+
+
+def _render_blocking(key: str):
+    """同步：選剛結束場次 → 故事導演排版 → 出圖 → 存檔。回 (png, format, "") 或 None。在 to_thread 跑。"""
+    import datetime
+    import sys
+    sys.path.insert(0, ".")
+    from diary_comic.render import render_story
+    try:
+        from llm_paid import PaidUsageGuard
+        guard = PaidUsageGuard()
+    except Exception:
+        guard = None
+
+    planned = plan_latest_session(
+        Path(LOG_PATH).read_text(encoding="utf-8"), _db_rows)
+    if not planned:
+        return None
+    session, plan, end = planned
     if end == _last_posted():
         return None  # 已出過這場次
 
-    layout = choose_style(session)
-    npanels = min(8, len(session)) if layout == "webtoon" else min(4, len(session))
+    npanels = 1 if plan.format == "meme" else 4  # meme 單格 / slant 四格
     if guard is not None and not guard.allow(EST_USD_PER_IMG * npanels):
         logger.warning("💰 [DiaryComic] 超 spending cap，今天不出漫畫")
         return None
 
-    page, used, line = render_session(
-        session, img_fn=_img_fn(key, guard), text_fn=_text_fn(key),
-        cache_dir=CACHE_DIR, page_size=(1080, 1920), variant="nano")
+    page = render_story(
+        plan, img_fn=_img_fn(key, guard), text_fn=_text_fn(key),
+        cache_dir=CACHE_DIR, page_size=(1080, 1920), variant="nano",
+        day_index=datetime.date.today().toordinal())
+    if page is None:
+        return None
     out = f"records/diary_comic_{end.replace(':', '').replace(' ', '_').replace('-', '')}.png"
     page.save(out)
     _mark_posted(end)
-    return out, used, line
+    return out, plan.format, ""
 
 
 async def maybe_post_comic(bot, active_text_channel):
