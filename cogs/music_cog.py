@@ -574,21 +574,11 @@ class MusicCog(commands.Cog):
         mm = getattr(self.bot, 'music_memory', None)
         if mm is None:
             return []
-        seeds: list[str] = []
-        last = getattr(self, '_last_user_song_seed', None)
-        if last:
-            seeds.append(last)
-        hist = mm.get_played_seed_ids(members, limit=30)
-        if hist:
-            self._t2_seed_idx = (getattr(self, '_t2_seed_idx', -1) + 1) % len(hist)
-            hist = hist[self._t2_seed_idx:] + hist[:self._t2_seed_idx]
         avoid_artists: list[str] = []
-        llm_seeds: list[str] = []
         if os.getenv("LLM_TASTE_T2", "off") == "on":
             try:
                 import taste_profile
                 _MAX_AGE = 8 * 86400
-                llm_seeds = taste_profile.fresh_seed_ids(_TASTE_PROFILE_CACHE, members, _MAX_AGE)
                 avoid_artists = taste_profile.fresh_avoid_artists(_TASTE_PROFILE_CACHE, members, _MAX_AGE)
             except Exception as e:
                 logger.warning(f"⚠️ [AutoRecommend] T2 LLM 品味快取讀取失敗，略過: {e}")
@@ -599,17 +589,42 @@ class MusicCog(commands.Cog):
                     avoid_artists.append(_a)
         except Exception:
             logger.debug("[AutoRecommend] explore retreat avoid 合併失敗", exc_info=True)
-        reacted_seeds = mm.get_reacted_seed_ids(members)
-        from itertools import zip_longest
-        for h, l, r in zip_longest(hist, llm_seeds, reacted_seeds):
-            for vid in (h, l, r):
-                if vid and vid not in seeds:
-                    seeds.append(vid)
-        for vid in mm.get_liked_video_ids(members):
-            if vid not in seeds:
-                seeds.append(vid)
         _N_SEEDS = 3
-        seeds = seeds[:_N_SEEDS]
+        # 多人種子輪替：每 N 首換主種子者(round-robin 在場者)、最後手動歌當 fresh lead
+        # （N 首後淡出）、永遠混入其他在場者 → 不被單一人霸佔（見 seed_rotation.py）。
+        import seed_rotation
+        self._seed_epoch = getattr(self, '_seed_epoch', -1) + 1
+        _since = getattr(self, '_auto_since_manual', _N_SEEDS)
+        self._auto_since_manual = _since + 1
+        # 各在場者的種子池＝他真人點過的歌（per-member，已排除 Marvin 自薦）；
+        # LLM_TASTE_T2 on 時前置該人的 LLM 鄰近種子（curated taste）。
+        _llm_on = os.getenv("LLM_TASTE_T2", "off") == "on"
+        seeds_by_member = {}
+        for _m in members:
+            _pool = mm.get_played_seed_ids([_m], limit=20)
+            if _llm_on:
+                try:
+                    import taste_profile
+                    _pool = taste_profile.fresh_seed_ids(_TASTE_PROFILE_CACHE, [_m], 8 * 86400) + _pool
+                except Exception:
+                    pass
+            seeds_by_member[_m] = _pool
+        seeds = seed_rotation.order_rotating_seeds(
+            members, seeds_by_member,
+            epoch=self._seed_epoch, since_manual=_since,
+            last_seed=getattr(self, '_last_user_song_seed', None),
+            swap_every=_N_SEEDS, n=_N_SEEDS,
+        )
+        # rotating 不足 N 顆時用團體 liked 墊底
+        if len(seeds) < _N_SEEDS:
+            for vid in mm.get_liked_video_ids(members):
+                if vid not in seeds:
+                    seeds.append(vid)
+                    if len(seeds) >= _N_SEEDS:
+                        break
+        logger.info(f"🎲 [AutoRecommend] 種子輪替 epoch={self._seed_epoch} "
+                    f"主={seed_rotation.primary_member(members, self._seed_epoch, _N_SEEDS)} "
+                    f"since_manual={_since} seeds={len(seeds)}")
         if not seeds:
             return []
         from ytmusic_radio import ytmusic_radio, blend_radio_results
@@ -1559,6 +1574,7 @@ class MusicCog(commands.Cog):
                             info.get('webpage_url') or '')
             if _m:
                 self._last_user_song_seed = _m.group(1)
+                self._auto_since_manual = 0  # 手動點歌 → 重置 freshness，這首當 fresh lead 種子
         except Exception:
             logger.debug("[Queue] skip-override / seed 更新失敗", exc_info=True)
 
