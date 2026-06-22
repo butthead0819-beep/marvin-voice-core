@@ -63,6 +63,16 @@ def persona(speaker: str) -> dict:
             "emotional_style": dna.get("emotional_style", "")}
 
 
+def cast_quirks(speakers: list[str]) -> str:
+    """一格說話者的表情/姿勢提示（餵出圖 prompt）：每人 emotional_style。沒人設→空字串。"""
+    bits = []
+    for s in speakers:
+        emo = persona(s)["emotional_style"]
+        if emo:
+            bits.append(f"{s}：{emo}")
+    return "；".join(bits)
+
+
 def persona_brief(speaker: str) -> str:
     """一行人設 brief（給故事導演/分鏡 prompt）：動物 + 說話風格 + 口頭禪。"""
     ch = get_character(speaker)

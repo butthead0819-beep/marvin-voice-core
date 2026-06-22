@@ -224,3 +224,11 @@ def test_build_panel_prompt_includes_composition_craft():
     assert "thirds" in p                          # rule of thirds 主體偏置
     assert "foreground" in p or "depth" in p      # 前後景景深
     assert "focal" in p or "focus" in p           # 情緒焦點
+
+
+def test_build_panel_prompt_includes_persona_expression_cue():
+    from diary_comic.panel_gen import build_panel_prompt
+    from diary_comic.parser import DiaryEntry
+    e = DiaryEntry(ts_str="2026-06-20 22:00:00", core="聊球賽", speakers=["大肚"])
+    p = build_panel_prompt(e)
+    assert "Expression cues" in p and "大肚" in p  # 人設表情提示進 prompt

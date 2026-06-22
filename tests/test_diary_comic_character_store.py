@@ -57,3 +57,14 @@ def test_persona_unknown_speaker_is_empty_not_crash():
 def test_persona_brief_has_animal_and_catchphrase():
     b = persona_brief("大肚")
     assert "cat" in b and ("你知不知道" in b or "我聽說" in b)
+
+
+def test_cast_quirks_gives_expression_cue_for_known_speaker():
+    from diary_comic.character_store import cast_quirks
+    q = cast_quirks(["大肚"])
+    assert "大肚" in q and ("好奇" in q or "自嘲" in q)  # 情緒風格進表情提示
+
+
+def test_cast_quirks_unknown_is_empty():
+    from diary_comic.character_store import cast_quirks
+    assert cast_quirks(["路人不存在"]) == ""

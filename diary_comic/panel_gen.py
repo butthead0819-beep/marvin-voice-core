@@ -12,7 +12,7 @@ from typing import Callable
 
 from PIL import Image, ImageDraw
 
-from diary_comic.character_store import cast_description, MARVIN
+from diary_comic.character_store import cast_description, cast_quirks, MARVIN
 from diary_comic.parser import DiaryEntry
 
 ImageFn = Callable[[str, "str | None"], Image.Image]  # (prompt, aspect) -> Image
@@ -44,11 +44,13 @@ def build_panel_prompt(entry: DiaryEntry, shot: str = "", object_only: bool = Fa
     if object_only:
         return f"{_OBJECT_STYLE}\nTopic being discussed: {entry.core}{camera}"
     cast = cast_description(entry.speakers) or "a couple of friendly animal characters"
+    quirks = cast_quirks(entry.speakers)
+    cue = f"\nExpression cues (draw their personality): {quirks}." if quirks else ""
     return (
         f"{_STYLE}\n"
         f"Characters (keep them consistent across panels): {cast}. "
         f"Optionally {MARVIN.appearance} watching from a corner.\n"
-        f"Scene (what they are doing): {entry.core}{camera}"
+        f"Scene (what they are doing): {entry.core}{camera}{cue}"
     )
 
 
