@@ -290,6 +290,45 @@ class SystemLoopsMixin:
         except Exception as e:
             logger.error(f"❌ [Daily Export] 每日匯出失敗: {e}", exc_info=True)
 
+    @tasks.loop(time=datetime.time(hour=13, minute=45, tzinfo=datetime.timezone(datetime.timedelta(hours=8))))
+    async def daily_watchdog_loop(self):
+        """每天 13:45 (UTC+8) 檢查每日 cron 任務健康 → 貼 Discord 心跳/告警。
+
+        跑在 bot 內（不另開 launchd 看 launchd）；bot 死了你本來就會發現。
+        正向心跳：沒問題也報「✅ 全健康」→ 完全安靜 = 連這個都掛了，silence 即警報。
+        """
+        try:
+            try:
+                from scripts.cron_watchdog import check_cron_health, CHECKS
+            except Exception:
+                from cron_watchdog import check_cron_health, CHECKS
+            problems = check_cron_health(CHECKS, now_ts=time.time())
+            if problems:
+                body = "🚨 **每日任務看門狗** 發現問題：\n" + "\n".join(f"• {p}" for p in problems)
+            else:
+                body = "✅ **每日任務看門狗**：全健康（心跳）"
+            ch = self._find_ops_channel()
+            if ch:
+                await ch.send(body)
+            else:
+                logger.warning(f"[Watchdog] 無頻道可貼：{body}")
+        except Exception as e:
+            logger.error(f"❌ [Watchdog] 看門狗失敗: {e}", exc_info=True)
+
+    def _find_ops_channel(self):
+        """貼看門狗的頻道：馬文系統狀態 > 馬文的厭世日記 > active_text_channel。"""
+        guild = None
+        if self.active_text_channel and getattr(self.active_text_channel, "guild", None):
+            guild = self.active_text_channel.guild
+        elif self.bot.guilds:
+            guild = self.bot.guilds[0]
+        if guild:
+            for name in ("馬文系統狀態", "marvin-ops", "馬文的厭世日記", "marvin-diary"):
+                ch = discord.utils.get(guild.text_channels, name=name)
+                if ch:
+                    return ch
+        return self.active_text_channel
+
     @tasks.loop(seconds=60.0)
     async def reset_stt_counter_loop(self):
         """[STT Rate Limit] 每分鐘重設 STT 計數器"""
