@@ -44,6 +44,22 @@ def _query_scores(db_path: str) -> dict[str, int]:
     return dict(rows)
 
 
+async def _wait_scores(db_path: str, predicate, timeout: float = 3.0,
+                       interval: float = 0.02) -> dict[str, int]:
+    """輪詢 player_scores 直到 predicate(scores) 為真或逾時。
+
+    取代固定 `asyncio.sleep` 等背景 executor 寫 DB —— CI 較慢時固定 sleep 不夠會 flaky，
+    輪詢則等到寫好為止（上限 timeout）。
+    """
+    import time as _t
+    deadline = _t.monotonic() + timeout
+    scores = _query_scores(db_path)
+    while not predicate(scores) and _t.monotonic() < deadline:
+        await asyncio.sleep(interval)
+        scores = _query_scores(db_path)
+    return scores
+
+
 # ── 1. Correct answer persists immediately ────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -64,9 +80,7 @@ async def test_correct_answer_persists_guesser_score_immediately():
         await engine.buzz_in("g1")
         await engine.submit_answer("g1", "蘋果汁")
 
-        await asyncio.sleep(0.15)  # let executor thread complete
-
-        scores = _query_scores(db_path)
+        scores = await _wait_scores(db_path, lambda s: s.get("g1", 0) > 0)
         assert scores.get("g1", 0) > 0, "guesser score should be persisted immediately after correct answer"
     finally:
         os.unlink(db_path)
@@ -90,9 +104,7 @@ async def test_correct_answer_persists_setter_score_immediately():
         await engine.buzz_in("g1")
         await engine.submit_answer("g1", "蘋果汁")
 
-        await asyncio.sleep(0.15)
-
-        scores = _query_scores(db_path)
+        scores = await _wait_scores(db_path, lambda s: s.get("setter", 0) > 0)
         assert scores.get("setter", 0) > 0, "setter score should be persisted immediately after correct answer"
     finally:
         os.unlink(db_path)
@@ -119,10 +131,8 @@ async def test_round5_answer_persists_score_immediately():
 
         result = await engine.submit_round5_answer("g1", "蘋果水")  # 蘋 matches → pts > 0
 
-        await asyncio.sleep(0.15)
-
-        scores = _query_scores(db_path)
         expected_pts = result["pts"]
+        scores = await _wait_scores(db_path, lambda s: s.get("g1", 0) == expected_pts)
         if expected_pts > 0:
             assert scores.get("g1", 0) == expected_pts, (
                 f"player_scores['g1'] should be {expected_pts}, got {scores.get('g1', 0)}"
@@ -154,9 +164,7 @@ async def test_r5_expire_persists_setter_score_immediately():
         await engine.submit_round5_answer("g1", "蘋果汁")  # full match → pts > 0
         await engine.advance_clue()  # finalise R5
 
-        await asyncio.sleep(0.15)
-
-        scores = _query_scores(db_path)
+        scores = await _wait_scores(db_path, lambda s: s.get("setter", 0) > 0)
         # setter should have 100 pts (any_scored is True)
         assert scores.get("setter", 0) > 0, "setter score should be persisted after R5 expire"
     finally:
@@ -183,9 +191,7 @@ async def test_setter_timeout_persists_penalty_immediately():
 
         await engine.skip_setter_timeout()
 
-        await asyncio.sleep(0.15)
-
-        scores = _query_scores(db_path)
+        scores = await _wait_scores(db_path, lambda s: "setter" in s)
         # SETTER_TIMEOUT_PENALTY is negative (-50), so score should be negative
         assert "setter" in scores, "setter should appear in player_scores after timeout"
         assert scores["setter"] == SETTER_TIMEOUT_PENALTY, (
@@ -227,9 +233,7 @@ async def test_no_double_count_after_full_game():
         await engine.skip_setter_timeout()
         # game should be GAME_OVER now
 
-        await asyncio.sleep(0.3)  # let all executor threads complete
-
-        scores = _query_scores(db_path)
+        scores = await _wait_scores(db_path, lambda s: "p1" in s and "p2" in s)
         # guesser_pts round 1 = 100 (correct at round 1), setter_pts = 20
         guesser_pts = result["score"]
         setter_pts = result["setter_score"]
