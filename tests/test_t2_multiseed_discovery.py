@@ -40,10 +40,11 @@ class _FakeMM:
 
 
 class _StubSelf:
-    def __init__(self, mm, last=None):
+    def __init__(self, mm, last=None, since_manual=99):
         self.bot = types.SimpleNamespace(music_memory=mm)
         self._last_user_song_seed = last
         self._round_size = 3
+        self._auto_since_manual = since_manual  # ≥swap_every → last 不當 fresh lead
 
     def _load_taste_fingerprint(self):
         return {}
@@ -85,7 +86,7 @@ async def test_t2_blends_multiple_played_seeds(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_t2_last_user_song_leads_seed_pool(monkeypatch):
+async def test_t2_fresh_manual_song_leads_then_fades(monkeypatch):
     MC = _import_mc()
     import ytmusic_radio
     calls = []
@@ -96,9 +97,16 @@ async def test_t2_last_user_song_leads_seed_pool(monkeypatch):
 
     monkeypatch.setattr(ytmusic_radio, "ytmusic_radio", fake_radio)
     mm = _FakeMM(played=["bbbbbbbbbbb", "ccccccccccc"], liked=[])
-    stub = _StubSelf(mm, last="zzzzzzzzzzz")          # 手動點的歌
+    # 剛手動點歌（since_manual=0，fresh）→ 那首領頭
+    stub = _StubSelf(mm, last="zzzzzzzzzzz", since_manual=0)
     await MC._t2_discovery_candidates(stub, ["狗與露"], exclude_titles=[])
-    assert calls[0] == "zzzzzzzzzzz"                  # 最近手動點排第一
+    assert calls[0] == "zzzzzzzzzzz"
+
+    # swap_every(3) 首後（since_manual≥3）→ 淡出、不再領頭
+    calls.clear()
+    stub2 = _StubSelf(mm, last="zzzzzzzzzzz", since_manual=3)
+    await MC._t2_discovery_candidates(stub2, ["狗與露"], exclude_titles=[])
+    assert "zzzzzzzzzzz" not in calls
 
 
 @pytest.mark.asyncio

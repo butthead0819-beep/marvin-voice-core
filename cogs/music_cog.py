@@ -596,7 +596,19 @@ class MusicCog(commands.Cog):
         self._seed_epoch = getattr(self, '_seed_epoch', -1) + 1
         _since = getattr(self, '_auto_since_manual', _N_SEEDS)
         self._auto_since_manual = _since + 1
-        seeds_by_member = {m: mm.get_played_seed_ids([m], limit=20) for m in members}
+        # 各在場者的種子池＝他真人點過的歌（per-member，已排除 Marvin 自薦）；
+        # LLM_TASTE_T2 on 時前置該人的 LLM 鄰近種子（curated taste）。
+        _llm_on = os.getenv("LLM_TASTE_T2", "off") == "on"
+        seeds_by_member = {}
+        for _m in members:
+            _pool = mm.get_played_seed_ids([_m], limit=20)
+            if _llm_on:
+                try:
+                    import taste_profile
+                    _pool = taste_profile.fresh_seed_ids(_TASTE_PROFILE_CACHE, [_m], 8 * 86400) + _pool
+                except Exception:
+                    pass
+            seeds_by_member[_m] = _pool
         seeds = seed_rotation.order_rotating_seeds(
             members, seeds_by_member,
             epoch=self._seed_epoch, since_manual=_since,
