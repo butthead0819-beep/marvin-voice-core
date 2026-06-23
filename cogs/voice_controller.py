@@ -2751,7 +2751,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 logger.info(f"🎵 [MusicFastPath] '{stripped[:30]}' → '{_hit[0]}' "
                             f"({_hit[1]:.0f}) 跳過 cleaner")
                 pipeline_timing.mark("cleaner_done")
-                return _hit[0]
+                # 補回點歌動詞：裸 canonical 無動詞 → music agent bid 0.00 → bus drop →
+                # 不播 / Marvin 幻覺「已為你播放」（2026-06-23 incident，見 music_fastpath）
+                from music_fastpath import to_play_command
+                return to_play_command(_hit[0])
 
         # LLM 清洗 STT 雜訊，不做語音確認。短 timeout 封頂：cleaner 太慢就用 raw，不卡 worker
         # （含 TimeoutError 由 except 接 → 降級 raw）。喚醒偵測時已清過一次，這裡慢不值得等。

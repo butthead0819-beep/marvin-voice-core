@@ -87,6 +87,38 @@ def test_multi_de_song_title_still_matches(fp):
     assert hit is not None and hit[0] == "陳華 想和你看五月的晚霞"
 
 
+def test_fastpath_output_dispatchable_as_play(fp):
+    """回歸：fast-path canonical 必須被 music agent 認成點歌（strong_play, 無 missing），
+    否則裸「藝人 歌名」無動詞 → bus bid 0.00 drop → 不播 / Marvin 幻覺「已為你播放」
+    （2026-06-23 18:33 incident：陳華晚霞 conf=0.00 drop→幻覺）。
+    to_play_command 補「放一首」前綴 → strong_play 0.95；播放時動詞被 _extract 剝掉。"""
+    from music_fastpath import to_play_command
+    from intent_agents.music_agent_v2 import MusicAgentV2
+    from intent_bus import IntentContext
+
+    hit = fp.match("陳華的陪你看五月的晚霞")
+    canonical = hit[0]
+
+    class _C:
+        _STRONG_PLAY_KW = ["放音樂", "播音樂", "放首歌", "播首歌", "放一首", "播一首",
+                           "來首", "搜尋歌曲"]
+        _WEAK_PLAY_KW = ["播放", "我想聽", "放點", "播點", "幫我找", "幫我放"]
+        _MUSIC_SKIP_KW = ["換一首"]; _MUSIC_STOP_KW = ["停止播放"]
+        _MUSIC_PAUSE_KW = ["暫停音樂"]; _MUSIC_RESUME_KW = ["繼續播"]
+        async def _safe_music_command(self, *a, **k): pass
+        async def _ask_music_followup(self, *a, **k): pass
+
+    def _ctx(q):
+        return IntentContext(speaker="x", raw_text=q, query=q, original_raw=q,
+                             wake_intent=0.9, stream_active=False, game_mode=False,
+                             is_owner=False, now=0.0)
+
+    agent = MusicAgentV2(_C())
+    assert agent.bid(_ctx(canonical)).confidence < 0.30          # 裸 canonical → bus drop（bug）
+    b = agent.bid(_ctx(to_play_command(canonical)))              # 補前綴 → 認得
+    assert b.confidence >= 0.95 and b.missing_slots == []        # strong_play、直接播不追問
+
+
 def test_empty_query_returns_none(fp):
     assert fp.match("") is None
     assert fp.match("   ") is None
