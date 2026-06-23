@@ -1,4 +1,4 @@
-"""解析當夜「使用者主動點歌」紀錄（bot log 的 [點歌-手動] 行）→ 漫畫「點歌台」素材。
+"""解析當夜「使用者主動點歌」紀錄（bot log 的 [點歌-手動] / [點歌-語音] 行）→ 漫畫「點歌台」素材。
 
 純函式：吃 log 文字 + 時間窗，回 [(requester, song_title)]。給策展層當一格文字素材。
 """
@@ -7,13 +7,16 @@ from __future__ import annotations
 import datetime as _dt
 import re
 
+# 同時吃 [點歌-手動]（文字/按鈕）與 [點歌-語音]（語音），兩者都是使用者主動點歌。
+# 語音行的「搜尋=」可能夾帶 (修正→…) 標記，靠 .+? non-greedy 跨到「| 結果=」。
 _LINE = re.compile(
-    r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d).*?點歌-手動\]\s*使用者=(.+?)\s*\|\s*搜尋=.+?\s*\|\s*結果=(.+?)\s*/")
+    r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d).*?點歌-(?:手動|語音)\]\s*使用者=(.+?)\s*\|\s*搜尋=.+?\s*\|\s*結果=(.+?)\s*/")
 
 
 def _clean_title(title: str) -> str:
-    """精簡歌名：砍掉 Official/MV/動態歌詞 等贅詞，留主體。"""
-    t = re.split(r"[\(（【\[]", title)[0].strip()
+    """精簡歌名：砍掉 Official/MV/動態歌詞/『歌詞引言』/｜分隔等贅詞，留主體。
+    保守只切明確贅詞分隔符（不含「」，避免砍掉以引號為名的歌）。"""
+    t = re.split(r"[\(（【\[『｜|]", title)[0].strip()
     return (t or title).strip()
 
 

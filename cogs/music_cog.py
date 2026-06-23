@@ -1535,7 +1535,14 @@ class MusicCog(commands.Cog):
 
         check_history=False：只擋「還在佇列」，不擋「本場播過」。給使用者手動點播用——
         skip 過的歌進了 stream_history，但手動點回來是刻意正向更正，應放行。
+
+        但「正在播的那首」一律擋（不受 check_history 影響）：防同一句經 snapshot 喚醒
+        + debounce wakeless 兩路徑各入隊一次造成背對背雙播（2026-06-23 隔壁老樊 incident；
+        兩路徑相隔 12s，時間窗去重全過期、#1 已開播不在佇列 → 漏。內容去重不怕時序）。
         """
+        cur = self._current_stream_info
+        if cur and cur.get("url") == url:
+            return True
         for item in self.stream_queue:
             if item.get("url") == url:
                 return True
