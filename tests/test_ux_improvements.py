@@ -184,6 +184,43 @@ async def test_different_song_not_rejected():
     assert result is False
 
 
+@pytest.mark.asyncio
+async def test_currently_playing_song_rejected_even_when_manual():
+    """正在播的那首被重點 → 擋（即使 check_history=False 的手動點播路徑）。
+
+    Regression: 2026-06-23 23:44 隔壁老樊雙播——snapshot 喚醒 + debounce wakeless
+    兩路徑相隔 12s 各入隊一次，5s 時間窗去重全過期，#1 已開播不在佇列 → 漏。
+    內容去重：正在播的同 URL 一律擋，不受時序/check_history 影響。
+    """
+    cog = _make_mc_cog()
+    cog.stream_queue = []
+    cog._current_stream_info = {"url": "https://yt.com/abc", "title": "末班車"}
+
+    result = cog._check_song_duplicate(
+        url="https://yt.com/abc",
+        title="末班車",
+        username="showay",
+        check_history=False,
+    )
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_currently_playing_does_not_reject_different_song():
+    """正在播 A、點 B → 不擋。"""
+    cog = _make_mc_cog()
+    cog.stream_queue = []
+    cog._current_stream_info = {"url": "https://yt.com/abc", "title": "末班車"}
+
+    result = cog._check_song_duplicate(
+        url="https://yt.com/xyz",
+        title="天空",
+        username="showay",
+        check_history=False,
+    )
+    assert result is False
+
+
 # ── G. Music direct command without wake word ────────────────────────────────
 
 def test_detect_music_direct_command_recognises_song_request():
