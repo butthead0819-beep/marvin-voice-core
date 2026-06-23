@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 LOG_PATH = "records/chat_summary_log.txt"
 DB_PATH = "marvin.db"
 STATE_PATH = "records/diary_comic_last.json"
+PENDING_PATH = "records/diary_comic_pending.json"
 CACHE_DIR = "records/diary_comic_cache"
 DIARY_CHANNELS = ("馬文的厭世日記", "marvin-diary")
 IMG_MODEL = "gemini-2.5-flash-image"
@@ -47,6 +48,31 @@ def _last_posted() -> str:
 def _mark_posted(end: str) -> None:
     try:
         Path(STATE_PATH).write_text(json.dumps({"end": end}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _pending() -> dict:
+    """已渲染、待下次開台才貼的那頁（end/path/format）。無→{}。"""
+    try:
+        return json.loads(Path(PENDING_PATH).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _set_pending(end: str, path: str, fmt: str) -> None:
+    try:
+        Path(PENDING_PATH).write_text(
+            json.dumps({"end": end, "path": path, "format": fmt}), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_pending() -> None:
+    try:
+        Path(PENDING_PATH).unlink()
+    except FileNotFoundError:
+        pass
     except Exception:
         pass
 
@@ -143,7 +169,10 @@ def plan_latest_session(log_text: str, rows_fn):
 
 
 def _render_blocking(key: str):
-    """同步：選剛結束場次 → 故事導演排版 → 出圖 → 存檔。回 (png, format, "") 或 None。在 to_thread 跑。"""
+    """同步：選剛結束場次 → 策展排版 → 出圖 → 存檔 + 標 pending（不貼，等下次開台）。
+
+    回 (png, format) 或 None。在 to_thread 跑。已貼過 / 已渲染待貼的同場次 → 跳過。
+    """
     import datetime
     import sys
     sys.path.insert(0, ".")
@@ -159,8 +188,8 @@ def _render_blocking(key: str):
     if not planned:
         return None
     session, plan, end = planned
-    if end == _last_posted():
-        return None  # 已出過這場次
+    if end == _last_posted() or end == _pending().get("end"):
+        return None  # 已貼過、或已渲染待貼
 
     npanels = 1 if plan.format == "meme" else 4  # meme 單格 / slant 四格
     if guard is not None and not guard.allow(EST_USD_PER_IMG * npanels):
@@ -175,32 +204,58 @@ def _render_blocking(key: str):
         return None
     out = f"records/diary_comic_{end.replace(':', '').replace(' ', '_').replace('-', '')}.png"
     page.save(out)
-    _mark_posted(end)
-    return out, plan.format, ""
+    _set_pending(end, out, plan.format)  # 等下次開台才貼
+    return out, plan.format
 
 
-async def maybe_post_comic(bot, active_text_channel):
-    """靜默時呼叫：把剛結束的場次畫成漫畫貼回日記頻道。任何失敗都吞掉。"""
+def _find_diary_channel(bot):
+    import discord
+    for guild in getattr(bot, "guilds", []) or []:
+        for name in DIARY_CHANNELS:
+            ch = discord.utils.get(guild.text_channels, name=name)
+            if ch:
+                return ch
+    return None
+
+
+async def maybe_render_diary(bot, active_text_channel=None):
+    """關台（靜默）時呼叫：策展出圖、標 pending，**不貼**。任何失敗都吞掉。"""
     try:
         key = _key()
         if not key:
             return
-        result = await asyncio.to_thread(_render_blocking, key)
-        if not result:
-            return
-        out, used, line = result
-        import discord
-        target = None
-        guild = active_text_channel.guild if active_text_channel else None
-        if guild:
-            for name in DIARY_CHANNELS:
-                target = discord.utils.get(guild.text_channels, name=name)
-                if target:
-                    break
-        target = target or active_text_channel
-        if target is None:
-            return
-        await target.send(content="📓 馬文今日漫畫", file=discord.File(out))
-        logger.info(f"📓 [DiaryComic] 已貼漫畫 {out}（{used}）")
+        await asyncio.to_thread(_render_blocking, key)
     except Exception as e:
-        logger.warning(f"⚠️ [DiaryComic] 出漫畫失敗（已吞，不影響 loop）: {e}")
+        logger.warning(f"⚠️ [DiaryComic] 渲染失敗（已吞，不影響 loop）: {e}")
+
+
+async def maybe_post_diary(bot):
+    """開台（有人進語音）時呼叫：把 pending 那頁貼回日記頻道 + 置頂。
+
+    回 (channel, format) 供呼叫端語音預告；無 pending / 失敗 → None。
+    """
+    try:
+        p = _pending()
+        end, path = p.get("end"), p.get("path")
+        if not end or not path or end == _last_posted():
+            return None
+        import discord
+        from pathlib import Path as _P
+        if not _P(path).exists():
+            _clear_pending()
+            return None
+        target = _find_diary_channel(bot)
+        if target is None:
+            return None
+        msg = await target.send(content="📓 馬文的昨日日記", file=discord.File(path))
+        try:
+            await msg.pin()  # 置頂 → 晚進來的人不用爬
+        except Exception:
+            pass
+        _mark_posted(end)
+        _clear_pending()
+        logger.info(f"📓 [DiaryComic] 已貼昨日漫畫 {path}（{p.get('format')}）並置頂")
+        return target, p.get("format", "")
+    except Exception as e:
+        logger.warning(f"⚠️ [DiaryComic] 貼漫畫失敗（已吞）: {e}")
+        return None

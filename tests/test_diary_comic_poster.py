@@ -83,3 +83,44 @@ def test_db_rows_filters_to_session_window(tmp_path):
 
 def test_db_rows_bad_timestamp_returns_empty():
     assert poster._db_rows("not-a-date", "also-bad", db_path=":memory:") == []
+
+
+# ---- 延後發布：pending 狀態 + 貼+置頂 ----
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+
+def test_pending_state_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(poster, "PENDING_PATH", str(tmp_path / "p.json"))
+    assert poster._pending() == {}
+    poster._set_pending("2026-06-22 23:00:00", "records/x.png", "slant")
+    p = poster._pending()
+    assert p["end"] == "2026-06-22 23:00:00" and p["format"] == "slant"
+    poster._clear_pending()
+    assert poster._pending() == {}
+
+
+@pytest.mark.asyncio
+async def test_maybe_post_diary_posts_pins_clears(tmp_path, monkeypatch):
+    img = tmp_path / "page.png"
+    img.write_bytes(b"x")
+    monkeypatch.setattr(poster, "PENDING_PATH", str(tmp_path / "p.json"))
+    monkeypatch.setattr(poster, "STATE_PATH", str(tmp_path / "s.json"))
+    poster._set_pending("2026-06-22 23:00:00", str(img), "slant")
+    msg = MagicMock()
+    msg.pin = AsyncMock()
+    channel = MagicMock()
+    channel.send = AsyncMock(return_value=msg)
+    monkeypatch.setattr(poster, "_find_diary_channel", lambda bot: channel)
+    res = await poster.maybe_post_diary(MagicMock())
+    assert res is not None and res[0] is channel
+    channel.send.assert_awaited()
+    msg.pin.assert_awaited()                       # 置頂
+    assert poster._pending() == {}                 # 清掉 pending
+    assert poster._last_posted() == "2026-06-22 23:00:00"  # 標已貼
+
+
+@pytest.mark.asyncio
+async def test_maybe_post_diary_no_pending_returns_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(poster, "PENDING_PATH", str(tmp_path / "p.json"))
+    assert await poster.maybe_post_diary(MagicMock()) is None
