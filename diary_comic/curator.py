@@ -47,6 +47,7 @@ class CurationPlan:
     hero: HeroMoment
     context: list[Segment]
     source: str                            # hero 來源（可追溯）："crosstalk" | "topic"
+    songs: list = field(default_factory=list)  # 當夜使用者主動點歌 [(點歌者, 歌名)]，「點歌台」一格用
 
 
 @dataclass
@@ -74,8 +75,10 @@ def _ts_str(epoch: float) -> str:
     return _dt.datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def curate(session_rows, topic_entries, conditions: CuratorConditions | None = None):
+def curate(session_rows, topic_entries, conditions: CuratorConditions | None = None,
+           song_requests=None):
     """session_rows=(speaker,text,ts_float) 原始逐字稿；topic_entries=10 分鐘摘要 DiaryEntry。
+    song_requests=當夜使用者主動點歌 [(點歌者, 歌名)]（給「點歌台」一格）。
 
     回 CurationPlan 或 None（內容太少）。
     """
@@ -105,4 +108,5 @@ def curate(session_rows, topic_entries, conditions: CuratorConditions | None = N
     pool = [e for e in topic_entries if e is not hero_entry]
     context = [Segment(ts_str=e.ts_str, summary=e.core, speakers=list(e.speakers))
                for e in _spread(pool, c.context_beats)]
-    return CurationPlan(date=date, cast=cast, hero=hero, context=context, source=source)
+    return CurationPlan(date=date, cast=cast, hero=hero, context=context, source=source,
+                        songs=list(song_requests or []))
