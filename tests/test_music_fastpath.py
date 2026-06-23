@@ -18,6 +18,7 @@ _CATALOG = [
     "關喆 想你的夜", "陶喆 月亮代表誰的心", "陶喆 Susan說", "陶喆 流沙",
     "張惠妹 如果你也聽說", "信樂團 離歌", "曲婉婷 我的歌聲裡", "莫文蔚 慢慢喜歡你",
     "Beyond 海闊天空", "齊秦 火柴天堂", "鄧紫棋 泡沫", "五月天 倔強",
+    "盧廣仲 輕輕對你說", "陳華 想和你看五月的晚霞",  # 退化歌名 / 多「的」歌名 回歸用例
 ]
 
 
@@ -69,6 +70,21 @@ def test_known_artist_wrong_song_rejected(fp):
     周杰倫在庫但「不存在歌名」非任何在庫曲 → 應 None 走 cleaner，而非播別首周杰倫。"""
     assert fp.match("周杰倫的這首歌不存在啦啦啦") is None
     assert fp.match("周杰倫的隨便亂掰一個") is None
+
+
+def test_artist_right_degenerate_song_rejected(fp):
+    """防「藝人對、歌名退化」假命中（2026-06-23 live：盧廣仲的對啊對啊→輕輕對你說 88 假過）。
+    「對啊對啊」去 stopword「啊」只剩單一 token dui、又剛好在別首「對你說」→ 舊覆蓋率被藝人
+    名灌到 4/4 假過關。歌名(的後)content token <2 → 退化 query，應 None 走 cleaner。"""
+    assert fp.match("盧廣仲的對啊對啊") is None
+    assert fp.match("播放盧廣仲的對啊對啊") is None
+
+
+def test_multi_de_song_title_still_matches(fp):
+    """歌名本身含「的」（五月『的』晚霞）→「的」切藝人只能切第一個，歌名 token 仍充足、照命中。
+    （陪你看→想和你看 同音/近義糊字，靠拼音+藝人撐分。）"""
+    hit = fp.match("陳華的陪你看五月的晚霞")
+    assert hit is not None and hit[0] == "陳華 想和你看五月的晚霞"
 
 
 def test_empty_query_returns_none(fp):

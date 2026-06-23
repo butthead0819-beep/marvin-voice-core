@@ -108,27 +108,39 @@ class MusicFastPath:
         self._maybe_reload()
         if not self._index:
             return None
-        qpy = to_pinyin(strip_command_prefix(query))
+        stripped = strip_command_prefix(query)
+        qpy = to_pinyin(stripped)
         if not qpy:
             return None
         res = process.extractOne(qpy, self._index, scorer=fuzz.token_set_ratio)
         if res is None:
             return None
         _pinyin_val, score, idx = res
-        if score >= self.threshold and self._title_covered(qpy, _pinyin_val):
+        if score >= self.threshold and self._title_covered(qpy, _pinyin_val, query_text=stripped):
             return self._names[idx], float(score)
         return None
 
-    @staticmethod
-    def _title_covered(query_py: str, cand_py: str, bar: float = 0.85) -> bool:
-        """防「藝人對、歌錯」：要求 query 拼音 token（去 stopword）大部分出現在命中曲名。
+    _STOP = {"de", "a", "ya", "ne", "ba", "la"}
 
-        token_set_ratio 會被共享的藝人名 token 灌分——query「王力宏的唯一」即使唯一
-        不在庫，也因藝人名撐到 ≥門檻配到同藝人別首。要求 query 內容 token 覆蓋率達標，
-        擋掉只有藝人對、歌名沒對上的情況（虛構/不在庫歌名 → fall through 走 cleaner）。
+    @classmethod
+    def _title_covered(cls, query_py: str, cand_py: str, bar: float = 0.85,
+                       query_text: str = "", min_song_tokens: int = 2) -> bool:
+        """防「藝人對、歌錯」：兩道守門。
+
+        ① 退化守門（2026-06-23）：用第一個「的」切出歌名（藝人在前），要求歌名內容 token
+        （去 stopword）≥min_song_tokens。否則退化 query（如「對啊對啊」去掉「啊」只剩單一
+        token dui）→ 藝人名又灌滿覆蓋率 → 配到同藝人別首假命中。token 太少 → 不敢 fast-path、
+        回 None 走 cleaner。藝人 token 仍保留在②覆蓋率（同藝人是有效訊號，撐回近義糊字）。
+
+        ② 覆蓋率：query 拼音 token（含藝人，去 stopword）大部分出現在命中曲名——擋只有
+        藝人對、歌名沒對上的虛構/不在庫歌名。
         """
-        stop = {"de", "a", "ya", "ne", "ba", "la"}
-        q = set(query_py.split()) - stop
+        if query_text:
+            song_text = query_text.split("的", 1)[1] if "的" in query_text else query_text
+            song_q = set(to_pinyin(song_text).split()) - cls._STOP
+            if len(song_q) < min_song_tokens:
+                return False
+        q = set(query_py.split()) - cls._STOP
         if not q:
             return True
         c = set(cand_py.split())
