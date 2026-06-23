@@ -25,11 +25,15 @@ import pipeline_timing
 logger = logging.getLogger("MarvinBot.Engine")
 
 
-def patch_voice_recv_key_sync(voice_client) -> None:
+def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
     """Discord voice session 換 key 時，voice_recv reader 的 decryptor 不會自動更新，
     導致持續 CryptoError 使 STT 完全失效。
     此函數在 voice_client.listen(sink) 之後立即呼叫，將 decryptor.decrypt_rtp / decrypt_rtcp
-    替換為自動同步版本：CryptoError 發生時從 voice_client.secret_key 讀取最新 key 並重試。"""
+    替換為自動同步版本：CryptoError 發生時從 voice_client.secret_key 讀取最新 key 並重試。
+
+    on_desync_storm：重抓 key 仍持續解不開（key 本身壞、RESUME 沿用舊 key）時觸發的自癒
+    callback（通常排程完整重連）。在 audio 接收執行緒被呼叫 → callback 必須 thread-safe。
+    None 則只 drop 封包不自癒（行為同舊版）。"""
     try:
         from nacl.exceptions import CryptoError as _CryptoError
     except ImportError:
@@ -42,6 +46,9 @@ def patch_voice_recv_key_sync(voice_client) -> None:
     decryptor = getattr(reader, 'decryptor', None)
     if decryptor is None or getattr(decryptor, '_key_sync_patched', False):
         return
+
+    from decrypt_health import DecryptHealthMonitor
+    _decrypt_monitor = DecryptHealthMonitor()  # 偵測持續零解密 → on_desync_storm
 
     orig_rtp = decryptor.decrypt_rtp
     orig_rtcp = decryptor.decrypt_rtcp
@@ -72,16 +79,29 @@ def patch_voice_recv_key_sync(voice_client) -> None:
 
     def _synced_decrypt_rtp(packet):
         try:
-            return _maybe_dave_decrypt(packet, orig_rtp(packet))
+            out = _maybe_dave_decrypt(packet, orig_rtp(packet))
+            _decrypt_monitor.record_success(time.time())
+            return out
         except _CryptoError:
             try:
                 new_key = bytes(voice_client.secret_key)
                 decryptor.update_secret_key(new_key)
                 logger.info("[KeySync] RTP CryptoError → reader secret_key 已同步")
-                return _maybe_dave_decrypt(packet, orig_rtp(packet))
+                out = _maybe_dave_decrypt(packet, orig_rtp(packet))
+                _decrypt_monitor.record_success(time.time())
+                return out
             except _CryptoError:
-                # 重抓 key 後仍 CryptoError：真的解不開（少見、transient）。原樣上拋，
-                # reader.py 的 except CryptoError 分支會單行 log + 乾淨 drop（無 traceback）。
+                # 重抓 key 後仍 CryptoError：key 本身壞（RESUME 沿用舊 key）。原樣上拋讓
+                # reader.py 乾淨 drop；但餵偵測器——持續零解密 = 真 desync 風暴，重讀無用、
+                # 只有完整重連能修（2026-06-23 incident：Sentinel 看不到這層 → 炸 40 分沒自癒）。
+                _now = time.time()
+                _decrypt_monitor.record_failure(_now)
+                if on_desync_storm is not None and _decrypt_monitor.should_escalate(_now):
+                    logger.warning("🛡️ [KeySync] 持續零解密(secret_key desync 風暴) → 觸發完整重連自癒")
+                    try:
+                        on_desync_storm()
+                    except Exception:
+                        logger.debug("[KeySync] on_desync_storm callback 失敗", exc_info=True)
                 logger.debug("[KeySync] RTP 重試仍 CryptoError，drop 此封包")
                 raise
             except Exception as _e:

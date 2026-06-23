@@ -252,3 +252,57 @@ def test_no_dave_session_attr_does_not_break():
     pkt = _make_packet()
     result = decryptor.decrypt_rtp(pkt)
     assert result == b"OLD_DISCORD_PY"
+
+
+# ---------------------------------------------------------------------------
+# secret_key desync 風暴自癒：持續零解密 → on_desync_storm callback
+# （2026-06-23 incident：傳輸層 CryptoError 風暴 Sentinel 看不到、炸 40 分沒升級）
+# ---------------------------------------------------------------------------
+
+def test_sustained_decrypt_storm_triggers_on_desync_storm(monkeypatch):
+    """重抓 key 仍持續零解密(RESUME 沿用舊 key) → patch 觸發完整重連自癒 callback。"""
+    import discord_voice_engine as dve
+    from discord_voice_engine import patch_voice_recv_key_sync
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(dve.time, "time", lambda: clock["t"])
+
+    vc, decryptor, _ = _make_voice_client(dave_ready=False)
+    decryptor.decrypt_rtp.side_effect = CryptoError("desync")  # 永遠解不開
+
+    fired = []
+    patch_voice_recv_key_sync(vc, on_desync_storm=lambda: fired.append(1))
+
+    patched = decryptor.decrypt_rtp  # patch 後為 synced 版
+    for i in range(15):              # 15 次封包跨 14s 全失敗
+        clock["t"] = 1000.0 + i
+        try:
+            patched(_make_packet())
+        except CryptoError:
+            pass
+
+    assert fired, "持續零解密應觸發 on_desync_storm 自癒"
+    assert len(fired) == 1, "升級只觸發一次、不 spam orchestrate_recovery"
+
+
+def test_transient_failures_recovered_by_resync_do_not_escalate(monkeypatch):
+    """重抓 key 後就解開（瞬間抖動，KeySync 救得回）→ 不該升級完整重連。"""
+    import discord_voice_engine as dve
+    from discord_voice_engine import patch_voice_recv_key_sync
+
+    clock = {"t": 2000.0}
+    monkeypatch.setattr(dve.time, "time", lambda: clock["t"])
+
+    vc, decryptor, _ = _make_voice_client(dave_ready=False)
+    # 第一次 raise、重抓 key 後第二次成功 → 每個封包都靠 resync 救回（record_success）
+    decryptor.decrypt_rtp.side_effect = [CryptoError("blip"), b"OK"] * 20
+
+    fired = []
+    patch_voice_recv_key_sync(vc, on_desync_storm=lambda: fired.append(1))
+
+    patched = decryptor.decrypt_rtp
+    for i in range(20):
+        clock["t"] = 2000.0 + i
+        patched(_make_packet())
+
+    assert not fired, "靠 resync 救回的瞬間抖動不該觸發完整重連"

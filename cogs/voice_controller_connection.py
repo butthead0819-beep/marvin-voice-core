@@ -97,6 +97,23 @@ class ConnectionMixin:
             return True
         return last_decrypted_audio_time >= connection_time
 
+    def _on_key_desync_storm(self):
+        """KeySync 偵測到「重抓 key 仍持續零解密」(secret_key desync 風暴) → 排程完整重連自癒。
+
+        補上 Sentinel 盲點：傳輸層 CryptoError 風暴被 KeySync drop、不走 report_sink_error
+        (只數 DAVE 層) → 升級永不觸發 (2026-06-23 incident 炸 40 分)。在 audio 接收執行緒
+        被呼叫 → 用 call_soon_threadsafe 排到 event loop 跑 orchestrate_recovery (內有
+        is_recovering 去重 + soft-repair→物理重啟分層)。"""
+        try:
+            loop = getattr(self.bot, "loop", None)
+            if loop is None or loop.is_closed():
+                return
+            loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self.orchestrate_recovery("key_desync_storm"))
+            )
+        except Exception:
+            logger.debug("[KeySync] 排程 desync 自癒失敗", exc_info=True)
+
     def report_sink_error(self, error_type: str):
         """
         [Operation Sentinel] 由 Sink 呼叫，匯報 DAVE 底層解密異常。
@@ -237,7 +254,7 @@ class ConnectionMixin:
                 wake_active_callback=lambda: self._wake_response_pending
             )
             voice_client.listen(sink)
-            patch_voice_recv_key_sync(voice_client)
+            patch_voice_recv_key_sync(voice_client, on_desync_storm=self._on_key_desync_storm)
             self.bot.engine.sink = sink # 🔗 [Linkage Fix] 直接鏈結回 Engine
             self.connection_time = time.time()
             self.last_recovery_time = time.time()
@@ -351,7 +368,7 @@ class ConnectionMixin:
                 wake_active_callback=lambda: self._wake_response_pending
             )
             voice_client.listen(sink)
-            patch_voice_recv_key_sync(voice_client)
+            patch_voice_recv_key_sync(voice_client, on_desync_storm=self._on_key_desync_storm)
             self.bot.engine.sink = sink # 🔗 [Linkage Fix]
             self.connection_time = time.time()  # 🛡️ [Operation Sentinel] 紀錄連線時間
             self.sink_failure_count = 0         # 重設失敗計數
