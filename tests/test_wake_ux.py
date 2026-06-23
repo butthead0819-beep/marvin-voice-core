@@ -59,6 +59,26 @@ async def test_confirmation_uses_initial_wake_text_query_without_waiting():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "initial_text, expected",
+    [
+        ("馬文下一首", "下一首"),   # 3 字 skip 指令，曾被 <4 字閘吞掉
+        ("馬文繼續播", "繼續播"),   # 3 字 resume 指令，同一個 bug
+    ],
+)
+async def test_confirmation_accepts_short_control_command_without_waiting(initial_text, expected):
+    """Regression: 「馬文下一首」剝詞後剩「下一首」(3 字)，曾被 _confirmation_flow
+    的 len<4 字閘當成『只喊了喚醒詞』，去等後續問句→10s 逾時→「沒聽清楚」，
+    指令從未送到 IntentBus。短控制指令本身即完整指令，必須即時返回。"""
+    controller = make_controller()
+
+    query = await controller._confirmation_flow("User1", 123.0, initial_text=initial_text)
+
+    assert query == expected
+    assert controller.speaker_dialogue_states == {}
+
+
+@pytest.mark.asyncio
 async def test_process_queued_query_passes_speaker_to_harvest():
     """Regression: get_harvest must receive speaker= so cross-talk doesn't pollute queries."""
     controller = make_controller()

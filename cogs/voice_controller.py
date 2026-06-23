@@ -2717,7 +2717,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if len(stripped) < 4:
             raw_query = self.bot.engine.conv_buffer.get_harvest(wake_time, before=3.0, after=2.0, speaker=speaker)
             stripped = self._strip_wake_word(raw_query) if raw_query else stripped
-        if len(stripped) >= 4:
+        # 短控制指令（下一首/暫停/繼續/停，排除 play）即使 <4 字也是完整指令，不可被字數閘
+        # 當成『只喊了喚醒詞』吞掉去等問句逾時（「馬文下一首」→「下一首」3 字 bug）。
+        if len(stripped) >= 4 or self._detect_music_command(stripped) in ("skip", "pause", "resume", "stop"):
             # 問句已在喚醒句裡，直接用
             self.speaker_dialogue_states.pop(speaker, None)
         else:
