@@ -291,9 +291,10 @@ _PROVIDERS: list[ProviderSpec] = [
                  "gpt-oss-120b", "gpt-oss-120b",
                  quick_model_env="CEREBRAS_QUICK_MODEL", analyze_model_env="CEREBRAS_MODEL",
                  tpm_budget=60000),
-    # SambaNova 無 3.1-8b；quick 用 Maverick-17B（快），analyze 用 3.3-70B（2026-05-21 實測 /models）
+    # SambaNova quick 用 gemma-4-31B（2026-06-23 實測 /models：Maverick-17B 已下架→每次必敗白燒
+    # failover；gemma-4-31B-it completion 驗過可用）；analyze 用 3.3-70B（仍在、只是高峰會 429）
     ProviderSpec("sambanova", "SAMBANOVA_API_KEY", "https://api.sambanova.ai/v1",
-                 "Llama-4-Maverick-17B-128E-Instruct", "Meta-Llama-3.3-70B-Instruct"),
+                 "gemma-4-31B-it", "Meta-Llama-3.3-70B-Instruct"),
     # Together 8b 要帶 'Meta-' 前綴（實測 /models）
     ProviderSpec("together", "TOGETHER_API_KEY", "https://api.together.xyz/v1",
                  "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
