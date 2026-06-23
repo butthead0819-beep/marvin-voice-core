@@ -117,29 +117,29 @@ def _db_rows(start_ts_str: str, end_ts_str: str, db_path: str = DB_PATH):
 
 
 def plan_latest_session(log_text: str, rows_fn):
-    """純規劃：日誌文字 + (start,end)->rows 函式 → (session, StoryPlan, end) 或 None。
+    """日誌文字 + (start,end)->原始逐字稿函式 → (session, StoryPlan, end) 或 None。
 
-    無場次 / <6 筆 / 無爆笑精華（fuse→None）→ None（沒高潮不畫）。
+    策展（curate）選 Hero：搶話峰值（≥在場×ratio）→ 不夠熱退最強話題。有料(≥6段)就出：
+    crosstalk→slant 整頁、topic→meme 單格。<6 段或無場次 → None。
     """
     import sys
     sys.path.insert(0, ".")
     from diary_comic.parser import (
         parse_log, dedupe_adjacent, eligible_sessions, should_generate)
-    from diary_comic.highlight import find_highlights
-    from diary_comic.story import fuse
+    from diary_comic.curator import curate
+    from diary_comic.curation_render import curation_to_story_plan
 
     sessions = eligible_sessions(dedupe_adjacent(parse_log(log_text)))
     if not sessions:
         return None
     session = sessions[-1]
     if not should_generate(session, min_entries=6):
-        return None  # 內容不足 6 筆（對話太短）→ 不值得燒 API 出漫畫
+        return None  # 內容不足 6 段（對話太短）→ 不值得燒 API
     end = session[-1].ts_str
-    highlights = find_highlights(rows_fn(session[0].ts_str, end))
-    plan = fuse(session, highlights)
-    if plan is None:
-        return None  # 沒爆笑精華 → 不出漫畫
-    return session, plan, end
+    cur = curate(rows_fn(session[0].ts_str, end), session)
+    if cur is None:
+        return None
+    return session, curation_to_story_plan(cur), end
 
 
 def _render_blocking(key: str):

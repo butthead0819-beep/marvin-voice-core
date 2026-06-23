@@ -23,37 +23,41 @@ def _log(n):
     return "\n".join(blocks)
 
 
-def _rows_with_laugh(start_ts_str, end_ts_str):
-    return [("showay", "我國中還在重考找不到制服", 1718000000.0),
-            ("showay", "哈哈哈哈哈哈哈", 1718000010.0)]
+def _rows_crosstalk(start_ts_str, end_ts_str):
+    # 3 人在 2 秒內各講長 → 搶話峰值
+    return [("狗與露", "我覺得這個設計真的有問題啦", 1718000000.0),
+            ("showay", "不是啦你聽我說成本根本壓不下來", 1718000001.0),
+            ("陳進文", "對啊而且客戶那邊也不會買單啦", 1718000001.8)]
 
 
-def _rows_no_laugh(start_ts_str, end_ts_str):
-    return [("showay", "今天天氣不錯", 1718000000.0),
-            ("狗與露", "對啊蠻舒服的", 1718000010.0)]
+def _rows_calm(start_ts_str, end_ts_str):
+    # 單人、無重疊 → 無搶話
+    return [("showay", "今天天氣真的蠻舒服的啊", 1718000000.0)]
 
 
-def test_plan_latest_session_with_highlight_returns_plan():
-    out = poster.plan_latest_session(_log(6), _rows_with_laugh)
+def test_plan_latest_session_crosstalk_returns_slant():
+    out = poster.plan_latest_session(_log(6), _rows_crosstalk)
     assert out is not None
     session, plan, end = out
-    assert plan is not None
-    assert plan.format in ("meme", "slant")
-    assert end == "2026-06-20 22:15:00"  # 第 6 筆（index 5 → 15 分）
+    assert plan.format == "slant"  # 有搶話高潮 → 整頁
+    assert end == "2026-06-20 22:15:00"  # 第 6 段（index 5 → 15 分）
 
 
-def test_plan_latest_session_no_laugh_returns_none():
-    # 內容夠多但沒爆笑 → fuse 回 None → 不出漫畫
-    assert poster.plan_latest_session(_log(6), _rows_no_laugh) is None
+def test_plan_latest_session_calm_returns_topic_meme():
+    # 沒搶話但有料 → 退最強話題、單格 meme（不再是 None）
+    out = poster.plan_latest_session(_log(6), _rows_calm)
+    assert out is not None
+    _session, plan, _end = out
+    assert plan.format == "meme"
 
 
 def test_plan_latest_session_too_short_returns_none():
-    # <6 筆 → should_generate False → 不出
-    assert poster.plan_latest_session(_log(3), _rows_with_laugh) is None
+    # <6 段 → should_generate False → 不出
+    assert poster.plan_latest_session(_log(3), _rows_crosstalk) is None
 
 
 def test_plan_latest_session_empty_log_returns_none():
-    assert poster.plan_latest_session("", _rows_with_laugh) is None
+    assert poster.plan_latest_session("", _rows_crosstalk) is None
 
 
 def test_db_rows_filters_to_session_window(tmp_path):
