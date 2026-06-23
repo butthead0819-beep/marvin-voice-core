@@ -360,6 +360,43 @@ def with_title(page: Image.Image, title: str, bar_h: int | None = None) -> Image
     return out
 
 
+# 馬文語錄 epigraph 配色（深墨底+米字，厭世日記調性；可調）
+QUOTE_BG = (28, 24, 32)
+QUOTE_FG = (228, 220, 200)
+QUOTE_ATTR = (150, 140, 120)
+
+
+def compose_quote_strip(quote: str, width: int = 1080) -> Image.Image:
+    """今夜馬文語錄 epigraph 條：「碎念」—— 馬文。深色，異於暖色點歌台與一般字幕。"""
+    pad = max(20, int(width * 0.04))
+    font = _load_font(max(26, int(width * 0.040)))
+    lines = wrap_text(f"「{quote}」", font, width - 2 * pad)
+    lh = int(font.size * 1.4)
+    attr_h = int(font.size * 1.3)
+    H = pad + lh * len(lines) + attr_h + pad
+    strip = Image.new("RGB", (width, H), QUOTE_BG)
+    draw = ImageDraw.Draw(strip)
+    y = pad
+    for ln in lines:
+        draw.text((pad, y), ln, fill=QUOTE_FG, font=font)
+        y += lh
+    attr = "—— 馬文"
+    aw = _text_width(font, attr)
+    draw.text((width - pad - aw, y), attr, fill=QUOTE_ATTR, font=font)
+    return strip
+
+
+def prepend_quote(page: Image.Image, quote: str) -> Image.Image:
+    """把馬文語錄接在漫畫頁上方當開頁 epigraph。空 → 原圖。"""
+    if not quote:
+        return page
+    strip = compose_quote_strip(quote, width=page.width)
+    out = Image.new("RGB", (page.width, page.height + strip.height), (250, 248, 244))
+    out.paste(strip, (0, 0))
+    out.paste(page, (0, strip.height))
+    return out
+
+
 # 點歌台卡片配色（暖色復古電台，刻意有別於標準深框白字字幕；可調）
 SONG_CARD_BG = (236, 208, 138)      # 奶油金底
 SONG_CARD_FG = (74, 48, 28)         # 深褐字

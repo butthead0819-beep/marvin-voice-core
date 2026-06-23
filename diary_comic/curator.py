@@ -48,6 +48,7 @@ class CurationPlan:
     context: list[Segment]
     source: str                            # hero 來源（可追溯）："crosstalk" | "topic"
     songs: list = field(default_factory=list)  # 當夜使用者主動點歌 [(點歌者, 歌名)]，「點歌台」一格用
+    quote: str = ""                            # 今夜馬文最毒一句碎念，當開頁語錄 epigraph
 
 
 @dataclass
