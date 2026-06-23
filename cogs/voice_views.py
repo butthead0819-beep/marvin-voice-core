@@ -81,6 +81,8 @@ class PlayControlView(discord.ui.View):
         if info:
             dur = info.get('duration', 0)
             dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
+            if info.get('thumbnail'):
+                embed.set_thumbnail(url=info['thumbnail'])  # 串流歌曲封面
             embed.add_field(name="🎵 歌曲", value=f"`{info['title']}`", inline=False)
             embed.add_field(name="👤 頻道", value=f"`{info['uploader']}`", inline=True)
             embed.add_field(name="⏱️ 時長", value=f"`{dur_str}`", inline=True)
