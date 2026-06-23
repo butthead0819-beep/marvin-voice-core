@@ -115,9 +115,10 @@ class PlayControlView(discord.ui.View):
                 _epoch = getattr(mc, '_seed_epoch', 0)
                 _since = getattr(mc, '_auto_since_manual', 99)
                 if _since < _swap and getattr(mc, '_last_user_song_seed', None):
-                    dom = f"🔥 跟最近點歌（{_swap - _since} 首後開始輪替）"
+                    _req = getattr(mc, '_last_user_song_requester', '') or members[0]
+                    dom = f"🔥 跟 `{_req}` 最近點歌（{_swap - _since} 首後開始輪替）"
                 else:
-                    _primary = seed_rotation.primary_member(members, _epoch, _swap)
+                    _primary = seed_rotation.primary_member(members, _epoch, _swap) or members[0]
                     dom = f"`{_primary}` 的口味（{_swap - (_epoch % _swap)} 首後換人）"
                 embed.add_field(name="🎚️ 推薦主導", value=dom, inline=False)
         except Exception:
