@@ -19,6 +19,8 @@ DB_PATH = "marvin.db"
 STATE_PATH = "records/diary_comic_last.json"
 PENDING_PATH = "records/diary_comic_pending.json"
 CACHE_DIR = "records/diary_comic_cache"
+BOT_LOG = os.path.expanduser("~/Library/Logs/Marvin/bot_stdout.log")  # [點歌-手動] 來源
+MUSIC_MEMORY = "music_memory.json"  # 歌名→video id→cover 縮圖
 DIARY_CHANNELS = ("馬文的厭世日記", "marvin-diary")
 IMG_MODEL = "gemini-2.5-flash-image"
 TEXT_MODEL = "gemini-2.5-flash"
@@ -168,8 +170,47 @@ def plan_latest_session(log_text: str, rows_fn):
     return session, curation_to_story_plan(cur), end
 
 
+def _append_song_card(page, session):
+    """關台時把當夜使用者主動點歌畫成「點歌台」一格接在頁下方（含 cover art）。全防禦→失敗回原圖。"""
+    try:
+        import datetime as _dt
+        import io
+        import json as _json
+        import urllib.request
+        from PIL import Image
+        from diary_comic.song_requests import parse_manual_requests, build_title_index, thumb_url
+        from diary_comic.layout import append_song_card
+
+        since = _dt.datetime.fromisoformat(session[0].ts_str).timestamp() - 600
+        until = _dt.datetime.fromisoformat(session[-1].ts_str).timestamp() + 600
+        reqs = parse_manual_requests(
+            Path(BOT_LOG).read_text(encoding="utf-8", errors="ignore"), since, until)
+        if not reqs:
+            return page
+        try:
+            idx = build_title_index(
+                _json.loads(Path(MUSIC_MEMORY).read_text(encoding="utf-8")).get("songs", {}))
+        except Exception:
+            idx = {}
+        covers = []
+        for _u, title in reqs[:8]:
+            img = None
+            vid = idx.get(title)
+            if vid:
+                try:
+                    with urllib.request.urlopen(thumb_url(vid), timeout=10) as r:
+                        img = Image.open(io.BytesIO(r.read())).convert("RGB")
+                except Exception:
+                    pass
+            covers.append(img)
+        return append_song_card(page, reqs, covers)
+    except Exception as e:
+        logger.debug(f"[DiaryComic] 點歌台略過: {e}")
+        return page
+
+
 def _render_blocking(key: str):
-    """同步：選剛結束場次 → 策展排版 → 出圖 → 存檔 + 標 pending（不貼，等下次開台）。
+    """同步：選剛結束場次 → 策展排版 → 出圖 + 點歌台 → 存檔 + 標 pending（不貼，等下次開台）。
 
     回 (png, format) 或 None。在 to_thread 跑。已貼過 / 已渲染待貼的同場次 → 跳過。
     """
@@ -202,6 +243,7 @@ def _render_blocking(key: str):
         day_index=datetime.date.today().toordinal())
     if page is None:
         return None
+    page = _append_song_card(page, session)  # 接「今夜點歌台」一格（有點歌才接，全防禦）
     out = f"records/diary_comic_{end.replace(':', '').replace(' ', '_').replace('-', '')}.png"
     page.save(out)
     _set_pending(end, out, plan.format)  # 等下次開台才貼

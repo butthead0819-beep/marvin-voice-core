@@ -360,6 +360,66 @@ def with_title(page: Image.Image, title: str, bar_h: int | None = None) -> Image
     return out
 
 
+# 點歌台卡片配色（暖色復古電台，刻意有別於標準深框白字字幕；可調）
+SONG_CARD_BG = (236, 208, 138)      # 奶油金底
+SONG_CARD_FG = (74, 48, 28)         # 深褐字
+SONG_CARD_ACCENT = (176, 122, 58)   # 分隔線/DJ榜
+
+
+def compose_song_card(requests, width: int = 1080, *, covers=None, bg=SONG_CARD_BG,
+                      fg=SONG_CARD_FG, accent=SONG_CARD_ACCENT) -> Image.Image:
+    """「今夜點歌台」一格：歌單 + DJ 榜。暖色卡，色彩異於一般字幕。
+
+    requests: [(點歌者, 完整歌名)]；covers: 對齊的 cover 縮圖 [PIL|None]（None→純文字列）。
+    """
+    from diary_comic.song_requests import dj_tally, clean_title
+    pad = max(16, int(width * 0.03))
+    hfont = _load_font(max(28, int(width * 0.050)))
+    font = _load_font(max(22, int(width * 0.036)))
+    sub = _load_font(max(18, int(width * 0.028)))
+    items = requests[:8]
+    covers = (covers or [None] * len(requests))[:8]
+    has_cover = any(c is not None for c in covers)
+    thumb_w, thumb_h = (int(width * 0.16), int(width * 0.12)) if has_cover else (0, 0)
+    row_h = max(thumb_h + pad // 2, int(font.size * 1.6))
+    tally = dj_tally(requests)
+    tally_str = ("點歌王　" + "　".join(f"{u}×{c}" for u, c in tally[:4])) if tally else ""
+    head_h = int(hfont.size * 1.3)
+    H = pad + head_h + pad // 2 + row_h * len(items) + (int(font.size * 1.5) if tally_str else 0) + pad
+    card = Image.new("RGB", (width, H), bg)
+    draw = ImageDraw.Draw(card)
+    draw.text((pad, pad), "今夜點歌台", fill=fg, font=hfont)
+    hy = pad + head_h
+    draw.line([(pad, hy), (width - pad, hy)], fill=accent, width=4)
+    y = hy + pad // 2
+    for (user, title), cover in zip(items, covers):
+        tx = pad
+        if has_cover:
+            if cover is not None:
+                card.paste(cover_fit(cover, thumb_w, thumb_h), (pad, y))
+            else:
+                draw.rectangle([pad, y, pad + thumb_w, y + thumb_h], fill=accent)
+            tx = pad + thumb_w + pad // 2
+        ty = y + (thumb_h - int(font.size * 1.0) - int(sub.size)) // 2 if has_cover else y
+        draw.text((tx, ty), f"《{clean_title(title)[:16]}》", fill=fg, font=font)
+        draw.text((tx, ty + int(font.size * 1.1)), user, fill=accent, font=sub)
+        y += row_h
+    if tally_str:
+        draw.text((pad, y + pad // 2), tally_str, fill=accent, font=font)
+    return card
+
+
+def append_song_card(page: Image.Image, requests, covers=None) -> Image.Image:
+    """把點歌台卡片接在漫畫頁下方。無點歌 → 原圖。"""
+    if not requests:
+        return page
+    card = compose_song_card(requests, width=page.width, covers=covers)
+    out = Image.new("RGB", (page.width, page.height + card.height), (250, 248, 244))
+    out.paste(page, (0, 0))
+    out.paste(card, (0, page.height))
+    return out
+
+
 def compose_meme(image: Image.Image, top: str = "", bottom: str = "",
                  size: tuple[int, int] = (1080, 1080)) -> Image.Image:
     """一格 meme：滿版圖 + 上 setup / 下 punchline 邊條（下可空=強反差單飛）。"""
