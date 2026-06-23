@@ -1575,6 +1575,7 @@ class MusicCog(commands.Cog):
             if _m:
                 self._last_user_song_seed = _m.group(1)
                 self._auto_since_manual = 0  # 手動點歌 → 重置 freshness，這首當 fresh lead 種子
+                self._last_user_song_requester = user or ''  # 控制台「跟誰最近點歌」顯示用
         except Exception:
             logger.debug("[Queue] skip-override / seed 更新失敗", exc_info=True)
 
