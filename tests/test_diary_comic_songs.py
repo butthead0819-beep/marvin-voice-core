@@ -25,8 +25,34 @@ def test_parse_manual_requests_window_and_full_title():
     # 窗外那筆(09:00)被濾掉、雜訊行不算
 
 
+def test_parse_includes_voice_requests():
+    """[點歌-語音] 也要算進點歌台。昨日 53% 點歌走語音，parser 只抓 [點歌-手動]
+    時整批語音點歌的歌名在日記裡完全不顯示（2026-06-23 incident）。
+    含 (修正→) 修正標記的語音行也要正確擷取歌名。"""
+    log = (
+        "2026-06-23 23:10:00,000 [INFO] STTHistory: [點歌-語音] 使用者=狗與露 | 搜尋=關喆 (修正→關喆 想你的夜) | 結果=想你的夜 / 關喆\n"
+        "2026-06-23 23:44:52,893 [INFO] STTHistory: [點歌-語音] 使用者=showay | 搜尋=隔壁老樊的多想 | 結果=隔壁老樊 - 多想在平庸的生活擁抱你 / EHPMusicChannel\n"
+    )
+    since = __import__("datetime").datetime(2026, 6, 23, 0, 0).timestamp()
+    until = __import__("datetime").datetime(2026, 6, 24, 0, 0).timestamp()
+    reqs = parse_manual_requests(log, since, until)
+    assert reqs == [
+        ("狗與露", "想你的夜"),
+        ("showay", "隔壁老樊 - 多想在平庸的生活擁抱你"),
+    ]
+
+
 def test_clean_title_strips_suffix():
     assert clean_title("江蕙 -夢中的情話(Official MV)") == "江蕙 -夢中的情話"
+
+
+def test_clean_title_strips_lyric_quote_and_pipe():
+    """『歌詞引言』與 ｜/| 分隔的 YT 贅詞要砍掉，留歌名主體。"""
+    assert clean_title(
+        "隔壁老樊 - 多想在平庸的生活擁抱你『無力，是我們最後難免的結局。』"
+    ) == "隔壁老樊 - 多想在平庸的生活擁抱你"
+    assert clean_title("ECO ELEPHANT - 中文版 - 產品形象 ｜Official Video") == "ECO ELEPHANT - 中文版 - 產品形象"
+    assert clean_title("某歌 | Official Audio") == "某歌"
 
 
 def test_video_id_and_thumb_url():
