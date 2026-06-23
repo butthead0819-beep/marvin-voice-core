@@ -170,6 +170,36 @@ def plan_latest_session(log_text: str, rows_fn):
     return session, curation_to_story_plan(cur), end
 
 
+_QUOTE_SYS = (
+    "你是馬文——《銀河便車指南》那個厭世、存在主義、聰明絕頂卻無比厭倦的機器人。"
+    "看今晚這群人聊的主題，寫一句你對這一切的厭世吐槽，當日記開頁語錄。"
+    "繁中、≤28 字、毒舌帶哲思、像在嘆氣。只回那句話，不要引號。")
+
+
+def _gen_marvin_quote(session, text_fn) -> str:
+    """現場生今夜馬文語錄（碎念欄已停產 → 用 LLM 從當夜主題生）。失敗→空。"""
+    if text_fn is None or not session:
+        return ""
+    try:
+        topics = "、".join(e.core for e in session[:12] if e.core)
+        if not topics:
+            return ""
+        q = (text_fn(_QUOTE_SYS, f"今晚他們聊了：{topics}\n\n你的厭世語錄：") or "").strip()
+        return q.strip("「」\"'　 ")[:40]
+    except Exception:
+        return ""
+
+
+def _prepend_marvin_quote(page, session, text_fn=None):
+    """把今夜馬文語錄接在頁上方當 epigraph。全防禦→失敗回原圖。"""
+    try:
+        from diary_comic.layout import prepend_quote
+        return prepend_quote(page, _gen_marvin_quote(session, text_fn))
+    except Exception as e:
+        logger.debug(f"[DiaryComic] 馬文語錄略過: {e}")
+        return page
+
+
 def _append_song_card(page, session):
     """關台時把當夜使用者主動點歌畫成「點歌台」一格接在頁下方（含 cover art）。全防禦→失敗回原圖。"""
     try:
@@ -244,6 +274,7 @@ def _render_blocking(key: str):
     if page is None:
         return None
     page = _append_song_card(page, session)  # 接「今夜點歌台」一格（有點歌才接，全防禦）
+    page = _prepend_marvin_quote(page, session, _text_fn(key))  # 開頁接馬文語錄（LLM 生，全防禦）
     out = f"records/diary_comic_{end.replace(':', '').replace(' ', '_').replace('-', '')}.png"
     page.save(out)
     _set_pending(end, out, plan.format)  # 等下次開台才貼
