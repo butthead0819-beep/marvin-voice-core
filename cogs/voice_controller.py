@@ -895,6 +895,16 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         # --- [Join Logic] ---
         if before.channel != after.channel and after.channel == marvin_channel:
+            # 📓 [DiaryComic] 開台儀式：把昨夜 pending 那頁貼出+置頂，貼成功才語音預告。
+            # idempotent（重複進來不重貼，poster 內 _last_posted 去重）；全防禦不擋 join。
+            try:
+                from diary_comic_poster import maybe_post_diary
+                posted = await maybe_post_diary(self.bot)
+                if posted and hasattr(self, "play_tts"):
+                    asyncio.create_task(self.play_tts(
+                        "昨天的日記畫好貼在日記頻道了，記得去翻翻。"))
+            except Exception as _de:
+                logger.debug(f"[DiaryComic] 開台發布略過: {_de}")
             # 🔔 [Nudge Throttle] (重)進語音 = 新 session，重新武裝該人所有提醒類別
             self._nudges.reset_speaker(member.display_name)
             # 🔐 [Consent] 首次進入時發送資料使用聲明

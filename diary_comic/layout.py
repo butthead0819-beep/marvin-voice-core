@@ -472,7 +472,7 @@ def compose_page_hero(rows, page_size=(1080, 1920), tilt=0.12, heights=None):
     W, H = page_size
     page = Image.new("RGB", (W, H), (250, 248, 244))
     draw = ImageDraw.Draw(page)
-    font = _load_font(max(14, int(min(W, H) * 0.030)))
+    font = _load_font(max(22, int(min(W, H) * 0.045)))  # 字幕放大（slant/hero 路徑，1080 寬→48px）
     g = max(4, int(min(W, H) * 0.012))
 
     if heights is not None:
