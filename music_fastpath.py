@@ -30,6 +30,19 @@ except ImportError:  # 缺 dep → fast-path 靜默停用
 DEFAULT_CATALOG = Path("records/music_catalog.json")
 DEFAULT_THRESHOLD = 80.0
 
+# fast-path 命中後回給 caller 的 query 要補回點歌動詞，否則裸「藝人 歌名」沒動詞 →
+# IntentBus music agent 所有 play pattern 都不 match → bid 0.00 → bus drop → 不播 /
+# Marvin LLM 假承諾「已為你播放」（2026-06-23 18:33 incident）。「放一首」命中 strong_play
+# (0.95, 無 missing slot → 直接播不追問)，且播放時被 _extract_music_search_query 剝掉、
+# 不污染 YT 搜尋（_extract cmd_prefixes 含「一首」）。
+FASTPATH_PLAY_PREFIX = "放一首"
+
+
+def to_play_command(canonical: str) -> str:
+    """把 fast-path 命中的 canonical「藝人 歌名」包成 music agent 認得的點歌指令。"""
+    return f"{FASTPATH_PLAY_PREFIX}{canonical}"
+
+
 # 點歌命令前綴：真實 query 是「播放陶喆的流沙」，命令動詞要先剝掉只留歌名，
 # 否則「播放/bo fang」當內容 token 被 token_set + 覆蓋率守門當噪音 → 命中失敗。
 _CMD_PREFIX = re.compile(
