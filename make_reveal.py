@@ -175,6 +175,9 @@ _TXT = (235, 235, 235)
 _CELL_ROWS = 18              # 每根 EQ 長條的 LED 格數
 _CELL_GAP = 3               # LED 格之間的縫
 _BAR_PAD = 0.16             # 長條左右留白比例
+# 固定刻度：滿格＝12 句/分鐘（跨晚共用，才能比高/低話量；最高觀測 11.5）。
+# 不是每晚各自縮放——安靜夜整片偏綠偏矮、熱鬧夜偏紅偏高，顏色＝絕對話量。
+_FULL_RATE = 12.0            # 句/分鐘 = 滿格
 
 
 def _eq_color(frac: float) -> tuple[int, int, int]:
@@ -201,20 +204,28 @@ def render_ekg_png(reel: Reel, out_path: str) -> str:
     plot_top, plot_bot = 150, 410
     x0, x1 = _MARGIN, _W - _MARGIN
     track = reel.activity_track
-    nmax = max((n for _, n in track), default=1.0) or 1.0
     step = (track[1][0] - track[0][0]) if len(track) >= 2 else span
+    bin_min = max(step / 60.0, 1e-6)         # 每格分鐘數（5-10）
 
     def _x(t):
         return x0 + (t - start) / span * (x1 - x0)
 
-    # EQ 長條：每格一根，由下往上點亮 LED，綠→紅
+    # 固定刻度格線：滿格 = _FULL_RATE 句/分（跨晚共用，不每晚縮放）
     plot_h = plot_bot - plot_top
     cell_h = plot_h / _CELL_ROWS
+    d.line([(x0, plot_top), (x1, plot_top)], fill=(70, 70, 78), width=1)
+    f_axis = _load_font(20)
+    d.text((x1 + 6, plot_top - 10), f"{_FULL_RATE:.0f}", font=f_axis, fill=(120, 120, 128))
+    d.text((x1 + 6, plot_bot - 10), "0", font=f_axis, fill=(120, 120, 128))
+    d.text((x1 + 6, (plot_top + plot_bot) // 2 - 24), "句\n分", font=f_axis, fill=(120, 120, 128))
+
+    # EQ 長條：每格一根，由下往上點亮 LED，綠→紅。高度＝該段「句/分」/ 固定滿格
     for t, n in track:
         left, right = _x(t), _x(t + step)
         pad = (right - left) * _BAR_PAD
         bx0, bx1 = left + pad, right - pad
-        lit = round(n / nmax * _CELL_ROWS)
+        rate = n / bin_min                   # 句/分鐘（跟格寬無關，可跨晚比）
+        lit = round(min(rate / _FULL_RATE, 1.0) * _CELL_ROWS)
         for k in range(lit):
             col = _eq_color(k / (_CELL_ROWS - 1))
             cy_bot = plot_bot - k * cell_h
@@ -326,9 +337,10 @@ def refine_topics(quotes: list[str], text_fn=None) -> list[str]:
 
 
 def build_reveal(rows, out_dir: str, date_label: str = "",
-                 song_requests=None, text_fn=None) -> tuple[str, str] | None:
+                 song_requests=None, text_fn=None, stamp=None) -> tuple[str, str] | None:
     """rows (+選用點歌) → (png_path, json_path)，或 None（平淡夜 / 無乾淨引言）。
 
+    date_label＝圖上顯示的日期；stamp＝檔名（None→由 date_label 推，同日多場會撞檔故可外帶）。
     text_fn 給定時把 5 個主題用 LLM 精煉成短語（離線預設 None → 用原引言）。
     """
     import os
@@ -338,7 +350,7 @@ def build_reveal(rows, out_dir: str, date_label: str = "",
         return None
     reel.topic_labels = refine_topics([q for _ts, _h, q in reel.topic_peaks], text_fn)
     os.makedirs(out_dir, exist_ok=True)
-    stamp = (date_label or "reveal").replace(":", "").replace(" ", "_").replace("-", "")
+    stamp = (stamp or date_label or "reveal").replace(":", "").replace(" ", "_").replace("-", "")
     png = os.path.join(out_dir, f"night_reel_{stamp}.png")
     js = os.path.join(out_dir, f"night_reel_{stamp}.json")
     reel.date = date_label                  # 給 render 標日期用
@@ -402,7 +414,8 @@ def make_reveal_from_db(db_path: str, start_ts_str: str, end_ts_str: str,
         return None
     songs = _songs_in_window(start_ts_str, end_ts_str, bot_log)
     return build_reveal(rows, out_dir, date_label=start_ts_str[:10],
-                        song_requests=songs, text_fn=text_fn)
+                        song_requests=songs, text_fn=text_fn,
+                        stamp=start_ts_str[:16])   # 含時間 → 同日多場不撞檔
 
 
 def _default_text_fn():
@@ -416,7 +429,10 @@ def _default_text_fn():
 
 
 if __name__ == "__main__":      # pragma: no cover
-    # v0.1 手動跑：抓最新一場合格夜晚 → 出靜態 EKG PNG 給自己眼驗命中率。
+    # v0.1 手動跑，眼驗命中率 / 比高低話量（Y 軸固定刻度，可跨晚比）：
+    #   python make_reveal.py                  最新一場
+    #   python make_reveal.py --last 5         最近 5 場
+    #   python make_reveal.py 2026-06-15 2026-06-23   指定日期（同日多場全出）
     import sys
 
     sys.path.insert(0, ".")
@@ -430,7 +446,24 @@ if __name__ == "__main__":      # pragma: no cover
     if not sessions:
         print("[reveal] 無合格場次")
         sys.exit(0)
-    sess = sessions[-1]
-    out = make_reveal_from_db(DB_PATH, sess[0].ts_str, sess[-1].ts_str, OUT_DIR,
-                              text_fn=_default_text_fn())
-    print(f"[reveal] {out}" if out else "[reveal] 平淡夜 / 無乾淨引言 → 退靜態海報")
+
+    args = sys.argv[1:]
+    if args and args[0] == "--last":
+        picked = sessions[-(int(args[1]) if len(args) > 1 else 3):]
+    elif args:
+        want = set(args)
+        picked = [s for s in sessions if s[0].ts_str[:10] in want]
+    else:
+        picked = [sessions[-1]]
+
+    if not picked:
+        print(f"[reveal] 找不到符合的場次：{args}")
+        sys.exit(0)
+
+    tf = _default_text_fn()
+    print(f"[reveal] 產 {len(picked)} 場（Y 軸固定滿格={_FULL_RATE:.0f} 句/分，可跨晚比話量）")
+    for sess in picked:
+        day = sess[0].ts_str[:10]
+        out = make_reveal_from_db(DB_PATH, sess[0].ts_str, sess[-1].ts_str, OUT_DIR,
+                                  text_fn=tf)
+        print(f"  {day}  → {out[0]}" if out else f"  {day}  平淡夜/無乾淨引言 → 退海報")
