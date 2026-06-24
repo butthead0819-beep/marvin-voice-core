@@ -23,7 +23,7 @@ import datetime as _dt
 import json
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from diary_comic.crosstalk import (
     _crosstalk_events,
@@ -66,6 +66,7 @@ class Reel:
     hero_heat: float
     speakers: list[str]
     quote: str
+    topic_labels: list[str] = field(default_factory=list)  # LLM 精煉的≤8字主題（空＝用原引言）
 
 
 def _quote_quality_ok(text: str) -> bool:
@@ -142,7 +143,10 @@ def night_reel_dict(reel: Reel, date_label: str = "") -> dict:
         "date": date_label,
         "window": list(reel.window),
         "activity_track": [{"t": t, "n": n} for t, n in reel.activity_track],
-        "topic_peaks": [{"ts": ts, "heat": h, "quote": q} for ts, h, q in reel.topic_peaks],
+        "topic_peaks": [
+            {"ts": ts, "heat": h, "quote": q,
+             "label": reel.topic_labels[i] if i < len(reel.topic_labels) else ""}
+            for i, (ts, h, q) in enumerate(reel.topic_peaks)],
         "songs": [{"ts": ts, "by": u, "title": clean_title(t)} for ts, u, t in reel.songs],
         "hero": {
             "ts": reel.hero_ts,
@@ -260,7 +264,8 @@ def render_ekg_png(reel: Reel, out_path: str) -> str:
     ly += 34
     for i, (ts, _h, q) in enumerate(reel.topic_peaks):
         hhmm = _dt.datetime.fromtimestamp(ts).strftime("%H:%M")
-        line = _fit(f"{_circ(i)} {hhmm} 「{q}」", f_song, lavail)
+        topic = reel.topic_labels[i] if i < len(reel.topic_labels) else _short(q, 10)
+        line = _fit(f"{_circ(i)} {hhmm} {topic}", f_song, lavail)
         d.text((lx, ly), line, font=f_song, fill=_HERO if i == 0 else (200, 200, 205))
         ly += 30
 
@@ -288,14 +293,50 @@ def render_ekg_png(reel: Reel, out_path: str) -> str:
     return out_path
 
 
+_TOPIC_SYS = (
+    "你是聊天室日記的主題標籤器。每行是一段「搶話高潮」的逐字稿（STT，可能有糊字）。"
+    "幫每行回一個 ≤8 字的繁體中文主題短語，點出他們在聊什麼。"
+    "只回主題、一行一個、順序對齊輸入、不要編號不要標點不要解釋。"
+)
+
+
+def _short(q: str, n: int = 12) -> str:
+    q = (q or "").strip()
+    return q if len(q) <= n else q[:n] + "…"
+
+
+def refine_topics(quotes: list[str], text_fn=None) -> list[str]:
+    """把原始搶話引言用 LLM 精煉成 ≤8 字主題；text_fn=None 或任何失敗 → 退回截斷原句。
+
+    text_fn(system, user) -> str（注入式，方便測試、且離線預設不打 LLM）。一次批次 5 句。
+    """
+    fallback = [_short(q) for q in quotes]
+    if not quotes or text_fn is None:
+        return fallback
+    try:
+        user = "\n".join(f"{i + 1}. {q}" for i, q in enumerate(quotes))
+        out = text_fn(_TOPIC_SYS, user)
+        lines = [re.sub(r"^\s*\d+[.、）)]?\s*", "", ln).strip()
+                 for ln in (out or "").splitlines() if ln.strip()]
+        if len(lines) != len(quotes):       # 行數對不上 → 不冒險，退原句
+            return fallback
+        return [(_short(ln, 10) or fallback[i]) for i, ln in enumerate(lines)]
+    except Exception:
+        return fallback
+
+
 def build_reveal(rows, out_dir: str, date_label: str = "",
-                 song_requests=None) -> tuple[str, str] | None:
-    """rows (+選用點歌) → (png_path, json_path)，或 None（平淡夜 / 無乾淨引言）。"""
+                 song_requests=None, text_fn=None) -> tuple[str, str] | None:
+    """rows (+選用點歌) → (png_path, json_path)，或 None（平淡夜 / 無乾淨引言）。
+
+    text_fn 給定時把 5 個主題用 LLM 精煉成短語（離線預設 None → 用原引言）。
+    """
     import os
 
     reel = curate_reel(rows, song_requests=song_requests)
     if reel is None:
         return None
+    reel.topic_labels = refine_topics([q for _ts, _h, q in reel.topic_peaks], text_fn)
     os.makedirs(out_dir, exist_ok=True)
     stamp = (date_label or "reveal").replace(":", "").replace(" ", "_").replace("-", "")
     png = os.path.join(out_dir, f"night_reel_{stamp}.png")
@@ -350,14 +391,28 @@ def _songs_in_window(start_ts_str: str, end_ts_str: str,
 
 
 def make_reveal_from_db(db_path: str, start_ts_str: str, end_ts_str: str,
-                        out_dir: str, bot_log: str = BOT_LOG) -> tuple[str, str] | None:
-    """從 marvin.db 撈一段時間窗 + bot log 點歌 → 靜態 EKG PNG。無 rows / 平淡夜 → None。"""
+                        out_dir: str, bot_log: str = BOT_LOG,
+                        text_fn=None) -> tuple[str, str] | None:
+    """從 marvin.db 撈一段時間窗 + bot log 點歌 → 靜態 EKG PNG。無 rows / 平淡夜 → None。
+
+    text_fn 給定時用 LLM 精煉 5 個主題短語（離線預設 None → 用原引言）。
+    """
     rows = _db_rows(start_ts_str, end_ts_str, db_path)
     if not rows:
         return None
     songs = _songs_in_window(start_ts_str, end_ts_str, bot_log)
     return build_reveal(rows, out_dir, date_label=start_ts_str[:10],
-                        song_requests=songs)
+                        song_requests=songs, text_fn=text_fn)
+
+
+def _default_text_fn():
+    """沿用日記的 Gemini text_fn（免費/付費池同路）；無 key → None（離線退原引言）。"""
+    try:
+        from diary_comic_poster import _key, _text_fn
+        key = _key()
+        return _text_fn(key) if key else None
+    except Exception:
+        return None
 
 
 if __name__ == "__main__":      # pragma: no cover
@@ -376,5 +431,6 @@ if __name__ == "__main__":      # pragma: no cover
         print("[reveal] 無合格場次")
         sys.exit(0)
     sess = sessions[-1]
-    out = make_reveal_from_db(DB_PATH, sess[0].ts_str, sess[-1].ts_str, OUT_DIR)
+    out = make_reveal_from_db(DB_PATH, sess[0].ts_str, sess[-1].ts_str, OUT_DIR,
+                              text_fn=_default_text_fn())
     print(f"[reveal] {out}" if out else "[reveal] 平淡夜 / 無乾淨引言 → 退靜態海報")

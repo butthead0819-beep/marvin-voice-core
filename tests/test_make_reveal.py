@@ -14,6 +14,7 @@ from make_reveal import (
     build_reveal,
     curate_reel,
     make_reveal_from_db,
+    refine_topics,
 )
 
 CLEAN_A = "今天那個會議真的有夠久"   # 11，乾淨
@@ -107,6 +108,37 @@ def test_curate_reel_rejects_garbage_quote_window():
     # 有搶話事件（兩句都 ≥8 字成峰），但全是 STT 糊字 → 選不出乾淨引言 → None
     rows = [("A", GARBAGE_REPEAT, 100.0), ("B", GARBAGE_LAUGH, 101.0)]
     assert curate_reel(rows) is None
+
+
+# ── refine_topics（LLM 精煉主題，可注入、全防禦）────────────────────
+def test_refine_topics_uses_injected_llm():
+    quotes = ["嗯神經啊那是獵血", "可是我是在跟巴黑講他的馬要夠聰明"]
+    fake = lambda _sys, _user: "獵血遊戲\n馬要夠聰明"
+    out = refine_topics(quotes, text_fn=fake)
+    assert out == ["獵血遊戲", "馬要夠聰明"]
+
+
+def test_refine_topics_strips_numbering():
+    fake = lambda _s, _u: "1. 獵血\n2. 國防預算"
+    assert refine_topics(["a", "b"], text_fn=fake) == ["獵血", "國防預算"]
+
+
+def test_refine_topics_no_text_fn_falls_back_to_truncated():
+    long_q = "那個那個我都那個我都 OK我都有交代交代那些年輕人設計師"
+    out = refine_topics([long_q], text_fn=None)
+    assert out[0].endswith("…") and len(out[0]) <= 13
+
+
+def test_refine_topics_llm_error_falls_back():
+    def boom(_s, _u):
+        raise RuntimeError("LLM down")
+    assert refine_topics(["獵血那是"], text_fn=boom) == ["獵血那是"]
+
+
+def test_refine_topics_count_mismatch_falls_back():
+    # LLM 回的行數對不上 → 不冒險，退回原句
+    fake = lambda _s, _u: "只有一行"
+    assert refine_topics(["a句子", "b句子"], text_fn=fake) == ["a句子", "b句子"]
 
 
 # ── 端到端真跡（slow）──────────────────────────────────────────────
