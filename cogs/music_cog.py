@@ -1341,6 +1341,13 @@ class MusicCog(commands.Cog):
         tmpl = random.choice(pool)
         return tmpl.format(who=who, title=clean_title, artist=clean_artist, anchor=anchor)
 
+    @staticmethod
+    def _themed_dj_text(info: dict) -> str:
+        """🎚️ 主題歌單的歌 → 用 LLM 策展時寫的選歌理由當 DJ 播報詞（其餘歌回 ""）。"""
+        if info.get('_lane') == 'themed':
+            return (info.get('_pick_reason') or '').strip()
+        return ''
+
     async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
         """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
         requester = info.get('requested_by', '')
@@ -1384,12 +1391,14 @@ class MusicCog(commands.Cog):
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
 
         if requester.startswith('Marvin'):
-            clean_title, clean_artist = self._parse_song_title_artist(info)
-            spotlight = info.get('_spotlight', '')
-            lane = info.get('_lane', '')
-            anchor = info.get('_anchor_title', '')
-            text = self._autopilot_dj_phrase(spotlight, clean_title, clean_artist,
-                                             lane=lane, anchor=anchor)
+            text = self._themed_dj_text(info)   # 主題歌單：直接播 LLM 寫的選歌理由
+            if not text:
+                clean_title, clean_artist = self._parse_song_title_artist(info)
+                spotlight = info.get('_spotlight', '')
+                lane = info.get('_lane', '')
+                anchor = info.get('_anchor_title', '')
+                text = self._autopilot_dj_phrase(spotlight, clean_title, clean_artist,
+                                                 lane=lane, anchor=anchor)
         else:
             try:
                 text = await self.bot.router.generate_dynamic_system_msg(
