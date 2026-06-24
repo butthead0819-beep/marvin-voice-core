@@ -60,7 +60,7 @@ def _bar_bin_s(rows) -> float:
 class Reel:
     window: tuple[float, float]                 # 整晚 (start_ts, end_ts)
     activity_track: list[tuple[float, float]]   # 底層曲線＝發言密度（句/bin），＝「熱鬧」
-    topic_peaks: list[tuple[float, float]]      # 「有主題」搶話峰紅點 (ts, heat)，≤MAX_TOPICS
+    topic_peaks: list[tuple[float, float, str]]  # 「有主題」紅點 (ts, heat, 引言)，≤MAX_TOPICS
     songs: list[tuple[float, str, str]]         # 點歌標記 (ts, 點歌者, 歌名)
     hero_ts: float                              # 最熱有主題搶話事件（freeze + 引言來源）
     hero_heat: float
@@ -124,7 +124,7 @@ def curate_reel(rows, song_requests=None, bin_s: float | None = None,
         return None
     topic_events.sort(key=lambda eq: -eq[0].heat)
     top = topic_events[:max_topics]
-    topic_peaks = [(ev.ts, ev.heat) for ev, _q in top]
+    topic_peaks = [(ev.ts, ev.heat, q) for ev, q in top]   # 帶上每個主題的引言
     hero_ev, hero_q = top[0]                 # 最熱者當 hero
 
     songs = sorted((ts, u, t) for (ts, u, t) in (song_requests or [])
@@ -142,7 +142,7 @@ def night_reel_dict(reel: Reel, date_label: str = "") -> dict:
         "date": date_label,
         "window": list(reel.window),
         "activity_track": [{"t": t, "n": n} for t, n in reel.activity_track],
-        "topic_peaks": [{"ts": ts, "heat": h} for ts, h in reel.topic_peaks],
+        "topic_peaks": [{"ts": ts, "heat": h, "quote": q} for ts, h, q in reel.topic_peaks],
         "songs": [{"ts": ts, "by": u, "title": clean_title(t)} for ts, u, t in reel.songs],
         "hero": {
             "ts": reel.hero_ts,
@@ -217,21 +217,24 @@ def render_ekg_png(reel: Reel, out_path: str) -> str:
             cy_top = plot_bot - (k + 1) * cell_h + _CELL_GAP
             d.rectangle([bx0, cy_top, bx1, cy_bot], fill=col)
 
-    # 有主題搶話標記：頂端一排倒三角（▼），hero 較大且加亮
-    mark_y = plot_top - 12
+    f_small = _load_font(26)
+    f_num = _load_font(22)
+    f_song = _load_font(24)
+
+    def _circ(i):                            # ①②③④⑤
+        return chr(0x2460 + i) if 0 <= i < 20 else f"{i + 1}."
+
+    # 有主題搶話標記：頂端一排倒三角（▼）+ 編號；hero 較大加亮
+    mark_y = plot_top - 14
 
     def _tri(cx, s, fill):
         d.polygon([(cx - s, mark_y - s), (cx + s, mark_y - s), (cx, mark_y + s)], fill=fill)
 
-    for ts, _h in reel.topic_peaks:
-        if ts == reel.hero_ts:
-            continue
-        _tri(_x(ts), 8, _MARK)
-    _tri(_x(reel.hero_ts), 12, _HERO)        # hero 最後畫、最大
-
-    f_small = _load_font(26)
-    f_quote = _load_font(44)
-    f_song = _load_font(24)
+    for i, (ts, _h, _q) in enumerate(reel.topic_peaks):   # 已依 heat 排序，0=hero
+        hero = (i == 0)
+        _tri(_x(ts), 12 if hero else 8, _HERO if hero else _MARK)
+        d.text((_x(ts) - 7, mark_y - 36), _circ(i), font=f_num,
+               fill=_HERO if hero else _MARK)
 
     # 點歌標記：時間軸下方一條 lane，每首歌打 ♪ tick
     song_lane = plot_bot + 16
@@ -241,9 +244,25 @@ def render_ekg_png(reel: Reel, out_path: str) -> str:
         d.ellipse([sx - 4, song_lane - 4, sx + 4, song_lane + 4], fill=_SONG)
 
     d.text((_MARGIN, 56), getattr(reel, "date", "") or "", font=f_small, fill=_TXT)
-    d.text((_MARGIN, plot_bot + 44), f"「{reel.quote}」", font=f_quote, fill=_TXT)
-    d.text((_MARGIN, plot_bot + 100), "— " + "、".join(reel.speakers),
-           font=f_small, fill=(170, 170, 175))
+
+    def _fit(s, font, avail):                # 過長截斷加省略
+        if d.textlength(s, font=font) <= avail:
+            return s
+        while s and d.textlength(s + "…", font=font) > avail:
+            s = s[:-1]
+        return s + "…"
+
+    # 左半欄：5 個有主題搶話的主題（時間 + 引言），① = hero
+    lx = _MARGIN
+    lavail = _W // 2 - 30 - lx
+    ly = plot_bot + 40
+    d.text((lx, ly), "🔥 主題搶話", font=f_song, fill=_MARK)
+    ly += 34
+    for i, (ts, _h, q) in enumerate(reel.topic_peaks):
+        hhmm = _dt.datetime.fromtimestamp(ts).strftime("%H:%M")
+        line = _fit(f"{_circ(i)} {hhmm} 「{q}」", f_song, lavail)
+        d.text((lx, ly), line, font=f_song, fill=_HERO if i == 0 else (200, 200, 205))
+        ly += 30
 
     # 點歌清單（時間 + 歌名 + 點歌者）：右半欄，最多 5 行、超過標 +N
     if reel.songs:
