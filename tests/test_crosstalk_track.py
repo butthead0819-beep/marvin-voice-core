@@ -10,6 +10,7 @@ import pytest
 from diary_comic.crosstalk import (
     CrosstalkPeak,
     _crosstalk_events,
+    activity_track,
     crosstalk_peak,
     crosstalk_track,
     pick_hottest_window,
@@ -111,6 +112,29 @@ def test_track_bin_assignment_separates_distant_events():
     # @100 與 @200 必須落在不同 bin
     assert any(t < 150 for t in hot_bins)
     assert any(t >= 150 for t in hot_bins)
+
+
+# ── activity_track（發言密度＝熱鬧）─────────────────────────────────
+def test_activity_track_empty():
+    assert activity_track([]) == []
+
+
+def test_activity_track_counts_per_bin():
+    # 短句也算（不像 crosstalk 要 ≥8 字）；bin_s=30
+    rows = [("A", "x", 100.0), ("B", "y", 105.0), ("A", "z", 130.0)]
+    track = activity_track(rows, bin_s=30.0)
+    assert track[0] == (100.0, 2.0)   # bin [100,130) → 2 句
+    assert track[1] == (130.0, 1.0)   # bin [130,160) → 1 句
+
+
+def test_activity_track_lively_night_not_mostly_zero():
+    # 對照 crosstalk：輪流講的熱鬧夜，activity 連續、crosstalk 幾乎全零
+    rows = [("A" if i % 2 else "B", "今天天氣真好欸", 100.0 + i * 3) for i in range(40)]
+    act = activity_track(rows, bin_s=30.0)
+    cross = crosstalk_track(rows, bin_s=30.0)
+    act_nz = sum(1 for _, h in act if h > 0)
+    cross_nz = sum(1 for _, h in cross if h > 0)
+    assert act_nz >= cross_nz          # 發言密度抓到的熱鬧 ≥ 搶話
 
 
 # ── pick_hottest_window ────────────────────────────────────────────

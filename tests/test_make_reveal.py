@@ -56,9 +56,19 @@ def test_curate_reel_picks_window_and_clean_quote():
     reel = curate_reel(rows)
     assert reel is not None
     start, end = reel.window
-    assert start <= reel.peak_ts <= end
-    assert reel.quote == CLEAN_A          # 取窗內最熱事件第一句乾淨引言
-    assert reel.heat_track                # 非空
+    assert start <= reel.hero_ts <= end
+    assert reel.quote == CLEAN_A          # 取最熱搶話事件第一句乾淨引言
+    assert reel.activity_track            # 底層發言密度非空
+    assert reel.peaks                     # 至少一個搶話峰標記
+
+
+def test_curate_reel_filters_bot_lines():
+    # Marvin 自己的句不該灌發言密度
+    rows = [("馬文", CLEAN_A, 90.0), ("A", CLEAN_A, 100.0), ("B", CLEAN_B, 101.0)]
+    reel = curate_reel(rows)
+    assert reel is not None
+    total = sum(n for _, n in reel.activity_track)
+    assert total == 2                     # 只算 A、B，不算馬文
 
 
 def test_curate_reel_rejects_garbage_quote_window():
@@ -78,8 +88,8 @@ def test_build_reveal_smoke_produces_png_and_json(tmp_path):
     import os
     assert os.path.getsize(png) > 0
     data = json.loads(open(js, encoding="utf-8").read())
-    assert "window" in data and "peak" in data and "heat_track" in data
-    assert data["peak"]["quote"] == CLEAN_A
+    assert "window" in data and "hero" in data and "activity_track" in data
+    assert data["hero"]["quote"] == CLEAN_A
 
 
 @pytest.mark.slow

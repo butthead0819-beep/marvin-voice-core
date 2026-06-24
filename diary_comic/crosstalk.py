@@ -93,6 +93,23 @@ def crosstalk_track(rows, bin_s: float = 10.0, min_sub: int = MIN_SUB,
     return [(ts0 + k * bin_s, bins[k]) for k in range(nbins)]
 
 
+def activity_track(rows, bin_s: float = 30.0) -> list[tuple[float, float]]:
+    """發言密度時間序列：每個 bin 的句數（不分長短、不論是否搶話）。
+
+    這是「熱鬧」的訊號——一群人輪流講也算熱鬧，跟 crosstalk（只算搶話）互補。
+    回 [(bin_start_ts, count)...]，空 rows → []。呼叫端應先濾掉 bot 自己的句。
+    """
+    if not rows:
+        return []
+    ts0 = rows[0][2]
+    ts1 = rows[-1][2]
+    nbins = int((ts1 - ts0) // bin_s) + 1
+    counts = [0] * nbins
+    for _spk, _txt, ts in rows:
+        counts[int((ts - ts0) // bin_s)] += 1
+    return [(ts0 + k * bin_s, float(counts[k])) for k in range(nbins)]
+
+
 def pick_hottest_window(track, win_s: float = 120.0) -> tuple[float, float] | None:
     """從熱度序列挑「最熱的固定長度窗」(start_ts, end_ts)，置中在最高 heat 的 bin。
 
