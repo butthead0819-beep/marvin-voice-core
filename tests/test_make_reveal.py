@@ -12,6 +12,7 @@ import pytest
 from make_reveal import (
     _quote_quality_ok,
     build_reveal,
+    combine_reveals,
     curate_reel,
     make_reveal_from_db,
     refine_topics,
@@ -155,6 +156,24 @@ def test_build_reveal_smoke_produces_png_and_json(tmp_path):
     assert "window" in data and "hero" in data and "activity_track" in data
     assert "topic_peaks" in data and "songs" in data
     assert data["hero"]["quote"] == CLEAN_A
+
+
+def test_combine_reveals_stacks_vertically(tmp_path):
+    from PIL import Image
+    paths = []
+    for i, (w, h) in enumerate([(100, 40), (120, 30)]):
+        p = str(tmp_path / f"r{i}.png")
+        Image.new("RGB", (w, h), (10, 10, 10)).save(p)
+        paths.append(p)
+    out = str(tmp_path / "sheet.png")
+    assert combine_reveals(paths, out, gap=10) == out
+    sheet = Image.open(out)
+    assert sheet.width == 120                 # 取最寬
+    assert sheet.height == 40 + 30 + 10       # 高度相加 + gap
+
+
+def test_combine_reveals_empty_returns_none(tmp_path):
+    assert combine_reveals([], str(tmp_path / "x.png")) is None
 
 
 @pytest.mark.slow

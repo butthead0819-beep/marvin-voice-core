@@ -360,6 +360,24 @@ def build_reveal(rows, out_dir: str, date_label: str = "",
     return png, js
 
 
+def combine_reveals(png_paths: list[str], out_path: str, gap: int = 10) -> str | None:
+    """把多張 reveal PNG 垂直疊成一張比較圖（Y 軸已是共用刻度，逐列掃下來比話量）。"""
+    from PIL import Image
+
+    imgs = [Image.open(p).convert("RGB") for p in png_paths if p]
+    if not imgs:
+        return None
+    w = max(im.width for im in imgs)
+    h = sum(im.height for im in imgs) + gap * (len(imgs) - 1)
+    sheet = Image.new("RGB", (w, h), _BG)
+    y = 0
+    for im in imgs:
+        sheet.paste(im, (0, y))
+        y += im.height + gap
+    sheet.save(out_path)
+    return out_path
+
+
 def _db_rows(start_ts_str: str, end_ts_str: str, db_path: str):
     """撈場次時間窗（前後各留 10 分鐘）的 (speaker,text,ts)。
 
@@ -462,8 +480,18 @@ if __name__ == "__main__":      # pragma: no cover
 
     tf = _default_text_fn()
     print(f"[reveal] 產 {len(picked)} 場（Y 軸固定滿格={_FULL_RATE:.0f} 句/分，可跨晚比話量）")
+    made = []
     for sess in picked:
         day = sess[0].ts_str[:10]
         out = make_reveal_from_db(DB_PATH, sess[0].ts_str, sess[-1].ts_str, OUT_DIR,
                                   text_fn=tf)
         print(f"  {day}  → {out[0]}" if out else f"  {day}  平淡夜/無乾淨引言 → 退海報")
+        if out:
+            made.append(out[0])
+
+    if len(made) > 1:
+        first = picked[0][0].ts_str[:10].replace("-", "")
+        last = picked[-1][-1].ts_str[:10].replace("-", "")
+        sheet = f"{OUT_DIR}/night_reel_compare_{first}_{last}.png"
+        combine_reveals(made, sheet)
+        print(f"[reveal] 比較圖 → {sheet}")
