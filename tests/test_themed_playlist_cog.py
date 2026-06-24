@@ -66,6 +66,16 @@ def test_themed_gate_resets_count_on_new_day(monkeypatch):
     assert cog._themed_sets_tonight == 0
 
 
+def test_themed_dj_text_uses_pick_reason():
+    """主題歌單的歌 → 播放時用 LLM 策展寫的選歌理由當 DJ 播報詞；其餘歌回 ""（走原 DJ 詞）。"""
+    from cogs.music_cog import MusicCog
+    assert MusicCog._themed_dj_text({"_lane": "themed", "_pick_reason": "今晚聊到溝通，這首最對味"}) \
+        == "今晚聊到溝通，這首最對味"
+    assert MusicCog._themed_dj_text({"_lane": "long_tail", "_pick_reason": "x"}) == ""  # 非主題歌
+    assert MusicCog._themed_dj_text({"_lane": "themed"}) == ""                         # 無理由
+    assert MusicCog._themed_dj_text({}) == ""
+
+
 @pytest.mark.asyncio
 async def test_try_themed_set_noop_when_env_off(monkeypatch):
     """env off → _try_themed_set 直接回 0、不打 LLM、不碰佇列。"""
