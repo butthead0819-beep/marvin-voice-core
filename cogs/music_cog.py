@@ -57,6 +57,9 @@ class MusicCog(commands.Cog):
     """音樂子系統（Strangler Fig 遷移中）。"""
 
     _PLAYED_EXCLUDE_TTL_S = 7 * 24 * 3600
+    # T3 回收層放寬已播排除（讓 1-7 天前舊歌重回候選），但保留 24h 窗擋當天重播，
+    # 否則 T1/T2 枯竭頻繁落 T3 時會把高播放數的歌同場一再回收（2026-06-24「鼓聲若響」2hr 播 11 次）。
+    _T3_PLAYED_EXCLUDE_TTL_S = 24 * 3600
     _COLD_META_TIMEOUT_S = 5.0
     _MUSIC_CMD_DEDUP_WINDOW = 5.0
     # DJ 播報疊在歌上的音量（混音時 dj 分支的 gain）。降到 30% 不蓋過音樂。
@@ -756,7 +759,8 @@ class MusicCog(commands.Cog):
             )
             cands = pick_candidates(relaxed_pool, k=self._round_size, top_n=9)
             ring_exclude = list(dict.fromkeys(skipped))
-            excluded_vids = _skipped_vids
+            # 放寬到 24h 而非砍光：仍回收 1-7 天前舊歌，但擋當天剛播過的，防同場收斂重播
+            excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._T3_PLAYED_EXCLUDE_TTL_S)
         if not cands:
             if _tier < 3:
                 return await self._auto_recommend(username, _tier=_tier + 1)
