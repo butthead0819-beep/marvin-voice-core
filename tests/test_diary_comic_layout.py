@@ -60,6 +60,28 @@ def test_cover_fit_does_not_distort_uses_max_scale_crop():
     assert out.size == (50, 50)
 
 
+def _mean_lum(im):
+    from PIL import ImageStat
+    return ImageStat.Stat(im.convert("L")).mean[0]
+
+
+def test_cover_fit_focus_y_biases_vertical_crop():
+    """focus_y 控制保留哪一段；預設 0.5＝置中（向後相容）。
+    直幅塞寬扁框時，對準主體那段才不會被切掉（Hero 斜切臉被切的修法）。"""
+    from PIL import ImageDraw
+    src = Image.new("RGB", (100, 300), (0, 0, 0))
+    ImageDraw.Draw(src).rectangle([0, 0, 100, 100], fill=(255, 255, 255))  # 上 1/3 是主體
+    top = cover_fit(src, 100, 100, focus_y=0.17)     # 對準上 1/3
+    bottom = cover_fit(src, 100, 100, focus_y=0.83)  # 對準下 1/3
+    assert _mean_lum(top) > _mean_lum(bottom)        # 對準主體那張保住白色主體
+
+
+def test_hero_upper_focus_is_biased_above_center():
+    """Hero 斜切上梯形的裁切焦點偏上（保住角色的臉），不是置中。"""
+    from diary_comic.layout import _HERO_UPPER_FOCUS_Y
+    assert 0.2 <= _HERO_UPPER_FOCUS_Y < 0.5
+
+
 def test_nearest_aspect_ratio_tall_box_is_portrait():
     page = (1200, 1600)
     tall_box = (0.0, 0.0, 0.30, 0.90)  # 窄高

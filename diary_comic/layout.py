@@ -182,9 +182,12 @@ def slanted_bands(heats: list[int], tilt: float = 0.035) -> list[Poly]:
     return polys
 
 
-def cover_fit(img: Image.Image, w: int, h: int) -> Image.Image:
-    """填滿 (w,h) 並保持原比例、置中裁切 —— 永不拉伸變形。
+def cover_fit(img: Image.Image, w: int, h: int,
+              focus_y: float = 0.5, focus_x: float = 0.5) -> Image.Image:
+    """填滿 (w,h) 並保持原比例、裁切 —— 永不拉伸變形。
 
+    focus_x/focus_y：裁切窗對準的影像比例位置（0=頂/左，0.5=置中＝向後相容，1=底/右）。
+    寬扁框塞直幅圖時會上下重裁，把 focus_y 對到主體（臉）才不會被切掉。
     用 LANCZOS 取樣：縮小細節圖才不會糊（預設 BICUBIC 縮小會軟掉）。
     """
     w, h = max(1, w), max(1, h)
@@ -192,8 +195,14 @@ def cover_fit(img: Image.Image, w: int, h: int) -> Image.Image:
     scale = max(w / sw, h / sh)
     rw, rh = max(w, int(sw * scale + 0.5)), max(h, int(sh * scale + 0.5))
     resized = img.resize((rw, rh), Image.LANCZOS)
-    left, top = (rw - w) // 2, (rh - h) // 2
+    left = max(0, min(rw - w, int(focus_x * rw - w / 2)))
+    top = max(0, min(rh - h, int(focus_y * rh - h / 2)))
     return resized.crop((left, top, left + w, top + h))
+
+
+# Hero 斜切上梯形的裁切焦點：偏上。AI 漫畫角色的臉穩定落在上半，置中裁＋對角遮罩
+# 會切到臉；偏上保臉。（亮度找臉不可靠——卡通動物臉騙不過 stddev；真臉偵測又不吃這畫風。）
+_HERO_UPPER_FOCUS_Y = 0.35
 
 
 _FONT_CANDIDATES = [
@@ -640,13 +649,14 @@ def compose_page_hero(rows, page_size=(1080, 1920), tilt=0.12, heights=None):
         else:  # duo：矩形內斜切上下兩格
             up_p, lo_p = row[1], row[2]
             upper, lower = hero_split_polys(x0, y0, x1, y1, tilt)
-            for poly, panel in ((upper, up_p), (lower, lo_p)):
+            # 上梯形可見區在頂部 → 裁切偏上保住角色的臉；下梯形可見區在底部、臉放不進去 → 維持置中
+            for poly, panel, fy in ((upper, up_p, _HERO_UPPER_FOCUS_Y), (lower, lo_p, 0.5)):
                 xs = [p[0] for p in poly]; ys = [p[1] for p in poly]
                 bx0, by0 = min(xs), min(ys)
                 bw, bh = max(xs) - bx0, max(ys) - by0
                 mask = Image.new("L", (bw, bh), 0)
                 ImageDraw.Draw(mask).polygon([(px - bx0, py - by0) for px, py in poly], fill=255)
-                page.paste(cover_fit(panel.image, bw, bh), (bx0, by0), mask)
+                page.paste(cover_fit(panel.image, bw, bh, focus_y=fy), (bx0, by0), mask)
             draw.line(upper + [upper[0]], fill=(20, 20, 20), width=5)  # 對角線+外框
             draw.rectangle([x0, y0, x1, y1], outline=(20, 20, 20), width=5)
             if up_p.caption:  # 上格字幕貼上緣
