@@ -88,3 +88,18 @@ def test_recently_played_excludes_outside_window(tmp_path):
 def test_recently_played_empty_when_no_songs(tmp_path):
     mm = MusicMemory(path=str(tmp_path / "mm.json"))
     assert mm.get_recently_played_video_ids(ttl_s=7 * 24 * 3600) == set()
+
+
+def test_t3_window_excludes_today_but_recycles_older(tmp_path):
+    """T3 回收層用 24h 窗：擋今晚剛播的（防同場重播收斂），但回收 1-7 天前舊歌。
+    2026-06-24 回報「鼓聲若響」同場 2hr 播 11 次——根因＝T3 把已播排除砍光只剩 skipped。"""
+    from cogs.music_cog import MusicCog
+    mm = MusicMemory(path=str(tmp_path / "mm.json"))
+    _seed_song(mm, "tonightaaaa", time.time() - 2 * 3600)        # 今晚 2 小時前
+    _seed_song(mm, "threedayss1", time.time() - 3 * 24 * 3600)   # 3 天前
+    t3 = mm.get_recently_played_video_ids(MusicCog._T3_PLAYED_EXCLUDE_TTL_S)
+    week = mm.get_recently_played_video_ids(MusicCog._PLAYED_EXCLUDE_TTL_S)
+    assert "tonightaaaa" in t3        # 今晚剛播 → T3 也擋，不同場重播
+    assert "threedayss1" not in t3    # 3 天前 → T3 放行回收
+    assert "threedayss1" in week      # 但 T1/T2 七天窗仍排除
+    assert MusicCog._T3_PLAYED_EXCLUDE_TTL_S < MusicCog._PLAYED_EXCLUDE_TTL_S
