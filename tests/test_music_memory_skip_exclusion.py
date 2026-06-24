@@ -103,3 +103,16 @@ def test_t3_window_excludes_today_but_recycles_older(tmp_path):
     assert "threedayss1" not in t3    # 3 天前 → T3 放行回收
     assert "threedayss1" in week      # 但 T1/T2 七天窗仍排除
     assert MusicCog._T3_PLAYED_EXCLUDE_TTL_S < MusicCog._PLAYED_EXCLUDE_TTL_S
+
+
+def test_recently_played_titles_aligns_with_video_ids(tmp_path):
+    """T3 候選池要能用歌名排除剛播的，跟迴圈的 video-id 排除對齊；
+    否則池子挑出剛播歌、迴圈又擋掉 → enqueue=0 → T3 無 fallback → 停播（2026-06-24 回報）。"""
+    mm = MusicMemory(path=str(tmp_path / "mm.json"))
+    mm._data.setdefault("songs", {})["https://www.youtube.com/watch?v=ccccccccccc"] = {
+        "title": "今晚剛播的歌", "webpage_url": "https://www.youtube.com/watch?v=ccccccccccc",
+        "plays": [{"by": "u", "ts": time.time() - 2 * 3600}],
+    }
+    titles = mm.get_recently_played_titles(24 * 3600)
+    assert "今晚剛播的歌" in titles
+    assert mm.get_recently_played_titles(3600) == []   # 1h 窗內無 → 空

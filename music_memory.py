@@ -377,6 +377,20 @@ class MusicMemory:
                     out.add(vid)
         return out
 
+    def get_recently_played_titles(self, ttl_s: float) -> list[str]:
+        """ttl_s 內播放過的歌名（給 T3 relaxed_pool exclude，與 get_recently_played_video_ids
+        對齊：否則池子按歌名挑出剛播的歌、enqueue 迴圈又按 video-id 擋掉 → 候選 0 → 停播）。"""
+        now = time.time()
+        out: list[str] = []
+        for url, s in (self._data.get("songs") or {}).items():
+            plays = s.get("plays") or []
+            latest = max((p.get("ts", 0) for p in plays), default=0)
+            if latest and now - latest < ttl_s:
+                t = s.get("title")
+                if t:
+                    out.append(t)
+        return out
+
     def get_liked_video_ids(self, usernames: list[str]) -> list[str]:
         """在場成員 liked 過的歌的 YouTube videoId（T2 radio seed 用，正向訊號）。
 

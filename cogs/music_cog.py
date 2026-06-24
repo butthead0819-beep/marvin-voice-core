@@ -752,14 +752,18 @@ class MusicCog(commands.Cog):
             ring_exclude = exclude_titles
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
         else:
+            # 放寬到 24h 而非砍光：仍回收 1-7 天前舊歌，但擋當天剛播過的，防同場收斂重播。
+            # 候選池(歌名)與 enqueue 迴圈(video-id)同步排除 24h 已播，否則池子挑出剛播歌、
+            # 迴圈又擋掉 → enqueue=0 → T3 無 fallback → 停播（2026-06-24 回報）。
+            _t3_played = mm.get_recently_played_titles(self._T3_PLAYED_EXCLUDE_TTL_S)
+            _t3_exclude = list(dict.fromkeys(skipped + _t3_played))
             relaxed_pool = build_recommendation_pool(
                 members=members, songs=mm.all_songs(),
-                exclude_titles=list(dict.fromkeys(skipped)),
+                exclude_titles=_t3_exclude,
                 now=time.time(), spotlight_member=spotlight, vibe_filter=vibe_filter,
             )
             cands = pick_candidates(relaxed_pool, k=self._round_size, top_n=9)
-            ring_exclude = list(dict.fromkeys(skipped))
-            # 放寬到 24h 而非砍光：仍回收 1-7 天前舊歌，但擋當天剛播過的，防同場收斂重播
+            ring_exclude = _t3_exclude
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._T3_PLAYED_EXCLUDE_TTL_S)
         if not cands:
             if _tier < 3:
