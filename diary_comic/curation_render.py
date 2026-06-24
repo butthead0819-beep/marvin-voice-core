@@ -18,8 +18,10 @@ def curation_to_story_plan(plan) -> StoryPlan:
     h = plan.hero
     lead = h.speakers[0] if h.speakers else ""
     if plan.source == "crosstalk":
+        # setup 餵故事導演：優先用主題對話窗(transcript)看完整來龍去脈，無則退回爆點幾句
         peak = Highlight(ts=0.0, laugher=lead, laugh_text="",
-                         strength=int(round(h.heat * 10)), setup=list(h.lines))
+                         strength=int(round(h.heat * 10)),
+                         setup=list(h.transcript or h.lines))
         first = h.lines[0][1] if h.lines else ""
         setup = DiaryEntry(ts_str=h.ts_str, core=first, speakers=list(h.speakers))
         reaction = DiaryEntry(ts_str=h.ts_str, core="全場接力搶話、互不相讓",

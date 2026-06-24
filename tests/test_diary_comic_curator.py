@@ -35,6 +35,31 @@ def test_curate_crosstalk_hero_when_pileon():
     assert set(plan.hero.speakers) == {"狗與露", "showay", "陳進文"}  # weakgogo 附和被濾
 
 
+def _themed_rows(base=1718000000.0):
+    """主題對話橫跨 ~90s（行動電源自燃），中段 3 人 2s 內搶話成峰。"""
+    return [
+        ("狗與露", "我的行動電源後來都蠻嚴格的", base - 60),
+        ("showay", "電池大家都有出過問題啊膨脹自燃的", base - 40),
+        ("狗與露", "我覺得這個設計真的有問題啦", base + 0.0),     # 搶話峰起點
+        ("showay", "不是啦你聽我說這個成本根本壓不下來", base + 1.0),
+        ("陳進文", "對啊而且客戶那邊也不會買單的啦", base + 1.8),
+        ("狗與露", "Anker也有啊大廠都出包", base + 25),
+        ("showay", "嗯", base + 30),  # 噪音、太短應濾
+    ]
+
+
+def test_curate_crosstalk_hero_carries_wider_transcript():
+    """hero 除了搶話爆點(lines)，還要帶主題對話窗(transcript)供故事導演看完整來龍去脈。
+    Regression: 2026-06-23 Anker 漫畫只拿爆點幾句餵 LLM，主題糊掉。"""
+    plan = curate(_themed_rows(), _entries(6))
+    assert plan.source == "crosstalk"
+    texts = [t for _s, t in plan.hero.transcript]
+    assert any("行動電源" in t for t in texts)   # 爆點前的主題前情有進來
+    assert any("膨脹自燃" in t for t in texts)
+    assert len(plan.hero.transcript) > len(plan.hero.lines)  # 比爆點窄窗寬
+    assert all(len(t) >= 4 for _s, t in plan.hero.transcript)  # 噪音「嗯」被濾
+
+
 def test_curate_topic_hero_when_calm():
     plan = curate(_calm_rows(), _entries(6))
     assert plan is not None

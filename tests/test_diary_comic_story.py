@@ -161,6 +161,13 @@ def test_build_story_prompt_directs_tension_arc():
     assert "腦補" in s                    # 張力靠鏡頭表情、不准腦補仍在
 
 
+def test_build_story_prompt_directs_theme_completeness():
+    """導演要先抓主題、把來龍去脈說完整，不只擷取單一笑點碎片
+    （2026-06-23 Anker 漫畫主題糊掉的修正）。"""
+    s, _ = build_story_prompt(_hl(9, ["x"]), "")
+    assert "主題" in s and "完整" in s
+
+
 def test_build_story_prompt_t4_adds_aftermath():
     s4, _ = build_story_prompt(_hl(9, ["x"]), "", template_id="T4")
     s1, _ = build_story_prompt(_hl(9, ["x"]), "", template_id="T1")
