@@ -19,11 +19,17 @@
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
 import json
+import logging
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, field
+from pathlib import Path as _Path
+
+logger = logging.getLogger(__name__)
 
 from diary_comic.crosstalk import (
     _crosstalk_events,
@@ -443,6 +449,116 @@ def _default_text_fn():
         key = _key()
         return _text_fn(key) if key else None
     except Exception:
+        return None
+
+
+# ── 自動貼文 hook（v0.2，鏡像日記：關台渲染→開台貼+置頂）──────────────────
+#   獨立 pending/posted 狀態檔，不跟日記撞；沿用日記的 channel/key/text_fn。
+#   v0.2 內部頻道貼（真名 OK）；對外發布前須先接匿名化 gate（TODOS.md）。
+REVEAL_PENDING = "records/night_reel_pending.json"
+REVEAL_POSTED = "records/night_reel_last_posted.txt"
+REVEAL_CONTENT = "📊 昨夜回放秀（話量・主題・點歌）"
+
+
+def _reveal_pending() -> dict:
+    try:
+        return json.loads(_Path(REVEAL_PENDING).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _set_reveal_pending(end: str, path: str) -> None:
+    try:
+        _Path(REVEAL_PENDING).write_text(
+            json.dumps({"end": end, "path": path}, ensure_ascii=False),
+            encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_reveal_pending() -> None:
+    try:
+        _Path(REVEAL_PENDING).unlink()
+    except Exception:
+        pass
+
+
+def _last_reveal_posted() -> str:
+    try:
+        return _Path(REVEAL_POSTED).read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _mark_reveal_posted(end: str) -> None:
+    try:
+        _Path(REVEAL_POSTED).write_text(end, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _render_reveal_blocking():
+    """同步：選剛結束場次 → 出回放秀 PNG → 標 pending（不貼，等開台）。同場次只渲一次。"""
+    import sys
+    sys.path.insert(0, ".")
+    from diary_comic.parser import dedupe_adjacent, eligible_sessions, parse_log
+    from diary_comic_poster import DB_PATH, LOG_PATH, _key, _text_fn
+
+    sessions = eligible_sessions(dedupe_adjacent(parse_log(
+        _Path(LOG_PATH).read_text(encoding="utf-8"))))
+    if not sessions:
+        return None
+    sess = sessions[-1]
+    end = sess[-1].ts_str
+    if end == _last_reveal_posted() or end == _reveal_pending().get("end"):
+        return None                          # 已貼 / 已渲染待貼
+    key = _key()
+    out = make_reveal_from_db(DB_PATH, sess[0].ts_str, end, "records",
+                              text_fn=_text_fn(key) if key else None)
+    if not out:
+        return None                          # 平淡夜 / 無乾淨引言 → 不貼
+    _set_reveal_pending(end, out[0])
+    return out[0]
+
+
+async def maybe_render_reveal(bot):
+    """關台（靜默）時呼叫：出回放秀、標 pending，**不貼**。任何失敗都吞掉。"""
+    try:
+        await asyncio.to_thread(_render_reveal_blocking)
+    except Exception as e:
+        logger.warning(f"⚠️ [Reveal] 渲染失敗（已吞，不影響 loop）: {e}")
+
+
+async def maybe_post_reveal(bot):
+    """開台（有人進語音）時呼叫：把 pending 回放秀貼回日記頻道 + 置頂。
+
+    回 channel 供呼叫端語音預告；無 pending / 失敗 → None。內部頻道、真名 OK。
+    """
+    try:
+        p = _reveal_pending()
+        end, path = p.get("end"), p.get("path")
+        if not end or not path or end == _last_reveal_posted():
+            return None
+        if not os.path.exists(path):
+            _clear_reveal_pending()
+            return None
+        import discord
+
+        from diary_comic_poster import _find_diary_channel
+        target = _find_diary_channel(bot)
+        if target is None:
+            return None
+        msg = await target.send(content=REVEAL_CONTENT, file=discord.File(path))
+        try:
+            await msg.pin()                  # 置頂 → 晚進來的人不用爬
+        except Exception:
+            pass
+        _mark_reveal_posted(end)
+        _clear_reveal_pending()
+        logger.info(f"📊 [Reveal] 已貼昨夜回放秀 {path} 並置頂")
+        return target
+    except Exception as e:
+        logger.warning(f"⚠️ [Reveal] 貼文失敗（已吞）: {e}")
         return None
 
 

@@ -332,3 +332,17 @@ async def maybe_post_diary(bot):
     except Exception as e:
         logger.warning(f"⚠️ [DiaryComic] 貼漫畫失敗（已吞）: {e}")
         return None
+
+
+async def maybe_post_open_rituals(bot):
+    """開台儀式總入口：貼昨日日記 + 昨夜回放秀（兩者各自 idempotent、全防禦）。
+
+    集中在這（非 voice_controller）以免 god-object 漲行。回 diary 的 posted 供語音預告判斷。
+    """
+    posted = await maybe_post_diary(bot)
+    try:
+        from make_reveal import maybe_post_reveal
+        await maybe_post_reveal(bot)
+    except Exception as e:
+        logger.debug(f"[Reveal] 開台發布略過（已吞）: {e}")
+    return posted
