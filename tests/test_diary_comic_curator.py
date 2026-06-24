@@ -36,10 +36,11 @@ def test_curate_crosstalk_hero_when_pileon():
 
 
 def _themed_rows(base=1718000000.0):
-    """主題對話橫跨 ~90s（行動電源自燃），中段 3 人 2s 內搶話成峰。"""
+    """主題對話（行動電源自燃）中段 3 人 2s 內搶話成峰；峰值前 70s 是上一個子話題。"""
     return [
-        ("狗與露", "我的行動電源後來都蠻嚴格的", base - 60),
-        ("showay", "電池大家都有出過問題啊膨脹自燃的", base - 40),
+        ("狗與露", "前一個子話題耳機音質的閒聊", base - 70),    # 峰值前的別話題，窗收窄後應排除
+        ("狗與露", "我的行動電源後來都蠻嚴格的", base - 25),
+        ("showay", "電池大家都有出過問題啊膨脹自燃的", base - 15),
         ("狗與露", "我覺得這個設計真的有問題啦", base + 0.0),     # 搶話峰起點
         ("showay", "不是啦你聽我說這個成本根本壓不下來", base + 1.0),
         ("陳進文", "對啊而且客戶那邊也不會買單的啦", base + 1.8),
@@ -49,13 +50,15 @@ def _themed_rows(base=1718000000.0):
 
 
 def test_curate_crosstalk_hero_carries_wider_transcript():
-    """hero 除了搶話爆點(lines)，還要帶主題對話窗(transcript)供故事導演看完整來龍去脈。
-    Regression: 2026-06-23 Anker 漫畫只拿爆點幾句餵 LLM，主題糊掉。"""
+    """hero 除了搶話爆點(lines)，還要帶主題對話窗(transcript)供故事導演看完整來龍去脈，
+    且窗重心在峰值之後、排除峰值前的上一個子話題（避免 SHOKZ 耳機稀釋 Anker 主線）。
+    Regression: 2026-06-23 Anker 漫畫只拿爆點幾句餵 LLM、又被前一個子話題稀釋。"""
     plan = curate(_themed_rows(), _entries(6))
     assert plan.source == "crosstalk"
     texts = [t for _s, t in plan.hero.transcript]
     assert any("行動電源" in t for t in texts)   # 爆點前的主題前情有進來
     assert any("膨脹自燃" in t for t in texts)
+    assert not any("耳機音質" in t for t in texts)  # 峰值前 70s 的上一個子話題被排除
     assert len(plan.hero.transcript) > len(plan.hero.lines)  # 比爆點窄窗寬
     assert all(len(t) >= 4 for _s, t in plan.hero.transcript)  # 噪音「嗯」被濾
 
