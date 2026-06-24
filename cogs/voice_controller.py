@@ -898,8 +898,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             # 📓 [DiaryComic] 開台儀式：把昨夜 pending 那頁貼出+置頂，貼成功才語音預告。
             # idempotent（重複進來不重貼，poster 內 _last_posted 去重）；全防禦不擋 join。
             try:
-                from diary_comic_poster import maybe_post_diary
-                posted = await maybe_post_diary(self.bot)
+                from diary_comic_poster import maybe_post_open_rituals
+                posted = await maybe_post_open_rituals(self.bot)
                 if posted and hasattr(self, "play_tts"):
                     asyncio.create_task(self.play_tts(
                         "昨天的日記畫好貼在日記頻道了，記得去翻翻。"))

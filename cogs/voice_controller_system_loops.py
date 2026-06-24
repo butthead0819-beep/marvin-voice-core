@@ -63,6 +63,12 @@ class SystemLoopsMixin:
                         await maybe_render_diary(self.bot, self.active_text_channel)
                     except Exception as _ce:
                         logger.warning(f"⚠️ [DiaryComic] 渲染 hook 失敗（已吞）: {_ce}")
+                    # 📊 [Reveal] 同關台時序：出昨夜回放秀存 pending（不立刻貼），全防禦
+                    try:
+                        from make_reveal import maybe_render_reveal
+                        await maybe_render_reveal(self.bot)
+                    except Exception as _re:
+                        logger.warning(f"⚠️ [Reveal] 渲染 hook 失敗（已吞）: {_re}")
 
                 # 📻 [Marvin Radio] 10 分鐘靜默自動啟動電台（stream_mode 播放中則跳過）
                 if silence > 600 and not self.radio_mode and not self.stream_mode and self.bot.voice_clients:
