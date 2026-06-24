@@ -145,3 +145,61 @@ async def curate_themed_set(brief: ThemeBrief | None, exclude_titles: list[str],
     except Exception:
         return None
     return parse_themed_set(resp)
+
+
+def _norm_for_match(s: str) -> str:
+    """正規化比對用：去空白/標點/大小寫，保留中英數，方便子字串比對。"""
+    return re.sub(r"[\s\W_]+", "", (s or "")).lower()
+
+
+def _resolved_title_matches(song: str, resolved_title: str) -> bool:
+    """resolve-then-VERIFY：解析標題要含 LLM 要的歌名（正規化子字串），否則視為解錯。
+    擋掉「足夠」被 yt-dlp 解成「曾經你說」這種搜尋失準。歌名太短(<2)時放行不誤殺。"""
+    ns = _norm_for_match(song)
+    if len(ns) < 2:
+        return True
+    return ns in _norm_for_match(resolved_title)
+
+
+async def resolve_themed_set(themed_set: ThemedSet, *, resolve_fn,
+                             exclude_vids=None, is_non_song_fn=None,
+                             extract_vid_fn=None, verify_title: bool = True) -> list[dict]:
+    """ThemedSet 的每首 pick → resolve(artist+song) → 過品質閘 → 回 enqueue-ready info dicts。
+
+    每個 info 帶 `_theme_title` / `_pick_reason` / `_set_position`（成塊入隊與日記用）。
+    resolve 不到/丟例外/非單曲/已播 vid/set 內重複 → 丟掉，不中斷其餘。
+    全注入式（resolve_fn 必填；is_non_song_fn / extract_vid_fn / exclude_vids 可選）→ 可測、
+    不耦合 music_cog。**只做無狀態的 title/vid 品質閘**；佇列去重/cover blacklist 等需 cog
+    狀態的閘留給實際入隊層（Step 3b）。caller 自行決定不足時補位 fallback。
+    """
+    exclude_vids = set(exclude_vids or ())
+    seen_vids: set[str] = set()
+    out: list[dict] = []
+    for pick in themed_set.picks:
+        query = f"{pick.artist} {pick.song}".strip()
+        if not query:
+            continue
+        try:
+            info = await resolve_fn(query)
+        except Exception:
+            continue
+        if not info:
+            continue
+        if verify_title and not _resolved_title_matches(pick.song, info.get("title", "")):
+            continue  # 解析到的不是 LLM 要的那首歌（搜尋失準）→ 丟掉
+        if is_non_song_fn is not None:
+            rejected, _reason = is_non_song_fn(info.get("title", ""), info.get("duration"))
+            if rejected:
+                continue
+        vid = None
+        if extract_vid_fn is not None:
+            vid = extract_vid_fn(info.get("webpage_url") or info.get("url") or "")
+        if vid and (vid in exclude_vids or vid in seen_vids):
+            continue
+        if vid:
+            seen_vids.add(vid)
+        info["_theme_title"] = themed_set.theme_title
+        info["_pick_reason"] = pick.reason
+        info["_set_position"] = len(out)
+        out.append(info)
+    return out

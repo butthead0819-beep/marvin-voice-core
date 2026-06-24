@@ -13,8 +13,30 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from diary_comic.parser import parse_log
-from themed_playlist import gather_theme_brief, curate_themed_set
+from themed_playlist import gather_theme_brief, curate_themed_set, resolve_themed_set
 from llm_pool import call_paid_review
+
+
+async def _standalone_resolve(query: str):
+    """鏡像 music_cog._resolve_yt_query 的核心（yt-dlp + pick_best_music_candidate），
+    給 dryrun 離線眼驗 resolve 用，不依賴 cog 實例。"""
+    import asyncio
+    import yt_dlp
+    from music_search import pick_best_music_candidate
+    opts = {"format": "bestaudio/best", "quiet": True, "no_warnings": True,
+            "noplaylist": True, "ignoreerrors": True}
+
+    def _extract():
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch5:{query}", download=False)
+            entries = [e for e in (info.get("entries") or []) if e] if info else []
+            chosen = pick_best_music_candidate(entries) if entries else None
+            if not chosen:
+                return None
+            return {"title": chosen.get("title", "?"), "uploader": chosen.get("uploader", "?"),
+                    "webpage_url": chosen.get("webpage_url") or chosen.get("original_url") or "",
+                    "url": chosen.get("url", ""), "duration": chosen.get("duration")}
+    return await asyncio.to_thread(_extract)
 
 
 async def main():
@@ -60,6 +82,22 @@ async def main():
         print(f"  {i}. {tag} {p.artist} - {p.song}")
         print(f"      「{p.reason}」")
     print(f"\n新鮮度：{fresh}/{len(themed.picks)} 首不在近 7 天排除清單（目標 ≥70%）")
+
+    # --resolve：真 yt-dlp 解析，驗 LLM 挑的歌解析得到、版本對（慢、吃網路）
+    if "--resolve" in sys.argv:
+        from track_quality import is_non_song_video
+        from music_memory import extract_video_id, MusicMemory
+        excl_vids = MusicMemory().get_recently_played_video_ids(7 * 24 * 3600)
+        print("\n=== Step 3a resolve_themed_set（真 yt-dlp）… ===")
+        infos = await resolve_themed_set(
+            themed, resolve_fn=_standalone_resolve, exclude_vids=excl_vids,
+            is_non_song_fn=is_non_song_video, extract_vid_fn=extract_video_id)
+        print(f"resolve+品質閘後可入隊：{len(infos)}/{len(themed.picks)} 首")
+        for info in infos:
+            print(f"  ✅ {info['title'][:50]}")
+            print(f"      理由「{info['_pick_reason']}」")
+        if len(infos) < 3:
+            print("  ⚠️ 不足 3 首 → 實際播放層會用 T1/T2 補位（Step 3b）")
 
 
 if __name__ == "__main__":

@@ -10,11 +10,13 @@ import pytest
 
 from themed_playlist import (
     ThemeBrief,
+    ThemedPick,
     ThemedSet,
     build_curation_prompt,
     curate_themed_set,
     gather_theme_brief,
     parse_themed_set,
+    resolve_themed_set,
 )
 
 _FP = {
@@ -138,3 +140,82 @@ async def test_curate_themed_set_llm_failure_returns_none():
         return None   # LLM 全 model 失敗
     brief = ThemeBrief(cores=["x", "y"], core_artists=[], language_label="華語", members=[])
     assert await curate_themed_set(brief, [], call_fn=fake_call) is None
+
+
+# ── Step 3a: resolve_themed_set（resolve + 品質閘 → 可入隊清單，全注入式）──────
+
+def _set(*pairs):
+    return ThemedSet(theme_title="今夜", picks=[ThemedPick(a, s, "r") for a, s in pairs])
+
+
+@pytest.mark.asyncio
+async def test_resolve_themed_set_resolves_and_tags():
+    """每首 resolve → info dict 帶 _theme_title/_pick_reason/_set_position。"""
+    async def resolve_fn(q):
+        return {"title": q, "webpage_url": f"https://youtu.be/{q[:11]:_<11}", "url": "x"}
+    infos = await resolve_themed_set(
+        _set(("周杰倫", "晴天"), ("陶喆", "流沙")), resolve_fn=resolve_fn,
+        extract_vid_fn=lambda u: u.split("/")[-1])
+    assert len(infos) == 2
+    assert infos[0]["_theme_title"] == "今夜"
+    assert infos[0]["_pick_reason"] == "r"
+    assert [i["_set_position"] for i in infos] == [0, 1]
+
+
+@pytest.mark.asyncio
+async def test_resolve_themed_set_drops_resolve_failures():
+    """resolve 回 None 或丟例外的 pick 被丟掉，不中斷其餘。"""
+    async def resolve_fn(q):
+        if "壞" in q:
+            return None
+        if "炸" in q:
+            raise RuntimeError("yt-dlp boom")
+        return {"title": q, "webpage_url": "https://youtu.be/aaaaaaaaaaa", "url": "x"}
+    infos = await resolve_themed_set(
+        _set(("a", "壞歌"), ("b", "炸歌"), ("c", "好歌")), resolve_fn=resolve_fn,
+        extract_vid_fn=lambda u: u.split("/")[-1])
+    assert len(infos) == 1 and "好歌" in infos[0]["title"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_themed_set_drops_non_song_and_excluded_vid():
+    """非單曲(is_non_song)與已播 video-id 被擋。"""
+    async def resolve_fn(q):
+        return {"title": q, "webpage_url": f"https://youtu.be/{q[-11:]}", "url": "x"}
+    def is_non_song(title, dur):
+        return ("合輯" in title, "compilation")
+    infos = await resolve_themed_set(
+        _set(("a", "正常歌aaaaaaaaaaa"), ("b", "古典合輯bbbbbbbbbb"), ("c", "已播ccccccccccc")),
+        resolve_fn=resolve_fn, is_non_song_fn=is_non_song,
+        exclude_vids={"ccccccccccc"}, extract_vid_fn=lambda u: u.split("/")[-1])
+    titles = [i["title"] for i in infos]
+    assert any("正常歌" in t for t in titles)
+    assert not any("合輯" in t for t in titles)   # 非單曲擋掉
+    assert not any("已播" in t for t in titles)   # 已播 vid 擋掉
+
+
+@pytest.mark.asyncio
+async def test_resolve_themed_set_rejects_wrong_song_resolve():
+    """resolve-then-VERIFY：解析出的標題不含 LLM 要的歌名 → 解錯了，丟掉。
+    真實案例：LLM 挑「關喆 足夠」，yt-dlp 解成「關喆 曾經你說（原唱：趙乃吉）」。"""
+    async def resolve_fn(q):
+        if "足夠" in q:
+            return {"title": "關喆 - 曾經你說（原唱：趙乃吉）", "webpage_url": "https://youtu.be/wrongggggggg", "url": "x"}
+        return {"title": f"周杰倫 - 晴天 Official MV", "webpage_url": "https://youtu.be/rightttttttt", "url": "x"}
+    infos = await resolve_themed_set(
+        _set(("關喆", "足夠"), ("周杰倫", "晴天")), resolve_fn=resolve_fn,
+        extract_vid_fn=lambda u: u.split("/")[-1])
+    titles = [i["title"] for i in infos]
+    assert not any("曾經你說" in t for t in titles)   # 解錯歌被擋
+    assert any("晴天" in t for t in titles)            # 解對的留
+
+
+@pytest.mark.asyncio
+async def test_resolve_themed_set_dedups_within_set():
+    """同一 set 內 resolve 到同 video-id 的只留一首。"""
+    async def resolve_fn(q):
+        return {"title": q, "webpage_url": "https://youtu.be/samesamesam", "url": "x"}
+    infos = await resolve_themed_set(
+        _set(("a", "x"), ("b", "y")), resolve_fn=resolve_fn,
+        extract_vid_fn=lambda u: u.split("/")[-1])
+    assert len(infos) == 1
