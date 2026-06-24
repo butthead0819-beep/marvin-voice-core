@@ -59,7 +59,39 @@ def test_curate_reel_picks_window_and_clean_quote():
     assert start <= reel.hero_ts <= end
     assert reel.quote == CLEAN_A          # 取最熱搶話事件第一句乾淨引言
     assert reel.activity_track            # 底層發言密度非空
-    assert reel.peaks                     # 至少一個搶話峰標記
+    assert reel.topic_peaks               # 至少一個「有主題」紅點
+
+
+def test_curate_reel_topic_dots_capped_at_5():
+    # 7 個有主題的搶話事件 → 紅點最多 5 個
+    rows = []
+    for i in range(7):
+        base = 100.0 + i * 100
+        rows += [(f"A{i}", CLEAN_A, base), (f"B{i}", CLEAN_B, base + 1)]
+    reel = curate_reel(rows)
+    assert reel is not None
+    assert len(reel.topic_peaks) == 5     # 每晚最多 5 個
+
+
+def test_curate_reel_excludes_topicless_peaks():
+    # 一個有主題事件 + 一個全糊字事件 → 只有有主題的進紅點
+    rows = [
+        ("A", CLEAN_A, 100.0), ("B", CLEAN_B, 101.0),            # 有主題
+        ("C", GARBAGE_REPEAT, 300.0), ("D", GARBAGE_LAUGH, 301.0),  # 無主題（糊字）
+    ]
+    reel = curate_reel(rows)
+    assert reel is not None
+    assert len(reel.topic_peaks) == 1
+    assert reel.topic_peaks[0][0] == 100.0
+
+
+def test_curate_reel_includes_songs_in_window():
+    rows = [("A", CLEAN_A, 100.0), ("B", CLEAN_B, 101.0)]
+    songs = [(100.5, "A", "周杰倫 - 晴天"), (999999.0, "B", "視窗外的歌")]
+    reel = curate_reel(rows, song_requests=songs)
+    titles = [t for _ts, _u, t in reel.songs]
+    assert "周杰倫 - 晴天" in titles
+    assert "視窗外的歌" not in titles     # 視窗外的點歌不標
 
 
 def test_curate_reel_filters_bot_lines():
@@ -89,6 +121,7 @@ def test_build_reveal_smoke_produces_png_and_json(tmp_path):
     assert os.path.getsize(png) > 0
     data = json.loads(open(js, encoding="utf-8").read())
     assert "window" in data and "hero" in data and "activity_track" in data
+    assert "topic_peaks" in data and "songs" in data
     assert data["hero"]["quote"] == CLEAN_A
 
 

@@ -20,11 +20,12 @@ def _clean_title(title: str) -> str:
     return (t or title).strip()
 
 
-def parse_manual_requests(log_text: str, since: float | None = None,
-                          until: float | None = None) -> list[tuple[str, str]]:
-    """回時間窗內的 [(點歌者, 完整歌名)]，依時間序。完整歌名供對 music_memory 取縮圖；
-    顯示時再用 clean_title 精簡。since/until 為 epoch 秒，None=不限。"""
-    out: list[tuple[str, str]] = []
+def parse_requests_with_ts(log_text: str, since: float | None = None,
+                           until: float | None = None) -> list[tuple[float, str, str]]:
+    """回時間窗內的 [(ts, 點歌者, 完整歌名)]，依時間序。ts=epoch 秒。
+
+    給時間軸標記用（回放秀 EKG 在點歌時刻打 ♪）。since/until 為 epoch 秒，None=不限。"""
+    out: list[tuple[float, str, str]] = []
     for line in log_text.splitlines():
         m = _LINE.search(line)
         if not m:
@@ -38,8 +39,16 @@ def parse_manual_requests(log_text: str, since: float | None = None,
             continue
         if until is not None and ts > until:
             continue
-        out.append((user.strip(), title.strip()))
+        out.append((ts, user.strip(), title.strip()))
     return out
+
+
+def parse_manual_requests(log_text: str, since: float | None = None,
+                          until: float | None = None) -> list[tuple[str, str]]:
+    """回時間窗內的 [(點歌者, 完整歌名)]，依時間序。完整歌名供對 music_memory 取縮圖；
+    顯示時再用 clean_title 精簡。since/until 為 epoch 秒，None=不限。"""
+    return [(user, title) for _ts, user, title
+            in parse_requests_with_ts(log_text, since, until)]
 
 
 def clean_title(title: str) -> str:
