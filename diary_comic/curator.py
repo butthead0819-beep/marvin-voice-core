@@ -28,8 +28,9 @@ class HeroMoment:
     kind: str                              # "crosstalk" | "topic"
     ts_str: str
     speakers: list[str]
-    lines: list[tuple[str, str]]           # (speaker, text) 原始對白，供渲染器還原
+    lines: list[tuple[str, str]]           # (speaker, text) 爆點/選題那幾句，供渲染器還原
     heat: float
+    transcript: list[tuple[str, str]] = field(default_factory=list)  # hero 時間窗完整對話，供故事導演看來龍去脈
 
 
 @dataclass
@@ -76,6 +77,15 @@ def _ts_str(epoch: float) -> str:
     return _dt.datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _window_transcript(session_rows, center_ts: float, *, before: float = 90.0,
+                       after: float = 45.0, max_lines: int = 16, min_len: int = 4):
+    """切 center_ts 前後時間窗的實際對話 [(speaker, text)]，濾掉太短的噪音句、依時間序、封頂行數。
+    給故事導演看主題來龍去脈用——比爆點窄窗多看前因後果。"""
+    win = [(s, t) for s, t, ts in session_rows
+           if center_ts - before <= ts <= center_ts + after and len((t or "").strip()) >= min_len]
+    return win[:max_lines]
+
+
 def curate(session_rows, topic_entries, conditions: CuratorConditions | None = None,
            song_requests=None):
     """session_rows=(speaker,text,ts_float) 原始逐字稿；topic_entries=10 分鐘摘要 DiaryEntry。
@@ -96,14 +106,21 @@ def curate(session_rows, topic_entries, conditions: CuratorConditions | None = N
     hero_entry = None
     if peak is not None and len(peak.speakers) >= _needed(present, c.crosstalk_ratio):
         hero = HeroMoment(kind="crosstalk", ts_str=_ts_str(peak.ts),
-                          speakers=peak.speakers, lines=peak.lines, heat=peak.heat)
+                          speakers=peak.speakers, lines=peak.lines, heat=peak.heat,
+                          transcript=_window_transcript(session_rows, peak.ts))
         source = "crosstalk"
     else:
         hero_entry = max(topic_entries, key=heat_score)
+        # 話題段是 10 分鐘摘要：取該段起點往後一窗的實際對話當主題逐字稿
+        try:
+            _ep = _dt.datetime.strptime(hero_entry.ts_str, "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            _ep = None
+        _tx = _window_transcript(session_rows, _ep, before=0.0, after=600.0) if _ep else []
         hero = HeroMoment(kind="topic", ts_str=hero_entry.ts_str,
                           speakers=list(hero_entry.speakers),
                           lines=[("．".join(hero_entry.speakers) or "群聊", hero_entry.core)],
-                          heat=float(heat_score(hero_entry)))
+                          heat=float(heat_score(hero_entry)), transcript=_tx)
         source = "topic"
 
     pool = [e for e in topic_entries if e is not hero_entry]
