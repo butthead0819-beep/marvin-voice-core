@@ -141,6 +141,12 @@ class MusicCog(commands.Cog):
         self._cover_blacklist = None
         self._round_track_count: int = 0
         self._round_size: int = 3
+        # 🎚️ [ThemedSet] 讀空氣主題歌單（env-gated MARVIN_THEMED_PLAYLIST，預設 OFF）
+        self._THEMED_SET_COOLDOWN_S = 30 * 60   # 一張歌單約 30-40 分鐘，半小時內不重開
+        self._THEMED_SET_NIGHTLY_CAP = 4        # 每晚上限，防抖動重打付費 LLM
+        self._last_themed_set_ts: float = 0.0
+        self._themed_sets_tonight: int = 0
+        self._themed_set_date = None
         self._prefetch_cache: dict = {}   # url → Task[{'lyrics', 'comment'}]
         self._last_search: dict = {}      # username → {query, ts, source}
         self._last_music_cmd_time: dict[str, float] = {}  # speaker → ts, for dedup
@@ -696,6 +702,102 @@ class MusicCog(commands.Cog):
             return f"🎵 **【馬文精選】** 為 `{who}` 挖到新歌《{title}》，聽聽看。"
         return f"🎵 **【馬文精選】** 為 `{who}` 翻出的《{title}》。"
 
+    def _themed_gate_open(self, now: float) -> bool:
+        """🎚️ 主題歌單觸發閘：env on + 過冷卻 + 未超每晚上限（跨日自動重置）。"""
+        if os.getenv("MARVIN_THEMED_PLAYLIST") != "1":
+            return False
+        today = datetime.date.fromtimestamp(now)
+        if today != self._themed_set_date:
+            self._themed_set_date = today
+            self._themed_sets_tonight = 0
+        if now - self._last_themed_set_ts < self._THEMED_SET_COOLDOWN_S:
+            return False
+        if self._themed_sets_tonight >= self._THEMED_SET_NIGHTLY_CAP:
+            return False
+        return True
+
+    def _load_summary_entries(self):
+        """讀 chat_summary_log → 日記 DiaryEntry（有 ts_str/core/speakers）。失敗回 []。"""
+        try:
+            from pathlib import Path
+            from diary_comic.parser import parse_log
+            return parse_log(Path("records/chat_summary_log.txt").read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+    def _enqueue_themed_infos(self, infos: list, theme_title: str, spotlight: str,
+                              exclude_titles: list, mm) -> int:
+        """成塊入隊：套需 cog 狀態的閘（佇列/正在播去重、ring）+ 標 set 欄位。回入隊首數。"""
+        enqueued = 0
+        for info in infos:
+            if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
+                                          username=spotlight):
+                continue
+            if is_already_recommended(info.get('title', ''), exclude_titles):
+                continue
+            info['requested_by'] = f"Marvin推薦（為{spotlight}）"
+            info['_lane'] = 'themed'
+            info['_spotlight'] = spotlight
+            info['_set_id'] = theme_title
+            info['_round_first'] = (enqueued == 0)
+            self.stream_queue.append(info)
+            for _rt in ring_titles_for(info.get('title', ''), 'direct', info.get('title', '')):
+                mm.add_recent_recommendation(_rt)
+            enqueued += 1
+        return enqueued
+
+    async def _announce_themed_set(self, theme_title: str, n: int) -> None:
+        vc = self._vc()
+        ch = vc.active_text_channel if vc is not None else None
+        if ch:
+            try:
+                await ch.send(f"🎚️ **【今夜歌單】** 我聽你們聊了一晚，為你們策展《{theme_title}》共 {n} 首。")
+            except Exception:
+                logger.debug("[ThemedSet] 宣告貼文失敗（忽略）", exc_info=True)
+
+    async def _try_themed_set(self, members: list, exclude_titles: list,
+                              spotlight: str, mm) -> int:
+        """🎚️ 嘗試策展一張主題歌單入隊。回入隊首數（0 = 沒做 → caller 走一般 autopilot）。
+
+        全程優雅降級：閘關 / 無主題 / LLM 失敗 / resolve 不足 / 任何例外 → 回 0，不中斷音樂。
+        """
+        if not self._themed_gate_open(time.time()):
+            return 0
+        try:
+            from themed_playlist import (curate_themed_set, gather_theme_brief,
+                                         resolve_themed_set)
+            from track_quality import is_non_song_video
+            from music_memory import extract_video_id
+            from llm_pool import call_paid_review
+
+            brief = gather_theme_brief(self._load_summary_entries(),
+                                       self._load_taste_fingerprint(), members, now=time.time())
+            if brief is None:
+                return 0
+            themed = await curate_themed_set(brief, exclude_titles,
+                                             call_fn=call_paid_review, set_size=self._round_size * 2)
+            if themed is None or not themed.picks:
+                return 0
+            exclude_vids = mm.get_skipped_video_ids() | mm.get_recently_played_video_ids(
+                self._PLAYED_EXCLUDE_TTL_S)
+            infos = await resolve_themed_set(
+                themed, resolve_fn=self._resolve_yt_query, exclude_vids=exclude_vids,
+                is_non_song_fn=is_non_song_video, extract_vid_fn=extract_video_id)
+            enqueued = self._enqueue_themed_infos(infos, themed.theme_title, spotlight,
+                                                  exclude_titles, mm)
+            if enqueued == 0:
+                logger.info("🎚️ [ThemedSet] resolve+閘後 0 首可入隊 → fallback 一般 autopilot")
+                return 0
+            self._themed_sets_tonight += 1
+            self._last_themed_set_ts = time.time()
+            logger.info(f"🎚️ [ThemedSet]《{themed.theme_title}》入隊 {enqueued} 首"
+                        f"（今晚第 {self._themed_sets_tonight} 張）")
+            await self._announce_themed_set(themed.theme_title, enqueued)
+            return enqueued
+        except Exception:
+            logger.exception("[ThemedSet] 失敗，fallback 一般 autopilot")
+            return 0
+
     async def _auto_recommend(self, username: str, *, _tier: int = 1):
         """佇列空 → 依在場成員的音樂記憶推薦下一首批。"""
         mm = getattr(self.bot, 'music_memory', None)
@@ -717,6 +819,12 @@ class MusicCog(commands.Cog):
             for m in members:
                 suki_hist += (_suki.get_song_history(m) or [])[:10]
         exclude_titles = list(dict.fromkeys(recently + recommended + skipped + suki_hist))
+
+        # 🎚️ [ThemedSet] 新一輪起手先試讀空氣主題歌單（env-gated，閘關/失敗回 0 → 走原 autopilot）
+        if _tier == 1:
+            _n_themed = await self._try_themed_set(members, exclude_titles, spotlight, mm)
+            if _n_themed > 0:
+                return
 
         vibe_filter = None
         vibe_label = None
