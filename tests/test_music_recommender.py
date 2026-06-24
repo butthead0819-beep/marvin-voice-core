@@ -185,6 +185,38 @@ def test_empty_when_no_member_history():
     assert pool == []
 
 
+# ── 版本品質降位（cover/live 沉隊尾）──────────────────────────────────────────
+
+def test_demote_low_quality_versions_sinks_cover_and_live_but_keeps_all():
+    """cover/live 版本降到隊尾、官方/錄音室優先；不丟棄（沒更好的仍可播，不枯竭）。
+    根因：自動推薦 cover 佔 11% vs 真人只 3%——humans 避開 cover。"""
+    from music_recommender import demote_low_quality_versions
+    cands = [
+        Candidate("關喆 - 想你的夜 (cover by 某某)", "某某", "spotlight", "cover", None, 90.0),
+        Candidate("周杰倫 - 晴天 (Official MV)", "周杰倫", "long_tail", "direct", None, 50.0),
+        Candidate("Eagles - Hotel California (Live 1977)", "Eagles", "long_tail", "direct", None, 40.0),
+        Candidate("陶喆 - 流沙 Official Music Video", "陶喆", "discovery", "direct", None, 30.0),
+    ]
+    out = demote_low_quality_versions(cands)
+    titles = [c.anchor_title for c in out]
+    assert len(out) == len(cands)                          # 不丟棄
+    assert "Official MV" in titles[0] or "Official Music Video" in titles[0]  # 好版本優先
+    assert "cover" in titles[-1].lower() or "Live" in titles[-1]  # cover/live 沉底
+    # 前兩名都不是 cover/live
+    assert all("cover" not in t.lower() and "Live" not in t for t in titles[:2])
+
+
+def test_demote_treats_cover_mode_as_low_quality():
+    """spotlight lane 的 mode=cover 即使標題沒 cover 字樣也算低品質版本（刻意 cover 化）。"""
+    from music_recommender import demote_low_quality_versions
+    cands = [
+        Candidate("關喆 - 想你的夜", "關喆", "spotlight", "cover", None, 90.0),
+        Candidate("周杰倫 - 晴天", "周杰倫", "long_tail", "direct", None, 50.0),
+    ]
+    out = demote_low_quality_versions(cands)
+    assert out[0].mode == "direct" and out[-1].mode == "cover"
+
+
 # ── pick_candidate（加權隨機抽樣 = 變化來源）─────────────────────────────────────
 
 def _cand(title, score):

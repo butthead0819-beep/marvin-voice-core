@@ -145,6 +145,25 @@ def looks_like_cover(title: str) -> bool:
     return has_cover_kw
 
 
+# 現場/演唱會版偵測：高精度避免誤殺歌名含 live 的歌（Live and Let Die / Alive）。
+# 要求 live 後接 concert 詞/年份/括號，或中文演唱會詞。
+_LIVE_RE = re.compile(
+    r"演唱會|現場版|不插電|\bunplugged\b"
+    r"|\blive\b\s*\(?\s*\d{4}"                                          # Live 1977 / Live (1977)
+    r"|\blive\s+(version|concert|performance|recording|tour|show|at|in)\b"  # Live Version/Concert...
+    r"|live\s+video"
+    r"|[\(（【]\s*live\b",                                              # (Live...) /（Live /【Live
+    re.I,
+)
+
+
+def looks_like_live(title: str) -> bool:
+    """True = 標題暗示這是現場/演唱會版（音質/口味雜訊，自動推薦應降位；humans 少點）。"""
+    if not title:
+        return False
+    return bool(_LIVE_RE.search(title))
+
+
 # ── YouTube Data API ─────────────────────────────────────────────────────────
 
 async def fetch_video_view_count(

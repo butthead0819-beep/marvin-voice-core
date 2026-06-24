@@ -188,6 +188,24 @@ def build_recommendation_pool(
     return result
 
 
+def is_low_quality_version(cand: "Candidate") -> bool:
+    """cover / 現場版 = 品質與口味雜訊：自動推薦 cover 佔 11% vs 真人只 3%、live 也 2 倍，
+    humans 明顯避開。spotlight lane 的 mode='cover' 一律算；其餘看標題。"""
+    from track_quality import looks_like_cover, looks_like_live
+    if cand.mode == "cover":
+        return True
+    t = cand.anchor_title or ""
+    return looks_like_cover(t) or looks_like_live(t)
+
+
+def demote_low_quality_versions(cands: list["Candidate"]) -> list["Candidate"]:
+    """穩定重排：官方/錄音室版優先、cover/現場版沉到隊尾。**不丟棄**——沒有更好的候選時
+    仍會播（不枯竭、不停播）；有更好的就先填滿 round → 自動推薦品質貼近真人口味。"""
+    preferred = [c for c in cands if not is_low_quality_version(c)]
+    demoted = [c for c in cands if is_low_quality_version(c)]
+    return preferred + demoted
+
+
 def ring_titles_for(played_title: str, mode: str, anchor_title: str) -> list[str]:
     """推薦一首後，該寫進 novelty ring 的標題清單。
 
