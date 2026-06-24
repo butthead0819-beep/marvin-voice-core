@@ -77,10 +77,14 @@ def _ts_str(epoch: float) -> str:
     return _dt.datetime.fromtimestamp(epoch).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _window_transcript(session_rows, center_ts: float, *, before: float = 90.0,
-                       after: float = 45.0, max_lines: int = 16, min_len: int = 4):
+def _window_transcript(session_rows, center_ts: float, *, before: float = 40.0,
+                       after: float = 80.0, max_lines: int = 16, min_len: int = 4):
     """切 center_ts 前後時間窗的實際對話 [(speaker, text)]，濾掉太短的噪音句、依時間序、封頂行數。
-    給故事導演看主題來龍去脈用——比爆點窄窗多看前因後果。"""
+    給故事導演看主題來龍去脈用——比爆點窄窗多看前因後果。
+
+    窗重心刻意偏後（before<after）：搶話峰常是主題的爆點、主線在峰值之後展開；
+    往前只留短引子，避免吃進峰值前的「上一個子話題」稀釋主題（2026-06-23 Anker 漫畫
+    被前面的 SHOKZ 耳機話題污染的修正）。"""
     win = [(s, t) for s, t, ts in session_rows
            if center_ts - before <= ts <= center_ts + after and len((t or "").strip()) >= min_len]
     return win[:max_lines]
