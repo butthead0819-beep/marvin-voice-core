@@ -41,7 +41,7 @@ from intent_agents.recommendation import (
     time_of_day_bucket,
 )
 from memory_guard import is_memory_critical
-from music_recommender import build_recommendation_pool, is_already_recommended, pick_candidates, ring_titles_for
+from music_recommender import build_recommendation_pool, demote_low_quality_versions, is_already_recommended, pick_candidates, ring_titles_for
 from music_memory import extract_video_id
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
@@ -743,8 +743,10 @@ class MusicCog(commands.Cog):
         _skipped_vids = mm.get_skipped_video_ids()
         _taste_fp = self._load_taste_fingerprint()
 
+        # k 多抽 3 倍當緩衝：入隊前把 cover/現場版降到隊尾，好版本先填滿 round（見下方 demote）。
+        _k_buf = self._round_size * 3
         if _tier == 1:
-            cands = pick_candidates(pool, k=self._round_size, top_n=9)
+            cands = pick_candidates(pool, k=_k_buf, top_n=max(9, _k_buf))
             ring_exclude = exclude_titles
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
         elif _tier == 2:
@@ -762,9 +764,13 @@ class MusicCog(commands.Cog):
                 exclude_titles=_t3_exclude,
                 now=time.time(), spotlight_member=spotlight, vibe_filter=vibe_filter,
             )
-            cands = pick_candidates(relaxed_pool, k=self._round_size, top_n=9)
+            cands = pick_candidates(relaxed_pool, k=_k_buf, top_n=max(9, _k_buf))
             ring_exclude = _t3_exclude
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._T3_PLAYED_EXCLUDE_TTL_S)
+
+        # 🎚️ [Quality] cover/現場版降到隊尾——自動推薦 cover 11% vs 真人 3%，humans 避開。
+        # 好版本先填滿 round；沒更好的時 cover/live 仍會播（不丟棄→不枯竭）。
+        cands = demote_low_quality_versions(cands)
         if not cands:
             if _tier < 3:
                 return await self._auto_recommend(username, _tier=_tier + 1)

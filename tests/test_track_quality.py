@@ -61,6 +61,27 @@ def test_looks_like_cover_negative(title):
     assert tq.looks_like_cover(title) is False
 
 
+@pytest.mark.parametrize("title", [
+    "Eagles - Hotel California (Live 1977) (Official Video) [HD]",
+    "陳昇【鼓聲若響】'95美麗的寶島演唱會 Bobby Chen New Year Live '95 Concert",
+    "張惠妹 - 聽海 Live Concert",
+    "五月天 - 倔強 (不插電版)",
+    "Coldplay - Yellow (Live Version)",
+])
+def test_looks_like_live_positive(title):
+    assert tq.looks_like_live(title) is True
+
+
+@pytest.mark.parametrize("title", [
+    "周杰倫 - 晴天 (Official MV)",
+    "Paul McCartney - Live and Let Die",          # 「live」是歌名一部分，非現場版
+    "Daft Punk - Alive",
+    "晴天 周杰倫",
+])
+def test_looks_like_live_negative(title):
+    assert tq.looks_like_live(title) is False
+
+
 # NOTE: 「official cover」混合 marker 是 ambiguous edge case（cover album 本來
 # 就是 cover）。v1 不擔保此 edge case 判定，pytest 不寫對應 case。
 
