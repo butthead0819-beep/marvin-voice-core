@@ -55,12 +55,21 @@ class LocalMixingAudioSource(_BASE):
         instrument: bool = False,
         on_demand: bool = False,
         idle_grace_s: float = 1.0,
+        clock=None,
     ):
         self._volume = float(volume)
         self._duck_level = float(duck_level)
         self._duck_step = float(duck_step)
         self._tts_gain = float(tts_gain)  # TTS 層增益（音樂常播 ~10%，TTS 滿音量過大 → 預設減半）
         self._duck_cur = 1.0  # 1.0 = 無 duck
+        # 🔇 [TTS 對玩家 duck] Marvin 自己的 TTS（尤其長的：DJ interjection / 歌單理由）播放中
+        # 若有玩家還在說話 → TTS 讓路到 10%（同串流音樂）；最後一次說話後 5s 無聲才回 1.0。
+        self._clock = clock or time.monotonic
+        self._tts_player_duck_level = 0.10
+        self._tts_player_duck_hold_s = 5.0
+        self._tts_player_duck_step = 0.12   # 逐幀 ramp（~50fps 下 ~0.15s 到位，防 click）
+        self._tts_player_duck_cur = 1.0
+        self._player_speech_until = 0.0
         self._tts_cap_samples = int(tts_cap_seconds * _SAMPLES_PER_SEC)
         self._rng = np.random.default_rng(seed)
         self._silence_bytes = b"\x00" * FRAME_BYTES_S16
@@ -97,6 +106,22 @@ class LocalMixingAudioSource(_BASE):
         self._stat_ms_max = 0.0
         self._stat_slow = 0          # read() > 18ms 的幀數（逼近 20ms deadline）
         self._stat_t0 = time.monotonic()
+
+    def note_player_speech(self) -> None:
+        """🔇 玩家正在說話 → 接下來 hold 秒內把 Marvin TTS duck 到 player_duck_level。
+        speech-detection 路徑每次偵測到玩家說話就呼叫（與 last_player_speech_time 同步）。"""
+        self._player_speech_until = self._clock() + self._tts_player_duck_hold_s
+
+    def _tts_player_duck_step_toward(self, now: float) -> float:
+        """逐幀 ramp TTS 對玩家說話的 duck 增益：說話窗內 → 往 10% 降；窗外（5s 無聲）→ 回 1.0。"""
+        target = self._tts_player_duck_level if now < self._player_speech_until else 1.0
+        cur = self._tts_player_duck_cur
+        if cur < target:
+            cur = min(target, cur + self._tts_player_duck_step)
+        elif cur > target:
+            cur = max(target, cur - self._tts_player_duck_step)
+        self._tts_player_duck_cur = cur
+        return cur
 
     def set_interject_params(self, *, duck: float | None = None, step: float | None = None) -> None:
         """即時調打岔 duck 終點 / fade 速度（taste-tuning 用，免重啟）。"""
@@ -184,9 +209,12 @@ class LocalMixingAudioSource(_BASE):
             layers = []
             if music_f is not None:
                 layers.append(am.apply_gain(music_f, self._volume * self._duck_cur))
+            # 🔇 TTS 對玩家說話 duck：玩家最近說話 → Marvin TTS 讓路到 10%，逐幀 ramp（防 click）
+            _pd = self._tts_player_duck_step_toward(self._clock())
             if tts_f is not None:
-                # 套 tts_gain（音樂 ~10% 時 TTS 滿音量過大）；淡出中再乘 interject_cur。
+                # 套 tts_gain（音樂 ~10% 時 TTS 滿音量過大）；淡出中再乘 interject_cur；玩家說話再乘 _pd。
                 _g = self._tts_gain * self._interject_cur if self._interject_cur < 1.0 else self._tts_gain
+                _g *= _pd
                 layers.append(am.apply_gain(tts_f, _g))  # Marvin
             if tts2_f is not None:
                 layers.append(am.apply_gain(tts2_f, self._tts_gain))  # Marmo（同為 TTS）
