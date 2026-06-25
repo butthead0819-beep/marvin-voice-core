@@ -1098,6 +1098,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return
 
         self.last_player_speech_time = time.time()
+        if self._mixer is not None:
+            self._mixer.note_player_speech()  # 🔇 玩家說話 → Marvin TTS（保護中的長播報）duck 到 10%
         self.proactive_attempts = 0
 
         # [TemperatureMonitor] 記錄語音事件（冷場偵測用；話題改直接講，無確認回覆判定）
@@ -1629,6 +1631,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             pending.cancel()
             self.user_states[speaker]["pending_task"] = None
         self.last_player_speech_time = time.time()
+        if self._mixer is not None:
+            self._mixer.note_player_speech()  # 🔇 玩家說話 → Marvin TTS（保護中的長播報）duck 到 10%
 
         # 🚀 [TTS Interrupt] 使用者開口時中斷 TTS 播放，若文字尚未在聊天室則補發
         if self.is_playing_audio and not self._tts_protected:

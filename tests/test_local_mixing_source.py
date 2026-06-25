@@ -577,3 +577,49 @@ def test_push_tts2_rejects_when_over_cap():
     assert mix.push_tts2(half) is True
     assert mix.push_tts2(half) is True   # 剛好到上限
     assert mix.push_tts2(half) is False  # 超過 → 拒絕
+
+
+# ── TTS 對玩家說話 duck（玩家還在講 → Marvin TTS 讓路到 10%，5s 無聲才回） ──────
+
+def test_tts_player_duck_ramps_down_when_player_speaks():
+    """note_player_speech() 後，TTS duck 增益逐幀 ramp 到 player_duck_level（10%）。"""
+    clk = [0.0]
+    mix = LocalMixingAudioSource(clock=lambda: clk[0])
+    assert mix._tts_player_duck_cur == 1.0
+    mix.note_player_speech()                       # until = 0 + 5
+    for _ in range(50):
+        mix._tts_player_duck_step_toward(0.5)      # 玩家說話窗內
+    assert abs(mix._tts_player_duck_cur - mix._tts_player_duck_level) < 1e-6  # → 10%
+
+
+def test_tts_player_duck_restores_only_after_5s_silence():
+    clk = [0.0]
+    mix = LocalMixingAudioSource(clock=lambda: clk[0])
+    mix.note_player_speech()                        # until = 5
+    for _ in range(50):
+        mix._tts_player_duck_step_toward(3.0)       # 3s（<5s）→ 仍 duck
+    assert mix._tts_player_duck_cur < 0.2           # 還壓著
+    for _ in range(50):
+        mix._tts_player_duck_step_toward(6.0)       # 6s（>5s 無聲）→ 回 1.0
+    assert abs(mix._tts_player_duck_cur - 1.0) < 1e-6
+
+
+def test_tts_player_duck_no_change_when_no_speech():
+    mix = LocalMixingAudioSource(clock=lambda: 100.0)
+    for _ in range(20):
+        mix._tts_player_duck_step_toward(100.0)
+    assert mix._tts_player_duck_cur == 1.0          # 沒人說話 → 不 duck
+
+
+def test_tts_output_ducked_when_player_speaking():
+    """wiring：玩家說話窗內 + duck 到位 → TTS 輸出 == apply_gain(tts, tts_gain * duck_level)。"""
+    clk = [0.0]
+    mix = LocalMixingAudioSource(seed=11, tts_gain=0.5, clock=lambda: clk[0])
+    mix.note_player_speech()
+    mix._tts_player_duck_cur = mix._tts_player_duck_level  # 假設已 ramp 到位
+    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))
+    out = np.frombuffer(mix.read(), dtype=np.int16)
+    tts = _f32_frame(0.6)
+    expected = am.to_s16(am.tpdf_dither(
+        am.apply_gain(tts, 0.5 * mix._tts_player_duck_level), np.random.default_rng(11)))
+    assert np.array_equal(out, expected)
