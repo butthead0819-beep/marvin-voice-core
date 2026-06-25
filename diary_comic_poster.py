@@ -25,6 +25,9 @@ DIARY_CHANNELS = ("馬文的厭世日記", "marvin-diary")
 IMG_MODEL = "gemini-2.5-flash-image"
 TEXT_MODEL = "gemini-2.5-flash"
 EST_USD_PER_IMG = 0.04
+# 出漫畫門檻：≥N 段（每段 ~10 分鐘對話）才值得燒生圖。6→10 約省 33% 生圖成本
+# （只出夠熱鬧的場次＝品質正篩，安靜場次本來也沒料可畫）。可調此值權衡頻率 vs 成本。
+DIARY_MIN_ENTRIES = 10
 
 
 def _key() -> str:
@@ -161,8 +164,8 @@ def plan_latest_session(log_text: str, rows_fn):
     if not sessions:
         return None
     session = sessions[-1]
-    if not should_generate(session, min_entries=6):
-        return None  # 內容不足 6 段（對話太短）→ 不值得燒 API
+    if not should_generate(session, min_entries=DIARY_MIN_ENTRIES):
+        return None  # 內容不足 DIARY_MIN_ENTRIES 段（對話太短）→ 不值得燒生圖錢
     end = session[-1].ts_str
     cur = curate(rows_fn(session[0].ts_str, end), session)
     if cur is None:

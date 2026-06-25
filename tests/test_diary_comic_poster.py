@@ -36,24 +36,30 @@ def _rows_calm(start_ts_str, end_ts_str):
 
 
 def test_plan_latest_session_crosstalk_returns_slant():
-    out = poster.plan_latest_session(_log(6), _rows_crosstalk)
+    out = poster.plan_latest_session(_log(10), _rows_crosstalk)
     assert out is not None
     session, plan, end = out
     assert plan.format == "slant"  # 有搶話高潮 → 整頁
-    assert end == "2026-06-20 22:15:00"  # 第 6 段（index 5 → 15 分）
+    assert end == "2026-06-20 22:27:00"  # 第 10 段（index 9 → 27 分）
 
 
 def test_plan_latest_session_calm_returns_topic_meme():
     # 沒搶話但有料 → 退最強話題、單格 meme（不再是 None）
-    out = poster.plan_latest_session(_log(6), _rows_calm)
+    out = poster.plan_latest_session(_log(10), _rows_calm)
     assert out is not None
     _session, plan, _end = out
     assert plan.format == "meme"
 
 
 def test_plan_latest_session_too_short_returns_none():
-    # <6 段 → should_generate False → 不出
+    # 段數 < DIARY_MIN_ENTRIES → should_generate False → 不出（省生圖錢）
     assert poster.plan_latest_session(_log(3), _rows_crosstalk) is None
+
+
+def test_plan_latest_session_below_raised_threshold_returns_none():
+    """門檻提高到 10（省 ~33% 生圖）：8 段這種不夠熱鬧的場次不再出漫畫。"""
+    assert poster.DIARY_MIN_ENTRIES == 10
+    assert poster.plan_latest_session(_log(8), _rows_crosstalk) is None
 
 
 def test_plan_latest_session_empty_log_returns_none():
