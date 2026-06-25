@@ -487,7 +487,8 @@ def compose_themed_set_card(theme_title, picks, width: int = 1080, *, covers=Non
     tfont = _load_font(max(22, int(width * 0.036)))   # 歌名
     rfont = _load_font(max(18, int(width * 0.026)))   # 選歌理由
     items = picks[:8]
-    covers = (covers or [None] * len(items))[:8]
+    # 補/截到剛好 len(items)：covers 比 picks 短時也不可 silently 砍歌（zip 截斷）。
+    covers = (list(covers or []) + [None] * len(items))[:len(items)]
     has_cover = any(c is not None for c in covers)
     thumb_w, thumb_h = (int(width * 0.16), int(width * 0.12)) if has_cover else (0, 0)
     text_w = width - 2 * pad - ((thumb_w + pad // 2) if has_cover else 0)

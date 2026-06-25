@@ -62,6 +62,16 @@ def test_compose_themed_set_card_with_covers():
     assert isinstance(card, Image.Image)
 
 
+def test_compose_themed_set_card_pads_short_covers():
+    """covers 比 picks 短時要補 None，不可 silently 砍歌（zip(rows, covers) 截斷 bug）。
+    補齊後應與顯式給齊長度（[img,None,None]）渲染出完全一致的圖；舊 bug 只畫第一列。"""
+    picks = [{"title": f"歌{i}", "reason": f"理由{i}"} for i in range(3)]
+    img = Image.new("RGB", (480, 360), (10, 10, 10))
+    short = compose_themed_set_card("主題", picks, covers=[img])               # 只給 1 張
+    explicit = compose_themed_set_card("主題", picks, covers=[img, None, None])  # 顯式補齊
+    assert short.tobytes() == explicit.tobytes()  # 3 首全畫，與顯式等長一致
+
+
 def test_append_themed_set_card_grows_or_passthrough():
     page = Image.new("RGB", (1080, 1920))
     assert append_themed_set_card(page, "主題", []) is page  # 無歌單→原圖

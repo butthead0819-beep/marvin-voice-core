@@ -21,7 +21,6 @@ PENDING_PATH = "records/diary_comic_pending.json"
 CACHE_DIR = "records/diary_comic_cache"
 BOT_LOG = os.path.expanduser("~/Library/Logs/Marvin/bot_stdout.log")  # [點歌-手動] 來源
 MUSIC_MEMORY = "music_memory.json"  # 歌名→video id→cover 縮圖
-THEMED_SETS_LOG = "records/themed_sets.jsonl"  # Marvin 策展的「今夜歌單」(themed_playlist 落)
 DIARY_CHANNELS = ("馬文的厭世日記", "marvin-diary")
 IMG_MODEL = "gemini-2.5-flash-image"
 TEXT_MODEL = "gemini-2.5-flash"
@@ -257,11 +256,12 @@ def _append_themed_set_card(page, session):
         from diary_comic.themed_set import latest_themed_set
         from diary_comic.song_requests import video_id_from_url, thumb_url
         from diary_comic.layout import append_themed_set_card
+        from themed_playlist import _THEMED_SET_LOG  # 單一事實來源：writer 同一路徑
 
         since = _dt.datetime.fromisoformat(session[0].ts_str).timestamp() - 600
         until = _dt.datetime.fromisoformat(session[-1].ts_str).timestamp() + 600
         rec = latest_themed_set(
-            Path(THEMED_SETS_LOG).read_text(encoding="utf-8", errors="ignore"), since, until)
+            Path(_THEMED_SET_LOG).read_text(encoding="utf-8", errors="ignore"), since, until)
         if rec is None or not rec.picks:
             return page
         covers = []
