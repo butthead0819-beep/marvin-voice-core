@@ -70,6 +70,7 @@ class LocalMixingAudioSource(_BASE):
         self._tts_player_duck_step = 0.12   # 逐幀 ramp（~50fps 下 ~0.15s 到位，防 click）
         self._tts_player_duck_cur = 1.0
         self._player_speech_until = 0.0
+        self._prev_tts_marvin = False   # 上一幀有無 Marvin TTS（偵測 onset 復原凍結的 duck）
         self._tts_cap_samples = int(tts_cap_seconds * _SAMPLES_PER_SEC)
         self._rng = np.random.default_rng(seed)
         self._silence_bytes = b"\x00" * FRAME_BYTES_S16
@@ -210,6 +211,12 @@ class LocalMixingAudioSource(_BASE):
             if music_f is not None:
                 layers.append(am.apply_gain(music_f, self._volume * self._duck_cur))
             # 🔇 TTS 對玩家說話 duck：玩家最近說話 → Marvin TTS 讓路到 10%，逐幀 ramp（防 click）
+            # onset 復原：新一段 Marvin TTS 進來、且無人說話（窗已過）→ 把 idle 期間凍結的 duck
+            # 復原 1.0（前幀無 TTS＝靜音，直接設不會 click），避免下段 TTS 殘留壓低。
+            _tts_now = tts_f is not None
+            if _tts_now and not self._prev_tts_marvin and self._clock() >= self._player_speech_until:
+                self._tts_player_duck_cur = 1.0
+            self._prev_tts_marvin = _tts_now
             _pd = self._tts_player_duck_step_toward(self._clock())
             if tts_f is not None:
                 # 套 tts_gain（音樂 ~10% 時 TTS 滿音量過大）；淡出中再乘 interject_cur；玩家說話再乘 _pd。
