@@ -635,6 +635,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.daily_watchdog_loop.start()   # 🐕 [Watchdog] 每天 13:45 檢查 cron 健康 + Discord 心跳
         self.background_news_loop.start()  # 📰 [BG News] 每 30 分鐘更新在線玩家喜好新聞
         self.speak_bus_tick_loop.start()   # 🗣️ [SpeakBus] 每 5s tick；無 agent 時靜默回 None
+        self.tts_duck_refresh_loop.start() # 🔇 每 1s 刷新 TTS 對玩家 duck 窗口（連續說話不中途解除）
         
         # 🚀 [Sentinel] 啟動 LLM 狀態監控
         await self.bot.router.start_heartbeat()
@@ -721,6 +722,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.slow_system_loop.stop()
         self.dynamic_social_loop.stop()
         self.sentinel_monitor_loop.stop()
+        self.tts_duck_refresh_loop.stop()
         self.reset_stt_counter_loop.stop()
         self.background_news_loop.stop()
         self.speak_bus_tick_loop.stop()

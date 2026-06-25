@@ -29,7 +29,31 @@ from proactive_topic_agent import ProactiveTopicAgent
 logger = logging.getLogger(__name__)
 
 
+def _player_spoke_recently(last_speech_ts: float, now: float, window: float = 1.5) -> bool:
+    """最近 window 秒內有人發聲（per-packet VAD 的 time.time 時戳；0=已重置/無）。
+    給 TTS duck 連續刷新閘用：講不停時持續重置窗口，5s hold 從『真正停止』算起。"""
+    return bool(last_speech_ts) and 0 <= (now - last_speech_ts) < window
+
+
 class SystemLoopsMixin:
+    @tasks.loop(seconds=1.0)
+    async def tts_duck_refresh_loop(self):
+        """🔇 連續說話時持續刷新 TTS duck 窗口（per-packet VAD），讓 5s hold 從『真正停止』算。
+        onset 由 handle_raw_speech_start 即時 duck；此 loop 只負責『講不停別中途解除』。全防禦。"""
+        if self._mixer is None:
+            return
+        try:
+            sink = self.bot.engine.get_active_sink()
+            if sink is None:
+                return
+            last = max(sink.user_last_spoken_time.values(), default=0.0)
+        except (RuntimeError, AttributeError):
+            return  # dict 變動中 / 無欄位 → 略過一次（下個 tick 再來）
+        except Exception:
+            return
+        if _player_spoke_recently(last, time.time()):
+            self._mixer.note_player_speech()
+
     @tasks.loop(minutes=10.0)
     async def slow_system_loop(self):
         """[Slow System] 每 10 分鐘進行一次對話彙整與馬文評論"""

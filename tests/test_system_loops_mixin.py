@@ -24,3 +24,14 @@ def test_loop_moved_and_is_loop(name):
     loop = getattr(VoiceController, name)
     assert isinstance(loop, tasks.Loop), f"{name} 不是 tasks.Loop"
     assert loop.coro.__module__ == MOD
+
+
+def test_player_spoke_recently():
+    """TTS duck 連續刷新閘：最近 window 秒內有 per-packet 發聲 → True（0=重置/無）。"""
+    from cogs.voice_controller_system_loops import _player_spoke_recently
+    now = 1000.0
+    assert _player_spoke_recently(999.5, now) is True            # 0.5s 前 → 最近有講
+    assert _player_spoke_recently(998.0, now) is False           # 2s 前 → 超過 1.5s 窗
+    assert _player_spoke_recently(0.0, now) is False             # 已重置 / 無發聲
+    assert _player_spoke_recently(999.0, now, window=0.5) is False  # 1s 前 > 0.5s 窗
+    assert _player_spoke_recently(1001.0, now) is False          # 未來時戳（防呆）
