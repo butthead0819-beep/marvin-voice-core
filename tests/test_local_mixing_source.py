@@ -623,3 +623,25 @@ def test_tts_output_ducked_when_player_speaking():
     expected = am.to_s16(am.tpdf_dither(
         am.apply_gain(tts, 0.5 * mix._tts_player_duck_level), np.random.default_rng(11)))
     assert np.array_equal(out, expected)
+
+
+def test_tts_player_duck_resets_on_fresh_tts_when_no_speech():
+    """idle 時 _cur 凍結在 duck 值 → 下一段 TTS（無人說話）onset 應復原 1.0，不殘留壓低新 TTS。"""
+    clk = [100.0]
+    mix = LocalMixingAudioSource(seed=1, clock=lambda: clk[0])
+    mix._tts_player_duck_cur = 0.10        # 模擬 idle 凍結在 duck
+    mix._player_speech_until = 0.0         # 無人說話（窗早過）
+    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))  # 新 TTS onset
+    mix.read()                             # 一幀 → onset reset 應觸發
+    assert mix._tts_player_duck_cur == 1.0
+
+
+def test_tts_player_duck_keeps_duck_on_fresh_tts_while_player_speaking():
+    """玩家正在說話 → 新 TTS onset 不復原（仍要 duck）。"""
+    clk = [0.0]
+    mix = LocalMixingAudioSource(seed=1, clock=lambda: clk[0])
+    mix._tts_player_duck_cur = 0.10
+    mix.note_player_speech()               # until = 5
+    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))
+    mix.read()                             # onset 但窗內 → 不復原
+    assert mix._tts_player_duck_cur < 0.5
