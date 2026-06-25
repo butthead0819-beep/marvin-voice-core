@@ -144,7 +144,7 @@ async def curate_themed_set(brief: ThemeBrief | None, exclude_titles: list[str],
         call_fn = call_paid_review
     system, user = build_curation_prompt(brief, exclude_titles, set_size=set_size)
     try:
-        resp = await call_fn(user, system=system)
+        resp = await call_fn(user, system=system, caller="themed_playlist")
     except Exception:
         return None
     return parse_themed_set(resp)

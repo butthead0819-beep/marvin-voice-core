@@ -70,7 +70,7 @@ async def main():
 
     async def _call(content, system):
         return await call_paid_review(content, system=system, max_tokens=1200,
-                                      temperature=0.4, timeout=90)
+                                      temperature=0.4, timeout=90, caller="taste_profiles")
 
     yt = YTMusic()
     done = 0

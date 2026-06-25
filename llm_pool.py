@@ -413,6 +413,17 @@ def build_paid_review_pool(
     return CooldownAwarePool(eps, clock=clock)
 
 
+def _record_paid_usage(caller: str, model: str, in_tok: int, out_tok: int, *, guard=None) -> None:
+    """付費呼叫成功後記成本（caller 可見化，帳單無盲區）。永不 raise（記帳是側效，不可炸 LLM）。"""
+    try:
+        from llm_paid import PaidUsageGuard, estimate_cost
+        (guard or PaidUsageGuard()).record(
+            caller=caller, model=model, tokens=int(in_tok + out_tok),
+            est_usd=estimate_cost(model, in_tok, out_tok))
+    except Exception:
+        pass
+
+
 async def call_paid_review(
     content: str,
     *,
@@ -421,9 +432,11 @@ async def call_paid_review(
     temperature: float = 0.2,
     timeout: float = 180.0,
     pool: Optional[CooldownAwarePool] = None,
+    caller: str = "paid_review",
 ) -> Optional[str]:
     """付費 Gemini 大型 batch 呼叫（genai 原生 SDK + thinking_budget=0 + JSON mode）；
-    model fallback + cooldown + timeout 走 bus 既有 dispatch。回 raw 字串；全 model 失敗回 None。"""
+    model fallback + cooldown + timeout 走 bus 既有 dispatch。回 raw 字串；全 model 失敗回 None。
+    caller：成本記帳標籤（寫 records/llm_paid_usage.jsonl，讓帳單看得見是誰花的）。"""
     pool = pool if pool is not None else build_paid_review_pool()
 
     async def _call(ep: PoolEndpoint):
@@ -443,8 +456,13 @@ async def call_paid_review(
             timeout=timeout,
         )
         um = getattr(resp, "usage_metadata", None)
-        tokens = ((getattr(um, "prompt_token_count", 0) or 0)
-                  + (getattr(um, "candidates_token_count", 0) or 0)) if um else 0
-        return resp.text, tokens
+        if um:
+            in_tok = getattr(um, "prompt_token_count", 0) or 0
+            out_tok = getattr(um, "candidates_token_count", 0) or 0
+        else:  # SDK 偶爾不回 usage → 用長度估（保守略高，避免 cost 不可見）
+            in_tok = (len(content) + len(system)) // 3
+            out_tok = len(resp.text or "") // 3
+        _record_paid_usage(caller, ep.model, in_tok, out_tok)
+        return resp.text, in_tok + out_tok
 
     return await dispatch(pool, _call)
