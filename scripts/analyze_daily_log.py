@@ -695,8 +695,10 @@ def call_review_llm(user_content: str, paid_call=None) -> dict:
     def _do(content: str) -> str:
         # batch job：flash 處理 ~76k content + 生成完整 JSON 要 60-90s，timeout 給寬
         # （180s）；即時 call 才用緊 timeout。per-call timeout 仍會 cut 真正掛死的連線。
+        # max_tokens 16000：2026-06-25 實測 daily review 輸出是 runaway（給 32000 也填滿砍斷），
+        # 加 token 無用且多花錢——真因是 input 重複資料誘發冗長輸出，治本要減 input/搶救 partial。
         raw = asyncio.run(paid_call(content, system=SYSTEM_PROMPT, max_tokens=16000,
-                                    temperature=0.2, timeout=180.0))
+                                    temperature=0.2, timeout=180.0, caller="daily_review"))
         if not raw:
             raise RuntimeError("LLM bus paid review 全 model 失敗，daily review 無法分析")
         raw = raw.strip()

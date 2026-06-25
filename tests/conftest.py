@@ -44,6 +44,39 @@ def _isolate_record_writes(tmp_path, monkeypatch):
             return records_dir / Path(*p.parts[1:])
         return p
 
+    # 0. 通用攔截（根除）：任何「write 模式開 relative records/...」一律導到 tmp。
+    #    下面 1~5 是逐 writer patch，會漏——2026-06-25 proactive_usage 沒被任何條覆蓋，
+    #    測試（test_marvin_entertainment_commands 觸發 trigger_proactive_topic）灌了 397 筆
+    #    Alice/Bob 假表演進 prod records/proactive_usage.jsonl，毒到 daily_review runaway。
+    #    攔在 open() / Path.open() 邊界，現在與未來任何 writer 都不可能再污染。只導 write，
+    #    read 不動（測試讀 prod fixture 不受影響）；redirect 時順手建好父目錄。
+    _WRITE_MODES = ("w", "a", "x", "+")
+
+    def _maybe_redirect_write(file):
+        if isinstance(file, (str, Path)):
+            p = Path(file)
+            if not p.is_absolute() and p.parts and p.parts[0] == "records":
+                red = records_dir / Path(*p.parts[1:])
+                red.parent.mkdir(parents=True, exist_ok=True)
+                return red
+        return file
+
+    import builtins
+    _real_open = builtins.open
+
+    def _guarded_open(file, mode="r", *args, **kw):
+        if any(c in mode for c in _WRITE_MODES):
+            file = _maybe_redirect_write(file)
+        return _real_open(file, mode, *args, **kw)
+    monkeypatch.setattr(builtins, "open", _guarded_open)
+
+    _real_path_open = Path.open
+
+    def _guarded_path_open(self, mode="r", *args, **kw):
+        target = _maybe_redirect_write(self) if any(c in mode for c in _WRITE_MODES) else self
+        return _real_path_open(Path(target), mode, *args, **kw)
+    monkeypatch.setattr(Path, "open", _guarded_path_open)
+
     # 1. GapLogger (agent_gaps) — __init__ runtime 建，patch class method 通用
     try:
         import intent_gap
