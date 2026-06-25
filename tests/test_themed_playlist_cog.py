@@ -76,6 +76,41 @@ def test_themed_dj_text_uses_pick_reason():
     assert MusicCog._themed_dj_text({}) == ""
 
 
+def test_enqueue_themed_infos_returns_list_and_marks_fields(monkeypatch):
+    """int→list 改動：回實際入隊的 info 清單（Step 5 落 record 要用）+ 標 set 欄位。"""
+    cog = _make_cog()
+    cog.stream_queue = []
+    monkeypatch.setattr(cog, "_check_song_duplicate", lambda **k: False)
+    infos = [
+        {"url": "u1", "title": "歌一", "_pick_reason": "理由一"},
+        {"url": "u2", "title": "歌二", "_pick_reason": "理由二"},
+    ]
+    out = cog._enqueue_themed_infos(infos, "主題X", "狗與露", [], MagicMock())
+    assert len(out) == 2
+    assert cog.stream_queue == out                       # 全部入隊
+    assert out[0]["_round_first"] is True and out[1]["_round_first"] is False
+    assert all(i["_lane"] == "themed" and i["_set_id"] == "主題X" for i in out)
+    assert out[0]["requested_by"] == "Marvin推薦（為狗與露）"
+
+
+def test_enqueue_themed_infos_skips_duplicates(monkeypatch):
+    """佇列/正在播去重命中 → 跳過該首；_round_first 標在『實際入隊』的第一首。"""
+    cog = _make_cog()
+    cog.stream_queue = []
+    calls = {"n": 0}
+
+    def dup(**k):
+        calls["n"] += 1
+        return calls["n"] == 1                            # 第一首判重複、其餘放行
+
+    monkeypatch.setattr(cog, "_check_song_duplicate", dup)
+    out = cog._enqueue_themed_infos(
+        [{"url": "u1", "title": "歌一"}, {"url": "u2", "title": "歌二"}],
+        "T", "u", [], MagicMock())
+    assert [i["title"] for i in out] == ["歌二"]
+    assert out[0]["_round_first"] is True                 # 入隊第一首才算 round_first
+
+
 @pytest.mark.asyncio
 async def test_try_themed_set_noop_when_env_off(monkeypatch):
     """env off → _try_themed_set 直接回 0、不打 LLM、不碰佇列。"""

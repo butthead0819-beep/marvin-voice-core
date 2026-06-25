@@ -726,9 +726,12 @@ class MusicCog(commands.Cog):
             return []
 
     def _enqueue_themed_infos(self, infos: list, theme_title: str, spotlight: str,
-                              exclude_titles: list, mm) -> int:
-        """成塊入隊：套需 cog 狀態的閘（佇列/正在播去重、ring）+ 標 set 欄位。回入隊首數。"""
-        enqueued = 0
+                              exclude_titles: list, mm) -> list:
+        """成塊入隊：套需 cog 狀態的閘（佇列/正在播去重、ring）+ 標 set 欄位。
+
+        回『實際入隊』的 info 清單（caller 取 len() 當首數、並落日記 record）。
+        """
+        enqueued: list = []
         for info in infos:
             if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
                                           username=spotlight):
@@ -739,11 +742,11 @@ class MusicCog(commands.Cog):
             info['_lane'] = 'themed'
             info['_spotlight'] = spotlight
             info['_set_id'] = theme_title
-            info['_round_first'] = (enqueued == 0)
+            info['_round_first'] = (len(enqueued) == 0)
             self.stream_queue.append(info)
             for _rt in ring_titles_for(info.get('title', ''), 'direct', info.get('title', '')):
                 mm.add_recent_recommendation(_rt)
-            enqueued += 1
+            enqueued.append(info)
         return enqueued
 
     async def _announce_themed_set(self, theme_title: str, n: int) -> None:
@@ -765,7 +768,7 @@ class MusicCog(commands.Cog):
             return 0
         try:
             from themed_playlist import (curate_themed_set, gather_theme_brief,
-                                         resolve_themed_set)
+                                         record_themed_set, resolve_themed_set)
             from track_quality import is_non_song_video
             from music_memory import extract_video_id
             from llm_pool import call_paid_review
@@ -783,17 +786,19 @@ class MusicCog(commands.Cog):
             infos = await resolve_themed_set(
                 themed, resolve_fn=self._resolve_yt_query, exclude_vids=exclude_vids,
                 is_non_song_fn=is_non_song_video, extract_vid_fn=extract_video_id)
-            enqueued = self._enqueue_themed_infos(infos, themed.theme_title, spotlight,
-                                                  exclude_titles, mm)
-            if enqueued == 0:
+            enqueued_infos = self._enqueue_themed_infos(infos, themed.theme_title, spotlight,
+                                                        exclude_titles, mm)
+            n = len(enqueued_infos)
+            if n == 0:
                 logger.info("🎚️ [ThemedSet] resolve+閘後 0 首可入隊 → fallback 一般 autopilot")
                 return 0
+            record_themed_set(themed.theme_title, enqueued_infos, ts=time.time())  # 落日記「今夜歌單」
             self._themed_sets_tonight += 1
             self._last_themed_set_ts = time.time()
-            logger.info(f"🎚️ [ThemedSet]《{themed.theme_title}》入隊 {enqueued} 首"
+            logger.info(f"🎚️ [ThemedSet]《{themed.theme_title}》入隊 {n} 首"
                         f"（今晚第 {self._themed_sets_tonight} 張）")
-            await self._announce_themed_set(themed.theme_title, enqueued)
-            return enqueued
+            await self._announce_themed_set(themed.theme_title, n)
+            return n
         except Exception:
             logger.exception("[ThemedSet] 失敗，fallback 一般 autopilot")
             return 0

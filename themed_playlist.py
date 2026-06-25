@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import os
 import re
 from dataclasses import dataclass
+
+_THEMED_SET_LOG = "records/themed_sets.jsonl"
 
 
 @dataclass
@@ -206,3 +209,41 @@ async def resolve_themed_set(themed_set: ThemedSet, *, resolve_fn,
         info["_set_position"] = len(out)
         out.append(info)
     return out
+
+
+def build_themed_set_record(theme_title: str, infos: list[dict], *, ts: float) -> dict:
+    """純函式。把『實際入隊』的 infos → 一筆日記 record（theme_title + picks + ts）。
+
+    每首取 resolved title + LLM 選歌理由（_pick_reason）+ webpage_url（縮圖用）。
+    無 title 的 info 丟掉（resolve 殘缺）。供 record_themed_set 落 jsonl、日記讀回。
+    """
+    picks: list[dict] = []
+    for info in infos:
+        title = str(info.get("title") or "").strip()
+        if not title:
+            continue
+        picks.append({
+            "title": title,
+            "reason": str(info.get("_pick_reason") or "").strip(),
+            "url": str(info.get("webpage_url") or info.get("url") or "").strip(),
+        })
+    return {"ts": ts, "theme_title": theme_title, "picks": picks}
+
+
+def record_themed_set(theme_title: str, infos: list[dict], *, ts: float,
+                      path: str = _THEMED_SET_LOG) -> dict:
+    """Append 一行主題歌單 record 到 records/themed_sets.jsonl（日記「今夜歌單」用）。
+
+    遙測寫檔絕不可炸斷音樂 → 全 try/except。無 picks 不寫。測試污染防護靠 conftest
+    （relative records/ 寫入導 tmp）；回傳 record 供呼叫端/測試檢視。
+    """
+    rec = build_themed_set_record(theme_title, infos, ts=ts)
+    if not rec["picks"]:
+        return rec
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    return rec

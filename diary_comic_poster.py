@@ -242,6 +242,45 @@ def _append_song_card(page, session):
         return page
 
 
+def _append_themed_set_card(page, session):
+    """關台時把當夜 Marvin 策展的主題歌單畫成「今夜歌單」一格接在頁下方（含 cover art）。
+
+    資料源異於點歌台（那是使用者主動點歌的 bot log）——這是 Marvin 自策展、附選歌理由。
+    全防禦→失敗回原圖。一晚多張取最後一張（latest_themed_set）。
+    """
+    try:
+        import datetime as _dt
+        import io
+        import urllib.request
+        from PIL import Image
+        from diary_comic.themed_set import latest_themed_set
+        from diary_comic.song_requests import video_id_from_url, thumb_url
+        from diary_comic.layout import append_themed_set_card
+        from themed_playlist import _THEMED_SET_LOG  # 單一事實來源：writer 同一路徑
+
+        since = _dt.datetime.fromisoformat(session[0].ts_str).timestamp() - 600
+        until = _dt.datetime.fromisoformat(session[-1].ts_str).timestamp() + 600
+        rec = latest_themed_set(
+            Path(_THEMED_SET_LOG).read_text(encoding="utf-8", errors="ignore"), since, until)
+        if rec is None or not rec.picks:
+            return page
+        covers = []
+        for p in rec.picks[:8]:
+            img = None
+            vid = video_id_from_url(p.get("url") or "")
+            if vid:
+                try:
+                    with urllib.request.urlopen(thumb_url(vid), timeout=10) as r:
+                        img = Image.open(io.BytesIO(r.read())).convert("RGB")
+                except Exception:
+                    pass
+            covers.append(img)
+        return append_themed_set_card(page, rec.theme_title, rec.picks, covers)
+    except Exception as e:
+        logger.debug(f"[DiaryComic] 今夜歌單略過: {e}")
+        return page
+
+
 def _render_blocking(key: str):
     """同步：選剛結束場次 → 策展排版 → 出圖 + 點歌台 → 存檔 + 標 pending（不貼，等下次開台）。
 
@@ -277,6 +316,7 @@ def _render_blocking(key: str):
     if page is None:
         return None
     page = _append_song_card(page, session)  # 接「今夜點歌台」一格（有點歌才接，全防禦）
+    page = _append_themed_set_card(page, session)  # 接「今夜歌單」一格（Marvin 策展，有才接，全防禦）
     page = _prepend_marvin_quote(page, session, _text_fn(key))  # 開頁接馬文語錄（LLM 生，全防禦）
     out = f"records/diary_comic_{end.replace(':', '').replace(' ', '_').replace('-', '')}.png"
     page.save(out)

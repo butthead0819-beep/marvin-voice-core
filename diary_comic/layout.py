@@ -466,6 +466,84 @@ def append_song_card(page: Image.Image, requests, covers=None) -> Image.Image:
     return out
 
 
+# 今夜歌單卡片配色（暮色靛藍，Marvin 策展，刻意異於暖色點歌台與深墨語錄）
+THEMED_CARD_BG = (38, 36, 62)        # 暮色靛底
+THEMED_CARD_FG = (228, 224, 240)     # 淡紫白字
+THEMED_CARD_ACCENT = (158, 138, 214)  # 紫晶（主題名/理由/分隔線）
+
+
+def compose_themed_set_card(theme_title, picks, width: int = 1080, *, covers=None,
+                            bg=THEMED_CARD_BG, fg=THEMED_CARD_FG,
+                            accent=THEMED_CARD_ACCENT) -> Image.Image:
+    """「今夜歌單」一格：Marvin 策展的主題歌單 + 每首選歌理由。暮色靛卡。
+
+    picks: [{"title","reason",...}]；covers: 對齊的 cover 縮圖 [PIL|None]（None→色塊）。
+    與點歌台的差異＝顯示『選歌理由』（人味）而非點歌者；配色暮色靛而非暖金。
+    """
+    from diary_comic.song_requests import clean_title
+    pad = max(16, int(width * 0.03))
+    hfont = _load_font(max(28, int(width * 0.050)))   # 標頭「今夜歌單」
+    sfont = _load_font(max(24, int(width * 0.040)))   # 主題名
+    tfont = _load_font(max(22, int(width * 0.036)))   # 歌名
+    rfont = _load_font(max(18, int(width * 0.026)))   # 選歌理由
+    items = picks[:8]
+    # 補/截到剛好 len(items)：covers 比 picks 短時也不可 silently 砍歌（zip 截斷）。
+    covers = (list(covers or []) + [None] * len(items))[:len(items)]
+    has_cover = any(c is not None for c in covers)
+    thumb_w, thumb_h = (int(width * 0.16), int(width * 0.12)) if has_cover else (0, 0)
+    text_w = width - 2 * pad - ((thumb_w + pad // 2) if has_cover else 0)
+    line_h = int(tfont.size * 1.25)
+    rline_h = int(rfont.size * 1.25)
+
+    rows = []  # (title, reason_lines, row_h)
+    for p in items:
+        title = clean_title(str(p.get("title") or ""))[:18]
+        reason = str(p.get("reason") or "").strip()
+        rlines = wrap_text(reason, rfont, text_w)[:2] if reason else []
+        row_text_h = line_h + rline_h * len(rlines)
+        rows.append((title, rlines, max(thumb_h, row_text_h) + pad // 2))
+
+    head_h = int(hfont.size * 1.3)
+    sub_h = int(sfont.size * 1.4) if theme_title else 0
+    H = pad + head_h + sub_h + pad // 2 + sum(r[2] for r in rows) + pad
+    card = Image.new("RGB", (width, H), bg)
+    draw = ImageDraw.Draw(card)
+    draw.text((pad, pad), "今夜歌單", fill=fg, font=hfont)
+    y = pad + head_h
+    if theme_title:
+        draw.text((pad, y), f"《{theme_title[:20]}》", fill=accent, font=sfont)
+        y += sub_h
+    draw.line([(pad, y), (width - pad, y)], fill=accent, width=4)
+    y += pad // 2
+    for (title, rlines, row_h), cover in zip(rows, covers):
+        tx = pad
+        if has_cover:
+            if cover is not None:
+                card.paste(cover_fit(cover, thumb_w, thumb_h), (pad, y))
+            else:
+                draw.rectangle([pad, y, pad + thumb_w, y + thumb_h], fill=accent)
+            tx = pad + thumb_w + pad // 2
+        draw.text((tx, y), f"《{title}》", fill=fg, font=tfont)
+        ry = y + line_h
+        for ln in rlines:
+            draw.text((tx, ry), ln, fill=accent, font=rfont)
+            ry += rline_h
+        y += row_h
+    return card
+
+
+def append_themed_set_card(page: Image.Image, theme_title, picks,
+                           covers=None) -> Image.Image:
+    """把今夜歌單卡片接在漫畫頁下方。無歌單 → 原圖。"""
+    if not picks:
+        return page
+    card = compose_themed_set_card(theme_title, picks, width=page.width, covers=covers)
+    out = Image.new("RGB", (page.width, page.height + card.height), (250, 248, 244))
+    out.paste(page, (0, 0))
+    out.paste(card, (0, page.height))
+    return out
+
+
 def compose_meme(image: Image.Image, top: str = "", bottom: str = "",
                  size: tuple[int, int] = (1080, 1080)) -> Image.Image:
     """一格 meme：滿版圖 + 上 setup / 下 punchline 邊條（下可空=強反差單飛）。"""
