@@ -493,3 +493,24 @@ def test_status_one_row_per_endpoint_in_order():
                  PoolEndpoint(name="cerebras", tpm_budget=60000))
     rows = pool.status()
     assert [r["name"] for r in rows] == ["groq", "cerebras"]
+
+
+def test_record_paid_usage_writes_caller_and_cost(tmp_path):
+    """call_paid_review 的成本記帳：寫 caller + 估價（est_usd>0）→ 帳單不再有盲區。"""
+    import json
+    from llm_pool import _record_paid_usage
+    from llm_paid import PaidUsageGuard
+    p = tmp_path / "usage.jsonl"
+    _record_paid_usage("themed_playlist", "gemini-2.5-flash", 1000, 500,
+                       guard=PaidUsageGuard(log_path=p))
+    rows = [json.loads(l) for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert len(rows) == 1
+    assert rows[0]["caller"] == "themed_playlist"
+    assert rows[0]["tokens"] == 1500
+    assert rows[0]["est_usd"] > 0
+
+
+def test_record_paid_usage_never_raises(tmp_path):
+    """記帳是側效，壞掉不可炸掉 LLM 呼叫。"""
+    from llm_pool import _record_paid_usage
+    _record_paid_usage("x", None, -5, -5, guard=None)  # 不該 raise

@@ -194,7 +194,7 @@ async def run(
         async def _paid_fallback(user_msg: str, system: str):
             return await call_paid_review(
                 user_msg, system=system, max_tokens=300, temperature=0.0,
-                pool=_paid_pool,
+                pool=_paid_pool, caller="daily_feedback",
             )
 
         analyzers = {"music": MusicFeedbackAnalyzer(router=router, paid_fallback=_paid_fallback)}
