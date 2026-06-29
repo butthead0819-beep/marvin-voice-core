@@ -1135,8 +1135,18 @@ class MusicCog(commands.Cog):
             while self.stream_mode:
                 if not self.stream_queue:
                     # 🎲 個人歌單連續播：佇列空先墊他下一首（一次一首）；池空才回退一般推薦
-                    if self._personal_shuffle is not None and await self._personal_shuffle_topup():
-                        continue
+                    if self._personal_shuffle is not None:
+                        await self._personal_shuffle_topup()
+                        if self.stream_queue:
+                            continue                      # 墊到歌了 → 去播
+                        if self._personal_shuffle is not None:
+                            # ⚠️ 死鎖防護：topup 沒實際入隊（in-flight 的 create_task 還在慢
+                            # resolve）→ 必須 await sleep 讓出 loop，否則 `while 佇列空: await
+                            # topup()→inflight 立刻 return True` 會 busy-spin 凍結 event loop、
+                            # in-flight topup 也永遠跑不完（2026-06-29 心跳阻塞 9 分鐘事故）。
+                            await asyncio.sleep(0.5)
+                            continue
+                        # else：池空、session 已清 → 落下面一般推薦
                     vc = self._vc()
                     _rb = (self._current_stream_info or {}).get('requested_by')
                     online = vc.get_online_members() if vc is not None else []
