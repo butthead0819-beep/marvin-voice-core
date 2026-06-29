@@ -14,8 +14,12 @@ from intent_bus import IntentContext
 
 # 「連續/重複播放」意圖詞
 _LOOP_WORDS = "連續|一直|循環|輪播|不斷|重複|隨機"
-# 「我自己的歌單」指涉詞（必須是『我的』，不接受別人或泛指）
-_MINE_WORDS = "我的歌單|我點過|我的歌|我的愛歌|我常聽|個人歌單|我所有的歌|我之前點"
+# 強訊號：明確指「我的歌單／我點過的歌」這類片語 → 本身就是要播個人歌單，不需連續詞。
+# 不靠『播』動詞比對，因此 STT 把『播』聽成同音『波』也不受影響（2026-06-29 狗與露實測）。
+_STRONG_PLAYLIST = ("我的歌單|我點過的歌|我點過的歌單|我之前點過的歌|我所有點過的歌|"
+                    "我愛聽的歌單|個人歌單")
+# 弱訊號：「我的歌」太籠統（可能只是一首），要搭連續/隨機詞才算連續播個人歌單。
+_WEAK_MINE = "我的歌|我的愛歌|我常聽|我所有的歌|我點過|我之前點"
 # 結束個人歌單：停止詞 + 歌單指涉詞（指名歌單才攔，純「停」留給一般 control_stop）
 _STOP_WORDS = "停|關|別|不要|取消|結束|不用|換回|恢復|回到|改回"
 _PLAYLIST_WORDS = "個人歌單|我的歌單|我的歌|連續播|輪播"
@@ -45,9 +49,17 @@ class PersonalShuffleAgent(DeclarativeIntentAgent):
                 ],
                 reason_template="personal_shuffle_stop",
             ),
+            # 強訊號：明確片語「我的歌單／我點過的歌」本身即觸發，不需連續詞。0.96 > 一般
+            # MusicAgentV2 的 weak_play(0.95)，否則「播我的歌單」會被當成搜尋『我的歌單』。
+            IntentSchema(
+                "personal_shuffle_start", 0.96,
+                patterns=[f"(?=.*(?:{_STRONG_PLAYLIST}))"],
+                reason_template="personal_shuffle_start",
+            ),
+            # 弱訊號：「我的歌」需搭連續/隨機詞才算連續播個人歌單。
             IntentSchema(
                 "personal_shuffle_start", 0.90,
-                patterns=[f"(?=.*(?:{_LOOP_WORDS}))(?=.*(?:{_MINE_WORDS}))"],
+                patterns=[f"(?=.*(?:{_LOOP_WORDS}))(?=.*(?:{_WEAK_MINE}))"],
                 reason_template="personal_shuffle_start",
             ),
         ]

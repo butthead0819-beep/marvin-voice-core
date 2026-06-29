@@ -46,6 +46,22 @@ def test_continuous_my_playlist_bids():
 
 # ── negative space：不該誤觸發 ─────────────────────────────────────────────
 
+def test_natural_play_my_playlist_phrases_bid():
+    """『播我的歌單 / 播我點過的歌』(不含連續/隨機詞) 也要命中，且涵蓋 STT 把『播』
+    聽成同音『波』。2026-06-29 狗與露實測這些 query 全 no_agent_matched → winner=none。"""
+    a = _agent()
+    for q in ["播我的歌單", "波我的歌單", "波我點過的歌", "我的歌單", "我點過的歌",
+              "馬文播我點過的歌", "波我馬文波我的歌單"]:
+        bid = a.bid(_ctx(q))
+        assert bid.confidence >= 0.9, f"應命中: {q} (得 {bid.confidence})"
+        assert bid.reason.startswith("personal_shuffle_start")
+
+
+def test_strong_playlist_beats_generic_music_play():
+    # 指名歌單時要贏過 MusicAgentV2 的 weak_play(0.95)，否則被當成搜尋『我的歌單』
+    assert _agent().bid(_ctx("播我的歌單")).confidence > 0.95
+
+
 def test_unrelated_dense_zero():
     a = _agent()
     bid = a.bid(_ctx("今天天氣真好"))
