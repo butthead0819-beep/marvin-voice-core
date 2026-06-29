@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -82,6 +83,33 @@ async def test_start_enqueues_one_personal_song_at_tail():
 # ── 一次只墊一首（不塞爆佇列）─────────────────────────────────────────────
 
 @pytest.mark.asyncio
+async def test_concurrent_topups_never_double_queue():
+    """併發 bug 重現：stream loop 的 <2 分支會 fire-and-forget 噴多個 topup task，
+    pending 檢查與 append 之間隔著慢 resolve → 兩個 topup 同時通過檢查各塞一首，
+    佇列就有兩首個人歌（搶播根因）。單飛守衛要保證任何時刻只塞一首。"""
+    cog = _make_cog([(t, {"阿明": 1}) for t in ["A", "B", "C", "D"]])
+    cog._personal_shuffle = {"user": "阿明", "remaining": list(cog.bot.music_memory.all_songs().values())}
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_resolve(q):
+        started.set()
+        await release.wait()  # 撐開「檢查→append」之間的併發窗口
+        t = q.rsplit("/", 1)[-1]
+        return {"title": t, "url": f"http://stream/{t}", "webpage_url": q}
+    cog._resolve_yt_query = slow_resolve
+
+    t1 = asyncio.create_task(cog._personal_shuffle_topup())
+    t2 = asyncio.create_task(cog._personal_shuffle_topup())
+    await started.wait()
+    release.set()
+    await asyncio.gather(t1, t2)
+
+    assert len(_personal_items(cog)) == 1, "併發 topup 不可雙塞，否則兩首搶播"
+
+
+@pytest.mark.asyncio
 async def test_topup_is_noop_when_personal_song_already_pending():
     cog = _make_cog([("A歌", {"阿明": 1}), ("B歌", {"阿明": 1}), ("C歌", {"阿明": 1})])
     await cog.start_personal_shuffle("阿明")  # 已墊 1 首
@@ -128,6 +156,18 @@ async def test_stop_personal_shuffle_clears_session():
     assert cog.stop_personal_shuffle() is True
     assert cog._personal_shuffle is None
     assert cog.stop_personal_shuffle() is False  # 第二次：本來就沒在跑
+
+
+@pytest.mark.asyncio
+async def test_stop_personal_shuffle_purges_pending_personal_songs_from_queue():
+    """結束個人歌單時，把佇列裡還沒播的個人墊位清掉 → 下一首立刻回一般推薦/主題。"""
+    cog = _make_cog([("A歌", {"阿明": 1}), ("B歌", {"阿明": 1})])
+    cog.stream_queue.insert(0, {"title": "別人點的", "url": "http://x/o", "requested_by": "小華"})
+    await cog.start_personal_shuffle("阿明")  # 佇列尾多一首 personal
+    assert any(it.get("_lane") == "personal" for it in cog.stream_queue)
+    cog.stop_personal_shuffle()
+    assert not any(it.get("_lane") == "personal" for it in cog.stream_queue), "個人墊位應被清掉"
+    assert any(it.get("requested_by") == "小華" for it in cog.stream_queue), "別人點的歌保留"
 
 
 @pytest.mark.asyncio

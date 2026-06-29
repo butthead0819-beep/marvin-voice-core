@@ -16,6 +16,12 @@ from intent_bus import IntentContext
 _LOOP_WORDS = "連續|一直|循環|輪播|不斷|重複|隨機"
 # 「我自己的歌單」指涉詞（必須是『我的』，不接受別人或泛指）
 _MINE_WORDS = "我的歌單|我點過|我的歌|我的愛歌|我常聽|個人歌單|我所有的歌|我之前點"
+# 結束個人歌單：停止詞 + 歌單指涉詞（指名歌單才攔，純「停」留給一般 control_stop）
+_STOP_WORDS = "停|關|別|不要|取消|結束|不用|換回|恢復|回到|改回"
+_PLAYLIST_WORDS = "個人歌單|我的歌單|我的歌|連續播|輪播"
+# 「回到一般/自動播放」說法（不含歌單詞也算）
+_RESUME_WORDS = "換回|恢復|回到|改回"
+_NORMAL_WORDS = "一般|正常|自動|平常|推薦|原本"
 
 
 class PersonalShuffleAgent(DeclarativeIntentAgent):
@@ -28,6 +34,17 @@ class PersonalShuffleAgent(DeclarativeIntentAgent):
 
     def declare_intents(self) -> list[IntentSchema]:
         return [
+            # stop 先宣告（first-match-wins）。0.96 > 一般 control_stop(0.95)，這樣「停掉
+            # 我的歌單」會結束個人模式而非停掉所有音樂；純「停」不含歌單詞 → 不命中、留給
+            # 一般 control_stop。
+            IntentSchema(
+                "personal_shuffle_stop", 0.96,
+                patterns=[
+                    f"(?=.*(?:{_STOP_WORDS}))(?=.*(?:{_PLAYLIST_WORDS}))",
+                    f"(?=.*(?:{_RESUME_WORDS}))(?=.*(?:{_NORMAL_WORDS}))",
+                ],
+                reason_template="personal_shuffle_stop",
+            ),
             IntentSchema(
                 "personal_shuffle_start", 0.90,
                 patterns=[f"(?=.*(?:{_LOOP_WORDS}))(?=.*(?:{_MINE_WORDS}))"],
@@ -35,12 +52,30 @@ class PersonalShuffleAgent(DeclarativeIntentAgent):
             ),
         ]
 
+    def _cog(self):
+        bot = getattr(self.ctrl, "bot", None)
+        return bot.cogs.get("MusicCog") if bot is not None else None
+
     def make_handler(self, schema: IntentSchema, slots: dict, ctx: IntentContext):
+        if schema.name == "personal_shuffle_stop":
+            async def _stop() -> None:
+                cog = self._cog()
+                if cog is None:
+                    return
+                if cog.stop_personal_shuffle():
+                    vc = cog._vc()
+                    ch = getattr(vc, "active_text_channel", None) if vc is not None else None
+                    if ch is not None:
+                        try:
+                            await ch.send("🎲 已結束個人歌單，回到一般推薦／主題歌單。")
+                        except Exception:
+                            pass
+            return _stop
+
         speaker = ctx.speaker
 
         async def _start() -> None:
-            bot = getattr(self.ctrl, "bot", None)
-            cog = bot.cogs.get("MusicCog") if bot is not None else None
+            cog = self._cog()
             if cog is None:
                 return
             await cog.start_personal_shuffle(speaker)

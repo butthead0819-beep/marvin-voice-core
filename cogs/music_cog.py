@@ -120,6 +120,7 @@ class MusicCog(commands.Cog):
         self._last_user_song_seed: Optional[str] = None
         self.stream_queue: list = []        # list of {title, uploader, url, …}
         self._personal_shuffle: Optional[dict] = None  # 個人歌單連續隨機播 session
+        self._personal_topup_inflight: bool = False     # 單飛守衛：同時只允許一個 topup
         self.stream_task = None
         self._current_stream_info = None
         self.stream_history: list = []      # 已播過的歌曲（用於上一首）
@@ -1037,6 +1038,7 @@ class MusicCog(commands.Cog):
         import random
         random.shuffle(pool)
         self._personal_shuffle = {"user": username, "remaining": pool}
+        logger.warning(f"🎲 [PersonalShuffle] start user={username} pool={len(pool)} stream_mode={self.stream_mode}")
         await self._personal_shuffle_topup()
         if not self.stream_mode:
             self.stream_mode = True
@@ -1055,9 +1057,14 @@ class MusicCog(commands.Cog):
         return (True, msg)
 
     def stop_personal_shuffle(self) -> bool:
-        """關掉個人歌單連續播；回傳先前是否在進行中。"""
+        """關掉個人歌單連續播，並清掉佇列裡還沒播的個人墊位 → 下一首立刻回一般推薦／
+        主題歌單（補位邏輯看 _personal_shuffle is None 即走 _auto_recommend）。
+
+        回傳先前是否在進行中。當前正在播的那首（已 pop 出佇列）會自然播完。
+        """
         was = self._personal_shuffle is not None
         self._personal_shuffle = None
+        self.stream_queue[:] = [it for it in self.stream_queue if it.get("_lane") != "personal"]
         return was
 
     def _personal_shuffle_pending(self) -> bool:
@@ -1073,41 +1080,51 @@ class MusicCog(commands.Cog):
         sess = self._personal_shuffle
         if not sess:
             return False
+        # 單飛守衛：stream loop 的 <2 分支會 fire-and-forget 噴多個 topup task；pending
+        # 檢查與 append 之間隔著慢 resolve（log 滿滿 >5s timeout），併發的兩個 topup 會同時
+        # 通過檢查各塞一首 → 兩首搶播。inflight 旗標在第一個 await 前同步設好，後到的直接退。
+        if self._personal_topup_inflight:
+            return True
         if self._personal_shuffle_pending():
             return True
+        self._personal_topup_inflight = True
         user = sess["user"]
-        while sess["remaining"]:
-            song = sess["remaining"].pop(0)
-            query = (song.get("webpage_url") or song.get("url")
-                     or f"{song.get('uploader', '')} {song.get('title', '')}".strip())
-            if not query:
-                continue
-            try:
-                info = await self._resolve_yt_query(query)
-            except Exception as e:
-                logger.debug(f"⚠️ [PersonalShuffle] resolve 失敗 '{query}': {e}")
-                continue
-            if not info:
-                continue
-            if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
-                                          username=user, check_history=False):
-                continue
-            info['requested_by'] = user
-            info['_lane'] = 'personal'
-            self.stream_queue.append(info)
-            logger.info(f"🎲 [PersonalShuffle] 墊一首（{user}）: {info['title']}（剩 {len(sess['remaining'])} 首）")
-            return True
-        # 池空 → 收尾
-        self._personal_shuffle = None
-        vc = self._vc()
-        ch = vc.active_text_channel if vc is not None else None
-        if ch is not None:
-            try:
-                await ch.send(f"🎲 {user} 的歌單播完了，回到一般推薦。")
-            except Exception:
-                pass
-        logger.info(f"🎲 [PersonalShuffle] {user} 歌單播畢，session 結束。")
-        return False
+        try:
+            while sess["remaining"]:
+                song = sess["remaining"].pop(0)
+                query = (song.get("webpage_url") or song.get("url")
+                         or f"{song.get('uploader', '')} {song.get('title', '')}".strip())
+                if not query:
+                    continue
+                try:
+                    info = await self._resolve_yt_query(query)
+                except Exception as e:
+                    logger.debug(f"⚠️ [PersonalShuffle] resolve 失敗 '{query}': {e}")
+                    continue
+                if not info:
+                    continue
+                if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
+                                              username=user, check_history=False):
+                    continue
+                info['requested_by'] = user
+                info['_lane'] = 'personal'
+                self.stream_queue.append(info)
+                # WARNING 級：music_cog 的 INFO 目前被壓掉，個人歌單要看得到才好診斷搶播
+                logger.warning(f"🎲 [PersonalShuffle] 墊一首（{user}）: {info['title']}（剩 {len(sess['remaining'])} 首）")
+                return True
+            # 池空 → 收尾
+            self._personal_shuffle = None
+            vc = self._vc()
+            ch = vc.active_text_channel if vc is not None else None
+            if ch is not None:
+                try:
+                    await ch.send(f"🎲 {user} 的歌單播完了，回到一般推薦。")
+                except Exception:
+                    pass
+            logger.warning(f"🎲 [PersonalShuffle] {user} 歌單播畢，session 結束。")
+            return False
+        finally:
+            self._personal_topup_inflight = False
 
     # ── 🎵 Stream loop & playback ────────────────────────────────────────────
 
@@ -1211,8 +1228,10 @@ class MusicCog(commands.Cog):
 
                 if len(self.stream_queue) < 2:
                     if self._personal_shuffle is not None:
-                        # 🎲 個人歌單模式：補位走他的歌單（內含一次一首守門），不混一般推薦
-                        asyncio.create_task(self._personal_shuffle_topup())
+                        # 🎲 個人歌單模式：補位走他的歌單。已有 in-flight topup 或已墊一首就
+                        # 不再 spawn（skip 連按時 loop 快速空轉，否則噴一堆 task 互搶）。
+                        if not self._personal_topup_inflight and not self._personal_shuffle_pending():
+                            asyncio.create_task(self._personal_shuffle_topup())
                     else:
                         online = vc.get_online_members() if vc is not None else []
                         seed = self._autorecommend_seed(requested_by, online)

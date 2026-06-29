@@ -65,6 +65,42 @@ def test_continuous_word_without_mine_does_not_match():
     assert _agent().bid(_ctx("連續播放音樂")).confidence == 0.0
 
 
+# ── stop：結束個人歌單、回到一般/主題自動播放 ─────────────────────────────
+
+def test_stop_phrases_bid():
+    a = _agent()
+    for q in ["停掉我的歌單", "結束個人歌單", "不要再放我的歌單", "換回一般播放",
+              "恢復自動推薦", "回到正常播放"]:
+        bid = a.bid(_ctx(q))
+        assert bid.confidence >= 0.95, f"應命中 stop: {q}"
+        assert bid.reason == "personal_shuffle_stop"
+
+
+def test_stop_beats_generic_music_stop():
+    # 指名「歌單」時要贏過 MusicAgentV2.control_stop(0.95)，否則會停掉所有音樂
+    assert _agent().bid(_ctx("停掉我的歌單")).confidence > 0.95
+
+
+def test_generic_stop_alone_not_matched():
+    # 純「停 / 停掉音樂」仍交給一般 control_stop（停掉所有音樂），個人 agent 不攔
+    a = _agent()
+    assert a.bid(_ctx("停")).confidence == 0.0
+    assert a.bid(_ctx("停掉音樂")).confidence == 0.0
+
+
+@pytest.mark.asyncio
+async def test_stop_handler_calls_cog_stop():
+    ctrl = MagicMock()
+    cog = MagicMock()
+    cog.stop_personal_shuffle.return_value = True
+    cog._vc.return_value = None  # 無頻道 → 跳過 ack
+    ctrl.bot.cogs.get.return_value = cog
+    a = PersonalShuffleAgent(ctrl)
+    bid = a.bid(_ctx("換回一般播放"))
+    await bid.handler()
+    cog.stop_personal_shuffle.assert_called_once()
+
+
 # ── handler 整合 ───────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
