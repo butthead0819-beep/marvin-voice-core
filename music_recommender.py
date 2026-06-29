@@ -188,6 +188,129 @@ def build_recommendation_pool(
     return result
 
 
+def build_member_pools(
+    *,
+    members: list[str],
+    songs: dict,
+    exclude_titles: list[str],
+    now: float,
+    vibe_filter: dict | None = None,
+) -> dict[str, list[Candidate]]:
+    """對每個在場成員各自產候選池 dict[member -> 依分數排序的 [Candidate]]。
+
+    一首歌對成員 M 是候選 iff M 在該歌 requesters。沿用 build_recommendation_pool 的
+    三條 lane 計分，但每個 Candidate.target_member 一律填 M（擁有者明確）：
+      - group_resonance（M 也在 ≥2 在場共鳴名單）→ direct
+      - long_tail（M 點過且久沒播）→ direct
+      - spotlight（M 的常點 top-3）→ cover
+
+    純函式、不做 I/O。給 assign_unique_owners 做跨使用者去重的上游。
+    """
+    member_set = set(members)
+    exclude_norm = {normalize_title(t) for t in exclude_titles}
+    pools: dict[str, dict[str, Candidate]] = {m: {} for m in members}
+
+    def _offer(member: str, cand: Candidate) -> None:
+        nt = normalize_title(cand.anchor_title)
+        if nt in exclude_norm:
+            return
+        best = pools[member]
+        cur = best.get(nt)
+        if cur is None or cand.score > cur.score:
+            best[nt] = cand
+
+    # 每位成員的常點 top-3（spotlight lane，mode=cover）— 對齊原 spotlight 行為，避免
+    # 把每首點過的歌都灌成 cover 候選。
+    top3: dict[str, set[str]] = {}
+    for m in member_set:
+        m_songs = sorted(
+            (s for s in songs.values() if m in s.get("requesters", {})),
+            key=lambda s: s["requesters"][m], reverse=True,
+        )
+        top3[m] = {s.get("title", "") for s in m_songs[:3]}
+
+    for song in songs.values():
+        title = song.get("title", "")
+        if not title:
+            continue
+        requesters = song.get("requesters", {})
+        artist = song.get("uploader", "")
+        resonant = member_set & set(song.get("connections", []))
+        age_days = (now - _last_play_ts(song)) / 86400.0
+
+        for m in member_set & set(requesters):
+            # Lane 1: group_resonance（M 也在共鳴名單且 ≥2 在場共鳴）
+            if len(resonant) >= GROUP_RESONANCE_MIN and m in resonant:
+                base = 100.0 + 10.0 * len(resonant)
+                _offer(m, Candidate(title, artist, "group_resonance", "direct", m,
+                                    base + _vibe_boost(song, "group_resonance", vibe_filter)))
+            # Lane 3: long_tail（M 點過 + 久沒播）
+            if age_days > LONG_TAIL_DAYS:
+                base = 40.0 + min(age_days, 30.0)
+                _offer(m, Candidate(title, artist, "long_tail", "direct", m,
+                                    base + _vibe_boost(song, "long_tail", vibe_filter)))
+            # Lane 2: spotlight（M 的常點 top-3）
+            if title in top3.get(m, set()):
+                base = 60.0 + float(requesters[m])
+                _offer(m, Candidate(title, artist, "spotlight", "cover", m,
+                                    base + _vibe_boost(song, "spotlight", vibe_filter)))
+
+    result: dict[str, list[Candidate]] = {}
+    for m, best in pools.items():
+        cands = sorted(best.values(), key=lambda c: c.score, reverse=True)
+        if vibe_filter and "min_score" in vibe_filter:
+            cands = [c for c in cands if c.score >= vibe_filter["min_score"]]
+        result[m] = cands
+    return result
+
+
+def assign_unique_owners(
+    member_pools: dict[str, list[Candidate]],
+    *,
+    rotation_order: list[str] | None = None,
+) -> dict[str, list[Candidate]]:
+    """跨使用者去重：每首歌（normalize 後）只歸一個成員，回傳去重後的 per-member 池。
+
+    一首歌被多人列為候選（＝大家都愛的高分候選）時，靠 round-robin 平手代表分配，盡量
+    讓每個在場者都被代表到，不讓單人通吃；只一人候選的歌維持歸該人。各成員池內保留原排序。
+
+    contested 計數只計「被搶過的歌」，所以是 contested 之間的輪流，與某人有多少獨享歌無關。
+    平手序：contested 已分配數少者優先 → rotation_order 在前者 → 分數高者。
+    """
+    order = rotation_order or list(member_pools.keys())
+    order_idx = {m: i for i, m in enumerate(order)}
+
+    offers: dict[str, list[tuple[str, Candidate]]] = {}
+    for m, cands in member_pools.items():
+        for c in cands:
+            offers.setdefault(normalize_title(c.anchor_title), []).append((m, c))
+
+    contested_count = {m: 0 for m in member_pools}
+    winner: dict[str, str] = {}
+
+    def _title_key(nt: str) -> tuple[float, str]:
+        return (-max(o[1].score for o in offers[nt]), nt)
+
+    for nt in sorted(offers, key=_title_key):
+        contenders = offers[nt]
+        if len(contenders) == 1:
+            winner[nt] = contenders[0][0]
+            continue
+        m = min(
+            contenders,
+            key=lambda oc: (contested_count[oc[0]], order_idx.get(oc[0], 1 << 30), -oc[1].score),
+        )[0]
+        winner[nt] = m
+        contested_count[m] += 1
+
+    result: dict[str, list[Candidate]] = {m: [] for m in member_pools}
+    for m, cands in member_pools.items():
+        for c in cands:
+            if winner.get(normalize_title(c.anchor_title)) == m:
+                result[m].append(c)
+    return result
+
+
 def is_low_quality_version(cand: "Candidate") -> bool:
     """cover / 現場版 = 品質與口味雜訊：自動推薦 cover 佔 11% vs 真人只 3%、live 也 2 倍，
     humans 明顯避開。spotlight lane 的 mode='cover' 一律算；其餘看標題。"""

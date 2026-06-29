@@ -41,7 +41,7 @@ from intent_agents.recommendation import (
     time_of_day_bucket,
 )
 from memory_guard import is_memory_critical
-from music_recommender import build_recommendation_pool, demote_low_quality_versions, is_already_recommended, pick_candidates, ring_titles_for
+from music_recommender import assign_unique_owners, build_member_pools, demote_low_quality_versions, is_already_recommended, pick_candidates, ring_titles_for
 from music_memory import extract_video_id
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
@@ -844,14 +844,16 @@ class MusicCog(commands.Cog):
             except Exception as e:
                 logger.warning(f"⚠️ [AutoRecommend] vibe sensor 失敗，fallback to no vibe filter: {e}")
 
-        pool = build_recommendation_pool(
+        # per-member 候選 → 跨使用者唯一歸屬：同一首歌只歸一人（round-robin 平手代表），
+        # 避免團體歌被分別指定給不同使用者重播。當輪只取 spotlight 自己的去重後候選。
+        _member_pools = build_member_pools(
             members=members,
             songs=mm.all_songs(),
             exclude_titles=exclude_titles,
             now=time.time(),
-            spotlight_member=spotlight,
             vibe_filter=vibe_filter,
         )
+        pool = assign_unique_owners(_member_pools, rotation_order=members).get(spotlight, [])
 
         _skipped_vids = mm.get_skipped_video_ids()
         _taste_fp = self._load_taste_fingerprint()
@@ -872,11 +874,12 @@ class MusicCog(commands.Cog):
             # 迴圈又擋掉 → enqueue=0 → T3 無 fallback → 停播（2026-06-24 回報）。
             _t3_played = mm.get_recently_played_titles(self._T3_PLAYED_EXCLUDE_TTL_S)
             _t3_exclude = list(dict.fromkeys(skipped + _t3_played))
-            relaxed_pool = build_recommendation_pool(
+            _relaxed_pools = build_member_pools(
                 members=members, songs=mm.all_songs(),
                 exclude_titles=_t3_exclude,
-                now=time.time(), spotlight_member=spotlight, vibe_filter=vibe_filter,
+                now=time.time(), vibe_filter=vibe_filter,
             )
+            relaxed_pool = assign_unique_owners(_relaxed_pools, rotation_order=members).get(spotlight, [])
             cands = pick_candidates(relaxed_pool, k=_k_buf, top_n=max(9, _k_buf))
             ring_exclude = _t3_exclude
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._T3_PLAYED_EXCLUDE_TTL_S)
