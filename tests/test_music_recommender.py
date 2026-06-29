@@ -11,7 +11,6 @@ import random
 
 from music_recommender import (
     Candidate,
-    build_recommendation_pool,
     is_already_recommended,
     normalize_title,
     pick_candidate,
@@ -74,80 +73,6 @@ def test_normalize_title_case_insensitive():
     assert normalize_title("Yesterday") == normalize_title("yesterday")
 
 
-# ── group_resonance lane ───────────────────────────────────────────────────────
-
-def test_group_resonance_ranks_shared_song_first():
-    songs = {
-        "s1": _song("孤芳自賞", requesters={"Alice": 1}),
-        "s2": _song("大家的歌", requesters={"Alice": 1, "Bob": 1}, connections=["Alice", "Bob"]),
-    }
-    pool = build_recommendation_pool(
-        members=["Alice", "Bob"], songs=songs, exclude_titles=[], now=NOW,
-    )
-    assert pool, "應有候選"
-    top = pool[0]
-    assert top.lane == "group_resonance"
-    assert normalize_title(top.anchor_title) == normalize_title("大家的歌")
-    assert top.mode == "direct"
-
-
-def test_group_resonance_requires_two_present_members():
-    # connections 只含一位在場者 → 不算群體共鳴
-    songs = {"s": _song("獨愛", requesters={"Alice": 1}, connections=["Alice"])}
-    pool = build_recommendation_pool(
-        members=["Alice", "Bob"], songs=songs, exclude_titles=[], now=NOW,
-    )
-    assert all(c.lane != "group_resonance" for c in pool)
-
-
-# ── spotlight lane ─────────────────────────────────────────────────────────────
-
-def test_spotlight_picks_target_member_top_song_as_cover():
-    songs = {
-        "s1": _song("阿明最愛", requesters={"阿明": 9}),
-        "s2": _song("阿明普通", requesters={"阿明": 2}),
-        "s3": _song("別人的歌", requesters={"Other": 5}),
-    }
-    pool = build_recommendation_pool(
-        members=["阿明", "Other"], songs=songs, exclude_titles=[], now=NOW,
-        spotlight_member="阿明",
-    )
-    spot = [c for c in pool if c.lane == "spotlight"]
-    assert spot, "應有 spotlight 候選"
-    assert spot[0].target_member == "阿明"
-    assert normalize_title(spot[0].anchor_title) == normalize_title("阿明最愛")
-    assert spot[0].mode == "cover"
-
-
-# ── long_tail lane ─────────────────────────────────────────────────────────────
-
-def test_long_tail_includes_old_songs_as_direct():
-    songs = {
-        "old": _song("塵封老歌", requesters={"Alice": 1}, last_play_age_days=30),
-        "new": _song("昨天剛播", requesters={"Alice": 1}, last_play_age_days=0.5),
-    }
-    pool = build_recommendation_pool(
-        members=["Alice"], songs=songs, exclude_titles=[], now=NOW,
-    )
-    lt = [c for c in pool if c.lane == "long_tail"]
-    titles = {normalize_title(c.anchor_title) for c in lt}
-    assert normalize_title("塵封老歌") in titles
-    assert normalize_title("昨天剛播") not in titles  # 太新，不算長尾
-    assert all(c.mode == "direct" for c in lt)
-
-
-# ── exclude（正規化比對）────────────────────────────────────────────────────────
-
-def test_exclude_removes_by_normalized_title():
-    songs = {"s": _song("大家的歌", requesters={"Alice": 1, "Bob": 1}, connections=["Alice", "Bob"])}
-    pool = build_recommendation_pool(
-        members=["Alice", "Bob"], songs=songs,
-        exclude_titles=["大家的歌 (cover)"],  # 變體字串也要擋掉
-        now=NOW,
-    )
-    assert pool == []
-
-
 # ── is_already_recommended（autopilot 在 yt-dlp 解析後的二次過濾）─────────────────
 #
 # Bug 2026-05-25: 「以為你都知道」一天被自動推 6 次。pool exclude OK，但
@@ -173,16 +98,6 @@ def test_is_already_recommended_empty_inputs():
     assert is_already_recommended("", ["晴天"]) is False
     assert is_already_recommended("晴天", []) is False
     assert is_already_recommended("", []) is False
-
-
-# ── 空池 ────────────────────────────────────────────────────────────────────────
-
-def test_empty_when_no_member_history():
-    songs = {"s": _song("陌生人的歌", requesters={"Stranger": 3})}
-    pool = build_recommendation_pool(
-        members=["Alice"], songs=songs, exclude_titles=[], now=NOW,
-    )
-    assert pool == []
 
 
 # ── 版本品質降位（cover/live 沉隊尾）──────────────────────────────────────────
@@ -245,20 +160,20 @@ def test_pick_candidate_varies_across_seeds():
 # 團體歌庫 → cands 空 → 停擺。fallback 放寬到只排除 skipped，非 skipped 老歌重新發現。
 
 def test_exhaustion_fallback_relaxed_exclude_recovers_non_skipped():
+    from music_recommender import build_member_pools
     songs = {
         "fav":  _song("最愛的歌", requesters={"a": 5}, last_play_age_days=10),
         "skip": _song("被skip的歌", requesters={"a": 3}, last_play_age_days=10),
     }
-    members = ["a"]
     # 嚴格：兩首都排除（最愛最近播過、skip 被 skip）→ 候選空 → 會停擺
-    strict_pool = build_recommendation_pool(
-        members=members, songs=songs,
-        exclude_titles=["最愛的歌", "被skip的歌"], now=NOW, spotlight_member="a")
+    strict_pool = build_member_pools(
+        members=["a"], songs=songs,
+        exclude_titles=["最愛的歌", "被skip的歌"], now=NOW)["a"]
     assert pick_candidates(strict_pool, k=3, top_n=9) == []
     # 放寬：只排除 skipped → 最愛重新發現，被 skip 仍排除
-    relaxed_pool = build_recommendation_pool(
-        members=members, songs=songs,
-        exclude_titles=["被skip的歌"], now=NOW, spotlight_member="a")
+    relaxed_pool = build_member_pools(
+        members=["a"], songs=songs,
+        exclude_titles=["被skip的歌"], now=NOW)["a"]
     titles = [c.anchor_title for c in relaxed_pool]
     assert "最愛的歌" in titles
     assert "被skip的歌" not in titles

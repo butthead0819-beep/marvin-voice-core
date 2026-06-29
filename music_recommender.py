@@ -43,7 +43,7 @@ def is_already_recommended(title: str, recent_titles: list[str]) -> bool:
 
     pool 內部 exclude 只擋住 anchor；spotlight lane 的 LLM coverify 會把 anchor 改寫
     成另一首歌，_resolve_yt_query 拿回的 raw title 可能仍命中 ring（同名熱門原版）。
-    本 helper 用同 build_recommendation_pool 的 normalize 規則比對。
+    本 helper 用同 normalize_title 的規則比對。
     """
     if not title or not recent_titles:
         return False
@@ -113,81 +113,6 @@ def _vibe_boost(song: dict, lane: str, vibe_filter: dict | None) -> float:
     return boost
 
 
-def build_recommendation_pool(
-    *,
-    members: list[str],
-    songs: dict,
-    exclude_titles: list[str],
-    now: float,
-    spotlight_member: str | None = None,
-    vibe_filter: dict | None = None,
-) -> list[Candidate]:
-    """產生依分數排序（高→低）的候選清單。純函式，不做 I/O。
-
-    members: 當前在場成員 display_name。
-    songs:   music_memory 的 _data["songs"] 結構。
-    exclude: 不可推薦的標題（會正規化後比對）。
-    spotlight_member: 本次輪到聚焦的成員（None → 不產 spotlight 候選）。
-    vibe_filter (Phase 1 M3): 可選 dict {mood, topic, min_score}。
-      - mood 命中歌曲 feelings keyword → +VIBE_BOOST_PER_FEELING_HIT / hit
-      - mood=分歧 → group_resonance lane +VIBE_BOOST_GROUP_RESONANCE_ON_SPLIT
-      - min_score：score 低於此值的 candidate 過濾掉
-      - vibe_filter=None → 完全 backward-compatible，行為不變
-    """
-    member_set = set(members)
-    exclude_norm = {normalize_title(t) for t in exclude_titles}
-    best: dict[str, Candidate] = {}  # norm_title → 最高分候選（跨 lane dedup）
-
-    def _offer(cand: Candidate) -> None:
-        nt = normalize_title(cand.anchor_title)
-        if nt in exclude_norm:
-            return
-        cur = best.get(nt)
-        if cur is None or cand.score > cur.score:
-            best[nt] = cand
-
-    for song in songs.values():
-        title = song.get("title", "")
-        if not title:
-            continue
-        requesters = song.get("requesters", {})
-        artist = song.get("uploader", "")
-
-        # Lane 1: group_resonance — ≥2 在場者共鳴
-        resonant = member_set & set(song.get("connections", []))
-        if len(resonant) >= GROUP_RESONANCE_MIN:
-            base = 100.0 + 10.0 * len(resonant)
-            score = base + _vibe_boost(song, "group_resonance", vibe_filter)
-            _offer(Candidate(title, artist, "group_resonance", "direct", None, score))
-
-        # Lane 3: long_tail — 在場者點過 + 久沒播
-        if member_set & set(requesters):
-            age_days = (now - _last_play_ts(song)) / 86400.0
-            if age_days > LONG_TAIL_DAYS:
-                base = 40.0 + min(age_days, 30.0)
-                score = base + _vibe_boost(song, "long_tail", vibe_filter)
-                _offer(Candidate(title, artist, "long_tail", "direct", None, score))
-
-    # Lane 2: spotlight — 聚焦成員的常點歌（mode=cover）
-    if spotlight_member:
-        spot_songs = sorted(
-            (s for s in songs.values() if spotlight_member in s.get("requesters", {})),
-            key=lambda s: s["requesters"][spotlight_member],
-            reverse=True,
-        )
-        for s in spot_songs[:3]:
-            base = 60.0 + float(s["requesters"][spotlight_member])
-            score = base + _vibe_boost(s, "spotlight", vibe_filter)
-            _offer(Candidate(s.get("title", ""), s.get("uploader", ""), "spotlight",
-                             "cover", spotlight_member, score))
-
-    # Sort + min_score filter (vibe_filter 提供時)
-    result = sorted(best.values(), key=lambda c: c.score, reverse=True)
-    if vibe_filter and "min_score" in vibe_filter:
-        result = [c for c in result if c.score >= vibe_filter["min_score"]]
-    return result
-
-
 def build_member_pools(
     *,
     members: list[str],
@@ -198,8 +123,8 @@ def build_member_pools(
 ) -> dict[str, list[Candidate]]:
     """對每個在場成員各自產候選池 dict[member -> 依分數排序的 [Candidate]]。
 
-    一首歌對成員 M 是候選 iff M 在該歌 requesters。沿用 build_recommendation_pool 的
-    三條 lane 計分，但每個 Candidate.target_member 一律填 M（擁有者明確）：
+    一首歌對成員 M 是候選 iff M 在該歌 requesters。沿用三條 lane 計分，
+    但每個 Candidate.target_member 一律填 M（擁有者明確）：
       - group_resonance（M 也在 ≥2 在場共鳴名單）→ direct
       - long_tail（M 點過且久沒播）→ direct
       - spotlight（M 的常點 top-3）→ cover

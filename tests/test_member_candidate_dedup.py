@@ -77,6 +77,69 @@ def test_member_pool_empty_for_member_with_no_history():
     assert pools["路人"] == []
 
 
+# ── lane 計分（從已刪 build_recommendation_pool 移植，改測 per-member 池）─────────
+
+def test_member_pool_group_resonance_ranks_shared_song_first():
+    """≥2 在場者共鳴的歌排該成員池最前（direct，分數高於其 spotlight cover）。"""
+    songs = {
+        "s1": _song("孤芳自賞", requesters={"Alice": 1}),
+        "s2": _song("大家的歌", requesters={"Alice": 1, "Bob": 1}, connections=["Alice", "Bob"]),
+    }
+    pools = build_member_pools(
+        members=["Alice", "Bob"], songs=songs, exclude_titles=[], now=NOW,
+    )
+    top = pools["Alice"][0]
+    assert top.lane == "group_resonance"
+    assert normalize_title(top.anchor_title) == normalize_title("大家的歌")
+    assert top.mode == "direct"
+
+
+def test_member_pool_group_resonance_requires_two_present_members():
+    """connections 只含一位在場者 → 不算群體共鳴（不出 group_resonance lane）。"""
+    songs = {"s": _song("獨愛", requesters={"Alice": 1}, connections=["Alice"])}
+    pools = build_member_pools(
+        members=["Alice", "Bob"], songs=songs, exclude_titles=[], now=NOW,
+    )
+    assert all(c.lane != "group_resonance" for c in pools["Alice"])
+
+
+def test_member_pool_spotlight_top_song_is_cover():
+    """成員的常點 top-3 走 spotlight lane（mode=cover）。"""
+    songs = {
+        "s1": _song("阿明最愛", requesters={"阿明": 9}),
+        "s2": _song("阿明普通", requesters={"阿明": 2}),
+    }
+    pools = build_member_pools(
+        members=["阿明"], songs=songs, exclude_titles=[], now=NOW,
+    )
+    spot = [c for c in pools["阿明"] if c.lane == "spotlight"]
+    assert spot, "應有 spotlight 候選"
+    assert spot[0].mode == "cover"
+    assert spot[0].target_member == "阿明"
+
+
+def test_member_pool_long_tail_includes_old_excludes_new():
+    """久沒播的歌進 long_tail（direct）；太新的不算長尾。"""
+    songs = {
+        "old": _song("塵封老歌", requesters={"Alice": 1}, last_play_age_days=30),
+        "new": _song("昨天剛播", requesters={"Alice": 1}, last_play_age_days=0.5),
+    }
+    pools = build_member_pools(
+        members=["Alice"], songs=songs, exclude_titles=[], now=NOW,
+    )
+    lt = {normalize_title(c.anchor_title) for c in pools["Alice"] if c.lane == "long_tail"}
+    assert normalize_title("塵封老歌") in lt
+    assert normalize_title("昨天剛播") not in lt
+
+
+def test_member_pool_empty_when_song_belongs_to_absent_member():
+    songs = {"s": _song("陌生人的歌", requesters={"Stranger": 3})}
+    pools = build_member_pools(
+        members=["Alice"], songs=songs, exclude_titles=[], now=NOW,
+    )
+    assert pools["Alice"] == []
+
+
 # ── assign_unique_owners：跨使用者去重（核心 bug 修復）─────────────────────────
 
 def test_same_song_assigned_to_exactly_one_member():
