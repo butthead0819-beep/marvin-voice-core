@@ -243,6 +243,7 @@ def build_intent_agents(controller, bot):
     from intent_agents.volume_agent import VolumeAgent
     from intent_agents.replay_agent import ReplayAgent
     from intent_agents.now_playing_agent import NowPlayingAgent
+    from intent_agents.personal_shuffle_agent import PersonalShuffleAgent
     from intent_agents.dual_speak_agent import DualSpeakAgent
     from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
     return [
@@ -254,6 +255,7 @@ def build_intent_agents(controller, bot):
         VolumeAgent(controller),  # 2026-05-27: 議題 E #1 — 音量語音控制
         ReplayAgent(controller),  # 2026-05-27: 議題 E #2 — 重播當前歌曲
         NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
+        PersonalShuffleAgent(controller),  # 2026-06-29: 語音「連續隨機播我的歌單」（一次墊一首）
         GameKnowledgeAgent(controller),  # 2026-06-06: Plan 4 intent_gap ready — 「查麥塊…」遊戲知識查詢
         BustedAgent(bot),
         Busted99Agent(bot),

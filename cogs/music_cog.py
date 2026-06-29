@@ -119,6 +119,7 @@ class MusicCog(commands.Cog):
         self._stream_norm_gain: dict = {}   # url → 每首響度正規化常數增益
         self._last_user_song_seed: Optional[str] = None
         self.stream_queue: list = []        # list of {title, uploader, url, …}
+        self._personal_shuffle: Optional[dict] = None  # 個人歌單連續隨機播 session
         self.stream_task = None
         self._current_stream_info = None
         self.stream_history: list = []      # 已播過的歌曲（用於上一首）
@@ -383,6 +384,7 @@ class MusicCog(commands.Cog):
             return
         vc = self._vc()
         self.stream_mode = False
+        self._personal_shuffle = None  # 🎲 停播一併收掉個人歌單 session，避免之後復活
         if vc is not None:
             vc.last_marvin_speech_time = time.time()
         self._current_stream_info = None
@@ -1017,6 +1019,96 @@ class MusicCog(commands.Cog):
             channel_state=channel_state,
         )
 
+    # ── 🎲 個人歌單連續隨機播 ────────────────────────────────────────────────
+
+    async def start_personal_shuffle(self, username: str) -> tuple[bool, str]:
+        """連續隨機播放某使用者點過的『全部』歌（不重複、播完為止）。
+
+        一次只墊一首待播（見 _personal_shuffle_topup），不塞爆佇列，別人現場點歌照樣
+        進得來。池子＝music_memory 裡 requesters 含該使用者的所有歌，純隨機洗牌。
+        """
+        mm = getattr(self.bot, 'music_memory', None)
+        if mm is None:
+            return (False, "音樂記憶尚未就緒。")
+        pool = [s for s in mm.all_songs().values()
+                if username in (s.get("requesters") or {})]
+        if not pool:
+            return (False, f"{username} 還沒點過任何歌，沒有歌單可以播。")
+        import random
+        random.shuffle(pool)
+        self._personal_shuffle = {"user": username, "remaining": pool}
+        await self._personal_shuffle_topup()
+        if not self.stream_mode:
+            self.stream_mode = True
+            self.stream_volume = 0.10
+            if self.stream_task and not self.stream_task.done():
+                self.stream_task.cancel()
+            self.stream_task = asyncio.create_task(self._stream_loop())
+        msg = f"🎲 開始連續隨機播放 {username} 的歌單（{len(pool)} 首，播完為止、不重複）。"
+        vc = self._vc()
+        ch = vc.active_text_channel if vc is not None else None
+        if ch is not None:
+            try:
+                await ch.send(msg)
+            except Exception:
+                pass
+        return (True, msg)
+
+    def stop_personal_shuffle(self) -> bool:
+        """關掉個人歌單連續播；回傳先前是否在進行中。"""
+        was = self._personal_shuffle is not None
+        self._personal_shuffle = None
+        return was
+
+    def _personal_shuffle_pending(self) -> bool:
+        """佇列裡是否已有一首個人歌單待播歌（保證一次只墊一首）。"""
+        return any(it.get("_lane") == "personal" for it in self.stream_queue)
+
+    async def _personal_shuffle_topup(self) -> bool:
+        """個人歌單補位：佇列尾墊『一首』他的歌。
+
+        已有待播個人歌 → 不補（回 True）。池空 → 收掉 session、回退一般推薦（回 False）。
+        成功墊一首 → 回 True。
+        """
+        sess = self._personal_shuffle
+        if not sess:
+            return False
+        if self._personal_shuffle_pending():
+            return True
+        user = sess["user"]
+        while sess["remaining"]:
+            song = sess["remaining"].pop(0)
+            query = (song.get("webpage_url") or song.get("url")
+                     or f"{song.get('uploader', '')} {song.get('title', '')}".strip())
+            if not query:
+                continue
+            try:
+                info = await self._resolve_yt_query(query)
+            except Exception as e:
+                logger.debug(f"⚠️ [PersonalShuffle] resolve 失敗 '{query}': {e}")
+                continue
+            if not info:
+                continue
+            if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
+                                          username=user, check_history=False):
+                continue
+            info['requested_by'] = user
+            info['_lane'] = 'personal'
+            self.stream_queue.append(info)
+            logger.info(f"🎲 [PersonalShuffle] 墊一首（{user}）: {info['title']}（剩 {len(sess['remaining'])} 首）")
+            return True
+        # 池空 → 收尾
+        self._personal_shuffle = None
+        vc = self._vc()
+        ch = vc.active_text_channel if vc is not None else None
+        if ch is not None:
+            try:
+                await ch.send(f"🎲 {user} 的歌單播完了，回到一般推薦。")
+            except Exception:
+                pass
+        logger.info(f"🎲 [PersonalShuffle] {user} 歌單播畢，session 結束。")
+        return False
+
     # ── 🎵 Stream loop & playback ────────────────────────────────────────────
 
     async def _stream_loop(self):
@@ -1025,6 +1117,9 @@ class MusicCog(commands.Cog):
         try:
             while self.stream_mode:
                 if not self.stream_queue:
+                    # 🎲 個人歌單連續播：佇列空先墊他下一首（一次一首）；池空才回退一般推薦
+                    if self._personal_shuffle is not None and await self._personal_shuffle_topup():
+                        continue
                     vc = self._vc()
                     _rb = (self._current_stream_info or {}).get('requested_by')
                     online = vc.get_online_members() if vc is not None else []
@@ -1115,10 +1210,14 @@ class MusicCog(commands.Cog):
                         logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
 
                 if len(self.stream_queue) < 2:
-                    online = vc.get_online_members() if vc is not None else []
-                    seed = self._autorecommend_seed(requested_by, online)
-                    if seed:
-                        asyncio.create_task(self._auto_recommend(seed))
+                    if self._personal_shuffle is not None:
+                        # 🎲 個人歌單模式：補位走他的歌單（內含一次一首守門），不混一般推薦
+                        asyncio.create_task(self._personal_shuffle_topup())
+                    else:
+                        online = vc.get_online_members() if vc is not None else []
+                        seed = self._autorecommend_seed(requested_by, online)
+                        if seed:
+                            asyncio.create_task(self._auto_recommend(seed))
 
                 dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
                 if dj_data and not dj_audio and vc is not None:

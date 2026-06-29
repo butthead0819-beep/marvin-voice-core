@@ -26,7 +26,7 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4214      # 實測 4214（2026-06-25 tts_duck_refresh_loop start/stop 接線 +2；loop 邏輯在 SystemLoopsMixin）
+LINE_BUDGET = 4216      # 實測 4216（2026-06-29 PersonalShuffleAgent 註冊接線 +2；功能在 intent_agents/personal_shuffle_agent.py + MusicCog）
 METHOD_BUDGET = 90      # VoiceController 自身定義的 method 數；新「功能」別在這加 method
 
 
