@@ -506,6 +506,12 @@ class ConnectionMixin:
         # 📻 [Marvin Radio] 解散時一併停止電台
         if self.radio_mode:
             await self.stop_radio(reason="系統解散")
+        # 🎵 解散時一併停止串流（含清掉個人歌單 session），否則 stream loop 會在無語音下
+        # 一直 churn（2026-06-29 個人歌單死鎖事故的相鄰根因：dismiss 沒停 stream）。
+        try:
+            await self.stop_stream(reason="系統解散")
+        except Exception as e:
+            print(f"⚠️ [Dismiss] stop_stream 失敗: {e}")
         for vc in self.bot.voice_clients:
             try:
                 if vc.is_connected():

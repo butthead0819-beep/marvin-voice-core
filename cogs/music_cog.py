@@ -1080,6 +1080,12 @@ class MusicCog(commands.Cog):
         sess = self._personal_shuffle
         if not sess:
             return False
+        # 無連線語音（被 dismiss/撤離）→ 結束 session，別讓 stream loop 一直 churn 解析+跳過。
+        # 多條離開語音路徑不一定都有清 session，這裡當總關（2026-06-29 死鎖事故相鄰根因）。
+        if not any(v.is_connected() for v in self.bot.voice_clients):
+            logger.warning(f"🎲 [PersonalShuffle] 無連線語音，結束 {sess['user']} 的個人歌單 session。")
+            self._personal_shuffle = None
+            return False
         # 單飛守衛：stream loop 的 <2 分支會 fire-and-forget 噴多個 topup task；pending
         # 檢查與 append 之間隔著慢 resolve（log 滿滿 >5s timeout），併發的兩個 topup 會同時
         # 通過檢查各塞一首 → 兩首搶播。inflight 旗標在第一個 await 前同步設好，後到的直接退。

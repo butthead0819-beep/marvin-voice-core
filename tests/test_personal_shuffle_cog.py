@@ -15,7 +15,9 @@ def _make_cog(songs):
     """songs: list of (title, requesters_dict)。"""
     bot = MagicMock()
     bot.guilds = []
-    bot.voice_clients = []
+    _vc = MagicMock()
+    _vc.is_connected.return_value = True   # 預設有連線語音（個人歌單要在語音內才跑）
+    bot.voice_clients = [_vc]
     bot.cogs.get.return_value = None
     bot.tts_engine = MagicMock()
     mm = MagicMock()
@@ -168,6 +170,20 @@ async def test_stop_personal_shuffle_purges_pending_personal_songs_from_queue():
     cog.stop_personal_shuffle()
     assert not any(it.get("_lane") == "personal" for it in cog.stream_queue), "個人墊位應被清掉"
     assert any(it.get("requested_by") == "小華" for it in cog.stream_queue), "別人點的歌保留"
+
+
+@pytest.mark.asyncio
+async def test_topup_clears_session_when_no_connected_voice():
+    """bot 被 dismiss/撤離後沒有連線語音 → topup 要清掉 session、別讓 stream loop 一直
+    churn 解析+跳過（2026-06-29 死鎖事故的相鄰根因：離開語音後 session 沒清）。"""
+    cog = _make_cog([("A", {"阿明": 1}), ("B", {"阿明": 1})])
+    await cog.start_personal_shuffle("阿明")
+    assert cog._personal_shuffle is not None
+    # 模擬離開語音：沒有連線中的 voice client
+    cog.bot.voice_clients[0].is_connected.return_value = False
+    added = await cog._personal_shuffle_topup()
+    assert added is False
+    assert cog._personal_shuffle is None, "無連線語音時要結束個人歌單 session"
 
 
 @pytest.mark.asyncio
