@@ -1940,8 +1940,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 if _direct_cmd:
                     _cmd_action = _direct_cmd.get("action", "stop")
                     if _cmd_action == "play":
+                        from music_fastpath import fastpath_play_query  # no-wake fast-path 接線；邏輯在 music_fastpath.py
                         _nw_ctx = build_nowake_play_ctx(
-                            speaker, full_raw_text, _direct_cmd.get("query", ""),
+                            speaker, full_raw_text, fastpath_play_query(self._get_music_fastpath(), _direct_cmd.get("query", "")),
                             stream_active=self.stream_mode,
                             is_owner=self._is_owner_speaker(speaker),
                         )

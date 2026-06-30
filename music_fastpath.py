@@ -48,6 +48,20 @@ def to_play_command(canonical: str, video_id: str = "") -> str:
     return f"{FASTPATH_PLAY_PREFIX}{canonical}"
 
 
+def fastpath_play_query(fp, query: str) -> str:
+    """no-wake/wake 點歌 query 統一改寫入口（共用薄包層）。
+
+    fp 命中 → 回 to_play_command(canonical, video_id)，直接入 IntentBus 跳 yt-dlp 搜尋。
+    fp None/falsy、query 空、或 match() 未命中 → 原樣回傳，caller fall-through 正常流程。
+    """
+    if not fp or not query:
+        return query
+    hit = fp.match(query)
+    if not hit:
+        return query
+    return to_play_command(hit[0], hit[2])
+
+
 # 點歌命令前綴：真實 query 是「播放陶喆的流沙」，命令動詞要先剝掉只留歌名，
 # 否則「播放/bo fang」當內容 token 被 token_set + 覆蓋率守門當噪音 → 命中失敗。
 _CMD_PREFIX = re.compile(

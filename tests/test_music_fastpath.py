@@ -144,6 +144,29 @@ def test_catalog_hot_reload_on_mtime_change(tmp_path):
     assert hit is not None and "倒帶" in hit[0]
 
 
+def test_fastpath_play_query_hit_builds_play_command(fp):
+    """命中 → 回 to_play_command 包出的指令（帶前綴 + watch?v= videoId）。"""
+    from music_fastpath import fastpath_play_query, FASTPATH_PLAY_PREFIX
+    result = fastpath_play_query(fp, "七里香")
+    assert isinstance(result, str)
+    assert result.startswith(FASTPATH_PLAY_PREFIX)
+    assert "watch?v=" in result  # vid_000 在 catalog 第 0 筆
+
+
+def test_fastpath_play_query_miss_returns_input_unchanged(fp):
+    """未命中（閒聊句）→ 原樣回傳。"""
+    from music_fastpath import fastpath_play_query
+    q = "今天天氣真好啊"
+    assert fastpath_play_query(fp, q) == q
+
+
+def test_fastpath_play_query_none_fp_returns_input():
+    """fp=None → 原樣回傳，不 crash。"""
+    from music_fastpath import fastpath_play_query
+    q = "七里香"
+    assert fastpath_play_query(None, q) == q
+
+
 def test_missing_catalog_disables_fastpath(tmp_path):
     fp = MusicFastPath(catalog_path=tmp_path / "nope.json", threshold=80)
     assert fp.enabled is False
