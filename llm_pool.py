@@ -285,12 +285,13 @@ class ProviderSpec:
 # 會自動被撿）；三個新的（SambaNova/Together/OpenRouter）等填 key。model 名都可 env 覆寫，
 # 因為各家命名不同、且 OpenRouter free 模型名會變。
 _PROVIDERS: list[ProviderSpec] = [
-    # Groq daily cap（6/2 從 429 訊息實測）：8b TPD 50萬、70b TPD 10萬。今天就是
-    # 70b 先撞 10萬、8b 後撞 50萬。填上後 daily 快爆會自動讓位、不會用到炸。
+    # Groq daily cap：2026-06-30 遷到 gpt-oss 後對齊真值——gpt-oss-20b/120b free tier TPD
+    # 都是 20萬（舊 llama 8b=50萬 / 70b=10萬 已下架，舊數字會高估容量→過真限還硬撞 429、
+    # budget-aware skip 失效）。填真值後 daily 快爆會自動讓位、不再白燒 failover。
     ProviderSpec("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1",
                  "openai/gpt-oss-20b", "openai/gpt-oss-120b",
                  quick_model_env="GROQ_SIMPLE_MODEL", analyze_model_env="GROQ_FALLBACK_MODEL",
-                 tpm_budget=6000, quick_daily=500000, analyze_daily=100000),
+                 tpm_budget=6000, quick_daily=200000, analyze_daily=200000),
     # Cerebras 6/1 實測 /models 只剩 zai-glm-4.7 + gpt-oss-120b；舊的 llama3.1-8b /
     # qwen-3-235b-a22b-instruct-2507 已下架（404 model_not_found）。zai-glm-4.7 是
     # reasoning model 回 `reasoning` 非 `content` 跟 OpenAI 介面不兼容，所以兩檔都
