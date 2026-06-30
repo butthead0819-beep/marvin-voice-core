@@ -153,7 +153,7 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
             self.groq_dedicated_client = AsyncOpenAI(api_key=_groq_key, base_url="https://api.groq.com/openai/v1")
             self.groq_dedicated_client.chat  # 🚀 [Pre-warm] 觸發 lazy import，避免首次呼叫時卡住 event loop
             self.groq_fallback_model = os.getenv("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
-            self.groq_simple_model = os.getenv("GROQ_SIMPLE_MODEL", "llama-3.1-8b-instant")  # 輕量高頻任務
+            self.groq_simple_model = os.getenv("GROQ_SIMPLE_MODEL", "openai/gpt-oss-20b")  # 輕量高頻任務
             logger.info(f"⚡ 已掛載 Groq 核心: 主力={self.groq_fallback_model}, 輕量={self.groq_simple_model}")
         else:
             self.groq_dedicated_client = None
