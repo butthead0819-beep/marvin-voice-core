@@ -423,7 +423,7 @@ def test_factory_default_models_and_env_override():
     # 預設
     quick, analyze = build_tier_pools({"GROQ_API_KEY": "g"}, client_factory=factory)
     assert quick.endpoints[0].model == "openai/gpt-oss-20b"
-    assert analyze.endpoints[0].model == "llama-3.3-70b-versatile"
+    assert analyze.endpoints[0].model == "openai/gpt-oss-120b"
     # 既有 env 名覆寫（GROQ_SIMPLE_MODEL / GROQ_FALLBACK_MODEL）
     env = {"GROQ_API_KEY": "g", "GROQ_SIMPLE_MODEL": "custom-8b", "GROQ_FALLBACK_MODEL": "custom-70b"}
     quick2, analyze2 = build_tier_pools(env, client_factory=factory)

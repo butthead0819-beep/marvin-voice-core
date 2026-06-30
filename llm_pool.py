@@ -288,7 +288,7 @@ _PROVIDERS: list[ProviderSpec] = [
     # Groq daily cap（6/2 從 429 訊息實測）：8b TPD 50萬、70b TPD 10萬。今天就是
     # 70b 先撞 10萬、8b 後撞 50萬。填上後 daily 快爆會自動讓位、不會用到炸。
     ProviderSpec("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1",
-                 "openai/gpt-oss-20b", "llama-3.3-70b-versatile",
+                 "openai/gpt-oss-20b", "openai/gpt-oss-120b",
                  quick_model_env="GROQ_SIMPLE_MODEL", analyze_model_env="GROQ_FALLBACK_MODEL",
                  tpm_budget=6000, quick_daily=500000, analyze_daily=100000),
     # Cerebras 6/1 實測 /models 只剩 zai-glm-4.7 + gpt-oss-120b；舊的 llama3.1-8b /
