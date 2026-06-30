@@ -3651,10 +3651,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         return None
 
     def _check_song_duplicate(self, url: str, title: str, username: str,
-                              *, check_history: bool = True) -> bool:
+                              *, webpage_url: str = "", check_history: bool = True) -> bool:
         mc = self.bot.cogs.get('MusicCog')
         if mc is not None:
-            return mc._check_song_duplicate(url=url, title=title, username=username, check_history=check_history)
+            return mc._check_song_duplicate(url=url, title=title, username=username, webpage_url=webpage_url, check_history=check_history)
         return False
 
     # IBA-T0 utterance 長度上限。無喚醒詞觸發 → 對 false positive 敏感。

@@ -41,7 +41,7 @@ from intent_agents.recommendation import (
     time_of_day_bucket,
 )
 from memory_guard import is_memory_critical
-from music_recommender import assign_unique_owners, build_member_pools, demote_low_quality_versions, is_already_recommended, pick_candidates, ring_titles_for
+from music_recommender import assign_unique_owners, build_member_pools, demote_low_quality_versions, is_already_recommended, normalize_title, pick_candidates, ring_titles_for
 from music_memory import extract_video_id
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
@@ -274,7 +274,7 @@ class MusicCog(commands.Cog):
             await self.stop_radio(reason="Stream 模式接管")
 
         info['requested_by'] = username
-        if self._check_song_duplicate(url=info['url'], title=info['title'], username=username, check_history=False):
+        if self._check_song_duplicate(url=info['url'], title=info['title'], username=username, webpage_url=info.get('webpage_url', ''), check_history=False):
             await msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。")
             return
         self._queue_user_song(info)
@@ -737,7 +737,7 @@ class MusicCog(commands.Cog):
         enqueued: list = []
         for info in infos:
             if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
-                                          username=spotlight):
+                                          username=spotlight, webpage_url=info.get('webpage_url', '')):
                 continue
             if is_already_recommended(info.get('title', ''), exclude_titles):
                 continue
@@ -925,7 +925,7 @@ class MusicCog(commands.Cog):
                 continue
             if not info:
                 continue
-            if self._check_song_duplicate(url=info['url'], title=info['title'], username=username):
+            if self._check_song_duplicate(url=info['url'], title=info['title'], username=username, webpage_url=info.get('webpage_url', '')):
                 logger.info(f"🎵 [AutoRecommend] {info['title']} 本場已播過，略過")
                 continue
             if is_already_recommended(info['title'], ring_exclude):
@@ -1110,7 +1110,7 @@ class MusicCog(commands.Cog):
                 if not info:
                     continue
                 if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
-                                              username=user, check_history=False):
+                                              username=user, webpage_url=info.get('webpage_url', ''), check_history=False):
                     continue
                 info['requested_by'] = user
                 info['_lane'] = 'personal'
@@ -1802,9 +1802,9 @@ class MusicCog(commands.Cog):
 
     # ── Phase 7F: queue / resolve helpers ────────────────────────────────────
 
-    def _check_song_duplicate(self, url: str, title: str, username: str,
-                              *, check_history: bool = True) -> bool:  # noqa: ARG002
-        """回傳 True 表示此 session 已有相同 URL，應跳過加入佇列。
+    def _check_song_duplicate(self, url: str, title: str, username: str,  # noqa: ARG002
+                              *, webpage_url: str = "", check_history: bool = True) -> bool:
+        """回傳 True 表示此 session 已有同一首歌，應跳過加入佇列。
 
         check_history=False：只擋「還在佇列」，不擋「本場播過」。給使用者手動點播用——
         skip 過的歌進了 stream_history，但手動點回來是刻意正向更正，應放行。
@@ -1812,16 +1812,37 @@ class MusicCog(commands.Cog):
         但「正在播的那首」一律擋（不受 check_history 影響）：防同一句經 snapshot 喚醒
         + debounce wakeless 兩路徑各入隊一次造成背對背雙播（2026-06-23 隔壁老樊 incident；
         兩路徑相隔 12s，時間窗去重全過期、#1 已開播不在佇列 → 漏。內容去重不怕時序）。
+
+        身份比對兩層（同 video-id 或同正規化歌名即視為重複）：
+        ① **穩定 video-id**（從 webpage_url 抽），不是 info['url']——後者是 yt-dlp 每次解析
+           都重產的 googlevideo 暫時串流網址（帶 expiry token），同一首歌兩次解析會得到不同
+           url，比 url 永遠不等 → 同歌入隊兩首（2026-06-29 對等關係 incident）。
+        ② **normalize_title 正規化歌名**：擋同名變體（cover/live/重傳但不同 video-id）。歌手
+           仍在原始標題裡 → 同名不同曲衝突低。兩層都拿不到才退回舊 url 比對。
         """
+        cand_vid = extract_video_id(webpage_url or url or "")
+        cand_nt = normalize_title(title or "")
+
+        def _same(item: dict) -> bool:
+            iv = extract_video_id(item.get("webpage_url") or item.get("url") or "")
+            if cand_vid and iv and iv == cand_vid:
+                return True  # ① 同一個 YouTube 影片
+            it = normalize_title(item.get("title") or "")
+            if cand_nt and it and it == cand_nt:
+                return True  # ② 同名變體
+            if not cand_vid and not cand_nt:  # 候選毫無穩定身份 → 退回舊 url 比對
+                return bool(url) and item.get("url") == url
+            return False
+
         cur = self._current_stream_info
-        if cur and cur.get("url") == url:
+        if cur and _same(cur):
             return True
         for item in self.stream_queue:
-            if item.get("url") == url:
+            if _same(item):
                 return True
         if check_history:
             for item in self.stream_history:
-                if item.get("url") == url:
+                if _same(item):
                     return True
         return False
 
@@ -2124,7 +2145,7 @@ class MusicCog(commands.Cog):
                 vc.stt_logger.info(
                     f"[點歌-語音] 使用者={speaker} | 搜尋={raw_search}{f' (修正→{search})' if wrong else ''} | 結果={info['title']} / {info.get('uploader', '?')}"
                 )
-            if self._check_song_duplicate(url=info['url'], title=info['title'], username=speaker, check_history=False):
+            if self._check_song_duplicate(url=info['url'], title=info['title'], username=speaker, webpage_url=info.get('webpage_url', ''), check_history=False):
                 if status_msg: await status_msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。")
                 return
             if self.radio_mode:

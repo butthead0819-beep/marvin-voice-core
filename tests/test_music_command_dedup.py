@@ -116,6 +116,60 @@ async def test_music_cmd_dedup_allows_call_after_5s():
     assert cog._resolve_yt_query.call_count == 2
 
 
+# ── 內容去重：用穩定 video-id，不用會變的暫時串流 url ──────────────────────
+# 2026-06-29 incident：同一句經喚醒+無喚醒 re-dispatch 各解析一次，info['url'] 是
+# yt-dlp 每次都重產的 googlevideo 串流網址（帶 expiry token）→ 兩次不同 → 舊 dedup 比
+# url 永遠不等 → 同一首歌入隊兩首（狗與露手動刪一首）。改用 webpage_url 的 video-id。
+
+def test_check_song_duplicate_matches_same_video_despite_different_stream_url():
+    cog = _make_mc_cog()
+    cog.stream_queue = [{
+        "title": "李榮浩 ft. 張惠妹《對等關係》Official Music Video",
+        "webpage_url": "https://www.youtube.com/watch?v=mQUek1GYfvs",
+        "url": "https://rr5---sn-aaa.googlevideo.com/videoplayback?ex=AAA&expire=1",
+    }]
+    # 同一首歌第二次解析：同 video-id，但暫時串流 url 不同
+    dup = cog._check_song_duplicate(
+        url="https://rr3---sn-bbb.googlevideo.com/videoplayback?ex=BBB&expire=2",
+        title="李榮浩 ft. 張惠妹《對等關係》Official Music Video",
+        username="狗與露",
+        webpage_url="https://www.youtube.com/watch?v=mQUek1GYfvs",
+        check_history=False,
+    )
+    assert dup is True, "同 video-id 即使暫時串流 url 不同，也要判定為重複"
+
+
+def test_check_song_duplicate_matches_same_title_different_upload():
+    """同名變體（不同 video-id 的重傳/cover）也視為重複——歌名正規化層。"""
+    cog = _make_mc_cog()
+    cog.stream_queue = [{
+        "title": "周杰倫 Jay Chou【晴天 Sunny Day】Official MV",
+        "webpage_url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        "url": "https://rr5.googlevideo.com/x",
+    }]
+    dup = cog._check_song_duplicate(
+        url="https://rr3.googlevideo.com/y",
+        title="周杰倫 Jay Chou【晴天 Sunny Day】Official MV (Live)",  # 同名 + Live 後綴
+        username="狗與露", webpage_url="https://www.youtube.com/watch?v=zzzzzzzzzzz",
+        check_history=False,
+    )
+    assert dup is True, "同名變體（不同上傳/版本）也要判定為重複"
+
+
+def test_check_song_duplicate_different_video_not_blocked():
+    cog = _make_mc_cog()
+    cog.stream_queue = [{
+        "title": "A 歌", "webpage_url": "https://www.youtube.com/watch?v=aaaaaaaaaaa",
+        "url": "https://rr5.googlevideo.com/x",
+    }]
+    dup = cog._check_song_duplicate(
+        url="https://rr5.googlevideo.com/y", title="B 歌",
+        username="狗與露", webpage_url="https://www.youtube.com/watch?v=bbbbbbbbbbb",
+        check_history=False,
+    )
+    assert dup is False, "不同 video-id 不該誤判為重複"
+
+
 # ── A: yt-dlp Errno 11 retry ────────────────────────────────────────────
 
 @pytest.mark.asyncio
