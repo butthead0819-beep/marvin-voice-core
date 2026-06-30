@@ -76,6 +76,20 @@ def strip_command_prefix(query: str) -> str:
     return stripped or query
 
 
+# personal_shuffle 觸發詞 / 歌單指令類片語——不是具體歌名，要交給 PersonalShuffleAgent。
+# fast-path 一律不攔（否則拼音 token 散落命中長歌名假命中，把 query 改寫成歌名/URL →
+# personal_shuffle 的觸發詞被吃掉、永遠贏不了。2026-06-30 live：『我的歌單』→『茄子蛋 愛情
+# 你比我想的閣較偉大』token_set 100 假命中，劫走 personal_shuffle）。
+_PLAYLIST_COMMAND_PHRASES = (
+    "我的歌單", "我點過", "我之前點", "個人歌單", "我愛聽的歌單", "我常聽的歌單",
+    "我所有的歌", "我所有點過的歌",
+)
+
+
+def _is_playlist_command(text: str) -> bool:
+    return any(p in text for p in _PLAYLIST_COMMAND_PHRASES)
+
+
 def to_pinyin(text: str) -> str:
     """中文 → toneless 拼音字串（英文/數字原樣 lower）。同音字常連聲調都被 STT 換掉，故去調。"""
     if not _DEPS_OK or not text:
@@ -145,6 +159,9 @@ class MusicFastPath:
         if not self._index:
             return None
         stripped = strip_command_prefix(query)
+        # 歌單指令類片語（我的歌單/我點過的歌/個人歌單…）交給 personal_shuffle，fast-path 不攔
+        if _is_playlist_command(stripped):
+            return None
         qpy = to_pinyin(stripped)
         if not qpy:
             return None

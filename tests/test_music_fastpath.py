@@ -124,6 +124,23 @@ def test_empty_query_returns_none(fp):
     assert fp.match("   ") is None
 
 
+def test_playlist_command_phrases_not_hijacked(tmp_path):
+    """personal_shuffle 觸發詞（我的歌單/我點過的歌/個人歌單…）不是具體歌名，fast-path
+    不該攔截——否則改寫成歌名/URL → personal_shuffle 看不到觸發詞 → 永遠贏不了。
+    2026-06-30 live bug：『我的歌單』拼音 token(wo/ge/dan)散落命中長標題『茄子蛋 愛情你
+    比我想的閣較偉大』token_set 100 假命中、劫走 personal_shuffle（播我的歌單沒反應）。"""
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps([
+        {"name": "茄子蛋 愛情你比我想的閣較偉大", "videoId": "vNloGR7mF1Y"},
+        {"name": "曲婉婷 我的歌聲裡", "videoId": "x1"},
+        {"name": "周杰倫 七里香", "videoId": "y1"},
+    ], ensure_ascii=False), encoding="utf-8")
+    fp = MusicFastPath(catalog_path=path, threshold=80)
+    for q in ["我的歌單", "播我的歌單", "馬文播放我的歌單", "隨機播我點過的歌", "個人歌單"]:
+        assert fp.match(q) is None, f"'{q}' 應交給 personal_shuffle，fast-path 不該攔截"
+    assert fp.match("播放七里香") is not None  # 真歌名仍命中（排除清單不誤傷）
+
+
 def test_catalog_hot_reload_on_mtime_change(tmp_path):
     """目錄檔更新（3am cron 重建）→ 不重啟也熱重載吃到新歌。"""
     import os
