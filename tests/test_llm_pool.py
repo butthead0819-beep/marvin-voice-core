@@ -411,6 +411,18 @@ def test_factory_all_providers_priority_order():
         "groq-quick", "cerebras-quick", "sambanova-quick", "together-quick", "openrouter-quick"]
 
 
+def test_gemini_paid_is_last_resort_overflow():
+    """付費兜底 GEMINI_PAID_API_KEY 必須排在 pool 最末位（免費全爆才用）。"""
+    factory, _ = _fake_factory()
+    env = {"GROQ_API_KEY": "g", "GOOGLE_API_KEY": "go", "GEMINI_PAID_API_KEY": "p"}
+    quick, analyze = build_tier_pools(env, client_factory=factory)
+    assert quick.endpoints[-1].name == "gemini_paid-quick"      # quick tier 末位
+    assert analyze.endpoints[-1].name == "gemini_paid-analyze"  # analyze tier 末位
+    # 免費 gemini 仍在它前面（先免費後付費）
+    names = [e.name for e in quick.endpoints]
+    assert names.index("gemini_free-quick") < names.index("gemini_paid-quick")
+
+
 def test_factory_quick_and_analyze_share_client():
     factory, calls = _fake_factory()
     quick, analyze = build_tier_pools({"CEREBRAS_API_KEY": "c"}, client_factory=factory)

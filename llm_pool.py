@@ -325,6 +325,14 @@ _PROVIDERS: list[ProviderSpec] = [
                  "https://generativelanguage.googleapis.com/v1beta/openai/",
                  "gemini-2.5-flash-lite", "gemini-2.5-flash",
                  analyze_extra={"reasoning_effort": "none"}),
+    # 💰 末位付費兜底（2026-06-30）：免費全爆才輪到它。用獨立帳務 GEMINI_PAID_API_KEY（與免費
+    # GOOGLE_API_KEY 不同 key、排最後）→ 接住 14% 硬失敗。quick 用最便宜 2.5-flash-lite
+    # ($0.10/$0.40)、analyze 用 2.5-flash。量小估 ~$0.15/月。跟 build_paid_review_pool 共用同把
+    # paid key（同帳單），但這是 bus 即時 tier 的最後一道、與批次 review pool 獨立。未設 key → 不建。
+    ProviderSpec("gemini_paid", "GEMINI_PAID_API_KEY",
+                 "https://generativelanguage.googleapis.com/v1beta/openai/",
+                 "gemini-2.5-flash-lite", "gemini-2.5-flash",
+                 analyze_extra={"reasoning_effort": "none"}),
 ]
 
 
