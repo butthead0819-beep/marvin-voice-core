@@ -99,7 +99,7 @@ async def test_music_cmd_dedup_does_not_block_different_speaker():
 
 @pytest.mark.asyncio
 async def test_music_cmd_dedup_allows_call_after_5s():
-    """5s 過後同 speaker 可再呼叫。"""
+    """5s 過後同 speaker 點『不同歌』可再呼叫（同句重派改由 query-aware 30s 守衛擋）。"""
     cog = _make_cog()
     cog._resolve_yt_query = AsyncMock(return_value={"title": "x", "url": "u", "duration": 100})
     cog._check_song_duplicate = MagicMock(return_value=True)
@@ -112,7 +112,7 @@ async def test_music_cmd_dedup_allows_call_after_5s():
     with patch("cogs.music_cog.time.time", _fake_time):
         await cog._handle_voice_music_command("Alice", "播放陶喆", "play")
         fake_now[0] += 6.0  # 過 5s
-        await cog._handle_voice_music_command("Alice", "播放陶喆", "play")
+        await cog._handle_voice_music_command("Alice", "播放周杰倫", "play")  # 不同歌
     assert cog._resolve_yt_query.call_count == 2
 
 
@@ -168,6 +168,54 @@ def test_check_song_duplicate_different_video_not_blocked():
         check_history=False,
     )
     assert dup is False, "不同 video-id 不該誤判為重複"
+
+
+# ── 入口 query-aware 去重：同句重派（喚醒+無喚醒）即使超過 5s 也擋 ──────────
+# 2026-06-29 對等關係 incident：同一句經喚醒+無喚醒 re-dispatch 相隔 13s（>5s 時間窗），
+# 舊的 speaker+5s dedup 漏 → 兩次解析 → 同歌入隊兩首。改用 speaker+正規化點歌字串。
+
+@pytest.mark.asyncio
+async def test_same_query_blocked_beyond_5s_window(monkeypatch):
+    cog = _make_cog()
+    cog._resolve_yt_query = AsyncMock(return_value={"title": "x", "url": "u", "webpage_url": "w", "duration": 100})
+    cog._check_song_duplicate = MagicMock(return_value=False)  # 隔離內容去重，純測入口
+    fake = [100.0]
+    monkeypatch.setattr("cogs.music_cog.time.time", lambda: fake[0])
+    await cog._handle_voice_music_command("狗與露", "播放張惠妹的對等關係", "play")
+    n1 = cog._resolve_yt_query.call_count
+    fake[0] += 13.0  # incident 相隔 13s（超過 5s 時間窗）
+    await cog._handle_voice_music_command("狗與露", "播放張惠妹的對等關係", "play")
+    assert cog._resolve_yt_query.call_count == n1, "同句 13s 後重派應被擋、不再解析"
+
+
+@pytest.mark.asyncio
+async def test_play_verb_variants_treated_as_same_query(monkeypatch):
+    """『播放X』與『播X』正規化後同一句，仍要擋。"""
+    cog = _make_cog()
+    cog._resolve_yt_query = AsyncMock(return_value={"title": "x", "url": "u", "webpage_url": "w", "duration": 100})
+    cog._check_song_duplicate = MagicMock(return_value=False)
+    fake = [100.0]
+    monkeypatch.setattr("cogs.music_cog.time.time", lambda: fake[0])
+    await cog._handle_voice_music_command("狗與露", "播放張惠妹的對等關係", "play")
+    n1 = cog._resolve_yt_query.call_count
+    fake[0] += 10.0
+    await cog._handle_voice_music_command("狗與露", "播張惠妹的對等關係", "play")
+    assert cog._resolve_yt_query.call_count == n1
+
+
+@pytest.mark.asyncio
+async def test_different_song_after_window_allowed(monkeypatch):
+    """超過 5s 後點不同歌應放行（query-aware 只擋同一句）。"""
+    cog = _make_cog()
+    cog._resolve_yt_query = AsyncMock(return_value={"title": "x", "url": "u", "webpage_url": "w", "duration": 100})
+    cog._check_song_duplicate = MagicMock(return_value=False)
+    fake = [100.0]
+    monkeypatch.setattr("cogs.music_cog.time.time", lambda: fake[0])
+    await cog._handle_voice_music_command("狗與露", "播放張惠妹的對等關係", "play")
+    n1 = cog._resolve_yt_query.call_count
+    fake[0] += 13.0
+    await cog._handle_voice_music_command("狗與露", "播放周杰倫的晴天", "play")  # 不同歌
+    assert cog._resolve_yt_query.call_count == n1 + 1, "不同歌應放行"
 
 
 # ── A: yt-dlp Errno 11 retry ────────────────────────────────────────────

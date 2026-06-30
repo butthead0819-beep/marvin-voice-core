@@ -62,6 +62,7 @@ class MusicCog(commands.Cog):
     _T3_PLAYED_EXCLUDE_TTL_S = 24 * 3600
     _COLD_META_TIMEOUT_S = 5.0
     _MUSIC_CMD_DEDUP_WINDOW = 5.0
+    _MUSIC_SAME_SONG_WINDOW = 30.0  # 同 speaker + 同正規化點歌字串：擋同一句重派（喚醒+無喚醒）
     # DJ 播報疊在歌上的音量（混音時 dj 分支的 gain）。降到 30% 不蓋過音樂。
     _DJ_INTERJECTION_VOLUME = 0.30
 
@@ -152,6 +153,7 @@ class MusicCog(commands.Cog):
         self._prefetch_cache: dict = {}   # url → Task[{'lyrics', 'comment'}]
         self._last_search: dict = {}      # username → {query, ts, source}
         self._last_music_cmd_time: dict[str, float] = {}  # speaker → ts, for dedup
+        self._last_music_query: dict[str, tuple[str, float]] = {}  # speaker → (正規化點歌字串, ts)
 
     def _vc(self):
         """取得 VoiceController cog；找不到回 None。"""
@@ -1847,6 +1849,19 @@ class MusicCog(commands.Cog):
         return False
 
     @staticmethod
+    def _normalize_request_query(query: str) -> str:
+        """點歌字串正規化，當『同一句重派』去重 key：去前綴喚醒/播放動詞 + 空白 + 大小寫。
+
+        不靠『播』動詞本身比對（'播放X' 與 '播X' 去掉動詞後同一句），STT 把播聽成波也只差
+        在被去掉的前綴。注意：這是「同句去重」用的，不是歌名標準化（同名異曲交給內容去重）。
+        """
+        import re
+        q = (query or "").strip().casefold()
+        q = re.sub(r"^(馬文|马文|marvin)?\s*(幫我|帮我|請|请|麻煩|麻烦)?\s*"
+                   r"(播放一下|播放|播|放一下|放|來首|来首|來|来|點播|点播|點|点)\s*", "", q)
+        return re.sub(r"\s+", "", q)
+
+    @staticmethod
     def _user_song_insert_index(queue: list[dict]) -> int:
         """使用者自選曲的插入位置：排在所有既有使用者曲之後、第一首 Marvin 自動曲之前。"""
         for i, item in enumerate(queue):
@@ -2025,6 +2040,15 @@ class MusicCog(commands.Cog):
             )
             return
         self._last_music_cmd_time[speaker] = _now
+        # query-aware 去重：同 speaker + 同正規化點歌字串 → 擋同一句重派（喚醒+無喚醒兩路徑，
+        # 相隔可 >5s 超過時間窗）。只對 play（skip/stop 等控制指令不能用同字串擋，會誤殺連按）。
+        if cmd == "play":
+            _nq = self._normalize_request_query(query)
+            _prev = self._last_music_query.get(speaker)
+            if _nq and _prev and _prev[0] == _nq and _now - _prev[1] < self._MUSIC_SAME_SONG_WINDOW:
+                logger.info(f"🎵 [Music Dedup] {speaker} 同句『{query[:30]}』{_now - _prev[1]:.1f}s 內重複點播，跳過（重派）")
+                return
+            self._last_music_query[speaker] = (_nq, _now)
         logger.info(f"🎵 [Music Command] {speaker} 觸發語音音樂指令: {cmd} | query='{query[:40]}'")
 
         vc = self._vc()
