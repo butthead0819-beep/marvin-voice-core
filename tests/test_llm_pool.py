@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from llm_pool import (
     CooldownAwarePool, PoolEndpoint, TieredLLMRouter,
     build_tier_pools, build_tiered_router,
-    dispatch, is_rate_limit, parse_retry_after,
+    dispatch, is_rate_limit, is_spending_cap, parse_retry_after,
 )
 
 
@@ -133,6 +133,22 @@ def test_is_rate_limit_detects_429_and_quota():
 def test_is_rate_limit_false_for_other_errors():
     assert not is_rate_limit(Exception("connection timeout"))
     assert not is_rate_limit(Exception("500 internal error"))
+
+
+# ── is_spending_cap：付費帳務上限(不夠預算) vs 純免費 quota ──────────────────────
+
+def test_is_spending_cap_detects_billing_cap():
+    assert is_spending_cap(Exception(
+        "429 RESOURCE_EXHAUSTED. Your project has exceeded its monthly spending cap."))
+    assert is_spending_cap(Exception(
+        "go to AI Studio at https://ai.studio/spend to manage your project spend cap"))
+
+
+def test_is_spending_cap_false_for_plain_free_quota():
+    # 純免費 quota / rate limit 不是帳務上限，不該誤判成「不夠預算」
+    assert not is_spending_cap(Exception(
+        "429 RESOURCE_EXHAUSTED. Quota exceeded for free_tier_requests, limit: 0"))
+    assert not is_spending_cap(Exception("Too Many Requests"))
 
 
 # ── dispatch ─────────────────────────────────────────────────────────────────
@@ -406,7 +422,7 @@ def test_factory_default_models_and_env_override():
     factory, _ = _fake_factory()
     # 預設
     quick, analyze = build_tier_pools({"GROQ_API_KEY": "g"}, client_factory=factory)
-    assert quick.endpoints[0].model == "llama-3.1-8b-instant"
+    assert quick.endpoints[0].model == "openai/gpt-oss-20b"
     assert analyze.endpoints[0].model == "llama-3.3-70b-versatile"
     # 既有 env 名覆寫（GROQ_SIMPLE_MODEL / GROQ_FALLBACK_MODEL）
     env = {"GROQ_API_KEY": "g", "GROQ_SIMPLE_MODEL": "custom-8b", "GROQ_FALLBACK_MODEL": "custom-70b"}

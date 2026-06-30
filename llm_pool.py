@@ -173,6 +173,14 @@ def is_rate_limit(exc: BaseException) -> bool:
     return any(h in s for h in _RATE_LIMIT_HINTS)
 
 
+def is_spending_cap(exc: BaseException) -> bool:
+    """是不是「付費帳務月度預算上限」(spending cap = 不夠預算)，而非純免費 quota 用完。
+    判別法：只有開帳務的 project 才會回 spending/spend cap；純免費只回 quota/429
+    （見 memory llm_paid_pool_wrong_key_bug）。讓失敗訊息能寫清楚「不夠預算」而非籠統失敗。"""
+    s = str(exc).lower()
+    return ("spending cap" in s or "spend cap" in s or "exceeded its monthly" in s)
+
+
 async def dispatch(pool: CooldownAwarePool, call_fn) -> Optional[Any]:
     """池子（狀態）+ call_fn（I/O）= router。
 
@@ -280,7 +288,7 @@ _PROVIDERS: list[ProviderSpec] = [
     # Groq daily cap（6/2 從 429 訊息實測）：8b TPD 50萬、70b TPD 10萬。今天就是
     # 70b 先撞 10萬、8b 後撞 50萬。填上後 daily 快爆會自動讓位、不會用到炸。
     ProviderSpec("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1",
-                 "llama-3.1-8b-instant", "llama-3.3-70b-versatile",
+                 "openai/gpt-oss-20b", "llama-3.3-70b-versatile",
                  quick_model_env="GROQ_SIMPLE_MODEL", analyze_model_env="GROQ_FALLBACK_MODEL",
                  tpm_budget=6000, quick_daily=500000, analyze_daily=100000),
     # Cerebras 6/1 實測 /models 只剩 zai-glm-4.7 + gpt-oss-120b；舊的 llama3.1-8b /
@@ -433,28 +441,37 @@ async def call_paid_review(
     timeout: float = 180.0,
     pool: Optional[CooldownAwarePool] = None,
     caller: str = "paid_review",
+    status: Optional[dict] = None,
 ) -> Optional[str]:
     """付費 Gemini 大型 batch 呼叫（genai 原生 SDK + thinking_budget=0 + JSON mode）；
     model fallback + cooldown + timeout 走 bus 既有 dispatch。回 raw 字串；全 model 失敗回 None。
-    caller：成本記帳標籤（寫 records/llm_paid_usage.jsonl，讓帳單看得見是誰花的）。"""
+    caller：成本記帳標籤（寫 records/llm_paid_usage.jsonl，讓帳單看得見是誰花的）。
+    status：可選 out-param dict。全 model 失敗時填 status["reason"]——"budget_cap"（撞付費
+    月度 spending cap = 不夠預算）或 "exhausted"（其他額度/連線失敗），讓 caller 寫清楚原因。"""
     pool = pool if pool is not None else build_paid_review_pool()
+    saw_budget_cap = {"v": False}
 
     async def _call(ep: PoolEndpoint):
         from google.genai import types
-        resp = await asyncio.wait_for(
-            ep.client.aio.models.generate_content(
-                model=ep.model,
-                contents=content,
-                config=types.GenerateContentConfig(
-                    system_instruction=system,
-                    temperature=temperature,
-                    response_mime_type="application/json",
-                    max_output_tokens=max_tokens,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+        try:
+            resp = await asyncio.wait_for(
+                ep.client.aio.models.generate_content(
+                    model=ep.model,
+                    contents=content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system,
+                        temperature=temperature,
+                        response_mime_type="application/json",
+                        max_output_tokens=max_tokens,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    ),
                 ),
-            ),
-            timeout=timeout,
-        )
+                timeout=timeout,
+            )
+        except Exception as e:
+            if is_spending_cap(e):  # 記下「不夠預算」訊號，dispatch 仍照常 cooldown+換家
+                saw_budget_cap["v"] = True
+            raise
         um = getattr(resp, "usage_metadata", None)
         if um:
             in_tok = getattr(um, "prompt_token_count", 0) or 0
@@ -465,4 +482,7 @@ async def call_paid_review(
         _record_paid_usage(caller, ep.model, in_tok, out_tok)
         return resp.text, in_tok + out_tok
 
-    return await dispatch(pool, _call)
+    result = await dispatch(pool, _call)
+    if result is None and status is not None:
+        status["reason"] = "budget_cap" if saw_budget_cap["v"] else "exhausted"
+    return result

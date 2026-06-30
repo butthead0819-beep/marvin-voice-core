@@ -697,10 +697,16 @@ def call_review_llm(user_content: str, paid_call=None) -> dict:
         # （180s）；即時 call 才用緊 timeout。per-call timeout 仍會 cut 真正掛死的連線。
         # max_tokens 16000：2026-06-25 實測 daily review 輸出是 runaway（給 32000 也填滿砍斷），
         # 加 token 無用且多花錢——真因是 input 重複資料誘發冗長輸出，治本要減 input/搶救 partial。
+        _status: dict = {}
         raw = asyncio.run(paid_call(content, system=SYSTEM_PROMPT, max_tokens=16000,
-                                    temperature=0.2, timeout=180.0, caller="daily_review"))
+                                    temperature=0.2, timeout=180.0, caller="daily_review",
+                                    status=_status))
         if not raw:
-            raise RuntimeError("LLM bus paid review 全 model 失敗，daily review 無法分析")
+            if _status.get("reason") == "budget_cap":
+                raise RuntimeError(
+                    "付費 Gemini 月度預算上限耗盡（spending cap — 不夠預算），daily review 無法分析。"
+                    "等月度重置或到 https://ai.studio/spend 調高 spending cap")
+            raise RuntimeError("LLM bus paid review 全 model 失敗（額度/連線），daily review 無法分析")
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
