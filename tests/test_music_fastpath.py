@@ -25,13 +25,13 @@ _CATALOG = [
 @pytest.fixture
 def fp(tmp_path):
     path = tmp_path / "catalog.json"
-    path.write_text(json.dumps([{"name": n} for n in _CATALOG], ensure_ascii=False),
-                    encoding="utf-8")
+    rows = [{"name": n, "videoId": f"vid_{i:03d}"} for i, n in enumerate(_CATALOG)]
+    path.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
     return MusicFastPath(catalog_path=path, threshold=80)
 
 
 def test_clean_query_matches_canonical(fp):
-    name, score = fp.match("七里香")
+    name, score, _ = fp.match("七里香")
     assert name == "周杰倫 七里香"
     assert score >= 80
 
@@ -46,14 +46,14 @@ def test_command_prefix_stripped(fp):
 
 def test_homophone_garble_matches_via_pinyin(fp):
     # 官者→關喆（guan zhe 同音）；字元比對救不回，拼音救回
-    name, score = fp.match("官者的想你的夜")
+    name, score, _ = fp.match("官者的想你的夜")
     assert name == "關喆 想你的夜"
     assert score >= 80
 
 
 def test_homophone_partial_matches(fp):
     # 月亮錶→月亮代表
-    name, _ = fp.match("陶喆的月亮錶是誰的心")
+    name, _, _vid = fp.match("陶喆的月亮錶是誰的心")
     assert name == "陶喆 月亮代表誰的心"
 
 
@@ -157,3 +157,29 @@ def test_voice_controller_hook_gated_off_by_default(monkeypatch):
 
     monkeypatch.delenv("MARVIN_MUSIC_FASTPATH", raising=False)
     assert VoiceController._get_music_fastpath(SimpleNamespace()) is None
+
+
+def test_match_returns_video_id_as_third_element(fp):
+    """match() 命中時，第 3 個元素等於 catalog row 的 videoId。"""
+    # 周杰倫 七里香 是 _CATALOG 第 0 筆 → videoId = vid_000
+    result = fp.match("七里香")
+    assert result is not None
+    name, score, video_id = result
+    assert name == "周杰倫 七里香"
+    assert video_id == "vid_000"
+
+
+def test_to_play_command_with_video_id_builds_watch_url():
+    """to_play_command(canonical, video_id) 有 videoId → 回 watch URL 指令。"""
+    from music_fastpath import to_play_command, FASTPATH_PLAY_PREFIX
+    cmd = to_play_command("周杰倫 七里香", "dQw4w9WgXcQ")
+    assert cmd.startswith(FASTPATH_PLAY_PREFIX)
+    assert "watch?v=dQw4w9WgXcQ" in cmd
+
+
+def test_to_play_command_without_video_id_returns_name_command():
+    """to_play_command(canonical) 沒有 videoId → 回原本的歌名指令。"""
+    from music_fastpath import to_play_command, FASTPATH_PLAY_PREFIX
+    cmd = to_play_command("周杰倫 七里香")
+    assert cmd == f"{FASTPATH_PLAY_PREFIX}周杰倫 七里香"
+    assert "watch?v=" not in cmd

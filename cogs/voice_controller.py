@@ -2762,7 +2762,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                             f"({_hit[1]:.0f}) 跳過 cleaner")
                 pipeline_timing.mark("cleaner_done")
                 from music_fastpath import to_play_command  # 補動詞，否則裸 canonical→bus drop→幻覺
-                return to_play_command(_hit[0])
+                return to_play_command(_hit[0], _hit[2])
 
         # LLM 清洗 STT 雜訊，不做語音確認。短 timeout 封頂：cleaner 太慢就用 raw，不卡 worker
         # （含 TimeoutError 由 except 接 → 降級 raw）。喚醒偵測時已清過一次，這裡慢不值得等。

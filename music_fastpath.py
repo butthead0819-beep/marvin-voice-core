@@ -38,8 +38,13 @@ DEFAULT_THRESHOLD = 80.0
 FASTPATH_PLAY_PREFIX = "放一首"
 
 
-def to_play_command(canonical: str) -> str:
-    """把 fast-path 命中的 canonical「藝人 歌名」包成 music agent 認得的點歌指令。"""
+def to_play_command(canonical: str, video_id: str = "") -> str:
+    """把 fast-path 命中的 canonical 或 videoId 包成 music agent 認得的點歌指令。
+
+    video_id 非空時回 watch URL（跳 yt-dlp 6s search）；空則回原本的歌名指令。
+    """
+    if video_id:
+        return f"{FASTPATH_PLAY_PREFIX}https://www.youtube.com/watch?v={video_id}"
     return f"{FASTPATH_PLAY_PREFIX}{canonical}"
 
 
@@ -65,10 +70,10 @@ def to_pinyin(text: str) -> str:
 
 
 class MusicFastPath:
-    """載入 canonical 歌表、提供 query → (canonical, score) 匹配。
+    """載入 canonical 歌表、提供 query → (canonical, score, video_id) 匹配。
 
-    catalog jsonl/json 格式：[{"name": "周杰倫 七里香", "pinyin": "..."}]
-    pinyin 缺則 lazy 補算。
+    catalog jsonl/json 格式：[{"name": "周杰倫 七里香", "pinyin": "...", "videoId": "xxxx"}]
+    pinyin 缺則 lazy 補算；videoId 缺則 ''（fallback 走 name-based search）。
     """
 
     def __init__(self, catalog_path: Path | str = DEFAULT_CATALOG,
@@ -77,6 +82,7 @@ class MusicFastPath:
         self._path = Path(catalog_path)
         self._names: list[str] = []
         self._index: dict[int, str] = {}  # idx → pinyin（rapidfuzz process choices）
+        self._video_ids: dict[int, str] = {}  # idx → videoId（'' 表示沒有）
         self._mtime: float = -1.0
         self._enabled = _DEPS_OK
         if _DEPS_OK:
@@ -90,6 +96,7 @@ class MusicFastPath:
         """（重）載入目錄。reset 後重填，記錄 mtime 供熱重載比對。"""
         self._names = []
         self._index = {}
+        self._video_ids = {}
         try:
             self._mtime = self._path.stat().st_mtime
             rows = json.loads(self._path.read_text(encoding="utf-8"))
@@ -102,7 +109,9 @@ class MusicFastPath:
                 continue
             py = row.get("pinyin") or to_pinyin(name)
             self._names.append(name)
-            self._index[len(self._names) - 1] = py
+            idx = len(self._names) - 1
+            self._index[idx] = py
+            self._video_ids[idx] = (row.get("videoId") or "").strip()
 
     def _maybe_reload(self) -> None:
         """目錄檔 mtime 變了就熱重載（3am cron 重建後不用重啟 bot 就吃到新目錄）。"""
@@ -114,8 +123,8 @@ class MusicFastPath:
             logger.info("[MusicFastPath] 目錄更新 → 熱重載 (%s)", self._path)
             self._load()
 
-    def match(self, query: str) -> tuple[str, float] | None:
-        """query（已剝喚醒詞）→ (canonical_name, score) 若 ≥門檻，否則 None。"""
+    def match(self, query: str) -> tuple[str, float, str] | None:
+        """query（已剝喚醒詞）→ (canonical_name, score, video_id) 若 ≥門檻，否則 None。"""
         if not self._enabled or not query or not query.strip():
             return None
         self._maybe_reload()
@@ -130,7 +139,7 @@ class MusicFastPath:
             return None
         _pinyin_val, score, idx = res
         if score >= self.threshold and self._title_covered(qpy, _pinyin_val, query_text=stripped):
-            return self._names[idx], float(score)
+            return self._names[idx], float(score), self._video_ids.get(idx, "")
         return None
 
     _STOP = {"de", "a", "ya", "ne", "ba", "la"}
