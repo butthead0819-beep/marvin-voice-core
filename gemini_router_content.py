@@ -969,18 +969,54 @@ class GeminiRouterContentMixin:
         # 兩個人設打架（marvin 10/10 憂鬱 vs 專業 DJ），LLM 會走憂鬱腔輸出諷刺台詞，
         # 「不諷刺、不憂鬱」指示失效。
         _DJ_EVENT_TYPES = {"dj_interjection", "stream_now_playing", "radio_now_playing"}
-        if event_type in _DJ_EVENT_TYPES:
+        is_dj = event_type in _DJ_EVENT_TYPES
+        # 純評語：非 DJ、不吃 context、是已知 prompt → 可快取一池變體輪播（降載 35%LLM 的主刀）
+        is_quip = (not is_dj) and (not context) and (event_type in prompts)
+
+        # 命中快取直接回（零 LLM）：DJ 按 (event_type,context)、純評語按 event_type 池輪播
+        cache = self._get_dyn_msg_cache()
+        if cache is not None:
+            _hit = cache.get_dj(event_type, context) if is_dj else (cache.get_quip(event_type) if is_quip else None)
+            if _hit:
+                return _hit
+
+        if is_dj:
             sys_prompt = f"你是 DJ Marvin，記得每位常客的專業電台 DJ。任務：{prompts[event_type]}"
         else:
             persona = self.dna.get("persona_tag", "厭世機器人馬文")
             toxicity = self.dna.get("toxicity", 10)
             sys_prompt = f"你是馬文 (Marvin)。當前性格標籤：{persona}，憂鬱指數：{toxicity}/10。\n脈絡：{context}\n任務：{prompts.get(event_type, '隨便嘆一口氣。')}"
-        
+
         try:
             # 使用高隨機性 (Temperature 0.9) 確保不重複
-            return await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple")
-        except:
+            if is_quip and cache is not None:
+                # 純評語：一次批次生 N 句填池，之後輪播免 LLM
+                from dynamic_msg_cache import QUIP_POOL_SIZE, parse_quips
+                batch = sys_prompt + f"\n\n請一次生成 {QUIP_POOL_SIZE} 句語氣略有不同的版本，每句獨立一行，不要編號、不要引號。"
+                raw = await self._call_llm(batch, "動態台詞批次", speaker="系統", tier="simple")
+                items = parse_quips(raw or "")
+                if items:
+                    cache.set_quips(event_type, items)
+                    return random.choice(items)
+                return (raw or "嗯？").strip() or "嗯？"  # 解析失敗 → 退回單句
+            result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple")
+            if is_dj and cache is not None and result:
+                cache.set_dj(event_type, context, result)  # 同首歌重播重用
+            return result
+        except Exception:
             return "嗯？" # 最底層防禦
+
+    def _get_dyn_msg_cache(self):
+        """Lazy DynamicMsgCache 單例；初始化失敗 → 標記後永回 None（fail-open 不卡功能）。"""
+        c = getattr(self, "_dyn_msg_cache", None)
+        if c is None:
+            try:
+                from dynamic_msg_cache import DynamicMsgCache
+                self._dyn_msg_cache = c = DynamicMsgCache()
+            except Exception:
+                self._dyn_msg_cache = False
+                return None
+        return c or None
 
     def check_budget_alerts(self) -> dict:
         """檢查是否有新觸發的水位警報"""
