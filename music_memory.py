@@ -221,6 +221,40 @@ class MusicMemory:
         s.setdefault("requesters", {})[requested_by] = s["requesters"].get(requested_by, 0) + 1
         self._save()
 
+    def undo_play(self, info: dict, requested_by: str | None = None) -> bool:
+        """抹除一次 record_play（誤點救回）：反向抵銷最近一次播放紀錄。
+
+        2026-07-01：使用者要求「偶爾點錯的歌播出來時，能當下把它從記憶抹去」，
+        避免污染口味指紋（_human_plays 從 requesters 算）與 autopilot 種子。
+
+        - pop 掉最後一筆 plays（誤點那次），total_plays -1
+        - requesters[點播者] -1，歸零則移除該 key（requested_by 未給則取該筆的 by）
+        - 已無真人播放且無 reactions → 整首移除（不再當推薦種子）
+        找不到這首 → 回 False（no-op）。
+        """
+        key = self._key(info)
+        songs = self._data.get("songs", {})
+        s = songs.get(key)
+        if not s:
+            return False
+        who = requested_by
+        plays = s.get("plays", [])
+        if plays:
+            who = who or plays.pop().get("by")
+        s["total_plays"] = max(0, s.get("total_plays", 0) - 1)
+        reqs = s.setdefault("requesters", {})
+        if who and who in reqs:
+            reqs[who] -= 1
+            if reqs[who] <= 0:
+                del reqs[who]
+        # 真人播放計數：排除 'Marvin推薦（為X）' 等自薦（同 taste_fingerprint._is_human）
+        human_left = sum(c for r, c in reqs.items()
+                         if r and "Marvin" not in r and "推薦" not in r)
+        if human_left <= 0 and not s.get("reactions"):
+            del songs[key]
+        self._save()
+        return True
+
     def record_reactions(self, info: dict, reactions: dict):
         """reactions: {username: {feelings: [], quotes: [], lyric_match: str}}"""
         key = self._key(info)
