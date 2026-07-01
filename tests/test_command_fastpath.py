@@ -65,3 +65,11 @@ def test_normalize_returns_canonical_text():
 def test_normalize_non_command_returns_none():
     assert normalize_command("你今天過得好嗎") is None
     assert normalize_command("") is None
+
+
+# ── kill-switch：MARVIN_COMMAND_FASTPATH=0 時整個 feature 停用（不重啟以外的保險閥）──
+def test_disabled_by_env_returns_none(monkeypatch):
+    import command_fastpath as cf
+    monkeypatch.setattr(cf, "_ENABLED", False)
+    assert cf.match_command_action("下一手") is None
+    assert cf.normalize_command("下一手") is None

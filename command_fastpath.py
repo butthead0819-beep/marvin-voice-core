@@ -17,6 +17,7 @@ toneless 拼音讓同音字塌成同一字串 → fuzzy 救回，直送 IntentBu
 """
 from __future__ import annotations
 
+import os
 import re
 
 from intent_agents.constants import (
@@ -31,6 +32,10 @@ except ImportError:  # 與 music_fastpath 同源 dep；缺 → _DEPS_OK 已 Fals
 
 DEFAULT_THRESHOLD = 85.0
 _MAX_LEN = 8   # 剝前綴後剩餘字數上限；控制指令都很短（下一首/停止播放≤4），長→非裸命令
+
+# kill-switch：晚間真人流量若糊字控制誤觸，設 MARVIN_COMMAND_FASTPATH=0 + 重啟即整個停用。
+# 預設 ON（feature 保守：只在精確表 miss + ratio≥門檻才觸發，blast radius 小）。
+_ENABLED = os.getenv("MARVIN_COMMAND_FASTPATH", "1") == "1"
 
 # 命中後回給下游的正規指令：都在 PlaybackControlAgent/MusicAgentV2 的 0.85+ pattern 內
 _CANONICAL = {"skip": "下一首", "pause": "暫停音樂", "resume": "繼續播", "stop": "停止播放"}
@@ -69,7 +74,7 @@ _IDX_PINYIN, _IDX_ACTION = _build_choices() if _DEPS_OK else ({}, {})
 
 def _match(text: str) -> tuple[str, str, float] | None:
     """(action, canonical, score) 若糊字命中某控制指令，否則 None。"""
-    if not _DEPS_OK or not _IDX_PINYIN or not text or not text.strip():
+    if not _ENABLED or not _DEPS_OK or not _IDX_PINYIN or not text or not text.strip():
         return None
     stripped = _PREFIX_RE.sub("", text.strip()).strip()
     if not stripped or len(stripped) > _MAX_LEN:
