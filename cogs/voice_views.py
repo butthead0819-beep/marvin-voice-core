@@ -239,6 +239,33 @@ class PlayControlView(discord.ui.View):
         self._selected_index = None
         await self._refresh(interaction)
 
+    @discord.ui.button(label="🙈 誤點抹除", style=discord.ButtonStyle.danger, row=3)
+    async def misclick_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        """把「正在播放」的誤點歌從記憶抹除 + 加永久黑名單 + 跳下一首。
+
+        誤點 ≠ skip：只反轉這次 record_play 的口味訊號，並用 video-id 黑名單擋掉
+        之後自動點；不做 artist_skip（一次手滑不該連坐整個藝人方向）。
+        """
+        c = self.controller
+        cur = c._current_stream_info
+        if not c.stream_mode or not cur:
+            await interaction.response.send_message("現在沒有正在播放的歌可以抹除。", ephemeral=True)
+            return
+        title = cur.get("title", "這首")
+        mm = getattr(c.bot, "music_memory", None)
+        if mm is not None:
+            try:
+                mm.undo_play(cur)
+                url = cur.get("webpage_url") or cur.get("url") or ""
+                if url:
+                    mm.record_skipped_video_id(url)
+            except Exception:
+                pass
+        self._skip_current(interaction.guild.voice_client)
+        await self._refresh(interaction)
+        await interaction.followup.send(
+            f"🙈 已把「{title[:40]}」從記憶抹除，之後不會再自動點。", ephemeral=True)
+
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True

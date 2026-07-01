@@ -40,6 +40,7 @@ def _fake_interaction(playing=True, values=None):
     interaction.response.send_message = AsyncMock()
     interaction.response.edit_message = AsyncMock()
     interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
     vc = MagicMock()
     vc.is_playing.return_value = playing
     interaction.guild.voice_client = vc
@@ -133,6 +134,34 @@ async def test_delete_button_removes_selected_song_from_queue():
     await view.delete_button.callback(_fake_interaction())
     assert [s["title"] for s in c.stream_queue] == ["A", "C"]
     assert view._selected_index is None
+
+
+# ── 🙈 誤點抹除按鈕 ───────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_misclick_button_erases_current_from_memory_and_skips():
+    cur = {"title": "手滑點到的歌", "uploader": "某藝人",
+           "webpage_url": "https://youtu.be/dQw4w9WgXcQ"}
+    c = _fake_controller(stream_mode=True, _current_stream_info=cur)
+    view = PlayControlView(c)
+    interaction = _fake_interaction(playing=True)
+    await view.misclick_button.callback(interaction)
+    # 反向抵銷 record_play + 加永久黑名單
+    c.bot.music_memory.undo_play.assert_called_once_with(cur)
+    c.bot.music_memory.record_skipped_video_id.assert_called_once_with(
+        "https://youtu.be/dQw4w9WgXcQ")
+    # 跳到下一首（舊路徑：vc.stop_playing）
+    assert interaction.guild.voice_client.stop_playing.called
+
+
+@pytest.mark.asyncio
+async def test_misclick_button_noop_when_nothing_playing():
+    c = _fake_controller(stream_mode=False, _current_stream_info=None)
+    view = PlayControlView(c)
+    interaction = _fake_interaction()
+    await view.misclick_button.callback(interaction)
+    assert interaction.response.send_message.called
+    assert not c.bot.music_memory.undo_play.called
 
 
 @pytest.mark.asyncio
