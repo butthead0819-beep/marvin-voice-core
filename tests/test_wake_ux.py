@@ -1,5 +1,7 @@
+import asyncio
+
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from cogs.voice_controller import VoiceController
 
@@ -76,6 +78,30 @@ async def test_confirmation_accepts_short_control_command_without_waiting(initia
 
     assert query == expected
     assert controller.speaker_dialogue_states == {}
+
+
+@pytest.mark.asyncio
+async def test_confirmation_wait_uses_named_timeout_constant(monkeypatch):
+    """只喊喚醒詞→等後續問句的逾時秒數必須用 _CONFIRM_WAIT_TIMEOUT 常數（不可再寫死 10.0），
+    且值已由 10s 降到 4s，縮短單 worker 佇列尾巴（一人的思考停頓不再霸佔整個 worker 10 秒）。"""
+    controller = make_controller()
+    controller.play_tts = AsyncMock()
+
+    captured = {}
+
+    async def fake_wait_for(coro, timeout):
+        captured["timeout"] = timeout
+        coro.close()  # 關掉未 await 的 evt.wait() coroutine，避免 warning
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr("cogs.voice_controller.asyncio.wait_for", fake_wait_for)
+
+    # initial_text 只有喚醒詞 → stripped < 4 → 進入等問句分支
+    query = await controller._confirmation_flow("User1", 123.0, initial_text="馬文")
+
+    assert query is None                                              # 逾時 → 回 None
+    assert captured["timeout"] == VoiceController._CONFIRM_WAIT_TIMEOUT
+    assert VoiceController._CONFIRM_WAIT_TIMEOUT == 4.0
 
 
 @pytest.mark.asyncio

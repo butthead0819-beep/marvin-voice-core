@@ -2008,6 +2008,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
     # confirmation_flow 內那次 cleaner 在 wake→LLM 阻塞路徑上；池子壞時 cleaner 會疊到
     # 27-35s（多家 8s timeout 串接）。封頂 2.5s：健康時照清，太慢就用 raw，不卡 worker。
     _CONFIRM_CLEAN_TIMEOUT       = 2.5
+    _CONFIRM_WAIT_TIMEOUT        = 4.0   # 只喊喚醒詞後等後續問句的逾時；在單 worker 內阻塞，10s→4s 縮短佇列尾
 
     @staticmethod
     def _is_stt_noise(entry: str) -> bool:
@@ -2717,7 +2718,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         """
         取得問句後直接回答，不做 TTS 確認環節。
         - 問句已在喚醒句中：立即返回，零等待
-        - 問句為空：等待後續 STT（最多 10 秒），逾時才提示重說
+        - 問句為空：等待後續 STT（最多 _CONFIRM_WAIT_TIMEOUT 秒），逾時才提示重說
         """
         evt = asyncio.Event()
         self.speaker_dialogue_states[speaker] = {"state": "awaiting_question", "event": evt, "question": ""}
@@ -2734,7 +2735,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         else:
             # 問句為空（玩家只說了喚醒詞），等後續語音
             try:
-                await asyncio.wait_for(evt.wait(), timeout=10.0)
+                await asyncio.wait_for(evt.wait(), timeout=self._CONFIRM_WAIT_TIMEOUT)
                 stripped = self.speaker_dialogue_states[speaker].get("question", stripped)
             except asyncio.TimeoutError:
                 logger.info(f"🗣️ [Confirm] {speaker} 等待問句逾時")
