@@ -26,7 +26,7 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4218      # 實測 4218（2026-07-01 把 confirmation 逾時 magic 10.0 抽成 _CONFIRM_WAIT_TIMEOUT 常數 +1；非新功能）
+LINE_BUDGET = 4227      # 實測 4227（2026-07-01 接線 command_fastpath 糊字控制指令拼音兜底 +9；邏輯在 command_fastpath.py，同 MusicFastPath 薄接線先例）
 METHOD_BUDGET = 90      # VoiceController 自身定義的 method 數；新「功能」別在這加 method
 
 

@@ -104,6 +104,32 @@ async def test_confirmation_wait_uses_named_timeout_constant(monkeypatch):
     assert VoiceController._CONFIRM_WAIT_TIMEOUT == 4.0
 
 
+def test_detect_music_direct_command_fuzzy_fallback():
+    """IBA-T0 無喚醒詞：糊字控制指令走拼音兜底（精確表 miss → fuzzy 救回）。"""
+    controller = make_controller()
+    assert controller._detect_music_direct_command("下一手") == {"action": "skip"}
+    assert controller._detect_music_direct_command("切鴿") == {"action": "skip"}
+    assert controller._detect_music_direct_command("繼續撥") == {"action": "resume"}
+    # 閒聊/問句不可誤觸
+    assert controller._detect_music_direct_command("為什麼要一直跳過這首歌") is None
+
+
+def test_detect_music_command_fuzzy_fallback():
+    """wake 版偵測器同樣拼音兜底（供 confirmation_flow 的短命令 wait 判定）。"""
+    controller = make_controller()
+    assert controller._detect_music_command("下一手") == "skip"
+    assert controller._detect_music_command("你今天好嗎") is None
+
+
+@pytest.mark.asyncio
+async def test_confirmation_normalizes_garbled_command_skipping_cleaner():
+    """糊字短控制指令「馬文下一手」→ 剝喚醒詞「下一手」→ 拼音正規化「下一首」直接返回，
+    不進 cleaner LLM（下游 PlaybackControlAgent regex 命中）。"""
+    controller = make_controller()
+    query = await controller._confirmation_flow("User1", 123.0, initial_text="馬文下一手")
+    assert query == "下一首"
+
+
 @pytest.mark.asyncio
 async def test_process_queued_query_passes_speaker_to_harvest():
     """Regression: get_harvest must receive speaker= so cross-talk doesn't pollute queries."""

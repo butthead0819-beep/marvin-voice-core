@@ -77,6 +77,7 @@ from intent_agents.constants import (
     STRONG_PLAY_KW as _STRONG_PLAY_KW_SRC,
     WEAK_PLAY_KW as _WEAK_PLAY_KW_SRC,
 )
+from command_fastpath import match_command_action, normalize_command
 from intent_bus import IntentBus, IntentContext
 from intent_gap import GapLogger, handle_intent_gap, make_groq_gap_classifier
 from gap_research import (
@@ -2766,6 +2767,13 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 from music_fastpath import to_play_command  # 補動詞，否則裸 canonical→bus drop→幻覺
                 return to_play_command(_hit[0], _hit[2])
 
+        # 糊字控制指令拼音兜底：下一手→下一首，下游 PlaybackControlAgent regex 命中、跳 cleaner
+        _cmd = normalize_command(stripped)
+        if _cmd:
+            logger.info(f"🎛️ [CommandFastPath] '{stripped[:20]}' → '{_cmd}' 跳過 cleaner")
+            pipeline_timing.mark("cleaner_done")
+            return _cmd
+
         # LLM 清洗 STT 雜訊，不做語音確認。短 timeout 封頂：cleaner 太慢就用 raw，不卡 worker
         # （含 TimeoutError 由 except 接 → 降級 raw）。喚醒偵測時已清過一次，這裡慢不值得等。
         cleaned = stripped
@@ -3650,7 +3658,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         for kw in self._WEAK_PLAY_KW:
             if kw in q and self._query_implies_music_intent(q, kw):
                 return "play"
-        return None
+        return match_command_action(q)   # 糊字控制指令拼音兜底（下一手→skip）
 
     def _check_song_duplicate(self, url: str, title: str, username: str,
                               *, webpage_url: str = "", check_history: bool = True) -> bool:
@@ -3711,7 +3719,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if kw in t and self._query_implies_music_intent(t, kw):
                 query = self._extract_music_search_query(text)
                 return {"action": "play", "query": query}
-        return None
+        _act = match_command_action(text)   # 糊字控制指令拼音兜底（下一手→skip）
+        return {"action": _act} if _act else None
 
     # play 關鍵字（含 strong + 常見 weak），長句救援用；故意排除 control 詞
     _EMBEDDED_PLAY_KW: tuple[str, ...] = ("幫我播放", "播放", "我想聽", "幫我放", "放一首", "來一首")
