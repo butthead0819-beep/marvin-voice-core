@@ -342,6 +342,13 @@ class MarvinBot(commands.Bot):
             except Exception as e:
                 logger.warning(f"[LivenessBeacon] startup failed: {e}")
 
+        # 🔀 [AltRescue] 開機驗證 env 真的有設（J2 空轉 3 天教訓：wire ≠ 啟用）
+        try:
+            from alt_rescue import rescue_mode
+            logger.warning(f"🔀 [AltRescue] mode={rescue_mode()}（env MARVIN_ALT_RESCUE）")
+        except Exception:
+            pass
+
         # 6. 啟動 CompanionBridge（Phase 3a）— 與 MarmoServer 並列
         try:
             await start_companion_bridge(self, voice_controller=vc_cog)
