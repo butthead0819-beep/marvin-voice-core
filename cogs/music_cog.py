@@ -696,10 +696,19 @@ class MusicCog(commands.Cog):
         rec = (rec or "").strip()
         return "" if (not rec or "無推薦" in rec) else rec
 
-    def _recommend_blurb(self, cand, title: str, spotlight: str = "") -> str:
-        """依 lane 產生推薦時的自我說明文案。"""
+    def _recommend_blurb(self, cand, title: str, spotlight: str = "",
+                         personal: bool = True) -> str:
+        """依 lane 產生推薦時的自我說明文案。
+
+        personal=False（歌不在掛名對象的點播歷史）→ 不指名、點給大家
+        （2026-07-02 使用者訂：掛名「為X」必須是 X 點過的歌）。
+        """
         if cand.lane == "group_resonance":
             return f"🎵 **【馬文精選】** 你們都有共鳴的《{title}》，再聽一次吧。"
+        if not personal:
+            if cand.lane == "discovery":
+                return f"🎵 **【馬文精選】** 挖到新歌《{title}》，點給大家聽聽看。"
+            return f"🎵 **【馬文精選】** 翻出《{title}》，點給大家。"
         who = cand.target_member or spotlight or "你"
         if cand.lane == "long_tail":
             return f"🎵 **【馬文精選】** 為 `{who}` 從塵封歌單挖出《{title}》。"
@@ -743,7 +752,9 @@ class MusicCog(commands.Cog):
                 continue
             if is_already_recommended(info.get('title', ''), exclude_titles):
                 continue
-            info['requested_by'] = f"Marvin推薦（為{spotlight}）"
+            # 掛名規則：themed 選歌來自主題策展、通常非 spotlight 點過 → 多為點給大家
+            from music_memory import recommend_attribution
+            info['requested_by'] = recommend_attribution(mm, info, spotlight)
             info['_lane'] = 'themed'
             info['_spotlight'] = spotlight
             info['_set_id'] = theme_title
@@ -961,7 +972,9 @@ class MusicCog(commands.Cog):
                 except Exception:
                     logger.exception("[AutoRecommend] quality filter raised — fail-open")
 
-            info['requested_by'] = f"Marvin推薦（為{spotlight}）"
+            # 掛名規則（2026-07-02）：「為X」⟹ X 點過這首；discovery 新歌等 → 點給大家
+            from music_memory import recommend_attribution
+            info['requested_by'] = recommend_attribution(mm, info, spotlight)
             info['_round_first'] = (enqueued == 0)
             info['_spotlight'] = spotlight
             info['_lane'] = cand.lane
@@ -976,7 +989,11 @@ class MusicCog(commands.Cog):
             active_ch = vc.active_text_channel if vc is not None else None
             if active_ch and enqueued == 0:
                 vibe_tag = f" [vibe: {vibe_label.mood}]" if vibe_label else ""
-                blurb = self._recommend_blurb(cand, info['title'], spotlight=spotlight) + vibe_tag
+                # 文案與掛名同規則：blurb 指名的人（target_member 優先）也要真的點過這首
+                _blurb_who = cand.target_member or spotlight
+                _personal = bool(_blurb_who) and mm.is_requester(info, _blurb_who)
+                blurb = self._recommend_blurb(cand, info['title'], spotlight=spotlight,
+                                              personal=_personal) + vibe_tag
                 await active_ch.send(blurb)
 
             _recent_titles = [
