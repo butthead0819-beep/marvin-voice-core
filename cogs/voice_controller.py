@@ -2766,6 +2766,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 pipeline_timing.mark("cleaner_done")
                 from music_fastpath import to_play_command  # 補動詞，否則裸 canonical→bus drop→幻覺
                 return to_play_command(_hit[0], _hit[2])
+            else:
+                from alt_rescue import run_alt_rescue  # 🔀 top-1 miss → STT 備選救援（邏輯在 alt_rescue.py，env MARVIN_ALT_RESCUE）
+                _ar = run_alt_rescue(_fp, speaker, stripped, getattr(self.bot, "engine", None), self._strip_wake_word)
+                if _ar:
+                    pipeline_timing.mark("cleaner_done")
+                    return _ar
 
         # 糊字控制指令拼音兜底：下一手→下一首，下游 PlaybackControlAgent regex 命中、跳 cleaner
         _cmd = normalize_command(stripped)
