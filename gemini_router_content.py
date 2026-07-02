@@ -72,6 +72,12 @@ class GeminiRouterContentMixin:
             raw_json = await self._call_llm(system_prompt, user_prompt, is_json=True, allow_local=False, tier="high")
             extracted_data = safe_json_loads(raw_json, {})
             
+            # 🧼 [防線③] LLM 產出進持久層前檢疫（掰時戳/非答案/垃圾長文；
+            # 錯誤記憶會複利——見 memory_quarantine docstring）。kill-switch 預設開。
+            if extracted_data and os.getenv("MARVIN_MEMORY_QUARANTINE", "1") != "0":
+                from memory_quarantine import quarantine
+                extracted_data, _rejected = quarantine(extracted_data, speaker)
+
             if extracted_data:
                 # 🌡️ [Warm Circuit] 分離處理 behavioral_patterns
                 bp = extracted_data.pop("behavioral_patterns", {})

@@ -772,9 +772,9 @@ class GeminiRouterLLMMixin:
 
     async def stream_fast_response(self, speaker: str, query: str, history: list = None, online_members: list[str] = None, temperature: float = None, emotion_tag: str = "neutral", stream_active: bool = False, game_mode: bool = False, hot_chat: bool = False):
         """[Fast System] 極速回應流式版本：專為 TTS 串流橋接設計"""
-        target_speakers = [speaker]
-        if online_members:
-            target_speakers = [speaker] + [m for m in online_members if m != speaker]
+        # 🔒 [防線②] 記憶注入名單唯一建構點——不變量由 test_speaker_isolation 守
+        from speaker_isolation import present_speakers
+        target_speakers = present_speakers(speaker, online_members)
 
         _dna = {**self.dna, '_session_calls': self._session_call_count}
         system_prompt = self.prompt_manager.get_instruction("fast_awakening", vision_enabled=self.vision_enabled, dna=_dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
