@@ -47,6 +47,11 @@ def setup_early_logging():
     main_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     logging.getLogger().addHandler(main_handler)
     logging.getLogger("cogs.voice_controller").setLevel(logging.INFO)
+    # 新頂層模組 logger 需顯式 INFO，否則吃 root WARNING、觀測 log 全被吞
+    # （2026-07-02 教訓：AltRescue shadow 上線後沉默，其實是 logger 層級不是邏輯）
+    logging.getLogger("alt_rescue").setLevel(logging.INFO)
+    logging.getLogger("memory_quarantine").setLevel(logging.INFO)
+    logging.getLogger("liveness_beacon").setLevel(logging.INFO)
 
     stdout_logger = logging.getLogger("MarvinBot.Stdout")
     stdout_logger.setLevel(logging.INFO)

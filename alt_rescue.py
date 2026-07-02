@@ -76,6 +76,11 @@ def try_alt_rescue(fp, stripped: str, slot, *, strip_wake_fn,
             if _hanzi_len(alt) < min_hanzi:
                 continue
             cand = strip_command_prefix(strip_wake_fn(alt).strip())
+            # 剝完後仍需夠長：如「馬文播放」剝成裸「播放」，strip_command_prefix
+            # 剝空回退原字串 → 2 音節垃圾 token 會被長歌名全覆蓋假 100 分
+            # （離線重放實證：「播放」→ 海波浪 100）。歌名級內容至少 3 漢字。
+            if _hanzi_len(cand) < 3:
+                continue
             if not cand or cand == song_part or cand in seen:
                 continue
             seen.add(cand)

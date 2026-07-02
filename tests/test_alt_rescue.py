@@ -134,6 +134,18 @@ def test_missing_slot_abandons_rescue():
     assert reason == "no_slot"
 
 
+def test_bare_command_word_alt_not_fed_to_match():
+    """「馬文播放」剝完只剩裸「播放」→ 不得餵 match——2 音節垃圾 token 會被
+    長歌名 token_set 全覆蓋假 100 分（2026-07-02 離線重放實證：播放→海波浪 100）。"""
+    fp = _StubFP({"播放": ("方瑞娥 海波浪", 100.0, "vX")})
+    slot = ("馬文播放周杰倫的青天", [["馬文播放"]], 0.0)
+    result, reason = try_alt_rescue(
+        fp, "播放周杰倫的青天", slot, strip_wake_fn=_strip_wake)
+    assert result is None
+    assert reason == "no_alt_hit"
+    assert fp.calls == []           # 裸指令詞連 match 都不碰
+
+
 def test_short_alternatives_skipped():
     """<4 漢字備選（gate 統計的碎片類）不餵——雜訊假命中面。"""
     fp = _StubFP({"晴": ("周杰倫 晴天", 90.0, "v1")})
