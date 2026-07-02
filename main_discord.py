@@ -330,6 +330,18 @@ class MarvinBot(commands.Bot):
         # 5b. 啟動 ErrorDispatcher — 真錯誤 → openclaw triage → DM owner
         await self._install_error_dispatcher(vc_cog)
 
+        # 5c. 🫀 [防線①] 心跳信標——外部 probe 靠它偵測 event loop 凍住
+        #（busy-spin 型事故 launchd 救不了）。kill-switch MARVIN_HEARTBEAT=0。
+        if os.getenv("MARVIN_HEARTBEAT", "1") != "0":
+            try:
+                from liveness_beacon import run_beacon
+                self._beacon_stop = asyncio.Event()
+                self._beacon_task = self.loop.create_task(
+                    run_beacon(stop_event=self._beacon_stop))
+                logger.info("🫀 [LivenessBeacon] 已啟動（records/heartbeat.json / 30s）")
+            except Exception as e:
+                logger.warning(f"[LivenessBeacon] startup failed: {e}")
+
         # 6. 啟動 CompanionBridge（Phase 3a）— 與 MarmoServer 並列
         try:
             await start_companion_bridge(self, voice_controller=vc_cog)
@@ -419,6 +431,7 @@ class MarvinBot(commands.Bot):
                 vector_store=vc_cog._vector_store,
                 transcript_store=vc_cog._transcript_store,
                 groq_client=groq_client,
+                router=getattr(self, 'router', None),
             )
 
             async def _run_topic_proactive() -> list[str]:
