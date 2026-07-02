@@ -221,6 +221,16 @@ class MusicMemory:
         s.setdefault("requesters", {})[requested_by] = s["requesters"].get(requested_by, 0) + 1
         self._save()
 
+    def is_requester(self, info: dict, username: str) -> bool:
+        """username 是否真人點播過這首歌（掛名推薦的資格檢查）。
+
+        exact key 比對——「Marvin推薦（為X）」偽 requester 不等於 X 本人點過。
+        """
+        if not username:
+            return False
+        s = self._data.get("songs", {}).get(self._key(info))
+        return bool(s and s.get("requesters", {}).get(username))
+
     def undo_play(self, info: dict, requested_by: str | None = None) -> bool:
         """抹除一次 record_play（誤點救回）：反向抵銷最近一次播放紀錄。
 
@@ -605,3 +615,23 @@ class MusicMemory:
                 return best_entry["correct"], query
 
         return query, None
+
+
+# ── 推薦掛名規則（2026-07-02 使用者訂） ─────────────────────────────────────
+
+GROUP_ATTRIBUTION = "Marvin推薦（點給大家）"
+
+
+def recommend_attribution(mm, info: dict, spotlight: str) -> str:
+    """自動推薦的 requested_by 掛名：「為X」⟹ X 真的點過這首，否則點給大家。
+
+    背景：discovery 新歌 / themed 主題歌單掛「為X」但 X 根本沒點過 →
+    使用者混淆。fail-safe 一律回團體掛名（掛錯名比不掛名傷）。
+    兩種字串都含「Marvin」「推薦」→ taste/_is_human 排除邏輯不受影響。
+    """
+    try:
+        if mm is not None and spotlight and mm.is_requester(info, spotlight):
+            return f"Marvin推薦（為{spotlight}）"
+    except Exception:
+        pass
+    return GROUP_ATTRIBUTION
