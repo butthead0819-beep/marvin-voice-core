@@ -789,6 +789,10 @@ class DiscordVoiceEngine:
         # First utterance from an unknown speaker defaults to "zh".
         self._speaker_lang: dict[str, str] = {}
 
+        # 🔀 [AltLatticeRescue Stage 1] per-speaker 單槽 side-channel：
+        # (raw_text, alt_segments | None, ts)，供 AltRescue seam 讀取本句 lattice。
+        self._last_alt_segments: dict[str, tuple] = {}
+
         # Zombie-thread guard: semaphore released by the thread itself (not asyncio timeout).
         # New calls check acquire(blocking=False) — if taken, the previous thread is still
         # running and the call is dropped. Max 1 Whisper thread alive at any time.
@@ -1234,6 +1238,18 @@ class DiscordVoiceEngine:
 
     # ── P2: STT 引擎拆解為獨立協程 ─────────────────────────────────────────────
 
+    def _store_alt_segments(self, speaker: str, raw_text: str, stt_meta: dict | None) -> None:
+        """per-speaker 單槽 side-channel：存本句 lattice 供 AltRescue seam 讀取。
+
+        永遠覆蓋（無 alt_segments 也存 None）——舊句的 lattice 不得誤掛到
+        該 speaker 的新 query（設計文件「seam 讀取與驗證」節的不變量）。
+        """
+        self._last_alt_segments[speaker] = (
+            raw_text,
+            (stt_meta or {}).get("alt_segments"),
+            time.time(),
+        )
+
     def _build_stt_context(self) -> str:
         """組 Swift contextualStrings：喚醒詞 + 遊戲字典 + 當前/佇列歌名歌手 + 活躍講者。
 
@@ -1584,6 +1600,8 @@ class DiscordVoiceEngine:
             # Update speaker language memory from this utterance for next call
             if raw_text:
                 self._update_speaker_lang(speaker_name, raw_text)
+                # 🔀 [AltLatticeRescue] 本句 lattice 進 per-speaker side-channel 槽
+                self._store_alt_segments(speaker_name, raw_text, stt_meta)
             # STT meta（avg/min confidence、prosody）：先 log 紀錄，後續供 J1 信心校準
             print(f"🧪 [STT Meta DEBUG] engine={used_engine} speaker={speaker_name} meta={stt_meta} type={type(stt_meta).__name__}", flush=True)
             if stt_meta:
@@ -1601,6 +1619,11 @@ class DiscordVoiceEngine:
                     min_confidence=stt_meta.get("min_confidence"),
                     # SwiftV2 同音字備選（證據收集：備選裡有沒有正確寫法，決定要不要接 music search）
                     alternatives=stt_meta.get("alternatives"),
+                    # 🔀 [AltLatticeRescue Stage 1] 補洞：沒存主文字/分段的舊資料
+                    # 連事後 replay 都不行（2026-07-02 設計文件 P2）。
+                    text=raw_text,
+                    segment_count=stt_meta.get("segment_count"),
+                    alt_segments=stt_meta.get("alt_segments"),
                 )
 
             # 🔬 [VolatileShadow] Phase 0：volatile 串流時序量測（env VOLATILE_SHADOW，
