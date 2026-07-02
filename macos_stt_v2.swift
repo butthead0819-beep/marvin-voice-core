@@ -78,10 +78,12 @@ struct MacosSTTv2 {
         do {
             var segments: [String] = []
             // results 收集與 analyze 並行；finalize 後 stream 結束
-            async let collector: ([String], [Double], [String]) = {
+            // 2026-07-02 [AltLatticeRescue Stage 1]：備選改 per-segment 分組（[[String]]），
+            // 保留與 segments 的 index 對位——舊版攤平後 prefix(3) 會丟後段備選與結構。
+            async let collector: ([String], [Double], [[String]]) = {
                 var out: [String] = []
                 var confs: [Double] = []
-                var alts: [String] = []
+                var altSegments: [[String]] = []
                 for try await result in transcriber.results {
                     out.append(String(result.text.characters))
                     for run in result.text.runs {
@@ -89,18 +91,16 @@ struct MacosSTTv2 {
                             confs.append(c)
                         }
                     }
-                    for alt in result.alternatives.prefix(3) {
-                        alts.append(String(alt.characters))
-                    }
+                    altSegments.append(result.alternatives.prefix(5).map { String($0.characters) })
                 }
-                return (out, confs, alts)
+                return (out, confs, altSegments)
             }()
             if let lastSample = try await analyzer.analyzeSequence(from: audioFile) {
                 try await analyzer.finalizeAndFinish(through: lastSample)
             } else {
                 await analyzer.cancelAndFinishNow()
             }
-            let (segs, confidences, alternatives) = try await collector
+            let (segs, confidences, altSegments) = try await collector
             segments = segs
 
             // 沿 v1 契約：無標點輸出（中文標點歷史上錯斷句、cleaner 會移除）
@@ -142,9 +142,17 @@ struct MacosSTTv2 {
                 meta["avg_confidence"] = confidences.reduce(0, +) / Double(confidences.count)
                 meta["min_confidence"] = confidences.min() ?? 0.0
             }
-            let cleanAlts = alternatives.map(stripPunct).filter { !$0.isEmpty && $0 != text }
-            if !cleanAlts.isEmpty {
-                meta["alternatives"] = Array(cleanAlts.prefix(3))
+            // per-segment 備選（與 segments index 對位）；空段保留空陣列維持對位。
+            let cleanAltSegments = altSegments.map { seg in
+                seg.map(stripPunct).filter { !$0.isEmpty }
+            }
+            if cleanAltSegments.contains(where: { !$0.isEmpty }) {
+                meta["alt_segments"] = cleanAltSegments
+                // 舊欄位保形（相容既有 stt_confidence 消費者）：攤平取前 3
+                let flat = cleanAltSegments.flatMap { $0 }.filter { $0 != text }
+                if !flat.isEmpty {
+                    meta["alternatives"] = Array(flat.prefix(3))
+                }
             }
             if let metaData = try? JSONSerialization.data(withJSONObject: meta),
                let metaStr = String(data: metaData, encoding: .utf8) {
