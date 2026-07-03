@@ -36,6 +36,8 @@ class SpeakerDispatcher:
         self._queues: dict[str, asyncio.Queue] = {}
         self._workers: dict[str, asyncio.Task] = {}
         self._inflight: dict[str, bool] = {}
+        # 開機可驗證（J2 空轉教訓：wire ≠ 啟用）；WARNING 級確保 root logger 放行
+        logger.warning(f"🚀 [{name}] per-speaker 序列化啟用（depth={max_depth}, idle_ttl={idle_ttl_s:.0f}s）")
 
     # ── API ──────────────────────────────────────────────────────────────
 
