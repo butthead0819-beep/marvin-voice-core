@@ -52,6 +52,7 @@ def setup_early_logging():
     logging.getLogger("alt_rescue").setLevel(logging.INFO)
     logging.getLogger("memory_quarantine").setLevel(logging.INFO)
     logging.getLogger("liveness_beacon").setLevel(logging.INFO)
+    logging.getLogger("diary_comic_poster").setLevel(logging.INFO)  # 漫畫 skip 原因/已貼 log
 
     stdout_logger = logging.getLogger("MarvinBot.Stdout")
     stdout_logger.setLevel(logging.INFO)

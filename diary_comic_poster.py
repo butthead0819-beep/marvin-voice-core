@@ -162,13 +162,17 @@ def plan_latest_session(log_text: str, rows_fn):
 
     sessions = eligible_sessions(dedupe_adjacent(parse_log(log_text)))
     if not sessions:
+        logger.info("📓 [DiaryComic] skip: 無可用場次")
         return None
     session = sessions[-1]
     if not should_generate(session, min_entries=DIARY_MIN_ENTRIES):
+        # 2026-07-03 補觀測：6/26-7/1 五晚短場全被此閘靜默跳過，使用者以為管線壞了
+        logger.info(f"📓 [DiaryComic] skip: 場次僅 {len(session)} 段 < {DIARY_MIN_ENTRIES}（太短不燒圖錢）")
         return None  # 內容不足 DIARY_MIN_ENTRIES 段（對話太短）→ 不值得燒生圖錢
     end = session[-1].ts_str
     cur = curate(rows_fn(session[0].ts_str, end), session)
     if cur is None:
+        logger.info("📓 [DiaryComic] skip: curator 回 None（無可策展內容）")
         return None
     return session, curation_to_story_plan(cur), end
 
@@ -302,6 +306,7 @@ def _render_blocking(key: str):
         return None
     session, plan, end = planned
     if end == _last_posted() or end == _pending().get("end"):
+        logger.info(f"📓 [DiaryComic] skip: 場次 {end} 已貼過/已渲染待貼")
         return None  # 已貼過、或已渲染待貼
 
     npanels = 1 if plan.format == "meme" else 4  # meme 單格 / slant 四格
