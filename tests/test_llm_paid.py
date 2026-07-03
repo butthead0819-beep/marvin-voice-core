@@ -106,3 +106,26 @@ def test_default_caps_aligned_with_10usd_spending_cap():
     g = PaidUsageGuard()
     assert g.daily_cap_usd == 0.5
     assert g.monthly_cap_usd == 4.0
+
+
+def test_record_stores_in_out_token_split(tmp_path):
+    """2026-07-03：in/out 分開存——output 單價是 input 8 倍，混在一起無法診斷
+    「誰在生成大量輸出」（本次帳務調查的痛點正是 output token SKU）。"""
+    import json
+    from llm_paid import PaidUsageGuard
+    g = PaidUsageGuard(log_path=tmp_path / "u.jsonl")
+    g.record(caller="test", model="gemini-2.5-flash", tokens=300, est_usd=0.01,
+             in_tokens=200, out_tokens=100)
+    row = json.loads((tmp_path / "u.jsonl").read_text().strip())
+    assert row["in_tokens"] == 200
+    assert row["out_tokens"] == 100
+
+
+def test_record_without_split_still_works(tmp_path):
+    """舊呼叫介面不帶 split → 不炸、不寫 split 欄（向後相容）。"""
+    import json
+    from llm_paid import PaidUsageGuard
+    g = PaidUsageGuard(log_path=tmp_path / "u.jsonl")
+    g.record(caller="test", model="m", tokens=10, est_usd=0.0)
+    row = json.loads((tmp_path / "u.jsonl").read_text().strip())
+    assert "in_tokens" not in row

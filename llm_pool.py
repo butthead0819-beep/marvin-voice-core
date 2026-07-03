@@ -460,7 +460,8 @@ def _record_paid_usage(caller: str, model: str, in_tok: int, out_tok: int, *, gu
         from llm_paid import PaidUsageGuard, estimate_cost
         (guard or PaidUsageGuard()).record(
             caller=caller, model=model, tokens=int(in_tok + out_tok),
-            est_usd=estimate_cost(model, in_tok, out_tok))
+            est_usd=estimate_cost(model, in_tok, out_tok),
+            in_tokens=in_tok, out_tokens=out_tok)
     except Exception:
         pass
 

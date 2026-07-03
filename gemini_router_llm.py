@@ -631,7 +631,8 @@ class GeminiRouterLLMMixin:
                                 out_tok = len(_resp_text) // 3
                             actual_cost = estimate_cost(self.cleaner_model, in_tok, out_tok)
                             guard.record(caller="marvin_reply_fallback", model=self.cleaner_model,
-                                         tokens=int(in_tok + out_tok), est_usd=actual_cost)
+                                         tokens=int(in_tok + out_tok), est_usd=actual_cost,
+                                         in_tokens=in_tok, out_tokens=out_tok)
                             logger.info("💰 [Paid Fallback] 成功。")
                             return response.text.strip()
                         except Exception as pe:
