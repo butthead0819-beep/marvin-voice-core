@@ -94,3 +94,15 @@ def test_corrupt_line_skipped(tmp_path):
                  encoding="utf-8")
     g = _guard(tmp_path)
     assert g.spent_today() == pytest.approx(3.0)   # 壞行跳過，好行照算
+
+
+def test_default_caps_aligned_with_10usd_spending_cap():
+    """2026-07-03 使用者訂：GCP spending cap 只有 $10 → 預設閘收緊。
+
+    daily 0.5（防 runaway 輸出型事故一天燒掉月預算）、monthly 4.0
+    （最壞情況 $10 也撐 2.5 個月；典型月 ~$2 撐 4-5 個月）。
+    """
+    from llm_paid import PaidUsageGuard
+    g = PaidUsageGuard()
+    assert g.daily_cap_usd == 0.5
+    assert g.monthly_cap_usd == 4.0

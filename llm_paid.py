@@ -45,9 +45,12 @@ class PaidSpendingExceeded(Exception):
 
 @dataclass
 class PaidUsageGuard:
+    # 2026-07-03 收緊：GCP spending cap 只有 $10（使用者訂）。daily 0.5 防
+    # runaway 輸出型事故一天燒掉月預算；monthly 4.0 → 最壞 $10 撐 2.5 個月、
+    # 典型月（~$2）撐 4-5 個月。實際 30 天帳單 $2.65（diary_comic 佔 2/3）。
     log_path: Path = DEFAULT_PAID_LOG
-    daily_cap_usd: float = 5.0
-    monthly_cap_usd: float = 50.0
+    daily_cap_usd: float = 0.5
+    monthly_cap_usd: float = 4.0
     clock: Callable[[], float] = time.time
 
     def _rows(self) -> list[dict]:
