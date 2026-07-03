@@ -56,10 +56,11 @@ def test_plan_latest_session_too_short_returns_none():
     assert poster.plan_latest_session(_log(3), _rows_crosstalk) is None
 
 
-def test_plan_latest_session_below_raised_threshold_returns_none():
-    """門檻提高到 10（省 ~33% 生圖）：8 段這種不夠熱鬧的場次不再出漫畫。"""
-    assert poster.DIARY_MIN_ENTRIES == 10
-    assert poster.plan_latest_session(_log(8), _rows_crosstalk) is None
+def test_plan_latest_session_below_threshold_returns_none():
+    """門檻 6（2026-07-03 10→6 使用者拍板：10 擋掉上週 5/6 晚，
+    短場也值一格 meme ~$0.04）：5 段以下不出漫畫。"""
+    assert poster.DIARY_MIN_ENTRIES == 6
+    assert poster.plan_latest_session(_log(5), _rows_crosstalk) is None
 
 
 def test_plan_latest_session_empty_log_returns_none():
