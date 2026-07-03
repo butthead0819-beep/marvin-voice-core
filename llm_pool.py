@@ -216,11 +216,15 @@ class TieredLLMRouter:
     （Groq/Cerebras/SambaNova/Together/Fireworks/OpenRouter 都是），統一 call_fn。
     """
 
-    def __init__(self, quick_pool: CooldownAwarePool, analyze_pool: CooldownAwarePool):
+    def __init__(self, quick_pool: CooldownAwarePool, analyze_pool: CooldownAwarePool,
+                 paid_guard=None):
         self.quick_pool = quick_pool
         self.analyze_pool = analyze_pool
         # per-caller token 歸屬：「誰最會吃 token」（記憶 project_llm_tier_wrapper 的目標）
         self.usage_by_caller: Counter = Counter()
+        # 💰 bus 付費尾記帳+守門（2026-07-03 帳務調查：gemini_paid 原本不記帳也
+        # 不過 guard → $0.5/天硬上限對 bus 流量咬不住）。None → lazy 用預設 guard。
+        self._paid_guard = paid_guard
 
     async def quick(self, prompt: str, *, caller: str, system: Optional[str] = None,
                     max_tokens: int = 200, temperature: float = 0.7,
@@ -238,6 +242,17 @@ class TieredLLMRouter:
                    [{"role": "user", "content": prompt}]
 
         async def _call(ep: PoolEndpoint):
+            # 💰 付費端點守門：呼叫前過 PaidUsageGuard（超 daily/monthly 上限
+            # → 不打 API 直接讓位，dispatch 冷卻此端點換下一家/回 None 兜底）。
+            _is_paid = ep.name == "gemini_paid"
+            if _is_paid:
+                from llm_paid import PaidUsageGuard, estimate_cost
+                _guard = self._paid_guard or PaidUsageGuard()
+                _est = estimate_cost(ep.model,
+                                     sum(len(m["content"]) for m in messages) // 3,
+                                     max_tokens)
+                if not _guard.allow(_est):
+                    raise RuntimeError(f"paid_cap_exceeded (est=${_est:.4f})")
             kwargs = dict(model=ep.model, messages=messages, max_tokens=max_tokens,
                           temperature=temperature, stream=False)
             if json:
@@ -253,6 +268,15 @@ class TieredLLMRouter:
             usage = getattr(resp, "usage", None)
             tokens = usage.total_tokens if usage else 0
             self.usage_by_caller[caller] += tokens   # per-agent 歸屬
+            if _is_paid:
+                # OpenAI-compat usage 欄位名是 prompt/completion_tokens（非 genai 的
+                # *_token_count）——這正是原本記帳漏掉 bus 尾的原因
+                _in = (getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
+                _out = (getattr(usage, "completion_tokens", 0) or 0) if usage else 0
+                if not usage:  # 保守長度估，避免 cost 不可見
+                    _in = sum(len(m["content"]) for m in messages) // 3
+                    _out = len(content or "") // 3
+                _record_paid_usage(caller, ep.model, _in, _out, guard=self._paid_guard)
             return content, tokens
 
         return await dispatch(pool, _call)
