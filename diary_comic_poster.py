@@ -27,7 +27,7 @@ TEXT_MODEL = "gemini-2.5-flash"
 EST_USD_PER_IMG = 0.04
 # 出漫畫門檻：≥N 段（每段 ~10 分鐘對話）才值得燒生圖。6→10 約省 33% 生圖成本
 # （只出夠熱鬧的場次＝品質正篩，安靜場次本來也沒料可畫）。可調此值權衡頻率 vs 成本。
-DIARY_MIN_ENTRIES = 10
+DIARY_MIN_ENTRIES = 6   # 2026-07-03 10→6（使用者拍板）：10 擋掉上週 5/6 晚，短場也值一格 meme（~$0.04）
 
 
 def _key() -> str:
