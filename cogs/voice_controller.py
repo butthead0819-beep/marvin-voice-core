@@ -362,7 +362,13 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._nudges = NudgeThrottle()
         self.last_player_speech_time = time.time() # 初始化為啟動時間
         self.greeting_cooldown = {} # 🛠️ [Cooldown] 玩家進出冷卻紀錄
-        self.query_queue = asyncio.Queue() # 🚀 [Fast System] 指令請求佇列
+        self.query_queue = asyncio.Queue() # 🚀 [Fast System] 指令請求佇列（legacy 單 worker 路）
+        # 🚀 [方案A] per-speaker 序列化（env MARVIN_PER_SPEAKER_QUEUE，run_bot 顯式開）：
+        # 同 speaker 嚴格 FIFO、跨 speaker 並行——邏輯在 speaker_dispatch.py
+        self._speaker_dispatch = None
+        if os.getenv("MARVIN_PER_SPEAKER_QUEUE", "0") == "1":
+            from speaker_dispatch import SpeakerDispatcher
+            self._speaker_dispatch = SpeakerDispatcher(self._process_query_task)
         self._latency_marks = LatencyMarks()  # ⏱️ wake → llm → sentence → audio 分階段計時
         # 📡 [IntentBus] Phase 1：取代 music + owner-lobster fast-track；其他 fast-track 留 legacy
         # 5/18 audit 後加 guard：主動 bid 高分吞 STT 幻覺 wake（wake-word loop /
@@ -1325,7 +1331,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             self.stt_logger.info(f"[⚡喚醒] [{speaker}] raw='{raw_text}' | {_track_label} | wake_intent={wake_intent}")
             
             # 排隊時改走文字頻道通知，不打斷當前語音播放
-            queue_size = self.query_queue.qsize()
+            # per-speaker 模式：只有「自己」前面還有排隊才通知（別人的隊不再相干）
+            queue_size = (self._speaker_dispatch.pending(speaker)
+                          if self._speaker_dispatch is not None else self.query_queue.qsize())
             if queue_size > 0 and self.active_text_channel:
                 wait_msgs = [
                     f"💬 {speaker}，排隊中，等我說完。",
@@ -1336,7 +1344,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
             # ⏱️ [Latency] T0: wake hit (進 queue 那刻)
             self._latency_marks.mark_wake(speaker, time.time())
-            await self.query_queue.put({
+            _task_data = {
                 "speaker":     speaker,
                 "timestamp":   timestamp,
                 "raw_text":    raw_text,
@@ -1345,7 +1353,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 "wake_dom":    _wake_dom,               # 主導通道（task/info → helper）
                 # ContextVar 不會跨 asyncio.Queue 邊界 — 手動 forward timing dict 給 consumer
                 "_timing":     pipeline_timing.snapshot(),
-            })
+            }
+            if self._speaker_dispatch is not None:
+                self._speaker_dispatch.submit(speaker, _task_data)  # 🚀 [方案A] per-speaker 序列
+            else:
+                await self.query_queue.put(_task_data)
 
             # 🚀 [Phase 3] 投機預取：若喚醒句已含足夠問句內容，立即開始 LLM 預熱
             # 不等 queue worker 處理，爭取 2-8 秒的 LLM 前置時間
@@ -2529,50 +2541,59 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
     async def _query_worker_loop(self):
         """
         [Fast System] 背景工作迴圈：循序處理隊列中的指令請求。
+
+        legacy 單 worker 路（kill-switch MARVIN_PER_SPEAKER_QUEUE=0）；
+        per-speaker 模式下 producer 直投 SpeakerDispatcher，此 loop 空轉無害。
         """
         logger.info("🚀 [Fast System] 指令隊列處理器已啟動。")
         while True:
             try:
                 task_data = await self.query_queue.get()
-                # ContextVar 不會跨 asyncio.Queue 邊界 — 從 producer 塞進來的 snapshot 還原，
-                # 讓下游 mark("intent_dispatched") + emit() 看得到 producer 的 endpoint / stt_start / stt_done
-                pipeline_timing.restore(task_data.get("_timing"))
-                # dequeued：worker 取出當下打點。stt_done→dequeued = 排隊等待，
-                # 之前被誤算進 cleaner 段（多人/autopilot 洗 query_queue 時可達 10~25s）。
-                pipeline_timing.mark("dequeued")
-                speaker = task_data["speaker"]
-                timestamp = task_data["timestamp"]
-                raw_text = task_data.get("raw_text", "")
-                _wi = task_data.get("wake_intent")  # None = Track A / 不明
-                _wvoice = task_data.get("wake_voice_score")  # helper query 判定用
-                _wdom = task_data.get("wake_dom")
-
-                # ⏱️ [Stale Drop] dequeue 即檢查排隊時間：已超過 LATE_SKIP 門檻的死查詢直接丟，
-                # 不跑 cleaner/LLM。斷開「整套處理完才在 4310 發現太舊」的佇列雪崩——6/2 多人
-                # 卡 28~345s 全因 worker 把死查詢一個個跑完，佇列越積越長。丟掉才追得上新查詢。
-                _age = time.time() - timestamp
-                if _age > self._LATE_RESPONSE_SKIP_SEC:
-                    logger.info(f"⏱️ [Stale Drop] {speaker} 查詢已排隊 {_age:.0f}s "
-                                f"(>{self._LATE_RESPONSE_SKIP_SEC:.0f}s)，dequeue 即丟、不處理（斷佇列雪崩）。")
-                    self.query_queue.task_done()
-                    continue
-
-                # 立即播 filler（延遲遮掩）
-                if raw_text:
-                    self._speaker_lang[speaker] = self._detect_text_lang(raw_text)
-                asyncio.create_task(self._play_ack("filler", speaker=speaker))
-
-                # 多回合確認流程，回傳最終確認的問句
-                confirmed_query = await self._confirmation_flow(speaker, timestamp, initial_text=raw_text)
-                if confirmed_query:
-                    await self._process_queued_query(speaker, timestamp, override_query=confirmed_query, wake_intent=_wi, original_raw=raw_text, wake_voice_score=_wvoice, wake_dom=_wdom)
-
+                await self._process_query_task(task_data)
                 self.query_queue.task_done()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"❌ [Fast System worker] 錯誤: {e}")
                 await asyncio.sleep(1)
+
+    async def _process_query_task(self, task_data: dict) -> None:
+        """單項查詢處理（Extract Method 自原 worker loop，行為不變）。
+
+        legacy 單 worker 與 SpeakerDispatcher（per-speaker 序列化，方案A）
+        共用；同 speaker 由各自路徑保證序列。
+        """
+        # ContextVar 不會跨 asyncio.Queue 邊界 — 從 producer 塞進來的 snapshot 還原，
+        # 讓下游 mark("intent_dispatched") + emit() 看得到 producer 的 endpoint / stt_start / stt_done
+        pipeline_timing.restore(task_data.get("_timing"))
+        # dequeued：worker 取出當下打點。stt_done→dequeued = 排隊等待，
+        # 之前被誤算進 cleaner 段（多人/autopilot 洗 query_queue 時可達 10~25s）。
+        pipeline_timing.mark("dequeued")
+        speaker = task_data["speaker"]
+        timestamp = task_data["timestamp"]
+        raw_text = task_data.get("raw_text", "")
+        _wi = task_data.get("wake_intent")  # None = Track A / 不明
+        _wvoice = task_data.get("wake_voice_score")  # helper query 判定用
+        _wdom = task_data.get("wake_dom")
+
+        # ⏱️ [Stale Drop] dequeue 即檢查排隊時間：已超過 LATE_SKIP 門檻的死查詢直接丟，
+        # 不跑 cleaner/LLM。斷開「整套處理完才在 4310 發現太舊」的佇列雪崩——6/2 多人
+        # 卡 28~345s 全因 worker 把死查詢一個個跑完，佇列越積越長。丟掉才追得上新查詢。
+        _age = time.time() - timestamp
+        if _age > self._LATE_RESPONSE_SKIP_SEC:
+            logger.info(f"⏱️ [Stale Drop] {speaker} 查詢已排隊 {_age:.0f}s "
+                        f"(>{self._LATE_RESPONSE_SKIP_SEC:.0f}s)，dequeue 即丟、不處理（斷佇列雪崩）。")
+            return
+
+        # 立即播 filler（延遲遮掩）
+        if raw_text:
+            self._speaker_lang[speaker] = self._detect_text_lang(raw_text)
+        asyncio.create_task(self._play_ack("filler", speaker=speaker))
+
+        # 多回合確認流程，回傳最終確認的問句
+        confirmed_query = await self._confirmation_flow(speaker, timestamp, initial_text=raw_text)
+        if confirmed_query:
+            await self._process_queued_query(speaker, timestamp, override_query=confirmed_query, wake_intent=_wi, original_raw=raw_text, wake_voice_score=_wvoice, wake_dom=_wdom)
 
     # ──────────────────────────────────────────────────────────────
     # 🗣️ [Dialogue Confirmation] 多回合確認流程

@@ -26,8 +26,9 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4233      # 實測 4233（2026-07-02 接線 alt_rescue STT 備選救援 +6；邏輯在 alt_rescue.py，同 command_fastpath 薄接線先例）
-METHOD_BUDGET = 90      # VoiceController 自身定義的 method 數；新「功能」別在這加 method
+LINE_BUDGET = 4254      # 實測 4254（2026-07-03 方案A per-speaker 序列化 +21：worker body Extract Method 成 _process_query_task（行為不變、legacy 與 SpeakerDispatcher 共用）+ producer 分流 4 行；邏輯在 speaker_dispatch.py）
+METHOD_BUDGET = 91      # VoiceController 自身定義的 method 數；新「功能」別在這加 method
+                        # （2026-07-03 +1：_process_query_task = worker body Extract Method，行為不變）
 
 
 def test_voice_controller_line_count_within_budget():
