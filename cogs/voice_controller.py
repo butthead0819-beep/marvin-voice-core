@@ -1329,7 +1329,27 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if is_fast:
             _track_label = f"Track={'A' if track is None else track}"
             self.stt_logger.info(f"[⚡喚醒] [{speaker}] raw='{raw_text}' | {_track_label} | wake_intent={wake_intent}")
-            
+
+            # ⚡ [WakeShortcut] 完整指令入隊前短路（2026-07-03）：歌表命中/控制指令
+            # 直派 bus 跳過 worker——fastpath 不再排在同 speaker 前一句聊天回覆
+            # 後面被 Stale Drop 丟掉（邏輯在 wake_shortcut.py；wakeless T0 同級快路）。
+            if not self.game_mode:
+                from wake_shortcut import shortcut_query
+                _sc = shortcut_query(self._get_music_fastpath(), self._strip_wake_word(raw_text))
+                if _sc:
+                    logger.info(f"⚡ [WakeShortcut] {speaker} '{raw_text[:24]}' → '{_sc[:32]}' 直派跳過佇列")
+                    pipeline_timing.mark("intent_dispatched")
+                    pipeline_timing.emit(speaker, raw_text, suffix=f" route=wake_shortcut:{_sc[:15]}")
+                    _sc_ctx = IntentContext(
+                        speaker=speaker, raw_text=raw_text, query=_sc,
+                        original_raw=raw_text, wake_intent=wake_intent,
+                        stream_active=self.stream_mode, game_mode=False,
+                        is_owner=self._is_owner_speaker(speaker), now=time.time(),
+                        mode=("stream" if self.stream_mode else "normal"),
+                        dispatch_source="wake_shortcut")
+                    asyncio.create_task(self._intent_bus.dispatch(_sc_ctx))
+                    return
+
             # 排隊時改走文字頻道通知，不打斷當前語音播放
             # per-speaker 模式：只有「自己」前面還有排隊才通知（別人的隊不再相干）
             queue_size = (self._speaker_dispatch.pending(speaker)
