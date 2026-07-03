@@ -47,3 +47,30 @@ def test_empty_and_no_fp_safe():
 def test_wake_only_returns_none():
     """只喊「馬文」→ stripped 空 → None → 走 worker 等問句（確認流不受影響）。"""
     assert shortcut_query(_StubFP({}), "") is None
+
+
+# ── 已服務標記：wakeless 救援不重複派發 ──────────────────────────────────────
+
+def test_served_recently_suppresses_same_query():
+    """shortcut 派發後 20s 內，debounce 晚關窗的同句（含尾巴贅語）不重派。"""
+    from wake_shortcut import served_recently
+    mark = ("播放陶喆的愛很簡單", 1000.0)
+    assert served_recently(mark, "馬文播放陶喆的愛很簡單 不是很慢呢", now=1008.0) is True
+
+
+def test_served_recently_expires_after_window():
+    from wake_shortcut import served_recently
+    mark = ("播放陶喆的愛很簡單", 1000.0)
+    assert served_recently(mark, "馬文播放陶喆的愛很簡單", now=1025.0) is False
+
+
+def test_served_recently_different_query_not_suppressed():
+    """新的不同指令（真的要點別首）不受抑制。"""
+    from wake_shortcut import served_recently
+    mark = ("播放陶喆的愛很簡單", 1000.0)
+    assert served_recently(mark, "馬文播放周杰倫的晴天", now=1005.0) is False
+
+
+def test_served_recently_none_mark_safe():
+    from wake_shortcut import served_recently
+    assert served_recently(None, "馬文播放晴天", now=1000.0) is False

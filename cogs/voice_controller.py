@@ -1335,8 +1335,13 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             # 後面被 Stale Drop 丟掉（邏輯在 wake_shortcut.py；wakeless T0 同級快路）。
             if not self.game_mode:
                 from wake_shortcut import shortcut_query
-                _sc = shortcut_query(self._get_music_fastpath(), self._strip_wake_word(raw_text))
+                _sc_stripped = self._strip_wake_word(raw_text)
+                _sc = shortcut_query(self._get_music_fastpath(), _sc_stripped)
                 if _sc:
+                    # 已服務標記：debounce 晚關窗的同句，wakeless 救援據此讓路（防重派）
+                    if not hasattr(self, "_shortcut_served"):
+                        self._shortcut_served = {}
+                    self._shortcut_served[speaker] = (_sc_stripped, time.time())
                     logger.info(f"⚡ [WakeShortcut] {speaker} '{raw_text[:24]}' → '{_sc[:32]}' 直派跳過佇列")
                     pipeline_timing.mark("intent_dispatched")
                     pipeline_timing.emit(speaker, raw_text, suffix=f" route=wake_shortcut:{_sc[:15]}")
@@ -1958,6 +1963,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🛡️ [Anti-Duplicate] 若 5 秒內已有 fast wake 處理同一發言，跳過此路徑避免雙重處理
         _last_fast_wake = getattr(self, "last_wake_time", {}).get(speaker, 0)
         _recently_fast_woken = (time.time() - _last_fast_wake) < 5.0
+        # ⚡ WakeShortcut 已服務讓路：debounce 晚關窗（>5s）同句不重派（7/3 首命中實戰修）
+        from wake_shortcut import served_recently
+        if served_recently(getattr(self, "_shortcut_served", {}).get(speaker),
+                           full_raw_text, now=time.time()):
+            logger.info(f"⚡ [WakeShortcut] {speaker} 同句已服務，wakeless 讓路")
+            _recently_fast_woken = True
 
         if not _recently_fast_woken:
             _direct_cmd = self._detect_music_direct_command(full_raw_text, stream_mode=self.stream_mode)

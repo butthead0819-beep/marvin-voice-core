@@ -32,3 +32,22 @@ def shortcut_query(fp, stripped: str) -> str | None:
     if cmd:
         return cmd
     return None
+
+
+SERVED_WINDOW_S = 20.0   # debounce 晚關窗最長觀測 ~8s，抓寬到 20s
+
+
+def served_recently(mark, raw_text: str, *, now: float,
+                    window_s: float = SERVED_WINDOW_S) -> bool:
+    """這句是否已被 shortcut 服務過（wakeless 救援據此讓路，防重複派發）。
+
+    首命中實戰（2026-07-03 23:20）：使用者點歌後嘴巴沒停，debounce 8s 後
+    關窗，wakeless 救援不知道 shortcut 已服務 → 同句重派兩次（多 ack、白搜）。
+    判定：mark 的 query 是當前 raw_text 的子字串（尾巴贅語不影響）且在窗內。
+    """
+    if not mark or not raw_text:
+        return False
+    query, ts = mark
+    if now - ts > window_s:
+        return False
+    return bool(query) and query in raw_text
