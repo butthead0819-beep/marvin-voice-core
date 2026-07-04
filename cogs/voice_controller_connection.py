@@ -340,9 +340,12 @@ class ConnectionMixin:
         env MARVIN_AUTO_REJOIN=0 可關。
         """
         if os.getenv("MARVIN_AUTO_REJOIN", "1") == "0":
+            logger.warning("🔁 [AutoRejoin] env 關閉，跳過")
             return
         ch = pick_rejoin_channel(self.bot.guilds, bool(self.bot.voice_clients))
         if ch is None:
+            # no-op 也要可觀測（7/4 教訓 ×3：沉默無法區分「正確不做」與「沒跑到」）
+            logger.warning("🔁 [AutoRejoin] 台上無真人（或已連線），不回台")
             return
         try:
             print(f"🔁 [AutoRejoin] 開機偵測 {ch.name} 有真人，靜默回台...", flush=True)
