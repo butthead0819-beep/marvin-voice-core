@@ -48,3 +48,32 @@ def test_match_member_by_any_name_field():
     assert match_member(members, "狗與露")["user"]["id"] == "111"
     assert match_member(members, "showay")["user"]["id"] == "222"
     assert match_member(members, "路人") is None
+
+
+# ── v2：圖片原生派送（HTML 在 Discord 變下載附件，改送可預覽的圖） ──────────
+
+def test_chunk_batches_of_ten():
+    from scripts.comic_bundle_weekly import chunk
+    items = list(range(23))
+    batches = chunk(items, 10)
+    assert [len(b) for b in batches] == [10, 10, 3]
+
+
+def test_format_version_forces_resend(tmp_path):
+    """HTML 版已送過的人，切到 img 版 key 改變 → 重送一次圖片版。"""
+    from scripts.comic_bundle_weekly import content_key, should_send, load_state, mark_sent
+    st = tmp_path / "s.json"
+    s = load_state(st)
+    old_key = content_key(["a.png"])                    # 無前綴（HTML 時代）
+    mark_sent(s, "u1", old_key, path=st)
+    new_key = content_key(["a.png"], fmt="img1")
+    assert new_key != old_key
+    assert should_send(load_state(st), "u1", new_key) is True
+
+
+def test_new_comics_only_delta(tmp_path):
+    """週更只送新增的：state 記 last_names，delta = 現有 − 已送過的檔名。"""
+    from scripts.comic_bundle_weekly import compute_delta
+    state = {"last_names": ["a.png", "b.png"]}
+    assert compute_delta(state, ["a.png", "b.png", "c.png"]) == ["c.png"]
+    assert compute_delta({}, ["a.png"]) == ["a.png"]      # 首次全送
