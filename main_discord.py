@@ -47,6 +47,10 @@ def setup_early_logging():
     main_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     logging.getLogger().addHandler(main_handler)
     logging.getLogger("cogs.voice_controller").setLevel(logging.INFO)
+    # 一次殲滅（2026-07-04 第四型坑）：整個 cogs 家族 INFO 放行——music_cog 拆離後
+    # 沒跟著註冊，播放/推薦/去重 INFO 被吞 17 天（0 INFO vs 346 WARNING 實錘）。
+    # 未來新 cog 自動繼承，不再逐一補名。
+    logging.getLogger("cogs").setLevel(logging.INFO)
     # 新頂層模組 logger 需顯式 INFO，否則吃 root WARNING、觀測 log 全被吞
     # （2026-07-02 教訓：AltRescue shadow 上線後沉默，其實是 logger 層級不是邏輯）
     logging.getLogger("alt_rescue").setLevel(logging.INFO)
