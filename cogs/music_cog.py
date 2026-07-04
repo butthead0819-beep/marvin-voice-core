@@ -151,6 +151,10 @@ class MusicCog(commands.Cog):
         self._themed_sets_tonight: int = 0
         self._themed_set_date = None
         self._prefetch_cache: dict = {}   # url → Task[{'lyrics', 'comment'}]
+        # 🎵 [ReqGuard] 使用者點歌兩道防護（2026-07-04；邏輯在 music_request_guard.py）
+        from music_request_guard import RecentRequestLedger, ResolveCache
+        self._req_ledger = RecentRequestLedger()    # 同人同曲 30s 去重（佇列空也擋）
+        self._yt_resolve_cache = ResolveCache()     # videoId→info TTL 1h，重複點播免重抽 ~2s
         self._last_search: dict = {}      # username → {query, ts, source}
         self._last_music_cmd_time: dict[str, float] = {}  # speaker → ts, for dedup
         self._last_music_query: dict[str, tuple[str, float]] = {}  # speaker → (正規化點歌字串, ts)
@@ -1891,6 +1895,15 @@ class MusicCog(commands.Cog):
 
         skip-override：手動點播蓋過先前 skip——記 played_again + 重置 consecutive-skip 計數。
         """
+        # 🎵 [ReqDedup] 同人同曲 30s 去重：佇列去重只看佇列（第一發已 pop 去播時
+        # 佇列空、第二發漏過，7/3-4 實錘）；ledger 與佇列狀態無關（唯一入隊點）
+        _vid = extract_video_id(info.get('webpage_url') or '')
+        _spk = info.get('requested_by') or ''
+        if _vid:
+            if self._req_ledger.is_dup(_spk, _vid, time.time()):
+                logger.info(f"🎵 [ReqDedup] {_spk} 30s 內重複點 {_vid}，跳過入隊（誤觸/殘餘）")
+                return
+            self._req_ledger.mark(_spk, _vid, time.time())
         self.stream_queue.insert(self._user_song_insert_index(self.stream_queue), info)
         try:
             user = info.get('requested_by') or ''
@@ -1964,6 +1977,14 @@ class MusicCog(commands.Cog):
             logger.warning("⚠️ [Stream] memory critical, skipping yt-dlp resolve")
             return None
 
+        # 🎵 [ResolveCache] URL 直點且 1h 內解析過 → 免重抽 ~2s（重複點播是常態使用模式）
+        _cache_vid = extract_video_id(query) if query.startswith('http') else None
+        if _cache_vid:
+            _cached = self._yt_resolve_cache.get(_cache_vid, time.time())
+            if _cached is not None:
+                logger.info(f"🎵 [ResolveCache] {_cache_vid} 快取命中，跳過 yt-dlp")
+                return _cached
+
         ydl_opts = {
             'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
             'quiet': True,
@@ -2005,15 +2026,23 @@ class MusicCog(commands.Cog):
                     'duration': chosen.get('duration', 0),
                 }
 
+        def _cache_put(res):
+            # 成功解析回填快取（鍵用結果的 videoId——搜尋型 query 也受益於後續 URL 直點）
+            if res:
+                _rv = extract_video_id(res.get('webpage_url') or '')
+                if _rv:
+                    self._yt_resolve_cache.put(_rv, res, time.time())
+            return res
+
         loop = asyncio.get_event_loop()
         try:
-            return await loop.run_in_executor(None, _extract)
+            return _cache_put(await loop.run_in_executor(None, _extract))
         except OSError as e:
             if getattr(e, "errno", None) == 11:
                 logger.warning("⚠️ [Stream] yt-dlp Errno 11 deadlock，200ms 後重試")
                 await asyncio.sleep(0.2)
                 try:
-                    return await loop.run_in_executor(None, _extract)
+                    return _cache_put(await loop.run_in_executor(None, _extract))
                 except Exception as e2:
                     logger.error(f"❌ [Stream] yt-dlp 重試後仍失敗: {e2}", exc_info=True)
                     return None
