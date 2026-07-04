@@ -22,3 +22,27 @@ def test_collect_skips_test_artifacts(tmp_path):
 def test_collect_ignores_non_comic_pngs(tmp_path):
     (tmp_path / "night_reel_20260615_2126.png").write_bytes(b"png")
     assert collect_comics(tmp_path) == []
+
+
+def test_bundle_is_self_contained(tmp_path):
+    """bundle 版：圖片 base64 內嵌（JPEG 壓縮），零外部引用——可直接私訊分享。"""
+    from PIL import Image
+    from scripts.build_comic_gallery import build_bundle
+    img = Image.new("RGB", (2000, 3000), (30, 30, 40))
+    img.save(tmp_path / "diary_comic_20260704_005541.png")
+    out = tmp_path / "bundle.html"
+    build_bundle(records_dir=tmp_path, out_path=out, max_width=1080, jpeg_q=85)
+    html = out.read_text(encoding="utf-8")
+    assert "data:image/jpeg;base64," in html
+    assert "records/" not in html          # 零外部路徑
+    assert "src=\"diary" not in html
+
+
+def test_bundle_skips_test_artifacts_too(tmp_path):
+    from PIL import Image
+    from scripts.build_comic_gallery import build_bundle
+    Image.new("RGB", (100, 100)).save(tmp_path / "diary_comic_TEST_20260622_235630.png")
+    Image.new("RGB", (100, 100)).save(tmp_path / "diary_comic_20260622_010536.png")
+    out = tmp_path / "b.html"
+    build_bundle(records_dir=tmp_path, out_path=out)
+    assert out.read_text(encoding="utf-8").count("data:image/jpeg") == 1

@@ -99,5 +99,41 @@ def build(records_dir="records", out_path="marvin_comics.html",
     return out_path
 
 
+def build_bundle(records_dir="records", out_path="marvin_comics_bundle.html",
+                 max_width: int = 1080, jpeg_q: int = 85) -> str:
+    """自含單檔版（2026-07-04）：圖縮寬 {max_width} + JPEG q{jpeg_q} + base64 內嵌，
+    零外部引用——原檔 27MB 超過 Discord 25MB 上限，壓縮後 ~5MB 可直接私訊。"""
+    import base64
+    import io
+
+    from PIL import Image
+
+    comics = collect_comics(records_dir)
+    if not comics:
+        print("找不到任何漫畫", file=sys.stderr)
+        return ""
+    cards = []
+    for e in comics:
+        img = Image.open(e["path"]).convert("RGB")
+        if img.width > max_width:
+            img = img.resize((max_width, int(img.height * max_width / img.width)),
+                             Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=jpeg_q, optimize=True)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        cards.append(_CARD.format(src=f"data:image/jpeg;base64,{b64}",
+                                  date=e["date"], badge=""))
+    span = f"{comics[-1]['dt']:%Y/%m/%d} — {comics[0]['dt']:%Y/%m/%d}"
+    html = _PAGE.format(n=len(comics), span=span, cards="\n".join(cards))
+    Path(out_path).write_text(html, encoding="utf-8")
+    size_mb = Path(out_path).stat().st_size / 1e6
+    print(f"✅ {out_path}（{len(comics)} 張, {size_mb:.1f}MB 自含）")
+    return str(out_path)
+
+
 if __name__ == "__main__":
-    build()
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bundle", action="store_true", help="自含單檔版（私訊分享用）")
+    a = ap.parse_args()
+    build_bundle() if a.bundle else build()
