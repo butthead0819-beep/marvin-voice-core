@@ -114,6 +114,13 @@ _CTRL_MARMO_RE = re.compile(
     r'(?:問|叫|用|讓|請|call|問問|叫一下)?(?:marmo|馬某|馬摸|馬墨)',
     re.IGNORECASE,
 )
+# 點歌句型（2026-07-04）：句首 4 字內的點歌動詞（容納「馬文/把我們/幫我」等前綴），
+# 動詞後須帶內容。動詞在句中（>4 字）＝聊天引用（「他昨天播放了影片」），不中。
+# 背景：喚醒詞糊掉（馬文→把我們，v=0.3）時 control 拿 0 分 → total 0.346 差
+# 0.004 落榜 → 7/3-7/4 實測 75% 點歌（4:12）掉進慢 ~2s 的 wakeless 救援路。
+_CTRL_MUSIC_REQUEST_RE = re.compile(
+    r'^.{0,4}(播放|點播|放一首|來一首|點一首|想聽)\S',
+)
 
 
 def _score_task(text: str) -> float:
@@ -131,6 +138,7 @@ def _score_info(text: str, stream_active: bool = False) -> float:
 def _score_control(text: str) -> float:
     if _CTRL_SILENCE_RE.search(text): return 1.00
     if _CTRL_MUSIC_RE.search(text):   return 0.90
+    if _CTRL_MUSIC_REQUEST_RE.search(text): return 0.85  # 點歌句型（句首錨定）
     if _CTRL_MARMO_RE.search(text):   return 0.75
     return 0.0
 
