@@ -14,6 +14,16 @@ SUNO_POLL_TIMEOUT = 300   # 5 minutes max wait
 GENAI_AVAILABLE = True
 
 
+def lyria_enabled() -> bool:
+    """💣 未爆彈拆除（2026-07-04）：Lyria 備援預設關。
+
+    它走 GOOGLE_API_KEY（老計費專案）且無 guard 無記帳（違反付費記帳鐵則），
+    該專案現為 free-tier limit:0 死路——每次 Suno 失敗滾進來只會 429 白打。
+    重開條件：MARVIN_LYRIA=1 + 換對 key + 過 PaidUsageGuard。
+    """
+    return os.getenv("MARVIN_LYRIA", "0") == "1"
+
+
 class SukiMusicEngine:
     """
     Marvin 專屬音樂生成引擎 (Operation Paranoid Android)
@@ -28,7 +38,9 @@ class SukiMusicEngine:
             from google import genai
             from google.genai import types
             self._types = types
-            if self.google_api_key:
+            if not lyria_enabled():
+                logger.info("🎵 [Music Engine] Lyria 備援已停用（MARVIN_LYRIA≠1）；Suno 失敗即優雅放棄。")
+            elif self.google_api_key:
                 self.lyria_client = genai.Client(api_key=self.google_api_key)
                 logger.info("🎵 [Music Engine] Lyria 3 Pro 備援核心已就緒。")
             else:

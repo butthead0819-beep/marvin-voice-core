@@ -35,6 +35,22 @@ logger = logging.getLogger(__name__)
 PROACTIVE_TOPIC_COOLDOWN_S = 600.0
 
 
+PERFORMANCE_GRACE_S = 600.0   # summon/回台後 10 分鐘內不主動表演——讓人先講話
+
+
+def too_soon_after_summon(connection_time, now: float,
+                          grace_s: float = PERFORMANCE_GRACE_S) -> bool:
+    """主動表演的回台寬限判定（2026-07-04）。
+
+    實錘：22:45:46 主動表演開火、22:45:48 才 BOT降臨——回台瞬間就急著表演
+    （下午整場音樂佔線讓表演一直沒空檔，晚上一有空檔立刻爆發）。
+    connection_time 無值（0/None）→ fail-open 不擋（舊行為）。
+    """
+    if not connection_time:
+        return False
+    return (now - connection_time) < grace_s
+
+
 class ProactiveSocialMixin:
     @tasks.loop(minutes=30.0)
     async def background_news_loop(self):
@@ -284,6 +300,11 @@ class ProactiveSocialMixin:
 
             # 🎭 表演類話題：不口頭提問，直接在語音頻道發起表演
             if topic_id in {"marvin_sing", "marvin_manzai", "marvin_imitate", "marvin_news", "marvin_standup", "marvin_joke"}:
+                # 🛡️ 回台寬限（2026-07-04）：剛 summon/回台就搶著表演=錯誤行為，
+                # 10 分鐘內表演類一律讓路（問答類主動社交不受此限）
+                if too_soon_after_summon(getattr(self, "connection_time", 0), time.time()):
+                    logger.info(f"🎭 [Proactive] 回台未滿 {PERFORMANCE_GRACE_S/60:.0f} 分鐘，表演 {topic_id} 讓路")
+                    return
                 if self.active_text_channel:
                     await self.active_text_channel.send(f"🌌 **【馬文·主動表演】** `{selected_topic['title']}`（主題：{selected_topic.get('script', '無')}）")
                 
