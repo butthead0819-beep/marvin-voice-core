@@ -76,6 +76,25 @@ def strip_command_prefix(query: str) -> str:
     return stripped or query
 
 
+# STT 漸進式口吃：把片段疊接成「A A」或「播放X播放X…」（7/4 09:48 實案：
+# 播放播放陳華的播放陳華的左邊的人）。重複片段是機械模式 → 正則塌縮，
+# 免送 2s cleaner LLM（漏斗哲學：便宜關卡能救的不送貴的）。
+# 閾值 ≥3 字片段：歌名合法 2 字疊詞（好好/天天）不動。
+_STUTTER_RE = re.compile(r"(.{3,20}?)(?:\s*\1)+")
+
+
+def collapse_stutter(text: str) -> str:
+    """塌縮重複片段（≥3 字、可含空白分隔）至單次。迭代到不動點（巢狀口吃）。"""
+    if not text:
+        return text
+    prev = None
+    out = text
+    while out != prev:
+        prev = out
+        out = _STUTTER_RE.sub(r"\1", out)
+    return out.strip()
+
+
 # personal_shuffle 觸發詞 / 歌單指令類片語——不是具體歌名，要交給 PersonalShuffleAgent。
 # fast-path 一律不攔（否則拼音 token 散落命中長歌名假命中，把 query 改寫成歌名/URL →
 # personal_shuffle 的觸發詞被吃掉、永遠贏不了。2026-06-30 live：『我的歌單』→『茄子蛋 愛情
@@ -158,6 +177,8 @@ class MusicFastPath:
         self._maybe_reload()
         if not self._index:
             return None
+        # 口吃疊字塌縮（對乾淨文字恆等）：7/4 09:48 實案免送 cleaner LLM
+        query = collapse_stutter(query)
         stripped = strip_command_prefix(query)
         # 歌單指令類片語（我的歌單/我點過的歌/個人歌單…）交給 personal_shuffle，fast-path 不攔
         if _is_playlist_command(stripped):

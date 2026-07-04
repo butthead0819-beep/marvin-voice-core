@@ -271,6 +271,9 @@ class RealtimeVADSink(voice_recv.AudioSink):
         # （避免遊戲中 cough/敲鍵盤/小聲閒聊觸發 STT；不影響 wake-word 模式）
         self.game_mode_rms_bump = 0
         self.user_near_silence_count = {}
+        # 📏 [VADGap 量測 2026-07-04] 句內最大停頓（未觸發切句的靜默）——
+        # 供「喚醒後續句可否收緊 VAD 尾巴」決策用；log-only shadow，不影響行為
+        self.user_utt_max_gap = {}
         self.user_first_audio_time = {}
         self.user_wake_check_count = {}  # user_id -> int，本次說話已發出的 wake check 次數
         self.decoders = {}
@@ -527,6 +530,12 @@ class RealtimeVADSink(voice_recv.AudioSink):
                                 user_id, now, bytes(self.user_buffers[user_id])
                             )
                 if confirmed_speech or self.user_is_speaking[user_id]:
+                    # 📏 [VADGap] 句內停頓追蹤：這次人聲距上次人聲的間隔（熱路徑，僅 dict 運算）
+                    _prev_spoken = self.user_last_spoken_time.get(user_id, 0)
+                    if _prev_spoken > 0 and self.user_is_speaking[user_id]:
+                        _g = now - _prev_spoken
+                        if _g > self.user_utt_max_gap.get(user_id, 0.0):
+                            self.user_utt_max_gap[user_id] = _g
                     self.user_last_spoken_time[user_id] = now
                     self.user_near_silence_count[user_id] = 0 # 重置微弱能量
 
@@ -949,6 +958,9 @@ class DiscordVoiceEngine:
                     buffer_bytes = len(sink.user_buffers[user_id])
                     # [VAD Relaxation] 從 96000 (0.5s) 下調至 19200 (0.1s)，容忍不穩定流
                     if buffer_bytes > 19200:
+                        # 📏 [VADGap] 量測落點：這句的句內最大停頓 vs 觸發切句的閾值
+                        _mg = sink.user_utt_max_gap.pop(user_id, 0.0)
+                        print(f"📏 [VADGap] User_{user_id} max_gap={_mg:.2f}s thr={stt_vad_threshold}s dur={buffer_bytes/192000:.1f}s", flush=True)
                         print(f"✂️ [VAD] 偵測到 {stt_vad_threshold}s 靜音 (User_{user_id})，聚合 {buffer_bytes} bytes 並送往 STT。", flush=True)
                         audio_data = bytes(sink.user_buffers[user_id])
                         sink.user_buffers[user_id] = bytearray()
@@ -965,6 +977,7 @@ class DiscordVoiceEngine:
                             print(f"🗑️ [VAD] 緩衝區過短 ({buffer_bytes} bytes)，判定為雜訊，捨棄中 (User_{user_id})。", flush=True)
                         sink.user_buffers[user_id] = bytearray()
                         sink.user_last_spoken_time[user_id] = 0
+                        sink.user_utt_max_gap.pop(user_id, None)  # 📏 雜訊丟棄同步清 gap
                         sink.user_wake_check_count.pop(user_id, None)
                         if sink.wake_stream:
                             sink.wake_stream.on_speech_end(user_id)
@@ -977,6 +990,7 @@ class DiscordVoiceEngine:
                         print(f"⏲️ [VAD] 說太長了 ({self.MAX_AUDIO_CHUNK_DURATION}s)，User_{user_id} 聚合 {buffer_bytes} bytes 並強制送往 STT。", flush=True)
                         audio_data = bytes(sink.user_buffers[user_id])
                         sink.user_buffers[user_id] = bytearray()
+                        sink.user_utt_max_gap.pop(user_id, None)  # 📏 說太長切塊也重計 gap
                         # 注意：此處不重置 last_spoken，僅重置 first_audio，讓使用者能繼續說下去
                         sink.user_first_audio_time[user_id] = now 
                         
