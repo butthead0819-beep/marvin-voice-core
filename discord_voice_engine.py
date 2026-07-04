@@ -571,6 +571,10 @@ class RealtimeVADSink(voice_recv.AudioSink):
                     if now - last_spoken > stt_vad_threshold:
                         buffer_bytes = len(self.user_buffers[user_id])
                         if buffer_bytes > 19200:
+                            # 📏 [VADGap] 事件驅動路徑才是切句主力（7/4 實測：watchdog 情境A
+                            # 搶不到，49 句 0 樣本）——量測掛這裡才收得到
+                            _mg = self.user_utt_max_gap.pop(user_id, 0.0)
+                            print(f"📏 [VADGap] User_{user_id} max_gap={_mg:.2f}s thr={stt_vad_threshold}s dur={buffer_bytes/192000:.1f}s", flush=True)
                             print(f"✂️ [Event-Driven VAD] 偵測到 {stt_vad_threshold}s 靜音 (User_{user_id})，聚合 {buffer_bytes} bytes 並送往 STT。", flush=True)
                             audio_data = bytes(self.user_buffers[user_id])
                             self.user_buffers[user_id] = bytearray()
@@ -590,6 +594,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
                             # 緩衝區太短，視為雜訊
                             # if buffer_bytes > 0:
                             #     print(f"🗑️ [Event-Driven VAD] 緩衝區過短 ({buffer_bytes} bytes)，判定為雜訊。", flush=True)
+                            self.user_utt_max_gap.pop(user_id, None)  # 📏 雜訊丟棄同步清 gap
                             self.user_buffers[user_id] = bytearray()
                             self.user_last_spoken_time[user_id] = 0
                             self.user_first_audio_time[user_id] = 0
