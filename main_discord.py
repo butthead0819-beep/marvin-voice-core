@@ -531,6 +531,15 @@ class MarvinBot(commands.Bot):
         logger.info(f"🤖 馬文已連線。帳號: {self.user} (ID: {self.user.id})")
         logger.info(f"🏘️  本尊已潛入以下 {len(self.guilds)} 個伺服器：")
 
+        # 🔁 [AutoRejoin] kickstart 後語音頻道有真人 → 靜默回台（7/4 四連重啟教訓：
+        # bot 不自己回台=每次部署都把馬文踢下台等人工 /summon）
+        try:
+            _vc_cog = self.cogs.get("VoiceController")
+            if _vc_cog is not None:
+                asyncio.create_task(_vc_cog.auto_rejoin_on_boot())
+        except Exception as _ar_e:
+            logger.warning(f"[AutoRejoin] 排程失敗: {_ar_e}")
+
         # [Sync Logic] 不再需要重新載入 Cog，直接同步至各 Guild 即可
         total_synced = 0
         for guild in self.guilds:

@@ -77,6 +77,21 @@ def read_and_clear_reboot_state() -> dict | None:
         return None
 
 
+def pick_rejoin_channel(guilds, already_connected: bool):
+    """開機自動回台目標：任一語音頻道有真人在 → 回傳該頻道；否則 None。
+
+    2026-07-04：kickstart 後 bot 是離台狀態、要人手動 /summon——部署重啟
+    每次把馬文踢下台（當晨四連發實錘：10:06 後離台 1.5h 沒人發現）。
+    """
+    if already_connected:
+        return None
+    for g in guilds or []:
+        for ch in getattr(g, "voice_channels", None) or []:
+            if any(not m.bot for m in ch.members):
+                return ch
+    return None
+
+
 class ConnectionMixin:
     @staticmethod
     def _dave_grace_should_forgive(now: float, connection_time: float,
@@ -316,6 +331,41 @@ class ConnectionMixin:
                          await self.active_text_channel.send("🌑 **【系統歸位】**\n偵測到異常離群後重新捕捉到語音同步信號，監聽已自動恢復。")
                 except Exception as e:
                     logger.error(f"❌ [Resilience] 自發性恢復監聽失敗: {e}")
+
+    async def auto_rejoin_on_boot(self):
+        """🔁 開機自動回台（2026-07-04）：語音頻道有真人 → 靜默回台恢復監聽。
+
+        鏡像 summon 的連線核心（DAVE 連線+sink 掛載），刻意不打招呼、不動
+        active_text_channel（安靜回歸）。失敗只 log，可手動 /summon 兜底。
+        env MARVIN_AUTO_REJOIN=0 可關。
+        """
+        if os.getenv("MARVIN_AUTO_REJOIN", "1") == "0":
+            return
+        ch = pick_rejoin_channel(self.bot.guilds, bool(self.bot.voice_clients))
+        if ch is None:
+            return
+        try:
+            print(f"🔁 [AutoRejoin] 開機偵測 {ch.name} 有真人，靜默回台...", flush=True)
+            self.bot.engine.start()
+            from discord_voice_engine import RealtimeVADSink, patch_voice_recv_key_sync
+            voice_client = await ch.connect(cls=voice_recv.VoiceRecvClient, timeout=60.0, reconnect=True)
+            await asyncio.sleep(0.5)
+            sink = RealtimeVADSink(
+                self.bot.engine.process_audio_slice,
+                on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
+                temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
+                sink_error_callback=self.report_sink_error,
+                suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio,
+                wake_active_callback=lambda: self._wake_response_pending,
+            )
+            voice_client.listen(sink)
+            patch_voice_recv_key_sync(voice_client, on_desync_storm=self._on_key_desync_storm)
+            self.bot.engine.sink = sink
+            self.connection_time = time.time()
+            self.sink_failure_count = 0
+            logger.warning("🔁 [AutoRejoin] 回台完成，恢復監聽（靜默、未打招呼）")
+        except Exception as e:
+            logger.warning(f"[AutoRejoin] 回台失敗（可手動 /summon）: {e}")
 
     @app_commands.command(name="summon", description="[Operation] 召喚馬文進入語音頻道監聽這無意義的世界")
     async def summon(self, interaction: discord.Interaction):
