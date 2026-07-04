@@ -87,19 +87,18 @@ class SystemLoopsMixin:
                         await maybe_render_diary(self.bot, self.active_text_channel)
                     except Exception as _ce:
                         logger.warning(f"⚠️ [DiaryComic] 渲染 hook 失敗（已吞）: {_ce}")
-                else:
-                    # 📓 [DiaryComic] 掛機族 fallback（2026-07-04）：貼文原只靠 join 事件
-                    # 觸發——整晚掛頻道沒離開的人（狗與露實案）永遠等不到貼。
-                    # 台上有人+有 pending → 直接貼（poster 冪等去重，重複呼叫無害）。
-                    try:
-                        if self.get_online_members():
-                            from diary_comic_poster import maybe_post_open_rituals
-                            posted = await maybe_post_open_rituals(self.bot)
-                            if posted and hasattr(self, "play_tts"):
-                                asyncio.create_task(self.play_tts(
-                                    "昨天的日記畫好貼在日記頻道了，記得去翻翻。"))
-                    except Exception as _pe:
-                        logger.debug(f"[DiaryComic] 掛機族貼文略過: {_pe}")
+                # 📓 [DiaryComic] 掛機族 fallback（2026-07-04b：初版誤放 else 分支——
+                # 掛機場景正是「長靜默+人還連著」永遠走 if，fallback 碰不到）：
+                # 與靜默分支無關，台上有人+有 pending 就貼（poster 冪等去重，10min 一查極便宜）。
+                try:
+                    if self.get_online_members():
+                        from diary_comic_poster import maybe_post_open_rituals
+                        posted = await maybe_post_open_rituals(self.bot)
+                        if posted and hasattr(self, "play_tts"):
+                            asyncio.create_task(self.play_tts(
+                                "昨天的日記畫好貼在日記頻道了，記得去翻翻。"))
+                except Exception as _pe:
+                    logger.debug(f"[DiaryComic] 掛機族貼文略過: {_pe}")
                     # 📊 [Reveal] 同關台時序：出昨夜回放秀存 pending（不立刻貼），全防禦
                     try:
                         from make_reveal import maybe_render_reveal
