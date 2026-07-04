@@ -19,6 +19,7 @@ class ContextInjector:
         transcript_store=None,
         profile_compressor=None,
         vector_store=None,
+        router=None,
     ):
         """
         全部可選注入，沒注入就用預設（db_path="marvin.db"）。
@@ -27,6 +28,7 @@ class ContextInjector:
         self._compressor = profile_compressor
         self._vector = vector_store
         self._transcript_store = transcript_store  # 保留引用，供未來擴充
+        self.router = router
 
         # 若未注入，lazy 初始化留到第一次 enrich 呼叫時建立
         self._initialized = (profile_compressor is not None and vector_store is not None)
@@ -39,7 +41,7 @@ class ContextInjector:
         from vector_store import VectorStore
 
         if self._compressor is None:
-            self._compressor = ProfileCompressor(db_path="marvin.db")
+            self._compressor = ProfileCompressor(db_path="marvin.db", router=self.router)
         if self._vector is None:
             self._vector = VectorStore(persist_dir=".chroma_db")
         self._initialized = True

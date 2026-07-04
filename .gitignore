@@ -87,3 +87,6 @@ Thumbs.db
 
 # 機密：免費 API key（手動保存，勿提交）
 Free API key/
+
+# 日記漫畫產生物（generated，勿入歷史，含 ~9MB bundle）
+marvin_comics*.html

@@ -36,7 +36,7 @@ WINDOW_S = 5 * 60                  # 看過去多少對話
 MIN_TRANSCRIPTS_FOR_LLM = 2        # 對話 < 此數 → 直接回 default 不浪費 LLM call
 MAX_CONSECUTIVE_FAILS = 3
 
-MOOD_CLASSIFIER_MODEL = "llama-3.1-8b-instant"
+MOOD_CLASSIFIER_MODEL = "openai/gpt-oss-20b"
 MOOD_CLASSIFIER_TIMEOUT_S = 5.0
 MOOD_CLASSIFIER_MAX_TOKENS = 10
 

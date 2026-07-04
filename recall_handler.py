@@ -78,7 +78,7 @@ _UPDATE_STRIP = re.compile(
 )
 
 _TIMEOUT = 12.0
-_GROQ_MODEL = "llama-3.1-8b-instant"
+_GROQ_MODEL = "openai/gpt-oss-20b"
 
 _5W2H_SYSTEM = """\
 你是語音助理 Marvin。根據以下的對話摘要與原始對話記錄，用繁體中文簡短回答用戶的問題。

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 _FALLBACK_NO_MEMBERS = ["語音頻道目前沒有其他人，等有人進來再試試！"]
 _FALLBACK_LLM_ERROR = ["我想不到好話題，等一下再試"]
 
-_GROQ_MODEL = "llama-3.1-8b-instant"
+_GROQ_MODEL = "openai/gpt-oss-20b"
 _MAX_TOKENS = 300
 _TIMEOUT = 10.0
 
@@ -23,10 +23,11 @@ _TIMEOUT = 10.0
 class TopicGenerator:
     """從 Living Profile + 近期對話生成 3 個話題建議。"""
 
-    def __init__(self, vector_store, transcript_store, groq_client):
+    def __init__(self, vector_store, transcript_store, groq_client, router=None):
         self.vector_store = vector_store
         self.transcript_store = transcript_store
         self.groq_client = groq_client
+        self.router = router
 
     async def generate_topics(self, guild_id: str, voice_members) -> list[str]:
         """
@@ -66,22 +67,35 @@ class TopicGenerator:
         # 3. 組 prompt
         prompt = self._build_prompt(profiles, recent_texts)
 
-        # 4. 呼叫 Groq（帶 timeout，失敗 fallback）
+        # 4. 呼叫 LLM（帶 timeout，失敗 fallback）
         try:
-            response = await asyncio.wait_for(
-                self.groq_client.chat.completions.create(
-                    model=_GROQ_MODEL,
-                    messages=[
-                        {"role": "system", "content": self._system_prompt()},
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.8,
-                    max_tokens=_MAX_TOKENS,
-                    stream=False,
-                ),
-                timeout=_TIMEOUT,
-            )
-            content = response.choices[0].message.content.strip()
+            if self.router is not None:
+                content = await asyncio.wait_for(
+                    self.router._call_llm(
+                        system_prompt=self._system_prompt(),
+                        user_prompt=prompt,
+                        tier="simple",
+                        temperature=0.8,
+                        purpose="generate_topics",
+                    ),
+                    timeout=_TIMEOUT,
+                )
+                content = (content or "").strip()
+            else:
+                response = await asyncio.wait_for(
+                    self.groq_client.chat.completions.create(
+                        model=_GROQ_MODEL,
+                        messages=[
+                            {"role": "system", "content": self._system_prompt()},
+                            {"role": "user", "content": prompt},
+                        ],
+                        temperature=0.8,
+                        max_tokens=_MAX_TOKENS,
+                        stream=False,
+                    ),
+                    timeout=_TIMEOUT,
+                )
+                content = response.choices[0].message.content.strip()
             return self._parse_topics(content)
         except Exception as e:
             logger.warning(f"[TopicGenerator] Groq 呼叫失敗: {e}")

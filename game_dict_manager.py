@@ -59,7 +59,7 @@ class GameDictManager:
         if self.client:
             try:
                 response = await self.client.chat.completions.create(
-                    model=os.getenv("LLM_PRIMARY_MODEL", "llama-3.1-8b-instant"), 
+                    model=os.getenv("LLM_PRIMARY_MODEL", "openai/gpt-oss-20b"), 
                     messages=[{"role": "user", "content": prompt_template}],
                     temperature=0.3
                 )

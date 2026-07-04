@@ -55,7 +55,7 @@ class Marvin99:
                     api_key=api_key,
                     base_url="https://api.groq.com/openai/v1",
                 )
-                self._model = os.getenv("GROQ_SIMPLE_MODEL", "llama-3.1-8b-instant")
+                self._model = os.getenv("GROQ_SIMPLE_MODEL", "openai/gpt-oss-20b")
         except Exception as e:
             logger.warning(f"[Marvin99] LLM client init failed: {e}")
 

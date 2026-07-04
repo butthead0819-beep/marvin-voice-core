@@ -23,7 +23,7 @@ from recall_handler import PendingConfirmation
 logger = logging.getLogger(__name__)
 
 _MIN_UTTERANCES = 3
-_GROQ_MODEL = "llama-3.1-8b-instant"
+_GROQ_MODEL = "openai/gpt-oss-20b"
 _TIMEOUT = 15.0
 _CONFIRMATION_TTL = 1800  # 30 分鐘後過期丟棄
 

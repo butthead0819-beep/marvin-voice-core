@@ -120,7 +120,7 @@ def _build_groq_detector() -> UncertaintyDetector:
                 messages.append({"role": "system", "content": system})
             messages.append({"role": "user", "content": prompt})
             resp = await client.chat.completions.create(
-                model="llama-3.1-8b-instant", messages=messages,
+                model="openai/gpt-oss-20b", messages=messages,
                 max_tokens=max_tokens, temperature=temperature,
             )
             return resp.choices[0].message.content.strip()

@@ -37,7 +37,7 @@ _MIN_TRANSCRIPT_COUNT = 5
 
 
 class ProfileCompressor:
-    def __init__(self, db_path: str = "marvin.db", transcript_store: TranscriptStore | None = None):
+    def __init__(self, db_path: str = "marvin.db", transcript_store: TranscriptStore | None = None, router=None):
         self._db_path = db_path
         # :memory: 保留持久連線（與 TranscriptStore 相同模式）
         if db_path == ":memory:":
@@ -46,6 +46,7 @@ class ProfileCompressor:
             self._con = None
 
         self._store = transcript_store or TranscriptStore(db_path=db_path)
+        self.router = router
         self._groq_client = AsyncGroq()
         self._init_db()
 
@@ -132,9 +133,18 @@ class ProfileCompressor:
         return age_seconds > max_age_hours * 3600
 
     async def _call_llm(self, prompt: str) -> str:
-        """呼叫 Groq LLM 壓縮 prompt（抽出讓測試可 mock）"""
+        """呼叫 LLM 壓縮 prompt（抽出讓測試可 mock）"""
+        if self.router is not None:
+            content = await self.router._call_llm(
+                system_prompt=None,
+                user_prompt=prompt,
+                tier="simple",
+                purpose="profile_compress"
+            )
+            return (content or "").strip()
+
         response = await self._groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
         )

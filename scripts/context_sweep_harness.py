@@ -148,7 +148,7 @@ async def _call_cleaner(client, system: str, raw: str, ctx: list[dict]) -> tuple
     start = time.monotonic()
     try:
         response = await client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user_message},

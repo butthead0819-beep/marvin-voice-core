@@ -15,7 +15,7 @@ phase0_mood_flip.py — Day 0 mood-flip 量測
 
 輸出：data/phase0_mood_flip_{date}.jsonl + summary 印到 stdout
 
-成本估算：~2500 sample × ~500 in tokens × llama-3.1-8b-instant
+成本估算：~2500 sample × ~500 in tokens × openai/gpt-oss-20b
          ≈ $0.06 USD（不用擔心）
 
 ⚠️ MOOD CLASSIFIER PROMPT 在下面 MOOD_CLASSIFIER_SYSTEM/USER 兩個常數，
@@ -57,7 +57,7 @@ WINDOW_S = 5 * 60                            # 每 sample 看過去 N 秒對話
 MIN_TRANSCRIPTS_PER_WINDOW = 2               # < 此數視為「無對話」、不分類
 
 # Groq
-MODEL = "llama-3.1-8b-instant"
+MODEL = "openai/gpt-oss-20b"
 MAX_TOKENS = 10                              # mood 是單字、output 短
 TIMEOUT = 10.0
 DEFAULT_CONCURRENCY = 3                      # 並發數 (Groq free tier rate limit 緊、3 比較穩)

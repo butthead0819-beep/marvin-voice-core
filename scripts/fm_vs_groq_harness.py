@@ -1,4 +1,4 @@
-"""Apple Foundation Model vs Groq llama-3.1-8b-instant cleaner harness.
+"""Apple Foundation Model vs Groq openai/gpt-oss-20b cleaner harness.
 
 跑同一組 STT raw 文字 → 分別打 FM CLI daemon 與 Groq 8b → 對照 cleaned/wake/延遲。
 產出 records/fm_vs_groq_report_<ts>.json + .md。
@@ -261,11 +261,11 @@ class FMDaemon:
 
 
 async def call_groq_8b(client, system: str, user: str) -> tuple[Optional[CleanerResult], int]:
-    """Call Groq llama-3.1-8b-instant — same shape as stt_cleaner.py."""
+    """Call Groq openai/gpt-oss-20b — same shape as stt_cleaner.py."""
     start = time.monotonic()
     try:
         response = await client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-20b",
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
