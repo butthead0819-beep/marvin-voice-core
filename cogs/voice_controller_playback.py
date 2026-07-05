@@ -317,11 +317,14 @@ class PlaybackMixin:
         # 🎛️ [Plan 12] render → push mixer
         device = self._resolve_playback_device()
         if device is None:
+            logger.warning(f"⚠️ [TTS] 無可用播放裝置（_resolve_playback_device→None，local_mode={getattr(self, '_local_mode', False)}），丟棄本句: '{text[:30]}'")
             return
         if not already_in_channel:
             self._tts_interrupted = False
         _drop = {0: float("inf"), 1: 8.0, 2: 3.0}.get(priority, 8.0)
-        if self._mixer.tts_load_seconds() > _drop and not self._tts_protected:
+        _load = self._mixer.tts_load_seconds()
+        if _load > _drop and not self._tts_protected:
+            logger.info(f"⏭️ [TTS Load Drop] mixer TTS 佇列 {_load:.1f}s > {_drop}s（priority={priority}），丟棄本句: '{text[:30]}'")
             if not already_in_channel and self.active_text_channel:
                 asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
             return

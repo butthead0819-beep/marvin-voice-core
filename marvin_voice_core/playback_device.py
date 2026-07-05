@@ -6,6 +6,10 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# persistent 泵 idle 時寫的預設靜音幀（20ms @ 48k stereo int16 = 3840 bytes）；
+# 首個真實幀進來後改用其大小（見 _pump）。
+_DEFAULT_SILENCE_FRAME = b"\x00" * 3840
+
 
 class DiscordPlaybackDevice:
     """Thin wrapper around a discord VoiceClient that satisfies PlaybackDevice.
@@ -80,7 +84,7 @@ class LocalSpeakerDevice:
 
     # ── PlaybackDevice Protocol ──────────────────────────────────────────────
 
-    def play(self, source, *, after=None) -> None:
+    def play(self, source, *, after=None, persistent: bool = False) -> None:
         if self._playing:
             logger.warning("[Core_LocalSpk] play() 忽略：泵已在執行中")
             return
@@ -89,12 +93,12 @@ class LocalSpeakerDevice:
         self._playing = True
         self._thread = threading.Thread(
             target=self._pump,
-            args=(source, after, output),
+            args=(source, after, output, persistent),
             daemon=True,
             name="LocalSpk-pump",
         )
         self._thread.start()
-        logger.debug("[Core_LocalSpk] 泵已啟動")
+        logger.debug("[Core_LocalSpk] 泵已啟動 (persistent=%s)", persistent)
 
     def is_playing(self) -> bool:
         return self._playing
@@ -110,8 +114,13 @@ class LocalSpeakerDevice:
         return True
 
     def arm_mixer(self, source) -> None:
-        """委派 play()：idempotent 由既有 _playing 守門保證。"""
-        self.play(source)
+        """委派 play()（persistent）：idempotent 由既有 _playing 守門保證。
+
+        mixer 是 on-demand 來源，閒置超過 grace 會回 b""（給 Discord 的「停送」訊號）。
+        本機喇叭是常駐輸出，那個 b"" 不該殺泵→persistent=True 讓泵持位置寫靜音、等下一段
+        TTS/music，只有 stop() 才真中止。否則泵一退出、再 arm 又讀到 stale idle b"" 立刻
+        退出→push 進來的 TTS 沒人排→無聲且 tts_load 累積（本機沉默 bug 根因）。"""
+        self.play(source, persistent=True)
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
@@ -129,16 +138,23 @@ class LocalSpeakerDevice:
         stream.start()
         return _SounddeviceOutputAdapter(stream)
 
-    def _pump(self, source, after, output) -> None:
+    def _pump(self, source, after, output, persistent: bool = False) -> None:
         exhausted = False
         start = time.perf_counter()
         frames_played = 0
+        silence = _DEFAULT_SILENCE_FRAME  # persistent idle 寫的靜音幀（跟到首個真實幀大小）
         try:
             while not self._stop_flag.is_set():
                 frame = source.read()
                 if not frame:
-                    exhausted = True
-                    break
+                    if not persistent:
+                        exhausted = True
+                        break
+                    # 常駐本機喇叭：mixer on-demand idle 回 b"" ≠ 耗盡。寫靜音持位置、
+                    # 等下一段 TTS/music，只有 stop() 才中止（避免 re-arm race 丟 TTS）。
+                    frame = silence
+                elif len(frame) != len(silence):
+                    silence = b"\x00" * len(frame)
                 _write_frame(output, frame)
                 frames_played += 1
                 if self._frame_duration > 0:
@@ -151,7 +167,7 @@ class LocalSpeakerDevice:
             if exhausted and after is not None:
                 after(None)
             self._playing = False
-            logger.debug("[Core_LocalSpk] 泵執行緒結束 (exhausted=%s)", exhausted)
+            logger.debug("[Core_LocalSpk] 泵執行緒結束 (exhausted=%s persistent=%s)", exhausted, persistent)
 
 
 class _SounddeviceOutputAdapter:

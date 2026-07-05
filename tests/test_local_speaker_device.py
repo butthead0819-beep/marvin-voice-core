@@ -113,6 +113,57 @@ def test_stop_aborts_pump_midway():
     assert len(after_calls) == 0, "stop() 中止不應呼叫 after"
 
 
+class _IdleThenFrames:
+    """前段回 b""(idle)、接著回真幀、之後永遠 idle——模擬 mixer arm 時 TTS 還沒 push。"""
+
+    def __init__(self) -> None:
+        self._seq = [b"", b"", b"", FRAME, FRAME]
+        self._i = 0
+
+    def read(self) -> bytes:
+        if self._i < len(self._seq):
+            f = self._seq[self._i]
+            self._i += 1
+            return f
+        return b""  # 之後永遠 idle
+
+
+def test_arm_mixer_persistent_survives_idle_empty_reads():
+    """arm_mixer(persistent)：source 前段回 b""（mixer arm 時 TTS 還沒 push）不讓泵退出——
+    持位置寫靜音、之後真幀仍播出、is_playing 維持 True，只有 stop() 才中止。
+    修 on-demand mixer idle b"" 殺泵 → re-arm race 丟 TTS → 本機永久沉默 的根因。"""
+    from marvin_voice_core.playback_device import LocalSpeakerDevice
+
+    src = _IdleThenFrames()
+    out = _FakeOutput()
+    dev = LocalSpeakerDevice(output=out, frame_duration=0.001)
+    dev.arm_mixer(src)  # persistent=True
+
+    assert _wait_until(lambda: FRAME in out.frames), "persistent 泵應在 idle b\"\" 後仍播出真幀"
+    assert dev.is_playing() is True, "idle b\"\" 不該讓 persistent 泵退出"
+    assert not out.closed, "persistent 泵運行中 output 不該被關閉"
+
+    dev.stop()
+    assert dev.is_playing() is False
+    assert out.closed
+
+
+def test_non_persistent_play_still_exits_on_empty_read():
+    """對照：一般 play()（非 persistent）遇 b"" 仍照舊耗盡退出（不回歸）。"""
+    from marvin_voice_core.playback_device import LocalSpeakerDevice
+
+    src = _FakeSource([FRAME, FRAME])
+    out = _FakeOutput()
+    dev = LocalSpeakerDevice(output=out, frame_duration=0)
+    dev.play(src)  # persistent 預設 False
+
+    assert dev._thread is not None
+    dev._thread.join(timeout=2.0)
+    assert dev.is_playing() is False
+    assert out.closed
+    assert out.frames == [FRAME, FRAME]
+
+
 def test_is_playing_and_is_connected_states():
     """is_playing() 與 is_connected() 在各階段的狀態正確。"""
     from marvin_voice_core.playback_device import LocalSpeakerDevice
@@ -146,21 +197,23 @@ def test_runtime_checkable_isinstance():
 
 
 def test_arm_mixer_starts_pump():
-    """arm_mixer(source) 委派 play() 啟動泵：幀寫出、is_playing() 最終 False（自然耗盡）。"""
+    """arm_mixer(source) 委派 play(persistent) 啟動泵：真幀依序寫出，之後 source 耗盡回 b""
+    也**不退出**（on-demand mixer 語意，等下一段），只有 stop() 才中止。"""
     from marvin_voice_core.playback_device import LocalSpeakerDevice
 
     N = 4
     source = _FakeSource([FRAME] * N)
     output = _FakeOutput()
 
-    dev = LocalSpeakerDevice(output=output, frame_duration=0)
+    dev = LocalSpeakerDevice(output=output, frame_duration=0.001)
     dev.arm_mixer(source)
 
-    assert dev._thread is not None
-    dev._thread.join(timeout=2.0)
+    assert _wait_until(lambda: output.frames[:N] == [FRAME] * N), "真幀應依序寫出"
+    assert dev.is_playing() is True, "persistent 泵不因 source 耗盡而退出"
 
-    assert output.frames == [FRAME] * N
+    dev.stop()
     assert not dev.is_playing()
+    assert output.closed
 
 
 def test_arm_mixer_idempotent_when_already_playing():
