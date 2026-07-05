@@ -132,6 +132,11 @@ class LocalMicSink:
                 logger.debug("[Core_LocalSink] 片段過短 (%d bytes)，丟棄", len(audio_data))
             return
 
+        # 診斷：切句時的語音時長（只計人聲幀）——判「切太早」是本機 VAD 過早切、
+        # 還是 Swift STT 把完整音訊聽殘。短時長=VAD 早切；長時長但文字殘=STT 問題。
+        _voiced_s = len(audio_data) / (self._sample_rate * self._channels * 2)
+        logger.info("[Core_LocalSink] ✂️ 切句：人聲 %.1fs（靜默門檻 %.1fs）", _voiced_s, self._silence_cut_s)
+
         self._get_loop().create_task(
             self.on_speech_cut_callback(_LOCAL_USER_ID, audio_data, speech_start)
         )
