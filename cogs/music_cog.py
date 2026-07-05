@@ -572,6 +572,29 @@ class MusicCog(commands.Cog):
             return online_members[0] if online_members else None
         return requested_by
 
+    # 健康播放的最低秒數；低於此且非使用者 skip → 疑似 403/網路失敗（yt-dlp 串流網址
+    # 過期，ffmpeg 開檔即 403 → play_stream_song 秒返）。
+    _MIN_HEALTHY_PLAY_S = 3.0
+
+    @classmethod
+    def _should_retry_failed_song(
+        cls, played_s: float, *, stream_active: bool, skipped: bool,
+        requested_by: str | None, already_retried: bool,
+    ) -> bool:
+        """點的歌播太短（疑 403/失敗）→ 該重抓網址重試一次，別讓它被自動推薦洗掉。
+
+        守門（全過才重試）：沒重試過 / 仍在串流(非 stop) / 非使用者 skip /
+        真人點播（非 Marvin 自動推薦）/ 播放時間 < 健康門檻。任一不符→不重試，
+        避免誤重播被 skip 的歌、或無限重試自動推薦。
+        """
+        if already_retried or not stream_active or skipped:
+            return False
+        if played_s >= cls._MIN_HEALTHY_PLAY_S:
+            return False
+        if not requested_by or requested_by.startswith("Marvin"):
+            return False
+        return True
+
     def _load_taste_fingerprint(self) -> dict:
         """讀 records/taste_fingerprint.json（5 分鐘快取；缺檔/壞檔 → {} fail-open）。"""
         now = time.time()
@@ -1280,6 +1303,7 @@ class MusicCog(commands.Cog):
                 if dj_data and not dj_audio and vc is not None:
                     await self._maybe_play_dj_interjection(dj_data)
 
+                self._current_song_skipped = False
                 song_start_time = time.time()
                 song_lyrics_snapshot = self._current_lyrics or ""
                 playback_completion = "natural"
@@ -1297,6 +1321,23 @@ class MusicCog(commands.Cog):
                         ))
                     except Exception as e:
                         logger.debug(f"⚠️ [Companion_Bridge] music_ended hook skipped: {e}")
+
+                # 🔁 點的歌只播了一瞬（疑 yt-dlp 網址過期→ffmpeg 403）→ 重抓網址重試一次，
+                # 別讓它被自動推薦洗掉。DJ 報歌走 mixed（隨 ffmpeg 一起失敗）→ 首次 403 不誤報，
+                # 只在確定能播的那次才響＝「確定能播的歌才說出來」。
+                _played_s = time.time() - song_start_time
+                if self._should_retry_failed_song(
+                        _played_s, stream_active=self.stream_mode,
+                        skipped=getattr(self, "_current_song_skipped", False),
+                        requested_by=requested_by, already_retried=False):
+                    _wp = info.get('webpage_url') or info.get('url')
+                    logger.info(f"🔁 [Stream] 點的歌只播 {_played_s:.1f}s，疑似 403，重抓網址重試：{title}")
+                    _fresh = await self._resolve_yt_query(_wp) if _wp else None
+                    if _fresh and _fresh.get('url'):
+                        try:
+                            await self.play_stream_song(_fresh['url'], title, dj_audio_path=dj_audio)
+                        except Exception:
+                            logger.warning(f"⚠️ [Stream] 重試也失敗，讓下一首接手：{title}")
 
                 if vc is not None:
                     asyncio.create_task(self._analyze_song_reactions(info, song_start_time, song_lyrics_snapshot))
@@ -2126,6 +2167,7 @@ class MusicCog(commands.Cog):
                 if ch: await ch.send("😑 沒有歌在播，要我跳過什麼？")
                 return
             self._record_song_skip()
+            self._current_song_skipped = True  # 標記：讓 stream loop 別把 skip 當 403 失敗去重試
             if _mixer is not None:
                 _mixer.clear_music()
             reply = random.choice(replies["skip"])
