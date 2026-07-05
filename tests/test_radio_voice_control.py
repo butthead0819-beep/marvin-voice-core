@@ -238,3 +238,38 @@ async def test_voice_skip_no_modes_active_sends_error():
     cog._vc_mock.active_text_channel.send.assert_called_once()
     sent = cog._vc_mock.active_text_channel.send.call_args[0][0]
     assert "😑" in sent
+
+
+# ── 本機模式（無 Discord VC）音樂播放接縫 ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_voice_play_local_mode_does_not_require_discord_vc():
+    """本機模式：vc._resolve_playback_device() 回本機喇叭（非 Discord VC）→ play 指令
+    不該回『先用 /summon』bail，應繼續搜尋。修 music_cog 寫死 Discord VC 導致本機無聲。"""
+    cog = _make_cog()
+    cog.stream_mode = False
+    cog.radio_mode = False
+    cog.bot.voice_clients = []                          # 無 Discord VC（本機模式）
+    cog._vc_mock._resolve_playback_device = MagicMock(return_value=MagicMock())  # 本機喇叭
+    cog._resolve_yt_query = AsyncMock(return_value=None)  # 搜尋回 None，止於 resolve（不真播）
+
+    await cog._handle_voice_music_command("狗與露", "播放周杰倫", "play")
+
+    sends = [c.args[0] for c in cog._vc_mock.active_text_channel.send.call_args_list]
+    assert not any("summon" in s for s in sends), f"本機模式不該要求 summon: {sends}"
+    assert any("搜尋" in s for s in sends), f"應進到搜尋: {sends}"
+
+
+@pytest.mark.asyncio
+async def test_voice_play_no_device_at_all_still_bails():
+    """對照：連本機喇叭都沒有（_resolve_playback_device→None）→ 照舊 bail 要求 summon。"""
+    cog = _make_cog()
+    cog.stream_mode = False
+    cog.radio_mode = False
+    cog.bot.voice_clients = []
+    cog._vc_mock._resolve_playback_device = MagicMock(return_value=None)
+
+    await cog._handle_voice_music_command("狗與露", "播放周杰倫", "play")
+
+    sends = [c.args[0] for c in cog._vc_mock.active_text_channel.send.call_args_list]
+    assert any("summon" in s for s in sends), f"無任何裝置時應要求 summon: {sends}"

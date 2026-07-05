@@ -46,7 +46,6 @@ from music_memory import extract_video_id
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
-from marvin_voice_core.playback_device import DiscordPlaybackDevice
 
 logger = logging.getLogger(__name__)
 
@@ -547,21 +546,20 @@ class MusicCog(commands.Cog):
             logger.warning(f"⚠️ [Radio Song] 找不到檔案: {file_path}")
             return
 
-        voice_client = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-        if not voice_client:
-            logger.warning("⚠️ [Radio Song] 無連線中的 VoiceClient，跳過播放。")
+        vc = self._vc()
+        device = vc._resolve_playback_device() if vc is not None else None
+        if device is None:
+            logger.warning("⚠️ [Radio Song] 無可用播放裝置（Discord VC / 本機喇叭皆無），跳過播放。")
             self.radio_mode = False
             self.radio_paused = False
             return
 
         src = discord.FFmpegPCMAudio(file_path, options="-vn")
-        vc = self._vc()
-        if vc is not None:
-            await vc._mixer_play_music(
-                DiscordPlaybackDevice(voice_client), src,
-                still_active=lambda: self.radio_mode,
-                volume_attr="radio_volume",
-            )
+        await vc._mixer_play_music(
+            device, src,
+            still_active=lambda: self.radio_mode,
+            volume_attr="radio_volume",
+        )
 
     # ── 🎵 Autopilot recommendation engine ───────────────────────────────────
 
@@ -1329,9 +1327,11 @@ class MusicCog(commands.Cog):
         import shlex
 
         vc = self._vc()
-        voice_client = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-        if not voice_client:
-            logger.warning("⚠️ [Stream Song] 無連線中的 VoiceClient，跳過。")
+        # 走輸出接縫：本機模式回 LocalSpeakerDevice、Discord 回 DiscordPlaybackDevice(vc)、
+        # 皆無回 None（不再寫死 Discord voice_client，否則本機模式音樂直接 bail 無聲）。
+        device = vc._resolve_playback_device() if vc is not None else None
+        if device is None:
+            logger.warning("⚠️ [Stream Song] 無可用播放裝置（Discord VC / 本機喇叭皆無），跳過。")
             self.stream_mode = False
             return
 
@@ -1358,7 +1358,7 @@ class MusicCog(commands.Cog):
             if vc is not None:
                 vc._mixer.set_volume(1.0)
                 await vc._mixer_play_music(
-                    DiscordPlaybackDevice(voice_client), discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
+                    device, discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
                     still_active=lambda: self.stream_mode,
                 )
         else:
@@ -1370,7 +1370,7 @@ class MusicCog(commands.Cog):
                 asyncio.create_task(self._measure_norm_gain_bg(url))
             if vc is not None:
                 await vc._mixer_play_music(
-                    DiscordPlaybackDevice(voice_client), discord.FFmpegPCMAudio(url, **p12_opts),
+                    device, discord.FFmpegPCMAudio(url, **p12_opts),
                     still_active=lambda: self.stream_mode, volume_attr="stream_volume",
                 )
 
@@ -2103,7 +2103,9 @@ class MusicCog(commands.Cog):
             if vc:
                 asyncio.create_task(vc._play_ack("music", speaker=speaker))
         ch = vc.active_text_channel if vc else None
-        discord_vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
+        # 可播放 = 有輸出裝置（本機 LocalSpeakerDevice 或 Discord 連線中 VC）。
+        # 不再只認 Discord VC，否則本機模式 play/pause/resume 全被擋。
+        _can_play = vc is not None and vc._resolve_playback_device() is not None
         _mixer = vc._mixer if vc else None
 
         import random
@@ -2146,7 +2148,7 @@ class MusicCog(commands.Cog):
             if not self.stream_mode and not self.radio_mode:
                 if ch: await ch.send("😑 沒有在播可以暫停。")
                 return
-            if not discord_vc:
+            if not _can_play:
                 if ch: await ch.send("😑 找不到語音連線。")
                 return
             if self.stream_mode and not self.stream_paused:
@@ -2168,7 +2170,7 @@ class MusicCog(commands.Cog):
             if not self.stream_paused and not self.radio_paused:
                 if ch: await ch.send("😑 沒有東西在暫停。")
                 return
-            if not discord_vc:
+            if not _can_play:
                 if ch: await ch.send("😑 找不到語音連線。")
                 return
             if self.stream_paused:
@@ -2185,7 +2187,7 @@ class MusicCog(commands.Cog):
 
         elif cmd == "play":
             search = vc._extract_music_search_query(query) if vc else query
-            if not discord_vc:
+            if not _can_play:
                 if ch: await ch.send("❌ 我不在語音頻道中，先用 `/summon` 召喚我。")
                 return
             if not search:
