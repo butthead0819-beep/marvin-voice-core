@@ -11,6 +11,8 @@ from protocols import AudioSource
 
 # 20 ms of 48 kHz stereo int16 PCM: 960 frames × 2 ch × 2 bytes = 3840 bytes
 FRAME_BYTES = 3840
+# 每幀 20ms → 切句門檻 1.5s = 75 幀（見 silence_cut_s）。給足 80 幀確保觸發。
+SILENCE_FRAMES_TO_CUT = 80
 # int16 amplitude well above any RMS detection threshold (≈ 8000 RMS)
 SPEECH_VALUE = 8000
 
@@ -23,6 +25,11 @@ def _silence_frame() -> bytes:
     return bytes(FRAME_BYTES)
 
 
+def _ambient_frame(value: int) -> bytes:
+    """定值 int16 幀，RMS == |value|（供自適應底噪測試）。"""
+    return (np.ones(FRAME_BYTES // 2, dtype=np.int16) * value).tobytes()
+
+
 @pytest.mark.asyncio
 async def test_local_mic_audio_reaches_pipeline_callback():
     """注入語音（6 frames = 23040 bytes > 19200）後接靜音，callback 恰觸發一次且 PCM 非空。"""
@@ -33,8 +40,8 @@ async def test_local_mic_audio_reaches_pipeline_callback():
     async def spy(user_id, pcm, timestamp, *, is_wake_check=False):
         calls.append((user_id, pcm, timestamp))
 
-    # 6 speech frames = 23040 bytes > 19200 min gate, then 25 silence frames to trigger cut
-    source = [_speech_frame()] * 6 + [_silence_frame()] * 25
+    # 6 speech frames = 23040 bytes > 19200 min gate, then 靜默達 1.5s 觸發切句
+    source = [_speech_frame()] * 6 + [_silence_frame()] * SILENCE_FRAMES_TO_CUT
     sink = LocalMicSink(spy, source=source, loop=asyncio.get_running_loop())
     await sink.start()
     await asyncio.sleep(0)
@@ -73,7 +80,7 @@ async def test_too_short_audio_below_noise_gate_does_not_trigger():
         calls.append((user_id, pcm, timestamp))
 
     # 4 speech frames × 3840 = 15360 bytes ≤ 19200 — must be dropped by the gate
-    source = [_speech_frame()] * 4 + [_silence_frame()] * 25
+    source = [_speech_frame()] * 4 + [_silence_frame()] * SILENCE_FRAMES_TO_CUT
     sink = LocalMicSink(spy, source=source, loop=asyncio.get_running_loop())
     await sink.start()
     await asyncio.sleep(0)
@@ -107,6 +114,88 @@ def test_mono_to_stereo_doubles_length_and_interleaves():
     # interleaved: [L0, R0, L1, R1, ...] — L==R
     assert list(samples[0::2]) == [1, 2, 3], "L channel 應等於 mono 原始值"
     assert list(samples[1::2]) == [1, 2, 3], "R channel 應等於 mono 原始值（L==R）"
+
+
+# ---------------------------------------------------------------------------
+# 時間基準切句 + 自適應底噪（VAD 別切句 / 底噪取樣）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_silence_cut_is_time_based_at_1_5s():
+    """切句是時間基準：74 幀(1.48s)不切、76 幀(1.52s)切——證明門檻≈1.5s 而非幀數。"""
+    from marvin_voice_core.local_mic_sink import LocalMicSink
+
+    async def run(n_silence):
+        calls = []
+        async def spy(uid, pcm, ts, *, is_wake_check=False):
+            calls.append(pcm)
+        source = [_speech_frame()] * 6 + [_silence_frame()] * n_silence
+        sink = LocalMicSink(spy, source=source, loop=asyncio.get_running_loop())
+        await sink.start()
+        await asyncio.sleep(0)
+        return len(calls)
+
+    assert await run(74) == 0   # 1.48s < 1.5s → 不切（且無句尾 flush）
+    assert await run(76) == 1   # 1.52s ≥ 1.5s → 切
+
+
+@pytest.mark.asyncio
+async def test_intra_sentence_pause_below_threshold_keeps_one_segment():
+    """句內 1.0s 停頓（< 1.5s）不切句：兩段語音併成一段，只觸發一次 callback。
+    這是「VAD 別切句」的核心行為——自然停頓不再把整句切碎。"""
+    from marvin_voice_core.local_mic_sink import LocalMicSink
+
+    calls = []
+    async def spy(uid, pcm, ts, *, is_wake_check=False):
+        calls.append(pcm)
+
+    # 6 語音 → 1.0s 停頓(50幀) → 6 語音 → 1.6s 靜默(80幀)收尾
+    source = ([_speech_frame()] * 6 + [_silence_frame()] * 50
+              + [_speech_frame()] * 6 + [_silence_frame()] * SILENCE_FRAMES_TO_CUT)
+    sink = LocalMicSink(spy, source=source, loop=asyncio.get_running_loop())
+    await sink.start()
+    await asyncio.sleep(0)
+
+    assert len(calls) == 1, "句內短停頓不該切成兩段"
+    # 兩段語音都在同一 buffer（12 語音幀 = 46080 bytes）
+    assert len(calls[0]) == 12 * FRAME_BYTES
+
+
+@pytest.mark.asyncio
+async def test_silence_cut_s_is_configurable():
+    """silence_cut_s 可調：設 0.5s → 26 幀(0.52s)即切。"""
+    from marvin_voice_core.local_mic_sink import LocalMicSink
+
+    calls = []
+    async def spy(uid, pcm, ts, *, is_wake_check=False):
+        calls.append(pcm)
+
+    source = [_speech_frame()] * 6 + [_silence_frame()] * 26  # 0.52s
+    sink = LocalMicSink(spy, source=source, silence_cut_s=0.5,
+                        loop=asyncio.get_running_loop())
+    await sink.start()
+    await asyncio.sleep(0)
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_sink_samples_noise_floor_not_fixed_threshold():
+    """底噪取樣：餵 75 幀穩定 600-RMS 背景後，sink 的 noise_floor 抬到 600
+    （非寫死門檻）——動態閾值隨環境上升，吵雜房間才不會把背景當人聲。"""
+    from marvin_voice_core.local_mic_sink import LocalMicSink
+
+    async def noop(uid, pcm, ts, *, is_wake_check=False):
+        pass
+
+    source = [_ambient_frame(600)] * 75
+    sink = LocalMicSink(noop, source=source, loop=asyncio.get_running_loop())
+    await sink.start()
+
+    assert sink._noise_floor.noise_floor == 600
+    # 沒有寫死的 _rms_threshold 欄位（已被自適應地板取代）
+    assert not hasattr(sink, "_rms_threshold")
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +278,7 @@ async def test_local_mic_sink_leaves_vad_state_empty():
     async def noop(user_id, pcm, ts, *, is_wake_check=False):
         pass
 
-    source = [_speech_frame()] * 6 + [_silence_frame()] * 25
+    source = [_speech_frame()] * 6 + [_silence_frame()] * SILENCE_FRAMES_TO_CUT
     sink = LocalMicSink(noop, source=source, loop=asyncio.get_running_loop())
     await sink.start()
     await asyncio.sleep(0)

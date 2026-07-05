@@ -13,6 +13,7 @@ from typing import Callable, Iterable
 
 import numpy as np
 
+from marvin_voice_core.adaptive_noise_floor import AdaptiveNoiseFloor
 from marvin_voice_core.audio_utils import calculate_rms
 
 logger = logging.getLogger(__name__)
@@ -31,9 +32,10 @@ class LocalMicSink:
     sounddevice InputStream.  In tests, pass a list of pre-built byte chunks —
     no real hardware required.
 
-    Speech detection uses a simple frame-level RMS threshold + consecutive
-    silence frame counter.  Full adaptive noise-floor / conversation-temperature
-    logic lives in RealtimeVADSink and is intentionally not duplicated here.
+    Speech detection uses an adaptive noise floor (AdaptiveNoiseFloor，取樣背景
+    RMS、非寫死門檻) plus a *time-based* silence cut：句尾累積靜默達 silence_cut_s
+    才切句（預設 1.5s，依 VADGap 實測句內停頓 p95≈1.48s 定，避免自然停頓把整句
+    切碎）。時間由 chunk 位元組長度換算（deterministic、不依賴浮動 blocksize）。
     """
 
     def __init__(
@@ -44,7 +46,7 @@ class LocalMicSink:
         source: Iterable[bytes] | None = None,
         min_audio_bytes: int = _MIN_AUDIO_BYTES,
         rms_threshold: int = 500,
-        silence_frames_threshold: int = 20,
+        silence_cut_s: float = 1.5,
         sample_rate: int = 48000,
         channels: int = 2,
         suppress_wake_callback: Callable[[], bool] | None = None,
@@ -53,14 +55,17 @@ class LocalMicSink:
         self._loop = loop
         self._source = source
         self._min_audio_bytes = min_audio_bytes
-        self._rms_threshold = rms_threshold
-        self._silence_frames_threshold = silence_frames_threshold
+        # rms_threshold 現為「靜態最低門檻」＝自適應地板的下限（安靜房間兜底）；
+        # 真正驅動偵測的是取樣背景後的 noise_floor+delta（見 AdaptiveNoiseFloor）。
+        self._noise_floor = AdaptiveNoiseFloor(static_floor=rms_threshold)
+        # 句尾靜默達此秒數才切句（時間基準，非幀數）。依 VADGap 實測 p95≈1.48s。
+        self._silence_cut_s = silence_cut_s
         self._sample_rate = sample_rate
         self._channels = channels
 
         self._speech_buffer: bytearray = bytearray()
         self._is_speaking: bool = False
-        self._silence_count: int = 0
+        self._silence_accum_s: float = 0.0
         self._speech_start_time: float = 0.0
         self._frame_count: int = 0
 
@@ -88,29 +93,37 @@ class LocalMicSink:
         except RuntimeError:
             return asyncio.get_event_loop()
 
+    def _chunk_duration_s(self, chunk: bytes) -> float:
+        """由 PCM 位元組長度換算秒（不依賴浮動的 sounddevice blocksize）。
+        48k stereo int16：len / (48000 × 2ch × 2bytes) = len / 192000。"""
+        return len(chunk) / (self._sample_rate * self._channels * 2)
+
     def _process_chunk(self, chunk: bytes, timestamp: float) -> None:
         rms = calculate_rms(chunk)
         self._frame_count += 1
+        active_threshold = self._noise_floor.update(rms)
 
-        if rms > self._rms_threshold:
+        if rms > active_threshold:
             if not self._is_speaking:
                 self._is_speaking = True
                 self._speech_start_time = timestamp
             self._speech_buffer.extend(chunk)
-            self._silence_count = 0
+            self._silence_accum_s = 0.0
             # NOTE: 刻意不填 user_last_spoken_time/user_is_speaking——開放麥克風底噪會讓
             # _wait_for_user_silence 永遠判「還在講」而擋住 play_tts。留空 → silence gate 直接放行。
         else:
             if self._is_speaking:
-                self._silence_count += 1
-                if self._silence_count >= self._silence_frames_threshold:
+                # 時間基準切句：句尾累積靜默達 silence_cut_s（預設 1.5s）才切。
+                # 句內停頓 < 門檻時被下一個人聲 frame 重置，不會把整句切碎。
+                self._silence_accum_s += self._chunk_duration_s(chunk)
+                if self._silence_accum_s >= self._silence_cut_s:
                     self._cut_segment()
 
     def _cut_segment(self) -> None:
         audio_data = bytes(self._speech_buffer)
         self._speech_buffer = bytearray()
         self._is_speaking = False
-        self._silence_count = 0
+        self._silence_accum_s = 0.0
         speech_start = self._speech_start_time
         self._speech_start_time = 0.0
 
