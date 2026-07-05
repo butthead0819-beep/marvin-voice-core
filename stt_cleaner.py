@@ -111,6 +111,23 @@ def _verify_wake_against_raw(
     return is_wake, wake_intent
 
 
+def _revert_injected_wake(cleaned_text: str, raw_text: str | None) -> tuple[str, bool]:
+    """文字層 Wake Injection Guard — cleaned 冒出原句沒有的喚醒詞 → 還原成 raw。
+
+    弱模型（gpt-oss/8b）有時判 not-wake 卻仍在文字裡塞「馬文」（如「說個笑話」→
+    「馬文說個笑話」）。_verify_wake_against_raw 只管 wake 決策、且只在 is_wake=True 時
+    還原文字，漏了 is_wake=False 的文字注入 → 污染下游 ctx.query（cleaner 路白費/誤配
+    agent）。此 helper 補這道：cleaned 有喚醒詞、raw 沒有 → 判定注入，回 (raw, True)。
+
+    raw_text=None（無比對基準）、或雙方都有/都沒喚醒詞 → 不動，回 (cleaned, False)。
+    """
+    if raw_text is None:
+        return cleaned_text, False
+    if check_cleaned_text_for_wake(cleaned_text) and not check_cleaned_text_for_wake(raw_text):
+        return raw_text, True
+    return cleaned_text, False
+
+
 # ── Cleaner pre-gate（2026-05-21）──────────────────────────────────────────────
 # 每句 STT 都打 cleaner 是 TPD 大宗。一句話只在「可能對 Marvin 有意圖」時才值得送：
 #   有指令訊號（喚醒音/音樂詞/龍蝦）OR 正在對話中（ctx_active / Marvin 剛說）。
@@ -214,6 +231,14 @@ class GeminiRouterSTTMixin:
             if is_wake and not verified_wake:
                 logger.warning(f"⚠️ [STT Clean] LLM 注入喚醒詞 (過矯正)：'{original}' -> '{text}'，已拒絕。")
                 return {"text": original, "is_wake": False, "wake_intent": verified_intent, "wake_threshold": threshold}
+
+            # 🛡️ [Wake Injection Guard — 文字層補漏] is_wake=False 但 cleaned 仍注入了原句
+            # 沒有的喚醒詞（「說個笑話」→「馬文說個笑話」）。上面的 guard 只在 is_wake=True 還原，
+            # 漏這種 → 污染下游 ctx.query。還原成 original，避免 cleaner 路白費/誤配 agent。
+            reverted_text, injected = _revert_injected_wake(text, original)
+            if injected:
+                logger.warning(f"⚠️ [STT Clean] LLM 注入喚醒詞 (過矯正/非wake)：'{original}' -> '{text}'，已還原。")
+                return {"text": reverted_text, "is_wake": False, "wake_intent": None, "wake_threshold": threshold}
 
             # 📝 [STT Correction Log] 有意義的修正才記錄（排除純空白差異）
             if original is not None and text.strip() != original.strip() and speaker:
