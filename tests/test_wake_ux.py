@@ -45,6 +45,16 @@ def test_low_confidence_answer_detection_blocks_weak_llm_text():
     assert controller._is_low_confidence_answer("我不確定你在問什麼") is True
     assert controller._is_low_confidence_answer("紅色那個先打掉，旁邊有補包。") is False
 
+    # 🃏 長答案內含搪塞詞（笑話/引述的哏）不該被誤判為低信心——搪塞詞是內容不是馬文搪塞。
+    # 7/5 User_local live：笑話被 _is_low_confidence_answer 吞掉不發聲的根因。
+    assert controller._is_low_confidence_answer(
+        "有一台機器人問宇宙的意義，宇宙回答：「我不知道，但我建議你先去洗碗。」") is False
+    assert controller._is_low_confidence_answer(
+        "我覺得這題超有趣的，雖然有些人會說不知道答案，但我認為就是四十二啦") is False  # 「不知道」埋句中
+    # 但「以搪塞詞開頭的長答案」仍算低信心（馬文真的在搪塞）
+    assert controller._is_low_confidence_answer(
+        "我不知道你在說什麼欸，可以再講清楚一點嗎拜託") is True
+
 
 @pytest.mark.asyncio
 async def test_confirmation_uses_initial_wake_text_query_without_waiting():

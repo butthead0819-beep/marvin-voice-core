@@ -2917,12 +2917,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return True
         if "[SKIP]" in cleaned:
             return True
-        weak_patterns = [
-            "不知道", "我不確定", "無法回答", "不清楚", "沒辦法回答", "不太清楚",
-            "無法確定", "沒有足夠", "需要更多", "請提供", "再說清楚",
-            "你是指", "你的意思是", "這取決於", "作為一個", "讓我先",
-        ]
-        return any(pattern in cleaned for pattern in weak_patterns)
+        weak_patterns = ("不知道", "我不確定", "無法回答", "不清楚", "沒辦法回答", "不太清楚",
+                         "無法確定", "沒有足夠", "需要更多", "請提供", "再說清楚",
+                         "你是指", "你的意思是", "這取決於", "作為一個", "讓我先")
+        # 長答案(>20)只認以搪塞詞開頭，短答案認子字串（笑話/引述含「不知道」等詞不誤判靜音，7/5 live）
+        return any(p in (cleaned if len(cleaned) <= 20 else cleaned[:8]) for p in weak_patterns)
 
     def _is_owner_speaker(self, speaker: str) -> bool:
         """確認 speaker display_name 對應的 Discord member 是否為授權主人。"""
