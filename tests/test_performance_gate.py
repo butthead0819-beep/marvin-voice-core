@@ -35,11 +35,11 @@ def test_lyria_disabled_by_default(monkeypatch):
     assert eng.lyria_client is None       # 預設不建 client＝零呼叫
 
 
-def test_lyria_enabled_only_with_env(monkeypatch):
+def test_lyria_retired_even_with_env(monkeypatch):
+    # 2026-07-05 使用者決策：Lyria 永久退役，env 設 1 也不得復活
     monkeypatch.setenv("MARVIN_LYRIA", "1")
-    from music_engine import SukiMusicEngine as MusicEngine
+    monkeypatch.setenv("GOOGLE_API_KEY", "AIzaFakeKey")
+    from music_engine import SukiMusicEngine as MusicEngine, lyria_enabled
+    assert lyria_enabled() is False
     eng = MusicEngine(api_key="AIzaFakeKey")
-    # env 開才嘗試建（在無 genai/假 key 環境下允許 None，但不得因預設關而 None）
-    # 判準：gate 不再是攔截原因
-    from music_engine import lyria_enabled
-    assert lyria_enabled() is True
+    assert eng.lyria_client is None

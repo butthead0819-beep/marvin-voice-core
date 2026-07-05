@@ -15,13 +15,12 @@ GENAI_AVAILABLE = True
 
 
 def lyria_enabled() -> bool:
-    """💣 未爆彈拆除（2026-07-04）：Lyria 備援預設關。
+    """🪦 Lyria 永久退役（2026-07-05 使用者決策）：env 設 1 也不復活。
 
-    它走 GOOGLE_API_KEY（老計費專案）且無 guard 無記帳（違反付費記帳鐵則），
-    該專案現為 free-tier limit:0 死路——每次 Suno 失敗滾進來只會 429 白打。
-    重開條件：MARVIN_LYRIA=1 + 換對 key + 過 PaidUsageGuard。
+    產品型態定為音樂播放為主，不做生成備援、不浪費 API；Suno 失敗即優雅放棄。
+    若未來要復活：先過付費記帳鐵則（呼叫前 guard.allow + 成功後 record）再拆這裡。
     """
-    return os.getenv("MARVIN_LYRIA", "0") == "1"
+    return False
 
 
 class SukiMusicEngine:
@@ -39,7 +38,7 @@ class SukiMusicEngine:
             from google.genai import types
             self._types = types
             if not lyria_enabled():
-                logger.info("🎵 [Music Engine] Lyria 備援已停用（MARVIN_LYRIA≠1）；Suno 失敗即優雅放棄。")
+                logger.info("🎵 [Music Engine] Lyria 已永久退役；Suno 失敗即優雅放棄。")
             elif self.google_api_key:
                 self.lyria_client = genai.Client(api_key=self.google_api_key)
                 logger.info("🎵 [Music Engine] Lyria 3 Pro 備援核心已就緒。")
