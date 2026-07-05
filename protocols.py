@@ -13,7 +13,7 @@ Dependency graph:
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
 
 # ── Speech-to-Text ────────────────────────────────────────────────────────────
@@ -78,3 +78,51 @@ class MemoryStore(Protocol):
     def adjust_bias(self, username: str, delta: float) -> None: ...
     def update_player_memory(self, username: str, new_info: dict) -> None: ...
     def flush(self) -> None: ...
+
+
+# ── Audio input source ────────────────────────────────────────────────────────
+
+@runtime_checkable
+class AudioSource(Protocol):
+    """Transport-agnostic audio input abstraction.
+
+    Both Discord's RealtimeVADSink and the local-mic LocalMicSink satisfy this
+    interface.  The contractual obligation: when the end of a speech segment is
+    detected, fire::
+
+        await on_speech_cut_callback(user_id, pcm_bytes, timestamp,
+                                     *, is_wake_check=False)
+
+    — the same signature the existing voice pipeline already accepts.
+    Callers that wire an AudioSource into the pipeline are decoupled from
+    whether audio originates from Discord, a local microphone, or a test
+    fixture.
+    """
+
+    on_speech_cut_callback: Any  # Callable: (user_id, pcm, timestamp, *, is_wake_check=False)
+
+    async def start(self) -> None: ...
+
+
+# ── Audio output / playback device ───────────────────────────────────────────
+
+@runtime_checkable
+class PlaybackDevice(Protocol):
+    """Transport-agnostic audio output abstraction.
+
+    Both DiscordPlaybackDevice (thin wrapper around a discord VoiceClient) and
+    a future LocalSpeakerDevice satisfy this interface.  Callers that need to
+    play audio are decoupled from whether output goes to Discord or a local
+    speaker.
+
+    Note: ``stop()`` maps to ``voice_client.stop_playing()`` in the Discord
+    adapter (a project-local method), **not** ``voice_client.stop()``.
+    """
+
+    def play(self, source: Any, *, after=None) -> None: ...
+    def is_playing(self) -> bool: ...
+    def stop(self) -> None: ...
+    def is_connected(self) -> bool: ...
+    def arm_mixer(self, source: Any) -> None:
+        """啟動持續性 mixer 播放。Discord=vc.play(opus+bitrate)、Local=起本機泵。"""
+        ...

@@ -46,6 +46,7 @@ from music_memory import extract_video_id
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
+from marvin_voice_core.playback_device import DiscordPlaybackDevice
 
 logger = logging.getLogger(__name__)
 
@@ -557,7 +558,7 @@ class MusicCog(commands.Cog):
         vc = self._vc()
         if vc is not None:
             await vc._mixer_play_music(
-                voice_client, src,
+                DiscordPlaybackDevice(voice_client), src,
                 still_active=lambda: self.radio_mode,
                 volume_attr="radio_volume",
             )
@@ -1357,7 +1358,7 @@ class MusicCog(commands.Cog):
             if vc is not None:
                 vc._mixer.set_volume(1.0)
                 await vc._mixer_play_music(
-                    voice_client, discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
+                    DiscordPlaybackDevice(voice_client), discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
                     still_active=lambda: self.stream_mode,
                 )
         else:
@@ -1369,7 +1370,7 @@ class MusicCog(commands.Cog):
                 asyncio.create_task(self._measure_norm_gain_bg(url))
             if vc is not None:
                 await vc._mixer_play_music(
-                    voice_client, discord.FFmpegPCMAudio(url, **p12_opts),
+                    DiscordPlaybackDevice(voice_client), discord.FFmpegPCMAudio(url, **p12_opts),
                     still_active=lambda: self.stream_mode, volume_attr="stream_volume",
                 )
 

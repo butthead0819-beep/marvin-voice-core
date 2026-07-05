@@ -32,6 +32,8 @@ from local_mixing_source import (
 
 import audio_mixing as am
 
+from marvin_voice_core.playback_device import DiscordPlaybackDevice
+
 
 def _f32_frame(value=0.5, n=FRAME_SAMPLES):
     return np.full(n, value, dtype=np.float32)
@@ -317,7 +319,8 @@ def _vc(connected=True, playing=False):
 def test_ensure_playing_plays_when_idle_vc():
     mix = LocalMixingAudioSource()
     vc = _vc(connected=True, playing=False)
-    assert ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(mix)) is True
+    device = DiscordPlaybackDevice(vc)
+    assert ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(mix)) is True
     assert vc.play.call_count == 1
     assert isinstance(vc.play.call_args.args[0], MixerPlaybackAdapter)
 
@@ -325,7 +328,8 @@ def test_ensure_playing_plays_when_idle_vc():
 def test_ensure_playing_idempotent_when_already_playing():
     mix = LocalMixingAudioSource()
     vc = _vc(connected=True, playing=True)
-    assert ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(mix)) is False
+    device = DiscordPlaybackDevice(vc)
+    assert ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(mix)) is False
     assert not vc.play.called
 
 
@@ -337,7 +341,8 @@ def test_ensure_playing_no_vc():
 def test_ensure_playing_not_connected():
     mix = LocalMixingAudioSource()
     vc = _vc(connected=False, playing=False)
-    assert ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(mix)) is False
+    device = DiscordPlaybackDevice(vc)
+    assert ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(mix)) is False
     assert not vc.play.called
 
 
@@ -345,15 +350,16 @@ def test_ensure_playing_swallows_already_playing_race():
     mix = LocalMixingAudioSource()
     vc = _vc(connected=True, playing=False)
     vc.play.side_effect = RuntimeError("Already playing audio")  # TOCTOU race
-    assert ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(mix)) is False  # 不 raise
+    device = DiscordPlaybackDevice(vc)
+    assert ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(mix)) is False  # 不 raise
 
 
 def test_ensure_playing_fresh_adapter_each_call():
     mix = LocalMixingAudioSource()
     seen = []
     factory = lambda: MixerPlaybackAdapter(mix)  # noqa: E731
-    ensure_mixer_playing(_vc(playing=False), lambda: seen.append(factory()) or seen[-1])
-    ensure_mixer_playing(_vc(playing=False), lambda: seen.append(factory()) or seen[-1])
+    ensure_mixer_playing(DiscordPlaybackDevice(_vc(playing=False)), lambda: seen.append(factory()) or seen[-1])
+    ensure_mixer_playing(DiscordPlaybackDevice(_vc(playing=False)), lambda: seen.append(factory()) or seen[-1])
     assert len(seen) == 2 and seen[0] is not seen[1]  # 每次新 adapter，不重用
 
 

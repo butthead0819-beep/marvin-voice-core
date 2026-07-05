@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from local_mixing_source import LocalMixingAudioSource, MixerPlaybackAdapter
+from marvin_voice_core.playback_device import DiscordPlaybackDevice
 
 
 def _make_cog(plan12: bool, monkeypatch):
@@ -48,7 +49,8 @@ def test_flag_on_builds_mixer_and_ensure_plays(monkeypatch):
     assert cog._plan12 is True
     assert isinstance(cog._mixer, LocalMixingAudioSource)
     vc = _idle_vc()
-    assert cog._ensure_mixer_playing(vc) is True
+    device = DiscordPlaybackDevice(vc)
+    assert cog._ensure_mixer_playing(device) is True
     assert vc.play.call_count == 1
     assert isinstance(vc.play.call_args.args[0], MixerPlaybackAdapter)
 
@@ -57,7 +59,8 @@ def test_flag_on_ensure_idempotent_when_playing(monkeypatch):
     cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
     vc = _idle_vc()
     vc.is_playing.return_value = True
-    assert cog._ensure_mixer_playing(vc) is False
+    device = DiscordPlaybackDevice(vc)
+    assert cog._ensure_mixer_playing(device) is False
     assert not vc.play.called
 
 

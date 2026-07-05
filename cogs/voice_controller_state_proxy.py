@@ -12,6 +12,8 @@ fallback，於 __init__ 設定）。全是 self 存取的 descriptor，以 mixin
 """
 from __future__ import annotations
 
+from marvin_voice_core.playback_device import DiscordPlaybackDevice
+
 
 class StateProxyMixin:
     # 🎛️ [Plan 12 / T4] flag=on 時 is_playing_audio / tts_queue_duration 由 mixer 維護，
@@ -29,6 +31,21 @@ class StateProxyMixin:
     @voice_client.setter
     def voice_client(self, value):
         self._voice_client_override = value
+
+    def _resolve_playback_device(self):
+        """Return a DiscordPlaybackDevice wrapping the first connected vc, or None.
+
+        Intentionally scans bot.voice_clients directly (same as the original
+        play_music lookup) rather than going through the voice_client property,
+        so _voice_client_override does not accidentally alter playback routing.
+        """
+        if getattr(self, "_local_mode", False) and getattr(self, "_local_speaker", None) is not None:
+            return self._local_speaker
+        vc = next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
+        return DiscordPlaybackDevice(vc) if vc is not None else None
+
+    def set_local_speaker(self, device) -> None:
+        self._local_speaker = device
 
     @property
     def is_playing_audio(self) -> bool:

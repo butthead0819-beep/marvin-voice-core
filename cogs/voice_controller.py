@@ -2760,7 +2760,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         try:
             f32 = await self._ffmpeg_to_f32(input_path=ack_file)
             if f32 is not None and f32.size:
-                self._ensure_mixer_playing(_vc)
+                self._ensure_mixer_playing(self._resolve_playback_device())
                 self._mixer.push_tts(f32)
                 logger.info(f"🗣️ [Ack:{category_key}] 播放 {variant or os.path.basename(ack_file)}")
         except Exception as e:
@@ -4117,8 +4117,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
     async def play_music(self, path: str, log_tag: str):
         if not path or not os.path.exists(path): return
-        vc = next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
-        if not vc: return
+        device = self._resolve_playback_device()
+        if device is None: return
         
         # 🛡️ [Queue Lock] 獲取音樂預估長度並鎖定 TTS 隊列
         dur = self.bot.music_engine.get_estimated_duration()
@@ -4133,8 +4133,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             
         try:
             self.is_playing_audio = True
-            if vc.is_playing(): vc.stop_playing()
-            vc.play(discord.FFmpegPCMAudio(path), after=after_playing)
+            if device.is_playing(): device.stop()
+            device.play(discord.FFmpegPCMAudio(path), after=after_playing)
             logger.info(f"🎶 [Music] Playing {path} (Estimated: {dur}s) | Tag: {log_tag}")
         except Exception as e:
             self.is_playing_audio = False

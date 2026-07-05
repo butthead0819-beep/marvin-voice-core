@@ -30,6 +30,7 @@ from discord import app_commands
 from discord.ext import tasks, voice_recv
 
 from local_mixing_source import BufferedF32MusicSource, S16ToF32MusicSource
+from marvin_voice_core.playback_device import DiscordPlaybackDevice
 
 logger = logging.getLogger(__name__)
 
@@ -279,7 +280,7 @@ class ConnectionMixin:
             if self._plan12:
                 # mixer adapter 已提供持續音訊（idle 出 silence），取代 SilenceSource keepalive；
                 # 並即時 re-arm，不必等 sentinel tick
-                self._ensure_mixer_playing(voice_client)
+                self._ensure_mixer_playing(DiscordPlaybackDevice(voice_client))
             else:
                 voice_client.play(self.SilenceSource(20))
 
@@ -504,7 +505,7 @@ class ConnectionMixin:
                 # 下方 greeting TTS 會自動 duck 它 → voice 清楚蓋在輕 intro 上（policy A）
                 print("🎸 [Intro] Plan 12：intro → mixer 音樂層（greeting 將 duck）")
                 src = discord.FFmpegPCMAudio(intro_file, before_options=before_opts, options="-vn")
-                self._ensure_mixer_playing(vc)
+                self._ensure_mixer_playing(DiscordPlaybackDevice(vc))
                 self._mixer.set_volume(0.7)
                 self._mixer.set_music_source(BufferedF32MusicSource(S16ToF32MusicSource(src), buffer_frames=50))
             else:
@@ -611,7 +612,7 @@ class ConnectionMixin:
 
         # 🎛️ [Plan 12] on-demand：只在「有內容但沒在播」（如重連後）才 re-arm；idle 不 arm（不送音）
         if self._plan12 and self._mixer is not None and not self._mixer.is_idle():
-            self._ensure_mixer_playing(vc)
+            self._ensure_mixer_playing(DiscordPlaybackDevice(vc))
 
         # 1. 寬限期檢查 (Grace Period)：連線後的 30 秒內不進行嚴格監控
         if time.time() - self.connection_time < 30:
@@ -771,4 +772,55 @@ class ConnectionMixin:
             # execv 不該失敗，若真失敗 bot 會死；至少留下 log 線索
             logger.critical(f"☢️ [Restart] os.execv 失敗！bot 將終結: {e}")
             raise
+
+    def start_local_listening(self) -> None:
+        """本機模式輸入接縫：/summon 的本機對應（無 Discord voice channel）。
+
+        Discord 路徑完全不受影響——只在主動呼叫此 method 時才切換 local 模式。
+        """
+        from marvin_voice_core.local_mic_sink import LocalMicSink
+        from marvin_voice_core.playback_device import LocalSpeakerDevice
+
+        # 1. 起 VAD watchdog（idempotent，對齊 summon 第一步）
+        self.bot.engine.start()
+
+        # 2. 建 LocalMicSink，綁 pipeline 入口（對齊 summon 的 process_audio_slice）
+        sink = LocalMicSink(
+            self.bot.engine.process_audio_slice,
+            loop=self.bot.loop,
+        )
+        self.bot.engine.sink = sink
+
+        # 3. 設 local 模式旗標
+        self._local_mode = True
+
+        # 3b. 放寬 late-skip：免費 LLM 免不了限流(429 backoff 數十秒)，本機單人用不怕
+        # 慢回應蓋掉新對話，故拉高門檻讓慢到的回應仍出聲(僅本實例，不碰生產的 25s)。
+        self._LATE_RESPONSE_SKIP_SEC = 120.0
+        self._LATENCY_DOMINATED_THRESHOLD = 120.0
+
+        # 4. 建並掛載本地喇叭裝置（輸出接縫已由 ④-1 的 _resolve_playback_device 處理）
+        self.set_local_speaker(LocalSpeakerDevice())
+
+        # 5. 換成 always-allow consent stub（local 模式無 Discord 同意流程）
+        self.consent = _LocalConsentStub()
+
+        # 6. 非阻塞啟動麥克風擷取（對齊 sink.write 用 loop.create_task 的規範）
+        self.bot.loop.create_task(sink.start())
+
+
+class _LocalConsentStub:
+    """Local 模式 consent 放行 stub：一律允許，覆蓋完整 ConsentManager 介面。"""
+
+    def is_consented(self, display_name: str) -> bool:
+        return True
+
+    def has_seen_notice(self, display_name: str) -> bool:
+        return True
+
+    def mark_seen(self, display_name: str) -> None:
+        pass
+
+    def set_consent(self, display_name: str, granted: bool) -> None:
+        pass
 

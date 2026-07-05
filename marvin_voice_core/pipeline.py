@@ -54,8 +54,10 @@ class MarvinVoicePipeline:
     """
     核心語音處理流水線。
     """
-    def __init__(self, bot, whisper_model=None):
+    def __init__(self, bot, whisper_model=None, speaker_provider=None):
+        # speaker_provider: Callable[[int|str], str] | None
         self.bot = bot
+        self._speaker_provider = speaker_provider
         self.stt_handler = STTHandler(whisper_model=whisper_model)
         self.stt_callback = None
         self.speech_start_callback = None
@@ -131,14 +133,21 @@ class MarvinVoicePipeline:
                         sink.user_buffers[user_id] = bytearray()
                         sink.user_first_audio_time[user_id] = 0
 
+    def _default_speaker_provider(self, user_id) -> str:
+        speaker_name = f"User_{user_id}"
+        for guild in self.bot.guilds:
+            member = guild.get_member(user_id)
+            if member:
+                speaker_name = member.nick if member.nick else member.display_name
+                break
+        return speaker_name
+
+    def _resolve_speaker(self, user_id) -> str:
+        return (self._speaker_provider or self._default_speaker_provider)(user_id)
+
     def _handle_raw_speech_start(self, user_id):
         if self.speech_start_callback:
-            speaker_name = f"User_{user_id}"
-            for guild in self.bot.guilds:
-                member = guild.get_member(user_id)
-                if member:
-                    speaker_name = member.nick if member.nick else member.display_name
-                    break
+            speaker_name = self._resolve_speaker(user_id)
             self.speech_start_callback(speaker_name, user_id=user_id)
 
     async def process_audio_slice(self, user_id, raw_pcm, start_time, is_wake_check=False):
@@ -172,12 +181,7 @@ class MarvinVoicePipeline:
                 with open(abs_wav_path, 'rb') as f:
                     wav_bytes = f.read()
 
-                speaker_name = f"User_{user_id}"
-                for guild in self.bot.guilds:
-                    member = guild.get_member(user_id)
-                    if member:
-                        speaker_name = member.nick if member.nick else member.display_name
-                        break
+                speaker_name = self._resolve_speaker(user_id)
 
                 # stt_lock 只保護 Swift 轉錄（序列化 STT subprocess），
                 # handle_stt_result 含 Groq API 等待，不能鎖在裡面

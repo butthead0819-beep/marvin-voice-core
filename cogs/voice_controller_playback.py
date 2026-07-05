@@ -38,28 +38,28 @@ MAX_HOTSWAP_CHARS = 12
 
 
 class PlaybackMixin:
-    def _ensure_mixer_playing(self, vc) -> bool:
-        """[Plan 12] flag=on 時確保 mixer adapter 正在 vc 上播放（連線/重連後 re-arm）。
+    def _ensure_mixer_playing(self, device) -> bool:
+        """[Plan 12] flag=on 時確保 mixer adapter 正在 device 上播放（連線/重連後 re-arm）。
 
-        每次交給 vc.play() 一個新 MixerPlaybackAdapter（不重用、reconnect-safe）。
+        每次交給 device.arm_mixer() 一個新 MixerPlaybackAdapter（不重用、reconnect-safe）。
         idempotent：已在播 → no-op。flag=off → 直接 no-op，不碰舊路徑。
         """
         if self._mixer is None:
             return False
-        return ensure_mixer_playing(vc, lambda: MixerPlaybackAdapter(self._mixer))
+        return ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(self._mixer))
 
-    async def _mixer_play_music(self, vc, s16_source, *, still_active, volume_attr=None) -> None:
+    async def _mixer_play_music(self, device, s16_source, *, still_active, volume_attr=None) -> None:
         """[Plan 12] 把 s16 音源餵 mixer 音樂層，等到播完 / 連線斷 / still_active() 變 False。
 
         volume_attr：要持續同步進 mixer 的 cog 音量屬性名（如 "stream_volume"）→ 語音/按鈕
         調音量 100ms 內即時生效（無 hotswap）。播完（來源耗盡 mixer 自清）或被中止即 return。
         """
-        self._ensure_mixer_playing(vc)
+        self._ensure_mixer_playing(device)
         # 背景預讀解耦 ffmpeg pipe（修 T5 串流斷續）：~1s buffer
         self._mixer.set_music_source(BufferedF32MusicSource(S16ToF32MusicSource(s16_source), buffer_frames=50))
         try:
             while self._mixer.has_music():
-                if not still_active() or not vc.is_connected():
+                if not still_active() or not device.is_connected():
                     self._mixer.clear_music()
                     return
                 if volume_attr is not None:
@@ -67,7 +67,7 @@ class PlaybackMixin:
                     # 一首一個常數 → 不在歌內 pumping。
                     _ng = self._stream_norm_gain.get(self._current_stream_url, 1.0)
                     self._mixer.set_volume(getattr(self, volume_attr) * _ng)
-                self._ensure_mixer_playing(vc)  # on-demand：重連後 adapter 沒了 → 重 arm
+                self._ensure_mixer_playing(device)  # on-demand：重連後 adapter 沒了 → 重 arm
                 await asyncio.sleep(0.1)
         finally:
             # 確保自己的音源不殘留在 mixer（被中止時）
@@ -315,8 +315,8 @@ class PlaybackMixin:
                     logger.warning(f"[Companion_Radar] check failed (proceeding with TTS): {e}")
 
         # 🎛️ [Plan 12] render → push mixer
-        vc = next((v for v in self.bot.voice_clients if v.is_connected()), None)
-        if vc is None:
+        device = self._resolve_playback_device()
+        if device is None:
             return
         if not already_in_channel:
             self._tts_interrupted = False
@@ -325,7 +325,7 @@ class PlaybackMixin:
             if not already_in_channel and self.active_text_channel:
                 asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
             return
-        self._ensure_mixer_playing(vc)
+        self._ensure_mixer_playing(device)
         pushed = await self._stream_tts_to_mixer(text, force_macos=force_macos,
                                                  emotion_tag=emotion_tag, voice=voice)
         # [Follow-Up] D8: only open window when TTS was actually heard by users
@@ -349,8 +349,8 @@ class PlaybackMixin:
         疊進 layer2 混音打斷。需 Plan12 mixer。成功回 True；前置不符/失敗回 False 讓
         caller 落序列 fallback。Marmo 疊進時 mixer 把 Marvin 逐漸 fade 到 _interject_duck。
         duck/step：taste-tuning 即時覆寫（webhook 帶 → 免重啟調 fade 終點/速度）。"""
-        vc = self.voice_client
-        if vc is None or self._mixer is None:
+        device = self._resolve_playback_device()
+        if device is None or self._mixer is None:
             return False
         if duck is not None or step is not None:
             self._mixer.set_interject_params(duck=duck, step=step)
@@ -366,7 +366,7 @@ class PlaybackMixin:
         # 🛡️ 漫才是「演出」，整段唸完不該被一句話/咳嗽 barge-in 中斷（否則 _stream_tts_to_mixer
         # 的串流被 kill → 餵入中斷、沒聲音）。_tts_protected=True 讓 barge-in(2480) 略過。
         _prev_protected = self._tts_protected
-        _armed = self._ensure_mixer_playing(vc)
+        _armed = self._ensure_mixer_playing(device)
         self.is_playing_audio = True
         self._tts_protected = True
         _m1 = _m2 = 0
@@ -380,7 +380,7 @@ class PlaybackMixin:
             # 串流期間持續 re-arm adapter（on-demand idle 掉就重 arm，仿 _mixer_play_music）。
             _t_end = asyncio.get_event_loop().time() + max(0.5, dur * _at)
             while asyncio.get_event_loop().time() < _t_end:
-                self._ensure_mixer_playing(vc)
+                self._ensure_mixer_playing(device)
                 await asyncio.sleep(0.1)
             # 量測 Marmo 首塊延遲：task 啟動 → 第一幀真正 push 進 mixer 的耗時
             # （耳朵聽到 Marmo 的時點 = 啟動時點 + 此延遲，是切入比例偏離設計的主因）。
@@ -394,7 +394,7 @@ class PlaybackMixin:
                 on_first_frame=_on_marmo_first))
             # 等兩路播完，期間持續 re-arm
             while not (marvin_task.done() and marmo_task.done()):
-                self._ensure_mixer_playing(vc)
+                self._ensure_mixer_playing(device)
                 await asyncio.sleep(0.1)
             _m1, _m2 = marvin_task.result(), marmo_task.result()
         finally:
@@ -492,13 +492,13 @@ class PlaybackMixin:
             logger.warning(f"⚠️ [Local Play] 找不到檔案: {file_path}")
             return
 
-        voice_client = next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
-        if not voice_client:
+        device = self._resolve_playback_device()
+        if device is None:
             return
 
         self._mixer.set_volume(1.0)
         src = discord.FFmpegPCMAudio(file_path)
-        await self._mixer_play_music(voice_client, src, still_active=lambda: voice_client.is_connected())
+        await self._mixer_play_music(device, src, still_active=lambda: device.is_connected())
 
     def _cleanup_fifo(self, path, tmp_dir):
         """[Operation Cleanup] 安全移除命名管道與暫存目錄"""

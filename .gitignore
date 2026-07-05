@@ -90,3 +90,4 @@ Free API key/
 
 # 日記漫畫產生物（generated，勿入歷史，含 ~9MB bundle）
 marvin_comics*.html
+.loop/
