@@ -7,6 +7,7 @@ import os
 import google.genai as genai
 from duckduckgo_search import DDGS
 
+from llm_json_compat import ensure_json_in_messages
 from utterance_budget import environment_directive
 
 logger = logging.getLogger(__name__)
@@ -455,13 +456,16 @@ class GeminiRouterLLMMixin:
         # 🥇 [Priority-1] Groq
         if self.groq_dedicated_client and groq_model:
             try:
+                _groq_messages = [
+                    {"role": "system", "content": final_system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ]
+                if is_json:
+                    _groq_messages = ensure_json_in_messages(_groq_messages)
                 response = await asyncio.wait_for(
                     self.groq_dedicated_client.chat.completions.create(
                         model=groq_model,
-                        messages=[
-                            {"role": "system", "content": final_system_prompt},
-                            {"role": "user", "content": user_prompt}
-                        ],
+                        messages=_groq_messages,
                         temperature=temperature if temperature is not None else 0.75,
                         max_tokens=1024,
                         stream=False,

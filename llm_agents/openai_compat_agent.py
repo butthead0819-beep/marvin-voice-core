@@ -15,6 +15,7 @@ import logging
 
 from llm_agents.base import LLMAgent, LLMBid, LLMContext
 from llm_agents.quota_service import QuotaService
+from llm_json_compat import ensure_json_in_messages
 
 logger = logging.getLogger("MarvinBot.LLMBus.OpenAICompat")
 
@@ -74,6 +75,8 @@ class OpenAICompatAgent(LLMAgent):
             messages.append({"role": "system", "content": ctx.system_prompt})
         messages.append({"role": "user", "content": ctx.prompt})
 
+        if ctx.json_mode:
+            messages = ensure_json_in_messages(messages)
         kwargs = dict(
             model=ep.model,
             messages=messages,

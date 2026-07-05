@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from llm_agents.base import LLMAgent, LLMBid, LLMContext
 from llm_agents.quota_service import QuotaService
+from llm_json_compat import ensure_json_in_messages
 
 logger = logging.getLogger("MarvinBot.LLMBus.Cerebras")
 
@@ -82,6 +83,8 @@ class CerebrasAgent(LLMAgent):
         # 6/1：Cerebras 現用 gpt-oss-120b 是 reasoning model，會吃 150-700 reasoning
         # tokens 才開始輸出 content。1024 太緊（reasoning 吃完只剩 ~300 給 content、
         # 長 Chinese JSON 截斷成空）。預設 2048 給 reasoning + content 都有空間。
+        if ctx.json_mode:
+            messages = ensure_json_in_messages(messages)
         kwargs = dict(
             model=ep.model,
             messages=messages,

@@ -24,6 +24,8 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
+from llm_json_compat import ensure_json_in_messages
+
 _RETRY_AFTER_DEFAULT = 30.0
 
 
@@ -240,6 +242,8 @@ class TieredLLMRouter:
                     timeout: float = _DEFAULT_CALL_TIMEOUT) -> Optional[str]:
         messages = ([{"role": "system", "content": system}] if system else []) + \
                    [{"role": "user", "content": prompt}]
+        if json:
+            messages = ensure_json_in_messages(messages)
 
         async def _call(ep: PoolEndpoint):
             # 💰 付費端點守門：呼叫前過 PaidUsageGuard（超 daily/monthly 上限
