@@ -15,6 +15,7 @@ filter 行為（STT 引擎注入 context strings 同時也是幻覺來源，clea
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import replace
 from typing import Awaitable, Callable
 
@@ -24,6 +25,18 @@ from intent_judges.regex_judge import regex_judge
 _JUDGE_NAME = "cleaner_judge"
 
 CleanerCall = Callable[[IntentContext], Awaitable[str]]
+
+# 與 hallucination_guard_agent 一致的喚醒詞集合（保守 set；此處只用來量「原句剝喚醒
+# 後還剩多少實質內容」，判斷 cleaner 是否過度塌縮）。
+_WAKE_RE = re.compile(
+    "|".join(("馬文", "marvin", "marvy", "麻文", "媽文", "瑪文")), re.IGNORECASE)
+# 與 guard rule#3/#4 的「stripped < 3」同一切點：原句剝喚醒後 ≥3 字才算「有實質內容」。
+_MIN_NONWAKE_CONTENT = 3
+
+
+def _nonwake_content_len(text: str) -> int:
+    """剝掉喚醒詞與前後標點後剩餘的字數。"""
+    return len(_WAKE_RE.sub("", text or "").strip("，,、。.！!？? \t"))
 
 
 async def _async_noop() -> None:
@@ -58,6 +71,15 @@ async def cleaner_judge(
 
     cleaned_ctx = replace(ctx, query=cleaned, raw_text=cleaned)
     j1_bid = regex_judge(cleaned_ctx, agents)
+
+    # Cleaner over-collapse guard（cleaner 別毀 query / guard 別誤壓）：弱模型有時把
+    # 「馬文，講個笑話給我聽」過度塌縮成只剩「馬文」，regex_judge 讓 HallucinationGuard
+    # 出價 swallow。但原句剝喚醒後仍有實質內容 → 這是 cleaner artifact 不是真 STT 幻覺
+    # → 不傳播 swallow，回 dense_zero 讓 race 落回 J1 / Marvin fallback（否則整句被靜默）。
+    # 原句本身就是純喚醒碎片（真幻覺）時 nonwake_len < 3，不覆寫，guard swallow 照常保留。
+    if j1_bid.name == "guard" and _nonwake_content_len(original) >= _MIN_NONWAKE_CONTENT:
+        return _dense_zero(f"cleaner_overcollapse:{original}->{cleaned}")
+
     if j1_bid.confidence == 0.0:
         return _dense_zero(f"cleaned_misses_regex:{original}->{cleaned}")
 

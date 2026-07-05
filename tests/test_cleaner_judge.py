@@ -11,14 +11,22 @@ cleaner_call 用 DI 注入，prod 接現有 stt_cleaner.py，test 傳 fake，零
 from __future__ import annotations
 
 import asyncio
+import types
 
 import pytest
 
 from intent_agents.base import DeclarativeIntentAgent, IntentSchema
+from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_bus import IntentContext
 from intent_judges.cleaner_judge import cleaner_judge
 
 pytestmark = pytest.mark.asyncio
+
+
+def _real_guard() -> HallucinationGuardAgent:
+    """真 guard，掛空 kw 列表的 stub controller（避免行為 drift）。"""
+    ctrl = types.SimpleNamespace(_STRONG_PLAY_KW=[], _WEAK_PLAY_KW=[])
+    return HallucinationGuardAgent(ctrl)
 
 
 class _StubAgent(DeclarativeIntentAgent):
@@ -172,6 +180,34 @@ async def test_cleaner_judge_preserves_ctx_metadata_when_cleaning():
     assert captured["mode"] == "stream"
     assert captured["wake_intent"] == 0.7
     assert captured["speaker"] == "bob"
+
+
+# ── cleaner over-collapse guard（cleaner 別毀 query / guard 別誤壓）────────────
+
+
+async def test_cleaner_overcollapse_to_wakeword_does_not_swallow():
+    """cleaner 把有內容的問句塌縮成只剩喚醒詞 → guard 出價 swallow，但那是 cleaner
+    artifact 不是真幻覺（原句有內容）→ cleaner_judge 回 dense_zero，不傳播 swallow，
+    讓 race 落回 J1 / Marvin fallback。這是本機 Phase 1 的確定性靜默 blocker。"""
+    music = _StubAgent("music", [("播放.*", 0.95)])
+    bid = await cleaner_judge(
+        _ctx("講個笑話給我聽"), [_real_guard(), music],
+        cleaner_call=_fake_cleaner("馬文"),
+    )
+    assert bid.confidence == 0.0
+    assert bid.name != "guard"
+    assert "overcollapse" in bid.reason.lower()
+
+
+async def test_cleaner_keeps_guard_swallow_when_original_is_wake_only():
+    """原句本身就是純喚醒碎片（真幻覺）→ cleaner 回喚醒詞屬正確，guard swallow 應保留。"""
+    music = _StubAgent("music", [("播放.*", 0.95)])
+    bid = await cleaner_judge(
+        _ctx("馬文"), [_real_guard(), music],
+        cleaner_call=_fake_cleaner("馬文"),
+    )
+    assert bid.name == "guard"
+    assert bid.confidence == 0.96
 
 
 # ── telemetry ─────────────────────────────────────────────────────────────
