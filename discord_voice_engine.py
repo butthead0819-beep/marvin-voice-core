@@ -874,14 +874,24 @@ class DiscordVoiceEngine:
             self._watchdog_task.cancel()
             print("🛑 [Engine] VAD 看門狗已取消，幽靈任務已清除。", flush=True)
 
-    async def _on_wake_stream_detected(self, user_id: int, first_audio_time: float, text: str) -> None:
-        """P3 WakeStreamDetector 早期偵測到喚醒詞的回呼。"""
-        speaker_name = f"User_{user_id}"
+    def _resolve_speaker_name(self, user_id) -> str:
+        """user_id → 顯示講者名。
+
+        Discord member 優先（int user_id 命中 guild cache）；找不到且來源是非 Discord
+        transport（衛星/本機，user_id 為字串）→ 走身分映射 env → 既有講者身分＝記憶
+        延續（project_identity_unification）。env 不設＝維持 User_xxx 舊行為（不亂認人）。
+        """
         for guild in self.bot.guilds:
             member = guild.get_member(user_id)
             if member:
-                speaker_name = member.nick if member.nick else member.display_name
-                break
+                return member.nick if member.nick else member.display_name
+        _mapped = {"satellite": os.getenv("MARVIN_SATELLITE_SPEAKER", ""),
+                   "local": os.getenv("MARVIN_LOCAL_SPEAKER", "")}.get(str(user_id), "")
+        return _mapped or f"User_{user_id}"
+
+    async def _on_wake_stream_detected(self, user_id: int, first_audio_time: float, text: str) -> None:
+        """P3 WakeStreamDetector 早期偵測到喚醒詞的回呼。"""
+        speaker_name = self._resolve_speaker_name(user_id)
         if self.stt_callback:
             await self.stt_callback(
                 speaker_name, text, first_audio_time,
@@ -1068,12 +1078,7 @@ class DiscordVoiceEngine:
         """底層 VAD 偵測到發言開始：立即透過回呼通知控制器進行中斷邏輯"""
         if self.speech_start_callback:
             # 獲取暱稱 (Operation Traceability)
-            speaker_name = f"User_{user_id}"
-            for guild in self.bot.guilds:
-                member = guild.get_member(user_id)
-                if member:
-                    speaker_name = member.nick if member.nick else member.display_name
-                    break
+            speaker_name = self._resolve_speaker_name(user_id)
             self.speech_start_callback(speaker_name, user_id=user_id)
 
     async def process_audio_slice(self, user_id, raw_pcm, start_time, is_wake_check=False):
@@ -1192,13 +1197,8 @@ class DiscordVoiceEngine:
             # 2026-06-13：裸抽取 [::3] 改抗混疊降頻（>8kHz 摺疊失真影響全部雲端 lane）
             whisper_audio = pcm48k_stereo_to_16k_mono(processed_pcm)
 
-            # 解析暱稱
-            speaker_name = f"User_{user_id}"
-            for guild in self.bot.guilds:
-                member = guild.get_member(user_id)
-                if member:
-                    speaker_name = member.nick if member.nick else member.display_name
-                    break
+            # 解析暱稱（Discord member 優先，衛星/本機走身分映射）
+            speaker_name = self._resolve_speaker_name(user_id)
 
             prosody_data = self.meta_analyzer.calculate_prosody(user_id, None, duration)
             await self._process_stt_hybrid(speaker_name, wav_path, wav_bytes, start_time,

@@ -808,6 +808,64 @@ class ConnectionMixin:
         # 6. 非阻塞啟動麥克風擷取（對齊 sink.write 用 loop.create_task 的規範）
         self.bot.loop.create_task(sink.start())
 
+    def _on_satellite_wake(self, name: str) -> None:
+        """衛星（Pi openwakeword）喚醒候選 → duck 音樂即時回饋。
+
+        尊重 MARVIN_WAKE_DUCK kill-switch（與 Discord/本機 duck 同一開關）。"""
+        if getattr(self, "_mixer", None) and os.getenv("MARVIN_WAKE_DUCK", "1") != "0":
+            self._mixer.duck_for_wake()
+
+    def start_satellite_listening(self) -> None:
+        """衛星模式輸入接縫：Pi wyoming-satellite → 現有 pipeline（實體音箱 S4）。
+
+        對齊 start_local_listening；差異＝mic 來源是 WyomingSatelliteBridge（TCP 收 Pi
+        麥、走同一 VAD/切句/STT），喇叭輸出注入 WyomingSpeakerOutput（音訊回送 Pi 播放），
+        喚醒在 Pi 本地 openwakeword→送 Detection→duck。Discord 路徑完全不受影響。
+        """
+        from marvin_voice_core.playback_device import LocalSpeakerDevice
+        from marvin_voice_core.wyoming_bridge import WyomingSatelliteBridge
+        from marvin_voice_core.wyoming_speaker_output import WyomingSpeakerOutput
+
+        # 1. 起 VAD watchdog（idempotent，對齊 summon 第一步）
+        self.bot.engine.start()
+
+        # 2. 建衛星橋，綁 pipeline 入口 + 喚醒 duck hook
+        bridge = WyomingSatelliteBridge(
+            self.bot.engine.process_audio_slice,
+            host=os.getenv("MARVIN_SATELLITE_HOST", "marvinpi.local"),
+            user_id="satellite",
+            on_detection=self._on_satellite_wake,
+            loop=self.bot.loop,
+        )
+        self._satellite_bridge = bridge
+        # Sentinel 心跳監控的是橋內部那顆 LocalMicSink（與本機模式同型）
+        self.bot.engine.sink = bridge.sink
+
+        # 3. 設 local 模式旗標（衛星共用 local 輸出接縫 _resolve_playback_device）
+        self._local_mode = True
+
+        # 3b. 放寬 late-skip（對齊 start_local_listening：免費 LLM 限流下慢回應仍出聲）
+        self._LATE_RESPONSE_SKIP_SEC = 120.0
+        self._LATENCY_DOMINATED_THRESHOLD = 120.0
+
+        # 4. 喇叭輸出接縫：mixer 泵 → WyomingSpeakerOutput → 衛星喇叭
+        self.set_local_speaker(
+            LocalSpeakerDevice(output=WyomingSpeakerOutput(bridge, self.bot.loop)))
+
+        # 5. always-allow consent stub（衛星單人用，無 Discord 同意流程）
+        self.consent = _LocalConsentStub()
+
+        # 6. 非阻塞啟動重連迴圈（衛星斷線/重啟 → 5s 後重連，不炸腦＝優雅降級）
+        async def _bridge_forever():
+            while True:
+                try:
+                    await bridge.run()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"🛰️ [Satellite] bridge error: {e}")
+                await asyncio.sleep(5)
+
+        self.bot.loop.create_task(_bridge_forever())
+
 
 class _LocalConsentStub:
     """Local 模式 consent 放行 stub：一律允許，覆蓋完整 ConsentManager 介面。"""

@@ -77,6 +77,12 @@ class WyomingSatelliteBridge:
             user_id=user_id,
         )
 
+    @property
+    def sink(self):
+        """內部 VAD/切句引擎（LocalMicSink）。Sentinel 心跳監控（engine.get_active_sink）
+        監的是這顆，故 start_satellite_listening 把它掛上 engine.sink——與本機模式同型。"""
+        return self._sink
+
     # ── 對外：衛星喇叭播放（TTS / mixer 音訊） ─────────────────────────────────
 
     async def send_pcm(self, pcm: bytes, *, rate: int = 48000, channels: int = 2) -> None:
