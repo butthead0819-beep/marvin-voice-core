@@ -50,7 +50,11 @@ class LocalMicSink:
         sample_rate: int = 48000,
         channels: int = 2,
         suppress_wake_callback: Callable[[], bool] | None = None,
+        user_id: str = _LOCAL_USER_ID,
     ) -> None:
+        # user_id：切句 callback 帶的講者鍵。本機模式預設 "local"；Wyoming 橋（衛星麥）
+        # 傳自己的（如 "satellite"），讓 speaker_provider 映射到既有身分（記憶延續）。
+        self._user_id = user_id
         self.on_speech_cut_callback = on_speech_cut_callback
         self._loop = loop
         self._source = source
@@ -138,7 +142,7 @@ class LocalMicSink:
         logger.info("[Core_LocalSink] ✂️ 切句：人聲 %.1fs（靜默門檻 %.1fs）", _voiced_s, self._silence_cut_s)
 
         self._get_loop().create_task(
-            self.on_speech_cut_callback(_LOCAL_USER_ID, audio_data, speech_start)
+            self.on_speech_cut_callback(self._user_id, audio_data, speech_start)
         )
 
     async def start(self) -> None:
