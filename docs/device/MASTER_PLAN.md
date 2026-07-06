@@ -8,7 +8,10 @@
 - ✅ VAD：自適應底噪 + 1.5s 時間切句（`marvin_voice_core/local_mic_sink.py`）
 - ✅ wake-duck：喚醒即壓音樂（`LocalMixingAudioSource.duck_for_wake`，Discord live）
 - ✅ **S2 Wyoming 橋已寫好+測綠**（`marvin_voice_core/wyoming_bridge.py`，7 測）＝Pi 衛星接腦的那塊
-- ✅ 喚醒音檔收集中（`records/wake_samples/`，Discord owner 喚醒自動存）
+- ✅ **S4 整合 code 全鋪好+測綠+land**（commit b2eda60）＝身分映射 `_resolve_speaker_name`
+  ／播放 adapter `wyoming_speaker_output.py`／入口 `start_satellite_listening`+`main_satellite.py`
+  （+22 測）。硬體到貨後 S4 只剩「設 .env → 跑 main_satellite.py → 走驗收天梯」，弱模型不用 author code。
+- ✅ 喚醒音檔收集中（`records/wake_samples/`，Discord owner 喚醒自動存，已 7 筆）
 - ✅ 硬體已下單（DigiAMP+ / ReSpeaker XVF3800 / 12-24V 電源 / microSD；Pi 3B 使用者已有）
 
 ## Step 地圖與順序
