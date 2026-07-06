@@ -19,6 +19,10 @@
 4. **驗收**：`speaker-test -c 2 -t wav -D default` 書架喇叭出聲。沒聲：查 `alsamixer` 音量、`dtoverlay` 拼字、電源瓦數（12V ≥3A）。
 
 ## 3.3 XVF3800 麥克風
+> ⚠️ **變體注意**：若買的是「XVF3800 + XIAO ESP32-S3」版（台灣 IoT 語音開發板款，非 Seeed USB 含殼版），
+> **出廠預設 I2S 韌體，要先刷成 USB 韌體**才會被認成 USB 音效卡——照 Seeed wiki
+> `respeaker_xvf3800_xiao_getting_started` 的「switching the firmware」節做（一次性）。
+> 刷完插 Pi 的行為與 USB 版完全相同；板上 XIAO 不使用。
 1. USB 插上 → `arecord -l` 應列出 ReSpeaker/XVF 裝置。
 2. **驗收**：`arecord -D plughw:<卡號>,0 -r 16000 -c 1 -f S16_LE -d 5 test.wav && aplay test.wav` 講話→喇叭回放聽得到自己。
 3. 記下裝置名（如 `plughw:CARD=XVF3800,DEV=0`），下節用。
