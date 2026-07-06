@@ -1651,6 +1651,9 @@ class DiscordVoiceEngine:
             if not is_wake_check and raw_text:
                 import volatile_shadow
                 volatile_shadow.maybe_shadow(wav_path, speaker_name, raw_text, used_engine)
+                # 📼 opt-in 存 owner 喚醒 wav 供訓「馬文」（刪除前；env/owner/wake-text 守門）
+                import wake_sample_collector
+                wake_sample_collector.collect(wav_path, user_id, raw_text)
 
         finally:
             _lock.release()
