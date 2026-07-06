@@ -651,3 +651,26 @@ def test_tts_player_duck_keeps_duck_on_fresh_tts_while_player_speaking():
     mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))
     mix.read()                             # onset 但窗內 → 不復原
     assert mix._tts_player_duck_cur < 0.5
+
+
+# ── Wake Duck：喚醒確認 → 音樂 duck（不等 TTS）────────────────────────────────
+
+def test_wake_duck_ducks_music_without_tts_then_restores():
+    """duck_for_wake() → hold 內即使無 TTS 也 duck 到 _duck_level；hold 過後回 1.0。"""
+    clock = [0.0]
+    m = LocalMixingAudioSource(clock=lambda: clock[0])
+
+    # 無 TTS、無 wake → 不 duck
+    assert m._music_duck_target(False) == 1.0
+    # 喚醒 → hold 內 duck（不等 TTS）
+    m.duck_for_wake(hold_s=5.0)
+    assert m._music_duck_target(False) == m._duck_level
+    # hold 過後 → 回 1.0
+    clock[0] = 6.0
+    assert m._music_duck_target(False) == 1.0
+
+
+def test_tts_active_ducks_regardless_of_wake():
+    """TTS 播放中一定 duck（回話期間由 TTS duck 維持，與 wake duck 無關）。"""
+    m = LocalMixingAudioSource(clock=lambda: 0.0)
+    assert m._music_duck_target(True) == m._duck_level

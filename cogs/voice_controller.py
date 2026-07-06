@@ -1327,6 +1327,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 self._record_interest_signals(speaker, raw_text)
 
         if is_fast:
+            if os.getenv("MARVIN_WAKE_DUCK", "1") != "0" and getattr(self, "_mixer", None): self._mixer.duck_for_wake()  # 🔇 喚醒→音樂沉一下即時回饋
             _track_label = f"Track={'A' if track is None else track}"
             self.stt_logger.info(f"[⚡喚醒] [{speaker}] raw='{raw_text}' | {_track_label} | wake_intent={wake_intent}")
 

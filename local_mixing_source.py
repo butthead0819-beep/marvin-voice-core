@@ -62,6 +62,7 @@ class LocalMixingAudioSource(_BASE):
         self._duck_step = float(duck_step)
         self._tts_gain = float(tts_gain)  # TTS 層增益（音樂常播 ~10%，TTS 滿音量過大 → 預設減半）
         self._duck_cur = 1.0  # 1.0 = 無 duck
+        self._wake_duck_until = 0.0  # 🔇 [Wake Duck] 喚醒確認 → 音樂 duck 到此時戳（不等 TTS）
         # 🔇 [TTS 對玩家 duck] Marvin 自己的 TTS（尤其長的：DJ interjection / 歌單理由）播放中
         # 若有玩家還在說話 → TTS 讓路到 10%（同串流音樂）；最後一次說話後 5s 無聲才回 1.0。
         self._clock = clock or time.monotonic
@@ -112,6 +113,18 @@ class LocalMixingAudioSource(_BASE):
         """🔇 玩家正在說話 → 接下來 hold 秒內把 Marvin TTS duck 到 player_duck_level。
         speech-detection 路徑每次偵測到玩家說話就呼叫（與 last_player_speech_time 同步）。"""
         self._player_speech_until = self._clock() + self._tts_player_duck_hold_s
+
+    def duck_for_wake(self, hold_s: float = 5.0) -> None:
+        """🔇 [Wake Duck] 喚醒確認 → 立刻把音樂 duck（不等回話 TTS），hold 秒數。
+
+        複用 TTS duck 的 _duck_level 與逐幀 ramp（平滑不 click）；hold 夠長橋接到回話
+        TTS 接手（避免 LLM 期間彈回再 duck 的 bounce）。給即時「我聽到你了」回饋。"""
+        self._wake_duck_until = self._clock() + hold_s
+
+    def _music_duck_target(self, tts_active: bool) -> float:
+        """音樂 duck 目標增益：TTS 播放中 或 喚醒 duck hold 內 → _duck_level，否則 1.0。"""
+        wake_duck = self._clock() < self._wake_duck_until
+        return self._duck_level if (tts_active or wake_duck) else 1.0
 
     def _tts_player_duck_step_toward(self, now: float) -> float:
         """逐幀 ramp TTS 對玩家說話的 duck 增益：說話窗內 → 往 10% 降；窗外（5s 無聲）→ 回 1.0。"""
@@ -192,8 +205,8 @@ class LocalMixingAudioSource(_BASE):
             tts2_f = self._next_tts2_frame()  # 打岔層（Marmo）
             tts_active = tts_f is not None or tts2_f is not None
 
-            # duck ramp：TTS 在 → 往 duck_level 下降；TTS 走 → 回 1.0（逐幀線性、防 click）
-            target = self._duck_level if tts_active else 1.0
+            # duck ramp：TTS 在 或 喚醒 duck hold 內 → 往 duck_level 下降；否則回 1.0（逐幀線性、防 click）
+            target = self._music_duck_target(tts_active)
             if self._duck_cur < target:
                 self._duck_cur = min(target, self._duck_cur + self._duck_step)
             elif self._duck_cur > target:
