@@ -594,6 +594,19 @@ class MusicCog(commands.Cog):
             return False
         return played_s < cls._MIN_HEALTHY_PLAY_S
 
+    @classmethod
+    def _premature_cut(cls, played_s: float, duration) -> bool:
+        """歌是否『中途被切』：播超過健康門檻(非開頭403)、卻遠短於真實總長(<80%)。
+
+        用來讓「播到一半串流 URL 中途失效→跳下一首」變可見（ffmpeg stderr 進 DEVNULL＝
+        log 隱形，且開頭 403 由 _should_retry_failed_song 處理，這裡只抓中途切）。
+        """
+        if not duration or duration <= 0:
+            return False
+        if played_s < cls._MIN_HEALTHY_PLAY_S:
+            return False   # 開頭就掛→走 403 重試路徑，不算中途切
+        return played_s < duration * 0.8
+
     def _load_taste_fingerprint(self) -> dict:
         """讀 records/taste_fingerprint.json（5 分鐘快取；缺檔/壞檔 → {} fail-open）。"""
         now = time.time()
@@ -1334,6 +1347,13 @@ class MusicCog(commands.Cog):
                 # 別讓它被自動推薦洗掉。DJ 報歌走 mixed（隨 ffmpeg 一起失敗）→ 首次 403 不誤報，
                 # 只在確定能播的那次才響＝「確定能播的歌才說出來」。
                 _played_s = time.time() - song_start_time
+                # 🔎 中途切偵測（診斷用）：播到一半串流 URL 失效→提早結束，ffmpeg 靜默不留 log。
+                # 只印不重試（中途切要 seek 續播是另一步，先確認頻率再決定）。
+                if not getattr(self, "_current_song_skipped", False) and self._premature_cut(_played_s, info.get('duration')):
+                    logger.warning(
+                        f"⚠️ [Stream] 「{title}」疑中途切：實播 {_played_s:.0f}s / 全長 "
+                        f"{info.get('duration')}s（串流 URL 中途失效？非開頭 403、非你 skip）"
+                    )
                 if self._should_retry_failed_song(
                         _played_s, stream_active=self.stream_mode,
                         skipped=getattr(self, "_current_song_skipped", False),
