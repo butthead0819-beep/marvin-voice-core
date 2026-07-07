@@ -96,6 +96,7 @@ from local_mixing_source import (
     BufferedF32MusicSource, ensure_mixer_playing, FRAME_BYTES_F32,
 )
 from utterance_budget import STREAM_BUDGET
+import audio_mixing
 import ack_templates
 import pipeline_timing
 from wake_intent_gate import has_intent_signal
@@ -2761,6 +2762,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         try:
             f32 = await self._ffmpeg_to_f32(input_path=ack_file)
             if f32 is not None and f32.size:
+                # ack mp3 振幅偏低，peak-normalize 拉滿幅再送，避免被 ducked 音樂蓋掉
+                f32 = audio_mixing.peak_normalize_f32(f32)
                 self._ensure_mixer_playing(self._resolve_playback_device())
                 self._mixer.push_tts(f32)
                 logger.info(f"🗣️ [Ack:{category_key}] 播放 {variant or os.path.basename(ack_file)}")

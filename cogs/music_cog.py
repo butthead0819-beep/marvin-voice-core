@@ -152,9 +152,10 @@ class MusicCog(commands.Cog):
         self._themed_set_date = None
         self._prefetch_cache: dict = {}   # url → Task[{'lyrics', 'comment'}]
         # 🎵 [ReqGuard] 使用者點歌兩道防護（2026-07-04；邏輯在 music_request_guard.py）
-        from music_request_guard import RecentRequestLedger, ResolveCache
+        from music_request_guard import RecentRequestLedger, ResolveCache, QueryResolveCache
         self._req_ledger = RecentRequestLedger()    # 同人同曲 30s 去重（佇列空也擋）
         self._yt_resolve_cache = ResolveCache()     # videoId→info TTL 1h，重複點播免重抽 ~2s
+        self._query_resolve_cache = QueryResolveCache()  # query→url 持久快取，點過的歌跳 ytsearch5(~6s)
         self._last_search: dict = {}      # username → {query, ts, source}
         self._last_music_cmd_time: dict[str, float] = {}  # speaker → ts, for dedup
         self._last_music_query: dict[str, tuple[str, float]] = {}  # speaker → (正規化點歌字串, ts)
@@ -1236,19 +1237,28 @@ class MusicCog(commands.Cog):
 
                 url = info.get('url', '')
                 prefetch_task = self._prefetch_cache.pop(url, None)
-                meta = None
-                if prefetch_task:
-                    try:
-                        meta = await asyncio.wait_for(asyncio.shield(prefetch_task), timeout=20.0)
-                        logger.info(f"🔮 [Prefetch] 命中預取快取: {title}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ [Prefetch] 等待失敗，即時 fetch: {e}")
-                if meta is None:
-                    meta = await self._meta_with_ack_fallback(info, requested_by)
+                # 🎵 [Play-First] 只用「已就緒」的 meta；沒好就不等（使用者定：先播音樂，
+                # meta 阻塞就放棄 DJ TTS）。未就緒 → 本首放棄 DJ、先出聲、歌詞/評論背景補。
+                meta = self._ready_meta(prefetch_task)
+                if meta is not None:
+                    logger.info(f"🔮 [Prefetch] 命中預取快取: {title}")
+                    self._current_stream_comment = meta.get('comment')
+                    self._current_lyrics = meta.get('lyrics')
+                    dj_data = meta.get('dj')
+                else:
+                    self._current_stream_comment = None
+                    self._current_lyrics = None
+                    dj_data = None   # meta 未就緒 → 放棄 DJ，不阻塞出聲
+                    _bg = prefetch_task if prefetch_task is not None else asyncio.create_task(self._fetch_song_meta(info))
 
-                self._current_stream_comment = meta.get('comment')
-                self._current_lyrics = meta.get('lyrics')
-                dj_data = meta.get('dj')
+                    def _apply_bg_meta(t, _self=self):
+                        m = t.result() if not t.cancelled() and t.exception() is None else None
+                        if isinstance(m, dict):
+                            _self._current_stream_comment = m.get('comment')
+                            _self._current_lyrics = m.get('lyrics')
+
+                    _bg.add_done_callback(_apply_bg_meta)
+                    logger.info(f"🎵 [Play-First] meta 未就緒，先播音樂、放棄本首 DJ、meta 背景補：{title}")
 
                 from cogs.voice_views import PlayControlView
                 view = self._active_control_view
@@ -1641,6 +1651,21 @@ class MusicCog(commands.Cog):
         logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
         return {'text': text, 'audio_path': audio_path}
 
+    @staticmethod
+    def _ready_meta(prefetch_task) -> dict | None:
+        """Play-First：只回傳『已就緒』的 prefetch meta；未就緒/失敗/非 dict → None。
+
+        None 時 caller 先出聲、放棄本首 DJ、meta 背景補——不讓 LLM meta 生成阻塞出聲
+        （Plan12 即時混音，DJ 本就疊在 ducked 音樂上，等它生成完才出聲沒意義）。
+        """
+        if prefetch_task is not None and prefetch_task.done():
+            try:
+                m = prefetch_task.result()
+            except Exception:
+                return None
+            return m if isinstance(m, dict) else None
+        return None
+
     async def _fetch_song_meta(self, info: dict) -> dict:
         """並行 fetch 歌詞、馬文評語、DJ 播報（含 TTS 預渲染）。"""
         lyrics, comment, dj = await asyncio.gather(
@@ -1947,6 +1972,13 @@ class MusicCog(commands.Cog):
                 return
             self._req_ledger.mark(_spk, _vid, time.time())
         self.stream_queue.insert(self._user_song_insert_index(self.stream_queue), info)
+        # 🎵 [Play-First] 點歌當下就背景預取 meta，讓 DJ/歌詞大多來得及（又不阻塞出聲）
+        _u = info.get('url', '')
+        if _u and _u not in self._prefetch_cache:
+            try:
+                self._prefetch_cache[_u] = asyncio.create_task(self._fetch_song_meta(info))
+            except RuntimeError:
+                pass  # 無 running loop（同步/測試呼叫）→ 略過預取
         try:
             user = info.get('requested_by') or ''
             title = info.get('title') or ''
@@ -2019,6 +2051,16 @@ class MusicCog(commands.Cog):
             logger.warning("⚠️ [Stream] memory critical, skipping yt-dlp resolve")
             return None
 
+        # 🎵 [QueryCache] 文字查詢點過的歌 → 拿回 videoId URL，跳過 ytsearch5(~6s)
+        _orig_text_query = query if not query.startswith('http') else None
+        _used_query_cache = False
+        if _orig_text_query is not None:
+            _qhit = self._query_resolve_cache.get(_orig_text_query)
+            if _qhit and _qhit.get('webpage_url'):
+                logger.info(f"🎵 [QueryCache] '{_orig_text_query[:30]}' 命中→{_qhit.get('title','')[:30]}，改 URL 解析跳搜尋")
+                query = _qhit['webpage_url']
+                _used_query_cache = True
+
         # 🎵 [ResolveCache] URL 直點且 1h 內解析過 → 免重抽 ~2s（重複點播是常態使用模式）
         _cache_vid = extract_video_id(query) if query.startswith('http') else None
         if _cache_vid:
@@ -2074,22 +2116,38 @@ class MusicCog(commands.Cog):
                 _rv = extract_video_id(res.get('webpage_url') or '')
                 if _rv:
                     self._yt_resolve_cache.put(_rv, res, time.time())
+                # 文字查詢解析成功 → 記住 query→url，下次同句跳 ytsearch5
+                if _orig_text_query and res.get('webpage_url'):
+                    self._query_resolve_cache.put(_orig_text_query, res['webpage_url'], res.get('title', ''))
             return res
 
         loop = asyncio.get_event_loop()
-        try:
-            return _cache_put(await loop.run_in_executor(None, _extract))
-        except OSError as e:
-            if getattr(e, "errno", None) == 11:
-                logger.warning("⚠️ [Stream] yt-dlp Errno 11 deadlock，200ms 後重試")
-                await asyncio.sleep(0.2)
-                try:
-                    return _cache_put(await loop.run_in_executor(None, _extract))
-                except Exception as e2:
-                    logger.error(f"❌ [Stream] yt-dlp 重試後仍失敗: {e2}", exc_info=True)
-                    return None
-            logger.error(f"❌ [Stream] yt-dlp 解析失敗 (OSError): {e}", exc_info=True)
-            return None
+
+        async def _extract_with_retry():
+            try:
+                return await loop.run_in_executor(None, _extract)
+            except OSError as e:
+                if getattr(e, "errno", None) == 11:
+                    logger.warning("⚠️ [Stream] yt-dlp Errno 11 deadlock，200ms 後重試")
+                    await asyncio.sleep(0.2)
+                    try:
+                        return await loop.run_in_executor(None, _extract)
+                    except Exception as e2:
+                        logger.error(f"❌ [Stream] yt-dlp 重試後仍失敗: {e2}", exc_info=True)
+                        return None
+                logger.error(f"❌ [Stream] yt-dlp 解析失敗 (OSError): {e}", exc_info=True)
+                return None
+
+        res = await _extract_with_retry()
+        if res is None and _used_query_cache:
+            # 快取的 URL 失效（影片下架/地區鎖等）→ 清掉，改用原始文字重搜。
+            # 透明 fallback：同一次請求就換到替代連結，使用者無感，不是「清掉就不播」。
+            logger.info(f"🎵 [QueryCache] 快取 URL 失效，清除並用原文字重搜 '{_orig_text_query[:30]}'")
+            self._query_resolve_cache.delete(_orig_text_query)
+            query = _orig_text_query
+            is_url = False
+            res = await _extract_with_retry()
+        return _cache_put(res)
 
     async def _safe_music_command(self, speaker: str, query: str, cmd: str):
         """Top-level wrapper：任何 music command 路徑都該過這層 try/except。"""

@@ -19,6 +19,20 @@ def apply_gain(frame: np.ndarray, gain: float) -> np.ndarray:
     return frame * np.float32(gain)
 
 
+def peak_normalize_f32(frame: np.ndarray, target_peak: float = 0.9) -> np.ndarray:
+    """把 f32 音訊峰值正規化到 target_peak 滿幅。
+
+    ack mp3 本身振幅偏低（mean ~-25dB），進 mixer 再 ×tts_gain 會被 ducked 音樂蓋掉。
+    先拉到一致響度再送出。全靜音（peak=0）原樣回傳，不除以零。
+    """
+    if frame.size == 0:
+        return frame
+    peak = float(np.max(np.abs(frame)))
+    if peak <= 0.0:
+        return frame
+    return frame * np.float32(target_peak / peak)
+
+
 def mix_layers(layers: list[np.ndarray]) -> np.ndarray:
     """逐元素相加多個同形 f32 layer（音樂 + TTS overlay）。"""
     acc = layers[0]

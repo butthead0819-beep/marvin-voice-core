@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
 
@@ -35,7 +36,7 @@ def _make_cog():
         from cogs.voice_controller import VoiceController
         cog = VoiceController(bot)
     cog._speaker_lang = {}
-    cog._ffmpeg_to_f32 = AsyncMock(return_value=MagicMock(size=100))
+    cog._ffmpeg_to_f32 = AsyncMock(return_value=np.full(100, 0.1, dtype=np.float32))
     cog._mixer = MagicMock()
     cog._ensure_mixer_playing = MagicMock()
     return cog

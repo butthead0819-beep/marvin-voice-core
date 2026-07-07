@@ -56,3 +56,68 @@ class ResolveCache:
         # 同樣順手 prune
         self._cache = {k: v for k, v in self._cache.items() if now - v[1] <= self._ttl}
         self._cache[video_id] = (dict(info), now)
+
+
+def _normalize_query_key(query: str) -> str:
+    """點歌 query 正規化成快取鍵：去頭尾/內部空白 + 轉小寫。
+
+    STT 糊字（器/體/奇）仍會落在不同鍵——這層只治「一致重複」的點播
+    （同一首歌反覆點、清楚咬字或穩定糊法），是嚴格增益、命中即省 ~6s 搜尋。
+    """
+    return "".join((query or "").split()).lower()
+
+
+class QueryResolveCache:
+    """正規化 query → {webpage_url, title} 的持久化快取。
+
+    現有 ResolveCache 只治 videoId→info（URL 直點才受益）；文字查詢每次都跑
+    ytsearch5(~6s)。這層記住「點過的歌名→videoId」，命中則改走 URL 解析跳搜尋。
+    只存 webpage_url（穩定），不存串流 url（會過期）。持久化到 JSON，跨重啟受益。
+    """
+
+    def __init__(self, path: str | None = "records/query_resolve_cache.json", max_size: int = 2000):
+        self._path = path
+        self._max = max_size
+        self._cache: dict[str, dict] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self._path:
+            return
+        try:
+            import json
+            with open(self._path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._cache = {k: v for k, v in data.items() if isinstance(v, dict)}
+        except (FileNotFoundError, ValueError, OSError):
+            self._cache = {}
+
+    def _save(self) -> None:
+        if not self._path:
+            return
+        try:
+            import json
+            with open(self._path, "w", encoding="utf-8") as f:
+                json.dump(self._cache, f, ensure_ascii=False)
+        except OSError:
+            pass
+
+    def get(self, query: str) -> dict | None:
+        hit = self._cache.get(_normalize_query_key(query))
+        return dict(hit) if hit else None   # copy：防 caller 污染
+
+    def put(self, query: str, webpage_url: str, title: str) -> None:
+        key = _normalize_query_key(query)
+        if not key or not webpage_url:
+            return
+        # 淘汰最舊（dict 保序，超上限先移除最早插入的）
+        while len(self._cache) >= self._max and self._cache:
+            self._cache.pop(next(iter(self._cache)))
+        self._cache[key] = {"webpage_url": webpage_url, "title": title}
+        self._save()
+
+    def delete(self, query: str) -> None:
+        """快取的影片下架/失效 → 清掉，下次重新搜尋（防永久走失效 URL）。"""
+        if self._cache.pop(_normalize_query_key(query), None) is not None:
+            self._save()
