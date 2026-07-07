@@ -6,14 +6,18 @@ transport 從「Mac 本機 mic/speaker」換成「TCP 連 Pi 衛星」。
 
 Live 執行步驟：
   1. 先在 Pi 起 wyoming-openwakeword + wyoming-satellite（見 docs/device/S3_pi_setup.md）
-  2. 把 .env 複製進 worktree 根目錄（和 main_discord.py 同層）
-     - 設 MARVIN_SATELLITE_HOST=marvinpi.local（或 Pi 的 IP）
-     - 設 MARVIN_SATELLITE_SPEAKER=狗與露（身分映射→記憶延續，可選）
+  2. 從**主 checkout** 跑（非獨立 worktree）＝讀寫**正本記憶**（marvin.db/music_memory.json/
+     records/）＋用主 .env 的 GUILD_ID＝跟 Discord 同一個 per-person 記憶分區（同一個靈魂）。
+     入口會自動 chdir 到 repo 根目錄，從哪啟動都錨到正本。
+     - .env 需有 GUILD_ID（與 Discord 相同，已設）
+     - 設 MARVIN_SATELLITE_SPEAKER=狗與露（身分映射→(GUILD_ID, 狗與露) 同分區＝記憶延續）
   3. /Users/jackhuang/Code/Discord-voice-bot/venv_simon/bin/python main_satellite.py
   4. 對 Pi 麥喊喚醒詞「馬文」，再說話；從 Pi 書架喇叭聽回應
 
 注意事項：
   - 不登入 Discord——不與線上 24/7 bot 的同 token 衝突
+  - ⚠️ device 直接讀寫正本記憶＝依賴「一次一具身體」：用 device 前要**停掉 24/7 Discord bot**
+    （launchd），否則兩進程並行寫記憶會 lost-update（見 project_marvin_physical_speaker）
   - 衛星斷線會自動 5s 重連（不炸腦）；驗收天梯見 docs/device/S4_integration.md
   - 按 Ctrl-C 乾淨結束
 """
@@ -24,6 +28,32 @@ import os
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+
+def repo_root() -> str:
+    """含 main_satellite.py 的 repo 根目錄＝正本記憶/assets/models/.env 所在。"""
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def check_identity_alignment(env) -> list:
+    """回傳記憶對齊警告清單（空＝對齊 OK）。純函式，好測。
+
+    device 是「同一個靈魂的另一具身體」：per-person 記憶按 (GUILD_ID, speaker) 分區，
+    兩者都要跟 Discord 一致，才讀得到同一份人格記憶。
+    """
+    warnings = []
+    gid = env.get("GUILD_ID")
+    if not gid or gid == "0":
+        warnings.append(
+            "GUILD_ID 未設或=0 → per-person 記憶會落在分區 0、讀不到 Discord 的人格記憶；"
+            "請在 .env 設與 Discord 相同的 GUILD_ID"
+        )
+    if not env.get("MARVIN_SATELLITE_SPEAKER"):
+        warnings.append(
+            "MARVIN_SATELLITE_SPEAKER 未設 → 衛星講者不映射到既有身分、記憶不延續；"
+            "建議設為 OWNER_SPEAKER（如 狗與露）"
+        )
+    return warnings
 
 
 def build_local_bot():
@@ -49,7 +79,17 @@ async def setup_satellite(bot) -> object:
 
 
 async def main():
+    # 錨定 repo 根目錄：相對路徑的正本記憶(marvin.db/music_memory.json/records/)+assets+
+    # models+repo 的 .env(GUILD_ID) 全用正本，不論從哪啟動都不會漂到別的 worktree。
+    os.chdir(repo_root())
     load_dotenv()
+    _warnings = check_identity_alignment(os.environ)
+    for _w in _warnings:
+        logger.warning(f"⚠️ [Satellite] 記憶對齊：{_w}")
+    if not _warnings:
+        _gid = os.environ.get("GUILD_ID", "0")
+        _spk = os.environ.get("MARVIN_SATELLITE_SPEAKER", "")
+        logger.info(f"🛰️ [Satellite] 記憶錨定正本：repo={repo_root()} guild={_gid} speaker={_spk}（同一個靈魂）")
     bot = build_local_bot()
     # async with bot: 進入 _async_setup_hook（設 event loop）但不呼叫 setup_hook，
     # 不觸發 tree.sync 或任何 Discord 連線動作。
