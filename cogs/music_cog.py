@@ -582,19 +582,17 @@ class MusicCog(commands.Cog):
         cls, played_s: float, *, stream_active: bool, skipped: bool,
         requested_by: str | None, already_retried: bool,
     ) -> bool:
-        """點的歌播太短（疑 403/失敗）→ 該重抓網址重試一次，別讓它被自動推薦洗掉。
+        """播的歌太短（疑 403/失敗）→ 該重抓網址重試一次，別靜默跳下一首。
 
-        守門（全過才重試）：沒重試過 / 仍在串流(非 stop) / 非使用者 skip /
-        真人點播（非 Marvin 自動推薦）/ 播放時間 < 健康門檻。任一不符→不重試，
-        避免誤重播被 skip 的歌、或無限重試自動推薦。
+        守門（全過才重試）：沒重試過 / 仍在串流(非 stop) / 非使用者 skip / 播放 < 健康門檻。
+        **跟「誰點的」無關**——2026-07-07 bug：原本排除 Marvin 自動推薦，導致自動歌 403
+        短播時靜默跳過（連 log 都沒有）。單次 force_fresh 重試對誰都安全（already_retried
+        上鎖、每首只救一次、不會無限；使用者 skip 由 skipped 擋住不會誤重播）。
         """
+        _ = requested_by  # 保留參數簽章相容；短播救援不再看點播者
         if already_retried or not stream_active or skipped:
             return False
-        if played_s >= cls._MIN_HEALTHY_PLAY_S:
-            return False
-        if not requested_by or requested_by.startswith("Marvin"):
-            return False
-        return True
+        return played_s < cls._MIN_HEALTHY_PLAY_S
 
     def _load_taste_fingerprint(self) -> dict:
         """讀 records/taste_fingerprint.json（5 分鐘快取；缺檔/壞檔 → {} fail-open）。"""
@@ -1349,6 +1347,8 @@ class MusicCog(commands.Cog):
                             await self.play_stream_song(_fresh['url'], title, dj_audio_path=dj_audio)
                         except Exception:
                             logger.warning(f"⚠️ [Stream] 重試也失敗，讓下一首接手：{title}")
+                    else:
+                        logger.warning(f"⚠️ [Stream] 重抓網址失敗（無 webpage_url 或解析空），讓下一首接手：{title}")
 
                 if vc is not None:
                     asyncio.create_task(self._analyze_song_reactions(info, song_start_time, song_lyrics_snapshot))

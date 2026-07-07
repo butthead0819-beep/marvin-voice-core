@@ -42,11 +42,13 @@ def test_healthy_playback_does_not_retry():
     assert _base(played_s=_LONG) is False
 
 
-def test_marvin_auto_song_does_not_retry():
-    """Marvin 自動推薦的歌失敗 → 不重試（只救真人點的歌，自動推薦讓它換下一首）。"""
-    assert _base(requested_by="Marvin推薦（點給大家）") is False
+def test_marvin_auto_song_also_retries():
+    """Marvin 自動推薦的歌 403 短播也要救一次（2026-07-07 bug：自動歌 403 靜默跳下一首、
+    連 log 都沒有）。單次 force_fresh 重試安全（already_retried 上鎖、不會無限）。"""
+    assert _base(requested_by="Marvin推薦（點給大家）") is True
 
 
-def test_no_requester_does_not_retry():
-    assert _base(requested_by=None) is False
-    assert _base(requested_by="") is False
+def test_no_requester_still_retries():
+    """短播救援跟「誰點的」無關——任何真正短播（非 skip）都該救一次。"""
+    assert _base(requested_by=None) is True
+    assert _base(requested_by="") is True
