@@ -405,8 +405,9 @@ class ConnectionMixin:
 
             # 🚀 [Parallel Warm-up] 在 UDP 握手等待期間同步預熱 LLM，讓 handle_summon 幾乎不用等
             _pre_members = [m.display_name for m in channel.members if not m.bot]
+            _pre_active = self._room_active_now(_pre_members)
             self._pending_greeting_task = asyncio.create_task(
-                self.bot.router.generate_greeting(_pre_members)
+                self.bot.router.generate_greeting(_pre_members, active=_pre_active)
             )
 
             voice_client = await channel.connect(cls=voice_recv.VoiceRecvClient, timeout=60.0, reconnect=True)
@@ -485,6 +486,21 @@ class ConnectionMixin:
         else:
             await interaction.followup.send("我不在任何語音頻道中。", ephemeral=True)
 
+    def _room_active_now(self, members: list) -> bool:
+        """進場當下判斷房間是否熱絡（人數 + 文字熱度代理），決定短/長招呼。
+
+        Marvin 剛進場聽不到先前的語音對話，只能用現場人數與文字頻道熱度推估。
+        """
+        from gemini_router_content import room_is_active
+        level = None
+        tm = getattr(self, "temperature_monitor", None)
+        if tm is not None:
+            try:
+                level = tm.level
+            except Exception:
+                level = None
+        return room_is_active(len(members), level)
+
     async def handle_summon(self, message: str = None):  # noqa: ARG002
         # 🚀 [Lifecycle Management] 啟動螢幕擷取 (視覺系統)
         if self.bot.vision_enabled and self.bot.screen_capture:
@@ -529,10 +545,11 @@ class ConnectionMixin:
         # 🚀 [Parallel Warm-up] 若 summon 時已預熱 LLM，直接拿結果（通常已完成，幾乎零等待）
         _task = self._pending_greeting_task
         self._pending_greeting_task = None
+        _active = self._room_active_now(human_members)
         try:
-            greeting = await _task if _task else await self.bot.router.generate_greeting(human_members)
+            greeting = await _task if _task else await self.bot.router.generate_greeting(human_members, active=_active)
         except Exception:
-            greeting = await self.bot.router.generate_greeting(human_members)
+            greeting = await self.bot.router.generate_greeting(human_members, active=_active)
         
         if self.active_text_channel:
             await self.active_text_channel.send(f"⚙️ **【馬文 降臨】**\n{greeting}")

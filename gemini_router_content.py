@@ -53,6 +53,39 @@ def greeting_char_budget(n_players: int | None) -> int:
     return n * _GREETING_CHARS_PER_PLAYER
 
 
+# ── 進場招呼「讀空氣」──────────────────────────────────────────────────
+# Marvin 剛進場聽不到先前的『語音』對話（它才剛開始收音），只能用「人數 + 文字
+# 頻道熱度」當代理判斷房間是否正在熱絡：熱絡→短招呼快速報到別打斷；冷清→長招呼
+# 挑一件觀察拋話題引人回話。
+_BRIEF_GREETING_CHARS_PER_PLAYER = 8   # 熱絡時：極簡報到，每人約 8 字
+_BRIEF_GREETING_MIN = 15               # 但至少 15 字，單人也叫得出名字＋一句
+_AMBIENT_GREETING_CHARS = 50           # 冷清時：固定約 50 字，多聊、拋問句
+
+
+def room_is_active(n_players: int | None, temp_level: str | None) -> bool:
+    """進場當下判斷房間是否正在熱絡（人數 + 文字熱度代理）。
+
+    注意：這只是代理。Marvin 剛進場聽不到先前的語音對話，少人卻正在語音熱聊時
+    仍會被判為冷清——這是選用此訊號的已知取捨。
+    """
+    n = n_players or 0
+    if n >= 3:
+        return True
+    return temp_level in ("warm", "hot")
+
+
+def greeting_plan(n_players: int | None, active: bool) -> tuple[str, int]:
+    """回傳 (style, char_budget)。
+
+    active=True  → ("brief",   熱絡：快速報到別打斷，字數壓在報到量級)
+    active=False → ("ambient", 冷清：固定約 50 字，挑一件觀察拋話題引回話)
+    """
+    n = max(1, n_players or 0)
+    if active:
+        return ("brief", max(_BRIEF_GREETING_MIN, n * _BRIEF_GREETING_CHARS_PER_PLAYER))
+    return ("ambient", _AMBIENT_GREETING_CHARS)
+
+
 class GeminiRouterContentMixin:
     """內容生成：記憶萃取、社交分析、日記、問候、音樂藍圖等。"""
 # --- 🧠 [Memory Extraction & Interaction] ---
@@ -787,24 +820,37 @@ class GeminiRouterContentMixin:
 # 🚀 [T-04 Fix] generate_silence_reproach() 已移除（孤島死碼）。
 # 整個 codebase 掃描無呼叫點，靜默觸發的舊功能殘骸已清除。
 
-    async def generate_greeting(self, players: list[str] = None) -> str:
-        """進場時的快樂打招呼 (Operation Narcissus v2)"""
+    async def generate_greeting(self, players: list[str] = None, active: bool = True) -> str:
+        """進場時的打招呼 (Operation Narcissus v2)。
+
+        active：房間是否正在熱絡（由 caller 用 room_is_active 判斷）。
+          True  → 短招呼，快速報到別打斷正在進行的對話。
+          False → 長招呼，挑一件觀察拋問句引冷清的房間回話。
+        """
+        style, _budget = greeting_plan(len(players) if players else 0, active)
+        layer = "greeting" if style == "brief" else "greeting_ambient"
         system_prompt = self.prompt_manager.get_instruction(
-            "greeting", 
-            vision_enabled=self.vision_enabled, 
-            dna=self.dna, 
-            speaker=players, 
-            memory_manager=self.memory, 
+            layer,
+            vision_enabled=self.vision_enabled,
+            dna=self.dna,
+            speaker=players,
+            memory_manager=self.memory,
             temp_toxicity_override=self.temp_toxicity_override
         )
-        
+
         player_list_str = "、".join(players) if players else "空氣"
-        _budget = greeting_char_budget(len(players) if players else 0)
-        user_prompt = (
-            f"妳降落到了語音頻道。現場玩家有：{player_list_str}。請對他們打聲招呼。"
-            f"\n【字數】約 {_budget} 字內（每人約 10-15 字），一個都不能漏。人越多招呼越長。"
-        )
-        
+        if style == "brief":
+            user_prompt = (
+                f"妳降落到了語音頻道。現場玩家有：{player_list_str}。他們正熱絡地聊著，妳不想打斷。"
+                f"\n【字數】約 {_budget} 字內：叫出每個人名字＋一句話報到就好，務必極簡，別長篇。"
+            )
+        else:
+            user_prompt = (
+                f"妳降落到了語音頻道。現場玩家有：{player_list_str}。頻道冷清、沒人在講話。"
+                f"\n【字數】約 {_budget} 字。挑一件妳觀察到的具體事情（某人的記憶勾點／現實環境／時間），"
+                f"用它拋一個具體問題，試著引他們回妳話。結尾要是問句或明確邀請，別自言自語式長嘆。"
+            )
+
         try:
             return await self._call_llm(system_prompt, user_prompt, tier="simple")
         except Exception:
