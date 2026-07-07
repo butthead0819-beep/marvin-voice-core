@@ -45,6 +45,40 @@ def test_persistence_roundtrip(tmp_path):
     assert hit is not None and hit["title"] == "愛很簡單"
 
 
+import pytest
+
+pytest.importorskip("rapidfuzz")
+pytest.importorskip("pypinyin")
+
+
+def test_fuzzy_matches_garble_tail_drift():
+    # 同一首歌尾巴被 STT 糊得不同（慢歌→慢）→ 拼音 fuzzy 命中同一首
+    c = QueryResolveCache(path=None)
+    c.put("消防器的慢歌", "https://y/watch?v=fire", "滅火器")
+    hit = c.get("消防器的慢")
+    assert hit is not None and hit["title"] == "滅火器"
+
+
+def test_fuzzy_matches_homophone_drift():
+    c = QueryResolveCache(path=None)
+    c.put("消防器的慢歌", "u", "滅火器")
+    assert c.get("消防氣的慢歌") is not None   # 器→氣 同音字漂移
+
+
+def test_fuzzy_rejects_different_and_short():
+    c = QueryResolveCache(path=None)
+    c.put("消防器的慢歌", "u", "滅火器")
+    assert c.get("消防車") is None            # 不同歌
+    assert c.get("周杰倫的七里香") is None      # 完全無關
+    assert c.get("消防") is None              # 太短，不 fuzzy（易假命中）
+
+
+def test_exact_takes_precedence_over_fuzzy():
+    c = QueryResolveCache(path=None)
+    c.put("陶喆的愛很簡單", "https://y/watch?v=exact", "愛很簡單")
+    assert c.get("陶喆的愛很簡單")["webpage_url"].endswith("exact")
+
+
 def test_delete_invalidates_stale_entry():
     # 影片下架 → delete 清掉，get 回 None（防永久走失效 URL）
     c = QueryResolveCache(path=None)

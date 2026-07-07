@@ -13,8 +13,20 @@
 """
 from __future__ import annotations
 
+# 拼音 fuzzy（C'）：收「糊法飄動的重複點播」——同一首歌被 STT 糊成不同字（消防器的慢歌
+# ／消防器的慢／消防氣的慢歌）。用 token_sort_ratio（不是 catalog 的 token_set_ratio，
+# 後者對子集給 100 會讓「消防」假命中長歌名）。缺 dep → 靜默退回純精確比對。
+try:
+    from rapidfuzz import fuzz as _fuzz
+    from music_fastpath import to_pinyin as _to_pinyin
+    _FUZZY_OK = True
+except ImportError:
+    _FUZZY_OK = False
+
 DEFAULT_WINDOW_S = 30.0
 DEFAULT_TTL_S = 3600.0
+_FUZZY_THRESHOLD = 85.0   # 真 repeat ≥91 / 假命中 ≤63，85 乾淨分離
+_FUZZY_MIN_TOKENS = 3     # 拼音 token <3 太短易假命中 → 不 fuzzy
 
 
 class RecentRequestLedger:
@@ -105,7 +117,27 @@ class QueryResolveCache:
 
     def get(self, query: str) -> dict | None:
         hit = self._cache.get(_normalize_query_key(query))
-        return dict(hit) if hit else None   # copy：防 caller 污染
+        if hit:
+            return {"webpage_url": hit["webpage_url"], "title": hit.get("title", "")}
+        return self._fuzzy_get(query)   # 精確 miss → 拼音 fuzzy 收糊字漂移
+
+    def _fuzzy_get(self, query: str) -> dict | None:
+        if not _FUZZY_OK:
+            return None
+        qpy = _to_pinyin(query)
+        if len(qpy.split()) < _FUZZY_MIN_TOKENS:
+            return None
+        best, best_score = None, 0.0
+        for v in self._cache.values():
+            cand_py = v.get("pinyin") or ""
+            if not cand_py:
+                continue
+            s = _fuzz.token_sort_ratio(qpy, cand_py)
+            if s > best_score:
+                best_score, best = s, v
+        if best is not None and best_score >= _FUZZY_THRESHOLD:
+            return {"webpage_url": best["webpage_url"], "title": best.get("title", "")}
+        return None
 
     def put(self, query: str, webpage_url: str, title: str) -> None:
         key = _normalize_query_key(query)
@@ -114,7 +146,11 @@ class QueryResolveCache:
         # 淘汰最舊（dict 保序，超上限先移除最早插入的）
         while len(self._cache) >= self._max and self._cache:
             self._cache.pop(next(iter(self._cache)))
-        self._cache[key] = {"webpage_url": webpage_url, "title": title}
+        self._cache[key] = {
+            "webpage_url": webpage_url,
+            "title": title,
+            "pinyin": _to_pinyin(query) if _FUZZY_OK else "",
+        }
         self._save()
 
     def delete(self, query: str) -> None:
