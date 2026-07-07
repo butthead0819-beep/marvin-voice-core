@@ -262,6 +262,9 @@ class MarvinBot(commands.Bot):
         logging.getLogger("discord.ext.voice_recv").setLevel(logging.WARNING)
         logging.getLogger("discord.ext.voice_recv.reader").setLevel(logging.WARNING)
         logging.getLogger("discord.ext.voice_recv.router").setLevel(logging.WARNING)
+        # CryptoError 是 ERROR 級（WARNING 攔不掉）、每天 ~3800 行淹沒真 error → 抽樣 1/100
+        from log_filters import CryptoErrorSampler
+        logging.getLogger("discord.ext.voice_recv.reader").addFilter(CryptoErrorSampler(sample_rate=100))
 
         # STT 歷史日誌
         stt_logger = logging.getLogger("STTHistory")
