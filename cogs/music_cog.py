@@ -1342,7 +1342,8 @@ class MusicCog(commands.Cog):
                         requested_by=requested_by, already_retried=False):
                     _wp = info.get('webpage_url') or info.get('url')
                     logger.info(f"🔁 [Stream] 點的歌只播 {_played_s:.1f}s，疑似 403，重抓網址重試：{title}")
-                    _fresh = await self._resolve_yt_query(_wp) if _wp else None
+                    # force_fresh：跳過快取，否則命中的是剛 403 的同一份死 URL → 又 403（無意義重試）
+                    _fresh = await self._resolve_yt_query(_wp, force_fresh=True) if _wp else None
                     if _fresh and _fresh.get('url'):
                         try:
                             await self.play_stream_song(_fresh['url'], title, dj_audio_path=dj_audio)
@@ -2043,8 +2044,12 @@ class MusicCog(commands.Cog):
                 extras["vibe_mood"] = getattr(cached_vibe, "mood", None)
         return extras
 
-    async def _resolve_yt_query(self, query: str) -> dict | None:
-        """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。"""
+    async def _resolve_yt_query(self, query: str, force_fresh: bool = False) -> dict | None:
+        """使用 yt-dlp 解析搜尋關鍵字或 URL，回傳串流資訊 dict。在 executor 中執行以避免阻塞。
+
+        force_fresh：跳過所有快取，強制重抓（403 重試專用——串流 URL 過期時快取存的
+        是同一份死 URL，命中只會再 403，必須真的重新 extract 拿新 URL）。
+        """
         from music_search import pick_best_music_candidate
 
         if is_memory_critical():
@@ -2054,7 +2059,7 @@ class MusicCog(commands.Cog):
         # 🎵 [QueryCache] 文字查詢點過的歌 → 拿回 videoId URL，跳過 ytsearch5(~6s)
         _orig_text_query = query if not query.startswith('http') else None
         _used_query_cache = False
-        if _orig_text_query is not None:
+        if _orig_text_query is not None and not force_fresh:
             _qhit = self._query_resolve_cache.get(_orig_text_query)
             if _qhit and _qhit.get('webpage_url'):
                 logger.info(f"🎵 [QueryCache] '{_orig_text_query[:30]}' 命中→{_qhit.get('title','')[:30]}，改 URL 解析跳搜尋")
@@ -2063,7 +2068,7 @@ class MusicCog(commands.Cog):
 
         # 🎵 [ResolveCache] URL 直點且 1h 內解析過 → 免重抽 ~2s（重複點播是常態使用模式）
         _cache_vid = extract_video_id(query) if query.startswith('http') else None
-        if _cache_vid:
+        if _cache_vid and not force_fresh:
             _cached = self._yt_resolve_cache.get(_cache_vid, time.time())
             if _cached is not None:
                 logger.info(f"🎵 [ResolveCache] {_cache_vid} 快取命中，跳過 yt-dlp")

@@ -111,6 +111,43 @@ async def test_resolve_yt_query_returns_none_when_empty():
 
 
 @pytest.mark.asyncio
+async def test_force_fresh_bypasses_resolve_cache():
+    """403 重試：force_fresh=True 要跳過 videoId 快取、重抓新串流 URL。
+
+    bug（2026-07-07 17:01）：歌播 0.7s 403 → 重試 _resolve_yt_query(webpage_url)
+    卻命中 _yt_resolve_cache 拿回同一份死 URL → 又 403 → 歌被自動推薦洗掉。
+    """
+    import time as _t
+    cog = _make_cog()
+    url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    # 預塞「死 URL」快取（模擬剛 403 那份）
+    cog._yt_resolve_cache.put(
+        "dQw4w9WgXcQ", {"title": "T", "url": "http://dead.403/x", "webpage_url": url}, _t.time()
+    )
+
+    class _FreshYDL(_FakeYDL):
+        def extract_info(self, search, download=False):
+            type(self).calls.append(search)
+            return {"title": "T", "url": "http://fresh.ok/new", "uploader": "C",
+                    "categories": ["Music"], "duration": 200,
+                    "webpage_url": url, "thumbnail": "t.png"}
+
+    # 預設：命中快取死 URL、不打 yt-dlp
+    _FreshYDL.calls = []
+    with patch("yt_dlp.YoutubeDL", _FreshYDL):
+        cached = await cog._resolve_yt_query(url)
+    assert cached["url"] == "http://dead.403/x"
+    assert _FreshYDL.calls == []
+
+    # force_fresh：跳過快取、真的重抓新 URL
+    _FreshYDL.calls = []
+    with patch("yt_dlp.YoutubeDL", _FreshYDL):
+        fresh = await cog._resolve_yt_query(url, force_fresh=True)
+    assert fresh["url"] == "http://fresh.ok/new"
+    assert len(_FreshYDL.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_resolve_yt_query_url_uses_direct_extract():
     """URL 查詢不該加 ytsearch 前綴，要直接 extract_info(url)。"""
     cog = _make_cog()
