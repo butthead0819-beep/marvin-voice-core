@@ -26,7 +26,7 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4285      # 實測 4285（2026-07-03c 已服務標記 +11：shortcut 記標記+wakeless 讓路，防 debounce 晚關窗同句重派；判定邏輯在 wake_shortcut.served_recently）
+LINE_BUDGET = 4288      # 實測 4288（2026-07-08 ack 音量 bugfix +3：既有 _play_ack 加 peak_normalize_f32 拉滿幅，非新功能、屬既有方法微調）；前 4285（2026-07-03c 已服務標記 +11）
 METHOD_BUDGET = 91      # VoiceController 自身定義的 method 數；新「功能」別在這加 method
                         # （2026-07-03 +1：_process_query_task = worker body Extract Method，行為不變）
 

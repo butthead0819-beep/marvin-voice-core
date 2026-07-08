@@ -87,7 +87,15 @@ class QueryResolveCache:
     只存 webpage_url（穩定），不存串流 url（會過期）。持久化到 JSON，跨重啟受益。
     """
 
-    def __init__(self, path: str | None = "records/query_resolve_cache.json", max_size: int = 2000):
+    _DEFAULT_PATH = "records/query_resolve_cache.json"
+
+    def __init__(self, path: str | None = _DEFAULT_PATH, max_size: int = 2000):
+        # 測試中不載入/寫入 production 持久檔——否則 live 快取(含 fuzzy)污染測試
+        # （2026-07-08 errno_11 事故：「陶喆的天天」fuzzy 命中 live 快取「陶喆天天」）。
+        # 明確傳入的路徑(如測試 tmp_path)仍生效，保住 persistence 測試。
+        import os
+        if path == self._DEFAULT_PATH and os.environ.get("PYTEST_CURRENT_TEST"):
+            path = None
         self._path = path
         self._max = max_size
         self._cache: dict[str, dict] = {}

@@ -1189,6 +1189,42 @@ class MusicCog(commands.Cog):
         finally:
             self._personal_topup_inflight = False
 
+    @staticmethod
+    def _eligible_replay_pool(history: list, skip_vids: set) -> list:
+        """最終安全網選池：從播放歷史挑可重播的舊歌，排除最近 5 首(防立即重複)+skip 過的。
+
+        歷史 <6 首 → 回 []（真沒得循環，讓串流正常停）。
+        """
+        hist = [s for s in history if isinstance(s, dict) and s.get('webpage_url')]
+        if len(hist) < 6:
+            return []
+        recent_vids = {extract_video_id(s.get('webpage_url', '')) for s in hist[-5:]}
+        out = []
+        for s in hist[:-5]:
+            v = extract_video_id(s.get('webpage_url', ''))
+            if v and v not in recent_vids and v not in skip_vids:
+                out.append(s)
+        return out
+
+    async def _last_resort_replay(self) -> bool:
+        """三層 autopilot 全枯竭（歌庫 24h 內被播光→候選全被『已播過』濾掉）時的最終安全網：
+        從本場歷史挑一首舊歌重播，保證只要有足夠歷史就永不靜默停播（無限續歌本意；
+        2026-06-24/07-08 停播事故）。force_fresh 重抓避開過期 URL。回 True=補到歌。"""
+        mm = getattr(self.bot, 'music_memory', None)
+        skip_vids = mm.get_skipped_video_ids() if mm is not None else set()
+        pool = self._eligible_replay_pool(list(self.stream_history), skip_vids)
+        if not pool:
+            return False
+        import random
+        pick = random.choice(pool)
+        info = await self._resolve_yt_query(pick['webpage_url'], force_fresh=True)
+        if not info or not info.get('url'):
+            return False
+        info['requested_by'] = 'Marvin推薦（點給大家）'
+        self.stream_queue.append(info)
+        logger.info(f"🔁 [AutoRecommend] 絕境回收：三層枯竭→重播「{info['title']}」（永不靜默停）")
+        return True
+
     # ── 🎵 Stream loop & playback ────────────────────────────────────────────
 
     async def _stream_loop(self):
@@ -1216,6 +1252,9 @@ class MusicCog(commands.Cog):
                     _seed = self._autorecommend_seed(_rb, online)
                     if _seed:
                         await self._auto_recommend(_seed)
+                    # 三層 autopilot 補不到 → 最終安全網：從歷史回收重播，永不靜默停
+                    if not self.stream_queue and await self._last_resort_replay():
+                        continue
                     if not self.stream_queue:
                         break
                     continue
