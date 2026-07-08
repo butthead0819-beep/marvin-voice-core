@@ -1113,15 +1113,15 @@ class MusicCog(commands.Cog):
                 mm.add_recent_recommendation(_ring_title)
             logger.info(f"🎵 [AutoRecommend] lane={cand.lane} round-#{enqueued+1}: {info['title']}")
             blurb = ""
-            active_ch = vc.active_text_channel if vc is not None else None
-            if active_ch and enqueued == 0:
+            if enqueued == 0:
                 vibe_tag = f" [vibe: {vibe_label.mood}]" if vibe_label else ""
                 # 文案與掛名同規則：blurb 指名的人（target_member 優先）也要真的點過這首
                 _blurb_who = cand.target_member or spotlight
                 _personal = bool(_blurb_who) and mm.is_requester(info, _blurb_who)
                 blurb = self._recommend_blurb(cand, info['title'], spotlight=spotlight,
                                               personal=_personal) + vibe_tag
-                await active_ch.send(blurb)
+                # 2026-07-08 使用者：這段推薦文字不貼頻道了——推薦會播出來(DJ 語音)+有歌曲卡，文字多餘。
+                # blurb 仍計算，供日記/推薦紀錄 append_recommendation 用。
 
             _recent_titles = [
                 s.get("title", "") for s in self.stream_history[-3:] if isinstance(s, dict)
