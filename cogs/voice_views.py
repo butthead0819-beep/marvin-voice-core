@@ -20,6 +20,77 @@ if TYPE_CHECKING:
     from cogs.voice_controller import VoiceController
 
 
+def build_song_embed(controller) -> discord.Embed:
+    """🎵 歌曲資訊卡（小、精緻、每首一則、持久保留）：歌名 + 馬文評論 + 歌手·時長 + 點播者 + 小封面。
+
+    純資訊、無按鈕；串流迴圈每首歌貼一則新的、不刪＝頻道裡留下播放紀錄。
+    """
+    c = controller
+    info = c._current_stream_info
+    if not info and c.stream_mode and c.stream_queue:   # 首曲還沒 pop → 借佇列第一首 preview
+        info = c.stream_queue[0]
+    embed = discord.Embed(color=discord.Color.blurple(), timestamp=datetime.datetime.now())
+    if not info:
+        embed.description = "目前沒有歌曲在播放。"
+        return embed
+    embed.title = f"🎵 {info['title']}"
+    comment = c._current_stream_comment
+    if comment:
+        embed.description = f"「{comment}」"          # 馬文對這首的評論
+    if info.get('thumbnail'):
+        embed.set_thumbnail(url=info['thumbnail'])    # 小縮圖（右上角）非滿寬大圖 → 精緻
+    dur = info.get('duration', 0)
+    dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
+    embed.add_field(name="👤 歌手", value=f"`{info['uploader']}`", inline=True)
+    embed.add_field(name="⏱️ 時長", value=f"`{dur_str}`", inline=True)
+    requester = info.get('requested_by', '')
+    if requester:
+        req_display = requester
+        try:
+            mm = getattr(getattr(c, 'bot', None), 'music_memory', None)
+            if mm is not None and not requester.startswith('Marvin'):
+                song_data = mm._data.get('songs', {}).get(mm._key(info), {})
+                play_count = song_data.get('requesters', {}).get(requester, 0)
+                slots = [p['time_slot'] for p in song_data.get('plays', []) if p['by'] == requester]
+                common_slot = max(set(slots), key=slots.count) if slots else None
+                if play_count > 1:
+                    req_display += f"　第 {play_count} 次"
+                if common_slot:
+                    req_display += f" · 常在{common_slot}聽"
+        except Exception:
+            pass
+        embed.add_field(name="🙋 點播", value=f"`{req_display}`", inline=False)
+    return embed
+
+
+def build_control_embed(controller) -> discord.Embed:
+    """🎛️ 控制台狀態（刪舊貼新、永遠在最下面）：音量 + 狀態 + 佇列。不含歌曲資訊/推薦主導/歌詞。"""
+    c = controller
+    vol_pct = int(c.stream_volume * 100)
+    pending_first = (not c._current_stream_info and c.stream_mode and c.stream_queue)
+    state = "⏸️ 暫停中" if c.stream_paused else (
+        "⏳ 載入中" if pending_first else ("▶️ 播放中" if c.stream_mode else "⏹️ 停止"))
+    embed = discord.Embed(title="🎛️ 控制台", color=discord.Color.blurple(),
+                          timestamp=datetime.datetime.now())
+    embed.add_field(name="🔊 音量", value=f"`{vol_pct}%`", inline=True)
+    embed.add_field(name="狀態", value=state, inline=True)
+    q = c.stream_queue
+    if q:
+        lines = []
+        for i, item in enumerate(q[:10], 1):
+            dur = item.get('duration', 0)
+            dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
+            by = item.get('requested_by', '')
+            by_tag = (f" *by {by}*" if by and not by.startswith('Marvin')
+                      else (" *🔮推薦*" if by.startswith('Marvin') else ""))
+            lines.append(f"`{i}.` {item['title'][:45]} `[{dur_str}]`{by_tag}")
+        if len(q) > 10:
+            lines.append(f"*...以及另外 {len(q)-10} 首*")
+        embed.add_field(name="📋 佇列", value="\n".join(lines), inline=False)
+    embed.set_footer(text=f"待播 {len(q)} 首 | 歷史 {len(c.stream_history)} 首")
+    return embed
+
+
 class PlayControlView(discord.ui.View):
     """🎵 [Unified Stream Control] 播放控制台 + 佇列管理，合一版。"""
 
@@ -63,88 +134,9 @@ class PlayControlView(discord.ui.View):
         self.pause_resume_button.label = "▶️ 播放" if self.controller.stream_paused else "⏸️ 暫停"
 
     def _build_embed(self) -> discord.Embed:
-        c = self.controller
-        info = c._current_stream_info
-        # 串流已啟動但第一首還沒被 loop pop 到時，借用佇列第一首當 preview
-        pending_first = (not info and c.stream_mode and c.stream_queue)
-        if pending_first:
-            info = c.stream_queue[0]
-        vol_pct = int(c.stream_volume * 100)
-        state = "⏸️ 暫停中" if c.stream_paused else ("⏳ 載入中" if pending_first else ("▶️ 播放中" if c.stream_mode else "⏹️ 停止"))
-        comment = c._current_stream_comment
-        embed = discord.Embed(
-            title="🎛️ 串流控制台",
-            description=f"「{comment}」" if comment else None,
-            color=discord.Color.blurple(),
-            timestamp=datetime.datetime.now()
-        )
-        if info:
-            dur = info.get('duration', 0)
-            dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
-            if info.get('thumbnail'):
-                embed.set_image(url=info['thumbnail'])  # 串流歌曲封面（滿寬幅大圖）
-            embed.add_field(name="🎵 歌曲", value=f"`{info['title']}`", inline=False)
-            embed.add_field(name="👤 頻道", value=f"`{info['uploader']}`", inline=True)
-            embed.add_field(name="⏱️ 時長", value=f"`{dur_str}`", inline=True)
-            # 點播者 + 歷史統計
-            requester = info.get('requested_by', '')
-            if requester:
-                req_display = requester
-                if hasattr(c, 'bot') and hasattr(c.bot, 'music_memory') and not requester.startswith('Marvin'):
-                    mm = c.bot.music_memory
-                    key = mm._key(info)
-                    song_data = mm._data.get('songs', {}).get(key, {})
-                    play_count = song_data.get('requesters', {}).get(requester, 0)
-                    user_plays = [p for p in song_data.get('plays', []) if p['by'] == requester]
-                    slots = [p['time_slot'] for p in user_plays]
-                    common_slot = max(set(slots), key=slots.count) if slots else None
-                    if play_count > 1:
-                        req_display += f"　第 {play_count} 次"
-                    if common_slot:
-                        req_display += f" · 常在{common_slot}聽"
-                embed.add_field(name="🙋 點播", value=f"`{req_display}`", inline=False)
-        else:
-            embed.description = "目前沒有歌曲在播放。"
-        embed.add_field(name="🔊 音量", value=f"`{vol_pct}%`", inline=True)
-        embed.add_field(name="狀態", value=state, inline=True)
-        # 🎚️ 誰的風格在主導自動推薦（多人種子輪替）
-        try:
-            mc = c.bot.cogs.get('MusicCog') if hasattr(c, 'bot') else None
-            members = c.get_online_members() if hasattr(c, 'get_online_members') else []
-            if mc and members and c.stream_mode:
-                import seed_rotation
-                _swap = 3
-                _epoch = getattr(mc, '_seed_epoch', 0)
-                _since = getattr(mc, '_auto_since_manual', 99)
-                if _since < _swap and getattr(mc, '_last_user_song_seed', None):
-                    _req = getattr(mc, '_last_user_song_requester', '') or members[0]
-                    dom = f"🔥 跟 `{_req}` 最近點歌（{_swap - _since} 首後開始輪替）"
-                else:
-                    _primary = seed_rotation.primary_member(members, _epoch, _swap) or members[0]
-                    dom = f"`{_primary}` 的口味（{_swap - (_epoch % _swap)} 首後換人）"
-                embed.add_field(name="🎚️ 推薦主導", value=dom, inline=False)
-        except Exception:
-            pass
-        q = c.stream_queue
-        if q:
-            lines = []
-            for i, item in enumerate(q[:10], 1):
-                dur = item.get('duration', 0)
-                dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
-                by = item.get('requested_by', '')
-                by_tag = f" *by {by}*" if by and not by.startswith('Marvin') else (" *🔮推薦*" if by.startswith('Marvin') else "")
-                lines.append(f"`{i}.` {item['title'][:45]} `[{dur_str}]`{by_tag}")
-            if len(q) > 10:
-                lines.append(f"*...以及另外 {len(q)-10} 首*")
-            embed.add_field(name="📋 佇列", value="\n".join(lines), inline=False)
-        if c._current_lyrics and not pending_first:
-            MAX = 900
-            text = c._current_lyrics
-            if len(text) > MAX:
-                text = text[:MAX].rsplit('\n', 1)[0] + "\n*...（更多歌詞請自行查詢）*"
-            embed.add_field(name="📝 歌詞", value=text, inline=False)
-        embed.set_footer(text=f"待播 {len(q)} 首 | 歷史 {len(c.stream_history)} 首")
-        return embed
+        """控制台 embed（歌曲資訊已拆到 build_song_embed 獨立貼文）。保留此名讓既有
+        refresh 呼叫點沿用；內容＝控制台狀態（音量/狀態/佇列）。"""
+        return build_control_embed(self.controller)
 
     async def _refresh(self, interaction: discord.Interaction):
         self._update_pause_label()

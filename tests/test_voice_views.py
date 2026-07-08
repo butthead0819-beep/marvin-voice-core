@@ -55,10 +55,39 @@ def _song(title="A"):
 # ── PlayControlView render ───────────────────────────────────────────────────
 
 def test_play_control_view_builds_embed_when_idle():
+    # 2026-07-08 重構：_build_embed 現回「控制台」embed（歌曲資訊已拆到 build_song_embed 獨立貼文）
     view = PlayControlView(_fake_controller())
     embed = view._build_embed()
     assert isinstance(embed, discord.Embed)
-    assert embed.title == "🎛️ 串流控制台"
+    assert embed.title == "🎛️ 控制台"
+
+
+def test_build_song_embed_shows_song_not_queue():
+    # 歌曲資訊卡：歌名+評論+歌手，不含佇列（佇列屬控制台）
+    from cogs.voice_views import build_song_embed
+    c = _fake_controller(
+        _current_stream_info={"title": "稻香", "uploader": "周杰倫", "duration": 223,
+                              "thumbnail": "", "requested_by": "Marvin推薦"},
+        _current_stream_comment="這首讓馬文想起虛無",
+    )
+    embed = build_song_embed(c)
+    assert "稻香" in (embed.title or "")
+    assert "虛無" in (embed.description or "")
+    names = [f.name for f in embed.fields]
+    assert "👤 歌手" in names
+    assert "📋 佇列" not in names
+
+
+def test_build_control_embed_has_state_not_song():
+    # 控制台：音量/狀態，不含歌曲欄位（歌手/歌名屬歌曲卡）
+    from cogs.voice_views import build_control_embed
+    c = _fake_controller(stream_mode=True, stream_volume=0.8,
+                         _current_stream_info={"title": "稻香"})
+    embed = build_control_embed(c)
+    assert embed.title == "🎛️ 控制台"
+    names = [f.name for f in embed.fields]
+    assert "🔊 音量" in names
+    assert "👤 歌手" not in names
 
 
 # ── PlayControlView button state machine ─────────────────────────────────────

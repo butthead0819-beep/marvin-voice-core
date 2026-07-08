@@ -1399,35 +1399,28 @@ class MusicCog(commands.Cog):
                     _bg.add_done_callback(_apply_bg_meta)
                     logger.info(f"🎵 [Play-First] meta 未就緒，先播音樂、放棄本首 DJ、meta 背景補：{title}")
 
-                from cogs.voice_views import PlayControlView
-                view = self._active_control_view
-                refreshed = False
+                # 🎛️ 每首歌：①貼一則小巧歌曲資訊卡（持久保留＝頻道留播放紀錄）②控制台刪舊貼新在底部
                 active_ch = vc.active_text_channel if vc is not None else None
-                if view and getattr(view, 'message', None):
-                    msg_age = time.time() - view.message.created_at.timestamp()
-                    if msg_age > 300:
+                if active_ch and vc is not None:
+                    from cogs.voice_views import PlayControlView, build_song_embed, build_control_embed
+                    # ① 歌曲資訊卡：新貼一則、不刪（每首一則）
+                    try:
+                        await active_ch.send(embed=build_song_embed(vc))
+                    except Exception as e:
+                        logger.debug(f"⚠️ [Stream] 歌曲資訊卡貼文失敗: {e}")
+                    # ② 控制台：刪掉上一則、貼新的在最下面（永遠好按）
+                    _old = self._active_control_view
+                    if _old is not None and getattr(_old, 'message', None):
                         try:
-                            await view.message.delete()
+                            await _old.message.delete()
                         except Exception:
                             pass
-                        if vc is not None:
-                            view = PlayControlView(vc)
-                            self._active_control_view = view
-                            if active_ch:
-                                new_msg = await active_ch.send(embed=view._build_embed(), view=view)
-                                view.message = new_msg
-                                refreshed = True
-                    else:
-                        try:
-                            await view.message.edit(embed=view._build_embed(), view=view)
-                            refreshed = True
-                        except Exception as e:
-                            logger.debug(f"⚠️ [Stream] embed 更新失敗: {e}")
-                if not refreshed and active_ch and vc is not None:
                     view = PlayControlView(vc)
                     self._active_control_view = view
-                    new_msg = await active_ch.send(embed=view._build_embed(), view=view)
-                    view.message = new_msg
+                    try:
+                        view.message = await active_ch.send(embed=build_control_embed(vc), view=view)
+                    except Exception as e:
+                        logger.debug(f"⚠️ [Stream] 控制台貼文失敗: {e}")
 
                 if self.stream_queue:
                     next_info = self.stream_queue[0]
