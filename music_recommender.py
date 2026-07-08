@@ -159,9 +159,16 @@ def build_member_pools(
         if not title:
             continue
         requesters = song.get("requesters", {})
+        likes = song.get("likes", {}) or {}
         artist = song.get("uploader", "")
         resonant = member_set & set(song.get("connections", []))
         age_days = (now - _last_play_ts(song)) / 86400.0
+
+        # Lane: liked（M 按讚→喜好擴散成候選；base 30 次於點播者 lanes 40/60/100）。
+        # _offer 保留高分：M 若也點過，requester lane 分數更高會勝出、不被 liked 拉低。
+        for m in member_set & set(likes):
+            _offer(m, Candidate(title, artist, "liked", "direct", m,
+                                30.0 + _vibe_boost(song, "liked", vibe_filter)))
 
         for m in member_set & set(requesters):
             # Lane 1: group_resonance（M 也在共鳴名單且 ≥2 在場共鳴）

@@ -163,6 +163,9 @@ class MusicMemory:
         for c in src.get("connections", []):
             if c not in conn_dst:
                 conn_dst.append(c)
+        likes_dst = dst.setdefault("likes", {})
+        for u, ts in src.get("likes", {}).items():
+            likes_dst[u] = max(likes_dst.get(u, 0), ts)   # 並集、較新 ts 勝
 
     def _save(self):
         tmp = self.path + ".tmp"
@@ -220,6 +223,33 @@ class MusicMemory:
         s["plays"] = s["plays"][-50:]
         s.setdefault("requesters", {})[requested_by] = s["requesters"].get(requested_by, 0) + 1
         self._save()
+
+    def toggle_like(self, info: dict, username: str) -> bool | None:
+        """按讚/取消讚一首歌。回傳新狀態（True=已讚 / False=取消）；歌不存在（沒播過）回 None。
+
+        likes 是明確的正向訊號（平行 requesters），餵 build_member_pools 讓喜好擴散到多人
+        （次於點播者計分）。一人一首一讚、可 toggle。歌只能在播過（已 record_play）後被讚。
+        """
+        if not username:
+            return None
+        key = self._key(info)
+        songs = self._data.get("songs", {})
+        if key not in songs:
+            return None
+        likes = songs[key].setdefault("likes", {})
+        if username in likes:
+            del likes[username]
+            new_state = False
+        else:
+            likes[username] = time.time()
+            new_state = True
+        self._save()
+        return new_state
+
+    def get_likers(self, info: dict) -> list[str]:
+        """這首歌被誰按讚（供頭像 overlay / 診斷用）。歌不存在回 []。"""
+        s = self._data.get("songs", {}).get(self._key(info), {})
+        return list((s.get("likes") or {}).keys())
 
     def is_requester(self, info: dict, username: str) -> bool:
         """username 是否真人點播過這首歌（掛名推薦的資格檢查）。

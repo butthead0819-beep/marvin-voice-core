@@ -126,6 +126,27 @@ async def test_next_button_without_stream_sends_message():
 
 
 @pytest.mark.asyncio
+async def test_like_button_records_like_for_current_song():
+    cur = {"title": "稻香", "webpage_url": "https://youtu.be/abc11111111"}
+    c = _fake_controller(stream_mode=True, _current_stream_info=cur)
+    c.bot.music_memory.toggle_like.return_value = True
+    view = PlayControlView(c)
+    interaction = _fake_interaction()
+    interaction.user.display_name = "大肚"
+    await view.like_button.callback(interaction)
+    c.bot.music_memory.toggle_like.assert_called_once_with(cur, "大肚")
+    assert interaction.response.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_like_button_noop_when_nothing_playing():
+    c = _fake_controller(stream_mode=False, _current_stream_info=None)
+    view = PlayControlView(c)
+    await view.like_button.callback(_fake_interaction())
+    assert not c.bot.music_memory.toggle_like.called
+
+
+@pytest.mark.asyncio
 async def test_misclick_button_erases_current_from_memory_and_skips():
     cur = {"title": "手滑點到的歌", "uploader": "某藝人",
            "webpage_url": "https://youtu.be/dQw4w9WgXcQ"}

@@ -113,6 +113,26 @@ class PlayControlView(discord.ui.View):
         self._skip_current(interaction.guild.voice_client)
         await self._refresh(interaction)
 
+    @discord.ui.button(label="❤️ 喜歡", style=discord.ButtonStyle.success, row=0)
+    async def like_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        """對正在播的歌按讚（可 toggle）。likes 讓喜好擴散到多人、餵 autopilot 候選（次於點播者）。"""
+        c = self.controller
+        info = c._current_stream_info
+        if not c.stream_mode or not info:
+            await interaction.response.send_message("現在沒有正在播放的歌可以喜歡。", ephemeral=True)
+            return
+        mm = getattr(c.bot, "music_memory", None)
+        liker = interaction.user.display_name
+        state = mm.toggle_like(info, liker) if mm is not None else None
+        title = (info.get("title") or "這首")[:40]
+        if state is True:
+            msg = f"❤️ 記下了，{liker} 喜歡「{title}」——之後會更常推這類的歌給你。"
+        elif state is False:
+            msg = f"💔 取消了對「{title}」的喜歡。"
+        else:
+            msg = "這首還沒被記錄，等它播一下再試。"
+        await interaction.response.send_message(msg, ephemeral=True)
+
     @discord.ui.button(label="🙈 誤點刪除", style=discord.ButtonStyle.danger, row=0)
     async def misclick_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         """把「正在播放」的誤點歌從記憶抹除 + 加永久黑名單 + 跳下一首。
