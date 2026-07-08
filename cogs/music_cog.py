@@ -1331,6 +1331,7 @@ class MusicCog(commands.Cog):
 
     async def _post_music_cards(self, active_ch, vc, info: dict) -> None:
         """貼①歌曲卡（封面全幅+點播者頭像圓徽合成圖）②控制台（刪舊貼新在底部）。背景執行。"""
+        logger.info(f"🎛️ [Card] 貼卡 requester={info.get('requested_by')} cover={bool(info.get('thumbnail'))} ch={getattr(active_ch,'id',None)}")
         from cogs.voice_views import PlayControlView, build_song_embed, build_control_embed
         # ① 歌曲卡：合成封面+頭像；任一步失敗 → 退純封面（不阻斷）
         image_url = None
@@ -1351,12 +1352,12 @@ class MusicCog(commands.Cog):
                 file = discord.File(io.BytesIO(png), filename="cover.png")
                 image_url = "attachment://cover.png"
         except Exception as e:
-            logger.debug(f"⚠️ [Stream] 封面+頭像合成失敗，退純封面: {e}")
+            logger.warning(f"⚠️ [Card] 封面+頭像合成失敗，退純封面: {e}")
         try:
             _embed = build_song_embed(info, image_url=image_url)
             await active_ch.send(embed=_embed, file=file) if file else await active_ch.send(embed=_embed)
         except Exception as e:
-            logger.debug(f"⚠️ [Stream] 歌曲卡貼文失敗: {e}")
+            logger.warning(f"⚠️ [Card] 歌曲卡貼文失敗: {e}")
         # ② 控制台：刪掉上一則、貼新的在最下面
         _old = self._active_control_view
         if _old is not None and getattr(_old, 'message', None):
@@ -1369,7 +1370,7 @@ class MusicCog(commands.Cog):
         try:
             view.message = await active_ch.send(embed=build_control_embed(vc), view=view)
         except Exception as e:
-            logger.debug(f"⚠️ [Stream] 控制台貼文失敗: {e}")
+            logger.warning(f"⚠️ [Card] 控制台貼文失敗: {e}")
 
     # ── 🎵 Stream loop & playback ────────────────────────────────────────────
 
@@ -1458,9 +1459,14 @@ class MusicCog(commands.Cog):
 
                 # 🎛️ 每首歌：貼歌曲卡（封面+頭像合成）+ 控制台刪舊貼新在底部。
                 # 背景 task：封面合成要下載圖片，不擋 play_stream_song 出聲；info 傳快照防下一首覆蓋。
-                active_ch = vc.active_text_channel if vc is not None else None
+                # active_text_channel 只在 /summon 斜線指令設定；語音召喚/重連時為 None →
+                # 退回貼到語音頻道自己的內建文字區（VoiceChannel.send()），卡片才不會第一首缺席。
+                _vch = getattr(getattr(vc, 'voice_client', None), 'channel', None) if vc is not None else None
+                active_ch = (vc.active_text_channel or _vch) if vc is not None else None
                 if active_ch and vc is not None:
                     asyncio.create_task(self._post_music_cards(active_ch, vc, dict(info)))
+                else:
+                    logger.info(f"🎛️ [Card] 跳過貼卡：active_ch=None vc={vc is not None}")
 
                 if self.stream_queue:
                     next_info = self.stream_queue[0]
