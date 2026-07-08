@@ -713,36 +713,58 @@ class MusicCog(commands.Cog):
             for c in radio
         ]
 
-    async def _t4_fresh_discovery(self, members: list[str], exclude_titles: list[str]) -> list:  # noqa: ARG002
-        """T4 冒險發現：核心藝人 catalog 搜尋 → 「還沒播過」的新歌。
+    # T4 排行榜輪替查詢（華語）——get_charts('TW') 回全球 playlists/藝人不乾淨，改華語搜尋 proxy。
+    _T4_CHART_QUERIES = ("華語抒情精選", "華語流行 熱門", "華語 情歌 精選")
 
-        只在 T1/T2/T3 全枯竭才觸發（罕見）→ 值得冒險注入全新歌，避免只回收舊歌。
-        來源＝口味指紋 core_artists（周杰倫/陶喆…），search 整個曲庫比 radio 種子(固定收斂
-        到同批相關歌)更廣，且是使用者本就愛的藝人＝又新又對味。全失敗回 [] → 退最終回收保險。
+    @staticmethod
+    def _extract_top_artists(songs: list, n: int = 4) -> list[str]:
+        """從歌曲 list（get_top_songs_for_user 回的）抽 top 藝人（artist_of，去重保序、取前 n）。"""
+        from taste_fingerprint import artist_of
+        out: list[str] = []
+        for s in songs:
+            a = artist_of(s.get('title', '') if isinstance(s, dict) else '')
+            if a and a not in out:
+                out.append(a)
+        return out[:n]
+
+    async def _t4_fresh_discovery(self, members: list[str], spotlight: str, exclude_titles: list[str]) -> list:  # noqa: ARG002
+        """T4 冒險發現：輪到的人(spotlight)的 top 藝人 + 排行榜 → search「還沒播過」的新歌。
+
+        只在 T1/T2/T3 全枯竭才觸發（罕見）→ 值得冒險注入全新歌（使用者訂「觸發難就冒險」）。
+        來源＝①spotlight 個人常聽藝人（在場者隨 spotlight 輪替→輪到每個人的歌手）②排行榜輪替。
+        排除 avoid_artists（skip≥2 的藝人）。全失敗回 [] → 退最終回收保險。
         """
-        artists = [a for a, _ in self._load_taste_fingerprint().get("core_artists", []) if a][:5]
-        if not artists:
+        mm = getattr(self.bot, 'music_memory', None)
+        artists = self._extract_top_artists(
+            mm.get_top_songs_for_user(spotlight, limit=20), n=4) if mm is not None else []
+        if not artists:  # 該人無史 → 退全域口味指紋核心藝人
+            artists = [a for a, _ in self._load_taste_fingerprint().get("core_artists", []) if a][:4]
+        # 排行榜：隨 spotlight 輪替換一條華語 chart 查詢（輪到不同人配不同榜）
+        chart_q = self._T4_CHART_QUERIES[self._recommend_spotlight_idx % len(self._T4_CHART_QUERIES)]
+        _avoid = set(mm.get_explore_avoid_artists()) if mm is not None else set()
+        queries = [q for q in (artists + [chart_q]) if q and q not in _avoid]
+        if not queries:
             return []
         from ytmusic_radio import ytmusic_search_songs, blend_radio_results
         results = []
-        for _a in artists:
+        for _q in queries:
             try:
                 r = await asyncio.to_thread(
-                    ytmusic_search_songs, _a,
+                    ytmusic_search_songs, _q,
                     exclude_titles=exclude_titles, limit=self._round_size * 2,
                 )
             except Exception as e:
-                logger.warning(f"⚠️ [AutoRecommend] T4 search 藝人={_a} 失敗，跳過: {e}")
+                logger.warning(f"⚠️ [AutoRecommend] T4 search '{_q}' 失敗，跳過: {e}")
                 continue
             if r:
                 results.append(r)
         if not results:
-            logger.warning("⚠️ [AutoRecommend] T4 全藝人 search 空/失敗，退最終回收")
+            logger.warning("⚠️ [AutoRecommend] T4 全 search 空/失敗，退最終回收")
             return []
         fresh = blend_radio_results(results, exclude_titles=exclude_titles, limit=self._round_size * 3)
         if not fresh:
             return []
-        logger.info(f"🎵 [AutoRecommend] T4 冒險發現: {len(artists)} 核心藝人 search → {len(fresh)} 首未播新歌候選")
+        logger.info(f"🎵 [AutoRecommend] T4 冒險發現: spotlight={spotlight} 藝人={artists} +排行榜『{chart_q}』 → {len(fresh)} 首未播新歌候選")
         from music_recommender import Candidate
         return [
             Candidate(anchor_title=c["title"], anchor_artist=c["artist"],
@@ -979,7 +1001,7 @@ class MusicCog(commands.Cog):
             # T4 冒險發現：T1-T3(個人史/radio 收斂)全枯竭→用核心藝人 catalog 搜「未播新歌」。
             # 罕見觸發＝值得冒險注入全新歌，不只回收舊歌（2026-07-08：個人史子集耗盡、radio 種子
             # 收斂到同批已播熱門歌；使用者訂「觸發難就冒險」）。新歌不在 24h 已播內、排除照舊。
-            cands = await self._t4_fresh_discovery(members, exclude_titles)
+            cands = await self._t4_fresh_discovery(members, spotlight, exclude_titles)
             ring_exclude = exclude_titles
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
 
