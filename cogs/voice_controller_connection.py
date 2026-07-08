@@ -501,6 +501,45 @@ class ConnectionMixin:
                 level = None
         return room_is_active(len(members), level)
 
+    @staticmethod
+    def _daily_review_done_today(today: str, records_dir: str = "records") -> bool:
+        """今天的 daily review 是否已跑（完成標記 quality_metrics_<today>.md 存在）。
+
+        當天多次 summon / launchd 已跑過 → True，跳過重跑＝**防重複付費**（review 走付費
+        Gemini，見 [[feedback_paid_calls_must_record]]）。
+        """
+        return os.path.exists(os.path.join(records_dir, f"quality_metrics_{today}.md"))
+
+    async def _maybe_run_daily_review(self) -> None:
+        """當天第一次 summon → 背景跑 daily review（不擋登場、成敗印 bot log）。
+
+        取代脆弱的 launchd 日排程（07-06 後靜默停 fire）。once/day guard 防重複付費；
+        用 bot 自己的 venv（sys.executable）跑 repo scripts，cwd=repo（bot 本就在 repo 根）
+        → 付費記帳走 scripts 內 call_paid_review、寫同一份 records/llm_paid_usage.jsonl。
+        """
+        import datetime
+        today = datetime.date.today().isoformat()
+        if self._daily_review_done_today(today):
+            return  # launchd 或先前 summon 已跑過，不重跑、不重複付費
+        _scripts = [("scripts/analyze_daily_log.py", "daily_review"),
+                    ("scripts/quality_metrics_report.py", "quality_metrics")]
+        if datetime.date.today().weekday() == 0:   # 週一加 recall probe
+            _scripts.append(("scripts/recall_probe.py", "recall_probe"))
+        for _path, _name in _scripts:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable, _path,
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                )
+                _, _err = await proc.communicate()
+                if proc.returncode == 0:
+                    logger.info(f"✅ [DailyReview] {_name} 完成（summon 觸發）")
+                else:
+                    logger.warning(f"❌ [DailyReview] {_name} 失敗 rc={proc.returncode}: "
+                                   f"{(_err or b'')[-300:].decode(errors='replace')}")
+            except Exception as e:
+                logger.warning(f"❌ [DailyReview] {_name} spawn 失敗: {e}")
+
     async def handle_summon(self, message: str = None):  # noqa: ARG002
         # 🚀 [Lifecycle Management] 啟動螢幕擷取 (視覺系統)
         if self.bot.vision_enabled and self.bot.screen_capture:
@@ -568,8 +607,12 @@ class ConnectionMixin:
         sink = self.bot.engine.get_active_sink()
         if sink:
             sink.last_audio_packet_time = time.time()
-        
+
         self.idle_streak = 0
+
+        # 📊 當天第一次 summon → 背景跑 daily review（取代脆弱 launchd 排程；once/day guard
+        # 防重複付費；不擋登場）。launchd 12:05 仍留當備援，guard 保證一天最多一次。
+        asyncio.create_task(self._maybe_run_daily_review())
 
     async def handle_dismiss(self):
         print("🛑 [系統指令] 執行 /dismiss 撤離程序。")
