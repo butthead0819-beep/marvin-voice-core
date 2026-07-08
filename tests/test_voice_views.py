@@ -62,54 +62,42 @@ def test_play_control_view_builds_embed_when_idle():
     assert embed.title == "🎛️ 控制台"
 
 
-def test_build_song_embed_shows_song_not_queue():
-    # 歌曲資訊卡：歌名+評論+歌手，不含佇列（佇列屬控制台）
+def test_build_song_embed_minimal_link_and_image():
+    # 2026-07-08 精簡：歌曲卡只留可點連結(→video)+全幅封面，無文字欄位（頭像 overlay 在合成圖）
     from cogs.voice_views import build_song_embed
-    c = _fake_controller(
-        _current_stream_info={"title": "稻香", "uploader": "周杰倫", "duration": 223,
-                              "thumbnail": "", "requested_by": "Marvin推薦"},
-        _current_stream_comment="這首讓馬文想起虛無",
-    )
-    embed = build_song_embed(c)
+    info = {"title": "稻香", "uploader": "周杰倫", "duration": 223,
+            "thumbnail": "https://img/cover.jpg",
+            "webpage_url": "https://youtu.be/abc11111111", "requested_by": "狗與露"}
+    embed = build_song_embed(info)
     assert "稻香" in (embed.title or "")
-    assert "虛無" in (embed.description or "")
-    names = [f.name for f in embed.fields]
-    assert "👤 歌手" in names
-    assert "📋 佇列" not in names
+    assert embed.url == "https://youtu.be/abc11111111"      # 標題可點→影片
+    assert embed.image.url == "https://img/cover.jpg"       # 全幅封面
+    assert embed.fields == []                                # 無文字欄位
 
 
-def test_build_control_embed_has_state_not_song():
-    # 控制台：音量/狀態，不含歌曲欄位（歌手/歌名屬歌曲卡）
+def test_build_song_embed_uses_composite_image_when_given():
+    from cogs.voice_views import build_song_embed
+    info = {"title": "x", "thumbnail": "https://img/cover.jpg"}
+    embed = build_song_embed(info, image_url="attachment://cover.png")
+    assert embed.image.url == "attachment://cover.png"      # 合成圖優先於純封面
+
+
+def test_build_control_embed_queue_only_no_song_no_volume():
+    # 2026-07-08 精簡：控制台資訊只留佇列（音量移到按鈕、狀態/歌手都不放）
     from cogs.voice_views import build_control_embed
     c = _fake_controller(stream_mode=True, stream_volume=0.8,
-                         _current_stream_info={"title": "稻香"})
+                         stream_queue=[{"title": "稻香", "uploader": "周杰倫",
+                                        "duration": 223, "requested_by": ""}],
+                         _current_stream_info={"title": "別的歌"})
     embed = build_control_embed(c)
     assert embed.title == "🎛️ 控制台"
     names = [f.name for f in embed.fields]
-    assert "🔊 音量" in names
-    assert "👤 歌手" not in names
+    assert "📋 佇列" in names
+    assert "🔊 音量" not in names   # 音量移到按鈕
+    assert "👤 歌手" not in names   # 歌手屬歌曲卡
 
 
 # ── PlayControlView button state machine ─────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_pause_resume_button_pauses_when_playing():
-    c = _fake_controller(stream_paused=False)
-    view = PlayControlView(c)
-    interaction = _fake_interaction()
-    await view.pause_resume_button.callback(interaction)
-    assert interaction.guild.voice_client.pause.called
-    assert c.stream_paused is True
-
-
-@pytest.mark.asyncio
-async def test_pause_resume_button_resumes_when_paused():
-    c = _fake_controller(stream_paused=True)
-    view = PlayControlView(c)
-    interaction = _fake_interaction()
-    await view.pause_resume_button.callback(interaction)
-    assert interaction.guild.voice_client.resume.called
-    assert c.stream_paused is False
 
 
 @pytest.mark.asyncio
@@ -129,15 +117,6 @@ async def test_vol_up_button_increases_volume():
 
 
 @pytest.mark.asyncio
-async def test_prev_button_without_history_sends_message():
-    c = _fake_controller(stream_history=[])
-    view = PlayControlView(c)
-    interaction = _fake_interaction()
-    await view.prev_button.callback(interaction)
-    assert interaction.response.send_message.called
-
-
-@pytest.mark.asyncio
 async def test_next_button_without_stream_sends_message():
     c = _fake_controller(stream_mode=False)
     view = PlayControlView(c)
@@ -145,27 +124,6 @@ async def test_next_button_without_stream_sends_message():
     await view.next_button.callback(interaction)
     assert interaction.response.send_message.called
 
-
-@pytest.mark.asyncio
-async def test_jump_button_without_selection_sends_message():
-    view = PlayControlView(_fake_controller())
-    interaction = _fake_interaction()
-    await view.jump_button.callback(interaction)
-    assert interaction.response.send_message.called
-
-
-@pytest.mark.asyncio
-async def test_delete_button_removes_selected_song_from_queue():
-    queue = [_song("A"), _song("B"), _song("C")]
-    c = _fake_controller(stream_queue=queue)
-    view = PlayControlView(c)
-    view._selected_index = 1
-    await view.delete_button.callback(_fake_interaction())
-    assert [s["title"] for s in c.stream_queue] == ["A", "C"]
-    assert view._selected_index is None
-
-
-# ── 🙈 誤點抹除按鈕 ───────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_misclick_button_erases_current_from_memory_and_skips():
@@ -192,17 +150,6 @@ async def test_misclick_button_noop_when_nothing_playing():
     assert interaction.response.send_message.called
     assert not c.bot.music_memory.undo_play.called
 
-
-@pytest.mark.asyncio
-async def test_on_select_sets_selected_index():
-    view = PlayControlView(_fake_controller())
-    interaction = _fake_interaction(values=["2"])
-    await view._on_select(interaction)
-    assert view._selected_index == 2
-    assert interaction.response.defer.called
-
-
-# ── on_timeout (T2 ref release) ──────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_on_timeout_disables_items_and_releases_ref():

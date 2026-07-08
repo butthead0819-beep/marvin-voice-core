@@ -1314,6 +1314,63 @@ class MusicCog(commands.Cog):
         logger.info(f"🔁 [AutoRecommend] 絕境回收：三層枯竭→重播「{info['title']}」（永不靜默停）")
         return True
 
+    def _resolve_requester_avatar(self, vc, requester: str) -> str | None:
+        """點播者頭像 URL：Marvin 推薦→bot 頭像；真人→從語音頻道成員 display_name 找；找不到→bot 兜底。"""
+        try:
+            bot_av = str(self.bot.user.display_avatar.url) if getattr(self.bot, 'user', None) else None
+            if not requester or requester.startswith('Marvin'):
+                return bot_av
+            ch = getattr(vc, 'channel', None)
+            if ch is not None:
+                for m in ch.members:
+                    if not m.bot and m.display_name == requester:
+                        return str(m.display_avatar.url)
+            return bot_av
+        except Exception:
+            return None
+
+    async def _post_music_cards(self, active_ch, vc, info: dict) -> None:
+        """貼①歌曲卡（封面全幅+點播者頭像圓徽合成圖）②控制台（刪舊貼新在底部）。背景執行。"""
+        from cogs.voice_views import PlayControlView, build_song_embed, build_control_embed
+        # ① 歌曲卡：合成封面+頭像；任一步失敗 → 退純封面（不阻斷）
+        image_url = None
+        file = None
+        try:
+            cover_url = info.get('thumbnail')
+            avatar_url = self._resolve_requester_avatar(vc, info.get('requested_by', ''))
+            if cover_url and avatar_url:
+                import io
+                import aiohttp
+                from music_cover_card import compose_cover_with_avatar
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(cover_url) as r1:
+                        cov = await r1.read()
+                    async with s.get(avatar_url) as r2:
+                        av = await r2.read()
+                png = await asyncio.to_thread(compose_cover_with_avatar, cov, av)
+                file = discord.File(io.BytesIO(png), filename="cover.png")
+                image_url = "attachment://cover.png"
+        except Exception as e:
+            logger.debug(f"⚠️ [Stream] 封面+頭像合成失敗，退純封面: {e}")
+        try:
+            _embed = build_song_embed(info, image_url=image_url)
+            await active_ch.send(embed=_embed, file=file) if file else await active_ch.send(embed=_embed)
+        except Exception as e:
+            logger.debug(f"⚠️ [Stream] 歌曲卡貼文失敗: {e}")
+        # ② 控制台：刪掉上一則、貼新的在最下面
+        _old = self._active_control_view
+        if _old is not None and getattr(_old, 'message', None):
+            try:
+                await _old.message.delete()
+            except Exception:
+                pass
+        view = PlayControlView(vc)
+        self._active_control_view = view
+        try:
+            view.message = await active_ch.send(embed=build_control_embed(vc), view=view)
+        except Exception as e:
+            logger.debug(f"⚠️ [Stream] 控制台貼文失敗: {e}")
+
     # ── 🎵 Stream loop & playback ────────────────────────────────────────────
 
     async def _stream_loop(self):
@@ -1399,28 +1456,11 @@ class MusicCog(commands.Cog):
                     _bg.add_done_callback(_apply_bg_meta)
                     logger.info(f"🎵 [Play-First] meta 未就緒，先播音樂、放棄本首 DJ、meta 背景補：{title}")
 
-                # 🎛️ 每首歌：①貼一則小巧歌曲資訊卡（持久保留＝頻道留播放紀錄）②控制台刪舊貼新在底部
+                # 🎛️ 每首歌：貼歌曲卡（封面+頭像合成）+ 控制台刪舊貼新在底部。
+                # 背景 task：封面合成要下載圖片，不擋 play_stream_song 出聲；info 傳快照防下一首覆蓋。
                 active_ch = vc.active_text_channel if vc is not None else None
                 if active_ch and vc is not None:
-                    from cogs.voice_views import PlayControlView, build_song_embed, build_control_embed
-                    # ① 歌曲資訊卡：新貼一則、不刪（每首一則）
-                    try:
-                        await active_ch.send(embed=build_song_embed(vc))
-                    except Exception as e:
-                        logger.debug(f"⚠️ [Stream] 歌曲資訊卡貼文失敗: {e}")
-                    # ② 控制台：刪掉上一則、貼新的在最下面（永遠好按）
-                    _old = self._active_control_view
-                    if _old is not None and getattr(_old, 'message', None):
-                        try:
-                            await _old.message.delete()
-                        except Exception:
-                            pass
-                    view = PlayControlView(vc)
-                    self._active_control_view = view
-                    try:
-                        view.message = await active_ch.send(embed=build_control_embed(vc), view=view)
-                    except Exception as e:
-                        logger.debug(f"⚠️ [Stream] 控制台貼文失敗: {e}")
+                    asyncio.create_task(self._post_music_cards(active_ch, vc, dict(info)))
 
                 if self.stream_queue:
                     next_info = self.stream_queue[0]

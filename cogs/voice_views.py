@@ -20,60 +20,32 @@ if TYPE_CHECKING:
     from cogs.voice_controller import VoiceController
 
 
-def build_song_embed(controller) -> discord.Embed:
-    """🎵 歌曲資訊卡（小、精緻、每首一則、持久保留）：歌名 + 馬文評論 + 歌手·時長 + 點播者 + 小封面。
+def build_song_embed(info: dict | None, *, image_url: str | None = None) -> discord.Embed:
+    """🎵 歌曲卡（精簡）：只留「可點連結（→video）」＋「全幅封面」。
 
-    純資訊、無按鈕；串流迴圈每首歌貼一則新的、不刪＝頻道裡留下播放紀錄。
+    誰點的用頭像表示——overlay 到封面上的合成圖由 caller 傳 image_url=attachment://…；
+    無合成圖時退純封面(info['thumbnail'])。每首一則、不刪＝頻道留播放紀錄。
+    吃 info dict（非 controller）→ 背景 task 用快照不受下一首影響、也好測。
     """
-    c = controller
-    info = c._current_stream_info
-    if not info and c.stream_mode and c.stream_queue:   # 首曲還沒 pop → 借佇列第一首 preview
-        info = c.stream_queue[0]
-    embed = discord.Embed(color=discord.Color.blurple(), timestamp=datetime.datetime.now())
+    embed = discord.Embed(color=discord.Color.blurple())
     if not info:
         embed.description = "目前沒有歌曲在播放。"
         return embed
-    embed.title = f"🎵 {info['title']}"
-    comment = c._current_stream_comment
-    if comment:
-        embed.description = f"「{comment}」"          # 馬文對這首的評論
-    if info.get('thumbnail'):
-        embed.set_thumbnail(url=info['thumbnail'])    # 小縮圖（右上角）非滿寬大圖 → 精緻
-    dur = info.get('duration', 0)
-    dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else "?"
-    embed.add_field(name="👤 歌手", value=f"`{info['uploader']}`", inline=True)
-    embed.add_field(name="⏱️ 時長", value=f"`{dur_str}`", inline=True)
-    requester = info.get('requested_by', '')
-    if requester:
-        req_display = requester
-        try:
-            mm = getattr(getattr(c, 'bot', None), 'music_memory', None)
-            if mm is not None and not requester.startswith('Marvin'):
-                song_data = mm._data.get('songs', {}).get(mm._key(info), {})
-                play_count = song_data.get('requesters', {}).get(requester, 0)
-                slots = [p['time_slot'] for p in song_data.get('plays', []) if p['by'] == requester]
-                common_slot = max(set(slots), key=slots.count) if slots else None
-                if play_count > 1:
-                    req_display += f"　第 {play_count} 次"
-                if common_slot:
-                    req_display += f" · 常在{common_slot}聽"
-        except Exception:
-            pass
-        embed.add_field(name="🙋 點播", value=f"`{req_display}`", inline=False)
+    embed.title = (info.get('title') or '🎵')[:250]
+    wp = info.get('webpage_url')
+    if wp:
+        embed.url = wp                              # 標題可點 → 影片(video id)
+    img = image_url or info.get('thumbnail')
+    if img:
+        embed.set_image(url=img)                    # 全幅封面（或封面+頭像合成圖）
     return embed
 
 
 def build_control_embed(controller) -> discord.Embed:
-    """🎛️ 控制台狀態（刪舊貼新、永遠在最下面）：音量 + 狀態 + 佇列。不含歌曲資訊/推薦主導/歌詞。"""
+    """🎛️ 控制台（刪舊貼新、永遠在最下面）：資訊只留佇列。音量在按鈕、狀態/主導/歌詞都不放。"""
     c = controller
-    vol_pct = int(c.stream_volume * 100)
-    pending_first = (not c._current_stream_info and c.stream_mode and c.stream_queue)
-    state = "⏸️ 暫停中" if c.stream_paused else (
-        "⏳ 載入中" if pending_first else ("▶️ 播放中" if c.stream_mode else "⏹️ 停止"))
     embed = discord.Embed(title="🎛️ 控制台", color=discord.Color.blurple(),
                           timestamp=datetime.datetime.now())
-    embed.add_field(name="🔊 音量", value=f"`{vol_pct}%`", inline=True)
-    embed.add_field(name="狀態", value=state, inline=True)
     q = c.stream_queue
     if q:
         lines = []
@@ -87,7 +59,8 @@ def build_control_embed(controller) -> discord.Embed:
         if len(q) > 10:
             lines.append(f"*...以及另外 {len(q)-10} 首*")
         embed.add_field(name="📋 佇列", value="\n".join(lines), inline=False)
-    embed.set_footer(text=f"待播 {len(q)} 首 | 歷史 {len(c.stream_history)} 首")
+    else:
+        embed.description = "佇列空。"
     return embed
 
 
@@ -101,37 +74,7 @@ class PlayControlView(discord.ui.View):
     def __init__(self, controller: "VoiceController"):
         super().__init__(timeout=3600)
         self.controller = controller
-        self._selected_index: int | None = None
-        self._update_pause_label()
-        self._rebuild_select()
         controller._active_views.add(self)
-
-    def _rebuild_select(self):
-        for item in list(self.children):
-            if isinstance(item, discord.ui.Select):
-                self.remove_item(item)
-        q = self.controller.stream_queue
-        if q:
-            options = [
-                discord.SelectOption(
-                    label=f"{i+1}. {item['title'][:80]}",
-                    description=(item['uploader'] or '')[:50],
-                    value=str(i),
-                )
-                for i, item in enumerate(q[:25])
-            ]
-            select = discord.ui.Select(placeholder="從佇列選擇歌曲…", options=options, row=0)
-            select.callback = self._on_select
-            self.add_item(select)
-        self.jump_button.disabled = not bool(q)
-        self.delete_button.disabled = not bool(q)
-
-    async def _on_select(self, interaction: discord.Interaction):
-        self._selected_index = int(interaction.data['values'][0])
-        await interaction.response.defer()
-
-    def _update_pause_label(self):
-        self.pause_resume_button.label = "▶️ 播放" if self.controller.stream_paused else "⏸️ 暫停"
 
     def _build_embed(self) -> discord.Embed:
         """控制台 embed（歌曲資訊已拆到 build_song_embed 獨立貼文）。保留此名讓既有
@@ -139,8 +82,6 @@ class PlayControlView(discord.ui.View):
         return build_control_embed(self.controller)
 
     async def _refresh(self, interaction: discord.Interaction):
-        self._update_pause_label()
-        self._rebuild_select()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
     def _skip_current(self, vc):
@@ -151,37 +92,19 @@ class PlayControlView(discord.ui.View):
         elif vc and vc.is_playing():
             vc.stop_playing()
 
-    @discord.ui.button(label="⏮️ 上一首", style=discord.ButtonStyle.secondary, row=1)
-    async def prev_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+    @discord.ui.button(label="🔉 -", style=discord.ButtonStyle.secondary, row=0)
+    async def vol_down_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         c = self.controller
-        if len(c.stream_history) < 2:
-            await interaction.response.send_message("沒有上一首了。歷史，就像宇宙一樣，在此終結。", ephemeral=True)
-            return
-        if c._current_stream_info:
-            c.stream_queue.insert(0, c._current_stream_info)
-            c.stream_history.pop()
-        prev = c.stream_history.pop()
-        c.stream_queue.insert(0, prev)
-        self._skip_current(interaction.guild.voice_client)
+        c.stream_volume = max(self.VOL_MIN, round(c.stream_volume - self.VOL_STEP, 2))
         await self._refresh(interaction)
 
-    @discord.ui.button(label="⏸️ 暫停", style=discord.ButtonStyle.primary, row=1)
-    async def pause_resume_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+    @discord.ui.button(label="🔊 +", style=discord.ButtonStyle.secondary, row=0)
+    async def vol_up_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         c = self.controller
-        vc = interaction.guild.voice_client
-        if not vc:
-            await interaction.response.send_message("沒有連線中的語音頻道。", ephemeral=True)
-            return
-        _p12 = getattr(c, "_plan12", False) and getattr(c, "_mixer", None) is not None
-        if c.stream_paused:
-            c._mixer.set_paused(False) if _p12 else vc.resume()
-            c.stream_paused = False
-        else:
-            c._mixer.set_paused(True) if _p12 else vc.pause()
-            c.stream_paused = True
+        c.stream_volume = min(self.VOL_MAX, round(c.stream_volume + self.VOL_STEP, 2))
         await self._refresh(interaction)
 
-    @discord.ui.button(label="⏭️ 下一首", style=discord.ButtonStyle.secondary, row=1)
+    @discord.ui.button(label="⏭️ 下一首", style=discord.ButtonStyle.secondary, row=0)
     async def next_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         c = self.controller
         if not c.stream_mode:
@@ -190,48 +113,7 @@ class PlayControlView(discord.ui.View):
         self._skip_current(interaction.guild.voice_client)
         await self._refresh(interaction)
 
-    @discord.ui.button(label="🔉 -10%", style=discord.ButtonStyle.secondary, row=2)
-    async def vol_down_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        c = self.controller
-        c.stream_volume = max(self.VOL_MIN, round(c.stream_volume - self.VOL_STEP, 2))
-        await self._refresh(interaction)
-
-    @discord.ui.button(label="🔊 +10%", style=discord.ButtonStyle.secondary, row=2)
-    async def vol_up_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        c = self.controller
-        c.stream_volume = min(self.VOL_MAX, round(c.stream_volume + self.VOL_STEP, 2))
-        await self._refresh(interaction)
-
-    @discord.ui.button(label="⏭️ 跳到此曲", style=discord.ButtonStyle.primary, row=2)
-    async def jump_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        if self._selected_index is None:
-            await interaction.response.send_message("請先從選單選擇一首歌曲。", ephemeral=True)
-            return
-        idx = self._selected_index
-        q = self.controller.stream_queue
-        if idx >= len(q):
-            await interaction.response.send_message("該歌曲已不在佇列中。", ephemeral=True)
-            return
-        self.controller.stream_queue = q[idx:]
-        self._skip_current(interaction.guild.voice_client)
-        self._selected_index = None
-        await self._refresh(interaction)
-
-    @discord.ui.button(label="🗑️ 刪除", style=discord.ButtonStyle.danger, row=2)
-    async def delete_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
-        if self._selected_index is None:
-            await interaction.response.send_message("請先從選單選擇一首歌曲。", ephemeral=True)
-            return
-        idx = self._selected_index
-        q = self.controller.stream_queue
-        if idx >= len(q):
-            await interaction.response.send_message("該歌曲已不在佇列中。", ephemeral=True)
-            return
-        q.pop(idx)
-        self._selected_index = None
-        await self._refresh(interaction)
-
-    @discord.ui.button(label="🙈 誤點抹除", style=discord.ButtonStyle.danger, row=3)
+    @discord.ui.button(label="🙈 誤點刪除", style=discord.ButtonStyle.danger, row=0)
     async def misclick_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         """把「正在播放」的誤點歌從記憶抹除 + 加永久黑名單 + 跳下一首。
 
