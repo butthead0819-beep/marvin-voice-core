@@ -92,6 +92,57 @@ def ytmusic_radio(
     return filtered[:limit]
 
 
+def parse_search_songs(results: list) -> list[dict]:
+    """ytmusicapi search(filter="songs") 結果 → 候選 dict（純函式）。丟無 videoId/title。
+
+    回 [{title, artist, video_id, url, duration_s}]，與 parse_radio_tracks 同形狀
+    （好共用 blend_radio_results / 下游 Candidate 轉換）。
+    """
+    out: list[dict] = []
+    for t in results or []:
+        vid = t.get("videoId")
+        title = (t.get("title") or "").strip()
+        if not vid or not title:
+            continue
+        artist = ", ".join(
+            a.get("name", "") for a in (t.get("artists") or []) if a.get("name")
+        )
+        dur = t.get("duration_seconds") or parse_length(t.get("duration"))
+        out.append({
+            "title": title,
+            "artist": artist,
+            "video_id": vid,
+            "url": f"https://www.youtube.com/watch?v={vid}",
+            "duration_s": dur,
+        })
+    return out
+
+
+def ytmusic_search_songs(
+    query: str,
+    *,
+    exclude_titles: Sequence[str] = (),
+    limit: int = 20,
+    client: Any = None,
+    client_factory: Callable[[], Any] = _default_client_factory,
+) -> list[dict]:
+    """T4 fresh discovery：搜尋 query 的歌 → 過 exclude_titles（skipped/已播）後回 ≤limit 首。
+
+    給核心藝人名當 query → 拉他 catalog 裡「還沒播過」的歌＝又新又對味（radio 種子固定會
+    收斂到同批相關歌，search 直接搜藝人整個曲庫更廣）。client 可注入；任何失敗回 []（graceful）。
+    """
+    if not query:
+        return []
+    try:
+        yt = client or client_factory()
+        results = yt.search(query, filter="songs", limit=limit)
+    except Exception:
+        return []
+    cands = parse_search_songs(results)
+    excl = {normalize_title(t) for t in exclude_titles}
+    return [c for c in cands if normalize_title(c["title"]) not in excl][:limit]
+
+
 def blend_radio_results(results_per_seed, exclude_titles=None, limit=None):
     """多 seed 的 radio 結果交錯混合（round-robin）+ 跨 seed 去重 + 排除 + 截斷。
 

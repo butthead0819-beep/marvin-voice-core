@@ -713,6 +713,44 @@ class MusicCog(commands.Cog):
             for c in radio
         ]
 
+    async def _t4_fresh_discovery(self, members: list[str], exclude_titles: list[str]) -> list:  # noqa: ARG002
+        """T4 冒險發現：核心藝人 catalog 搜尋 → 「還沒播過」的新歌。
+
+        只在 T1/T2/T3 全枯竭才觸發（罕見）→ 值得冒險注入全新歌，避免只回收舊歌。
+        來源＝口味指紋 core_artists（周杰倫/陶喆…），search 整個曲庫比 radio 種子(固定收斂
+        到同批相關歌)更廣，且是使用者本就愛的藝人＝又新又對味。全失敗回 [] → 退最終回收保險。
+        """
+        artists = [a for a, _ in self._load_taste_fingerprint().get("core_artists", []) if a][:5]
+        if not artists:
+            return []
+        from ytmusic_radio import ytmusic_search_songs, blend_radio_results
+        results = []
+        for _a in artists:
+            try:
+                r = await asyncio.to_thread(
+                    ytmusic_search_songs, _a,
+                    exclude_titles=exclude_titles, limit=self._round_size * 2,
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ [AutoRecommend] T4 search 藝人={_a} 失敗，跳過: {e}")
+                continue
+            if r:
+                results.append(r)
+        if not results:
+            logger.warning("⚠️ [AutoRecommend] T4 全藝人 search 空/失敗，退最終回收")
+            return []
+        fresh = blend_radio_results(results, exclude_titles=exclude_titles, limit=self._round_size * 3)
+        if not fresh:
+            return []
+        logger.info(f"🎵 [AutoRecommend] T4 冒險發現: {len(artists)} 核心藝人 search → {len(fresh)} 首未播新歌候選")
+        from music_recommender import Candidate
+        return [
+            Candidate(anchor_title=c["title"], anchor_artist=c["artist"],
+                      lane="discovery", mode="direct", target_member=None,
+                      score=0.0, direct_url=c["url"])
+            for c in fresh
+        ]
+
     async def _llm_coverify(self, cand, exclude_titles: list[str]) -> str:
         """spotlight lane：請 LLM 推薦選定錨點歌的 cover 版本。回 "" 表示無推薦。"""
         slot = self.bot.music_memory.time_slot(time.time())
@@ -922,7 +960,7 @@ class MusicCog(commands.Cog):
             cands = await self._t2_discovery_candidates(members, exclude_titles)
             ring_exclude = exclude_titles
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
-        else:
+        elif _tier == 3:
             # 放寬到 24h 而非砍光：仍回收 1-7 天前舊歌，但擋當天剛播過的，防同場收斂重播。
             # 候選池(歌名)與 enqueue 迴圈(video-id)同步排除 24h 已播，否則池子挑出剛播歌、
             # 迴圈又擋掉 → enqueue=0 → T3 無 fallback → 停播（2026-06-24 回報）。
@@ -937,14 +975,21 @@ class MusicCog(commands.Cog):
             cands = pick_candidates(relaxed_pool, k=_k_buf, top_n=max(9, _k_buf))
             ring_exclude = _t3_exclude
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._T3_PLAYED_EXCLUDE_TTL_S)
+        else:
+            # T4 冒險發現：T1-T3(個人史/radio 收斂)全枯竭→用核心藝人 catalog 搜「未播新歌」。
+            # 罕見觸發＝值得冒險注入全新歌，不只回收舊歌（2026-07-08：個人史子集耗盡、radio 種子
+            # 收斂到同批已播熱門歌；使用者訂「觸發難就冒險」）。新歌不在 24h 已播內、排除照舊。
+            cands = await self._t4_fresh_discovery(members, exclude_titles)
+            ring_exclude = exclude_titles
+            excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
 
         # 🎚️ [Quality] cover/現場版降到隊尾——自動推薦 cover 11% vs 真人 3%，humans 避開。
         # 好版本先填滿 round；沒更好的時 cover/live 仍會播（不丟棄→不枯竭）。
         cands = demote_low_quality_versions(cands)
         if not cands:
-            if _tier < 3:
+            if _tier < 4:
                 return await self._auto_recommend(username, _tier=_tier + 1)
-            logger.debug("🎵 [AutoRecommend] 三層皆無候選，跳過")
+            logger.debug("🎵 [AutoRecommend] 四層皆無候選，跳過（退最終回收保險）")
             return
 
         self._round_track_count = 0
@@ -1058,7 +1103,7 @@ class MusicCog(commands.Cog):
             enqueued += 1
 
         logger.info(f"🎵 [AutoRecommend] T{_tier} round 完成: enqueued={enqueued}/{self._round_size}")
-        if enqueued == 0 and _tier < 3:
+        if enqueued == 0 and _tier < 4:
             await self._auto_recommend(username, _tier=_tier + 1)
 
     @staticmethod
