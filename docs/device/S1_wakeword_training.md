@@ -53,11 +53,14 @@ owwenv 沒了就 `python3 -m venv /tmp/owwenv && /tmp/owwenv/bin/pip install ope
 | 誤觸多（沒喊也觸發） | `max_negative_weight` 1500 → 3000 |
 | 門檻 | 預設 0.5 合理；要更少誤觸拉 0.6–0.7（裝置端 env 調，非重訓） |
 
-## ⚠️ onnx → Pi 的 tflite（S3/S4 才處理，非 S1 blocker）
-notebook 只出 **onnx**；Pi 的 wyoming-openwakeword 慣用 **tflite**。兩個選項（S3 時決定）：
-1. openWakeWord 自帶 onnx→tflite 轉換工具，轉一顆 `hey_marvin.tflite` 放 Pi `~/wakewords/`。
-2. 或設 wyoming-openwakeword 直接吃 onnx（openWakeWord Model 支援 `inference_framework='onnx'`）。
-S3 runbook 的 `--wake-word-name` 對應改成 `hey_marvin` 即可。
+## ✅ onnx → Pi 的 tflite（已轉好，2026-07-08）
+`models/wakeword/hey_marvin.tflite`（793KB）**已產出+驗證+land**。Pi 的 wyoming-openwakeword
+慣用 tflite，硬體到貨後直接 `scp models/wakeword/hey_marvin.tflite pi@marvinpi.local:~/wakewords/`，
+S3 的 `--custom-model-dir ~/wakewords --preload-model 'hey_marvin'`、`--wake-word-name 'hey_marvin'`。
+> ⚠️ **重訓要再轉時別用 onnx2tf**——它會把 [1,16,96] 輸入轉置成 [1,96,16]（NCHW→NHWC 優化）
+> →openWakeWord 餵 [1,16,96] 對不上、Pi 上失效。用 `scripts/onnx_to_tflite_wakeword.py <onnx>`
+> （讀權重→Keras 以正確 layout 重建→驗證 onnx↔tflite 數值等同<1e-4→匯出）。本次實測誤差 2.68e-07。
+> onnx 也可當 fallback（Linux openWakeWord 同裝 onnxruntime，Model 依副檔名自動選 framework）。
 
 ## 真人錄音注入（可選 v2，非 v1 必要）
 防彈 notebook **不支援**注入真人錄音。v1 純 TTS 合成的「hey marvin」通常已夠（S0 證英文
