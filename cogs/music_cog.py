@@ -739,10 +739,25 @@ class MusicCog(commands.Cog):
             mm.get_top_songs_for_user(spotlight, limit=20), n=4) if mm is not None else []
         if not artists:  # 該人無史 → 退全域口味指紋核心藝人
             artists = [a for a, _ in self._load_taste_fingerprint().get("core_artists", []) if a][:4]
+        # 避開歌手：deterministic skip-avoid + LLM avoid_artists（同 T2 gate/快取）
+        avoid_artists = list(mm.get_explore_avoid_artists()) if mm is not None else []
+        if os.getenv("LLM_TASTE_T2", "off") == "on":
+            try:
+                import taste_profile
+                _MAX_AGE = 8 * 86400
+                # LLM 相近歌手（破回音室、挖他沒聽但會愛的）併入 search 來源
+                for _a in taste_profile.fresh_adjacent_artists(_TASTE_PROFILE_CACHE, [spotlight], _MAX_AGE):
+                    if _a not in artists:
+                        artists.append(_a)
+                for _a in taste_profile.fresh_avoid_artists(_TASTE_PROFILE_CACHE, members, _MAX_AGE):
+                    if _a not in avoid_artists:
+                        avoid_artists.append(_a)
+            except Exception as e:
+                logger.warning(f"⚠️ [AutoRecommend] T4 LLM taste 讀取失敗，略過: {e}")
         # 排行榜：隨 spotlight 輪替換一條華語 chart 查詢（輪到不同人配不同榜）
         chart_q = self._T4_CHART_QUERIES[self._recommend_spotlight_idx % len(self._T4_CHART_QUERIES)]
-        _avoid = set(mm.get_explore_avoid_artists()) if mm is not None else set()
-        queries = [q for q in (artists + [chart_q]) if q and q not in _avoid]
+        _avoid_set = set(avoid_artists)
+        queries = [q for q in (artists + [chart_q]) if q and q not in _avoid_set]
         if not queries:
             return []
         from ytmusic_radio import ytmusic_search_songs, blend_radio_results
@@ -762,9 +777,16 @@ class MusicCog(commands.Cog):
             logger.warning("⚠️ [AutoRecommend] T4 全 search 空/失敗，退最終回收")
             return []
         fresh = blend_radio_results(results, exclude_titles=exclude_titles, limit=self._round_size * 3)
+        # LLM/skip avoid_artists 也套在結果上（chart 查詢可能回避開歌手的歌）
+        if avoid_artists:
+            import taste_profile
+            _before = len(fresh)
+            fresh = taste_profile.filter_avoided(fresh, avoid_artists)
+            if len(fresh) < _before:
+                logger.info(f"🚫 [AutoRecommend] T4 avoid 排除 {_before - len(fresh)} 首（{avoid_artists[:5]}）")
         if not fresh:
             return []
-        logger.info(f"🎵 [AutoRecommend] T4 冒險發現: spotlight={spotlight} 藝人={artists} +排行榜『{chart_q}』 → {len(fresh)} 首未播新歌候選")
+        logger.info(f"🎵 [AutoRecommend] T4 冒險發現: spotlight={spotlight} 藝人+LLM相近={artists} +排行榜『{chart_q}』 avoid={len(avoid_artists)} → {len(fresh)} 首未播新歌候選")
         from music_recommender import Candidate
         return [
             Candidate(anchor_title=c["title"], anchor_artist=c["artist"],

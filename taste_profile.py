@@ -153,6 +153,11 @@ def fresh_avoid_artists(path, users: list[str], max_age_s: float) -> list[str]:
     return _fresh_field(path, users, max_age_s, "avoid_artists")
 
 
+def fresh_adjacent_artists(path, users: list[str], max_age_s: float) -> list[str]:
+    """在場成員的 adjacent_artists 聯集（正向：LLM 推的史外鄰近歌手，餵 T4 catalog search）。"""
+    return _fresh_field(path, users, max_age_s, "adjacent_artists")
+
+
 def filter_avoided(candidates: list[dict], avoid_artists: list[str]) -> list[dict]:
     """剔除 artist 命中 avoid 的候選（純函式）。normalize 比對：avoid 名出現在候選
     artist 字串內即剔（涵蓋「伍佰」vs「伍佰 & China Blue」）。avoid 空 → 原樣回。"""

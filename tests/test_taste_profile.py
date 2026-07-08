@@ -106,6 +106,16 @@ def test_cache_missing_user_empty(tmp_path):
     assert tp.fresh_seed_ids(p, ["不在的人"], max_age_s=99999) == []
 
 
+def test_fresh_adjacent_artists_union_dedup(tmp_path):
+    # T4 讀 LLM 相近歌手：在場成員聯集、去重保序
+    p = tmp_path / "taste.json"
+    tp.write_profile(p, "weakgogo", {"adjacent_artists": ["林憶蓮", "張學友"]})
+    tp.write_profile(p, "大肚", {"adjacent_artists": ["張學友", "趙傳"]})   # 張學友 去重
+    out = tp.fresh_adjacent_artists(p, ["weakgogo", "大肚"], max_age_s=99999)
+    assert out == ["林憶蓮", "張學友", "趙傳"]
+    assert tp.fresh_adjacent_artists(p, ["不在的人"], max_age_s=99999) == []
+
+
 def test_fresh_read_missing_file(tmp_path):
     assert tp.fresh_seed_ids(tmp_path / "nope.json", ["x"], max_age_s=99999) == []
 
