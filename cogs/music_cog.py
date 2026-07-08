@@ -1320,7 +1320,8 @@ class MusicCog(commands.Cog):
             bot_av = str(self.bot.user.display_avatar.url) if getattr(self.bot, 'user', None) else None
             if not requester or requester.startswith('Marvin'):
                 return bot_av
-            ch = getattr(vc, 'channel', None)
+            # vc 是 VoiceController cog → 語音頻道走 vc.voice_client.channel（非 vc.channel）
+            ch = getattr(getattr(vc, 'voice_client', None), 'channel', None)
             if ch is not None:
                 for m in ch.members:
                     if not m.bot and m.display_name == requester:
