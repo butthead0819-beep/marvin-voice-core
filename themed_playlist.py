@@ -56,15 +56,18 @@ def gather_theme_brief(summary_entries, taste_fp: dict, members: list[str], *,
     cores: list[str] = []
     for e in summary_entries:
         if isinstance(e, tuple):
-            ts_str, core = e[0], e[1]
+            ts_str, core, salience = e[0], e[1], (e[2] if len(e) > 2 else "中")
         else:
             ts_str, core = getattr(e, "ts_str", None), getattr(e, "core", None)
+            salience = getattr(e, "salience", "中")
         try:
             ts = _dt.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").timestamp()
         except (ValueError, TypeError):
             continue
         if ts >= cutoff and core and str(core).strip():
-            cores.append(str(core).strip())
+            c = str(core).strip()
+            # 高顯著度＝獨特/難忘話題 → 標【重點】讓策展 LLM 優先繞它（非聲量、是語意）
+            cores.append(f"【重點】{c}" if str(salience).strip() == "高" else c)
     if len(cores) < min_cores:
         return None
     core_artists = [a for a, _ in (taste_fp.get("core_artists") or [])][:8]
@@ -77,7 +80,8 @@ def gather_theme_brief(summary_entries, taste_fp: dict, members: list[str], *,
 _CURATION_SYS = (
     "你是一位懂這群人的 DJ。根據他們今晚聊的主題 + 平常的口味，策展一張有主題的歌單。\n"
     "規則：\n"
-    "1) 先抓今晚對話的『主題情緒』，給歌單一個有味道的名字（≤14 字）。\n"
+    "1) 先抓今晚對話的『主題情緒』，給歌單一個有味道的名字（≤14 字）。**標【重點】的核心句是"
+    "今晚最獨特/難忘的話題（如某人的計畫、罕見的事），優先繞它們定主題，別被反覆出現的通用閒聊帶偏**。\n"
     "2) 選歌要同時貼合：那個主題情緒、這群人的口味歌手/語言。\n"
     "3) 【新鮮度硬規則】絕對不要選『已放過清單』上的任何一首；而且**避開每位歌手大家"
     "都會唱的那幾首招牌芭樂**（他們早聽膩了），往專輯曲/中後期/被低估的好歌挖——"

@@ -38,6 +38,7 @@ class DiaryEntry:
     speakers: list[str] = field(default_factory=list)
     aside: str = ""
     raw: str = ""
+    salience: str = "中"   # 話題顯著度 高|中|低（summarizer 標；舊 entry 無→中）
 
 
 def _extract_after_marker(body: str, key: str) -> str:
@@ -88,6 +89,7 @@ def parse_log(text: str) -> list[DiaryEntry]:
             core=core,
             speakers=_extract_speakers(body),
             aside=_extract_after_marker(body, "碎念"),  # 6 月無碎念 → ""
+            salience=(_extract_after_marker(body, "顯著度") or "中"),  # 舊 entry 無→中
             raw=body,
         ))
     return entries
