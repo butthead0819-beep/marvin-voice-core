@@ -449,12 +449,15 @@ class BufferedF32MusicSource:
         self._eof = False
         self._stop = False
         self._underruns = 0  # read() 因 buffer 空（未 eof）回 silence 的次數
+        self._produced = 0   # inner.read() 成功取得的幀數（診斷音源提早死）
+        self._eof_reason = ""  # ""＝未 eof / "empty"＝正常耗盡 / "error"＝inner.read 拋例外
         self._silence = b"\x00" * FRAME_BYTES_F32
         self._thread = threading.Thread(target=self._fill_loop, daemon=True)
         self._thread.start()
 
     def stats(self) -> dict:
-        return {"underruns": self._underruns, "depth": len(self._buf), "max": self._maxlen}
+        return {"underruns": self._underruns, "depth": len(self._buf), "max": self._maxlen,
+                "produced": self._produced, "eof": self._eof, "eof_reason": self._eof_reason}
 
     def _fill_loop(self):
         while not self._stop:
@@ -465,11 +468,14 @@ class BufferedF32MusicSource:
                 chunk = self._inner.read()
             except Exception:
                 logger.exception("[Plan12_Mixer] buffered 音源 inner.read 失敗，視為 eof")
+                self._eof_reason = "error"
                 self._eof = True
                 return
             if not chunk:
+                self._eof_reason = "empty"
                 self._eof = True
                 return
+            self._produced += 1
             self._buf.append(chunk)
 
     def read(self) -> bytes:

@@ -56,10 +56,21 @@ class PlaybackMixin:
         """
         self._ensure_mixer_playing(device)
         # 背景預讀解耦 ffmpeg pipe（修 T5 串流斷續）：~1s buffer
-        self._mixer.set_music_source(BufferedF32MusicSource(S16ToF32MusicSource(s16_source), buffer_frames=50))
+        buffered = BufferedF32MusicSource(S16ToF32MusicSource(s16_source), buffer_frames=50)
+        self._mixer.set_music_source(buffered)
+        # 「音樂停了為何停」是靜默盲點（ffmpeg stderr→DEVNULL、音源耗盡無 log）＝device 上
+        # 「~3s 就中斷、無錯誤日誌」難查的根因。此處是所有停止路徑的唯一出口→退出時一律記
+        # 原因＋音源統計（produced 幀數/underruns/eof_reason），下次不必猜是音源死還是被中止。
+        _t0 = time.monotonic()
+        _reason = "source_exhausted"   # has_music() 變 False＝音源耗盡（正常或提早死）
         try:
             while self._mixer.has_music():
-                if not still_active() or not device.is_connected():
+                if not still_active():
+                    _reason = "still_active_false"   # stream_mode/radio_mode 被外部關掉
+                    self._mixer.clear_music()
+                    return
+                if not device.is_connected():
+                    _reason = "disconnected"         # 播放裝置斷線（本機喇叭恆連→不會走這）
                     self._mixer.clear_music()
                     return
                 if volume_attr is not None:
@@ -70,8 +81,13 @@ class PlaybackMixin:
                 self._ensure_mixer_playing(device)  # on-demand：重連後 adapter 沒了 → 重 arm
                 await asyncio.sleep(0.1)
         finally:
-            # 確保自己的音源不殘留在 mixer（被中止時）
-            pass
+            _st = buffered.stats()
+            logger.info(
+                "🎵 [Plan12_Mixer] 音樂層結束 reason=%s elapsed=%.1fs produced=%d "
+                "underruns=%d eof=%s(%s)",
+                _reason, time.monotonic() - _t0, _st["produced"],
+                _st["underruns"], _st["eof"], _st["eof_reason"] or "-",
+            )
 
     async def _ffmpeg_to_f32(self, *, input_path: str | None = None,
                              input_bytes: bytes | None = None) -> "np.ndarray | None":

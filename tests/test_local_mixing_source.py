@@ -448,6 +448,39 @@ def test_buffered_underrun_returns_silence_not_eof():
     buf.cleanup()
 
 
+def test_buffered_stats_reports_produced_and_eof_reason():
+    """診斷：正常耗盡 → produced 計到全部幀、eof=True、eof_reason='empty'。"""
+    inner = _FakeF32Frames([0.1, 0.2, 0.3])
+    buf = BufferedF32MusicSource(inner, buffer_frames=10)
+    for _ in range(300):
+        if buf.read() == b"":
+            break
+        _time.sleep(0.001)
+    st = buf.stats()
+    buf.cleanup()
+    assert st["produced"] == 3
+    assert st["eof"] is True
+    assert st["eof_reason"] == "empty"
+
+
+def test_buffered_stats_eof_reason_error_on_inner_exception():
+    """診斷：inner.read 拋例外 → eof_reason='error'（區分音源死於錯誤 vs 正常耗盡）。"""
+    class _Boom:
+        def read(self):
+            raise RuntimeError("stream died")
+
+        def cleanup(self):
+            pass
+
+    buf = BufferedF32MusicSource(_Boom(), buffer_frames=4)
+    _time.sleep(0.05)
+    st = buf.stats()
+    buf.cleanup()
+    assert st["eof"] is True
+    assert st["eof_reason"] == "error"
+    assert st["produced"] == 0
+
+
 def test_buffered_cleanup_stops_thread_and_inner():
     inner = _FakeF32Frames([0.1])
     buf = BufferedF32MusicSource(inner, buffer_frames=4)
