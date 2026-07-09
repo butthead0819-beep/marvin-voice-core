@@ -1955,6 +1955,9 @@ class MusicCog(commands.Cog):
         vc = self._vc()
         if vc is None:
             return
+        # 私語模式：聽>>講，不主動唸 DJ 播報（autopilot 與今夜歌單共用此路）
+        if getattr(vc, '_intimate_mode', False):
+            return
         vc._tts_protected = True
         try:
             if audio_path and os.path.exists(audio_path):

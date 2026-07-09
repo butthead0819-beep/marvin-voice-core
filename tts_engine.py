@@ -240,7 +240,7 @@ class SukiTTS:
             logger.error(f"❌ [TTS] macOS say 子進程異常: {e}")
             return False
 
-    async def stream_audio(self, text: str, voice: str = None, rate: str = None, pitch: str = None, force_macos: bool = False):
+    async def stream_audio(self, text: str, voice: str = None, rate: str = None, pitch: str = None, volume: str = None, force_macos: bool = False):
         """
         [Operation Hyper-Stream] 
         將文字轉為音訊串流 (Async Generator)，直接回傳音訊 chunk。
@@ -282,9 +282,10 @@ class SukiTTS:
             return
 
         # --- 第二路徑：Primary Edge TTS ---
+        _vol_kw = {"volume": volume} if volume is not None else {}
         success = False
         try:
-            comm = edge_tts.Communicate(text=processed_text, voice=v, rate=r, pitch=p)
+            comm = edge_tts.Communicate(text=processed_text, voice=v, rate=r, pitch=p, **_vol_kw)
             _audio_chunks = 0
             async for chunk in comm.stream():
                 if chunk["type"] == "audio":
@@ -304,7 +305,7 @@ class SukiTTS:
             try:
                 # 使用備援語音（中文重試同聲音，0.5s 後暫時性失敗通常已恢復）
                 _secondary = self._english_voice if self._is_english_text(processed_text) else self.voice
-                comm = edge_tts.Communicate(text=processed_text, voice=_secondary, rate=r, pitch=p)
+                comm = edge_tts.Communicate(text=processed_text, voice=_secondary, rate=r, pitch=p, **_vol_kw)
                 _sec_chunks = 0
                 async for chunk in comm.stream():
                     if chunk["type"] == "audio":

@@ -16,6 +16,31 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from marvin_voice_core.playback_device import DiscordPlaybackDevice
 
 
+def _make_cog_real_stream_tts():
+    """VoiceController *不* mock _stream_tts_to_mixer（用來測 volume threading）。"""
+    bot = MagicMock()
+    bot.guilds = []
+    bot.cogs.get.return_value = None
+    bot.tts_engine = MagicMock()
+
+    with patch("discord_voice_engine.faster_whisper", None, create=True):
+        from discord_voice_engine import DiscordVoiceEngine
+        engine = DiscordVoiceEngine(bot)
+    bot.engine = engine
+
+    with patch("discord.ext.tasks.loop", lambda *a, **kw: lambda f: f), \
+         patch("cogs.voice_controller.DepartureStats", MagicMock), \
+         patch("cogs.voice_controller.ConsentManager", MagicMock):
+        from cogs.voice_controller import VoiceController
+        cog = VoiceController(bot)
+
+    cog._tts_interrupted = False
+    cog._mixer = MagicMock()
+    cog._mixer.push_tts = MagicMock()
+    cog._mixer.push_tts2 = MagicMock()
+    return cog
+
+
 def _make_cog():
     """Minimal VoiceController for playback path tests (same pattern as test_tts_storm_fallback)."""
     bot = MagicMock()
@@ -172,3 +197,64 @@ async def test_play_local_file_returns_early_when_resolve_returns_none(tmp_path)
         await cog.play_local_file(str(f))
 
     cog._mixer_play_music.assert_not_called()
+
+
+# ── _stream_tts_to_mixer volume threading ─────────────────────────────────────
+
+def _fake_stream_audio_empty():
+    """空 async generator 讓 _feed 立即完成。"""
+    async def _gen(*args, **kwargs):
+        return
+        yield  # noqa: unreachable — makes this an async generator function
+    return MagicMock(side_effect=_gen)
+
+
+def _fake_ffmpeg_proc():
+    """Fake ffmpeg proc：_drain 遇到 IncompleteReadError(b'', 0) 立即退出。"""
+    proc = MagicMock()
+    proc.stdin = MagicMock()
+    proc.stdout = MagicMock()
+    proc.stdout.readexactly = AsyncMock(
+        side_effect=asyncio.IncompleteReadError(b"", 0)
+    )
+    return proc
+
+
+@pytest.mark.asyncio
+async def test_stream_tts_to_mixer_passes_volume_intimate_agitated():
+    """_stream_tts_to_mixer 親密模式 AGITATED tag → stream_audio 收到 volume='-20%'。"""
+    cog = _make_cog_real_stream_tts()
+    cog._intimate_mode = True
+
+    stream_audio_mock = _fake_stream_audio_empty()
+    cog.bot.tts_engine.stream_audio = stream_audio_mock
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_fake_ffmpeg_proc())):
+        await cog._stream_tts_to_mixer(
+            "測試", force_macos=False, emotion_tag="excited", voice=None
+        )
+
+    stream_audio_mock.assert_called_once()
+    call_kwargs = stream_audio_mock.call_args.kwargs
+    assert call_kwargs.get("volume") == "-20%", \
+        f"AGITATED intimate 模式 volume 預期 '-20%'，實際 {call_kwargs}"
+
+
+@pytest.mark.asyncio
+async def test_stream_tts_to_mixer_passes_volume_none_discord_path():
+    """_stream_tts_to_mixer 非親密（Discord 路徑）→ stream_audio 收到 volume=None。"""
+    cog = _make_cog_real_stream_tts()
+    # 不設 _intimate_mode（Discord 路徑），_resolve 回 _EMOTION_TTS_PARAMS（無 volume 欄位）
+
+    stream_audio_mock = _fake_stream_audio_empty()
+    cog.bot.tts_engine.stream_audio = stream_audio_mock
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_fake_ffmpeg_proc())):
+        await cog._stream_tts_to_mixer(
+            "測試", force_macos=False, emotion_tag="excited", voice=None
+        )
+
+    stream_audio_mock.assert_called_once()
+    call_kwargs = stream_audio_mock.call_args.kwargs
+    assert call_kwargs.get("volume") is None, \
+        f"Discord 路徑 volume 預期 None，實際 {call_kwargs}"

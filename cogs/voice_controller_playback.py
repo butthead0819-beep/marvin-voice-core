@@ -98,6 +98,34 @@ class PlaybackMixin:
             return None
         return np.frombuffer(out, dtype=np.float32)
 
+    # 對比舒緩 bucket（PROVISIONAL，可 live-tune）：激動使用者 → 讓 Marvin 更緩/軟以反差安撫。
+    # 每個 bucket 含 volume 欄位（只有親密路徑用到；Discord 路徑永遠不讀這些值）。
+    _INTIMATE_AGITATED: dict[str, str] = {"rate": "-30%", "pitch": "-18Hz", "volume": "-20%"}
+    _INTIMATE_LOW: dict[str, str]      = {"rate": "-22%", "pitch": "-12Hz", "volume": "-12%"}
+    _INTIMATE_CALM: dict[str, str]     = {"rate": "-28%", "pitch": "-22Hz", "volume": "-18%"}
+    _INTIMATE_TTS_MAP: dict[str, dict[str, str]] = {
+        # AGITATED：soothe with slow/steady/soft Marvin
+        "excited": _INTIMATE_AGITATED, "impatient": _INTIMATE_AGITATED,
+        "angry": _INTIMATE_AGITATED,   "frustrated": _INTIMATE_AGITATED,
+        "sarcastic": _INTIMATE_AGITATED, "nemo": _INTIMATE_AGITATED,
+        # LOW：warm-gentle
+        "depressed": _INTIMATE_LOW, "sad": _INTIMATE_LOW, "hesitant": _INTIMATE_LOW,
+        # CALM：gentle baseline（neutral, robotic, amused, marmo）
+        "neutral": _INTIMATE_CALM, "robotic": _INTIMATE_CALM,
+        "amused": _INTIMATE_CALM, "marmo": _INTIMATE_CALM,
+    }
+
+    def _resolve_tts_params(self, emotion_tag: str) -> dict[str, str]:
+        """回傳當前有效 TTS 語調參數。
+
+        親密模式開啟：依 emotion_tag bucket 回傳對比舒緩語調（含 volume）。
+        未知/None tag → CALM 預設。
+        親密模式關閉（Discord 路徑，getattr default False）→ 與原 inline lookup 完全一致。
+        """
+        if getattr(self, "_intimate_mode", False):
+            return self._INTIMATE_TTS_MAP.get(emotion_tag, self._INTIMATE_CALM)
+        return self._EMOTION_TTS_PARAMS.get(emotion_tag, self._EMOTION_TTS_PARAMS["neutral"])
+
     async def _stream_tts_to_mixer(self, text: str, *, force_macos: bool,
                                    emotion_tag: str, voice: str | None, layer: int = 1,
                                    on_first_frame=None) -> int:
@@ -110,7 +138,7 @@ class PlaybackMixin:
         event loop（非 voice thread）→ 不阻塞混音。回傳 push 進去的幀數。
         edge-tts chunks → ffmpeg stdin；ffmpeg f32le stdout → readexactly(一幀) → push_tts。
         """
-        tp = self._EMOTION_TTS_PARAMS.get(emotion_tag, self._EMOTION_TTS_PARAMS["neutral"])
+        tp = self._resolve_tts_params(emotion_tag)
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-nostdin", "-loglevel", "quiet", "-i", "pipe:0",
@@ -125,7 +153,8 @@ class PlaybackMixin:
         async def _feed():
             try:
                 async for c in self.bot.tts_engine.stream_audio(
-                    text, voice=voice, rate=tp["rate"], pitch=tp["pitch"], force_macos=force_macos,
+                    text, voice=voice, rate=tp["rate"], pitch=tp["pitch"],
+                    volume=tp.get("volume"), force_macos=force_macos,
                 ):
                     if c:
                         proc.stdin.write(c)

@@ -189,6 +189,9 @@ class ProactiveSocialMixin:
 
     @tasks.loop(seconds=5.0)
     async def speak_bus_tick_loop(self):
+        # 🤫 私語模式：聽>>講——SpeakBus 主動表演一律不 tick（narrow allowlist）
+        if getattr(self, '_intimate_mode', False):
+            return
         # 沒連 voice channel → bus 跑沒意義
         if not self.bot.voice_clients:
             return
@@ -249,6 +252,9 @@ class ProactiveSocialMixin:
         [Operation Social Gap] 主動發起對話。
         從記憶庫選取合適話題並進行動態改寫後發出。
         """
+        # 🤫 私語模式：不主動起話題（1-on-1 反應式 only）
+        if getattr(self, '_intimate_mode', False):
+            return
         import random
         try:
             # 1. 取得現場玩家

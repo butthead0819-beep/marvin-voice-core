@@ -854,6 +854,8 @@ class ConnectionMixin:
 
         # 3. 設 local 模式旗標
         self._local_mode = True
+        # 親密模式旗標（裝置端專屬，Discord 路徑永不設）
+        self._intimate_mode = os.getenv("MARVIN_INTIMATE_MODE", "").strip().lower() in ("1", "true", "yes", "on")
 
         # 3b. 放寬 late-skip：免費 LLM 免不了限流(429 backoff 數十秒)，本機單人用不怕
         # 慢回應蓋掉新對話，故拉高門檻讓慢到的回應仍出聲(僅本實例，不碰生產的 25s)。
@@ -905,6 +907,8 @@ class ConnectionMixin:
 
         # 3. 設 local 模式旗標（衛星共用 local 輸出接縫 _resolve_playback_device）
         self._local_mode = True
+        # 親密模式旗標（對齊 start_local_listening；Discord 路徑永不設）
+        self._intimate_mode = os.getenv("MARVIN_INTIMATE_MODE", "").strip().lower() in ("1", "true", "yes", "on")
 
         # 3b. 放寬 late-skip（對齊 start_local_listening：免費 LLM 限流下慢回應仍出聲）
         self._LATE_RESPONSE_SKIP_SEC = 120.0
