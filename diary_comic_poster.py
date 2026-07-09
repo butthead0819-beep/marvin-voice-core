@@ -1,14 +1,13 @@
-"""把剛結束的對話場次畫成漫畫貼回 #馬文的厭世日記（接 slow_system_loop 靜默觸發）。
+"""把剛結束場次的當夜策展「今夜歌單」畫成一格貼回 #馬文的厭世日記（接 slow_system_loop 靜默觸發）。
 
-全防禦：任何失敗都吞掉、絕不影響 slow loop。出圖走 PaidUsageGuard 入帳 + daily/monthly cap。
-觸發時機 = 靜默（場次收尾）；同一場次靠 state 檔去重，不重出。
+2026-07 縮減自舊的多格 AI 生圖漫畫（使用者拍板「一天只出一格，內容就是策展」）——
+日記唯一內容 = 策展卡（只下 YouTube 縮圖、零 AI 生圖、零付費）。本場無策展歌單 → 不出日記。
+全防禦：任何失敗都吞掉、絕不影響 slow loop。觸發時機 = 靜默（場次收尾）；同一場次靠 state 檔去重。
 """
 import asyncio
-import base64
 import io
 import json
 import logging
-import os
 import urllib.request
 from pathlib import Path
 
@@ -18,29 +17,10 @@ LOG_PATH = "records/chat_summary_log.txt"
 DB_PATH = "marvin.db"
 STATE_PATH = "records/diary_comic_last.json"
 PENDING_PATH = "records/diary_comic_pending.json"
-CACHE_DIR = "records/diary_comic_cache"
-BOT_LOG = os.path.expanduser("~/Library/Logs/Marvin/bot_stdout.log")  # [點歌-手動] 來源
-MUSIC_MEMORY = "music_memory.json"  # 歌名→video id→cover 縮圖
 DIARY_CHANNELS = ("馬文的厭世日記", "marvin-diary")
-IMG_MODEL = "gemini-2.5-flash-image"
-TEXT_MODEL = "gemini-2.5-flash"
-EST_USD_PER_IMG = 0.04
-# 出漫畫門檻：≥N 段（每段 ~10 分鐘對話）才值得燒生圖。6→10 約省 33% 生圖成本
+# （保留給 plan_latest_session 測試）出漫畫門檻：≥N 段（每段 ~10 分鐘對話）才值得燒生圖。6→10 約省 33% 生圖成本
 # （只出夠熱鬧的場次＝品質正篩，安靜場次本來也沒料可畫）。可調此值權衡頻率 vs 成本。
 DIARY_MIN_ENTRIES = 6   # 2026-07-03 10→6（使用者拍板）：10 擋掉上週 5/6 晚，短場也值一格 meme（~$0.04）
-
-
-def _key() -> str:
-    k = os.environ.get("GEMINI_PAID_API_KEY", "")
-    if k:
-        return k
-    try:
-        for line in open(".env", encoding="utf-8"):
-            if line.strip().startswith("GEMINI_PAID_API_KEY="):
-                return line.strip().split("=", 1)[1].strip().strip('"').strip("'")
-    except FileNotFoundError:
-        pass
-    return ""
 
 
 def _last_posted() -> str:
@@ -80,46 +60,6 @@ def _clear_pending() -> None:
         pass
     except Exception:
         pass
-
-
-def _img_fn(key, guard):
-    def gen(prompt, aspect=None):
-        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-               f"{IMG_MODEL}:generateContent?key={key}")
-        payload = {"contents": [{"parts": [{"text": prompt}]}]}
-        if aspect:
-            payload["generationConfig"] = {"imageConfig": {"aspectRatio": aspect}}
-        req = urllib.request.Request(url, data=json.dumps(payload).encode(),
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=180) as r:
-            d = json.loads(r.read())
-        from PIL import Image
-        for p in d["candidates"][0]["content"]["parts"]:
-            inl = p.get("inlineData") or p.get("inline_data")
-            if inl and inl.get("data"):
-                img = Image.open(io.BytesIO(base64.b64decode(inl["data"]))).convert("RGB")
-                if guard is not None:
-                    guard.record(caller="diary_comic", model=IMG_MODEL,
-                                 tokens=1290, est_usd=EST_USD_PER_IMG)  # 入帳
-                return img
-        raise RuntimeError("no image in response")
-    return gen
-
-
-def _text_fn(key):
-    def gen(system, user):
-        url = (f"https://generativelanguage.googleapis.com/v1beta/models/"
-               f"{TEXT_MODEL}:generateContent?key={key}")
-        body = json.dumps({
-            "system_instruction": {"parts": [{"text": system}]},
-            "contents": [{"parts": [{"text": user}]}],
-        }).encode()
-        req = urllib.request.Request(url, data=body,
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            d = json.loads(r.read())
-        return d["candidates"][0]["content"]["parts"][0]["text"]
-    return gen
 
 
 def _db_rows(start_ts_str: str, end_ts_str: str, db_path: str = DB_PATH):
@@ -197,60 +137,12 @@ def _gen_marvin_quote(session, text_fn) -> str:
         return ""
 
 
-def _prepend_marvin_quote(page, session, text_fn=None):
-    """把今夜馬文語錄接在頁上方當 epigraph。全防禦→失敗回原圖。"""
-    try:
-        from diary_comic.layout import prepend_quote
-        return prepend_quote(page, _gen_marvin_quote(session, text_fn))
-    except Exception as e:
-        logger.debug(f"[DiaryComic] 馬文語錄略過: {e}")
-        return page
-
-
-def _append_song_card(page, session):
-    """關台時把當夜使用者主動點歌畫成「點歌台」一格接在頁下方（含 cover art）。全防禦→失敗回原圖。"""
-    try:
-        import datetime as _dt
-        import io
-        import json as _json
-        import urllib.request
-        from PIL import Image
-        from diary_comic.song_requests import parse_manual_requests, build_title_index, thumb_url
-        from diary_comic.layout import append_song_card
-
-        since = _dt.datetime.fromisoformat(session[0].ts_str).timestamp() - 600
-        until = _dt.datetime.fromisoformat(session[-1].ts_str).timestamp() + 600
-        reqs = parse_manual_requests(
-            Path(BOT_LOG).read_text(encoding="utf-8", errors="ignore"), since, until)
-        if not reqs:
-            return page
-        try:
-            idx = build_title_index(
-                _json.loads(Path(MUSIC_MEMORY).read_text(encoding="utf-8")).get("songs", {}))
-        except Exception:
-            idx = {}
-        covers = []
-        for _u, title in reqs[:8]:
-            img = None
-            vid = idx.get(title)
-            if vid:
-                try:
-                    with urllib.request.urlopen(thumb_url(vid), timeout=10) as r:
-                        img = Image.open(io.BytesIO(r.read())).convert("RGB")
-                except Exception:
-                    pass
-            covers.append(img)
-        return append_song_card(page, reqs, covers)
-    except Exception as e:
-        logger.debug(f"[DiaryComic] 點歌台略過: {e}")
-        return page
-
-
-def _append_themed_set_card(page, session):
-    """關台時把當夜 Marvin 策展的主題歌單畫成「今夜歌單」一格接在頁下方（含 cover art）。
+def _render_themed_card(session):
+    """當夜 Marvin 策展的「今夜歌單」獨立卡（含 cover art）＝縮減後日記的唯一內容。
 
     資料源異於點歌台（那是使用者主動點歌的 bot log）——這是 Marvin 自策展、附選歌理由。
-    全防禦→失敗回原圖。一晚多張取最後一張（latest_themed_set）。
+    一晚多張取最後一張（latest_themed_set）。零 AI 生圖（只下 YouTube 縮圖）。
+    無策展歌單 / 任何失敗 → None（caller 據此決定不出日記）。
     """
     try:
         import datetime as _dt
@@ -259,7 +151,7 @@ def _append_themed_set_card(page, session):
         from PIL import Image
         from diary_comic.themed_set import latest_themed_set
         from diary_comic.song_requests import video_id_from_url, thumb_url
-        from diary_comic.layout import append_themed_set_card
+        from diary_comic.layout import compose_themed_set_card
         from themed_playlist import _THEMED_SET_LOG  # 單一事實來源：writer 同一路徑
 
         since = _dt.datetime.fromisoformat(session[0].ts_str).timestamp() - 600
@@ -267,7 +159,7 @@ def _append_themed_set_card(page, session):
         rec = latest_themed_set(
             Path(_THEMED_SET_LOG).read_text(encoding="utf-8", errors="ignore"), since, until)
         if rec is None or not rec.picks:
-            return page
+            return None
         covers = []
         for p in rec.picks[:8]:
             img = None
@@ -279,54 +171,50 @@ def _append_themed_set_card(page, session):
                 except Exception:
                     pass
             covers.append(img)
-        return append_themed_set_card(page, rec.theme_title, rec.picks, covers)
+        return compose_themed_set_card(rec.theme_title, rec.picks, covers=covers)
     except Exception as e:
-        logger.debug(f"[DiaryComic] 今夜歌單略過: {e}")
-        return page
-
-
-def _render_blocking(key: str):
-    """同步：選剛結束場次 → 策展排版 → 出圖 + 點歌台 → 存檔 + 標 pending（不貼，等下次開台）。
-
-    回 (png, format) 或 None。在 to_thread 跑。已貼過 / 已渲染待貼的同場次 → 跳過。
-    """
-    import datetime
-    import sys
-    sys.path.insert(0, ".")
-    from diary_comic.render import render_story
-    try:
-        from llm_paid import PaidUsageGuard
-        guard = PaidUsageGuard()
-    except Exception:
-        guard = None
-
-    planned = plan_latest_session(
-        Path(LOG_PATH).read_text(encoding="utf-8"), _db_rows)
-    if not planned:
+        logger.debug(f"[DiaryComic] 今夜歌單卡略過: {e}")
         return None
-    session, plan, end = planned
+
+
+def _latest_session():
+    """拿最近一場的 session（給時間窗 + end 去重）。無 curator、無 min_entries 閘——
+    縮減後日記由「有沒有策展歌單」決定，不由對話熱鬧度決定。無場次 → None。"""
+    try:
+        import sys
+        sys.path.insert(0, ".")
+        from diary_comic.parser import parse_log, dedupe_adjacent, eligible_sessions
+        sessions = eligible_sessions(dedupe_adjacent(
+            parse_log(Path(LOG_PATH).read_text(encoding="utf-8", errors="ignore"))))
+        return sessions[-1] if sessions else None
+    except Exception as e:
+        logger.debug(f"[DiaryComic] 取場次失敗: {e}")
+        return None
+
+
+def _render_blocking():
+    """同步：選剛結束場次 → 只渲染當夜策展「今夜歌單」一格 → 存檔 + 標 pending（等下次開台才貼）。
+
+    縮減自舊的多格 AI 生圖漫畫（2026-07：使用者拍板「一天只出一格，內容就是策展」）——
+    日記唯一內容 = 策展卡（零 AI 生圖、零付費）。本場無策展歌單 → 不出日記。
+    回 (png, "themed") 或 None。在 to_thread 跑。已貼過 / 已渲染待貼的同場次 → 跳過。
+    """
+    session = _latest_session()
+    if not session:
+        return None
+    end = session[-1].ts_str
     if end == _last_posted() or end == _pending().get("end"):
         logger.info(f"📓 [DiaryComic] skip: 場次 {end} 已貼過/已渲染待貼")
         return None  # 已貼過、或已渲染待貼
 
-    npanels = 1 if plan.format == "meme" else 4  # meme 單格 / slant 四格
-    if guard is not None and not guard.allow(EST_USD_PER_IMG * npanels):
-        logger.warning("💰 [DiaryComic] 超 spending cap，今天不出漫畫")
+    card = _render_themed_card(session)  # 當夜策展卡；無策展 → None
+    if card is None:
+        logger.info(f"📓 [DiaryComic] skip: 場次 {end} 本場無策展歌單，不出日記")
         return None
-
-    page = render_story(
-        plan, img_fn=_img_fn(key, guard), text_fn=_text_fn(key),
-        cache_dir=CACHE_DIR, page_size=(1080, 1920), variant="nano",
-        day_index=datetime.date.today().toordinal())
-    if page is None:
-        return None
-    page = _append_song_card(page, session)  # 接「今夜點歌台」一格（有點歌才接，全防禦）
-    page = _append_themed_set_card(page, session)  # 接「今夜歌單」一格（Marvin 策展，有才接，全防禦）
-    page = _prepend_marvin_quote(page, session, _text_fn(key))  # 開頁接馬文語錄（LLM 生，全防禦）
     out = f"records/diary_comic_{end.replace(':', '').replace(' ', '_').replace('-', '')}.png"
-    page.save(out)
-    _set_pending(end, out, plan.format)  # 等下次開台才貼
-    return out, plan.format
+    card.save(out)
+    _set_pending(end, out, "themed")  # 等下次開台才貼
+    return out, "themed"
 
 
 def _find_diary_channel(bot):
@@ -340,12 +228,9 @@ def _find_diary_channel(bot):
 
 
 async def maybe_render_diary(bot, active_text_channel=None):
-    """關台（靜默）時呼叫：策展出圖、標 pending，**不貼**。任何失敗都吞掉。"""
+    """關台（靜默）時呼叫：渲染當夜策展卡、標 pending，**不貼**。任何失敗都吞掉。"""
     try:
-        key = _key()
-        if not key:
-            return
-        await asyncio.to_thread(_render_blocking, key)
+        await asyncio.to_thread(_render_blocking)
     except Exception as e:
         logger.warning(f"⚠️ [DiaryComic] 渲染失敗（已吞，不影響 loop）: {e}")
 
