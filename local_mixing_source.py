@@ -110,8 +110,14 @@ class LocalMixingAudioSource(_BASE):
         self._stat_t0 = time.monotonic()
 
     def note_player_speech(self) -> None:
-        """🔇 玩家正在說話 → 接下來 hold 秒內把 Marvin TTS duck 到 player_duck_level。
-        speech-detection 路徑每次偵測到玩家說話就呼叫（與 last_player_speech_time 同步）。"""
+        """🔇 玩家說話 → 接下來 hold 秒內把 Marvin 正播的長播報 duck 到 player_duck_level。
+        speech-detection 路徑每次偵測到玩家說話就呼叫（與 last_player_speech_time 同步）。
+
+        **barge-in 閘**：只在 Marvin 正播 TTS（佇列有料）時才 arm。Marvin 沒在講時玩家說話
+        不是打斷——緊接的 ack／回應是全新 onset，該全音量播出；無條件 arm 會把它壓成
+        「前小後大」（點歌 ack 前段被壓、5s 窗中途過期才 ramp 回滿）。"""
+        if self._tts_cur is None and not self._tts_queue:
+            return  # Marvin 沒在講 → 不 arm，避免壓到緊接的回應/ack
         self._player_speech_until = self._clock() + self._tts_player_duck_hold_s
 
     def duck_for_wake(self, hold_s: float = 5.0) -> None:

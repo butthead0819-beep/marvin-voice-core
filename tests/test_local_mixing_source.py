@@ -167,6 +167,35 @@ def test_tts_subframe_clip_consumed_in_one_read():
     assert mix.is_idle()
 
 
+# ── player-duck barge-in 閘：只在 Marvin 正播 TTS 時才 arm ────────────────────
+
+def test_note_player_speech_no_arm_when_marvin_silent():
+    """Marvin 沒在講 → 玩家說話不是打斷，不 arm player-duck（否則緊接的點歌 ack 被壓）。"""
+    mix = LocalMixingAudioSource(clock=lambda: 100.0)
+    mix.note_player_speech()
+    assert mix._player_speech_until == 0.0   # 未 arm
+
+
+def test_note_player_speech_arms_when_marvin_speaking():
+    """Marvin 正播長播報（佇列有料）+ 玩家插話 = barge-in → arm，讓 Marvin 讓路。"""
+    mix = LocalMixingAudioSource(clock=lambda: 100.0)
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))   # Marvin 正在講
+    mix.note_player_speech()
+    assert mix._player_speech_until == 105.0          # armed（+hold 5s）
+
+
+def test_ack_after_request_plays_full_volume_not_ducked():
+    """回歸：串流中語音點歌 → STT(note_player_speech) → 緊接 ack。Marvin 當下沒在講，
+    ack 是全新 onset，該全 tts_gain 播出，不該被 player-duck 壓（前小後大 bug）。"""
+    mix = LocalMixingAudioSource(seed=1, tts_gain=0.5, clock=lambda: 100.0)
+    mix.note_player_speech()                          # 玩家點歌那次 STT
+    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))    # 回應 ack
+    out = np.frombuffer(mix.read(), dtype=np.int16)
+    expected = am.to_s16(am.tpdf_dither(
+        am.apply_gain(_f32_frame(0.6), 0.5), np.random.default_rng(1)))
+    assert np.array_equal(out, expected)              # 全 tts_gain，未被壓
+
+
 # ── is_idle / 狀態欄位 ────────────────────────────────────────────────────────
 
 def test_is_idle_transitions():
@@ -592,7 +621,8 @@ def test_tts_player_duck_ramps_down_when_player_speaks():
     clk = [0.0]
     mix = LocalMixingAudioSource(clock=lambda: clk[0])
     assert mix._tts_player_duck_cur == 1.0
-    mix.note_player_speech()                       # until = 0 + 5
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))  # Marvin 正播長播報＝arm 前提
+    mix.note_player_speech()                       # barge-in → until = 0 + 5
     for _ in range(50):
         mix._tts_player_duck_step_toward(0.5)      # 玩家說話窗內
     assert abs(mix._tts_player_duck_cur - mix._tts_player_duck_level) < 1e-6  # → 10%
@@ -601,7 +631,8 @@ def test_tts_player_duck_ramps_down_when_player_speaks():
 def test_tts_player_duck_restores_only_after_5s_silence():
     clk = [0.0]
     mix = LocalMixingAudioSource(clock=lambda: clk[0])
-    mix.note_player_speech()                        # until = 5
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))  # Marvin 正播＝arm 前提
+    mix.note_player_speech()                        # barge-in → until = 5
     for _ in range(50):
         mix._tts_player_duck_step_toward(3.0)       # 3s（<5s）→ 仍 duck
     assert mix._tts_player_duck_cur < 0.2           # 還壓著
@@ -621,9 +652,9 @@ def test_tts_output_ducked_when_player_speaking():
     """wiring：玩家說話窗內 + duck 到位 → TTS 輸出 == apply_gain(tts, tts_gain * duck_level)。"""
     clk = [0.0]
     mix = LocalMixingAudioSource(seed=11, tts_gain=0.5, clock=lambda: clk[0])
-    mix.note_player_speech()
+    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))        # Marvin 正播的長播報（就是被壓的這幀）
+    mix.note_player_speech()                              # barge-in → arm
     mix._tts_player_duck_cur = mix._tts_player_duck_level  # 假設已 ramp 到位
-    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))
     out = np.frombuffer(mix.read(), dtype=np.int16)
     tts = _f32_frame(0.6)
     expected = am.to_s16(am.tpdf_dither(
@@ -647,7 +678,8 @@ def test_tts_player_duck_keeps_duck_on_fresh_tts_while_player_speaking():
     clk = [0.0]
     mix = LocalMixingAudioSource(seed=1, clock=lambda: clk[0])
     mix._tts_player_duck_cur = 0.10
-    mix.note_player_speech()               # until = 5
+    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))  # Marvin 正播＝arm 前提
+    mix.note_player_speech()               # barge-in → until = 5
     mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))
     mix.read()                             # onset 但窗內 → 不復原
     assert mix._tts_player_duck_cur < 0.5
