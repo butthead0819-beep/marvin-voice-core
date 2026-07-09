@@ -95,3 +95,13 @@ def test_start_local_listening_calls_engine_start():
     fake = _make_fake_self()
     ConnectionMixin.start_local_listening(fake)
     fake.bot.engine.start.assert_called_once()
+
+
+# ── (T2b) LocalMicSink 的 on_speech_start_callback 綁 engine._handle_raw_speech_start ─
+
+def test_start_local_listening_wires_onset_callback_to_engine_handler():
+    fake = _make_fake_self()
+    ConnectionMixin.start_local_listening(fake)
+    sink = fake.bot.engine.sink
+    assert isinstance(sink, LocalMicSink)
+    assert sink.on_speech_start_callback is fake.bot.engine._handle_raw_speech_start

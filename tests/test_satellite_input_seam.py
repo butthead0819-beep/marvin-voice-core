@@ -117,3 +117,13 @@ def test_on_satellite_wake_respects_kill_switch(monkeypatch):
     fake = MagicMock()
     ConnectionMixin._on_satellite_wake(fake, "mawen_v1")
     fake._mixer.duck_for_wake.assert_not_called()
+
+
+# ── (T2b) 橋內部 LocalMicSink 的 on_speech_start_callback 綁 engine handler ─────────
+
+def test_start_satellite_wires_onset_callback_to_engine_handler():
+    fake = _make_fake_self()
+    ConnectionMixin.start_satellite_listening(fake)
+    bridge = fake._satellite_bridge
+    assert isinstance(bridge, WyomingSatelliteBridge)
+    assert bridge.sink.on_speech_start_callback is fake.bot.engine._handle_raw_speech_start

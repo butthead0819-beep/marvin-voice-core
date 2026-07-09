@@ -58,6 +58,7 @@ class WyomingSatelliteBridge:
         port: int = 10700,
         user_id: str = "satellite",
         on_detection: Callable[[str], None] | None = None,
+        on_speech_start_callback: Callable | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         client_factory: Callable[[], object] | None = None,
         rms_threshold: int = 500,
@@ -75,6 +76,7 @@ class WyomingSatelliteBridge:
             on_speech_cut_callback, loop=loop, source=[],
             rms_threshold=rms_threshold, silence_cut_s=silence_cut_s,
             user_id=user_id,
+            on_speech_start_callback=on_speech_start_callback,
         )
 
     @property

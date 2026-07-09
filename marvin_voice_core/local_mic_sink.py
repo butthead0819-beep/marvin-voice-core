@@ -50,6 +50,7 @@ class LocalMicSink:
         sample_rate: int = 48000,
         channels: int = 2,
         suppress_wake_callback: Callable[[], bool] | None = None,
+        on_speech_start_callback: Callable | None = None,
         user_id: str = _LOCAL_USER_ID,
     ) -> None:
         # user_id：切句 callback 帶的講者鍵。本機模式預設 "local"；Wyoming 橋（衛星麥）
@@ -88,6 +89,8 @@ class LocalMicSink:
         self.user_utt_max_gap: dict = {}
         self.last_audio_packet_time: float = 0.0
         self.suppress_wake_callback: Callable[[], bool] = suppress_wake_callback or (lambda: False)
+        # 私語 barge-in：靜默→人聲的起音邊緣同步觸發，讓 device 音訊路徑可打斷。
+        self.on_speech_start_callback: Callable = on_speech_start_callback or (lambda _uid: None)
 
     def _get_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is not None:
@@ -111,6 +114,7 @@ class LocalMicSink:
             if not self._is_speaking:
                 self._is_speaking = True
                 self._speech_start_time = timestamp
+                self.on_speech_start_callback(self._user_id)
             self._speech_buffer.extend(chunk)
             self._silence_accum_s = 0.0
             # NOTE: 刻意不填 user_last_spoken_time/user_is_speaking——開放麥克風底噪會讓

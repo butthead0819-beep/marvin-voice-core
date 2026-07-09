@@ -3,6 +3,7 @@
 TDD: 這些測試先於實作撰寫（先紅），實作完成後全綠。
 """
 import asyncio
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -286,3 +287,109 @@ async def test_local_mic_sink_leaves_vad_state_empty():
     # 屬性存在（get_active_sink / _wait_for_user_silence 會摸），但保持空
     assert sink.user_is_speaking == {}
     assert sink.user_last_spoken_time == {}
+
+
+# ---------------------------------------------------------------------------
+# on_speech_start_callback — 起音邊緣 (silence→speech onset)
+# ---------------------------------------------------------------------------
+
+
+def test_on_speech_start_param_defaults_to_noop_callable():
+    """on_speech_start_callback 預設為可呼叫的 no-op：不傳時不 raise，且 callable。"""
+    from marvin_voice_core.local_mic_sink import LocalMicSink
+
+    async def noop_cut(uid, pcm, ts, *, is_wake_check=False):
+        pass
+
+    sink = LocalMicSink(noop_cut, source=[])
+    assert callable(sink.on_speech_start_callback)
+    sink.on_speech_start_callback("local")  # 不 raise
+
+
+@pytest.mark.asyncio
+async def test_onset_fires_once_on_speech_start():
+    """on_speech_start 在靜默→人聲邊緣恰觸發一次（MagicMock 同步 callback）。"""
+    from marvin_voice_core.local_mic_sink import LocalMicSink
+
+    onset_cb = MagicMock(name="onset")
+
+    async def cut_spy(uid, pcm, ts, *, is_wake_check=False):
+        pass
+
+    source = [_speech_frame()] * 6 + [_silence_frame()] * SILENCE_FRAMES_TO_CUT
+    sink = LocalMicSink(cut_spy, on_speech_start_callback=onset_cb,
+                        source=source, loop=asyncio.get_running_loop())
+    await sink.start()
+    await asyncio.sleep(0)
+
+    assert onset_cb.call_count == 1
+    onset_cb.assert_called_once_with(sink._user_id)
+
+
+@pytest.mark.asyncio
+async def test_onset_does_not_fire_on_pure_silence():
+    """全靜音時 on_speech_start 不觸發。"""
+    from marvin_voice_core.local_mic_sink import LocalMicSink
+
+    onset_cb = MagicMock(name="onset")
+
+    async def cut_spy(uid, pcm, ts, *, is_wake_check=False):
+        pass
+
+    source = [_silence_frame()] * 30
+    sink = LocalMicSink(cut_spy, on_speech_start_callback=onset_cb,
+                        source=source, loop=asyncio.get_running_loop())
+    await sink.start()
+    await asyncio.sleep(0)
+
+    assert onset_cb.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_onset_refires_on_new_utterance_after_cut():
+    """切句後 _is_speaking 重設為 False，下一句再次觸發 on_speech_start（re-arm）。"""
+    from marvin_voice_core.local_mic_sink import LocalMicSink
+
+    onset_cb = MagicMock(name="onset")
+
+    async def cut_spy(uid, pcm, ts, *, is_wake_check=False):
+        pass
+
+    # 兩段完整語音，各自觸發切句後 re-arm
+    source = (
+        [_speech_frame()] * 6 + [_silence_frame()] * SILENCE_FRAMES_TO_CUT
+        + [_speech_frame()] * 6 + [_silence_frame()] * SILENCE_FRAMES_TO_CUT
+    )
+    sink = LocalMicSink(cut_spy, on_speech_start_callback=onset_cb,
+                        source=source, loop=asyncio.get_running_loop())
+    await sink.start()
+    await asyncio.sleep(0)
+
+    assert onset_cb.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_onset_fires_before_cut():
+    """on_speech_start 同步觸發（start() 內迴圈中），嚴格先於非同步 create_task 切句。"""
+    from marvin_voice_core.local_mic_sink import LocalMicSink
+
+    order: list = []
+    onset_cb = MagicMock(name="onset", side_effect=lambda uid: order.append("onset"))
+
+    cut_calls: list = []
+
+    async def cut_spy(uid, pcm, ts, *, is_wake_check=False):
+        cut_calls.append(pcm)
+        order.append("cut")
+
+    source = [_speech_frame()] * 6 + [_silence_frame()] * SILENCE_FRAMES_TO_CUT
+    sink = LocalMicSink(cut_spy, on_speech_start_callback=onset_cb,
+                        source=source, loop=asyncio.get_running_loop())
+    await sink.start()
+    # onset 已在 start() 內同步觸發；cut 尚在 task 佇列未執行
+    assert onset_cb.call_count == 1
+    assert len(cut_calls) == 0
+
+    await asyncio.sleep(0)  # 讓 create_task 執行
+    assert len(cut_calls) == 1
+    assert order == ["onset", "cut"]

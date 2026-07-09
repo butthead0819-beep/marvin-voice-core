@@ -1680,9 +1680,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         # 🚀 [TTS Interrupt] 使用者開口時中斷 TTS 播放，若文字尚未在聊天室則補發
         if self.is_playing_audio and not self._tts_protected:
-            vc = discord.utils.get(self.bot.voice_clients)
-            if vc and vc.is_playing():
-                vc.stop_playing()
+            device = self._resolve_playback_device()
+            if device is not None and device.is_playing():
+                device.stop()
             if self._plan12 and self._mixer is not None:
                 self._mixer.clear_tts()  # 🎛️ 清 mixer TTS 佇列，否則被打斷的 TTS 殘留累積亂播
             self._tts_interrupted = True  # 封鎖所有排隊中的串流片段（也讓 streaming render 停止餵）

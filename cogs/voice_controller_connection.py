@@ -848,6 +848,7 @@ class ConnectionMixin:
         sink = LocalMicSink(
             self.bot.engine.process_audio_slice,
             loop=self.bot.loop,
+            on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
         )
         self.bot.engine.sink = sink
 
@@ -895,6 +896,7 @@ class ConnectionMixin:
             host=os.getenv("MARVIN_SATELLITE_HOST", "marvinpi.local"),
             user_id="satellite",
             on_detection=self._on_satellite_wake,
+            on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
             loop=self.bot.loop,
         )
         self._satellite_bridge = bridge
