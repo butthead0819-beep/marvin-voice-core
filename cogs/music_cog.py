@@ -885,12 +885,27 @@ class MusicCog(commands.Cog):
             enqueued.append(info)
         return enqueued
 
-    async def _announce_themed_set(self, theme_title: str, n: int) -> None:
+    @staticmethod
+    def _build_themed_announcement(theme_title: str, infos: list) -> str:
+        """今夜歌單文字貼文：主題 + 每首歌名與策展理由（_pick_reason）。截到 Discord 2000 上限內。"""
+        n = len(infos)
+        lines = [f"🎚️ **【今夜歌單】** 我聽你們聊了一晚，為你們策展《{theme_title}》共 {n} 首："]
+        for i, info in enumerate(infos, 1):
+            title = (info.get('title') or '?').strip()[:60]
+            reason = (info.get('_pick_reason') or '').strip()
+            lines.append(f"`{i}.` **{title}**" + (f"\n> {reason}" if reason else ""))
+        text = "\n".join(lines)
+        return (text[:1900] + "…") if len(text) > 1900 else text
+
+    async def _announce_themed_set(self, theme_title: str, enqueued_infos: list) -> None:
         vc = self._vc()
-        ch = vc.active_text_channel if vc is not None else None
+        # 同卡片 fallback：active_text_channel 未設(語音召喚)時退語音頻道內建文字區
+        ch = None
+        if vc is not None:
+            ch = vc.active_text_channel or getattr(getattr(vc, 'voice_client', None), 'channel', None)
         if ch:
             try:
-                await ch.send(f"🎚️ **【今夜歌單】** 我聽你們聊了一晚，為你們策展《{theme_title}》共 {n} 首。")
+                await ch.send(self._build_themed_announcement(theme_title, enqueued_infos))
             except Exception:
                 logger.debug("[ThemedSet] 宣告貼文失敗（忽略）", exc_info=True)
 
@@ -933,7 +948,7 @@ class MusicCog(commands.Cog):
             self._last_themed_set_ts = time.time()
             logger.info(f"🎚️ [ThemedSet]《{themed.theme_title}》入隊 {n} 首"
                         f"（今晚第 {self._themed_sets_tonight} 張）")
-            await self._announce_themed_set(themed.theme_title, n)
+            await self._announce_themed_set(themed.theme_title, enqueued_infos)
             return n
         except Exception:
             logger.exception("[ThemedSet] 失敗，fallback 一般 autopilot")
