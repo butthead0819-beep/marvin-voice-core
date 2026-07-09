@@ -30,28 +30,30 @@
 ## 3.4 wyoming-satellite + wyoming-openwakeword
 照官方教學（https://github.com/rhasspy/wyoming-satellite/blob/master/docs/tutorial_2mic.md ，硬體段換成我們的 ALSA 裝置名）：
 ```bash
-sudo apt-get update && sudo apt-get install -y python3-venv git libopenblas-dev
+sudo apt-get update && sudo apt-get install -y python3-venv python3-dev git libopenblas-dev
 git clone https://github.com/rhasspy/wyoming-satellite.git ~/wyoming-satellite
-cd ~/wyoming-satellite && python3 -m venv .venv && .venv/bin/pip install -f 'https://synesthesiam.github.io/prebuilt-apps/' -e '.[all]'
+# ⚠️ Py3.13 上 '.[all]' 編不過（webrtc-noise-gain 無 3.13 prebuilt wheel + setuptools build backend 缺）→
+# 裝基礎版即可（降噪/AEC/波束交給 XVF3800 硬體，用不到那個軟體 extra）
+cd ~/wyoming-satellite && python3 -m venv .venv && .venv/bin/pip install -U pip setuptools wheel && .venv/bin/pip install -e .
 git clone https://github.com/rhasspy/wyoming-openwakeword.git ~/wyoming-openwakeword
 cd ~/wyoming-openwakeword && python3 -m venv .venv && .venv/bin/pip install -e .
-# 放「馬文」模型（S1 產出）
-mkdir -p ~/wakewords && scp <Mac>:.../models/wakeword/mawen_v1.tflite ~/wakewords/
+# 放喚醒模型（S1 產出，英文「hey marvin」；非中文 mawen）
+mkdir -p ~/wakewords && scp <Mac>:.../models/wakeword/hey_marvin.tflite ~/wakewords/
 ```
 啟動（先手動跑通，再照官方教學包 systemd service）：
 ```bash
 # 終端 1：喚醒服務
 ~/wyoming-openwakeword/.venv/bin/python -m wyoming_openwakeword \
-  --uri 'tcp://127.0.0.1:10400' --custom-model-dir ~/wakewords --preload-model 'mawen_v1'
+  --uri 'tcp://127.0.0.1:10400' --custom-model-dir ~/wakewords --preload-model 'hey_marvin'
 # 終端 2：衛星（⚠️ mic 16k/1ch、snd 48k/2ch —— Mac 橋的 send_pcm 是 48k stereo）
 ~/wyoming-satellite/.venv/bin/python -m wyoming_satellite \
   --name 'marvin-satellite' --uri 'tcp://0.0.0.0:10700' \
   --mic-command 'arecord -D plughw:CARD=XVF3800,DEV=0 -r 16000 -c 1 -f S16_LE -t raw' \
   --snd-command 'aplay -D default -r 48000 -c 2 -f S16_LE -t raw' \
-  --wake-uri 'tcp://127.0.0.1:10400' --wake-word-name 'mawen_v1'
+  --wake-uri 'tcp://127.0.0.1:10400' --wake-word-name 'hey_marvin'
 ```
 **驗收**：
-1. Pi log：喊「馬文」→ openwakeword log 出現 detection。
+1. Pi log：喊「hey marvin」（美式腔、不停頓）→ openwakeword log 出現 detection。⚠️不觸發先用內建 `--preload-model 'hey_jarvis'` 隔離模型格式問題 vs 管線問題（Pi 上 openwakeword 是新版 2.1.0/pyopen_wakeword，我們的 tflite 是舊架構，載入 OK 但推論相容性只有 detection 時才知道）。
 2. Mac：`nc -z marvinpi.local 10700 && echo OK` → OK。
 3. （S4 之後）Mac 橋連上收到 Detection。
 
