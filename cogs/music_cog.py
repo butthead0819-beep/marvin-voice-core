@@ -859,6 +859,43 @@ class MusicCog(commands.Cog):
         except Exception:
             return []
 
+    @staticmethod
+    def _taste_match_owner(title: str, member_likes: dict, order: list) -> str | None:
+        """歌名 vs 各成員 suki likes 的歌手強匹配。歌手名(≥2 字)== 抽出歌手 或 出現在歌名 →
+        回該成員（依 order 優先）；否則 None。混雜的非音樂興趣(露營/股票)幾乎不會出現在歌名。"""
+        from taste_fingerprint import artist_of
+        artist = artist_of(title or "")
+        for m in order:
+            for like in (member_likes.get(m) or []):
+                like = str(like).strip()
+                if len(like) < 2:
+                    continue
+                if like == artist or like in (title or ""):
+                    return m
+        return None
+
+    def _attribution_with_suki(self, mm, info: dict, spotlight: str) -> str:
+        """autopilot 掛名：①真的點過→為X（既有）②否則歌手強匹配某在場者 suki 愛歌手→為X
+        （記憶影響「為誰點」）③再否則點給大家。強匹配才掛（掛錯名比不掛名傷）。"""
+        from music_memory import recommend_attribution, GROUP_ATTRIBUTION
+        base = recommend_attribution(mm, info, spotlight)
+        if base != GROUP_ATTRIBUTION:
+            return base                      # 真的點過 → 保留既有掛名
+        suki = getattr(getattr(self.bot, 'router', None), 'memory', None)
+        if suki is None:
+            return base
+        vc = self._vc()
+        members = (vc.get_online_members() if vc is not None else []) or ([spotlight] if spotlight else [])
+        order = ([spotlight] if spotlight else []) + [m for m in members if m != spotlight]
+        likes_map = {}
+        for m in order:
+            try:
+                likes_map[m] = (suki.get_player_memory(m) or {}).get('likes', []) or []
+            except Exception:
+                likes_map[m] = []
+        owner = self._taste_match_owner(info.get('title', ''), likes_map, order)
+        return f"Marvin推薦（為{owner}）" if owner else base
+
     def _enqueue_themed_infos(self, infos: list, theme_title: str, spotlight: str,
                               exclude_titles: list, mm) -> list:
         """成塊入隊：套需 cog 狀態的閘（佇列/正在播去重、ring）+ 標 set 欄位。
@@ -872,9 +909,9 @@ class MusicCog(commands.Cog):
                 continue
             if is_already_recommended(info.get('title', ''), exclude_titles):
                 continue
-            # 掛名規則：themed 選歌來自主題策展、通常非 spotlight 點過 → 多為點給大家
-            from music_memory import recommend_attribution
-            info['requested_by'] = recommend_attribution(mm, info, spotlight)
+            # 掛名規則：themed 選歌通常非 spotlight 點過 → recommend_attribution 走點給大家，
+            # 但 _attribution_with_suki 會再用 suki 愛歌手強匹配補「為X」
+            info['requested_by'] = self._attribution_with_suki(mm, info, spotlight)
             info['_lane'] = 'themed'
             info['_spotlight'] = spotlight
             info['_set_id'] = theme_title
@@ -1114,9 +1151,8 @@ class MusicCog(commands.Cog):
                 except Exception:
                     logger.exception("[AutoRecommend] quality filter raised — fail-open")
 
-            # 掛名規則（2026-07-02）：「為X」⟹ X 點過這首；discovery 新歌等 → 點給大家
-            from music_memory import recommend_attribution
-            info['requested_by'] = recommend_attribution(mm, info, spotlight)
+            # 掛名（2026-07-02+07-09）：X 點過→為X；否則歌手強匹配某在場者 suki 愛歌手→為X；再否則點給大家
+            info['requested_by'] = self._attribution_with_suki(mm, info, spotlight)
             info['_round_first'] = (enqueued == 0)
             info['_spotlight'] = spotlight
             info['_lane'] = cand.lane
