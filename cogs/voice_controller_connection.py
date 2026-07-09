@@ -850,6 +850,8 @@ class ConnectionMixin:
             loop=self.bot.loop,
             on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
         )
+        # 韻律活化：把共享 VoiceMetaAnalyzer 掛上 device sink，讓 add_rms 真的餵到。
+        sink.meta_analyzer = self.bot.engine.meta_analyzer
         self.bot.engine.sink = sink
 
         # 3. 設 local 模式旗標
@@ -902,6 +904,8 @@ class ConnectionMixin:
             loop=self.bot.loop,
         )
         self._satellite_bridge = bridge
+        # 韻律活化：衛星路徑，把共享 VoiceMetaAnalyzer 掛上橋內部 LocalMicSink。
+        bridge.sink.meta_analyzer = self.bot.engine.meta_analyzer
         # Sentinel 心跳監控的是橋內部那顆 LocalMicSink（與本機模式同型）
         self.bot.engine.sink = bridge.sink
 

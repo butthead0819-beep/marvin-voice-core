@@ -107,6 +107,9 @@ class LocalMicSink:
 
     def _process_chunk(self, chunk: bytes, timestamp: float) -> None:
         rms = calculate_rms(chunk)
+        # 韻律採樣：有掛 meta_analyzer 才餵，None 時 no-op＝Discord 位元等價。
+        if self.meta_analyzer is not None:
+            self.meta_analyzer.add_rms(self._user_id, rms)
         self._frame_count += 1
         active_threshold = self._noise_floor.update(rms)
 

@@ -115,15 +115,45 @@ class PlaybackMixin:
         "amused": _INTIMATE_CALM, "marmo": _INTIMATE_CALM,
     }
 
+    def _current_softness(self) -> float:
+        """安全讀取 meta_analyzer.last_softness；任何一層缺失都回 0.0，永不拋例外。
+
+        只在親密分支呼叫——Discord（intimate OFF）路徑永遠不進來。
+        """
+        return getattr(
+            getattr(getattr(getattr(self, "bot", None), "engine", None), "meta_analyzer", None),
+            "last_softness", 0.0,
+        )
+
+    @staticmethod
+    def _apply_softness_to_volume(vol: "str | None", softness: float) -> str:
+        """依軟度調整 volume 字串（例如 '-18%'）並回傳新字串（不修改原值）。
+
+        SOFT_MAX=15（PROVISIONAL，可 live-tune）：softness=1.0 最多再壓低 15%。
+        夾持範圍 [-60, 0]（PROVISIONAL）。
+        """
+        base = int(vol.rstrip("%")) if vol else 0  # None / '' → 0
+        # SOFT_MAX=15 PROVISIONAL
+        final = base - round(softness * 15)
+        # 夾持 [-60, 0] PROVISIONAL
+        final = max(-60, min(0, final))
+        return f"{final}%"
+
     def _resolve_tts_params(self, emotion_tag: str) -> dict[str, str]:
         """回傳當前有效 TTS 語調參數。
 
-        親密模式開啟：依 emotion_tag bucket 回傳對比舒緩語調（含 volume）。
-        未知/None tag → CALM 預設。
-        親密模式關閉（Discord 路徑，getattr default False）→ 與原 inline lookup 完全一致。
+        親密模式開啟：依 emotion_tag bucket 回傳對比舒緩語調（含 softness 調整後的 volume）。
+        未知/None tag → CALM 預設。回傳 copy，永不修改 _INTIMATE_* 常數。
+        親密模式關閉（Discord 路徑，getattr default False）→ 與原 inline lookup 完全一致，
+        不讀 meta_analyzer。
         """
         if getattr(self, "_intimate_mode", False):
-            return self._INTIMATE_TTS_MAP.get(emotion_tag, self._INTIMATE_CALM)
+            profile = self._INTIMATE_TTS_MAP.get(emotion_tag, self._INTIMATE_CALM)
+            out = dict(profile)
+            out["volume"] = self._apply_softness_to_volume(
+                profile.get("volume"), self._current_softness()
+            )
+            return out
         return self._EMOTION_TTS_PARAMS.get(emotion_tag, self._EMOTION_TTS_PARAMS["neutral"])
 
     async def _stream_tts_to_mixer(self, text: str, *, force_macos: bool,

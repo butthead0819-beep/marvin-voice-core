@@ -10,6 +10,8 @@ class VoiceMetaAnalyzer:
     def __init__(self, max_samples=1000):
         self.rms_history = {} # user_id -> deque of RMS values
         self.max_samples = max_samples
+        self.rms_baseline: dict = {}  # user_id -> 每人 EMA 基準（alpha=0.2 PROVISIONAL）
+        self.last_softness: float = 0.0  # 最近一次發聲的軟度 [0,1]；1-on-1 單值
 
     def add_rms(self, user_id: int, rms: float):
         """將每 20ms 的 RMS 能量值存入雙端隊列 (輕量級採樣)"""
@@ -45,12 +47,27 @@ class VoiceMetaAnalyzer:
             except Exception:
                 variance = 0.0
 
+        mean_rms = round(statistics.mean(samples), 2) if samples else 0.0
+
+        # 更新每人 EMA 基準 + 計算軟度（僅在有採樣時；空採樣路徑保留舊值）
+        if samples:
+            # alpha=0.2 PROVISIONAL（可 live-tune）
+            prev = self.rms_baseline.get(user_id)
+            baseline = mean_rms if prev is None else 0.2 * mean_rms + 0.8 * prev
+            self.rms_baseline[user_id] = baseline
+            # 比基準軟 → >0；等於或大於基準 → 夾到 0
+            self.last_softness = (
+                min(1.0, max(0.0, (baseline - mean_rms) / baseline))
+                if baseline > 0 else 0.0
+            )
+
         return {
             "wps": round(wps, 2),
             "char_count": char_count,
             "energy_variance": round(variance, 2),
             "physical_duration": round(physical_duration, 2),
-            "sample_count": len(samples)
+            "sample_count": len(samples),
+            "mean_rms": mean_rms,
         }
 
     def clear(self, user_id: int):
