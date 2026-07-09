@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from marvin_voice_core.wyoming_speaker_output import WyomingSpeakerOutput
@@ -94,3 +95,71 @@ async def test_no_client_does_not_crash():
     out.close()
     await _settle()
     # 沒有 client 可斷言，能跑到這裡＝沒炸
+
+
+# ── (d) 靜音幀不送網路（idle 停送，避免 flood 塞爆佇列丟真語音幀）─────────────
+
+@pytest.mark.asyncio
+async def test_silence_frame_not_sent():
+    from wyoming.audio import AudioChunk
+
+    loop = asyncio.get_running_loop()
+    client = _FakeClient()
+    bridge = SimpleNamespace(_client=client)
+    out = WyomingSpeakerOutput(bridge, loop)
+
+    out.write(b"\x00\x00" * 480)   # 全靜音（abs max 0 < _SILENCE_MAX）
+    await _settle()
+
+    chunks = [e for e in client.events if AudioChunk.is_type(e.type)]
+    assert len(chunks) == 0, "靜音幀不應送任何 AudioChunk"
+
+
+# ── (e) 換 client（衛星重連）→ 重送 AudioStart 起新串流 ───────────────────────
+
+@pytest.mark.asyncio
+async def test_reconnect_resends_audiostart():
+    from wyoming.audio import AudioStart
+
+    loop = asyncio.get_running_loop()
+    client_a = _FakeClient()
+    bridge = SimpleNamespace(_client=client_a)
+    out = WyomingSpeakerOutput(bridge, loop)
+
+    out.write(b"\x01\x02" * 480)
+    await _settle()
+    assert any(AudioStart.is_type(e.type) for e in client_a.events)
+
+    client_b = _FakeClient()   # 衛星重連→換新 client
+    bridge._client = client_b
+    out.write(b"\x01\x02" * 480)
+    await _settle()
+
+    assert AudioStart.is_type(client_b.events[0].type), \
+        "換 client 後首事件應為新 AudioStart（新串流）"
+
+
+# ── (f) 佇列滿 → 優雅丟幀、不噴例外 ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_queue_full_drops_frame_gracefully():
+    loop = asyncio.get_running_loop()
+    bridge = SimpleNamespace(_client=None)   # 不消化→佇列會塞滿
+    out = WyomingSpeakerOutput(bridge, loop)
+
+    for _ in range(100):            # 填到 maxsize
+        out._q.put_nowait(b"x")
+    out._enqueue(b"overflow")       # 不應丟 QueueFull
+
+
+# ── (g) LOWBW 降取樣：48k stereo → 16k mono（純函式，deterministic）──────────
+
+def test_to_16k_mono_downmix_and_downsample():
+    from marvin_voice_core.wyoming_speaker_output import _to_16k_mono
+
+    frame = np.full(12, 300, dtype=np.int16).tobytes()   # 6 stereo 樣本、L=R=300
+    out = _to_16k_mono(frame)
+
+    arr = np.frombuffer(out, dtype=np.int16)
+    assert arr.size == 2, "6 stereo 幀 → downmix 6 mono → /3 降取樣 → 2 樣本"
+    assert np.all(arr == 300), "L=R=300 downmix+平均降取樣後仍為 300"

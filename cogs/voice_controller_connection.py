@@ -913,6 +913,11 @@ class ConnectionMixin:
         self._local_mode = True
         # 親密模式旗標（對齊 start_local_listening；Discord 路徑永不設）
         self._intimate_mode = os.getenv("MARVIN_INTIMATE_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+        # device TTS 音量：mixer 預設 tts_gain=0.5（-6dB，為「TTS 疊音樂上不過大」而設）；device 上
+        # TTS 常單獨播＋音樂有 loudnorm 拉滿→ack 相對太小。調高（f32 域、有 headroom、不後級 clip）。
+        # env MARVIN_TTS_GAIN 可覆蓋；只 device（satellite）路徑，Discord 不受影響。
+        if self._mixer is not None:
+            self._mixer._tts_gain = float(os.getenv("MARVIN_TTS_GAIN", "0.9"))
 
         # 3b. 放寬 late-skip（對齊 start_local_listening：免費 LLM 限流下慢回應仍出聲）
         self._LATE_RESPONSE_SKIP_SEC = 120.0
