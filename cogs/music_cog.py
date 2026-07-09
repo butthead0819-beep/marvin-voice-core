@@ -1613,6 +1613,25 @@ class MusicCog(commands.Cog):
             logger.error(f"❌ [Stream Loop] 發生異常: {e}")
             self.stream_mode = False
 
+    async def _await_reconnect_device(self, vc, *, timeout_s: float = 12.0, interval_s: float = 0.5):
+        """語音 WS 短暫斷線（如 close code 1006）→ discord.py 會自動重連，中間 ~數秒
+        _resolve_playback_device() 回 None。輪詢等 device 回來，避免一次短暫重連視窗害整條
+        音樂佇列被 stream_mode=False 永久收攤（2026-07-10 實測：00:49 一次 1006→下一首撞
+        「無可用播放裝置」→佇列直接「播放完畢」再也沒歌）。逾時仍 None＝真的斷了、caller 收攤；
+        期間被停播（stream_mode False）也提早退出。"""
+        if vc is None:
+            return None
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if not self.stream_mode:
+                return None
+            await asyncio.sleep(interval_s)
+            device = vc._resolve_playback_device()
+            if device is not None:
+                logger.info("🎵 [Stream Song] 語音短暫斷線已重連，續播佇列。")
+                return device
+        return None
+
     async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None):
         """🎵 播放單首串流音樂，等待播放完成後 return。"""
         import shlex
@@ -1621,8 +1640,12 @@ class MusicCog(commands.Cog):
         # 走輸出接縫：本機模式回 LocalSpeakerDevice、Discord 回 DiscordPlaybackDevice(vc)、
         # 皆無回 None（不再寫死 Discord voice_client，否則本機模式音樂直接 bail 無聲）。
         device = vc._resolve_playback_device() if vc is not None else None
+        # device None 但仍在串流 session → 多半是語音 WS 短暫斷線重連中（1006），別立刻整條
+        # 收攤，先有界等重連（見 _await_reconnect_device）。逾時才真的放棄。
+        if device is None and vc is not None and self.stream_mode:
+            device = await self._await_reconnect_device(vc)
         if device is None:
-            logger.warning("⚠️ [Stream Song] 無可用播放裝置（Discord VC / 本機喇叭皆無），跳過。")
+            logger.warning("⚠️ [Stream Song] 無可用播放裝置（Discord VC / 本機喇叭皆無，等重連逾時），跳過。")
             self.stream_mode = False
             return
 
