@@ -11,6 +11,7 @@
 #   marvinctl status     看兩具狀態 + 當前活著的腦
 #   marvinctl device     切到 device：停 Discord → 起 main_satellite（背景+log）
 #   marvinctl discord     切到 Discord：停 main_satellite → 起 Discord launchd bot
+#   marvinctl toggle     翻到另一個模式（Discord↔device；都沒跑→device）＝給 Hey Siri 一句話用
 #   marvinctl logs [n]   tail 當前活著那具的 log（預設 40 行）
 # 註：不用 set -e——本工具大量呼叫「預期會非零」的指令(pgrep 無匹配、bootout 未載入)，
 # 互斥安全改用顯式 stop_x || exit 1 把關（stop 沒成功就不啟動另一具）。
@@ -65,9 +66,12 @@ cmd_status() {
     if nc -z -G 2 "$SAT_HOST" 10700 2>/dev/null; then echo "${G}● 待命${Z}"; else echo "${Y}○ 不可達（沒開機/沒連網）${Z}"; fi
 }
 
+# 進度訊息走 stderr：Shortcuts 只抓 stdout→Siri 只唸最後一句結果；互動終端 stderr 照樣可見。
+note() { echo "$@" >&2; }
+
 stop_discord() {
     if launchd_loaded || [ -n "$(discord_pid)" ]; then
-        echo "  停 Discord bot…"
+        note "  停 Discord bot…"
         launchctl bootout "${DOMAIN}/${LABEL}" 2>/dev/null || true
         wait_gone discord_pid main_discord.py || return 1
     fi
@@ -75,14 +79,14 @@ stop_discord() {
 }
 
 start_discord() {
-    echo "  起 Discord bot…"
+    note "  起 Discord bot…"
     if launchd_loaded; then launchctl kickstart -k "${DOMAIN}/${LABEL}"
     else launchctl bootstrap "$DOMAIN" "$PLIST"; fi
 }
 
 stop_device() {
     if [ -n "$(device_pid)" ]; then
-        echo "  停 device 腦…"
+        note "  停 device 腦…"
         pkill -TERM -f "main_satellite.py" 2>/dev/null || true
         wait_gone device_pid main_satellite.py || return 1
     fi
@@ -90,24 +94,43 @@ stop_device() {
 }
 
 start_device() {
-    echo "  起 device 腦（連 Pi ${SAT_HOST}, 講者=${SAT_SPEAKER}）…"
+    note "  起 device 腦（連 Pi ${SAT_HOST}, 講者=${SAT_SPEAKER}）…"
     mkdir -p "$(dirname "$SAT_LOG")"
     ( cd "$REPO" && MARVIN_SATELLITE_SPEAKER="$SAT_SPEAKER" MARVIN_SATELLITE_HOST="$SAT_HOST" \
         nohup "$PY" main_satellite.py >>"$SAT_LOG" 2>&1 & )
 }
 
+# 當前身體的口語名（給 Siri 唸）
+current_body() {
+    if [ -n "$(device_pid)" ]; then echo "音箱"
+    elif [ -n "$(discord_pid)" ]; then echo "Discord"
+    else echo "沒有任何模式"; fi
+}
+# 切換後回報：互動終端→完整 status；非互動(Siri/Shortcuts)→一句話好唸
+report_switch() {
+    if [ -t 1 ]; then echo; cmd_status
+    else echo "馬文已切換到 $(current_body) 模式"; fi
+}
+
 cmd_device() {
-    echo "${B}切到 device 模式${Z}"
+    note "${B}切到 device 模式${Z}"
     stop_discord || exit 1             # 先確認 Discord 腦死透（互斥）；沒停成就不啟動
-    if [ -n "$(device_pid)" ]; then echo "  device 腦已在跑，不重啟。"; else start_device; sleep 2; fi
-    echo; cmd_status
+    if [ -n "$(device_pid)" ]; then note "  device 腦已在跑，不重啟。"; else start_device; sleep 2; fi
+    report_switch
 }
 
 cmd_discord() {
-    echo "${B}切到 Discord 模式${Z}"
+    note "${B}切到 Discord 模式${Z}"
     stop_device || exit 1              # 先確認 device 腦死透（互斥）；沒停成就不啟動
-    if [ -n "$(discord_pid)" ]; then echo "  Discord bot 已在跑，不重啟。"; else start_discord; sleep 2; fi
-    echo; cmd_status
+    if [ -n "$(discord_pid)" ]; then note "  Discord bot 已在跑，不重啟。"; else start_discord; sleep 2; fi
+    report_switch
+}
+
+cmd_toggle() {
+    # 翻到「另一個」腦：Discord 在跑→去 device；device 在跑→去 Discord；都沒跑→開 device。
+    if [ -n "$(discord_pid)" ]; then cmd_device
+    elif [ -n "$(device_pid)" ]; then cmd_discord
+    else cmd_device; fi
 }
 
 cmd_logs() {
@@ -122,6 +145,7 @@ case "${1:-status}" in
     status|"") cmd_status ;;
     device)    cmd_device ;;
     discord)   cmd_discord ;;
+    toggle)    cmd_toggle ;;
     logs)      cmd_logs "${2:-40}" ;;
-    *) echo "用法: marvinctl {status|device|discord|logs [n]}" >&2; exit 1 ;;
+    *) echo "用法: marvinctl {status|device|discord|toggle|logs [n]}" >&2; exit 1 ;;
 esac
