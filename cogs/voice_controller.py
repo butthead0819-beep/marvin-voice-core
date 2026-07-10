@@ -1104,7 +1104,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         except Exception as e:
             logger.debug(f"[GapResearch] shadow 偵測失敗（忽略）: {e}")
 
-    async def handle_stt_result(self, speaker: str, raw_text: str, timestamp: float, wav_bytes: bytes, prosody_data: dict = None, is_wake_check=False, track=None, bypass_etd=False, wake_intent: float = None):
+    async def handle_stt_result(self, speaker: str, raw_text: str, timestamp: float, wav_bytes: bytes, prosody_data: dict = None, is_wake_check=False, track=None, bypass_etd=False, wake_intent: float = None, is_text_input: bool = False):
         # 🔐 [Consent] 未同意者不送出任何資料（Groq STT / LLM / suki_memory 均跳過）
         if not self.consent.is_consented(speaker):
             return
@@ -1263,7 +1263,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         is_fast, is_echo = self._apply_wake_guards(
             speaker, raw_text, timestamp, track, is_fast,
-            _fusion, _wake_dom, _confidence, _wake_voice_score)
+            _fusion, _wake_dom, _confidence, _wake_voice_score,
+            is_text_input=is_text_input)
         
         if speaker not in self.speech_buffers:
             self.speech_buffers[speaker] = {"texts": [], "first_timestamp": timestamp, "wav_bytes": bytearray()}
@@ -1378,6 +1379,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 "wake_intent": wake_intent,   # None = Track A (regex, 高信心)
                 "wake_voice_score": _wake_voice_score,  # helper query 判定：沒喊馬文→低
                 "wake_dom":    _wake_dom,               # 主導通道（task/info → helper）
+                "is_text_input": is_text_input,         # 文字輸入（Siri/stdin）→ 下游跳過等後續語音
                 # ContextVar 不會跨 asyncio.Queue 邊界 — 手動 forward timing dict 給 consumer
                 "_timing":     pipeline_timing.snapshot(),
             }
@@ -1482,13 +1484,20 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
 
     def _apply_wake_guards(self, speaker, raw_text, timestamp, track, is_fast,
-                           _fusion, _wake_dom, _confidence, _wake_voice_score):
+                           _fusion, _wake_dom, _confidence, _wake_voice_score,
+                           is_text_input: bool = False):
         """[Wake Guards] handle_stt_result 中段的喚醒守衛叢集（抽出，行為不變）。
 
         Double Wake / Response Lock / Storm / Echo(+Strong-Voice Bypass) / Global /
         Follow-up override。回授防護安全核心。回 (is_fast, is_echo)；is_duplicate /
         now / segment_id 純內部；接受喚醒時記 segment + 開 Response Lock + 風暴計數。
         """
+        # 📝 [Text Input] Siri/stdin 文字非音訊：整組守衛（Double Wake / Response Lock /
+        # Storm / Echo / Global）都為「防音訊快速誤觸發」而設，對刻意、完整、離散的文字
+        # 指令一律不適用（否則播音樂時 Response Lock 會壓掉「停」）。每句文字都要處理。
+        if is_text_input:
+            return True, False
+
         # 🛡️ [Double Wake Guard 2.0] 強化版：結合 Segment ID 與時間窗口
         segment_id = f"{speaker}_{timestamp}"
         now = time.time()
@@ -2615,6 +2624,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         _wi = task_data.get("wake_intent")  # None = Track A / 不明
         _wvoice = task_data.get("wake_voice_score")  # helper query 判定用
         _wdom = task_data.get("wake_dom")
+        _is_text = task_data.get("is_text_input", False)  # 文字輸入→confirmation 不等後續語音
 
         # ⏱️ [Stale Drop] dequeue 即檢查排隊時間：已超過 LATE_SKIP 門檻的死查詢直接丟，
         # 不跑 cleaner/LLM。斷開「整套處理完才在 4310 發現太舊」的佇列雪崩——6/2 多人
@@ -2631,9 +2641,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         asyncio.create_task(self._play_ack("filler", speaker=speaker))
 
         # 多回合確認流程，回傳最終確認的問句
-        confirmed_query = await self._confirmation_flow(speaker, timestamp, initial_text=raw_text)
+        confirmed_query = await self._confirmation_flow(speaker, timestamp, initial_text=raw_text, is_text_input=_is_text)
         if confirmed_query:
-            await self._process_queued_query(speaker, timestamp, override_query=confirmed_query, wake_intent=_wi, original_raw=raw_text, wake_voice_score=_wvoice, wake_dom=_wdom)
+            await self._process_queued_query(speaker, timestamp, override_query=confirmed_query, wake_intent=_wi, original_raw=raw_text, wake_voice_score=_wvoice, wake_dom=_wdom, is_text_input=_is_text)
 
     # ──────────────────────────────────────────────────────────────
     # 🗣️ [Dialogue Confirmation] 多回合確認流程
@@ -2778,22 +2788,24 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             logger.warning(f"[Ack:{category_key}] 播放失敗（忽略）：{e}")
         return
 
-    async def _confirmation_flow(self, speaker: str, wake_time: float, initial_text: str = "") -> str | None:
+    async def _confirmation_flow(self, speaker: str, wake_time: float, initial_text: str = "", is_text_input: bool = False) -> str | None:
         """
         取得問句後直接回答，不做 TTS 確認環節。
         - 問句已在喚醒句中：立即返回，零等待
         - 問句為空：等待後續 STT（最多 _CONFIRM_WAIT_TIMEOUT 秒），逾時才提示重說
+        - is_text_input（Siri/stdin）：文字是一次送完的完整指令，無後續語音可等，
+          也無音訊 conv_buffer 可 harvest → 短句直接當完整指令，不等、不逾時。
         """
         evt = asyncio.Event()
         self.speaker_dialogue_states[speaker] = {"state": "awaiting_question", "event": evt, "question": ""}
 
         stripped = self._strip_wake_word(initial_text) if initial_text else ""
-        if len(stripped) < 4:
+        if len(stripped) < 4 and not is_text_input:
             raw_query = self.bot.engine.conv_buffer.get_harvest(wake_time, before=3.0, after=2.0, speaker=speaker)
             stripped = self._strip_wake_word(raw_query) if raw_query else stripped
         # 短控制指令（下一首/暫停/繼續/停，排除 play）即使 <4 字也是完整指令，不可被字數閘
         # 當成『只喊了喚醒詞』吞掉去等問句逾時（「馬文下一首」→「下一首」3 字 bug）。
-        if len(stripped) >= 4 or self._detect_music_command(stripped) in ("skip", "pause", "resume", "stop"):
+        if is_text_input or len(stripped) >= 4 or self._detect_music_command(stripped) in ("skip", "pause", "resume", "stop"):
             # 問句已在喚醒句裡，直接用
             self.speaker_dialogue_states.pop(speaker, None)
         else:
@@ -3157,7 +3169,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             logger.warning("[Marmo] 90 秒內未收到 @AI Marmo 回覆")
             asyncio.create_task(self.play_tts("Marmo 沒有回應，可能在忙。", already_in_channel=True))
 
-    async def _process_queued_query(self, speaker: str, wake_time: float, override_query: str = None, wake_intent: float = None, original_raw: str = None, wake_voice_score: float = None, wake_dom: str = None):
+    async def _process_queued_query(self, speaker: str, wake_time: float, override_query: str = None, wake_intent: float = None, original_raw: str = None, wake_voice_score: float = None, wake_dom: str = None, is_text_input: bool = False):
         """
         [Fast System] 核心處理邏輯：根據喚醒時間點，精準擷取上下文並請求 LLM。
         """
@@ -3219,7 +3231,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             await self._handle_marmo_query(speaker, _marmo_check_text)
             return
 
-        should_answer, gate_reason = self._query_quality_gate(query)
+        # 文字輸入（Siri/控制台）是刻意打的完整指令，跳過為語音 harvest 雜訊設計的品質閘
+        # （否則「停」「繼續」等短控制詞會被 too_short 擋掉）。
+        if is_text_input:
+            should_answer, gate_reason = True, "text_input"
+        else:
+            should_answer, gate_reason = self._query_quality_gate(query)
         if not should_answer:
             self._wake_response_pending = False  # 🔒 Gate 拒絕，不走 TTS，主動解鎖
             msg = "我聽到你叫我，但問題本身像宇宙背景噪音一樣空。再說一次。"

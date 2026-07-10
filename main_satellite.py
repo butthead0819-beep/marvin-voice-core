@@ -24,6 +24,7 @@ Live 執行步驟：
 import asyncio
 import logging
 import os
+import time
 
 from dotenv import load_dotenv
 
@@ -78,6 +79,131 @@ async def setup_satellite(bot) -> object:
     return vc
 
 
+async def inject_text(vc, speaker: str, text: str) -> bool:
+    """把一段文字當成「已轉錄結果」注入 Marvin pipeline（stdin / HTTP 共用）。
+
+    跳過 STT、虛擬空 wav_bytes、bypass_etd（文字輸入無語音、不需語意終止檢測）。
+    回傳 True＝已送出、False＝空字串略過。
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    logger.info(f"📝 [TextInput] 收到文字（{speaker}）: {text}")
+    # 用牆鐘 time.time()：下游 Stale Drop 檢查是 time.time()-timestamp，
+    # 傳單調時鐘（loop.time()）會被誤判成排隊上億秒而丟棄。
+    timestamp = time.time()
+    await vc.handle_stt_result(
+        speaker=speaker,
+        raw_text=text,
+        timestamp=timestamp,
+        wav_bytes=b"",  # 文字模式無音訊
+        prosody_data=None,
+        is_wake_check=False,
+        bypass_etd=True,  # 文字輸入跳過語意終止檢測
+        is_text_input=True,  # 跳過 Echo Guard（播音樂時仍能下文字指令）+ 不等後續語音
+    )
+    return True
+
+
+def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗與露"):
+    """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
+
+    純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
+    （Tailscale 私網信任）；設了 token 就檢查 X-Marvin-Token header。
+    """
+    from aiohttp import web
+
+    _CORS = {"Access-Control-Allow-Origin": "*",
+             "Access-Control-Allow-Headers": "*",
+             "Access-Control-Allow-Methods": "POST, OPTIONS"}
+
+    async def handle_say(request):
+        # token 可走 header 或網址 ?t=（控制台網頁跨網域呼叫方便）
+        tok = request.headers.get("X-Marvin-Token") or request.query.get("t")
+        if token and tok != token:
+            return web.json_response({"error": "unauthorized"}, status=401, headers=_CORS)
+        ctype = request.headers.get("Content-Type", "")
+        if "application/json" in ctype:
+            data = await request.json()
+            text = (data.get("text") or "").strip()
+            speaker = data.get("speaker") or default_speaker
+        else:
+            text = (await request.text()).strip()
+            speaker = request.query.get("speaker") or default_speaker
+        if not text:
+            return web.json_response({"error": "empty"}, status=400, headers=_CORS)
+        await inject_text(vc, speaker, text)
+        return web.json_response({"ok": True, "speaker": speaker, "text": text}, headers=_CORS)
+
+    async def handle_now(request):
+        """回當前播放的歌（控制台「現正播放中」輪詢）。無 token 驗證（唯讀）。"""
+        mc = None
+        try:
+            mc = vc.bot.cogs.get("MusicCog")
+        except Exception:  # noqa: BLE001
+            mc = None
+        info = getattr(mc, "_current_stream_info", None) if mc else None
+        playing = bool(mc and getattr(mc, "stream_mode", False) and info)
+        if not playing:
+            return web.json_response({"playing": False}, headers=_CORS)
+        return web.json_response({
+            "playing": True,
+            "paused": bool(getattr(mc, "stream_paused", False)),
+            "title": info.get("title", ""),
+            "by": info.get("requested_by", ""),
+            "cover": info.get("thumbnail", ""),  # yt-dlp 縮圖 URL，瀏覽器直接載
+        }, headers=_CORS)
+
+    async def handle_preflight(request):
+        return web.Response(status=204, headers=_CORS)
+
+    app = web.Application()
+    app.router.add_post("/say", handle_say)
+    app.router.add_options("/say", handle_preflight)
+    app.router.add_get("/now", handle_now)
+    return app
+
+
+async def start_text_http_server(vc):
+    """起 Siri 文字 HTTP 伺服器（0.0.0.0，走 Tailscale）。回傳 runner（好收）。
+
+    埠＝MARVIN_TEXT_PORT（預設 8790）；token＝MARVIN_TEXT_TOKEN（空＝不驗證）。
+    """
+    from aiohttp import web
+
+    port = int(os.getenv("MARVIN_TEXT_PORT", "8790"))
+    token = os.getenv("MARVIN_TEXT_TOKEN", "").strip() or None
+    default_speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
+
+    app = build_text_app(vc, token=token, default_speaker=default_speaker)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    _auth = "有 token 保護" if token else "⚠️ 無 token（僅靠 Tailscale 私網）"
+    logger.info(
+        f"📝 [TextInput] Siri HTTP 伺服器啟動：POST :{port}/say（speaker={default_speaker}，{_auth}）")
+    return runner
+
+
+async def _stdin_text_input_loop(vc):
+    """監聽 stdin 輸入文字，直接注入 Marvin pipeline（本機終端手打／貼 Siri 轉錄）。"""
+    import sys
+    loop = asyncio.get_event_loop()
+    speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
+
+    logger.info(f"📝 [TextInput] stdin 模式啟用（speaker={speaker}）；打字後按 Enter 送出")
+
+    while True:
+        try:
+            text = await loop.run_in_executor(None, sys.stdin.readline)
+            await inject_text(vc, speaker, text)
+        except EOFError:
+            break
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"❌ [TextInput] 處理文字失敗: {e}", exc_info=True)
+
+
 async def main():
     # 錨定 repo 根目錄：相對路徑的正本記憶(marvin.db/music_memory.json/records/)+assets+
     # models+repo 的 .env(GUILD_ID) 全用正本，不論從哪啟動都不會漂到別的 worktree。
@@ -94,9 +220,13 @@ async def main():
     # async with bot: 進入 _async_setup_hook（設 event loop）但不呼叫 setup_hook，
     # 不觸發 tree.sync 或任何 Discord 連線動作。
     async with bot:
-        await setup_satellite(bot)
+        vc = await setup_satellite(bot)
         host = os.getenv("MARVIN_SATELLITE_HOST", "marvinpi.local")
         logger.info(f"🛰️ [Satellite] 衛星模式啟動完成，連向 {host}，等 Pi 麥喚醒...")
+
+        # 文字輸入：stdin（本機手打）+ HTTP（Siri 捷徑走 Tailscale POST /say）
+        asyncio.create_task(_stdin_text_input_loop(vc))
+        await start_text_http_server(vc)
         # Selftest：免喚醒直接播放，測音訊路徑（腦 mixer→衛星→喇叭，如 BT 連續音樂穩定性）。
         # 不設任何 SELFTEST_* env＝一般模式、零影響。兩種模式：
         #   MARVIN_SATELLITE_SELFTEST_MP3   ＝本地 mp3 檔或資料夾，連續播（繞過 YouTube／yt-dlp

@@ -1,0 +1,190 @@
+"""
+tests/test_satellite_text_input.py
+TDD：驗 main_satellite.py 文字注入接口（stdin / HTTP 共用）+ Siri HTTP endpoint。
+無網路（aiohttp TestServer 起在本機隨機埠）、無 Discord、vc 用 AsyncMock。
+"""
+import pytest
+from unittest.mock import AsyncMock, MagicMock
+
+
+def _make_vc():
+    vc = MagicMock()
+    vc.handle_stt_result = AsyncMock()
+    return vc
+
+
+# --- 共用注入函式 ---
+@pytest.mark.asyncio
+async def test_inject_text_calls_handle_stt_result_as_transcribed():
+    from main_satellite import inject_text
+    vc = _make_vc()
+    await inject_text(vc, "狗與露", "下一首")
+    vc.handle_stt_result.assert_awaited_once()
+    kw = vc.handle_stt_result.call_args.kwargs
+    assert kw["speaker"] == "狗與露"
+    assert kw["raw_text"] == "下一首"
+    assert kw["wav_bytes"] == b""       # 文字模式無音訊
+    assert kw["bypass_etd"] is True     # 文字輸入跳過語意終止檢測
+    assert kw["is_wake_check"] is False
+    assert kw["is_text_input"] is True  # 跳過 Echo Guard + 不等後續語音
+
+
+@pytest.mark.asyncio
+async def test_inject_text_uses_wallclock_timestamp():
+    """回歸：timestamp 必須是牆鐘 time.time()，非單調 loop.time()。
+
+    下游 Stale Drop 是 time.time()-timestamp；傳單調時鐘會被誤判排隊上億秒而丟棄。
+    """
+    import time as _time
+    from main_satellite import inject_text
+    vc = _make_vc()
+    before = _time.time()
+    await inject_text(vc, "狗與露", "下一首")
+    after = _time.time()
+    ts = vc.handle_stt_result.call_args.kwargs["timestamp"]
+    assert before <= ts <= after
+
+
+@pytest.mark.asyncio
+async def test_inject_text_skips_empty_and_whitespace():
+    from main_satellite import inject_text
+    vc = _make_vc()
+    await inject_text(vc, "狗與露", "   ")
+    vc.handle_stt_result.assert_not_awaited()
+
+
+# --- Siri HTTP endpoint ---
+@pytest.mark.asyncio
+async def test_http_say_injects_text_and_returns_ok():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/say", data="放周杰倫".encode(),
+            headers={"X-Marvin-Token": "s3cret"})
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is True
+    vc.handle_stt_result.assert_awaited_once()
+    kw = vc.handle_stt_result.call_args.kwargs
+    assert kw["raw_text"] == "放周杰倫"
+    assert kw["speaker"] == "狗與露"
+
+
+@pytest.mark.asyncio
+async def test_http_say_rejects_wrong_token():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/say", data=b"hi", headers={"X-Marvin-Token": "wrong"})
+        assert resp.status == 401
+    vc.handle_stt_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_http_say_rejects_empty_text():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/say", data="   ".encode(), headers={"X-Marvin-Token": "s3cret"})
+        assert resp.status == 400
+    vc.handle_stt_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_http_say_no_token_configured_allows_request():
+    """token=None（Tailscale 私網）→ 不驗證，直接放行。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token=None, default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/say", data="測試".encode())
+        assert resp.status == 200
+    vc.handle_stt_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_http_now_reports_current_song():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    mc = MagicMock()
+    mc.stream_mode = True
+    mc.stream_paused = False
+    mc._current_stream_info = {"title": "告白氣球", "requested_by": "狗與露",
+                               "thumbnail": "https://i.ytimg.com/vi/abc/hq.jpg"}
+    vc.bot.cogs.get.return_value = mc
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/now")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["playing"] is True
+        assert body["title"] == "告白氣球"
+        assert body["by"] == "狗與露"
+        assert body["cover"] == "https://i.ytimg.com/vi/abc/hq.jpg"
+
+
+@pytest.mark.asyncio
+async def test_http_now_reports_not_playing_when_idle():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    mc = MagicMock()
+    mc.stream_mode = False
+    mc._current_stream_info = None
+    vc.bot.cogs.get.return_value = mc
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/now")
+        assert resp.status == 200
+        assert (await resp.json())["playing"] is False
+
+
+@pytest.mark.asyncio
+async def test_http_say_token_via_query_param():
+    """控制台網頁跨網域呼叫：token 走網址 ?t= 也要能過。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/say?t=s3cret", data="下一首".encode())
+        assert resp.status == 200
+        assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+    vc.handle_stt_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_http_say_options_preflight_returns_cors():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.options("/say")
+        assert resp.status == 204
+        assert resp.headers.get("Access-Control-Allow-Origin") == "*"
+
+
+@pytest.mark.asyncio
+async def test_http_say_json_speaker_override():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token=None, default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/say", json={"text": "哈囉", "speaker": "showay"})
+        assert resp.status == 200
+    kw = vc.handle_stt_result.call_args.kwargs
+    assert kw["raw_text"] == "哈囉"
+    assert kw["speaker"] == "showay"
