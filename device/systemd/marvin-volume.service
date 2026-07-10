@@ -1,0 +1,16 @@
+[Unit]
+Description=Marvin device 音量控制 HTTP 服務（取代旋鈕；Siri 捷徑 POST /vol）
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Environment=MARVIN_VOL_TOKEN=__MARVIN_TEXT_TOKEN__
+Environment=MARVIN_VOL_PORT=8766
+ExecStart=/usr/bin/python3 -u /home/pi/marvin-device/volume_server.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

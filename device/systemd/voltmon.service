@@ -1,0 +1,7 @@
+[Unit]
+Description=Under-voltage 哨兵（fsync 落地，抓硬斷電前的旗標）
+[Service]
+ExecStart=/usr/local/bin/voltmon.sh
+Restart=always
+[Install]
+WantedBy=multi-user.target
