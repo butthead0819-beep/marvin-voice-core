@@ -99,7 +99,9 @@ def _make_barge_self(*, local_mode=True, current_tts_text=""):
     return fake
 
 
-def test_barge_in_skipped_during_pure_music_on_local(monkeypatch):
+# barge-in 硬停音樂＝永遠不該（純音樂只 duck，播放交命令流水線）→ 與 kill-switch 脫鉤。
+
+def test_barge_in_skipped_during_pure_music_guard_on(monkeypatch):
     monkeypatch.setenv("MARVIN_MUSIC_ECHO_GUARD", "1")
     fake = _make_barge_self()  # local + 純音樂（無 TTS 文字）
     VoiceController.handle_raw_speech_start(fake, "Alice")
@@ -107,9 +109,19 @@ def test_barge_in_skipped_during_pure_music_on_local(monkeypatch):
     assert fake._tts_interrupted is not True
 
 
+def test_barge_in_skipped_during_pure_music_even_when_killswitch_off(monkeypatch):
+    # 關鍵回歸（2026-07-10 使用者實測「還是停掉了」）：kill-switch 關掉是為了 honor 喚醒 duck，
+    # 但 barge-in 硬停音樂與那旗標無關，純音樂仍一律不該砍整首。
+    monkeypatch.setenv("MARVIN_MUSIC_ECHO_GUARD", "0")
+    fake = _make_barge_self()  # local 純音樂
+    VoiceController.handle_raw_speech_start(fake, "Alice")
+    fake._resolve_playback_device.assert_not_called()
+    assert fake._tts_interrupted is not True
+
+
 def test_barge_in_proceeds_on_discord_during_music(monkeypatch):
-    monkeypatch.setenv("MARVIN_MUSIC_ECHO_GUARD", "1")
-    fake = _make_barge_self(local_mode=False)  # Discord → guard 不作用
+    monkeypatch.setenv("MARVIN_MUSIC_ECHO_GUARD", "0")
+    fake = _make_barge_self(local_mode=False)  # Discord（_local_mode 不存在）→ 不受影響
     device = MagicMock()
     device.is_playing.return_value = True
     fake._resolve_playback_device.return_value = device
@@ -119,9 +131,10 @@ def test_barge_in_proceeds_on_discord_during_music(monkeypatch):
     assert fake._tts_interrupted is True
 
 
-def test_barge_in_proceeds_when_killswitch_off(monkeypatch):
+def test_barge_in_proceeds_during_tts_on_local(monkeypatch):
+    # device 上 bot 正講 TTS（_current_tts_text 非空）→ 使用者打斷 bot 仍要中斷（非純音樂）。
     monkeypatch.setenv("MARVIN_MUSIC_ECHO_GUARD", "0")
-    fake = _make_barge_self()  # local 純音樂但 guard 關 → 照舊打斷
+    fake = _make_barge_self(current_tts_text="說到一半的回應")
     device = MagicMock()
     device.is_playing.return_value = True
     fake._resolve_playback_device.return_value = device
