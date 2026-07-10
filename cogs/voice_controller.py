@@ -35,7 +35,7 @@ from cogs.voice_controller_commands import MarvinCommandsMixin
 from cogs.voice_controller_social import ProactiveSocialMixin, PROACTIVE_TOPIC_COOLDOWN_S
 from cogs.voice_controller_emotion import EmotionMoodMixin
 from cogs.voice_controller_connection import (  # noqa: F401 — re-export 給 main_discord / 測試
-    ConnectionMixin, read_and_clear_reboot_state, REBOOT_STATE_FILE,
+    ConnectionMixin, music_echo_guard_active, read_and_clear_reboot_state, REBOOT_STATE_FILE,
 )
 from cogs.voice_controller_playback import (  # noqa: F401 — re-export MAX_HOTSWAP_CHARS 給測試
     PlaybackMixin, MAX_HOTSWAP_CHARS,
@@ -1680,6 +1680,13 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         # 🚀 [TTS Interrupt] 使用者開口時中斷 TTS 播放，若文字尚未在聊天室則補發
         if self.is_playing_audio and not self._tts_protected:
+            # 🔇 [Music Echo Guard] 播純音樂時 local/satellite（無硬體 AEC）的 speech-start
+            # 很可能是喇叭外放被同機麥收回的回聲 → 不觸發 barge-in（Discord 路徑不受影響）。
+            if music_echo_guard_active(
+                    getattr(self, "_local_mode", False), self.is_playing_audio,
+                    self._current_tts_text, os.getenv("MARVIN_MUSIC_ECHO_GUARD", "1") != "0"):
+                logger.info(f"🔇 [Music Echo Guard] 播音樂中跳過 {speaker} 的 barge-in（無硬體 AEC＝可能為喇叭回聲）")
+                return
             device = self._resolve_playback_device()
             if device is not None and device.is_playing():
                 device.stop()

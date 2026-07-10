@@ -39,6 +39,20 @@ logger = logging.getLogger(__name__)
 REBOOT_STATE_FILE = ".marvin_reboot_state.json"
 
 
+def music_echo_guard_active(local_mode: bool, is_playing_audio: bool,
+                            current_tts_text: str, enabled: bool) -> bool:
+    """軟體 Music Echo Guard：播純音樂時，local/satellite（無硬體 AEC）該不該把
+    同機喇叭外放、麥又收回的音樂回聲當人聲。純函式，好測。
+
+    True＝忽略衛星喚醒 duck ＋ 不觸發 barge-in。條件全滿足才 arm：
+      - enabled           kill-switch（env MARVIN_MUSIC_ECHO_GUARD）未關
+      - local_mode        本機/衛星路徑（Discord 路徑此旗標不存在→False→零影響）
+      - is_playing_audio  正在播放
+      - not current_tts_text  純音樂（無 TTS 文字）；bot 正講 TTS 時使用者仍要能 barge-in
+    """
+    return bool(enabled and local_mode and is_playing_audio and not current_tts_text)
+
+
 def _git_head_short() -> str:
     """取目前 HEAD short hash；失敗回 'unknown'。"""
     try:
@@ -876,7 +890,14 @@ class ConnectionMixin:
     def _on_satellite_wake(self, name: str) -> None:
         """衛星（Pi openwakeword）喚醒候選 → duck 音樂即時回饋。
 
-        尊重 MARVIN_WAKE_DUCK kill-switch（與 Discord/本機 duck 同一開關）。"""
+        尊重 MARVIN_WAKE_DUCK kill-switch（與 Discord/本機 duck 同一開關）。
+        播純音樂時走 Music Echo Guard 忽略此候選（無硬體 AEC＝很可能是喇叭回聲）。"""
+        if music_echo_guard_active(
+                getattr(self, "_local_mode", False), getattr(self, "is_playing_audio", False),
+                getattr(self, "_current_tts_text", ""),
+                os.getenv("MARVIN_MUSIC_ECHO_GUARD", "1") != "0"):
+            logger.info("🔇 [Music Echo Guard] 播音樂中忽略衛星喚醒候選 name=%s（無硬體 AEC＝可能為喇叭回聲）", name)
+            return
         if getattr(self, "_mixer", None) and os.getenv("MARVIN_WAKE_DUCK", "1") != "0":
             self._mixer.duck_for_wake()
 
