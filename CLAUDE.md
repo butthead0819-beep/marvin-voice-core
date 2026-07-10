@@ -74,6 +74,46 @@
 
 ---
 
+## loopkit 分流規則（大型任務用）
+
+TDD 測試優先原則（「先寫測試，再實作」）對所有任務都成立，但有兩條執行路線，按**確定性**而非行數決策：
+
+### 決策樹（優先順序）
+
+1. **是否 bug fix？** → YES ⇒ 用 TDD
+2. **是否「一次寫對」（無需驗證）？** → YES ⇒ 用 TDD
+3. **是否多檔或跨模組協調？** → YES ⇒ 用 loopkit
+4. **是否有探索空間（多個方案未知最優）？** → YES ⇒ 用 loopkit
+
+### TDD 路線（DEFAULT 大多數情況）
+- **任務特徵**：bug fix、明確邏輯、單一職責、一次寫對
+- **流程**：寫失敗測試 → 寫實作 → pytest 綠 → 一個 commit
+- **在主工作目錄執行**
+
+### loopkit 路線（規模大/不確定性高）
+- **任務特徵**：多檔、跨模組、探索性高、需驗證最佳方案
+- **前置**：確認 `claude` CLI + `jq` 在 PATH；不知道驗收條件 → 不用 loopkit
+- **流程**：
+  1. `~/Code/loopkit/init.sh <project>` scaffold `.loop/`
+  2. 填 `task.json`：goal + 機器可判的 acceptance（如 `pytest X && condition Y`）
+  3. `loop.sh` 啟動 planner→generator→evaluator 迴圈
+  4. **在隔離 git worktree 執行**（防每輪 auto-commit 污染主目錄）
+  5. evaluator PASS → 整包 reset --soft 或讓 GitHub 自動 squash merge
+  6. **最終一個清淨 commit** 上主線
+- **evaluator 必須用機器可判的條件**：不能是「看起來對」，要能 `pytest && grep && diff` 等
+
+### 兩者共同要求
+- **都有測試**（形式不同）
+  - TDD：pytest 標準斷言
+  - loopkit：evaluator 條件（可包含 pytest，但要多維驗證邏輯）
+- **都從測試反推實作**（測試優先）
+
+### 何時違反決策樹（例外）
+- 使用者明確說「就用 TDD」或「就用 loopkit」→ 從之
+- 任務中途發現「原本以為一次寫對，結果卡住」→ 停下切換工具
+
+---
+
 ## Voice Agent 設計理念
 
 ### 核心原則
