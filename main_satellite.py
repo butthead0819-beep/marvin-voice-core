@@ -97,6 +97,57 @@ async def main():
         await setup_satellite(bot)
         host = os.getenv("MARVIN_SATELLITE_HOST", "marvinpi.local")
         logger.info(f"🛰️ [Satellite] 衛星模式啟動完成，連向 {host}，等 Pi 麥喚醒...")
+        # Selftest：免喚醒直接播放，測音訊路徑（腦 mixer→衛星→喇叭，如 BT 連續音樂穩定性）。
+        # 不設任何 SELFTEST_* env＝一般模式、零影響。兩種模式：
+        #   MARVIN_SATELLITE_SELFTEST_MP3   ＝本地 mp3 檔或資料夾，連續播（繞過 YouTube／yt-dlp
+        #                                     限流＝乾淨測 BT 音訊路徑＋換歌轉場）
+        #   MARVIN_SATELLITE_SELFTEST_QUERY ＝語音點歌 query（走 yt-dlp）
+        _mp3 = os.getenv("MARVIN_SATELLITE_SELFTEST_MP3", "").strip()
+        _q = os.getenv("MARVIN_SATELLITE_SELFTEST_QUERY", "").strip()
+        if _mp3:
+            import glob
+            import discord
+            async def _selftest_local():
+                await asyncio.sleep(6)
+                mc = bot.cogs.get("MusicCog")
+                vc = bot.cogs.get("VoiceController")
+                if mc is None or vc is None:
+                    logger.warning("⚠️ [Selftest] cog 未載入，跳過")
+                    return
+                files = sorted(glob.glob(os.path.join(_mp3, "*.mp3"))) if os.path.isdir(_mp3) else [_mp3]
+                device = vc._resolve_playback_device()
+                if device is None:
+                    logger.warning("⚠️ [Selftest] 無播放裝置，跳過")
+                    return
+                logger.info(f"🎵 [Selftest] 本地 MP3 連續播放 {len(files)} 首（繞過 YouTube）")
+                mc.stream_mode = True
+                for f in files:
+                    if not mc.stream_mode:
+                        break
+                    logger.info(f"🎵 [Selftest] ▶ {os.path.basename(f)}")
+                    vc._current_stream_url = f
+                    try:
+                        # 乾淨 FFmpegPCMAudio（無 -reconnect 網路參數，本地檔才開得起來）→
+                        # 真實 mixer 路徑，連續播＝測 BT 音訊 + 換歌轉場。
+                        await vc._mixer_play_music(
+                            device, discord.FFmpegPCMAudio(f),
+                            still_active=lambda: mc.stream_mode, volume_attr="stream_volume")
+                    except Exception as e:   # noqa: BLE001
+                        logger.warning(f"⚠️ [Selftest] 播放失敗 {os.path.basename(f)}: {e}")
+                mc.stream_mode = False
+                logger.info("🎵 [Selftest] 本地 MP3 全部播完")
+            asyncio.create_task(_selftest_local())
+        elif _q:
+            _spk = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
+            async def _selftest_play():
+                await asyncio.sleep(6)   # 等衛星橋連上 Pi + Pi 端就緒
+                mc = bot.cogs.get("MusicCog")
+                if mc is None:
+                    logger.warning("⚠️ [Selftest] MusicCog 未載入，跳過")
+                    return
+                logger.info(f"🎵 [Selftest] 免喚醒直接點歌：{_q}（speaker={_spk}）")
+                await mc._safe_music_command(_spk, _q, "play")
+            asyncio.create_task(_selftest_play())
         await asyncio.Event().wait()
 
 
