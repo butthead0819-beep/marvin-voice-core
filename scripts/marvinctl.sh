@@ -106,12 +106,12 @@ current_body() {
     elif [ -n "$(discord_pid)" ]; then echo "Discord"
     else echo "沒有任何模式"; fi
 }
-# 切換後回報：互動終端→完整 status；非互動(Siri/Shortcuts)→一句話好唸（音箱開/關框架）
+# 切換後回報：互動終端→完整 status；非互動(Siri/Shortcuts)→明講現在是什麼模式（好唸）
 report_switch() {
     if [ -t 1 ]; then echo; cmd_status
-    elif [ -n "$(device_pid)" ]; then echo "馬文音箱模式已打開"
-    elif [ -n "$(discord_pid)" ]; then echo "馬文音箱模式已關閉，回到 Discord"
-    else echo "馬文兩個模式目前都沒開"; fi
+    elif [ -n "$(device_pid)" ]; then echo "音箱模式已打開，馬文現在是音箱模式"
+    elif [ -n "$(discord_pid)" ]; then echo "音箱模式已關閉，馬文現在是 Discord 模式"
+    else echo "馬文現在兩個模式都沒開"; fi
 }
 
 cmd_device() {
