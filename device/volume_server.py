@@ -78,7 +78,8 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
     <img id="npcover" alt="" style="width:64px;height:64px;border-radius:10px;
          object-fit:cover;background:#0f1117;flex-shrink:0;display:none">
     <div style="min-width:0">
-      <div id="nptitle" style="font-size:18px;font-weight:600;line-height:1.3">—</div>
+      <div id="nptitle" style="font-size:18px;font-weight:600;line-height:1.3;
+         display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">—</div>
       <div id="npby" style="font-size:13px;color:var(--mut);margin-top:4px"></div>
     </div>
   </div>
