@@ -41,7 +41,7 @@ from intent_agents.recommendation import (
     time_of_day_bucket,
 )
 from memory_guard import is_memory_critical
-from music_recommender import assign_unique_owners, build_member_pools, demote_low_quality_versions, is_already_recommended, normalize_title, pick_candidates, ring_titles_for
+from music_recommender import assign_unique_owners, build_member_pools, demote_low_quality_versions, find_recent_same_song, is_already_recommended, normalize_title, pick_candidates, ring_titles_for
 from music_memory import extract_video_id
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
@@ -1052,10 +1052,12 @@ class MusicCog(commands.Cog):
             cands = pick_candidates(pool, k=_k_buf, top_n=max(9, _k_buf))
             ring_exclude = exclude_titles
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
+            _played_titles = mm.get_recently_played_titles(self._PLAYED_EXCLUDE_TTL_S)
         elif _tier == 2:
             cands = await self._t2_discovery_candidates(members, exclude_titles)
             ring_exclude = exclude_titles
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
+            _played_titles = mm.get_recently_played_titles(self._PLAYED_EXCLUDE_TTL_S)
         elif _tier == 3:
             # 放寬到 24h 而非砍光：仍回收 1-7 天前舊歌，但擋當天剛播過的，防同場收斂重播。
             # 候選池(歌名)與 enqueue 迴圈(video-id)同步排除 24h 已播，否則池子挑出剛播歌、
@@ -1071,6 +1073,7 @@ class MusicCog(commands.Cog):
             cands = pick_candidates(relaxed_pool, k=_k_buf, top_n=max(9, _k_buf))
             ring_exclude = _t3_exclude
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._T3_PLAYED_EXCLUDE_TTL_S)
+            _played_titles = _t3_played
         else:
             # T4 冒險發現：T1-T3(個人史/radio 收斂)全枯竭→用核心藝人 catalog 搜「未播新歌」。
             # 罕見觸發＝值得冒險注入全新歌，不只回收舊歌（2026-07-08：個人史子集耗盡、radio 種子
@@ -1078,6 +1081,7 @@ class MusicCog(commands.Cog):
             cands = await self._t4_fresh_discovery(members, spotlight, exclude_titles)
             ring_exclude = exclude_titles
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
+            _played_titles = mm.get_recently_played_titles(self._PLAYED_EXCLUDE_TTL_S)
 
         # 🎚️ [Quality] cover/現場版降到隊尾——自動推薦 cover 11% vs 真人 3%，humans 避開。
         # 好版本先填滿 round；沒更好的時 cover/live 仍會播（不丟棄→不枯竭）。
@@ -1126,6 +1130,10 @@ class MusicCog(commands.Cog):
             _cand_vid = extract_video_id(info.get('webpage_url') or info.get('url') or '')
             if _cand_vid and _cand_vid in excluded_vids:
                 logger.info(f"🎵 [AutoRecommend] {info['title']} video-id 已播過/已skip，略過")
+                continue
+            _same = find_recent_same_song(info['title'], _played_titles)
+            if _same:
+                logger.info(f"🎵 [AutoRecommend] {info['title']} 與最近播過『{_same[:30]}』同歌不同上傳，略過")
                 continue
             from track_quality import is_non_song_video
             _ns, _ns_reason = is_non_song_video(info.get('title', ''), info.get('duration'))

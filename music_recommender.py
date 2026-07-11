@@ -50,6 +50,43 @@ def is_already_recommended(title: str, recent_titles: list[str]) -> bool:
     return normalize_title(title) in {normalize_title(t) for t in recent_titles}
 
 
+def find_recent_same_song(
+    title: str,
+    recent_titles: list[str],
+    threshold: float = 90.0,
+    min_core_len: int = 4,
+) -> str | None:
+    """回傳 recent_titles 中與 title「同歌不同上傳」的第一首（否則 None）。
+
+    補 video-id dedup 的漏：同一首歌在 YouTube 有多個上傳（官方 MV vs 純歌名版）→
+    video-id 不同 → video-id 排除認不出；normalize_title 又因藝人前綴 /「(Official
+    …)」後綴使長短標題不 exact 相等 → title ring 也漏 → autopilot 重推同歌。
+
+    正規化後用 rapidfuzz partial_ratio 做「短標題含於長標題」比對（子字串對齊）。
+    min_core_len 守門：過短核心（<4，如「情歌」「小半」）不做 fuzzy，避免子字串
+    誤殺不同歌——寧可偶爾漏一次也不誤殺（使用者訂）。
+    """
+    if not title or not recent_titles:
+        return None
+    nt = normalize_title(title)
+    if not nt:
+        return None
+    from rapidfuzz import fuzz
+
+    for rt in recent_titles:
+        nrt = normalize_title(rt)
+        if not nrt:
+            continue
+        if nt == nrt:
+            return rt
+        shorter, longer = (nt, nrt) if len(nt) <= len(nrt) else (nrt, nt)
+        if len(shorter) < min_core_len:
+            continue
+        if fuzz.partial_ratio(shorter, longer) >= threshold:
+            return rt
+    return None
+
+
 @dataclass
 class Candidate:
     anchor_title: str
