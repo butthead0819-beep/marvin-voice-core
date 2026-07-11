@@ -65,6 +65,7 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
   button.danger{ background:#3a1f24; color:var(--danger); }
   button.wide{ width:100%; }
   .vol{ display:flex; align-items:center; gap:12px; }
+  .vol > button{ flex:1; }  /* ＋/－ 撐滿兩側、大觸控目標、消除右側死白 */
   .vol .pct{ font-size:34px; font-weight:700; min-width:96px; text-align:center; }
   .volbtns{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:10px; }
   #status{ font-size:13px; color:var(--mut); min-height:18px; margin:2px; text-align:center; }
