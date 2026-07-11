@@ -135,6 +135,24 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         await inject_text(vc, speaker, text)
         return web.json_response({"ok": True, "speaker": speaker, "text": text}, headers=_CORS)
 
+    async def handle_play(request):
+        """GET /play?q=歌名&t=token — Siri 捷徑點歌（伺服器補「放一首」，捷徑只要一格 URL）。"""
+        tok = request.headers.get("X-Marvin-Token") or request.query.get("t")
+        if token and tok != token:
+            return web.json_response({"error": "unauthorized"}, status=401, headers=_CORS)
+        q = (request.query.get("q") or "").strip()
+        if not q:
+            return web.json_response({"error": "empty"}, status=400, headers=_CORS)
+        # 統一成 strong_play「放一首X」：裸「放X」不夠強（見記憶）；已含「放一首」不重複補
+        if q.startswith("放一首"):
+            text = q
+        else:
+            core = q[1:].strip() if q.startswith("放") else q
+            text = f"放一首{core}"
+        speaker = request.query.get("speaker") or default_speaker
+        await inject_text(vc, speaker, text)
+        return web.json_response({"ok": True, "speaker": speaker, "text": text}, headers=_CORS)
+
     async def handle_now(request):
         """回當前播放的歌（控制台「現正播放中」輪詢）。無 token 驗證（唯讀）。"""
         mc = None
@@ -164,6 +182,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app = web.Application()
     app.router.add_post("/say", handle_say)
     app.router.add_options("/say", handle_preflight)
+    app.router.add_get("/play", handle_play)
     app.router.add_get("/now", handle_now)
     return app
 

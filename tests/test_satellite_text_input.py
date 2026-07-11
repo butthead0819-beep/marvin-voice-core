@@ -53,6 +53,67 @@ async def test_inject_text_skips_empty_and_whitespace():
     vc.handle_stt_result.assert_not_awaited()
 
 
+# --- Siri 點歌 GET /play（伺服器補「放一首」，捷徑只要一格 URL）---
+@pytest.mark.asyncio
+async def test_http_play_prepends_放一首():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/play?q=告白氣球&t=s3cret")
+        assert resp.status == 200
+        assert (await resp.json())["text"] == "放一首告白氣球"
+    assert vc.handle_stt_result.call_args.kwargs["raw_text"] == "放一首告白氣球"
+
+
+@pytest.mark.asyncio
+async def test_http_play_no_double_prefix_when_already_放一首():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/play?q=放一首七里香&t=s3cret")
+        assert (await resp.json())["text"] == "放一首七里香"
+
+
+@pytest.mark.asyncio
+async def test_http_play_normalizes_bare_放():
+    """裸「放X」不夠強（記憶），統一補成「放一首X」。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/play?q=放告白氣球&t=s3cret")
+        assert (await resp.json())["text"] == "放一首告白氣球"
+
+
+@pytest.mark.asyncio
+async def test_http_play_rejects_wrong_token():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/play?q=告白氣球&t=wrong")
+        assert resp.status == 401
+    vc.handle_stt_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_http_play_empty_q_returns_400():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    app = build_text_app(vc, token="s3cret")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/play?q=&t=s3cret")
+        assert resp.status == 400
+    vc.handle_stt_result.assert_not_awaited()
+
+
 # --- Siri HTTP endpoint ---
 @pytest.mark.asyncio
 async def test_http_say_injects_text_and_returns_ok():
