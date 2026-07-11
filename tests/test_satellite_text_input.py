@@ -135,6 +135,48 @@ async def test_http_now_reports_current_song():
 
 
 @pytest.mark.asyncio
+async def test_http_now_includes_pending_queue():
+    """控制台「待播放佇列」：/now 回 queue（title + by），供 next-up 顯示。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    mc = MagicMock()
+    mc.stream_mode = True
+    mc.stream_paused = False
+    mc._current_stream_info = {"title": "當前歌", "requested_by": "狗與露", "thumbnail": ""}
+    mc.stream_queue = [
+        {"title": "下一首A", "requested_by": "阿明"},
+        {"title": "下一首B", "requested_by": "Marvin推薦（點給大家）"},
+    ]
+    vc.bot.cogs.get.return_value = mc
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        body = await (await client.get("/now")).json()
+        assert body["queue"] == [
+            {"title": "下一首A", "by": "阿明"},
+            {"title": "下一首B", "by": "Marvin推薦（點給大家）"},
+        ]
+
+
+@pytest.mark.asyncio
+async def test_http_now_queue_empty_when_no_queue():
+    """佇列為空（或未就緒）時 queue=[]，不炸。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    vc = _make_vc()
+    mc = MagicMock()
+    mc.stream_mode = True
+    mc.stream_paused = False
+    mc._current_stream_info = {"title": "當前歌", "requested_by": "狗與露", "thumbnail": ""}
+    mc.stream_queue = []
+    vc.bot.cogs.get.return_value = mc
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    async with TestClient(TestServer(app)) as client:
+        body = await (await client.get("/now")).json()
+        assert body["queue"] == []
+
+
+@pytest.mark.asyncio
 async def test_http_now_reports_not_playing_when_idle():
     from aiohttp.test_utils import TestClient, TestServer
     from main_satellite import build_text_app

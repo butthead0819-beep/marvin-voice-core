@@ -146,12 +146,16 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         playing = bool(mc and getattr(mc, "stream_mode", False) and info)
         if not playing:
             return web.json_response({"playing": False}, headers=_CORS)
+        _q = getattr(mc, "stream_queue", None)
+        queue = ([{"title": s.get("title", ""), "by": s.get("requested_by", "")}
+                  for s in _q[:10]] if isinstance(_q, list) else [])
         return web.json_response({
             "playing": True,
             "paused": bool(getattr(mc, "stream_paused", False)),
             "title": info.get("title", ""),
             "by": info.get("requested_by", ""),
             "cover": info.get("thumbnail", ""),  # yt-dlp 縮圖 URL，瀏覽器直接載
+            "queue": queue,  # 待播放佇列（next up），控制台顯示
         }, headers=_CORS)
 
     async def handle_preflight(request):
