@@ -91,10 +91,10 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
     <button class="accent" onclick="playSong()">點播</button>
   </div>
   <div class="grid" style="margin-top:10px">
-    <button onclick="say('下一首')">⏭ 下一首</button>
-    <button onclick="say('暫停播放')">⏸ 暫停</button>
-    <button onclick="say('繼續播放')">▶️ 繼續</button>
-    <button class="danger" onclick="say('停止播放')">⏹ 停</button>
+    <button onclick="say('下一首')">下一首</button>
+    <button onclick="say('暫停播放')">暫停</button>
+    <button onclick="say('繼續播放')">繼續</button>
+    <button class="danger" onclick="say('停止播放')">停</button>
   </div>
 </div>
 
@@ -159,7 +159,7 @@ async function nowPlaying(){
     const r=await fetch(MAC_NOW,{cache:"no-store"}); const j=await r.json();
     const cov=$("npcover");
     if(j.playing){
-      $("nptitle").textContent=(j.paused?"⏸ ":"▶️ ")+(j.title||"—");
+      $("nptitle").textContent=(j.paused?"暫停中 · ":"")+(j.title||"—");
       $("npby").textContent=j.by?("點播："+j.by):"";
       if(j.cover){ cov.src=j.cover; cov.style.display="block"; } else { cov.style.display="none"; }
     }else{
