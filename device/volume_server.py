@@ -98,18 +98,15 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <div class="card">
-  <div class="lbl">音量</div>
+  <div class="lbl" style="display:flex;justify-content:space-between;align-items:center">
+    <span>音量</span><span id="soctemp" style="font-variant-numeric:tabular-nums">🌡️ --°C</span>
+  </div>
   <div class="vol">
     <button onclick="vol('-10')">－</button>
     <div class="pct"><span id="pct">--</span><span style="font-size:18px">%</span></div>
     <button onclick="vol('+10')">＋</button>
   </div>
-  <div class="volbtns">
-    <button onclick="vol('55')">55</button>
-    <button onclick="vol('65')">65</button>
-    <button onclick="vol('75')">75</button>
-    <button class="danger" onclick="vol('mute')">靜音</button>
-  </div>
+  <button class="danger wide" onclick="vol('mute')" style="margin-top:10px">靜音</button>
 </div>
 
 <div class="card">
@@ -149,6 +146,11 @@ async function vol(v){
 async function refresh(){
   try{ const r=await fetch("/vol?t="+encodeURIComponent(TOKEN)); const j=await r.json();
        if(j.percent!=null) $("pct").textContent=j.percent; $("dot").style.background="#4ec07a";
+       if(j.temp!=null && j.temp>0){
+         const t=Math.round(j.temp*10)/10, el=$("soctemp");
+         el.textContent="🌡️ "+t+"°C";
+         el.style.color = t>=65?"#ff6b6b" : t>=57?"#e0a53a" : "#8b90a0";  // 紅=將觸發停播 黃=偏高 灰=正常
+       }
   }catch(e){ $("dot").style.background="#ff6b6b"; }
 }
 async function nowPlaying(){
@@ -184,6 +186,17 @@ def get_percent() -> int:
     out = _amixer("sget", CONTROL)
     m = re.search(r"\[(\d+)%\]", out)
     return int(m.group(1)) if m else -1
+
+
+def get_temp() -> float:
+    """SoC(cpu-thermal) 溫度 °C；讀不到回 -1。"""
+    try:
+        out = subprocess.run(["vcgencmd", "measure_temp"],
+                             capture_output=True, text=True, timeout=5).stdout
+        m = re.search(r"([\d.]+)", out)
+        return float(m.group(1)) if m else -1.0
+    except Exception:
+        return -1.0
 
 
 def set_percent(p: int) -> int:
@@ -249,12 +262,12 @@ class Handler(BaseHTTPRequestHandler):
             val = self.rfile.read(n).decode() if n else ""
         val = (val or "").strip()
         if not val:  # 無值＝讀現值
-            return self._send(200, {"percent": get_percent()})
+            return self._send(200, {"percent": get_percent(), "temp": get_temp()})
         try:
             pct = self._apply(val)
         except (ValueError, TypeError):
             return self._send(400, {"error": "bad_value", "got": val})
-        self._send(200, {"ok": True, "percent": pct})
+        self._send(200, {"ok": True, "percent": pct, "temp": get_temp()})
 
     do_GET = _handle
     do_POST = _handle
