@@ -1727,6 +1727,13 @@ class MusicCog(commands.Cog):
             return parts[1].strip(), parts[0].strip()
         return info.get('track') or raw_title, artist
 
+    def _dj_clean_name(self, info: dict) -> tuple[str, str]:
+        """DJ 播報專用乾淨歌名（track→catalog videoId→regex 剝雜訊）。與歌詞路徑的
+        _parse_song_title_artist 分開：catalog 的「藝人 歌名」合併格式不適合 lrclib 查詞。"""
+        from song_name_clean import dj_display_name
+        from music_memory import extract_video_id
+        return dj_display_name(info, extract_vid=extract_video_id)
+
     async def _fetch_lyrics_synced(self, info: dict) -> str | None:
         """像 _fetch_lyrics_raw 但保留 [mm:ss.xx] timestamp（給 lyrics_seek 用）。"""
         import aiohttp
@@ -1881,10 +1888,11 @@ class MusicCog(commands.Cog):
         if requester.startswith('Marvin'):
             text = self._themed_dj_text(info)   # 主題歌單：直接播 LLM 寫的選歌理由
             if not text:
-                clean_title, clean_artist = self._parse_song_title_artist(info)
+                from song_name_clean import clean_title_regex
+                clean_title, clean_artist = self._dj_clean_name(info)
                 spotlight = info.get('_spotlight', '')
                 lane = info.get('_lane', '')
-                anchor = info.get('_anchor_title', '')
+                anchor = clean_title_regex(info.get('_anchor_title', ''))
                 text = self._autopilot_dj_phrase(spotlight, clean_title, clean_artist,
                                                  lane=lane, anchor=anchor)
         else:
@@ -1898,7 +1906,7 @@ class MusicCog(commands.Cog):
 
         text = (text or '').strip()
         if len(text) < 2:
-            clean_title, clean_artist = self._parse_song_title_artist(info)
+            clean_title, clean_artist = self._dj_clean_name(info)
             if clean_artist:
                 text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{requester} 點的"
             else:
@@ -1910,7 +1918,7 @@ class MusicCog(commands.Cog):
             text, "music_intro", self.bot.tts_engine.get_estimated_duration
         )
         if was_cut:
-            logger.info(f"🚦 [TTS Gate] DJ intro 超 7s 截斷: '{text}' → '{gated_text}'")
+            logger.info(f"🚦 [TTS Gate] DJ intro 超 5s 截斷: '{text}' → '{gated_text}'")
             text = gated_text
 
         audio_path = None

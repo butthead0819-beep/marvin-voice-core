@@ -19,9 +19,9 @@ def test_known_tasks_have_limits():
         assert task in LIMITS
 
 
-def test_music_intro_15s():
-    """專業 DJ 介紹：歌名 + 歌手 + 年份 + 歌詞重點 + 短故事，預算 15s（~50 字）。"""
-    assert LIMITS["music_intro"] == 15.0
+def test_music_intro_5s():
+    """DJ 播報上限 5s（~16 字）：2026-07-13 從 15s 收到 5s（DJ 話太多）。"""
+    assert LIMITS["music_intro"] == 5.0
 
 
 def test_callback_15s():
@@ -51,16 +51,16 @@ def test_no_limit_task_unchanged():
     assert was_cut is False
 
 
-# ── music_intro 截斷（15s budget ≈ 50 中文字）────────────────────────────────
+# ── music_intro 截斷（5s budget ≈ 16 中文字）─────────────────────────────────
 
 def test_music_intro_cuts_at_punctuation():
     """超 budget → 在符號處切（找 budget 內最後一個 punctuation）。"""
-    # 60 字 = 18s 超 budget(15s=50字)。「，」在 index 6, 17, 30, 44, 52。budget 內最後一個 = 44。
-    text = "周杰倫的夜曲，這是兩千零五年發行的，副歌花葬段落最動人也最值得反覆聽，整首歌的悲劇感層次很豐富，這首歌跟黃俊郎合作"
+    # 24 字 = 7.2s 超 budget(5s=16字)。「，」在 index 6, 14, 20。budget(16) 內最後一個 = 14。
+    text = "周杰倫的夜曲，兩千零五年的歌，副歌很動人，值得聽"
     out, was_cut = truncate_for_tts(text, "music_intro", _est)
     assert was_cut is True
     # 切到 budget 內最後一個「，」前
-    assert out == "周杰倫的夜曲，這是兩千零五年發行的，副歌花葬段落最動人也最值得反覆聽，整首歌的悲劇感層次很豐富"
+    assert out == "周杰倫的夜曲，兩千零五年的歌"
 
 
 def test_music_intro_cuts_at_chinese_period():

@@ -17,9 +17,9 @@ from typing import Callable, Optional
 
 # 各 task 的 TTS 時長硬上限（秒）。None = 無限制（不 gate）。
 LIMITS: dict[str, Optional[float]] = {
-    "music_intro": 15.0,     # 專業 DJ 介紹：歌名 + 歌手 + 年份 + 歌詞重點 + 短故事
-                             # （dj_interjection / stream_now_playing / radio_now_playing 共用）
-                             # 2026-05-24 從 7s 拉到 15s — DJ 風格更多發揮空間
+    "music_intro": 5.0,      # DJ 播報（歌名+理由+點播者一句）：≤5s，別打斷切歌節奏
+                             # （dj_interjection / autopilot phrase / themed 理由 / fallback 共用）
+                             # 2026-05-24 7s→15s(DJ 發揮)；2026-07-13 15s→5s(使用者：DJ 話太多)
     "callback": 15.0,        # Memory callback（必須講到聽懂，但別變嘮叨）
                              # 2026-05-24 從 7s 拉到 15s
     "marvin_reply": None,    # 主回覆，不 hard gate（caller 自己控）
