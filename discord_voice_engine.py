@@ -21,8 +21,12 @@ from marvin_voice_core.audio_utils import pcm48k_stereo_to_16k_mono, normalize_r
 from voice_meta_analyzer import VoiceMetaAnalyzer
 from quality_metrics import record_metric
 import pipeline_timing
+from stt_debug_retention import prune_stt_debug
 
 logger = logging.getLogger("MarvinBot.Engine")
+
+# stt_debug_*.wav 輪替節流：最多每小時掃一次，避免每次 STT 都 glob 上千檔
+_last_stt_debug_prune = 0.0
 
 
 def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
@@ -1189,6 +1193,40 @@ class DiscordVoiceEngine:
                 wav_file.setsampwidth(2)
                 wav_file.setframerate(48000)
                 wav_file.writeframes(processed_pcm)
+
+            try:
+                import shutil
+                from datetime import datetime
+                os.makedirs("records", exist_ok=True)
+                dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                duration = len(processed_pcm) / 192000.0
+                debug_name = f"stt_debug_{dt_str}_{duration:.1f}s.wav"
+                debug_path = os.path.join("records", debug_name)
+                
+                # 備份 1：時間戳記封存檔（使用 shutil.copy 避免複製 macOS 隔離 xattr）
+                shutil.copy(wav_path, debug_path)
+                
+                # 備份 2：靜態捷徑（僅在音檔長度大於等於 1.0 秒時寫入，防止 0.1 秒的尾隨雜音覆蓋主音檔）
+                if duration >= 1.0:
+                    static_path = os.path.join("records", "last_stt_debug.wav")
+                    shutil.copy(wav_path, static_path)
+                    print(f"💾 [Audio Audit] 已保存主除錯音檔至 {static_path} 與 {debug_path}", flush=True)
+                else:
+                    print(f"💾 [Audio Audit] 已保存雜音/尾音檔至 {debug_path}（不覆蓋 last_stt_debug.wav）", flush=True)
+            except Exception as _e:
+                print(f"⚠️ [Audio Audit] 保存除錯音檔失敗: {_e}", flush=True)
+
+            # 7 天保留輪替（節流：最多每小時一次，避免每次 STT 都掃目錄）
+            global _last_stt_debug_prune
+            if time.monotonic() - _last_stt_debug_prune > 3600:
+                _last_stt_debug_prune = time.monotonic()
+                try:
+                    from datetime import datetime
+                    pruned = prune_stt_debug("records", now=datetime.now(), retention_days=7)
+                    if pruned:
+                        print(f"🧹 [Audio Audit] 輪替清除 {len(pruned)} 個過期 stt_debug 音檔", flush=True)
+                except Exception as _e:
+                    print(f"⚠️ [Audio Audit] stt_debug 輪替失敗: {_e}", flush=True)
 
             with open(wav_path, 'rb') as f:
                 wav_bytes = f.read()
