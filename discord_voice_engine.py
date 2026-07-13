@@ -802,6 +802,9 @@ class DiscordVoiceEngine:
         self.stt_engine = os.getenv("STT_ENGINE", "macos").lower() # 🚀 [Default Swap] 預設改為 macos 優先模式
         self.whisper_model = None
         self.debug_vad_heartbeat = os.getenv("DEBUG_VAD_HEARTBEAT", "false").lower() == "true"
+        # 時間戳封存檔預設關閉：每次 STT 存一份 stt_debug_*.wav 重度使用日會堆到 ~700M/天。
+        # 需倒推事故時 STT_DEBUG_ARCHIVE=true 重開；last_stt_debug.wav 不受此開關影響。
+        self.stt_debug_archive = os.getenv("STT_DEBUG_ARCHIVE", "false").lower() == "true"
 
         # Per-speaker language memory: updated after each successful transcription.
         # First utterance from an unknown speaker defaults to "zh".
@@ -1198,21 +1201,21 @@ class DiscordVoiceEngine:
                 import shutil
                 from datetime import datetime
                 os.makedirs("records", exist_ok=True)
-                dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
                 duration = len(processed_pcm) / 192000.0
-                debug_name = f"stt_debug_{dt_str}_{duration:.1f}s.wav"
-                debug_path = os.path.join("records", debug_name)
-                
-                # 備份 1：時間戳記封存檔（使用 shutil.copy 避免複製 macOS 隔離 xattr）
-                shutil.copy(wav_path, debug_path)
-                
+
+                # 備份 1：時間戳記封存檔（預設關閉，STT_DEBUG_ARCHIVE=true 才開；
+                # 使用 shutil.copy 避免複製 macOS 隔離 xattr）
+                if self.stt_debug_archive:
+                    dt_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    debug_name = f"stt_debug_{dt_str}_{duration:.1f}s.wav"
+                    debug_path = os.path.join("records", debug_name)
+                    shutil.copy(wav_path, debug_path)
+
                 # 備份 2：靜態捷徑（僅在音檔長度大於等於 1.0 秒時寫入，防止 0.1 秒的尾隨雜音覆蓋主音檔）
                 if duration >= 1.0:
                     static_path = os.path.join("records", "last_stt_debug.wav")
                     shutil.copy(wav_path, static_path)
-                    print(f"💾 [Audio Audit] 已保存主除錯音檔至 {static_path} 與 {debug_path}", flush=True)
-                else:
-                    print(f"💾 [Audio Audit] 已保存雜音/尾音檔至 {debug_path}（不覆蓋 last_stt_debug.wav）", flush=True)
+                    print(f"💾 [Audio Audit] 已保存主除錯音檔至 {static_path}", flush=True)
             except Exception as _e:
                 print(f"⚠️ [Audio Audit] 保存除錯音檔失敗: {_e}", flush=True)
 
