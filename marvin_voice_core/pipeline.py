@@ -188,7 +188,7 @@ class MarvinVoicePipeline:
                 async with self.stt_lock:
                     game_dict = getattr(self.bot.router, 'game_dict_string', "") if hasattr(self.bot, 'router') else ""
                     pipeline_timing.mark("stt_start")
-                    raw_text, engine = await self.stt_handler.transcribe_hybrid(
+                    raw_text, engine, _meta = await self.stt_handler.transcribe_hybrid(
                         abs_wav_path, speaker_name, game_dict_string=game_dict
                     )
                     pipeline_timing.mark("stt_done")

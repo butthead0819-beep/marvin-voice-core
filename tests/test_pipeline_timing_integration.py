@@ -25,7 +25,7 @@ def _make_pipeline_with_mocks():
         from marvin_voice_core.pipeline import MarvinVoicePipeline
         pipe = MarvinVoicePipeline(bot)
 
-    pipe.stt_handler.transcribe_hybrid = AsyncMock(return_value=("哈囉", "Swift"))
+    pipe.stt_handler.transcribe_hybrid = AsyncMock(return_value=("哈囉", "Swift", {}))
     pipe.stt_callback = AsyncMock()
     return pipe
 
