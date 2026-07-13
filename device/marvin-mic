@@ -1,0 +1,11 @@
+#!/bin/bash
+# Marvin device 麥克風軟體開關（隱私用）。實測 nocap=硬靜音（arecord 錄到數位零 peak=0/rms=0）。
+# amixer 可在 wyoming-satellite 錄音進行中即時切換，不必停服務（切了之後 arecord 錄到的是無聲）。
+# 裝在 Pi /usr/local/bin/marvin-mic；給 macOS/iOS 捷徑用「離家 off / 到家 on」自動化呼叫。
+CARD=Array; CTL=Headset
+case "$1" in
+    off|mute|nocap)  amixer -c $CARD sset $CTL nocap >/dev/null 2>&1 && echo "🔇 mic OFF（靜音）" ;;
+    on|unmute|cap)   amixer -c $CARD sset $CTL cap 60 >/dev/null 2>&1 && echo "🎙️ mic ON" ;;
+    status)          amixer -c $CARD sget $CTL 2>/dev/null | grep -oE '\[on\]|\[off\]' | head -1 | tr -d '[]' ;;
+    *) echo "用法: marvin-mic <on|off|status>"; exit 1 ;;
+esac
