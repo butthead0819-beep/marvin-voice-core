@@ -17,6 +17,8 @@ from __future__ import annotations
 import struct
 import threading
 
+import numpy as np
+
 
 class BrowserSpeakerOutput:
     def __init__(self, *, silence_threshold: int = 30, hangover_frames: int = 15,
@@ -37,12 +39,8 @@ class BrowserSpeakerOutput:
         n = len(frame) // 2
         if n == 0:
             return 0
-        peak = 0
-        for s in struct.unpack("<%dh" % n, frame[: n * 2]):
-            a = -s if s < 0 else s
-            if a > peak:
-                peak = a
-        return peak
+        # numpy 向量化（pump 每秒呼叫 ~50 次，純 Python 迴圈太貴；對齊 WyomingSpeakerOutput）
+        return int(np.abs(np.frombuffer(frame[: n * 2], dtype=np.int16)).max())
 
     def write(self, frame: bytes) -> None:   # 泵執行緒呼叫
         if not frame:
