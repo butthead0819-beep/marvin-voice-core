@@ -1,11 +1,38 @@
 #!/bin/bash
-# Marvin device 麥克風軟體開關（隱私用）。實測 nocap=硬靜音（arecord 錄到數位零 peak=0/rms=0）。
-# amixer 可在 wyoming-satellite 錄音進行中即時切換，不必停服務（切了之後 arecord 錄到的是無聲）。
-# 裝在 Pi /usr/local/bin/marvin-mic；給 macOS/iOS 捷徑用「離家 off / 到家 on」自動化呼叫。
-CARD=Array; CTL=Headset
+# Marvin device 隱私/離家開關：一併控制 XVF3800 麥克風 + DigiAMP 輸出。
+# 用法：
+#   marvin-mic off        → 麥克風 + DigiAMP 都關（離家：不收音 + 不出聲）
+#   marvin-mic on         → 麥克風 + DigiAMP 都開（到家）
+#   marvin-mic mic off|on → 只控麥克風
+#   marvin-mic amp off|on → 只控 DigiAMP
+#   marvin-mic status     → 看兩者狀態
+# 機制：
+#   mic = amixer -c Array Headset nocap/cap（實測 nocap=數位零硬靜音；wyoming 錄音中可即時切）
+#   amp = amixer -c IQaudIODAC Digital mute/unmute（只切「訊號」，Class-D 晶片仍通電，不斷放大器的電）
+# 註：不做 alsactl store，故重開機回到已存狀態（fail-safe：重開後音訊照常）。
+MIC_CARD=Array;      MIC_CTL=Headset
+AMP_CARD=IQaudIODAC; AMP_CTL=Digital
+
+mic_off(){ amixer -c $MIC_CARD sset $MIC_CTL nocap  >/dev/null 2>&1; }
+mic_on(){  amixer -c $MIC_CARD sset $MIC_CTL cap 60  >/dev/null 2>&1; }
+amp_off(){ amixer -c $AMP_CARD sset $AMP_CTL mute    >/dev/null 2>&1; }
+amp_on(){  amixer -c $AMP_CARD sset $AMP_CTL unmute  >/dev/null 2>&1; }
+mic_state(){ amixer -c $MIC_CARD sget $MIC_CTL 2>/dev/null | grep -oE '\[on\]|\[off\]' | head -1 | tr -d '[]'; }
+amp_state(){ amixer -c $AMP_CARD sget $AMP_CTL 2>/dev/null | grep -oE '\[on\]|\[off\]' | head -1 | tr -d '[]'; }
+
 case "$1" in
-    off|mute|nocap)  amixer -c $CARD sset $CTL nocap >/dev/null 2>&1 && echo "🔇 mic OFF（靜音）" ;;
-    on|unmute|cap)   amixer -c $CARD sset $CTL cap 60 >/dev/null 2>&1 && echo "🎙️ mic ON" ;;
-    status)          amixer -c $CARD sget $CTL 2>/dev/null | grep -oE '\[on\]|\[off\]' | head -1 | tr -d '[]' ;;
-    *) echo "用法: marvin-mic <on|off|status>"; exit 1 ;;
+    off) mic_off; amp_off; echo "🔇 mic OFF + 🔇 DigiAMP OFF（離家）" ;;
+    on)  mic_on;  amp_on;  echo "🎙️ mic ON + 🔊 DigiAMP ON（到家）" ;;
+    mic) case "$2" in
+            off|mute|nocap) mic_off; echo "🔇 mic OFF" ;;
+            on|unmute|cap)  mic_on;  echo "🎙️ mic ON" ;;
+            *) echo "用法: marvin-mic mic <on|off>"; exit 1 ;;
+         esac ;;
+    amp) case "$2" in
+            off|mute)   amp_off; echo "🔇 DigiAMP OFF" ;;
+            on|unmute)  amp_on;  echo "🔊 DigiAMP ON" ;;
+            *) echo "用法: marvin-mic amp <on|off>"; exit 1 ;;
+         esac ;;
+    status) echo "mic=$(mic_state) DigiAMP=$(amp_state)" ;;
+    *) echo "用法: marvin-mic <on|off|status> | marvin-mic <mic|amp> <on|off>"; exit 1 ;;
 esac
