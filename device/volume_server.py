@@ -190,6 +190,15 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <div class="card">
+  <div class="lbl">🏠 在家 / 離家（麥克風＋DigiAMP）</div>
+  <div class="grid">
+    <button class="danger" onclick="presence('off')">🔇 離家</button>
+    <button onclick="presence('on')">🏠 到家</button>
+  </div>
+  <div id="presence-state" style="font-size:13px;color:var(--mut);text-align:center;margin-top:8px">—</div>
+</div>
+
+<div class="card">
   <div class="lbl">💬 說一句話 / 問問題</div>
   <div class="row">
     <input type="text" id="cmd" placeholder="例：現在幾點、講個笑話" autocapitalize="off" autocomplete="off">
@@ -250,7 +259,21 @@ async function nowPlaying(){
     $("npcover").style.display="none";
   }
 }
-function tick(){ nowPlaying(); refresh(); }
+async function presence(state){
+  try{
+    const r=await fetch("/presence?t="+encodeURIComponent(TOKEN),
+      {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({state:state})});
+    const j=await r.json();
+    if(j.ok){ stat(state==="off"?"已離家：麥克風＋DigiAMP 關閉":"已到家：麥克風＋DigiAMP 開啟",true); presenceState(); }
+    else stat("切換失敗",false);
+  }catch(e){ stat("音量服務連不到",false); }
+}
+async function presenceState(){
+  try{ const r=await fetch("/presence?t="+encodeURIComponent(TOKEN)); const j=await r.json();
+       if(j.status) $("presence-state").textContent=j.status;
+  }catch(e){}
+}
+function tick(){ nowPlaying(); refresh(); presenceState(); }
 tick();
 setInterval(tick, 4000);
 
@@ -494,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
         # 控制台網頁（免 token，Tailscale 私網；API 呼叫才驗 token）
         if self.command == "GET" and path in ("", "/panel"):
             return self._serve_panel()
-        if path not in ("/vol", "/eq", "/balance", "/profile", "/ptt"):
+        if path not in ("/vol", "/eq", "/balance", "/profile", "/ptt", "/presence"):
             return self._send(404, {"error": "not_found"})
         q = parse_qs(parsed.query)
         if not self._authed(q):
@@ -585,6 +608,27 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 profiles = load_profiles()
                 return self._send(200, {"profiles": list(profiles.keys()), "current_profiles": profiles, "active": CURRENT_PROFILE})
+
+        elif path == "/presence":
+            # 離家/到家一鍵開關：跑 marvin-mic on|off（麥克風 + DigiAMP 一起）。
+            # 位置自動化的手動備援。GET=讀狀態。
+            if self.command == "POST":
+                n = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(n).decode() if n else "{}"
+                try:
+                    state = json.loads(body).get("state", "").strip().lower()
+                    if state not in ("on", "off"):
+                        return self._send(400, {"error": "bad_state", "want": ["on", "off"]})
+                    r = subprocess.run(["/usr/local/bin/marvin-mic", state],
+                                       capture_output=True, text=True, timeout=10)
+                    print(f"📡 [VolumeServer] POST /presence state={state} rc={r.returncode} out={r.stdout.strip()}")
+                    return self._send(200, {"ok": r.returncode == 0, "state": state, "detail": r.stdout.strip()})
+                except Exception as e:
+                    return self._send(400, {"error": "bad_request", "message": str(e)})
+            else:
+                r = subprocess.run(["/usr/local/bin/marvin-mic", "status"],
+                                   capture_output=True, text=True, timeout=10)
+                return self._send(200, {"status": r.stdout.strip()})
 
         elif path == "/ptt":
             if self.command == "POST":
