@@ -910,7 +910,9 @@ class ConnectionMixin:
         self._LATENCY_DOMINATED_THRESHOLD = 120.0
 
         # 4. 喇叭輸出接縫：mixer 泵 → BrowserSpeakerOutput（靜音切段快取，/reply 服務）
-        self.set_local_speaker(LocalSpeakerDevice(output=browser_output))
+        #    persistent=False：回覆是離散 TTS，播完（含 mixer grace）泵即停，idle 不空轉
+        #    →CPU 0（PTT 最小化）。Pi 常駐喇叭仍用預設 persistent=True，不受影響。
+        self.set_local_speaker(LocalSpeakerDevice(output=browser_output, persistent=False))
 
         # 5. always-allow consent stub（單人用，無 Discord 同意流程）
         self.consent = _LocalConsentStub()

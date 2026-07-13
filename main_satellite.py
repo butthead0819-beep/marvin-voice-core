@@ -530,6 +530,13 @@ async def start_text_http_server(vc, reply_source=None):
 async def _stdin_text_input_loop(vc):
     """監聽 stdin 輸入文字，直接注入 Marvin pipeline（本機終端手打／貼 Siri 轉錄）。"""
     import sys
+    # ⚠️ stdin 非互動終端（launchd / nohup </dev/null / 背景進程）：readline 立即回 ""
+    # 不阻塞，且 EOFError 不會觸發（readline 回 "" 不 raise）→ while 迴圈瘋狂空轉、狂丟
+    # run_in_executor 任務 → 燒滿一核 CPU。非 tty 就不啟用（本來也沒終端可打字）。
+    if not sys.stdin or not sys.stdin.isatty():
+        logger.info("📝 [TextInput] stdin 非互動終端，跳過 stdin 輸入迴圈（避免 EOF busy-spin）")
+        return
+
     loop = asyncio.get_event_loop()
     speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
 
@@ -538,6 +545,8 @@ async def _stdin_text_input_loop(vc):
     while True:
         try:
             text = await loop.run_in_executor(None, sys.stdin.readline)
+            if not text:   # EOF：readline 回 "" 不 raise EOFError；不 break 會 busy-spin
+                break
             await inject_text(vc, speaker, text)
         except EOFError:
             break

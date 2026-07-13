@@ -75,9 +75,14 @@ class LocalSpeakerDevice:
         *,
         output=None,
         frame_duration: float = 0.02,
+        persistent: bool = True,
     ) -> None:
+        # persistent=True（預設，Pi 常駐喇叭）：arm_mixer 的泵遇 mixer idle b"" 不退出、
+        # 寫靜音持位置等下一段（避免 re-arm race 丟 TTS）。
+        # persistent=False（瀏覽器衛星 PTT）：source 耗盡即退出，idle 不空轉→CPU 0。
         self._output = output          # None ⇒ lazy sounddevice; else injected
         self._frame_duration = frame_duration
+        self._persistent = persistent
         self._thread: threading.Thread | None = None
         self._stop_flag: threading.Event = threading.Event()
         self._playing: bool = False
@@ -119,8 +124,10 @@ class LocalSpeakerDevice:
         mixer 是 on-demand 來源，閒置超過 grace 會回 b""（給 Discord 的「停送」訊號）。
         本機喇叭是常駐輸出，那個 b"" 不該殺泵→persistent=True 讓泵持位置寫靜音、等下一段
         TTS/music，只有 stop() 才真中止。否則泵一退出、再 arm 又讀到 stale idle b"" 立刻
-        退出→push 進來的 TTS 沒人排→無聲且 tts_load 累積（本機沉默 bug 根因）。"""
-        self.play(source, persistent=True)
+        退出→push 進來的 TTS 沒人排→無聲且 tts_load 累積（本機沉默 bug 根因）。
+
+        瀏覽器衛星（PTT）以 persistent=False 建構→泵播完即停、idle 不空轉（省 CPU）。"""
+        self.play(source, persistent=self._persistent)
 
     # ── Internal ─────────────────────────────────────────────────────────────
 

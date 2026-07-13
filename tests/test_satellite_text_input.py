@@ -3,6 +3,9 @@ tests/test_satellite_text_input.py
 TDD：驗 main_satellite.py 文字注入接口（stdin / HTTP 共用）+ Siri HTTP endpoint。
 無網路（aiohttp TestServer 起在本機隨機埠）、無 Discord、vc 用 AsyncMock。
 """
+import asyncio
+import sys
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
@@ -291,3 +294,32 @@ async def test_http_say_json_speaker_override():
     kw = vc.handle_stt_result.call_args.kwargs
     assert kw["raw_text"] == "哈囉"
     assert kw["speaker"] == "showay"
+
+
+# ── stdin busy-spin 回歸（launchd/背景 stdin=EOF → readline 立即回 "" 空轉燒 CPU）──
+@pytest.mark.asyncio
+async def test_stdin_loop_skips_when_stdin_not_a_tty(monkeypatch):
+    """stdin 非互動終端（launchd / nohup </dev/null）→ 不啟用 stdin 迴圈，避免 EOF busy-spin。"""
+    from main_satellite import _stdin_text_input_loop
+    fake_stdin = MagicMock()
+    fake_stdin.isatty.return_value = False
+    monkeypatch.setattr(sys, "stdin", fake_stdin)
+    vc = _make_vc()
+    # 應立即返回（非無限迴圈）、且完全不碰 readline
+    await asyncio.wait_for(_stdin_text_input_loop(vc), timeout=1.0)
+    fake_stdin.readline.assert_not_called()
+    vc.handle_stt_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stdin_loop_breaks_on_eof_when_tty(monkeypatch):
+    """即使 isatty=True，readline 回 ""（EOF）也要 break，不無限空轉。"""
+    from main_satellite import _stdin_text_input_loop
+    fake_stdin = MagicMock()
+    fake_stdin.isatty.return_value = True
+    fake_stdin.readline.return_value = ""   # EOF：readline 回 "" 不 raise EOFError
+    monkeypatch.setattr(sys, "stdin", fake_stdin)
+    vc = _make_vc()
+    # 有 fix（if not text: break）→ 秒回；沒 fix → 無限迴圈 → wait_for 逾時（紅）
+    await asyncio.wait_for(_stdin_text_input_loop(vc), timeout=1.0)
+    vc.handle_stt_result.assert_not_awaited()

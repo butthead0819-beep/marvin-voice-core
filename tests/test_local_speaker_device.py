@@ -148,6 +148,36 @@ def test_arm_mixer_persistent_survives_idle_empty_reads():
     assert out.closed
 
 
+def test_arm_mixer_honors_persistent_false_and_exits_when_idle():
+    """PTT 最小化：LocalSpeakerDevice(persistent=False) 時 arm_mixer 起的泵在 source
+    耗盡（b""）後退出，不常駐空轉——瀏覽器衛星 idle CPU→0（Pi 預設 persistent=True 不變）。"""
+    from marvin_voice_core.playback_device import LocalSpeakerDevice
+
+    src = _FakeSource([FRAME, FRAME])   # 兩幀後回 b""
+    out = _FakeOutput()
+    dev = LocalSpeakerDevice(output=out, frame_duration=0, persistent=False)
+    dev.arm_mixer(src)
+
+    assert dev._thread is not None
+    dev._thread.join(timeout=2.0)
+    assert dev.is_playing() is False, "persistent=False：source 耗盡後泵應退出"
+    assert out.closed
+    assert out.frames == [FRAME, FRAME]
+
+
+def test_arm_mixer_default_persistent_true_survives_idle():
+    """回歸：不傳 persistent＝預設 True（Pi 常駐喇叭行為不變）。"""
+    from marvin_voice_core.playback_device import LocalSpeakerDevice
+
+    src = _IdleThenFrames()
+    out = _FakeOutput()
+    dev = LocalSpeakerDevice(output=out, frame_duration=0.001)   # 預設 persistent=True
+    dev.arm_mixer(src)
+    assert _wait_until(lambda: FRAME in out.frames)
+    assert dev.is_playing() is True, "預設仍 persistent，idle b\"\" 不退出"
+    dev.stop()
+
+
 def test_non_persistent_play_still_exits_on_empty_read():
     """對照：一般 play()（非 persistent）遇 b"" 仍照舊耗盡退出（不回歸）。"""
     from marvin_voice_core.playback_device import LocalSpeakerDevice
