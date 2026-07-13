@@ -887,6 +887,34 @@ class ConnectionMixin:
         # 6. 非阻塞啟動麥克風擷取（對齊 sink.write 用 loop.create_task 的規範）
         self.bot.loop.create_task(sink.start())
 
+    def start_browser_satellite_listening(self, browser_output) -> None:
+        """純軟體 satellite 輸出接縫：mixer 泵 → BrowserSpeakerOutput → 瀏覽器 WebAudio。
+
+        與 start_satellite_listening 差異＝無 Pi/wyoming mic 橋、無 Mac mic sink：輸入唯一
+        來源是 main_satellite 的 POST /audio（inject_audio→handle_stt_result）。輸出改注入
+        BrowserSpeakerOutput（GET /reply 服務給瀏覽器）。Discord / Pi 路徑完全不受影響。
+        """
+        from marvin_voice_core.playback_device import LocalSpeakerDevice
+
+        # 1. 起 VAD watchdog（idempotent；emit/timing 用）
+        self.bot.engine.start()
+
+        # 2. local 模式旗標（共用 _resolve_playback_device 輸出接縫）
+        self._local_mode = True
+        self._intimate_mode = os.getenv("MARVIN_INTIMATE_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+        if self._mixer is not None:
+            self._mixer._tts_gain = float(os.getenv("MARVIN_TTS_GAIN", "0.9"))
+
+        # 3. 放寬 late-skip（免費 LLM 限流下慢回應仍出聲；單人用不怕蓋）
+        self._LATE_RESPONSE_SKIP_SEC = 120.0
+        self._LATENCY_DOMINATED_THRESHOLD = 120.0
+
+        # 4. 喇叭輸出接縫：mixer 泵 → BrowserSpeakerOutput（靜音切段快取，/reply 服務）
+        self.set_local_speaker(LocalSpeakerDevice(output=browser_output))
+
+        # 5. always-allow consent stub（單人用，無 Discord 同意流程）
+        self.consent = _LocalConsentStub()
+
     def _on_satellite_wake(self, name: str) -> None:
         """衛星（Pi openwakeword）喚醒候選 → duck 音樂即時回饋。
 
