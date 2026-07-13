@@ -130,6 +130,13 @@ class LocalMicSink:
                 if self._silence_accum_s >= self._silence_cut_s:
                     self._cut_segment()
 
+    def reset(self) -> None:
+        self._speech_buffer = bytearray()
+        self._is_speaking = False
+        self._silence_accum_s = 0.0
+        self._speech_start_time = 0.0
+        logger.info("🎙️ [Sink] PTT 喚醒：已清空語音緩衝區")
+
     def _cut_segment(self) -> None:
         audio_data = bytes(self._speech_buffer)
         self._speech_buffer = bytearray()

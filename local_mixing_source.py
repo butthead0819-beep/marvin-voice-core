@@ -62,6 +62,7 @@ class LocalMixingAudioSource(_BASE):
         self._duck_step = float(duck_step)
         self._tts_gain = float(tts_gain)  # TTS 層增益（音樂常播 ~10%，TTS 滿音量過大 → 預設減半）
         self._duck_cur = 1.0  # 1.0 = 無 duck
+        self._ptt_active = False  # 🎙️ [PTT Optimization] PTT 狀態標記
         self._wake_duck_until = 0.0  # 🔇 [Wake Duck] 喚醒確認 → 音樂 duck 到此時戳（不等 TTS）
         # 🔇 [TTS 對玩家 duck] Marvin 自己的 TTS（尤其長的：DJ interjection / 歌單理由）播放中
         # 若有玩家還在說話 → TTS 讓路到 10%（同串流音樂）；最後一次說話後 5s 無聲才回 1.0。
@@ -129,6 +130,8 @@ class LocalMixingAudioSource(_BASE):
 
     def _music_duck_target(self, tts_active: bool) -> float:
         """音樂 duck 目標增益：TTS 播放中 或 喚醒 duck hold 內 → _duck_level，否則 1.0。"""
+        if self._ptt_active:
+            return 0.0  # PTT 期間完全靜音 (0%)
         wake_duck = self._clock() < self._wake_duck_until
         return self._duck_level if (tts_active or wake_duck) else 1.0
 

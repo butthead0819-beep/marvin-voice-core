@@ -30,6 +30,75 @@ PORT = int(os.getenv("MARVIN_VOL_PORT", "8766"))
 # 控制台網頁：指令送 Mac 大腦 /say（跨網域，已開 CORS）
 MAC_SAY = os.getenv("MARVIN_MAC_SAY_URL", "http://100.123.68.86:8790/say")
 
+PROFILES_FILE = os.path.expanduser("~/marvin-device/sound_profiles.json")
+if not os.path.exists(os.path.dirname(PROFILES_FILE)) and os.path.dirname(PROFILES_FILE):
+    PROFILES_FILE = "sound_profiles.json"
+
+DEFAULT_PROFILES = {
+    "calibrated": {
+        "01. 31Hz": 50, "02. 63Hz": 50, "03. 125Hz": 50, "04. 250Hz": 50, "05. 500Hz": 50,
+        "06. 1kHz": 50, "07. 2kHz": 50, "08. 4kHz": 50, "09. 8kHz": 50, "10. 16kHz": 50
+    },
+    "pop": {
+        "01. 31Hz": 62, "02. 63Hz": 60, "03. 125Hz": 56, "04. 250Hz": 52, "05. 500Hz": 50,
+        "06. 1kHz": 48, "07. 2kHz": 52, "08. 4kHz": 56, "09. 8kHz": 60, "10. 16kHz": 62
+    },
+    "podcast": {
+        "01. 31Hz": 30, "02. 63Hz": 35, "03. 125Hz": 48, "04. 250Hz": 58, "05. 500Hz": 62,
+        "06. 1kHz": 66, "07. 2kHz": 64, "08. 4kHz": 58, "09. 8kHz": 48, "10. 16kHz": 42
+    },
+    "spatial": {
+        "01. 31Hz": 50, "02. 63Hz": 50, "03. 125Hz": 50, "04. 250Hz": 50, "05. 500Hz": 50,
+        "06. 1kHz": 50, "07. 2kHz": 50, "08. 4kHz": 50, "09. 8kHz": 50, "10. 16kHz": 50
+    }
+}
+
+CURRENT_PROFILE = "calibrated"
+FIR_DIR = "/etc/marvin-device"
+
+def apply_airplay_fir(profile_name: str) -> bool:
+    """將對應 profile 的 FIR WAV 檔案路徑透過 D-Bus 設為作用中，實現無縫切換。"""
+    src = os.path.join(FIR_DIR, f"eq_fir_{profile_name}.wav")
+    print(f"🎬 [apply_airplay_fir] Target profile: {profile_name}")
+    print(f"🎬 [apply_airplay_fir] Src: {src} (exists={os.path.exists(src)})")
+    if not os.path.exists(src):
+        print(f"⚠️ [apply_airplay_fir] Src file does not exist!")
+        return False
+    try:
+        # 直接使用 D-Bus 動態變更 shairport-sync 的路徑屬性（不需重啟，無縫切換！）
+        subprocess.run([
+            "dbus-send", "--system", "--print-reply",
+            "--dest=org.gnome.ShairportSync",
+            "/org/gnome/ShairportSync",
+            "org.freedesktop.DBus.Properties.Set",
+            "string:org.gnome.ShairportSync",
+            "string:ConvolutionImpulseResponseFile",
+            f"variant:string:{src}"
+        ], capture_output=True, text=True, timeout=5, check=True)
+        print(f"✅ [apply_airplay_fir] Dynamic path updated to {src} via D-Bus")
+        return True
+    except Exception as e:
+        print(f"❌ [apply_airplay_fir] Error updating D-Bus property: {e}")
+        return False
+
+def load_profiles() -> dict:
+    if os.path.exists(PROFILES_FILE):
+        try:
+            with open(PROFILES_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {k: v.copy() for k, v in DEFAULT_PROFILES.items()}
+
+def save_profiles(profiles: dict):
+    try:
+        if os.path.dirname(PROFILES_FILE):
+            os.makedirs(os.path.dirname(PROFILES_FILE), exist_ok=True)
+        with open(PROFILES_FILE, "w") as f:
+            json.dump(profiles, f, indent=2)
+    except Exception:
+        pass
+
 
 def panel_html() -> str:
     tok = TOKEN or ""
@@ -69,6 +138,7 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
   .vol .pct{ font-size:34px; font-weight:700; min-width:96px; text-align:center; }
   .volbtns{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:10px; }
   #status{ font-size:13px; color:var(--mut); min-height:18px; margin:2px; text-align:center; }
+  button.active { border: 1.5px solid var(--accent) !important; color: var(--accent) !important; font-weight: 700 !important; }
 </style></head><body>
 <h1><span class="dot" id="dot"></span>馬文控制台</h1>
 
@@ -105,6 +175,18 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
     <button onclick="vol('+10')">＋</button>
   </div>
   <button class="danger wide" onclick="vol('mute')" style="margin-top:10px">靜音</button>
+  <div class="lbl" style="margin-top:14px">🔊 聲音風格 (Sound Profile)</div>
+  <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:6px" id="prof-btns">
+    <button id="btn-calibrated" onclick="setProfile('calibrated')">校正</button>
+    <button id="btn-pop" onclick="setProfile('pop')">流行</button>
+    <button id="btn-podcast" onclick="setProfile('podcast')">播客</button>
+    <button id="btn-spatial" onclick="setProfile('spatial')">空間</button>
+  </div>
+</div>
+
+<div class="card" style="text-align:center">
+  <div class="lbl" style="text-align:left;margin-bottom:8px">🎙️ PTT 語音對話 (Push to Talk)</div>
+  <button id="btn-ptt" onclick="togglePTT()" style="background:#1f283a; color:#85b3ff; font-size:18px; font-weight:bold; padding:15px; width:100%; border:1px solid #334466; border-radius:8px; cursor:pointer; transition:all 0.2s">🎙️ 開始對話</button>
 </div>
 
 <div class="card">
@@ -149,6 +231,7 @@ async function refresh(){
          el.textContent="🌡️ "+t+"°C";
          el.style.color = t>=65?"#ff6b6b" : t>=57?"#e0a53a" : "#8b90a0";  // 紅=將觸發停播 黃=偏高 灰=正常
        }
+       if(j.profile) updateProfileUI(j.profile);
   }catch(e){ $("dot").style.background="#ff6b6b"; }
 }
 async function nowPlaying(){
@@ -170,6 +253,78 @@ async function nowPlaying(){
 function tick(){ nowPlaying(); refresh(); }
 tick();
 setInterval(tick, 4000);
+
+function updateProfileUI(name) {
+  const btns = ["calibrated", "pop", "podcast", "spatial"];
+  btns.forEach(b => {
+    const el = $("btn-" + b);
+    if(el) {
+      if(b === name) el.classList.add("active");
+      else el.classList.remove("active");
+    }
+  });
+}
+
+async function setProfile(name){
+  try{
+    const r=await fetch("/profile?t="+encodeURIComponent(TOKEN),{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({name:name})
+    });
+    if(r.ok){ 
+      stat("已套用風格：" + name, true);
+      updateProfileUI(name);
+    }
+    else { stat("套用風格失敗", false); }
+  }catch(e){ stat("風格服務連不到", false); }
+}
+
+let pttRecording = false;
+async function togglePTT() {
+  const el = $("btn-ptt");
+  if (!pttRecording) {
+    try {
+      const r = await fetch("/ptt?t=" + encodeURIComponent(TOKEN), {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({state: "start"})
+      });
+      if (r.ok) {
+        pttRecording = true;
+        el.textContent = "🔴 錄音中 (點擊結束)";
+        el.style.background = "#ff6b6b";
+        el.style.color = "#0e0f13";
+        el.style.borderColor = "#ff6b6b";
+        stat("🎙️ 錄音中...請對著音箱說話", true);
+      } else {
+        stat("啟動 PTT 失敗", false);
+      }
+    } catch(e) {
+      stat("連不到音量服務", false);
+    }
+  } else {
+    try {
+      const r = await fetch("/ptt?t=" + encodeURIComponent(TOKEN), {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({state: "stop"})
+      });
+      if (r.ok) {
+        pttRecording = false;
+        el.textContent = "🎙️ 開始對話";
+        el.style.background = "#1f283a";
+        el.style.color = "#85b3ff";
+        el.style.borderColor = "#334466";
+        stat("⌛ 傳送語音中...", true);
+      } else {
+        stat("結束 PTT 失敗", false);
+      }
+    } catch(e) {
+      stat("連不到音量服務", false);
+    }
+  }
+}
 </script>
 </body></html>"""
 
@@ -182,8 +337,17 @@ def _amixer(*args) -> str:
 
 def get_percent() -> int:
     out = _amixer("sget", CONTROL)
-    m = re.search(r"\[(\d+)%\]", out)
-    return int(m.group(1)) if m else -1
+    m = re.search(r"Playback (\d+)\s+\[", out)
+    if not m:
+        m_pct = re.search(r"\[(\d+)%\]", out)
+        return int(m_pct.group(1)) if m_pct else -1
+    raw_val = int(m.group(1))
+    if raw_val <= 0:
+        return 0
+    if raw_val <= 107:
+        return 1
+    pct = int((raw_val - 107) / 100.0 * 99.0 + 1)
+    return max(0, min(100, pct))
 
 
 def get_temp() -> float:
@@ -199,7 +363,13 @@ def get_temp() -> float:
 
 def set_percent(p: int) -> int:
     p = max(0, min(100, p))
-    _amixer("sset", CONTROL, f"{p}%")
+    if p == 0:
+        _amixer("sset", CONTROL, "0")
+    else:
+        # 將 1-100% 線性映射至暫存器 107-207 (對應 -50dB 至 0dB 的線性聽感曲線)
+        raw_val = int(107 + ((p - 1) / 99.0) * 100.0)
+        raw_val = max(0, min(207, raw_val))
+        _amixer("sset", CONTROL, str(raw_val))
     # 持久化（開機還原）；pi 免密 sudo
     subprocess.run(["sudo", "alsactl", "store"], capture_output=True, timeout=10)
     return get_percent()
@@ -209,6 +379,81 @@ def set_mute(muted: bool) -> int:
     _amixer("sset", CONTROL, "mute" if muted else "unmute")
     subprocess.run(["sudo", "alsactl", "store"], capture_output=True, timeout=10)
     return get_percent()
+
+
+def get_eq() -> dict:
+    try:
+        out = subprocess.run(
+            ["amixer", "-D", "equal", "sget", "all"],
+            capture_output=True, text=True, timeout=5
+        ).stdout
+        if not out.strip():
+            out = subprocess.run(
+                ["amixer", "-D", "equal"],
+                capture_output=True, text=True, timeout=5
+            ).stdout
+    except Exception:
+        return {}
+
+    res = {}
+    controls = re.split(r"Simple mixer control", out)
+    for c in controls:
+        m_name = re.search(r"'([^']+)'", c)
+        if not m_name:
+            continue
+        name = m_name.group(1)
+        m_val = re.search(r"\[(\d+)%\]", c)
+        if m_val:
+            res[name] = int(m_val.group(1))
+    return res
+
+
+def set_eq(band: str, val: int) -> bool:
+    current = get_eq()
+    target_key = None
+    # 移除前導數字與點，如 "01. 31Hz" -> "31Hz"，並移除空格
+    band_core = re.sub(r"^\d+\.\s*", "", band)
+    clean_band = re.sub(r"\s+", "", band_core.lower())
+    for k in current.keys():
+        # 同樣對實機控制鍵進行清洗，如 "00. 31 Hz" -> "31 Hz"
+        k_core = re.sub(r"^\d+\.\s*", "", k)
+        clean_k = re.sub(r"\s+", "", k_core.lower())
+        if clean_band == clean_k or clean_band in clean_k:
+            target_key = k
+            break
+    if not target_key:
+        return False
+    val = max(0, min(100, val))
+    try:
+        subprocess.run(
+            ["amixer", "-D", "equal", "sset", target_key, f"{val}%"],
+            capture_output=True, timeout=5
+        )
+        return True
+    except Exception:
+        return False
+
+
+def get_balance() -> dict:
+    out = _amixer("sget", CONTROL)
+    left = -1
+    right = -1
+    m_left = re.search(r"Front Left:.*\[(\d+)%\]", out)
+    m_right = re.search(r"Front Right:.*\[(\d+)%\]", out)
+    if m_left:
+        left = int(m_left.group(1))
+    if m_right:
+        right = int(m_right.group(1))
+    return {"left": left, "right": right}
+
+
+def set_balance(left: int, right: int) -> dict:
+    left = max(0, min(100, left))
+    right = max(0, min(100, right))
+    _amixer("sset", CONTROL, f"{left}%,{right}%")
+    subprocess.run(["sudo", "alsactl", "store"], capture_output=True, timeout=10)
+    return get_balance()
+
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -243,29 +488,170 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _handle(self):
+        global CURRENT_PROFILE
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
         # 控制台網頁（免 token，Tailscale 私網；API 呼叫才驗 token）
         if self.command == "GET" and path in ("", "/panel"):
             return self._serve_panel()
-        if path != "/vol":
+        if path not in ("/vol", "/eq", "/balance", "/profile", "/ptt"):
             return self._send(404, {"error": "not_found"})
         q = parse_qs(parsed.query)
         if not self._authed(q):
             return self._send(401, {"error": "unauthorized"})
-        # 值來源：網址 ?v= 優先，否則 body（POST）
-        val = q.get("v", [None])[0]
-        if val is None and self.command == "POST":
-            n = int(self.headers.get("Content-Length", 0))
-            val = self.rfile.read(n).decode() if n else ""
-        val = (val or "").strip()
-        if not val:  # 無值＝讀現值
-            return self._send(200, {"percent": get_percent(), "temp": get_temp()})
-        try:
-            pct = self._apply(val)
-        except (ValueError, TypeError):
-            return self._send(400, {"error": "bad_value", "got": val})
-        self._send(200, {"ok": True, "percent": pct, "temp": get_temp()})
+
+        if path == "/vol":
+            # 值來源：網址 ?v= 優先，否則 body（POST）
+            val = q.get("v", [None])[0]
+            if val is None and self.command == "POST":
+                n = int(self.headers.get("Content-Length", 0))
+                val = self.rfile.read(n).decode() if n else ""
+            val = (val or "").strip()
+            if not val:  # 無值＝讀現值
+                return self._send(200, {"percent": get_percent(), "temp": get_temp(), "profile": CURRENT_PROFILE})
+            try:
+                pct = self._apply(val)
+            except (ValueError, TypeError):
+                return self._send(400, {"error": "bad_value", "got": val})
+            return self._send(200, {"ok": True, "percent": pct, "temp": get_temp(), "profile": CURRENT_PROFILE})
+
+        elif path == "/eq":
+            if self.command == "POST":
+                n = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(n).decode() if n else "{}"
+                try:
+                    data = json.loads(body)
+                    applied = {}
+                    for band, val in data.items():
+                        ok = set_eq(band, int(val))
+                        applied[band] = ok
+                    
+                    # 校正完後自動存入 calibrated Profile 記憶體
+                    CURRENT_PROFILE = "calibrated"
+                    current_eq = get_eq()
+                    if current_eq:
+                        profiles = load_profiles()
+                        profiles["calibrated"] = current_eq
+                        save_profiles(profiles)
+                        
+                    return self._send(200, {"ok": True, "applied": applied, "eq": current_eq})
+                except Exception as e:
+                    return self._send(400, {"error": "bad_request", "message": str(e)})
+            else:
+                return self._send(200, {"eq": get_eq()})
+
+        elif path == "/balance":
+            if self.command == "POST":
+                n = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(n).decode() if n else "{}"
+                try:
+                    data = json.loads(body)
+                    left = data.get("left")
+                    right = data.get("right")
+                    if left is None or right is None:
+                        return self._send(400, {"error": "missing_parameters", "require": ["left", "right"]})
+                    bal = set_balance(int(left), int(right))
+                    return self._send(200, {"ok": True, "balance": bal})
+                except Exception as e:
+                    return self._send(400, {"error": "bad_request", "message": str(e)})
+            else:
+                return self._send(200, get_balance())
+
+        elif path == "/profile":
+            if self.command == "POST":
+                n = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(n).decode() if n else "{}"
+                print(f"📡 [VolumeServer] POST /profile body={body}")
+                try:
+                    data = json.loads(body)
+                    name = data.get("name", "").strip().lower()
+                    print(f"📡 [VolumeServer] POST /profile requesting name={name}")
+                    profiles = load_profiles()
+                    if name not in profiles:
+                        print(f"⚠️ [VolumeServer] POST /profile unknown name={name}")
+                        return self._send(400, {"error": "unknown_profile", "available": list(profiles.keys())})
+                    
+                    # 套用該風格的所有等化器頻段值
+                    for band, val in profiles[name].items():
+                        set_eq(band, val)
+                        
+                    CURRENT_PROFILE = name
+                    # 同步更換 AirPlay FIR 並重載 shairport-sync
+                    fir_ok = apply_airplay_fir(name)
+                    print(f"📡 [VolumeServer] POST /profile success name={name} fir_ok={fir_ok}")
+                    return self._send(200, {"ok": True, "profile": name, "eq": get_eq(), "airplay_fir": fir_ok})
+                except Exception as e:
+                    return self._send(400, {"error": "bad_request", "message": str(e)})
+            else:
+                profiles = load_profiles()
+                return self._send(200, {"profiles": list(profiles.keys()), "current_profiles": profiles, "active": CURRENT_PROFILE})
+
+        elif path == "/ptt":
+            if self.command == "POST":
+                n = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(n).decode() if n else "{}"
+                print(f"📡 [VolumeServer] POST /ptt body={body}")
+                try:
+                    data = json.loads(body)
+                    state = data.get("state", "").strip().lower()
+                    
+                    if state == "start":
+                        # 1. 啟用麥克風輸入
+                        subprocess.run(["amixer", "-c", "Array", "sset", "Headset", "cap"], check=True)
+                        print("🎤 [PTT] 麥克風已開啟 (Headset cap)")
+                        
+                        # 2. 通知 Mac 大腦進行音樂壓低 (Ducking)
+                        import urllib.request
+                        mac_host = MAC_SAY.split("/say")[0]
+                        wake_url = f"{mac_host}/wake"
+                        if TOKEN:
+                            wake_url += f"?t={TOKEN}"
+                        print(f"📡 [VolumeServer] 呼叫 Mac wake: {wake_url}")
+                        
+                        req = urllib.request.Request(
+                            wake_url,
+                            data=b"{}",
+                            headers={"Content-Type": "application/json"},
+                            method="POST"
+                        )
+                        try:
+                            with urllib.request.urlopen(req, timeout=2) as response:
+                                print(f"📡 [VolumeServer] Mac wake 回應: {response.status}")
+                        except Exception as e:
+                            print(f"⚠️ [VolumeServer] 呼叫 Mac wake 失敗: {e}")
+                            
+                        return self._send(200, {"ok": True, "state": "recording"})
+                        
+                    elif state == "stop":
+                        # 1. 關閉麥克風輸入
+                        subprocess.run(["amixer", "-c", "Array", "sset", "Headset", "nocap"], check=True)
+                        print("🔇 [PTT] 麥克風已關閉 (Headset nocap)")
+                        
+                        # 2. 通知 Mac 大腦強行斷句 (Flush)
+                        import urllib.request
+                        mac_host = MAC_SAY.split("/say")[0]
+                        flush_url = f"{mac_host}/flush"
+                        if TOKEN:
+                            flush_url += f"?t={TOKEN}"
+                        print(f"📡 [VolumeServer] 呼叫 Mac flush: {flush_url}")
+                        
+                        req = urllib.request.Request(
+                            flush_url,
+                            data=b"{}",
+                            headers={"Content-Type": "application/json"},
+                            method="POST"
+                        )
+                        try:
+                            with urllib.request.urlopen(req, timeout=2) as response:
+                                print(f"📡 [VolumeServer] Mac flush 回應: {response.status}")
+                        except Exception as e:
+                            print(f"⚠️ [VolumeServer] 呼叫 Mac flush 失敗: {e}")
+                            
+                        return self._send(200, {"ok": True, "state": "idle"})
+                    else:
+                        return self._send(400, {"error": "invalid_state", "got": state})
+                except Exception as e:
+                    return self._send(400, {"error": "bad_request", "message": str(e)})
 
     do_GET = _handle
     do_POST = _handle
