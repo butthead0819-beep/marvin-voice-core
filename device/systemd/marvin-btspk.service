@@ -1,0 +1,13 @@
+[Unit]
+Description=Marvin Soundcore BT auto-connect (retry loop)
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/marvin-btspk-autoconnect.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
