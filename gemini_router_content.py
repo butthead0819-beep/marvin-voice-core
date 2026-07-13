@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import datetime
 import suki_miner
+import memory_sandbox
 from utils import safe_json_loads
 from marvin_prompts import get_persona_modifiers
 from personality_config import (
@@ -310,6 +311,8 @@ class GeminiRouterContentMixin:
     def save_dna(self, dna: dict):
         """原子化儲存 Suki 的性格數據 (Operation Atomic Write)"""
         self.dna = normalize_personality_state(dna)
+        if memory_sandbox.active():
+            return  # 沙盒：整檔覆寫 no-op（性格演化只留 RAM、斷線丟棄）
         try:
             tmp_file = self.dna_file + ".tmp"
             with open(tmp_file, "w", encoding="utf-8") as f:

@@ -9,6 +9,8 @@ import time
 import datetime
 import logging
 
+import memory_sandbox
+
 _VIDEO_ID_RE = re.compile(r"(?:v=|youtu\.be/|/watch\?v=)([A-Za-z0-9_-]{11})")
 
 
@@ -168,6 +170,8 @@ class MusicMemory:
             likes_dst[u] = max(likes_dst.get(u, 0), ts)   # 並集、較新 ts 勝
 
     def _save(self):
+        if memory_sandbox.active():
+            return  # 沙盒：整檔覆寫是最危險並行寫，絕不落盤（變更只留 self._data、斷線丟棄）
         tmp = self.path + ".tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as f:

@@ -22,6 +22,8 @@ from typing import Iterable
 
 import numpy as np
 
+import memory_sandbox
+
 
 _DEFAULT_COOLDOWN_DAYS = 30
 _EMBED_DIM_TOLERANCE = 1024  # 防呆，最大允許 dim
@@ -41,13 +43,15 @@ class SpeakerTopicGraph:
     def _connect(self) -> sqlite3.Connection:
         if self._con is not None:
             return self._con
-        return sqlite3.connect(self._db_path)
+        return memory_sandbox.connect(self._db_path)
 
     def _release(self, con: sqlite3.Connection) -> None:
         if self._con is None:
             con.close()
 
     def _init_db(self) -> None:
+        if memory_sandbox.active():
+            return  # 沙盒：正本 schema 已存在、唯讀連線不能建表
         con = self._connect()
         try:
             con.execute("""
@@ -89,6 +93,8 @@ class SpeakerTopicGraph:
         """寫一句 utterance；空白文字直接 noop（回 None）。回傳 transcript_id。"""
         if not text or not text.strip():
             return None
+        if memory_sandbox.active():
+            return None  # 沙盒：寫入 no-op（ephemeral，斷線丟棄）
         if ts is None:
             ts = time.time()
         con = self._connect()
@@ -111,6 +117,8 @@ class SpeakerTopicGraph:
         text_emotion: str | None = None,
         prosody_emotion: str | None = None,
     ) -> None:
+        if memory_sandbox.active():
+            return
         con = self._connect()
         try:
             con.execute(
@@ -126,6 +134,8 @@ class SpeakerTopicGraph:
 
     def mark_bridged(self, transcript_id: int, *, ts: float | None = None) -> None:
         """標記某句已被 BridgeAgent 使用過 → cooldown_days 內不再被選為 callback。"""
+        if memory_sandbox.active():
+            return
         if ts is None:
             ts = time.time()
         con = self._connect()

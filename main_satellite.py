@@ -16,8 +16,10 @@ Live 執行步驟：
 
 注意事項：
   - 不登入 Discord——不與線上 24/7 bot 的同 token 衝突
-  - ⚠️ device 直接讀寫正本記憶＝依賴「一次一具身體」：用 device 前要**停掉 24/7 Discord bot**
-    （launchd），否則兩進程並行寫記憶會 lost-update（見 project_marvin_physical_speaker）
+  - 🧊 預設啟用 ephemeral 記憶沙盒＝唯讀繼承正本、寫入全 no-op、斷線丟棄
+    ∴ **可與 24/7 Discord bot 並存、不必停一啟一**（見 design_ephemeral_sandbox_memory）。
+    代價：satellite 講的話/點的歌不進正本（session 內 RAM cache 連貫、進程結束即忘）。
+    escape hatch：設 MARVIN_MEMORY_SANDBOX=0 關沙盒直接寫正本，但須先停 Discord bot。
   - 衛星斷線會自動 5s 重連（不炸腦）；驗收天梯見 docs/device/S4_integration.md
   - 按 Ctrl-C 乾淨結束
 """
@@ -28,7 +30,31 @@ import time
 
 from dotenv import load_dotenv
 
+import memory_sandbox
+
 logger = logging.getLogger(__name__)
+
+
+def maybe_activate_memory_sandbox(env) -> bool:
+    """satellite 預設啟用 ephemeral 記憶沙盒＝唯讀繼承正本、寫入 no-op、斷線丟棄。
+
+    這是「satellite/discord 模式共存不搶寫正本」的關鍵：沙盒下 satellite 進程
+    絕不寫 marvin.db / music_memory.json / 等正本，∴ 24/7 Discord bot 可同時活著、
+    不必停一啟一（見 design_ephemeral_sandbox_memory）。
+
+    env `MARVIN_MEMORY_SANDBOX=0` ＝escape hatch：關沙盒、讓 satellite 直接寫正本
+    （舊工作流，需先停掉 Discord bot 避免 lost-update）。回傳是否啟用。
+    """
+    if env.get("MARVIN_MEMORY_SANDBOX", "1").strip() == "0":
+        logger.warning(
+            "⚠️ [Satellite] 記憶沙盒關閉（MARVIN_MEMORY_SANDBOX=0）＝直接寫正本；"
+            "務必先停掉 24/7 Discord bot，否則並行寫會 lost-update")
+        return False
+    memory_sandbox.activate()
+    logger.info(
+        "🧊 [Satellite] ephemeral 記憶沙盒啟用：唯讀繼承正本、寫入全 no-op、斷線丟棄"
+        "（可與 24/7 Discord bot 並存不搶寫）")
+    return True
 
 
 def repo_root() -> str:
@@ -232,6 +258,8 @@ async def main():
     # models+repo 的 .env(GUILD_ID) 全用正本，不論從哪啟動都不會漂到別的 worktree。
     os.chdir(repo_root())
     load_dotenv()
+    # 沙盒必須在建 bot（→建各 store）之前啟用，否則 store 會以讀寫模式開連線
+    maybe_activate_memory_sandbox(os.environ)
     _warnings = check_identity_alignment(os.environ)
     for _w in _warnings:
         logger.warning(f"⚠️ [Satellite] 記憶對齊：{_w}")

@@ -4,6 +4,8 @@ import json
 import sqlite3
 import time
 
+import memory_sandbox
+
 
 class SummaryStore:
     def __init__(self, db_path: str = "marvin.db"):
@@ -14,13 +16,15 @@ class SummaryStore:
     def _connect(self) -> sqlite3.Connection:
         if self._con is not None:
             return self._con
-        return sqlite3.connect(self._db_path)
+        return memory_sandbox.connect(self._db_path)
 
     def _release(self, con: sqlite3.Connection) -> None:
         if self._con is None:
             con.close()
 
     def _init_db(self) -> None:
+        if memory_sandbox.active():
+            return  # 沙盒：正本 schema 已存在、唯讀連線不能建表
         con = self._connect()
         try:
             con.execute("""
@@ -50,6 +54,8 @@ class SummaryStore:
         summary_text: str,
         speakers: list[str],
     ) -> int:
+        if memory_sandbox.active():
+            return 0  # 沙盒：寫入 no-op（ephemeral，斷線丟棄）
         con = self._connect()
         try:
             cur = con.execute(

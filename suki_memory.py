@@ -6,6 +6,8 @@ import sqlite3
 import time
 from datetime import datetime
 
+import memory_sandbox
+
 logger = logging.getLogger("SukiMemory")
 
 _DB_PATH = "marvin.db"
@@ -214,6 +216,9 @@ class MemoryManager:
     # ── DB init ──────────────────────────────────────────────────────────────
 
     def _open_db(self) -> sqlite3.Connection:
+        if memory_sandbox.active():
+            # 沙盒：唯讀開正本（物理牆），schema 已由 live bot 維護、不建不遷不設 WAL
+            return memory_sandbox.connect(self._db_path, check_same_thread=False)
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         self._ensure_players_schema(conn)
@@ -300,7 +305,8 @@ class MemoryManager:
         rows = self._conn.execute(
             "SELECT username, data FROM players WHERE guild_id = ?", (self._guild_id,)
         ).fetchall()
-        if not rows and self._is_home:
+        if not rows and self._is_home and not memory_sandbox.active():
+            # 沙盒：不做 JSON→DB 遷移（那是寫入；正本 schema/資料已由 live bot 維護）
             self._migrate_from_json()
             rows = self._conn.execute(
                 "SELECT username, data FROM players WHERE guild_id = ?", (self._guild_id,)
@@ -333,6 +339,8 @@ class MemoryManager:
     # ── Persist ──────────────────────────────────────────────────────────────
 
     def _save_player(self, username: str):
+        if memory_sandbox.active():
+            return  # 沙盒：不落盤（ephemeral，變更只留 self._cache、斷線丟棄）
         if username not in self._cache:
             return
         self._conn.execute(
@@ -351,6 +359,8 @@ class MemoryManager:
         只在 home guild 匯出：JSON 的 players 區段是扁平 username map，guest guild
         若也寫會互相蓋掉、也會污染 offline script 讀的 home guild 資料。
         """
+        if memory_sandbox.active():
+            return  # 沙盒：整檔 JSON 覆寫是最危險的並行寫（會 nuke live bot 的 cron meta），絕不寫
         if not self._is_home:
             return
         try:
@@ -735,6 +745,8 @@ class MemoryManager:
         speaker: str | None = None,
     ) -> None:
         """記錄一筆氣氛回饋。label ∈ {"too_loud", "too_sharp", "too_jolly"}。"""
+        if memory_sandbox.active():
+            return  # 沙盒：寫入 no-op
         self._conn.execute(
             "INSERT INTO atmosphere_corrections "
             "(snapshot_ts, label, speaker, created_ts) VALUES (?, ?, ?, ?)",

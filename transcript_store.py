@@ -3,6 +3,8 @@ from __future__ import annotations
 import sqlite3
 import time
 
+import memory_sandbox
+
 
 class TranscriptStore:
     def __init__(self, db_path: str = "marvin.db"):
@@ -17,13 +19,15 @@ class TranscriptStore:
     def _connect(self) -> sqlite3.Connection:
         if self._con is not None:
             return self._con
-        return sqlite3.connect(self._db_path)
+        return memory_sandbox.connect(self._db_path)
 
     def _release(self, con: sqlite3.Connection) -> None:
         if self._con is None:
             con.close()
 
     def _init_db(self) -> None:
+        if memory_sandbox.active():
+            return  # 沙盒：正本 schema 已存在、唯讀連線不能建表
         con = self._connect()
         try:
             con.execute("""
@@ -47,6 +51,8 @@ class TranscriptStore:
     def save(self, speaker: str, guild_id: int, text: str, timestamp: float, channel_id: int = 0) -> None:
         if not text.strip():
             return
+        if memory_sandbox.active():
+            return  # 沙盒：寫入 no-op（ephemeral，斷線丟棄）
         con = self._connect()
         try:
             con.execute(
@@ -107,6 +113,8 @@ class TranscriptStore:
         retention_days=14 留足緩衝，prune 不影響任何即時行為。長期語意記憶由向量庫
         負責（不在此表）。邊界用嚴格小於，避免誤刪剛好落在 cutoff 的近期資料。
         """
+        if memory_sandbox.active():
+            return 0  # 沙盒：DELETE no-op（不動正本）
         cutoff = (now if now is not None else time.time()) - retention_days * 86400
         con = self._connect()
         try:

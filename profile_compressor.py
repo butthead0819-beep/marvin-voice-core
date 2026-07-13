@@ -13,6 +13,7 @@ import time
 
 from groq import AsyncGroq
 
+import memory_sandbox
 from transcript_store import TranscriptStore
 
 logger = logging.getLogger(__name__)
@@ -55,13 +56,15 @@ class ProfileCompressor:
     def _connect(self) -> sqlite3.Connection:
         if self._con is not None:
             return self._con
-        return sqlite3.connect(self._db_path)
+        return memory_sandbox.connect(self._db_path)
 
     def _release(self, con: sqlite3.Connection) -> None:
         if self._con is None:
             con.close()
 
     def _init_db(self) -> None:
+        if memory_sandbox.active():
+            return  # 沙盒：正本 schema 已存在、唯讀連線不能建表
         con = self._connect()
         try:
             con.execute("""
@@ -85,6 +88,8 @@ class ProfileCompressor:
 
     def _upsert_profile(self, speaker: str, guild_id: int, profile_text: str, updated_at: float) -> None:
         """INSERT OR REPLACE 最新 profile（允許測試直接注入）"""
+        if memory_sandbox.active():
+            return  # 沙盒：寫入 no-op（ephemeral，斷線丟棄）
         con = self._connect()
         try:
             con.execute(
