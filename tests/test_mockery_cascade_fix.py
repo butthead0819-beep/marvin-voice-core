@@ -76,6 +76,29 @@ def test_mockery_in_stream_mode_still_resets_timer():
         "stream_mode 嘲諷也必須 reset timer，否則 cascade"
 
 
+# ── 1b. satellite/local 模式關閉嘲諷 ──────────────────────────────────────
+
+def test_mockery_suppressed_in_local_satellite_mode():
+    """satellite/local（device）模式使用者不主動講話 → 「等你回話」嘲諷不該觸發。
+
+    2026-07-14：satellite 本來就是 PTT/喚醒驅動，使用者不會主動開口，「反應太慢」
+    的延遲嘲諷在這語境下純屬騷擾。_local_mode（satellite + 本機）一律不嘲諷。
+    """
+    cog = _make_cog()
+    cog.stream_mode = False
+    cog._local_mode = True  # satellite / 本機 device 模式
+
+    now = time.time()
+    cog.last_marvin_speech_time = now - 300.0
+
+    cog._trigger_silent_mockery("狗與露", silence_duration=300.0)
+
+    # 未觸發：不打 log、不排 TTS、也不加入 pending_mock_users
+    cog.stt_logger.info.assert_not_called()
+    cog.bot.loop.create_task.assert_not_called()
+    assert "狗與露" not in cog.pending_mock_users
+
+
 # ── 2. Cooldown 防 cascade（驗證雙重保護）─────────────────────────────────
 
 def test_mockery_per_speaker_cooldown_45s():

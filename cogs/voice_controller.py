@@ -1757,6 +1757,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         修法：嘲諷判定通過時立刻 reset timer，與 TTS 是否真播解耦。
         """
         import random as _rand
+
+        # 🛰️ [Satellite/Local] device 模式使用者不主動講話（PTT/喚醒驅動）→「反應太慢」
+        # 的延遲嘲諷純屬騷擾，一律關閉。Discord 多人聊天路徑不受影響。
+        if getattr(self, "_local_mode", False):
+            return
+
         now = time.time()
 
         # 🛡️ [Mockery Cooldown] 同一玩家 45 秒內只嘲諷一次
