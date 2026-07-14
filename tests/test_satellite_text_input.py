@@ -189,7 +189,7 @@ async def test_http_now_reports_current_song():
     vc.bot.cogs.get.return_value = mc
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/now")
+        resp = await client.get("/now?t=s3cret")
         assert resp.status == 200
         body = await resp.json()
         assert body["playing"] is True
@@ -215,7 +215,7 @@ async def test_http_now_includes_pending_queue():
     vc.bot.cogs.get.return_value = mc
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
-        body = await (await client.get("/now")).json()
+        body = await (await client.get("/now?t=s3cret")).json()
         assert body["queue"] == [
             {"title": "下一首A", "by": "阿明"},
             {"title": "下一首B", "by": "Marvin推薦（點給大家）"},
@@ -236,7 +236,7 @@ async def test_http_now_queue_empty_when_no_queue():
     vc.bot.cogs.get.return_value = mc
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
-        body = await (await client.get("/now")).json()
+        body = await (await client.get("/now?t=s3cret")).json()
         assert body["queue"] == []
 
 
@@ -251,7 +251,7 @@ async def test_http_now_reports_not_playing_when_idle():
     vc.bot.cogs.get.return_value = mc
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/now")
+        resp = await client.get("/now?t=s3cret")
         assert resp.status == 200
         assert (await resp.json())["playing"] is False
 

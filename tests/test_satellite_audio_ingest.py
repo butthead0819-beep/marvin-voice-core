@@ -132,7 +132,7 @@ async def test_http_satellite_serves_html_page():
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/satellite")
+        resp = await client.get("/satellite?t=s3cret")
         assert resp.status == 200
         assert "text/html" in resp.headers["Content-Type"]
         html = await resp.text()
@@ -148,7 +148,7 @@ async def test_http_satellite_injects_token_into_page():
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret")
     async with TestClient(TestServer(app)) as client:
-        html = await (await client.get("/satellite")).text()
+        html = await (await client.get("/satellite?t=s3cret")).text()
         assert "s3cret" in html
 
 
