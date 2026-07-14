@@ -538,12 +538,63 @@ async def start_text_http_server(vc, reply_source=None):
     token = os.getenv("MARVIN_TEXT_TOKEN", "").strip() or None
     default_speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
 
+    # ── 車載模式（ESP32 puck）：MARVIN_CAR_MODE=1 才接；預設 off＝零行為改變 ──
+    car_presence = None
+    audio_rate_limiter = None
+    if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        from car_mode import build_car_presence, run_car_ttl_loop
+        from music_recommender import build_member_pools
+        from rate_limiter import RateLimiter
+        owner = default_speaker
+
+        def _pool_provider():
+            # 車載＝機主一人的候選池（復用既有 build_member_pools 純函式，見 CodeQ#4）。失敗→空池降級。
+            try:
+                mc = vc.bot.cogs.get("MusicCog")
+                mm = getattr(mc, "mm", None) or getattr(mc, "_music_memory", None)
+                if mm is None:
+                    return []
+                pools = build_member_pools(members=[owner], songs=mm.all_songs(),
+                                           exclude_titles=[], now=time.time())
+                return pools.get(owner, [])
+            except Exception:  # noqa: BLE001
+                logger.exception("[CarMode] pool_provider 失敗，回空池")
+                return []
+
+        async def _play_open(car_open):
+            # 開場：復用 /play 那招 inject_text「放一首X」讓 pipeline 解析+播+DJ；絕不即時付費 LLM。
+            try:
+                if car_open.song:
+                    await inject_text(vc, owner, f"放一首{car_open.song.anchor_title}")
+                logger.info("🚗 [CarMode] 上車開場：%s → 放《%s》",
+                            car_open.line, car_open.song.anchor_title if car_open.song else "—")
+            except Exception:  # noqa: BLE001
+                logger.exception("[CarMode] play_open 失敗")
+
+        async def _stop_playback():
+            try:
+                mc = vc.bot.cogs.get("MusicCog")
+                if mc and hasattr(mc, "stop_stream"):
+                    await mc.stop_stream(reason="下車（puck absent）")
+                logger.info("🚗 [CarMode] 下車停播")
+            except Exception:  # noqa: BLE001
+                logger.exception("[CarMode] stop_playback 失敗")
+
+        car_presence = build_car_presence(
+            play_open=_play_open, stop_playback=_stop_playback, pool_provider=_pool_provider)
+        # funnel 公開後 /audio per-token 限速：每 token 每分鐘 30 次（架構#2 付費鐵則）。
+        audio_rate_limiter = RateLimiter(max_per_window=30, window_s=60.0)
+        logger.info("🚗 [CarMode] 車載模式啟用（/car present/absent + TTL 收尾 + /audio 限速）")
+
     app = build_text_app(vc, token=token, default_speaker=default_speaker,
-                         reply_source=reply_source)
+                         reply_source=reply_source, car_presence=car_presence,
+                         audio_rate_limiter=audio_rate_limiter)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
+    if car_presence is not None:
+        asyncio.create_task(run_car_ttl_loop(car_presence))
     _auth = "有 token 保護" if token else "⚠️ 無 token（僅靠 Tailscale 私網）"
     logger.info(
         f"📝 [TextInput] Siri HTTP 伺服器啟動：POST :{port}/say（speaker={default_speaker}，{_auth}）")
