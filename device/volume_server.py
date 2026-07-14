@@ -245,7 +245,7 @@ async function refresh(){
 }
 async function nowPlaying(){
   try{
-    const r=await fetch(MAC_NOW,{cache:"no-store"}); const j=await r.json();
+    const r=await fetch(MAC_NOW+"?t="+encodeURIComponent(TOKEN),{cache:"no-store"}); const j=await r.json();
     const cov=$("npcover");
     if(j.playing){
       $("nptitle").textContent=(j.paused?"暫停中 · ":"")+(j.title||"—");
