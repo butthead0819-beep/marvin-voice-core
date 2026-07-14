@@ -44,3 +44,47 @@ def test_midnight_wrap_late_night():
     assert resolve_time_bucket(_dt.datetime(2026, 7, 15, 4, 59)) == "late_night"
     # 05:00 整已跳出 late_night
     assert resolve_time_bucket(_dt.datetime(2026, 7, 15, 5, 0)) == "morning"
+
+
+# ── build_car_open：復用 pick_candidate + 預生成開場白，絕不付費 LLM ──────────
+def _cand(title, score=1.0):
+    from music_recommender import Candidate
+    return Candidate(anchor_title=title, anchor_artist="x", lane="long_tail",
+                     mode="direct", target_member=None, score=score)
+
+
+def test_build_car_open_picks_line_and_reuses_pick_candidate():
+    from car_open import build_car_open
+    pool = [_cand("晴天"), _cand("稻香")]
+    out = build_car_open("morning", pool_provider=lambda: pool,
+                         open_lines={"morning": ["早安，來首歌"]})
+    assert out.line == "早安，來首歌"
+    assert out.song is not None and out.song.anchor_title in ("晴天", "稻香")
+
+
+def test_build_car_open_empty_pool_song_none_but_still_has_line():
+    from car_open import build_car_open
+    out = build_car_open("noon", pool_provider=lambda: [],
+                         open_lines={"noon": ["午安"]})
+    assert out.song is None          # 沒候選→不硬湊，caller 決定降級
+    assert out.line == "午安"
+
+
+def test_build_car_open_missing_bucket_uses_fallback_line():
+    from car_open import build_car_open, _FALLBACK_OPEN_LINE
+    out = build_car_open("evening", pool_provider=lambda: [], open_lines={})  # 沒 evening
+    assert out.line == _FALLBACK_OPEN_LINE
+
+
+def test_build_car_open_never_calls_paid_llm(monkeypatch):
+    """付費鐵則守門：開場路徑絕不觸發 call_paid_review。"""
+    import llm_pool
+
+    def _boom(*a, **k):
+        raise AssertionError("開場不准打付費 LLM")
+
+    monkeypatch.setattr(llm_pool, "call_paid_review", _boom, raising=False)
+    from car_open import build_car_open
+    out = build_car_open("morning", pool_provider=lambda: [_cand("晴天")],
+                         open_lines={"morning": ["早安"]})
+    assert out.song is not None      # 順利選到，且沒炸＝沒打付費
