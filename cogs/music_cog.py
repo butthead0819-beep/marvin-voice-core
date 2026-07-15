@@ -1908,7 +1908,10 @@ class MusicCog(commands.Cog):
 
         slot = mm.time_slot(time.time()) if mm else ''
         title = info.get('title', '')
-        ctx = [f"歌曲：《{title}》", f"點播者：{requester}"]
+        # 餵 LLM 用乾淨歌名（別給完整 YouTube 標題，否則 DJ 會照唸一長串）。
+        _clean_t, _clean_a = self._dj_clean_name(info)
+        _song_label = f"{_clean_a} - {_clean_t}" if _clean_a else _clean_t
+        ctx = [f"歌曲：{_song_label or title}", f"點播者：{requester}"]
         # 上一首 ↔ 下一首故事延伸：反向找第一首不是自己的 history 歌（相容 Play-First
         # 背景路徑 stream_history[-1] 就是自己的情況）。第一首歌沒有上一首，跳過。
         prev_title = ''
@@ -1935,9 +1938,9 @@ class MusicCog(commands.Cog):
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
 
-        # 長度 gate：human LLM 故事路徑放寬到 dj_story（說故事，需跑道）；
-        # Marvin 模板 / themed 理由維持 music_intro(5s)，避免整批自動歌變嘮叨。
-        gate_task = "music_intro"
+        # 長度 gate 統一放寬到 dj_story：Marvin autopilot 模板/themed 理由也別再被 5s
+        # music_intro 砍成「狗與露」這種殘句（autopilot DJ 被截斷的根因）。
+        gate_task = "dj_story"
         if requester.startswith('Marvin'):
             text = self._themed_dj_text(info)   # 主題歌單：直接播 LLM 寫的選歌理由
             if not text:
@@ -1949,7 +1952,6 @@ class MusicCog(commands.Cog):
                 text = self._autopilot_dj_phrase(spotlight, clean_title, clean_artist,
                                                  lane=lane, anchor=anchor)
         else:
-            gate_task = "dj_story"
             try:
                 text = await self.bot.router.generate_dynamic_system_msg(
                     'dj_interjection', context='\n'.join(ctx)

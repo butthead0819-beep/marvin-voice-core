@@ -133,8 +133,8 @@ async def test_human_story_not_truncated_to_short():
 
 
 @pytest.mark.asyncio
-async def test_marvin_themed_reason_still_gated_at_5s():
-    """Marvin themed 選歌理由維持 5s gate（不吃放寬），避免整批自動歌變嘮叨。"""
+async def test_marvin_themed_reason_plays_full_dj_story_gate():
+    """Marvin themed 選歌理由（LLM 策展的故事）走 dj_story gate、完整播出，不被 5s 砍。"""
     cog = _make_cog(est_per_char=0.3)
     long_reason = "這首歌是今晚主題的核心，把大家剛剛聊的疲憊都收進了旋律裡，慢慢帶你們降落到夜的最底"
     assert len(long_reason) >= 30
@@ -143,5 +143,18 @@ async def test_marvin_themed_reason_still_gated_at_5s():
     info["_pick_reason"] = long_reason
     result = await cog._fetch_dj_interjection_raw(info)
     assert result is not None
-    # music_intro 5s → budget ~16 字，themed 長理由應被截斷
-    assert len(result["text"]) <= 20, f"Marvin themed 應仍受 5s gate: {result['text']!r}"
+    assert len(result["text"]) >= 30, f"themed 故事應完整播出、不被 5s 砍: {result['text']!r}"
+
+
+@pytest.mark.asyncio
+async def test_marvin_autopilot_phrase_not_cut_to_garbage():
+    """Marvin autopilot 短語（含長 YouTube 標題）不該被 5s 砍成殘句（如「狗與露」）——dj_story gate。"""
+    cog = _make_cog(est_per_char=0.3)
+    long_phrase = "狗與露，給你首新的《Jay Chou 周杰倫 Aurora in July 七月的極光》，接著剛才的氣氛慢慢聽"
+    assert len(long_phrase) >= 40
+    cog._autopilot_dj_phrase = MagicMock(return_value=long_phrase)
+    info = _info(title="Jay Chou 周杰倫 Aurora in July 七月的極光", requester="Marvin推薦（為狗與露）")
+    result = await cog._fetch_dj_interjection_raw(info)
+    assert result is not None
+    # 舊 music_intro 5s → 砍成「狗與露」；dj_story gate 下應保留大部分
+    assert len(result["text"]) >= 35, f"Marvin autopilot 被砍成殘句: {result['text']!r}"
