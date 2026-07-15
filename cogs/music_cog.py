@@ -123,6 +123,7 @@ class MusicCog(commands.Cog):
         self._personal_shuffle: Optional[dict] = None  # 個人歌單連續隨機播 session
         self._personal_topup_inflight: bool = False     # 單飛守衛：同時只允許一個 topup
         self.stream_task = None
+        self._tail_dj_task: Optional[asyncio.Task] = None  # [DJ Tail] 尾段串場排程 task
         self._current_stream_info = None
         self.stream_history: list = []      # 已播過的歌曲（用於上一首）
         self.stream_paused: bool = False
@@ -1547,6 +1548,12 @@ class MusicCog(commands.Cog):
                         if seed:
                             asyncio.create_task(self._auto_recommend(seed))
 
+                # [DJ Tail] 尾段派發成功（上一首 _run_tail_dj 播完並標記）→ 本首開頭不重播
+                if info.get('_dj_played_in_tail'):
+                    logger.info(f"[DJ Tail] {title} DJ 已在上一首尾段播出，跳過開頭重播")
+                    dj_audio = None
+                    dj_data = None
+
                 dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
                 if dj_data and not dj_audio and vc is not None:
                     await self._maybe_play_dj_interjection(dj_data)
@@ -1555,12 +1562,29 @@ class MusicCog(commands.Cog):
                 song_start_time = time.time()
                 song_lyrics_snapshot = self._current_lyrics or ""
                 playback_completion = "natural"
+
+                # [DJ Tail] 在播 N 期間排尾段 task，若 N+1 有可用 prefetch → 在 N 尾段疊播 N+1 的 DJ
+                _next_for_tail = self.stream_queue[0] if self.stream_queue else None
+                if _next_for_tail is not None and vc is not None:
+                    self._tail_dj_task = asyncio.create_task(
+                        self._run_tail_dj(info, _next_for_tail, song_start_time)
+                    )
+                    def _clear_tail_task(t, _self=self):
+                        if _self._tail_dj_task is t:
+                            _self._tail_dj_task = None
+                    self._tail_dj_task.add_done_callback(_clear_tail_task)
+                    logger.info(f"[DJ Tail] 已排尾段 task：{title} → {_next_for_tail.get('title','?')}")
+
                 try:
                     await self.play_stream_song(info['url'], title, dj_audio_path=dj_audio)
                 except Exception:
                     playback_completion = "stopped"
                     raise
                 finally:
+                    # [DJ Tail] 歌播完（自然/中斷）後取消尾段 task（若仍未觸發）
+                    if self._tail_dj_task is not None and not self._tail_dj_task.done():
+                        self._tail_dj_task.cancel()
+                        self._tail_dj_task = None
                     try:
                         from bridge_emitters import emit_music_ended_to_bridge
                         completion = playback_completion if self.stream_mode else "stopped"
@@ -1837,6 +1861,18 @@ class MusicCog(commands.Cog):
         return tmpl.format(who=who, title=clean_title, artist=clean_artist, anchor=anchor)
 
     @staticmethod
+    def _current_season() -> str:
+        """由當前月份推台北季節（北半球）。給 DJ 串場的環境沉浸用。"""
+        mon = time.localtime().tm_mon
+        if mon in (3, 4, 5):
+            return "春天"
+        if mon in (6, 7, 8):
+            return "夏天"
+        if mon in (9, 10, 11):
+            return "秋天"
+        return "冬天"
+
+    @staticmethod
     def _themed_dj_text(info: dict) -> str:
         """🎚️ 主題歌單的歌 → 用 LLM 策展時寫的選歌理由當 DJ 播報詞（其餘歌回 ""）。"""
         if info.get('_lane') == 'themed':
@@ -1874,17 +1910,35 @@ class MusicCog(commands.Cog):
         slot = mm.time_slot(time.time()) if mm else ''
         title = info.get('title', '')
         ctx = [f"歌曲：《{title}》", f"點播者：{requester}"]
+        # 上一首 ↔ 下一首故事延伸：反向找第一首不是自己的 history 歌（相容 Play-First
+        # 背景路徑 stream_history[-1] 就是自己的情況）。第一首歌沒有上一首，跳過。
+        prev_title = ''
+        for s in reversed((getattr(self, 'stream_history', None) or [])[-3:]):
+            if isinstance(s, dict):
+                t = s.get('title', '')
+                if t and t != title:
+                    prev_title = t
+                    break
+        if prev_title:
+            ctx.append(f"上一首剛播完：《{prev_title}》")
         if play_count >= 2:
             ctx.append(f"{requester} 第 {play_count} 次點這首")
         if feelings:
             ctx.append(f"情感記錄：{' / '.join(feelings[:2])}")
         if lyric_match:
             ctx.append(f"歌詞呼應：{lyric_match[:60]}")
+        # 環境沉浸：城市（台北）+ 季節（日期推）+ 時段，讓 DJ 有畫面可帶。
+        season = self._current_season()
+        env = f"環境：台北 · {season}"
         if slot:
-            ctx.append(f"時段：{slot}")
+            env += f" · {slot}"
+        ctx.append(env)
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
 
+        # 長度 gate：human LLM 故事路徑放寬到 dj_story（說故事，需跑道）；
+        # Marvin 模板 / themed 理由維持 music_intro(5s)，避免整批自動歌變嘮叨。
+        gate_task = "music_intro"
         if requester.startswith('Marvin'):
             text = self._themed_dj_text(info)   # 主題歌單：直接播 LLM 寫的選歌理由
             if not text:
@@ -1896,6 +1950,7 @@ class MusicCog(commands.Cog):
                 text = self._autopilot_dj_phrase(spotlight, clean_title, clean_artist,
                                                  lane=lane, anchor=anchor)
         else:
+            gate_task = "dj_story"
             try:
                 text = await self.bot.router.generate_dynamic_system_msg(
                     'dj_interjection', context='\n'.join(ctx)
@@ -1915,10 +1970,10 @@ class MusicCog(commands.Cog):
 
         from tts_length_policy import truncate_for_tts
         gated_text, was_cut = truncate_for_tts(
-            text, "music_intro", self.bot.tts_engine.get_estimated_duration
+            text, gate_task, self.bot.tts_engine.get_estimated_duration
         )
         if was_cut:
-            logger.info(f"🚦 [TTS Gate] DJ intro 超 5s 截斷: '{text}' → '{gated_text}'")
+            logger.info(f"🚦 [TTS Gate] DJ intro 超上限截斷({gate_task}): '{text}' → '{gated_text}'")
             text = gated_text
 
         audio_path = None
@@ -1981,6 +2036,89 @@ class MusicCog(commands.Cog):
                     "audio_path": None,
                 },
             }
+
+    async def _run_tail_dj(self, cur_info: dict, next_info: dict, song_start_time: float):
+        """[DJ Tail] 滑動窗串場：歌1 結束前 5s 點火，DJ 疊歌1尾巴 + 溢進歌2開頭。
+
+        DJ 掛在 mixer 的 TTS 層（與 _music 音樂源獨立），歌1→歌2 換源
+        （set_music_source）不會中斷 DJ，音樂持續被 duck → DJ 自然橫跨切歌點。
+        會 await 下一首的 prefetch task，算出還需等多久，睡到點火時刻，
+        再確認歌未被 skip / 仍是同一首，才走 _maybe_play_dj_interjection。
+        任何無法安全派發的情境（duration 未知、歌太短、已過窗、無預渲染 audio、
+        私語模式）一律 return，讓下一首走舊路（混進開頭 or _maybe_play_dj_interjection）。
+        """
+        from dj_tail_schedule import tail_dj_fire_delay
+
+        title_cur = cur_info.get('title', '?')
+        title_next = next_info.get('title', '?')
+
+        duration = cur_info.get('duration')
+        if not duration:
+            logger.info(f"[DJ Tail] {title_cur} duration 未知，退回舊行為")
+            return
+
+        next_url = next_info.get('url', '')
+        prefetch_task = self._prefetch_cache.get(next_url)
+        if prefetch_task is None:
+            logger.info(f"[DJ Tail] {title_next} 無 prefetch task，退回舊行為")
+            return
+
+        # await 下一首 prefetch（可能還在跑）
+        try:
+            if asyncio.isfuture(prefetch_task) or asyncio.iscoroutine(prefetch_task):
+                meta = await prefetch_task
+            else:
+                meta = prefetch_task.result() if prefetch_task.done() else await prefetch_task
+        except asyncio.CancelledError:
+            logger.info(f"[DJ Tail] prefetch 被取消，退回舊行為")
+            return
+        except Exception as e:
+            logger.info(f"[DJ Tail] prefetch 失敗: {e}，退回舊行為")
+            return
+
+        if not isinstance(meta, dict):
+            logger.info(f"[DJ Tail] {title_next} prefetch meta 非 dict，退回舊行為")
+            return
+
+        dj_meta = meta.get('dj')
+        if not isinstance(dj_meta, dict):
+            logger.info(f"[DJ Tail] {title_next} 無 dj meta，退回舊行為")
+            return
+
+        audio_path = dj_meta.get('audio_path')
+        if not audio_path or not os.path.exists(audio_path):
+            logger.info(f"[DJ Tail] {title_next} DJ 無預渲染 audio，退回舊行為")
+            return
+
+        elapsed = time.time() - song_start_time
+        # 滑動窗：歌1 結束前 5s 點火，DJ（~15s）疊歌1尾巴 5s + 溢進歌2開頭 ~10s。
+        delay = tail_dj_fire_delay(duration, elapsed)
+        if delay is None:
+            logger.info(f"[DJ Tail] {title_cur} 過窗或歌太短，退回舊行為")
+            return
+
+        logger.info(f"[DJ Tail] {title_cur} 尾段點火倒數 {delay:.1f}s，將播 {title_next} 的 DJ")
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            logger.info(f"[DJ Tail] {title_cur} 尾段 task 被取消（skip/stop）")
+            return
+
+        # re-check：歌仍在播、沒被 skip、仍是同一首
+        if not self.stream_mode:
+            logger.info(f"[DJ Tail] {title_cur} stream 已停，不派發")
+            return
+        if getattr(self, '_current_song_skipped', False):
+            logger.info(f"[DJ Tail] {title_cur} 已被 skip，不派發")
+            return
+        if self._current_stream_info is not cur_info:
+            logger.info(f"[DJ Tail] {title_cur} 歌已切換，不派發")
+            return
+
+        logger.info(f"[DJ Tail] 點火！疊播 {title_next} 的 DJ 在 {title_cur} 尾段")
+        await self._maybe_play_dj_interjection(dj_meta)
+        next_info['_dj_played_in_tail'] = True
+        logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
 
     async def _maybe_play_dj_interjection(self, dj: dict | None):
         """播放預先生成的 DJ 播報。有預渲染音訊則直接播檔案，否則即時串流。"""
@@ -2512,6 +2650,10 @@ class MusicCog(commands.Cog):
                 return
             self._record_song_skip()
             self._current_song_skipped = True  # 標記：讓 stream loop 別把 skip 當 403 失敗去重試
+            # [DJ Tail] skip → 取消尾段 task，不讓它在下一首開頭前誤觸發
+            if self._tail_dj_task is not None and not self._tail_dj_task.done():
+                self._tail_dj_task.cancel()
+                self._tail_dj_task = None
             if _mixer is not None:
                 _mixer.clear_music()
             reply = random.choice(replies["skip"])
