@@ -578,6 +578,23 @@ class PlaybackMixin:
         src = discord.FFmpegPCMAudio(file_path)
         await self._mixer_play_music(device, src, still_active=lambda: device.is_connected())
 
+    async def play_dj_on_tts_layer(self, file_path: str) -> bool:
+        """把預渲染 DJ 音檔解碼後推上 **TTS 層**（push_tts），非阻塞、會 duck 音樂、
+        且撐過歌1→歌2 的音樂換源（set_music_source 不碰 TTS 層）→ DJ 橫跨切歌點。
+
+        跟 play_local_file 不同：後者走 _mixer_play_music＝把檔案設成**音樂層**來源，
+        會替換掉正在播的歌（DJ 尾段 crossfade 不能用那條）。回 True＝已入列。
+        """
+        if not os.path.exists(file_path):
+            return False
+        f32 = await self._ffmpeg_to_f32(input_path=file_path)
+        if f32 is None or not f32.size:
+            return False
+        import audio_mixing
+        f32 = audio_mixing.peak_normalize_f32(f32)  # DJ 音檔振幅偏低→拉滿幅，別被 ducked 音樂蓋掉
+        self._ensure_mixer_playing(self._resolve_playback_device())
+        return bool(self._mixer.push_tts(f32))
+
     def _cleanup_fifo(self, path, tmp_dir):
         """[Operation Cleanup] 安全移除命名管道與暫存目錄"""
         try:

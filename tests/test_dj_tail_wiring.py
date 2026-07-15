@@ -271,6 +271,28 @@ def test_stream_loop_skips_dj_when_already_played_in_tail():
     assert dj_data is None
 
 
+# ── (g) 預渲染 DJ 必須走 TTS 層（非音樂層）──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_prerendered_dj_plays_on_tts_layer_not_music():
+    """_maybe_play_dj_interjection 有預渲染 audio → 走 play_dj_on_tts_layer（TTS 層、
+    riding、撐過換歌），不可走 play_local_file（音樂層＝替換掉正在播的歌→DJ 被切）。"""
+    cog = _make_cog()
+    vc = MagicMock()
+    vc._intimate_mode = False
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    vc.play_local_file = AsyncMock()
+    vc.play_tts = AsyncMock()
+    cog.bot.cogs.get.return_value = vc  # _vc() → 這個 vc
+
+    with patch("os.path.exists", return_value=True):
+        await cog._maybe_play_dj_interjection({"text": "狗與露點的這首…", "audio_path": "/tmp/dj.opus"})
+
+    vc.play_dj_on_tts_layer.assert_awaited_once_with("/tmp/dj.opus")
+    vc.play_local_file.assert_not_called()  # 絕不走音樂層
+    vc.play_tts.assert_not_called()          # 有預渲染就不即時 TTS
+
+
 # ── (f) CancelledError 被 catch ──────────────────────────────────────────────
 
 @pytest.mark.asyncio

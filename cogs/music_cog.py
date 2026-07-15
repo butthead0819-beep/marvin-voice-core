@@ -2146,7 +2146,10 @@ class MusicCog(commands.Cog):
         vc._tts_protected = True
         try:
             if audio_path and os.path.exists(audio_path):
-                await vc.play_local_file(audio_path)
+                # 尾段 DJ：走 TTS 層（duck 音樂、非阻塞、撐過歌1→歌2 換源）。
+                # 不可用 play_local_file——那條把檔案設成音樂層來源會替換掉正在播的歌，
+                # DJ 只播到切歌點就被下一首蓋掉（使用者實測「只聽到狗與露就停」）。
+                await vc.play_dj_on_tts_layer(audio_path)
             else:
                 await vc.play_tts(text, already_in_channel=True)
         finally:

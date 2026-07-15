@@ -41,6 +41,7 @@ def _make_vc(intimate: bool) -> MagicMock:
     vc = MagicMock()
     vc.play_tts = AsyncMock()
     vc.play_local_file = AsyncMock()
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
     vc._tts_protected = False
     vc._intimate_mode = intimate
     return vc
@@ -51,6 +52,7 @@ def _make_vc_no_intimate() -> SimpleNamespace:
     vc = SimpleNamespace()
     vc.play_tts = AsyncMock()
     vc.play_local_file = AsyncMock()
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
     vc._tts_protected = False
     return vc
 
@@ -83,6 +85,7 @@ async def test_intimate_on_suppresses_even_with_audio_path(tmp_path):
 
     await cog._maybe_play_dj_interjection({'text': '播報文字', 'audio_path': str(audio_file)})
 
+    vc.play_dj_on_tts_layer.assert_not_awaited()
     vc.play_local_file.assert_not_awaited()
     vc.play_tts.assert_not_awaited()
 
@@ -115,8 +118,9 @@ async def test_intimate_absent_speaks():
 
 
 @pytest.mark.asyncio
-async def test_intimate_off_with_audio_plays_file(tmp_path):
-    """_intimate_mode=False, audio_path 存在 → play_local_file 執行，play_tts 不執行。"""
+async def test_intimate_off_with_audio_plays_on_tts_layer(tmp_path):
+    """_intimate_mode=False, audio_path 存在 → play_dj_on_tts_layer 執行（TTS 層），
+    play_local_file（音樂層）/play_tts 皆不執行。"""
     cog = _make_cog()
     vc = _make_vc(intimate=False)
     cog._vc = MagicMock(return_value=vc)
@@ -126,7 +130,8 @@ async def test_intimate_off_with_audio_plays_file(tmp_path):
 
     await cog._maybe_play_dj_interjection({'text': '播報', 'audio_path': str(audio_file)})
 
-    vc.play_local_file.assert_awaited_once()
+    vc.play_dj_on_tts_layer.assert_awaited_once()
+    vc.play_local_file.assert_not_awaited()
     vc.play_tts.assert_not_awaited()
 
 
