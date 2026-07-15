@@ -87,6 +87,29 @@ def greeting_plan(n_players: int | None, active: bool) -> tuple[str, int]:
     return ("ambient", _AMBIENT_GREETING_CHARS)
 
 
+# ── 真實當地時間（杜絕 LLM 幻覺編時間）──────────────────────────────────
+_WEEKDAY_ZH = "一二三四五六日"
+
+
+def _slot_zh(hour: int) -> str:
+    """小時 → 時段中文（對齊 music_memory.time_slot 的切點）。"""
+    if hour < 5:  return "凌晨"
+    if hour < 9:  return "早晨"
+    if hour < 12: return "上午"
+    if hour < 18: return "下午"
+    if hour < 21: return "傍晚"
+    return "深夜"
+
+
+def local_time_phrase(ts: float) -> str:
+    """把 ts 格式化成當地時間中文串（週幾 + 時段 + HH:MM）。
+
+    給進場招呼注入真實時間、禁止 LLM 自編。系統時區＝當地（台北 CST）。
+    """
+    dt = datetime.fromtimestamp(ts)
+    return f"週{_WEEKDAY_ZH[dt.weekday()]} {_slot_zh(dt.hour)} {dt.strftime('%H:%M')}"
+
+
 class GeminiRouterContentMixin:
     """內容生成：記憶萃取、社交分析、日記、問候、音樂藍圖等。"""
 # --- 🧠 [Memory Extraction & Interaction] ---
@@ -848,8 +871,10 @@ class GeminiRouterContentMixin:
                 f"\n【字數】約 {_budget} 字內：叫出每個人名字＋一句話報到就好，務必極簡，別長篇。"
             )
         else:
+            now_phrase = local_time_phrase(time.time())
             user_prompt = (
                 f"妳降落到了語音頻道。現場玩家有：{player_list_str}。頻道冷清、沒人在講話。"
+                f"\n【現在時間】{now_phrase}（真實當地時間；若要提時間只能用這個，絕不可自己編造）。"
                 f"\n【字數】約 {_budget} 字。挑一件妳觀察到的具體事情（某人的記憶勾點／現實環境／時間），"
                 f"用它拋一個具體問題，試著引他們回妳話。結尾要是問句或明確邀請，別自言自語式長嘆。"
             )
