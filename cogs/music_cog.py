@@ -1548,13 +1548,12 @@ class MusicCog(commands.Cog):
                         if seed:
                             asyncio.create_task(self._auto_recommend(seed))
 
+                dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
                 # [DJ Tail] 尾段派發成功（上一首 _run_tail_dj 播完並標記）→ 本首開頭不重播
                 if info.get('_dj_played_in_tail'):
                     logger.info(f"[DJ Tail] {title} DJ 已在上一首尾段播出，跳過開頭重播")
                     dj_audio = None
                     dj_data = None
-
-                dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
                 if dj_data and not dj_audio and vc is not None:
                     await self._maybe_play_dj_interjection(dj_data)
 
@@ -1563,17 +1562,17 @@ class MusicCog(commands.Cog):
                 song_lyrics_snapshot = self._current_lyrics or ""
                 playback_completion = "natural"
 
-                # [DJ Tail] 在播 N 期間排尾段 task，若 N+1 有可用 prefetch → 在 N 尾段疊播 N+1 的 DJ
-                _next_for_tail = self.stream_queue[0] if self.stream_queue else None
-                if _next_for_tail is not None and vc is not None:
+                # [DJ Tail] 在播 N 期間排尾段 task：只要 duration 已知就排，下一首在點火
+                # 當下才抓 stream_queue[0]（autopilot 常播放中才排下一首，開播時綁定會抓空）。
+                if vc is not None and info.get('duration'):
                     self._tail_dj_task = asyncio.create_task(
-                        self._run_tail_dj(info, _next_for_tail, song_start_time)
+                        self._run_tail_dj(info, song_start_time)
                     )
                     def _clear_tail_task(t, _self=self):
                         if _self._tail_dj_task is t:
                             _self._tail_dj_task = None
                     self._tail_dj_task.add_done_callback(_clear_tail_task)
-                    logger.info(f"[DJ Tail] 已排尾段 task：{title} → {_next_for_tail.get('title','?')}")
+                    logger.info(f"[DJ Tail] 已排尾段 task：{title}（點火時抓下一首）")
 
                 try:
                     await self.play_stream_song(info['url'], title, dj_audio_path=dj_audio)
@@ -2037,67 +2036,35 @@ class MusicCog(commands.Cog):
                 },
             }
 
-    async def _run_tail_dj(self, cur_info: dict, next_info: dict, song_start_time: float):
-        """[DJ Tail] 滑動窗串場：歌1 結束前 5s 點火，DJ 疊歌1尾巴 + 溢進歌2開頭。
+    async def _run_tail_dj(self, cur_info: dict, song_start_time: float):
+        """[DJ Tail] 滑動窗串場：當前歌結束前 5s 點火，DJ 疊當前歌尾巴 + 溢進下一首開頭。
 
-        DJ 掛在 mixer 的 TTS 層（與 _music 音樂源獨立），歌1→歌2 換源
-        （set_music_source）不會中斷 DJ，音樂持續被 duck → DJ 自然橫跨切歌點。
-        會 await 下一首的 prefetch task，算出還需等多久，睡到點火時刻，
-        再確認歌未被 skip / 仍是同一首，才走 _maybe_play_dj_interjection。
-        任何無法安全派發的情境（duration 未知、歌太短、已過窗、無預渲染 audio、
-        私語模式）一律 return，讓下一首走舊路（混進開頭 or _maybe_play_dj_interjection）。
+        關鍵：點火時刻只依「當前歌 duration」算（開播即可知），**下一首在點火當下
+        才從 stream_queue[0] 抓**——因為 autopilot 常在播放中才把下一首排入 queue，
+        開播時綁定會抓到空的。DJ 掛 mixer TTS 層（與 _music 獨立），set_music_source
+        換歌不中斷 DJ、音樂持續 duck → DJ 自然橫跨切歌點。
+
+        任何無法安全派發的情境（duration 未知/歌太短/已過窗、點火時沒有下一首、
+        下一首無預渲染 audio、被 skip、私語模式）一律 return，讓下一首走舊路
+        （混進開頭 or _maybe_play_dj_interjection）。
         """
         from dj_tail_schedule import tail_dj_fire_delay
 
         title_cur = cur_info.get('title', '?')
-        title_next = next_info.get('title', '?')
 
         duration = cur_info.get('duration')
         if not duration:
             logger.info(f"[DJ Tail] {title_cur} duration 未知，退回舊行為")
             return
 
-        next_url = next_info.get('url', '')
-        prefetch_task = self._prefetch_cache.get(next_url)
-        if prefetch_task is None:
-            logger.info(f"[DJ Tail] {title_next} 無 prefetch task，退回舊行為")
-            return
-
-        # await 下一首 prefetch（可能還在跑）
-        try:
-            if asyncio.isfuture(prefetch_task) or asyncio.iscoroutine(prefetch_task):
-                meta = await prefetch_task
-            else:
-                meta = prefetch_task.result() if prefetch_task.done() else await prefetch_task
-        except asyncio.CancelledError:
-            logger.info(f"[DJ Tail] prefetch 被取消，退回舊行為")
-            return
-        except Exception as e:
-            logger.info(f"[DJ Tail] prefetch 失敗: {e}，退回舊行為")
-            return
-
-        if not isinstance(meta, dict):
-            logger.info(f"[DJ Tail] {title_next} prefetch meta 非 dict，退回舊行為")
-            return
-
-        dj_meta = meta.get('dj')
-        if not isinstance(dj_meta, dict):
-            logger.info(f"[DJ Tail] {title_next} 無 dj meta，退回舊行為")
-            return
-
-        audio_path = dj_meta.get('audio_path')
-        if not audio_path or not os.path.exists(audio_path):
-            logger.info(f"[DJ Tail] {title_next} DJ 無預渲染 audio，退回舊行為")
-            return
-
         elapsed = time.time() - song_start_time
-        # 滑動窗：歌1 結束前 5s 點火，DJ（~15s）疊歌1尾巴 5s + 溢進歌2開頭 ~10s。
+        # 滑動窗：當前歌結束前 5s 點火，DJ（~15s）疊尾巴 5s + 溢進下一首開頭 ~10s。
         delay = tail_dj_fire_delay(duration, elapsed)
         if delay is None:
             logger.info(f"[DJ Tail] {title_cur} 過窗或歌太短，退回舊行為")
             return
 
-        logger.info(f"[DJ Tail] {title_cur} 尾段點火倒數 {delay:.1f}s，將播 {title_next} 的 DJ")
+        logger.info(f"[DJ Tail] {title_cur} 尾段點火倒數 {delay:.1f}s")
         try:
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
@@ -2115,10 +2082,51 @@ class MusicCog(commands.Cog):
             logger.info(f"[DJ Tail] {title_cur} 歌已切換，不派發")
             return
 
+        # 點火當下才抓下一首（此時 autopilot 幾乎必定已排入 queue）
+        next_info = self.stream_queue[0] if self.stream_queue else None
+        if next_info is None:
+            logger.info(f"[DJ Tail] {title_cur} 點火時 queue 仍空、無下一首，退回舊行為")
+            return
+        title_next = next_info.get('title', '?')
+
+        dj_meta = await self._resolve_tail_dj_meta(next_info)
+        if dj_meta is None:
+            logger.info(f"[DJ Tail] {title_next} 無可用預渲染 DJ，退回舊行為")
+            return
+
         logger.info(f"[DJ Tail] 點火！疊播 {title_next} 的 DJ 在 {title_cur} 尾段")
         await self._maybe_play_dj_interjection(dj_meta)
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
+
+    async def _resolve_tail_dj_meta(self, next_info: dict) -> dict | None:
+        """取下一首已預渲染的 DJ meta（有 audio 檔才回）；不可用回 None（退回舊路）。
+
+        下一首若還沒 prefetch（autopilot 較晚排入 queue）→ 現場補建一個並存回 cache，
+        供後續 loop 複用（不重複 fetch）。這樣點火時一定拿得到 DJ、不會白白退回開頭。
+        """
+        url = next_info.get('url', '')
+        prefetch_task = self._prefetch_cache.get(url)
+        if prefetch_task is None:
+            prefetch_task = asyncio.create_task(self._fetch_song_meta(next_info))
+            if url:
+                self._prefetch_cache[url] = prefetch_task
+        try:
+            meta = await prefetch_task
+        except asyncio.CancelledError:
+            return None
+        except Exception as e:
+            logger.info(f"[DJ Tail] prefetch 失敗: {e}")
+            return None
+        if not isinstance(meta, dict):
+            return None
+        dj_meta = meta.get('dj')
+        if not isinstance(dj_meta, dict):
+            return None
+        audio_path = dj_meta.get('audio_path')
+        if not audio_path or not os.path.exists(audio_path):
+            return None
+        return dj_meta
 
     async def _maybe_play_dj_interjection(self, dj: dict | None):
         """播放預先生成的 DJ 播報。有預渲染音訊則直接播檔案，否則即時串流。"""
