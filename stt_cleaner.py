@@ -1,4 +1,5 @@
 import re
+import os
 import json
 import time
 import asyncio
@@ -357,6 +358,77 @@ class GeminiRouterSTTMixin:
         _CLEANER_BUDGET_S = 6.0
         _PER_CALL_S = 4.0
         _llm_start = time.monotonic()
+
+        async def _try_paid(timeout_left):
+            """付費 Gemini flash-lite 清洗（獨立 RPM bucket）。回 res dict 或 None。
+
+            付費鐵則（feedback_paid_calls_must_record）：呼叫前 guard.allow() 估價守門、
+            成功後 guard.record() 記帳。超 cap / RPM 滿 / 無 client / 失敗 → None，caller 降級。
+            """
+            cleaner_client = getattr(self, 'google_cleaner_client', None)
+            if not cleaner_client:
+                return None
+            cleaner_model = getattr(self, 'cleaner_model', "gemini-2.0-flash-lite")
+            from llm_paid import estimate_cost
+            _est_in = max(1, (len(system_prompt) + len(user_message)) // 3)
+            guard = self._get_paid_guard() if getattr(self, '_get_paid_guard', None) else None
+            if guard is not None and not guard.allow(estimate_cost(cleaner_model, _est_in, _est_in // 2)):
+                logger.warning("⚠️ [STT Clean] 付費 cleaner 超 daily/monthly cap，跳過")
+                return None
+            if not (getattr(self, '_try_acquire_cleaner_rpm_slot', None) and self._try_acquire_cleaner_rpm_slot()):
+                return None
+            try:
+                config = genai.types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                )
+                response = await asyncio.wait_for(
+                    cleaner_client.aio.models.generate_content(
+                        model=cleaner_model, contents=user_message, config=config,
+                    ),
+                    timeout=min(_PER_CALL_S, max(0.8, timeout_left)),
+                )
+                raw_output = _strip_xml_artifacts(response.text.strip())
+                result = _validate_cleaned(raw_output, raw_text)
+                if result is None:
+                    return _build_res(raw_text)
+                validated_text, wake_intent, calling, is_complete = result
+                res = _build_res(validated_text, original=raw_text, wake_intent=wake_intent, calling=calling)
+                res["is_complete"] = is_complete
+                if guard is not None:
+                    _um = getattr(response, 'usage_metadata', None)
+                    _in = int(getattr(_um, 'prompt_token_count', 0) or _est_in)
+                    _out = int(getattr(_um, 'candidates_token_count', 0) or _est_in // 2)
+                    guard.record(caller="stt_cleaner", model=cleaner_model, tokens=_in + _out,
+                                 est_usd=estimate_cost(cleaner_model, _in, _out),
+                                 in_tokens=_in, out_tokens=_out)
+                logger.debug(
+                    f"[WAKE_INTENT] ts={time.time():.3f} speaker={speaker or 'unknown'} "
+                    f"raw='{raw_text[:30]}' decision={'WAKE' if res['is_wake'] else 'PASS'} track=B (gemini-paid)"
+                )
+                return res
+            except Exception as e:
+                logger.error(f"❌ [STT Clean] Gemini flash-lite 備援也失敗: {e}")
+                return None
+
+        # ── 0. 冷池直連付費（Plan A）：quick 池全冷卻（壞日子 429 級聯）時跳過免費 quick/
+        # analyze（只會撞 timeout 燒預算），直接付費，砍延遲尾。付費不可用 → 落回免費盡力。
+        _cold_paid = os.environ.get("MARVIN_CLEANER_COLD_PAID", "1") != "0"
+        if _cold_paid and getattr(self, 'google_cleaner_client', None):
+            _quick_cold = False
+            try:
+                _qp = getattr(_router, "quick_pool", None)
+                _quick_cold = _qp is not None and _qp.next_available() is None
+            except Exception:
+                _quick_cold = False
+            if _quick_cold:
+                res = await _try_paid(_CLEANER_BUDGET_S)
+                if res is not None:
+                    return res
+                # 付費不可用 → 落回免費 cascade
+
+        # ── 算力池：quick(8b 多家自動分流) → analyze(70b 升級)，cooldown-aware ──
         content = await _router.quick(user_message, caller="stt_cleaner",
                                       system=system_prompt, max_tokens=200,
                                       temperature=0.0, json=True,
@@ -378,38 +450,10 @@ class GeminiRouterSTTMixin:
         if _left < 0.8:
             return _build_res(raw_text)
 
-        # ── 3. Gemini flash-lite 備援 (獨立 RPM bucket，非阻塞) ─────────────
-        cleaner_client = getattr(self, 'google_cleaner_client', None)
-        cleaner_model = getattr(self, 'cleaner_model', "gemini-2.0-flash-lite")
-        if cleaner_client and getattr(self, '_try_acquire_cleaner_rpm_slot', None) and self._try_acquire_cleaner_rpm_slot():
-            try:
-                config = genai.types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                )
-                response = await asyncio.wait_for(
-                    cleaner_client.aio.models.generate_content(
-                        model=cleaner_model,
-                        contents=user_message,
-                        config=config,
-                    ),
-                    timeout=min(_PER_CALL_S, _left),
-                )
-                raw_output = _strip_xml_artifacts(response.text.strip())
-                result = _validate_cleaned(raw_output, raw_text)
-                if result is None:
-                    return _build_res(raw_text)
-                validated_text, wake_intent, calling, is_complete = result
-                res = _build_res(validated_text, original=raw_text, wake_intent=wake_intent, calling=calling)
-                res["is_complete"] = is_complete
-                logger.debug(
-                    f"[WAKE_INTENT] ts={time.time():.3f} speaker={speaker or 'unknown'} "
-                    f"raw='{raw_text[:30]}' decision={'WAKE' if res['is_wake'] else 'PASS'} track=B (gemini-fallback)"
-                )
-                return res
-            except Exception as e:
-                logger.error(f"❌ [STT Clean] Gemini flash-lite 備援也失敗: {e}")
+        # ── 3. Gemini flash-lite 付費備援 ─────────────────────────────────────
+        res = await _try_paid(_left)
+        if res is not None:
+            return res
 
         # ── 4. 降級：返回原始文本 ────────────────────────────────────────────
         return _build_res(raw_text)
