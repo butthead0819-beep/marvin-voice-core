@@ -11,7 +11,26 @@
  *   STEP 4 = + INMP441 麥克風錄音到 PSRAM
  *   STEP 5 = + 按 PTT 錄 3s → POST /audio → 收 /reply（全鏈路，除了聽不到）
  *
- * ⚠️ 動手前要填：WiFi、MARVIN_TOKEN、以及 INMP441 的 I2S 腳位（見下方 TODO）。
+ * ⚠️ 動手前要填：WiFi、MARVIN_TOKEN。（I2S 腳位已實測、不用再查，見下。）
+ *
+ * ── 2026-07-17 實機體檢結果（Goouuu N16R8 + V1.7，硬體全綠）──
+ * efuse 實讀：ESP32-S3 QFN56 rev v0.2 / Flash 16MB / PSRAM 8MB (AP_3v3)，
+ * 8MB PSRAM 開機後真的可用（psram free ≈ 8386096）＝STEP 1 的 PSRAM 檢查會過。
+ * 下面三顆按鈕與 INMP441 三根腳都已按過/錄過音驗證（安靜 rms ~25、說話 rms 100-700）。
+ * MAX98357 的三根腳仍只有 schematic 依據，還沒接喇叭實測。
+ *
+ * 🔥 燒錄流程（不照做會以為板子壞了）：
+ *   1. 進下載模式＝按住 BOOT → 短按 RESET → 放 RESET → 放 BOOT
+ *   2. arduino-cli upload -p /dev/cu.usbmodem1101 -b <FQBN 見下>
+ *   3. ⚠️ 燒完手動按一下 RESET。esptool 印的「Hard resetting via RTS pin」
+ *      在這塊板子不生效，不按的話晶片留在下載模式、app 不會跑、serial 全靜默，
+ *      症狀跟「沒燒進去」或「板子壞了」一模一樣。
+ *   FQBN: esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,CDCOnBoot=cdc,
+ *         USBMode=hwcdc,PartitionScheme=app3M_fat9M_16MB
+ *   ⚠️ USBMode 必須是 hwcdc：改成 default(TinyUSB) 在 macOS 上會 enumerate 但
+ *      配不到驅動（ioreg 顯示 !matched）、根本不產生序列埠。
+ *   ⚠️ HWCDC 會丟輸出：按鍵「短按」的列印常常整個消失。測按鍵要按住 ~3 秒；
+ *      正式邏輯讀按鍵請用中斷/狀態機，別靠列印判斷。
  */
 
 #include <WiFi.h>
@@ -28,17 +47,18 @@ const char* MARVIN_HOST  = "macbook-air.tail7ba8d0.ts.net";   // 不含 https://
 const int   MARVIN_PORT  = 443;
 const char* MARVIN_TOKEN = "PASTE_YOUR_TOKEN";                // ⚠️ 別 commit 真 token
 
-// ========== 板上按鈕（V1.7 已知腳位）==========
+// ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
 #define PIN_BTN_PTT    0    // 喚醒/打斷 = 我們的 PTT
 #define PIN_BTN_VOLUP  38
 #define PIN_BTN_VOLDN  39
 
-// ========== INMP441 I2S 麥克風腳位（V1.7 schematic P6 讀出）==========
+// ========== INMP441 I2S 麥克風腳位（V1.7 schematic P6；2026-07-17 錄音實測通過）==========
 #define I2S_MIC_SCK   5     // SCK / BCLK
 #define I2S_MIC_WS    4     // WS / LRCLK
 #define I2S_MIC_SD    6     // SD / DATA（麥→ESP32）；L/R 接地=左聲道
 
 // ========== MAX98357 喇叭 I2S 腳位（V1.7 schematic P7；PCM5102 並到同組）==========
+// ⚠️ 這三根只有 schematic 依據，還沒接喇叭實測（PH2.0 喇叭未購入）。
 #define I2S_AMP_BCLK  15
 #define I2S_AMP_LRCLK 16
 #define I2S_AMP_DIN   7
