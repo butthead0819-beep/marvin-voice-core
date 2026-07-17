@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import glob
 import os
 import sys
 import time
@@ -19,11 +20,17 @@ FAIL_MARKERS = ("all 3 attempts failed", "all attempts failed",
 
 _LOG_DIR = os.path.expanduser("~/Library/Logs/Marvin")
 
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # 每個任務 → log + 容許多久沒更新（依排程：每日 36h、每週 8 天）
+# artifact_glob（可選）：盯「產物有沒有生出來」而非 log。給有多條觸發路徑的任務用——
+# dailyreview 改 summon 觸發後，launchd 12:05 備援撞 once/day guard 就跳過，
+# 只有備援會寫的 review_cron.log 永遠不更新 → 盯 log 會天天誤報。盯結果不盯手段。
+# feedbackbatch 2026-07-09 已退役（plist 改 .disabled），不再檢查。
 CHECKS = [
     {"name": "dailyslice",      "log": f"{_LOG_DIR}/slice_cron.log",          "max_age_h": 36},
-    {"name": "dailyreview",     "log": f"{_LOG_DIR}/review_cron.log",         "max_age_h": 36},
-    {"name": "feedbackbatch",   "log": f"{_LOG_DIR}/feedback_batch_cron.log", "max_age_h": 36},
+    {"name": "dailyreview",     "log": f"{_LOG_DIR}/review_cron.log",         "max_age_h": 36,
+     "artifact_glob": f"{_REPO}/records/quality_metrics_*.md"},
     {"name": "tasteprofile",    "log": f"{_LOG_DIR}/taste_profile_cron.log",  "max_age_h": 36},
     {"name": "speechdna",       "log": f"{_LOG_DIR}/speechdna_cron.log",      "max_age_h": 192},
     {"name": "tastefingerprint", "log": f"{_LOG_DIR}/taste_fingerprint_cron.log", "max_age_h": 192},
@@ -35,12 +42,25 @@ def check_cron_health(checks, now_ts, tail_lines: int = 40) -> list[str]:
     problems: list[str] = []
     for c in checks:
         name, path, max_age_h = c["name"], c["log"], c["max_age_h"]
+        glob_pat = c.get("artifact_glob")
+        if glob_pat:
+            # 盯產物：多條觸發路徑時，只有「報告有沒有生出來」是共同的成功訊號。
+            newest = max(glob.glob(glob_pat), key=os.path.getmtime, default=None)
+            if newest is None:
+                problems.append(f"{name}：找不到產物（沒產出？）")
+            else:
+                age_h = (now_ts - os.path.getmtime(newest)) / 3600
+                if age_h > max_age_h:
+                    problems.append(
+                        f"{name}：{age_h:.0f}h 沒產出（>{max_age_h}h，可能沒跑）")
         if not os.path.exists(path):
-            problems.append(f"{name}：log 不存在（沒跑過？）")
+            if not glob_pat:
+                problems.append(f"{name}：log 不存在（沒跑過？）")
             continue
-        age_h = (now_ts - os.path.getmtime(path)) / 3600
-        if age_h > max_age_h:
-            problems.append(f"{name}：{age_h:.0f}h 沒更新（>{max_age_h}h，可能沒跑）")
+        if not glob_pat:
+            age_h = (now_ts - os.path.getmtime(path)) / 3600
+            if age_h > max_age_h:
+                problems.append(f"{name}：{age_h:.0f}h 沒更新（>{max_age_h}h，可能沒跑）")
         try:
             with open(path, encoding="utf-8", errors="ignore") as f:
                 tail = "".join(f.readlines()[-tail_lines:])
