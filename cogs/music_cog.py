@@ -283,16 +283,14 @@ class MusicCog(commands.Cog):
 
         info['requested_by'] = username
         if self._check_song_duplicate(url=info['url'], title=info['title'], username=username, webpage_url=info.get('webpage_url', ''), check_history=False):
-            await msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。")
+            # 已在佇列 → 仍要確保 loop 活著：使用者重點同一首，多半正是因為它沒在播。
+            revived = self._ensure_stream_loop()
+            await msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。"
+                                   + ("（播放已恢復）" if revived else ""))
             return
         self._queue_user_song(info)
 
-        if not self.stream_mode:
-            self.stream_mode = True
-            self.stream_volume = 0.10
-            if self.stream_task and not self.stream_task.done():
-                self.stream_task.cancel()
-            self.stream_task = asyncio.create_task(self._stream_loop())
+        self._ensure_stream_loop()
 
         existing_view = self._active_control_view
         if existing_view and getattr(existing_view, 'message', None):
@@ -386,6 +384,24 @@ class MusicCog(commands.Cog):
         if guild_vc and guild_vc.is_playing():
             guild_vc.stop_playing()
             logger.info("📻 [Radio] 已立即停止當前播放的歌曲。")
+
+    def _ensure_stream_loop(self) -> bool:
+        """佇列有歌但 stream loop 沒在跑 → 叫醒它。回傳「是否剛叫醒」。
+
+        2026-07-17 死鎖事故：/dismiss 會 cancel loop 但不清 stream_queue，使用者
+        重點同一首歌撞上 _check_song_duplicate 早退 → 走不到重啟 loop 的程式碼 →
+        佇列永遠卡著（唯一逃生出口是點一首不同的歌，但沒人會知道）。
+        loop 活著時不動它——別把正在播的那首打斷。
+        """
+        if self.stream_mode:
+            return False
+        self.stream_mode = True
+        self.stream_volume = 0.10
+        if self.stream_task and not self.stream_task.done():
+            self.stream_task.cancel()
+        self.stream_task = asyncio.create_task(self._stream_loop())
+        logger.warning("🎵 [Stream] loop 已死但佇列有歌 → 叫醒（dup-request 復活）")
+        return True
 
     async def stop_stream(self, reason: str = "未知原因"):
         """🎵 停止串流播放，清空當前狀態。"""
@@ -2803,17 +2819,16 @@ class MusicCog(commands.Cog):
                     f"[點歌-語音] 使用者={speaker} | 搜尋={raw_search}{f' (修正→{search})' if wrong else ''} | 結果={info['title']} / {info.get('uploader', '?')}"
                 )
             if self._check_song_duplicate(url=info['url'], title=info['title'], username=speaker, webpage_url=info.get('webpage_url', ''), check_history=False):
-                if status_msg: await status_msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。")
+                # 已在佇列 → 仍要確保 loop 活著（零鍵盤：使用者只能靠再喊一次求救）
+                revived = self._ensure_stream_loop()
+                if status_msg:
+                    await status_msg.edit(content=f"⏭️ 「{info['title']}」已在佇列待播了。"
+                                                  + ("（播放已恢復）" if revived else ""))
                 return
             if self.radio_mode:
                 await self.stop_radio(reason="語音音樂指令接管")
             self._queue_user_song(info)
-            if not self.stream_mode:
-                self.stream_mode = True
-                self.stream_volume = 0.10
-                if self.stream_task and not self.stream_task.done():
-                    self.stream_task.cancel()
-                self.stream_task = asyncio.create_task(self._stream_loop())
+            if self._ensure_stream_loop():
                 from cogs.voice_views import PlayControlView
                 existing_view = self._active_control_view
                 if ch and existing_view and getattr(existing_view, 'message', None):
