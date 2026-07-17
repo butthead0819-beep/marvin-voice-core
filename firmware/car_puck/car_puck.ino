@@ -66,8 +66,9 @@ const char* MARVIN_TOKEN = "PASTE_YOUR_TOKEN";                // ⚠️ 別 comm
 
 // ========== 錄音參數 ==========
 #define SAMPLE_RATE   16000          // 16kHz mono 16-bit（STT 夠用、省 RAM）
-#define REC_SECONDS   3
-#define REC_SAMPLES   (SAMPLE_RATE * REC_SECONDS)
+#define MAX_REC_SECONDS 10                            // hold-to-talk 錄音上限（防 PSRAM buffer 溢出）
+#define MAX_REC_SAMPLES (SAMPLE_RATE * MAX_REC_SECONDS)
+#define MIN_REC_SAMPLES (SAMPLE_RATE / 4)             // < 0.25s 視為手滑，忽略不送
 
 static int16_t* recBuf = nullptr;    // 放 PSRAM
 
@@ -135,20 +136,44 @@ void startMic() {
   Serial.println("[MIC] INMP441 I2S 起動");
 }
 
-// 錄 REC_SECONDS 秒到 recBuf（32-bit 讀入→右移成 16-bit）
-void recordToBuf() {
-  Serial.printf("[MIC] 錄音 %ds ...\n", REC_SECONDS);
-  int32_t frame; size_t n; int got = 0;
-  while (got < REC_SAMPLES) {
-    i2s_read(I2S_MIC_PORT, &frame, sizeof(frame), &n, portMAX_DELAY);
-    if (n == sizeof(frame)) recBuf[got++] = (int16_t)(frame >> 14);  // 24→16bit 概略
+void postAudio(int nSamples);  // 前置宣告（hold-to-talk 放開時呼叫）
+
+// hold-to-talk：按住 PTT 期間持續錄音、放開送出。長度自適應，
+// 不像固定秒數會切掉長句或錄多餘環境音。每 loop 呼叫一次（非阻塞）。
+void pttHoldToTalk() {
+  static bool recording = false;
+  static int  recCount = 0;
+  bool pressed = (digitalRead(PIN_BTN_PTT) == LOW);
+
+  if (pressed && !recording) {           // ▼ 按下：開錄
+    recording = true; recCount = 0;
+    i2s_zero_dma_buffer(I2S_MIC_PORT);    // 丟掉按下前 DMA 累積的舊音
+    Serial.println("[PTT] ▼ 按下，開始錄音（按住說話）");
   }
-  Serial.println("[MIC] 錄完");
+
+  if (recording) {
+    // 把 DMA 裡已到的 frame 全撈進 buffer（>>16 對齊 int16，見開箱體檢）
+    int32_t frame; size_t n;
+    while (recCount < MAX_REC_SAMPLES &&
+           i2s_read(I2S_MIC_PORT, &frame, sizeof(frame), &n, 0) == ESP_OK &&
+           n == sizeof(frame)) {
+      recBuf[recCount++] = (int16_t)(frame >> 16);
+    }
+    bool full = (recCount >= MAX_REC_SAMPLES);
+    if (!pressed || full) {               // ▲ 放開 或 撞上限：送出
+      recording = false;
+      float secs = recCount / (float)SAMPLE_RATE;
+      if (full) Serial.printf("[PTT] ■ 達上限 %ds，送出（%.1fs）\n", MAX_REC_SECONDS, secs);
+      else      Serial.printf("[PTT] ▲ 放開，送出（%.1fs）\n", secs);
+      if (recCount >= MIN_REC_SAMPLES) postAudio(recCount);
+      else Serial.println("[PTT] 太短（手滑？），忽略不送");
+    }
+  }
 }
 
-// STEP 5：把 recBuf 包成 WAV，POST /audio
-void postAudio() {
-  const int dataBytes = REC_SAMPLES * 2;
+// STEP 5：把 recBuf 前 nSamples 個樣本包成 WAV，POST /audio
+void postAudio(int nSamples) {
+  const int dataBytes = nSamples * 2;
   const int wavBytes = 44 + dataBytes;
   uint8_t* wav = (uint8_t*)ps_malloc(wavBytes);
   // 極簡 WAV 標頭（16kHz mono 16-bit）
@@ -181,7 +206,7 @@ void setup() {
   Serial.printf("[PSRAM] size = %u bytes（N16R8 應 ~8388608）\n", (unsigned)ESP.getPsramSize());
   if (ESP.getPsramSize() < 4*1024*1024)
     Serial.println("[PSRAM] ❌ 沒偵測到大 PSRAM！確認買的是 N16R8 + Arduino 有開 PSRAM");
-  recBuf = (int16_t*)ps_malloc(REC_SAMPLES * sizeof(int16_t));
+  recBuf = (int16_t*)ps_malloc(MAX_REC_SAMPLES * sizeof(int16_t));
 
   connectWiFi();
 
@@ -199,18 +224,16 @@ void setup() {
 }
 
 void loop() {
-#if STEP >= 3
-  if (digitalRead(PIN_BTN_PTT)  == LOW) { Serial.println("[BTN] PTT 按下"); delay(200); }
-  if (digitalRead(PIN_BTN_VOLUP)== LOW) { Serial.println("[BTN] Vol+"); delay(200); }
-  if (digitalRead(PIN_BTN_VOLDN)== LOW) { Serial.println("[BTN] Vol-"); delay(200); }
+#if STEP == 3 || STEP == 4
+  // STEP 3/4 只驗按鍵通不通（印一下）。STEP 5 的 PTT 改走 hold-to-talk，
+  // 不在這印（那個 delay 會打斷錄音節奏）。
+  if (digitalRead(PIN_BTN_PTT)  == LOW) { Serial.println("[BTN] PTT 按下"); delay(150); }
+  if (digitalRead(PIN_BTN_VOLUP)== LOW) { Serial.println("[BTN] Vol+"); delay(150); }
+  if (digitalRead(PIN_BTN_VOLDN)== LOW) { Serial.println("[BTN] Vol-"); delay(150); }
 #endif
 
 #if STEP >= 5
-  if (digitalRead(PIN_BTN_PTT) == LOW) {
-    recordToBuf();
-    postAudio();
-    delay(500);
-  }
+  pttHoldToTalk();   // 按住說話、放開送出
 #endif
-  delay(20);
+  delay(5);
 }
