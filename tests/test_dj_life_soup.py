@@ -222,6 +222,29 @@ async def test_autopilot_context_carries_spotlight_for_attribution():
     assert "狗與露" in _ctx_str(cog)
 
 
+def _dj_prompt_block() -> str:
+    from pathlib import Path
+    src = Path("gemini_router_content.py").read_text(encoding="utf-8")
+    return src.split('"dj_interjection": (')[1].split(")\n")[0]
+
+
+def test_dj_prompt_forbids_human_first_person():
+    """Marvin 不是人類：雞湯不得用第一人稱人類經驗（「我也搬過家」「我懂那種感覺」）。
+
+    雞湯這個文體天生誘導「我也曾經⋯」，prompt 必須明文擋掉，改觀察者視角。
+    """
+    blk = _dj_prompt_block()
+    assert "機器" in blk or "不是人類" in blk, "DJ prompt 應宣告 Marvin 非人類"
+    assert "第一人稱" in blk, "DJ prompt 應明文禁止第一人稱人類經驗"
+
+
+def test_dj_prompt_has_no_human_body_framing():
+    """別再叫 LLM 扮『一邊喝飲料的朋友』——那是人類身體經驗的框架。"""
+    blk = _dj_prompt_block()
+    for bad in ("喝飲料", "坐在聽眾旁邊"):
+        assert bad not in blk, f"prompt 殘留人類身體框架: {bad}"
+
+
 def test_dj_prompt_forbids_inventing_attribution():
     """prompt 必須明文禁止 LLM 自己指定這首是誰點的（掛錯名比不掛名傷）。"""
     from pathlib import Path
