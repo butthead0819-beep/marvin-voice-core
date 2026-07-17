@@ -19,9 +19,16 @@ def test_known_tasks_have_limits():
         assert task in LIMITS
 
 
-def test_dj_story_gate_is_26s():
-    """2026-07-17 使用者：雞湯文縮短 1 秒 → 27s→26s（安全網跟著 prompt 字數往下一格）。"""
-    assert LIMITS["dj_story"] == 26.0
+def test_dj_story_gate_matches_60_char_budget():
+    """2026-07-17 使用者：雞湯文改成 10 秒。
+
+    ⚠️ gate 是「估算器秒數」不是真實秒數：估算器 0.3s/中文字（保守），真實
+    edge-tts ≈0.17s/字。真實 10s ≈ 57-60 字 → 估算器口徑 60×0.3 = 18s。
+    照字面把 gate 設 10.0 會在 33 字就砍斷（真實才 5.7s）＝「狗與露」殘句重演。
+    """
+    assert LIMITS["dj_story"] == 18.0
+    assert _est("字" * 60) <= LIMITS["dj_story"], "60 字（真實≈10s）不該被 gate 砍"
+    assert _est("字" * 70) > LIMITS["dj_story"], "70 字（超出預算）應被 gate 攔下"
 
 
 def test_music_intro_5s():

@@ -228,11 +228,22 @@ def _dj_prompt_block() -> str:
     return src.split('"dj_interjection": (')[1].split(")\n")[0]
 
 
-def test_dj_prompt_word_budget_is_54_to_84():
-    """2026-07-17 使用者：雞湯文縮短 1 秒。真實語速 ~5.8 字/秒 → 60-90 字降 6 字。"""
+def test_dj_prompt_word_budget_targets_10_seconds():
+    """2026-07-17 使用者：雞湯文改成 10 秒（減 1 秒沒差異）。
+
+    真實 edge-tts ≈5.7 中文字/秒 → 10s ≈ 57-60 字。live 實測 LLM 會嚴重超寫
+    （24 則有 9 則爆 gate 被截斷），所以字數規則要擺在最前面、講死上限。
+    """
     blk = _dj_prompt_block()
-    assert "54-84" in blk, "prompt 字數預算應為 54-84 中文字"
-    assert "60-90" not in blk, "舊的 60-90 字預算應已移除"
+    assert "50-60" in blk, "prompt 字數預算應為 50-60 中文字（真實≈10s）"
+    assert "60-90" not in blk and "54-84" not in blk, "舊字數預算應已移除"
+
+
+def test_dj_prompt_puts_length_rule_first():
+    """live 實測 37.5% 超長被截斷：長度規則埋在第 6 條沒用，要擺第 1 條。"""
+    blk = _dj_prompt_block()
+    first_rule = blk.split("1. ")[1].split("2. ")[0]
+    assert "50-60" in first_rule, f"字數規則應是第 1 條: {first_rule[:60]!r}"
 
 
 def test_dj_prompt_forbids_human_first_person():
