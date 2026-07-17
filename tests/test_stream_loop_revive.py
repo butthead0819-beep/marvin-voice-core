@@ -55,6 +55,38 @@ async def test_ensure_stream_loop_starts_when_dead():
 
 
 @pytest.mark.asyncio
+async def test_ensure_stream_loop_revives_when_flag_lies():
+    """⚠️ 2026-07-17 第二次事故：stream_mode=True 但 task 已死（被 cancel）。
+
+    _stream_loop 的 except CancelledError 只印 log 沒把 stream_mode 設回 False →
+    旗標停在 True 騙人說「還在播」→ 只看旗標的復活邏輯直接 no-op → 佇列卡死。
+    **loop 是否活著要看 task，不能信旗標。**
+    """
+    cog = _make_cog()
+    cog.stream_mode = True                      # 旗標說在播
+    dead = asyncio.create_task(_noop())
+    await dead                                  # …但 task 已經死了
+    cog.stream_task = dead
+    cog.stream_queue = [_song()]
+    assert cog._ensure_stream_loop() is True, "旗標騙人時仍須叫醒（不能只看 stream_mode）"
+    assert cog.stream_mode is True
+    assert cog.stream_task is not dead, "應換上新的 task"
+    cog.stream_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_loop_resets_stream_mode_flag():
+    """根因：loop 被取消時 stream_mode 必須設回 False，別讓旗標說謊。"""
+    import inspect
+
+    from cogs.music_cog import MusicCog
+    src = inspect.getsource(MusicCog._stream_loop)
+    cancel_branch = src.split("except asyncio.CancelledError:")[1].split("except Exception")[0]
+    assert "stream_mode = False" in cancel_branch, \
+        "CancelledError 分支沒清 stream_mode → 旗標會說謊 → 復活邏輯失效"
+
+
+@pytest.mark.asyncio
 async def test_ensure_stream_loop_noop_when_already_running():
     """loop 活著 → 不動它（別把正在播的歌打斷），回 False。"""
     cog = _make_cog()

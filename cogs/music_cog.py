@@ -392,15 +392,21 @@ class MusicCog(commands.Cog):
         重點同一首歌撞上 _check_song_duplicate 早退 → 走不到重啟 loop 的程式碼 →
         佇列永遠卡著（唯一逃生出口是點一首不同的歌，但沒人會知道）。
         loop 活著時不動它——別把正在播的那首打斷。
+
+        ⚠️ 判活看 **task**，不看 stream_mode：旗標會說謊。loop 被 cancel 時
+        （非 stop_stream 那條）旗標停在 True 但沒人在播，只信旗標會 no-op →
+        佇列卡死（2026-07-17 第二次事故）。
         """
-        if self.stream_mode:
+        alive = self.stream_task is not None and not self.stream_task.done()
+        if alive and self.stream_mode:
             return False
+        if alive:
+            self.stream_task.cancel()   # 收尾中的殘骸 → 收掉重來
         self.stream_mode = True
         self.stream_volume = 0.10
-        if self.stream_task and not self.stream_task.done():
-            self.stream_task.cancel()
         self.stream_task = asyncio.create_task(self._stream_loop())
-        logger.warning("🎵 [Stream] loop 已死但佇列有歌 → 叫醒（dup-request 復活）")
+        logger.warning(f"🎵 [Stream] loop 不在跑（flag={self.stream_mode} task_alive={alive}）"
+                       f"→ 叫醒，佇列 {len(self.stream_queue)} 首")
         return True
 
     async def stop_stream(self, reason: str = "未知原因"):
@@ -1655,7 +1661,10 @@ class MusicCog(commands.Cog):
                 await active_ch.send("🎵 **【串流播放完畢】** 佇列已空。就跟馬文的希望一樣——消失殆盡。")
 
         except asyncio.CancelledError:
-            logger.info("🎵 [Stream Loop] 串流迴圈被取消。")
+            # 旗標必須反映現實：沒清的話 stream_mode 會停在 True 但沒人在播，
+            # 之後每次點歌的「叫醒」判斷都會被騙 → 佇列永遠卡死（2026-07-17 事故）。
+            self.stream_mode = False
+            logger.info("🎵 [Stream Loop] 串流迴圈被取消（stream_mode 已歸位 False）。")
         except Exception as e:
             logger.error(f"❌ [Stream Loop] 發生異常: {e}")
             self.stream_mode = False
