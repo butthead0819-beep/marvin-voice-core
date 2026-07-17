@@ -20,9 +20,10 @@ LIMITS: dict[str, Optional[float]] = {
     "music_intro": 5.0,      # DJ 播報（歌名+理由+點播者一句）：≤5s，別打斷切歌節奏
                              # （autopilot phrase / themed 理由 / fallback 共用）
                              # 2026-05-24 7s→15s(DJ 發揮)；2026-07-13 15s→5s(使用者：DJ 話太多)
-    "dj_story": 27.0,        # human 點歌的 DJ 串場：說故事不唸資訊 → 放寬（2026-07-15）
-                             # 估算器保守(0.3s/中文字含×1.2)，27s≈90字上限；真實 edge-tts
-                             # ≈15-16s。只當 runaway 安全網，實際長度由 prompt 控在 60-90 字
+    "dj_story": 26.0,        # human 點歌的 DJ 串場：說故事不唸資訊 → 放寬（2026-07-15）
+                             # 估算器保守(0.3s/中文字含×1.2)，26s≈84字上限；真實 edge-tts
+                             # ≈14-15s。只當 runaway 安全網，實際長度由 prompt 控在 54-84 字
+                             # 2026-07-17 27→26s（使用者：雞湯文縮短 1 秒；prompt 同步 -6 字）
     "callback": 15.0,        # Memory callback（必須講到聽懂，但別變嘮叨）
                              # 2026-05-24 從 7s 拉到 15s
     "marvin_reply": None,    # 主回覆，不 hard gate（caller 自己控）

@@ -228,6 +228,13 @@ def _dj_prompt_block() -> str:
     return src.split('"dj_interjection": (')[1].split(")\n")[0]
 
 
+def test_dj_prompt_word_budget_is_54_to_84():
+    """2026-07-17 使用者：雞湯文縮短 1 秒。真實語速 ~5.8 字/秒 → 60-90 字降 6 字。"""
+    blk = _dj_prompt_block()
+    assert "54-84" in blk, "prompt 字數預算應為 54-84 中文字"
+    assert "60-90" not in blk, "舊的 60-90 字預算應已移除"
+
+
 def test_dj_prompt_forbids_human_first_person():
     """Marvin 不是人類：雞湯不得用第一人稱人類經驗（「我也搬過家」「我懂那種感覺」）。
 

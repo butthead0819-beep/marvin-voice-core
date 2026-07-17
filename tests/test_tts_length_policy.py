@@ -19,6 +19,11 @@ def test_known_tasks_have_limits():
         assert task in LIMITS
 
 
+def test_dj_story_gate_is_26s():
+    """2026-07-17 使用者：雞湯文縮短 1 秒 → 27s→26s（安全網跟著 prompt 字數往下一格）。"""
+    assert LIMITS["dj_story"] == 26.0
+
+
 def test_music_intro_5s():
     """DJ 播報上限 5s（~16 字）：2026-07-13 從 15s 收到 5s（DJ 話太多）。"""
     assert LIMITS["music_intro"] == 5.0
