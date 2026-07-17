@@ -172,11 +172,11 @@ async def test_dj_fallback_audio_render_attempted():
 # ── 5. DJ Marvin 人設（避免每路徑都跑回「專業電台 DJ」泛人設）─────────────────
 
 @pytest.mark.asyncio
-async def test_round_first_marvin_pick_uses_personalized_phrase():
-    """Marvin 自選 round 第 1 首走個人化短語 hardcoded path（不走 LLM）。
+async def test_round_first_marvin_pick_passes_spotlight_to_llm():
+    """Marvin 自選走 LLM 雞湯（2026-07-17 改），spotlight 必須進 context。
 
-    新行為：輸出個人化短語（「這首幫XXX點的」等），包含 spotlight 名字 + 歌手 + 歌名。
-    spotlight 未設時用「你」兜底；LLM 不呼叫。
+    掛名鐵則：LLM 只能照脈絡掛名，所以 spotlight 名字要餵進去它才掛得對。
+    （舊契約是 hardcoded 個人化短語不走 LLM，已被雞湯化取代；模板退為 fallback。）
     """
     cog = _make_cog()
     info = _info(title="周杰倫 - 青花瓷", requester="Marvin")
@@ -184,16 +184,19 @@ async def test_round_first_marvin_pick_uses_personalized_phrase():
     info["_spotlight"] = "狗與露"
     result = await cog._fetch_dj_interjection_raw(info)
     assert result is not None
-    text = result["text"]
-    assert "狗與露" in text, f"個人化短語應含 spotlight 名稱: {text!r}"
-    assert "周杰倫" in text and "青花瓷" in text, \
-        f"個人化短語應含歌手 + 歌名: {text!r}"
+    call = cog.bot.router.generate_dynamic_system_msg.call_args
+    assert call is not None, "autopilot 應走 LLM"
+    assert call.args[0] == "dj_interjection"
+    ctx = call.kwargs.get("context", "")
+    assert "狗與露" in ctx, f"spotlight 應進 LLM context: {ctx!r}"
+    assert "青花瓷" in ctx, f"歌名應進 LLM context: {ctx!r}"
 
 
 @pytest.mark.asyncio
-async def test_round_first_marvin_no_spotlight_uses_fallback():
-    """spotlight 未設時 DJ 短語用「你」兜底，仍含 artist + title。"""
+async def test_round_first_marvin_no_spotlight_falls_back_to_template():
+    """spotlight 未設 + LLM 空手 → 退回模板，用「你」兜底且仍含 artist + title。"""
     cog = _make_cog()
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="")
     info = _info(title="周杰倫 - 青花瓷", requester="Marvin")
     info["_round_first"] = True
     result = await cog._fetch_dj_interjection_raw(info)

@@ -152,6 +152,8 @@ async def test_marvin_autopilot_phrase_not_cut_to_garbage():
     cog = _make_cog(est_per_char=0.3)
     long_phrase = "狗與露，給你首新的《Jay Chou 周杰倫 Aurora in July 七月的極光》，接著剛才的氣氛慢慢聽"
     assert len(long_phrase) >= 40
+    # autopilot 改走 LLM 雞湯後，模板退居 fallback：讓 LLM 空手以走到模板路徑。
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="")
     cog._autopilot_dj_phrase = MagicMock(return_value=long_phrase)
     info = _info(title="Jay Chou 周杰倫 Aurora in July 七月的極光", requester="Marvin推薦（為狗與露）")
     result = await cog._fetch_dj_interjection_raw(info)

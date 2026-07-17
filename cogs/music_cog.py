@@ -1860,6 +1860,22 @@ class MusicCog(commands.Cog):
         return tmpl.format(who=who, title=clean_title, artist=clean_artist, anchor=anchor)
 
     @staticmethod
+    def _autopilot_pick_reason(info: dict) -> str:
+        """autopilot 選這首的理由（給 DJ LLM 當素材，語意同 _autopilot_dj_phrase 的 lane 分流）。"""
+        who = info.get('_spotlight', '') or '大家'
+        lane = info.get('_lane', '')
+        if lane == 'group_resonance':
+            return "這首是大家都有共鳴的歌"
+        if lane == 'long_tail':
+            return f"{who} 很久沒點到這首了"
+        if lane == 'discovery':
+            return f"照 {who} 的口味挖出來的新歌"
+        anchor = info.get('_anchor_title', '')
+        if anchor:
+            return f"因為 {who} 點過《{anchor}》才接這首"
+        return f"這首是 {who} 平常會聽的歌"
+
+    @staticmethod
     def _current_season() -> str:
         """由當前月份推台北季節（北半球）。給 DJ 串場的環境沉浸用。"""
         mon = time.localtime().tm_mon
@@ -1877,6 +1893,21 @@ class MusicCog(commands.Cog):
         if info.get('_lane') == 'themed':
             return (info.get('_pick_reason') or '').strip()
         return ''
+
+    def _life_cores(self, entries, now: float) -> list[str]:
+        """日記 entries → DJ 雞湯用的近日生活素材（純函式包裝，測試用此點注入）。"""
+        from dj_life_context import recent_life_cores
+        return recent_life_cores(entries, now=now)
+
+    async def _life_cores_async(self) -> list[str]:
+        """讀日記檔取生活素材。606K 檔的 read+parse 走 to_thread，不阻塞 event loop。
+        任何失敗回 []（DJ 少一味料，不該讓整條串場掛掉）。"""
+        try:
+            entries = await asyncio.to_thread(self._load_summary_entries)
+            return self._life_cores(entries, time.time())
+        except Exception as e:
+            logger.debug(f"⚠️ [DJ Life] 生活素材抽取失敗，DJ 改走無生活素材: {e}")
+            return []
 
     async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
         """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
@@ -1937,28 +1968,40 @@ class MusicCog(commands.Cog):
         ctx.append(env)
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
+        # 雞湯素材：近幾日的生活核心句。只串歌名像播報清單，摻生活才有人味。
+        life = await self._life_cores_async()
+        if life:
+            ctx.append("最近生活：\n" + '\n'.join(f"・{c}" for c in life))
 
         # 長度 gate 統一放寬到 dj_story：Marvin autopilot 模板/themed 理由也別再被 5s
         # music_intro 砍成「狗與露」這種殘句（autopilot DJ 被截斷的根因）。
         gate_task = "dj_story"
-        if requester.startswith('Marvin'):
-            text = self._themed_dj_text(info)   # 主題歌單：直接播 LLM 寫的選歌理由
-            if not text:
-                from song_name_clean import clean_title_regex
-                clean_title, clean_artist = self._dj_clean_name(info)
-                spotlight = info.get('_spotlight', '')
-                lane = info.get('_lane', '')
-                anchor = clean_title_regex(info.get('_anchor_title', ''))
-                text = self._autopilot_dj_phrase(spotlight, clean_title, clean_artist,
-                                                 lane=lane, anchor=anchor)
-        else:
+        text = self._themed_dj_text(info)   # 主題歌單：直接播策展時寫好的理由，不重複燒 LLM
+        if not text:
+            # autopilot 與真人點歌共用這條 LLM 雞湯（走 tier=simple 免費層）。
+            # autopilot 多帶一行「為什麼選這首」，讓 LLM 有理由可講，不是硬掰。
+            if requester.startswith('Marvin'):
+                _why = self._autopilot_pick_reason(info)
+                if _why:
+                    ctx.append(f"選這首的理由：{_why}")
             try:
                 text = await self.bot.router.generate_dynamic_system_msg(
                     'dj_interjection', context='\n'.join(ctx)
                 )
             except Exception as e:
-                logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗，使用 fallback template: {e}")
+                logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗: {e}")
                 text = ""
+            text = (text or '').strip()
+            # LLM 空手（失敗/quota）→ autopilot 退回原本的模板台詞，別掉到報幕 fallback
+            if not text and requester.startswith('Marvin'):
+                from song_name_clean import clean_title_regex
+                clean_title, clean_artist = self._dj_clean_name(info)
+                text = self._autopilot_dj_phrase(
+                    info.get('_spotlight', ''), clean_title, clean_artist,
+                    lane=info.get('_lane', ''),
+                    anchor=clean_title_regex(info.get('_anchor_title', '')),
+                )
+                logger.info("🎙️ [DJ Prefetch] LLM 空手 → 退回 autopilot 模板")
 
         text = (text or '').strip()
         if len(text) < 2:
