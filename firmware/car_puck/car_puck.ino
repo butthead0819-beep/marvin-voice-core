@@ -122,6 +122,11 @@ void startMic() {
     .use_apll = true,          // 專用音訊 PLL，降 jitter（審查建議）
   };
   i2s_pin_config_t pins = {
+    // ⚠️ mck_io_num 必須明確設 NO_CHANGE：i2s_pin_config_t 第一個欄位就是它，
+    // 漏設會被零初始化成 0=GPIO0，I2S 把 MCLK 輸出到 GPIO0＝徵用掉 PTT 腳，
+    // 一開麥克風 GPIO0 就被拉死在 LOW→PTT 無限誤觸發（2026-07-17 診斷實錘：
+    // 啟 I2S 前 GPIO0 low 0%、啟後 low 100%；設此行後回 0%）。INMP441 不需 MCLK。
+    .mck_io_num = I2S_PIN_NO_CHANGE,
     .bck_io_num = I2S_MIC_SCK, .ws_io_num = I2S_MIC_WS,
     .data_out_num = I2S_PIN_NO_CHANGE, .data_in_num = I2S_MIC_SD,
   };
