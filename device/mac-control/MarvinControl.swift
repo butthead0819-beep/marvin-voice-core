@@ -357,10 +357,17 @@ struct Panel: View {
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("設定").font(.caption).foregroundStyle(.secondary)
+            Text("設定（即時儲存）").font(.caption).foregroundStyle(.secondary)
             LabeledField(label: "Pi", text: $piBase)
             LabeledField(label: "Mac", text: $macBase)
             LabeledField(label: "Token", text: $token)
+            Button {
+                NSApp.keyWindow?.makeFirstResponder(nil)  // 強制輸入框失焦、commit
+                model.refresh()
+            } label: {
+                Text("套用並測試連線").frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
         }
     }
 }
