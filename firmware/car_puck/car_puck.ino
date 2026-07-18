@@ -52,6 +52,11 @@ const char* MARVIN_TOKEN = "PASTE_YOUR_TOKEN";                // ⚠️ 別 comm
 #define PIN_BTN_VOLUP  38
 #define PIN_BTN_VOLDN  39
 
+// ========== 板載 RGB 狀態燈（WS2812，核心板 GPIO48）==========
+// ESP32 Arduino core 3.x 內建 neopixelWrite(pin,r,g,b)，不需函式庫。
+// 用來顯示 Marvin 狀態：待機/收聽/播放/connected/錯誤。亮度刻意壓低（車上夜間不刺眼）。
+#define PIN_RGB 48
+
 // ========== INMP441 I2S 麥克風腳位（V1.7 schematic P6；2026-07-17 錄音實測通過）==========
 #define I2S_MIC_SCK   5     // SCK / BCLK
 #define I2S_MIC_WS    4     // WS / LRCLK
@@ -72,6 +77,64 @@ const char* MARVIN_TOKEN = "PASTE_YOUR_TOKEN";                // ⚠️ 別 comm
 
 static int16_t* recBuf = nullptr;    // 放 PSRAM
 
+// ========== 狀態燈狀態機 ==========
+// 切狀態用 setLed()、每 loop 呼叫 updateLed() 畫動畫。
+// 全程 millis()、零 delay，不打斷 hold-to-talk 錄音節奏。
+enum LedState {
+  LED_BOOT,       // 開機/連線中：黃色慢閃
+  LED_CONNECTED,  // Marvin connected：綠色閃兩下 → 自動落回待機
+  LED_STANDBY,    // 待機中：暗白呼吸
+  LED_LISTENING,  // 收聽中（PTT 按住）：藍色常亮
+  LED_PLAYING,    // 播放中（送出後等/播 /reply）：青色呼吸
+  LED_ERROR,      // 錯誤（WiFi 斷/Funnel 非 200）：紅色快閃（持續，壞掉就該看起來壞）
+};
+static LedState ledState = LED_BOOT;
+static uint32_t ledSince = 0;   // 進入當前狀態的時間
+
+void setLed(LedState s) {
+  if (s == ledState) return;
+  ledState = s; ledSince = millis();
+}
+
+// 三角波呼吸：在 lo..hi 之間隨 period 週期起伏，回傳當前亮度
+static uint8_t ledBreathe(uint32_t now, uint32_t period, uint8_t lo, uint8_t hi) {
+  uint32_t ph = now % period, half = period / 2;
+  uint32_t up = ph < half ? ph : period - ph;    // 0..half
+  return lo + (uint32_t)(hi - lo) * up / half;
+}
+
+void updateLed() {
+  uint32_t now = millis(), t = now - ledSince;
+  switch (ledState) {
+    case LED_BOOT: {                               // 黃色慢閃
+      bool on = (now % 1000) < 500;
+      neopixelWrite(PIN_RGB, on ? 40 : 0, on ? 28 : 0, 0); break;
+    }
+    case LED_CONNECTED: {                          // 綠色閃兩下 → 落回待機
+      if (t >= 1200) { setLed(LED_STANDBY); break; }
+      bool on = (t % 300) < 150;
+      neopixelWrite(PIN_RGB, 0, on ? 60 : 0, 0); break;
+    }
+    case LED_STANDBY: {                            // 暗白呼吸（低亮度）
+      uint8_t b = ledBreathe(now, 3000, 2, 16);
+      neopixelWrite(PIN_RGB, b, b, b); break;
+    }
+    case LED_LISTENING:                            // 藍色常亮
+      neopixelWrite(PIN_RGB, 0, 0, 80); break;
+    case LED_PLAYING: {                            // 青色呼吸
+      // 骨架尚無「播放結束」訊號（缺喇叭），先用 10s 上限自動落回待機。
+      // 之後接了 /reply 實際播放，播完處呼叫 setLed(LED_STANDBY) 取代這條逾時。
+      if (t >= 10000) { setLed(LED_STANDBY); break; }
+      uint8_t b = ledBreathe(now, 1500, 4, 70);
+      neopixelWrite(PIN_RGB, 0, b, b); break;
+    }
+    case LED_ERROR: {                              // 紅色快閃
+      bool on = (now % 300) < 150;
+      neopixelWrite(PIN_RGB, on ? 90 : 0, 0, 0); break;
+    }
+  }
+}
+
 // ------------------------------------------------------------------
 void connectWiFi() {
   Serial.printf("[WiFi] 連線 %s ...\n", WIFI_SSID);
@@ -79,13 +142,15 @@ void connectWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   uint32_t t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
-    delay(300); Serial.print(".");
+    delay(300); Serial.print("."); updateLed();   // 連線期間 setup 阻塞，靠這裡讓黃燈慢閃
   }
   Serial.println();
   if (WiFi.status() == WL_CONNECTED)
     Serial.printf("[WiFi] OK, IP=%s RSSI=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-  else
+  else {
     Serial.println("[WiFi] ❌ 連不上，檢查 SSID/密碼/熱點開了沒");
+    setLed(LED_ERROR);
+  }
 }
 
 // STEP 2：HTTPS GET /now?t=token —— 驗 Funnel 端到端 + TLS
@@ -95,6 +160,7 @@ void testFunnelNow() {
   Serial.println("[HTTPS] 連 Funnel ...");
   if (!client.connect(MARVIN_HOST, MARVIN_PORT)) {
     Serial.println("[HTTPS] ❌ TLS 連不上（TLS 太重/沒網/Funnel 沒開）");
+    setLed(LED_ERROR);
     return;
   }
   String req = String("GET /now?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
@@ -102,10 +168,15 @@ void testFunnelNow() {
   client.print(req);
   String statusLine = client.readStringUntil('\n');
   Serial.printf("[HTTPS] 回應：%s", statusLine.c_str());
-  if (statusLine.indexOf("200") > 0)
+  if (statusLine.indexOf("200") > 0) {
     Serial.println("[HTTPS] ✅ 端到端通了！token 對、Funnel 對、TLS 沒問題");
-  else if (statusLine.indexOf("401") > 0)
+    setLed(LED_CONNECTED);   // 綠色閃兩下 → 自動落回待機
+  } else if (statusLine.indexOf("401") > 0) {
     Serial.println("[HTTPS] ⚠️ 401 = 通了但 token 錯，改 MARVIN_TOKEN");
+    setLed(LED_ERROR);
+  } else {
+    setLed(LED_ERROR);
+  }
   client.stop();
 }
 
@@ -148,6 +219,7 @@ void pttHoldToTalk() {
   if (pressed && !recording) {           // ▼ 按下：開錄
     recording = true; recCount = 0;
     i2s_zero_dma_buffer(I2S_MIC_PORT);    // 丟掉按下前 DMA 累積的舊音
+    setLed(LED_LISTENING);                // 收聽中：藍燈
     Serial.println("[PTT] ▼ 按下，開始錄音（按住說話）");
   }
 
@@ -165,8 +237,8 @@ void pttHoldToTalk() {
       float secs = recCount / (float)SAMPLE_RATE;
       if (full) Serial.printf("[PTT] ■ 達上限 %ds，送出（%.1fs）\n", MAX_REC_SECONDS, secs);
       else      Serial.printf("[PTT] ▲ 放開，送出（%.1fs）\n", secs);
-      if (recCount >= MIN_REC_SAMPLES) postAudio(recCount);
-      else Serial.println("[PTT] 太短（手滑？），忽略不送");
+      if (recCount >= MIN_REC_SAMPLES) { setLed(LED_PLAYING); postAudio(recCount); }
+      else { Serial.println("[PTT] 太短（手滑？），忽略不送"); setLed(LED_STANDBY); }
     }
   }
 }
@@ -192,6 +264,7 @@ void postAudio(int nSamples) {
   http.addHeader("Content-Type", "audio/wav");
   int code = http.POST(wav, wavBytes);
   Serial.printf("[POST /audio] HTTP %d：%s\n", code, http.getString().c_str());
+  if (code != 200) setLed(LED_STANDBY);   // 沒送成功＝沒回覆要播，別卡在青燈
   http.end(); free(wav);
   Serial.println("[POST] 送出後，Mac 會轉錄+回覆；回覆音訊走 GET /reply（有喇叭才聽得到）");
 }
@@ -201,6 +274,9 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println("\n=== Marvin car_puck bring-up ===");
+
+  setLed(LED_BOOT);
+  neopixelWrite(PIN_RGB, 40, 28, 0);   // 立刻亮黃：setup 期間 loop 還沒跑
 
   // STEP 1：PSRAM 檢查（驗你買對 N16R8）
   Serial.printf("[PSRAM] size = %u bytes（N16R8 應 ~8388608）\n", (unsigned)ESP.getPsramSize());
@@ -220,6 +296,9 @@ void setup() {
 #if STEP >= 4
   startMic();
 #endif
+  // 收尾定燈：WiFi 通但沒跑 Funnel 檢查（STEP 1）也給個 connected 提示；
+  // 若前面已 setLed(ERROR/CONNECTED) 則不覆蓋。
+  if (WiFi.status() == WL_CONNECTED && ledState == LED_BOOT) setLed(LED_CONNECTED);
   Serial.printf("[READY] STEP=%d\n", STEP);
 }
 
@@ -235,5 +314,6 @@ void loop() {
 #if STEP >= 5
   pttHoldToTalk();   // 按住說話、放開送出
 #endif
+  updateLed();       // 狀態燈動畫（非阻塞）
   delay(5);
 }
