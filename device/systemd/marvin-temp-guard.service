@@ -1,11 +1,9 @@
 [Unit]
-Description=Marvin device SoC 溫度防護（過熱→送停止播放給大腦）
+Description=Marvin device SoC 溫度防護（過熱→本機靜音 DigiAMP）
 After=network-online.target
 [Service]
-Environment=MARVIN_TEXT_TOKEN=__MARVIN_TEXT_TOKEN__
-Environment=MARVIN_MAC_SAY_URL=http://100.123.68.86:8790/say
-Environment=MARVIN_TEMP_STOP_C=65
-Environment=MARVIN_TEMP_CLEAR_C=57
+Environment=MARVIN_TEMP_STOP_C=50
+Environment=MARVIN_TEMP_CLEAR_C=48
 ExecStart=/usr/local/bin/temp_guard.sh
 Restart=always
 RestartSec=3
