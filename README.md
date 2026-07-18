@@ -2,9 +2,15 @@
 
 [![CI](https://github.com/butthead0819-beep/marvin-voice-core/actions/workflows/ci.yml/badge.svg)](https://github.com/butthead0819-beep/marvin-voice-core/actions/workflows/ci.yml)
 
-**A Discord bot that joins your voice channel, hears you talk, and talks back out loud — and remembers you.**
+**A voice companion that joins your Discord channel, hears you talk, and talks back out loud — remembers who you are, reads the room, and now lives in hardware too.**
 
-Marvin lives in your Discord voice channel. After a few sessions he knows who stays until 3am, who always says goodbye before leaving, whose music taste runs toward melancholy on weeknights. He will absolutely roast you for it.
+Marvin lives in your voice channel. After a few sessions he knows who stays until 3am, who always says goodbye before leaving, whose music taste runs toward melancholy on weeknights. He will absolutely roast you for it.
+
+### What a session actually feels like
+
+You join voice. Marvin greets *you* — not "a user," you, in the tone your last hundred sessions earned. You start talking about a game; without being asked, he's already tracking that the room turned to gaming and colours his replies to match. Someone says "放首歌" — no wake word, no menu — and the right song is playing seconds later, picked from what *this room* actually stayed for last time. You argue, you laugh, someone gets roasted. When everyone goes quiet at the end of the night, Marvin quietly draws the funniest three minutes as a one-page comic and drops it in the diary channel. Nobody asked. It just shows up.
+
+That's the surprise: none of it is a command you memorised. It's a roommate who happens to live in a voice channel — and, increasingly, in a speaker on your shelf and a puck in your car.
 
 📖 **The story** — how this grew from a toy into a platform, Simon → Suki → Marvin, in three months: **[read the illustrated history](https://butthead0819-beep.github.io/marvin-voice-core/marvin-story.html)** (中 / EN).
 
@@ -163,6 +169,26 @@ launchctl list | grep feedbackbatch
 ```
 
 Nothing leaves your machine except the consented cloud calls above (Groq for STT, Gemini/Cerebras for responses), governed by those providers' policies. `marvin.db`, `suki_memory.json`, and `records/` are gitignored by default.
+
+---
+
+## Beyond Discord — the same soul, in hardware
+
+Discord is where Marvin was born, but a voice channel is a keyboard away from a real conversation: you still `/summon`, you still tab back to a window. The whole point of Marvin is **zero-keyboard presence** — so he's been escaping the app into the room.
+
+The trick is that all three form factors are the *same Marvin*. The brain runs once on a Mac (Apple Silicon); the hardware is just a dumb mic-and-speaker at the far end of a socket. They read the **same per-person memory**, the same music taste, the same relationship state. Walk from Discord to the shelf speaker to the car and it's one continuous person, not three bots.
+
+| Form factor | What it is | Status |
+|---|---|---|
+| **Browser satellite** | Any phone opens a web page → `getUserMedia` streams voice to the Mac brain → reply plays back through `<audio>`. Zero install, zero Pi. | ✅ live (`MARVIN_SATELLITE_BROWSER=1`) |
+| **Bookshelf speaker** | A Raspberry Pi with a `wyoming-satellite` mic array + amp sits on a shelf. Say the wake word "馬文" out loud, hear him answer from the room. Brain stays on the Mac over Tailscale. | ✅ live (`main_satellite.py`) |
+| **Car puck** | An ESP32-S3 puck (INMP441 mic + MAX98357 amp, hold-to-talk button) tethers to a phone hotspot and hits the brain over HTTPS. Bring-up firmware STEP 1–5 all green: PTT → record → reply loop closes on real hardware. | 🔧 firmware live, integration gated (`MARVIN_CAR_MODE`, default off) |
+
+**Why go physical at all?** Because the memory and personality only pay off if Marvin is *ambient* — there when you're cooking, driving, or half-asleep, not when you've deliberately opened an app and typed a command. A depressed roommate who remembers you is a novelty inside Discord; on a shelf and in the car it's a presence. The hard engineering (per-person DNA, room-awareness, taste memory) is identical across all three — the hardware is just proof that the pipeline was decoupled cleanly enough to run anywhere.
+
+One safety detail worth calling out: satellite sessions run in an **ephemeral memory sandbox** by default — they read the real memory but write nothing, so a shelf speaker and the 24/7 Discord bot can run at the same time without corrupting each other's state. Same soul, read-only twin.
+
+See `main_satellite.py`, `firmware/car_puck/car_puck.ino`, and the browser satellite seam in `discord_voice_engine.py`.
 
 ---
 
