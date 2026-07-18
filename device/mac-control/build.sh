@@ -24,6 +24,10 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
+  <!-- Pi/Mac 走 Tailscale 私網明文 HTTP；ATS 預設擋 http://，這裡放行 -->
+  <key>NSAppTransportSecurity</key><dict>
+    <key>NSAllowsArbitraryLoads</key><true/>
+  </dict>
 </dict></plist>
 PLIST
 
