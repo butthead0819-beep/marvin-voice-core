@@ -1,0 +1,19 @@
+graph LR
+  subgraph OUT[箱外]
+    BRICK[24V 密封變壓器磚]
+    SPK[書架喇叭 外接]
+    MIC[XVF3800 麥克風]
+  end
+  subgraph CASE[薄鋁殼外殼 231x64x薄]
+    SCREEN[8.8吋螢幕<br/>開窗 54.72x218.88]
+    DRV[HDMI-MIPI 驅動板]
+    STACK[Pi 3B + DigiAMP+ 疊板]
+    SHELL[鋁殼本體 = 散熱片<br/>無風扇 無開孔]
+  end
+  BRICK -->|DC 24V 單一入口| STACK
+  STACK -->|降壓 5V| DRV
+  STACK -->|HDMI| DRV
+  DRV -->|MIPI FFC| SCREEN
+  STACK -->|喇叭線 拉出| SPK
+  STACK -->|USB 拉出| MIC
+  STACK -.->|TAS5756M 導熱貼合| SHELL
