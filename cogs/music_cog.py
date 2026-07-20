@@ -2675,6 +2675,12 @@ class MusicCog(commands.Cog):
                 logger.info(f"🎨 [Cover] iTunes 封面取代 YT 縮圖：{(res.get('title') or '?')[:30]}")
         except Exception as e:
             logger.warning(f"⚠️ [Cover] iTunes 解析失敗，用原縮圖：{type(e).__name__}: {e}")
+        # 從最終封面抽主色調色盤（給 vinyl splatter 用；失敗 → [] 不影響封面）
+        try:
+            import cover_palette
+            res['palette'] = await cover_palette.extract_palette(res.get('thumbnail'), n=4)
+        except Exception as e:
+            logger.warning(f"⚠️ [Cover] 抽色失敗：{type(e).__name__}: {e}")
         return res
 
     async def _safe_music_command(self, speaker: str, query: str, cmd: str):
