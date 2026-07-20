@@ -47,6 +47,23 @@ def test_title_band_uses_primary_bg():
     assert img.getpixel((4, h - 3)) == (0x20, 0x40, 0x80), "標題帶底應為主色"
 
 
+def test_title_has_white_sticker_stroke():
+    # 字色故意設成與底色相同 → 唯有白色描邊可見；掃標題帶左半應有近白像素
+    out = compose_cover_with_avatar(
+        _png(640, 640, (10, 10, 10)), _png(64, 64, (0, 0, 0)),
+        width=640, title="七", primary="#204080", secondary="#204080",
+    )
+    img = Image.open(io.BytesIO(out)).convert("RGB")
+    w, h = img.size
+    band_top = h - int(640 * 0.14)
+    found = any(
+        all(c > 230 for c in img.getpixel((x, y)))
+        for y in range(band_top + 2, h - 2)
+        for x in range(6, 260)
+    )
+    assert found, "應有白色描邊像素（sticker 手法）"
+
+
 def test_no_palette_is_backcompat_no_band():
     # 無 title/palette → 不加帶（左下仍是封面底色）
     out = compose_cover_with_avatar(

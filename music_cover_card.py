@@ -93,7 +93,11 @@ def compose_cover_with_avatar(
         txt = _fit(str(title), font, max_text_w)
         fsize = int(getattr(font, "size", band_h * 0.5))
         ty = band_y + max(0, (band_h - fsize) // 2)
-        ImageDraw.Draw(cover).text((pad, ty), txt, fill=(s[0], s[1], s[2], 255), font=font)
+        # 白色描邊（YouTube sticker 手法）：任何底色/主副色對比都清楚
+        ImageDraw.Draw(cover).text(
+            (pad, ty), txt, fill=(s[0], s[1], s[2], 255), font=font,
+            stroke_width=max(2, int(fsize * 0.09)), stroke_fill=(255, 255, 255, 255),
+        )
 
     # 頭像圓徽（右下）
     av = Image.open(io.BytesIO(avatar_png)).convert("RGBA").resize((badge, badge))
