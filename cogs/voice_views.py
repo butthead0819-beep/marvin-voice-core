@@ -27,7 +27,17 @@ def build_song_embed(info: dict | None, *, image_url: str | None = None) -> disc
     無合成圖時退純封面(info['thumbnail'])。每首一則、不刪＝頻道留播放紀錄。
     吃 info dict（非 controller）→ 背景 task 用快照不受下一首影響、也好測。
     """
-    embed = discord.Embed(color=discord.Color.blurple())
+    # accent 色條＝封面抽出的主色（palette[0]）；無/壞 → 退 blurple
+    color = discord.Color.blurple()
+    pal = (info or {}).get('palette') or []
+    if pal:
+        _h = (pal[0] or '').lstrip('#')
+        if len(_h) == 6:
+            try:
+                color = discord.Color(int(_h, 16))
+            except ValueError:
+                pass
+    embed = discord.Embed(color=color)
     if not info:
         embed.description = "目前沒有歌曲在播放。"
         return embed

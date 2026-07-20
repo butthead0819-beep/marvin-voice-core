@@ -1431,7 +1431,13 @@ class MusicCog(commands.Cog):
                         cov = await r1.read()
                     async with s.get(avatar_url) as r2:
                         av = await r2.read()
-                png = await asyncio.to_thread(compose_cover_with_avatar, cov, av)
+                pal = info.get('palette') or []
+                png = await asyncio.to_thread(
+                    compose_cover_with_avatar, cov, av,
+                    title=info.get('title', ''),
+                    primary=(pal[0] if len(pal) >= 1 else None),
+                    secondary=(pal[1] if len(pal) >= 2 else None),
+                )
                 file = discord.File(io.BytesIO(png), filename="cover.png")
                 image_url = "attachment://cover.png"
         except Exception as e:

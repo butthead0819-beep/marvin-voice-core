@@ -34,3 +34,24 @@ def test_square_cover_keeps_aspect():
 def test_bad_cover_raises_for_caller_fallback():
     with pytest.raises(Exception):
         compose_cover_with_avatar(b"not-an-image", _png(64, 64, (1, 1, 1)))
+
+
+def test_title_band_uses_primary_bg():
+    # 有 title+主/副色 → 底部加主色標題帶；左下角採到主色
+    out = compose_cover_with_avatar(
+        _png(640, 640, (10, 10, 10)), _png(64, 64, (255, 255, 255)),
+        width=640, title="測試歌名", primary="#204080", secondary="#F0C040",
+    )
+    img = Image.open(io.BytesIO(out)).convert("RGB")
+    w, h = img.size
+    assert img.getpixel((4, h - 3)) == (0x20, 0x40, 0x80), "標題帶底應為主色"
+
+
+def test_no_palette_is_backcompat_no_band():
+    # 無 title/palette → 不加帶（左下仍是封面底色）
+    out = compose_cover_with_avatar(
+        _png(640, 640, (10, 10, 10)), _png(64, 64, (255, 255, 255)), width=640
+    )
+    img = Image.open(io.BytesIO(out)).convert("RGB")
+    w, h = img.size
+    assert img.getpixel((4, h - 3)) == (10, 10, 10)
