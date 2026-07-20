@@ -2652,7 +2652,30 @@ class MusicCog(commands.Cog):
             query = _orig_text_query
             is_url = False
             res = await _extract_with_retry()
+        res = await self._apply_itunes_cover(res)
         return _cache_put(res)
+
+    async def _apply_itunes_cover(self, res):
+        """用 iTunes 方形專輯封面取代 YT 縮圖（失敗/低信心一律退回原縮圖）。
+
+        單一改點：res['thumbnail'] 是全站封面唯一源頭（音樂卡 PIL、embed、/now 顯示端），
+        在此換掉即全部沿用；且解析在進快取前完成，ResolveCache 免費快取不重打 iTunes。
+        """
+        if not res:
+            return res
+        try:
+            import itunes_cover
+            yt = res.get('thumbnail')
+            art = await itunes_cover.resolve_cover(
+                res.get('title', ''), res.get('uploader'), fallback=yt
+            )
+            if art and art != yt:
+                res['yt_thumbnail'] = yt
+                res['thumbnail'] = art
+                logger.info(f"🎨 [Cover] iTunes 封面取代 YT 縮圖：{(res.get('title') or '?')[:30]}")
+        except Exception as e:
+            logger.warning(f"⚠️ [Cover] iTunes 解析失敗，用原縮圖：{type(e).__name__}: {e}")
+        return res
 
     async def _safe_music_command(self, speaker: str, query: str, cmd: str):
         """Top-level wrapper：任何 music command 路徑都該過這層 try/except。"""
