@@ -11,6 +11,10 @@
  *   STEP 4 = + INMP441 麥克風錄音到 PSRAM
  *   STEP 5 = + 按 PTT 錄 3s → POST /audio → 收 /reply（全鏈路，除了聽不到）
  *   STEP 6 = + PCM5102 I2S 喇叭輸出，放開 PTT 後自動輪詢 /reply 並就地播放（板子自己出聲）
+ *   STEP 7 = + 開機自動上車：WiFi 連上→POST /car present（+30s 心跳）→常駐讀
+ *            GET /audio_stream 播整個 mixer 輸出（音樂+TTS+DJ 全部，非單次 /reply
+ *            輪詢；核心 0 專任務常駐讀、核心 1 跑 loop()/PTT，兩者不互卡）。
+ *            斷電＝心跳自然停送，由伺服器 TTL(90s) 收尾停播，不用板子主動告知。
  *
  * ⚠️ 動手前要填：WiFi、MARVIN_TOKEN。（I2S 腳位已實測、不用再查，見下。）
  *
@@ -315,6 +319,88 @@ void pollAndPlayReply() {
   setLed(LED_STANDBY);
 }
 
+// STEP 7：常駐音訊串流（車載模式）——開機後常駐一條到 /audio_stream 的連線，讀到就播；
+// 跑在獨立 FreeRTOS 任務、釘死 core 0（Arduino loop()/PTT/心跳跑在預設的 core 1），
+// 讀取阻塞不會卡住 PTT 錄音或心跳送出。/audio_stream 是整個 mixer 輸出（音樂+TTS+DJ
+// 全部），車載模式下伺服器 /reply 已停用，對話回覆也會自動從這條串流播出，postAudio()
+// 不用再額外輪詢 /reply（見下）。
+// 手動解 chunked transfer-encoding（伺服器固定用 aiohttp StreamResponse，會送 chunked；
+// 不支援時直接放棄這輪連線重試，不猜格式）。
+void audioStreamTask(void* pv) {
+  uint8_t buf[512];
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    if (!client.connect(MARVIN_HOST, MARVIN_PORT)) {
+      vTaskDelay(pdMS_TO_TICKS(2000));
+      continue;
+    }
+    String req = String("GET /audio_stream?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
+                 "Host: " + MARVIN_HOST + "\r\nConnection: close\r\n\r\n";
+    client.print(req);
+
+    String status = client.readStringUntil('\n');
+    bool ok200 = status.indexOf("200") > 0;
+    bool chunked = false;
+    while (client.connected()) {
+      String h = client.readStringUntil('\n');
+      if (h.length() <= 1) break;             // 只剩 "\r"＝空行，標頭結束
+      if (h.indexOf("chunked") >= 0) chunked = true;
+    }
+
+    if (!ok200 || !chunked) {
+      Serial.printf("[Stream] /audio_stream 非預期回應（200=%d chunked=%d）：%s",
+                    ok200, chunked, status.c_str());
+      client.stop();
+      vTaskDelay(pdMS_TO_TICKS(5000));        // 車載模式未接串流輸出等更久，避免熱迴圈
+      continue;
+    }
+    Serial.println("[Stream] /audio_stream 連上，開始播放");
+
+    while (client.connected()) {
+      String sizeLine = client.readStringUntil('\n');
+      long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
+      if (chunkSize <= 0) break;              // 終止 chunk（0）或連線壞了，跳出重連
+      long remain = chunkSize;
+      while (remain > 0 && client.connected()) {
+        size_t want = remain < (long)sizeof(buf) ? (size_t)remain : sizeof(buf);
+        int n = client.readBytes(buf, want);
+        if (n <= 0) break;
+        size_t written;
+        i2s_write(I2S_SPK_PORT, buf, n, &written, portMAX_DELAY);
+        remain -= n;
+      }
+      client.readStringUntil('\n');           // chunk 尾 CRLF
+    }
+    client.stop();
+    Serial.println("[Stream] /audio_stream 斷線，1s 後重連");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
+// STEP 7：車載 present 心跳（POST /car）——伺服器 TTL 預設 90s，這裡每 30s 送一次留足
+// margin。斷電＝板子直接死掉、心跳自然停送，交給伺服器 TTL 收尾（不用板子主動告知斷電）。
+void carHeartbeat() {
+  HTTPClient http;
+  WiFiClientSecure client; client.setInsecure();
+  String url = String("https://") + MARVIN_HOST + "/car?t=" + MARVIN_TOKEN;
+  http.begin(client, url);
+  http.addHeader("Content-Type", "application/json");
+  int code = http.POST("{\"state\":\"present\"}");
+  Serial.printf("[Car] present 心跳 HTTP %d\n", code);
+  http.end();
+}
+
+void carHeartbeatLoop() {   // 每 loop() 呼叫一次，內部用 millis() 非阻塞 gate 到 30s
+  static uint32_t lastBeat = 0;
+  uint32_t now = millis();
+  if (lastBeat != 0 && now - lastBeat < 30000) return;
+  lastBeat = now;
+  carHeartbeat();
+}
+
 void postAudio(int nSamples);  // 前置宣告（hold-to-talk 放開時呼叫）
 
 // hold-to-talk：按住 PTT 期間持續錄音、放開送出。長度自適應，
@@ -374,7 +460,10 @@ void postAudio(int nSamples) {
   Serial.printf("[POST /audio] HTTP %d：%s\n", code, http.getString().c_str());
   http.end(); free(wav);
   if (code != 200) { setLed(LED_STANDBY); return; }   // 沒送成功＝沒回覆要播，別卡在青燈
-#if STEP >= 6
+#if STEP >= 7
+  // 車載常駐串流模式：/reply 已停用，回覆會自動從 audioStreamTask 的 /audio_stream 播出。
+  setLed(LED_STANDBY);
+#elif STEP >= 6
   pollAndPlayReply();   // 輪詢 /reply，收到就用 PCM5102 就地播放
 #else
   Serial.println("[POST] 送出後，Mac 會轉錄+回覆；回覆音訊走 GET /reply（STEP<6，板子還不會自己播）");
@@ -411,6 +500,10 @@ void setup() {
 #if STEP >= 6
   startSpeaker();
 #endif
+#if STEP >= 7
+  xTaskCreatePinnedToCore(audioStreamTask, "audioStream", 16384, nullptr, 1, nullptr, 0);
+  if (WiFi.status() == WL_CONNECTED) carHeartbeatLoop();   // 立刻上車，不等第一輪 30s
+#endif
   // 收尾定燈：WiFi 通但沒跑 Funnel 檢查（STEP 1）也給個 connected 提示；
   // 若前面已 setLed(ERROR/CONNECTED) 則不覆蓋。
   if (WiFi.status() == WL_CONNECTED && ledState == LED_BOOT) setLed(LED_CONNECTED);
@@ -428,6 +521,9 @@ void loop() {
 
 #if STEP >= 5
   pttHoldToTalk();   // 按住說話、放開送出
+#endif
+#if STEP >= 7
+  carHeartbeatLoop();   // 30s 一次 POST /car present（內部 millis gate，非阻塞判斷）
 #endif
   updateLed();       // 狀態燈動畫（非阻塞）
   delay(5);
