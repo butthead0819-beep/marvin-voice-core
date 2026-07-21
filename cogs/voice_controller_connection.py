@@ -887,12 +887,16 @@ class ConnectionMixin:
         # 6. 非阻塞啟動麥克風擷取（對齊 sink.write 用 loop.create_task 的規範）
         self.bot.loop.create_task(sink.start())
 
-    def start_browser_satellite_listening(self, browser_output) -> None:
-        """純軟體 satellite 輸出接縫：mixer 泵 → BrowserSpeakerOutput → 瀏覽器 WebAudio。
+    def start_browser_satellite_listening(self, browser_output, *, persistent: bool = False) -> None:
+        """純軟體 satellite 輸出接縫：mixer 泵 → BrowserSpeakerOutput/StreamSpeakerOutput → 輸出。
 
         與 start_satellite_listening 差異＝無 Pi/wyoming mic 橋、無 Mac mic sink：輸入唯一
-        來源是 main_satellite 的 POST /audio（inject_audio→handle_stt_result）。輸出改注入
+        來源是 main_satellite 的 POST /audio（inject_audio→handle_stt_result）。輸出預設注入
         BrowserSpeakerOutput（GET /reply 服務給瀏覽器）。Discord / Pi 路徑完全不受影響。
+
+        persistent＝False（預設，離散 TTS 回覆用；播完 idle 泵即停，CPU 0）；車載模式
+        （MARVIN_CAR_MODE + StreamSpeakerOutput）傳 True，比照 Pi 常駐喇叭讓泵連續跑，
+        避免歌與歌之間的靜音間隙讓泵停下、造成 /audio_stream 串流中斷重啟的延遲。
         """
         from marvin_voice_core.playback_device import LocalSpeakerDevice
 
@@ -909,10 +913,11 @@ class ConnectionMixin:
         self._LATE_RESPONSE_SKIP_SEC = 120.0
         self._LATENCY_DOMINATED_THRESHOLD = 120.0
 
-        # 4. 喇叭輸出接縫：mixer 泵 → BrowserSpeakerOutput（靜音切段快取，/reply 服務）
-        #    persistent=False：回覆是離散 TTS，播完（含 mixer grace）泵即停，idle 不空轉
+        # 4. 喇叭輸出接縫：mixer 泵 → browser_output（BrowserSpeakerOutput/reply 或
+        #    StreamSpeakerOutput/audio_stream，見呼叫端）
+        #    persistent=False（預設）：回覆是離散 TTS，播完（含 mixer grace）泵即停，idle 不空轉
         #    →CPU 0（PTT 最小化）。Pi 常駐喇叭仍用預設 persistent=True，不受影響。
-        self.set_local_speaker(LocalSpeakerDevice(output=browser_output, persistent=False))
+        self.set_local_speaker(LocalSpeakerDevice(output=browser_output, persistent=persistent))
 
         # 5. always-allow consent stub（單人用，無 Discord 同意流程）
         self.consent = _LocalConsentStub()
