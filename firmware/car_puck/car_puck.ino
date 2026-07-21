@@ -10,6 +10,7 @@
  *   STEP 3 = + 三顆按鈕（GPIO0/38/39）
  *   STEP 4 = + INMP441 麥克風錄音到 PSRAM
  *   STEP 5 = + 按 PTT 錄 3s → POST /audio → 收 /reply（全鏈路，除了聽不到）
+ *   STEP 6 = + PCM5102 I2S 喇叭輸出，放開 PTT 後自動輪詢 /reply 並就地播放（板子自己出聲）
  *
  * ⚠️ 動手前要填：WiFi、MARVIN_TOKEN。（I2S 腳位已實測、不用再查，見下。）
  *
@@ -62,12 +63,14 @@ const char* MARVIN_TOKEN = "PASTE_YOUR_TOKEN";                // ⚠️ 別 comm
 #define I2S_MIC_WS    4     // WS / LRCLK
 #define I2S_MIC_SD    6     // SD / DATA（麥→ESP32）；L/R 接地=左聲道
 
-// ========== MAX98357 喇叭 I2S 腳位（V1.7 schematic P7；PCM5102 並到同組）==========
-// ⚠️ 這三根只有 schematic 依據，還沒接喇叭實測（PH2.0 喇叭未購入）。
+// ========== 喇叭輸出 I2S 腳位（V1.7 schematic P7；MAX98357/PCM5102 並到同一組）==========
+// ⚠️ 這三根只有 schematic 依據，還沒實機播放驗證過（PCM5102 到貨但尚未接線通電測試）。
+// PCM5102 的 SCK/FLT/DEMP/XSMT 是硬體接地/接高低電位決定模式，非 GPIO，軟體不用管。
 #define I2S_AMP_BCLK  15
 #define I2S_AMP_LRCLK 16
 #define I2S_AMP_DIN   7
 #define I2S_MIC_PORT  I2S_NUM_0
+#define I2S_SPK_PORT  I2S_NUM_1   // 喇叭用獨立 I2S 埠，跟麥克風 I2S_NUM_0 不共用時脈
 
 // ========== 錄音參數 ==========
 #define SAMPLE_RATE   16000          // 16kHz mono 16-bit（STT 夠用、省 RAM）
@@ -122,8 +125,8 @@ void updateLed() {
     case LED_LISTENING:                            // 藍色常亮
       neopixelWrite(PIN_RGB, 0, 0, 80); break;
     case LED_PLAYING: {                            // 青色呼吸
-      // 骨架尚無「播放結束」訊號（缺喇叭），先用 10s 上限自動落回待機。
-      // 之後接了 /reply 實際播放，播完處呼叫 setLed(LED_STANDBY) 取代這條逾時。
+      // STEP>=6：pollAndPlayReply() 播完/逾時會主動 setLed(LED_STANDBY)，這條 10s 只是兜底。
+      // STEP<6（無喇叭）：沒有真播放事件，靠這個上限自動落回待機。
       if (t >= 10000) { setLed(LED_STANDBY); break; }
       uint8_t b = ledBreathe(now, 1500, 4, 70);
       neopixelWrite(PIN_RGB, 0, b, b); break;
@@ -207,6 +210,111 @@ void startMic() {
   Serial.println("[MIC] INMP441 I2S 起動");
 }
 
+// STEP 6：起 PCM5102 I2S 喇叭輸出（TX）
+void startSpeaker() {
+  i2s_config_t cfg = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = 48000,                          // 對齊 BrowserSpeakerOutput 輸出格式；實際播放前會用 i2s_set_clk 覆蓋成 wav 標頭裡的值
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // stereo
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = 0,
+    .dma_buf_count = 8,
+    .dma_buf_len = 512,
+    .use_apll = true,
+  };
+  i2s_pin_config_t pins = {
+    .mck_io_num = I2S_PIN_NO_CHANGE,   // PCM5102 SCK 腳硬體接地走內部 PLL，不需 MCLK
+    .bck_io_num = I2S_AMP_BCLK, .ws_io_num = I2S_AMP_LRCLK,
+    .data_out_num = I2S_AMP_DIN, .data_in_num = I2S_PIN_NO_CHANGE,
+  };
+  i2s_driver_install(I2S_SPK_PORT, &cfg, 0, NULL);
+  i2s_set_pin(I2S_SPK_PORT, &pins);
+  Serial.println("[SPK] PCM5102 I2S 起動");
+}
+
+// 解 RIFF/WAVE 標頭：找 fmt/data chunk，不假設固定 44-byte 標頭長度（穩健對付上游格式微調）
+static bool parseWav(uint8_t* buf, size_t len, size_t* dataOff, size_t* dataLen,
+                      uint32_t* sr, uint16_t* ch, uint16_t* bits) {
+  if (len < 12 || memcmp(buf, "RIFF", 4) != 0 || memcmp(buf + 8, "WAVE", 4) != 0) return false;
+  size_t p = 12;
+  bool haveFmt = false;
+  while (p + 8 <= len) {
+    char id[4]; memcpy(id, buf + p, 4);
+    uint32_t csz; memcpy(&csz, buf + p + 4, 4);
+    size_t body = p + 8;
+    if (memcmp(id, "fmt ", 4) == 0 && body + 16 <= len) {
+      memcpy(ch, buf + body + 2, 2);
+      memcpy(sr, buf + body + 4, 4);
+      memcpy(bits, buf + body + 14, 2);
+      haveFmt = true;
+    } else if (memcmp(id, "data", 4) == 0) {
+      *dataOff = body; *dataLen = min((size_t)csz, len - body);
+      return haveFmt;
+    }
+    if (body + csz > len) break;
+    p = body + csz + (csz & 1);   // chunk 對齊 word boundary
+  }
+  return false;
+}
+
+// STEP 6：POST /audio 成功後呼叫。輪詢 GET /reply?since=<seq>，收到就播、逾時就放棄。
+// 阻塞式（沿用 STEP 5 live 版驗證過的作法），輪詢/播放期間持續 updateLed() 讓青燈呼吸不凍。
+static uint32_t lastReplySeq = 0;
+
+void pollAndPlayReply() {
+  const uint32_t timeoutMs = 20000, pollMs = 300;
+  uint32_t t0 = millis();
+  while (millis() - t0 < timeoutMs) {
+    HTTPClient http;
+    WiFiClientSecure client; client.setInsecure();
+    const char* headerKeys[] = { "X-Reply-Seq" };
+    http.collectHeaders(headerKeys, 1);
+    String url = String("https://") + MARVIN_HOST + "/reply?since=" + lastReplySeq + "&t=" + MARVIN_TOKEN;
+    http.begin(client, url);
+    int code = http.GET();
+
+    if (code == 200) {
+      int len = http.getSize();
+      uint8_t* wav = (len > 0) ? (uint8_t*)ps_malloc(len) : nullptr;
+      if (wav) {
+        WiFiClient* stream = http.getStreamPtr();
+        int got = 0;
+        while (got < len && http.connected()) {
+          got += stream->readBytes(wav + got, len - got);
+        }
+        size_t dataOff, dataLen; uint32_t sr; uint16_t ch, bits;
+        if (parseWav(wav, got, &dataOff, &dataLen, &sr, &ch, &bits)) {
+          Serial.printf("[SPK] 播放 %u Hz / %uch / %u-bit / %u bytes\n", sr, ch, bits, (unsigned)dataLen);
+          i2s_set_clk(I2S_SPK_PORT, sr, (i2s_bits_per_sample_t)bits,
+                      ch == 1 ? I2S_CHANNEL_MONO : I2S_CHANNEL_STEREO);
+          size_t written, off = 0;
+          while (off < dataLen) {
+            i2s_write(I2S_SPK_PORT, wav + dataOff + off, dataLen - off, &written, portMAX_DELAY);
+            off += written;
+            updateLed();   // 播放期間讓青燈呼吸繼續動
+          }
+        } else {
+          Serial.println("[SPK] ⚠️ wav 標頭解析失敗，跳過播放");
+        }
+        free(wav);
+      } else if (len > 0) {
+        Serial.println("[SPK] ⚠️ ps_malloc 失敗，跳過播放");
+      }
+      String seqHdr = http.header("X-Reply-Seq");
+      http.end();
+      if (seqHdr.length()) lastReplySeq = (uint32_t)seqHdr.toInt();
+      setLed(LED_STANDBY);
+      return;
+    }
+    http.end();
+    delay(pollMs);
+    updateLed();
+  }
+  Serial.println("[SPK] /reply 逾時（20s 沒等到回覆）");
+  setLed(LED_STANDBY);
+}
+
 void postAudio(int nSamples);  // 前置宣告（hold-to-talk 放開時呼叫）
 
 // hold-to-talk：按住 PTT 期間持續錄音、放開送出。長度自適應，
@@ -264,9 +372,13 @@ void postAudio(int nSamples) {
   http.addHeader("Content-Type", "audio/wav");
   int code = http.POST(wav, wavBytes);
   Serial.printf("[POST /audio] HTTP %d：%s\n", code, http.getString().c_str());
-  if (code != 200) setLed(LED_STANDBY);   // 沒送成功＝沒回覆要播，別卡在青燈
   http.end(); free(wav);
-  Serial.println("[POST] 送出後，Mac 會轉錄+回覆；回覆音訊走 GET /reply（有喇叭才聽得到）");
+  if (code != 200) { setLed(LED_STANDBY); return; }   // 沒送成功＝沒回覆要播，別卡在青燈
+#if STEP >= 6
+  pollAndPlayReply();   // 輪詢 /reply，收到就用 PCM5102 就地播放
+#else
+  Serial.println("[POST] 送出後，Mac 會轉錄+回覆；回覆音訊走 GET /reply（STEP<6，板子還不會自己播）");
+#endif
 }
 
 // ------------------------------------------------------------------
@@ -295,6 +407,9 @@ void setup() {
 #endif
 #if STEP >= 4
   startMic();
+#endif
+#if STEP >= 6
+  startSpeaker();
 #endif
   // 收尾定燈：WiFi 通但沒跑 Funnel 檢查（STEP 1）也給個 connected 提示；
   // 若前面已 setLed(ERROR/CONNECTED) 則不覆蓋。
