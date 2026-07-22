@@ -23,6 +23,7 @@ def load_now_playing_state(path: str = DEFAULT_PATH) -> dict | None:
 
 def save_now_playing_state(*, playing: bool, title: str = "", by: str = "",
                             cover: str = "", palette: list | None = None,
+                            queue: list | None = None,
                             path: str = DEFAULT_PATH) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump({
@@ -31,4 +32,5 @@ def save_now_playing_state(*, playing: bool, title: str = "", by: str = "",
             "by": by,
             "cover": cover,
             "palette": palette or [],
+            "queue": queue or [],
         }, f)

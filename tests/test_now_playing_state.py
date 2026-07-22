@@ -13,12 +13,13 @@ def test_save_then_load_round_trips(tmp_path):
     path = str(tmp_path / "now_playing_state.json")
     save_now_playing_state(
         playing=True, title="夜曲", by="大肚", cover="http://x/y.jpg",
-        palette=["#111111", "#222222"], path=path,
+        palette=["#111111", "#222222"], queue=[{"title": "晴天", "by": "小明"}], path=path,
     )
     state = load_now_playing_state(path=path)
     assert state == {
         "playing": True, "title": "夜曲", "by": "大肚",
         "cover": "http://x/y.jpg", "palette": ["#111111", "#222222"],
+        "queue": [{"title": "晴天", "by": "小明"}],
     }
 
 
@@ -29,6 +30,7 @@ def test_save_not_playing_defaults_empty_fields(tmp_path):
     assert state["playing"] is False
     assert state["title"] == ""
     assert state["palette"] == []
+    assert state["queue"] == []
 
 
 def test_load_missing_file_returns_none(tmp_path):

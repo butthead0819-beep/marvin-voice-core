@@ -35,6 +35,7 @@ def test_publish_with_info_writes_playing_true(monkeypatch):
     monkeypatch.setattr(now_playing_state, "save_now_playing_state",
                          lambda **kw: calls.append(kw))
     cog = _make_cog()
+    cog.stream_queue = [{"title": "晴天", "requested_by": "小明", "url": "x"}]
     cog._publish_now_playing_state({
         "title": "夜曲", "requested_by": "大肚",
         "thumbnail": "http://x/y.jpg", "palette": ["#111111"],
@@ -43,6 +44,7 @@ def test_publish_with_info_writes_playing_true(monkeypatch):
     assert calls[0] == {
         "playing": True, "title": "夜曲", "by": "大肚",
         "cover": "http://x/y.jpg", "palette": ["#111111"],
+        "queue": [{"title": "晴天", "by": "小明"}],
     }
 
 

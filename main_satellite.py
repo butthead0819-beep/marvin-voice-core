@@ -1138,7 +1138,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "ç‹—è
                     "by": state.get("by", ""),
                     "cover": state.get("cover", ""),
                     "palette": state.get("palette", []),
-                    "queue": [],
+                    "queue": state.get("queue", []),
                 }, headers=_CORS)
             return web.json_response({"playing": False}, headers=_CORS)
         _q = getattr(mc, "stream_queue", None)

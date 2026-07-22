@@ -25,7 +25,8 @@ async def test_now_falls_back_to_bridge_file_when_local_cog_idle(tmp_path):
     from main_satellite import build_text_app
     path = str(tmp_path / "now_playing_state.json")
     save_now_playing_state(playing=True, title="夜曲", by="大肚",
-                            cover="http://x/y.jpg", palette=["#111111"], path=path)
+                            cover="http://x/y.jpg", palette=["#111111"],
+                            queue=[{"title": "晴天", "by": "小明"}], path=path)
     app = build_text_app(_make_vc(mc=None), token=None, now_playing_state_path=path)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/now")
@@ -35,6 +36,7 @@ async def test_now_falls_back_to_bridge_file_when_local_cog_idle(tmp_path):
         assert body["title"] == "夜曲"
         assert body["by"] == "大肚"
         assert body["palette"] == ["#111111"]
+        assert body["queue"] == [{"title": "晴天", "by": "小明"}]
 
 
 @pytest.mark.asyncio
