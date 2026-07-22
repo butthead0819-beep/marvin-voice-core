@@ -83,3 +83,16 @@ async def test_hud_kiosk_param_strips_chrome_class():
     async with TestClient(TestServer(app)) as client:
         html = await (await client.get("/hud?kiosk=1")).text()
         assert '<body class="kiosk">' in html
+
+
+@pytest.mark.asyncio
+async def test_hud_includes_queue_card_markup():
+    """待播清單卡片：demo scene 帶 queue markup，前端輪詢 /now 時用真實 queue 覆蓋。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    app = build_text_app(_make_vc(), token=None)
+    async with TestClient(TestServer(app)) as client:
+        html = await (await client.get("/hud")).text()
+        assert "待播清單" in html
+        assert "qlist" in html
+        assert "resolveQueue" in html

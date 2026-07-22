@@ -377,6 +377,12 @@ HUD_HTML = """<!DOCTYPE html>
   .card .glyph{ position:absolute; right:2.6cqh; bottom:2.4cqh; width:11cqh; height:11cqh; color:rgba(var(--c),.5); opacity:.5; }
   .card .glyph.face{ opacity:.95; width:13cqh; height:13cqh; }
   .card .glyph svg{ width:100%; height:100%; }
+  .card .qlist{ list-style:none; margin:1.4cqh 0 0; padding:0; display:flex; flex-direction:column; gap:1.2cqh; }
+  .card .qlist li{ display:flex; align-items:baseline; gap:1.4cqh; min-width:0; }
+  .card .qlist .qi{ font-family:var(--mono); font-size:3cqh; color:rgba(var(--c),.85); flex:none; }
+  .card .qlist .qt{ font-size:3.6cqh; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .card .qlist .qb{ margin-left:auto; flex:none; font-size:2.8cqh; color:var(--dim); }
+  .card .qlist .qempty{ font-size:3.2cqh; color:var(--dim); }
   .mcard .mrow{ flex:1; display:flex; align-items:center; gap:2.4cqh; min-height:0; }
   .mcard .mvhead{ width:42%; flex:none; aspect-ratio:1/1; height:auto; }
   .mcard .mtext{ min-width:0; }
@@ -573,7 +579,7 @@ HUD_HTML = """<!DOCTYPE html>
   const M = [
     [ {kind:'marvin', s:'marvin', l:'Marvin', t:'待命中', sub:'「又是漫長的一天，而它才過了兩秒。」', mood:'idle'},
       {kind:'info', s:'ok', l:'現正播放', vinyl:{title:'七里香', pal:['#F5B841','#E8749B','#7A4CC4','#2A1A44']}, meta:'七里香 · 周杰倫 · 1:23'},
-      {kind:'info', s:'info', l:'系統', t:'一切正常', sub:'CPU 38% · 電量 92%', g:'system'} ],
+      {kind:'info', s:'info', l:'待播清單', queue:[{title:'後知後覺',by:'周杰倫'},{title:'隔壁泰山',by:'周杰倫'}], g:'list'} ],
     [ {kind:'schedule', s:'info', l:'行事曆', t:'設計評審', sub:'10:30 · 42 分後 · Zoom', g:'calendar'},
       {kind:'marvin', s:'marvin', l:'Marvin', t:'要我到時提醒你？', sub:'說「好」即可', mood:'wake'},
       {kind:'info', s:'ok', l:'現正播放', vinyl:{title:'七里香', pal:['#F5B841','#E8749B','#7A4CC4','#2A1A44']}, meta:'七里香 · 周杰倫'} ],
@@ -604,6 +610,10 @@ HUD_HTML = """<!DOCTYPE html>
     if(liveNow && liveNow.title) return esc(liveNow.title)+(liveNow.by?' · '+esc(liveNow.by):'');
     return demo||'';
   }
+  function resolveQueue(demo){
+    if(liveNow && Array.isArray(liveNow.queue) && liveNow.queue.length) return liveNow.queue;
+    return demo||[];
+  }
 
   function render(i){
     const cards=[...M[i]].sort((a,b)=>KIND[b.kind].w-KIND[a.kind].w);
@@ -621,6 +631,14 @@ HUD_HTML = """<!DOCTYPE html>
           <div class="vwrap"><canvas class="vdisc"></canvas></div>
           <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
           <div class="vmeta">${resolveMeta(c.meta)}</div></div>`;
+      }
+      if(c.queue){
+        const rows=resolveQueue(c.queue).slice(0,3).map((q,idx)=>
+          `<li><span class="qi">${idx+1}</span><span class="qt">${esc(q.title)}</span>${q.by?`<span class="qb">${esc(q.by)}</span>`:''}</li>`).join('');
+        return `<div class="card" style="flex:${k.w} 1 0;--c:var(--${c.s})">
+          <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+          <ul class="qlist">${rows||'<li class="qempty">目前沒有排隊中的歌</li>'}</ul>
+          <div class="glyph">${svg(c.g||'list')}</div></div>`;
       }
       const acts=c.actions?`<div class="acts">${c.actions.map((a,x)=>`<button class="chip ${x===0?'primary':''}">${a}</button>`).join('')}</div>`:'';
       return `<div class="card ${k.hero?'hero':''}" style="flex:${k.w} 1 0;--c:var(--${c.s})" ${c.ex?`data-explain="${c.ex}"`:''}>
@@ -990,9 +1008,10 @@ HUD_HTML = """<!DOCTYPE html>
     try{
       const r=await fetch("/now?t="+encodeURIComponent(TOKEN),{cache:"no-store"});
       const j=await r.json();
-      liveNow = j.playing ? {title:j.title||'', by:j.by||'', pal:Array.isArray(j.palette)?j.palette:[], cover:j.cover||''} : null;
+      liveNow = j.playing ? {title:j.title||'', by:j.by||'', pal:Array.isArray(j.palette)?j.palette:[], cover:j.cover||'',
+        queue:Array.isArray(j.queue)?j.queue:[]} : null;
     }catch(e){ liveNow=null; }
-    const key = liveNow ? liveNow.title+'|'+liveNow.by+'|'+liveNow.pal.join(',')+'|'+liveNow.cover : '';
+    const key = liveNow ? liveNow.title+'|'+liveNow.by+'|'+liveNow.pal.join(',')+'|'+liveNow.cover+'|'+liveNow.queue.map(q=>q.title).join(',') : '';
     if(key!==lastLiveKey){ lastLiveKey=key; render(cur); }
   }
 
