@@ -241,7 +241,7 @@ async def test_http_now_queue_empty_when_no_queue():
 
 
 @pytest.mark.asyncio
-async def test_http_now_reports_not_playing_when_idle():
+async def test_http_now_reports_not_playing_when_idle(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
     from main_satellite import build_text_app
     vc = _make_vc()
@@ -249,7 +249,11 @@ async def test_http_now_reports_not_playing_when_idle():
     mc.stream_mode = False
     mc._current_stream_info = None
     vc.bot.cogs.get.return_value = mc
-    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    # 不隔離會讀到真 bot 進程正在寫的 now_playing_state.json（跨進程橋接檔），
+    # bot 真的在播歌時這條就會假紅——bridge fallback 分支必須指到隔離的 tmp 檔。
+    path = str(tmp_path / "now_playing_state.json")
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露",
+                          now_playing_state_path=path)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/now?t=s3cret")
         assert resp.status == 200

@@ -944,6 +944,8 @@ class MusicCog(commands.Cog):
             for _rt in ring_titles_for(info.get('title', ''), 'direct', info.get('title', '')):
                 mm.add_recent_recommendation(_rt)
             enqueued.append(info)
+        if enqueued:
+            self._republish_queue_snapshot()
         return enqueued
 
     @staticmethod
@@ -1230,6 +1232,8 @@ class MusicCog(commands.Cog):
             enqueued += 1
 
         logger.info(f"🎵 [AutoRecommend] T{_tier} round 完成: enqueued={enqueued}/{self._round_size}")
+        if enqueued:
+            self._republish_queue_snapshot()
         if enqueued == 0 and _tier < 4:
             await self._auto_recommend(username, _tier=_tier + 1)
 
@@ -1294,6 +1298,7 @@ class MusicCog(commands.Cog):
         was = self._personal_shuffle is not None
         self._personal_shuffle = None
         self.stream_queue[:] = [it for it in self.stream_queue if it.get("_lane") != "personal"]
+        self._republish_queue_snapshot()
         return was
 
     def _personal_shuffle_pending(self) -> bool:
@@ -1344,6 +1349,7 @@ class MusicCog(commands.Cog):
                 info['requested_by'] = user
                 info['_lane'] = 'personal'
                 self.stream_queue.append(info)
+                self._republish_queue_snapshot()
                 # WARNING 級：music_cog 的 INFO 目前被壓掉，個人歌單要看得到才好診斷搶播
                 logger.warning(f"🎲 [PersonalShuffle] 墊一首（{user}）: {info['title']}（剩 {len(sess['remaining'])} 首）")
                 return True
@@ -1394,6 +1400,7 @@ class MusicCog(commands.Cog):
             return False
         info['requested_by'] = 'Marvin推薦（點給大家）'
         self.stream_queue.append(info)
+        self._republish_queue_snapshot()
         logger.info(f"🔁 [AutoRecommend] 絕境回收：三層枯竭→重播「{info['title']}」（永不靜默停）")
         return True
 
@@ -1487,6 +1494,10 @@ class MusicCog(commands.Cog):
                 save_now_playing_state(playing=False)
         except Exception:
             pass
+
+    def _republish_queue_snapshot(self) -> None:
+        """佇列變動（補歌/新點歌/移除個人歌單）後重寫橋接檔，不用等下一首開播 HUD 才刷新。"""
+        self._publish_now_playing_state(self._current_stream_info)
 
     # ── 🎵 Stream loop & playback ────────────────────────────────────────────
 
@@ -2525,6 +2536,7 @@ class MusicCog(commands.Cog):
                 return
             self._req_ledger.mark(_spk, _vid, time.time())
         self.stream_queue.insert(self._user_song_insert_index(self.stream_queue), info)
+        self._republish_queue_snapshot()
         # 🎵 [Play-First] 點歌當下就背景預取 meta，讓 DJ/歌詞大多來得及（又不阻塞出聲）
         _u = info.get('url', '')
         if _u and _u not in self._prefetch_cache:

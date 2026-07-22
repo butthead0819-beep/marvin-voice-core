@@ -67,3 +67,29 @@ def test_publish_swallows_write_failure(monkeypatch):
     monkeypatch.setattr(now_playing_state, "save_now_playing_state", _boom)
     cog = _make_cog()
     cog._publish_now_playing_state({"title": "夜曲", "requested_by": "大肚"})   # 不應丟例外
+
+
+def test_republish_queue_snapshot_writes_current_queue(monkeypatch):
+    """佇列變動（補歌/新點歌）後不必等下一首開播，立刻重寫橋接檔的 queue。"""
+    import now_playing_state
+    calls = []
+    monkeypatch.setattr(now_playing_state, "save_now_playing_state",
+                         lambda **kw: calls.append(kw))
+    cog = _make_cog()
+    cog._current_stream_info = {"title": "夜曲", "requested_by": "大肚",
+                                 "thumbnail": "http://x/y.jpg", "palette": ["#111111"]}
+    cog.stream_queue = [{"title": "晴天", "requested_by": "小明", "thumbnail": "http://x/n.jpg"}]
+    cog._republish_queue_snapshot()
+    assert calls[-1]["queue"] == [{"title": "晴天", "by": "小明", "thumbnail": "http://x/n.jpg"}]
+
+
+def test_republish_queue_snapshot_writes_playing_false_when_idle(monkeypatch):
+    """沒歌在播時佇列變動（例如收掉個人歌單殘留位）→ 橋接檔正確反映 playing=False。"""
+    import now_playing_state
+    calls = []
+    monkeypatch.setattr(now_playing_state, "save_now_playing_state",
+                         lambda **kw: calls.append(kw))
+    cog = _make_cog()
+    cog._current_stream_info = None
+    cog._republish_queue_snapshot()
+    assert calls == [{"playing": False}]
