@@ -209,7 +209,7 @@ async def test_http_now_includes_pending_queue():
     mc.stream_paused = False
     mc._current_stream_info = {"title": "當前歌", "requested_by": "狗與露", "thumbnail": ""}
     mc.stream_queue = [
-        {"title": "下一首A", "requested_by": "阿明"},
+        {"title": "下一首A", "requested_by": "阿明", "thumbnail": "https://i.ytimg.com/vi/a/hq.jpg"},
         {"title": "下一首B", "requested_by": "Marvin推薦（點給大家）"},
     ]
     vc.bot.cogs.get.return_value = mc
@@ -217,8 +217,8 @@ async def test_http_now_includes_pending_queue():
     async with TestClient(TestServer(app)) as client:
         body = await (await client.get("/now?t=s3cret")).json()
         assert body["queue"] == [
-            {"title": "下一首A", "by": "阿明"},
-            {"title": "下一首B", "by": "Marvin推薦（點給大家）"},
+            {"title": "下一首A", "by": "阿明", "thumbnail": "https://i.ytimg.com/vi/a/hq.jpg"},
+            {"title": "下一首B", "by": "Marvin推薦（點給大家）", "thumbnail": ""},
         ]
 
 

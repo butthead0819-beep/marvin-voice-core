@@ -96,3 +96,4 @@ async def test_hud_includes_queue_card_markup():
         assert "待播清單" in html
         assert "qlist" in html
         assert "resolveQueue" in html
+        assert "qcover" in html

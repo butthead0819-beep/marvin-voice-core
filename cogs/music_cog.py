@@ -1472,7 +1472,8 @@ class MusicCog(commands.Cog):
         try:
             from now_playing_state import save_now_playing_state
             if info:
-                queue = [{"title": s.get("title", ""), "by": s.get("requested_by", "")}
+                queue = [{"title": s.get("title", ""), "by": s.get("requested_by", ""),
+                          "thumbnail": s.get("thumbnail", "") or ""}
                          for s in self.stream_queue[:10]]
                 save_now_playing_state(
                     playing=True,

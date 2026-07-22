@@ -377,9 +377,15 @@ HUD_HTML = """<!DOCTYPE html>
   .card .glyph{ position:absolute; right:2.6cqh; bottom:2.4cqh; width:11cqh; height:11cqh; color:rgba(var(--c),.5); opacity:.5; }
   .card .glyph.face{ opacity:.95; width:13cqh; height:13cqh; }
   .card .glyph svg{ width:100%; height:100%; }
-  .card .qlist{ list-style:none; margin:1.4cqh 0 0; padding:0; display:flex; flex-direction:column; gap:1.2cqh; }
-  .card .qlist li{ display:flex; align-items:baseline; gap:1.4cqh; min-width:0; }
-  .card .qlist .qi{ font-family:var(--mono); font-size:3cqh; color:rgba(var(--c),.85); flex:none; }
+  .card .qlist{ list-style:none; margin:1.4cqh 0 0; padding:0; display:flex; flex-direction:column; gap:1.3cqh; }
+  .card .qlist li{ display:flex; align-items:center; gap:1.5cqh; min-width:0; }
+  .card .qlist .qcover{ position:relative; width:8.4cqh; height:8.4cqh; flex:none; border-radius:1.6cqh;
+    background-size:cover; background-position:center; background-color:rgba(var(--c),.14);
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.10); display:grid; place-items:center; color:rgba(var(--c),.6); }
+  .card .qlist .qcover svg{ width:45%; height:45%; }
+  .card .qlist .qi{ position:absolute; left:-0.7cqh; top:-0.7cqh; width:2.9cqh; height:2.9cqh; border-radius:50%;
+    background:rgb(var(--c)); color:#0b1204; font-family:var(--mono); font-size:1.9cqh; font-weight:700;
+    display:grid; place-items:center; box-shadow:0 0 0 2px var(--ink); }
   .card .qlist .qt{ font-size:3.6cqh; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .card .qlist .qb{ margin-left:auto; flex:none; font-size:2.8cqh; color:var(--dim); }
   .card .qlist .qempty{ font-size:3.2cqh; color:var(--dim); }
@@ -633,8 +639,11 @@ HUD_HTML = """<!DOCTYPE html>
           <div class="vmeta">${resolveMeta(c.meta)}</div></div>`;
       }
       if(c.queue){
-        const rows=resolveQueue(c.queue).slice(0,3).map((q,idx)=>
-          `<li><span class="qi">${idx+1}</span><span class="qt">${esc(q.title)}</span>${q.by?`<span class="qb">${esc(q.by)}</span>`:''}</li>`).join('');
+        const rows=resolveQueue(c.queue).slice(0,3).map((q,idx)=>{
+          const cover=q.thumbnail?`style="background-image:url('${esc(q.thumbnail)}')"`:'';
+          return `<li><span class="qcover" ${cover}>${q.thumbnail?'':svg('music')}<span class="qi">${idx+1}</span></span>
+            <span class="qt">${esc(q.title)}</span>${q.by?`<span class="qb">${esc(q.by)}</span>`:''}</li>`;
+        }).join('');
         return `<div class="card" style="flex:${k.w} 1 0;--c:var(--${c.s})">
           <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
           <ul class="qlist">${rows||'<li class="qempty">目前沒有排隊中的歌</li>'}</ul>
@@ -1142,7 +1151,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                 }, headers=_CORS)
             return web.json_response({"playing": False}, headers=_CORS)
         _q = getattr(mc, "stream_queue", None)
-        queue = ([{"title": s.get("title", ""), "by": s.get("requested_by", "")}
+        queue = ([{"title": s.get("title", ""), "by": s.get("requested_by", ""),
+                    "thumbnail": s.get("thumbnail", "") or ""}
                   for s in _q[:10]] if isinstance(_q, list) else [])
         return web.json_response({
             "playing": True,
