@@ -11,6 +11,10 @@ shortcut_query：喚醒句剝完喚醒詞後若是「完整、可直派」的指
 """
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def shortcut_query(fp, stripped: str) -> str | None:
     """完整指令 → 改寫後 query（直派 bus 用）；其他 → None（走 worker）。
@@ -32,6 +36,29 @@ def shortcut_query(fp, stripped: str) -> str | None:
     if cmd:
         return cmd
     return None
+
+
+async def dispatch_with_feedback(intent_bus, channel, speaker: str, raw_text: str, ctx) -> None:
+    """WakeShortcut 直派：dispatch 沒人接時要有回應，不能靜默丟掉。
+
+    Why: 直派是 fire-and-forget（asyncio.create_task），原本連 dispatch()
+    的回傳值都沒接——bus 沒人 above threshold（例如 music agent 被
+    repetitive_hallucination guard 擋下，2026-07-23 實戰：catalog 壞掉的
+    videoId 每次組出同一個死 URL）時，使用者已經聽到 wake 反應，指令卻
+    悄悄消失，體感像沒聽到、連環喊連環失敗都查不出原因。main bus 路徑
+    （handle_stt_result 主流程）早有 _ask_music_followup 這層防護，
+    WakeShortcut 快路徑補上同一層，不用 TTS（避免 storm，同精神）。
+    """
+    winner = await intent_bus.dispatch(ctx)
+    if winner is not None:
+        return
+    logger.warning(f"⚠️ [WakeShortcut] {speaker} 直派沒人接 → 回頻道告知失敗，不靜默")
+    if channel is None:
+        return
+    try:
+        await channel.send(f"💬 `{speaker}` 剛剛「{raw_text[:24]}」沒處理成功，再說一次？")
+    except Exception as e:
+        logger.warning(f"⚠️ [WakeShortcut] 失敗提示貼頻道失敗: {e}")
 
 
 SERVED_WINDOW_S = 20.0   # debounce 晚關窗最長觀測 ~8s，抓寬到 20s

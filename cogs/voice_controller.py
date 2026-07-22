@@ -1337,7 +1337,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             # 直派 bus 跳過 worker——fastpath 不再排在同 speaker 前一句聊天回覆
             # 後面被 Stale Drop 丟掉（邏輯在 wake_shortcut.py；wakeless T0 同級快路）。
             if not self.game_mode:
-                from wake_shortcut import shortcut_query
+                from wake_shortcut import dispatch_with_feedback, shortcut_query
                 _sc_stripped = self._strip_wake_word(raw_text)
                 _sc = shortcut_query(self._get_music_fastpath(), _sc_stripped)
                 if _sc:
@@ -1355,7 +1355,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         is_owner=self._is_owner_speaker(speaker), now=time.time(),
                         mode=("stream" if self.stream_mode else "normal"),
                         dispatch_source="wake_shortcut")
-                    asyncio.create_task(self._intent_bus.dispatch(_sc_ctx))
+                    asyncio.create_task(dispatch_with_feedback(self._intent_bus, self.active_text_channel, speaker, raw_text, _sc_ctx))
                     return
 
             # 排隊時改走文字頻道通知，不打斷當前語音播放
