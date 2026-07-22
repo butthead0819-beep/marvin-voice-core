@@ -377,18 +377,20 @@ HUD_HTML = """<!DOCTYPE html>
   .card .glyph{ position:absolute; right:2.6cqh; bottom:2.4cqh; width:11cqh; height:11cqh; color:rgba(var(--c),.5); opacity:.5; }
   .card .glyph.face{ opacity:.95; width:13cqh; height:13cqh; }
   .card .glyph svg{ width:100%; height:100%; }
-  .card .qlist{ list-style:none; margin:1.4cqh 0 0; padding:0; display:flex; flex-direction:column; gap:1.3cqh; }
-  .card .qlist li{ display:flex; align-items:center; gap:1.5cqh; min-width:0; }
-  .card .qlist .qcover{ position:relative; width:8.4cqh; height:8.4cqh; flex:none; border-radius:1.6cqh;
-    background-size:cover; background-position:center; background-color:rgba(var(--c),.14);
-    box-shadow:inset 0 0 0 1px rgba(255,255,255,.10); display:grid; place-items:center; color:rgba(var(--c),.6); }
-  .card .qlist .qcover svg{ width:45%; height:45%; }
-  .card .qlist .qi{ position:absolute; left:-0.7cqh; top:-0.7cqh; width:2.9cqh; height:2.9cqh; border-radius:50%;
-    background:rgb(var(--c)); color:#0b1204; font-family:var(--mono); font-size:1.9cqh; font-weight:700;
-    display:grid; place-items:center; box-shadow:0 0 0 2px var(--ink); }
-  .card .qlist .qt{ font-size:3.6cqh; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .card .qlist .qb{ margin-left:auto; flex:none; font-size:2.8cqh; color:var(--dim); }
-  .card .qlist .qempty{ font-size:3.2cqh; color:var(--dim); }
+  .card .qstack{ position:relative; flex:1; margin-top:1.4cqh; min-height:0; }
+  .card .qnext{ position:relative; z-index:2; width:72%; height:100%; border-radius:2.2cqh; overflow:hidden;
+    background-size:cover; background-position:center; background-color:rgba(var(--c),.16);
+    box-shadow:0 1cqh 3cqh rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.10); }
+  .card .qnext .qplaceholder{ position:absolute; inset:0; display:grid; place-items:center; color:rgba(var(--c),.6); }
+  .card .qnext .qplaceholder svg{ width:30%; height:30%; }
+  .card .qnext .qmeta{ position:absolute; left:0; right:0; bottom:0; padding:1.8cqh 2cqh;
+    background:linear-gradient(180deg, transparent, rgba(6,10,16,.88) 85%); }
+  .card .qnext .qt{ font-size:4cqh; font-weight:700; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .card .qnext .qb{ font-size:2.9cqh; color:rgba(255,255,255,.78); margin-top:.3cqh; }
+  .card .qpeek{ position:absolute; right:0; top:6%; z-index:1; width:40%; height:88%; border-radius:2.2cqh;
+    background-size:cover; background-position:center; background-color:rgba(var(--c),.12);
+    opacity:.5; filter:saturate(.6) brightness(.65); box-shadow:0 1cqh 2.4cqh rgba(0,0,0,.45); }
+  .card .qempty{ font-size:3.2cqh; color:var(--dim); margin-top:1.4cqh; }
   .mcard .mrow{ flex:1; display:flex; align-items:center; gap:2.4cqh; min-height:0; }
   .mcard .mvhead{ width:42%; flex:none; aspect-ratio:1/1; height:auto; }
   .mcard .mtext{ min-width:0; }
@@ -639,15 +641,25 @@ HUD_HTML = """<!DOCTYPE html>
           <div class="vmeta">${resolveMeta(c.meta)}</div></div>`;
       }
       if(c.queue){
-        const rows=resolveQueue(c.queue).slice(0,3).map((q,idx)=>{
-          const cover=q.thumbnail?`style="background-image:url('${esc(q.thumbnail)}')"`:'';
-          return `<li><span class="qcover" ${cover}>${q.thumbnail?'':svg('music')}<span class="qi">${idx+1}</span></span>
-            <span class="qt">${esc(q.title)}</span>${q.by?`<span class="qb">${esc(q.by)}</span>`:''}</li>`;
-        }).join('');
+        const items=resolveQueue(c.queue);
+        if(!items.length){
+          return `<div class="card" style="flex:${k.w} 1 0;--c:var(--${c.s})">
+            <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+            <div class="qempty">目前沒有排隊中的歌</div>
+            <div class="glyph">${svg(c.g||'list')}</div></div>`;
+        }
+        const [next, after]=items;
+        const nextBg=next.thumbnail?`style="background-image:url('${esc(next.thumbnail)}')"`:'';
+        const afterBg=(after&&after.thumbnail)?`style="background-image:url('${esc(after.thumbnail)}')"`:'';
         return `<div class="card" style="flex:${k.w} 1 0;--c:var(--${c.s})">
           <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
-          <ul class="qlist">${rows||'<li class="qempty">目前沒有排隊中的歌</li>'}</ul>
-          <div class="glyph">${svg(c.g||'list')}</div></div>`;
+          <div class="qstack">
+            ${after?`<div class="qpeek" ${afterBg}></div>`:''}
+            <div class="qnext" ${nextBg}>
+              ${next.thumbnail?'':`<div class="qplaceholder">${svg('music')}</div>`}
+              <div class="qmeta"><div class="qt">${esc(next.title)}</div>${next.by?`<div class="qb">${esc(next.by)}</div>`:''}</div>
+            </div>
+          </div></div>`;
       }
       const acts=c.actions?`<div class="acts">${c.actions.map((a,x)=>`<button class="chip ${x===0?'primary':''}">${a}</button>`).join('')}</div>`:'';
       return `<div class="card ${k.hero?'hero':''}" style="flex:${k.w} 1 0;--c:var(--${c.s})" ${c.ex?`data-explain="${c.ex}"`:''}>

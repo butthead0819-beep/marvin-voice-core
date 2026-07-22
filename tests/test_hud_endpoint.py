@@ -94,6 +94,7 @@ async def test_hud_includes_queue_card_markup():
     async with TestClient(TestServer(app)) as client:
         html = await (await client.get("/hud")).text()
         assert "待播清單" in html
-        assert "qlist" in html
         assert "resolveQueue" in html
-        assert "qcover" in html
+        assert "qstack" in html
+        assert "qnext" in html
+        assert "qpeek" in html
