@@ -400,7 +400,7 @@ HUD_HTML = """<!DOCTYPE html>
   .card.explain .title{ font-size:13cqh; }
   .exhint{ position:absolute; left:3cqh; bottom:1.2cqh; font-family:var(--mono); font-size:3cqh; color:rgba(var(--marvin),.85); z-index:5; }
   .vinyl-card{ position:relative; overflow:hidden; }
-  .vinyl-card .vwrap{ position:absolute; top:44%; left:41%; height:158%; aspect-ratio:1/1; transform:translate(-50%,-50%); z-index:0; }
+  .vinyl-card .vwrap{ position:absolute; top:44%; left:41%; height:140%; aspect-ratio:1/1; transform:translate(-50%,-50%); z-index:0; }
   .vinyl-card .vdisc{ position:absolute; inset:0; width:100%; height:100%; border-radius:50%; animation:spin 12s linear infinite; will-change:transform; }
   .vinyl-card::after{ content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
     background:linear-gradient(180deg, transparent 52%, rgba(6,10,16,.78) 100%); }
@@ -412,17 +412,36 @@ HUD_HTML = """<!DOCTYPE html>
   .card .done{ margin-top:2cqh; font-size:3.6cqh; font-weight:650; color:rgb(var(--c)); font-family:var(--mono); }
   @keyframes rise{ from{ opacity:0; transform:translateY(2cqh) scale(.985); } to{ opacity:1; transform:none; } }
 
-  .dock{ height:16.5cqh; display:flex; align-items:center; gap:2cqh; padding:0 3cqh 1.4cqh; border-top:1px solid var(--line); }
-  .mshort{ display:flex; align-items:center; gap:1.6cqh; padding:1.4cqh 2.6cqh 1.4cqh 1.6cqh; border-radius:3cqh;
+  /* dock 收起時整個變矮（不只 icon 橫向收），讓 .stage（flex:1）自動吃到多出來的高度；
+     展開時 dock 變高、卡片自動讓出空間——flexbox column 天生會算，不用 JS 量高度。 */
+  .dock{ height:16.5cqh; display:flex; align-items:center; gap:2cqh; padding:0 3cqh 1.4cqh; border-top:1px solid var(--line);
+    overflow:hidden; transition:height .35s cubic-bezier(.2,.7,.2,1); }
+  .dock.icons-collapsed{ height:9cqh; }
+  .mshort{ position:relative; display:flex; align-items:center; gap:1.6cqh; padding:1.4cqh 2.6cqh 1.4cqh 1.6cqh; border-radius:3cqh;
     background:radial-gradient(120% 160% at 20% 0%, rgba(var(--marvin),.20), transparent 60%), var(--surf);
-    border:1px solid rgba(var(--marvin),.34); cursor:pointer; transition:.18s; }
+    border:1px solid rgba(var(--marvin),.34); cursor:pointer;
+    transition:border-color .18s, transform .18s, padding .35s, gap .35s; }
   .mshort:hover{ border-color:rgba(var(--marvin),.65); transform:translateY(-0.4cqh); }
-  .mface{ width:9.5cqh; height:9.5cqh; flex:none; }
+  .dock.icons-collapsed .mshort{ padding:0.7cqh 1.8cqh 0.7cqh 1cqh; gap:1cqh; }
+  .mface-wrap{ position:relative; display:inline-flex; flex:none; }
+  .mface{ width:9.5cqh; height:9.5cqh; flex:none; transition:width .35s, height .35s; }
+  .dock.icons-collapsed .mface{ width:6cqh; height:6cqh; }
+  /* 資訊量降到最低：平常只有這顆小紅點，有事才提醒，其餘都收起來（點 Marvin 才滑出來）。
+     掛在 .mface-wrap 而非 .mface 本身——mface 的 innerHTML 會被 SVG 覆蓋掉，紅點放裡面會被吃掉。 */
+  .mdot{ position:absolute; top:-0.3cqh; right:-0.3cqh; width:2.6cqh; height:2.6cqh; border-radius:50%;
+    background:rgb(var(--urgent)); box-shadow:0 0 0 2px var(--ink), 0 0 6px rgba(var(--urgent),.7);
+    display:none; }
+  .mdot.show{ display:block; }
   .mshort .mlabel{ display:flex; flex-direction:column; line-height:1.12; }
-  .mshort .mlabel b{ font-size:3.3cqh; font-weight:650; }
-  .mshort .mlabel span{ font-family:var(--mono); font-size:2.4cqh; color:rgba(var(--marvin),.92); letter-spacing:.05em; }
-  .vdiv{ width:1px; align-self:stretch; margin:2.6cqh 0.6cqh; background:var(--line); }
-  .icons{ display:flex; gap:1.5cqh; }
+  .mshort .mlabel b{ font-size:3.3cqh; font-weight:650; transition:font-size .35s; }
+  .mshort .mlabel span{ font-family:var(--mono); font-size:2.4cqh; color:rgba(var(--marvin),.92); letter-spacing:.05em; transition:font-size .35s; }
+  .dock.icons-collapsed .mshort .mlabel b{ font-size:2.8cqh; }
+  .dock.icons-collapsed .mshort .mlabel span{ font-size:2cqh; }
+  .vdiv{ width:1px; align-self:stretch; margin:2.6cqh 0.6cqh; background:var(--line); transition:opacity .3s; }
+  .icons{ display:flex; gap:1.5cqh; max-width:100cqh; opacity:1; overflow:hidden;
+    transition:max-width .35s cubic-bezier(.2,.7,.2,1), opacity .25s, gap .35s; }
+  .icons.collapsed{ max-width:0; gap:0; opacity:0; pointer-events:none; }
+  .dock.icons-collapsed .vdiv{ opacity:0; }
   .ibtn{ --ic:150,180,200; position:relative; width:11cqh; height:11cqh; border-radius:2.8cqh;
     background:radial-gradient(120% 150% at 30% 0%, rgba(var(--ic),.34), rgba(var(--ic),.10) 70%), rgba(255,255,255,.05);
     border:1px solid rgba(var(--ic),.55); color:rgb(var(--ic)); display:grid; place-items:center; cursor:pointer; transition:.16s;
@@ -433,8 +452,10 @@ HUD_HTML = """<!DOCTYPE html>
     border-radius:2cqh; background:rgb(var(--bc)); color:#0a0a0a; font-family:var(--mono); font-size:2.5cqh; font-weight:700;
     display:grid; place-items:center; box-shadow:0 0 0 2px var(--ink); }
   .clock{ margin-left:auto; text-align:right; font-family:var(--mono); }
-  .clock b{ font-size:4.6cqh; font-weight:600; font-variant-numeric:tabular-nums; }
-  .clock span{ display:block; font-size:2.5cqh; color:var(--dim); }
+  .clock b{ font-size:4.6cqh; font-weight:600; font-variant-numeric:tabular-nums; transition:font-size .35s; }
+  .clock span{ display:block; font-size:2.5cqh; color:var(--dim); transition:font-size .35s; }
+  .dock.icons-collapsed .clock b{ font-size:3.6cqh; }
+  .dock.icons-collapsed .clock span{ font-size:2cqh; }
 
   .nc{ position:absolute; left:0; right:0; top:0; bottom:16.5cqh; z-index:20;
     background:rgba(8,11,17,.74); backdrop-filter:blur(22px) saturate(1.2); -webkit-backdrop-filter:blur(22px) saturate(1.2);
@@ -473,9 +494,15 @@ HUD_HTML = """<!DOCTYPE html>
   .cap{ max-width:700px; text-align:center; color:var(--dim); font-size:13px; line-height:1.6; }
   .cap b{ color:var(--muted); font-weight:500; }
   button:focus-visible,.ibtn:focus-visible,.mshort:focus-visible{ outline:2px solid rgb(var(--marvin)); outline-offset:2px; }
+  /* kiosk 模式（?kiosk=1）：拿掉簡報用外殼，screen 直接滿版貼齊實體螢幕，不留展示留白。 */
+  body.kiosk{ padding:0; gap:0; }
+  body.kiosk .brand, body.kiosk .cap, body.kiosk .dock2{ display:none; }
+  body.kiosk .device{ width:100vw; filter:none; }
+  body.kiosk .bezel{ background:none; border:none; border-radius:0; padding:0; }
+  body.kiosk .screen{ border-radius:0; aspect-ratio:auto; width:100vw; height:100vh; }
 </style>
 </head>
-<body>
+<body class="__BODY_CLASS__">
 
 <div class="brand">
   <h1>Marvin HUD</h1>
@@ -489,13 +516,13 @@ HUD_HTML = """<!DOCTYPE html>
       <div class="head"><span class="t" id="nc-title"></span><button class="close" id="nc-close" aria-label="關閉">&#10005;</button></div>
       <div class="list" id="nc-list"></div>
     </div>
-    <div class="dock">
-      <div class="mshort" id="mshort" role="button" tabindex="0">
-        <span class="mface" id="mface"></span>
+    <div class="dock icons-collapsed" id="dock">
+      <div class="mshort" id="mshort" role="button" tabindex="0" aria-expanded="false" aria-label="Marvin，點擊展開通知列">
+        <span class="mface-wrap"><span class="mface" id="mface"></span><span class="mdot" id="mdot"></span></span>
         <span class="mlabel"><b>Marvin</b><span id="mstatus">待命中</span></span>
       </div>
       <div class="vdiv"></div>
-      <div class="icons" id="icons"></div>
+      <div class="icons collapsed" id="icons"></div>
       <div class="clock"><b id="clk">10:48</b><span id="clkd">週日 7/20</span></div>
     </div>
   </div>
@@ -696,7 +723,7 @@ HUD_HTML = """<!DOCTYPE html>
     const disc=card.querySelector('.vdisc');
     const dctx=disc.getContext('2d'); let DPR=1;
     function drawDisc(){
-      const W=disc.width,H=disc.height,S=Math.min(W,H),cx=W/2,cy=H/2,Rdisc=S*0.49,LR=S*0.24,PI2=Math.PI*2;
+      const W=disc.width,H=disc.height,S=Math.min(W,H),cx=W/2,cy=H/2,Rdisc=S*0.49,LR=S*0.205,PI2=Math.PI*2;
       const pal=cover.pal, r=rng(cover.title.length*131+7);
       dctx.clearRect(0,0,W,H);
       const baseCol=pal[0]||'#1b1620';
@@ -803,24 +830,35 @@ HUD_HTML = """<!DOCTYPE html>
       st.cam += (((mood==='speak'||mood==='wake')?1.05:1)-st.cam)*0.05;
       const base=Math.min(W,Hh);
       const cx=W/2+Math.sin(st.t*0.4)*base*0.02;
-      const cy=Hh*0.45+Math.cos(st.t*0.33)*base*0.014+env*base*0.03;
+      const floatY=Math.sin(st.t*0.28)*base*0.045;   // 明顯一點的上下起伏，才有懸浮感（不只是待機微動）
+      const cy=Hh*0.45+floatY+env*base*0.03;
       const R=base*0.40*st.cam*(1+Math.sin(st.t*0.9)*0.006);
-      ctx.save(); ctx.translate(cx,cy+R*1.02); ctx.scale(1,0.24);
-      const cs=ctx.createRadialGradient(0,0,0,0,0,R*0.9); cs.addColorStop(0,'rgba(0,0,0,0.45)'); cs.addColorStop(1,'rgba(0,0,0,0)');
-      ctx.fillStyle=cs; ctx.beginPath(); ctx.arc(0,0,R*0.9,0,P2); ctx.fill(); ctx.restore();
-      ctx.save(); ctx.beginPath(); ctx.rect(cx-R,cy+R,2*R,R*1.1); ctx.clip(); ctx.transform(1,0,0,-1,0,2*(cy+R));
-      const rg=ctx.createRadialGradient(cx-R*0.34,cy-R*0.42,R*0.05,cx,cy,R*1.05);
-      rg.addColorStop(0,'rgba(255,255,255,0.18)');rg.addColorStop(0.6,'rgba(200,208,214,0.10)');rg.addColorStop(1,'rgba(150,160,168,0.02)');
-      ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(cx,cy,R,0,P2); ctx.fill(); ctx.restore();
-      const fade=ctx.createLinearGradient(0,cy+R,0,cy+R*1.6); fade.addColorStop(0,'rgba(8,11,17,0)'); fade.addColorStop(1,'rgba(8,11,17,1)');
-      ctx.fillStyle=fade; ctx.fillRect(cx-R,cy+R,2*R,R*1.1);
+      // 陰影跟球體脫開一段距離、且隨浮動高度縮放變淡——飄得越高陰影越小越淡、
+      // 沉得越低陰影越大越實，這種「陰影跟物體不貼在一起」才會讀成懸浮，不是貼地站著。
+      const floatNorm=(floatY/(base*0.045)+1)/2;
+      const shadowGap=base*0.10+floatNorm*base*0.05;
+      const shadowScale=1-floatNorm*0.22, shadowAlpha=0.40-floatNorm*0.16;
+      ctx.save(); ctx.translate(cx,cy+R+shadowGap); ctx.scale(shadowScale,0.22*shadowScale);
+      const cs=ctx.createRadialGradient(0,0,0,0,0,R*0.85);
+      cs.addColorStop(0,`rgba(0,0,0,${shadowAlpha})`); cs.addColorStop(0.7,`rgba(0,0,0,${shadowAlpha*0.4})`); cs.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=cs; ctx.beginPath(); ctx.arc(0,0,R*0.85,0,P2); ctx.fill();
+      // 卡片底色接近黑，純黑陰影對比不夠、看不出來（跟卡片 box-shadow 那次同個問題）。
+      // 疊一層 screen 混合的淡綠光暈——加法混合永遠比背景亮，暗底也讀得出來，順便呼應
+      // 整個 HUD 的霓虹風格，讀起來像懸浮物投下的光暈而不是純陰影。
+      const glowAlpha=0.16-floatNorm*0.09;
+      const gl=ctx.createRadialGradient(0,0,0,0,0,R*0.75);
+      gl.addColorStop(0,`rgba(140,214,90,${glowAlpha})`); gl.addColorStop(1,'rgba(140,214,90,0)');
+      ctx.globalCompositeOperation='screen'; ctx.fillStyle=gl; ctx.beginPath(); ctx.arc(0,0,R*0.75,0,P2); ctx.fill();
+      ctx.globalCompositeOperation='source-over';
+      ctx.restore();
       const sph=ctx.createRadialGradient(cx-R*0.34,cy-R*0.42,R*0.05,cx,cy,R*1.07);
       sph.addColorStop(0,'#ffffff');sph.addColorStop(0.3,'#eef2f4');sph.addColorStop(0.66,'#cfd6dc');sph.addColorStop(0.9,'#b6c0c8');sph.addColorStop(1,'#8b959d');
       ctx.fillStyle=sph;ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.fill();
       ctx.save();ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.clip();
       const hot=ctx.createRadialGradient(cx-R*0.33,cy-R*0.42,0,cx-R*0.33,cy-R*0.42,R*0.5);
       hot.addColorStop(0,'rgba(255,255,255,0.9)');hot.addColorStop(1,'rgba(255,255,255,0)');
-      ctx.fillStyle=hot;ctx.fillRect(cx-R,cy-R,2*R,2*R);ctx.restore();
+      ctx.fillStyle=hot;ctx.fillRect(cx-R,cy-R,2*R,2*R);
+      ctx.restore();
       ctx.strokeStyle='rgba(255,255,255,.4)';ctx.lineWidth=DPR;ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.stroke();
       const tc=MOODCOL[mood]||MOODCOL.idle; st.ec=st.ec.map((v,i)=>v+(tc[i]-v)*0.06);
       const boost=1+env*0.5, gr=Math.min(255,st.ec[0]*boost), gg=Math.min(255,st.ec[1]*boost), gb=Math.min(255,st.ec[2]*boost);
@@ -844,7 +882,7 @@ HUD_HTML = """<!DOCTYPE html>
         const p0=sign*phiC+st.gphi, lam0=lamC+st.glam;
         const P=[proj(p0+sign*dw,lam0+0.05*st.blink),proj(p0-sign*dw,lam0),proj(p0,lam0+dhA*st.blink)];
         const path=()=>{ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.closePath();};
-        path();ctx.shadowColor='rgba(0,0,0,.55)';ctx.shadowBlur=R*0.05;ctx.fillStyle=dark(0.45);ctx.fill();ctx.shadowBlur=0;
+        path();ctx.fillStyle=dark(0.45);ctx.fill();
         ctx.save();path();ctx.clip();
         const sx=(P[1][0]+P[2][0])/2+st.gphi*R*0.9, sy=(P[1][1]+P[2][1])/2;
         const g=ctx.createRadialGradient(sx,sy,0,sx,sy,R*0.46);
@@ -901,6 +939,8 @@ HUD_HTML = """<!DOCTYPE html>
     return `<button class="ibtn" data-src="${k}" aria-label="${SRC[k].name}" style="--ic:var(--${c})">
       ${svg(SRC[k].items[0].i)}${b?`<span class="badge" style="--bc:var(--${b[1]})">${b[0]}</span>`:''}</button>`;
   }).join('');
+  // 資訊量降到最低：整排 icon 預設收起，Marvin 頭像只掛一顆紅點——有任何分類有未讀才亮。
+  document.getElementById('mdot').classList.toggle('show', Object.keys(badges).length>0);
 
   const nc=document.getElementById('nc'), ncTitle=document.getElementById('nc-title'), ncList=document.getElementById('nc-list');
   function openSrc(k){
@@ -910,19 +950,19 @@ HUD_HTML = """<!DOCTYPE html>
       <div class="nb"><div class="nt">${n.t}<time>${n.time}</time></div><div class="nm">${n.m}</div></div></div>`).join('');
     nc.classList.add('open'); stopAuto();
   }
-  function openMarvin(){
-    ncTitle.innerHTML=`Marvin <small>捷徑</small>`;
-    const acts=[['重播上一首','music'],['靜音 30 分','mic'],['今日摘要','list'],['開會議連結','calendar']];
-    ncList.innerHTML=`<div class="qa">${acts.map(a=>`<button class="qbtn">${svg(a[1])}${a[0]}</button>`).join('')}</div>`+
-      [['你','幫我放點周杰倫','剛剛'],['Marvin','好，放《七里香》。第 47 次了。','剛剛'],['你','等下會議提醒我','2 分']]
-      .map(r=>`<div class="note" style="--c:var(--marvin)"><div class="ni">${svg('mic')}</div>
-        <div class="nb"><div class="nt">${r[0]}<time>${r[2]}</time></div><div class="nm">${r[1]}</div></div></div>`).join('');
-    nc.classList.add('open'); stopAuto();
-  }
   const closeNC=()=>nc.classList.remove('open');
   document.getElementById('icons').addEventListener('click',e=>{ const b=e.target.closest('.ibtn'); if(b) openSrc(b.dataset.src); });
-  document.getElementById('mshort').addEventListener('click',openMarvin);
-  document.getElementById('mshort').addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openMarvin(); }});
+  // 點 Marvin＝滑出整排 icon（不是打開通知面板）；再點一次收回去，跟 iOS 縮時通知同一套邏輯。
+  const dock=document.getElementById('dock'), iconsEl=document.getElementById('icons'), mshortEl=document.getElementById('mshort');
+  let iconsOpen=false;
+  function setIconsOpen(open){
+    iconsOpen=open;
+    iconsEl.classList.toggle('collapsed', !open);
+    dock.classList.toggle('icons-collapsed', !open);
+    mshortEl.setAttribute('aria-expanded', String(open));
+  }
+  mshortEl.addEventListener('click', ()=>setIconsOpen(!iconsOpen));
+  mshortEl.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); setIconsOpen(!iconsOpen); } });
   document.getElementById('nc-close').addEventListener('click',closeNC);
   nc.addEventListener('click',e=>{ if(e.target===nc) closeNC(); });
 
@@ -1170,10 +1210,15 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             content_type="text/html", headers=_CORS)
 
     async def handle_hud(request):
-        """GET /hud — Marvin HUD v12 寬屏顯示頁（Mac 自服務，比照 /satellite）。"""
-        return web.Response(
-            text=HUD_HTML.replace("__TOKEN__", token or ""),
-            content_type="text/html", headers=_CORS)
+        """GET /hud — Marvin HUD v12 寬屏顯示頁（Mac 自服務，比照 /satellite）。
+
+        ?kiosk=1 拿掉簡報用外殼（品牌標題/裝置邊框/說明文字），screen 滿版貼齊實體螢幕；
+        不帶則是瀏覽器預覽模式（保留外殼方便截圖/討論）。
+        """
+        kiosk = (request.query.get("kiosk") or "").strip().lower() in ("1", "true", "yes")
+        body_class = "kiosk" if kiosk else ""
+        html = HUD_HTML.replace("__TOKEN__", token or "").replace("__BODY_CLASS__", body_class)
+        return web.Response(text=html, content_type="text/html", headers=_CORS)
 
     async def handle_audio_stream(request):
         """GET /audio_stream — 車載 puck 連續收音：chunked 即時轉送 mixer PCM。

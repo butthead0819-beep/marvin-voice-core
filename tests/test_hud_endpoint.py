@@ -61,3 +61,25 @@ async def test_hud_no_token_configured_allows_access():
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/hud")
         assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_hud_default_keeps_presentation_chrome():
+    """沒帶 ?kiosk=1 → 瀏覽器預覽模式，body 不掛 kiosk class，外殼照舊顯示。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    app = build_text_app(_make_vc(), token=None)
+    async with TestClient(TestServer(app)) as client:
+        html = await (await client.get("/hud")).text()
+        assert '<body class="">' in html
+
+
+@pytest.mark.asyncio
+async def test_hud_kiosk_param_strips_chrome_class():
+    """?kiosk=1 → body 加 kiosk class，CSS 拿掉外殼、screen 滿版。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+    app = build_text_app(_make_vc(), token=None)
+    async with TestClient(TestServer(app)) as client:
+        html = await (await client.get("/hud?kiosk=1")).text()
+        assert '<body class="kiosk">' in html
