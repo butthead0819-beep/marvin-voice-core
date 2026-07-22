@@ -420,6 +420,7 @@ class MusicCog(commands.Cog):
             vc.last_marvin_speech_time = time.time()
         self._current_stream_info = None
         self.stream_paused = False
+        self._publish_now_playing_state(None)
         logger.info(f"🎵 [Stream] 停止，原因: {reason}")
         if self.stream_task and not self.stream_task.done():
             self.stream_task.cancel()
@@ -1461,6 +1462,28 @@ class MusicCog(commands.Cog):
         except Exception as e:
             logger.warning(f"⚠️ [Card] 控制台貼文失敗: {e}")
 
+    def _publish_now_playing_state(self, info: dict | None) -> None:
+        """把現正播放狀態寫到跨進程橋接檔，讓 main_satellite.py 的 /now（HUD）讀得到。
+
+        main_satellite.py 是不登入 Discord 的獨立進程，自己的 MusicCog 永遠是空的，
+        得靠這個檔案橋接真實播放狀態（見 now_playing_state.py）。寫檔失敗（磁碟/序列化
+        問題）不該打斷播放，靜默吞掉。
+        """
+        try:
+            from now_playing_state import save_now_playing_state
+            if info:
+                save_now_playing_state(
+                    playing=True,
+                    title=info.get("title", ""),
+                    by=info.get("requested_by", ""),
+                    cover=info.get("thumbnail", ""),
+                    palette=info.get("palette", []),
+                )
+            else:
+                save_now_playing_state(playing=False)
+        except Exception:
+            pass
+
     # ── 🎵 Stream loop & playback ────────────────────────────────────────────
 
     async def _stream_loop(self):
@@ -1498,6 +1521,7 @@ class MusicCog(commands.Cog):
                 vc = self._vc()
                 info = self.stream_queue.pop(0)
                 self._current_stream_info = info
+                self._publish_now_playing_state(info)
                 self._current_lyrics = None
                 self._current_stream_comment = None
                 self.stream_paused = False
@@ -1656,6 +1680,7 @@ class MusicCog(commands.Cog):
 
             self.stream_mode = False
             self._current_stream_info = None
+            self._publish_now_playing_state(None)
             vc = self._vc()
             if vc is not None:
                 vc.last_marvin_speech_time = time.time()
@@ -1670,10 +1695,12 @@ class MusicCog(commands.Cog):
             # 旗標必須反映現實：沒清的話 stream_mode 會停在 True 但沒人在播，
             # 之後每次點歌的「叫醒」判斷都會被騙 → 佇列永遠卡死（2026-07-17 事故）。
             self.stream_mode = False
+            self._publish_now_playing_state(None)
             logger.info("🎵 [Stream Loop] 串流迴圈被取消（stream_mode 已歸位 False）。")
         except Exception as e:
             logger.error(f"❌ [Stream Loop] 發生異常: {e}")
             self.stream_mode = False
+            self._publish_now_playing_state(None)
 
     async def _await_reconnect_device(self, vc, *, timeout_s: float = 12.0, interval_s: float = 0.5):
         """語音 WS 短暫斷線（如 close code 1006）→ discord.py 會自動重連，中間 ~數秒
@@ -1919,6 +1946,20 @@ class MusicCog(commands.Cog):
         return "冬天"
 
     @staticmethod
+    def _city_label() -> str:
+        """車載 ESP32 puck 的 GPS 訊號 → DJ 環境行用的城市/區名。
+
+        沒有新鮮訊號（不在車上）時退回「台中」（家裡預設）。讀檔/座標推算失敗
+        不該讓 DJ 串場掛掉，走跟 _life_cores_async 一樣的降級哲學。
+        """
+        try:
+            from gps_context import city_label
+            from location_state import load_location_state
+            return city_label(load_location_state(), now=time.time())
+        except Exception:
+            return "台中"
+
+    @staticmethod
     def _themed_dj_text(info: dict) -> str:
         """🎚️ 主題歌單的歌 → 用 LLM 策展時寫的選歌理由當 DJ 播報詞（其餘歌回 ""）。"""
         if info.get('_lane') == 'themed':
@@ -1991,9 +2032,10 @@ class MusicCog(commands.Cog):
             ctx.append(f"情感記錄：{' / '.join(feelings[:2])}")
         if lyric_match:
             ctx.append(f"歌詞呼應：{lyric_match[:60]}")
-        # 環境沉浸：城市（台北）+ 季節（日期推）+ 時段，讓 DJ 有畫面可帶。
+        # 環境沉浸：城市/區（GPS 訊號，沒有則退回台北）+ 季節（日期推）+ 時段。
         season = self._current_season()
-        env = f"環境：台北 · {season}"
+        city = self._city_label()
+        env = f"環境：{city} · {season}"
         if slot:
             env += f" · {slot}"
         ctx.append(env)

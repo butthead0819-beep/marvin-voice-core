@@ -105,11 +105,11 @@ async def test_context_no_previous_song_when_history_empty():
 
 @pytest.mark.asyncio
 async def test_context_includes_environment_city_and_season():
-    """context 帶環境行：城市（台北）+ 季節（春/夏/秋/冬其一）。"""
+    """context 帶環境行：城市（無 GPS 訊號時退回家裡預設台中）+ 季節（春/夏/秋/冬其一）。"""
     cog = _make_cog()
     await cog._fetch_dj_interjection_raw(_info())
     ctx = _ctx_str(cog)
-    assert "台北" in ctx, f"context 應含城市: {ctx!r}"
+    assert "台中" in ctx, f"context 應含城市: {ctx!r}"
     assert any(s in ctx for s in "春夏秋冬"), f"context 應含季節: {ctx!r}"
 
 

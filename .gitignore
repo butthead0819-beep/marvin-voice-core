@@ -47,6 +47,8 @@ bot_main.py.pid
 consent.json
 data/voice_presence.jsonl
 data/bad_cover_blacklist.json
+location_state.json
+now_playing_state.json
 
 # Records directory — personal transcripts and player data
 records/

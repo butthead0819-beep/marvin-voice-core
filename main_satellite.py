@@ -311,6 +311,659 @@ function encodeWAV(buffers, rate){
 </body></html>"""
 
 
+# Marvin HUD v12（設計稿 → 接上真實 /now 現正播放資料）。1920×480 寬屏顯示框架，
+# 重要性階梯卡片 + 會動 Marvin 頭 + 旋轉黑膠（封面調色盤 splatter）。
+# 場景/通知中心示範資料仍是靜態 demo；「現正播放」卡輪詢 /now，playing=true 時
+# 用真實 title/by/palette 蓋掉 demo 黑膠，沒歌在播就維持 demo 樣子。__TOKEN__ 由伺服器填入。
+HUD_HTML = """<!DOCTYPE html>
+<html lang="zh-Hant"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marvin HUD v12 — 寬屏顯示框架</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --ink:#080B11; --ink2:#0C1119; --surf:rgba(255,255,255,.04);
+    --text:#EEF2F6; --muted:#93A0AE; --dim:#5C6774; --line:rgba(160,180,200,.12);
+    --ok:52,224,190; --info:76,157,255; --warn:245,178,62; --urgent:255,107,94; --marvin:155,224,75;
+    --display: "Futura","Avenir Next",-apple-system,system-ui,sans-serif;
+    --font: "Avenir Next","Avenir",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; }
+  body{
+    background:radial-gradient(120% 100% at 50% -20%,#111826 0%,var(--ink) 60%,#04060A 100%);
+    color:var(--text); font-family:var(--font); min-height:100vh;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:clamp(18px,3.4vh,36px); padding:clamp(20px,4vh,52px) 18px; overflow-x:hidden;
+  }
+  .brand{ text-align:center; display:flex; flex-direction:column; gap:8px; align-items:center; }
+  .brand h1{ margin:0; font-family:var(--display); font-size:clamp(19px,2.7vw,28px); font-weight:600; letter-spacing:.18em; text-transform:uppercase;
+    background:linear-gradient(180deg,#fff,#B7C4D0); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .brand p{ margin:0; font-family:var(--mono); font-size:clamp(10px,1.3vw,12px); color:var(--muted); letter-spacing:.04em; }
+
+  .device{ width:min(1180px,95vw); filter:drop-shadow(0 40px 80px rgba(0,0,0,.6)); }
+  .bezel{ background:linear-gradient(180deg,#1b212b,#0b0f16); border:1px solid #2a323d; border-radius:24px; padding:12px; }
+  .screen{
+    position:relative; width:100%; aspect-ratio:1920/480; border-radius:14px; overflow:hidden;
+    background:var(--ink); container-type:size; box-shadow:inset 0 0 0 1px #000, inset 0 0 60px rgba(0,0,0,.7);
+    display:flex; flex-direction:column;
+  }
+
+  /* ---- stage: <=3 importance-weighted cards ---- */
+  .stage{ flex:1; display:flex; gap:2.2cqh; padding:3cqh 3cqh 1.6cqh; min-height:0; }
+  .card{
+    --c:var(--ok);
+    position:relative; min-width:0; border-radius:3cqh; padding:3.2cqh 3.4cqh;
+    display:flex; flex-direction:column; justify-content:space-between; overflow:hidden;
+    background:radial-gradient(135% 150% at 16% -12%, rgba(var(--c),.22), transparent 60%), var(--surf);
+    border:1px solid rgba(var(--c),.30);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 42px rgba(var(--c),.07);
+    animation:rise .5s cubic-bezier(.2,.7,.2,1) both;
+  }
+  .card.hero{ box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 0 60px rgba(var(--c),.14); border-color:rgba(var(--c),.45); }
+  .card .top{ display:flex; align-items:center; gap:1.6cqh; }
+  .card .label{ font-family:var(--mono); font-size:2.9cqh; letter-spacing:.12em; text-transform:uppercase; color:rgba(var(--c),.95); }
+  .card .dot{ width:1.7cqh; height:1.7cqh; border-radius:50%; background:rgb(var(--c)); box-shadow:0 0 8px rgba(var(--c),.8); margin-left:auto; }
+  .card .title{ font-family:var(--display); font-size:8.5cqh; font-weight:600; line-height:1.04; letter-spacing:.005em; text-wrap:balance; }
+  .card.hero .title{ font-size:12cqh; }
+  .card .sub{ font-size:3.8cqh; color:var(--muted); font-weight:500; margin-top:.6cqh; }
+  .card .acts{ display:flex; gap:1.4cqh; margin-top:2cqh; }
+  .chip{ font-family:var(--font); font-size:3.2cqh; font-weight:650; padding:1.3cqh 2.6cqh; border-radius:2cqh; cursor:pointer;
+    border:1px solid rgba(var(--c),.4); background:rgba(var(--c),.14); color:#fff; transition:.15s; }
+  .chip.primary{ background:rgb(var(--c)); color:#0b1204; border-color:transparent; }
+  .chip:hover{ filter:brightness(1.12); }
+  .card .glyph{ position:absolute; right:2.6cqh; bottom:2.4cqh; width:11cqh; height:11cqh; color:rgba(var(--c),.5); opacity:.5; }
+  .card .glyph.face{ opacity:.95; width:13cqh; height:13cqh; }
+  .card .glyph svg{ width:100%; height:100%; }
+  .mcard .mrow{ flex:1; display:flex; align-items:center; gap:2.4cqh; min-height:0; }
+  .mcard .mvhead{ width:42%; flex:none; aspect-ratio:1/1; height:auto; }
+  .mcard .mtext{ min-width:0; }
+  .mcard .mtext .title{ font-size:7.5cqh; }
+  .mcard .mtext .sub{ font-size:3.6cqh; }
+  .card{ transition:flex-grow .45s cubic-bezier(.2,.7,.2,1), transform .3s, box-shadow .3s, border-color .3s; }
+  .mcard{ cursor:pointer;
+    /* 底色已經是接近黑的頁面，卡片外圍的陰影疊上去會直接隱形——深度感不能靠外陰影，
+       要靠「卡片自己的填色」由上往下漸亮到暗，加上底部一圈跟著圓角走的 inset 陰影
+       （inset 陰影是畫在卡片自己的填色上，不是疊到頁面背景，才不會被吃掉），
+       讓底部像往內凹進去的一層「地板」，撐出立體感。 */
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 30%, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%),
+      radial-gradient(135% 150% at 16% -12%, rgba(var(--c),.22), transparent 60%), var(--surf);
+    box-shadow: inset 0 1.5px 0 rgba(255,255,255,.28),
+                inset 0 -3.4cqh 4.2cqh -1.6cqh rgba(0,0,0,.85),
+                0 0 42px rgba(var(--marvin),.07);
+  }
+  .mcard:hover{ border-color:rgba(var(--marvin),.55); }
+  .card.explain{ transform:scale(1.015); z-index:4; box-shadow:0 0 64px rgba(var(--c),.26); border-color:rgba(var(--c),.62); }
+  .card.explain .title{ font-size:13cqh; }
+  .exhint{ position:absolute; left:3cqh; bottom:1.2cqh; font-family:var(--mono); font-size:3cqh; color:rgba(var(--marvin),.85); z-index:5; }
+  .vinyl-card{ position:relative; overflow:hidden; }
+  .vinyl-card .vwrap{ position:absolute; top:44%; left:41%; height:158%; aspect-ratio:1/1; transform:translate(-50%,-50%); z-index:0; }
+  .vinyl-card .vdisc{ position:absolute; inset:0; width:100%; height:100%; border-radius:50%; animation:spin 12s linear infinite; will-change:transform; }
+  .vinyl-card::after{ content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
+    background:linear-gradient(180deg, transparent 52%, rgba(6,10,16,.78) 100%); }
+  .vinyl-card .top, .vinyl-card .vmeta{ position:relative; z-index:3; }
+  .vinyl-card .vmeta{ margin-top:auto; font-family:var(--display); font-size:4cqh; font-weight:600; color:#F1F5F8; text-shadow:0 2px 12px rgba(0,0,0,.75); }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  @media (prefers-reduced-motion:reduce){ .vinyl-card .vdisc{ animation:none; } }
+  .mcard:focus-visible{ outline:2px solid rgb(var(--marvin)); outline-offset:-2px; }
+  .card .done{ margin-top:2cqh; font-size:3.6cqh; font-weight:650; color:rgb(var(--c)); font-family:var(--mono); }
+  @keyframes rise{ from{ opacity:0; transform:translateY(2cqh) scale(.985); } to{ opacity:1; transform:none; } }
+
+  .dock{ height:16.5cqh; display:flex; align-items:center; gap:2cqh; padding:0 3cqh 1.4cqh; border-top:1px solid var(--line); }
+  .mshort{ display:flex; align-items:center; gap:1.6cqh; padding:1.4cqh 2.6cqh 1.4cqh 1.6cqh; border-radius:3cqh;
+    background:radial-gradient(120% 160% at 20% 0%, rgba(var(--marvin),.20), transparent 60%), var(--surf);
+    border:1px solid rgba(var(--marvin),.34); cursor:pointer; transition:.18s; }
+  .mshort:hover{ border-color:rgba(var(--marvin),.65); transform:translateY(-0.4cqh); }
+  .mface{ width:9.5cqh; height:9.5cqh; flex:none; }
+  .mshort .mlabel{ display:flex; flex-direction:column; line-height:1.12; }
+  .mshort .mlabel b{ font-size:3.3cqh; font-weight:650; }
+  .mshort .mlabel span{ font-family:var(--mono); font-size:2.4cqh; color:rgba(var(--marvin),.92); letter-spacing:.05em; }
+  .vdiv{ width:1px; align-self:stretch; margin:2.6cqh 0.6cqh; background:var(--line); }
+  .icons{ display:flex; gap:1.5cqh; }
+  .ibtn{ --ic:150,180,200; position:relative; width:11cqh; height:11cqh; border-radius:2.8cqh;
+    background:radial-gradient(120% 150% at 30% 0%, rgba(var(--ic),.34), rgba(var(--ic),.10) 70%), rgba(255,255,255,.05);
+    border:1px solid rgba(var(--ic),.55); color:rgb(var(--ic)); display:grid; place-items:center; cursor:pointer; transition:.16s;
+    box-shadow:0 0 16px rgba(var(--ic),.28), inset 0 1px 0 rgba(255,255,255,.12); }
+  .ibtn:hover{ transform:translateY(-0.5cqh); box-shadow:0 0 24px rgba(var(--ic),.5), inset 0 1px 0 rgba(255,255,255,.15); }
+  .ibtn svg{ width:6cqh; height:6cqh; filter:drop-shadow(0 0 5px rgba(var(--ic),.85)); }
+  .ibtn .badge{ position:absolute; top:-0.9cqh; right:-0.9cqh; min-width:3.6cqh; height:3.6cqh; padding:0 1cqh;
+    border-radius:2cqh; background:rgb(var(--bc)); color:#0a0a0a; font-family:var(--mono); font-size:2.5cqh; font-weight:700;
+    display:grid; place-items:center; box-shadow:0 0 0 2px var(--ink); }
+  .clock{ margin-left:auto; text-align:right; font-family:var(--mono); }
+  .clock b{ font-size:4.6cqh; font-weight:600; font-variant-numeric:tabular-nums; }
+  .clock span{ display:block; font-size:2.5cqh; color:var(--dim); }
+
+  .nc{ position:absolute; left:0; right:0; top:0; bottom:16.5cqh; z-index:20;
+    background:rgba(8,11,17,.74); backdrop-filter:blur(22px) saturate(1.2); -webkit-backdrop-filter:blur(22px) saturate(1.2);
+    transform:translateY(calc(100% + 17cqh)); transition:transform .34s cubic-bezier(.2,.7,.2,1); padding:3cqh; display:flex; flex-direction:column; gap:2cqh; }
+  .nc.open{ transform:translateY(0); }
+  .nc .head{ display:flex; align-items:center; gap:1.6cqh; }
+  .nc .head .t{ font-size:5cqh; font-weight:650; }
+  .nc .head .t small{ font-family:var(--mono); font-weight:400; color:var(--muted); font-size:2.8cqh; margin-left:1.2cqh; letter-spacing:.06em; }
+  .nc .close{ margin-left:auto; width:8cqh; height:8cqh; border-radius:50%; border:1px solid var(--line); background:var(--surf);
+    color:var(--muted); font-size:4cqh; cursor:pointer; display:grid; place-items:center; transition:.16s; }
+  .nc .close:hover{ color:var(--text); border-color:rgba(160,180,200,.3); }
+  .nc .list{ flex:1; display:grid; grid-template-columns:1fr 1fr; grid-auto-rows:min-content; gap:1.6cqh; overflow:auto; align-content:start; }
+  .note{ --c:var(--info); display:flex; gap:1.8cqh; padding:2.2cqh 2.4cqh; border-radius:2.6cqh;
+    background:radial-gradient(120% 160% at 12% 0%, rgba(var(--c),.14), transparent 62%), rgba(255,255,255,.045);
+    border:1px solid rgba(var(--c),.22); animation:rise .4s both; }
+  .note .ni{ width:7cqh; height:7cqh; border-radius:2cqh; background:rgba(var(--c),.18); color:rgb(var(--c)); display:grid; place-items:center; flex:none; }
+  .note .ni svg{ width:4.2cqh; height:4.2cqh; }
+  .note .nb{ min-width:0; display:flex; flex-direction:column; gap:.4cqh; }
+  .note .nb .nt{ font-size:3.4cqh; font-weight:600; display:flex; gap:1cqh; align-items:baseline; }
+  .note .nb .nt time{ margin-left:auto; font-family:var(--mono); font-size:2.5cqh; color:var(--dim); flex:none; }
+  .note .nb .nm{ font-size:3cqh; color:var(--muted); line-height:1.3; }
+  .qa{ display:grid; grid-template-columns:repeat(4,1fr); gap:1.6cqh; grid-column:1/-1; }
+  .qbtn{ padding:2.4cqh 2cqh; border-radius:2.6cqh; border:1px solid rgba(var(--marvin),.3);
+    background:radial-gradient(120% 150% at 20% 0%, rgba(var(--marvin),.14), transparent 62%), rgba(255,255,255,.04);
+    color:var(--text); font-size:3.2cqh; font-weight:600; cursor:pointer; text-align:left; transition:.16s; display:flex; flex-direction:column; gap:1cqh; }
+  .qbtn:hover{ border-color:rgba(var(--marvin),.6); }
+  .qbtn svg{ width:5cqh; height:5cqh; color:rgb(var(--marvin)); }
+
+  .dock2{ display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; justify-content:center; }
+  .seg{ display:flex; background:var(--ink2); border:1px solid var(--line); border-radius:12px; padding:4px; gap:4px; }
+  .seg button{ font-family:var(--mono); font-size:12px; color:var(--muted); background:transparent; border:0; cursor:pointer; padding:9px 14px; border-radius:9px; transition:.18s; }
+  .seg button:hover{ color:var(--text); }
+  .seg button[aria-pressed="true"]{ background:rgba(var(--marvin),.9); color:#0c1406; font-weight:600; }
+  .ghost{ font-family:var(--mono); font-size:12px; color:var(--muted); background:transparent; border:1px solid var(--line); border-radius:11px; padding:10px 15px; cursor:pointer; }
+  .ghost[data-on="true"]{ border-color:rgba(var(--marvin),.6); color:rgb(var(--marvin)); }
+  .cap{ max-width:700px; text-align:center; color:var(--dim); font-size:13px; line-height:1.6; }
+  .cap b{ color:var(--muted); font-weight:500; }
+  button:focus-visible,.ibtn:focus-visible,.mshort:focus-visible{ outline:2px solid rgb(var(--marvin)); outline-offset:2px; }
+</style>
+</head>
+<body>
+
+<div class="brand">
+  <h1>Marvin HUD</h1>
+  <p>寬屏顯示框架 · 1920&times;480 · 與 macOS 的常駐互動夥伴</p>
+</div>
+
+<div class="device"><div class="bezel">
+  <div class="screen">
+    <div class="stage" id="stage"></div>
+    <div class="nc" id="nc">
+      <div class="head"><span class="t" id="nc-title"></span><button class="close" id="nc-close" aria-label="關閉">&#10005;</button></div>
+      <div class="list" id="nc-list"></div>
+    </div>
+    <div class="dock">
+      <div class="mshort" id="mshort" role="button" tabindex="0">
+        <span class="mface" id="mface"></span>
+        <span class="mlabel"><b>Marvin</b><span id="mstatus">待命中</span></span>
+      </div>
+      <div class="vdiv"></div>
+      <div class="icons" id="icons"></div>
+      <div class="clock"><b id="clk">10:48</b><span id="clkd">週日 7/20</span></div>
+    </div>
+  </div>
+</div></div>
+
+<div class="dock2">
+  <div class="seg" id="scene" role="group" aria-label="場景">
+    <button data-i="0" aria-pressed="true">平靜</button>
+    <button data-i="1" aria-pressed="false">會議排程</button>
+    <button data-i="2" aria-pressed="false">需要回應</button>
+    <button data-i="3" aria-pressed="false">建置失敗</button>
+  </div>
+  <button class="ghost" id="auto" data-on="true">Auto &#9656; 自動巡演</button>
+</div>
+<p class="cap">
+  重要性階梯：<b>需要回應</b>（Hero）&gt; <b>會議排程</b> &gt; <b>Marvin</b> &gt; <b>單純資訊</b>。
+  卡片依此自動變大小；<b>Marvin＝會動的頭</b>當 1.5 權重卡；「現正播放」黑膠卡輪詢 <b>/now</b>，
+  有歌在播就換成真封面調色盤潑漆，沒歌在播維持 demo 樣子。
+</p>
+
+<script>
+(function(){
+  const TOKEN="__TOKEN__";
+  const I = {
+    calendar:'<rect x="4" y="6" width="16" height="15" rx="2.5"/><path d="M4 10h16M8 3v4M16 3v4"/>',
+    messages:'<path d="M4 5h16v11H10l-4 4v-4H4z" stroke-linejoin="round"/>',
+    music:'<circle cx="7.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="15.5" r="2.5"/><path d="M10 17.5V6l10-2v11.5"/>',
+    build:'<path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/>',
+    system:'<path d="M6 19v-6M12 19V6M18 19v-4"/>',
+    weather:'<path d="M7.5 18a4.2 4.2 0 0 1-.3-8.4 5.2 5.2 0 0 1 9.9-1.1A3.7 3.7 0 0 1 16.8 18z"/>',
+    alerts:'<path d="M12 4a5 5 0 0 0-5 5v4l-1.8 2.6h13.6L17 13V9a5 5 0 0 0-5-5z"/><path d="M10.2 19a1.8 1.8 0 0 0 3.6 0"/>',
+    check:'<path d="M5 12l5 5 9-10"/>', mic:'<rect x="9" y="4" width="6" height="11" rx="3"/><path d="M6 12a6 6 0 0 0 12 0M12 18v3"/>',
+    list:'<path d="M8 7h11M8 12h11M8 17h11M4 7h.01M4 12h.01M4 17h.01"/>',
+    sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>'
+  };
+  const svg=k=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">${I[k]||''}</svg>`;
+  const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const MFACE=`<svg viewBox="0 0 40 40"><defs><radialGradient id="mg" cx="38%" cy="34%" r="70%">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="0.6" stop-color="#d3dae0"/><stop offset="1" stop-color="#8b959d"/></radialGradient></defs>
+      <circle cx="20" cy="20" r="16" fill="url(#mg)"/>
+      <path d="M10 18 L17 18 L14 24 Z" fill="#9BE04B"/><path d="M30 18 L23 18 L26 24 Z" fill="#9BE04B"/>
+      <path d="M9 17.5 Q20 16 31 17.5" stroke="#12150f" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg>`;
+  document.getElementById('mface').innerHTML=MFACE;
+
+  // ---- importance ladder (weights + who becomes hero) ----
+  const KIND={ respond:{w:2.6,hero:1}, schedule:{w:1.9}, marvin:{w:1.5}, info:{w:1} };
+
+  const M = [
+    [ {kind:'marvin', s:'marvin', l:'Marvin', t:'待命中', sub:'「又是漫長的一天，而它才過了兩秒。」', mood:'idle'},
+      {kind:'info', s:'ok', l:'現正播放', vinyl:{title:'七里香', pal:['#F5B841','#E8749B','#7A4CC4','#2A1A44']}, meta:'七里香 · 周杰倫 · 1:23'},
+      {kind:'info', s:'info', l:'系統', t:'一切正常', sub:'CPU 38% · 電量 92%', g:'system'} ],
+    [ {kind:'schedule', s:'info', l:'行事曆', t:'設計評審', sub:'10:30 · 42 分後 · Zoom', g:'calendar'},
+      {kind:'marvin', s:'marvin', l:'Marvin', t:'要我到時提醒你？', sub:'說「好」即可', mood:'wake'},
+      {kind:'info', s:'ok', l:'現正播放', vinyl:{title:'七里香', pal:['#F5B841','#E8749B','#7A4CC4','#2A1A44']}, meta:'七里香 · 周杰倫'} ],
+    [ {kind:'respond', s:'warn', l:'需要回應', t:'設計評審 5 分鐘後', sub:'要現在加入嗎？', g:'calendar', actions:['加入','稍後'], ex:'設計評審 5 分鐘後開始，Zoom 連結我準備好了。說「加入」我就幫你開。'},
+      {kind:'marvin', s:'marvin', l:'Marvin', t:'我可以幫你開連結', sub:'', mood:'speak'},
+      {kind:'info', s:'info', l:'訊息', t:'3 則未讀', sub:'Jack、設計組…', g:'messages'} ],
+    [ {kind:'respond', s:'urgent', l:'需要回應', t:'建置失敗 · main', sub:'test_stt_queue 逾時 · 要重跑嗎？', g:'build', actions:['重跑 CI','忽略'], ex:'建置在 test_stt_queue 逾時掛掉——排隊等太久。八成是暫時的，要我重跑就說一聲。'},
+      {kind:'marvin', s:'marvin', l:'Marvin', t:'我看了 log，是排隊逾時', sub:'', mood:'think'} ]
+  ];
+
+  const stage=document.getElementById('stage');
+  const mvParams={ mood:'idle', focusDir:0 };
+  const reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ---- live 現正播放（/now 輪詢覆蓋 demo 黑膠）----
+  let liveNow=null;
+  const FALLBACK_PAL=['#9BE04B','#4C9DFF','#2A1A44','#080B11'];
+  function padPal(pal){
+    const out=(Array.isArray(pal)?pal:[]).filter(Boolean).slice(0,4);
+    while(out.length<4) out.push(FALLBACK_PAL[out.length]);
+    return out;
+  }
+  function resolveVinyl(demo){
+    if(liveNow && liveNow.title) return {title:liveNow.title, pal:padPal(liveNow.pal), cover:liveNow.cover||''};
+    return demo;
+  }
+  function resolveMeta(demo){
+    if(liveNow && liveNow.title) return esc(liveNow.title)+(liveNow.by?' · '+esc(liveNow.by):'');
+    return demo||'';
+  }
+
+  function render(i){
+    const cards=[...M[i]].sort((a,b)=>KIND[b.kind].w-KIND[a.kind].w);
+    stage.innerHTML=cards.map(c=>{
+      const k=KIND[c.kind];
+      if(c.kind==='marvin'){
+        return `<div class="card mcard" role="button" tabindex="0" aria-label="Marvin，點擊講解重點卡" style="flex:${k.w} 1 0;--c:var(--marvin)">
+          <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+          <div class="mrow"><canvas class="mvhead"></canvas>
+            <div class="mtext"><div class="title">${c.t}</div>${c.sub?`<div class="sub">${c.sub}</div>`:''}</div></div>
+          <div class="exhint">點我＝講解重點卡</div></div>`;
+      }
+      if(c.vinyl){
+        return `<div class="card vinyl-card" style="flex:${k.w} 1 0;--c:var(--${c.s})">
+          <div class="vwrap"><canvas class="vdisc"></canvas></div>
+          <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+          <div class="vmeta">${resolveMeta(c.meta)}</div></div>`;
+      }
+      const acts=c.actions?`<div class="acts">${c.actions.map((a,x)=>`<button class="chip ${x===0?'primary':''}">${a}</button>`).join('')}</div>`:'';
+      return `<div class="card ${k.hero?'hero':''}" style="flex:${k.w} 1 0;--c:var(--${c.s})" ${c.ex?`data-explain="${c.ex}"`:''}>
+        <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+        <div><div class="title">${c.t}</div>${c.sub?`<div class="sub">${c.sub}</div>`:''}${acts}</div>
+        <div class="glyph ${c.g==='marvin'?'face':''}">${c.g==='marvin'?MFACE:svg(c.g)}</div></div>`;
+    }).join('');
+    explaining=false;
+    mvParams.mood=(cards.find(c=>c.kind==='marvin')||{}).mood||'idle';
+    mountHead(stage.querySelector('.mvhead'));
+    const vc=cards.find(c=>c.vinyl); mountVinyl(stage.querySelector('.vinyl-card'), vc?resolveVinyl(vc.vinyl):null);
+    updateFocusDir();
+  }
+
+  function updateFocusDir(){
+    const mv=stage.querySelector('.mcard');
+    const focus=stage.querySelector('.card.explain')||stage.querySelector('.card.hero');
+    if(!mv||!focus){ mvParams.focusDir=0; return; }
+    const a=mv.getBoundingClientRect(), b=focus.getBoundingClientRect();
+    mvParams.focusDir=Math.max(-1,Math.min(1, ((b.left+b.right)-(a.left+a.right))/2 / a.width ));
+  }
+
+  let explaining=false, savedLine='';
+  function startExplain(){
+    const focus=stage.querySelector('.card.hero')||stage.querySelector('.card:not(.mcard)');
+    if(!focus) return;
+    focus.dataset.g0=focus.style.flexGrow||'';
+    focus.style.flexGrow='4.2'; focus.classList.add('explain');
+    const mt=stage.querySelector('.mcard .mtext .title'); if(mt){ savedLine=mt.textContent;
+      mt.textContent=focus.dataset.explain||`關於「${focus.querySelector('.title').textContent}」，${focus.querySelector('.sub')?.textContent||'沒什麼特別的。'}`; }
+    mvParams.mood='speak'; explaining=true; stopAuto(); updateFocusDir();
+  }
+  function endExplain(){
+    if(!explaining) return; explaining=false;
+    stage.querySelectorAll('.card.explain').forEach(c=>{ c.style.flexGrow=c.dataset.g0||''; c.classList.remove('explain'); });
+    const mt=stage.querySelector('.mcard .mtext .title'); if(mt&&savedLine) mt.textContent=savedLine;
+    mvParams.mood=(M[cur].find(c=>c.kind==='marvin')||{}).mood||'idle'; updateFocusDir();
+  }
+  const REPLY={'加入':'好，開連結。','稍後':'好，30 分鐘後再叫你。','重跑 CI':'重跑了。八成會過。','忽略':'隨你。反正我也不意外。'};
+  function handleChip(chip){
+    const card=chip.closest('.card'), label=chip.textContent.trim();
+    const acts=card.querySelector('.acts'); if(acts) acts.outerHTML=`<div class="done">&#10003; ${label}</div>`;
+    const mt=stage.querySelector('.mcard .mtext .title'); if(mt) mt.textContent=REPLY[label]||'好。';
+    mvParams.mood='speak'; stopAuto();
+  }
+  stage.addEventListener('click',e=>{
+    const chip=e.target.closest('.chip'); if(chip){ handleChip(chip); return; }
+    const mc=e.target.closest('.mcard');
+    if(mc){ explaining?endExplain():startExplain(); } else if(explaining){ endExplain(); }
+  });
+  stage.addEventListener('keydown',e=>{ if((e.key==='Enter'||e.key===' ')&&e.target.closest('.mcard')){
+    e.preventDefault(); explaining?endExplain():startExplain(); } });
+
+  // ---------- spinning vinyl for 現正播放 ----------
+  function rng(seed){ return ()=>{ seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }; }
+  function shade(hex, amt){   // amt<0 變暗（往黑混）、amt>0 變亮（往白混）
+    const n=parseInt(String(hex).replace('#',''),16), rr=(n>>16)&255, gg=(n>>8)&255, bb=n&255;
+    const mix=c=> amt<0 ? Math.round(c*(1+amt)) : Math.round(c+(255-c)*amt);
+    return `rgb(${mix(rr)},${mix(gg)},${mix(bb)})`;
+  }
+  function drawLabelArt(ctx,cx,cy,LR,tk){
+    const [a,b,c,d]=tk.pal, PI2=Math.PI*2;
+    ctx.save(); ctx.beginPath(); ctx.arc(cx,cy,LR,0,PI2); ctx.clip();
+    const g=ctx.createLinearGradient(cx-LR,cy-LR,cx+LR,cy+LR); g.addColorStop(0,c); g.addColorStop(1,d);
+    ctx.fillStyle=g; ctx.fillRect(cx-LR,cy-LR,LR*2,LR*2);
+    [[a,-0.4,-0.3,1.1],[b,0.5,-0.1,1.0],[a,0.2,0.6,0.9]].forEach(([col,px,py,rad])=>{
+      const x=cx+LR*px,y=cy+LR*py,R=LR*rad; const bg=ctx.createRadialGradient(x,y,0,x,y,R);
+      bg.addColorStop(0,col+'DD'); bg.addColorStop(0.5,col+'55'); bg.addColorStop(1,col+'00');
+      ctx.fillStyle=bg; ctx.beginPath(); ctx.arc(x,y,R,0,PI2); ctx.fill(); });
+    ctx.globalCompositeOperation='soft-light'; ctx.fillStyle='#fff';
+    ctx.globalAlpha=.45;
+    for(let i=0;i<9;i++){ ctx.save(); ctx.translate(cx,cy); ctx.rotate(i/9*PI2);
+      ctx.beginPath(); ctx.ellipse(0,LR*0.45,LR*0.12,LR*0.4,0,0,PI2); ctx.fill(); ctx.restore(); }
+    ctx.globalCompositeOperation='source-over'; ctx.globalAlpha=1;
+    ctx.fillStyle='rgba(255,255,255,.96)'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font='700 '+(LR*0.34)+'px Futura,"Avenir Next",sans-serif';
+    ctx.shadowColor='rgba(0,0,0,.35)'; ctx.shadowBlur=LR*0.08;
+    ctx.fillText(tk.title,cx,cy-LR*0.02);
+    ctx.shadowBlur=0; ctx.textAlign='left'; ctx.textBaseline='alphabetic'; ctx.restore();
+  }
+  // 中央標籤優先用真封面圖（iTunes/YouTube thumbnail，見 cover_palette.py）；
+  // 沒有圖或圖還沒載完 → 退回程序化 splatter 標籤。快取 Image 物件避免每次 render 重抓。
+  const imgCache=new Map();   // url -> Image | 'error'
+  function getCoverImage(url, onReady){
+    if(!url) return null;
+    const cached=imgCache.get(url);
+    if(cached==='error') return null;
+    if(cached instanceof Image) return (cached.complete && cached.naturalWidth) ? cached : null;
+    const img=new Image();
+    imgCache.set(url, img);
+    img.onload=onReady;
+    img.onerror=()=>imgCache.set(url,'error');
+    img.src=url;
+    return null;
+  }
+  let vinyl=null;
+  function mountVinyl(card, cover){
+    if(vinyl){ vinyl.ro.disconnect(); vinyl=null; }
+    if(!card||!cover) return;
+    const disc=card.querySelector('.vdisc');
+    const dctx=disc.getContext('2d'); let DPR=1;
+    function drawDisc(){
+      const W=disc.width,H=disc.height,S=Math.min(W,H),cx=W/2,cy=H/2,Rdisc=S*0.49,LR=S*0.24,PI2=Math.PI*2;
+      const pal=cover.pal, r=rng(cover.title.length*131+7);
+      dctx.clearRect(0,0,W,H);
+      const baseCol=pal[0]||'#1b1620';
+      const body=dctx.createRadialGradient(cx-Rdisc*0.25,cy-Rdisc*0.3,Rdisc*0.1,cx,cy,Rdisc);
+      body.addColorStop(0,shade(baseCol,0.32)); body.addColorStop(0.6,shade(baseCol,-0.15)); body.addColorStop(1,shade(baseCol,-0.55));
+      dctx.fillStyle=body; dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.fill();
+      dctx.save(); dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.arc(cx,cy,LR*0.98,0,PI2,true); dctx.clip();
+      // 真潑漆黑膠的樣子：從標籤邊緣往外放射的噴痕，每條方向長短完全不均——多數噴痕很短、
+      // 少數噴得很遠，方向之間留大片空白，不是整圈平均鋪滿（見參考圖：翻譯半透明藍膠+黑噴痕）。
+      // 三種筆觸（細噴痕/潑濺塊/孤立小點）的比例每張唱片自己隨機抽一次，不是固定配方——
+      // 有的歌噴痕多、有的歌潑濺塊多，混合起來才不會每張看起來都同一套公式。
+      const mixRay=0.55+r()*0.7, mixSplash=0.45+r()*0.9, mixDot=0.45+r()*0.9;
+      const rays=Math.floor((90+r()*70)*mixRay);
+      for(let i=0;i<rays;i++){
+        const ang=r()*PI2;
+        const reach=Math.pow(r(),2.4);                    // 平方以上→大部分噴痕短，少數噴得遠
+        const endR=LR+reach*(Rdisc-LR)*1.02;
+        const segs=3+Math.floor(reach*9);                  // 噴得越遠，沿路留的斑點越多（拖尾感）
+        const col=pal[Math.floor(r()*pal.length)];
+        for(let s=0;s<segs;s++){
+          const t=s/Math.max(1,segs-1);
+          const rr=LR+t*(endR-LR)+(r()-0.5)*S*0.006;       // 半徑方向也帶點抖動，噴痕不是死直線
+          const ja=ang+(r()-0.5)*0.05;
+          const w=S*(0.005*(1-t*0.75)+r()*0.0025);         // 越接近尾端越細
+          dctx.globalAlpha=(0.85-t*0.45)*(0.6+r()*0.4);
+          dctx.fillStyle=col;
+          dctx.beginPath();
+          dctx.arc(cx+Math.cos(ja)*rr, cy+Math.sin(ja)*rr, w, 0, PI2);
+          dctx.fill();
+        }
+      }
+      // 混一些較大的潑濺塊（splash），不是只有細噴痕——每塊由幾顆重疊圓組成不規則形狀，
+      // 大多落在靠標籤近的地方（reach 冪次偏小），少數飛遠一點。
+      const splashes=Math.floor((8+r()*8)*mixSplash);
+      for(let i=0;i<splashes;i++){
+        const ang=r()*PI2, reach=Math.pow(r(),1.6), rr=LR+reach*(Rdisc-LR)*0.85;
+        const bx=cx+Math.cos(ang)*rr, by=cy+Math.sin(ang)*rr;
+        const blobR=S*(0.012+r()*0.022), col=pal[Math.floor(r()*pal.length)];
+        const lumps=3+Math.floor(r()*4);
+        dctx.fillStyle=col;
+        for(let k=0;k<lumps;k++){
+          const lx=bx+(r()-0.5)*blobR*1.6, ly=by+(r()-0.5)*blobR*1.6, lr=blobR*(0.4+r()*0.7);
+          dctx.globalAlpha=0.55+r()*0.35;
+          dctx.beginPath(); dctx.arc(lx,ly,lr,0,PI2); dctx.fill();
+        }
+      }
+      // 少量脫離主噴痕、飛得比噴痕更遠的孤立小點
+      for(let i=0;i<Math.floor(rays*0.25*mixDot);i++){
+        const ang=r()*PI2, rr=LR+Math.pow(r(),0.35)*(Rdisc-LR);
+        dctx.globalAlpha=0.5+r()*0.4; dctx.fillStyle=pal[Math.floor(r()*pal.length)];
+        dctx.beginPath(); dctx.arc(cx+Math.cos(ang)*rr, cy+Math.sin(ang)*rr, S*(0.0015+r()*0.003), 0, PI2); dctx.fill();
+      }
+      dctx.globalAlpha=1;
+      // 溝槽反光：畫在潑漆最上層（亮線+暗線成對＝溝槽斷面的高光/陰影），alpha 要夠強才不會
+      // 被下面較實心的 splash/ray 蓋掉、在整張潑漆圖案上仍看得出一圈圈唱片紋理。
+      dctx.lineWidth=Math.max(1,DPR*0.6);
+      for(let R=LR*1.15; R<Rdisc*0.98; R+=S*0.008){
+        dctx.strokeStyle='rgba(255,255,255,0.16)'; dctx.beginPath(); dctx.arc(cx,cy,R,0,PI2); dctx.stroke();
+        dctx.strokeStyle='rgba(0,0,0,0.12)'; dctx.beginPath(); dctx.arc(cx,cy,R+DPR*0.7,0,PI2); dctx.stroke();
+      }
+      dctx.restore();
+      const gl=dctx.createRadialGradient(cx-Rdisc*0.4,cy-Rdisc*0.5,0,cx-Rdisc*0.4,cy-Rdisc*0.5,Rdisc*1.1);
+      gl.addColorStop(0,'rgba(255,255,255,0.12)'); gl.addColorStop(0.4,'rgba(255,255,255,0)');
+      dctx.globalCompositeOperation='screen'; dctx.fillStyle=gl; dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.fill();
+      dctx.globalCompositeOperation='source-over';
+      dctx.strokeStyle='rgba(255,255,255,0.10)'; dctx.lineWidth=DPR; dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.stroke();
+      const coverImg=cover.cover ? getCoverImage(cover.cover, ()=>drawDisc()) : null;
+      if(coverImg){
+        // 真封面：撐滿整個中央標籤圓（expand+fill，不留縫、不加邊框）。
+        dctx.save(); dctx.beginPath(); dctx.arc(cx,cy,LR+DPR,0,PI2); dctx.clip();
+        const iw=coverImg.naturalWidth, ih=coverImg.naturalHeight, s=Math.max((LR*2)/iw,(LR*2)/ih);
+        const dw=iw*s, dh=ih*s;
+        dctx.drawImage(coverImg, cx-dw/2, cy-dh/2, dw, dh);
+        dctx.restore();
+      } else {
+        drawLabelArt(dctx,cx,cy,LR,cover);
+        dctx.strokeStyle='rgba(0,0,0,.4)'; dctx.lineWidth=DPR*1.5; dctx.beginPath(); dctx.arc(cx,cy,LR,0,PI2); dctx.stroke();
+      }
+    }
+    function size(){ DPR=Math.min(2,window.devicePixelRatio||1);
+      const dr=disc.getBoundingClientRect(); disc.width=Math.max(1,dr.width*DPR); disc.height=Math.max(1,dr.height*DPR);
+      drawDisc(); }
+    const ro=new ResizeObserver(size); ro.observe(card); size();
+    vinyl={ro};
+  }
+
+  // ---------- live Marvin head (metallic + green triangle eyes) ----------
+  const MOODCOL={ idle:[104,158,58], wake:[150,224,72], speak:[152,222,82], think:[92,178,120] };
+  let head=null;
+  function mountHead(canvas){
+    if(head){ cancelAnimationFrame(head.raf); head.ro.disconnect(); head=null; }
+    if(!canvas) return;
+    const ctx=canvas.getContext('2d');
+    const st={t:0,gphi:0,glam:0,vphi:0,vlam:0,blink:1,blinkT:1.2,blinkStart:-1,sacT:0,sacX:0,sacY:0,ec:[104,158,58].slice(),cam:1};
+    let W=0,Hh=0,DPR=1;
+    function size(){ const r=canvas.getBoundingClientRect(); DPR=Math.min(2,window.devicePixelRatio||1);
+      W=canvas.width=Math.max(1,r.width*DPR); Hh=canvas.height=Math.max(1,r.height*DPR); }
+    const ro=new ResizeObserver(size); ro.observe(canvas); size();
+    const P2=Math.PI*2;
+    function frame(){
+      st.t+=0.03; ctx.clearRect(0,0,W,Hh);
+      const mood=mvParams.mood;
+      const env = mood==='speak' ? Math.max(0, Math.sin(st.t*7.3)*0.5+Math.sin(st.t*11.1)*0.3+0.2) : 0;
+      st.cam += (((mood==='speak'||mood==='wake')?1.05:1)-st.cam)*0.05;
+      const base=Math.min(W,Hh);
+      const cx=W/2+Math.sin(st.t*0.4)*base*0.02;
+      const cy=Hh*0.45+Math.cos(st.t*0.33)*base*0.014+env*base*0.03;
+      const R=base*0.40*st.cam*(1+Math.sin(st.t*0.9)*0.006);
+      ctx.save(); ctx.translate(cx,cy+R*1.02); ctx.scale(1,0.24);
+      const cs=ctx.createRadialGradient(0,0,0,0,0,R*0.9); cs.addColorStop(0,'rgba(0,0,0,0.45)'); cs.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=cs; ctx.beginPath(); ctx.arc(0,0,R*0.9,0,P2); ctx.fill(); ctx.restore();
+      ctx.save(); ctx.beginPath(); ctx.rect(cx-R,cy+R,2*R,R*1.1); ctx.clip(); ctx.transform(1,0,0,-1,0,2*(cy+R));
+      const rg=ctx.createRadialGradient(cx-R*0.34,cy-R*0.42,R*0.05,cx,cy,R*1.05);
+      rg.addColorStop(0,'rgba(255,255,255,0.18)');rg.addColorStop(0.6,'rgba(200,208,214,0.10)');rg.addColorStop(1,'rgba(150,160,168,0.02)');
+      ctx.fillStyle=rg; ctx.beginPath(); ctx.arc(cx,cy,R,0,P2); ctx.fill(); ctx.restore();
+      const fade=ctx.createLinearGradient(0,cy+R,0,cy+R*1.6); fade.addColorStop(0,'rgba(8,11,17,0)'); fade.addColorStop(1,'rgba(8,11,17,1)');
+      ctx.fillStyle=fade; ctx.fillRect(cx-R,cy+R,2*R,R*1.1);
+      const sph=ctx.createRadialGradient(cx-R*0.34,cy-R*0.42,R*0.05,cx,cy,R*1.07);
+      sph.addColorStop(0,'#ffffff');sph.addColorStop(0.3,'#eef2f4');sph.addColorStop(0.66,'#cfd6dc');sph.addColorStop(0.9,'#b6c0c8');sph.addColorStop(1,'#8b959d');
+      ctx.fillStyle=sph;ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.fill();
+      ctx.save();ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.clip();
+      const hot=ctx.createRadialGradient(cx-R*0.33,cy-R*0.42,0,cx-R*0.33,cy-R*0.42,R*0.5);
+      hot.addColorStop(0,'rgba(255,255,255,0.9)');hot.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle=hot;ctx.fillRect(cx-R,cy-R,2*R,2*R);ctx.restore();
+      ctx.strokeStyle='rgba(255,255,255,.4)';ctx.lineWidth=DPR;ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.stroke();
+      const tc=MOODCOL[mood]||MOODCOL.idle; st.ec=st.ec.map((v,i)=>v+(tc[i]-v)*0.06);
+      const boost=1+env*0.5, gr=Math.min(255,st.ec[0]*boost), gg=Math.min(255,st.ec[1]*boost), gb=Math.min(255,st.ec[2]*boost);
+      const dark=k=>`rgba(${gr*k|0},${gg*k|0},${gb*k|0},0.98)`;
+      const bright=`rgba(${Math.min(255,gr+80)|0},${Math.min(255,gg+70)|0},${Math.min(255,gb+70)|0},0.98)`;
+      let tphi,tlam;
+      if(mood==='think'){ tphi=-0.1+Math.sin(st.t*0.5)*0.08; tlam=-0.16+Math.sin(st.t*0.7)*0.05; }
+      else if(mood==='speak'){ tphi=Math.sin(st.t*0.8)*0.05; tlam=-0.02; }
+      else if(mood==='wake'){ tphi=0; tlam=-0.03; }
+      else { tphi=Math.sin(st.t*0.33)*0.18; tlam=Math.sin(st.t*0.23+1.1)*0.12; }
+      tphi += mvParams.focusDir*0.42;
+      if(st.t>st.sacT){ st.sacT=st.t+0.4+Math.random()*1.7; st.sacX=(Math.random()-0.5)*0.1; st.sacY=(Math.random()-0.5)*0.06; }
+      tphi+=st.sacX; tlam+=st.sacY;
+      st.vphi+=(tphi-st.gphi)*0.018-st.vphi*0.14; st.gphi+=st.vphi;
+      st.vlam+=(tlam-st.glam)*0.018-st.vlam*0.14; st.glam+=st.vlam;
+      if(st.blinkStart<0&&st.t>st.blinkT){ st.blinkStart=st.t; st.blinkT=st.t+2+Math.random()*4; }
+      st.blink=1;
+      if(st.blinkStart>=0){ const pr=(st.t-st.blinkStart)/0.16; if(pr>=1) st.blinkStart=-1; else st.blink=1-0.92*Math.sin(pr*Math.PI); }
+      const phiC=0.72,dw=0.27,lamC=0.15,dhA=0.26, proj=(phi,lam)=>[cx+R*Math.cos(lam)*Math.sin(phi),cy+R*Math.sin(lam)];
+      function eye(sign){
+        const p0=sign*phiC+st.gphi, lam0=lamC+st.glam;
+        const P=[proj(p0+sign*dw,lam0+0.05*st.blink),proj(p0-sign*dw,lam0),proj(p0,lam0+dhA*st.blink)];
+        const path=()=>{ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.closePath();};
+        path();ctx.shadowColor='rgba(0,0,0,.55)';ctx.shadowBlur=R*0.05;ctx.fillStyle=dark(0.45);ctx.fill();ctx.shadowBlur=0;
+        ctx.save();path();ctx.clip();
+        const sx=(P[1][0]+P[2][0])/2+st.gphi*R*0.9, sy=(P[1][1]+P[2][1])/2;
+        const g=ctx.createRadialGradient(sx,sy,0,sx,sy,R*0.46);
+        g.addColorStop(0,bright);g.addColorStop(0.4,dark(1));g.addColorStop(1,dark(0.42));ctx.fillStyle=g;ctx.fill();
+        const topY=Math.min(P[0][1],P[1][1]);
+        const sh=ctx.createLinearGradient(0,topY-R*0.01,0,topY+R*0.16);sh.addColorStop(0,'rgba(0,0,0,.5)');sh.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.fillStyle=sh;ctx.fill();ctx.restore();
+        ctx.lineJoin='round';ctx.lineCap='round';ctx.lineWidth=Math.max(2,R*0.035);ctx.strokeStyle='rgba(8,10,9,.96)';
+        ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.stroke();
+      }
+      eye(-1);eye(1);
+      ctx.save();ctx.strokeStyle='rgba(16,19,17,.92)';ctx.lineWidth=Math.max(1.5,R*0.02);ctx.lineCap='round';ctx.lineJoin='round';
+      const phiEnd=phiC+dw+0.26,curve=0.035;ctx.beginPath();
+      for(let i=0;i<=24;i++){ const s=-1+i/12, ph=st.gphi+s*phiEnd, lm=lamC+st.glam+curve*s*s, q=proj(ph,lm); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
+      ctx.stroke();ctx.restore();
+      if(!reduce) head.raf=requestAnimationFrame(frame);
+    }
+    head={raf:requestAnimationFrame(frame),ro};
+  }
+
+  // ---- dock sources + notification center (demo) ----
+  const SRC = {
+    calendar:{name:'行事曆', c:'info', items:[
+      {c:'warn', i:'calendar', t:'設計評審', m:'10:30 · Zoom · 設計組', time:'5 分後'},
+      {c:'info', i:'calendar', t:'一對一 · Jack', m:'14:00 · 辦公室', time:'今天'},
+      {c:'info', i:'calendar', t:'Marvin 週檢討', m:'明天 09:00', time:'明天'} ]},
+    messages:{name:'訊息', c:'info', items:[
+      {c:'info', i:'messages', t:'Jack', m:'記得看一下那個 STT 佇列的圖', time:'3 分'},
+      {c:'info', i:'messages', t:'設計組', m:'新的 bar 螢幕稿放上去了', time:'21 分'},
+      {c:'urgent', i:'build', t:'CI Bot', m:'main 建置失敗', time:'2 分'} ]},
+    music:{name:'音樂', c:'ok', items:[
+      {c:'ok', i:'music', t:'現正播放', m:'七里香 — 周杰倫', time:'now'},
+      {c:'ok', i:'music', t:'待播', m:'遇見 — 孫燕姿', time:'—'},
+      {c:'ok', i:'list', t:'Marvin 選的', m:'千禧華語抒情 · 8 首', time:'—'} ]},
+    build:{name:'建置', c:'urgent', items:[
+      {c:'urgent', i:'build', t:'marvin · main 失敗', m:'test_stt_queue 逾時 · 3m12s', time:'2 分'},
+      {c:'ok', i:'check', t:'marvin · feat/hud 通過', m:'全綠 · 2m48s', time:'26 分'},
+      {c:'ok', i:'check', t:'部署 prod 成功', m:'v0.9.1', time:'1 小時'} ]},
+    system:{name:'系統', c:'ok', items:[
+      {c:'ok', i:'system', t:'CPU 38% · 記憶體 61%', m:'一切正常', time:'now'},
+      {c:'ok', i:'system', t:'電量 92%', m:'預估可用 6 小時', time:'now'},
+      {c:'info', i:'system', t:'備份完成', m:'Time Machine · 昨晚', time:'昨天'} ]},
+    weather:{name:'天氣', c:'info', items:[
+      {c:'info', i:'sun', t:'台北 · 晴 31°', m:'體感 34° · 午後有雷陣雨', time:'now'},
+      {c:'info', i:'weather', t:'15:00 降雨', m:'機率 60%', time:'午後'} ]},
+    alerts:{name:'通知', c:'warn', items:[
+      {c:'warn', i:'calendar', t:'設計評審 5 分鐘後', m:'要我開連結嗎？', time:'5 分'},
+      {c:'urgent', i:'build', t:'CI 失敗', m:'main · test_stt_queue', time:'2 分'} ]}
+  };
+  const order=['calendar','messages','music','build','system','weather','alerts'];
+  const badges={ messages:['3','info'], build:['!','urgent'], alerts:['2','warn'] };
+  document.getElementById('icons').innerHTML = order.map(k=>{
+    const b=badges[k]; const c=SRC[k].c;
+    return `<button class="ibtn" data-src="${k}" aria-label="${SRC[k].name}" style="--ic:var(--${c})">
+      ${svg(SRC[k].items[0].i)}${b?`<span class="badge" style="--bc:var(--${b[1]})">${b[0]}</span>`:''}</button>`;
+  }).join('');
+
+  const nc=document.getElementById('nc'), ncTitle=document.getElementById('nc-title'), ncList=document.getElementById('nc-list');
+  function openSrc(k){
+    const s=SRC[k]; ncTitle.innerHTML=`${s.name} <small>${s.items.length} 則</small>`;
+    ncList.innerHTML=s.items.map(n=>`<div class="note" style="--c:var(--${n.c})">
+      <div class="ni">${svg(n.i)}</div>
+      <div class="nb"><div class="nt">${n.t}<time>${n.time}</time></div><div class="nm">${n.m}</div></div></div>`).join('');
+    nc.classList.add('open'); stopAuto();
+  }
+  function openMarvin(){
+    ncTitle.innerHTML=`Marvin <small>捷徑</small>`;
+    const acts=[['重播上一首','music'],['靜音 30 分','mic'],['今日摘要','list'],['開會議連結','calendar']];
+    ncList.innerHTML=`<div class="qa">${acts.map(a=>`<button class="qbtn">${svg(a[1])}${a[0]}</button>`).join('')}</div>`+
+      [['你','幫我放點周杰倫','剛剛'],['Marvin','好，放《七里香》。第 47 次了。','剛剛'],['你','等下會議提醒我','2 分']]
+      .map(r=>`<div class="note" style="--c:var(--marvin)"><div class="ni">${svg('mic')}</div>
+        <div class="nb"><div class="nt">${r[0]}<time>${r[2]}</time></div><div class="nm">${r[1]}</div></div></div>`).join('');
+    nc.classList.add('open'); stopAuto();
+  }
+  const closeNC=()=>nc.classList.remove('open');
+  document.getElementById('icons').addEventListener('click',e=>{ const b=e.target.closest('.ibtn'); if(b) openSrc(b.dataset.src); });
+  document.getElementById('mshort').addEventListener('click',openMarvin);
+  document.getElementById('mshort').addEventListener('keydown',e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openMarvin(); }});
+  document.getElementById('nc-close').addEventListener('click',closeNC);
+  nc.addEventListener('click',e=>{ if(e.target===nc) closeNC(); });
+
+  // ---- scenes ----
+  const seg=document.getElementById('scene'), autoBtn=document.getElementById('auto');
+  let cur=0, auto=true, timer=null;
+  const STAT=['待命中','待命中','等你回應','排查中'];
+  function setScene(i){ cur=i; render(i);
+    seg.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed', String(+b.dataset.i===i)));
+    document.getElementById('mstatus').textContent=STAT[i]; }
+  seg.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; stopAuto(); closeNC(); setScene(+b.dataset.i); });
+  function tick(){ setScene((cur+1)%M.length); timer=setTimeout(tick,5200); }
+  function startAuto(){ if(reduce){ autoBtn.dataset.on='false'; return; } auto=true; autoBtn.dataset.on='true'; clearTimeout(timer); timer=setTimeout(tick,5200); }
+  function stopAuto(){ auto=false; autoBtn.dataset.on='false'; clearTimeout(timer); }
+  autoBtn.addEventListener('click',()=> auto?stopAuto():startAuto());
+
+  const pad=n=>String(n).padStart(2,'0');
+  function clock(){ const d=new Date(); document.getElementById('clk').textContent=pad(d.getHours())+':'+pad(d.getMinutes());
+    document.getElementById('clkd').textContent=`週${['日','一','二','三','四','五','六'][d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`; }
+  clock(); setInterval(clock,10000);
+
+  // ---- 輪詢 /now：有歌在播就把「現正播放」卡換成真資料 ----
+  let lastLiveKey='';
+  async function refreshNow(){
+    try{
+      const r=await fetch("/now?t="+encodeURIComponent(TOKEN),{cache:"no-store"});
+      const j=await r.json();
+      liveNow = j.playing ? {title:j.title||'', by:j.by||'', pal:Array.isArray(j.palette)?j.palette:[], cover:j.cover||''} : null;
+    }catch(e){ liveNow=null; }
+    const key = liveNow ? liveNow.title+'|'+liveNow.by+'|'+liveNow.pal.join(',')+'|'+liveNow.cover : '';
+    if(key!==lastLiveKey){ lastLiveKey=key; render(cur); }
+  }
+
+  setScene(0); startAuto();
+  refreshNow(); setInterval(refreshNow,4000);
+})();
+</script>
+
+</body></html>"""
+
+
 async def inject_audio(vc, wav_bytes: bytes) -> bool:
     """把瀏覽器上傳的 WAV 轉錄後，走 inject_text（is_text_input）強制回覆。
 
@@ -347,13 +1000,27 @@ async def inject_audio(vc, wav_bytes: bytes) -> bool:
 
 def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗與露",
                    reply_source=None, car_presence=None, audio_rate_limiter=None,
-                   stream_source=None):
+                   stream_source=None, location_state_path=None,
+                   now_playing_state_path=None):
     """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
 
     純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
     （Tailscale 私網信任）；設了 token 就檢查 X-Marvin-Token header。
+    location_state_path＝GPS 訊號存檔路徑（None＝用 location_state.DEFAULT_PATH，測試時
+    傳 tmp_path 隔離）。
+    now_playing_state_path＝跨進程現正播放橋接檔路徑（None＝用
+    now_playing_state.DEFAULT_PATH；main_discord.py 的 MusicCog 寫、這裡的 /now 讀，見
+    now_playing_state.py docstring）。
     """
     from aiohttp import web
+
+    from location_state import DEFAULT_PATH as _GPS_DEFAULT_PATH
+    from location_state import save_location_state
+    from now_playing_state import DEFAULT_PATH as _NOW_DEFAULT_PATH
+    from now_playing_state import load_now_playing_state
+
+    _gps_path = location_state_path or _GPS_DEFAULT_PATH
+    _now_path = now_playing_state_path or _NOW_DEFAULT_PATH
 
     _CORS = {"Access-Control-Allow-Origin": "*",
              "Access-Control-Allow-Headers": "*",
@@ -389,7 +1056,12 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         return web.json_response({"ok": True, "speaker": speaker, "text": text}, headers=_CORS)
 
     async def handle_now(request):
-        """回當前播放的歌（控制台「現正播放中」輪詢）。走統一 token gate（?t= 帶 token）。"""
+        """回當前播放的歌（控制台「現正播放中」輪詢）。走統一 token gate（?t= 帶 token）。
+
+        satellite 自己的 bot 不登入 Discord，本地 MusicCog 只在 car puck/瀏覽器模式自己播歌
+        時才有東西；沒有的話退回讀跨進程橋接檔（main_discord.py 真正在 Discord 播的狀態）。
+        本地優先——car puck 播放是即時真相，不該被舊橋接檔蓋掉。
+        """
         mc = None
         try:
             mc = vc.bot.cogs.get("MusicCog")
@@ -398,6 +1070,17 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         info = getattr(mc, "_current_stream_info", None) if mc else None
         playing = bool(mc and getattr(mc, "stream_mode", False) and info)
         if not playing:
+            state = load_now_playing_state(path=_now_path)
+            if state and state.get("playing"):
+                return web.json_response({
+                    "playing": True,
+                    "paused": False,
+                    "title": state.get("title", ""),
+                    "by": state.get("by", ""),
+                    "cover": state.get("cover", ""),
+                    "palette": state.get("palette", []),
+                    "queue": [],
+                }, headers=_CORS)
             return web.json_response({"playing": False}, headers=_CORS)
         _q = getattr(mc, "stream_queue", None)
         queue = ([{"title": s.get("title", ""), "by": s.get("requested_by", "")}
@@ -486,6 +1169,12 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             text=SATELLITE_HTML.replace("__TOKEN__", token or ""),
             content_type="text/html", headers=_CORS)
 
+    async def handle_hud(request):
+        """GET /hud — Marvin HUD v12 寬屏顯示頁（Mac 自服務，比照 /satellite）。"""
+        return web.Response(
+            text=HUD_HTML.replace("__TOKEN__", token or ""),
+            content_type="text/html", headers=_CORS)
+
     async def handle_audio_stream(request):
         """GET /audio_stream — 車載 puck 連續收音：chunked 即時轉送 mixer PCM。
 
@@ -516,24 +1205,31 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         return resp
 
     async def handle_car(request):
-        """POST /car {"state": "present"|"absent"} — ESP32 puck 車載觸發。
+        """POST /car {"state": "present"|"absent", "lat"?, "lon"?} — ESP32 puck 車載觸發。
 
         present＝上車/heartbeat（到達觸發讀空氣開場一次、後續續期）；
         absent＝主動離開停播。熄火斷電靠 CarPresence 的 TTL 收尾（present 不 sticky）。
         車載模式未接（car_presence=None）→ 400 car_mode_off。
+        lat/lon 為韌體端 15 分鐘節流後才附帶的 GPS 讀數；沒帶就不動 location_state
+        （其餘心跳沒座標，不該把上次存的座標覆蓋成空）。
         """
         if car_presence is None:
             return web.json_response({"error": "car_mode_off"}, status=400, headers=_CORS)
         if "application/json" in request.headers.get("Content-Type", ""):
-            state = ((await request.json()).get("state") or "").strip()
+            body = await request.json()
+            state = (body.get("state") or "").strip()
+            lat, lon = body.get("lat"), body.get("lon")
         else:
             state = (request.query.get("state") or "").strip()
+            lat, lon = None, None
         if state == "present":
             await car_presence.present()
         elif state == "absent":
             await car_presence.absent()
         else:
             return web.json_response({"error": "bad_state"}, status=400, headers=_CORS)
+        if lat is not None and lon is not None:
+            save_location_state(lat=float(lat), lon=float(lon), ts=time.time(), path=_gps_path)
         return web.json_response(
             {"ok": True, "state": state, "present": car_presence.is_present}, headers=_CORS)
 
@@ -566,6 +1262,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_get("/reply", handle_reply)
     app.router.add_get("/audio_stream", handle_audio_stream)
     app.router.add_get("/satellite", handle_satellite)
+    app.router.add_get("/hud", handle_hud)
     app.router.add_post("/car", handle_car)
     app.router.add_options("/car", handle_preflight)
     return app
