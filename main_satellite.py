@@ -33,8 +33,14 @@ import time
 from dotenv import load_dotenv
 
 import memory_sandbox
+from marvin_voice_core.audio_stream_batcher import iter_batched_frames
 
 logger = logging.getLogger(__name__)
+
+# /audio_stream 送出前合併小 frame 的門檻（bytes）：48k stereo s16 → 192 bytes/ms。
+# 預設 100ms（19200 bytes，約 5 個 20ms mixer frame），把封包數從 50/s 砍到 10/s，
+# 減少對車載 WiFi 逐封包時序抖動的敏感度（見 audio_stream_batcher.py）。
+_AUDIO_STREAM_BATCH_BYTES = int(os.getenv("MARVIN_AUDIO_STREAM_BATCH_MS", "100")) * 192
 
 
 def maybe_activate_memory_sandbox(env) -> bool:
@@ -127,6 +133,10 @@ async def setup_browser_satellite(bot):
 
     if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
         from marvin_voice_core.stream_speaker_output import StreamSpeakerOutput
+        # 2026-07-25：mono_downmix 曾懷疑是頻寬瓶頸解法，後來確認瓶頸其實是雙重 TLS
+        # 解密（見 audioNetworkTask 改明碼直連區網 IP）+ mixer 端即時解碼 underrun，
+        # 跟聲道數無關；plain HTTP 修好後實測 throughput 180-340+ KB/s，遠超 stereo
+        # 需要的 192KB/s，沒必要犧牲音質，改回 stereo。
         stream_out = StreamSpeakerOutput(bot.loop)
         vc.start_browser_satellite_listening(stream_out, persistent=True)
         # 泵預設 on-demand（只有真的有 TTS/音樂要推才 arm）。車載模式若開機後還沒東西
@@ -1540,12 +1550,13 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         await resp.prepare(request)
         q = stream_source.subscribe()
         try:
-            while True:
-                frame = await q.get()
-                if frame is None:
-                    break
-                await resp.write(frame)
-        except (ConnectionResetError, asyncio.CancelledError):
+            async for chunk in iter_batched_frames(q, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
+                await resp.write(chunk)
+        except (ConnectionError, asyncio.CancelledError):
+            # ConnectionError 涵蓋 BrokenPipeError/ConnectionResetError，也涵蓋 aiohttp
+            # base_protocol._drain_helper 包裝後直接丟的通用 ConnectionError("Connection
+            # lost")（2026-07-25 車puck實測：底層 BrokenPipeError 被包成這個，narrow except
+            # 接不住，一輪輪重連照樣噴 traceback）。
             pass
         finally:
             stream_source.unsubscribe(q)
@@ -1724,6 +1735,64 @@ async def _stdin_text_input_loop(vc):
             logger.error(f"❌ [TextInput] 處理文字失敗: {e}", exc_info=True)
 
 
+def _start_selftest_if_configured(bot) -> None:
+    """Selftest：免喚醒直接播放，測音訊路徑（腦 mixer→衛星/串流→喇叭）。
+
+    不設任何 SELFTEST_* env＝一般模式、零影響。兩種模式：
+      MARVIN_SATELLITE_SELFTEST_MP3   ＝本地 mp3 檔或資料夾，連續播（繞過 YouTube／yt-dlp
+                                        限流＝乾淨測音訊路徑＋換歌轉場，車載模式下即測
+                                        /audio_stream 真實 mixer 輸出，不必靠 PTT 觸發）
+      MARVIN_SATELLITE_SELFTEST_QUERY ＝語音點歌 query（走 yt-dlp）
+    兩種 satellite 分支（browser/Pi）共用同一套邏輯，故抽成獨立函式。
+    """
+    _mp3 = os.getenv("MARVIN_SATELLITE_SELFTEST_MP3", "").strip()
+    _q = os.getenv("MARVIN_SATELLITE_SELFTEST_QUERY", "").strip()
+    if _mp3:
+        import glob
+        import discord
+        async def _selftest_local():
+            await asyncio.sleep(6)
+            mc = bot.cogs.get("MusicCog")
+            vc = bot.cogs.get("VoiceController")
+            if mc is None or vc is None:
+                logger.warning("⚠️ [Selftest] cog 未載入，跳過")
+                return
+            files = sorted(glob.glob(os.path.join(_mp3, "*.mp3"))) if os.path.isdir(_mp3) else [_mp3]
+            device = vc._resolve_playback_device()
+            if device is None:
+                logger.warning("⚠️ [Selftest] 無播放裝置，跳過")
+                return
+            logger.info(f"🎵 [Selftest] 本地 MP3 連續播放 {len(files)} 首（繞過 YouTube）")
+            mc.stream_mode = True
+            for f in files:
+                if not mc.stream_mode:
+                    break
+                logger.info(f"🎵 [Selftest] ▶ {os.path.basename(f)}")
+                vc._current_stream_url = f
+                try:
+                    # 乾淨 FFmpegPCMAudio（無 -reconnect 網路參數，本地檔才開得起來）→
+                    # 真實 mixer 路徑，連續播＝測音訊路徑 + 換歌轉場。
+                    await vc._mixer_play_music(
+                        device, discord.FFmpegPCMAudio(f),
+                        still_active=lambda: mc.stream_mode, volume_attr="stream_volume")
+                except Exception as e:   # noqa: BLE001
+                    logger.warning(f"⚠️ [Selftest] 播放失敗 {os.path.basename(f)}: {e}")
+            mc.stream_mode = False
+            logger.info("🎵 [Selftest] 本地 MP3 全部播完")
+        asyncio.create_task(_selftest_local())
+    elif _q:
+        _spk = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
+        async def _selftest_play():
+            await asyncio.sleep(6)   # 等衛星橋連上 Pi + Pi 端就緒
+            mc = bot.cogs.get("MusicCog")
+            if mc is None:
+                logger.warning("⚠️ [Selftest] MusicCog 未載入，跳過")
+                return
+            logger.info(f"🎵 [Selftest] 免喚醒直接點歌：{_q}（speaker={_spk}）")
+            await mc._safe_music_command(_spk, _q, "play")
+        asyncio.create_task(_selftest_play())
+
+
 async def main():
     # 錨定 repo 根目錄：相對路徑的正本記憶(marvin.db/music_memory.json/records/)+assets+
     # models+repo 的 .env(GUILD_ID) 全用正本，不論從哪啟動都不會漂到別的 worktree。
@@ -1750,6 +1819,7 @@ async def main():
             logger.info(f"🛰️ [Satellite] 純軟體瀏覽器模式（無 Pi）：手機開 http://<mac>:{port}/satellite")
             asyncio.create_task(_stdin_text_input_loop(vc))
             await start_text_http_server(vc, reply_source=browser_out, stream_source=stream_out)
+            _start_selftest_if_configured(bot)
             await asyncio.Event().wait()
             return
 
@@ -1760,57 +1830,7 @@ async def main():
         # 文字輸入：stdin（本機手打）+ HTTP（Siri 捷徑走 Tailscale POST /say）
         asyncio.create_task(_stdin_text_input_loop(vc))
         await start_text_http_server(vc)
-        # Selftest：免喚醒直接播放，測音訊路徑（腦 mixer→衛星→喇叭，如 BT 連續音樂穩定性）。
-        # 不設任何 SELFTEST_* env＝一般模式、零影響。兩種模式：
-        #   MARVIN_SATELLITE_SELFTEST_MP3   ＝本地 mp3 檔或資料夾，連續播（繞過 YouTube／yt-dlp
-        #                                     限流＝乾淨測 BT 音訊路徑＋換歌轉場）
-        #   MARVIN_SATELLITE_SELFTEST_QUERY ＝語音點歌 query（走 yt-dlp）
-        _mp3 = os.getenv("MARVIN_SATELLITE_SELFTEST_MP3", "").strip()
-        _q = os.getenv("MARVIN_SATELLITE_SELFTEST_QUERY", "").strip()
-        if _mp3:
-            import glob
-            import discord
-            async def _selftest_local():
-                await asyncio.sleep(6)
-                mc = bot.cogs.get("MusicCog")
-                vc = bot.cogs.get("VoiceController")
-                if mc is None or vc is None:
-                    logger.warning("⚠️ [Selftest] cog 未載入，跳過")
-                    return
-                files = sorted(glob.glob(os.path.join(_mp3, "*.mp3"))) if os.path.isdir(_mp3) else [_mp3]
-                device = vc._resolve_playback_device()
-                if device is None:
-                    logger.warning("⚠️ [Selftest] 無播放裝置，跳過")
-                    return
-                logger.info(f"🎵 [Selftest] 本地 MP3 連續播放 {len(files)} 首（繞過 YouTube）")
-                mc.stream_mode = True
-                for f in files:
-                    if not mc.stream_mode:
-                        break
-                    logger.info(f"🎵 [Selftest] ▶ {os.path.basename(f)}")
-                    vc._current_stream_url = f
-                    try:
-                        # 乾淨 FFmpegPCMAudio（無 -reconnect 網路參數，本地檔才開得起來）→
-                        # 真實 mixer 路徑，連續播＝測 BT 音訊 + 換歌轉場。
-                        await vc._mixer_play_music(
-                            device, discord.FFmpegPCMAudio(f),
-                            still_active=lambda: mc.stream_mode, volume_attr="stream_volume")
-                    except Exception as e:   # noqa: BLE001
-                        logger.warning(f"⚠️ [Selftest] 播放失敗 {os.path.basename(f)}: {e}")
-                mc.stream_mode = False
-                logger.info("🎵 [Selftest] 本地 MP3 全部播完")
-            asyncio.create_task(_selftest_local())
-        elif _q:
-            _spk = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
-            async def _selftest_play():
-                await asyncio.sleep(6)   # 等衛星橋連上 Pi + Pi 端就緒
-                mc = bot.cogs.get("MusicCog")
-                if mc is None:
-                    logger.warning("⚠️ [Selftest] MusicCog 未載入，跳過")
-                    return
-                logger.info(f"🎵 [Selftest] 免喚醒直接點歌：{_q}（speaker={_spk}）")
-                await mc._safe_music_command(_spk, _q, "play")
-            asyncio.create_task(_selftest_play())
+        _start_selftest_if_configured(bot)
         await asyncio.Event().wait()
 
 

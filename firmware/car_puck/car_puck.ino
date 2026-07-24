@@ -42,15 +42,29 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <driver/i2s.h>
+#include <string.h>
 
 // ========== 你要填的 ==========
-#define STEP 1   // ← 從 1 開始，每步綠了再 +1
+#define STEP 7   // ← 從 1 開始，每步綠了再 +1
+
+// 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
+// buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
+#define STREAM_DEBUG_PRINT 0
 
 const char* WIFI_SSID    = "你的手機熱點名稱";
 const char* WIFI_PASS    = "熱點密碼";
 const char* MARVIN_HOST  = "macbook-air.tail7ba8d0.ts.net";   // 不含 https://
 const int   MARVIN_PORT  = 443;
 const char* MARVIN_TOKEN = "PASTE_YOUR_TOKEN";                // ⚠️ 別 commit 真 token
+
+// TEMP 實驗（2026-07-25）：/audio_stream 實測 sustained throughput 只有目標 187.5KB/s
+// 的 ~55-67%（100-126KB/s），懷疑雙重加密——Tailscale WireGuard 本身已加密，這條又走
+// HTTPS/TLS(443)，ESP32 軟體 mbedTLS 解密可能就是瓶頸。puck 目前只在家測（同一台
+// Wi-Fi），先試直連 Mac 區網 IP + 明碼 HTTP，看 throughput 是否顯著改善來確認假設。
+// 只有這條高頻寬串流走這個路徑，/car 心跳、/now 等低流量請求維持原本 HTTPS 不動。
+// ⚠️ 只在家測試網路有效；真的出門用 4G 時這個 IP 打不通，需要退回 Tailscale/Funnel。
+const char* MARVIN_LOCAL_HOST = "填你家 Mac 的區網 IP";
+const int   MARVIN_LOCAL_PORT = 8790;
 
 // ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
 #define PIN_BTN_PTT    0    // 喚醒/打斷 = 我們的 PTT
@@ -154,10 +168,12 @@ void connectWiFi() {
   Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[WiFi] OK, IP=%s RSSI=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-    WiFi.setSleep(false);   // 連上後才關閉 modem sleep：省電喚醒週期（依 AP beacon/DTIM
-                            // 約100-300ms）會造成即時音訊串流規律性斷流/延遲，連線建立
-                            // 過程本身可能重置此設定，故連上才設（2026-07-24 實測：串流
-                            // 語音約 0.3s 週期性破碎，疑似此因；社群驗證修法見論壇）。
+    // ⚠️ 2026-07-24 實測過 WiFi.setSleep(false)：串流反而更破碎（只剩零星爆音）、
+    // 心跳一度斷拍近90秒（疑似跟其他 WiFi 功能衝突，社群也有類似回報），已復原移除。
+    // 2026-07-25 重試：架構整個換了（network/playback 分兩個 task + 1MB ring buffer +
+    // 明碼直連區網 IP），舊測試的前提已經不成立，modem sleep 週期性喚醒延遲很符合我們
+    // 現在量到的 170-400ms maxGap 規律性卡頓特徵，值得在新架構上重新單獨驗證一次。
+    WiFi.setSleep(false);
   } else {
     Serial.println("[WiFi] ❌ 連不上，檢查 SSID/密碼/熱點開了沒");
     setLed(LED_ERROR);
@@ -224,10 +240,12 @@ void startSpeaker() {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
     .sample_rate = 48000,                          // 對齊 BrowserSpeakerOutput 輸出格式；實際播放前會用 i2s_set_clk 覆蓋成 wav 標頭裡的值
     .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    // 2026-07-25：曾試過改 mono 省頻寬，後來確認真瓶頸是雙重 TLS 解密+mixer 端即時解碼
+    // underrun，跟聲道數無關；改回 stereo（伺服器端 StreamSpeakerOutput 也已改回預設）。
     .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,  // stereo
     .communication_format = I2S_COMM_FORMAT_STAND_I2S,
     .intr_alloc_flags = 0,
-    .dma_buf_count = 8,
+    .dma_buf_count = 12,   // 2026-07-25 從 8 拉到 12：給網路串流抖動多一點 DMA 端容錯
     .dma_buf_len = 512,
     .use_apll = true,
   };
@@ -291,6 +309,9 @@ void pollAndPlayReply() {
         while (got < len && http.connected()) {
           got += stream->readBytes(wav + got, len - got);
         }
+        String seqHdr = http.header("X-Reply-Seq");
+        http.end();
+        if (seqHdr.length()) lastReplySeq = (uint32_t)seqHdr.toInt();
         size_t dataOff, dataLen; uint32_t sr; uint16_t ch, bits;
         if (parseWav(wav, got, &dataOff, &dataLen, &sr, &ch, &bits)) {
           Serial.printf("[SPK] 播放 %u Hz / %uch / %u-bit / %u bytes\n", sr, ch, bits, (unsigned)dataLen);
@@ -306,12 +327,12 @@ void pollAndPlayReply() {
           Serial.println("[SPK] ⚠️ wav 標頭解析失敗，跳過播放");
         }
         free(wav);
-      } else if (len > 0) {
-        Serial.println("[SPK] ⚠️ ps_malloc 失敗，跳過播放");
+      } else {
+        if (len > 0) Serial.println("[SPK] ⚠️ ps_malloc 失敗，跳過播放");
+        String seqHdr = http.header("X-Reply-Seq");
+        http.end();
+        if (seqHdr.length()) lastReplySeq = (uint32_t)seqHdr.toInt();
       }
-      String seqHdr = http.header("X-Reply-Seq");
-      http.end();
-      if (seqHdr.length()) lastReplySeq = (uint32_t)seqHdr.toInt();
       setLed(LED_STANDBY);
       return;
     }
@@ -330,14 +351,77 @@ void pollAndPlayReply() {
 // 不用再額外輪詢 /reply（見下）。
 // 手動解 chunked transfer-encoding（伺服器固定用 aiohttp StreamResponse，會送 chunked；
 // 不支援時直接放棄這輪連線重試，不猜格式）。
-void audioStreamTask(void* pv) {
-  uint8_t buf[512];
+//
+// 2026-07-25：拆成兩個任務、中間隔一個 PSRAM ring buffer，網路讀取（audioNetworkTask）
+// 跟 I2S 播放（audioPlaybackTask）不再共用同一個迴圈——舊版兩者綁在一起時，WiFi 封包
+// 抖動/HTTP 卡頓會直接變成 I2S 斷供、聲音破碎（DMA 只吐得出「剛好收到的那一點」）。現在
+// WiFi 卡頓時 playback 繼續吃 ring buffer 存量，不影響出聲；network task 補滿 buffer
+// 不受播放節奏影響。不需要即時性（純音樂播放器用途），拉大 buffer 換穩定完全划算。
+// N16R8 有 8MB PSRAM，1MiB 只吃 12.5%（跟 10s 錄音 buffer ~312KB 加起來還不到一半），
+// 拉滿一點換更長的抖動緩衝時間（stereo 48k/16bit ~5.5s）划算。開播門檻跟總容量脫鉤、
+// 固定抓 ~0.5s：只是要吸收 WiFi 瞬間卡頓，不需要每次斷流重蓄都等半天。
+// 2026-07-25 追加：曾試拉到 4MiB 想換更長抗抖動空間，但同一輪實測重連變得更頻繁+
+// 中斷變更長，先退回 1MiB 做對照排除「buffer 大小本身導致不穩」這個變因，只留
+// audioNetworkTask 的「重連不強制重蓄」修法。等對照測試結果出來再決定要不要重新拉大。
+#define STREAM_RING_SIZE (1024 * 1024)
+#define STREAM_PREBUF_BYTES (96 * 1000)
+static uint8_t* streamRing = nullptr;
+static volatile size_t ringHead = 0, ringTail = 0;   // 單一 producer（network）寫 head、單一 consumer（playback）讀 tail
+static volatile bool streamPrimed = false;           // 是否已蓄滿過一輪，允許開始播放
+
+static inline size_t ringUsed() {
+  size_t h = ringHead, t = ringTail;
+  return (h >= t) ? (h - t) : (STREAM_RING_SIZE - t + h);
+}
+static inline size_t ringFree() { return STREAM_RING_SIZE - 1 - ringUsed(); }
+
+// memcpy 版（最多跨 wraparound 分兩段拷貝），取代逐 byte 迴圈——逐 byte 版每個位元組都要
+// 算一次 modulo，512 位元組一次呼叫的額外開銷跟實際音訊時長（~2.7ms）相比不算小，加上
+// 128KB 版本的小 buffer，兩者疊加就是使用者聽到的週期性 ~0.3s 卡頓（2026-07-25 實測）。
+static void ringWrite(const uint8_t* data, size_t len) {
+  size_t offset = 0;
+  while (offset < len) {
+    while (ringFree() == 0) vTaskDelay(pdMS_TO_TICKS(1));   // playback 消化不及才等（backpressure）
+    size_t chunk = len - offset;
+    size_t freeNow = ringFree();
+    if (chunk > freeNow) chunk = freeNow;
+    size_t firstPart = STREAM_RING_SIZE - ringHead;
+    if (firstPart > chunk) firstPart = chunk;
+    memcpy(streamRing + ringHead, data + offset, firstPart);
+    if (chunk > firstPart) memcpy(streamRing, data + offset + firstPart, chunk - firstPart);
+    ringHead = (ringHead + chunk) % STREAM_RING_SIZE;
+    offset += chunk;
+  }
+}
+
+static size_t ringRead(uint8_t* out, size_t maxLen) {
+  size_t avail = ringUsed();
+  size_t want = maxLen < avail ? maxLen : avail;
+  if (want == 0) return 0;
+  size_t firstPart = STREAM_RING_SIZE - ringTail;
+  if (firstPart > want) firstPart = want;
+  memcpy(out, streamRing + ringTail, firstPart);
+  if (want > firstPart) memcpy(out + firstPart, streamRing, want - firstPart);
+  ringTail = (ringTail + want) % STREAM_RING_SIZE;
+  return want;
+}
+
+void audioNetworkTask(void* pv) {
+  Serial.println("[Stream] audioNetworkTask 已啟動");
+  // 2026-07-25：512→4096。實測 idle 靜音期間 ring buffer 仍穩定下探（96KB→3.8KB/~2s，
+  // 實際補貨速率只有需求的 ~75%），優先權已經調過還是一樣，指向每次 readBytes 的 TLS
+  // 解密呼叫開銷才是瓶頸，不是排程。加大單次讀取量減少呼叫次數換 throughput。
+  uint8_t buf[4096];
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    if (!client.connect(MARVIN_HOST, MARVIN_PORT)) {
+    Serial.printf("[Stream] connect() 前 free heap=%u minFree=%u\n",
+                  (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
+    // TEMP：明碼 WiFiClient 直連區網 IP（見上面 MARVIN_LOCAL_HOST 註解），跳過 TLS
+    // 解密開銷，測試是否解決 throughput 上不去的問題。
+    WiFiClient client;
+    if (!client.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT)) {
+      Serial.println("[Stream] ⚠️ connect() 失敗，2s 後重試");
       vTaskDelay(pdMS_TO_TICKS(2000));
       continue;
     }
@@ -347,7 +431,7 @@ void audioStreamTask(void* pv) {
     // 光修資料讀取迴圈那段不夠，這裡的逾時才是真正根因）。拉長到 20s，遠大於正常幀間空檔。
     client.setTimeout(20000);
     String req = String("GET /audio_stream?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
-                 "Host: " + MARVIN_HOST + "\r\nConnection: close\r\n\r\n";
+                 "Host: " + MARVIN_LOCAL_HOST + "\r\nConnection: close\r\n\r\n";
     client.print(req);
 
     String status = client.readStringUntil('\n');
@@ -363,16 +447,41 @@ void audioStreamTask(void* pv) {
       Serial.printf("[Stream] /audio_stream 非預期回應（200=%d chunked=%d）：%s",
                     ok200, chunked, status.c_str());
       client.stop();
-      i2s_zero_dma_buffer(I2S_SPK_PORT);
       vTaskDelay(pdMS_TO_TICKS(5000));        // 車載模式未接串流輸出等更久，避免熱迴圈
       continue;
     }
-    Serial.println("[Stream] /audio_stream 連上，開始播放");
+    Serial.println("[Stream] /audio_stream 連上，開始灌 buffer");
+    // 2026-07-25：原本這裡無條件 streamPrimed=false，代表每次重連（不管是真的斷貨還是
+    // TCP 瞬斷/伺服器端小抖動）都強制暫停、重蓄滿 STREAM_PREBUF_BYTES 才准繼續播——即使
+    // ring buffer 裡其實還有好幾秒沒播完的存量也照樣打斷，白白浪費掉上面拉大 buffer換來的
+    // 抗抖動空間。改成只有「重連當下 ring 已經被榨乾」才需要重新蓄水；還有存量就讓
+    // audioPlaybackTask 繼續吃舊資料撐過這次重連，聽不出斷點。
+    if (ringUsed() < STREAM_PREBUF_BYTES) {
+      streamPrimed = false;
+    }
+#if STREAM_DEBUG_PRINT
+    else {
+      // 2026-07-25：這行 Serial.printf 曾懷疑是「中斷變長」的兇手——HWCDC 底下
+      // Serial.printf 已知偶爾會阻塞等 USB buffer（檔頭已知雷），剛好卡在重連後這個
+      // 時間點，等於每次重連都多一次可能卡住的 print。關掉當預設，需要時再開驗證。
+      Serial.printf("[Stream] 重連時 ring 仍有 %u bytes 存量，不重蓄、直接接續播放\n",
+                    (unsigned)ringUsed());
+    }
+#endif
 
     while (client.connected()) {
       String sizeLine = client.readStringUntil('\n');
       long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
-      if (chunkSize <= 0) break;              // 終止 chunk（0）或連線壞了，跳出重連
+      if (chunkSize <= 0) {
+        // 2026-07-25：重連頻率實測每 1-5 分鐘一次、貫穿整晚，跟播放內容/歌曲轉場無關
+        // （見 project_car_puck_pops_full_fix_2026-07-25）。斷線當下不知道是①這裡 readBytes
+        // 逾時讀到殘缺 size-line（client 端自己判斷異常放棄）還是②WiFi/socket 真斷——
+        // 分不清就無法對症下藥，這裡補印 raw size-line + connected 狀態 + RSSI + ring 存量。
+        Serial.printf("[Stream] chunk-size 異常 break：raw='%s' len=%d connected=%d rssi=%d ringUsed=%u\n",
+                      sizeLine.c_str(), sizeLine.length(), (int)client.connected(),
+                      WiFi.RSSI(), (unsigned)ringUsed());
+        break;              // 終止 chunk（0）或連線壞了，跳出重連
+      }
       long remain = chunkSize;
       while (remain > 0 && client.connected()) {
         size_t want = remain < (long)sizeof(buf) ? (size_t)remain : sizeof(buf);
@@ -381,21 +490,103 @@ void audioStreamTask(void* pv) {
                                  // 位元組，後面 readStringUntil 撈到 PCM 當文字解析，
                                  // 永久錯位整條連線的 chunk 邊界（2026-07-24 實測：
                                  // 放出來的音訊像迴圈亂碼、聽不出完整單字）
-          i2s_zero_dma_buffer(I2S_SPK_PORT);   // 網路卡頓沒新資料時，DMA 會一直循環播放
-                                                // 殘留的上一段音訊（2026-07-25 實測證實），
-                                                // 清空成靜音，卡頓聽起來是斷點而非噠噠噠
+          vTaskDelay(pdMS_TO_TICKS(1));   // 讓出 CPU 給 IDLE0，否則空讀在此忙迴圈會
+                                            // 餓死 idle task 觸發 task watchdog 整board重開機
+                                            // （2026-07-25 實測：task_wdt Aborting，backtrace
+                                            // 卡在 audioStream；不需要即時性，讓一下無妨）
           continue;
         }
-        size_t written;
-        i2s_write(I2S_SPK_PORT, buf, n, &written, portMAX_DELAY);
+        ringWrite(buf, n);       // 只塞 buffer，不碰 I2S——播放節奏交給 audioPlaybackTask
         remain -= n;
+
+#if STREAM_DEBUG_PRINT
+        // 2026-07-25 懷疑：Serial.printf 本身在 HWCDC 底下可能會阻塞等 USB buffer
+        // （這塊板子的已知怪癖，見檔頭註解），變成我們在追的週期性卡頓的兇手之一。
+        // 先關掉驗證，需要時再開。
+        static size_t _bytesSinceLog = 0;
+        static uint32_t _lastLogMs = 0;
+        _bytesSinceLog += n;
+        uint32_t now = millis();
+        if (now - _lastLogMs >= 1000) {
+          Serial.printf("[Stream] recv %.1f KB/s（目標 187.5 KB/s）ringUsed=%u\n",
+                        _bytesSinceLog / 1024.0 * 1000.0 / (now - _lastLogMs), (unsigned)ringUsed());
+          _bytesSinceLog = 0;
+          _lastLogMs = now;
+        }
+#endif
       }
       client.readStringUntil('\n');           // chunk 尾 CRLF
     }
+    if (!client.connected()) {
+      Serial.printf("[Stream] 外層迴圈退出：client.connected()==false rssi=%d ringUsed=%u\n",
+                    WiFi.RSSI(), (unsigned)ringUsed());
+    }
     client.stop();
-    i2s_zero_dma_buffer(I2S_SPK_PORT);
     Serial.println("[Stream] /audio_stream 斷線，1s 後重連");
     vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+}
+
+// 消費端：只管從 ring buffer 拿資料餵 I2S，不碰網路，WiFi 抖動完全感受不到
+// （buffer 存量夠撐過去）。開播前先蓄到 STREAM_PREBUF_BYTES（模擬串流 app 的
+// 「緩衝中」畫面），真的斷貨（ring 見底）就靜音、回頭重新蓄一輪，避免忽有忽無的破音。
+void audioPlaybackTask(void* pv) {
+  Serial.println("[Stream] audioPlaybackTask 已啟動");
+  uint8_t buf[512];
+  for (;;) {
+    if (!streamPrimed) {
+      if (ringUsed() >= STREAM_PREBUF_BYTES) {
+        streamPrimed = true;
+        Serial.println("[Stream] buffer 蓄滿，開始播放");
+      } else {
+        i2s_zero_dma_buffer(I2S_SPK_PORT);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        continue;
+      }
+    }
+    size_t avail = ringUsed();
+    if (avail == 0) {
+      // 只是瞬間見底（網路正常、只是這一刻還沒補到）→ 靜音這一輪就好，不強制整個重蓄
+      // buffer。2026-07-25 實測：這裡一見底就 streamPrimed=false，逼下一輪重蓄到
+      // STREAM_PREBUF_BYTES 才准播，稍有抖動就整段重來一次，聽起來變成規律性卡頓、
+      // 一直印「buffer 蓄滿」。真正的斷線重蓄門檻交給 audioNetworkTask 重連時設。
+      i2s_zero_dma_buffer(I2S_SPK_PORT);
+      vTaskDelay(pdMS_TO_TICKS(5));
+      continue;
+    }
+    // 2026-07-25：逐次量測本輪迴圈間隔（micros），抓的是「單次卡住多久」而非平均速率——
+    // 平均 KB/s 正常時完全可能藏著一次 20-30ms 的瞬間卡頓（佔一秒的一小部分，平均值看不
+    // 出來），但耳朵聽得到。ring buffer 這次全程沒見底，代表破碎不是缺資料，是某個環節
+    // 週期性卡住，這裡直接量測卡多久、卡在哪個環節。
+    static uint32_t _lastIterUs = 0;
+    static uint32_t _maxGapUs = 0;
+    uint32_t nowUs = micros();
+    if (_lastIterUs != 0) {
+      uint32_t gap = nowUs - _lastIterUs;
+      if (gap > _maxGapUs) _maxGapUs = gap;
+    }
+    _lastIterUs = nowUs;
+
+    size_t want = avail < sizeof(buf) ? avail : sizeof(buf);
+    size_t n = ringRead(buf, want);
+    size_t written;
+    esp_err_t werr = i2s_write(I2S_SPK_PORT, buf, n, &written, portMAX_DELAY);
+    (void)werr;
+#if STREAM_DEBUG_PRINT
+    static uint32_t _dbgCounter = 0;
+    if (++_dbgCounter % 80 == 0) {   // ~每 0.5s 印一次（80 次 * ~2.7ms/512bytes），別洗版
+      int16_t peak = 0;
+      for (size_t i = 0; i + 1 < n; i += 2) {
+        int16_t s = (int16_t)(buf[i] | (buf[i + 1] << 8));
+        int16_t a = s < 0 ? -s : s;
+        if (a > peak) peak = a;
+      }
+      Serial.printf("[Stream] play#%u n=%u written=%u err=%d peak=%d ringUsed=%u maxGap=%.1fms\n",
+                    (unsigned)_dbgCounter, (unsigned)n, (unsigned)written, (int)werr,
+                    (int)peak, (unsigned)ringUsed(), _maxGapUs / 1000.0);
+      _maxGapUs = 0;
+    }
+#endif
   }
 }
 
@@ -403,8 +594,10 @@ void audioStreamTask(void* pv) {
 // margin。斷電＝板子直接死掉、心跳自然停送，交給伺服器 TTL 收尾（不用板子主動告知斷電）。
 void carHeartbeat() {
   HTTPClient http;
-  WiFiClientSecure client; client.setInsecure();
-  String url = String("https://") + MARVIN_HOST + "/car?t=" + MARVIN_TOKEN;
+  // TEMP（2026-07-25）：跟 /audio_stream 一致，明碼直連區網 IP，避免每 30s 一次的 TLS
+  // 握手佔用同一顆 WiFi 天線的時間片，跟主串流搶頻寬造成瞬間 throughput 掉底。
+  WiFiClient client;
+  String url = String("http://") + MARVIN_LOCAL_HOST + ":" + MARVIN_LOCAL_PORT + "/car?t=" + MARVIN_TOKEN;
   http.begin(client, url);
   http.addHeader("Content-Type", "application/json");
   int code = http.POST("{\"state\":\"present\"}");
@@ -477,7 +670,8 @@ void postAudio(int nSamples) {
   http.addHeader("Content-Type", "audio/wav");
   int code = http.POST(wav, wavBytes);
   Serial.printf("[POST /audio] HTTP %d：%s\n", code, http.getString().c_str());
-  http.end(); free(wav);
+  http.end();
+  free(wav);
   if (code != 200) { setLed(LED_STANDBY); return; }   // 沒送成功＝沒回覆要播，別卡在青燈
 #if STEP >= 7
   // 車載常駐串流模式：/reply 已停用，回覆會自動從 audioStreamTask 的 /audio_stream 播出。
@@ -504,33 +698,6 @@ void setup() {
     Serial.println("[PSRAM] ❌ 沒偵測到大 PSRAM！確認買的是 N16R8 + Arduino 有開 PSRAM");
   recBuf = (int16_t*)ps_malloc(MAX_REC_SAMPLES * sizeof(int16_t));
 
-  // 🔊 TEMP 診斷（2026-07-24）：開機直接播一段本機測試音，繞過 WiFi/mixer/串流整條鏈，
-  // 只測 I2S 喇叭硬體本身有沒有問題。驗完聽感後這段要刪掉，別留在 repo。
-  startSpeaker();
-  {
-    const int freq = 440, durMs = 1500, sr = 48000;
-    int16_t buf[256];
-    int totalSamples = sr * durMs / 1000;
-    int sent = 0;
-    while (sent < totalSamples) {
-      int n = min(128, totalSamples - sent);
-      for (int i = 0; i < n; i++) {
-        float t = (float)(sent + i) / sr;
-        int16_t s = (int16_t)(8000 * sinf(2 * PI * freq * t));
-        buf[i * 2] = s; buf[i * 2 + 1] = s;
-      }
-      size_t written;
-      i2s_write(I2S_SPK_PORT, buf, n * 4, &written, portMAX_DELAY);
-      sent += n;
-    }
-    Serial.println("[TEMP] 測試音播完（440Hz 1.5s）");
-    // 只清空殘留 DMA buffer（消除循環播放殘音造成的噠噠噠），不呼叫 i2s_stop()：
-    // STEP>=6 的 startSpeaker() 之後還會再裝一次同一個埠，i2s_driver_install 對已安裝
-    // 的埠會直接失敗、不會重新啟動，若這裡先 i2s_stop() 會讓喇叭永久停在停止狀態、
-    // 真正串流播放時 i2s_write 全部進 DMA buffer 但硬體不會真的出聲（2026-07-24 實測）。
-    i2s_zero_dma_buffer(I2S_SPK_PORT);
-  }
-
   connectWiFi();
 
   pinMode(PIN_BTN_PTT, INPUT_PULLUP);
@@ -547,7 +714,29 @@ void setup() {
   startSpeaker();
 #endif
 #if STEP >= 7
-  xTaskCreatePinnedToCore(audioStreamTask, "audioStream", 16384, nullptr, 1, nullptr, 0);
+  streamRing = (uint8_t*)ps_malloc(STREAM_RING_SIZE);
+  Serial.printf("[Stream] streamRing ps_malloc %s（%u bytes）\n",
+                streamRing ? "成功" : "❌失敗", (unsigned)STREAM_RING_SIZE);
+  // 2026-07-25 修正：network 優先權要 >= playback，不是反過來。playback 本來就靠
+  // i2s_write(...,portMAX_DELAY) 被 DMA 硬體節奏卡住、天然限速，不需要搶 CPU；
+  // 反而是 network 要追一個真即時的來源（伺服器批次送 100ms 一包），優先權太低會被
+  // playback 一直搶走 CPU 時間片，追不上進度，ring buffer 就一直在 0 附近打轉、
+  // 聽起來斷斷續續（2026-07-25 實測：ringUsed 反覆见底又跳回 13-14KB，符合追不上批次
+  // 送達節奏的症狀）。
+  // 2026-07-25 再修：光調優先權只是把問題換方向——兩個任務仍同釘 core 0，network
+  // 優先權較高時換成它偶爾長時間佔用 core 0（連線/重連時的一段同步處理）反過來餓死
+  // playback，即使 ring buffer 存量健康（40-95 萬 bytes，遠高於 96KB 開播門檻）也一樣
+  // 卡（STREAM_DEBUG_PRINT 實測：maxGap 常態 100-150ms，兩次分別量到 1623ms/2322ms 的
+  // 停頓，同時 ringUsed 完全沒見底，排除資料不足，鎖定是 CPU 排程）。改把 playback 挪去
+  // 跟 Arduino loop()/PTT/心跳 共用的 core 1——那些工作量很輕，不會像 network task
+  // 一樣搶爆；network 繼續獨占 core 0，兩者不再共核競爭，優先權高低就不重要了。
+  // 優先權=2（>Arduino loopTask 預設的 1）：跟 loopTask 同核心、同優先權時 FreeRTOS 靠
+  // 時間片輪流，playback 不保證每輪都搶到；loop() 裡的 PTT/心跳未來變重時可能偶爾晚一輪
+  // 才輪到 playback。實測目前很穩（maxGap 10.7ms）才調的，不是修急迫症狀，是把「贏
+  // loopTask」從機率變保證。
+  BaseType_t _rNet = xTaskCreatePinnedToCore(audioNetworkTask, "audioNet", 16384, nullptr, 2, nullptr, 0);
+  BaseType_t _rPlay = xTaskCreatePinnedToCore(audioPlaybackTask, "audioPlay", 8192, nullptr, 2, nullptr, 1);
+  Serial.printf("[Stream] 任務建立 net=%d play=%d（1=成功）\n", (int)_rNet, (int)_rPlay);
   if (WiFi.status() == WL_CONNECTED) carHeartbeatLoop();   // 立刻上車，不等第一輪 30s
 #endif
   // 收尾定燈：WiFi 通但沒跑 Funnel 檢查（STEP 1）也給個 connected 提示；

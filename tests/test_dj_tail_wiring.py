@@ -71,6 +71,9 @@ def _prime(cog, cur, *, skipped=False, stream_mode=True):
     cog._current_song_skipped = skipped
     cog.stream_mode = stream_mode
     cog._maybe_play_dj_interjection = AsyncMock()
+    # 點火會背景起 preload task（真 ffmpeg），跟這裡其他測項無關，mock 掉避免測試
+    # 期間對假 URL 噴真的 ffmpeg subprocess；行為本身另在 test_music_preload_cache.py 驗。
+    cog._start_music_preload = MagicMock()
 
 
 # ── (a) 尾段窗內派發：點火時抓 stream_queue[0] ──────────────────────────────
@@ -93,6 +96,27 @@ async def test_tail_dj_fires_and_marks_next():
 
     cog._maybe_play_dj_interjection.assert_called_once()
     assert nxt.get("_dj_played_in_tail") is True
+
+
+# ── (h) 點火同時背景預解碼下一首（蓋掉 preload_f32_source 的整首解碼延遲，見
+#     test_music_preload_cache.py；2026-07-25 實測回歸：沒先做，這段延遲會落在 DJ
+#     開場白講完跟下一首出聲之間，變成聽得到的中斷）──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_tail_dj_fire_starts_music_preload():
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _next_info()
+    cog.stream_queue = [nxt]
+    cog._prefetch_cache[nxt["url"]] = _done_future({"dj": _dj_meta()})
+    _prime(cog, cur)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        import time
+        await cog._run_tail_dj(cur, time.time() - 170.0)
+
+    cog._start_music_preload.assert_called_once_with(nxt)
 
 
 # ── (bug) 開播時 queue 空、sleep 期間才排入 → 仍點火（此次修的核心）──────────

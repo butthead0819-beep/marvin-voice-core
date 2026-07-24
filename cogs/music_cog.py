@@ -153,6 +153,7 @@ class MusicCog(commands.Cog):
         self._themed_sets_tonight: int = 0
         self._themed_set_date = None
         self._prefetch_cache: dict = {}   # url → Task[{'lyrics', 'comment'}]
+        self._preload_music_cache: dict = {}   # url → Task[PreloadedF32MusicSource]
         # 🎵 [ReqGuard] 使用者點歌兩道防護（2026-07-04；邏輯在 music_request_guard.py）
         from music_request_guard import RecentRequestLedger, ResolveCache, QueryResolveCache
         self._req_ledger = RecentRequestLedger()    # 同人同曲 30s 去重（佇列空也擋）
@@ -1805,9 +1806,14 @@ class MusicCog(commands.Cog):
             if url not in self._stream_norm_gain and vc is not None:
                 asyncio.create_task(self._measure_norm_gain_bg(url))
             if vc is not None:
+                # DJ Tail 點火時已背景 preload（見 _start_music_preload）→ 有就直接用、
+                # 零等待；沒有（沒走過尾段轉場，如第一首/被 skip）就退回現場建 ffmpeg 音源。
+                preloaded, fresh = await self._resolve_music_source(
+                    url, lambda: discord.FFmpegPCMAudio(url, **p12_opts))
                 await vc._mixer_play_music(
-                    device, discord.FFmpegPCMAudio(url, **p12_opts),
+                    device, fresh,
                     still_active=lambda: self.stream_mode, volume_attr="stream_volume",
+                    preloaded=preloaded,
                 )
 
     @app_commands.command(name="marvin_recommend", description="[Stream] 讓馬文根據你的點播記憶推薦下一首")
@@ -2246,9 +2252,56 @@ class MusicCog(commands.Cog):
             return
 
         logger.info(f"[DJ Tail] 點火！疊播 {title_next} 的 DJ 在 {title_cur} 尾段")
+        # 2026-07-25：跟 DJ 開場白同時，背景先把下一首整首解碼好（preload_f32_source
+        # 消除 mixer 中段爆音的代價是換源前要等整首解碼完；不先做，這段延遲就會落在
+        # 「DJ 開場白講完」跟「下一首出聲」中間，變成聽得到的中斷）。DJ 開場白＋尾段疊播
+        # 還有 ~5s+ 窗口，剛好夠蓋掉解碼時間。
+        self._start_music_preload(next_info)
         await self._maybe_play_dj_interjection(dj_meta)
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
+
+    def _start_music_preload(self, info: dict) -> None:
+        """[DJ Tail] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song 換源時直接用
+        （見 _resolve_music_source）。idempotent：同一 url 不重複起 task。
+
+        cache 最多留 2 個未被領取的 task——一首完整解碼是幾十 MB，正常路徑幾秒內就會被
+        play_stream_song 領走清掉，這裡只是防呆（例如點火後又被 skip，task 沒人領走）。
+        """
+        url = info.get('url', '')
+        if not url or url in self._preload_music_cache:
+            return
+        while len(self._preload_music_cache) >= 2:
+            _stale_url, stale_task = self._preload_music_cache.popitem()
+            stale_task.cancel()
+
+        async def _do():
+            from local_mixing_source import S16ToF32MusicSource, preload_f32_source
+            p12_opts = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
+                'options': '-vn -bufsize 512k',
+            }
+            s16 = discord.FFmpegPCMAudio(url, **p12_opts)
+            return await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(s16))
+
+        self._preload_music_cache[url] = asyncio.create_task(_do())
+
+    async def _resolve_music_source(self, url: str, ffmpeg_factory):
+        """回傳 (preloaded, fresh_s16_source)——恰好一個非 None。
+
+        cache 有這個 url 的預解碼 task（完成或進行中皆可，await 等它）就用，領走後從 cache
+        清掉；沒有、或預解碼失敗（例如網路斷）→ 退回現場用 ffmpeg_factory() 建全新 s16 音源
+        （跟修這個之前的行為一致，不會因為預解碼失敗就播不出來）。
+        """
+        preload_task = self._preload_music_cache.pop(url, None)
+        if preload_task is not None:
+            try:
+                source = await preload_task
+                logger.info("[DJ Tail] 換源命中預解碼，零等待")
+                return source, None
+            except Exception as e:
+                logger.info(f"[DJ Tail] 預解碼失敗，退回現場解碼: {e}")
+        return None, ffmpeg_factory()
 
     async def _resolve_tail_dj_meta(self, next_info: dict) -> dict | None:
         """取下一首已預渲染的 DJ meta（有 audio 檔才回）；不可用回 None（退回舊路）。

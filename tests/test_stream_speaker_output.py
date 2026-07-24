@@ -117,3 +117,42 @@ def test_default_format_matches_mixer_output():
         assert (out.rate, out.channels, out.bits) == (48000, 2, 16)
     finally:
         loop.close()
+
+
+def test_mono_downmix_reports_one_channel():
+    loop = asyncio.new_event_loop()
+    try:
+        out = StreamSpeakerOutput(loop, mono_downmix=True)
+        assert out.channels == 1
+    finally:
+        loop.close()
+
+
+@pytest.mark.asyncio
+async def test_mono_downmix_averages_stereo_samples_and_halves_frame_size():
+    import struct
+
+    loop = asyncio.get_running_loop()
+    out = StreamSpeakerOutput(loop, mono_downmix=True)
+    q = out.subscribe()
+
+    # 2 個 stereo s16 樣本：(L=1000,R=2000) → mono 平均 1500；(L=-100,R=100) → mono 0
+    stereo = struct.pack("<4h", 1000, 2000, -100, 100)
+    out.write(stereo)
+    await _settle()
+
+    mono = q.get_nowait()
+    assert len(mono) == 4   # 2 mono 樣本 = 一半 bytes
+    assert struct.unpack("<2h", mono) == (1500, 0)
+
+
+@pytest.mark.asyncio
+async def test_mono_downmix_ignores_empty_frame():
+    loop = asyncio.get_running_loop()
+    out = StreamSpeakerOutput(loop, mono_downmix=True)
+    q = out.subscribe()
+
+    out.write(b"")
+    await _settle()
+
+    assert q.empty()

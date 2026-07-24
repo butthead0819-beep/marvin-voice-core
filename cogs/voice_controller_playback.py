@@ -27,8 +27,8 @@ from voice_guard_helpers import _should_mute_for_stream_guard
 from utterance_budget import STREAM_BUDGET
 from manzai_interject import compute_interject_ratio, interject_diagnostics
 from local_mixing_source import (
-    MixerPlaybackAdapter, S16ToF32MusicSource, BufferedF32MusicSource,
-    ensure_mixer_playing, FRAME_BYTES_F32,
+    MixerPlaybackAdapter, S16ToF32MusicSource,
+    preload_f32_source, ensure_mixer_playing, FRAME_BYTES_F32,
 )
 
 logger = logging.getLogger(__name__)
@@ -48,15 +48,25 @@ class PlaybackMixin:
             return False
         return ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(self._mixer))
 
-    async def _mixer_play_music(self, device, s16_source, *, still_active, volume_attr=None) -> None:
+    async def _mixer_play_music(self, device, s16_source, *, still_active, volume_attr=None,
+                                 preloaded=None) -> None:
         """[Plan 12] 把 s16 音源餵 mixer 音樂層，等到播完 / 連線斷 / still_active() 變 False。
 
         volume_attr：要持續同步進 mixer 的 cog 音量屬性名（如 "stream_volume"）→ 語音/按鈕
         調音量 100ms 內即時生效（無 hotswap）。播完（來源耗盡 mixer 自清）或被中止即 return。
+
+        preloaded：呼叫端已經背景解碼好的 PreloadedF32MusicSource（見 music_cog.py 的
+        DJ Tail 點火 preload）→ 直接用、跳過這裡的現場解碼；s16_source 此時可為 None。
+        沒給就照舊即時解碼 s16_source（2026-07-25：整首先解碼進記憶體再餵 mixer，拉大
+        BufferedF32MusicSource 的 buffer_frames 治標不治本，CPU 被搶佔時背景 decode
+        thread 還是跟不上混音時鐘，塞靜音頂替＝中段爆音，見
+        project_car_puck_pops_and_1s_dropout）。
         """
         self._ensure_mixer_playing(device)
-        # 背景預讀解耦 ffmpeg pipe（修 T5 串流斷續）：~1s buffer
-        buffered = BufferedF32MusicSource(S16ToF32MusicSource(s16_source), buffer_frames=50)
+        if preloaded is not None:
+            buffered = preloaded
+        else:
+            buffered = await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(s16_source))
         self._mixer.set_music_source(buffered)
         # 「音樂停了為何停」是靜默盲點（ffmpeg stderr→DEVNULL、音源耗盡無 log）＝device 上
         # 「~3s 就中斷、無錯誤日誌」難查的根因。此處是所有停止路徑的唯一出口→退出時一律記

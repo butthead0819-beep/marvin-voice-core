@@ -22,6 +22,8 @@ from local_mixing_source import (
     MixerPlaybackAdapter,
     S16ToF32MusicSource,
     BufferedF32MusicSource,
+    PreloadedF32MusicSource,
+    preload_f32_source,
     ensure_mixer_playing,
     FRAME_SAMPLES,
     FRAME_BYTES_S16,
@@ -334,6 +336,73 @@ def test_has_music_tracks_source_drain():
     mix.read()   # 消化唯一一幀
     mix.read()   # 來源回 b"" → mixer 清音樂層
     assert mix.has_music() is False
+
+
+# ── PreloadedF32MusicSource / preload_f32_source（mixer decode underrun 真解：
+#    整首先解碼進記憶體，read() 純陣列取用，消除 ffmpeg pipe 即時解碼被 CPU 搶佔導致
+#    的中段爆音，見 project_car_puck_pops_and_1s_dropout_2026-07-25）───────────────
+
+def test_preload_reads_all_frames_in_order_then_eof():
+    inner = _FakeF32Frames([0.1, 0.2, 0.3])
+    src = preload_f32_source(inner)
+    got = []
+    while True:
+        b = src.read()
+        if b == b"":
+            break
+        got.append(round(float(np.frombuffer(b, dtype=np.float32)[0]), 4))
+    assert got == [0.1, 0.2, 0.3]
+
+
+def test_preload_calls_inner_cleanup_during_preload_not_on_source_cleanup():
+    inner = _FakeF32Frames([0.1])
+    src = preload_f32_source(inner)
+    assert inner.cleaned is True   # 解碼完當下就清（ffmpeg 已無存在必要）
+    src.cleanup()                  # 再呼叫一次不可 raise（no-op）
+
+
+def test_preload_handles_empty_source():
+    class _Empty:
+        def read(self):
+            return b""
+
+        def cleanup(self):
+            pass
+
+    src = preload_f32_source(_Empty())
+    assert src.read() == b""
+
+
+def test_preload_never_returns_silence_underrun_frame():
+    """跟 BufferedF32MusicSource 不同：沒有 underrun 概念，耗盡就是 b""，不會塞靜音頂替。"""
+    inner = _FakeF32Frames([0.5])
+    src = preload_f32_source(inner)
+    src.read()
+    assert src.read() == b""
+
+
+def test_preload_feeds_mixer_music_layer():
+    mix = LocalMixingAudioSource(seed=1, volume=1.0)
+    inner = _FakeF32Frames([0.2, 0.2, 0.2])
+    mix.set_music_source(preload_f32_source(inner))
+    assert len(mix.read()) == FRAME_BYTES_S16
+    assert mix.has_music()
+
+
+def test_preloaded_source_is_reusable_container_type():
+    src = preload_f32_source(_FakeF32Frames([0.1, 0.2]))
+    assert isinstance(src, PreloadedF32MusicSource)
+
+
+def test_preloaded_stats_matches_buffered_shape_no_underruns():
+    """_mixer_play_music 退出時呼叫 .stats() 印 log，preload 沒有 underrun 概念但欄位形狀
+    要跟 BufferedF32MusicSource.stats() 一致，才不會炸 log 那一行。"""
+    src = preload_f32_source(_FakeF32Frames([0.1, 0.2, 0.3]))
+    st = src.stats()
+    assert st["underruns"] == 0
+    assert st["produced"] == 3
+    assert st["eof"] is True
+    assert st["eof_reason"] == "preloaded"
 
 
 # ── ensure_mixer_playing ─────────────────────────────────────────────────────

@@ -29,7 +29,7 @@ import discord
 from discord import app_commands
 from discord.ext import tasks, voice_recv
 
-from local_mixing_source import BufferedF32MusicSource, S16ToF32MusicSource
+from local_mixing_source import preload_f32_source, S16ToF32MusicSource
 from marvin_voice_core.playback_device import DiscordPlaybackDevice
 
 logger = logging.getLogger(__name__)
@@ -576,7 +576,9 @@ class ConnectionMixin:
                 src = discord.FFmpegPCMAudio(intro_file, before_options=before_opts, options="-vn")
                 self._ensure_mixer_playing(DiscordPlaybackDevice(vc))
                 self._mixer.set_volume(0.7)
-                self._mixer.set_music_source(BufferedF32MusicSource(S16ToF32MusicSource(src), buffer_frames=50))
+                # 整首先解碼進記憶體（intro 只有 7s 本地檔，解碼幾乎瞬間完成，換零中段爆音
+                # 沒有代價，見 project_car_puck_pops_and_1s_dropout）。
+                self._mixer.set_music_source(await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(src)))
             else:
                 # 🚀 [Race Condition Fix] 確保清除之前的沉默破門音源或殘留音訊
                 if vc.is_playing():

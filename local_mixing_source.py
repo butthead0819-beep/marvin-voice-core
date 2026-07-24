@@ -501,6 +501,56 @@ class BufferedF32MusicSource:
                 pass
 
 
+class PreloadedF32MusicSource:
+    """整首音樂已完整解碼進記憶體的 f32 frame 序列；read() 純陣列取用，無 ffmpeg pipe
+    依賴、無即時解碼背景執行緒——消除 BufferedF32MusicSource 的 mixer decode underrun
+    （CPU 被搶佔時 decode thread 跟不上混音時鐘→塞靜音頂替→中段爆音，見
+    project_car_puck_pops_and_1s_dropout_2026-07-25）。代價：播放前要等整首解碼完，換開頭
+    延遲，不再有中段斷點。cleanup() 為 no-op：inner 音源已在 preload_f32_source() 內完整
+    耗盡並清過。
+    """
+
+    def __init__(self, frames: list):
+        self._frames = frames
+        self._i = 0
+
+    def read(self) -> bytes:
+        if self._i >= len(self._frames):
+            return b""
+        f = self._frames[self._i]
+        self._i += 1
+        return f
+
+    def cleanup(self):
+        pass
+
+    def stats(self) -> dict:
+        """跟 BufferedF32MusicSource.stats() 同形狀，讓 _mixer_play_music 的退出 log
+        沿用同一行格式。沒有 underrun 概念（全解碼完才開始播）恆為 0。"""
+        return {"underruns": 0, "depth": len(self._frames) - self._i, "max": len(self._frames),
+                "produced": len(self._frames), "eof": True, "eof_reason": "preloaded"}
+
+
+def preload_f32_source(inner_source) -> PreloadedF32MusicSource:
+    """阻塞讀 inner_source 到耗盡，切成 FRAME_BYTES_F32 幀存進記憶體。呼叫端須自行丟進
+    thread（如 asyncio.to_thread）——此函式本身是同步阻塞的，會等整首解碼完才回傳。
+    """
+    frames = []
+    leftover = b""
+    while True:
+        chunk = inner_source.read()
+        if not chunk:
+            break
+        leftover += chunk
+        while len(leftover) >= FRAME_BYTES_F32:
+            frames.append(bytes(leftover[:FRAME_BYTES_F32]))
+            leftover = leftover[FRAME_BYTES_F32:]
+    c = getattr(inner_source, "cleanup", None)
+    if callable(c):
+        c()
+    return PreloadedF32MusicSource(frames)
+
+
 def ensure_mixer_playing(device, adapter_factory) -> bool:
     """device 連線中且未在播 → arm_mixer 一個新 adapter，回 True；已在播/無 device → 不動回 False。
 

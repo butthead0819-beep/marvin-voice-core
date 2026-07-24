@@ -5,6 +5,8 @@ PlaybackMixin — VoiceController 的 TTS 渲染 + mixer 播放抽到獨立檔�
 """
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 MOD = "cogs.voice_controller_playback"
@@ -122,6 +124,28 @@ async def test_mixer_play_music_logs_source_exhausted(caplog):
         )
     assert mixer.cleared is False   # 音源自然耗盡不呼叫 clear_music
     assert any("reason=source_exhausted" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_mixer_play_music_uses_preloaded_source_skips_decode():
+    """2026-07-25：DJ Tail 點火時背景 preload 好的來源直接用，不再現場 preload_f32_source
+    （s16_source=None 也要能跑，因為呼叫端沒有東西可現場解碼）。"""
+    from cogs.voice_controller_playback import PlaybackMixin
+
+    class _FakePreloaded:
+        def stats(self):
+            return {"underruns": 0, "depth": 0, "max": 3, "produced": 3,
+                     "eof": True, "eof_reason": "preloaded"}
+
+    preloaded = _FakePreloaded()
+    mixer = _FakeMixer([True, False])
+    with patch("cogs.voice_controller_playback.preload_f32_source") as mock_preload:
+        await PlaybackMixin._mixer_play_music(
+            _fake_self(mixer), _FakeDevice(), None,
+            still_active=lambda: True, preloaded=preloaded,
+        )
+    mock_preload.assert_not_called()
+    assert mixer._src is preloaded
 
 
 @pytest.mark.asyncio
