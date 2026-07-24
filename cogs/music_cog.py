@@ -167,6 +167,19 @@ class MusicCog(commands.Cog):
         """取得 VoiceController cog；找不到回 None。"""
         return self.bot.cogs.get('VoiceController')
 
+    @staticmethod
+    def _autopilot_online_members(online: list[str]) -> list[str]:
+        """autopilot 續推用的「在場者」清單：car 模式沒有 Discord 語音頻道，
+        `vc.get_online_members()` 永遠回 []，會被 `_autorecommend_seed` 誤判成
+        「空房」而永久停止續推（2026-07-25 車 puck 佇列播完停播事故）。
+        車 puck 本身有 present/absent 心跳，會在這裡才進來就代表真的有人在車上，
+        用 MARVIN_SATELLITE_SPEAKER（車載開場也用同一個 owner）當在場者。"""
+        if online:
+            return online
+        if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+            return [os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")]
+        return online
+
     # ── 🎵 Slash commands ─────────────────────────────────────────────────────
 
     @app_commands.command(name="marvin_radio", description="[Radio] 啟動/停止 Marvin 電台，隨機播放 assets/songs 中的歌曲")
@@ -1536,7 +1549,7 @@ class MusicCog(commands.Cog):
                         # else：池空、session 已清 → 落下面一般推薦
                     vc = self._vc()
                     _rb = (self._current_stream_info or {}).get('requested_by')
-                    online = vc.get_online_members() if vc is not None else []
+                    online = self._autopilot_online_members(vc.get_online_members() if vc is not None else [])
                     _seed = self._autorecommend_seed(_rb, online)
                     if _seed:
                         await self._auto_recommend(_seed)
@@ -1627,7 +1640,7 @@ class MusicCog(commands.Cog):
                         if not self._personal_topup_inflight and not self._personal_shuffle_pending():
                             asyncio.create_task(self._personal_shuffle_topup())
                     else:
-                        online = vc.get_online_members() if vc is not None else []
+                        online = self._autopilot_online_members(vc.get_online_members() if vc is not None else [])
                         seed = self._autorecommend_seed(requested_by, online)
                         if seed:
                             asyncio.create_task(self._auto_recommend(seed))
