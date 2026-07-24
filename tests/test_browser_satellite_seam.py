@@ -56,3 +56,16 @@ def test_browser_relaxes_late_skip_threshold():
     fake = _make_fake_self()
     ConnectionMixin.start_browser_satellite_listening(fake, BrowserSpeakerOutput())
     assert fake._LATE_RESPONSE_SKIP_SEC == 120.0
+
+
+def test_browser_default_persistent_true_avoids_pump_exhaustion_race():
+    """persistent=False 時，_ensure_mixer_playing 先 arm 泵、_stream_tts_to_mixer 才推
+    frame 進 mixer；若 TTS 首塊延遲超過 mixer 的 on-demand idle grace（預設 1s），泵會判
+    定「播完」提前關閉、close() 對空 _current no-op，整段回覆遺失且無任何錯誤（2026-07-23
+    ESP32 puck 實測：/reply 觸發 TTS 但 seq 不動，log 顯示泵幾乎瞬間 arm→exhausted）。
+    persistent=True（比照車載 StreamSpeakerOutput）泵常駐不因 idle 提前退出，靠
+    BrowserSpeakerOutput.write() 自己的靜音 hangover 偵測（300ms）分段，不受 mixer
+    on-demand 退出時序影響。"""
+    fake = _make_fake_self()
+    ConnectionMixin.start_browser_satellite_listening(fake, BrowserSpeakerOutput())
+    assert fake._local_speaker._persistent is True

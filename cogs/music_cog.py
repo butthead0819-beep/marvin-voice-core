@@ -129,6 +129,7 @@ class MusicCog(commands.Cog):
         self.stream_paused: bool = False
         self._current_lyrics: Optional[str] = None
         self._current_stream_comment: Optional[str] = None
+        self._current_stream_start_time: Optional[float] = None  # HUD 進度條用
         self._active_control_view = None
 
         # 📻 [Phase 3] Radio subsystem state (proxied from VoiceController)
@@ -1475,7 +1476,16 @@ class MusicCog(commands.Cog):
         main_satellite.py 是不登入 Discord 的獨立進程，自己的 MusicCog 永遠是空的，
         得靠這個檔案橋接真實播放狀態（見 now_playing_state.py）。寫檔失敗（磁碟/序列化
         問題）不該打斷播放，靜默吞掉。
+
+        HUD 只在家用：瀏覽器 satellite（MARVIN_SATELLITE_BROWSER，在外用手機）跟車載
+        puck（MARVIN_CAR_MODE）都是「在外」場景，這兩種模式下不寫橋接檔，避免蓋掉
+        家用 HUD 該看的 Pi/Discord 真實播放狀態（橋接檔只有一份、沒有來源標記，寫了
+        就會蓋掉）。
         """
+        if os.getenv("MARVIN_SATELLITE_BROWSER", "").strip().lower() in ("1", "true", "yes", "on"):
+            return
+        if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+            return
         try:
             from now_playing_state import save_now_playing_state
             if info:
@@ -1489,6 +1499,9 @@ class MusicCog(commands.Cog):
                     cover=info.get("thumbnail", ""),
                     palette=info.get("palette", []),
                     queue=queue,
+                    duration=info.get("duration"),
+                    song_start_time=self._current_stream_start_time,
+                    comment=self._current_stream_comment,
                 )
             else:
                 save_now_playing_state(playing=False)
@@ -1536,6 +1549,7 @@ class MusicCog(commands.Cog):
                 vc = self._vc()
                 info = self.stream_queue.pop(0)
                 self._current_stream_info = info
+                self._current_stream_start_time = None
                 self._publish_now_playing_state(info)
                 self._current_lyrics = None
                 self._current_stream_comment = None
@@ -1570,6 +1584,7 @@ class MusicCog(commands.Cog):
                     self._current_stream_comment = meta.get('comment')
                     self._current_lyrics = meta.get('lyrics')
                     dj_data = meta.get('dj')
+                    self._republish_queue_snapshot()
                 else:
                     self._current_stream_comment = None
                     self._current_lyrics = None
@@ -1581,6 +1596,7 @@ class MusicCog(commands.Cog):
                         if isinstance(m, dict):
                             _self._current_stream_comment = m.get('comment')
                             _self._current_lyrics = m.get('lyrics')
+                            _self._republish_queue_snapshot()   # HUD DJ 銳評卡靠這次補推更新
 
                     _bg.add_done_callback(_apply_bg_meta)
                     logger.info(f"🎵 [Play-First] meta 未就緒，先播音樂、放棄本首 DJ、meta 背景補：{title}")
@@ -1626,6 +1642,8 @@ class MusicCog(commands.Cog):
 
                 self._current_song_skipped = False
                 song_start_time = time.time()
+                self._current_stream_start_time = song_start_time
+                self._republish_queue_snapshot()   # HUD 進度條要靠這次補推的 song_start_time
                 song_lyrics_snapshot = self._current_lyrics or ""
                 playback_completion = "natural"
 

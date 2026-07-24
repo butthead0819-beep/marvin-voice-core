@@ -152,9 +152,13 @@ void connectWiFi() {
     delay(300); Serial.print("."); updateLed();   // 連線期間 setup 阻塞，靠這裡讓黃燈慢閃
   }
   Serial.println();
-  if (WiFi.status() == WL_CONNECTED)
+  if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[WiFi] OK, IP=%s RSSI=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-  else {
+    WiFi.setSleep(false);   // 連上後才關閉 modem sleep：省電喚醒週期（依 AP beacon/DTIM
+                            // 約100-300ms）會造成即時音訊串流規律性斷流/延遲，連線建立
+                            // 過程本身可能重置此設定，故連上才設（2026-07-24 實測：串流
+                            // 語音約 0.3s 週期性破碎，疑似此因；社群驗證修法見論壇）。
+  } else {
     Serial.println("[WiFi] ❌ 連不上，檢查 SSID/密碼/熱點開了沒");
     setLed(LED_ERROR);
   }
@@ -337,6 +341,11 @@ void audioStreamTask(void* pv) {
       vTaskDelay(pdMS_TO_TICKS(2000));
       continue;
     }
+    // mixer 是 on-demand 來源，兩幀之間偶爾會停超過 1s（Arduino Stream 預設逾時）。
+    // readStringUntil/readBytes 逾時只會回傳讀到一半的殘缺資料、不是錯誤，續行程式碼
+    // 會拿殘缺的 size-line 字串當成合法 chunk size 解析，從此永久錯位（2026-07-24 實測：
+    // 光修資料讀取迴圈那段不夠，這裡的逾時才是真正根因）。拉長到 20s，遠大於正常幀間空檔。
+    client.setTimeout(20000);
     String req = String("GET /audio_stream?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
                  "Host: " + MARVIN_HOST + "\r\nConnection: close\r\n\r\n";
     client.print(req);
@@ -354,6 +363,7 @@ void audioStreamTask(void* pv) {
       Serial.printf("[Stream] /audio_stream 非預期回應（200=%d chunked=%d）：%s",
                     ok200, chunked, status.c_str());
       client.stop();
+      i2s_zero_dma_buffer(I2S_SPK_PORT);
       vTaskDelay(pdMS_TO_TICKS(5000));        // 車載模式未接串流輸出等更久，避免熱迴圈
       continue;
     }
@@ -367,7 +377,15 @@ void audioStreamTask(void* pv) {
       while (remain > 0 && client.connected()) {
         size_t want = remain < (long)sizeof(buf) ? (size_t)remain : sizeof(buf);
         int n = client.readBytes(buf, want);
-        if (n <= 0) break;
+        if (n <= 0) {            // 逾時空讀、連線仍在＝重試；break 會丟下沒讀完的 remain
+                                 // 位元組，後面 readStringUntil 撈到 PCM 當文字解析，
+                                 // 永久錯位整條連線的 chunk 邊界（2026-07-24 實測：
+                                 // 放出來的音訊像迴圈亂碼、聽不出完整單字）
+          i2s_zero_dma_buffer(I2S_SPK_PORT);   // 網路卡頓沒新資料時，DMA 會一直循環播放
+                                                // 殘留的上一段音訊（2026-07-25 實測證實），
+                                                // 清空成靜音，卡頓聽起來是斷點而非噠噠噠
+          continue;
+        }
         size_t written;
         i2s_write(I2S_SPK_PORT, buf, n, &written, portMAX_DELAY);
         remain -= n;
@@ -375,6 +393,7 @@ void audioStreamTask(void* pv) {
       client.readStringUntil('\n');           // chunk 尾 CRLF
     }
     client.stop();
+    i2s_zero_dma_buffer(I2S_SPK_PORT);
     Serial.println("[Stream] /audio_stream 斷線，1s 後重連");
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
@@ -484,6 +503,33 @@ void setup() {
   if (ESP.getPsramSize() < 4*1024*1024)
     Serial.println("[PSRAM] ❌ 沒偵測到大 PSRAM！確認買的是 N16R8 + Arduino 有開 PSRAM");
   recBuf = (int16_t*)ps_malloc(MAX_REC_SAMPLES * sizeof(int16_t));
+
+  // 🔊 TEMP 診斷（2026-07-24）：開機直接播一段本機測試音，繞過 WiFi/mixer/串流整條鏈，
+  // 只測 I2S 喇叭硬體本身有沒有問題。驗完聽感後這段要刪掉，別留在 repo。
+  startSpeaker();
+  {
+    const int freq = 440, durMs = 1500, sr = 48000;
+    int16_t buf[256];
+    int totalSamples = sr * durMs / 1000;
+    int sent = 0;
+    while (sent < totalSamples) {
+      int n = min(128, totalSamples - sent);
+      for (int i = 0; i < n; i++) {
+        float t = (float)(sent + i) / sr;
+        int16_t s = (int16_t)(8000 * sinf(2 * PI * freq * t));
+        buf[i * 2] = s; buf[i * 2 + 1] = s;
+      }
+      size_t written;
+      i2s_write(I2S_SPK_PORT, buf, n * 4, &written, portMAX_DELAY);
+      sent += n;
+    }
+    Serial.println("[TEMP] 測試音播完（440Hz 1.5s）");
+    // 只清空殘留 DMA buffer（消除循環播放殘音造成的噠噠噠），不呼叫 i2s_stop()：
+    // STEP>=6 的 startSpeaker() 之後還會再裝一次同一個埠，i2s_driver_install 對已安裝
+    // 的埠會直接失敗、不會重新啟動，若這裡先 i2s_stop() 會讓喇叭永久停在停止狀態、
+    // 真正串流播放時 i2s_write 全部進 DMA buffer 但硬體不會真的出聲（2026-07-24 實測）。
+    i2s_zero_dma_buffer(I2S_SPK_PORT);
+  }
 
   connectWiFi();
 

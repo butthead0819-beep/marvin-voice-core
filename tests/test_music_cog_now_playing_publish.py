@@ -14,6 +14,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _clear_away_mode_env(monkeypatch):
+    """main_discord.py 模組層 load_dotenv() 可能把真實 .env 的 MARVIN_CAR_MODE 等帶進
+    行程環境；這裡測的是「家用模式」預設行為，跟真實 .env 內容無關，先清乾淨。"""
+    monkeypatch.delenv("MARVIN_SATELLITE_BROWSER", raising=False)
+    monkeypatch.delenv("MARVIN_CAR_MODE", raising=False)
+
+
 def _make_cog():
     bot = MagicMock()
     bot.guilds = []
@@ -46,7 +54,25 @@ def test_publish_with_info_writes_playing_true(monkeypatch):
         "playing": True, "title": "夜曲", "by": "大肚",
         "cover": "http://x/y.jpg", "palette": ["#111111"],
         "queue": [{"title": "晴天", "by": "小明", "thumbnail": "http://x/next.jpg"}],
+        "duration": None, "song_start_time": None, "comment": None,
     }
+
+
+def test_publish_with_info_includes_duration_start_time_and_comment(monkeypatch):
+    """HUD 黑膠展開的進度條/DJ 銳評要靠這三個欄位。"""
+    import now_playing_state
+    calls = []
+    monkeypatch.setattr(now_playing_state, "save_now_playing_state",
+                         lambda **kw: calls.append(kw))
+    cog = _make_cog()
+    cog._current_stream_start_time = 1700000000.0
+    cog._current_stream_comment = "這首不錯。"
+    cog._publish_now_playing_state({
+        "title": "夜曲", "requested_by": "大肚", "duration": 245.0,
+    })
+    assert calls[0]["duration"] == 245.0
+    assert calls[0]["song_start_time"] == 1700000000.0
+    assert calls[0]["comment"] == "這首不錯。"
 
 
 def test_publish_without_info_writes_playing_false(monkeypatch):
@@ -81,6 +107,30 @@ def test_republish_queue_snapshot_writes_current_queue(monkeypatch):
     cog.stream_queue = [{"title": "晴天", "requested_by": "小明", "thumbnail": "http://x/n.jpg"}]
     cog._republish_queue_snapshot()
     assert calls[-1]["queue"] == [{"title": "晴天", "by": "小明", "thumbnail": "http://x/n.jpg"}]
+
+
+def test_publish_skips_write_in_browser_satellite_mode(monkeypatch):
+    """瀏覽器 satellite（在外）不該寫跨進程橋接檔，免得蓋掉家用 HUD 的 Pi/Discord 狀態。"""
+    import now_playing_state
+    calls = []
+    monkeypatch.setattr(now_playing_state, "save_now_playing_state",
+                         lambda **kw: calls.append(kw))
+    monkeypatch.setenv("MARVIN_SATELLITE_BROWSER", "1")
+    cog = _make_cog()
+    cog._publish_now_playing_state({"title": "在外播放", "requested_by": "手機"})
+    assert calls == []
+
+
+def test_publish_skips_write_in_car_mode(monkeypatch):
+    """車載 ESP32 puck（在外）不該寫跨進程橋接檔，理由同瀏覽器 satellite。"""
+    import now_playing_state
+    calls = []
+    monkeypatch.setattr(now_playing_state, "save_now_playing_state",
+                         lambda **kw: calls.append(kw))
+    monkeypatch.setenv("MARVIN_CAR_MODE", "1")
+    cog = _make_cog()
+    cog._publish_now_playing_state({"title": "車上播放", "requested_by": "車上"})
+    assert calls == []
 
 
 def test_republish_queue_snapshot_writes_playing_false_when_idle(monkeypatch):

@@ -177,17 +177,17 @@ async def test_http_say_no_token_configured_allows_request():
 
 
 @pytest.mark.asyncio
-async def test_http_now_reports_current_song():
+async def test_http_now_reports_current_song_from_bridge_file(tmp_path):
+    """HUD 只在家用，/now 要跟橋接檔（Pi satellite／main_discord.py 真正播放狀態）連動。"""
     from aiohttp.test_utils import TestClient, TestServer
     from main_satellite import build_text_app
+    from now_playing_state import save_now_playing_state
     vc = _make_vc()
-    mc = MagicMock()
-    mc.stream_mode = True
-    mc.stream_paused = False
-    mc._current_stream_info = {"title": "告白氣球", "requested_by": "狗與露",
-                               "thumbnail": "https://i.ytimg.com/vi/abc/hq.jpg"}
-    vc.bot.cogs.get.return_value = mc
-    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    path = str(tmp_path / "now_playing_state.json")
+    save_now_playing_state(playing=True, title="告白氣球", by="狗與露",
+                            cover="https://i.ytimg.com/vi/abc/hq.jpg", path=path)
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露",
+                          now_playing_state_path=path)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/now?t=s3cret")
         assert resp.status == 200
@@ -199,45 +199,25 @@ async def test_http_now_reports_current_song():
 
 
 @pytest.mark.asyncio
-async def test_http_now_includes_pending_queue():
-    """控制台「待播放佇列」：/now 回 queue（title + by），供 next-up 顯示。"""
+async def test_http_now_ignores_local_music_cog(tmp_path):
+    """satellite 進程自己的 MusicCog（car puck／瀏覽器 satellite 在外播放）不該蓋掉家用 HUD。"""
     from aiohttp.test_utils import TestClient, TestServer
     from main_satellite import build_text_app
     vc = _make_vc()
     mc = MagicMock()
     mc.stream_mode = True
     mc.stream_paused = False
-    mc._current_stream_info = {"title": "當前歌", "requested_by": "狗與露", "thumbnail": ""}
-    mc.stream_queue = [
-        {"title": "下一首A", "requested_by": "阿明", "thumbnail": "https://i.ytimg.com/vi/a/hq.jpg"},
-        {"title": "下一首B", "requested_by": "Marvin推薦（點給大家）"},
-    ]
+    mc._current_stream_info = {"title": "在外本地播放", "requested_by": "車上", "thumbnail": ""}
+    mc.stream_queue = [{"title": "下一首A", "requested_by": "阿明"}]
+    mc._current_stream_start_time = None
+    mc._current_stream_comment = None
     vc.bot.cogs.get.return_value = mc
-    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
+    path = str(tmp_path / "now_playing_state.json")   # 橋接檔不存在＝家裡沒在播
+    app = build_text_app(vc, token="s3cret", default_speaker="狗與露",
+                          now_playing_state_path=path)
     async with TestClient(TestServer(app)) as client:
         body = await (await client.get("/now?t=s3cret")).json()
-        assert body["queue"] == [
-            {"title": "下一首A", "by": "阿明", "thumbnail": "https://i.ytimg.com/vi/a/hq.jpg"},
-            {"title": "下一首B", "by": "Marvin推薦（點給大家）", "thumbnail": ""},
-        ]
-
-
-@pytest.mark.asyncio
-async def test_http_now_queue_empty_when_no_queue():
-    """佇列為空（或未就緒）時 queue=[]，不炸。"""
-    from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
-    vc = _make_vc()
-    mc = MagicMock()
-    mc.stream_mode = True
-    mc.stream_paused = False
-    mc._current_stream_info = {"title": "當前歌", "requested_by": "狗與露", "thumbnail": ""}
-    mc.stream_queue = []
-    vc.bot.cogs.get.return_value = mc
-    app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
-    async with TestClient(TestServer(app)) as client:
-        body = await (await client.get("/now?t=s3cret")).json()
-        assert body["queue"] == []
+        assert body == {"playing": False}
 
 
 @pytest.mark.asyncio

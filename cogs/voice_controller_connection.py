@@ -887,16 +887,21 @@ class ConnectionMixin:
         # 6. 非阻塞啟動麥克風擷取（對齊 sink.write 用 loop.create_task 的規範）
         self.bot.loop.create_task(sink.start())
 
-    def start_browser_satellite_listening(self, browser_output, *, persistent: bool = False) -> None:
+    def start_browser_satellite_listening(self, browser_output, *, persistent: bool = True) -> None:
         """純軟體 satellite 輸出接縫：mixer 泵 → BrowserSpeakerOutput/StreamSpeakerOutput → 輸出。
 
         與 start_satellite_listening 差異＝無 Pi/wyoming mic 橋、無 Mac mic sink：輸入唯一
         來源是 main_satellite 的 POST /audio（inject_audio→handle_stt_result）。輸出預設注入
         BrowserSpeakerOutput（GET /reply 服務給瀏覽器）。Discord / Pi 路徑完全不受影響。
 
-        persistent＝False（預設，離散 TTS 回覆用；播完 idle 泵即停，CPU 0）；車載模式
-        （MARVIN_CAR_MODE + StreamSpeakerOutput）傳 True，比照 Pi 常駐喇叭讓泵連續跑，
-        避免歌與歌之間的靜音間隙讓泵停下、造成 /audio_stream 串流中斷重啟的延遲。
+        persistent＝True（預設，比照 Pi 常駐喇叭／車載 StreamSpeakerOutput）：泵不因 mixer
+        on-demand idle 判定「播完」而提前退出。2026-07-23 ESP32 puck 實測踩到的 race：
+        play_tts() 先 _ensure_mixer_playing() arm 泵、才 await _stream_tts_to_mixer() 把
+        TTS frame 推進 mixer；若 edge-tts 首塊延遲超過 mixer 的 idle grace（預設 1s，日常
+        LLM/搜尋併發下並不罕見），泵在任何 TTS frame 抵達前就讀到 mixer 的 b""（耗盡）、
+        close() 對空 _current no-op，整段回覆靜默遺失、無任何錯誤或警告可查。persistent=True
+        讓泵永遠等，改靠 BrowserSpeakerOutput.write() 自己的靜音 hangover 偵測（300ms）分
+        段，不受 mixer 退出時序影響。CPU 成本可忽略（同一顆本機 process 早已為車載模式常駐）。
         """
         from marvin_voice_core.playback_device import LocalSpeakerDevice
 
