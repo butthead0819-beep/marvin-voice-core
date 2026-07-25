@@ -678,7 +678,10 @@ HUD_HTML = """<!DOCTYPE html>
       ? waiting.reduce((a,b)=>(b.updated_at||0)>(a.updated_at||0)?b:a)
       : null;
     if(waitingOne){
-      return {kind:'respond', s:'warn', l:'Claude Code', t:`${esc(waitingOne.project)} 等你回應`,
+      // title 優先用 🏁 收尾行解析出的「處理了什麼問題」（見 scan_claude_sessions.py），
+      // 沒有這行（舊格式/純聊天回合）才退回專案名當標題。
+      const title=waitingOne.title?esc(waitingOne.title):`${esc(waitingOne.project)} 等你回應`;
+      return {kind:'respond', s:'warn', l:'Claude Code', t:title,
         sub:esc(waitingOne.last_text||''), g:'messages'};
     }
     if(rl && rl.five_hour && rl.five_hour.used_percentage!=null){

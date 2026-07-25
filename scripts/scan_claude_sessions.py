@@ -25,6 +25,9 @@ DEFAULT_SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 DEFAULT_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 IDLE_THRESHOLD_S = 15.0
 LAST_TEXT_MAX_CHARS = 400
+CONCLUSION_MARKER = "🏁"
+TITLE_MAX_CHARS = 20
+SUMMARY_MAX_CHARS = 120
 
 
 def _pid_alive(pid: int) -> bool:
@@ -45,6 +48,27 @@ def _extract_text(message: dict) -> str:
         parts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
         return "".join(parts)
     return ""
+
+
+def _parse_conclusion(text: str) -> tuple[str | None, str | None]:
+    """從 assistant 回應找最後一行 `🏁 <標題> — <結論>`（CLAUDE.md 規定的收尾格式），
+    給 HUD 卡片當標題／內文用，不另外呼叫 LLM 摘要。沒有這行就回 (None, None)，
+    呼叫端 fallback 用原文。"""
+    for line in reversed(text.splitlines()):
+        line = line.strip()
+        if not line.startswith(CONCLUSION_MARKER):
+            continue
+        rest = line[len(CONCLUSION_MARKER):].strip()
+        sep = "—" if "—" in rest else ("-" if " - " in rest else None)
+        if sep:
+            title, _, summary = rest.partition(sep)
+        else:
+            title, summary = rest, ""
+        title = title.strip()[:TITLE_MAX_CHARS]
+        if not title:
+            return None, None
+        return title, summary.strip()[:SUMMARY_MAX_CHARS]
+    return None, None
 
 
 def _last_role_and_text(transcript_path: str) -> tuple[str | None, str]:
@@ -96,12 +120,14 @@ def scan_sessions(sessions_dir: str = DEFAULT_SESSIONS_DIR,
         pid_dead = pid is not None and not _pid_alive(pid)
         idle = pid_dead or (now - mtime) > idle_threshold_s
         waiting = last_role == "assistant" and idle
+        title, summary = _parse_conclusion(last_text)
         results.append({
             "session_id": session_id,
             "project": os.path.basename(cwd),
             "cwd": cwd,
             "waiting": waiting,
-            "last_text": last_text[:LAST_TEXT_MAX_CHARS],
+            "title": title,
+            "last_text": summary if title else last_text[:LAST_TEXT_MAX_CHARS],
             "updated_at": mtime,
         })
     return results

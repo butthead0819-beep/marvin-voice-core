@@ -145,3 +145,45 @@ def test_missing_transcript_file_is_skipped_not_crashed(tmp_path):
     _write_session_json(sessions_dir, os.getpid(), "sess-ghost", "/Users/jackhuang/Code/ghost")
     results = scan_sessions(str(sessions_dir), str(projects_dir))
     assert results == []
+
+
+def test_conclusion_line_parsed_into_title_and_short_body(tmp_path):
+    """CLAUDE.md 規定收尾行 `🏁 <標題> — <結論>`；HUD 卡片要能拆出短標題＋短內文，
+    不是把一大段回應原文塞進卡片。"""
+    sessions_dir = tmp_path / "sessions"
+    projects_dir = tmp_path / "projects"
+    cwd = "/Users/jackhuang/Code/w"
+    pid = os.getpid()
+    _write_session_json(sessions_dir, pid, "sess-6", cwd)
+    now = time.time()
+    long_reply = (
+        "先看了 log，發現是 session 過期沒有重新登入導致的。\n"
+        "改了 auth.py 加上 token 過期自動 refresh 的邏輯，並補了對應測試。\n"
+        "🏁 修登入閃退 — 加了 token 自動 refresh"
+    )
+    _write_transcript(projects_dir, cwd, "sess-6",
+                       [_user_entry("幫我看一下"), _assistant_entry(long_reply)],
+                       mtime=now - 100)
+
+    results = scan_sessions(str(sessions_dir), str(projects_dir), now=now, idle_threshold_s=15)
+
+    assert results[0]["waiting"] is True
+    assert results[0]["title"] == "修登入閃退"
+    assert results[0]["last_text"] == "加了 token 自動 refresh"
+
+
+def test_no_conclusion_line_falls_back_to_raw_text_with_no_title(tmp_path):
+    """舊格式（沒有🏁收尾行）的訊息要能照舊運作：title 是 None，last_text 用原文截斷。"""
+    sessions_dir = tmp_path / "sessions"
+    projects_dir = tmp_path / "projects"
+    cwd = "/Users/jackhuang/Code/v"
+    pid = os.getpid()
+    _write_session_json(sessions_dir, pid, "sess-7", cwd)
+    now = time.time()
+    _write_transcript(projects_dir, cwd, "sess-7",
+                       [_assistant_entry("要不要重跑 CI？")], mtime=now - 100)
+
+    results = scan_sessions(str(sessions_dir), str(projects_dir), now=now, idle_threshold_s=15)
+
+    assert results[0]["title"] is None
+    assert results[0]["last_text"] == "要不要重跑 CI？"
