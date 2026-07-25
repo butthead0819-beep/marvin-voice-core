@@ -42,6 +42,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <driver/i2s.h>
+#include <freertos/semphr.h>
 #include <string.h>
 
 // ========== 你要填的 ==========
@@ -366,6 +367,65 @@ void pollAndPlayReply() {
 #define STREAM_RING_SIZE (1024 * 1024)
 #define STREAM_PREBUF_BYTES (96 * 1000)
 static uint8_t* streamRing = nullptr;
+// 2026-07-25 診斷用：查 pbuf_free 崩潰根因，抓三顆任務的堆疊水位一起比對
+// （見 carHeartbeat() 尾巴的 [StackWM] log）。
+static TaskHandle_t audioNetTaskHandle = nullptr;
+static TaskHandle_t audioPlayTaskHandle = nullptr;
+static TaskHandle_t loopTaskHandle = nullptr;
+
+// 2026-07-25 方案 A（隔離測試證實：拔掉心跳、只留 audioNetworkTask 31 分鐘零崩潰，
+// 心跳的 connect/POST/close 週期是 pbuf_free 崩潰的必要條件）：
+// 鎖只保護「真正的 byte 搬移」那一瞬間（client.read() 在 available()>0 時只是把
+// lwIP 已經收下的資料 memcpy 出來，微秒級），絕對不鎖任何等待資料/連線的迴圈——
+// 前一版鎖住 readStringUntil()/http.POST() 這種可能空等到 client 逾時（20s）的呼叫，
+// 等於持鎖阻塞 20 秒，才會撞 task watchdog。這版所有讀取都先用 available() 非阻塞
+// 判斷，沒資料就不鎖、vTaskDelay(1) 讓出 CPU，只有確定有資料在等時才進鎖。
+static SemaphoreHandle_t lwipMutex = nullptr;
+#define LWIP_LOCK()   xSemaphoreTake(lwipMutex, portMAX_DELAY)
+#define LWIP_UNLOCK() xSemaphoreGive(lwipMutex)
+
+// 非阻塞讀一行（到 \n，行尾 \r 會被去掉）：沒資料就不鎖、讓出 CPU 再檢查；
+// 有資料才進鎖搬。timeoutMs=0 代表不設逾時上限（仍會持續 yield，不忙迴圈）。
+// 回傳 false＝連線斷了或逾時前沒等到換行。
+static bool lockedReadLine(WiFiClient& client, String& out, uint32_t timeoutMs) {
+  out = "";
+  uint32_t t0 = millis();
+  for (;;) {
+    if (client.available() > 0) {
+      LWIP_LOCK();
+      int c = client.read();
+      LWIP_UNLOCK();
+      if (c < 0) { vTaskDelay(pdMS_TO_TICKS(1)); continue; }
+      if (c == '\n') return true;
+      if (c != '\r') out += (char)c;
+      continue;
+    }
+    if (!client.connected()) return false;
+    if (timeoutMs > 0 && millis() - t0 > timeoutMs) return false;
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+}
+
+// 非阻塞讀最多 want bytes：沒資料就不鎖、讓出 CPU；有資料才進鎖搬（一次搬
+// available() 跟剩餘需求的較小值）。回傳實際讀到的 byte 數（可能 < want，逾時/斷線）。
+static size_t lockedReadBytes(WiFiClient& client, uint8_t* buf, size_t want, uint32_t timeoutMs) {
+  size_t got = 0;
+  uint32_t t0 = millis();
+  while (got < want) {
+    int avail = client.available();
+    if (avail > 0) {
+      size_t chunk = (size_t)avail < (want - got) ? (size_t)avail : (want - got);
+      LWIP_LOCK();
+      int n = client.read(buf + got, chunk);
+      LWIP_UNLOCK();
+      if (n > 0) { got += (size_t)n; t0 = millis(); continue; }
+    }
+    if (!client.connected()) break;
+    if (timeoutMs > 0 && millis() - t0 > timeoutMs) break;
+    vTaskDelay(pdMS_TO_TICKS(1));
+  }
+  return got;
+}
 static volatile size_t ringHead = 0, ringTail = 0;   // 單一 producer（network）寫 head、單一 consumer（playback）讀 tail
 static volatile bool streamPrimed = false;           // 是否已蓄滿過一輪，允許開始播放
 
@@ -420,33 +480,37 @@ void audioNetworkTask(void* pv) {
     // TEMP：明碼 WiFiClient 直連區網 IP（見上面 MARVIN_LOCAL_HOST 註解），跳過 TLS
     // 解密開銷，測試是否解決 throughput 上不去的問題。
     WiFiClient client;
-    if (!client.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT)) {
+    LWIP_LOCK();
+    bool connectOk = client.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT);
+    LWIP_UNLOCK();
+    if (!connectOk) {
       Serial.println("[Stream] ⚠️ connect() 失敗，2s 後重試");
       vTaskDelay(pdMS_TO_TICKS(2000));
       continue;
     }
-    // mixer 是 on-demand 來源，兩幀之間偶爾會停超過 1s（Arduino Stream 預設逾時）。
-    // readStringUntil/readBytes 逾時只會回傳讀到一半的殘缺資料、不是錯誤，續行程式碼
-    // 會拿殘缺的 size-line 字串當成合法 chunk size 解析，從此永久錯位（2026-07-24 實測：
-    // 光修資料讀取迴圈那段不夠，這裡的逾時才是真正根因）。拉長到 20s，遠大於正常幀間空檔。
-    client.setTimeout(20000);
+    // mixer 是 on-demand 來源，兩幀之間偶爾會停超過 1s。舊版靠 client.setTimeout(20000)
+    // 讓 Arduino 內建的 readStringUntil/readBytes 空等到 20s——2026-07-25 改用
+    // lockedReadLine/lockedReadBytes（見上方定義），逾時改由呼叫端明講的 timeoutMs
+    // 參數控制，setTimeout 已無作用、拿掉。
     String req = String("GET /audio_stream?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
                  "Host: " + MARVIN_LOCAL_HOST + "\r\nConnection: close\r\n\r\n";
-    client.print(req);
+    LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
 
-    String status = client.readStringUntil('\n');
+    String status;
+    lockedReadLine(client, status, 20000);
     bool ok200 = status.indexOf("200") > 0;
     bool chunked = false;
     while (client.connected()) {
-      String h = client.readStringUntil('\n');
-      if (h.length() <= 1) break;             // 只剩 "\r"＝空行，標頭結束
+      String h;
+      if (!lockedReadLine(client, h, 20000)) break;   // 逾時/斷線＝跳出，走下面的重連
+      if (h.length() == 0) break;                     // 空行＝標頭結束
       if (h.indexOf("chunked") >= 0) chunked = true;
     }
 
     if (!ok200 || !chunked) {
       Serial.printf("[Stream] /audio_stream 非預期回應（200=%d chunked=%d）：%s",
                     ok200, chunked, status.c_str());
-      client.stop();
+      LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
       vTaskDelay(pdMS_TO_TICKS(5000));        // 車載模式未接串流輸出等更久，避免熱迴圈
       continue;
     }
@@ -470,7 +534,8 @@ void audioNetworkTask(void* pv) {
 #endif
 
     while (client.connected()) {
-      String sizeLine = client.readStringUntil('\n');
+      String sizeLine;
+      if (!lockedReadLine(client, sizeLine, 20000)) sizeLine = "";  // 逾時/斷線走下面統一當異常處理
       long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
       if (chunkSize <= 0) {
         // 2026-07-25：重連頻率實測每 1-5 分鐘一次、貫穿整晚，跟播放內容/歌曲轉場無關
@@ -485,19 +550,20 @@ void audioNetworkTask(void* pv) {
       long remain = chunkSize;
       while (remain > 0 && client.connected()) {
         size_t want = remain < (long)sizeof(buf) ? (size_t)remain : sizeof(buf);
-        int n = client.readBytes(buf, want);
-        if (n <= 0) {            // 逾時空讀、連線仍在＝重試；break 會丟下沒讀完的 remain
+        // 2026-07-25：lockedReadBytes 內部已經是「沒資料就 vTaskDelay(1) 讓出 CPU、
+        // 不忙迴圈」，n<=0 代表這裡設的 20s 逾時內完全沒有任何進展（真的斷了/伺服器
+        // 卡很久）——舊版同樣邏輯的顧慮（餓死 IDLE0 觸發 task watchdog）在這裡不成立，
+        // 因為讓出 CPU 的動作已經內建在 lockedReadBytes 的等待迴圈裡。
+        size_t n = lockedReadBytes(client, buf, want, 20000);
+        if (n == 0) {            // 逾時空讀、連線仍在＝重試；break 會丟下沒讀完的 remain
                                  // 位元組，後面 readStringUntil 撈到 PCM 當文字解析，
                                  // 永久錯位整條連線的 chunk 邊界（2026-07-24 實測：
                                  // 放出來的音訊像迴圈亂碼、聽不出完整單字）
-          vTaskDelay(pdMS_TO_TICKS(1));   // 讓出 CPU 給 IDLE0，否則空讀在此忙迴圈會
-                                            // 餓死 idle task 觸發 task watchdog 整board重開機
-                                            // （2026-07-25 實測：task_wdt Aborting，backtrace
-                                            // 卡在 audioStream；不需要即時性，讓一下無妨）
+          vTaskDelay(pdMS_TO_TICKS(1));
           continue;
         }
         ringWrite(buf, n);       // 只塞 buffer，不碰 I2S——播放節奏交給 audioPlaybackTask
-        remain -= n;
+        remain -= (long)n;
 
 #if STREAM_DEBUG_PRINT
         // 2026-07-25 懷疑：Serial.printf 本身在 HWCDC 底下可能會阻塞等 USB buffer
@@ -515,13 +581,13 @@ void audioNetworkTask(void* pv) {
         }
 #endif
       }
-      client.readStringUntil('\n');           // chunk 尾 CRLF
+      { String _crlf; lockedReadLine(client, _crlf, 20000); }   // chunk 尾 CRLF
     }
     if (!client.connected()) {
       Serial.printf("[Stream] 外層迴圈退出：client.connected()==false rssi=%d ringUsed=%u\n",
                     WiFi.RSSI(), (unsigned)ringUsed());
     }
-    client.stop();
+    LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
     Serial.println("[Stream] /audio_stream 斷線，1s 後重連");
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
@@ -592,25 +658,64 @@ void audioPlaybackTask(void* pv) {
 
 // STEP 7：車載 present 心跳（POST /car）——伺服器 TTL 預設 90s，這裡每 30s 送一次留足
 // margin。斷電＝板子直接死掉、心跳自然停送，交給伺服器 TTL 收尾（不用板子主動告知斷電）。
+//
+// 2026-07-25 除錯記錄（別再重踩，方案 A 已落地）：
+//   ①一開始懷疑 loopTask（跑 postAudio 的 TLS handshake）堆疊 8KB 不夠——實機崩潰前
+//     堆疊水位完全健康、且崩潰當下沒有任何 PTT/TLS 活動，排除。
+//   ②改猜「兩顆不同 core 同時碰 lwIP」，把心跳釘死去 audioNetworkTask 同一顆 core
+//     （carHeartbeatTask，仍保留這個安排）——30 分鐘實機蹲點照樣崩 6 次，排除。
+//     blocking I/O 呼叫本身就會 yield 讓出 CPU，同 core 不等於真正互斥執行。
+//   ③試過窄範圍互斥鎖，但鎖住了 `readStringUntil()`/`http.POST()` 這種可能阻塞到
+//     client 逾時（20s）的呼叫——持鎖阻塞 20 秒，17-20 秒內就撞 task watchdog，
+//     比原本崩潰還快，撤掉。
+//   ④隔離實驗：整個拔掉心跳任務，只留 audioNetworkTask+audioPlaybackTask，
+//     31 分鐘零崩潰——證實心跳的 connect/POST/close 週期是必要條件。
+//   ⑤方案 A（目前這版）：不用 HTTPClient（整包 POST 是不可拆的黑盒），改手動
+//     WiFiClient + lockedReadLine（見 audioNetworkTask 前的定義）——鎖只包住
+//     connect()／print() 這種 LAN 上通常幾十毫秒內完成的短操作，讀取一律先
+//     available() 非阻塞判斷，沒資料就不鎖、不會有③那種持鎖空等的情況。
 void carHeartbeat() {
-  HTTPClient http;
   // TEMP（2026-07-25）：跟 /audio_stream 一致，明碼直連區網 IP，避免每 30s 一次的 TLS
   // 握手佔用同一顆 WiFi 天線的時間片，跟主串流搶頻寬造成瞬間 throughput 掉底。
   WiFiClient client;
-  String url = String("http://") + MARVIN_LOCAL_HOST + ":" + MARVIN_LOCAL_PORT + "/car?t=" + MARVIN_TOKEN;
-  http.begin(client, url);
-  http.addHeader("Content-Type", "application/json");
-  int code = http.POST("{\"state\":\"present\"}");
+  LWIP_LOCK();
+  bool connectOk = client.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT);
+  LWIP_UNLOCK();
+  if (!connectOk) {
+    Serial.println("[Car] ⚠️ 心跳 connect() 失敗，跳過這輪");
+    return;
+  }
+  const char* body = "{\"state\":\"present\"}";
+  String req = String("POST /car?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
+               "Host: " + MARVIN_LOCAL_HOST + "\r\n" +
+               "Content-Type: application/json\r\n" +
+               "Content-Length: " + strlen(body) + "\r\n" +
+               "Connection: close\r\n\r\n" + body;
+  LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
+
+  String status;
+  lockedReadLine(client, status, 3000);   // 只在乎狀態碼，不解析/等 body
+  int code = 0;
+  int sp1 = status.indexOf(' ');
+  if (sp1 > 0) code = status.substring(sp1 + 1, sp1 + 4).toInt();
   Serial.printf("[Car] present 心跳 HTTP %d\n", code);
-  http.end();
+  LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
+  // 診斷用堆疊水位（見上方 2026-07-25 註解）：已排除堆疊溢位假說，繼續留著當健康度
+  // 觀察——四顆任務裡任何一個持續下探都值得回頭查。
+  Serial.printf("[StackWM] loopTask=%u carHeartbeat=%u audioNet=%u audioPlay=%u words\n",
+                loopTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(loopTaskHandle) : 0,
+                (unsigned)uxTaskGetStackHighWaterMark(NULL),
+                audioNetTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(audioNetTaskHandle) : 0,
+                audioPlayTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(audioPlayTaskHandle) : 0);
 }
 
-void carHeartbeatLoop() {   // 每 loop() 呼叫一次，內部用 millis() 非阻塞 gate 到 30s
-  static uint32_t lastBeat = 0;
-  uint32_t now = millis();
-  if (lastBeat != 0 && now - lastBeat < 30000) return;
-  lastBeat = now;
-  carHeartbeat();
+// 獨立任務，釘死 core 0（跟 audioNetworkTask 同核，理由見 carHeartbeat() 前的註解）。
+// 開機立刻打一次（不等第一輪 30s），之後每 30s 一次。
+void carHeartbeatTask(void* pv) {
+  for (;;) {
+    if (WiFi.status() == WL_CONNECTED) carHeartbeat();
+    vTaskDelay(pdMS_TO_TICKS(30000));
+  }
 }
 
 void postAudio(int nSamples);  // 前置宣告（hold-to-talk 放開時呼叫）
@@ -672,6 +777,10 @@ void postAudio(int nSamples) {
   Serial.printf("[POST /audio] HTTP %d：%s\n", code, http.getString().c_str());
   http.end();
   free(wav);
+  // 2026-07-25 診斷：postAudio 這裡是 loopTask 上唯一會做 TLS handshake
+  // （WiFiClientSecure）的地方，最可能把 8KB 堆疊吃緊——崩潰前後對照這個數字。
+  Serial.printf("[StackWM] loopTask after postAudio (TLS): %u words\n",
+                (unsigned)uxTaskGetStackHighWaterMark(NULL));
   if (code != 200) { setLed(LED_STANDBY); return; }   // 沒送成功＝沒回覆要播，別卡在青燈
 #if STEP >= 7
   // 車載常駐串流模式：/reply 已停用，回覆會自動從 audioStreamTask 的 /audio_stream 播出。
@@ -685,6 +794,8 @@ void postAudio(int nSamples) {
 
 // ------------------------------------------------------------------
 void setup() {
+  loopTaskHandle = xTaskGetCurrentTaskHandle();   // setup()/loop() 是同一顆 Arduino loopTask
+  lwipMutex = xSemaphoreCreateMutex();            // 必須在 audioNet/carHeartbeat 任務起來前建好
   Serial.begin(115200);
   delay(500);
   Serial.println("\n=== Marvin car_puck bring-up ===");
@@ -728,16 +839,20 @@ void setup() {
   // playback，即使 ring buffer 存量健康（40-95 萬 bytes，遠高於 96KB 開播門檻）也一樣
   // 卡（STREAM_DEBUG_PRINT 實測：maxGap 常態 100-150ms，兩次分別量到 1623ms/2322ms 的
   // 停頓，同時 ringUsed 完全沒見底，排除資料不足，鎖定是 CPU 排程）。改把 playback 挪去
-  // 跟 Arduino loop()/PTT/心跳 共用的 core 1——那些工作量很輕，不會像 network task
-  // 一樣搶爆；network 繼續獨占 core 0，兩者不再共核競爭，優先權高低就不重要了。
+  // 跟 Arduino loop()/PTT 共用的 core 1（2026-07-25 之後心跳搬去 core 0，見
+  // carHeartbeatTask）——loop() 剩下的工作量很輕，不會像 network task 一樣搶爆；
+  // network 繼續獨占 core 0，兩者不再共核競爭，優先權高低就不重要了。
   // 優先權=2（>Arduino loopTask 預設的 1）：跟 loopTask 同核心、同優先權時 FreeRTOS 靠
   // 時間片輪流，playback 不保證每輪都搶到；loop() 裡的 PTT/心跳未來變重時可能偶爾晚一輪
   // 才輪到 playback。實測目前很穩（maxGap 10.7ms）才調的，不是修急迫症狀，是把「贏
   // loopTask」從機率變保證。
-  BaseType_t _rNet = xTaskCreatePinnedToCore(audioNetworkTask, "audioNet", 16384, nullptr, 2, nullptr, 0);
-  BaseType_t _rPlay = xTaskCreatePinnedToCore(audioPlaybackTask, "audioPlay", 8192, nullptr, 2, nullptr, 1);
+  BaseType_t _rNet = xTaskCreatePinnedToCore(audioNetworkTask, "audioNet", 16384, nullptr, 2, &audioNetTaskHandle, 0);
+  BaseType_t _rPlay = xTaskCreatePinnedToCore(audioPlaybackTask, "audioPlay", 8192, nullptr, 2, &audioPlayTaskHandle, 1);
   Serial.printf("[Stream] 任務建立 net=%d play=%d（1=成功）\n", (int)_rNet, (int)_rPlay);
-  if (WiFi.status() == WL_CONNECTED) carHeartbeatLoop();   // 立刻上車，不等第一輪 30s
+  // 心跳釘死 core 0（跟 audioNetworkTask 同核，理由見 carHeartbeat() 前的註解）；
+  // 任務起來後第一輪迴圈立刻打一次，不用等第一輪 30s。隔離實驗（31 分鐘拔掉心跳
+  // 零崩潰）已證實心跳是必要條件，方案 A 落地後重新啟用測試。
+  xTaskCreatePinnedToCore(carHeartbeatTask, "carHeartbeat", 8192, nullptr, 1, nullptr, 0);
 #endif
   // 收尾定燈：WiFi 通但沒跑 Funnel 檢查（STEP 1）也給個 connected 提示；
   // 若前面已 setLed(ERROR/CONNECTED) 則不覆蓋。
@@ -757,9 +872,7 @@ void loop() {
 #if STEP >= 5
   pttHoldToTalk();   // 按住說話、放開送出
 #endif
-#if STEP >= 7
-  carHeartbeatLoop();   // 30s 一次 POST /car present（內部 millis gate，非阻塞判斷）
-#endif
+  // 心跳 2026-07-25 起改由 carHeartbeatTask（core 0 專用任務）驅動，不再從這裡呼叫。
   updateLed();       // 狀態燈動畫（非阻塞）
   delay(5);
 }
