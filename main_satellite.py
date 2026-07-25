@@ -1628,6 +1628,21 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     return app
 
 
+def resolve_car_owner_pool(vc, owner: str, now: float | None = None) -> list:
+    """車載＝機主一人的候選池（復用既有 build_member_pools 純函式，見 CodeQ#4）。
+
+    音樂記憶掛在 vc.bot.music_memory（非 MusicCog 物件本身），別再誤抓 cog 屬性。
+    """
+    from music_recommender import build_member_pools
+
+    mm = getattr(vc.bot, "music_memory", None)
+    if mm is None:
+        return []
+    pools = build_member_pools(members=[owner], songs=mm.all_songs(),
+                               exclude_titles=[], now=now if now is not None else time.time())
+    return pools.get(owner, [])
+
+
 async def start_text_http_server(vc, reply_source=None, stream_source=None):
     """起 Siri 文字 HTTP 伺服器（0.0.0.0，走 Tailscale）。回傳 runner（好收）。
 
@@ -1646,20 +1661,13 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
     audio_rate_limiter = None
     if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
         from car_mode import build_car_presence, run_car_ttl_loop
-        from music_recommender import build_member_pools
         from rate_limiter import RateLimiter
         owner = default_speaker
 
         def _pool_provider():
-            # 車載＝機主一人的候選池（復用既有 build_member_pools 純函式，見 CodeQ#4）。失敗→空池降級。
+            # 失敗→空池降級，不讓車載開場因例外整個炸掉。
             try:
-                mc = vc.bot.cogs.get("MusicCog")
-                mm = getattr(mc, "mm", None) or getattr(mc, "_music_memory", None)
-                if mm is None:
-                    return []
-                pools = build_member_pools(members=[owner], songs=mm.all_songs(),
-                                           exclude_titles=[], now=time.time())
-                return pools.get(owner, [])
+                return resolve_car_owner_pool(vc, owner)
             except Exception:  # noqa: BLE001
                 logger.exception("[CarMode] pool_provider 失敗，回空池")
                 return []
