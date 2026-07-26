@@ -483,8 +483,47 @@ HUD_HTML = """<!DOCTYPE html>
   .vinyl-card.focused .vmeta{ margin-left:38%; }
   @keyframes spin{ to{ transform:rotate(360deg); } }
   @media (prefers-reduced-motion:reduce){ .vinyl-card .vdisc{ animation:none; } }
-  .mcard:focus-visible{ outline:2px solid rgb(var(--marvin)); outline-offset:-2px; }
+  /* ---- Gmail 卡片內嵌展開與聚焦適配 (避免巨大 .title 擠掉摘要內容) ---- */
+  .card.gmail-card { cursor: pointer; }
+  .card.gmail-card .title { transition: font-size 0.3s ease; }
+  .card.gmail-card.focused .title {
+    font-size: 5cqh !important; line-height: 1.2; margin-bottom: 1cqh; flex: none;
+  }
+  .gmailexpand {
+    flex: 1; min-height: 0; margin: 1.2cqh 0; display: flex; flex-direction: column;
+    gap: 1.2cqh; overflow-y: auto; z-index: 3; text-align: left; padding-right: 0.5cqh;
+  }
+  .gmail-card-item {
+    flex: none; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(76, 157, 255, 0.25);
+    border-radius: 2cqh; padding: 1.4cqh 1.8cqh; transition: background 0.2s;
+  }
+  .gmail-card-item:hover { background: rgba(255, 255, 255, 0.12); }
+  .gmail-card-item .g-top { display: flex; justify-content: space-between; align-items: center; }
+  .gmail-card-item .g-sender { font-size: 3cqh; font-weight: 700; color: #fff; }
+  .gmail-card-item .g-date { font-family: var(--mono); font-size: 2.4cqh; color: var(--muted); }
+  .gmail-card-item .g-subject { font-family: var(--font); font-size: 3.4cqh; font-weight: 700; color: #fff; margin: 0.5cqh 0; line-height: 1.25; }
+  .gmail-card-item .g-summary { font-size: 2.8cqh; color: rgba(238, 242, 246, 0.85); line-height: 1.35; margin-bottom: 0.8cqh; }
+  .gmail-card-item .g-action {
+    display: inline-flex; align-items: center; gap: 0.6cqh; font-size: 2.6cqh; font-weight: 650;
+    padding: 0.5cqh 1.2cqh; border-radius: 1cqh;
+  }
+  .gmail-card-item.priority-high .g-action { background: rgba(255, 107, 94, 0.2); color: #ff6b5e; border: 1px solid rgba(255, 107, 94, 0.4); }
+  .gmail-card-item.priority-medium .g-action { background: rgba(245, 178, 62, 0.2); color: #f5b23e; border: 1px solid rgba(245, 178, 62, 0.4); }
+  .gmail-card-item.priority-low .g-action { background: rgba(76, 157, 255, 0.2); color: #4c9dfd; border: 1px solid rgba(76, 157, 255, 0.4); }
+  
+  .card.focused .gmailexpand { gap: 1.6cqh; }
+  .card.focused .gmail-card-item { padding: 1.8cqh 2.2cqh; border-radius: 2.2cqh; background: rgba(255, 255, 255, 0.08); }
+  .card.focused .gmail-card-item .g-sender { font-size: 3.6cqh; }
+  .card.focused .gmail-card-item .g-date { font-size: 2.8cqh; }
+  .card.focused .gmail-card-item .g-subject { font-size: 4.2cqh; margin: 0.6cqh 0; }
+  .card.focused .gmail-card-item .g-summary { font-size: 3.4cqh; line-height: 1.4; }
+  .card.focused .gmail-card-item .g-action { font-size: 3cqh; padding: 0.6cqh 1.4cqh; }
+  .gmail-empty-hint { font-size: 3.2cqh; color: var(--muted); padding: 2cqh 0; font-style: italic; }
+
+
   .card .done{ margin-top:2cqh; font-size:3.6cqh; font-weight:650; color:rgb(var(--c)); font-family:var(--mono); }
+
+
   @keyframes rise{ from{ opacity:0; transform:translateY(2cqh) scale(.985); } to{ opacity:1; transform:none; } }
 
   /* dock 收起時整個變矮（不只 icon 橫向收），讓 .stage（flex:1）自動吃到多出來的高度；
@@ -738,6 +777,23 @@ HUD_HTML = """<!DOCTYPE html>
     return `<div class="vexpand">${progress}${comment}${qlist}</div>`;
   }
 
+  function renderGmailExpand(emails, focused){
+    if(!emails || !emails.length) {
+      return `<div class="gmailexpand"><div class="gmail-empty-hint">📩 目前沒有需要特別處理的信件</div></div>`;
+    }
+    return `<div class="gmailexpand">
+      ${emails.map(m=>`
+        <div class="gmail-card-item priority-${esc(m.priority||'medium')}">
+          <div class="g-top"><span class="g-sender">${esc(m.sender||'')}</span><span class="g-date">${esc(m.date||'')}</span></div>
+          <div class="g-subject">${esc(m.subject||'')}</div>
+          <div class="g-summary">${esc(m.summary||'')}</div>
+          ${m.action_item?`<div class="g-action">💡 ${esc(m.action_item)}</div>`:''}
+        </div>
+      `).join('')}
+    </div>`;
+  }
+
+
   const MAX_CARDS=3;
   // Marvin 狀態文字跟著真實 mood 走（claudeMoodOverride 見 claudeCard()），不再靠場景假資料。
   function marvinBaseCard(){
@@ -759,10 +815,12 @@ HUD_HTML = """<!DOCTYPE html>
     // 否則退化成總數。行事曆獨立一行走 info。沒資料就不佔位。
     if(liveGmailCal && (liveGmailCal.unread||0)>0){
       const cats=liveGmailCal.cats||{};
+      const importantEmails=liveGmailCal.important_emails||[];
       const CAT_ORDER=['關注的信件','重要通知','工作郵件','發票郵件','銀行通知'];
       const catParts=CAT_ORDER.filter(k=>cats[k]>0).map(k=>`${k} ${cats[k]}`);
-      const t=catParts.length?catParts.join(' · '):`${liveGmailCal.unread} 封未讀`;
-      others.push({kind:'ambient', s:'info', l:'收件匣（本週）', t, g:'messages'});
+      const unreadText=catParts.length?catParts.join(' · '):`${liveGmailCal.unread} 封未讀`;
+      const t=importantEmails.length?`✉️ ${importantEmails.length} 封重要待處理 · ${unreadText}`:unreadText;
+      others.push({kind:'ambient', s:'info', l:'收件匣（本週）', t, g:'messages', gmailEmails: importantEmails});
     }
     if(liveGmailCal && (liveGmailCal.calToday||0)>0){
       others.push({kind:'info', s:'info', l:'行事曆', t:`今天 ${liveGmailCal.calToday} 場行程`, g:'calendar'});
@@ -803,6 +861,14 @@ HUD_HTML = """<!DOCTYPE html>
           ${expand}
           <div class="vmeta">${resolveMeta(c.meta)}</div></div>`;
       }
+      if(c.gmailEmails){
+        const expand=focused?renderGmailExpand(c.gmailEmails, focused):'';
+        return `<div class="card gmail-card ${focCls}" data-key="${key}" style="flex:${k.w} 1 0;--c:var(--${c.s})">
+          <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+          <div><div class="title">${c.t}</div>${c.sub?`<div class="sub">${mdLite(c.sub)}</div>`:''}</div>
+          ${expand}
+          <div class="glyph">${svg(c.g||'messages')}</div></div>`;
+      }
       if(c.queue){
         const items=resolveQueue(c.queue);
         if(!items.length){
@@ -830,6 +896,8 @@ HUD_HTML = """<!DOCTYPE html>
         <div><div class="title">${c.t}</div>${c.sub?`<div class="sub">${mdLite(c.sub)}</div>`:''}${acts}</div>
         <div class="glyph ${c.g==='marvin'?'face':''}">${c.g==='marvin'?MFACE:svg(c.g)}</div></div>`;
     }).join('');
+
+
     stage.classList.toggle('focused-mode', !!focusKey);
     // 別張卡被聚焦時保留目前 mood（不被 marvinBaseCard() 的預設值蓋掉），其餘情況
     // 直接吃 marvin 卡的 mood（已經在 buildCards() 裡把 claudeMoodOverride 算進去了）。
@@ -1279,7 +1347,8 @@ HUD_HTML = """<!DOCTYPE html>
     try{
       const r=await fetch("/gmail_calendar_status?t="+encodeURIComponent(TOKEN),{cache:"no-store"});
       const j=await r.json();
-      liveGmailCal = {unread:j.gmail_unread, calToday:j.calendar_today_count, cats:j.gmail_categories||{}};
+      liveGmailCal = {unread:j.gmail_unread, calToday:j.calendar_today_count, cats:j.gmail_categories||{}, important_emails:j.important_emails||[]};
+
     }catch(e){ liveGmailCal=null; }
     const key=JSON.stringify(liveGmailCal);
     if(key!==lastGmailCalKey){ lastGmailCalKey=key; render(); }
@@ -1571,8 +1640,10 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         return web.json_response({
             "gmail_unread": state.get("gmail_unread"),
             "gmail_categories": state.get("gmail_categories", {}),
+            "important_emails": state.get("important_emails", []),
             "calendar_today_count": state.get("calendar_today_count"),
         }, headers=_CORS)
+
 
     async def handle_wake(request):
         if hasattr(vc, "_on_satellite_wake"):

@@ -16,11 +16,16 @@ Gmail/Calendar 兩個數字寫進跨進程橋接檔（gmail_calendar_state.py）
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import subprocess
 import sys
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO_DIR)
+
+from gmail_calendar_state import load_gmail_calendar_state  # noqa: E402
+
 CLAUDE_BIN = os.environ.get("MARVIN_CLAUDE_BIN", "claude")
 
 PROMPT_TEMPLATE = """1. 呼叫 Gmail MCP 工具 search_threads，query 是 "is:unread newer_than:7d -in:draft"，
@@ -40,22 +45,53 @@ PROMPT_TEMPLATE = """1. 呼叫 Gmail MCP 工具 search_threads，query 是 "is:u
 
    計算出 5 個類別的各自數量（若某類為 0 可省略），格式：
    {{"關注的信件": N1, "重要通知": N2, "工作郵件": N3, "發票郵件": N4, "銀行通知": N5}}
-   總數 N = 所有類別加總。不要讀信件內容，只看 sender。
-2. 呼叫 Google Calendar MCP 工具 list_events，calendarId 用 "primary"，
+   總數 N = 所有類別加總。
+
+2. 重要信件 LLM 智慧篩選與建議動作 (Action Item)：
+   已知已處理的歷史快取信件列表如下 (JSON)：
+   {existing_cached_json}
+
+   針對上述 threads 列表中最新 10 封信件：
+   - 若該 Thread ID 已在上方快取列表中，直接復用其 summary 與 action_item，不要重複分析。
+   - 若為全新未處理信件，分析其主旨 (subject) 與 snippet：
+     - 優先篩選需處理或關注的信件（如：繳費通知、工作 PR/需求、緊急帳號通知、行程確認、重點電子報等）。
+     - **若沒有急件，亦必須挑選最新 2~3 封未讀信件（含「關注的信件」分類）** 進行摘要。
+     - 每封信件產生結構：
+       - subject: 信件主旨
+       - sender: 寄件者名稱/Domain
+       - date: 寄出日期或時間描述
+       - summary: 1-2 句話精簡繁體中文摘要
+       - action_item: 建議動作（如有繳費/回覆需求則寫明確動作；無須操作則寫 "無須動作，僅通知"）
+       - priority: "high"、"medium" 或 "low"
+   - 篩選整合出最多 3 封最重要/最新的信件摘要，格式為 JSON 陣列：
+     [
+       {{"id": "...", "subject": "...", "sender": "...", "date": "...", "summary": "...", "action_item": "...", "priority": "medium"}}
+     ]
+
+
+3. 呼叫 Google Calendar MCP 工具 list_events，calendarId 用 "primary"，
    startTime="{today}T00:00:00+08:00"，endTime="{today}T23:59:59+08:00"，
-   timeZone="Asia/Taipei"。算回傳的事件數量（沒有 items 欄位就是 0）。不要描述
-   事件內容。
-3. 用 Bash 執行（工作目錄是 {repo_dir}）：
+   timeZone="Asia/Taipei"。算回傳的事件數量（沒有 items 欄位就是 0）。不要描述事件內容。
+
+4. 用 Bash 執行（工作目錄是 {repo_dir}）：
    python3 scripts/sync_gmail_calendar_state.py --unread <N> --calendar-today <M> \
-     --categories '<CATEGORIES_JSON>'
-   N=總數、M=步驟 2 的事件數、CATEGORIES_JSON=步驟 1 算出的 JSON（單引號包住）。
-只做這三步，不要輸出其他文字、不要問確認。
+     --categories '<CATEGORIES_JSON>' --important-emails '<IMPORTANT_EMAILS_JSON>'
+   N=總數、M=步驟 3 的事件數、CATEGORIES_JSON=步驟 1 算出的 JSON、IMPORTANT_EMAILS_JSON=步驟 2 算出的 JSON 陣列（單引號包住）。
+只做這四步，不要輸出其他文字、不要問確認。
 """
 
 
 def main() -> int:
     today = dt.date.today().isoformat()
-    prompt = PROMPT_TEMPLATE.format(today=today, repo_dir=REPO_DIR)
+    existing_state = load_gmail_calendar_state() or {}
+    existing_cached_emails = existing_state.get("important_emails", [])
+    existing_cached_json = json.dumps(existing_cached_emails, ensure_ascii=False)
+
+    prompt = PROMPT_TEMPLATE.format(
+        today=today,
+        repo_dir=REPO_DIR,
+        existing_cached_json=existing_cached_json,
+    )
     try:
         result = subprocess.run(
             [CLAUDE_BIN, "-p", "--allowedTools",
@@ -73,6 +109,7 @@ def main() -> int:
         return 1
     print(result.stdout)
     return 0
+
 
 
 if __name__ == "__main__":

@@ -23,14 +23,26 @@ async def test_returns_counts_when_fresh(tmp_path):
     from main_satellite import build_text_app
     import time
     path = str(tmp_path / "gmail_calendar_state.json")
-    save_gmail_calendar_state(gmail_unread=12, calendar_today_count=2, updated_at=time.time(), path=path)
+    important_emails = [
+        {"id": "t1", "subject": "測試主旨", "sender": "測試寄件者", "summary": "測試摘要", "action_item": "請確認", "priority": "high"}
+    ]
+    save_gmail_calendar_state(
+        gmail_unread=12,
+        calendar_today_count=2,
+        important_emails=important_emails,
+        updated_at=time.time(),
+        path=path,
+    )
 
     app = build_text_app(_make_vc(), token=None, gmail_calendar_state_path=path)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/gmail_calendar_status")
         assert resp.status == 200
         body = await resp.json()
-        assert body == {"gmail_unread": 12, "calendar_today_count": 2}
+        assert body["gmail_unread"] == 12
+        assert body["calendar_today_count"] == 2
+        assert body["important_emails"] == important_emails
+
 
 
 @pytest.mark.asyncio

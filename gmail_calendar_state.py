@@ -23,18 +23,24 @@ DEFAULT_STALE_AFTER_S = 3600.0 * 3
 def load_gmail_calendar_state(path: str = DEFAULT_PATH) -> dict | None:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+            if isinstance(data, dict):
+                data.setdefault("important_emails", [])
+            return data
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
 
 def save_gmail_calendar_state(*, gmail_unread: int, calendar_today_count: int,
                                gmail_categories: dict | None = None,
+                               important_emails: list[dict] | None = None,
                                updated_at: float, path: str = DEFAULT_PATH) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump({
             "gmail_unread": gmail_unread,
             "gmail_categories": gmail_categories or {},
+            "important_emails": important_emails or [],
             "calendar_today_count": calendar_today_count,
             "updated_at": updated_at,
         }, f)
+
