@@ -64,7 +64,7 @@ const char* MARVIN_TOKEN = "PASTE_YOUR_TOKEN";                // ⚠️ 別 comm
 // Wi-Fi），先試直連 Mac 區網 IP + 明碼 HTTP，看 throughput 是否顯著改善來確認假設。
 // 只有這條高頻寬串流走這個路徑，/car 心跳、/now 等低流量請求維持原本 HTTPS 不動。
 // ⚠️ 只在家測試網路有效；真的出門用 4G 時這個 IP 打不通，需要退回 Tailscale/Funnel。
-const char* MARVIN_LOCAL_HOST = "填你家 Mac 的區網 IP";
+const char* MARVIN_LOCAL_HOST = "192.168.1.130";
 const int   MARVIN_LOCAL_PORT = 8790;
 
 // ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
@@ -187,7 +187,9 @@ void testFunnelNow() {
   client.setInsecure();   // bring-up 先跳過憑證驗證（Funnel 是有效 LetsEncrypt，之後可加 CA）
   Serial.println("[HTTPS] 連 Funnel ...");
   if (!client.connect(MARVIN_HOST, MARVIN_PORT)) {
-    Serial.println("[HTTPS] ❌ TLS 連不上（TLS 太重/沒網/Funnel 沒開）");
+    char errBuf[128];
+    client.lastError(errBuf, sizeof(errBuf));
+    Serial.printf("[HTTPS] ❌ TLS 連不上（TLS 太重/沒網/Funnel 沒開）lastError=%s\n", errBuf);
     setLed(LED_ERROR);
     return;
   }
@@ -768,18 +770,26 @@ void postAudio(int nSamples) {
   memcpy(wav+36,"data",4); wr32(40,dataBytes);
   memcpy(wav+44, recBuf, dataBytes);
 
+  // 2026-07-26：改走區網明碼直連 Mac（跟 /car 心跳、/audio_stream 一致），跳過 Funnel TLS
+  // ——實測 Funnel 對 ESP32 的 TLS ClientHello 會在握手中回 EOF 直接斷線（lastError=
+  // "SSL - The connection indicated an EOF"），/audio 送出必炸 HTTP -1。只在家測試網路有效；
+  // 出門用 4G 時這條區網 IP 打不通，需要退回 Funnel（Funnel TLS 本身待查修）。
+  // ⚠️ loopTask（core 1）跟 audioNetworkTask/carHeartbeatTask（core 0）共用 lwIP，未上鎖
+  // 就從這裡直接 connect/POST 撞上就是已知的 pbuf_free 崩潰（實測重現：LoadProhibited
+  // 當機重開機）。跟其他跨 core 的 lwIP 呼叫一致，全程包住 LWIP_LOCK/UNLOCK。
   HTTPClient http;
-  WiFiClientSecure client; client.setInsecure();
-  String url = String("https://") + MARVIN_HOST + "/audio?t=" + MARVIN_TOKEN;
+  WiFiClient client;
+  String url = String("http://") + MARVIN_LOCAL_HOST + ":" + MARVIN_LOCAL_PORT + "/audio?t=" + MARVIN_TOKEN;
+  LWIP_LOCK();
   http.begin(client, url);
   http.addHeader("Content-Type", "audio/wav");
   int code = http.POST(wav, wavBytes);
-  Serial.printf("[POST /audio] HTTP %d：%s\n", code, http.getString().c_str());
+  String respBody = http.getString();
   http.end();
+  LWIP_UNLOCK();
+  Serial.printf("[POST /audio] HTTP %d：%s\n", code, respBody.c_str());
   free(wav);
-  // 2026-07-25 診斷：postAudio 這裡是 loopTask 上唯一會做 TLS handshake
-  // （WiFiClientSecure）的地方，最可能把 8KB 堆疊吃緊——崩潰前後對照這個數字。
-  Serial.printf("[StackWM] loopTask after postAudio (TLS): %u words\n",
+  Serial.printf("[StackWM] loopTask after postAudio: %u words\n",
                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
   if (code != 200) { setLed(LED_STANDBY); return; }   // 沒送成功＝沒回覆要播，別卡在青燈
 #if STEP >= 7
