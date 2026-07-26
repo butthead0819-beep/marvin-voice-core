@@ -33,14 +33,20 @@ import time
 from dotenv import load_dotenv
 
 import memory_sandbox
-from marvin_voice_core.audio_stream_batcher import iter_batched_frames
+from marvin_voice_core.audio_stream_batcher import iter_batched_encoded_frames
+from marvin_voice_core.mp3_stream_encoder import Mp3StreamEncoder
 
 logger = logging.getLogger(__name__)
 
-# /audio_stream 送出前合併小 frame 的門檻（bytes）：48k stereo s16 → 192 bytes/ms。
-# 預設 100ms（19200 bytes，約 5 個 20ms mixer frame），把封包數從 50/s 砍到 10/s，
-# 減少對車載 WiFi 逐封包時序抖動的敏感度（見 audio_stream_batcher.py）。
-_AUDIO_STREAM_BATCH_BYTES = int(os.getenv("MARVIN_AUDIO_STREAM_BATCH_MS", "100")) * 192
+# /audio_stream 即時轉成 MP3 再送出（見 project_car_puck_funnel_tls_and_fallback：Funnel+
+# 熱點實測 throughput 只有 ~60KB/s，遠低於未壓縮 stereo 48k 需要的 187.5KB/s）。家用WiFi/
+# 熱點兩條網路路徑都套用同一份編碼，firmware 端只需維護一套 arduino-libhelix 解碼路徑。
+_AUDIO_STREAM_MP3_KBPS = int(os.getenv("MARVIN_AUDIO_STREAM_MP3_KBPS", "128"))
+
+# /audio_stream 送出前合併小 MP3 chunk 的門檻（bytes），降低對車載 WiFi 逐封包時序抖動
+# 的敏感度（見 audio_stream_batcher.py）。門檻依編碼後的 bitrate 換算，不是原始 PCM。
+_AUDIO_STREAM_BATCH_BYTES = max(
+    1, _AUDIO_STREAM_MP3_KBPS * 1000 // 8 * int(os.getenv("MARVIN_AUDIO_STREAM_BATCH_MS", "100")) // 1000)
 
 
 def maybe_activate_memory_sandbox(env) -> bool:
@@ -1536,24 +1542,32 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         return web.Response(text=html, content_type="text/html", headers=_CORS)
 
     async def handle_audio_stream(request):
-        """GET /audio_stream — 車載 puck 連續收音：chunked 即時轉送 mixer PCM。
+        """GET /audio_stream — 車載 puck 連續收音：chunked 即時轉送 mixer PCM（MP3編碼）。
 
         跟 /reply 不同：不做靜音切段緩衝整段回，而是 frame 一到就吐給連線中的 client，
         讓 ESP32 能像收音機一樣連續播放整份歌單，不受單段緩衝上限限制（見 StreamSpeakerOutput）。
-        無 stream_source（車載模式未接串流輸出）→ 404。
+        送出前即時轉成 MP3（Mp3StreamEncoder）——原始 stereo 48k PCM 需要 187.5KB/s，
+        Funnel+熱點實測只有 ~60KB/s throughput，128kbps MP3 只需 ~16KB/s（見
+        project_car_puck_funnel_tls_and_fallback）。無 stream_source（車載模式未接串流
+        輸出）→ 404。
         """
         if stream_source is None:
             return web.Response(status=404, headers=_CORS)
         resp = web.StreamResponse(status=200, headers={
-            **_CORS, "Content-Type": "application/octet-stream",
+            **_CORS, "Content-Type": "audio/mpeg",
+            "X-Audio-Codec": "mp3",
             "X-Audio-Rate": str(stream_source.rate),
             "X-Audio-Channels": str(stream_source.channels),
             "X-Audio-Bits": str(stream_source.bits),
         })
         await resp.prepare(request)
         q = stream_source.subscribe()
+        encoder = Mp3StreamEncoder(
+            rate=stream_source.rate, channels=stream_source.channels,
+            bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
         try:
-            async for chunk in iter_batched_frames(q, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
+            async for chunk in iter_batched_encoded_frames(
+                    q, encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
                 await resp.write(chunk)
         except (ConnectionError, asyncio.CancelledError):
             # ConnectionError 涵蓋 BrokenPipeError/ConnectionResetError，也涵蓋 aiohttp

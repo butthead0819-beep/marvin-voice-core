@@ -24,3 +24,25 @@ async def iter_batched_frames(q: asyncio.Queue, *, min_bytes: int) -> AsyncItera
         if len(buf) >= min_bytes:
             yield bytes(buf)
             buf.clear()
+
+
+async def iter_batched_encoded_frames(q: asyncio.Queue, encoder, *, min_bytes: int) -> AsyncIterator[bytes]:
+    """跟 iter_batched_frames 邏輯相同，差別是每個原始 PCM frame 先經過 encoder.encode()
+    轉成壓縮 bytes 才累積（見 mp3_stream_encoder.py）；收到 None 時額外呼叫 encoder.flush()
+    把 lame 內部殘留、還沒湊滿一個 MP3 frame 的樣本吐乾淨再一起送出。"""
+    buf = bytearray()
+    while True:
+        frame = await q.get()
+        if frame is None:
+            tail = encoder.flush()
+            if tail:
+                buf += tail
+            if buf:
+                yield bytes(buf)
+            return
+        encoded = encoder.encode(frame)
+        if encoded:
+            buf += encoded
+        if len(buf) >= min_bytes:
+            yield bytes(buf)
+            buf.clear()

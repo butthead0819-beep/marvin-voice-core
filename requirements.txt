@@ -10,6 +10,7 @@ faster-whisper==1.2.1
 google-genai==1.70.0
 google-generativeai==0.8.6
 groq==1.2.0
+lameenc==1.8.4
 mcrcon==0.7.0
 mss==10.1.0
 numpy==2.4.4

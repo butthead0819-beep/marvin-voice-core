@@ -45,6 +45,9 @@
 #include <driver/i2s.h>
 #include <freertos/semphr.h>
 #include <string.h>
+#include <MP3DecoderHelix.h>   // pschatzmann/arduino-libhelix — decode-only(不接管連線),
+                                // 塞進既有 audioNetworkTask(填ring buffer)/audioPlaybackTask
+                                // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
 
 // ========== 你要填的 ==========
 #define STEP 7   // ← 從 1 開始，每步綠了再 +1
@@ -378,8 +381,13 @@ void pollAndPlayReply() {
 // 2026-07-25 追加：曾試拉到 4MiB 想換更長抗抖動空間，但同一輪實測重連變得更頻繁+
 // 中斷變更長，先退回 1MiB 做對照排除「buffer 大小本身導致不穩」這個變因，只留
 // audioNetworkTask 的「重連不強制重蓄」修法。等對照測試結果出來再決定要不要重新拉大。
+// 2026-07-26：/audio_stream 改送 MP3（128kbps，見 server 端 Mp3StreamEncoder），ring
+// buffer 現在裝的是壓縮 bytes，不是原始 PCM——同樣 1MiB 現在能撐 ~64s 音訊（原本
+// stereo PCM 只能撐 ~5.5s），STREAM_PREBUF_BYTES 改用 bitrate 換算維持 ~0.5s 開播延遲
+// （不再是「越大越抗抖動」，MP3 bitrate 遠低於 187.5KB/s 需求，抗抖動空間本來就大增）。
+#define MP3_BITRATE_KBPS 128
 #define STREAM_RING_SIZE (1024 * 1024)
-#define STREAM_PREBUF_BYTES (96 * 1000)
+#define STREAM_PREBUF_BYTES ((MP3_BITRATE_KBPS * 1000 / 8) / 2)   // ~0.5s
 static uint8_t* streamRing = nullptr;
 // 2026-07-25 診斷用：查 pbuf_free 崩潰根因，抓三顆任務的堆疊水位一起比對
 // （見 carHeartbeat() 尾巴的 [StackWM] log）。
@@ -451,12 +459,20 @@ static size_t lockedReadBytes(WiFiClient& client, uint8_t* buf, size_t want, uin
 }
 static volatile size_t ringHead = 0, ringTail = 0;   // 單一 producer（network）寫 head、單一 consumer（playback）讀 tail
 static volatile bool streamPrimed = false;           // 是否已蓄滿過一輪，允許開始播放
+// 2026-07-26：MP3 化之後每次重連都要處理——每個 HTTP 連線在 server 端都是全新一份
+// Mp3StreamEncoder（見 handle_audio_stream），舊連線最後幾個 bytes 可能卡在 MP3 frame
+// 中間，直接接上新連線開頭的 bytes 會讓 decoder 的 frame_buffer 對不齊，findSynchWord
+// 誤認出假的 sync word，症狀＝MP3 格式忽快忽慢亂跳（實機驗證過：raw PCM 時代這裡靠
+// 「ring 還有存量就不強制重蓄」換無感重連是對的，MP3 沒有這個彈性，byte stream 邊界
+// 一定要跟 decoder 重置對齊）。改成每次重連無條件清空 ring + 標記需要重置 decoder。
+static volatile bool mp3NeedsReset = false;
 
 static inline size_t ringUsed() {
   size_t h = ringHead, t = ringTail;
   return (h >= t) ? (h - t) : (STREAM_RING_SIZE - t + h);
 }
 static inline size_t ringFree() { return STREAM_RING_SIZE - 1 - ringUsed(); }
+static inline void ringReset() { ringHead = 0; ringTail = 0; }
 
 // memcpy 版（最多跨 wraparound 分兩段拷貝），取代逐 byte 迴圈——逐 byte 版每個位元組都要
 // 算一次 modulo，512 位元組一次呼叫的額外開銷跟實際音訊時長（~2.7ms）相比不算小，加上
@@ -572,23 +588,20 @@ void audioNetworkTask(void* pv) {
       continue;
     }
     Serial.println("[Stream] /audio_stream 連上，開始灌 buffer");
-    // 2026-07-25：原本這裡無條件 streamPrimed=false，代表每次重連（不管是真的斷貨還是
-    // TCP 瞬斷/伺服器端小抖動）都強制暫停、重蓄滿 STREAM_PREBUF_BYTES 才准繼續播——即使
-    // ring buffer 裡其實還有好幾秒沒播完的存量也照樣打斷，白白浪費掉上面拉大 buffer換來的
-    // 抗抖動空間。改成只有「重連當下 ring 已經被榨乾」才需要重新蓄水；還有存量就讓
-    // audioPlaybackTask 繼續吃舊資料撐過這次重連，聽不出斷點。
-    if (ringUsed() < STREAM_PREBUF_BYTES) {
-      streamPrimed = false;
-    }
-#if STREAM_DEBUG_PRINT
-    else {
-      // 2026-07-25：這行 Serial.printf 曾懷疑是「中斷變長」的兇手——HWCDC 底下
-      // Serial.printf 已知偶爾會阻塞等 USB buffer（檔頭已知雷），剛好卡在重連後這個
-      // 時間點，等於每次重連都多一次可能卡住的 print。關掉當預設，需要時再開驗證。
-      Serial.printf("[Stream] 重連時 ring 仍有 %u bytes 存量，不重蓄、直接接續播放\n",
-                    (unsigned)ringUsed());
-    }
-#endif
+    // 2026-07-25 raw PCM 時代的邏輯：ring 還有存量就不強制重蓄，讓 audioPlaybackTask
+    // 繼續吃舊資料撐過重連、聽不出斷點。2026-07-26 MP3 化後這個優化不能再用——每個
+    // HTTP 連線在 server 端都是全新一份 Mp3StreamEncoder，舊連線尾巴的 bytes 接上新
+    // 連線開頭的 bytes 對 decoder 來說是同一個 byte stream 裡的不連續斷點，frame_buffer
+    // 對不齊會讓 findSynchWord 誤認假 sync word（實機驗證過：MP3 格式忽快忽慢亂跳）。
+    // 改成每次重連無條件標記需要重置，犧牲一點點無感重連（MP3 bitrate 低，
+    // STREAM_PREBUF_BYTES 現在只有 ~0.5s，可犧牲的存量本來就不多）換正確性。
+    // ⚠️ ring 是 single-producer(network)/single-consumer(playback) 設計，ringTail
+    // 只能由 playback task 動——這裡不直接呼叫 ringReset()（會兩邊都改 head/tail，
+    // 破壞這個約定，playback 端讀到「head 已歸零、tail 還沒歸零」的中間態會算出離譜
+    // 大的 ringUsed()，等於製造更嚴重的資料錯位）。只設旗標，實際丟棄舊資料交給
+    // audioPlaybackTask 自己用 ringTail = ringHead 追上。
+    streamPrimed = false;
+    mp3NeedsReset = true;
 
     while (client.connected()) {
       String sizeLine;
@@ -650,13 +663,62 @@ void audioNetworkTask(void* pv) {
   }
 }
 
-// 消費端：只管從 ring buffer 拿資料餵 I2S，不碰網路，WiFi 抖動完全感受不到
-// （buffer 存量夠撐過去）。開播前先蓄到 STREAM_PREBUF_BYTES（模擬串流 app 的
+// 2026-07-26：/audio_stream 現在送 MP3，ring buffer 裡裝的是壓縮 bytes——消費端不能再
+// 直接 i2s_write，要先解碼。用 pschatzmann/arduino-libhelix 的 MP3DecoderHelix：
+// decode-only（不像 ESP32-audioI2S 整包接管連線），塞 bytes 進去、解碼完的 PCM 經
+// callback 吐回來，剛好對得上這裡「網路/解碼播放分離」的既有雙 task 架構——
+// audioNetworkTask 完全不用改，一樣只管把 bytes 塞進 ring buffer。
+using namespace libhelix;
+
+static void mp3DataCallback(MP3FrameInfo &info, short *pcm_buffer, size_t len, void *ref);
+static MP3DecoderHelix mp3Decoder(mp3DataCallback);
+static int mp3LastRate = -1;
+static int mp3LastChans = -1;
+
+// 解碼出的 PCM 經這裡直接 i2s_write（write() 內部同步呼叫，跟舊版直接 i2s_write 的
+// 位置等價，不是額外一層排隊）。samprate/nChans 跟上次不同才重設 I2S 時脈——正常情況
+// server 端 bitrate/rate 是固定的，這個分支只在第一個 frame 解出來時觸發一次。
+static void mp3DataCallback(MP3FrameInfo &info, short *pcm_buffer, size_t len, void *ref) {
+  if (len == 0) return;
+  if (info.samprate != mp3LastRate || info.nChans != mp3LastChans) {
+    i2s_set_clk(I2S_SPK_PORT, info.samprate, I2S_BITS_PER_SAMPLE_16BIT,
+                info.nChans == 1 ? I2S_CHANNEL_MONO : I2S_CHANNEL_STEREO);
+    mp3LastRate = info.samprate;
+    mp3LastChans = info.nChans;
+    Serial.printf("[Stream] MP3 格式：%dHz %dch\n", info.samprate, info.nChans);
+  }
+  size_t written;
+  i2s_write(I2S_SPK_PORT, pcm_buffer, len * sizeof(short), &written, portMAX_DELAY);
+#if STREAM_DEBUG_PRINT
+  static uint32_t _dbgCounter = 0;
+  if (++_dbgCounter % 40 == 0) {   // 128kbps下每個MP3 frame ~1152 samples/26ms，~1s印一次
+    int16_t peak = 0;
+    for (size_t i = 0; i < len; i++) {
+      int16_t a = pcm_buffer[i] < 0 ? (int16_t)-pcm_buffer[i] : pcm_buffer[i];
+      if (a > peak) peak = a;
+    }
+    Serial.printf("[Stream] decode#%u samples=%u peak=%d ringUsed=%u\n",
+                  (unsigned)_dbgCounter, (unsigned)len, (int)peak, (unsigned)ringUsed());
+  }
+#endif
+}
+
+// 消費端：只管從 ring buffer 拿壓縮 bytes 餵 MP3 解碼器，不碰網路，WiFi 抖動完全感受
+// 不到（buffer 存量夠撐過去）。開播前先蓄到 STREAM_PREBUF_BYTES（模擬串流 app 的
 // 「緩衝中」畫面），真的斷貨（ring 見底）就靜音、回頭重新蓄一輪，避免忽有忽無的破音。
 void audioPlaybackTask(void* pv) {
   Serial.println("[Stream] audioPlaybackTask 已啟動");
+  mp3Decoder.begin();
   uint8_t buf[512];
   for (;;) {
+    if (mp3NeedsReset) {
+      // 只從這裡（consumer 自己）動 ringTail，追上 ringHead 當下值＝丟棄重連前的舊
+      // 殘留資料，不動 network task 的 ringHead，維持 single-producer/single-consumer
+      // 約定。decoder 一起重置，避免舊連線尾巴的殘留 bytes 跟新連線開頭錯位。
+      ringTail = ringHead;
+      mp3Decoder.begin();
+      mp3NeedsReset = false;
+    }
     if (!streamPrimed) {
       if (ringUsed() >= STREAM_PREBUF_BYTES) {
         streamPrimed = true;
@@ -677,39 +739,9 @@ void audioPlaybackTask(void* pv) {
       vTaskDelay(pdMS_TO_TICKS(5));
       continue;
     }
-    // 2026-07-25：逐次量測本輪迴圈間隔（micros），抓的是「單次卡住多久」而非平均速率——
-    // 平均 KB/s 正常時完全可能藏著一次 20-30ms 的瞬間卡頓（佔一秒的一小部分，平均值看不
-    // 出來），但耳朵聽得到。ring buffer 這次全程沒見底，代表破碎不是缺資料，是某個環節
-    // 週期性卡住，這裡直接量測卡多久、卡在哪個環節。
-    static uint32_t _lastIterUs = 0;
-    static uint32_t _maxGapUs = 0;
-    uint32_t nowUs = micros();
-    if (_lastIterUs != 0) {
-      uint32_t gap = nowUs - _lastIterUs;
-      if (gap > _maxGapUs) _maxGapUs = gap;
-    }
-    _lastIterUs = nowUs;
-
     size_t want = avail < sizeof(buf) ? avail : sizeof(buf);
     size_t n = ringRead(buf, want);
-    size_t written;
-    esp_err_t werr = i2s_write(I2S_SPK_PORT, buf, n, &written, portMAX_DELAY);
-    (void)werr;
-#if STREAM_DEBUG_PRINT
-    static uint32_t _dbgCounter = 0;
-    if (++_dbgCounter % 80 == 0) {   // ~每 0.5s 印一次（80 次 * ~2.7ms/512bytes），別洗版
-      int16_t peak = 0;
-      for (size_t i = 0; i + 1 < n; i += 2) {
-        int16_t s = (int16_t)(buf[i] | (buf[i + 1] << 8));
-        int16_t a = s < 0 ? -s : s;
-        if (a > peak) peak = a;
-      }
-      Serial.printf("[Stream] play#%u n=%u written=%u err=%d peak=%d ringUsed=%u maxGap=%.1fms\n",
-                    (unsigned)_dbgCounter, (unsigned)n, (unsigned)written, (int)werr,
-                    (int)peak, (unsigned)ringUsed(), _maxGapUs / 1000.0);
-      _maxGapUs = 0;
-    }
-#endif
+    mp3Decoder.write(buf, n);   // 解碼出的 PCM 經 mp3DataCallback 同步 i2s_write
   }
 }
 
