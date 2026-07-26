@@ -193,6 +193,9 @@ void connectWiFi() {
 void testFunnelNow() {
   WiFiClientSecure client;
   client.setInsecure();   // bring-up 先跳過憑證驗證（Funnel 是有效 LetsEncrypt，之後可加 CA）
+  // ⚠️ WiFiClientSecure 預設 handshake_timeout=120000ms，跟 connect() 的 timeout 參數是
+  // 兩回事（那個只管 TCP 連線階段）——握手卡住最長會空等 2 分鐘，這裡先設短。
+  client.setHandshakeTimeout(5);
   Serial.println("[HTTPS] 連 Funnel ...");
   if (!client.connect(MARVIN_HOST, MARVIN_PORT)) {
     char errBuf[128];
@@ -305,6 +308,7 @@ void pollAndPlayReply() {
   while (millis() - t0 < timeoutMs) {
     HTTPClient http;
     WiFiClientSecure client; client.setInsecure();
+    client.setHandshakeTimeout(5);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
     const char* headerKeys[] = { "X-Reply-Seq" };
     http.collectHeaders(headerKeys, 1);
     String url = String("https://") + MARVIN_HOST + "/reply?since=" + lastReplySeq + "&t=" + MARVIN_TOKEN;
@@ -397,14 +401,21 @@ static SemaphoreHandle_t lwipMutex = nullptr;
 // 非阻塞讀一行（到 \n，行尾 \r 會被去掉）：沒資料就不鎖、讓出 CPU 再檢查；
 // 有資料才進鎖搬。timeoutMs=0 代表不設逾時上限（仍會持續 yield，不忙迴圈）。
 // 回傳 false＝連線斷了或逾時前沒等到換行。
+// ⚠️ 2026-07-26：這裡原本的假設是「client.available() 不碰網路層，不用鎖」——對明碼
+// WiFiClient 成立（純查 OS socket buffer），但 WiFiClientSecure.available() 底層會呼叫
+// mbedtls_ssl_read(...,0) 真的碰 recv()／lwIP 狀態。沒鎖住它，就跟 carHeartbeatTask
+// 在另一個 core 的 lwIP 操作沒有互斥保護——實機重現症狀是音訊「電流爆點聲、聽不出
+// 內容」（不是逾時／不是卡死，調 timeout 值沒用），研判是資料撕裂。連 available() 一起
+// 鎖住（對明碼 client 而言鎖這個幾乎零成本，一起鎖沒有壞處）。
 static bool lockedReadLine(WiFiClient& client, String& out, uint32_t timeoutMs) {
   out = "";
   uint32_t t0 = millis();
   for (;;) {
-    if (client.available() > 0) {
-      LWIP_LOCK();
-      int c = client.read();
-      LWIP_UNLOCK();
+    LWIP_LOCK();
+    bool hasData = client.available() > 0;
+    int c = hasData ? client.read() : -1;
+    LWIP_UNLOCK();
+    if (hasData) {
       if (c < 0) { vTaskDelay(pdMS_TO_TICKS(1)); continue; }
       if (c == '\n') return true;
       if (c != '\r') out += (char)c;
@@ -422,14 +433,16 @@ static size_t lockedReadBytes(WiFiClient& client, uint8_t* buf, size_t want, uin
   size_t got = 0;
   uint32_t t0 = millis();
   while (got < want) {
+    // available() 一起鎖住，理由見 lockedReadLine() 前的 2026-07-26 註解。
+    LWIP_LOCK();
     int avail = client.available();
+    int n = 0;
     if (avail > 0) {
       size_t chunk = (size_t)avail < (want - got) ? (size_t)avail : (want - got);
-      LWIP_LOCK();
-      int n = client.read(buf + got, chunk);
-      LWIP_UNLOCK();
-      if (n > 0) { got += (size_t)n; t0 = millis(); continue; }
+      n = client.read(buf + got, chunk);
     }
+    LWIP_UNLOCK();
+    if (n > 0) { got += (size_t)n; t0 = millis(); continue; }
     if (!client.connected()) break;
     if (timeoutMs > 0 && millis() - t0 > timeoutMs) break;
     vTaskDelay(pdMS_TO_TICKS(1));
@@ -494,6 +507,11 @@ void audioNetworkTask(void* pv) {
     // 讓下面 lockedReadLine/lockedReadBytes 這段共用邏輯不用為兩條路徑各寫一份。
     WiFiClient localClient;
     WiFiClientSecure funnelClient; funnelClient.setInsecure();
+    // ⚠️ 2026-07-26 實機重現：handshake_timeout 預設120s跟connect()的timeout參數是兩回事
+    // （後者只管TCP連線階段），握手卡住的話 LWIP_LOCK() 會被鎖住到120秒——carHeartbeat/
+    // PTT/ring buffer補貨全部餓死在等同一把鎖，症狀＝出門連上熱點後播不到一秒就整個
+    // 靜音、心跳log也停。設短逾時，見 testFunnelNow() 前的註解。
+    funnelClient.setHandshakeTimeout(5);
     LWIP_LOCK();
     bool connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
     LWIP_UNLOCK();
@@ -511,6 +529,22 @@ void audioNetworkTask(void* pv) {
     }
     const char* host = useFunnel ? MARVIN_HOST : MARVIN_LOCAL_HOST;
     if (useFunnel) Serial.println("[Stream] 區網打不到，走Funnel連線");
+    // ⚠️ 2026-07-26 實機重現：lockedReadLine/lockedReadBytes 的「available()>0 才進鎖」
+    // 設計是對明碼 socket 驗證過的——明碼 available() 純查 OS buffer 真的零阻塞。但
+    // WiFiClientSecure.available() 底層是 mbedtls_ssl_read(...,0) 嘗試解密一個 TLS
+    // record，會真的等 socket recv()，逾時長度＝這個 client 的 SO_RCVTIMEO（沿用
+    // connect() 設的 5000ms）——等於「非阻塞輪詢」一次就可能卡 5 秒，症狀＝Funnel
+    // 連線可以連上，但读回的極慢/像卡死，音樂不到一秒就斷。
+    // ⚠️ 2026-07-26 第二輪：一開始只調這裡的 timeout（100ms→2000ms 都試過），board不再
+    // 卡死但音訊仍是「電流爆點聲、聽不出內容」——後來查到 lockedReadLine/lockedReadBytes
+    // 的 available() 沒上鎖（見上方定義前的註解）才是真正原因，鎖住後這個 timeout 只是
+    // 控制輪詢節奏，不影響正確性，收在 500ms（明碼 client 設這個沒副作用，一起設）。
+    // ⚠️ 2026-07-26 第三輪：加了鎖之後爆音依舊沒消失——實測量到 Funnel+熱點實際
+    // throughput 只有 ~60KB/s（目標187.5KB/s stereo），ring buffer 持續被榨到接近見底
+    // （maxGap 300-470ms，健康時10.6ms），爆音其實是buffer underrun反覆重新填充的
+    // 不連續交界，不是資料撕裂。真正的修法要降低串流本身的bitrate（mono downmix/降
+    // 取樣率），需要同時改server端跟firmware動態讀格式header設I2S，範圍更大、留待下次。
+    client.setTimeout(500);
     // mixer 是 on-demand 來源，兩幀之間偶爾會停超過 1s。舊版靠 client.setTimeout(20000)
     // 讓 Arduino 內建的 readStringUntil/readBytes 空等到 20s——2026-07-25 改用
     // lockedReadLine/lockedReadBytes（見上方定義），逾時改由呼叫端明講的 timeoutMs
@@ -708,6 +742,9 @@ static int postHttp(WiFiClient& client, const char* host, uint16_t port, int32_t
   bool connectOk = client.connect(host, port, connectTimeoutMs);
   LWIP_UNLOCK();
   if (!connectOk) return -1;
+  // WiFiClientSecure.available() 底層會真的等 socket recv()（見 audioNetworkTask 前的
+  // 2026-07-26 註解，available() 已經一起上鎖，這裡只是控制輪詢節奏）。
+  client.setTimeout(500);
 
   String header = String("POST ") + path + "?t=" + MARVIN_TOKEN + " HTTP/1.1\r\n" +
                   "Host: " + host + "\r\n" +
@@ -736,6 +773,7 @@ void carHeartbeat() {
                        "/car", "application/json", (const uint8_t*)body, strlen(body), 3000);
   if (code <= 0) {
     WiFiClientSecure funnelClient; funnelClient.setInsecure();
+    funnelClient.setHandshakeTimeout(5);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
     code = postHttp(funnelClient, MARVIN_HOST, MARVIN_PORT, 5000,
                      "/car", "application/json", (const uint8_t*)body, strlen(body), 5000);
     Serial.printf("[Car] present 心跳(Funnel) HTTP %d\n", code);
@@ -823,6 +861,7 @@ void postAudio(int nSamples) {
   if (code <= 0) {
     Serial.println("[POST /audio] 區網打不到，退回 Funnel...");
     WiFiClientSecure funnelClient; funnelClient.setInsecure();
+    funnelClient.setHandshakeTimeout(5);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
     code = postHttp(funnelClient, MARVIN_HOST, MARVIN_PORT, 5000,
                      "/audio", "audio/wav", wav, wavBytes, 15000);
   }
