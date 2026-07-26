@@ -676,32 +676,52 @@ void audioPlaybackTask(void* pv) {
 //     WiFiClient + lockedReadLine（見 audioNetworkTask 前的定義）——鎖只包住
 //     connect()／print() 這種 LAN 上通常幾十毫秒內完成的短操作，讀取一律先
 //     available() 非阻塞判斷，沒資料就不鎖、不會有③那種持鎖空等的情況。
-void carHeartbeat() {
-  // TEMP（2026-07-25）：跟 /audio_stream 一致，明碼直連區網 IP，避免每 30s 一次的 TLS
-  // 握手佔用同一顆 WiFi 天線的時間片，跟主串流搶頻寬造成瞬間 throughput 掉底。
-  WiFiClient client;
+// 手動 HTTP POST（沿用 lockedReadLine 的鎖範圍紀律）：鎖只包住 connect()／print()／
+// stop() 這種短操作，等回應期間不持鎖。回傳 HTTP 狀態碼，connect 失敗回 -1。
+// client 傳 WiFiClient（區網明碼）或 WiFiClientSecure（Funnel TLS，setInsecure() 後傳入）
+// 都可以——WiFiClientSecure 是 WiFiClient 的子類別。
+static int postHttp(WiFiClient& client, const char* host, uint16_t port, int32_t connectTimeoutMs,
+                     const char* path, const char* contentType, const uint8_t* body, size_t bodyLen,
+                     uint32_t readTimeoutMs) {
   LWIP_LOCK();
-  bool connectOk = client.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT);
+  bool connectOk = client.connect(host, port, connectTimeoutMs);
   LWIP_UNLOCK();
-  if (!connectOk) {
-    Serial.println("[Car] ⚠️ 心跳 connect() 失敗，跳過這輪");
-    return;
-  }
-  const char* body = "{\"state\":\"present\"}";
-  String req = String("POST /car?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
-               "Host: " + MARVIN_LOCAL_HOST + "\r\n" +
-               "Content-Type: application/json\r\n" +
-               "Content-Length: " + strlen(body) + "\r\n" +
-               "Connection: close\r\n\r\n" + body;
-  LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
+  if (!connectOk) return -1;
+
+  String header = String("POST ") + path + "?t=" + MARVIN_TOKEN + " HTTP/1.1\r\n" +
+                  "Host: " + host + "\r\n" +
+                  "Content-Type: " + contentType + "\r\n" +
+                  "Content-Length: " + bodyLen + "\r\n" +
+                  "Connection: close\r\n\r\n";
+  LWIP_LOCK();
+  client.print(header);
+  client.write(body, bodyLen);
+  LWIP_UNLOCK();
 
   String status;
-  lockedReadLine(client, status, 3000);   // 只在乎狀態碼，不解析/等 body
+  lockedReadLine(client, status, readTimeoutMs);   // 只在乎狀態碼，不解析/等 body
   int code = 0;
   int sp1 = status.indexOf(' ');
   if (sp1 > 0) code = status.substring(sp1 + 1, sp1 + 4).toInt();
-  Serial.printf("[Car] present 心跳 HTTP %d\n", code);
   LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
+  return code;
+}
+
+void carHeartbeat() {
+  // 先試區網明碼（快、家用WiFi成立）；連不到（出門）就退回 Funnel TLS。
+  const char* body = "{\"state\":\"present\"}";
+  WiFiClient localClient;
+  int code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
+                       "/car", "application/json", (const uint8_t*)body, strlen(body), 3000);
+  if (code <= 0) {
+    WiFiClientSecure funnelClient; funnelClient.setInsecure();
+    code = postHttp(funnelClient, MARVIN_HOST, MARVIN_PORT, 5000,
+                     "/car", "application/json", (const uint8_t*)body, strlen(body), 5000);
+    Serial.printf("[Car] present 心跳(Funnel) HTTP %d\n", code);
+  } else {
+    Serial.printf("[Car] present 心跳(區網) HTTP %d\n", code);
+  }
+  if (code <= 0) { Serial.println("[Car] ⚠️ 心跳區網+Funnel都失敗，跳過這輪"); return; }
   // 診斷用堆疊水位（見上方 2026-07-25 註解）：已排除堆疊溢位假說，繼續留著當健康度
   // 觀察——四顆任務裡任何一個持續下探都值得回頭查。
   Serial.printf("[StackWM] loopTask=%u carHeartbeat=%u audioNet=%u audioPlay=%u words\n",
@@ -770,24 +790,22 @@ void postAudio(int nSamples) {
   memcpy(wav+36,"data",4); wr32(40,dataBytes);
   memcpy(wav+44, recBuf, dataBytes);
 
-  // 2026-07-26：改走區網明碼直連 Mac（跟 /car 心跳、/audio_stream 一致），跳過 Funnel TLS
-  // ——實測 Funnel 對 ESP32 的 TLS ClientHello 會在握手中回 EOF 直接斷線（lastError=
-  // "SSL - The connection indicated an EOF"），/audio 送出必炸 HTTP -1。只在家測試網路有效；
-  // 出門用 4G 時這條區網 IP 打不通，需要退回 Funnel（Funnel TLS 本身待查修）。
-  // ⚠️ loopTask（core 1）跟 audioNetworkTask/carHeartbeatTask（core 0）共用 lwIP，未上鎖
-  // 就從這裡直接 connect/POST 撞上就是已知的 pbuf_free 崩潰（實測重現：LoadProhibited
-  // 當機重開機）。跟其他跨 core 的 lwIP 呼叫一致，全程包住 LWIP_LOCK/UNLOCK。
-  HTTPClient http;
-  WiFiClient client;
-  String url = String("http://") + MARVIN_LOCAL_HOST + ":" + MARVIN_LOCAL_PORT + "/audio?t=" + MARVIN_TOKEN;
-  LWIP_LOCK();
-  http.begin(client, url);
-  http.addHeader("Content-Type", "audio/wav");
-  int code = http.POST(wav, wavBytes);
-  String respBody = http.getString();
-  http.end();
-  LWIP_UNLOCK();
-  Serial.printf("[POST /audio] HTTP %d：%s\n", code, respBody.c_str());
+  // 2026-07-26：先試區網明碼直連 Mac（跟 /car 心跳、/audio_stream 一致，快、家用WiFi成立），
+  // 連不到（出門用4G）就退回 Funnel TLS——Funnel 那邊之前 ingress 卡住已經在 Tailscale
+  // 側修好（tailscale funnel reset 重新註冊），兩條路現在都通。改用 postHttp()（手動
+  // socket + lockedReadLine）而非 HTTPClient：HTTPClient 的 POST() 是不可拆的黑盒，鎖
+  // 只要包住它就等於持鎖空等到逾時——carHeartbeat() 上面的除錯記錄③已經實測過這個
+  // 組合會在 17-20 秒內撞 task watchdog，不要重踩。
+  WiFiClient localClient;
+  int code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
+                       "/audio", "audio/wav", wav, wavBytes, 15000);
+  if (code <= 0) {
+    Serial.println("[POST /audio] 區網打不到，退回 Funnel...");
+    WiFiClientSecure funnelClient; funnelClient.setInsecure();
+    code = postHttp(funnelClient, MARVIN_HOST, MARVIN_PORT, 5000,
+                     "/audio", "audio/wav", wav, wavBytes, 15000);
+  }
+  Serial.printf("[POST /audio] HTTP %d\n", code);
   free(wav);
   Serial.printf("[StackWM] loopTask after postAudio: %u words\n",
                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
