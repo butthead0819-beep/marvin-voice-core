@@ -487,23 +487,36 @@ void audioNetworkTask(void* pv) {
 
     Serial.printf("[Stream] connect() 前 free heap=%u minFree=%u\n",
                   (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
-    // TEMP：明碼 WiFiClient 直連區網 IP（見上面 MARVIN_LOCAL_HOST 註解），跳過 TLS
-    // 解密開銷，測試是否解決 throughput 上不去的問題。
-    WiFiClient client;
+    // 2026-07-26：先試區網明碼直連（快、跳過TLS解密開銷，家用WiFi成立），短逾時(1.2s)
+    // 快速失敗；連不到（出門用4G/熱點）就退回 Funnel TLS。不記狀態每輪都重試區網——
+    // reconnect本來就頻繁（1-5分鐘一次），這樣回到家用網路範圍會自動切回區網，不用
+    // 額外邏輯判斷「現在該用哪條」。WiFiClientSecure繼承WiFiClient，用base reference
+    // 讓下面 lockedReadLine/lockedReadBytes 這段共用邏輯不用為兩條路徑各寫一份。
+    WiFiClient localClient;
+    WiFiClientSecure funnelClient; funnelClient.setInsecure();
     LWIP_LOCK();
-    bool connectOk = client.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT);
+    bool connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
     LWIP_UNLOCK();
+    bool useFunnel = !connectOk;
+    if (useFunnel) {
+      LWIP_LOCK();
+      connectOk = funnelClient.connect(MARVIN_HOST, MARVIN_PORT, 5000);
+      LWIP_UNLOCK();
+    }
+    WiFiClient& client = useFunnel ? (WiFiClient&)funnelClient : localClient;
     if (!connectOk) {
-      Serial.println("[Stream] ⚠️ connect() 失敗，2s 後重試");
+      Serial.println("[Stream] ⚠️ connect()（區網+Funnel都失敗），2s 後重試");
       vTaskDelay(pdMS_TO_TICKS(2000));
       continue;
     }
+    const char* host = useFunnel ? MARVIN_HOST : MARVIN_LOCAL_HOST;
+    if (useFunnel) Serial.println("[Stream] 區網打不到，走Funnel連線");
     // mixer 是 on-demand 來源，兩幀之間偶爾會停超過 1s。舊版靠 client.setTimeout(20000)
     // 讓 Arduino 內建的 readStringUntil/readBytes 空等到 20s——2026-07-25 改用
     // lockedReadLine/lockedReadBytes（見上方定義），逾時改由呼叫端明講的 timeoutMs
     // 參數控制，setTimeout 已無作用、拿掉。
     String req = String("GET /audio_stream?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
-                 "Host: " + MARVIN_LOCAL_HOST + "\r\nConnection: close\r\n\r\n";
+                 "Host: " + host + "\r\nConnection: close\r\n\r\n";
     LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
 
     String status;
