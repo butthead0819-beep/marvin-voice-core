@@ -39,6 +39,7 @@
  */
 
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <driver/i2s.h>
@@ -52,8 +53,14 @@
 // buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
 #define STREAM_DEBUG_PRINT 0
 
+// 2026-07-26：家用WiFi + iPhone個人熱點都登記進去，WiFiMulti開機掃描自動選訊號最強、
+// 有登記的那組——在家連家用WiFi（MARVIN_LOCAL_HOST區網明碼路徑成立），出門連iPhone
+// 熱點（區網打不到、走[[Funnel回退]]，見 postAudio()/carHeartbeat()）。
+WiFiMulti wifiMulti;
 const char* WIFI_SSID    = "你的手機熱點名稱";
 const char* WIFI_PASS    = "熱點密碼";
+const char* WIFI2_SSID   = "第二組WiFi(SSID)";
+const char* WIFI2_PASS   = "第二組WiFi(密碼)";
 const char* MARVIN_HOST  = "macbook-air.tail7ba8d0.ts.net";   // 不含 https://
 const int   MARVIN_PORT  = 443;
 const char* MARVIN_TOKEN = "PASTE_YOUR_TOKEN";                // ⚠️ 別 commit 真 token
@@ -159,16 +166,17 @@ void updateLed() {
 
 // ------------------------------------------------------------------
 void connectWiFi() {
-  Serial.printf("[WiFi] 連線 %s ...\n", WIFI_SSID);
+  Serial.println("[WiFi] 連線（自動選家用WiFi/iPhone熱點訊號較強的那組）...");
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  wifiMulti.addAP(WIFI_SSID, WIFI_PASS);
+  wifiMulti.addAP(WIFI2_SSID, WIFI2_PASS);
   uint32_t t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) {
+  while (wifiMulti.run() != WL_CONNECTED && millis() - t0 < 20000) {
     delay(300); Serial.print("."); updateLed();   // 連線期間 setup 阻塞，靠這裡讓黃燈慢閃
   }
   Serial.println();
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("[WiFi] OK, IP=%s RSSI=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    Serial.printf("[WiFi] OK, SSID=%s IP=%s RSSI=%d\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
     // ⚠️ 2026-07-24 實測過 WiFi.setSleep(false)：串流反而更破碎（只剩零星爆音）、
     // 心跳一度斷拍近90秒（疑似跟其他 WiFi 功能衝突，社群也有類似回報），已復原移除。
     // 2026-07-25 重試：架構整個換了（network/playback 分兩個 task + 1MB ring buffer +
