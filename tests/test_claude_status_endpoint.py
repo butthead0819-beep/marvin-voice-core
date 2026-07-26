@@ -50,4 +50,4 @@ async def test_claude_status_returns_empty_when_bridge_file_missing(tmp_path):
         resp = await client.get("/claude_status")
         assert resp.status == 200
         body = await resp.json()
-        assert body == {"sessions": [], "rate_limits": None}
+        assert body == {"sessions": [], "rate_limits": None, "notification": None}

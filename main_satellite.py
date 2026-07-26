@@ -603,19 +603,9 @@ HUD_HTML = """<!DOCTYPE html>
   </div>
 </div></div>
 
-<div class="dock2">
-  <div class="seg" id="scene" role="group" aria-label="場景">
-    <button data-i="0" aria-pressed="true">平靜</button>
-    <button data-i="1" aria-pressed="false">會議排程</button>
-    <button data-i="2" aria-pressed="false">需要回應</button>
-    <button data-i="3" aria-pressed="false">建置失敗</button>
-  </div>
-  <button class="ghost" id="auto" data-on="true">Auto &#9656; 自動巡演</button>
-</div>
 <p class="cap">
-  重要性階梯：<b>需要回應</b>（Hero）&gt; <b>會議排程</b> &gt; <b>Marvin</b> &gt; <b>單純資訊</b>。
-  卡片依此自動變大小；<b>Marvin＝會動的頭</b>當 1.5 權重卡；「現正播放」黑膠卡輪詢 <b>/now</b>，
-  有歌在播就換成真封面調色盤潑漆，沒歌在播維持 demo 樣子。
+  單一頁面，沒有場景切換：<b>Marvin</b> 固定佔一格，其餘最多 2 格照重要性階梯（<b>需要回應</b> &gt;
+  <b>單純資訊</b>）從真實資料動態挑，沒資料就不佔位。
 </p>
 
 <script>
@@ -650,44 +640,55 @@ HUD_HTML = """<!DOCTYPE html>
   document.getElementById('mface').innerHTML=MFACE;
 
   // ---- importance ladder (weights + who becomes hero) ----
-  const KIND={ respond:{w:2.6,hero:1}, schedule:{w:1.9}, marvin:{w:1.5}, info:{w:1} };
-
-  const M = [
-    [ {kind:'marvin', s:'marvin', l:'Marvin', t:'待命中', sub:'「又是漫長的一天，而它才過了兩秒。」', mood:'idle'},
-      {kind:'info', s:'ok', l:'現正播放', vinyl:{title:'七里香', pal:['#F5B841','#E8749B','#7A4CC4','#2A1A44']}, meta:'七里香 · 周杰倫 · 1:23'},
-      {kind:'info', s:'info', l:'待播清單', queue:[{title:'後知後覺',by:'周杰倫'},{title:'隔壁泰山',by:'周杰倫'}], g:'list'} ],
-    [ {kind:'schedule', s:'info', l:'行事曆', t:'設計評審', sub:'10:30 · 42 分後 · Zoom', g:'calendar'},
-      {kind:'marvin', s:'marvin', l:'Marvin', t:'要我到時提醒你？', sub:'說「好」即可', mood:'wake'},
-      {kind:'info', s:'ok', l:'現正播放', vinyl:{title:'七里香', pal:['#F5B841','#E8749B','#7A4CC4','#2A1A44']}, meta:'七里香 · 周杰倫'} ],
-    [ {kind:'respond', s:'warn', l:'需要回應', t:'設計評審 5 分鐘後', sub:'要現在加入嗎？', g:'calendar', actions:['加入','稍後'], ex:'設計評審 5 分鐘後開始，Zoom 連結我準備好了。說「加入」我就幫你開。'},
-      {kind:'marvin', s:'marvin', l:'Marvin', t:'我可以幫你開連結', sub:'', mood:'speak'},
-      {kind:'info', s:'info', l:'訊息', t:'3 則未讀', sub:'Jack、設計組…', g:'messages'} ],
-    [ {kind:'respond', s:'urgent', l:'需要回應', t:'建置失敗 · main', sub:'test_stt_queue 逾時 · 要重跑嗎？', g:'build', actions:['重跑 CI','忽略'], ex:'建置在 test_stt_queue 逾時掛掉——排隊等太久。八成是暫時的，要我重跑就說一聲。'},
-      {kind:'marvin', s:'marvin', l:'Marvin', t:'我看了 log，是排隊逾時', sub:'', mood:'think'} ]
-  ];
+  // 單一頁面、無場景：Marvin 固定佔一格，其餘卡片全部來自真實資料源（buildCards()），
+  // 沒資料的來源就不產生卡片——不再用假資料撐頁面。
+  const KIND={ respond:{w:2.6,hero:1}, marvin:{w:1.5}, info:{w:1}, ambient:{w:0.75} };
 
   const stage=document.getElementById('stage');
   const mvParams={ mood:'idle', focusDir:0 };
   const reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // 一次性反應（被搖晃/快速核准）＝暫時把 mood 借去播放專屬的色彩/眨眼/視線設定，
+  // 時間到自動還原成原本的 mood；不另開狀態機，跟 frame() 共用同一套讀法。
+  function triggerReaction(name, ms){
+    const prev=mvParams.mood; mvParams.mood=name;
+    setTimeout(()=>{ if(mvParams.mood===name) mvParams.mood=prev; }, ms);
+  }
 
   // ---- live 現正播放（/now 輪詢覆蓋 demo 黑膠）----
   let liveNow=null;
   // ---- live Claude Code 狀態（/claude_status 輪詢，動態插卡，demo 沒有對應格子）----
   let liveClaude=null;
+  let claudeMoodOverride=null;   // 真的有 session 在等你回應/等太久 → 蓋掉 marvin 卡自己的 demo mood
+  const CLAUDE_ESCALATE_SEC=600; // 等超過 10 分鐘算升級，粗粒度門檻，非死規則
+  const NOTIFY_BRIDGE_SEC=90; // Notification hook 即時推播，但只推一次沒有「已解決」事件；
+                               // 這段時間內先信它，之後讓 sessions.waiting（持續追蹤的真相來源）接手
   function claudeCard(){
+    claudeMoodOverride=null;
     if(!liveClaude) return null;
-    const sessions=liveClaude.sessions||[], rl=liveClaude.rateLimits;
+    const sessions=liveClaude.sessions||[], rl=liveClaude.rateLimits, notif=liveClaude.notification;
     // 多個 session 同時等待時，挑最近更新那個（不是檔案列表的任意順序），
     // 否則舊的、早就晾在那的 session 會一直霸佔卡片，蓋掉真正在動的那個。
     const waiting=sessions.filter(s=>s.waiting);
-    const waitingOne=waiting.length
+    let waitingOne=waiting.length
       ? waiting.reduce((a,b)=>(b.updated_at||0)>(a.updated_at||0)?b:a)
       : null;
+    // scan_claude_sessions.py 20s 一拍才追得到 sessions.waiting；permission_prompt hook
+    // 是 Claude Code 自己在對話框跳出來那瞬間推的，用來墊這段空窗期。
+    if(!waitingOne && notif && notif.notification_type==='permission_prompt'){
+      const age=notif.received_at ? (Date.now()/1000-notif.received_at) : Infinity;
+      if(age<NOTIFY_BRIDGE_SEC){
+        waitingOne={project:(notif.cwd||'').split('/').filter(Boolean).pop()||'Claude Code',
+          last_text:notif.message||'', updated_at:notif.received_at, title:null};
+      }
+    }
     if(waitingOne){
+      const staleSec=waitingOne.updated_at ? (Date.now()/1000-waitingOne.updated_at) : 0;
+      const escalated=staleSec>CLAUDE_ESCALATE_SEC;
+      claudeMoodOverride = escalated ? 'escalate' : 'pending';
       // title 優先用 🏁 收尾行解析出的「處理了什麼問題」（見 scan_claude_sessions.py），
       // 沒有這行（舊格式/純聊天回合）才退回專案名當標題。
       const title=waitingOne.title?esc(waitingOne.title):`${esc(waitingOne.project)} 等你回應`;
-      return {kind:'respond', s:'warn', l:'Claude Code', t:title,
+      return {kind:'respond', s:escalated?'urgent':'warn', l:'Claude Code', t:title,
         sub:esc(waitingOne.last_text||''), g:'messages'};
     }
     if(rl && rl.five_hour && rl.five_hour.used_percentage!=null){
@@ -738,13 +739,49 @@ HUD_HTML = """<!DOCTYPE html>
   }
 
   const MAX_CARDS=3;
-  function render(i){
+  // Marvin 狀態文字跟著真實 mood 走（claudeMoodOverride 見 claudeCard()），不再靠場景假資料。
+  function marvinBaseCard(){
+    let t='待命中', sub='「又是漫長的一天，而它才過了兩秒。」';
+    if(claudeMoodOverride==='escalate'){ t='已經等好一陣子了'; sub='要不要看一下？'; }
+    else if(claudeMoodOverride==='pending'){ t='等你回應'; sub='說一聲我就繼續。'; }
+    return {kind:'marvin', s:'marvin', l:'Marvin', t, sub, mood:claudeMoodOverride||'idle'};
+  }
+  // Marvin 固定佔一格；其餘最多 MAX_CARDS-1 格從真實資料源（Claude Code／現正播放／
+  // 待播清單）依重要性階梯挑，沒資料的來源就不產生卡片——不再用demo卡片撐頁面。
+  function buildCards(){
+    const others=[];
     const cc=claudeCard();
-    // 最多同時 3 張卡：權重排序後截斷，優先保留 respond/marvin，砍掉權重最低的 info 卡。
-    const cards=[...M[i], ...(cc?[cc]:[])].sort((a,b)=>KIND[b.kind].w-KIND[a.kind].w).slice(0,MAX_CARDS);
+    if(cc) others.push(cc);
+    if(liveNow && liveNow.title){
+      others.push({kind:'info', s:'ok', l:'現正播放', vinyl:{title:liveNow.title, pal:liveNow.pal||[]}, meta:''});
+    }
+    // Gmail 用 ambient（比 info 小）——資訊密度低於現正播放；有分類資料就顯示分類×數量，
+    // 否則退化成總數。行事曆獨立一行走 info。沒資料就不佔位。
+    if(liveGmailCal && (liveGmailCal.unread||0)>0){
+      const cats=liveGmailCal.cats||{};
+      const CAT_ORDER=['關注的信件','重要通知','工作郵件','發票郵件','銀行通知'];
+      const catParts=CAT_ORDER.filter(k=>cats[k]>0).map(k=>`${k} ${cats[k]}`);
+      const t=catParts.length?catParts.join(' · '):`${liveGmailCal.unread} 封未讀`;
+      others.push({kind:'ambient', s:'info', l:'收件匣（本週）', t, g:'messages'});
+    }
+    if(liveGmailCal && (liveGmailCal.calToday||0)>0){
+      others.push({kind:'info', s:'info', l:'行事曆', t:`今天 ${liveGmailCal.calToday} 場行程`, g:'calendar'});
+    }
+    if(resolveQueue([]).length){
+      others.push({kind:'info', s:'info', l:'待播清單', queue:[], g:'list'});
+    }
+    others.sort((a,b)=>KIND[b.kind].w-KIND[a.kind].w);
+    const top=others.slice(0, MAX_CARDS-1);
+    // Marvin 卡固定在正中央：其餘卡片依重要性排序後，前半排左邊、後半排右邊
+    // （2 張時剛好一左一右夾住 Marvin；0/1 張時退化成單獨或偏一邊，沒有真正的「中間」可佔）。
+    const mid=Math.floor(top.length/2);
+    return [...top.slice(0,mid), marvinBaseCard(), ...top.slice(mid)];
+  }
+  function render(){
+    const cards=buildCards();
     stage.innerHTML=cards.map((c,x)=>{
       const k=KIND[c.kind];
-      const key='c'+i+'_'+x;
+      const key='c'+x;
       const focused=focusKey===key;
       const focCls=focused?'focused':'';
       if(c.kind==='marvin'){
@@ -794,8 +831,12 @@ HUD_HTML = """<!DOCTYPE html>
         <div class="glyph ${c.g==='marvin'?'face':''}">${c.g==='marvin'?MFACE:svg(c.g)}</div></div>`;
     }).join('');
     stage.classList.toggle('focused-mode', !!focusKey);
-    mvParams.mood=(focusKey && stage.querySelector('.mcard.focused')) ? mvParams.mood
+    // 別張卡被聚焦時保留目前 mood（不被 marvinBaseCard() 的預設值蓋掉），其餘情況
+    // 直接吃 marvin 卡的 mood（已經在 buildCards() 裡把 claudeMoodOverride 算進去了）。
+    mvParams.mood = (focusKey && stage.querySelector('.mcard.focused')) ? mvParams.mood
       : (cards.find(c=>c.kind==='marvin')||{}).mood||'idle';
+    document.getElementById('mstatus').textContent =
+      claudeMoodOverride==='escalate' ? '好一陣子沒回應' : claudeMoodOverride==='pending' ? '等你回應' : '待命中';
     mountHead(stage.querySelector('.mvhead'));
     const vc=cards.find(c=>c.vinyl); mountVinyl(stage.querySelector('.vinyl-card'), vc?resolveVinyl(vc.vinyl):null);
     updateFocusDir();
@@ -832,21 +873,21 @@ HUD_HTML = """<!DOCTYPE html>
   // ---- 點 Marvin 卡＝現生一句對目前畫面的銳評（/marvin_comment，走 LLM bus）----
   let marvinCommentText='';
   async function requestMarvinComment(){
-    mvParams.mood='think'; marvinCommentText=''; render(cur);
+    mvParams.mood='think'; marvinCommentText=''; render();
     try{
       const cardsParam=encodeURIComponent(JSON.stringify(otherCardsSnapshot()));
       const r=await fetch("/marvin_comment?t="+encodeURIComponent(TOKEN)+"&cards="+cardsParam,{cache:"no-store"});
       const j=await r.json();
       marvinCommentText=j.comment||'……我現在沒什麼想講的。';
     }catch(e){ marvinCommentText='……訊號有點怪，等等再試。'; }
-    mvParams.mood='speak'; render(cur);
+    mvParams.mood='speak'; render();
   }
   const REPLY={'加入':'好，開連結。','稍後':'好，30 分鐘後再叫你。','重跑 CI':'重跑了。八成會過。','忽略':'隨你。反正我也不意外。'};
   function handleChip(chip){
     const card=chip.closest('.card'), label=chip.textContent.trim();
     const acts=card.querySelector('.acts'); if(acts) acts.outerHTML=`<div class="done">&#10003; ${label}</div>`;
     const mt=stage.querySelector('.mcard .mtext .title'); if(mt) mt.textContent=REPLY[label]||'好。';
-    mvParams.mood='speak'; stopAuto();
+    triggerReaction('quickApprove', 500);
   }
   // 點任一卡片（含 marvin）＝聚焦該卡（≤70% 寬＋放大字），其他卡縮到旁邊堆疊；
   // 再點一次同一張卡或點空白處收回。點 marvin 卡額外現生一句銳評（見 requestMarvinComment）。
@@ -856,15 +897,14 @@ HUD_HTML = """<!DOCTYPE html>
     if(card){
       const wasFocused=focusKey===card.dataset.key;
       focusKey = wasFocused ? null : card.dataset.key;
-      if(focusKey) stopAuto();
       if(card.classList.contains('mcard')){
         if(!wasFocused) requestMarvinComment();
-        else { marvinCommentText=''; mvParams.mood=(M[cur].find(c=>c.kind==='marvin')||{}).mood||'idle'; }
+        else { marvinCommentText=''; mvParams.mood=claudeMoodOverride||'idle'; }
       }
-      render(cur);
+      render();
       return;
     }
-    if(focusKey){ focusKey=null; render(cur); }
+    if(focusKey){ focusKey=null; render(); }
   });
   stage.addEventListener('keydown',e=>{
     const card=e.target.closest('.card[data-key]');
@@ -1008,7 +1048,28 @@ HUD_HTML = """<!DOCTYPE html>
   }
 
   // ---------- live Marvin head (metallic + green triangle eyes) ----------
-  const MOODCOL={ idle:[104,158,58], wake:[150,224,72], speak:[152,222,82], think:[92,178,120] };
+  // 每個情緒只用三個既有槓桿驅動：眼睛顏色/亮度（col+alpha+pulse）、眨眼節奏（blink）、
+  // 視線方向（gaze）——不加新繪製層/新幾何，Pi 3B 要跑得動，全部只是餵給既有 frame() 的數字。
+  const MOODCFG={
+    idle:    { col:[104,158,58], blink:{min:2,max:6,dur:0.16},
+               gaze:t=>[Math.sin(t*0.33)*0.18, Math.sin(t*0.23+1.1)*0.12] },
+    wake:    { col:[150,224,72], blink:{min:2,max:6,dur:0.16}, gaze:()=>[0,-0.03] },
+    speak:   { col:[152,222,82], blink:{min:2,max:6,dur:0.16}, gaze:t=>[Math.sin(t*0.8)*0.05,-0.02],
+               pulse:{speed:7.3,amp:0.5,speed2:11.1,amp2:0.3} },
+    think:   { col:[92,178,120], blink:{min:2,max:6,dur:0.16},
+               gaze:t=>[-0.1+Math.sin(t*0.5)*0.08, -0.16+Math.sin(t*0.7)*0.05] },
+    // ---- 新增七態（睡眠/待機/工作中/待核准/升級 為持續態；被搖晃/快速核准 為一次性反應）----
+    sleep:   { col:[60,75,95], alpha:0.45, blink:{forceClosed:true,min:5,max:9,dur:0.5},
+               gaze:()=>[0,0], noSaccade:true },
+    working: { col:[70,190,160], blink:{min:1.2,max:3,dur:0.12},
+               gaze:t=>[-0.12+Math.sin(t*1.1)*0.04,-0.05+Math.sin(t*0.9)*0.03], pulse:{speed:1.6,amp:0.15} },
+    pending: { col:[220,175,60], blink:{min:4,max:8,dur:0.2}, gaze:()=>[0,0], pulse:{speed:0.8,amp:0.1} },
+    escalate:{ col:[230,90,55], blink:{min:0.6,max:1.5,dur:0.1},
+               gaze:t=>[Math.sin(t*3.4)*0.3,0], pulse:{speed:3.9,amp:0.25} },
+    shaken:  { col:[240,240,235], blink:{forceOpen:true},
+               gaze:t=>[Math.sin(t*9)*0.35, Math.sin(t*7)*0.15] },
+    quickApprove:{ col:[150,255,120], blink:{min:0.05,max:0.15,dur:0.18}, gaze:()=>[0,0] },
+  };
   let head=null;
   function mountHead(canvas){
     if(head){ cancelAnimationFrame(head.raf); head.ro.disconnect(); head=null; }
@@ -1023,7 +1084,9 @@ HUD_HTML = """<!DOCTYPE html>
     function frame(){
       st.t+=0.03; ctx.clearRect(0,0,W,Hh);
       const mood=mvParams.mood;
-      const env = mood==='speak' ? Math.max(0, Math.sin(st.t*7.3)*0.5+Math.sin(st.t*11.1)*0.3+0.2) : 0;
+      const cfg=MOODCFG[mood]||MOODCFG.idle;
+      const p=cfg.pulse;
+      const env = p ? Math.max(0, Math.sin(st.t*p.speed)*p.amp + (p.speed2?Math.sin(st.t*p.speed2)*p.amp2:0)) : 0;
       st.cam += (((mood==='speak'||mood==='wake')?1.05:1)-st.cam)*0.05;
       const base=Math.min(W,Hh);
       const cx=W/2+Math.sin(st.t*0.4)*base*0.02;
@@ -1057,23 +1120,31 @@ HUD_HTML = """<!DOCTYPE html>
       ctx.fillStyle=hot;ctx.fillRect(cx-R,cy-R,2*R,2*R);
       ctx.restore();
       ctx.strokeStyle='rgba(255,255,255,.4)';ctx.lineWidth=DPR;ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.stroke();
-      const tc=MOODCOL[mood]||MOODCOL.idle; st.ec=st.ec.map((v,i)=>v+(tc[i]-v)*0.06);
+      const tc=cfg.col; st.ec=st.ec.map((v,i)=>v+(tc[i]-v)*0.06);
       const boost=1+env*0.5, gr=Math.min(255,st.ec[0]*boost), gg=Math.min(255,st.ec[1]*boost), gb=Math.min(255,st.ec[2]*boost);
-      const dark=k=>`rgba(${gr*k|0},${gg*k|0},${gb*k|0},0.98)`;
-      const bright=`rgba(${Math.min(255,gr+80)|0},${Math.min(255,gg+70)|0},${Math.min(255,gb+70)|0},0.98)`;
-      let tphi,tlam;
-      if(mood==='think'){ tphi=-0.1+Math.sin(st.t*0.5)*0.08; tlam=-0.16+Math.sin(st.t*0.7)*0.05; }
-      else if(mood==='speak'){ tphi=Math.sin(st.t*0.8)*0.05; tlam=-0.02; }
-      else if(mood==='wake'){ tphi=0; tlam=-0.03; }
-      else { tphi=Math.sin(st.t*0.33)*0.18; tlam=Math.sin(st.t*0.23+1.1)*0.12; }
+      const alpha=cfg.alpha!=null?cfg.alpha:0.98;
+      const dark=k=>`rgba(${gr*k|0},${gg*k|0},${gb*k|0},${alpha})`;
+      const bright=`rgba(${Math.min(255,gr+80)|0},${Math.min(255,gg+70)|0},${Math.min(255,gb+70)|0},${alpha})`;
+      let [tphi,tlam]=cfg.gaze(st.t);
       tphi += mvParams.focusDir*0.42;
-      if(st.t>st.sacT){ st.sacT=st.t+0.4+Math.random()*1.7; st.sacX=(Math.random()-0.5)*0.1; st.sacY=(Math.random()-0.5)*0.06; }
-      tphi+=st.sacX; tlam+=st.sacY;
+      if(!cfg.noSaccade){
+        if(st.t>st.sacT){ st.sacT=st.t+0.4+Math.random()*1.7; st.sacX=(Math.random()-0.5)*0.1; st.sacY=(Math.random()-0.5)*0.06; }
+        tphi+=st.sacX; tlam+=st.sacY;
+      }
       st.vphi+=(tphi-st.gphi)*0.018-st.vphi*0.14; st.gphi+=st.vphi;
       st.vlam+=(tlam-st.glam)*0.018-st.vlam*0.14; st.glam+=st.vlam;
-      if(st.blinkStart<0&&st.t>st.blinkT){ st.blinkStart=st.t; st.blinkT=st.t+2+Math.random()*4; }
-      st.blink=1;
-      if(st.blinkStart>=0){ const pr=(st.t-st.blinkStart)/0.16; if(pr>=1) st.blinkStart=-1; else st.blink=1-0.92*Math.sin(pr*Math.PI); }
+      const bc=cfg.blink||{min:2,max:6,dur:0.16};
+      if(bc.forceOpen){ st.blink=1; st.blinkStart=-1; }
+      else if(bc.forceClosed){
+        if(st.blinkStart<0&&st.t>st.blinkT){ st.blinkStart=st.t; st.blinkT=st.t+bc.min+Math.random()*(bc.max-bc.min); }
+        const rest=0.15;
+        if(st.blinkStart>=0){ const pr=(st.t-st.blinkStart)/bc.dur; if(pr>=1) st.blinkStart=-1; else st.blink=rest+(1-rest)*0.4*Math.sin(pr*Math.PI); }
+        else st.blink=rest;
+      } else {
+        if(st.blinkStart<0&&st.t>st.blinkT){ st.blinkStart=st.t; st.blinkT=st.t+bc.min+Math.random()*(bc.max-bc.min); }
+        st.blink=1;
+        if(st.blinkStart>=0){ const pr=(st.t-st.blinkStart)/bc.dur; if(pr>=1) st.blinkStart=-1; else st.blink=1-0.92*Math.sin(pr*Math.PI); }
+      }
       const phiC=0.72,dw=0.27,lamC=0.15,dhA=0.26, proj=(phi,lam)=>[cx+R*Math.cos(lam)*Math.sin(phi),cy+R*Math.sin(lam)];
       function eye(sign){
         const p0=sign*phiC+st.gphi, lam0=lamC+st.glam;
@@ -1145,7 +1216,7 @@ HUD_HTML = """<!DOCTYPE html>
     ncList.innerHTML=s.items.map(n=>`<div class="note" style="--c:var(--${n.c})">
       <div class="ni">${svg(n.i)}</div>
       <div class="nb"><div class="nt">${n.t}<time>${n.time}</time></div><div class="nm">${n.m}</div></div></div>`).join('');
-    nc.classList.add('open'); stopAuto();
+    nc.classList.add('open');
   }
   const closeNC=()=>nc.classList.remove('open');
   document.getElementById('icons').addEventListener('click',e=>{ const b=e.target.closest('.ibtn'); if(b) openSrc(b.dataset.src); });
@@ -1163,19 +1234,6 @@ HUD_HTML = """<!DOCTYPE html>
   document.getElementById('nc-close').addEventListener('click',closeNC);
   nc.addEventListener('click',e=>{ if(e.target===nc) closeNC(); });
 
-  // ---- scenes ----
-  const seg=document.getElementById('scene'), autoBtn=document.getElementById('auto');
-  let cur=0, auto=true, timer=null;
-  const STAT=['待命中','待命中','等你回應','排查中'];
-  function setScene(i){ cur=i; focusKey=null; render(i);
-    seg.querySelectorAll('button').forEach(b=>b.setAttribute('aria-pressed', String(+b.dataset.i===i)));
-    document.getElementById('mstatus').textContent=STAT[i]; }
-  seg.addEventListener('click',e=>{ const b=e.target.closest('button'); if(!b) return; stopAuto(); closeNC(); setScene(+b.dataset.i); });
-  function tick(){ setScene((cur+1)%M.length); timer=setTimeout(tick,5200); }
-  function startAuto(){ if(reduce){ autoBtn.dataset.on='false'; return; } auto=true; autoBtn.dataset.on='true'; clearTimeout(timer); timer=setTimeout(tick,5200); }
-  function stopAuto(){ auto=false; autoBtn.dataset.on='false'; clearTimeout(timer); }
-  autoBtn.addEventListener('click',()=> auto?stopAuto():startAuto());
-
   const pad=n=>String(n).padStart(2,'0');
   function clock(){ const d=new Date(); document.getElementById('clk').textContent=pad(d.getHours())+':'+pad(d.getMinutes());
     document.getElementById('clkd').textContent=`週${['日','一','二','三','四','五','六'][d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`; }
@@ -1192,7 +1250,7 @@ HUD_HTML = """<!DOCTYPE html>
         comment:j.comment||''} : null;
     }catch(e){ liveNow=null; }
     const key = liveNow ? liveNow.title+'|'+liveNow.by+'|'+liveNow.pal.join(',')+'|'+liveNow.cover+'|'+liveNow.queue.map(q=>q.title).join(',')+'|'+liveNow.comment+'|'+liveNow.songStartTime : '';
-    if(key!==lastLiveKey){ lastLiveKey=key; render(cur); }
+    if(key!==lastLiveKey){ lastLiveKey=key; render(); }
   }
   // ---- 黑膠展開進度條每秒補間，不用等 4s /now 輪詢才動（不重繪整卡，只改一個 style.width）----
   function tickProgress(){
@@ -1209,15 +1267,28 @@ HUD_HTML = """<!DOCTYPE html>
     try{
       const r=await fetch("/claude_status?t="+encodeURIComponent(TOKEN),{cache:"no-store"});
       const j=await r.json();
-      liveClaude = {sessions:Array.isArray(j.sessions)?j.sessions:[], rateLimits:j.rate_limits||null};
+      liveClaude = {sessions:Array.isArray(j.sessions)?j.sessions:[], rateLimits:j.rate_limits||null, notification:j.notification||null};
     }catch(e){ liveClaude=null; }
     const key=JSON.stringify(liveClaude);
-    if(key!==lastClaudeKey){ lastClaudeKey=key; render(cur); }
+    if(key!==lastClaudeKey){ lastClaudeKey=key; render(); }
   }
 
-  setScene(0); startAuto();
+  // ---- 輪詢 /gmail_calendar_status：count-only，有未讀/今天有行程才插一張 info 卡 ----
+  let liveGmailCal=null, lastGmailCalKey='';
+  async function refreshGmailCal(){
+    try{
+      const r=await fetch("/gmail_calendar_status?t="+encodeURIComponent(TOKEN),{cache:"no-store"});
+      const j=await r.json();
+      liveGmailCal = {unread:j.gmail_unread, calToday:j.calendar_today_count, cats:j.gmail_categories||{}};
+    }catch(e){ liveGmailCal=null; }
+    const key=JSON.stringify(liveGmailCal);
+    if(key!==lastGmailCalKey){ lastGmailCalKey=key; render(); }
+  }
+
+  render();
   refreshNow(); setInterval(refreshNow,4000);
   refreshClaudeStatus(); setInterval(refreshClaudeStatus,15000);
+  refreshGmailCal(); setInterval(refreshGmailCal,120000);
 })();
 </script>
 
@@ -1324,7 +1395,8 @@ def parse_other_cards_param(raw: str | None) -> list[dict]:
 def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗與露",
                    reply_source=None, car_presence=None, audio_rate_limiter=None,
                    stream_source=None, location_state_path=None,
-                   now_playing_state_path=None, claude_sessions_state_path=None):
+                   now_playing_state_path=None, claude_sessions_state_path=None,
+                   gmail_calendar_state_path=None):
     """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
 
     純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
@@ -1337,6 +1409,9 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     claude_sessions_state_path＝Claude Code session 狀態橋接檔路徑（None＝用
     claude_sessions_state.DEFAULT_PATH；scripts/scan_claude_sessions.py +
     scripts/claude_statusline.py 寫、這裡的 /claude_status 讀）。
+    gmail_calendar_state_path＝Gmail/Calendar count-only 橋接檔路徑（None＝用
+    gmail_calendar_state.DEFAULT_PATH；scripts/sync_gmail_calendar_state.py（排程
+    agent 呼叫）寫、這裡的 /gmail_calendar_status 讀，見該檔開頭說明）。
     """
     from aiohttp import web
 
@@ -1346,10 +1421,15 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     from now_playing_state import load_now_playing_state
     from claude_sessions_state import DEFAULT_PATH as _CLAUDE_DEFAULT_PATH
     from claude_sessions_state import load_claude_sessions_state
+    from claude_sessions_state import save_claude_notification
+    from gmail_calendar_state import DEFAULT_PATH as _GMAIL_CAL_DEFAULT_PATH
+    from gmail_calendar_state import DEFAULT_STALE_AFTER_S as _GMAIL_CAL_STALE_S
+    from gmail_calendar_state import load_gmail_calendar_state
 
     _gps_path = location_state_path or _GPS_DEFAULT_PATH
     _now_path = now_playing_state_path or _NOW_DEFAULT_PATH
     _claude_path = claude_sessions_state_path or _CLAUDE_DEFAULT_PATH
+    _gmail_cal_path = gmail_calendar_state_path or _GMAIL_CAL_DEFAULT_PATH
 
     _CORS = {"Access-Control-Allow-Origin": "*",
              "Access-Control-Allow-Headers": "*",
@@ -1450,10 +1530,48 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         """
         state = load_claude_sessions_state(path=_claude_path)
         if not state:
-            return web.json_response({"sessions": [], "rate_limits": None}, headers=_CORS)
+            return web.json_response({"sessions": [], "rate_limits": None, "notification": None}, headers=_CORS)
         return web.json_response({
             "sessions": state.get("sessions", []),
             "rate_limits": state.get("rate_limits"),
+            "notification": state.get("notification"),
+        }, headers=_CORS)
+
+    async def handle_claude_hook(request):
+        """POST /claude_hook — Claude Code 的 Notification hook（matcher permission_prompt）
+        直接推播，permission 對話框跳出來那瞬間就寫檔，不用等 scan_claude_sessions.py
+        下一次 20s 輪詢——純寫檔，不影響 hook 本身的 fail-open 行為（這裡出錯也只是
+        log，不回傳非 200，避免 Claude Code 那邊誤判 hook 失敗）。
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        save_claude_notification(
+            session_id=body.get("session_id", ""),
+            cwd=body.get("cwd", ""),
+            message=body.get("message", ""),
+            notification_type=body.get("notification_type", ""),
+            received_at=time.time(),
+            path=_claude_path,
+        )
+        return web.json_response({"ok": True}, headers=_CORS)
+
+    async def handle_gmail_calendar_status(request):
+        """GET /gmail_calendar_status — HUD 讀 Gmail 未讀數／今天剩下的行程數。
+
+        Count-only（DAKboard 那種做法，見 [[project_hud_actionable_open_loops]]）：
+        只回數字，不回信件內容。資料完全來自跨進程橋接檔（排程 agent 定期查 MCP
+        Gmail/Calendar connector 寫入，這個進程本身碰不到那些 MCP 工具）。太久沒更新
+        （排程可能停了）就當作沒有，不回傳過期數字誤導使用者。
+        """
+        state = load_gmail_calendar_state(path=_gmail_cal_path)
+        if not state or (time.time() - (state.get("updated_at") or 0)) > _GMAIL_CAL_STALE_S:
+            return web.json_response({"gmail_unread": None, "calendar_today_count": None}, headers=_CORS)
+        return web.json_response({
+            "gmail_unread": state.get("gmail_unread"),
+            "gmail_categories": state.get("gmail_categories", {}),
+            "calendar_today_count": state.get("calendar_today_count"),
         }, headers=_CORS)
 
     async def handle_wake(request):
@@ -1629,6 +1747,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_get("/play", handle_play)
     app.router.add_get("/now", handle_now)
     app.router.add_get("/claude_status", handle_claude_status)
+    app.router.add_post("/claude_hook", handle_claude_hook)
+    app.router.add_get("/gmail_calendar_status", handle_gmail_calendar_status)
     app.router.add_get("/marvin_comment", handle_marvin_comment)
     app.router.add_post("/wake", handle_wake)
     app.router.add_options("/wake", handle_preflight)
@@ -1723,6 +1843,20 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
     await site.start()
     if car_presence is not None:
         asyncio.create_task(run_car_ttl_loop(car_presence))
+
+        async def _sync_car_presence_state():
+            # 定期寫（不只在 arrive/depart 那瞬間），讓 updated_at 持續新鮮；main_discord.py
+            # 那邊的 music_cog 靠這份新鮮度判斷「car puck 真的還在用嗎」，決定現正播放要不要
+            # 照樣寫回 Discord 給家用 HUD（見 car_presence_state.py 開頭說明）。
+            from car_presence_state import save_car_presence_state
+            while True:
+                try:
+                    save_car_presence_state(present=car_presence.is_present, updated_at=time.time())
+                except Exception:  # noqa: BLE001
+                    pass
+                await asyncio.sleep(10.0)
+
+        asyncio.create_task(_sync_car_presence_state())
     if os.getenv("MARVIN_CLAUDE_STATUS_SCAN", "1").strip().lower() in ("1", "true", "yes", "on"):
         from scripts.scan_claude_sessions import run_claude_sessions_scan_loop
         asyncio.create_task(run_claude_sessions_scan_loop())

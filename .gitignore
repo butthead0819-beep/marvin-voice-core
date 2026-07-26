@@ -50,6 +50,8 @@ data/bad_cover_blacklist.json
 location_state.json
 now_playing_state.json
 claude_sessions_state.json
+gmail_calendar_state.json
+car_presence_state.json
 
 # Records directory — personal transcripts and player data
 records/

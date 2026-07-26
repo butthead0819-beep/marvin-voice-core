@@ -1491,15 +1491,21 @@ class MusicCog(commands.Cog):
         得靠這個檔案橋接真實播放狀態（見 now_playing_state.py）。寫檔失敗（磁碟/序列化
         問題）不該打斷播放，靜默吞掉。
 
-        HUD 只在家用：瀏覽器 satellite（MARVIN_SATELLITE_BROWSER，在外用手機）跟車載
-        puck（MARVIN_CAR_MODE）都是「在外」場景，這兩種模式下不寫橋接檔，避免蓋掉
-        家用 HUD 該看的 Pi/Discord 真實播放狀態（橋接檔只有一份、沒有來源標記，寫了
-        就會蓋掉）。
+        HUD 只在家用：瀏覽器 satellite（MARVIN_SATELLITE_BROWSER，在外用手機）是「在外」
+        場景，這個模式下不寫橋接檔，避免蓋掉家用 HUD 該看的 Discord 真實播放狀態
+        （橋接檔只有一份、沒有來源標記，寫了就會蓋掉）。
+
+        車載 puck 則是動態判斷（不是「MARVIN_CAR_MODE 有開就永遠不寫」這種死開關）：
+        只有 puck 真的在場、心跳夠新鮮（is_car_actively_in_use）才略過；puck 沒插電/
+        熄火/整個沒連上時，就算 MARVIN_CAR_MODE=1 也照樣把 Discord 的播放狀態寫回
+        家用 HUD——不然車模式忘了關就會靜默斷掉家裡黑膠封面（2026-07-25 踩過）。
         """
         if os.getenv("MARVIN_SATELLITE_BROWSER", "").strip().lower() in ("1", "true", "yes", "on"):
             return
         if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
-            return
+            from car_presence_state import is_car_actively_in_use
+            if is_car_actively_in_use(now=time.time()):
+                return
         try:
             from now_playing_state import save_now_playing_state
             if info:

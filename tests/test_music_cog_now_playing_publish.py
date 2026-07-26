@@ -121,16 +121,36 @@ def test_publish_skips_write_in_browser_satellite_mode(monkeypatch):
     assert calls == []
 
 
-def test_publish_skips_write_in_car_mode(monkeypatch):
-    """車載 ESP32 puck（在外）不該寫跨進程橋接檔，理由同瀏覽器 satellite。"""
+def test_publish_skips_write_when_car_puck_actively_in_use(monkeypatch):
+    """MARVIN_CAR_MODE=1 且 puck 真的在場、心跳夠新鮮 → 不寫，避免蓋掉車上正在看的畫面。"""
     import now_playing_state
+    import car_presence_state
     calls = []
     monkeypatch.setattr(now_playing_state, "save_now_playing_state",
                          lambda **kw: calls.append(kw))
+    monkeypatch.setattr(car_presence_state, "is_car_actively_in_use", lambda **kw: True)
     monkeypatch.setenv("MARVIN_CAR_MODE", "1")
     cog = _make_cog()
     cog._publish_now_playing_state({"title": "車上播放", "requested_by": "車上"})
     assert calls == []
+
+
+def test_publish_falls_back_to_discord_when_car_mode_flag_on_but_puck_not_active(monkeypatch):
+    """MARVIN_CAR_MODE=1 只是旗標沒關、puck 其實沒連上（沒插電/忘了關）→ 照樣寫給家用 HUD。
+
+    2026-07-25 踩過：MARVIN_CAR_MODE=1 是死開關時，忘了關會讓家用 HUD 的黑膠封面
+    靜默斷線，好幾天都沒人發現。改成動態判斷後，這個情境要照樣 fallback 寫回去。
+    """
+    import now_playing_state
+    import car_presence_state
+    calls = []
+    monkeypatch.setattr(now_playing_state, "save_now_playing_state",
+                         lambda **kw: calls.append(kw))
+    monkeypatch.setattr(car_presence_state, "is_car_actively_in_use", lambda **kw: False)
+    monkeypatch.setenv("MARVIN_CAR_MODE", "1")
+    cog = _make_cog()
+    cog._publish_now_playing_state({"title": "在家播放", "requested_by": "小明"})
+    assert calls and calls[-1]["title"] == "在家播放"
 
 
 def test_republish_queue_snapshot_writes_playing_false_when_idle(monkeypatch):
