@@ -9,6 +9,7 @@ diary_comic_*.png 生成靜態合集頁（repo 根 marvin_comics.html，
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import sys
 from datetime import datetime
@@ -18,7 +19,12 @@ _FNAME_RE = re.compile(r"^diary_comic_(\d{8})_(\d{6})\.png$")
 
 
 def collect_comics(records_dir) -> list[dict]:
-    """掃描目錄 → [{path, date, dt}]，新→舊排序；TEST 產物與非漫畫檔排除。"""
+    """掃描目錄 → [{path, date, dt}]，新→舊排序；TEST 產物與非漫畫檔排除。
+
+    同內容（像素 hash 相同）只留最早那張——渲染端偶爾會為同一場次重複產出
+    內容一樣、檔名不同的圖（見 diary_comic_poster._render_blocking 的場次去重註解），
+    這裡再擋一層，避免週合集把同一張圖當成好幾張新漫畫送出去。
+    """
     out = []
     for p in Path(records_dir).glob("diary_comic_*.png"):
         m = _FNAME_RE.match(p.name)
@@ -27,7 +33,16 @@ def collect_comics(records_dir) -> list[dict]:
         d, t = m.groups()
         dt = datetime.strptime(d + t, "%Y%m%d%H%M%S")
         out.append({"path": p, "dt": dt, "date": dt.strftime("%Y/%m/%d %H:%M")})
-    return sorted(out, key=lambda e: e["dt"], reverse=True)
+    out.sort(key=lambda e: e["dt"])  # 舊→新，同內容留最早那張
+    seen_hashes: set[str] = set()
+    deduped = []
+    for e in out:
+        h = hashlib.sha256(e["path"].read_bytes()).hexdigest()
+        if h in seen_hashes:
+            continue
+        seen_hashes.add(h)
+        deduped.append(e)
+    return sorted(deduped, key=lambda e: e["dt"], reverse=True)
 
 
 _PAGE = """<!DOCTYPE html>

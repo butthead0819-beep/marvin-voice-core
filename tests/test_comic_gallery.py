@@ -8,7 +8,7 @@ def test_collect_parses_and_sorts_newest_first(tmp_path):
     for name in ("diary_comic_20260621_234513.png",
                  "diary_comic_20260704_005541.png",
                  "diary_comic_20260622_010536.png"):
-        (tmp_path / name).write_bytes(b"png")
+        (tmp_path / name).write_bytes(name.encode())  # 內容各異，不觸發 dedup
     out = collect_comics(tmp_path)
     assert [e["date"] for e in out] == ["2026/07/04 00:55", "2026/06/22 01:05", "2026/06/21 23:45"]
 
@@ -17,6 +17,17 @@ def test_collect_skips_test_artifacts(tmp_path):
     (tmp_path / "diary_comic_TEST_20260622_235630.png").write_bytes(b"png")
     (tmp_path / "diary_comic_20260622_010536.png").write_bytes(b"png")
     assert len(collect_comics(tmp_path)) == 1
+
+
+def test_collect_dedupes_identical_content_keeps_earliest(tmp_path):
+    """回歸測試：同一場次被重複渲染會產生檔名不同、像素相同的圖
+    （見 diary_comic_poster._render_blocking 場次去重註解）——週合集不該把它們當新漫畫全送。"""
+    (tmp_path / "diary_comic_20260726_120000.png").write_bytes(b"same-bytes")
+    (tmp_path / "diary_comic_20260726_121000.png").write_bytes(b"same-bytes")  # 內容相同、較晚
+    (tmp_path / "diary_comic_20260726_130000.png").write_bytes(b"different")
+    out = collect_comics(tmp_path)
+    assert len(out) == 2
+    assert [e["date"] for e in out] == ["2026/07/26 13:00", "2026/07/26 12:00"]
 
 
 def test_collect_ignores_non_comic_pngs(tmp_path):

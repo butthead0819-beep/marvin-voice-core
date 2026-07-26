@@ -202,18 +202,23 @@ def _render_blocking():
     session = _latest_session()
     if not session:
         return None
+    # 去重鍵用場次「起始」而非「結束」時間：長靜默中對話仍會持續累加新條目，
+    # 若拿 end（session[-1]）當鍵，同一場次每次重跑 end 都往後移，去重永遠比不中，
+    # 導致同一段「今夜歌單」被反覆渲染成不同檔名的重複圖（週合集因此收進大量重複）。
+    # start（session[0]）在同一場次內固定不變，才是穩定的場次身分。
+    key = session[0].ts_str
     end = session[-1].ts_str
-    if end == _last_posted() or end == _pending().get("end"):
-        logger.info(f"📓 [DiaryComic] skip: 場次 {end} 已貼過/已渲染待貼")
+    if key == _last_posted() or key == _pending().get("end"):
+        logger.info(f"📓 [DiaryComic] skip: 場次 {key} 已貼過/已渲染待貼")
         return None  # 已貼過、或已渲染待貼
 
     card = _render_themed_card(session)  # 當夜策展卡；無策展 → None
     if card is None:
-        logger.info(f"📓 [DiaryComic] skip: 場次 {end} 本場無策展歌單，不出日記")
+        logger.info(f"📓 [DiaryComic] skip: 場次 {key} 本場無策展歌單，不出日記")
         return None
     out = f"records/diary_comic_{end.replace(':', '').replace(' ', '_').replace('-', '')}.png"
     card.save(out)
-    _set_pending(end, out, "themed")  # 等下次開台才貼
+    _set_pending(key, out, "themed")  # 等下次開台才貼
     return out, "themed"
 
 
@@ -242,8 +247,8 @@ async def maybe_post_diary(bot):
     """
     try:
         p = _pending()
-        end, path = p.get("end"), p.get("path")
-        if not end or not path or end == _last_posted():
+        key, path = p.get("end"), p.get("path")  # "end" 欄位實存場次 start 去重鍵，見 _render_blocking
+        if not key or not path or key == _last_posted():
             return None
         import discord
         from pathlib import Path as _P
@@ -258,7 +263,7 @@ async def maybe_post_diary(bot):
             await msg.pin()  # 置頂 → 晚進來的人不用爬
         except Exception:
             pass
-        _mark_posted(end)
+        _mark_posted(key)
         _clear_pending()
         logger.info(f"📓 [DiaryComic] 已貼昨日漫畫 {path}（{p.get('format')}）並置頂")
         return target, p.get("format", "")

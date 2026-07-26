@@ -131,3 +131,43 @@ async def test_maybe_post_diary_posts_pins_clears(tmp_path, monkeypatch):
 async def test_maybe_post_diary_no_pending_returns_none(tmp_path, monkeypatch):
     monkeypatch.setattr(poster, "PENDING_PATH", str(tmp_path / "p.json"))
     assert await poster.maybe_post_diary(MagicMock()) is None
+
+
+class _FakeEntry:
+    def __init__(self, ts_str):
+        self.ts_str = ts_str
+
+
+def test_render_blocking_skips_when_same_session_grows(tmp_path, monkeypatch):
+    """回歸測試：長靜默中 log 持續有新條目 append，同一場次的 end 每次都往後移，
+    若拿 end 當去重鍵會誤判成新場次而重複渲染同一張策展卡（→ 週合集塞滿重複圖）。
+    去重鍵改用場次 start 後，start 不變 → 第二次應被跳過，不重複渲染/存檔。"""
+    monkeypatch.setattr(poster, "PENDING_PATH", str(tmp_path / "p.json"))
+    monkeypatch.setattr(poster, "STATE_PATH", str(tmp_path / "s.json"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "records").mkdir(exist_ok=True)
+
+    render_calls = []
+
+    def fake_render(session):
+        render_calls.append(session)
+        img = MagicMock()
+        img.save = lambda path: None
+        return img
+
+    monkeypatch.setattr(poster, "_render_themed_card", fake_render)
+
+    # 第一次：場次 start=22:00:00, end=22:10:00
+    session1 = [_FakeEntry("2026-06-22 22:00:00"), _FakeEntry("2026-06-22 22:10:00")]
+    monkeypatch.setattr(poster, "_latest_session", lambda: session1)
+    out1 = poster._render_blocking()
+    assert out1 is not None
+    assert len(render_calls) == 1
+
+    # 第二次（下個 10 分鐘 tick）：同一場次沒人重新開場，但 log 又多了一條 → end 往後移
+    session2 = [_FakeEntry("2026-06-22 22:00:00"), _FakeEntry("2026-06-22 22:10:00"),
+                _FakeEntry("2026-06-22 22:20:00")]
+    monkeypatch.setattr(poster, "_latest_session", lambda: session2)
+    out2 = poster._render_blocking()
+    assert out2 is None                      # 應跳過，不重複渲染
+    assert len(render_calls) == 1             # 沒有再呼叫渲染
