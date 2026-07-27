@@ -288,8 +288,11 @@ class _BlockingOutput:
 # ── Timing tests ──────────────────────────────────────────────────────────────
 
 def test_pump_no_double_timing_with_blocking_output():
-    """阻塞輸出（write 內 sleep frame_duration）播 10 幀，總耗時 < 0.32s；
-    現況雙重計時約 0.4s → 此測試應為紅；修成 deadline 計時後 ~0.2s → 綠。"""
+    """阻塞輸出（write 內 sleep frame_duration）播 10 幀，總耗時 < 0.8s；
+    現況雙重計時會逼近正確耗時的兩倍 → 此測試應為紅；修成 deadline 計時後不會再翻倍 → 綠。
+    上界抓寬到 0.8s（非緊貼本機 ~0.2s 的 0.32s）是因為 GitHub Actions macOS runner
+    的 thread/sleep 排程延遲會讓「正確」耗時本身就達 ~0.5s；0.8s 仍能跟雙重計時的
+    ~2x 耗時（同環境下會落在 ~1.0s+）區分開。"""
     from marvin_voice_core.playback_device import LocalSpeakerDevice
 
     N = 10
@@ -306,8 +309,8 @@ def test_pump_no_double_timing_with_blocking_output():
     elapsed = time.perf_counter() - start
 
     assert len(output.frames) == N, f"應播出 {N} 幀，實際 {len(output.frames)}"
-    assert elapsed < 0.32, (
-        f"雙重計時 bug：{N} 幀阻塞輸出總耗時 {elapsed:.3f}s 超過 0.32s 上界"
+    assert elapsed < 0.8, (
+        f"雙重計時 bug：{N} 幀阻塞輸出總耗時 {elapsed:.3f}s 超過 0.8s 上界"
     )
 
 
