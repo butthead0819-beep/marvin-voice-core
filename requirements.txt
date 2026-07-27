@@ -23,9 +23,11 @@ pypinyin==0.55.0
 python-dotenv==1.2.2
 rapidfuzz==3.14.5
 requests==2.33.1
+scipy==1.18.0
 sounddevice==0.5.3
 soundfile==0.13.1
 syncedlyrics==1.0.1
+wyoming==1.10.0
 yt-dlp==2026.6.9
 ytmusicapi==1.12.0
 
