@@ -1,0 +1,17 @@
+# 安裝時把 __MARVIN_TEXT_TOKEN__ 換成 Mac .env 的 MARVIN_TEXT_TOKEN 實際值。
+[Unit]
+Description=Marvin HUD kiosk display (cage + chromium on HDMI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=XDG_RUNTIME_DIR=/run
+Environment=WLR_BACKENDS=drm
+ExecStart=/usr/bin/cage -- /usr/bin/chromium --no-sandbox --kiosk --enable-features=UseOzonePlatform --ozone-platform=wayland --use-gl=angle --use-angle=gles --enable-gpu-rasterization --ignore-gpu-blocklist --enable-zero-copy --disable-extensions --disable-sync --disable-background-networking --disable-default-apps --mute-audio --no-first-run --num-raster-threads=2 http://100.123.68.86:8790/hud?t=__MARVIN_TEXT_TOKEN__
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

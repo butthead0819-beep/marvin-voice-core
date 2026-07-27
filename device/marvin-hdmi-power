@@ -1,0 +1,7 @@
+#!/bin/bash
+# marvin-hdmi-power on|off — 直接控制 HDMI 訊號輸出（FBIOBLANK，非只是關瀏覽器留黑畫面）。
+case "$1" in
+    on)  echo 0 > /sys/class/graphics/fb0/blank ;;
+    off) echo 1 > /sys/class/graphics/fb0/blank ;;
+    *) echo '用法: marvin-hdmi-power on|off'; exit 1 ;;
+esac

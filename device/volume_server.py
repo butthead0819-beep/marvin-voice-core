@@ -517,7 +517,7 @@ class Handler(BaseHTTPRequestHandler):
         # 控制台網頁（免 token，Tailscale 私網；API 呼叫才驗 token）
         if self.command == "GET" and path in ("", "/panel"):
             return self._serve_panel()
-        if path not in ("/vol", "/eq", "/balance", "/profile", "/ptt", "/presence"):
+        if path not in ("/vol", "/eq", "/balance", "/profile", "/ptt", "/presence", "/hud"):
             return self._send(404, {"error": "not_found"})
         q = parse_qs(parsed.query)
         if not self._authed(q):
@@ -627,6 +627,27 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(400, {"error": "bad_request", "message": str(e)})
             else:
                 r = subprocess.run(["/usr/local/bin/marvin-mic", "status"],
+                                   capture_output=True, text=True, timeout=10)
+                return self._send(200, {"status": r.stdout.strip()})
+
+        elif path == "/hud":
+            # HUD HDMI kiosk 開關：跑 marvin-hud on|off|status（cage+chromium systemd service）。
+            # GET=讀狀態。
+            if self.command == "POST":
+                n = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(n).decode() if n else "{}"
+                try:
+                    state = json.loads(body).get("state", "").strip().lower()
+                    if state not in ("on", "off"):
+                        return self._send(400, {"error": "bad_state", "want": ["on", "off"]})
+                    r = subprocess.run(["/usr/local/bin/marvin-hud", state],
+                                       capture_output=True, text=True, timeout=10)
+                    print(f"📡 [VolumeServer] POST /hud state={state} rc={r.returncode} out={r.stdout.strip()}")
+                    return self._send(200, {"ok": r.returncode == 0, "state": state, "detail": r.stdout.strip()})
+                except Exception as e:
+                    return self._send(400, {"error": "bad_request", "message": str(e)})
+            else:
+                r = subprocess.run(["/usr/local/bin/marvin-hud", "status"],
                                    capture_output=True, text=True, timeout=10)
                 return self._send(200, {"status": r.stdout.strip()})
 

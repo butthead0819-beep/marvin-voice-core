@@ -1,0 +1,17 @@
+#!/bin/bash
+# marvin-hud on|off|status — 控制 Pi HDMI 輸出的 HUD kiosk（cage+chromium）＋ HDMI 訊號本身。
+case "$1" in
+    on)
+        sudo /usr/local/bin/marvin-hdmi-power on
+        sleep 1
+        sudo systemctl start marvin-hud-kiosk.service
+        echo '🖥️ HUD HDMI ON'
+        ;;
+    off)
+        sudo systemctl stop marvin-hud-kiosk.service
+        sudo /usr/local/bin/marvin-hdmi-power off
+        echo '🖥️ HUD HDMI OFF（含關閉 HDMI 訊號）'
+        ;;
+    status) sudo systemctl is-active marvin-hud-kiosk.service || true ;;
+    *) echo '用法: marvin-hud <on|off|status>'; exit 1 ;;
+esac

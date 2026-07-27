@@ -98,6 +98,18 @@ struct MarvinClient {
         _ = try await request(url, method: "POST", json: ["state": state])
     }
 
+    func hudStatus() async throws -> Bool {
+        let url = URL(string: "\(Cfg.piBase)/hud?\(tokenQuery())")!
+        let data = try await request(url)
+        let j = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        return (j["status"] as? String) == "active"
+    }
+
+    func setHud(_ on: Bool) async throws {
+        let url = URL(string: "\(Cfg.piBase)/hud?\(tokenQuery())")!
+        _ = try await request(url, method: "POST", json: ["state": on ? "on" : "off"])
+    }
+
     // --- Mac 大腦 (:8790) ---
 
     func say(_ text: String) async throws {
@@ -137,6 +149,8 @@ final class Model: ObservableObject {
     @Published var online = false
     @Published var status = "就緒"
     @Published var pttRecording = false
+    @Published var hudOn = false
+    @Published var hudBusy = false
     @Published var sliderValue = 40.0   // 本地滑桿值（拖曳時不被 refresh 蓋掉）
     @Published var sliderEditing = false
 
@@ -155,6 +169,7 @@ final class Model: ObservableObject {
                 online = true
             } catch { online = false }
             presence = (try? await client.presenceStatus()) ?? presence
+            if let h = try? await client.hudStatus() { hudOn = h }
             if let np = try? await client.nowPlaying() {
                 if np.playing {
                     nowTitle = (np.paused ? "暫停中 · " : "") + (np.title.isEmpty ? "—" : np.title)
@@ -180,6 +195,19 @@ final class Model: ObservableObject {
         run(state == "off" ? "已離家" : "已到家", "切換失敗") { try await self.client.presence(state) }
     }
     func say(_ text: String) { run("已送出：「\(text)」", "連不到大腦") { try await self.client.say(text) } }
+
+    func toggleHud() {
+        let next = !hudOn
+        hudBusy = true
+        Task {
+            do {
+                try await client.setHud(next)
+                hudOn = next
+                status = next ? "🖥️ HUD HDMI 開啟" : "🖥️ HUD HDMI 關閉"
+            } catch { status = "HUD 切換失敗" }
+            hudBusy = false
+        }
+    }
 
     func togglePTT() {
         let next = pttRecording ? "stop" : "start"
@@ -215,6 +243,7 @@ struct Panel: View {
             volume
             profileRow
             pttButton
+            hudRow
             presenceRow
             quickInputs
             Divider()
@@ -291,6 +320,21 @@ struct Panel: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(model.pttRecording ? .red : .accentColor)
+    }
+
+    private var hudRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("🖥️ HUD HDMI 輸出").font(.caption).foregroundStyle(.secondary)
+            Button {
+                model.toggleHud()
+            } label: {
+                Text(model.hudOn ? "🖥️ 關閉 HUD 螢幕" : "🖥️ 開啟 HUD 螢幕")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(model.hudOn ? .accentColor : nil)
+            .disabled(model.hudBusy)
+        }
     }
 
     private var presenceRow: some View {
