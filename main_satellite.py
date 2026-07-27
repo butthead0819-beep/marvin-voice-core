@@ -1320,23 +1320,51 @@ __PERF_JS__
         ctx.fillStyle=sh;ctx.fill();ctx.restore();
         ctx.lineJoin='round';ctx.lineCap='round';ctx.lineWidth=Math.max(2,R*0.035);ctx.strokeStyle='rgba(8,10,9,.96)';
         ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.stroke();
+        return P;
+      }
+      // 墨鏡鏡片直接從 eye() 回傳的實際三角形頂點算 bounding box——不是另外用 proj() 算一次
+      // 獨立座標，才能保證鏡片跟眼睛(含 saccade/blink 造成的偏移)完全同步移動，不會跑掉。
+      function eyeBounds(P){
+        const xs=P.map(p=>p[0]), ys=P.map(p=>p[1]);
+        const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+        return {cx:(minX+maxX)/2, cy:(minY+maxY)/2, w:maxX-minX, h:maxY-minY};
+      }
+      // 參考 Matrix 主題墨鏡設計：長方形鏡片(圓角)、深綠黑漸層＋幾道淡綠色橫紋模擬數位反光、
+      // 細金屬框、鏡橋、外側鉸鏈螺絲——不是純色橢圓疊圖。
+      function drawLens(b){
+        const w=b.w*1.2, h=b.h*1.45;
+        const x=b.cx-w/2, y=b.cy-h*0.58;
+        const r=Math.min(w,h)*0.26;
+        ctx.beginPath();
+        if(ctx.roundRect) ctx.roundRect(x,y,w,h,r); else ctx.rect(x,y,w,h);
+        const lg=ctx.createLinearGradient(x,y,x+w,y+h);
+        lg.addColorStop(0,'rgba(8,16,11,0.95)');lg.addColorStop(0.55,'rgba(16,36,20,0.88)');lg.addColorStop(1,'rgba(6,10,8,0.95)');
+        ctx.fillStyle=lg;ctx.fill();
+        ctx.save();ctx.clip();
+        ctx.fillStyle='rgba(120,230,140,0.22)';
+        for(let i=0;i<3;i++){ const sy=y+h*(0.22+i*0.28)+Math.sin(st.t*2+i*2)*h*0.05; ctx.fillRect(x,sy,w,h*0.05); }
+        ctx.restore();
+        ctx.lineWidth=Math.max(1.5,R*0.022);ctx.strokeStyle='rgba(18,20,22,0.95)';ctx.stroke();
+        return {x,y,w,h};
       }
       // 球體本身是圓形、繞中心轉沒有視覺差異，headTiltZ 只需要轉「眼睛＋眉毛＋墨鏡」這個子群組。
       const tiltRad=(pv.headTiltZ||0)*Math.PI/180;
       ctx.save(); if(tiltRad){ ctx.translate(cx,cy); ctx.rotate(tiltRad); ctx.translate(-cx,-cy); }
-      eye(-1);eye(1);
+      const eyeP=[eye(-1),eye(1)];
       ctx.save();ctx.strokeStyle='rgba(16,19,17,.92)';ctx.lineWidth=Math.max(1.5,R*0.02);ctx.lineCap='round';ctx.lineJoin='round';
       const phiEnd=phiC+dw+0.26,curve=0.035;ctx.beginPath();
       for(let i=0;i<=24;i++){ const s=-1+i/12, ph=st.gphi+s*phiEnd, lm=lamC+st.glam+curve*s*s, q=proj(ph,lm); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
       ctx.stroke();ctx.restore();
       if(perfCtx && perfCtx.wearing && perfCtx.wearing.put_on_sunglasses){
-        ctx.fillStyle='rgba(10,12,14,0.88)';
-        for(const sign of [-1,1]){
-          const [ex,ey]=proj(sign*phiC+st.gphi, lamC+st.glam);
-          ctx.beginPath(); ctx.ellipse(ex,ey,R*0.32,R*0.16,0,0,P2); ctx.fill();
-        }
-        ctx.strokeStyle='rgba(5,6,7,.9)'; ctx.lineWidth=Math.max(2,R*0.03);
-        ctx.beginPath(); ctx.moveTo(cx-R*0.5,cy-R*0.05); ctx.lineTo(cx+R*0.5,cy-R*0.05); ctx.stroke();
+        const lb=[eyeBounds(eyeP[0]),eyeBounds(eyeP[1])].sort((a,b)=>a.cx-b.cx).map(drawLens);
+        ctx.strokeStyle='rgba(18,20,22,0.95)';ctx.lineWidth=Math.max(1.5,R*0.025);
+        ctx.beginPath();ctx.moveTo(lb[0].x+lb[0].w,lb[0].y+lb[0].h*0.4);ctx.lineTo(lb[1].x,lb[1].y+lb[1].h*0.4);ctx.stroke();
+        const hingeR=Math.max(1.2,R*0.018);
+        ctx.fillStyle='rgba(40,42,45,0.95)';
+        [[lb[0].x,lb[0].y+lb[0].h*0.35,-1],[lb[1].x+lb[1].w,lb[1].y+lb[1].h*0.35,1]].forEach(([hx,hy,dir])=>{
+          ctx.beginPath();ctx.arc(hx,hy,hingeR,0,P2);ctx.fill();
+          ctx.beginPath();ctx.moveTo(hx,hy);ctx.lineTo(hx+dir*R*0.12,hy+R*0.02);ctx.stroke();
+        });
       }
       ctx.restore();
       if(!reduce) head.raf=requestAnimationFrame(frame);
