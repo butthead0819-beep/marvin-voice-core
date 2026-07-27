@@ -334,6 +334,12 @@ function encodeWAV(buffers, rate){
 </body></html>"""
 
 
+# hud_performance.js 是「動作(Action)+情緒(Emotion)兩層疊加表演」的唯一真相來源——
+# node --test 直接測這個檔案，HUD_HTML 用 __PERF_JS__ 佔位字串把整段內容內嵌進 <script>，
+# 不是另外複製一份邏輯進這個字串裡（見 tests_js/hud_performance.test.js）。
+with open(os.path.join(os.path.dirname(__file__), "hud_performance.js"), encoding="utf-8") as _f:
+    _PERF_JS = _f.read()
+
 # Marvin HUD v12（設計稿 → 接上真實 /now 現正播放資料）。1920×480 寬屏顯示框架，
 # 重要性階梯卡片 + 會動 Marvin 頭 + 旋轉黑膠（封面調色盤 splatter）。
 # 場景/通知中心示範資料仍是靜態 demo；「現正播放」卡輪詢 /now，playing=true 時
@@ -1150,6 +1156,24 @@ HUD_HTML = """<!DOCTYPE html>
     vinyl={ro};
   }
 
+  // ---------- performance script: 疊加表演（Action + Emotion 兩層，見 hud_performance.js）----------
+  // 下面這段佔位字串由 handle_hud 讀 hud_performance.js 檔案內容整段替換進來——
+  // 這個檔案是唯一真相來源，node --test 直接測它，不是另外重寫一份邏輯到這個字串裡。
+__PERF_JS__
+  const PERF_THEME_NAME="__PERF_THEME__"; // 空字串＝關閉（MARVIN_PERFORMANCE_SCRIPT off 或未設定主題）
+  let perf=null;
+  function ensurePerf(){
+    const theme=PERF_THEMES[PERF_THEME_NAME];
+    if(!theme) return null;
+    if(!perf || (Date.now()-perf.roundStart)/1000>=PERF_ROUND_SEC){
+      const emoKeys=Object.keys(EMOTIONS);
+      const emotion=emoKeys[Math.floor(Math.random()*emoKeys.length)];
+      perf={ order:buildRoundOrder(theme), emotion, roundStart:Date.now() };
+      console.log('[perf] round start', perf.order, 'emotion='+emotion, new Date(perf.roundStart).toISOString());
+    }
+    return perf;
+  }
+
   // ---------- live Marvin head (metallic + green triangle eyes) ----------
   // 每個情緒只用三個既有槓桿驅動：眼睛顏色/亮度（col+alpha+pulse）、眨眼節奏（blink）、
   // 視線方向（gaze）——不加新繪製層/新幾何，Pi 3B 要跑得動，全部只是餵給既有 frame() 的數字。
@@ -1185,8 +1209,28 @@ HUD_HTML = """<!DOCTYPE html>
     const ro=new ResizeObserver(size); ro.observe(canvas); size();
     const P2=Math.PI*2;
     function frame(){
-      st.t+=0.03; ctx.clearRect(0,0,W,Hh);
       const mood=mvParams.mood;
+      // 疊加表演取樣——吃到未知 action_id/資料缺漏就 console.warn 跳過，不能讓例外拋出
+      // 去害整顆頭的 requestAnimationFrame 排程停掉（main_satellite.py 原本 frame() 無防護）。
+      let pv={}, perfCtx=null;
+      try{
+        if(perfShouldRender(mood)){
+          const theme=PERF_THEMES[PERF_THEME_NAME];
+          if(theme){
+            const p=ensurePerf();
+            const elapsed=(Date.now()-p.roundStart)/1000;
+            const active=pickActiveAction(theme,p.order,elapsed);
+            if(active){
+              const progress=active.action.dur?Math.min(1,active.localT/active.action.dur):0;
+              pv=sampleAction(active.action, EMOTIONS[p.emotion]||EMOTIONS.neutral, progress);
+              if(p.lastActionId!==active.id){ p.lastActionId=active.id; console.log('[perf] action', active.id, 'emotion='+p.emotion, new Date().toISOString()); }
+            }
+            perfCtx={theme,order:p.order,elapsed};
+          }
+        }
+      }catch(e){ console.warn('[perf] sample failed, skipping', e); pv={}; perfCtx=null; }
+      if(!(pv.freeze>0.5)) st.t+=0.03;
+      ctx.clearRect(0,0,W,Hh);
       const cfg=MOODCFG[mood]||MOODCFG.idle;
       const p=cfg.pulse;
       const env = p ? Math.max(0, Math.sin(st.t*p.speed)*p.amp + (p.speed2?Math.sin(st.t*p.speed2)*p.amp2:0)) : 0;
@@ -1195,10 +1239,12 @@ HUD_HTML = """<!DOCTYPE html>
       // flex-grow 橫向分配變動，是穩定的頭部尺寸基準）。cx 的左右漂浮改吃全部的 W，
       // 卡片越寬、Marvin 能晃動的地盤就越大，這才是「卡片變大＝拓展活動空間」而非放大頭。
       const headBase=Hh;
-      const cx=W/2+Math.sin(st.t*0.4)*W*0.02;
+      const perfShakeX=pv.shake?Math.sin(st.t*41)*pv.shake*headBase*0.02:0;
+      const perfShakeY=pv.shake?Math.cos(st.t*37)*pv.shake*headBase*0.02:0;
+      const cx=W/2+Math.sin(st.t*0.4)*W*0.02+(pv.swayX||0)*headBase*0.05+(pv.driftX||0)*headBase*0.08+perfShakeX;
       const floatY=Math.sin(st.t*0.28)*headBase*0.045;   // 明顯一點的上下起伏，才有懸浮感（不只是待機微動）
-      const cy=Hh*0.45+floatY+env*headBase*0.03;
-      const R=headBase*0.40*st.cam*(1+Math.sin(st.t*0.9)*0.006);
+      const cy=Hh*0.45+floatY+env*headBase*0.03+(pv.bobY||0)*headBase*0.05+(pv.driftY||0)*headBase*0.08+perfShakeY;
+      const R=headBase*0.40*st.cam*(1+Math.sin(st.t*0.9)*0.006)*(pv.scale??1);
       // 陰影跟球體脫開一段距離、且隨浮動高度縮放變淡——飄得越高陰影越小越淡、
       // 沉得越低陰影越大越實，這種「陰影跟物體不貼在一起」才會讀成懸浮，不是貼地站著。
       const floatNorm=(floatY/(headBase*0.045)+1)/2;
@@ -1233,6 +1279,7 @@ HUD_HTML = """<!DOCTYPE html>
       const bright=`rgba(${Math.min(255,gr+80)|0},${Math.min(255,gg+70)|0},${Math.min(255,gb+70)|0},${alpha})`;
       let [tphi,tlam]=cfg.gaze(st.t);
       tphi += mvParams.focusDir*0.42;
+      tphi += pv.gazeDir||0;
       if(!cfg.noSaccade){
         if(st.t>st.sacT){ st.sacT=st.t+0.4+Math.random()*1.7; st.sacX=(Math.random()-0.5)*0.1; st.sacY=(Math.random()-0.5)*0.06; }
         tphi+=st.sacX; tlam+=st.sacY;
@@ -1267,11 +1314,24 @@ HUD_HTML = """<!DOCTYPE html>
         ctx.lineJoin='round';ctx.lineCap='round';ctx.lineWidth=Math.max(2,R*0.035);ctx.strokeStyle='rgba(8,10,9,.96)';
         ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.stroke();
       }
+      // 球體本身是圓形、繞中心轉沒有視覺差異，headTiltZ 只需要轉「眼睛＋眉毛＋墨鏡」這個子群組。
+      const tiltRad=(pv.headTiltZ||0)*Math.PI/180;
+      ctx.save(); if(tiltRad){ ctx.translate(cx,cy); ctx.rotate(tiltRad); ctx.translate(-cx,-cy); }
       eye(-1);eye(1);
       ctx.save();ctx.strokeStyle='rgba(16,19,17,.92)';ctx.lineWidth=Math.max(1.5,R*0.02);ctx.lineCap='round';ctx.lineJoin='round';
       const phiEnd=phiC+dw+0.26,curve=0.035;ctx.beginPath();
       for(let i=0;i<=24;i++){ const s=-1+i/12, ph=st.gphi+s*phiEnd, lm=lamC+st.glam+curve*s*s, q=proj(ph,lm); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
       ctx.stroke();ctx.restore();
+      if(perfCtx && isPairHeld(perfCtx.theme, perfCtx.order, 'put_on_sunglasses', perfCtx.elapsed)){
+        ctx.fillStyle='rgba(10,12,14,0.88)';
+        for(const sign of [-1,1]){
+          const [ex,ey]=proj(sign*phiC+st.gphi, lamC+st.glam);
+          ctx.beginPath(); ctx.ellipse(ex,ey,R*0.32,R*0.16,0,0,P2); ctx.fill();
+        }
+        ctx.strokeStyle='rgba(5,6,7,.9)'; ctx.lineWidth=Math.max(2,R*0.03);
+        ctx.beginPath(); ctx.moveTo(cx-R*0.5,cy-R*0.05); ctx.lineTo(cx+R*0.5,cy-R*0.05); ctx.stroke();
+      }
+      ctx.restore();
       if(!reduce) head.raf=requestAnimationFrame(frame);
     }
     head={raf:requestAnimationFrame(frame),ro};
@@ -1765,7 +1825,10 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         """
         kiosk = (request.query.get("kiosk") or "").strip().lower() in ("1", "true", "yes")
         body_class = "kiosk" if kiosk else ""
-        html = HUD_HTML.replace("__TOKEN__", token or "").replace("__BODY_CLASS__", body_class)
+        perf_enabled = os.getenv("MARVIN_PERFORMANCE_SCRIPT", "1").strip().lower() in ("1", "true", "yes", "on")
+        perf_theme = os.getenv("MARVIN_PERFORMANCE_THEME", "matrix").strip() if perf_enabled else ""
+        html = (HUD_HTML.replace("__TOKEN__", token or "").replace("__BODY_CLASS__", body_class)
+                .replace("__PERF_JS__", _PERF_JS).replace("__PERF_THEME__", perf_theme))
         return web.Response(text=html, content_type="text/html", headers=_CORS)
 
     async def handle_audio_stream(request):

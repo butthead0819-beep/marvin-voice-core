@@ -1,6 +1,14 @@
 
 ## 新功能 — 待完成
 
+### TODO: Marvin 表演腳本 — 疊加動作指向目前畫面卡片
+**What:** Marvin 播放主題動作時，能「看向/指向」目前 HUD 畫面上實際存在的卡片（例如有 Gmail 卡就轉頭看一眼），而不是動作永遠對著固定方向。
+**Why:** `/office-hours` 設計文件（`jackhuang-main-design-MarvinPerformanceScript-20260727-104135.md`）Open Question #2——結構性互動能讓表演感覺跟畫面有連結，而不是自己演自己的，但不是 v1 骨架驗證的必要條件。
+**Context:** `lastCards`（`main_satellite.py`）已經有「目前畫面上有哪些卡、是什麼 kind」的結構化資料，直接讀取即可，不用新建資料源。需要設計一個 `action_id=point_at, target=card_kind` 的參數格式，讓疊加動作播放器能查目前有沒有這張卡、有的話往哪個方向轉頭。
+**Depends on:** v1 動作庫骨架（idle_bob/wave/put_on_sunglasses 等基礎動作）先驗證過、疊加播放器狀態已提升到 `render()` 外部（見 eng review Issue 1）之後再做，避免同時動兩層架構。
+**Priority:** P3（錦上添花，非阻擋 v1 上線）
+
+
 ### TODO: ⭐ suki DB/JSON 同步斷裂修復（下一輪最先做；taste Phase B2 前置）
 **Status:** ✅ DONE（2026-05-22 實作選項 1）。`analyze_daily_log.py` 加 `persist_players_to_db()`，在 json 寫出後把本輪 Gemini 實際更新的 player（`updated_players` keys）用 `MemoryManager.replace_player_memory` 寫進 `marvin.db`；meta 仍寫 json。測試 `tests/test_daily_review_db_sync.py`（4 條：落盤 / 只寫列名 / 保留 meta / 缺名跳過）。**B2 已解鎖。**
 **What:** daily review（`scripts/analyze_daily_log.py:1383`）只寫 `suki_memory.json`，但 bot（`MemoryManager._load_all`）只從 `marvin.db` 讀，`_migrate_from_json` 只在 db 空時跑 → **daily review 的 player 分析（likes/impression/relationship）永遠進不了 bot runtime**；bot `_export_json` 還會用 db 覆蓋抹掉 daily 寫的 json。
