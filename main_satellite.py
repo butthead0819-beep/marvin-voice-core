@@ -1207,11 +1207,19 @@ __PERF_JS__
     const ctx=canvas.getContext('2d');
     const st={t:0,gphi:0,glam:0,vphi:0,vlam:0,blink:1,blinkT:1.2,blinkStart:-1,sacT:0,sacX:0,sacY:0,ec:[104,158,58].slice(),cam:1};
     let W=0,Hh=0,DPR=1;
+    // 24fps 節流：畫面在弱 GPU 裝置（如 Pi 3B kiosk）上很吃重，60Hz 全速重畫沒必要。
+    // st.t 改用實際經過秒數推進（renderDt*1.8，1.8＝原本 0.03/frame 假設 60fps 換算的速率），
+    // 節流後動畫速度才不會被拖慢——不能只是跳過重畫卻仍固定加 0.03。
+    const FRAME_MS=1000/24; let lastRenderTs=0;
     function size(){ const r=canvas.getBoundingClientRect(); DPR=Math.min(2,window.devicePixelRatio||1);
       W=canvas.width=Math.max(1,r.width*DPR); Hh=canvas.height=Math.max(1,r.height*DPR); }
     const ro=new ResizeObserver(size); ro.observe(canvas); size();
     const P2=Math.PI*2;
-    function frame(){
+    function frame(ts){
+      if(!lastRenderTs) lastRenderTs=ts;
+      const sinceRender=ts-lastRenderTs;
+      if(sinceRender<FRAME_MS){ if(!reduce) head.raf=requestAnimationFrame(frame); return; }
+      const renderDt=sinceRender/1000; lastRenderTs=ts;
       const mood=mvParams.mood;
       // 疊加表演取樣——吃到未知 action_id/資料缺漏就 console.warn 跳過，不能讓例外拋出
       // 去害整顆頭的 requestAnimationFrame 排程停掉（main_satellite.py 原本 frame() 無防護）。
@@ -1236,7 +1244,7 @@ __PERF_JS__
           }
         }
       }catch(e){ console.warn('[perf] sample failed, skipping', e); pv={}; perfCtx=null; }
-      if(!(pv.freeze>0.5)) st.t+=0.03;
+      if(!(pv.freeze>0.5)) st.t+=renderDt*1.8;
       ctx.clearRect(0,0,W,Hh);
       const cfg=MOODCFG[mood]||MOODCFG.idle;
       const p=cfg.pulse;
