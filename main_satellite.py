@@ -375,10 +375,12 @@ HUD_HTML = """<!DOCTYPE html>
   }
 
   /* ---- stage: <=3 importance-weighted cards ---- */
-  .stage{ flex:1; display:flex; gap:2.2cqh; padding:3cqh 3cqh 1.6cqh; min-height:0; }
+  /* 未聚焦卡片依內容權重(KIND.w)分配寬度，但夾在 15%-45% 之間，避免單張獨佔或擠成一條；
+     卡片總寬不滿版時置中，不留死氣沉沉的右側空白。 */
+  .stage{ flex:1; display:flex; gap:2.2cqh; padding:3cqh 3cqh 1.6cqh; min-height:0; justify-content:center; }
   .card{
     --c:var(--ok);
-    position:relative; min-width:0; border-radius:3cqh; padding:3.2cqh 3.4cqh;
+    position:relative; min-width:15%; max-width:45%; border-radius:3cqh; padding:3.2cqh 3.4cqh;
     display:flex; flex-direction:column; justify-content:space-between; overflow:hidden;
     background:radial-gradient(135% 150% at 16% -12%, rgba(var(--c),.22), transparent 60%), var(--surf);
     border:1px solid rgba(var(--c),.30);
@@ -416,14 +418,20 @@ HUD_HTML = """<!DOCTYPE html>
     opacity:.5; filter:saturate(.6) brightness(.65); box-shadow:0 1cqh 2.4cqh rgba(0,0,0,.45); }
   .card .qempty{ font-size:3.2cqh; color:var(--dim); margin-top:1.4cqh; }
   .mcard .mrow{ flex:1; display:flex; align-items:center; gap:2.4cqh; min-height:0; }
-  .mcard .mvhead{ width:42%; flex:none; aspect-ratio:1/1; height:auto; }
+  /* mvhead 不設 aspect-ratio 綁死寬高：卡片變寬時這個 canvas 也跟著變寬（flex:1 吃滿剩餘空間），
+     但頭像本身大小是 mountHead() 依「高度」畫的（見 frame() 的 headBase），寬度只拿來給
+     Marvin 多一點左右漂浮的活動範圍——卡片變大＝地盤變大，不是頭變大。 */
+  .mcard .mvhead{ flex:1 1 0; min-width:0; height:100%; }
   .mcard .mrow.shrunk{ justify-content:center; }
-  .mcard .mrow.shrunk .mvhead{ width:88%; }
+  .mcard .mrow.shrunk .mvhead{ flex:none; width:88%; }
   .mcard .mtext{ min-width:0; }
   .mcard .mtext .title{ font-size:7.5cqh; }
   .mcard .mtext .sub{ font-size:3.6cqh; }
   .card{ transition:flex-grow .45s cubic-bezier(.2,.7,.2,1), transform .3s, box-shadow .3s, border-color .3s; }
-  .mcard{ cursor:pointer;
+  /* Marvin 待命中卡片不受一般卡片 45% 上限約束——旁邊沒別的卡（或別的卡都被壓到
+     capped 45%）騰出來的空間，讓 Marvin 吃滿，不留死氣沉沉的空白；點開聚焦時
+     .card.focused 的 max-width:70% 選擇器優先度更高，不受這裡影響。 */
+  .mcard{ max-width:100%; cursor:pointer;
     /* 底色已經是接近黑的頁面，卡片外圍的陰影疊上去會直接隱形——深度感不能靠外陰影，
        要靠「卡片自己的填色」由上往下漸亮到暗，加上底部一圈跟著圓角走的 inset 陰影
        （inset 陰影是畫在卡片自己的填色上，不是疊到頁面背景，才不會被吃掉），
@@ -723,11 +731,17 @@ HUD_HTML = """<!DOCTYPE html>
     if(waitingOne){
       const staleSec=waitingOne.updated_at ? (Date.now()/1000-waitingOne.updated_at) : 0;
       const escalated=staleSec>CLAUDE_ESCALATE_SEC;
-      claudeMoodOverride = escalated ? 'escalate' : 'pending';
-      // title 優先用 🏁 收尾行解析出的「處理了什麼問題」（見 scan_claude_sessions.py），
-      // 沒有這行（舊格式/純聊天回合）才退回專案名當標題。
-      const title=waitingOne.title?esc(waitingOne.title):`${esc(waitingOne.project)} 等你回應`;
-      return {kind:'respond', s:escalated?'urgent':'warn', l:'Claude Code', t:title,
+      // 真的需要你回應（還卡在許可對話框／問題還沒問完）＝沒有 🏁 收尾行可解析
+      // （CLAUDE.md 規定只有「純聊天/還在釐清需求」才會省略這行，所以沒有這行視同
+      // 還在等你）；有 🏁 收尾行代表這輪已經結束、只是通知結果，跟其他 info 卡一樣
+      // 看完可以關掉，不該永遠霸佔卡片。
+      const needsResponse=!waitingOne.title;
+      claudeMoodOverride = needsResponse ? (escalated?'escalate':'pending') : null;
+      if(needsResponse){
+        return {kind:'respond', s:escalated?'urgent':'warn', l:'Claude Code',
+          t:`${esc(waitingOne.project)} 等你回應`, sub:esc(waitingOne.last_text||''), g:'messages'};
+      }
+      return {kind:'info', s:escalated?'warn':'ok', l:'Claude Code', t:esc(waitingOne.title),
         sub:esc(waitingOne.last_text||''), g:'messages'};
     }
     if(rl && rl.five_hour && rl.five_hour.used_percentage!=null){
@@ -795,6 +809,17 @@ HUD_HTML = """<!DOCTYPE html>
 
 
   const MAX_CARDS=3;
+  // ---- 資訊提供類卡片可被看完關閉：respond（需要使用者真的回應）跟 marvin 永遠不算，
+  // 其餘 kind 屬於「看完即可消失」——用 kind+label 當識別、內容雜湊當版本號，
+  // 同一份內容關掉後不會再彈出來，但內容變了（新信/新歌/新用量數字）視同新資訊照樣重新出現。
+  const dismissed={};
+  function cardIdentity(c){ return c.kind+':'+c.l; }
+  function cardContentHash(c){
+    return JSON.stringify([c.t, c.sub, c.gmailEmails&&c.gmailEmails.length, c.vinyl&&c.vinyl.title]);
+  }
+  function isDismissible(c){ return c.kind!=='respond' && c.kind!=='marvin'; }
+  function dismissCard(c){ dismissed[cardIdentity(c)]=cardContentHash(c); }
+  function isDismissed(c){ return isDismissible(c) && dismissed[cardIdentity(c)]===cardContentHash(c); }
   // Marvin 狀態文字跟著真實 mood 走（claudeMoodOverride 見 claudeCard()），不再靠場景假資料。
   function marvinBaseCard(){
     let t='待命中', sub='「又是漫長的一天，而它才過了兩秒。」';
@@ -828,8 +853,9 @@ HUD_HTML = """<!DOCTYPE html>
     if(resolveQueue([]).length){
       others.push({kind:'info', s:'info', l:'待播清單', queue:[], g:'list'});
     }
-    others.sort((a,b)=>KIND[b.kind].w-KIND[a.kind].w);
-    const top=others.slice(0, MAX_CARDS-1);
+    const visible=others.filter(c=>!isDismissed(c));
+    visible.sort((a,b)=>KIND[b.kind].w-KIND[a.kind].w);
+    const top=visible.slice(0, MAX_CARDS-1);
     // Marvin 卡固定在正中央：其餘卡片依重要性排序後，前半排左邊、後半排右邊
     // （2 張時剛好一左一右夾住 Marvin；0/1 張時退化成單獨或偏一邊，沒有真正的「中間」可佔）。
     const mid=Math.floor(top.length/2);
@@ -844,14 +870,14 @@ HUD_HTML = """<!DOCTYPE html>
       const focCls=focused?'focused':'';
       if(c.kind==='marvin'){
         const showComment=focused && marvinCommentText;
-        // 別張卡被聚焦、Marvin 卡被擠小時：不塞文字了（擠成一條也看不清），
-        // 頭轉向那張卡（focusDir，見 updateFocusDir）就是全部的表達。
-        const shrunk=!!focusKey && !focused;
-        const mtext=shrunk?'':`<div class="mtext"><div class="title">${showComment?esc(marvinCommentText):c.t}</div>${(!showComment&&c.sub)?`<div class="sub">${mdLite(c.sub)}</div>`:''}</div>`;
+        // 平常（沒被點開聚焦）一律不塞「待命中」這類文字——留空給 canvas，讓 Marvin
+        // 能在整張卡左右自由漂浮；點開聚焦才顯示現生的 LLM 銳評（見 requestMarvinComment）。
+        const roam=!focused;
+        const mtext=roam?'':`<div class="mtext"><div class="title">${showComment?esc(marvinCommentText):c.t}</div>${(!showComment&&c.sub)?`<div class="sub">${mdLite(c.sub)}</div>`:''}</div>`;
         return `<div class="card mcard ${focCls}" data-key="${key}" role="button" tabindex="0" aria-label="Marvin，點擊聽牠對目前畫面的評論" style="flex:${k.w} 1 0;--c:var(--marvin)">
           <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
-          <div class="mrow ${shrunk?'shrunk':''}"><canvas class="mvhead"></canvas>${mtext}</div>
-          ${shrunk?'':'<div class="exhint">點我＝聽牠講評</div>'}</div>`;
+          <div class="mrow ${roam?'shrunk':''}"><canvas class="mvhead"></canvas>${mtext}</div>
+          ${roam?'<div class="exhint">點我＝聽牠講評</div>':''}</div>`;
       }
       if(c.vinyl){
         const expand=focused?renderVinylExpand():'';
@@ -959,11 +985,20 @@ HUD_HTML = """<!DOCTYPE html>
   }
   // 點任一卡片（含 marvin）＝聚焦該卡（≤70% 寬＋放大字），其他卡縮到旁邊堆疊；
   // 再點一次同一張卡或點空白處收回。點 marvin 卡額外現生一句銳評（見 requestMarvinComment）。
+  // 資訊提供類卡片（見 isDismissible）已經聚焦過一次、使用者再點第二次＝看完了，直接關掉
+  // 不用再收回聚焦——respond（需要真的回應）跟 marvin 卡不適用，只能收回聚焦不會消失。
   stage.addEventListener('click',e=>{
     const chip=e.target.closest('.chip'); if(chip){ handleChip(chip); return; }
     const card=e.target.closest('.card[data-key]');
     if(card){
       const wasFocused=focusKey===card.dataset.key;
+      const cdata=lastCards[Number(card.dataset.key.slice(1))];
+      if(wasFocused && cdata && isDismissible(cdata)){
+        dismissCard(cdata);
+        focusKey=null;
+        render();
+        return;
+      }
       focusKey = wasFocused ? null : card.dataset.key;
       if(card.classList.contains('mcard')){
         if(!wasFocused) requestMarvinComment();
@@ -1156,15 +1191,18 @@ HUD_HTML = """<!DOCTYPE html>
       const p=cfg.pulse;
       const env = p ? Math.max(0, Math.sin(st.t*p.speed)*p.amp + (p.speed2?Math.sin(st.t*p.speed2)*p.amp2:0)) : 0;
       st.cam += (((mood==='speak'||mood==='wake')?1.05:1)-st.cam)*0.05;
-      const base=Math.min(W,Hh);
-      const cx=W/2+Math.sin(st.t*0.4)*base*0.02;
-      const floatY=Math.sin(st.t*0.28)*base*0.045;   // 明顯一點的上下起伏，才有懸浮感（不只是待機微動）
-      const cy=Hh*0.45+floatY+env*base*0.03;
-      const R=base*0.40*st.cam*(1+Math.sin(st.t*0.9)*0.006);
+      // headBase 只吃「高度」——卡片變寬只讓 canvas(W) 變寬，不會放大頭（卡片高度不隨
+      // flex-grow 橫向分配變動，是穩定的頭部尺寸基準）。cx 的左右漂浮改吃全部的 W，
+      // 卡片越寬、Marvin 能晃動的地盤就越大，這才是「卡片變大＝拓展活動空間」而非放大頭。
+      const headBase=Hh;
+      const cx=W/2+Math.sin(st.t*0.4)*W*0.02;
+      const floatY=Math.sin(st.t*0.28)*headBase*0.045;   // 明顯一點的上下起伏，才有懸浮感（不只是待機微動）
+      const cy=Hh*0.45+floatY+env*headBase*0.03;
+      const R=headBase*0.40*st.cam*(1+Math.sin(st.t*0.9)*0.006);
       // 陰影跟球體脫開一段距離、且隨浮動高度縮放變淡——飄得越高陰影越小越淡、
       // 沉得越低陰影越大越實，這種「陰影跟物體不貼在一起」才會讀成懸浮，不是貼地站著。
-      const floatNorm=(floatY/(base*0.045)+1)/2;
-      const shadowGap=base*0.10+floatNorm*base*0.05;
+      const floatNorm=(floatY/(headBase*0.045)+1)/2;
+      const shadowGap=headBase*0.10+floatNorm*headBase*0.05;
       const shadowScale=1-floatNorm*0.22, shadowAlpha=0.40-floatNorm*0.16;
       ctx.save(); ctx.translate(cx,cy+R+shadowGap); ctx.scale(shadowScale,0.22*shadowScale);
       const cs=ctx.createRadialGradient(0,0,0,0,0,R*0.85);
