@@ -1166,10 +1166,13 @@ __PERF_JS__
     const theme=PERF_THEMES[PERF_THEME_NAME];
     if(!theme) return null;
     if(!perf || (Date.now()-perf.roundStart)/1000>=PERF_ROUND_SEC){
+      // wearing 跨輪延續(不隨新的一輪重置)：表演後穿著的 costume 要撐到下一次表演，
+      // 不能因為開新的一輪就憑空重置成裸面。
+      const wearing=perf?perf.wearing:{};
       const emoKeys=Object.keys(EMOTIONS);
       const emotion=emoKeys[Math.floor(Math.random()*emoKeys.length)];
-      perf={ order:buildRoundOrder(theme), emotion, roundStart:Date.now() };
-      console.log('[perf] round start', perf.order, 'emotion='+emotion, new Date(perf.roundStart).toISOString());
+      perf={ order:buildRoundOrder(theme,wearing), emotion, roundStart:Date.now(), wearing };
+      console.log('[perf] round start', perf.order, 'emotion='+emotion, 'wearing='+JSON.stringify(wearing), new Date(perf.roundStart).toISOString());
     }
     return perf;
   }
@@ -1223,9 +1226,13 @@ __PERF_JS__
             if(active){
               const progress=active.action.dur?Math.min(1,active.localT/active.action.dur):0;
               pv=sampleAction(active.action, EMOTIONS[p.emotion]||EMOTIONS.neutral, progress);
-              if(p.lastActionId!==active.id){ p.lastActionId=active.id; console.log('[perf] action', active.id, 'emotion='+p.emotion, new Date().toISOString()); }
+              if(p.lastActionId!==active.id){
+                p.lastActionId=active.id;
+                p.wearing=applyWearingTransition(p.wearing, theme, active.id);
+                console.log('[perf] action', active.id, 'emotion='+p.emotion, 'wearing='+JSON.stringify(p.wearing), new Date().toISOString());
+              }
             }
-            perfCtx={theme,order:p.order,elapsed};
+            perfCtx={theme,order:p.order,elapsed,wearing:p.wearing};
           }
         }
       }catch(e){ console.warn('[perf] sample failed, skipping', e); pv={}; perfCtx=null; }
@@ -1322,7 +1329,7 @@ __PERF_JS__
       const phiEnd=phiC+dw+0.26,curve=0.035;ctx.beginPath();
       for(let i=0;i<=24;i++){ const s=-1+i/12, ph=st.gphi+s*phiEnd, lm=lamC+st.glam+curve*s*s, q=proj(ph,lm); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
       ctx.stroke();ctx.restore();
-      if(perfCtx && isPairHeld(perfCtx.theme, perfCtx.order, 'put_on_sunglasses', perfCtx.elapsed)){
+      if(perfCtx && perfCtx.wearing && perfCtx.wearing.put_on_sunglasses){
         ctx.fillStyle='rgba(10,12,14,0.88)';
         for(const sign of [-1,1]){
           const [ex,ey]=proj(sign*phiC+st.gphi, lamC+st.glam);

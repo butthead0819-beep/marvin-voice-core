@@ -79,19 +79,21 @@ function shuffle(arr, rand){
   return a;
 }
 
-// 洗牌規則：enter/exit 配對永遠保持相對順序(先開後關)，oneshot 隨機插入配對之間或前後。
-function buildRoundOrder(theme, rand){
+// 洗牌規則：oneshot 全部入列；enter/exit 配對每輪只丟一次硬幣——已經穿著的只考慮脫下，
+// 沒穿著的只考慮穿上，兩者都可能「這輪不排」而讓 costume 原封不動撐過這一整輪。
+// wearing={enterId: bool} 是跨輪持續的穿著狀態，由呼叫端（ensurePerf）保存並傳入。
+function buildRoundOrder(theme, wearing, rand){
   rand = rand || Math.random;
+  wearing = wearing || {};
   const ids = Object.keys(theme.actions).filter(id => theme.actions[id].kind !== 'loop');
-  const enterIds = ids.filter(id => theme.actions[id].kind === 'enter');
-  const singleIds = shuffle(ids.filter(id => theme.actions[id].kind === 'oneshot'), rand);
-  const order = [];
-  for (const enterId of enterIds) order.push(enterId, theme.actions[enterId].pair);
-  singleIds.forEach(id => {
-    const pos = 1 + Math.floor(rand() * (order.length || 1));
-    order.splice(Math.min(pos, order.length), 0, id);
-  });
-  return order;
+  const chosen = shuffle(ids.filter(id => theme.actions[id].kind === 'oneshot'), rand);
+  for (const id of ids){
+    const a = theme.actions[id];
+    if (a.kind !== 'enter') continue;
+    if (wearing[id]){ if (rand() < 0.5) chosen.push(a.pair); }
+    else { if (rand() < 0.5) chosen.push(id); }
+  }
+  return shuffle(chosen, rand);
 }
 
 // 給定這輪的排序跟從輪次開始算起的秒數，回傳目前該播哪個動作(含它自己的局部進度)；
@@ -107,25 +109,16 @@ function pickActiveAction(theme, order, elapsedSec){
   return null;
 }
 
-// enter/exit 配對之間的「持有」窗：enter 開始之後、exit 結束之前都算「持有中」(例如墨鏡戴著)。
-function pairHoldWindow(theme, order, enterId){
-  const exitId = theme.actions[enterId]?.pair;
-  let acc = 0, enterStart = null, exitEnd = null;
-  for (const id of order){
-    const d = theme.actions[id].dur ?? 1.2;
-    if (id === enterId && enterStart === null) enterStart = acc;
-    if (id === exitId) exitEnd = acc + d;
-    acc += d;
-  }
-  return { enterStart, exitEnd };
-}
-
-function isPairHeld(theme, order, enterId, elapsedSec){
-  const w = pairHoldWindow(theme, order, enterId);
-  if (w.enterStart === null) return false;
-  if (elapsedSec < w.enterStart) return false;
-  if (w.exitEnd !== null && elapsedSec >= w.exitEnd) return false;
-  return true;
+// 穿著狀態轉移：enter 動作一開始播就算穿上、exit 動作一開始播就算脫下——這個 flag 是
+// 表演唯一的視覺真相來源(不再從 order+elapsedSec 重新推導)，所以就算中途被 mood 中斷、
+// 或這輪根本沒排到這個 costume 的動作，穿著狀態都會原樣延續到下一輪開頭。
+function applyWearingTransition(wearing, theme, activeId){
+  if (activeId == null) return wearing;
+  const a = theme.actions[activeId];
+  if (!a) return wearing;
+  if (a.kind === 'enter') return { ...wearing, [activeId]: true };
+  if (a.kind === 'exit') return { ...wearing, [a.pair]: false };
+  return wearing;
 }
 
 // mood 優先權：pending/escalate/speak/wake/think 等任何非 idle 的對話狀態一律暫停疊加表演，
@@ -138,6 +131,6 @@ if (typeof module !== 'undefined' && module.exports){
   module.exports = {
     PERF_ROUND_SEC, ACTIONS, EMOTIONS, PERF_THEMES,
     evalKeyframes, sampleAction, shuffle, buildRoundOrder,
-    pickActiveAction, pairHoldWindow, isPairHeld, perfShouldRender,
+    pickActiveAction, applyWearingTransition, perfShouldRender,
   };
 }

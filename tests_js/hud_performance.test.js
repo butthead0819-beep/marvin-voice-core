@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   PERF_ROUND_SEC, PERF_THEMES, evalKeyframes, sampleAction,
-  buildRoundOrder, pickActiveAction, isPairHeld, perfShouldRender,
+  buildRoundOrder, pickActiveAction, applyWearingTransition, perfShouldRender,
 } = require('../hud_performance.js');
 
 test('evalKeyframes interpolates linearly between keyframes', () => {
@@ -27,22 +27,28 @@ test('sampleAction applies emotion gain and gazeBias on top of the base curve', 
   assert.equal(confident.gazeDir, 0.15);
 });
 
-test('buildRoundOrder keeps enter/exit pair order and shuffles oneshots between them', () => {
+test('buildRoundOrder offers put_on when bare and never both sides of a pair at once', () => {
   const theme = PERF_THEMES.matrix;
-  const rand = (() => { let i = 0; const seq = [0.9, 0.1, 0.5]; return () => seq[i++ % seq.length]; })();
-  const order = buildRoundOrder(theme, rand);
-  const enterIdx = order.indexOf('put_on_sunglasses');
-  const exitIdx = order.indexOf('take_off_sunglasses');
-  assert.ok(enterIdx < exitIdx, 'enter must come before its matching exit');
+  const alwaysLow = () => 0.1; // coin flip (<0.5) always fires
+  const order = buildRoundOrder(theme, {}, alwaysLow);
+  assert.ok(order.includes('put_on_sunglasses'));
+  assert.ok(!order.includes('take_off_sunglasses'), 'bare state must never schedule the exit action');
   assert.ok(order.includes('wave'));
-  assert.equal(order.length, 3);
 });
 
-test('buildRoundOrder never reorders a pair across many random seeds', () => {
-  for (let i = 0; i < 50; i++){
-    const order = buildRoundOrder(PERF_THEMES.matrix, Math.random);
-    assert.ok(order.indexOf('put_on_sunglasses') < order.indexOf('take_off_sunglasses'));
-  }
+test('buildRoundOrder offers take_off (never put_on again) once already worn', () => {
+  const alwaysLow = () => 0.1;
+  const order = buildRoundOrder(PERF_THEMES.matrix, { put_on_sunglasses: true }, alwaysLow);
+  assert.ok(order.includes('take_off_sunglasses'));
+  assert.ok(!order.includes('put_on_sunglasses'), 'already-worn state must never schedule another enter');
+});
+
+test('buildRoundOrder can skip a pair entirely for a round, leaving costume state untouched', () => {
+  const alwaysHigh = () => 0.99; // coin flip (<0.5) never fires, no pair action either direction
+  const bare = buildRoundOrder(PERF_THEMES.matrix, {}, alwaysHigh);
+  const worn = buildRoundOrder(PERF_THEMES.matrix, { put_on_sunglasses: true }, alwaysHigh);
+  assert.ok(!bare.includes('put_on_sunglasses') && !bare.includes('take_off_sunglasses'));
+  assert.ok(!worn.includes('put_on_sunglasses') && !worn.includes('take_off_sunglasses'));
 });
 
 test('pickActiveAction walks the order by cumulative duration', () => {
@@ -64,13 +70,30 @@ test('7-minute round boundary: pickActiveAction returns null once elapsed exceed
   assert.equal(pickActiveAction(theme, order, totalDur + 0.01), null);
 });
 
-test('isPairHeld is true from enter start until exit finishes', () => {
+test('applyWearingTransition sets worn on enter, clears on exit, ignores everything else', () => {
   const theme = PERF_THEMES.matrix;
-  const order = ['put_on_sunglasses', 'wave', 'take_off_sunglasses'];
-  assert.equal(isPairHeld(theme, order, 'put_on_sunglasses', -0.1), false);
-  assert.equal(isPairHeld(theme, order, 'put_on_sunglasses', 0.1), true);
-  assert.equal(isPairHeld(theme, order, 'put_on_sunglasses', 0.6 + 1.8 + 0.1), true);
-  assert.equal(isPairHeld(theme, order, 'put_on_sunglasses', 0.6 + 1.8 + 0.6 + 0.1), false);
+  let wearing = {};
+  wearing = applyWearingTransition(wearing, theme, 'put_on_sunglasses');
+  assert.equal(wearing.put_on_sunglasses, true);
+  wearing = applyWearingTransition(wearing, theme, 'wave');
+  assert.equal(wearing.put_on_sunglasses, true, 'an unrelated oneshot must not touch costume state');
+  wearing = applyWearingTransition(wearing, theme, 'take_off_sunglasses');
+  assert.equal(wearing.put_on_sunglasses, false);
+  assert.deepEqual(applyWearingTransition(wearing, theme, null), wearing);
+});
+
+test('costume persists across a round boundary when the round never scheduled a removal', () => {
+  const theme = PERF_THEMES.matrix;
+  // Round 1: put_on_sunglasses plays, no take_off scheduled this round (simulates either
+  // the coin flip skipping it, or the round being cut short by a mood interruption).
+  let wearing = applyWearingTransition({}, theme, 'put_on_sunglasses');
+  assert.equal(wearing.put_on_sunglasses, true);
+  // Round 2 starts: buildRoundOrder must treat the costume as still worn, never re-offer
+  // put_on_sunglasses, and only roll for take_off_sunglasses.
+  const order = buildRoundOrder(theme, wearing, () => 0.99);
+  assert.ok(!order.includes('put_on_sunglasses'));
+  // wearing itself (the actual visual truth) is untouched until an exit action actually plays.
+  assert.equal(wearing.put_on_sunglasses, true);
 });
 
 test('perfShouldRender only allows the performance during idle mood', () => {
