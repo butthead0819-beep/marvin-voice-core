@@ -90,6 +90,12 @@ class LocalMixingAudioSource(_BASE):
         self._tts2_cur: np.ndarray | None = None
         self._tts2_off = 0
         self._interject_duck = 0.6    # layer2 活躍時 layer1 的目標增益（fade 終點）。
+        self._sidechain_mid_cut_active = False
+        try:
+            from spatial_voice_renderer import SpatialVoiceRenderer
+            self._spatial_renderer = SpatialVoiceRenderer(sample_rate=SAMPLE_RATE)
+        except Exception:
+            self._spatial_renderer = None
         # 0.6 不是 0.45：用戶回饋 0.45 下 Marvin「完全退位」被 Marmo 蓋掉；0.6 讓他還在、
         # 只是被蓋過（漫才被吐槽的感覺），不是消失。
         # layer1 在 layer2 進來時「逐漸 fade out」而非瞬降。逐幀線性 ramp，step 0.008/幀 →
@@ -231,7 +237,10 @@ class LocalMixingAudioSource(_BASE):
 
             layers = []
             if music_f is not None:
-                layers.append(am.apply_gain(music_f, self._volume * self._duck_cur))
+                m_frame = music_f
+                if self._sidechain_mid_cut_active and tts_active and self._spatial_renderer is not None:
+                    m_frame = self._spatial_renderer.apply_music_sidechain_mid_cut(m_frame, cut_db=-4.0)
+                layers.append(am.apply_gain(m_frame, self._volume * self._duck_cur))
             # 🔇 TTS 對玩家說話 duck：玩家最近說話 → Marvin TTS 讓路到 10%，逐幀 ramp（防 click）
             # onset 復原：新一段 Marvin TTS 進來、且無人說話（窗已過）→ 把 idle 期間凍結的 duck
             # 復原 1.0（前幀無 TTS＝靜音，直接設不會 click），避免下段 TTS 殘留壓低。
@@ -289,6 +298,10 @@ class LocalMixingAudioSource(_BASE):
                 c()
             except Exception:
                 pass
+
+    def set_sidechain_mid_cut_active(self, active: bool) -> None:
+        """開啟或關閉 TTS 發聲時的音樂層中頻 Sidechain 削弱 (2.5kHz-4kHz)。"""
+        self._sidechain_mid_cut_active = bool(active)
 
     def set_volume(self, volume: float) -> None:
         """即時音量（下一幀生效，無接縫、無 hotswap）。"""

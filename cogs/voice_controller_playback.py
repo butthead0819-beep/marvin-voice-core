@@ -184,8 +184,9 @@ class PlaybackMixin:
 
     async def _stream_tts_to_mixer(self, text: str, *, force_macos: bool,
                                    emotion_tag: str, voice: str | None, layer: int = 1,
-                                   on_first_frame=None) -> int:
-        """[Plan 12] 邊收 edge-tts、邊 ffmpeg 解碼、邊逐幀 push 進 TTS 層。
+                                   on_first_frame=None, target_user: str | None = None,
+                                   spatial_control: dict | None = None) -> int:
+        """[Plan 12] 邊收 edge-tts、邊 ffmpeg 解碼、邊進行 Spatial DSP 聲學渲染並逐幀 push 進 TTS 層。
 
         layer=1：主 TTS 層（push_tts）；layer=2：打岔層（push_tts2，與 layer1 並行混音，
         漫才 Marmo 疊進來打斷 Marvin 用）。
@@ -195,6 +196,45 @@ class PlaybackMixin:
         edge-tts chunks → ffmpeg stdin；ffmpeg f32le stdout → readexactly(一幀) → push_tts。
         """
         tp = self._resolve_tts_params(emotion_tag)
+        if spatial_control is None:
+            if not hasattr(self, "_spatial_engine") or self._spatial_engine is None:
+                try:
+                    from social_dynamics_engine import SocialDynamicsEngine
+                    self._spatial_engine = SocialDynamicsEngine()
+                except Exception:
+                    self._spatial_engine = None
+            if getattr(self, "_spatial_engine", None) is not None:
+                room_mood = ""
+                if hasattr(self, "_room_mood_store") and self._room_mood_store:
+                    try:
+                        room_mood = str(getattr(self._room_mood_store.get(0), "room_mood", "") or "")
+                    except Exception:
+                        room_mood = ""
+                tc = self._spatial_engine.generate_tts_control(
+                    text=text,
+                    target_user=target_user,
+                    room_mood=room_mood,
+                    is_intimate=getattr(self, "_intimate_mode", False),
+                )
+                edge_params = tc.to_edge_tts_params()
+                tp["rate"] = edge_params["rate"]
+                tp["pitch"] = edge_params["pitch"]
+                if tp.get("volume") is None and tc.volume_offset_percent != 0.0:
+                    tp["volume"] = edge_params["volume"]
+                spatial_control = tc.audio_effects
+
+        if not hasattr(self, "_spatial_renderer") or self._spatial_renderer is None:
+            try:
+                from spatial_voice_renderer import SpatialVoiceRenderer
+                self._spatial_renderer = SpatialVoiceRenderer(sample_rate=48000)
+            except Exception:
+                self._spatial_renderer = None
+
+        if self._mixer is not None and spatial_control:
+            clarity = float(spatial_control.get("clarity_boost_db", 0.0))
+            if clarity > 0.0:
+                self._mixer.set_sidechain_mid_cut_active(True)
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-nostdin", "-loglevel", "quiet", "-i", "pipe:0",
@@ -238,12 +278,18 @@ class PlaybackMixin:
                     data = await proc.stdout.readexactly(FRAME_BYTES_F32)
                 except asyncio.IncompleteReadError as e:
                     if e.partial:
-                        _push(np.frombuffer(e.partial, dtype=np.float32))
+                        buf = np.frombuffer(e.partial, dtype=np.float32)
+                        if spatial_control and self._spatial_renderer is not None:
+                            buf = self._spatial_renderer.render_spatial_voice(buf, spatial_control)
+                        _push(buf)
                         pushed += 1
                     break
                 except Exception:
                     break
-                _push(np.frombuffer(data, dtype=np.float32))
+                buf = np.frombuffer(data, dtype=np.float32)
+                if spatial_control and self._spatial_renderer is not None:
+                    buf = self._spatial_renderer.render_spatial_voice(buf, spatial_control)
+                _push(buf)
                 pushed += 1
                 if pushed == 1 and on_first_frame is not None:
                     try:
