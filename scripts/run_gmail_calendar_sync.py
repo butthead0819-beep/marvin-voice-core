@@ -1,115 +1,262 @@
 #!/usr/bin/env python3
-"""scripts/run_gmail_calendar_sync.py — 本機排程跑的 headless Claude Code，查
-Gmail/Calendar 兩個數字寫進跨進程橋接檔（gmail_calendar_state.py）。
+"""scripts/run_gmail_calendar_sync.py — 本機排程跑的純 Python 查 Gmail/Calendar。
 
-為什麼是這支腳本、不是雲端排程 agent：/schedule 建的雲端 agent 跑在 Anthropic
-雲端沙盒，碰不到這台 Mac 的檔案系統——寫了也是寫進拋棄式沙盒，HUD 永遠讀不到。
-這支改用本機 `claude -p`（headless），MCP Gmail/Calendar connector 沿用這台機器
-已登入的 claude.ai 帳號，親測 headless 模式下可用（2026-07-26 手動驗證：
-`echo prompt | claude -p --allowedTools "mcp__claude_ai_Gmail__search_threads"`
-真的能拿到 resultCountEstimate，不用另外互動授權，只要用 --allowedTools 過權限
-提示）。
-
-只查數字，不讀信件內容——count-only 是刻意的設計（見
-[[project_hud_actionable_open_loops]] 的 DAKboard 參考）。
+改掉原本用重型 Agent (claude -p) 造成的龐大 Token 浪費，採用 Option A1 架構：
+- 使用 Google API SDK (google-api-python-client) 查 Gmail 與 Calendar (0 Token)。
+- 在 Python 中進行 5 大類別域名規則分類 (0 Token)。
+- 搜尋範圍：當天的未讀郵件 (is:unread newer_than:1d -in:draft)。
+- 用量極省：僅針對當天全新未讀信件 (最多 3 封) 呼叫 llm_pool router 產生簡短繁中摘要 (Single-turn, < 500 tokens)。
+- 寫進跨進程橋接檔 (gmail_calendar_state.py)。
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import os
-import subprocess
 import sys
+import time
+from typing import Any
 
 REPO_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_DIR)
 
-from gmail_calendar_state import load_gmail_calendar_state  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv()
 
-CLAUDE_BIN = os.environ.get("MARVIN_CLAUDE_BIN", "claude")
+from google.auth.transport.requests import Request  # noqa: E402
+from google.oauth2.credentials import Credentials  # noqa: E402
+from googleapiclient.discovery import build  # noqa: E402
 
-PROMPT_TEMPLATE = """1. 呼叫 Gmail MCP 工具 search_threads，query 是 "is:unread newer_than:7d -in:draft"，
-   view 用 THREAD_VIEW_METADATA_ONLY，pageSize 用 50。不要用 resultCountEstimate（不準）。
-   分頁拿完所有 threads（一頁一頁帶 nextPageToken 直到沒有），把每封信的 sender 欄位
-   依下列規則分類，累計每類數量：
+from gmail_calendar_state import load_gmail_calendar_state, save_gmail_calendar_state  # noqa: E402
+from llm_pool import build_tiered_router  # noqa: E402
 
-   分類規則（每封信只落在一類，優先序由上往下）：
-   - 銀行通知：sender domain 含 ctbcbank / megabank / taipeifubon / feib / hncb /
-     cathaylife / cathaybk / entrust / fubon / sinopac / esun
-   - 發票郵件：sender domain 含 uber / yoxi / foodpanda / 711 / family / shopee /
-     momo / pchome / books.com / dks / nitori / buyee（購物/叫車收據類）
-   - 工作郵件：sender domain 含 linkedin / github
-   - 重要通知：sender domain 含 apple / microsoft / fedex / google / binance /
-     cloudflare / playstation / osaka-marathon / coinbase
-   - 關注的信件：其餘所有信件（電子報、個人信、投資報告等）
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+]
+TOKEN_PATH = os.path.join(REPO_DIR, "google_tokens.json")
 
-   計算出 5 個類別的各自數量（若某類為 0 可省略），格式：
-   {{"關注的信件": N1, "重要通知": N2, "工作郵件": N3, "發票郵件": N4, "銀行通知": N5}}
-   總數 N = 所有類別加總。
-
-2. 重要信件 LLM 智慧篩選與建議動作 (Action Item)：
-   已知已處理的歷史快取信件列表如下 (JSON)：
-   {existing_cached_json}
-
-   針對上述 threads 列表中最新 10 封信件：
-   - 若該 Thread ID 已在上方快取列表中，直接復用其 summary 與 action_item，不要重複分析。
-   - 若為全新未處理信件，分析其主旨 (subject) 與 snippet：
-     - 優先篩選需處理或關注的信件（如：繳費通知、工作 PR/需求、緊急帳號通知、行程確認、重點電子報等）。
-     - **若沒有急件，亦必須挑選最新 2~3 封未讀信件（含「關注的信件」分類）** 進行摘要。
-     - 每封信件產生結構：
-       - subject: 信件主旨
-       - sender: 寄件者名稱/Domain
-       - date: 寄出日期或時間描述
-       - summary: 1-2 句話精簡繁體中文摘要
-       - action_item: 建議動作（如有繳費/回覆需求則寫明確動作；無須操作則寫 "無須動作，僅通知"）
-       - priority: "high"、"medium" 或 "low"
-   - 篩選整合出最多 3 封最重要/最新的信件摘要，格式為 JSON 陣列：
-     [
-       {{"id": "...", "subject": "...", "sender": "...", "date": "...", "summary": "...", "action_item": "...", "priority": "medium"}}
-     ]
+BANK_DOMAINS = ["ctbcbank", "megabank", "taipeifubon", "feib", "hncb", "cathaylife", "cathaybk", "entrust", "fubon", "sinopac", "esun"]
+INVOICE_DOMAINS = ["uber", "yoxi", "foodpanda", "711", "family", "shopee", "momo", "pchome", "books.com", "dks", "nitori", "buyee"]
+WORK_DOMAINS = ["linkedin", "github"]
+IMPORTANT_DOMAINS = ["apple", "microsoft", "fedex", "google", "binance", "cloudflare", "playstation", "osaka-marathon", "coinbase"]
 
 
-3. 呼叫 Google Calendar MCP 工具 list_events，calendarId 用 "primary"，
-   startTime="{today}T00:00:00+08:00"，endTime="{today}T23:59:59+08:00"，
-   timeZone="Asia/Taipei"。算回傳的事件數量（沒有 items 欄位就是 0）。不要描述事件內容。
+def classify_sender(sender: str) -> str:
+    s = sender.lower()
+    for d in BANK_DOMAINS:
+        if d in s:
+            return "銀行通知"
+    for d in INVOICE_DOMAINS:
+        if d in s:
+            return "發票郵件"
+    for d in WORK_DOMAINS:
+        if d in s:
+            return "工作郵件"
+    for d in IMPORTANT_DOMAINS:
+        if d in s:
+            return "重要通知"
+    return "關注的信件"
 
-4. 用 Bash 執行（工作目錄是 {repo_dir}）：
-   python3 scripts/sync_gmail_calendar_state.py --unread <N> --calendar-today <M> \
-     --categories '<CATEGORIES_JSON>' --important-emails '<IMPORTANT_EMAILS_JSON>'
-   N=總數、M=步驟 3 的事件數、CATEGORIES_JSON=步驟 1 算出的 JSON、IMPORTANT_EMAILS_JSON=步驟 2 算出的 JSON 陣列（單引號包住）。
-只做這四步，不要輸出其他文字、不要問確認。
-"""
+
+def load_google_credentials() -> Credentials | None:
+    if not os.path.exists(TOKEN_PATH):
+        return None
+    try:
+        creds = Credentials.from_authorized_user_file(TOKEN_PATH, SCOPES)
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            with open(TOKEN_PATH, "w", encoding="utf-8") as f:
+                f.write(creds.to_json())
+        return creds if creds and creds.valid else None
+    except Exception as e:
+        print(f"[gmail_calendar_sync] 載入 Credentials 失敗: {e}", file=sys.stderr)
+        return None
+
+
+def fetch_gmail_unread_today(creds: Credentials) -> tuple[int, dict[str, int], list[dict[str, Any]]]:
+    """使用 Gmail API 查詢當天的未讀信件 (is:unread in:inbox newer_than:1d -in:draft)。"""
+    service = build("gmail", "v1", credentials=creds)
+    query = "is:unread in:inbox newer_than:1d -in:draft"
+
+    
+    threads_res = service.users().threads().list(userId="me", q=query, maxResults=50).execute()
+    threads = threads_res.get("threads", [])
+    
+    categories = {
+        "關注的信件": 0,
+        "重要通知": 0,
+        "工作郵件": 0,
+        "發票郵件": 0,
+        "銀行通知": 0,
+    }
+    
+    raw_unread_items = []
+    
+    for t in threads:
+        t_id = t["id"]
+        t_data = service.users().threads().get(userId="me", id=t_id, format="full").execute()
+        messages = t_data.get("messages", [])
+        if not messages:
+            continue
+            
+        first_msg = messages[0]
+        headers = {h["name"].lower(): h["value"] for h in first_msg.get("payload", {}).get("headers", [])}
+        
+        subject = headers.get("subject", "(無標題)")
+        sender = headers.get("from", "(未知寄件者)")
+        date_str = headers.get("date", "")
+        snippet = first_msg.get("snippet", "")
+        
+        cat = classify_sender(sender)
+        categories[cat] = categories.get(cat, 0) + 1
+        
+        raw_unread_items.append({
+            "id": t_id,
+            "subject": subject,
+            "sender": sender,
+            "date": date_str,
+            "snippet": snippet,
+            "category": cat,
+        })
+        
+    categories = {k: v for k, v in categories.items() if v > 0}
+    return len(threads), categories, raw_unread_items
+
+
+def fetch_calendar_today_count(creds: Credentials) -> int:
+    """使用 Google Calendar API 查詢當天事件數。"""
+    service = build("calendar", "v3", credentials=creds)
+    today = dt.date.today().isoformat()
+    start_time = f"{today}T00:00:00+08:00"
+    end_time = f"{today}T23:59:59+08:00"
+    
+    events_res = service.events().list(
+        calendarId="primary",
+        timeMin=start_time,
+        timeMax=end_time,
+        singleEvents=True,
+        timeZone="Asia/Taipei",
+    ).execute()
+    
+    items = events_res.get("items", [])
+    return len(items)
+
+
+async def summarize_important_emails(
+    raw_items: list[dict[str, Any]],
+    cached_emails: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """針對新信件呼叫 llm_pool 進行輕量摘要 (Single-turn LLM)。"""
+    cached_map = {item["id"]: item for item in cached_emails if "id" in item}
+    
+    result_emails = []
+    items_to_summarize = []
+    
+    for item in raw_items[:10]:
+        t_id = item["id"]
+        if t_id in cached_map:
+            result_emails.append(cached_map[t_id])
+        else:
+            items_to_summarize.append(item)
+            
+    if not items_to_summarize:
+        return result_emails[:3]
+        
+    targets = items_to_summarize[:3]
+    prompt_input = json.dumps([{
+        "id": x["id"],
+        "subject": x["subject"],
+        "sender": x["sender"],
+        "date": x["date"],
+        "snippet": x["snippet"],
+    } for x in targets], ensure_ascii=False)
+    
+    prompt = f"""你是一個精準的繁體中文郵件助理。請分析以下未讀信件：
+{prompt_input}
+
+請回傳一個 JSON 陣列（格式如下），整合最多 3 封重點信件的摘要：
+[
+  {{
+    "id": "信件ID",
+    "subject": "主旨",
+    "sender": "寄件者",
+    "date": "日期/時間",
+    "summary": "1-2 句話精簡繁體中文摘要",
+    "action_item": "建議動作（如：需回覆/繳費；無則寫 '無須動作，僅通知'）",
+    "priority": "high/medium/low"
+  }}
+]
+只回傳 JSON 陣列，不要加入任何額外說明。"""
+
+    try:
+        router = build_tiered_router()
+        res_str = await router.quick(prompt, caller="gmail_calendar_sync", json=True)
+        if res_str:
+            new_summaries = json.loads(res_str)
+            if isinstance(new_summaries, list):
+                result_emails.extend(new_summaries)
+    except Exception as e:
+        print(f"[gmail_calendar_sync] LLM 摘要失敗，降級使用原文: {e}", file=sys.stderr)
+        for x in targets:
+            result_emails.append({
+                "id": x["id"],
+                "subject": x["subject"],
+                "sender": x["sender"],
+                "date": x["date"],
+                "summary": x["snippet"][:50] + ("..." if len(x["snippet"]) > 50 else ""),
+                "action_item": "無須動作，僅通知",
+                "priority": "medium",
+            })
+            
+    return result_emails[:3]
+
+
+async def async_main() -> int:
+    creds = load_google_credentials()
+    if not creds:
+        print(
+            "❌ [gmail_calendar_sync] 未能載入 Google Credentials！\n"
+            "請先執行: python3 scripts/google_auth_setup.py 進行一次性 Google 帳號授權。",
+            file=sys.stderr,
+        )
+        return 1
+        
+    try:
+        unread_count, categories, raw_items = fetch_gmail_unread_today(creds)
+    except Exception as e:
+        print(f"❌ [gmail_calendar_sync] 讀取 Gmail 失敗: {e}", file=sys.stderr)
+        return 1
+        
+    try:
+        calendar_count = fetch_calendar_today_count(creds)
+    except Exception as e:
+        print(f"⚠️ [gmail_calendar_sync] 讀取 Calendar 失敗: {e}", file=sys.stderr)
+        calendar_count = 0
+
+    existing_state = load_gmail_calendar_state() or {}
+    cached_emails = existing_state.get("important_emails", [])
+
+    important_emails = await summarize_important_emails(raw_items, cached_emails)
+
+    save_gmail_calendar_state(
+        gmail_unread=unread_count,
+        calendar_today_count=calendar_count,
+        gmail_categories=categories,
+        important_emails=important_emails,
+        updated_at=time.time(),
+    )
+
+    print(
+        f"✅ [gmail_calendar_sync] 成功寫入狀態：unread={unread_count} (當天) "
+        f"categories={categories} important={len(important_emails)} calendar={calendar_count}"
+    )
+    return 0
 
 
 def main() -> int:
-    today = dt.date.today().isoformat()
-    existing_state = load_gmail_calendar_state() or {}
-    existing_cached_emails = existing_state.get("important_emails", [])
-    existing_cached_json = json.dumps(existing_cached_emails, ensure_ascii=False)
-
-    prompt = PROMPT_TEMPLATE.format(
-        today=today,
-        repo_dir=REPO_DIR,
-        existing_cached_json=existing_cached_json,
-    )
-    try:
-        result = subprocess.run(
-            [CLAUDE_BIN, "-p", "--allowedTools",
-             "mcp__claude_ai_Gmail__search_threads",
-             "mcp__claude_ai_Google_Calendar__list_events",
-             "Bash(python3 scripts/sync_gmail_calendar_state.py*)"],
-            input=prompt, text=True, cwd=REPO_DIR, timeout=180,
-            capture_output=True, check=True,
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"claude -p 失敗: {e}\nstdout={e.stdout}\nstderr={e.stderr}", file=sys.stderr)
-        return 1
-    except subprocess.TimeoutExpired:
-        print("claude -p 逾時（180s）", file=sys.stderr)
-        return 1
-    print(result.stdout)
-    return 0
-
+    return asyncio.run(async_main())
 
 
 if __name__ == "__main__":

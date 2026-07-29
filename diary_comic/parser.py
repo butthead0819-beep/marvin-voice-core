@@ -39,6 +39,8 @@ class DiaryEntry:
     aside: str = ""
     raw: str = ""
     salience: str = "中"   # 話題顯著度 高|中|低（summarizer 標；舊 entry 無→中）
+    meme_id: str = ""      # 語義 meme tag（搬家/宿醉 等）；summarizer 標；無→""
+
 
 
 def _extract_after_marker(body: str, key: str) -> str:
@@ -84,14 +86,19 @@ def parse_log(text: str) -> list[DiaryEntry]:
         core = _extract_after_marker(body, "核心")
         if not core:
             continue  # 沒核心 = 視為無效，跳過
+        raw_meme = _extract_after_marker(body, "meme")
+        # LLM 無法歸納時填「-」，視同空字串（走 text hash 冷卻）
+        meme_id = "" if raw_meme in ("-", "—", "無") else raw_meme
         entries.append(DiaryEntry(
             ts_str=ts_str,
             core=core,
             speakers=_extract_speakers(body),
             aside=_extract_after_marker(body, "碎念"),  # 6 月無碎念 → ""
             salience=(_extract_after_marker(body, "顯著度") or "中"),  # 舊 entry 無→中
+            meme_id=meme_id,  # 新格式；無/"-" → ""（fail-open）
             raw=body,
         ))
+
     return entries
 
 

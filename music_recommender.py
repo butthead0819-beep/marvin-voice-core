@@ -19,10 +19,16 @@ import random
 import re
 from dataclasses import dataclass
 
+from music_memory import extract_video_id
+
 # 長尾門檻：最後一次播放超過這天數才算「久沒播」
 LONG_TAIL_DAYS = 7.0
 # 群體共鳴需要的最少在場共鳴人數
 GROUP_RESONANCE_MIN = 2
+
+# BPM soft re-rank（見 bpm_estimate.py 取樣落地）：容忍帶內線性衰減，超出不扣分只是 0。
+BPM_BOOST_MAX = 15.0
+BPM_TOLERANCE = 30.0
 
 # 標題正規化：去掉版本／合作等變體後綴，讓「晴天」與「晴天 (cover)」視為同一首
 _VARIANT_RE = re.compile(
@@ -150,6 +156,34 @@ def _vibe_boost(song: dict, lane: str, vibe_filter: dict | None) -> float:
     return boost
 
 
+def _bpm_boost(song: dict, bpm_filter: dict | None) -> float:
+    """候選歌 BPM 越接近目前播放歌 → boost 越高（soft re-rank，同 _vibe_boost 設計）。
+
+    bpm_filter={"current_bpm": float, "store": {video_id: {"bpm": float, ...}}}。
+    任一沒 BPM 記錄（新歌/還沒被 bpm_estimate 取樣過）或差距超出 BPM_TOLERANCE →
+    0，不影響原排序——BPM 資料是漸進覆蓋的，不能讓沒資料的歌被扣分排擠掉。
+    """
+    if not bpm_filter:
+        return 0.0
+    current_bpm = bpm_filter.get("current_bpm")
+    store = bpm_filter.get("store") or {}
+    if not current_bpm or not store:
+        return 0.0
+    vid = extract_video_id(song.get("webpage_url") or song.get("url") or "")
+    if not vid:
+        return 0.0
+    entry = store.get(vid)
+    if not isinstance(entry, dict):
+        return 0.0
+    bpm = entry.get("bpm")
+    if bpm is None:
+        return 0.0
+    diff = abs(float(bpm) - float(current_bpm))
+    if diff >= BPM_TOLERANCE:
+        return 0.0
+    return BPM_BOOST_MAX * (1.0 - diff / BPM_TOLERANCE)
+
+
 def build_member_pools(
     *,
     members: list[str],
@@ -157,6 +191,7 @@ def build_member_pools(
     exclude_titles: list[str],
     now: float,
     vibe_filter: dict | None = None,
+    bpm_filter: dict | None = None,
 ) -> dict[str, list[Candidate]]:
     """對每個在場成員各自產候選池 dict[member -> 依分數排序的 [Candidate]]。
 
@@ -201,28 +236,30 @@ def build_member_pools(
         resonant = member_set & set(song.get("connections", []))
         age_days = (now - _last_play_ts(song)) / 86400.0
 
+        bpm_boost = _bpm_boost(song, bpm_filter)
+
         # Lane: liked（M 按讚→喜好擴散成候選；base 30 次於點播者 lanes 40/60/100）。
         # _offer 保留高分：M 若也點過，requester lane 分數更高會勝出、不被 liked 拉低。
         for m in member_set & set(likes):
             _offer(m, Candidate(title, artist, "liked", "direct", m,
-                                30.0 + _vibe_boost(song, "liked", vibe_filter)))
+                                30.0 + _vibe_boost(song, "liked", vibe_filter) + bpm_boost))
 
         for m in member_set & set(requesters):
             # Lane 1: group_resonance（M 也在共鳴名單且 ≥2 在場共鳴）
             if len(resonant) >= GROUP_RESONANCE_MIN and m in resonant:
                 base = 100.0 + 10.0 * len(resonant)
                 _offer(m, Candidate(title, artist, "group_resonance", "direct", m,
-                                    base + _vibe_boost(song, "group_resonance", vibe_filter)))
+                                    base + _vibe_boost(song, "group_resonance", vibe_filter) + bpm_boost))
             # Lane 3: long_tail（M 點過 + 久沒播）
             if age_days > LONG_TAIL_DAYS:
                 base = 40.0 + min(age_days, 30.0)
                 _offer(m, Candidate(title, artist, "long_tail", "direct", m,
-                                    base + _vibe_boost(song, "long_tail", vibe_filter)))
+                                    base + _vibe_boost(song, "long_tail", vibe_filter) + bpm_boost))
             # Lane 2: spotlight（M 的常點 top-3）
             if title in top3.get(m, set()):
                 base = 60.0 + float(requesters[m])
                 _offer(m, Candidate(title, artist, "spotlight", "cover", m,
-                                    base + _vibe_boost(song, "spotlight", vibe_filter)))
+                                    base + _vibe_boost(song, "spotlight", vibe_filter) + bpm_boost))
 
     result: dict[str, list[Candidate]] = {}
     for m, best in pools.items():

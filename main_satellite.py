@@ -469,7 +469,16 @@ HUD_HTML = """<!DOCTYPE html>
   .card.focused .vqcover{ width:7.6cqh; height:7.6cqh; }
   .card.focused .vqt{ font-size:4cqh; }
   .card.focused .vqb{ font-size:3cqh; }
+  /* Marvin 卡被點開聚焦時：保持 Marvin 頭部 1:1 不被擠壓，標題文字放大 (11.5cqh) */
+  .card.focused.mcard .mrow{ gap:4cqh; }
+  .card.focused.mcard .mrow .mvhead{ flex:0 0 auto; height:100%; aspect-ratio:1/1; }
+  .card.focused.mcard .mtext{ flex:1 1 0; min-width:0; padding-left:1cqh; }
+  .card.focused.mcard .mtext .title{ font-size:11.5cqh; line-height:1.15; }
+  .card.focused.mcard .mtext .sub{ font-size:4.8cqh; line-height:1.3; }
+
+
   .exhint{ position:absolute; left:3cqh; bottom:1.2cqh; font-family:var(--mono); font-size:3cqh; color:rgba(var(--marvin),.85); z-index:5; }
+
   .vinyl-card{ position:relative; overflow:hidden; }
   .vinyl-card .vwrap{ position:absolute; top:44%; left:41%; height:140%; aspect-ratio:1/1; transform:translate(-50%,-50%); z-index:0; }
   .vinyl-card .vdisc{ position:absolute; inset:0; width:100%; height:100%; border-radius:50%; animation:spin 12s linear infinite; will-change:transform; }
@@ -851,7 +860,8 @@ HUD_HTML = """<!DOCTYPE html>
       const catParts=CAT_ORDER.filter(k=>cats[k]>0).map(k=>`${k} ${cats[k]}`);
       const unreadText=catParts.length?catParts.join(' · '):`${liveGmailCal.unread} 封未讀`;
       const t=importantEmails.length?`✉️ ${importantEmails.length} 封重要待處理 · ${unreadText}`:unreadText;
-      others.push({kind:'ambient', s:'info', l:'收件匣（本週）', t, g:'messages', gmailEmails: importantEmails});
+      others.push({kind:'ambient', s:'info', l:'收件匣（今天）', t, g:'messages', gmailEmails: importantEmails});
+
     }
     if(liveGmailCal && (liveGmailCal.calToday||0)>0){
       others.push({kind:'info', s:'info', l:'行事曆', t:`今天 ${liveGmailCal.calToday} 場行程`, g:'calendar'});

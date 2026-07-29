@@ -52,6 +52,9 @@ now_playing_state.json
 claude_sessions_state.json
 gmail_calendar_state.json
 car_presence_state.json
+google_tokens.json
+google_credentials.json
+
 
 # Records directory — personal transcripts and player data
 records/

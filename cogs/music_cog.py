@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 _TASTE_PROFILE_CACHE = "records/taste_profiles.json"
 _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
+_SONG_BPM_STORE = "records/song_bpm.json"
+_BPM_SAMPLE_SR = 11025
 
 
 class MusicCog(commands.Cog):
@@ -660,6 +662,21 @@ class MusicCog(commands.Cog):
         self._taste_fp_loaded_at = now
         return self._taste_fp_cache
 
+    def _current_bpm_filter(self) -> dict | None:
+        """目前播放歌的 BPM（見 bpm_estimate.py 取樣落地）→ build_member_pools 的
+        bpm_filter，讓下一輪候選偏好節奏接近的歌。目前歌沒 BPM 記錄（新歌/還沒取樣過）
+        → None（不影響原排序，fail-open）。"""
+        from bpm_estimate import read_bpm_store
+        info = self._current_stream_info or {}
+        vid = extract_video_id(info.get("webpage_url") or info.get("url") or "")
+        if not vid:
+            return None
+        store = read_bpm_store(_SONG_BPM_STORE)
+        entry = store.get(vid)
+        if not isinstance(entry, dict) or entry.get("bpm") is None:
+            return None
+        return {"current_bpm": entry["bpm"], "store": store}
+
     async def _t2_discovery_candidates(self, members: list[str], exclude_titles: list[str]) -> list:
         """T2 discovery：多 seed → ytmusic radio 混合取相關新歌 → Candidate(direct_url)。"""
         mm = getattr(self.bot, 'music_memory', None)
@@ -1073,6 +1090,8 @@ class MusicCog(commands.Cog):
             except Exception as e:
                 logger.warning(f"⚠️ [AutoRecommend] vibe sensor 失敗，fallback to no vibe filter: {e}")
 
+        bpm_filter = self._current_bpm_filter()
+
         # per-member 候選 → 跨使用者唯一歸屬：同一首歌只歸一人（round-robin 平手代表），
         # 避免團體歌被分別指定給不同使用者重播。當輪只取 spotlight 自己的去重後候選。
         _member_pools = build_member_pools(
@@ -1081,6 +1100,7 @@ class MusicCog(commands.Cog):
             exclude_titles=exclude_titles,
             now=time.time(),
             vibe_filter=vibe_filter,
+            bpm_filter=bpm_filter,
         )
         pool = assign_unique_owners(_member_pools, rotation_order=members).get(spotlight, [])
 
@@ -1108,7 +1128,7 @@ class MusicCog(commands.Cog):
             _relaxed_pools = build_member_pools(
                 members=members, songs=mm.all_songs(),
                 exclude_titles=_t3_exclude,
-                now=time.time(), vibe_filter=vibe_filter,
+                now=time.time(), vibe_filter=vibe_filter, bpm_filter=bpm_filter,
             )
             relaxed_pool = assign_unique_owners(_relaxed_pools, rotation_order=members).get(spotlight, [])
             cands = pick_candidates(relaxed_pool, k=_k_buf, top_n=max(9, _k_buf))
@@ -2024,19 +2044,65 @@ class MusicCog(commands.Cog):
             return (info.get('_pick_reason') or '').strip()
         return ''
 
-    def _life_cores(self, entries, now: float) -> list[str]:
-        """日記 entries → DJ 雞湯用的近日生活素材（純函式包裝，測試用此點注入）。"""
+    def _life_cores(self, entries, now: float,
+                    present_speakers: set[str] | None = None) -> list[str]:
+        """日記 entries → DJ 雞湯用的近日生活素材（純函式包裝，測試用此點注入）。
+
+        present_speakers: 在場人集合，傳給 recent_life_cores 做 privacy filter。
+        None = 不過濾（fail-open，vc 不可用時的預設）。
+        """
         from dj_life_context import recent_life_cores
-        return recent_life_cores(entries, now=now)
+        return recent_life_cores(entries, now=now, present_speakers=present_speakers)
 
     async def _life_cores_async(self) -> list[str]:
         """讀日記檔取生活素材。606K 檔的 read+parse 走 to_thread，不阻塞 event loop。
-        任何失敗回 []（DJ 少一味料，不該讓整條串場掛掉）。"""
+        任何失敗回 []（DJ 少一味料，不該讓整條串場掛掉）。
+
+        在場人（vc.get_online_members）傳給 privacy filter，
+        讓敏感 entry 在參與者不全在場時自動過濾。
+        vc 不可用 → present_speakers=None（不過濾，fail-open）。
+        """
+        present_speakers: set[str] | None = None
+        try:
+            _vc = self._vc()
+            if _vc is not None:
+                present_speakers = set(_vc.get_online_members())
+        except Exception as e:
+            logger.debug(f"[DJ Life] 讀在場人失敗，privacy filter 跳過: {e}")
         try:
             entries = await asyncio.to_thread(self._load_summary_entries)
-            return self._life_cores(entries, time.time())
+            return self._life_cores(entries, time.time(),
+                                    present_speakers=present_speakers)
         except Exception as e:
             logger.debug(f"⚠️ [DJ Life] 生活素材抽取失敗，DJ 改走無生活素材: {e}")
+            return []
+
+    def _dj_topic_store(self):
+        """DJ 話題冷卻表的 lazy 單例（跨呼叫共用同一份記憶體狀態＋disk-backed）。"""
+        store = getattr(self, "_dj_topic_cooldown_store", None)
+        if store is None:
+            from dj_topic_selector import TopicCooldownStore
+            store = TopicCooldownStore()
+            self._dj_topic_cooldown_store = store
+        return store
+
+    def _present_interests(self) -> list[str]:
+        """在場成員在 suki_memory 的興趣，供話題選擇器沒有『最近生活』可用時當引子。
+        任何失敗回 []（DJ 少一味料，不該讓整條串場掛掉）。"""
+        try:
+            suki = getattr(getattr(self.bot, 'router', None), 'memory', None)
+            vc = self._vc()
+            if suki is None or vc is None:
+                return []
+            out = []
+            for m in vc.get_online_members():
+                # 按最近才被強化排序，別老是講分數最高的舊愛好（跳針）。
+                for like in suki.get_recent_liked_items(m, limit=2):
+                    like = str(like).strip()
+                    if like:
+                        out.append(f"{m}喜歡{like}")
+            return out
+        except Exception:
             return []
 
     async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
@@ -2099,10 +2165,29 @@ class MusicCog(commands.Cog):
         ctx.append(env)
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
-        # 雞湯素材：近幾日的生活核心句。只串歌名像播報清單，摻生活才有人味。
+        # 話題拆開只挑一個：近期生活 → 在場興趣 → 都沒有就純過場（交給規則3 的環境/對話切入）。
+        # 挑中的具體話題冷卻 8 小時內不重複——治「最近生活天天被提」的跳針感。
+        from dj_topic_selector import select_topic
         life = await self._life_cores_async()
-        if life:
-            ctx.append("最近生活：\n" + '\n'.join(f"・{c}" for c in life))
+        interests = self._present_interests()
+        topic, topic_kind = select_topic(life, interests, self._dj_topic_store())
+        if topic_kind == "life":
+            ctx.append(f"最近生活：\n・{topic}")
+        elif topic_kind == "interest":
+            ctx.append(f"在場興趣：\n・{topic}")
+
+        # Group size → 語氣指令：1 人親密、4+ 人 live DJ 節奏；2-3 人不加（維持原有行為）。
+        # vc() 不可用時靜默略過——DJ 少一行語氣提示，不影響整條生成。
+        try:
+            _vc_ref = self._vc()
+            if _vc_ref is not None:
+                _n_online = len(_vc_ref.get_online_members())
+                if _n_online == 1:
+                    ctx.append("只有一個人在聽，語氣親密一點，像對老朋友說話。")
+                elif _n_online >= 4:
+                    ctx.append("人多，說短一點、節奏精簡，像 live DJ 播報。")
+        except Exception:
+            pass  # fail-open：語氣注入失敗不影響 DJ 生成
 
         # 長度 gate 統一放寬到 dj_story：Marvin autopilot 模板/themed 理由也別再被 5s
         # music_intro 砍成「狗與露」這種殘句（autopilot DJ 被截斷的根因）。
@@ -2442,27 +2527,45 @@ class MusicCog(commands.Cog):
         return 3.0
 
     async def _measure_norm_gain_bg(self, url: str):
-        """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存 _stream_norm_gain[url]。"""
+        """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存 _stream_norm_gain[url]。
+
+        順便在同一趟 ffmpeg（同取樣點、同一個 process 兩個輸出：ebur128→null 給
+        stderr 響度統計、raw f32le mono→stdout 給 BPM 估算）取 PCM 估 BPM，落地存
+        records/song_bpm.json（見 bpm_estimate.py）——BPM 分析不擋、不影響既有響度
+        正規化行為，失敗只是沒存到 BPM。"""
         if url in self._stream_norm_gain:
             return
+        import numpy as np
+
+        from bpm_estimate import estimate_bpm_from_pcm, median_bpm, write_bpm
         from loudness_norm import (
             sample_positions, parse_ebur128_integrated, average_lufs, compute_loudness_gain,
         )
         info = self._current_stream_info or {}
         duration = float(info.get("duration") or 0)
         lufs_vals: list[float | None] = []
+        bpm_vals: list[float | None] = []
         for pos in sample_positions(duration):
             try:
                 proc = await asyncio.create_subprocess_exec(
                     "ffmpeg", "-nostats", "-ss", f"{pos:.1f}", "-t", "20", "-i", url,
                     "-af", "ebur128", "-f", "null", "-",
-                    stdout=asyncio.subprocess.DEVNULL,
+                    "-vn", "-ac", "1", "-ar", str(_BPM_SAMPLE_SR), "-f", "f32le", "pipe:1",
+                    stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                 lufs_vals.append(parse_ebur128_integrated(stderr.decode("utf-8", "ignore")))
+                pcm = np.frombuffer(stdout, dtype=np.float32)
+                bpm_vals.append(estimate_bpm_from_pcm(pcm, _BPM_SAMPLE_SR))
             except Exception:
                 lufs_vals.append(None)
+                bpm_vals.append(None)
+        video_id = extract_video_id(info.get("webpage_url") or info.get("url") or "")
+        bpm = median_bpm(bpm_vals)
+        if bpm is not None and video_id:
+            write_bpm(_SONG_BPM_STORE, video_id, bpm)
+            logger.info(f"🥁 [BPM] {url[:40]} 估計 {bpm:.0f} BPM → 存 {video_id}")
         avg = average_lufs(lufs_vals)
         if avg is None:
             logger.warning(f"⚠️ [LoudNorm] {url[:40]} 響度量測無結果，用 raw 音量")

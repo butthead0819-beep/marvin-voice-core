@@ -125,8 +125,12 @@ def _make_cog(life_cores=None):
     bot.music_memory.time_slot = MagicMock(return_value="深夜")
 
     from cogs.music_cog import MusicCog
+    from dj_topic_selector import TopicCooldownStore
+    import tempfile
     cog = MusicCog(bot)
     cog._life_cores = MagicMock(return_value=list(life_cores or []))
+    # 話題冷卻表指到一次性 tmp 檔，別讓測試互相污染或寫進真的 records/。
+    cog._dj_topic_cooldown_store = TopicCooldownStore(tempfile.mktemp(suffix=".json"))
     return cog
 
 
@@ -145,12 +149,40 @@ def _ctx_str(cog):
 
 @pytest.mark.asyncio
 async def test_human_context_includes_recent_life():
-    """真人點歌 → context 帶最近生活素材，讓 DJ 有得熬湯。"""
+    """真人點歌 → context 帶最近生活素材，讓 DJ 有得熬湯（話題拆開後只挑一個，不全塞）。"""
     cog = _make_cog(life_cores=["大肚在準備搬家", "【重點】狗與露要去環島"])
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     ctx = _ctx_str(cog)
     assert "大肚在準備搬家" in ctx, f"context 應含生活素材: {ctx!r}"
-    assert "狗與露要去環島" in ctx
+
+
+@pytest.mark.asyncio
+async def test_interest_fallback_when_no_life_material():
+    """沒有『最近生活』時 → 退而查在場興趣（suki_memory.get_recent_liked_items）當話題。"""
+    cog = _make_cog(life_cores=[])
+    fake_vc = MagicMock()
+    fake_vc.get_online_members = MagicMock(return_value=["大肚"])
+    cog._vc = MagicMock(return_value=fake_vc)
+    cog.bot.router.memory = MagicMock()
+    cog.bot.router.memory.get_recent_liked_items = MagicMock(return_value=["九零年代金曲"])
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "在場興趣" in ctx
+    assert "大肚喜歡九零年代金曲" in ctx
+    assert "最近生活" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_no_topic_block_when_neither_life_nor_interest_available():
+    """兩種話題都沒有 → 不硬塞任何話題行，純過場交給 prompt 規則3。"""
+    cog = _make_cog(life_cores=[])
+    fake_vc = MagicMock()
+    fake_vc.get_online_members = MagicMock(return_value=[])
+    cog._vc = MagicMock(return_value=fake_vc)
+    await cog._fetch_dj_interjection_raw(_info())
+    ctx = _ctx_str(cog)
+    assert "最近生活" not in ctx
+    assert "在場興趣" not in ctx
 
 
 @pytest.mark.asyncio

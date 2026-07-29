@@ -95,11 +95,16 @@ def _build_taste_from_legacy(likes: list, dislikes: list) -> dict:
 
 
 def _project_taste(player: dict) -> None:
-    """從 taste 分數重算 player['likes']/['dislikes']（taboos 不動）。likes 按分數高→低。"""
+    """從 taste 分數重算 player['likes']/['dislikes']（taboos 不動）。likes 按分數高→低。
+
+    非 dict 的 taste 值（實測撞過：某玩家 taste 裡混進 `primary`/`sub_genre` 這種不明
+    來源的非本格式資料）直接跳過，不當機——taste 命名空間目前無 schema 強制，壞資料
+    只該被忽略，不該讓整個玩家記憶連載入都失敗。
+    """
     taste = player.get("taste", {})
-    likes = sorted((i for i, d in taste.items() if d.get("score", 0) >= LIKE_THRESHOLD),
+    likes = sorted((i for i, d in taste.items() if isinstance(d, dict) and d.get("score", 0) >= LIKE_THRESHOLD),
                    key=lambda i: -taste[i].get("score", 0))
-    dislikes = sorted((i for i, d in taste.items() if d.get("score", 0) <= DISLIKE_THRESHOLD),
+    dislikes = sorted((i for i, d in taste.items() if isinstance(d, dict) and d.get("score", 0) <= DISLIKE_THRESHOLD),
                       key=lambda i: taste[i].get("score", 0))
     player["likes"] = likes
     player["dislikes"] = dislikes
@@ -139,14 +144,28 @@ def _new_player() -> dict:
     return copy.deepcopy(_PLAYER_DEFAULTS)
 
 
+def _backfill_taste_from_likes(p: dict) -> None:
+    """likes/dislikes 裡任何還沒進 taste 的項目 → 逐項補上（confirmed 起始分＋現在時戳）。
+
+    原本的遷移只在整個 `taste` 欄位不存在時觸發一次；但只要玩家在那之後透過
+    `record_taste_signal` 寫入過任何一項（taste 從此存在），舊 likes/dislikes 裡
+    其餘項目就永遠進不了 taste，變成沒有 last_update 可查、無法判斷新鮮度的孤兒資料。
+    改成逐項檢查、每次載入都跑（idempotent：已在 taste 裡的項目不動）。
+    """
+    taste = p.setdefault("taste", {})
+    now = time.time()
+    for key, sign in (("likes", _MIGRATE_SCORE), ("dislikes", -_MIGRATE_SCORE)):
+        for item in p.get(key, []) or []:
+            if item and item not in taste:
+                taste[item] = {"score": sign, "mentions": 1, "first_seen": now, "last_update": now}
+
+
 def _repair_player(p: dict) -> dict:
     """Fill in any fields missing from older records (non-destructive)."""
     if not isinstance(p, dict):
         return _new_player()
-    # taste 遷移：舊資料（無 taste 欄位）→ 從 likes/dislikes 建分數。放在 generic fill 前，
-    # 否則下方會先補 taste={} 使遷移永不觸發。idempotent：taste 欄位一旦存在（即使空）就不重建。
-    if "taste" not in p:
-        p["taste"] = _build_taste_from_legacy(p.get("likes", []), p.get("dislikes", []))
+    _backfill_taste_from_likes(p)
+    if p.get("taste"):
         _project_taste(p)
     for k, v in _PLAYER_DEFAULTS.items():
         if k not in p:
@@ -627,6 +646,22 @@ class MemoryManager:
         p["bias_score"] = max(-10.0, min(10.0, before + float(delta)))
         self._save_player(username)
         logger.debug(f"🎭 [Bias] {username}: {before:.1f} → {p['bias_score']:.1f} ({delta:+.1f})")
+
+    def get_recent_liked_items(self, username: str, limit: int = 2) -> list[str]:
+        """confirmed likes 裡最近才被強化（taste last_update 最新）的幾項，供話題選擇器
+        優先講『最近才喜歡上』的東西，而非 `likes` 原本按分數高低排的固定順序——分數高的
+        舊愛好會永遠排第一個，講到跳針。無 taste 時戳的項目（理論上不該有，見
+        `_backfill_taste_from_likes`）排最後，不擋沒有時戳資料的正常運作。"""
+        p = self.get_player_memory(username)
+        taste = p.get("taste", {})
+        likes = p.get("likes", []) or []
+        items = []
+        for item in likes:
+            entry = taste.get(item)
+            last_update = entry.get("last_update", 0) if isinstance(entry, dict) else 0
+            items.append((item, last_update))
+        items.sort(key=lambda x: -x[1])
+        return [item for item, _ in items[:limit]]
 
     def find_shared_interests(self, active_users: list) -> str | None:
         if len(active_users) < 2:

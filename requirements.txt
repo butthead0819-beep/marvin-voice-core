@@ -33,3 +33,8 @@ ytmusicapi==1.12.0
 
 # diary_comic 漫畫渲染
 Pillow>=12.0.0
+
+# Google API client & OAuth
+google-api-python-client>=2.196.0
+google-auth-oauthlib>=1.4.0
+
