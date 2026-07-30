@@ -1658,6 +1658,10 @@ class MusicCog(commands.Cog):
                     if next_url not in self._prefetch_cache and vc is not None:
                         self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(next_info))
                         logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
+                    # 跟 DJ Tail 點火 preload 同一招，但不等尾段觸發——一開播就先背景解碼好
+                    # 下一首，manual skip（無法像 DJ Tail 提前 5s 預告）才不會現場等整首解碼。
+                    if vc is not None:
+                        self._start_music_preload(next_info)
 
                 if len(self.stream_queue) < 2:
                     if self._personal_shuffle is not None:

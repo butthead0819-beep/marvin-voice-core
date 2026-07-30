@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import weakref
 
 import discord
@@ -123,6 +124,19 @@ async def test_next_button_without_stream_sends_message():
     interaction = _fake_interaction()
     await view.next_button.callback(interaction)
     assert interaction.response.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_next_button_plays_quick_ack_before_gap():
+    """按下一首要立刻聽到反饋（消失中斷感），不能靜默等下一首 buffer 好才有動靜。"""
+    c = _fake_controller(stream_mode=True, _plan12=True, _mixer=MagicMock())
+    c.play_tts = AsyncMock()
+    view = PlayControlView(c)
+    interaction = _fake_interaction()
+    await view.next_button.callback(interaction)
+    await asyncio.sleep(0)   # 讓 create_task 排的 ack coroutine 真的跑一次
+    c.play_tts.assert_called_once()
+    assert c._mixer.clear_music.called
 
 
 @pytest.mark.asyncio

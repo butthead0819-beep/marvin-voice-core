@@ -10,6 +10,7 @@ on_timeout 時移除，使 cog_unload 能 stop 所有存活 view、斷開 view�
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 from typing import TYPE_CHECKING
 
@@ -94,9 +95,20 @@ class PlayControlView(discord.ui.View):
     async def _refresh(self, interaction: discord.Interaction):
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
+    async def _quick_skip_ack(self, play_tts) -> None:
+        """跟 playback_control_agent._quick_ack 同款：失敗靜默，不擋跳歌本身。"""
+        try:
+            await play_tts("好，換", already_in_channel=True)
+        except Exception:
+            pass
+
     def _skip_current(self, vc):
-        """跳歌：Plan 12 清 mixer 音樂層（_mixer_play_music 結束→播下一首）；舊路徑停 vc。"""
+        """跳歌：先發 quick ack 讓使用者立刻知道指令收到（消除等 buffer 存滿的空白感），
+        Plan 12 清 mixer 音樂層（_mixer_play_music 結束→播下一首）；舊路徑停 vc。"""
         c = self.controller
+        play_tts = getattr(c, "play_tts", None)
+        if play_tts is not None:
+            asyncio.create_task(self._quick_skip_ack(play_tts))
         if getattr(c, "_plan12", False) and getattr(c, "_mixer", None) is not None:
             c._mixer.clear_music()
         elif vc and vc.is_playing():
