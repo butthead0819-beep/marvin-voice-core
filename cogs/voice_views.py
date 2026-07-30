@@ -96,9 +96,11 @@ class PlayControlView(discord.ui.View):
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
     async def _quick_skip_ack(self, play_tts) -> None:
-        """跟 playback_control_agent._quick_ack 同款：失敗靜默，不擋跳歌本身。"""
+        """跟 playback_control_agent._quick_ack 同款：失敗靜默，不擋跳歌本身。
+        already_in_channel=False：這是全新獨立 ack，不能被殘留的 _tts_interrupted
+        旗標（按鈕點擊當下若馬文正在講話）靜默丟棄。"""
         try:
-            await play_tts("好，換", already_in_channel=True)
+            await play_tts("好，換", already_in_channel=False)
         except Exception:
             pass
 

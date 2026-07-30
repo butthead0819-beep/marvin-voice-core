@@ -143,7 +143,11 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
             if play_tts is None:
                 logger.warning("[PlaybackControl] ctrl.play_tts 不存在，skip ack")
                 return
-            await play_tts(text, already_in_channel=True)
+            # already_in_channel=False：這是全新獨立的 ack，不是「正在講的話」的延續片段。
+            # 講出切歌指令本身就是 barge-in，會把 _tts_interrupted 設 True；若這裡仍用
+            # already_in_channel=True，[Interrupt Guard] 會看到這個殘留旗標把 ack 整句
+            # 靜默丟棄（2026-07-30 實測：log 只見「中斷後跳過剩餘片段」，完全沒發聲）。
+            await play_tts(text, already_in_channel=False)
         except Exception:
             logger.exception("[PlaybackControl] quick ack 失敗，靜默")
 

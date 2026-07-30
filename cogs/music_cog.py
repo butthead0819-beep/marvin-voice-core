@@ -1659,9 +1659,10 @@ class MusicCog(commands.Cog):
                         self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(next_info))
                         logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
                     # 跟 DJ Tail 點火 preload 同一招，但不等尾段觸發——一開播就先背景解碼好
-                    # 下一首，manual skip（無法像 DJ Tail 提前 5s 預告）才不會現場等整首解碼。
+                    # 下一首（含 DJ Mix 版本，見 _preload_next_music），manual skip（無法像
+                    # DJ Tail 提前 5s 預告）才不會現場等整首解碼。
                     if vc is not None:
-                        self._start_music_preload(next_info)
+                        asyncio.create_task(self._preload_next_music(next_info))
 
                 if len(self.stream_queue) < 2:
                     if self._personal_shuffle is not None:
@@ -1800,8 +1801,6 @@ class MusicCog(commands.Cog):
 
     async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None):
         """🎵 播放單首串流音樂，等待播放完成後 return。"""
-        import shlex
-
         vc = self._vc()
         # 走輸出接縫：本機模式回 LocalSpeakerDevice、Discord 回 DiscordPlaybackDevice(vc)、
         # 皆無回 None（不再寫死 Discord voice_client，否則本機模式音樂直接 bail 無聲）。
@@ -1819,27 +1818,16 @@ class MusicCog(commands.Cog):
         use_mix = dj_audio_path and os.path.exists(dj_audio_path)
 
         if use_mix:
-            vol = self.stream_volume
-            djv = self._DJ_INTERJECTION_VOLUME
-            fc = (
-                f"[0:a]asplit=2[dj_sc][dj_mix];"
-                f"[dj_sc]apad=whole_dur=9999[dj_pad];"
-                f"[dj_mix]volume={djv:.3f}[dj_q];"  # DJ 播報降到 30%，不蓋過音樂
-                f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,volume={vol:.3f}[music];"
-                f"[music][dj_pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
-                f"[ducked][dj_q]amix=inputs=2:duration=longest:normalize=0[out]"
-            )
-            before_opts = (
-                f"-i {shlex.quote(dj_audio_path)} "
-                "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"
-            )
-            options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
             logger.info(f"🎙️ [DJ Mix] 混音模式：{os.path.basename(dj_audio_path)}")
             if vc is not None:
                 vc._mixer.set_volume(1.0)
+                # DJ Tail 點火時／manual skip 一開播就已背景 preload（見 _preload_next_music）
+                # → 有就直接用、零等待；沒有就退回現場建（同一份 filter_complex，見
+                # _build_dj_mix_s16_source，preload 分支跟這裡共用避免兩邊各修各的分岔）。
+                preloaded, fresh = await self._resolve_music_source(
+                    url, lambda: self._build_dj_mix_s16_source(url, dj_audio_path))
                 await vc._mixer_play_music(
-                    device, discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
-                    still_active=lambda: self.stream_mode,
+                    device, fresh, still_active=lambda: self.stream_mode, preloaded=preloaded,
                 )
         else:
             p12_opts = {
@@ -2369,9 +2357,44 @@ class MusicCog(commands.Cog):
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
 
-    def _start_music_preload(self, info: dict) -> None:
-        """[DJ Tail] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song 換源時直接用
-        （見 _resolve_music_source）。idempotent：同一 url 不重複起 task。
+    def _build_dj_mix_s16_source(self, url: str, dj_audio_path: str):
+        """DJ Mix 混音 filter_complex 音源建構。play_stream_song 現場播放／preload 共用
+        同一份，避免兩邊 filter graph 各修各的分岔。"""
+        import shlex
+        vol = self.stream_volume
+        djv = self._DJ_INTERJECTION_VOLUME
+        fc = (
+            f"[0:a]asplit=2[dj_sc][dj_mix];"
+            f"[dj_sc]apad=whole_dur=9999[dj_pad];"
+            f"[dj_mix]volume={djv:.3f}[dj_q];"  # DJ 播報降到 30%，不蓋過音樂
+            f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,volume={vol:.3f}[music];"
+            f"[music][dj_pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
+            f"[ducked][dj_q]amix=inputs=2:duration=longest:normalize=0[out]"
+        )
+        before_opts = (
+            f"-i {shlex.quote(dj_audio_path)} "
+            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"
+        )
+        options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
+        return discord.FFmpegPCMAudio(url, before_options=before_opts, options=options)
+
+    def _pick_preload_s16_source(self, url: str, dj_audio_path: str | None):
+        """有可用 DJ 音檔就疊 DJ Mix 版、沒有就退回純音樂版（純邏輯，抽出來跟 _do() 的
+        async/thread 解碼分開，方便測不用碰真 ffmpeg）。"""
+        if dj_audio_path and os.path.exists(dj_audio_path):
+            return self._build_dj_mix_s16_source(url, dj_audio_path)
+        p12_opts = {
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
+            'options': '-vn -bufsize 512k',
+        }
+        return discord.FFmpegPCMAudio(url, **p12_opts)
+
+    def _start_music_preload(self, info: dict, dj_audio_path: str | None = None) -> None:
+        """[DJ Tail / manual skip] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song
+        換源時直接用（見 _resolve_music_source）。idempotent：同一 url 不重複起 task。
+
+        dj_audio_path 給了且檔案存在 → 疊 DJ Mix 版一起 preload（見 _pick_preload_s16_source），
+        否則下一首若走 use_mix 分支，這個 cache 對它是空的、preload 等於白做。
 
         cache 最多留 2 個未被領取的 task——一首完整解碼是幾十 MB，正常路徑幾秒內就會被
         play_stream_song 領走清掉，這裡只是防呆（例如點火後又被 skip，task 沒人領走）。
@@ -2385,14 +2408,18 @@ class MusicCog(commands.Cog):
 
         async def _do():
             from local_mixing_source import S16ToF32MusicSource, preload_f32_source
-            p12_opts = {
-                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
-                'options': '-vn -bufsize 512k',
-            }
-            s16 = discord.FFmpegPCMAudio(url, **p12_opts)
+            s16 = self._pick_preload_s16_source(url, dj_audio_path)
             return await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(s16))
 
         self._preload_music_cache[url] = asyncio.create_task(_do())
+
+    async def _preload_next_music(self, info: dict) -> None:
+        """一開播就搶跑：跟 DJ Tail 共用同一個 _resolve_tail_dj_meta 拿下一首 DJ 音檔
+        （有就連 DJ Mix 版一起 preload，沒有就退回純音樂 preload）。manual skip 不像
+        DJ Tail 能提前 5s 預告，只能靠一開播就起跑爭取最長的解碼時間窗。"""
+        dj_meta = await self._resolve_tail_dj_meta(info)
+        dj_audio_path = dj_meta.get('audio_path') if isinstance(dj_meta, dict) else None
+        self._start_music_preload(info, dj_audio_path=dj_audio_path)
 
     async def _resolve_music_source(self, url: str, ffmpeg_factory):
         """回傳 (preloaded, fresh_s16_source)——恰好一個非 None。

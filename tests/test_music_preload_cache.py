@@ -8,11 +8,17 @@
 只測純邏輯（cache 記帳 + 「有預解碼就用、沒有就退回現場建」的決策），不碰真 ffmpeg/mixer
 （跟 test_stream_reconnect_wait.py 同一個原則：play_stream_song 整條牽涉 ffmpeg/mixer，
 不做端到端）。
+
+2026-07-30 補：手動 skip 實測發現「下一首有 DJ 開場白」的轉場（play_stream_song 的
+use_mix 分支）完全沒吃到這個 preload——那條分支自己現場組 filter_complex 音源，根本
+不查 _preload_music_cache。_pick_preload_s16_source 抽出「有 DJ 音檔就疊 DJ Mix 版
+preload、沒有就退回純音樂版」的純邏輯，讓 preload 也能覆蓋這條分支。
 """
 from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -118,3 +124,59 @@ async def test_resolve_falls_back_to_fresh_when_preload_failed():
     assert preloaded is None
     assert fresh == "FRESH"
     assert "https://ex/a" not in me._preload_music_cache
+
+
+# ── _pick_preload_s16_source：DJ Mix 轉場也要吃到 preload ───────────────────
+
+def test_pick_preload_source_uses_dj_mix_when_audio_exists(tmp_path):
+    audio = tmp_path / "dj.mp3"
+    audio.write_bytes(b"x")
+    me = _fake_self()
+    me._build_dj_mix_s16_source = lambda url, path: ("DJ_SRC", url, path)
+    result = MusicCog._pick_preload_s16_source(me, "https://ex/a", str(audio))
+    assert result == ("DJ_SRC", "https://ex/a", str(audio))
+
+
+def test_pick_preload_source_falls_back_plain_when_no_dj_audio_path():
+    me = _fake_self()
+    me._build_dj_mix_s16_source = lambda *a: (_ for _ in ()).throw(AssertionError("不該呼叫"))
+    with patch("discord.FFmpegPCMAudio", return_value="PLAIN_SRC") as m:
+        result = MusicCog._pick_preload_s16_source(me, "https://ex/a", None)
+    assert result == "PLAIN_SRC"
+    m.assert_called_once()
+
+
+def test_pick_preload_source_falls_back_plain_when_dj_audio_file_missing():
+    """meta 給的 audio_path 檔案其實不存在（例如渲染失敗但欄位沒清乾淨）→ 別當 DJ Mix 用。"""
+    me = _fake_self()
+    me._build_dj_mix_s16_source = lambda *a: (_ for _ in ()).throw(AssertionError("不該呼叫"))
+    with patch("discord.FFmpegPCMAudio", return_value="PLAIN_SRC"):
+        result = MusicCog._pick_preload_s16_source(me, "https://ex/a", "/no/such/file.mp3")
+    assert result == "PLAIN_SRC"
+
+
+# ── _preload_next_music：跟 DJ Tail 共用 _resolve_tail_dj_meta 拿下一首 DJ 音檔 ──
+
+@pytest.mark.asyncio
+async def test_preload_next_music_passes_dj_audio_path_when_available():
+    me = _fake_self()
+    me._resolve_tail_dj_meta = MagicMock(
+        return_value=_async_return({"audio_path": "/dj/audio.mp3"}))
+    calls = []
+    me._start_music_preload = lambda info, dj_audio_path=None: calls.append((info, dj_audio_path))
+    await MusicCog._preload_next_music(me, {"url": "https://ex/a"})
+    assert calls == [({"url": "https://ex/a"}, "/dj/audio.mp3")]
+
+
+@pytest.mark.asyncio
+async def test_preload_next_music_passes_none_when_no_dj_meta():
+    me = _fake_self()
+    me._resolve_tail_dj_meta = MagicMock(return_value=_async_return(None))
+    calls = []
+    me._start_music_preload = lambda info, dj_audio_path=None: calls.append((info, dj_audio_path))
+    await MusicCog._preload_next_music(me, {"url": "https://ex/a"})
+    assert calls == [({"url": "https://ex/a"}, None)]
+
+
+async def _async_return(value):
+    return value
