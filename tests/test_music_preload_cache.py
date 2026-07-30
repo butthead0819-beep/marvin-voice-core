@@ -32,7 +32,7 @@ async def _noop_measure(*_a, **_k):
 def _fake_self():
     return SimpleNamespace(_preload_music_cache={}, _stream_norm_gain={},
                            stream_volume=1.0, _DJ_INTERJECTION_VOLUME=0.3,
-                           _measure_norm_gain_bg=_noop_measure)
+                           _measure_norm_gain_bg=_noop_measure, _norm_gain_inflight={})
 
 
 # ── _start_music_preload：cache 記帳 ────────────────────────────────────────
@@ -272,6 +272,7 @@ async def test_measure_norm_gain_bg_uses_explicit_info_over_current_stream_info(
     sample_positions 算出來的取樣點對不上這首歌實際長度。"""
     me = _fake_self()
     me._current_stream_info = {"duration": 999}   # 別首歌，若誤用會用錯 duration
+    me._measure_norm_gain_worker = lambda url, info: MusicCog._measure_norm_gain_worker(me, url, info)
     calls = []
 
     class _FakeProc:
@@ -289,6 +290,34 @@ async def test_measure_norm_gain_bg_uses_explicit_info_over_current_stream_info(
     ss_values = [float(a[a.index("-ss") + 1]) for a in calls]
     # duration=60 的取樣點必定 < 60；若誤用 999 會算出 >= 250 的位置
     assert all(v < 60 for v in ss_values)
+
+
+@pytest.mark.asyncio
+async def test_measure_norm_gain_bg_dedupes_concurrent_calls_for_same_url(monkeypatch):
+    """2026-07-30 實測回歸：_preload_next_music（幫下一首提前量）跟 play_stream_song
+    自己的量測呼叫（歌一開播就打）如果都還沒完成，會對同一首歌同時起兩份量測、6 條
+    ffmpeg 連線同時搶頻寬——疑似讓測出來的響度失真、autogain 誤壓低音量。兩邊呼叫要
+    共用同一份 in-flight 量測，不能各起各的。"""
+    me = _fake_self()
+    me._measure_norm_gain_worker = lambda url, info: MusicCog._measure_norm_gain_worker(me, url, info)
+    call_count = {"n": 0}
+
+    class _FakeProc:
+        async def communicate(self):
+            call_count["n"] += 1
+            return b"", b""
+
+    async def _fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    info = {"duration": 200, "webpage_url": "https://ex/dup"}
+    await asyncio.gather(
+        MusicCog._measure_norm_gain_bg(me, "https://ex/dup", info=info),
+        MusicCog._measure_norm_gain_bg(me, "https://ex/dup", info=info),
+    )
+    assert call_count["n"] == 3   # duration=200 → 3 個取樣點，只該真的量一次不是兩次(6)
+    assert "https://ex/dup" not in me._norm_gain_inflight   # 完成後要清乾淨
 
 
 async def _async_return(value):

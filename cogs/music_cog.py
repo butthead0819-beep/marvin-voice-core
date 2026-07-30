@@ -126,6 +126,7 @@ class MusicCog(commands.Cog):
         self._stream_play_gen: int = 0
         self._current_stream_url: Optional[str] = None
         self._stream_norm_gain: dict = {}   # url → 每首響度正規化常數增益
+        self._norm_gain_inflight: dict = {}  # url → 進行中的量測 task（去重，見 _measure_norm_gain_bg）
         self._last_user_song_seed: Optional[str] = None
         self.stream_queue: list = []        # list of {title, uploader, url, …}
         self._personal_shuffle: Optional[dict] = None  # 個人歌單連續隨機播 session
@@ -2587,9 +2588,27 @@ class MusicCog(commands.Cog):
         info：明確指定要量測哪首歌的 metadata（duration/webpage_url）。不給就退回
         self._current_stream_info（原本 play_stream_song 內呼叫時，url 就是當下播放曲，
         兩者相同）；_preload_next_music 幫『下一首』(還沒成為 current) 提前量測時必須
-        明確傳，否則會誤用目前正在播的別首歌的 duration。"""
+        明確傳，否則會誤用目前正在播的別首歌的 duration。
+
+        去重：_preload_next_music（提前量）跟 play_stream_song（歌一開播就量，見下方
+        呼叫點）都會對同一首歌呼叫這個函式；若前者還沒量完後者就已開始，兩邊各起一份
+        會對同一個 url 同時打 6 條 ffmpeg 連線搶頻寬，疑似讓量測讀到劣化音訊、autogain
+        誤壓低音量（2026-07-30 實測回歸）。用 _norm_gain_inflight 共用同一份進行中的
+        量測 task，晚到的呼叫等同一份結果，不重新起。"""
         if url in self._stream_norm_gain:
             return
+        existing = self._norm_gain_inflight.get(url)
+        if existing is None:
+            existing = asyncio.create_task(self._measure_norm_gain_worker(url, info))
+            self._norm_gain_inflight[url] = existing
+        try:
+            await existing
+        finally:
+            if self._norm_gain_inflight.get(url) is existing and existing.done():
+                self._norm_gain_inflight.pop(url, None)
+
+    async def _measure_norm_gain_worker(self, url: str, info: dict | None) -> None:
+        """_measure_norm_gain_bg 實際量測工作，抽出來讓多個呼叫端能共用同一個 task。"""
         import numpy as np
 
         from bpm_estimate import estimate_bpm_from_pcm, median_bpm, write_bpm
