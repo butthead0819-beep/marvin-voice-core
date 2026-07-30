@@ -54,12 +54,6 @@ _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 _SONG_BPM_STORE = "records/song_bpm.json"
 _BPM_SAMPLE_SR = 11025
 
-# 2026-07-30 實測回歸：下一首 preload 一開播就搶跑，跟同一首歌自己的 LoudNorm 三點取樣
-# （_measure_norm_gain_bg，也是一開播就打好幾條網路連線）正面搶頻寬/CPU，疑似讓取樣讀到
-# 劣化音訊、autogain 誤判成大聲把音量錯壓低（使用者確認調大音量能聽到，此回歸在加這個
-# preload 之後才出現）。preload 先讓一小段時間過去，把起跑時機錯開。
-_PRELOAD_STAGGER_S = 12.0
-
 
 class MusicCog(commands.Cog):
     """音樂子系統（Strangler Fig 遷移中）。"""
@@ -126,7 +120,6 @@ class MusicCog(commands.Cog):
         self._stream_play_gen: int = 0
         self._current_stream_url: Optional[str] = None
         self._stream_norm_gain: dict = {}   # url → 每首響度正規化常數增益
-        self._norm_gain_inflight: dict = {}  # url → 進行中的量測 task（去重，見 _measure_norm_gain_bg）
         self._last_user_song_seed: Optional[str] = None
         self.stream_queue: list = []        # list of {title, uploader, url, …}
         self._personal_shuffle: Optional[dict] = None  # 個人歌單連續隨機播 session
@@ -1665,11 +1658,6 @@ class MusicCog(commands.Cog):
                     if next_url not in self._prefetch_cache and vc is not None:
                         self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(next_info))
                         logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
-                    # 跟 DJ Tail 點火 preload 同一招，但不等尾段觸發——一開播就先背景解碼好
-                    # 下一首（含 DJ Mix 版本，見 _preload_next_music），manual skip（無法像
-                    # DJ Tail 提前 5s 預告）才不會現場等整首解碼。
-                    if vc is not None:
-                        asyncio.create_task(self._preload_next_music(next_info))
 
                 if len(self.stream_queue) < 2:
                     if self._personal_shuffle is not None:
@@ -1808,6 +1796,8 @@ class MusicCog(commands.Cog):
 
     async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None):
         """🎵 播放單首串流音樂，等待播放完成後 return。"""
+        import shlex
+
         vc = self._vc()
         # 走輸出接縫：本機模式回 LocalSpeakerDevice、Discord 回 DiscordPlaybackDevice(vc)、
         # 皆無回 None（不再寫死 Discord voice_client，否則本機模式音樂直接 bail 無聲）。
@@ -1825,16 +1815,27 @@ class MusicCog(commands.Cog):
         use_mix = dj_audio_path and os.path.exists(dj_audio_path)
 
         if use_mix:
+            vol = self.stream_volume
+            djv = self._DJ_INTERJECTION_VOLUME
+            fc = (
+                f"[0:a]asplit=2[dj_sc][dj_mix];"
+                f"[dj_sc]apad=whole_dur=9999[dj_pad];"
+                f"[dj_mix]volume={djv:.3f}[dj_q];"  # DJ 播報降到 30%，不蓋過音樂
+                f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,volume={vol:.3f}[music];"
+                f"[music][dj_pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
+                f"[ducked][dj_q]amix=inputs=2:duration=longest:normalize=0[out]"
+            )
+            before_opts = (
+                f"-i {shlex.quote(dj_audio_path)} "
+                "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"
+            )
+            options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
             logger.info(f"🎙️ [DJ Mix] 混音模式：{os.path.basename(dj_audio_path)}")
             if vc is not None:
                 vc._mixer.set_volume(1.0)
-                # DJ Tail 點火時／manual skip 一開播就已背景 preload（見 _preload_next_music）
-                # → 有就直接用、零等待；沒有就退回現場建（同一份 filter_complex，見
-                # _build_dj_mix_s16_source，preload 分支跟這裡共用避免兩邊各修各的分岔）。
-                preloaded, fresh = await self._resolve_music_source(
-                    url, lambda: self._build_dj_mix_s16_source(url, dj_audio_path))
                 await vc._mixer_play_music(
-                    device, fresh, still_active=lambda: self.stream_mode, preloaded=preloaded,
+                    device, discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
+                    still_active=lambda: self.stream_mode,
                 )
         else:
             p12_opts = {
@@ -2364,50 +2365,9 @@ class MusicCog(commands.Cog):
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
 
-    def _dj_mix_volume(self, url: str) -> float:
-        """DJ Mix 分支的音樂音量＝使用者音量 × 這首歌的響度校正常數增益（跟非 DJ 分支同一套
-        _stream_norm_gain，未量測完成前退回 1.0，不擋播放）。2026-07-30：取代原本 ffmpeg
-        自己的 single-pass loudnorm filter——準度不夠，「二十二」這類歌明顯偏小聲。"""
-        return self.stream_volume * self._stream_norm_gain.get(url, 1.0)
-
-    def _build_dj_mix_s16_source(self, url: str, dj_audio_path: str):
-        """DJ Mix 混音 filter_complex 音源建構。play_stream_song 現場播放／preload 共用
-        同一份，避免兩邊 filter graph 各修各的分岔。"""
-        import shlex
-        vol = self._dj_mix_volume(url)
-        djv = self._DJ_INTERJECTION_VOLUME
-        fc = (
-            f"[0:a]asplit=2[dj_sc][dj_mix];"
-            f"[dj_sc]apad=whole_dur=9999[dj_pad];"
-            f"[dj_mix]volume={djv:.3f}[dj_q];"  # DJ 播報降到 30%，不蓋過音樂
-            f"[1:a]volume={vol:.3f}[music];"
-            f"[music][dj_pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
-            f"[ducked][dj_q]amix=inputs=2:duration=longest:normalize=0[out]"
-        )
-        before_opts = (
-            f"-i {shlex.quote(dj_audio_path)} "
-            "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"
-        )
-        options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
-        return discord.FFmpegPCMAudio(url, before_options=before_opts, options=options)
-
-    def _pick_preload_s16_source(self, url: str, dj_audio_path: str | None):
-        """有可用 DJ 音檔就疊 DJ Mix 版、沒有就退回純音樂版（純邏輯，抽出來跟 _do() 的
-        async/thread 解碼分開，方便測不用碰真 ffmpeg）。"""
-        if dj_audio_path and os.path.exists(dj_audio_path):
-            return self._build_dj_mix_s16_source(url, dj_audio_path)
-        p12_opts = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
-            'options': '-vn -bufsize 512k',
-        }
-        return discord.FFmpegPCMAudio(url, **p12_opts)
-
-    def _start_music_preload(self, info: dict, dj_audio_path: str | None = None) -> None:
-        """[DJ Tail / manual skip] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song
-        換源時直接用（見 _resolve_music_source）。idempotent：同一 url 不重複起 task。
-
-        dj_audio_path 給了且檔案存在 → 疊 DJ Mix 版一起 preload（見 _pick_preload_s16_source），
-        否則下一首若走 use_mix 分支，這個 cache 對它是空的、preload 等於白做。
+    def _start_music_preload(self, info: dict) -> None:
+        """[DJ Tail] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song 換源時直接用
+        （見 _resolve_music_source）。idempotent：同一 url 不重複起 task。
 
         cache 最多留 2 個未被領取的 task——一首完整解碼是幾十 MB，正常路徑幾秒內就會被
         play_stream_song 領走清掉，這裡只是防呆（例如點火後又被 skip，task 沒人領走）。
@@ -2421,25 +2381,14 @@ class MusicCog(commands.Cog):
 
         async def _do():
             from local_mixing_source import S16ToF32MusicSource, preload_f32_source
-            s16 = self._pick_preload_s16_source(url, dj_audio_path)
+            p12_opts = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
+                'options': '-vn -bufsize 512k',
+            }
+            s16 = discord.FFmpegPCMAudio(url, **p12_opts)
             return await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(s16))
 
         self._preload_music_cache[url] = asyncio.create_task(_do())
-
-    async def _preload_next_music(self, info: dict) -> None:
-        """一開播就搶跑（但先錯開，見 _PRELOAD_STAGGER_S）：先量響度校正增益（見
-        _measure_norm_gain_bg，DJ Mix 分支也靠這個而非 ffmpeg 內建 loudnorm），量完才做
-        跟 DJ Tail 共用的 _resolve_tail_dj_meta 拿下一首 DJ 音檔（有就連 DJ Mix 版一起
-        preload，沒有就退回純音樂 preload）。量測跟 preload 解碼都是對同一個 url 的網路
-        抓取，故意序列化不同時搶頻寬。manual skip 不像 DJ Tail 能提前 5s 預告，只能靠
-        一開播就起跑爭取最長的時間窗。"""
-        await asyncio.sleep(_PRELOAD_STAGGER_S)
-        url = info.get('url', '')
-        if url and url not in self._stream_norm_gain:
-            await self._measure_norm_gain_bg(url, info=info)
-        dj_meta = await self._resolve_tail_dj_meta(info)
-        dj_audio_path = dj_meta.get('audio_path') if isinstance(dj_meta, dict) else None
-        self._start_music_preload(info, dj_audio_path=dj_audio_path)
 
     async def _resolve_music_source(self, url: str, ffmpeg_factory):
         """回傳 (preloaded, fresh_s16_source)——恰好一個非 None。
@@ -2577,45 +2526,22 @@ class MusicCog(commands.Cog):
             pass
         return 3.0
 
-    async def _measure_norm_gain_bg(self, url: str, info: dict | None = None):
+    async def _measure_norm_gain_bg(self, url: str):
         """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存 _stream_norm_gain[url]。
 
         順便在同一趟 ffmpeg（同取樣點、同一個 process 兩個輸出：ebur128→null 給
         stderr 響度統計、raw f32le mono→stdout 給 BPM 估算）取 PCM 估 BPM，落地存
         records/song_bpm.json（見 bpm_estimate.py）——BPM 分析不擋、不影響既有響度
-        正規化行為，失敗只是沒存到 BPM。
-
-        info：明確指定要量測哪首歌的 metadata（duration/webpage_url）。不給就退回
-        self._current_stream_info（原本 play_stream_song 內呼叫時，url 就是當下播放曲，
-        兩者相同）；_preload_next_music 幫『下一首』(還沒成為 current) 提前量測時必須
-        明確傳，否則會誤用目前正在播的別首歌的 duration。
-
-        去重：_preload_next_music（提前量）跟 play_stream_song（歌一開播就量，見下方
-        呼叫點）都會對同一首歌呼叫這個函式；若前者還沒量完後者就已開始，兩邊各起一份
-        會對同一個 url 同時打 6 條 ffmpeg 連線搶頻寬，疑似讓量測讀到劣化音訊、autogain
-        誤壓低音量（2026-07-30 實測回歸）。用 _norm_gain_inflight 共用同一份進行中的
-        量測 task，晚到的呼叫等同一份結果，不重新起。"""
+        正規化行為，失敗只是沒存到 BPM。"""
         if url in self._stream_norm_gain:
             return
-        existing = self._norm_gain_inflight.get(url)
-        if existing is None:
-            existing = asyncio.create_task(self._measure_norm_gain_worker(url, info))
-            self._norm_gain_inflight[url] = existing
-        try:
-            await existing
-        finally:
-            if self._norm_gain_inflight.get(url) is existing and existing.done():
-                self._norm_gain_inflight.pop(url, None)
-
-    async def _measure_norm_gain_worker(self, url: str, info: dict | None) -> None:
-        """_measure_norm_gain_bg 實際量測工作，抽出來讓多個呼叫端能共用同一個 task。"""
         import numpy as np
 
         from bpm_estimate import estimate_bpm_from_pcm, median_bpm, write_bpm
         from loudness_norm import (
             sample_positions, parse_ebur128_integrated, average_lufs, compute_loudness_gain,
         )
-        info = info if info is not None else (self._current_stream_info or {})
+        info = self._current_stream_info or {}
         duration = float(info.get("duration") or 0)
         lufs_vals: list[float | None] = []
         bpm_vals: list[float | None] = []
