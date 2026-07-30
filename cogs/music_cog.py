@@ -54,6 +54,12 @@ _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 _SONG_BPM_STORE = "records/song_bpm.json"
 _BPM_SAMPLE_SR = 11025
 
+# 2026-07-30 實測回歸：下一首 preload 一開播就搶跑，跟同一首歌自己的 LoudNorm 三點取樣
+# （_measure_norm_gain_bg，也是一開播就打好幾條網路連線）正面搶頻寬/CPU，疑似讓取樣讀到
+# 劣化音訊、autogain 誤判成大聲把音量錯壓低（使用者確認調大音量能聽到，此回歸在加這個
+# preload 之後才出現）。preload 先讓一小段時間過去，把起跑時機錯開。
+_PRELOAD_STAGGER_S = 12.0
+
 
 class MusicCog(commands.Cog):
     """音樂子系統（Strangler Fig 遷移中）。"""
@@ -2414,9 +2420,11 @@ class MusicCog(commands.Cog):
         self._preload_music_cache[url] = asyncio.create_task(_do())
 
     async def _preload_next_music(self, info: dict) -> None:
-        """一開播就搶跑：跟 DJ Tail 共用同一個 _resolve_tail_dj_meta 拿下一首 DJ 音檔
-        （有就連 DJ Mix 版一起 preload，沒有就退回純音樂 preload）。manual skip 不像
-        DJ Tail 能提前 5s 預告，只能靠一開播就起跑爭取最長的解碼時間窗。"""
+        """一開播就搶跑（但先錯開，見 _PRELOAD_STAGGER_S）：跟 DJ Tail 共用同一個
+        _resolve_tail_dj_meta 拿下一首 DJ 音檔（有就連 DJ Mix 版一起 preload，沒有就退回
+        純音樂 preload）。manual skip 不像 DJ Tail 能提前 5s 預告，只能靠一開播就起跑爭取
+        最長的解碼時間窗。"""
+        await asyncio.sleep(_PRELOAD_STAGGER_S)
         dj_meta = await self._resolve_tail_dj_meta(info)
         dj_audio_path = dj_meta.get('audio_path') if isinstance(dj_meta, dict) else None
         self._start_music_preload(info, dj_audio_path=dj_audio_path)

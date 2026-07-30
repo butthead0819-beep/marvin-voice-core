@@ -22,7 +22,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from cogs.music_cog import MusicCog
+from cogs.music_cog import MusicCog, _PRELOAD_STAGGER_S
 
 
 def _fake_self():
@@ -158,24 +158,57 @@ def test_pick_preload_source_falls_back_plain_when_dj_audio_file_missing():
 # ── _preload_next_music：跟 DJ Tail 共用 _resolve_tail_dj_meta 拿下一首 DJ 音檔 ──
 
 @pytest.mark.asyncio
-async def test_preload_next_music_passes_dj_audio_path_when_available():
+async def test_preload_next_music_passes_dj_audio_path_when_available(monkeypatch):
     me = _fake_self()
     me._resolve_tail_dj_meta = MagicMock(
         return_value=_async_return({"audio_path": "/dj/audio.mp3"}))
     calls = []
     me._start_music_preload = lambda info, dj_audio_path=None: calls.append((info, dj_audio_path))
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
     await MusicCog._preload_next_music(me, {"url": "https://ex/a"})
     assert calls == [({"url": "https://ex/a"}, "/dj/audio.mp3")]
 
 
 @pytest.mark.asyncio
-async def test_preload_next_music_passes_none_when_no_dj_meta():
+async def test_preload_next_music_passes_none_when_no_dj_meta(monkeypatch):
     me = _fake_self()
     me._resolve_tail_dj_meta = MagicMock(return_value=_async_return(None))
     calls = []
     me._start_music_preload = lambda info, dj_audio_path=None: calls.append((info, dj_audio_path))
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
     await MusicCog._preload_next_music(me, {"url": "https://ex/a"})
     assert calls == [({"url": "https://ex/a"}, None)]
+
+
+@pytest.mark.asyncio
+async def test_preload_next_music_staggers_before_heavy_work(monkeypatch):
+    """2026-07-30 實測回歸：preload 一開播就搶跑，跟這首歌自己的 LoudNorm 三點取樣
+    （_measure_norm_gain_bg，也是一開播就打）同時搶好幾條網路連線，疑似讓取樣讀到劣化
+    音訊、autogain 誤判成大聲把音量壓低（使用者確認調大音量能聽到，回歸在改動之後才有）。
+    修法＝preload 先讓一小段時間過去，別跟它正面搶頻寬。"""
+    me = _fake_self()
+    calls = []
+
+    async def _fake_sleep(secs):
+        calls.append(("sleep", secs))
+
+    async def _fake_resolve(info):
+        calls.append(("resolve", info))
+        return None
+
+    me._resolve_tail_dj_meta = _fake_resolve
+    me._start_music_preload = lambda info, dj_audio_path=None: calls.append(("start", dj_audio_path))
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    await MusicCog._preload_next_music(me, {"url": "https://ex/a"})
+    assert calls == [
+        ("sleep", _PRELOAD_STAGGER_S),
+        ("resolve", {"url": "https://ex/a"}),
+        ("start", None),
+    ]
+
+
+async def _instant_sleep(_secs):
+    return None
 
 
 async def _async_return(value):
