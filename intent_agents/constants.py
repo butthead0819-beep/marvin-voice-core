@@ -26,7 +26,7 @@ WEAK_PLAY_KW: tuple[str, ...] = (
 MUSIC_PLAY_KW: tuple[str, ...] = STRONG_PLAY_KW + WEAK_PLAY_KW
 
 MUSIC_SKIP_KW: tuple[str, ...] = (
-    "換一首", "下一首", "跳過", "換歌", "切歌", "不要這首", "skip",
+    "換一首", "下一首", "跳過", "換歌", "切歌", "不要這首", "skip", "next song",
 )
 MUSIC_STOP_KW: tuple[str, ...] = (
     "停止播放", "音樂停", "不要播了", "關掉音樂", "停音樂", "音樂關掉",

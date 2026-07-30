@@ -126,11 +126,12 @@ def test_artist_only_v1_055_longstring_v2_085_curation(v1, v2, query):
     ("馬文，停止播放", "control:stop"),
 ])
 def test_control_intents_match(v1, v2, query, expected_prefix):
+    """v1 仍维持控制 intent；v2 已移至 PlaybackControlAgent，預期 0.0。"""
     b1 = v1.bid(_ctx(query))
     b2 = v2.bid(_ctx(query))
     assert b1.confidence == 0.95
-    assert b2.confidence == 0.95
-    assert b2.reason.startswith(expected_prefix), f"v2 reason: {b2.reason}"
+    # v2 的 control_* 已移除（2026-07-30），控制指令改由 PlaybackControlAgent 獨攀
+    assert b2.confidence == 0.0, f"v2 應該不再接控制指令，得 {b2.confidence} ({b2.reason})"
 
 
 # ── Gates: low wake_intent → v1 None, v2 dense 0.0 ───────────────────────────

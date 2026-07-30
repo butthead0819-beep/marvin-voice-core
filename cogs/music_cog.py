@@ -63,6 +63,7 @@ class MusicCog(commands.Cog):
     # 否則 T1/T2 枯竭頻繁落 T3 時會把高播放數的歌同場一再回收（2026-06-24「鼓聲若響」2hr 播 11 次）。
     _T3_PLAYED_EXCLUDE_TTL_S = 24 * 3600
     _COLD_META_TIMEOUT_S = 5.0
+    _SEAMLESS_SKIP_TIMEOUT_S = 10.0  # ⏭️ Seamless Skip 極端守護門檻 (10s)：確保第一首播放不提前中斷
     _MUSIC_CMD_DEDUP_WINDOW = 5.0
     _MUSIC_SAME_SONG_WINDOW = 30.0  # 同 speaker + 同正規化點歌字串：擋同一句重派（喚醒+無喚醒）
     # DJ 播報疊在歌上的音量（混音時 dj 分支的 gain）。降到 30% 不蓋過音樂。
@@ -329,9 +330,8 @@ class MusicCog(commands.Cog):
         if not self.stream_mode:
             await interaction.followup.send("沒有歌曲在播放。虛無是這個宇宙的預設狀態。", ephemeral=True)
             return
-        guild_vc = interaction.guild.voice_client
-        if guild_vc and guild_vc.is_playing():
-            guild_vc.stop_playing()
+        user_name = interaction.user.display_name if interaction.user else "Discord"
+        await self._safe_music_command(user_name, "", "skip")
         await interaction.followup.send("⏭️ 已跳過。", ephemeral=True)
 
     @app_commands.command(name="marvin_play_control", description="[Stream] 播放控制台：音量、暫停、上下首、佇列管理")
@@ -3021,6 +3021,29 @@ class MusicCog(commands.Cog):
             if self._tail_dj_task is not None and not self._tail_dj_task.done():
                 self._tail_dj_task.cancel()
                 self._tail_dj_task = None
+
+            # ⏭️ [Seamless Skip] 聲音零中斷：若佇列中有下一首，預載 DJ 與 PCM 解碼後才清空第一首
+            next_info = self.stream_queue[0] if self.stream_queue else None
+            if next_info is not None and self.stream_mode:
+                try:
+                    timeout_s = getattr(self, '_SEAMLESS_SKIP_TIMEOUT_S', 3.0)
+                    logger.info(f"⏭️ [Seamless Skip] 開始預載下一首 ({next_info.get('title', '?')})，逾時={timeout_s}s")
+                    self._start_music_preload(next_info)
+                    try:
+                        dj_meta = await asyncio.wait_for(
+                            self._resolve_tail_dj_meta(next_info),
+                            timeout=timeout_s,
+                        )
+                    except asyncio.TimeoutError:
+                        dj_meta = None
+                        logger.warning(f"⚠️ [Seamless Skip] DJ meta 預載逾時 >{timeout_s}s，直接切歌")
+
+                    if dj_meta is not None:
+                        next_info['_dj_played_in_tail'] = True
+                        await self._maybe_play_dj_interjection(dj_meta)
+                except Exception as e:
+                    logger.warning(f"⚠️ [Seamless Skip] 預載準備過程出錯，退回直接切歌: {e}")
+
             if _mixer is not None:
                 _mixer.clear_music()
             reply = random.choice(replies["skip"])

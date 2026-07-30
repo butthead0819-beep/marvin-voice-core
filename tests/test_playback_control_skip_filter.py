@@ -119,7 +119,7 @@ def test_keyword_only_still_matches_skip(query):
     from intent_agents.playback_control_agent import PlaybackControlAgent
     agent = PlaybackControlAgent(_ctrl())
     bid = agent.bid(_ctx(query))
-    assert bid.confidence == 0.85
+    assert bid.confidence == 0.95
     assert "skip" in bid.reason.lower()
 
 
@@ -128,7 +128,7 @@ def test_keyword_with_wake_prefix_still_matches():
     from intent_agents.playback_control_agent import PlaybackControlAgent
     agent = PlaybackControlAgent(_ctrl())
     bid = agent.bid(_ctx("馬文下一首"))
-    assert bid.confidence == 0.85
+    assert bid.confidence == 0.95
 
 
 def test_chat_marker_after_keyword_still_matches():
@@ -139,98 +139,90 @@ def test_chat_marker_after_keyword_still_matches():
     agent = PlaybackControlAgent(_ctrl())
     bid = agent.bid(_ctx("下一首為什麼那麼難聽"))
     # 這個 case 暫不擋（避免複雜化 filter）
-    assert bid.confidence == 0.85
+    assert bid.confidence == 0.95
 
 
-# ── stream mode gate 仍生效 ───────────────────────────────────────────────
+# ── gate 移除後：stream_mode=False 時也應該可 match ────────────────────────
 
 
-def test_stream_not_active_returns_dense_zero():
-    """既有 gate 行為不變。"""
+def test_stream_mode_false_still_matches_skip():
+    """gate() 移除 stream_mode 限制後，stream_mode=False 仍可命中 skip_track。
+    實際 skip 動作由 music_cog._handle_voice_music_command 自己判斷有沒歌在播。"""
     from intent_agents.playback_control_agent import PlaybackControlAgent
     agent = PlaybackControlAgent(_ctrl(stream_mode=False))
-    bid = agent.bid(_ctx("下一首"))
-    assert bid.confidence == 0.0
-    assert "stream_not_active" in bid.reason
+    bid = agent.bid(_ctx("下一首", stream_mode=False))
+    assert bid.confidence == 0.95
+
+
+def test_stream_mode_false_still_matches_stop():
+    """stop 指令在 stream_mode=False 時也應 match。"""
+    from intent_agents.playback_control_agent import PlaybackControlAgent
+    agent = PlaybackControlAgent(_ctrl(stream_mode=False))
+    bid = agent.bid(_ctx("停止播放", stream_mode=False))
+    assert bid.confidence == 0.95
 
 
 # ── Plan 12 TDD Tests ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_execute_plan12_skip():
-    """在 Plan 12 模式下，下一首/切歌指令應清除 mixer 音樂，而不呼叫 vc 的播放停止方法。"""
-    from unittest.mock import MagicMock
+    """skip 指令現委派 music_cog._safe_music_command(speaker, query, 'skip')。"""
+    from unittest.mock import MagicMock, AsyncMock
     from intent_agents.playback_control_agent import PlaybackControlAgent
-    
+
     ctrl = _ctrl()
-    ctrl._plan12 = True
-    ctrl._mixer = MagicMock()
-    
-    vc = MagicMock()
-    vc.is_connected = MagicMock(return_value=True)
+    mc_mock = MagicMock()
+    mc_mock._safe_music_command = AsyncMock()
     ctrl.bot = MagicMock()
-    ctrl.bot.voice_clients = [vc]
-    
+    ctrl.bot.cogs.get = MagicMock(return_value=mc_mock)
+
     agent = PlaybackControlAgent(ctrl)
-    
     bid = agent.bid(_ctx("下一首"))
     await bid.handler()
-    
-    # 應呼叫 mixer 的清除音樂方法
-    ctrl._mixer.clear_music.assert_called_once()
-    # vc 的停止方法不應被呼叫，避免 reconnect-loop 抵消
-    vc.stop_playing.assert_not_called()
-    vc.stop.assert_not_called()
+
+    mc_mock._safe_music_command.assert_awaited_once()
+    args = mc_mock._safe_music_command.call_args
+    assert args.args[2] == "skip"
 
 
 @pytest.mark.asyncio
 async def test_execute_plan12_stop():
-    """在 Plan 12 模式下，停止播放指令應清除 mixer 且清空佇列，但不呼叫 vc 的停止方法。"""
-    from unittest.mock import MagicMock
+    """stop 指令委派 music_cog._safe_music_command(speaker, query, 'stop')。"""
+    from unittest.mock import MagicMock, AsyncMock
     from intent_agents.playback_control_agent import PlaybackControlAgent
-    
+
     ctrl = _ctrl()
-    ctrl._plan12 = True
-    ctrl._mixer = MagicMock()
-    ctrl.stream_queue = [{"title": "Song A"}]
-    
-    vc = MagicMock()
-    vc.is_connected = MagicMock(return_value=True)
+    mc_mock = MagicMock()
+    mc_mock._safe_music_command = AsyncMock()
     ctrl.bot = MagicMock()
-    ctrl.bot.voice_clients = [vc]
-    
+    ctrl.bot.cogs.get = MagicMock(return_value=mc_mock)
+
     agent = PlaybackControlAgent(ctrl)
-    
     bid = agent.bid(_ctx("停止播放"))
     await bid.handler()
-    
-    ctrl._mixer.clear_music.assert_called_once()
-    assert ctrl.stream_queue == []
-    vc.stop.assert_not_called()
+
+    mc_mock._safe_music_command.assert_awaited_once()
+    args = mc_mock._safe_music_command.call_args
+    assert args.args[2] == "stop"
 
 
 @pytest.mark.asyncio
 async def test_execute_plan12_pause():
-    """在 Plan 12 模式下，暫停指令應設定 mixer 暫停並標記暫停狀態，而不呼叫 vc 的暫停方法。"""
-    from unittest.mock import MagicMock
+    """pause 指令委派 music_cog._safe_music_command(speaker, query, 'pause')。"""
+    from unittest.mock import MagicMock, AsyncMock
     from intent_agents.playback_control_agent import PlaybackControlAgent
-    
+
     ctrl = _ctrl()
-    ctrl._plan12 = True
-    ctrl._mixer = MagicMock()
-    ctrl.stream_paused = False
-    
-    vc = MagicMock()
-    vc.is_connected = MagicMock(return_value=True)
+    mc_mock = MagicMock()
+    mc_mock._safe_music_command = AsyncMock()
     ctrl.bot = MagicMock()
-    ctrl.bot.voice_clients = [vc]
-    
+    ctrl.bot.cogs.get = MagicMock(return_value=mc_mock)
+
     agent = PlaybackControlAgent(ctrl)
-    
-    bid = agent.bid(_ctx("暫停"))
+    bid = agent.bid(_ctx("暫停音樂"))
     await bid.handler()
-    
-    ctrl._mixer.set_paused.assert_called_once_with(True)
-    assert ctrl.stream_paused is True
-    vc.pause.assert_not_called()
+
+    mc_mock._safe_music_command.assert_awaited_once()
+    args = mc_mock._safe_music_command.call_args
+    assert args.args[2] == "pause"
 

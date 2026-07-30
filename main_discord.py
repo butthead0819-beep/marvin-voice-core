@@ -51,6 +51,14 @@ def setup_early_logging():
     # 沒跟著註冊，播放/推薦/去重 INFO 被吞 17 天（0 INFO vs 346 WARNING 實錘）。
     # 未來新 cog 自動繼承，不再逐一補名。
     logging.getLogger("cogs").setLevel(logging.INFO)
+    # 同一型坑第二次中鏢（2026-07-30）：intent_agents/*.py 泰半用
+    # `logging.getLogger(__name__)`（如 playback_control_agent → skip/stop/
+    # pause/resume 的 `[PlaybackControl] skip by ...` 執行結果、no_voice_client
+    # 早退）落在 "intent_agents" 家族，沒被上面的 cogs allowlist 涵蓋，INFO 全被
+    # root WARNING 吞掉——查 7/27「法文下一首」漏執行案才挖出：IntentBus 判定
+    # log 正常（掛在 cogs.voice_controller.intent_bus），但 agent 實際執行 log
+    # 整段歷史查無一筆。放行整個家族，跟 cogs 同套處理，避免逐一補名。
+    logging.getLogger("intent_agents").setLevel(logging.INFO)
     # 新頂層模組 logger 需顯式 INFO，否則吃 root WARNING、觀測 log 全被吞
     # （2026-07-02 教訓：AltRescue shadow 上線後沉默，其實是 logger 層級不是邏輯）
     logging.getLogger("alt_rescue").setLevel(logging.INFO)

@@ -1,13 +1,15 @@
-"""PlaybackControlAgent — Phase 1 M5: voice-driven 播放控制 + skip ack.
+"""PlaybackControlAgent — 播放控制的唯一責任人。
 
-對應 design doc Phase 1 M5（jackhuang-main-design-20260523-131453.md）:
-  - 強訊號（語音明示 skip/next/stop/pause）→ IntentBus 立刻切歌
-  - 切歌 quick ack「好，換」/「停了」/「暫停」(P5 parallel 嘴 v1 簡化版)
+2026-07-30 職責分離：MusicAgentV2 對应的 control_skip/pause/resume/stop
+移除，由此 agent 獨攀。
+
+功能：
+  - skip/stop/pause/resume 语音命令 → IntentBus 立刻回應（confidence=0.95）
+  - 切歌 quick ack TTS（好，換 / 停了 / 暫停 / 繼續）
   - skip 連 2 不同 speaker 同一 url → 自動加 cover blacklist (D3 A 方案)
 
-Phase 1 簡化: quick ack 用 既有 paid path (Marvin tier wrapper Phase 3 才動)。
-Phase 1 ack LLM 失敗 fallback 用 hardcoded 字串（D2 = A，TTS gen 一次就好；
-若 prerecorded audio 尚未產，play_tts 即時 gen 也 acceptable）。
+Phase 1 簡化: quick ack 用 既有 paid path。
+Phase 1 ack LLM 失敗 fallback 用 hardcoded 字串。
 """
 from __future__ import annotations
 
@@ -16,6 +18,9 @@ import logging
 from typing import Awaitable, Callable
 
 from intent_agents.base import DeclarativeIntentAgent, IntentSchema
+from intent_agents.constants import (
+    MUSIC_SKIP_KW, MUSIC_STOP_KW, MUSIC_PAUSE_KW, MUSIC_RESUME_KW,
+)
 from intent_bus import IntentContext
 
 logger = logging.getLogger(__name__)
@@ -64,45 +69,61 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
 
     def declare_intents(self) -> list[IntentSchema]:
         if self._intents_cache is None:
+            # 統一從 constants 取 keyword，與 MusicAgentV2 同源、不再各維各的
+            skip_pat = "|".join(MUSIC_SKIP_KW)
+            stop_pat = "|".join(MUSIC_STOP_KW)
+            pause_pat = "|".join(MUSIC_PAUSE_KW)
+            resume_pat = "|".join(MUSIC_RESUME_KW)
             self._intents_cache = [
                 IntentSchema(
-                    "skip_track", 0.85,
-                    patterns=[r"(下一首|切歌|換歌|跳過|next\s*song|skip)"],
+                    "skip_track", 0.95,
+                    patterns=[f"({skip_pat})"],
                     reason_template="skip:{matched}",
                 ),
+                # pause 必須在 stop 之前：「暂停音樂」含「停音樂」，若 stop 先就會被誤判
                 IntentSchema(
-                    "stop_playback", 0.85,
-                    patterns=[r"(停止播放|別播了|stop\s*play)"],
-                    reason_template="stop:{matched}",
-                ),
-                IntentSchema(
-                    "pause_playback", 0.80,
-                    patterns=[r"(暫停|pause)"],
+                    "pause_playback", 0.95,
+                    patterns=[f"({pause_pat})"],
                     reason_template="pause:{matched}",
                 ),
                 IntentSchema(
-                    "resume_playback", 0.80,
-                    patterns=[r"(繼續播|繼續音樂|播回來|resume)"],
+                    "stop_playback", 0.95,
+                    patterns=[f"({stop_pat})"],
+                    reason_template="stop:{matched}",
+                ),
+                IntentSchema(
+                    "resume_playback", 0.95,
+                    patterns=[f"({resume_pat})"],
                     reason_template="resume:{matched}",
                 ),
             ]
         return self._intents_cache
 
     def gate(self, ctx: IntentContext) -> str | None:
-        # 非 stream mode 沒歌可控 → 早退
-        if not getattr(self.ctrl, "stream_mode", False):
-            return "stream_not_active"
+        # stream_mode 検查已移除：music_cog._handle_voice_music_command 自己會判斷有沒歌在播。
+        # PlaybackControlAgent 不需要在 gate 這層再裁剪一次（過先會導致 stream_mode
+        # 剛歸位 False 時的指令被封鎖，發生失效 skip）。
         return None
 
     def post_match_filter(self, schema, slots, ctx) -> bool:
-        """議題 C (2026-05-27)：chat marker 出現在 keyword 之前 → 拒絕。
+        """FP 防護：
 
-        L19「應該下一首就是」/ L32「為什麼你下一首」這類 modal/question prefix
-        的 case 被誤判 control:skip 0.95。filter 只看 prefix（matched 之前的子字串），
-        避免複雜化；後續 J2 chat veto 接 prefix-less 的 case（如「下一首為什麼難聽」）。
+        skip_track：語氣詞/否定詞出現在關鍵字前方 → 拒絕。
+          - 底層由 is_short_skip_command 做位置+長度檢查（與 MusicAgentV2 同一邏輯）
+          - 議題 C prefix filter（應該/為什麼/幾/怒啊… 出現在關鍵字前）→ chat，拒絕
+
+        stop/pause/resume：僅議題 C prefix filter（同藏語關鍵字，但不需要位置檢查）。
         """
         text = ctx.query or ""
-        # base class 沒把 match span 傳進來，這裡重跑 regex 找 keyword 起始位置
+
+        if schema.name == "skip_track":
+            from intent_agents.skip_intent import is_short_skip_command
+            if not is_short_skip_command(text, MUSIC_SKIP_KW):
+                return False
+            # is_short_skip_command 已覆蓋位置+長度+否定，不需要再跟 prefix filter
+            return True
+
+        # stop/pause/resume：議題 C 的 chat marker prefix 檢查
         import re
         pos = -1
         for pat in schema.patterns:
@@ -128,7 +149,7 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
             # Phase 1 M5 P5 簡化版: ack + action 並行
             ack_text = _ACK_TEXT.get(intent, "好")
             ack_task = asyncio.create_task(self._quick_ack(ack_text))
-            action_task = asyncio.create_task(self._execute(intent, speaker))
+            action_task = asyncio.create_task(self._execute(intent, speaker, ctx.query))
             try:
                 await asyncio.gather(ack_task, action_task)
             except Exception:
@@ -151,31 +172,28 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
         except Exception:
             logger.exception("[PlaybackControl] quick ack 失敗，靜默")
 
-    async def _execute(self, intent: str, speaker: str) -> None:
-        """執行 action: skip / stop / pause。skip 觸發 blacklist auto-add 邏輯。"""
-        vc = self._voice_client()
-        if vc is None:
-            logger.warning(f"[PlaybackControl] {intent} no voice_client")
+    async def _execute(self, intent: str, speaker: str, query: str) -> None:
+        """委派 music_cog._safe_music_command 執行動作。
+
+        協倹 music_cog 的單一實作出口：
+          - dedup window、_record_song_skip、_current_song_skipped、_tail_dj_task取消都在內。
+          - PlaybackControlAgent 除了 quick ack TTS + auto-blacklist，從此不再自己操作播放層。
+        """
+        intent_to_cmd = {
+            "skip_track": "skip",
+            "stop_playback": "stop",
+            "pause_playback": "pause",
+            "resume_playback": "resume",
+        }
+        cmd = intent_to_cmd.get(intent)
+        if cmd is None:
+            logger.warning(f"[PlaybackControl] 未知 intent={intent}")
             return
 
-        _p12 = getattr(self.ctrl, "_plan12", False)
-        if not isinstance(_p12, bool):
-            _p12 = False
-        _p12 = _p12 and getattr(self.ctrl, "_mixer", None) is not None
-
-        if intent == "skip_track":
+        # skip 额外處理：auto-blacklist（D3 A 方案）
+        if cmd == "skip":
             current = getattr(self.ctrl, "_current_stream_info", None)
             current_url = current.get("url") if current else None
-
-            # video-id 進永久 skip 排除集（自動點播不再點此歌；與 IBA-T0 路徑共用）
-            rec = getattr(self.ctrl, "_record_song_skip", None)
-            if callable(rec):
-                try:
-                    rec()
-                except Exception:
-                    logger.exception("[PlaybackControl] _record_song_skip 失敗")
-
-            # blacklist auto-add 邏輯（D3 A 方案）：同一 url 被 ≥ 2 個不同 speaker skip → 黑名單
             if current_url:
                 tracker = getattr(self.ctrl, "_consecutive_skips_by_url", None)
                 if tracker is None:
@@ -185,54 +203,18 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
                 spk_set.add(speaker)
                 if len(spk_set) >= SKIP_BLACKLIST_THRESHOLD:
                     self._add_to_blacklist(current_url, current.get("title", ""), spk_set)
-                    # 清掉 tracker entry（已加黑名單、不重覆加）
                     tracker.pop(current_url, None)
 
-            try:
-                if _p12:
-                    self.ctrl._mixer.clear_music()
-                elif hasattr(vc, "stop"):
-                    vc.stop()
-                logger.info(f"[PlaybackControl] skip by {speaker} url={current_url} (plan12={_p12})")
-            except Exception:
-                logger.exception("[PlaybackControl] skip 動作失敗")
-
-        elif intent == "stop_playback":
-            try:
-                if _p12:
-                    self.ctrl._mixer.clear_music()
-                elif hasattr(vc, "stop"):
-                    vc.stop()
-                # 同步清空 queue，避免「停」後又自動播下一首
-                if hasattr(self.ctrl, "stream_queue"):
-                    self.ctrl.stream_queue.clear()
-                logger.info(f"[PlaybackControl] stop by {speaker} (plan12={_p12})")
-            except Exception:
-                logger.exception("[PlaybackControl] stop 動作失敗")
-
-        elif intent == "pause_playback":
-            try:
-                if _p12:
-                    self.ctrl._mixer.set_paused(True)
-                elif hasattr(vc, "pause"):
-                    vc.pause()
-                if hasattr(self.ctrl, "stream_paused"):
-                    self.ctrl.stream_paused = True
-                logger.info(f"[PlaybackControl] pause by {speaker} (plan12={_p12})")
-            except Exception:
-                logger.exception("[PlaybackControl] pause 動作失敗")
-
-        elif intent == "resume_playback":
-            try:
-                if _p12:
-                    self.ctrl._mixer.set_paused(False)
-                elif hasattr(vc, "resume"):
-                    vc.resume()
-                if hasattr(self.ctrl, "stream_paused"):
-                    self.ctrl.stream_paused = False
-                logger.info(f"[PlaybackControl] resume by {speaker} (plan12={_p12})")
-            except Exception:
-                logger.exception("[PlaybackControl] resume 動作失敗")
+        # 委派給 music_cog（包含 dedup、_record_song_skip、_tail_dj_task 取消等）
+        try:
+            bot = getattr(self.ctrl, "bot", None)
+            mc = bot.cogs.get("MusicCog") if bot else None
+            if mc is None:
+                logger.warning(f"[PlaybackControl] MusicCog 未載入，無法執行 {cmd}")
+                return
+            await mc._safe_music_command(speaker, query, cmd)
+        except Exception:
+            logger.exception(f"[PlaybackControl] 委派 {cmd} 失敗")
 
     def _voice_client(self):
         """從 ctrl 取當前 active voice_client；無則 None。"""

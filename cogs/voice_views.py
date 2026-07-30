@@ -105,12 +105,21 @@ class PlayControlView(discord.ui.View):
             pass
 
     def _skip_current(self, vc):
-        """跳歌：先發 quick ack 讓使用者立刻知道指令收到（消除等 buffer 存滿的空白感），
-        Plan 12 清 mixer 音樂層（_mixer_play_music 結束→播下一首）；舊路徑停 vc。"""
+        """跳歌：先播 quick ack，再委派 MusicCog _safe_music_command 走 Seamless Skip 無縫預載轉場流程。"""
         c = self.controller
         play_tts = getattr(c, "play_tts", None)
         if play_tts is not None:
             asyncio.create_task(self._quick_skip_ack(play_tts))
+        bot = getattr(c, "bot", None)
+        mc = bot.cogs.get("MusicCog") if bot else None
+        if mc is not None and hasattr(mc, "_safe_music_command"):
+            try:
+                res = mc._safe_music_command("control_panel", "", "skip")
+                if asyncio.iscoroutine(res):
+                    asyncio.create_task(res)
+                    return
+            except Exception:
+                pass
         if getattr(c, "_plan12", False) and getattr(c, "_mixer", None) is not None:
             c._mixer.clear_music()
         elif vc and vc.is_playing():

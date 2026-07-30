@@ -20,13 +20,19 @@ class _BareCtrl:
 
 
 def test_declare_intents_does_not_read_ctrl_keywords():
+    """2026-07-30 職責分離：control_* 已移至 PlaybackControlAgent，
+    MusicAgentV2 的 declare_intents 不再包含 control_skip/pause/resume/stop。
+    同時驗證仍不需要 ctrl 上的 _MUSIC_*_KW（BareCtrl 不報 AttributeError）。
+    """
     agent = MusicAgentV2(_BareCtrl())
     intents = agent.declare_intents()
     names = [i.name for i in intents]
-    assert "control_skip" in names
-    assert "control_pause" in names
-    assert "control_resume" in names
-    assert "control_stop" in names
+    # control_* 應已移除
+    assert "control_skip" not in names
+    assert "control_pause" not in names
+    assert "control_resume" not in names
+    assert "control_stop" not in names
+    # play 類仍在
     assert "strong_play" in names
     assert "weak_play_with_marker" in names
     assert "weak_play_long_string" in names

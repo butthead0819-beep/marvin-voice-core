@@ -6,16 +6,17 @@ Behavior parity goal vs v1：
   - dense bid 0.0 + reason 是 v2 新增（v1 是 None），驗證 negative space 表達
 
 Schema priority order（declare 順序 = first-match-wins，與 confidence 解耦）：
-  1. control_skip / control_pause / control_resume / control_stop (0.95)
-  2. strong_play (0.95)
-  3. weak_play_directional (0.50, missing=["directional_resolution"])  ← 抽象修飾先攔
-  4. weak_play_specific (0.95, no missing)                            ← artist的song≥2字
-  5. weak_play_with_marker (0.80)
-  6. weak_play_artist_only (0.85, missing=["song_choice"])            ← CURATION
-  7. weak_play_long_string (0.55, missing=["song_title"])
+  1. strong_play (0.95)
+  2. weak_play_directional (0.50, missing=["directional_resolution"])  ← 抽象修飾先攔
+  3. weak_play_specific (0.95, no missing)                            ← artist的song≥2字
+  4. weak_play_with_marker (0.80)
+  5. weak_play_artist_only (0.85, missing=["song_choice"])            ← CURATION
+  6. weak_play_long_string (0.55, missing=["song_title"])
 
 3/4/6 是 5/21 vector intent 三檔分流新增；對 v1（MusicAgent）刻意 diverge，
 parity validator Gate 1 預期 fail（見 memory/project_vector_intent_5_21.md）。
+
+2026-07-30：control_skip/pause/resume/stop 移至 PlaybackControlAgent（職責分離）。
 """
 from __future__ import annotations
 
@@ -24,10 +25,6 @@ from collections import Counter
 
 from intent_agents.base import DeclarativeIntentAgent, IntentSchema
 from intent_agents.constants import (
-    MUSIC_PAUSE_KW,
-    MUSIC_RESUME_KW,
-    MUSIC_SKIP_KW,
-    MUSIC_STOP_KW,
     STRONG_PLAY_KW,
     WEAK_PLAY_KW,
 )
@@ -111,10 +108,6 @@ class MusicAgentV2(DeclarativeIntentAgent):
         if self._intents_cache is not None:
             return self._intents_cache
 
-        skip_kws = _kw_alt(MUSIC_SKIP_KW)
-        pause_kws = _kw_alt(MUSIC_PAUSE_KW)
-        resume_kws = _kw_alt(MUSIC_RESUME_KW)
-        stop_kws = _kw_alt(MUSIC_STOP_KW)
         strong_kws = _kw_alt(STRONG_PLAY_KW)
         weak_kws = _kw_alt(WEAK_PLAY_KW)
         markers = _kw_alt(_MUSIC_INTENT_MARKERS)
@@ -124,20 +117,8 @@ class MusicAgentV2(DeclarativeIntentAgent):
         # Vector intent 三檔分流（priority 與 confidence 刻意解耦，靠 declare 順序）：
         #   directional(0.50) 先攔 → specific(0.95) → with_marker(0.80) → artist_only(0.85) → long_string(0.55)
         # directional 必須最先：「播放周杰倫符合我年紀的歌」同時含「的」與 artist，但要判 directional。
+        # 注意：控制指令（skip/pause/resume/stop）已移至 PlaybackControlAgent（2026-07-30）。
         self._intents_cache = [
-            # Control intents — priority order matches v1 (skip → pause → resume → stop)
-            IntentSchema("control_skip", 0.95,
-                         patterns=[f"(?P<kw>{skip_kws})"],
-                         reason_template="control:skip"),
-            IntentSchema("control_pause", 0.95,
-                         patterns=[f"(?P<kw>{pause_kws})"],
-                         reason_template="control:pause"),
-            IntentSchema("control_resume", 0.95,
-                         patterns=[f"(?P<kw>{resume_kws})"],
-                         reason_template="control:resume"),
-            IntentSchema("control_stop", 0.95,
-                         patterns=[f"(?P<kw>{stop_kws})"],
-                         reason_template="control:stop"),
             # Strong play — kw 命中即 0.95
             IntentSchema("strong_play", 0.95,
                          patterns=[f"(?P<kw>{strong_kws})"],
@@ -184,14 +165,6 @@ class MusicAgentV2(DeclarativeIntentAgent):
     # ── Post-match filter (NON_MUSIC_TARGETS blocklist) ──────────────────────
 
     def post_match_filter(self, schema, slots, ctx):
-        # control_skip：regex 只是 substring 命中，還要過 is_short_skip_command 位置/長度檢查
-        # 避免「為什麼你下一首」「不喜歡下一首歌」這類閒聊誤觸發（2026-05-26 bug）
-        if schema.name == "control_skip":
-            from intent_agents.skip_intent import is_short_skip_command
-            from intent_agents.constants import MUSIC_SKIP_KW
-            if not is_short_skip_command(ctx.query or "", MUSIC_SKIP_KW):
-                return False
-            return True
         # 議題 D (2026-05-27)：weak_play_specific 的 song slot 也要過非音樂名詞 blocklist
         # （之前漏擋導致 L48「幫我找...線上網站」誤命中 0.95）。
         if schema.name == "weak_play_specific":
@@ -216,12 +189,7 @@ class MusicAgentV2(DeclarativeIntentAgent):
 
     def make_handler(self, schema, slots, ctx):
         # Map schema → controller call (parity with v1 handlers)
-        if schema.name.startswith("control_"):
-            cmd = schema.name.split("_", 1)[1]
-            async def _control():
-                await self.ctrl._safe_music_command(ctx.speaker, ctx.query, cmd)
-            return _control
-
+        # 注意：control_* 已移至 PlaybackControlAgent（2026-07-30），不再出現於此。
         if schema.name == "weak_play_long_string":
             # missing song_title → ask follow-up (Alexa CanFulfillIntent pattern)
             async def _ask():

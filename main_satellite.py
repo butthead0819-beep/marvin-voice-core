@@ -469,12 +469,13 @@ HUD_HTML = """<!DOCTYPE html>
   .card.focused .vqcover{ width:7.6cqh; height:7.6cqh; }
   .card.focused .vqt{ font-size:4cqh; }
   .card.focused .vqb{ font-size:3cqh; }
-  /* Marvin 卡被點開聚焦時：保持 Marvin 頭部 1:1 不被擠壓，標題文字放大 (11.5cqh) */
-  .card.focused.mcard .mrow{ gap:4cqh; }
-  .card.focused.mcard .mrow .mvhead{ flex:0 0 auto; height:100%; aspect-ratio:1/1; }
+  /* Marvin 卡被點開聚焦時：確保 Marvin 頭部 min-width 與 align-self:stretch 保護，絕不塌陷 */
+  .card.focused.mcard .mrow{ gap:4cqh; align-items:stretch; }
+  .card.focused.mcard .mrow .mvhead{ flex:0 0 auto; height:100%; min-width:30cqh; aspect-ratio:1/1; align-self:stretch; }
   .card.focused.mcard .mtext{ flex:1 1 0; min-width:0; padding-left:1cqh; }
   .card.focused.mcard .mtext .title{ font-size:11.5cqh; line-height:1.15; }
   .card.focused.mcard .mtext .sub{ font-size:4.8cqh; line-height:1.3; }
+
 
 
   .exhint{ position:absolute; left:3cqh; bottom:1.2cqh; font-family:var(--mono); font-size:3cqh; color:rgba(var(--marvin),.85); z-index:5; }

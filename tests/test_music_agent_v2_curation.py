@@ -150,8 +150,9 @@ def test_strong_play_still_095():
     assert bid.missing_slots == []
 
 
-def test_control_skip_still_095():
-    """「換一首」仍是 control 0.95（控制詞優先序最高，不被 directional 干擾）。"""
+def test_control_skip_no_longer_in_v2():
+    """控制指令已移至 PlaybackControlAgent（2026-07-30），
+    MusicAgentV2 對「換一首」應回 0.0（not found）。
+    實際 bid 由 playback_control 以 0.95 勝出。"""
     bid = _agent().bid(_ctx("換一首"))
-    assert bid.confidence == 0.95
-    assert bid.missing_slots == []
+    assert bid.confidence == 0.0
