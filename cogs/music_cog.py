@@ -2363,17 +2363,23 @@ class MusicCog(commands.Cog):
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
 
+    def _dj_mix_volume(self, url: str) -> float:
+        """DJ Mix 分支的音樂音量＝使用者音量 × 這首歌的響度校正常數增益（跟非 DJ 分支同一套
+        _stream_norm_gain，未量測完成前退回 1.0，不擋播放）。2026-07-30：取代原本 ffmpeg
+        自己的 single-pass loudnorm filter——準度不夠，「二十二」這類歌明顯偏小聲。"""
+        return self.stream_volume * self._stream_norm_gain.get(url, 1.0)
+
     def _build_dj_mix_s16_source(self, url: str, dj_audio_path: str):
         """DJ Mix 混音 filter_complex 音源建構。play_stream_song 現場播放／preload 共用
         同一份，避免兩邊 filter graph 各修各的分岔。"""
         import shlex
-        vol = self.stream_volume
+        vol = self._dj_mix_volume(url)
         djv = self._DJ_INTERJECTION_VOLUME
         fc = (
             f"[0:a]asplit=2[dj_sc][dj_mix];"
             f"[dj_sc]apad=whole_dur=9999[dj_pad];"
             f"[dj_mix]volume={djv:.3f}[dj_q];"  # DJ 播報降到 30%，不蓋過音樂
-            f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,volume={vol:.3f}[music];"
+            f"[1:a]volume={vol:.3f}[music];"
             f"[music][dj_pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
             f"[ducked][dj_q]amix=inputs=2:duration=longest:normalize=0[out]"
         )
@@ -2420,11 +2426,16 @@ class MusicCog(commands.Cog):
         self._preload_music_cache[url] = asyncio.create_task(_do())
 
     async def _preload_next_music(self, info: dict) -> None:
-        """一開播就搶跑（但先錯開，見 _PRELOAD_STAGGER_S）：跟 DJ Tail 共用同一個
-        _resolve_tail_dj_meta 拿下一首 DJ 音檔（有就連 DJ Mix 版一起 preload，沒有就退回
-        純音樂 preload）。manual skip 不像 DJ Tail 能提前 5s 預告，只能靠一開播就起跑爭取
-        最長的解碼時間窗。"""
+        """一開播就搶跑（但先錯開，見 _PRELOAD_STAGGER_S）：先量響度校正增益（見
+        _measure_norm_gain_bg，DJ Mix 分支也靠這個而非 ffmpeg 內建 loudnorm），量完才做
+        跟 DJ Tail 共用的 _resolve_tail_dj_meta 拿下一首 DJ 音檔（有就連 DJ Mix 版一起
+        preload，沒有就退回純音樂 preload）。量測跟 preload 解碼都是對同一個 url 的網路
+        抓取，故意序列化不同時搶頻寬。manual skip 不像 DJ Tail 能提前 5s 預告，只能靠
+        一開播就起跑爭取最長的時間窗。"""
         await asyncio.sleep(_PRELOAD_STAGGER_S)
+        url = info.get('url', '')
+        if url and url not in self._stream_norm_gain:
+            await self._measure_norm_gain_bg(url, info=info)
         dj_meta = await self._resolve_tail_dj_meta(info)
         dj_audio_path = dj_meta.get('audio_path') if isinstance(dj_meta, dict) else None
         self._start_music_preload(info, dj_audio_path=dj_audio_path)
@@ -2565,13 +2576,18 @@ class MusicCog(commands.Cog):
             pass
         return 3.0
 
-    async def _measure_norm_gain_bg(self, url: str):
+    async def _measure_norm_gain_bg(self, url: str, info: dict | None = None):
         """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存 _stream_norm_gain[url]。
 
         順便在同一趟 ffmpeg（同取樣點、同一個 process 兩個輸出：ebur128→null 給
         stderr 響度統計、raw f32le mono→stdout 給 BPM 估算）取 PCM 估 BPM，落地存
         records/song_bpm.json（見 bpm_estimate.py）——BPM 分析不擋、不影響既有響度
-        正規化行為，失敗只是沒存到 BPM。"""
+        正規化行為，失敗只是沒存到 BPM。
+
+        info：明確指定要量測哪首歌的 metadata（duration/webpage_url）。不給就退回
+        self._current_stream_info（原本 play_stream_song 內呼叫時，url 就是當下播放曲，
+        兩者相同）；_preload_next_music 幫『下一首』(還沒成為 current) 提前量測時必須
+        明確傳，否則會誤用目前正在播的別首歌的 duration。"""
         if url in self._stream_norm_gain:
             return
         import numpy as np
@@ -2580,7 +2596,7 @@ class MusicCog(commands.Cog):
         from loudness_norm import (
             sample_positions, parse_ebur128_integrated, average_lufs, compute_loudness_gain,
         )
-        info = self._current_stream_info or {}
+        info = info if info is not None else (self._current_stream_info or {})
         duration = float(info.get("duration") or 0)
         lufs_vals: list[float | None] = []
         bpm_vals: list[float | None] = []

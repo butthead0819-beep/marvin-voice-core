@@ -25,8 +25,14 @@ import pytest
 from cogs.music_cog import MusicCog, _PRELOAD_STAGGER_S
 
 
+async def _noop_measure(*_a, **_k):
+    return None
+
+
 def _fake_self():
-    return SimpleNamespace(_preload_music_cache={})
+    return SimpleNamespace(_preload_music_cache={}, _stream_norm_gain={},
+                           stream_volume=1.0, _DJ_INTERJECTION_VOLUME=0.3,
+                           _measure_norm_gain_bg=_noop_measure)
 
 
 # ── _start_music_preload：cache 記帳 ────────────────────────────────────────
@@ -196,12 +202,17 @@ async def test_preload_next_music_staggers_before_heavy_work(monkeypatch):
         calls.append(("resolve", info))
         return None
 
+    async def _fake_measure(url, info=None):
+        calls.append(("measure", url, info))
+
     me._resolve_tail_dj_meta = _fake_resolve
+    me._measure_norm_gain_bg = _fake_measure
     me._start_music_preload = lambda info, dj_audio_path=None: calls.append(("start", dj_audio_path))
     monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
     await MusicCog._preload_next_music(me, {"url": "https://ex/a"})
     assert calls == [
         ("sleep", _PRELOAD_STAGGER_S),
+        ("measure", "https://ex/a", {"url": "https://ex/a"}),
         ("resolve", {"url": "https://ex/a"}),
         ("start", None),
     ]
@@ -209,6 +220,75 @@ async def test_preload_next_music_staggers_before_heavy_work(monkeypatch):
 
 async def _instant_sleep(_secs):
     return None
+
+
+# ── DJ Mix 分支接上跟非 DJ 分支同一套 autogain ──────────────────────────────
+# 背景（2026-07-30 實測回歸）：DJ Mix 分支（下一首有開場白）從沒套用過
+# _measure_norm_gain_bg/_stream_norm_gain 這套響度校正，只靠 ffmpeg 自己的
+# single-pass loudnorm filter，準度不夠導致「二十二」這類歌明顯偏小聲。改用
+# 跟非 DJ 分支一樣的預先量測常數增益，取代 ffmpeg 內建 loudnorm。
+
+@pytest.mark.asyncio
+async def test_preload_next_music_skips_measure_when_already_measured(monkeypatch):
+    me = _fake_self()
+    me._stream_norm_gain = {"https://ex/a": 1.5}
+    calls = []
+
+    async def _fake_sleep(_secs):
+        calls.append("sleep")
+
+    async def _fake_measure(*a, **k):
+        calls.append("measure")
+
+    async def _fake_resolve(info):
+        return None
+
+    me._measure_norm_gain_bg = _fake_measure
+    me._resolve_tail_dj_meta = _fake_resolve
+    me._start_music_preload = lambda info, dj_audio_path=None: None
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    await MusicCog._preload_next_music(me, {"url": "https://ex/a"})
+    assert "measure" not in calls   # 已經量過，別重量
+
+
+def test_dj_mix_volume_uses_measured_gain_when_available():
+    me = _fake_self()
+    me.stream_volume = 0.5
+    me._stream_norm_gain = {"https://ex/a": 2.0}
+    assert MusicCog._dj_mix_volume(me, "https://ex/a") == 1.0
+
+
+def test_dj_mix_volume_defaults_to_one_when_unmeasured():
+    me = _fake_self()
+    me.stream_volume = 0.5
+    me._stream_norm_gain = {}
+    assert MusicCog._dj_mix_volume(me, "https://ex/a") == 0.5
+
+
+@pytest.mark.asyncio
+async def test_measure_norm_gain_bg_uses_explicit_info_over_current_stream_info(monkeypatch):
+    """_preload_next_music 幫『下一首』(尚未成為 current) 量測時，不能誤用
+    self._current_stream_info（那是現在正在播的別首歌）的 duration，否則
+    sample_positions 算出來的取樣點對不上這首歌實際長度。"""
+    me = _fake_self()
+    me._current_stream_info = {"duration": 999}   # 別首歌，若誤用會用錯 duration
+    calls = []
+
+    class _FakeProc:
+        async def communicate(self):
+            return b"", b""
+
+    async def _fake_exec(*args, **kwargs):
+        calls.append(args)
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    await MusicCog._measure_norm_gain_bg(
+        me, "https://ex/next", info={"duration": 60, "webpage_url": "https://ex/next"})
+    assert calls   # 有嘗試量測
+    ss_values = [float(a[a.index("-ss") + 1]) for a in calls]
+    # duration=60 的取樣點必定 < 60；若誤用 999 會算出 >= 250 的位置
+    assert all(v < 60 for v in ss_values)
 
 
 async def _async_return(value):
