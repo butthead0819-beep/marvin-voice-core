@@ -378,6 +378,9 @@ class RealtimeVADSink(voice_recv.AudioSink):
             elif self.debug_audio_packets and self.packet_count % 100 == 0:
                 print(f"📡 [Sink] DAVE Session 尚未就緒 (Session: {dave_session}, Ready: {getattr(dave_session, 'ready', 'N/A')})，嘗試透傳解碼 (Packet: {self.packet_count})", flush=True)
 
+            if len(final_opus) < 2:
+                return
+
             self.last_decrypted_audio_time = time.time() # 🛡️ [Heartbeat] 到達此處代表解密成功或無需解密
 
             # 4. 手動 Opus 解碼為 PCM
@@ -385,8 +388,15 @@ class RealtimeVADSink(voice_recv.AudioSink):
                 print(f"🎹 [Sink] 為使用者 {user.name} 建立新的 Opus Decoder (48k Stereo)", flush=True)
                 self.decoders[user_id] = discord.opus.Decoder()
             
-            # Decoder.decode 會回報 4k Stereo 16-bit PCM (每 20ms 一幀)
-            pcm_bytes = self.decoders[user_id].decode(final_opus)
+            # Decoder.decode 會回報 48k Stereo 16-bit PCM (每 20ms 一幀)
+            try:
+                pcm_bytes = self.decoders[user_id].decode(final_opus)
+            except Exception as e:
+                # 🎹 [Opus Decoder Self-Healing] 解碼失敗時剔除舊 Decoder，避免 C libopus 狀態腐敗引發 SIGABRT (silk/resampler.c)
+                if self.packet_count % 50 == 0:
+                    print(f"⚠️ [Sink Opus Decode Error] User_{user_id}: {e}", flush=True)
+                self.decoders.pop(user_id, None)
+                return
 
             if self.packet_count == 1:
                 # DAVE 此時可能 ready 也可能 passthrough；只 log 「收到第一筆有效封包」

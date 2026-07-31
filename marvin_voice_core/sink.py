@@ -83,11 +83,19 @@ class RealtimeVADSink(voice_recv.AudioSink):
             elif self.packet_count % 100 == 0 and dave_session:
                  print(f"📡 [Core_Sink] DAVE Session 尚未就緒，嘗試透傳 (Packet: {self.packet_count})", flush=True)
 
+            if len(final_opus) < 2:
+                return
+
             if user_id not in self.decoders:
                 print(f"🎹 [Core_Sink] 為使用者 {user.name} 建立新的 Opus Decoder", flush=True)
                 self.decoders[user_id] = discord.opus.Decoder()
             
-            pcm_bytes = self.decoders[user_id].decode(final_opus)
+            try:
+                pcm_bytes = self.decoders[user_id].decode(final_opus)
+            except Exception as e:
+                # 🎹 [Opus Decoder Self-Healing] 解碼失敗時剔除舊 Decoder，避免 C libopus 狀態腐敗引發 SIGABRT (silk/resampler.c)
+                self.decoders.pop(user_id, None)
+                return
 
             if user_id not in self.user_buffers:
                 self.user_buffers[user_id] = bytearray()
