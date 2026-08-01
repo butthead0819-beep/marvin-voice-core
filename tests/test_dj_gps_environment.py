@@ -1,6 +1,11 @@
 """TDD: DJ 環境行城市名接上 GPS 訊號（gps_context.city_label）。
 
 沒有新鮮 GPS 訊號 → 退回家裡預設「台中」；車上 ESP32 puck 有新鮮訊號 → 用真實區名。
+
+環境行現在只在本地 mode 選擇器選中 "atmosphere" 時才進 ctx（不再無條件塞入，
+見 dj_topic_selector.select_mode）。這兩個測試把 life/interest/conversation/
+prev_song 都清空，讓 fallback 落在候選序列第一位的 atmosphere（全新 store，
+沒有 last_fallback 紀錄時就是排第一的那個）。
 """
 from __future__ import annotations
 
@@ -52,6 +57,7 @@ async def test_no_gps_signal_falls_back_to_taichung(monkeypatch):
     import location_state
     monkeypatch.setattr(location_state, "load_location_state", lambda *a, **kw: None)
     cog = _make_cog()
+    cog._life_cores = MagicMock(return_value=[])
     await cog._fetch_dj_interjection_raw(_info())
     ctx = _ctx_str(cog)
     assert "台中" in ctx
@@ -66,6 +72,7 @@ async def test_fresh_car_gps_overrides_city_in_environment_line(monkeypatch):
         lambda *a, **kw: {"lat": 25.0693, "lon": 121.5885, "ts": now},
     )
     cog = _make_cog()
+    cog._life_cores = MagicMock(return_value=[])
     await cog._fetch_dj_interjection_raw(_info())
     ctx = _ctx_str(cog)
     assert "內湖區" in ctx

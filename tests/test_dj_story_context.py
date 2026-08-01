@@ -105,8 +105,14 @@ async def test_context_no_previous_song_when_history_empty():
 
 @pytest.mark.asyncio
 async def test_context_includes_environment_city_and_season():
-    """context 帶環境行：城市（無 GPS 訊號時退回家裡預設台中）+ 季節（春/夏/秋/冬其一）。"""
+    """context 帶環境行：城市（無 GPS 訊號時退回家裡預設台中）+ 季節（春/夏/秋/冬其一）。
+
+    環境行現在只在本地 mode 選擇器選中 "atmosphere" 時才進 ctx（見
+    dj_topic_selector.select_mode）。清空 life_cores，讓全新 store 落在
+    候選序列第一位的 atmosphere。
+    """
     cog = _make_cog()
+    cog._life_cores = MagicMock(return_value=[])
     await cog._fetch_dj_interjection_raw(_info())
     ctx = _ctx_str(cog)
     assert "台中" in ctx, f"context 應含城市: {ctx!r}"

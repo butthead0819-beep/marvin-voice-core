@@ -88,7 +88,7 @@ def test_life_cores_passes_present_speakers_to_recent_life_cores():
     bot.cogs.get.return_value = None
     cog = MusicCog(bot)
 
-    with patch("dj_life_context.recent_life_cores") as mock_rlc:
+    with patch("dj_life_context.recent_life_cores_with_speakers") as mock_rlc:
         mock_rlc.return_value = []
         cog._life_cores([], now=1.0, present_speakers={"大肚"})
         _, kwargs = mock_rlc.call_args

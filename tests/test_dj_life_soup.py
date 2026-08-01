@@ -157,6 +157,25 @@ async def test_human_context_includes_recent_life():
 
 
 @pytest.mark.asyncio
+async def test_life_mode_carries_empathy_hook_instruction():
+    """life mode → ctx 帶『這根本在講你』的代入感開場鉤子提示。"""
+    cog = _make_cog(life_cores=["大肚在準備搬家"])
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "代入感" in ctx and "開場鉤子" in ctx
+
+
+@pytest.mark.asyncio
+async def test_atmosphere_mode_carries_env_line_and_hook_instruction():
+    """atmosphere mode（無 life/interest/對話/上一首）→ ctx 帶環境行 + 氛圍開場鉤子提示。"""
+    cog = _make_cog(life_cores=[])
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "環境：" in ctx
+    assert "開場鉤子" in ctx and "時間/地點" in ctx
+
+
+@pytest.mark.asyncio
 async def test_interest_fallback_when_no_life_material():
     """沒有『最近生活』時 → 退而查在場興趣（suki_memory.get_recent_liked_items）當話題。"""
     cog = _make_cog(life_cores=[])
@@ -174,24 +193,30 @@ async def test_interest_fallback_when_no_life_material():
 
 @pytest.mark.asyncio
 async def test_no_topic_block_when_neither_life_nor_interest_available():
-    """兩種話題都沒有 → 不硬塞任何話題行，純過場交給 prompt 規則3。"""
+    """兩種話題、對話、上一首都沒有 → fallback 落到 quick 時走本地模板，不呼叫 LLM。
+
+    fallback 候選只剩 atmosphere/quick 輪替，全新 store 第一次選 atmosphere
+    （仍會呼叫 LLM，只是不含最近生活/在場興趣）；把 atmosphere 標成剛用過，
+    逼下一次輪到 quick 才能驗證「真的沒素材時完全跳過 LLM」。
+    """
     cog = _make_cog(life_cores=[])
     fake_vc = MagicMock()
     fake_vc.get_online_members = MagicMock(return_value=[])
     cog._vc = MagicMock(return_value=fake_vc)
-    await cog._fetch_dj_interjection_raw(_info())
-    ctx = _ctx_str(cog)
-    assert "最近生活" not in ctx
-    assert "在場興趣" not in ctx
+    cog._dj_topic_cooldown_store.set_last_fallback("atmosphere")
+    dj = await cog._fetch_dj_interjection_raw(_info())
+    cog.bot.router.generate_dynamic_system_msg.assert_not_awaited()
+    assert dj is not None and len(dj["text"]) >= 2
 
 
 @pytest.mark.asyncio
 async def test_context_has_no_life_line_when_no_material():
-    """沒有生活素材 → 不硬塞空行（別讓 LLM 對著空標題編故事）。"""
+    """沒有任何素材、輪到 quick → 落到本地模板，不呼叫 LLM（不會對著空標題編故事）。"""
     cog = _make_cog(life_cores=[])
-    await cog._fetch_dj_interjection_raw(_info())
-    ctx = _ctx_str(cog)
-    assert "最近生活" not in ctx, f"無素材時不該有生活行: {ctx!r}"
+    cog._dj_topic_cooldown_store.set_last_fallback("atmosphere")
+    dj = await cog._fetch_dj_interjection_raw(_info())
+    cog.bot.router.generate_dynamic_system_msg.assert_not_awaited()
+    assert dj is not None and len(dj["text"]) >= 2
 
 
 # ── 3. autopilot 走 LLM 雞湯（不再是純模板）───────────────────────────────

@@ -12,12 +12,26 @@ is_sensitive=True 且 present_speakers 未知時（None）一律丟掉（保守�
 from __future__ import annotations
 
 import datetime as _dt
+from dataclasses import dataclass
 
 DEFAULT_DAYS = 3.0
 DEFAULT_MAX_CORES = 3      # 每則 DJ 只需要幾顆料；餵多了是白燒 token
 DEFAULT_MAX_LEN = 40       # 單句上限，長摘要截斷
 
 _SENTINEL = object()       # 區分「呼叫端未傳 present_speakers」與「明確傳 None」
+
+
+@dataclass(frozen=True)
+class LifeCore:
+    """生活素材：文字 + 語義 tag + 事件主角。
+
+    speakers 給上層（dj_topic_selector.select_mode）判斷「這件事的主角現在在不在場」，
+    跟 privacy filter（是否安全提及）是兩件事——後者在本模組內已處理，speakers 只是
+    原樣帶出去讓呼叫端自己決定要不要用。
+    """
+    text: str
+    meme_id: str = ""
+    speakers: tuple[str, ...] = ()
 
 
 
@@ -68,6 +82,47 @@ def _is_privacy_safe(
 
 
 
+def _build_life_cores(
+    summary_entries,
+    *,
+    now: float,
+    days: float,
+    max_cores: int,
+    max_len: int,
+    present_speakers,
+) -> list[LifeCore]:
+    do_filter = present_speakers is not _SENTINEL
+    effective_speakers = present_speakers if do_filter else None
+
+    cutoff = now - days * 86400.0
+    cores: list[LifeCore] = []
+    for e in summary_entries:
+        ts_str, core, salience = _fields(e)
+        if not core or not str(core).strip():
+            continue
+        if str(salience).strip() == "低":
+            continue
+        try:
+            ts = _dt.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").timestamp()
+        except (ValueError, TypeError):
+            continue
+        if ts < cutoff:
+            continue
+        # Privacy filter（只在 do_filter=True 時觸發）
+        if do_filter and not _is_privacy_safe(e, effective_speakers):
+            continue
+        c = str(core).strip()[:max_len]
+        label = f"【重點】{c}" if str(salience).strip() == "高" else c
+        raw_meme = getattr(e, "meme_id", "")
+        # 只接受真正的 str，防止 MagicMock 等非字串被誤判為有效 meme_id/speakers
+        meme_id = raw_meme.strip() if isinstance(raw_meme, str) else ""
+        raw_speakers = getattr(e, "speakers", None)
+        speakers = tuple(raw_speakers) if isinstance(raw_speakers, (list, tuple)) else ()
+        cores.append(LifeCore(label, meme_id, speakers))
+
+    return cores[-max_cores:]
+
+
 def recent_life_cores(
     summary_entries,
     *,
@@ -89,33 +144,32 @@ def recent_life_cores(
             本函式的 Sentinel 不觸發此規則；但若呼叫端明確傳 None，
             _is_privacy_safe 會視為「在場人未知」→ 丟掉敏感事件。
           * entry.participants 不是 None → 需為 present_speakers 子集。
+
+    回傳純字串/`(text, meme_id)`——不帶 speakers。需要主角資訊（判斷是否在場）
+    的呼叫端請改用 recent_life_cores_with_speakers。
     """
-    # _SENTINEL 表示「呼叫端沒有傳 present_speakers」→ 完全不過濾（向後相容）
-    do_filter = present_speakers is not _SENTINEL
-    effective_speakers = present_speakers if do_filter else None
+    cores = _build_life_cores(
+        summary_entries, now=now, days=days, max_cores=max_cores,
+        max_len=max_len, present_speakers=present_speakers,
+    )
+    return [(c.text, c.meme_id) if c.meme_id else c.text for c in cores]
 
-    cutoff = now - days * 86400.0
-    cores: list[str | tuple[str, str]] = []
-    for e in summary_entries:
-        ts_str, core, salience = _fields(e)
-        if not core or not str(core).strip():
-            continue
-        if str(salience).strip() == "低":
-            continue
-        try:
-            ts = _dt.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").timestamp()
-        except (ValueError, TypeError):
-            continue
-        if ts < cutoff:
-            continue
-        # Privacy filter（只在 do_filter=True 時觸發）
-        if do_filter and not _is_privacy_safe(e, effective_speakers):
-            continue
-        c = str(core).strip()[:max_len]
-        label = f"【重點】{c}" if str(salience).strip() == "高" else c
-        raw_meme = getattr(e, "meme_id", "")
-        # 只接受真正的 str，防止 MagicMock 等非字串被誤判為有效 meme_id
-        meme_id = raw_meme.strip() if isinstance(raw_meme, str) else ""
-        cores.append((label, meme_id) if meme_id else label)
 
-    return cores[-max_cores:]
+def recent_life_cores_with_speakers(
+    summary_entries,
+    *,
+    now: float,
+    days: float = DEFAULT_DAYS,
+    max_cores: int = DEFAULT_MAX_CORES,
+    max_len: int = DEFAULT_MAX_LEN,
+    present_speakers: set[str] | None = _SENTINEL,
+) -> list[LifeCore]:
+    """同 recent_life_cores，但保留每條素材的事件主角（entry.speakers）。
+
+    給 dj_topic_selector.select_mode 用：主角現在不在頻道裡的生活素材，
+    上層可以直接跳過換下一個候選，不用讓 LLM 去猜「這件事是不是點播者的」。
+    """
+    return _build_life_cores(
+        summary_entries, now=now, days=days, max_cores=max_cores,
+        max_len=max_len, present_speakers=present_speakers,
+    )

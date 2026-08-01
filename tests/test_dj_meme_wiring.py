@@ -120,8 +120,9 @@ def test_recent_life_cores_returns_str_without_meme_id():
 # ── 4. music_cog._life_cores 回 tuple list（透過 recent_life_cores）────────────
 
 def test_life_cores_passes_through_tuples():
-    """_life_cores 把 recent_life_cores 的 tuple 原封不動傳回。"""
+    """_life_cores 回 LifeCore 列表（含 meme_id），供 select_mode 用。"""
     from cogs.music_cog import MusicCog
+    from dj_life_context import LifeCore
     bot = MagicMock()
     bot.guilds = []
     bot.voice_clients = []
@@ -138,8 +139,8 @@ def test_life_cores_passes_through_tuples():
 
     result = cog._life_cores([e], __import__("time").time())
     assert len(result) == 1
-    assert isinstance(result[0], tuple)
-    assert result[0][1] == "搬家"
+    assert isinstance(result[0], LifeCore)
+    assert result[0].meme_id == "搬家"
 
 
 # ── 5. 端到端：meme_id 冷卻透過 _fetch_dj_interjection_raw ─────────────────────

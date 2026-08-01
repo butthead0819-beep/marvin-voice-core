@@ -54,6 +54,25 @@ _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 _SONG_BPM_STORE = "records/song_bpm.json"
 _BPM_SAMPLE_SR = 11025
 
+_puck_mixer_client = None  # lazy singleton，見 _get_puck_client()
+
+
+def _get_puck_client():
+    """MARVIN_CAR_HARDWARE=pi_bt 才回傳 client；其餘硬體（ESP32 mk1/家用 Pi 3B）回 None、
+    零行為改變。見 device/puck_mixer.py + project_car_puck_mk2_pi_zero2w_bt_mixer_validated。"""
+    global _puck_mixer_client
+    if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() != "pi_bt":
+        return None
+    if _puck_mixer_client is None:
+        from marvin_voice_core.puck_mixer_client import PuckMixerClient
+        base_url = os.getenv("MARVIN_PUCK_BASE_URL", "")
+        token = os.getenv("MARVIN_PUCK_TOKEN", "").strip() or None
+        if not base_url:
+            logger.warning("[PuckMixer] MARVIN_CAR_HARDWARE=pi_bt 但 MARVIN_PUCK_BASE_URL 未設，跳過")
+            return None
+        _puck_mixer_client = PuckMixerClient(base_url, token)
+    return _puck_mixer_client
+
 
 class MusicCog(commands.Cog):
     """音樂子系統（Strangler Fig 遷移中）。"""
@@ -2044,15 +2063,48 @@ class MusicCog(commands.Cog):
             return (info.get('_pick_reason') or '').strip()
         return ''
 
+    _QUICK_SEGUE_TEMPLATES = (
+        "這首收得漂亮，換個口味，接下來這首。",
+        "剛好告一段落，下一首馬上接上。",
+        "先這樣，換首歌繼續聽。",
+        "這首先到這，接下來換個心情。",
+    )
+    _QUICK_SEGUE_TEMPLATES_INTIMATE = (
+        "這首先到這，換下一首陪你聽。",
+        "剛好告一段落，來換首歌。",
+    )
+    _QUICK_SEGUE_TEMPLATES_ENERGETIC = (
+        "接上，別停！",
+        "下一首馬上來，別停。",
+    )
+
+    @classmethod
+    def _quick_segue_text(cls, n_online: int = 0) -> str:
+        """沒有任何話題/素材可用時的本地過場模板——純接歌，跳過 LLM。
+
+        n_online 決定語氣（跟原本 group-size ctx 提示同一套門檻），quick 模式
+        沒有 LLM 可以照 ctx 調語氣，改本地挑模板池達到同樣效果。
+        """
+        import random
+        if n_online == 1:
+            pool = cls._QUICK_SEGUE_TEMPLATES_INTIMATE
+        elif n_online >= 4:
+            pool = cls._QUICK_SEGUE_TEMPLATES_ENERGETIC
+        else:
+            pool = cls._QUICK_SEGUE_TEMPLATES
+        return random.choice(pool)
+
     def _life_cores(self, entries, now: float,
-                    present_speakers: set[str] | None = None) -> list[str]:
+                    present_speakers: set[str] | None = None) -> list:
         """日記 entries → DJ 雞湯用的近日生活素材（純函式包裝，測試用此點注入）。
 
-        present_speakers: 在場人集合，傳給 recent_life_cores 做 privacy filter。
-        None = 不過濾（fail-open，vc 不可用時的預設）。
+        回傳 LifeCore 列表（含事件主角），供 dj_topic_selector.select_mode 判斷
+        主角現在在不在場。present_speakers: 在場人集合，傳給
+        recent_life_cores_with_speakers 做 privacy filter。None = 不過濾
+        （fail-open，vc 不可用時的預設）。
         """
-        from dj_life_context import recent_life_cores
-        return recent_life_cores(entries, now=now, present_speakers=present_speakers)
+        from dj_life_context import recent_life_cores_with_speakers
+        return recent_life_cores_with_speakers(entries, now=now, present_speakers=present_speakers)
 
     async def _life_cores_async(self) -> list[str]:
         """讀日記檔取生活素材。606K 檔的 read+parse 走 to_thread，不阻塞 event loop。
@@ -2157,29 +2209,72 @@ class MusicCog(commands.Cog):
         if lyric_match:
             ctx.append(f"歌詞呼應：{lyric_match[:60]}")
         # 環境沉浸：城市/區（GPS 訊號，沒有則退回台北）+ 季節（日期推）+ 時段。
+        # 不再無條件塞進 ctx——只有 mode == "atmosphere" 被選中時才當開場素材用，
+        # 其餘時候別讓它變成 LLM 隨手可用的預設開場（治「每次都靠環境/天氣開場」）。
         season = self._current_season()
         city = self._city_label()
         env = f"環境：{city} · {season}"
         if slot:
             env += f" · {slot}"
-        ctx.append(env)
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
-        # 話題拆開只挑一個：近期生活 → 在場興趣 → 都沒有就純過場（交給規則3 的環境/對話切入）。
-        # 挑中的具體話題冷卻 8 小時內不重複——治「最近生活天天被提」的跳針感。
-        from dj_topic_selector import select_topic
+        # 本地決定這次串場怎麼寫，LLM 不必自己判斷「有沒有話題、要不要硬掰、
+        # 這件事是不是點播者本人的」——樣版/素材/在場判斷全部本地做完，LLM 只負責
+        # 把選定的素材寫成自然的過場文字。
+        # 順序：近期生活（主角要在場，否則換下一個候選）→ 在場興趣 → 都沒有時在
+        # 對話銜接/上一首銜接/純接歌 之間本地輪替（治「每次都靠環境/天氣開場」）。
+        from dj_topic_selector import select_mode
         life = await self._life_cores_async()
         interests = self._present_interests()
-        topic, topic_kind = select_topic(life, interests, self._dj_topic_store())
-        if topic_kind == "life":
-            ctx.append(f"最近生活：\n・{topic}")
-        elif topic_kind == "interest":
-            ctx.append(f"在場興趣：\n・{topic}")
 
-        # Group size → 語氣指令：1 人親密、4+ 人 live DJ 節奏；2-3 人不加（維持原有行為）。
-        # vc() 不可用時靜默略過——DJ 少一行語氣提示，不影響整條生成。
+        _vc_ref = None
+        present_members: set[str] | None = None
         try:
             _vc_ref = self._vc()
+            if _vc_ref is not None:
+                present_members = set(_vc_ref.get_online_members())
+        except Exception:
+            pass  # fail-open：vc 不可用時不過濾在場人
+
+        # autopilot 策展理由算在 mode 選擇之前：有理由可講時別讓它被 fallback 輪替
+        # 排進 quick（quick 沒素材時直接跳過 LLM，會把這個好料浪費掉）。
+        _autopilot_reason = ''
+        if requester.startswith('Marvin'):
+            _autopilot_reason = self._autopilot_pick_reason(info) or ''
+
+        topic, mode = select_mode(
+            life, interests, self._dj_topic_store(),
+            present_members=present_members,
+            has_conversation=bool(conv_lines),
+            has_prev_song=bool(prev_title),
+        )
+        if _autopilot_reason and mode in ("quick", "atmosphere"):
+            mode = "reason"
+
+        # 開場鉤子提示依「歌會中的心理機制」分兩類套用：
+        #   代入感（life/interest）——這是聽眾自己的事，別只是轉述，要讓人覺得被說中。
+        #   氣氛精準（atmosphere）——緊扣這個時間/地點，像特別為這一刻準備的。
+        # conversation/prev_song 本身就是銜接類，維持原本的過場方向指示即可。
+        if mode == "life":
+            ctx.append(f"最近生活：\n・{topic}")
+            ctx.append("開場鉤子：用『這根本在講你』的代入感切入，讓人覺得被說中，別只是轉述。")
+        elif mode == "interest":
+            ctx.append(f"在場興趣：\n・{topic}")
+            ctx.append("開場鉤子：用『這根本在講你』的代入感切入，讓人覺得被說中，別只是轉述。")
+        elif mode == "prev_song":
+            ctx.append("串場方向：延續上一首的情緒銜接過去就好，不用硬掰新話題。")
+        elif mode == "conversation":
+            ctx.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
+        elif mode == "atmosphere":
+            ctx.append(env)
+            ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
+        if _autopilot_reason:
+            ctx.append(f"選這首的理由：{_autopilot_reason}")
+
+        # Group size → 語氣：1 人親密、4+ 人 live DJ 節奏；2-3 人不加（維持原有行為）。
+        # vc() 不可用時靜默略過。quick 模式沒有 LLM 可以照 ctx 調語氣，改本地選模板池。
+        _n_online = 0
+        try:
             if _vc_ref is not None:
                 _n_online = len(_vc_ref.get_online_members())
                 if _n_online == 1:
@@ -2193,13 +2288,11 @@ class MusicCog(commands.Cog):
         # music_intro 砍成「狗與露」這種殘句（autopilot DJ 被截斷的根因）。
         gate_task = "dj_story"
         text = self._themed_dj_text(info)   # 主題歌單：直接播策展時寫好的理由，不重複燒 LLM
+        if not text and mode == "quick":
+            # 沒有任何素材可用 → 本地固定模板直接接歌，跳過 LLM（零出錯風險、零延遲、零花費）。
+            text = self._quick_segue_text(_n_online)
         if not text:
             # autopilot 與真人點歌共用這條 LLM 雞湯（走 tier=simple 免費層）。
-            # autopilot 多帶一行「為什麼選這首」，讓 LLM 有理由可講，不是硬掰。
-            if requester.startswith('Marvin'):
-                _why = self._autopilot_pick_reason(info)
-                if _why:
-                    ctx.append(f"選這首的理由：{_why}")
             try:
                 text = await self.bot.router.generate_dynamic_system_msg(
                     'dj_interjection', context='\n'.join(ctx)
@@ -2297,6 +2390,19 @@ class MusicCog(commands.Cog):
                 },
             }
 
+    async def _fire_puck_crossfade(self, puck_client, next_url: str,
+                                    buffer_s: float = 2.0, crossfade_s: float = 4.0) -> None:
+        """[PuckMixer] Pi mk2 純音樂 crossfade：queue_next 後留 buffer_s 給 Pi 背景
+        yt-dlp+ffmpeg 起手緩衝，再送 crossfade。跟本地 Discord mixer/DJ 口白邏輯
+        完全獨立（見呼叫點 _run_tail_dj），queue_next 失敗就放棄、不重試（下一輪
+        tail-fire 或下一首開頭會再給機會）。"""
+        ok = await puck_client.queue_next(next_url)
+        if not ok:
+            logger.warning(f"[PuckMixer] queue_next 失敗，放棄本次 crossfade: {next_url}")
+            return
+        await asyncio.sleep(buffer_s)
+        await puck_client.crossfade(crossfade_s)
+
     async def _run_tail_dj(self, cur_info: dict, song_start_time: float):
         """[DJ Tail] 滑動窗串場：當前歌結束前 5s 點火，DJ 疊當前歌尾巴 + 溢進下一首開頭。
 
@@ -2349,6 +2455,15 @@ class MusicCog(commands.Cog):
             logger.info(f"[DJ Tail] {title_cur} 點火時 queue 仍空、無下一首，退回舊行為")
             return
         title_next = next_info.get('title', '?')
+
+        # [PuckMixer] pi_bt 硬體(Pi mk2)：額外送純音樂 crossfade 訊號給 Pi，跟下面
+        # 本地 Discord mixer 的 DJ 口白邏輯完全獨立、不共用旗標、不影響其他硬體行為
+        # （DJ 口白走另一條未實作的 TTS 串流管線，這裡只管換歌）。fire-and-forget
+        # 背景 task，不阻塞/不改變既有 flow 的時序。
+        puck_client = _get_puck_client()
+        next_url = next_info.get('url', '')
+        if puck_client is not None and next_url:
+            asyncio.create_task(self._fire_puck_crossfade(puck_client, next_url))
 
         dj_meta = await self._resolve_tail_dj_meta(next_info)
         if dj_meta is None:

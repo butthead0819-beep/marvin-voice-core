@@ -14,8 +14,18 @@ import json
 import os
 import time
 
+from dj_life_context import LifeCore
+
 DEFAULT_PATH = "records/dj_topic_cooldown.json"
 COOLDOWN_S = 8 * 3600  # 同一具體話題用過 8 小時內不重複
+
+# 話題（life/interest）都沒有時，本地在這四種 fallback 之間輪替，別每次都落在
+# 同一種（尤其是「環境/天氣」那種永遠在場的素材，之前是靠 LLM「自由發揮」硬凹，
+# 結果每次都用它開場——現在改把它變成 atmosphere，跟其他 fallback 平等輪替，
+# 不再是預設值）。atmosphere（時間/地點氛圍）永遠有素材可用，跟 quick 一樣不需要
+# has_* 旗標。quick 沒有任何素材，caller 該走本地模板、跳過 LLM，排最後當墊底選項。
+FALLBACK_ORDER = ("conversation", "prev_song", "atmosphere", "quick")
+_FALLBACK_KEY = "_last_fallback_mode"
 
 
 def _topic_key(text: str) -> str:
@@ -61,6 +71,14 @@ class TopicCooldownStore:
         self._data[key] = self._now()
         self._save()
 
+    def get_last_fallback(self) -> str | None:
+        """上次選到的 fallback mode（conversation/prev_song/quick），跨重啟保存。"""
+        return self._data.get(_FALLBACK_KEY)
+
+    def set_last_fallback(self, mode: str) -> None:
+        self._data[_FALLBACK_KEY] = mode
+        self._save()
+
 
 def select_topic(
     life_cores: list[str | tuple[str, str]],
@@ -91,3 +109,76 @@ def select_topic(
             store.mark_used(i)
             return i, "interest"
     return None, "none"
+
+
+def _decompose_life_item(item) -> tuple[str, str, tuple[str, ...]]:
+    """相容 LifeCore / (text, meme_id) / 純 str 三種形狀，統一拆成 (text, meme_id, speakers)。"""
+    if isinstance(item, LifeCore):
+        return item.text, item.meme_id, item.speakers
+    if isinstance(item, tuple):
+        return item[0], item[1], ()
+    return item, "", ()
+
+
+def _filter_present_actors(
+    life_cores,
+    present_members: set[str] | None,
+) -> list[str | tuple[str, str]]:
+    """事件主角現在不在場的生活素材直接濾掉（換下一個候選），別留給 LLM 自己猜代名詞。
+
+    speakers 是空的（一般公開話題、沒有特定主角）一律放行——沒有主角就沒有代名詞
+    掛錯的風險。present_members=None（vc 不可用）時不過濾，fail-open。
+    """
+    out: list[str | tuple[str, str]] = []
+    for item in life_cores or []:
+        text, meme_id, speakers = _decompose_life_item(item)
+        if present_members is not None and speakers and not set(speakers).issubset(present_members):
+            continue
+        out.append((text, meme_id) if meme_id else text)
+    return out
+
+
+def _pick_fallback_mode(
+    store: TopicCooldownStore,
+    *,
+    has_conversation: bool,
+    has_prev_song: bool,
+) -> str:
+    candidates = [
+        m for m in FALLBACK_ORDER
+        if (m != "conversation" or has_conversation)
+        and (m != "prev_song" or has_prev_song)
+    ]
+    if not candidates:
+        candidates = ["quick"]
+    last = store.get_last_fallback()
+    mode = next((m for m in candidates if m != last), candidates[0])
+    store.set_last_fallback(mode)
+    return mode
+
+
+def select_mode(
+    life_cores: list,
+    interests: list[str],
+    store: TopicCooldownStore,
+    *,
+    present_members: set[str] | None = None,
+    has_conversation: bool = False,
+    has_prev_song: bool = False,
+) -> tuple[str | None, str]:
+    """本地決定這次串場要走哪個 mode，LLM 不必自己判斷「有沒有話題、要不要硬掰」。
+
+    順序：近期生活（主角要在場）→ 在場興趣 → 都沒有時，在 conversation/prev_song/quick
+    間輪替（避免每次都落在同一種 fallback，尤其是最容易變成「每次都環境/天氣」的那個）。
+
+    回傳 (topic_text, mode)，mode 比 select_topic 多了 'conversation'/'prev_song'/'quick'。
+    topic_text 只有 mode in {'life', 'interest'} 才非 None，其餘三種 fallback 沒有具體
+    文字素材——caller 自己依 mode 決定串場方向（quick 甚至該跳過 LLM，直接走本地模板）。
+    """
+    filtered_life = _filter_present_actors(life_cores, present_members)
+    topic, kind = select_topic(filtered_life, interests, store)
+    if kind != "none":
+        return topic, kind
+    return None, _pick_fallback_mode(
+        store, has_conversation=has_conversation, has_prev_song=has_prev_song,
+    )

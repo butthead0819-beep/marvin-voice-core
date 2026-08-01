@@ -1,4 +1,4 @@
-"""TDD: DJ interjection 依 group size 注入語氣指令。
+"""TDD: DJ interjection 依 group size 調整語氣。
 
 問題：_fetch_dj_interjection_raw 的 context 沒有 group size 感知，
      1 人時和 4+ 人時的語氣應該不同：
@@ -7,7 +7,13 @@
        4+ 人  → 精簡節奏，像 live DJ 播報
 
 修法：_fetch_dj_interjection_raw 在 ctx 組裝尾端，讀 online members count
-     並視 group size 附加一行語氣指令。
+     並視 group size 附加一行語氣指令（LLM 會被呼叫的情境）。
+
+這幾個測試預設沒有 life/interest/對話/上一首 可用 → fallback 候選只剩
+atmosphere/quick 輪替。atmosphere 永遠可用，全新 store 第一次會先選到它
+（走 LLM），所以要測 quick 本地模板的三個測試，先把 store 的 last_fallback
+標成 "atmosphere"，逼下一次輪到 quick——語氣改成看 _quick_segue_text 選中
+的模板池，不是看 ctx 字串（quick 模式下 LLM 根本沒被呼叫，ctx 不會送出去）。
 """
 from __future__ import annotations
 
@@ -60,36 +66,52 @@ def _ctx_str(cog) -> str:
     return call.kwargs.get("context", "") or (call.args[1] if len(call.args) > 1 else "")
 
 
-# ── 1. 1 人獨聽：親密語氣 ────────────────────────────────────────────────────
+# ── 1. 1 人獨聽：親密語氣（無素材 → quick 本地模板，看選中的池）───────────────
 
 @pytest.mark.asyncio
 async def test_single_listener_gets_intimate_tone_hint():
-    """1 人在場 → context 含親密語氣提示。"""
+    """1 人在場、沒有任何話題素材 → quick 模式挑親密語氣模板，不呼叫 LLM。"""
+    from cogs.music_cog import MusicCog
     cog = _make_cog(online_members=["大肚"])
-    await cog._fetch_dj_interjection_raw(_info())
-    ctx = _ctx_str(cog)
-    assert "親密" in ctx or "一個人" in ctx, f"1人時應有親密語氣提示: {ctx!r}"
+    cog._dj_topic_cooldown_store.set_last_fallback("atmosphere")
+    dj = await cog._fetch_dj_interjection_raw(_info())
+    cog.bot.router.generate_dynamic_system_msg.assert_not_awaited()
+    assert dj["text"] in MusicCog._QUICK_SEGUE_TEMPLATES_INTIMATE
 
 
-# ── 2. 2-3 人：正常，不加語氣行（不干擾現有行為）────────────────────────────
+# ── 2. 2-3 人：正常池（不干擾現有行為）──────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_small_group_no_tone_hint():
-    """2-3 人 → 不注入特殊語氣行。"""
+    """2-3 人、沒有話題素材 → quick 模式用一般模板池，不是親密/精簡池。"""
+    from cogs.music_cog import MusicCog
     cog = _make_cog(online_members=["大肚", "狗與露"])
-    await cog._fetch_dj_interjection_raw(_info())
-    ctx = _ctx_str(cog)
-    # 不應有親密、也不應有 live DJ 大場面提示
-    assert "親密" not in ctx
-    assert "精簡" not in ctx and "節奏快" not in ctx
+    cog._dj_topic_cooldown_store.set_last_fallback("atmosphere")
+    dj = await cog._fetch_dj_interjection_raw(_info())
+    assert dj["text"] in MusicCog._QUICK_SEGUE_TEMPLATES
+    assert dj["text"] not in MusicCog._QUICK_SEGUE_TEMPLATES_INTIMATE
+    assert dj["text"] not in MusicCog._QUICK_SEGUE_TEMPLATES_ENERGETIC
 
 
 # ── 3. 4+ 人：live DJ 精簡節奏 ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_large_group_gets_live_dj_tone_hint():
-    """4+ 人 → context 含精簡節奏提示。"""
+    """4+ 人、沒有話題素材 → quick 模式挑精簡/帶勁模板。"""
+    from cogs.music_cog import MusicCog
     cog = _make_cog(online_members=["大肚", "狗與露", "Alice", "Bob"])
+    cog._dj_topic_cooldown_store.set_last_fallback("atmosphere")
+    dj = await cog._fetch_dj_interjection_raw(_info())
+    assert dj["text"] in MusicCog._QUICK_SEGUE_TEMPLATES_ENERGETIC
+
+
+# ── 5. 有話題素材時，group-size 語氣行仍照舊送進 LLM context ────────────────
+
+@pytest.mark.asyncio
+async def test_tone_hint_still_reaches_llm_when_topic_available():
+    """有素材（走 LLM 路徑）時，group-size 語氣提示應該還是照舊塞進 context。"""
+    cog = _make_cog(online_members=["大肚", "狗與露", "Alice", "Bob"])
+    cog._life_cores = MagicMock(return_value=["昨天去爬山"])
     await cog._fetch_dj_interjection_raw(_info())
     ctx = _ctx_str(cog)
     assert "精簡" in ctx or "節奏" in ctx or "短" in ctx, f"4+人時應有精簡語氣提示: {ctx!r}"
