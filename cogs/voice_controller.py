@@ -3845,9 +3845,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         ch = self.active_text_channel
         if not info:
             return
-        title    = info.get("title", "不知道耶")
-        uploader = info.get("uploader", "")
-        req_by   = info.get("requested_by", "")
+        title, uploader, req_by = info.get("title", "不知道耶"), info.get("uploader", ""), info.get("requested_by", "")
         parts = [f"「{title}」"]
         if uploader:
             parts.append(f"by {uploader}")
@@ -3859,6 +3857,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.stt_logger.info(f"[音樂資訊←{speaker}] query='{query[:30]}' | reply={reply}")
         if ch:
             await ch.send(f"💬 **【馬文·音樂資訊】** {reply}")
+        await self.play_tts(reply, already_in_channel=False)  # 8/8：原本只送文字沒語音，補 TTS
 
     _MUSIC_KW_NOISE_WINDOW = 6  # 命令詞可容忍 ≤6 char noise prefix（"好煩，馬文，"=6 剛好）
 

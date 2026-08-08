@@ -127,6 +127,24 @@ def test_repair_player_adds_callback_queue_to_old_record():
     assert repaired["callback_queue"] == []
 
 
+def test_repair_player_fixes_explicit_none_callback_queue():
+    """8/8 實戰崩潰：某玩家記錄 callback_queue 存成字面 None（非缺鍵），
+    `k not in p` 判斷不到，讀取端 `for item in queue` 直接
+    TypeError: 'NoneType' object is not iterable（speak_bus 每 5s 噴一次）。
+    _repair_player 對「缺鍵」跟「值是 None」要一視同仁補回預設值。"""
+    repaired = _repair_player({"likes": ["coffee"], "callback_queue": None})
+    assert repaired["callback_queue"] == []
+
+
+def test_peek_all_shareable_callbacks_survives_none_queue(tmp_path):
+    """讀取端也要防：即使 _repair_player 沒接住，peek 系列也不該直接崩。"""
+    mem = _mk(tmp_path)
+    mem.get_player_memory("Alice")
+    mem._cache["Alice"]["callback_queue"] = None
+    assert mem.peek_all_shareable_callbacks("Alice") == []
+    assert mem.peek_shareable_callback("Alice") is None
+
+
 # ── kill-switch: per-player mute (T4) ──────────────────────────────────────────
 def test_muted_player_peek_returns_none(tmp_path):
     mem = _mk(tmp_path)

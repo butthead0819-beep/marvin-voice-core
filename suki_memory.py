@@ -168,7 +168,7 @@ def _repair_player(p: dict) -> dict:
     if p.get("taste"):
         _project_taste(p)
     for k, v in _PLAYER_DEFAULTS.items():
-        if k not in p:
+        if k not in p or p[k] is None:
             p[k] = copy.deepcopy(v)
     pi = p.setdefault("personal_info", {})
     for k in ("food", "clothing", "housing", "transport", "minecraft_id"):
@@ -498,7 +498,7 @@ class MemoryManager:
             return None
         if self._cache[username].get("callbacks_muted"):
             return None   # kill-switch：此人 callback 被靜音
-        queue = self._cache[username].get("callback_queue", [])
+        queue = (self._cache[username].get("callback_queue") or [])
         cutoff = time.time() - ttl_seconds
         fresh = [item for item in queue if item.get("ts", 0) >= cutoff]
         if len(fresh) != len(queue):
@@ -522,7 +522,7 @@ class MemoryManager:
             return []
         if self._cache[username].get("callbacks_muted"):
             return []
-        queue = self._cache[username].get("callback_queue", [])
+        queue = (self._cache[username].get("callback_queue") or [])
         cutoff = time.time() - ttl_seconds
         fresh = [item for item in queue if item.get("ts", 0) >= cutoff]
         if len(fresh) != len(queue):
@@ -534,7 +534,7 @@ class MemoryManager:
         """投遞成功後移除該則 callback（以 ts+text 比對）。"""
         if username not in self._cache or not item:
             return
-        queue = self._cache[username].get("callback_queue", [])
+        queue = (self._cache[username].get("callback_queue") or [])
         self._cache[username]["callback_queue"] = [
             q for q in queue
             if not (q.get("ts") == item.get("ts") and q.get("text") == item.get("text"))
