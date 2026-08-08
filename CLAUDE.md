@@ -21,6 +21,8 @@ Marvin，分三條分支：
 
 各層的鎖範圍、閾值公式、Protocol 介面、async 安全等具體約束，多半是踩過真實 bug（CryptoError 風暴、busy-spin 凍結等）後留下的——改動這些之前**直接讀對應原始碼**（`protocols.py`、`intent_agents/base.py` docstring、各層現有實作），不要憑印象改。有疑慮就把方案攤開問，別自己猜一個看起來合理的版本。
 
+新增/落地 IntentAgent 後，順手把對應的 intent_type 加進 `agent_gaps_resolved.json`（見 `scripts/analyze_agent_gaps.py` 開頭 docstring）——這份清單沒同步更新，`intent_clusters.json` 的每日/手動 gap clustering 會一直把已經有 agent 的東西誤標 `ready_to_implement`（2026-08-08 實測踩到：`agent_gaps_resolved.json` 從 6/7 後兩個月沒更新，漏了 5 個之後落地的 agent）。
+
 ## Skill routing
 
 請求符合現有 skill 就用 Skill tool 呼叫，拿不準就呼叫。常見對應：產品發想→/office-hours、架構→/plan-eng-review、bug→/investigate、QA→/qa、code review→/review、視覺→/design-review、上線→/ship、存/復原上下文→/context-save /context-restore。

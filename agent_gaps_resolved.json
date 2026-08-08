@@ -5,5 +5,41 @@
     "commit": "3a5c120",
     "resolved_at": "2026-06-07",
     "note": "Minecraft 等遊戲知識查詢已由 GameKnowledgeAgent 接手（bid 0.80）。新 intent_type 實作 agent 後，把 intent_type 加進這檔（tracked，與 code 同步），analyze_agent_gaps 就不再誤報 ready，新 coding agent 也不會被誤導去重做。"
+  },
+  "strong_play": {
+    "agent": "music_v2",
+    "file": "intent_agents/music_agent_v2.py",
+    "resolved_at": "2026-08-08",
+    "note": "8/8 audit：intent_clusters.json 的 control_audio cluster 把這幾個字面上早就有 agent 覆蓋的 intent_type 標成 ready_to_implement——agent_gaps_resolved.json 自 6/7 只加過一筆，playback_control_agent.py（7/30 land）、volume_agent.py（5/27 land）都沒補記，導致 clustering 一直誤報。補齊此次發現的全部。"
+  },
+  "playback_control": {
+    "agent": "playback_control",
+    "file": "intent_agents/playback_control_agent.py",
+    "resolved_at": "2026-08-08",
+    "note": "skip/stop/pause/resume 由 PlaybackControlAgent 接手（bid 0.95）。見 strong_play 條目 note。"
+  },
+  "control_pause": {
+    "agent": "playback_control",
+    "file": "intent_agents/playback_control_agent.py",
+    "resolved_at": "2026-08-08",
+    "note": "見 playback_control 條目。"
+  },
+  "volume_down": {
+    "agent": "volume",
+    "file": "intent_agents/volume_agent.py",
+    "resolved_at": "2026-08-08",
+    "note": "音量調整由 VolumeAgent 接手。見 strong_play 條目 note。"
+  },
+  "volume_control": {
+    "agent": "volume",
+    "file": "intent_agents/volume_agent.py",
+    "resolved_at": "2026-08-08",
+    "note": "見 volume_down 條目。"
+  },
+  "current_song_query": {
+    "agent": "now_playing",
+    "file": "intent_agents/now_playing_agent.py",
+    "resolved_at": "2026-08-08",
+    "note": "「現在播的是什麼歌」由 NowPlayingAgent 接手（5/27 land，比這筆 8/1 的 gap record 還早）。8/1 那筆是冷門說法沒被既有 regex 接住，不是缺 agent。"
   }
 }

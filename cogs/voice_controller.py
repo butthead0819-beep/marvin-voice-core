@@ -322,11 +322,11 @@ _MUSIC_DIRECT_STOP_KW   = _MUSIC_DIRECT_STOP_KW_SRC
 _MUSIC_DIRECT_PAUSE_KW  = _MUSIC_DIRECT_PAUSE_KW_SRC
 _MUSIC_DIRECT_RESUME_KW = _MUSIC_DIRECT_RESUME_KW_SRC
 
-# 🎵 [IBA Tier 1] 無喚醒詞音樂資訊查詢 — "這首叫什麼?" 類問句
+# 🎵 [IBA Tier 1] 無喚醒詞音樂資訊查詢 — "這首叫什麼?"（8/8 補 `?`／「這什麼歌」對齊 NowPlayingAgent）
 _MUSIC_INFO_RE = re.compile(
-    r'這首(?:歌|曲)?(?:叫什麼|是什麼|是誰|叫做|的名字|哪首|叫|叫啥)'
+    r'這首(?:歌|曲)?(?:叫什麼|是什麼|是誰|叫做|的名字|哪首|叫|叫啥)|這(?:是)?什麼(?:歌|曲)'
     r'|(?:現在|剛才|正在)(?:播|放|唱)的(?:是|叫)?'
-    r'|(?:歌名|歌手|藝人|誰唱|誰寫)(?:是什麼|叫什麼|是誰|叫)',
+    r'|(?:歌名|歌手|藝人|誰唱|誰寫)(?:是什麼|叫什麼|是誰|叫)?',
     re.IGNORECASE,
 )
 

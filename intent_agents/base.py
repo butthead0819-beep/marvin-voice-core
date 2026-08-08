@@ -15,6 +15,22 @@ Bid 永遠 dense：未命中 schema 也回 Bid(confidence=0.0, reason="no_match"
 2-agent 規模 bid vector 太稀就是這個問題）。
 
 設計來源：5/19 設計討論，已記憶 `project_intent_bus.md`。
+
+── 音素 fallback（喚醒+指令 AND-gate）─────────────────────────────────────────
+regex 全部 miss 後，若 schema 有宣告 phonetic_keywords，會再試一次拼音 fuzzy：
+喚醒（ctx.wake_intent 打中）**且**指令拼音（fuzzy ratio ≥ 門檻）都中才出價，任一沒
+中就是 no_match——不會單靠音素就產生行為。這是 opt-in：schema 不填
+phonetic_confidence 就完全不受影響。只該用在封閉、可窮舉的關鍵詞集合（skip/pause/
+播放/查詢 這類動詞），開放式 slot schema（任意查詢字串）不該宣告，音素 fuzzy 對
+自由文字誤判率太高（見 memory triadic_expert_pattern_domain_and_timing）。
+
+比對演算法是「音節數對齊的滑動窗口」而非整串/partial ratio：keyword 轉拼音音節、
+text 也轉每字拼音音節，取跟 keyword 等長的窗口比對取最高分——這是刻意選擇，
+partial_ratio 對短詞（2-3 音節）太寬容，會把「換一首」「放一首」這種共用字尾但語意
+相反的詞組混在一起（8/8 實測 partial_ratio=90.9，window ratio=83.3，仍需靠下方
+literal-substring skip 加額外守門）。keyword 若整串已是 text 的字面 substring 一律
+排除比對——代表 regex 已經試過、沒中是因為缺 marker/target 等結構條件，不是同音字
+問題，音素 fallback 不該把它撿回來。
 """
 from __future__ import annotations
 
@@ -23,6 +39,45 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 from intent_bus import Bid, IntentContext
+
+try:
+    from rapidfuzz import fuzz
+    from pypinyin import lazy_pinyin
+    from music_fastpath import _DEPS_OK as _PHONETIC_DEPS_OK
+except ImportError:  # 同源 dep 缺 → phonetic fallback 靜默停用
+    _PHONETIC_DEPS_OK = False
+
+
+# 動詞窗口最多容忍幾個音節的句首前綴（「幫我」「請」這類）再開始比對。中文指令
+# 動詞習慣在句首附近，不會埋在句子中段；深埋才比對到的通常是雜訊撞詞（8/8 實測：
+# 不設界限時「馬文播放這個」誤配「放首歌」到 78.3 分，設界限後降到 71.4，門檻才有
+# 意義——見模組 docstring「換一首」vs「放一首」案例，那個要靠 substring guard，
+# 這個窗口界限是另一道獨立防線，擋的是不同種類的誤判）。
+_PHONETIC_MAX_PREFIX_SYLLABLES = 2
+
+
+def _phonetic_window_score(text: str, keyword: str) -> float:
+    """text 對單一 keyword 的音節對齊窗口最高分（0-100）。見模組 docstring 選型理由。"""
+    if not _PHONETIC_DEPS_OK or not text or not keyword or keyword in text:
+        return 0.0
+    kw_syllables = lazy_pinyin(keyword)
+    text_syllables = lazy_pinyin(text)
+    n = len(kw_syllables)
+    if n == 0 or len(text_syllables) < n:
+        return 0.0
+    kw_joined = " ".join(kw_syllables).lower()
+    max_start = min(_PHONETIC_MAX_PREFIX_SYLLABLES, len(text_syllables) - n)
+    best = 0.0
+    for i in range(max_start + 1):
+        window = " ".join(text_syllables[i:i + n]).lower()
+        best = max(best, fuzz.ratio(window, kw_joined))
+    return best
+
+
+def phonetic_best_match(text: str, keywords) -> float:
+    """text 對 keywords 集合中任一詞的最佳音素相似分數（0-100）。跨 agent 共用
+    （例如 MusicAgentV2 用它排除跟控制指令家族撞音的 case）。"""
+    return max((_phonetic_window_score(text, kw) for kw in keywords), default=0.0)
 
 
 @dataclass(frozen=True)
@@ -40,6 +95,11 @@ class IntentSchema:
     patterns: list[str]
     required_slots: list[str] = field(default_factory=list)
     reason_template: str = "{name}"
+    # 音素 fallback（opt-in）：regex 全 miss 後才試。phonetic_confidence 是 None
+    # 表示這個 schema 不參與音素 fallback（多數開放式 slot schema 應該維持 None——
+    # 音素 fuzzy 只在封閉、可窮舉的關鍵詞集合上可靠，見 base.py 模組 docstring）。
+    phonetic_keywords: list[str] = field(default_factory=list)
+    phonetic_confidence: float | None = None
 
 
 class DeclarativeIntentAgent:
@@ -52,6 +112,12 @@ class DeclarativeIntentAgent:
     #   Busted99Agent:    {"game"}               （只在遊戲模式吃 raw 語音）
     # 預設 {"normal"}：保守，subclass 必須顯式宣告才能在其他模式出價。
     mode_compatible: set[str] = frozenset({"normal"})
+
+    # 音素 fallback 門檻。wake_intent is None（Track A 精確喚醒）或 >= 這個值才算
+    # 「喚醒打中」；對齊既有 agent 的 LOW_WAKE_THRESHOLD 慣例（music_agent 0.65）。
+    PHONETIC_WAKE_MIN_INTENT: float = 0.65
+    # 拼音 fuzzy ratio 門檻，跟 command_fastpath 同門檻（DEFAULT_THRESHOLD=85）。
+    PHONETIC_FUZZ_THRESHOLD: float = 85.0
 
     # ── Subclass hooks ────────────────────────────────────────────────────────
 
@@ -122,9 +188,45 @@ class DeclarativeIntentAgent:
                     missing_slots=missing,
                 )
 
+        phonetic_bid = self._try_phonetic_bid(text, ctx)
+        if phonetic_bid is not None:
+            return phonetic_bid
+
         return self._dense_zero("no_match")
 
     # ── Internals ─────────────────────────────────────────────────────────────
+
+    def _try_phonetic_bid(self, text: str, ctx: IntentContext) -> Bid | None:
+        """喚醒+指令音素 AND-gate。兩個訊號都要打中才出價，見模組 docstring。"""
+        if not _PHONETIC_DEPS_OK:
+            return None
+        wake_hit = ctx.wake_intent is None or ctx.wake_intent >= self.PHONETIC_WAKE_MIN_INTENT
+        if not wake_hit:
+            return None
+
+        for schema in self.declare_intents():
+            if not schema.phonetic_keywords or schema.phonetic_confidence is None:
+                continue
+            score = phonetic_best_match(text, schema.phonetic_keywords)
+            if score < self.PHONETIC_FUZZ_THRESHOLD:
+                continue
+            slots: dict[str, str] = {}
+            if not self.post_match_filter(schema, slots, ctx):
+                continue
+            missing = [s for s in schema.required_slots if not slots.get(s, "").strip()]
+            fmt_kwargs = {**slots, "matched": text, "name": schema.name}
+            try:
+                reason = schema.reason_template.format(**fmt_kwargs)
+            except (KeyError, IndexError):
+                reason = schema.name
+            return Bid(
+                name=self.name,
+                confidence=schema.phonetic_confidence,
+                handler=self.make_handler(schema, slots, ctx),
+                reason=f"phonetic:{reason}:{score:.0f}",
+                missing_slots=missing,
+            )
+        return None
 
     def _dense_zero(self, reason: str) -> Bid:
         return Bid(name=self.name, confidence=0.0, handler=self._noop, reason=reason)

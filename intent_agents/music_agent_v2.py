@@ -27,8 +27,18 @@ from intent_agents.base import DeclarativeIntentAgent, IntentSchema
 from intent_agents.constants import (
     STRONG_PLAY_KW,
     WEAK_PLAY_KW,
+    MUSIC_SKIP_KW,
+    MUSIC_STOP_KW,
+    MUSIC_PAUSE_KW,
+    MUSIC_RESUME_KW,
 )
 from intent_bus import IntentContext
+
+# 控制指令家族關鍵詞（PlaybackControlAgent 的地盤）。phonetic_play 用它排除「換一首」
+# 這類跟播放詞共用字尾、但語意相反的字面撞詞（見 base.py _phonetic_window_score
+# docstring：「換一首」vs「放一首」window ratio 83.3，跟目標正例太接近，靠字面
+# substring 直接擋掉最可靠——PlaybackControlAgent 自己的 exact regex 本來就會接住）。
+_CONTROL_FAMILY_KW = MUSIC_SKIP_KW + MUSIC_STOP_KW + MUSIC_PAUSE_KW + MUSIC_RESUME_KW
 
 
 # Music intent markers — same as v1
@@ -71,6 +81,12 @@ def _kw_alt(kws) -> str:
     return "|".join(re.escape(kw) for kw in sorted(kws, key=len, reverse=True))
 
 
+_HAN_RE = re.compile(r"[一-鿿]")
+
+# 純英文動詞（play music…）STT 很少糊音，不用進拼音池；跟 command_fastpath 同慣例。
+_PHONETIC_PLAY_KW = tuple(kw for kw in (STRONG_PLAY_KW + WEAK_PLAY_KW) if _HAN_RE.search(kw))
+
+
 def _looks_repetitive(query: str) -> bool:
     q_len = len(query)
     if q_len < _REPETITION_MIN_LEN or q_len > _REPETITION_MAX_LEN:
@@ -88,6 +104,10 @@ class MusicAgentV2(DeclarativeIntentAgent):
     # 音樂 agent 在正常對話與串流播放期間都活著；遊戲模式下不該誤觸發
     mode_compatible = frozenset({"normal", "stream"})
     LOW_WAKE_THRESHOLD = 0.65
+    # 播放動詞只有 2 音節，window ratio 天生比長詞低（見 base.py docstring 實測
+    # 80.0 vs 85.0 預設門檻），故往下調；仍高於「換一首」類撞詞的 window ratio(83.3，
+    # 但那個 case 已被上面 _CONTROL_FAMILY_KW substring guard 直接擋掉，不靠門檻分）。
+    PHONETIC_FUZZ_THRESHOLD = 78.0
 
     def __init__(self, controller):
         self.ctrl = controller
@@ -159,12 +179,26 @@ class MusicAgentV2(DeclarativeIntentAgent):
                          ],
                          required_slots=["song_title"],
                          reason_template="weak_play_only:{kw}->{target}"),
+            # 音素 fallback：以上 6 個 schema 都要求動詞字面精確 match，STT 把「播放」
+            # 糊成「泡放」這類同音字時全部 miss。喚醒+動詞拼音都中才出價（AND-gate，見
+            # base.py 模組 docstring），confidence 比照 weak_play_long_string 最低檔——
+            # 訊號比任何 regex 命中都弱，缺 song_title 交 resolver 從 ctx.query 原文解析。
+            IntentSchema("phonetic_play", 0.55, patterns=[],
+                         required_slots=["song_title"],
+                         reason_template="phonetic_play",
+                         phonetic_keywords=list(_PHONETIC_PLAY_KW),
+                         phonetic_confidence=0.55),
         ]
         return self._intents_cache
 
     # ── Post-match filter (NON_MUSIC_TARGETS blocklist) ──────────────────────
 
     def post_match_filter(self, schema, slots, ctx):
+        if schema.name == "phonetic_play":
+            text = ctx.query or ""
+            if any(kw in text for kw in _CONTROL_FAMILY_KW):
+                return False
+            return True
         # 議題 D (2026-05-27)：weak_play_specific 的 song slot 也要過非音樂名詞 blocklist
         # （之前漏擋導致 L48「幫我找...線上網站」誤命中 0.95）。
         if schema.name == "weak_play_specific":
@@ -190,8 +224,10 @@ class MusicAgentV2(DeclarativeIntentAgent):
     def make_handler(self, schema, slots, ctx):
         # Map schema → controller call (parity with v1 handlers)
         # 注意：control_* 已移至 PlaybackControlAgent（2026-07-30），不再出現於此。
-        if schema.name == "weak_play_long_string":
+        if schema.name in ("weak_play_long_string", "phonetic_play"):
             # missing song_title → ask follow-up (Alexa CanFulfillIntent pattern)
+            # bus 不認得 song_title 這個 slot 名（只認 song_choice/directional_resolution，
+            # 見 intent_bus.py 293-295 行註解），不會自動路由到 resolver，handler 得自己問。
             async def _ask():
                 await self.ctrl._ask_music_followup(ctx.speaker, ctx.query, ["song_title"])
             return _ask

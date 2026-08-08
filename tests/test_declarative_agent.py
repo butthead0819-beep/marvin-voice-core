@@ -217,3 +217,116 @@ def test_mode_gate_takes_precedence_over_subclass_gate():
     )
     bid = a.bid(_ctx(query="x", mode="game"))
     assert bid.reason == "mode_mismatch:game"
+
+
+# ── phonetic fallback（喚醒+指令音素 AND-gate → bid() 高信心捷徑）─────────────────
+#
+# regex 全 miss 後才試：wake 打中（wake_intent is None 或 >= PHONETIC_WAKE_MIN_INTENT）
+# 且 schema.phonetic_keywords 拼音 fuzzy ratio >= PHONETIC_FUZZ_THRESHOLD 才出價。
+# 兩個條件都要中（AND），任一沒中就是 no_match，不會生出行為。
+
+def test_phonetic_fallback_hits_when_wake_and_command_both_match():
+    schema = IntentSchema(
+        name="skip_track", confidence=0.95, patterns=["下一首"],
+        reason_template="skip", phonetic_keywords=["下一首"],
+        phonetic_confidence=0.80,
+    )
+    a = _ToyAgent(intents=[schema])
+    # STT 糊字：「下一手」regex 不中，但拼音跟「下一首」幾乎同音
+    bid = a.bid(_ctx(query="下一手", wake_intent=0.9))
+    assert bid.confidence == 0.80
+    assert bid.reason.startswith("phonetic:")
+    assert bid.handler is not None
+
+
+def test_phonetic_fallback_requires_wake_hit_too():
+    """指令拼音中但 wake 沒中（低於門檻）→ 不出價，AND-gate 擋下。"""
+    schema = IntentSchema(
+        name="skip_track", confidence=0.95, patterns=["下一首"],
+        reason_template="skip", phonetic_keywords=["下一首"],
+        phonetic_confidence=0.80,
+    )
+    a = _ToyAgent(intents=[schema])
+    bid = a.bid(_ctx(query="下一手", wake_intent=0.3))
+    assert bid.confidence == 0.0
+    assert bid.reason == "no_match"
+
+
+def test_phonetic_fallback_requires_command_hit_too():
+    """wake 中但文字/拼音都對不上任何 phonetic_keywords → 不出價。"""
+    schema = IntentSchema(
+        name="skip_track", confidence=0.95, patterns=["下一首"],
+        reason_template="skip", phonetic_keywords=["下一首"],
+        phonetic_confidence=0.80,
+    )
+    a = _ToyAgent(intents=[schema])
+    bid = a.bid(_ctx(query="今天天氣真好", wake_intent=0.9))
+    assert bid.confidence == 0.0
+    assert bid.reason == "no_match"
+
+
+def test_phonetic_fallback_disabled_when_schema_opts_out():
+    """schema 沒填 phonetic_keywords/phonetic_confidence → 完全不受影響（opt-in）。"""
+    schema = IntentSchema(
+        name="skip_track", confidence=0.95, patterns=["下一首"],
+        reason_template="skip",
+    )
+    a = _ToyAgent(intents=[schema])
+    bid = a.bid(_ctx(query="下一手", wake_intent=0.9))
+    assert bid.confidence == 0.0
+    assert bid.reason == "no_match"
+
+
+def test_phonetic_fallback_does_not_shadow_exact_regex_match():
+    """regex 先命中就直接用 regex 的 confidence，不會被 phonetic_confidence 蓋過。"""
+    schema = IntentSchema(
+        name="skip_track", confidence=0.95, patterns=["下一首"],
+        reason_template="skip", phonetic_keywords=["下一首"],
+        phonetic_confidence=0.80,
+    )
+    a = _ToyAgent(intents=[schema])
+    bid = a.bid(_ctx(query="下一首", wake_intent=0.9))
+    assert bid.confidence == 0.95
+    assert bid.reason == "skip"
+
+
+def test_phonetic_fallback_respects_post_match_filter():
+    """post_match_filter 拒絕 → phonetic 命中也不算數（FP 防護不因音素路徑失效）。"""
+    schema = IntentSchema(
+        name="skip_track", confidence=0.95, patterns=["下一首"],
+        reason_template="skip", phonetic_keywords=["下一首"],
+        phonetic_confidence=0.80,
+    )
+    a = _ToyAgent(intents=[schema], filter_reject={"skip_track"})
+    bid = a.bid(_ctx(query="下一手", wake_intent=0.9))
+    assert bid.confidence == 0.0
+    assert bid.reason == "no_match"
+
+
+def test_phonetic_fallback_missing_required_slots_reported():
+    schema = IntentSchema(
+        name="query_time", confidence=0.9, patterns=["現在幾點"],
+        required_slots=["topic"], reason_template="time",
+        phonetic_keywords=["現在幾點"], phonetic_confidence=0.70,
+    )
+    a = _ToyAgent(intents=[schema])
+    bid = a.bid(_ctx(query="現在及點", wake_intent=0.9))
+    assert bid.confidence == 0.70
+    assert bid.missing_slots == ["topic"]
+
+
+def test_phonetic_fallback_matches_keyword_embedded_in_longer_sentence():
+    """播放動詞混在整句裡（動詞後面還有歌名）也要中——不能只認整句=關鍵詞。"""
+    schema = IntentSchema(
+        name="phonetic_play", confidence=0.55, patterns=[],
+        required_slots=["song_title"], reason_template="phonetic_play",
+        phonetic_keywords=["播放"], phonetic_confidence=0.55,
+    )
+    a = _ToyAgent(intents=[schema])
+    # 2 音節動詞窗口天生比長詞分數低（見 base.py docstring 實測），跟 MusicAgentV2
+    # 一樣需要往下調門檻——這裡顯式設定，不依賴 85.0 預設值。
+    a.PHONETIC_FUZZ_THRESHOLD = 75.0
+    # STT 糊字：「播放」→「泡放」，後面還接了歌名
+    bid = a.bid(_ctx(query="泡放周杰倫的稻香", wake_intent=0.9))
+    assert bid.confidence == 0.55
+    assert bid.missing_slots == ["song_title"]
