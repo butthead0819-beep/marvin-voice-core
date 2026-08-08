@@ -33,7 +33,7 @@ import yt_dlp
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from intent_agents.recommendation import (
     Recommendation,
@@ -184,6 +184,10 @@ class MusicCog(commands.Cog):
         self._last_search: dict = {}      # username → {query, ts, source}
         self._last_music_cmd_time: dict[str, float] = {}  # speaker → ts, for dedup
         self._last_music_query: dict[str, tuple[str, float]] = {}  # speaker → (正規化點歌字串, ts)
+        # 🐕 [Stream Watchdog] 使用者/系統主動停播（stop_stream）時設 True，抑制 watchdog
+        # 自動復活；_ensure_stream_loop() 一旦真的（重）啟動迴圈就清掉（見該函式與
+        # _stream_watchdog_loop，2026-08-01 佇列假死事故後補）。
+        self._stream_user_stopped: bool = False
 
     def _vc(self):
         """取得 VoiceController cog；找不到回 None。"""
@@ -437,13 +441,25 @@ class MusicCog(commands.Cog):
         if alive and self.stream_mode:
             return False
         if alive:
-            self.stream_task.cancel()   # 收尾中的殘骸 → 收掉重來
+            self._cancel_stream_task("_ensure_stream_loop 收殘骸")   # 收尾中的殘骸 → 收掉重來
         self.stream_mode = True
         self.stream_volume = 0.10
+        self._stream_user_stopped = False  # 有人／有東西要它跑了，解除 watchdog 抑制
         self.stream_task = asyncio.create_task(self._stream_loop())
         logger.warning(f"🎵 [Stream] loop 不在跑（flag={self.stream_mode} task_alive={alive}）"
                        f"→ 叫醒，佇列 {len(self.stream_queue)} 首")
         return True
+
+    def _cancel_stream_task(self, reason: str) -> None:
+        """統一 stream_task.cancel() 出口 + 記錄呼叫來源。
+
+        2026-08-01 事故：迴圈在歌曲自然轉場瞬間被取消，但沒有任何 log 留下是誰
+        呼叫的 `.cancel()`，只能靠時間軸推理、抓不到真兇。統一出口讓已知的呼叫
+        點都留痕；仍抓不到的話至少能從留痕排除法縮小範圍。
+        """
+        if self.stream_task is not None and not self.stream_task.done():
+            logger.info(f"🎵 [Stream] stream_task.cancel() 呼叫來源: {reason}")
+            self.stream_task.cancel()
 
     async def stop_stream(self, reason: str = "未知原因"):
         """🎵 停止串流播放，清空當前狀態。"""
@@ -451,6 +467,7 @@ class MusicCog(commands.Cog):
             return
         vc = self._vc()
         self.stream_mode = False
+        self._stream_user_stopped = True  # 主動停播 → watchdog 別自己復活它
         self._personal_shuffle = None  # 🎲 停播一併收掉個人歌單 session，避免之後復活
         if vc is not None:
             vc.last_marvin_speech_time = time.time()
@@ -459,7 +476,7 @@ class MusicCog(commands.Cog):
         self._publish_now_playing_state(None)
         logger.info(f"🎵 [Stream] 停止，原因: {reason}")
         if self.stream_task and not self.stream_task.done():
-            self.stream_task.cancel()
+            self._cancel_stream_task(f"stop_stream reason={reason}")
             self.stream_task = None
         if self._radio_fade_task and not self._radio_fade_task.done():
             self._radio_fade_task.cancel()
@@ -1330,8 +1347,9 @@ class MusicCog(commands.Cog):
         if not self.stream_mode:
             self.stream_mode = True
             self.stream_volume = 0.10
+            self._stream_user_stopped = False
             if self.stream_task and not self.stream_task.done():
-                self.stream_task.cancel()
+                self._cancel_stream_task("start_personal_shuffle")
             self.stream_task = asyncio.create_task(self._stream_loop())
         msg = f"🎲 開始連續隨機播放 {username} 的歌單（{len(pool)} 首，播完為止、不重複）。"
         vc = self._vc()
@@ -1788,7 +1806,10 @@ class MusicCog(commands.Cog):
             # 之後每次點歌的「叫醒」判斷都會被騙 → 佇列永遠卡死（2026-07-17 事故）。
             self.stream_mode = False
             self._publish_now_playing_state(None)
-            logger.info("🎵 [Stream Loop] 串流迴圈被取消（stream_mode 已歸位 False）。")
+            # exc_info：留下取消當下卡在哪個 await（play_stream_song/mixer 的哪一行）。
+            # 2026-08-01 事故：迴圈被取消但抓不到兇手，只能靠時間軸推理；已知呼叫點
+            # 都已改走 _cancel_stream_task 留痕，這裡補上「被取消時人在哪」那一半。
+            logger.warning("🎵 [Stream Loop] 串流迴圈被取消（stream_mode 已歸位 False）。", exc_info=True)
         except Exception as e:
             logger.error(f"❌ [Stream Loop] 發生異常: {e}")
             self.stream_mode = False
@@ -2551,6 +2572,25 @@ class MusicCog(commands.Cog):
             return None
         return dj_meta
 
+    async def _play_tail_dj_after_skip(self, next_info: dict) -> None:
+        """手動 skip 後背景解析/播放 DJ 串場，逾時或出錯都不影響已經生效的 skip。"""
+        try:
+            timeout_s = self._SEAMLESS_SKIP_TIMEOUT_S
+            try:
+                dj_meta = await asyncio.wait_for(
+                    self._resolve_tail_dj_meta(next_info),
+                    timeout=timeout_s,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"⚠️ [Seamless Skip] DJ meta 背景解析逾時 >{timeout_s}s，放棄串場")
+                return
+
+            if dj_meta is not None:
+                next_info['_dj_played_in_tail'] = True
+                await self._maybe_play_dj_interjection(dj_meta)
+        except Exception as e:
+            logger.warning(f"⚠️ [Seamless Skip] 背景 DJ 串場出錯: {e}")
+
     async def _maybe_play_dj_interjection(self, dj: dict | None):
         """播放預先生成的 DJ 播報。有預渲染音訊則直接播檔案，否則即時串流。"""
         if not dj:
@@ -3137,27 +3177,15 @@ class MusicCog(commands.Cog):
                 self._tail_dj_task.cancel()
                 self._tail_dj_task = None
 
-            # ⏭️ [Seamless Skip] 聲音零中斷：若佇列中有下一首，預載 DJ 與 PCM 解碼後才清空第一首
+            # ⏭️ [Quick Skip] 手動 skip 要立即生效，DJ 串場改背景執行不擋路。
+            # 原本這裡 await 到 DJ meta 解析/播放完才清空第一首，逼近
+            # _SEAMLESS_SKIP_TIMEOUT_S=10s 逾時時使用者會覺得指令沒反應（2026-08-06
+            # 事故：喚醒到 skip 生效隔了 10.9s，使用者以為指令沒吃到又講一次）。
+            # PCM 預載跟 DJ 串場改丟背景 task，不擋這裡的立即回覆。
             next_info = self.stream_queue[0] if self.stream_queue else None
             if next_info is not None and self.stream_mode:
-                try:
-                    timeout_s = getattr(self, '_SEAMLESS_SKIP_TIMEOUT_S', 3.0)
-                    logger.info(f"⏭️ [Seamless Skip] 開始預載下一首 ({next_info.get('title', '?')})，逾時={timeout_s}s")
-                    self._start_music_preload(next_info)
-                    try:
-                        dj_meta = await asyncio.wait_for(
-                            self._resolve_tail_dj_meta(next_info),
-                            timeout=timeout_s,
-                        )
-                    except asyncio.TimeoutError:
-                        dj_meta = None
-                        logger.warning(f"⚠️ [Seamless Skip] DJ meta 預載逾時 >{timeout_s}s，直接切歌")
-
-                    if dj_meta is not None:
-                        next_info['_dj_played_in_tail'] = True
-                        await self._maybe_play_dj_interjection(dj_meta)
-                except Exception as e:
-                    logger.warning(f"⚠️ [Seamless Skip] 預載準備過程出錯，退回直接切歌: {e}")
+                self._start_music_preload(next_info)
+                asyncio.create_task(self._play_tail_dj_after_skip(next_info))
 
             if _mixer is not None:
                 _mixer.clear_music()
@@ -3351,11 +3379,46 @@ class MusicCog(commands.Cog):
             )
         await self._safe_music_command(speaker, ident, "play")
 
+    @tasks.loop(seconds=90.0)
+    async def _stream_watchdog_loop(self):
+        """🐕 [Stream Watchdog] 主動偵測『迴圈死了但沒人發現』，不用等使用者手動點歌
+        才觸發 _ensure_stream_loop() 的自癒（2026-08-01 事故：迴圈莫名死掉／process
+        重啟後迴圈沒重建，佇列裡明明有歌卻安靜了 17-46 分鐘，靠的是使用者剛好開口
+        點歌才救回）。
+
+        只在有明確訊號『音樂本該在播』時動手（佇列非空、或 flag 卡在 True 但沒
+        task）；完全靜默、沒人點過歌的狀態不會被這裡誤觸發成自動開播——那是
+        summon / 手動點歌才該決定的事，不是這個 watchdog 的責任。
+        `stop_stream()` 主動停播時會設 `_stream_user_stopped` 抑制本迴圈，避免使用者
+        說「停」之後被這裡偷偷復活。
+        """
+        if self._stream_user_stopped:
+            return
+        alive = self.stream_task is not None and not self.stream_task.done()
+        if alive:
+            return
+        if not self.stream_queue and not self.stream_mode:
+            return  # 沒訊號顯示「本該在播」，不主動開播
+        vc = self._vc()
+        if vc is None:
+            return
+        online = self._autopilot_online_members(
+            vc.get_online_members() if hasattr(vc, 'get_online_members') else []
+        )
+        if not online:
+            return
+        logger.warning(
+            f"🐕 [Stream Watchdog] 偵測到串流迴圈死掉但沒人發現"
+            f"（flag={self.stream_mode} 佇列={len(self.stream_queue)}首）→ 主動救回"
+        )
+        self._ensure_stream_loop()
+
     async def cog_load(self) -> None:
         logger.info("[MusicCog] Phase 5 已載入（stream + radio + autoplay state + slash commands 就緒）")
+        self._stream_watchdog_loop.start()
 
     async def cog_unload(self) -> None:
-        pass
+        self._stream_watchdog_loop.cancel()
 
 
 async def setup(bot) -> None:

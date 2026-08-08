@@ -382,6 +382,22 @@ class ConnectionMixin:
             self.connection_time = time.time()
             self.sink_failure_count = 0
             logger.warning("🔁 [AutoRejoin] 回台完成，恢復監聽（靜默、未打招呼）")
+
+            # 🎵 [Restart Resume] process 重啟會把 MusicCog 的 stream_queue/stream_mode
+            # 全部歸零（純記憶體狀態，沒有持久化）——重啟前若正在播歌，重啟後 autopilot
+            # 補歌鏈完全沒人觸發，只能乾等到有人手動點歌才會被 _ensure_stream_loop()
+            # 救回（2026-08-01 事故：安靜 17 分鐘）。這裡回台時若台上已有真人，判斷
+            # 多半是重啟打斷了進行中的一場，順手接續一輪 autopilot 推薦；跟登場的
+            # 「靜默不打招呼」同一種克制——不寒暄，但別讓音樂真的斷在那裡。
+            mc = self.bot.cogs.get('MusicCog')
+            if mc is not None and not mc.stream_mode and not mc.radio_mode:
+                online = mc._autopilot_online_members(self.get_online_members())
+                if online:
+                    # 佇列此刻是空的（重啟清空）→ 交給 _ensure_stream_loop() 啟動迴圈，
+                    # 迴圈自己發現佇列空時會走一般 autopilot 補歌路徑（跟平常運作期間
+                    # 佇列見底時同一條路，不另開特例）。
+                    logger.warning(f"🔁 [AutoRejoin] 台上已有人，接續 autopilot 音樂（{len(online)} 人在場）")
+                    mc._ensure_stream_loop()
         except Exception as e:
             logger.warning(f"[AutoRejoin] 回台失敗（可手動 /summon）: {e}")
 
