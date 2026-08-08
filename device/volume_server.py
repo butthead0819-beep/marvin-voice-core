@@ -23,10 +23,28 @@ import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+try:
+    from puck_mixer import PuckMixer
+except ImportError:
+    PuckMixer = None
+
+try:
+    from puck_mic_aec import PuckMicAecLoop, make_fifo_writer
+except ImportError:
+    PuckMicAecLoop = None
+    make_fifo_writer = None
+
 CARD = os.getenv("MARVIN_VOL_CARD", "IQaudIODAC")
 CONTROL = os.getenv("MARVIN_VOL_CONTROL", "Digital")
 TOKEN = os.getenv("MARVIN_VOL_TOKEN", "").strip() or None
 PORT = int(os.getenv("MARVIN_VOL_PORT", "8766"))
+PUCK_BT_MAC = os.getenv("MARVIN_PUCK_BT_MAC", "").strip() or None
+_puck_mixer = PuckMixer(PUCK_BT_MAC) if (PuckMixer and PUCK_BT_MAC) else None
+# INMP441 收音 + 即時 AEC（PoC，見 device/puck_mic_aec.py）。
+# 只有兩個 env 都設，且真的跑在有 puck_mixer 的車 puck 上才啟動。
+PUCK_MIC_DEVICE = os.getenv("MARVIN_PUCK_MIC_DEVICE", "").strip() or None
+PUCK_MIC_AEC_OUT = os.getenv("MARVIN_PUCK_MIC_AEC_OUT", "").strip() or "/tmp/marvin_puck_mic_clean.pcm"
+_puck_mic_aec_loop = None
 # 控制台網頁：指令送 Mac 大腦 /say（跨網域，已開 CORS）
 MAC_SAY = os.getenv("MARVIN_MAC_SAY_URL", "http://100.123.68.86:8790/say")
 
@@ -517,7 +535,8 @@ class Handler(BaseHTTPRequestHandler):
         # 控制台網頁（免 token，Tailscale 私網；API 呼叫才驗 token）
         if self.command == "GET" and path in ("", "/panel"):
             return self._serve_panel()
-        if path not in ("/vol", "/eq", "/balance", "/profile", "/ptt", "/presence", "/hud"):
+        if path not in ("/vol", "/eq", "/balance", "/profile", "/ptt", "/presence", "/hud",
+                         "/puck/play", "/puck/queue_next", "/puck/crossfade", "/puck/stop", "/puck/status"):
             return self._send(404, {"error": "not_found"})
         q = parse_qs(parsed.query)
         if not self._authed(q):
@@ -718,6 +737,43 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send(400, {"error": "bad_request", "message": str(e)})
 
+        elif path.startswith("/puck/"):
+            # 車puck mk2 BT crossfade 混音：Mac 決策時機、Pi 純執行。
+            if _puck_mixer is None:
+                return self._send(503, {"error": "puck_mixer_unavailable"})
+            if path == "/puck/status":
+                return self._send(200, _puck_mixer.status())
+            n = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(n).decode() if n else "{}"
+            try:
+                data = json.loads(body) if body else {}
+            except Exception:
+                return self._send(400, {"error": "bad_json"})
+            try:
+                if path == "/puck/play":
+                    url = data.get("url", "").strip()
+                    if not url:
+                        return self._send(400, {"error": "missing_url"})
+                    _puck_mixer.play(url)
+                    return self._send(200, {"ok": True})
+                elif path == "/puck/queue_next":
+                    url = data.get("url", "").strip()
+                    if not url:
+                        return self._send(400, {"error": "missing_url"})
+                    _puck_mixer.queue_next(url)
+                    return self._send(200, {"ok": True})
+                elif path == "/puck/crossfade":
+                    duration_s = float(data.get("duration_s", 4.0))
+                    _puck_mixer.crossfade(duration_s)
+                    return self._send(200, {"ok": True})
+                elif path == "/puck/stop":
+                    _puck_mixer.stop()
+                    return self._send(200, {"ok": True})
+                else:
+                    return self._send(404, {"error": "not_found"})
+            except Exception as e:
+                return self._send(400, {"error": "bad_request", "message": str(e)})
+
     do_GET = _handle
     do_POST = _handle
 
@@ -728,4 +784,12 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     print(f"🔊 [VolumeServer] :{PORT}/vol  card={CARD} control={CONTROL} "
           f"token={'on' if TOKEN else 'off'}  現值={get_percent()}%", flush=True)
+    if _puck_mixer and PUCK_MIC_DEVICE and PuckMicAecLoop:
+        _puck_mic_aec_loop = PuckMicAecLoop(
+            mixer=_puck_mixer,
+            mic_device=PUCK_MIC_DEVICE,
+            on_clean_chunk=make_fifo_writer(PUCK_MIC_AEC_OUT),
+        )
+        _puck_mic_aec_loop.start()
+        print(f"🎙️ [PuckMicAec] 收音 device={PUCK_MIC_DEVICE} → 消回音後輸出 {PUCK_MIC_AEC_OUT}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
