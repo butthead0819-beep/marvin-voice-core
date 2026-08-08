@@ -100,11 +100,16 @@ _TITLE_NOISE_TOKENS = frozenset({
 
 
 def build_stt_context(base: str, game_dict: str, song_pairs: list[tuple[str, str]],
-                      members: list[str], cap: int = 60) -> str:
-    """組裝 STT contextualStrings（2026-06-13 動態擴充：歌名/歌手/活躍講者）。
+                      members: list[str], cap: int = 60,
+                      history_titles: list[str] | None = None) -> str:
+    """組裝 STT contextualStrings（2026-06-13 動態擴充：歌名/歌手/活躍講者；
+    8/8 再擴充：在場講者曾點過的歌——被重點機率高，救拼音同音字撞錯歌，
+    如「小雨」被撞成「小宇」）。
 
     - 標題先按空白/括號類符號切 token，濾掉 YouTube 垃圾詞與超長 token（>12 字）
     - 去重保序、空白剔除、總數 cap（Apple contextualStrings 宜短小聚焦）
+    - 優先序：base → game_dict → 現正播放/佇列 → 點播歷史 → 在場講者暱稱
+      （現正播放最即時最該保留，cap 吃緊時 caller 應先砍 history_titles 筆數）
     - ⚠️ 鐵則：回傳的字串 caller 必須同步餵給 is_whisper_hallucination 過濾 echo-back
     """
     import re as _re
@@ -123,14 +128,19 @@ def build_stt_context(base: str, game_dict: str, song_pairs: list[tuple[str, str
         seen.add(token)
         out.append(token)
 
+    def _add_title_tokens(field: str) -> None:
+        for token in _re.split(r"[\s\[\]【】()（）「」『』/|\-_–—:：]+", field or ""):
+            _add(token)
+
     for part in base.split(","):
         _add(part)
     for part in game_dict.split(","):
         _add(part)
     for title, artist in song_pairs:
-        for field in (title, artist):
-            for token in _re.split(r"[\s\[\]【】()（）「」『』/|\-_–—:：]+", field or ""):
-                _add(token)
+        _add_title_tokens(title)
+        _add_title_tokens(artist)
+    for title in (history_titles or []):
+        _add_title_tokens(title)
     for m in members:
         _add(m)
     return ",".join(out)

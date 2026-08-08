@@ -92,3 +92,40 @@ def test_build_stt_context_gathers_songs_and_speakers():
     for expected in ("馬文", "晴天", "夜曲", "周杰倫", "狗與露"):
         assert expected in parts
     assert engine._last_stt_context == ctx
+
+
+def test_build_stt_context_includes_active_speakers_song_history():
+    """8/8：在場講者曾點過的歌餵進 context，救拼音同音字撞錯歌（小雨/小宇）。"""
+    engine = _make_engine()
+    vc = MagicMock()
+    vc._current_stream_info = None
+    vc.stream_queue = []
+    engine.bot.get_cog.return_value = vc
+    engine.conv_buffer = MagicMock()
+    engine.conv_buffer.get_active_speakers.return_value = {"狗與露"}
+    engine.bot.router.memory = MagicMock()
+    engine.bot.router.memory.get_song_history.return_value = ["張震嶽 小雨", "李宗盛 山丘"]
+
+    ctx = engine._build_stt_context()
+
+    parts = ctx.split(",")
+    assert "張震嶽" in parts
+    assert "小雨" in parts
+    engine.bot.router.memory.get_song_history.assert_called_with("狗與露")
+
+
+def test_build_stt_context_history_fetch_failure_degrades_gracefully():
+    """memory 掛掉/沒裝不該讓整個 context 組裝失敗。"""
+    engine = _make_engine()
+    vc = MagicMock()
+    vc._current_stream_info = None
+    vc.stream_queue = []
+    engine.bot.get_cog.return_value = vc
+    engine.conv_buffer = MagicMock()
+    engine.conv_buffer.get_active_speakers.return_value = {"狗與露"}
+    engine.bot.router.memory = MagicMock()
+    engine.bot.router.memory.get_song_history.side_effect = RuntimeError("boom")
+
+    ctx = engine._build_stt_context()
+
+    assert "馬文" in ctx.split(",")

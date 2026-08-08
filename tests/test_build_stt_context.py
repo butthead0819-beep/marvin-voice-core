@@ -67,6 +67,52 @@ def test_overlong_tokens_dropped():
     assert all(len(p) <= 12 for p in parts)
 
 
+def test_history_titles_included():
+    """8/8：曾點過的歌被重點機率很高，餵進 context 幫拼音消歧（小雨 vs 小宇 這種）。"""
+    ctx = build_stt_context(
+        base="馬文", game_dict="",
+        song_pairs=[], members=[],
+        history_titles=["張震嶽 小雨", "李宗盛 山丘"],
+    )
+    parts = set(ctx.split(","))
+    assert "張震嶽" in parts
+    assert "小雨" in parts
+    assert "山丘" in parts
+
+
+def test_history_titles_noise_and_length_filtered_same_as_song_pairs():
+    ctx = build_stt_context(
+        base="馬文", game_dict="", song_pairs=[], members=[],
+        history_titles=["晴天 Official Music Video 官方完整版"],
+    )
+    parts = set(ctx.split(","))
+    assert "晴天" in parts
+    assert "Official" not in parts
+
+
+def test_history_titles_respect_shared_cap():
+    ctx = build_stt_context(
+        base="", game_dict="", song_pairs=[], members=[],
+        history_titles=[f"歷史歌{i}" for i in range(100)],
+        cap=10,
+    )
+    assert len(ctx.split(",")) <= 10
+
+
+def test_song_pairs_take_priority_over_history_when_capped():
+    """佇列現正播放的歌比歷史紀錄更即時，cap 吃緊時優先保留。"""
+    ctx = build_stt_context(
+        base="", game_dict="",
+        song_pairs=[("現正播放", "當前歌手")],
+        members=[],
+        history_titles=[f"歷史歌{i}" for i in range(20)],
+        cap=3,
+    )
+    parts = set(ctx.split(","))
+    assert "現正播放" in parts
+    assert "當前歌手" in parts
+
+
 def test_injected_titles_caught_by_hallucination_filter():
     """端到端鐵則驗證：注入的歌名若被 STT 原樣 echo（純 prompt token 組成），
     is_whisper_hallucination 用同一份 context 能抓到。"""
