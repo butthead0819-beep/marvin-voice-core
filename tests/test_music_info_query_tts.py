@@ -46,6 +46,9 @@ async def test_music_info_query_speaks_the_reply():
     cog.play_tts.assert_awaited_once()
     spoken = cog.play_tts.await_args.args[0]
     assert "左邊的人" in spoken
+    # 8/9：多人語音頻道常有人同時講話，非 protected 會被 Silence Gate 靜默丟棄
+    # （狗與露 8/9 01:20 實戰重現：「有迴答了但還是沒語音」）；直答類查詢必須 protected。
+    assert cog.play_tts.await_args.kwargs.get("protected") is True
 
 
 @pytest.mark.asyncio

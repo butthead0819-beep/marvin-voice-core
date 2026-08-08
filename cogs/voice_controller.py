@@ -3857,7 +3857,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.stt_logger.info(f"[音樂資訊←{speaker}] query='{query[:30]}' | reply={reply}")
         if ch:
             await ch.send(f"💬 **【馬文·音樂資訊】** {reply}")
-        await self.play_tts(reply, already_in_channel=False)  # 8/8：原本只送文字沒語音，補 TTS
+        # 8/9：8/8 補的 TTS 未加 protected，多人語音頻道常有人同時講話，被
+        # Silence Gate 靜默丟棄（狗與露 8/9 01:20 實戰重現：「有迴答了但還是沒語音」）；
+        # 直接回答類查詢比照 helper query 慣例用 protected=True，唸完不被中斷。
+        await self.play_tts(reply, already_in_channel=False, protected=True)
 
     _MUSIC_KW_NOISE_WINDOW = 6  # 命令詞可容忍 ≤6 char noise prefix（"好煩，馬文，"=6 剛好）
 
