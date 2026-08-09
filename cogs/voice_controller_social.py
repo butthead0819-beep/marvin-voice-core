@@ -574,5 +574,12 @@ class ProactiveSocialMixin:
         if self.active_text_channel:
             await self.active_text_channel.send(f"👋 **【馬文·道別】** {msg}")
         self.stt_logger.info(f"[道別←{speaker}] reply={msg}")
-        # 直接回應使用者道別，唸完不被同頻道其他人講話蓋掉（protected）
-        await self.play_tts(msg, already_in_channel=True, protected=True)
+        # 直接回應使用者道別，唸完不被同頻道其他人講話蓋掉。play_tts 的 protected=
+        # 參數本身是死的（該方法只讀 self._tts_protected，不讀傳入的 kwarg——8/9 才
+        # 抓到，比照 _proactive_play_joke 等既有呼叫點手動拉旗標，別再被同一個坑絆倒）。
+        _prev_protected = self._tts_protected
+        self._tts_protected = True
+        try:
+            await self.play_tts(msg, already_in_channel=True, protected=True)
+        finally:
+            self._tts_protected = _prev_protected

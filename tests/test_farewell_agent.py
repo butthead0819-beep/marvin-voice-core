@@ -140,19 +140,31 @@ def _make_cog():
         from cogs.voice_controller import VoiceController
         cog = VoiceController(bot)
     cog.stt_logger = MagicMock()
-    cog.play_tts = AsyncMock()
     cog.stream_mode = False
+    cog._tts_protected = False
     return cog
 
 
 async def test_handle_wake_farewell_speaks_and_posts():
+    """play_tts 的 `protected=` kwarg 是死參數（該方法只讀 self._tts_protected）；
+    真正生效的是呼叫當下 self._tts_protected 有沒有被拉成 True——只 mock play_tts
+    本身測不出這個坑（8/9 實測：兩次補 protected 都栽在這裡），改用 side_effect
+    在呼叫當下讀 self._tts_protected 才是真的驗證有沒有保護到。
+    """
     cog = _make_cog()
     cog.active_text_channel = AsyncMock()
+    protected_at_call = []
+
+    async def _capture(*args, **kwargs):
+        protected_at_call.append(cog._tts_protected)
+
+    cog.play_tts = AsyncMock(side_effect=_capture)
 
     await cog._handle_wake_farewell("狗與露")
 
     cog.active_text_channel.send.assert_awaited_once()
     cog.play_tts.assert_awaited_once()
-    args, kwargs = cog.play_tts.await_args
+    args, _ = cog.play_tts.await_args
     assert "掰掰" in args[0]
-    assert kwargs.get("protected") is True
+    assert protected_at_call == [True], "self._tts_protected 在 play_tts 呼叫當下必須是 True，否則會被 Silence Gate 丟掉"
+    assert cog._tts_protected is False, "呼叫完必須還原旗標，不能永久卡在 protected 狀態"

@@ -35,11 +35,22 @@ def _make_cog():
 
 @pytest.mark.asyncio
 async def test_music_info_query_speaks_the_reply():
+    """play_tts 的 `protected=` kwarg 是死參數（該方法只讀 self._tts_protected，不讀
+    傳入的 kwarg）；真正生效的是呼叫當下 self._tts_protected 有沒有被拉成 True——只
+    mock play_tts 本身測不出這個坑，改用 side_effect 在呼叫當下讀旗標才是真的驗證。
+    """
     cog = _make_cog()
     cog.active_text_channel = AsyncMock()
     cog._current_stream_info = {
         "title": "左邊的人-陳華 歌詞字幕版", "uploader": "MuSiC CC", "requested_by": "狗與露",
     }
+    cog._tts_protected = False
+    protected_at_call = []
+
+    async def _capture(*args, **kwargs):
+        protected_at_call.append(cog._tts_protected)
+
+    cog.play_tts = AsyncMock(side_effect=_capture)
 
     await cog._handle_music_info_query("狗與露", "這是什麼歌")
 
@@ -48,7 +59,8 @@ async def test_music_info_query_speaks_the_reply():
     assert "左邊的人" in spoken
     # 8/9：多人語音頻道常有人同時講話，非 protected 會被 Silence Gate 靜默丟棄
     # （狗與露 8/9 01:20 實戰重現：「有迴答了但還是沒語音」）；直答類查詢必須 protected。
-    assert cog.play_tts.await_args.kwargs.get("protected") is True
+    assert protected_at_call == [True], "self._tts_protected 在 play_tts 呼叫當下必須是 True"
+    assert cog._tts_protected is False, "呼叫完必須還原旗標"
 
 
 @pytest.mark.asyncio

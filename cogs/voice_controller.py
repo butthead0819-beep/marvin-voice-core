@@ -3740,7 +3740,14 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 8/9：8/8 補的 TTS 未加 protected，多人語音頻道常有人同時講話，被
         # Silence Gate 靜默丟棄（狗與露 8/9 01:20 實戰重現：「有迴答了但還是沒語音」）；
         # 直接回答類查詢比照 helper query 慣例用 protected=True，唸完不被中斷。
-        await self.play_tts(reply, already_in_channel=False, protected=True)
+        # ⚠️ play_tts 的 protected= 參數是死的（該方法只讀 self._tts_protected，不讀
+        # 傳入的 kwarg），要手動拉旗標才真的生效——這輪才發現，一併補上。
+        _prev_protected = self._tts_protected
+        self._tts_protected = True
+        try:
+            await self.play_tts(reply, already_in_channel=False, protected=True)
+        finally:
+            self._tts_protected = _prev_protected
 
     _MUSIC_KW_NOISE_WINDOW = 6  # 命令詞可容忍 ≤6 char noise prefix（"好煩，馬文，"=6 剛好）
 

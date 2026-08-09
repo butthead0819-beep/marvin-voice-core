@@ -26,7 +26,9 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4200      # 實測 4200（2026-08-09 移除 _handle_farewell_speech / _farewell_role_resolve
+LINE_BUDGET = 4207      # 實測 4207（2026-08-09 修 play_tts protected= 死參數坑 +7：該方法只讀
+                        # self._tts_protected、不讀傳入 kwarg，_handle_music_info_query 補手動拉
+                        # 旗標的 try/finally——既有呼叫點微調，非新功能）；前 4200（2026-08-09 移除 _handle_farewell_speech / _farewell_role_resolve
                         # 側通道 -140：判斷邏輯複雜又不準的「聽到 bye 就猜會不會離場」偵測整條拔除，
                         # 只留 FarewellAgent 處理喚醒直接道別；departure_stats.py 同步砍掉
                         # predict_leaving_soon / typical_departure_summary / record_false_alarm 三個
