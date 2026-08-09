@@ -37,6 +37,26 @@ logger = logging.getLogger(__name__)
 MAX_HOTSWAP_CHARS = 12
 
 
+def _shift_percent_string(value: "str | None", offset: int, clamp: tuple[int, int] = (-60, 60)) -> str:
+    """把 '-20%' 這種 edge-tts rate 字串疊加 offset 百分點，clamp 後回傳同格式字串。"""
+    try:
+        base = int(str(value).rstrip("%")) if value else 0
+    except ValueError:
+        base = 0
+    shifted = max(clamp[0], min(clamp[1], base + offset))
+    return f"{shifted:+d}%"
+
+
+def _shift_hz_string(value: "str | None", offset: int, clamp: tuple[int, int] = (-50, 50)) -> str:
+    """把 '-15Hz' 這種 edge-tts pitch 字串疊加 offset Hz，clamp 後回傳同格式字串。"""
+    try:
+        base = int(str(value).rstrip("Hz")) if value else 0
+    except ValueError:
+        base = 0
+    shifted = max(clamp[0], min(clamp[1], base + offset))
+    return f"{shifted:+d}Hz"
+
+
 class PlaybackMixin:
     def _ensure_mixer_playing(self, device) -> bool:
         """[Plan 12] flag=on 時確保 mixer adapter 正在 device 上播放（連線/重連後 re-arm）。
@@ -182,6 +202,29 @@ class PlaybackMixin:
             return out
         return self._EMOTION_TTS_PARAMS.get(emotion_tag, self._EMOTION_TTS_PARAMS["neutral"])
 
+    def _apply_persona_mood_tts_offset(self, tp: dict[str, str]) -> dict[str, str]:
+        """疊加人格週排程 mood（bot.router.dna['persona_tag']）的 rate/pitch offset。
+
+        offset 定義在 personas/moods/persona_behavior_map.yaml（見 rate_offset_percent /
+        pitch_offset_hz），讓 Marvin 目前的排班人格（躁鬱/虛無/邏輯關機…）連動 TTS 表現，
+        不只影響 prompt 語氣。查無 router/dna/persona_tag 一律不調整，回傳原值。
+        """
+        router = getattr(self.bot, "router", None)
+        dna = getattr(router, "dna", None)
+        persona_tag = dna.get("persona_tag") if isinstance(dna, dict) else None
+        if not persona_tag:
+            return tp
+        from marvin_prompts import get_persona_modifiers
+        modifiers = get_persona_modifiers(persona_tag)
+        rate_offset = int(modifiers.get("rate_offset_percent", 0) or 0)
+        pitch_offset = int(modifiers.get("pitch_offset_hz", 0) or 0)
+        if rate_offset == 0 and pitch_offset == 0:
+            return tp
+        out = dict(tp)
+        out["rate"] = _shift_percent_string(tp.get("rate"), rate_offset)
+        out["pitch"] = _shift_hz_string(tp.get("pitch"), pitch_offset)
+        return out
+
     async def _stream_tts_to_mixer(self, text: str, *, force_macos: bool,
                                    emotion_tag: str, voice: str | None, layer: int = 1,
                                    on_first_frame=None, target_user: str | None = None,
@@ -207,7 +250,7 @@ class PlaybackMixin:
                 room_mood = ""
                 if hasattr(self, "_room_mood_store") and self._room_mood_store:
                     try:
-                        room_mood = str(getattr(self._room_mood_store.get(0), "room_mood", "") or "")
+                        room_mood = str(getattr(self._room_mood_store.get(0), "group_mood", "") or "")
                     except Exception:
                         room_mood = ""
                 tc = self._spatial_engine.generate_tts_control(
@@ -222,6 +265,8 @@ class PlaybackMixin:
                 if tp.get("volume") is None and tc.volume_offset_percent != 0.0:
                     tp["volume"] = edge_params["volume"]
                 spatial_control = tc.audio_effects
+
+        tp = self._apply_persona_mood_tts_offset(tp)
 
         if not hasattr(self, "_spatial_renderer") or self._spatial_renderer is None:
             try:
@@ -634,12 +679,16 @@ class PlaybackMixin:
         src = discord.FFmpegPCMAudio(file_path)
         await self._mixer_play_music(device, src, still_active=lambda: device.is_connected())
 
-    async def play_dj_on_tts_layer(self, file_path: str) -> bool:
+    async def play_dj_on_tts_layer(self, file_path: str, *, peak: float = 0.9) -> bool:
         """把預渲染 DJ 音檔解碼後推上 **TTS 層**（push_tts），非阻塞、會 duck 音樂、
         且撐過歌1→歌2 的音樂換源（set_music_source 不碰 TTS 層）→ DJ 橫跨切歌點。
 
         跟 play_local_file 不同：後者走 _mixer_play_music＝把檔案設成**音樂層**來源，
         會替換掉正在播的歌（DJ 尾段 crossfade 不能用那條）。回 True＝已入列。
+
+        peak：正規化目標峰值（0-1）。預設 0.9＝口白原本的滿幅行為（TTS 層還會再乘
+        _tts_gain，講話本就該蓋過 ducked 音樂）。轉場音效不是講話，音量該跟音樂的
+        10% 音量感一致，caller 傳低一點的 peak（例如 0.1）別讓 SFX 比講話還突兀。
         """
         if not os.path.exists(file_path):
             return False
@@ -647,7 +696,7 @@ class PlaybackMixin:
         if f32 is None or not f32.size:
             return False
         import audio_mixing
-        f32 = audio_mixing.peak_normalize_f32(f32)  # DJ 音檔振幅偏低→拉滿幅，別被 ducked 音樂蓋掉
+        f32 = audio_mixing.peak_normalize_f32(f32, target_peak=peak)
         self._ensure_mixer_playing(self._resolve_playback_device())
         return bool(self._mixer.push_tts(f32))
 

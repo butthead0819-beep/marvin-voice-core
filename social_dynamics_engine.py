@@ -111,6 +111,8 @@ class SocialDynamicsEngine:
         pan = positions.get(target_user, 0.0) if target_user else 0.0
 
         # Base environment context
+        # 「深夜/熱鬧/露營」是場景描述關鍵字；「興奮/低落/分歧/放鬆」是 RoomMoodState.group_mood
+        # 的四個固定標籤（見 room_mood_state.py MoodLabel），兩套詞彙不重疊，故分開判斷。
         if "深夜" in room_mood or is_intimate:
             env = "LATE_NIGHT_CHILL"
             rate = 0.85
@@ -119,13 +121,29 @@ class SocialDynamicsEngine:
             prox_db = 3.0
             clarity_db = 0.0
             distance = 0.2 if target_user else 0.0
-        elif "熱鬧" in room_mood or "歡樂" in room_mood or "聚會" in room_mood:
+        elif "低落" in room_mood:
+            env = "LOW_MOOD"
+            rate = 0.88
+            pitch = -6.0
+            vol = -8.0
+            prox_db = 1.5
+            clarity_db = 0.0
+            distance = 0.1 if target_user else 0.0
+        elif "熱鬧" in room_mood or "歡樂" in room_mood or "聚會" in room_mood or "興奮" in room_mood:
             env = "PARTY_CROWD"
             rate = 1.15
             pitch = 5.0
             vol = 0.0
             prox_db = 0.0
             clarity_db = 3.5
+            distance = 0.0
+        elif "分歧" in room_mood:
+            env = "TENSE_ROOM"
+            rate = 0.95
+            pitch = -3.0
+            vol = -5.0
+            prox_db = 0.0
+            clarity_db = 2.0
             distance = 0.0
         elif "露營" in room_mood or "戶外" in room_mood:
             env = "OUTDOOR_CAMP"

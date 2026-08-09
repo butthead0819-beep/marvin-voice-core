@@ -48,6 +48,31 @@ def test_tts_control_generation_party_crowd():
     assert tts_control.audio_effects["reverb_preset"] == "PARTY_CROWD"
 
 
+@pytest.mark.parametrize(
+    "group_mood,expect_rate_faster,expect_pitch_lower",
+    [
+        ("興奮", True, False),
+        ("低落", False, True),
+        ("分歧", False, True),
+        ("放鬆", None, None),
+    ],
+)
+def test_tts_control_driven_by_group_mood_label(group_mood, expect_rate_faster, expect_pitch_lower):
+    """RoomMoodState.group_mood 的四個固定標籤（放鬆/興奮/低落/分歧）需能直接驅動 TTS rate/pitch。"""
+    engine = SocialDynamicsEngine()
+    neutral = engine.generate_tts_control(text="測試", room_mood="放鬆")
+    tts_control = engine.generate_tts_control(text="測試", room_mood=group_mood)
+
+    assert isinstance(tts_control, TTSControl)
+    if expect_rate_faster is True:
+        assert tts_control.speaking_rate > neutral.speaking_rate
+    if expect_pitch_lower is True:
+        assert tts_control.pitch_offset_hz < neutral.pitch_offset_hz
+    if group_mood == "放鬆":
+        assert tts_control.speaking_rate == neutral.speaking_rate
+        assert tts_control.pitch_offset_hz == neutral.pitch_offset_hz
+
+
 def test_edge_tts_parameter_export():
     engine = SocialDynamicsEngine()
     tts_control = engine.generate_tts_control(
