@@ -246,6 +246,7 @@ def build_intent_agents(controller, bot):
     from intent_agents.replay_agent import ReplayAgent
     from intent_agents.now_playing_agent import NowPlayingAgent
     from intent_agents.personal_shuffle_agent import PersonalShuffleAgent
+    from intent_agents.farewell_agent import FarewellAgent
     from intent_agents.dual_speak_agent import DualSpeakAgent
     from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
     return [
@@ -257,6 +258,7 @@ def build_intent_agents(controller, bot):
         VolumeAgent(controller),  # 2026-05-27: 議題 E #1 — 音量語音控制
         ReplayAgent(controller),  # 2026-05-27: 議題 E #2 — 重播當前歌曲
         NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
+        FarewellAgent(controller),  # 2026-08-09: 喚醒直接說「掰掰/晚安/bye bye」互道再見
         PersonalShuffleAgent(controller),  # 2026-06-29: 語音「連續隨機播我的歌單」（一次墊一首）
         GameKnowledgeAgent(controller),  # 2026-06-06: Plan 4 intent_gap ready — 「查麥塊…」遊戲知識查詢
         BustedAgent(bot),
@@ -2904,6 +2906,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         compact = re.sub(r"[\s，,。.!！?？、…~～]+", "", normalized).strip()
         if not compact:
             return False, "empty"
+
+        # 👋 [Wake Farewell] 整句就是道別詞 → 直接放行，讓 FarewellAgent 接手真的回話+TTS。
+        # 放在 weak_fillers/too_short/ambient_statement 之前：這幾詞都短，會被那幾道擋掉。
+        from intent_agents.farewell_agent import DIRECT_FAREWELL_WORDS
+        if compact.lower() in DIRECT_FAREWELL_WORDS:
+            return True, "farewell_direct"
 
         weak_fillers = {
             "嗯", "啊", "欸", "喂", "哈囉", "hello", "hi", "嗨",

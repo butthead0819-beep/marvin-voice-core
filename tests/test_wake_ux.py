@@ -38,6 +38,17 @@ def test_query_quality_gate_rejects_empty_wake_and_accepts_real_question():
     assert controller._query_quality_gate("馬文，幫我看一下這個畫面")[0] is True
 
 
+@pytest.mark.parametrize("query", [
+    "馬文晚安", "馬文再見", "馬文掰掰", "馬文拜拜",
+    "Marvin byebye", "MARVIN bye bye", "馬文goodnight",
+])
+def test_query_quality_gate_accepts_direct_farewell(query):
+    """8/9：短道別詞喚醒 Marvin 要放行給 FarewellAgent，不能被 too_short/ambient 擋掉。"""
+    controller = make_controller()
+    should_answer, reason = controller._query_quality_gate(query)
+    assert should_answer is True, f"{query!r} should pass gate, got reason={reason!r}"
+
+
 def test_low_confidence_answer_detection_blocks_weak_llm_text():
     controller = make_controller()
 

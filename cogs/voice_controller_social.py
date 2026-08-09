@@ -556,3 +556,22 @@ class ProactiveSocialMixin:
                     self._tts_protected = _prev_protected
         except Exception as exc:
             logger.exception("[proactive_play_joke] failed")
+
+    # ------------------------------------------------------------------ #
+    # 👋  FarewellAgent handler（反應式，非主動；放這裡是省 voice_controller.py
+    #     的 method 棘輪額度，見 test_voice_controller_size_budget.py）
+    # ------------------------------------------------------------------ #
+
+    async def _handle_wake_farewell(self, speaker: str):
+        """[FarewellAgent] 使用者喚醒後直接對 Marvin 說「掰掰/晚安/bye bye」，互道再見。
+
+        跟 `_handle_farewell_speech`（側通道，預測會不會離場）不同：這裡使用者是明確
+        對 Marvin 講話，一定要真的回一句道別＋TTS，不能只貼文字（8/9 實測：「馬文晚安」
+        被 quality gate 擋掉，只回一句聽不懂的台詞，完全不像道別）。
+        """
+        msg = await self.bot.router.generate_player_farewell(speaker, stream_active=self.stream_mode)
+        if self.active_text_channel:
+            await self.active_text_channel.send(f"👋 **【馬文·道別】** {msg}")
+        self.stt_logger.info(f"[道別←{speaker}] reply={msg}")
+        # 直接回應使用者道別，唸完不被同頻道其他人講話蓋掉（protected）
+        await self.play_tts(msg, already_in_channel=True, protected=True)
