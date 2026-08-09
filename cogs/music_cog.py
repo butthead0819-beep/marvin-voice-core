@@ -2597,7 +2597,8 @@ class MusicCog(commands.Cog):
         if not os.path.exists(path):
             return
         try:
-            await vc.play_dj_on_tts_layer(path)
+            # 轉場音效不是講話，音量比照音樂 10% 感受，別用口白的滿幅正規化（太搶戲）。
+            await vc.play_dj_on_tts_layer(path, peak=0.1)
         except Exception as e:
             logger.debug(f"⚠️ [DJ Tail] SFX 疊播失敗（不影響主流程）: {e}")
 

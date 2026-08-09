@@ -8,9 +8,20 @@ import os
 import wave
 
 import numpy as np
+from scipy.signal import butter, sosfilt
 
 RATE = 44100
 SFX_DIR = "assets/dj_sfx"
+
+
+def _lowpass(sig: np.ndarray, cutoff: float, order: int = 2) -> np.ndarray:
+    sos = butter(order, cutoff, btype="lowpass", fs=RATE, output="sos")
+    return sosfilt(sos, sig)
+
+
+def _bandpass(sig: np.ndarray, low: float, high: float, order: int = 2) -> np.ndarray:
+    sos = butter(order, [low, high], btype="bandpass", fs=RATE, output="sos")
+    return sosfilt(sos, sig)
 
 
 def _write_wav(path: str, samples: np.ndarray) -> None:
@@ -37,18 +48,26 @@ def _fade(samples: np.ndarray, attack: float = 0.01, release: float = 0.08) -> n
 
 
 def gen_scratch() -> np.ndarray:
-    """刷碟：正反來回的鋸齒音高擺盪 + 噪點，模擬 DJ 手刷黑膠。"""
+    """刷碟：正反來回的音高擺盪 + 濾波噪點，模擬 DJ 手刷黑膠。
+
+    上一版用方波（np.sign）當音高擺盪的音色，方波高次諧波一路延伸到 Nyquist，
+    聽起來像 8-bit 蜂鳴而非刷碟——這是「不自然」的主因。改用正弦音高擺盪
+    （音高本身的來回擺動已經有辨識度，不需要靠方波刺耳感）+ lowpass 收乾淨；
+    噪點也從全頻域白噪音改成 bandpass 濾到中高頻段，模擬唱針磨擦黑膠的顆粒感
+    而非一片嘶聲。
+    """
     dur = 0.55
     n = int(RATE * dur)
     t = np.arange(n) / RATE
     # 音高在 3 段來回擺盪（去-回-去），模擬手刷來回
     sweep = 900 + 700 * np.sin(2 * np.pi * 3.2 * t)
     phase = 2 * np.pi * np.cumsum(sweep) / RATE
-    tone = np.sign(np.sin(phase))  # 方波，刷碟的粗噪質感
+    tone = _lowpass(np.sin(phase), 3500)
     noise = np.random.default_rng(0).uniform(-1, 1, n)
-    sig = 0.55 * tone + 0.25 * noise
+    noise = _bandpass(noise, 400, 6000)
+    sig = 0.55 * tone + 0.3 * noise
     env = 0.6 + 0.4 * np.abs(np.sin(2 * np.pi * 3.2 * t))
-    return _fade(sig * env, attack=0.005, release=0.1)
+    return _fade((sig * env).astype(np.float32), attack=0.005, release=0.1)
 
 
 def gen_dj_airhorn() -> np.ndarray:
