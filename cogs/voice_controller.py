@@ -336,17 +336,6 @@ _MUSIC_INFO_RE = re.compile(
 # （歌詞/專輯/的歌/的歌曲）。對話「找」（找東西/找你/找工會）無錨點 → 不觸發。
 _FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGNORECASE)
 
-# 👋 [Farewell Detector] 告別語偵測正規表達式
-_FAREWELL_RE = re.compile(
-    r'(?:^|[\s，,、！!？?.。]+)'
-    r'(?:bye[\s-]*bye|good[\s-]*bye|goodnight|good[\s-]*night|'
-    r'掰掰|掰了|拜拜|再見|晚安|掰|拜了個拜|'
-    r'先走了|先閃了|我先了|我走了|我閃了|下線了|要下線了|'
-    r'我要走了|我先離開|先離開|我要下線|先下線)'
-    r'(?:[\s，,、！!？?.。]|$)',
-    re.IGNORECASE,
-)
-
 
 class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixin,
                       ConnectionMixin, PlaybackMixin, SystemLoopsMixin,
@@ -473,10 +462,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🔐 [Consent] 成員語音資料處理同意管理
         self.consent = ConsentManager()
 
-        # 🚀 [Farewell Guard] 送客冷卻池
-        self.recent_verbal_farewells = {} # speaker -> timestamp
-        self._pending_verbal_farewells = {} # speaker -> timestamp，說了 bye 但尚未確認是否離場
-        
         # 🚀 [Priority & Queue] 追問與隊列管理系統
         self.user_states = {} # speaker -> {"pending_task": Task, "is_talking": bool}
         self.tts_queue_duration = 0.0 # 當前待播放語音的總估計長度
@@ -965,27 +950,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if len(human_members) == 0:
                 print(f"👋 [Auto Dismiss] 最後一名玩家 {member.display_name} 已離開，執行自動撤離...")
                 # 記錄離場習慣（最後一人離場也算）
-                verbal_bye = time.time() - self.recent_verbal_farewells.get(member.display_name, 0) < 60
-                await self.departure_stats.record_departure(member.display_name, verbal_bye=verbal_bye)
+                await self.departure_stats.record_departure(member.display_name, verbal_bye=False)
                 await self.handle_dismiss()
             else:
-                verbal_bye_age = time.time() - self.recent_verbal_farewells.get(member.display_name, 0)
-                verbal_bye = verbal_bye_age < 60
                 # 無論哪種離場都記錄習慣
-                await self.departure_stats.record_departure(member.display_name, verbal_bye=verbal_bye)
+                await self.departure_stats.record_departure(member.display_name, verbal_bye=False)
 
-                if verbal_bye:
-                    # 已預告離場者：短應一句，不做完整 TTS 送客
-                    print(f"👋 [Farewell Detector] {member.display_name} 已預告說 bye，靜默送出。")
-                    if self.active_text_channel:
-                        ack_lines = [
-                            f"_（{member.display_name} 已先說了再見，我就不多費口舌了。）_",
-                            f"_（{member.display_name} 走了。他/她至少還有基本禮貌。）_",
-                            f"_（{member.display_name} 說完 bye 就跑了，算有提前通知。）_",
-                        ]
-                        import random as _r
-                        await self.active_text_channel.send(_r.choice(ack_lines))
-                    return
                 if now - self.greeting_cooldown.get(member.id, 0) > 10:
                     print(f"👋 [Dynamic Farewell] 偵測到玩家 {member.display_name} 離開...")
 
@@ -1318,17 +1288,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if is_fast and wav_bytes and self.bot.router.google_client:
             asyncio.create_task(self._update_emotion_from_audio(speaker, wav_bytes, raw_text))
 
-        # 👋 [Farewell Detector] 側通道偵測告別語（不阻塞主流程，不限 wake word）
-        # 用 bot.loop.create_task 取代 asyncio.create_task，確保排程到正確的 event loop
-        if not is_wake_check and not is_echo:
-            try:
-                self.bot.loop.create_task(self._handle_farewell_speech(speaker, raw_text))
-            except Exception as _e:
-                logger.debug(f"⚠️ [Farewell] create_task 失敗: {_e}")
-            # 👅 [Taste C] 即時明示偏好。只掛非喚醒路徑（is_fast 走 wake 熱路徑，不加 I/O）；
-            # inline 與主迴圈同 thread（避免共用 sqlite 連線競態）。命中才寫，罕見。
-            if not is_fast:
-                self._record_interest_signals(speaker, raw_text)
+        # 👅 [Taste C] 即時明示偏好。只掛非喚醒路徑（is_fast 走 wake 熱路徑，不加 I/O）；
+        # inline 與主迴圈同 thread（避免共用 sqlite 連線競態）。命中才寫，罕見。
+        if not is_wake_check and not is_echo and not is_fast:
+            self._record_interest_signals(speaker, raw_text)
 
         if is_fast:
             if os.getenv("MARVIN_WAKE_DUCK", "1") != "0" and getattr(self, "_mixer", None): self._mixer.duck_for_wake()  # 🔇 喚醒→音樂沉一下即時回饋
@@ -1819,97 +1782,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         except Exception as e:
             logger.debug(f"⚠️ [Taste-C] 即時偏好記錄失敗（不影響主流程）: {e}")
 
-    # ------------------------------------------------------------------ #
-    # 👋  Farewell Detector                                               #
-    # ------------------------------------------------------------------ #
-
-    async def _handle_farewell_speech(self, speaker: str, text: str):
-        """偵測告別語，立即讓 Marvin 搶先送客，並啟動 25 秒身份驗證計時器。"""
-        if not _FAREWELL_RE.search(text):
-            return
-        now = time.time()
-        # 60 秒冷卻：同一人短時間內多次 bye 只處理一次
-        if now - self._pending_verbal_farewells.get(speaker, 0) < 60:
-            return
-
-        # 查歷史離場機率，決定要不要搶先送客、以及送客的語氣
-        leave_prob = self.departure_stats.predict_leaving_soon(speaker, window_minutes=30)
-        dep_summary = self.departure_stats.typical_departure_summary(speaker)
-        logger.info(
-            f"👋 [Farewell Detector] {speaker} 說了告別語：'{text[:60]}' | "
-            f"歷史離場機率={leave_prob:.0%} | {dep_summary}"
-        )
-
-        self._pending_verbal_farewells[speaker] = now
-        # 預先武裝，讓 on_voice_state_update 在他真的離開時不再重複 TTS 送客
-        self.recent_verbal_farewells[speaker] = now
-
-        # 🚀 [Proactive Bye] 僅在歷史離場機率 >= 30% 時主動送客，避免送別他人時誤觸
-        self.stt_logger.info(
-            f"[搶先送客→{speaker}] 偵測到告別語 | 歷史離場機率={leave_prob:.0%} | {dep_summary}"
-        )
-        if leave_prob >= 0.30:
-            try:
-                msg = await self.bot.router.generate_player_farewell(speaker)
-                if self.active_text_channel:
-                    await self.active_text_channel.send(f"👋 **【馬文 搶先送客】**\n{msg}")
-                    asyncio.create_task(self._send_mood_sticker(msg, context="farewell"))
-                self.stt_logger.info(f"[BOT搶先送客→{speaker}] {msg}")
-                await self.play_tts(msg, already_in_channel=True, silent_during_stream=True)
-            except Exception as e:
-                logger.warning(f"⚠️ [Farewell Detector] 搶先送客 TTS 失敗: {e}")
-        else:
-            logger.info(f"👋 [Farewell Detector] {speaker} leave_prob={leave_prob:.0%} < 30%，跳過主動送客，僅啟動計時器。")
-
-        asyncio.create_task(self._farewell_role_resolve(speaker, now, text))
-
-    async def _farewell_role_resolve(self, speaker: str, farewell_time: float, original_text: str):
-        """25 秒後確認身份，記錄猜測結果（含猜錯情形）。
-
-        - 說 bye 後已離開 → leaver，猜對，保留 guard 避免重複送客
-        - 說 bye 後仍在頻道 → stayer，猜錯，撤回 guard 並讓 Marvin 認錯
-        """
-        await asyncio.sleep(25)
-        # 若此期間有更新（重複觸發），本次解析作廢
-        if self._pending_verbal_farewells.get(speaker) != farewell_time:
-            return
-        self._pending_verbal_farewells.pop(speaker, None)
-
-        vc = discord.utils.get(self.bot.voice_clients)
-        if not vc:
-            return
-
-        still_in_channel = any(
-            m.display_name == speaker
-            for m in vc.channel.members
-            if not m.bot
-        )
-
-        if still_in_channel:
-            # ⚠️ 猜錯：說了 bye 但沒走，是送別他人的 stayer
-            logger.warning(f"👋 [Farewell Detector] ⚠️ 猜錯！{speaker} 說了 bye 但仍在頻道 (stayer)。")
-            await self.departure_stats.record_false_alarm(speaker)
-            summary = self.departure_stats.typical_departure_summary(speaker)
-            self.stt_logger.info(
-                f"[猜錯→{speaker}] 預測離場但仍在頻道 | 原話='{original_text[:60]}' | 結論=stayer"
-                f" | 習慣={summary}"
-            )
-            # 撤回 guard，日後真的離開時仍能觸發正常送客
-            self.recent_verbal_farewells.pop(speaker, None)
-            # Marvin 認錯：說完 bye 對方還在，很尷尬
-            if self.active_text_channel:
-                import random as _r
-                embarrassed = [
-                    f"_（{speaker}，我剛送你走了，但你還在。這很尷尬。）_",
-                    f"_（對不起，{speaker}，我預判失誤。你說 bye 是在送別別人。）_",
-                    f"_（{speaker} 說完 bye 沒走……我的預測系統需要重新校準。）_",
-                ]
-                await self.active_text_channel.send(_r.choice(embarrassed))
-        else:
-            # ✅ 猜對：說了 bye 後確實離開了
-            logger.info(f"👋 [Farewell Detector] ✅ 猜對！{speaker} 說了 bye 後確認離場 (leaver)。")
-            self.stt_logger.info(f"[猜對→{speaker}] 預測離場，確認已離開頻道 | 原話='{original_text[:60]}' | 結論=leaver")
-            # recent_verbal_farewells 已在 on_voice_state_update 60s guard 中生效，不需額外操作
 
     async def process_debounced_speech(self, speaker: str):
         if speaker in self.user_states:

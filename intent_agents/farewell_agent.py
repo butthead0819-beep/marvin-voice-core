@@ -3,12 +3,14 @@
 8/9 使用者提報：喚醒說「Marvin byebye」或「馬文晚安」/「馬文再見」，Marvin 沒有真的
 道別、也沒有 TTS。根因是 `_query_quality_gate` 把這幾個短道別詞當成雜訊擋在 bus
 之前（too_short/ambient_statement），query 根本沒機會走到這個 agent。已在
-voice_controller.py 補 `_DIRECT_FAREWELL_WORDS` 短路放行；這個 agent 接手後续。
+voice_controller.py 補 DIRECT_FAREWELL_WORDS 短路放行；這個 agent 接手後续。
 
-patterns 是「純道別詞」子集（不含 _FAREWELL_RE 裡「先走了/我要下線」這類離場宣告——
-那些是側通道 `_handle_farewell_speech` 的範疇，預測會不會離場，不是使用者在跟 Marvin
-打招呼）。DIRECT_FAREWELL_WORDS 也是 voice_controller._query_quality_gate 的短路
-放行清單——single source of truth，兩邊都 import 這裡，別各自維護一份。
+原本另外還有一條不限喚醒詞的側通道（`_handle_farewell_speech`，聽到「掰掰」就猜
+「這人是不是要走了」，25 秒後驗證猜對沒），判斷邏輯複雜又不準，8/9 已整條移除，
+現在只留這個 agent 處理「使用者直接對 Marvin 說再見」。patterns 故意只含純道別詞
+（不含「先走了/我要下線」這類離場宣告——那不是在跟 Marvin 打招呼）。
+DIRECT_FAREWELL_WORDS 同時是 voice_controller._query_quality_gate 的短路放行
+清單——single source of truth，兩邊都 import 這裡，別各自維護一份。
 
 confidence 0.90，1 個 intent：farewell。mode_compatible = {"normal", "stream"}：
 音樂播放中也該能互道再見，`generate_player_farewell(stream_active=...)` 已處理
