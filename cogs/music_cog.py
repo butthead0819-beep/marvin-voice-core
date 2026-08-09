@@ -57,6 +57,11 @@ _SONG_BPM_STORE = "records/song_bpm.json"
 _BPM_SAMPLE_SR = 11025
 _DJ_TAIL_SFX_DIR = "assets/dj_sfx"
 _DJ_TAIL_SFX_NAMES = ("scratch", "dj_airhorn", "riser", "shoutout")
+# 5s→8s：留更多餘裕給 _play_dj_tail_sfx 等下一首 preload 解碼完（見該處
+# asyncio.wait_for），避免逼近歌1實際結束點才設 _dj_played_in_tail、跟主
+# stream loop 換歌撞在一起（見 _run_tail_dj docstring）。
+_DJ_TAIL_LEAD_S = 8.0
+_DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
 
 _puck_mixer_client = None  # lazy singleton，見 _get_puck_client()
 
@@ -2408,7 +2413,7 @@ class MusicCog(commands.Cog):
         await puck_client.crossfade(crossfade_s)
 
     async def _run_tail_dj(self, cur_info: dict, song_start_time: float):
-        """[DJ Tail] 滑動窗串場：當前歌結束前 5s 點火，DJ 疊當前歌尾巴 + 溢進下一首開頭。
+        """[DJ Tail] 滑動窗串場：當前歌結束前 _DJ_TAIL_LEAD_S 秒點火，DJ 疊當前歌尾巴 + 溢進下一首開頭。
 
         關鍵：點火時刻只依「當前歌 duration」算（開播即可知），**下一首在點火當下
         才從 stream_queue[0] 抓**——因為 autopilot 常在播放中才把下一首排入 queue，
@@ -2434,8 +2439,8 @@ class MusicCog(commands.Cog):
             duration = max(0.0, duration - cur_info['highlight_start_s'])
 
         elapsed = time.time() - song_start_time
-        # 滑動窗：當前歌結束前 5s 點火，DJ（~15s）疊尾巴 5s + 溢進下一首開頭 ~10s。
-        delay = tail_dj_fire_delay(duration, elapsed)
+        # 滑動窗：當前歌結束前 _DJ_TAIL_LEAD_S 秒點火，DJ（~15s）疊尾巴 + 溢進下一首開頭。
+        delay = tail_dj_fire_delay(duration, elapsed, lead_s=_DJ_TAIL_LEAD_S)
         if delay is None:
             logger.info(f"[DJ Tail] {title_cur} 過窗或歌太短，退回舊行為")
             return
@@ -2483,7 +2488,7 @@ class MusicCog(commands.Cog):
         # 2026-07-25：跟 DJ 開場白同時，背景先把下一首整首解碼好（preload_f32_source
         # 消除 mixer 中段爆音的代價是換源前要等整首解碼完；不先做，這段延遲就會落在
         # 「DJ 開場白講完」跟「下一首出聲」中間，變成聽得到的中斷）。DJ 開場白＋尾段疊播
-        # 還有 ~5s+ 窗口，剛好夠蓋掉解碼時間。
+        # 還有 ~_DJ_TAIL_LEAD_S 秒窗口，剛好夠蓋掉解碼時間。
         self._start_music_preload(next_info)
         await self._maybe_play_dj_interjection(dj_meta)
         await self._play_dj_tail_sfx(next_info)
@@ -2625,14 +2630,28 @@ class MusicCog(commands.Cog):
         name = random.choice(_DJ_TAIL_SFX_NAMES)
         path = os.path.join(_DJ_TAIL_SFX_DIR, f"{name}.wav")
 
-        # 若抽中 scratch 且下一首已有預解碼 PCM，即時生成專屬該曲的動態刷碟聲
+        # 若抽中 scratch 且下一首已有預解碼 PCM，即時生成專屬該曲的動態刷碟聲。
+        # preload 是背景整首解碼，點火當下十之八九還沒好——與其一次性 done() 檢查
+        # （幾乎必定 miss、動態合成形同虛設），改用 wait_for 主動等一小段（在
+        # _DJ_TAIL_LEAD_S 的窗口內仍有餘裕），拉高真正用上真實 PCM 的機率。
+        # asyncio.shield：等待逾時只放棄「這次用它」，不能連 preload task 本身也砍掉
+        # ——它還要留給 _resolve_music_source 換源時用。
         if name == "scratch" and next_info:
             url = next_info.get('url', '')
             preload_task = self._preload_music_cache.get(url)
-            if preload_task is not None and preload_task.done() and not preload_task.cancelled():
+            if preload_task is not None and not preload_task.cancelled():
+                preloaded = None
                 try:
-                    if not preload_task.exception():
-                        preloaded = preload_task.result()
+                    preloaded = await asyncio.wait_for(
+                        asyncio.shield(preload_task), timeout=_DJ_TAIL_SFX_PRELOAD_WAIT_S,
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+                except Exception as e:
+                    logger.debug(f"[DJ Tail] preload 讀取失敗，退回靜態 scratch: {e}")
+
+                if preloaded is not None:
+                    try:
                         frames = getattr(preloaded, '_frames', None)
                         if frames and len(frames) >= 50:
                             import hashlib
@@ -2647,8 +2666,8 @@ class MusicCog(commands.Cog):
                             dynamic_path = f"/tmp/scratch_dynamic_{url_hash}.wav"
                             _write_wav(dynamic_path, dynamic_samples)
                             path = dynamic_path
-                except Exception as e:
-                    logger.debug(f"[DJ Tail] 動態 scratch 合成退回靜態音效: {e}")
+                    except Exception as e:
+                        logger.debug(f"[DJ Tail] 動態 scratch 合成退回靜態音效: {e}")
 
         if not os.path.exists(path):
             return

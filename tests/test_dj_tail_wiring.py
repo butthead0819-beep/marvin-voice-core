@@ -137,7 +137,7 @@ async def test_tail_dj_fire_delay_uses_effective_duration_with_highlight_start()
 
     captured = {}
 
-    def _fake_delay(duration, elapsed):
+    def _fake_delay(duration, elapsed, **kwargs):
         captured["duration"] = duration
         captured["elapsed"] = elapsed
         return 5.0
@@ -162,8 +162,9 @@ async def test_tail_dj_fire_delay_no_highlight_uses_raw_duration():
 
     captured = {}
 
-    def _fake_delay(duration, elapsed):
+    def _fake_delay(duration, elapsed, **kwargs):
         captured["duration"] = duration
+        captured["lead_s"] = kwargs.get("lead_s")
         return 5.0
 
     with patch("os.path.exists", return_value=True), \
@@ -171,6 +172,9 @@ async def test_tail_dj_fire_delay_no_highlight_uses_raw_duration():
          patch("dj_tail_schedule.tail_dj_fire_delay", side_effect=_fake_delay):
         import time
         await cog._run_tail_dj(cur, time.time() - 170.0)
+
+    from cogs.music_cog import _DJ_TAIL_LEAD_S
+    assert captured["lead_s"] == _DJ_TAIL_LEAD_S  # 5s→8s，給 preload 更多餘裕
 
     assert captured["duration"] == 180.0
 
@@ -470,6 +474,73 @@ async def test_dj_tail_sfx_falls_back_when_preload_not_ready():
     vc.play_dj_on_tts_layer.assert_awaited_once()
     played_path = vc.play_dj_on_tts_layer.await_args.args[0]
     assert played_path == "assets/dj_sfx/scratch.wav"
+
+
+@pytest.mark.asyncio
+async def test_dj_tail_sfx_waits_for_slow_preload_within_timeout():
+    """preload 點火時還沒完成、但在 wait_for 逾時前解碼好 → 照樣用真實 PCM 合成動態 scratch
+    （驗證從一次性 done() 檢查改成主動等待後，真的能等到剛完成的 preload）。"""
+    from local_mixing_source import PreloadedF32MusicSource
+    cog = _make_cog()
+    nxt = _next_info()
+    url = nxt["url"]
+
+    fake_frames = [b"\x00" * 7680 for _ in range(100)]
+    preloaded = PreloadedF32MusicSource(fake_frames)
+
+    async def _slow_preload():
+        await asyncio.sleep(0.02)  # 遠短於 timeout，但點火當下確實還沒 done()
+        return preloaded
+
+    cog._preload_music_cache[url] = asyncio.create_task(_slow_preload())
+
+    vc = MagicMock()
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    cog.bot.cogs.get.return_value = vc
+
+    with patch("random.choice", return_value="scratch"), \
+         patch("scripts.gen_dj_sfx.gen_scratch_from_pcm", return_value=np.zeros(int(48000 * 0.65), dtype=np.float32)) as mock_gen, \
+         patch("scripts.gen_dj_sfx._write_wav") as mock_write, \
+         patch("os.path.exists", return_value=True):
+        await cog._play_dj_tail_sfx(nxt)
+
+    mock_gen.assert_called_once()
+    mock_write.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_dj_tail_sfx_gives_up_after_preload_wait_timeout():
+    """preload 在 wait_for 逾時前都還沒完成 → 放棄等待、退回靜態 scratch.wav，
+    且不能把 preload task 本身取消掉（asyncio.shield，換源那邊還要用）。"""
+    import cogs.music_cog as music_cog_module
+    cog = _make_cog()
+    nxt = _next_info()
+    url = nxt["url"]
+
+    async def _never_finishes_in_time():
+        await asyncio.sleep(0.2)
+        return "should not be reached"
+
+    task = asyncio.create_task(_never_finishes_in_time())
+    cog._preload_music_cache[url] = task
+
+    vc = MagicMock()
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    cog.bot.cogs.get.return_value = vc
+
+    with patch("random.choice", return_value="scratch"), \
+         patch.object(music_cog_module, "_DJ_TAIL_SFX_PRELOAD_WAIT_S", 0.02), \
+         patch("os.path.exists", return_value=True):
+        await cog._play_dj_tail_sfx(nxt)
+
+    vc.play_dj_on_tts_layer.assert_awaited_once()
+    played_path = vc.play_dj_on_tts_layer.await_args.args[0]
+    assert played_path == "assets/dj_sfx/scratch.wav"
+    assert not task.cancelled()  # shield 保護：等待逾時不能連 preload task 都砍了
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 
