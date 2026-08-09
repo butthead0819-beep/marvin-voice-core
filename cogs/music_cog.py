@@ -56,7 +56,7 @@ _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 _SONG_BPM_STORE = "records/song_bpm.json"
 _BPM_SAMPLE_SR = 11025
 _DJ_TAIL_SFX_DIR = "assets/dj_sfx"
-_DJ_TAIL_SFX_NAMES = ("scratch", "dj_airhorn", "riser", "shoutout")
+_DJ_TAIL_SFX_NAMES = ("scratch", "riser", "shoutout")
 # 5s→8s：留更多餘裕給 _play_dj_tail_sfx 等下一首 preload 解碼完（見該處
 # asyncio.wait_for），避免逼近歌1實際結束點才設 _dj_played_in_tail、跟主
 # stream loop 換歌撞在一起（見 _run_tail_dj docstring）。
@@ -2665,8 +2665,9 @@ class MusicCog(commands.Cog):
             return None
 
     async def _play_dj_tail_sfx(self, next_info: dict | None = None):
-        """[DJ Tail] DJ 口白播完後，隨機疊一支轉場音效（dj_airhorn/riser 合成自
-        scripts/gen_dj_sfx.py；shoutout 是 edge-tts 用 Marvin 現役聲線 zh-TW-YunJheNeural
+        """[DJ Tail] DJ 口白播完後，隨機疊一支轉場音效（riser 合成自
+        scripts/gen_dj_sfx.py；dj_airhorn 方波太刺耳已從輪替池移除，函式仍留著給
+        gen_dj_sfx.py 素材產出用；shoutout 是 edge-tts 用 Marvin 現役聲線 zh-TW-YunJheNeural
         rate=-20% pitch=-15Hz 錄的「Yo，DJ 馬文！」報名 stamp；scratch 是即時抓下一首
         PCM 合成的動態黑膠刷碟聲）進 TTS 層——跟口白同一條佇列接續播出，落在尾段疊播
         溢進下一首開頭的窗口內。
