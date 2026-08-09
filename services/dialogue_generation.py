@@ -20,6 +20,7 @@ import re
 from typing import Awaitable, Callable
 
 from personality_config import build_personality_prompt_context
+from tts_echo_guard import is_prompt_echo
 
 logger = logging.getLogger("MarvinBot.DialogueGen")
 
@@ -262,6 +263,13 @@ async def generate_dual_dialogue(
 
     if not _passes_red_line(ordered):
         return None
+
+    for seg in ordered:
+        if is_prompt_echo(system_prompt, seg.get("text", "")):
+            logger.warning(
+                f"⚠️ [TTS Echo Guard] {seg.get('voice')} 段與 prompt 高度重複，停止 TTS"
+            )
+            return None
 
     return ordered
 

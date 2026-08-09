@@ -18,6 +18,7 @@ from personality_config import (
     normalize_personality_state,
 )
 from google.genai import types
+from tts_echo_guard import is_prompt_echo
 
 logger = logging.getLogger(__name__)
 
@@ -1090,6 +1091,9 @@ class GeminiRouterContentMixin:
                     return random.choice(items)
                 return (raw or "嗯？").strip() or "嗯？"  # 解析失敗 → 退回單句
             result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple")
+            if result and is_prompt_echo(sys_prompt, result):
+                logger.warning(f"⚠️ [TTS Echo Guard] {event_type} 回傳與 prompt 高度重複，停止 TTS")
+                return "嗯？"
             if is_dj and cache is not None and result:
                 cache.set_dj(event_type, context, result)  # 同首歌重播重用
             return result

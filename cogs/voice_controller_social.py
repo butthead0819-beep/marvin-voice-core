@@ -28,6 +28,7 @@ from discord.ext import tasks
 
 from speak_bus import SpeakContext
 from speak_outcome import SpeakOutcome, append_speak_outcome
+from tts_echo_guard import is_prompt_echo
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +462,9 @@ class ProactiveSocialMixin:
                 tier="quick",
                 purpose="imitate_performance",
             )
+            if imitation and is_prompt_echo(system_prompt, imitation):
+                logger.warning("⚠️ [TTS Echo Guard] imitate_performance 回傳與 prompt 高度重複，停止 TTS")
+                return
             if imitation:
                 self._tts_interrupted = False
                 _prev_protected = self._tts_protected
@@ -532,6 +536,9 @@ class ProactiveSocialMixin:
                 tier="quick",
                 purpose="standup_performance",
             )
+            if standup_text and is_prompt_echo(system_prompt, standup_text):
+                logger.warning("⚠️ [TTS Echo Guard] standup_performance 回傳與 prompt 高度重複，停止 TTS")
+                return
             if standup_text:
                 self._tts_interrupted = False
                 _prev_protected = self._tts_protected
