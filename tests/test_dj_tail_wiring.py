@@ -394,8 +394,11 @@ async def test_tail_dj_plays_sfx_after_interjection():
     vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
     cog.bot.cogs.get.return_value = vc  # _vc() → 這個 vc
 
+    # scratch 沒有靜態 fallback，抽中它但沒配 preload 會這輪不放（另有測試專門鎖這個
+    # 行為）；這裡測的是「SFX 接在口白後面」的一般 wiring，鎖非 scratch 的固定音效。
     with patch("os.path.exists", return_value=True), \
-         patch("asyncio.sleep", new=AsyncMock()):
+         patch("asyncio.sleep", new=AsyncMock()), \
+         patch("random.choice", return_value="dj_airhorn"):
         import time
         await cog._run_tail_dj(cur, time.time() - 170.0)
 
@@ -457,8 +460,9 @@ async def test_dj_tail_sfx_uses_preloaded_source_for_scratch():
 
 
 @pytest.mark.asyncio
-async def test_dj_tail_sfx_falls_back_when_preload_not_ready():
-    """當 preloaded source 尚未準備好或異常時，抽中 scratch 自動 fallback 到 assets/dj_sfx/scratch.wav。"""
+async def test_dj_tail_sfx_skips_when_preload_not_ready():
+    """scratch 沒有靜態 fallback：preload 沒排、不存在 → 這輪不放任何音效
+    （沒特效＝沒抓到 PCM，訊號要乾淨，不能用預錄音檔頂替蓋掉失敗）。"""
     cog = _make_cog()
     nxt = _next_info()
     # 無 preload 或 preload 尚未完成
@@ -471,9 +475,7 @@ async def test_dj_tail_sfx_falls_back_when_preload_not_ready():
          patch("os.path.exists", return_value=True):
         await cog._play_dj_tail_sfx(nxt)
 
-    vc.play_dj_on_tts_layer.assert_awaited_once()
-    played_path = vc.play_dj_on_tts_layer.await_args.args[0]
-    assert played_path == "assets/dj_sfx/scratch.wav"
+    vc.play_dj_on_tts_layer.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -510,8 +512,8 @@ async def test_dj_tail_sfx_waits_for_slow_preload_within_timeout():
 
 @pytest.mark.asyncio
 async def test_dj_tail_sfx_gives_up_after_preload_wait_timeout():
-    """preload 在 wait_for 逾時前都還沒完成 → 放棄等待、退回靜態 scratch.wav，
-    且不能把 preload task 本身取消掉（asyncio.shield，換源那邊還要用）。"""
+    """preload 在 wait_for 逾時前都還沒完成 → 放棄等待、這輪不放任何音效（沒有靜態
+    fallback），且不能把 preload task 本身取消掉（asyncio.shield，換源那邊還要用）。"""
     import cogs.music_cog as music_cog_module
     cog = _make_cog()
     nxt = _next_info()
@@ -533,9 +535,7 @@ async def test_dj_tail_sfx_gives_up_after_preload_wait_timeout():
          patch("os.path.exists", return_value=True):
         await cog._play_dj_tail_sfx(nxt)
 
-    vc.play_dj_on_tts_layer.assert_awaited_once()
-    played_path = vc.play_dj_on_tts_layer.await_args.args[0]
-    assert played_path == "assets/dj_sfx/scratch.wav"
+    vc.play_dj_on_tts_layer.assert_not_awaited()
     assert not task.cancelled()  # shield 保護：等待逾時不能連 preload task 都砍了
 
     task.cancel()

@@ -2617,60 +2617,80 @@ class MusicCog(commands.Cog):
         finally:
             vc._tts_protected = False
 
+    async def _synthesize_dynamic_scratch(self, next_info: dict) -> str | None:
+        """抓下一首已預解碼的 PCM、即時合成專屬該曲的黑膠刷碟聲。抓不到/沒 ready/合成
+        失敗一律回 None——刻意不留靜態備用檔，交給呼叫端直接放棄這輪 SFX（見
+        _play_dj_tail_sfx：沒有 fallback 音效，播不出來就是這輪真的沒抓到 PCM，訊號
+        要乾淨，別用預錄音檔混過去）。
+
+        preload 是背景整首解碼，點火當下十之八九還沒好——與其一次性 done() 檢查
+        （幾乎必定 miss），改用 wait_for 主動等一小段（在 _DJ_TAIL_LEAD_S 的窗口內
+        仍有餘裕），拉高真正用上真實 PCM 的機率。asyncio.shield：等待逾時只放棄
+        「這次用它」，不能連 preload task 本身也砍掉——它還要留給 _resolve_music_source
+        換源時用。
+        """
+        url = next_info.get('url', '')
+        preload_task = self._preload_music_cache.get(url)
+        if preload_task is None or preload_task.cancelled():
+            return None
+
+        try:
+            preloaded = await asyncio.wait_for(
+                asyncio.shield(preload_task), timeout=_DJ_TAIL_SFX_PRELOAD_WAIT_S,
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            return None
+        except Exception as e:
+            logger.debug(f"[DJ Tail] preload 讀取失敗: {e}")
+            return None
+
+        try:
+            frames = getattr(preloaded, '_frames', None)
+            if not frames or len(frames) < 50:
+                return None
+            import hashlib
+            import numpy as np
+            from scripts.gen_dj_sfx import gen_scratch_from_pcm, _write_wav
+            raw_bytes = b"".join(frames[:100])
+            raw_f32 = np.frombuffer(raw_bytes, dtype=np.float32).reshape(-1, 2)
+            dynamic_samples = gen_scratch_from_pcm(raw_f32, rate=48000)
+            # 固定檔名在多首歌同時點火時會互踩（寫入中被下一次點火覆蓋/搶讀半寫檔），
+            # 用 url hash 隔開。
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+            dynamic_path = f"/tmp/scratch_dynamic_{url_hash}.wav"
+            _write_wav(dynamic_path, dynamic_samples)
+            return dynamic_path
+        except Exception as e:
+            logger.debug(f"[DJ Tail] 動態 scratch 合成失敗: {e}")
+            return None
+
     async def _play_dj_tail_sfx(self, next_info: dict | None = None):
-        """[DJ Tail] DJ 口白播完後，隨機疊一支轉場音效（scratch/air horn/riser 合成自
+        """[DJ Tail] DJ 口白播完後，隨機疊一支轉場音效（dj_airhorn/riser 合成自
         scripts/gen_dj_sfx.py；shoutout 是 edge-tts 用 Marvin 現役聲線 zh-TW-YunJheNeural
-        rate=-20% pitch=-15Hz 錄的「Yo，DJ 馬文！」報名 stamp）進 TTS 層——跟口白同一條
-        佇列接續播出，落在尾段疊播溢進下一首開頭的窗口內。
-        若抽中 scratch 且下一首已有預解碼 PCM，則即時截取其前奏合成專屬該曲的真實黑膠刷碟聲。
-        找不到 vc/檔案就靜靜放棄，不影響主流程。"""
+        rate=-20% pitch=-15Hz 錄的「Yo，DJ 馬文！」報名 stamp；scratch 是即時抓下一首
+        PCM 合成的動態黑膠刷碟聲）進 TTS 層——跟口白同一條佇列接續播出，落在尾段疊播
+        溢進下一首開頭的窗口內。
+
+        scratch 沒有靜態備用檔：抓不到下一首 PCM 就這輪不放，不用預錄音檔頂替——
+        「這次沒聽到刷碟聲」本身就是訊號，別讓 fallback 把失敗蓋掉。找不到 vc 就靜靜
+        放棄，不影響主流程。"""
         vc = self._vc()
         if vc is None:
             return
         name = random.choice(_DJ_TAIL_SFX_NAMES)
-        path = os.path.join(_DJ_TAIL_SFX_DIR, f"{name}.wav")
 
-        # 若抽中 scratch 且下一首已有預解碼 PCM，即時生成專屬該曲的動態刷碟聲。
-        # preload 是背景整首解碼，點火當下十之八九還沒好——與其一次性 done() 檢查
-        # （幾乎必定 miss、動態合成形同虛設），改用 wait_for 主動等一小段（在
-        # _DJ_TAIL_LEAD_S 的窗口內仍有餘裕），拉高真正用上真實 PCM 的機率。
-        # asyncio.shield：等待逾時只放棄「這次用它」，不能連 preload task 本身也砍掉
-        # ——它還要留給 _resolve_music_source 換源時用。
-        if name == "scratch" and next_info:
-            url = next_info.get('url', '')
-            preload_task = self._preload_music_cache.get(url)
-            if preload_task is not None and not preload_task.cancelled():
-                preloaded = None
-                try:
-                    preloaded = await asyncio.wait_for(
-                        asyncio.shield(preload_task), timeout=_DJ_TAIL_SFX_PRELOAD_WAIT_S,
-                    )
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
-                except Exception as e:
-                    logger.debug(f"[DJ Tail] preload 讀取失敗，退回靜態 scratch: {e}")
+        if name == "scratch":
+            path = await self._synthesize_dynamic_scratch(next_info) if next_info else None
+            if path is None:
+                logger.info("[DJ Tail] SFX：scratch 抽中但沒抓到下一首 PCM，這輪不放")
+                return
+            logger.info("[DJ Tail] SFX：scratch（動態合成）")
+        else:
+            path = os.path.join(_DJ_TAIL_SFX_DIR, f"{name}.wav")
+            if not os.path.exists(path):
+                return
+            logger.info(f"[DJ Tail] SFX：{name}")
 
-                if preloaded is not None:
-                    try:
-                        frames = getattr(preloaded, '_frames', None)
-                        if frames and len(frames) >= 50:
-                            import hashlib
-                            import numpy as np
-                            from scripts.gen_dj_sfx import gen_scratch_from_pcm, _write_wav
-                            raw_bytes = b"".join(frames[:100])
-                            raw_f32 = np.frombuffer(raw_bytes, dtype=np.float32).reshape(-1, 2)
-                            dynamic_samples = gen_scratch_from_pcm(raw_f32, rate=48000)
-                            # 固定檔名在多首歌同時點火時會互踩（寫入中被下一次點火覆蓋/搶讀半寫檔），
-                            # 用 url hash 隔開。
-                            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
-                            dynamic_path = f"/tmp/scratch_dynamic_{url_hash}.wav"
-                            _write_wav(dynamic_path, dynamic_samples)
-                            path = dynamic_path
-                    except Exception as e:
-                        logger.debug(f"[DJ Tail] 動態 scratch 合成退回靜態音效: {e}")
-
-        if not os.path.exists(path):
-            return
         try:
             # 轉場音效不是講話，音量比照音樂 10% 感受，別用口白的滿幅正規化（太搶戲）。
             await vc.play_dj_on_tts_layer(path, peak=0.1)
