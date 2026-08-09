@@ -317,6 +317,57 @@ async def test_prerendered_dj_plays_on_tts_layer_not_music():
     vc.play_tts.assert_not_called()          # 有預渲染就不即時 TTS
 
 
+# ── (i) 尾段 SFX 疊播：DJ 口白播完後接一支轉場音效（見 scripts/gen_dj_sfx.py）──
+
+@pytest.mark.asyncio
+async def test_tail_dj_plays_sfx_after_interjection():
+    """尾段點火成功派發 DJ 口白後，_play_dj_tail_sfx 用同一條 TTS 層佇列疊一支
+    scratch/dj_airhorn/riser，且晚於口白（同一佇列接續播放）。"""
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _next_info()
+    cog.stream_queue = [nxt]
+    cog._prefetch_cache[nxt["url"]] = _done_future({"dj": _dj_meta()})
+    _prime(cog, cur)
+
+    vc = MagicMock()
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    cog.bot.cogs.get.return_value = vc  # _vc() → 這個 vc
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        import time
+        await cog._run_tail_dj(cur, time.time() - 170.0)
+
+    cog._maybe_play_dj_interjection.assert_called_once()
+    vc.play_dj_on_tts_layer.assert_awaited_once()
+    sfx_path = vc.play_dj_on_tts_layer.await_args.args[0]
+    assert sfx_path.endswith(".wav")
+    assert "dj_sfx" in sfx_path
+
+
+@pytest.mark.asyncio
+async def test_dj_tail_sfx_skips_when_no_vc():
+    """沒有 VoiceController（_vc() 回 None）→ 靜靜放棄，不炸。"""
+    cog = _make_cog()
+    cog.bot.cogs.get.return_value = None
+    await cog._play_dj_tail_sfx()  # 不應拋例外
+
+
+@pytest.mark.asyncio
+async def test_dj_tail_sfx_skips_when_file_missing():
+    """音效檔不存在（例如尚未跑 scripts/gen_dj_sfx.py）→ 不呼叫 play_dj_on_tts_layer。"""
+    cog = _make_cog()
+    vc = MagicMock()
+    vc.play_dj_on_tts_layer = AsyncMock()
+    cog.bot.cogs.get.return_value = vc
+
+    with patch("os.path.exists", return_value=False):
+        await cog._play_dj_tail_sfx()
+
+    vc.play_dj_on_tts_layer.assert_not_awaited()
+
+
 # ── (f) CancelledError 被 catch ──────────────────────────────────────────────
 
 @pytest.mark.asyncio

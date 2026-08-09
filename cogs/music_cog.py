@@ -24,6 +24,7 @@ import datetime
 import json
 import logging
 import os
+import random
 import subprocess
 import tempfile
 import time
@@ -53,6 +54,8 @@ _TASTE_PROFILE_CACHE = "records/taste_profiles.json"
 _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 _SONG_BPM_STORE = "records/song_bpm.json"
 _BPM_SAMPLE_SR = 11025
+_DJ_TAIL_SFX_DIR = "assets/dj_sfx"
+_DJ_TAIL_SFX_NAMES = ("scratch", "dj_airhorn", "riser", "shoutout")
 
 _puck_mixer_client = None  # lazy singleton，見 _get_puck_client()
 
@@ -2498,6 +2501,7 @@ class MusicCog(commands.Cog):
         # 還有 ~5s+ 窗口，剛好夠蓋掉解碼時間。
         self._start_music_preload(next_info)
         await self._maybe_play_dj_interjection(dj_meta)
+        await self._play_dj_tail_sfx()
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
 
@@ -2617,6 +2621,24 @@ class MusicCog(commands.Cog):
                 await vc.play_tts(text, already_in_channel=True)
         finally:
             vc._tts_protected = False
+
+    async def _play_dj_tail_sfx(self):
+        """[DJ Tail] DJ 口白播完後，隨機疊一支轉場音效（scratch/air horn/riser 合成自
+        scripts/gen_dj_sfx.py；shoutout 是 edge-tts 用 Marvin 現役聲線 zh-TW-YunJheNeural
+        rate=-20% pitch=-15Hz 錄的「Yo，DJ 馬文！」報名 stamp）進 TTS 層——跟口白同一條
+        佇列接續播出，落在尾段疊播溢進下一首開頭的窗口內。找不到 vc/檔案就靜靜放棄，
+        不影響主流程。"""
+        vc = self._vc()
+        if vc is None:
+            return
+        name = random.choice(_DJ_TAIL_SFX_NAMES)
+        path = os.path.join(_DJ_TAIL_SFX_DIR, f"{name}.wav")
+        if not os.path.exists(path):
+            return
+        try:
+            await vc.play_dj_on_tts_layer(path)
+        except Exception as e:
+            logger.debug(f"⚠️ [DJ Tail] SFX 疊播失敗（不影響主流程）: {e}")
 
     async def _analyze_song_reactions(self, info: dict, song_start_time: float, lyrics: str):
         """歌曲結束後掃描對話，分析聆聽反應並寫入音樂記憶。"""
