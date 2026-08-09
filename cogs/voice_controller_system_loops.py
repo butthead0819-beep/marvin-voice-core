@@ -154,6 +154,12 @@ class SystemLoopsMixin:
                     # 🚀 [Proactive Social] 靜默主動發起話題
                     # 2026-05-26: 已遷至 SpeakBus（ProactiveTopicAgent），由 5s tick 統一 dispatch
                     # 保留 proactive_silence_threshold 動態調整（上面 _ratio 那段），agent 讀同一個值
+
+                # 📰 [News Broadcast] 靜默夠久就順便播一則新聞（免費 Google News RSS，
+                # 依在場興趣關鍵字查）。獨立於電台自動啟動的 if，兩者可以同時發生；
+                # 30 分鐘冷卻，別在同一場靜默裡每 10 分鐘就報一次。
+                if silence > 600 and now - getattr(self, "_last_news_broadcast_ts", 0) > 1800:
+                    await self._maybe_broadcast_news()
                 return
             
             # 使用最新條目的時間作為快照參考
@@ -273,6 +279,31 @@ class SystemLoopsMixin:
             logger.error(f"🚨 [Slow System Error] 背景循環發生異常 (已截斷防止崩潰): {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+    async def _maybe_broadcast_news(self) -> None:
+        """靜默夠久時順便報一則新聞（免費 Google News RSS，依在場興趣關鍵字查；
+        沒興趣關鍵字就查台灣熱門頭條）。全防禦 fail-open：抓不到就靜靜跳過，
+        不影響 slow_system_loop 其餘行為。冷卻時戳在呼叫前就先蓋，避免抓取
+        卡住時同一輪 tick 重入。"""
+        self._last_news_broadcast_ts = time.time()
+        try:
+            mc = self.bot.cogs.get("MusicCog")
+            keyword = None
+            if mc is not None:
+                interests = mc._present_interests()
+                if interests:
+                    first = interests[0]
+                    if "喜歡" in first:
+                        keyword = first.split("喜歡", 1)[-1].strip() or None
+            from news_fetch import fetch_news_headline
+            headline = await fetch_news_headline(keyword)
+            if not headline or not headline.get("title"):
+                return
+            text = f"順便報一下新聞：{headline['title']}"
+            if hasattr(self, "play_tts"):
+                await self.play_tts(text)
+        except Exception as e:
+            logger.warning(f"⚠️ [News Broadcast] 失敗（已吞）: {e}")
 
     @tasks.loop(time=datetime.time(hour=12, minute=0, tzinfo=datetime.timezone(datetime.timedelta(hours=8))))
     async def daily_log_export_loop(self):
