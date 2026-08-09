@@ -146,11 +146,14 @@ class MusicProxyMixin:
         mc = self.bot.cogs.get('MusicCog')
         return await mc._get_audio_duration(path) if mc else 3.0
 
-    async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None):
+    async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None,
+                                highlight_start_s: float | None = None):
         """🎵 [Phase 7D stub] → MusicCog.play_stream_song"""
         mc = self.bot.cogs.get('MusicCog')
         if mc is not None:
-            await mc.play_stream_song(url, title, dj_audio_path=dj_audio_path)
+            await mc.play_stream_song(
+                url, title, dj_audio_path=dj_audio_path, highlight_start_s=highlight_start_s,
+            )
 
     async def _measure_norm_gain_bg(self, url: str):
         """[Phase 7E stub] → MusicCog._measure_norm_gain_bg"""

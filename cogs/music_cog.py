@@ -1712,7 +1712,10 @@ class MusicCog(commands.Cog):
                     logger.info(f"[DJ Tail] 已排尾段 task：{title}（點火時抓下一首）")
 
                 try:
-                    await self.play_stream_song(info['url'], title, dj_audio_path=dj_audio)
+                    await self.play_stream_song(
+                        info['url'], title, dj_audio_path=dj_audio,
+                        highlight_start_s=info.get('highlight_start_s'),
+                    )
                 except Exception:
                     playback_completion = "stopped"
                     raise
@@ -1734,12 +1737,17 @@ class MusicCog(commands.Cog):
                 # 別讓它被自動推薦洗掉。DJ 報歌走 mixed（隨 ffmpeg 一起失敗）→ 首次 403 不誤報，
                 # 只在確定能播的那次才響＝「確定能播的歌才說出來」。
                 _played_s = time.time() - song_start_time
+                # 精華起播（highlight_start_s）讓實播天生比 metadata 全長短一截，中途切/短
+                # 播判斷都要扣掉這段位移，否則正常播完的精華曲會被誤判成「中途切」。
+                _effective_duration = info.get('duration')
+                if _effective_duration and info.get('highlight_start_s'):
+                    _effective_duration = max(0.0, _effective_duration - info['highlight_start_s'])
                 # 🔎 中途切偵測（診斷用）：播到一半串流 URL 失效→提早結束，ffmpeg 靜默不留 log。
                 # 只印不重試（中途切要 seek 續播是另一步，先確認頻率再決定）。
-                if not getattr(self, "_current_song_skipped", False) and self._premature_cut(_played_s, info.get('duration')):
+                if not getattr(self, "_current_song_skipped", False) and self._premature_cut(_played_s, _effective_duration):
                     logger.warning(
                         f"⚠️ [Stream] 「{title}」疑中途切：實播 {_played_s:.0f}s / 全長 "
-                        f"{info.get('duration')}s（串流 URL 中途失效？非開頭 403、非你 skip）"
+                        f"{_effective_duration}s（串流 URL 中途失效？非開頭 403、非你 skip）"
                     )
                 if self._should_retry_failed_song(
                         _played_s, stream_active=self.stream_mode,
@@ -1751,7 +1759,10 @@ class MusicCog(commands.Cog):
                     _fresh = await self._resolve_yt_query(_wp, force_fresh=True) if _wp else None
                     if _fresh and _fresh.get('url'):
                         try:
-                            await self.play_stream_song(_fresh['url'], title, dj_audio_path=dj_audio)
+                            await self.play_stream_song(
+                                _fresh['url'], title, dj_audio_path=dj_audio,
+                                highlight_start_s=_fresh.get('highlight_start_s'),
+                            )
                         except Exception:
                             logger.warning(f"⚠️ [Stream] 重試也失敗，讓下一首接手：{title}")
                     else:
@@ -1809,8 +1820,14 @@ class MusicCog(commands.Cog):
                 return device
         return None
 
-    async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None):
-        """🎵 播放單首串流音樂，等待播放完成後 return。"""
+    async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None,
+                                highlight_start_s: float | None = None):
+        """🎵 播放單首串流音樂，等待播放完成後 return。
+
+        highlight_start_s：YouTube「最多人重播」熱力圖挑出的精華起點（見
+        youtube_heatmap.pick_highlight_start），有給就從這秒開始播（-ss），
+        不影響 DJ 混音模式（use_mix，另一條較少走的路徑，保持舊行為）。
+        """
         import shlex
 
         vc = self._vc()
@@ -1857,6 +1874,8 @@ class MusicCog(commands.Cog):
                 'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
                 'options': '-vn -bufsize 512k',
             }
+            if highlight_start_s:
+                p12_opts['before_options'] = f'-ss {highlight_start_s:.2f} ' + p12_opts['before_options']
             if url not in self._stream_norm_gain and vc is not None:
                 asyncio.create_task(self._measure_norm_gain_bg(url))
             if vc is not None:
@@ -2408,6 +2427,11 @@ class MusicCog(commands.Cog):
         if not duration:
             logger.info(f"[DJ Tail] {title_cur} duration 未知，退回舊行為")
             return
+        # 精華起播（highlight_start_s）讓實際播放時間軸位移了一截——elapsed 是從
+        # 「起播那秒」算起，尾段點火要抓的是「離實際結束還有多久」，duration 要跟著扣掉
+        # 位移，否則會算成離結尾還很久（其實早就快撥完了），點火時間表全錯。
+        if cur_info.get('highlight_start_s'):
+            duration = max(0.0, duration - cur_info['highlight_start_s'])
 
         elapsed = time.time() - song_start_time
         # 滑動窗：當前歌結束前 5s 點火，DJ（~15s）疊尾巴 5s + 溢進下一首開頭 ~10s。
@@ -2480,12 +2504,17 @@ class MusicCog(commands.Cog):
             _stale_url, stale_task = self._preload_music_cache.popitem()
             stale_task.cancel()
 
+        highlight = info.get('highlight_start_s')
+
         async def _do():
             from local_mixing_source import S16ToF32MusicSource, preload_f32_source
             p12_opts = {
                 'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
                 'options': '-vn -bufsize 512k',
             }
+            if highlight:
+                # -ss 放在 -i 前（input seeking），ffmpeg 用容器索引快跳，不必解碼到那秒。
+                p12_opts['before_options'] = f'-ss {highlight:.2f} ' + p12_opts['before_options']
             s16 = discord.FFmpegPCMAudio(url, **p12_opts)
             return await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(s16))
 
@@ -2947,6 +2976,7 @@ class MusicCog(commands.Cog):
         是同一份死 URL，命中只會再 403，必須真的重新 extract 拿新 URL）。
         """
         from music_search import pick_best_music_candidate
+        from youtube_heatmap import pick_highlight_start
 
         if is_memory_critical():
             logger.warning("⚠️ [Stream] memory critical, skipping yt-dlp resolve")
@@ -3002,13 +3032,18 @@ class MusicCog(commands.Cog):
                         )
                 if not chosen or 'url' not in chosen:
                     return None
+                _duration = chosen.get('duration', 0)
                 return {
                     'title': chosen.get('title', 'Unknown'),
                     'uploader': chosen.get('uploader', chosen.get('channel', 'Unknown')),
                     'url': chosen['url'],
                     'thumbnail': chosen.get('thumbnail'),
                     'webpage_url': chosen.get('webpage_url', ''),
-                    'duration': chosen.get('duration', 0),
+                    'duration': _duration,
+                    # 「最多人重播」熱力圖挑出的精華起點；沒有/太短/太靠尾聲則 None
+                    # （=從頭播，跟舊行為相容）。播放端（play_stream_song/_start_music_preload/
+                    # _run_tail_dj）要用這個位移調整實際起播點與尾段點火時間表。
+                    'highlight_start_s': pick_highlight_start(chosen.get('heatmap'), _duration),
                 }
 
         def _cache_put(res):

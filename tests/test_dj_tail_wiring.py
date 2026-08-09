@@ -119,6 +119,60 @@ async def test_tail_dj_fire_starts_music_preload():
     cog._start_music_preload.assert_called_once_with(nxt)
 
 
+# ── 精華起播（highlight_start_s）位移尾段點火時間表 ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_tail_dj_fire_delay_uses_effective_duration_with_highlight_start():
+    """highlight_start_s 讓實際播放起點位移了一截，餵給 tail_dj_fire_delay 的 duration
+    要扣掉這段位移，否則會以為離結尾還很久（其實早就快播完了），點火時間表全錯。"""
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    cur["highlight_start_s"] = 60.0
+    nxt = _next_info()
+    cog.stream_queue = [nxt]
+    cog._prefetch_cache[nxt["url"]] = _done_future({"dj": _dj_meta()})
+    _prime(cog, cur)
+
+    captured = {}
+
+    def _fake_delay(duration, elapsed):
+        captured["duration"] = duration
+        captured["elapsed"] = elapsed
+        return 5.0
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()), \
+         patch("dj_tail_schedule.tail_dj_fire_delay", side_effect=_fake_delay):
+        import time
+        await cog._run_tail_dj(cur, time.time() - 100.0)
+
+    assert captured["duration"] == 120.0  # 180 - 60，不是原始 180
+
+
+@pytest.mark.asyncio
+async def test_tail_dj_fire_delay_no_highlight_uses_raw_duration():
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _next_info()
+    cog.stream_queue = [nxt]
+    cog._prefetch_cache[nxt["url"]] = _done_future({"dj": _dj_meta()})
+    _prime(cog, cur)
+
+    captured = {}
+
+    def _fake_delay(duration, elapsed):
+        captured["duration"] = duration
+        return 5.0
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()), \
+         patch("dj_tail_schedule.tail_dj_fire_delay", side_effect=_fake_delay):
+        import time
+        await cog._run_tail_dj(cur, time.time() - 170.0)
+
+    assert captured["duration"] == 180.0
+
+
 # ── (bug) 開播時 queue 空、sleep 期間才排入 → 仍點火（此次修的核心）──────────
 
 @pytest.mark.asyncio

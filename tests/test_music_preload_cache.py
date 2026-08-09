@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -49,6 +50,41 @@ def test_start_music_preload_no_url_noop():
     me = _fake_self()
     MusicCog._start_music_preload(me, {"title": "沒有 url"})
     assert me._preload_music_cache == {}
+
+
+@pytest.mark.asyncio
+async def test_start_music_preload_applies_highlight_seek():
+    """有 highlight_start_s → 預解碼的 ffmpeg 音源要帶 -ss 跳到精華起點。"""
+    me = _fake_self()
+    captured = {}
+
+    def _fake_ffmpeg(url, **kw):
+        captured.update(kw)
+        return "S16_SOURCE"
+
+    with patch("cogs.music_cog.discord.FFmpegPCMAudio", side_effect=_fake_ffmpeg), \
+         patch("local_mixing_source.preload_f32_source", side_effect=lambda src: src):
+        MusicCog._start_music_preload(me, {"url": "https://ex/a", "highlight_start_s": 42.5})
+        await me._preload_music_cache["https://ex/a"]
+
+    assert "-ss 42.50" in captured["before_options"]
+
+
+@pytest.mark.asyncio
+async def test_start_music_preload_no_highlight_no_seek():
+    me = _fake_self()
+    captured = {}
+
+    def _fake_ffmpeg(url, **kw):
+        captured.update(kw)
+        return "S16_SOURCE"
+
+    with patch("cogs.music_cog.discord.FFmpegPCMAudio", side_effect=_fake_ffmpeg), \
+         patch("local_mixing_source.preload_f32_source", side_effect=lambda src: src):
+        MusicCog._start_music_preload(me, {"url": "https://ex/a"})
+        await me._preload_music_cache["https://ex/a"]
+
+    assert "-ss" not in captured["before_options"]
 
 
 @pytest.mark.asyncio
