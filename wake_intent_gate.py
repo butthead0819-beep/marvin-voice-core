@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import re
 
+from wake_words_data import words_for
+
 # 純 wake 詞（cleaner 注入後可能剩這些）— 沒接其他內容就不算指令
-_WAKE_WORDS = frozenset({"馬文", "瑪文", "媽文", "麻文", "馬汶", "marvin", "marvy"})
+# 完整清單見 wake_words_data.py（單一資料來源，跟 wake_detector.WAKE_WORDS_LIST 共用）
+_WAKE_WORDS = frozenset(words_for("gate"))
 
 # Filler / 短應答 hard-blocklist（剝標點後完全等於這些 → 擋）
 _FILLERS = frozenset({
