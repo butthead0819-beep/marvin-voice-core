@@ -1,0 +1,56 @@
+# DJ 播報模板池（純資料）。選池邏輯（依 lane/n_online 選哪個 pool）跟
+# random.choice() 呼叫點留在 cogs/music_cog.py，這裡只放模板字串本身。
+
+empathy_hooks:
+  - 開場鉤子：直接描寫生活畫面或細節切入（營造自然代入感），嚴禁「這根本在說你」等套話，別只是轉述。
+  - 開場鉤子：用老朋友觀察者的默契與微幽默切入（營造陪伴代入感），避免固定套路，別只是轉述。
+  - 開場鉤子：從深夜聽歌的心情或共鳴切入（營造深夜電台代入感），開門見山，別只是轉述。
+  - 開場鉤子：從這件事與音樂氛圍的契合點切入（營造情緒代入感），自然破題，別只是轉述。
+
+autopilot_phrases:
+  personal:
+    - "這首幫{who}點的，{artist}唱的{title}"
+    - "{who}應該喜歡這首，{artist}的{title}"
+    - "希望{who}喜歡，{artist}演唱的{title}"
+    - "馬文特別為{who}帶來，{artist}的{title}"
+    - "這首{title}是給{who}的，{artist}唱的"
+  personal_no_artist:
+    - "這首幫{who}點的，《{title}》"
+    - "{who}應該喜歡，《{title}》"
+    - "希望{who}喜歡這首，《{title}》"
+    - "馬文特別為{who}帶來《{title}》"
+  group:
+    - "這首大家應該都喜歡，{artist}的{title}"
+    - "為大家挑的，{artist}演唱的{title}"
+    - "馬文覺得大家都喜歡這首，{artist}的{title}"
+  group_no_artist:
+    - "這首大家應該都喜歡，《{title}》"
+    - "馬文為大家挑的，《{title}》"
+  # long_tail：在場者點過但久沒播 → 講「重新發現」的理由
+  long_tail:
+    - "{who}好久沒聽《{title}》了，翻出來"
+    - "從{who}的塵封歌單挖出《{title}》"
+    - "{who}，《{title}》冰很久沒聽，解凍一下"
+  # discovery：沒人點過的新歌 → 講「挖新歌」的理由
+  discovery:
+    - "挖到《{title}》，{who}應該沒聽過"
+    - "{who}，給你首新的《{title}》"
+    - "這首《{title}》是挖給{who}的新貨"
+  # spotlight cover：以 {who} 常點的 {anchor} 為錨 → 講「你愛 anchor，給你個版本」
+  spotlight_anchor:
+    - "{who}愛{anchor}，給你個《{title}》"
+    - "{who}常點{anchor}，換首《{title}》"
+    - "知道{who}喜歡{anchor}，這首《{title}》你會愛"
+
+quick_segue:
+  default:
+    - 這首收得漂亮，換個口味，接下來這首。
+    - 剛好告一段落，下一首馬上接上。
+    - 先這樣，換首歌繼續聽。
+    - 這首先到這，接下來換個心情。
+  intimate:
+    - 這首先到這，換下一首陪你聽。
+    - 剛好告一段落，來換首歌。
+  energetic:
+    - 接上，別停！
+    - 下一首馬上來，別停。

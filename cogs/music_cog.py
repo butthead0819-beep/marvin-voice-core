@@ -47,6 +47,7 @@ from music_memory import extract_video_id
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
+from persona_loader import load_dj_templates
 
 logger = logging.getLogger(__name__)
 
@@ -91,46 +92,17 @@ class MusicCog(commands.Cog):
     # DJ 播報疊在歌上的音量（混音時 dj 分支的 gain）。降到 30% 不蓋過音樂。
     _DJ_INTERJECTION_VOLUME = 0.30
 
-    _AUTOPILOT_DJ_PHRASES_PERSONAL = [
-        "這首幫{who}點的，{artist}唱的{title}",
-        "{who}應該喜歡這首，{artist}的{title}",
-        "希望{who}喜歡，{artist}演唱的{title}",
-        "馬文特別為{who}帶來，{artist}的{title}",
-        "這首{title}是給{who}的，{artist}唱的",
-    ]
-    _AUTOPILOT_DJ_PHRASES_PERSONAL_NO_ARTIST = [
-        "這首幫{who}點的，《{title}》",
-        "{who}應該喜歡，《{title}》",
-        "希望{who}喜歡這首，《{title}》",
-        "馬文特別為{who}帶來《{title}》",
-    ]
-    _AUTOPILOT_DJ_PHRASES_GROUP = [
-        "這首大家應該都喜歡，{artist}的{title}",
-        "為大家挑的，{artist}演唱的{title}",
-        "馬文覺得大家都喜歡這首，{artist}的{title}",
-    ]
-    _AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST = [
-        "這首大家應該都喜歡，《{title}》",
-        "馬文為大家挑的，《{title}》",
-    ]
-    # long_tail：在場者點過但久沒播 → 講「重新發現」的理由
-    _AUTOPILOT_DJ_PHRASES_LONG_TAIL = [
-        "{who}好久沒聽《{title}》了，翻出來",
-        "從{who}的塵封歌單挖出《{title}》",
-        "{who}，《{title}》冰很久沒聽，解凍一下",
-    ]
-    # discovery：沒人點過的新歌 → 講「挖新歌」的理由
-    _AUTOPILOT_DJ_PHRASES_DISCOVERY = [
-        "挖到《{title}》，{who}應該沒聽過",
-        "{who}，給你首新的《{title}》",
-        "這首《{title}》是挖給{who}的新貨",
-    ]
-    # spotlight cover：以 {who} 常點的 {anchor} 為錨 → 講「你愛 anchor，給你個版本」
-    _AUTOPILOT_DJ_PHRASES_SPOTLIGHT_ANCHOR = [
-        "{who}愛{anchor}，給你個《{title}》",
-        "{who}常點{anchor}，換首《{title}》",
-        "知道{who}喜歡{anchor}，這首《{title}》你會愛",
-    ]
+    # DJ 播報模板池資料源見 personas/dj_templates.yaml；選池邏輯/random.choice() 呼叫點不動
+    _DJ_TEMPLATES = load_dj_templates()
+    _DJ_EMPATHY_HOOK_TEMPLATES = tuple(_DJ_TEMPLATES["empathy_hooks"])
+
+    _AUTOPILOT_DJ_PHRASES_PERSONAL = _DJ_TEMPLATES["autopilot_phrases"]["personal"]
+    _AUTOPILOT_DJ_PHRASES_PERSONAL_NO_ARTIST = _DJ_TEMPLATES["autopilot_phrases"]["personal_no_artist"]
+    _AUTOPILOT_DJ_PHRASES_GROUP = _DJ_TEMPLATES["autopilot_phrases"]["group"]
+    _AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST = _DJ_TEMPLATES["autopilot_phrases"]["group_no_artist"]
+    _AUTOPILOT_DJ_PHRASES_LONG_TAIL = _DJ_TEMPLATES["autopilot_phrases"]["long_tail"]
+    _AUTOPILOT_DJ_PHRASES_DISCOVERY = _DJ_TEMPLATES["autopilot_phrases"]["discovery"]
+    _AUTOPILOT_DJ_PHRASES_SPOTLIGHT_ANCHOR = _DJ_TEMPLATES["autopilot_phrases"]["spotlight_anchor"]
 
     def __init__(self, bot):
         self.bot = bot
@@ -2087,20 +2059,9 @@ class MusicCog(commands.Cog):
             return (info.get('_pick_reason') or '').strip()
         return ''
 
-    _QUICK_SEGUE_TEMPLATES = (
-        "這首收得漂亮，換個口味，接下來這首。",
-        "剛好告一段落，下一首馬上接上。",
-        "先這樣，換首歌繼續聽。",
-        "這首先到這，接下來換個心情。",
-    )
-    _QUICK_SEGUE_TEMPLATES_INTIMATE = (
-        "這首先到這，換下一首陪你聽。",
-        "剛好告一段落，來換首歌。",
-    )
-    _QUICK_SEGUE_TEMPLATES_ENERGETIC = (
-        "接上，別停！",
-        "下一首馬上來，別停。",
-    )
+    _QUICK_SEGUE_TEMPLATES = tuple(_DJ_TEMPLATES["quick_segue"]["default"])
+    _QUICK_SEGUE_TEMPLATES_INTIMATE = tuple(_DJ_TEMPLATES["quick_segue"]["intimate"])
+    _QUICK_SEGUE_TEMPLATES_ENERGETIC = tuple(_DJ_TEMPLATES["quick_segue"]["energetic"])
 
     @classmethod
     def _quick_segue_text(cls, n_online: int = 0) -> str:
@@ -2281,10 +2242,10 @@ class MusicCog(commands.Cog):
         # conversation/prev_song 本身就是銜接類，維持原本的過場方向指示即可。
         if mode == "life":
             ctx.append(f"最近生活：\n・{topic}")
-            ctx.append("開場鉤子：用『這根本在講你』的代入感切入，讓人覺得被說中，別只是轉述。")
+            ctx.append(random.choice(self._DJ_EMPATHY_HOOK_TEMPLATES))
         elif mode == "interest":
             ctx.append(f"在場興趣：\n・{topic}")
-            ctx.append("開場鉤子：用『這根本在講你』的代入感切入，讓人覺得被說中，別只是轉述。")
+            ctx.append(random.choice(self._DJ_EMPATHY_HOOK_TEMPLATES))
         elif mode == "prev_song":
             ctx.append("串場方向：延續上一首的情緒銜接過去就好，不用硬掰新話題。")
         elif mode == "conversation":

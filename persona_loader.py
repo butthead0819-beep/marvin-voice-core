@@ -40,3 +40,7 @@ def load_catchphrases() -> list:
 
 def load_relationship_tone_map() -> dict:
     return _load_yaml("moods/relationship_tone.yaml")
+
+
+def load_dj_templates() -> dict:
+    return _load_yaml("dj_templates.yaml")
