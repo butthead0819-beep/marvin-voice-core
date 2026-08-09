@@ -338,3 +338,21 @@ async def test_life_cores_reads_diary_off_event_loop():
     from cogs.music_cog import MusicCog
     src = inspect.getsource(MusicCog._life_cores_async)
     assert "to_thread" in src, "日記讀檔必須走 asyncio.to_thread，不得阻塞 event loop"
+
+
+def test_dj_prompt_forbids_cliche_repeating_phrases():
+    """DJ prompt 應明文禁止「這根本在說你」「這簡直就在說你」等跳針套話，並包含深夜電台風格指引。"""
+    blk = _dj_prompt_block()
+    assert "這根本在說你" in blk and "這簡直就在說你" in blk, "prompt 應包含禁用特定跳針套話的指示"
+    assert "深夜" in blk, "prompt 應包含深夜電台風格指示"
+
+
+def test_empathy_hooks_are_diverse_and_have_no_cliche():
+    """MusicCog._DJ_EMPATHY_HOOK_TEMPLATES 應包含多種開場角度，且不包含舊版寫死套話。"""
+    from cogs.music_cog import MusicCog
+    templates = MusicCog._DJ_EMPATHY_HOOK_TEMPLATES
+    assert len(templates) >= 3, "開場鉤子模板庫應至少有 3 種變體"
+    for tmpl in templates:
+        assert "這根本在講你" not in tmpl, f"模板不應包含舊版跳針文字: {tmpl}"
+        assert "代入感" in tmpl and "開場鉤子" in tmpl
+
