@@ -14,24 +14,11 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
+from persona_loader import load_tts_limits
 
 # 各 task 的 TTS 時長硬上限（秒）。None = 無限制（不 gate）。
-LIMITS: dict[str, Optional[float]] = {
-    "music_intro": 5.0,      # DJ 播報（歌名+理由+點播者一句）：≤5s，別打斷切歌節奏
-                             # （autopilot phrase / themed 理由 / fallback 共用）
-                             # 2026-05-24 7s→15s(DJ 發揮)；2026-07-13 15s→5s(使用者：DJ 話太多)
-    "dj_story": 18.0,        # human 點歌的 DJ 串場：說故事不唸資訊 → 放寬（2026-07-15）
-                             # ⚠️ 這是「估算器秒數」非真實秒數：估算器保守(0.3s/中文字
-                             # 含×1.2)、真實 edge-tts ≈0.17s/字。18s≈60字上限＝真實≈10s。
-                             # 想改「幾秒」先換算：真實秒數 ×1.8 才是這裡要填的數字，
-                             # 照字面填 10.0 會在 33 字砍斷（真實 5.7s）＝殘句重演。
-                             # 2026-07-15 27s；2026-07-17 →18s（使用者：雞湯文改成 10 秒）
-                             # live 實測 LLM 常超寫（24 則 9 則爆 gate），這網真的會用到
-    "callback": 15.0,        # Memory callback（必須講到聽懂，但別變嘮叨）
-                             # 2026-05-24 從 7s 拉到 15s
-    "marvin_reply": None,    # 主回覆，不 hard gate（caller 自己控）
-    "scrap": 3.0,            # 通用短 scrap（report_sent / joke_request / footer 等）
-}
+# 數值本體 + 踩坑註解在 personas/tts_limits.yaml（改「幾秒」前先讀那份註解）。
+LIMITS: dict[str, Optional[float]] = load_tts_limits()
 
 # 中文常見句讀（按優先順序：句末符號最優先，逗點次之，列點頓號最次）
 _PUNCT_CHARS = "。！？!?，,、；;…⋯"
