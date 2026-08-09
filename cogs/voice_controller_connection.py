@@ -29,6 +29,7 @@ import discord
 from discord import app_commands
 from discord.ext import tasks, voice_recv
 
+import persona_loader
 from local_mixing_source import preload_f32_source, S16ToF32MusicSource
 from marvin_voice_core.playback_device import DiscordPlaybackDevice
 
@@ -531,6 +532,38 @@ class ConnectionMixin:
                 level = None
         return room_is_active(len(members), level)
 
+    _SCHEDULE_WEEKDAY_KEYS = (
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    )
+
+    @staticmethod
+    def _persona_schedule_applied_today(dna: dict, today: str) -> bool:
+        """今天的每日人格排班是否已套用（guard 用 dna 自帶的日期欄位，非額外檔案）。"""
+        return dna.get("schedule_applied_date") == today
+
+    async def _maybe_apply_daily_persona_schedule(self) -> None:
+        """每天第一次 summon → 同步套用當天排班（見 personas/schedule.yaml）。
+
+        必須在 generate_greeting() 讀取人格資料之前完成（同步 await，不是
+        create_task）；查表/套用失敗只 log 不擋登場，不能讓排班機制變成新 SPOF。
+        """
+        import datetime
+        try:
+            today = datetime.date.today().isoformat()
+            router = self.bot.router
+            if self._persona_schedule_applied_today(router.dna, today):
+                return
+            weekday_key = self._SCHEDULE_WEEKDAY_KEYS[datetime.date.today().weekday()]
+            schedule = persona_loader.load_schedule()
+            entry = schedule.get(weekday_key)
+            if not entry:
+                logger.warning(f"⚠️ [PersonaSchedule] schedule.yaml 缺 {weekday_key} 條目，跳過套用")
+                return
+            router.apply_daily_schedule(entry["character"], entry["mood"], today)
+            logger.info(f"🎭 [PersonaSchedule] {weekday_key} → {entry['character']}/{entry['mood']}")
+        except Exception as e:
+            logger.warning(f"❌ [PersonaSchedule] 套用失敗，維持現狀不擋登場: {e}")
+
     @staticmethod
     def _daily_review_done_today(today: str, records_dir: str = "records") -> bool:
         """今天的 daily review 是否已跑（完成標記 quality_metrics_<today>.md 存在）。
@@ -606,6 +639,9 @@ class ConnectionMixin:
             if not vc: print("⚠️ [Intro] 跳過音樂：找不到連線中的 VoiceClient。")
             if not os.path.exists(intro_file): print(f"⚠️ [Intro] 跳過音樂：找不到檔案 {intro_file}")
             
+        # 1.5 🎭 每日人格排班：同步套用（必須在下面 generate_greeting 讀取人格之前完成）
+        await self._maybe_apply_daily_persona_schedule()
+
         # 2. 🌸 [Greeting] 呼叫 LLM 產出動態登場台詞 (Operation Narcissus v2: 群體黑歷史掃描)
         human_members = []
         if vc and vc.channel:

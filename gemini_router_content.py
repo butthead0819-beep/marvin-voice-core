@@ -14,6 +14,7 @@ from persona_loader import load_dj_styles
 from personality_config import (
     adjust_axis,
     apply_character_preset,
+    apply_schedule_entry,
     normalize_personality_state,
 )
 from google.genai import types
@@ -410,6 +411,11 @@ class GeminiRouterContentMixin:
     def switch_character_preset(self, character: str) -> dict:
         """快速切換角色 preset，同時保留 current_game。"""
         self.save_dna(apply_character_preset(self.dna, character, keep_current_game=True))
+        return self.dna
+
+    def apply_daily_schedule(self, character: str, mood: str, today: str) -> dict:
+        """套用每日人格排班（character + mood），並蓋章今天已套用。"""
+        self.save_dna(apply_schedule_entry(self.dna, character, mood, today))
         return self.dna
 
 # 🚀 [T-04 Fix] analyze_qa() 已移除（孤島死碼）。

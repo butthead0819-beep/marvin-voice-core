@@ -54,6 +54,18 @@ def apply_character_preset(dna: dict | None, character: str, keep_current_game: 
     return normalize_personality_state(new_state)
 
 
+def apply_schedule_entry(dna: dict | None, character: str, mood: str, today: str) -> dict:
+    """套用一筆每日排班（character + mood），並蓋章今天已套用（guard 用）。
+
+    mood 對應 marvin_prompts.PERSONA_BEHAVIOR_MAP 的 key；未知 mood 值不在這裡驗證，
+    交給 get_persona_modifiers() 在讀取時優雅降級成預設 tag。
+    """
+    new_state = apply_character_preset(dna, character, keep_current_game=True)
+    new_state["persona_tag"] = mood
+    new_state["schedule_applied_date"] = today
+    return new_state
+
+
 def adjust_axis(dna: dict, axis: str, delta: float) -> dict:
     state = normalize_personality_state(dna)
     if axis not in PERSONALITY_AXES:

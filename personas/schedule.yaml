@@ -1,0 +1,27 @@
+# 🗓️ 每日人格排班表 — 星期幾輪替，每週固定循環
+# character 對應 personas/characters/*.yaml 檔名（去掉 .yaml）
+# mood 對應 personas/moods/persona_behavior_map.yaml 的 key
+#
+# 初始值全部填目前的預設角色/mood，代表這個機制上線當下行為零改變；
+# 要換排班，直接改這個檔案，不用重啟以外的其他步驟（bot 每天第一次 summon 時查表套用）。
+monday:
+  character: marvin
+  mood: 虛無主義
+tuesday:
+  character: marvin
+  mood: 厭世機器人馬文
+wednesday:
+  character: marvin
+  mood: 厭世機器人馬文
+thursday:
+  character: marvin
+  mood: 厭世機器人馬文
+friday:
+  character: marvin
+  mood: 厭世機器人馬文
+saturday:
+  character: marvin
+  mood: 厭世機器人馬文
+sunday:
+  character: marvin
+  mood: 厭世機器人馬文

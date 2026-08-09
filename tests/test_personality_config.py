@@ -34,6 +34,22 @@ def test_apply_character_preset_preserves_current_game():
     assert state["axes"]["directness"] >= 0.9
 
 
+def test_apply_character_preset_switches_prompt_context():
+    """switch_character_preset()（gemini_router_content.py）本質上就是
+    apply_character_preset() + save_dna()；這裡驗證前半段確實會反映到
+    build_personality_prompt_context() 的輸出裡，因為該 router 方法目前
+    沒有任何呼叫點、從未被驗證過。"""
+    marvin_state = apply_character_preset({}, "marvin")
+    marmo_state = apply_character_preset({}, "marmo")
+
+    marvin_prompt = build_personality_prompt_context(marvin_state)
+    marmo_prompt = build_personality_prompt_context(marmo_state)
+
+    assert "馬文" in marvin_prompt and "行星般大腦" in marvin_prompt
+    assert "馬末" in marmo_prompt and "刀子嘴豆腐心" in marmo_prompt
+    assert marvin_prompt != marmo_prompt
+
+
 def test_prompt_manager_injects_unified_personality_context():
     prompt = PromptManager().get_instruction(
         "fast_awakening",
