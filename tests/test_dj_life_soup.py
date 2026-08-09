@@ -280,9 +280,8 @@ async def test_autopilot_context_carries_spotlight_for_attribution():
 
 
 def _dj_prompt_block() -> str:
-    from pathlib import Path
-    src = Path("gemini_router_content.py").read_text(encoding="utf-8")
-    return src.split('"dj_interjection": (')[1].split(")\n")[0]
+    from gemini_router_content import _build_dj_interjection_prompt
+    return _build_dj_interjection_prompt("測試脈絡")
 
 
 def test_dj_prompt_word_budget_targets_10_seconds():
@@ -322,9 +321,7 @@ def test_dj_prompt_has_no_human_body_framing():
 
 def test_dj_prompt_forbids_inventing_attribution():
     """prompt 必須明文禁止 LLM 自己指定這首是誰點的（掛錯名比不掛名傷）。"""
-    from pathlib import Path
-    src = Path("gemini_router_content.py").read_text(encoding="utf-8")
-    dj_block = src.split('"dj_interjection": (')[1].split(")\n")[0]
+    dj_block = _dj_prompt_block()
     assert "掛名" in dj_block and "脈絡" in dj_block, "DJ prompt 應有掛名護欄"
 
 

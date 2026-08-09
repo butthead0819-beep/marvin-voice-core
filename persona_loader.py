@@ -44,3 +44,7 @@ def load_relationship_tone_map() -> dict:
 
 def load_dj_templates() -> dict:
     return _load_yaml("dj_templates.yaml")
+
+
+def load_dj_styles() -> dict:
+    return _load_yaml("dj_styles.yaml")

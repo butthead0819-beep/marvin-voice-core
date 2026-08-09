@@ -10,6 +10,7 @@ import suki_miner
 import memory_sandbox
 from utils import safe_json_loads
 from marvin_prompts import get_persona_modifiers
+from persona_loader import load_dj_styles
 from personality_config import (
     adjust_axis,
     apply_character_preset,
@@ -18,6 +19,34 @@ from personality_config import (
 from google.genai import types
 
 logger = logging.getLogger(__name__)
+
+_DJ_STYLES = load_dj_styles()
+
+# 防幻覺護欄（呼應 feedback_no_llm_invented_facts 鐵則）：故意留在 code 裡，不放進
+# personas/dj_styles.yaml——換 persona/mood 設定時不該連安全約束一起換掉。
+_DJ_MATERIAL_GUARD = (
+    "只用脈絡給的那一項素材寫，不要自己加新話題、不要同時講好幾件事；"
+    "歌名最多提一次，是配角。"
+)
+_DJ_NAMING_GUARD = (
+    "**掛名只能照脈絡**：只有脈絡明講「點播者」或「理由」裡出現的人才能提名字，"
+    "絕不自己指定這首是誰點的、誰想聽的——掛錯名比不掛名傷。"
+)
+
+
+def _build_dj_interjection_prompt(context: str) -> str:
+    style = _DJ_STYLES["dj_interjection_style"]
+    return (
+        f"你是 DJ Marvin，在兩首歌 crossfade 的空檔串場。\n\n"
+        f"脈絡：\n{context}\n\n"
+        "規則：\n"
+        f"1. {style['length_rule']}\n"
+        f"2. {_DJ_MATERIAL_GUARD}{style['material_style_rule']}\n"
+        f"3. {style['robot_pov_rule']}\n"
+        f"4. {_DJ_NAMING_GUARD}\n"
+        f"5. {style['tone_rule']}\n"
+        f"6. {style['output_format_rule']}"
+    )
 
 
 # rephrase_proactive_script 兜底 — LLM 把 task metadata 當回應 echo（5/27 6 筆嚴重 reaction）。
@@ -1015,44 +1044,9 @@ class GeminiRouterContentMixin:
             "error_outage": "錄音室發生故障。嘆口氣說，我就知道這機器最後會壞掉。15字內。",
             # 三個歌曲介紹 task 統一走 music_intro length policy（7s ≈ 23 中文字 hard gate）。
             # 角色定位：專業電台 DJ（非 Marvin 諷刺人格），介紹歌曲、歌手、年份、歌詞重點。
-            "radio_now_playing": (
-                f"你是專業電台 DJ，正在介紹下一首歌。\n\n"
-                f"脈絡：\n{context}\n\n"
-                "規則：\n"
-                "1. 內容要素（挑 2-3 個塞進一句）：歌名、歌手、年份、副歌或歌詞亮點、創作背景\n"
-                "2. **20-23 中文字**，唸完約 6 秒，務必 7 秒內結束\n"
-                "3. 專業 DJ 口吻，平實有溫度，不諷刺、不憂鬱、不裝深沉\n"
-                "4. 只輸出台詞，不加引號、不加說明"
-            ),
-            "stream_now_playing": (
-                f"你是專業電台 DJ，介紹剛點播的這首歌。\n\n"
-                f"脈絡：\n{context}\n\n"
-                "規則：\n"
-                "1. 內容要素（挑 2-3 個）：歌名、歌手、年份、副歌或歌詞亮點。可順帶提點播者\n"
-                "2. **20-23 中文字**，唸完約 6 秒，務必 7 秒內結束\n"
-                "3. 專業 DJ 口吻，介紹給聽眾，不諷刺、不憂鬱\n"
-                "4. 只輸出台詞，不加引號、不加說明"
-            ),
-            "dj_interjection": (
-                f"你是 DJ Marvin，在兩首歌 crossfade 的空檔串場。\n\n"
-                f"脈絡：\n{context}\n\n"
-                "規則：\n"
-                "1. **長度硬上限：50-60 中文字**（唸完約 10 秒）。這是最重要的規則，"
-                "超過就是失敗——寧可少講一件事，也不要寫到第 61 字。兩三句話講完。\n"
-                "2. 只用脈絡給的那一項素材寫，不要自己加新話題、不要同時講好幾件事；"
-                "歌名最多提一次，是配角。雞湯要**具體、輕**：扣著給的素材講，不要「人生就像"
-                "一場旅行」這種空泛萬用句，也不要說教、不要勵志標語。\n"
-                "3. **你是機器人 DJ，不是人類**：『最近生活』『在場興趣』裡的事是**他們的**，不是你的。"
-                "用觀察者視角講他們的事、他們的感覺。**絕不用第一人稱把他們的經歷說成自己的**，"
-                "不准說「我最近在學佛」「我同事吵架」「我也搬過家」「我懂那種感覺」。"
-                "可以說「我」，但只能指你自己這台機器做的事（例如挑了這首歌）。\n"
-                "4. **掛名只能照脈絡**：只有脈絡明講「點播者」或「理由」裡出現的人才能提名字，"
-                "絕不自己指定這首是誰點的、誰想聽的——掛錯名比不掛名傷。\n"
-                "5. **深夜電台風格與多樣化破題**：語氣溫暖放鬆帶點默契幽默，像深夜陪伴大家很久的機器人電台；不諷刺、不憂鬱、不裝深沉。\n"
-                "   - **嚴禁固定套話**：絕對不要用「大家好，我是 DJ」、「這根本在說你」、「這簡直就在說你」、「這首歌送給...」等陳腔濫調開頭。\n"
-                "   - **多樣化開場**：開門見山，可直接從生活畫面、當下心情、老朋友間的默契微吐槽或兩首歌的情緒轉換切入，打破固定句型結構。\n"
-                "6. 只輸出台詞，不加引號、不加說明。"
-            )
+            "radio_now_playing": _DJ_STYLES["radio_now_playing"].format(context=context),
+            "stream_now_playing": _DJ_STYLES["stream_now_playing"].format(context=context),
+            "dj_interjection": _build_dj_interjection_prompt(context),
         }
         
         # DJ 三條走獨立 system prompt（不注入馬文厭世人格），否則 system 跟 task
