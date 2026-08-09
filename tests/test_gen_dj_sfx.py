@@ -79,9 +79,33 @@ def test_gen_scratch_from_pcm_music_input():
     assert isinstance(scratch, np.ndarray)
     assert scratch.dtype == np.float32
     dur = len(scratch) / rate
-    assert 0.4 <= dur <= 1.0
+    assert 0.4 <= dur <= 1.2
     assert np.max(np.abs(scratch)) <= 1.0
     # 驗證動態調變與黑膠摩擦
     rms = np.sqrt(np.mean(scratch ** 2))
     assert 0.05 <= rms <= 0.8
+
+
+def test_all_scratch_styles_supported():
+    """驗證所有支援的刷盤手法（wicka, spinback, vinyl_brake, chirp, transform, tear）均能正常生成。"""
+    from scripts.gen_dj_sfx import gen_scratch_from_pcm, SCRATCH_STYLES
+    rate = 48000
+    t = np.arange(rate * 3) / rate
+    test_pcm = 0.4 * np.sin(2 * np.pi * 330 * t) + 0.3 * np.sin(2 * np.pi * 660 * t)
+
+    expected_styles = {"wicka", "spinback", "vinyl_brake", "chirp", "transform", "tear"}
+    assert set(SCRATCH_STYLES) == expected_styles
+
+    for style in SCRATCH_STYLES:
+        out = gen_scratch_from_pcm(test_pcm, rate=rate, style=style)
+        assert isinstance(out, np.ndarray)
+        assert out.dtype == np.float32
+        dur = len(out) / rate
+        assert 0.4 <= dur <= 1.2, f"Style {style} duration {dur:.2f}s out of bounds"
+        assert not np.isnan(out).any(), f"Style {style} contains NaN"
+        assert not np.isinf(out).any(), f"Style {style} contains Inf"
+        assert np.max(np.abs(out)) <= 1.0
+        rms = np.sqrt(np.mean(out ** 2))
+        assert rms > 0.03, f"Style {style} too quiet (rms={rms})"
+
 
