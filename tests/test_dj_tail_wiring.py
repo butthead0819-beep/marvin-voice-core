@@ -18,7 +18,9 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
+
 
 
 # ── helper: build a minimal MusicCog ────────────────────────────────────────
@@ -420,6 +422,56 @@ async def test_dj_tail_sfx_skips_when_file_missing():
         await cog._play_dj_tail_sfx()
 
     vc.play_dj_on_tts_layer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dj_tail_sfx_uses_preloaded_source_for_scratch():
+    """當抽中 scratch 且 next_info 有已解碼的 preloaded source 時，使用真實 PCM 生成動態 scratch。"""
+    from local_mixing_source import PreloadedF32MusicSource
+    cog = _make_cog()
+    nxt = _next_info()
+    url = nxt["url"]
+    
+    # 建立一個假的 PreloadedF32MusicSource（100 幀）
+    fake_frames = [b"\x00" * 7680 for _ in range(100)]
+    preloaded = PreloadedF32MusicSource(fake_frames)
+    cog._preload_music_cache[url] = _done_future(preloaded)
+
+    vc = MagicMock()
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    cog.bot.cogs.get.return_value = vc
+
+    with patch("random.choice", return_value="scratch"), \
+         patch("scripts.gen_dj_sfx.gen_scratch_from_pcm", return_value=np.zeros(int(48000 * 0.65), dtype=np.float32)) as mock_gen, \
+         patch("scripts.gen_dj_sfx._write_wav") as mock_write, \
+         patch("os.path.exists", return_value=True):
+        await cog._play_dj_tail_sfx(nxt)
+
+    mock_gen.assert_called_once()
+    mock_write.assert_called_once()
+    vc.play_dj_on_tts_layer.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_dj_tail_sfx_falls_back_when_preload_not_ready():
+    """當 preloaded source 尚未準備好或異常時，抽中 scratch 自動 fallback 到 assets/dj_sfx/scratch.wav。"""
+    cog = _make_cog()
+    nxt = _next_info()
+    # 無 preload 或 preload 尚未完成
+
+    vc = MagicMock()
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    cog.bot.cogs.get.return_value = vc
+
+    with patch("random.choice", return_value="scratch"), \
+         patch("os.path.exists", return_value=True):
+        await cog._play_dj_tail_sfx(nxt)
+
+    vc.play_dj_on_tts_layer.assert_awaited_once()
+    played_path = vc.play_dj_on_tts_layer.await_args.args[0]
+    assert played_path == "assets/dj_sfx/scratch.wav"
+
+
 
 
 # ── (f) CancelledError 被 catch ──────────────────────────────────────────────

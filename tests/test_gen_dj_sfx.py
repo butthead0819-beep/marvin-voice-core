@@ -63,3 +63,25 @@ def test_gen_scratch_wav_file_output(tmp_path):
         assert f.getsampwidth() == 2
         assert f.getframerate() == RATE
         assert f.getnframes() == len(samples)
+
+
+def test_gen_scratch_from_pcm_music_input():
+    """傳入真實音樂 PCM（如立體聲 48kHz）時，應能成功產生帶有音樂特徵的動態刷碟音訊。"""
+    from scripts.gen_dj_sfx import gen_scratch_from_pcm
+    rate = 48000
+    t = np.arange(rate * 2) / rate  # 2 秒音訊
+    # 模擬音樂：440Hz 主音 + 880Hz 泛音
+    music_ch1 = 0.5 * np.sin(2 * np.pi * 440 * t)
+    music_ch2 = 0.4 * np.sin(2 * np.pi * 880 * t)
+    stereo_pcm = np.stack([music_ch1, music_ch2], axis=-1)
+
+    scratch = gen_scratch_from_pcm(stereo_pcm, rate=rate)
+    assert isinstance(scratch, np.ndarray)
+    assert scratch.dtype == np.float32
+    dur = len(scratch) / rate
+    assert 0.4 <= dur <= 1.0
+    assert np.max(np.abs(scratch)) <= 1.0
+    # 驗證動態調變與黑膠摩擦
+    rms = np.sqrt(np.mean(scratch ** 2))
+    assert 0.05 <= rms <= 0.8
+

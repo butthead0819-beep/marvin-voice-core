@@ -2486,7 +2486,7 @@ class MusicCog(commands.Cog):
         # 還有 ~5s+ 窗口，剛好夠蓋掉解碼時間。
         self._start_music_preload(next_info)
         await self._maybe_play_dj_interjection(dj_meta)
-        await self._play_dj_tail_sfx()
+        await self._play_dj_tail_sfx(next_info)
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
 
@@ -2612,17 +2612,44 @@ class MusicCog(commands.Cog):
         finally:
             vc._tts_protected = False
 
-    async def _play_dj_tail_sfx(self):
+    async def _play_dj_tail_sfx(self, next_info: dict | None = None):
         """[DJ Tail] DJ 口白播完後，隨機疊一支轉場音效（scratch/air horn/riser 合成自
         scripts/gen_dj_sfx.py；shoutout 是 edge-tts 用 Marvin 現役聲線 zh-TW-YunJheNeural
         rate=-20% pitch=-15Hz 錄的「Yo，DJ 馬文！」報名 stamp）進 TTS 層——跟口白同一條
-        佇列接續播出，落在尾段疊播溢進下一首開頭的窗口內。找不到 vc/檔案就靜靜放棄，
-        不影響主流程。"""
+        佇列接續播出，落在尾段疊播溢進下一首開頭的窗口內。
+        若抽中 scratch 且下一首已有預解碼 PCM，則即時截取其前奏合成專屬該曲的真實黑膠刷碟聲。
+        找不到 vc/檔案就靜靜放棄，不影響主流程。"""
         vc = self._vc()
         if vc is None:
             return
         name = random.choice(_DJ_TAIL_SFX_NAMES)
         path = os.path.join(_DJ_TAIL_SFX_DIR, f"{name}.wav")
+
+        # 若抽中 scratch 且下一首已有預解碼 PCM，即時生成專屬該曲的動態刷碟聲
+        if name == "scratch" and next_info:
+            url = next_info.get('url', '')
+            preload_task = self._preload_music_cache.get(url)
+            if preload_task is not None and preload_task.done() and not preload_task.cancelled():
+                try:
+                    if not preload_task.exception():
+                        preloaded = preload_task.result()
+                        frames = getattr(preloaded, '_frames', None)
+                        if frames and len(frames) >= 50:
+                            import hashlib
+                            import numpy as np
+                            from scripts.gen_dj_sfx import gen_scratch_from_pcm, _write_wav
+                            raw_bytes = b"".join(frames[:100])
+                            raw_f32 = np.frombuffer(raw_bytes, dtype=np.float32).reshape(-1, 2)
+                            dynamic_samples = gen_scratch_from_pcm(raw_f32, rate=48000)
+                            # 固定檔名在多首歌同時點火時會互踩（寫入中被下一次點火覆蓋/搶讀半寫檔），
+                            # 用 url hash 隔開。
+                            url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
+                            dynamic_path = f"/tmp/scratch_dynamic_{url_hash}.wav"
+                            _write_wav(dynamic_path, dynamic_samples)
+                            path = dynamic_path
+                except Exception as e:
+                    logger.debug(f"[DJ Tail] 動態 scratch 合成退回靜態音效: {e}")
+
         if not os.path.exists(path):
             return
         try:
@@ -2630,6 +2657,7 @@ class MusicCog(commands.Cog):
             await vc.play_dj_on_tts_layer(path, peak=0.1)
         except Exception as e:
             logger.debug(f"⚠️ [DJ Tail] SFX 疊播失敗（不影響主流程）: {e}")
+
 
     async def _analyze_song_reactions(self, info: dict, song_start_time: float, lyrics: str):
         """歌曲結束後掃描對話，分析聆聽反應並寫入音樂記憶。"""
