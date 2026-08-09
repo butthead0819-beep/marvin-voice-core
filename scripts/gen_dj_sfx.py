@@ -153,6 +153,15 @@ def gen_scratch_from_pcm(raw_pcm: np.ndarray, rate: int = RATE, style: str | Non
         raw_pcm = np.mean(raw_pcm, axis=-1)
 
     raw_pcm = raw_pcm.astype(np.float32)
+
+    # 摩擦/rumble/碎音幾層是照「內建 formant 素材」的音量（tanh 飽和後 RMS≈0.3）調的
+    # 增益；真實歌曲 PCM（loudnorm 後 RMS 常只有 ~0.1-0.15）直接餵進來，噪點層蓋過
+    # 刷碟音本身，聽起來變成一坨跟歌完全無關的電子噪音。這裡固定歸一化到統一峰值，
+    # 讓 scratched_tone 音量不再看輸入原始響度臉色。
+    peak = float(np.max(np.abs(raw_pcm))) if raw_pcm.size else 0.0
+    if peak > 1e-6:
+        raw_pcm = raw_pcm * (0.9 / peak)
+
     if style is None or style not in SCRATCH_STYLES:
         import random
         style = random.choice(SCRATCH_STYLES)

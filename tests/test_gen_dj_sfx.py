@@ -86,6 +86,27 @@ def test_gen_scratch_from_pcm_music_input():
     assert 0.05 <= rms <= 0.8
 
 
+def test_gen_scratch_from_pcm_normalizes_quiet_input():
+    """真實歌曲 PCM（loudnorm 後 RMS 常只有 ~0.1-0.15）遠比內建 formant 素材
+    （tanh 飽和後 RMS≈0.3）安靜，而摩擦/rumble 噪點層的增益是照後者調的——沒有
+    先歸一化，安靜輸入的旋律會被噪點層蓋過，聽起來像跟歌曲完全無關的電子噪音
+    （2026-08-09 使用者實測回報）。鎖住：同一段旋律不論原始音量多小聲，輸出響度
+    要落在穩定區間內，不能因為輸入安靜就被噪點主導、輸出音量遠低於正常水準。"""
+    from scripts.gen_dj_sfx import gen_scratch_from_pcm
+    rate = 48000
+    t = np.arange(int(rate * 2)) / rate
+    quiet_music = (0.05 * np.sin(2 * np.pi * 220 * t) + 0.03 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    loud_music = quiet_music * 6.0  # 同一段旋律，音量差 6 倍
+
+    out_quiet = gen_scratch_from_pcm(quiet_music, rate=rate, style="wicka")
+    out_loud = gen_scratch_from_pcm(loud_music, rate=rate, style="wicka")
+
+    rms_quiet = np.sqrt(np.mean(out_quiet ** 2))
+    rms_loud = np.sqrt(np.mean(out_loud ** 2))
+    assert rms_quiet > 0.15  # 安靜輸入不能被正規化前的做法拖到幾乎聽不見旋律
+    assert rms_loud / rms_quiet < 1.5  # 歸一化後響度差距應被拉近，不能維持原始 6 倍懸殊
+
+
 def test_all_scratch_styles_supported():
     """驗證所有支援的刷盤手法（wicka, spinback, vinyl_brake, chirp, transform, tear）均能正常生成。"""
     from scripts.gen_dj_sfx import gen_scratch_from_pcm, SCRATCH_STYLES
