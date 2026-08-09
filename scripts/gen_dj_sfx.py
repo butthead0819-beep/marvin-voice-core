@@ -14,16 +14,6 @@ RATE = 44100
 SFX_DIR = "assets/dj_sfx"
 
 
-def _lowpass(sig: np.ndarray, cutoff: float, order: int = 2) -> np.ndarray:
-    sos = butter(order, cutoff, btype="lowpass", fs=RATE, output="sos")
-    return sosfilt(sos, sig)
-
-
-def _bandpass(sig: np.ndarray, low: float, high: float, order: int = 2) -> np.ndarray:
-    sos = butter(order, [low, high], btype="bandpass", fs=RATE, output="sos")
-    return sosfilt(sos, sig)
-
-
 def _write_wav(path: str, samples: np.ndarray) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     pcm16 = np.clip(samples, -1.0, 1.0)
@@ -48,26 +38,97 @@ def _fade(samples: np.ndarray, attack: float = 0.01, release: float = 0.08) -> n
 
 
 def gen_scratch() -> np.ndarray:
-    """刷碟：正反來回的音高擺盪 + 濾波噪點，模擬 DJ 手刷黑膠。
+    """刷碟：真實 DJ 黑膠轉盤刷碟（Vinyl Scratch）。
 
-    上一版用方波（np.sign）當音高擺盪的音色，方波高次諧波一路延伸到 Nyquist，
-    聽起來像 8-bit 蜂鳴而非刷碟——這是「不自然」的主因。改用正弦音高擺盪
-    （音高本身的來回擺動已經有辨識度，不需要靠方波刺耳感）+ lowpass 收乾淨；
-    噪點也從全頻域白噪音改成 bandpass 濾到中高頻段，模擬唱針磨擦黑膠的顆粒感
-    而非一片嘶聲。
+    捨棄單純正弦波掃頻（聽起來像 8-bit 電子噪音），改用真實黑膠溝槽調變模型：
+    1. 採用手腕加減速非對稱軌跡（Wicka-wicka 手法：Pull -> Push -> Short Pull -> Slide Cut）。
+    2. 驅動黑膠溝槽 Formant（A/O 共振峰）切片重採樣（Doppler / Speed modulation）。
+    3. 疊加唱針微觀摩擦顆粒（Needle Friction）、唱盤低頻共振（Turntable Rumble）與唱針微爆音（Crackle）。
+    4. 換向停滯點動態歸零，經箱體濾波與類比暖度飽和，呈現清脆、扎實且自然的黑膠刷碟聲。
     """
-    dur = 0.55
+    dur = 0.65
     n = int(RATE * dur)
-    t = np.arange(n) / RATE
-    # 音高在 3 段來回擺盪（去-回-去），模擬手刷來回
-    sweep = 900 + 700 * np.sin(2 * np.pi * 3.2 * t)
-    phase = 2 * np.pi * np.cumsum(sweep) / RATE
-    tone = _lowpass(np.sin(phase), 3500)
-    noise = np.random.default_rng(0).uniform(-1, 1, n)
-    noise = _bandpass(noise, 400, 6000)
-    sig = 0.55 * tone + 0.3 * noise
-    env = 0.6 + 0.4 * np.abs(np.sin(2 * np.pi * 3.2 * t))
-    return _fade((sig * env).astype(np.float32), attack=0.005, release=0.1)
+    t = np.linspace(0, dur, n)
+
+    # 4 段手部動作速度曲線 v(t) (相對正常播放速度的倍率)
+    # 0.00 ~ 0.13: 向後拉回 (pull, v從 0 -> -2.6 -> 0)
+    # 0.13 ~ 0.26: 向前快推 (push, v從 0 -> +3.2 -> 0)
+    # 0.26 ~ 0.38: 短促拉回 (short pull, v從 0 -> -3.5 -> 0)
+    # 0.38 ~ 0.65: 前推切入並順勢滑出 (release slide, v從 0 -> +4.0 -> 0)
+    cuts = [0.0, 0.13, 0.26, 0.38, dur]
+    v = np.zeros(n)
+
+    s1 = (t >= cuts[0]) & (t < cuts[1])
+    t_s1 = (t[s1] - cuts[0]) / (cuts[1] - cuts[0])
+    v[s1] = -2.6 * np.sin(np.pi * t_s1) ** 1.3
+
+    s2 = (t >= cuts[1]) & (t < cuts[2])
+    t_s2 = (t[s2] - cuts[1]) / (cuts[2] - cuts[1])
+    v[s2] = 3.2 * np.sin(np.pi * t_s2) ** 1.3
+
+    s3 = (t >= cuts[2]) & (t < cuts[3])
+    t_s3 = (t[s3] - cuts[2]) / (cuts[3] - cuts[2])
+    v[s3] = -3.5 * np.sin(np.pi * t_s3) ** 1.4
+
+    s4 = (t >= cuts[3]) & (t <= cuts[4])
+    t_s4 = (t[s4] - cuts[3]) / (cuts[4] - cuts[3])
+    v[s4] = 4.0 * np.sin(np.pi * t_s4 * 0.75) * np.exp(-3.2 * t_s4)
+
+    # 1. 唱片音源層：富含 Formant 共振的人聲/樂器黑膠切片
+    sample_dur = 4.0
+    st = np.arange(int(RATE * sample_dur)) / RATE
+    f0 = 170.0
+    saw = 2 * (st * f0 - np.floor(0.5 + st * f0))
+    pulse = np.where((st * f0 % 1.0) < 0.32, 1.0, -1.0)
+    source_wave = 0.55 * saw + 0.45 * pulse
+
+    # 經典嘻哈 "Ahhh/Fresh" 3 階共振峰濾波
+    sos_f1 = butter(2, [580, 820], btype="bandpass", fs=RATE, output="sos")
+    sos_f2 = butter(2, [1150, 1550], btype="bandpass", fs=RATE, output="sos")
+    sos_f3 = butter(2, [2350, 3100], btype="bandpass", fs=RATE, output="sos")
+    f1 = sosfilt(sos_f1, source_wave) * 1.7
+    f2 = sosfilt(sos_f2, source_wave) * 1.3
+    f3 = sosfilt(sos_f3, source_wave) * 0.9
+    vinyl_content = np.tanh((f1 + f2 + f3) * 1.7)
+
+    # 根據手速軌跡重採樣 (Doppler / Scratch modulation)
+    pos = 1.0 + np.cumsum(v) / RATE
+    pos_idx = np.clip(pos * RATE, 0, len(vinyl_content) - 2)
+    idx_f = pos_idx.astype(int)
+    idx_frac = pos_idx - idx_f
+    scratched_tone = (1.0 - idx_frac) * vinyl_content[idx_f] + idx_frac * vinyl_content[idx_f + 1]
+
+    # 2. 手速動態包絡 (速度越快聲音越響亮，換向停滯點無聲)
+    speed = np.abs(v)
+    vol_env = np.clip(speed / 1.6, 0.0, 1.0) ** 0.8
+
+    # 3. 唱針微觀摩擦層 (Needle Friction & Texture)
+    rng = np.random.default_rng(2026)
+    noise = rng.normal(0, 1, n)
+    sos_fric = butter(2, [800, 5200], btype="bandpass", fs=RATE, output="sos")
+    friction = sosfilt(sos_fric, noise) * 0.45 * (speed ** 1.15)
+
+    # 4. 黑膠唱盤箱體低頻 (Turntable Platter Rumble)
+    sos_rumble = butter(2, [45, 110], btype="bandpass", fs=RATE, output="sos")
+    rumble = sosfilt(sos_rumble, rng.normal(0, 1, n)) * 0.3 * (speed ** 0.5)
+
+    # 5. 黑膠唱針微小碎音 (Needle crackle / micro-pops)
+    crackle = np.zeros(n)
+    pop_indices = rng.choice(n, size=int(n * 0.008), replace=False)
+    crackle[pop_indices] = rng.uniform(0.25, 0.7, size=len(pop_indices)) * speed[pop_indices]
+
+    # 混音組合
+    mix = (scratched_tone * 0.70 + friction * 0.42 + rumble * 0.28 + crackle * 0.15) * vol_env
+
+    # 溫暖度濾波（抑制過度刺耳的高頻，留下扎實的中頻刷碟質感）
+    sos_body = butter(2, 6000, btype="lowpass", fs=RATE, output="sos")
+    mix = sosfilt(sos_body, mix)
+
+    # 軟飽和 (Analog Warmth)
+    out = np.tanh(mix * 1.55)
+
+    return _fade(out.astype(np.float32), attack=0.008, release=0.04)
+
 
 
 def gen_dj_airhorn() -> np.ndarray:
