@@ -70,10 +70,39 @@ def test_official_mv_boosted():
     assert score_yt_candidate(info) > 15
 
 
-def test_cover_keyword_boosted():
+def test_cover_without_official_marker_penalized():
+    # 2026-08-10：cover/翻唱不再加分，改扣分——高流量 cover/AI cover 常態贏過
+    # 官方版是使用者實際反映的痛點，不能讓「這是音樂」的加分同時當「這是好版本」用。
     info = {"title": "稻香 Cover 翻唱", "duration": 240, "categories": []}
-    # 有 cover/翻唱 → 加分（即使無類別）
-    assert score_yt_candidate(info) > 0
+    assert score_yt_candidate(info) < 0
+
+
+def test_official_marker_overrides_cover_penalty():
+    # 標題同時有 official 標記 → looks_like_cover 判定為 False，不扣分
+    # （例：官方頻道自己發的「Official Cover / Tribute」企劃）。
+    info = {"title": "周杰倫 - 稻香 Official MV Cover Version", "duration": 240, "categories": ["Music"]}
+    assert score_yt_candidate(info) > 10
+
+
+def test_ai_cover_keyword_penalized():
+    info = {"title": "張學友 AI COVER - 那些年", "duration": 240, "categories": []}
+    assert score_yt_candidate(info) < 0
+
+
+def test_live_version_penalized():
+    info = {"title": "周杰倫 稻香 演唱會 Live 2019", "duration": 260, "categories": []}
+    assert score_yt_candidate(info) < 3   # 沒有黑名單命中但被 live 扣分拉低
+
+
+def test_official_beats_high_signal_cover_in_pick_best():
+    # 使用者實際反映：搜尋常挑到流量高的 cover/AI cover 蓋過官方版；
+    # 就算 cover 候選各方面條件(時長/無黑名單)都正常，官方版仍該勝出。
+    candidates = [
+        {"title": "周杰倫 - 稻香 AI COVER 翻唱", "duration": 240, "categories": []},
+        {"title": "周杰倫 - 稻香 Official MV", "duration": 240, "categories": ["Music"]},
+    ]
+    best = pick_best_music_candidate(candidates)
+    assert "Official MV" in best["title"]
 
 
 def test_topic_channel_boosted():

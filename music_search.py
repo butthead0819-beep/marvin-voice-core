@@ -8,6 +8,7 @@ music_search.py — YouTube 搜尋候選評分與過濾。
 """
 from __future__ import annotations
 
+from track_quality import looks_like_cover, looks_like_live
 
 # 標題出現這些字 → 強烈扣分（非音樂內容）
 NON_MUSIC_BLACKLIST = (
@@ -22,7 +23,7 @@ NON_MUSIC_BLACKLIST = (
     "asmr",
 )
 
-# 標題出現這些字 → 加分（音樂內容信號）
+# 標題出現這些字 → 加分（音樂內容信號，has_music_signal 用；cover/翻唱也算「是音樂」）
 MUSIC_HINTS = (
     "mv", "music video", "official",
     "audio", "official audio",
@@ -30,6 +31,10 @@ MUSIC_HINTS = (
     "完整版", "ost",
     "lyric", "歌詞",
 )
+# 評分加分排除 cover/翻唱：那只代表「這是音樂」不代表「這是好版本」——高流量
+# cover/AI cover 常態贏過官方版（使用者 2026-08-10 反映），改用 looks_like_cover
+# 額外扣分決勝負，不能讓兩者同時加分互相抵消掉。
+_SCORE_HINTS = tuple(h for h in MUSIC_HINTS if h not in ("cover", "翻唱"))
 
 
 def score_yt_candidate(info: dict) -> float:
@@ -38,7 +43,9 @@ def score_yt_candidate(info: dict) -> float:
     評分維度（可互相抵消）：
     - 類別：Music +10；其他類別 -3；無類別 0
     - 黑名單關鍵字：每命中一個 -5
-    - 音樂提示關鍵字：每命中一個 +2
+    - 音樂提示關鍵字（cover/翻唱除外）：每命中一個 +2
+    - cover 版（無官方標記時）：-4；現場/演唱會版：-2（與 track_quality 的
+      looks_like_cover/looks_like_live 同一套判斷，官方標記會壓制誤判）
     - YouTube Music auto-generated channel（"... - Topic"）：+3
     - 時長：90s-600s +3；60s-900s +1；其他 -2
     """
@@ -59,10 +66,16 @@ def score_yt_candidate(info: dict) -> float:
         if kw in title:
             score -= 5
 
-    # 音樂提示
-    for kw in MUSIC_HINTS:
+    # 音樂提示（cover/翻唱除外，見 _SCORE_HINTS）
+    for kw in _SCORE_HINTS:
         if kw in title:
             score += 2
+
+    # cover / 現場版扣分（官方標記會壓制誤判，見 looks_like_cover）
+    if looks_like_cover(title):
+        score -= 4
+    if looks_like_live(title):
+        score -= 2
 
     # YouTube Music 自動產生的 channel（純歌曲，無 MV/反應）
     if uploader.endswith(" - topic"):
