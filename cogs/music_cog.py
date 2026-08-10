@@ -702,6 +702,11 @@ class MusicCog(commands.Cog):
         """單一 seed 的 radio 候選，帶 TTL 快取：一次 API 呼叫已回全量(~50首)，
         同 seed 在 TTL 內重複被選中（seed_rotation 常見連續多輪同一顆）就直接重用，
         只在本地重套當下的 exclude_titles（已播/skip 每輪都在變，不能連同結果一起快取）。
+
+        過濾後隨機抽樣（非固定取前 N 首）：實測同一 seed 連續打 API 兩次，YouTube radio
+        本身順序/集合就有小幅漂移（2026-08-10 驗證），可見「取前 N」的變化度一直是這種
+        意外漂移撐出來的、不是設計；快取住同一批後這個意外漂移沒了，改用隨機抽樣顯式補回
+        變化度，順便比原本的「永遠前 N 首」更不容易讓同一批候選反覆撞臉。
         """
         from ytmusic_radio import ytmusic_radio
         now = time.time()
@@ -715,7 +720,11 @@ class MusicCog(commands.Cog):
         if not raw:
             return []
         excl = {normalize_title(t) for t in exclude_titles}
-        return [c for c in raw if normalize_title(c["title"]) not in excl][: self._round_size * 2]
+        filtered = [c for c in raw if normalize_title(c["title"]) not in excl]
+        k = self._round_size * 2
+        if len(filtered) <= k:
+            return filtered
+        return random.sample(filtered, k)
 
     async def _t2_discovery_candidates(self, members: list[str], exclude_titles: list[str]) -> list:
         """T2 discovery：多 seed → ytmusic radio 混合取相關新歌 → Candidate(direct_url)。"""

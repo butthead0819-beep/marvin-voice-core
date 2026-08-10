@@ -38,8 +38,26 @@ async def test_second_call_same_seed_hits_cache_no_api_call(monkeypatch):
     out2 = await MusicCog._t2_radio_for_seed(stub, "seedaaaaaaa", [])
 
     assert len(calls) == 1                 # 第二次命中快取，沒有再打 API
-    assert len(out1) == 6                  # 全量50首 → round_size*2 截斷
-    assert out1 == out2
+    assert len(out1) == 6                  # 全量50首 → 隨機抽 round_size*2
+    assert len(out2) == 6
+    all_titles = {f"seedaaaaaaa-song{i}" for i in range(50)}
+    assert {c["title"] for c in out1} <= all_titles
+    assert {c["title"] for c in out2} <= all_titles
+
+
+async def test_random_sampling_varies_across_rounds(monkeypatch):
+    """快取住同一批後改隨機抽樣：連續多輪不該每次都抽到一模一樣的 6 首。"""
+    import ytmusic_radio
+
+    def fake_radio(seed, exclude_titles=None, limit=None, **kw):
+        return [{"title": f"song{i}", "artist": "x", "url": f"http://y/{i}"} for i in range(50)]
+
+    monkeypatch.setattr(ytmusic_radio, "ytmusic_radio", fake_radio)
+    stub = _StubSelf()
+
+    rounds = [tuple(sorted(c["title"] for c in await MusicCog._t2_radio_for_seed(stub, "seedaaaaaaa", [])))
+              for _ in range(8)]
+    assert len(set(rounds)) > 1            # 至少有兩輪抽到不同組合
 
 
 async def test_different_seed_still_calls_api(monkeypatch):
