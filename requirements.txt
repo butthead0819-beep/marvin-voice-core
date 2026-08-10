@@ -30,7 +30,7 @@ soundfile==0.13.1
 syncedlyrics==1.0.1
 wyoming==1.10.0
 yt-dlp==2026.6.9
-ytmusicapi==1.12.0
+ytmusicapi==1.12.2
 
 # diary_comic 漫畫渲染
 Pillow>=12.0.0

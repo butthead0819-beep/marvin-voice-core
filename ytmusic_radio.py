@@ -14,9 +14,12 @@ _auto_recommend——先驗證 radio 真吐相關新歌、過得了安全閘，�
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable, Sequence
 
 from music_recommender import normalize_title
+
+logger = logging.getLogger(__name__)
 
 
 def parse_length(s: str | None) -> int:
@@ -84,7 +87,8 @@ def ytmusic_radio(
         wp = yt.get_watch_playlist(
             videoId=seed_video_id, playlistId="RDAMVM" + seed_video_id
         )
-    except Exception:
+    except Exception as e:
+        logger.warning(f"[T2] get_watch_playlist(seed={seed_video_id}) 失敗: {e!r}")
         return []
     cands = parse_radio_tracks(wp, seed_video_id=seed_video_id)
     excl = {normalize_title(t) for t in exclude_titles}
@@ -136,7 +140,8 @@ def ytmusic_search_songs(
     try:
         yt = client or client_factory()
         results = yt.search(query, filter="songs", limit=limit)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"[T4] search(query={query!r}) 失敗: {e!r}")
         return []
     cands = parse_search_songs(results)
     excl = {normalize_title(t) for t in exclude_titles}
