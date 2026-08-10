@@ -2,7 +2,11 @@
 
 背景（2026-07-08 使用者報「自動隨機播放沒候選歌就結束」）：歌庫 1061 首在長時間連播下
 24h 內被播光→T2/T3 找到的候選全被『已播過 video-id』濾掉→enqueued=0→串流靜默結束。
-最終安全網從本場歷史挑舊歌重播（避開最近 5 首防立即重複+skip 過的）。這裡測純選池邏輯。
+最終安全網從本場歷史挑舊歌重播（避開最近 min(5,歷史-1) 首防立即重複+skip 過的）。這裡測純選池邏輯。
+
+2026-08-10 追加：舊門檻「歷史 <6 首才回空」在短場次(剛重啟/才聽幾首)一律打不開安全網，
+且失敗時 `_last_resort_replay` 沒留下任何 log（真正的事故根因是「窮盡了但看不出為什麼」）。
+門檻降到 <2 首，排除窗跟著縮小成 min(5, 歷史-1)，短場次也能回收。
 """
 from cogs.music_cog import MusicCog
 
@@ -14,9 +18,19 @@ def _h(vid: str, title: str = "") -> dict:
 
 
 def test_too_short_history_returns_empty():
-    # 歷史 <6 首 → 沒得循環（真沒東西）
-    hist = [_h(f"vid{i:08d}xx"[:11]) for i in range(5)]
+    # 歷史 <2 首 → 沒得循環（真沒東西）
+    hist = [_h("vid0000000")]
     assert _pool(hist, set()) == []
+
+
+def test_short_history_relaxes_recent_window():
+    # 歷史 3 首：排除窗縮成 min(5,2)=2 首，最舊那 1 首仍可回收
+    hist = [_h(f"ddddddd{i:04d}"[:11]) for i in range(3)]
+    out = _pool(hist, set())
+    out_vids = {s["webpage_url"] for s in out}
+    assert hist[0]["webpage_url"] in out_vids
+    assert hist[1]["webpage_url"] not in out_vids
+    assert hist[2]["webpage_url"] not in out_vids
 
 
 def test_excludes_last_five_and_returns_older():

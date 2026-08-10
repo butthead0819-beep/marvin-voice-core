@@ -1421,16 +1421,19 @@ class MusicCog(commands.Cog):
 
     @staticmethod
     def _eligible_replay_pool(history: list, skip_vids: set) -> list:
-        """最終安全網選池：從播放歷史挑可重播的舊歌，排除最近 5 首(防立即重複)+skip 過的。
+        """最終安全網選池：從播放歷史挑可重播的舊歌，排除最近 min(5, 歷史-1) 首(防立即重複)+skip 過的。
 
-        歷史 <6 首 → 回 []（真沒得循環，讓串流正常停）。
+        歷史 <2 首 → 回 []（真沒得循環，讓串流正常停）。舊門檻是「歷史 <6 首」，但那只是
+        「排除最近 5 首」順手訂出來的數字，不是真的沒歌可放——短場次(剛重啟/才聽幾首)一律
+        打不開安全網，還會在 `_last_resort_replay` 靜默失敗（2026-08-10 事故）。
         """
         hist = [s for s in history if isinstance(s, dict) and s.get('webpage_url')]
-        if len(hist) < 6:
+        if len(hist) < 2:
             return []
-        recent_vids = {extract_video_id(s.get('webpage_url', '')) for s in hist[-5:]}
+        recent_n = min(5, len(hist) - 1)
+        recent_vids = {extract_video_id(s.get('webpage_url', '')) for s in hist[-recent_n:]}
         out = []
-        for s in hist[:-5]:
+        for s in hist[:-recent_n]:
             v = extract_video_id(s.get('webpage_url', ''))
             if v and v not in recent_vids and v not in skip_vids:
                 out.append(s)
@@ -1444,11 +1447,13 @@ class MusicCog(commands.Cog):
         skip_vids = mm.get_skipped_video_ids() if mm is not None else set()
         pool = self._eligible_replay_pool(list(self.stream_history), skip_vids)
         if not pool:
+            logger.warning(f"⚠️ [AutoRecommend] 絕境回收失敗：本場歷史不足可回收（{len(self.stream_history)}首）")
             return False
         import random
         pick = random.choice(pool)
         info = await self._resolve_yt_query(pick['webpage_url'], force_fresh=True)
         if not info or not info.get('url'):
+            logger.warning(f"⚠️ [AutoRecommend] 絕境回收失敗：重抓網址失敗「{pick.get('title')}」")
             return False
         info['requested_by'] = 'Marvin推薦（點給大家）'
         self.stream_queue.append(info)
