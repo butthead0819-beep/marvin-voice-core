@@ -148,6 +148,11 @@ class MusicCog(commands.Cog):
         self._cover_blacklist = None
         self._round_track_count: int = 0
         self._round_size: int = 3
+        # 🎲 [T2 SeedCache] 同一 seed 的 radio 原始結果快取（TTL 內免重打 ytmusicapi）：
+        # seed 輪替常見同一顆種子連續多輪被選中（見 seed_rotation.py 的 round-robin），
+        # radio 推薦短期內不太會變，快取原始 50 首、exclude_titles 每次本地重套即可。
+        self._t2_seed_cache: dict[str, tuple[float, list[dict]]] = {}
+        self._T2_SEED_CACHE_TTL_S = 3600
         # 🎚️ [ThemedSet] 讀空氣主題歌單（env-gated MARVIN_THEMED_PLAYLIST，預設 OFF）
         self._THEMED_SET_COOLDOWN_S = 30 * 60   # 一張歌單約 30-40 分鐘，半小時內不重開
         self._THEMED_SET_NIGHTLY_CAP = 4        # 每晚上限，防抖動重打付費 LLM
@@ -693,6 +698,25 @@ class MusicCog(commands.Cog):
             return None
         return {"current_bpm": entry["bpm"], "store": store}
 
+    async def _t2_radio_for_seed(self, seed_video_id: str, exclude_titles: list[str]) -> list[dict]:
+        """單一 seed 的 radio 候選，帶 TTL 快取：一次 API 呼叫已回全量(~50首)，
+        同 seed 在 TTL 內重複被選中（seed_rotation 常見連續多輪同一顆）就直接重用，
+        只在本地重套當下的 exclude_titles（已播/skip 每輪都在變，不能連同結果一起快取）。
+        """
+        from ytmusic_radio import ytmusic_radio
+        now = time.time()
+        cached = self._t2_seed_cache.get(seed_video_id)
+        if cached and now - cached[0] < self._T2_SEED_CACHE_TTL_S:
+            raw = cached[1]
+            logger.debug(f"[T2 SeedCache] seed={seed_video_id} 命中（省一次 API 呼叫）")
+        else:
+            raw = await asyncio.to_thread(ytmusic_radio, seed_video_id, exclude_titles=(), limit=50)
+            self._t2_seed_cache[seed_video_id] = (now, raw)
+        if not raw:
+            return []
+        excl = {normalize_title(t) for t in exclude_titles}
+        return [c for c in raw if normalize_title(c["title"]) not in excl][: self._round_size * 2]
+
     async def _t2_discovery_candidates(self, members: list[str], exclude_titles: list[str]) -> list:
         """T2 discovery：多 seed → ytmusic radio 混合取相關新歌 → Candidate(direct_url)。"""
         mm = getattr(self.bot, 'music_memory', None)
@@ -751,14 +775,11 @@ class MusicCog(commands.Cog):
                     f"since_manual={_since} seeds={len(seeds)}")
         if not seeds:
             return []
-        from ytmusic_radio import ytmusic_radio, blend_radio_results
+        from ytmusic_radio import blend_radio_results
         results = []
         for sd in seeds:
             try:
-                r = await asyncio.to_thread(
-                    ytmusic_radio, sd,
-                    exclude_titles=exclude_titles, limit=self._round_size * 2,
-                )
+                r = await self._t2_radio_for_seed(sd, exclude_titles)
             except Exception as e:
                 logger.warning(f"⚠️ [AutoRecommend] T2 radio seed={sd} 失敗，跳過: {e}")
                 continue

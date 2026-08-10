@@ -45,9 +45,15 @@ class _StubSelf:
         self._last_user_song_seed = last
         self._round_size = 3
         self._auto_since_manual = since_manual  # ≥swap_every → last 不當 fresh lead
+        self._t2_seed_cache = {}
+        self._T2_SEED_CACHE_TTL_S = 3600
 
     def _load_taste_fingerprint(self):
         return {}
+
+    async def _t2_radio_for_seed(self, seed_video_id, exclude_titles):
+        from cogs.music_cog import MusicCog as _MC
+        return await _MC._t2_radio_for_seed(self, seed_video_id, exclude_titles)
 
 
 pytestmark = pytest.mark.asyncio
