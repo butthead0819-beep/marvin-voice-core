@@ -15,7 +15,14 @@
  *            GET /audio_stream 播整個 mixer 輸出（音樂+TTS+DJ 全部，非單次 /reply
  *            輪詢；核心 0 專任務常駐讀、核心 1 跑 loop()/PTT，兩者不互卡）。
  *            斷電＝心跳自然停送，由伺服器 TTL(90s) 收尾停播，不用板子主動告知。
+ *   STEP 8a = + 每 1s 輪詢 GET /car_commands?since=<seq>（見 main_satellite.py::
+ *             handle_car_commands + marvin_voice_core/puck_command_queue.py），收到
+ *             新指令只 log 到 Serial，完全不碰音訊路徑——edge端混音（雙 deck 自己
+ *             crossfade，見 project 計畫文件）第一刀，只驗證「連得上新端點、seq 正確
+ *             往前推進」，deck 邏輯留到下一刀再加。STEP<8 完全不受影響（沿用 STEP7
+ *             既有的單一 /audio_stream 全混音路徑）。
  *
+
  * ⚠️ 動手前要填：WiFi、MARVIN_TOKEN。（I2S 腳位已實測、不用再查，見下。）
  *
  * ── 2026-07-17 實機體檢結果（Goouuu N16R8 + V1.7，硬體全綠）──
@@ -50,10 +57,16 @@
                                 // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
 
 // ========== 你要填的 ==========
-#define STEP 7   // ← 從 1 開始，每步綠了再 +1
+#define STEP 8   // ← 從 1 開始，每步綠了再 +1（8＝STEP 8a 指令輪詢，見檔頭說明；
+                 // 想還原到目前驗證過的音訊路徑，改回 7 重新燒錄即可，STEP<8 的
+                 // 邏輯完全沒被這次改動動到）
 
 // 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
 // buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
+// 2026-08-11 重開查車上斷線：USB 接筆電、serial monitor 開著主動讀（不會積壓 buffer）
+// 時應該安全；量完記得改回 0，避免平常沒接電腦時 printf 卡 HWCDC。
+// 2026-08-11 追加：開了之後 ringUsed 持續飆高、puck 現場真的沒聲音——複現了上面那個
+// 預言的症狀，改回 0 驗證是不是這個 flag 自己捅的婁子。
 #define STREAM_DEBUG_PRINT 0
 
 // 2026-07-26：家用WiFi + iPhone個人熱點都登記進去，WiFiMulti開機掃描自動選訊號最強、
@@ -797,6 +810,106 @@ static int postHttp(WiFiClient& client, const char* host, uint16_t port, int32_t
   return code;
 }
 
+// STEP 8a：手動 GET + 讀 body（跟 postHttp 對稱、同款鎖紀律；body 走 Connection: close
+// 讀到斷線為止，不解析 Content-Length——/car_commands 回應很小，這樣最簡單）。
+// bodyBuf 由呼叫端提供（ps_malloc，避免佔 stack），塞不下就截斷（回傳值 = 實際讀到的
+// bytes，可能等於 bodyBufSize）。回傳 HTTP 狀態碼，connect 失敗回 -1。
+static int getHttpBody(WiFiClient& client, const char* host, uint16_t port, int32_t connectTimeoutMs,
+                        const char* path, uint32_t readTimeoutMs,
+                        uint8_t* bodyBuf, size_t bodyBufSize, size_t* outBodyLen) {
+  *outBodyLen = 0;
+  LWIP_LOCK();
+  bool connectOk = client.connect(host, port, connectTimeoutMs);
+  LWIP_UNLOCK();
+  if (!connectOk) return -1;
+  client.setTimeout(500);
+
+  String req = String("GET ") + path + " HTTP/1.1\r\n" +
+               "Host: " + host + "\r\nConnection: close\r\n\r\n";
+  LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
+
+  String status;
+  lockedReadLine(client, status, readTimeoutMs);
+  int code = 0;
+  int sp1 = status.indexOf(' ');
+  if (sp1 > 0) code = status.substring(sp1 + 1, sp1 + 4).toInt();
+
+  while (client.connected()) {          // 跳過 headers，讀到空行＝標頭結束
+    String h;
+    if (!lockedReadLine(client, h, readTimeoutMs)) break;
+    if (h.length() == 0) break;
+  }
+  size_t got = 0;
+  while (got < bodyBufSize) {
+    size_t n = lockedReadBytes(client, bodyBuf + got, bodyBufSize - got, readTimeoutMs);
+    if (n == 0) break;                  // 逾時空讀或斷線＝body 讀完了
+    got += n;
+  }
+  *outBodyLen = got;
+  LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
+  return code;
+}
+
+// STEP 8a：抽 JSON 最外層 "seq":<N>——回應固定是 {"seq":N,"commands":[...]}，"seq" 這個
+// key 第一次出現的位置一定是最外層那個（commands 陣列裡每個指令物件的 "seq" 排在它
+// 後面），用第一次出現位置抽數字即可，不需要完整 JSON parser。指令內容（cmd/url/
+// duration_s）留到下一刀真的要套用到 deck 邏輯時再解析，這一刀只求「seq 有沒有往前
+// 推進、能不能連上」。
+static uint32_t parseTopLevelSeq(const uint8_t* body, size_t len) {
+  const char* key = "\"seq\":";
+  size_t klen = strlen(key);
+  for (size_t i = 0; i + klen < len; i++) {
+    if (memcmp(body + i, key, klen) == 0) {
+      return (uint32_t)strtoul((const char*)(body + i + klen), nullptr, 10);
+    }
+  }
+  return 0;
+}
+
+#define CMD_POLL_BODY_MAX 2048
+static uint8_t* cmdPollBodyBuf = nullptr;
+static uint32_t lastCmdSeq = 0;
+
+// STEP 8a：每 1s 輪詢一次 /car_commands，收到新指令只 log、不套用（edge端混音第一刀，
+// 見檔頭 STEP 8a 說明）。跟 carHeartbeatTask 同款區網優先／Funnel 回退、同款
+// LWIP_LOCK 紀律，釘同一顆 core（0），優先權跟心跳一樣低（1）——這是低頻輪詢，不搶
+// audioNetworkTask/audioPlaybackTask 的 CPU。
+void commandPollTask(void* pv) {
+  Serial.println("[CmdPoll] commandPollTask 已啟動（STEP 8a：只 log，不套用指令）");
+  cmdPollBodyBuf = (uint8_t*)ps_malloc(CMD_POLL_BODY_MAX);
+  if (cmdPollBodyBuf == nullptr) {
+    Serial.println("[CmdPoll] ❌ ps_malloc 失敗，指令輪詢停用");
+    vTaskDelete(nullptr);
+    return;
+  }
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    if (WiFi.status() != WL_CONNECTED) continue;
+
+    char path[96];
+    snprintf(path, sizeof(path), "/car_commands?since=%u&t=%s", (unsigned)lastCmdSeq, MARVIN_TOKEN);
+
+    size_t bodyLen = 0;
+    WiFiClient localClient;
+    int code = getHttpBody(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
+                            path, 3000, cmdPollBodyBuf, CMD_POLL_BODY_MAX, &bodyLen);
+    if (code <= 0) {
+      WiFiClientSecure funnelClient; funnelClient.setInsecure();
+      funnelClient.setHandshakeTimeout(5);
+      code = getHttpBody(funnelClient, MARVIN_HOST, MARVIN_PORT, 5000,
+                          path, 5000, cmdPollBodyBuf, CMD_POLL_BODY_MAX, &bodyLen);
+    }
+    if (code != 200 || bodyLen == 0) continue;
+
+    uint32_t newSeq = parseTopLevelSeq(cmdPollBodyBuf, bodyLen);
+    if (newSeq > lastCmdSeq) {
+      Serial.printf("[CmdPoll] 新指令 seq %u→%u：%.*s\n",
+                    (unsigned)lastCmdSeq, (unsigned)newSeq, (int)bodyLen, (const char*)cmdPollBodyBuf);
+      lastCmdSeq = newSeq;
+    }
+  }
+}
+
 void carHeartbeat() {
   // 先試區網明碼（快、家用WiFi成立）；連不到（出門）就退回 Funnel TLS。
   const char* body = "{\"state\":\"present\"}";
@@ -973,6 +1086,10 @@ void setup() {
   // 任務起來後第一輪迴圈立刻打一次，不用等第一輪 30s。隔離實驗（31 分鐘拔掉心跳
   // 零崩潰）已證實心跳是必要條件，方案 A 落地後重新啟用測試。
   xTaskCreatePinnedToCore(carHeartbeatTask, "carHeartbeat", 8192, nullptr, 1, nullptr, 0);
+#endif
+#if STEP >= 8
+  // STEP 8a：指令輪詢，跟心跳同核心同優先權（低頻、不搶 audioNet/audioPlay 的 CPU）。
+  xTaskCreatePinnedToCore(commandPollTask, "cmdPoll", 8192, nullptr, 1, nullptr, 0);
 #endif
   // 收尾定燈：WiFi 通但沒跑 Funnel 檢查（STEP 1）也給個 connected 提示；
   // 若前面已 setLed(ERROR/CONNECTED) 則不覆蓋。
