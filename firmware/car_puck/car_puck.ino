@@ -28,6 +28,15 @@
  *             會不會影響/餓死既有 /audio_stream 播放」，真正疊加混音留到下一刀。收到
  *             stop 指令會關掉 deck B。STEP<9 完全不受影響，想退回只驗證過指令輪詢的
  *             狀態，改回 8 重新燒錄即可。
+ *   STEP 10 = + 混音數學測試：deck B 解碼出的 PCM 額外寫進一個獨立的 PCM ring
+ *             （deckBPcmRing），收到 crossfade 指令才真的算 gain（crossfadeGains()，
+ *             照抄 device/puck_mixer.py::crossfade_gains() 邏輯）疊加進 deck A 輸出
+ *             （mp3DataCallback 寫 i2s 前）。⚠️ deck A 的來源本身還是沒換——仍然吃
+ *             /audio_stream（Mac 中央 mixer 已混好的完整輸出），這一刀純粹測試「疊加
+ *             運算本身+兩個解碼器並行」的數學/CPU負擔對不對，不是真正的產品行為（正式
+ *             行為要 deck A 也改吃 /puck_deck，那是之後單獨一刀，會動到主播放來源、
+ *             風險更高）。crossfade 視窗跑完（elapsed>=duration）就把 crossfadeActive
+ *             關掉，不做「切成 deck B 變主線」的部分。STEP<10 完全不受影響。
  *
 
  * ⚠️ 動手前要填：WiFi、MARVIN_TOKEN。（I2S 腳位已實測、不用再查，見下。）
@@ -64,9 +73,10 @@
                                 // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
 
 // ========== 你要填的 ==========
-#define STEP 9   // ← 從 1 開始，每步綠了再 +1（9＝STEP 9 deck B 解碼統計，見檔頭說明；
-                 // 想退回只有指令輪詢、已驗證過的狀態，改回 8 重新燒錄；想完全退回
-                 // 音訊路徑零改動的狀態，改回 7，兩層還原都不用改別的地方）
+#define STEP 10  // ← 從 1 開始，每步綠了再 +1（10＝STEP 10 混音數學測試，見檔頭說明；
+                 // 想退回只有deck B解碼統計、已驗證過的狀態，改回 9；想退回只有指令
+                 // 輪詢，改回 8；想完全退回音訊路徑零改動的狀態，改回 7——每一層都
+                 // 不用改別的地方，重新燒錄即可）
 
 // 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
 // buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
@@ -683,6 +693,66 @@ void audioNetworkTask(void* pv) {
   }
 }
 
+#if STEP >= 10
+// ============================================================
+// STEP 10：混音狀態 + deck B 解碼 PCM ring——放在 mp3DataCallback（deck A）之前，
+// 因為它需要讀這些東西；deck B 那組（本節之後、STEP>=9 區塊裡的 mp3DataCallbackB）
+// 只是往這裡寫，兩邊共用同一份宣告，避免 Arduino 對「變數」（不像函式）不會自動產生
+// forward declaration 而編譯失敗。
+// ============================================================
+#define DECKB_PCM_RING_SIZE (48000 * 2 * 2 * 6)   // 6秒 stereo s16 @48kHz ≈ 1.1MB
+static uint8_t* deckBPcmRing = nullptr;
+static volatile size_t deckBPcmHead = 0, deckBPcmTail = 0;
+
+static volatile bool crossfadeActive = false;
+static volatile uint32_t crossfadeStartMs = 0;
+static volatile uint32_t crossfadeDurationMs = 4000;
+
+static inline size_t deckBPcmUsed() {
+  size_t h = deckBPcmHead, t = deckBPcmTail;
+  return (h >= t) ? (h - t) : (DECKB_PCM_RING_SIZE - t + h);
+}
+static inline size_t deckBPcmFree() { return DECKB_PCM_RING_SIZE - 1 - deckBPcmUsed(); }
+
+// 跟其他 ring 不同：滿了就丟這批，不 vTaskDelay 等（PCM ring 只在 crossfade 附近才
+// 有人消費，deck B 解碼 task 不該被這裡卡住——寧可丟音訊樣本，不要拖累 deck B 自己
+// 的 decode 節奏）。
+static void deckBPcmWrite(const uint8_t* data, size_t len) {
+  if (deckBPcmRing == nullptr) return;   // ps_malloc 失敗時安靜跳過，別寫進空指標
+  size_t freeNow = deckBPcmFree();
+  if (freeNow == 0) return;
+  size_t chunk = len > freeNow ? freeNow : len;
+  size_t firstPart = DECKB_PCM_RING_SIZE - deckBPcmHead;
+  if (firstPart > chunk) firstPart = chunk;
+  memcpy(deckBPcmRing + deckBPcmHead, data, firstPart);
+  if (chunk > firstPart) memcpy(deckBPcmRing, data + firstPart, chunk - firstPart);
+  deckBPcmHead = (deckBPcmHead + chunk) % DECKB_PCM_RING_SIZE;
+}
+static size_t deckBPcmRead(uint8_t* out, size_t maxLen) {
+  size_t avail = deckBPcmUsed();
+  size_t want = maxLen < avail ? maxLen : avail;
+  if (want == 0) return 0;
+  size_t firstPart = DECKB_PCM_RING_SIZE - deckBPcmTail;
+  if (firstPart > want) firstPart = want;
+  memcpy(out, deckBPcmRing + deckBPcmTail, firstPart);
+  if (want > firstPart) memcpy(out + firstPart, deckBPcmRing, want - firstPart);
+  deckBPcmTail = (deckBPcmTail + want) % DECKB_PCM_RING_SIZE;
+  return want;
+}
+
+// 照抄 device/puck_mixer.py::crossfade_gains() 的邏輯（線性 crossfade），純 C 重寫，
+// 行為要跟 Python 版一致，方便日後對照除錯。elapsedS<=0→(1,0)；elapsedS>=durationS→
+// (0,1)；durationS<=0→立即切到 b。
+static void crossfadeGains(float elapsedS, float durationS, float* gainA, float* gainB) {
+  if (durationS <= 0.0f) { *gainA = 0.0f; *gainB = 1.0f; return; }
+  float frac = elapsedS / durationS;
+  if (frac < 0.0f) frac = 0.0f;
+  if (frac > 1.0f) frac = 1.0f;
+  *gainA = 1.0f - frac;
+  *gainB = frac;
+}
+#endif  // STEP >= 10
+
 // 2026-07-26：/audio_stream 現在送 MP3，ring buffer 裡裝的是壓縮 bytes——消費端不能再
 // 直接 i2s_write，要先解碼。用 pschatzmann/arduino-libhelix 的 MP3DecoderHelix：
 // decode-only（不像 ESP32-audioI2S 整包接管連線），塞 bytes 進去、解碼完的 PCM 經
@@ -707,6 +777,34 @@ static void mp3DataCallback(MP3FrameInfo &info, short *pcm_buffer, size_t len, v
     mp3LastChans = info.nChans;
     Serial.printf("[Stream] MP3 格式：%dHz %dch\n", info.samprate, info.nChans);
   }
+#if STEP >= 10
+  // STEP 10：crossfade 測試視窗內，把 deck B 的 PCM 依 gain 疊加進來——deck A 來源
+  //本身沒換（仍是 /audio_stream），純測混音數學/CPU負擔，見檔頭 STEP 10 說明。
+  if (crossfadeActive) {
+    static int16_t mixBuf[4096];
+    size_t nSamples = len;
+    if (nSamples > sizeof(mixBuf) / sizeof(mixBuf[0])) nSamples = sizeof(mixBuf) / sizeof(mixBuf[0]);
+    size_t gotBytes = deckBPcmRead((uint8_t*)mixBuf, nSamples * sizeof(int16_t));
+    size_t gotSamples = gotBytes / sizeof(int16_t);
+
+    uint32_t elapsedMs = millis() - crossfadeStartMs;
+    float gainA, gainB;
+    crossfadeGains(elapsedMs / 1000.0f, crossfadeDurationMs / 1000.0f, &gainA, &gainB);
+
+    for (size_t i = 0; i < nSamples; i++) {
+      float a = pcm_buffer[i] * gainA;
+      float b = (i < gotSamples) ? mixBuf[i] * gainB : 0.0f;
+      float mixed = a + b;
+      if (mixed > 32767.0f) mixed = 32767.0f;
+      if (mixed < -32768.0f) mixed = -32768.0f;
+      pcm_buffer[i] = (int16_t)mixed;
+    }
+    if (elapsedMs >= crossfadeDurationMs) {
+      crossfadeActive = false;   // 這一刀不做「切成deck B變主線」，測試視窗跑完就收手
+      Serial.println("[Mix] crossfade 測試視窗結束");
+    }
+  }
+#endif
   size_t written;
   i2s_write(I2S_SPK_PORT, pcm_buffer, len * sizeof(short), &written, portMAX_DELAY);
 #if STREAM_DEBUG_PRINT
@@ -988,6 +1086,9 @@ static int16_t deckBPeak = 0;
 
 static void mp3DataCallbackB(MP3FrameInfo &info, short *pcm_buffer, size_t len, void *ref) {
   if (len == 0) return;
+#if STEP >= 10
+  deckBPcmWrite((const uint8_t*)pcm_buffer, len * sizeof(int16_t));
+#endif
   deckBFrameCount++;
   for (size_t i = 0; i < len; i++) {
     int16_t a = pcm_buffer[i] < 0 ? (int16_t)-pcm_buffer[i] : pcm_buffer[i];
@@ -1141,9 +1242,29 @@ static size_t extractJsonStringField(const uint8_t* body, size_t from, size_t to
   return 0;
 }
 
-// STEP 9：真的套用指令——目前只認 queue_next（開 deck B）跟 stop（關 deck B）；
-// play/crossfade 先繼續只 log，deck A 真正接上 /puck_deck + 混音疊加留給下一刀。
-// bodyLen 內可能不只一筆指令，逐筆掃過 "cmd": 出現的位置套用（同款空格容忍，見上）。
+#if STEP >= 10
+// STEP 10：抽單一 JSON 物件裡 "key": <number> 數字欄位（duration_s 用），同款空格容忍
+// + 搜尋範圍限制，找不到回 false（out 不變，呼叫端自己決定 fallback）。
+static bool extractJsonNumberField(const uint8_t* body, size_t from, size_t to,
+                                    const char* key, float* out) {
+  char pattern[32];
+  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+  size_t plen = strlen(pattern);
+  for (size_t i = from; i + plen < to; i++) {
+    if (memcmp(body + i, pattern, plen) != 0) continue;
+    size_t p = i + plen;
+    while (p < to && body[p] == ' ') p++;
+    if (p >= to || (body[p] != '-' && (body[p] < '0' || body[p] > '9'))) continue;
+    *out = strtof((const char*)(body + p), nullptr);
+    return true;
+  }
+  return false;
+}
+#endif
+
+// STEP 9：真的套用指令——queue_next（開 deck B）、stop（關 deck B）；STEP 10 起
+// crossfade 也真的套用（算 gain 疊加，見 mp3DataCallback）。bodyLen 內可能不只一筆
+// 指令，逐筆掃過 "cmd": 出現的位置套用（同款空格容忍，見上）。
 void dispatchNewCommands(const uint8_t* body, size_t bodyLen) {
   const char* cmdKey = "\"cmd\":";
   size_t klen = strlen(cmdKey);
@@ -1165,11 +1286,33 @@ void dispatchNewCommands(const uint8_t* body, size_t bodyLen) {
         deckBUrl[sizeof(deckBUrl) - 1] = 0;
         xSemaphoreGive(deckBUrlMutex);
         deckBActive = true;
+#if STEP >= 10
+        // 新歌換源：清掉舊歌可能殘留在 PCM ring 裡的樣本，避免下次 crossfade 混進
+        // 上一首的尾巴。crossfadeActive 也一併關掉——舊的 crossfade 視窗不該延續到
+        // 新歌上。
+        crossfadeActive = false;
+        deckBPcmHead = 0; deckBPcmTail = 0;
+#endif
         Serial.printf("[DeckB] queue_next → %s\n", url);
       }
     } else if (nameLen == 4 && memcmp(body + nameStart, "stop", 4) == 0) {
       deckBActive = false;
+#if STEP >= 10
+      crossfadeActive = false;
+      deckBPcmHead = 0; deckBPcmTail = 0;
+#endif
       Serial.println("[DeckB] stop → deck B 停用");
+#if STEP >= 10
+    } else if (nameLen == 9 && memcmp(body + nameStart, "crossfade", 9) == 0) {
+      float durationS = 4.0f;   // 找不到 duration_s 欄位就用跟 Mac 端 PuckCommandQueue
+                                 // 同款預設值（見 puck_command_queue.py::crossfade()）
+      size_t searchTo = bodyLen < i + 300 ? bodyLen : i + 300;
+      extractJsonNumberField(body, i, searchTo, "duration_s", &durationS);
+      crossfadeStartMs = millis();
+      crossfadeDurationMs = (uint32_t)(durationS * 1000.0f);
+      crossfadeActive = true;
+      Serial.printf("[Mix] crossfade → duration=%.1fs\n", durationS);
+#endif
     }
   }
 }
@@ -1365,6 +1508,12 @@ void setup() {
   deckBUrlMutex = xSemaphoreCreateMutex();
   Serial.printf("[DeckB] deckBRing ps_malloc %s（%u bytes）free heap=%u\n",
                 deckBRing ? "成功" : "❌失敗", (unsigned)DECKB_RING_SIZE, (unsigned)ESP.getFreeHeap());
+#if STEP >= 10
+  // STEP 10：混音 PCM ring，要在 deckB 任務起來、真的開始解碼寫入前分配好。
+  deckBPcmRing = (uint8_t*)ps_malloc(DECKB_PCM_RING_SIZE);
+  Serial.printf("[Mix] deckBPcmRing ps_malloc %s（%u bytes）free heap=%u\n",
+                deckBPcmRing ? "成功" : "❌失敗", (unsigned)DECKB_PCM_RING_SIZE, (unsigned)ESP.getFreeHeap());
+#endif
   xTaskCreatePinnedToCore(deckBNetworkTask, "deckBNet", 16384, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(deckBPlaybackTask, "deckBPlay", 8192, nullptr, 1, nullptr, 1);
 #endif
