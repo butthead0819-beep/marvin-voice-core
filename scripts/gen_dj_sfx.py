@@ -5,6 +5,7 @@
 Run from repo root: python scripts/gen_dj_sfx.py
 """
 import os
+import random
 import wave
 
 import numpy as np
@@ -35,6 +36,13 @@ def _fade(samples: np.ndarray, attack: float = 0.01, release: float = 0.08) -> n
     if rel > 0:
         out[n - rel:] *= np.linspace(1, 0, rel)
     return out
+
+
+def _sinpow(x: np.ndarray, power: float) -> np.ndarray:
+    """sin(...) 在邊界(tn≈0 或 1) 因浮點誤差可能落到 -1e-16 等極小負值，非整數次方
+    對負底數會產生 NaN。clip 到 0 再取次方——量級上跟正常訊號差 16 個數量級，聽感
+    上截掉的只有數值雜訊，不是真正的訊號。"""
+    return np.clip(x, 0.0, None) ** power
 
 
 SCRATCH_STYLES = ("wicka", "spinback", "vinyl_brake", "chirp", "transform", "tear")
@@ -76,8 +84,9 @@ def _calc_scratch_profile(style: str, dur: float, rate: int) -> tuple[np.ndarray
         rumble_gain = 0.45
 
     elif style == "chirp":
-        # 清脆鳥鳴短切刷 (Chirp Scratch)
-        cuts = [0.0, 0.12, 0.25, 0.38, dur]
+        # 清脆鳥鳴短切刷 (Chirp Scratch)——切點比例取自原始 0.52s 手感，等比例縮放
+        # 到任意 dur，讓 BPM 拼接出的短/長節奏段落都維持同樣的顆粒感。
+        cuts = [f * dur for f in (0.0, 0.2308, 0.4808, 0.7308, 1.0)]
         for i in range(4):
             t_s, t_e = cuts[i], cuts[i + 1]
             seg = (t >= t_s) & (t < t_e)
@@ -85,7 +94,7 @@ def _calc_scratch_profile(style: str, dur: float, rate: int) -> tuple[np.ndarray
                 continue
             tn = (t[seg] - t_s) / (t_e - t_s)
             spd = [4.2, -4.2, 4.5, -4.0][i]
-            v[seg] = spd * np.sin(np.pi * tn) ** 1.3
+            v[seg] = spd * _sinpow(np.sin(np.pi * tn), 1.3)
         p0 = 0.6
         # Crossfader 閘門：換向低速處關閉，高峰處全開
         spd_abs = np.abs(v)
@@ -94,8 +103,8 @@ def _calc_scratch_profile(style: str, dur: float, rate: int) -> tuple[np.ndarray
         rumble_gain = 0.20
 
     elif style == "transform":
-        # 機關槍 16 分音符節奏切片刷 (Transform Scratch)
-        cuts = [0.0, 0.25, 0.45, dur]
+        # 機關槍 16 分音符節奏切片刷 (Transform Scratch)——切點比例取自原始 0.65s
+        cuts = [f * dur for f in (0.0, 0.3846, 0.6923, 1.0)]
         v1 = (t < cuts[1])
         v[v1] = 1.8 * np.sin(np.pi * t[v1] / cuts[1])
         v2 = (t >= cuts[1]) & (t < cuts[2])
@@ -110,28 +119,28 @@ def _calc_scratch_profile(style: str, dur: float, rate: int) -> tuple[np.ndarray
         rumble_gain = 0.25
 
     elif style == "tear":
-        # 雙速撕裂刷 (Tear Scratch)
-        cuts = [0.0, 0.10, 0.26, 0.38, dur]
+        # 雙速撕裂刷 (Tear Scratch)——切點比例取自原始 0.60s
+        cuts = [f * dur for f in (0.0, 0.1667, 0.4333, 0.6333, 1.0)]
         s1 = (t >= cuts[0]) & (t < cuts[1])
         v[s1] = 1.8 * np.sin(np.pi * (t[s1] - cuts[0]) / (cuts[1] - cuts[0]))
         s2 = (t >= cuts[1]) & (t < cuts[2])
-        v[s2] = 4.2 * np.sin(np.pi * (t[s2] - cuts[1]) / (cuts[2] - cuts[1])) ** 1.3
+        v[s2] = 4.2 * _sinpow(np.sin(np.pi * (t[s2] - cuts[1]) / (cuts[2] - cuts[1])), 1.3)
         s3 = (t >= cuts[2]) & (t < cuts[3])
         v[s3] = -1.6 * np.sin(np.pi * (t[s3] - cuts[2]) / (cuts[3] - cuts[2]))
         s4 = (t >= cuts[3]) & (t <= cuts[4])
-        v[s4] = -4.0 * np.sin(np.pi * (t[s4] - cuts[3]) / (cuts[4] - cuts[3])) ** 1.3
+        v[s4] = -4.0 * _sinpow(np.sin(np.pi * (t[s4] - cuts[3]) / (cuts[4] - cuts[3])), 1.3)
         p0 = 0.7
         fric_gain = 0.45
         rumble_gain = 0.25
 
-    else:  # "wicka" 預設
-        cuts = [0.0, 0.13, 0.26, 0.38, dur]
+    else:  # "wicka" 預設——切點比例取自原始 0.65s
+        cuts = [f * dur for f in (0.0, 0.2, 0.4, 0.5846, 1.0)]
         s1 = (t >= cuts[0]) & (t < cuts[1])
-        v[s1] = -2.6 * np.sin(np.pi * (t[s1] - cuts[0]) / (cuts[1] - cuts[0])) ** 1.3
+        v[s1] = -2.6 * _sinpow(np.sin(np.pi * (t[s1] - cuts[0]) / (cuts[1] - cuts[0])), 1.3)
         s2 = (t >= cuts[1]) & (t < cuts[2])
-        v[s2] = 3.2 * np.sin(np.pi * (t[s2] - cuts[1]) / (cuts[2] - cuts[1])) ** 1.3
+        v[s2] = 3.2 * _sinpow(np.sin(np.pi * (t[s2] - cuts[1]) / (cuts[2] - cuts[1])), 1.3)
         s3 = (t >= cuts[2]) & (t < cuts[3])
-        v[s3] = -3.5 * np.sin(np.pi * (t[s3] - cuts[2]) / (cuts[3] - cuts[2])) ** 1.4
+        v[s3] = -3.5 * _sinpow(np.sin(np.pi * (t[s3] - cuts[2]) / (cuts[3] - cuts[2])), 1.4)
         s4 = (t >= cuts[3]) & (t <= cuts[4])
         v[s4] = 4.0 * np.sin(np.pi * (t[s4] - cuts[3]) / (cuts[4] - cuts[3]) * 0.75) * np.exp(-3.2 * (t[s4] - cuts[3]) / (cuts[4] - cuts[3]))
         p0 = 0.8
@@ -141,40 +150,11 @@ def _calc_scratch_profile(style: str, dur: float, rate: int) -> tuple[np.ndarray
     return v, fader, p0, fric_gain, rumble_gain
 
 
-def gen_scratch_from_pcm(raw_pcm: np.ndarray, rate: int = RATE, style: str | None = None) -> np.ndarray:
-    """使用傳入的音樂 PCM 進行真實 DJ 黑膠轉盤手刷調變。
-
-    raw_pcm: float32 PCM（單聲道或雙聲道均可）
-    rate: 採樣率（預設 44100，或 48000）
-    style: 手法風格名稱（"wicka", "spinback", "vinyl_brake", "chirp", "transform", "tear"）。
-           若為 None 則隨機從 SCRATCH_STYLES 挑選一種。
-    """
-    if raw_pcm.ndim > 1:
-        raw_pcm = np.mean(raw_pcm, axis=-1)
-
-    raw_pcm = raw_pcm.astype(np.float32)
-
-    # 摩擦/rumble/碎音幾層是照「內建 formant 素材」的音量（tanh 飽和後 RMS≈0.3）調的
-    # 增益；真實歌曲 PCM（loudnorm 後 RMS 常只有 ~0.1-0.15）直接餵進來，噪點層蓋過
-    # 刷碟音本身，聽起來變成一坨跟歌完全無關的電子噪音。這裡固定歸一化到統一峰值，
-    # 讓 scratched_tone 音量不再看輸入原始響度臉色。
-    peak = float(np.max(np.abs(raw_pcm))) if raw_pcm.size else 0.0
-    if peak > 1e-6:
-        raw_pcm = raw_pcm * (0.9 / peak)
-
-    if style is None or style not in SCRATCH_STYLES:
-        import random
-        style = random.choice(SCRATCH_STYLES)
-
-    dur = _STYLE_DURATIONS.get(style, 0.65)
+def _gen_scratch_segment(raw_pcm: np.ndarray, rate: int, style: str, dur: float) -> np.ndarray:
+    """單一刷碟手勢（風格＋時值）→ 一段刷碟音訊。gen_scratch_from_pcm 依 BPM 拆出
+    的半分/三連/四分節奏，每一段各自呼叫這裡再串接，聽起來像連續數個刷碟動作，
+    而非同一個固定循環反覆播放。"""
     n = int(rate * dur)
-
-    # 若輸入長度少於 3 秒，以循環/鏡像補足
-    min_samples = int(rate * 3.0)
-    if len(raw_pcm) < min_samples:
-        repeats = int(np.ceil(min_samples / max(1, len(raw_pcm))))
-        raw_pcm = np.tile(raw_pcm, repeats)[:min_samples]
-
     v, fader, p0, fric_gain, rumble_gain = _calc_scratch_profile(style, dur, rate)
 
     # 隨手速積分重採樣
@@ -214,6 +194,74 @@ def gen_scratch_from_pcm(raw_pcm: np.ndarray, rate: int = RATE, style: str | Non
     out = np.tanh(mix * 1.55)
 
     return _fade(out.astype(np.float32), attack=0.008, release=0.04)
+
+
+def _pick_bpm_scratch_durations(bpm: float) -> list[float]:
+    """把下一首的 BPM 拆成半分/三連/四分等固定音符時值，湊出 1~2 秒的刷碟節奏。
+
+    最小單位是一個「bar」＝3 個音符，音符值各自從 note_pool 隨機挑（快慢交錯），
+    bar 湊好後緊接著原樣複製一次形成「一組」（AABB 式的兩段重複），聽起來像真人
+    刷了一個手法再重複一次，而不是每段都各刷各的、毫無律動可循。組數視 target
+    隨機湊到 1~2 秒，極端 BPM（音符值 clamp 到頂/底）下最多堆到 4 組（12 段）
+    避免無限迴圈。單一音符時值 clamp 在 [0.12, 0.9]s，避免極端 BPM 讓某一段獨佔
+    整個效果或短到破音。"""
+    beat = 60.0 / bpm
+    note_pool = (beat * 2.0, beat * 1.0, beat * 2.0 / 3.0)  # 半分 / 四分 / 三連音兩份
+    target = random.uniform(1.0, 2.0)
+    durations: list[float] = []
+    total = 0.0
+    while total < target and len(durations) < 12:
+        bar = [min(max(random.choice(note_pool), 0.12), 0.9) for _ in range(3)]
+        durations.extend(bar)
+        durations.extend(bar)
+        total += sum(bar) * 2
+    return durations or [min(max(target, 0.12), 0.9)]
+
+
+def gen_scratch_from_pcm(raw_pcm: np.ndarray, rate: int = RATE, style: str | None = None,
+                          bpm: float | None = None) -> np.ndarray:
+    """使用傳入的音樂 PCM 進行真實 DJ 黑膠轉盤手刷調變。
+
+    raw_pcm: float32 PCM（單聲道或雙聲道均可）
+    rate: 採樣率（預設 44100，或 48000）
+    style: 手法風格名稱（"wicka", "spinback", "vinyl_brake", "chirp", "transform", "tear"）。
+           若為 None 則隨機從 SCRATCH_STYLES 挑選一種。bpm 給定時每段各自隨機挑，
+           style 參數在該情境下不生效。
+    bpm: 下一首歌的 BPM。給定時依半分/三連/四分節奏拆成多段（總長 1~2s）串接，
+         段落數與時值隨機、不是固定節拍；為 None 時退回單一手法的舊行為
+         （長度取自 _STYLE_DURATIONS，約 0.5~0.75s）。
+    """
+    if raw_pcm.ndim > 1:
+        raw_pcm = np.mean(raw_pcm, axis=-1)
+
+    raw_pcm = raw_pcm.astype(np.float32)
+
+    # 摩擦/rumble/碎音幾層是照「內建 formant 素材」的音量（tanh 飽和後 RMS≈0.3）調的
+    # 增益；真實歌曲 PCM（loudnorm 後 RMS 常只有 ~0.1-0.15）直接餵進來，噪點層蓋過
+    # 刷碟音本身，聽起來變成一坨跟歌完全無關的電子噪音。這裡固定歸一化到統一峰值，
+    # 讓 scratched_tone 音量不再看輸入原始響度臉色。
+    peak = float(np.max(np.abs(raw_pcm))) if raw_pcm.size else 0.0
+    if peak > 1e-6:
+        raw_pcm = raw_pcm * (0.9 / peak)
+
+    # 若輸入長度少於 3 秒，以循環/鏡像補足
+    min_samples = int(rate * 3.0)
+    if len(raw_pcm) < min_samples:
+        repeats = int(np.ceil(min_samples / max(1, len(raw_pcm))))
+        raw_pcm = np.tile(raw_pcm, repeats)[:min_samples]
+
+    if bpm and bpm > 0:
+        durations = _pick_bpm_scratch_durations(float(bpm))
+        segments = [
+            _gen_scratch_segment(raw_pcm, rate, random.choice(SCRATCH_STYLES), dur)
+            for dur in durations
+        ]
+        return np.concatenate(segments) if len(segments) > 1 else segments[0]
+
+    if style is None or style not in SCRATCH_STYLES:
+        style = random.choice(SCRATCH_STYLES)
+    dur = _STYLE_DURATIONS.get(style, 0.65)
+    return _gen_scratch_segment(raw_pcm, rate, style, dur)
 
 
 def gen_scratch() -> np.ndarray:

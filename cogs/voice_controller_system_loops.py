@@ -157,10 +157,11 @@ class SystemLoopsMixin:
 
                 # 📰 [News Broadcast] 靜默夠久就順便播一則新聞（免費 Google News RSS，
                 # 依在場興趣關鍵字查）。獨立於電台自動啟動的 if，兩者可以同時發生；
-                # 30 分鐘冷卻，別在同一場靜默裡每 10 分鐘就報一次。
-                if silence > 600 and now - getattr(self, "_last_news_broadcast_ts", 0) > 1800:
+                # 放寬門檻：靜默 3 分鐘 (180s) 即可播報，冷卻時間縮短為 10 分鐘 (600s)。
+                if silence > 180 and now - getattr(self, "_last_news_broadcast_ts", 0) > 600:
                     await self._maybe_broadcast_news()
                 return
+
             
             # 使用最新條目的時間作為快照參考
             self.last_snapshot_time = max(e["timestamp"] for e in self.slow_loop_accumulator)
@@ -292,9 +293,12 @@ class SystemLoopsMixin:
             if mc is not None:
                 interests = mc._present_interests()
                 if interests:
-                    first = interests[0]
+                    first = str(interests[0]).strip()
                     if "喜歡" in first:
                         keyword = first.split("喜歡", 1)[-1].strip() or None
+                    else:
+                        keyword = first or None
+
             from news_fetch import fetch_news_headline
             headline = await fetch_news_headline(keyword)
             if not headline or not headline.get("title"):

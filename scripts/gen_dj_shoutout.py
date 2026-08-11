@@ -15,7 +15,7 @@ import edge_tts
 VOICE = "zh-TW-YunJheNeural"
 RATE = "-20%"
 PITCH = "-15Hz"
-TEXT = "Yo，DJ 馬文！"
+TEXT = "Yo，DJ Maaaarvinnnnn！"
 OUT_PATH = "assets/dj_sfx/shoutout.wav"
 
 

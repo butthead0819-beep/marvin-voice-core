@@ -2398,13 +2398,24 @@ class MusicCog(commands.Cog):
         return None
 
     async def _fetch_song_meta(self, info: dict) -> dict:
-        """並行 fetch 歌詞、馬文評語、DJ 播報（含 TTS 預渲染）。"""
-        lyrics, comment, dj = await asyncio.gather(
+        """並行 fetch 歌詞、馬文評語、DJ 播報（含 TTS 預渲染）+ 長前奏跳過起點。"""
+        lyrics, comment, dj, lyrics_synced = await asyncio.gather(
             self._fetch_lyrics_raw(info),
             self._fetch_comment_raw(info),
             self._fetch_dj_interjection_raw(info),
+            self._fetch_lyrics_synced(info),
             return_exceptions=True,
         )
+        # 🎬 [IntroSkip] YouTube 熱力圖已挑過精華起點就不覆蓋；沒有才用 LRC 補長前奏跳過
+        # （見 music_intro_skipper.pick_intro_skip_start）。原地改 info——跟 stream_queue
+        # 裡 popleft 出去要播的是同一個 dict 物件，播放端 play_stream_song/_start_music_preload
+        # 已原生吃 highlight_start_s，這裡填了就自動生效，不用額外改播放路徑。
+        if not info.get('highlight_start_s') and isinstance(lyrics_synced, str):
+            from music_intro_skipper import pick_intro_skip_start
+            intro_start = pick_intro_skip_start(lyrics_synced, info.get('duration'))
+            if intro_start is not None:
+                info['highlight_start_s'] = intro_start
+                logger.info(f"🎬 [IntroSkip] {info.get('title', '?')} 前奏跳過起播點 {intro_start:.1f}s")
         return {
             'lyrics': lyrics if isinstance(lyrics, str) else None,
             'comment': comment if isinstance(comment, str) else None,
@@ -2685,10 +2696,14 @@ class MusicCog(commands.Cog):
                 return None
             import hashlib
             import numpy as np
+            from bpm_estimate import estimate_bpm_from_pcm
             from scripts.gen_dj_sfx import gen_scratch_from_pcm, _write_wav
             raw_bytes = b"".join(frames[:100])
             raw_f32 = np.frombuffer(raw_bytes, dtype=np.float32).reshape(-1, 2)
-            dynamic_samples = gen_scratch_from_pcm(raw_f32, rate=48000)
+            # 用同一段預解碼 PCM 順手估下一首 BPM，餵給刷碟合成拆成半分/三連/四分
+            # 節奏的多段手勢——沒抓到 BPM（太安靜/太短）就退回舊的單段隨機手法。
+            next_bpm = estimate_bpm_from_pcm(raw_f32.mean(axis=-1).astype(np.float32), 48000)
+            dynamic_samples = gen_scratch_from_pcm(raw_f32, rate=48000, bpm=next_bpm)
             # 固定檔名在多首歌同時點火時會互踩（寫入中被下一次點火覆蓋/搶讀半寫檔），
             # 用 url hash 隔開。
             url_hash = hashlib.md5(url.encode()).hexdigest()[:10]
@@ -2703,7 +2718,7 @@ class MusicCog(commands.Cog):
         """[DJ Tail] DJ 口白播完後，隨機疊一支轉場音效（riser 合成自
         scripts/gen_dj_sfx.py；dj_airhorn 方波太刺耳已從輪替池移除，函式仍留著給
         gen_dj_sfx.py 素材產出用；shoutout 是 edge-tts 用 Marvin 現役聲線 zh-TW-YunJheNeural
-        rate=-20% pitch=-15Hz 錄的「Yo，DJ 馬文！」報名 stamp；scratch 是即時抓下一首
+        rate=-20% pitch=-15Hz 錄的「Yo，DJ Maaaarvinnnnn！」拉長音報名 stamp；scratch 是即時抓下一首
         PCM 合成的動態黑膠刷碟聲）進 TTS 層——跟口白同一條佇列接續播出，落在尾段疊播
         溢進下一首開頭的窗口內。
 

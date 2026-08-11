@@ -344,6 +344,13 @@ def test_dj_prompt_forbids_cliche_repeating_phrases():
     assert "深夜" in blk, "prompt 應包含深夜電台風格指示"
 
 
+def test_dj_prompt_forbids_pseudo_literary_cliches():
+    """DJ prompt 應明文禁止「時光流動」「假文青」等做作抒情或無病呻吟。"""
+    blk = _dj_prompt_block()
+    assert "時光流動" in blk or "假文青" in blk, "prompt 應包含禁用假文青/時光流動等做作修辭指示"
+    assert "白話" in blk or "接地氣" in blk or "自然" in blk, "prompt 應強調白話自然接地氣"
+
+
 def test_empathy_hooks_are_diverse_and_have_no_cliche():
     """MusicCog._DJ_EMPATHY_HOOK_TEMPLATES 應包含多種開場角度，且不包含舊版寫死套話。"""
     from cogs.music_cog import MusicCog
@@ -352,4 +359,10 @@ def test_empathy_hooks_are_diverse_and_have_no_cliche():
     for tmpl in templates:
         assert "這根本在講你" not in tmpl, f"模板不應包含舊版跳針文字: {tmpl}"
         assert "代入感" in tmpl and "開場鉤子" in tmpl
+
+
+def test_dj_prompt_encourages_song_name_segue_and_imagination():
+    """DJ prompt 應引導針對歌名巧妙串接情境，引起對下一首歌的想像與期待。"""
+    blk = _dj_prompt_block()
+    assert "歌名" in blk and "想像" in blk, "prompt 應包含針對歌名串接並引起下一首歌想像的指示"
 

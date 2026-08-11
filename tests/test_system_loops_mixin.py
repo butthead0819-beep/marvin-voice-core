@@ -114,3 +114,27 @@ async def test_broadcast_news_sets_cooldown_timestamp_before_fetch():
     before = time_mod.time()
     await vc._maybe_broadcast_news()
     assert vc._last_news_broadcast_ts >= before
+
+
+@pytest.mark.asyncio
+async def test_broadcast_news_uses_raw_interest_keyword(monkeypatch):
+    """如果興趣字串沒有『喜歡』前綴（例如純字串），也能正確作為關鍵字查詢。"""
+    from cogs.voice_controller import VoiceController
+
+    async def _fake_fetch(keyword=None, **kw):
+        assert keyword == "深度學習"
+        return {"title": "AI 最新突破"}
+
+    monkeypatch.setattr("news_fetch.fetch_news_headline", _fake_fetch)
+
+    vc = VoiceController.__new__(VoiceController)
+    vc.bot = MagicMock()
+    mc = MagicMock()
+    mc._present_interests.return_value = ["深度學習"]
+    vc.bot.cogs.get.return_value = mc
+    vc.play_tts = AsyncMock()
+
+    await vc._maybe_broadcast_news()
+    vc.play_tts.assert_awaited_once()
+    assert "AI 最新突破" in vc.play_tts.call_args[0][0]
+
