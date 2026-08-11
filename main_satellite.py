@@ -2116,9 +2116,24 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
 
         async def _play_open(car_open):
             # 開場：復用 /play 那招 inject_text「放一首X」讓 pipeline 解析+播+DJ；絕不即時付費 LLM。
+            #
+            # ⚠️ 2026-08-11 實機踩到：這裡原本無條件用 anchor_title 裸字串搜尋，跟
+            # music_cog.py 的一般 autopilot enqueue（_auto_recommend 系列）邏輯不一致——
+            # 那邊會優先吃 Candidate.direct_url（T2 discovery 自帶 YouTube URL，見
+            # music_recommender.py 開頭註解「自帶 YouTube URL → enqueue 時直解不搜尋」），
+            # 沒有才退回文字搜尋，且用 artist+title 組合（不是裸 title）換更準的搜尋結果。
+            # car mode 開場沒吃 direct_url、也沒帶 artist，實機驗證：候選池挑到一首
+            # anchor_title 是雜亂爬蟲標題的歌（「清纯大眼旗袍美女,优美古镇唯美街拍」），
+            # yt-dlp 用這串裸標題搜不到東西，resolve 靜默失敗、整趟開場沒聲音。
+            # 改成比照 _auto_recommend 的優先序：direct_url > artist+title > title。
             try:
                 if car_open.song:
-                    await inject_text(vc, owner, f"放一首{car_open.song.anchor_title}")
+                    song = car_open.song
+                    if song.direct_url:
+                        query = song.direct_url
+                    else:
+                        query = f"{song.anchor_artist} {song.anchor_title}".strip() or song.anchor_title
+                    await inject_text(vc, owner, f"放一首{query}")
                 logger.info("🚗 [CarMode] 上車開場：%s → 放《%s》",
                             car_open.line, car_open.song.anchor_title if car_open.song else "—")
             except Exception:  # noqa: BLE001
