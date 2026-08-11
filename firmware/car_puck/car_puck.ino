@@ -85,9 +85,11 @@
                                 // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
 
 // ========== 你要填的 ==========
-#define STEP 11  // ← 2026-08-11 重新上機測試 PCM ring race condition 修復（/now 確認
-                 // playing:false，目前沒有真實使用者）。想退回上次已驗證乾淨的狀態，
-                 // 改回 10 重新燒錄即可。
+#define STEP 10  // ← 2026-08-11 深夜收工：明天要正常使用（開機自動播放+autopilot），
+                 // STEP 11 還沒接「play」自動觸發點、DJ口白/SFX仍缺、crossfade仍有極小
+                 // 瑕疵——先退回功能完整、已充分驗證的 STEP 10 供實際使用。STEP 11
+                 // 程式碼保留在這份原始碼裡（deck0/1可互換架構+今晚修好的三個bug），
+                 // 之後有空再繼續往下接（play觸發點+DJ口白管線）、重新上機測試。
 
 // 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
 // buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
