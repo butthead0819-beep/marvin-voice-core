@@ -1967,8 +1967,13 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         if not stream_url:
             return web.json_response({"error": "resolve_failed"}, status=502, headers=_CORS)
 
+        # -af volume：/puck_deck 直接轉碼原始音源，沒有 /audio_stream 那邊中央 mixer 的
+        # stream_volume 衰減（MusicCog.stream_volume 預設 0.10，見 cogs/music_cog.py）
+        # ——不加的話比使用者已經聽慣的 /audio_stream 音量大上一截（2026-08-11 實機
+        # 反饋：「音量太大」）。套同一個比例讓 ESP32 edge端混音跟中央 mixer 音量感受一致。
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-nostdin", "-loglevel", "error", "-i", stream_url,
+            "-af", "volume=0.10",
             "-ar", "48000", "-ac", "2", "-f", "s16le", "-",
             stdout=asyncio.subprocess.PIPE)
         resp = web.StreamResponse(status=200, headers={

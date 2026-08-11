@@ -2456,11 +2456,17 @@ class MusicCog(commands.Cog):
             }
 
     async def _fire_puck_crossfade(self, puck_client, next_url: str,
-                                    buffer_s: float = 2.0, crossfade_s: float = 4.0) -> None:
-        """[PuckMixer] Pi mk2 純音樂 crossfade：queue_next 後留 buffer_s 給 Pi 背景
+                                    buffer_s: float = 4.0, crossfade_s: float = 4.0) -> None:
+        """[PuckMixer] 純音樂 crossfade：queue_next 後留 buffer_s 給裝置端背景
         yt-dlp+ffmpeg 起手緩衝，再送 crossfade。跟本地 Discord mixer/DJ 口白邏輯
         完全獨立（見呼叫點 _run_tail_dj），queue_next 失敗就放棄、不重試（下一輪
-        tail-fire 或下一首開頭會再給機會）。"""
+        tail-fire 或下一首開頭會再給機會）。
+
+        buffer_s 2.0→4.0（2026-08-11）：esp32_edge_mix 實機驗證，2.0s 對 ESP32 的
+        /puck_deck 鏈路（Mac resolve+ffmpeg轉碼+MP3編碼+網路傳輸，比 Pi mk2 本地
+        直接 yt-dlp 多一段來回)不夠，crossfade 觸發時 standby deck 常常還沒緩衝夠，
+        混音瞬間出現真的靜音空白。拉長對 pi_bt 硬體也安全（純粹更保守，不影響其
+        本地 resolve 路徑）。"""
         ok = await puck_client.queue_next(next_url)
         if not ok:
             logger.warning(f"[PuckMixer] queue_next 失敗，放棄本次 crossfade: {next_url}")

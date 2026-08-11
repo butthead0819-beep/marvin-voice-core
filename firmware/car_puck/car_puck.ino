@@ -85,12 +85,9 @@
                                 // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
 
 // ========== 你要填的 ==========
-#define STEP 10  // ← 2026-08-11 緊急退回：STEP 11 實機測出「大聲白噪音」，先退回已驗證
-                 // 乾淨的 STEP 10 恢復正常播放（板子目前實際燒的就是 STEP 10）。已找到
-                 // 並修好可疑成因（dispatchNewCommands 跨任務直接戳 PCM ring 指標的
-                 // race，見 mixOutputTask/deckPlaybackTask 附近註解），但這個修復還沒
-                 // 上機驗證過，STEP 11 下次要在沒有真實使用者的時段重新測試。
-                 // （原本 11＝可互換雙deck正式取代/audio_stream，見檔頭說明）
+#define STEP 11  // ← 2026-08-11 重新上機測試 PCM ring race condition 修復（/now 確認
+                 // playing:false，目前沒有真實使用者）。想退回上次已驗證乾淨的狀態，
+                 // 改回 10 重新燒錄即可。
 
 // 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
 // buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
@@ -1090,6 +1087,7 @@ static uint32_t parseTopLevelSeq(const uint8_t* body, size_t len) {
 #define CMD_POLL_BODY_MAX 2048
 static uint8_t* cmdPollBodyBuf = nullptr;
 static uint32_t lastCmdSeq = 0;
+static bool cmdSeqSynced = false;   // 見 commandPollTask 開機首次同步的說明
 
 // STEP 8a：每 1s 輪詢一次 /car_commands，收到新指令只 log、不套用（edge端混音第一刀，
 // 見檔頭 STEP 8a 說明）。跟 carHeartbeatTask 同款區網優先／Funnel 回退、同款
@@ -1123,6 +1121,23 @@ void commandPollTask(void* pv) {
     if (code != 200 || bodyLen == 0) continue;
 
     uint32_t newSeq = parseTopLevelSeq(cmdPollBodyBuf, bodyLen);
+
+    if (!cmdSeqSynced) {
+      // ⚠️ 2026-08-11 實機踩到（STEP 11 白噪音第二個根因，比 PCM ring race 更嚴重）：
+      // lastCmdSeq 只存在 RAM，ESP32 每次實體重開機都歸零，但 Mac 端 PuckCommandQueue
+      // 是跨重開機持續存在的行程級單例——一開機第一次打 since=0 會拿回「有史以來全部」
+      // 指令（實測：累積 15 首歌份、30 筆 queue_next/crossfade），dispatchNewCommands
+      // 在同一輪迴圈內把這些全部瞬間套用完，所有 crossfade 計時起點被連續覆寫、deck
+      // URL/reset 旗標被連續覆寫，雙 deck 狀態瞬間攪亂。開機後第一次成功輪詢只同步
+      // seq 起點、不套用任何歷史指令——之後才開始正常的增量處理，只處理「開機之後才
+      // 發生」的新指令，不重播開機前的舊歷史。
+      lastCmdSeq = newSeq;
+      cmdSeqSynced = true;
+      Serial.printf("[CmdPoll] 開機同步完成，起點 seq=%u（不重播開機前的歷史指令）\n",
+                    (unsigned)newSeq);
+      continue;
+    }
+
     if (newSeq > lastCmdSeq) {
       Serial.printf("[CmdPoll] 新指令 seq %u→%u：%.*s\n",
                     (unsigned)lastCmdSeq, (unsigned)newSeq, (int)bodyLen, (const char*)cmdPollBodyBuf);
@@ -1612,6 +1627,18 @@ void deckPlaybackTask(void* pv) {
       if (idx == 0) mp3DecoderM0.begin(); else mp3DecoderM1.begin();
       mdeckNeedsReset[idx] = false;
     }
+    // ⚠️ 2026-08-11 實機踩到（STEP 11 白噪音第三個根因）：這裡原本一路狂解、完全不看
+    // PCM ring 還有沒有空間——mdeckPcmWrite() 滿了就默默丟樣本（見該函式），所以 decode
+    // 從不因為 PCM ring 滿而停下來，raw ring 因此幾乎總是很快被清空，對 network task
+    // 起不到背壓，整首歌在幾秒內就下載+解碼完，連線自然關閉→deckNetworkTask 重連、
+    // 從頭重下載同一首歌→每次重連都觸發 mdeckNeedsReset（decoder+PCM ring重置），
+    // 打斷正在播放的內容——這就是「播一下噪音、恢復幾秒、又噪音」規律性重複的根因。
+    // 修法：PCM ring 剩餘空間不夠時先等，讓 decode 的節奏被迫貼近 mixOutputTask 的
+    // 真實消耗速度，背壓才會一路傳回 raw ring、再傳回 network 下載端。
+    if (mdeckPcmFree(idx) < (MDECK_PCM_RING_SIZE / 8)) {
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
     size_t avail = mdeckUsed(idx);
     if (avail == 0) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
     size_t want = avail < sizeof(buf) ? avail : sizeof(buf);
@@ -1895,13 +1922,20 @@ void setup() {
                   mdeckRing[_d] ? "成功" : "❌失敗", mdeckPcmRing[_d] ? "成功" : "❌失敗",
                   (unsigned)ESP.getFreeHeap());
   }
-  // network/decode 優先權跟 STEP9 deck B 同款（1，不搶 mixOutputTask 的 CPU/網路）；
-  // mixOutputTask 是新的音訊輸出權威，優先權給 2（比照舊 audioPlaybackTask），釘
-  // core 1（i2s_write 節奏跟 loop()/PTT 共用 core，理由同舊版註解）。
-  xTaskCreatePinnedToCore(deckNetworkTask, "deckNet0", 16384, (void*)0, 1, nullptr, 0);
-  xTaskCreatePinnedToCore(deckNetworkTask, "deckNet1", 16384, (void*)1, 1, nullptr, 0);
-  xTaskCreatePinnedToCore(deckPlaybackTask, "deckPlay0", 8192, (void*)0, 1, nullptr, 1);
-  xTaskCreatePinnedToCore(deckPlaybackTask, "deckPlay1", 8192, (void*)1, 1, nullptr, 1);
+  // ⚠️ 2026-08-11 實機踩到：crossfade 時兩個 deckNetworkTask 會同時活躍（deck0 淡出
+  // 仍在下載、deck1 淡入也在下載），跟 commandPollTask/carHeartbeatTask 一起擠在
+  // core 0、優先權都是 1，聽感回報換歌瞬間有真的空白/斷點——比照 STEP7 的既有教訓
+  // （network 優先權要 >= playback，見 audioNetworkTask 前的大段註解：優先權太低會被
+  // 其他任務搶走時間片，PCM ring 追不上進度就見底變靜音），把 network 優先權拉到 2
+  // （高於 commandPollTask/carHeartbeatTask 的 1），確保它們排隊時優先搶到 CPU。
+  xTaskCreatePinnedToCore(deckNetworkTask, "deckNet0", 16384, (void*)0, 2, nullptr, 0);
+  xTaskCreatePinnedToCore(deckNetworkTask, "deckNet1", 16384, (void*)1, 2, nullptr, 0);
+  // decode 同理拉到 2（跟 core1 上原本預設優先權1的 Arduino loopTask/PTT 分開一階，
+  // crossfade 時兩個 decode 都要即時把 raw ring 轉成 PCM 供 mixOutputTask 消費，不該
+  // 被 loop() 排擠）；mixOutputTask 仍是 2（跟 decode 同階，用 portMAX_DELAY 的
+  // i2s_write 天然限速+讓出 CPU，不會因為同優先權互搶而卡住 decode）。
+  xTaskCreatePinnedToCore(deckPlaybackTask, "deckPlay0", 8192, (void*)0, 2, nullptr, 1);
+  xTaskCreatePinnedToCore(deckPlaybackTask, "deckPlay1", 8192, (void*)1, 2, nullptr, 1);
   xTaskCreatePinnedToCore(mixOutputTask, "mixOut", 8192, nullptr, 2, nullptr, 1);
 #endif
   // 收尾定燈：WiFi 通但沒跑 Funnel 檢查（STEP 1）也給個 connected 提示；
