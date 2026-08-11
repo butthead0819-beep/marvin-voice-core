@@ -834,7 +834,15 @@ static int getHttpBody(WiFiClient& client, const char* host, uint16_t port, int3
   int sp1 = status.indexOf(' ');
   if (sp1 > 0) code = status.substring(sp1 + 1, sp1 + 4).toInt();
 
-  while (client.connected()) {          // 跳過 headers，讀到空行＝標頭結束
+  // 跳過 headers，讀到空行＝標頭結束。⚠️ 2026-08-11 實機踩到：外層不能用
+  // `while (client.connected())` 當守門（audioNetworkTask 的 chunked 長連線那份可以，
+  // 因為連線持續開著）——/car_commands 是 Connection: close 的短回應，本地區網幾乎
+  // 瞬間送完+關閉，ESP32 使用者層跑到這行時 connected() 常常已經回 false（即使 socket
+  // buffer 裡還有沒讀完的 header/body），outer while 直接 0 次跳過、標頭全部漏進
+  // body buffer（實測：body 開頭印出一堆 Access-Control-*/Content-Type header 行）。
+  // 改成純靠 lockedReadLine() 自己的回傳值收尾——它內部先查 available() 才查
+  // connected()，能正確吃到「已斷線但還有緩衝資料」這種情況。
+  for (;;) {
     String h;
     if (!lockedReadLine(client, h, readTimeoutMs)) break;
     if (h.length() == 0) break;
