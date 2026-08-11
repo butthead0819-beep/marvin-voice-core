@@ -201,20 +201,30 @@ def _pick_bpm_scratch_durations(bpm: float) -> list[float]:
 
     最小單位是一個「bar」＝3 個音符，音符值各自從 note_pool 隨機挑（快慢交錯），
     bar 湊好後緊接著原樣複製一次形成「一組」（AABB 式的兩段重複），聽起來像真人
-    刷了一個手法再重複一次，而不是每段都各刷各的、毫無律動可循。組數視 target
-    隨機湊到 1~2 秒，極端 BPM（音符值 clamp 到頂/底）下最多堆到 4 組（12 段）
-    避免無限迴圈。單一音符時值 clamp 在 [0.12, 0.9]s，避免極端 BPM 讓某一段獨佔
-    整個效果或短到破音。"""
+    刷了一個手法再重複一次，而不是每段都各刷各的、毫無律動可循。單一音符時值
+    clamp 在 [0.12, 0.9]s，避免極端 BPM 讓某一段獨佔整個效果或短到破音。
+
+    ⚠️ 慢～中速 BPM 時單一音符值本身就接近 0.9s 上限，一組（bar×2）就可能衝到
+    4~5 秒——這段音效是疊在歌尾巴、溢進下一首開頭的轉場，拖長了等於讓下一首
+    聽起來遲遲不進來。hard_cap 是實際播放上限：湊出的一組若會超過，整組音符值
+    等比例縮小塞進剩餘預算，寧可音符變短也不讓總長失控。"""
     beat = 60.0 / bpm
     note_pool = (beat * 2.0, beat * 1.0, beat * 2.0 / 3.0)  # 半分 / 四分 / 三連音兩份
     target = random.uniform(1.0, 2.0)
+    hard_cap = target + 0.4
     durations: list[float] = []
     total = 0.0
     while total < target and len(durations) < 12:
         bar = [min(max(random.choice(note_pool), 0.12), 0.9) for _ in range(3)]
-        durations.extend(bar)
-        durations.extend(bar)
-        total += sum(bar) * 2
+        group = bar + bar
+        group_total = sum(group)
+        remaining = hard_cap - total
+        if group_total > remaining:
+            scale = max(remaining / group_total, 0.12 / max(group))
+            durations.extend(max(0.08, d * scale) for d in group)
+            break
+        durations.extend(group)
+        total += group_total
     return durations or [min(max(target, 0.12), 0.9)]
 
 
