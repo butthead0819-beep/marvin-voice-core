@@ -67,10 +67,20 @@ _puck_mixer_client = None  # lazy singleton，見 _get_puck_client()
 
 
 def _get_puck_client():
-    """MARVIN_CAR_HARDWARE=pi_bt 才回傳 client；其餘硬體（ESP32 mk1/家用 Pi 3B）回 None、
-    零行為改變。見 device/puck_mixer.py + project_car_puck_mk2_pi_zero2w_bt_mixer_validated。"""
+    """依 MARVIN_CAR_HARDWARE 回傳對應 client；其餘硬體（家用 Pi 3B 等）回 None、零行為
+    改變。兩種硬體走的 control-plane 方向不同（push vs pull），但介面（play/queue_next/
+    crossfade/stop 皆為 async、回 bool）一致，呼叫端（_fire_puck_crossfade）不用分辨：
+      - pi_bt（Pi mk2，見 device/puck_mixer.py）：Mac 直接 POST 到 Pi（LAN 內可連進去）。
+      - esp32_edge_mix（ESP32 car puck，見 marvin_voice_core/puck_command_queue.py）：
+        Pi 那招對 ESP32 不成立（永遠是它自己撥出連線，Mac 推不進去），改寫進本地佇列，
+        ESP32 用既有心跳節奏輪詢 /car_commands 拿指令。
+    """
     global _puck_mixer_client
-    if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() != "pi_bt":
+    hardware = os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower()
+    if hardware == "esp32_edge_mix":
+        from marvin_voice_core.puck_command_queue import PuckCommandQueueClient, get_default_queue
+        return PuckCommandQueueClient(get_default_queue())
+    if hardware != "pi_bt":
         return None
     if _puck_mixer_client is None:
         from marvin_voice_core.puck_mixer_client import PuckMixerClient
@@ -2647,9 +2657,11 @@ class MusicCog(commands.Cog):
 
         vc = self._vc()
         if vc is None:
+            logger.info("[DJ Tail] 口白：找不到 VoiceController cog（_vc()→None），這輪不放")
             return
         # 私語模式：聽>>講，不主動唸 DJ 播報（autopilot 與今夜歌單共用此路）
         if getattr(vc, '_intimate_mode', False):
+            logger.info("[DJ Tail] 口白：_intimate_mode=True，這輪不放")
             return
         vc._tts_protected = True
         try:
@@ -2727,6 +2739,7 @@ class MusicCog(commands.Cog):
         放棄，不影響主流程。"""
         vc = self._vc()
         if vc is None:
+            logger.info("[DJ Tail] SFX：找不到 VoiceController cog（_vc()→None），這輪不放")
             return
         name = random.choice(_DJ_TAIL_SFX_NAMES)
 

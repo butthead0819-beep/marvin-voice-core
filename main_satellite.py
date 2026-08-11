@@ -1617,7 +1617,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                    reply_source=None, car_presence=None, audio_rate_limiter=None,
                    stream_source=None, location_state_path=None,
                    now_playing_state_path=None, claude_sessions_state_path=None,
-                   gmail_calendar_state_path=None):
+                   gmail_calendar_state_path=None, puck_command_queue=None):
     """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
 
     純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
@@ -1633,6 +1633,10 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     gmail_calendar_state_path＝Gmail/Calendar count-only 橋接檔路徑（None＝用
     gmail_calendar_state.DEFAULT_PATH；scripts/sync_gmail_calendar_state.py（排程
     agent 呼叫）寫、這裡的 /gmail_calendar_status 讀，見該檔開頭說明）。
+    puck_command_queue＝ESP32 edge端混音（MARVIN_CAR_HARDWARE=esp32_edge_mix）的控制
+    指令佇列（見 marvin_voice_core/puck_command_queue.py）；None＝該功能關閉，
+    /car_commands、/puck_deck 回 404。開啟 /puck_deck 需要 vc.bot 能拿到 MusicCog
+    （bot.cogs.get("MusicCog")）才能 resolve 歌曲 URL，拿不到就回 500。
     """
     from aiohttp import web
 
@@ -1923,6 +1927,74 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             stream_source.unsubscribe(q)
         return resp
 
+    async def handle_car_commands(request):
+        """GET /car_commands?since=<seq> — ESP32 edge端混音輪詢指令（pull model）。
+
+        Pi mk2 是 Mac 主動 POST 到 Pi（push，Pi 在 LAN 內可被連進來）；ESP32 car puck
+        永遠是自己撥出連線，Mac 沒辦法主動推指令，只能讓 ESP32 用既有輪詢節奏來拿
+        （見 puck_command_queue.py 開頭說明）。無 puck_command_queue（功能未開）→ 404。
+        """
+        if puck_command_queue is None:
+            return web.Response(status=404, headers=_CORS)
+        try:
+            since = int(request.query.get("since", "0"))
+        except ValueError:
+            since = 0
+        seq, pending = puck_command_queue.since(since)
+        return web.json_response({"seq": seq, "commands": pending}, headers=_CORS)
+
+    async def handle_puck_deck(request):
+        """GET /puck_deck?url=<watch_url> — ESP32 edge端混音單一 deck 原始音源。
+
+        跟 /audio_stream 不同：/audio_stream 是 Mac mixer 已經混好的單一輸出；這裡是
+        「單一原始音源」現場 resolve+轉碼，給 ESP32 開兩條並行連線（deck A/B）各自解碼、
+        自己算 crossfade envelope 疊加後才 i2s_write（照 device/puck_mixer.py 的角色分工：
+        Mac 只管把音源送到，「怎麼混」交給裝置端）。
+
+        重用 MusicCog._resolve_yt_query()（既有 yt-dlp 快取/候選挑選邏輯，vc.bot 上
+        找不到 MusicCog 就 500，避免整台 server 啟動又要重複一份 yt-dlp options）。
+        """
+        if puck_command_queue is None:
+            return web.Response(status=404, headers=_CORS)
+        watch_url = (request.query.get("url") or "").strip()
+        if not watch_url:
+            return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
+        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
+        if music_cog is None:
+            return web.json_response({"error": "music_cog_unavailable"}, status=500, headers=_CORS)
+        info = await music_cog._resolve_yt_query(watch_url)
+        stream_url = info.get("url") if info else None
+        if not stream_url:
+            return web.json_response({"error": "resolve_failed"}, status=502, headers=_CORS)
+
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-nostdin", "-loglevel", "error", "-i", stream_url,
+            "-ar", "48000", "-ac", "2", "-f", "s16le", "-",
+            stdout=asyncio.subprocess.PIPE)
+        resp = web.StreamResponse(status=200, headers={
+            **_CORS, "Content-Type": "audio/mpeg", "X-Audio-Codec": "mp3",
+            "X-Audio-Rate": "48000", "X-Audio-Channels": "2", "X-Audio-Bits": "16",
+        })
+        await resp.prepare(request)
+        encoder = Mp3StreamEncoder(rate=48000, channels=2, bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
+        try:
+            while True:
+                pcm = await proc.stdout.read(4096)
+                if not pcm:
+                    break
+                chunk = encoder.encode(pcm)
+                if chunk:
+                    await resp.write(chunk)
+            tail = encoder.flush()
+            if tail:
+                await resp.write(tail)
+        except (ConnectionError, asyncio.CancelledError):
+            pass   # client 斷線/取消，見 handle_audio_stream 同款 except 的理由
+        finally:
+            proc.kill()
+            await proc.wait()
+        return resp
+
     async def handle_car(request):
         """POST /car {"state": "present"|"absent", "lat"?, "lon"?} — ESP32 puck 車載觸發。
 
@@ -1984,6 +2056,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_options("/audio", handle_preflight)
     app.router.add_get("/reply", handle_reply)
     app.router.add_get("/audio_stream", handle_audio_stream)
+    app.router.add_get("/car_commands", handle_car_commands)
+    app.router.add_get("/puck_deck", handle_puck_deck)
     app.router.add_get("/satellite", handle_satellite)
     app.router.add_get("/hud", handle_hud)
     app.router.add_post("/car", handle_car)
@@ -2060,9 +2134,20 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
         audio_rate_limiter = RateLimiter(max_per_window=30, window_s=60.0)
         logger.info("🚗 [CarMode] 車載模式啟用（/car present/absent + TTL 收尾 + /audio 限速）")
 
+    # ── ESP32 edge端混音（見 marvin_voice_core/puck_command_queue.py）：
+    # MARVIN_CAR_HARDWARE=esp32_edge_mix 才接，跟 pi_bt（Pi mk2）走的 push model 互斥、
+    # 預設 off＝零行為改變。跟 music_cog.py 共用同一個 process-wide 單例（見該模組
+    # get_default_queue() 的說明），這裡不用額外傳遞物件。
+    puck_command_queue = None
+    if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() == "esp32_edge_mix":
+        from marvin_voice_core.puck_command_queue import get_default_queue
+        puck_command_queue = get_default_queue()
+        logger.info("🎛️ [PuckEdgeMix] ESP32 edge端混音啟用（/car_commands + /puck_deck）")
+
     app = build_text_app(vc, token=token, default_speaker=default_speaker,
                          reply_source=reply_source, car_presence=car_presence,
-                         audio_rate_limiter=audio_rate_limiter, stream_source=stream_source)
+                         audio_rate_limiter=audio_rate_limiter, stream_source=stream_source,
+                         puck_command_queue=puck_command_queue)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
