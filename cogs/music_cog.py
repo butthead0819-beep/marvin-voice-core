@@ -2526,12 +2526,21 @@ class MusicCog(commands.Cog):
             return
         title_next = next_info.get('title', '?')
 
-        # [PuckMixer] pi_bt 硬體(Pi mk2)：額外送純音樂 crossfade 訊號給 Pi，跟下面
-        # 本地 Discord mixer 的 DJ 口白邏輯完全獨立、不共用旗標、不影響其他硬體行為
-        # （DJ 口白走另一條未實作的 TTS 串流管線，這裡只管換歌）。fire-and-forget
-        # 背景 task，不阻塞/不改變既有 flow 的時序。
+        # [PuckMixer] pi_bt(Pi mk2)/esp32_edge_mix(ESP32)硬體：額外送純音樂 crossfade
+        # 訊號給裝置端，跟下面本地 Discord mixer 的 DJ 口白邏輯完全獨立、不共用旗標、
+        # 不影響其他硬體行為（DJ 口白走另一條未實作的 TTS 串流管線，這裡只管換歌）。
+        # fire-and-forget 背景 task，不阻塞/不改變既有 flow 的時序。
+        #
+        # ⚠️ 2026-08-11 實機踩到：這裡一定要用 webpage_url（可重新 yt-dlp resolve 的
+        # youtube 頁面網址），不能用 'url'——後者是 _resolve_yt_query() 當下呼叫 yt-dlp
+        # 解出來、已經是 googlevideo CDN 的最終直連網址（見該函式 return dict），裝置端
+        # （device/puck_mixer.py::resolve_stream_url / main_satellite.py::handle_puck_deck）
+        # 收到後還會再對它跑一次 yt-dlp resolve，餵一個 CDN 網址進去等於再解析一次
+        # 「不是 youtube 頁面」的網址，100% 失敗（實機驗證：ESP32 收到後 /puck_deck 穩定
+        # 回 502，deckB 永遠連不上；這條路徑 Pi mk2 會撞一樣的錯，只是硬體還沒上線沒人
+        # 發現）。
         puck_client = _get_puck_client()
-        next_url = next_info.get('url', '')
+        next_url = next_info.get('webpage_url', '')
         if puck_client is not None and next_url:
             asyncio.create_task(self._fire_puck_crossfade(puck_client, next_url))
 

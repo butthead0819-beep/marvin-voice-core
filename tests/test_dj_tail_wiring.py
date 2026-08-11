@@ -545,6 +545,38 @@ async def test_dj_tail_sfx_gives_up_after_preload_wait_timeout():
 
 
 
+# ── [PuckMixer] queue_next 必須送 webpage_url，不能送已解析過的 CDN 直連網址 ──────
+# 2026-08-11 實機踩到：next_info['url'] 是 _resolve_yt_query() 當下解出來的 googlevideo
+# CDN 直連網址（時效性、非 youtube 頁面），裝置端（Pi/ESP32）收到後還會再對它跑一次
+# yt-dlp resolve，餵 CDN 網址進去 100% 失敗（實機驗證：ESP32 /puck_deck 穩定回 502）。
+
+@pytest.mark.asyncio
+async def test_tail_dj_fires_puck_crossfade_with_webpage_url_not_resolved_url():
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _next_info()
+    nxt["webpage_url"] = "https://youtube.com/watch?v=abc123"
+    assert nxt["url"] != nxt["webpage_url"]   # 這條測試才有意義：兩者必須不同
+    cog.stream_queue = [nxt]
+    cog._prefetch_cache[nxt["url"]] = _done_future({"dj": _dj_meta()})
+    _prime(cog, cur)
+
+    fake_client = MagicMock()
+    fake_client.queue_next = AsyncMock(return_value=True)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()), \
+         patch("cogs.music_cog._get_puck_client", return_value=fake_client):
+        import time
+        await cog._run_tail_dj(cur, time.time() - 170.0)
+    # asyncio.create_task 起的 _fire_puck_crossfade 要等回到 event loop 才會真的跑；
+    # 移出 patch 區塊外用真正的 asyncio.sleep(0) 讓出控制權一次（patch 已經在
+    # _run_tail_dj 執行期間把 fake_client 綁進 task 的 closure，不需要 patch 還開著）。
+    await asyncio.sleep(0)
+
+    fake_client.queue_next.assert_awaited_once_with(nxt["webpage_url"])
+
+
 # ── (f) CancelledError 被 catch ──────────────────────────────────────────────
 
 @pytest.mark.asyncio
