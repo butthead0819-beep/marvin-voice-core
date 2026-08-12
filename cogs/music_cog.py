@@ -1845,12 +1845,23 @@ class MusicCog(commands.Cog):
 
                 dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
                 # [DJ Tail] 尾段派發成功（上一首 _run_tail_dj 播完並標記）→ 本首開頭不重播
-                if info.get('_dj_played_in_tail'):
+                _dj_played_in_tail = bool(info.get('_dj_played_in_tail'))
+                if _dj_played_in_tail:
                     logger.info(f"[DJ Tail] {title} DJ 已在上一首尾段播出，跳過開頭重播")
                     dj_audio = None
                     dj_data = None
                 if dj_data and not dj_audio and vc is not None:
                     await self._maybe_play_dj_interjection(dj_data)
+
+                # [PuckMixer] esp32_edge_mix：沒經過 _fire_puck_crossfade 接手的歌（開場
+                # 第一首、skip、或上一首沒排到尾段 task）要送硬 play 讓 ESP32 從乾淨狀態
+                # 開始播——跟 _fire_puck_crossfade 對稱，那邊只在尾段轉場時接手 standby
+                # deck，不會有人叫它 play。見 _play_open()/_run_tail_dj() 前的說明。
+                if not _dj_played_in_tail:
+                    puck_client = _get_puck_client()
+                    puck_url = info.get('webpage_url', '')
+                    if puck_client is not None and puck_url:
+                        asyncio.create_task(self._fire_puck_play(puck_client, puck_url))
 
                 self._current_song_skipped = False
                 song_start_time = time.time()
@@ -2545,6 +2556,15 @@ class MusicCog(commands.Cog):
                     "audio_path": None,
                 },
             }
+
+    async def _fire_puck_play(self, puck_client, url: str) -> None:
+        """[PuckMixer] 硬 play：沒有 standby deck 可 crossfade 接手時（開場第一首/skip/
+        上一首無尾段task）用這個讓 ESP32 從乾淨狀態開播（見 car_puck.ino dispatchNewCommands
+        的 play 分支：兩個 deck 都停、deck0 接新 URL）。fire-and-forget，失敗只記警告，
+        不影響本地 Discord/家用播放路徑。"""
+        ok = await puck_client.play(url)
+        if not ok:
+            logger.warning(f"[PuckMixer] play 失敗: {url}")
 
     async def _fire_puck_crossfade(self, puck_client, next_url: str,
                                     buffer_s: float = 4.0, crossfade_s: float = 4.0) -> None:

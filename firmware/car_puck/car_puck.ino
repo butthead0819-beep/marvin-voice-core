@@ -85,7 +85,12 @@
                                 // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
 
 // ========== 你要填的 ==========
-#define STEP 10  // ← 2026-08-11 深夜收工：明天要正常使用（開機自動播放+autopilot），
+#define STEP 11  // ← 2026-08-12：music_cog.py 補上 _fire_puck_play（見該檔案
+                 // _stream_loop 裡 `if not _dj_played_in_tail:` 那段）——STEP 11
+                 // 缺的「play 觸發點」補上了，deck A/B 改走可互換雙 deck、都直連
+                 // URL 讓 ESP32 自行混音。已知仍缺：DJ 口白/刷碟音效、crossfade
+                 // 極小瑕疵，先實機驗證基本播放/轉場再說。
+// #define STEP 10  // 2026-08-11 深夜收工版本：明天要正常使用（開機自動播放+autopilot），
                  // STEP 11 還沒接「play」自動觸發點、DJ口白/SFX仍缺、crossfade仍有極小
                  // 瑕疵——先退回功能完整、已充分驗證的 STEP 10 供實際使用。STEP 11
                  // 程式碼保留在這份原始碼裡（deck0/1可互換架構+今晚修好的三個bug），
