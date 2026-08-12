@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-合成 DJ Tail 轉場音效（scratch / air horn / riser），純 numpy 產生、無外部素材授權疑慮。
+合成 DJ Tail 轉場音效（scratch / air horn / riser），純 numpy/scipy 產生、無外部素材授權疑慮。
 每支 <2s，供 _run_tail_dj 在 DJ 口白播完後疊入下一首開頭。
 Run from repo root: python scripts/gen_dj_sfx.py
 """
@@ -26,7 +26,7 @@ def _write_wav(path: str, samples: np.ndarray) -> None:
         f.writeframes(pcm16.tobytes())
 
 
-def _fade(samples: np.ndarray, attack: float = 0.01, release: float = 0.08) -> np.ndarray:
+def _fade(samples: np.ndarray, attack: float = 0.005, release: float = 0.03) -> np.ndarray:
     n = len(samples)
     att = int(RATE * attack)
     rel = int(RATE * release)
@@ -45,233 +45,355 @@ def _sinpow(x: np.ndarray, power: float) -> np.ndarray:
     return np.clip(x, 0.0, None) ** power
 
 
+def find_cue_point(raw_pcm: np.ndarray, rate: int = RATE, search_window_s: float = 2.0) -> float:
+    """尋找歌曲前奏中最具代表性、最清晰的音訊起點 (Cue Point / Transient Attack)。
+
+    避免在開頭 0~0.8s 的靜音或微弱雜音上刷碟，而是對準第一個鼓點/人聲/重音攻擊音。
+    """
+    if raw_pcm.ndim > 1:
+        raw_pcm = np.mean(raw_pcm, axis=-1)
+
+    max_search = min(len(raw_pcm), int(rate * search_window_s))
+    if max_search < int(rate * 0.1):
+        return 0.20
+
+    search_pcm = raw_pcm[:max_search]
+    win_size = int(rate * 0.005)   # 5ms 窗口
+    hop_size = int(rate * 0.0025)  # 2.5ms 步進
+    num_frames = (len(search_pcm) - win_size) // hop_size
+
+    if num_frames <= 0:
+        return 0.20
+
+    energies = np.array([
+        np.sqrt(np.mean(search_pcm[i * hop_size : i * hop_size + win_size] ** 2))
+        for i in range(num_frames)
+    ])
+
+    max_e = float(np.max(energies)) if len(energies) else 0.0
+    if max_e < 1e-4:
+        return 0.20  # 整段極靜音
+
+    threshold = max(0.04, max_e * 0.20)
+    candidates = np.where(energies >= threshold)[0]
+    if len(candidates) > 0:
+        cue_idx = candidates[0] * hop_size
+        cue_s = cue_idx / rate
+        # 稍微往前保留 20ms 的 attack 前緣
+        return max(0.04, cue_s - 0.02)
+    return 0.25
+
+
 SCRATCH_STYLES = ("wicka", "spinback", "vinyl_brake", "chirp", "transform", "tear")
 
 _STYLE_DURATIONS = {
     "wicka": 0.65,
     "spinback": 0.70,
     "vinyl_brake": 0.75,
-    "chirp": 0.52,
+    "chirp": 0.55,
     "transform": 0.65,
     "tear": 0.60,
 }
 
 
-def _calc_scratch_profile(style: str, dur: float, rate: int) -> tuple[np.ndarray, np.ndarray, float, float, float]:
-    """計算指定刷碟手法的速度曲線 v(t)、Crossfader 門閥包絡 A(t)、基準原點 p0、摩擦增益、Rumble增益。"""
+def _calc_scratch_trajectory(style: str | None, dur: float | None, rate: int,
+                             bpm: float | None = None) -> tuple[np.ndarray, np.ndarray, float, float, float]:
+    """計算連續單一轉盤速度軌跡 v(t)、Crossfader 門閥 A(t)、Cue 點微調位移、摩擦增益、Rumble增益。"""
+    if bpm and bpm > 0:
+        beat = 60.0 / float(bpm)
+        # 控制總長在 1.0 ~ 1.7 秒之間
+        if beat * 3 <= 1.7:
+            dur = beat * 3
+        elif beat * 2 <= 1.7:
+            dur = beat * 2
+        else:
+            dur = min(1.7, max(1.0, beat * 2))
+            beat = dur / 2.0
+    else:
+        if dur is None or dur <= 0:
+            dur = _STYLE_DURATIONS.get(style or "wicka", 0.65)
+
     n = int(rate * dur)
     t = np.linspace(0, dur, n)
     v = np.zeros(n)
     fader = np.ones(n)
-    p0 = 0.8
-    fric_gain = 0.40
-    rumble_gain = 0.25
+    cue_offset_s = 0.0
+    fric_gain = 0.06
+    rumble_gain = 0.03
 
-    if style == "spinback":
-        # 急速倒盤回甩 (Spinback / Backspin)
-        v = -8.5 * np.exp(-3.8 * t) * (np.maximum(0.0, 1.0 - t / dur) ** 0.5)
-        p0 = 1.8  # 往回倒轉需更多前置音訊
-        fader = np.maximum(0.0, 1.0 - (t / dur) ** 1.8)
-        fric_gain = 0.55
-        rumble_gain = 0.20
+    if style is None or style not in SCRATCH_STYLES:
+        style = random.choice(SCRATCH_STYLES)
 
-    elif style == "vinyl_brake":
-        # 轉盤斷電慢速煞車 (Turntable Stop / Pitch Drop)
-        v = (np.maximum(0.0, 1.0 - t / dur)) ** 1.6
-        p0 = 0.1
-        fader = np.maximum(0.0, 1.0 - (t / dur) ** 1.3)
-        fric_gain = 0.25
-        rumble_gain = 0.45
+    if bpm and bpm > 0:
+        beat = 60.0 / float(bpm)
+        # ── BPM-Synced 連貫 Turntablism Routine ──
+        if style == "spinback":
+            # 1 拍 Baby 對位暖身 + 指數衰減急速倒盤回甩
+            t_setup = min(0.45, dur * 0.35)
+            seg1 = (t < t_setup)
+            v[seg1] = 2.8 * np.sin(2 * np.pi * t[seg1] / (t_setup / 2.0))
+            fader[seg1] = 1.0
 
-    elif style == "chirp":
-        # 清脆鳥鳴短切刷 (Chirp Scratch)——切點比例取自原始 0.52s 手感，等比例縮放
-        # 到任意 dur，讓 BPM 拼接出的短/長節奏段落都維持同樣的顆粒感。
-        cuts = [f * dur for f in (0.0, 0.2308, 0.4808, 0.7308, 1.0)]
-        for i in range(4):
-            t_s, t_e = cuts[i], cuts[i + 1]
-            seg = (t >= t_s) & (t < t_e)
-            if not np.any(seg):
-                continue
-            tn = (t[seg] - t_s) / (t_e - t_s)
-            spd = [4.2, -4.2, 4.5, -4.0][i]
-            v[seg] = spd * _sinpow(np.sin(np.pi * tn), 1.3)
-        p0 = 0.6
-        # Crossfader 閘門：換向低速處關閉，高峰處全開
-        spd_abs = np.abs(v)
-        fader = np.clip((spd_abs - 0.8) / 1.5, 0.0, 1.0) ** 1.5
-        fric_gain = 0.45
-        rumble_gain = 0.20
+            seg2 = (t >= t_setup)
+            t_spin = dur - t_setup
+            t_rel = t[seg2] - t_setup
+            v[seg2] = -8.5 * np.exp(-3.8 * t_rel) * (np.maximum(0.0, 1.0 - t_rel / t_spin) ** 0.5)
+            fader[seg2] = np.maximum(0.0, 1.0 - (t_rel / t_spin) ** 1.8)
+            cue_offset_s = 0.25
+            fric_gain = 0.08
+            rumble_gain = 0.03
 
-    elif style == "transform":
-        # 機關槍 16 分音符節奏切片刷 (Transform Scratch)——切點比例取自原始 0.65s
-        cuts = [f * dur for f in (0.0, 0.3846, 0.6923, 1.0)]
-        v1 = (t < cuts[1])
-        v[v1] = 1.8 * np.sin(np.pi * t[v1] / cuts[1])
-        v2 = (t >= cuts[1]) & (t < cuts[2])
-        v[v2] = -2.2 * np.sin(np.pi * (t[v2] - cuts[1]) / (cuts[2] - cuts[1]))
-        v3 = (t >= cuts[2])
-        v[v3] = 3.0 * np.sin(np.pi * (t[v3] - cuts[2]) / (dur - cuts[2]))
-        p0 = 0.8
-        # 14Hz 方波切音
-        gate = np.sin(2 * np.pi * 14.0 * t)
-        fader = np.where(gate > 0.0, 1.0, 0.08)
-        fric_gain = 0.35
-        rumble_gain = 0.25
+        elif style == "vinyl_brake":
+            # 短暫正常播放 + 平滑斷電煞車降速
+            t_norm = min(0.20, dur * 0.20)
+            seg1 = (t < t_norm)
+            v[seg1] = 1.0
+            fader[seg1] = 1.0
 
-    elif style == "tear":
-        # 雙速撕裂刷 (Tear Scratch)——切點比例取自原始 0.60s
-        cuts = [f * dur for f in (0.0, 0.1667, 0.4333, 0.6333, 1.0)]
-        s1 = (t >= cuts[0]) & (t < cuts[1])
-        v[s1] = 1.8 * np.sin(np.pi * (t[s1] - cuts[0]) / (cuts[1] - cuts[0]))
-        s2 = (t >= cuts[1]) & (t < cuts[2])
-        v[s2] = 4.2 * _sinpow(np.sin(np.pi * (t[s2] - cuts[1]) / (cuts[2] - cuts[1])), 1.3)
-        s3 = (t >= cuts[2]) & (t < cuts[3])
-        v[s3] = -1.6 * np.sin(np.pi * (t[s3] - cuts[2]) / (cuts[3] - cuts[2]))
-        s4 = (t >= cuts[3]) & (t <= cuts[4])
-        v[s4] = -4.0 * _sinpow(np.sin(np.pi * (t[s4] - cuts[3]) / (cuts[4] - cuts[3])), 1.3)
-        p0 = 0.7
-        fric_gain = 0.45
-        rumble_gain = 0.25
+            seg2 = (t >= t_norm)
+            t_brake = dur - t_norm
+            t_rel = t[seg2] - t_norm
+            v[seg2] = np.maximum(0.0, 1.0 - t_rel / t_brake) ** 1.5
+            fader[seg2] = np.maximum(0.0, 1.0 - (t_rel / t_brake) ** 1.2)
+            cue_offset_s = 0.0
+            fric_gain = 0.04
+            rumble_gain = 0.06
 
-    else:  # "wicka" 預設——切點比例取自原始 0.65s
-        cuts = [f * dur for f in (0.0, 0.2, 0.4, 0.5846, 1.0)]
-        s1 = (t >= cuts[0]) & (t < cuts[1])
-        v[s1] = -2.6 * _sinpow(np.sin(np.pi * (t[s1] - cuts[0]) / (cuts[1] - cuts[0])), 1.3)
-        s2 = (t >= cuts[1]) & (t < cuts[2])
-        v[s2] = 3.2 * _sinpow(np.sin(np.pi * (t[s2] - cuts[1]) / (cuts[2] - cuts[1])), 1.3)
-        s3 = (t >= cuts[2]) & (t < cuts[3])
-        v[s3] = -3.5 * _sinpow(np.sin(np.pi * (t[s3] - cuts[2]) / (cuts[3] - cuts[2])), 1.4)
-        s4 = (t >= cuts[3]) & (t <= cuts[4])
-        v[s4] = 4.0 * np.sin(np.pi * (t[s4] - cuts[3]) / (cuts[4] - cuts[3]) * 0.75) * np.exp(-3.2 * (t[s4] - cuts[3]) / (cuts[4] - cuts[3]))
-        p0 = 0.8
-        fric_gain = 0.42
-        rumble_gain = 0.28
+        elif style == "chirp":
+            # 16 分音符清脆鳥鳴刷 + 結尾 Drop 放盤
+            t_chirp_end = dur * 0.75
+            seg_c = (t < t_chirp_end)
+            t_16 = max(0.08, beat / 4.0)
+            phase_c = (t[seg_c] % t_16) / t_16
+            v[seg_c] = np.where(phase_c < 0.5, 3.8 * np.sin(np.pi * phase_c / 0.5), -3.8 * np.sin(np.pi * (phase_c - 0.5) / 0.5))
+            spd_abs = np.abs(v[seg_c])
+            fader[seg_c] = np.clip((spd_abs - 1.2) / 1.5, 0.0, 1.0) ** 1.2
 
-    return v, fader, p0, fric_gain, rumble_gain
+            seg_drop = (t >= t_chirp_end)
+            t_rel = (t[seg_drop] - t_chirp_end) / max(1e-4, dur - t_chirp_end)
+            v[seg_drop] = np.where(t_rel < 0.3, -2.5 * np.sin(np.pi * t_rel / 0.3), 1.0)
+            fader[seg_drop] = 1.0
+            cue_offset_s = 0.0
+            fric_gain = 0.06
+            rumble_gain = 0.03
+
+        elif style == "transform":
+            # 平滑往復運動 + 16 分音符方形門閥切音 (Machine Gun Gate) + Drop
+            t_trans_end = dur * 0.75
+            seg_t = (t < t_trans_end)
+            v[seg_t] = 2.2 * np.sin(2 * np.pi * t[seg_t] / beat)
+            t_16 = max(0.08, beat / 4.0)
+            phase_g = (t[seg_t] % t_16) / t_16
+            fader[seg_t] = np.where(phase_g < 0.55, 1.0, 0.0)
+
+            seg_drop = (t >= t_trans_end)
+            t_rel = (t[seg_drop] - t_trans_end) / max(1e-4, dur - t_trans_end)
+            v[seg_drop] = np.where(t_rel < 0.3, -2.0 * np.sin(np.pi * t_rel / 0.3), 1.0)
+            fader[seg_drop] = 1.0
+            cue_offset_s = 0.0
+            fric_gain = 0.05
+            rumble_gain = 0.03
+
+        elif style == "tear":
+            # 雙速前推撕裂刷 (Tear) + 結尾 Drop
+            t_tear_end = dur * 0.75
+            seg_tear = (t < t_tear_end)
+            t_8 = max(0.15, beat / 2.0)
+            phase_tear = (t[seg_tear] % t_8) / t_8
+            v[seg_tear] = np.where(
+                phase_tear < 0.25,
+                2.2 * np.sin(np.pi * phase_tear / 0.25),
+                np.where(
+                    phase_tear < 0.5,
+                    4.2 * np.sin(np.pi * (phase_tear - 0.25) / 0.25),
+                    -3.6 * np.sin(np.pi * (phase_tear - 0.5) / 0.5)
+                )
+            )
+            fader[seg_tear] = 1.0
+
+            seg_drop = (t >= t_tear_end)
+            t_rel = (t[seg_drop] - t_tear_end) / max(1e-4, dur - t_tear_end)
+            v[seg_drop] = np.where(t_rel < 0.3, -2.5 * np.sin(np.pi * t_rel / 0.3), 1.0)
+            fader[seg_drop] = 1.0
+            cue_offset_s = 0.0
+            fric_gain = 0.06
+            rumble_gain = 0.03
+
+        else:  # "wicka"
+            # 經典 4-stroke Wicka (2 Baby + 2 Forward Cuts + Drop)
+            t_b1 = min(beat, dur * 0.38)
+            seg1 = (t < t_b1)
+            v[seg1] = 3.0 * np.sin(2 * np.pi * t[seg1] / (t_b1 / 2.0))
+            fader[seg1] = 1.0
+
+            t_b2 = min(2 * beat, dur * 0.75)
+            seg2 = (t >= t_b1) & (t < t_b2)
+            t_seg2 = t[seg2] - t_b1
+            t_cut = max(0.12, (t_b2 - t_b1) / 2.0)
+            phase_cut = (t_seg2 % t_cut) / t_cut
+            v[seg2] = np.where(phase_cut < 0.5, 3.5 * np.sin(np.pi * phase_cut / 0.5), -4.0 * np.sin(np.pi * (phase_cut - 0.5) / 0.5))
+            fader[seg2] = np.where(phase_cut < 0.5, 1.0, 0.0)
+
+            seg3 = (t >= t_b2)
+            t_rel = (t[seg3] - t_b2) / max(1e-4, dur - t_b2)
+            v[seg3] = np.where(t_rel < 0.25, -2.5 * np.sin(np.pi * t_rel / 0.25), 1.0)
+            fader[seg3] = 1.0
+            cue_offset_s = 0.0
+            fric_gain = 0.06
+            rumble_gain = 0.03
+
+    else:
+        # ── 單一手勢手動微調模式 ──
+        if style == "spinback":
+            v = -8.5 * np.exp(-3.8 * t) * (np.maximum(0.0, 1.0 - t / dur) ** 0.5)
+            fader = np.maximum(0.0, 1.0 - (t / dur) ** 1.8)
+            cue_offset_s = 0.25
+            fric_gain = 0.08
+            rumble_gain = 0.03
+
+        elif style == "vinyl_brake":
+            v = (np.maximum(0.0, 1.0 - t / dur)) ** 1.5
+            fader = np.maximum(0.0, 1.0 - (t / dur) ** 1.2)
+            cue_offset_s = 0.0
+            fric_gain = 0.04
+            rumble_gain = 0.06
+
+        elif style == "chirp":
+            cuts = [f * dur for f in (0.0, 0.25, 0.50, 0.75, 1.0)]
+            for i in range(4):
+                t_s, t_e = cuts[i], cuts[i + 1]
+                seg = (t >= t_s) & (t < t_e)
+                if not np.any(seg):
+                    continue
+                tn = (t[seg] - t_s) / (t_e - t_s)
+                spd = [4.2, -4.2, 4.5, -4.0][i]
+                v[seg] = spd * _sinpow(np.sin(np.pi * tn), 1.2)
+            spd_abs = np.abs(v)
+            fader = np.clip((spd_abs - 1.2) / 1.5, 0.0, 1.0) ** 1.2
+            cue_offset_s = 0.0
+            fric_gain = 0.06
+            rumble_gain = 0.03
+
+        elif style == "transform":
+            v = 2.2 * np.sin(2 * np.pi * t / dur)
+            gate = np.sin(2 * np.pi * 14.0 * t)
+            fader = np.where(gate > 0.0, 1.0, 0.0)
+            cue_offset_s = 0.0
+            fric_gain = 0.05
+            rumble_gain = 0.03
+
+        elif style == "tear":
+            cuts = [f * dur for f in (0.0, 0.2, 0.45, 0.65, 1.0)]
+            s1 = (t >= cuts[0]) & (t < cuts[1])
+            v[s1] = 2.0 * np.sin(np.pi * (t[s1] - cuts[0]) / (cuts[1] - cuts[0]))
+            s2 = (t >= cuts[1]) & (t < cuts[2])
+            v[s2] = 4.2 * _sinpow(np.sin(np.pi * (t[s2] - cuts[1]) / (cuts[2] - cuts[1])), 1.2)
+            s3 = (t >= cuts[2]) & (t < cuts[3])
+            v[s3] = -1.8 * np.sin(np.pi * (t[s3] - cuts[2]) / (cuts[3] - cuts[2]))
+            s4 = (t >= cuts[3]) & (t <= cuts[4])
+            v[s4] = -4.0 * _sinpow(np.sin(np.pi * (t[s4] - cuts[3]) / (cuts[4] - cuts[3])), 1.2)
+            fader = np.ones(n)
+            cue_offset_s = 0.0
+            fric_gain = 0.06
+            rumble_gain = 0.03
+
+        else:  # "wicka"
+            cuts = [f * dur for f in (0.0, 0.2, 0.4, 0.6, 1.0)]
+            s1 = (t >= cuts[0]) & (t < cuts[1])
+            v[s1] = -2.8 * _sinpow(np.sin(np.pi * (t[s1] - cuts[0]) / (cuts[1] - cuts[0])), 1.2)
+            s2 = (t >= cuts[1]) & (t < cuts[2])
+            v[s2] = 3.2 * _sinpow(np.sin(np.pi * (t[s2] - cuts[1]) / (cuts[2] - cuts[1])), 1.2)
+            s3 = (t >= cuts[2]) & (t < cuts[3])
+            v[s3] = -3.5 * _sinpow(np.sin(np.pi * (t[s3] - cuts[2]) / (cuts[3] - cuts[2])), 1.2)
+            s4 = (t >= cuts[3]) & (t <= cuts[4])
+            v[s4] = 3.8 * np.sin(np.pi * (t[s4] - cuts[3]) / (cuts[4] - cuts[3]) * 0.75) * np.exp(-2.5 * (t[s4] - cuts[3]) / (cuts[4] - cuts[3]))
+            fader = np.ones(n)
+            cue_offset_s = 0.0
+            fric_gain = 0.06
+            rumble_gain = 0.03
+
+    return v, fader, cue_offset_s, fric_gain, rumble_gain
 
 
-def _gen_scratch_segment(raw_pcm: np.ndarray, rate: int, style: str, dur: float) -> np.ndarray:
-    """單一刷碟手勢（風格＋時值）→ 一段刷碟音訊。gen_scratch_from_pcm 依 BPM 拆出
-    的半分/三連/四分節奏，每一段各自呼叫這裡再串接，聽起來像連續數個刷碟動作，
-    而非同一個固定循環反覆播放。"""
-    n = int(rate * dur)
-    v, fader, p0, fric_gain, rumble_gain = _calc_scratch_profile(style, dur, rate)
-
-    # 隨手速積分重採樣
-    pos = p0 + np.cumsum(v) / rate
-    pos_idx = np.clip(pos * rate, 0, len(raw_pcm) - 2)
-    idx_f = pos_idx.astype(int)
-    idx_frac = pos_idx - idx_f
-    scratched_tone = (1.0 - idx_frac) * raw_pcm[idx_f] + idx_frac * raw_pcm[idx_f + 1]
-
-    # 手速動態包絡 (速度越快聲音越響亮，換向停滯點無聲)
-    speed = np.abs(v)
-    vol_env = np.clip(speed / 1.6, 0.0, 1.0) ** 0.8 * fader
-
-    # 唱針微觀摩擦層 (Needle Friction & Texture)
-    rng = np.random.default_rng(2026)
-    noise = rng.normal(0, 1, n)
-    sos_fric = butter(2, [800, min(5200, int(rate * 0.45))], btype="bandpass", fs=rate, output="sos")
-    friction = sosfilt(sos_fric, noise) * fric_gain * (speed ** 1.15)
-
-    # 黑膠唱盤箱體低頻 (Turntable Platter Rumble)
-    sos_rumble = butter(2, [45, 110], btype="bandpass", fs=rate, output="sos")
-    rumble = sosfilt(sos_rumble, rng.normal(0, 1, n)) * rumble_gain * (speed ** 0.5)
-
-    # 黑膠唱針微小碎音 (Needle crackle / micro-pops)
-    crackle = np.zeros(n)
-    pop_indices = rng.choice(n, size=int(n * 0.008), replace=False)
-    crackle[pop_indices] = rng.uniform(0.25, 0.7, size=len(pop_indices)) * speed[pop_indices]
-
-    # 混音組合
-    mix = (scratched_tone * 0.75 + friction * 0.38 + rumble * 0.25 + crackle * 0.15) * vol_env
-
-    # 溫暖度濾波（抑制過度刺耳的高頻，留下扎實的中頻刷碟質感）
-    sos_body = butter(2, min(6500, int(rate * 0.45)), btype="lowpass", fs=rate, output="sos")
-    mix = sosfilt(sos_body, mix)
-
-    # 軟飽和 (Analog Warmth)
-    out = np.tanh(mix * 1.55)
-
-    return _fade(out.astype(np.float32), attack=0.008, release=0.04)
-
-
-def _pick_bpm_scratch_durations(bpm: float) -> list[float]:
-    """把下一首的 BPM 拆成半分/三連/四分等固定音符時值，湊出 1~2 秒的刷碟節奏。
-
-    最小單位是一個「bar」＝3 個音符，音符值各自從 note_pool 隨機挑（快慢交錯），
-    bar 湊好後緊接著原樣複製一次形成「一組」（AABB 式的兩段重複），聽起來像真人
-    刷了一個手法再重複一次，而不是每段都各刷各的、毫無律動可循。單一音符時值
-    clamp 在 [0.12, 0.9]s，避免極端 BPM 讓某一段獨佔整個效果或短到破音。
-
-    ⚠️ 慢～中速 BPM 時單一音符值本身就接近 0.9s 上限，一組（bar×2）就可能衝到
-    4~5 秒——這段音效是疊在歌尾巴、溢進下一首開頭的轉場，拖長了等於讓下一首
-    聽起來遲遲不進來。hard_cap 是實際播放上限：湊出的一組若會超過，整組音符值
-    等比例縮小塞進剩餘預算，寧可音符變短也不讓總長失控。"""
-    beat = 60.0 / bpm
-    note_pool = (beat * 2.0, beat * 1.0, beat * 2.0 / 3.0)  # 半分 / 四分 / 三連音兩份
-    target = random.uniform(1.0, 2.0)
-    hard_cap = target + 0.4
-    durations: list[float] = []
-    total = 0.0
-    while total < target and len(durations) < 12:
-        bar = [min(max(random.choice(note_pool), 0.12), 0.9) for _ in range(3)]
-        group = bar + bar
-        group_total = sum(group)
-        remaining = hard_cap - total
-        if group_total > remaining:
-            scale = max(remaining / group_total, 0.12 / max(group))
-            durations.extend(max(0.08, d * scale) for d in group)
-            break
-        durations.extend(group)
-        total += group_total
-    return durations or [min(max(target, 0.12), 0.9)]
+def _calc_scratch_profile(style: str, dur: float, rate: int) -> tuple[np.ndarray, np.ndarray, float, float, float]:
+    """舊版相容性包裝：計算指定刷碟手法的速度曲線 v(t)、Crossfader 門閥 A(t)、基準原點 p0、摩擦增益、Rumble增益。"""
+    v, fader, _offset, fric_gain, rumble_gain = _calc_scratch_trajectory(style, dur, rate, bpm=None)
+    return v, fader, 0.8, fric_gain, rumble_gain
 
 
 def gen_scratch_from_pcm(raw_pcm: np.ndarray, rate: int = RATE, style: str | None = None,
-                          bpm: float | None = None) -> np.ndarray:
+                         bpm: float | None = None) -> np.ndarray:
     """使用傳入的音樂 PCM 進行真實 DJ 黑膠轉盤手刷調變。
 
     raw_pcm: float32 PCM（單聲道或雙聲道均可）
     rate: 採樣率（預設 44100，或 48000）
     style: 手法風格名稱（"wicka", "spinback", "vinyl_brake", "chirp", "transform", "tear"）。
-           若為 None 則隨機從 SCRATCH_STYLES 挑選一種。bpm 給定時每段各自隨機挑，
-           style 參數在該情境下不生效。
-    bpm: 下一首歌的 BPM。給定時依半分/三連/四分節奏拆成多段（總長 1~2s）串接，
-         段落數與時值隨機、不是固定節拍；為 None 時退回單一手法的舊行為
-         （長度取自 _STYLE_DURATIONS，約 0.5~0.75s）。
+           若為 None 則隨機挑選。
+    bpm: 下一首歌的 BPM。給定時生成與小節節奏嚴密對齊的連貫 Turntablism Routine（總長 1.0~1.7s），
+         帶有平滑放盤切入；未給定時生成單一手勢（時長 0.55~0.75s）。
     """
     if raw_pcm.ndim > 1:
         raw_pcm = np.mean(raw_pcm, axis=-1)
 
     raw_pcm = raw_pcm.astype(np.float32)
 
-    # 摩擦/rumble/碎音幾層是照「內建 formant 素材」的音量（tanh 飽和後 RMS≈0.3）調的
-    # 增益；真實歌曲 PCM（loudnorm 後 RMS 常只有 ~0.1-0.15）直接餵進來，噪點層蓋過
-    # 刷碟音本身，聽起來變成一坨跟歌完全無關的電子噪音。這裡固定歸一化到統一峰值，
-    # 讓 scratched_tone 音量不再看輸入原始響度臉色。
+    # 1. 統一正規化輸入峰值至 0.90，消除安靜歌曲與大音量歌曲間的動態失衡
     peak = float(np.max(np.abs(raw_pcm))) if raw_pcm.size else 0.0
     if peak > 1e-6:
-        raw_pcm = raw_pcm * (0.9 / peak)
+        raw_pcm = raw_pcm * (0.90 / peak)
 
-    # 若輸入長度少於 3 秒，以循環/鏡像補足
-    min_samples = int(rate * 3.0)
+    # 2. 保障最少 4 秒緩衝區供唱針大幅度前後移動
+    min_samples = int(rate * 4.0)
     if len(raw_pcm) < min_samples:
         repeats = int(np.ceil(min_samples / max(1, len(raw_pcm))))
         raw_pcm = np.tile(raw_pcm, repeats)[:min_samples]
 
-    if bpm and bpm > 0:
-        durations = _pick_bpm_scratch_durations(float(bpm))
-        segments = [
-            _gen_scratch_segment(raw_pcm, rate, random.choice(SCRATCH_STYLES), dur)
-            for dur in durations
-        ]
-        return np.concatenate(segments) if len(segments) > 1 else segments[0]
+    # 3. 動態尋找音樂前奏的第一個 Attack / 重音點 (Cue Point)
+    cue_point = find_cue_point(raw_pcm, rate=rate)
 
-    if style is None or style not in SCRATCH_STYLES:
-        style = random.choice(SCRATCH_STYLES)
-    dur = _STYLE_DURATIONS.get(style, 0.65)
-    return _gen_scratch_segment(raw_pcm, rate, style, dur)
+    # 4. 生成連續平滑的速度與 Crossfader 門閥軌跡
+    v, fader, cue_offset_s, fric_gain, rumble_gain = _calc_scratch_trajectory(
+        style=style, dur=None, rate=rate, bpm=bpm
+    )
+    n = len(v)
+
+    # 5. 連續物理位移積分 x(t) = p0 + ∫ v(t) dt
+    start_pos = max(0.05, cue_point + cue_offset_s)
+    pos = start_pos + np.cumsum(v) / rate
+    pos_idx = np.clip(pos * rate, 0, len(raw_pcm) - 2)
+    idx_f = pos_idx.astype(int)
+    idx_frac = pos_idx - idx_f
+    scratched_tone = (1.0 - idx_frac) * raw_pcm[idx_f] + idx_frac * raw_pcm[idx_f + 1]
+
+    # 6. Crossfader 門閥施加 2ms 微小平滑濾波，消除方波硬切產生的數位喀噠聲 (Anti-Click)
+    sos_fader = butter(1, min(600, int(rate * 0.45)), btype="lowpass", fs=rate, output="sos")
+    fader_smooth = np.clip(sosfilt(sos_fader, fader), 0.0, 1.0)
+
+    # 7. 電磁唱頭動態感應音量曲線：速度越快聲音越響亮，停滯點 (v=0) 靜音
+    speed = np.abs(v)
+    speed_env = np.clip(speed ** 0.7, 0.0, 1.25)
+    vol_env = speed_env * fader_smooth
+
+    # 8. 唱針微觀摩擦層 (Needle Friction) 與唱盤箱體低頻 (Turntable Rumble)
+    rng = np.random.default_rng(2026)
+    noise = rng.normal(0, 1, n)
+    sos_fric = butter(2, [1200, min(5500, int(rate * 0.45))], btype="bandpass", fs=rate, output="sos")
+    friction = sosfilt(sos_fric, noise) * fric_gain * (speed ** 0.8)
+
+    sos_rumble = butter(2, [45, 95], btype="bandpass", fs=rate, output="sos")
+    rumble = sosfilt(sos_rumble, rng.normal(0, 1, n)) * rumble_gain * (speed ** 0.4)
+
+    # 9. 混音組合：音樂本體佔 92%，物理表面質感佔 8%
+    mix = (scratched_tone * 0.92 + friction + rumble) * vol_env
+
+    # 10. 類比溫暖度濾波（抑制超高頻數位 Aliasing，留下扎實黑膠感）
+    sos_body = butter(2, min(8000, int(rate * 0.45)), btype="lowpass", fs=rate, output="sos")
+    mix = sosfilt(sos_body, mix)
+
+    # 11. 類比軟飽和 (Analog Saturation)
+    out = np.tanh(mix * 1.35)
+
+    return _fade(out.astype(np.float32), attack=0.005, release=0.03)
 
 
 def gen_scratch() -> np.ndarray:
@@ -293,9 +415,6 @@ def gen_scratch() -> np.ndarray:
     vinyl_content = np.tanh((f1 + f2 + f3) * 1.7)
 
     return gen_scratch_from_pcm(vinyl_content, rate=RATE, style="wicka")
-
-
-
 
 
 def gen_dj_airhorn() -> np.ndarray:

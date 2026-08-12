@@ -63,7 +63,8 @@ _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 _SONG_BPM_STORE = "records/song_bpm.json"
 _BPM_SAMPLE_SR = 11025
 _DJ_TAIL_SFX_DIR = "assets/dj_sfx"
-_DJ_TAIL_SFX_NAMES = ("scratch", "riser", "shoutout")
+# 暫時關閉其他特效（riser, shoutout, dj_airhorn），100% 專注於 scratch 刷碟轉盤效果
+_DJ_TAIL_SFX_NAMES = ("scratch",)
 # 5s→8s：留更多餘裕給 _play_dj_tail_sfx 等下一首 preload 解碼完（見該處
 # asyncio.wait_for），避免逼近歌1實際結束點才設 _dj_played_in_tail、跟主
 # stream loop 換歌撞在一起（見 _run_tail_dj docstring）。

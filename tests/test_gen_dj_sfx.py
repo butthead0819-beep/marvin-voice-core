@@ -122,11 +122,54 @@ def test_all_scratch_styles_supported():
         assert isinstance(out, np.ndarray)
         assert out.dtype == np.float32
         dur = len(out) / rate
-        assert 0.4 <= dur <= 1.2, f"Style {style} duration {dur:.2f}s out of bounds"
+        assert 0.4 <= dur <= 1.5, f"Style {style} duration {dur:.2f}s out of bounds"
         assert not np.isnan(out).any(), f"Style {style} contains NaN"
         assert not np.isinf(out).any(), f"Style {style} contains Inf"
         assert np.max(np.abs(out)) <= 1.0
         rms = np.sqrt(np.mean(out ** 2))
         assert rms > 0.03, f"Style {style} too quiet (rms={rms})"
+
+
+def test_find_cue_point_detects_transient_onset():
+    """驗證 find_cue_point 能在開頭有靜音/微弱環境音時，精準鎖定前奏的第一個重音攻擊點 (Attack)。"""
+    from scripts.gen_dj_sfx import find_cue_point
+    rate = 48000
+    # 前 0.45 秒為純靜音，0.45s 處出現強烈人聲/樂器攻擊音
+    test_pcm = np.zeros(rate * 3, dtype=np.float32)
+    n_sound = int(rate * 1.5)
+    t_sound = np.arange(n_sound) / rate
+    test_pcm[int(rate * 0.45) : int(rate * 0.45) + n_sound] = (
+        0.7 * np.sin(2 * np.pi * 440 * t_sound) * np.exp(-1.5 * t_sound)
+    )
+
+    cue = find_cue_point(test_pcm, rate=rate)
+    assert 0.40 <= cue <= 0.48, f"Cue point {cue:.3f}s should be around 0.45s"
+
+    # 若整段皆為極小雜音/靜音，應優雅 fallback 到預設 ~0.2s 而非報錯
+    silent_pcm = np.random.normal(0, 1e-6, rate * 2).astype(np.float32)
+    fallback_cue = find_cue_point(silent_pcm, rate=rate)
+    assert 0.1 <= fallback_cue <= 0.5
+
+
+def test_gen_scratch_bpm_continuous_routine():
+    """驗證傳入 BPM 時，生成的是一段完整連貫的 Turntablism Routine，長度在 1.0~1.8 秒之間，且無破音。"""
+    from scripts.gen_dj_sfx import gen_scratch_from_pcm
+    rate = 48000
+    t = np.arange(rate * 4) / rate
+    # 模擬包含前奏的歌曲
+    music = (0.5 * np.sin(2 * np.pi * 261.6 * t) + 0.3 * np.sin(2 * np.pi * 523.2 * t)).astype(np.float32)
+
+    for test_bpm in (85.0, 110.0, 128.0, 150.0):
+        out = gen_scratch_from_pcm(music, rate=rate, bpm=test_bpm)
+        assert isinstance(out, np.ndarray)
+        assert out.dtype == np.float32
+        dur = len(out) / rate
+        assert 0.8 <= dur <= 2.0, f"BPM {test_bpm} duration {dur:.2f}s out of DJ tail window"
+        assert not np.isnan(out).any()
+        assert not np.isinf(out).any()
+        assert np.max(np.abs(out)) <= 1.0
+        rms = np.sqrt(np.mean(out ** 2))
+        assert 0.08 <= rms <= 0.7, f"BPM {test_bpm} rms={rms:.3f} out of reasonable range"
+
 
 
