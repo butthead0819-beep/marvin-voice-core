@@ -328,6 +328,14 @@ _PROVIDERS: list[ProviderSpec] = [
                  "gpt-oss-120b", "gpt-oss-120b",
                  quick_model_env="CEREBRAS_QUICK_MODEL", analyze_model_env="CEREBRAS_MODEL",
                  tpm_budget=60000),
+    # Mistral（2026-08-12 加，Cerebras free tier 8/17 到期前補位——近3天量 Cerebras 1908次 vs
+    # Groq 479次是主力，Cerebras 斷線後這裡要扛大部分背景流量）。免費 Free Mode 額度官方不公開
+    # 寫死數字，quick/analyze 都用 /v1/models + 真 completion 驗過可用（ministral-8b-latest /
+    # mistral-medium-latest）。daily cap 未知先填 0（不罰），撞 429 靠 cooldown 自然讓位。
+    ProviderSpec("mistral", "MISTRAL_API_KEY", "https://api.mistral.ai/v1",
+                 "ministral-8b-latest", "mistral-medium-latest",
+                 quick_model_env="MISTRAL_QUICK_MODEL", analyze_model_env="MISTRAL_MODEL",
+                 tpm_budget=30000),
     # SambaNova quick 用 gemma-4-31B（2026-06-23 實測 /models：Maverick-17B 已下架→每次必敗白燒
     # failover；gemma-4-31B-it completion 驗過可用）；analyze 用 3.3-70B（仍在、只是高峰會 429）
     ProviderSpec("sambanova", "SAMBANOVA_API_KEY", "https://api.sambanova.ai/v1",
