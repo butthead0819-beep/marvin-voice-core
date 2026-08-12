@@ -1943,6 +1943,27 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         seq, pending = puck_command_queue.since(since)
         return web.json_response({"seq": seq, "commands": pending}, headers=_CORS)
 
+    async def handle_car_control(request):
+        """GET /car_control?cmd=play&url=<url> 或 ?cmd=stop — 人手動下指令給 ESP32 car puck。
+
+        跟 /car_commands 的關係：這裡只負責「寫進佇列」，ESP32 下次輪詢 /car_commands
+        才會真的撿到、執行——手動指令跟 music_cog.py 的 DJ 自動化共用同一份佇列，寫進去
+        後兩邊都看得到、順序也照寫入先後（見 puck_command_queue.py）。無
+        puck_command_queue（功能未開）→ 404。"""
+        if puck_command_queue is None:
+            return web.Response(status=404, headers=_CORS)
+        cmd = (request.query.get("cmd") or "").strip()
+        if cmd == "play":
+            url = (request.query.get("url") or "").strip()
+            if not url:
+                return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
+            seq = puck_command_queue.play(url)
+        elif cmd == "stop":
+            seq = puck_command_queue.stop()
+        else:
+            return web.json_response({"error": "bad_cmd"}, status=400, headers=_CORS)
+        return web.json_response({"ok": True, "cmd": cmd, "seq": seq}, headers=_CORS)
+
     async def _stream_ffmpeg_input_as_mp3(request, ffmpeg_input_args: list[str]):
         """[PuckMixer] /puck_deck 跟 /puck_voice 共用：起 ffmpeg 把任意輸入（yt-dlp
         直連URL 或本機檔案路徑）轉成 48kHz/2ch PCM，即時編碼 MP3 chunked 回傳。差異
@@ -2099,6 +2120,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_get("/reply", handle_reply)
     app.router.add_get("/audio_stream", handle_audio_stream)
     app.router.add_get("/car_commands", handle_car_commands)
+    app.router.add_get("/car_control", handle_car_control)
     app.router.add_get("/puck_deck", handle_puck_deck)
     app.router.add_get("/puck_voice", handle_puck_voice)
     app.router.add_get("/satellite", handle_satellite)
