@@ -2566,6 +2566,21 @@ class MusicCog(commands.Cog):
         if not ok:
             logger.warning(f"[PuckMixer] play 失敗: {url}")
 
+    async def _fire_puck_speak(self, puck_client, audio_path: str) -> None:
+        """[PuckMixer Phase3] DJ 口白：ESP32 端會 duck 音樂再疊播（見
+        car_puck.ino::mixOutputTask 的 VOICE_DUCK_GAIN）。只有 pi_bt/esp32_edge_mix
+        以外的硬體（puck_client=None）或呼叫端沒帶 speak（PuckMixerClient 目前
+        沒有——Pi mk2 的 DJ 口白走另一條獨立管線，見該檔案開頭說明）才不會走到這裡。"""
+        ok = await puck_client.speak(audio_path)
+        if not ok:
+            logger.warning(f"[PuckMixer] speak 失敗: {audio_path}")
+
+    async def _fire_puck_sfx(self, puck_client, audio_path: str) -> None:
+        """[PuckMixer Phase3] 轉場音效：不 duck，直接疊播。"""
+        ok = await puck_client.sfx(audio_path)
+        if not ok:
+            logger.warning(f"[PuckMixer] sfx 失敗: {audio_path}")
+
     async def _fire_puck_crossfade(self, puck_client, next_url: str,
                                     buffer_s: float = 4.0, crossfade_s: float = 4.0) -> None:
         """[PuckMixer] 純音樂 crossfade：queue_next 後留 buffer_s 給裝置端背景
@@ -2796,6 +2811,14 @@ class MusicCog(commands.Cog):
                 # 不可用 play_local_file——那條把檔案設成音樂層來源會替換掉正在播的歌，
                 # DJ 只播到切歌點就被下一首蓋掉（使用者實測「只聽到狗與露就停」）。
                 await vc.play_dj_on_tts_layer(audio_path)
+                # [PuckMixer Phase3] esp32_edge_mix：deck A/B 改走 /puck_deck 乾淨音源
+                # 後，這條 vc.play_dj_on_tts_layer 疊的 DJ 口白只會出現在 Discord/家用
+                # 混音（走 vc 自己的輸出），不會到 ESP32——另外送一份給裝置端自己疊播
+                # +duck（見 car_puck.ino 的 speak 分支）。只有 audio_path 有預渲染檔的
+                # 情況才送，即時 TTS（else 分支）沒有檔案可傳，這裡先不接。
+                puck_client = _get_puck_client()
+                if puck_client is not None and hasattr(puck_client, "speak"):
+                    asyncio.create_task(self._fire_puck_speak(puck_client, audio_path))
             else:
                 await vc.play_tts(text, already_in_channel=True)
         finally:
@@ -2886,6 +2909,13 @@ class MusicCog(commands.Cog):
             await vc.play_dj_on_tts_layer(path, peak=0.1)
         except Exception as e:
             logger.debug(f"⚠️ [DJ Tail] SFX 疊播失敗（不影響主流程）: {e}")
+
+        # [PuckMixer Phase3] 比照 _maybe_play_dj_interjection：Discord/家用混音走 vc
+        # 自己的輸出，esp32_edge_mix 要另外送一份給裝置端（不 duck，見 car_puck.ino
+        # 的 sfx 分支）。
+        puck_client = _get_puck_client()
+        if puck_client is not None and hasattr(puck_client, "sfx"):
+            asyncio.create_task(self._fire_puck_sfx(puck_client, path))
 
 
     async def _analyze_song_reactions(self, info: dict, song_start_time: float, lyrics: str):

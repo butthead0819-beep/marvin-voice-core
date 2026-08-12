@@ -1943,37 +1943,13 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         seq, pending = puck_command_queue.since(since)
         return web.json_response({"seq": seq, "commands": pending}, headers=_CORS)
 
-    async def handle_puck_deck(request):
-        """GET /puck_deck?url=<watch_url> — ESP32 edge端混音單一 deck 原始音源。
-
-        跟 /audio_stream 不同：/audio_stream 是 Mac mixer 已經混好的單一輸出；這裡是
-        「單一原始音源」現場 resolve+轉碼，給 ESP32 開兩條並行連線（deck A/B）各自解碼、
-        自己算 crossfade envelope 疊加後才 i2s_write（照 device/puck_mixer.py 的角色分工：
-        Mac 只管把音源送到，「怎麼混」交給裝置端）。
-
-        重用 MusicCog._resolve_yt_query()（既有 yt-dlp 快取/候選挑選邏輯，vc.bot 上
-        找不到 MusicCog 就 500，避免整台 server 啟動又要重複一份 yt-dlp options）。
-        """
-        if puck_command_queue is None:
-            return web.Response(status=404, headers=_CORS)
-        watch_url = (request.query.get("url") or "").strip()
-        if not watch_url:
-            return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
-        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
-        if music_cog is None:
-            return web.json_response({"error": "music_cog_unavailable"}, status=500, headers=_CORS)
-        info = await music_cog._resolve_yt_query(watch_url)
-        stream_url = info.get("url") if info else None
-        if not stream_url:
-            return web.json_response({"error": "resolve_failed"}, status=502, headers=_CORS)
-
-        # -af volume：/puck_deck 直接轉碼原始音源，沒有 /audio_stream 那邊中央 mixer 的
-        # stream_volume 衰減（MusicCog.stream_volume 預設 0.10，見 cogs/music_cog.py）
-        # ——不加的話比使用者已經聽慣的 /audio_stream 音量大上一截（2026-08-11 實機
-        # 反饋：「音量太大」）。套同一個比例讓 ESP32 edge端混音跟中央 mixer 音量感受一致。
+    async def _stream_ffmpeg_input_as_mp3(request, ffmpeg_input_args: list[str]):
+        """[PuckMixer] /puck_deck 跟 /puck_voice 共用：起 ffmpeg 把任意輸入（yt-dlp
+        直連URL 或本機檔案路徑）轉成 48kHz/2ch PCM，即時編碼 MP3 chunked 回傳。差異
+        只在 ffmpeg 的 -i 來源，其餘轉碼/串流/斷線處理完全一樣，抽出來避免兩邊各自
+        維護一份、之後改壞其中一個沒同步改到另一個。"""
         proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-nostdin", "-loglevel", "error", "-i", stream_url,
-            "-af", "volume=0.10",
+            "ffmpeg", "-nostdin", "-loglevel", "error", *ffmpeg_input_args,
             "-ar", "48000", "-ac", "2", "-f", "s16le", "-",
             stdout=asyncio.subprocess.PIPE)
         resp = web.StreamResponse(status=200, headers={
@@ -1999,6 +1975,67 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             proc.kill()
             await proc.wait()
         return resp
+
+    async def handle_puck_voice(request):
+        """GET /puck_voice?clip_id=<id> — ESP32 edge端混音的 DJ 口白/SFX 原始音源。
+
+        跟 /puck_deck 的差異：來源不是 yt-dlp URL，是本機已經生成好的 TTS/SFX 檔案
+        （見 cogs/music_cog.py::_fire_puck_speak/_fire_puck_sfx）。不直接把檔案系統
+        路徑暴露在 /car_commands 回應裡（那條走 Funnel 公開）——clip_id 是短效索引，
+        見 marvin_voice_core/puck_command_queue.py::register_voice_clip。
+        """
+        if puck_command_queue is None:
+            return web.Response(status=404, headers=_CORS)
+        from marvin_voice_core.puck_command_queue import resolve_voice_clip
+        clip_id = (request.query.get("clip_id") or "").strip()
+        path = resolve_voice_clip(clip_id) if clip_id else None
+        if not path or not os.path.exists(path):
+            return web.json_response({"error": "clip_not_found"}, status=404, headers=_CORS)
+        return await _stream_ffmpeg_input_as_mp3(request, ["-i", path])
+
+    async def handle_puck_deck(request):
+        """GET /puck_deck?url=<watch_url> — ESP32 edge端混音單一 deck 原始音源。
+
+        跟 /audio_stream 不同：/audio_stream 是 Mac mixer 已經混好的單一輸出；這裡是
+        「單一原始音源」現場 resolve+轉碼，給 ESP32 開兩條並行連線（deck A/B）各自解碼、
+        自己算 crossfade envelope 疊加後才 i2s_write（照 device/puck_mixer.py 的角色分工：
+        Mac 只管把音源送到，「怎麼混」交給裝置端）。
+
+        重用 MusicCog._resolve_yt_query()（既有 yt-dlp 快取/候選挑選邏輯，vc.bot 上
+        找不到 MusicCog 就 500，避免整台 server 啟動又要重複一份 yt-dlp options）。
+        """
+        if puck_command_queue is None:
+            return web.Response(status=404, headers=_CORS)
+        watch_url = (request.query.get("url") or "").strip()
+        if not watch_url:
+            return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
+        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
+        if music_cog is None:
+            return web.json_response({"error": "music_cog_unavailable"}, status=500, headers=_CORS)
+        info = await music_cog._resolve_yt_query(watch_url)
+        stream_url = info.get("url") if info else None
+        if not stream_url:
+            return web.json_response({"error": "resolve_failed"}, status=502, headers=_CORS)
+
+        # seek：ESP32 端真斷線（非自然播完）重連時帶著「已下載到第幾秒」回來，接回
+        # 原本位置而不是從頭重播（見 car_puck.ino::deckNetworkTask 的 deckDownloadedSec
+        # 說明；行動網路瞬斷比家用WiFi常見，2026-08-12 車上實測要求加的）。-ss 放在
+        # -i 前面＝快速 seek（用容器索引跳，不精確 decode 到那一幀），音訊來源夠準。
+        ffmpeg_args = ["-i", stream_url, "-af", "volume=0.10"]
+        seek_raw = (request.query.get("seek") or "").strip()
+        if seek_raw:
+            try:
+                seek_s = max(0.0, float(seek_raw))
+                if seek_s > 0:
+                    ffmpeg_args = ["-ss", f"{seek_s:.2f}"] + ffmpeg_args
+            except ValueError:
+                pass   # 帶了垃圾值就當沒帶，別讓整個 deck 連不上
+
+        # -af volume：/puck_deck 直接轉碼原始音源，沒有 /audio_stream 那邊中央 mixer 的
+        # stream_volume 衰減（MusicCog.stream_volume 預設 0.10，見 cogs/music_cog.py）
+        # ——不加的話比使用者已經聽慣的 /audio_stream 音量大上一截（2026-08-11 實機
+        # 反饋：「音量太大」）。套同一個比例讓 ESP32 edge端混音跟中央 mixer 音量感受一致。
+        return await _stream_ffmpeg_input_as_mp3(request, ffmpeg_args)
 
     async def handle_car(request):
         """POST /car {"state": "present"|"absent", "lat"?, "lon"?} — ESP32 puck 車載觸發。
@@ -2063,6 +2100,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_get("/audio_stream", handle_audio_stream)
     app.router.add_get("/car_commands", handle_car_commands)
     app.router.add_get("/puck_deck", handle_puck_deck)
+    app.router.add_get("/puck_voice", handle_puck_voice)
     app.router.add_get("/satellite", handle_satellite)
     app.router.add_get("/hud", handle_hud)
     app.router.add_post("/car", handle_car)

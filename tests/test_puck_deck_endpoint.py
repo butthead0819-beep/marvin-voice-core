@@ -125,6 +125,91 @@ async def test_puck_deck_streams_mp3_on_success():
 
 
 @pytest.mark.asyncio
+async def test_puck_deck_seek_param_adds_ffmpeg_ss_before_i():
+    """ESP32 端真斷線重連時帶 &seek=<秒數>，ffmpeg 要用 -ss 接回原本位置（放在 -i
+    前面才是快速 seek）——見 car_puck.ino::deckNetworkTask 的 deckDownloadedSec。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    vc = _make_vc()
+    fake_proc = _FakeProc([_sine_pcm()])
+    app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
+    with patch("main_satellite.asyncio.create_subprocess_exec",
+               AsyncMock(return_value=fake_proc)) as mock_exec:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret&seek=87.65")
+            assert resp.status == 200
+            await resp.read()
+
+    args = list(mock_exec.call_args.args)
+    assert "-ss" in args
+    ss_idx = args.index("-ss")
+    assert args[ss_idx + 1] == "87.65"
+    i_idx = args.index("-i")
+    assert ss_idx < i_idx, "-ss 要在 -i 前面才是快速 seek"
+
+
+@pytest.mark.asyncio
+async def test_puck_deck_no_seek_param_omits_ss():
+    """沒帶 seek（新歌開播的正常情況）→ 不該出現 -ss，從頭播。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    vc = _make_vc()
+    fake_proc = _FakeProc([_sine_pcm()])
+    app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
+    with patch("main_satellite.asyncio.create_subprocess_exec",
+               AsyncMock(return_value=fake_proc)) as mock_exec:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
+            assert resp.status == 200
+            await resp.read()
+
+    args = list(mock_exec.call_args.args)
+    assert "-ss" not in args
+
+
+@pytest.mark.asyncio
+async def test_puck_deck_seek_zero_omits_ss():
+    """seek=0（理論上不該發生，但保守處理）→ 不加 -ss，等同從頭播。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    vc = _make_vc()
+    fake_proc = _FakeProc([_sine_pcm()])
+    app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
+    with patch("main_satellite.asyncio.create_subprocess_exec",
+               AsyncMock(return_value=fake_proc)) as mock_exec:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret&seek=0")
+            assert resp.status == 200
+            await resp.read()
+
+    args = list(mock_exec.call_args.args)
+    assert "-ss" not in args
+
+
+@pytest.mark.asyncio
+async def test_puck_deck_garbage_seek_ignored():
+    """seek 帶垃圾值 → 忽略、照樣正常開播，不能讓整個 deck 連不上。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    vc = _make_vc()
+    fake_proc = _FakeProc([_sine_pcm()])
+    app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
+    with patch("main_satellite.asyncio.create_subprocess_exec",
+               AsyncMock(return_value=fake_proc)) as mock_exec:
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret&seek=not-a-number")
+            assert resp.status == 200
+            await resp.read()
+
+    args = list(mock_exec.call_args.args)
+    assert "-ss" not in args
+
+
+@pytest.mark.asyncio
 async def test_puck_deck_token_gated():
     from aiohttp.test_utils import TestClient, TestServer
     from main_satellite import build_text_app

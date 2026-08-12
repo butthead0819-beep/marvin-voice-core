@@ -377,6 +377,48 @@ async def test_prerendered_dj_plays_on_tts_layer_not_music():
     vc.play_tts.assert_not_called()          # 有預渲染就不即時 TTS
 
 
+# ── (j) esp32_edge_mix：DJ 口白另外送一份給裝置端（Phase3） ─────────────────
+
+@pytest.mark.asyncio
+async def test_dj_interjection_fires_puck_speak_when_client_has_speak():
+    """deck A/B 改吃 /puck_deck 乾淨音源後，vc 自己疊的口白到不了 ESP32——
+    有預渲染 audio_path 時要另外送 speak 給裝置端自己疊播+duck。"""
+    cog = _make_cog()
+    vc = MagicMock()
+    vc._intimate_mode = False
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    cog.bot.cogs.get.return_value = vc
+
+    fake_client = MagicMock()
+    fake_client.speak = AsyncMock(return_value=True)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("cogs.music_cog._get_puck_client", return_value=fake_client):
+        await cog._maybe_play_dj_interjection({"text": "接下來這首…", "audio_path": "/tmp/dj.opus"})
+        await asyncio.sleep(0)   # 讓 create_task 起的 _fire_puck_speak 真的跑
+
+    fake_client.speak.assert_awaited_once_with("/tmp/dj.opus")
+
+
+@pytest.mark.asyncio
+async def test_dj_interjection_skips_puck_speak_when_client_lacks_speak():
+    """Pi mk2（PuckMixerClient）沒有 speak 方法——DJ口白走另一條獨立管線（見該檔案
+    開頭說明），不該對它呼叫 speak 炸 AttributeError。"""
+    cog = _make_cog()
+    vc = MagicMock()
+    vc._intimate_mode = False
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    cog.bot.cogs.get.return_value = vc
+
+    fake_client = MagicMock(spec=["play", "queue_next", "crossfade", "stop"])
+
+    with patch("os.path.exists", return_value=True), \
+         patch("cogs.music_cog._get_puck_client", return_value=fake_client):
+        await cog._maybe_play_dj_interjection({"text": "接下來這首…", "audio_path": "/tmp/dj.opus"})
+        await asyncio.sleep(0)
+    # 沒拋例外就是過。
+
+
 # ── (i) 尾段 SFX 疊播：DJ 口白播完後接一支轉場音效（見 scripts/gen_dj_sfx.py）──
 
 @pytest.mark.asyncio
@@ -429,6 +471,27 @@ async def test_dj_tail_sfx_skips_when_file_missing():
         await cog._play_dj_tail_sfx()
 
     vc.play_dj_on_tts_layer.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dj_tail_sfx_fires_puck_sfx_when_client_has_sfx():
+    """比照 speak：SFX 也要另外送一份給 esp32_edge_mix 裝置端（不 duck）。"""
+    cog = _make_cog()
+    vc = MagicMock()
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    cog.bot.cogs.get.return_value = vc
+
+    fake_client = MagicMock()
+    fake_client.sfx = AsyncMock(return_value=True)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("random.choice", return_value="dj_airhorn"), \
+         patch("cogs.music_cog._get_puck_client", return_value=fake_client):
+        await cog._play_dj_tail_sfx()
+        await asyncio.sleep(0)
+
+    fake_client.sfx.assert_awaited_once()
+    assert fake_client.sfx.await_args.args[0].endswith(".wav")
 
 
 @pytest.mark.asyncio
