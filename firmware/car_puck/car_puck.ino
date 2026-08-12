@@ -1772,30 +1772,30 @@ void deckNetworkTask(void* pv) {
       vTaskDelay(pdMS_TO_TICKS(2000));
       continue;
     }
-    Serial.printf("[Mix] deck%d /puck_deck 連上：%s\n", idx, urlLocal);
-    mdeckNeedsReset[idx] = true;
+    Serial.printf("[Mix] deck%d /puck_deck 連上：%s\n", idx, path);
+    // ⚠️ 2026-08-12 實機踩到：這裡以前無條件重置（不管新歌開播還是斷線重連都
+    // mdeckNeedsReset=true），斷線重連時會把 PCM ring 裡已經解碼好、還沒播到的緩衝
+    // 音訊直接丟掉、解碼器整個重置——聽感是「跳回一小段之前」。只有新歌開播
+    // （seekSec<=0.1，見上面 setMdeckUrl 呼叫點會歸零 deckDownloadedSec）才該重置；
+    // 斷線重連要保留原本還沒播完的緩衝，讓新連線的位元流無縫接上去就好。
+    bool isFreshSong = (seekSec <= 0.1f);
+    if (isFreshSong) mdeckNeedsReset[idx] = true;
 
     uint8_t buf[4096];
+    // 2026-08-12：分辨「這首歌自然播完」跟「真斷線」——lockedReadLine 讀到有效的
+    // 終止 0-chunk（回傳 true、內容"0"）＝正常收工；讀不到（逾時）或迴圈中途
+    // client.connected() 變 false（下面兩個 while 的守門條件）才是真斷線。以前兩種
+    // 都當同一件事處理、往下掉到迴圈尾端用同一個 mdeckUrl 重連，若 Python 端這時還
+    // 沒送新 queue_next（autopilot 一時找不到下一首），就會抓著剛播完那首的網址
+    // 重播，實機聽感是「一直繞同一首歌」。naturalEof 統一在迴圈外印 log/判斷，不管
+    // 是在讀 chunk 大小那行偵測到、還是讀 bytes 途中連線掉了都涵蓋得到。
+    bool naturalEof = false;
     while (client.connected() && mdeckActive[idx]) {
       String sizeLine;
-      // 2026-08-12：分辨「這首歌自然播完」跟「真斷線」——lockedReadLine 讀到有效的
-      // 終止 0-chunk（回傳 true、內容"0"）＝正常收工；讀不到（逾時/連線斷）才是真
-      // 斷線。以前兩種都當同一件事處理，往下掉到迴圈尾端用同一個 mdeckUrl 重連，若
-      // Python 端這時還沒送新 queue_next（autopilot一時找不到下一首），就會抓著剛
-      // 播完那首的網址重播，實機聽感是「一直繞同一首歌」。
       bool readOk = lockedReadLine(client, sizeLine, 20000);
       long chunkSize = readOk ? strtol(sizeLine.c_str(), nullptr, 16) : -1;
       if (chunkSize <= 0) {
-        if (readOk) {
-          // 真的讀到 "0"：自然播完，不重播——轉閒置等下一個明確指令。
-          Serial.printf("[Mix] deck%d 自然播完，轉閒置等下一個 queue_next/play\n", idx);
-          mdeckActive[idx] = false;
-        } else {
-          // 讀不到：行動網路瞬斷比家用WiFi常見，這裡不放棄，讓迴圈尾端帶著
-          // deckDownloadedSec 目前的值重連接回原本位置（見迴圈開頭 seekSec）。
-          Serial.printf("[Mix] deck%d 斷線（已下載%.1fs），帶seek重連接回原位置\n",
-                        idx, deckDownloadedSec[idx]);
-        }
+        naturalEof = readOk;   // 真的讀到"0"才算自然播完，讀不到＝真斷線
         break;
       }
       long remain = chunkSize;
@@ -1810,7 +1810,13 @@ void deckNetworkTask(void* pv) {
       { String _crlf; lockedReadLine(client, _crlf, 20000); }
     }
     LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
-    Serial.printf("[Mix] deck%d /puck_deck 斷線\n", idx);
+    if (naturalEof) {
+      Serial.printf("[Mix] deck%d 自然播完，轉閒置等下一個 queue_next/play\n", idx);
+      mdeckActive[idx] = false;
+    } else if (mdeckActive[idx]) {
+      Serial.printf("[Mix] deck%d 斷線（已下載%.1fs），帶seek重連接回原位置\n",
+                    idx, deckDownloadedSec[idx]);
+    }
     if (!mdeckActive[idx]) {
       Serial.printf("[Mix] deck%d 已被停用，等下一次 play/queue_next\n", idx);
     } else {
