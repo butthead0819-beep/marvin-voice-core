@@ -516,34 +516,6 @@ class TurtleSoupCog(commands.Cog):
 
         self._spawn(_chain())
 
-    # ── Slash commands ────────────────────────────────────────────────────────
-
-    @app_commands.command(name="turtle_soup_start", description="開始一場海龜湯")
-    async def turtle_soup_start(self, interaction: discord.Interaction):
-        if self._engine is not None and self._session and self._session.state != TurtleSoupState.GAME_OVER:
-            await interaction.response.send_message("海龜湯已進行中。", ephemeral=True)
-            return
-
-        await interaction.response.send_message("🐢 海龜湯啟動！", ephemeral=True)
-        await self._handle_start(interaction.channel)
-
-    @app_commands.command(name="turtle_soup_stop", description="強制中止目前的海龜湯")
-    async def turtle_soup_stop(self, interaction: discord.Interaction):
-        if self._engine is None:
-            await interaction.response.send_message("沒有進行中的海龜湯。", ephemeral=True)
-            return
-        await self._engine.cancel()
-        await interaction.response.send_message("🛑 海龜湯已中止。", ephemeral=True)
-
-    @app_commands.command(name="turtle_soup_show", description="重看當前題目的湯面")
-    async def turtle_soup_show(self, interaction: discord.Interaction):
-        if self._engine is None:
-            await interaction.response.send_message("沒有進行中的海龜湯。", ephemeral=True)
-            return
-        await interaction.response.send_message(
-            f"**湯面**\n{self._engine.puzzle.surface}", ephemeral=True,
-        )
-
     # ── Start helper ──────────────────────────────────────────────────────────
 
     async def _handle_start(self, channel: Optional[discord.TextChannel]) -> None:

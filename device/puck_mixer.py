@@ -12,6 +12,9 @@ import time
 
 import numpy as np
 
+from bpm_estimate import estimate_bpm_from_pcm
+from scripts.gen_dj_sfx import gen_scratch_from_pcm
+
 try:
     import alsaaudio
 except ImportError:  # 開發機沒有 pyalsaaudio，允許 import 供 crossfade_gains() 單元測試
@@ -21,6 +24,10 @@ RATE = 48000
 CHANNELS = 2
 CHUNK_FRAMES = 1024
 BYTES_PER_CHUNK = CHUNK_FRAMES * CHANNELS * 2
+# queue_next() 讀先頭這麼多 chunk（約 2.1s）給刷碟合成當原料，同時存進
+# peek_buf 供播放補播——不是額外多讀，只是把「反正要播的音訊」提前讀出來用。
+SCRATCH_PEEK_CHUNKS = 100
+SCRATCH_GAIN = 0.1  # 比照 Mac 端 play_dj_on_tts_layer(path, peak=0.1)，別搶戲
 
 
 def crossfade_gains(elapsed: float, duration: float) -> tuple:
@@ -61,6 +68,39 @@ def _read_chunk(proc) -> np.ndarray:
     return arr
 
 
+def _read_chunk_deck(deck: dict) -> np.ndarray:
+    """讀一個 chunk：優先吃 deck["peek_buf"]（queue_next() 為刷碟合成讀先頭時
+    順便存下的樣本），吃完才繼續從 proc.stdout 讀——peek 只是把播放本來就要讀的
+    音訊提前讀出來，這裡補播回去，不會漏掉那段。"""
+    need = CHUNK_FRAMES * CHANNELS
+    buf = deck.get("peek_buf")
+    if buf is not None and len(buf) > 0:
+        if len(buf) >= need:
+            chunk = buf[:need]
+            deck["peek_buf"] = buf[need:]
+            return chunk
+        rest = _read_chunk(deck["proc"])
+        chunk = np.concatenate([buf, rest])[:need]
+        deck["peek_buf"] = None
+        return chunk
+    return _read_chunk(deck["proc"])
+
+
+def _mix_scratch(mixed: np.ndarray, scratch, pos: int, gain: float):
+    """把刷碟音效疊進已算好的 A/B chunk。回傳 (疊好的 chunk, 新的 pos)；
+    scratch 是 None（沒 armed）時新 pos 也回傳 None。播完了（new_pos >= len(scratch)）
+    由呼叫端自己比較長度判斷、清掉 armed 狀態——這裡只管疊音量、不管生命週期。"""
+    if scratch is None:
+        return mixed, None
+    n = len(mixed)
+    take = min(n, len(scratch) - pos)
+    seg = scratch[pos:pos + take].astype(np.float32)
+    if take < n:
+        seg = np.pad(seg, (0, n - take))
+    out = np.clip(mixed.astype(np.float32) + seg * gain, -32768, 32767).astype(np.int16)
+    return out, pos + take
+
+
 class PuckMixer:
     """車puck BT 混音執行層。public method thread-safe、非阻塞（重活丟背景 thread）。"""
 
@@ -77,6 +117,9 @@ class PuckMixer:
         self._crossfade_duration = 4.0
         self._current_url = None
         self._next_url = None
+        # crossfade() 點火時若 deck_b 已合成好刷碟音效就 armed；None=沒疊
+        self._scratch_samples = None
+        self._scratch_pos = 0
         # AEC reference ring buffer：存最近 REF_BUFFER_SECONDS 秒送進喇叭前的
         # PCM（48kHz stereo interleaved），給 puck_aec.py 當 bit-exact reference。
         self._ref_lock = threading.Lock()
@@ -139,16 +182,37 @@ class PuckMixer:
         self._ensure_loop_running()
 
     def queue_next(self, url: str):
-        """背景解析+起 ffmpeg 緩衝下一首，不打斷目前播放。"""
+        """背景解析+起 ffmpeg 緩衝下一首，不打斷目前播放。順便讀先頭
+        SCRATCH_PEEK_CHUNKS（約 2.1s）存進 peek_buf——這段本來就要播，只是提前
+        讀出來估 BPM、合成這首專屬的刷碟音效，_read_chunk_deck() 播放時會先吃
+        peek_buf 補回去，不會漏音。合成失敗就沒有 scratch_pcm，crossfade() 時這輪
+        單純不疊刷碟聲，不擋轉場。"""
         def _load():
             try:
                 stream_url = resolve_stream_url(url)
                 proc = _make_decoder(stream_url)
             except Exception:
                 return
+            deck = {"url": url, "proc": proc, "peek_buf": None, "scratch_pcm": None}
             with self._lock:
-                self._deck_b = {"url": url, "proc": proc}
+                self._deck_b = deck
                 self._next_url = url
+            try:
+                peek_buf = np.concatenate([_read_chunk(proc) for _ in range(SCRATCH_PEEK_CHUNKS)])
+            except Exception:
+                return
+            scratch_pcm = None
+            try:
+                stereo_f32 = peek_buf.reshape(-1, CHANNELS).astype(np.float32)
+                bpm = estimate_bpm_from_pcm(stereo_f32.mean(axis=-1), RATE)
+                scratch_mono = np.clip(gen_scratch_from_pcm(stereo_f32, rate=RATE, bpm=bpm), -1.0, 1.0)
+                scratch_pcm = np.repeat((scratch_mono * 32767).astype(np.int16), CHANNELS)
+            except Exception:
+                pass
+            with self._lock:
+                if self._deck_b is deck:  # 沒被下一輪 queue_next() 取代
+                    deck["peek_buf"] = peek_buf
+                    deck["scratch_pcm"] = scratch_pcm
         threading.Thread(target=_load, daemon=True).start()
 
     def crossfade(self, duration_s: float = 4.0):
@@ -157,6 +221,9 @@ class PuckMixer:
                 raise RuntimeError("沒有已 queue_next 的下一首可轉場")
             self._crossfade_duration = duration_s
             self._crossfade_start = time.time()
+            scratch_pcm = self._deck_b.get("scratch_pcm")
+            self._scratch_samples = scratch_pcm
+            self._scratch_pos = 0
 
     def stop(self):
         self._stop_flag.set()
@@ -171,6 +238,8 @@ class PuckMixer:
             self._current_url = None
             self._next_url = None
             self._crossfade_start = None
+            self._scratch_samples = None
+            self._scratch_pos = 0
         self._stop_flag = threading.Event()
         self._loop_thread = None
 
@@ -194,10 +263,10 @@ class PuckMixer:
                 if deck_a is None:
                     time.sleep(0.05)
                     continue
-                a = _read_chunk(deck_a["proc"]).astype(np.float32)
+                a = _read_chunk_deck(deck_a).astype(np.float32)
                 if cf_start is not None and deck_b is not None:
                     gain_a, gain_b = crossfade_gains(time.time() - cf_start, cf_dur)
-                    b = _read_chunk(deck_b["proc"]).astype(np.float32)
+                    b = _read_chunk_deck(deck_b).astype(np.float32)
                     mixed = np.clip(a * gain_a + b * gain_b, -32768, 32767).astype(np.int16)
                     if gain_b >= 1.0:
                         with self._lock:
@@ -209,6 +278,17 @@ class PuckMixer:
                             self._crossfade_start = None
                 else:
                     mixed = np.clip(a, -32768, 32767).astype(np.int16)
+                with self._lock:
+                    scratch, scratch_pos = self._scratch_samples, self._scratch_pos
+                if scratch is not None:
+                    mixed, new_pos = _mix_scratch(mixed, scratch, scratch_pos, SCRATCH_GAIN)
+                    with self._lock:
+                        if self._scratch_samples is scratch:  # 沒被下一次 crossfade() 換掉
+                            if new_pos >= len(scratch):
+                                self._scratch_samples = None
+                                self._scratch_pos = 0
+                            else:
+                                self._scratch_pos = new_pos
                 self._append_reference(mixed)
                 pcm.write(mixed.tobytes())
         finally:

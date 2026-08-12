@@ -786,17 +786,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         await interaction.response.send_message(msg)
         await self.self_restart(reason="指揮官手動重啟", force=True, pull=pull)
 
-    @app_commands.command(name="marvin_tts_clear", description="[Owner] 立即清空 TTS 語音佇列，停止當前播放")
-    async def marvin_tts_clear(self, interaction: discord.Interaction):
-        if interaction.user.id != _NEMOCLAW_OWNER_ID:
-            await interaction.response.send_message("你沒有權限這樣做。不過我也不在乎。", ephemeral=True)
-            return
-        queue_before = self.tts_queue_duration
-        await interaction.response.send_message(
-            f"🗑️ 正在清空語音佇列（估計 {queue_before:.1f}s 的待播內容）...", ephemeral=True
-        )
-        await self.tts_flush()
-
     @app_commands.command(name="marvin_optin", description="同意馬文處理你在語音頻道的資料")
     async def marvin_optin(self, interaction: discord.Interaction):
         name = interaction.user.display_name

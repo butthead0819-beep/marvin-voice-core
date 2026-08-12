@@ -606,6 +606,131 @@ class MusicMemory:
         )
         return ranked[:limit]
 
+    def export_user_playlist(self, username: str) -> list[dict]:
+        """匯出某位使用者的完整點播歌單。
+
+        回傳清單（按該使用者的點播次數降序、總播放次數次之）：
+        [
+            {
+                "title": str,
+                "uploader": str,
+                "url": str,
+                "webpage_url": str,
+                "user_plays": int,
+                "total_plays": int,
+                "liked": bool,
+                "feelings": list[str],
+            },
+            ...
+        ]
+        """
+        if not username:
+            return []
+        songs = self._data.get("songs", {})
+        user_songs = []
+        for key, s in songs.items():
+            reqs = s.get("requesters") or {}
+            user_cnt = reqs.get(username, 0)
+            if user_cnt <= 0:
+                continue
+            likes = s.get("likes") or {}
+            is_liked = username in likes
+            rx = (s.get("reactions") or {}).get(username, {})
+            feelings = list(rx.get("feelings") or [])
+            wp = s.get("webpage_url") or s.get("url") or key
+            user_songs.append({
+                "title": s.get("title", ""),
+                "uploader": s.get("uploader", ""),
+                "url": s.get("url", ""),
+                "webpage_url": wp,
+                "user_plays": user_cnt,
+                "total_plays": s.get("total_plays", 0),
+                "liked": is_liked,
+                "feelings": feelings,
+            })
+        user_songs.sort(key=lambda x: (x["user_plays"], x["total_plays"]), reverse=True)
+        return user_songs
+
+    def import_user_playlist(self, username: str, songs_to_import: list[dict]) -> tuple[int, int]:
+        """批次匯入歌曲到某位使用者的點播歌單。
+
+        songs_to_import: 包含 title 或 webpage_url/url 的字典清單。
+        回傳: (imported_count, skipped_count)
+        """
+        if not username or not songs_to_import:
+            return 0, len(songs_to_import) if songs_to_import else 0
+
+        songs = self._data.setdefault("songs", {})
+        imported_cnt = 0
+        skipped_cnt = 0
+        now = time.time()
+        slot = self.time_slot(now)
+        date_str = datetime.datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+
+        for item in songs_to_import:
+            if not isinstance(item, dict):
+                skipped_cnt += 1
+                continue
+            title = (item.get("title") or "").strip()
+            uploader = (item.get("uploader") or item.get("channel") or "").strip()
+            wp = (item.get("webpage_url") or item.get("url") or "").strip()
+            if not title and not wp:
+                skipped_cnt += 1
+                continue
+
+            # 產生 key
+            key = self._key(item)
+            if not key or key == "|":
+                skipped_cnt += 1
+                continue
+
+            if key not in songs:
+                songs[key] = {
+                    "title": title or wp,
+                    "uploader": uploader,
+                    "url": item.get("url", wp),
+                    "webpage_url": wp,
+                    "total_plays": 1,
+                    "plays": [{
+                        "by": username,
+                        "ts": now,
+                        "time_slot": slot,
+                        "date": date_str,
+                    }],
+                    "requesters": {username: 1},
+                    "reactions": {},
+                    "connections": [],
+                }
+            else:
+                s = songs[key]
+                s["total_plays"] = s.get("total_plays", 0) + 1
+                reqs = s.setdefault("requesters", {})
+                reqs[username] = reqs.get(username, 0) + 1
+                plays = s.setdefault("plays", [])
+                plays.append({
+                    "by": username,
+                    "ts": now,
+                    "time_slot": slot,
+                    "date": date_str,
+                })
+                s["plays"] = plays[-50:]
+                if not s.get("webpage_url") and wp:
+                    s["webpage_url"] = wp
+                if not s.get("title") and title:
+                    s["title"] = title
+                if not s.get("uploader") and uploader:
+                    s["uploader"] = uploader
+
+            if item.get("liked"):
+                songs[key].setdefault("likes", {})[username] = now
+
+            imported_cnt += 1
+
+        if imported_cnt > 0:
+            self._save()
+
+        return imported_cnt, skipped_cnt
+
     # ── STT Correction ────────────────────────────────────────────────────
 
     def record_stt_correction(self, username: str, wrong: str, correct: str):

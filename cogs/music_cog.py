@@ -41,9 +41,16 @@ from intent_agents.recommendation import (
     append_recommendation,
     time_of_day_bucket,
 )
+import io
 from memory_guard import is_memory_critical
 from music_recommender import assign_unique_owners, build_member_pools, demote_low_quality_versions, find_recent_same_song, is_already_recommended, normalize_title, pick_candidates, ring_titles_for
 from music_memory import extract_video_id
+from playlist_utils import (
+    format_playlist_export,
+    parse_playlist_content,
+    is_youtube_playlist_url,
+    extract_youtube_playlist_flat,
+)
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
@@ -363,6 +370,102 @@ class MusicCog(commands.Cog):
         self._active_control_view = view
         await interaction.response.send_message(embed=view._build_embed(), view=view)
         view.message = await interaction.original_response()
+
+    @app_commands.command(name="marvin_playlist_export", description="[Playlist] 匯出個人點播歌單（支援 TXT/JSON/CSV 檔）")
+    @app_commands.describe(
+        format="匯出格式：txt（純文字清單）、json（完整結構化資料）、csv（表格）",
+        target_user="[選填] 指定要匯出的成員名稱（預設為自己）",
+    )
+    @app_commands.choices(format=[
+        app_commands.Choice(name="txt — 純文字清單（含歌名與網址）", value="txt"),
+        app_commands.Choice(name="json — 結構化 JSON 備份檔", value="json"),
+        app_commands.Choice(name="csv — CSV 表格檔案", value="csv"),
+    ])
+    async def marvin_playlist_export(
+        self,
+        interaction: discord.Interaction,
+        format: str = "txt",
+        target_user: Optional[str] = None,
+    ):
+        await interaction.response.defer(ephemeral=False)
+        mm = getattr(self.bot, "music_memory", None)
+        if not mm:
+            await interaction.followup.send("❌ 音樂記憶系統尚未就緒。", ephemeral=True)
+            return
+
+        username = target_user or interaction.user.display_name
+        songs = mm.export_user_playlist(username)
+        if not songs:
+            await interaction.followup.send(f"❌ 找不到 `{username}` 的點播歌單紀錄（可能尚未在頻道中點播過歌曲）。")
+            return
+
+        summary, file_bytes, ext = format_playlist_export(songs, format, username)
+        date_str = datetime.datetime.now().strftime("%Y%m%d")
+        filename = f"playlist_{username}_{date_str}.{ext}"
+
+        file = discord.File(io.BytesIO(file_bytes), filename=filename)
+        await interaction.followup.send(summary, file=file)
+
+    @app_commands.command(name="marvin_playlist_import", description="[Playlist] 匯入歌曲至個人歌單（支援 YouTube 播放清單連結、附檔或文字）")
+    @app_commands.describe(
+        query_or_url="YouTube 播放清單連結、單曲網址或文字清單",
+        file="[選填] 上傳 JSON / TXT / CSV 歌單檔案",
+        target_user="[選填] 指定要匯入的成員名稱（預設為自己）",
+    )
+    async def marvin_playlist_import(
+        self,
+        interaction: discord.Interaction,
+        query_or_url: Optional[str] = None,
+        file: Optional[discord.Attachment] = None,
+        target_user: Optional[str] = None,
+    ):
+        await interaction.response.defer(ephemeral=False)
+        mm = getattr(self.bot, "music_memory", None)
+        if not mm:
+            await interaction.followup.send("❌ 音樂記憶系統尚未就緒。", ephemeral=True)
+            return
+
+        username = target_user or interaction.user.display_name
+
+        if not query_or_url and not file:
+            await interaction.followup.send("❌ 請提供 YouTube 歌單連結、文字清單或上傳歌單檔案（.json, .txt, .csv）。", ephemeral=True)
+            return
+
+        songs_to_import: list[dict] = []
+
+        if file:
+            try:
+                content_bytes = await file.read()
+                ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "txt"
+                parsed = parse_playlist_content(content_bytes, ext)
+                songs_to_import.extend(parsed)
+            except Exception as e:
+                logger.error(f"❌ 讀取附檔失敗: {e}")
+                await interaction.followup.send(f"❌ 讀取檔案 `{file.filename}` 失敗: {e}", ephemeral=True)
+                return
+
+        if query_or_url:
+            cleaned_query = query_or_url.strip()
+            if is_youtube_playlist_url(cleaned_query):
+                yt_songs = await extract_youtube_playlist_flat(cleaned_query)
+                songs_to_import.extend(yt_songs)
+            else:
+                parsed = parse_playlist_content(cleaned_query, "txt")
+                songs_to_import.extend(parsed)
+
+        if not songs_to_import:
+            await interaction.followup.send("❌ 無法從提供之內容中解析出有效歌曲。", ephemeral=True)
+            return
+
+        imported_cnt, skipped_cnt = mm.import_user_playlist(username, songs_to_import)
+        total_user_songs = len(mm.export_user_playlist(username))
+
+        msg = (
+            f"✅ **【歌單匯入完成】** 成功為 `{username}` 匯入 **{imported_cnt}** 首歌！\n"
+            f"（略過無效或重複項：{skipped_cnt} 首，目前個人歌單共有 **{total_user_songs}** 首歌）\n"
+            f"💡 現在你可以直接在語音頻道說「**播我的歌單**」開始連續播放！"
+        )
+        await interaction.followup.send(msg)
 
     # ── 🎵 Music subsystem methods ────────────────────────────────────────────
 
@@ -1945,26 +2048,6 @@ class MusicCog(commands.Cog):
                     still_active=lambda: self.stream_mode, volume_attr="stream_volume",
                     preloaded=preloaded,
                 )
-
-    @app_commands.command(name="marvin_recommend", description="[Stream] 讓馬文根據你的點播記憶推薦下一首")
-    async def marvin_recommend(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        vc = self._vc()
-        if not vc:
-            await interaction.followup.send("❌ 語音系統尚未就緒。", ephemeral=True)
-            return
-        username = interaction.user.display_name
-        if not hasattr(self.bot, 'music_memory'):
-            await interaction.followup.send("音樂記憶系統尚未啟動。", ephemeral=True)
-            return
-        music_ctx = self.bot.music_memory.get_user_music_context(username)
-        if not music_ctx:
-            await interaction.followup.send(
-                f"我對 `{username}` 的品味一無所知。先去多點幾首歌讓我學習再說。", ephemeral=True
-            )
-            return
-        await interaction.followup.send(f"🔮 **【馬文精選】** 正在為 `{username}` 挑選...")
-        await vc._auto_recommend(username)
 
     # ── 🎵 Song metadata / fetch helpers ────────────────────────────────────────
 

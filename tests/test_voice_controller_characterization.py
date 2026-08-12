@@ -154,35 +154,3 @@ async def test_play_dual_dialogue_empty_segments_noop():
     cog.play_tts = AsyncMock()
     await cog.play_dual_dialogue([])
     assert cog.play_tts.await_count == 0
-
-
-# ── tts_queue_duration 外部讀取（marvin_tts_clear owner gate）────────────────
-
-@pytest.mark.asyncio
-async def test_marvin_tts_clear_owner_reads_queue_then_flushes():
-    from cogs.voice_controller import _NEMOCLAW_OWNER_ID
-    cog = _make_cog()
-    if getattr(cog, "_plan12", False) and getattr(cog, "_mixer", None) is not None:
-        cog._mixer.tts_load_seconds = MagicMock(return_value=5.0)
-    cog.tts_queue_duration = 5.0
-    cog.tts_flush = AsyncMock()
-    interaction = MagicMock()
-    interaction.user.id = _NEMOCLAW_OWNER_ID
-    interaction.response.send_message = AsyncMock()
-    await cog.marvin_tts_clear.callback(cog, interaction)
-    assert interaction.response.send_message.called
-    assert "5.0" in interaction.response.send_message.call_args.args[0]
-    cog.tts_flush.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_marvin_tts_clear_non_owner_denied_without_flush():
-    from cogs.voice_controller import _NEMOCLAW_OWNER_ID
-    cog = _make_cog()
-    cog.tts_flush = AsyncMock()
-    interaction = MagicMock()
-    interaction.user.id = _NEMOCLAW_OWNER_ID + 1
-    interaction.response.send_message = AsyncMock()
-    await cog.marvin_tts_clear.callback(cog, interaction)
-    assert interaction.response.send_message.called
-    cog.tts_flush.assert_not_awaited()

@@ -1716,15 +1716,20 @@ void mixOutputTask(void* pv) {
 
 void carHeartbeat() {
   // 先試區網明碼（快、家用WiFi成立）；連不到（出門）就退回 Funnel TLS。
+  //
+  // 2026-08-12：實機用 serial 監控抓到 WiFi 明明還連著（deckB 網路 task 持續在收音訊）
+  // 但心跳區網+Funnel兩條路連續 HTTP -1——connect() 前要先搶 LWIP_LOCK，這個 task
+  // 優先權=1，跟同核心的 audioNet/deckNet（優先權=2）搶不過，逾時前常常連鎖都還沒搶到
+  // 就過期。逾時值加大給排程延遲留餘裕（見下面 carHeartbeatTask 建立時優先權也一併調高）。
   const char* body = "{\"state\":\"present\"}";
   WiFiClient localClient;
-  int code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
-                       "/car", "application/json", (const uint8_t*)body, strlen(body), 3000);
+  int code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 3000,
+                       "/car", "application/json", (const uint8_t*)body, strlen(body), 4000);
   if (code <= 0) {
     WiFiClientSecure funnelClient; funnelClient.setInsecure();
-    funnelClient.setHandshakeTimeout(5);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
-    code = postHttp(funnelClient, MARVIN_HOST, MARVIN_PORT, 5000,
-                     "/car", "application/json", (const uint8_t*)body, strlen(body), 5000);
+    funnelClient.setHandshakeTimeout(8);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
+    code = postHttp(funnelClient, MARVIN_HOST, MARVIN_PORT, 8000,
+                     "/car", "application/json", (const uint8_t*)body, strlen(body), 6000);
     Serial.printf("[Car] present 心跳(Funnel) HTTP %d\n", code);
   } else {
     Serial.printf("[Car] present 心跳(區網) HTTP %d\n", code);
@@ -1741,10 +1746,30 @@ void carHeartbeat() {
 
 // 獨立任務，釘死 core 0（跟 audioNetworkTask 同核，理由見 carHeartbeat() 前的註解）。
 // 開機立刻打一次（不等第一輪 30s），之後每 30s 一次。
+//
+// 2026-08-12 補：connectWiFi() 過去只在 setup() 跑一次，斷線後所有 task 只是輪詢
+// WiFi.status()==WL_CONNECTED 空轉、從沒再呼叫 wifiMulti.run()，車上斷線後只能
+// 物理重開機才有機會重連。這裡改成斷線時每 3s 主動重試（wifiMulti.run() 內部只在
+// 真的不是 WL_CONNECTED 時才重新掃描/連線，不會白白重跑），恢復後改回 30s 心跳節奏、
+// 燈號跟著回報。⚠️ 這只治得了「WiFi 訊號本身還在、ESP32 端沒去搶救」——如果是
+// iPhone個人熱點自己因閒置進入省電把 Wi-Fi 電台關了，重連會一直失敗，需要在手機那邊
+// 把「個人熱點」畫面打開喚醒熱點（見碰車puck連線問題前讀的記憶）。
 void carHeartbeatTask(void* pv) {
   for (;;) {
-    if (WiFi.status() == WL_CONNECTED) carHeartbeat();
-    vTaskDelay(pdMS_TO_TICKS(30000));
+    if (WiFi.status() == WL_CONNECTED) {
+      carHeartbeat();
+      vTaskDelay(pdMS_TO_TICKS(30000));
+    } else {
+      Serial.println("[WiFi] ⚠️ 斷線，嘗試重連...");
+      setLed(LED_ERROR);
+      wifiMulti.run();
+      if (WiFi.status() == WL_CONNECTED) {
+        Serial.printf("[WiFi] ✅ 重連成功, SSID=%s IP=%s RSSI=%d\n",
+                      WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        setLed(LED_CONNECTED);
+      }
+      vTaskDelay(pdMS_TO_TICKS(3000));
+    }
   }
 }
 
@@ -1892,7 +1917,9 @@ void setup() {
 #if STEP >= 7
   // 心跳釘死 core 0；任務起來後第一輪迴圈立刻打一次，不用等第一輪 30s。跟音訊路徑
   // 是哪個版本（STEP<11 舊單deck / STEP>=11 新雙deck）無關，兩邊都要跑。
-  xTaskCreatePinnedToCore(carHeartbeatTask, "carHeartbeat", 8192, nullptr, 1, nullptr, 0);
+  // 2026-08-12：優先權從 1 調到 2，跟 audioNet/deckNet 同級——原本=1 時實機常被同核心
+  // 的網路 task 餓到搶不到 LWIP_LOCK，心跳連續 HTTP -1（見 carHeartbeat() 前的註解）。
+  xTaskCreatePinnedToCore(carHeartbeatTask, "carHeartbeat", 8192, nullptr, 2, nullptr, 0);
 #endif
 #if STEP >= 8
   // STEP 8a：指令輪詢，跟心跳同核心同優先權（低頻、不搶 audioNet/audioPlay 的 CPU）。
