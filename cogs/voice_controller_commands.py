@@ -75,6 +75,10 @@ class MarvinCommandsMixin:
         # 同 marvin_sing / marvin_joke。
         await interaction.response.defer(thinking=True)
         await interaction.followup.send(f"🗣️ 「{text}」")
+        # 掛專屬 tag（非 speech_dna 用的 "(Debounced)" 格式）：只供聊天彙整/daily
+        # review 撈上下文，刻意不吻合 analyze_speech_dna.py 的 regex，避免手打文字
+        # 冒充操作者的自然語音語料。
+        self.stt_logger.info(f"[MarvinSay←{interaction.user.display_name}] {text}")
         # protected：手動拉起 _tts_protected（比照進場招呼），讓 play_tts 的靜默閘 /
         # queue-drop guard 一律放行，確保整句念完不被砍；_tts_interrupted 先清掉避免
         # 被前一次中斷旗標吞掉。結束還原原值，不 clobber 既有保護播放。

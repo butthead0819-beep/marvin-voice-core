@@ -72,6 +72,7 @@ def _make_vc():
     vc._tts_protected = False
     vc._tts_interrupted = True
     vc.bot = MagicMock()
+    vc.stt_logger = MagicMock()
     return vc
 
 

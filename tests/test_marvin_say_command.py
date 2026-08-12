@@ -23,13 +23,15 @@ def _make_vc():
     vc.play_tts = AsyncMock()
     vc._tts_protected = False
     vc._tts_interrupted = True  # 預設髒，驗證指令會清掉
+    vc.stt_logger = MagicMock()
     return vc
 
 
-def _make_interaction():
+def _make_interaction(display_name="操作者"):
     interaction = MagicMock()
     interaction.response.defer = AsyncMock()
     interaction.followup.send = AsyncMock()
+    interaction.user.display_name = display_name
     return interaction
 
 
@@ -136,3 +138,23 @@ async def test_marvin_say_posts_text_to_channel():
     interaction.followup.send.assert_awaited_once()
     sent = interaction.followup.send.call_args.args[0]
     assert "貼這句" in sent
+
+
+@pytest.mark.asyncio
+async def test_marvin_say_logs_to_stt_history_with_caller_tag():
+    """掛 [MarvinSay←操作者] tag 進 stt_history.log，供聊天彙整/daily review 撈上下文。
+
+    刻意不套 speech_dna 的 "(Debounced)" 格式，避免手打文字被誤判成操作者的
+    自然語音語料（見 scripts/analyze_speech_dna.py 的 _LOG_RE）。
+    """
+    from cogs.voice_controller import VoiceController
+    vc = _make_vc()
+    interaction = _make_interaction(display_name="阿明")
+
+    await VoiceController.marvin_say.callback(vc, interaction, text="哈囉宇宙")
+
+    vc.stt_logger.info.assert_called_once()
+    logged = vc.stt_logger.info.call_args.args[0]
+    assert "[MarvinSay←阿明]" in logged
+    assert "哈囉宇宙" in logged
+    assert "(Debounced)" not in logged

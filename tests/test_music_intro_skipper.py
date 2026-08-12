@@ -45,3 +45,12 @@ def test_empty_lyric_lines_skipped_when_finding_first_real_line():
 def test_no_real_lyric_lines_returns_none():
     lrc = _lrc((0.0, ""), (5.0, ""))
     assert mis.pick_intro_skip_start(lrc, duration=200.0) is None
+
+
+def test_skip_past_half_duration_returns_none_even_with_enough_remaining():
+    # 300s 曲子，第一句歌詞在 280s → 起播點 278.5s，離結尾還有 21.5s...
+    # 等等這樣還是 < 30s。改用剩餘剛好過 30s 門檻但已經超過一半的案例：
+    # 第一句歌詞在 265s → 起播點 263.5s，剩 36.5s（> 30s 舊門檻會放行），
+    # 但 263.5s 已經是總長 300s 的 87.8%，遠超過一半，應該放棄。
+    lrc = _lrc((265.0, "副歌很晚才進來"))
+    assert mis.pick_intro_skip_start(lrc, duration=300.0) is None

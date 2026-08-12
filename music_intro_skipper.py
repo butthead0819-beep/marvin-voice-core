@@ -18,7 +18,8 @@ def pick_intro_skip_start(lrc: str | None, duration: float | None) -> float | No
     """挑 LRC 第一句實質歌詞的時間戳往前推 _LEAD_IN_S 秒當起播點。
 
     放棄條件：沒 LRC / 沒 duration / 第一句歌詞在 _INTRO_THRESHOLD_S 秒內出現
-    （前奏不長，跳過去意義不大）/ 跳過去的起點離結尾剩不到 _MIN_REMAINING_S 秒。
+    （前奏不長，跳過去意義不大）/ 跳過去的起點離結尾剩不到 _MIN_REMAINING_S 秒 /
+    起點超過總長一半（LRC 抓錯第一句實質歌詞時，避免整首歌被跳掉大半）。
     """
     if not lrc or not duration:
         return None
@@ -29,5 +30,7 @@ def pick_intro_skip_start(lrc: str | None, duration: float | None) -> float | No
         return None
     start = first_lyric_ts - _LEAD_IN_S
     if duration - start < _MIN_REMAINING_S:
+        return None
+    if start > duration / 2:
         return None
     return start
