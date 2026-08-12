@@ -1219,6 +1219,7 @@ class MusicCog(commands.Cog):
                 logger.exception("[AutoRecommend] CoverBlacklist init 失敗")
 
         enqueued = 0
+        _prev_round_title = None
         for cand in cands:
             if enqueued >= self._round_size:
                 break
@@ -1283,6 +1284,12 @@ class MusicCog(commands.Cog):
             info['_lane'] = cand.lane
             info['_anchor_title'] = cand.anchor_title
             info['_round_position'] = enqueued
+            # round 內同批 enqueue 時 stream_history 還沒更新到本輪前面幾首歌（要等真正播放
+            # 才 append），DJ 反查 prev_title 會抓到上一輪的舊歷史。round 內歌曲會依序播放，
+            # 用同一輪前一個位置的標題當作可靠的「上一首」提示（見 _fetch_dj_interjection_raw）。
+            if _prev_round_title:
+                info['_prev_title_hint'] = _prev_round_title
+            _prev_round_title = info['title']
 
             self.stream_queue.append(info)
             for _ring_title in ring_titles_for(info['title'], cand.mode, cand.anchor_title):
@@ -2247,13 +2254,14 @@ class MusicCog(commands.Cog):
         ctx = [f"歌曲：{_song_label or title}", f"點播者：{requester}"]
         # 上一首 ↔ 下一首故事延伸：反向找第一首不是自己的 history 歌（相容 Play-First
         # 背景路徑 stream_history[-1] 就是自己的情況）。第一首歌沒有上一首，跳過。
-        prev_title = ''
-        for s in reversed((getattr(self, 'stream_history', None) or [])[-3:]):
-            if isinstance(s, dict):
-                t = s.get('title', '')
-                if t and t != title:
-                    prev_title = t
-                    break
+        prev_title = info.get('_prev_title_hint', '') or ''
+        if not prev_title:
+            for s in reversed((getattr(self, 'stream_history', None) or [])[-3:]):
+                if isinstance(s, dict):
+                    t = s.get('title', '')
+                    if t and t != title:
+                        prev_title = t
+                        break
         if prev_title:
             ctx.append(f"上一首剛播完：《{prev_title}》")
         if play_count >= 2:
