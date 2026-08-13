@@ -69,7 +69,7 @@ class PlaybackMixin:
         return ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(self._mixer))
 
     async def _mixer_play_music(self, device, s16_source, *, still_active, volume_attr=None,
-                                 preloaded=None) -> None:
+                                 preloaded=None, started_at=None) -> None:
         """[Plan 12] 把 s16 音源餵 mixer 音樂層，等到播完 / 連線斷 / still_active() 變 False。
 
         volume_attr：要持續同步進 mixer 的 cog 音量屬性名（如 "stream_volume"）→ 語音/按鈕
@@ -81,6 +81,12 @@ class PlaybackMixin:
         BufferedF32MusicSource 的 buffer_frames 治標不治本，CPU 被搶佔時背景 decode
         thread 還是跟不上混音時鐘，塞靜音頂替＝中段爆音，見
         project_car_puck_pops_and_1s_dropout）。
+
+        started_at：呼叫端要拿「真正出聲」時刻的 asyncio.Future（見 music_cog.py 的
+        _run_tail_dj）→ set_music_source 真的把音源掛上 mixer 的那一刻才 set_result，
+        別讓呼叫端在此之前用 create_task 時蓋的時間戳當基準——highlight_start_s 的
+        網路 seek + 這裡的整首解碼都要花時間，蓋太早會讓下游「已播秒數」systematically
+        偏大（DJ 尾段因此提早點火，見 project_dj_tail_seek_latency）。
         """
         self._ensure_mixer_playing(device)
         if preloaded is not None:
@@ -88,6 +94,8 @@ class PlaybackMixin:
         else:
             buffered = await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(s16_source))
         self._mixer.set_music_source(buffered)
+        if started_at is not None and not started_at.done():
+            started_at.set_result(time.time())
         # 「音樂停了為何停」是靜默盲點（ffmpeg stderr→DEVNULL、音源耗盡無 log）＝device 上
         # 「~3s 就中斷、無錯誤日誌」難查的根因。此處是所有停止路徑的唯一出口→退出時一律記
         # 原因＋音源統計（produced 幀數/underruns/eof_reason），下次不必猜是音源死還是被中止。

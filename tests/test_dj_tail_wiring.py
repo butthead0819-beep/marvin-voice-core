@@ -151,6 +151,65 @@ async def test_tail_dj_fire_delay_uses_effective_duration_with_highlight_start()
     assert captured["duration"] == 120.0  # 180 - 60，不是原始 180
 
 
+# ── song_start_time 傳 Future：elapsed 要用「真正出聲」時刻算，不是排 task 那刻 ──
+# （2026-08-13 修：highlight_start_s 的網路 seek + 整首解碼都要花時間，用排 task 當下
+# 的時間戳當基準會讓 elapsed 系統性偏大→尾段提早點火，見 project_dj_tail_seek_latency）
+
+@pytest.mark.asyncio
+async def test_tail_dj_uses_future_resolution_time_not_task_creation_time():
+    """song_start_time 是還沒 resolve 的 Future 時，_run_tail_dj 要等它 resolve 才起算
+    elapsed——即使「排 task」跟「Future resolve（真正出聲）」中間隔了一段模擬的 seek/解碼
+    延遲，elapsed 也要以 resolve 當下的時間戳為準，不能被中間那段延遲污染。"""
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _next_info()
+    cog.stream_queue = [nxt]
+    cog._prefetch_cache[nxt["url"]] = _done_future({"dj": _dj_meta()})
+    _prime(cog, cur)
+
+    import time
+    started: asyncio.Future = asyncio.get_event_loop().create_future()
+    real_start = time.time() - 170.0   # 「真正出聲」時刻＝已播 170s
+
+    async def _resolve_after_simulated_seek_delay():
+        # 模擬 -ss 網路 seek + 整首解碼花的時間；task 建立當下 real_start 還沒發生。
+        started.set_result(real_start)
+
+    captured = {}
+
+    def _fake_delay(duration, elapsed, **kwargs):
+        captured["elapsed"] = elapsed
+        return 0.01
+
+    with patch("os.path.exists", return_value=True), \
+         patch("dj_tail_schedule.tail_dj_fire_delay", side_effect=_fake_delay), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        asyncio.create_task(_resolve_after_simulated_seek_delay())
+        await cog._run_tail_dj(cur, started)
+
+    # elapsed 算的是「距真正出聲(real_start)過了多久」，跟 task 建立時間無關。
+    assert captured["elapsed"] == pytest.approx(170.0, abs=1.0)
+    cog._maybe_play_dj_interjection.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_tail_dj_cancelled_while_waiting_for_start_future_returns():
+    """歌在真正出聲前就結束/被取消（Future 從未 resolve）→ task 被取消時要乾淨 return，
+    不留下懸而未決的 await。"""
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    _prime(cog, cur)
+
+    started: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    task = asyncio.create_task(cog._run_tail_dj(cur, started))
+    await asyncio.sleep(0)   # 讓 task 跑到卡在 `await started`
+    task.cancel()
+    await task   # 不該拋出
+
+    cog._maybe_play_dj_interjection.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_tail_dj_fire_delay_no_highlight_uses_raw_duration():
     cog = _make_cog()

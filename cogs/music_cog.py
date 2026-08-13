@@ -1873,9 +1873,14 @@ class MusicCog(commands.Cog):
 
                 # [DJ Tail] 在播 N 期間排尾段 task：只要 duration 已知就排，下一首在點火
                 # 當下才抓 stream_queue[0]（autopilot 常播放中才排下一首，開播時綁定會抓空）。
+                # song_start_time 是「決定要播」那刻蓋的，離「真的出聲」還隔著 highlight_start_s
+                # 的網路 seek + 整首解碼，拿它當基準會讓尾段提早點火（見 project_dj_tail_seek_latency）
+                # ——改傳 playback_started future，_run_tail_dj 改等 _mixer_play_music 真出聲才起算。
+                playback_started: "asyncio.Future | None" = None
                 if vc is not None and info.get('duration'):
+                    playback_started = asyncio.get_event_loop().create_future()
                     self._tail_dj_task = asyncio.create_task(
-                        self._run_tail_dj(info, song_start_time)
+                        self._run_tail_dj(info, playback_started)
                     )
                     def _clear_tail_task(t, _self=self):
                         if _self._tail_dj_task is t:
@@ -1887,6 +1892,7 @@ class MusicCog(commands.Cog):
                     await self.play_stream_song(
                         info['url'], title, dj_audio_path=dj_audio,
                         highlight_start_s=info.get('highlight_start_s'),
+                        started_future=playback_started,
                     )
                 except Exception:
                     playback_completion = "stopped"
@@ -1993,12 +1999,18 @@ class MusicCog(commands.Cog):
         return None
 
     async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None,
-                                highlight_start_s: float | None = None):
+                                highlight_start_s: float | None = None,
+                                started_future: "asyncio.Future | None" = None):
         """🎵 播放單首串流音樂，等待播放完成後 return。
 
         highlight_start_s：YouTube「最多人重播」熱力圖挑出的精華起點（見
         youtube_heatmap.pick_highlight_start），有給就從這秒開始播（-ss），
         不影響 DJ 混音模式（use_mix，另一條較少走的路徑，保持舊行為）。
+
+        started_future：真正出聲（_mixer_play_music 的 set_music_source）那一刻才
+        set_result(time.time())，給 _run_tail_dj 當「已播秒數」的基準——highlight_start_s
+        的網路 seek + 整首解碼都花時間，用「call 這個函式前」蓋的時間戳會系統性偏早，
+        見 project_dj_tail_seek_latency。無下一首派發需求的呼叫端可不傳。
         """
         import shlex
 
@@ -2040,6 +2052,7 @@ class MusicCog(commands.Cog):
                 await vc._mixer_play_music(
                     device, discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
                     still_active=lambda: self.stream_mode,
+                    started_at=started_future,
                 )
         else:
             p12_opts = {
@@ -2058,7 +2071,7 @@ class MusicCog(commands.Cog):
                 await vc._mixer_play_music(
                     device, fresh,
                     still_active=lambda: self.stream_mode, volume_attr="stream_volume",
-                    preloaded=preloaded,
+                    preloaded=preloaded, started_at=started_future,
                 )
 
     # ── 🎵 Song metadata / fetch helpers ────────────────────────────────────────
@@ -2601,7 +2614,7 @@ class MusicCog(commands.Cog):
         await asyncio.sleep(buffer_s)
         await puck_client.crossfade(crossfade_s)
 
-    async def _run_tail_dj(self, cur_info: dict, song_start_time: float):
+    async def _run_tail_dj(self, cur_info: dict, song_start_time):
         """[DJ Tail] 滑動窗串場：當前歌結束前 _DJ_TAIL_LEAD_S 秒點火，DJ 疊當前歌尾巴 + 溢進下一首開頭。
 
         關鍵：點火時刻只依「當前歌 duration」算（開播即可知），**下一首在點火當下
@@ -2612,6 +2625,13 @@ class MusicCog(commands.Cog):
         任何無法安全派發的情境（duration 未知/歌太短/已過窗、點火時沒有下一首、
         下一首無預渲染 audio、被 skip、私語模式）一律 return，讓下一首走舊路
         （混進開頭 or _maybe_play_dj_interjection）。
+
+        song_start_time：float（已知起播時間戳，測試/相容用）或 asyncio.Future（真正
+        出聲那刻才 set_result，見 play_stream_song/_mixer_play_music 的 started_future）。
+        傳 Future 才準——call 這個函式時歌其實還沒出聲（highlight_start_s 的網路 seek
+        +整首解碼都要花時間），拿「排 task 那刻」的時間戳當基準會讓 elapsed 系統性偏大、
+        尾段提早點火（見 project_dj_tail_seek_latency）。Future 若中途被取消（歌提早結束/
+        skip）視同「等不到」，退回舊行為。
         """
         from dj_tail_schedule import tail_dj_fire_delay
 
@@ -2627,7 +2647,16 @@ class MusicCog(commands.Cog):
         if cur_info.get('highlight_start_s'):
             duration = max(0.0, duration - cur_info['highlight_start_s'])
 
-        elapsed = time.time() - song_start_time
+        if isinstance(song_start_time, asyncio.Future):
+            try:
+                real_start = await song_start_time
+            except asyncio.CancelledError:
+                logger.info(f"[DJ Tail] {title_cur} 等真正出聲前被取消，退回舊行為")
+                return
+        else:
+            real_start = song_start_time
+
+        elapsed = time.time() - real_start
         # 滑動窗：當前歌結束前 _DJ_TAIL_LEAD_S 秒點火，DJ（~15s）疊尾巴 + 溢進下一首開頭。
         delay = tail_dj_fire_delay(duration, elapsed, lead_s=_DJ_TAIL_LEAD_S)
         if delay is None:
