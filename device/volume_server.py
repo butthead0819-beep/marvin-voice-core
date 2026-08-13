@@ -184,6 +184,15 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <div class="card">
+  <div class="lbl">🚗 車 Puck (ESP32 mk1)</div>
+  <div class="row">
+    <input type="text" id="carurl" placeholder="YouTube 網址" autocapitalize="off" autocomplete="off">
+    <button class="accent" onclick="carPlay()">播放</button>
+  </div>
+  <button class="danger wide" onclick="carStop()" style="margin-top:10px">停止</button>
+</div>
+
+<div class="card">
   <div class="lbl" style="display:flex;justify-content:space-between;align-items:center">
     <span>音量</span><span id="soctemp" style="font-variant-numeric:tabular-nums">🌡️ --°C</span>
   </div>
@@ -227,7 +236,8 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
 <div id="status">就緒</div>
 
 <script>
-const TOKEN="__TOKEN__", MAC_SAY="__MAC_SAY__", MAC_NOW=MAC_SAY.replace("/say","/now");
+const TOKEN="__TOKEN__", MAC_SAY="__MAC_SAY__", MAC_NOW=MAC_SAY.replace("/say","/now"),
+      MAC_CAR_CONTROL=MAC_SAY.replace("/say","/car_control");
 const $=id=>document.getElementById(id);
 function stat(msg,ok){ $("status").textContent=msg; $("status").style.color=ok?"#4ec07a":"#8b90a0"; }
 async function say(text){
@@ -276,6 +286,22 @@ async function nowPlaying(){
     $("nptitle").textContent="大腦未啟動"; $("npby").textContent="（Mac 上 main_satellite 沒跑）";
     $("npcover").style.display="none";
   }
+}
+async function carPlay(){
+  const v=$("carurl").value.trim(); if(!v)return;
+  try{
+    const r=await fetch(MAC_CAR_CONTROL+"?cmd=play&url="+encodeURIComponent(v)+"&t="+encodeURIComponent(TOKEN));
+    if(r.ok){ stat("車 puck：已送播放指令",true); $("carurl").value=""; }
+    else{ stat("車 puck 送出失敗 "+r.status,false); }
+  }catch(e){ stat("連不到大腦（Mac 上 main_satellite 沒跑？）",false); }
+}
+$("carurl").addEventListener("keydown",e=>{ if(e.key==="Enter") carPlay(); });
+async function carStop(){
+  try{
+    const r=await fetch(MAC_CAR_CONTROL+"?cmd=stop&t="+encodeURIComponent(TOKEN));
+    if(r.ok){ stat("車 puck：已送停止指令",true); }
+    else{ stat("車 puck 送出失敗 "+r.status,false); }
+  }catch(e){ stat("連不到大腦（Mac 上 main_satellite 沒跑？）",false); }
 }
 async function presence(state){
   try{
