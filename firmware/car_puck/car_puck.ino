@@ -1144,8 +1144,9 @@ static bool cmdSeqSynced = false;   // 見 commandPollTask 開機首次同步的
 
 // STEP 8a：每 1s 輪詢一次 /car_commands，收到新指令只 log、不套用（edge端混音第一刀，
 // 見檔頭 STEP 8a 說明）。跟 carHeartbeatTask 同款區網優先／Funnel 回退、同款
-// LWIP_LOCK 紀律，釘同一顆 core（0），優先權跟心跳一樣低（1）——這是低頻輪詢，不搶
-// audioNetworkTask/audioPlaybackTask 的 CPU。
+// LWIP_LOCK 紀律，釘同一顆 core（0）、優先權 2（2026-08-13 調的，見 setup() 建立這個
+// task 那行的說明——原本=1 會被同核心優先權2的 audioNet/deckNet×2 餓死，跟
+// carHeartbeatTask 2026-08-12 那次同一種症狀）。
 void commandPollTask(void* pv) {
   Serial.println("[CmdPoll] commandPollTask 已啟動（STEP 8a：只 log，不套用指令）");
   cmdPollBodyBuf = (uint8_t*)ps_malloc(CMD_POLL_BODY_MAX);
@@ -2189,8 +2190,15 @@ void setup() {
   xTaskCreatePinnedToCore(carHeartbeatTask, "carHeartbeat", 8192, nullptr, 2, nullptr, 0);
 #endif
 #if STEP >= 8
-  // STEP 8a：指令輪詢，跟心跳同核心同優先權（低頻、不搶 audioNet/audioPlay 的 CPU）。
-  xTaskCreatePinnedToCore(commandPollTask, "cmdPoll", 8192, nullptr, 1, nullptr, 0);
+  // STEP 8a：指令輪詢，同核心同優先權 2（原本=1，2026-08-13車上實機踩到：跟
+  // carHeartbeatTask 2026-08-12 那次一模一樣的餓死症狀——commandPollTask 在同核心的
+  // audioNet/deckNet×2（優先權都是2）忙碌時完全被排擠，/car_commands 連續好幾分鐘
+  // 收不到任何輪詢，car_control面板也一起失去回應，只有puck端手動reset才能恢復。
+  // 上面 carHeartbeatTask 已經因為同一個原因調到2、這裡當初漏改，註解還誤寫「同優先權」
+  // 但兩邊其實不同級。跟其餘同核心 task 一致調到2，靠FreeRTOS同優先權round-robin
+  // 保底輪詢不被完全餓死（不解決任何task真的卡死自旋的情況，但那另有其事，見
+  // 2026-08-13對話記錄）。
+  xTaskCreatePinnedToCore(commandPollTask, "cmdPoll", 8192, nullptr, 2, nullptr, 0);
 #endif
 #if STEP >= 9 && STEP < 11
   // STEP 9/10：deck B 只做解碼統計/混音測試，STEP>=11 起被下面的可互換雙deck取代。
