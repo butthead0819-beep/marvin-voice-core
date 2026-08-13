@@ -1191,6 +1191,21 @@ void commandPollTask(void* pv) {
       continue;
     }
 
+    // 2026-08-13 實機踩到：seq 只存在 Mac 端 PuckCommandQueue 的進程記憶體裡，puck
+    // 沒重開機的情況下 Mac 端重啟一次，seq 就從 0 重算——這裡的 newSeq 會小於 puck
+    // 記得的 lastCmdSeq，導致 `newSeq > lastCmdSeq` 從此永遠不成立、新指令永遠被判定
+    // 成「舊的」而略過，puck 卡死不再有任何反應（症狀：/car_commands 一路回 200 但
+    // since 卡住不動，/puck_deck 完全沒被打過）。加這個分支：只要看到 seq 比記憶中的
+    // 還小，代表 Mac 端重開過，比照開機首次同步的規則重新校準基準（不重播這一輪
+    // body 裡的內容，避免把 Mac 重啟瞬間新塞進去的指令當「舊歷史」或「新指令」誤判），
+    // 下一輪 poll 起才恢復正常增量處理。
+    if (newSeq < lastCmdSeq) {
+      Serial.printf("[CmdPoll] ⚠️ server seq %u→%u 倒退，判定 Mac 端進程重啟過，重新校準基準（不重播這輪）\n",
+                    (unsigned)lastCmdSeq, (unsigned)newSeq);
+      lastCmdSeq = newSeq;
+      continue;
+    }
+
     if (newSeq > lastCmdSeq) {
       Serial.printf("[CmdPoll] 新指令 seq %u→%u：%.*s\n",
                     (unsigned)lastCmdSeq, (unsigned)newSeq, (int)bodyLen, (const char*)cmdPollBodyBuf);
