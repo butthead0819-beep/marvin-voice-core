@@ -359,7 +359,7 @@ _PROVIDERS: list[ProviderSpec] = [
     # quick 的 2.5-flash-lite 預設無 thinking 陷阱（mt=20 即回完整 JSON），不需 extra。
     ProviderSpec("gemini_free_25", "GOOGLE_API_KEY",
                  "https://generativelanguage.googleapis.com/v1beta/openai/",
-                 "gemini-2.5-flash-lite", "gemini-2.5-flash",
+                 "gemini-2.5-flash-lite", "gemini-3.5-flash-lite",
                  analyze_extra={"reasoning_effort": "none"}),
     # 💰 末位付費兜底（2026-06-30）：免費全爆才輪到它。用獨立帳務 GEMINI_PAID_API_KEY（與免費
     # GOOGLE_API_KEY 不同 key、排最後）→ 接住 14% 硬失敗。quick 用最便宜 2.5-flash-lite
@@ -367,7 +367,7 @@ _PROVIDERS: list[ProviderSpec] = [
     # paid key（同帳單），但這是 bus 即時 tier 的最後一道、與批次 review pool 獨立。未設 key → 不建。
     ProviderSpec("gemini_paid", "GEMINI_PAID_API_KEY",
                  "https://generativelanguage.googleapis.com/v1beta/openai/",
-                 "gemini-2.5-flash-lite", "gemini-2.5-flash",
+                 "gemini-2.5-flash-lite", "gemini-3.5-flash-lite",
                  analyze_extra={"reasoning_effort": "none"}),
 ]
 
@@ -434,7 +434,7 @@ def build_tiered_router(
 # OpenAI-compat 入口把 thinking token 算進 max_tokens → 大 input 下 thinking 吃光額度、
 # output 被腰斬（實測 629 token finish=length）。genai SDK 可 thinking_budget=0 關 thinking，
 # 把額度全留給 output（實測 7201 token 完整 JSON）。dispatch 的 cooldown/fallback 照用。
-_PAID_REVIEW_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash"]   # fallback 順序
+_PAID_REVIEW_MODELS = ["gemini-3.5-flash-lite", "gemini-2.0-flash"]   # fallback 順序
 
 
 def _default_genai_client_factory(api_key: str) -> Any:

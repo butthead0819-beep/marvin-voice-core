@@ -38,7 +38,7 @@ MEMORY_PATH  = _ROOT / "suki_memory.json"
 DNA_OUT_DIR  = _ROOT / "records"
 
 # ── LLM model (overridden at startup from .env) ───────────────────────────────
-_GEMINI_MODEL = "gemini-2.5-flash"
+_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 MIN_UTTERANCES      = 100   # minimum to run first analysis

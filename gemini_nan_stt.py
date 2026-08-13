@@ -32,7 +32,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_OUT_PATH = Path("records/nan_stt_shadow.jsonl")
 _TIMEOUT_S = 15.0
 

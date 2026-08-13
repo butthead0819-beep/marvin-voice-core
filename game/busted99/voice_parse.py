@@ -20,7 +20,7 @@ _CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
 _GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 _CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "qwen-3-235b-a22b-instruct-2507")
 _GROQ_MODEL = os.environ.get("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
-_GEMINI_MODEL = "gemini-2.5-flash"
+_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 _SYSTEM_PROMPT = """\
 你是 Busted99 遊戲的語音助理，從玩家口語轉錄中抽出唯一的猜測數字。

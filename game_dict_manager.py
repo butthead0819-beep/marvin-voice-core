@@ -73,7 +73,7 @@ class GameDictManager:
             print(f"⚠️ [DictManager] Groq 失敗，嘗試使用 Gemini...")
             try:
                 # 使用 .env 指定的 Flash 模型作為最穩定的高速生成模型
-                gemini_flash_model = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
+                gemini_flash_model = os.getenv("GEMINI_FLASH_MODEL", "gemini-3.5-flash-lite")
                 gemini_model = genai.GenerativeModel(gemini_flash_model)
                 response = await gemini_model.generate_content_async(prompt_template)
                 result = response.text.strip()

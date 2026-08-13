@@ -33,7 +33,7 @@ def _key():
 def _text_fn(key):
     def gen(system, user):
         url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-               f"gemini-2.5-flash:generateContent?key={key}")
+               f"gemini-3.5-flash-lite:generateContent?key={key}")
         body = json.dumps({"system_instruction": {"parts": [{"text": system}]},
                            "contents": [{"parts": [{"text": user}]}]}).encode()
         for attempt in range(5):  # 429 退避重試（批次清理會撞每分鐘限速）

@@ -837,7 +837,7 @@ class GeminiRouterContentMixin:
                         types.Part.from_bytes(data=f, mime_type="image/jpeg") for f in frames_list
                     ] + [f"{frame_label}{self._get_game_context()}\n{extra_context}\n玩家當前疑問: {query_text}\n請以此畫面給出戰術建議。"]
 
-                    vision_model = os.getenv("GEMINI_FLASH_MODEL", "gemini-2.5-flash")
+                    vision_model = os.getenv("GEMINI_FLASH_MODEL", "gemini-3.5-flash-lite")
                     config = types.GenerateContentConfig(system_instruction=vision_system_prompt)
 
                     response = await self.google_client.aio.models.generate_content(

@@ -32,7 +32,8 @@ class GeminiRouterLLMMixin:
     def _supports_thinking(self) -> bool:
         """回傳目前主要模型是否支援 thinking_level 參數（僅 Gemini 2.5 系列）"""
         return self.provider == "gemini" and any(
-            m in self.model_name for m in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5")
+            m in self.model_name
+            for m in ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5", "gemini-3.5")
         )
 
     def _get_paid_guard(self):

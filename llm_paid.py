@@ -22,6 +22,7 @@ DEFAULT_PAID_LOG = Path("records/llm_paid_usage.jsonl")
 _PRICE_PER_1M: dict[str, tuple[float, float]] = {
     "gemini-2.5-pro": (1.25, 10.0),
     "gemini-2.5-flash": (0.30, 2.50),
+    "gemini-3.5-flash-lite": (0.30, 2.50),
     # flash-lite-preview：Marvin reply paid fallback 用。略保守。
     "gemini-3.1-flash-lite": (0.10, 0.40),
 }

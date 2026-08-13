@@ -59,7 +59,7 @@ async def search_lyrics_grounded(
     google_client,
     fragment: str,
     *,
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.5-flash-lite",
     timeout: float = 15.0,
 ) -> str | None:
     """從歌詞片段識別歌曲，回傳「藝人 - 歌名」或 None。
