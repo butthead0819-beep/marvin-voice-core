@@ -11,9 +11,9 @@ from __future__ import annotations
 import datetime as _dt
 import random as _random
 from dataclasses import dataclass
-from typing import Callable
+from typing import Awaitable, Callable
 
-from music_recommender import Candidate, pick_candidate
+from music_recommender import Candidate, pick_candidate, pick_candidates
 
 # 5 個離散 bucket（design doc / eng review）；順序不重要，成員固定。
 TIME_BUCKETS = ("morning", "noon", "afternoon", "evening", "late_night")
@@ -46,6 +46,52 @@ def build_car_open(
     line = r.choice(lines) if lines else _FALLBACK_OPEN_LINE
     song = pick_candidate(pool_provider() or [], rng=rng)   # pool 空 → None
     return CarOpen(line=line, song=song)
+
+
+async def resolve_car_open_query(
+    song: Candidate | None,
+    *,
+    pool_provider: Callable[[], list[Candidate]],
+    resolve_fn: Callable[[str], Awaitable[dict | None]],
+    max_attempts: int = 3,
+) -> str | None:
+    """挑開場曲最終要拿去點播的查詢字串，過 track_quality 的非單曲品質閘。
+
+    2026-08-13 review 補：原本第一首candidate沒過品質閘就直接放棄，開場靜音、
+    駕駛沒任何提示。改成最多試 max_attempts 首——先試 song，沒過再從
+    pool_provider() 補抽候選池（排除已試過的），直到抽到一首過閘的或用完次數。
+
+    resolve_fn(query) 失敗/逾時（由 caller 決定要不要包 timeout）視為「無法驗證，
+    保守放行」——回傳當前這首的 query 讓 caller 照樣嘗試播放，不因為 resolve 掛掉
+    就連音樂都沒有（車載開場的體驗優先序：有聲音 > 沒過驗證）。
+    全部候選都沒過品質閘 → 回傳 None，caller 決定開場靜音。
+    """
+    if song is None:
+        return None
+    from track_quality import is_non_song_video
+
+    candidates = [song]
+    tried_titles: set[str] = set()
+    for _ in range(max_attempts):
+        if not candidates:
+            more = pick_candidates(pool_provider() or [], k=3)
+            candidates = [c for c in more if c.anchor_title not in tried_titles]
+            if not candidates:
+                return None
+        cur = candidates.pop(0)
+        tried_titles.add(cur.anchor_title)
+        query = cur.direct_url or (f"{cur.anchor_artist} {cur.anchor_title}".strip() or cur.anchor_title)
+        try:
+            info = await resolve_fn(query)
+        except Exception:
+            info = None
+        if info is None:
+            return query
+        is_ns, _reason = is_non_song_video(info.get("title", ""), info.get("duration"))
+        if is_ns:
+            continue
+        return info.get("webpage_url") or query
+    return None
 
 
 def resolve_time_bucket(when: _dt.datetime) -> str:

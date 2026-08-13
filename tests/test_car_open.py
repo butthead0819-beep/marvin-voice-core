@@ -88,3 +88,83 @@ def test_build_car_open_never_calls_paid_llm(monkeypatch):
     out = build_car_open("morning", pool_provider=lambda: [_cand("晴天")],
                          open_lines={"morning": ["早安"]})
     assert out.song is not None      # 順利選到，且沒炸＝沒打付費
+
+
+# ── resolve_car_open_query：非單曲品質閘 + 候選池重試（2026-08-13 review 補測） ──
+_LONG_DURATION = 901   # > track_quality.MAX_SONG_DURATION_S(900)
+
+
+def _info(title, duration=180, webpage_url=None):
+    return {"title": title, "duration": duration, "webpage_url": webpage_url}
+
+
+@pytest.mark.asyncio
+async def test_resolve_car_open_query_returns_webpage_url_when_gate_passes():
+    from car_open import resolve_car_open_query
+
+    async def _resolve(q):
+        return _info("正常單曲", duration=200, webpage_url="https://youtu.be/abc")
+
+    out = await resolve_car_open_query(
+        _cand("晴天"), pool_provider=lambda: [], resolve_fn=_resolve)
+    assert out == "https://youtu.be/abc"
+
+
+@pytest.mark.asyncio
+async def test_resolve_car_open_query_retries_pool_when_first_candidate_fails_gate():
+    """第一首是長合輯被閘掉 → 從候選池補抽，第二首正常過閘。"""
+    from car_open import resolve_car_open_query
+
+    calls = []
+
+    async def _resolve(q):
+        calls.append(q)
+        if len(calls) == 1:
+            return _info("有聲書合輯", duration=_LONG_DURATION)
+        return _info("正常單曲", duration=200, webpage_url="https://youtu.be/second")
+
+    out = await resolve_car_open_query(
+        _cand("有聲書"),
+        pool_provider=lambda: [_cand("有聲書", score=1.0), _cand("備用曲", score=0.9)],
+        resolve_fn=_resolve)
+    assert out == "https://youtu.be/second"
+    assert len(calls) == 2   # 真的試了第二首，沒有一失敗就放棄
+
+
+@pytest.mark.asyncio
+async def test_resolve_car_open_query_returns_none_when_pool_exhausted():
+    """候選池全部都是長合輯 → 最終放棄，回 None（caller 決定開場靜音，不硬播爛片）。"""
+    from car_open import resolve_car_open_query
+
+    async def _resolve(q):
+        return _info("有聲書", duration=_LONG_DURATION)
+
+    out = await resolve_car_open_query(
+        _cand("有聲書A"),
+        pool_provider=lambda: [_cand("有聲書A"), _cand("有聲書B"), _cand("有聲書C")],
+        resolve_fn=_resolve)
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_car_open_query_falls_back_to_raw_query_when_resolve_fails():
+    """resolve 掛掉（逾時/MusicCog不可用等）→ 保守放行，回原始 query 讓 caller 照樣嘗試播放。"""
+    from car_open import resolve_car_open_query
+
+    async def _resolve(q):
+        raise RuntimeError("music_cog_unavailable")
+
+    out = await resolve_car_open_query(
+        _cand("晴天", score=1.0), pool_provider=lambda: [], resolve_fn=_resolve)
+    assert out == "x 晴天"   # anchor_artist="x" + anchor_title（_cand fixture 預設）
+
+
+@pytest.mark.asyncio
+async def test_resolve_car_open_query_none_song_returns_none():
+    from car_open import resolve_car_open_query
+
+    async def _resolve(q):
+        raise AssertionError("song=None 不該打 resolve")
+
+    out = await resolve_car_open_query(None, pool_provider=lambda: [], resolve_fn=_resolve)
+    assert out is None

@@ -21,6 +21,14 @@ class PuckCommandQueue:
         self._commands: list[dict] = []   # [{"seq":..., "cmd":..., ...}]
         self._seq = 0
         self._max_history = max_history
+        # ── watchdog 用的活性訊號（見 puck_watchdog.py）：last_polled_ts＝puck 上次
+        # 打 /car_commands 的時間（每次 since() 被呼叫就更新，不管有沒有新指令）；
+        # last_deck_hit_ts＝puck 上次真的打 /puck_deck 來拉音源的時間；
+        # _last_play_push_ts＝Mac 上次下 play/queue_next 的時間——三者合起來才能分辨
+        # 「puck 斷線沒輪詢」跟「有輪詢但下的播放指令沒被消費」這兩種不同的沒反應。
+        self.last_polled_ts: float = 0.0
+        self.last_deck_hit_ts: float = 0.0
+        self._last_play_push_ts: float = 0.0
 
     def _push(self, cmd: dict) -> int:
         with self._lock:
@@ -32,9 +40,11 @@ class PuckCommandQueue:
             return self._seq
 
     def play(self, url: str) -> int:
+        self._last_play_push_ts = time.time()
         return self._push({"cmd": "play", "url": url})
 
     def queue_next(self, url: str) -> int:
+        self._last_play_push_ts = time.time()
         return self._push({"cmd": "queue_next", "url": url})
 
     def crossfade(self, duration_s: float = 4.0) -> int:
@@ -58,10 +68,31 @@ class PuckCommandQueue:
         """回傳 (目前最新 seq, seq 之後的所有指令，舊到新排序)。
 
         seq 早於歷史保留範圍（超過 max_history 被砍掉）時，回傳目前存著的全部
-        歷史——寧可讓 ESP32 收到「補播」幾個舊指令，也不要靜默漏掉。"""
+        歷史——寧可讓 ESP32 收到「補播」幾個舊指令，也不要靜默漏掉。
+
+        每次被呼叫（不管有沒有新指令）都更新 last_polled_ts——這是 puck 唯一會
+        主動打回來的端點，只要還在打表示至少還連著線（見 puck_watchdog.py）。"""
         with self._lock:
+            self.last_polled_ts = time.time()
             pending = [c for c in self._commands if c["seq"] > seq]
             return self._seq, pending
+
+    def mark_deck_hit(self) -> None:
+        """puck 真的打了 /puck_deck 來拉音源時呼叫（見 main_satellite.py::handle_puck_deck）。"""
+        self.last_deck_hit_ts = time.time()
+
+    def stall_seconds(self, *, now: float | None = None) -> float | None:
+        """已下 play/queue_next 但 puck 還沒打 /puck_deck 來消費，卡住了幾秒。
+
+        沒有待確認的播放指令、或已經被 mark_deck_hit() 消費過 → None（沒卡住）。
+        純讀取、不碰鎖——時間戳寫入本來就是單調遞增的 float，讀到中間值頂多晚一輪
+        才偵測到，沒有正確性風險，不值得為這個多繞一次鎖。"""
+        if self._last_play_push_ts <= 0:
+            return None
+        if self.last_deck_hit_ts >= self._last_play_push_ts:
+            return None
+        now = now if now is not None else time.time()
+        return now - self._last_play_push_ts
 
 
 # 同進程內的 lazy singleton：main_satellite.py（HTTP handler，讀）跟 music_cog.py

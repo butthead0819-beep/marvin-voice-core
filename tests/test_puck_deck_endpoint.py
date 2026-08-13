@@ -38,11 +38,16 @@ def _sine_pcm(*, rate: int = 48000, channels: int = 2, seconds: float = 0.05) ->
 
 
 class _FakeProc:
-    def __init__(self, chunks):
+    def __init__(self, chunks, *, already_exited: bool = False):
         self._chunks = list(chunks) + [b""]
         self.stdout = MagicMock()
         self.stdout.read = AsyncMock(side_effect=self._chunks)
-        self.kill = MagicMock()
+        # returncode=None＝行程還活著（真實 asyncio.subprocess.Process 的預設值，見
+        # main_satellite.py::_stream_ffmpeg_input_as_mp3 的 finally 分支判斷依據）；
+        # already_exited=True 模擬 ffmpeg 轉完自然結束（EOF）、行程早就死了的情況。
+        self.returncode = 0 if already_exited else None
+        self.kill = MagicMock(
+            side_effect=ProcessLookupError() if already_exited else None)
         self.wait = AsyncMock(return_value=0)
 
 
@@ -207,6 +212,29 @@ async def test_puck_deck_garbage_seek_ignored():
 
     args = list(mock_exec.call_args.args)
     assert "-ss" not in args
+
+
+@pytest.mark.asyncio
+async def test_puck_deck_survives_process_already_exited_naturally():
+    """2026-08-13 實機踩到：ffmpeg 正常轉完（read() 讀到 EOF）代表子行程早就自己結束，
+    finally 裡無條件 proc.kill() 對已死行程送 SIGKILL 會炸 ProcessLookupError，這條
+    沒被接住、整個 handler 中斷——線上日誌 356 次同一支 traceback，puck 收到斷開的
+    爛尾連線而非乾淨串流結束（症狀：一直回到歌曲開頭/無聲idle/DJ口白放不出來，因為
+    /puck_deck 跟 /puck_voice 共用這支函式）。這裡驗證：行程已經自然結束時，回應仍要
+    完整送達（不能讓 ProcessLookupError 逃出去讓整個請求炸掉）。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    vc = _make_vc()
+    fake_proc = _FakeProc([_sine_pcm()], already_exited=True)
+    app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
+    with patch("main_satellite.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
+            assert resp.status == 200
+            body = await resp.read()
+            assert len(body) > 0
+    fake_proc.kill.assert_not_called()   # returncode 已非 None → 不該再送一次 kill
 
 
 @pytest.mark.asyncio

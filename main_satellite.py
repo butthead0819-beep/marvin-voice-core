@@ -29,6 +29,7 @@ import logging
 import os
 import tempfile
 import time
+from typing import Awaitable, Callable
 
 from dotenv import load_dotenv
 
@@ -1993,7 +1994,18 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         except (ConnectionError, asyncio.CancelledError):
             pass   # client 斷線/取消，見 handle_audio_stream 同款 except 的理由
         finally:
-            proc.kill()
+            # ⚠️ 2026-08-13 實機踩到：ffmpeg 正常轉完（read() 讀到 EOF 自然 break）代表
+            # 子行程早就自己結束了，這裡還無條件 proc.kill() 對一個已經死掉的行程送
+            # SIGKILL，asyncio 的 subprocess transport 會在 _check_proc() 直接 raise
+            # ProcessLookupError——這條 except 沒接住，整個 handler 直接炸穿到
+            # aiohttp，puck 收到的不是乾淨的串流結束、是斷開的爛尾連線（實機日誌：
+            # 356 次同一支 traceback，幾乎每個 /puck_deck、/puck_voice 請求都中一次；
+            # 症狀＝一直回到歌曲開頭/無聲idle/DJ口白放不出來，三個都是同一個根因）。
+            if proc.returncode is None:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
             await proc.wait()
         return resp
 
@@ -2027,6 +2039,9 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         """
         if puck_command_queue is None:
             return web.Response(status=404, headers=_CORS)
+        # puck 真的打進來了＝活著、有在消費指令（見 puck_watchdog.py 的 deck stall 判斷），
+        # 不管後面 resolve 成不成功都算數。
+        puck_command_queue.mark_deck_hit()
         watch_url = (request.query.get("url") or "").strip()
         if not watch_url:
             return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
@@ -2130,6 +2145,59 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     return app
 
 
+async def _puck_watchdog_loop(
+    car_presence, puck_command_queue, *,
+    interval_s: float = 5.0,
+    dm_fn=None,
+    sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    should_stop: Callable[[], bool] | None = None,
+    now_fn: Callable[[], float] = time.time,
+):
+    """N 秒一輪偵測 car puck 是否卡住/斷線，只在車主還在車上時才警報（見 puck_watchdog.py
+    的 poll/deck stall 判斷邏輯——這裡只負責串：讀狀態、決定要不要 DM、狀態轉換去重）。
+
+    去重用一個記憶體內布林值就夠：這是長駐 in-process 迴圈，不像 pipeline_heartbeat_probe.py
+    那種每 30 分鐘各自獨立啟動的 cron，不需要跨進程 persist 的去重狀態機——同一段連續
+    stalled episode 只 DM 一次，恢復時再 DM 一次即可。
+
+    dm_fn 預設用 puck_watchdog.dm_owner_sync（同步、跑在 asyncio.to_thread 裡避免卡住
+    event loop）；sleep_fn/should_stop/now_fn 比照 car_mode.run_car_ttl_loop 同款注入
+    測試點，好測、零真的 sleep。"""
+    from puck_watchdog import STALL_REASON_TEXT, check_puck_stall
+    from puck_watchdog import dm_owner_sync as _default_dm_fn
+
+    dm_fn = dm_fn or _default_dm_fn
+    was_stalled = False
+    was_present = False
+    presence_since = 0.0   # 上車那一刻的時間戳，當 puck 還沒打過 /car_commands 時當基準用
+    while should_stop is None or not should_stop():
+        try:
+            now = now_fn()
+            is_present = car_presence.is_present
+            if is_present and not was_present:
+                # 剛上車，puck 可能還在連 WiFi 的路上——用「上車時間」當輪詢基準，
+                # 讓 poll_stall_threshold 從這一刻起算，別在 puck 連上前那零點幾秒
+                # 就因為 last_polled_ts 還是 0 而立刻誤報。
+                presence_since = now
+            was_present = is_present
+            last_polled = puck_command_queue.last_polled_ts or presence_since
+            status = check_puck_stall(
+                is_present=is_present, last_polled_ts=last_polled,
+                stall_seconds=puck_command_queue.stall_seconds(now=now), now=now)
+            if status.stalled and not was_stalled:
+                text = f"🚨 [CarPuck] {STALL_REASON_TEXT.get(status.reason, '沒反應')}"
+                logger.warning(text)
+                await asyncio.to_thread(dm_fn, text)
+            elif was_stalled and not status.stalled:
+                text = "✅ [CarPuck] puck 恢復回應了"
+                logger.info(text)
+                await asyncio.to_thread(dm_fn, text)
+            was_stalled = status.stalled
+        except Exception:  # noqa: BLE001 — 一拍失敗不弄垮迴圈
+            logger.exception("[PuckWatchdog] 檢查失敗")
+        await sleep_fn(interval_s)
+
+
 def resolve_car_owner_pool(vc, owner: str, now: float | None = None) -> list:
     """車載＝機主一人的候選池（復用既有 build_member_pools 純函式，見 CodeQ#4）。
 
@@ -2188,31 +2256,27 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
             # 改成比照 _auto_recommend 的優先序：direct_url > artist+title > title。
             try:
                 if car_open.song:
-                    song = car_open.song
-                    if song.direct_url:
-                        query = song.direct_url
-                    else:
-                        query = f"{song.anchor_artist} {song.anchor_title}".strip() or song.anchor_title
                     # 車載開場繞過 _auto_recommend 的 enqueue 迴圈、直接走手動點歌路徑，
                     # 沒吃到那邊本來就有的 is_non_song_video 品質閘——候選池 build_member_pools
                     # 對音樂/非音樂內容零過濾，久沒播的有聲書/podcast 一樣有資格被選中當開場曲。
-                    # 這裡補一次同款檢查（不重造邏輯，直接 reuse track_quality）。
+                    # 這裡補一次同款檢查（不重造邏輯，直接 reuse track_quality，邏輯抽在
+                    # car_open.resolve_car_open_query 方便單元測試——見該函式 docstring）。
+                    from car_open import resolve_car_open_query
+
                     mc = vc.bot.cogs.get("MusicCog")
-                    if mc is not None:
-                        try:
-                            info = await mc._resolve_yt_query(query)
-                        except Exception:
-                            logger.exception("[CarMode] play_open resolve 失敗，仍嘗試播放")
-                            info = None
-                        if info is not None:
-                            from track_quality import is_non_song_video
-                            _ns, _ns_reason = is_non_song_video(info.get('title', ''), info.get('duration'))
-                            if _ns:
-                                logger.info("🚫 [CarMode] 開場候選非單曲略過 '%s': %s",
-                                            info.get('title'), _ns_reason)
-                                return
-                            query = info.get('webpage_url') or query
-                    await inject_text(vc, owner, f"放一首{query}")
+
+                    async def _resolve(q):
+                        if mc is None:
+                            raise RuntimeError("music_cog_unavailable")
+                        # 車上 4G 訊號差時 yt-dlp 可能整個掛住，10s 逾時避免卡住整趟開場。
+                        return await asyncio.wait_for(mc._resolve_yt_query(q), timeout=10)
+
+                    query = await resolve_car_open_query(
+                        car_open.song, pool_provider=_pool_provider, resolve_fn=_resolve)
+                    if query:
+                        await inject_text(vc, owner, f"放一首{query}")
+                    else:
+                        logger.warning("🚗 [CarMode] 開場候選池連試多首都沒過品質閘，本次開場靜音")
                 logger.info("🚗 [CarMode] 上車開場：%s → 放《%s》",
                             car_open.line, car_open.song.anchor_title if car_open.song else "—")
             except Exception:  # noqa: BLE001
@@ -2267,6 +2331,11 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
                 await asyncio.sleep(10.0)
 
         asyncio.create_task(_sync_car_presence_state())
+    if car_presence is not None and puck_command_queue is not None:
+        # ESP32 edge端混音才有 poll/deck 這兩個訊號可觀察（pi_bt 是 push model，Mac
+        # 主動連 Pi，沒有這種「puck 該來輪詢卻沒來」的判斷方式）。見 puck_watchdog.py。
+        asyncio.create_task(_puck_watchdog_loop(car_presence, puck_command_queue))
+        logger.info("🐕 [PuckWatchdog] car puck 沒反應偵測啟動（poll/deck stall，5s 一輪）")
     if os.getenv("MARVIN_CLAUDE_STATUS_SCAN", "1").strip().lower() in ("1", "true", "yes", "on"):
         from scripts.scan_claude_sessions import run_claude_sessions_scan_loop
         asyncio.create_task(run_claude_sessions_scan_loop())
