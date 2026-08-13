@@ -2193,6 +2193,25 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
                         query = song.direct_url
                     else:
                         query = f"{song.anchor_artist} {song.anchor_title}".strip() or song.anchor_title
+                    # 車載開場繞過 _auto_recommend 的 enqueue 迴圈、直接走手動點歌路徑，
+                    # 沒吃到那邊本來就有的 is_non_song_video 品質閘——候選池 build_member_pools
+                    # 對音樂/非音樂內容零過濾，久沒播的有聲書/podcast 一樣有資格被選中當開場曲。
+                    # 這裡補一次同款檢查（不重造邏輯，直接 reuse track_quality）。
+                    mc = vc.bot.cogs.get("MusicCog")
+                    if mc is not None:
+                        try:
+                            info = await mc._resolve_yt_query(query)
+                        except Exception:
+                            logger.exception("[CarMode] play_open resolve 失敗，仍嘗試播放")
+                            info = None
+                        if info is not None:
+                            from track_quality import is_non_song_video
+                            _ns, _ns_reason = is_non_song_video(info.get('title', ''), info.get('duration'))
+                            if _ns:
+                                logger.info("🚫 [CarMode] 開場候選非單曲略過 '%s': %s",
+                                            info.get('title'), _ns_reason)
+                                return
+                            query = info.get('webpage_url') or query
                     await inject_text(vc, owner, f"放一首{query}")
                 logger.info("🚗 [CarMode] 上車開場：%s → 放《%s》",
                             car_open.line, car_open.song.anchor_title if car_open.song else "—")
