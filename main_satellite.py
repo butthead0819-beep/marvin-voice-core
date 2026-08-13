@@ -2188,7 +2188,13 @@ async def _puck_watchdog_loop(
                 text = f"🚨 [CarPuck] {STALL_REASON_TEXT.get(status.reason, '沒反應')}"
                 logger.warning(text)
                 await asyncio.to_thread(dm_fn, text)
-            elif was_stalled and not status.stalled:
+            elif was_stalled and not status.stalled and is_present:
+                # ⚠️ 2026-08-13 實機踩到假恢復：is_present 一旦變 False，check_puck_stall
+                # 一律回 stalled=False（車主不在車上不用管），如果不額外檢查 is_present，
+                # 這個 elif 會把「presence 剛好在這拍翻成離開」誤判成「puck 真的恢復回應
+                # 了」，兩者其實毫無關係——departure 不代表 puck 連線問題解決了。只有
+                # 車主還在場、且這拍真的不再 stalled，才算數。presence 翻成 False 時
+                # 靜默重置 was_stalled，不發任何訊息（沒有恢復可言，只是不用再管了）。
                 text = "✅ [CarPuck] puck 恢復回應了"
                 logger.info(text)
                 await asyncio.to_thread(dm_fn, text)

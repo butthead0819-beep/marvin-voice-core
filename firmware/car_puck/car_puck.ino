@@ -37,18 +37,6 @@
  *             行為要 deck A 也改吃 /puck_deck，那是之後單獨一刀，會動到主播放來源、
  *             風險更高）。crossfade 視窗跑完（elapsed>=duration）就把 crossfadeActive
  *             關掉，不做「切成 deck B 變主線」的部分。STEP<10 完全不受影響。
- *   STEP 11 = + 正式取代 /audio_stream：deck 0/1 完全對稱（各自 network+decode+PCM
- *             ring），mixOutputTask 是唯一寫 i2s 的任務，正常單獨播 activeDeck，
- *             crossfade 視窗內混兩個 deck，視窗跑完直接 activeDeck 互換（不重新連
- *             線，standby deck 那條連線本來就活著、持續在抓那首歌，互換不會跳拍）。
- *             新增 play 指令（硬換：兩個deck都停、deck0接新URL）；queue_next 改成
- *             永遠對「待命位」（1-activeDeck）下手，不是寫死 deck B。⚠️ deck A 不再
- *             吃 Mac 中央 mixer 混好的 /audio_stream——DJ 口白／刷碟音效目前會從輸出
- *             消失（那些是中央 mixer 疊上去的，/puck_deck 只有乾淨歌曲），這是刻意
- *             接受的代價，另案再補（見 project 計畫文件的 Phase 3）。STEP<11 這條路
- *             完全不受影響（STEP7 舊單deck + STEP9/10 deck B 統計/混音測試都還在，
- *             只是不再被 setup() 建立成任務），改回 10 可還原到「deck A 仍吃
- *             /audio_stream、混音只是測試」的狀態。
  *
 
  * ⚠️ 動手前要填：WiFi、MARVIN_TOKEN。（I2S 腳位已實測、不用再查，見下。）
@@ -85,16 +73,10 @@
                                 // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
 
 // ========== 你要填的 ==========
-#define STEP 11  // ← 2026-08-12：music_cog.py 補上 _fire_puck_play（見該檔案
-                 // _stream_loop 裡 `if not _dj_played_in_tail:` 那段）——STEP 11
-                 // 缺的「play 觸發點」補上了，deck A/B 改走可互換雙 deck、都直連
-                 // URL 讓 ESP32 自行混音。已知仍缺：DJ 口白/刷碟音效、crossfade
-                 // 極小瑕疵，先實機驗證基本播放/轉場再說。
-// #define STEP 10  // 2026-08-11 深夜收工版本：明天要正常使用（開機自動播放+autopilot），
-                 // STEP 11 還沒接「play」自動觸發點、DJ口白/SFX仍缺、crossfade仍有極小
-                 // 瑕疵——先退回功能完整、已充分驗證的 STEP 10 供實際使用。STEP 11
-                 // 程式碼保留在這份原始碼裡（deck0/1可互換架構+今晚修好的三個bug），
-                 // 之後有空再繼續往下接（play觸發點+DJ口白管線）、重新上機測試。
+#define STEP 10  // ← 從 1 開始，每步綠了再 +1（10＝STEP 10 混音數學測試，見檔頭說明；
+                 // 想退回只有deck B解碼統計、已驗證過的狀態，改回 9；想退回只有指令
+                 // 輪詢，改回 8；想完全退回音訊路徑零改動的狀態，改回 7——每一層都
+                 // 不用改別的地方，重新燒錄即可）
 
 // 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
 // buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
@@ -771,146 +753,6 @@ static void crossfadeGains(float elapsedS, float durationS, float* gainA, float*
 }
 #endif  // STEP >= 10
 
-#if STEP >= 11
-// ============================================================
-// STEP 11：可互換雙 deck——deck 0/1 完全對稱，activeDeck 決定「誰在播、誰待命」。
-// 宣告放在這裡（早於 mp3DataCallback/dispatchNewCommands）因為兩邊都要用到這些全域；
-// 對應的 task 本體（deckNetworkTask/deckPlaybackTask/mixOutputTask + decoder callback）
-// 在檔案後段、dispatchNewCommands 之後（用得到 lockedReadLine 等更早定義的輔助函式）。
-// ============================================================
-#define MDECK_RING_SIZE (256 * 1024)              // raw MP3 bytes，跟 STEP9 deckBRing同size
-// 2026-08-12：6s→10s，用縮小VOICE_PCM_MAX_BYTES省下來的PSRAM換更長的網路抖動緩衝
-// （見該常數前的說明；8MB PSRAM總預算：raw ring 512KB+PCM ring本身3.66MB+voice
-// buffer 2.2MB+麥克風錄音312KB≈6.65MB，留~1.35MB安全邊際）。
-#define MDECK_PCM_RING_SIZE (48000 * 2 * 2 * 10)
-static uint8_t* mdeckRing[2] = {nullptr, nullptr};
-static volatile size_t mdeckHead[2] = {0, 0}, mdeckTail[2] = {0, 0};
-static volatile bool mdeckActive[2] = {false, false};
-static volatile bool mdeckNeedsReset[2] = {false, false};
-static char mdeckUrl[2][256] = {{0}, {0}};
-static SemaphoreHandle_t mdeckUrlMutex = nullptr;
-static uint8_t* mdeckPcmRing[2] = {nullptr, nullptr};
-static volatile size_t mdeckPcmHead[2] = {0, 0}, mdeckPcmTail[2] = {0, 0};
-static volatile int activeDeck = 0;   // 0 或 1，決定 mixOutputTask 正常情況吃哪個 PCM ring
-
-// 2026-08-12：行動網路瞬斷比家用WiFi常見，deckNetworkTask 真斷線（非自然播完）時
-// 從頭重播體感很差——這裡追蹤「這首歌目前已經下載到第幾秒」，斷線重連時帶
-// &seek=<秒數> 給 /puck_deck，接回原本的位置而不是從頭來。用下載 bytes 換算（server
-// 端固定 MP3_BITRATE_KBPS CBR，見該常數），不用碰解碼器/PCM ring 那層，deckNetworkTask
-// 自己就能算，跟 mixOutputTask/deckPlaybackTask 无耦合。新歌開播（play/queue_next）
-// 時歸零，見 dispatchNewCommands 的 setMdeckUrl() 呼叫點。
-static volatile float deckDownloadedSec[2] = {0.0f, 0.0f};
-
-// 2026-08-12 Phase3：DJ 口白/SFX 第三聲道。跟 deck0/1（持續串流、raw+PCM 雙層 ring）
-// 不同——口白/音效都是短檔（見 main_satellite.py::handle_puck_voice），一次抓完整個
-// 檔案解碼進固定大小的 PSRAM buffer 比較簡單，不用開一條常駐 network task。
-// ⚠️ 2026-08-12 實機踩到：一開始設 8s 上限（誤以為跟 music_intro 的 5s cap 同一種東
-// 西，實際是不同功能——DJ尾段口白沒有那個cap，量到剛好卡在 8s 整被我自己的邊界檢查
-// 截斷，「話講到一半被中斷」）。12s：DJ口白實際常態在10s內（比預期短），留2s餘裕
-// 就夠、不用像一開始猜的20s那麼誇張——省下來的PSRAM讓給deck0/1 PCM ring（見
-// MDECK_PCM_RING_SIZE）撐更長的網路抖動緩衝。voiceFetchTask（唯一 producer）解碼完
-// 才設voicePcmLen+voiceActive=true，之後只有mixOutputTask（唯一consumer）會動
-// voicePcmPos——跟其他ring「只從自己那端動指標」的既有紀律一致，兩個task之間不會
-// 有並行寫入衝突。
-#define VOICE_PCM_MAX_BYTES (48000 * 2 * 2 * 12)
-static uint8_t* voicePcmBuf = nullptr;
-static volatile size_t voicePcmLen = 0;    // 解碼完成才設一次（bytes）
-static volatile size_t voicePcmPos = 0;    // 播放游標，只有 mixOutputTask 動
-static volatile bool voiceActive = false;  // true=正在播，mixOutputTask 播完自己清 false
-static volatile bool voiceDuck = false;    // true=speak（duck音樂）；false=sfx（不duck，疊播）
-#define VOICE_DUCK_GAIN 0.30f   // speak 期間音樂音量降到這個比例
-#define VOICE_DUCK_RAMP 0.15f   // 每次mixOutputTask迴圈往目標gain靠近的比例，讓duck平滑不卡拍
-
-// dispatchNewCommands 收到 speak/sfx 就 spawn 一個 voiceFetchTask；duck 旗標跟著這次
-// fetch 的 path 一起用 malloc 傳過去（不用共用全域），避免兩個口白/SFX 指令連續進來時
-// 後到的把前一個還沒播的 duck 設定蓋掉。voiceFetchTask 定義在檔案後段（要用到
-// lockedReadLine 等輔助函式），這裡先 forward-declare 給 dispatchNewCommands 用。
-//
-// ⚠️ 2026-08-12 實機踩到：DJ 尾段轉場 Python 端會連續送 speak+sfx（口白+轉場音效）
-// 兩個指令，幾乎同時到——但 voicePcmBuf/mp3DecoderVoice/voiceDecodeWritePos 是唯一一
-// 份共用狀態，兩個 voiceFetchTask 同時跑會互相踩（解碼器不是 reentrant，兩邊搶著寫
-// 同一塊 PSRAM），實機聽感是播放異常（懷疑波及 deck 狀態）。voiceBusyMutex 讓
-// voiceFetchTask 從抓取到播完整個生命週期互斥，同一時間只有一個聲音在用這個聲道——
-// 口白播完才輪到音效接著響，也才是原本想要的先後順序，不是犧牲。
-static SemaphoreHandle_t voiceBusyMutex = nullptr;
-struct VoiceFetchArgs { char path[160]; bool duck; };
-void voiceFetchTask(void* pv);
-
-static void setMdeckUrl(int idx, const char* url) {
-  xSemaphoreTake(mdeckUrlMutex, portMAX_DELAY);
-  strncpy(mdeckUrl[idx], url, sizeof(mdeckUrl[idx]) - 1);
-  mdeckUrl[idx][sizeof(mdeckUrl[idx]) - 1] = 0;
-  xSemaphoreGive(mdeckUrlMutex);
-}
-
-// raw MP3 bytes ring（同 STEP9 deckBRing 的 memcpy 版實作，索引化成 [idx]）。
-static inline size_t mdeckUsed(int idx) {
-  size_t h = mdeckHead[idx], t = mdeckTail[idx];
-  return (h >= t) ? (h - t) : (MDECK_RING_SIZE - t + h);
-}
-static inline size_t mdeckFree(int idx) { return MDECK_RING_SIZE - 1 - mdeckUsed(idx); }
-static void mdeckRingWrite(int idx, const uint8_t* data, size_t len) {
-  size_t offset = 0;
-  while (offset < len) {
-    while (mdeckFree(idx) == 0) {
-      if (!mdeckActive[idx]) return;   // 被停用/被swap掉了，別卡死等 free
-      vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    size_t chunk = len - offset;
-    size_t freeNow = mdeckFree(idx);
-    if (chunk > freeNow) chunk = freeNow;
-    size_t firstPart = MDECK_RING_SIZE - mdeckHead[idx];
-    if (firstPart > chunk) firstPart = chunk;
-    memcpy(mdeckRing[idx] + mdeckHead[idx], data + offset, firstPart);
-    if (chunk > firstPart) memcpy(mdeckRing[idx], data + offset + firstPart, chunk - firstPart);
-    mdeckHead[idx] = (mdeckHead[idx] + chunk) % MDECK_RING_SIZE;
-    offset += chunk;
-  }
-}
-static size_t mdeckRingRead(int idx, uint8_t* out, size_t maxLen) {
-  size_t avail = mdeckUsed(idx);
-  size_t want = maxLen < avail ? maxLen : avail;
-  if (want == 0) return 0;
-  size_t firstPart = MDECK_RING_SIZE - mdeckTail[idx];
-  if (firstPart > want) firstPart = want;
-  memcpy(out, mdeckRing[idx] + mdeckTail[idx], firstPart);
-  if (want > firstPart) memcpy(out + firstPart, mdeckRing[idx], want - firstPart);
-  mdeckTail[idx] = (mdeckTail[idx] + want) % MDECK_RING_SIZE;
-  return want;
-}
-
-// 解碼後 PCM ring（同 STEP10 deckBPcmRing 的滿了就丟版本，索引化）。跟 raw ring 不同：
-// 滿了直接丟這批，不等——mixOutputTask 才是這個 ring 唯一的消費節奏來源，decode task
-// 不該被它卡住。
-static inline size_t mdeckPcmUsed(int idx) {
-  size_t h = mdeckPcmHead[idx], t = mdeckPcmTail[idx];
-  return (h >= t) ? (h - t) : (MDECK_PCM_RING_SIZE - t + h);
-}
-static inline size_t mdeckPcmFree(int idx) { return MDECK_PCM_RING_SIZE - 1 - mdeckPcmUsed(idx); }
-static void mdeckPcmWrite(int idx, const uint8_t* data, size_t len) {
-  if (mdeckPcmRing[idx] == nullptr) return;
-  size_t freeNow = mdeckPcmFree(idx);
-  if (freeNow == 0) return;
-  size_t chunk = len > freeNow ? freeNow : len;
-  size_t firstPart = MDECK_PCM_RING_SIZE - mdeckPcmHead[idx];
-  if (firstPart > chunk) firstPart = chunk;
-  memcpy(mdeckPcmRing[idx] + mdeckPcmHead[idx], data, firstPart);
-  if (chunk > firstPart) memcpy(mdeckPcmRing[idx], data + firstPart, chunk - firstPart);
-  mdeckPcmHead[idx] = (mdeckPcmHead[idx] + chunk) % MDECK_PCM_RING_SIZE;
-}
-static size_t mdeckPcmRead(int idx, uint8_t* out, size_t maxLen) {
-  size_t avail = mdeckPcmUsed(idx);
-  size_t want = maxLen < avail ? maxLen : avail;
-  if (want == 0) return 0;
-  size_t firstPart = MDECK_PCM_RING_SIZE - mdeckPcmTail[idx];
-  if (firstPart > want) firstPart = want;
-  memcpy(out, mdeckPcmRing[idx] + mdeckPcmTail[idx], firstPart);
-  if (want > firstPart) memcpy(out + firstPart, mdeckPcmRing[idx], want - firstPart);
-  mdeckPcmTail[idx] = (mdeckPcmTail[idx] + want) % MDECK_PCM_RING_SIZE;
-  return want;
-}
-#endif  // STEP >= 11
-
 // 2026-07-26：/audio_stream 現在送 MP3，ring buffer 裡裝的是壓縮 bytes——消費端不能再
 // 直接 i2s_write，要先解碼。用 pschatzmann/arduino-libhelix 的 MP3DecoderHelix：
 // decode-only（不像 ESP32-audioI2S 整包接管連線），塞 bytes 進去、解碼完的 PCM 經
@@ -1073,6 +915,60 @@ static int postHttp(WiFiClient& client, const char* host, uint16_t port, int32_t
   return code;
 }
 
+// 2026-08-13：postHttp() 的 keep-alive 版——不用在每次心跳都重新 TLS handshake（ECDHE
+// 是 ESP32 最貴的 CPU 操作，同 core 上會跟 audioNetworkTask 搶 LWIP_LOCK/CPU，實機在
+// 熱點/Funnel 下觀察到心跳連續 HTTP -1、/audio_stream 斷續，見 carHeartbeat() 前的
+// 說明）。跟 postHttp() 不同：呼叫端負責保留 client 物件跨呼叫存活、不主動 stop()；
+// 這裡必須精確讀完 Content-Length 那麼多 body bytes 才能把 socket 讀取位置停在下一個
+// response 的開頭——不能像 postHttp() 那樣「只看 status line、不管 body」，keep-alive
+// 連線上殘留沒讀完的 body 會讓下一次心跳從殘留資料開始解析、狀態碼全亂。回傳
+// false＝連線已經斷了或讀取異常，呼叫端要自己 stop() 該連線、下次重新 connect()+
+// handshake；true＝連線仍活著，可以留給下一次心跳直接複用。
+static bool postHttpKeepAlive(WiFiClient& client, const char* host, const char* path,
+                               const char* contentType, const uint8_t* body, size_t bodyLen,
+                               uint32_t readTimeoutMs, int* outCode) {
+  *outCode = -1;
+  if (!client.connected()) return false;
+
+  String header = String("POST ") + path + "?t=" + MARVIN_TOKEN + " HTTP/1.1\r\n" +
+                  "Host: " + host + "\r\n" +
+                  "Content-Type: " + contentType + "\r\n" +
+                  "Content-Length: " + bodyLen + "\r\n" +
+                  "Connection: keep-alive\r\n\r\n";
+  LWIP_LOCK();
+  client.print(header);
+  client.write(body, bodyLen);
+  LWIP_UNLOCK();
+
+  String status;
+  if (!lockedReadLine(client, status, readTimeoutMs)) return false;
+  int code = 0;
+  int sp1 = status.indexOf(' ');
+  if (sp1 > 0) code = status.substring(sp1 + 1, sp1 + 4).toInt();
+
+  long contentLength = -1;
+  for (;;) {
+    String h;
+    if (!lockedReadLine(client, h, readTimeoutMs)) return false;
+    if (h.length() == 0) break;   // 空行＝標頭結束
+    if (h.startsWith("Content-Length:") || h.startsWith("content-length:")) {
+      contentLength = h.substring(h.indexOf(':') + 1).toInt();
+    }
+  }
+  if (contentLength > 0) {
+    uint8_t drain[256];
+    long remain = contentLength;
+    while (remain > 0) {
+      size_t want = remain < (long)sizeof(drain) ? (size_t)remain : sizeof(drain);
+      size_t n = lockedReadBytes(client, drain, want, readTimeoutMs);
+      if (n == 0) return false;   // 讀不到＝斷線，逼下一次重新 connect()
+      remain -= (long)n;
+    }
+  }
+  *outCode = code;
+  return true;
+}
+
 // STEP 8a：手動 GET + 讀 body（跟 postHttp 對稱、同款鎖紀律；body 走 Connection: close
 // 讀到斷線為止，不解析 Content-Length——/car_commands 回應很小，這樣最簡單）。
 // bodyBuf 由呼叫端提供（ps_malloc，避免佔 stack），塞不下就截斷（回傳值 = 實際讀到的
@@ -1140,13 +1036,19 @@ static uint32_t parseTopLevelSeq(const uint8_t* body, size_t len) {
 #define CMD_POLL_BODY_MAX 2048
 static uint8_t* cmdPollBodyBuf = nullptr;
 static uint32_t lastCmdSeq = 0;
-static bool cmdSeqSynced = false;   // 見 commandPollTask 開機首次同步的說明
 
-// STEP 8a：每 1s 輪詢一次 /car_commands，收到新指令只 log、不套用（edge端混音第一刀，
+// STEP 8a：每 60s 輪詢一次 /car_commands，收到新指令只 log、不套用（edge端混音第一刀，
 // 見檔頭 STEP 8a 說明）。跟 carHeartbeatTask 同款區網優先／Funnel 回退、同款
 // LWIP_LOCK 紀律，釘同一顆 core（0）、優先權 2（2026-08-13 調的，見 setup() 建立這個
 // task 那行的說明——原本=1 會被同核心優先權2的 audioNet/deckNet×2 餓死，跟
 // carHeartbeatTask 2026-08-12 那次同一種症狀）。
+//
+// 2026-08-13：原本 1s 一次——這條路每次都要「先試區網（持鎖）、失敗退 Funnel TLS
+// handshake」，跟心跳是同一種搶 LWIP_LOCK 的模式，但頻率是心跳（30s）的 30 倍，
+// 是熱點/Funnel 下最大宗的搶鎖來源。車用場景幾乎不會操作 car_control 面板，這條
+// 輪詢本身也只是 log（.env 的 MARVIN_CAR_HARDWARE 沒開時 /car_commands 直接 404，
+// 連指令都收不到），拉長到 60s 對「有沒有新指令」這件事影響可忽略，換來的是把這裡
+// 的鎖競爭砍到心跳的 1/2。
 void commandPollTask(void* pv) {
   Serial.println("[CmdPoll] commandPollTask 已啟動（STEP 8a：只 log，不套用指令）");
   cmdPollBodyBuf = (uint8_t*)ps_malloc(CMD_POLL_BODY_MAX);
@@ -1156,7 +1058,7 @@ void commandPollTask(void* pv) {
     return;
   }
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    vTaskDelay(pdMS_TO_TICKS(60000));
     if (WiFi.status() != WL_CONNECTED) continue;
 
     char path[96];
@@ -1175,23 +1077,6 @@ void commandPollTask(void* pv) {
     if (code != 200 || bodyLen == 0) continue;
 
     uint32_t newSeq = parseTopLevelSeq(cmdPollBodyBuf, bodyLen);
-
-    if (!cmdSeqSynced) {
-      // ⚠️ 2026-08-11 實機踩到（STEP 11 白噪音第二個根因，比 PCM ring race 更嚴重）：
-      // lastCmdSeq 只存在 RAM，ESP32 每次實體重開機都歸零，但 Mac 端 PuckCommandQueue
-      // 是跨重開機持續存在的行程級單例——一開機第一次打 since=0 會拿回「有史以來全部」
-      // 指令（實測：累積 15 首歌份、30 筆 queue_next/crossfade），dispatchNewCommands
-      // 在同一輪迴圈內把這些全部瞬間套用完，所有 crossfade 計時起點被連續覆寫、deck
-      // URL/reset 旗標被連續覆寫，雙 deck 狀態瞬間攪亂。開機後第一次成功輪詢只同步
-      // seq 起點、不套用任何歷史指令——之後才開始正常的增量處理，只處理「開機之後才
-      // 發生」的新指令，不重播開機前的舊歷史。
-      lastCmdSeq = newSeq;
-      cmdSeqSynced = true;
-      Serial.printf("[CmdPoll] 開機同步完成，起點 seq=%u（不重播開機前的歷史指令）\n",
-                    (unsigned)newSeq);
-      continue;
-    }
-
     // 2026-08-13 實機踩到：seq 只存在 Mac 端 PuckCommandQueue 的進程記憶體裡，puck
     // 沒重開機的情況下 Mac 端重啟一次，seq 就從 0 重算——這裡的 newSeq 會小於 puck
     // 記得的 lastCmdSeq，導致 `newSeq > lastCmdSeq` 從此永遠不成立、新指令永遠被判定
@@ -1469,81 +1354,6 @@ void dispatchNewCommands(const uint8_t* body, size_t bodyLen) {
     while (nameEnd < bodyLen && body[nameEnd] != '"') nameEnd++;
     size_t nameLen = nameEnd - nameStart;
 
-#if STEP >= 11
-    // STEP 11：deck A/B 變成可互換角色（見檔頭說明+下方 STEP 11 區塊），這裡不再用
-    // 固定的 deckB* 全域，一律用 mdeck*[idx]，idx 用 activeDeck 決定「誰是待命位」。
-    if (nameLen == 4 && memcmp(body + nameStart, "play", 4) == 0) {
-      char url[256];
-      size_t searchTo = bodyLen < i + 300 ? bodyLen : i + 300;
-      if (extractJsonStringField(body, i, searchTo, "url", url, sizeof(url)) > 0) {
-        mdeckActive[0] = false; mdeckActive[1] = false;   // 硬換：兩邊都停
-        crossfadeActive = false;
-        activeDeck = 0;
-        setMdeckUrl(0, url);
-        deckDownloadedSec[0] = 0.0f;   // 新歌開播，斷線重連的 seek 基準歸零
-        // ⚠️ 2026-08-11 實機踩到「大聲白噪音」：這裡本來直接 mdeckPcmHead[0]=0/
-        // mdeckPcmTail[0]=0，但 commandPollTask（這裡，core0）跟 mixOutputTask/
-        // deckPlaybackTask（讀寫同一組PCM ring指標，core1）是不同任務，直接從外部戳
-        // single-producer/single-consumer ring 的指標會跟正在進行中的
-        // read/write 打架，algebra 算出來的「used」可能對應到 ps_malloc 從沒清過的
-        // PSRAM 垃圾值，當PCM播出來就是滿範圍隨機噪音。改成只設 mdeckNeedsReset
-        // 旗標，實際指標重置交回 deckPlaybackTask 自己（它是PCM ring的producer，
-        // 只碰自己的head，安全），比照 raw ring「只從 consumer/producer 自己動指標」
-        // 的既有紀律（見 mdeckRingRead 前的註解）。
-        mdeckNeedsReset[0] = true;
-        mdeckActive[0] = true;
-        Serial.printf("[Mix] play → %s\n", url);
-      }
-    } else if (nameLen == 10 && memcmp(body + nameStart, "queue_next", 10) == 0) {
-      char url[256];
-      size_t searchTo = bodyLen < i + 300 ? bodyLen : i + 300;
-      if (extractJsonStringField(body, i, searchTo, "url", url, sizeof(url)) > 0) {
-        int standby = 1 - activeDeck;
-        setMdeckUrl(standby, url);
-        deckDownloadedSec[standby] = 0.0f;   // 新歌開播，斷線重連的 seek 基準歸零
-        mdeckNeedsReset[standby] = true;   // 同上：PCM ring 指標重置交給 deckPlaybackTask 自己
-        mdeckActive[standby] = true;
-        Serial.printf("[Mix] queue_next(deck%d) → %s\n", standby, url);
-      }
-    } else if (nameLen == 4 && memcmp(body + nameStart, "stop", 4) == 0) {
-      mdeckActive[0] = false; mdeckActive[1] = false;
-      crossfadeActive = false;
-      Serial.println("[Mix] stop → 兩個 deck 都停用");
-    } else if (nameLen == 9 && memcmp(body + nameStart, "crossfade", 9) == 0) {
-      float durationS = 4.0f;
-      size_t searchTo = bodyLen < i + 300 ? bodyLen : i + 300;
-      extractJsonNumberField(body, i, searchTo, "duration_s", &durationS);
-      crossfadeStartMs = millis();
-      crossfadeDurationMs = (uint32_t)(durationS * 1000.0f);
-      crossfadeActive = true;
-      Serial.printf("[Mix] crossfade → duration=%.1fs（deck%d→deck%d）\n",
-                    durationS, activeDeck, 1 - activeDeck);
-    } else if (nameLen == 5 && memcmp(body + nameStart, "speak", 5) == 0) {
-      char clipId[64];
-      size_t searchTo = bodyLen < i + 300 ? bodyLen : i + 300;
-      if (extractJsonStringField(body, i, searchTo, "clip_id", clipId, sizeof(clipId)) > 0) {
-        VoiceFetchArgs* args = (VoiceFetchArgs*)malloc(sizeof(VoiceFetchArgs));
-        if (args) {
-          snprintf(args->path, sizeof(args->path), "/puck_voice?clip_id=%s&t=%s", clipId, MARVIN_TOKEN);
-          args->duck = true;
-          xTaskCreatePinnedToCore(voiceFetchTask, "voiceFetch", 8192, args, 1, nullptr, 0);
-        }
-        Serial.printf("[Voice] speak → clip_id=%s\n", clipId);
-      }
-    } else if (nameLen == 3 && memcmp(body + nameStart, "sfx", 3) == 0) {
-      char clipId[64];
-      size_t searchTo = bodyLen < i + 300 ? bodyLen : i + 300;
-      if (extractJsonStringField(body, i, searchTo, "clip_id", clipId, sizeof(clipId)) > 0) {
-        VoiceFetchArgs* args = (VoiceFetchArgs*)malloc(sizeof(VoiceFetchArgs));
-        if (args) {
-          snprintf(args->path, sizeof(args->path), "/puck_voice?clip_id=%s&t=%s", clipId, MARVIN_TOKEN);
-          args->duck = false;
-          xTaskCreatePinnedToCore(voiceFetchTask, "voiceFetch", 8192, args, 1, nullptr, 0);
-        }
-        Serial.printf("[Voice] sfx → clip_id=%s\n", clipId);
-      }
-    }
-#else
     if (nameLen == 10 && memcmp(body + nameStart, "queue_next", 10) == 0) {
       char url[256];
       size_t searchTo = bodyLen < i + 300 ? bodyLen : i + 300;
@@ -1581,399 +1391,22 @@ void dispatchNewCommands(const uint8_t* body, size_t bodyLen) {
       Serial.printf("[Mix] crossfade → duration=%.1fs\n", durationS);
 #endif
     }
-#endif  // STEP >= 11
   }
 }
 #endif  // STEP >= 9
 
-#if STEP >= 11
-// ============================================================
-// STEP 11：可互換雙 deck 的 network/decode/mix 任務——全域狀態（mdeck*/activeDeck）
-// 宣告在檔案更早處（mp3DataCallback 之前，因為 dispatchNewCommands 也要用），這裡只放
-// 用不到那些全域的部分：兩個 decoder callback + task 本體。
-//
-// crossfade 結束時直接 activeDeck = 1-activeDeck（角色互換，不重新連線），才不會
-// 跳拍——deck B（STEP 9/10）那組是先解碼一堆丟進 side-channel 疊加，測完混音數學就
-// 收手；這裡是真的把「輸出權威」在兩個一直獨立播放中的 deck 之間切換。
-// ============================================================
-// 兩個 decoder 各自的 callback 只是把解碼出的 PCM 推進對應 idx 的 PCM ring——
-// MP3DecoderHelix 的 callback 是純函式指標、沒有 user-data 可穿，兩個實例各自要有
-// 專屬 callback，這裡各自硬寫 idx（跟 STEP7/9 兩個既有 decoder 是同一種寫法）。
-static void mp3DataCallbackM0(MP3FrameInfo &info, short *pcm_buffer, size_t len, void *ref) {
-  if (len == 0) return;
-  mdeckPcmWrite(0, (const uint8_t*)pcm_buffer, len * sizeof(int16_t));
-}
-static void mp3DataCallbackM1(MP3FrameInfo &info, short *pcm_buffer, size_t len, void *ref) {
-  if (len == 0) return;
-  mdeckPcmWrite(1, (const uint8_t*)pcm_buffer, len * sizeof(int16_t));
-}
-static MP3DecoderHelix mp3DecoderM0(mp3DataCallbackM0);
-static MP3DecoderHelix mp3DecoderM1(mp3DataCallbackM1);
+// 2026-08-13：心跳走 Funnel 時複用同一個 TLS 連線（keep-alive），不是 postHttp() 那種
+// 用完即丟的 client——避免每 30 秒都重新做一次完整 handshake。
+static WiFiClientSecure gHeartbeatFunnelClient;
 
-// ── Phase3 口白/SFX 第三聲道：一次性抓取+解碼（見 voicePcmBuf 前的說明）──────
-// voiceDecodeWritePos 只有 voiceFetchTask 會動（decode 期間的唯一 writer，跟
-// mixOutputTask 讀 voicePcmBuf 的時間點靠 voiceActive 旗標錯開，不會撞）。
-static size_t voiceDecodeWritePos = 0;
-static void mp3DataCallbackVoice(MP3FrameInfo &info, short *pcm_buffer, size_t len, void *ref) {
-  if (len == 0 || voicePcmBuf == nullptr) return;
-  size_t bytes = len * sizeof(int16_t);
-  if (voiceDecodeWritePos + bytes > VOICE_PCM_MAX_BYTES) {
-    if (voiceDecodeWritePos >= VOICE_PCM_MAX_BYTES) return;   // 已經滿了，安靜丟棄
-    bytes = VOICE_PCM_MAX_BYTES - voiceDecodeWritePos;         // 截斷最後一點，別溢位
-  }
-  memcpy(voicePcmBuf + voiceDecodeWritePos, pcm_buffer, bytes);
-  voiceDecodeWritePos += bytes;
-}
-static MP3DecoderHelix mp3DecoderVoice(mp3DataCallbackVoice);
-
-// 一次性 task：抓 /puck_voice?clip_id=... 整個檔案、解碼進 voicePcmBuf、武裝
-// voiceActive，播完自己刪除（跟 deck0/1 常駐 network task 不同，口白/SFX 不需要
-// 持續連線）。args 由呼叫端 malloc 傳入（見 VoiceFetchArgs 前的說明），這裡用完即
-// free——所有權轉移給這個 task。
-void voiceFetchTask(void* pv) {
-  VoiceFetchArgs* args = (VoiceFetchArgs*)pv;
-  char* path = args->path;
-  bool duck = args->duck;
-  Serial.printf("[Voice] 抓取 %s（duck=%d）\n", path, (int)duck);
-
-  // 見 voiceBusyMutex 前的說明：整個 fetch→decode→播完 生命週期互斥，同一時間只有
-  // 一個 speak/sfx 在用這條聲道，避免兩個 voiceFetchTask 同時搶 voicePcmBuf/解碼器。
-  xSemaphoreTake(voiceBusyMutex, portMAX_DELAY);
-
-  WiFiClient localClient;
-  WiFiClientSecure funnelClient; funnelClient.setInsecure();
-  funnelClient.setHandshakeTimeout(5);
-  LWIP_LOCK();
-  bool connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
-  LWIP_UNLOCK();
-  bool useFunnel = !connectOk;
-  if (useFunnel) {
-    LWIP_LOCK();
-    connectOk = funnelClient.connect(MARVIN_HOST, MARVIN_PORT, 5000);
-    LWIP_UNLOCK();
-  }
-  WiFiClient& client = useFunnel ? (WiFiClient&)funnelClient : localClient;
-  if (!connectOk) {
-    Serial.println("[Voice] ⚠️ connect() 失敗，放棄本次口白/音效");
-    free(args);
-    xSemaphoreGive(voiceBusyMutex);
-    vTaskDelete(nullptr);
-    return;
-  }
-  const char* host = useFunnel ? MARVIN_HOST : MARVIN_LOCAL_HOST;
-  client.setTimeout(500);
-  String req = String("GET ") + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";
-  LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
-  free(args);   // path 是 args->path，用 req 拷貝完內容後這裡才釋放，不會用到已釋放記憶體
-
-  String status;
-  lockedReadLine(client, status, 8000);
-  bool ok200 = status.indexOf("200") > 0;
-  bool chunked = false;
-  while (client.connected()) {
-    String h;
-    if (!lockedReadLine(client, h, 8000)) break;
-    if (h.length() == 0) break;
-    if (h.indexOf("chunked") >= 0) chunked = true;
-  }
-  if (!ok200 || !chunked) {
-    Serial.printf("[Voice] ⚠️ 非預期回應（200=%d chunked=%d）\n", ok200, chunked);
-    LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
-    xSemaphoreGive(voiceBusyMutex);
-    vTaskDelete(nullptr);
-    return;
-  }
-
-  voiceDecodeWritePos = 0;
-  mp3DecoderVoice.begin();
-  uint8_t buf[2048];
-  while (client.connected()) {
-    String sizeLine;
-    if (!lockedReadLine(client, sizeLine, 8000)) sizeLine = "";
-    long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
-    if (chunkSize <= 0) break;   // 0 = chunked 結尾，正常收工
-    long remain = chunkSize;
-    while (remain > 0 && client.connected()) {
-      size_t want = remain < (long)sizeof(buf) ? (size_t)remain : sizeof(buf);
-      size_t n = lockedReadBytes(client, buf, want, 8000);
-      if (n == 0) { vTaskDelay(pdMS_TO_TICKS(1)); continue; }
-      mp3DecoderVoice.write(buf, n);
-      remain -= (long)n;
-    }
-    { String _crlf; lockedReadLine(client, _crlf, 8000); }
-  }
-  LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
-
-  if (voiceDecodeWritePos > 0) {
-    voicePcmPos = 0;
-    voicePcmLen = voiceDecodeWritePos;   // 寫完才設，mixOutputTask 只在 voiceActive=true 後才讀
-    voiceDuck = duck;                    // 跟著這次 fetch 的指令走，不用共用全域搶
-    voiceActive = true;
-    Serial.printf("[Voice] 解碼完成 %u bytes，開始播（duck=%d）\n",
-                  (unsigned)voiceDecodeWritePos, (int)duck);
-    // 等這輪真的播完（mixOutputTask 播完會把 voiceActive 清掉）才放行下一個
-    // speak/sfx——這條聲道跟解碼器只有一份，播放期間不能讓下一個 fetch 進來搶。
-    while (voiceActive) vTaskDelay(pdMS_TO_TICKS(20));
-  } else {
-    Serial.println("[Voice] ⚠️ 解碼出 0 bytes，放棄");
-  }
-  xSemaphoreGive(voiceBusyMutex);
-  vTaskDelete(nullptr);
-}
-
-// 通用 network task，idx 從 pvParameters 拿（0 或 1）。跟 STEP9 deckBNetworkTask
-// 幾乎一樣的手動 chunked 解析+區網優先/Funnel回退+LWIP_LOCK 紀律，差別只在讀寫哪個
-// idx 的 ring/url/active 旗標。deck 沒 active 時空轉，不連線。
-void deckNetworkTask(void* pv) {
-  int idx = (int)(intptr_t)pv;
-  Serial.printf("[Mix] deckNetworkTask(%d) 已啟動\n", idx);
-  for (;;) {
-    if (!mdeckActive[idx]) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
-    if (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
-
-    char urlLocal[256];
-    xSemaphoreTake(mdeckUrlMutex, portMAX_DELAY);
-    strncpy(urlLocal, mdeckUrl[idx], sizeof(urlLocal) - 1);
-    urlLocal[sizeof(urlLocal) - 1] = 0;
-    xSemaphoreGive(mdeckUrlMutex);
-    if (urlLocal[0] == 0) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
-
-    // deckDownloadedSec > 0 代表上一輪是真斷線重連（見迴圈尾端），不是新歌開播（那
-    // 邊在 dispatchNewCommands 就歸零了）——帶 seek 接回原本下載到的位置。
-    float seekSec = deckDownloadedSec[idx];
-    char path[352];
-    if (seekSec > 0.1f) {
-      snprintf(path, sizeof(path), "/puck_deck?url=%s&t=%s&seek=%.2f", urlLocal, MARVIN_TOKEN, seekSec);
-    } else {
-      snprintf(path, sizeof(path), "/puck_deck?url=%s&t=%s", urlLocal, MARVIN_TOKEN);
-    }
-
-    WiFiClient localClient;
-    WiFiClientSecure funnelClient; funnelClient.setInsecure();
-    funnelClient.setHandshakeTimeout(5);
-    LWIP_LOCK();
-    bool connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
-    LWIP_UNLOCK();
-    bool useFunnel = !connectOk;
-    if (useFunnel) {
-      LWIP_LOCK();
-      connectOk = funnelClient.connect(MARVIN_HOST, MARVIN_PORT, 5000);
-      LWIP_UNLOCK();
-    }
-    WiFiClient& client = useFunnel ? (WiFiClient&)funnelClient : localClient;
-    if (!connectOk) {
-      Serial.printf("[Mix] deck%d ⚠️ connect() 失敗，2s後重試\n", idx);
-      vTaskDelay(pdMS_TO_TICKS(2000));
-      continue;
-    }
-    const char* host = useFunnel ? MARVIN_HOST : MARVIN_LOCAL_HOST;
-    client.setTimeout(500);
-    String req = String("GET ") + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";
-    LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
-
-    String status;
-    lockedReadLine(client, status, 20000);
-    bool ok200 = status.indexOf("200") > 0;
-    bool chunked = false;
-    while (client.connected()) {   // /puck_deck 是長連線 chunked stream，這裡守門沒問題
-      String h;
-      if (!lockedReadLine(client, h, 20000)) break;
-      if (h.length() == 0) break;
-      if (h.indexOf("chunked") >= 0) chunked = true;
-    }
-    if (!ok200 || !chunked) {
-      Serial.printf("[Mix] deck%d /puck_deck 非預期回應（200=%d chunked=%d）：%s\n",
-                    idx, ok200, chunked, status.c_str());
-      LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
-      vTaskDelay(pdMS_TO_TICKS(2000));
-      continue;
-    }
-    Serial.printf("[Mix] deck%d /puck_deck 連上：%s\n", idx, path);
-    // ⚠️ 2026-08-12 實機踩到：這裡以前無條件重置（不管新歌開播還是斷線重連都
-    // mdeckNeedsReset=true），斷線重連時會把 PCM ring 裡已經解碼好、還沒播到的緩衝
-    // 音訊直接丟掉、解碼器整個重置——聽感是「跳回一小段之前」。只有新歌開播
-    // （seekSec<=0.1，見上面 setMdeckUrl 呼叫點會歸零 deckDownloadedSec）才該重置；
-    // 斷線重連要保留原本還沒播完的緩衝，讓新連線的位元流無縫接上去就好。
-    bool isFreshSong = (seekSec <= 0.1f);
-    if (isFreshSong) mdeckNeedsReset[idx] = true;
-
-    uint8_t buf[4096];
-    // 2026-08-12：分辨「這首歌自然播完」跟「真斷線」——lockedReadLine 讀到有效的
-    // 終止 0-chunk（回傳 true、內容"0"）＝正常收工；讀不到（逾時）或迴圈中途
-    // client.connected() 變 false（下面兩個 while 的守門條件）才是真斷線。以前兩種
-    // 都當同一件事處理、往下掉到迴圈尾端用同一個 mdeckUrl 重連，若 Python 端這時還
-    // 沒送新 queue_next（autopilot 一時找不到下一首），就會抓著剛播完那首的網址
-    // 重播，實機聽感是「一直繞同一首歌」。naturalEof 統一在迴圈外印 log/判斷，不管
-    // 是在讀 chunk 大小那行偵測到、還是讀 bytes 途中連線掉了都涵蓋得到。
-    bool naturalEof = false;
-    while (client.connected() && mdeckActive[idx]) {
-      String sizeLine;
-      bool readOk = lockedReadLine(client, sizeLine, 20000);
-      long chunkSize = readOk ? strtol(sizeLine.c_str(), nullptr, 16) : -1;
-      if (chunkSize <= 0) {
-        naturalEof = readOk;   // 真的讀到"0"才算自然播完，讀不到＝真斷線
-        break;
-      }
-      long remain = chunkSize;
-      while (remain > 0 && client.connected() && mdeckActive[idx]) {
-        size_t want = remain < (long)sizeof(buf) ? (size_t)remain : sizeof(buf);
-        size_t n = lockedReadBytes(client, buf, want, 20000);
-        if (n == 0) { vTaskDelay(pdMS_TO_TICKS(1)); continue; }
-        mdeckRingWrite(idx, buf, n);
-        deckDownloadedSec[idx] += (float)n * 8.0f / (MP3_BITRATE_KBPS * 1000.0f);
-        remain -= (long)n;
-      }
-      { String _crlf; lockedReadLine(client, _crlf, 20000); }
-    }
-    LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
-    if (naturalEof) {
-      Serial.printf("[Mix] deck%d 自然播完，轉閒置等下一個 queue_next/play\n", idx);
-      mdeckActive[idx] = false;
-    } else if (mdeckActive[idx]) {
-      Serial.printf("[Mix] deck%d 斷線（已下載%.1fs），帶seek重連接回原位置\n",
-                    idx, deckDownloadedSec[idx]);
-    }
-    if (!mdeckActive[idx]) {
-      Serial.printf("[Mix] deck%d 已被停用，等下一次 play/queue_next\n", idx);
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-  }
-}
-
-// 通用 decode task，idx 從 pvParameters 拿。只管把 raw ring 的 bytes 餵給對應 decoder，
-// 解碼結果經 callback 進 PCM ring——完全不碰 i2s，輸出權威統一在 mixOutputTask。
-void deckPlaybackTask(void* pv) {
-  int idx = (int)(intptr_t)pv;
-  Serial.printf("[Mix] deckPlaybackTask(%d) 已啟動\n", idx);
-  if (idx == 0) mp3DecoderM0.begin(); else mp3DecoderM1.begin();
-  uint8_t buf[512];
-  for (;;) {
-    if (!mdeckActive[idx]) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
-    if (mdeckNeedsReset[idx]) {
-      mdeckTail[idx] = mdeckHead[idx];   // 只從 consumer 自己動 tail，理由同其他 ring
-      // PCM ring 這裡（deckPlaybackTask）是 producer（呼叫 mp3DecoderMx.write() 觸發
-      // callback 同步寫入），只准動自己的 head，不碰 tail（那是 mixOutputTask 的地盤）
-      // ——把 head 追平到目前 tail，等於丟掉還沒被消費的舊資料，讓新歌從乾淨狀態開始，
-      // 不會跟 mixOutputTask 的並行讀取打架（見 dispatchNewCommands 的 2026-08-11 註解：
-      // 白噪音bug就是因為外部任務直接戳這兩個指標）。
-      mdeckPcmHead[idx] = mdeckPcmTail[idx];
-      if (idx == 0) mp3DecoderM0.begin(); else mp3DecoderM1.begin();
-      mdeckNeedsReset[idx] = false;
-    }
-    // ⚠️ 2026-08-11 實機踩到（STEP 11 白噪音第三個根因）：這裡原本一路狂解、完全不看
-    // PCM ring 還有沒有空間——mdeckPcmWrite() 滿了就默默丟樣本（見該函式），所以 decode
-    // 從不因為 PCM ring 滿而停下來，raw ring 因此幾乎總是很快被清空，對 network task
-    // 起不到背壓，整首歌在幾秒內就下載+解碼完，連線自然關閉→deckNetworkTask 重連、
-    // 從頭重下載同一首歌→每次重連都觸發 mdeckNeedsReset（decoder+PCM ring重置），
-    // 打斷正在播放的內容——這就是「播一下噪音、恢復幾秒、又噪音」規律性重複的根因。
-    // 修法：PCM ring 剩餘空間不夠時先等，讓 decode 的節奏被迫貼近 mixOutputTask 的
-    // 真實消耗速度，背壓才會一路傳回 raw ring、再傳回 network 下載端。
-    if (mdeckPcmFree(idx) < (MDECK_PCM_RING_SIZE / 8)) {
-      vTaskDelay(pdMS_TO_TICKS(20));
-      continue;
-    }
-    size_t avail = mdeckUsed(idx);
-    if (avail == 0) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
-    size_t want = avail < sizeof(buf) ? avail : sizeof(buf);
-    size_t n = mdeckRingRead(idx, buf, want);
-    if (idx == 0) mp3DecoderM0.write(buf, n); else mp3DecoderM1.write(buf, n);
-  }
-}
-
-// 唯一寫 i2s 的任務——單獨播 activeDeck（gain 1.0）；crossfade 視窗內混
-// activeDeck（淡出）+ 1-activeDeck（淡入）；視窗跑完直接 activeDeck 互換（deck B
-// 這條連線本來就是活的、持續播放中，互換不用重連，不會跳拍）。
-void mixOutputTask(void* pv) {
-  Serial.println("[Mix] mixOutputTask 已啟動（STEP 11：可互換雙deck輸出權威）");
-  // /puck_deck 固定 48kHz/2ch/16bit（見 main_satellite.py::handle_puck_deck），格式
-  // 不會變，開機設一次就好，不用像舊版 mp3DataCallback 每個 frame 都檢查。
-  i2s_set_clk(I2S_SPK_PORT, 48000, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_STEREO);
-  static int16_t outBuf[1024], mixBuf[1024], voiceBuf[1024];
-  static float musicDuckGain = 1.0f;   // Phase3：口白/SFX 疊播用，見迴圈尾段
-  for (;;) {
-    int active = activeDeck;
-    size_t nSamples;
-    if (!crossfadeActive) {
-      size_t gotBytes = mdeckPcmRead(active, (uint8_t*)outBuf, sizeof(outBuf));
-      nSamples = gotBytes / sizeof(int16_t);
-      if (nSamples == 0) {
-        i2s_zero_dma_buffer(I2S_SPK_PORT);
-        vTaskDelay(pdMS_TO_TICKS(5));
-        continue;
-      }
-    } else {
-      // crossfade 中：activeDeck 淡出、1-activeDeck 淡入，等長讀取兩邊。
-      int standby = 1 - active;
-      size_t wantBytes = sizeof(outBuf);
-      size_t gotA = mdeckPcmRead(active, (uint8_t*)outBuf, wantBytes);
-      size_t gotB = mdeckPcmRead(standby, (uint8_t*)mixBuf, wantBytes);
-      nSamples = (gotA / sizeof(int16_t) > gotB / sizeof(int16_t))
-                     ? gotA / sizeof(int16_t) : gotB / sizeof(int16_t);
-      if (nSamples == 0) {
-        i2s_zero_dma_buffer(I2S_SPK_PORT);
-        vTaskDelay(pdMS_TO_TICKS(5));
-        continue;
-      }
-      size_t sampA = gotA / sizeof(int16_t), sampB = gotB / sizeof(int16_t);
-
-      uint32_t elapsedMs = millis() - crossfadeStartMs;
-      float gainA, gainB;
-      crossfadeGains(elapsedMs / 1000.0f, crossfadeDurationMs / 1000.0f, &gainA, &gainB);
-
-      for (size_t i = 0; i < nSamples; i++) {
-        float a = (i < sampA) ? outBuf[i] * gainA : 0.0f;
-        float b = (i < sampB) ? mixBuf[i] * gainB : 0.0f;
-        float mixed = a + b;
-        if (mixed > 32767.0f) mixed = 32767.0f;
-        if (mixed < -32768.0f) mixed = -32768.0f;
-        outBuf[i] = (int16_t)mixed;
-      }
-
-      if (elapsedMs >= crossfadeDurationMs) {
-        // 視窗跑完：角色互換。standby（剛淡入完成）變新的 active；舊 active 停用、
-        // 釋出給下一次 queue_next 當新的待命位——它的連線本來就活著，不用重連。
-        activeDeck = standby;
-        mdeckActive[active] = false;
-        crossfadeActive = false;
-        Serial.printf("[Mix] crossfade 完成，deck%d 接管為 active\n", standby);
-      }
-    }
-
-    // ── Phase3：DJ口白/SFX 疊播——outBuf 這時已經是「純音樂」的這一輪輸出（單獨播
-    // 或 crossfade 混好都算），這裡疊加口白/音效、順便處理 duck。musicDuckGain 用
-    // 一階低通往目標值靠（而非精確算樣本數的線性 ramp），實作簡單又能吸收
-    // voiceActive 開關瞬間的click——1024 samples/loop（≈21ms @48kHz）配 0.15 係數，
-    // 大約 100-150ms 內平滑到位，speak 開口前先聽到音樂淡下去、講完淡回來。
-    float duckTarget = (voiceActive && voiceDuck) ? VOICE_DUCK_GAIN : 1.0f;
-    musicDuckGain += (duckTarget - musicDuckGain) * VOICE_DUCK_RAMP;
-
-    size_t voiceSamples = 0;
-    if (voiceActive) {
-      size_t remainBytes = voicePcmLen - voicePcmPos;
-      size_t remainSamples = remainBytes / sizeof(int16_t);
-      voiceSamples = remainSamples < nSamples ? remainSamples : nSamples;
-      memcpy(voiceBuf, voicePcmBuf + voicePcmPos, voiceSamples * sizeof(int16_t));
-      voicePcmPos += voiceSamples * sizeof(int16_t);   // 只有這裡（consumer）動 pos
-      if (voicePcmPos >= voicePcmLen) voiceActive = false;   // 播完了
-    }
-
-    if (musicDuckGain < 0.999f || voiceSamples > 0) {   // 沒 duck 也沒口白時跳過整輪浮點運算
-      for (size_t i = 0; i < nSamples; i++) {
-        float m = outBuf[i] * musicDuckGain;
-        float v = (i < voiceSamples) ? (float)voiceBuf[i] : 0.0f;
-        float mixed = m + v;
-        if (mixed > 32767.0f) mixed = 32767.0f;
-        if (mixed < -32768.0f) mixed = -32768.0f;
-        outBuf[i] = (int16_t)mixed;
-      }
-    }
-
-    size_t written;
-    i2s_write(I2S_SPK_PORT, outBuf, nSamples * sizeof(int16_t), &written, portMAX_DELAY);
-  }
-}
-#endif  // STEP >= 11
+// 2026-08-13：熱點/Funnel 下每次心跳都無條件先試區網——LWIP_LOCK 包住整個 connect()
+// timeout，區網打不到時等於每 30 秒白白持鎖最多 timeout 那麼久，直接跟 audioNetworkTask
+// 搶讀取視窗，是斷續的另一個貢獻源（跟上面的 Funnel keep-alive 是同一個問題的兩面：
+// 「連線建立太貴」+「明知會失敗還硬試」）。記住上次心跳走哪條路：確定不在區網範圍時，
+// 接下來幾輪跳過區網嘗試直接走 Funnel；每 gHeartbeatSkipLanRounds 輪（約5分鐘）重新
+// 探一次區網，偵測「開回家了」。
+static bool gHeartbeatTryLan = true;
+static uint8_t gHeartbeatSkipLanRounds = 0;
 
 void carHeartbeat() {
   // 先試區網明碼（快、家用WiFi成立）；連不到（出門）就退回 Funnel TLS。
@@ -1983,17 +1416,52 @@ void carHeartbeat() {
   // 優先權=1，跟同核心的 audioNet/deckNet（優先權=2）搶不過，逾時前常常連鎖都還沒搶到
   // 就過期。逾時值加大給排程延遲留餘裕（見下面 carHeartbeatTask 建立時優先權也一併調高）。
   const char* body = "{\"state\":\"present\"}";
-  WiFiClient localClient;
-  int code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 3000,
-                       "/car", "application/json", (const uint8_t*)body, strlen(body), 4000);
-  if (code <= 0) {
-    WiFiClientSecure funnelClient; funnelClient.setInsecure();
-    funnelClient.setHandshakeTimeout(8);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
-    code = postHttp(funnelClient, MARVIN_HOST, MARVIN_PORT, 8000,
-                     "/car", "application/json", (const uint8_t*)body, strlen(body), 6000);
-    Serial.printf("[Car] present 心跳(Funnel) HTTP %d\n", code);
-  } else {
+  int code = -1;
+  bool lanAttempted = gHeartbeatTryLan;
+  if (lanAttempted) {
+    // timeout 從 3000ms 砍到 800ms：真的在區網範圍時連線幾毫秒內就會成功，不需要那麼
+    // 長的容忍度；失敗時（不在區網範圍）的最壞持鎖時間跟著砍掉，別讓明知可能失敗的
+    // 嘗試把 LWIP_LOCK 一鎖鎖 3 秒。
+    WiFiClient localClient;
+    code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 800,
+                     "/car", "application/json", (const uint8_t*)body, strlen(body), 4000);
+  }
+
+  if (code > 0) {
+    gHeartbeatTryLan = true;
+    gHeartbeatSkipLanRounds = 0;
     Serial.printf("[Car] present 心跳(區網) HTTP %d\n", code);
+  } else {
+    if (lanAttempted) {
+      // 這輪剛確認區網不通：接下來跳過幾輪的區網嘗試，省下白白持鎖的時間；輪數歸零
+      // 後重新探一次（偵測「開回家了」）。
+      gHeartbeatTryLan = false;
+      gHeartbeatSkipLanRounds = 9;   // 9 輪 × 30s ≈ 4.5 分鐘後重新探一次區網
+    } else if (gHeartbeatSkipLanRounds > 0 && --gHeartbeatSkipLanRounds == 0) {
+      gHeartbeatTryLan = true;
+    }
+
+    // Funnel：keep-alive 複用連線（見 gHeartbeatFunnelClient 前的說明）——連線還活著
+    // 就直接送、不重新握手；斷了（或這是第一次）才真的 connect()+handshake。
+    bool alive = gHeartbeatFunnelClient.connected();
+    if (!alive) {
+      gHeartbeatFunnelClient.setInsecure();
+      gHeartbeatFunnelClient.setHandshakeTimeout(8);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
+      LWIP_LOCK();
+      alive = gHeartbeatFunnelClient.connect(MARVIN_HOST, MARVIN_PORT, 8000);
+      LWIP_UNLOCK();
+      if (alive) gHeartbeatFunnelClient.setTimeout(500);
+    }
+    if (alive) {
+      int httpCode = -1;
+      bool ok = postHttpKeepAlive(gHeartbeatFunnelClient, MARVIN_HOST, "/car", "application/json",
+                                   (const uint8_t*)body, strlen(body), 6000, &httpCode);
+      if (!ok) { LWIP_LOCK(); gHeartbeatFunnelClient.stop(); LWIP_UNLOCK(); }
+      code = ok ? httpCode : -1;
+    } else {
+      code = -1;
+    }
+    Serial.printf("[Car] present 心跳(Funnel) HTTP %d\n", code);
   }
   if (code <= 0) { Serial.println("[Car] ⚠️ 心跳區網+Funnel都失敗，跳過這輪"); return; }
   // 診斷用堆疊水位（見上方 2026-07-25 註解）：已排除堆疊溢位假說，繼續留著當健康度
@@ -2138,14 +1606,7 @@ void setup() {
   pinMode(PIN_BTN_VOLUP, INPUT_PULLUP);
   pinMode(PIN_BTN_VOLDN, INPUT_PULLUP);
 
-#if STEP >= 2 && STEP < 7
-  // 2026-08-12 實機踩到：STEP>=7 起真正代表健康狀態的是持續心跳
-  // （carHeartbeatTask，每 30s 一次+斷線自動重試），這個一次性 Funnel 連線測試只是
-  // STEP2 時代的 bring-up 驗證，失敗就 setLed(LED_ERROR)、之後沒人會在心跳成功後把
-  // 燈改回來——開機那一瞬間 Funnel 剛好卡一下（TLS handshake 逾時/DNS還沒好），就
-  // 永久卡紅燈，即使實際心跳完全正常也不會恢復（使用者實機回報「reset後閃紅燈連不
-  // 上」，serial驗證心跳其實 HTTP 200，是誤報）。STEP>=7 起不再讓這顆一次性測試碰
-  // LED，只在 STEP2-6 bring-up 階段還沒有心跳迴圈時才需要它當連線指示。
+#if STEP >= 2
   testFunnelNow();
 #endif
 #if STEP >= 4
@@ -2154,9 +1615,7 @@ void setup() {
 #if STEP >= 6
   startSpeaker();
 #endif
-#if STEP >= 7 && STEP < 11
-  // STEP<11：舊單一 deck 直吃 /audio_stream，見 audioNetworkTask/audioPlaybackTask。
-  // STEP>=11 起這條路徑整個被 STEP 11 的可互換雙 deck 取代，見下面的新區塊。
+#if STEP >= 7
   streamRing = (uint8_t*)ps_malloc(STREAM_RING_SIZE);
   Serial.printf("[Stream] streamRing ps_malloc %s（%u bytes）\n",
                 streamRing ? "成功" : "❌失敗", (unsigned)STREAM_RING_SIZE);
@@ -2181,10 +1640,9 @@ void setup() {
   BaseType_t _rNet = xTaskCreatePinnedToCore(audioNetworkTask, "audioNet", 16384, nullptr, 2, &audioNetTaskHandle, 0);
   BaseType_t _rPlay = xTaskCreatePinnedToCore(audioPlaybackTask, "audioPlay", 8192, nullptr, 2, &audioPlayTaskHandle, 1);
   Serial.printf("[Stream] 任務建立 net=%d play=%d（1=成功）\n", (int)_rNet, (int)_rPlay);
-#endif
-#if STEP >= 7
-  // 心跳釘死 core 0；任務起來後第一輪迴圈立刻打一次，不用等第一輪 30s。跟音訊路徑
-  // 是哪個版本（STEP<11 舊單deck / STEP>=11 新雙deck）無關，兩邊都要跑。
+  // 心跳釘死 core 0（跟 audioNetworkTask 同核，理由見 carHeartbeat() 前的註解）；
+  // 任務起來後第一輪迴圈立刻打一次，不用等第一輪 30s。隔離實驗（31 分鐘拔掉心跳
+  // 零崩潰）已證實心跳是必要條件，方案 A 落地後重新啟用測試。
   // 2026-08-12：優先權從 1 調到 2，跟 audioNet/deckNet 同級——原本=1 時實機常被同核心
   // 的網路 task 餓到搶不到 LWIP_LOCK，心跳連續 HTTP -1（見 carHeartbeat() 前的註解）。
   xTaskCreatePinnedToCore(carHeartbeatTask, "carHeartbeat", 8192, nullptr, 2, nullptr, 0);
@@ -2196,62 +1654,26 @@ void setup() {
   // 收不到任何輪詢，car_control面板也一起失去回應，只有puck端手動reset才能恢復。
   // 上面 carHeartbeatTask 已經因為同一個原因調到2、這裡當初漏改，註解還誤寫「同優先權」
   // 但兩邊其實不同級。跟其餘同核心 task 一致調到2，靠FreeRTOS同優先權round-robin
-  // 保底輪詢不被完全餓死（不解決任何task真的卡死自旋的情況，但那另有其事，見
-  // 2026-08-13對話記錄）。
+  // 保底輪詢不被完全餓死（不解決任何task真的卡死自旋的情況，但那另有其事）。
   xTaskCreatePinnedToCore(commandPollTask, "cmdPoll", 8192, nullptr, 2, nullptr, 0);
 #endif
-#if STEP >= 9 && STEP < 11
-  // STEP 9/10：deck B 只做解碼統計/混音測試，STEP>=11 起被下面的可互換雙deck取代。
+#if STEP >= 9
+  // STEP 9：deck B —— 優先權都給 1（比主 deck 的 audioNet/audioPlay 的 2 低一階），
+  // 這一刀是「順便驗證能不能撐」，不該搶主播放的 CPU/網路優先權。network 跟主 deck
+  // 一樣釘 core 0（I/O bound），decode 跟主 deck 一樣釘 core 1（CPU bound，這一刀最想
+  // 觀察的就是這裡會不會餓死 audioPlaybackTask）。
   deckBRing = (uint8_t*)ps_malloc(DECKB_RING_SIZE);
   deckBUrlMutex = xSemaphoreCreateMutex();
   Serial.printf("[DeckB] deckBRing ps_malloc %s（%u bytes）free heap=%u\n",
                 deckBRing ? "成功" : "❌失敗", (unsigned)DECKB_RING_SIZE, (unsigned)ESP.getFreeHeap());
 #if STEP >= 10
+  // STEP 10：混音 PCM ring，要在 deckB 任務起來、真的開始解碼寫入前分配好。
   deckBPcmRing = (uint8_t*)ps_malloc(DECKB_PCM_RING_SIZE);
   Serial.printf("[Mix] deckBPcmRing ps_malloc %s（%u bytes）free heap=%u\n",
                 deckBPcmRing ? "成功" : "❌失敗", (unsigned)DECKB_PCM_RING_SIZE, (unsigned)ESP.getFreeHeap());
 #endif
   xTaskCreatePinnedToCore(deckBNetworkTask, "deckBNet", 16384, nullptr, 1, nullptr, 0);
   xTaskCreatePinnedToCore(deckBPlaybackTask, "deckBPlay", 8192, nullptr, 1, nullptr, 1);
-#endif
-#if STEP >= 11
-  // STEP 11：可互換雙 deck——deck 0/1 對稱，activeDeck 決定誰在播、誰待命。兩個
-  // network/decode 各自 ps_malloc 自己的 raw+PCM ring；mixOutputTask 是唯一寫 i2s
-  // 的任務，統一決定「單獨播 activeDeck」還是「crossfade 混兩個 deck」。
-  mdeckUrlMutex = xSemaphoreCreateMutex();
-  // Phase3 口白/SFX 聲道互斥鎖（見 voiceBusyMutex 前的說明）：binary semaphore 初始
-  // 給 1（可用），不用 xSemaphoreCreateMutex()——take/give 分屬 voiceFetchTask 自己
-  // 的一次生命週期，不是「跨 task 交還」那種需要優先權繼承的情境，binary semaphore
-  // 語意更直接對應「這條聲道現在有沒有人在用」。
-  voiceBusyMutex = xSemaphoreCreateBinary();
-  xSemaphoreGive(voiceBusyMutex);
-  for (int _d = 0; _d < 2; _d++) {
-    mdeckRing[_d] = (uint8_t*)ps_malloc(MDECK_RING_SIZE);
-    mdeckPcmRing[_d] = (uint8_t*)ps_malloc(MDECK_PCM_RING_SIZE);
-    Serial.printf("[Mix] deck%d ring ps_malloc raw=%s pcm=%s free heap=%u\n", _d,
-                  mdeckRing[_d] ? "成功" : "❌失敗", mdeckPcmRing[_d] ? "成功" : "❌失敗",
-                  (unsigned)ESP.getFreeHeap());
-  }
-  // Phase3：口白/SFX 第三聲道固定 buffer（見 voicePcmBuf 前的說明）。
-  voicePcmBuf = (uint8_t*)ps_malloc(VOICE_PCM_MAX_BYTES);
-  Serial.printf("[Voice] voicePcmBuf ps_malloc %s（%u bytes）free heap=%u\n",
-                voicePcmBuf ? "成功" : "❌失敗", (unsigned)VOICE_PCM_MAX_BYTES,
-                (unsigned)ESP.getFreeHeap());
-  // ⚠️ 2026-08-11 實機踩到：crossfade 時兩個 deckNetworkTask 會同時活躍（deck0 淡出
-  // 仍在下載、deck1 淡入也在下載），跟 commandPollTask/carHeartbeatTask 一起擠在
-  // core 0、優先權都是 1，聽感回報換歌瞬間有真的空白/斷點——比照 STEP7 的既有教訓
-  // （network 優先權要 >= playback，見 audioNetworkTask 前的大段註解：優先權太低會被
-  // 其他任務搶走時間片，PCM ring 追不上進度就見底變靜音），把 network 優先權拉到 2
-  // （高於 commandPollTask/carHeartbeatTask 的 1），確保它們排隊時優先搶到 CPU。
-  xTaskCreatePinnedToCore(deckNetworkTask, "deckNet0", 16384, (void*)0, 2, nullptr, 0);
-  xTaskCreatePinnedToCore(deckNetworkTask, "deckNet1", 16384, (void*)1, 2, nullptr, 0);
-  // decode 同理拉到 2（跟 core1 上原本預設優先權1的 Arduino loopTask/PTT 分開一階，
-  // crossfade 時兩個 decode 都要即時把 raw ring 轉成 PCM 供 mixOutputTask 消費，不該
-  // 被 loop() 排擠）；mixOutputTask 仍是 2（跟 decode 同階，用 portMAX_DELAY 的
-  // i2s_write 天然限速+讓出 CPU，不會因為同優先權互搶而卡住 decode）。
-  xTaskCreatePinnedToCore(deckPlaybackTask, "deckPlay0", 8192, (void*)0, 2, nullptr, 1);
-  xTaskCreatePinnedToCore(deckPlaybackTask, "deckPlay1", 8192, (void*)1, 2, nullptr, 1);
-  xTaskCreatePinnedToCore(mixOutputTask, "mixOut", 8192, nullptr, 2, nullptr, 1);
 #endif
   // 收尾定燈：WiFi 通但沒跑 Funnel 檢查（STEP 1）也給個 connected 提示；
   // 若前面已 setLed(ERROR/CONNECTED) 則不覆蓋。

@@ -20,6 +20,11 @@ class Mp3StreamEncoder:
         self._encoder = lameenc.Encoder()
         self._encoder.set_bit_rate(bitrate_kbps)
         self._encoder.set_in_sample_rate(rate)
+        # ⚠️ 2026-08-13 實機踩到：LAME bitrate 低於門檻（128kbps沒事，96kbps會觸發）時會
+        # 自作主張把輸出取樣率從48kHz降到32kHz省位元——firmware端I2S輸出寫死48kHz播放，
+        # 吃到32kHz的PCM會變成1.5倍速+音調拉高（實機聽感：整首歌像卡通配音）。顯式鎖住
+        # 輸出取樣率=輸入取樣率，不讓LAME自動降。
+        self._encoder.set_out_sample_rate(rate)
         self._encoder.set_channels(channels)
         self._encoder.set_quality(quality)
         self._started = False   # lameenc.flush() 在從沒 encode() 過時會拋 RuntimeError

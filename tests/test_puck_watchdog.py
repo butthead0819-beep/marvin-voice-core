@@ -232,3 +232,77 @@ async def test_watchdog_loop_dm_failure_does_not_crash_loop():
     await _puck_watchdog_loop(
         presence, q, dm_fn=boom, sleep_fn=fake_sleep, should_stop=should_stop)
     # 沒炸出去（await 沒拋例外）就算過
+
+
+@pytest.mark.asyncio
+async def test_watchdog_loop_departure_does_not_fire_false_recovery():
+    """2026-08-13 實機踩到：poll stall 期間車主離開（is_present 翻 False），
+    check_puck_stall 這時無條件回 stalled=False（車主不在不用管）——如果不額外檢查
+    is_present，會被誤判成「puck 恢復回應了」，但其實只是沒人在乎了，puck 根本沒有
+    真的連回來。這裡驗證：departure 不該觸發恢復訊息，只有還在場、且真的不再 stalled
+    才算數。"""
+    from marvin_voice_core.puck_command_queue import PuckCommandQueue
+    from main_satellite import _puck_watchdog_loop
+
+    q = PuckCommandQueue()   # 從沒輪詢過 → poll stall
+    presence = _FakeCarPresence(is_present=True)
+    dms = []
+    clock = {"t": 1000.0}
+    ticks = {"n": 0}
+
+    async def fake_sleep(_):
+        pass
+
+    def fake_now():
+        return clock["t"]
+
+    def should_stop():
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            clock["t"] += 30.0   # 超過 poll_stall_threshold，觸發 stall
+        elif ticks["n"] == 3:
+            presence.is_present = False   # 車主離開，puck 依然沒真的連回來
+        return ticks["n"] > 4
+
+    await _puck_watchdog_loop(
+        presence, q, dm_fn=lambda t: dms.append(t), sleep_fn=fake_sleep, should_stop=should_stop,
+        now_fn=fake_now)
+
+    assert len(dms) == 1
+    assert dms[0].startswith("🚨")   # 只有一開始的告警，沒有假的「恢復」訊息
+
+
+@pytest.mark.asyncio
+async def test_watchdog_loop_real_recovery_while_still_present_fires_message():
+    """對照組：真的還在場、且真的不再 stalled，恢復訊息要照樣發，前一個測試不能
+    連帶把真恢復也悶掉。"""
+    from marvin_voice_core.puck_command_queue import PuckCommandQueue
+    from main_satellite import _puck_watchdog_loop
+
+    q = PuckCommandQueue()
+    presence = _FakeCarPresence(is_present=True)
+    dms = []
+    clock = {"t": 1000.0}
+    ticks = {"n": 0}
+
+    async def fake_sleep(_):
+        pass
+
+    def fake_now():
+        return clock["t"]
+
+    def should_stop():
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            clock["t"] += 30.0   # 超過 poll_stall_threshold，觸發 stall
+        elif ticks["n"] == 3:
+            q.last_polled_ts = clock["t"]   # 真的連回來了，車主還在場
+        return ticks["n"] > 4
+
+    await _puck_watchdog_loop(
+        presence, q, dm_fn=lambda t: dms.append(t), sleep_fn=fake_sleep, should_stop=should_stop,
+        now_fn=fake_now)
+
+    assert len(dms) == 2
+    assert dms[0].startswith("🚨")
+    assert dms[1].startswith("✅")
