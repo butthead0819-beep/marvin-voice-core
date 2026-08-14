@@ -106,3 +106,75 @@ async def test_car_control_token_gated():
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/car_control?cmd=stop")   # 無 token
         assert resp.status == 401
+
+
+def _make_vc_with_current_stream(info: dict | None, *, start_time=None):
+    """/car_now 讀的是本地 MusicCog 的即時屬性（_current_stream_info /
+    _current_stream_start_time），不是 puck_command_queue——STEP10 韌體 deck A 固定吃
+    /audio_stream，這份 MusicCog 才是真的餵進 /audio_stream 的來源。"""
+    vc = MagicMock()
+    music_cog = MagicMock()
+    music_cog._current_stream_info = info
+    music_cog._current_stream_start_time = start_time
+    vc.bot.cogs.get.return_value = music_cog
+    return vc
+
+
+@pytest.mark.asyncio
+async def test_car_now_playing_false_when_no_music_cog():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    app = build_text_app(_make_vc(), token="s3cret")   # cogs.get 回 None
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/car_now?t=s3cret")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["playing"] is False
+
+
+@pytest.mark.asyncio
+async def test_car_now_playing_false_when_nothing_streaming():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    app = build_text_app(_make_vc_with_current_stream(None), token="s3cret")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/car_now?t=s3cret")
+        body = await resp.json()
+        assert body["playing"] is False
+
+
+@pytest.mark.asyncio
+async def test_car_now_reflects_local_music_cog_stream_info():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    info = {
+        "title": "測試歌曲", "requested_by": "狗與露",
+        "thumbnail": "https://img/a.jpg", "palette": ["#111", "#222"],
+        "duration": 210,
+    }
+    app = build_text_app(_make_vc_with_current_stream(info, start_time=123.0), token="s3cret")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/car_now?t=s3cret")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["playing"] is True
+        assert body["title"] == "測試歌曲"
+        assert body["by"] == "狗與露"
+        assert body["cover"] == "https://img/a.jpg"
+        assert body["palette"] == ["#111", "#222"]
+        assert body["duration"] == 210
+        assert body["song_start_time"] == 123.0
+
+
+@pytest.mark.asyncio
+async def test_car_now_token_gated():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    app = build_text_app(_make_vc(), token="s3cret")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/car_now")   # 無 token
+        assert resp.status == 401

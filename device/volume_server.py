@@ -128,7 +128,7 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>馬文控制台</title>
+<title>車 Puck 控制台</title>
 <style>
   :root{ --bg:#0e0f13; --card:#1a1c23; --line:#2a2d38; --fg:#e8eaf0; --mut:#8b90a0;
          --accent:#6c8cff; --danger:#ff6b6b; --ok:#4ec07a; }
@@ -151,95 +151,70 @@ PANEL_TEMPLATE = """<!DOCTYPE html>
   button.accent{ background:var(--accent); color:#0b1020; }
   button.danger{ background:#3a1f24; color:var(--danger); }
   button.wide{ width:100%; }
-  .vol{ display:flex; align-items:center; gap:12px; }
-  .vol > button{ flex:1; }  /* ＋/－ 撐滿兩側、大觸控目標、消除右側死白 */
-  .vol .pct{ font-size:34px; font-weight:700; min-width:96px; text-align:center; }
-  .volbtns{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:10px; }
+  .grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
   #status{ font-size:13px; color:var(--mut); min-height:18px; margin:2px; text-align:center; }
-  button.active { border: 1.5px solid var(--accent) !important; color: var(--accent) !important; font-weight: 700 !important; }
-</style></head><body>
-<h1><span class="dot" id="dot"></span>馬文控制台</h1>
 
-<div class="card" id="npcard">
-  <div class="lbl">🎧 現正播放中</div>
-  <img id="npcover" alt="" style="width:100%;aspect-ratio:1/1;border-radius:12px;
-       object-fit:cover;background:#0f1117;display:none;margin-bottom:12px">
-  <div id="nptitle" style="font-size:18px;font-weight:600;line-height:1.3;
-       display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">—</div>
-  <div id="npby" style="font-size:13px;color:var(--mut);margin-top:4px"></div>
+  /* ── 黑膠「現正播放」（搬自 HUD mountVinyl，見 main_satellite.py HUD_HTML）── */
+  .vinyl-card{ position:relative; aspect-ratio:1/1; overflow:hidden; padding:0; }
+  .vinyl-card .vwrap{ position:absolute; top:50%; left:50%; width:82%; aspect-ratio:1/1; transform:translate(-50%,-50%); }
+  .vinyl-card .vdisc{ position:absolute; inset:0; width:100%; height:100%; border-radius:50%;
+       animation:vspin 12s linear infinite; will-change:transform; }
+  @keyframes vspin{ to{ transform:rotate(360deg); } }
+  @media (prefers-reduced-motion:reduce){ .vinyl-card .vdisc{ animation:none; } }
+  .vinyl-card .vmeta{ position:absolute; left:14px; right:14px; bottom:12px; z-index:2;
+       text-shadow:0 2px 10px rgba(0,0,0,.7); }
+  .vinyl-card #nptitle{ font-size:17px; font-weight:700; color:#fff; white-space:nowrap;
+       overflow:hidden; text-overflow:ellipsis; }
+  .vinyl-card #npby{ font-size:12px; color:rgba(255,255,255,.72); margin-top:2px; }
+
+  /* ── Marvin 頭（搬自 HUD mountHead，簡化成只有 idle 待機態，無疊加表演）── */
+  .head-card{ aspect-ratio:1/1; overflow:hidden; padding:0; position:relative;
+       background:radial-gradient(120% 100% at 50% -10%,#1b2230 0%,#0e0f13 70%); }
+  .head-card canvas{ width:100%; height:100%; display:block; }
+</style></head><body>
+<h1><span class="dot" id="dot"></span>車 Puck 控制台</h1>
+
+<div class="card vinyl-card" id="npcard">
+  <div class="vwrap"><canvas class="vdisc"></canvas></div>
+  <div class="vmeta">
+    <div id="nptitle">—</div>
+    <div id="npby"></div>
+  </div>
+</div>
+
+<div class="card head-card">
+  <canvas id="mvhead"></canvas>
 </div>
 
 <div class="card">
-  <div class="lbl">🎵 點歌（只打歌名，自動送「放一首…」）</div>
+  <div class="lbl">🎛️ 控制項</div>
+  <div class="grid3">
+    <button class="accent" onclick="say('繼續播放')">▶️ 播放</button>
+    <button class="danger" onclick="say('停止播放')">⏹ 停止</button>
+    <button onclick="say('下一首')">⏭ 下一首</button>
+  </div>
+  <div class="grid" style="margin-top:8px">
+    <button onclick="say('小聲一點')">🔉 小聲</button>
+    <button onclick="say('大聲一點')">🔊 大聲</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="lbl">🔍 搜尋＝播放（打歌名，自動送「放一首…」）</div>
   <div class="row">
     <input type="text" id="song" placeholder="例：告白氣球、七里香" autocapitalize="off" autocomplete="off">
-    <button class="accent" onclick="playSong()">點播</button>
-  </div>
-  <div class="grid" style="margin-top:10px">
-    <button onclick="say('下一首')">下一首</button>
-    <button onclick="say('暫停播放')">暫停</button>
-    <button onclick="say('繼續播放')">繼續</button>
-    <button class="danger" onclick="say('停止播放')">停</button>
-  </div>
-</div>
-
-<div class="card">
-  <div class="lbl">🚗 車 Puck (ESP32 mk1)</div>
-  <div class="row">
-    <input type="text" id="carurl" placeholder="YouTube 網址" autocapitalize="off" autocomplete="off">
-    <button class="accent" onclick="carPlay()">播放</button>
-  </div>
-  <button class="danger wide" onclick="carStop()" style="margin-top:10px">停止</button>
-</div>
-
-<div class="card">
-  <div class="lbl" style="display:flex;justify-content:space-between;align-items:center">
-    <span>音量</span><span id="soctemp" style="font-variant-numeric:tabular-nums">🌡️ --°C</span>
-  </div>
-  <div class="vol">
-    <button onclick="vol('-10')">－</button>
-    <div class="pct"><span id="pct">--</span><span style="font-size:18px">%</span></div>
-    <button onclick="vol('+10')">＋</button>
-  </div>
-  <button class="danger wide" onclick="vol('mute')" style="margin-top:10px">靜音</button>
-  <div class="lbl" style="margin-top:14px">🔊 聲音風格 (Sound Profile)</div>
-  <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:6px" id="prof-btns">
-    <button id="btn-calibrated" onclick="setProfile('calibrated')">校正</button>
-    <button id="btn-pop" onclick="setProfile('pop')">流行</button>
-    <button id="btn-podcast" onclick="setProfile('podcast')">播客</button>
-    <button id="btn-spatial" onclick="setProfile('spatial')">空間</button>
-  </div>
-</div>
-
-<div class="card" style="text-align:center">
-  <div class="lbl" style="text-align:left;margin-bottom:8px">🎙️ PTT 語音對話 (Push to Talk)</div>
-  <button id="btn-ptt" onclick="togglePTT()" style="background:#1f283a; color:#85b3ff; font-size:18px; font-weight:bold; padding:15px; width:100%; border:1px solid #334466; border-radius:8px; cursor:pointer; transition:all 0.2s">🎙️ 開始對話</button>
-</div>
-
-<div class="card">
-  <div class="lbl">🏠 在家 / 離家（麥克風＋DigiAMP）</div>
-  <div class="grid">
-    <button class="danger" onclick="presence('off')">🔇 離家</button>
-    <button onclick="presence('on')">🏠 到家</button>
-  </div>
-  <div id="presence-state" style="font-size:13px;color:var(--mut);text-align:center;margin-top:8px">—</div>
-</div>
-
-<div class="card">
-  <div class="lbl">💬 說一句話 / 問問題</div>
-  <div class="row">
-    <input type="text" id="cmd" placeholder="例：現在幾點、講個笑話" autocapitalize="off" autocomplete="off">
-    <button onclick="sendCmd()">送出</button>
+    <button class="accent" onclick="playSong()">播放</button>
   </div>
 </div>
 
 <div id="status">就緒</div>
 
 <script>
-const TOKEN="__TOKEN__", MAC_SAY="__MAC_SAY__", MAC_NOW=MAC_SAY.replace("/say","/now"),
-      MAC_CAR_CONTROL=MAC_SAY.replace("/say","/car_control");
+const TOKEN="__TOKEN__", MAC_SAY="__MAC_SAY__",
+      MAC_CAR_NOW=MAC_SAY.replace("/say","/car_now");
 const $=id=>document.getElementById(id);
 function stat(msg,ok){ $("status").textContent=msg; $("status").style.color=ok?"#4ec07a":"#8b90a0"; }
+
 async function say(text){
   try{
     const r=await fetch(MAC_SAY+"?t="+encodeURIComponent(TOKEN),
@@ -249,149 +224,255 @@ async function say(text){
     else{ stat("送出失敗 "+r.status,false); }
   }catch(e){ stat("連不到大腦（Mac 上 main_satellite 沒跑？）",false); }
 }
-function sendCmd(){ const v=$("cmd").value.trim(); if(!v)return; say(v); $("cmd").value=""; }
-$("cmd").addEventListener("keydown",e=>{ if(e.key==="Enter") sendCmd(); });
 function playSong(){ const v=$("song").value.trim(); if(!v)return; say("放一首"+v); $("song").value=""; }
 $("song").addEventListener("keydown",e=>{ if(e.key==="Enter") playSong(); });
-async function vol(v){
-  try{
-    const r=await fetch("/vol?v="+encodeURIComponent(v)+"&t="+encodeURIComponent(TOKEN),{method:"POST"});
-    const j=await r.json();
-    if(j.percent!=null){ $("pct").textContent=j.percent; stat("音量 "+j.percent+"%",true); }
-  }catch(e){ stat("音量服務連不到",false); }
+
+// ── 黑膠「現正播放」：搬自 HUD mountVinyl（main_satellite.py 的 HUD_HTML），
+// 只吃 {title, pal, cover} 畫封面唱片，跟 HUD 那份是同一套繪圖邏輯 ───────────
+const FALLBACK_PAL=['#9BE04B','#4C9DFF','#2A1A44','#080B11'];
+function padPal(pal){
+  const out=(Array.isArray(pal)?pal:[]).filter(Boolean).slice(0,4);
+  while(out.length<4) out.push(FALLBACK_PAL[out.length]);
+  return out;
 }
-async function refresh(){
-  try{ const r=await fetch("/vol?t="+encodeURIComponent(TOKEN)); const j=await r.json();
-       if(j.percent!=null) $("pct").textContent=j.percent; $("dot").style.background="#4ec07a";
-       if(j.temp!=null && j.temp>0){
-         const t=Math.round(j.temp*10)/10, el=$("soctemp");
-         el.textContent="🌡️ "+t+"°C";
-         el.style.color = t>=65?"#ff6b6b" : t>=57?"#e0a53a" : "#8b90a0";  // 紅=將觸發停播 黃=偏高 灰=正常
-       }
-       if(j.profile) updateProfileUI(j.profile);
-  }catch(e){ $("dot").style.background="#ff6b6b"; }
+function rng(seed){ return ()=>{ seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }; }
+function shade(hex, amt){
+  const n=parseInt(String(hex).replace('#',''),16), rr=(n>>16)&255, gg=(n>>8)&255, bb=n&255;
+  const mix=c=> amt<0 ? Math.round(c*(1+amt)) : Math.round(c+(255-c)*amt);
+  return `rgb(${mix(rr)},${mix(gg)},${mix(bb)})`;
 }
-async function nowPlaying(){
+function drawLabelArt(ctx,cx,cy,LR,tk){
+  const [a,b,c,d]=tk.pal, PI2=Math.PI*2;
+  ctx.save(); ctx.beginPath(); ctx.arc(cx,cy,LR,0,PI2); ctx.clip();
+  const g=ctx.createLinearGradient(cx-LR,cy-LR,cx+LR,cy+LR); g.addColorStop(0,c); g.addColorStop(1,d);
+  ctx.fillStyle=g; ctx.fillRect(cx-LR,cy-LR,LR*2,LR*2);
+  [[a,-0.4,-0.3,1.1],[b,0.5,-0.1,1.0],[a,0.2,0.6,0.9]].forEach(([col,px,py,rad])=>{
+    const x=cx+LR*px,y=cy+LR*py,R=LR*rad; const bg=ctx.createRadialGradient(x,y,0,x,y,R);
+    bg.addColorStop(0,col+'DD'); bg.addColorStop(0.5,col+'55'); bg.addColorStop(1,col+'00');
+    ctx.fillStyle=bg; ctx.beginPath(); ctx.arc(x,y,R,0,PI2); ctx.fill(); });
+  ctx.globalCompositeOperation='soft-light'; ctx.fillStyle='#fff';
+  ctx.globalAlpha=.45;
+  for(let i=0;i<9;i++){ ctx.save(); ctx.translate(cx,cy); ctx.rotate(i/9*PI2);
+    ctx.beginPath(); ctx.ellipse(0,LR*0.45,LR*0.12,LR*0.4,0,0,PI2); ctx.fill(); ctx.restore(); }
+  ctx.globalCompositeOperation='source-over'; ctx.globalAlpha=1;
+  ctx.fillStyle='rgba(255,255,255,.96)'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.font='700 '+(LR*0.34)+'px Futura,"Avenir Next",sans-serif';
+  ctx.shadowColor='rgba(0,0,0,.35)'; ctx.shadowBlur=LR*0.08;
+  ctx.fillText(tk.title,cx,cy-LR*0.02);
+  ctx.shadowBlur=0; ctx.textAlign='left'; ctx.textBaseline='alphabetic'; ctx.restore();
+}
+const imgCache=new Map();
+function getCoverImage(url, onReady){
+  if(!url) return null;
+  const cached=imgCache.get(url);
+  if(cached==='error') return null;
+  if(cached instanceof Image) return (cached.complete && cached.naturalWidth) ? cached : null;
+  const img=new Image();
+  imgCache.set(url, img);
+  img.onload=onReady;
+  img.onerror=()=>imgCache.set(url,'error');
+  img.src=url;
+  return null;
+}
+let vinyl=null;
+function mountVinyl(card, cover){
+  if(vinyl){ vinyl.ro.disconnect(); vinyl=null; }
+  if(!card||!cover) return;
+  const disc=card.querySelector('.vdisc');
+  const dctx=disc.getContext('2d'); let DPR=1;
+  function drawDisc(){
+    const W=disc.width,H=disc.height,S=Math.min(W,H),cx=W/2,cy=H/2,Rdisc=S*0.49,LR=S*0.205,PI2=Math.PI*2;
+    const pal=cover.pal, r=rng(cover.title.length*131+7);
+    dctx.clearRect(0,0,W,H);
+    const baseCol=pal[0]||'#1b1620';
+    const body=dctx.createRadialGradient(cx-Rdisc*0.25,cy-Rdisc*0.3,Rdisc*0.1,cx,cy,Rdisc);
+    body.addColorStop(0,shade(baseCol,0.32)); body.addColorStop(0.6,shade(baseCol,-0.15)); body.addColorStop(1,shade(baseCol,-0.55));
+    dctx.fillStyle=body; dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.fill();
+    dctx.save(); dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.arc(cx,cy,LR*0.98,0,PI2,true); dctx.clip();
+    const mixRay=0.55+r()*0.7, mixSplash=0.45+r()*0.9, mixDot=0.45+r()*0.9;
+    const rays=Math.floor((90+r()*70)*mixRay);
+    for(let i=0;i<rays;i++){
+      const ang=r()*PI2;
+      const reach=Math.pow(r(),2.4);
+      const endR=LR+reach*(Rdisc-LR)*1.02;
+      const segs=3+Math.floor(reach*9);
+      const col=pal[Math.floor(r()*pal.length)];
+      for(let s=0;s<segs;s++){
+        const t=s/Math.max(1,segs-1);
+        const rr=LR+t*(endR-LR)+(r()-0.5)*S*0.006;
+        const ja=ang+(r()-0.5)*0.05;
+        const w=S*(0.005*(1-t*0.75)+r()*0.0025);
+        dctx.globalAlpha=(0.85-t*0.45)*(0.6+r()*0.4);
+        dctx.fillStyle=col;
+        dctx.beginPath();
+        dctx.arc(cx+Math.cos(ja)*rr, cy+Math.sin(ja)*rr, w, 0, PI2);
+        dctx.fill();
+      }
+    }
+    const splashes=Math.floor((8+r()*8)*mixSplash);
+    for(let i=0;i<splashes;i++){
+      const ang=r()*PI2, reach=Math.pow(r(),1.6), rr=LR+reach*(Rdisc-LR)*0.85;
+      const bx=cx+Math.cos(ang)*rr, by=cy+Math.sin(ang)*rr;
+      const blobR=S*(0.012+r()*0.022), col=pal[Math.floor(r()*pal.length)];
+      const lumps=3+Math.floor(r()*4);
+      dctx.fillStyle=col;
+      for(let k=0;k<lumps;k++){
+        const lx=bx+(r()-0.5)*blobR*1.6, ly=by+(r()-0.5)*blobR*1.6, lr=blobR*(0.4+r()*0.7);
+        dctx.globalAlpha=0.55+r()*0.35;
+        dctx.beginPath(); dctx.arc(lx,ly,lr,0,PI2); dctx.fill();
+      }
+    }
+    for(let i=0;i<Math.floor(rays*0.25*mixDot);i++){
+      const ang=r()*PI2, rr=LR+Math.pow(r(),0.35)*(Rdisc-LR);
+      dctx.globalAlpha=0.5+r()*0.4; dctx.fillStyle=pal[Math.floor(r()*pal.length)];
+      dctx.beginPath(); dctx.arc(cx+Math.cos(ang)*rr, cy+Math.sin(ang)*rr, S*(0.0015+r()*0.003), 0, PI2); dctx.fill();
+    }
+    dctx.globalAlpha=1;
+    dctx.lineWidth=Math.max(1,DPR*0.6);
+    for(let R=LR*1.15; R<Rdisc*0.98; R+=S*0.008){
+      dctx.strokeStyle='rgba(255,255,255,0.16)'; dctx.beginPath(); dctx.arc(cx,cy,R,0,PI2); dctx.stroke();
+      dctx.strokeStyle='rgba(0,0,0,0.12)'; dctx.beginPath(); dctx.arc(cx,cy,R+DPR*0.7,0,PI2); dctx.stroke();
+    }
+    dctx.restore();
+    const gl=dctx.createRadialGradient(cx-Rdisc*0.4,cy-Rdisc*0.5,0,cx-Rdisc*0.4,cy-Rdisc*0.5,Rdisc*1.1);
+    gl.addColorStop(0,'rgba(255,255,255,0.12)'); gl.addColorStop(0.4,'rgba(255,255,255,0)');
+    dctx.globalCompositeOperation='screen'; dctx.fillStyle=gl; dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.fill();
+    dctx.globalCompositeOperation='source-over';
+    dctx.strokeStyle='rgba(255,255,255,0.10)'; dctx.lineWidth=DPR; dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.stroke();
+    const coverImg=cover.cover ? getCoverImage(cover.cover, ()=>drawDisc()) : null;
+    if(coverImg){
+      dctx.save(); dctx.beginPath(); dctx.arc(cx,cy,LR+DPR,0,PI2); dctx.clip();
+      const iw=coverImg.naturalWidth, ih=coverImg.naturalHeight, s=Math.max((LR*2)/iw,(LR*2)/ih);
+      const dw=iw*s, dh=ih*s;
+      dctx.drawImage(coverImg, cx-dw/2, cy-dh/2, dw, dh);
+      dctx.restore();
+    } else {
+      drawLabelArt(dctx,cx,cy,LR,cover);
+      dctx.strokeStyle='rgba(0,0,0,.4)'; dctx.lineWidth=DPR*1.5; dctx.beginPath(); dctx.arc(cx,cy,LR,0,PI2); dctx.stroke();
+    }
+  }
+  function size(){ DPR=Math.min(2,window.devicePixelRatio||1);
+    const dr=disc.getBoundingClientRect(); disc.width=Math.max(1,dr.width*DPR); disc.height=Math.max(1,dr.height*DPR);
+    drawDisc(); }
+  const ro=new ResizeObserver(size); ro.observe(card); size();
+  vinyl={ro};
+}
+
+// ── Marvin 頭：搬自 HUD mountHead，砍掉疊加表演/情緒系統（沒有 speak/wake 這種
+// 即時語音事件可餵，車面板只會用到 idle 待機態，那一整套判斷永遠不會走到）──
+const MOOD_IDLE={ col:[104,158,58], blink:{min:2,max:6,dur:0.16},
+  gaze:t=>[Math.sin(t*0.33)*0.18, Math.sin(t*0.23+1.1)*0.12] };
+let head=null;
+function mountHead(canvas){
+  if(head){ cancelAnimationFrame(head.raf); head.ro.disconnect(); head=null; }
+  if(!canvas) return;
+  const ctx=canvas.getContext('2d');
+  const st={t:0,gphi:0,glam:0,vphi:0,vlam:0,blink:1,blinkT:1.2,blinkStart:-1,sacT:0,sacX:0,sacY:0,ec:[104,158,58].slice()};
+  let W=0,Hh=0,DPR=1;
+  const reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const FRAME_MS=1000/24; let lastRenderTs=0;
+  function size(){ const r=canvas.getBoundingClientRect(); DPR=Math.min(2,window.devicePixelRatio||1);
+    W=canvas.width=Math.max(1,r.width*DPR); Hh=canvas.height=Math.max(1,r.height*DPR); }
+  const ro=new ResizeObserver(size); ro.observe(canvas); size();
+  const P2=Math.PI*2;
+  function frame(ts){
+    if(!lastRenderTs) lastRenderTs=ts;
+    const sinceRender=ts-lastRenderTs;
+    if(sinceRender<FRAME_MS){ if(!reduce) head.raf=requestAnimationFrame(frame); return; }
+    const renderDt=sinceRender/1000; lastRenderTs=ts;
+    st.t+=renderDt*1.8;
+    ctx.clearRect(0,0,W,Hh);
+    const cfg=MOOD_IDLE, headBase=Hh;
+    const cx=W/2+Math.sin(st.t*0.4)*W*0.02;
+    const floatY=Math.sin(st.t*0.28)*headBase*0.045;
+    const cy=Hh*0.45+floatY;
+    const R=headBase*0.40*(1+Math.sin(st.t*0.9)*0.006);
+    const floatNorm=(floatY/(headBase*0.045)+1)/2;
+    const shadowGap=headBase*0.10+floatNorm*headBase*0.05;
+    const shadowScale=1-floatNorm*0.22, shadowAlpha=0.40-floatNorm*0.16;
+    ctx.save(); ctx.translate(cx,cy+R+shadowGap); ctx.scale(shadowScale,0.22*shadowScale);
+    const cs=ctx.createRadialGradient(0,0,0,0,0,R*0.85);
+    cs.addColorStop(0,`rgba(0,0,0,${shadowAlpha})`); cs.addColorStop(0.7,`rgba(0,0,0,${shadowAlpha*0.4})`); cs.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=cs; ctx.beginPath(); ctx.arc(0,0,R*0.85,0,P2); ctx.fill();
+    const glowAlpha=0.16-floatNorm*0.09;
+    const gl=ctx.createRadialGradient(0,0,0,0,0,R*0.75);
+    gl.addColorStop(0,`rgba(140,214,90,${glowAlpha})`); gl.addColorStop(1,'rgba(140,214,90,0)');
+    ctx.globalCompositeOperation='screen'; ctx.fillStyle=gl; ctx.beginPath(); ctx.arc(0,0,R*0.75,0,P2); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    ctx.restore();
+    const sph=ctx.createRadialGradient(cx-R*0.34,cy-R*0.42,R*0.05,cx,cy,R*1.07);
+    sph.addColorStop(0,'#ffffff');sph.addColorStop(0.3,'#eef2f4');sph.addColorStop(0.66,'#cfd6dc');sph.addColorStop(0.9,'#b6c0c8');sph.addColorStop(1,'#8b959d');
+    ctx.fillStyle=sph;ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.fill();
+    ctx.save();ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.clip();
+    const hot=ctx.createRadialGradient(cx-R*0.33,cy-R*0.42,0,cx-R*0.33,cy-R*0.42,R*0.5);
+    hot.addColorStop(0,'rgba(255,255,255,0.9)');hot.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle=hot;ctx.fillRect(cx-R,cy-R,2*R,2*R);
+    ctx.restore();
+    ctx.strokeStyle='rgba(255,255,255,.4)';ctx.lineWidth=DPR;ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.stroke();
+    const tc=cfg.col; st.ec=st.ec.map((v,i)=>v+(tc[i]-v)*0.06);
+    const gr=st.ec[0], gg=st.ec[1], gb=st.ec[2], alpha=0.98;
+    const dark=k=>`rgba(${gr*k|0},${gg*k|0},${gb*k|0},${alpha})`;
+    const bright=`rgba(${Math.min(255,gr+80)|0},${Math.min(255,gg+70)|0},${Math.min(255,gb+70)|0},${alpha})`;
+    let [tphi,tlam]=cfg.gaze(st.t);
+    if(st.t>st.sacT){ st.sacT=st.t+0.4+Math.random()*1.7; st.sacX=(Math.random()-0.5)*0.1; st.sacY=(Math.random()-0.5)*0.06; }
+    tphi+=st.sacX; tlam+=st.sacY;
+    st.vphi+=(tphi-st.gphi)*0.018-st.vphi*0.14; st.gphi+=st.vphi;
+    st.vlam+=(tlam-st.glam)*0.018-st.vlam*0.14; st.glam+=st.vlam;
+    const bc=cfg.blink;
+    if(st.blinkStart<0&&st.t>st.blinkT){ st.blinkStart=st.t; st.blinkT=st.t+bc.min+Math.random()*(bc.max-bc.min); }
+    st.blink=1;
+    if(st.blinkStart>=0){ const pr=(st.t-st.blinkStart)/bc.dur; if(pr>=1) st.blinkStart=-1; else st.blink=1-0.92*Math.sin(pr*Math.PI); }
+    const phiC=0.72,dw=0.27,lamC=0.15,dhA=0.26, proj=(phi,lam)=>[cx+R*Math.cos(lam)*Math.sin(phi),cy+R*Math.sin(lam)];
+    function eye(sign){
+      const p0=sign*phiC+st.gphi, lam0=lamC+st.glam;
+      const P=[proj(p0+sign*dw,lam0+0.05*st.blink),proj(p0-sign*dw,lam0),proj(p0,lam0+dhA*st.blink)];
+      const path=()=>{ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.closePath();};
+      path();ctx.fillStyle=dark(0.45);ctx.fill();
+      ctx.save();path();ctx.clip();
+      const sx=(P[1][0]+P[2][0])/2+st.gphi*R*0.9, sy=(P[1][1]+P[2][1])/2;
+      const g=ctx.createRadialGradient(sx,sy,0,sx,sy,R*0.46);
+      g.addColorStop(0,bright);g.addColorStop(0.4,dark(1));g.addColorStop(1,dark(0.42));ctx.fillStyle=g;ctx.fill();
+      const topY=Math.min(P[0][1],P[1][1]);
+      const sh=ctx.createLinearGradient(0,topY-R*0.01,0,topY+R*0.16);sh.addColorStop(0,'rgba(0,0,0,.5)');sh.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=sh;ctx.fill();ctx.restore();
+      ctx.lineJoin='round';ctx.lineCap='round';ctx.lineWidth=Math.max(2,R*0.035);ctx.strokeStyle='rgba(8,10,9,.96)';
+      ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.stroke();
+    }
+    eye(-1); eye(1);
+    ctx.save();ctx.strokeStyle='rgba(16,19,17,.92)';ctx.lineWidth=Math.max(1.5,R*0.02);ctx.lineCap='round';ctx.lineJoin='round';
+    const phiEnd=phiC+dw+0.26,curve=0.035;ctx.beginPath();
+    for(let i=0;i<=24;i++){ const s=-1+i/12, ph=st.gphi+s*phiEnd, lm=lamC+st.glam+curve*s*s, q=proj(ph,lm); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
+    ctx.stroke();ctx.restore();
+    if(!reduce) head.raf=requestAnimationFrame(frame);
+  }
+  head={raf:requestAnimationFrame(frame),ro};
+}
+mountHead($("mvhead"));
+
+// ── 輪詢 /car_now：puck 實際在放的歌（見 main_satellite.py::handle_car_now）──
+let lastNowKey='';
+async function carNowPlaying(){
   try{
-    const r=await fetch(MAC_NOW+"?t="+encodeURIComponent(TOKEN),{cache:"no-store"}); const j=await r.json();
-    const cov=$("npcover");
+    const r=await fetch(MAC_CAR_NOW+"?t="+encodeURIComponent(TOKEN),{cache:"no-store"}); const j=await r.json();
+    $("dot").style.background = j.playing ? "#4ec07a" : "#8b90a0";
     if(j.playing){
-      $("nptitle").textContent=(j.paused?"暫停中 · ":"")+(j.title||"—");
+      $("nptitle").textContent=j.title||'—';
       $("npby").textContent=j.by?("點播："+j.by):"";
-      if(j.cover){ cov.src=j.cover; cov.style.display="block"; } else { cov.style.display="none"; }
+      const key=j.title+'|'+j.by+'|'+(j.palette||[]).join(',')+'|'+j.cover;
+      if(key!==lastNowKey){ lastNowKey=key;
+        mountVinyl($("npcard"), {title:j.title||'', pal:padPal(j.palette), cover:j.cover||''});
+      }
     }else{
-      $("nptitle").textContent="沒有播放"; $("npby").textContent=""; cov.style.display="none";
+      $("nptitle").textContent="沒有播放"; $("npby").textContent="";
+      if(lastNowKey!==''){ lastNowKey=''; mountVinyl($("npcard"), null); }
     }
   }catch(e){
+    $("dot").style.background="#ff6b6b";
     $("nptitle").textContent="大腦未啟動"; $("npby").textContent="（Mac 上 main_satellite 沒跑）";
-    $("npcover").style.display="none";
   }
 }
-async function carPlay(){
-  const v=$("carurl").value.trim(); if(!v)return;
-  try{
-    const r=await fetch(MAC_CAR_CONTROL+"?cmd=play&url="+encodeURIComponent(v)+"&t="+encodeURIComponent(TOKEN));
-    if(r.ok){ stat("車 puck：已送播放指令",true); $("carurl").value=""; }
-    else{ stat("車 puck 送出失敗 "+r.status,false); }
-  }catch(e){ stat("連不到大腦（Mac 上 main_satellite 沒跑？）",false); }
-}
-$("carurl").addEventListener("keydown",e=>{ if(e.key==="Enter") carPlay(); });
-async function carStop(){
-  try{
-    const r=await fetch(MAC_CAR_CONTROL+"?cmd=stop&t="+encodeURIComponent(TOKEN));
-    if(r.ok){ stat("車 puck：已送停止指令",true); }
-    else{ stat("車 puck 送出失敗 "+r.status,false); }
-  }catch(e){ stat("連不到大腦（Mac 上 main_satellite 沒跑？）",false); }
-}
-async function presence(state){
-  try{
-    const r=await fetch("/presence?t="+encodeURIComponent(TOKEN),
-      {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({state:state})});
-    const j=await r.json();
-    if(j.ok){ stat(state==="off"?"已離家：麥克風＋DigiAMP 關閉":"已到家：麥克風＋DigiAMP 開啟",true); presenceState(); }
-    else stat("切換失敗",false);
-  }catch(e){ stat("音量服務連不到",false); }
-}
-async function presenceState(){
-  try{ const r=await fetch("/presence?t="+encodeURIComponent(TOKEN)); const j=await r.json();
-       if(j.status) $("presence-state").textContent=j.status;
-  }catch(e){}
-}
-function tick(){ nowPlaying(); refresh(); presenceState(); }
-tick();
-setInterval(tick, 4000);
-
-function updateProfileUI(name) {
-  const btns = ["calibrated", "pop", "podcast", "spatial"];
-  btns.forEach(b => {
-    const el = $("btn-" + b);
-    if(el) {
-      if(b === name) el.classList.add("active");
-      else el.classList.remove("active");
-    }
-  });
-}
-
-async function setProfile(name){
-  try{
-    const r=await fetch("/profile?t="+encodeURIComponent(TOKEN),{
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name:name})
-    });
-    if(r.ok){ 
-      stat("已套用風格：" + name, true);
-      updateProfileUI(name);
-    }
-    else { stat("套用風格失敗", false); }
-  }catch(e){ stat("風格服務連不到", false); }
-}
-
-let pttRecording = false;
-async function togglePTT() {
-  const el = $("btn-ptt");
-  if (!pttRecording) {
-    try {
-      const r = await fetch("/ptt?t=" + encodeURIComponent(TOKEN), {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({state: "start"})
-      });
-      if (r.ok) {
-        pttRecording = true;
-        el.textContent = "🔴 錄音中 (點擊結束)";
-        el.style.background = "#ff6b6b";
-        el.style.color = "#0e0f13";
-        el.style.borderColor = "#ff6b6b";
-        stat("🎙️ 錄音中...請對著音箱說話", true);
-      } else {
-        stat("啟動 PTT 失敗", false);
-      }
-    } catch(e) {
-      stat("連不到音量服務", false);
-    }
-  } else {
-    try {
-      const r = await fetch("/ptt?t=" + encodeURIComponent(TOKEN), {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({state: "stop"})
-      });
-      if (r.ok) {
-        pttRecording = false;
-        el.textContent = "🎙️ 開始對話";
-        el.style.background = "#1f283a";
-        el.style.color = "#85b3ff";
-        el.style.borderColor = "#334466";
-        stat("⌛ 傳送語音中...", true);
-      } else {
-        stat("結束 PTT 失敗", false);
-      }
-    } catch(e) {
-      stat("連不到音量服務", false);
-    }
-  }
-}
+carNowPlaying();
+setInterval(carNowPlaying, 4000);
 </script>
 </body></html>"""
 

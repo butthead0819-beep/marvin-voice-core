@@ -1950,7 +1950,13 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         跟 /car_commands 的關係：這裡只負責「寫進佇列」，ESP32 下次輪詢 /car_commands
         才會真的撿到、執行——手動指令跟 music_cog.py 的 DJ 自動化共用同一份佇列，寫進去
         後兩邊都看得到、順序也照寫入先後（見 puck_command_queue.py）。無
-        puck_command_queue（功能未開）→ 404。"""
+        puck_command_queue（功能未開）→ 404。
+
+        ⚠️ 2026-08-13 起 MARVIN_CAR_HARDWARE=esp32_edge_mix 預設關閉（STEP10 韌體收到
+        crossfade/play 會跟真正播放用的 audioNetworkTask 搶 LWIP_LOCK，見 .env 註解），
+        這條路目前對 deck A（真正在響的那條）沒有效果，deck A 固定吃 /audio_stream。
+        真正能控制車上播放的是 /say 文字指令（跟 handle_car_now 同一份 MusicCog）。這個
+        端點留著給以後 STEP11 正式 deck 架構重新開啟時用。"""
         if puck_command_queue is None:
             return web.Response(status=404, headers=_CORS)
         cmd = (request.query.get("cmd") or "").strip()
@@ -1964,6 +1970,29 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         else:
             return web.json_response({"error": "bad_cmd"}, status=400, headers=_CORS)
         return web.json_response({"ok": True, "cmd": cmd, "seq": seq}, headers=_CORS)
+
+    async def handle_car_now(request):
+        """GET /car_now — 車 puck 實際在播的歌（:8766 面板黑膠/控制項用）。
+
+        跟 /now 的差異：/now 故意只讀 Discord 的跨進程橋接檔，車模式主動在場時
+        本地 MusicCog 不會去寫那份檔（見 music_cog.py::_publish_now_playing_state
+        docstring，避免蓋掉家用 HUD）。車上真正在放什麼，得直接讀 satellite 這個
+        進程自己的本地 MusicCog 即時狀態——STEP10 韌體 deck A 固定吃 /audio_stream，
+        而 /audio_stream 就是這個本地 MusicCog 餵給中央 mixer 的內容。
+        沒有 MusicCog／沒歌在播 → playing:false。"""
+        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
+        info = getattr(music_cog, "_current_stream_info", None) if music_cog else None
+        if not info:
+            return web.json_response({"playing": False}, headers=_CORS)
+        return web.json_response({
+            "playing": True,
+            "title": info.get("title", ""),
+            "by": info.get("requested_by", ""),
+            "cover": info.get("thumbnail", "") or "",
+            "palette": info.get("palette", []) or [],
+            "duration": info.get("duration"),
+            "song_start_time": getattr(music_cog, "_current_stream_start_time", None),
+        }, headers=_CORS)
 
     async def _stream_ffmpeg_input_as_mp3(request, ffmpeg_input_args: list[str]):
         """[PuckMixer] /puck_deck 跟 /puck_voice 共用：起 ffmpeg 把任意輸入（yt-dlp
@@ -2136,6 +2165,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_get("/audio_stream", handle_audio_stream)
     app.router.add_get("/car_commands", handle_car_commands)
     app.router.add_get("/car_control", handle_car_control)
+    app.router.add_get("/car_now", handle_car_now)
     app.router.add_get("/puck_deck", handle_puck_deck)
     app.router.add_get("/puck_voice", handle_puck_voice)
     app.router.add_get("/satellite", handle_satellite)
