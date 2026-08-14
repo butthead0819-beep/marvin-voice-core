@@ -2706,6 +2706,12 @@ class MusicCog(commands.Cog):
         if puck_client is not None and next_url:
             asyncio.create_task(self._fire_puck_crossfade(puck_client, next_url))
 
+        # 2026-08-14：preload 只跟「下一首歌本身」有關，不該綁在 DJ 口白是否成功
+        # 預渲染上——DJ meta 拿不到時（生成失敗/逾時/quick 模式不講話）以前會直接
+        # return 導致這裡從沒被呼叫，切歌當下退回同步整首解碼，造成聽得到的等待。
+        # 提前到 dj_meta 判斷之前，確保退回舊行為時下一首依然有機會提前解碼好。
+        self._start_music_preload(next_info)
+
         dj_meta = await self._resolve_tail_dj_meta(next_info)
         if dj_meta is None:
             logger.info(f"[DJ Tail] {title_next} 無可用預渲染 DJ，退回舊行為")
@@ -2716,7 +2722,6 @@ class MusicCog(commands.Cog):
         # 消除 mixer 中段爆音的代價是換源前要等整首解碼完；不先做，這段延遲就會落在
         # 「DJ 開場白講完」跟「下一首出聲」中間，變成聽得到的中斷）。DJ 開場白＋尾段疊播
         # 還有 ~_DJ_TAIL_LEAD_S 秒窗口，剛好夠蓋掉解碼時間。
-        self._start_music_preload(next_info)
         await self._maybe_play_dj_interjection(dj_meta)
         await self._play_dj_tail_sfx(next_info)
         next_info['_dj_played_in_tail'] = True
