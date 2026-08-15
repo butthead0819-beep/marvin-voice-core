@@ -1464,6 +1464,12 @@ void carHeartbeat() {
     Serial.printf("[Car] present 心跳(Funnel) HTTP %d\n", code);
   }
   if (code <= 0) { Serial.println("[Car] ⚠️ 心跳區網+Funnel都失敗，跳過這輪"); return; }
+  // 2026-08-15：開機時 testFunnelNow() 若剛好撞上瞬斷會設紅燈，之後除了「WiFi 整個斷線
+  // 又重連」外沒有任何路徑會清掉——即使 WiFi 全程連著、心跳其實每 30s 都在成功，紅燈
+  // 還是會卡一整趟車程（見碰紅燈前讀的記憶）。這裡心跳只要拿到回應就證明連線是通的，
+  // 順手清掉舊的錯誤燈號；只在真的是 LED_ERROR 時才動，別去打斷 LISTENING/PLAYING
+  // 這種正在進行中的互動狀態。
+  if (ledState == LED_ERROR) setLed(LED_CONNECTED);
   // 診斷用堆疊水位（見上方 2026-07-25 註解）：已排除堆疊溢位假說，繼續留著當健康度
   // 觀察——四顆任務裡任何一個持續下探都值得回頭查。
   Serial.printf("[StackWM] loopTask=%u carHeartbeat=%u audioNet=%u audioPlay=%u words\n",
