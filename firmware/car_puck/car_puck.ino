@@ -90,13 +90,13 @@
 // 有登記的那組——在家連家用WiFi（MARVIN_LOCAL_HOST區網明碼路徑成立），出門連iPhone
 // 熱點（區網打不到、走[[Funnel回退]]，見 postAudio()/carHeartbeat()）。
 WiFiMulti wifiMulti;
-const char* WIFI_SSID    = "子嘉的Wi-Fi網路";
-const char* WIFI_PASS    = "Jack1836";
-const char* WIFI2_SSID   = "黃子嘉的iPhone Air";
-const char* WIFI2_PASS   = "1cogjnsiqq1m";
+const char* WIFI_SSID    = "__WIFI_SSID__";
+const char* WIFI_PASS    = "__WIFI_PASS__";
+const char* WIFI2_SSID   = "__WIFI2_SSID__";
+const char* WIFI2_PASS   = "__WIFI2_PASS__";
 const char* MARVIN_HOST  = "macbook-air.tail7ba8d0.ts.net";   // 不含 https://
 const int   MARVIN_PORT  = 443;
-const char* MARVIN_TOKEN = "FgmIGAdbKDJ9NCJUTY5qhRJe";        // ⚠️ 別 commit 真 token
+const char* MARVIN_TOKEN = "__MARVIN_TEXT_TOKEN__";           // ⚠️ 別 commit 真 token（燒錄前手動填真值）
 
 // TEMP 實驗（2026-07-25）：/audio_stream 實測 sustained throughput 只有目標 187.5KB/s
 // 的 ~55-67%（100-126KB/s），懷疑雙重加密——Tailscale WireGuard 本身已加密，這條又走
