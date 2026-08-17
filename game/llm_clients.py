@@ -20,7 +20,7 @@ CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
 CEREBRAS_MODEL = os.environ.get("CEREBRAS_MODEL", "qwen-3-235b-a22b-instruct-2507")
-GROQ_MODEL = os.environ.get("GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL = os.environ.get("GROQ_FALLBACK_MODEL", "openai/gpt-oss-120b")
 GROQ_WEAK_MODEL = os.environ.get("GROQ_SIMPLE_MODEL", "openai/gpt-oss-20b")
 GEMINI_MODEL = os.environ.get("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 
