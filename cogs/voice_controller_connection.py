@@ -382,6 +382,12 @@ class ConnectionMixin:
             self.bot.engine.sink = sink
             self.connection_time = time.time()
             self.sink_failure_count = 0
+            # 🩹 [Text Fallback] 沒有既有 active_text_channel（開機/process 重啟後全新狀態）
+            # → 用語音頻道自帶的文字區頂上，否則控制台/現正播放/嘲諷/看門狗全部靜默失效，
+            # 只能靠人 dismiss 再 summon 重設（2026-08-17 事故：使用者反映自動回台後
+            # music control 不出來）。不算「打招呼」——沒送任何訊息，只是補回報路徑。
+            if self.active_text_channel is None:
+                self.active_text_channel = ch
             logger.warning("🔁 [AutoRejoin] 回台完成，恢復監聽（靜默、未打招呼）")
 
             # 🎵 [Restart Resume] process 重啟會把 MusicCog 的 stream_queue/stream_mode
@@ -729,7 +735,13 @@ class ConnectionMixin:
     async def sentinel_monitor_loop(self):
         """🛡️ [Operation Sentinel] 強化型語音監控：具備 30s 寬限期與自癒功能"""
         if self.is_recovering: return # 🚀 [Sentinel 強化] 修復中跳過主迴圈
-        if not self.bot.voice_clients: return
+        if not self.bot.voice_clients:
+            # 🩹 [Full-Disconnect Rejoin] 連線物件整個消失（非殭屍連線，是真的斷了/被踢）
+            # →上面 vc.is_connected()==False 那支軟修復管不到（那支要 voice_clients 非空）。
+            # 沒人管的話只能等人手動 /summon（2026-08-17 事故：斷線後 10 分鐘沒自動回台，
+            # 靠人發現才救回）。鏡像 auto_rejoin_on_boot 的靜默回台核心，60s 巡一次順便兜底。
+            await self.auto_rejoin_on_boot()
+            return
         vc = self.bot.voice_clients[0]
         if not vc.is_connected():
             # VoiceClient exists but WebSocket is dead → trigger soft repair
