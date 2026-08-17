@@ -39,6 +39,15 @@ PREFETCH_SECONDS = 1.5
 PREFETCH_CHUNKS = max(1, int(PREFETCH_SECONDS * RATE / CHUNK_FRAMES))
 _QUEUE_GET_TIMEOUT_S = 0.5
 
+# 2026-08-17：DJ 口白傳輸——Mac 只送文字，Pi 自己 Edge TTS 合成+疊播，duck 音樂
+# 音量比照 Mac 端 cogs/music_cog.py::MusicCog._DJ_INTERJECTION_VOLUME（=0.30，
+# 兩邊保持一致的「口白蓋過音樂」聽感）。TTS_VOICE/RATE/PITCH 沿用 tts_engine.py
+# 的 zh-TW-YunJheNeural 預設，讓車上口白跟 Discord/家用聽起來是同一個聲音。
+DJ_INTERJECTION_VOLUME = 0.30
+TTS_VOICE = "zh-TW-YunJheNeural"
+TTS_RATE = "-20%"
+TTS_PITCH = "-15Hz"
+
 
 def crossfade_gains(elapsed: float, duration: float) -> tuple:
     """回傳 (gain_a, gain_b)，elapsed/duration 秒，線性 crossfade。
@@ -160,6 +169,61 @@ def _mix_scratch(mixed: np.ndarray, scratch, pos: int, gain: float):
     return out, pos + take
 
 
+def _mix_tts_ducked(mixed: np.ndarray, tts, pos: int, duck_gain: float):
+    """把 DJ 口白疊進已算好的 A/B chunk，同時把音樂 duck 到 duck_gain（模擬 Mac
+    端 sidechaincompress 的聽感：口白蓋過音樂，不是疊在滿音量音樂上）。回傳
+    (疊好的 chunk, 新的 pos)；tts 是 None（沒 armed）時新 pos 也回傳 None、音樂
+    維持原音量不 duck。播完了（new_pos >= len(tts)）由呼叫端自己比較長度判斷、
+    清掉 armed 狀態、下一輪音樂音量自動恢復——這裡只管當下這個 chunk。"""
+    if tts is None:
+        return mixed, None
+    n = len(mixed)
+    take = min(n, len(tts) - pos)
+    seg = tts[pos:pos + take].astype(np.float32)
+    if take < n:
+        seg = np.pad(seg, (0, n - take))
+    ducked_music = mixed.astype(np.float32) * duck_gain
+    out = np.clip(ducked_music + seg, -32768, 32767).astype(np.int16)
+    return out, pos + take
+
+
+def _synthesize_tts_pcm(text: str) -> "np.ndarray | None":
+    """呼叫 edge-tts CLI 合成一段口白到暫存 mp3，再用既有 ffmpeg decode 路徑
+    （_make_decoder/_read_chunk）轉成 RATE/CHANNELS 的 PCM int16 array。逾時/
+    edge-tts 未安裝/合成空檔都讓例外往上冒，交給呼叫端（PuckMixer.speak()）
+    決定要不要安靜放棄——這支只管「合成」，不管降級策略。"""
+    import os as _os
+    import tempfile
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+    _os.close(fd)
+    try:
+        subprocess.run(
+            # --rate/--pitch 的值以 "-" 開頭（例如 "-20%"），argparse 當成獨立 argv
+            # 元素會誤判成一個新選項、報 "expected one argument"——用 --key=value
+            # 單一 token 形式才不會被拆開解析（2026-08-17 實機踩到）。
+            ["edge-tts", "--voice", TTS_VOICE, f"--rate={TTS_RATE}", f"--pitch={TTS_PITCH}",
+             "--text", text, "--write-media", tmp_path],
+            capture_output=True, timeout=15, check=True,
+        )
+        proc = _make_decoder(tmp_path)
+        chunks = []
+        while True:
+            data = proc.stdout.read(BYTES_PER_CHUNK)
+            if not data:
+                break
+            chunks.append(np.frombuffer(data, dtype=np.int16))
+        proc.wait(timeout=5)
+        if not chunks:
+            return None
+        return np.concatenate(chunks)
+    finally:
+        try:
+            _os.remove(tmp_path)
+        except Exception:
+            pass
+
+
 class PuckMixer:
     """車puck BT 混音執行層。public method thread-safe、非阻塞（重活丟背景 thread）。"""
 
@@ -183,6 +247,9 @@ class PuckMixer:
         # crossfade() 點火時若 deck_b 已合成好刷碟音效就 armed；None=沒疊
         self._scratch_samples = None
         self._scratch_pos = 0
+        # DJ 口白 TTS deck：speak() 背景合成完成後 armed，None=沒疊（音樂不 duck）
+        self._tts_samples = None
+        self._tts_pos = 0
         # AEC reference ring buffer：存最近 REF_BUFFER_SECONDS 秒送進喇叭前的
         # PCM（48kHz stereo interleaved），給 puck_aec.py 當 bit-exact reference。
         self._ref_lock = threading.Lock()
@@ -300,6 +367,25 @@ class PuckMixer:
             self._scratch_samples = scratch_pcm
             self._scratch_pos = 0
 
+    def speak(self, text: str):
+        """DJ 口白：Mac 只送文字過來，這裡背景呼叫 edge-tts 合成+疊進 TTS deck
+        （見 project_car_puck_mk2_pi_zero2w_bt_mixer_validated 記憶「DJ口白傳輸
+        路線定案」）。非阻塞——合成要打網路，不能卡住呼叫端的 HTTP handler。
+        合成失敗（edge-tts 未安裝/網路問題/逾時）就安靜放棄，不擋音樂繼續播，
+        跟其他降級路徑（_write_with_reconnect 等）同一套哲學。"""
+        def _synthesize():
+            try:
+                pcm = _synthesize_tts_pcm(text)
+            except Exception:
+                print(f"🔇 [PuckMixer] DJ 口白合成失敗，這輪不放：{text[:20]}", flush=True)
+                return
+            if pcm is None or not pcm.size:
+                return
+            with self._lock:
+                self._tts_samples = pcm
+                self._tts_pos = 0
+        threading.Thread(target=_synthesize, daemon=True).start()
+
     def stop(self):
         self._stop_flag.set()
         if self._loop_thread is not None:
@@ -318,6 +404,8 @@ class PuckMixer:
             self._crossfade_start = None
             self._scratch_samples = None
             self._scratch_pos = 0
+            self._tts_samples = None
+            self._tts_pos = 0
         self._stop_flag = threading.Event()
         self._loop_thread = None
 
@@ -417,6 +505,17 @@ class PuckMixer:
                                 self._scratch_pos = 0
                             else:
                                 self._scratch_pos = new_pos
+                with self._lock:
+                    tts, tts_pos = self._tts_samples, self._tts_pos
+                if tts is not None:
+                    mixed, new_tts_pos = _mix_tts_ducked(mixed, tts, tts_pos, DJ_INTERJECTION_VOLUME)
+                    with self._lock:
+                        if self._tts_samples is tts:  # 沒被下一次 speak() 換掉
+                            if new_tts_pos >= len(tts):
+                                self._tts_samples = None
+                                self._tts_pos = 0
+                            else:
+                                self._tts_pos = new_tts_pos
                 self._append_reference(mixed)
                 pcm = self._write_with_reconnect(pcm, mixed.tobytes())
         finally:

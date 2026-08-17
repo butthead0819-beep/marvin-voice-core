@@ -707,7 +707,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET" and path in ("", "/panel"):
             return self._serve_panel()
         if path not in ("/vol", "/eq", "/balance", "/profile", "/ptt", "/presence", "/hud",
-                         "/puck/play", "/puck/queue_next", "/puck/crossfade", "/puck/stop", "/puck/status"):
+                         "/puck/play", "/puck/queue_next", "/puck/crossfade", "/puck/stop",
+                         "/puck/status", "/puck/speak"):
             return self._send(404, {"error": "not_found"})
         q = parse_qs(parsed.query)
         if not self._authed(q):
@@ -936,6 +937,12 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == "/puck/crossfade":
                     duration_s = float(data.get("duration_s", 4.0))
                     _puck_mixer.crossfade(duration_s)
+                    return self._send(200, {"ok": True})
+                elif path == "/puck/speak":
+                    text = (data.get("text") or "").strip()
+                    if not text:
+                        return self._send(400, {"error": "missing_text"})
+                    _puck_mixer.speak(text)  # 背景合成，立刻回應不卡 HTTP handler
                     return self._send(200, {"ok": True})
                 elif path == "/puck/stop":
                     _puck_mixer.stop()

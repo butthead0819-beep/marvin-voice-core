@@ -2888,12 +2888,22 @@ class MusicCog(commands.Cog):
 
     async def _fire_puck_speak(self, puck_client, audio_path: str) -> None:
         """[PuckMixer Phase3] DJ 口白：ESP32 端會 duck 音樂再疊播（見
-        car_puck.ino::mixOutputTask 的 VOICE_DUCK_GAIN）。只有 pi_bt/esp32_edge_mix
-        以外的硬體（puck_client=None）或呼叫端沒帶 speak（PuckMixerClient 目前
-        沒有——Pi mk2 的 DJ 口白走另一條獨立管線，見該檔案開頭說明）才不會走到這裡。"""
+        car_puck.ino::mixOutputTask 的 VOICE_DUCK_GAIN）。esp32_edge_mix 專用
+        （送 Mac 本機預渲染音檔路徑，ESP32 pull 播放）；pi_bt 走 _fire_puck_speak_text
+        （送文字，見該方法說明），呼叫端用 hasattr 分辨。"""
         ok = await puck_client.speak(audio_path)
         if not ok:
             logger.warning(f"[PuckMixer] speak 失敗: {audio_path}")
+
+    async def _fire_puck_speak_text(self, puck_client, text: str) -> None:
+        """[PuckMixer] pi_bt 專用 DJ 口白（2026-08-17 補上，見
+        project_car_puck_mk2_pi_zero2w_bt_mixer_validated 記憶「DJ口白傳輸路線
+        定案」）。只送文字——Pi 自己呼叫 edge-tts 合成+duck 音樂疊播
+        （device/puck_mixer.py::PuckMixer.speak()），不像 esp32_edge_mix 那樣送
+        Mac 本機音檔路徑（Pi 讀不到 Mac 檔案系統）。"""
+        ok = await puck_client.speak_text(text)
+        if not ok:
+            logger.warning(f"[PuckMixer] speak_text 失敗: {text[:20]}")
 
     async def _fire_puck_sfx(self, puck_client, audio_path: str) -> None:
         """[PuckMixer Phase3] 轉場音效：不 duck，直接疊播。"""
@@ -3226,13 +3236,19 @@ class MusicCog(commands.Cog):
                 # 不可用 play_local_file——那條把檔案設成音樂層來源會替換掉正在播的歌，
                 # DJ 只播到切歌點就被下一首蓋掉（使用者實測「只聽到狗與露就停」）。
                 await vc.play_dj_on_tts_layer(audio_path)
-                # [PuckMixer Phase3] esp32_edge_mix：deck A/B 改走 /puck_deck 乾淨音源
-                # 後，這條 vc.play_dj_on_tts_layer 疊的 DJ 口白只會出現在 Discord/家用
-                # 混音（走 vc 自己的輸出），不會到 ESP32——另外送一份給裝置端自己疊播
-                # +duck（見 car_puck.ino 的 speak 分支）。只有 audio_path 有預渲染檔的
-                # 情況才送，即時 TTS（else 分支）沒有檔案可傳，這裡先不接。
+                # [PuckMixer] vc.play_dj_on_tts_layer 疊的 DJ 口白只會出現在 Discord/
+                # 家用混音（走 vc 自己的輸出），到不了車puck 硬體——另外送一份給裝置端
+                # 自己疊播+duck。兩種硬體傳輸模型不同，用 hasattr 分辨（speak_text 優先）：
+                #   pi_bt：送文字，Pi 自己 edge-tts 合成（2026-08-17，見
+                #     project_car_puck_mk2_pi_zero2w_bt_mixer_validated 記憶）
+                #   esp32_edge_mix：送 Mac 本機預渲染音檔路徑，ESP32 pull 播放
+                #     （見 car_puck.ino 的 speak 分支）
+                # 只有 audio_path 有預渲染檔的情況才送，即時 TTS（else 分支）沒有
+                # 檔案/固定文字可傳，這裡先不接。
                 puck_client = _get_puck_client()
-                if puck_client is not None and hasattr(puck_client, "speak"):
+                if puck_client is not None and hasattr(puck_client, "speak_text"):
+                    asyncio.create_task(self._fire_puck_speak_text(puck_client, text))
+                elif puck_client is not None and hasattr(puck_client, "speak"):
                     asyncio.create_task(self._fire_puck_speak(puck_client, audio_path))
             else:
                 await vc.play_tts(text, already_in_channel=True)
