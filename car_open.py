@@ -61,10 +61,14 @@ async def resolve_car_open_query(
     駕駛沒任何提示。改成最多試 max_attempts 首——先試 song，沒過再從
     pool_provider() 補抽候選池（排除已試過的），直到抽到一首過閘的或用完次數。
 
-    resolve_fn(query) 失敗/逾時（由 caller 決定要不要包 timeout）視為「無法驗證，
-    保守放行」——回傳當前這首的 query 讓 caller 照樣嘗試播放，不因為 resolve 掛掉
-    就連音樂都沒有（車載開場的體驗優先序：有聲音 > 沒過驗證）。
-    全部候選都沒過品質閘 → 回傳 None，caller 決定開場靜音。
+    resolve_fn(query) 拋例外（逾時/服務不可用，由 caller 決定要不要包 timeout）視為
+    「無法驗證，保守放行」——回傳當前這首的 query 讓 caller 照樣嘗試播放，不因為
+    resolve 掛掉就連音樂都沒有（車載開場的體驗優先序：有聲音 > 沒過驗證）。
+    ⚠️ 2026-08-17 車puck mk2 實機踩到：resolve_fn 乾淨回 None（真的搜不到，不是
+    例外）原本被跟「掛掉」同樣處理直接放行，結果送出一個已知搜不到的 query，
+    caller 二次 resolve 一樣失敗、整趟開場靜音。改成乾淨回 None＝這首確定不行，
+    换下一首候選試——只有真的拋例外才保守放行。
+    全部候選都沒過品質閘/都搜不到 → 回傳 None，caller 決定開場靜音。
     """
     if song is None:
         return None
@@ -84,9 +88,9 @@ async def resolve_car_open_query(
         try:
             info = await resolve_fn(query)
         except Exception:
-            info = None
+            return query   # 真的異常（逾時/服務不可用）→ 保守放行，不繼續試下一首
         if info is None:
-            return query
+            continue        # 乾淨回 None＝真的搜不到，換下一首候選試
         is_ns, _reason = is_non_song_video(info.get("title", ""), info.get("duration"))
         if is_ns:
             continue

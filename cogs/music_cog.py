@@ -70,6 +70,13 @@ _DJ_TAIL_SFX_NAMES = ("scratch",)
 # stream loop 換歌撞在一起（見 _run_tail_dj docstring）。
 _DJ_TAIL_LEAD_S = 8.0
 _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
+# pi_bt 專用、跟 DJ 口白脫鉤的獨立 crossfade 觸發窗口。_DJ_TAIL_LEAD_S=8.0 是
+# DJ 口白疊當前歌尾巴的編排選擇，從沒考慮過「resolve 一首歌網址要多久」；
+# pi_bt 要在 Pi 端自己跑 yt-dlp（~7s，2026-08-17 升級後），塞進 8s 窗口太貼邊，
+# 給它自己更早、獨立的觸發點，不影響 DJ 口白原本的時間軸設計（見
+# _run_puck_pi_bt_crossfade）。
+_PUCK_PI_BT_CROSSFADE_LEAD_S = 20.0
+_PUCK_PI_BT_CROSSFADE_BUFFER_S = 10.0
 
 _puck_mixer_client = None  # lazy singleton，見 _get_puck_client()
 
@@ -177,6 +184,10 @@ class MusicCog(commands.Cog):
         self._last_themed_set_ts: float = 0.0
         self._themed_sets_tonight: int = 0
         self._themed_set_date = None
+        # 📖 [StoryArc] 故事弧線節目（dj_story_arc.py）進行中旗標——自成一體播放協程，
+        # 不碰 stream_queue/_stream_loop/_run_tail_dj，跟一般 autopilot 互斥（見 story_arc 指令）。
+        self._story_arc_active: bool = False
+        self._STORY_ARC_BGM_VOLUME: float = 0.05  # 口白約10%感覺時，BGM抓一半5%，別蓋過口白
         self._prefetch_cache: dict = {}   # url → Task[{'lyrics', 'comment'}]
         self._preload_music_cache: dict = {}   # url → Task[PreloadedF32MusicSource]
         # 🎵 [ReqGuard] 使用者點歌兩道防護（2026-07-04；邏輯在 music_request_guard.py）
@@ -1209,6 +1220,250 @@ class MusicCog(commands.Cog):
             logger.exception("[ThemedSet] 失敗，fallback 一般 autopilot")
             return 0
 
+    # ── 📖 [StoryArc] 故事弧線節目（dj_story_arc.py）──────────────────────────
+
+    async def _run_story_arc_pipeline(self, members: list, target_minutes: float):
+        """離線 Step1-5：找敘事流→共同/個人回憶→大綱+選歌→口白→resolve+片頭。
+
+        跟 scripts/preview_story_arc.py 同一批函式、同一套邏輯，只是資料源改成
+        cog 內既有的 self.bot.music_memory / suki / self._resolve_yt_query（不用
+        另外拉 yt-dlp standalone resolve）。
+
+        回 (arc, infos, brief, intro) 或 (None, 原因字串) 供指令層告知使用者為何沒開播。
+        """
+        from dj_story_arc import (build_show_intro, build_story_candidate_pools,
+                                  curate_story_interjections, curate_story_outline,
+                                  gather_story_brief, resolve_story_arc)
+        from llm_pool import call_paid_review
+        from track_quality import is_non_song_video, extract_video_id
+
+        entries = self._load_summary_entries()
+        if not entries:
+            return None, "沒有對話記錄可用"
+        now = time.time()
+
+        suki = getattr(getattr(self.bot, 'router', None), 'memory', None)
+        liked_items = []
+        if suki is not None:
+            for m in members:
+                try:
+                    for item in suki.get_recent_liked_items(m, limit=2):
+                        liked_items.append(f"{m}喜歡{item}")
+                except Exception:
+                    pass
+        conv_snippets = [e.core for e in entries[-4:] if getattr(e, "core", None)]
+
+        target_duration_s = target_minutes * 60.0
+        brief = gather_story_brief(entries, members, liked_items, conv_snippets,
+                                   now=now, target_duration_s=target_duration_s)
+        if brief is None:
+            return None, "共同回憶素材不足（近7天可用共同核心句 < 2），無法生成故事弧"
+
+        mm = getattr(self.bot, 'music_memory', None)
+        if mm is None:
+            return None, "音樂記憶尚未就緒"
+        exclude_titles = mm.get_recently_played_titles(7 * 24 * 3600)
+        exclude_vids = mm.get_recently_played_video_ids(7 * 24 * 3600) | mm.get_skipped_video_ids()
+        pools = build_story_candidate_pools(members, mm.all_songs(), exclude_titles, now=now)
+
+        arc = await curate_story_outline(brief, pools, exclude_titles, call_fn=call_paid_review)
+        if arc is None or not arc.nodes:
+            return None, "LLM 生成故事大綱失敗"
+
+        arc = await curate_story_interjections(arc, brief, call_fn=call_paid_review)
+
+        infos = await resolve_story_arc(
+            arc, resolve_fn=self._resolve_yt_query, exclude_vids=exclude_vids,
+            is_non_song_fn=is_non_song_video, extract_vid_fn=extract_video_id)
+        if not infos:
+            return None, "選好的歌都解析失敗，無法播放"
+
+        intro = build_show_intro(arc, brief)
+        return (arc, infos, brief, intro), None
+
+    async def _render_tts_with_duration(self, text: str) -> tuple:
+        """文字轉 TTS 音檔 + ffprobe 量真實秒數（取代 Phase 1 preview 用的粗估）。
+        失敗回 (None, 0.0)——caller 該優雅跳過這段口白，不中斷整場故事弧。"""
+        if not text:
+            return None, 0.0
+        try:
+            audio_path = await self.bot.tts_engine.generate_audio(text)
+        except Exception:
+            logger.warning("⚠️ [StoryArc] TTS 渲染失敗", exc_info=True)
+            return None, 0.0
+        if not audio_path:
+            return None, 0.0
+        dur = await self._probe_audio_duration(audio_path)
+        return audio_path, dur
+
+    @staticmethod
+    async def _probe_audio_duration(path: str) -> float:
+        """ffprobe 量音檔實際秒數，失敗回 0.0（caller 該當作「這段沒有時長可等」處理）。"""
+        def _probe():
+            import subprocess
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True, text=True, timeout=10)
+            return float(out.stdout.strip())
+        try:
+            return await asyncio.to_thread(_probe)
+        except Exception:
+            return 0.0
+
+    async def _prepare_and_stage_story_arc(self, members: list, target_minutes: float):
+        """Prepare 階段：跑生成管線 + 把片頭/每個節點的口白都預渲染成真實 TTS 音檔，
+        存成一份「待播節目」（`dj_story_arc.save_staged_show`）。播放當下（Play 階段）
+        不再做任何 LLM/TTS 工作，零延遲、可排程在生成完成後任何時間點觸發。
+
+        回 (staged_dict, None) 或 (None, 原因字串)。
+        """
+        from dj_story_arc import build_staged_show, save_staged_show
+
+        result, err = await self._run_story_arc_pipeline(members, target_minutes)
+        if result is None:
+            return None, err
+        arc, infos, brief, intro = result
+
+        intro_audio_path, intro_audio_dur = await self._render_tts_with_duration(intro.intro_script)
+
+        for info in infos:
+            script = (info.get('_story_interjection_script') or '').strip()
+            if script:
+                audio_path, dur_s = await self._render_tts_with_duration(script)
+                info['_story_interjection_audio_path'] = audio_path
+                info['_story_interjection_duration_s'] = dur_s
+
+        staged = build_staged_show(
+            infos, intro, intro_audio_path=intro_audio_path,
+            intro_audio_duration_s=intro_audio_dur, ts=time.time(),
+            narrative_day=brief.narrative_day, target_duration_s=brief.target_duration_s)
+        save_staged_show(staged)
+        return staged, None
+
+    async def _play_story_arc(self, staged: dict) -> None:
+        """Play 階段：純播放一份已經 Prepare 好的「待播節目」（見 `dj_story_arc.load_staged_show`）。
+
+        只有片頭（開場一次性 BGM+引導口白）是故事弧自己播；歌曲本身**直接丟進既有
+        `stream_queue`**，交給 `_stream_loop`/`_run_tail_dj`/`play_stream_song` 這套
+        本來就正確的機制接手播放跟 DJ 尾段口白——2026-08-17 真機測試踩到的三個 bug
+        （still_active 誤判/BGM音量蓋過口白/webpage_url不是可播網址）本質上都是自己
+        重造這套邏輯繞開既有正確實作造成的：歌曲只是故事裡的一份待播清單，不需要
+        另外重寫一套播放器。`_fetch_dj_interjection_raw` 認得 `_lane == 'story_arc'`
+        的節點，直接用 Prepare 階段預渲染好的口白，不重新過 LLM/TTS。
+
+        片頭 BGM 音量固定壓到 `_STORY_ARC_BGM_VOLUME`（口白約 10% 感覺時，BGM 抓一半
+        5%，別蓋過口白）。片頭口白 `vc._tts_protected = True` 全程開著，不被
+        barge-in/靜音閘/game_mode 中途打斷（同 `_maybe_play_dj_interjection` 既有慣例）。
+        """
+        from dj_story_arc import ShowIntro, record_story_arc
+
+        vc = self._vc()
+        if vc is None:
+            return
+        intro_dict = staged.get('intro') or {}
+        bgm_path = intro_dict.get('music_path') or ""
+
+        # 只在片頭這段短暫的一次性播放期間開著——擋掉同時間第二個 /story_arc_play
+        # 重複觸發片頭。歌曲交棒給 stream_queue 之後，正常播放狀態就看 stream_mode。
+        self._story_arc_active = True
+        try:
+            # 片頭：一次性播放，跟後面的歌曲佇列無關，播完就結束這段。
+            bgm_task = (asyncio.create_task(
+                vc.play_local_file(bgm_path, volume=self._STORY_ARC_BGM_VOLUME))
+                if bgm_path else None)
+            intro_audio = intro_dict.get('audio_path')
+            intro_dur = intro_dict.get('audio_duration_s') or 0.0
+            if intro_audio and intro_dur > 0:
+                _prev_protected = vc._tts_protected
+                vc._tts_protected = True
+                try:
+                    await vc.play_dj_on_tts_layer(intro_audio)
+                    await asyncio.sleep(intro_dur)
+                finally:
+                    vc._tts_protected = _prev_protected
+            if bgm_task:
+                bgm_task.cancel()
+
+            # 歌曲：原樣丟進既有佇列（info dict 保留 resolve_story_arc 給的 url/webpage_url/
+            # duration/highlight_start_s，不重新設計格式），交給 _stream_loop 接手播放。
+            infos = sorted(staged.get('infos', []), key=lambda i: i.get('_story_node_position') or 0)
+            for info in infos:
+                info = dict(info)   # copy，避免共用 staged dict 的可變狀態
+                info['requested_by'] = 'Marvin故事弧'
+                info['_lane'] = 'story_arc'
+                self.stream_queue.append(info)
+            if infos:
+                self._republish_queue_snapshot()
+                self._ensure_stream_loop()
+        finally:
+            self._story_arc_active = False
+
+        record_story_arc(
+            staged.get("arc_title", ""), infos,
+            target_duration_s=staged.get("target_duration_s", 0.0), ts=time.time(),
+            narrative_day=staged.get("narrative_day", ""),
+            intro=ShowIntro(intro_script=intro_dict.get("script", ""), intro_music_path=bgm_path))
+        # 播完（其實是「交棒播放」那一刻）刻意不清 staged show——測播放設定不該每次都
+        # 重新 Prepare 燒一次 LLM token。同一份內容可以重複 /story_arc_play；要換內容
+        # 就重新 /story_arc_prepare，會覆蓋掉舊的（見 save_staged_show 是整檔覆寫）。
+
+    @app_commands.command(name="story_arc_prepare", description="[DJ] 預先生成故事弧節目內容+口白TTS，不播放")
+    @app_commands.describe(minutes="目標時長（分鐘，預設20）")
+    async def story_arc_prepare(self, interaction: discord.Interaction, minutes: int = 20):
+        await interaction.response.defer(ephemeral=False)
+        guild_vc = interaction.guild.voice_client
+        members = ([m.display_name for m in guild_vc.channel.members if not m.bot]
+                  if guild_vc else [])
+        if not members and interaction.user.voice:
+            members = [m.display_name for m in interaction.user.voice.channel.members if not m.bot]
+        if not members:
+            await interaction.followup.send(
+                "❌ 找不到故事對象——請待在語音頻道裡再試（不需要先 /summon，"
+                "Prepare 階段不碰播放）。", ephemeral=True)
+            return
+
+        await interaction.followup.send(f"📖 正在為 {'、'.join(members)} 編一段故事，請稍候…")
+        staged, err = await self._prepare_and_stage_story_arc(members, float(minutes))
+        if staged is None:
+            await interaction.followup.send(f"❌ 故事弧沒生成成功：{err}", ephemeral=True)
+            return
+        n = len(staged.get('nodes', []))
+        await interaction.followup.send(
+            f"✅ 《{staged.get('arc_title', '')}》準備好了，{n} 首歌 + 口白已預渲染。"
+            f"用 `/story_arc_play` 開始播放。")
+
+    @app_commands.command(name="story_arc_play", description="[DJ] 播放已經 /story_arc_prepare 好的故事弧節目")
+    async def story_arc_play(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False)
+        vc = self._vc()
+        if not vc:
+            await interaction.followup.send("❌ 語音系統尚未就緒。", ephemeral=True)
+            return
+        guild_vc = interaction.guild.voice_client
+        if not guild_vc:
+            await interaction.followup.send("❌ 馬文不在語音頻道中。請先使用 `/summon`。", ephemeral=True)
+            return
+        if self._story_arc_active:
+            await interaction.followup.send("📖 已經有一場故事弧在進行中了。", ephemeral=True)
+            return
+        if self.stream_mode:
+            await interaction.followup.send(
+                "❌ 目前有音樂正在自動播放，故事弧要先淨空播放狀態才能開始——"
+                "先 `/marvin_radio stop` 或等目前播放結束再試。", ephemeral=True)
+            return
+
+        from dj_story_arc import load_staged_show
+        staged = load_staged_show()
+        if staged is None:
+            await interaction.followup.send(
+                "❌ 沒有準備好的節目，先跑 `/story_arc_prepare`。", ephemeral=True)
+            return
+
+        await interaction.followup.send(
+            f"🎬 《{staged.get('arc_title', '')}》，{len(staged.get('nodes', []))} 首歌，開始了。")
+        await self._play_story_arc(staged)
+
     async def _auto_recommend(self, username: str, *, _tier: int = 1):
         """佇列空 → 依在場成員的音樂記憶推薦下一首批。"""
         mm = getattr(self.bot, 'music_memory', None)
@@ -1862,7 +2117,9 @@ class MusicCog(commands.Cog):
                     puck_client = _get_puck_client()
                     puck_url = info.get('webpage_url', '')
                     if puck_client is not None and puck_url:
-                        asyncio.create_task(self._fire_puck_play(puck_client, puck_url))
+                        asyncio.create_task(
+                            self._fire_puck_play(puck_client, puck_url, title=info.get('title'))
+                        )
 
                 self._current_song_skipped = False
                 song_start_time = time.time()
@@ -1887,6 +2144,13 @@ class MusicCog(commands.Cog):
                             _self._tail_dj_task = None
                     self._tail_dj_task.add_done_callback(_clear_tail_task)
                     logger.info(f"[DJ Tail] 已排尾段 task：{title}（點火時抓下一首）")
+
+                    # [PuckMixer] pi_bt 的 crossfade 訊號跟 DJ 口白的 8s 窗口脫鉤，
+                    # 獨立排一個更早觸發的 task（見 _run_puck_pi_bt_crossfade docstring）。
+                    if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() == "pi_bt":
+                        asyncio.create_task(
+                            self._run_puck_pi_bt_crossfade(info, playback_started)
+                        )
 
                 try:
                     await self.play_stream_song(
@@ -2000,7 +2264,8 @@ class MusicCog(commands.Cog):
 
     async def play_stream_song(self, url: str, title: str, dj_audio_path: str | None = None,
                                 highlight_start_s: float | None = None,
-                                started_future: "asyncio.Future | None" = None):
+                                started_future: "asyncio.Future | None" = None,
+                                still_active=None):
         """🎵 播放單首串流音樂，等待播放完成後 return。
 
         highlight_start_s：YouTube「最多人重播」熱力圖挑出的精華起點（見
@@ -2011,8 +2276,18 @@ class MusicCog(commands.Cog):
         set_result(time.time())，給 _run_tail_dj 當「已播秒數」的基準——highlight_start_s
         的網路 seek + 整首解碼都花時間，用「call 這個函式前」蓋的時間戳會系統性偏早，
         見 project_dj_tail_seek_latency。無下一首派發需求的呼叫端可不傳。
+
+        still_active：`_mixer_play_music` 用來判斷「還要不要繼續播」的 callable，預設
+        `None` → 退回 `lambda: self.stream_mode`（一般 autopilot/radio 的既有行為，不變）。
+        `_play_story_arc` 這種自成一體、刻意不設 `stream_mode=True` 的呼叫端要傳自己的
+        判斷（例如 `lambda: self._story_arc_active`）——否則 `still_active()` 一開始就是
+        False，`_mixer_play_music` 的 while 迴圈第一輪就判定「該停了」，歌完全沒真的
+        播出來就被 `clear_music()` 收掉（2026-08-17 story arc 第一次真機測試踩到）。
         """
         import shlex
+
+        if still_active is None:
+            still_active = lambda: self.stream_mode  # noqa: E731
 
         vc = self._vc()
         # 走輸出接縫：本機模式回 LocalSpeakerDevice、Discord 回 DiscordPlaybackDevice(vc)、
@@ -2051,7 +2326,7 @@ class MusicCog(commands.Cog):
                 vc._mixer.set_volume(1.0)
                 await vc._mixer_play_music(
                     device, discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
-                    still_active=lambda: self.stream_mode,
+                    still_active=still_active,
                     started_at=started_future,
                 )
         else:
@@ -2070,7 +2345,7 @@ class MusicCog(commands.Cog):
                     url, lambda: discord.FFmpegPCMAudio(url, **p12_opts))
                 await vc._mixer_play_music(
                     device, fresh,
-                    still_active=lambda: self.stream_mode, volume_attr="stream_volume",
+                    still_active=still_active, volume_attr="stream_volume",
                     preloaded=preloaded, started_at=started_future,
                 )
 
@@ -2328,6 +2603,14 @@ class MusicCog(commands.Cog):
 
     async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
         """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
+        # 📖 [StoryArc] 故事弧節點：口白已經在 /story_arc_prepare 階段生成+TTS預渲染好
+        # 了，直接用，不重新過 LLM/TTS（那是這個函式其餘部分在做的事，故事弧要跳過）。
+        if info.get('_lane') == 'story_arc':
+            script = (info.get('_story_interjection_script') or '').strip()
+            if not script:
+                return None
+            return {'text': script, 'audio_path': info.get('_story_interjection_audio_path')}
+
         requester = info.get('requested_by', '')
         if not requester:
             return None
@@ -2536,7 +2819,7 @@ class MusicCog(commands.Cog):
         # （見 music_intro_skipper.pick_intro_skip_start）。原地改 info——跟 stream_queue
         # 裡 popleft 出去要播的是同一個 dict 物件，播放端 play_stream_song/_start_music_preload
         # 已原生吃 highlight_start_s，這裡填了就自動生效，不用額外改播放路徑。
-        if not info.get('highlight_start_s') and isinstance(lyrics_synced, str):
+        if not info.get('highlight_start_s') and not info.get('voice_request') and isinstance(lyrics_synced, str):
             from music_intro_skipper import pick_intro_skip_start
             intro_start = pick_intro_skip_start(lyrics_synced, info.get('duration'))
             if intro_start is not None:
@@ -2571,12 +2854,35 @@ class MusicCog(commands.Cog):
                 },
             }
 
-    async def _fire_puck_play(self, puck_client, url: str) -> None:
+    async def _speak_song_ack(self, vc, title: str) -> None:
+        """語音點歌第三個Ack：合成後直推 TTS 層（同 _play_ack 路徑），不走 play_tts 的
+        Silence Gate/Interrupt Guard，才不會被聊天室裡持續講話的其他人擋掉。"""
+        try:
+            audio_path = await self.bot.tts_engine.generate_audio(f"幫你點了《{title}》")
+        except Exception as e:
+            logger.warning(f"⚠️ [第三個Ack] TTS 生成失敗，跳過報歌名: {e}")
+            return
+        if not audio_path:
+            return
+        try:
+            await vc.play_dj_on_tts_layer(audio_path)
+        except Exception as e:
+            logger.warning(f"⚠️ [第三個Ack] 推播失敗: {e}")
+
+    async def _fire_puck_play(self, puck_client, url: str, title: str = None) -> None:
         """[PuckMixer] 硬 play：沒有 standby deck 可 crossfade 接手時（開場第一首/skip/
         上一首無尾段task）用這個讓 ESP32 從乾淨狀態開播（見 car_puck.ino dispatchNewCommands
         的 play 分支：兩個 deck 都停、deck0 接新 URL）。fire-and-forget，失敗只記警告，
-        不影響本地 Discord/家用播放路徑。"""
-        ok = await puck_client.play(url)
+        不影響本地 Discord/家用播放路徑。
+
+        2026-08-17 實測過改由 Mac 端 resolve 好直連網址再送過去——被 Google 用
+        來源 IP 檢查擋下 403，不可靠，已 revert。Pi 端（device/puck_mixer.py）
+        繼續自己跑 yt-dlp；yt-dlp 已升級到跟 Mac 同代版本，resolve 從 18-23s
+        降到 ~7s（見 puck_mixer.py::resolve_stream_url() docstring）。
+
+        title：pi_bt 硬體才會用到（見 puck_mixer.py 的 AVRCP metadata 掛勾），
+        esp32_edge_mix 的 PuckMixerClient 忽略這個欄位，安全。"""
+        ok = await puck_client.play(url, title=title)
         if not ok:
             logger.warning(f"[PuckMixer] play 失敗: {url}")
 
@@ -2596,18 +2902,24 @@ class MusicCog(commands.Cog):
             logger.warning(f"[PuckMixer] sfx 失敗: {audio_path}")
 
     async def _fire_puck_crossfade(self, puck_client, next_url: str,
-                                    buffer_s: float = 4.0, crossfade_s: float = 4.0) -> None:
+                                    buffer_s: float = 4.0, crossfade_s: float = 4.0,
+                                    title: str = None) -> None:
         """[PuckMixer] 純音樂 crossfade：queue_next 後留 buffer_s 給裝置端背景
-        yt-dlp+ffmpeg 起手緩衝，再送 crossfade。跟本地 Discord mixer/DJ 口白邏輯
+        ffmpeg 起手緩衝，再送 crossfade。跟本地 Discord mixer/DJ 口白邏輯
         完全獨立（見呼叫點 _run_tail_dj），queue_next 失敗就放棄、不重試（下一輪
         tail-fire 或下一首開頭會再給機會）。
 
         buffer_s 2.0→4.0（2026-08-11）：esp32_edge_mix 實機驗證，2.0s 對 ESP32 的
-        /puck_deck 鏈路（Mac resolve+ffmpeg轉碼+MP3編碼+網路傳輸，比 Pi mk2 本地
-        直接 yt-dlp 多一段來回)不夠，crossfade 觸發時 standby deck 常常還沒緩衝夠，
-        混音瞬間出現真的靜音空白。拉長對 pi_bt 硬體也安全（純粹更保守，不影響其
-        本地 resolve 路徑）。"""
-        ok = await puck_client.queue_next(next_url)
+        /puck_deck 鏈路（Mac resolve+ffmpeg轉碼+MP3編碼+網路傳輸)不夠，crossfade
+        觸發時 standby deck 常常還沒緩衝夠，混音瞬間出現真的靜音空白。
+
+        ⚠️ 2026-08-17：這裡收到的 buffer_s 上限由呼叫端決定的觸發窗口決定——
+        esp32_edge_mix 走 _run_tail_dj 內建的 _DJ_TAIL_LEAD_S(=8.0)s 窗口，不能
+        逼近甚至超過它；pi_bt 已改走獨立更早觸發的 _run_puck_pi_bt_crossfade
+        （_PUCK_PI_BT_CROSSFADE_LEAD_S，見該函式），buffer_s 才有餘裕給 Pi 自己
+        resolve（yt-dlp 升級後 ~7s）用，不再需要 Mac 端 resolve 那條會被 IP 檢查
+        擋 403 的路（2026-08-17 實測過、不可靠，已 revert）。"""
+        ok = await puck_client.queue_next(next_url, title=title)
         if not ok:
             logger.warning(f"[PuckMixer] queue_next 失敗，放棄本次 crossfade: {next_url}")
             return
@@ -2695,16 +3007,19 @@ class MusicCog(commands.Cog):
         #
         # ⚠️ 2026-08-11 實機踩到：這裡一定要用 webpage_url（可重新 yt-dlp resolve 的
         # youtube 頁面網址），不能用 'url'——後者是 _resolve_yt_query() 當下呼叫 yt-dlp
-        # 解出來、已經是 googlevideo CDN 的最終直連網址（見該函式 return dict），裝置端
-        # （device/puck_mixer.py::resolve_stream_url / main_satellite.py::handle_puck_deck）
-        # 收到後還會再對它跑一次 yt-dlp resolve，餵一個 CDN 網址進去等於再解析一次
-        # 「不是 youtube 頁面」的網址，100% 失敗（實機驗證：ESP32 收到後 /puck_deck 穩定
-        # 回 502，deckB 永遠連不上；這條路徑 Pi mk2 會撞一樣的錯，只是硬體還沒上線沒人
-        # 發現）。
+        # 解出來、已經是 googlevideo CDN 的最終直連網址（見該函式 return dict）。
+        # esp32_edge_mix 收到 webpage_url 後靠 /puck_deck 端點在 Mac 端重新
+        # resolve（main_satellite.py::handle_puck_deck），餵一個已經是 CDN 網址
+        # 的字串進去再 resolve 一次 100% 失敗（實機驗證：ESP32 /puck_deck 穩定
+        # 回 502）。pi_bt 不在這裡點火——它有自己獨立、更早觸發的排程（見
+        # _run_puck_pi_bt_crossfade），跟 DJ 口白的 8s 窗口脫鉤（2026-08-17）。
+        hardware = os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower()
         puck_client = _get_puck_client()
         next_url = next_info.get('webpage_url', '')
-        if puck_client is not None and next_url:
-            asyncio.create_task(self._fire_puck_crossfade(puck_client, next_url))
+        if puck_client is not None and next_url and hardware != "pi_bt":
+            asyncio.create_task(
+                self._fire_puck_crossfade(puck_client, next_url, title=next_info.get('title'))
+            )
 
         # 2026-08-14：preload 只跟「下一首歌本身」有關，不該綁在 DJ 口白是否成功
         # 預渲染上——DJ meta 拿不到時（生成失敗/逾時/quick 模式不講話）以前會直接
@@ -2726,6 +3041,71 @@ class MusicCog(commands.Cog):
         await self._play_dj_tail_sfx(next_info)
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
+
+    async def _run_puck_pi_bt_crossfade(self, cur_info: dict, song_start_time) -> None:
+        """[PuckMixer] pi_bt 專用，跟 DJ 口白的 _run_tail_dj/_DJ_TAIL_LEAD_S 完全脫鉤
+        的獨立 crossfade 排程（2026-08-17）。
+
+        背景：_DJ_TAIL_LEAD_S=8.0 是 DJ 口白疊當前歌尾巴的編排選擇，從沒考慮過
+        「resolve 一首歌網址要多久」——pi_bt 在 Pi 端自己跑 yt-dlp（升級後 ~7s），
+        塞進 8s 窗口太貼邊，網路一抖動就會撞回原本的 bug（crossfade() 被呼叫時
+        deck_b 還沒 ready）。這裡用 _PUCK_PI_BT_CROSSFADE_LEAD_S(=20.0) 給
+        resolve+緩衝更寬裕的窗口，只影響 pi_bt 硬體訊號本身，不動 DJ 口白的
+        時間軸設計。esp32_edge_mix 不受影響，繼續走 _run_tail_dj 內建的觸發點
+        （Mac 端 /puck_deck resolve 快，8s 夠用，已由實機驗證）。
+
+        跟 _run_tail_dj 平行排程、各自獨立 sleep，互不阻塞；任一方被取消（skip/
+        stop）只影響自己那份。"""
+        from dj_tail_schedule import tail_dj_fire_delay
+
+        title_cur = cur_info.get('title', '?')
+        duration = cur_info.get('duration')
+        if not duration:
+            return
+        if cur_info.get('highlight_start_s'):
+            duration = max(0.0, duration - cur_info['highlight_start_s'])
+
+        if isinstance(song_start_time, asyncio.Future):
+            try:
+                real_start = await song_start_time
+            except asyncio.CancelledError:
+                return
+        else:
+            real_start = song_start_time
+
+        elapsed = time.time() - real_start
+        delay = tail_dj_fire_delay(duration, elapsed, lead_s=_PUCK_PI_BT_CROSSFADE_LEAD_S)
+        if delay is None:
+            logger.info(f"[PuckMixer] pi_bt {title_cur} 過窗或歌太短，不排 crossfade")
+            return
+
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+
+        if not self.stream_mode:
+            return
+        if getattr(self, '_current_song_skipped', False):
+            return
+        if self._current_stream_info is not cur_info:
+            return
+
+        next_info = self.stream_queue[0] if self.stream_queue else None
+        if next_info is None:
+            logger.info(f"[PuckMixer] pi_bt {title_cur} 點火時 queue 仍空，放棄")
+            return
+        next_url = next_info.get('webpage_url', '')
+        if not next_url:
+            return
+
+        puck_client = _get_puck_client()
+        if puck_client is None:
+            return
+        await self._fire_puck_crossfade(
+            puck_client, next_url, buffer_s=_PUCK_PI_BT_CROSSFADE_BUFFER_S,
+            title=next_info.get('title'),
+        )
 
     def _start_music_preload(self, info: dict) -> None:
         """[DJ Tail] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song 換源時直接用
@@ -3616,6 +3996,9 @@ class MusicCog(commands.Cog):
                 if vc: asyncio.create_task(vc._play_ack("music_fail", speaker=speaker))
                 return
             info['requested_by'] = speaker
+            # 🎙️ [語音點歌] 不快進：略過熱力圖精華起點與後續 LRC 前奏跳過，一律從頭播。
+            info['highlight_start_s'] = None
+            info['voice_request'] = True
             if vc:
                 vc.stt_logger.info(
                     f"[點歌-語音] 使用者={speaker} | 搜尋={raw_search}{f' (修正→{search})' if wrong else ''} | 結果={info['title']} / {info.get('uploader', '?')}"
@@ -3630,6 +4013,12 @@ class MusicCog(commands.Cog):
             if self.radio_mode:
                 await self.stop_radio(reason="語音音樂指令接管")
             self._queue_user_song(info)
+            # 🎙️ [第三個Ack] 點播成功：唸出點了什麼歌，跟「收到」「找不到」兩個 Ack 分開，
+            # 讓使用者確認聽到的字沒被 STT/搜尋誤解成別首歌。走跟 _play_ack 同款「直推 TTS
+            # 層」路徑（play_dj_on_tts_layer），繞開 play_tts 的 Silence Gate/Interrupt Guard——
+            # 這兩個 gate 是為長回應設計的，聊天室常有人持續講話，會把這句短報幾乎全擋掉。
+            if vc:
+                asyncio.create_task(self._speak_song_ack(vc, info['title']))
             if self._ensure_stream_loop():
                 from cogs.voice_views import PlayControlView
                 existing_view = self._active_control_view

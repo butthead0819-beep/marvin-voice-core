@@ -696,7 +696,7 @@ async def test_tail_dj_fires_puck_crossfade_with_webpage_url_not_resolved_url():
     # _run_tail_dj 執行期間把 fake_client 綁進 task 的 closure，不需要 patch 還開著）。
     await asyncio.sleep(0)
 
-    fake_client.queue_next.assert_awaited_once_with(nxt["webpage_url"])
+    fake_client.queue_next.assert_awaited_once_with(nxt["webpage_url"], title=nxt["title"])
 
 
 # ── (f) CancelledError 被 catch ──────────────────────────────────────────────

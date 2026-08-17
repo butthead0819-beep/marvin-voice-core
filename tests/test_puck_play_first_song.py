@@ -61,7 +61,7 @@ async def test_stream_loop_fires_puck_play_for_song_not_played_in_tail():
         await cog._stream_loop()
         await asyncio.sleep(0)   # 讓 create_task 起的 _fire_puck_play 真的跑
 
-    fake_client.play.assert_awaited_once_with(song["webpage_url"])
+    fake_client.play.assert_awaited_once_with(song["webpage_url"], title=song["title"])
 
 
 @pytest.mark.asyncio

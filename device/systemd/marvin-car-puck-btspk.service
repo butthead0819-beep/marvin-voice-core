@@ -1,0 +1,13 @@
+[Unit]
+Description=Marvin car puck mk2 BT auto-connect to head unit (retry loop)
+After=bluetooth.service
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/marvin-car-puck-btspk-autoconnect.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

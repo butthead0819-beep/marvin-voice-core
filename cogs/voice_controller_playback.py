@@ -671,9 +671,19 @@ class PlaybackMixin:
         self._tts_flush_requested = False
         logger.info("🗑️ [TTS Flush] 佇列已清空，恢復正常播放。")
 
-    async def play_local_file(self, file_path: str):
+    async def play_local_file(self, file_path: str, *, start_offset_s: float = 0.0,
+                              volume: float = 1.0):
         """
         🚀 [Operation Broadcast] 播放本地音訊檔案。
+
+        start_offset_s：從第幾秒開始播（ffmpeg -ss）。給故事弧 BGM「接續播放不從頭」用
+        （見 dj_story_arc.BgmCursor）——呼叫端自己記位置，這裡只負責照給定秒數起播。
+        阻塞到整首播完/被中止才 return；呼叫端若要背景播放（BGM 段常常比口白長很多）
+        要自己包 asyncio.create_task，且換源前必須 cancel 掉，見 _mixer_play_music 內文。
+
+        volume：音樂層音量（0-1），預設 1.0（原本行為不變）。故事弧當背景床（BGM）用時
+        要傳低一點的值——這條路徑不像 play_dj_on_tts_layer 疊播在 TTS 層上會被自動
+        sidechain duck，是直接設進音樂層，音量完全由這個參數決定。
         """
         if not os.path.exists(file_path):
             logger.warning(f"⚠️ [Local Play] 找不到檔案: {file_path}")
@@ -683,8 +693,9 @@ class PlaybackMixin:
         if device is None:
             return
 
-        self._mixer.set_volume(1.0)
-        src = discord.FFmpegPCMAudio(file_path)
+        self._mixer.set_volume(volume)
+        before_options = f"-ss {start_offset_s}" if start_offset_s > 0 else None
+        src = discord.FFmpegPCMAudio(file_path, before_options=before_options)
         await self._mixer_play_music(device, src, still_active=lambda: device.is_connected())
 
     async def play_dj_on_tts_layer(self, file_path: str, *, peak: float = 0.9) -> bool:

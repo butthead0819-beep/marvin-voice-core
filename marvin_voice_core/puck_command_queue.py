@@ -149,11 +149,14 @@ class PuckCommandQueueClient:
     def __init__(self, queue: PuckCommandQueue):
         self._queue = queue
 
-    async def play(self, url: str) -> bool:
+    async def play(self, url: str, title: str | None = None) -> bool:
+        # title 是 pi_bt 專用的 AVRCP metadata 掛勾（見 device/avrcp_media_player.py）,
+        # ESP32 edge_mix 沒有這條路，接受這個參數只是跟 PuckMixerClient 維持同款介面
+        # 讓呼叫端（_fire_puck_play/_fire_puck_crossfade）不用分辨背後是哪種硬體。
         self._queue.play(url)
         return True
 
-    async def queue_next(self, url: str) -> bool:
+    async def queue_next(self, url: str, title: str | None = None) -> bool:
         self._queue.queue_next(url)
         return True
 

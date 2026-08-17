@@ -160,6 +160,48 @@ async def test_resolve_car_open_query_falls_back_to_raw_query_when_resolve_fails
 
 
 @pytest.mark.asyncio
+async def test_resolve_car_open_query_tries_next_candidate_when_resolve_returns_none_cleanly():
+    """2026-08-17 車puck mk2 實機踩到：候選池挑到一首雜亂爬蟲標題（yt-dlp 搜尋
+    ytsearch5 真的找不到任何結果，_resolve_yt_query 乾淨回 None，不是拋例外），
+    原本這種「乾淨回 None」被跟「resolve 掛掉/逾時」同樣當「無法驗證、保守放行」，
+    導致開場送出一個已知搜不到東西的 query，caller 那邊二次 resolve 一樣失敗，
+    整趟開場靜音。改成：乾淨回 None＝這首候選確定不行，換下一首候選試，只有
+    resolve_fn 真的拋例外（服務不可用/逾時）才保守放行。"""
+    from car_open import resolve_car_open_query
+
+    calls = []
+
+    async def _resolve(q):
+        calls.append(q)
+        if len(calls) == 1:
+            return None   # 第一首搜尋乾淨落空（不是例外）
+        return _info("正常單曲", duration=200, webpage_url="https://youtu.be/second")
+
+    out = await resolve_car_open_query(
+        _cand("爛標題"),
+        pool_provider=lambda: [_cand("爛標題", score=1.0), _cand("備用曲", score=0.9)],
+        resolve_fn=_resolve)
+    assert out == "https://youtu.be/second"
+    assert len(calls) == 2   # 真的換了下一首試，沒有把搜不到的 query 直接放行
+
+
+@pytest.mark.asyncio
+async def test_resolve_car_open_query_returns_none_when_all_candidates_resolve_to_none():
+    """全部候選 resolve 都乾淨回 None（都搜不到）→ 放棄，回 None 讓 caller 開場靜音，
+    而不是硬塞一個已知搜不到的 query 給 caller 再失敗一次。"""
+    from car_open import resolve_car_open_query
+
+    async def _resolve(q):
+        return None
+
+    out = await resolve_car_open_query(
+        _cand("爛標題A"),
+        pool_provider=lambda: [_cand("爛標題A"), _cand("爛標題B"), _cand("爛標題C")],
+        resolve_fn=_resolve)
+    assert out is None
+
+
+@pytest.mark.asyncio
 async def test_resolve_car_open_query_none_song_returns_none():
     from car_open import resolve_car_open_query
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Marvin car puck mk2 presence heartbeat (POST /car present → Mac 端開場)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/marvin-car-puck-presence-heartbeat.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

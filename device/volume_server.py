@@ -34,12 +34,76 @@ except ImportError:
     PuckMicAecLoop = None
     make_fifo_writer = None
 
+try:
+    from avrcp_media_player import AvrcpMediaPlayer
+except ImportError:
+    AvrcpMediaPlayer = None
+
 CARD = os.getenv("MARVIN_VOL_CARD", "IQaudIODAC")
 CONTROL = os.getenv("MARVIN_VOL_CONTROL", "Digital")
 TOKEN = os.getenv("MARVIN_VOL_TOKEN", "").strip() or None
 PORT = int(os.getenv("MARVIN_VOL_PORT", "8766"))
-PUCK_BT_MAC = os.getenv("MARVIN_PUCK_BT_MAC", "").strip() or None
-_puck_mixer = PuckMixer(PUCK_BT_MAC) if (PuckMixer and PUCK_BT_MAC) else None
+
+
+def _parse_connected_macs(bluetoothctl_output: str) -> set:
+    """解析 `bluetoothctl devices Connected` 的輸出，每行長這樣
+    `Device AA:BB:CC:DD:EE:FF BMW 04900`，抓第二個欄位的 MAC（正規化成大寫）。"""
+    macs = set()
+    for line in bluetoothctl_output.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "Device":
+            macs.add(parts[1].upper())
+    return macs
+
+
+def _list_connected_bt_macs(timeout: float = 5.0) -> set:
+    """跑 `bluetoothctl devices Connected` 查目前有連線的 BT MAC。抓不到（指令不在/
+    逾時）就回傳空集合——當成「沒有連線資訊可用」處理，不是硬錯誤。"""
+    try:
+        out = subprocess.run(
+            ["bluetoothctl", "devices", "Connected"],
+            capture_output=True, text=True, timeout=timeout,
+        ).stdout
+    except Exception:
+        return set()
+    return _parse_connected_macs(out)
+
+
+def pick_bt_mac(candidates: list, connected: set = None):
+    """candidates 依優先權排序（第一個優先權最高，實務上＝BMW車機，使用者拍板
+    「BMW跟其他喇叭不會同時連線，真的都連著時BMW優先」）。回傳目前有連線、優先權
+    最高的候選；查不到任何連線資訊（bluetoothctl 沒回應/都沒連）就照樣回傳優先權
+    最高的那個——交給 PuckMixer 既有的 `_write_with_reconnect` 重試邏輯把連線談
+    起來，不要因為偵測失敗就整條不開機。candidates 為空回傳 None。"""
+    if not candidates:
+        return None
+    if connected is None:
+        connected = _list_connected_bt_macs()
+    for mac in candidates:
+        if mac.upper() in connected:
+            return mac
+    return candidates[0]
+
+
+def _bt_mac_candidates() -> list:
+    """依優先權排序的候選 MAC 清單：MARVIN_PUCK_BT_MAC 是主要（通常＝BMW，優先權
+    最高），MARVIN_PUCK_BT_MAC_FALLBACK 逗號分隔次要候選（例如 Soundcore，對照
+    測試/備援用）。只設 MARVIN_PUCK_BT_MAC 時行為跟改動前的固定 MAC 完全一致。"""
+    primary = os.getenv("MARVIN_PUCK_BT_MAC", "").strip()
+    fallback = [m.strip() for m in os.getenv("MARVIN_PUCK_BT_MAC_FALLBACK", "").split(",") if m.strip()]
+    return ([primary] if primary else []) + fallback
+
+
+PUCK_BT_MAC = pick_bt_mac(_bt_mac_candidates())
+# BMW 30s 規律斷線疑似跟裸串流沒回應 AVRCP metadata 查詢有關（見
+# device/avrcp_media_player.py 開頭說明，2026-08-17 Soundcore 對照測試沒斷）。
+# 出狀況想快速排除變因就設這個 env=0，不用重新部署程式碼。
+AVRCP_ENABLE = os.getenv("MARVIN_AVRCP_ENABLE", "1").strip() != "0"
+_avrcp_player = AvrcpMediaPlayer() if (AvrcpMediaPlayer and PUCK_BT_MAC and AVRCP_ENABLE) else None
+_puck_mixer = (
+    PuckMixer(PUCK_BT_MAC, on_track_change=(_avrcp_player.set_track if _avrcp_player else None))
+    if (PuckMixer and PUCK_BT_MAC) else None
+)
 # INMP441 收音 + 即時 AEC（PoC，見 device/puck_mic_aec.py）。
 # 只有兩個 env 都設，且真的跑在有 puck_mixer 的車 puck 上才啟動。
 PUCK_MIC_DEVICE = os.getenv("MARVIN_PUCK_MIC_DEVICE", "").strip() or None
@@ -861,13 +925,13 @@ class Handler(BaseHTTPRequestHandler):
                     url = data.get("url", "").strip()
                     if not url:
                         return self._send(400, {"error": "missing_url"})
-                    _puck_mixer.play(url)
+                    _puck_mixer.play(url, title=(data.get("title") or "").strip() or None)
                     return self._send(200, {"ok": True})
                 elif path == "/puck/queue_next":
                     url = data.get("url", "").strip()
                     if not url:
                         return self._send(400, {"error": "missing_url"})
-                    _puck_mixer.queue_next(url)
+                    _puck_mixer.queue_next(url, title=(data.get("title") or "").strip() or None)
                     return self._send(200, {"ok": True})
                 elif path == "/puck/crossfade":
                     duration_s = float(data.get("duration_s", 4.0))

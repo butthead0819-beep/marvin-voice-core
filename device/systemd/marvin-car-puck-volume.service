@@ -1,0 +1,22 @@
+[Unit]
+Description=Marvin car puck mk2 混音/控制 HTTP 服務（/puck/play|queue_next|crossfade|stop|status）
+After=network-online.target sound.target marvin-car-puck-btspk.service
+Wants=network-online.target
+Requires=marvin-car-puck-btspk.service
+
+[Service]
+Type=simple
+User=pi
+Environment=MARVIN_VOL_TOKEN=__MARVIN_TEXT_TOKEN__
+Environment=MARVIN_VOL_PORT=8766
+Environment=MARVIN_PUCK_BT_MAC=__CAR_HEAD_UNIT_MAC__
+# 選用：逗號分隔的次要候選 MAC（優先權低於上面的 MARVIN_PUCK_BT_MAC），兩者都有
+# 連線時上面那個優先。平常不用設，只有要對照測試其他喇叭時才加。
+#Environment=MARVIN_PUCK_BT_MAC_FALLBACK=__SOUNDCORE_MAC__
+Environment=MARVIN_PUCK_MIC_DEVICE=__INMP441_ALSA_DEVICE__
+ExecStart=/usr/bin/python3 -u /home/pi/marvin-device/volume_server.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -6,6 +6,10 @@ PCM）是完全不同硬體架構——Pi mk2 算力夠，音樂自己抓流/解
 
 DJ 口白（TTS）走另一條獨立的串流管線，不經這支 client——這裡純粹是音樂 A/B crossfade
 的控制訊號，兩條管線互不相依。
+
+play()/queue_next() 的 title 是選填：Pi 端會轉成 AVRCP MediaPlayer1 metadata
+（見 device/avrcp_media_player.py），不影響播放本身，Pi 端沒裝 dbus 套件或
+註冊失敗也只是車機螢幕沒曲名可顯示。
 """
 from __future__ import annotations
 
@@ -35,11 +39,17 @@ class PuckMixerClient:
             logger.warning(f"[PuckMixer] {path} 連線失敗: {e}")
             return False
 
-    async def play(self, url: str) -> bool:
-        return await self._post("/puck/play", {"url": url})
+    async def play(self, url: str, title: str | None = None) -> bool:
+        body = {"url": url}
+        if title:
+            body["title"] = title
+        return await self._post("/puck/play", body)
 
-    async def queue_next(self, url: str) -> bool:
-        return await self._post("/puck/queue_next", {"url": url})
+    async def queue_next(self, url: str, title: str | None = None) -> bool:
+        body = {"url": url}
+        if title:
+            body["title"] = title
+        return await self._post("/puck/queue_next", body)
 
     async def crossfade(self, duration_s: float = 4.0) -> bool:
         return await self._post("/puck/crossfade", {"duration_s": duration_s})
