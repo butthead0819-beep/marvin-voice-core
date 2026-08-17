@@ -594,6 +594,9 @@ class MusicCog(commands.Cog):
         self._radio_source = None
         if vc is not None and vc._mixer is not None:
             vc._mixer.clear_music()
+        puck_client = _get_puck_client()
+        if puck_client is not None:
+            asyncio.create_task(self._fire_puck_stop(puck_client))
 
     async def _radio_volume_fade_loop(self):
         """📻 動態音量漸變：有人說話 → duck to 1%；靜默 1.5s 後 → fade up to 10%。"""
@@ -2885,6 +2888,19 @@ class MusicCog(commands.Cog):
         ok = await puck_client.play(url, title=title)
         if not ok:
             logger.warning(f"[PuckMixer] play 失敗: {url}")
+
+    async def _fire_puck_stop(self, puck_client) -> None:
+        """[PuckMixer] 2026-08-17 實機踩到：stop_stream() 原本從沒通知裝置端，
+        Mac 說「停止播放」後 stream_mode 歸位，但 Pi 端 `/puck/status` 仍卡在舊
+        `playing: <url>`、deck 繼續跑，下次 /puck/play 送新歌時容易殘留舊狀態，
+        也讓「兩首歌之間卡住」難以用 /puck/status 排查（分不清是 Mac 沒下指令
+        還是 Pi 沒接到）。裝置端通知是盡力而為，失敗不擋 Mac 端本身的停播流程。"""
+        try:
+            ok = await puck_client.stop()
+            if not ok:
+                logger.warning("[PuckMixer] stop 失敗")
+        except Exception as e:
+            logger.warning(f"[PuckMixer] stop 呼叫例外: {e}")
 
     async def _fire_puck_speak(self, puck_client, audio_path: str) -> None:
         """[PuckMixer Phase3] DJ 口白：ESP32 端會 duck 音樂再疊播（見
