@@ -88,6 +88,58 @@ async def test_happy_path_writes_ack_record_and_plays_tts(tmp_path: Path):
     tts.assert_awaited_once_with("想播 showay 點過的歌，這個還沒會。")
 
 
+# ── query_domain（8/18 新增：query-type 意圖分 web/core 兩條執行路徑）────────────
+
+@pytest.mark.asyncio
+async def test_query_domain_propagates_to_record(tmp_path: Path):
+    classifier = _classifier_returning({
+        "intent_type": "current_time_query",
+        "slots": {},
+        "nearest_agent": None,
+        "nearest_distance": None,
+        "ack_text": None,
+        "query_domain": "core",
+    })
+    gap_logger = GapLogger(tmp_path / "gaps.jsonl")
+
+    rec = await handle_intent_gap(
+        _ctx(query="現在幾點"),
+        utterance_id="u-domain",
+        classifier=classifier,
+        gap_logger=gap_logger,
+        manifest=_manifest(),
+        tts_call=AsyncMock(),
+    )
+
+    assert rec.query_domain == "core"
+    line = (tmp_path / "gaps.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    assert json.loads(line)["query_domain"] == "core"
+
+
+@pytest.mark.asyncio
+async def test_query_domain_defaults_to_none_when_classifier_omits_it(tmp_path: Path):
+    """向後相容：classifier 沒回 query_domain（舊 prompt/mock）也不該炸，落 None。"""
+    classifier = _classifier_returning({
+        "intent_type": "skip_track",
+        "slots": {},
+        "nearest_agent": "playback_control",
+        "nearest_distance": 0.1,
+        "ack_text": "收到！",
+    })
+    gap_logger = GapLogger(tmp_path / "gaps.jsonl")
+
+    rec = await handle_intent_gap(
+        _ctx(),
+        utterance_id="u-nodomain",
+        classifier=classifier,
+        gap_logger=gap_logger,
+        manifest=_manifest(),
+        tts_call=AsyncMock(),
+    )
+
+    assert rec.query_domain is None
+
+
 @pytest.mark.asyncio
 async def test_happy_path_marks_acked_in_cache(tmp_path: Path):
     """ack 後 cache 留紀錄，第二次 should_ack 回 False。"""

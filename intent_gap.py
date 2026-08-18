@@ -46,6 +46,12 @@ class IntentGapRecord:
     ack_text: str | None  # None = 沒播 ack（UNKNOWN / 5min dedup skipped）
     acknowledged: bool
     schema_version: int = 1
+    # 8/18 新增：query-type 意圖要接 web 查詢還是讀 Marvin 自己的 state，執行工具完全
+    # 不同（見 project memory：分開才不用每次現查現猜）。只在「使用者在問資訊」時
+    # 才填；action 類指令（播放/控制/社交）跟 UNKNOWN 一律 null。
+    #   "web"  — 需要外部查詢（天氣/知識/時事，答案不在 bot 自己身上）
+    #   "core" — Marvin/bot 自己的狀態（現在幾點/現在播什麼/系統狀態）
+    query_domain: str | None = None
 
     def to_jsonl(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -79,9 +85,13 @@ _GAP_SYSTEM_PROMPT = """你是 Discord 語音 bot 的 intent gap classifier。
 4. nearest_distance — 與最接近 agent 的距離 0.0–1.0（0=完美 match；1=完全不相關）；找不到回 null
 5. ack_text — 回給使用者的一句自然口語繁體中文 ≤ 30 字，告知意圖已收到但功能還在開發；
    intent_type=UNKNOWN 時回 null（不該對雜訊播 ack）
+6. query_domain — 只有這句話是「使用者在問資訊」時才填，其餘（動作指令如播放/控制/
+   社交閒聊、或 intent_type=UNKNOWN）一律 null：
+   - "web"：答案在 bot 自己身上找不到，需要查外部世界（天氣、時事、常識、遊戲攻略）
+   - "core"：答案是 Marvin/bot 自己的狀態（現在幾點、現在播什麼、系統狀態）
 
 輸出 JSON only：
-{"intent_type": str, "slots": dict, "nearest_agent": str|null, "nearest_distance": float|null, "ack_text": str|null}"""
+{"intent_type": str, "slots": dict, "nearest_agent": str|null, "nearest_distance": float|null, "ack_text": str|null, "query_domain": str|null}"""
 
 
 _GAP_SAFE_DEFAULT: dict = {
@@ -90,6 +100,7 @@ _GAP_SAFE_DEFAULT: dict = {
     "nearest_agent": None,
     "nearest_distance": None,
     "ack_text": None,
+    "query_domain": None,
 }
 
 
@@ -183,6 +194,7 @@ async def handle_intent_gap(
     nearest_agent = result.get("nearest_agent")
     nearest_distance = result.get("nearest_distance")
     llm_ack_text = result.get("ack_text")
+    query_domain = result.get("query_domain")
 
     should_play = bool(
         intent_type != "UNKNOWN"
@@ -203,6 +215,7 @@ async def handle_intent_gap(
         nearest_distance=nearest_distance,
         ack_text=llm_ack_text if should_play else None,
         acknowledged=should_play,
+        query_domain=query_domain,
     )
     gap_logger.write(record)
 

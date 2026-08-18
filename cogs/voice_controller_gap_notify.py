@@ -28,10 +28,11 @@ class GapNotifyMixin:
                 owner = self.bot.get_user(_NEMOCLAW_OWNER_ID) or await self.bot.fetch_user(_NEMOCLAW_OWNER_ID)
                 if owner is None:
                     return
+                domain_tag = f" domain={gap_rec.query_domain}" if gap_rec.query_domain else ""
                 text = (
                     f"🪦 [開放意圖] {gap_rec.speaker}: {gap_rec.cleaned_query}\n"
                     f"type={gap_rec.intent_type} nearest={gap_rec.nearest_agent} "
-                    f"acked={gap_rec.acknowledged}"
+                    f"acked={gap_rec.acknowledged}{domain_tag}"
                 )
                 await owner.send(text[:1990])
             except Exception:
