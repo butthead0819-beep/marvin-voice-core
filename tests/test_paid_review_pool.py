@@ -36,7 +36,7 @@ def test_pool_uses_centralized_gemini_models():
     pool = build_paid_review_pool(env={"GOOGLE_API_KEY": "k"}, client_factory=lambda k: MagicMock())
     models = [ep.model for ep in pool.endpoints]
     assert any("gemini" in m for m in models)
-    assert "gemini-2.5-flash" in models
+    assert "gemini-3.5-flash-lite" in models
 
 
 def test_pool_env_override_goes_first():
@@ -44,7 +44,7 @@ def test_pool_env_override_goes_first():
                                   client_factory=lambda k: MagicMock())
     models = [ep.model for ep in pool.endpoints]
     assert models[0] == "gemini-X"            # env 指定優先
-    assert "gemini-2.5-flash" in models       # 仍保留 fallback
+    assert "gemini-3.5-flash-lite" in models  # 仍保留 fallback
 
 
 def test_pool_empty_when_no_key():
