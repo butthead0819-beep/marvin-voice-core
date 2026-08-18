@@ -83,9 +83,21 @@ _PUCK_PI_BT_CROSSFADE_BUFFER_S = 10.0
 # 繞過——匿名 ANDROID_VR client（省簽章/n-challenge解密）沒辦法帶 cookies
 # （yt-dlp 會直接跳過該 client），只能改用需要簽章解密的一般 client + cookies，
 # 靠 remote_components=['ejs:github'] 下載 JS challenge solver（需要本機裝
-# deno，`brew install deno`）解出來。cookies.txt 不進 repo、不進 .env，放
-# home 目錄外部，檔案不存在（沒匯出過/尚未設定）就整段跳過退回原本匿名解析，
-# 零行為改變。cookies 有效期通常數週，過期需要使用者重新從瀏覽器匯出。
+# deno，`brew install deno`）解出來。
+#
+# 兩種 cookies 來源，依序嘗試、任何一種失敗就退到下一種（最終退回無 cookies
+# 匿名解析，零行為改變）：
+#   ① cookiesfrombrowser（優先）：直接讀 Chrome 目前登入的 session，永遠最新，
+#      不用手動匯出/不會過期。代價：第一次要使用者手動點過一次 macOS Keychain
+#      授權（讀 Chrome Safe Storage 密鑰），已完成；理論上之後授權失效需要
+#      再跳一次窗，若那時候是無人值守跑會卡住（run_in_executor 佔用一個
+#      thread pool 工作緒），這是接受的已知風險（沒有簡單方法讓 Python
+#      thread 帶 timeout 強制中斷），出問題時 log 會清楚顯示哪個 client 失敗
+#      方便排查。
+#   ② cookiefile：使用者手動從瀏覽器匯出的 cookies.txt，不進 repo/不進
+#      .env，放 home 目錄外部；有效期通常數週，過期需重新匯出（見
+#      scripts/check_yt_cookies_freshness.py）。
+_YT_COOKIES_FROM_BROWSER = os.getenv("MARVIN_YT_COOKIES_FROM_BROWSER", "chrome").strip() or None
 _YT_COOKIES_FILE = os.path.expanduser(
     os.getenv("MARVIN_YT_COOKIES_FILE", "~/.config/marvin/youtube_cookies.txt"))
 
@@ -3755,7 +3767,18 @@ class MusicCog(commands.Cog):
             # （2026-06-22 incident：sk9fkcxhYRw This video is not available 整單炸。）
             'ignoreerrors': True,
         }
-        if os.path.exists(_YT_COOKIES_FILE):
+        # cookies 來源優先序：browser（永遠最新，見上方常數說明）→ file（使用者
+        # 手動匯出，會過期）→ 無 cookies。單一選定，不做「這個來源丟例外就換下一個」
+        # 的執行期重試——那樣會跟下面 _extract_with_retry 既有的 OSError errno=11
+        # 專屬重試邏輯混在一起，讓任何跟 cookies 完全無關的例外也被重試多次
+        # （2026-08-18 實測踩到：既有測試鎖住「非 errno=11 的 OSError 只該試一次」，
+        # 加了 cookies 來源 cascade 後這個測試變成試 3 次才失敗，屬於不該有的行為
+        # 改變）。cookies 來源本身壞掉時（例如 Keychain 授權失效）就讓例外照舊
+        # 往上冒，走既有的錯誤處理/重抓路徑，不在這裡疊一層新的重試語意。
+        if _YT_COOKIES_FROM_BROWSER:
+            ydl_opts['cookiesfrombrowser'] = (_YT_COOKIES_FROM_BROWSER,)
+            ydl_opts['remote_components'] = ['ejs:github']
+        elif os.path.exists(_YT_COOKIES_FILE):
             ydl_opts['cookiefile'] = _YT_COOKIES_FILE
             ydl_opts['remote_components'] = ['ejs:github']
         is_url = query.startswith('http')
