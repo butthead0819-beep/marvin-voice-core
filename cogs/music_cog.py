@@ -78,6 +78,17 @@ _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
 _PUCK_PI_BT_CROSSFADE_LEAD_S = 20.0
 _PUCK_PI_BT_CROSSFADE_BUFFER_S = 10.0
 
+# 2026-08-18：YouTube 對這台 Mac 的來源 IP 節流（連續多天 403 Forbidden 攀升，
+# 見 incident_youtube_403_ip_throttle_2026-08-17 記憶），實測登入身分的請求能
+# 繞過——匿名 ANDROID_VR client（省簽章/n-challenge解密）沒辦法帶 cookies
+# （yt-dlp 會直接跳過該 client），只能改用需要簽章解密的一般 client + cookies，
+# 靠 remote_components=['ejs:github'] 下載 JS challenge solver（需要本機裝
+# deno，`brew install deno`）解出來。cookies.txt 不進 repo、不進 .env，放
+# home 目錄外部，檔案不存在（沒匯出過/尚未設定）就整段跳過退回原本匿名解析，
+# 零行為改變。cookies 有效期通常數週，過期需要使用者重新從瀏覽器匯出。
+_YT_COOKIES_FILE = os.path.expanduser(
+    os.getenv("MARVIN_YT_COOKIES_FILE", "~/.config/marvin/youtube_cookies.txt"))
+
 _puck_mixer_client = None  # lazy singleton，見 _get_puck_client()
 
 
@@ -3744,6 +3755,9 @@ class MusicCog(commands.Cog):
             # （2026-06-22 incident：sk9fkcxhYRw This video is not available 整單炸。）
             'ignoreerrors': True,
         }
+        if os.path.exists(_YT_COOKIES_FILE):
+            ydl_opts['cookiefile'] = _YT_COOKIES_FILE
+            ydl_opts['remote_components'] = ['ejs:github']
         is_url = query.startswith('http')
 
         def _extract():

@@ -19,6 +19,7 @@ env/
 
 # Secrets — never commit
 .env
+*cookies*.txt
 
 # Logs — large, runtime-generated
 *.log
