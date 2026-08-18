@@ -173,3 +173,61 @@ async def test_resolve_yt_query_url_uses_direct_extract():
     assert info["title"] == "Direct URL Song"
     assert _DirectYDL.calls == ["https://youtu.be/abc123"], \
         f"URL 應該直接打，不該加搜尋前綴：{_DirectYDL.calls}"
+
+
+@pytest.mark.asyncio
+async def test_itunes_cover_query_uses_original_text_not_dirty_yt_title():
+    """文字查詢時，iTunes 封面查詢該用使用者原始文字（乾淨），不是 yt-dlp 解析回的
+    YT 標題（可能夾雜頻道名/Official MV 等上傳者自由格式雜訊）。"""
+    cog = _make_cog()
+    _FakeYDL.calls = []
+    _FakeYDL.script = {
+        "ytsearch5:": [_music_entry("周杰倫 - 晴天 (Official MV) 官方頻道")],
+    }
+    captured = {}
+
+    async def _fake_resolve_cover(title, artist=None, *, fallback=None, **kw):
+        captured["title"] = title
+        captured["artist"] = artist
+        return fallback
+
+    with patch("yt_dlp.YoutubeDL", _FakeYDL), \
+         patch("itunes_cover.resolve_cover", _fake_resolve_cover):
+        await cog._resolve_yt_query("周杰倫 晴天")
+
+    assert captured["title"] == "周杰倫 晴天", \
+        f"應該用原始查詢文字查 iTunes，實際傳入：{captured}"
+
+
+@pytest.mark.asyncio
+async def test_itunes_cover_falls_back_to_yt_title_when_no_orig_query():
+    """直接點 URL（沒有對應文字查詢）時，維持舊行為：用 YT 標題 + uploader 查。"""
+    cog = _make_cog()
+    _FakeYDL.calls = []
+
+    class _DirectYDL(_FakeYDL):
+        def extract_info(self, search, download=False):
+            type(self).calls.append(search)
+            return {
+                "title": "Direct URL Song",
+                "url": "http://stream.direct/x",
+                "uploader": "Channel",
+                "categories": ["Music"],
+                "duration": 200,
+                "webpage_url": search,
+                "thumbnail": "t.png",
+            }
+
+    captured = {}
+
+    async def _fake_resolve_cover(title, artist=None, *, fallback=None, **kw):
+        captured["title"] = title
+        captured["artist"] = artist
+        return fallback
+
+    with patch("yt_dlp.YoutubeDL", _DirectYDL), \
+         patch("itunes_cover.resolve_cover", _fake_resolve_cover):
+        await cog._resolve_yt_query("https://youtu.be/abc123")
+
+    assert captured["title"] == "Direct URL Song"
+    assert captured["artist"] == "Channel"

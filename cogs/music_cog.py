@@ -1978,17 +1978,12 @@ class MusicCog(commands.Cog):
         場景，這個模式下不寫橋接檔，避免蓋掉家用 HUD 該看的 Discord 真實播放狀態
         （橋接檔只有一份、沒有來源標記，寫了就會蓋掉）。
 
-        車載 puck 則是動態判斷（不是「MARVIN_CAR_MODE 有開就永遠不寫」這種死開關）：
-        只有 puck 真的在場、心跳夠新鮮（is_car_actively_in_use）才略過；puck 沒插電/
-        熄火/整個沒連上時，就算 MARVIN_CAR_MODE=1 也照樣把 Discord 的播放狀態寫回
-        家用 HUD——不然車模式忘了關就會靜默斷掉家裡黑膠封面（2026-07-25 踩過）。
+        車載 puck 有自己專屬的顯示端（100.109.213.74:8766），不再需要跟家用 HUD
+        搶這份橋接檔，所以車機在場與否不影響這裡寫入（2026-08-19 起取消，見
+        car_presence_state.py 開頭說明——is_car_actively_in_use 仍留給其他用途讀）。
         """
         if os.getenv("MARVIN_SATELLITE_BROWSER", "").strip().lower() in ("1", "true", "yes", "on"):
             return
-        if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
-            from car_presence_state import is_car_actively_in_use
-            if is_car_actively_in_use(now=time.time()):
-                return
         try:
             from now_playing_state import save_now_playing_state
             if info:
@@ -3883,23 +3878,30 @@ class MusicCog(commands.Cog):
             query = _orig_text_query
             is_url = False
             res = await _extract_with_retry()
-        res = await self._apply_itunes_cover(res)
+        res = await self._apply_itunes_cover(res, _orig_text_query)
         return _cache_put(res)
 
-    async def _apply_itunes_cover(self, res):
+    async def _apply_itunes_cover(self, res, orig_query: str = None):
         """用 iTunes 方形專輯封面取代 YT 縮圖（失敗/低信心一律退回原縮圖）。
 
         單一改點：res['thumbnail'] 是全站封面唯一源頭（音樂卡 PIL、embed、/now 顯示端），
         在此換掉即全部沿用；且解析在進快取前完成，ResolveCache 免費快取不重打 iTunes。
+
+        orig_query（使用者原始點歌文字，例如「周杰倫 晴天」）比 YT 解析完的標題乾淨
+        （後者夾雜頻道名/Official MV/emoji 等上傳者自由格式雜訊），優先拿它去查；
+        沒有時（例如直接點 URL 進來，沒有對應文字查詢）才退回舊路徑用 YT 標題+uploader。
         """
         if not res:
             return res
         try:
             import itunes_cover
             yt = res.get('thumbnail')
-            art = await itunes_cover.resolve_cover(
-                res.get('title', ''), res.get('uploader'), fallback=yt
-            )
+            if orig_query:
+                art = await itunes_cover.resolve_cover(orig_query, fallback=yt)
+            else:
+                art = await itunes_cover.resolve_cover(
+                    res.get('title', ''), res.get('uploader'), fallback=yt
+                )
             if art and art != yt:
                 res['yt_thumbnail'] = yt
                 res['thumbnail'] = art
