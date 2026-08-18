@@ -57,6 +57,23 @@ class PuckMixerClient:
     async def crossfade(self, duration_s: float = 4.0) -> bool:
         return await self._post("/puck/crossfade", {"duration_s": duration_s})
 
+    async def status(self) -> dict | None:
+        """GET /puck/status——輪詢用，讓呼叫端知道 queue_next() 背景 resolve（yt-dlp+
+        cookies 解 JS challenge，Pi 上可能要 20s+）真的完成、deck_b 已 ready，
+        不用再賭一個固定 sleep 夠不夠久（見 _fire_puck_crossfade 呼叫點）。
+        連線失敗/逾時回 None，呼叫端自行降級。"""
+        url = f"{self._base_url}/puck/status"
+        params = {"t": self._token} if self._token else None
+        try:
+            async with aiohttp.ClientSession(timeout=self._timeout) as session:
+                async with session.get(url, params=params) as resp:
+                    if resp.status != 200:
+                        return None
+                    return await resp.json()
+        except Exception as e:
+            logger.warning(f"[PuckMixer] /puck/status 連線失敗: {e}")
+            return None
+
     async def speak_text(self, text: str) -> bool:
         return await self._post("/puck/speak", {"text": text})
 

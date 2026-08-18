@@ -72,11 +72,20 @@ _DJ_TAIL_LEAD_S = 8.0
 _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
 # pi_bt 專用、跟 DJ 口白脫鉤的獨立 crossfade 觸發窗口。_DJ_TAIL_LEAD_S=8.0 是
 # DJ 口白疊當前歌尾巴的編排選擇，從沒考慮過「resolve 一首歌網址要多久」；
-# pi_bt 要在 Pi 端自己跑 yt-dlp（~7s，2026-08-17 升級後），塞進 8s 窗口太貼邊，
-# 給它自己更早、獨立的觸發點，不影響 DJ 口白原本的時間軸設計（見
-# _run_puck_pi_bt_crossfade）。
-_PUCK_PI_BT_CROSSFADE_LEAD_S = 20.0
-_PUCK_PI_BT_CROSSFADE_BUFFER_S = 10.0
+# pi_bt 要在 Pi 端自己跑 yt-dlp，塞進 8s 窗口太貼邊，給它自己更早、獨立的
+# 觸發點，不影響 DJ 口白原本的時間軸設計（見 _run_puck_pi_bt_crossfade）。
+# 2026-08-18：兩顆常數從 20.0/10.0 調大——原本假設 resolve ~7s（無 cookies的
+# ANDROID_VR 路徑），接上 YouTube cookies 後 deno 解 JS challenge 在 Pi 這種
+# 弱 CPU 上常吃到 ~24s，10s buffer 常常等不到 deck_b ready 就打 crossfade、
+# 被 Pi 端 RuntimeError 打回，當前曲播完只剩靜音（見「播放不順」實測）。
+# buffer_s 現在是 _fire_puck_crossfade 輪詢 /puck/status 的上限（不是固定
+# sleep，見該函式），30.0 給 24s cookies 路徑留餘裕；LEAD_S=35.0 確保
+# buffer_s 耗盡後還有時間做 crossfade 本身，不會逼近甚至超過歌曲結尾。
+_PUCK_PI_BT_CROSSFADE_LEAD_S = 35.0
+_PUCK_PI_BT_CROSSFADE_BUFFER_S = 30.0
+# _fire_puck_crossfade 輪詢 /puck/status 的間隔——pi_bt cookies resolve 常見
+# ~24s（見該函式 2026-08-18 註解），1s 夠即時又不會洗爆 Pi 的 HTTP handler。
+_PUCK_STATUS_POLL_INTERVAL_S = 1.0
 
 # 2026-08-18：YouTube 對這台 Mac 的來源 IP 節流（連續多天 403 Forbidden 攀升，
 # 見 incident_youtube_403_ip_throttle_2026-08-17 記憶），實測登入身分的請求能
@@ -2967,13 +2976,33 @@ class MusicCog(commands.Cog):
         逼近甚至超過它；pi_bt 已改走獨立更早觸發的 _run_puck_pi_bt_crossfade
         （_PUCK_PI_BT_CROSSFADE_LEAD_S，見該函式），buffer_s 才有餘裕給 Pi 自己
         resolve（yt-dlp 升級後 ~7s）用，不再需要 Mac 端 resolve 那條會被 IP 檢查
-        擋 403 的路（2026-08-17 實測過、不可靠，已 revert）。"""
+        擋 403 的路（2026-08-17 實測過、不可靠，已 revert）。
+
+        ⚠️ 2026-08-18：pi_bt 接上 YouTube cookies 後，resolve 常要吃到 ~24s CPU
+        time（deno 解 JS challenge，見 puck_mixer.py::resolve_stream_url()
+        docstring），遠超原本假設的 ~7s。固定 sleep(buffer_s) 賭一個時長不管用——
+        猜太短會在 deck_b 還沒 ready 時打 /puck/crossfade，Pi 端 raise
+        RuntimeError（deck_b is None）被吞掉、这次转场直接放弃、当前曲播完只剩靜音；
+        猜太長又浪費窗口。改成輪詢 /puck/status 的 next_queued 是否已等於
+        next_url，ready 就提早出手，buffer_s 退化成「polling 的上限」，esp32_edge_mix
+        的 client 沒有 status() 保留舊的固定 sleep 行為不變（hasattr 分辨，同
+        speak/speak_text 的既有 pattern）。"""
         ok = await puck_client.queue_next(next_url, title=title)
         if not ok:
             logger.warning(f"[PuckMixer] queue_next 失敗，放棄本次 crossfade: {next_url}")
             return
-        await asyncio.sleep(buffer_s)
-        await puck_client.crossfade(crossfade_s)
+        if hasattr(puck_client, "status"):
+            deadline = time.time() + buffer_s
+            while time.time() < deadline:
+                await asyncio.sleep(_PUCK_STATUS_POLL_INTERVAL_S)
+                st = await puck_client.status()
+                if st is not None and st.get("next_queued") == next_url:
+                    break
+        else:
+            await asyncio.sleep(buffer_s)
+        crossfaded = await puck_client.crossfade(crossfade_s)
+        if not crossfaded:
+            logger.warning(f"[PuckMixer] crossfade 失敗（deck_b 可能還沒 ready）: {next_url}")
 
     async def _run_tail_dj(self, cur_info: dict, song_start_time):
         """[DJ Tail] 滑動窗串場：當前歌結束前 _DJ_TAIL_LEAD_S 秒點火，DJ 疊當前歌尾巴 + 溢進下一首開頭。

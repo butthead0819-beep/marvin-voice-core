@@ -31,6 +31,7 @@ import tempfile
 import time
 from typing import Awaitable, Callable
 
+from aiohttp import web
 from dotenv import load_dotenv
 
 import memory_sandbox
@@ -48,6 +49,102 @@ _AUDIO_STREAM_MP3_KBPS = int(os.getenv("MARVIN_AUDIO_STREAM_MP3_KBPS", "128"))
 # 的敏感度（見 audio_stream_batcher.py）。門檻依編碼後的 bitrate 換算，不是原始 PCM。
 _AUDIO_STREAM_BATCH_BYTES = max(
     1, _AUDIO_STREAM_MP3_KBPS * 1000 // 8 * int(os.getenv("MARVIN_AUDIO_STREAM_BATCH_MS", "100")) // 1000)
+
+_CORS = {"Access-Control-Allow-Origin": "*",
+         "Access-Control-Allow-Headers": "*",
+         "Access-Control-Allow-Methods": "POST, OPTIONS"}
+
+
+async def _stream_ffmpeg_input_as_mp3(request, ffmpeg_input_args: list[str]):
+    """[PuckMixer] /puck_deck 跟 /puck_voice 共用：起 ffmpeg 把任意輸入（yt-dlp
+    直連URL 或本機檔案路徑）轉成 48kHz/2ch PCM，即時編碼 MP3 chunked 回傳。差異
+    只在 ffmpeg 的 -i 來源，其餘轉碼/串流/斷線處理完全一樣，抽出來避免兩邊各自
+    維護一份、之後改壞其中一個沒同步改到另一個。
+
+    2026-08-18：從 build_text_app() 內部 hoist 到 module level，跟 handle_puck_voice
+    共用同一份邏輯，不用各自維護一份（見上方 docstring 的教訓）。"""
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-nostdin", "-loglevel", "error", *ffmpeg_input_args,
+        "-ar", "48000", "-ac", "2", "-f", "s16le", "-",
+        stdout=asyncio.subprocess.PIPE)
+    resp = web.StreamResponse(status=200, headers={
+        **_CORS, "Content-Type": "audio/mpeg", "X-Audio-Codec": "mp3",
+        "X-Audio-Rate": "48000", "X-Audio-Channels": "2", "X-Audio-Bits": "16",
+    })
+    await resp.prepare(request)
+    encoder = Mp3StreamEncoder(rate=48000, channels=2, bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
+    try:
+        while True:
+            pcm = await proc.stdout.read(4096)
+            if not pcm:
+                break
+            chunk = encoder.encode(pcm)
+            if chunk:
+                await resp.write(chunk)
+        tail = encoder.flush()
+        if tail:
+            await resp.write(tail)
+    except (ConnectionError, asyncio.CancelledError):
+        pass   # client 斷線/取消，見 handle_audio_stream 同款 except 的理由
+    finally:
+        # ⚠️ 2026-08-13 實機踩到：ffmpeg 正常轉完（read() 讀到 EOF 自然 break）代表
+        # 子行程早就自己結束了，這裡還無條件 proc.kill() 對一個已經死掉的行程送
+        # SIGKILL，asyncio 的 subprocess transport 會在 _check_proc() 直接 raise
+        # ProcessLookupError——這條 except 沒接住，整個 handler 直接炸穿到
+        # aiohttp，puck 收到的不是乾淨的串流結束、是斷開的爛尾連線（實機日誌：
+        # 356 次同一支 traceback，幾乎每個 /puck_deck、/puck_voice 請求都中一次；
+        # 症狀＝一直回到歌曲開頭/無聲idle/DJ口白放不出來，三個都是同一個根因）。
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        await proc.wait()
+    return resp
+
+
+def _make_puck_deck_handler(vc, puck_command_queue=None):
+    """回傳一個 /puck_deck 的 handler closure。2026-08-18：car puck mk2(pi_bt)
+    跟 ESP32(esp32_edge_mix) 都走這裡——兩種硬體的音源都由 satellite 這個進程
+    （com.antigravity.marvin.satellite）統一 resolve+轉碼，跟 24/7 Discord bot
+    的關係是「誰在決策播放」而非「誰能 serve 音源」（見 device/puck_mixer.py::
+    resolve_stream_url() 註解、car-presence 心跳打 satellite 的 :8790 而非 bot）。
+
+    puck_command_queue＝None（pi_bt 沒有這個佇列）就跳過 mark_deck_hit()，那是
+    ESP32 專用的 deck stall 判斷。"""
+    async def handle_puck_deck(request):
+        if puck_command_queue is not None:
+            puck_command_queue.mark_deck_hit()
+        watch_url = (request.query.get("url") or "").strip()
+        if not watch_url:
+            return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
+        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
+        if music_cog is None:
+            return web.json_response({"error": "music_cog_unavailable"}, status=500, headers=_CORS)
+        info = await music_cog._resolve_yt_query(watch_url)
+        stream_url = info.get("url") if info else None
+        if not stream_url:
+            return web.json_response({"error": "resolve_failed"}, status=502, headers=_CORS)
+
+        # seek：斷線（非自然播完）重連時帶著「已下載到第幾秒」回來，接回原本位置而不是
+        # 從頭重播（見 car_puck.ino::deckNetworkTask 的 deckDownloadedSec 說明）。-ss 放在
+        # -i 前面＝快速 seek（用容器索引跳，不精確 decode 到那一幀），音訊來源夠準。
+        ffmpeg_args = ["-i", stream_url, "-af", "volume=0.10"]
+        seek_raw = (request.query.get("seek") or "").strip()
+        if seek_raw:
+            try:
+                seek_s = max(0.0, float(seek_raw))
+                if seek_s > 0:
+                    ffmpeg_args = ["-ss", f"{seek_s:.2f}"] + ffmpeg_args
+            except ValueError:
+                pass   # 帶了垃圾值就當沒帶，別讓整個 deck 連不上
+
+        # -af volume：/puck_deck 直接轉碼原始音源，沒有 /audio_stream 那邊中央 mixer 的
+        # stream_volume 衰減（MusicCog.stream_volume 預設 0.10，見 cogs/music_cog.py）
+        # ——不加的話比使用者已經聽慣的 /audio_stream 音量大上一截（2026-08-11 實機
+        # 反饋：「音量太大」）。套同一個比例讓裝置端混音跟中央 mixer 音量感受一致。
+        return await _stream_ffmpeg_input_as_mp3(request, ffmpeg_args)
+    return handle_puck_deck
 
 
 def maybe_activate_memory_sandbox(env) -> bool:
@@ -1636,8 +1733,9 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     agent 呼叫）寫、這裡的 /gmail_calendar_status 讀，見該檔開頭說明）。
     puck_command_queue＝ESP32 edge端混音（MARVIN_CAR_HARDWARE=esp32_edge_mix）的控制
     指令佇列（見 marvin_voice_core/puck_command_queue.py）；None＝該功能關閉，
-    /car_commands、/puck_deck 回 404。開啟 /puck_deck 需要 vc.bot 能拿到 MusicCog
-    （bot.cogs.get("MusicCog")）才能 resolve 歌曲 URL，拿不到就回 500。
+    /car_commands 回 404。/puck_deck 不吃這個旗標（2026-08-18 起 pi_bt 硬體
+    也走這條路，見 device/puck_mixer.py::resolve_stream_url() 註解）——只要
+    vc.bot 能拿到 MusicCog（bot.cogs.get("MusicCog")）就開放，拿不到才回 500。
     """
     from aiohttp import web
 
@@ -1994,49 +2092,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             "song_start_time": getattr(music_cog, "_current_stream_start_time", None),
         }, headers=_CORS)
 
-    async def _stream_ffmpeg_input_as_mp3(request, ffmpeg_input_args: list[str]):
-        """[PuckMixer] /puck_deck 跟 /puck_voice 共用：起 ffmpeg 把任意輸入（yt-dlp
-        直連URL 或本機檔案路徑）轉成 48kHz/2ch PCM，即時編碼 MP3 chunked 回傳。差異
-        只在 ffmpeg 的 -i 來源，其餘轉碼/串流/斷線處理完全一樣，抽出來避免兩邊各自
-        維護一份、之後改壞其中一個沒同步改到另一個。"""
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-nostdin", "-loglevel", "error", *ffmpeg_input_args,
-            "-ar", "48000", "-ac", "2", "-f", "s16le", "-",
-            stdout=asyncio.subprocess.PIPE)
-        resp = web.StreamResponse(status=200, headers={
-            **_CORS, "Content-Type": "audio/mpeg", "X-Audio-Codec": "mp3",
-            "X-Audio-Rate": "48000", "X-Audio-Channels": "2", "X-Audio-Bits": "16",
-        })
-        await resp.prepare(request)
-        encoder = Mp3StreamEncoder(rate=48000, channels=2, bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
-        try:
-            while True:
-                pcm = await proc.stdout.read(4096)
-                if not pcm:
-                    break
-                chunk = encoder.encode(pcm)
-                if chunk:
-                    await resp.write(chunk)
-            tail = encoder.flush()
-            if tail:
-                await resp.write(tail)
-        except (ConnectionError, asyncio.CancelledError):
-            pass   # client 斷線/取消，見 handle_audio_stream 同款 except 的理由
-        finally:
-            # ⚠️ 2026-08-13 實機踩到：ffmpeg 正常轉完（read() 讀到 EOF 自然 break）代表
-            # 子行程早就自己結束了，這裡還無條件 proc.kill() 對一個已經死掉的行程送
-            # SIGKILL，asyncio 的 subprocess transport 會在 _check_proc() 直接 raise
-            # ProcessLookupError——這條 except 沒接住，整個 handler 直接炸穿到
-            # aiohttp，puck 收到的不是乾淨的串流結束、是斷開的爛尾連線（實機日誌：
-            # 356 次同一支 traceback，幾乎每個 /puck_deck、/puck_voice 請求都中一次；
-            # 症狀＝一直回到歌曲開頭/無聲idle/DJ口白放不出來，三個都是同一個根因）。
-            if proc.returncode is None:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-            await proc.wait()
-        return resp
+    # _stream_ffmpeg_input_as_mp3 2026-08-18 起是 module-level 函式（見檔案上方），
+    # 跟 handle_puck_voice 共用，這裡不再自己定義一份。
 
     async def handle_puck_voice(request):
         """GET /puck_voice?clip_id=<id> — ESP32 edge端混音的 DJ 口白/SFX 原始音源。
@@ -2055,52 +2112,10 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             return web.json_response({"error": "clip_not_found"}, status=404, headers=_CORS)
         return await _stream_ffmpeg_input_as_mp3(request, ["-i", path])
 
-    async def handle_puck_deck(request):
-        """GET /puck_deck?url=<watch_url> — ESP32 edge端混音單一 deck 原始音源。
-
-        跟 /audio_stream 不同：/audio_stream 是 Mac mixer 已經混好的單一輸出；這裡是
-        「單一原始音源」現場 resolve+轉碼，給 ESP32 開兩條並行連線（deck A/B）各自解碼、
-        自己算 crossfade envelope 疊加後才 i2s_write（照 device/puck_mixer.py 的角色分工：
-        Mac 只管把音源送到，「怎麼混」交給裝置端）。
-
-        重用 MusicCog._resolve_yt_query()（既有 yt-dlp 快取/候選挑選邏輯，vc.bot 上
-        找不到 MusicCog 就 500，避免整台 server 啟動又要重複一份 yt-dlp options）。
-        """
-        if puck_command_queue is None:
-            return web.Response(status=404, headers=_CORS)
-        # puck 真的打進來了＝活著、有在消費指令（見 puck_watchdog.py 的 deck stall 判斷），
-        # 不管後面 resolve 成不成功都算數。
-        puck_command_queue.mark_deck_hit()
-        watch_url = (request.query.get("url") or "").strip()
-        if not watch_url:
-            return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
-        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
-        if music_cog is None:
-            return web.json_response({"error": "music_cog_unavailable"}, status=500, headers=_CORS)
-        info = await music_cog._resolve_yt_query(watch_url)
-        stream_url = info.get("url") if info else None
-        if not stream_url:
-            return web.json_response({"error": "resolve_failed"}, status=502, headers=_CORS)
-
-        # seek：ESP32 端真斷線（非自然播完）重連時帶著「已下載到第幾秒」回來，接回
-        # 原本位置而不是從頭重播（見 car_puck.ino::deckNetworkTask 的 deckDownloadedSec
-        # 說明；行動網路瞬斷比家用WiFi常見，2026-08-12 車上實測要求加的）。-ss 放在
-        # -i 前面＝快速 seek（用容器索引跳，不精確 decode 到那一幀），音訊來源夠準。
-        ffmpeg_args = ["-i", stream_url, "-af", "volume=0.10"]
-        seek_raw = (request.query.get("seek") or "").strip()
-        if seek_raw:
-            try:
-                seek_s = max(0.0, float(seek_raw))
-                if seek_s > 0:
-                    ffmpeg_args = ["-ss", f"{seek_s:.2f}"] + ffmpeg_args
-            except ValueError:
-                pass   # 帶了垃圾值就當沒帶，別讓整個 deck 連不上
-
-        # -af volume：/puck_deck 直接轉碼原始音源，沒有 /audio_stream 那邊中央 mixer 的
-        # stream_volume 衰減（MusicCog.stream_volume 預設 0.10，見 cogs/music_cog.py）
-        # ——不加的話比使用者已經聽慣的 /audio_stream 音量大上一截（2026-08-11 實機
-        # 反饋：「音量太大」）。套同一個比例讓 ESP32 edge端混音跟中央 mixer 音量感受一致。
-        return await _stream_ffmpeg_input_as_mp3(request, ffmpeg_args)
+    # handle_puck_deck 2026-08-18 起由 module-level _make_puck_deck_handler() 產生
+    # （見檔案上方）——car puck mk2(pi_bt) 也走這裡（跟 ESP32 共用），這支
+    # satellite 進程是兩種車puck硬體共同的音源+決策來源（見該函式 docstring）。
+    handle_puck_deck = _make_puck_deck_handler(vc, puck_command_queue)
 
     async def handle_car(request):
         """POST /car {"state": "present"|"absent", "lat"?, "lon"?} — ESP32 puck 車載觸發。

@@ -7,12 +7,14 @@ TDD：GET /puck_deck?url=<watch_url> — ESP32 edge端混音單一 deck 原始�
 docstring）。
 
 驗：
-(a) puck_command_queue=None（功能未開）→ 404
+(a) puck_command_queue=None（ESP32 功能未開，pi_bt 2026-08-18 起改吃這個端點）
+    → 不再 404，只要 MusicCog 拿得到就照常 resolve+轉碼
 (b) 無 url 參數 → 400
 (c) vc.bot 找不到 MusicCog → 500
 (d) MusicCog resolve 失敗（回 None/無 url）→ 502
 (e) resolve 成功 → 200 + chunked MP3 body（frame sync 開頭），起了 ffmpeg 子行程轉碼
 (f) 也吃既有 token middleware：無 token → 401
+(g) puck_command_queue 存在時才呼叫 mark_deck_hit()（None 時略過，不炸 AttributeError）
 
 ffmpeg/yt-dlp 都是重外部依賴，這裡全部 mock：MusicCog._resolve_yt_query 直接回一個假
 stream_url，ffmpeg 子行程用假 PCM bytes 取代真的轉碼輸出，只驗證端點層 wiring。
@@ -64,14 +66,36 @@ def _make_vc(resolved_url="https://cdn.example.com/stream.m4a", music_cog_presen
 
 
 @pytest.mark.asyncio
-async def test_puck_deck_404_when_not_wired():
+async def test_puck_deck_works_without_puck_command_queue():
+    """pi_bt 硬體不會傳 puck_command_queue（那是 ESP32 專用的控制指令佇列），
+    2026-08-18 起 /puck_deck 不該再因此 404——只要 MusicCog 拿得到就正常服務。"""
     from aiohttp.test_utils import TestClient, TestServer
     from main_satellite import build_text_app
 
-    app = build_text_app(_make_vc(), token="s3cret")   # 無 puck_command_queue
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
-        assert resp.status == 404
+    vc = _make_vc()
+    fake_proc = _FakeProc([_sine_pcm()])
+    app = build_text_app(vc, token="s3cret")   # 無 puck_command_queue
+    with patch("main_satellite.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
+            assert resp.status == 200
+
+
+@pytest.mark.asyncio
+async def test_puck_deck_marks_deck_hit_only_when_queue_present():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    vc = _make_vc()
+    fake_proc = _FakeProc([_sine_pcm()])
+    queue = PuckCommandQueue()
+    queue.mark_deck_hit = MagicMock()
+    app = build_text_app(vc, token="s3cret", puck_command_queue=queue)
+    with patch("main_satellite.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
+            assert resp.status == 200
+    queue.mark_deck_hit.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -246,3 +270,5 @@ async def test_puck_deck_token_gated():
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/puck_deck?url=https://youtu.be/a")   # 無 token
         assert resp.status == 401
+
+

@@ -6,6 +6,7 @@ queue_next() 背景解析+緩衝下一首、crossfade() 對兩軌套線性增益
 單一 process 內部混音（bluealsa PCM 一次只能一個 client 開，見
 project_car_puck_mk2_pi_zero2w_bt_mixer_validated 記憶，不可用多個播放器各自接裝置）。
 """
+import os
 import queue
 import subprocess
 import threading
@@ -58,21 +59,53 @@ def crossfade_gains(elapsed: float, duration: float) -> tuple:
     return (1.0 - frac, frac)
 
 
-def resolve_stream_url(watch_url: str, timeout: float = 30.0) -> str:
-    """watch_url（youtube 頁面網址）→ 直連串流網址。2026-08-17：曾試過改由 Mac
-    端 resolve 好直連網址再送過去（避開這裡的 yt-dlp CPU 開銷），但 Mac 解出的
-    網址帶 IP 參數，Pi 用不同來源 IP 開會被 Google 用 403 擋下、不可靠，已
-    revert。改升級這台機器的 yt-dlp（pip install --upgrade，apt 版本太舊，簽章
-    解密走慢路徑）：resolve 時間從 18-23s 降到 ~7s；呼叫端（cogs/music_cog.py
-    的 _run_puck_pi_bt_crossfade）也已經把觸發時機跟 DJ 口白的 8s 窗口脫鉤、
-    給了更寬裕的獨立窗口，兩者搭配才撐得住。"""
-    out = subprocess.run(
-        ["yt-dlp", "-f", "bestaudio", "-g", watch_url],
-        capture_output=True, text=True, timeout=timeout,
-    )
-    if out.returncode != 0:
-        raise RuntimeError(f"yt-dlp 解析失敗 {watch_url}: {out.stderr.strip()[-300:]}")
-    return out.stdout.strip().splitlines()[0]
+# 2026-08-18：pi_bt 改走跟 ESP32 edge端混音（esp32_edge_mix）同一條路——Pi 不再
+# 自己碰 YouTube。原本讓 Pi 自己跑 yt-dlp 先後踩兩個坑（同一份
+# incident_youtube_403_ip_throttle_2026-08-17 記憶）：①無 cookies 的匿名
+# ANDROID_VR client 被來源 IP 節流直接 403；②接上 cookies 修 403 後，deno 解
+# JS challenge 在 Pi 這種弱 CPU（quad-core Cortex-A53 @1GHz）上常吃到 ~24s CPU
+# time，還跟 Mac 那份 cookies session 共用會被 Google 判定異常整組 rotate 掉，
+# 迫使 Pi 只能用專屬靜態 cookies.txt、數週要重新手動匯出一次——維護成本疊在
+# 「有時候還是會 403」上面不划算。改成跟 main_satellite.py::handle_puck_deck
+# 一樣的路：Mac 用自己已經穩定驗證過的 cookiesfrombrowser session 現場
+# resolve+轉碼成 MP3，Pi 純粹當消費端接這條 HTTP 串流——ffmpeg -i 對輸入是
+# googlevideo CDN 直連還是 Mac 轉碼串流無感，_make_decoder() 不用改。
+# MARVIN_MAC_TOKEN 沿用跟 /wake、/flush 呼叫同一套慣例（見 volume_server.py 的
+# MAC_SAY/TOKEN；預設沿用 MARVIN_VOL_TOKEN，跟 systemd unit 裡 MARVIN_TEXT_TOKEN
+# 對齊的部署慣例一致）。
+#
+# ⚠️ 2026-08-18：/puck_deck 的 port 在同一天內改過兩次，這裡把來龍去脈記清楚
+# 別再繞回去：
+#   v1（誤）：讓 24/7 Discord bot（main_discord.py）自己開一個獨立小 app 服務
+#     /puck_deck，port 一度沿用 satellite 文字介面的 8790，撞上另一個常駐進程
+#     （browsersatellite）也綁在 8790，讓整支 24/7 bot 在啟動時掛掉。
+#   v2（也不對）：port 改獨立的 8792 避開衝突，但仔細想「由 24/7 bot 決策車puck
+#     播放」這個方向本身就錯了——car-presence 心跳打的是 satellite 的 :8790（見
+#     device/car-puck-mk2-presence-heartbeat.sh），這代表架構設計上車puck的
+#     「在場觸發」本來就該由 satellite（com.antigravity.marvin.satellite，
+#     main_satellite.py）這個「出門的身體」接手，跟 ESP32(esp32_edge_mix) 同一條
+#     路、同一個進程——兩者都該由 satellite 統一 resolve+決策，不是 24/7 Discord
+#     bot（那是「聊天陪伴」的身體，跟車puck在場觸發語意上不搭）。
+#   v3（現在）：回到 satellite 的 :8790，MARVIN_CAR_HARDWARE 只在 satellite 進程
+#     的 env 生效（其餘進程明確 override 成空字串關掉，見 run_bot.py/
+#     run_browser_satellite.py 的機器本地 wrapper），確保只有一個進程能決策
+#     車puck播放，避免多顆大腦互搶同一台實體裝置（見
+#     project_car_puck_mk2_pi_zero2w... 記憶「幽靈換歌」事故）。satellite 沒開
+#     （純 discord 模式）車puck就沒人管，需要 `marvin-mode dual` 確保常駐。
+MAC_BASE_URL = os.getenv("MARVIN_MAC_BASE_URL", "http://100.123.68.86:8790")
+MAC_TOKEN = os.getenv("MARVIN_MAC_TOKEN", "").strip() or os.getenv("MARVIN_VOL_TOKEN", "").strip() or None
+
+
+def resolve_stream_url(watch_url: str) -> str:
+    """watch_url（youtube 頁面網址）→ Mac /puck_deck 轉發網址（見上方模組註解）。
+    這裡不做任何網路呼叫，只是組字串——真正的 yt-dlp resolve+ffmpeg 轉碼在 Mac
+    端的 handle_puck_deck 收到 ffmpeg 連進來才觸發，_make_decoder() 開的
+    subprocess 直接對這個 URL 讀，跟原本讀 googlevideo 直連網址完全一樣的路徑。"""
+    from urllib.parse import urlencode
+    params = {"url": watch_url}
+    if MAC_TOKEN:
+        params["t"] = MAC_TOKEN
+    return f"{MAC_BASE_URL}/puck_deck?{urlencode(params)}"
 
 
 def _make_decoder(stream_url: str):
