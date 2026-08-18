@@ -39,6 +39,32 @@ logger = logging.getLogger(__name__)
 # 重啟回報狀態檔。寫於 self_restart pre-execv，讀於 on_ready post-sync。
 REBOOT_STATE_FILE = ".marvin_reboot_state.json"
 
+# 最後一次 /summon 的文字頻道（跨重啟/重連持久化）。auto_rejoin_on_boot / soft_repair
+# 靜默回台時 active_text_channel 是 None，沒這份記錄只能退到語音頻道自帶文字區，使用者
+# 常用的文字頻道就收不到卡片/播報（2026-08-19 使用者反映：auto rejoin 貼卡貼到語音頻道
+# 內建文字區，不是平常在看的頻道）。
+LAST_TEXT_CHANNEL_FILE = ".marvin_last_text_channel.json"
+
+
+def _write_last_text_channel(channel) -> None:
+    """/summon 設定 active_text_channel 時順手記一份到磁碟（失敗不阻斷）。"""
+    try:
+        with open(LAST_TEXT_CHANNEL_FILE, "w", encoding="utf-8") as f:
+            json.dump({"guild_id": channel.guild.id, "channel_id": channel.id}, f)
+    except Exception as e:
+        logger.debug(f"[TextChannel] 記錄最後文字頻道失敗（不阻斷）: {e}")
+
+
+def _read_last_text_channel(bot):
+    """靜默回台用：讀回上次 /summon 的文字頻道物件；找不到/失效回 None。"""
+    try:
+        with open(LAST_TEXT_CHANNEL_FILE, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        ch = bot.get_channel(state.get("channel_id"))
+        return ch if isinstance(ch, discord.TextChannel) else None
+    except Exception:
+        return None
+
 
 def music_echo_guard_active(local_mode: bool, is_playing_audio: bool,
                             current_tts_text: str, enabled: bool) -> bool:
@@ -291,11 +317,11 @@ class ConnectionMixin:
             self.last_recovery_time = time.time()
             self.dave_error_count = 0  # 🚀 [T-01 Fix] 重設 DAVE 錯誤計數（非 sink_missing_count）
 
-            # 🩹 [Text Fallback] 鏡像 auto_rejoin_on_boot() 的補洞（見該處 2026-08-17 事故
-            # 註解）：active_text_channel 若在軟修復當下已是 None，重連成功也救不回報路徑
-            # →用回台的語音頻道自帶文字區頂上，否則控制台/現正播放卡片永久 [Card] 跳過貼卡。
+            # 🩹 [Text Fallback] 鏡像 auto_rejoin_on_boot() 的補洞（見該處說明）：
+            # active_text_channel 若在軟修復當下已是 None，重連成功也救不回報路徑
+            # →優先用上次 /summon 的文字頻道頂上，找不到才退語音頻道自帶文字區。
             if self.active_text_channel is None:
-                self.active_text_channel = channel
+                self.active_text_channel = _read_last_text_channel(self.bot) or channel
 
             # UDP Hole Punching
             if self._plan12:
@@ -389,11 +415,13 @@ class ConnectionMixin:
             self.connection_time = time.time()
             self.sink_failure_count = 0
             # 🩹 [Text Fallback] 沒有既有 active_text_channel（開機/process 重啟後全新狀態）
-            # → 用語音頻道自帶的文字區頂上，否則控制台/現正播放/嘲諷/看門狗全部靜默失效，
-            # 只能靠人 dismiss 再 summon 重設（2026-08-17 事故：使用者反映自動回台後
-            # music control 不出來）。不算「打招呼」——沒送任何訊息，只是補回報路徑。
+            # → 優先用上次 /summon 的文字頻道頂上，找不到才退語音頻道自帶文字區，否則控制台/
+            # 現正播放/嘲諷/看門狗全部靜默失效，只能靠人 dismiss 再 summon 重設（2026-08-17
+            # 事故：使用者反映自動回台後 music control 不出來；2026-08-19 補：退到語音頻道
+            # 內建文字區使用者根本不會去看，卡片形同消失）。不算「打招呼」——沒送任何訊息，
+            # 只是補回報路徑。
             if self.active_text_channel is None:
-                self.active_text_channel = ch
+                self.active_text_channel = _read_last_text_channel(self.bot) or ch
             logger.warning("🔁 [AutoRejoin] 回台完成，恢復監聽（靜默、未打招呼）")
 
             # 🎵 [Restart Resume] process 重啟會把 MusicCog 的 stream_queue/stream_mode
@@ -421,6 +449,7 @@ class ConnectionMixin:
         # 1. 紀錄文字頻道
         if self.bot.engine.text_channel_callback:
             self.bot.engine.text_channel_callback(interaction.channel)
+        _write_last_text_channel(interaction.channel)
         
         if not interaction.user.voice:
             await interaction.followup.send("❌ 你必須先加入一個語音頻道！", ephemeral=True)
