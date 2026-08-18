@@ -33,7 +33,7 @@ MUSIC_STOP_KW: tuple[str, ...] = (
     "stop music", "stop playing",
 )
 MUSIC_PAUSE_KW: tuple[str, ...] = (
-    "暫停音樂", "暫停一下", "pause",
+    "暫停音樂", "暫停播放", "暫停一下", "pause",
 )
 MUSIC_RESUME_KW: tuple[str, ...] = (
     "繼續播", "繼續音樂", "播回來", "resume",

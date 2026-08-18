@@ -107,6 +107,39 @@ def test_question_prefix_rejects_pause():
 # ── happy path（不能誤殺）────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize("query", ["暫停", "暫停！", "暫停。"])
+def test_bare_pause_whole_utterance_matches(query):
+    """8/18 bot_main.log 實測：query='暫停' 整句只有這兩字，IntentBus winner=none
+    真漏接（agent 端 no_match，且 has_intent_signal 也因 <4 字被 silent，雙重看不見）。
+    只做全句 anchor，不做 substring（見下方 FP 測試 why）。"""
+    from intent_agents.playback_control_agent import PlaybackControlAgent
+    agent = PlaybackControlAgent(_ctrl())
+    bid = agent.bid(_ctx(query))
+    assert bid.confidence == 0.95, f"expect 0.95 for {query!r}, got {bid.confidence} ({bid.reason})"
+    assert "pause" in bid.reason
+
+
+def test_pause_substring_in_unrelated_sentence_does_not_match():
+    """「暫停」若只是句子裡路過的詞（不是整句指令）不該誤觸發——
+    真實 stt_history.log 樣本：使用者在講冷氣，不是要求暫停播放。"""
+    from intent_agents.playback_control_agent import PlaybackControlAgent
+    agent = PlaybackControlAgent(_ctrl())
+    bid = agent.bid(_ctx("他暫暫停他的冷氣不會流出去嗎"))
+    assert bid.confidence == 0.0, f"expected 0.0, got {bid.confidence} ({bid.reason})"
+
+
+@pytest.mark.parametrize("query", ["暫停播放", "暫停音樂", "暫停一下", "pause"])
+def test_pause_keyword_variants_match(query):
+    """8/18 agent_gaps 修正：「暫停播放」原本沒在 MUSIC_PAUSE_KW 裡，
+    只有 IBA-T0 無喚醒詞路徑（MUSIC_DIRECT_PAUSE_KW）接得住，wake 路徑落空
+    （見 records/agent_gaps.jsonl control_pause/playback_control_pause 兩筆）。"""
+    from intent_agents.playback_control_agent import PlaybackControlAgent
+    agent = PlaybackControlAgent(_ctrl())
+    bid = agent.bid(_ctx(query))
+    assert bid.confidence == 0.95, f"expect 0.95 for {query!r}, got {bid.confidence} ({bid.reason})"
+    assert "pause" in bid.reason
+
+
 @pytest.mark.parametrize("query", [
     "下一首",
     "切歌",

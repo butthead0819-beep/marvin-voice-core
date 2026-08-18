@@ -88,6 +88,7 @@ async def test_no_playback_active_dense_zero():
     "調小聲",
     "音量調低",
     "音量小一點",
+    "調低的音量",  # 8/18 agent_gaps 修正：particle「的」不該卡掉 adjacency match
     "volume down",
 ])
 async def test_volume_down_patterns(query):
@@ -107,6 +108,7 @@ async def test_volume_down_patterns(query):
     "調大聲",
     "音量調高",
     "音量大一點",
+    "調高的音量",  # 8/18 agent_gaps 真實樣本「總動調高的音量」的精簡版
     "volume up",
 ])
 async def test_volume_up_patterns(query):

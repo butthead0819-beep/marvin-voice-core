@@ -83,7 +83,14 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
                 # pause 必須在 stop 之前：「暂停音樂」含「停音樂」，若 stop 先就會被誤判
                 IntentSchema(
                     "pause_playback", 0.95,
-                    patterns=[f"({pause_pat})"],
+                    patterns=[
+                        f"({pause_pat})",
+                        # 裸字「暫停」單獨成句才收（8/18 bot_main.log 實測 winner=none
+                        # 真漏接）；不能做成 substring（MUSIC_PAUSE_KW 那種），因為
+                        # 「他暫暫停他的冷氣」這類句子裡「暫停」只是路過的名詞，全句
+                        # anchor 才能避開這類 FP。
+                        r"^暫停[!！。\.，,]*$",
+                    ],
                     reason_template="pause:{matched}",
                 ),
                 IntentSchema(

@@ -59,15 +59,17 @@ class VolumeAgent(DeclarativeIntentAgent):
                 IntentSchema(
                     "volume_down", 0.90,
                     patterns=[
-                        # 「(把)?(音量)?調?小聲(一?點)?」「音量調低/小」「volume down」
-                        r"(小聲(\s*一?點)?|音量\s*(調)?(低|小)|調\s*低\s*音量|volume\s*down)",
+                        # 「(把)?(音量)?調?小聲(一?點)?」「音量調低/小」「調低(的)?音量」「volume down」
+                        # 「的」容錯：口語常見「調低的音量」而非「調低音量」（8/18 gap 實測：
+                        # 「總動調高的音量」被嚴格 \s* 卡掉，見同款 volume_up 修正）。
+                        r"(小聲(\s*一?點)?|音量\s*(調)?(低|小)|調\s*低\s*(的)?\s*音量|volume\s*down)",
                     ],
                     reason_template="volume_down:{matched}",
                 ),
                 IntentSchema(
                     "volume_up", 0.90,
                     patterns=[
-                        r"(大聲(\s*一?點)?|音量\s*(調)?(高|大)|調\s*高\s*音量|volume\s*up)",
+                        r"(大聲(\s*一?點)?|音量\s*(調)?(高|大)|調\s*高\s*(的)?\s*音量|volume\s*up)",
                     ],
                     reason_template="volume_up:{matched}",
                 ),

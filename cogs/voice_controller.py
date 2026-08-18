@@ -43,6 +43,7 @@ from cogs.voice_controller_playback import (  # noqa: F401 — re-export MAX_HOT
 from cogs.voice_controller_system_loops import SystemLoopsMixin
 from cogs.voice_controller_state_proxy import StateProxyMixin
 from cogs.voice_controller_music_proxy import MusicProxyMixin
+from cogs.voice_controller_gap_notify import GapNotifyMixin
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
 
@@ -245,6 +246,7 @@ def build_intent_agents(controller, bot):
     from intent_agents.volume_agent import VolumeAgent
     from intent_agents.replay_agent import ReplayAgent
     from intent_agents.now_playing_agent import NowPlayingAgent
+    from intent_agents.time_query_agent import TimeQueryAgent
     from intent_agents.personal_shuffle_agent import PersonalShuffleAgent
     from intent_agents.farewell_agent import FarewellAgent
     from intent_agents.dual_speak_agent import DualSpeakAgent
@@ -258,6 +260,7 @@ def build_intent_agents(controller, bot):
         VolumeAgent(controller),  # 2026-05-27: 議題 E #1 — 音量語音控制
         ReplayAgent(controller),  # 2026-05-27: 議題 E #2 — 重播當前歌曲
         NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
+        TimeQueryAgent(controller),  # 2026-08-18: agent_gaps time_query ready_to_implement — 零成本報時
         FarewellAgent(controller),  # 2026-08-09: 喚醒直接說「掰掰/晚安/bye bye」互道再見
         PersonalShuffleAgent(controller),  # 2026-06-29: 語音「連續隨機播我的歌單」（一次墊一首）
         GameKnowledgeAgent(controller),  # 2026-06-06: Plan 4 intent_gap ready — 「查麥塊…」遊戲知識查詢
@@ -339,7 +342,7 @@ _FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGN
 
 class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixin,
                       ConnectionMixin, PlaybackMixin, SystemLoopsMixin,
-                      StateProxyMixin, MusicProxyMixin, commands.Cog):
+                      StateProxyMixin, MusicProxyMixin, GapNotifyMixin, commands.Cog):
     """
     [Operation Paranoid Android] 
     馬文 (Marvin) 的語音控制器：負責語音監聽、社交分析、TTS 廣播與史官系統。
@@ -3237,18 +3240,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             except Exception as _re:
                 logger.debug(f"🦞 [NemoClaw Router] 路由失敗，繼續走 Marvin: {_re}")
 
-        # 🚫 [Intent Presence Gate] IntentBus / imitation / nemoclaw 都沒接 → 進 Marvin 主 LLM
-        # 前最後一道 code gate：raw 只是 filler/短應答（嗯/啊/對啊）→ silent，避免錯時機
-        # 亂回答 + 省一次主 LLM call。問句 / 指令動詞 / 長度 ≥ 4 字一律放行（保守）。
-        if not has_intent_signal(query):
-            self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
-            self._cancel_stale_prefetch(speaker)
-            return
-
         # 🛡️ [Gap Pre-check] PA intent（recall / 記一下 / mark_done / task_update）已有
-        # RecallHandler 接 → 不是 gap。能跑到這代表上游 PA routing 漏接（routing anomaly），
-        # 記 warning 方便追，但**不**寫進 agent_gaps（否則 LLM 會把它亂標成 buy_milk /
-        # replay_user_history 假觸發 Plan 4，2026-05-30 事件）。
+        # RecallHandler 接 → 上游 routing 漏接屬 anomaly，不是 gap，記 warning 但不寫
+        # agent_gaps（否則 LLM 會亂標成 buy_milk 等，2026-05-30 事件）。留在 classifier 前。
         if is_personal_assistant_query(query):
             logger.warning(
                 f"⚠️ [Gap Pre-check] {speaker} PA intent 漏接到 gap path（routing anomaly，"
@@ -3257,10 +3251,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             self._cancel_stale_prefetch(speaker)
             return
 
-        # 🪦 [Intent Gap Detection] bus / music-drop / imitate / nemoclaw 全沒接 +
-        # has_intent_signal=true → 用 cheap classifier 判讀「有 intent 但沒 agent」，
-        # 寫 records/agent_gaps.jsonl；intent_type != UNKNOWN 給模板 ack 並 skip Marvin
-        # （避免 Marvin 對沒實作的功能假承諾）；UNKNOWN → fall through Marvin 兜底閒聊。
+        # 🪦 [Intent Gap Detection] bus/music-drop/imitate/nemoclaw 全沒接 → 一律先送進
+        # cheap classifier 判讀「有 intent 但沒 agent」，寫 agent_gaps.jsonl。8/18 修正：
+        # 測量（classifier+log）跟要不要回應 Marvin 拆開——has_intent_signal 只留在分類完
+        # 仍是 UNKNOWN 時才決定要不要閒聊，之前短指令（裸字「暫停」）連 log 都進不去。
+        gap_rec = None
         if self._gap_classifier_cached is None and self._shared_tier_router is not None:
             self._gap_classifier_cached = make_groq_gap_classifier(self._shared_tier_router)
         if self._gap_classifier_cached is not None:
@@ -3274,6 +3269,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     manifest=self._intent_bus.build_intent_manifest(),
                     tts_call=self.play_tts,
                 )
+                self._dm_owner_intent_gap(gap_rec)
                 if gap_rec.intent_type != "UNKNOWN":
                     self.stt_logger.info(
                         f"[IntentGap] [{speaker}] type={gap_rec.intent_type} "
@@ -3283,6 +3279,21 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     return
             except Exception as _gap_exc:
                 logger.warning(f"⚠️ [IntentGap] gap path 炸了，fall through 到 Marvin: {_gap_exc}")
+
+        # 🚫 [Intent Presence Gate] classifier 判 UNKNOWN（或不可用）後，進 Marvin 前最後
+        # 一道 code gate：raw 只是 filler/短應答 → silent（測量已在上面 classifier 做完）。
+        if not has_intent_signal(query):
+            self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
+            try:
+                gap_append_record(
+                    "records/intent_gate_silenced.jsonl",
+                    {"ts": time.time(), "speaker": speaker, "query": query,
+                     "gap_intent_type": gap_rec.intent_type if gap_rec else None},
+                )
+            except Exception:
+                logger.debug("[Intent Gate] intent_gate_silenced.jsonl 落地失敗（忽略）")
+            self._cancel_stale_prefetch(speaker)
+            return
 
         await self._stream_response(
             speaker, query, history, wake_time, wake_intent, _is_helper, _head,
