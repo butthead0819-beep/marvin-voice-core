@@ -290,7 +290,13 @@ class ConnectionMixin:
             self.connection_time = time.time()
             self.last_recovery_time = time.time()
             self.dave_error_count = 0  # 🚀 [T-01 Fix] 重設 DAVE 錯誤計數（非 sink_missing_count）
-            
+
+            # 🩹 [Text Fallback] 鏡像 auto_rejoin_on_boot() 的補洞（見該處 2026-08-17 事故
+            # 註解）：active_text_channel 若在軟修復當下已是 None，重連成功也救不回報路徑
+            # →用回台的語音頻道自帶文字區頂上，否則控制台/現正播放卡片永久 [Card] 跳過貼卡。
+            if self.active_text_channel is None:
+                self.active_text_channel = channel
+
             # UDP Hole Punching
             if self._plan12:
                 # mixer adapter 已提供持續音訊（idle 出 silence），取代 SilenceSource keepalive；
