@@ -257,13 +257,68 @@ def _synthesize_tts_pcm(text: str) -> "np.ndarray | None":
             pass
 
 
+# 2026-08-19：BT 輸出目標從「固定 MAC」改成「候選清單 + 動態挑選」——原本
+# `pick_bt_mac()` 只在 volume_server.py 開機那一刻算一次（見該檔案 PUCK_BT_MAC
+# 模組層賦值），mixer 拿到的是寫死的字串，運行中途候選裝置的連線狀態變了
+# （例如在家用 Soundcore 開機、開車出門 BMW 進範圍）也不會自動換target，得手動
+# 重啟服務。搬到這裡讓 PuckMixer 自己在每次(重)連線時即時重新挑選，才是真正的
+# 動態切換。volume_server.py 改成 import 這裡的實作（同一份邏輯只維護一次）。
+def _parse_connected_macs(bluetoothctl_output: str) -> set:
+    """解析 `bluetoothctl devices Connected` 的輸出，每行長這樣
+    `Device AA:BB:CC:DD:EE:FF BMW 04900`，抓第二個欄位的 MAC（正規化成大寫）。"""
+    macs = set()
+    for line in bluetoothctl_output.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == "Device":
+            macs.add(parts[1].upper())
+    return macs
+
+
+def _list_connected_bt_macs(timeout: float = 5.0) -> set:
+    """跑 `bluetoothctl devices Connected` 查目前有連線的 BT MAC。抓不到（指令不在/
+    逾時）就回傳空集合——當成「沒有連線資訊可用」處理，不是硬錯誤。"""
+    try:
+        out = subprocess.run(
+            ["bluetoothctl", "devices", "Connected"],
+            capture_output=True, text=True, timeout=timeout,
+        ).stdout
+    except Exception:
+        return set()
+    return _parse_connected_macs(out)
+
+
+def pick_bt_mac(candidates: list, connected: set = None):
+    """candidates 依優先權排序（第一個優先權最高，實務上＝BMW車機，使用者拍板
+    「BMW跟其他喇叭不會同時連線，真的都連著時BMW優先」）。回傳目前有連線、優先權
+    最高的候選；查不到任何連線資訊（bluetoothctl 沒回應/都沒連）就照樣回傳優先權
+    最高的那個——交給 PuckMixer 既有的 `_write_with_reconnect` 重試邏輯把連線談
+    起來，不要因為偵測失敗就整條不開機。candidates 為空回傳 None。"""
+    if not candidates:
+        return None
+    if connected is None:
+        connected = _list_connected_bt_macs()
+    for mac in candidates:
+        if mac.upper() in connected:
+            return mac
+    return candidates[0]
+
+
 class PuckMixer:
     """車puck BT 混音執行層。public method thread-safe、非阻塞（重活丟背景 thread）。"""
 
     REF_BUFFER_SECONDS = 2.0
+    # 運行中重新評估 BT 輸出目標的間隔——太短會讓 bluetoothctl subprocess 呼叫
+    # 拖累音訊迴圈（每次都是幾十ms的阻塞），太長切換不夠即時；15s 跟
+    # device/car-puck-mk2-btspk-autoconnect.sh 重連迴圈的節奏對齊。
+    BT_RECHECK_INTERVAL_S = 15.0
 
-    def __init__(self, bt_mac: str, on_track_change=None):
-        self._device = f"bluealsa:DEV={bt_mac},PROFILE=a2dp"
+    def __init__(self, bt_mac, on_track_change=None):
+        # bt_mac：依優先權排序的 BT MAC 候選清單（見 pick_bt_mac()）；也接受單一
+        # 字串（沿用舊參數名 bt_mac 保持呼叫端相容，單一字串等同單一候選、行為
+        # 跟改動前完全一樣）。
+        self._candidates = [bt_mac] if isinstance(bt_mac, str) else list(bt_mac)
+        self._current_mac = None  # 最近一次實際連上的 MAC，供 status()/log 用
+        self._last_bt_check = 0.0
         # AVRCP metadata 掛勾（見 device/avrcp_media_player.py 開頭說明：BMW
         # 30s 規律斷線疑似跟這台裸串流沒回應曲名查詢有關）。None＝不裝，跟舊行為
         # 完全一致；換歌時（play()/crossfade 換到 deck_b）拿到 title 才會呼叫。
@@ -449,8 +504,13 @@ class PuckMixer:
             self._loop_thread.start()
 
     def _open_pcm(self):
+        # 每次(重)連線都重新挑選目標——不是開機時算一次的固定值，家用/車上兩種
+        # 候選裝置誰在連線範圍內會隨時間改變（見上方模組註解）。
+        target = pick_bt_mac(self._candidates)
+        self._current_mac = target
+        device = f"bluealsa:DEV={target},PROFILE=a2dp"
         return alsaaudio.PCM(
-            alsaaudio.PCM_PLAYBACK, alsaaudio.PCM_NORMAL, device=self._device,
+            alsaaudio.PCM_PLAYBACK, alsaaudio.PCM_NORMAL, device=device,
             channels=CHANNELS, rate=RATE, format=alsaaudio.PCM_FORMAT_S16_LE,
             periodsize=CHUNK_FRAMES,
         )
@@ -497,12 +557,38 @@ class PuckMixer:
             pass
         return new_pcm
 
+    def _maybe_switch_bt_target(self, pcm):
+        """每 BT_RECHECK_INTERVAL_S 秒重新評估一次候選裝置的連線狀態；如果優先權
+        最高的目標已經換了（例如從家用 Soundcore 開機、開車出門 BMW 進了範圍），
+        主動斷開重連到新目標——不用等 write() 失敗才被動換（那只在舊目標先斷線
+        時才會觸發，兩個候選裝置一度同時在線的情況需要這裡主動偵測）。只有
+        candidates 有兩個以上才值得做這個檢查，單一候選跟改動前行為完全一樣。"""
+        if len(self._candidates) < 2:
+            return pcm
+        now = time.time()
+        if now - self._last_bt_check < self.BT_RECHECK_INTERVAL_S:
+            return pcm
+        self._last_bt_check = now
+        target = pick_bt_mac(self._candidates)
+        if target == self._current_mac:
+            return pcm
+        try:
+            pcm.close()
+        except Exception:
+            pass
+        new_pcm = self._open_pcm_with_retry()
+        if new_pcm is None:  # stop() 被呼叫——_loop() 下一輪自然收尾
+            return pcm
+        print(f"🔀 [PuckMixer] BT 目標切換 → {target}", flush=True)
+        return new_pcm
+
     def _loop(self):
         pcm = self._open_pcm_with_retry()
         if pcm is None:
             return
         try:
             while not self._stop_flag.is_set():
+                pcm = self._maybe_switch_bt_target(pcm)
                 with self._lock:
                     deck_a, deck_b = self._deck_a, self._deck_b
                     cf_start, cf_dur = self._crossfade_start, self._crossfade_duration
