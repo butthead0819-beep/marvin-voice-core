@@ -129,7 +129,18 @@ def _make_puck_deck_handler(vc, puck_command_queue=None):
         # seek：斷線（非自然播完）重連時帶著「已下載到第幾秒」回來，接回原本位置而不是
         # 從頭重播（見 car_puck.ino::deckNetworkTask 的 deckDownloadedSec 說明）。-ss 放在
         # -i 前面＝快速 seek（用容器索引跳，不精確 decode 到那一幀），音訊來源夠準。
-        ffmpeg_args = ["-i", stream_url, "-af", "volume=0.10"]
+        ffmpeg_args = ["-i", stream_url]
+        # -af volume：/puck_deck 直接轉碼原始音源，沒有 /audio_stream 那邊中央 mixer 的
+        # stream_volume 衰減（MusicCog.stream_volume 預設 0.10，見 cogs/music_cog.py）
+        # ——不加的話比使用者已經聽慣的 /audio_stream 音量大上一截（2026-08-11 實機
+        # 反饋：「音量太大」）。套同一個比例讓裝置端混音跟中央 mixer 音量感受一致。
+        # ⚠️ 2026-08-19：這個 0.10 只對 esp32_edge_mix 成立——car puck mk2(pi_bt) 的
+        # device/puck_mixer.py 是直接把解碼出的 PCM 送去已經開滿的 bluealsa BT 音量，
+        # 沒有中間任何 mixer 再衰減一次，套同一個 0.10 等於音樂天生只剩一成音量（實機
+        # 反饋「聲音很小」的真因，見 incident_car_puck_hotspot_tailscale_relay 記憶）。
+        # resolve_stream_url() 現在帶 hw=pi_bt 讓這裡分辨、跳過這層衰減。
+        if request.query.get("hw") != "pi_bt":
+            ffmpeg_args += ["-af", "volume=0.10"]
         seek_raw = (request.query.get("seek") or "").strip()
         if seek_raw:
             try:
@@ -139,10 +150,6 @@ def _make_puck_deck_handler(vc, puck_command_queue=None):
             except ValueError:
                 pass   # 帶了垃圾值就當沒帶，別讓整個 deck 連不上
 
-        # -af volume：/puck_deck 直接轉碼原始音源，沒有 /audio_stream 那邊中央 mixer 的
-        # stream_volume 衰減（MusicCog.stream_volume 預設 0.10，見 cogs/music_cog.py）
-        # ——不加的話比使用者已經聽慣的 /audio_stream 音量大上一截（2026-08-11 實機
-        # 反饋：「音量太大」）。套同一個比例讓裝置端混音跟中央 mixer 音量感受一致。
         return await _stream_ffmpeg_input_as_mp3(request, ffmpeg_args)
     return handle_puck_deck
 

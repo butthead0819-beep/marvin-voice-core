@@ -2143,7 +2143,19 @@ class MusicCog(commands.Cog):
                 # 第一首、skip、或上一首沒排到尾段 task）要送硬 play 讓 ESP32 從乾淨狀態
                 # 開始播——跟 _fire_puck_crossfade 對稱，那邊只在尾段轉場時接手 standby
                 # deck，不會有人叫它 play。見 _play_open()/_run_tail_dj() 前的說明。
-                if not _dj_played_in_tail:
+                #
+                # ⚠️ 2026-08-19：pi_bt 不能沿用 _dj_played_in_tail 判斷——那是 DJ 口白
+                # （Discord 端邏輯）有沒有講話，跟 Pi 裝置端的 _run_puck_pi_bt_crossfade
+                # 是否真的接手是兩件獨立的事（DJ 講了話不代表 Pi 端 crossfade 成功，
+                # 例如 Pi 剛好離線）。沿用會讓下一首開頭永久跳過硬 play、Pi 端 deck_a
+                # 停在 None 播不出聲音（實機踩到，見 incident_car_puck_hotspot_
+                # tailscale_relay 記憶）。改用 _run_puck_pi_bt_crossfade 設的
+                # _puck_pi_bt_handed_off（裝置端真的接手才 True）。
+                if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() == "pi_bt":
+                    _puck_handed_off = bool(info.get('_puck_pi_bt_handed_off'))
+                else:
+                    _puck_handed_off = _dj_played_in_tail
+                if not _puck_handed_off:
                     puck_client = _get_puck_client()
                     puck_url = info.get('webpage_url', '')
                     if puck_client is not None and puck_url:
@@ -2956,11 +2968,13 @@ class MusicCog(commands.Cog):
 
     async def _fire_puck_crossfade(self, puck_client, next_url: str,
                                     buffer_s: float = 4.0, crossfade_s: float = 4.0,
-                                    title: str = None) -> None:
+                                    title: str = None) -> bool:
         """[PuckMixer] 純音樂 crossfade：queue_next 後留 buffer_s 給裝置端背景
         ffmpeg 起手緩衝，再送 crossfade。跟本地 Discord mixer/DJ 口白邏輯
         完全獨立（見呼叫點 _run_tail_dj），queue_next 失敗就放棄、不重試（下一輪
-        tail-fire 或下一首開頭會再給機會）。
+        tail-fire 或下一首開頭會再給機會）。回傳裝置端是否真的接手了下一首
+        （queue_next 或 crossfade 任一步失敗都是 False）——pi_bt 靠這個回傳值
+        決定要不要在下一首開頭補一次硬 play（見 _run_puck_pi_bt_crossfade）。
 
         buffer_s 2.0→4.0（2026-08-11）：esp32_edge_mix 實機驗證，2.0s 對 ESP32 的
         /puck_deck 鏈路（Mac resolve+ffmpeg轉碼+MP3編碼+網路傳輸)不夠，crossfade
@@ -2985,7 +2999,7 @@ class MusicCog(commands.Cog):
         ok = await puck_client.queue_next(next_url, title=title)
         if not ok:
             logger.warning(f"[PuckMixer] queue_next 失敗，放棄本次 crossfade: {next_url}")
-            return
+            return False
         if hasattr(puck_client, "status"):
             deadline = time.time() + buffer_s
             while time.time() < deadline:
@@ -2998,6 +3012,7 @@ class MusicCog(commands.Cog):
         crossfaded = await puck_client.crossfade(crossfade_s)
         if not crossfaded:
             logger.warning(f"[PuckMixer] crossfade 失敗（deck_b 可能還沒 ready）: {next_url}")
+        return bool(crossfaded)
 
     async def _run_tail_dj(self, cur_info: dict, song_start_time):
         """[DJ Tail] 滑動窗串場：當前歌結束前 _DJ_TAIL_LEAD_S 秒點火，DJ 疊當前歌尾巴 + 溢進下一首開頭。
@@ -3175,10 +3190,17 @@ class MusicCog(commands.Cog):
         puck_client = _get_puck_client()
         if puck_client is None:
             return
-        await self._fire_puck_crossfade(
+        handed_off = await self._fire_puck_crossfade(
             puck_client, next_url, buffer_s=_PUCK_PI_BT_CROSSFADE_BUFFER_S,
             title=next_info.get('title'),
         )
+        # 2026-08-19：跟 _dj_played_in_tail（DJ 口白是否有講話，Discord 端邏輯）
+        # 脫鉤——那個旗標曾被誤用來判斷「pi_bt 裝置端要不要補硬 play」，兩者其實
+        # 無關：DJ 有講話不代表 Pi 真的接到 crossfade（例如 Pi 剛好離線/queue_next
+        # 失敗），沿用 _dj_played_in_tail 會讓下一首開頭永久跳過硬 play、Pi 端
+        # deck_a 停在 None，crossfade 邏輯又不會 promote 空的 deck_a，變成永久靜音
+        # （2026-08-19 實機踩到）。改成裝置端真的接手了才標記。
+        next_info['_puck_pi_bt_handed_off'] = handed_off
 
     def _start_music_preload(self, info: dict) -> None:
         """[DJ Tail] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song 換源時直接用

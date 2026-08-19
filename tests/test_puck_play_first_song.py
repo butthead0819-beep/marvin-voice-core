@@ -65,10 +65,63 @@ async def test_stream_loop_fires_puck_play_for_song_not_played_in_tail():
 
 
 @pytest.mark.asyncio
-async def test_stream_loop_skips_puck_play_when_already_played_in_tail():
-    """已經被 _fire_puck_crossfade 接手過的歌（_dj_played_in_tail=True）→ 不重複 play。"""
+async def test_stream_loop_skips_puck_play_when_already_played_in_tail(monkeypatch):
+    """已經被 _fire_puck_crossfade 接手過的歌（_dj_played_in_tail=True）→ 不重複 play。
+    這條測的是 esp32_edge_mix/其餘硬體路徑（pi_bt 有自己獨立的
+    _puck_pi_bt_handed_off 判斷，見下面兩條 pi_bt 測試）——明確 delenv 避免這台
+    機器 .env 的 MARVIN_CAR_HARDWARE=pi_bt（main_discord.py import 時 load_dotenv()
+    會把它留在 os.environ 一整個 pytest session）滲進來把這條測成 pi_bt 路徑。"""
+    monkeypatch.delenv("MARVIN_CAR_HARDWARE", raising=False)
     cog = _make_cog()
     song = _song(played_in_tail=True)
+    cog.stream_queue = [song]
+    cog.stream_mode = True
+    cog._prefetch_cache[song["url"]] = _done_future(None)
+
+    fake_client = MagicMock()
+    fake_client.play = AsyncMock(return_value=True)
+
+    with patch("cogs.music_cog._get_puck_client", return_value=fake_client):
+        await cog._stream_loop()
+        await asyncio.sleep(0)
+
+    fake_client.play.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stream_loop_fires_puck_play_on_pi_bt_when_dj_tail_played_but_puck_not_handed_off(monkeypatch):
+    """2026-08-19 實機踩到：pi_bt 硬體上 _dj_played_in_tail=True（DJ 口白有講話）
+    不代表 Pi 端真的接到 crossfade（例如 Pi 剛好離線、queue_next 失敗）——沿用
+    _dj_played_in_tail 判斷會讓這裡永久跳過硬 play，Pi 端 deck_a 停在 None，之後
+    crossfade 邏輯也不會 promote 空的 deck_a，變成永久靜音。pi_bt 該看
+    _puck_pi_bt_handed_off（_run_puck_pi_bt_crossfade 依裝置端實際成功與否設的
+    旗標），沒接手成功就該補一次硬 play。"""
+    monkeypatch.setenv("MARVIN_CAR_HARDWARE", "pi_bt")
+    cog = _make_cog()
+    song = _song(played_in_tail=True)   # DJ 口白講了話，但裝置端沒接手
+    song["_puck_pi_bt_handed_off"] = False
+    cog.stream_queue = [song]
+    cog.stream_mode = True
+    cog._prefetch_cache[song["url"]] = _done_future(None)
+
+    fake_client = MagicMock()
+    fake_client.play = AsyncMock(return_value=True)
+
+    with patch("cogs.music_cog._get_puck_client", return_value=fake_client):
+        await cog._stream_loop()
+        await asyncio.sleep(0)
+
+    fake_client.play.assert_awaited_once_with(song["webpage_url"], title=song["title"])
+
+
+@pytest.mark.asyncio
+async def test_stream_loop_skips_puck_play_on_pi_bt_when_handed_off(monkeypatch):
+    """pi_bt 硬體上，_puck_pi_bt_handed_off=True（裝置端真的接到 crossfade）→
+    不重複 play，即使 _dj_played_in_tail 是 False 也一樣（兩個旗標互不影響）。"""
+    monkeypatch.setenv("MARVIN_CAR_HARDWARE", "pi_bt")
+    cog = _make_cog()
+    song = _song()   # 沒有 _dj_played_in_tail
+    song["_puck_pi_bt_handed_off"] = True
     cog.stream_queue = [song]
     cog.stream_mode = True
     cog._prefetch_cache[song["url"]] = _done_future(None)

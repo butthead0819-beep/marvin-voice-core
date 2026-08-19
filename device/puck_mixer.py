@@ -36,7 +36,12 @@ SCRATCH_GAIN = 0.1  # 比照 Mac 端 play_dj_on_tts_layer(path, peak=0.1)，別�
 # 已經堆了好幾個 chunk，連續讀出來造成「追趕」聽感。修法：背景 reader thread 把
 # 解碼出來的 chunk 塞進一個有上限的 queue，_loop() 只跟 queue 打交道，網路抖動被
 # 這個緩衝吸收，除非抖動時間超過 buffer 長度才會漏音。
-PREFETCH_SECONDS = 1.5
+# 2026-08-19：手機熱點下 Pi↔Mac 的 Tailscale 沒 direct connect、relay 走香港
+# （`tailscale status` 顯示 relay "hkg"），RTT 150-270ms + jitter ~50ms，1.5s
+# 根本扛不住——實機 log 10 分鐘內 81 次「prefetch queue 空了」→ BT PCM 斷線
+# 重連（平均每 7.4 秒一次），聽感是斷續變小聲+像換歌。拉大到 5.0s 吸收這種
+# relay 等級的抖動；代價是換歌/crossfade 反應會多等幾秒，可接受。
+PREFETCH_SECONDS = 5.0
 PREFETCH_CHUNKS = max(1, int(PREFETCH_SECONDS * RATE / CHUNK_FRAMES))
 _QUEUE_GET_TIMEOUT_S = 0.5
 
@@ -100,9 +105,12 @@ def resolve_stream_url(watch_url: str) -> str:
     """watch_url（youtube 頁面網址）→ Mac /puck_deck 轉發網址（見上方模組註解）。
     這裡不做任何網路呼叫，只是組字串——真正的 yt-dlp resolve+ffmpeg 轉碼在 Mac
     端的 handle_puck_deck 收到 ffmpeg 連進來才觸發，_make_decoder() 開的
-    subprocess 直接對這個 URL 讀，跟原本讀 googlevideo 直連網址完全一樣的路徑。"""
+    subprocess 直接對這個 URL 讀，跟原本讀 googlevideo 直連網址完全一樣的路徑。
+    hw=pi_bt：main_satellite.py::handle_puck_deck 靠這個分辨呼叫端不是
+    esp32_edge_mix，跳過幫 ESP32 中央 mixer 配的 volume=0.10 衰減——pi_bt
+    這邊已經是直接送去開滿的 bluealsa BT 音量，沒有下游 mixer 再衰減一次。"""
     from urllib.parse import urlencode
-    params = {"url": watch_url}
+    params = {"url": watch_url, "hw": "pi_bt"}
     if MAC_TOKEN:
         params["t"] = MAC_TOKEN
     return f"{MAC_BASE_URL}/puck_deck?{urlencode(params)}"
@@ -509,10 +517,15 @@ class PuckMixer:
         target = pick_bt_mac(self._candidates)
         self._current_mac = target
         device = f"bluealsa:DEV={target},PROFILE=a2dp"
+        # 2026-08-19：沒指定 periods 時 bluealsa 預設給 4 periods x 4096 bytes
+        # ≈ 85ms 的 HW buffer（實機 log 量測到的值），車puck mk2 BMW 實測每
+        # ~30s 準時被 bluealsa 判定「No PCM clients」斷開重連——懷疑 Pi Zero
+        # 2W 這種弱 CPU 上 numpy 混音+GIL 偶爾卡過 85ms 就 XRUN，觸發斷線。
+        # periods=16 把 HW buffer 拉到 ~340ms，吸收更大的排程抖動。
         return alsaaudio.PCM(
             alsaaudio.PCM_PLAYBACK, alsaaudio.PCM_NORMAL, device=device,
             channels=CHANNELS, rate=RATE, format=alsaaudio.PCM_FORMAT_S16_LE,
-            periodsize=CHUNK_FRAMES,
+            periodsize=CHUNK_FRAMES, periods=16,
         )
 
     def _open_pcm_with_retry(self):
