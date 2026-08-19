@@ -168,7 +168,7 @@ def _read_chunk(proc) -> np.ndarray:
 
 
 def _reader_loop(proc, q: "queue.Queue", stop_event: threading.Event, eof_event: threading.Event = None,
-                  started_at: float = None):
+                  started_at: float = None, first_chunk_ts: list = None):
     """背景 thread：持續從 ffmpeg stdout 讀 chunk 塞進 prefetch queue，直到
     stop_event 被喊停、讀取本身出錯（例如 proc 已死、pipe 壞掉），或讀到真正
     的 EOF——三種都安靜結束這條 thread，不吵（比照 _write_with_reconnect 的
@@ -195,9 +195,12 @@ def _reader_loop(proc, q: "queue.Queue", stop_event: threading.Event, eof_event:
             return
         if _first_chunk:
             _first_chunk = False
+            _now = time.time()
             if started_at is not None:
                 print(f"🎧 [PuckMixer] deck 第一個真實 chunk 到手，距 _load() 起算 "
-                      f"{time.time() - started_at:.2f}s", flush=True)
+                      f"{_now - started_at:.2f}s", flush=True)
+            if first_chunk_ts is not None:
+                first_chunk_ts.append(_now)
         while not stop_event.is_set():
             try:
                 q.put(chunk, timeout=0.1)
@@ -234,14 +237,21 @@ def _start_deck_reader(proc, started_at: float = None) -> dict:
     """幫一個剛開好的 decoder proc 起一條 _reader_loop 背景 thread + prefetch
     queue，回傳可以直接 `**` 展開塞進 deck dict 的欄位。eof_event：讀到真正
     EOF（stream 正常播完）時會被設起來，見 _reader_loop docstring。started_at：
-    診斷用，見 _reader_loop 的「第一個真實 chunk」log。"""
+    診斷用，見 _reader_loop 的「第一個真實 chunk」log。first_chunk_ts：
+    2026-08-19 追「Mac 排程 vs Pi 實際出聲」落差用——單元素 list，第一個真實
+    chunk 到手的 wall-clock 時間戳，經 status() 曝出去給 Mac 端比對
+    real_start（見 cogs/music_cog.py::_run_puck_pi_bt_crossfade 的診斷 log）。"""
     q = queue.Queue(maxsize=PREFETCH_CHUNKS)
     reader_stop = threading.Event()
     eof_event = threading.Event()
+    first_chunk_ts = []
     reader_thread = threading.Thread(
-        target=_reader_loop, args=(proc, q, reader_stop, eof_event, started_at), daemon=True)
+        target=_reader_loop, args=(proc, q, reader_stop, eof_event, started_at, first_chunk_ts), daemon=True)
     reader_thread.start()
-    return {"queue": q, "reader_stop": reader_stop, "reader_thread": reader_thread, "eof_event": eof_event}
+    return {
+        "queue": q, "reader_stop": reader_stop, "reader_thread": reader_thread,
+        "eof_event": eof_event, "first_chunk_ts": first_chunk_ts,
+    }
 
 
 def _read_chunk_deck(deck: dict) -> np.ndarray:
@@ -458,10 +468,17 @@ class PuckMixer:
 
     def status(self) -> dict:
         with self._lock:
+            deck_a = self._deck_a
+            first_chunk_ts = deck_a.get("first_chunk_ts") if deck_a else None
             return {
                 "playing": self._current_url,
                 "next_queued": self._next_url,
                 "crossfading": self._crossfade_start is not None,
+                # 2026-08-19 診斷用：deck_a 目前這輪真正開始出聲的 wall-clock
+                # 時間戳（第一個真實 chunk 到手那刻）——Mac 端拿它跟自己算的
+                # real_start 比對，直接量出「Mac 以為幾點開播」跟「Pi 實際幾點
+                # 出聲」的落差，不用再靠猜。
+                "deck_a_first_chunk_ts": first_chunk_ts[0] if first_chunk_ts else None,
             }
 
     def play(self, url: str, title: str = None, seek: float = None):

@@ -3236,6 +3236,43 @@ class MusicCog(commands.Cog):
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
 
+    async def _diag_pi_vs_mac_start_offset(self, title_cur: str, real_start: float) -> None:
+        """2026-08-19 診斷專用：量「Mac 以為幾點開播」(real_start) 跟「Pi puck
+        自己實際幾點出聲」(deck_a_first_chunk_ts，見 device/puck_mixer.py
+        status()) 的落差。先在最早時間點（呼叫當下）抓一次基準值——這時
+        _fire_puck_play() 的 HTTP 才剛發出或還沒發出，deck_a_first_chunk_ts
+        應該還是上一首歌的值——之後每 0.5s 輪詢一次，等它變成新值（代表這首
+        歌真的出聲了），算出跟 real_start 的落差。正值代表 Pi 比 Mac 認定的
+        開播時間晚出聲（Mac 排程會系統性地把「還剩幾秒」算多，PREFETCH/FIRE
+        都會晚），負值反過來。輪詢 20 秒還沒等到新值就放棄（多半是這首歌沒有
+        走 pi_bt 硬 play，例如接在自救之後）。"""
+        puck_client = _get_puck_client()
+        if puck_client is None:
+            return
+        try:
+            st0 = await puck_client.status()
+        except Exception:
+            return
+        baseline = st0.get("deck_a_first_chunk_ts") if st0 else None
+        deadline = time.time() + 20.0
+        while time.time() < deadline:
+            await asyncio.sleep(0.5)
+            try:
+                st = await puck_client.status()
+            except Exception:
+                continue
+            if st is None:
+                continue
+            ts = st.get("deck_a_first_chunk_ts")
+            if ts is not None and ts != baseline:
+                delta = ts - real_start
+                logger.info(
+                    f"[PuckMixer][Diag] {title_cur}：real_start(Mac)={real_start:.2f}，"
+                    f"deck_a_first_chunk_ts(Pi)={ts:.2f}，落差(Pi-Mac)={delta:+.2f}s"
+                )
+                return
+        logger.info(f"[PuckMixer][Diag] {title_cur}：20s 內沒偵測到 deck_a_first_chunk_ts 變化，放棄本次量測")
+
     async def _run_puck_pi_bt_crossfade(self, cur_info: dict, song_start_time) -> None:
         """[PuckMixer] pi_bt 專用，跟 DJ 口白的 _run_tail_dj/_DJ_TAIL_LEAD_S 完全脫鉤
         的獨立 crossfade 排程（2026-08-17）。
@@ -3285,6 +3322,15 @@ class MusicCog(commands.Cog):
                 return
         else:
             real_start = song_start_time
+
+        # 2026-08-19：真正的斷播根因追查——deck_a 真實 EOF 常常比這裡算出來的
+        # expected_end_ts 早 20~50 秒不等，懷疑是 Mac 這邊的 real_start（Discord
+        # 本地播放器出聲的時間戳）跟 Pi puck 自己實際出聲（_fire_puck_play() 發
+        # HTTP → Pi resolve+起 ffmpeg → 第一個真實 chunk）中間有落差，兩條路徑
+        # 各自獨立、沒有互相校準過。獨立起一個不擋排程的診斷 task，直接拿
+        # Pi 自己回報的「deck_a 第一個真實 chunk 到手」時間戳跟這裡的 real_start
+        # 比對，落差是正是負、多大，一次看清楚，不用再靠猜。
+        asyncio.create_task(self._diag_pi_vs_mac_start_offset(title_cur, real_start))
 
         expected_end_ts = real_start + duration
         prefetch_at = expected_end_ts - _PUCK_PI_BT_PREFETCH_LEAD_S
