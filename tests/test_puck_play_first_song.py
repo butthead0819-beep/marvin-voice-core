@@ -56,6 +56,7 @@ async def test_stream_loop_fires_puck_play_for_song_not_played_in_tail():
 
     fake_client = MagicMock()
     fake_client.play = AsyncMock(return_value=True)
+    fake_client.status = AsyncMock(return_value=None)  # Pi 端沒在播這首，不該跳過補 play
 
     with patch("cogs.music_cog._get_puck_client", return_value=fake_client):
         await cog._stream_loop()
@@ -79,6 +80,7 @@ async def test_stream_loop_passes_highlight_start_s_as_seek_to_puck_play():
 
     fake_client = MagicMock()
     fake_client.play = AsyncMock(return_value=True)
+    fake_client.status = AsyncMock(return_value=None)
 
     with patch("cogs.music_cog._get_puck_client", return_value=fake_client):
         await cog._stream_loop()
@@ -130,6 +132,7 @@ async def test_stream_loop_fires_puck_play_on_pi_bt_when_dj_tail_played_but_puck
 
     fake_client = MagicMock()
     fake_client.play = AsyncMock(return_value=True)
+    fake_client.status = AsyncMock(return_value=None)
 
     with patch("cogs.music_cog._get_puck_client", return_value=fake_client):
         await cog._stream_loop()
@@ -152,6 +155,33 @@ async def test_stream_loop_skips_puck_play_on_pi_bt_when_handed_off(monkeypatch)
 
     fake_client = MagicMock()
     fake_client.play = AsyncMock(return_value=True)
+
+    with patch("cogs.music_cog._get_puck_client", return_value=fake_client):
+        await cog._stream_loop()
+        await asyncio.sleep(0)
+
+    fake_client.play.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stream_loop_skips_hard_play_when_pi_already_self_healed(monkeypatch):
+    """2026-08-19 實機踩到：Mac 記錄的是「FIRE 時輪詢逾時、crossfade 失敗」
+    （_puck_pi_bt_handed_off=False），但 Pi 端可能在那之後、deck_b 真正 ready
+    時自己已經扶正了（見 device/puck_mixer.py::_loop() 的 eof_event 自我修復）。
+    兩個獨立保險互不知情撞在一起，會變成「Pi 已經自己救活、Mac 又送一次硬
+    play 砍掉重開」——聽感是歌曲順利接上、播了幾秒後又從頭開始。硬 play 前
+    該先問一次 Pi 現在是不是已經在播這首，對得上就跳過。"""
+    monkeypatch.setenv("MARVIN_CAR_HARDWARE", "pi_bt")
+    cog = _make_cog()
+    song = _song(played_in_tail=True)
+    song["_puck_pi_bt_handed_off"] = False   # Mac 記錄的是失敗
+    cog.stream_queue = [song]
+    cog.stream_mode = True
+    cog._prefetch_cache[song["url"]] = _done_future(None)
+
+    fake_client = MagicMock()
+    fake_client.play = AsyncMock(return_value=True)
+    fake_client.status = AsyncMock(return_value={"playing": song["webpage_url"]})  # Pi 已經自救成功
 
     with patch("cogs.music_cog._get_puck_client", return_value=fake_client):
         await cog._stream_loop()

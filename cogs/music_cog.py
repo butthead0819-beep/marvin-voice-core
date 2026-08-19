@@ -2972,7 +2972,22 @@ class MusicCog(commands.Cog):
         本地播放本來就會跳過前奏，Pi 端一直沒真的套用同一個位移，導致 Pi 實際
         內容比 Mac 排程假設的長了這段秒數，長期造成 Pi 提早進入尾聲（見
         puck_client.play() 的 seek 參數說明）。esp32 的 client 目前忽略這個欄位
-        （同 title），安全。"""
+        （同 title），安全。
+
+        ⚠️ 2026-08-19 實機踩到：這裡（Mac 端判斷 crossfade 失敗的保底機制）跟
+        Pi 端 device/puck_mixer.py 的 EOF 自我修復是兩個獨立設計、互不知情的
+        保險——Mac 記錄的是「FIRE 時輪詢逾時、crossfade 失敗」（
+        _puck_pi_bt_handed_off=False），但 Pi 可能在那之後、deck_b 真正 ready
+        時自己已經扶正了（見 puck_mixer.py::_loop() 的 eof_event 分支）。兩者
+        沒協調就會撞成「Pi 已經自己救活、Mac 又送一次硬 play 砍掉重開」，聽感
+        是「deck B 順利接上、播了幾秒、口白講完後又從頭開始」。硬 play 前先問
+        一次 Pi 現在是不是已經在播這首（url 對得上），對得上就跳過，不要畫蛇
+        添足。"""
+        if hasattr(puck_client, "status"):
+            st = await puck_client.status()
+            if st is not None and st.get("playing") == url:
+                logger.info(f"[PuckMixer] Pi 已經在播這首（可能是自己 EOF 自救成功），跳過補硬 play: {url}")
+                return
         ok = await puck_client.play(url, title=title, seek=highlight_start_s)
         if not ok:
             logger.warning(f"[PuckMixer] play 失敗: {url}")
