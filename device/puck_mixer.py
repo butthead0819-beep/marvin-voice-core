@@ -14,9 +14,6 @@ import time
 
 import numpy as np
 
-from bpm_estimate import estimate_bpm_from_pcm
-from scripts.gen_dj_sfx import gen_scratch_from_pcm
-
 try:
     import alsaaudio
 except ImportError:  # 開發機沒有 pyalsaaudio，允許 import 供 crossfade_gains() 單元測試
@@ -26,9 +23,11 @@ RATE = 48000
 CHANNELS = 2
 CHUNK_FRAMES = 1024
 BYTES_PER_CHUNK = CHUNK_FRAMES * CHANNELS * 2
-# queue_next() 讀先頭這麼多 chunk（約 2.1s）給刷碟合成當原料，同時存進
-# peek_buf 供播放補播——不是額外多讀，只是把「反正要播的音訊」提前讀出來用。
-SCRATCH_PEEK_CHUNKS = 100
+# 2026-08-19：queue_next() 曾讀先頭 ~2.1s(SCRATCH_PEEK_CHUNKS=100) PCM 算 BPM+
+# 合成刷碟轉場音效，已移除（見 queue_next() docstring：Pi Zero 2W CPU 撐不住，
+# 會跟 Deck A 播放搶 CPU 觸發 BT 斷線）。_mix_scratch()/SCRATCH_GAIN 混音路徑
+# 保留（scratch_pcm 恆為 None 就自然不觸發，非死碼——之後想在算力夠的硬體
+# 上恢復這個效果直接復用）。
 SCRATCH_GAIN = 0.1  # 比照 Mac 端 play_dj_on_tts_layer(path, peak=0.1)，別搶戲
 
 # 2026-08-17：車puck mk2 BMW 實機踩到「1秒斷續+追趕」——原本 _loop() 直接同步呼叫
@@ -414,14 +413,21 @@ class PuckMixer:
             self._on_track_change(title)
 
     def queue_next(self, url: str, title: str = None):
-        """背景解析+起 ffmpeg 緩衝下一首，不打斷目前播放。順便讀先頭
-        SCRATCH_PEEK_CHUNKS（約 2.1s）存進 peek_buf——這段本來就要播，只是提前
-        讀出來估 BPM、合成這首專屬的刷碟音效，_read_chunk_deck() 播放時會先吃
-        peek_buf 補回去，不會漏音。合成失敗就沒有 scratch_pcm，crossfade() 時這輪
-        單純不疊刷碟聲，不擋轉場。url 跟 play() 一樣是 youtube 頁面網址，這裡
-        自己 resolve（見 play() docstring）。title 存進 deck，等 _loop() 真的
-        crossfade 換手（deck_b 變 deck_a）那刻才觸發 on_track_change——不在這裡
-        提前報，避免車機螢幕在轉場緩衝期間就搶先顯示還沒真的在放的下一首。"""
+        """背景解析+起 ffmpeg 緩衝下一首，不打斷目前播放。url 跟 play() 一樣是
+        youtube 頁面網址，這裡自己 resolve（見 play() docstring）。title 存進
+        deck，等 _loop() 真的 crossfade 換手（deck_b 變 deck_a）那刻才觸發
+        on_track_change——不在這裡提前報，避免車機螢幕在轉場緩衝期間就搶先
+        顯示還沒真的在放的下一首。
+
+        ⚠️ 2026-08-19：原本這裡會多讀開頭 ~2.1s PCM 算 BPM＋合成這首歌專屬的
+        刷碟轉場音效（estimate_bpm_from_pcm/gen_scratch_from_pcm，都是 numpy
+        運算）。實機在 PREFETCH 觸發 queue_next() 的當下量到 Deck A 那邊連續
+        「prefetch queue 空了」+ BT PCM 斷線重連，時間點精準對上——Pi Zero 2W
+        （quad-core A53 @1GHz）這段背景運算跟正在播放 Deck A 的主 mixer 迴圈
+        搶 CPU，逼近甚至超過 periods=16 的 ~340ms 緩衝，觸發 XRUN。跟 Mac 端
+        排在倒數幾秒觸發 queue_next 完全無關（不管多早/多晚觸發都會撞）。
+        pi_bt 直接砍掉這段分析＋刷碟音效，只保留必要的解碼緩衝——peek_buf
+        不填時 _read_chunk_deck() 會自動退回直接讀 deck 的 queue，不會漏音。"""
         def _load():
             try:
                 stream_url = resolve_stream_url(url)
@@ -435,22 +441,6 @@ class PuckMixer:
             with self._lock:
                 self._deck_b = deck
                 self._next_url = url
-            try:
-                peek_buf = np.concatenate([_next_chunk(deck) for _ in range(SCRATCH_PEEK_CHUNKS)])
-            except Exception:
-                return
-            scratch_pcm = None
-            try:
-                stereo_f32 = peek_buf.reshape(-1, CHANNELS).astype(np.float32)
-                bpm = estimate_bpm_from_pcm(stereo_f32.mean(axis=-1), RATE)
-                scratch_mono = np.clip(gen_scratch_from_pcm(stereo_f32, rate=RATE, bpm=bpm), -1.0, 1.0)
-                scratch_pcm = np.repeat((scratch_mono * 32767).astype(np.int16), CHANNELS)
-            except Exception:
-                pass
-            with self._lock:
-                if self._deck_b is deck:  # 沒被下一輪 queue_next() 取代
-                    deck["peek_buf"] = peek_buf
-                    deck["scratch_pcm"] = scratch_pcm
         threading.Thread(target=_load, daemon=True).start()
 
     def crossfade(self, duration_s: float = 4.0):
