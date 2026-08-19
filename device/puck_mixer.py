@@ -517,7 +517,17 @@ class PuckMixer:
         扶正，狀態卡在 crossfading=True/playing=None 永久沒聲音。Mac 端的
         「crossfade 失敗就補硬 play」保險機制因此也失效，因為這裡回的是
         成功，不是失敗。deck_a 是 None 時直接把 deck_b 扶正成 deck_a（沒有
-        東西可以「淡出」，animate 沒意義），不留在半吊子狀態。"""
+        東西可以「淡出」，animate 沒意義），不留在半吊子狀態。
+
+        ⚠️ 同一次實機還發現兩個連帶問題：
+        ①這裡忘了更新 self._current_url——status() 的 "playing" 欄位讀的是
+        這個，不是 _deck_a，扶正 deck_b 後 "playing" 卻還是舊值/None，容易
+        誤判成沒真的扶正。
+        ②_loop() 播放主迴圈只有 play() 會啟動（_ensure_loop_running()），
+        queue_next()/crossfade() 都不會——Pi 重啟後若 Mac 只送了 queue_next()
+        （以為之前已經有歌在播、不需要 play()），_loop() 從沒真正跑起來，
+        不管呼叫幾次 crossfade() 都沒有人在處理，永遠卡住。crossfade() 也該
+        確保迴圈活著（_ensure_loop_running() 本身 idempotent，重複呼叫安全）。"""
         promoted_title = None
         with self._lock:
             if self._deck_b is None:
@@ -525,6 +535,7 @@ class PuckMixer:
             if self._deck_a is None:
                 self._deck_a = self._deck_b
                 self._deck_b = None
+                self._current_url = self._next_url
                 self._next_url = None
                 self._crossfade_start = None
                 promoted_title = self._deck_a.get("title")
@@ -534,6 +545,7 @@ class PuckMixer:
                 scratch_pcm = self._deck_b.get("scratch_pcm")
                 self._scratch_samples = scratch_pcm
                 self._scratch_pos = 0
+        self._ensure_loop_running()
         if promoted_title and self._on_track_change:
             self._on_track_change(promoted_title)
 

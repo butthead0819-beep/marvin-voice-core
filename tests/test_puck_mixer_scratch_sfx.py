@@ -118,8 +118,12 @@ def test_crossfade_promotes_deck_b_when_deck_a_is_none():
     檢查 deck_b 會「成功」但 _loop() 永遠不會扶正 deck_b（deck_a is None 直接
     continue），卡在 crossfading=True/playing=None 永久沒聲音。deck_a 是 None
     時該直接把 deck_b 扶正，不留在半吊子狀態。"""
+    from unittest.mock import MagicMock
+
     calls = []
     mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF", on_track_change=calls.append)
+    mixer._ensure_loop_running = MagicMock()   # 避免真的開背景 thread 連 BT
+    mixer._next_url = "next"   # queue_next() 正常情況下會跟 _deck_b 一起設
     mixer._deck_b = {"url": "next", "proc": None, "peek_buf": None, "scratch_pcm": None, "title": "下一首"}
     mixer.crossfade(duration_s=4.0)
     assert mixer._deck_a is not None
@@ -127,6 +131,13 @@ def test_crossfade_promotes_deck_b_when_deck_a_is_none():
     assert mixer._deck_b is None
     assert mixer._crossfade_start is None
     assert calls == ["下一首"]
+    # 2026-08-19 連帶修：status() 的 "playing" 讀 _current_url，扶正時要一起更新，
+    # 不然 playing 還是舊值，看起來像沒真的扶正。
+    assert mixer._current_url == "next"
+    # 2026-08-19 連帶修：_loop() 只有 play() 會啟動，Pi 重啟後若只收到
+    # queue_next()（沒人叫過 play()），crossfade() 這裡才是唯一能確保播放
+    # 主迴圈真的活著的地方。
+    mixer._ensure_loop_running.assert_called_once()
 
 
 def test_crossfade_raises_without_deck_b():
