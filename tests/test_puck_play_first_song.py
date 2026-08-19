@@ -74,6 +74,7 @@ async def test_stream_loop_passes_highlight_start_s_as_seek_to_puck_play():
     cog = _make_cog()
     song = _song()
     song["highlight_start_s"] = 12.3
+    song["duration"] = 200.0   # 剩餘 187.7s，遠大於 _safe_pi_bt_seek 的 45s 安全邊界
     cog.stream_queue = [song]
     cog.stream_mode = True
     cog._prefetch_cache[song["url"]] = _done_future(None)

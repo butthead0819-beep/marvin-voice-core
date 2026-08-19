@@ -148,6 +148,23 @@ def _get_puck_client():
     return _puck_mixer_client
 
 
+def _safe_pi_bt_seek(duration, highlight_start_s, min_remaining: float = 45.0):
+    """2026-08-19 實機踩到：youtube_heatmap.py::pick_highlight_start() 已經有
+    「起點離結尾剩不到 min_remaining 秒就放棄」的安全檢查，但實機仍量到
+    seek=255.96s 這種幾乎跳到歌曲尾端、只剩幾秒內容的異常值（duration 260s
+    左右）——上游那個檢查用的 duration 可能跟後續排程/播放實際用的 duration
+    不是同一份（不同時間點解析出的不同版本），導致原本該擋下的極端值漏過去，
+    pi_bt 端一 seek 過去幾乎立刻撞真 EOF，聽感是「必定提早結束」。與其去追
+    上游哪裡不一致，在真正套用 seek 的這一刻（_fire_puck_play/
+    _run_puck_pi_bt_crossfade 呼叫點）重新驗證一次剩餘時長夠不夠——不夠就
+    當作沒有這個 highlight，安全退回從頭播，不留任何攻擊面。"""
+    if not highlight_start_s or not duration:
+        return None
+    if duration - highlight_start_s < min_remaining:
+        return None
+    return highlight_start_s
+
+
 class MusicCog(commands.Cog):
     """音樂子系統（Strangler Fig 遷移中）。"""
 
@@ -2201,8 +2218,10 @@ class MusicCog(commands.Cog):
                     puck_url = info.get('webpage_url', '')
                     if puck_client is not None and puck_url:
                         asyncio.create_task(
-                            self._fire_puck_play(puck_client, puck_url, title=info.get('title'),
-                                                  highlight_start_s=info.get('highlight_start_s'))
+                            self._fire_puck_play(
+                                puck_client, puck_url, title=info.get('title'),
+                                highlight_start_s=_safe_pi_bt_seek(
+                                    info.get('duration'), info.get('highlight_start_s')))
                         )
 
                 self._current_song_skipped = False
@@ -3238,8 +3257,14 @@ class MusicCog(commands.Cog):
         # 這裡扣減才對得上 Pi 實際會播的長度（之前 Pi 端沒真的 seek 時，這裡
         # 扣減會讓排程以為 Pi 內容比實際短了 highlight_start_s 秒，長期造成
         # Pi 提早進入尾聲——已經改成兩邊都套用同一個起點，維持一致）。
-        if cur_info.get('highlight_start_s'):
-            duration = max(0.0, duration - cur_info['highlight_start_s'])
+        #
+        # ⚠️ 用 _safe_pi_bt_seek() 驗證過的值，不要直接信 cur_info 裡的原始
+        # highlight_start_s——實機量到過安全邊界失守的異常值（見該函式
+        # docstring：seek=255.96s 幾乎跳到歌曲尾端）。跟 queue_next() 那邊套用
+        # 的是不是同一個安全值要一致，否則排程跟實際 seek 又會對不上。
+        safe_highlight = _safe_pi_bt_seek(duration, cur_info.get('highlight_start_s'))
+        if safe_highlight:
+            duration = max(0.0, duration - safe_highlight)
 
         if isinstance(song_start_time, asyncio.Future):
             try:
@@ -3283,7 +3308,8 @@ class MusicCog(commands.Cog):
         if puck_client is None:
             return
         ok = await puck_client.queue_next(
-            next_url, title=next_info.get('title'), seek=next_info.get('highlight_start_s'))
+            next_url, title=next_info.get('title'),
+            seek=_safe_pi_bt_seek(next_info.get('duration'), next_info.get('highlight_start_s')))
         if not ok:
             logger.warning(f"[PuckMixer] pi_bt queue_next 失敗，放棄本次 crossfade: {next_url}")
             next_info['_puck_pi_bt_handed_off'] = False

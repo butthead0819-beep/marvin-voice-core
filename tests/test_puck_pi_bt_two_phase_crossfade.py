@@ -140,6 +140,7 @@ async def test_queue_next_passes_highlight_start_s_as_seek():
     cur = _cur_info(duration=180.0)
     nxt = _next_info()
     nxt["highlight_start_s"] = 12.3
+    nxt["duration"] = 200.0   # 剩餘 187.7s，遠大於 _safe_pi_bt_seek 的 45s 安全邊界
     cog.stream_queue = [nxt]
     _prime(cog, cur)
 
