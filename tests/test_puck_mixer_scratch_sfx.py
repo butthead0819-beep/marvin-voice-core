@@ -96,6 +96,7 @@ def test_read_chunk_deck_combines_short_peek_with_proc_read():
 
 def test_crossfade_arms_scratch_when_deck_b_has_scratch_pcm():
     mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF")
+    mixer._deck_a = {"url": "cur", "proc": None, "peek_buf": None, "scratch_pcm": None}
     scratch = np.full(1000, 500, dtype=np.int16)
     mixer._deck_b = {"url": "u", "proc": None, "peek_buf": None, "scratch_pcm": scratch}
     mixer.crossfade(duration_s=4.0)
@@ -106,9 +107,26 @@ def test_crossfade_arms_scratch_when_deck_b_has_scratch_pcm():
 
 def test_crossfade_no_scratch_when_deck_b_has_none():
     mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF")
+    mixer._deck_a = {"url": "cur", "proc": None, "peek_buf": None, "scratch_pcm": None}
     mixer._deck_b = {"url": "u", "proc": None, "peek_buf": None, "scratch_pcm": None}
     mixer.crossfade(duration_s=4.0)
     assert mixer._scratch_samples is None
+
+
+def test_crossfade_promotes_deck_b_when_deck_a_is_none():
+    """2026-08-19 實機踩到：Pi 剛重啟/重連時 deck_a 是 None，crossfade() 若只
+    檢查 deck_b 會「成功」但 _loop() 永遠不會扶正 deck_b（deck_a is None 直接
+    continue），卡在 crossfading=True/playing=None 永久沒聲音。deck_a 是 None
+    時該直接把 deck_b 扶正，不留在半吊子狀態。"""
+    calls = []
+    mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF", on_track_change=calls.append)
+    mixer._deck_b = {"url": "next", "proc": None, "peek_buf": None, "scratch_pcm": None, "title": "下一首"}
+    mixer.crossfade(duration_s=4.0)
+    assert mixer._deck_a is not None
+    assert mixer._deck_a.get("url") == "next"
+    assert mixer._deck_b is None
+    assert mixer._crossfade_start is None
+    assert calls == ["下一首"]
 
 
 def test_crossfade_raises_without_deck_b():

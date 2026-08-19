@@ -30,6 +30,14 @@ BYTES_PER_CHUNK = CHUNK_FRAMES * CHANNELS * 2
 # 上恢復這個效果直接復用）。
 SCRATCH_GAIN = 0.1  # 比照 Mac 端 play_dj_on_tts_layer(path, peak=0.1)，別搶戲
 
+# 2026-08-19：診斷用開關——實機還是在 Deck A 尾聲附近偶發斷播，懷疑是尾段
+# 附近同時發生的兩件背景工作之一在搶 CPU：DJ 口白 speak()（edge-tts 合成，
+# 網路+CPU）或 queue_next() 的 Deck B 預抓（ffmpeg 起手+網路）。BPM/刷碟SFX
+# 那段已經砍掉（見 queue_next() docstring），但這兩個還在。輪流關掉其中一個
+# 現場測試，縮小範圍——不是永久功能開關，排除完可以拔掉。
+DISABLE_SPEAK = os.getenv("MARVIN_PUCK_DISABLE_SPEAK", "").strip() == "1"
+DISABLE_PREFETCH = os.getenv("MARVIN_PUCK_DISABLE_PREFETCH", "").strip() == "1"
+
 # 2026-08-17：車puck mk2 BMW 實機踩到「1秒斷續+追趕」——原本 _loop() 直接同步呼叫
 # proc.stdout.read()，網路/yt-dlp串流一卡，播放迴圈跟著卡住；訊號恢復時 pipe 裡
 # 已經堆了好幾個 chunk，連續讀出來造成「追趕」聽感。修法：背景 reader thread 把
@@ -427,7 +435,16 @@ class PuckMixer:
         搶 CPU，逼近甚至超過 periods=16 的 ~340ms 緩衝，觸發 XRUN。跟 Mac 端
         排在倒數幾秒觸發 queue_next 完全無關（不管多早/多晚觸發都會撞）。
         pi_bt 直接砍掉這段分析＋刷碟音效，只保留必要的解碼緩衝——peek_buf
-        不填時 _read_chunk_deck() 會自動退回直接讀 deck 的 queue，不會漏音。"""
+        不填時 _read_chunk_deck() 會自動退回直接讀 deck 的 queue，不會漏音。
+
+        MARVIN_PUCK_DISABLE_PREFETCH=1 時整段直接跳過（診斷用，見模組常數
+        說明）——deck_b 不會 ready，之後的 crossfade() 會自然丟例外優雅失敗，
+        Mac 端已有的回退機制（下一首開頭補硬 play）會接手，不會真的沒聲音，
+        只是拿掉 crossfade 平滑轉場的效果，純粹用來排除「是不是這段在搶
+        CPU」。"""
+        if DISABLE_PREFETCH:
+            print("🔇 [PuckMixer] MARVIN_PUCK_DISABLE_PREFETCH=1，跳過本次 queue_next", flush=True)
+            return
         def _load():
             try:
                 stream_url = resolve_stream_url(url)
@@ -444,21 +461,46 @@ class PuckMixer:
         threading.Thread(target=_load, daemon=True).start()
 
     def crossfade(self, duration_s: float = 4.0):
+        """⚠️ 2026-08-19 實機踩到：這裡原本只檢查 deck_b 有沒有 ready，沒檢查
+        deck_a——Pi 剛重啟/重連時 deck_a 是 None，這時呼叫端（Mac）先
+        queue_next() 成功、再 crossfade() 也成功（deck_b 有），但 _loop()
+        `if deck_a is None: continue` 直接跳過所有混音，deck_b 永遠不會被
+        扶正，狀態卡在 crossfading=True/playing=None 永久沒聲音。Mac 端的
+        「crossfade 失敗就補硬 play」保險機制因此也失效，因為這裡回的是
+        成功，不是失敗。deck_a 是 None 時直接把 deck_b 扶正成 deck_a（沒有
+        東西可以「淡出」，animate 沒意義），不留在半吊子狀態。"""
+        promoted_title = None
         with self._lock:
             if self._deck_b is None:
                 raise RuntimeError("沒有已 queue_next 的下一首可轉場")
-            self._crossfade_duration = duration_s
-            self._crossfade_start = time.time()
-            scratch_pcm = self._deck_b.get("scratch_pcm")
-            self._scratch_samples = scratch_pcm
-            self._scratch_pos = 0
+            if self._deck_a is None:
+                self._deck_a = self._deck_b
+                self._deck_b = None
+                self._next_url = None
+                self._crossfade_start = None
+                promoted_title = self._deck_a.get("title")
+            else:
+                self._crossfade_duration = duration_s
+                self._crossfade_start = time.time()
+                scratch_pcm = self._deck_b.get("scratch_pcm")
+                self._scratch_samples = scratch_pcm
+                self._scratch_pos = 0
+        if promoted_title and self._on_track_change:
+            self._on_track_change(promoted_title)
 
     def speak(self, text: str):
         """DJ 口白：Mac 只送文字過來，這裡背景呼叫 edge-tts 合成+疊進 TTS deck
         （見 project_car_puck_mk2_pi_zero2w_bt_mixer_validated 記憶「DJ口白傳輸
         路線定案」）。非阻塞——合成要打網路，不能卡住呼叫端的 HTTP handler。
         合成失敗（edge-tts 未安裝/網路問題/逾時）就安靜放棄，不擋音樂繼續播，
-        跟其他降級路徑（_write_with_reconnect 等）同一套哲學。"""
+        跟其他降級路徑（_write_with_reconnect 等）同一套哲學。
+
+        MARVIN_PUCK_DISABLE_SPEAK=1 時整段直接跳過（診斷用，見模組常數
+        說明）——純粹排除「是不是 edge-tts 合成在搶 CPU/網路」，這輪就是沒有
+        DJ 口白，不影響音樂播放。"""
+        if DISABLE_SPEAK:
+            print(f"🔇 [PuckMixer] MARVIN_PUCK_DISABLE_SPEAK=1，跳過口白：{text[:20]}", flush=True)
+            return
         def _synthesize():
             try:
                 pcm = _synthesize_tts_pcm(text)
