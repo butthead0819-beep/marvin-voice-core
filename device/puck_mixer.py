@@ -48,7 +48,14 @@ DISABLE_PREFETCH = os.getenv("MARVIN_PUCK_DISABLE_PREFETCH", "").strip() == "1"
 # 根本扛不住——實機 log 10 分鐘內 81 次「prefetch queue 空了」→ BT PCM 斷線
 # 重連（平均每 7.4 秒一次），聽感是斷續變小聲+像換歌。拉大到 5.0s 吸收這種
 # relay 等級的抖動；代價是換歌/crossfade 反應會多等幾秒，可接受。
-PREFETCH_SECONDS = 5.0
+#
+# ⚠️ 2026-08-19 第二次拉大：家用 WiFi 下也量到 deck_a 自己的 prefetch queue
+# 在 deck_b 剛啟動（queue_next()）那一刻炸出一長串「空了」——時間點精準對上，
+# deck_b 的新 reader thread 開始搶 Python GIL（Pi Zero 2W 是 quad-core @1GHz
+# 弱 CPU，這台機器今天已經多次證實 CPU 很緊繃：BPM/刷碟SFX、bluetoothctl
+# 阻塞都是同一類問題），deck_a 的 reader thread 那幾秒被排擠、跟不上主迴圈
+# 消耗的速度。5.0→8.0s 給 deck_a 更多緩衝撐過 deck_b 啟動那幾秒的 GIL 競爭。
+PREFETCH_SECONDS = 8.0
 PREFETCH_CHUNKS = max(1, int(PREFETCH_SECONDS * RATE / CHUNK_FRAMES))
 _QUEUE_GET_TIMEOUT_S = 0.5
 
