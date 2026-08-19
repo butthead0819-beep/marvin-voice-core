@@ -16,11 +16,21 @@ speak_text()：DJ 口白傳輸（2026-08-17 補上，見該記憶「DJ口白傳�
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+# 2026-08-19 實機踩到：Mac→Pi 短暫 Tailscale 路由抖動時，queue_next/speak/play
+# 三個呼叫全部連線層失敗（DNS/TCP 連不上，不是 Pi 回了非 200），一次就放棄，
+# 白白錯過一整輪 crossfade——Pi 端 _write_with_reconnect（device/puck_mixer.py）
+# 早就對這種瞬斷有重試，控制平面這幾個呼叫卻沒有。只對連線層例外重試；HTTP
+# 回應本身（含非 200，例如 crossfade 時 deck_b 還沒 ready）是 Pi 端已經正常
+# 回應、業務邏輯拒絕，重試沒有意義，不動它。
+_RETRY_ATTEMPTS = 2
+_RETRY_DELAY_S = 0.5
 
 
 class PuckMixerClient:
@@ -32,15 +42,20 @@ class PuckMixerClient:
     async def _post(self, path: str, json_body: dict) -> bool:
         url = f"{self._base_url}{path}"
         params = {"t": self._token} if self._token else None
-        try:
-            async with aiohttp.ClientSession(timeout=self._timeout) as session:
-                async with session.post(url, params=params, json=json_body) as resp:
-                    if resp.status != 200:
-                        logger.warning(f"[PuckMixer] {path} 失敗 status={resp.status}")
-                    return resp.status == 200
-        except Exception as e:
-            logger.warning(f"[PuckMixer] {path} 連線失敗: {e}")
-            return False
+        last_exc: Exception | None = None
+        for attempt in range(_RETRY_ATTEMPTS):
+            try:
+                async with aiohttp.ClientSession(timeout=self._timeout) as session:
+                    async with session.post(url, params=params, json=json_body) as resp:
+                        if resp.status != 200:
+                            logger.warning(f"[PuckMixer] {path} 失敗 status={resp.status}")
+                        return resp.status == 200
+            except Exception as e:
+                last_exc = e
+                if attempt < _RETRY_ATTEMPTS - 1:
+                    await asyncio.sleep(_RETRY_DELAY_S)
+        logger.warning(f"[PuckMixer] {path} 連線失敗: {last_exc}")
+        return False
 
     async def play(self, url: str, title: str | None = None) -> bool:
         body = {"url": url}
@@ -64,15 +79,20 @@ class PuckMixerClient:
         連線失敗/逾時回 None，呼叫端自行降級。"""
         url = f"{self._base_url}/puck/status"
         params = {"t": self._token} if self._token else None
-        try:
-            async with aiohttp.ClientSession(timeout=self._timeout) as session:
-                async with session.get(url, params=params) as resp:
-                    if resp.status != 200:
-                        return None
-                    return await resp.json()
-        except Exception as e:
-            logger.warning(f"[PuckMixer] /puck/status 連線失敗: {e}")
-            return None
+        last_exc: Exception | None = None
+        for attempt in range(_RETRY_ATTEMPTS):
+            try:
+                async with aiohttp.ClientSession(timeout=self._timeout) as session:
+                    async with session.get(url, params=params) as resp:
+                        if resp.status != 200:
+                            return None
+                        return await resp.json()
+            except Exception as e:
+                last_exc = e
+                if attempt < _RETRY_ATTEMPTS - 1:
+                    await asyncio.sleep(_RETRY_DELAY_S)
+        logger.warning(f"[PuckMixer] /puck/status 連線失敗: {last_exc}")
+        return None
 
     async def speak_text(self, text: str) -> bool:
         return await self._post("/puck/speak", {"text": text})
