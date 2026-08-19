@@ -3012,12 +3012,23 @@ class MusicCog(commands.Cog):
             logger.warning(f"[PuckMixer] queue_next 失敗，放棄本次 crossfade: {next_url}")
             return False
         if hasattr(puck_client, "status"):
+            # 2026-08-19：狀態驅動到底——輪詢逾時代表裝置端還沒真的 ready，
+            # 直接放棄這次 crossfade，不要賭一把硬打（那個賭注就是「花田錯
+            # 提早結束 20s 空白」的根因：逼近真正歌曲結尾時 Pi 端 deck_b 常常
+            # 還沒好，crossfade() 丟 RuntimeError 失敗，反而比乾脆不打還慢）。
+            # 放棄後交給 _run_puck_pi_bt_crossfade 設的 _puck_pi_bt_handed_off
+            # =False，下一首開頭會補一次硬 play（見該函式/_stream_loop）。
             deadline = time.time() + buffer_s
+            ready = False
             while time.time() < deadline:
                 await asyncio.sleep(_PUCK_STATUS_POLL_INTERVAL_S)
                 st = await puck_client.status()
                 if st is not None and st.get("next_queued") == next_url:
+                    ready = True
                     break
+            if not ready:
+                logger.warning(f"[PuckMixer] queue_next 逾時仍未就緒，放棄本次 crossfade（交給下一首開頭補 play）: {next_url}")
+                return False
         else:
             await asyncio.sleep(buffer_s)
         crossfaded = await puck_client.crossfade(crossfade_s)

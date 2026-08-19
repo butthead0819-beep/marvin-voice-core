@@ -64,14 +64,16 @@ async def test_crossfade_falls_back_to_fixed_sleep_when_client_lacks_status():
 
 
 @pytest.mark.asyncio
-async def test_crossfade_stops_polling_at_buffer_s_deadline_and_still_attempts():
-    """轉場慢到超過 buffer_s（deck_b 一直沒 ready）→ 輪詢到上限就放棄等待，
-    仍照舊打一次 crossfade（維持舊行為：不會因為輪詢就完全不出手），只是
-    這次大概率會被 Pi 端拒絕——呼叫端只記警告，不拋例外。"""
+async def test_crossfade_gives_up_when_still_not_ready_at_buffer_s_deadline():
+    """2026-08-19：轉場慢到超過 buffer_s（deck_b 一直沒 ready）→ 輪詢到上限就
+    放棄，不再賭一把硬打 crossfade。舊行為（逾時仍硬打）就是「花田錯提早
+    結束、~20s 沒聲音」的根因：逼近真正歌曲結尾時硬打常被 Pi 端拒絕
+    （RuntimeError: deck_b is None），比乾脆不打、直接讓下一首開頭補
+    硬 play（_puck_pi_bt_handed_off=False 那條路）還慢。"""
     cog = _make_cog()
     fake_client = MagicMock(spec=["play", "queue_next", "crossfade", "stop", "status"])
     fake_client.queue_next = AsyncMock(return_value=True)
-    fake_client.crossfade = AsyncMock(return_value=False)  # Pi 端拒絕（deck_b is None）
+    fake_client.crossfade = AsyncMock(return_value=False)
     fake_client.status = AsyncMock(return_value={"next_queued": None})
 
     real_time = __import__("time").time
@@ -84,6 +86,7 @@ async def test_crossfade_stops_polling_at_buffer_s_deadline_and_still_attempts()
 
     with patch("asyncio.sleep", new=AsyncMock()), \
          patch("cogs.music_cog.time.time", side_effect=_fake_time):
-        await cog._fire_puck_crossfade(fake_client, "https://ex/next", buffer_s=2.0)
+        result = await cog._fire_puck_crossfade(fake_client, "https://ex/next", buffer_s=2.0)
 
-    fake_client.crossfade.assert_awaited_once_with(4.0)
+    fake_client.crossfade.assert_not_awaited()
+    assert result is False
