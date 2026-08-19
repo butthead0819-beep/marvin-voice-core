@@ -160,7 +160,8 @@ def _read_chunk(proc) -> np.ndarray:
     return arr if arr is not None else np.zeros(CHUNK_FRAMES * CHANNELS, dtype=np.int16)
 
 
-def _reader_loop(proc, q: "queue.Queue", stop_event: threading.Event, eof_event: threading.Event = None):
+def _reader_loop(proc, q: "queue.Queue", stop_event: threading.Event, eof_event: threading.Event = None,
+                  started_at: float = None):
     """背景 thread：持續從 ffmpeg stdout 讀 chunk 塞進 prefetch queue，直到
     stop_event 被喊停、讀取本身出錯（例如 proc 已死、pipe 壞掉），或讀到真正
     的 EOF——三種都安靜結束這條 thread，不吵（比照 _write_with_reconnect 的
@@ -175,6 +176,7 @@ def _reader_loop(proc, q: "queue.Queue", stop_event: threading.Event, eof_event:
     無聲」規律出現在每首歌的真因，跟 DJ 口白/Deck B 預抓都無關（兩者都測試
     排除過了）。現在讀到真正 EOF 會設 eof_event，_loop() 主迴圈可以立刻自己
     判斷要不要扶正 deck_b，不用死等 crossfade 時間點。"""
+    _first_chunk = True
     while not stop_event.is_set():
         try:
             chunk = _read_pcm_chunk_or_none(proc)
@@ -184,6 +186,11 @@ def _reader_loop(proc, q: "queue.Queue", stop_event: threading.Event, eof_event:
             if eof_event is not None:
                 eof_event.set()
             return
+        if _first_chunk:
+            _first_chunk = False
+            if started_at is not None:
+                print(f"🎧 [PuckMixer] deck 第一個真實 chunk 到手，距 _load() 起算 "
+                      f"{time.time() - started_at:.2f}s", flush=True)
         while not stop_event.is_set():
             try:
                 q.put(chunk, timeout=0.1)
@@ -216,15 +223,16 @@ def _next_chunk(deck: dict) -> np.ndarray:
         return np.zeros(CHUNK_FRAMES * CHANNELS, dtype=np.int16)
 
 
-def _start_deck_reader(proc) -> dict:
+def _start_deck_reader(proc, started_at: float = None) -> dict:
     """幫一個剛開好的 decoder proc 起一條 _reader_loop 背景 thread + prefetch
     queue，回傳可以直接 `**` 展開塞進 deck dict 的欄位。eof_event：讀到真正
-    EOF（stream 正常播完）時會被設起來，見 _reader_loop docstring。"""
+    EOF（stream 正常播完）時會被設起來，見 _reader_loop docstring。started_at：
+    診斷用，見 _reader_loop 的「第一個真實 chunk」log。"""
     q = queue.Queue(maxsize=PREFETCH_CHUNKS)
     reader_stop = threading.Event()
     eof_event = threading.Event()
     reader_thread = threading.Thread(
-        target=_reader_loop, args=(proc, q, reader_stop, eof_event), daemon=True)
+        target=_reader_loop, args=(proc, q, reader_stop, eof_event, started_at), daemon=True)
     reader_thread.start()
     return {"queue": q, "reader_stop": reader_stop, "reader_thread": reader_thread, "eof_event": eof_event}
 
@@ -495,6 +503,12 @@ class PuckMixer:
             print("🔇 [PuckMixer] MARVIN_PUCK_DISABLE_PREFETCH=1，跳過本次 queue_next", flush=True)
             return
         def _load():
+            # 2026-08-19 診斷用時間戳記——追「deck_b 幾乎每首歌都來不及」，
+            # 光看 Mac 端 log 對不準真正卡在 Pi 這邊的哪一段（resolve URL 組字串
+            # 是瞬間的，真正的網路/decode 開銷在背景 ffmpeg 行程裡，這裡量的是
+            # _load() 本身到起好 reader thread 為止，_reader_loop 另外量第一個
+            # 真的讀到 chunk 的時間點，兩段合起來才看得出瓶頸在哪）。
+            _t0 = time.time()
             try:
                 stream_url = resolve_stream_url(url, seek=seek)
                 proc = _make_decoder(stream_url)
@@ -502,7 +516,8 @@ class PuckMixer:
                 return
             deck = {
                 "url": url, "proc": proc, "peek_buf": None, "scratch_pcm": None, "title": title,
-                **_start_deck_reader(proc),
+                "_load_started_at": _t0,
+                **_start_deck_reader(proc, started_at=_t0),
             }
             with self._lock:
                 # ⚠️ 2026-08-19 實機踩到：這裡原本直接覆蓋 self._deck_b，如果上一輪

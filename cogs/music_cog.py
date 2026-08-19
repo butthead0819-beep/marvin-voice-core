@@ -3307,13 +3307,23 @@ class MusicCog(commands.Cog):
         puck_client = _get_puck_client()
         if puck_client is None:
             return
+        # 2026-08-19：診斷用時間戳記——追「deck_b 幾乎每首歌都來不及」這個
+        # 反覆出現的症狀，只憑事後 log 反推對不準真正卡在哪一段（PREFETCH
+        # 排程本身晚了？queue_next() HTTP 往返慢？Pi 端 resolve+起 ffmpeg
+        # 慢？），直接記精確時間點，下次發生時能一眼看出來。
+        _prefetch_call_ts = time.time()
         ok = await puck_client.queue_next(
             next_url, title=next_info.get('title'),
             seek=_safe_pi_bt_seek(next_info.get('duration'), next_info.get('highlight_start_s')))
+        _prefetch_rtt = time.time() - _prefetch_call_ts
         if not ok:
             logger.warning(f"[PuckMixer] pi_bt queue_next 失敗，放棄本次 crossfade: {next_url}")
             next_info['_puck_pi_bt_handed_off'] = False
             return
+        logger.info(
+            f"[PuckMixer] pi_bt PREFETCH queue_next({next_url}) 成功，"
+            f"HTTP 往返 {_prefetch_rtt:.2f}s，距 FIRE 還有 {fire_at - time.time():.1f}s"
+        )
 
         # ⚠️ 重新用「fire_at − 現在時間」算，不是固定睡 PREFETCH_LEAD_S 減
         # FIRE_LEAD_S 那段差值——上面 queue_next() 的網路往返已經吃掉了一段
@@ -3336,6 +3346,11 @@ class MusicCog(commands.Cog):
                 break
         if not handed_off:
             logger.warning(f"[PuckMixer] pi_bt FIRE 時仍未偵測到 deck_b ready，放棄本次 crossfade: {next_url}")
+        else:
+            logger.info(
+                f"[PuckMixer] pi_bt FIRE 成功，deck_b({next_url}) 從 PREFETCH queue_next() "
+                f"成功到真正 ready 共花了 {time.time() - _prefetch_call_ts:.1f}s"
+            )
         # 2026-08-19：跟 _dj_played_in_tail（DJ 口白是否有講話，Discord 端邏輯）
         # 脫鉤——那個旗標曾被誤用來判斷「pi_bt 裝置端要不要補硬 play」，兩者其實
         # 無關：DJ 有講話不代表 Pi 真的接到 crossfade（例如 Pi 剛好離線/queue_next
