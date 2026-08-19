@@ -70,32 +70,28 @@ _DJ_TAIL_SFX_NAMES = ("scratch",)
 # stream loop 換歌撞在一起（見 _run_tail_dj docstring）。
 _DJ_TAIL_LEAD_S = 8.0
 _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
-# pi_bt 專用、跟 DJ 口白脫鉤的獨立 crossfade 觸發窗口。_DJ_TAIL_LEAD_S=8.0 是
-# DJ 口白疊當前歌尾巴的編排選擇，從沒考慮過「resolve 一首歌網址要多久」；
-# pi_bt 給它自己更早、獨立的觸發點，不影響 DJ 口白原本的時間軸設計（見
-# _run_puck_pi_bt_crossfade）。
+# pi_bt 專用、跟 DJ 口白脫鉤的獨立 crossfade 排程。
 #
-# ⚠️ 2026-08-19：35.0/30.0 是 8/18 那次改的，當時假設 pi_bt 還在 Pi 本地跑
-# yt-dlp+cookies（deno 解 JS challenge 常吃 ~24s），特地留了大餘裕。但同一個
-# commit 也把 pi_bt 遷到跟 esp32_edge_mix 共用的 Mac 端 /puck_deck relay 解析
-# （見 device/puck_mixer.py::resolve_stream_url()），Pi 不再自己碰 YouTube；
-# 35s 這個舊餘裕沒人在用了，變成純粹「太早換歌」——實機踩到：一首 ~138s 的
-# 短歌，pi_bt 音樂 crossfade 在倒數 35s 點火，比 DJ 口白自己的尾段（倒數 8s
-# 點火）早了快 27 秒，聽感是「歌播到一半突然換下一首，DJ 口白根本沒機會講」。
-# 改回接近 esp32_edge_mix 的 _DJ_TAIL_LEAD_S(=8.0) 量級，只留一點 Pi 端解碼
-# 啟動的餘裕（Mac relay 本身跟 esp32 走同一條路，resolve 不再是瓶頸）。
+# ⚠️ 2026-08-19：連續三次實機症狀（太早換歌 27s / 20s 空白 / 提早 8s 結束）
+# 都是同一個病根——把「多早開始 queue_next（resolve 要多久，猜不準）」跟
+# 「什麼時候真的觸發 crossfade（決定聽感上歌幾秒結束，要精準）」綁在同一個
+# 常數 LEAD_S 上。resolve 快就提早結束、resolve 慢就撞真正結尾被拒絕，兩個
+# 目標互相打架，怎麼調都會有一邊犧牲。
 #
-# ⚠️ 2026-08-19：第一版改成 LEAD_S=12.0/BUFFER_S=8.0 忘了留 crossfade 本身
-# （_fire_puck_crossfade 預設 crossfade_s=4.0）的時間——buffer_s(8) + crossfade_s
-# (4) = 12 剛好頂到 LEAD_S，輪詢一頂格、crossfade 動畫就會逼近甚至撞上真正
-# 歌曲結尾。撞上時 Pi 端 crossfade() 若 deck_b 還沒 ready 會丟 RuntimeError
-# 失敗，退回「deck_a 自然播完、等 Mac 補打硬 play」——這條路徑有真實的網路+
-# resolve+ffmpeg 啟動延遲，實機聽到「花田錯提早結束，~20s 沒聲音」就是這樣
-# 來的。LEAD_S 12→15，buffer_s 不動，留 3s margin 給 crossfade 本身+輪詢誤差。
-_PUCK_PI_BT_CROSSFADE_LEAD_S = 15.0
-_PUCK_PI_BT_CROSSFADE_BUFFER_S = 8.0
-# _fire_puck_crossfade 輪詢 /puck/status 的間隔——resolve 現在多半是 cache 命中
-# 幾乎瞬間完成，1s 夠即時又不會洗爆 Pi 的 HTTP handler。
+# 改成兩階段、各自獨立的時間點：
+#   PREFETCH（倒數 _PUCK_PI_BT_PREFETCH_LEAD_S=30s）：只呼叫 queue_next()，
+#     不管 resolve 要多久、不觸發任何聽感上的變化，留寬鬆餘裕。
+#   FIRE（倒數 _PUCK_PI_BT_CROSSFADE_LEAD_S=8.0，跟 DJ 口白尾段同一個量級）：
+#     這才是真正決定聽感的時間點——因為 deck_b 早在 22s 前就開始 resolve，
+#     這裡的 /puck/status 輪詢理論上第一次就會命中，不必再靠猜秒數硬撐。
+#     用短的 _PUCK_PI_BT_FIRE_POLL_DEADLINE_S 當安全網：真的還沒 ready
+#     （網路異常慢）就放棄，交給已有的 _puck_pi_bt_handed_off=False 回退
+#     機制（下一首開頭補硬 play），不賭一把硬打。
+_PUCK_PI_BT_PREFETCH_LEAD_S = 30.0
+_PUCK_PI_BT_CROSSFADE_LEAD_S = 8.0
+_PUCK_PI_BT_FIRE_POLL_DEADLINE_S = 4.0
+# 輪詢 /puck/status 的間隔——resolve 現在多半是 cache 命中幾乎瞬間完成，
+# 1s 夠即時又不會洗爆 Pi 的 HTTP handler。
 _PUCK_STATUS_POLL_INTERVAL_S = 1.0
 
 # 2026-08-18：YouTube 對這台 Mac 的來源 IP 節流（連續多天 403 Forbidden 攀升，
@@ -3156,13 +3152,17 @@ class MusicCog(commands.Cog):
         """[PuckMixer] pi_bt 專用，跟 DJ 口白的 _run_tail_dj/_DJ_TAIL_LEAD_S 完全脫鉤
         的獨立 crossfade 排程（2026-08-17）。
 
-        背景：_DJ_TAIL_LEAD_S=8.0 是 DJ 口白疊當前歌尾巴的編排選擇，從沒考慮過
-        「resolve 一首歌網址要多久」——pi_bt 在 Pi 端自己跑 yt-dlp（升級後 ~7s），
-        塞進 8s 窗口太貼邊，網路一抖動就會撞回原本的 bug（crossfade() 被呼叫時
-        deck_b 還沒 ready）。這裡用 _PUCK_PI_BT_CROSSFADE_LEAD_S(=20.0) 給
-        resolve+緩衝更寬裕的窗口，只影響 pi_bt 硬體訊號本身，不動 DJ 口白的
-        時間軸設計。esp32_edge_mix 不受影響，繼續走 _run_tail_dj 內建的觸發點
-        （Mac 端 /puck_deck resolve 快，8s 夠用，已由實機驗證）。
+        2026-08-19 重寫成兩階段，拆開「多早開始 resolve」跟「什麼時候真的換歌」
+        這兩件事——之前綁在同一個 LEAD_S 常數上，resolve 快就提早結束、
+        resolve 慢就撞真正結尾被拒絕，怎麼調都會有一邊犧牲（連續三次實機
+        症狀：太早換歌 27s / 20s 空白 / 提早 8s 結束，都是這個病根）：
+          1. PREFETCH（倒數 _PUCK_PI_BT_PREFETCH_LEAD_S=30s）：只 queue_next()，
+             不觸發任何聽感變化，留寬鬆餘裕給 resolve。
+          2. FIRE（倒數 _PUCK_PI_BT_CROSSFADE_LEAD_S=8.0，跟 DJ 口白尾段同量級）：
+             這才是真正決定聽感的時間點——deck_b 早在 22s 前就開始 resolve，
+             這裡短暫輪詢（_PUCK_PI_BT_FIRE_POLL_DEADLINE_S）理論上第一次就會
+             命中；真的還沒 ready 就放棄，交給 _puck_pi_bt_handed_off=False
+             回退機制（下一首開頭補硬 play），不賭一把硬打。
 
         跟 _run_tail_dj 平行排程、各自獨立 sleep，互不阻塞；任一方被取消（skip/
         stop）只影響自己那份。"""
@@ -3184,26 +3184,29 @@ class MusicCog(commands.Cog):
             real_start = song_start_time
 
         elapsed = time.time() - real_start
-        delay = tail_dj_fire_delay(duration, elapsed, lead_s=_PUCK_PI_BT_CROSSFADE_LEAD_S)
-        if delay is None:
+        prefetch_delay = tail_dj_fire_delay(duration, elapsed, lead_s=_PUCK_PI_BT_PREFETCH_LEAD_S)
+        if prefetch_delay is None:
             logger.info(f"[PuckMixer] pi_bt {title_cur} 過窗或歌太短，不排 crossfade")
             return
 
         try:
-            await asyncio.sleep(delay)
+            await asyncio.sleep(prefetch_delay)
         except asyncio.CancelledError:
             return
 
-        if not self.stream_mode:
-            return
-        if getattr(self, '_current_song_skipped', False):
-            return
-        if self._current_stream_info is not cur_info:
+        def _still_current() -> bool:
+            if not self.stream_mode:
+                return False
+            if getattr(self, '_current_song_skipped', False):
+                return False
+            return self._current_stream_info is cur_info
+
+        if not _still_current():
             return
 
         next_info = self.stream_queue[0] if self.stream_queue else None
         if next_info is None:
-            logger.info(f"[PuckMixer] pi_bt {title_cur} 點火時 queue 仍空，放棄")
+            logger.info(f"[PuckMixer] pi_bt {title_cur} PREFETCH 時 queue 仍空，放棄")
             return
         next_url = next_info.get('webpage_url', '')
         if not next_url:
@@ -3212,10 +3215,30 @@ class MusicCog(commands.Cog):
         puck_client = _get_puck_client()
         if puck_client is None:
             return
-        handed_off = await self._fire_puck_crossfade(
-            puck_client, next_url, buffer_s=_PUCK_PI_BT_CROSSFADE_BUFFER_S,
-            title=next_info.get('title'),
-        )
+        ok = await puck_client.queue_next(next_url, title=next_info.get('title'))
+        if not ok:
+            logger.warning(f"[PuckMixer] pi_bt queue_next 失敗，放棄本次 crossfade: {next_url}")
+            next_info['_puck_pi_bt_handed_off'] = False
+            return
+
+        try:
+            await asyncio.sleep(_PUCK_PI_BT_PREFETCH_LEAD_S - _PUCK_PI_BT_CROSSFADE_LEAD_S)
+        except asyncio.CancelledError:
+            return
+
+        if not _still_current():
+            return
+
+        handed_off = False
+        deadline = time.time() + _PUCK_PI_BT_FIRE_POLL_DEADLINE_S
+        while time.time() < deadline:
+            await asyncio.sleep(_PUCK_STATUS_POLL_INTERVAL_S)
+            st = await puck_client.status()
+            if st is not None and st.get("next_queued") == next_url:
+                handed_off = bool(await puck_client.crossfade(4.0))
+                break
+        if not handed_off:
+            logger.warning(f"[PuckMixer] pi_bt FIRE 時仍未偵測到 deck_b ready，放棄本次 crossfade: {next_url}")
         # 2026-08-19：跟 _dj_played_in_tail（DJ 口白是否有講話，Discord 端邏輯）
         # 脫鉤——那個旗標曾被誤用來判斷「pi_bt 裝置端要不要補硬 play」，兩者其實
         # 無關：DJ 有講話不代表 Pi 真的接到 crossfade（例如 Pi 剛好離線/queue_next
