@@ -334,6 +334,8 @@ class PuckMixer:
         self._candidates = [bt_mac] if isinstance(bt_mac, str) else list(bt_mac)
         self._current_mac = None  # 最近一次實際連上的 MAC，供 status()/log 用
         self._last_bt_check = 0.0
+        self._bt_check_inflight = False
+        self._pending_bt_target = None
         # AVRCP metadata 掛勾（見 device/avrcp_media_player.py 開頭說明：BMW
         # 30s 規律斷線疑似跟這台裸串流沒回應曲名查詢有關）。None＝不裝，跟舊行為
         # 完全一致；換歌時（play()/crossfade 換到 deck_b）拿到 title 才會呼叫。
@@ -607,15 +609,36 @@ class PuckMixer:
         最高的目標已經換了（例如從家用 Soundcore 開機、開車出門 BMW 進了範圍），
         主動斷開重連到新目標——不用等 write() 失敗才被動換（那只在舊目標先斷線
         時才會觸發，兩個候選裝置一度同時在線的情況需要這裡主動偵測）。只有
-        candidates 有兩個以上才值得做這個檢查，單一候選跟改動前行為完全一樣。"""
+        candidates 有兩個以上才值得做這個檢查，單一候選跟改動前行為完全一樣。
+
+        ⚠️ 2026-08-19 實機踩到：`pick_bt_mac()` 內部呼叫 `bluetoothctl` subprocess
+        （見 _list_connected_bt_macs()，timeout=5.0s），這裡原本直接同步呼叫、
+        擋在 _loop() 播放主迴圈裡——多個獨立 A/B 測試（關 DJ 口白、關 Deck B
+        預抓）都排除不了的規律性斷播/BT 重連，時間間隔對上這裡的 15s 週期。
+        `bluetoothctl` 偶爾卡個幾百毫秒到幾秒（bluetoothd 忙/D-Bus 慢）就會逼近
+        甚至遠超 periods=16 的 ~340ms 緩衝，觸發 XRUN。改成背景 thread 做偵測，
+        _loop() 只讀最近一次算好的結果，永遠不會被這個 subprocess 卡住；真的
+        要切換 BT 目標時才會呼叫 `_open_pcm_with_retry()`（本來就會短暫卡頓，
+        切換本身就是有感的事件，可接受）。"""
         if len(self._candidates) < 2:
             return pcm
         now = time.time()
-        if now - self._last_bt_check < self.BT_RECHECK_INTERVAL_S:
-            return pcm
-        self._last_bt_check = now
-        target = pick_bt_mac(self._candidates)
-        if target == self._current_mac:
+        if now - self._last_bt_check >= self.BT_RECHECK_INTERVAL_S and not self._bt_check_inflight:
+            self._last_bt_check = now
+            self._bt_check_inflight = True
+
+            def _check():
+                try:
+                    target = pick_bt_mac(self._candidates)
+                finally:
+                    self._bt_check_inflight = False
+                with self._lock:
+                    self._pending_bt_target = target
+            threading.Thread(target=_check, daemon=True).start()
+
+        with self._lock:
+            target = self._pending_bt_target
+        if target is None or target == self._current_mac:
             return pcm
         try:
             pcm.close()

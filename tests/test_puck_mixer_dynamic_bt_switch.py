@@ -7,6 +7,14 @@
 換 target，得手動重啟服務。改成 PuckMixer 自己在每次(重)連線時即時重新
 挑選（_open_pcm()），並在 _loop() 主迴圈定期主動偵測（_maybe_switch_bt_target()）
 ——後者處理「兩個候選裝置一度同時在線」這種被動 write-失敗偵測不到的情況。
+
+2026-08-19 第二次修：`_maybe_switch_bt_target()` 內部 pick_bt_mac() 會呼叫
+`bluetoothctl` subprocess（可能卡到 5s），原本直接同步擋在 _loop() 播放
+主迴圈裡，逼近甚至遠超 periods=16 的 buffer 觸發 XRUN——實機規律性斷播的
+真因之一。改成背景 thread 做偵測，_loop() 只讀最近一次算好的結果
+（_pending_bt_target），偵測本身不再阻塞音訊迴圈；真的要切換時才呼叫
+_open_pcm_with_retry()（那本來就會短暫卡頓，是有感事件，可接受）。測試用
+_run_thread_target_inline 讓背景 thread 立刻同步跑完，維持測試決定性。
 """
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +22,18 @@ from device.puck_mixer import PuckMixer
 
 BMW = "AA:BB:CC:DD:EE:01"
 SOUNDCORE = "AA:BB:CC:DD:EE:02"
+
+
+class _InlineThread:
+    """threading.Thread 的假替身：start() 立刻同步跑 target()，測試不用真的
+    等背景 thread、也不用 sleep/join 猜時機。"""
+
+    def __init__(self, target=None, daemon=None):
+        self._target = target
+
+    def start(self):
+        if self._target:
+            self._target()
 
 
 def test_single_candidate_never_triggers_recheck():
@@ -33,10 +53,33 @@ def test_recheck_skipped_before_interval_elapsed():
     mixer._current_mac = SOUNDCORE
     mixer._last_bt_check = __import__("time").time()   # 剛檢查過
     fake_pcm = MagicMock()
-    with patch("device.puck_mixer.pick_bt_mac") as mock_pick:
+    with patch("device.puck_mixer.pick_bt_mac") as mock_pick, \
+         patch("device.puck_mixer.threading.Thread", _InlineThread):
         out = mixer._maybe_switch_bt_target(fake_pcm)
     mock_pick.assert_not_called()
     assert out is fake_pcm
+
+
+def test_recheck_does_not_block_audio_loop_pick_runs_in_background_thread():
+    """2026-08-19：偵測本身不能卡住 _loop()——用真的 threading.Thread（不 inline
+    替換），確認呼叫當下就回傳，不等 pick_bt_mac 跑完才返回。"""
+    mixer = PuckMixer(bt_mac=[BMW, SOUNDCORE])
+    mixer._current_mac = SOUNDCORE
+    mixer._last_bt_check = 0.0
+    fake_pcm = MagicMock()
+    started = __import__("threading").Event()
+    release = __import__("threading").Event()
+
+    def _slow_pick(candidates):
+        started.set()
+        release.wait(timeout=2.0)   # 模擬卡住的 bluetoothctl subprocess
+        return SOUNDCORE
+
+    with patch("device.puck_mixer.pick_bt_mac", side_effect=_slow_pick):
+        out = mixer._maybe_switch_bt_target(fake_pcm)   # 應該立刻回傳，不卡在這裡
+    assert out is fake_pcm   # pending 還沒算完，這次不換
+    assert started.wait(timeout=1.0)   # 背景 thread 真的有在跑
+    release.set()   # 收尾，別留一條卡住的 thread
 
 
 def test_recheck_after_interval_keeps_pcm_when_target_unchanged():
@@ -44,7 +87,8 @@ def test_recheck_after_interval_keeps_pcm_when_target_unchanged():
     mixer._current_mac = SOUNDCORE
     mixer._last_bt_check = 0.0   # 早就過了 BT_RECHECK_INTERVAL_S
     fake_pcm = MagicMock()
-    with patch("device.puck_mixer.pick_bt_mac", return_value=SOUNDCORE):
+    with patch("device.puck_mixer.pick_bt_mac", return_value=SOUNDCORE), \
+         patch("device.puck_mixer.threading.Thread", _InlineThread):
         out = mixer._maybe_switch_bt_target(fake_pcm)
     fake_pcm.close.assert_not_called()
     assert out is fake_pcm
@@ -59,6 +103,7 @@ def test_recheck_switches_pcm_when_higher_priority_target_becomes_available():
     old_pcm = MagicMock()
     new_pcm = MagicMock()
     with patch("device.puck_mixer.pick_bt_mac", return_value=BMW), \
+         patch("device.puck_mixer.threading.Thread", _InlineThread), \
          patch.object(mixer, "_open_pcm_with_retry", return_value=new_pcm) as mock_reopen:
         out = mixer._maybe_switch_bt_target(old_pcm)
     old_pcm.close.assert_called_once()
@@ -74,6 +119,7 @@ def test_recheck_survives_stop_during_switch():
     mixer._last_bt_check = 0.0
     old_pcm = MagicMock()
     with patch("device.puck_mixer.pick_bt_mac", return_value=BMW), \
+         patch("device.puck_mixer.threading.Thread", _InlineThread), \
          patch.object(mixer, "_open_pcm_with_retry", return_value=None):
         out = mixer._maybe_switch_bt_target(old_pcm)
     assert out is old_pcm
