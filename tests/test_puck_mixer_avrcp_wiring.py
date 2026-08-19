@@ -1,5 +1,6 @@
 """car puck mk2 AVRCP metadata 掛勾：PuckMixer 換歌時該不該呼叫 on_track_change，
 見 device/avrcp_media_player.py 開頭說明（2026-08-17 Soundcore/BMW 對照測試）。"""
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -57,6 +58,38 @@ def test_queue_next_stores_title_on_deck(monkeypatch):
 
     assert mixer._deck_b is not None
     assert mixer._deck_b.get("title") == "下一首"
+
+
+def test_queue_next_terminates_stale_deck_b_instead_of_leaking(monkeypatch):
+    """2026-08-19 實機踩到：queue_next() 覆蓋 self._deck_b 時原本沒清理舊值，
+    上一輪沒被消費的 deck（例如被 skip、或 FIRE 逾時後又排了下一輪）的
+    ffmpeg proc/reader thread 永遠不會停——實機查到車puck背景累積 4 條殭屍
+    ffmpeg，最舊一條掛了快 45 分鐘，持續佔 CPU/網路頻寬，讓後續每次
+    queue_next() 都要跟殭屍搶資源。覆蓋前該先終止舊的。"""
+    monkeypatch.setattr("device.puck_mixer.resolve_stream_url", lambda url, timeout=30.0, seek=None: "cdn://x")
+    monkeypatch.setattr("device.puck_mixer._make_decoder", lambda url: MagicMock(stdout=MagicMock(read=lambda n: b"")))
+    monkeypatch.setattr(
+        "device.puck_mixer._read_chunk",
+        lambda proc: __import__("numpy").zeros(1, dtype="int16"),
+    )
+
+    mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF")
+    stale_proc = MagicMock()
+    stale_reader_stop = threading.Event()
+    mixer._deck_b = {
+        "url": "https://youtube.com/watch?v=stale", "proc": stale_proc,
+        "reader_stop": stale_reader_stop,
+    }
+
+    mixer.queue_next("https://youtube.com/watch?v=next", title="下一首")
+    for _ in range(50):
+        if mixer._deck_b is not None and mixer._deck_b.get("url") != "https://youtube.com/watch?v=stale":
+            break
+        time.sleep(0.02)
+
+    stale_proc.terminate.assert_called_once()
+    assert stale_reader_stop.is_set()
+    assert mixer._deck_b.get("url") == "https://youtube.com/watch?v=next"
 
 
 def test_loop_swap_fires_on_track_change_with_deck_b_title(monkeypatch):

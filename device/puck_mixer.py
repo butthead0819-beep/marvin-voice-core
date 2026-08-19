@@ -505,8 +505,25 @@ class PuckMixer:
                 **_start_deck_reader(proc),
             }
             with self._lock:
+                # ⚠️ 2026-08-19 實機踩到：這裡原本直接覆蓋 self._deck_b，如果上一輪
+                # queue_next() 排的 deck_b 從沒被 crossfade()/EOF 自救消費掉（例如
+                # 被 skip、或 FIRE 逾時後又排了下一輪），舊 deck 的 ffmpeg proc 跟
+                # reader thread 永遠不會停——實機查到車puck背景累積 4 條殭屍
+                # ffmpeg，最舊一條掛了快 45 分鐘，持續佔 CPU/網路頻寬，讓後續每次
+                # queue_next() 都要跟殭屍搶資源，才是「deck_b 幾乎每首歌都來不及
+                # 準備好」的真因（跟 highlight_start_s/CPU 搶佔都無關）。覆蓋前先
+                # 清掉舊的。
+                stale = self._deck_b
                 self._deck_b = deck
                 self._next_url = url
+            if stale is not None:
+                reader_stop = stale.get("reader_stop")
+                if reader_stop is not None:
+                    reader_stop.set()
+                try:
+                    stale["proc"].terminate()
+                except Exception:
+                    pass
         threading.Thread(target=_load, daemon=True).start()
 
     def crossfade(self, duration_s: float = 4.0):
