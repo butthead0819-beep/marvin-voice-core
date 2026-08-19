@@ -84,7 +84,15 @@ _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
 # 點火）早了快 27 秒，聽感是「歌播到一半突然換下一首，DJ 口白根本沒機會講」。
 # 改回接近 esp32_edge_mix 的 _DJ_TAIL_LEAD_S(=8.0) 量級，只留一點 Pi 端解碼
 # 啟動的餘裕（Mac relay 本身跟 esp32 走同一條路，resolve 不再是瓶頸）。
-_PUCK_PI_BT_CROSSFADE_LEAD_S = 12.0
+#
+# ⚠️ 2026-08-19：第一版改成 LEAD_S=12.0/BUFFER_S=8.0 忘了留 crossfade 本身
+# （_fire_puck_crossfade 預設 crossfade_s=4.0）的時間——buffer_s(8) + crossfade_s
+# (4) = 12 剛好頂到 LEAD_S，輪詢一頂格、crossfade 動畫就會逼近甚至撞上真正
+# 歌曲結尾。撞上時 Pi 端 crossfade() 若 deck_b 還沒 ready 會丟 RuntimeError
+# 失敗，退回「deck_a 自然播完、等 Mac 補打硬 play」——這條路徑有真實的網路+
+# resolve+ffmpeg 啟動延遲，實機聽到「花田錯提早結束，~20s 沒聲音」就是這樣
+# 來的。LEAD_S 12→15，buffer_s 不動，留 3s margin 給 crossfade 本身+輪詢誤差。
+_PUCK_PI_BT_CROSSFADE_LEAD_S = 15.0
 _PUCK_PI_BT_CROSSFADE_BUFFER_S = 8.0
 # _fire_puck_crossfade 輪詢 /puck/status 的間隔——resolve 現在多半是 cache 命中
 # 幾乎瞬間完成，1s 夠即時又不會洗爆 Pi 的 HTTP handler。
