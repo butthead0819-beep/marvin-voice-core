@@ -3152,25 +3152,29 @@ class MusicCog(commands.Cog):
         """[PuckMixer] pi_bt 專用，跟 DJ 口白的 _run_tail_dj/_DJ_TAIL_LEAD_S 完全脫鉤
         的獨立 crossfade 排程（2026-08-17）。
 
-        2026-08-19 重寫成兩階段，拆開「多早開始 resolve」跟「什麼時候真的換歌」
-        這兩件事——之前綁在同一個 LEAD_S 常數上，resolve 快就提早結束、
-        resolve 慢就撞真正結尾被拒絕，怎麼調都會有一邊犧牲（連續三次實機
-        症狀：太早換歌 27s / 20s 空白 / 提早 8s 結束，都是這個病根）：
-          1. PREFETCH（倒數 _PUCK_PI_BT_PREFETCH_LEAD_S=30s）：只 queue_next()，
-             不觸發任何聽感變化，留寬鬆餘裕給 resolve。
-          2. FIRE（倒數 _PUCK_PI_BT_CROSSFADE_LEAD_S=8.0，跟 DJ 口白尾段同量級）：
-             這才是真正決定聽感的時間點——deck_b 早在 22s 前就開始 resolve，
-             這裡短暫輪詢（_PUCK_PI_BT_FIRE_POLL_DEADLINE_S）理論上第一次就會
-             命中；真的還沒 ready 就放棄，交給 _puck_pi_bt_handed_off=False
-             回退機制（下一首開頭補硬 play），不賭一把硬打。
+        2026-08-19 重寫成兩階段＋絕對時間戳記排程。拆開「多早開始 resolve」跟
+        「什麼時候真的換歌」這兩件事——之前綁在同一個 LEAD_S 常數上，resolve
+        快就提早結束、resolve 慢就撞真正結尾被拒絕，怎麼調都會有一邊犧牲
+        （連續實機症狀：太早換歌 27s / 20s 空白 / 提早結束）：
+          1. PREFETCH（`fire_end_ts - _PUCK_PI_BT_PREFETCH_LEAD_S`）：只
+             queue_next()，不觸發任何聽感變化，留寬鬆餘裕給 resolve。
+          2. FIRE（`fire_end_ts - _PUCK_PI_BT_CROSSFADE_LEAD_S`，跟 DJ 口白
+             尾段同量級）：真正決定聽感的時間點——deck_b 早就開始 resolve，
+             這裡短暫輪詢（_PUCK_PI_BT_FIRE_POLL_DEADLINE_S）理論上第一次
+             就會命中；真的還沒 ready 就放棄，交給 _puck_pi_bt_handed_off
+             =False 回退機制（下一首開頭補硬 play），不賭一把硬打。
+
+        ⚠️ 兩個時間點都是「歌開播時算好的絕對 wall-clock 時間戳記」
+        （real_start + duration 為錨點），不是疊加相對 sleep()——第一版疊加
+        寫法忘了扣掉兩次 sleep 中間 queue_next() 那段真實網路延遲，每次都在
+        累積漂移，FIRE 時機因此忽早忽晚。改成每次要睡多久都用「絕對目標時間
+        − 現在時間」重新算，drift 不會累積。
 
         跟 _run_tail_dj 平行排程、各自獨立 sleep，互不阻塞；任一方被取消（skip/
         stop）只影響自己那份。"""
-        from dj_tail_schedule import tail_dj_fire_delay
-
         title_cur = cur_info.get('title', '?')
         duration = cur_info.get('duration')
-        if not duration:
+        if not duration or duration < _PUCK_PI_BT_PREFETCH_LEAD_S:
             return
         if cur_info.get('highlight_start_s'):
             duration = max(0.0, duration - cur_info['highlight_start_s'])
@@ -3183,14 +3187,15 @@ class MusicCog(commands.Cog):
         else:
             real_start = song_start_time
 
-        elapsed = time.time() - real_start
-        prefetch_delay = tail_dj_fire_delay(duration, elapsed, lead_s=_PUCK_PI_BT_PREFETCH_LEAD_S)
-        if prefetch_delay is None:
+        expected_end_ts = real_start + duration
+        prefetch_at = expected_end_ts - _PUCK_PI_BT_PREFETCH_LEAD_S
+        fire_at = expected_end_ts - _PUCK_PI_BT_CROSSFADE_LEAD_S
+        if fire_at <= time.time():
             logger.info(f"[PuckMixer] pi_bt {title_cur} 過窗或歌太短，不排 crossfade")
             return
 
         try:
-            await asyncio.sleep(prefetch_delay)
+            await asyncio.sleep(max(0.0, prefetch_at - time.time()))
         except asyncio.CancelledError:
             return
 
@@ -3221,8 +3226,11 @@ class MusicCog(commands.Cog):
             next_info['_puck_pi_bt_handed_off'] = False
             return
 
+        # ⚠️ 重新用「fire_at − 現在時間」算，不是固定睡 PREFETCH_LEAD_S 減
+        # FIRE_LEAD_S 那段差值——上面 queue_next() 的網路往返已經吃掉了一段
+        # 真實時間，固定差值會把這段延遲原封不動疊加到 FIRE 時機上。
         try:
-            await asyncio.sleep(_PUCK_PI_BT_PREFETCH_LEAD_S - _PUCK_PI_BT_CROSSFADE_LEAD_S)
+            await asyncio.sleep(max(0.0, fire_at - time.time()))
         except asyncio.CancelledError:
             return
 
@@ -3230,7 +3238,7 @@ class MusicCog(commands.Cog):
             return
 
         handed_off = False
-        deadline = time.time() + _PUCK_PI_BT_FIRE_POLL_DEADLINE_S
+        deadline = fire_at + _PUCK_PI_BT_FIRE_POLL_DEADLINE_S
         while time.time() < deadline:
             await asyncio.sleep(_PUCK_STATUS_POLL_INTERVAL_S)
             st = await puck_client.status()
