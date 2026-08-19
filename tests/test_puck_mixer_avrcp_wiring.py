@@ -96,3 +96,46 @@ def test_loop_swap_fires_on_track_change_with_deck_b_title(monkeypatch):
     assert calls == ["接手的歌"]
     assert mixer._deck_a is deck_b
     assert mixer._deck_b is None
+
+
+def test_loop_promotes_deck_b_immediately_when_deck_a_hits_real_eof(monkeypatch):
+    """2026-08-19 實機修：deck_a 的 eof_event 被設起來（真的播完了，見
+    _reader_loop）、deck_b 已經 ready 時，_loop() 該立刻扶正，不用等 Mac
+    排定的 crossfade 時間點才動——那個時間點可能還沒到，deck_a 卻已經真的
+    沒音訊了。這條沒有設 _crossfade_start（模擬 crossfade 根本還沒被
+    Mac 觸發），純粹靠 eof_event 自己接手。"""
+    import numpy as np
+    import threading
+
+    from device.puck_mixer import CHANNELS, CHUNK_FRAMES
+
+    calls = []
+    mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF", on_track_change=calls.append)
+    monkeypatch.setattr(mixer, "_open_pcm", lambda: MagicMock())
+
+    zeros = np.zeros(CHUNK_FRAMES * CHANNELS, dtype=np.int16)
+    monkeypatch.setattr("device.puck_mixer._read_chunk_deck", lambda deck: zeros)
+
+    eof_event = threading.Event()
+    eof_event.set()  # deck_a 已經真的讀到結尾
+    deck_a = {"url": "a", "proc": MagicMock(), "eof_event": eof_event}
+    deck_b = {"url": "b", "proc": MagicMock(), "title": "接手的歌"}
+    mixer._deck_a = deck_a
+    mixer._deck_b = deck_b
+    mixer._current_url = "a"
+    mixer._next_url = "b"
+    # 故意不設 _crossfade_start——crossfade() 根本沒被呼叫過，純測 eof_event 自救。
+
+    t = threading.Thread(target=mixer._loop, daemon=True)
+    t.start()
+    for _ in range(100):
+        if calls:
+            break
+        time.sleep(0.02)
+    mixer._stop_flag.set()
+    t.join(timeout=1.0)
+
+    assert calls == ["接手的歌"]
+    assert mixer._deck_a is deck_b
+    assert mixer._deck_b is None
+    deck_a["proc"].terminate.assert_called_once()

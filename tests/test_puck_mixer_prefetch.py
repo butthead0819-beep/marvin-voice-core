@@ -92,6 +92,29 @@ def test_reader_loop_stops_on_event_without_reading_more():
     assert not t.is_alive()
 
 
+def test_reader_loop_stops_and_sets_eof_event_on_real_eof():
+    """2026-08-19 實機踩到：改這條之前，_FakeStdout 讀到空（chunks 耗盡＝
+    stream 真的播完）會被當成一般個案退回補靜音，_reader_loop 永遠不停，
+    無限期灌靜音進 queue——deck 播完之後 _loop() 完全不知道，只能乾等 Mac
+    排定的 crossfade 時間點，duration 估計只要差幾秒就會提早進入「假裝還在
+    播、其實是靜音」的狀態。現在讀到真正 EOF 該停止 thread 並設 eof_event。"""
+    chunks = [_stereo_chunk(CHUNK_FRAMES, 1)]
+    proc = _FakeProc(chunks)  # 只有一個 chunk，讀完下一次 read() 就是真 EOF
+    q = queue.Queue(maxsize=PREFETCH_CHUNKS)
+    stop_event = threading.Event()
+    eof_event = threading.Event()
+
+    t = threading.Thread(target=_reader_loop, args=(proc, q, stop_event, eof_event), daemon=True)
+    t.start()
+    first = q.get(timeout=1.0)
+    t.join(timeout=1.0)
+
+    assert np.all(first == 1)
+    assert not t.is_alive()          # thread 自己停了，不是無限迴圈
+    assert eof_event.is_set()        # 呼叫端可以查這個知道是真的播完
+    assert q.empty()                 # 沒有被灌一堆補靜音的 chunk
+
+
 def test_reader_loop_exits_quietly_on_read_exception():
     class _BoomStdout:
         def read(self, n):

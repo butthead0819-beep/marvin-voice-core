@@ -132,25 +132,50 @@ def _make_decoder(stream_url: str):
     return subprocess.Popen(cmd, stdout=subprocess.PIPE)
 
 
-def _read_chunk(proc) -> np.ndarray:
+def _read_pcm_chunk_or_none(proc):
+    """讀一個 chunk；回 None 代表 stdout 真的讀到空——`proc.stdout` 是
+    blocking pipe，只有 ffmpeg 寫完關閉 pipe（stream 正常播完，不是網路
+    暫時沒資料）才會讀到空，呼叫端可以放心把 None 當成「這個 decoder 真的
+    結束了」的明確訊號，不是需要補靜音撐過去的暫時抖動。"""
     data = proc.stdout.read(BYTES_PER_CHUNK)
     if not data:
-        return np.zeros(CHUNK_FRAMES * CHANNELS, dtype=np.int16)
+        return None
     arr = np.frombuffer(data, dtype=np.int16)
     if len(arr) < CHUNK_FRAMES * CHANNELS:
         arr = np.pad(arr, (0, CHUNK_FRAMES * CHANNELS - len(arr)))
     return arr
 
 
-def _reader_loop(proc, q: "queue.Queue", stop_event: threading.Event):
+def _read_chunk(proc) -> np.ndarray:
+    """相容沒有 prefetch queue 的舊路徑（見 _next_chunk）——那條路徑沒有
+    eof_event 可以通知，EOF 只能退回補靜音，沒有更好的選擇。"""
+    arr = _read_pcm_chunk_or_none(proc)
+    return arr if arr is not None else np.zeros(CHUNK_FRAMES * CHANNELS, dtype=np.int16)
+
+
+def _reader_loop(proc, q: "queue.Queue", stop_event: threading.Event, eof_event: threading.Event = None):
     """背景 thread：持續從 ffmpeg stdout 讀 chunk 塞進 prefetch queue，直到
-    stop_event 被喊停或讀取本身出錯（例如 proc 已死、pipe 壞掉）——出錯就安靜
-    結束這條 thread，不吵（比照 _write_with_reconnect 的優雅降級哲學，這裡連
-    重試都不需要，proc 掛了播放層自然會換新的 deck）。"""
+    stop_event 被喊停、讀取本身出錯（例如 proc 已死、pipe 壞掉），或讀到真正
+    的 EOF——三種都安靜結束這條 thread，不吵（比照 _write_with_reconnect 的
+    優雅降級哲學）。
+
+    ⚠️ 2026-08-19 實機踩到：改這版之前，EOF 被 _read_chunk() 當成一般的
+    「這個 chunk 沒讀到」個案退回補靜音，這裡的迴圈永遠不會停——deck 播完
+    之後會無限期灌靜音進 queue，_loop() 完全不知道這首歌已經真的結束了，
+    只能乾等 Mac 排定的 crossfade 時間點。YouTube metadata 的 duration 只要
+    跟 Mac 端 /puck_deck 實際轉碼出來的串流長度差個幾秒，deck_a 就會在真正
+    結尾提早進入「假裝還在播、其實是靜音」的狀態——這就是「尾端提早結束/
+    無聲」規律出現在每首歌的真因，跟 DJ 口白/Deck B 預抓都無關（兩者都測試
+    排除過了）。現在讀到真正 EOF 會設 eof_event，_loop() 主迴圈可以立刻自己
+    判斷要不要扶正 deck_b，不用死等 crossfade 時間點。"""
     while not stop_event.is_set():
         try:
-            chunk = _read_chunk(proc)
+            chunk = _read_pcm_chunk_or_none(proc)
         except Exception:
+            return
+        if chunk is None:
+            if eof_event is not None:
+                eof_event.set()
             return
         while not stop_event.is_set():
             try:
@@ -176,12 +201,15 @@ def _next_chunk(deck: dict) -> np.ndarray:
 
 def _start_deck_reader(proc) -> dict:
     """幫一個剛開好的 decoder proc 起一條 _reader_loop 背景 thread + prefetch
-    queue，回傳可以直接 `**` 展開塞進 deck dict 的欄位。"""
+    queue，回傳可以直接 `**` 展開塞進 deck dict 的欄位。eof_event：讀到真正
+    EOF（stream 正常播完）時會被設起來，見 _reader_loop docstring。"""
     q = queue.Queue(maxsize=PREFETCH_CHUNKS)
     reader_stop = threading.Event()
-    reader_thread = threading.Thread(target=_reader_loop, args=(proc, q, reader_stop), daemon=True)
+    eof_event = threading.Event()
+    reader_thread = threading.Thread(
+        target=_reader_loop, args=(proc, q, reader_stop, eof_event), daemon=True)
     reader_thread.start()
-    return {"queue": q, "reader_stop": reader_stop, "reader_thread": reader_thread}
+    return {"queue": q, "reader_stop": reader_stop, "reader_thread": reader_thread, "eof_event": eof_event}
 
 
 def _read_chunk_deck(deck: dict) -> np.ndarray:
@@ -663,6 +691,30 @@ class PuckMixer:
                 if deck_a is None:
                     time.sleep(0.05)
                     continue
+                eof_event = deck_a.get("eof_event")
+                if eof_event is not None and eof_event.is_set():
+                    # 2026-08-19：deck_a 真的播完了（見 _reader_loop 註解）。
+                    # deck_b 已經 ready 就直接扶正，不用死等 Mac 排定的
+                    # crossfade 時間點——duration 估計只要跟實際串流長度差
+                    # 幾秒，繼續照舊流程會先讀到一堆補靜音，這裡自己先接手。
+                    if deck_b is not None:
+                        with self._lock:
+                            try:
+                                deck_a["proc"].terminate()
+                            except Exception:
+                                pass
+                            self._deck_a = deck_b
+                            self._deck_b = None
+                            self._current_url = self._next_url
+                            self._next_url = None
+                            self._crossfade_start = None
+                        new_title = deck_b.get("title")
+                        if new_title and self._on_track_change:
+                            self._on_track_change(new_title)
+                        continue
+                    elif not deck_a.get("_eof_logged"):
+                        deck_a["_eof_logged"] = True
+                        print("🔇 [PuckMixer] deck_a 已讀到真正結尾但沒有 deck_b 可接手，補靜音等待", flush=True)
                 a = _read_chunk_deck(deck_a).astype(np.float32)
                 if cf_start is not None and deck_b is not None:
                     gain_a, gain_b = crossfade_gains(time.time() - cf_start, cf_dur)
