@@ -3238,18 +3238,19 @@ class MusicCog(commands.Cog):
 
     async def _diag_pi_vs_mac_start_offset(self, title_cur: str, real_start: float) -> None:
         """2026-08-19 診斷專用：量「Mac 以為幾點開播」(real_start) 跟「Pi puck
-        自己實際幾點出聲」(deck_a_first_chunk_ts，見 device/puck_mixer.py
-        status()) 的落差。
+        自己實際幾點『變成正在播放這首歌』」(deck_a_promoted_at，見
+        device/puck_mixer.py status()) 的落差。
 
-        ⚠️ 第一版靠「等 deck_a_first_chunk_ts 從基準值變成新值」判斷這首歌真的
-        出聲了，實機一測就踩坑：現在大多數轉場走的是 PREFETCH/FIRE 排好的
-        crossfade 或 eof_event 自救，deck_b（=即將接手的 deck_a）早在上一首
-        還在播的時候就已經 queue_next() 完、first_chunk_ts 也早就蓋好了——
-        等這首歌真的變成 deck_a 時，那個時間戳早就不是「新」的，20 秒內永遠
-        等不到「變化」，白白放棄，量不到東西。改成直接抓當下 deck_a_first_
-        chunk_ts，只要落在合理範圍內（跟 real_start 差距 <90s，排除讀到上上
-        首歌的殘值）就直接採用不用等變化——反正呼叫這個 task 的時間點本來就
-        該是這首歌已經是 Pi 端的 deck_a 了。"""
+        ⚠️ 走過兩版才對：
+        v1 靠「等 deck_a_first_chunk_ts 從基準值變成新值」判斷，20 秒內等不到
+        變化（crossfade 接手時這個值早在 PREFETCH 階段就蓋好了，不會再變）。
+        v2 改成直接抓當下 deck_a_first_chunk_ts，結果量到 -58.54s / -56.50s
+        這種大負值——因為 first_chunk_ts 記的是「ffmpeg 解碼開始」那一刻
+        （PREFETCH 觸發時，可能是出聲前 50~60 秒），不是「這首歌真的開始播」
+        那一刻，兩者被錯誤地劃上等號，量到的其實是 PREFETCH_LEAD_S 本身，不是
+        真正的落差。v3（這版）改用 deck_a_promoted_at——deck 真正變成 deck_a
+        （硬 play() / crossfade() 完成 / eof_event 自救扶正）那一刻的獨立
+        時間戳，這才是跟 real_start 同一件事可以互相比對的量。"""
         puck_client = _get_puck_client()
         if puck_client is None:
             return
@@ -3261,24 +3262,24 @@ class MusicCog(commands.Cog):
             except Exception:
                 st = None
             if st is not None:
-                ts = st.get("deck_a_first_chunk_ts")
+                ts = st.get("deck_a_promoted_at")
                 if ts is not None:
                     last_ts = ts
                     if abs(ts - real_start) < 90.0:
                         delta = ts - real_start
                         logger.info(
                             f"[PuckMixer][Diag] {title_cur}：real_start(Mac)={real_start:.2f}，"
-                            f"deck_a_first_chunk_ts(Pi)={ts:.2f}，落差(Pi-Mac)={delta:+.2f}s"
+                            f"deck_a_promoted_at(Pi)={ts:.2f}，落差(Pi-Mac)={delta:+.2f}s"
                         )
                         return
             await asyncio.sleep(0.5)
         if last_ts is not None:
             logger.info(
-                f"[PuckMixer][Diag] {title_cur}：15s 內讀到的 deck_a_first_chunk_ts={last_ts:.2f} "
+                f"[PuckMixer][Diag] {title_cur}：15s 內讀到的 deck_a_promoted_at={last_ts:.2f} "
                 f"跟 real_start 差 {last_ts - real_start:+.2f}s，超出合理範圍（可能是舊值），放棄本次量測"
             )
         else:
-            logger.info(f"[PuckMixer][Diag] {title_cur}：15s 內都讀不到 deck_a_first_chunk_ts，放棄本次量測")
+            logger.info(f"[PuckMixer][Diag] {title_cur}：15s 內都讀不到 deck_a_promoted_at，放棄本次量測")
 
     async def _run_puck_pi_bt_crossfade(self, cur_info: dict, song_start_time) -> None:
         """[PuckMixer] pi_bt 專用，跟 DJ 口白的 _run_tail_dj/_DJ_TAIL_LEAD_S 完全脫鉤

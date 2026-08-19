@@ -419,6 +419,13 @@ class PuckMixer:
         self._crossfade_duration = 4.0
         self._current_url = None
         self._next_url = None
+        # 2026-08-19 診斷用：deck 真正變成 deck_a（硬 play/crossfade 完成/
+        # eof 自救扶正）那一刻的 wall-clock 時間戳，跟 deck["first_chunk_ts"]
+        # 不同——後者是 ffmpeg 解碼開始那刻（PREFETCH 階段就蓋好，可能是
+        # 出聲前 50~60 秒），這個才是「Pi 真的開始播這首歌」的時間點，
+        # 拿來跟 Mac 端 real_start 比對才有意義（見 status()/
+        # cogs/music_cog.py::_diag_pi_vs_mac_start_offset）。
+        self._deck_a_promoted_at = None
         # crossfade() 點火時若 deck_b 已合成好刷碟音效就 armed；None=沒疊
         self._scratch_samples = None
         self._scratch_pos = 0
@@ -474,11 +481,15 @@ class PuckMixer:
                 "playing": self._current_url,
                 "next_queued": self._next_url,
                 "crossfading": self._crossfade_start is not None,
-                # 2026-08-19 診斷用：deck_a 目前這輪真正開始出聲的 wall-clock
-                # 時間戳（第一個真實 chunk 到手那刻）——Mac 端拿它跟自己算的
-                # real_start 比對，直接量出「Mac 以為幾點開播」跟「Pi 實際幾點
-                # 出聲」的落差，不用再靠猜。
+                # 2026-08-19 診斷用，別搞混這兩個：
+                # first_chunk_ts＝deck_a 這個 ffmpeg 解碼開始後第一個真實 chunk
+                #   到手的時間——crossfade 接手的歌走 PREFETCH，這個時間點常常
+                #   是出聲前 50~60 秒，不能拿來當「這首歌何時開始播」用。
+                # deck_a_promoted_at＝deck 真正變成 deck_a（硬 play/crossfade
+                #   完成/eof 自救扶正）那一刻，這個才是跟 Mac 端 real_start
+                #   比對用的（見 cogs/music_cog.py::_diag_pi_vs_mac_start_offset）。
                 "deck_a_first_chunk_ts": first_chunk_ts[0] if first_chunk_ts else None,
+                "deck_a_promoted_at": self._deck_a_promoted_at,
             }
 
     def play(self, url: str, title: str = None, seek: float = None):
@@ -495,6 +506,7 @@ class PuckMixer:
             self._deck_b = None
             self._current_url = url
             self._next_url = None
+            self._deck_a_promoted_at = time.time()
             self._crossfade_start = None
         self._ensure_loop_running()
         if title and self._on_track_change:
@@ -594,6 +606,7 @@ class PuckMixer:
                 self._current_url = self._next_url
                 self._next_url = None
                 self._crossfade_start = None
+                self._deck_a_promoted_at = time.time()
                 promoted_title = self._deck_a.get("title")
             else:
                 self._crossfade_duration = duration_s
@@ -795,6 +808,7 @@ class PuckMixer:
                             self._current_url = self._next_url
                             self._next_url = None
                             self._crossfade_start = None
+                            self._deck_a_promoted_at = time.time()
                         new_title = deck_b.get("title")
                         if new_title and self._on_track_change:
                             self._on_track_change(new_title)
@@ -815,6 +829,7 @@ class PuckMixer:
                             self._current_url = self._next_url
                             self._next_url = None
                             self._crossfade_start = None
+                            self._deck_a_promoted_at = time.time()
                         new_title = deck_b.get("title")
                         if new_title and self._on_track_change:
                             self._on_track_change(new_title)
