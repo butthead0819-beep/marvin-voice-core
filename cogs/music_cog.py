@@ -72,19 +72,22 @@ _DJ_TAIL_LEAD_S = 8.0
 _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
 # pi_bt 專用、跟 DJ 口白脫鉤的獨立 crossfade 觸發窗口。_DJ_TAIL_LEAD_S=8.0 是
 # DJ 口白疊當前歌尾巴的編排選擇，從沒考慮過「resolve 一首歌網址要多久」；
-# pi_bt 要在 Pi 端自己跑 yt-dlp，塞進 8s 窗口太貼邊，給它自己更早、獨立的
-# 觸發點，不影響 DJ 口白原本的時間軸設計（見 _run_puck_pi_bt_crossfade）。
-# 2026-08-18：兩顆常數從 20.0/10.0 調大——原本假設 resolve ~7s（無 cookies的
-# ANDROID_VR 路徑），接上 YouTube cookies 後 deno 解 JS challenge 在 Pi 這種
-# 弱 CPU 上常吃到 ~24s，10s buffer 常常等不到 deck_b ready 就打 crossfade、
-# 被 Pi 端 RuntimeError 打回，當前曲播完只剩靜音（見「播放不順」實測）。
-# buffer_s 現在是 _fire_puck_crossfade 輪詢 /puck/status 的上限（不是固定
-# sleep，見該函式），30.0 給 24s cookies 路徑留餘裕；LEAD_S=35.0 確保
-# buffer_s 耗盡後還有時間做 crossfade 本身，不會逼近甚至超過歌曲結尾。
-_PUCK_PI_BT_CROSSFADE_LEAD_S = 35.0
-_PUCK_PI_BT_CROSSFADE_BUFFER_S = 30.0
-# _fire_puck_crossfade 輪詢 /puck/status 的間隔——pi_bt cookies resolve 常見
-# ~24s（見該函式 2026-08-18 註解），1s 夠即時又不會洗爆 Pi 的 HTTP handler。
+# pi_bt 給它自己更早、獨立的觸發點，不影響 DJ 口白原本的時間軸設計（見
+# _run_puck_pi_bt_crossfade）。
+#
+# ⚠️ 2026-08-19：35.0/30.0 是 8/18 那次改的，當時假設 pi_bt 還在 Pi 本地跑
+# yt-dlp+cookies（deno 解 JS challenge 常吃 ~24s），特地留了大餘裕。但同一個
+# commit 也把 pi_bt 遷到跟 esp32_edge_mix 共用的 Mac 端 /puck_deck relay 解析
+# （見 device/puck_mixer.py::resolve_stream_url()），Pi 不再自己碰 YouTube；
+# 35s 這個舊餘裕沒人在用了，變成純粹「太早換歌」——實機踩到：一首 ~138s 的
+# 短歌，pi_bt 音樂 crossfade 在倒數 35s 點火，比 DJ 口白自己的尾段（倒數 8s
+# 點火）早了快 27 秒，聽感是「歌播到一半突然換下一首，DJ 口白根本沒機會講」。
+# 改回接近 esp32_edge_mix 的 _DJ_TAIL_LEAD_S(=8.0) 量級，只留一點 Pi 端解碼
+# 啟動的餘裕（Mac relay 本身跟 esp32 走同一條路，resolve 不再是瓶頸）。
+_PUCK_PI_BT_CROSSFADE_LEAD_S = 12.0
+_PUCK_PI_BT_CROSSFADE_BUFFER_S = 8.0
+# _fire_puck_crossfade 輪詢 /puck/status 的間隔——resolve 現在多半是 cache 命中
+# 幾乎瞬間完成，1s 夠即時又不會洗爆 Pi 的 HTTP handler。
 _PUCK_STATUS_POLL_INTERVAL_S = 1.0
 
 # 2026-08-18：YouTube 對這台 Mac 的來源 IP 節流（連續多天 403 Forbidden 攀升，
