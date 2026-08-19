@@ -36,6 +36,25 @@ def test_read_chunk_deck_queue_empty_returns_silence_without_hanging(monkeypatch
     assert elapsed < 0.5  # 有界，不會卡死播放迴圈
 
 
+def test_read_chunk_deck_returns_immediately_when_eof_event_set(monkeypatch):
+    """2026-08-19 實機踩到：deck_a 真的播完（eof_event 已設）又沒有 deck_b 可
+    接手時，_next_chunk() 原本還是傻等滿 _QUEUE_GET_TIMEOUT_S(=0.5s) 才判定
+    「空了」——這個 queue 保證不會再有新 chunk（reader thread 已經停了），
+    每輪迴圈卡 0.5 秒等於主播放節奏（~21ms/chunk）被拖慢超過 20 倍，遠超
+    periods=16 的緩衝，直接把 BT PCM 拖進斷線重連風暴。eof_event 已設時該
+    立刻回靜音，不留任何等待。用刻意調大的 _QUEUE_GET_TIMEOUT_S 確認真的是
+    eof_event 生效跳過等待，不是剛好測試機快。"""
+    monkeypatch.setattr(puck_mixer, "_QUEUE_GET_TIMEOUT_S", 5.0)
+    eof_event = threading.Event()
+    eof_event.set()
+    deck = {"proc": None, "peek_buf": None, "queue": queue.Queue(), "eof_event": eof_event}
+    start = time.monotonic()
+    out = _read_chunk_deck(deck)
+    elapsed = time.monotonic() - start
+    assert np.all(out == 0)
+    assert elapsed < 0.1  # 遠低於 5.0s 的 _QUEUE_GET_TIMEOUT_S，證明沒有真的等
+
+
 def test_read_chunk_deck_still_drains_peek_buf_first_when_queue_present():
     q = queue.Queue()
     q.put(_stereo_chunk(CHUNK_FRAMES, 999))  # 不該被讀到

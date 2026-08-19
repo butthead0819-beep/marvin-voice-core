@@ -195,12 +195,22 @@ def _reader_loop(proc, q: "queue.Queue", stop_event: threading.Event, eof_event:
 def _next_chunk(deck: dict) -> np.ndarray:
     """從 deck 的 prefetch queue 取下一個 chunk；沒有 queue（測試/舊路徑）就退回
     直接同步讀 proc。queue 空了（buffer 也追不上，抖動超過 PREFETCH_SECONDS）就
-    補靜音——寧可漏一小段音訊，也不能讓 PCM 寫入迴圈被卡住拖累整條播放時序。"""
+    補靜音——寧可漏一小段音訊，也不能讓 PCM 寫入迴圈被卡住拖累整條播放時序。
+
+    ⚠️ 2026-08-19：eof_event 已設起來（_reader_loop 讀到真正 EOF、確定不會再
+    有新 chunk）時，改用 timeout=0 立刻回靜音，不要再等滿 _QUEUE_GET_TIMEOUT_S
+    (=0.5s)——那 0.5 秒是假設「網路/解碼可能還在追」才值得等，deck_a 真正播完
+    又沒有 deck_b 可接手時，這個 queue 保證永遠不會再有東西，每輪迴圈還傻等
+    0.5 秒等於主播放迴圈每 ~21ms 該寫一次 PCM 的節奏被拖到 500ms 一次，遠超
+    periods=16 的緩衝，直接把 BT PCM 拖進斷線重連風暴（實機踩到：「deck_a
+    已讀到真正結尾但沒有 deck_b 可接手」那行 log 之後緊接著一長串斷線重連）。"""
     q = deck.get("queue")
     if q is None:
         return _read_chunk(deck["proc"])
+    eof_event = deck.get("eof_event")
+    timeout = 0 if (eof_event is not None and eof_event.is_set()) else _QUEUE_GET_TIMEOUT_S
     try:
-        return q.get(timeout=_QUEUE_GET_TIMEOUT_S)
+        return q.get(timeout=timeout)
     except queue.Empty:
         print("🔇 [PuckMixer] prefetch queue 空了，補靜音（網路/解碼跟不上）", flush=True)
         return np.zeros(CHUNK_FRAMES * CHANNELS, dtype=np.int16)
