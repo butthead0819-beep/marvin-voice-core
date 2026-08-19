@@ -80,7 +80,7 @@ _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
 # 目標互相打架，怎麼調都會有一邊犧牲。
 #
 # 改成兩階段、各自獨立的時間點：
-#   PREFETCH（倒數 _PUCK_PI_BT_PREFETCH_LEAD_S=30s）：只呼叫 queue_next()，
+#   PREFETCH（倒數 _PUCK_PI_BT_PREFETCH_LEAD_S）：只呼叫 queue_next()，
 #     不管 resolve 要多久、不觸發任何聽感上的變化，留寬鬆餘裕。
 #   FIRE（倒數 _PUCK_PI_BT_CROSSFADE_LEAD_S=8.0，跟 DJ 口白尾段同一個量級）：
 #     這才是真正決定聽感的時間點——因為 deck_b 早在 22s 前就開始 resolve，
@@ -88,7 +88,19 @@ _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
 #     用短的 _PUCK_PI_BT_FIRE_POLL_DEADLINE_S 當安全網：真的還沒 ready
 #     （網路異常慢）就放棄，交給已有的 _puck_pi_bt_handed_off=False 回退
 #     機制（下一首開頭補硬 play），不賭一把硬打。
-_PUCK_PI_BT_PREFETCH_LEAD_S = 30.0
+#
+# ⚠️ 2026-08-19 py-spy+/puck/status 實機交叉比對：deck_a 真正 EOF 的時間點
+# 比這裡算出的 expected_end_ts 早了 20~50 秒不等（同一批樣本內落差不小，
+# 不是固定幾秒的系統性偏移），30s 的 PREFETCH 餘裕常常不夠——deck_a 已經
+# 真的無聲了，PREFETCH（queue_next）才剛要開始 resolve，這段真空就是使用
+# 者聽到的斷播。deck_b 本身 resolve+起 reader thread 很快（1~3s 內拿到
+# 第一個真實 chunk，py-spy 也證實沒有卡在 GIL/thread 排程），瓶頸單純是
+# PREFETCH 觸發得太晚。拉大這個值不會有副作用（deck_b 準備好後就是在
+# queue 裡待命，Pi 端 loop() 靠 eof_event 自己判斷何時扶正，不會提前
+# 打斷 deck_a）。30→60s 先擋最壞情況；若之後樣本顯示落差仍能超過 60s，
+# 代表問題不是「餘裕不夠」而是 duration 估計本身系統性算錯，要往那個
+# 方向查（yt-dlp duration vs 實際串流長度、highlight_start_s 扣除邏輯）。
+_PUCK_PI_BT_PREFETCH_LEAD_S = 60.0
 _PUCK_PI_BT_CROSSFADE_LEAD_S = 8.0
 _PUCK_PI_BT_FIRE_POLL_DEADLINE_S = 4.0
 # 輪詢 /puck/status 的間隔——resolve 現在多半是 cache 命中幾乎瞬間完成，
@@ -3341,7 +3353,19 @@ class MusicCog(commands.Cog):
         while time.time() < deadline:
             await asyncio.sleep(_PUCK_STATUS_POLL_INTERVAL_S)
             st = await puck_client.status()
-            if st is not None and st.get("next_queued") == next_url:
+            if st is None:
+                continue
+            if st.get("playing") == next_url:
+                # 2026-08-19 py-spy+status實機驗證：deck_a 真的提早 EOF 時，Pi
+                # 自己的 eof_event 自救（_loop()）會搶在這個輪詢之前就把
+                # deck_b 扶正成 deck_a——這裡看到時 next_queued 早就被清成
+                # None 了，永遠不會走到下面 next_queued 分支，之前一律誤判成
+                # 「FIRE 時仍未偵測到 ready」放棄，但其實已經無縫換好了，只是
+                # 沒事先用 crossfade() 那 4 秒淡出淡入。不用再呼叫 crossfade()
+                # （deck_a 已經是它了，crossfade() 會錯誤地把它當 deck_b 處理）。
+                handed_off = True
+                break
+            if st.get("next_queued") == next_url:
                 handed_off = bool(await puck_client.crossfade(4.0))
                 break
         if not handed_off:
