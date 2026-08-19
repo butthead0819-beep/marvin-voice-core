@@ -55,7 +55,7 @@ async def test_queue_next_fires_at_prefetch_point_crossfade_fires_later_when_rea
          patch("asyncio.sleep", new=AsyncMock()):
         await cog._run_puck_pi_bt_crossfade(cur, time.time() - 10.0)
 
-    fake_client.queue_next.assert_awaited_once_with(nxt["webpage_url"], title=nxt["title"])
+    fake_client.queue_next.assert_awaited_once_with(nxt["webpage_url"], title=nxt["title"], seek=None)
     fake_client.crossfade.assert_awaited_once_with(4.0)
     assert nxt["_puck_pi_bt_handed_off"] is True
 
@@ -89,6 +89,71 @@ async def test_gives_up_without_crossfade_when_not_ready_at_fire_deadline():
 
     fake_client.crossfade.assert_not_awaited()
     assert nxt["_puck_pi_bt_handed_off"] is False
+
+
+@pytest.mark.asyncio
+async def test_highlight_start_s_still_subtracted_from_schedule():
+    """2026-08-19：pi_bt 現在真的把 highlight_start_s 當 seek 傳給 Pi（見
+    test_queue_next_passes_highlight_start_s_as_seek），Pi 播的內容跟 Discord
+    本地一樣是跳過前奏的版本，所以排程算 duration 時該扣掉這段——不能因為
+    「Pi 以前沒真的 seek」就永久放棄扣減，兩邊已經對齊了。用同一組
+    duration/real_start，有 highlight_start_s 該比沒有時更早觸發 FIRE
+    （sleep 到 FIRE 的秒數更短）。"""
+    cog = _make_cog()
+    nxt = _next_info()
+    fake_client = MagicMock()
+    fake_client.queue_next = AsyncMock(return_value=True)
+    fake_client.status = AsyncMock(return_value={"next_queued": nxt["webpage_url"]})
+    fake_client.crossfade = AsyncMock(return_value=True)
+
+    sleeps = {"with": [], "without": []}
+
+    def _make_recorder(label):
+        async def _record(delay):
+            sleeps[label].append(delay)
+        return _record
+
+    for label, cur in [
+        ("without", _cur_info(duration=180.0)),
+        ("with", {**_cur_info(duration=180.0), "highlight_start_s": 20.0}),
+    ]:
+        cog.stream_queue = [nxt]
+        _prime(cog, cur)
+        real_start = time.time() - 10.0
+        with patch("cogs.music_cog._get_puck_client", return_value=fake_client), \
+             patch("asyncio.sleep", new=AsyncMock(side_effect=_make_recorder(label))):
+            await cog._run_puck_pi_bt_crossfade(cur, real_start)
+
+    # duration 少 20s → expected_end_ts 提早 20s → PREFETCH/FIRE 兩個絕對時間
+    # 點各自都提早 20s，兩段 sleep 各短 20s，總和少 40s。
+    assert sum(sleeps["without"]) - sum(sleeps["with"]) == pytest.approx(40.0, abs=0.2)
+
+
+@pytest.mark.asyncio
+async def test_queue_next_passes_highlight_start_s_as_seek():
+    """2026-08-19 實機踩到「提前結束約10秒」：Pi 端一直沒真的套用
+    highlight_start_s（YouTube 熱力圖精華起點）跳過前奏，Discord 本地播放
+    卻有——Pi 播的內容比 Mac 排程假設的長了這段秒數，長期造成 Pi 提早進入
+    尾聲。改成 queue_next() 也把 highlight_start_s 當 seek 傳給 Pi，讓兩邊
+    播的是同一個起點。"""
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _next_info()
+    nxt["highlight_start_s"] = 12.3
+    cog.stream_queue = [nxt]
+    _prime(cog, cur)
+
+    fake_client = MagicMock()
+    fake_client.queue_next = AsyncMock(return_value=True)
+    fake_client.status = AsyncMock(return_value={"next_queued": nxt["webpage_url"]})
+    fake_client.crossfade = AsyncMock(return_value=True)
+
+    with patch("cogs.music_cog._get_puck_client", return_value=fake_client), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        await cog._run_puck_pi_bt_crossfade(cur, time.time() - 10.0)
+
+    fake_client.queue_next.assert_awaited_once_with(
+        nxt["webpage_url"], title=nxt["title"], seek=12.3)
 
 
 @pytest.mark.asyncio

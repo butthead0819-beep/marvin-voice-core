@@ -43,6 +43,7 @@ from intent_agents.recommendation import (
 )
 import io
 from memory_guard import is_memory_critical
+import owner_song_voice_samples
 from music_recommender import assign_unique_owners, build_member_pools, demote_low_quality_versions, find_recent_same_song, is_already_recommended, normalize_title, pick_candidates, ring_titles_for
 from music_memory import extract_video_id
 from playlist_utils import (
@@ -1353,6 +1354,37 @@ class MusicCog(commands.Cog):
         except Exception:
             return 0.0
 
+    async def _splice_owner_voice_clip(self, dj_audio: str | None, info: dict) -> str | None:
+        """語音點歌時，若能撈到 owner 當時點這首歌的原音片段，接在 DJ 介紹口白前面
+        當彩蛋（先放「我想聽周杰倫的歌」原音，再接 DJ 說「幫你點的...」）。
+
+        找不到樣本 / 非語音點歌 / 接檔失敗 → 原樣回傳 dj_audio，不影響既有行為
+        （見 owner_song_voice_samples.py：opt-in、只 owner、7 天滾動保留）。
+        """
+        if not dj_audio or not info.get('voice_request'):
+            return dj_audio
+        clip_path = owner_song_voice_samples.find_recent_clip(
+            f"{info.get('title', '')} {info.get('uploader', '')}"
+        )
+        if not clip_path:
+            return dj_audio
+        combined = f"{dj_audio}.with_clip.wav"
+
+        def _concat():
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", clip_path, "-i", dj_audio,
+                 "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1[out]",
+                 "-map", "[out]", combined],
+                capture_output=True, timeout=15, check=True,
+            )
+        try:
+            await asyncio.to_thread(_concat)
+            logger.info(f"🎙️ [SongVoiceSample] 已接原音彩蛋：{os.path.basename(clip_path)} → {info.get('title')}")
+            return combined
+        except Exception as e:
+            logger.debug(f"⚠️ [SongVoiceSample] 接原音失敗，退回純TTS: {e}")
+            return dj_audio
+
     async def _prepare_and_stage_story_arc(self, members: list, target_minutes: float):
         """Prepare 階段：跑生成管線 + 把片頭/每個節點的口白都預渲染成真實 TTS 音檔，
         存成一份「待播節目」（`dj_story_arc.save_staged_show`）。播放當下（Play 階段）
@@ -2143,6 +2175,8 @@ class MusicCog(commands.Cog):
                     logger.info(f"[DJ Tail] {title} DJ 已在上一首尾段播出，跳過開頭重播")
                     dj_audio = None
                     dj_data = None
+                if dj_audio:
+                    dj_audio = await self._splice_owner_voice_clip(dj_audio, info)
                 if dj_data and not dj_audio and vc is not None:
                     await self._maybe_play_dj_interjection(dj_data)
 
@@ -2167,7 +2201,8 @@ class MusicCog(commands.Cog):
                     puck_url = info.get('webpage_url', '')
                     if puck_client is not None and puck_url:
                         asyncio.create_task(
-                            self._fire_puck_play(puck_client, puck_url, title=info.get('title'))
+                            self._fire_puck_play(puck_client, puck_url, title=info.get('title'),
+                                                  highlight_start_s=info.get('highlight_start_s'))
                         )
 
                 self._current_song_skipped = False
@@ -2918,7 +2953,8 @@ class MusicCog(commands.Cog):
         except Exception as e:
             logger.warning(f"⚠️ [第三個Ack] 推播失敗: {e}")
 
-    async def _fire_puck_play(self, puck_client, url: str, title: str = None) -> None:
+    async def _fire_puck_play(self, puck_client, url: str, title: str = None,
+                               highlight_start_s: float = None) -> None:
         """[PuckMixer] 硬 play：沒有 standby deck 可 crossfade 接手時（開場第一首/skip/
         上一首無尾段task）用這個讓 ESP32 從乾淨狀態開播（見 car_puck.ino dispatchNewCommands
         的 play 分支：兩個 deck 都停、deck0 接新 URL）。fire-and-forget，失敗只記警告，
@@ -2930,8 +2966,14 @@ class MusicCog(commands.Cog):
         降到 ~7s（見 puck_mixer.py::resolve_stream_url() docstring）。
 
         title：pi_bt 硬體才會用到（見 puck_mixer.py 的 AVRCP metadata 掛勾），
-        esp32_edge_mix 的 PuckMixerClient 忽略這個欄位，安全。"""
-        ok = await puck_client.play(url, title=title)
+        esp32_edge_mix 的 PuckMixerClient 忽略這個欄位，安全。
+
+        highlight_start_s：2026-08-19 補上，YouTube 熱力圖精華起點——Discord
+        本地播放本來就會跳過前奏，Pi 端一直沒真的套用同一個位移，導致 Pi 實際
+        內容比 Mac 排程假設的長了這段秒數，長期造成 Pi 提早進入尾聲（見
+        puck_client.play() 的 seek 參數說明）。esp32 的 client 目前忽略這個欄位
+        （同 title），安全。"""
+        ok = await puck_client.play(url, title=title, seek=highlight_start_s)
         if not ok:
             logger.warning(f"[PuckMixer] play 失敗: {url}")
 
@@ -3176,6 +3218,11 @@ class MusicCog(commands.Cog):
         duration = cur_info.get('duration')
         if not duration or duration < _PUCK_PI_BT_PREFETCH_LEAD_S:
             return
+        # 2026-08-19：pi_bt 現在也真的套用 highlight_start_s（見 queue_next()
+        # 呼叫點帶 seek），Pi 播的是跟 Discord 本地一樣「跳過前奏」的內容，
+        # 這裡扣減才對得上 Pi 實際會播的長度（之前 Pi 端沒真的 seek 時，這裡
+        # 扣減會讓排程以為 Pi 內容比實際短了 highlight_start_s 秒，長期造成
+        # Pi 提早進入尾聲——已經改成兩邊都套用同一個起點，維持一致）。
         if cur_info.get('highlight_start_s'):
             duration = max(0.0, duration - cur_info['highlight_start_s'])
 
@@ -3220,7 +3267,8 @@ class MusicCog(commands.Cog):
         puck_client = _get_puck_client()
         if puck_client is None:
             return
-        ok = await puck_client.queue_next(next_url, title=next_info.get('title'))
+        ok = await puck_client.queue_next(
+            next_url, title=next_info.get('title'), seek=next_info.get('highlight_start_s'))
         if not ok:
             logger.warning(f"[PuckMixer] pi_bt queue_next 失敗，放棄本次 crossfade: {next_url}")
             next_info['_puck_pi_bt_handed_off'] = False

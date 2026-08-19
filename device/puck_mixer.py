@@ -108,18 +108,25 @@ MAC_BASE_URL = os.getenv("MARVIN_MAC_BASE_URL", "http://100.123.68.86:8790")
 MAC_TOKEN = os.getenv("MARVIN_MAC_TOKEN", "").strip() or os.getenv("MARVIN_VOL_TOKEN", "").strip() or None
 
 
-def resolve_stream_url(watch_url: str) -> str:
+def resolve_stream_url(watch_url: str, seek: float = None) -> str:
     """watch_url（youtube 頁面網址）→ Mac /puck_deck 轉發網址（見上方模組註解）。
     這裡不做任何網路呼叫，只是組字串——真正的 yt-dlp resolve+ffmpeg 轉碼在 Mac
     端的 handle_puck_deck 收到 ffmpeg 連進來才觸發，_make_decoder() 開的
     subprocess 直接對這個 URL 讀，跟原本讀 googlevideo 直連網址完全一樣的路徑。
     hw=pi_bt：main_satellite.py::handle_puck_deck 靠這個分辨呼叫端不是
     esp32_edge_mix，跳過幫 ESP32 中央 mixer 配的 volume=0.10 衰減——pi_bt
-    這邊已經是直接送去開滿的 bluealsa BT 音量，沒有下游 mixer 再衰減一次。"""
+    這邊已經是直接送去開滿的 bluealsa BT 音量，沒有下游 mixer 再衰減一次。
+
+    seek：2026-08-19 補上，YouTube 熱力圖精華起點（跳過前奏），跟 Mac 端
+    handle_puck_deck 既有的 seek 參數共用（原本是給斷線重連用，語意一樣是
+    「從第幾秒開始這條串流」）。不帶就是完整原始串流、從第 0 秒播——舊行為
+    不變。"""
     from urllib.parse import urlencode
     params = {"url": watch_url, "hw": "pi_bt"}
     if MAC_TOKEN:
         params["t"] = MAC_TOKEN
+    if seek:
+        params["seek"] = f"{seek:.2f}"
     return f"{MAC_BASE_URL}/puck_deck?{urlencode(params)}"
 
 
@@ -432,14 +439,15 @@ class PuckMixer:
                 "crossfading": self._crossfade_start is not None,
             }
 
-    def play(self, url: str, title: str = None):
+    def play(self, url: str, title: str = None, seek: float = None):
         """硬啟動/硬換：終止舊迴圈，單軌重新開播（開播/skip 用）。url 是 youtube
         頁面網址，這裡自己 yt-dlp resolve 成直連串流網址（見 resolve_stream_url()
         docstring：曾試過交給 Mac 端 resolve，被 Google IP 檢查擋 403，已 revert）。
         title 給 AVRCP metadata 用（見 __init__ 的 on_track_change）；None 就跳過，
-        不清空舊值——比起顯示過期標題，螢幕整個閃空白更糟。"""
+        不清空舊值——比起顯示過期標題，螢幕整個閃空白更糟。seek：YouTube 熱力圖
+        精華起點，見 resolve_stream_url() docstring。"""
         self.stop()
-        proc = _make_decoder(resolve_stream_url(url))
+        proc = _make_decoder(resolve_stream_url(url, seek=seek))
         with self._lock:
             self._deck_a = {"url": url, "proc": proc, **_start_deck_reader(proc)}
             self._deck_b = None
@@ -450,12 +458,13 @@ class PuckMixer:
         if title and self._on_track_change:
             self._on_track_change(title)
 
-    def queue_next(self, url: str, title: str = None):
+    def queue_next(self, url: str, title: str = None, seek: float = None):
         """背景解析+起 ffmpeg 緩衝下一首，不打斷目前播放。url 跟 play() 一樣是
         youtube 頁面網址，這裡自己 resolve（見 play() docstring）。title 存進
         deck，等 _loop() 真的 crossfade 換手（deck_b 變 deck_a）那刻才觸發
         on_track_change——不在這裡提前報，避免車機螢幕在轉場緩衝期間就搶先
-        顯示還沒真的在放的下一首。
+        顯示還沒真的在放的下一首。seek：YouTube 熱力圖精華起點，見
+        resolve_stream_url() docstring。
 
         ⚠️ 2026-08-19：原本這裡會多讀開頭 ~2.1s PCM 算 BPM＋合成這首歌專屬的
         刷碟轉場音效（estimate_bpm_from_pcm/gen_scratch_from_pcm，都是 numpy
@@ -477,7 +486,7 @@ class PuckMixer:
             return
         def _load():
             try:
-                stream_url = resolve_stream_url(url)
+                stream_url = resolve_stream_url(url, seek=seek)
                 proc = _make_decoder(stream_url)
             except Exception:
                 return

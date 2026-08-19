@@ -8,6 +8,13 @@ play()/queue_next() 的 title 是選填：Pi 端會轉成 AVRCP MediaPlayer1 met
 （見 device/avrcp_media_player.py），不影響播放本身，Pi 端沒裝 dbus 套件或
 註冊失敗也只是車機螢幕沒曲名可顯示。
 
+seek：2026-08-19 補上——YouTube 熱力圖精華起點（cur_info['highlight_start_s']），
+Discord 本地播放/DJ 口白排程本來就有算，但 Pi 端 resolve_stream_url() 一直沒
+真的帶這個位移，Pi 永遠從第 0 秒開始播完整串流，實際內容比 Mac 排程假設的
+長了 highlight_start_s 秒，長期會讓 Pi 端提早進入尾聲。現在跟 Mac 端
+/puck_deck 既有的 seek 參數（原本是給斷線重連用的）共用，讓 Pi 也真的跳過
+前奏，體驗跟 Discord 本地播放一致。
+
 speak_text()：DJ 口白傳輸（2026-08-17 補上，見該記憶「DJ口白傳輸路線定案」）。
 只送**文字**，不送音檔——Pi 自己呼叫 edge-tts 合成+疊播+duck 音樂（device/puck_mixer.py
 的 speak()）。跟 esp32_edge_mix 的 PuckCommandQueueClient.speak(audio_path)（送 Mac
@@ -57,16 +64,20 @@ class PuckMixerClient:
         logger.warning(f"[PuckMixer] {path} 連線失敗: {last_exc}")
         return False
 
-    async def play(self, url: str, title: str | None = None) -> bool:
+    async def play(self, url: str, title: str | None = None, seek: float | None = None) -> bool:
         body = {"url": url}
         if title:
             body["title"] = title
+        if seek:
+            body["seek"] = seek
         return await self._post("/puck/play", body)
 
-    async def queue_next(self, url: str, title: str | None = None) -> bool:
+    async def queue_next(self, url: str, title: str | None = None, seek: float | None = None) -> bool:
         body = {"url": url}
         if title:
             body["title"] = title
+        if seek:
+            body["seek"] = seek
         return await self._post("/puck/queue_next", body)
 
     async def crossfade(self, duration_s: float = 4.0) -> bool:

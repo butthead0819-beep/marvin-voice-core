@@ -61,7 +61,31 @@ async def test_stream_loop_fires_puck_play_for_song_not_played_in_tail():
         await cog._stream_loop()
         await asyncio.sleep(0)   # 讓 create_task 起的 _fire_puck_play 真的跑
 
-    fake_client.play.assert_awaited_once_with(song["webpage_url"], title=song["title"])
+    fake_client.play.assert_awaited_once_with(
+        song["webpage_url"], title=song["title"], seek=None)
+
+
+@pytest.mark.asyncio
+async def test_stream_loop_passes_highlight_start_s_as_seek_to_puck_play():
+    """2026-08-19：YouTube 熱力圖精華起點（highlight_start_s）該當 seek 傳給
+    Pi，讓 Pi 也跳過前奏，跟 Discord 本地播放內容對齊（見
+    project_car_puck_mk2... 記憶「提前結束約10秒」根因）。"""
+    cog = _make_cog()
+    song = _song()
+    song["highlight_start_s"] = 12.3
+    cog.stream_queue = [song]
+    cog.stream_mode = True
+    cog._prefetch_cache[song["url"]] = _done_future(None)
+
+    fake_client = MagicMock()
+    fake_client.play = AsyncMock(return_value=True)
+
+    with patch("cogs.music_cog._get_puck_client", return_value=fake_client):
+        await cog._stream_loop()
+        await asyncio.sleep(0)
+
+    fake_client.play.assert_awaited_once_with(
+        song["webpage_url"], title=song["title"], seek=12.3)
 
 
 @pytest.mark.asyncio
@@ -111,7 +135,7 @@ async def test_stream_loop_fires_puck_play_on_pi_bt_when_dj_tail_played_but_puck
         await cog._stream_loop()
         await asyncio.sleep(0)
 
-    fake_client.play.assert_awaited_once_with(song["webpage_url"], title=song["title"])
+    fake_client.play.assert_awaited_once_with(song["webpage_url"], title=song["title"], seek=None)
 
 
 @pytest.mark.asyncio

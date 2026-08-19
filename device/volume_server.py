@@ -900,13 +900,15 @@ class Handler(BaseHTTPRequestHandler):
                     url = data.get("url", "").strip()
                     if not url:
                         return self._send(400, {"error": "missing_url"})
-                    _puck_mixer.play(url, title=(data.get("title") or "").strip() or None)
+                    _puck_mixer.play(url, title=(data.get("title") or "").strip() or None,
+                                      seek=data.get("seek") or None)
                     return self._send(200, {"ok": True})
                 elif path == "/puck/queue_next":
                     url = data.get("url", "").strip()
                     if not url:
                         return self._send(400, {"error": "missing_url"})
-                    _puck_mixer.queue_next(url, title=(data.get("title") or "").strip() or None)
+                    _puck_mixer.queue_next(url, title=(data.get("title") or "").strip() or None,
+                                            seek=data.get("seek") or None)
                     return self._send(200, {"ok": True})
                 elif path == "/puck/crossfade":
                     duration_s = float(data.get("duration_s", 4.0))

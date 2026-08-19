@@ -9,7 +9,7 @@ from device.puck_mixer import PuckMixer
 def test_play_calls_on_track_change_with_title(monkeypatch):
     calls = []
     mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF", on_track_change=calls.append)
-    monkeypatch.setattr("device.puck_mixer.resolve_stream_url", lambda url, timeout=30.0: "cdn://x")
+    monkeypatch.setattr("device.puck_mixer.resolve_stream_url", lambda url, timeout=30.0, seek=None: "cdn://x")
     monkeypatch.setattr("device.puck_mixer._make_decoder", lambda url: MagicMock())
     monkeypatch.setattr(mixer, "_ensure_loop_running", lambda: None)
 
@@ -21,7 +21,7 @@ def test_play_calls_on_track_change_with_title(monkeypatch):
 def test_play_without_title_does_not_call_hook(monkeypatch):
     calls = []
     mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF", on_track_change=calls.append)
-    monkeypatch.setattr("device.puck_mixer.resolve_stream_url", lambda url, timeout=30.0: "cdn://x")
+    monkeypatch.setattr("device.puck_mixer.resolve_stream_url", lambda url, timeout=30.0, seek=None: "cdn://x")
     monkeypatch.setattr("device.puck_mixer._make_decoder", lambda url: MagicMock())
     monkeypatch.setattr(mixer, "_ensure_loop_running", lambda: None)
 
@@ -32,7 +32,7 @@ def test_play_without_title_does_not_call_hook(monkeypatch):
 
 def test_no_hook_configured_is_safe(monkeypatch):
     mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF")  # on_track_change 預設 None
-    monkeypatch.setattr("device.puck_mixer.resolve_stream_url", lambda url, timeout=30.0: "cdn://x")
+    monkeypatch.setattr("device.puck_mixer.resolve_stream_url", lambda url, timeout=30.0, seek=None: "cdn://x")
     monkeypatch.setattr("device.puck_mixer._make_decoder", lambda url: MagicMock())
     monkeypatch.setattr(mixer, "_ensure_loop_running", lambda: None)
 
@@ -41,7 +41,7 @@ def test_no_hook_configured_is_safe(monkeypatch):
 
 def test_queue_next_stores_title_on_deck(monkeypatch):
     mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF")
-    monkeypatch.setattr("device.puck_mixer.resolve_stream_url", lambda url, timeout=30.0: "cdn://x")
+    monkeypatch.setattr("device.puck_mixer.resolve_stream_url", lambda url, timeout=30.0, seek=None: "cdn://x")
     monkeypatch.setattr("device.puck_mixer._make_decoder", lambda url: MagicMock(stdout=MagicMock(read=lambda n: b"")))
     monkeypatch.setattr(
         "device.puck_mixer._read_chunk",
