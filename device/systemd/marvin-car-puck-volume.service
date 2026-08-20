@@ -1,5 +1,5 @@
 [Unit]
-Description=Marvin car puck mk2 混音/控制 HTTP 服務（/puck/play|queue_next|crossfade|stop|status）
+Description=Marvin car puck mk2 播放服務（連續消費 Mac /audio_stream + /puck/status 唯讀查詢）
 After=network-online.target sound.target marvin-car-puck-btspk.service
 Wants=network-online.target
 Requires=marvin-car-puck-btspk.service

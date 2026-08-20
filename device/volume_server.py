@@ -681,8 +681,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.command == "GET" and path in ("", "/panel"):
             return self._serve_panel()
         if path not in ("/vol", "/eq", "/balance", "/profile", "/ptt", "/presence", "/hud",
-                         "/puck/play", "/puck/queue_next", "/puck/crossfade", "/puck/stop",
-                         "/puck/status", "/puck/speak"):
+                         "/puck/status"):
             return self._send(404, {"error": "not_found"})
         q = parse_qs(parsed.query)
         if not self._authed(q):
@@ -883,50 +882,13 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send(400, {"error": "bad_request", "message": str(e)})
 
-        elif path.startswith("/puck/"):
-            # 車puck mk2 BT crossfade 混音：Mac 決策時機、Pi 純執行。
+        elif path == "/puck/status":
+            # 2026-08-20：車puck 換歌決策/DJ口白已改回 Mac 端 mixer 統一處理、Pi 純粹
+            # 連續消費 /audio_stream（見 device/puck_mixer.py 模組說明）——不再有
+            # play/queue_next/crossfade/speak/stop 這些指令端點，只剩唯讀狀態查詢。
             if _puck_mixer is None:
                 return self._send(503, {"error": "puck_mixer_unavailable"})
-            if path == "/puck/status":
-                return self._send(200, _puck_mixer.status())
-            n = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(n).decode() if n else "{}"
-            try:
-                data = json.loads(body) if body else {}
-            except Exception:
-                return self._send(400, {"error": "bad_json"})
-            try:
-                if path == "/puck/play":
-                    url = data.get("url", "").strip()
-                    if not url:
-                        return self._send(400, {"error": "missing_url"})
-                    _puck_mixer.play(url, title=(data.get("title") or "").strip() or None,
-                                      seek=data.get("seek") or None)
-                    return self._send(200, {"ok": True})
-                elif path == "/puck/queue_next":
-                    url = data.get("url", "").strip()
-                    if not url:
-                        return self._send(400, {"error": "missing_url"})
-                    _puck_mixer.queue_next(url, title=(data.get("title") or "").strip() or None,
-                                            seek=data.get("seek") or None)
-                    return self._send(200, {"ok": True})
-                elif path == "/puck/crossfade":
-                    duration_s = float(data.get("duration_s", 4.0))
-                    _puck_mixer.crossfade(duration_s)
-                    return self._send(200, {"ok": True})
-                elif path == "/puck/speak":
-                    text = (data.get("text") or "").strip()
-                    if not text:
-                        return self._send(400, {"error": "missing_text"})
-                    _puck_mixer.speak(text)  # 背景合成，立刻回應不卡 HTTP handler
-                    return self._send(200, {"ok": True})
-                elif path == "/puck/stop":
-                    _puck_mixer.stop()
-                    return self._send(200, {"ok": True})
-                else:
-                    return self._send(404, {"error": "not_found"})
-            except Exception as e:
-                return self._send(400, {"error": "bad_request", "message": str(e)})
+            return self._send(200, _puck_mixer.status())
 
     do_GET = _handle
     do_POST = _handle
@@ -938,6 +900,11 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     print(f"🔊 [VolumeServer] :{PORT}/vol  card={CARD} control={CONTROL} "
           f"token={'on' if TOKEN else 'off'}  現值={get_percent()}%", flush=True)
+    if _puck_mixer:
+        # 2026-08-20：像收音機一樣開機就連——不再等 Mac 送第一個 play() 指令才啟動
+        # 播放迴圈（那套指令模型已經整個拿掉，見 device/puck_mixer.py 模組說明）。
+        _puck_mixer.start()
+        print(f"🎧 [PuckMixer] 已啟動，連續消費 {os.getenv('MARVIN_MAC_BASE_URL', 'http://100.123.68.86:8790')}/audio_stream", flush=True)
     if _puck_mixer and PUCK_MIC_DEVICE and PuckMicAecLoop:
         _puck_mic_aec_loop = PuckMicAecLoop(
             mixer=_puck_mixer,

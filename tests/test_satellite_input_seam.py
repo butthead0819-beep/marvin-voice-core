@@ -96,6 +96,27 @@ def test_start_satellite_speaker_output_is_wyoming():
     assert isinstance(fake._local_speaker._output, WyomingSpeakerOutput)
 
 
+# ── extra_output：車 puck 跟家用喇叭共用同一顆 mixer，扇出兩路 ───────────────
+
+def test_start_satellite_without_extra_output_stays_plain_wyoming():
+    """沒給 extra_output（預設）→ 零行為改變，還是純 WyomingSpeakerOutput，不包 Tee。"""
+    fake = _make_fake_self()
+    ConnectionMixin.start_satellite_listening(fake)
+    assert isinstance(fake._local_speaker._output, WyomingSpeakerOutput)
+
+
+def test_start_satellite_with_extra_output_tees_both():
+    from marvin_voice_core.tee_speaker_output import TeeSpeakerOutput
+
+    fake = _make_fake_self()
+    car_output = MagicMock()
+    ConnectionMixin.start_satellite_listening(fake, extra_output=car_output)
+    tee = fake._local_speaker._output
+    assert isinstance(tee, TeeSpeakerOutput)
+    assert isinstance(tee._outputs[0], WyomingSpeakerOutput)
+    assert tee._outputs[1] is car_output
+
+
 # ── (h) 喚醒 hook → duck ──────────────────────────────────────────────────────
 
 def test_start_satellite_wires_detection_to_wake_hook():

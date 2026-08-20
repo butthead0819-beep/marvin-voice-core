@@ -42,15 +42,23 @@ REBOOT_STATE_FILE = ".marvin_reboot_state.json"
 # 最後一次 /summon 的文字頻道（跨重啟/重連持久化）。auto_rejoin_on_boot / soft_repair
 # 靜默回台時 active_text_channel 是 None，沒這份記錄只能退到語音頻道自帶文字區，使用者
 # 常用的文字頻道就收不到卡片/播報（2026-08-19 使用者反映：auto rejoin 貼卡貼到語音頻道
-# 內建文字區，不是平常在看的頻道）。
+# 內建文字區，不是平常在看的頻道）。使用者可指定任何文字頻道（含 #馬文的厭世日記）當目的地
+# ——別自作主張排除特定頻道，哪個頻道是「平常在看的」由使用者決定，不是頻道名稱決定。
 LAST_TEXT_CHANNEL_FILE = ".marvin_last_text_channel.json"
 
 
 def _write_last_text_channel(channel) -> None:
-    """/summon 設定 active_text_channel 時順手記一份到磁碟（失敗不阻斷）。"""
+    """/summon 設定 active_text_channel 時順手記一份到磁碟（失敗不阻斷）。
+
+    先寫暫存檔再 rename（POSIX 同檔案系統內 atomic）：2026-08-20 事故——bot 重啟
+    (SIGTERM) 剛好打在 open("w") 寫到一半，檔案被截斷成 `{"guild_id": ` 半截 JSON，
+    下次讀取直接 json.load 炸掉、靜默退回 except None，使用者指定的頻道形同沒存到。
+    """
     try:
-        with open(LAST_TEXT_CHANNEL_FILE, "w", encoding="utf-8") as f:
+        tmp_path = f"{LAST_TEXT_CHANNEL_FILE}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump({"guild_id": channel.guild.id, "channel_id": channel.id}, f)
+        os.replace(tmp_path, LAST_TEXT_CHANNEL_FILE)
     except Exception as e:
         logger.debug(f"[TextChannel] 記錄最後文字頻道失敗（不阻斷）: {e}")
 
@@ -1042,13 +1050,18 @@ class ConnectionMixin:
         if getattr(self, "_mixer", None) and os.getenv("MARVIN_WAKE_DUCK", "1") != "0":
             self._mixer.duck_for_wake()
 
-    def start_satellite_listening(self) -> None:
+    def start_satellite_listening(self, extra_output=None) -> None:
         """衛星模式輸入接縫：Pi wyoming-satellite → 現有 pipeline（實體音箱 S4）。
 
         對齊 start_local_listening；差異＝mic 來源是 WyomingSatelliteBridge（TCP 收 Pi
         麥、走同一 VAD/切句/STT），喇叭輸出注入 WyomingSpeakerOutput（音訊回送 Pi 播放），
         喚醒在 Pi 本地 openwakeword→送 Detection→duck。Discord 路徑完全不受影響。
-        """
+
+        extra_output：2026-08-20 補上，車 puck（pi_bt）跟家用喇叭共用同一個進程/同一顆
+        mixer——給了就用 TeeSpeakerOutput 把 WyomingSpeakerOutput（家用）跟這個額外輸出
+        （車 puck 的 StreamSpeakerOutput，見 main_satellite.py::setup_satellite）一起接
+        到同一份 mixer 輸出，兩邊各自消化各自那份，互不影響。None（預設）＝零行為改變，
+        只接家用喇叭。"""
         from marvin_voice_core.playback_device import LocalSpeakerDevice
         from marvin_voice_core.wyoming_bridge import WyomingSatelliteBridge
         from marvin_voice_core.wyoming_speaker_output import WyomingSpeakerOutput
@@ -1086,8 +1099,12 @@ class ConnectionMixin:
         self._LATENCY_DOMINATED_THRESHOLD = 120.0
 
         # 4. 喇叭輸出接縫：mixer 泵 → WyomingSpeakerOutput → 衛星喇叭
-        self.set_local_speaker(
-            LocalSpeakerDevice(output=WyomingSpeakerOutput(bridge, self.bot.loop)))
+        #    （extra_output 給了就用 TeeSpeakerOutput 多扇出一路給車 puck）
+        output = WyomingSpeakerOutput(bridge, self.bot.loop)
+        if extra_output is not None:
+            from marvin_voice_core.tee_speaker_output import TeeSpeakerOutput
+            output = TeeSpeakerOutput([output, extra_output])
+        self.set_local_speaker(LocalSpeakerDevice(output=output))
 
         # 5. always-allow consent stub（衛星單人用，無 Discord 同意流程）
         self.consent = _LocalConsentStub()

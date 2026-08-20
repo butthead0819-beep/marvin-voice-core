@@ -71,40 +71,14 @@ _DJ_TAIL_SFX_NAMES = ("scratch",)
 # stream loop 換歌撞在一起（見 _run_tail_dj docstring）。
 _DJ_TAIL_LEAD_S = 8.0
 _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
-# pi_bt 專用、跟 DJ 口白脫鉤的獨立 crossfade 排程。
-#
-# ⚠️ 2026-08-19：連續三次實機症狀（太早換歌 27s / 20s 空白 / 提早 8s 結束）
-# 都是同一個病根——把「多早開始 queue_next（resolve 要多久，猜不準）」跟
-# 「什麼時候真的觸發 crossfade（決定聽感上歌幾秒結束，要精準）」綁在同一個
-# 常數 LEAD_S 上。resolve 快就提早結束、resolve 慢就撞真正結尾被拒絕，兩個
-# 目標互相打架，怎麼調都會有一邊犧牲。
-#
-# 改成兩階段、各自獨立的時間點：
-#   PREFETCH（倒數 _PUCK_PI_BT_PREFETCH_LEAD_S）：只呼叫 queue_next()，
-#     不管 resolve 要多久、不觸發任何聽感上的變化，留寬鬆餘裕。
-#   FIRE（倒數 _PUCK_PI_BT_CROSSFADE_LEAD_S=8.0，跟 DJ 口白尾段同一個量級）：
-#     這才是真正決定聽感的時間點——因為 deck_b 早在 22s 前就開始 resolve，
-#     這裡的 /puck/status 輪詢理論上第一次就會命中，不必再靠猜秒數硬撐。
-#     用短的 _PUCK_PI_BT_FIRE_POLL_DEADLINE_S 當安全網：真的還沒 ready
-#     （網路異常慢）就放棄，交給已有的 _puck_pi_bt_handed_off=False 回退
-#     機制（下一首開頭補硬 play），不賭一把硬打。
-#
-# ⚠️ 2026-08-19 py-spy+/puck/status 實機交叉比對：deck_a 真正 EOF 的時間點
-# 比這裡算出的 expected_end_ts 早了 20~50 秒不等（同一批樣本內落差不小，
-# 不是固定幾秒的系統性偏移），30s 的 PREFETCH 餘裕常常不夠——deck_a 已經
-# 真的無聲了，PREFETCH（queue_next）才剛要開始 resolve，這段真空就是使用
-# 者聽到的斷播。deck_b 本身 resolve+起 reader thread 很快（1~3s 內拿到
-# 第一個真實 chunk，py-spy 也證實沒有卡在 GIL/thread 排程），瓶頸單純是
-# PREFETCH 觸發得太晚。拉大這個值不會有副作用（deck_b 準備好後就是在
-# queue 裡待命，Pi 端 loop() 靠 eof_event 自己判斷何時扶正，不會提前
-# 打斷 deck_a）。30→60s 先擋最壞情況；若之後樣本顯示落差仍能超過 60s，
-# 代表問題不是「餘裕不夠」而是 duration 估計本身系統性算錯，要往那個
-# 方向查（yt-dlp duration vs 實際串流長度、highlight_start_s 扣除邏輯）。
-_PUCK_PI_BT_PREFETCH_LEAD_S = 60.0
-_PUCK_PI_BT_CROSSFADE_LEAD_S = 8.0
-_PUCK_PI_BT_FIRE_POLL_DEADLINE_S = 4.0
-# 輪詢 /puck/status 的間隔——resolve 現在多半是 cache 命中幾乎瞬間完成，
-# 1s 夠即時又不會洗爆 Pi 的 HTTP handler。
+# ⚠️ 2026-08-17～20 連續實機症狀（太早換歌 27s / 20s 空白 / 提早 8s 結束 / deck_a
+# 尾段被腰斬 / DJ 口白晚於 Pi 已自行換歌之後才送達）——先後試過「Mac 算絕對時間戳」
+# 跟「FIRE 決策搬到 Pi 自己本地判斷」兩種架構，都還是製造出「兩條播放通道/兩個
+# 時鐘各自猜、互不知情」的變體。2026-08-20 定案：pi_bt 換歌決策改回跟
+# esp32_edge_mix 共用同一條 Mac 端排程（_run_tail_dj → _fire_puck_crossfade），
+# 換歌訊號跟 DJ 口白由同一個時鐘統一發出，不再讓 Pi 自己猜或另外同步。
+# 輪詢 /puck/status 的間隔（_fire_puck_crossfade 用，兩種硬體共用）——resolve
+# 現在多半是 cache 命中幾乎瞬間完成，1s 夠即時又不會洗爆 Pi 的 HTTP handler。
 _PUCK_STATUS_POLL_INTERVAL_S = 1.0
 
 # 2026-08-18：YouTube 對這台 Mac 的來源 IP 節流（連續多天 403 Forbidden 攀升，
@@ -130,51 +104,22 @@ _YT_COOKIES_FROM_BROWSER = os.getenv("MARVIN_YT_COOKIES_FROM_BROWSER", "chrome")
 _YT_COOKIES_FILE = os.path.expanduser(
     os.getenv("MARVIN_YT_COOKIES_FILE", "~/.config/marvin/youtube_cookies.txt"))
 
-_puck_mixer_client = None  # lazy singleton，見 _get_puck_client()
-
-
 def _get_puck_client():
-    """依 MARVIN_CAR_HARDWARE 回傳對應 client；其餘硬體（家用 Pi 3B 等）回 None、零行為
-    改變。兩種硬體走的 control-plane 方向不同（push vs pull），但介面（play/queue_next/
-    crossfade/stop 皆為 async、回 bool）一致，呼叫端（_fire_puck_crossfade）不用分辨：
-      - pi_bt（Pi mk2，見 device/puck_mixer.py）：Mac 直接 POST 到 Pi（LAN 內可連進去）。
-      - esp32_edge_mix（ESP32 car puck，見 marvin_voice_core/puck_command_queue.py）：
-        Pi 那招對 ESP32 不成立（永遠是它自己撥出連線，Mac 推不進去），改寫進本地佇列，
-        ESP32 用既有心跳節奏輪詢 /car_commands 拿指令。
-    """
-    global _puck_mixer_client
+    """MARVIN_CAR_HARDWARE=esp32_edge_mix 才回傳 client；其餘硬體（pi_bt 車 puck、家用
+    Pi 3B 等）回 None。
+
+    2026-08-20：pi_bt（Pi Zero 2W 車 puck）不再有專屬 client——換歌決策/DJ口白改回
+    跟家用喇叭共用同一顆 mixer、走 /audio_stream「收音機」模式（見
+    main_satellite.py::setup_satellite 的 TeeSpeakerOutput 說明），不需要 Mac 主動
+    POST 指令給 Pi 這條 control-plane 了（原本的 marvin_voice_core/puck_mixer_client.py
+    已隨之退役）。esp32_edge_mix 車 puck 永遠是它自己撥出連線，Mac 沒辦法主動推指令，
+    改寫進本地佇列，ESP32 用既有心跳節奏輪詢 /car_commands 拿指令
+    （見 marvin_voice_core/puck_command_queue.py）。"""
     hardware = os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower()
-    if hardware == "esp32_edge_mix":
-        from marvin_voice_core.puck_command_queue import PuckCommandQueueClient, get_default_queue
-        return PuckCommandQueueClient(get_default_queue())
-    if hardware != "pi_bt":
+    if hardware != "esp32_edge_mix":
         return None
-    if _puck_mixer_client is None:
-        from marvin_voice_core.puck_mixer_client import PuckMixerClient
-        base_url = os.getenv("MARVIN_PUCK_BASE_URL", "")
-        token = os.getenv("MARVIN_PUCK_TOKEN", "").strip() or None
-        if not base_url:
-            logger.warning("[PuckMixer] MARVIN_CAR_HARDWARE=pi_bt 但 MARVIN_PUCK_BASE_URL 未設，跳過")
-            return None
-        _puck_mixer_client = PuckMixerClient(base_url, token)
-    return _puck_mixer_client
-
-
-def _safe_pi_bt_seek(duration, highlight_start_s, min_remaining: float = 45.0):
-    """2026-08-19 實機踩到：youtube_heatmap.py::pick_highlight_start() 已經有
-    「起點離結尾剩不到 min_remaining 秒就放棄」的安全檢查，但實機仍量到
-    seek=255.96s 這種幾乎跳到歌曲尾端、只剩幾秒內容的異常值（duration 260s
-    左右）——上游那個檢查用的 duration 可能跟後續排程/播放實際用的 duration
-    不是同一份（不同時間點解析出的不同版本），導致原本該擋下的極端值漏過去，
-    pi_bt 端一 seek 過去幾乎立刻撞真 EOF，聽感是「必定提早結束」。與其去追
-    上游哪裡不一致，在真正套用 seek 的這一刻（_fire_puck_play/
-    _run_puck_pi_bt_crossfade 呼叫點）重新驗證一次剩餘時長夠不夠——不夠就
-    當作沒有這個 highlight，安全退回從頭播，不留任何攻擊面。"""
-    if not highlight_start_s or not duration:
-        return None
-    if duration - highlight_start_s < min_remaining:
-        return None
-    return highlight_start_s
+    from marvin_voice_core.puck_command_queue import PuckCommandQueueClient, get_default_queue
+    return PuckCommandQueueClient(get_default_queue())
 
 
 class MusicCog(commands.Cog):
@@ -225,6 +170,7 @@ class MusicCog(commands.Cog):
         self.stream_paused: bool = False
         self._current_lyrics: Optional[str] = None
         self._current_stream_comment: Optional[str] = None
+        self._current_stream_explanation: Optional[str] = None  # 🎯 推薦解釋（槽位填空，見 explanation_slotfill.py）
         self._current_stream_start_time: Optional[float] = None  # HUD 進度條用
         self._active_control_view = None
 
@@ -1745,6 +1691,11 @@ class MusicCog(commands.Cog):
             info['_spotlight'] = spotlight
             info['_lane'] = cand.lane
             info['_anchor_title'] = cand.anchor_title
+            # 🎯 推薦解釋：必須在這裡（record_play() 之前）算，不能等到真正播放時才算
+            # ——mm.all_songs() 到那時已經把「現在正要播的這次」記進 plays[]，會把「你
+            # 上次聽是 0 週前」這種自我指涉的假解釋算進去。這裡拿到的還是播放前的乾淨
+            # 歷史（見 explanation_slotfill.py 開頭動機說明）。
+            info['_explanation'] = self._compute_recommend_explanation(mm, cand)
             info['_round_position'] = enqueued
             # round 內同批 enqueue 時 stream_history 還沒更新到本輪前面幾首歌（要等真正播放
             # 才 append），DJ 反查 prev_title 會抓到上一輪的舊歷史。round 內歌曲會依序播放，
@@ -2068,6 +2019,7 @@ class MusicCog(commands.Cog):
                     duration=info.get("duration"),
                     song_start_time=self._current_stream_start_time,
                     comment=self._current_stream_comment,
+                    explanation=self._current_stream_explanation,
                 )
             else:
                 save_now_playing_state(playing=False)
@@ -2116,6 +2068,10 @@ class MusicCog(commands.Cog):
                 info = self.stream_queue.pop(0)
                 self._current_stream_info = info
                 self._current_stream_start_time = None
+                # 🎯 推薦解釋在 _auto_recommend 已算好存進 info（record_play 之前，見
+                # _compute_recommend_explanation docstring），這裡直接讀、不用等 meta——
+                # 要在 _publish_now_playing_state 之前設好，第一次發布就帶對的值。
+                self._current_stream_explanation = info.get('_explanation')
                 self._publish_now_playing_state(info)
                 self._current_lyrics = None
                 self._current_stream_comment = None
@@ -2209,22 +2165,16 @@ class MusicCog(commands.Cog):
                 if dj_data and not dj_audio and vc is not None:
                     await self._maybe_play_dj_interjection(dj_data)
 
-                # [PuckMixer] esp32_edge_mix：沒經過 _fire_puck_crossfade 接手的歌（開場
-                # 第一首、skip、或上一首沒排到尾段 task）要送硬 play 讓 ESP32 從乾淨狀態
-                # 開始播——跟 _fire_puck_crossfade 對稱，那邊只在尾段轉場時接手 standby
+                # [PuckMixer] esp32_edge_mix 專用：沒經過 _fire_puck_crossfade 接手的歌
+                # （開場第一首、skip、或上一首沒排到尾段 task）要送硬 play 讓裝置端從乾淨
+                # 狀態開始播——跟 _fire_puck_crossfade 對稱，那邊只在尾段轉場時接手 standby
                 # deck，不會有人叫它 play。見 _play_open()/_run_tail_dj() 前的說明。
                 #
-                # ⚠️ 2026-08-19：pi_bt 不能沿用 _dj_played_in_tail 判斷——那是 DJ 口白
-                # （Discord 端邏輯）有沒有講話，跟 Pi 裝置端的 _run_puck_pi_bt_crossfade
-                # 是否真的接手是兩件獨立的事（DJ 講了話不代表 Pi 端 crossfade 成功，
-                # 例如 Pi 剛好離線）。沿用會讓下一首開頭永久跳過硬 play、Pi 端 deck_a
-                # 停在 None 播不出聲音（實機踩到，見 incident_car_puck_hotspot_
-                # tailscale_relay 記憶）。改用 _run_puck_pi_bt_crossfade 設的
-                # _puck_pi_bt_handed_off（裝置端真的接手才 True）。
-                if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() == "pi_bt":
-                    _puck_handed_off = bool(info.get('_puck_pi_bt_handed_off'))
-                else:
-                    _puck_handed_off = _dj_played_in_tail
+                # 2026-08-20：pi_bt（車 puck Pi Zero 2W）不再走這條——換歌決策/DJ口白
+                # 改回跟家用喇叭共用同一顆 mixer（見 main_satellite.py::setup_satellite
+                # 的 TeeSpeakerOutput + /audio_stream「收音機」模式說明），_get_puck_client()
+                # 對 pi_bt 回 None，下面這段自然被跳過。
+                _puck_handed_off = _dj_played_in_tail
                 if not _puck_handed_off:
                     puck_client = _get_puck_client()
                     puck_url = info.get('webpage_url', '')
@@ -2232,8 +2182,8 @@ class MusicCog(commands.Cog):
                         asyncio.create_task(
                             self._fire_puck_play(
                                 puck_client, puck_url, title=info.get('title'),
-                                highlight_start_s=_safe_pi_bt_seek(
-                                    info.get('duration'), info.get('highlight_start_s')))
+                                highlight_start_s=info.get('highlight_start_s'),
+                                duration=info.get('duration'))
                         )
 
                 self._current_song_skipped = False
@@ -2249,8 +2199,9 @@ class MusicCog(commands.Cog):
                 # 的網路 seek + 整首解碼，拿它當基準會讓尾段提早點火（見 project_dj_tail_seek_latency）
                 # ——改傳 playback_started future，_run_tail_dj 改等 _mixer_play_music 真出聲才起算。
                 playback_started: "asyncio.Future | None" = None
-                if vc is not None and info.get('duration'):
+                if vc is not None:
                     playback_started = asyncio.get_event_loop().create_future()
+                if vc is not None and info.get('duration'):
                     self._tail_dj_task = asyncio.create_task(
                         self._run_tail_dj(info, playback_started)
                     )
@@ -2259,13 +2210,6 @@ class MusicCog(commands.Cog):
                             _self._tail_dj_task = None
                     self._tail_dj_task.add_done_callback(_clear_tail_task)
                     logger.info(f"[DJ Tail] 已排尾段 task：{title}（點火時抓下一首）")
-
-                    # [PuckMixer] pi_bt 的 crossfade 訊號跟 DJ 口白的 8s 窗口脫鉤，
-                    # 獨立排一個更早觸發的 task（見 _run_puck_pi_bt_crossfade docstring）。
-                    if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() == "pi_bt":
-                        asyncio.create_task(
-                            self._run_puck_pi_bt_crossfade(info, playback_started)
-                        )
 
                 try:
                     await self.play_stream_song(
@@ -2921,8 +2865,61 @@ class MusicCog(commands.Cog):
             return m if isinstance(m, dict) else None
         return None
 
+    def _compute_recommend_explanation(self, mm, cand) -> str | None:
+        """算這次 autopilot 推薦要附的解釋（見 explanation_slotfill.py）。
+
+        呼叫時機：**必須在 record_play() 之前**（見呼叫點 `_auto_recommend`）——
+        record_play 一執行，這次播放就會被記進 plays[]，晚一步算 evidence 會把
+        「現在正要播的這次」誤當成「你上次聽過」的證據，變成自我指涉的假解釋
+        （2026-08-20 實測發現）。
+
+        用 anchor_title 正規化比對找歷史紀錄，**不用 `mm._key(info)` 直接查**：
+        同一首歌重新 yt-dlp 搜尋常常命中不同 webpage_url（同名不同上傳，
+        music_memory.json 實測有 7 組重複標題、不同 key），照 key 查會找到一個
+        全新的空白 entry，漏掉真正的收聽歷史。改用 normalize_title 比對，命中
+        多筆同名 entry 時取 total_plays 最多的那個代表「這首歌」的歷史。
+        """
+        if not cand.lane or not hasattr(self.bot, 'music_memory'):
+            return None
+        try:
+            from explanation_slotfill import TemplateRotationStore, generate_explanation
+            from music_recommender import extract_evidence, normalize_title
+            import taste_profile
+
+            anchor_norm = normalize_title(cand.anchor_title)
+            song = None
+            if anchor_norm:
+                matches = [
+                    s for s in mm.all_songs().values()
+                    if isinstance(s, dict) and normalize_title(s.get('title', '')) == anchor_norm
+                ]
+                if matches:
+                    song = max(matches, key=lambda s: s.get('total_plays', 0))
+
+            evidence = None
+            if isinstance(song, dict):
+                evidence = extract_evidence(song, cand)
+                if evidence is not None and evidence.play_count == 0 and evidence.timestamp is None:
+                    evidence = None  # 沒有真的聽過紀錄，別硬湊一句「你聽過」
+
+            if evidence is None and cand.target_member:
+                adjacent = taste_profile.fresh_adjacent_artists(_TASTE_PROFILE_CACHE, [cand.target_member], 8 * 86400)
+                evidence = taste_profile.extract_discover_new_evidence(cand.anchor_artist, adjacent)
+
+            if evidence is None:
+                return None
+            return generate_explanation(evidence, store=TemplateRotationStore())
+        except Exception as e:
+            logger.debug(f"⚠️ [Explanation] 計算失敗，跳過本次解釋: {e}")
+            return None
+
     async def _fetch_song_meta(self, info: dict) -> dict:
-        """並行 fetch 歌詞、馬文評語、DJ 播報（含 TTS 預渲染）+ 長前奏跳過起點。"""
+        """並行 fetch 歌詞、馬文評語、DJ 播報（含 TTS 預渲染）+ 長前奏跳過起點。
+
+        推薦解釋不在這裡算——`_auto_recommend` 已在 record_play() 之前同步算好、
+        存進 `info['_explanation']`（見 `_compute_recommend_explanation` docstring
+        說明時機為何不能延後），這裡不用等、也不用重算。
+        """
         lyrics, comment, dj, lyrics_synced = await asyncio.gather(
             self._fetch_lyrics_raw(info),
             self._fetch_comment_raw(info),
@@ -2985,50 +2982,24 @@ class MusicCog(commands.Cog):
             logger.warning(f"⚠️ [第三個Ack] 推播失敗: {e}")
 
     async def _fire_puck_play(self, puck_client, url: str, title: str = None,
-                               highlight_start_s: float = None) -> None:
-        """[PuckMixer] 硬 play：沒有 standby deck 可 crossfade 接手時（開場第一首/skip/
-        上一首無尾段task）用這個讓 ESP32 從乾淨狀態開播（見 car_puck.ino dispatchNewCommands
-        的 play 分支：兩個 deck 都停、deck0 接新 URL）。fire-and-forget，失敗只記警告，
-        不影響本地 Discord/家用播放路徑。
+                               highlight_start_s: float = None, duration: float = None) -> None:
+        """[PuckMixer] esp32_edge_mix 專用硬 play：沒有 standby deck 可 crossfade 接手時
+        （開場第一首/skip/上一首無尾段task）用這個讓 ESP32 從乾淨狀態開播（見
+        car_puck.ino dispatchNewCommands 的 play 分支：兩個 deck 都停、deck0 接新
+        URL）。fire-and-forget，失敗只記警告，不影響本地 Discord/家用播放路徑。
 
-        2026-08-17 實測過改由 Mac 端 resolve 好直連網址再送過去——被 Google 用
-        來源 IP 檢查擋下 403，不可靠，已 revert。Pi 端（device/puck_mixer.py）
-        繼續自己跑 yt-dlp；yt-dlp 已升級到跟 Mac 同代版本，resolve 從 18-23s
-        降到 ~7s（見 puck_mixer.py::resolve_stream_url() docstring）。
-
-        title：pi_bt 硬體才會用到（見 puck_mixer.py 的 AVRCP metadata 掛勾），
-        esp32_edge_mix 的 PuckMixerClient 忽略這個欄位，安全。
-
-        highlight_start_s：2026-08-19 補上，YouTube 熱力圖精華起點——Discord
-        本地播放本來就會跳過前奏，Pi 端一直沒真的套用同一個位移，導致 Pi 實際
-        內容比 Mac 排程假設的長了這段秒數，長期造成 Pi 提早進入尾聲（見
-        puck_client.play() 的 seek 參數說明）。esp32 的 client 目前忽略這個欄位
-        （同 title），安全。
-
-        ⚠️ 2026-08-19 實機踩到：這裡（Mac 端判斷 crossfade 失敗的保底機制）跟
-        Pi 端 device/puck_mixer.py 的 EOF 自我修復是兩個獨立設計、互不知情的
-        保險——Mac 記錄的是「FIRE 時輪詢逾時、crossfade 失敗」（
-        _puck_pi_bt_handed_off=False），但 Pi 可能在那之後、deck_b 真正 ready
-        時自己已經扶正了（見 puck_mixer.py::_loop() 的 eof_event 分支）。兩者
-        沒協調就會撞成「Pi 已經自己救活、Mac 又送一次硬 play 砍掉重開」，聽感
-        是「deck B 順利接上、播了幾秒、口白講完後又從頭開始」。硬 play 前先問
-        一次 Pi 現在是不是已經在播這首（url 對得上），對得上就跳過，不要畫蛇
-        添足。"""
-        if hasattr(puck_client, "status"):
-            st = await puck_client.status()
-            if st is not None and st.get("playing") == url:
-                logger.info(f"[PuckMixer] Pi 已經在播這首（可能是自己 EOF 自救成功），跳過補硬 play: {url}")
-                return
-        ok = await puck_client.play(url, title=title, seek=highlight_start_s)
+        title/highlight_start_s/duration：ESP32 的 PuckCommandQueueClient 目前忽略
+        這幾個欄位，接受它們只是跟其他 client 維持同款介面（見
+        marvin_voice_core/puck_command_queue.py::PuckCommandQueueClient.play）。"""
+        ok = await puck_client.play(url, title=title, seek=highlight_start_s, duration=duration)
         if not ok:
             logger.warning(f"[PuckMixer] play 失敗: {url}")
 
     async def _fire_puck_stop(self, puck_client) -> None:
-        """[PuckMixer] 2026-08-17 實機踩到：stop_stream() 原本從沒通知裝置端，
-        Mac 說「停止播放」後 stream_mode 歸位，但 Pi 端 `/puck/status` 仍卡在舊
-        `playing: <url>`、deck 繼續跑，下次 /puck/play 送新歌時容易殘留舊狀態，
-        也讓「兩首歌之間卡住」難以用 /puck/status 排查（分不清是 Mac 沒下指令
-        還是 Pi 沒接到）。裝置端通知是盡力而為，失敗不擋 Mac 端本身的停播流程。"""
+        """[PuckMixer] esp32_edge_mix 專用。2026-08-17 實機踩到：stop_stream() 原本
+        從沒通知裝置端，Mac 說「停止播放」後 stream_mode 歸位，但裝置端狀態沒同步，
+        下次送新歌時容易殘留舊狀態。裝置端通知是盡力而為，失敗不擋 Mac 端本身的
+        停播流程。"""
         try:
             ok = await puck_client.stop()
             if not ok:
@@ -3039,21 +3010,10 @@ class MusicCog(commands.Cog):
     async def _fire_puck_speak(self, puck_client, audio_path: str) -> None:
         """[PuckMixer Phase3] DJ 口白：ESP32 端會 duck 音樂再疊播（見
         car_puck.ino::mixOutputTask 的 VOICE_DUCK_GAIN）。esp32_edge_mix 專用
-        （送 Mac 本機預渲染音檔路徑，ESP32 pull 播放）；pi_bt 走 _fire_puck_speak_text
-        （送文字，見該方法說明），呼叫端用 hasattr 分辨。"""
+        （送 Mac 本機預渲染音檔路徑，ESP32 pull 播放）。"""
         ok = await puck_client.speak(audio_path)
         if not ok:
             logger.warning(f"[PuckMixer] speak 失敗: {audio_path}")
-
-    async def _fire_puck_speak_text(self, puck_client, text: str) -> None:
-        """[PuckMixer] pi_bt 專用 DJ 口白（2026-08-17 補上，見
-        project_car_puck_mk2_pi_zero2w_bt_mixer_validated 記憶「DJ口白傳輸路線
-        定案」）。只送文字——Pi 自己呼叫 edge-tts 合成+duck 音樂疊播
-        （device/puck_mixer.py::PuckMixer.speak()），不像 esp32_edge_mix 那樣送
-        Mac 本機音檔路徑（Pi 讀不到 Mac 檔案系統）。"""
-        ok = await puck_client.speak_text(text)
-        if not ok:
-            logger.warning(f"[PuckMixer] speak_text 失敗: {text[:20]}")
 
     async def _fire_puck_sfx(self, puck_client, audio_path: str) -> None:
         """[PuckMixer Phase3] 轉場音效：不 duck，直接疊播。"""
@@ -3068,8 +3028,12 @@ class MusicCog(commands.Cog):
         ffmpeg 起手緩衝，再送 crossfade。跟本地 Discord mixer/DJ 口白邏輯
         完全獨立（見呼叫點 _run_tail_dj），queue_next 失敗就放棄、不重試（下一輪
         tail-fire 或下一首開頭會再給機會）。回傳裝置端是否真的接手了下一首
-        （queue_next 或 crossfade 任一步失敗都是 False）——pi_bt 靠這個回傳值
-        決定要不要在下一首開頭補一次硬 play（見 _run_puck_pi_bt_crossfade）。
+        （queue_next 或 crossfade 任一步失敗都是 False）。esp32_edge_mix 專用——
+
+        2026-08-20：pi_bt（Pi Zero 2W 車 puck）換歌決策/DJ口白改回跟家用喇叭共用
+        同一顆 mixer（見 main_satellite.py::setup_satellite 的 TeeSpeakerOutput +
+        /audio_stream「收音機」模式說明），不再需要 Mac 送 play/queue_next/crossfade
+        指令，這支函式跟 pi_bt 完全脫鉤，只剩 esp32_edge_mix 會呼叫。
 
         buffer_s 2.0→4.0（2026-08-11）：esp32_edge_mix 實機驗證，2.0s 對 ESP32 的
         /puck_deck 鏈路（Mac resolve+ffmpeg轉碼+MP3編碼+網路傳輸)不夠，crossfade
@@ -3077,10 +3041,7 @@ class MusicCog(commands.Cog):
 
         ⚠️ 2026-08-17：這裡收到的 buffer_s 上限由呼叫端決定的觸發窗口決定——
         esp32_edge_mix 走 _run_tail_dj 內建的 _DJ_TAIL_LEAD_S(=8.0)s 窗口，不能
-        逼近甚至超過它；pi_bt 已改走獨立更早觸發的 _run_puck_pi_bt_crossfade
-        （_PUCK_PI_BT_CROSSFADE_LEAD_S，見該函式），buffer_s 才有餘裕給 Pi 自己
-        resolve（yt-dlp 升級後 ~7s）用，不再需要 Mac 端 resolve 那條會被 IP 檢查
-        擋 403 的路（2026-08-17 實測過、不可靠，已 revert）。
+        逼近甚至超過它。
 
         ⚠️ 2026-08-18：pi_bt 接上 YouTube cookies 後，resolve 常要吃到 ~24s CPU
         time（deno 解 JS challenge，見 puck_mixer.py::resolve_stream_url()
@@ -3100,8 +3061,8 @@ class MusicCog(commands.Cog):
             # 直接放棄這次 crossfade，不要賭一把硬打（那個賭注就是「花田錯
             # 提早結束 20s 空白」的根因：逼近真正歌曲結尾時 Pi 端 deck_b 常常
             # 還沒好，crossfade() 丟 RuntimeError 失敗，反而比乾脆不打還慢）。
-            # 放棄後交給 _run_puck_pi_bt_crossfade 設的 _puck_pi_bt_handed_off
-            # =False，下一首開頭會補一次硬 play（見該函式/_stream_loop）。
+            # 放棄後回傳 False，呼叫端（_run_tail_dj）不會標記 _dj_played_in_tail，
+            # 下一首開頭走 _fire_puck_play 的既有硬 play 回退路徑（見該函式）。
             deadline = time.time() + buffer_s
             ready = False
             while time.time() < deadline:
@@ -3194,10 +3155,13 @@ class MusicCog(commands.Cog):
             return
         title_next = next_info.get('title', '?')
 
-        # [PuckMixer] pi_bt(Pi mk2)/esp32_edge_mix(ESP32)硬體：額外送純音樂 crossfade
-        # 訊號給裝置端，跟下面本地 Discord mixer 的 DJ 口白邏輯完全獨立、不共用旗標、
-        # 不影響其他硬體行為（DJ 口白走另一條未實作的 TTS 串流管線，這裡只管換歌）。
-        # fire-and-forget 背景 task，不阻塞/不改變既有 flow 的時序。
+        # [PuckMixer] esp32_edge_mix 專用：額外送純音樂 crossfade 訊號給裝置端，跟下面
+        # 本地 Discord mixer 的 DJ 口白邏輯完全獨立、不共用旗標、不影響其他硬體行為
+        # （DJ 口白走另一條未實作的 TTS 串流管線，這裡只管換歌）。fire-and-forget
+        # 背景 task，不阻塞/不改變既有 flow 的時序。pi_bt（車 puck Pi Zero 2W）
+        # 2026-08-20 起不再呼叫這裡——換歌決策/DJ口白改回跟家用喇叭共用同一顆 mixer
+        # （見 main_satellite.py::setup_satellite 的 TeeSpeakerOutput + /audio_stream
+        # 說明），_get_puck_client() 對 pi_bt 回 None，下面這段自然被跳過。
         #
         # ⚠️ 2026-08-11 實機踩到：這裡一定要用 webpage_url（可重新 yt-dlp resolve 的
         # youtube 頁面網址），不能用 'url'——後者是 _resolve_yt_query() 當下呼叫 yt-dlp
@@ -3205,12 +3169,10 @@ class MusicCog(commands.Cog):
         # esp32_edge_mix 收到 webpage_url 後靠 /puck_deck 端點在 Mac 端重新
         # resolve（main_satellite.py::handle_puck_deck），餵一個已經是 CDN 網址
         # 的字串進去再 resolve 一次 100% 失敗（實機驗證：ESP32 /puck_deck 穩定
-        # 回 502）。pi_bt 不在這裡點火——它有自己獨立、更早觸發的排程（見
-        # _run_puck_pi_bt_crossfade），跟 DJ 口白的 8s 窗口脫鉤（2026-08-17）。
-        hardware = os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower()
+        # 回 502）。
         puck_client = _get_puck_client()
         next_url = next_info.get('webpage_url', '')
-        if puck_client is not None and next_url and hardware != "pi_bt":
+        if puck_client is not None and next_url:
             asyncio.create_task(
                 self._fire_puck_crossfade(puck_client, next_url, title=next_info.get('title'))
             )
@@ -3236,206 +3198,6 @@ class MusicCog(commands.Cog):
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
 
-    async def _diag_pi_vs_mac_start_offset(self, title_cur: str, real_start: float) -> None:
-        """2026-08-19 診斷專用：量「Mac 以為幾點開播」(real_start) 跟「Pi puck
-        自己實際幾點『變成正在播放這首歌』」(deck_a_promoted_at，見
-        device/puck_mixer.py status()) 的落差。
-
-        ⚠️ 走過兩版才對：
-        v1 靠「等 deck_a_first_chunk_ts 從基準值變成新值」判斷，20 秒內等不到
-        變化（crossfade 接手時這個值早在 PREFETCH 階段就蓋好了，不會再變）。
-        v2 改成直接抓當下 deck_a_first_chunk_ts，結果量到 -58.54s / -56.50s
-        這種大負值——因為 first_chunk_ts 記的是「ffmpeg 解碼開始」那一刻
-        （PREFETCH 觸發時，可能是出聲前 50~60 秒），不是「這首歌真的開始播」
-        那一刻，兩者被錯誤地劃上等號，量到的其實是 PREFETCH_LEAD_S 本身，不是
-        真正的落差。v3（這版）改用 deck_a_promoted_at——deck 真正變成 deck_a
-        （硬 play() / crossfade() 完成 / eof_event 自救扶正）那一刻的獨立
-        時間戳，這才是跟 real_start 同一件事可以互相比對的量。"""
-        puck_client = _get_puck_client()
-        if puck_client is None:
-            return
-        deadline = time.time() + 15.0
-        last_ts = None
-        while time.time() < deadline:
-            try:
-                st = await puck_client.status()
-            except Exception:
-                st = None
-            if st is not None:
-                ts = st.get("deck_a_promoted_at")
-                if ts is not None:
-                    last_ts = ts
-                    if abs(ts - real_start) < 90.0:
-                        delta = ts - real_start
-                        logger.info(
-                            f"[PuckMixer][Diag] {title_cur}：real_start(Mac)={real_start:.2f}，"
-                            f"deck_a_promoted_at(Pi)={ts:.2f}，落差(Pi-Mac)={delta:+.2f}s"
-                        )
-                        return
-            await asyncio.sleep(0.5)
-        if last_ts is not None:
-            logger.info(
-                f"[PuckMixer][Diag] {title_cur}：15s 內讀到的 deck_a_promoted_at={last_ts:.2f} "
-                f"跟 real_start 差 {last_ts - real_start:+.2f}s，超出合理範圍（可能是舊值），放棄本次量測"
-            )
-        else:
-            logger.info(f"[PuckMixer][Diag] {title_cur}：15s 內都讀不到 deck_a_promoted_at，放棄本次量測")
-
-    async def _run_puck_pi_bt_crossfade(self, cur_info: dict, song_start_time) -> None:
-        """[PuckMixer] pi_bt 專用，跟 DJ 口白的 _run_tail_dj/_DJ_TAIL_LEAD_S 完全脫鉤
-        的獨立 crossfade 排程（2026-08-17）。
-
-        2026-08-19 重寫成兩階段＋絕對時間戳記排程。拆開「多早開始 resolve」跟
-        「什麼時候真的換歌」這兩件事——之前綁在同一個 LEAD_S 常數上，resolve
-        快就提早結束、resolve 慢就撞真正結尾被拒絕，怎麼調都會有一邊犧牲
-        （連續實機症狀：太早換歌 27s / 20s 空白 / 提早結束）：
-          1. PREFETCH（`fire_end_ts - _PUCK_PI_BT_PREFETCH_LEAD_S`）：只
-             queue_next()，不觸發任何聽感變化，留寬鬆餘裕給 resolve。
-          2. FIRE（`fire_end_ts - _PUCK_PI_BT_CROSSFADE_LEAD_S`，跟 DJ 口白
-             尾段同量級）：真正決定聽感的時間點——deck_b 早就開始 resolve，
-             這裡短暫輪詢（_PUCK_PI_BT_FIRE_POLL_DEADLINE_S）理論上第一次
-             就會命中；真的還沒 ready 就放棄，交給 _puck_pi_bt_handed_off
-             =False 回退機制（下一首開頭補硬 play），不賭一把硬打。
-
-        ⚠️ 兩個時間點都是「歌開播時算好的絕對 wall-clock 時間戳記」
-        （real_start + duration 為錨點），不是疊加相對 sleep()——第一版疊加
-        寫法忘了扣掉兩次 sleep 中間 queue_next() 那段真實網路延遲，每次都在
-        累積漂移，FIRE 時機因此忽早忽晚。改成每次要睡多久都用「絕對目標時間
-        − 現在時間」重新算，drift 不會累積。
-
-        跟 _run_tail_dj 平行排程、各自獨立 sleep，互不阻塞；任一方被取消（skip/
-        stop）只影響自己那份。"""
-        title_cur = cur_info.get('title', '?')
-        duration = cur_info.get('duration')
-        if not duration or duration < _PUCK_PI_BT_PREFETCH_LEAD_S:
-            return
-        # 2026-08-19：pi_bt 現在也真的套用 highlight_start_s（見 queue_next()
-        # 呼叫點帶 seek），Pi 播的是跟 Discord 本地一樣「跳過前奏」的內容，
-        # 這裡扣減才對得上 Pi 實際會播的長度（之前 Pi 端沒真的 seek 時，這裡
-        # 扣減會讓排程以為 Pi 內容比實際短了 highlight_start_s 秒，長期造成
-        # Pi 提早進入尾聲——已經改成兩邊都套用同一個起點，維持一致）。
-        #
-        # ⚠️ 用 _safe_pi_bt_seek() 驗證過的值，不要直接信 cur_info 裡的原始
-        # highlight_start_s——實機量到過安全邊界失守的異常值（見該函式
-        # docstring：seek=255.96s 幾乎跳到歌曲尾端）。跟 queue_next() 那邊套用
-        # 的是不是同一個安全值要一致，否則排程跟實際 seek 又會對不上。
-        safe_highlight = _safe_pi_bt_seek(duration, cur_info.get('highlight_start_s'))
-        if safe_highlight:
-            duration = max(0.0, duration - safe_highlight)
-
-        if isinstance(song_start_time, asyncio.Future):
-            try:
-                real_start = await song_start_time
-            except asyncio.CancelledError:
-                return
-        else:
-            real_start = song_start_time
-
-        # 2026-08-19：真正的斷播根因追查——deck_a 真實 EOF 常常比這裡算出來的
-        # expected_end_ts 早 20~50 秒不等，懷疑是 Mac 這邊的 real_start（Discord
-        # 本地播放器出聲的時間戳）跟 Pi puck 自己實際出聲（_fire_puck_play() 發
-        # HTTP → Pi resolve+起 ffmpeg → 第一個真實 chunk）中間有落差，兩條路徑
-        # 各自獨立、沒有互相校準過。獨立起一個不擋排程的診斷 task，直接拿
-        # Pi 自己回報的「deck_a 第一個真實 chunk 到手」時間戳跟這裡的 real_start
-        # 比對，落差是正是負、多大，一次看清楚，不用再靠猜。
-        asyncio.create_task(self._diag_pi_vs_mac_start_offset(title_cur, real_start))
-
-        expected_end_ts = real_start + duration
-        prefetch_at = expected_end_ts - _PUCK_PI_BT_PREFETCH_LEAD_S
-        fire_at = expected_end_ts - _PUCK_PI_BT_CROSSFADE_LEAD_S
-        if fire_at <= time.time():
-            logger.info(f"[PuckMixer] pi_bt {title_cur} 過窗或歌太短，不排 crossfade")
-            return
-
-        try:
-            await asyncio.sleep(max(0.0, prefetch_at - time.time()))
-        except asyncio.CancelledError:
-            return
-
-        def _still_current() -> bool:
-            if not self.stream_mode:
-                return False
-            if getattr(self, '_current_song_skipped', False):
-                return False
-            return self._current_stream_info is cur_info
-
-        if not _still_current():
-            return
-
-        next_info = self.stream_queue[0] if self.stream_queue else None
-        if next_info is None:
-            logger.info(f"[PuckMixer] pi_bt {title_cur} PREFETCH 時 queue 仍空，放棄")
-            return
-        next_url = next_info.get('webpage_url', '')
-        if not next_url:
-            return
-
-        puck_client = _get_puck_client()
-        if puck_client is None:
-            return
-        # 2026-08-19：診斷用時間戳記——追「deck_b 幾乎每首歌都來不及」這個
-        # 反覆出現的症狀，只憑事後 log 反推對不準真正卡在哪一段（PREFETCH
-        # 排程本身晚了？queue_next() HTTP 往返慢？Pi 端 resolve+起 ffmpeg
-        # 慢？），直接記精確時間點，下次發生時能一眼看出來。
-        _prefetch_call_ts = time.time()
-        ok = await puck_client.queue_next(
-            next_url, title=next_info.get('title'),
-            seek=_safe_pi_bt_seek(next_info.get('duration'), next_info.get('highlight_start_s')))
-        _prefetch_rtt = time.time() - _prefetch_call_ts
-        if not ok:
-            logger.warning(f"[PuckMixer] pi_bt queue_next 失敗，放棄本次 crossfade: {next_url}")
-            next_info['_puck_pi_bt_handed_off'] = False
-            return
-        logger.info(
-            f"[PuckMixer] pi_bt PREFETCH queue_next({next_url}) 成功，"
-            f"HTTP 往返 {_prefetch_rtt:.2f}s，距 FIRE 還有 {fire_at - time.time():.1f}s"
-        )
-
-        # ⚠️ 重新用「fire_at − 現在時間」算，不是固定睡 PREFETCH_LEAD_S 減
-        # FIRE_LEAD_S 那段差值——上面 queue_next() 的網路往返已經吃掉了一段
-        # 真實時間，固定差值會把這段延遲原封不動疊加到 FIRE 時機上。
-        try:
-            await asyncio.sleep(max(0.0, fire_at - time.time()))
-        except asyncio.CancelledError:
-            return
-
-        if not _still_current():
-            return
-
-        handed_off = False
-        deadline = fire_at + _PUCK_PI_BT_FIRE_POLL_DEADLINE_S
-        while time.time() < deadline:
-            await asyncio.sleep(_PUCK_STATUS_POLL_INTERVAL_S)
-            st = await puck_client.status()
-            if st is None:
-                continue
-            if st.get("playing") == next_url:
-                # 2026-08-19 py-spy+status實機驗證：deck_a 真的提早 EOF 時，Pi
-                # 自己的 eof_event 自救（_loop()）會搶在這個輪詢之前就把
-                # deck_b 扶正成 deck_a——這裡看到時 next_queued 早就被清成
-                # None 了，永遠不會走到下面 next_queued 分支，之前一律誤判成
-                # 「FIRE 時仍未偵測到 ready」放棄，但其實已經無縫換好了，只是
-                # 沒事先用 crossfade() 那 4 秒淡出淡入。不用再呼叫 crossfade()
-                # （deck_a 已經是它了，crossfade() 會錯誤地把它當 deck_b 處理）。
-                handed_off = True
-                break
-            if st.get("next_queued") == next_url:
-                handed_off = bool(await puck_client.crossfade(4.0))
-                break
-        if not handed_off:
-            logger.warning(f"[PuckMixer] pi_bt FIRE 時仍未偵測到 deck_b ready，放棄本次 crossfade: {next_url}")
-        else:
-            logger.info(
-                f"[PuckMixer] pi_bt FIRE 成功，deck_b({next_url}) 從 PREFETCH queue_next() "
-                f"成功到真正 ready 共花了 {time.time() - _prefetch_call_ts:.1f}s"
-            )
-        # 2026-08-19：跟 _dj_played_in_tail（DJ 口白是否有講話，Discord 端邏輯）
-        # 脫鉤——那個旗標曾被誤用來判斷「pi_bt 裝置端要不要補硬 play」，兩者其實
-        # 無關：DJ 有講話不代表 Pi 真的接到 crossfade（例如 Pi 剛好離線/queue_next
-        # 失敗），沿用 _dj_played_in_tail 會讓下一首開頭永久跳過硬 play、Pi 端
-        # deck_a 停在 None，crossfade 邏輯又不會 promote 空的 deck_a，變成永久靜音
-        # （2026-08-19 實機踩到）。改成裝置端真的接手了才標記。
-        next_info['_puck_pi_bt_handed_off'] = handed_off
 
     def _start_music_preload(self, info: dict) -> None:
         """[DJ Tail] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song 換源時直接用
@@ -3556,19 +3318,15 @@ class MusicCog(commands.Cog):
                 # 不可用 play_local_file——那條把檔案設成音樂層來源會替換掉正在播的歌，
                 # DJ 只播到切歌點就被下一首蓋掉（使用者實測「只聽到狗與露就停」）。
                 await vc.play_dj_on_tts_layer(audio_path)
-                # [PuckMixer] vc.play_dj_on_tts_layer 疊的 DJ 口白只會出現在 Discord/
-                # 家用混音（走 vc 自己的輸出），到不了車puck 硬體——另外送一份給裝置端
-                # 自己疊播+duck。兩種硬體傳輸模型不同，用 hasattr 分辨（speak_text 優先）：
-                #   pi_bt：送文字，Pi 自己 edge-tts 合成（2026-08-17，見
-                #     project_car_puck_mk2_pi_zero2w_bt_mixer_validated 記憶）
-                #   esp32_edge_mix：送 Mac 本機預渲染音檔路徑，ESP32 pull 播放
-                #     （見 car_puck.ino 的 speak 分支）
-                # 只有 audio_path 有預渲染檔的情況才送，即時 TTS（else 分支）沒有
-                # 檔案/固定文字可傳，這裡先不接。
+                # [PuckMixer] vc.play_dj_on_tts_layer 疊的 DJ 口白出現在這個進程自己的
+                # mixer 輸出——pi_bt（車 puck Pi Zero 2W）2026-08-20 起也接進同一顆
+                # mixer（見 main_satellite.py::setup_satellite 的 TeeSpeakerOutput 說明），
+                # DJ 口白自然隨 /audio_stream 一起播到車上，不用另外傳。esp32_edge_mix
+                # 仍是獨立通道（送 Mac 本機預渲染音檔路徑，ESP32 pull 播放，見
+                # car_puck.ino 的 speak 分支）——只有 audio_path 有預渲染檔的情況才送，
+                # 即時 TTS（else 分支）沒有檔案/固定文字可傳，這裡先不接。
                 puck_client = _get_puck_client()
-                if puck_client is not None and hasattr(puck_client, "speak_text"):
-                    asyncio.create_task(self._fire_puck_speak_text(puck_client, text))
-                elif puck_client is not None and hasattr(puck_client, "speak"):
+                if puck_client is not None and hasattr(puck_client, "speak"):
                     asyncio.create_task(self._fire_puck_speak(puck_client, audio_path))
             else:
                 await vc.play_tts(text, already_in_channel=True)

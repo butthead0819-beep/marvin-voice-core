@@ -463,33 +463,11 @@ async def test_dj_interjection_fires_puck_speak_when_client_has_speak():
 
 
 @pytest.mark.asyncio
-async def test_dj_interjection_fires_puck_speak_text_when_client_has_speak_text():
-    """2026-08-17：Pi mk2（PuckMixerClient）補上 speak_text——DJ 口白改成 Mac 送
-    文字、Pi 自己 edge-tts 合成+duck（見 project_car_puck_mk2 記憶「DJ口白傳輸
-    路線定案」）。送的是 dj['text']，不是 audio_path（那是 Mac 本機檔案路徑，
-    Pi 讀不到）。跟 esp32_edge_mix 的 speak(audio_path) 是不同傳輸模型，用
-    hasattr(client, "speak_text") 分辨，speak_text 優先於 speak。"""
-    cog = _make_cog()
-    vc = MagicMock()
-    vc._intimate_mode = False
-    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
-    cog.bot.cogs.get.return_value = vc
-
-    fake_client = MagicMock(spec=["play", "queue_next", "crossfade", "stop", "speak_text"])
-    fake_client.speak_text = AsyncMock(return_value=True)
-
-    with patch("os.path.exists", return_value=True), \
-         patch("cogs.music_cog._get_puck_client", return_value=fake_client):
-        await cog._maybe_play_dj_interjection({"text": "接下來這首…", "audio_path": "/tmp/dj.opus"})
-        await asyncio.sleep(0)   # 讓 create_task 起的 _fire_puck_speak_text 真的跑
-
-    fake_client.speak_text.assert_awaited_once_with("接下來這首…")
-
-
-@pytest.mark.asyncio
-async def test_dj_interjection_skips_puck_speak_when_client_lacks_both():
-    """client 兩種 speak 介面都沒有（例如家用 Pi 3B/未來新硬體）→ 靜靜放棄，
-    不該炸 AttributeError。"""
+async def test_dj_interjection_skips_puck_speak_when_client_lacks_speak():
+    """client 沒有 speak 介面（例如家用 Pi 3B、或 pi_bt 車 puck——2026-08-20 起
+    pi_bt 的 DJ 口白隨 /audio_stream 共用 mixer 自然播出，_get_puck_client() 對它
+    一律回 None，見 main_satellite.py::setup_satellite 說明）→ 靜靜放棄，不該炸
+    AttributeError。"""
     cog = _make_cog()
     vc = MagicMock()
     vc._intimate_mode = False

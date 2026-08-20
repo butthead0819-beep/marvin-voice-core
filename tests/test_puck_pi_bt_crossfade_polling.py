@@ -1,13 +1,14 @@
-"""TDD：cogs/music_cog.py::MusicCog._fire_puck_crossfade() 輪詢 /puck/status
-取代固定 sleep(buffer_s)。
+"""TDD：cogs/music_cog.py::MusicCog._fire_puck_crossfade() 依 client 是否有 status()
+決定輪詢還是固定 sleep(buffer_s)。
 
-背景：pi_bt 接上 YouTube cookies 後，Pi 端 resolve_stream_url() 的 deno JS
-challenge 常吃到 ~24s CPU time（見該函式 2026-08-18 docstring），遠超原本
-假設的 ~7s。固定 sleep(buffer_s) 賭一個時長——猜太短會在 deck_b 還沒 ready
-時打 /puck/crossfade，Pi 端 raise RuntimeError 被吞掉，這次轉場直接放棄、
-當前曲播完只剩靜音。改成輪詢 next_queued 是否等於 next_url，ready 就提早
-出手；client 沒有 status()（esp32_edge_mix）保留舊的固定 sleep 行為。
-"""
+背景：這個能力分派原本是為 pi_bt（Pi mk2）加的——接上 YouTube cookies 後 resolve
+常吃到 ~24s CPU time，固定 sleep 賭時長不管用，改成輪詢 next_queued 是否等於
+next_url、ready 就提早出手。2026-08-20 起 pi_bt 換歌決策已改走 /audio_stream
+「收音機」模式，不再呼叫這支函式（見 main_satellite.py::setup_satellite 說明）；
+`_fire_puck_crossfade` 現在只有 esp32_edge_mix 會呼叫，它的 client 沒有 status()，
+永遠走下面第二條測試（固定 sleep）的路徑。輪詢分支保留成 hasattr 能力分派（跟
+speak/speak_text、sfx 等既有 pattern一致）——這裡繼續測它，確保這條路以後有
+client 補上 status() 時邏輯依然正確。"""
 from __future__ import annotations
 
 import asyncio

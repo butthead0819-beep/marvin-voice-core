@@ -209,19 +209,46 @@ def build_local_bot():
     return MarvinBot()
 
 
-async def setup_satellite(bot) -> object:
+async def setup_satellite(bot):
     """載入必要 cog 並啟動衛星聆聽（可測試的 wiring 層）。
 
     順序對齊 setup_hook：music_cog 必須先於 voice_controller。
-    """
+
+    回傳 (vc, stream_out)：MARVIN_CAR_HARDWARE=pi_bt 才有 stream_out（車 puck 用的
+    StreamSpeakerOutput，見下方說明）；其餘情況 stream_out=None，行為跟改動前一致。
+
+    2026-08-20：車 puck（Pi Zero 2W）換歌決策/DJ口白全部改回跟家用喇叭共用同一顆
+    mixer——之前 pi_bt 走一套獨立的「Mac 送 play/queue_next/crossfade 指令、Pi 自己
+    resolve+decode+crossfade」架構，反覆踩到 deck 尾段被腰斬、口白跟換歌時機各自
+    一個時鐘對不上（跟 ESP32 car puck 早期繞的彎路是同一類問題）。ESP32 車 puck 真正
+    在響的音訊其實走 /audio_stream（見 handle_audio_stream docstring）——Mac 端
+    mixer 混好的音訊直接連續廣播出去，裝置端純粹「有訊號就播」，不需要理解「歌」
+    這個概念，crossfade/DJ 口白/音量 ducking 全部在 Mac 這顆 mixer 裡就已經處理好。
+    pi_bt 現在比照這條路：StreamSpeakerOutput 掛進 start_satellite_listening() 的
+    extra_output（跟家用衛星的 WyomingSpeakerOutput 用 TeeSpeakerOutput 共用同一份
+    mixer 輸出，互不影響），呼叫端把回傳的 stream_out 接進 start_text_http_server()
+    的 stream_source，車 puck（device/puck_mixer.py 新版）連上 /audio_stream 就跟
+    ESP32 一樣「像收音機」連續播放。"""
     await bot.load_extension("cogs.music_cog")
     await bot.load_extension("cogs.voice_controller")
     bot.engine.start()
     vc = bot.cogs.get("VoiceController")
     if vc is None:
         raise RuntimeError("VoiceController cog 未載入，無法啟動衛星聆聽")
-    vc.start_satellite_listening()
-    return vc
+
+    stream_out = None
+    if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() == "pi_bt":
+        from marvin_voice_core.stream_speaker_output import StreamSpeakerOutput
+        stream_out = StreamSpeakerOutput(bot.loop)
+        vc.start_satellite_listening(extra_output=stream_out)
+        # 比照 setup_browser_satellite 的車載模式：開機立刻 arm 泵，讓靜音幀先流動，
+        # 車 puck 一連上 /audio_stream 就有東西可讀，不用等第一句話/第一首歌才出聲。
+        vc._ensure_mixer_playing(vc._resolve_playback_device())
+        logger.info("🚗 [CarMode/pi_bt] StreamSpeakerOutput 已接進家用衛星 mixer（/audio_stream 可用）")
+    else:
+        vc.start_satellite_listening()
+
+    return vc, stream_out
 
 
 async def setup_browser_satellite(bot):
@@ -2519,13 +2546,15 @@ async def main():
             await asyncio.Event().wait()
             return
 
-        vc = await setup_satellite(bot)
+        vc, stream_out = await setup_satellite(bot)
         host = os.getenv("MARVIN_SATELLITE_HOST", "marvinpi.local")
         logger.info(f"🛰️ [Satellite] 衛星模式啟動完成，連向 {host}，等 Pi 麥喚醒...")
 
         # 文字輸入：stdin（本機手打）+ HTTP（Siri 捷徑走 Tailscale POST /say）
+        # stream_out：MARVIN_CAR_HARDWARE=pi_bt 才非 None（見 setup_satellite docstring），
+        # 接進 /audio_stream 給車 puck 連續收音；其餘情況 None，/audio_stream 404，零行為改變。
         asyncio.create_task(_stdin_text_input_loop(vc))
-        await start_text_http_server(vc)
+        await start_text_http_server(vc, stream_source=stream_out)
         _start_selftest_if_configured(bot)
         await asyncio.Event().wait()
 
