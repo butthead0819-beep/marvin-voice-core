@@ -22,6 +22,7 @@ def test_save_then_load_round_trips(tmp_path):
         "cover": "http://x/y.jpg", "palette": ["#111111", "#222222"],
         "queue": [{"title": "晴天", "by": "小明"}],
         "duration": 245.0, "song_start_time": 1700000000.0, "comment": "這首不錯。",
+        "explanation": None,
     }
 
 
