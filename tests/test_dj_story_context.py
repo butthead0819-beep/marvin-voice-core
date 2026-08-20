@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-def _make_cog(est_per_char: float = 0.0):
+def _make_cog(est_per_char: float = 0.0, tmp_path=None):
     bot = MagicMock()
     bot.guilds = []
     bot.voice_clients = []
@@ -45,6 +45,13 @@ def _make_cog(est_per_char: float = 0.0):
 
     from cogs.music_cog import MusicCog
     cog = MusicCog(bot)
+    if tmp_path is not None:
+        # ⚠️ 沒注入時 _dj_topic_store() 是 lazy singleton，讀寫真正的
+        # records/dj_topic_cooldown.json——斷言 fallback 落在特定 mode
+        # （atmosphere）的測試沒隔離會被硬碟上殘留的 _last_fallback_mode 汙染，
+        # 隨機測出不同結果（見 tests/test_dj_gps_environment.py 同款修法）。
+        from dj_topic_selector import TopicCooldownStore
+        cog._dj_topic_cooldown_store = TopicCooldownStore(path=str(tmp_path / "dj_topic_cooldown.json"))
     return cog
 
 
@@ -104,14 +111,15 @@ async def test_context_no_previous_song_when_history_empty():
 # ── 2. 環境沉浸（城市 + 季節）─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_context_includes_environment_city_and_season():
+async def test_context_includes_environment_city_and_season(tmp_path):
     """context 帶環境行：城市（無 GPS 訊號時退回家裡預設台中）+ 季節（春/夏/秋/冬其一）。
 
     環境行現在只在本地 mode 選擇器選中 "atmosphere" 時才進 ctx（見
-    dj_topic_selector.select_mode）。清空 life_cores，讓全新 store 落在
-    候選序列第一位的 atmosphere。
+    dj_topic_selector.select_mode）。清空 life_cores + 隔離的 topic store，讓
+    全新 store 落在候選序列第一位的 atmosphere（不隔離會被硬碟上殘留的
+    _last_fallback_mode 汙染，見 _make_cog 的 tmp_path 說明）。
     """
-    cog = _make_cog()
+    cog = _make_cog(tmp_path=tmp_path)
     cog._life_cores = MagicMock(return_value=[])
     await cog._fetch_dj_interjection_raw(_info())
     ctx = _ctx_str(cog)

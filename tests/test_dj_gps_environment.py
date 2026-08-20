@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-def _make_cog():
+def _make_cog(tmp_path=None):
     bot = MagicMock()
     bot.guilds = []
     bot.voice_clients = []
@@ -35,7 +35,16 @@ def _make_cog():
     bot.music_memory.time_slot = MagicMock(return_value="深夜")
 
     from cogs.music_cog import MusicCog
-    return MusicCog(bot)
+    cog = MusicCog(bot)
+    if tmp_path is not None:
+        # ⚠️ _dj_topic_store() 沒注入時是 lazy singleton，讀寫真正的
+        # records/dj_topic_cooldown.json——這兩條測試斷言 fallback 落在特定
+        # mode（atmosphere），沒隔離的話會被其他測試/前次執行留在硬碟上的
+        # _last_fallback_mode 汙染，隨機測出不同結果。每個測試各自給一份乾淨、
+        # 隔離的 store，行為才是決定性的。
+        from dj_topic_selector import TopicCooldownStore
+        cog._dj_topic_cooldown_store = TopicCooldownStore(path=str(tmp_path / "dj_topic_cooldown.json"))
+    return cog
 
 
 def _info():
@@ -53,10 +62,10 @@ def _ctx_str(cog):
 
 
 @pytest.mark.asyncio
-async def test_no_gps_signal_falls_back_to_taichung(monkeypatch):
+async def test_no_gps_signal_falls_back_to_taichung(monkeypatch, tmp_path):
     import location_state
     monkeypatch.setattr(location_state, "load_location_state", lambda *a, **kw: None)
-    cog = _make_cog()
+    cog = _make_cog(tmp_path)
     cog._life_cores = MagicMock(return_value=[])
     await cog._fetch_dj_interjection_raw(_info())
     ctx = _ctx_str(cog)
@@ -64,14 +73,14 @@ async def test_no_gps_signal_falls_back_to_taichung(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fresh_car_gps_overrides_city_in_environment_line(monkeypatch):
+async def test_fresh_car_gps_overrides_city_in_environment_line(monkeypatch, tmp_path):
     import location_state
     now = time.time()
     monkeypatch.setattr(
         location_state, "load_location_state",
         lambda *a, **kw: {"lat": 25.0693, "lon": 121.5885, "ts": now},
     )
-    cog = _make_cog()
+    cog = _make_cog(tmp_path)
     cog._life_cores = MagicMock(return_value=[])
     await cog._fetch_dj_interjection_raw(_info())
     ctx = _ctx_str(cog)
