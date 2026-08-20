@@ -12,6 +12,11 @@ Gate：stream_mode + _current_stream_info 都要存在。
 
 Handler 直接呼叫 ctrl._handle_music_info_query(speaker, query)；既有實作已處理
 title/uploader/requested_by 組裝 + 送 text channel。
+
+答完後追問要不要追加點播同歌手的歌（`_offer_more_by_artist`，見 wake_followup.
+maybe_offer_more_by_artist）——問歌曲資訊代表對這位歌手有興趣，是自然的追加點播
+訊號。放在這層而非 voice_controller.py：voice_controller 有行數棘輪守門（見
+test_voice_controller_size_budget.py），新語音功能規定要進 IntentAgent/Cog/mixin。
 """
 from __future__ import annotations
 
@@ -20,6 +25,7 @@ from typing import Awaitable, Callable
 
 from intent_agents.base import DeclarativeIntentAgent, IntentSchema
 from intent_bus import IntentContext
+from wake_followup import maybe_offer_more_by_artist
 
 logger = logging.getLogger(__name__)
 
@@ -74,5 +80,27 @@ class NowPlayingAgent(DeclarativeIntentAgent):
                 await handle(speaker, query)
             except Exception:
                 logger.exception("[NowPlaying] _handle_music_info_query failed")
+                return
+            await self._offer_more_by_artist(speaker)
 
         return _handler
+
+    async def _offer_more_by_artist(self, speaker: str) -> None:
+        """問完歌曲資訊＝對這位歌手有興趣的訊號，文字追問要不要追加點播同歌手的歌
+        （比照 `_ask_music_followup` 慣例：追問只走文字，不開 TTS，避免疊播）。
+        12s 內同 speaker 回肯定詞（好/要/點吧…）→ `wake_followup.match_followup`
+        自動合成播放指令重投，不需重新喊「馬文」。
+        """
+        info = getattr(self.ctrl, "_current_stream_info", None) or {}
+        ch = getattr(self.ctrl, "active_text_channel", None)
+        pending_map = getattr(self.ctrl, "_pending_followups", None)
+        if ch is None or pending_map is None:
+            return
+        prompt, pending = maybe_offer_more_by_artist("", info.get("uploader", ""))
+        if not pending:
+            return
+        pending_map[speaker] = pending
+        try:
+            await ch.send(f"💬 {prompt.strip()}")
+        except Exception:
+            logger.warning("[NowPlaying] 追問追加播放貼頻道失敗", exc_info=True)

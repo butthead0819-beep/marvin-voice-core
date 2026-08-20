@@ -1716,6 +1716,10 @@ class DiscordVoiceEngine:
                 # 📼 opt-in 存 owner 喚醒 wav 供訓「馬文」（刪除前；env/owner/wake-text 守門）
                 import wake_sample_collector
                 wake_sample_collector.collect(wav_path, user_id, raw_text)
+                # 🎙️ opt-in 存 owner 點歌當下的語音片段（刪除前；env/owner/點歌關鍵字守門），
+                # DJ 介紹這首歌時可回放原音當彩蛋（見 owner_song_voice_samples.py）。
+                import owner_song_voice_samples
+                owner_song_voice_samples.collect(wav_path, user_id, raw_text)
 
         finally:
             _lock.release()

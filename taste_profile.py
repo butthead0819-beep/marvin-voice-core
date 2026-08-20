@@ -38,10 +38,19 @@ TASTE_SYSTEM_PROMPT = (
 _EMPTY = {"profile": "", "adjacent_artists": [], "suggested_songs": [], "avoid_artists": []}
 
 
-def build_taste_input(songs: list[str], likes: list[str]) -> str:
-    """組 LLM user prompt（純函式）。"""
+def build_taste_input(songs: list[str], likes: list[str], skipped: list[str] | None = None) -> str:
+    """組 LLM user prompt（純函式）。
+
+    skipped：這位使用者按過跳過的歌名（負向訊號）。給了才附加——沒有這段時
+    LLM 只看「聽過什麼」推 avoid_artists 等於瞎猜；有明確被跳過的歌可以讓
+    avoid_artists 有憑有據，而不是純粹反向聯想聽過的曲風。
+    """
     lines = "\n".join(f"- {t}" for t in songs if t)
-    return f"使用者聽過的歌：\n{lines}\n他的興趣標籤：{likes}"
+    out = f"使用者聽過的歌：\n{lines}\n他的興趣標籤：{likes}"
+    if skipped:
+        skip_lines = "\n".join(f"- {t}" for t in skipped)
+        out += f"\n他跳過不聽的歌（負向訊號，可用來判斷 avoid_artists）：\n{skip_lines}"
+    return out
 
 
 def parse_taste_response(raw: str) -> dict:
@@ -73,14 +82,15 @@ def parse_taste_response(raw: str) -> dict:
     }
 
 
-async def generate_taste_profile(songs: list[str], likes: list[str], *, call_fn) -> dict | None:
+async def generate_taste_profile(songs: list[str], likes: list[str], *, call_fn,
+                                   skipped: list[str] | None = None) -> dict | None:
     """LLM 生品味 profile。call_fn(content, system) -> str|None（注入 bus 呼叫）。
 
     沒歌 → 不打 LLM 回 None；LLM 全失敗（call_fn 回 None）→ None。
     """
     if not songs:
         return None
-    raw = await call_fn(build_taste_input(songs, likes), TASTE_SYSTEM_PROMPT)
+    raw = await call_fn(build_taste_input(songs, likes, skipped), TASTE_SYSTEM_PROMPT)
     if not raw:
         return None
     return parse_taste_response(raw)

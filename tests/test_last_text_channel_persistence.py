@@ -57,3 +57,46 @@ def test_read_returns_none_when_channel_not_text_channel(tmp_path, monkeypatch):
     bot = MagicMock()
     bot.get_channel.return_value = MagicMock(spec=discord.VoiceChannel)  # 語音頻道自己也有 id
     assert _read_last_text_channel(bot) is None
+
+
+def test_write_survives_being_named_diary_channel(tmp_path, monkeypatch):
+    """使用者可以指定任何文字頻道（含 #馬文的厭世日記）當音樂播報目的地——頻道名稱
+    不是排除依據，哪個頻道是「平常在看的」由使用者決定（2026-08-20 使用者明確要求
+    指定 #馬文的厭世日記）。"""
+    monkeypatch.chdir(tmp_path)
+    import cogs.voice_controller_connection as vcc
+    dest = tmp_path / "last_ch.json"
+    monkeypatch.setattr(vcc, "LAST_TEXT_CHANNEL_FILE", str(dest))
+
+    diary_channel = MagicMock(spec=discord.TextChannel)
+    diary_channel.name = "馬文的厭世日記"
+    diary_channel.id = 999
+    diary_channel.guild.id = 456
+    _write_last_text_channel(diary_channel)
+
+    assert json.loads(dest.read_text()) == {"guild_id": 456, "channel_id": 999}
+
+
+def test_write_is_atomic_no_partial_file_on_crash(tmp_path, monkeypatch):
+    """2026-08-20 事故：bot 重啟（SIGTERM）剛好打在 open("w") 寫到一半，檔案被截斷
+    成 `{"guild_id": ` 半截 JSON，下次讀取 json.load 直接炸掉、靜默退回 None——使用者
+    指定的頻道形同沒存到。寫暫存檔 + os.replace 確保檔案永遠是完整寫入或維持舊內容，
+    不會有半成品。"""
+    monkeypatch.chdir(tmp_path)
+    import cogs.voice_controller_connection as vcc
+    dest = tmp_path / "last_ch.json"
+    monkeypatch.setattr(vcc, "LAST_TEXT_CHANNEL_FILE", str(dest))
+    dest.write_text(json.dumps({"guild_id": 1, "channel_id": 111}))  # 舊內容
+
+    channel = MagicMock()
+    channel.id = 222
+    channel.guild.id = 1
+
+    def _boom(*a, **kw):
+        raise OSError("simulated crash mid-write")
+    monkeypatch.setattr(vcc.os, "replace", _boom)
+
+    _write_last_text_channel(channel)  # 失敗但不阻斷（try/except 吞掉）
+
+    # 舊檔案完整無損，不是半截 JSON
+    assert json.loads(dest.read_text()) == {"guild_id": 1, "channel_id": 111}

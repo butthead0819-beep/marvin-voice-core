@@ -13,7 +13,15 @@ Why：MusicAgent 接到 weak_play_long_string 等 missing-slot 路徑 → `_ask_
 """
 from __future__ import annotations
 
+import time
 from typing import Callable, Optional
+
+# 「要不要幫你點一首XX的歌」這類 yes/no 追問的肯定詞。
+# has_intent_signal 會把「好」「要」判成 filler/無訊號（3字以內非問句非指令），
+# 但這裡就是要接住這些短肯定詞，所以 music_more_by_artist 不走 has_signal_fn。
+_AFFIRMATIVE_WORDS = (
+    "好啊", "好的", "好", "要", "點吧", "可以", "來一首", "播放", "播", "嗯", "對啊", "對",
+)
 
 
 def match_followup(
@@ -35,16 +43,38 @@ def match_followup(
         return None  # expired
     if not raw_text or not raw_text.strip():
         return None
+
+    ptype = pending.get("type", "")
+
+    if ptype == "music_more_by_artist":
+        # yes/no 追問：肯定詞才觸發，不吃 has_signal_fn（短肯定詞會被判 filler）。
+        text = raw_text.strip()
+        artist = pending.get("artist", "")
+        if artist and any(w in text for w in _AFFIRMATIVE_WORDS):
+            return f"馬文，播{artist}的歌"
+        return None  # 否定/沒聽懂 → 不觸發，pending 留著等視窗過期
+
     if not has_signal_fn(raw_text):
         return None  # 純 filler，pending 留著等
 
-    ptype = pending.get("type", "")
     if ptype == "music_song_title":
         return f"馬文，播{raw_text}"
     if ptype == "music_artist":
         return f"馬文，播{raw_text}的歌"
     # 未知 type → 通用合成，未來新 caller 補 type 即可
     return f"馬文，{raw_text}"
+
+
+def maybe_offer_more_by_artist(reply: str, uploader: str) -> tuple[str, Optional[dict]]:
+    """問歌曲資訊時，若有 uploader，追加「要不要點同歌手的歌」+ 回傳 pending state。
+
+    caller（voice_controller._handle_music_info_query）負責把 pending 塞進
+    `self._pending_followups[speaker]`；這裡只組文字跟 dict，不碰 controller 狀態。
+    """
+    if not uploader:
+        return reply, None
+    reply = f"{reply} 要不要幫你點一首 {uploader} 的經典曲目？"
+    return reply, {"type": "music_more_by_artist", "artist": uploader, "ts": time.time()}
 
 
 def is_expired(pending: Optional[dict], now: float, window_s: float) -> bool:

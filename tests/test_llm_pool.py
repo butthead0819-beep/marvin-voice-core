@@ -451,17 +451,18 @@ def test_factory_new_provider_model_override_pattern():
 
 
 def test_factory_gemini_free_adds_25_model_tier():
-    """穩健中庸（2026-06-04）：GOOGLE_API_KEY 進池時，除既有 2.0 系列，再加 2.5 系列
+    """穩健中庸（2026-06-04）：GOOGLE_API_KEY 進池時，除既有 gemini_free 系列，再加 2.5 系列
     各層 endpoint（per-model 獨立免費配額疊加）。analyze 的 3.5-flash-lite 帶 reasoning_effort=none
     關 thinking，否則 OpenAI-compat 下 thinking 吃光 max_tokens → 空 content。
-    2026-08-13：analyze 預設 model 由 gemini-2.5-flash 換成 gemini-3.5-flash-lite（同價換速）。"""
+    2026-08-13：analyze 預設 model 由 gemini-2.5-flash 換成 gemini-3.5-flash-lite（同價換速）。
+    2026-08-20：2.0 系列全下架（404），gemini_free 換成 3.1-flash-lite / 3.5-flash。"""
     factory, _ = _fake_factory()
     quick, analyze = build_tier_pools({"GOOGLE_API_KEY": "k"}, client_factory=factory)
     assert "gemini-2.5-flash-lite" in [e.model for e in quick.endpoints]
     flash25 = next(e for e in analyze.endpoints if e.model == "gemini-3.5-flash-lite")
     assert flash25.extra_params.get("reasoning_effort") == "none"
-    # 既有 2.0 系列仍在（不取代、是疊加）
-    assert "gemini-2.0-flash" in [e.model for e in analyze.endpoints]
+    # 既有 gemini_free 系列仍在（不取代、是疊加）
+    assert "gemini-3.5-flash" in [e.model for e in analyze.endpoints]
 
 
 @pytest.mark.asyncio

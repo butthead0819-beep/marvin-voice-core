@@ -32,19 +32,24 @@ def compute_loudness_gain(measured_lufs: float | None,
 
 
 def sample_positions(duration_s: float, *, window_s: float = 20.0,
-                     fracs: tuple[float, ...] = (0.25, 0.50, 0.75)) -> list[float]:
-    """回各取樣起點秒數（25/50/75%）。歌太短（< 2*window）→ 退化成單點 0（從頭量）。
+                     fracs: tuple[float, ...] = (0.25, 0.50, 0.75),
+                     start_s: float = 0.0) -> list[float]:
+    """回各取樣起點秒數（25/50/75%）。支援 start_s（熱力圖精華起點對齊）。
 
-    起點 clamp 在 [0, duration-window]，避免 seek 過尾巴量到靜音。
+    歌太短（有效長度 < 2*window）→ 退化成單點 start_s（從精華或開頭量）。
+    起點 clamp 在 [start_s, duration-window]，避免 seek 過尾巴量到靜音。
     """
-    if duration_s <= 0:
-        return [0.0]
-    if duration_s < window_s * 2:
-        return [0.0]
-    last_start = max(0.0, duration_s - window_s)
+    start = max(0.0, float(start_s or 0.0))
+    if duration_s <= start:
+        return [start]
+    eff_duration = duration_s - start
+    if eff_duration < window_s * 2:
+        return [start]
+    last_start = max(start, duration_s - window_s)
     out: list[float] = []
     for f in fracs:
-        out.append(min(last_start, max(0.0, duration_s * f)))
+        pos = start + eff_duration * f
+        out.append(min(last_start, max(start, pos)))
     return out
 
 

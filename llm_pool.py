@@ -343,15 +343,18 @@ _PROVIDERS: list[ProviderSpec] = [
     # Together 8b 要帶 'Meta-' 前綴（實測 /models）
     ProviderSpec("together", "TOGETHER_API_KEY", "https://api.together.xyz/v1",
                  "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
-    # OpenRouter 免費目錄會變（2026-05-21 實測）：無 3.1-8b。quick 用 llama-3.2-3b（快、
-    # 末位 fallback），analyze 用免費 llama-3.3-70b。同 llama 家族保 cleaner prompt 一致性。
+    # OpenRouter 免費目錄會變（2026-08-20 實測：llama 家族免費版全下架，改用 gemma/nemotron）。
+    # quick 用 gemma-4-31b（小、非 thinking model，低 max_tokens 也能吐乾淨內容）；
+    # analyze 用 nemotron-3-super-120b（thinking model，靠 caller 給足 max_tokens 吃掉推理 token）。
     ProviderSpec("openrouter", "OPENROUTER_API_KEY", "https://openrouter.ai/api/v1",
-                 "meta-llama/llama-3.2-3b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free"),
+                 "google/gemma-4-31b-it:free", "nvidia/nemotron-3-super-120b-a12b:free"),
     # Gemini free tier（GOOGLE_API_KEY）走官方 OpenAI-compat 端點。獨立每日 quota，
-    # 跟 Groq/Cerebras 分攤。6/2 加：flash-lite 快、免費。付費 Gemini 另走 _call_cloud C 兜底。
+    # 跟 Groq/Cerebras 分攤。2026-08-20 實測：2.0 系列全下架（404），換成 3.1/3.5。
+    # analyze 的 3.5-flash 是 thinking model，同 gemini_free_25 的理由必須 reasoning_effort=none。
     ProviderSpec("gemini_free", "GOOGLE_API_KEY",
                  "https://generativelanguage.googleapis.com/v1beta/openai/",
-                 "gemini-2.0-flash-lite", "gemini-2.0-flash"),
+                 "gemini-3.1-flash-lite", "gemini-3.5-flash",
+                 analyze_extra={"reasoning_effort": "none"}),
     # 2026-06-04：free tier 配額 per-model 各自獨立 → 再掛 2.5 系列疊加免費吞吐。
     # 同 GOOGLE_API_KEY、不同 model = 不同 bucket，一個爆 429 cooldown 自動讓位另一個。
     # analyze 的 2.5-flash 是 thinking model，OpenAI-compat 下必須 reasoning_effort=none，
@@ -434,7 +437,19 @@ def build_tiered_router(
 # OpenAI-compat 入口把 thinking token 算進 max_tokens → 大 input 下 thinking 吃光額度、
 # output 被腰斬（實測 629 token finish=length）。genai SDK 可 thinking_budget=0 關 thinking，
 # 把額度全留給 output（實測 7201 token 完整 JSON）。dispatch 的 cooldown/fallback 照用。
-_PAID_REVIEW_MODELS = ["gemini-3.5-flash-lite", "gemini-2.0-flash"]   # fallback 順序
+#
+# fallback model 清單不在這裡另外手寫一份——單一真相來源是 _PROVIDERS 的 gemini_paid
+# spec（即時 tier 用同一組帳號+model）。2026-08-20 事故：這裡曾自己維護一份
+# _PAID_REVIEW_MODELS，跟 gemini_paid 各自改各自的，沒同步更新，掉進 gemini_paid
+# 早就換掉的已下架 model（gemini-2.0-flash，404）。
+
+
+def _paid_review_fallback_models(env: Mapping[str, str]) -> list[str]:
+    """從 gemini_paid spec 讀 quick/analyze model（跟即時 tier 同源，見上方註解）。"""
+    spec = next(s for s in _PROVIDERS if s.name == "gemini_paid")
+    quick = _resolve_model(env, spec, analyze=False)
+    analyze = _resolve_model(env, spec, analyze=True)
+    return [quick] if quick == analyze else [quick, analyze]
 
 
 def _default_genai_client_factory(api_key: str) -> Any:
@@ -457,7 +472,7 @@ def build_paid_review_pool(
     if not key:
         return CooldownAwarePool([], clock=clock)
     models: list[str] = []
-    for m in ([env.get("MARVIN_REVIEW_MODEL")] + _PAID_REVIEW_MODELS):
+    for m in ([env.get("MARVIN_REVIEW_MODEL")] + _paid_review_fallback_models(env)):
         if m and m not in models:
             models.append(m)
     client = client_factory(key)

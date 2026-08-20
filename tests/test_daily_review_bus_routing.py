@@ -88,14 +88,18 @@ def test_retry_on_truncated_json():
 # ── 5. model 集中在 llm_pool（不在 analyze_daily_log 寫死）─────────────────
 
 def test_models_centralized_in_llm_pool():
+    """model 名單集中在 _PROVIDERS 的 gemini_paid spec（單一真相來源，2026-08-20 改）——
+    不再另外維護一份 _PAID_REVIEW_MODELS 常數，那份會跟 gemini_paid 各自走鐘、
+    掉進已下架的死 model（見 [[incident_youtube...]] 同一類 bug，這次是 Gemini 2.0 系列）。"""
     import importlib, sys as _sys
     from pathlib import Path
     base = Path(__file__).parent.parent
     if str(base) not in _sys.path:
         _sys.path.insert(0, str(base))
     llm_pool = importlib.import_module("llm_pool")
-    assert hasattr(llm_pool, "_PAID_REVIEW_MODELS")
-    assert any("gemini" in mdl for mdl in llm_pool._PAID_REVIEW_MODELS)
+    assert not hasattr(llm_pool, "_PAID_REVIEW_MODELS")
+    models = llm_pool._paid_review_fallback_models({})
+    assert any("gemini" in mdl for mdl in models)
     # analyze_daily_log 不該再有自己的 model fallback 列表
     m = _mod()
     assert not hasattr(m, "review_model_fallbacks")

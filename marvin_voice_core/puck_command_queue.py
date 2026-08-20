@@ -149,16 +149,18 @@ class PuckCommandQueueClient:
     def __init__(self, queue: PuckCommandQueue):
         self._queue = queue
 
-    async def play(self, url: str, title: str | None = None, seek: float | None = None) -> bool:
-        # title/seek 是 pi_bt 專用的功能（AVRCP metadata 掛勾、跳過前奏 seek，
-        # 見 device/avrcp_media_player.py、puck_mixer_client.py::PuckMixerClient
-        # 的 seek 說明），ESP32 edge_mix 目前沒有這兩條路，接受這兩個參數只是
-        # 跟 PuckMixerClient 維持同款介面，讓呼叫端（_fire_puck_play/
-        # _fire_puck_crossfade）不用分辨背後是哪種硬體。
+    async def play(self, url: str, title: str | None = None, seek: float | None = None,
+                    duration: float | None = None) -> bool:
+        # title/seek/duration 是 pi_bt 專用的功能（AVRCP metadata 掛勾、跳過前奏
+        # seek、Pi 本地 FIRE 判斷用的剩餘秒數，見 device/avrcp_media_player.py、
+        # puck_mixer_client.py::PuckMixerClient 的說明），ESP32 edge_mix 目前
+        # 沒有這幾條路，接受這些參數只是跟 PuckMixerClient 維持同款介面，讓
+        # 呼叫端（_fire_puck_play/_fire_puck_crossfade）不用分辨背後是哪種硬體。
         self._queue.play(url)
         return True
 
-    async def queue_next(self, url: str, title: str | None = None, seek: float | None = None) -> bool:
+    async def queue_next(self, url: str, title: str | None = None, seek: float | None = None,
+                          duration: float | None = None) -> bool:
         self._queue.queue_next(url)
         return True
 

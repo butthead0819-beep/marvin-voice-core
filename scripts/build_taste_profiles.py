@@ -37,19 +37,43 @@ def _load_env():
 
 
 def _gather(user: str, mm: dict, sk: dict) -> tuple[list[str], list[str]]:
-    """回 (該使用者真人點過/聽過的歌名, 音樂相關興趣標籤)。"""
-    titles: list[str] = []
+    """回 (該使用者真人點過/聽過的歌名, 音樂相關興趣標籤)。
+
+    music_memory 的歌依該使用者點播次數（`requesters` count）降冪排序——愛播的歌
+    才是真正代表品味的樣本，聽過 1 次跟愛播 10 次不該被同等對待。song_history
+    沒有次數只有標題，當補充訊號接在後面，依最近性排序（`add_song_history` 只
+    append 到尾巴，故 reversed 讓最近聽的排前面）。dedup 保留先出現（權重較高
+    或較新）的位置。
+    """
+    weighted: list[tuple[str, int]] = []
     for _url, s in (mm.get("songs") or {}).items():
         reqs = s.get("requesters", {}) or {}
-        if any(user in r and "Marvin" not in r and "推薦" not in r for r in reqs):
+        count = sum(c for r, c in reqs.items() if user in r and "Marvin" not in r and "推薦" not in r)
+        if count > 0:
             t = s.get("title", "")
             if t:
-                titles.append(t)
+                weighted.append((t, count))
+    weighted.sort(key=lambda x: x[1], reverse=True)
+    titles = [t for t, _c in weighted]
     p = (sk.get("players") or {}).get(user, {})
-    titles += [t for t in (p.get("song_history") or []) if t]
+    titles += [t for t in reversed(p.get("song_history") or []) if t]
     titles = list(dict.fromkeys(titles))[:_MAX_SONGS]
     likes = [l for l in (p.get("likes") or []) if any(h in l for h in _MUSIC_LIKE_HINT)]
     return titles, likes
+
+
+def _skipped_titles(user: str, mm: dict) -> list[str]:
+    """該使用者最新一筆 feedback 為 skipped 的歌名（負向訊號，餵進 LLM 讓 avoid_artists
+    有憑有據）。複製 `music_memory.MusicMemory.get_skipped_titles` 的 latest-wins 邏輯，
+    但吃原始 dict 不建立 MusicMemory 實例——這支批次腳本只讀 music_memory.json，
+    不該觸發 MusicMemory.__init__ 的 key migration/落地存檔 side effect。
+    """
+    latest: dict[str, str] = {}
+    for f in mm.get("recommendations", {}).get(user, {}).get("feedback", []):
+        t = f.get("title")
+        if t and f.get("result"):
+            latest[t] = f["result"]
+    return [t for t, r in latest.items() if r == "skipped"]
 
 
 async def main():
@@ -79,7 +103,8 @@ async def main():
         if len(titles) < _MIN_SONGS:
             print(f"[Taste] {user}: 歌 {len(titles)} < {_MIN_SONGS}，跳過", flush=True)
             continue
-        prof = await taste_profile.generate_taste_profile(titles, likes, call_fn=_call)
+        skipped = _skipped_titles(user, mm)
+        prof = await taste_profile.generate_taste_profile(titles, likes, call_fn=_call, skipped=skipped)
         if not prof:
             print(f"[Taste] {user}: LLM 失敗，跳過", flush=True)
             continue

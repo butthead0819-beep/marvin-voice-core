@@ -2396,7 +2396,12 @@ class MusicCog(commands.Cog):
             if highlight_start_s:
                 p12_opts['before_options'] = f'-ss {highlight_start_s:.2f} ' + p12_opts['before_options']
             if url not in self._stream_norm_gain and vc is not None:
-                asyncio.create_task(self._measure_norm_gain_bg(url))
+                asyncio.create_task(self._measure_norm_gain_bg(
+                    url,
+                    duration=float((self._current_stream_info or {}).get("duration") or 0),
+                    highlight_start_s=highlight_start_s,
+                    info=self._current_stream_info,
+                ))
             if vc is not None:
                 # DJ Tail 點火時已背景 preload（見 _start_music_preload）→ 有就直接用、
                 # 零等待；沒有（沒走過尾段轉場，如第一首/被 skip）就退回現場建 ffmpeg 音源。
@@ -3228,6 +3233,15 @@ class MusicCog(commands.Cog):
             return await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(s16))
 
         self._preload_music_cache[url] = asyncio.create_task(_do())
+        norm_gains = getattr(self, "_stream_norm_gain", None)
+        measure_fn = getattr(self, "_measure_norm_gain_bg", None)
+        if norm_gains is not None and url not in norm_gains and measure_fn is not None:
+            asyncio.create_task(measure_fn(
+                url,
+                duration=float(info.get('duration') or 0),
+                highlight_start_s=highlight,
+                info=info,
+            ))
 
     async def _resolve_music_source(self, url: str, ffmpeg_factory):
         """回傳 (preloaded, fresh_s16_source)——恰好一個非 None。
@@ -3490,14 +3504,21 @@ class MusicCog(commands.Cog):
             pass
         return 3.0
 
-    async def _measure_norm_gain_bg(self, url: str):
+    async def _measure_norm_gain_bg(
+        self,
+        url: str,
+        duration: float | None = None,
+        highlight_start_s: float | None = None,
+        info: dict | None = None,
+    ):
         """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存 _stream_norm_gain[url]。
 
+        支援傳入 duration、highlight_start_s 與 info，避免在預載或預取時受當前播歌狀態干擾。
         順便在同一趟 ffmpeg（同取樣點、同一個 process 兩個輸出：ebur128→null 給
         stderr 響度統計、raw f32le mono→stdout 給 BPM 估算）取 PCM 估 BPM，落地存
         records/song_bpm.json（見 bpm_estimate.py）——BPM 分析不擋、不影響既有響度
         正規化行為，失敗只是沒存到 BPM。"""
-        if url in self._stream_norm_gain:
+        if not url or url in self._stream_norm_gain:
             return
         import numpy as np
 
@@ -3505,11 +3526,13 @@ class MusicCog(commands.Cog):
         from loudness_norm import (
             sample_positions, parse_ebur128_integrated, average_lufs, compute_loudness_gain,
         )
-        info = self._current_stream_info or {}
-        duration = float(info.get("duration") or 0)
+        song_info = info if info is not None else (self._current_stream_info or {})
+        dur = float(duration if duration is not None else (song_info.get("duration") or 0))
+        start_s = float(highlight_start_s if highlight_start_s is not None else (song_info.get("highlight_start_s") or 0.0))
+
         lufs_vals: list[float | None] = []
         bpm_vals: list[float | None] = []
-        for pos in sample_positions(duration):
+        for pos in sample_positions(dur, start_s=start_s):
             try:
                 proc = await asyncio.create_subprocess_exec(
                     "ffmpeg", "-nostats", "-ss", f"{pos:.1f}", "-t", "20", "-i", url,
@@ -3525,7 +3548,7 @@ class MusicCog(commands.Cog):
             except Exception:
                 lufs_vals.append(None)
                 bpm_vals.append(None)
-        video_id = extract_video_id(info.get("webpage_url") or info.get("url") or "")
+        video_id = extract_video_id(song_info.get("webpage_url") or song_info.get("url") or url)
         bpm = median_bpm(bpm_vals)
         if bpm is not None and video_id:
             write_bpm(_SONG_BPM_STORE, video_id, bpm)

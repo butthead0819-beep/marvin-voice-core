@@ -40,6 +40,33 @@ def test_generic_type_uses_default_synthesis():
     assert result == "馬文，今天天氣很好"
 
 
+# ── music_more_by_artist：yes/no 追問，不吃 has_signal_fn ──────────────────
+
+def test_more_by_artist_affirmative_synthesizes():
+    pending = {"type": "music_more_by_artist", "artist": "周杰倫", "ts": 100.0}
+    result = match_followup(pending, "好啊", 105.0, 12.0, _signal)
+    assert result == "馬文，播周杰倫的歌"
+
+
+def test_more_by_artist_short_yes_bypasses_signal_gate():
+    """「好」在 has_intent_signal 會被判 filler，但這個 type 不該吃 has_signal_fn。"""
+    pending = {"type": "music_more_by_artist", "artist": "張學友", "ts": 100.0}
+    result = match_followup(pending, "好", 105.0, 12.0, lambda t: False)
+    assert result == "馬文，播張學友的歌"
+
+
+def test_more_by_artist_negative_returns_none():
+    pending = {"type": "music_more_by_artist", "artist": "周杰倫", "ts": 100.0}
+    result = match_followup(pending, "不用了", 105.0, 12.0, _signal)
+    assert result is None
+
+
+def test_more_by_artist_no_artist_returns_none():
+    pending = {"type": "music_more_by_artist", "artist": "", "ts": 100.0}
+    result = match_followup(pending, "好啊", 105.0, 12.0, _signal)
+    assert result is None
+
+
 # ── 視窗內 + 純 filler → None（pending 保留，caller 不該清）─────────────────
 
 def test_filler_in_window_returns_none():

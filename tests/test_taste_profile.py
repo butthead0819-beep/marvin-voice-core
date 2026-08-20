@@ -43,6 +43,23 @@ def test_build_input_includes_songs_and_likes():
     assert "晴天" in s and "山丘" in s and "張國榮" in s
 
 
+# ── 3b. build_taste_input：優化 #2 skip 訊號讓 avoid_artists 有根據，不用瞎猜 ──
+def test_build_input_includes_skipped_when_given():
+    s = tp.build_taste_input(["晴天"], ["張國榮"], skipped=["難聽的歌"])
+    assert "難聽的歌" in s
+
+
+def test_build_input_omits_skipped_section_when_empty():
+    s = tp.build_taste_input(["晴天"], ["張國榮"], skipped=[])
+    assert "跳過" not in s and "skip" not in s.lower()
+
+
+def test_build_input_backward_compatible_without_skipped():
+    # 沒傳 skipped 的舊呼叫點（例如尚未升級的 caller）仍要正常運作
+    s = tp.build_taste_input(["晴天"], ["張國榮"])
+    assert "晴天" in s
+
+
 # ── 4. generate：注入 call_fn ──
 @pytest.mark.asyncio
 async def test_generate_uses_call_fn():
@@ -57,6 +74,16 @@ async def test_generate_call_fn_none_returns_none():
     async def fail_call(content, system):
         return None
     assert await tp.generate_taste_profile(["s1"], [], call_fn=fail_call) is None
+
+
+@pytest.mark.asyncio
+async def test_generate_passes_skipped_into_prompt():
+    seen = {}
+    async def fake_call(content, system):
+        seen["content"] = content
+        return json.dumps({"profile": "p", "adjacent_artists": [], "suggested_songs": []})
+    await tp.generate_taste_profile(["s1"], [], call_fn=fake_call, skipped=["爛歌"])
+    assert "爛歌" in seen["content"]
 
 
 @pytest.mark.asyncio

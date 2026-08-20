@@ -155,11 +155,11 @@ class MusicProxyMixin:
                 url, title, dj_audio_path=dj_audio_path, highlight_start_s=highlight_start_s,
             )
 
-    async def _measure_norm_gain_bg(self, url: str):
+    async def _measure_norm_gain_bg(self, url: str, *args, **kwargs):
         """[Phase 7E stub] → MusicCog._measure_norm_gain_bg"""
         mc = self.bot.cogs.get('MusicCog')
         if mc is not None:
-            await mc._measure_norm_gain_bg(url)
+            await mc._measure_norm_gain_bg(url, *args, **kwargs)
 
     def _extract_song_metadata(self, file_path: str):
         """[Phase 7E stub] → MusicCog._extract_song_metadata"""

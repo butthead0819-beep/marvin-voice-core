@@ -163,3 +163,54 @@ async def test_handler_missing_method_does_not_crash():
     agent = NowPlayingAgent(ctrl)
     bid = agent.bid(_ctx("現在播的是什麼歌"))
     await bid.handler()
+
+
+# ── 追加播放追問（_offer_more_by_artist）────────────────────────────────────
+
+
+async def test_handler_offers_more_by_artist_after_answering():
+    from intent_agents.now_playing_agent import NowPlayingAgent
+    ctrl = _ctrl(current_info={"title": "夜曲", "uploader": "周杰倫"})
+    ctrl.active_text_channel = AsyncMock()
+    ctrl._pending_followups = {}
+    agent = NowPlayingAgent(ctrl)
+    bid = agent.bid(_ctx("這首是誰唱的"))
+
+    await bid.handler()
+
+    ctrl.active_text_channel.send.assert_awaited_once()
+    sent = ctrl.active_text_channel.send.await_args.args[0]
+    assert "周杰倫" in sent
+    pending = ctrl._pending_followups.get("alice")
+    assert pending is not None
+    assert pending["type"] == "music_more_by_artist"
+    assert pending["artist"] == "周杰倫"
+
+
+async def test_handler_skips_offer_when_no_uploader():
+    from intent_agents.now_playing_agent import NowPlayingAgent
+    ctrl = _ctrl(current_info={"title": "測試曲", "uploader": ""})
+    ctrl.active_text_channel = AsyncMock()
+    ctrl._pending_followups = {}
+    agent = NowPlayingAgent(ctrl)
+    bid = agent.bid(_ctx("這是什麼歌"))
+
+    await bid.handler()
+
+    ctrl.active_text_channel.send.assert_not_awaited()
+    assert ctrl._pending_followups == {}
+
+
+async def test_handler_skips_offer_when_underlying_handler_raises():
+    """_handle_music_info_query 炸掉時不該還去追問（handler 已 return）。"""
+    from intent_agents.now_playing_agent import NowPlayingAgent
+    ctrl = _ctrl(current_info={"title": "夜曲", "uploader": "周杰倫"})
+    ctrl._handle_music_info_query = AsyncMock(side_effect=RuntimeError("boom"))
+    ctrl.active_text_channel = AsyncMock()
+    ctrl._pending_followups = {}
+    agent = NowPlayingAgent(ctrl)
+    bid = agent.bid(_ctx("這首是誰唱的"))
+
+    await bid.handler()
+
+    ctrl.active_text_channel.send.assert_not_awaited()

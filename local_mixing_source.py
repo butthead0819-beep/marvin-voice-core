@@ -58,6 +58,9 @@ class LocalMixingAudioSource(_BASE):
         clock=None,
     ):
         self._volume = float(volume)
+        self._volume_cur = float(volume)
+        self._volume_target = float(volume)
+        self._volume_step = 0.04  # 逐幀線性 ramp（每幀 20ms 調整 0.04，~0.25s 平滑到位，防 click/step jump）
         self._duck_level = float(duck_level)
         self._duck_step = float(duck_step)
         self._tts_gain = float(tts_gain)  # TTS 層增益（音樂常播 ~10%，TTS 滿音量過大 → 預設減半）
@@ -227,6 +230,13 @@ class LocalMixingAudioSource(_BASE):
             elif self._duck_cur > target:
                 self._duck_cur = max(target, self._duck_cur - self._duck_step)
 
+            # volume ramp：逐幀線性往 _volume_target 漸變（防 Auto Gain 更新或手動調音量時產生 step jump/click）
+            if self._volume_cur < self._volume_target:
+                self._volume_cur = min(self._volume_target, self._volume_cur + self._volume_step)
+            elif self._volume_cur > self._volume_target:
+                self._volume_cur = max(self._volume_target, self._volume_cur - self._volume_step)
+            self._volume = self._volume_cur
+
             # 打岔 duck ramp：layer2(Marmo) 在 → layer1(Marvin) 逐幀往 _interject_duck 淡出；
             # layer2 走 → 逐幀回 1.0。線性、防突兀（用戶回饋：瞬降太快，要漸進 fade out）。
             _itarget = self._interject_duck if tts2_f is not None else 1.0
@@ -240,7 +250,7 @@ class LocalMixingAudioSource(_BASE):
                 m_frame = music_f
                 if self._sidechain_mid_cut_active and tts_active and self._spatial_renderer is not None:
                     m_frame = self._spatial_renderer.apply_music_sidechain_mid_cut(m_frame, cut_db=-4.0)
-                layers.append(am.apply_gain(m_frame, self._volume * self._duck_cur))
+                layers.append(am.apply_gain(m_frame, self._volume_cur * self._duck_cur))
             # 🔇 TTS 對玩家說話 duck：玩家最近說話 → Marvin TTS 讓路到 10%，逐幀 ramp（防 click）
             # onset 復原：新一段 Marvin TTS 進來、且無人說話（窗已過）→ 把 idle 期間凍結的 duck
             # 復原 1.0（前幀無 TTS＝靜音，直接設不會 click），避免下段 TTS 殘留壓低。
@@ -303,9 +313,13 @@ class LocalMixingAudioSource(_BASE):
         """開啟或關閉 TTS 發聲時的音樂層中頻 Sidechain 削弱 (2.5kHz-4kHz)。"""
         self._sidechain_mid_cut_active = bool(active)
 
-    def set_volume(self, volume: float) -> None:
-        """即時音量（下一幀生效，無接縫、無 hotswap）。"""
-        self._volume = float(volume)
+    def set_volume(self, volume: float, immediate: bool = False) -> None:
+        """音量設定。預設逐幀平滑漸變（無接縫、防 click/pop/step jump）；immediate=True 則立即硬設。"""
+        v = float(volume)
+        self._volume_target = v
+        if immediate or (self._music is None and not self._tts_queue and self._tts_cur is None):
+            self._volume_cur = v
+            self._volume = v
 
     def push_tts(self, f32_buffer: np.ndarray) -> bool:
         """把預解碼的 TTS f32 buffer 排進 TTS 層。超過 cap → 拒絕回 False（caller 降級貼文）。"""

@@ -54,6 +54,18 @@ def test_sample_positions_short_song_single_point():
     assert sample_positions(0.0) == [0.0]
 
 
+def test_sample_positions_with_start_s():
+    # duration=200, start_s=100 (eff_duration=100) -> 100 + [25, 50, 75] = [125, 150, 175]
+    pos = sample_positions(200.0, window_s=20.0, start_s=100.0)
+    assert pos == [125.0, 150.0, 175.0]
+
+
+def test_sample_positions_short_after_start_s():
+    # duration=100, start_s=80 -> eff_duration=20 (< 2*window=40) -> 退化成 [80.0]
+    assert sample_positions(100.0, window_s=20.0, start_s=80.0) == [80.0]
+
+
+
 # ── parse_ebur128_integrated ──────────────────────────────────────────────────
 
 _EBUR128_TAIL = """\
