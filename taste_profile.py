@@ -15,11 +15,15 @@ search 解析成真 videoId（resolve-then-trust 防幻覺），餵進 T2 seed �
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from pathlib import Path
 
 import memory_sandbox
+from music_recommender import Evidence
+
+logger = logging.getLogger(__name__)
 
 TASTE_SYSTEM_PROMPT = (
     "你是華語音樂品味分析師。根據使用者實際聽的歌，輸出 JSON："
@@ -160,6 +164,34 @@ def fresh_avoid_artists(path, users: list[str], max_age_s: float) -> list[str]:
 def fresh_adjacent_artists(path, users: list[str], max_age_s: float) -> list[str]:
     """在場成員的 adjacent_artists 聯集（正向：LLM 推的史外鄰近歌手，餵 T4 catalog search）。"""
     return _fresh_field(path, users, max_age_s, "adjacent_artists")
+
+
+def extract_discover_new_evidence(artist: str, adjacent_artists: list[str]) -> Evidence | None:
+    """從 adjacent_artists 抽新領域訊號 Evidence，供解釋層槽位填空使用。
+
+    只有候選歌手命中 adjacent_artists 清單才回 Evidence（signal_type="adjacent_artist"，
+    沒有 listen 事件所以 timestamp/play_count 都是空值）；沒命中回 None（非壞資料，
+    只是候選本身不屬於新領域訊號，caller 該當作沒有 evidence 處理）。
+
+    fail-open：adjacent_artists 型別異常（非 list）→ log 記錄、回傳 None，不拋例外。
+    """
+    try:
+        if not isinstance(adjacent_artists, list):
+            raise TypeError(f"adjacent_artists 應為 list，實際 {type(adjacent_artists)!r}")
+    except TypeError as e:
+        logger.warning("discover_new evidence 抽取失敗，跳過藝人 %r：%s", artist, e)
+        return None
+    if not artist or artist not in adjacent_artists:
+        return None
+    return Evidence(
+        signal_type="adjacent_artist",
+        timestamp=None,
+        play_count=0,
+        skip_count=0,
+        source_tier="adjacent_artist",
+        subject="you",
+        requester=None,
+    )
 
 
 def filter_avoided(candidates: list[dict], avoid_artists: list[str]) -> list[dict]:

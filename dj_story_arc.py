@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json
+import logging
 import os
 import re
 from collections import Counter, defaultdict
@@ -68,6 +69,8 @@ from dataclasses import dataclass, replace
 
 import dj_life_context
 from themed_playlist import _norm_for_match  # 共用正規化比對，避免重複定義
+
+logger = logging.getLogger(__name__)
 
 _STORY_ARC_LOG = "records/dj_story_arcs.jsonl"
 DEFAULT_INTRO_MUSIC_PATH = "assets/dj_sfx/show_intro.mp3"  # 節目片頭主題曲，人工放置
@@ -551,10 +554,13 @@ async def curate_story_outline(brief: StoryBrief | None, candidate_pools: dict[s
     system, user = build_outline_prompt(brief, candidate_pools, exclude_titles)
     try:
         resp = await call_fn(user, system=system, caller="dj_story_arc_outline")
-    except Exception:
+    except Exception as e:
+        logger.warning(f"⚠️ [StoryArc] Call 1 呼叫失敗: {e!r}")
         return None
     arc = parse_story_outline(resp, max_nodes=brief.node_count)
     if arc is None:
+        logger.warning(f"⚠️ [StoryArc] Call 1 回應解析失敗，resp={resp[:200]!r}" if resp
+                        else "⚠️ [StoryArc] Call 1 回應為空（全 model 失敗/cooldown）")
         return None
     return tag_taste_match(arc, candidate_pools)
 

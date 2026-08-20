@@ -15,11 +15,16 @@ Phase 1 M3 新增：
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 import random
 import re
 from dataclasses import dataclass
 
 from music_memory import extract_video_id
+
+logger = logging.getLogger(__name__)
 
 # 長尾門檻：最後一次播放超過這天數才算「久沒播」
 LONG_TAIL_DAYS = 7.0
@@ -349,6 +354,68 @@ def ring_titles_for(played_title: str, mode: str, anchor_title: str) -> list[str
     return titles
 
 
+# ── Evidence 抽取層（供解釋層槽位填空用；不准 LLM 自由編造事實）──────────────
+# 從 song.plays[]/requesters 抽 rediscover 訊號（timestamp/play_count）。
+# source_tier 沿用本檔 lane 命名（group_resonance/long_tail/spotlight/liked），
+# 不是 project_infinite_autopilot_tiers 的 T1/T2/T3 那套命名——兩者是不同子系統。
+@dataclass
+class Evidence:
+    signal_type: str            # listen | like | adjacent_artist
+    timestamp: float | None     # 最近一次相關事件的 unix ts（無資料時 None）
+    play_count: int
+    skip_count: int
+    source_tier: str            # 候選來源 lane：group_resonance/long_tail/spotlight/liked/adjacent_artist
+    subject: str                # "you"（單一 requester）| "you_all"（群體共同歷史）
+    requester: str | None       # subject == "you" 時的具名對象，否則 None
+
+
+def extract_evidence(song: dict, candidate: "Candidate") -> Evidence | None:
+    """從 song.plays[]/requesters/likes 抽 Evidence，供解釋層槽位填空使用。
+
+    候選歌曲只有單一 requester 時才用人名化解釋（subject="you"）；多人點過則
+    群體共同歷史用「你們」（subject="you_all"），不猜測在場哪位互動最多。
+
+    fail-open：song 關鍵欄位型別異常（非 dict/list）→ log 記錄被跳過的候選、
+    回傳 None，不拋例外——caller 該跳過該候選的解釋顯示，不中斷整段推薦流程。
+    """
+    title = getattr(candidate, "anchor_title", None)
+    try:
+        plays = song.get("plays") or []
+        if not isinstance(plays, list):
+            raise TypeError(f"plays 應為 list，實際 {type(plays)!r}")
+        requesters = song.get("requesters") or {}
+        if not isinstance(requesters, dict):
+            raise TypeError(f"requesters 應為 dict，實際 {type(requesters)!r}")
+
+        target = candidate.target_member
+        member_plays = [p for p in plays if isinstance(p, dict) and p.get("by") == target]
+        relevant_plays = member_plays or [p for p in plays if isinstance(p, dict)]
+        timestamps = [p.get("ts") for p in relevant_plays if isinstance(p.get("ts"), (int, float))]
+        timestamp = max(timestamps) if timestamps else None
+        play_count = len(member_plays) if member_plays else int(requesters.get(target, 0) or 0)
+
+        active_requesters = [u for u, n in requesters.items() if n]
+        if len(active_requesters) <= 1:
+            subject, requester = "you", (active_requesters[0] if active_requesters else target)
+        else:
+            subject, requester = "you_all", None
+
+        signal_type = "like" if candidate.lane == "liked" else "listen"
+
+        return Evidence(
+            signal_type=signal_type,
+            timestamp=timestamp,
+            play_count=play_count,
+            skip_count=0,
+            source_tier=candidate.lane,
+            subject=subject,
+            requester=requester,
+        )
+    except (TypeError, AttributeError, ValueError) as e:
+        logger.warning("evidence 抽取失敗，跳過候選 %r：%s", title, e)
+        return None
+
+
 def pick_candidate(
     pool: list[Candidate],
     *,
@@ -361,6 +428,73 @@ def pick_candidate(
     top = pool[:top_n]
     r = rng or random
     return r.choices(top, weights=[max(c.score, 0.1) for c in top], k=1)[0]
+
+
+# ── 情境切換選擇器（rediscover / discover_new，仿 dj_topic_selector.select_mode）──
+# 優先序 cascade：只有一種 lane 有素材 → 直接選；兩者都有 → 輪替避免每次都選同一種；
+# 兩者皆空 → 'default'（沿用現有排序，不強制切換）。這是排序優先度層，不是新推薦邏輯
+# ——不動 long_tail/adjacent_artists 既有分數公式。
+REC_MODE_ORDER = ("rediscover", "discover_new")
+DEFAULT_REC_MODE_PATH = "records/rec_mode_state.json"
+_LAST_REC_MODE_KEY = "_last_rec_mode"
+
+
+class RecModeStore:
+    """情境切換選擇器的輪替狀態，disk JSON 持久化（撓過重啟），fail-open。"""
+
+    def __init__(self, path: str = DEFAULT_REC_MODE_PATH):
+        self._path = path
+        self._data = self._load()
+
+    def _load(self) -> dict:
+        try:
+            return json.load(open(self._path, encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+            return {}
+
+    def _save(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
+            tmp = f"{self._path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._data, f, ensure_ascii=False)
+            os.replace(tmp, self._path)
+        except OSError:
+            pass  # fail-open：寫不進去不影響功能（下次再判斷）
+
+    def get_last_mode(self) -> str | None:
+        return self._data.get(_LAST_REC_MODE_KEY)
+
+    def set_last_mode(self, mode: str) -> None:
+        self._data[_LAST_REC_MODE_KEY] = mode
+        self._save()
+
+
+def select_rec_mode(
+    *,
+    has_rediscover: bool,
+    has_discover_new: bool,
+    store: RecModeStore,
+) -> str:
+    """本地決定這輪自動推薦要走哪個情境模式，不用每次問 LLM。
+
+    回傳 'rediscover' | 'discover_new' | 'default'：
+      - 只有 rediscover 有素材（long_tail lane 非空）→ 'rediscover'
+      - 只有 discover_new 有素材（adjacent_artists 非空）→ 'discover_new'
+      - 兩者都有 → 在兩者間輪替（不重複上次選過的），避免每次都落在同一種
+      - 兩者皆空 → 'default'（fallback 現有預設排序，不強制切換）
+    """
+    candidates = [
+        m for m in REC_MODE_ORDER
+        if (m == "rediscover" and has_rediscover)
+        or (m == "discover_new" and has_discover_new)
+    ]
+    if not candidates:
+        return "default"
+    last = store.get_last_mode()
+    mode = next((m for m in candidates if m != last), candidates[0])
+    store.set_last_mode(mode)
+    return mode
 
 
 def pick_candidates(

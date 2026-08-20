@@ -1,6 +1,14 @@
 
 ## 新功能 — 待完成
 
+### TODO: Claim-level 可反駁解釋機制（推薦引擎 Phase 2）
+**What:** 讓使用者可以在 Discord 對推薦附帶的「解釋本身」按讚/按噓（不只對歌），把解釋存成結構化 claim（用了哪個訊號、權重多少），讓候選池權重學到「使用者信任哪種理由」而非只是「喜歡哪首歌」。
+**Why:** cross-model 意見（`jackhuang-main-design-MusicRecEngine-20260820-114251.md`）認為這是推薦引擎的最酷版本——Spotify 結構上做不到，因為他們的 explanation 從來不是產品面向使用者的一等公民。長期複利最高，但依賴基本挖舊/新領域切換 + 解釋層先驗證有沒有用。
+**Context:** 推薦引擎第一輪（情境切換版）已 land 挖舊/新領域切換 + grounded 解釋層（複用 `music_recommender.py` 的 `long_tail` lane 與 `taste_profile.py` 的 `adjacent_artists`）。這個 TODO 是在那之上加一層使用者回饋——evidence 結構化物件本身天然適合擴充成可被 emoji 反饋的形式，但第一輪明確排除，避免在基本假設都還沒驗證前就加複雜度。
+**Depends on:** 推薦引擎情境切換版（挖舊+新領域雙模式 + grounding 驗證）先上線並驗證過。
+**Priority:** P3（長期複利項，非阻擋當前推薦引擎上線）
+
+
 ### TODO: Marvin 表演腳本 — 疊加動作指向目前畫面卡片
 **What:** Marvin 播放主題動作時，能「看向/指向」目前 HUD 畫面上實際存在的卡片（例如有 Gmail 卡就轉頭看一眼），而不是動作永遠對著固定方向。
 **Why:** `/office-hours` 設計文件（`jackhuang-main-design-MarvinPerformanceScript-20260727-104135.md`）Open Question #2——結構性互動能讓表演感覺跟畫面有連結，而不是自己演自己的，但不是 v1 骨架驗證的必要條件。
