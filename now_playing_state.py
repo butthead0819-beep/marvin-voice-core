@@ -27,6 +27,7 @@ def save_now_playing_state(*, playing: bool, title: str = "", by: str = "",
                             duration: float | None = None,
                             song_start_time: float | None = None,
                             comment: str | None = None,
+                            explanation: str | None = None,
                             path: str = DEFAULT_PATH) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump({
@@ -39,4 +40,5 @@ def save_now_playing_state(*, playing: bool, title: str = "", by: str = "",
             "duration": duration,
             "song_start_time": song_start_time,
             "comment": comment,
+            "explanation": explanation,
         }, f)

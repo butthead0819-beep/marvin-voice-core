@@ -54,7 +54,7 @@ def test_publish_with_info_writes_playing_true(monkeypatch):
         "playing": True, "title": "夜曲", "by": "大肚",
         "cover": "http://x/y.jpg", "palette": ["#111111"],
         "queue": [{"title": "晴天", "by": "小明", "thumbnail": "http://x/next.jpg"}],
-        "duration": None, "song_start_time": None, "comment": None,
+        "duration": None, "song_start_time": None, "comment": None, "explanation": None,
     }
 
 
