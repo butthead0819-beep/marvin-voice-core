@@ -7,7 +7,7 @@ music_memory 的歌一視同仁地照字典順序取前 25 首，聽過 1 次跟
 """
 from __future__ import annotations
 
-from scripts.build_taste_profiles import _gather, _skipped_titles
+from scripts.build_taste_profiles import _gather, _music_related_likes, _skipped_titles
 
 
 def _song(title, requesters):
@@ -78,3 +78,33 @@ def test_skipped_titles_no_recommendations_empty():
 def test_skipped_titles_other_user_not_leaked():
     mm = {"recommendations": {"大肚": {"feedback": [{"title": "歌A", "result": "skipped"}]}}}
     assert _skipped_titles("showay", mm) == []
+
+
+# ── 優化 #4：興趣標籤篩選改用多字詞彙 + 真實聽過藝人交叉比對，取代姓氏單字 hint ──
+def test_music_related_likes_matches_genre_keyword():
+    out = _music_related_likes(["喜歡搖滾樂"], core_artists=[])
+    assert out == ["喜歡搖滾樂"]
+
+
+def test_music_related_likes_matches_known_core_artist():
+    # 提到使用者自己真的聽過的藝人（deterministic 指紋 core_artists）算音樂興趣
+    out = _music_related_likes(["超愛五月天"], core_artists=["五月天"])
+    assert out == ["超愛五月天"]
+
+
+def test_music_related_likes_excludes_unrelated_surname_mention():
+    # 舊版姓氏單字 hint（張/周/林）誤殺：「周末爬山」被誤收；改版不該再收
+    out = _music_related_likes(["周末喜歡爬山"], core_artists=["五月天"])
+    assert out == []
+
+
+def test_music_related_likes_no_match_excluded():
+    out = _music_related_likes(["喜歡打籃球"], core_artists=["五月天"])
+    assert out == []
+
+
+def test_gather_filters_likes_by_core_artists():
+    mm = {"songs": {}}
+    sk = {"players": {"showay": {"likes": ["超愛五月天", "打籃球"]}}}
+    _titles, likes = _gather("showay", mm, sk, core_artists=["五月天"])
+    assert likes == ["超愛五月天"]

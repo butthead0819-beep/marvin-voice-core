@@ -204,6 +204,39 @@ def extract_discover_new_evidence(artist: str, adjacent_artists: list[str]) -> E
     )
 
 
+def sanitize_profile(profile: dict, core_artists: list[str]) -> dict:
+    """用 deterministic 指紋（`taste_fingerprint.compute_taste_fingerprint` 的
+    per_user core_artists）交叉驗證 LLM profile，濾掉自相矛盾/沒擴展價值的輸出。
+
+    LLM 偶爾會把使用者明顯愛聽（真人點播統計出的核心藝人）的歌手塞進
+    avoid_artists（自相矛盾，直接砍）或 adjacent_artists（不是真的「跳出史外」，
+    只是換句話說同一個已經在聽的歌手，沒有擴展價值）。純函式、不改原物件；
+    沒有 core_artists 可比對 → 原樣回傳（fail-open，不因指紋缺資料砍光 LLM 輸出）。
+    """
+    if not core_artists:
+        return dict(profile)
+    core = [c.strip() for c in core_artists if c and c.strip()]
+
+    def _matches_core(name: str) -> bool:
+        n = (name or "").strip()
+        if not n:
+            return False
+        return any(c == n or c in n or n in c for c in core)
+
+    out = dict(profile)
+    avoid = profile.get("avoid_artists") or []
+    adjacent = profile.get("adjacent_artists") or []
+    dropped_avoid = [a for a in avoid if _matches_core(a)]
+    dropped_adjacent = [a for a in adjacent if _matches_core(a)]
+    out["avoid_artists"] = [a for a in avoid if a not in dropped_avoid]
+    out["adjacent_artists"] = [a for a in adjacent if a not in dropped_adjacent]
+    if dropped_avoid:
+        logger.warning("taste profile 自相矛盾：avoid_artists 含 core_artists %r，已濾掉", dropped_avoid)
+    if dropped_adjacent:
+        logger.warning("taste profile adjacent_artists 含既有 core_artists %r（非史外），已濾掉", dropped_adjacent)
+    return out
+
+
 def filter_avoided(candidates: list[dict], avoid_artists: list[str]) -> list[dict]:
     """剔除 artist 命中 avoid 的候選（純函式）。normalize 比對：avoid 名出現在候選
     artist 字串內即剔（涵蓋「伍佰」vs「伍佰 & China Blue」）。avoid 空 → 原樣回。"""

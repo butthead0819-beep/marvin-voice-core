@@ -178,3 +178,38 @@ def test_filter_avoided_drops_matching_artist():
 def test_filter_avoided_empty_avoid_keeps_all():
     cands = [{"title": "歌1", "artist": "伍佰"}]
     assert tp.filter_avoided(cands, []) == cands
+
+
+# ── 10. sanitize_profile：優化 #3 用 deterministic 指紋交叉驗證 LLM 輸出 ──
+def test_sanitize_drops_avoid_artist_that_is_actually_core():
+    # LLM 自相矛盾：使用者明顯愛聽周杰倫（fingerprint core_artists），卻叫我們避開他
+    profile = {"avoid_artists": ["周杰倫", "重金屬團"], "adjacent_artists": ["伍佰"]}
+    out = tp.sanitize_profile(profile, core_artists=["周杰倫", "陶喆"])
+    assert out["avoid_artists"] == ["重金屬團"]
+    assert out["adjacent_artists"] == ["伍佰"]   # 不受影響
+
+
+def test_sanitize_drops_adjacent_artist_already_core():
+    # 「鄰近歌手」其實是使用者已經在聽的核心藝人，沒有擴展價值
+    profile = {"avoid_artists": [], "adjacent_artists": ["陶喆", "林憶蓮"]}
+    out = tp.sanitize_profile(profile, core_artists=["陶喆"])
+    assert out["adjacent_artists"] == ["林憶蓮"]
+
+
+def test_sanitize_no_core_artists_returns_profile_unchanged():
+    profile = {"avoid_artists": ["A"], "adjacent_artists": ["B"]}
+    out = tp.sanitize_profile(profile, core_artists=[])
+    assert out == profile
+
+
+def test_sanitize_does_not_mutate_input():
+    profile = {"avoid_artists": ["周杰倫"], "adjacent_artists": []}
+    tp.sanitize_profile(profile, core_artists=["周杰倫"])
+    assert profile["avoid_artists"] == ["周杰倫"]   # 原物件不變
+
+
+def test_sanitize_substring_match_handles_full_stage_name():
+    # fingerprint 抽出「周杰倫」，LLM 講「周杰倫 Jay Chou」變體也要抓到
+    profile = {"avoid_artists": ["周杰倫 Jay Chou"], "adjacent_artists": []}
+    out = tp.sanitize_profile(profile, core_artists=["周杰倫"])
+    assert out["avoid_artists"] == []
