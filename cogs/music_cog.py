@@ -2829,14 +2829,49 @@ class MusicCog(commands.Cog):
             ctx.append(f"情感記錄：{' / '.join(feelings[:2])}")
         if lyric_match:
             ctx.append(f"歌詞呼應：{lyric_match[:60]}")
-        # 環境沉浸：城市/區（GPS 訊號，沒有則退回台北）+ 季節（日期推）+ 時段。
+
+        _vc_ref = None
+        present_members: set[str] | None = None
+        try:
+            _vc_ref = self._vc()
+            if _vc_ref is not None:
+                present_members = set(_vc_ref.get_online_members())
+        except Exception:
+            pass  # fail-open：vc 不可用時不過濾在場人
+
+        from dj_social_affinity import (
+            detect_back_to_back_artist,
+            find_song_social_affinity,
+            format_temporal_atmosphere,
+        )
+
+        b2b_artist = detect_back_to_back_artist(prev_title, title)
+        if b2b_artist:
+            ctx.append(f"連播線索：連續第二首 {b2b_artist} 的歌")
+
+        affinity = find_song_social_affinity(mm, info, requester, present_members)
+        if affinity:
+            ctx.append(f"喜好線索：{affinity}")
+
+        # 🎵 音樂深度知識（作詞作曲、收錄專輯、官方創作背景/維基百科典故）
+        try:
+            from song_knowledge_store import SongKnowledgeStore
+            _sks = getattr(self, '_song_knowledge_store', None)
+            if _sks is None:
+                _sks = SongKnowledgeStore()
+                self._song_knowledge_store = _sks
+            music_insight = await _sks.get_or_extract_insight(info, _clean_t, _clean_a)
+            if music_insight:
+                ctx.append(f"音樂賞析：{music_insight}")
+        except Exception:
+            pass  # fail-open：知識庫異常不影響 DJ 生成
+
+        # 環境沉浸：城市/區（GPS 訊號，沒有則退回台北）+ 季節（日期推）+ 星期/時段。
         # 不再無條件塞進 ctx——只有 mode == "atmosphere" 被選中時才當開場素材用，
         # 其餘時候別讓它變成 LLM 隨手可用的預設開場（治「每次都靠環境/天氣開場」）。
         season = self._current_season()
         city = self._city_label()
-        env = f"環境：{city} · {season}"
-        if slot:
-            env += f" · {slot}"
+        env = format_temporal_atmosphere(city, season, slot)
         if conv_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
         # 本地決定這次串場怎麼寫，LLM 不必自己判斷「有沒有話題、要不要硬掰、
@@ -2849,15 +2884,6 @@ class MusicCog(commands.Cog):
         interests = self._present_interests()
         _emo_highlight = self._recent_emotional_highlight(requester)
         emotional_highlights = [_emo_highlight] if _emo_highlight else []
-
-        _vc_ref = None
-        present_members: set[str] | None = None
-        try:
-            _vc_ref = self._vc()
-            if _vc_ref is not None:
-                present_members = set(_vc_ref.get_online_members())
-        except Exception:
-            pass  # fail-open：vc 不可用時不過濾在場人
 
         # autopilot 策展理由算在 mode 選擇之前：有理由可講時別讓它被 fallback 輪替
         # 排進 quick（quick 沒素材時直接跳過 LLM，會把這個好料浪費掉）。
@@ -2900,16 +2926,17 @@ class MusicCog(commands.Cog):
         if _autopilot_reason:
             ctx.append(f"選這首的理由：{_autopilot_reason}")
 
-        # Group size → 語氣：1 人親密、4+ 人 live DJ 節奏；2-3 人不加（維持原有行為）。
+        # Group size & Chat Heat → 語氣：綜合在線人數與 AtmosphereTracker 對話活躍度。
         # vc() 不可用時靜默略過。quick 模式沒有 LLM 可以照 ctx 調語氣，改本地選模板池。
         _n_online = 0
         try:
             if _vc_ref is not None:
                 _n_online = len(_vc_ref.get_online_members())
-                if _n_online == 1:
-                    ctx.append("只有一個人在聽，語氣親密一點，像對老朋友說話。")
-                elif _n_online >= 4:
-                    ctx.append("人多，說短一點、節奏精簡，像 live DJ 播報。")
+                _tracker = getattr(getattr(self.bot, 'router', None), 'atmosphere_tracker', None)
+                from dj_social_affinity import assess_channel_heat
+                _, _heat_instr = assess_channel_heat(_tracker, conv_buf, _n_online)
+                if _heat_instr:
+                    ctx.append(_heat_instr)
         except Exception:
             pass  # fail-open：語氣注入失敗不影響 DJ 生成
 
@@ -3855,6 +3882,10 @@ class MusicCog(commands.Cog):
 
         skip-override：手動點播蓋過先前 skip——記 played_again + 重置 consecutive-skip 計數。
         """
+        # 🎙️ [使用者自選曲] 不快進：略過熱力圖精華起點與後續 LRC 前奏跳過，一律從頭播。
+        info['highlight_start_s'] = None
+        info['voice_request'] = True
+
         # 🎵 [ReqDedup] 同人同曲 30s 去重：佇列去重只看佇列（第一發已 pop 去播時
         # 佇列空、第二發漏過，7/3-4 實錘）；ledger 與佇列狀態無關（唯一入隊點）
         _vid = extract_video_id(info.get('webpage_url') or '')

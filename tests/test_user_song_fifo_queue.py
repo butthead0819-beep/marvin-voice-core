@@ -94,3 +94,21 @@ def test_user_song_updates_t2_seed():
         "webpage_url": "https://www.youtube.com/watch?v=ABCDEFGHIJK",
     })
     assert cog._last_user_song_seed == "ABCDEFGHIJK"
+
+
+def test_user_song_clears_highlight_start_and_sets_voice_request():
+    """使用者點歌不快進：清空 highlight_start_s 並標記 voice_request（避免熱力圖與前奏跳過）。"""
+    cog = _make_cog()
+    cog.stream_queue = []
+    song = {
+        "title": "稻香",
+        "url": "http://x",
+        "requested_by": "alice",
+        "webpage_url": "https://www.youtube.com/watch?v=ABCDEFGHIJK",
+        "highlight_start_s": 42.5,
+    }
+    cog._queue_user_song(song)
+    queued = cog.stream_queue[0]
+    assert queued["highlight_start_s"] is None
+    assert queued.get("voice_request") is True
+
