@@ -68,3 +68,31 @@ def test_corrupt_cache_file_fails_open(tmp_path):
     path.write_text("not json", encoding="utf-8")
     store = TopicCooldownStore(str(path))
     assert select_topic(["昨天去爬山"], [], store) == ("昨天去爬山", "life")
+
+
+# ── emotional_highlight：第三優先，life/interest 之後 ────────────────────────
+
+def test_select_topic_falls_back_to_emotional_highlight_when_no_life_or_interest(tmp_path):
+    store = TopicCooldownStore(str(tmp_path / "c.json"))
+    topic, kind = select_topic([], [], store, ["上次你說覺得被理解那句話"])
+    assert (topic, kind) == ("上次你說覺得被理解那句話", "emotional_highlight")
+
+
+def test_select_topic_prefers_interest_over_emotional_highlight(tmp_path):
+    store = TopicCooldownStore(str(tmp_path / "c.json"))
+    topic, kind = select_topic([], ["喜歡周杰倫"], store, ["上次的感動瞬間"])
+    assert (topic, kind) == ("喜歡周杰倫", "interest")
+
+
+def test_emotional_highlight_goes_on_cooldown(tmp_path):
+    store = TopicCooldownStore(str(tmp_path / "c.json"))
+    select_topic([], [], store, ["同一個瞬間"])
+    topic, kind = select_topic([], [], store, ["同一個瞬間"])
+    assert (topic, kind) == (None, "none")
+
+
+def test_no_emotional_highlights_falls_through_to_none(tmp_path):
+    store = TopicCooldownStore(str(tmp_path / "c.json"))
+    assert select_topic([], [], store) == (None, "none")
+    assert select_topic([], [], store, None) == (None, "none")
+    assert select_topic([], [], store, []) == (None, "none")

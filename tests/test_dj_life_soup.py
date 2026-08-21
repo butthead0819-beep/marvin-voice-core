@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -284,22 +285,23 @@ def _dj_prompt_block() -> str:
     return _build_dj_interjection_prompt("測試脈絡")
 
 
-def test_dj_prompt_word_budget_targets_10_seconds():
-    """2026-07-17 使用者：雞湯文改成 10 秒（減 1 秒沒差異）。
+def test_dj_prompt_word_budget_targets_12_seconds():
+    """2026-08-21 使用者：目前長度還能接受，配合 dj_story TTS gate 18s→22s
+    （tts_limits.yaml）放寬字數預算，讓推薦理由/生動描寫有多一點發揮空間。
 
-    真實 edge-tts ≈5.7 中文字/秒 → 10s ≈ 57-60 字。live 實測 LLM 會嚴重超寫
+    真實 edge-tts ≈5.7 中文字/秒 → 12s ≈ 68-70 字。live 實測 LLM 會嚴重超寫
     （24 則有 9 則爆 gate 被截斷），所以字數規則要擺在最前面、講死上限。
     """
     blk = _dj_prompt_block()
-    assert "50-60" in blk, "prompt 字數預算應為 50-60 中文字（真實≈10s）"
-    assert "60-90" not in blk and "54-84" not in blk, "舊字數預算應已移除"
+    assert "60-70" in blk, "prompt 字數預算應為 60-70 中文字（真實≈12s）"
+    assert "50-60" not in blk, "舊字數預算應已移除"
 
 
 def test_dj_prompt_puts_length_rule_first():
     """live 實測 37.5% 超長被截斷：長度規則埋在第 6 條沒用，要擺第 1 條。"""
     blk = _dj_prompt_block()
     first_rule = blk.split("1. ")[1].split("2. ")[0]
-    assert "50-60" in first_rule, f"字數規則應是第 1 條: {first_rule[:60]!r}"
+    assert "60-70" in first_rule, f"字數規則應是第 1 條: {first_rule[:60]!r}"
 
 
 def test_dj_prompt_forbids_human_first_person():
@@ -365,4 +367,106 @@ def test_dj_prompt_encourages_song_name_segue_and_imagination():
     """DJ prompt 應引導針對歌名巧妙串接情境，引起對下一首歌的想像與期待。"""
     blk = _dj_prompt_block()
     assert "歌名" in blk and "想像" in blk, "prompt 應包含針對歌名串接並引起下一首歌想像的指示"
+
+
+def test_dj_prompt_encourages_specific_personal_callback():
+    """2026-08-21 使用者：要更有畫面感、更個人化（比照 Gemini 範例的『既然你喜歡...』
+    具體點名），但受限於 12 秒硬上限，只能靠 prompt 引導『具體點出脈絡給的個人化細節』，
+    而非真的塞進長段落。"""
+    blk = _dj_prompt_block()
+    assert "個人化" in blk
+    assert "具體" in blk
+    assert "記得我" in blk, "prompt 應引導營造『DJ 真的記得聽眾』的具體感"
+
+
+# ── 5. TTS 情緒微調：mode → emotion 接進 generate_audio（2026-08-21）────────
+
+def _emotion_kwarg(cog) -> str | None:
+    call = cog.bot.tts_engine.generate_audio.call_args
+    assert call is not None, "generate_audio 應被呼叫"
+    return call.kwargs.get("emotion")
+
+
+@pytest.mark.asyncio
+async def test_life_mode_uses_upbeat_emotion():
+    cog = _make_cog(life_cores=["大肚在準備搬家"])
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    assert _emotion_kwarg(cog) == "upbeat"
+
+
+@pytest.mark.asyncio
+async def test_interest_mode_uses_upbeat_emotion():
+    cog = _make_cog(life_cores=[])
+    fake_vc = MagicMock()
+    fake_vc.get_online_members = MagicMock(return_value=["大肚"])
+    cog._vc = MagicMock(return_value=fake_vc)
+    cog.bot.router.memory = MagicMock()
+    cog.bot.router.memory.get_recent_liked_items = MagicMock(return_value=["九零年代金曲"])
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    assert _emotion_kwarg(cog) == "upbeat"
+
+
+@pytest.mark.asyncio
+async def test_atmosphere_mode_uses_calm_emotion():
+    cog = _make_cog(life_cores=[])
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    assert _emotion_kwarg(cog) == "calm"
+
+
+# ── 6. 情緒高光（emotional_highlights）接進 DJ 話題選擇（2026-08-21）─────────
+
+def _with_highlight(cog, requester, moment, valence="warm", age_s=3600.0):
+    cog.bot.router.memory.get_player_memory = MagicMock(return_value={
+        "emotional_highlights": [
+            {"moment": moment, "valence": valence, "timestamp": time.time() - age_s},
+        ],
+    })
+
+
+@pytest.mark.asyncio
+async def test_emotional_highlight_used_when_no_life_or_interest():
+    cog = _make_cog(life_cores=[])
+    _with_highlight(cog, "大肚", "你說覺得被理解的那句話")
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "你說覺得被理解的那句話" in ctx
+    assert "第一人稱" in ctx and "機器人" in ctx
+
+
+@pytest.mark.asyncio
+async def test_emotional_highlight_uses_calm_emotion():
+    cog = _make_cog(life_cores=[])
+    _with_highlight(cog, "大肚", "你說覺得被理解的那句話")
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    assert _emotion_kwarg(cog) == "calm"
+
+
+@pytest.mark.asyncio
+async def test_annoyed_valence_excluded_from_dj_material():
+    """annoyed 是 Marvin 對使用者的負面反應，串場裡講出來很怪——不該被當素材。"""
+    cog = _make_cog(life_cores=[])
+    _with_highlight(cog, "大肚", "你放的歌洗腦到讓我很煩", valence="annoyed")
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "你放的歌洗腦到讓我很煩" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_stale_emotional_highlight_excluded():
+    """超過 8 天的情緒高光太舊，不當新鮮素材。"""
+    cog = _make_cog(life_cores=[])
+    _with_highlight(cog, "大肚", "很久以前的瞬間", age_s=9 * 86400.0)
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "很久以前的瞬間" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_life_topic_wins_over_emotional_highlight():
+    cog = _make_cog(life_cores=["大肚在準備搬家"])
+    _with_highlight(cog, "大肚", "你說覺得被理解的那句話")
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "大肚在準備搬家" in ctx
+    assert "你說覺得被理解的那句話" not in ctx
 

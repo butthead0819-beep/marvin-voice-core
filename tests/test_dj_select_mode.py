@@ -115,3 +115,30 @@ def test_plain_str_and_tuple_life_items_still_work(tmp_path):
     store = _store(tmp_path)
     topic, mode = select_mode(["昨天去爬山"], [], store)
     assert (topic, mode) == ("昨天去爬山", "life")
+
+
+# ── 4. emotional_highlight：life/interest 都沒有時的第三選項 ─────────────────
+
+def test_emotional_highlight_used_when_no_life_or_interest(tmp_path):
+    store = _store(tmp_path)
+    topic, mode = select_mode(
+        [], [], store, emotional_highlights=["上次你說覺得被理解那句話"],
+    )
+    assert (topic, mode) == ("上次你說覺得被理解那句話", "emotional_highlight")
+
+
+def test_emotional_highlight_loses_to_life(tmp_path):
+    store = _store(tmp_path)
+    topic, mode = select_mode(
+        ["昨天去爬山"], [], store, emotional_highlights=["感動瞬間"],
+    )
+    assert (topic, mode) == ("昨天去爬山", "life")
+
+
+def test_no_emotional_highlights_still_falls_to_fallback_rotation(tmp_path):
+    store = _store(tmp_path)
+    _, mode = select_mode(
+        [], [], store, has_conversation=False, has_prev_song=False,
+        emotional_highlights=[],
+    )
+    assert mode in ("atmosphere", "quick")

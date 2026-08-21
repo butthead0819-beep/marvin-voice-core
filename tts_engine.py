@@ -16,6 +16,38 @@ from xml.sax.saxutils import escape as xml_escape
 
 logger = logging.getLogger(__name__)
 
+# 🎭 [Emotion] edge-tts 沒有 SSML style/express-as 可用（Communicate 只吃
+# rate/pitch/volume；zh-TW-YunJheNeural 在 Azure 語音清單裡也沒有 StyleList），
+# 真情緒風格這條路是死路。這裡改用「有效的旋鈕」：依情緒微調 rate/pitch，疊加在
+# base self.rate/self.pitch 上——不是真的表情演出，只是語速/音高的輕微起伏。
+# (rate_delta_pct, pitch_delta_hz)
+_EMOTION_ADJUST: dict[str, tuple[int, int]] = {
+    "upbeat": (5, 10),   # 生活/興趣類話題：稍快、稍高，聽起來更有精神
+    "calm": (-5, -8),    # 氛圍/情緒沉澱類：稍慢、稍低，貼氣氛
+    "normal": (0, 0),
+}
+
+_RATE_RE = re.compile(r"^([+-]?\d+)%$")
+_PITCH_RE = re.compile(r"^([+-]?\d+)Hz$")
+
+
+def _apply_rate_delta(base_rate: str, delta_pct: int) -> str:
+    """base_rate（如 "-20%"）疊加 delta_pct → 新的 rate 字串。解析不出 base 時當 0%。"""
+    if not delta_pct:
+        return base_rate
+    m = _RATE_RE.match(base_rate)
+    base = int(m.group(1)) if m else 0
+    return f"{base + delta_pct:+d}%"
+
+
+def _apply_pitch_delta(base_pitch: str, delta_hz: int) -> str:
+    """base_pitch（如 "-15Hz"）疊加 delta_hz → 新的 pitch 字串。解析不出 base 時當 0Hz。"""
+    if not delta_hz:
+        return base_pitch
+    m = _PITCH_RE.match(base_pitch)
+    base = int(m.group(1)) if m else 0
+    return f"{base + delta_hz:+d}Hz"
+
 
 def peak_normalize_wav_bytes(wav_bytes: bytes, target_peak_ratio: float = 0.9) -> bytes:
     """把 mono/stereo 16-bit WAV 峰值正規化到 target_peak_ratio×滿幅。
@@ -328,12 +360,21 @@ class SukiTTS:
         """
         [Legacy Support] 將文字轉為音訊檔案。
         內部改為呼叫 stream_audio 以維持邏輯一致性。
+
+        emotion：見 _EMOTION_ADJUST——只調 rate/pitch（edge-tts 沒有真情緒 style 可用），
+        未知 emotion 值當 "normal"（0 delta，行為與原本不傳 emotion 完全一致）。
         """
         clean_text = self._clean_text(text)
         if not clean_text:
             return None
 
-        file_hash = hashlib.md5(clean_text.encode()).hexdigest()
+        rate_delta, pitch_delta = _EMOTION_ADJUST.get(emotion, (0, 0))
+        rate = _apply_rate_delta(self.rate, rate_delta) if rate_delta else None
+        pitch = _apply_pitch_delta(self.pitch, pitch_delta) if pitch_delta else None
+
+        # emotion 進快取 key：同一句文字不同 emotion 會產生不同 rate/pitch，
+        # 不能共用快取檔（否則第二次呼叫會誤用第一次的語速/音高）。
+        file_hash = hashlib.md5(f"{clean_text}|{emotion}".encode()).hexdigest()
         ext = ".wav" if force_macos else ".mp3"
         file_name = f"suki_voice_{file_hash}{ext}"
         file_path = os.path.abspath(os.path.join(self.temp_dir, file_name))
@@ -345,7 +386,7 @@ class SukiTTS:
         try:
             # 使用 stream_audio 獲取音訊並寫入檔案
             with open(file_path, "wb") as f:
-                async for chunk in self.stream_audio(text, force_macos=force_macos):
+                async for chunk in self.stream_audio(text, rate=rate, pitch=pitch, force_macos=force_macos):
                     f.write(chunk)
             
             if os.path.exists(file_path) and os.path.getsize(file_path) > 100:

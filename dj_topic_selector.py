@@ -84,15 +84,20 @@ def select_topic(
     life_cores: list[str | tuple[str, str]],
     interests: list[str],
     store: TopicCooldownStore,
+    emotional_highlights: list[str] | None = None,
 ) -> tuple[str | None, str]:
-    """依序挑：近期生活 → 在場興趣 → 無話題（純過場，caller 該退回歌曲間銜接詞）。
+    """依序挑：近期生活 → 在場興趣 → 情緒高光 → 無話題（純過場，caller 該退回歌曲間銜接詞）。
 
-    回傳 (topic_text, topic_type)，topic_type in {'life', 'interest', 'none'}。
-    挑中的話題視為即將被用掉，立刻標記冷卻。
+    回傳 (topic_text, topic_type)，topic_type in {'life', 'interest',
+    'emotional_highlight', 'none'}。挑中的話題視為即將被用掉，立刻標記冷卻。
 
     life_cores 每項可以是：
       - str                → 純文字，用 SHA1 hash 冷卻（舊介面，向後相容）
       - (text, meme_id)    → 帶語義 tag，用 meme_id 冷卻（同 meme 換說法也算冷卻）
+
+    emotional_highlights：Marvin 自己對這位聽眾的情緒記憶（見 suki_memory
+    add_emotional_highlight），排最後——比 life/interest 少見（單一 requester
+    才有），優先度給群體話題。
     """
     for item in life_cores or []:
         if isinstance(item, tuple):
@@ -108,6 +113,11 @@ def select_topic(
         if i and store.is_cool(i):
             store.mark_used(i)
             return i, "interest"
+    for h in emotional_highlights or []:
+        h = (h or "").strip()
+        if h and store.is_cool(h):
+            store.mark_used(h)
+            return h, "emotional_highlight"
     return None, "none"
 
 
@@ -165,18 +175,21 @@ def select_mode(
     present_members: set[str] | None = None,
     has_conversation: bool = False,
     has_prev_song: bool = False,
+    emotional_highlights: list[str] | None = None,
 ) -> tuple[str | None, str]:
     """本地決定這次串場要走哪個 mode，LLM 不必自己判斷「有沒有話題、要不要硬掰」。
 
-    順序：近期生活（主角要在場）→ 在場興趣 → 都沒有時，在 conversation/prev_song/quick
-    間輪替（避免每次都落在同一種 fallback，尤其是最容易變成「每次都環境/天氣」的那個）。
+    順序：近期生活（主角要在場）→ 在場興趣 → 情緒高光 → 都沒有時，在
+    conversation/prev_song/quick 間輪替（避免每次都落在同一種 fallback，尤其是最
+    容易變成「每次都環境/天氣」的那個）。
 
     回傳 (topic_text, mode)，mode 比 select_topic 多了 'conversation'/'prev_song'/'quick'。
-    topic_text 只有 mode in {'life', 'interest'} 才非 None，其餘三種 fallback 沒有具體
-    文字素材——caller 自己依 mode 決定串場方向（quick 甚至該跳過 LLM，直接走本地模板）。
+    topic_text 只有 mode in {'life', 'interest', 'emotional_highlight'} 才非 None，
+    其餘三種 fallback 沒有具體文字素材——caller 自己依 mode 決定串場方向（quick
+    甚至該跳過 LLM，直接走本地模板）。
     """
     filtered_life = _filter_present_actors(life_cores, present_members)
-    topic, kind = select_topic(filtered_life, interests, store)
+    topic, kind = select_topic(filtered_life, interests, store, emotional_highlights)
     if kind != "none":
         return topic, kind
     return None, _pick_fallback_mode(

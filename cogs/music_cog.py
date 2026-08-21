@@ -136,6 +136,17 @@ class MusicCog(commands.Cog):
     # DJ 播報疊在歌上的音量（混音時 dj 分支的 gain）。降到 30% 不蓋過音樂。
     _DJ_INTERJECTION_VOLUME = 0.30
 
+    # dj_topic_selector.select_mode() 的 mode → tts_engine 情緒（見 _EMOTION_ADJUST）：
+    # 只調 rate/pitch（edge-tts 沒有真情緒 style 可用）。沒列到的 mode（quick/
+    # conversation/reason 等）用預設 "normal"，不特別調。
+    _DJ_MODE_TO_TTS_EMOTION = {
+        "life": "upbeat",
+        "interest": "upbeat",
+        "atmosphere": "calm",
+        "prev_song": "calm",
+        "emotional_highlight": "calm",
+    }
+
     # DJ 播報模板池資料源見 personas/dj_templates.yaml；選池邏輯/random.choice() 呼叫點不動
     _DJ_TEMPLATES = load_dj_templates()
     _DJ_EMPATHY_HOOK_TEMPLATES = tuple(_DJ_TEMPLATES["empathy_hooks"])
@@ -2707,6 +2718,38 @@ class MusicCog(commands.Cog):
         except Exception:
             return []
 
+    _EMOTIONAL_HIGHLIGHT_MAX_AGE_S = 8 * 86400  # 跟 taste_profile 其他 freshness window 一致
+
+    def _recent_emotional_highlight(self, requester: str) -> str:
+        """requester 最近一則「讓 Marvin 情緒波動的瞬間」（見 gemini_router_content.py
+        extract_emotional_moments / suki_memory.add_emotional_highlight），供 DJ 話題選擇器
+        當第三優先話題。只取 warm/surprised/moved——annoyed 不當 DJ 素材（串場裡講『你讓我
+        不爽』很怪，跟這個場合的語氣不合）。8 天內才算新鮮。任何失敗回 ""（DJ 少一味料，
+        不該讓整條串場掛掉，同 _present_interests 的降級哲學）。
+        """
+        try:
+            suki = getattr(getattr(self.bot, 'router', None), 'memory', None)
+            if suki is None or not requester:
+                return ""
+            highlights = suki.get_player_memory(requester).get('emotional_highlights', [])
+            if not isinstance(highlights, list):
+                return ""
+            now = time.time()
+            for h in reversed(highlights):
+                if not isinstance(h, dict):
+                    continue
+                if h.get('valence') == 'annoyed':
+                    continue
+                ts = h.get('timestamp')
+                if not isinstance(ts, (int, float)) or now - ts > self._EMOTIONAL_HIGHLIGHT_MAX_AGE_S:
+                    continue
+                moment = str(h.get('moment', '')).strip()
+                if moment:
+                    return moment
+            return ""
+        except Exception:
+            return ""
+
     async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
         """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
         # 📖 [StoryArc] 故事弧節點：口白已經在 /story_arc_prepare 階段生成+TTS預渲染好
@@ -2785,6 +2828,8 @@ class MusicCog(commands.Cog):
         from dj_topic_selector import select_mode
         life = await self._life_cores_async()
         interests = self._present_interests()
+        _emo_highlight = self._recent_emotional_highlight(requester)
+        emotional_highlights = [_emo_highlight] if _emo_highlight else []
 
         _vc_ref = None
         present_members: set[str] | None = None
@@ -2806,6 +2851,7 @@ class MusicCog(commands.Cog):
             present_members=present_members,
             has_conversation=bool(conv_lines),
             has_prev_song=bool(prev_title),
+            emotional_highlights=emotional_highlights,
         )
         if _autopilot_reason and mode in ("quick", "atmosphere"):
             mode = "reason"
@@ -2820,6 +2866,11 @@ class MusicCog(commands.Cog):
         elif mode == "interest":
             ctx.append(f"在場興趣：\n・{topic}")
             ctx.append(random.choice(self._DJ_EMPATHY_HOOK_TEMPLATES))
+        elif mode == "emotional_highlight":
+            # 這是 Marvin 自己（機器人）的記憶與反應，不是聽眾的事——跟 life/interest
+            # 的「代入感」方向相反，robot_pov_rule 對「第一人稱」的限制在這裡要放行。
+            ctx.append(f"你（機器人自己）記得的一個瞬間：\n・{topic}")
+            ctx.append("開場鉤子：這是你自己的記憶與反應，可以用第一人稱提起這個瞬間，不是在講聽眾的事。")
         elif mode == "prev_song":
             ctx.append("串場方向：延續上一首的情緒銜接過去就好，不用硬掰新話題。")
         elif mode == "conversation":
@@ -2890,7 +2941,8 @@ class MusicCog(commands.Cog):
 
         audio_path = None
         try:
-            audio_path = await self.bot.tts_engine.generate_audio(text)
+            _emotion = self._DJ_MODE_TO_TTS_EMOTION.get(mode, "normal")
+            audio_path = await self.bot.tts_engine.generate_audio(text, emotion=_emotion)
         except Exception as e:
             logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
 
