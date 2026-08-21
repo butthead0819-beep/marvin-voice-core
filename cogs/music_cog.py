@@ -912,7 +912,13 @@ class MusicCog(commands.Cog):
         _llm_on = os.getenv("LLM_TASTE_T2", "off") == "on"
         seeds_by_member = {}
         for _m in members:
-            _pool = mm.get_played_seed_ids([_m], limit=20)
+            _pool = mm.get_played_seed_ids([_m], limit=50)
+            # 單人模式保護：若該成員個人種子過少（<6 顆），混入伺服器全體真人點過的種子擴充電台廣度
+            if len(members) == 1 and len(_pool) < 6:
+                all_played = mm.get_played_seed_ids([], limit=30)
+                for _v in all_played:
+                    if _v not in _pool:
+                        _pool.append(_v)
             if _llm_on:
                 try:
                     import taste_profile
@@ -1670,7 +1676,7 @@ class MusicCog(commands.Cog):
                 logger.exception("[AutoRecommend] CoverBlacklist init 失敗")
 
         enqueued = 0
-        _prev_round_title = None
+        _prev_round_title = self.stream_queue[-1].get('title') if self.stream_queue else None
         for cand in cands:
             if enqueued >= self._round_size:
                 break
@@ -2197,6 +2203,19 @@ class MusicCog(commands.Cog):
                             asyncio.create_task(self._auto_recommend(seed))
 
                 dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
+                # 🛡️ [Consistency Guard] 檢查退回開頭播放的 DJ 口白是否提及了錯誤的上一首
+                if dj_data and dj_data.get('prev_title_used'):
+                    real_prev = self.stream_history[-2].get('title', '') if len(self.stream_history) >= 2 else ''
+                    if real_prev:
+                        from song_name_clean import clean_title_regex
+                        norm_used = clean_title_regex(dj_data['prev_title_used']).strip().lower()
+                        norm_real = clean_title_regex(real_prev).strip().lower()
+                        if norm_used and norm_real and norm_used != norm_real:
+                            logger.warning(
+                                f"🛡️ [Stream Loop Consistency Guard] 預期上一首《{dj_data['prev_title_used']}》與實際《{real_prev}》不符，捨棄過期口白"
+                            )
+                            dj_data = None
+                            dj_audio = None
                 # [DJ Tail] 尾段派發成功（上一首 _run_tail_dj 播完並標記）→ 本首開頭不重播
                 _dj_played_in_tail = bool(info.get('_dj_played_in_tail'))
                 if _dj_played_in_tail:
@@ -2947,7 +2966,7 @@ class MusicCog(commands.Cog):
             logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
 
         logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
-        return {'text': text, 'audio_path': audio_path}
+        return {'text': text, 'audio_path': audio_path, 'prev_title_used': prev_title or None}
 
     @staticmethod
     def _ready_meta(prefetch_task) -> dict | None:
@@ -3285,7 +3304,7 @@ class MusicCog(commands.Cog):
         # 提前到 dj_meta 判斷之前，確保退回舊行為時下一首依然有機會提前解碼好。
         self._start_music_preload(next_info)
 
-        dj_meta = await self._resolve_tail_dj_meta(next_info)
+        dj_meta = await self._resolve_tail_dj_meta(next_info, cur_info=cur_info)
         if dj_meta is None:
             logger.info(f"[DJ Tail] {title_next} 無可用預渲染 DJ，退回舊行為")
             return
@@ -3357,7 +3376,7 @@ class MusicCog(commands.Cog):
                 logger.info(f"[DJ Tail] 預解碼失敗，退回現場解碼: {e}")
         return None, ffmpeg_factory()
 
-    async def _resolve_tail_dj_meta(self, next_info: dict) -> dict | None:
+    async def _resolve_tail_dj_meta(self, next_info: dict, cur_info: dict = None) -> dict | None:
         """取下一首已預渲染的 DJ meta（有 audio 檔才回）；不可用回 None（退回舊路）。
 
         下一首若還沒 prefetch（autopilot 較晚排入 queue）→ 現場補建一個並存回 cache，
@@ -3381,6 +3400,39 @@ class MusicCog(commands.Cog):
         dj_meta = meta.get('dj')
         if not isinstance(dj_meta, dict):
             return None
+
+        # 🛡️ [Consistency Guard] 檢查 DJ 口白所用的 prev_title 與當前實際結束的歌名是否吻合
+        if cur_info is not None:
+            prev_used = dj_meta.get('prev_title_used')
+            actual_prev = cur_info.get('title', '')
+            if prev_used and actual_prev:
+                from song_name_clean import clean_title_regex
+                norm_used = clean_title_regex(prev_used).strip().lower()
+                norm_actual = clean_title_regex(actual_prev).strip().lower()
+                if norm_used and norm_actual and norm_used != norm_actual:
+                    logger.warning(
+                        f"🛡️ [DJ Tail Consistency Guard] 預期上一首《{prev_used}》與實際《{actual_prev}》不符"
+                        f"（佇列可能被插播/skip），放棄過期音檔以防報錯歌名"
+                    )
+                    clean_title, clean_artist = self._dj_clean_name(next_info)
+                    req = next_info.get('requested_by', '')
+                    if clean_artist:
+                        safe_text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{req} 點的"
+                    else:
+                        safe_text = f"DJ Marvin為你帶來《{clean_title}》，{req} 點的"
+                    safe_audio = None
+                    try:
+                        safe_audio = await self.bot.tts_engine.generate_audio(safe_text, emotion="normal")
+                    except Exception as e:
+                        logger.debug(f"[DJ Tail] safe fallback TTS 失敗: {e}")
+                    if safe_audio and os.path.exists(safe_audio):
+                        return {
+                            'text': safe_text,
+                            'audio_path': safe_audio,
+                            'prev_title_used': None,
+                        }
+                    return None
+
         audio_path = dj_meta.get('audio_path')
         if not audio_path or not os.path.exists(audio_path):
             return None
@@ -3392,7 +3444,7 @@ class MusicCog(commands.Cog):
             timeout_s = self._SEAMLESS_SKIP_TIMEOUT_S
             try:
                 dj_meta = await asyncio.wait_for(
-                    self._resolve_tail_dj_meta(next_info),
+                    self._resolve_tail_dj_meta(next_info, cur_info=self._current_stream_info),
                     timeout=timeout_s,
                 )
             except asyncio.TimeoutError:

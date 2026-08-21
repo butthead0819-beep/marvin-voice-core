@@ -77,7 +77,7 @@ async def test_seamless_skip_clears_immediately_without_waiting_for_dj():
         nonlocal preload_called
         preload_called = True
 
-    async def _mock_resolve_dj(info):
+    async def _mock_resolve_dj(info, *args, **kwargs):
         meta_started.set()
         # 模擬長時間才會回來的 DJ 解析——不該卡住 skip 本身
         await release_meta.wait()

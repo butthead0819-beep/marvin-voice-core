@@ -45,7 +45,8 @@
 - [project_plan12_local_mixing](#project-plan12-local-mixing) — 決定把串流播放核心改成本地 f32 混音（取代 hotswap second-stream）的方向、測試策略，以及 Marmo 的定位
 - [project_plan_b_public_bot](#project-plan-b-public-bot) — Plan B（公開可邀請 bot）計劃已寫、冷凍待命；啟動 gate + Gemini 每 guild 成本
 - [project_relaxed_zdr_tiered_retention](#project-relaxed-zdr-tiered-retention) — Marvin 隱私資料保留的方向決策——選分層保留而非硬 ZDR/fork；含 golden 蒸餾資料現況
-- [project_spontaneous_manzai](#project-spontaneous-manzai) — 自發漫才（不依賴 openclaw）+ 打岔疊播 mixer 雙層；觸發條件與下一步
+- [dj_prev_title_consistency](#dj-prev-title-consistency) — DJ interjection 提及上一首/下一首歌名錯位的根因與 Consistency Guard 一致性防護機制
+- [autopilot_single_member_seed_rotation](#autopilot-single-member-seed-rotation) — Car puck/單人模式下 T2 種子游標未滾動導致候選池收斂之根因與修復
 - [runtime_state_files](#runtime-state-files) — Bot 啟動時讀的本地 state files 清單，遷移／clone 時要從舊環境複製過來，否則 bot 看起來會像「死」但其實只是 init 後狀態歸零
 - [speakbus_and_survival](#speakbus-and-survival) — Marvin 主動發話用 bid 架構（SpeakBus），以及 agent 自調/求生能力的分級路線圖與陷阱
 - [speculative_stt_pipeline](#speculative-stt-pipeline) — bus 入口前用 J1 Regex / J2 Groq-8B / J3 Cleaner 三路 judges race，最快達信心門檻者勝出
@@ -1512,10 +1513,29 @@ Discord UDP packet
 - `discord.py == 2.7.1+` (要含 PR #10300, 內建 DAVE handshake)
 - `discord-ext-voice-recv == 0.5.2a179` (沒有 DAVE 支援, 必須 patch)
 
-**Anti-pattern 警告**:
-- `davey_bridge.py::apply_davey_fix()` 那個 "DaveSession→MLSContext shim" 是給 Pycord 用的，這 repo 是 discord.py 完全用不到（但留著也沒副作用，主要是它的 macOS UDP 修補有用）
-- 不要試著手動處理 opcodes 21-31，discord.py 已經接好了；只接 decrypt
+## dj_prev_title_consistency
+*DJ interjection 提及上一首/下一首歌名錯位的根因與 Consistency Guard 一致性防護機制（2026-08-21 修正）*
 
+**現象**：DJ 串場口白中提及的「剛才那首 X 播完...」與實際剛播完的歌名對不上（跳歌、跳過一首、或提到很久以前的歌）。
+
+**根因**：
+1. **AutoRecommend round 邊界未銜接 Queue**：`_auto_recommend` 開始時寫死 `_prev_round_title = None`，忽略了 `stream_queue` 裡前一輪殘留的歌，導致 round-#1 錯誤 fallback 到正在播放的歌曲（`stream_history[-1]`）。
+2. **預取（Prefetch）早綁定 vs 播放時 Queue 順序變動**：歌曲入隊時 LLM+TTS 就預渲染好寫死上一首歌名的音檔；若中途手動點歌插播、skip 或提早切歌，預渲染音檔播出來就錯位。
+3. **播放前缺乏一致性校驗**：`_run_tail_dj` 與 `stream_loop` 直接播音檔，未檢查文案中的 `prev_title_used` 是否與真實剛播完的歌曲吻合。
+
+## autopilot_single_member_seed_rotation
+*Car puck / 單人模式下 T2 種子游標未滾動導致候選池收斂之根因與修復（2026-08-21 修正）*
+
+**現象**：車載 Car puck（或單人在場）聽歌時，Autopilot 推薦的歌池極淺，頻繁重複出現固定幾首熱門歌曲。
+
+**根因**：
+1. `seed_rotation.order_rotating_seeds` 中的 `cursor` 每次硬編碼從 `0` 開始初始化。單人模式下無其他成員輪替，導致每次 T2 抽取的 Radio 種子永遠鎖死在歷史點播第 1、2、3 首（`pool[0], pool[1], pool[2]`）。
+2. `get_played_seed_ids` 預設只取點播次數 Top 20，其餘點過的歌曲無法進入候選池。
+
+**修法與防護**：
+- `seed_rotation.py` 游標改為根據 `epoch` 滾動推進（`cursor = (epoch * n) % len(pool)`），使單人與多人皆能完整遍歷點播歷史。
+- `music_memory.py::get_played_seed_ids` 預設上限放寬為 50 首。
+- `cogs/music_cog.py::_t2_discovery_candidates` 在單人且種子過少（<6 首）時自動混入伺服器全體常聽種子。
 
 ---
 

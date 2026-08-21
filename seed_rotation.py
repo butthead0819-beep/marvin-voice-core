@@ -41,21 +41,32 @@ def order_rotating_seeds(
         out.append(last_seed)
     primary = primary_member(members, epoch, swap_every)
     order = [primary] + [m for m in members if m != primary]
-    # 多輪 round-robin：每輪每人貢獻下一顆未用種子，直到湊滿 n。
-    # 第一輪確保各人都先進來（混合）；少人時後續輪由主種子者等多貢獻。
-    cursor = {m: 0 for m in order}
+    # 每個成員根據該人被輪替到的次數推進 offset，使單人或多人模式下皆能滾動遍歷種子池
+    cursor = {}
+    for m in order:
+        pool = seeds_by_member.get(m, [])
+        if not pool:
+            cursor[m] = 0
+            continue
+        step_size = n if len(members) == 1 else max(1, n // len(members))
+        base_cycle = epoch if len(members) == 1 else (epoch // len(members))
+        cursor[m] = (base_cycle * step_size) % len(pool)
+
     progressed = True
+    checked_count = {m: 0 for m in order}
     while len(out) < n and progressed:
         progressed = False
         for m in order:
             pool = seeds_by_member.get(m, [])
-            i = cursor[m]
-            while i < len(pool) and pool[i] in out:
-                i += 1
-            if i < len(pool):
-                out.append(pool[i])
-                cursor[m] = i + 1
-                progressed = True
+            if not pool or checked_count[m] >= len(pool):
+                continue
+            idx = cursor[m] % len(pool)
+            val = pool[idx]
+            cursor[m] = (idx + 1) % len(pool)
+            checked_count[m] += 1
+            progressed = True
+            if val not in out:
+                out.append(val)
                 if len(out) >= n:
                     break
     return out[:n]

@@ -495,7 +495,7 @@ class MusicMemory:
                     out.append(m.group(1))
         return out
 
-    def get_played_seed_ids(self, usernames: list[str], limit: int = 20) -> list[str]:
+    def get_played_seed_ids(self, usernames: list[str], limit: int = 50) -> list[str]:
         """在場成員**真人點過**的歌的 videoId（T2 radio 多 seed 來源，比 liked 更廣）。
 
         關鍵守則：排除「Marvin推薦（為X）」等自薦 requester（避免回音室——拿自己推的
