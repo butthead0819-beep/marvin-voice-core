@@ -21,9 +21,10 @@ def _import_mc():
 
 
 class _FakeMM:
-    def __init__(self, played, liked):
+    def __init__(self, played, liked, songs=None):
         self._played = played
         self._liked = liked
+        self._songs = songs or {}
 
     def get_played_seed_ids(self, members, limit=20):
         return self._played[:limit]
@@ -37,6 +38,9 @@ class _FakeMM:
 
     def get_reacted_seed_ids(self, members):
         return []
+
+    def all_songs(self):
+        return self._songs
 
 
 class _StubSelf:
@@ -54,6 +58,11 @@ class _StubSelf:
     async def _t2_radio_for_seed(self, seed_video_id, exclude_titles):
         from cogs.music_cog import MusicCog as _MC
         return await _MC._t2_radio_for_seed(self, seed_video_id, exclude_titles)
+
+    @staticmethod
+    def _seed_title_lookup(mm, seed_video_ids):
+        from cogs.music_cog import MusicCog as _MC
+        return _MC._seed_title_lookup(mm, seed_video_ids)
 
 
 pytestmark = pytest.mark.asyncio
@@ -138,6 +147,34 @@ async def test_t2_empty_seeds_returns_empty(monkeypatch):
     mm = _FakeMM(played=[], liked=[])
     out = await MC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
     assert out == []
+
+
+@pytest.mark.asyncio
+async def test_t2_candidates_carry_seed_title_for_explanation(monkeypatch):
+    """種子曲名要能查到（music_memory 裡有該 video_id）→ Candidate.discovery_seed_title
+    帶著觸發它的種子曲名，解釋層才能生成 grounded『因為你們聽過 XX』（見 CLAUDE.md
+    對話：T2 找到候選的方式跟解釋脫鉤的修復）。查不到（fail-open）則留空字串。
+    """
+    MC = _import_mc()
+    import ytmusic_radio
+
+    def fake_radio(seed, exclude_titles=None, limit=None, **kw):
+        return [{"title": f"{seed}-song", "artist": "x", "url": f"http://y/{seed}"}]
+
+    monkeypatch.setattr(ytmusic_radio, "ytmusic_radio", fake_radio)
+
+    mm = _FakeMM(
+        played=["aaaaaaaaaaa", "bbbbbbbbbbb"],
+        liked=[],
+        songs={
+            "s1": {"title": "晴天", "webpage_url": "https://www.youtube.com/watch?v=aaaaaaaaaaa"},
+            # bbbbbbbbbbb 故意不在 songs 裡 → lookup 查不到，seed_title 留空
+        },
+    )
+    out = await MC._t2_discovery_candidates(_StubSelf(mm), ["狗與露"], exclude_titles=[])
+    by_title = {c.anchor_title: c for c in out}
+    assert by_title["aaaaaaaaaaa-song"].discovery_seed_title == "晴天"
+    assert by_title["bbbbbbbbbbb-song"].discovery_seed_title == ""
 
 
 @pytest.mark.asyncio

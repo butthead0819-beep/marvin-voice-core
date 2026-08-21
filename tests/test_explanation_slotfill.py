@@ -93,3 +93,19 @@ class TestGenerateExplanation:
         ev = _evidence(signal_type="like")
         text = generate_explanation(ev, store=_store(tmp_path))
         assert text is not None
+
+    def test_radio_related_renders_seed_title(self, tmp_path):
+        ev = _evidence(
+            signal_type="radio_related", subject="you_all", requester=None,
+            timestamp=None, play_count=0, seed_title="晴天",
+        )
+        text = generate_explanation(ev, store=_store(tmp_path))
+        assert text is not None
+        assert "晴天" in text
+
+    def test_radio_related_without_seed_title_skips_template(self, tmp_path):
+        ev = _evidence(
+            signal_type="radio_related", subject="you_all", requester=None,
+            timestamp=None, play_count=0, seed_title=None,
+        )
+        assert generate_explanation(ev, store=_store(tmp_path)) is None

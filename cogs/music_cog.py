@@ -928,6 +928,7 @@ class MusicCog(commands.Cog):
         if not seeds:
             return []
         from ytmusic_radio import blend_radio_results
+        seed_titles = self._seed_title_lookup(mm, seeds)
         results = []
         for sd in seeds:
             try:
@@ -936,6 +937,10 @@ class MusicCog(commands.Cog):
                 logger.warning(f"⚠️ [AutoRecommend] T2 radio seed={sd} 失敗，跳過: {e}")
                 continue
             if r:
+                seed_title = seed_titles.get(sd, "")
+                if seed_title:
+                    for c in r:
+                        c["_seed_title"] = seed_title
                 results.append(r)
         if not results:
             logger.warning("⚠️ [AutoRecommend] T2 全 seed radio 空/失敗，退 T3")
@@ -954,9 +959,36 @@ class MusicCog(commands.Cog):
         return [
             Candidate(anchor_title=c["title"], anchor_artist=c["artist"],
                       lane="discovery", mode="direct", target_member=None,
-                      score=0.0, direct_url=c["url"])
+                      score=0.0, direct_url=c["url"],
+                      discovery_seed_title=c.get("_seed_title", ""))
             for c in radio
         ]
+
+    @staticmethod
+    def _seed_title_lookup(mm, seed_video_ids: list[str]) -> dict[str, str]:
+        """seed video_id → 曲名，供 T2 解釋層標註「從哪首種子曲找到的」。
+
+        fail-open：mm 缺 all_songs() 或任何比對失敗 → 回空 dict，不擋 T2 主流程
+        （解釋是錦上添花，不能因為查不到種子曲名就讓整條 discovery 失敗）。
+        """
+        needed = set(seed_video_ids)
+        lookup: dict[str, str] = {}
+        if not needed:
+            return lookup
+        try:
+            for s in mm.all_songs().values():
+                if not needed:
+                    break
+                if not isinstance(s, dict):
+                    continue
+                vid = extract_video_id(s.get('webpage_url') or s.get('url') or '')
+                if vid in needed:
+                    lookup[vid] = s.get('title', '')
+                    needed.discard(vid)
+        except Exception:
+            logger.debug("[AutoRecommend] T2 種子曲名查詢失敗，跳過解釋標註", exc_info=True)
+            return {}
+        return lookup
 
     # T4 排行榜輪替查詢（華語）——get_charts('TW') 回全球 playlists/藝人不乾淨，改華語搜尋 proxy。
     _T4_CHART_QUERIES = ("華語抒情精選", "華語流行 熱門", "華語 情歌 精選")
@@ -2535,7 +2567,17 @@ class MusicCog(commands.Cog):
 
     @staticmethod
     def _autopilot_pick_reason(info: dict) -> str:
-        """autopilot 選這首的理由（給 DJ LLM 當素材，語意同 _autopilot_dj_phrase 的 lane 分流）。"""
+        """autopilot 選這首的理由（給 DJ LLM 當素材，語意同 _autopilot_dj_phrase 的 lane 分流）。
+
+        優先用 `info['_explanation']`（`_compute_recommend_explanation` 算好的 grounded
+        解釋，見 explanation_slotfill.py）——比下面 lane 分流的固定樣版更具體、更可查證
+        （例如 T2 discovery 會有「YouTube Music 常把這首和你們聽過的《XX》放在一起」，
+        而非「照口味挖出來的新歌」這種空泛說法）。沒有 explanation（例如沒 evidence
+        可用）才退回原本 lane 分流的固定樣版。
+        """
+        explanation = info.get('_explanation')
+        if explanation:
+            return explanation
         who = info.get('_spotlight', '') or '大家'
         lane = info.get('_lane', '')
         if lane == 'group_resonance':
@@ -2888,7 +2930,7 @@ class MusicCog(commands.Cog):
             return None
         try:
             from explanation_slotfill import TemplateRotationStore, generate_explanation
-            from music_recommender import extract_evidence, normalize_title
+            from music_recommender import extract_evidence, extract_radio_related_evidence, normalize_title
             import taste_profile
 
             anchor_norm = normalize_title(cand.anchor_title)
@@ -2910,6 +2952,9 @@ class MusicCog(commands.Cog):
             if evidence is None and cand.target_member:
                 adjacent = taste_profile.fresh_adjacent_artists(_TASTE_PROFILE_CACHE, [cand.target_member], 8 * 86400)
                 evidence = taste_profile.extract_discover_new_evidence(cand.anchor_artist, adjacent)
+
+            if evidence is None and cand.lane == "discovery":
+                evidence = extract_radio_related_evidence(cand)
 
             if evidence is None:
                 return None

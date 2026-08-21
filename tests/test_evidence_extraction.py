@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from music_recommender import Candidate, Evidence, extract_evidence
+from music_recommender import Candidate, Evidence, extract_evidence, extract_radio_related_evidence
 from taste_profile import extract_discover_new_evidence
 
 
@@ -99,3 +99,28 @@ class TestExtractDiscoverNewEvidence:
 
     def test_empty_artist_returns_none(self):
         assert extract_discover_new_evidence("", ["伍佰"]) is None
+
+
+class TestExtractRadioRelatedEvidence:
+    """T2 discovery（YT Music radio 種子曲關聯）→ grounded evidence，見 CLAUDE.md 對話中
+    「T2 候選找到的方式跟解釋脫鉤」的修復：radio 候選本身沒有播放史，過去完全拿不到解釋。
+    """
+
+    def test_candidate_with_seed_title_returns_evidence(self):
+        cand = _candidate(lane="discovery", target_member=None, discovery_seed_title="晴天")
+        ev = extract_radio_related_evidence(cand)
+        assert ev is not None
+        assert ev.signal_type == "radio_related"
+        assert ev.subject == "you_all"
+        assert ev.requester is None
+        assert ev.seed_title == "晴天"
+        assert ev.source_tier == "discovery"
+
+    def test_candidate_without_seed_title_returns_none(self):
+        cand = _candidate(lane="discovery", target_member=None, discovery_seed_title="")
+        assert extract_radio_related_evidence(cand) is None
+
+    def test_candidate_without_discovery_seed_title_attr_returns_none(self):
+        # Candidate 一律有此欄位（預設空字串），這裡防守未來欄位被移除/改名的情境
+        cand = _candidate(lane="discovery", target_member=None)
+        assert extract_radio_related_evidence(cand) is None

@@ -107,6 +107,7 @@ class Candidate:
     target_member: str | None   # spotlight 聚焦對象
     score: float
     direct_url: str = ""         # T2 discovery：自帶 YouTube URL → enqueue 時直解不搜尋
+    discovery_seed_title: str = ""  # T2 discovery：觸發這首候選的 YT Music radio 種子曲名
 
 
 def _last_play_ts(song: dict) -> float:
@@ -360,13 +361,14 @@ def ring_titles_for(played_title: str, mode: str, anchor_title: str) -> list[str
 # 不是 project_infinite_autopilot_tiers 的 T1/T2/T3 那套命名——兩者是不同子系統。
 @dataclass
 class Evidence:
-    signal_type: str            # listen | like | adjacent_artist
+    signal_type: str            # listen | like | adjacent_artist | radio_related
     timestamp: float | None     # 最近一次相關事件的 unix ts（無資料時 None）
     play_count: int
     skip_count: int
     source_tier: str            # 候選來源 lane：group_resonance/long_tail/spotlight/liked/adjacent_artist
     subject: str                # "you"（單一 requester）| "you_all"（群體共同歷史）
     requester: str | None       # subject == "you" 時的具名對象，否則 None
+    seed_title: str | None = None  # signal_type=="radio_related" 時：觸發的 YT Music radio 種子曲名
 
 
 def extract_evidence(song: dict, candidate: "Candidate") -> Evidence | None:
@@ -414,6 +416,30 @@ def extract_evidence(song: dict, candidate: "Candidate") -> Evidence | None:
     except (TypeError, AttributeError, ValueError) as e:
         logger.warning("evidence 抽取失敗，跳過候選 %r：%s", title, e)
         return None
+
+
+def extract_radio_related_evidence(cand: "Candidate") -> Evidence | None:
+    """T2 discovery 候選（lane="discovery"）：從觸發的 YT Music radio 種子曲名產生
+    grounded evidence——候選本身沒有播放史（是真的新歌），故不能走 rediscover 路徑；
+    這裡的「可查證事實」是「radio API 真的把這首跟種子曲關聯在一起」，不是猜測。
+
+    只有 cand.discovery_seed_title 有值才回 Evidence（T2 建構候選時已把種子曲名帶上，
+    見 cogs/music_cog.py `_t2_discovery_candidates`）。無種子曲名（如 T4 冒險發現，
+    是 query 搜尋而非種子關聯）→ None，交給其他 evidence 路徑或不顯示解釋。
+    """
+    seed_title = (getattr(cand, "discovery_seed_title", "") or "").strip()
+    if not seed_title:
+        return None
+    return Evidence(
+        signal_type="radio_related",
+        timestamp=None,
+        play_count=0,
+        skip_count=0,
+        source_tier=cand.lane,
+        subject="you_all",
+        requester=None,
+        seed_title=seed_title,
+    )
 
 
 def pick_candidate(

@@ -62,6 +62,10 @@ _TEMPLATES: dict[tuple[str, str], list[Template]] = {
     ("adjacent_artist", "you_all"): [
         Template("這是跳出你們常聽範圍的鄰近推薦，一起試試看", ()),
     ],
+    ("radio_related", "you_all"): [
+        Template("YouTube Music 常把這首和你們聽過的《{seed_title}》放在同一份歌單", ("seed_title",)),
+        Template("跟你們聽過的《{seed_title}》風格相近，YouTube Music 判斷放在一起", ("seed_title",)),
+    ],
 }
 
 
@@ -76,6 +80,8 @@ def _compute_slot_values(evidence: Evidence) -> dict[str, object]:
         diff = time.time() - evidence.timestamp
         if diff >= 0:
             values["weeks_ago"] = int(diff / SECONDS_PER_WEEK)
+    if isinstance(evidence.seed_title, str) and evidence.seed_title:
+        values["seed_title"] = evidence.seed_title
     return values
 
 
