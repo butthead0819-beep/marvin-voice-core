@@ -2120,6 +2120,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "ç‹—è
             "playing": True,
             "title": info.get("title", ""),
             "by": info.get("requested_by", ""),
+            "artist": info.get("artist") or info.get("uploader", "") or "",
+            "album": info.get("album", "") or "",
             "cover": info.get("thumbnail", "") or "",
             "palette": info.get("palette", []) or [],
             "duration": info.get("duration"),

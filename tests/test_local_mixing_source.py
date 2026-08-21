@@ -114,9 +114,9 @@ def test_music_and_tts_both_contribute():
 
 # ── TTS 音量（tts_gain）─────────────────────────────────────────────────────
 
-def test_tts_gain_default_is_half():
-    """預設 tts_gain = 0.5：音樂常播在 ~10%，TTS 滿音量顯得過大 → 預設減半平衡。"""
-    assert LocalMixingAudioSource()._tts_gain == 0.5
+def test_tts_gain_default_is_0_8():
+    """2026-08-21 用戶要求：music/tts 都恢復接近滿音量，tts_gain 預設 0.8。"""
+    assert LocalMixingAudioSource()._tts_gain == 0.8
 
 
 def test_tts_layer_scaled_by_tts_gain():

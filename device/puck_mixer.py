@@ -127,10 +127,11 @@ def audio_stream_url() -> str:
     return f"{MAC_BASE_URL}/audio_stream{qs}"
 
 
-def fetch_car_now_title(timeout: float = 3.0) -> "str | None":
-    """輪詢 Mac 端 /car_now 拿目前播放曲名，餵給 AVRCP metadata（車機螢幕顯示曲名）。
-    跟音訊本身完全脫鉤的旁路——查不到（連線失敗/沒在播）回 None，呼叫端不更新
-    現有 title，不是硬錯誤。"""
+def fetch_car_now_track(timeout: float = 3.0) -> "dict | None":
+    """輪詢 Mac 端 /car_now 拿目前播放曲名/演出者/專輯，餵給 AVRCP metadata（車機
+    螢幕顯示用）。跟音訊本身完全脫鉤的旁路——查不到（連線失敗/沒在播）回 None，
+    呼叫端不更新現有 title，不是硬錯誤。title 是唯一必要欄位（沒有就當沒在播）；
+    artist/album 缺省回空字串，車機那邊本來就會把空欄位當沒有處理。"""
     from urllib.parse import urlencode
     params = {"t": MAC_TOKEN} if MAC_TOKEN else {}
     qs = f"?{urlencode(params)}" if params else ""
@@ -142,7 +143,14 @@ def fetch_car_now_title(timeout: float = 3.0) -> "str | None":
         return None
     if not data.get("playing"):
         return None
-    return (data.get("title") or "").strip() or None
+    title = (data.get("title") or "").strip()
+    if not title:
+        return None
+    return {
+        "title": title,
+        "artist": (data.get("artist") or "").strip(),
+        "album": (data.get("album") or "").strip(),
+    }
 
 
 def _process_rss_kb() -> "int | None":
@@ -333,12 +341,12 @@ class PuckMixer:
 
     def _title_poll_loop(self):
         while not self._title_stop.is_set():
-            title = fetch_car_now_title()
-            if title and title != self._current_title:
+            track = fetch_car_now_track()
+            if track and track["title"] != self._current_title:
                 with self._lock:
-                    self._current_title = title
+                    self._current_title = track["title"]
                 if self._on_track_change:
-                    self._on_track_change(title)
+                    self._on_track_change(track["title"], track["artist"], track["album"])
             self._title_stop.wait(_TITLE_POLL_INTERVAL_S)
 
     def _open_pcm(self):

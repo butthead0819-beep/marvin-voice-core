@@ -531,7 +531,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         # 🎵 [Stream Mode] YouTube 串流系統狀態 — 狀態由 MusicCog 持有，透過 proxy property 存取
         self._stream_mode_local = False           # fallback when MusicCog not loaded
-        self._stream_volume_local = 0.10
+        self._stream_volume_local = 1.0
         self._stream_play_gen_local = 0
         self._current_stream_url_local = None
         self._stream_norm_gain_local: dict[str, float] = {}

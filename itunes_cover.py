@@ -85,38 +85,39 @@ async def _default_fetch(term: str, *, timeout_s: float = 6.0) -> Optional[dict]
         return None
 
 
-async def resolve_cover(
+def _art(it: dict) -> Optional[str]:
+    return it.get("artworkUrl100") or it.get("artworkUrl60") or it.get("artworkUrl30")
+
+
+async def _resolve_best(
     title: str,
     artist: Optional[str] = None,
     *,
-    fallback: Optional[str] = None,
     fetch: Optional[Callable[..., Awaitable[Optional[dict]]]] = None,
     threshold: float = 0.55,
-    size: int = 600,
-) -> Optional[str]:
-    """回 iTunes 高清方形封面 URL；查不到/低信心/關閉 → 回 fallback。
+) -> Optional[dict]:
+    """resolve_cover()/resolve_metadata() 共用的核心：查 iTunes、比對信心，回配到的
+    那筆原始候選 dict（含 artworkUrl100/artistName/trackName/collectionName）；查不到/
+    低信心一律回 None，兩個呼叫端各自決定 None 時怎麼退回。
 
     採用規則（避開「自信地錯」又能吃 CJK 羅馬化）：
       ① 文字夠像（中↔中）→ 採用最像的一筆。
       ② 否則若有藝人、且 iTunes 把結果鎖在同一位藝人 → 信任 iTunes #1（跨語言救援）。
-      ③ 沒藝人 or 結果散落多位藝人（iTunes 沒聽懂）→ 退回 fallback。
+      ③ 沒藝人 or 結果散落多位藝人（iTunes 沒聽懂）→ None。
     """
     if not enabled() or not title:
-        return fallback
+        return None
 
     cleaned = clean_title_regex(title) or title
     artist_c = _clean_artist(artist)
     term = f"{artist_c} {cleaned}".strip() if artist_c else cleaned
     data = await (fetch or _default_fetch)(term)
     if not data:
-        return fallback
-
-    def _art(it):
-        return it.get("artworkUrl100") or it.get("artworkUrl60") or it.get("artworkUrl30")
+        return None
 
     arted = [it for it in (data.get("results") or []) if _art(it)]
     if not arted:
-        return fallback
+        return None
 
     query = f"{artist_c or ''} {cleaned}".strip()
     ncleaned = _norm(cleaned)
@@ -131,11 +132,54 @@ async def resolve_cover(
             best_score, best = score, it
 
     if best_score >= threshold:
-        return _hi_res(_art(best), size)
+        return best
 
     # 跨語言救援：iTunes 對中文歌常回羅馬拼音，文字必失敗。若有藝人且前幾筆鎖定
     # 同一位藝人（代表 iTunes 聽懂了藝人）→ 信任它的排名第一。
     top_artists = {_norm(it.get("artistName", "")) for it in arted[:3]}
     if artist_c and len(top_artists) == 1 and next(iter(top_artists)):
-        return _hi_res(_art(arted[0]), size)
-    return fallback
+        return arted[0]
+    return None
+
+
+async def resolve_cover(
+    title: str,
+    artist: Optional[str] = None,
+    *,
+    fallback: Optional[str] = None,
+    fetch: Optional[Callable[..., Awaitable[Optional[dict]]]] = None,
+    threshold: float = 0.55,
+    size: int = 600,
+) -> Optional[str]:
+    """回 iTunes 高清方形封面 URL；查不到/低信心/關閉 → 回 fallback。"""
+    if not enabled() or not title:
+        return fallback
+    best = await _resolve_best(title, artist, fetch=fetch, threshold=threshold)
+    if best is None:
+        return fallback
+    return _hi_res(_art(best), size)
+
+
+async def resolve_metadata(
+    title: str,
+    artist: Optional[str] = None,
+    *,
+    fetch: Optional[Callable[..., Awaitable[Optional[dict]]]] = None,
+    threshold: float = 0.55,
+    size: int = 600,
+) -> Optional[dict]:
+    """單次 iTunes 查詢同時拿封面+演出者+專輯（跟 resolve_cover() 分開呼叫是兩次
+    API request，這支給需要三者一起的呼叫端用，見 music_cog.py::_apply_itunes_cover）。
+    回 {"cover":, "artist":, "album":}（沒配到欄位個別回 None）；整體查不到/低信心/
+    關閉 → 回 None，呼叫端自行決定退回值。"""
+    if not enabled() or not title:
+        return None
+    best = await _resolve_best(title, artist, fetch=fetch, threshold=threshold)
+    if best is None:
+        return None
+    art = _art(best)
+    return {
+        "cover": _hi_res(art, size) if art else None,
+        "artist": best.get("artistName") or None,
+        "album": best.get("collectionName") or None,
+    }

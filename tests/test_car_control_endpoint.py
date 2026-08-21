@@ -170,6 +170,39 @@ async def test_car_now_reflects_local_music_cog_stream_info():
 
 
 @pytest.mark.asyncio
+async def test_car_now_includes_artist_and_album():
+    """2026-08-21 車機要求顯示演出者/專輯——artist 優先讀 info['artist']，沒有就退回
+    info['uploader']（yt-dlp 常見欄位）；album 缺欄位回空字串，不是 None。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    info = {
+        "title": "測試歌曲", "requested_by": "狗與露", "uploader": "某頻道",
+        "artist": "某歌手", "album": "某專輯",
+    }
+    app = build_text_app(_make_vc_with_current_stream(info), token="s3cret")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/car_now?t=s3cret")
+        body = await resp.json()
+        assert body["artist"] == "某歌手"
+        assert body["album"] == "某專輯"
+
+
+@pytest.mark.asyncio
+async def test_car_now_artist_falls_back_to_uploader_album_defaults_empty():
+    from aiohttp.test_utils import TestClient, TestServer
+    from main_satellite import build_text_app
+
+    info = {"title": "測試歌曲", "requested_by": "狗與露", "uploader": "某頻道"}
+    app = build_text_app(_make_vc_with_current_stream(info), token="s3cret")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/car_now?t=s3cret")
+        body = await resp.json()
+        assert body["artist"] == "某頻道"
+        assert body["album"] == ""
+
+
+@pytest.mark.asyncio
 async def test_car_now_token_gated():
     from aiohttp.test_utils import TestClient, TestServer
     from main_satellite import build_text_app

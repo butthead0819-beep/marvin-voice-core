@@ -166,7 +166,7 @@ class MusicCog(commands.Cog):
         self.radio_mode: bool = False
 
         # 🎵 [Phase 2] Stream subsystem state (proxied from VoiceController)
-        self.stream_volume: float = 0.10
+        self.stream_volume: float = 1.0
         self._stream_play_gen: int = 0
         self._current_stream_url: Optional[str] = None
         self._stream_norm_gain: dict = {}   # url → 每首響度正規化常數增益
@@ -579,7 +579,7 @@ class MusicCog(commands.Cog):
         if alive:
             self._cancel_stream_task("_ensure_stream_loop 收殘骸")   # 收尾中的殘骸 → 收掉重來
         self.stream_mode = True
-        self.stream_volume = 0.10
+        self.stream_volume = 1.0
         self._stream_user_stopped = False  # 有人／有東西要它跑了，解除 watchdog 抑制
         self.stream_task = asyncio.create_task(self._stream_loop())
         logger.warning(f"🎵 [Stream] loop 不在跑（flag={self.stream_mode} task_alive={alive}）"
@@ -1829,7 +1829,7 @@ class MusicCog(commands.Cog):
         await self._personal_shuffle_topup()
         if not self.stream_mode:
             self.stream_mode = True
-            self.stream_volume = 0.10
+            self.stream_volume = 1.0
             self._stream_user_stopped = False
             if self.stream_task and not self.stream_task.done():
                 self._cancel_stream_task("start_personal_shuffle")
@@ -4017,10 +4017,14 @@ class MusicCog(commands.Cog):
         return _cache_put(res)
 
     async def _apply_itunes_cover(self, res, orig_query: str = None):
-        """用 iTunes 方形專輯封面取代 YT 縮圖（失敗/低信心一律退回原縮圖）。
+        """用 iTunes 方形專輯封面取代 YT 縮圖 + 補 artist/album（失敗/低信心一律
+        只退回原縮圖，不補 artist/album）。單次 iTunes 查詢同時拿三者
+        （itunes_cover.resolve_metadata()），不是各打一次 API。
 
         單一改點：res['thumbnail'] 是全站封面唯一源頭（音樂卡 PIL、embed、/now 顯示端），
         在此換掉即全部沿用；且解析在進快取前完成，ResolveCache 免費快取不重打 iTunes。
+        res['artist']/res['album'] 則是 /car_now → AVRCP 車機顯示的來源
+        （main_satellite.py::handle_car_now，沒配到就沿用 yt-dlp 的 uploader/空字串）。
 
         orig_query（使用者原始點歌文字，例如「周杰倫 晴天」）比 YT 解析完的標題乾淨
         （後者夾雜頻道名/Official MV/emoji 等上傳者自由格式雜訊），優先拿它去查；
@@ -4032,15 +4036,19 @@ class MusicCog(commands.Cog):
             import itunes_cover
             yt = res.get('thumbnail')
             if orig_query:
-                art = await itunes_cover.resolve_cover(orig_query, fallback=yt)
+                meta = await itunes_cover.resolve_metadata(orig_query)
             else:
-                art = await itunes_cover.resolve_cover(
-                    res.get('title', ''), res.get('uploader'), fallback=yt
-                )
+                meta = await itunes_cover.resolve_metadata(res.get('title', ''), res.get('uploader'))
+            art = (meta or {}).get('cover') or yt
             if art and art != yt:
                 res['yt_thumbnail'] = yt
                 res['thumbnail'] = art
                 logger.info(f"🎨 [Cover] iTunes 封面取代 YT 縮圖：{(res.get('title') or '?')[:30]}")
+            if meta:
+                if meta.get('artist'):
+                    res['artist'] = meta['artist']
+                if meta.get('album'):
+                    res['album'] = meta['album']
         except Exception as e:
             logger.warning(f"⚠️ [Cover] iTunes 解析失敗，用原縮圖：{type(e).__name__}: {e}")
         # 從最終封面抽主色調色盤（給 vinyl splatter 用；失敗 → [] 不影響封面）

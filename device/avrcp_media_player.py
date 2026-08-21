@@ -5,11 +5,20 @@ avrcp_media_player.py — 車puck AVRCP MediaPlayer1 橋接（BlueZ Media1.Regis
 project_car_puck_mk2_pi_zero2w_bt_mixer_validated 記憶）——Soundcore 完全沒斷，
 BMW 會斷，兩者已知差異是 BMW 車機螢幕會顯示曲名/縮圖（主動查 AVRCP metadata），
 puck_mixer 目前純 A2DP 裸串流、沒有任何 MediaPlayer1 物件可查，疑似車機查不到
-metadata 判斷連線異常而斷開重連。這裡補上最小可用的 AVRCP Target metadata：只報
-Title/Artist/PlaybackStatus，不接受車機遙控（CanControl 全 False，比照 BlueZ 官方
-test/example-player 的 metadata-only 玩家設定）。封面圖不在這裡——那要另外接
-obexd 的 BIP（Basic Imaging Profile）/OBEX API，是完全不同的一套機制，等這支先在
-車上驗證真的解決斷線問題再評估要不要做。
+metadata 判斷連線異常而斷開重連。這裡補上最小可用的 AVRCP Target metadata：報
+Title/Artist/Album/PlaybackStatus。封面圖不在這裡——那要另外接 obexd 的 BIP
+（Basic Imaging Profile）/OBEX API，是完全不同的一套機制，先評估要不要做。
+
+2026-08-21：實測 D-Bus 層 metadata 已正確送達（`busctl` 直接查 BlueZ 持有的
+player 物件，Title/Artist 都對），但 BMW 車機螢幕沒顯示；同一台車機接 iPhone
+時能正常顯示演出者/專輯。已知差異：iPhone 的 player 一定回報完整控制能力，這裡
+原本 `CanControl` 全 False（比照 BlueZ 官方 test/example-player 的 metadata-only
+玩家設定）。懷疑車機把「不可控制」的來源當成不值得查 metadata 的裝置、跳過
+AVRCP GetElementAttributes 查詢。改成回報 CanPlay/CanPause/CanGoNext/
+CanGoPrevious/CanControl 全 True，Play/Pause/Next/Previous/Stop 這幾支 D-Bus
+method 先做成安全的 no-op（車機真的按下去不會炸，但沒有實際效果）——真正的播放
+控制走 Marvin 既有的語音/文字指令，這裡只是為了讓車機的能力協商判定「這是個
+正常玩家、值得顯示資訊」。
 
 需要系統套件（這台 Pi 的 volume_server.py 跑系統 python3、沒用 venv，直接
 apt 裝，不要 pip）：
@@ -37,8 +46,10 @@ if _AVAILABLE:
 
     class _Player(dbus.service.Object):
         """MPRIS 形狀的物件，供 BlueZ Media1.RegisterPlayer 轉發成 AVRCP metadata。
-        CanControl 系列全 False：只報資訊、不接受車機遙控（比照 BlueZ 官方
-        test/example-player 的預設玩家設定）。"""
+        2026-08-21：Can* 系列全部回 True——車機（BMW）疑似把「不可控制」的來源
+        當成不值得顯示 metadata 的裝置，見本檔開頭說明。Play/Pause/Next/Previous/
+        Stop 這幾支 method 因此也要存在（車機能力協商後真的可能呼叫），但只是
+        no-op：真正的播放控制走 Marvin 既有的語音/文字指令。"""
 
         def __init__(self, bus):
             dbus.service.Object.__init__(self, bus, PLAYER_PATH)
@@ -54,12 +65,12 @@ if _AVAILABLE:
                 "Position": dbus.Int64(0),
                 "MinimumRate": dbus.Double(1.0),
                 "MaximumRate": dbus.Double(1.0),
-                "CanGoNext": dbus.Boolean(False),
-                "CanGoPrevious": dbus.Boolean(False),
-                "CanPlay": dbus.Boolean(False),
-                "CanPause": dbus.Boolean(False),
+                "CanGoNext": dbus.Boolean(True),
+                "CanGoPrevious": dbus.Boolean(True),
+                "CanPlay": dbus.Boolean(True),
+                "CanPause": dbus.Boolean(True),
                 "CanSeek": dbus.Boolean(False),
-                "CanControl": dbus.Boolean(False),
+                "CanControl": dbus.Boolean(True),
             }, signature="sv")
 
         def get_path(self):
@@ -82,6 +93,32 @@ if _AVAILABLE:
 
         @dbus.service.signal(PROPS_IFACE, signature="sa{sv}as")
         def PropertiesChanged(self, interface, changed, invalidated):
+            pass
+
+        # 車機遙控 no-op：CanControl=True 後車機可能真的呼叫這幾支，接住但不做
+        # 任何事（不丟例外、不改 PlaybackStatus）——播放控制走 Marvin 語音/文字。
+        @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
+        def Play(self):
+            pass
+
+        @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
+        def Pause(self):
+            pass
+
+        @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
+        def PlayPause(self):
+            pass
+
+        @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
+        def Stop(self):
+            pass
+
+        @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
+        def Next(self):
+            pass
+
+        @dbus.service.method(PLAYER_IFACE, in_signature="", out_signature="")
+        def Previous(self):
             pass
 
         def update(self, changed: dict):
@@ -129,12 +166,13 @@ class AvrcpMediaPlayer:
         self._loop = GLib.MainLoop()
         self._loop.run()
 
-    def set_track(self, title: str, artist: str = None):
+    def set_track(self, title: str, artist: str = None, album: str = None):
         if not self.available:
             return
         metadata = dbus.Dictionary({
             "xesam:title": title or "",
             "xesam:artist": dbus.Array([artist] if artist else [], signature="s"),
+            "xesam:album": album or "",
         }, signature="sv")
         GLib.idle_add(self._player.update, {"Metadata": metadata, "PlaybackStatus": "Playing"})
 

@@ -60,7 +60,30 @@ def test_mac_token_env_defaults_fall_back_to_marvin_vol_token(monkeypatch):
         importlib.reload(puck_mixer)   # 還原成正常環境，避免污染其他測試
 
 
-def test_fetch_car_now_title_returns_title_when_playing(monkeypatch):
+def test_fetch_car_now_track_returns_title_artist_album_when_playing(monkeypatch):
+    import io
+    import json
+
+    class _FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    body = json.dumps({
+        "playing": True, "title": "現正播放的歌", "artist": "某歌手", "album": "某專輯",
+    }).encode()
+    monkeypatch.setattr(puck_mixer.urllib.request, "urlopen", lambda url, timeout=3.0: _FakeResp(body))
+
+    assert puck_mixer.fetch_car_now_track() == {
+        "title": "現正播放的歌", "artist": "某歌手", "album": "某專輯",
+    }
+
+
+def test_fetch_car_now_track_defaults_artist_album_to_empty_string(monkeypatch):
+    """/car_now 沒帶 artist/album 欄位（舊版 Mac 還沒部署新版）→ 回空字串，不是 None，
+    呼叫端（AVRCP set_track）不用另外判斷缺欄位。"""
     import io
     import json
 
@@ -74,10 +97,12 @@ def test_fetch_car_now_title_returns_title_when_playing(monkeypatch):
     body = json.dumps({"playing": True, "title": "現正播放的歌"}).encode()
     monkeypatch.setattr(puck_mixer.urllib.request, "urlopen", lambda url, timeout=3.0: _FakeResp(body))
 
-    assert puck_mixer.fetch_car_now_title() == "現正播放的歌"
+    assert puck_mixer.fetch_car_now_track() == {
+        "title": "現正播放的歌", "artist": "", "album": "",
+    }
 
 
-def test_fetch_car_now_title_returns_none_when_not_playing(monkeypatch):
+def test_fetch_car_now_track_returns_none_when_not_playing(monkeypatch):
     import io
     import json
 
@@ -91,12 +116,12 @@ def test_fetch_car_now_title_returns_none_when_not_playing(monkeypatch):
     body = json.dumps({"playing": False}).encode()
     monkeypatch.setattr(puck_mixer.urllib.request, "urlopen", lambda url, timeout=3.0: _FakeResp(body))
 
-    assert puck_mixer.fetch_car_now_title() is None
+    assert puck_mixer.fetch_car_now_track() is None
 
 
-def test_fetch_car_now_title_returns_none_on_connection_failure(monkeypatch):
+def test_fetch_car_now_track_returns_none_on_connection_failure(monkeypatch):
     def _boom(url, timeout=3.0):
         raise OSError("連不到 Mac")
     monkeypatch.setattr(puck_mixer.urllib.request, "urlopen", _boom)
 
-    assert puck_mixer.fetch_car_now_title() is None
+    assert puck_mixer.fetch_car_now_track() is None

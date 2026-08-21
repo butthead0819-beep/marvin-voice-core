@@ -186,13 +186,13 @@ async def test_itunes_cover_query_uses_original_text_not_dirty_yt_title():
     }
     captured = {}
 
-    async def _fake_resolve_cover(title, artist=None, *, fallback=None, **kw):
+    async def _fake_resolve_metadata(title, artist=None, **kw):
         captured["title"] = title
         captured["artist"] = artist
-        return fallback
+        return None
 
     with patch("yt_dlp.YoutubeDL", _FakeYDL), \
-         patch("itunes_cover.resolve_cover", _fake_resolve_cover):
+         patch("itunes_cover.resolve_metadata", _fake_resolve_metadata):
         await cog._resolve_yt_query("周杰倫 晴天")
 
     assert captured["title"] == "周杰倫 晴天", \
@@ -220,14 +220,57 @@ async def test_itunes_cover_falls_back_to_yt_title_when_no_orig_query():
 
     captured = {}
 
-    async def _fake_resolve_cover(title, artist=None, *, fallback=None, **kw):
+    async def _fake_resolve_metadata(title, artist=None, **kw):
         captured["title"] = title
         captured["artist"] = artist
-        return fallback
+        return None
 
     with patch("yt_dlp.YoutubeDL", _DirectYDL), \
-         patch("itunes_cover.resolve_cover", _fake_resolve_cover):
+         patch("itunes_cover.resolve_metadata", _fake_resolve_metadata):
         await cog._resolve_yt_query("https://youtu.be/abc123")
 
     assert captured["title"] == "Direct URL Song"
     assert captured["artist"] == "Channel"
+
+
+@pytest.mark.asyncio
+async def test_itunes_metadata_writes_artist_and_album_into_result():
+    """2026-08-21：iTunes 配到 artist/album 時要真的寫進結果 dict——這是
+    /car_now → AVRCP 車機顯示演出者/專輯的資料源頭（見 music_cog.py::_apply_itunes_cover）。"""
+    cog = _make_cog()
+    _FakeYDL.calls = []
+    _FakeYDL.script = {
+        "ytsearch5:": [_music_entry("周杰倫 - 晴天 (Official MV) 官方頻道")],
+    }
+
+    async def _fake_resolve_metadata(title, artist=None, **kw):
+        return {"cover": "https://itunes/cover.jpg", "artist": "周杰倫", "album": "范特西"}
+
+    with patch("yt_dlp.YoutubeDL", _FakeYDL), \
+         patch("itunes_cover.resolve_metadata", _fake_resolve_metadata):
+        res = await cog._resolve_yt_query("周杰倫 晴天")
+
+    assert res["thumbnail"] == "https://itunes/cover.jpg"
+    assert res["artist"] == "周杰倫"
+    assert res["album"] == "范特西"
+
+
+@pytest.mark.asyncio
+async def test_itunes_metadata_none_leaves_artist_and_album_unset():
+    """iTunes 配不到（None）→ 不寫入 res['artist']/res['album']，呼叫端（/car_now）
+    退回 yt-dlp 的 uploader/空字串，不是硬塞一個 None 進去蓋掉。"""
+    cog = _make_cog()
+    _FakeYDL.calls = []
+    _FakeYDL.script = {
+        "ytsearch5:": [_music_entry("周杰倫 - 晴天 (Official MV) 官方頻道")],
+    }
+
+    async def _fake_resolve_metadata(title, artist=None, **kw):
+        return None
+
+    with patch("yt_dlp.YoutubeDL", _FakeYDL), \
+         patch("itunes_cover.resolve_metadata", _fake_resolve_metadata):
+        res = await cog._resolve_yt_query("周杰倫 晴天")
+
+    assert "artist" not in res
+    assert "album" not in res

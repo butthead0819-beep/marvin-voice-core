@@ -49,7 +49,7 @@ class LocalMixingAudioSource(_BASE):
         volume: float = 1.0,
         duck_level: float = 0.30,
         duck_step: float = 0.28,
-        tts_gain: float = 0.5,
+        tts_gain: float = 0.8,
         tts_cap_seconds: float = 30.0,
         seed: int | None = None,
         instrument: bool = False,
@@ -63,7 +63,7 @@ class LocalMixingAudioSource(_BASE):
         self._volume_step = 0.04  # 逐幀線性 ramp（每幀 20ms 調整 0.04，~0.25s 平滑到位，防 click/step jump）
         self._duck_level = float(duck_level)
         self._duck_step = float(duck_step)
-        self._tts_gain = float(tts_gain)  # TTS 層增益（音樂常播 ~10%，TTS 滿音量過大 → 預設減半）
+        self._tts_gain = float(tts_gain)  # TTS 層增益（2026-08-21 用戶要求：音樂/TTS 都恢復滿音量附近，music=1.0/tts=0.8）
         self._duck_cur = 1.0  # 1.0 = 無 duck
         self._ptt_active = False  # 🎙️ [PTT Optimization] PTT 狀態標記
         self._wake_duck_until = 0.0  # 🔇 [Wake Duck] 喚醒確認 → 音樂 duck 到此時戳（不等 TTS）
