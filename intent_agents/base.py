@@ -194,6 +194,47 @@ class DeclarativeIntentAgent:
 
         return self._dense_zero("no_match")
 
+    def resolve_intent(
+        self, intent_name: str, slots: dict[str, str], ctx: IntentContext
+    ) -> Bid | None:
+        """Audio rescue 專用：LLM 已經指名要哪個 intent（跳過 regex 文字比對），
+        這裡只重放 bid() 除了「regex 找 schema」以外的所有既有守門邏輯——
+        mode_compatible / gate() / post_match_filter() / make_handler()——確保
+        音訊路徑跟正常 bid() 路徑受同一套系統狀態檢查（例如 VolumeAgent 沒開
+        播放不該真的調音量）。
+
+        v1 刻意不處理 missing slots（不接 resolver/追問流程）：required_slots
+        沒填滿 → 視為 no-match 回 None，交由 caller 走純聊天 fallback，避免
+        audio rescue 疊加 vector-intent resolve 的複雜度。
+        """
+        if ctx.mode not in self.mode_compatible:
+            return None
+        if self.gate(ctx) is not None:
+            return None
+
+        for schema in self.declare_intents():
+            if schema.name != intent_name:
+                continue
+            filled = {k: (v or "") for k, v in (slots or {}).items()}
+            if not self.post_match_filter(schema, filled, ctx):
+                return None
+            missing = [s for s in schema.required_slots if not filled.get(s, "").strip()]
+            if missing:
+                return None
+            fmt_kwargs = {**filled, "matched": ctx.query or "", "name": schema.name}
+            try:
+                reason = schema.reason_template.format(**fmt_kwargs)
+            except (KeyError, IndexError):
+                reason = schema.name
+            return Bid(
+                name=self.name,
+                confidence=schema.confidence,
+                handler=self.make_handler(schema, filled, ctx),
+                reason=f"audio_rescue:{reason}",
+                missing_slots=[],
+            )
+        return None
+
     # ── Internals ─────────────────────────────────────────────────────────────
 
     def _try_phonetic_bid(self, text: str, ctx: IntentContext) -> Bid | None:

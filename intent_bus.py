@@ -55,9 +55,11 @@ class IntentContext:
     # LLM rescue 路徑帶的「真正意圖」訊號（surface vs pragmatic）。regex 命中時
     # 為預設值；agent handler 用 None 判斷「這次不需要消化語用訊號」。
     # dispatch_source:
-    #   "regex"        — wake → regex agent 直接命中
-    #   "llm_rescue"   — LLM 改寫後重投
-    #   "marmo_inject" — marmo_server HTTP webhook 非 wake 注入（dual-speak PoC）
+    #   "regex"            — wake → regex agent 直接命中
+    #   "llm_rescue"       — LLM 改寫後重投（文字版 rescue）
+    #   "llm_rescue_audio" — 音訊 function-calling 選中已知 intent，直接執行對應
+    #                        handler（不重跑 regex——regex 本來就沒中，重跑無意義）
+    #   "marmo_inject"     — marmo_server HTTP webhook 非 wake 注入（dual-speak PoC）
     # pragmatic_signal: "positive" / "negative" / "neutral" / None
     # pragmatic_target: handler 該對什麼物件 apply signal（e.g. "current_song" / "last_reply"）
     dispatch_source: str = "regex"
@@ -66,6 +68,15 @@ class IntentContext:
     # 非 wake source 注入意圖時帶的 payload（如 marmo_server 帶 marmo_text / job_id）。
     # 一般 wake 路徑為 None；agent 自行判斷 dispatch_source 後讀 payload。
     payload: dict | None = None
+    # Audio Rescue v2：原始語音 wav bytes，供音訊 rescue 送 Gemini 多模態用。
+    # repr=False 避免任何 f"{ctx}"/logger 意外把整包音訊印進 log。
+    audio_wav_bytes: bytes | None = field(default=None, repr=False)
+    # Audio Rescue v2 專用：LLM 音訊 function-calling 選中的 intent，供
+    # _execute_resolved_intent() 反查 agent+schema 直接執行 handler（不走 regex）。
+    # dispatch_source == "llm_rescue_audio" 時才有值。
+    resolved_agent: str | None = None
+    resolved_intent: str | None = None
+    resolved_slots: dict | None = None
 
 
 @dataclass
@@ -350,14 +361,52 @@ class IntentBus:
             self._emit_rescue_outcome(ctx, rescued_ctx, winner=None, shadow=True)
             return None
 
-        self.logger.info(
-            f"📡 [IntentBus] llm_rescue: '{ctx.query[:30]}' → "
-            f"'{rescued_ctx.query[:30]}' signal={rescued_ctx.pragmatic_signal} "
-            f"target={rescued_ctx.pragmatic_target} → re-dispatch"
-        )
-        winner = await self.dispatch(rescued_ctx)
+        if rescued_ctx.dispatch_source == "llm_rescue_audio":
+            self.logger.info(
+                f"📡 [IntentBus] llm_rescue_audio: '{ctx.query[:30]}' → "
+                f"agent={rescued_ctx.resolved_agent} intent={rescued_ctx.resolved_intent} "
+                f"slots={rescued_ctx.resolved_slots} → execute"
+            )
+            winner = await self._execute_resolved_intent(rescued_ctx)
+        else:
+            self.logger.info(
+                f"📡 [IntentBus] llm_rescue: '{ctx.query[:30]}' → "
+                f"'{rescued_ctx.query[:30]}' signal={rescued_ctx.pragmatic_signal} "
+                f"target={rescued_ctx.pragmatic_target} → re-dispatch"
+            )
+            winner = await self.dispatch(rescued_ctx)
         self._emit_rescue_outcome(ctx, rescued_ctx, winner=winner, shadow=False)
         return winner
+
+    async def _execute_resolved_intent(self, ctx: IntentContext) -> Bid | None:
+        """Audio rescue 專用：LLM 已經選定 agent+intent+slots，直接找到該 agent
+        呼叫其 handler，不重跑 regex（regex 本來就沒中，重跑無意義）。
+
+        覆用 DeclarativeIntentAgent.resolve_intent()（intent_agents/base.py）——跟
+        bid() 共用 mode_compatible / gate() / post_match_filter() / make_handler()，
+        唯一差異是 intent 比對來源從 regex 換成 LLM 給的 intent name。
+        """
+        if not ctx.resolved_agent or not ctx.resolved_intent:
+            return None
+        agent = next(
+            (a for a in self.agents if getattr(a, "name", None) == ctx.resolved_agent),
+            None,
+        )
+        if agent is None or not hasattr(agent, "resolve_intent"):
+            self.logger.warning(
+                f"⚠️ [IntentBus] audio rescue 選中 agent={ctx.resolved_agent} "
+                f"但找不到或不支援 resolve_intent，放棄"
+            )
+            return None
+        try:
+            bid = agent.resolve_intent(ctx.resolved_intent, ctx.resolved_slots or {}, ctx)
+        except Exception as exc:
+            self.logger.warning(f"⚠️ [IntentBus] resolve_intent 炸了，放棄: {exc}")
+            return None
+        if bid is None:
+            return None
+        await bid.handler()
+        return bid
 
     def _emit_rescue_outcome(self, original_ctx: IntentContext,
                              rescued_ctx: IntentContext,
@@ -392,6 +441,13 @@ class IntentBus:
             "gap_class": gap_class,
             "speaker": original_ctx.speaker,
             "ts": original_ctx.now,
+            # Audio Rescue v2：文字版 record 這些欄位恆 None/0，只在 dispatch_mode
+            # == "llm_rescue_audio" 時有值，供 daily ritual 另開分析維度。
+            "dispatch_mode": rescued_ctx.dispatch_source,
+            "resolved_agent": rescued_ctx.resolved_agent,
+            "resolved_intent": rescued_ctx.resolved_intent,
+            "resolved_slots": rescued_ctx.resolved_slots,
+            "audio_bytes_len": len(original_ctx.audio_wav_bytes) if original_ctx.audio_wav_bytes else 0,
         }
         try:
             self.rescue_outcome_sink(record)

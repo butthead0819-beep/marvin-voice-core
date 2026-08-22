@@ -399,7 +399,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             temperature=getattr(_router, "atmosphere_tracker", None),
             clock=time.time,
         )
-        _rescue_agent, _rescue_shadow, _rescue_sink = build_rescue_components(_tier_router)
+        _rescue_agent, _rescue_shadow, _rescue_sink = build_rescue_components(
+            _tier_router, google_client=getattr(_router, "google_client", None), manifest_provider=lambda: self._intent_bus.build_intent_manifest())
         # 建立實體 cleaner_call 傳給 IntentBus 競速使用
         async def real_cleaner_call(c: IntentContext) -> str:
             if not hasattr(self.bot, "router") or not hasattr(self.bot.router, "clean_stt_text"):
@@ -3060,7 +3061,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         _is_helper = is_helper_wake(wake_voice_score, wake_dom)
         _head = "🔍 **【馬文·幫你查了】**" if _is_helper else "⚡ **【馬文·喚醒回應】**"
 
-        # 1. 擷取 Query：優先使用確認流程傳入的 override_query
+        _captured_wav_bytes: bytes | None = None  # 1. 擷取 Query（Audio Rescue v2：pop 前存音訊快照，override_query 路徑不擷取）
         if override_query:
             query = override_query
             history = self.bot.engine.conv_buffer.get_last_n_utterances(n=10)
@@ -3070,12 +3071,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             history = self.bot.engine.conv_buffer.get_last_n_utterances(n=10)
 
             # 🛡️ 防禦性 Fallback: 若 harvest 為空，嘗試使用 speech_buffers 裡剩餘的片段
-            if not query:
-                data = self.speech_buffers.pop(speaker, None)
-                if data:
-                    query = " ".join(data["texts"])
-            else:
-                self.speech_buffers.pop(speaker, None)
+            data = self.speech_buffers.pop(speaker, None)
+            if data:
+                query = query or " ".join(data["texts"])
+                _captured_wav_bytes = bytes(data.get("wav_bytes") or b"") or None
 
         if not query:
             logger.warning(f"⚠️ [Fast System] 無法為 {speaker} 擷取到任何有效的 Query 內容。")
@@ -3197,6 +3196,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             game_mode=False,  # game_mode 已在 handle_stt_result 提早 return，不會到這
             is_owner=self._is_owner_speaker(speaker),
             now=time.time(),
+            audio_wav_bytes=_captured_wav_bytes,
         )
         pipeline_timing.mark("intent_dispatched")
         pipeline_timing.emit(speaker, _bus_ctx.raw_text or "", suffix=" route=main_bus")

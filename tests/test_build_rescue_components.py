@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from intent_agents.audio_rescue_agent import AudioRescueAgent
 from intent_agents.llm_rescue_agent import LLMRescueAgent
 from intent_agents.rescue_classifier import build_rescue_components
 
@@ -76,3 +77,47 @@ def test_sink_writes_to_records_rescue_outcomes_jsonl(tmp_path, monkeypatch):
     expected = tmp_path / "records" / "rescue_outcomes.jsonl"
     assert expected.exists()
     assert "shadow" in expected.read_text()
+
+
+# ── Audio Rescue v2：MARVIN_INTENT_RESCUE_MODE ──────────────────────────────
+
+def test_mode_unset_behaves_exactly_like_before():
+    """MODE 未設 → 預設 "text"，行為與 Audio Rescue v2 上線前完全一致（回歸）。"""
+    agent, shadow, sink = build_rescue_components(
+        MagicMock(), env={"MARVIN_INTENT_RESCUE_ENABLED": "1"}
+    )
+    assert isinstance(agent, LLMRescueAgent)
+
+
+def test_mode_text_explicit_uses_llm_rescue_agent():
+    env = {"MARVIN_INTENT_RESCUE_ENABLED": "1", "MARVIN_INTENT_RESCUE_MODE": "text"}
+    agent, shadow, sink = build_rescue_components(MagicMock(), env=env)
+    assert isinstance(agent, LLMRescueAgent)
+
+
+def test_mode_audio_without_google_client_degrades_gracefully():
+    env = {"MARVIN_INTENT_RESCUE_ENABLED": "1", "MARVIN_INTENT_RESCUE_MODE": "audio"}
+    agent, shadow, sink = build_rescue_components(
+        MagicMock(), env=env, google_client=None, manifest_provider=lambda: {},
+    )
+    assert agent is None
+    assert shadow is False
+    assert sink is None
+
+
+def test_mode_audio_without_manifest_provider_degrades_gracefully():
+    env = {"MARVIN_INTENT_RESCUE_ENABLED": "1", "MARVIN_INTENT_RESCUE_MODE": "audio"}
+    agent, shadow, sink = build_rescue_components(
+        MagicMock(), env=env, google_client=MagicMock(), manifest_provider=None,
+    )
+    assert agent is None
+
+
+def test_mode_audio_with_deps_returns_audio_rescue_agent():
+    env = {"MARVIN_INTENT_RESCUE_ENABLED": "1", "MARVIN_INTENT_RESCUE_MODE": "audio"}
+    agent, shadow, sink = build_rescue_components(
+        MagicMock(), env=env, google_client=MagicMock(), manifest_provider=lambda: {},
+    )
+    assert isinstance(agent, AudioRescueAgent)
+    assert shadow is True  # 預設 shadow 沿用，跟文字版一致
+    assert callable(sink)
