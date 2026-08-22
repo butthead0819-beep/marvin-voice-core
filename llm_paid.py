@@ -25,6 +25,8 @@ _PRICE_PER_1M: dict[str, tuple[float, float]] = {
     "gemini-3.5-flash-lite": (0.30, 2.50),
     # flash-lite-preview：Marvin reply paid fallback 用。略保守。
     "gemini-3.1-flash-lite": (0.10, 0.40),
+    # AudioRescueAgent 預設 model；沒有這條會前綴誤配到較貴的 gemini-2.5-flash。
+    "gemini-2.5-flash-lite": (0.10, 0.40),
 }
 _DEFAULT_PRICE = (2.0, 12.0)
 

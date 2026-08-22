@@ -14,11 +14,18 @@ IntentBus._maybe_rescue() 依 dispatch_source 分流到不同執行路徑（見 
 失敗降級：任何逾時/API 例外/沒選中 tool 一律乾淨 return None，交由
 IntentBus._maybe_rescue()（已有 try/except 包一層）與 caller 走既有「無 fallback，
 走 Marvin 一般聊天」路徑，不拋例外往上炸，不製造新單點故障。
+
+付費鐵則（feedback_paid_calls_must_record）：比照 stt_cleaner.py::_try_paid() 的
+pattern——呼叫前 RPM 視窗守門 + PaidUsageGuard.allow() 估價守門，成功後
+guard.record() 記帳（優先用 response.usage_metadata 的真實 token 數，缺才退回估算）。
+不硬塞 LLMBus：LLMBus 目前沒有 Gemini agent、也沒有音訊/tool-calling 先例，其
+F3/F4 多 provider 比價機制對「只有一家能接」的音訊呼叫沒有實質效益。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import replace
 from typing import Any, Awaitable, Callable
 
@@ -31,8 +38,16 @@ from intent_agents.audio_rescue_tools import (
     manifest_to_function_declarations,
     parse_tool_call,
 )
+from llm_paid import PaidUsageGuard, estimate_cost
 
 logger = logging.getLogger("cogs.voice_controller.intent_bus.audio_rescue")
+
+# 16kHz mono 16-bit PCM wav（跟 discord_voice_engine.py 寫出的暫存 wav 格式一致）
+# 粗估音訊秒數 → token 數：Gemini 音訊輸入約 32 token/秒（官方文件量級，非精算）。
+_PCM_BYTES_PER_SECOND = 16000 * 2
+_AUDIO_TOKENS_PER_SECOND = 32
+# 單輪 function-calling 輸出短（一組 tool call），保守估 30 token。
+_ESTIMATED_OUTPUT_TOKENS = 30
 
 
 _PROMPT = (
@@ -51,21 +66,37 @@ class AudioRescueAgent:
     """Audio-native rescue：原始語音 → Gemini function calling → 選定 intent。"""
 
     name: str = "AudioRescue"
+    # 非阻塞 RPM 視窗（獨立 bucket，不跟 STT cleaner 共用計數——rescue 只在 regex
+    # 全 miss 時偶發觸發，量遠小於 cleaner；滿了直接跳過本次 rescue，不排隊等待）。
+    _RPM_LIMIT = 5
 
     def __init__(
         self,
         *,
         google_client: Any,
         manifest_provider: Callable[[], dict],
-        model: str = "gemini-2.0-flash-lite",
+        model: str = "gemini-2.5-flash-lite",  # 2.0 系列 2026-08-20 已下架（404），見 llm_pool.py
         timeout_s: float = 3.0,
         readonly_tool_executor: ReadonlyToolExecutor | None = None,
+        paid_guard: PaidUsageGuard | None = None,
     ):
         self.google_client = google_client
         self.manifest_provider = manifest_provider
         self.model = model
         self.timeout_s = timeout_s
         self.readonly_tool_executor = readonly_tool_executor
+        self.paid_guard = paid_guard if paid_guard is not None else PaidUsageGuard()
+        self._rpm_window: list[float] = []
+
+    def _try_acquire_rpm_slot(self) -> bool:
+        """非阻塞：RPM 視窗有空位就佔一格回 True，否則回 False（同 gemini_router_llm.py
+        的 _try_acquire_cleaner_rpm_slot pattern，但獨立 bucket）。"""
+        now = time.time()
+        self._rpm_window = [t for t in self._rpm_window if now - t < 60]
+        if len(self._rpm_window) < self._RPM_LIMIT:
+            self._rpm_window.append(now)
+            return True
+        return False
 
     async def synthesize(self, ctx: IntentContext) -> IntentContext | None:
         if not ctx.audio_wav_bytes:
@@ -76,6 +107,14 @@ class AudioRescueAgent:
             manifest_to_function_declarations(manifest) + READONLY_FUNCTION_DECLARATIONS
         )
         if not function_declarations:
+            return None
+
+        est_in = max(1, len(ctx.audio_wav_bytes) // _PCM_BYTES_PER_SECOND * _AUDIO_TOKENS_PER_SECOND)
+        if not self.paid_guard.allow(estimate_cost(self.model, est_in, _ESTIMATED_OUTPUT_TOKENS)):
+            logger.warning("⚠️ [AudioRescue] 超 daily/monthly paid cap，放棄 rescue")
+            return None
+        if not self._try_acquire_rpm_slot():
+            logger.info("📡 [AudioRescue] RPM 視窗已滿，跳過本次 rescue")
             return None
 
         try:
@@ -99,6 +138,15 @@ class AudioRescueAgent:
         except Exception as exc:
             logger.warning(f"⚠️ [AudioRescue] Gemini 呼叫失敗，放棄 rescue: {exc}")
             return None
+
+        usage = getattr(response, "usage_metadata", None)
+        in_tokens = int(getattr(usage, "prompt_token_count", 0) or est_in)
+        out_tokens = int(getattr(usage, "candidates_token_count", 0) or _ESTIMATED_OUTPUT_TOKENS)
+        self.paid_guard.record(
+            caller="audio_rescue", model=self.model, tokens=in_tokens + out_tokens,
+            est_usd=estimate_cost(self.model, in_tokens, out_tokens),
+            in_tokens=in_tokens, out_tokens=out_tokens,
+        )
 
         calls = getattr(response, "function_calls", None) or []
         if not calls:
