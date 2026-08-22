@@ -48,8 +48,8 @@ class LocalMixingAudioSource(_BASE):
         *,
         volume: float = 1.0,
         duck_level: float = 0.30,
-        duck_step: float = 0.28,
-        tts_gain: float = 0.8,
+        duck_step: float = 0.05,
+        tts_gain: float = 1.0,
         tts_cap_seconds: float = 30.0,
         seed: int | None = None,
         instrument: bool = False,
@@ -63,18 +63,28 @@ class LocalMixingAudioSource(_BASE):
         self._volume_step = 0.04  # 逐幀線性 ramp（每幀 20ms 調整 0.04，~0.25s 平滑到位，防 click/step jump）
         self._duck_level = float(duck_level)
         self._duck_step = float(duck_step)
-        self._tts_gain = float(tts_gain)  # TTS 層增益（2026-08-21 用戶要求：音樂/TTS 都恢復滿音量附近，music=1.0/tts=0.8）
+        self._tts_gain = float(tts_gain)  # TTS 層增益（2026-08-22 用戶要求：音樂/TTS 都恢復滿音量 1.0）
         self._duck_cur = 1.0  # 1.0 = 無 duck
         self._ptt_active = False  # 🎙️ [PTT Optimization] PTT 狀態標記
         self._wake_duck_until = 0.0  # 🔇 [Wake Duck] 喚醒確認 → 音樂 duck 到此時戳（不等 TTS）
         # 🔇 [TTS 對玩家 duck] Marvin 自己的 TTS（尤其長的：DJ interjection / 歌單理由）播放中
-        # 若有玩家還在說話 → TTS 讓路到 10%（同串流音樂）；最後一次說話後 5s 無聲才回 1.0。
+        # 若有玩家還在說話 → TTS 讓路。兩階段（用戶回饋：單一雜音就整段壓到 10%，10 秒的
+        # 播報一下就聽不到——一次觸發可能只是雜音，不代表使用者真的想講話）：
+        #   1. onset：第一次偵測到 → 先淺 duck 到 80%（禮貌讓路，不到「聽不到」的程度）。
+        #   2. confirmed：onset 窗（_confirm_window_s）內又偵測到一次 → 判定是真的在講話，
+        #      才繼續壓到 _tts_player_duck_level（10%），之後每次再講話延長 hold。
+        # onset 沒被確認 → onset_hold_s 後快速回滿（不佔滿整段 5s hold，盡快讓 TTS 恢復音量）。
         self._clock = clock or time.monotonic
-        self._tts_player_duck_level = 0.10
-        self._tts_player_duck_hold_s = 5.0
-        self._tts_player_duck_step = 0.12   # 逐幀 ramp（~50fps 下 ~0.15s 到位，防 click）
+        self._tts_player_duck_level = 0.10        # confirmed（持續講話）→ 深 duck
+        self._tts_player_duck_level_onset = 0.8    # 第一次觸發（可能只是雜音）→ 淺 duck
+        self._tts_player_duck_confirm_window_s = 1.2  # onset 後這段時間內再觸發才算「確認」
+        self._tts_player_duck_onset_hold_s = 1.0   # onset 沒被確認 → 這麼久後快速回滿
+        self._tts_player_duck_hold_s = 5.0         # confirmed 後每次講話延長的 hold
+        self._tts_player_duck_step = 0.15   # 加大 step，升降都更陡（用戶回饋：原本太軟，要斜一點）
         self._tts_player_duck_cur = 1.0
-        self._player_speech_until = 0.0
+        self._player_speech_until = 0.0          # 目前 duck 階段的到期時戳
+        self._player_speech_confirm_deadline = 0.0  # onset 期間允許升級到 confirmed 的截止時間
+        self._player_speech_confirmed = False       # 是否已升級到深 duck
         self._prev_tts_marvin = False   # 上一幀有無 Marvin TTS（偵測 onset 復原凍結的 duck）
         self._tts_cap_samples = int(tts_cap_seconds * _SAMPLES_PER_SEC)
         self._rng = np.random.default_rng(seed)
@@ -120,15 +130,26 @@ class LocalMixingAudioSource(_BASE):
         self._stat_t0 = time.monotonic()
 
     def note_player_speech(self) -> None:
-        """🔇 玩家說話 → 接下來 hold 秒內把 Marvin 正播的長播報 duck 到 player_duck_level。
-        speech-detection 路徑每次偵測到玩家說話就呼叫（與 last_player_speech_time 同步）。
+        """🔇 玩家說話 → 把 Marvin 正播的長播報 duck 讓路，兩階段漸進確認（見 __init__ 註解）：
+        第一次觸發只淺 duck 到 80%、給短 onset 窗；窗內再觸發才升級到 confirmed（10%）並延長
+        hold。speech-detection 路徑每次偵測到玩家說話就呼叫（與 last_player_speech_time 同步）。
 
         **barge-in 閘**：只在 Marvin 正播 TTS（佇列有料）時才 arm。Marvin 沒在講時玩家說話
         不是打斷——緊接的 ack／回應是全新 onset，該全音量播出；無條件 arm 會把它壓成
         「前小後大」（點歌 ack 前段被壓、5s 窗中途過期才 ramp 回滿）。"""
         if self._tts_cur is None and not self._tts_queue:
             return  # Marvin 沒在講 → 不 arm，避免壓到緊接的回應/ack
-        self._player_speech_until = self._clock() + self._tts_player_duck_hold_s
+        now = self._clock()
+        if self._player_speech_confirmed:
+            self._player_speech_until = now + self._tts_player_duck_hold_s  # 持續講話 → 延長深 duck
+            return
+        if now < self._player_speech_confirm_deadline:
+            self._player_speech_confirmed = True  # onset 窗內再次觸發 → 確認是真的在講話
+            self._player_speech_until = now + self._tts_player_duck_hold_s
+            return
+        # 新一輪 onset：淺 duck，短暫 hold，等下一次觸發確認
+        self._player_speech_confirm_deadline = now + self._tts_player_duck_confirm_window_s
+        self._player_speech_until = now + self._tts_player_duck_onset_hold_s
 
     def duck_for_wake(self, hold_s: float = 5.0) -> None:
         """🔇 [Wake Duck] 喚醒確認 → 立刻把音樂 duck（不等回話 TTS），hold 秒數。
@@ -144,9 +165,18 @@ class LocalMixingAudioSource(_BASE):
         wake_duck = self._clock() < self._wake_duck_until
         return self._duck_level if (tts_active or wake_duck) else 1.0
 
+    def _tts_player_duck_target(self, now: float) -> float:
+        """目前該階段的 duck 目標：階段到期 → 回 1.0（並清 confirmed，下次觸發重新從 onset 開始）；
+        confirmed → 10%；只 onset（尚未確認）→ 80%。"""
+        if now >= self._player_speech_until:
+            self._player_speech_confirmed = False
+            return 1.0
+        return self._tts_player_duck_level if self._player_speech_confirmed else self._tts_player_duck_level_onset
+
     def _tts_player_duck_step_toward(self, now: float) -> float:
-        """逐幀 ramp TTS 對玩家說話的 duck 增益：說話窗內 → 往 10% 降；窗外（5s 無聲）→ 回 1.0。"""
-        target = self._tts_player_duck_level if now < self._player_speech_until else 1.0
+        """逐幀 ramp TTS 對玩家說話的 duck 增益：往目前階段的目標（onset 80% / confirmed 10% /
+        無 1.0）漸進、不瞬跳。"""
+        target = self._tts_player_duck_target(now)
         cur = self._tts_player_duck_cur
         if cur < target:
             cur = min(target, cur + self._tts_player_duck_step)

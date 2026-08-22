@@ -114,9 +114,9 @@ def test_music_and_tts_both_contribute():
 
 # ── TTS 音量（tts_gain）─────────────────────────────────────────────────────
 
-def test_tts_gain_default_is_0_8():
-    """2026-08-21 用戶要求：music/tts 都恢復接近滿音量，tts_gain 預設 0.8。"""
-    assert LocalMixingAudioSource()._tts_gain == 0.8
+def test_tts_gain_default_is_1_0():
+    """2026-08-22 用戶要求：satellite 模式下音樂 1.0、TTS 也是 1.0，tts_gain 預設 1.0。"""
+    assert LocalMixingAudioSource()._tts_gain == 1.0
 
 
 def test_tts_layer_scaled_by_tts_gain():
@@ -179,11 +179,37 @@ def test_note_player_speech_no_arm_when_marvin_silent():
 
 
 def test_note_player_speech_arms_when_marvin_speaking():
-    """Marvin 正播長播報（佇列有料）+ 玩家插話 = barge-in → arm，讓 Marvin 讓路。"""
+    """Marvin 正播長播報（佇列有料）+ 玩家插話 = barge-in → arm，讓 Marvin 讓路。
+    單次觸發只是 onset（可能只是雜音）→ 短暫淺 duck，不是直接整段 5s 深 duck。"""
     mix = LocalMixingAudioSource(clock=lambda: 100.0)
     mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))   # Marvin 正在講
     mix.note_player_speech()
-    assert mix._player_speech_until == 105.0          # armed（+hold 5s）
+    assert mix._player_speech_until == 101.0          # onset armed（+onset_hold 1s，非 5s）
+    assert mix._player_speech_confirmed is False
+
+
+def test_note_player_speech_confirms_on_second_call_within_window():
+    """onset 窗內再次觸發 → 判定是真的在講話，升級到 confirmed 並延長到完整 5s hold。"""
+    clk = [100.0]
+    mix = LocalMixingAudioSource(clock=lambda: clk[0])
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))
+    mix.note_player_speech()          # onset：until=101.0
+    clk[0] = 100.5                    # 仍在 confirm window（1.2s）內
+    mix.note_player_speech()          # 確認 → confirmed
+    assert mix._player_speech_confirmed is True
+    assert mix._player_speech_until == 105.5          # +hold 5s
+
+
+def test_note_player_speech_onset_not_confirmed_after_window_expires():
+    """onset 窗過了才又觸發 → 視為全新一輪 onset，不會誤判成確認。"""
+    clk = [100.0]
+    mix = LocalMixingAudioSource(clock=lambda: clk[0])
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))
+    mix.note_player_speech()          # onset：confirm_deadline=101.2
+    clk[0] = 102.0                    # confirm window 已過
+    mix.note_player_speech()          # 新一輪 onset，非確認
+    assert mix._player_speech_confirmed is False
+    assert mix._player_speech_until == 103.0          # 102.0 + onset_hold 1s
 
 
 def test_ack_after_request_plays_full_volume_not_ducked():
@@ -254,6 +280,40 @@ def test_ducking_restores_when_tts_gone():
     mix.read()              # tts 沒了 → 回升
     mix.read()
     assert mix._duck_cur > low
+
+
+def test_default_music_duck_step_is_smooth_not_abrupt():
+    """用戶回饋：預設 duck_step 太大（3 幀=60ms 就到底），聽感是瞬降的「悶」一聲。
+    要求至少要 10 幀（200ms）才 ramp 到 duck_level，聽起來才是漸弱而非瞬降。"""
+    mix = LocalMixingAudioSource(seed=1, volume=1.0)
+    mix.set_music_source(_FakeMusic(value=0.5, frames=100))
+    mix.push_tts(_f32_frame(0.0, n=FRAME_SAMPLES * 20))
+    frames_to_settle = 0
+    for _ in range(30):
+        mix.read()
+        frames_to_settle += 1
+        if abs(mix._duck_cur - mix._duck_level) < 1e-6:
+            break
+    assert frames_to_settle >= 10, f"duck 只花 {frames_to_settle} 幀就到底，太突兀"
+
+
+def test_default_tts_player_duck_step_is_smooth_but_steeper_than_before():
+    """玩家確認持續說話（confirmed）→ TTS 讓路到 10% 的 ramp 仍要逐幀漸進、不瞬跳；
+    但用戶回饋原本的 gradient 太軟，新預設 step 要比舊版（0.06）更陡。"""
+    clk = [0.0]
+    mix = LocalMixingAudioSource(clock=lambda: clk[0])
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))
+    mix.note_player_speech()
+    mix.note_player_speech()  # 仍在 confirm window 內再觸發一次 → confirmed（目標 10%）
+    frames_to_settle = 0
+    for _ in range(30):
+        mix._tts_player_duck_step_toward(0.5)
+        frames_to_settle += 1
+        if abs(mix._tts_player_duck_cur - mix._tts_player_duck_level) < 1e-6:
+            break
+    assert 2 <= frames_to_settle <= 8, (
+        f"TTS player duck 花 {frames_to_settle} 幀到底，應逐幀漸進但比舊版更陡"
+    )
 
 
 # ── lock-free 並發 push ───────────────────────────────────────────────────────
@@ -718,28 +778,55 @@ def test_push_tts2_rejects_when_over_cap():
 
 # ── TTS 對玩家說話 duck（玩家還在講 → Marvin TTS 讓路到 10%，5s 無聲才回） ──────
 
-def test_tts_player_duck_ramps_down_when_player_speaks():
-    """note_player_speech() 後，TTS duck 增益逐幀 ramp 到 player_duck_level（10%）。"""
+def test_tts_player_duck_ramps_down_to_onset_level_on_first_speech():
+    """單次 note_player_speech()（可能只是雜音）→ 只淺 duck 到 onset 80%，不直接到 10%。"""
     clk = [0.0]
     mix = LocalMixingAudioSource(clock=lambda: clk[0])
     assert mix._tts_player_duck_cur == 1.0
     mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))  # Marvin 正播長播報＝arm 前提
-    mix.note_player_speech()                       # barge-in → until = 0 + 5
+    mix.note_player_speech()                       # onset only
     for _ in range(50):
-        mix._tts_player_duck_step_toward(0.5)      # 玩家說話窗內
+        mix._tts_player_duck_step_toward(0.5)      # 仍在 onset 窗內
+    assert abs(mix._tts_player_duck_cur - mix._tts_player_duck_level_onset) < 1e-6  # → 80%
+
+
+def test_tts_player_duck_ramps_down_to_confirmed_level_when_speech_continues():
+    """onset 窗內再講一次（確認）→ 才繼續往 confirmed 10% 降。"""
+    clk = [0.0]
+    mix = LocalMixingAudioSource(clock=lambda: clk[0])
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))  # Marvin 正播長播報＝arm 前提
+    mix.note_player_speech()                       # onset
+    clk[0] = 0.5
+    mix.note_player_speech()                       # 確認 → confirmed
+    for _ in range(50):
+        mix._tts_player_duck_step_toward(0.6)      # 玩家說話窗內
     assert abs(mix._tts_player_duck_cur - mix._tts_player_duck_level) < 1e-6  # → 10%
 
 
-def test_tts_player_duck_restores_only_after_5s_silence():
+def test_tts_player_duck_restores_only_after_5s_silence_when_confirmed():
     clk = [0.0]
     mix = LocalMixingAudioSource(clock=lambda: clk[0])
     mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))  # Marvin 正播＝arm 前提
-    mix.note_player_speech()                        # barge-in → until = 5
+    mix.note_player_speech()                        # onset
+    clk[0] = 0.1
+    mix.note_player_speech()                        # 確認 → confirmed，until = 0.1 + 5
     for _ in range(50):
-        mix._tts_player_duck_step_toward(3.0)       # 3s（<5s）→ 仍 duck
+        mix._tts_player_duck_step_toward(3.0)       # 3s（<5.1s）→ 仍 duck
     assert mix._tts_player_duck_cur < 0.2           # 還壓著
     for _ in range(50):
-        mix._tts_player_duck_step_toward(6.0)       # 6s（>5s 無聲）→ 回 1.0
+        mix._tts_player_duck_step_toward(6.0)       # 6s（>5.1s 無聲）→ 回 1.0
+    assert abs(mix._tts_player_duck_cur - 1.0) < 1e-6
+
+
+def test_tts_player_duck_recovers_quickly_when_onset_not_confirmed():
+    """用戶回饋：有時觸發只是雜音、不是真的講話——沒人接著說話要盡快拉回來，
+    不該卡在整段 5s hold 裡才回滿。onset 沒被確認 → onset_hold_s（1s）後就該回 1.0。"""
+    clk = [0.0]
+    mix = LocalMixingAudioSource(clock=lambda: clk[0])
+    mix.push_tts(_f32_frame(0.5, n=FRAME_SAMPLES))
+    mix.note_player_speech()                        # onset only，until = 1.0
+    for _ in range(50):
+        mix._tts_player_duck_step_toward(2.0)       # 2s（>1s onset hold，沒被確認）→ 回 1.0
     assert abs(mix._tts_player_duck_cur - 1.0) < 1e-6
 
 
@@ -751,11 +838,12 @@ def test_tts_player_duck_no_change_when_no_speech():
 
 
 def test_tts_output_ducked_when_player_speaking():
-    """wiring：玩家說話窗內 + duck 到位 → TTS 輸出 == apply_gain(tts, tts_gain * duck_level)。"""
+    """wiring：玩家持續說話（confirmed）+ duck 到位 → TTS 輸出 == apply_gain(tts, tts_gain * duck_level)。"""
     clk = [0.0]
     mix = LocalMixingAudioSource(seed=11, tts_gain=0.5, clock=lambda: clk[0])
     mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))        # Marvin 正播的長播報（就是被壓的這幀）
-    mix.note_player_speech()                              # barge-in → arm
+    mix.note_player_speech()                              # onset
+    mix.note_player_speech()                              # 再次觸發（仍在 confirm window 內）→ confirmed
     mix._tts_player_duck_cur = mix._tts_player_duck_level  # 假設已 ramp 到位
     out = np.frombuffer(mix.read(), dtype=np.int16)
     tts = _f32_frame(0.6)
