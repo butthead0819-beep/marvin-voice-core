@@ -21,10 +21,10 @@ guard.record() 記帳（優先用 response.usage_metadata 的真實 token 數，
 不硬塞 LLMBus：LLMBus 目前沒有 Gemini agent、也沒有音訊/tool-calling 先例，其
 F3/F4 多 provider 比價機制對「只有一家能接」的音訊呼叫沒有實質效益。
 
-範圍守門（8/22）：不是 regex 沒接住就一定送語音 LLM。`ctx.low_confidence_wake`
-（voice_controller 算好的喚醒信心不足訊號）在 IntentBus._maybe_rescue() 就先擋掉；
-這裡再用零成本的 has_intent_signal() 擋掉語氣詞/短應答，避免每句閒聊都打付費 API、
-跟真正的指令失敗搶同一份 daily cap。
+範圍守門（8/22 加、8/22 放寬）：單次呼叫成本量到只有 $0.00002-0.00003（音訊短句
+換算 token 極少），估算過在正常量級下完全不會頂到 daily/monthly cap，所以刻意放寬
+守門到接近不擋——保留的只是「完全空字串/沒錄到音」這種真的沒東西可送的情況，跟一個
+較高的 RPM/cap 天花板防真正失控的迴圈，不是拿來擋一般語意。
 """
 from __future__ import annotations
 
@@ -44,9 +44,14 @@ from intent_agents.audio_rescue_tools import (
     parse_tool_call,
 )
 from llm_paid import PaidUsageGuard, estimate_cost
-from wake_intent_gate import has_intent_signal
 
 logger = logging.getLogger("cogs.voice_controller.intent_bus.audio_rescue")
+
+# 單次呼叫成本 ~$0.00002-0.00003（見 8/22 估算）——放寬到跟 GCP 帳戶本身的
+# spending cap（$10，llm_paid.py 註解）同量級，而非文字版沿用的保守 0.5/4.0，
+# 那組數字是給「隨時可能跑很多次」的背景任務用，這裡是偶發、低頻的 rescue。
+_DAILY_CAP_USD = 2.0
+_MONTHLY_CAP_USD = 10.0
 
 # 16kHz mono 16-bit PCM wav（跟 discord_voice_engine.py 寫出的暫存 wav 格式一致）
 # 粗估音訊秒數 → token 數：Gemini 音訊輸入約 32 token/秒（官方文件量級，非精算）。
@@ -72,9 +77,9 @@ class AudioRescueAgent:
     """Audio-native rescue：原始語音 → Gemini function calling → 選定 intent。"""
 
     name: str = "AudioRescue"
-    # 非阻塞 RPM 視窗（獨立 bucket，不跟 STT cleaner 共用計數——rescue 只在 regex
-    # 全 miss 時偶發觸發，量遠小於 cleaner；滿了直接跳過本次 rescue，不排隊等待）。
-    _RPM_LIMIT = 5
+    # 非阻塞 RPM 視窗（獨立 bucket，不跟 STT cleaner 共用計數）。放寬到 20——
+    # 只當「真正失控迴圈」的天花板，不是拿來擋正常對話節奏。
+    _RPM_LIMIT = 20
 
     def __init__(
         self,
@@ -91,7 +96,9 @@ class AudioRescueAgent:
         self.model = model
         self.timeout_s = timeout_s
         self.readonly_tool_executor = readonly_tool_executor
-        self.paid_guard = paid_guard if paid_guard is not None else PaidUsageGuard()
+        self.paid_guard = paid_guard if paid_guard is not None else PaidUsageGuard(
+            daily_cap_usd=_DAILY_CAP_USD, monthly_cap_usd=_MONTHLY_CAP_USD,
+        )
         self._rpm_window: list[float] = []
 
     def _try_acquire_rpm_slot(self) -> bool:
@@ -106,8 +113,6 @@ class AudioRescueAgent:
 
     async def synthesize(self, ctx: IntentContext) -> IntentContext | None:
         if not ctx.audio_wav_bytes:
-            return None
-        if not has_intent_signal(ctx.query):
             return None
 
         manifest = self.manifest_provider()

@@ -93,15 +93,14 @@ async def test_no_audio_bytes_skips_gemini_call_entirely():
 
 
 @pytest.mark.asyncio
-async def test_filler_query_skips_gemini_call_entirely():
-    """has_intent_signal() 擋語氣詞/短應答——不該為了「嗯」打一次付費音訊 API。"""
+async def test_filler_query_still_calls_gemini():
+    """8/22 放寬：has_intent_signal 過濾拿掉了，語氣詞一樣會送——成本量到無感，不再擋語意。"""
     client = _make_client(function_calls=[_FakeCall("volume__volume_down")])
     agent = _make_agent(client)
 
-    result = await agent.synthesize(_ctx(query="嗯"))
+    await agent.synthesize(_ctx(query="嗯"))
 
-    assert result is None
-    client.aio.models.generate_content.assert_not_called()
+    client.aio.models.generate_content.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -261,3 +260,16 @@ async def test_rpm_window_exhausted_skips_call():
 
     assert result is None
     client.aio.models.generate_content.assert_called_once()  # 第二次沒真的打出去
+
+
+def test_default_rpm_limit_is_relaxed_to_twenty():
+    """8/22 放寬：RPM 上限只當失控迴圈天花板，不擋正常對話節奏。"""
+    agent = AudioRescueAgent(google_client=MagicMock(), manifest_provider=_manifest)
+    assert agent._RPM_LIMIT == 20
+
+
+def test_default_paid_guard_has_relaxed_caps():
+    """8/22 放寬：單次呼叫成本量到無感（$0.00002-0.00003），cap 拉高到 GCP 帳戶量級。"""
+    agent = AudioRescueAgent(google_client=MagicMock(), manifest_provider=_manifest)
+    assert agent.paid_guard.daily_cap_usd == 2.0
+    assert agent.paid_guard.monthly_cap_usd == 10.0

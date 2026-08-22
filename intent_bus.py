@@ -337,18 +337,16 @@ class IntentBus:
         守門：
         - 未注入 rescue_agent → 直接 None（向後相容既有 prod 設定）
         - ctx.depth > 0 → 已 rescue 過，不再嘗試（無窮迴圈防護）
-        - ctx.low_confidence_wake → 環境誤拾音，不該打真的 LLM（尤其音訊版是付費 API）
         - synthesize 例外 / 回 None → None（caller 走原 fallback）
         - shadow mode → 跑 LLM 收數據但不重投，純觀察
+
+        8/22：曾經加過 ctx.low_confidence_wake 擋低信心喚醒，量到單次呼叫成本只有
+        $0.00002-0.00003 後拿掉——這道門檻是為了省錢設計的，成本不成立就不該再擋。
+        低信心喚醒現在一樣會嘗試 rescue，讓更多邊界案例有機會被救回來。
         """
         if self.llm_rescue_agent is None:
             return None
         if ctx.depth > 0:
-            return None
-        if ctx.low_confidence_wake:
-            self.logger.info(
-                f"📡 [IntentBus] low_confidence_wake，跳過 rescue: '{ctx.query[:30]}'"
-            )
             return None
 
         try:
