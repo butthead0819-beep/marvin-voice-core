@@ -93,6 +93,18 @@ async def test_no_audio_bytes_skips_gemini_call_entirely():
 
 
 @pytest.mark.asyncio
+async def test_filler_query_skips_gemini_call_entirely():
+    """has_intent_signal() 擋語氣詞/短應答——不該為了「嗯」打一次付費音訊 API。"""
+    client = _make_client(function_calls=[_FakeCall("volume__volume_down")])
+    agent = _make_agent(client)
+
+    result = await agent.synthesize(_ctx(query="嗯"))
+
+    assert result is None
+    client.aio.models.generate_content.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_action_tool_call_resolves_agent_and_intent():
     client = _make_client(function_calls=[_FakeCall("volume__volume_down")])
     agent = _make_agent(client)

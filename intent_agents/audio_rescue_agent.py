@@ -20,6 +20,11 @@ pattern——呼叫前 RPM 視窗守門 + PaidUsageGuard.allow() 估價守門，
 guard.record() 記帳（優先用 response.usage_metadata 的真實 token 數，缺才退回估算）。
 不硬塞 LLMBus：LLMBus 目前沒有 Gemini agent、也沒有音訊/tool-calling 先例，其
 F3/F4 多 provider 比價機制對「只有一家能接」的音訊呼叫沒有實質效益。
+
+範圍守門（8/22）：不是 regex 沒接住就一定送語音 LLM。`ctx.low_confidence_wake`
+（voice_controller 算好的喚醒信心不足訊號）在 IntentBus._maybe_rescue() 就先擋掉；
+這裡再用零成本的 has_intent_signal() 擋掉語氣詞/短應答，避免每句閒聊都打付費 API、
+跟真正的指令失敗搶同一份 daily cap。
 """
 from __future__ import annotations
 
@@ -39,6 +44,7 @@ from intent_agents.audio_rescue_tools import (
     parse_tool_call,
 )
 from llm_paid import PaidUsageGuard, estimate_cost
+from wake_intent_gate import has_intent_signal
 
 logger = logging.getLogger("cogs.voice_controller.intent_bus.audio_rescue")
 
@@ -100,6 +106,8 @@ class AudioRescueAgent:
 
     async def synthesize(self, ctx: IntentContext) -> IntentContext | None:
         if not ctx.audio_wav_bytes:
+            return None
+        if not has_intent_signal(ctx.query):
             return None
 
         manifest = self.manifest_provider()

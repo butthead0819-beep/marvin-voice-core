@@ -77,6 +77,10 @@ class IntentContext:
     resolved_agent: str | None = None
     resolved_intent: str | None = None
     resolved_slots: dict | None = None
+    # 8/22：voice_controller 算好的「這次喚醒信心夠不夠」（wake_intent < 門檻），
+    # 既有側效分支（NemoClaw/Marmo/Vision/imitation…）都用它擋環境誤拾音；
+    # rescue（尤其音訊版，真的會打付費 API）比照同款守門，見 _maybe_rescue()。
+    low_confidence_wake: bool = False
 
 
 @dataclass
@@ -333,12 +337,18 @@ class IntentBus:
         守門：
         - 未注入 rescue_agent → 直接 None（向後相容既有 prod 設定）
         - ctx.depth > 0 → 已 rescue 過，不再嘗試（無窮迴圈防護）
+        - ctx.low_confidence_wake → 環境誤拾音，不該打真的 LLM（尤其音訊版是付費 API）
         - synthesize 例外 / 回 None → None（caller 走原 fallback）
         - shadow mode → 跑 LLM 收數據但不重投，純觀察
         """
         if self.llm_rescue_agent is None:
             return None
         if ctx.depth > 0:
+            return None
+        if ctx.low_confidence_wake:
+            self.logger.info(
+                f"📡 [IntentBus] low_confidence_wake，跳過 rescue: '{ctx.query[:30]}'"
+            )
             return None
 
         try:

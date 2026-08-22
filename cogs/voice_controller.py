@@ -3195,8 +3195,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             stream_active=self.stream_mode,
             game_mode=False,  # game_mode 已在 handle_stt_result 提早 return，不會到這
             is_owner=self._is_owner_speaker(speaker),
-            now=time.time(),
-            audio_wav_bytes=_captured_wav_bytes,
+            now=time.time(), audio_wav_bytes=_captured_wav_bytes, low_confidence_wake=low_confidence_wake,
         )
         pipeline_timing.mark("intent_dispatched")
         pipeline_timing.emit(speaker, _bus_ctx.raw_text or "", suffix=" route=main_bus")

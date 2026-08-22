@@ -220,3 +220,20 @@ async def test_bus_without_rescue_agent_behaves_as_before():
 
     bus = IntentBus([_StubAgent("z", _zero)])  # 不傳 llm_rescue_agent
     assert await bus.dispatch(_ctx()) is None
+
+
+# ── low_confidence_wake：環境誤拾音不該打真的 LLM ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_low_confidence_wake_skips_rescue_entirely():
+    """ctx.low_confidence_wake=True → 連 synthesize() 都不呼叫（尤其音訊版是付費 API）。"""
+    def _zero(ctx):
+        return Bid(name="z", confidence=0.0, handler=AsyncMock(), reason="no_match")
+
+    rescue = _StubRescue(result=None)
+    bus = IntentBus([_StubAgent("z", _zero)], llm_rescue_agent=rescue)
+
+    winner = await bus.dispatch(replace(_ctx(), low_confidence_wake=True))
+
+    assert winner is None
+    assert rescue.calls == []
