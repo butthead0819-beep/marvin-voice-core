@@ -49,9 +49,22 @@ def test_in_tts_cooldown_no_bypass():
 
 
 def test_weak_confidence_no_bypass():
-    """總信心不夠高（0.4 < 0.55）→ 不繞，維持抑制。"""
+    """總信心不夠高（0.4 < 0.45）→ 不繞，維持抑制。"""
     VC = _vc_class()
     assert _bypass(VC, conf=0.4) is False
+
+
+def test_confidence_at_lowered_threshold_bypasses():
+    """8/22 門檻 0.55→0.45：實測 total=0.500（voice_score 滿分但其他分量掉零）
+    卡在舊門檻邊緣被誤擋，降低後這種案例該放行。"""
+    VC = _vc_class()
+    assert _bypass(VC, conf=0.500) is True
+
+
+def test_confidence_just_below_lowered_threshold_no_bypass():
+    """0.45 仍是硬門檻，差一點點也不繞（不是拆防線）。"""
+    VC = _vc_class()
+    assert _bypass(VC, conf=0.44) is False
 
 
 def test_non_voice_dominant_no_bypass():

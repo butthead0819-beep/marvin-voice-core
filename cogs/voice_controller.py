@@ -750,7 +750,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         零鍵盤點歌核心：放歌時也要能語音點歌。但嚴格防自我觸發——
         bot 正在講 TTS（current_tts_text 非空）或 TTS 後冷卻窗內一律不繞；
         只在 voice 主導 + voice 分數高 + 總信心高時放行。legacy 路徑
-        （無 fusion 分數，confidence=None）不繞。
+        （無 fusion 分數，confidence=None）不繞。confidence 門檻 8/22 由 0.55 降到
+        0.45：實測 total=0.500（voice_score 滿分但其他 IBA 分量掉零）卡在邊緣誤擋。
         """
         if not is_playing_audio:
             return False
@@ -760,7 +761,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return False
         if confidence is None:          # legacy 路徑無 fusion 分數
             return False
-        return wake_dom == "voice" and confidence >= 0.55 and (voice_score or 0) >= 0.9
+        return wake_dom == "voice" and confidence >= 0.45 and (voice_score or 0) >= 0.9
 
 
 
