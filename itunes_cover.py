@@ -168,10 +168,10 @@ async def resolve_metadata(
     threshold: float = 0.55,
     size: int = 600,
 ) -> Optional[dict]:
-    """單次 iTunes 查詢同時拿封面+演出者+專輯（跟 resolve_cover() 分開呼叫是兩次
-    API request，這支給需要三者一起的呼叫端用，見 music_cog.py::_apply_itunes_cover）。
-    回 {"cover":, "artist":, "album":}（沒配到欄位個別回 None）；整體查不到/低信心/
-    關閉 → 回 None，呼叫端自行決定退回值。"""
+    """單次 iTunes 查詢同時拿封面+演出者+專輯+乾淨曲名（跟 resolve_cover() 分開呼叫
+    是兩次 API request，這支給需要多者一起的呼叫端用，見
+    music_cog.py::_apply_itunes_cover）。回 {"cover":, "artist":, "album":, "title":}
+    （沒配到欄位個別回 None）；整體查不到/低信心/關閉 → 回 None，呼叫端自行決定退回值。"""
     if not enabled() or not title:
         return None
     best = await _resolve_best(title, artist, fetch=fetch, threshold=threshold)
@@ -182,4 +182,5 @@ async def resolve_metadata(
         "cover": _hi_res(art, size) if art else None,
         "artist": best.get("artistName") or None,
         "album": best.get("collectionName") or None,
+        "title": best.get("trackName") or None,
     }

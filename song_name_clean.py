@@ -28,7 +28,20 @@ _CRUFT_IN = re.compile(_CRUFT_KW, re.I)
 
 # 括號整段（【】[]()（）「」）——內容含 cruft → 整段丟；否則只脫殼保留內容
 # （中文 YouTube 常把「歌名」放 【】 裡，不能無腦剝掉）
-_BRACKET_ANY = re.compile(r"[【\[（(「]([^】\]）)」]*)[】\]）)」]")
+_BRACKET_PAIRS = (("【", "】"), ("[", "]"), ("（", "）"), ("(", ")"), ("「", "」"))
+_BRACKET_ANY = re.compile(
+    "|".join(rf"{re.escape(o)}([^{re.escape(c)}]*){re.escape(c)}" for o, c in _BRACKET_PAIRS)
+)
+_BRACKET_STRIP_CHARS = "".join(o + c for o, c in _BRACKET_PAIRS) + " |｜/／\\-–—•·.．"
+
+
+def _is_pure_cruft(content: str) -> bool:
+    """整段括號內容是否「整體」就是雜訊標記（如 Official MV/HD），而非「含有」雜訊子字串。
+    先挖掉已知 cruft 關鍵字與括號/分隔符號，若殘留無字母數字/中日韓字 → 判定整段皆雜訊。
+    """
+    stripped = _CRUFT_IN.sub("", content)
+    stripped = re.sub(rf"[{re.escape(_BRACKET_STRIP_CHARS)}]+", "", stripped)
+    return not re.search(r"[0-9A-Za-z぀-ヿ一-鿿]", stripped)
 
 # 尾端 cruft：分隔符或空白 + 已知關鍵字 → 到結尾。反覆套用剝多個尾巴。
 _TAIL = re.compile(rf"(?i)[\s|｜/／\-–—•·]+(?:{_CRUFT_KW})\s*$")
@@ -43,8 +56,8 @@ def clean_title_regex(raw: str) -> str:
         return raw
 
     def _debracket(m):
-        content = m.group(1)
-        return " " if _CRUFT_IN.search(content) else f" {content} "
+        content = next(g for g in m.groups() if g is not None)
+        return " " if _is_pure_cruft(content) else f" {content} "
 
     s = _BRACKET_ANY.sub(_debracket, raw)
     prev = None

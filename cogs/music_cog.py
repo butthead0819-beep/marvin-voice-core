@@ -4097,6 +4097,7 @@ class MusicCog(commands.Cog):
             is_url = False
             res = await _extract_with_retry()
         res = await self._apply_itunes_cover(res, _orig_text_query)
+        res = await self._apply_spotify_metadata(res, _orig_text_query)
         return _cache_put(res)
 
     async def _apply_itunes_cover(self, res, orig_query: str = None):
@@ -4140,6 +4141,33 @@ class MusicCog(commands.Cog):
             res['palette'] = await cover_palette.extract_palette(res.get('thumbnail'), n=4)
         except Exception as e:
             logger.warning(f"⚠️ [Cover] 抽色失敗：{type(e).__name__}: {e}")
+        return res
+
+    async def _apply_spotify_metadata(self, res, orig_query: str = None):
+        """新歌一入庫就該是乾淨的：查 Spotify 拿官方 track/artist/album/uri，寫進
+        res['spotify_title'/'spotify_artist'/'spotify_album'/'spotify_uri']（新增
+        欄位，不覆蓋既有 res['artist']/res['album']——那兩個是 iTunes 補的、給
+        AVRCP 車機顯示用，語意不同）。record_play() 建新歌條目時原樣抄進
+        music_memory，取代事後跑 scripts/spotify_clean_music_memory.py 批次清洗
+        存量的做法（見 [[project_spotify_connect_personal_dj_design]]）。
+
+        失敗/查不到/關 flag（MARVIN_SPOTIFY_METADATA=0）一律不寫欄位，絕不擋播放。
+        """
+        if not res:
+            return res
+        try:
+            import spotify_metadata
+            if orig_query:
+                meta = await spotify_metadata.resolve_metadata(orig_query)
+            else:
+                meta = await spotify_metadata.resolve_metadata(res.get('title', ''), res.get('uploader'))
+            if meta:
+                res['spotify_title'] = meta.get('title')
+                res['spotify_artist'] = meta.get('artist')
+                res['spotify_album'] = meta.get('album')
+                res['spotify_uri'] = meta.get('uri')
+        except Exception as e:
+            logger.warning(f"⚠️ [Spotify] metadata 解析失敗：{type(e).__name__}: {e}")
         return res
 
     async def _safe_music_command(self, speaker: str, query: str, cmd: str):

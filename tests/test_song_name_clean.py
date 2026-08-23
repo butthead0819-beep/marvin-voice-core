@@ -43,6 +43,15 @@ def test_regex_falls_back_to_raw_when_cleaning_empties():
     assert clean_title_regex("【【】】") == "【【】】"
 
 
+def test_regex_keeps_title_when_bracket_has_nested_cruft_paren():
+    # 【】內容混了「真歌名 + 巢狀 (feat. xxx) cruft」→ 不能因為含 cruft 關鍵字
+    # 就把整段（含真歌名）一起丟掉，也不能截斷漏看 【 之後的巢狀括號
+    result = clean_title_regex("周杰倫 Jay Chou【可愛女人 Cute Girl (feat.徐若瑄Vivian)】-Official Music Video")
+    assert "可愛女人" in result
+    assert "Cute Girl" in result
+    assert "】" not in result
+
+
 # ── dj_display_name：三層優先序 ──────────────────────────────────────────────
 def test_track_field_preferred():
     info = {"track": "告白氣球", "artist": "周杰倫", "title": "【官方MV】告白氣球 歌詞版 HD"}

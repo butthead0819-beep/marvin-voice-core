@@ -54,6 +54,7 @@ claude_sessions_state.json
 gmail_calendar_state.json
 car_presence_state.json
 google_tokens.json
+.spotify_connect_cache
 google_credentials.json
 
 

@@ -215,6 +215,14 @@ class MusicMemory:
                 "reactions": {},
                 "connections": [],
             }
+            # 新歌一入庫就乾淨：_apply_spotify_metadata() 若查到官方 metadata 已
+            # 寫進 info，這裡原樣抄進來，取代事後批次清洗存量的做法（見
+            # spotify_metadata.py／scripts/spotify_clean_music_memory.py）。
+            if info.get("spotify_title"):
+                songs[key]["spotify_title"] = info["spotify_title"]
+                songs[key]["spotify_artist"] = info.get("spotify_artist")
+                songs[key]["spotify_album"] = info.get("spotify_album")
+                songs[key]["spotify_uri"] = info.get("spotify_uri")
         s = songs[key]
         ts = time.time()
         s["total_plays"] = s.get("total_plays", 0) + 1

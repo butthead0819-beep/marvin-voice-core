@@ -117,6 +117,19 @@ async def test_no_title_returns_fallback():
     assert art == "YT"
 
 
+@pytest.mark.asyncio
+async def test_resolve_metadata_includes_canonical_title():
+    fetch = _capturing_fetch({"results": [{
+        "trackName": "七里香", "artistName": "周杰倫",
+        "collectionName": "七里香同名專輯",
+        "artworkUrl100": "https://x/100x100bb.jpg",
+    }]})
+    meta = await itunes_cover.resolve_metadata("七里香", "周杰倫", fetch=fetch)
+    assert meta["title"] == "七里香"
+    assert meta["artist"] == "周杰倫"
+    assert meta["album"] == "七里香同名專輯"
+
+
 def test_hi_res_swaps_size():
     url = "https://is1-ssl.mzstatic.com/image/thumb/Music/x/source/100x100bb.jpg"
     out = itunes_cover._hi_res(url, 600)
