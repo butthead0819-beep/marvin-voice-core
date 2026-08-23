@@ -140,6 +140,25 @@ def test_on_satellite_wake_respects_kill_switch(monkeypatch):
     fake._mixer.duck_for_wake.assert_not_called()
 
 
+# ── tts_gain 預設 1.0 ─────────────────────────────────────────────────────────
+
+def test_start_satellite_defaults_tts_gain_to_1_0(monkeypatch):
+    """satellite 模式下音樂 1.0，Marvin TTS 也是 1.0。"""
+    monkeypatch.delenv("MARVIN_TTS_GAIN", raising=False)
+    fake = _make_fake_self()
+    ConnectionMixin.start_satellite_listening(fake)
+    assert fake._mixer._tts_gain == 1.0
+
+
+def test_start_satellite_respects_env_tts_gain(monkeypatch):
+    """MARVIN_TTS_GAIN 可覆蓋。"""
+    monkeypatch.setenv("MARVIN_TTS_GAIN", "0.7")
+    fake = _make_fake_self()
+    ConnectionMixin.start_satellite_listening(fake)
+    assert fake._mixer._tts_gain == 0.7
+
+
+
 # ── (T2b) 橋內部 LocalMicSink 的 on_speech_start_callback 綁 engine handler ─────────
 
 def test_start_satellite_wires_onset_callback_to_engine_handler():

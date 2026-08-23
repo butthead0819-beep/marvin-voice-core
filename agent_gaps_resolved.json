@@ -1,4 +1,11 @@
 {
+  "time_query": {
+    "agent": "time_query",
+    "file": "intent_agents/time_query_agent.py",
+    "commit": "d3a2c57",
+    "resolved_at": "2026-08-18",
+    "note": "報時（現在幾點）已由 TimeQueryAgent 接手（bid 0.90，讀系統時鐘零成本）。落地時漏補這筆，之後 daily gap clustering 會持續誤報 ready_to_implement。"
+  },
   "game_knowledge_query": {
     "agent": "game_knowledge",
     "file": "intent_agents/game_knowledge_agent.py",

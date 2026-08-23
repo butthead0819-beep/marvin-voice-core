@@ -1,0 +1,40 @@
+{"tag": "positive_1", "speaker": "阿凱", "selected": "伍佰 - 挪威的森林", "explanation_uttered": "來點伍佰", "trigger": "queue_empty", "utts": [{"text": "喔這首讚", "delta": 3.0}], "expected": "positive"}
+{"tag": "positive_2", "speaker": "阿凱", "selected": "梁靜茹 - 崇拜", "explanation_uttered": "梁靜茹經典", "trigger": "queue_empty", "utts": [{"text": "好聽欸再來一首她的", "delta": 4.0}], "expected": "positive"}
+{"tag": "positive_3", "speaker": "阿凱", "selected": "孫燕姿 - 天黑黑", "explanation_uttered": "孫燕姿一首", "trigger": "ambient_cold", "utts": [{"text": "神曲欸這首", "delta": 2.0}], "expected": "positive"}
+{"tag": "positive_4", "speaker": "小美", "selected": "告五人 - 披星戴月的想你", "explanation_uttered": "告五人一首", "trigger": "queue_empty", "utts": [{"text": "終於放這首了愛死", "delta": 3.5}], "expected": "positive"}
+{"tag": "positive_5", "speaker": "阿凱", "selected": "老王樂隊 - 我還年輕 我還年輕", "explanation_uttered": "老王來一首", "trigger": "ambient_cold", "utts": [{"text": "這個歌單越來越懂我了", "delta": 6.0}], "expected": "positive"}
+{"tag": "positive_6", "speaker": "小美", "selected": "美秀集團 - 素蘭小姐要出嫁", "explanation_uttered": "美秀集團一首", "trigger": "queue_empty", "utts": [{"text": "笑死這選歌品味不錯", "delta": 4.5}], "expected": "positive"}
+{"tag": "positive_7", "speaker": "阿凱", "selected": "茄子蛋 - 浪流連", "explanation_uttered": "茄子蛋一首", "trigger": "ambient_cold", "utts": [{"text": "這個好聽誒放大聲一點", "delta": 3.0}], "expected": "positive"}
+{"tag": "positive_8", "speaker": "小美", "selected": "deca joins - 曬乾", "explanation_uttered": "小眾一首", "trigger": "queue_empty", "utts": [{"text": "誒這團不錯欸", "delta": 5.0}], "expected": "positive"}
+{"tag": "positive_9", "speaker": "阿凱", "selected": "929樂團 - 未來的自己", "explanation_uttered": "929一首", "trigger": "ambient_cold", "utts": [{"text": "喜歡這種調調", "delta": 4.0}], "expected": "positive"}
+{"tag": "positive_10", "speaker": "小美", "selected": "草東沒有派對 - 山海", "explanation_uttered": "草東一首", "trigger": "queue_empty", "utts": [{"text": "這首必須大聲聽", "delta": 3.0}], "expected": "positive"}
+{"tag": "negative_1", "speaker": "小美", "selected": "周杰倫 - 稻香", "explanation_uttered": "換個口味", "trigger": "ambient_cold", "utts": [{"text": "換一首啦難聽", "delta": 2.0}], "expected": "negative"}
+{"tag": "negative_2", "speaker": "小美", "selected": "五月天 - 倔強", "explanation_uttered": "五月天來一首", "trigger": "queue_empty", "utts": [{"text": "這首不行換掉", "delta": 2.5}], "expected": "negative"}
+{"tag": "negative_3", "speaker": "小美", "selected": "王力宏 - 唯一", "explanation_uttered": "王力宏一首", "trigger": "queue_empty", "utts": [{"text": "不喜歡這首欸", "delta": 3.0}], "expected": "negative"}
+{"tag": "negative_4", "speaker": "阿凱", "selected": "羅志祥 - 精舞門", "explanation_uttered": "羅志祥一首", "trigger": "ambient_cold", "utts": [{"text": "這選歌品味有點問題喔", "delta": 4.0}], "expected": "negative"}
+{"tag": "negative_5", "speaker": "小美", "selected": "麥當娜 - 舊英文老歌", "explanation_uttered": "來點懷舊", "trigger": "queue_empty", "utts": [{"text": "誰要聽這個啦太老了", "delta": 3.5}], "expected": "negative"}
+{"tag": "negative_6", "speaker": "阿凱", "selected": "抖音神曲串燒", "explanation_uttered": "來點抖音神曲", "trigger": "ambient_cold", "utts": [{"text": "拜託不要放這種洗腦歌", "delta": 2.8}], "expected": "negative"}
+{"tag": "negative_7", "speaker": "小美", "selected": "某流量偶像新歌", "explanation_uttered": "新歌試試", "trigger": "queue_empty", "utts": [{"text": "這歌詞也太尷尬了吧", "delta": 3.2}], "expected": "negative"}
+{"tag": "negative_8", "speaker": "阿凱", "selected": "重金屬樂團 - 嘶吼曲", "explanation_uttered": "重口味一首", "trigger": "ambient_cold", "utts": [{"text": "吵死了誰選的", "delta": 2.2}], "expected": "negative"}
+{"tag": "negative_9", "speaker": "小美", "selected": "電音remix版本", "explanation_uttered": "電音一首", "trigger": "queue_empty", "utts": [{"text": "這個版本毀了原曲", "delta": 4.5}], "expected": "negative"}
+{"tag": "negative_10", "speaker": "阿凱", "selected": "英文老搖滾", "explanation_uttered": "老搖滾一首", "trigger": "ambient_cold", "utts": [{"text": "聽不懂而且不好聽", "delta": 3.0}], "expected": "negative"}
+{"tag": "skipped_immediately_1", "speaker": "阿凱", "selected": "五月天 - 突然好想你", "explanation_uttered": "試試這首", "trigger": "queue_empty", "utts": [{"text": "不要這首，換掉", "delta": 1.0}], "expected": "skipped_immediately"}
+{"tag": "skipped_immediately_2", "speaker": "阿凱", "selected": "蔡依林 - 日不落", "explanation_uttered": "蔡依林一首", "trigger": "ambient_cold", "utts": [{"text": "跳過跳過", "delta": 0.8}], "expected": "skipped_immediately"}
+{"tag": "skipped_immediately_3", "speaker": "小美", "selected": "某首前奏很長的歌", "explanation_uttered": "來點新鮮的", "trigger": "queue_empty", "utts": [{"text": "換掉換掉", "delta": 0.5}], "expected": "skipped_immediately"}
+{"tag": "skipped_immediately_4", "speaker": "阿凱", "selected": "陌生冷門歌手作品", "explanation_uttered": "冷門一首", "trigger": "ambient_cold", "utts": [{"text": "欸不要這個下一首", "delta": 1.2}], "expected": "skipped_immediately"}
+{"tag": "skipped_immediately_5", "speaker": "小美", "selected": "節奏很快的一首歌", "explanation_uttered": "來點快歌", "trigger": "queue_empty", "utts": [{"text": "馬上換掉拜託", "delta": 0.9}], "expected": "skipped_immediately"}
+{"tag": "skipped_immediately_6", "speaker": "阿凱", "selected": "節慶應景歌曲", "explanation_uttered": "應景一首", "trigger": "ambient_cold", "utts": [{"text": "不是吧換一首", "delta": 1.3}], "expected": "skipped_immediately"}
+{"tag": "skipped_immediately_7", "speaker": "小美", "selected": "某冷門remix", "explanation_uttered": "remix試試", "trigger": "queue_empty", "utts": [{"text": "skip skip", "delta": 0.6}], "expected": "skipped_immediately"}
+{"tag": "skipped_immediately_8", "speaker": "阿凱", "selected": "純樂器演奏曲", "explanation_uttered": "純音樂一首", "trigger": "ambient_cold", "utts": [{"text": "不是這個換下一首", "delta": 1.1}], "expected": "skipped_immediately"}
+{"tag": "skipped_immediately_9", "speaker": "小美", "selected": "太長的一首歌", "explanation_uttered": "長歌一首", "trigger": "queue_empty", "utts": [{"text": "換換換", "delta": 0.7}], "expected": "skipped_immediately"}
+{"tag": "skipped_immediately_10", "speaker": "阿凱", "selected": "奇怪選曲", "explanation_uttered": "試試看", "trigger": "ambient_cold", "utts": [{"text": "不行換掉", "delta": 1.4}], "expected": "skipped_immediately"}
+{"tag": "neutral_1", "speaker": "小美", "selected": "陳綺貞 - 旅行的意義", "explanation_uttered": "來點陳綺貞", "trigger": "ambient_cold", "utts": [{"text": "還好啦，繼續聊天", "delta": 5.0}], "expected": "neutral"}
+{"tag": "neutral_2", "speaker": "小美", "selected": "林俊傑 - 江南", "explanation_uttered": "林俊傑一首", "trigger": "queue_empty", "utts": [{"text": "欸剛剛作業寫完了嗎", "delta": 3.5}], "expected": "neutral"}
+{"tag": "neutral_3", "speaker": "阿凱", "selected": "某首背景音樂", "explanation_uttered": "來點輕音樂", "trigger": "ambient_cold", "utts": [{"text": "我們晚點去吃什麼", "delta": 4.0}], "expected": "neutral"}
+{"tag": "neutral_4", "speaker": "小美", "selected": "某首熱門新歌", "explanation_uttered": "新歌一首", "trigger": "queue_empty", "utts": [{"text": "誰唱的啊沒聽過", "delta": 3.0}], "expected": "neutral"}
+{"tag": "neutral_5", "speaker": "阿凱", "selected": "某首合輯歌曲", "explanation_uttered": "合輯一首", "trigger": "ambient_cold", "utts": [{"text": "嗯", "delta": 6.0}], "expected": "neutral"}
+{"tag": "neutral_6", "speaker": "小美", "selected": "某首民謠", "explanation_uttered": "民謠一首", "trigger": "queue_empty", "utts": [{"text": "這首好像在哪聽過", "delta": 4.5}], "expected": "neutral"}
+{"tag": "neutral_7", "speaker": "阿凱", "selected": "某首爵士樂", "explanation_uttered": "爵士一首", "trigger": "ambient_cold", "utts": [{"text": "有點想睡了", "delta": 5.5}], "expected": "neutral"}
+{"tag": "neutral_8", "speaker": "小美", "selected": "某首韓文歌", "explanation_uttered": "韓文歌一首", "trigger": "queue_empty", "utts": [{"text": "這是哪個團體的", "delta": 3.8}], "expected": "neutral"}
+{"tag": "neutral_9", "speaker": "阿凱", "selected": "某首日文歌", "explanation_uttered": "日文歌一首", "trigger": "ambient_cold", "utts": [{"text": "作業還有三題沒寫", "delta": 4.2}], "expected": "neutral"}
+{"tag": "neutral_10", "speaker": "小美", "selected": "某首instrumental", "explanation_uttered": "純音樂試試", "trigger": "queue_empty", "utts": [{"text": "剛剛外送到了嗎", "delta": 5.0}], "expected": "neutral"}

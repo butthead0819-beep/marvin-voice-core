@@ -216,7 +216,18 @@ class SystemLoopsMixin:
 
             if summary is None:
                 print("📭 [SlowLoop] LLM 判斷本輪內容不值得記錄，跳過發文。")
-                await asyncio.to_thread(_write_rag_log, "[SKIPPED - 內容無新意]")
+                # 🎚️ [DJ Life Material] 設計不變：SKIP 依舊不貼進 Discord 日記頻道；
+                # 但這輪確實捕捉到人類發言（human_entries 非空，上面已擋掉「只有馬文自言自語」
+                # 的情況），就該留一筆可被 diary_comic.parser 解析出「核心：」的原始記錄，
+                # 不然 dj_life_context 的生活素材來源會跟著被 SKIP 判斷一起清空。
+                speakers_str = "、".join(dict.fromkeys(
+                    e.get("speaker", "") for e in human_entries if e.get("speaker")
+                ))
+                raw_text = " ".join(
+                    e.get("text", "").strip() for e in human_entries if e.get("text", "").strip()
+                )[:120]
+                fallback_body = f"核心：{raw_text}（{speakers_str}）" if raw_text else "[SKIPPED - 內容無新意]"
+                await asyncio.to_thread(_write_rag_log, fallback_body)
             else:
                 await asyncio.to_thread(_write_rag_log, summary)
 

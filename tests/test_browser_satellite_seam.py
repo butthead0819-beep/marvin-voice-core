@@ -58,6 +58,23 @@ def test_browser_relaxes_late_skip_threshold():
     assert fake._LATE_RESPONSE_SKIP_SEC == 120.0
 
 
+def test_browser_defaults_tts_gain_to_1_0(monkeypatch):
+    """純軟體 satellite 模式下預設 tts_gain 為 1.0。"""
+    monkeypatch.delenv("MARVIN_TTS_GAIN", raising=False)
+    fake = _make_fake_self()
+    ConnectionMixin.start_browser_satellite_listening(fake, BrowserSpeakerOutput())
+    assert fake._mixer._tts_gain == 1.0
+
+
+def test_browser_respects_env_tts_gain(monkeypatch):
+    """MARVIN_TTS_GAIN 可覆蓋。"""
+    monkeypatch.setenv("MARVIN_TTS_GAIN", "0.6")
+    fake = _make_fake_self()
+    ConnectionMixin.start_browser_satellite_listening(fake, BrowserSpeakerOutput())
+    assert fake._mixer._tts_gain == 0.6
+
+
+
 def test_browser_default_persistent_true_avoids_pump_exhaustion_race():
     """persistent=False 時，_ensure_mixer_playing 先 arm 泵、_stream_tts_to_mixer 才推
     frame 進 mixer；若 TTS 首塊延遲超過 mixer 的 on-demand idle grace（預設 1s），泵會判

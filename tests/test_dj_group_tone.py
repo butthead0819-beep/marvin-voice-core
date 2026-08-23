@@ -109,12 +109,33 @@ async def test_large_group_gets_live_dj_tone_hint():
 
 @pytest.mark.asyncio
 async def test_tone_hint_still_reaches_llm_when_topic_available():
-    """有素材（走 LLM 路徑）時，group-size 語氣提示應該還是照舊塞進 context。"""
+    """有素材（走 LLM 路徑）+ 頻道近期密集發言 → active_chat 精簡語氣提示塞進 context。"""
     cog = _make_cog(online_members=["大肚", "狗與露", "Alice", "Bob"])
     cog._life_cores = MagicMock(return_value=["昨天去爬山"])
+    # atmosphere_tracker 若存在會蓋過 conv_buffer 判斷熱度來源，這裡逼它走 conv_buffer 分支。
+    cog.bot.router.atmosphere_tracker = None
+    cog.bot.engine.conv_buffer.get_last_n_utterances = MagicMock(
+        return_value=[
+            {"speaker": "大肚", "text": "u1"},
+            {"speaker": "狗與露", "text": "u2"},
+            {"speaker": "Alice", "text": "u3"},
+            {"speaker": "Bob", "text": "u4"},
+        ]
+    )
     await cog._fetch_dj_interjection_raw(_info())
     ctx = _ctx_str(cog)
-    assert "精簡" in ctx or "節奏" in ctx or "短" in ctx, f"4+人時應有精簡語氣提示: {ctx!r}"
+    assert "精簡" in ctx or "節奏" in ctx or "短" in ctx, f"4+人密集發言時應有精簡語氣提示: {ctx!r}"
+
+
+@pytest.mark.asyncio
+async def test_quiet_group_gets_companion_tone_hint_when_topic_available():
+    """有素材（走 LLM 路徑）+ 頻道安靜無發言 → quiet_group 陪伴語氣提示塞進 context。"""
+    cog = _make_cog(online_members=["大肚", "狗與露", "Alice", "Bob"])
+    cog._life_cores = MagicMock(return_value=["昨天去爬山"])
+    cog.bot.router.atmosphere_tracker = None
+    await cog._fetch_dj_interjection_raw(_info())
+    ctx = _ctx_str(cog)
+    assert "陪伴" in ctx or "安靜" in ctx, f"4+人安靜時應有陪伴語氣提示: {ctx!r}"
 
 
 # ── 4. vc=None 時不崩潰（fail-open）────────────────────────────────────────

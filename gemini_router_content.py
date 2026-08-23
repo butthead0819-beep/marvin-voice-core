@@ -767,26 +767,31 @@ class GeminiRouterContentMixin:
                         ),
                         timeout=12.0
                     )
-                    summary = response.choices[0].message.content.strip()
+                    content = response.choices[0].message.content
+                    summary = content.strip() if content else ""
                 except Exception as e:
                     logger.warning(f"⚠️ [Diary] Groq 失敗，嘗試 Gemini: {e}")
 
-            if summary is None:
+            # 空字串（推理模型如 gpt-oss-120b 常把 token 燒在內部推理、content 真的是空的）
+            # 要跟 None 一樣觸發 fallback，不然會騙過下面的判斷，混到 splitlines()[0] 炸掉
+            if not summary:
                 can_use_cloud = not self.is_exhausted and not self.budget.is_circuit_open()
                 if can_use_cloud:
                     summary = await self._call_cloud(system_prompt, user_prompt, is_json=False)
 
-            if summary is None:
-                logger.warning("⚠️ [Diary] 所有雲端路徑失敗，跳過本輪。")
+            if not summary or not summary.strip():
+                logger.warning("⚠️ [Diary] 所有雲端路徑失敗或回傳空內容，跳過本輪。")
                 return None
 
+            summary = summary.strip()
+
             # LLM 主動判斷無新意
-            if summary.strip().upper().startswith("SKIP"):
+            if summary.upper().startswith("SKIP"):
                 logger.info("📭 [Diary] LLM 回傳 SKIP，本輪內容無新意。")
                 return None
 
             # 只儲存第一行作為下一輪前情提要，不儲存完整摘要防止模板擴散
-            self.last_slow_summary = summary.strip().splitlines()[0]
+            self.last_slow_summary = summary.splitlines()[0]
 
             # 🌡️ [Operation Warm Circuit] 非阻塞地觸發情緒記憶萃取
             if log_entries:

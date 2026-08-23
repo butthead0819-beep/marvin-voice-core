@@ -823,8 +823,8 @@ HUD_HTML = """<!DOCTYPE html>
   // 極簡 markdown 排版：輸入必須已經是 esc() 過的字串（不會反轉義，只在安全字元上加標籤）。
   // 把 Claude Code transcript 常見的 **粗體**/換行/條列排出來，不然整段黏成一坨看不出結構。
   const mdLite=s=>String(s||'')
-    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
-    .replace(/\\n[-•]\s+/g,'<br>• ')
+    .replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>')
+    .replace(/\\n[-•]\\s+/g,'<br>• ')
     .replace(/\\n{2,}/g,'<br><br>')
     .replace(/\\n/g,'<br>');
   const MFACE=`<svg viewBox="0 0 40 40"><defs><radialGradient id="mg" cx="38%" cy="34%" r="70%">
