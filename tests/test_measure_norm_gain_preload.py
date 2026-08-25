@@ -6,7 +6,39 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cogs.music_cog import MusicCog
+from cogs.music_cog import MusicCog, _NORM_GAIN_MEASURE_DELAY_S
+
+
+@pytest.mark.asyncio
+async def test_measure_norm_gain_bg_waits_delay_s_before_sampling():
+    """delay_s>0 時，起跑前要先讓出 event loop，且量測工作要等 sleep 完才開始
+    （2026-08-25：避開開播當下解碼尖峰，見 _measure_norm_gain_bg docstring）。"""
+    cog = MusicCog(bot=MagicMock())
+    order: list[str] = []
+
+    async def fake_sleep(_s):
+        order.append("slept")
+
+    with patch("asyncio.sleep", side_effect=fake_sleep) as mock_sleep, \
+         patch("asyncio.create_subprocess_exec") as mock_exec, \
+         patch("loudness_norm.sample_positions", return_value=[50.0]), \
+         patch("loudness_norm.parse_ebur128_integrated", return_value=-14.0):
+        proc = MagicMock()
+
+        async def fake_communicate():
+            order.append("sampled")
+            return (b"", b"Summary:\n I: -14.0 LUFS")
+
+        proc.communicate = fake_communicate
+        mock_exec.return_value = proc
+
+        await cog._measure_norm_gain_bg(
+            "https://test.url/song3", duration=200.0, highlight_start_s=0.0,
+            info={"duration": 200.0}, delay_s=6.0,
+        )
+
+    mock_sleep.assert_called_once_with(6.0)
+    assert order == ["slept", "sampled"]
 
 
 @pytest.mark.asyncio
@@ -57,4 +89,5 @@ async def test_start_music_preload_triggers_gain_measurement():
         duration=180.0,
         highlight_start_s=45.0,
         info=info,
+        delay_s=_NORM_GAIN_MEASURE_DELAY_S,
     )

@@ -15,6 +15,9 @@ import re
 TARGET_LUFS = -14.0       # 對齊既有 loudnorm I=-14
 MAX_GAIN = 4.0            # 安靜歌最多放大 4x（+12dB），防過度放大噪音
 MIN_GAIN = 0.25          # 大聲歌最多衰減到 0.25x（-12dB），防完全靜音
+# 每點取樣秒數。20s→8s（2026-08-25）：三點×20s＝60s，對 180s 的歌等於解碼 1/3，
+# 音樂 cog 端量測用的 ffmpeg -t 也要跟這裡同步（見 music_cog._measure_norm_gain_bg）。
+DEFAULT_WINDOW_S = 8.0
 
 
 def compute_loudness_gain(measured_lufs: float | None,
@@ -31,7 +34,7 @@ def compute_loudness_gain(measured_lufs: float | None,
     return max(min_gain, min(max_gain, gain))
 
 
-def sample_positions(duration_s: float, *, window_s: float = 20.0,
+def sample_positions(duration_s: float, *, window_s: float = DEFAULT_WINDOW_S,
                      fracs: tuple[float, ...] = (0.25, 0.50, 0.75),
                      start_s: float = 0.0) -> list[float]:
     """回各取樣起點秒數（25/50/75%）。支援 start_s（熱力圖精華起點對齊）。

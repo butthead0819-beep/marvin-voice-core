@@ -63,6 +63,9 @@ _TASTE_PROFILE_CACHE = "records/taste_profiles.json"
 _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 _SONG_BPM_STORE = "records/song_bpm.json"
 _BPM_SAMPLE_SR = 11025
+# 開播/preload起跑當下解碼正忙著搶 CPU/網路，響度+BPM量測延後這麼久再起跑，
+# 避開開播頭幾秒的資源尖峰（2026-08-25：量測 blocking event loop 疑似造成開頭斷續/加速）。
+_NORM_GAIN_MEASURE_DELAY_S = 6.0
 _DJ_TAIL_SFX_DIR = "assets/dj_sfx"
 # 暫時關閉其他特效（riser, shoutout, dj_airhorn），100% 專注於 scratch 刷碟轉盤效果
 _DJ_TAIL_SFX_NAMES = ("scratch",)
@@ -2469,6 +2472,7 @@ class MusicCog(commands.Cog):
                     duration=float((self._current_stream_info or {}).get("duration") or 0),
                     highlight_start_s=highlight_start_s,
                     info=self._current_stream_info,
+                    delay_s=_NORM_GAIN_MEASURE_DELAY_S,
                 ))
             if vc is not None:
                 # DJ Tail 點火時已背景 preload（見 _start_music_preload）→ 有就直接用、
@@ -3390,6 +3394,7 @@ class MusicCog(commands.Cog):
                 duration=float(info.get('duration') or 0),
                 highlight_start_s=highlight,
                 info=info,
+                delay_s=_NORM_GAIN_MEASURE_DELAY_S,
             ))
 
     async def _resolve_music_source(self, url: str, ffmpeg_factory):
@@ -3698,6 +3703,7 @@ class MusicCog(commands.Cog):
         duration: float | None = None,
         highlight_start_s: float | None = None,
         info: dict | None = None,
+        delay_s: float = 0.0,
     ):
         """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存 _stream_norm_gain[url]。
 
@@ -3705,14 +3711,22 @@ class MusicCog(commands.Cog):
         順便在同一趟 ffmpeg（同取樣點、同一個 process 兩個輸出：ebur128→null 給
         stderr 響度統計、raw f32le mono→stdout 給 BPM 估算）取 PCM 估 BPM，落地存
         records/song_bpm.json（見 bpm_estimate.py）——BPM 分析不擋、不影響既有響度
-        正規化行為，失敗只是沒存到 BPM。"""
+        正規化行為，失敗只是沒存到 BPM。
+
+        delay_s：起跑前先 sleep 這麼久，避開呼叫端（開播/preload）當下的解碼尖峰
+        （2026-08-25：BPM 估算是同步 numpy，量測跟解碼撞在一起會卡 event loop 造成
+        開頭斷續/加速，見 CLAUDE.md 對應討論）。呼叫端排程用；單元測試直呼此函式
+        預設 0 不等。"""
         if not url or url in self._stream_norm_gain:
             return
+        if delay_s > 0:
+            await asyncio.sleep(delay_s)
         import numpy as np
 
         from bpm_estimate import estimate_bpm_from_pcm, median_bpm, write_bpm
         from loudness_norm import (
             sample_positions, parse_ebur128_integrated, average_lufs, compute_loudness_gain,
+            DEFAULT_WINDOW_S,
         )
         song_info = info if info is not None else (self._current_stream_info or {})
         dur = float(duration if duration is not None else (song_info.get("duration") or 0))
@@ -3723,7 +3737,7 @@ class MusicCog(commands.Cog):
         for pos in sample_positions(dur, start_s=start_s):
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "ffmpeg", "-nostats", "-ss", f"{pos:.1f}", "-t", "20", "-i", url,
+                    "ffmpeg", "-nostats", "-ss", f"{pos:.1f}", "-t", f"{DEFAULT_WINDOW_S:.0f}", "-i", url,
                     "-af", "ebur128", "-f", "null", "-",
                     "-vn", "-ac", "1", "-ar", str(_BPM_SAMPLE_SR), "-f", "f32le", "pipe:1",
                     stdout=asyncio.subprocess.PIPE,
@@ -3732,7 +3746,7 @@ class MusicCog(commands.Cog):
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
                 lufs_vals.append(parse_ebur128_integrated(stderr.decode("utf-8", "ignore")))
                 pcm = np.frombuffer(stdout, dtype=np.float32)
-                bpm_vals.append(estimate_bpm_from_pcm(pcm, _BPM_SAMPLE_SR))
+                bpm_vals.append(await asyncio.to_thread(estimate_bpm_from_pcm, pcm, _BPM_SAMPLE_SR))
             except Exception:
                 lufs_vals.append(None)
                 bpm_vals.append(None)
