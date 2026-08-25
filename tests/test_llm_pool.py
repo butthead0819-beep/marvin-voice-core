@@ -403,12 +403,20 @@ def test_factory_empty_env_empty_pools():
 
 
 def test_factory_all_providers_priority_order():
+    """2026-08-25：Cerebras 移除（free tier 8/17 到期，全數 402），不再進池。"""
     factory, _ = _fake_factory()
-    env = {k: "x" for k in ("GROQ_API_KEY", "CEREBRAS_API_KEY", "SAMBANOVA_API_KEY",
+    env = {k: "x" for k in ("GROQ_API_KEY", "MISTRAL_API_KEY", "SAMBANOVA_API_KEY",
                             "TOGETHER_API_KEY", "OPENROUTER_API_KEY")}
     quick, _a = build_tier_pools(env, client_factory=factory)
     assert [e.name for e in quick.endpoints] == [
-        "groq-quick", "cerebras-quick", "sambanova-quick", "together-quick", "openrouter-quick"]
+        "groq-quick", "mistral-quick", "sambanova-quick", "together-quick", "openrouter-quick"]
+
+
+def test_factory_cerebras_key_present_does_not_register():
+    """2026-08-25：即使 CEREBRAS_API_KEY 還留在 env，也不該進池（provider 已移除）。"""
+    factory, _ = _fake_factory()
+    quick, analyze = build_tier_pools({"CEREBRAS_API_KEY": "c"}, client_factory=factory)
+    assert quick.endpoints == [] and analyze.endpoints == []
 
 
 def test_gemini_paid_is_last_resort_overflow():
@@ -425,7 +433,7 @@ def test_gemini_paid_is_last_resort_overflow():
 
 def test_factory_quick_and_analyze_share_client():
     factory, calls = _fake_factory()
-    quick, analyze = build_tier_pools({"CEREBRAS_API_KEY": "c"}, client_factory=factory)
+    quick, analyze = build_tier_pools({"GROQ_API_KEY": "g"}, client_factory=factory)
     assert quick.endpoints[0].client is analyze.endpoints[0].client   # 同 provider 共用 client
     assert len(calls) == 1
 

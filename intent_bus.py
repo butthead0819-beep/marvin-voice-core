@@ -71,6 +71,11 @@ class IntentContext:
     # Audio Rescue v2：原始語音 wav bytes，供音訊 rescue 送 Gemini 多模態用。
     # repr=False 避免任何 f"{ctx}"/logger 意外把整包音訊印進 log。
     audio_wav_bytes: bytes | None = field(default=None, repr=False)
+    # FrustrationAgent 專用：上一輪（挫折語句之前）被 pop 掉的音訊快照。
+    # 挫折句本身（如「到底要講幾遍」）通常不含歌名/意圖線索，真正該送去
+    # Audio LLM 救援的是「挫折產生之前」那輪失敗嘗試的音訊。見 voice_controller.py
+    # 的 self._prev_turn_audio。
+    prev_turn_audio_wav_bytes: bytes | None = field(default=None, repr=False)
     # Audio Rescue v2 專用：LLM 音訊 function-calling 選中的 intent，供
     # _execute_resolved_intent() 反查 agent+schema 直接執行 handler（不走 regex）。
     # dispatch_source == "llm_rescue_audio" 時才有值。

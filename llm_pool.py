@@ -320,14 +320,10 @@ _PROVIDERS: list[ProviderSpec] = [
                  "openai/gpt-oss-20b", "openai/gpt-oss-120b",
                  quick_model_env="GROQ_SIMPLE_MODEL", analyze_model_env="GROQ_FALLBACK_MODEL",
                  tpm_budget=6000, quick_daily=200000, analyze_daily=200000),
-    # Cerebras 6/1 實測 /models 只剩 zai-glm-4.7 + gpt-oss-120b；舊的 llama3.1-8b /
-    # qwen-3-235b-a22b-instruct-2507 已下架（404 model_not_found）。zai-glm-4.7 是
-    # reasoning model 回 `reasoning` 非 `content` 跟 OpenAI 介面不兼容，所以兩檔都
-    # 統一 gpt-oss-120b（JSON mode 實測 OK）；tier 區分由其他 provider 承擔。
-    ProviderSpec("cerebras", "CEREBRAS_API_KEY", "https://api.cerebras.ai/v1",
-                 "gpt-oss-120b", "gpt-oss-120b",
-                 quick_model_env="CEREBRAS_QUICK_MODEL", analyze_model_env="CEREBRAS_MODEL",
-                 tpm_budget=60000),
+    # Cerebras 移除（2026-08-25）：free tier 已於 8/17 到期，CEREBRAS_API_KEY 呼叫全數
+    # 回 402 payment required，即使 key 有效也白燒一輪 failover 延遲。Mistral 已於
+    # 8/12 補位扛住背景流量，見下方 ProviderSpec。若日後重新綁卡復活，把 ProviderSpec
+    # 加回來即可（見 git history）。
     # Mistral（2026-08-12 加，Cerebras free tier 8/17 到期前補位——近3天量 Cerebras 1908次 vs
     # Groq 479次是主力，Cerebras 斷線後這裡要扛大部分背景流量）。免費 Free Mode 額度官方不公開
     # 寫死數字，quick/analyze 都用 /v1/models + 真 completion 驗過可用（ministral-8b-latest /

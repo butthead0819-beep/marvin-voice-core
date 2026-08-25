@@ -887,52 +887,13 @@ class GeminiRouterLLMMixin:
 
     async def _rewrite_query_for_search(self, speaker: str, raw_query: str) -> str | None:
         """將口語問句 rewrite 成精準的 DDG 搜尋 query。
-        先以 keyword gate 篩選意圖，再用 Cerebras 注入遊戲/興趣脈絡做精準改寫。
-        Cerebras 失敗時 fallback 到 keyword 清洗結果。"""
+
+        2026-08-25：Cerebras 注入脈絡改寫已移除——free tier 於 8/17 到期，
+        呼叫全數回 402，每次都白吃 5s timeout 才 fallback。改直接回 keyword
+        清洗結果（base_q），無 LLM 改寫。"""
         base_q = self._should_local_search(raw_query)
         if not base_q:
             return None
-
-        ctx_parts = []
-        if self.current_game:
-            ctx_parts.append(f"遊戲：《{self.current_game}》")
-        try:
-            mem = self.memory.get_player_memory(speaker)
-            likes = mem.get("likes", [])
-            if likes:
-                ctx_parts.append(f"玩家興趣：{', '.join(likes[:2])}")
-        except Exception:
-            pass
-        ctx_str = "；".join(ctx_parts) if ctx_parts else "（無特定脈絡）"
-
-        if not self.cerebras_client:
-            return base_q
-
-        try:
-            response = await asyncio.wait_for(
-                self.cerebras_client.chat.completions.create(
-                    model=self.cerebras_model,
-                    messages=[
-                        {"role": "system", "content": (
-                            "你是搜尋 query 產生器。根據玩家發言與背景脈絡，"
-                            "輸出一個最適合 DuckDuckGo 的繁體中文搜尋關鍵字（5 個字以內）。"
-                            "只輸出搜尋字，不要標點、不要解釋。"
-                        )},
-                        {"role": "user", "content": f"背景：{ctx_str}\n玩家說：「{raw_query}」"},
-                    ],
-                    temperature=0.0,
-                    max_tokens=32,
-                    stream=False,
-                ),
-                timeout=5.0,
-            )
-            rewritten = response.choices[0].message.content.strip()
-            if rewritten and len(rewritten) < 50:
-                logger.info(f"✏️ [Query Rewrite] '{raw_query}' → '{rewritten}' (ctx: {ctx_str})")
-                return rewritten
-        except Exception as e:
-            logger.warning(f"⚠️ [Query Rewrite] Cerebras 失敗，fallback 到 keyword: {e}")
-
         return base_q
 
     async def _background_intent_enrich(self, speaker: str, query: str):

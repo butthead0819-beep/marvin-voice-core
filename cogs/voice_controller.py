@@ -250,9 +250,11 @@ def build_intent_agents(controller, bot):
     from intent_agents.personal_shuffle_agent import PersonalShuffleAgent
     from intent_agents.farewell_agent import FarewellAgent
     from intent_agents.dual_speak_agent import DualSpeakAgent
+    from intent_agents.frustration_agent import FrustrationAgent
     from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
     return [
         HallucinationGuardAgent(controller),
+        FrustrationAgent(controller),  # 2026-08-25: 挫折與口吃重試意圖救援 Agent (直通 Audio LLM)
         NemoClawAgent(controller),
         MusicAgentV2(controller),
         FindSongAgent(controller),
@@ -401,6 +403,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         )
         _rescue_agent, _rescue_shadow, _rescue_sink = build_rescue_components(
             _tier_router, google_client=getattr(_router, "google_client", None), manifest_provider=lambda: self._intent_bus.build_intent_manifest())
+        self._rescue_agent = _rescue_agent
         # 建立實體 cleaner_call 傳給 IntentBus 競速使用
         async def real_cleaner_call(c: IntentContext) -> str:
             if not hasattr(self.bot, "router") or not hasattr(self.bot.router, "clean_stt_text"):
@@ -459,6 +462,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🚀 [Optimization] Debounce 節流系統
         self.speech_buffers = {} # speaker -> {texts: [], first_timestamp: float, wav_bytes: bytes}
         self.speech_timers = {} # speaker -> Task
+        # FrustrationAgent 專用：上一輪被 pop 掉的音訊快照（speaker -> wav_bytes）。
+        # 挫折句本身常不含歌名線索，救援要送的是「挫折產生之前」那輪失敗嘗試的音訊。
+        self._prev_turn_audio: dict[str, bytes] = {}
         
         # 📊 [Departure Stats] 離場習慣統計
         self.departure_stats = DepartureStats()
@@ -493,6 +499,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.pending_mock_users = set() # users that took too long to respond
         self.last_mock_time: dict[str, float] = {}  # speaker -> last mockery timestamp (cooldown)
         self._last_global_mock_time: float = 0.0    # 全頻道嘲諷全域冷卻（防多人同時觸發）
+        self.last_music_control_time: float = 0.0   # 最近一次音樂控制（music/volume）intent 命中時間
+                                                      # 2026-08-25：MemoryCallbackAgent 前後 30s 讓路，見 music_control_cooldown_s
         self._proactive_used_ids: set = set()       # 本 session 已用過的 topic id（防止重複）
 
         # 🚀 [TTS Interrupt] 追蹤當前播放中的 TTS 文字，供打斷時發文字用
@@ -1678,6 +1686,15 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         voice_client = discord.utils.get(self.bot.voice_clients)
         if voice_client and (voice_client.is_playing() or self.is_playing_audio):
              return # 音樂/播報中不嘲諷
+
+        # 1.5 🛡️ [Idle Hangout Guard] 純掛網狀態（近 5 分鐘無人聊天 + 沒在放音樂）
+        # 不嘲諷——沒有主動對話可言，硬吐槽「反應太慢」不成立，純屬騷擾。
+        # 2026-08-25 使用者反映需求。
+        if not getattr(self, "stream_mode", False) and not getattr(self, "radio_mode", False):
+            idle_temp = self.bot.engine.conv_buffer.get_conversation_temperature(window_seconds=300)
+            if idle_temp <= 0.0:
+                logger.info(f"🤫 [Prosody] 頻道近 5 分鐘無人聊天且無音樂，判定純掛網，暫停嘲諷。")
+                return
 
         # 2. 基礎防禦：環境熱度抑制
         temp = self.bot.engine.conv_buffer.get_conversation_temperature(window_seconds=60)
@@ -3063,10 +3080,15 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         _head = "🔍 **【馬文·幫你查了】**" if _is_helper else "⚡ **【馬文·喚醒回應】**"
 
         _captured_wav_bytes: bytes | None = None  # 1. 擷取 Query（Audio Rescue v2：pop 前存音訊快照，override_query 路徑不擷取）
+        # FrustrationAgent 專用：這輪覆蓋前先留住「上一輪」快照，讓挫折句能回頭撈
+        # 挫折產生之前那輪的音訊；本輪 pop 出來的音訊會在下面更新成新的快照。
+        _prev_turn_wav_bytes = getattr(self, "_prev_turn_audio", {}).get(speaker)
         if override_query:
             query = override_query
             history = self.bot.engine.conv_buffer.get_last_n_utterances(n=10)
-            self.speech_buffers.pop(speaker, None)
+            data = self.speech_buffers.pop(speaker, None)
+            if data and data.get("wav_bytes"):
+                self._prev_turn_audio[speaker] = bytes(data["wav_bytes"])
         else:
             query = self.bot.engine.conv_buffer.get_harvest(wake_time, before=3.0, after=1.0, speaker=speaker)
             history = self.bot.engine.conv_buffer.get_last_n_utterances(n=10)
@@ -3076,6 +3098,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if data:
                 query = query or " ".join(data["texts"])
                 _captured_wav_bytes = bytes(data.get("wav_bytes") or b"") or None
+                if _captured_wav_bytes:
+                    self._prev_turn_audio[speaker] = _captured_wav_bytes
 
         if not query:
             logger.warning(f"⚠️ [Fast System] 無法為 {speaker} 擷取到任何有效的 Query 內容。")
@@ -3196,7 +3220,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             stream_active=self.stream_mode,
             game_mode=False,  # game_mode 已在 handle_stt_result 提早 return，不會到這
             is_owner=self._is_owner_speaker(speaker),
-            now=time.time(), audio_wav_bytes=_captured_wav_bytes, low_confidence_wake=low_confidence_wake,
+            now=time.time(), audio_wav_bytes=_captured_wav_bytes,
+            prev_turn_audio_wav_bytes=_prev_turn_wav_bytes, low_confidence_wake=low_confidence_wake,
         )
         pipeline_timing.mark("intent_dispatched")
         pipeline_timing.emit(speaker, _bus_ctx.raw_text or "", suffix=" route=main_bus")
@@ -3207,6 +3232,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             # prefetch（避免吃 LLM quota；且防 1976 行 race 把舊 result 帶到
             # 下次 chat turn 變成幻覺起手回答）
             self._cancel_stale_prefetch(speaker)
+            # 2026-08-25：music/volume intent 命中 → 戳音樂控制時間戳，
+            # 給 MemoryCallbackAgent 前後 30s 讓路用（見 music_control_cooldown_s）
+            if _winner.name in ("music", "volume"):
+                self.last_music_control_time = time.time()
             return  # bus 已執行 winner.handler()
 
         # 🆕 [Music Drop → Followup] IntentBus drop（含 MusicAgent bid 中但

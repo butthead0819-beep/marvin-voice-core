@@ -151,12 +151,12 @@ async def test_no_match_returns_dense_zero(query):
 
 async def test_handler_volume_down_decreases_stream_volume():
     from intent_agents.volume_agent import VolumeAgent
-    ctrl = _ctrl(stream_mode=True, stream_volume=0.20)
+    ctrl = _ctrl(stream_mode=True, stream_volume=0.50)
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("小聲一點"))
     await bid.handler()
-    # 語音步進 10%：0.20 - 0.10 = 0.10
-    assert ctrl.stream_volume == pytest.approx(0.10)
+    # 語音步進 25%：0.50 - 0.25 = 0.25
+    assert ctrl.stream_volume == pytest.approx(0.25)
 
 
 async def test_handler_volume_up_increases_stream_volume():
@@ -165,8 +165,8 @@ async def test_handler_volume_up_increases_stream_volume():
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("大聲一點"))
     await bid.handler()
-    # 0.20 + 0.10 = 0.30
-    assert ctrl.stream_volume == pytest.approx(0.30)
+    # 0.20 + 0.25 = 0.45
+    assert ctrl.stream_volume == pytest.approx(0.45)
 
 
 async def test_handler_clamps_to_vol_min():
@@ -175,7 +175,7 @@ async def test_handler_clamps_to_vol_min():
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("小聲一點"))
     await bid.handler()
-    # 0.05 - 0.10 = -0.05 → clamp to VOL_MIN=0.01
+    # 0.05 - 0.25 = -0.20 → clamp to VOL_MIN=0.01
     assert ctrl.stream_volume == pytest.approx(0.01)
 
 
@@ -208,7 +208,7 @@ async def test_handler_radio_mode_adjusts_radio_volume():
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("大聲一點"))
     await bid.handler()
-    assert ctrl.radio_volume == pytest.approx(0.30)
+    assert ctrl.radio_volume == pytest.approx(0.45)
     # stream_volume 不該被動到
     assert ctrl.stream_volume == pytest.approx(0.10)
 
@@ -246,3 +246,40 @@ async def test_handler_plays_ack():
     bid = agent.bid(_ctx("小聲一點"))
     await bid.handler()
     ctrl.play_tts.assert_called_once()
+
+
+# ── handler: volume_down 連動全域 TTS Gain ───────────────────────────────
+
+
+async def test_handler_volume_down_lowers_tts_gain_proportionally():
+    """「小聲一點」時全域 mixer._tts_gain 該跟音樂音量同比例下修。"""
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True, stream_volume=0.50)
+    ctrl._mixer = MagicMock()
+    ctrl._mixer._tts_gain = 1.0
+    agent = VolumeAgent(ctrl)
+    bid = agent.bid(_ctx("小聲一點"))
+    await bid.handler()
+    # 音樂音量 0.50 → 0.25（ratio=0.5），TTS gain 1.0 → 0.5 同比例
+    assert ctrl._mixer._tts_gain == pytest.approx(0.5)
+
+
+async def test_handler_volume_up_does_not_touch_tts_gain():
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True, stream_volume=0.20)
+    ctrl._mixer = MagicMock()
+    ctrl._mixer._tts_gain = 1.0
+    agent = VolumeAgent(ctrl)
+    bid = agent.bid(_ctx("大聲一點"))
+    await bid.handler()
+    assert ctrl._mixer._tts_gain == pytest.approx(1.0)
+
+
+async def test_handler_volume_down_no_mixer_does_not_crash():
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True, stream_volume=0.50)
+    ctrl._mixer = None
+    agent = VolumeAgent(ctrl)
+    bid = agent.bid(_ctx("小聲一點"))
+    await bid.handler()  # 不該拋例外
+    assert ctrl.stream_volume == pytest.approx(0.25)

@@ -70,6 +70,7 @@ class MemoryCallbackAgent:
         cooldown_s: float = 1800.0,
         overlap_threshold: float = 0.35,
         recent_utt_window_s: float = 10.0,
+        music_control_cooldown_s: float = 30.0,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._ctrl = controller
@@ -77,6 +78,7 @@ class MemoryCallbackAgent:
         self._cooldown_s = cooldown_s
         self._overlap_threshold = overlap_threshold
         self._recent_utt_window_s = recent_utt_window_s
+        self._music_control_cooldown_s = music_control_cooldown_s
         self._clock = clock
         # key = (speaker, item_ts) — 不用 hash(text) 避免相同文字異筆混淆
         self._bid_history: dict[tuple[str, float], float] = {}
@@ -122,6 +124,14 @@ class MemoryCallbackAgent:
         # 2. 沒玩家在場
         if not ctx.present_speakers:
             return self._dense(0.0, "no_present")
+
+        # 2.5 音樂控制前後 N 秒讓路（2026-08-25：使用者剛下音樂/音量指令時，
+        # 突然被主動接話題打斷體驗差，靠 self.last_music_control_time 判斷）
+        last_mc = getattr(self._ctrl, "last_music_control_time", 0.0)
+        if not isinstance(last_mc, (int, float)):
+            last_mc = 0.0
+        if last_mc and (self._clock() - last_mc) < self._music_control_cooldown_s:
+            return self._dense(0.0, "music_control_cooldown")
 
         mem = getattr(getattr(getattr(self._ctrl, "bot", None), "router", None), "memory", None)
         if mem is None:

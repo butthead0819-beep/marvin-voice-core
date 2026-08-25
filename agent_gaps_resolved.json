@@ -48,5 +48,11 @@
     "file": "intent_agents/now_playing_agent.py",
     "resolved_at": "2026-08-08",
     "note": "「現在播的是什麼歌」由 NowPlayingAgent 接手（5/27 land，比這筆 8/1 的 gap record 還早）。8/1 那筆是冷門說法沒被既有 regex 接住，不是缺 agent。"
+  },
+  "frustration": {
+    "agent": "frustration",
+    "file": "intent_agents/frustration_agent.py",
+    "resolved_at": "2026-08-25",
+    "note": "使用者挫折/抱怨/口吃重試（如「把文文播放馬文播放張宇的傘下」）由 FrustrationAgent 接手（bid 0.91-0.92），直接將原始音訊送 Audio LLM 救援。"
   }
 }

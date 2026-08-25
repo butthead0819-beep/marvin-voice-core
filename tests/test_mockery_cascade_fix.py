@@ -101,6 +101,46 @@ def test_mockery_suppressed_in_local_satellite_mode():
 
 # ── 2. Cooldown 防 cascade（驗證雙重保護）─────────────────────────────────
 
+# ── 3. 純掛網狀態（無人聊天 + 無音樂）不嘲諷 ────────────────────────────────
+
+def test_mockery_suppressed_when_purely_idle_hangout():
+    """近 5 分鐘無人聊天（conversation_temperature==0）且無音樂播放 → 不嘲諷。
+
+    2026-08-25 使用者反映：純掛網（沒人講話、也沒放歌）時被嘲諷「反應太慢」
+    很怪——根本沒有進行中的對話可言。
+    """
+    cog = _make_cog()
+    cog.stream_mode = False
+    cog.radio_mode = False
+    cog.is_playing_audio = False
+    cog.bot.engine.conv_buffer.get_conversation_temperature.return_value = 0.0
+
+    now = time.time()
+    cog.last_marvin_speech_time = now - 200.0
+
+    cog.handle_raw_speech_start("狗與露")
+
+    cog.stt_logger.info.assert_not_called()
+    assert "狗與露" not in cog.pending_mock_users
+
+
+def test_mockery_not_suppressed_when_recent_chat_exists():
+    """近 5 分鐘內有人聊天過（temperature > 0）且無音樂 → 沿既有邏輯照常判斷嘲諷。"""
+    cog = _make_cog()
+    cog.stream_mode = False
+    cog.radio_mode = False
+    cog.is_playing_audio = False
+    cog.active_text_channel = MagicMock()
+    cog.bot.engine.conv_buffer.get_conversation_temperature.return_value = 0.5
+
+    now = time.time()
+    cog.last_marvin_speech_time = now - 200.0
+
+    cog.handle_raw_speech_start("狗與露")
+
+    cog.stt_logger.info.assert_called()
+
+
 def test_mockery_per_speaker_cooldown_45s():
     """同 speaker 45s 內第二次不該再嘲諷（既有保護，不該 regress）。"""
     cog = _make_cog()

@@ -43,6 +43,7 @@ def _mk_ctrl(mem, history=None):
     ctrl.bot.engine.conv_buffer.history = history or []
     ctrl.stream_mode = False  # 2026-06-01: agent 新增 stream_mode gate，預設假
     ctrl.speak = AsyncMock()  # handler 改走 vc.speak()
+    ctrl.last_music_control_time = 0.0  # 2026-08-25: 預設無音樂控制冷卻
     return ctrl
 
 
@@ -119,6 +120,35 @@ async def test_bid_returns_zero_when_no_present_speakers(monkeypatch, tmp_path):
     bid = await agent.speak_bid(_mk_ctx([]))
     assert bid.confidence == 0.0
     assert bid.reason == "no_present"
+
+
+@pytest.mark.asyncio
+async def test_bid_returns_zero_within_music_control_cooldown(monkeypatch, tmp_path):
+    """2026-08-25：音樂/音量控制後 30s 內不該主動接話題，避免打斷體驗。"""
+    monkeypatch.setenv("SPEAK_MEMORY_CALLBACK", "true")
+    mem = _mk_mem(tmp_path)
+    mem.enqueue_callback("Alice", "戒咖啡", shareable=True)
+    history = [_utt("Alice", "戒咖啡的事情")]
+    ctrl = _mk_ctrl(mem, history=history)
+    ctrl.last_music_control_time = time.time() - 5.0  # 5s 前剛下過音樂指令
+    agent = MemoryCallbackAgent(ctrl, overlap_threshold=0.3, music_control_cooldown_s=30.0)
+    bid = await agent.speak_bid(_mk_ctx(["Alice"]))
+    assert bid.confidence == 0.0
+    assert bid.reason == "music_control_cooldown"
+
+
+@pytest.mark.asyncio
+async def test_bid_not_blocked_once_music_control_cooldown_expires(monkeypatch, tmp_path):
+    """超過 cooldown 窗口 → 恢復正常 bid（不再被 music_control_cooldown 卡住）。"""
+    monkeypatch.setenv("SPEAK_MEMORY_CALLBACK", "true")
+    mem = _mk_mem(tmp_path)
+    mem.enqueue_callback("Alice", "試 grounded search", shareable=True)
+    history = [_utt("Alice", "grounded search 那個怎樣")]
+    ctrl = _mk_ctrl(mem, history=history)
+    ctrl.last_music_control_time = time.time() - 60.0  # 60s 前，已過 30s 窗口
+    agent = MemoryCallbackAgent(ctrl, confidence=0.7, overlap_threshold=0.3, music_control_cooldown_s=30.0)
+    bid = await agent.speak_bid(_mk_ctx(["Alice"], last_speaker="Alice"))
+    assert bid.confidence == 0.7
 
 
 @pytest.mark.asyncio

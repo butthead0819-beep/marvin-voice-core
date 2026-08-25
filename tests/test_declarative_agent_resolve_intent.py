@@ -42,7 +42,8 @@ async def test_resolve_intent_executes_when_gate_passes():
 
     assert bid is not None
     await bid.handler()
-    assert ctrl.stream_volume == pytest.approx(0.4)
+    # 語音步進 25%（2026-08-25 改前 10%）：0.5 - 0.25 = 0.25
+    assert ctrl.stream_volume == pytest.approx(0.25)
 
 
 @pytest.mark.asyncio

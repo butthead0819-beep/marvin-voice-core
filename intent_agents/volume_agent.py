@@ -14,9 +14,11 @@ Gate：stream_mode 與 radio_mode 都沒開 → dense zero with "no_playback_act
 
 Handler：
   stream_mode → 調 controller.stream_volume，再 request_volume_swap() 排一次 second-stream
-                重 render 讓新音量即時生效（hotswap 關 → 退回次首生效）。步進 10%。
+                重 render 讓新音量即時生效（hotswap 關 → 退回次首生效）。步進 25%。
   radio_mode  → 調 controller.radio_volume（_radio_volume_fade_loop 即時觀察）
   mute → 設為 VOL_MIN
+
+  volume_down 額外連動：全域 mixer._tts_gain 依同比例下修（2026-08-25）。
 """
 from __future__ import annotations
 
@@ -29,8 +31,9 @@ from intent_bus import IntentContext
 logger = logging.getLogger(__name__)
 
 
-# 語音步進 10%（按鈕 UI PlayControlView.VOL_STEP=0.05 較細，2026-06-04 起兩者不同）。
-VOICE_VOL_STEP = 0.10
+# 語音步進 25%（按鈕 UI PlayControlView.VOL_STEP=0.05 較細，2026-06-04 起兩者不同）。
+# 2026-08-25：使用者反映「小聲一點」原本 10% 降幅無感，改大幅遞減。
+VOICE_VOL_STEP = 0.25
 
 _ACK_TEXT = {
     "volume_down": "好，調小",
@@ -126,7 +129,26 @@ class VolumeAgent(DeclarativeIntentAgent):
 
         setattr(ctrl, target_attr, new_val)
         logger.info(f"[Volume] {intent} → {target_attr}={new_val:.2f}")
+
+        # 2026-08-25：使用者抱怨「很大聲/小聲一點」時，全域 TTS Gain（獨立於音樂音量）
+        # 也該等比例下修，否則調小音樂後 TTS 講話顯得過大聲。只在 volume_down 連動。
+        if intent == "volume_down" and current > 0:
+            self._adjust_tts_gain(new_val / current)
+
         return target_attr
+
+    def _adjust_tts_gain(self, ratio: float) -> None:
+        """把全域 mixer._tts_gain 依 ratio 等比例下修（跟音樂音量同幅度）。"""
+        mixer = getattr(self.ctrl, "_mixer", None)
+        if mixer is None:
+            return
+        try:
+            current_gain = float(getattr(mixer, "_tts_gain", 1.0))
+            new_gain = max(0.05, round(current_gain * ratio, 3))
+            mixer._tts_gain = new_gain
+            logger.info(f"[Volume] TTS gain 等比例下修 {current_gain:.2f} → {new_gain:.2f}（ratio={ratio:.2f}）")
+        except Exception:
+            logger.exception("[Volume] tts gain adjust failed")
 
     async def _ack(self, intent: str) -> None:
         try:
