@@ -55,7 +55,7 @@ def _make_vc(music_cog=None):
 
 def test_stream_volume_getter_defaults_when_no_music_cog():
     vc = _make_vc(music_cog=None)
-    assert vc.stream_volume == pytest.approx(1.0)
+    assert vc.stream_volume == pytest.approx(0.10)
 
 
 def test_stream_volume_getter_delegates_to_music_cog():
