@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import logging
 from typing import TYPE_CHECKING
 
 import discord
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from consent_manager import ConsentManager
@@ -139,12 +142,14 @@ class PlayControlView(discord.ui.View):
     async def vol_down_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         c = self.controller
         c.stream_volume = max(self.VOL_MIN, round(c.stream_volume - self.VOL_STEP, 2))
+        logger.info(f"[Volume] button_down → stream_volume={c.stream_volume:.2f}")
         await self._refresh(interaction)
 
     @discord.ui.button(label="🔊 +", style=discord.ButtonStyle.secondary, row=0)
     async def vol_up_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         c = self.controller
         c.stream_volume = min(self.VOL_MAX, round(c.stream_volume + self.VOL_STEP, 2))
+        logger.info(f"[Volume] button_up → stream_volume={c.stream_volume:.2f}")
         await self._refresh(interaction)
 
     @discord.ui.button(label="⏭️ 下一首", style=discord.ButtonStyle.secondary, row=0)
