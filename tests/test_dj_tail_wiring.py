@@ -486,6 +486,7 @@ async def test_dj_interjection_skips_puck_speak_when_client_lacks_speak():
 # ── (i) 尾段 SFX 疊播：DJ 口白播完後接一支轉場音效（見 scripts/gen_dj_sfx.py）──
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="2026-08-25 _play_dj_tail_sfx 暫時停用（換歌斷續調查，見 music_cog.py 該函式開頭 return）")
 async def test_tail_dj_plays_sfx_after_interjection():
     """尾段點火成功派發 DJ 口白後，_play_dj_tail_sfx 用同一條 TTS 層佇列疊一支
     scratch/dj_airhorn/riser，且晚於口白（同一佇列接續播放）。"""
@@ -538,6 +539,7 @@ async def test_dj_tail_sfx_skips_when_file_missing():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="2026-08-25 _play_dj_tail_sfx 暫時停用（換歌斷續調查，見 music_cog.py 該函式開頭 return）")
 async def test_dj_tail_sfx_fires_puck_sfx_when_client_has_sfx():
     """比照 speak：SFX 也要另外送一份給 esp32_edge_mix 裝置端（不 duck）。"""
     cog = _make_cog()
@@ -559,6 +561,7 @@ async def test_dj_tail_sfx_fires_puck_sfx_when_client_has_sfx():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="2026-08-25 _play_dj_tail_sfx 暫時停用（換歌斷續調查，見 music_cog.py 該函式開頭 return）")
 async def test_dj_tail_sfx_uses_preloaded_source_for_scratch():
     """當抽中 scratch 且 next_info 有已解碼的 preloaded source 時，使用真實 PCM 生成動態 scratch。"""
     from local_mixing_source import PreloadedF32MusicSource
@@ -606,6 +609,7 @@ async def test_dj_tail_sfx_skips_when_preload_not_ready():
 
 
 @pytest.mark.asyncio
+@pytest.mark.skip(reason="2026-08-25 _play_dj_tail_sfx 暫時停用（換歌斷續調查，見 music_cog.py 該函式開頭 return）")
 async def test_dj_tail_sfx_waits_for_slow_preload_within_timeout():
     """preload 點火時還沒完成、但在 wait_for 逾時前解碼好 → 照樣用真實 PCM 合成動態 scratch
     （驗證從一次性 done() 檢查改成主動等待後，真的能等到剛完成的 preload）。"""

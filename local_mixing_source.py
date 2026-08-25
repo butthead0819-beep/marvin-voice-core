@@ -559,12 +559,16 @@ class BufferedF32MusicSource:
 
 
 class PreloadedF32MusicSource:
-    """整首音樂已完整解碼進記憶體的 f32 frame 序列；read() 純陣列取用，無 ffmpeg pipe
+    """整首音樂已完整解碼進記憶體的 frame 序列；read() 純陣列取用，無 ffmpeg pipe
     依賴、無即時解碼背景執行緒——消除 BufferedF32MusicSource 的 mixer decode underrun
     （CPU 被搶佔時 decode thread 跟不上混音時鐘→塞靜音頂替→中段爆音，見
     project_car_puck_pops_and_1s_dropout_2026-07-25）。代價：播放前要等整首解碼完，換開頭
     延遲，不再有中段斷點。cleanup() 為 no-op：inner 音源已在 preload_f32_source() 內完整
     耗盡並清過。
+
+    內部存 s16（frames 是 FRAME_BYTES_S16 幀），read() 時才轉 f32——省一半常駐記憶體，
+    s16→f32 無損（見 S16ToF32MusicSource）。2026-08-24：DJ tail crossfade 期間兩首歌
+    同時 preloaded，f32 存底一首 ~5min 歌吃 109MB，量到常駐 ~700MB 後改成 s16 存底。
     """
 
     def __init__(self, frames: list):
@@ -574,9 +578,10 @@ class PreloadedF32MusicSource:
     def read(self) -> bytes:
         if self._i >= len(self._frames):
             return b""
-        f = self._frames[self._i]
+        s16 = self._frames[self._i]
         self._i += 1
-        return f
+        f = np.frombuffer(s16, dtype=np.int16).astype(np.float32) / np.float32(32768.0)
+        return f.tobytes()
 
     def cleanup(self):
         pass
@@ -588,21 +593,22 @@ class PreloadedF32MusicSource:
                 "produced": len(self._frames), "eof": True, "eof_reason": "preloaded"}
 
 
-def preload_f32_source(inner_source) -> PreloadedF32MusicSource:
-    """阻塞讀 inner_source 到耗盡，切成 FRAME_BYTES_F32 幀存進記憶體。呼叫端須自行丟進
+def preload_f32_source(inner_s16_source) -> PreloadedF32MusicSource:
+    """阻塞讀『s16le』inner_s16_source（例如 discord.FFmpegPCMAudio，別再包
+    S16ToF32MusicSource）到耗盡，切成 FRAME_BYTES_S16 幀存進記憶體。呼叫端須自行丟進
     thread（如 asyncio.to_thread）——此函式本身是同步阻塞的，會等整首解碼完才回傳。
     """
     frames = []
     leftover = b""
     while True:
-        chunk = inner_source.read()
+        chunk = inner_s16_source.read()
         if not chunk:
             break
         leftover += chunk
-        while len(leftover) >= FRAME_BYTES_F32:
-            frames.append(bytes(leftover[:FRAME_BYTES_F32]))
-            leftover = leftover[FRAME_BYTES_F32:]
-    c = getattr(inner_source, "cleanup", None)
+        while len(leftover) >= FRAME_BYTES_S16:
+            frames.append(bytes(leftover[:FRAME_BYTES_S16]))
+            leftover = leftover[FRAME_BYTES_S16:]
+    c = getattr(inner_s16_source, "cleanup", None)
     if callable(c):
         c()
     return PreloadedF32MusicSource(frames)

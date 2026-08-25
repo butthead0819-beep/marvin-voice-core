@@ -27,7 +27,7 @@ from voice_guard_helpers import _should_mute_for_stream_guard
 from utterance_budget import STREAM_BUDGET
 from manzai_interject import compute_interject_ratio, interject_diagnostics
 from local_mixing_source import (
-    MixerPlaybackAdapter, S16ToF32MusicSource,
+    MixerPlaybackAdapter,
     preload_f32_source, ensure_mixer_playing, FRAME_BYTES_F32,
 )
 
@@ -92,7 +92,7 @@ class PlaybackMixin:
         if preloaded is not None:
             buffered = preloaded
         else:
-            buffered = await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(s16_source))
+            buffered = await asyncio.to_thread(preload_f32_source, s16_source)
         self._mixer.set_music_source(buffered)
         if started_at is not None and not started_at.done():
             started_at.set_result(time.time())

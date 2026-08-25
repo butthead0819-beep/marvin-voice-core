@@ -166,7 +166,13 @@ class MusicCog(commands.Cog):
         self.radio_mode: bool = False
 
         # 🎵 [Phase 2] Stream subsystem state (proxied from VoiceController)
-        self.stream_volume: float = 1.0
+        # Discord 音量壓回 10%；車 puck 音量策略在裝置端另外處理，維持滿幅
+        # 讓 puck_mixer 端有完整動態範圍可調（見 596dbea「stream_volume 滿幅」）。
+        self._default_stream_volume: float = (
+            1.0 if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+            else 0.10
+        )
+        self.stream_volume: float = self._default_stream_volume
         self._stream_play_gen: int = 0
         self._current_stream_url: Optional[str] = None
         self._stream_norm_gain: dict = {}   # url → 每首響度正規化常數增益
@@ -579,7 +585,7 @@ class MusicCog(commands.Cog):
         if alive:
             self._cancel_stream_task("_ensure_stream_loop 收殘骸")   # 收尾中的殘骸 → 收掉重來
         self.stream_mode = True
-        self.stream_volume = 1.0
+        self.stream_volume = self._default_stream_volume
         self._stream_user_stopped = False  # 有人／有東西要它跑了，解除 watchdog 抑制
         self.stream_task = asyncio.create_task(self._stream_loop())
         logger.warning(f"🎵 [Stream] loop 不在跑（flag={self.stream_mode} task_alive={alive}）"
@@ -1835,7 +1841,7 @@ class MusicCog(commands.Cog):
         await self._personal_shuffle_topup()
         if not self.stream_mode:
             self.stream_mode = True
-            self.stream_volume = 1.0
+            self.stream_volume = self._default_stream_volume
             self._stream_user_stopped = False
             if self.stream_task and not self.stream_task.done():
                 self._cancel_stream_task("start_personal_shuffle")
@@ -3364,7 +3370,7 @@ class MusicCog(commands.Cog):
         highlight = info.get('highlight_start_s')
 
         async def _do():
-            from local_mixing_source import S16ToF32MusicSource, preload_f32_source
+            from local_mixing_source import preload_f32_source
             p12_opts = {
                 'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M',
                 'options': '-vn -bufsize 512k',
@@ -3373,7 +3379,7 @@ class MusicCog(commands.Cog):
                 # -ss 放在 -i 前（input seeking），ffmpeg 用容器索引快跳，不必解碼到那秒。
                 p12_opts['before_options'] = f'-ss {highlight:.2f} ' + p12_opts['before_options']
             s16 = discord.FFmpegPCMAudio(url, **p12_opts)
-            return await asyncio.to_thread(preload_f32_source, S16ToF32MusicSource(s16))
+            return await asyncio.to_thread(preload_f32_source, s16)
 
         self._preload_music_cache[url] = asyncio.create_task(_do())
         norm_gains = getattr(self, "_stream_norm_gain", None)
@@ -3584,7 +3590,13 @@ class MusicCog(commands.Cog):
 
         scratch 沒有靜態備用檔：抓不到下一首 PCM 就這輪不放，不用預錄音檔頂替——
         「這次沒聽到刷碟聲」本身就是訊號，別讓 fallback 把失敗蓋掉。找不到 vc 就靜靜
-        放棄，不影響主流程。"""
+        放棄，不影響主流程。
+
+        2026-08-25 暫時停用：SFX 疊播（scratch 動態合成 + ffmpeg fork）跟換歌本身的
+        preload/口白 fork 疊在同一個窗口，是 Discord 語音斷續的可疑根因之一（見
+        feedback_diagnose_timing_vs_cpu_dropout 同類診斷）。要復原刪掉這個 return 即可。
+        """
+        return
         vc = self._vc()
         if vc is None:
             logger.info("[DJ Tail] SFX：找不到 VoiceController cog（_vc()→None），這輪不放")

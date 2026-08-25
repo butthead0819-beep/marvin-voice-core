@@ -86,6 +86,15 @@ class PlayControlView(discord.ui.View):
         super().__init__(timeout=3600)
         self.controller = controller
         controller._active_views.add(self)
+        self._sync_vol_labels()
+
+    def _sync_vol_labels(self) -> None:
+        """按鈕本身就是音量顯示（控制台 embed 不放音量，見 build_control_embed 註解）
+        ——沒有這行，按鈕文字永遠是靜態的「🔉 -」/「🔊 +」，按了音量其實有變但畫面
+        完全看不出來，使用者會誤以為按鈕沒反應（2026-08-25 用戶回報）。"""
+        pct = int(round(self.controller.stream_volume * 100))
+        self.vol_down_button.label = f"🔉 - {pct}%"
+        self.vol_up_button.label = f"🔊 + {pct}%"
 
     def _build_embed(self) -> discord.Embed:
         """控制台 embed（歌曲資訊已拆到 build_song_embed 獨立貼文）。保留此名讓既有
@@ -93,6 +102,7 @@ class PlayControlView(discord.ui.View):
         return build_control_embed(self.controller)
 
     async def _refresh(self, interaction: discord.Interaction):
+        self._sync_vol_labels()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
     async def _quick_skip_ack(self, play_tts) -> None:

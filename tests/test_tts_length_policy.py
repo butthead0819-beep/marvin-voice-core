@@ -19,16 +19,18 @@ def test_known_tasks_have_limits():
         assert task in LIMITS
 
 
-def test_dj_story_gate_matches_73_char_budget():
-    """2026-08-21 使用者：目前長度還能接受，18s→22s 讓推薦理由當素材有發揮空間。
+def test_dj_story_gate_matches_56_char_budget():
+    """2026-08-25 換歌斷續調查：22s→17s，縮短口白音檔 ffmpeg fork 存活時間，
+    降低跟其他 fork（preload/STT）疊到一起的機率，非嫌話多（見 tts_limits.yaml
+    dj_story 註解）。
 
     ⚠️ gate 是「估算器秒數」不是真實秒數：估算器 0.3s/中文字（保守），真實
-    edge-tts ≈0.17s/字。真實 12.4s ≈ 73 字 → 估算器口徑 73×0.3 ≈ 22s。
+    edge-tts ≈0.17s/字。真實 ≈9.5s ≈ 56 字 → 估算器口徑 56×0.3 ≈ 17s。
     照字面把 gate 設成真實秒數會太早砍斷＝「狗與露」殘句重演。
     """
-    assert LIMITS["dj_story"] == 22.0
-    assert _est("字" * 70) <= LIMITS["dj_story"], "70 字（真實≈11.9s）不該被 gate 砍"
-    assert _est("字" * 80) > LIMITS["dj_story"], "80 字（超出預算）應被 gate 攔下"
+    assert LIMITS["dj_story"] == 17.0
+    assert _est("字" * 54) <= LIMITS["dj_story"], "54 字（真實≈9.2s）不該被 gate 砍"
+    assert _est("字" * 60) > LIMITS["dj_story"], "60 字（超出預算）應被 gate 攔下"
 
 
 def test_music_intro_5s():

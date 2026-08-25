@@ -285,23 +285,23 @@ def _dj_prompt_block() -> str:
     return _build_dj_interjection_prompt("測試脈絡")
 
 
-def test_dj_prompt_word_budget_targets_12_seconds():
-    """2026-08-21 使用者：目前長度還能接受，配合 dj_story TTS gate 18s→22s
-    （tts_limits.yaml）放寬字數預算，讓推薦理由/生動描寫有多一點發揮空間。
+def test_dj_prompt_word_budget_targets_9_seconds():
+    """2026-08-25 換歌斷續調查：dj_story TTS gate 22s→17s（tts_limits.yaml）收緊，
+    prompt 字數預算跟著往下調，讓 LLM 正常發揮就落在 gate 之內，截斷變回例外
+    而非常態。
 
-    真實 edge-tts ≈5.7 中文字/秒 → 12s ≈ 68-70 字。live 實測 LLM 會嚴重超寫
-    （24 則有 9 則爆 gate 被截斷），所以字數規則要擺在最前面、講死上限。
+    真實 edge-tts ≈5.7 中文字/秒 → 9s ≈ 51-53 字，留一點餘裕在 56 字 gate 之下。
     """
     blk = _dj_prompt_block()
-    assert "60-70" in blk, "prompt 字數預算應為 60-70 中文字（真實≈12s）"
-    assert "50-60" not in blk, "舊字數預算應已移除"
+    assert "45-55" in blk, "prompt 字數預算應為 45-55 中文字（真實≈9s）"
+    assert "60-70" not in blk, "舊字數預算應已移除"
 
 
 def test_dj_prompt_puts_length_rule_first():
     """live 實測 37.5% 超長被截斷：長度規則埋在第 6 條沒用，要擺第 1 條。"""
     blk = _dj_prompt_block()
     first_rule = blk.split("1. ")[1].split("2. ")[0]
-    assert "60-70" in first_rule, f"字數規則應是第 1 條: {first_rule[:60]!r}"
+    assert "45-55" in first_rule, f"字數規則應是第 1 條: {first_rule[:60]!r}"
 
 
 def test_dj_prompt_forbids_human_first_person():
