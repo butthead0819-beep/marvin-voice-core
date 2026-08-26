@@ -558,7 +558,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         # 🎛️ [Plan 12] always-on 本地混音台
         self._plan12 = True
-        self._mixer = LocalMixingAudioSource(instrument=True, on_demand=True)
+        self._mixer = self._make_initial_mixer(bot)
         self._voice_client_override = None  # 測試可覆寫；prod 走 voice_client property 即時查連線 vc
         self._prefetch_cache_local: dict[str, asyncio.Task] = {}  # fallback when MusicCog not loaded
         self._last_search_local: dict[str, dict] = {}  # fallback when MusicCog not loaded

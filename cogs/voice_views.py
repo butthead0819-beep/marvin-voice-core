@@ -143,6 +143,10 @@ class PlayControlView(discord.ui.View):
         c = self.controller
         c.stream_volume = max(self.VOL_MIN, round(c.stream_volume - self.VOL_STEP, 2))
         logger.info(f"[Volume] button_down → stream_volume={c.stream_volume:.2f}")
+        # TTS 音量跟音樂設成同一個值，見 intent_agents/volume_agent.py（2026-08-26
+        # 用戶回報：按鈕路徑當時漏接，音樂降了 TTS 沒跟著降）。
+        from intent_agents.volume_agent import sync_tts_gain
+        sync_tts_gain(c, c.stream_volume)
         await self._refresh(interaction)
 
     @discord.ui.button(label="🔊 +", style=discord.ButtonStyle.secondary, row=0)
@@ -150,6 +154,8 @@ class PlayControlView(discord.ui.View):
         c = self.controller
         c.stream_volume = min(self.VOL_MAX, round(c.stream_volume + self.VOL_STEP, 2))
         logger.info(f"[Volume] button_up → stream_volume={c.stream_volume:.2f}")
+        from intent_agents.volume_agent import sync_tts_gain
+        sync_tts_gain(c, c.stream_volume)
         await self._refresh(interaction)
 
     @discord.ui.button(label="⏭️ 下一首", style=discord.ButtonStyle.secondary, row=0)

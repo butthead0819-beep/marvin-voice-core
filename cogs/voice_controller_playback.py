@@ -27,7 +27,7 @@ from voice_guard_helpers import _should_mute_for_stream_guard
 from utterance_budget import STREAM_BUDGET
 from manzai_interject import compute_interject_ratio, interject_diagnostics
 from local_mixing_source import (
-    MixerPlaybackAdapter,
+    LocalMixingAudioSource, MixerPlaybackAdapter,
     preload_f32_source, ensure_mixer_playing, FRAME_BYTES_F32,
 )
 
@@ -58,6 +58,15 @@ def _shift_hz_string(value: "str | None", offset: int, clamp: tuple[int, int] = 
 
 
 class PlaybackMixin:
+    def _make_initial_mixer(self, bot) -> LocalMixingAudioSource:
+        """建 Plan12 mixer，TTS 起始音量對齊各模式（Discord/車機）音樂音量預設值——
+        不用等第一次調音量指令才被 sync_tts_gain() 追上（2026-08-26）。setup_hook
+        保證 music_cog 先於 voice_controller 載入，這裡一定拿得到。"""
+        mixer = LocalMixingAudioSource(instrument=True, on_demand=True)
+        mc = bot.cogs.get("MusicCog")
+        mixer._tts_gain = getattr(mc, "stream_volume", self._stream_volume_local) if mc else self._stream_volume_local
+        return mixer
+
     def _ensure_mixer_playing(self, device) -> bool:
         """[Plan 12] flag=on 時確保 mixer adapter 正在 device 上播放（連線/重連後 re-arm）。
 

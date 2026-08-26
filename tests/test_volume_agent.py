@@ -251,8 +251,8 @@ async def test_handler_plays_ack():
 # ── handler: volume_down 連動全域 TTS Gain ───────────────────────────────
 
 
-async def test_handler_volume_down_lowers_tts_gain_proportionally():
-    """「小聲一點」時全域 mixer._tts_gain 該跟音樂音量同比例下修。"""
+async def test_handler_volume_down_syncs_tts_gain_to_music_volume():
+    """「小聲一點」時全域 mixer._tts_gain 直接設成跟音樂音量一樣的值。"""
     from intent_agents.volume_agent import VolumeAgent
     ctrl = _ctrl(stream_mode=True, stream_volume=0.50)
     ctrl._mixer = MagicMock()
@@ -260,11 +260,12 @@ async def test_handler_volume_down_lowers_tts_gain_proportionally():
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("小聲一點"))
     await bid.handler()
-    # 音樂音量 0.50 → 0.25（ratio=0.5），TTS gain 1.0 → 0.5 同比例
-    assert ctrl._mixer._tts_gain == pytest.approx(0.5)
+    # 音樂音量 0.50 → 0.25，TTS gain 直接對齊到 0.25
+    assert ctrl._mixer._tts_gain == pytest.approx(0.25)
 
 
-async def test_handler_volume_up_does_not_touch_tts_gain():
+async def test_handler_volume_up_also_syncs_tts_gain():
+    """「大聲一點」也該同步 TTS 音量，不是只有調小才連動。"""
     from intent_agents.volume_agent import VolumeAgent
     ctrl = _ctrl(stream_mode=True, stream_volume=0.20)
     ctrl._mixer = MagicMock()
@@ -272,7 +273,8 @@ async def test_handler_volume_up_does_not_touch_tts_gain():
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("大聲一點"))
     await bid.handler()
-    assert ctrl._mixer._tts_gain == pytest.approx(1.0)
+    # 音樂音量 0.20 → 0.45，TTS gain 直接對齊到 0.45
+    assert ctrl._mixer._tts_gain == pytest.approx(0.45)
 
 
 async def test_handler_volume_down_no_mixer_does_not_crash():

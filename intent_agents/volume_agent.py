@@ -18,7 +18,8 @@ Handler：
   radio_mode  → 調 controller.radio_volume（_radio_volume_fade_loop 即時觀察）
   mute → 設為 VOL_MIN
 
-  volume_down 額外連動：全域 mixer._tts_gain 依同比例下修（2026-08-25）。
+  TTS 音量跟著同步：全域 mixer._tts_gain 設成跟 stream_volume/radio_volume 一樣的值
+  （2026-08-25 起連動；2026-08-26 改成直接對齊同一個值，而非比例衰減）。
 """
 from __future__ import annotations
 
@@ -29,6 +30,24 @@ from intent_agents.base import DeclarativeIntentAgent, IntentSchema
 from intent_bus import IntentContext
 
 logger = logging.getLogger(__name__)
+
+
+def sync_tts_gain(ctrl, value: float) -> None:
+    """把全域 mixer._tts_gain 設成跟音樂音量一樣的值（不是各調各的比例衰減）。
+
+    語音指令（VolumeAgent）與控制面板按鈕（voice_views.py）共用同一份邏輯，
+    避免兩條路徑各調各的、音樂降了 TTS 卻沒跟著降（2026-08-26 用戶回報）。
+    """
+    mixer = getattr(ctrl, "_mixer", None)
+    if mixer is None:
+        return
+    try:
+        old_gain = float(getattr(mixer, "_tts_gain", 1.0))
+        new_gain = round(value, 3)
+        mixer._tts_gain = new_gain
+        logger.info(f"[Volume] TTS gain 同步音樂音量 {old_gain:.2f} → {new_gain:.2f}")
+    except Exception:
+        logger.exception("[Volume] tts gain sync failed")
 
 
 # 語音步進 25%（按鈕 UI PlayControlView.VOL_STEP=0.05 較細，2026-06-04 起兩者不同）。
@@ -130,25 +149,10 @@ class VolumeAgent(DeclarativeIntentAgent):
         setattr(ctrl, target_attr, new_val)
         logger.info(f"[Volume] {intent} → {target_attr}={new_val:.2f}")
 
-        # 2026-08-25：使用者抱怨「很大聲/小聲一點」時，全域 TTS Gain（獨立於音樂音量）
-        # 也該等比例下修，否則調小音樂後 TTS 講話顯得過大聲。只在 volume_down 連動。
-        if intent == "volume_down" and current > 0:
-            self._adjust_tts_gain(new_val / current)
+        # 2026-08-26：TTS 音量跟音樂音量設成同一個值（不是各調各的比例衰減）。
+        sync_tts_gain(ctrl, new_val)
 
         return target_attr
-
-    def _adjust_tts_gain(self, ratio: float) -> None:
-        """把全域 mixer._tts_gain 依 ratio 等比例下修（跟音樂音量同幅度）。"""
-        mixer = getattr(self.ctrl, "_mixer", None)
-        if mixer is None:
-            return
-        try:
-            current_gain = float(getattr(mixer, "_tts_gain", 1.0))
-            new_gain = max(0.05, round(current_gain * ratio, 3))
-            mixer._tts_gain = new_gain
-            logger.info(f"[Volume] TTS gain 等比例下修 {current_gain:.2f} → {new_gain:.2f}（ratio={ratio:.2f}）")
-        except Exception:
-            logger.exception("[Volume] tts gain adjust failed")
 
     async def _ack(self, intent: str) -> None:
         try:

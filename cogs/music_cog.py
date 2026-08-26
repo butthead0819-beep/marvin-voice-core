@@ -171,6 +171,8 @@ class MusicCog(commands.Cog):
         # 🎵 [Phase 2] Stream subsystem state (proxied from VoiceController)
         # Discord 音量壓回 10%；車 puck 音量策略在裝置端另外處理，維持滿幅
         # 讓 puck_mixer 端有完整動態範圍可調（見 596dbea「stream_volume 滿幅」）。
+        # 2026-08-26：使用者確認 Discord/車機是各自獨立的兩個 process，各自預設值
+        # 不同、音量/TTS 各自連動即可，不需要統一成同一個數字。
         self._default_stream_volume: float = (
             1.0 if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on")
             else 0.10
