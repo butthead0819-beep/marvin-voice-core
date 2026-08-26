@@ -24,32 +24,11 @@ logger = logging.getLogger(__name__)
 
 _DJ_STYLES = load_dj_styles()
 
-# 防幻覺護欄（呼應 feedback_no_llm_invented_facts 鐵則）：故意留在 code 裡，不放進
-# personas/dj_styles.yaml——換 persona/mood 設定時不該連安全約束一起換掉。
-_DJ_MATERIAL_GUARD = (
-    "只用脈絡給的那一項素材寫，不要自己加新話題、不要同時講好幾件事；"
-    "歌名最多提一次，可針對歌名巧妙串接情境，勾起聽眾對下一首歌的畫面與想聽的期待感。"
+from dj_prompt_builder import (
+    DJ_MATERIAL_GUARD as _DJ_MATERIAL_GUARD,
+    DJ_NAMING_GUARD as _DJ_NAMING_GUARD,
+    build_dj_interjection_prompt as _build_dj_interjection_prompt,
 )
-
-_DJ_NAMING_GUARD = (
-    "**掛名只能照脈絡**：只有脈絡明講「點播者」或「理由」裡出現的人才能提名字，"
-    "絕不自己指定這首是誰點的、誰想聽的——掛錯名比不掛名傷。"
-)
-
-
-def _build_dj_interjection_prompt(context: str) -> str:
-    style = _DJ_STYLES["dj_interjection_style"]
-    return (
-        f"你是 DJ Marvin，在兩首歌 crossfade 的空檔串場。\n\n"
-        f"脈絡：\n{context}\n\n"
-        "規則：\n"
-        f"1. {style['length_rule']}\n"
-        f"2. {_DJ_MATERIAL_GUARD}{style['material_style_rule']}\n"
-        f"3. {style['robot_pov_rule']}\n"
-        f"4. {_DJ_NAMING_GUARD}\n"
-        f"5. {style['tone_rule']}\n"
-        f"6. {style['output_format_rule']}"
-    )
 
 
 # rephrase_proactive_script 兜底 — LLM 把 task metadata 當回應 echo（5/27 6 筆嚴重 reaction）。
