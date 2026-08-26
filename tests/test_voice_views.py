@@ -98,6 +98,20 @@ def test_build_control_embed_queue_only_no_song_no_volume():
     assert "👤 歌手" not in names   # 歌手屬歌曲卡
 
 
+def test_build_lyrics_embed_shows_full_text():
+    from cogs.voice_views import build_lyrics_embed
+    embed = build_lyrics_embed("第一句\n第二句")
+    assert embed.title == "🎤 歌詞"
+    assert embed.description == "第一句\n第二句"
+
+
+def test_build_lyrics_embed_truncated_to_description_limit():
+    from cogs.voice_views import build_lyrics_embed
+    embed = build_lyrics_embed("字" * 5000)
+    assert len(embed.description) == 4096
+    assert embed.description.endswith("...")
+
+
 # ── PlayControlView button state machine ─────────────────────────────────────
 
 

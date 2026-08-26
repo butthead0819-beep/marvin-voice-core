@@ -55,8 +55,18 @@ def build_song_embed(info: dict | None, *, image_url: str | None = None) -> disc
     return embed
 
 
+def build_lyrics_embed(lyrics: str) -> discord.Embed:
+    """🎤 歌詞獨立訊息（換歌刪舊貼新，貼在歌曲卡之後、控制台之前）：全文列出，不逐行同步顯示。
+    獨立訊息才能用 description（4096 字）而非 embed field 的 1024 字上限。"""
+    text = lyrics.strip()
+    if len(text) > 4096:
+        text = text[:4093] + "..."
+    return discord.Embed(title="🎤 歌詞", description=text, color=discord.Color.blurple())
+
+
 def build_control_embed(controller) -> discord.Embed:
-    """🎛️ 控制台（刪舊貼新、永遠在最下面）：資訊只留佇列。音量在按鈕、狀態/主導/歌詞都不放。"""
+    """🎛️ 控制台（刪舊貼新、永遠在最下面）：資訊只留佇列。音量在按鈕、狀態/主導/歌詞都不放
+    （歌詞是獨立訊息，見 build_lyrics_embed）。"""
     c = controller
     embed = discord.Embed(title="🎛️ 控制台", color=discord.Color.blurple(),
                           timestamp=datetime.datetime.now())

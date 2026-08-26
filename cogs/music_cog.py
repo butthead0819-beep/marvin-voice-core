@@ -195,6 +195,7 @@ class MusicCog(commands.Cog):
         self._current_stream_explanation: Optional[str] = None  # 🎯 推薦解釋（槽位填空，見 explanation_slotfill.py）
         self._current_stream_start_time: Optional[float] = None  # HUD 進度條用
         self._active_control_view = None
+        self._active_lyrics_message = None  # 歌詞獨立訊息（換歌刪舊貼新，不留存舊歌歌詞）
 
         # 📻 [Phase 3] Radio subsystem state (proxied from VoiceController)
         self.radio_task = None
@@ -1998,9 +1999,10 @@ class MusicCog(commands.Cog):
             return None
 
     async def _post_music_cards(self, active_ch, vc, info: dict) -> None:
-        """貼①歌曲卡（封面全幅+點播者頭像圓徽合成圖）②控制台（刪舊貼新在底部）。背景執行。"""
+        """貼①歌曲卡（封面全幅+點播者頭像圓徽合成圖）②歌詞（刪舊貼新，查無資料就不貼）
+        ③控制台（刪舊貼新在底部）。背景執行。"""
         logger.info(f"🎛️ [Card] 貼卡 requester={info.get('requested_by')} cover={bool(info.get('thumbnail'))} ch={getattr(active_ch,'id',None)}")
-        from cogs.voice_views import PlayControlView, build_song_embed, build_control_embed
+        from cogs.voice_views import PlayControlView, build_song_embed, build_control_embed, build_lyrics_embed
         # ① 歌曲卡：合成封面+頭像；任一步失敗 → 退純封面（不阻斷）
         image_url = None
         file = None
@@ -2032,7 +2034,21 @@ class MusicCog(commands.Cog):
             await active_ch.send(embed=_embed, file=file) if file else await active_ch.send(embed=_embed)
         except Exception as e:
             logger.warning(f"⚠️ [Card] 歌曲卡貼文失敗: {e}")
-        # ② 控制台：刪掉上一則、貼新的在最下面
+        # ② 歌詞：獨立訊息，刪掉上一首的、查無資料就不貼新的（不留存舊歌歌詞）
+        lyrics = await self._fetch_lyrics_control_card(info)
+        _old_lyrics_msg = self._active_lyrics_message
+        if _old_lyrics_msg is not None:
+            try:
+                await _old_lyrics_msg.delete()
+            except Exception:
+                pass
+        self._active_lyrics_message = None
+        if lyrics:
+            try:
+                self._active_lyrics_message = await active_ch.send(embed=build_lyrics_embed(lyrics))
+            except Exception as e:
+                logger.warning(f"⚠️ [Card] 歌詞貼文失敗: {e}")
+        # ③ 控制台：刪掉上一則、貼新的在最下面
         _old = self._active_control_view
         if _old is not None and getattr(_old, 'message', None):
             try:
@@ -2567,6 +2583,24 @@ class MusicCog(commands.Cog):
                             return plain
         except Exception as e:
             logger.debug(f"⚠️ [Lyrics/lrclib] {e}")
+        return None
+
+    async def _fetch_lyrics_control_card(self, info: dict) -> str | None:
+        """控制台卡片歌詞：純 lrclib.net plainLyrics，不逐行同步、不快取（每首開播現查一次）。
+        跟 _fetch_lyrics_raw（DJ 評論用，syncedlyrics 多來源）分開——那條有既有用途不動它。"""
+        import aiohttp
+        title, artist = self._parse_song_title_artist(info)
+        duration = int(info.get('duration') or 0)
+        try:
+            async with aiohttp.ClientSession() as session:
+                params = {'track_name': title, 'artist_name': artist, 'duration': duration}
+                async with session.get('https://lrclib.net/api/get', params=params,
+                                       timeout=aiohttp.ClientTimeout(total=8)) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        return data.get('plainLyrics') or None
+        except Exception as e:
+            logger.debug(f"⚠️ [Lyrics/ControlCard/lrclib] {e}")
         return None
 
     async def _fetch_comment_raw(self, info: dict) -> str | None:
