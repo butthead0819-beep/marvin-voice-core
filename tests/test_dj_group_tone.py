@@ -45,6 +45,7 @@ def _make_cog(online_members: list[str]):
     from dj_topic_selector import TopicCooldownStore
     import tempfile
     cog = MusicCog(bot)
+    cog._enable_dj_news_fetch = False
     cog._life_cores = MagicMock(return_value=[])
     cog._dj_topic_cooldown_store = TopicCooldownStore(tempfile.mktemp(suffix=".json"))
 

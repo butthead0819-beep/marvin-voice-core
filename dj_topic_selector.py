@@ -17,9 +17,10 @@ import time
 from dj_life_context import LifeCore
 
 DEFAULT_PATH = "records/dj_topic_cooldown.json"
-COOLDOWN_S = 8 * 3600  # 同一具體話題用過 8 小時內不重複
+COOLDOWN_S = 8 * 3600       # 同一具體生活/興趣話題用過 8 小時內不重複
+NEWS_COOLDOWN_S = 2 * 3600  # 新聞頻率可較高，2 小時內不重複
 
-# 話題（life/interest）都沒有時，本地在這四種 fallback 之間輪替，別每次都落在
+# 話題（life/interest/news）都沒有時，本地在這四種 fallback 之間輪替，別每次都落在
 # 同一種（尤其是「環境/天氣」那種永遠在場的素材，之前是靠 LLM「自由發揮」硬凹，
 # 結果每次都用它開場——現在改把它變成 atmosphere，跟其他 fallback 平等輪替，
 # 不再是預設值）。atmosphere（時間/地點氛圍）永遠有素材可用，跟 quick 一樣不需要
@@ -54,19 +55,33 @@ class TopicCooldownStore:
         except OSError:
             pass  # fail-open：寫不進去不影響功能（下次再判斷）
 
-    def is_cool(self, text: str, *, meme_id: str | None = None) -> bool:
+    def is_cool(
+        self,
+        text: str,
+        *,
+        meme_id: str | None = None,
+        cooldown_s: float | None = None,
+    ) -> bool:
         """話題是否可用（沒用過，或用過但已超過冷卻時間）。
 
         meme_id: 語義 tag。傳入時用 "meme:{meme_id}" 作 key，
                  與純 text hash 是獨立 namespace，互不影響。
+        cooldown_s: 自訂冷卻秒數（預設使用 COOLDOWN_S 8小時，新聞為 2 小時）。
         """
+        cd = cooldown_s if cooldown_s is not None else COOLDOWN_S
         key = f"meme:{meme_id}" if meme_id else _topic_key(text)
         ts = self._data.get(key)
         if ts is None:
             return True
-        return self._now() - ts >= COOLDOWN_S
+        return self._now() - ts >= cd
 
-    def mark_used(self, text: str, *, meme_id: str | None = None) -> None:
+    def mark_used(
+        self,
+        text: str,
+        *,
+        meme_id: str | None = None,
+        cooldown_s: float | None = None,
+    ) -> None:
         key = f"meme:{meme_id}" if meme_id else _topic_key(text)
         self._data[key] = self._now()
         self._save()
@@ -85,19 +100,12 @@ def select_topic(
     interests: list[str],
     store: TopicCooldownStore,
     emotional_highlights: list[str] | None = None,
+    news_items: list[str] | None = None,
 ) -> tuple[str | None, str]:
-    """依序挑：近期生活 → 在場興趣 → 情緒高光 → 無話題（純過場，caller 該退回歌曲間銜接詞）。
+    """依序挑：近期生活 → 在場興趣 → 情緒高光 → 新聞快訊 → 無話題（純過場，caller 該退回歌曲間銜接詞）。
 
     回傳 (topic_text, topic_type)，topic_type in {'life', 'interest',
-    'emotional_highlight', 'none'}。挑中的話題視為即將被用掉，立刻標記冷卻。
-
-    life_cores 每項可以是：
-      - str                → 純文字，用 SHA1 hash 冷卻（舊介面，向後相容）
-      - (text, meme_id)    → 帶語義 tag，用 meme_id 冷卻（同 meme 換說法也算冷卻）
-
-    emotional_highlights：Marvin 自己對這位聽眾的情緒記憶（見 suki_memory
-    add_emotional_highlight），排最後——比 life/interest 少見（單一 requester
-    才有），優先度給群體話題。
+    'emotional_highlight', 'news', 'none'}。挑中的話題視為即將被用掉，立刻標記冷卻。
     """
     for item in life_cores or []:
         if isinstance(item, tuple):
@@ -118,6 +126,11 @@ def select_topic(
         if h and store.is_cool(h):
             store.mark_used(h)
             return h, "emotional_highlight"
+    for n in news_items or []:
+        n = (n or "").strip()
+        if n and store.is_cool(n, cooldown_s=NEWS_COOLDOWN_S):
+            store.mark_used(n, cooldown_s=NEWS_COOLDOWN_S)
+            return n, "news"
     return None, "none"
 
 
@@ -176,20 +189,27 @@ def select_mode(
     has_conversation: bool = False,
     has_prev_song: bool = False,
     emotional_highlights: list[str] | None = None,
+    news_items: list[str] | None = None,
 ) -> tuple[str | None, str]:
     """本地決定這次串場要走哪個 mode，LLM 不必自己判斷「有沒有話題、要不要硬掰」。
 
-    順序：近期生活（主角要在場）→ 在場興趣 → 情緒高光 → 都沒有時，在
+    順序：近期生活（主角要在場）→ 在場興趣 → 情緒高光 → 新聞快訊 → 都沒有時，在
     conversation/prev_song/quick 間輪替（避免每次都落在同一種 fallback，尤其是最
     容易變成「每次都環境/天氣」的那個）。
 
     回傳 (topic_text, mode)，mode 比 select_topic 多了 'conversation'/'prev_song'/'quick'。
-    topic_text 只有 mode in {'life', 'interest', 'emotional_highlight'} 才非 None，
+    topic_text 只有 mode in {'life', 'interest', 'emotional_highlight', 'news'} 才非 None，
     其餘三種 fallback 沒有具體文字素材——caller 自己依 mode 決定串場方向（quick
     甚至該跳過 LLM，直接走本地模板）。
     """
     filtered_life = _filter_present_actors(life_cores, present_members)
-    topic, kind = select_topic(filtered_life, interests, store, emotional_highlights)
+    topic, kind = select_topic(
+        filtered_life,
+        interests,
+        store,
+        emotional_highlights=emotional_highlights,
+        news_items=news_items,
+    )
     if kind != "none":
         return topic, kind
     return None, _pick_fallback_mode(

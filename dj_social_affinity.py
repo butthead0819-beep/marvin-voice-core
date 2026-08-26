@@ -125,13 +125,13 @@ def find_song_social_affinity(
         for m in members:
             if not m or m == requester or "Marvin" in m:
                 continue
-            # 按讚
-            if m in (song.get("likes") or {}):
-                return f"在場的 {m} 也按過這首歌讚"
             # 點播過
             req_cnt = (song.get("requesters") or {}).get(m, 0)
             if req_cnt > 0:
-                return f"在場的 {m} 之前也點過這首（共 {req_cnt} 次）"
+                return f"這首 {requester} 常聽，在場的 {m} 也常聽/點過"
+            # 按讚
+            if m in (song.get("likes") or {}):
+                return f"在場的 {m} 也按過這首歌讚"
             # 記錄過感受
             rx = (song.get("reactions") or {}).get(m, {})
             feelings = rx.get("feelings", [])

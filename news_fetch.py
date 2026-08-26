@@ -52,18 +52,39 @@ def _strip_source_suffix(title: str) -> str:
     return title.strip()
 
 
+_UNSAFE_NEWS_KEYWORDS = (
+    "死", "傷", "亡", "殺", "撞", "車禍", "命危", "搶救", "墜樓", "自焚", "輕生", "溺水", "失蹤",
+    "性侵", "偷拍", "猥褻", "家暴", "通緝", "詐騙", "吸毒", "毒品", "開槍", "槍擊", "砍人",
+    "政治", "選舉", "選戰", "立委", "民進黨", "國民黨", "民眾黨", "政黨", "立院", "立法院",
+    "柯文哲", "賴清德", "藍綠", "罷免", "貪污", "表決", "抗議", "衝突",
+    "外遇", "偷吃", "劈腿", "婚變", "八卦", "醜聞", "性騷"
+)
+
+
+def is_safe_news_title(title: str) -> bool:
+    """檢查新聞標題是否適合電台播報（過濾社會悲劇、傷亡、政治及八卦）。"""
+    t = (title or "").strip()
+    if not t:
+        return False
+    return not any(kw in t for kw in _UNSAFE_NEWS_KEYWORDS)
+
+
 def _parse_first_item(xml_text: str) -> Optional[dict]:
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
         return None
-    item = root.find("./channel/item")
-    if item is None:
+    items = root.findall("./channel/item")
+    if not items:
         return None
-    title = (item.findtext("title") or "").strip()
-    if not title:
-        return None
-    return {"title": _strip_source_suffix(title)}
+    for item in items:
+        title = (item.findtext("title") or "").strip()
+        if not title:
+            continue
+        clean_title = _strip_source_suffix(title)
+        if clean_title and is_safe_news_title(clean_title):
+            return {"title": clean_title}
+    return None
 
 
 async def fetch_news_headline(

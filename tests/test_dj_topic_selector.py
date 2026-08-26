@@ -96,3 +96,29 @@ def test_no_emotional_highlights_falls_through_to_none(tmp_path):
     assert select_topic([], [], store) == (None, "none")
     assert select_topic([], [], store, None) == (None, "none")
     assert select_topic([], [], store, []) == (None, "none")
+
+
+# ── news：新聞模式與 2 小時冷卻 ──────────────────────────────────────
+
+def test_select_topic_picks_news_when_available(tmp_path):
+    store = TopicCooldownStore(str(tmp_path / "c.json"))
+    topic, kind = select_topic([], [], store, emotional_highlights=[], news_items=["台積電新廠完工"])
+    assert (topic, kind) == ("台積電新廠完工", "news")
+
+
+def test_news_cooldown_is_2_hours(tmp_path):
+    from dj_topic_selector import NEWS_COOLDOWN_S
+    assert NEWS_COOLDOWN_S == 2 * 3600
+
+    t, now = _clock()
+    store = TopicCooldownStore(str(tmp_path / "c.json"), now=now)
+    select_topic([], [], store, news_items=["台積電新廠完工"])
+
+    # 1 小時後：仍在冷卻中
+    t[0] += 3600
+    assert select_topic([], [], store, news_items=["台積電新廠完工"]) == (None, "none")
+
+    # 滿 2 小時（+3601s）：冷卻結束，可再次使用
+    t[0] += 3601
+    assert select_topic([], [], store, news_items=["台積電新廠完工"]) == ("台積電新廠完工", "news")
+

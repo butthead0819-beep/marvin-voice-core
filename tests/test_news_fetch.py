@@ -78,3 +78,31 @@ async def test_disabled_flag_skips_and_returns_none(monkeypatch):
 
     result = await news_fetch.fetch_news_headline("測試", fetch=_must_not_call)
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_skips_unsafe_news_and_picks_first_safe_news():
+    """遇到車禍、死亡、政治新聞時應自動跳過，挑選第一則安全新聞。"""
+    fetch = _capturing_fetch(
+        _rss(
+            "重大車禍造成3人受傷 - 某新聞",
+            "立委針對政治議題激烈交鋒 - 某政治報",
+            "台積電新廠宣布完工投產 - 科技新報",
+        )
+    )
+    result = await news_fetch.fetch_news_headline("科技", fetch=fetch)
+    assert result == {"title": "台積電新廠宣布完工投產"}
+
+
+@pytest.mark.asyncio
+async def test_returns_none_if_all_news_are_unsafe():
+    """若全部新聞皆含有負面/政治/社會事件關鍵字，應回傳 None。"""
+    fetch = _capturing_fetch(
+        _rss(
+            "某地發生墜樓身亡意外 - 社會頭條",
+            "政黨候選人捲入貪污醜聞 - 政治快訊",
+        )
+    )
+    result = await news_fetch.fetch_news_headline("新聞", fetch=fetch)
+    assert result is None
+

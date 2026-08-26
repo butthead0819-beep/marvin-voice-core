@@ -72,13 +72,14 @@ def test_social_bridge_when_other_present_member_also_requested():
     mm = _make_mm(songs)
     info = {"title": "稻香", "webpage_url": "https://www.youtube.com/watch?v=song2"}
 
-    # Alice 點歌，Bob 在場（Bob 也曾點過 3 次）
+    # Alice 點歌，Bob 在場（Bob 也常聽）
     affinity = find_song_social_affinity(
         mm, info, requester="Alice", present_members={"Alice", "Bob"}
     )
     assert affinity is not None
     assert "Bob" in affinity
-    assert "點過" in affinity
+    assert "常聽" in affinity or "點過" in affinity
+    assert "次" not in affinity  # 不再包含生硬的次數計數
 
 
 def test_artist_affinity_when_requester_frequently_plays_artist():

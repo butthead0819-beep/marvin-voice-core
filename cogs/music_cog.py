@@ -148,6 +148,7 @@ class MusicCog(commands.Cog):
         "atmosphere": "calm",
         "prev_song": "calm",
         "emotional_highlight": "calm",
+        "news": "upbeat",
     }
 
     # DJ 播報模板池資料源見 personas/dj_templates.yaml；選池邏輯/random.choice() 呼叫點不動
@@ -2755,6 +2756,20 @@ class MusicCog(commands.Cog):
             logger.debug(f"⚠️ [DJ Life] 生活素材抽取失敗，DJ 改走無生活素材: {e}")
             return []
 
+    async def _fetch_news_items_async(self, interests: list[str]) -> list[str]:
+        """從 Google News 獲取適合電台播報的乾淨新聞（已過濾受傷/死亡/政治/八卦）。"""
+        if not getattr(self, "_enable_dj_news_fetch", True):
+            return []
+        try:
+            from news_fetch import fetch_news_headline
+            _kw = interests[0] if interests else None
+            _news_res = await fetch_news_headline(_kw)
+            if _news_res and _news_res.get('title'):
+                return [_news_res['title']]
+        except Exception as e:
+            logger.debug(f"[DJ News] 新聞抓取失敗: {e}")
+        return []
+
     def _dj_topic_store(self):
         """DJ 話題冷卻表的 lazy 單例（跨呼叫共用同一份記憶體狀態＋disk-backed）。"""
         store = getattr(self, "_dj_topic_cooldown_store", None)
@@ -2870,7 +2885,7 @@ class MusicCog(commands.Cog):
         if prev_title:
             ctx.append(f"上一首剛播完：《{prev_title}》")
         if play_count >= 2:
-            ctx.append(f"{requester} 第 {play_count} 次點這首")
+            ctx.append(f"喜好線索：這首是 {requester} 常聽的愛歌")
         if feelings:
             ctx.append(f"情感記錄：{' / '.join(feelings[:2])}")
         if lyric_match:
@@ -2931,6 +2946,9 @@ class MusicCog(commands.Cog):
         _emo_highlight = self._recent_emotional_highlight(requester)
         emotional_highlights = [_emo_highlight] if _emo_highlight else []
 
+        # 獲取安全生活/科技新聞素材（已在 news_fetch 過濾政治/受傷/死亡）
+        news_items = await self._fetch_news_items_async(interests)
+
         # autopilot 策展理由算在 mode 選擇之前：有理由可講時別讓它被 fallback 輪替
         # 排進 quick（quick 沒素材時直接跳過 LLM，會把這個好料浪費掉）。
         _autopilot_reason = ''
@@ -2943,6 +2961,7 @@ class MusicCog(commands.Cog):
             has_conversation=bool(conv_lines),
             has_prev_song=bool(prev_title),
             emotional_highlights=emotional_highlights,
+            news_items=news_items,
         )
         if _autopilot_reason and mode in ("quick", "atmosphere"):
             mode = "reason"
@@ -2962,6 +2981,9 @@ class MusicCog(commands.Cog):
             # 的「代入感」方向相反，robot_pov_rule 對「第一人稱」的限制在這裡要放行。
             ctx.append(f"你（機器人自己）記得的一個瞬間：\n・{topic}")
             ctx.append("開場鉤子：這是你自己的記憶與反應，可以用第一人稱提起這個瞬間，不是在講聽眾的事。")
+        elif mode == "news":
+            ctx.append(f"最新時事消息：\n・{topic}")
+            ctx.append("開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。")
         elif mode == "prev_song":
             ctx.append("串場方向：延續上一首的情緒銜接過去就好，不用硬掰新話題。")
         elif mode == "conversation":
@@ -3003,25 +3025,37 @@ class MusicCog(commands.Cog):
                 logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗: {e}")
                 text = ""
             text = (text or '').strip()
-            # LLM 空手（失敗/quota）→ autopilot 退回原本的模板台詞，別掉到報幕 fallback
-            if not text and requester.startswith('Marvin'):
-                from song_name_clean import clean_title_regex
-                clean_title, clean_artist = self._dj_clean_name(info)
-                text = self._autopilot_dj_phrase(
-                    info.get('_spotlight', ''), clean_title, clean_artist,
-                    lane=info.get('_lane', ''),
-                    anchor=clean_title_regex(info.get('_anchor_title', '')),
-                )
-                logger.info("🎙️ [DJ Prefetch] LLM 空手 → 退回 autopilot 模板")
 
-        text = (text or '').strip()
-        if len(text) < 2:
-            clean_title, clean_artist = self._dj_clean_name(info)
-            if clean_artist:
-                text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{requester} 點的"
-            else:
-                text = f"DJ Marvin為你帶來《{clean_title}》，{requester} 點的"
-            logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
+            from dj_comedy_fallback import get_comedy_fallback, build_news_interjection_template
+            _FORBIDDEN_PHRASES = ("時光流動", "歲月靜好", "撫平心靈", "流淌的旋律", "身為AI", "身為一個AI", "大家好我是")
+
+            def _is_qualified_dj_script(s: str) -> bool:
+                if not s or len(s) < 10 or len(s) > 120:
+                    return False
+                for fb in _FORBIDDEN_PHRASES:
+                    if fb in s:
+                        return False
+                return True
+
+            if not text or not _is_qualified_dj_script(text):
+                # LLM 空手或品質不及格 → 優先退回 autopilot 模板（若為 Marvin 自己選歌）
+                if requester.startswith('Marvin'):
+                    from song_name_clean import clean_title_regex
+                    clean_title, clean_artist = self._dj_clean_name(info)
+                    text = self._autopilot_dj_phrase(
+                        info.get('_spotlight', ''), clean_title, clean_artist,
+                        lane=info.get('_lane', ''),
+                        anchor=clean_title_regex(info.get('_anchor_title', '')),
+                    )
+
+                # 若仍無有效台詞或品質不符，採用 DJ Marvin 經典人設報幕
+                if not text or not _is_qualified_dj_script(text):
+                    clean_title, clean_artist = self._dj_clean_name(info)
+                    if clean_artist:
+                        text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{requester} 點的"
+                    else:
+                        text = f"DJ Marvin為你帶來《{clean_title}》，{requester} 點的"
+                    logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
 
         from tts_length_policy import truncate_for_tts
         gated_text, was_cut = truncate_for_tts(

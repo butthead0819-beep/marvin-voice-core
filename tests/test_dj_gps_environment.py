@@ -36,6 +36,7 @@ def _make_cog(tmp_path=None):
 
     from cogs.music_cog import MusicCog
     cog = MusicCog(bot)
+    cog._enable_dj_news_fetch = False
     if tmp_path is not None:
         # ⚠️ _dj_topic_store() 沒注入時是 lazy singleton，讀寫真正的
         # records/dj_topic_cooldown.json——這兩條測試斷言 fallback 落在特定

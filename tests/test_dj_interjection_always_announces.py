@@ -42,6 +42,7 @@ def _make_cog():
 
     from cogs.music_cog import MusicCog
     cog = MusicCog(bot)
+    cog._enable_dj_news_fetch = False
     return cog
 
 
