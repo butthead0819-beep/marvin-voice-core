@@ -255,7 +255,13 @@ class ConnectionMixin:
             if self.soft_repair_count < 2:
                 self.soft_repair_count += 1
                 logger.critical(f"🛡️ [Sentinel] 偵測到持續性的底層失效 ({error_type})，啟動【軟修復】程序 ({self.soft_repair_count}/2)...")
-                await self.soft_repair_connection(reason=f"底層失效 ({error_type})")
+                await self.soft_repair_connection(
+                    reason=f"底層失效 ({error_type})",
+                    # key_desync_storm＝正在播的音訊本身已因解密風暴爆音，保「播放連續性」
+                    # 是在保爛音訊；且此類失效唯有重連能重新同步 secret_key。其他失效類型
+                    # 維持原樣（播放中跳過，避免無謂中斷）。2026-08-27 incident。
+                    force_during_playback=(error_type == "key_desync_storm"),
+                )
             # 🚀 [Sentinel Case 2] 軟修復無效後，才啟動物理性重啟進程
             else:
                 logger.error(f"☢️ [Sentinel] 軟修復失效，正在執行物理重啟 ({error_type}) 以重新同步金鑰。")
@@ -264,15 +270,19 @@ class ConnectionMixin:
             # 即使失敗也釋放鎖定，讓 Sentinel Loop 能在未來嘗試
             self.is_recovering = False
 
-    async def soft_repair_connection(self, reason: str):
+    async def soft_repair_connection(self, reason: str, *, force_during_playback: bool = False):
         """
         [Sentinel 軟修復] 不重啟進程，僅重整語音連線管道
+
+        force_during_playback：預設 False → 播放中跳過（disconnect 會中斷語音）。
+        key_desync_storm 傳 True → 正在播的音訊本身已因解密風暴爆音，跳過只是保爛音訊，
+        照樣重連同步 secret_key（見 orchestrate_recovery 呼叫端說明）。
         """
         if not self.bot.voice_clients:
             return
 
         # TTS 播放中不斷線 — disconnect 會中斷正在播放的語音
-        if self.is_playing_audio:
+        if self.is_playing_audio and not force_during_playback:
             logger.info(f"🛡️ [Sentinel] TTS 播放中，跳過本次軟修復 ({reason})")
             return
 
