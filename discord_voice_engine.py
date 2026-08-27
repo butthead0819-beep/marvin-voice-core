@@ -112,7 +112,7 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
         fresh._key_sync_patched = True
         reader.decryptor = fresh
         decryptor = fresh
-        logger.info(f"[KeySync] decryptor 已用當前 mode={fresh.mode} 重建（{reason}）")
+        logger.warning(f"🛡️ [KeySync] decryptor 已用當前 mode={fresh.mode} 重建（{reason}）")
         return True
 
     def _synced_decrypt_rtp(packet):
@@ -124,7 +124,7 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
             try:
                 new_key = bytes(voice_client.secret_key)
                 decryptor.update_secret_key(new_key)
-                logger.info("[KeySync] RTP CryptoError → reader secret_key 已同步")
+                logger.debug("[KeySync] RTP CryptoError → reader secret_key 已同步")
                 out = _maybe_dave_decrypt(packet, orig_rtp(packet))
                 _decrypt_monitor.record_success(time.time())
                 return out
@@ -135,7 +135,7 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
                     try:
                         out = _maybe_dave_decrypt(packet, orig_rtp(packet))
                         _decrypt_monitor.record_success(time.time())
-                        logger.info("[KeySync] decryptor 重建後 RTP 解密恢復")
+                        logger.warning("🛡️ [KeySync] decryptor 重建後 RTP 解密恢復 → 免整條重連")
                         return out
                     except _CryptoError:
                         pass
@@ -166,7 +166,7 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
             try:
                 new_key = bytes(voice_client.secret_key)
                 decryptor.update_secret_key(new_key)
-                logger.info("[KeySync] RTCP CryptoError → reader secret_key 已同步")
+                logger.debug("[KeySync] RTCP CryptoError → reader secret_key 已同步")
                 return orig_rtcp(packet_data)
             except _CryptoError:
                 if _rebuild_decryptor("RTCP 持續 CryptoError"):
@@ -184,7 +184,7 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
     decryptor.decrypt_rtp = _synced_decrypt_rtp
     decryptor.decrypt_rtcp = _synced_decrypt_rtcp
     decryptor._key_sync_patched = True
-    logger.info("[KeySync] voice_recv decryptor auto key-sync 補丁已掛載")
+    logger.warning("🛡️ [KeySync] voice_recv decryptor auto key-sync 補丁已掛載")
 
 
 # 每次說話最多做 3 次 Wake Check，分別在開口後 0.6 / 1.2 / 1.8 秒觸發。
