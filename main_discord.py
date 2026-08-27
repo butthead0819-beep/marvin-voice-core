@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import asyncio
+import gc
 import os
 import sys
 import time
@@ -32,6 +33,28 @@ class _StreamToLogger:
         if self._buffer.strip():
             self.target_logger.log(self.level, self._buffer.strip())
         self._buffer = ""
+
+# GC stop-the-world 暫停跟語音 thread 排程延遲同源（都吃 GIL），且完全跟頻道
+# 有沒有人講話無關——2026-08-27 排查「單人靜音頻道也爆音」時新增，跟
+# local_mixing_source.py 的 [Plan12_ReadGap] 對照時間戳，看 gap 是否跟 GC
+# 暫停重疊。閾值 15ms：明顯感覺得到但不會被平常 gen0 小 GC 洗版。
+_gc_pause_t0: dict[int, float] = {}
+
+def _gc_pause_callback(phase: str, info: dict) -> None:
+    gen = info.get("generation", 0)
+    if phase == "start":
+        _gc_pause_t0[gen] = time.perf_counter()
+        return
+    t0 = _gc_pause_t0.pop(gen, None)
+    if t0 is None:
+        return
+    dt_ms = (time.perf_counter() - t0) * 1000.0
+    if dt_ms > 15.0:
+        print(
+            f"[GC_Pause] {time.strftime('%H:%M:%S')} gen={gen} dt={dt_ms:.1f}ms "
+            f"collected={info.get('collected')} uncollectable={info.get('uncollectable')}",
+            flush=True,
+        )
 
 def setup_early_logging():
     logging.basicConfig(
@@ -79,7 +102,9 @@ def setup_early_logging():
     stdout_logger.addHandler(stdout_handler)
     sys.stdout = _StreamToLogger(stdout_logger, logging.INFO)
     sys.stderr = _StreamToLogger(stdout_logger, logging.ERROR)
-    
+
+    gc.callbacks.append(_gc_pause_callback)  # 裝在 stdout 重導之後，[GC_Pause] 才進 bot_stdout.log
+
     # [Early Progress]
     print("🚀 Marvin Bot is waking up...")
     logger.info("🚀 Marvin Bot is waking up (Logging Initialized)...")

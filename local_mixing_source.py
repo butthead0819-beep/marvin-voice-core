@@ -128,6 +128,12 @@ class LocalMixingAudioSource(_BASE):
         self._stat_ms_max = 0.0
         self._stat_slow = 0          # read() > 18ms 的幀數（逼近 20ms deadline）
         self._stat_t0 = time.monotonic()
+        # read() 呼叫「間隔」（非耗時）：discord AudioPlayer thread 被 GIL/排程延遲時，
+        # _read_impl() 本身可能還是 <1ms，但兩次 read() 之間的牆鐘間隔會遠超 20ms——
+        # 這才是爆音的直接訊號（送出去的幀本身遲到），跟 _record_stat 量的「我們算得慢不慢」
+        # 是兩件事，2026-08-27 車機 vs Discord 爆音排查新增。
+        self._last_read_ts: float | None = None
+        self._stat_gap_max_ms = 0.0
 
     def note_player_speech(self) -> None:
         """🔇 玩家說話 → 把 Marvin 正播的長播報 duck 讓路，兩階段漸進確認（見 __init__ 註解）：
@@ -197,10 +203,25 @@ class LocalMixingAudioSource(_BASE):
     def is_opus(self) -> bool:
         return False
 
+    # read() 呼叫間隔超過此值 → 視為一次「送出去的幀遲到」，立即記錄（不等 5s 週期報告），
+    # 才能跟使用者回報的爆音時間點對得上。20ms 幀期的 2 倍：正常 OS 排程 jitter 不該碰到。
+    _READ_GAP_WARN_MS = 40.0
+
     def read(self) -> bytes:
         if not self._instrument:
             return self._read_impl()
         t0 = time.perf_counter()
+        if self._last_read_ts is not None:
+            gap_ms = (t0 - self._last_read_ts) * 1000.0
+            if gap_ms > self._stat_gap_max_ms:
+                self._stat_gap_max_ms = gap_ms
+            if gap_ms > self._READ_GAP_WARN_MS:
+                print(
+                    f"[Plan12_ReadGap] {time.strftime('%H:%M:%S')} gap={gap_ms:.1f}ms"
+                    f"（預期 20ms）→ AudioPlayer thread 被延遲，這幀送出去大概率已聽到爆音/斷點",
+                    flush=True,
+                )
+        self._last_read_ts = t0
         out = self._read_impl()
         self._record_stat((time.perf_counter() - t0) * 1000.0)
         return out
@@ -221,6 +242,7 @@ class LocalMixingAudioSource(_BASE):
             print(
                 f"[Plan12_Stats] {now - self._stat_t0:.1f}s f={self._stat_frames} "
                 f"read_ms(avg/max)={avg:.2f}/{self._stat_ms_max:.2f} slow>18ms={self._stat_slow} "
+                f"gap_max_ms={self._stat_gap_max_ms:.1f} "
                 f"music_underrun={mst.get('underruns', '-')} "
                 f"buf={mst.get('depth', '-')}/{mst.get('max', '-')} tts_q={len(self._tts_queue)}",
                 flush=True,
@@ -229,6 +251,7 @@ class LocalMixingAudioSource(_BASE):
             self._stat_ms_sum = 0.0
             self._stat_ms_max = 0.0
             self._stat_slow = 0
+            self._stat_gap_max_ms = 0.0
             self._stat_t0 = now
 
     def clear_tts(self) -> None:
