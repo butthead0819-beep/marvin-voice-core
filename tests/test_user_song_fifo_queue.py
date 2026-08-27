@@ -96,6 +96,37 @@ def test_user_song_updates_t2_seed():
     assert cog._last_user_song_seed == "ABCDEFGHIJK"
 
 
+def test_autopilot_user_song_becomes_third_not_next():
+    """autopilot 播放中：點歌往後推一首，不插隊到下一首（爆音修 2026-08-27）。
+
+    A 正在播 → queue=[m1]（下一首，歌尾常已預載）。點 X → 應變 [m1, X]，
+    播放序 A→m1→X，X 是第三首；不是 [X, m1] 讓 X 搶掉已預載的 m1。
+    """
+    cog = _make_cog()
+    cog.stream_mode = True
+    cog.stream_queue = [_m("m1")]
+    cog._queue_user_song(_u("jack", "X"))
+    assert [s["title"] for s in cog.stream_queue] == ["m1", "X"]
+
+
+def test_autopilot_user_songs_still_fifo_among_themselves():
+    cog = _make_cog()
+    cog.stream_mode = True
+    cog.stream_queue = [_m("m1")]
+    cog._queue_user_song(_u("jack", "A"))
+    cog._queue_user_song(_u("jack", "B"))
+    assert [s["title"] for s in cog.stream_queue] == ["m1", "A", "B"]
+
+
+def test_non_autopilot_user_song_still_plays_next():
+    """非 autopilot（stream_mode=False）→ 維持舊行為，點歌插到 Marvin 曲之前。"""
+    cog = _make_cog()
+    cog.stream_mode = False
+    cog.stream_queue = [_m("m1"), _m("m2")]
+    cog._queue_user_song(_u("jack", "A"))
+    assert cog.stream_queue[0]["title"] == "A"
+
+
 def test_user_song_clears_highlight_start_and_sets_voice_request():
     """使用者點歌不快進：清空 highlight_start_s 並標記 voice_request（避免熱力圖與前奏跳過）。"""
     cog = _make_cog()
