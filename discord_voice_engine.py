@@ -81,6 +81,40 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
             logger.debug(f"[DAVE] decrypt fallback uid={uid}: {_e}")
             return plaintext
 
+    _last_rebuild = [0.0]
+
+    def _rebuild_decryptor(reason: str) -> bool:
+        """用 voice_client 當前 mode + secret_key 整個重建 decryptor，等同重新 listen()
+        的效果但零音訊中斷。
+
+        補 voice_recv 的洞：PacketDecryptor.update_secret_key() 只換 box、不換 self.mode
+        也不重綁 decrypt_rtp/rtcp。reconnect 後若協商到不同 mode，或 decryptor 綁死已失效
+        的 session，光重讀 key 永遠解不開——只有重新 listen()（＝Sentinel 完整軟修復）
+        才會用當前 mode 重建。這裡把「重建」單獨拉出來先試，成功就地復原、免整條重連。
+        """
+        nonlocal decryptor, orig_rtp, orig_rtcp
+        _now = time.time()
+        if _now - _last_rebuild[0] < 5.0:   # 防抖：避免每個壞封包都重建
+            return False
+        _last_rebuild[0] = _now
+        try:
+            from discord.ext.voice_recv.reader import PacketDecryptor
+            fresh = PacketDecryptor(voice_client.mode, bytes(voice_client.secret_key))
+        except Exception as _e:
+            logger.warning(
+                f"[KeySync] decryptor 重建失敗（mode={getattr(voice_client, 'mode', None)!r}）: {_e}"
+            )
+            return False
+        orig_rtp = fresh.decrypt_rtp
+        orig_rtcp = fresh.decrypt_rtcp
+        fresh.decrypt_rtp = _synced_decrypt_rtp
+        fresh.decrypt_rtcp = _synced_decrypt_rtcp
+        fresh._key_sync_patched = True
+        reader.decryptor = fresh
+        decryptor = fresh
+        logger.info(f"[KeySync] decryptor 已用當前 mode={fresh.mode} 重建（{reason}）")
+        return True
+
     def _synced_decrypt_rtp(packet):
         try:
             out = _maybe_dave_decrypt(packet, orig_rtp(packet))
@@ -95,9 +129,19 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
                 _decrypt_monitor.record_success(time.time())
                 return out
             except _CryptoError:
-                # 重抓 key 後仍 CryptoError：key 本身壞（RESUME 沿用舊 key）。原樣上拋讓
-                # reader.py 乾淨 drop；但餵偵測器——持續零解密 = 真 desync 風暴，重讀無用、
-                # 只有完整重連能修（2026-06-23 incident：Sentinel 看不到這層 → 炸 40 分沒自癒）。
+                # 重抓 key 後仍 CryptoError → 先試「用當前 mode 整個重建 decryptor」
+                # （voice_recv update_secret_key 不換 mode 的洞）。成功就地復原、零中斷。
+                if _rebuild_decryptor("RTP 持續 CryptoError"):
+                    try:
+                        out = _maybe_dave_decrypt(packet, orig_rtp(packet))
+                        _decrypt_monitor.record_success(time.time())
+                        logger.info("[KeySync] decryptor 重建後 RTP 解密恢復")
+                        return out
+                    except _CryptoError:
+                        pass
+                # 重建也救不回：key 本身壞（RESUME 沿用舊 key）。原樣上拋讓 reader.py 乾淨
+                # drop；餵偵測器——持續零解密 = 真 desync 風暴，只有完整重連能修
+                # （2026-06-23 incident：Sentinel 看不到這層 → 炸 40 分沒自癒）。
                 _now = time.time()
                 _decrypt_monitor.record_failure(_now)
                 if on_desync_storm is not None and _decrypt_monitor.should_escalate(_now):
@@ -125,6 +169,11 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
                 logger.info("[KeySync] RTCP CryptoError → reader secret_key 已同步")
                 return orig_rtcp(packet_data)
             except _CryptoError:
+                if _rebuild_decryptor("RTCP 持續 CryptoError"):
+                    try:
+                        return orig_rtcp(packet_data)
+                    except _CryptoError:
+                        pass
                 logger.debug("[KeySync] RTCP 重試仍 CryptoError，drop 此封包")
                 raise
             except Exception as _e:
