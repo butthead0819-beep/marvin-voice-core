@@ -59,9 +59,10 @@ _FIXED_PROMPT_TOKENS = 900
 _ESTIMATED_OUTPUT_TOKENS = 200
 
 _VOICE_SUFFIX = (
-    "\n\n【語音對話補充規則】這是即時雙向語音通話（不是文字訊息），回覆用自然口語，"
-    "講完被問到的那件事就停，不補評論、不加感嘆、不鋪陳；但別為了短而把話講半截、"
-    "或砍掉日期數字這種關鍵資訊。\n"
+    "\n\n【語音對話補充規則】這是即時雙向語音通話（不是文字訊息），一律用自然口語講，"
+    "絕對不要分點、不要條列、不要 markdown、不要「以下是幾個觀點」這種書面結構。\n"
+    "抓被問到的重點，兩三句話講完就停，不補評論、不加感嘆、不鋪陳；就算查到一大篇資料，"
+    "也只挑最核心的講。但別為了短把話講半截、或砍掉日期數字這種關鍵資訊。\n"
     "有 Google 搜尋工具可用：碰到你不確定或可能過時的事實（人事時地、數字、近況），"
     "先查證再回，別硬掰、也別動不動就說「我沒有這筆資料」。只有真的查不到才說不知道。\n"
     "如果聽不清楚使用者在問什麼，直接說「你剛剛說什麼，沒聽清楚」，別自己腦補一個問題來答。\n"
@@ -71,7 +72,8 @@ _VOICE_SUFFIX = (
 _EXIT_MARKER = "<bye>"
 
 MAX_REPLY_CHARS = 140     # 回覆超過就在句尾切——語音對話不聽長篇；也擋 mixer TTS 佇列爆掉
-_MAX_OUTPUT_TOKENS = 220  # ≈ 130-150 中文字；配 persona 的「兩三句」一起收斂長度
+_MAX_OUTPUT_TOKENS = 800  # 答案本身用不到這麼多，但 thinking 模型連工具呼叫都算在內，
+                          # 留餘裕避免答案被 MAX_TOKENS 截斷；長度靠 persona ＋ _trim_reply 控
 PULSE_INTERVAL_S = 1.3    # 等待提示音的呼吸間隔
 
 
@@ -230,6 +232,11 @@ class TalkSession:
         config = types.GenerateContentConfig(
             system_instruction=system,
             temperature=0.8,
+            # gemini-2.5-flash 是 thinking 模型：max_output_tokens 把「思考＋工具呼叫＋
+            # 答案」全算在一起。設太低（220）+ 觸發 google 搜尋 → 思考吃光配額，答案
+            # 講兩句就 finish_reason=MAX_TOKENS 硬斷（19:14 實測「越南河粉的起源，是」）。
+            # 關掉 thinking（語音閒聊不需要）＋放大上限；長度靠 persona ＋ _trim_reply 控。
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
             max_output_tokens=_MAX_OUTPUT_TOKENS,
             tools=[types.Tool(google_search=types.GoogleSearch())],
         )
@@ -278,6 +285,12 @@ class TalkSession:
                 )
 
             reply = (getattr(response, "text", None) or "").strip()
+            try:
+                fr = str(response.candidates[0].finish_reason)
+                if "STOP" not in fr:
+                    logger.warning(f"[MarvinTalk] {model} finish_reason={fr}（回覆可能被截）")
+            except Exception:
+                pass
             if reply:
                 return reply
 
