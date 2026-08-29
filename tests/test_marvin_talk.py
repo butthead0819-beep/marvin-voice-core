@@ -95,6 +95,45 @@ async def test_toggle_opens_and_closes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_mic_gate_drops_slice_while_marvin_speaking(tmp_path):
+    """馬文自己在出聲時進來的切片（同頻道回授）不送 LLM。"""
+    client = _fake_client()
+    open_mic = {"v": False}
+    mgr = marvin_talk.TalkSessionManager(
+        google_client_provider=lambda: client,
+        play_tts=AsyncMock(), send_text=AsyncMock(),
+        pause_music=MagicMock(), resume_music=MagicMock(),
+        persona_provider=lambda: "你是馬文。", paid_guard=_guard(tmp_path),
+        mic_gate=lambda: open_mic["v"], clock=lambda: 1000.0,
+    )
+    await mgr.start(1, "Alice")
+
+    await mgr.feed(1, _PCM)  # 馬文在出聲 → 丟
+    client.aio.models.generate_content.assert_not_called()
+
+    open_mic["v"] = True
+    await mgr.feed(1, _PCM)  # 麥克風開了 → 送
+    client.aio.models.generate_content.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_echo_tail_drops_slice_right_after_reply(tmp_path):
+    clock = _FakeClock()
+    client = _fake_client()
+    mgr = _manager(tmp_path, client=client, clock=clock)
+    await mgr.start(1, "Alice")
+    await mgr.feed(1, _PCM)
+    assert client.aio.models.generate_content.await_count == 1
+    mgr.session._reply_done_at = clock.t  # 剛回覆完
+    clock.t += marvin_talk.ECHO_TAIL_S - 0.3
+    await mgr.feed(1, _PCM)  # 殘響窗內 → 丟
+    assert client.aio.models.generate_content.await_count == 1
+    clock.t += 0.5  # 出窗
+    await mgr.feed(1, _PCM)
+    assert client.aio.models.generate_content.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_second_user_cannot_open_while_active(tmp_path):
     mgr = _manager(tmp_path, client=_fake_client())
     await mgr.start(1, "Alice")

@@ -34,6 +34,7 @@ logger = logging.getLogger("cogs.voice_controller.talk")
 # paid cap（_DAILY_CAP_USD）+ 「只在真的有人講話才打 LLM」（VAD 已 gate）守住。
 # 結束靠：閒置逾時 / 說結束語 / 再打一次 /marvin_talk / bot 離開語音頻道。
 IDLE_TIMEOUT_S = 180.0     # 這麼久沒有任何一句 → 自動收（沒人講話就沒成本，寬一點無妨）
+ECHO_TAIL_S = 1.2          # 馬文回覆播完後這段時間內來的切片視為聲學殘響，丟
 MAX_HISTORY_TURNS = 8      # 送進 prompt 的最近對話輪數
 GEMINI_TIMEOUT_S = 6.0     # 單次呼叫上限（實測 flash-lite 平時 ~2.6s；卡住就換下一家別乾等）
 
@@ -121,6 +122,7 @@ class TalkSession:
         self._last_activity = self.started_at
         self.history: list[dict] = []  # [{"heard": str, "reply": str}]
         self.turn_count = 0
+        self._reply_done_at = 0.0  # 上一句回覆 TTS push 完的時刻（擋聲學殘響回授）
         self._turn_lock = asyncio.Lock()
 
     # ── 生命週期 ──────────────────────────────────────────────────────────────
@@ -142,6 +144,10 @@ class TalkSession:
             return
         async with self._turn_lock:
             if not self.active:
+                return
+            # 上一句回覆剛播完的殘響窗內 → 這段大概率是喇叭進麥克風的回授，丟
+            if 0 < self._clock() - self._reply_done_at < ECHO_TAIL_S:
+                logger.info("[MarvinTalk] 回覆殘響窗內，丟棄這段切片（疑似回授）")
                 return
             self._last_activity = self._clock()
             logger.warning(f"[MarvinTalk] 收到 {self.owner_name} 一句（{len(pcm48k_stereo)} bytes），處理中")
@@ -180,6 +186,7 @@ class TalkSession:
             self._last_activity = self._clock()
 
             await self._safe_tts(reply)
+            self._reply_done_at = self._clock()
 
             if heard and any(p in heard for p in _EXIT_PHRASES):
                 logger.info(f"[MarvinTalk] 聽到結束語「{heard}」→ 收會話")
@@ -263,6 +270,7 @@ class TalkSessionManager:
         persona_provider: Callable[[], str],
         is_voice_connected: Callable[[], bool] | None = None,
         heard_cue: Callable[[], Awaitable[Any]] | None = None,
+        mic_gate: Callable[[], bool] | None = None,
         paid_guard: PaidUsageGuard | None = None,
         model_chain: tuple[str, ...] = _MODEL_CHAIN,
         clock: Callable[[], float] = time.time,
@@ -271,6 +279,7 @@ class TalkSessionManager:
         self._play_tts = play_tts
         self._send_text = send_text
         self._heard_cue = heard_cue
+        self._mic_gate = mic_gate
         self._pause_music = pause_music
         self._resume_music = resume_music
         self._persona_provider = persona_provider
@@ -355,6 +364,12 @@ class TalkSessionManager:
         """engine 在獨佔期間把觸發者的語音切片轉進來。"""
         sess = self.session
         if sess is None or not sess.active or user_id != sess.owner_id:
+            return
+        # 馬文自己在講（ack / 回覆，mixer 還在放）或剛講完的 echo 窗內 → 這段切片是
+        # 馬文自己的聲音（同頻道回授 / 喇叭進麥克風），不是使用者要說的話，丟掉。
+        # 回合制不支援 barge-in，本來就該等馬文講完再開口。
+        if self._mic_gate is not None and not self._mic_gate():
+            logger.info("[MarvinTalk] 馬文正在出聲（或 echo 窗內），丟棄這段切片（疑似回授）")
             return
         await sess.handle_turn(pcm48k_stereo)
 
