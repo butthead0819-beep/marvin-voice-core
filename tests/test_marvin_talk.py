@@ -145,22 +145,29 @@ async def test_feed_only_owner_reaches_gemini(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_heard_cue_fires_before_gemini(tmp_path):
-    order = []
+async def test_wait_pulse_beeps_until_reply(tmp_path):
+    beeps = []
     client = MagicMock()
 
     async def _gen(*a, **k):
-        order.append("gemini")
+        await asyncio.sleep(0.05)  # 讓 pulse loop 跑幾下
         return _fake_gemini_response()
     client.aio.models.generate_content = AsyncMock(side_effect=_gen)
 
     async def _cue():
-        order.append("cue")
+        beeps.append(1)
 
-    mgr = _manager(tmp_path, client=client, heard_cue=_cue)
-    await mgr.start(1, "Alice")
-    await _feed(mgr)
-    assert order == ["cue", "gemini"]  # 先出提示音，再打 LLM
+    # pulse 間隔壓短，測試才不用等
+    import marvin_talk as mt
+    orig = mt.PULSE_INTERVAL_S
+    mt.PULSE_INTERVAL_S = 0.01
+    try:
+        mgr = _manager(tmp_path, client=client, heard_cue=_cue)
+        await mgr.start(1, "Alice")
+        await _feed(mgr)
+    finally:
+        mt.PULSE_INTERVAL_S = orig
+    assert len(beeps) >= 2  # 等待期間至少嗶了兩下
 
 
 @pytest.mark.asyncio

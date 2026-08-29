@@ -33,9 +33,32 @@ class MarvinTalkMixin:
             persona_provider=self._talk_persona,
             is_voice_connected=lambda: self.voice_client is not None
             and self.voice_client.is_connected(),
-            # VAD 切走你的話後立刻出個短音「嗯」——讓你知道聽到了、正在想（LLM+TTS 還要幾秒）
-            heard_cue=lambda: self._play_ack("filler"),
+            # 等回應期間循環出的輕柔提示音（呼吸節奏），到回覆出聲才停
+            heard_cue=self._talk_pulse_beep,
         )
+
+    def _talk_beep_f32(self):
+        """一聲柔和的 ~320Hz 短音（raised-cosine 包絡、低振幅），48k stereo 交錯 f32。"""
+        buf = getattr(self, "_talk_beep_cache", None)
+        if buf is None:
+            import numpy as np
+            sr, dur = 48000, 0.16
+            n = int(sr * dur)
+            t = np.arange(n) / sr
+            env = np.sin(np.pi * np.arange(n) / n) ** 2
+            mono = (np.sin(2 * np.pi * 320 * t) * env * 0.10).astype("float32")
+            buf = np.repeat(mono, 2)  # → stereo 交錯
+            self._talk_beep_cache = buf
+        return buf
+
+    async def _talk_pulse_beep(self) -> None:
+        mixer = getattr(self, "_mixer", None)
+        if mixer is None:
+            return
+        try:
+            mixer.push_tts(self._talk_beep_f32())
+        except Exception:
+            pass
 
     def _talk_free_client(self):
         key = os.getenv("MARVIN_TALK_API_KEY")
@@ -93,7 +116,8 @@ class MarvinTalkMixin:
             "厭世是底色不是表演。繁體中文台灣口語。\n"
             "你有 Google 搜尋工具：任何你不確定或可能過時的事實（人事時地、數字、近況、"
             "在地資訊），一律先查證再回答。不要憑印象答、更不要動不動就說「我沒有這筆資料」"
-            "——那是最後手段，只有真的查不到才用。"
+            "——那是最後手段，只有真的查不到才用。\n"
+            "這是講電話，回覆最多兩三句、控制在 60 字內，只講重點；除非對方明確要你細講。"
         )
 
     def _talk_set_music_paused(self, paused: bool) -> None:

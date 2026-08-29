@@ -70,6 +70,23 @@ _VOICE_SUFFIX = (
 
 _EXIT_MARKER = "<bye>"
 
+MAX_REPLY_CHARS = 140     # 回覆超過就在句尾切——語音對話不聽長篇；也擋 mixer TTS 佇列爆掉
+_MAX_OUTPUT_TOKENS = 220  # ≈ 130-150 中文字；配 persona 的「兩三句」一起收斂長度
+PULSE_INTERVAL_S = 1.3    # 等待提示音的呼吸間隔
+
+
+def _trim_reply(text: str) -> str:
+    """回覆太長 → 在 MAX_REPLY_CHARS 前最後一個句末標點切；找不到就硬切。"""
+    text = text.strip()
+    if len(text) <= MAX_REPLY_CHARS:
+        return text
+    head = text[:MAX_REPLY_CHARS]
+    for i in range(len(head) - 1, 0, -1):
+        if head[i] in "。！？!?…":
+            return head[: i + 1]
+    return head + "…"
+
+
 PlayTTS = Callable[[str], Awaitable[Any]]
 SendText = Callable[[str], Awaitable[Any]]
 
@@ -147,20 +164,21 @@ class TalkSession:
             self._last_activity = self._clock()
             logger.warning(f"[MarvinTalk] 收到 {self.owner_name} 一句（{len(wav_bytes)} bytes, rms={rms}），處理中")
 
-            # 出個短音讓使用者知道「聽到了、正在想」——後面 LLM+TTS 還要等幾秒
-            if self._on_heard is not None:
-                try:
-                    await self._on_heard()
-                except Exception as exc:
-                    logger.warning(f"[MarvinTalk] 收到提示音失敗（不擋）：{exc}")
+            # 等伺服器回應期間持續出輕柔提示音（呼吸節奏），到回覆出聲才停——不留死寂
+            pulse = asyncio.ensure_future(self._pulse_loop()) if self._on_heard else None
+            try:
+                reply = await self._call_gemini(wav_bytes)
+            finally:
+                if pulse is not None:
+                    pulse.cancel()
 
-            reply = await self._call_gemini(wav_bytes)
             if reply is None:
                 await self._safe_tts("抱歉，我剛剛恍神了，你再說一次。")
                 return
 
             said_bye = reply.startswith(_EXIT_MARKER)
             reply = reply[len(_EXIT_MARKER):].strip() if said_bye else reply
+            reply = _trim_reply(reply)
             logger.warning(f"[MarvinTalk] 回合 {self.turn_count + 1}｜回「{reply[:50]}」{' [bye]' if said_bye else ''}")
             self.turn_count += 1
             self.history.append(reply)
@@ -212,6 +230,7 @@ class TalkSession:
         config = types.GenerateContentConfig(
             system_instruction=system,
             temperature=0.8,
+            max_output_tokens=_MAX_OUTPUT_TOKENS,
             tools=[types.Tool(google_search=types.GoogleSearch())],
         )
 
@@ -263,6 +282,18 @@ class TalkSession:
                 return reply
 
         return None
+
+    async def _pulse_loop(self) -> None:
+        """等回應期間循環出提示音，第一下立刻、之後每 PULSE_INTERVAL_S 一下。"""
+        try:
+            while True:
+                try:
+                    await self._on_heard()
+                except Exception:
+                    pass
+                await asyncio.sleep(PULSE_INTERVAL_S)
+        except asyncio.CancelledError:
+            pass
 
     async def _safe_tts(self, text: str) -> None:
         try:
