@@ -20,11 +20,9 @@ cleaner 共用同一把。免費全掛（429 / 逾時）才退到付費 key（go
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import logging
 import time
-import wave
 from typing import Any, Awaitable, Callable
 
 from llm_paid import PaidUsageGuard, estimate_cost
@@ -53,7 +51,8 @@ _DAILY_CAP_USD = 2.0
 _MONTHLY_CAP_USD = 10.0
 
 # 粗估：Gemini 音訊輸入約 32 token/秒；人格 prompt + 歷史約 900 token；輸出短。
-_PCM16_BYTES_PER_SECOND = 16000 * 2
+# wav_bytes 是 48kHz stereo 16-bit（既有 pipeline 產出），約 192000 B/s。
+_WAV_BYTES_PER_SECOND = 48000 * 2 * 2
 _AUDIO_TOKENS_PER_SECOND = 32
 _FIXED_PROMPT_TOKENS = 900
 _ESTIMATED_OUTPUT_TOKENS = 200
@@ -78,21 +77,6 @@ _EXIT_PHRASES = ("掰掰馬文", "再見馬文", "結束對話", "結束聊天",
 
 PlayTTS = Callable[[str], Awaitable[Any]]
 SendText = Callable[[str], Awaitable[Any]]
-
-
-def _pcm48k_stereo_to_wav16k_mono(pcm48k_stereo: bytes) -> bytes:
-    """48kHz stereo int16 PCM → 16kHz mono 16-bit WAV bytes（Gemini audio 輸入格式）。"""
-    from marvin_voice_core.audio_utils import pcm48k_stereo_to_16k_mono
-
-    mono_f32 = pcm48k_stereo_to_16k_mono(pcm48k_stereo)  # float32 [-1, 1]
-    pcm16 = (mono_f32 * 32767.0).clip(-32768, 32767).astype("<i2").tobytes()
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(16000)
-        wav.writeframes(pcm16)
-    return buf.getvalue()
 
 
 class TalkSession:
@@ -145,8 +129,11 @@ class TalkSession:
         self.active = False
 
     # ── 每回合 ───────────────────────────────────────────────────────────────
-    async def handle_turn(self, pcm48k_stereo: bytes) -> None:
-        if not self.active or not pcm48k_stereo:
+    async def handle_turn(self, wav_bytes: bytes, rms: int) -> None:
+        """wav_bytes：既有 pipeline 已 normalize_rms + 抗混疊處理好的 WAV（見
+        discord_voice_engine._flush_audio_to_stt）。rms：正規化前的原始 RMS，當
+        「有沒有人真的在講話」的訊號。"""
+        if not self.active or not wav_bytes:
             return
         # 上一回合還在跑（Gemini 或 TTS）→ 丟棄本次，避免堆積
         if self._turn_lock.locked():
@@ -158,14 +145,12 @@ class TalkSession:
 
             # 沒人真的在講話（房間噪音/呼吸被 VAD 誤切）→ 不燒 LLM。VAD 不是萬能，
             # 14:52 實測整段噪音被 Gemini 當「00:00 00:01」瘋狂 hallucinate、連回 9 次同一句。
-            from marvin_voice_core.audio_utils import calculate_rms
-            rms = calculate_rms(pcm48k_stereo)
             if rms < MIN_SPEECH_RMS:
                 logger.info(f"[MarvinTalk] 切片 RMS={rms} < {MIN_SPEECH_RMS}，沒在講話，跳過")
                 return
 
             self._last_activity = self._clock()
-            logger.warning(f"[MarvinTalk] 收到 {self.owner_name} 一句（{len(pcm48k_stereo)} bytes, rms={rms}），處理中")
+            logger.warning(f"[MarvinTalk] 收到 {self.owner_name} 一句（{len(wav_bytes)} bytes, rms={rms}），處理中")
 
             # 出個短音讓使用者知道「聽到了、正在想」——後面 LLM+TTS 還要等幾秒
             if self._on_heard is not None:
@@ -173,12 +158,6 @@ class TalkSession:
                     await self._on_heard()
                 except Exception as exc:
                     logger.warning(f"[MarvinTalk] 收到提示音失敗（不擋）：{exc}")
-
-            try:
-                wav_bytes = _pcm48k_stereo_to_wav16k_mono(pcm48k_stereo)
-            except Exception as exc:
-                logger.warning(f"[MarvinTalk] 音訊轉檔失敗，跳過本回合：{exc}")
-                return
 
             result = await self._call_gemini(wav_bytes)
             if result is None:
@@ -239,7 +218,7 @@ class TalkSession:
         # 免費 key 只試最快那顆（flash-lite）——free tier 的其他 model 常整批
         # 逾時 6s 純浪費（14:34 實測）。免費不通就直接退付費（過 paid cap），
         # 付費才跑整條 chain 求穩。
-        est_in = _FIXED_PROMPT_TOKENS + max(1, len(wav_bytes) // _PCM16_BYTES_PER_SECOND) * _AUDIO_TOKENS_PER_SECOND
+        est_in = _FIXED_PROMPT_TOKENS + max(1, len(wav_bytes) // _WAV_BYTES_PER_SECOND) * _AUDIO_TOKENS_PER_SECOND
         attempts: list[tuple[Any, str, bool]] = []
         if self._free_client is not None and not self._free_exhausted:
             attempts.append((self._free_client, self._model_chain[0], False))
@@ -405,12 +384,12 @@ class TalkSessionManager:
         except Exception:
             pass
 
-    async def feed(self, user_id: int, pcm48k_stereo: bytes) -> None:
-        """engine 在獨佔期間把觸發者的語音切片轉進來。"""
+    async def feed(self, user_id: int, wav_bytes: bytes, rms: int) -> None:
+        """engine 在 STT 之前把觸發者這句已處理好的 WAV 轉進來（含正規化前 RMS）。"""
         sess = self.session
         if sess is None or not sess.active or user_id != sess.owner_id:
             return
-        await sess.handle_turn(pcm48k_stereo)
+        await sess.handle_turn(wav_bytes, rms)
 
     async def _watch(self) -> None:
         try:

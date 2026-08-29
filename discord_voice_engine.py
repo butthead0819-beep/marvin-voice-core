@@ -1147,6 +1147,10 @@ class DiscordVoiceEngine:
             speaker_name = self._resolve_speaker_name(user_id)
             self.speech_start_callback(speaker_name, user_id=user_id)
 
+    def _talk_manager(self):
+        _vc = self.bot.get_cog("VoiceController")
+        return getattr(_vc, "talk_manager", None) if _vc is not None else None
+
     async def process_audio_slice(self, user_id, raw_pcm, start_time, is_wake_check=False):
         """
         接收 VAD 切出的 PCM 片段。此層級不再進行額外的 1.2s Debounce，
@@ -1155,13 +1159,11 @@ class DiscordVoiceEngine:
         # ContextVar propagates into create_task descendants automatically.
         pipeline_timing.start()
 
-        # 🎙️ [Marvin Talk 獨佔] 回合制對談進行中：觸發者的語音切片轉給對談會話，
-        # 其他人的語音一律丟棄，整條 STT→IntentBus 直接跳過（Live/回合制皆無中間文字態）。
-        _vc = self.bot.get_cog("VoiceController")
-        _talk = getattr(_vc, "talk_manager", None) if _vc is not None else None
-        if _talk is not None and _talk.active:
-            if not is_wake_check and user_id == _talk.owner_id:
-                asyncio.create_task(_talk.feed(user_id, raw_pcm))
+        # 🎙️ [Marvin Talk 獨佔] 對談進行中：非觸發者 / wake check 直接丟（獨佔）。
+        # 觸發者的音訊照走既有 _flush_audio_to_stt（normalize_rms + 抗混疊 16k），
+        # 到「WAV 已備好、進 STT 之前」那點才改交給對談會話（見 _flush_audio_to_stt）。
+        _talk = self._talk_manager()
+        if _talk is not None and _talk.active and (is_wake_check or user_id != _talk.owner_id):
             return
 
         # 🚀 [Chief Architect Action] 立即進行 STT，不再進行二次 1.2s Debounce
@@ -1309,6 +1311,20 @@ class DiscordVoiceEngine:
 
             # 解析暱稱（Discord member 優先，衛星/本機走身分映射）
             speaker_name = self._resolve_speaker_name(user_id)
+
+            # 🎙️ [Marvin Talk] 對談進行中且是觸發者 → 這份已正規化 / 抗混疊過的音訊
+            # 直接交給對談會話（Gemini 音訊→文字→TTS），跳過 STT / cleaner / IntentBus。
+            _talk = self._talk_manager()
+            if (_talk is not None and _talk.active and not is_wake_check
+                    and user_id == _talk.owner_id):
+                _release_inflight()
+                try:
+                    if wav_path and os.path.exists(wav_path):
+                        os.unlink(wav_path)
+                except OSError:
+                    pass
+                asyncio.create_task(_talk.feed(user_id, wav_bytes, rms))
+                return
 
             prosody_data = self.meta_analyzer.calculate_prosody(user_id, None, duration)
             await self._process_stt_hybrid(speaker_name, wav_path, wav_bytes, start_time,

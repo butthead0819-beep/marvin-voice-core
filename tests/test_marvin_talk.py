@@ -70,18 +70,14 @@ def _manager(tmp_path, *, client=None, free_client="__unset__", paid_client=None
     )
 
 
-# 一段假 PCM：48k stereo int16，0.5 秒，振幅 ~2000（過 MIN_SPEECH_RMS）
-_PCM = (2000).to_bytes(2, "little", signed=True) * 2 * (48000 // 2)
-_SILENT_PCM = b"\x02\x00\x02\x00" * (48000 // 2)  # RMS ~2，靜音
+# engine 已處理好的假 WAV bytes（feed 不再自己轉檔）
+_WAV = b"RIFF" + b"\x00" * (48000 * 4)  # ~1s
+_SPEECH_RMS = 1500   # 過 MIN_SPEECH_RMS
+_SILENT_RMS = 5      # 低於門檻
 
 
-@pytest.fixture(autouse=True)
-def _stub_resample(monkeypatch):
-    """繞開 numpy 重採樣，回一段固定長度的假 wav bytes。"""
-    monkeypatch.setattr(
-        marvin_talk, "_pcm48k_stereo_to_wav16k_mono",
-        lambda pcm: b"RIFF" + b"\x00" * (16000 * 2),  # ~1s 音訊
-    )
+async def _feed(mgr, uid=1, rms=_SPEECH_RMS):
+    await mgr.feed(uid, _WAV, rms)
 
 
 @pytest.mark.asyncio
@@ -105,9 +101,9 @@ async def test_silent_slice_not_sent_to_llm(tmp_path):
     client = _fake_client()
     mgr = _manager(tmp_path, client=client)
     await mgr.start(1, "Alice")
-    await mgr.feed(1, _SILENT_PCM)
+    await _feed(mgr, rms=_SILENT_RMS)
     client.aio.models.generate_content.assert_not_called()
-    await mgr.feed(1, _PCM)
+    await _feed(mgr)
     client.aio.models.generate_content.assert_awaited_once()
 
 
@@ -119,7 +115,7 @@ async def test_repeated_identical_reply_ends_session(tmp_path):
     await mgr.start(1, "Alice")
     for _ in range(3):
         if mgr.active:
-            await mgr.feed(1, _PCM)
+            await _feed(mgr)
     assert not mgr.active
     assert "閉嘴" in tts.await_args.args[0]
 
@@ -140,10 +136,10 @@ async def test_feed_only_owner_reaches_gemini(tmp_path):
     mgr = _manager(tmp_path, client=client, tts=tts)
     await mgr.start(1, "Alice")
 
-    await mgr.feed(999, _PCM)  # 別人
+    await mgr.feed(999, _WAV, _SPEECH_RMS)  # 別人
     client.aio.models.generate_content.assert_not_called()
 
-    await mgr.feed(1, _PCM)  # 觸發者
+    await _feed(mgr)  # 觸發者
     client.aio.models.generate_content.assert_awaited_once()
     # 開場提示語 + 回覆 → 兩次 TTS；最後一次是回覆
     assert tts.await_args.args[0] == "嗯，隨便啦。"
@@ -164,7 +160,7 @@ async def test_heard_cue_fires_before_gemini(tmp_path):
 
     mgr = _manager(tmp_path, client=client, heard_cue=_cue)
     await mgr.start(1, "Alice")
-    await mgr.feed(1, _PCM)
+    await _feed(mgr)
     assert order == ["cue", "gemini"]  # 先出提示音，再打 LLM
 
 
@@ -175,7 +171,7 @@ async def test_free_client_used_first_paid_untouched(tmp_path):
     paid = _fake_client()
     mgr = _manager(tmp_path, client=free, paid_client=paid, guard=guard)
     await mgr.start(1, "Alice")
-    await mgr.feed(1, _PCM)
+    await _feed(mgr)
 
     free.aio.models.generate_content.assert_awaited()
     paid.aio.models.generate_content.assert_not_called()
@@ -189,7 +185,7 @@ async def test_paid_fallback_records_usage_when_free_fails(tmp_path):
     paid = _fake_client()
     mgr = _manager(tmp_path, client=free, paid_client=paid, guard=guard)
     await mgr.start(1, "Alice")
-    await mgr.feed(1, _PCM)
+    await _feed(mgr)
 
     paid.aio.models.generate_content.assert_awaited()
     rows = guard._rows()
@@ -204,7 +200,7 @@ async def test_over_cap_skips_paid_fallback(tmp_path):
     paid = _fake_client()
     mgr = _manager(tmp_path, client=free, paid_client=paid, guard=guard, tts=tts)
     await mgr.start(1, "Alice")
-    await mgr.feed(1, _PCM)
+    await _feed(mgr)
     paid.aio.models.generate_content.assert_not_called()  # 超 cap → 不退付費
     assert tts.await_args.args[0] == "抱歉，我剛剛恍神了，你再說一次。"
     assert mgr.active  # 免費可能會恢復，不強制收
@@ -216,7 +212,7 @@ async def test_exit_phrase_closes_session(tmp_path):
     resume = MagicMock()
     mgr = _manager(tmp_path, client=client, resume=resume)
     await mgr.start(1, "Alice")
-    await mgr.feed(1, _PCM)
+    await _feed(mgr)
     assert not mgr.active
     resume.assert_called_once()
 
@@ -232,7 +228,7 @@ async def test_paid_chain_falls_back_across_models(tmp_path):
     mgr = _manager(tmp_path, client=_fake_client(exc=RuntimeError("429")),
                    paid_client=paid, tts=tts)
     await mgr.start(1, "Alice")
-    await mgr.feed(1, _PCM)
+    await _feed(mgr)
 
     assert paid.aio.models.generate_content.await_count == 2
     assert tts.await_args.args[0] == "好啦。"
@@ -244,7 +240,7 @@ async def test_gemini_failure_keeps_session_and_apologizes(tmp_path):
     tts = AsyncMock()
     mgr = _manager(tmp_path, client=_fake_client(exc=RuntimeError("boom")), tts=tts)
     await mgr.start(1, "Alice")
-    await mgr.feed(1, _PCM)
+    await _feed(mgr)
     assert mgr.active  # 單次失敗不收會話
     assert "再說一次" in tts.await_args.args[0]
 
