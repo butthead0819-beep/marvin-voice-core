@@ -54,7 +54,7 @@ def _guard(tmp_path, daily=2.0):
 
 def _manager(tmp_path, *, client=None, free_client="__unset__", paid_client=None,
              clock=None, tts=None, pause=None, resume=None, send=None, guard=None,
-             mic_gate=None, heard_cue=None):
+             heard_cue=None):
     fc = client if free_client == "__unset__" else free_client
     return marvin_talk.TalkSessionManager(
         free_client_provider=lambda: fc,
@@ -65,7 +65,6 @@ def _manager(tmp_path, *, client=None, free_client="__unset__", paid_client=None
         resume_music=resume or MagicMock(),
         persona_provider=lambda: "你是馬文。",
         paid_guard=guard or _guard(tmp_path),
-        mic_gate=mic_gate,
         heard_cue=heard_cue,
         clock=clock or (lambda: 1000.0),
     )
@@ -98,22 +97,6 @@ async def test_toggle_opens_and_closes(tmp_path):
     assert "結束" in msg2
     assert not mgr.active
     resume.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_mic_gate_drops_slice_while_marvin_speaking(tmp_path):
-    """馬文自己在出聲時進來的切片（同頻道回授）不送 LLM。"""
-    client = _fake_client()
-    open_mic = {"v": False}
-    mgr = _manager(tmp_path, client=client, mic_gate=lambda: open_mic["v"])
-    await mgr.start(1, "Alice")
-
-    await mgr.feed(1, _PCM)  # 馬文在出聲 → 丟
-    client.aio.models.generate_content.assert_not_called()
-
-    open_mic["v"] = True
-    await mgr.feed(1, _PCM)  # 麥克風開了 → 送
-    client.aio.models.generate_content.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -214,17 +197,19 @@ async def test_exit_phrase_closes_session(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_model_chain_falls_back_on_first_model_error(tmp_path):
+async def test_paid_chain_falls_back_across_models(tmp_path):
+    """付費 client 第一顆 model 掛 → 換 chain 下一顆。"""
     tts = AsyncMock()
-    client = MagicMock()
-    client.aio.models.generate_content = AsyncMock(
+    paid = MagicMock()
+    paid.aio.models.generate_content = AsyncMock(
         side_effect=[RuntimeError("503 high demand"), _fake_gemini_response(reply="好啦。")]
     )
-    mgr = _manager(tmp_path, client=client, tts=tts)
+    mgr = _manager(tmp_path, client=_fake_client(exc=RuntimeError("429")),
+                   paid_client=paid, tts=tts)
     await mgr.start(1, "Alice")
     await mgr.feed(1, _PCM)
 
-    assert client.aio.models.generate_content.await_count == 2  # 第一家掛 → 換第二家
+    assert paid.aio.models.generate_content.await_count == 2
     assert tts.await_args.args[0] == "好啦。"
     assert mgr.active
 

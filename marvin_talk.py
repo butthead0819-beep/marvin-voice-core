@@ -202,11 +202,13 @@ class TalkSession:
             response_schema=_RESPONSE_SCHEMA,
         )
 
-        # 免費 key 先跑整條 model chain；全掛才退付費 key（且過 paid cap）
+        # 免費 key 只試最快那顆（flash-lite）——free tier 的其他 model 常整批
+        # 逾時 6s 純浪費（14:34 實測）。免費不通就直接退付費（過 paid cap），
+        # 付費才跑整條 chain 求穩。
         est_in = _FIXED_PROMPT_TOKENS + max(1, len(wav_bytes) // _PCM16_BYTES_PER_SECOND) * _AUDIO_TOKENS_PER_SECOND
         attempts: list[tuple[Any, str, bool]] = []
         if self._free_client is not None:
-            attempts += [(self._free_client, m, False) for m in self._model_chain]
+            attempts.append((self._free_client, self._model_chain[0], False))
         if self._paid_client is not None and self._guard.allow(
             estimate_cost(self._model_chain[0], est_in, _ESTIMATED_OUTPUT_TOKENS)
         ):
@@ -274,7 +276,6 @@ class TalkSessionManager:
         persona_provider: Callable[[], str],
         is_voice_connected: Callable[[], bool] | None = None,
         heard_cue: Callable[[], Awaitable[Any]] | None = None,
-        mic_gate: Callable[[], bool] | None = None,
         paid_guard: PaidUsageGuard | None = None,
         model_chain: tuple[str, ...] = _MODEL_CHAIN,
         clock: Callable[[], float] = time.time,
@@ -284,7 +285,6 @@ class TalkSessionManager:
         self._play_tts = play_tts
         self._send_text = send_text
         self._heard_cue = heard_cue
-        self._mic_gate = mic_gate
         self._pause_music = pause_music
         self._resume_music = resume_music
         self._persona_provider = persona_provider
@@ -370,12 +370,6 @@ class TalkSessionManager:
         """engine 在獨佔期間把觸發者的語音切片轉進來。"""
         sess = self.session
         if sess is None or not sess.active or user_id != sess.owner_id:
-            return
-        # 馬文的回覆 TTS 還在 mixer 裡播 → turn_lock 這時已釋放（play_tts 推完就回，
-        # 播放由 mixer 續），此時進來的切片多半是背景雜訊/呼吸被 VAD 誤切，或使用者
-        # 想 barge-in（回合制不支援）。等他講完再收。
-        if self._mic_gate is not None and not self._mic_gate():
-            logger.info("[MarvinTalk] 馬文回覆還在播，丟棄這段切片")
             return
         await sess.handle_turn(pcm48k_stereo)
 

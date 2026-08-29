@@ -35,7 +35,6 @@ class MarvinTalkMixin:
             and self.voice_client.is_connected(),
             # VAD 切走你的話後立刻出個短音「嗯」——讓你知道聽到了、正在想（LLM+TTS 還要幾秒）
             heard_cue=lambda: self._play_ack("filler"),
-            mic_gate=self._talk_mic_open,
         )
 
     def _talk_free_client(self):
@@ -48,19 +47,6 @@ class MarvinTalkMixin:
                 self._talk_dedicated_client = cached
             return cached
         return getattr(getattr(self.bot, "router", None), "google_client", None)
-
-    def _talk_mic_open(self) -> bool:
-        """True = 收這段切片；False = 馬文回覆還在 mixer 裡播，這時的切片多半是雜訊誤切
-        或 barge-in（回合制不支援），等他播完再收。"""
-        if getattr(self, "is_playing_audio", False):
-            return False
-        mixer = getattr(self, "_mixer", None)
-        if mixer is not None:
-            try:
-                return mixer.tts_load_seconds() <= 0.05
-            except Exception:
-                pass
-        return True
 
     def _talk_active(self) -> bool:
         """回合制對談進行中 → 主動發話 / 嘲諷 / 插話一律讓路（獨佔）。"""
