@@ -1645,6 +1645,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return (combined_text, origin_ts)
 
     def handle_raw_speech_start(self, speaker: str, user_id: int = None):
+        # 🎙️ 回合制對談：使用者講話不該 duck / 中斷馬文的回覆——那是「你講完他答」的
+        # 回合制，馬文回覆要滿音量、受保護。整個 speech-start 副作用鏈直接跳過。
+        if self._talk_active():
+            return
         if speaker not in self.user_states:
             self.user_states[speaker] = {"pending_task": None, "is_talking": True}
         else:
@@ -1683,8 +1687,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 self.stt_logger.info(f"[BOT被打斷←{speaker}] 未說完={interrupted_text[:80]}")
             self._current_tts_text = ""
 
-        if self._talk_active():
-            return  # 🎙️ 回合制對談進行中：獨佔，不嘲諷
         # 🚀 [Operation Prosody Perception] 延遲嘲諷邏輯 (Operation Silicon Mockery)
         now = time.time()
         silence_duration = now - self.last_marvin_speech_time

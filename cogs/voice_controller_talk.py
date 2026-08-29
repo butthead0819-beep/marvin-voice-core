@@ -60,8 +60,14 @@ class MarvinTalkMixin:
         - play_tts 只讀 self._tts_protected、不讀 kwarg（[[p1_conflicts_clarification]] 死參數坑）
           → 必須手動拉旗標，否則回覆被 [TTS Silence Gate] 當非保護 TTS 丟掉。
         - force_macos：本機 say（Meijia，已調音），避 edge-tts 限流失聲 [[tts_edge_ratelimit_and_say_fallback]]
+        - 對談回覆要滿音量：清掉 mixer 的 player-speech duck（使用者剛講完話會把它壓到
+          10%，但回合制就是「你講完他答」，不該讓路）。
         """
         self._tts_interrupted = False
+        mixer = getattr(self, "_mixer", None)
+        if mixer is not None:
+            mixer._player_speech_until = 0.0
+            mixer._tts_player_duck_cur = 1.0
         _prev = self._tts_protected
         self._tts_protected = True
         try:
