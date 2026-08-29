@@ -95,6 +95,8 @@ def _make_barge_self(*, local_mode=True, current_tts_text=""):
     fake.stt_logger = MagicMock()
     fake.last_marvin_speech_time = 0.0
     fake.user_states = {}
+    # /marvin_talk 沒在跑（否則 handle_raw_speech_start 開頭就 return）
+    fake._talk_active = MagicMock(return_value=False)
     fake.bot.engine.conv_buffer.get_conversation_temperature.return_value = 2.0
     return fake
 

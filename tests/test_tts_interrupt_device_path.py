@@ -37,6 +37,8 @@ def _make_fake_self(*, is_playing_audio: bool = True, tts_protected: bool = Fals
     fake._current_tts_text = "未說完的話"
     fake._current_tts_in_channel = True  # 跳過 asyncio.create_task
     fake.stt_logger = MagicMock()
+    # /marvin_talk 沒在跑（否則 handle_raw_speech_start 開頭就 return，不走打斷路徑）
+    fake._talk_active = MagicMock(return_value=False)
     # silence_duration = time.time() - last_marvin_speech_time 必須是 float
     fake.last_marvin_speech_time = 0.0
     # user_states 走真 dict，避免 MagicMock __contains__ 奇異行為
