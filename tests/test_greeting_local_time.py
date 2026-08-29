@@ -79,8 +79,8 @@ async def test_ambient_greeting_injects_real_local_time(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_brief_greeting_stays_terse_without_time(monkeypatch):
-    """熱絡短招呼（快速報到）不注入時間，維持極簡、避免無謂提時間。"""
+async def test_brief_greeting_injects_real_local_time(monkeypatch):
+    """登場短招呼（快速報到）同樣注入時間，指示簡單問候、星期幾與幾點。"""
     fixed = datetime(2026, 7, 15, 2, 30).timestamp()
     monkeypatch.setattr(grc.time, "time", lambda: fixed)
 
@@ -88,4 +88,18 @@ async def test_brief_greeting_stays_terse_without_time(monkeypatch):
     await grc.GeminiRouterContentMixin.generate_greeting(fake, players=["大肚", "showay", "狗與露"], active=True)
 
     user_prompt = fake._call_llm.call_args.args[1]
-    assert "現在時間" not in user_prompt, f"短招呼不該注入時間: {user_prompt!r}"
+    assert local_time_phrase(fixed) in user_prompt, f"短招呼應注入時間: {user_prompt!r}"
+    assert "星期" in user_prompt or "週" in user_prompt
+    assert "幾點" in user_prompt or "時間" in user_prompt
+
+
+def test_greeting_prompts_content():
+    """檢查 marvin_prompts.py 中的 greeting 與 greeting_ambient 包含簡單問候、星期幾與幾點。"""
+    from marvin_prompts import PromptManager
+    pm = PromptManager()
+    for layer in ["greeting", "greeting_ambient"]:
+        prompt = pm.instructions.get(layer, "")
+        assert "問候" in prompt or "招呼" in prompt, f"{layer} 應包含問候/招呼指示: {prompt}"
+        assert "星期幾" in prompt or "時間" in prompt, f"{layer} 應包含星期幾/時間指示: {prompt}"
+        assert "幾點" in prompt or "時間" in prompt, f"{layer} 應包含幾點/時間指示: {prompt}"
+

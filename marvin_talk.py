@@ -35,7 +35,11 @@ logger = logging.getLogger("cogs.voice_controller.talk")
 # 結束靠：閒置逾時 / 說結束語 / 再打一次 /marvin_talk / bot 離開語音頻道。
 IDLE_TIMEOUT_S = 180.0     # 這麼久沒有任何一句 → 自動收（沒人講話就沒成本，寬一點無妨）
 MAX_HISTORY_TURNS = 8      # 送進 prompt 的最近對話輪數
-GEMINI_TIMEOUT_S = 8.0
+GEMINI_TIMEOUT_S = 6.0     # 單次呼叫上限（實測 flash-lite 平時 ~2.6s；卡住就換下一家別乾等）
+
+# 依序嘗試——flash-lite 平時最快（~2.6s），但偶爾整批「high demand」503/逾時
+# （11:58 實測 5 回合掛 2 回）。flash-latest 是獨立容量、延遲相近，當即時 fallback。
+_MODEL_CHAIN = ("gemini-2.5-flash-lite", "gemini-flash-latest")
 
 # 付費守門：比照 audio_rescue，偶發低頻、單次成本極低，放寬到跟 GCP spending cap 同量級
 _DAILY_CAP_USD = 2.0
@@ -96,7 +100,7 @@ class TalkSession:
         play_tts: PlayTTS,
         persona_provider: Callable[[], str],
         paid_guard: PaidUsageGuard,
-        model: str,
+        model_chain: tuple[str, ...] = _MODEL_CHAIN,
         clock: Callable[[], float] = time.time,
         on_exit_phrase: Callable[[], Awaitable[Any]] | None = None,
     ):
@@ -106,7 +110,7 @@ class TalkSession:
         self._play_tts = play_tts
         self._persona_provider = persona_provider
         self._guard = paid_guard
-        self._model = model
+        self._model_chain = model_chain
         self._clock = clock
         self._on_exit_phrase = on_exit_phrase
 
@@ -148,7 +152,7 @@ class TalkSession:
 
             secs = max(1, len(wav_bytes) // _PCM16_BYTES_PER_SECOND)
             est_in = _FIXED_PROMPT_TOKENS + secs * _AUDIO_TOKENS_PER_SECOND
-            if not self._guard.allow(estimate_cost(self._model, est_in, _ESTIMATED_OUTPUT_TOKENS)):
+            if not self._guard.allow(estimate_cost(self._model_chain[0], est_in, _ESTIMATED_OUTPUT_TOKENS)):
                 logger.warning("[MarvinTalk] 超 daily/monthly paid cap，結束會話")
                 self.close()
                 await self._safe_tts("我這個月的對話額度用完了，改天吧。")
@@ -184,49 +188,50 @@ class TalkSession:
             parts.append(types.Part.from_text(text=f"（你回）{turn['reply']}"))
         parts.append(types.Part.from_text(text="（以下是我這句話的音訊，聽完用馬文的口吻回我）"))
         parts.append(types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"))
-
-        try:
-            response = await asyncio.wait_for(
-                self._client.aio.models.generate_content(
-                    model=self._model,
-                    contents=parts,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system,
-                        temperature=0.8,
-                        response_mime_type="application/json",
-                        response_schema=_RESPONSE_SCHEMA,
-                    ),
-                ),
-                timeout=GEMINI_TIMEOUT_S,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("[MarvinTalk] Gemini 逾時")
-            return None
-        except Exception as exc:
-            logger.warning(f"[MarvinTalk] Gemini 呼叫失敗：{exc}")
-            return None
-
-        usage = getattr(response, "usage_metadata", None)
-        in_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
-        out_tokens = int(getattr(usage, "candidates_token_count", 0) or _ESTIMATED_OUTPUT_TOKENS)
-        self._guard.record(
-            caller="marvin_talk", model=self._model, tokens=in_tokens + out_tokens,
-            est_usd=estimate_cost(self._model, in_tokens or _FIXED_PROMPT_TOKENS, out_tokens),
-            in_tokens=in_tokens, out_tokens=out_tokens,
+        config = types.GenerateContentConfig(
+            system_instruction=system,
+            temperature=0.8,
+            response_mime_type="application/json",
+            response_schema=_RESPONSE_SCHEMA,
         )
 
-        raw = (getattr(response, "text", None) or "").strip()
-        if not raw:
-            return None
-        try:
-            data = json.loads(raw)
-            reply = str(data.get("reply", "")).strip()
-            heard = str(data.get("heard", "")).strip()
-        except (json.JSONDecodeError, ValueError, AttributeError):
-            reply, heard = raw, ""
-        if not reply:
-            return None
-        return heard, reply
+        for model in self._model_chain:
+            try:
+                response = await asyncio.wait_for(
+                    self._client.aio.models.generate_content(
+                        model=model, contents=parts, config=config,
+                    ),
+                    timeout=GEMINI_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"[MarvinTalk] {model} 逾時（{GEMINI_TIMEOUT_S}s），換下一家")
+                continue
+            except Exception as exc:
+                logger.warning(f"[MarvinTalk] {model} 呼叫失敗：{exc}，換下一家")
+                continue
+
+            usage = getattr(response, "usage_metadata", None)
+            in_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
+            out_tokens = int(getattr(usage, "candidates_token_count", 0) or _ESTIMATED_OUTPUT_TOKENS)
+            self._guard.record(
+                caller="marvin_talk", model=model, tokens=in_tokens + out_tokens,
+                est_usd=estimate_cost(model, in_tokens or _FIXED_PROMPT_TOKENS, out_tokens),
+                in_tokens=in_tokens, out_tokens=out_tokens,
+            )
+
+            raw = (getattr(response, "text", None) or "").strip()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+                reply = str(data.get("reply", "")).strip()
+                heard = str(data.get("heard", "")).strip()
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                reply, heard = raw, ""
+            if reply:
+                return heard, reply
+
+        return None
 
     async def _safe_tts(self, text: str) -> None:
         try:
@@ -249,7 +254,7 @@ class TalkSessionManager:
         persona_provider: Callable[[], str],
         is_voice_connected: Callable[[], bool] | None = None,
         paid_guard: PaidUsageGuard | None = None,
-        model: str = "gemini-2.5-flash-lite",
+        model_chain: tuple[str, ...] = _MODEL_CHAIN,
         clock: Callable[[], float] = time.time,
     ):
         self._google_client_provider = google_client_provider
@@ -262,7 +267,7 @@ class TalkSessionManager:
         self._guard = paid_guard if paid_guard is not None else PaidUsageGuard(
             daily_cap_usd=_DAILY_CAP_USD, monthly_cap_usd=_MONTHLY_CAP_USD,
         )
-        self._model = model
+        self._model_chain = model_chain
         self._clock = clock
 
         self.session: TalkSession | None = None
@@ -301,7 +306,7 @@ class TalkSessionManager:
             owner_id=user_id, owner_name=user_name,
             google_client=client, play_tts=self._play_tts,
             persona_provider=self._persona_provider, paid_guard=self._guard,
-            model=self._model, clock=self._clock,
+            model_chain=self._model_chain, clock=self._clock,
             on_exit_phrase=lambda: self.stop(reason="使用者道別"),
         )
         self._watchdog = asyncio.ensure_future(self._watch())

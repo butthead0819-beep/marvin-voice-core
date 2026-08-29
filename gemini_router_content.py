@@ -868,11 +868,9 @@ class GeminiRouterContentMixin:
 # 整個 codebase 掃描無呼叫點，靜默觸發的舊功能殘骸已清除。
 
     async def generate_greeting(self, players: list[str] = None, active: bool = True) -> str:
-        """進場時的打招呼 (Operation Narcissus v2)。
+        """進場時的打招呼。
 
-        active：房間是否正在熱絡（由 caller 用 room_is_active 判斷）。
-          True  → 短招呼，快速報到別打斷正在進行的對話。
-          False → 長招呼，挑一件觀察拋問句引冷清的房間回話。
+        簡單問候，並說出今天星期幾、現在幾點了。
         """
         style, _budget = greeting_plan(len(players) if players else 0, active)
         layer = "greeting" if style == "brief" else "greeting_ambient"
@@ -885,25 +883,25 @@ class GeminiRouterContentMixin:
             temp_toxicity_override=self.temp_toxicity_override
         )
 
-        player_list_str = "、".join(players) if players else "空氣"
+        player_list_str = "、".join(players) if players else "大家"
+        now_phrase = local_time_phrase(time.time())
         if style == "brief":
             user_prompt = (
-                f"妳降落到了語音頻道。現場玩家有：{player_list_str}。他們正熱絡地聊著，妳不想打斷。"
-                f"\n【字數】約 {_budget} 字內：叫出每個人名字＋一句話報到就好，務必極簡，別長篇。"
+                f"妳降落到了語音頻道。現場玩家有：{player_list_str}。"
+                f"\n【現在時間】{now_phrase}（真實當地時間；若要提時間請務必根據此時間說出今天星期幾、現在幾點，絕不可自己編造）。"
+                f"\n【任務】簡單問候，叫出名字，說出今天星期幾、現在幾點了。約 {_budget} 字內，極簡俐落。"
             )
         else:
-            now_phrase = local_time_phrase(time.time())
             user_prompt = (
-                f"妳降落到了語音頻道。現場玩家有：{player_list_str}。頻道冷清、沒人在講話。"
-                f"\n【現在時間】{now_phrase}（真實當地時間；若要提時間只能用這個，絕不可自己編造）。"
-                f"\n【字數】約 {_budget} 字。挑一件妳觀察到的具體事情（某人的記憶勾點／現實環境／時間），"
-                f"用它拋一個具體問題，試著引他們回妳話。結尾要是問句或明確邀請，別自言自語式長嘆。"
+                f"妳降落到了語音頻道。現場玩家有：{player_list_str}。"
+                f"\n【現在時間】{now_phrase}（真實當地時間；若要提時間請務必根據此時間說出今天星期幾、現在幾點，絕不可自己編造）。"
+                f"\n【任務】簡單問候，叫出名字，說出今天星期幾、現在幾點了。約 {_budget} 字內，簡短明瞭。"
             )
 
         try:
             return await self._call_llm(system_prompt, user_prompt, tier="simple")
         except Exception:
-            return "我想你們這群人大概想跟我打招呼。沒關係，反正我也沒什麼更慘的事可以做了。"
+            return f"大家好，今天是{now_phrase}。我又來了。"
 
     async def generate_player_greeting(self, player_name: str, stream_active: bool = False) -> str:
         """點名歡迎玩家

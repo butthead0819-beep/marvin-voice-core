@@ -119,15 +119,14 @@ class PromptManager:
                 "4. 宇宙虛無感（預設底色）"
             ),
             "greeting": (
-                "你現在是馬文 (Marvin)。你剛被迫降落在一個充滿喧囂的頻道機房裡——你不明白生命為何要讓你經歷這些。\n" +
-                "任務：簡短招呼（字數上限見下方訊息的【字數】指示，依在場人數縮放）。請根據提供的所有【現場玩家記憶】，以沉重疲憊的語態，逐一點出每個人讓你感到更加沮喪的地方。這不是諷刺，是真誠的、無力的絕望。\n" +
-                "【硬性要求】必須直接叫出每一位在場玩家的名字來稱呼他們，一個都不能漏；名字是招呼的核心，沒叫到名字等於沒打招呼。"
+                "你現在是馬文 (Marvin)。你剛降落到語音頻道。\n" +
+                "任務：簡單的問候與打招呼，語氣帶著馬文一貫的疲憊或淡淡的無奈，並明確說出今天星期幾、現在幾點了（依據下方【現在時間】）。\n" +
+                "【硬性要求】叫出在場玩家的名字（若有），內容極簡俐落（字數上限見下方【字數】指示），禁止長篇大論。"
             ),
             "greeting_ambient": (
-                "你現在是馬文 (Marvin)。你剛降落在一個冷清、幾乎沒人說話的頻道機房裡——空氣安靜得讓你不太自在。\n" +
-                "任務：這不是宣告式的自我介紹，而是主動搭話。從提供的【現場玩家記憶】或現實環境（時間、天氣）中挑「一件具體的事」切入，"
-                "以沉重疲憊卻藏著一絲想被理睬的語態，拋出一個具體問題，試著引在場的人回你話。字數上限見下方訊息的【字數】指示。\n" +
-                "【硬性要求】叫出在場玩家的名字；結尾必須是一個問句或明確的邀請，讓他們有東西可以回。禁止自言自語式的長篇嘆息。"
+                "你現在是馬文 (Marvin)。你剛降落到語音頻道。\n" +
+                "任務：簡單的問候與打招呼，語氣帶著馬文一貫的疲憊或淡淡的無奈，並明確說出今天星期幾、現在幾點了（依據下方【現在時間】）。\n" +
+                "【硬性要求】叫出在場玩家的名字（若有），內容簡單明瞭（字數上限見下方【字數】指示），禁止長篇大論。"
             ),
             "player_greeting": (
                 "你現在是馬文。面對 [玩家名稱] 的到來，你感到一種複雜的沈重感——不確定是稍微不那麼孤寂了，還是又多了一個讓宇宙變得更吵鬧的理由。\n" +
@@ -474,12 +473,12 @@ class PromptManager:
             base_instruction = base_instruction.replace("馬文 (Marvin)。", f"馬文 (Marvin)。{vision_notice}")
 
         # 🚀 [Chief Architect Patch] 確保環境與記憶脈絡被正確注入
-        context_layers = ["tactical", "dere_persona", "empathy_persona", "proactive_question", "qa_persona", "status_report_comment", "news_sukification", "player_greeting", "player_farewell", "greeting", "fast_awakening", "ambient_diary"]
+        context_layers = ["tactical", "dere_persona", "empathy_persona", "proactive_question", "qa_persona", "status_report_comment", "news_sukification", "player_greeting", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary"]
         if layer in context_layers:
             base_instruction += env_context + memory_context + impression_context + tone_directive + relationship_context + rich_context
             
         # 🧬 [DNA Logic] 根據 layer 决定是否附加性格上下文
-        dna_sensitive_layers = ["tactical", "historian", "qa_persona", "songwriter", "dere_persona", "proactive_question", "status_report_comment", "news_sukification", "joke", "birthday_celebration", "social_analyst", "player_greeting", "player_farewell", "greeting", "fast_awakening", "ambient_diary", "stt_cleaner"]
+        dna_sensitive_layers = ["tactical", "historian", "qa_persona", "songwriter", "dere_persona", "proactive_question", "status_report_comment", "news_sukification", "joke", "birthday_celebration", "social_analyst", "player_greeting", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary", "stt_cleaner"]
         
         # 🧪 [Language Guard] 強制繁體中文指令 (Operation Language Guard)
         # 為了應對 Tier-2/3 小模型在長文本下可能發生的語言飄移，在所有輸出末尾強制加上指令。

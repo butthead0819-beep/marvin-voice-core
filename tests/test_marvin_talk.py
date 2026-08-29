@@ -167,6 +167,22 @@ async def test_exit_phrase_closes_session(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_model_chain_falls_back_on_first_model_error(tmp_path):
+    tts = AsyncMock()
+    client = MagicMock()
+    client.aio.models.generate_content = AsyncMock(
+        side_effect=[RuntimeError("503 high demand"), _fake_gemini_response(reply="好啦。")]
+    )
+    mgr = _manager(tmp_path, client=client, tts=tts)
+    await mgr.start(1, "Alice")
+    await mgr.feed(1, _PCM)
+
+    assert client.aio.models.generate_content.await_count == 2  # 第一家掛 → 換第二家
+    assert tts.await_args.args[0] == "好啦。"
+    assert mgr.active
+
+
+@pytest.mark.asyncio
 async def test_gemini_failure_keeps_session_and_apologizes(tmp_path):
     tts = AsyncMock()
     mgr = _manager(tmp_path, client=_fake_client(exc=RuntimeError("boom")), tts=tts)
