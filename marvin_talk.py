@@ -41,9 +41,11 @@ MIN_SPEECH_RMS = 180       # 切片整體 RMS 低於這值＝沒人真的在講�
                            # （正常語音 RMS ~1000-3000；14:52 實測噪音被當「00:00 00:01」瘋狂 hallucinate）
 MAX_REPEAT_REPLIES = 2     # 連續回同一句這麼多次 → 判定對方沒在講、自動收會話
 
-# 依序嘗試——flash-lite 平時最快（~2.6s），但偶爾整批「high demand」503/逾時
-# （11:58 實測 5 回合掛 2 回）。flash-latest 是獨立容量、延遲相近，當即時 fallback。
-_MODEL_CHAIN = ("gemini-2.5-flash-lite", "gemini-flash-latest")
+# 用 gemini-2.5-flash（非 lite）——flash-lite 的音訊理解太差：實測會截斷轉錄
+# （「台北101有幾層樓」只聽到「台北101有幾」）、把語音聽成「00:00 00:01 00:02」、
+# 動不動「沒聽清楚」（16:10-16:14 整場如此）。flash 明顯準、也肯 grounding 查證。
+# 代價：grounded turn ~5s（vs lite ~2.6s）——寧可慢一點也要答對。
+_MODEL_CHAIN = ("gemini-2.5-flash", "gemini-flash-latest")
 
 # 付費守門：比照 audio_rescue，偶發低頻、單次成本極低，放寬到跟 GCP spending cap 同量級
 _DAILY_CAP_USD = 2.0
@@ -165,8 +167,10 @@ class TalkSession:
             del self.history[:-MAX_HISTORY_TURNS]
             self._last_activity = self._clock()
 
-            # 連續同一句 = 送進去的音訊每次都一樣（噪音）、對方沒在講 → 收會話
-            if reply == self._last_reply:
+            # 開頭雷同 = 送進去的音訊每次都一樣（噪音）、對方沒在講 → 收會話。
+            # 比開頭 16 字而非整句：grounding 回覆常帶點隨機尾巴，整句 == 抓不到。
+            _key = "".join(reply.split())[:16]
+            if _key and _key == self._last_reply:
                 self._repeat_count += 1
                 if self._repeat_count >= MAX_REPEAT_REPLIES:
                     logger.warning(f"[MarvinTalk] 連續 {self._repeat_count + 1} 次回同一句，判定沒在對話 → 收")
@@ -177,7 +181,7 @@ class TalkSession:
                     return
             else:
                 self._repeat_count = 0
-            self._last_reply = reply
+            self._last_reply = _key
 
             await self._safe_tts(reply)
 
@@ -197,8 +201,10 @@ class TalkSession:
             types.Content(role="model", parts=[types.Part.from_text(text=r)])
             for r in self.history[-MAX_HISTORY_TURNS:]
         ]
+        # 只放音訊、不加說明文字——實測加「（這是我這句話的音訊…）」這種 text part，
+        # 模型會把它當旁白照抄成「（播放音訊）」而不去聽內容（16:10 整場回覆都是這個）。
+        # 該做什麼 system_instruction 已經講清楚。
         contents.append(types.Content(role="user", parts=[
-            types.Part.from_text(text="（這是我這句話的音訊，聽完用馬文的口吻回我）"),
             types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
         ]))
         # google_search grounding：碰不確定的事實去查，別亂說也別動不動說沒資料。

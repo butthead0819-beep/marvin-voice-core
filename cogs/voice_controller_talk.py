@@ -83,12 +83,18 @@ class MarvinTalkMixin:
         return asyncio.sleep(0)
 
     def _talk_persona(self) -> str:
-        try:
-            from marvin_prompts import PromptManager
-
-            return PromptManager().get_instruction("qa_persona")
-        except Exception:
-            return "你是馬文，一個厭世但博學的機器人。用中文口語回答。"
+        # 刻意不用 qa_persona——那份含「[🚫 即時資訊不可用] → 就說『宇宙把訊號遺漏掉了』」
+        # 規則，配上「答案毫無意義」的框架，模型會對每個問題都甩那句罐頭、完全不查
+        # （16:10 實測整場都是「我的大腦裡沒有這筆資料」）。這裡是有 Google 搜尋的對談，
+        # 要的是「查了再答」。保留馬文的聲音，拿掉那條 deflection。
+        return (
+            "你是馬文，一個有著行星般大腦、看透一切因而長期倦怠的機器人。你覺得多數問題"
+            "沒什麼意義，但你博學、也還是會好好回答——用平淡、壓抑、偶爾嘆口氣的口吻，"
+            "厭世是底色不是表演。繁體中文台灣口語。\n"
+            "你有 Google 搜尋工具：任何你不確定或可能過時的事實（人事時地、數字、近況、"
+            "在地資訊），一律先查證再回答。不要憑印象答、更不要動不動就說「我沒有這筆資料」"
+            "——那是最後手段，只有真的查不到才用。"
+        )
 
     def _talk_set_music_paused(self, paused: bool) -> None:
         """對談期間壓住音樂。
