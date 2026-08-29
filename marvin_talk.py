@@ -20,7 +20,6 @@ cleaner 共用同一把。免費全掛（429 / 逾時）才退到付費 key（go
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from typing import Any, Awaitable, Callable
@@ -60,20 +59,14 @@ _ESTIMATED_OUTPUT_TOKENS = 200
 _VOICE_SUFFIX = (
     "\n\n【語音對話補充規則】這是即時雙向語音通話（不是文字訊息），回覆要用自然口語、"
     "正常講話的長度和節奏，不必條列、不必湊字數上限，講完一個念頭就停。厭世是底色不是"
-    "表演——用平淡的語氣講出喪氣的話，比誇張哀嚎更像馬文。"
+    "表演——用平淡的語氣講出喪氣的話，比誇張哀嚎更像馬文。\n"
+    "有 Google 搜尋工具可用：碰到你不確定或可能過時的事實（人事時地、數字、近況），"
+    "先查證再回，別硬掰、也別動不動就說「我沒有這筆資料」。只有真的查不到才說不知道。\n"
+    "如果聽不清楚使用者在問什麼，直接說「你剛剛說什麼，沒聽清楚」，別自己腦補一個問題來答。\n"
+    "如果使用者在道別或說要結束對話（掰掰、不聊了、先這樣…），回覆的最前面加上 <bye> 這個標記。"
 )
 
-_RESPONSE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "heard": {"type": "string", "description": "使用者這句話的逐字內容"},
-        "reply": {"type": "string", "description": "馬文的口語回覆"},
-    },
-    "required": ["heard", "reply"],
-}
-
-# 使用者說出這些詞 → 主動結束會話（對 Gemini 回傳的 heard 做子字串比對，零額外 LLM）
-_EXIT_PHRASES = ("掰掰馬文", "再見馬文", "結束對話", "結束聊天", "不聊了", "先這樣")
+_EXIT_MARKER = "<bye>"
 
 PlayTTS = Callable[[str], Awaitable[Any]]
 SendText = Callable[[str], Awaitable[Any]]
@@ -112,7 +105,7 @@ class TalkSession:
         self.active = True
         self.started_at = clock()
         self._last_activity = self.started_at
-        self.history: list[dict] = []  # [{"heard": str, "reply": str}]
+        self.history: list[str] = []  # 馬文自己上幾句 reply
         self.turn_count = 0
         self._last_reply = ""
         self._repeat_count = 0
@@ -159,15 +152,16 @@ class TalkSession:
                 except Exception as exc:
                     logger.warning(f"[MarvinTalk] 收到提示音失敗（不擋）：{exc}")
 
-            result = await self._call_gemini(wav_bytes)
-            if result is None:
+            reply = await self._call_gemini(wav_bytes)
+            if reply is None:
                 await self._safe_tts("抱歉，我剛剛恍神了，你再說一次。")
                 return
 
-            heard, reply = result
-            logger.warning(f"[MarvinTalk] 回合 {self.turn_count + 1}｜聽到「{heard[:30]}」→ 回「{reply[:40]}」")
+            said_bye = reply.startswith(_EXIT_MARKER)
+            reply = reply[len(_EXIT_MARKER):].strip() if said_bye else reply
+            logger.warning(f"[MarvinTalk] 回合 {self.turn_count + 1}｜回「{reply[:50]}」{' [bye]' if said_bye else ''}")
             self.turn_count += 1
-            self.history.append({"heard": heard, "reply": reply})
+            self.history.append(reply)
             del self.history[:-MAX_HISTORY_TURNS]
             self._last_activity = self._clock()
 
@@ -187,32 +181,32 @@ class TalkSession:
 
             await self._safe_tts(reply)
 
-            if heard and any(p in heard for p in _EXIT_PHRASES):
-                logger.info(f"[MarvinTalk] 聽到結束語「{heard}」→ 收會話")
+            if said_bye:
+                logger.info("[MarvinTalk] 使用者道別 → 收會話")
                 self.close()
                 if self._on_exit_phrase is not None:
                     await self._on_exit_phrase()
 
-    async def _call_gemini(self, wav_bytes: bytes) -> tuple[str, str] | None:
+    async def _call_gemini(self, wav_bytes: bytes) -> str | None:
         from google.genai import types
 
         system = self._persona_provider() + _VOICE_SUFFIX
-        # 用正式 role 對話串，別用「（我剛說）…（你回）…」文字前綴——實測會被模型
-        # 原樣抄進回覆的逐字稿欄位（14:52 heard 出現「…（你回）嗯，你說得對」）。
-        contents: list[Any] = []
-        for turn in self.history[-MAX_HISTORY_TURNS:]:
-            if turn.get("heard"):
-                contents.append(types.Content(role="user", parts=[types.Part.from_text(text=turn["heard"])]))
-            contents.append(types.Content(role="model", parts=[types.Part.from_text(text=turn["reply"])]))
+        # role=model 存馬文自己上幾句（帶足夠上下文接續追問）；不存 user 側逐字稿——
+        # 沒可靠來源（STT 已跳過），硬塞會被模型抄進回覆。
+        contents: list[Any] = [
+            types.Content(role="model", parts=[types.Part.from_text(text=r)])
+            for r in self.history[-MAX_HISTORY_TURNS:]
+        ]
         contents.append(types.Content(role="user", parts=[
             types.Part.from_text(text="（這是我這句話的音訊，聽完用馬文的口吻回我）"),
             types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
         ]))
+        # google_search grounding：碰不確定的事實去查，別亂說也別動不動說沒資料。
+        # 注意：grounding 與 response_schema(JSON) 不能並用 → 純文字輸出。
         config = types.GenerateContentConfig(
             system_instruction=system,
             temperature=0.8,
-            response_mime_type="application/json",
-            response_schema=_RESPONSE_SCHEMA,
+            tools=[types.Tool(google_search=types.GoogleSearch())],
         )
 
         # 免費 key 只試最快那顆（flash-lite）——free tier 的其他 model 常整批
@@ -258,17 +252,9 @@ class TalkSession:
                     in_tokens=in_tokens, out_tokens=out_tokens,
                 )
 
-            raw = (getattr(response, "text", None) or "").strip()
-            if not raw:
-                continue
-            try:
-                data = json.loads(raw)
-                reply = str(data.get("reply", "")).strip()
-                heard = str(data.get("heard", "")).strip()
-            except (json.JSONDecodeError, ValueError, AttributeError):
-                reply, heard = raw, ""
+            reply = (getattr(response, "text", None) or "").strip()
             if reply:
-                return heard, reply
+                return reply
 
         return None
 

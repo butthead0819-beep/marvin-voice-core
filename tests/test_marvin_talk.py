@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -27,9 +26,9 @@ class _FakeClock:
         return self.t
 
 
-def _fake_gemini_response(reply="嗯，隨便啦。", heard="你好", in_tok=1200, out_tok=40):
+def _fake_gemini_response(reply="嗯，隨便啦。", in_tok=1200, out_tok=40):
     resp = MagicMock()
-    resp.text = json.dumps({"heard": heard, "reply": reply})
+    resp.text = reply  # 純文字輸出（grounding 不能配 JSON schema）
     resp.usage_metadata = MagicMock(prompt_token_count=in_tok, candidates_token_count=out_tok)
     return resp
 
@@ -109,7 +108,7 @@ async def test_silent_slice_not_sent_to_llm(tmp_path):
 
 @pytest.mark.asyncio
 async def test_repeated_identical_reply_ends_session(tmp_path):
-    client = _fake_client(_fake_gemini_response(reply="一樣的話。", heard="嗯"))
+    client = _fake_client(_fake_gemini_response(reply="一樣的話。"))
     tts = AsyncMock()
     mgr = _manager(tmp_path, client=client, tts=tts)
     await mgr.start(1, "Alice")
@@ -208,7 +207,7 @@ async def test_over_cap_skips_paid_fallback(tmp_path):
 
 @pytest.mark.asyncio
 async def test_exit_phrase_closes_session(tmp_path):
-    client = _fake_client(_fake_gemini_response(reply="好啦掰。", heard="好了掰掰馬文"))
+    client = _fake_client(_fake_gemini_response(reply="<bye> 好啦掰。"))
     resume = MagicMock()
     mgr = _manager(tmp_path, client=client, resume=resume)
     await mgr.start(1, "Alice")
