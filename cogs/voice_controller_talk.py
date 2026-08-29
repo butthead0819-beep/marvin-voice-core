@@ -31,6 +31,8 @@ class MarvinTalkMixin:
             pause_music=lambda: self._talk_set_music_paused(True),
             resume_music=lambda: self._talk_set_music_paused(False),
             persona_provider=self._talk_persona,
+            is_voice_connected=lambda: self.voice_client is not None
+            and self.voice_client.is_connected(),
         )
 
     def _talk_active(self) -> bool:

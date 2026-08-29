@@ -29,11 +29,12 @@ from llm_paid import PaidUsageGuard, estimate_cost
 # （裸頂層名會吃 root WARNING 全被吞——見 main_discord.py 註解裡同型坑三次中鏢）
 logger = logging.getLogger("cogs.voice_controller.talk")
 
-# ── 會話上限 ───────────────────────────────────────────────────────────────────
-HARD_CAP_S = 90.0          # 單場硬上限（使用者訂）
-FIRST_TURN_GRACE_S = 55.0  # 開場到講第一句的寬限（>= HARD_CAP 一半，實質「開了就等你講」）
-SILENCE_TIMEOUT_S = 25.0   # 已對過話後，這麼久沒有新回合 → 自動收
-MAX_HISTORY_TURNS = 6      # 送進 prompt 的最近對話輪數
+# ── 會話結束條件 ──────────────────────────────────────────────────────────────
+# 沒有 wall-clock 硬上限——對話本來就沒有「講滿 N 秒」的道理。成本由既有 daily
+# paid cap（_DAILY_CAP_USD）+ 「只在真的有人講話才打 LLM」（VAD 已 gate）守住。
+# 結束靠：閒置逾時 / 說結束語 / 再打一次 /marvin_talk / bot 離開語音頻道。
+IDLE_TIMEOUT_S = 180.0     # 這麼久沒有任何一句 → 自動收（沒人講話就沒成本，寬一點無妨）
+MAX_HISTORY_TURNS = 8      # 送進 prompt 的最近對話輪數
 GEMINI_TIMEOUT_S = 8.0
 
 # 付費守門：比照 audio_rescue，偶發低頻、單次成本極低，放寬到跟 GCP spending cap 同量級
@@ -118,12 +119,7 @@ class TalkSession:
 
     # ── 生命週期 ──────────────────────────────────────────────────────────────
     def deadline_reason(self) -> str | None:
-        now = self._clock()
-        if now - self.started_at >= HARD_CAP_S:
-            return "時間到"
-        # 開場還沒講第一句給多一點寬限（找麥克風、想講什麼）；之後回合間才收緊
-        idle_cap = FIRST_TURN_GRACE_S if self.turn_count == 0 else SILENCE_TIMEOUT_S
-        if now - self._last_activity >= idle_cap:
+        if self._clock() - self._last_activity >= IDLE_TIMEOUT_S:
             return "太久沒聲音"
         return None
 
@@ -251,6 +247,7 @@ class TalkSessionManager:
         pause_music: Callable[[], Any],
         resume_music: Callable[[], Any],
         persona_provider: Callable[[], str],
+        is_voice_connected: Callable[[], bool] | None = None,
         paid_guard: PaidUsageGuard | None = None,
         model: str = "gemini-2.5-flash-lite",
         clock: Callable[[], float] = time.time,
@@ -261,6 +258,7 @@ class TalkSessionManager:
         self._pause_music = pause_music
         self._resume_music = resume_music
         self._persona_provider = persona_provider
+        self._is_voice_connected = is_voice_connected or (lambda: True)
         self._guard = paid_guard if paid_guard is not None else PaidUsageGuard(
             daily_cap_usd=_DAILY_CAP_USD, monthly_cap_usd=_MONTHLY_CAP_USD,
         )
@@ -313,7 +311,10 @@ class TalkSessionManager:
             await self._play_tts("嗯，我在聽，你說。")
         except Exception as exc:
             logger.warning(f"[MarvinTalk] 開場語音失敗（不擋）：{exc}")
-        return f"🎙️ 好，{user_name}，直接說話。{int(HARD_CAP_S)} 秒後自動收，或再打一次 /marvin_talk。"
+        return (
+            f"🎙️ 好，{user_name}，直接說話。說「掰掰馬文」或再打一次 /marvin_talk 結束"
+            f"（{int(IDLE_TIMEOUT_S // 60)} 分鐘沒聲音會自動收）。"
+        )
 
     async def stop(self, reason: str = "") -> None:
         sess = self.session
@@ -343,13 +344,16 @@ class TalkSessionManager:
     async def _watch(self) -> None:
         try:
             while self.active:
-                await asyncio.sleep(1.0)
                 sess = self.session
                 if sess is None:
+                    return
+                if not self._is_voice_connected():
+                    await self.stop(reason="離開語音頻道")
                     return
                 reason = sess.deadline_reason()
                 if reason is not None:
                     await self.stop(reason=reason)
                     return
+                await asyncio.sleep(5.0)
         except asyncio.CancelledError:
             pass

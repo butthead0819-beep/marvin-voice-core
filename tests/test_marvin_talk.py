@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock
 
@@ -176,31 +177,40 @@ async def test_gemini_failure_keeps_session_and_apologizes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_deadline_hard_cap(tmp_path):
+async def test_no_wall_clock_cap_only_idle(tmp_path):
     clock = _FakeClock()
     mgr = _manager(tmp_path, client=_fake_client(), clock=clock)
     await mgr.start(1, "Alice")
-    assert mgr.session.deadline_reason() is None
-    clock.t += marvin_talk.HARD_CAP_S + 1
-    assert mgr.session.deadline_reason() == "時間到"
+    # 講過很多輪、掛了很久，只要一直在講話就不會被收
+    for _ in range(20):
+        clock.t += marvin_talk.IDLE_TIMEOUT_S - 10
+        mgr.session._last_activity = clock.t
+        assert mgr.session.deadline_reason() is None
+    # 停止講話 → 閒置逾時才收
+    clock.t += marvin_talk.IDLE_TIMEOUT_S + 1
+    assert mgr.session.deadline_reason() == "太久沒聲音"
 
 
 @pytest.mark.asyncio
-async def test_deadline_silence_timeout(tmp_path):
-    clock = _FakeClock()
-    mgr = _manager(tmp_path, client=_fake_client(), clock=clock)
+async def test_watchdog_ends_on_voice_disconnect(tmp_path, monkeypatch):
+    connected = {"v": True}
+    mgr = marvin_talk.TalkSessionManager(
+        google_client_provider=lambda: _fake_client(),
+        play_tts=AsyncMock(), send_text=AsyncMock(),
+        pause_music=MagicMock(), resume_music=MagicMock(),
+        persona_provider=lambda: "你是馬文。", paid_guard=_guard(tmp_path),
+        is_voice_connected=lambda: connected["v"], clock=lambda: 1000.0,
+    )
     await mgr.start(1, "Alice")
-    # 開場前寬限用 FIRST_TURN_GRACE_S
-    clock.t += marvin_talk.SILENCE_TIMEOUT_S + 1
-    assert mgr.session.deadline_reason() is None
-    clock.t += marvin_talk.FIRST_TURN_GRACE_S
-    assert mgr.session.deadline_reason() == "太久沒聲音"
-    # 對過話之後收緊到 SILENCE_TIMEOUT_S
-    mgr.session.turn_count = 1
-    mgr.session.started_at = clock.t
-    mgr.session._last_activity = clock.t
-    clock.t += marvin_talk.SILENCE_TIMEOUT_S + 1
-    assert mgr.session.deadline_reason() == "太久沒聲音"
+    mgr._watchdog.cancel()  # 停掉自動 watchdog，手動跑一輪
+
+    async def _sleep_then_break(_):
+        raise asyncio.CancelledError  # 讓 _watch 跑完第一輪就退出
+    monkeypatch.setattr(marvin_talk.asyncio, "sleep", _sleep_then_break)
+
+    connected["v"] = False
+    await mgr._watch()
+    assert not mgr.active
 
 
 @pytest.mark.asyncio
