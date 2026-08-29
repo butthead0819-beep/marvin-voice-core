@@ -288,29 +288,40 @@ class _BlockingOutput:
 # ── Timing tests ──────────────────────────────────────────────────────────────
 
 def test_pump_no_double_timing_with_blocking_output():
-    """阻塞輸出（write 內 sleep frame_duration）播 10 幀，總耗時 < 0.8s；
-    現況雙重計時會逼近正確耗時的兩倍 → 此測試應為紅；修成 deadline 計時後不會再翻倍 → 綠。
-    上界抓寬到 0.8s（非緊貼本機 ~0.2s 的 0.32s）是因為 GitHub Actions macOS runner
-    的 thread/sleep 排程延遲會讓「正確」耗時本身就達 ~0.5s；0.8s 仍能跟雙重計時的
-    ~2x 耗時（同環境下會落在 ~1.0s+）區分開。"""
+    """阻塞輸出（write 內 sleep frame_duration）下，_pump 不得在 write 已耗掉一個
+    frame 之後又睡一個 frame（雙重計時 bug → 總耗時逼近正確的兩倍）。
+
+    絕對時間上界在共用 CI runner 上不可靠（thread/sleep 排程抖動可讓「正確」耗時
+    本身就翻好幾倍）。改測「相對」：先量純 N 次阻塞 write 的基線耗時（同一台機、
+    同一份排程抖動），再量經過 _pump 的耗時。_pump 的額外開銷只有執行緒啟動 + 迴圈
+    （數十 ms）；雙重計時 bug 會多睡整整 N×frame_duration。抓 excess < 半個 N×frame
+    預算，兩者分得開又不受 runner 負載影響。"""
     from marvin_voice_core.playback_device import LocalSpeakerDevice
 
     N = 10
     frame_duration = 0.02
-    source = _FakeSource([FRAME] * N)
+    budget = N * frame_duration  # 雙重計時 bug 會多花約這麼多
+
+    # 基線：純 N 次阻塞 write（含這台機當下的排程抖動）
+    baseline_out = _BlockingOutput(frame_duration)
+    t0 = time.perf_counter()
+    for _ in range(N):
+        baseline_out.write(FRAME)
+    baseline = time.perf_counter() - t0
+
     output = _BlockingOutput(frame_duration)
-
     dev = LocalSpeakerDevice(output=output, frame_duration=frame_duration)
-    start = time.perf_counter()
-    dev.play(source)
-
+    t0 = time.perf_counter()
+    dev.play(_FakeSource([FRAME] * N))
     assert dev._thread is not None
     dev._thread.join(timeout=5.0)
-    elapsed = time.perf_counter() - start
+    via_pump = time.perf_counter() - t0
 
     assert len(output.frames) == N, f"應播出 {N} 幀，實際 {len(output.frames)}"
-    assert elapsed < 0.8, (
-        f"雙重計時 bug：{N} 幀阻塞輸出總耗時 {elapsed:.3f}s 超過 0.8s 上界"
+    excess = via_pump - baseline
+    assert excess < budget * 0.5, (
+        f"雙重計時 bug：_pump 比純阻塞 write 多花 {excess:.3f}s"
+        f"（基線 {baseline:.3f}s → 經泵 {via_pump:.3f}s），超過半個 {budget:.3f}s frame 預算"
     )
 
 

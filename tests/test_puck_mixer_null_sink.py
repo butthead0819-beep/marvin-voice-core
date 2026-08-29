@@ -7,8 +7,6 @@ _loop() 連 PCM 都開不成，量不到解碼端/網路端真正的靜音持續
 _loop() 照常跑起來。"""
 import time
 
-import pytest
-
 import device.puck_mixer as puck_mixer
 from device.puck_mixer import CHANNELS, RATE, PuckMixer, _NullPCM
 
@@ -48,6 +46,8 @@ def test_null_pcm_write_paces_to_real_playback_speed():
     start = time.monotonic()
     pcm.write(data)
     elapsed = time.monotonic() - start
-    # 寬容一點的誤差——這裡測的是「有沒有真的照 chunk 秒數 sleep」不是精確計時，
-    # 系統忙碌時（例如跟整批測試一起跑）time.sleep() 本身就有數十 ms 級的抖動。
-    assert elapsed == pytest.approx(expected, abs=0.05)
+    # 測的是「有沒有真的照 chunk 秒數 sleep」不是精確計時。要擋的失敗模式是
+    # write() 直接 return（elapsed≈0）→ _loop() 榨乾 buffer。共用 CI runner 忙碌時
+    # time.sleep() 只會偏長（實測 0.021→0.096），偏長不是 bug，所以下界抓緊、
+    # 上界放寬：至少睡了大半個 chunk，且沒離譜到 10 倍以上。
+    assert 0.5 * expected <= elapsed < expected + 0.5
