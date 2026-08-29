@@ -112,17 +112,35 @@ async def test_harvest_empty_fallback_still_captures_wav_bytes():
 
 
 @pytest.mark.asyncio
-async def test_override_query_path_has_no_audio_wav_bytes():
-    """override_query 路徑本來就不對應這段音訊，不該誤帶。"""
+async def test_override_query_path_captures_wav_bytes_from_speech_buffers():
+    """override_query 是實際唯一路徑（_confirmation_flow → _process_queued_query）。
+    喚醒句就是完整指令時，speech_buffers 裡的音訊正是這輪要救援的音訊，必須帶走。"""
     cog = _make_cog()
-    cog.speech_buffers["Alice"] = {"texts": ["x"], "wav_bytes": bytearray(b"unrelated-audio")}
+    cog.speech_buffers["Alice"] = {"texts": ["馬文小聲一點"], "wav_bytes": bytearray(b"wake-audio")}
+
+    await cog._process_queued_query(
+        "Alice", wake_time=time.time(), wake_intent=0.95, override_query="小聲一點",
+    )
+
+    assert "Alice" not in cog.speech_buffers  # 照舊被 pop 丟棄
+    ctx = cog._intent_bus.dispatch.await_args.args[0]
+    assert ctx.audio_wav_bytes == b"wake-audio"
+
+
+@pytest.mark.asyncio
+async def test_override_query_path_falls_back_to_prev_turn_audio_snapshot():
+    """等問句情境下 speech_buffers 可能已被 follow-up 的 debounce pop 掉；
+    退回 _prev_turn_audio 快照，讓 Audio Rescue / Frustration 仍有音訊可用。"""
+    cog = _make_cog()
+    cog._prev_turn_audio = {"Alice": b"snapshot-audio"}
+    # speech_buffers 沒有 Alice（已被 pop）
 
     await cog._process_queued_query(
         "Alice", wake_time=time.time(), wake_intent=0.95, override_query="小聲一點",
     )
 
     ctx = cog._intent_bus.dispatch.await_args.args[0]
-    assert ctx.audio_wav_bytes is None
+    assert ctx.audio_wav_bytes == b"snapshot-audio"
 
 
 @pytest.mark.asyncio

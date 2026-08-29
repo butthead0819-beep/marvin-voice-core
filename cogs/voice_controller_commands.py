@@ -49,9 +49,11 @@ class MarvinCommandsMixin:
         if mgr is None:
             await interaction.response.send_message("😑 對話功能沒初始化。", ephemeral=True)
             return
-        voice = getattr(interaction.user, "voice", None)
-        if not self.active and (voice is None or voice.channel is None):
-            await interaction.response.send_message("先進語音頻道再叫我。", ephemeral=True)
+        # sink 只在 bot 已連進語音頻道時收音——沒連就先 /summon
+        if self.voice_client is None or not self.voice_client.is_connected():
+            await interaction.response.send_message(
+                "我還沒進語音頻道，先 /summon。", ephemeral=True
+            )
             return
         await interaction.response.defer(thinking=True)
         msg = await mgr.toggle(interaction.user.id, interaction.user.display_name)

@@ -3081,27 +3081,24 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         _is_helper = is_helper_wake(wake_voice_score, wake_dom)
         _head = "🔍 **【馬文·幫你查了】**" if _is_helper else "⚡ **【馬文·喚醒回應】**"
 
-        _captured_wav_bytes: bytes | None = None  # 1. 擷取 Query（Audio Rescue v2：pop 前存音訊快照，override_query 路徑不擷取）
-        # FrustrationAgent 專用：這輪覆蓋前先留住「上一輪」快照，讓挫折句能回頭撈
-        # 挫折產生之前那輪的音訊；本輪 pop 出來的音訊會在下面更新成新的快照。
+        # 1. 擷取 Query 前先 pop speech_buffers 音訊：override_query（_confirmation_flow →
+        # 此函式，實際唯一路徑）下喚醒句音訊正是這輪 regex 沒中、要送 Audio Rescue /
+        # FrustrationAgent 的音訊；buffer 已被 follow-up 的 debounce pop 掉時，退回上一輪
+        # _prev_turn_audio 快照（FrustrationAgent 要撈的正是挫折句之前那輪）。
         _prev_turn_wav_bytes = getattr(self, "_prev_turn_audio", {}).get(speaker)
+        data = self.speech_buffers.pop(speaker, None)
+        _captured_wav_bytes = (bytes((data or {}).get("wav_bytes") or b"") or None) or _prev_turn_wav_bytes
+        if _captured_wav_bytes:
+            self._prev_turn_audio[speaker] = _captured_wav_bytes
+
+        history = self.bot.engine.conv_buffer.get_last_n_utterances(n=10)
         if override_query:
             query = override_query
-            history = self.bot.engine.conv_buffer.get_last_n_utterances(n=10)
-            data = self.speech_buffers.pop(speaker, None)
-            if data and data.get("wav_bytes"):
-                self._prev_turn_audio[speaker] = bytes(data["wav_bytes"])
         else:
+            # 🛡️ 防禦性 Fallback: 若 harvest 為空，用 speech_buffers 裡剩餘的片段
             query = self.bot.engine.conv_buffer.get_harvest(wake_time, before=3.0, after=1.0, speaker=speaker)
-            history = self.bot.engine.conv_buffer.get_last_n_utterances(n=10)
-
-            # 🛡️ 防禦性 Fallback: 若 harvest 為空，嘗試使用 speech_buffers 裡剩餘的片段
-            data = self.speech_buffers.pop(speaker, None)
             if data:
                 query = query or " ".join(data["texts"])
-                _captured_wav_bytes = bytes(data.get("wav_bytes") or b"") or None
-                if _captured_wav_bytes:
-                    self._prev_turn_audio[speaker] = _captured_wav_bytes
 
         if not query:
             logger.warning(f"⚠️ [Fast System] 無法為 {speaker} 擷取到任何有效的 Query 內容。")

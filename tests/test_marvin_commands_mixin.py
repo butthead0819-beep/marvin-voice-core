@@ -12,6 +12,7 @@ from discord import app_commands
 # ── 要搬到 mixin 的指令清單 ───────────────────────────────────────────────
 MOVED_COMMANDS = [
     "marvin_say",
+    "marvin_talk",
 ]
 
 # ── 必須留在 VoiceController（控制面）的指令 ──────────────────────────────────
@@ -66,3 +67,45 @@ async def test_marvin_say_uses_macos_protected_and_restores_flag():
     assert kwargs["already_in_channel"] is True
     assert vc._tts_protected is False
     assert vc._tts_interrupted is False
+
+
+def _talk_interaction():
+    interaction = MagicMock()
+    interaction.response.send_message = AsyncMock()
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+    interaction.user.id = 42
+    interaction.user.display_name = "陳進文"
+    return interaction
+
+
+@pytest.mark.asyncio
+async def test_marvin_talk_refuses_when_not_in_voice():
+    from cogs.voice_controller import VoiceController
+    vc = VoiceController.__new__(VoiceController)
+    vc.talk_manager = MagicMock()
+    vc._voice_client_override = None  # voice_client property → None（未連線）
+    vc.bot = MagicMock(voice_clients=[])
+    interaction = _talk_interaction()
+
+    await VoiceController.marvin_talk.callback(vc, interaction)
+
+    interaction.response.send_message.assert_awaited_once()
+    assert "summon" in interaction.response.send_message.call_args.args[0]
+    vc.talk_manager.toggle.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_marvin_talk_toggles_when_connected():
+    from cogs.voice_controller import VoiceController
+    vc = VoiceController.__new__(VoiceController)
+    vc.talk_manager = MagicMock(toggle=AsyncMock(return_value="🎙️ 好，說話。"))
+    vc._voice_client_override = MagicMock(is_connected=lambda: True)
+    vc.bot = MagicMock()
+    vc.stt_logger = MagicMock()
+    interaction = _talk_interaction()
+
+    await VoiceController.marvin_talk.callback(vc, interaction)
+
+    vc.talk_manager.toggle.assert_awaited_once_with(42, "陳進文")
+    interaction.followup.send.assert_awaited_once()
