@@ -40,6 +40,9 @@ logger = logging.getLogger("cogs.voice_controller.talk")
 IDLE_TIMEOUT_S = 180.0     # 這麼久沒有任何一句 → 自動收（沒人講話就沒成本，寬一點無妨）
 MAX_HISTORY_TURNS = 8      # 送進 prompt 的最近對話輪數
 GEMINI_TIMEOUT_S = 6.0     # 單次呼叫上限（實測 flash-lite 平時 ~2.6s；卡住就換下一家別乾等）
+MIN_SPEECH_RMS = 180       # 切片整體 RMS 低於這值＝沒人真的在講話（房間噪音/呼吸），不送 LLM
+                           # （正常語音 RMS ~1000-3000；14:52 實測噪音被當「00:00 00:01」瘋狂 hallucinate）
+MAX_REPEAT_REPLIES = 2     # 連續回同一句這麼多次 → 判定對方沒在講、自動收會話
 
 # 依序嘗試——flash-lite 平時最快（~2.6s），但偶爾整批「high demand」503/逾時
 # （11:58 實測 5 回合掛 2 回）。flash-latest 是獨立容量、延遲相近，當即時 fallback。
@@ -127,6 +130,9 @@ class TalkSession:
         self._last_activity = self.started_at
         self.history: list[dict] = []  # [{"heard": str, "reply": str}]
         self.turn_count = 0
+        self._last_reply = ""
+        self._repeat_count = 0
+        self._free_exhausted = False  # 免費 key 撞每日配額 → 本場不再試免費
         self._turn_lock = asyncio.Lock()
 
     # ── 生命週期 ──────────────────────────────────────────────────────────────
@@ -149,8 +155,17 @@ class TalkSession:
         async with self._turn_lock:
             if not self.active:
                 return
+
+            # 沒人真的在講話（房間噪音/呼吸被 VAD 誤切）→ 不燒 LLM。VAD 不是萬能，
+            # 14:52 實測整段噪音被 Gemini 當「00:00 00:01」瘋狂 hallucinate、連回 9 次同一句。
+            from marvin_voice_core.audio_utils import calculate_rms
+            rms = calculate_rms(pcm48k_stereo)
+            if rms < MIN_SPEECH_RMS:
+                logger.info(f"[MarvinTalk] 切片 RMS={rms} < {MIN_SPEECH_RMS}，沒在講話，跳過")
+                return
+
             self._last_activity = self._clock()
-            logger.warning(f"[MarvinTalk] 收到 {self.owner_name} 一句（{len(pcm48k_stereo)} bytes），處理中")
+            logger.warning(f"[MarvinTalk] 收到 {self.owner_name} 一句（{len(pcm48k_stereo)} bytes, rms={rms}），處理中")
 
             # 出個短音讓使用者知道「聽到了、正在想」——後面 LLM+TTS 還要等幾秒
             if self._on_heard is not None:
@@ -177,6 +192,20 @@ class TalkSession:
             del self.history[:-MAX_HISTORY_TURNS]
             self._last_activity = self._clock()
 
+            # 連續同一句 = 送進去的音訊每次都一樣（噪音）、對方沒在講 → 收會話
+            if reply == self._last_reply:
+                self._repeat_count += 1
+                if self._repeat_count >= MAX_REPEAT_REPLIES:
+                    logger.warning(f"[MarvinTalk] 連續 {self._repeat_count + 1} 次回同一句，判定沒在對話 → 收")
+                    self.close()
+                    await self._safe_tts("你好像沒在講話，我先閉嘴。")
+                    if self._on_exit_phrase is not None:
+                        await self._on_exit_phrase()
+                    return
+            else:
+                self._repeat_count = 0
+            self._last_reply = reply
+
             await self._safe_tts(reply)
 
             if heard and any(p in heard for p in _EXIT_PHRASES):
@@ -189,12 +218,17 @@ class TalkSession:
         from google.genai import types
 
         system = self._persona_provider() + _VOICE_SUFFIX
-        parts: list[Any] = []
+        # 用正式 role 對話串，別用「（我剛說）…（你回）…」文字前綴——實測會被模型
+        # 原樣抄進回覆的逐字稿欄位（14:52 heard 出現「…（你回）嗯，你說得對」）。
+        contents: list[Any] = []
         for turn in self.history[-MAX_HISTORY_TURNS:]:
-            parts.append(types.Part.from_text(text=f"（我剛說）{turn['heard']}"))
-            parts.append(types.Part.from_text(text=f"（你回）{turn['reply']}"))
-        parts.append(types.Part.from_text(text="（以下是我這句話的音訊，聽完用馬文的口吻回我）"))
-        parts.append(types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"))
+            if turn.get("heard"):
+                contents.append(types.Content(role="user", parts=[types.Part.from_text(text=turn["heard"])]))
+            contents.append(types.Content(role="model", parts=[types.Part.from_text(text=turn["reply"])]))
+        contents.append(types.Content(role="user", parts=[
+            types.Part.from_text(text="（這是我這句話的音訊，聽完用馬文的口吻回我）"),
+            types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
+        ]))
         config = types.GenerateContentConfig(
             system_instruction=system,
             temperature=0.8,
@@ -207,7 +241,7 @@ class TalkSession:
         # 付費才跑整條 chain 求穩。
         est_in = _FIXED_PROMPT_TOKENS + max(1, len(wav_bytes) // _PCM16_BYTES_PER_SECOND) * _AUDIO_TOKENS_PER_SECOND
         attempts: list[tuple[Any, str, bool]] = []
-        if self._free_client is not None:
+        if self._free_client is not None and not self._free_exhausted:
             attempts.append((self._free_client, self._model_chain[0], False))
         if self._paid_client is not None and self._guard.allow(
             estimate_cost(self._model_chain[0], est_in, _ESTIMATED_OUTPUT_TOKENS)
@@ -219,7 +253,7 @@ class TalkSession:
             try:
                 response = await asyncio.wait_for(
                     client.aio.models.generate_content(
-                        model=model, contents=parts, config=config,
+                        model=model, contents=contents, config=config,
                     ),
                     timeout=GEMINI_TIMEOUT_S,
                 )
@@ -227,7 +261,12 @@ class TalkSession:
                 logger.warning(f"[MarvinTalk] {tier} {model} 逾時（{GEMINI_TIMEOUT_S}s），換下一個")
                 continue
             except Exception as exc:
-                logger.warning(f"[MarvinTalk] {tier} {model} 失敗：{exc}，換下一個")
+                # 免費 key 撞每日配額（RESOURCE_EXHAUSTED）→ 本場後續都別再試免費，直接付費
+                if not is_paid and "RESOURCE_EXHAUSTED" in str(exc):
+                    self._free_exhausted = True
+                    logger.warning("[MarvinTalk] 免費 key 今日配額用盡，本場改走付費")
+                else:
+                    logger.warning(f"[MarvinTalk] {tier} {model} 失敗：{str(exc)[:120]}，換下一個")
                 continue
 
             usage = getattr(response, "usage_metadata", None)

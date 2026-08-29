@@ -70,8 +70,9 @@ def _manager(tmp_path, *, client=None, free_client="__unset__", paid_client=None
     )
 
 
-# 一段假 PCM：48k stereo int16，0.5 秒
-_PCM = b"\x01\x00\x02\x00" * (48000 // 2)
+# 一段假 PCM：48k stereo int16，0.5 秒，振幅 ~2000（過 MIN_SPEECH_RMS）
+_PCM = (2000).to_bytes(2, "little", signed=True) * 2 * (48000 // 2)
+_SILENT_PCM = b"\x02\x00\x02\x00" * (48000 // 2)  # RMS ~2，靜音
 
 
 @pytest.fixture(autouse=True)
@@ -97,6 +98,30 @@ async def test_toggle_opens_and_closes(tmp_path):
     assert "結束" in msg2
     assert not mgr.active
     resume.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_silent_slice_not_sent_to_llm(tmp_path):
+    client = _fake_client()
+    mgr = _manager(tmp_path, client=client)
+    await mgr.start(1, "Alice")
+    await mgr.feed(1, _SILENT_PCM)
+    client.aio.models.generate_content.assert_not_called()
+    await mgr.feed(1, _PCM)
+    client.aio.models.generate_content.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_repeated_identical_reply_ends_session(tmp_path):
+    client = _fake_client(_fake_gemini_response(reply="一樣的話。", heard="嗯"))
+    tts = AsyncMock()
+    mgr = _manager(tmp_path, client=client, tts=tts)
+    await mgr.start(1, "Alice")
+    for _ in range(3):
+        if mgr.active:
+            await mgr.feed(1, _PCM)
+    assert not mgr.active
+    assert "閉嘴" in tts.await_args.args[0]
 
 
 @pytest.mark.asyncio
