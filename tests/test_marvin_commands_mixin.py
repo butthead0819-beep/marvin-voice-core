@@ -120,6 +120,22 @@ async def test_talk_say_clears_interrupt_and_protects():
     assert kwargs["force_macos"] is True
 
 
+def test_talk_music_pause_mutes_layer_not_whole_mixer():
+    """對談暫停音樂只能壓音樂層音量，絕不能 _mixer.set_paused()——
+    整台泵暫停會連馬文回覆 TTS 一起卡住（11:46 bug）。"""
+    from cogs.voice_controller import VoiceController
+    vc = VoiceController.__new__(VoiceController)
+    vc._mixer = MagicMock()
+    vc._mixer._volume_target = 0.8
+
+    vc._talk_set_music_paused(True)
+    vc._mixer.set_volume.assert_called_once_with(0.0)
+    vc._mixer.set_paused.assert_not_called()
+
+    vc._talk_set_music_paused(False)
+    vc._mixer.set_volume.assert_called_with(0.8)
+
+
 @pytest.mark.asyncio
 async def test_marvin_talk_toggles_when_connected():
     from cogs.voice_controller import VoiceController

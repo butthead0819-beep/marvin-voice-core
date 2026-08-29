@@ -67,16 +67,19 @@ class MarvinTalkMixin:
             return "你是馬文，一個厭世但博學的機器人。用中文口語回答。"
 
     def _talk_set_music_paused(self, paused: bool) -> None:
-        if getattr(self, "_mixer", None) is not None:
-            self._mixer.set_paused(paused)
-        mc = self.bot.cogs.get("MusicCog")
-        if mc is None:
+        """對談期間壓住音樂。
+
+        ⚠️ 不能用 _mixer.set_paused()——Plan12 mixer 是「音樂＋TTS」單一泵，
+        整台暫停時 read() 直接回 silence，馬文的回覆 TTS 也被卡住，只在對談結束
+        解暫停時才一次噴出（11:46 實測「聽不到、結束才有聲音、已講一半」的根因）。
+        改成只把音樂層音量壓到 0（TTS 層走獨立 _tts_gain 不受影響）。
+        代價：歌曲位置照跑，對談中會前進——短對談可接受。
+        """
+        mixer = getattr(self, "_mixer", None)
+        if mixer is None:
             return
         if paused:
-            if getattr(mc, "stream_mode", False):
-                mc.stream_paused = True
-            if getattr(mc, "radio_mode", False):
-                mc.radio_paused = True
+            self._talk_saved_music_vol = getattr(mixer, "_volume_target", 1.0)
+            mixer.set_volume(0.0)
         else:
-            mc.stream_paused = False
-            mc.radio_paused = False
+            mixer.set_volume(getattr(self, "_talk_saved_music_vol", 1.0))
