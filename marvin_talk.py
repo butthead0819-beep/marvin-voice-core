@@ -12,6 +12,10 @@
 講話那幾十秒算 audio-in、輸出是文字、TTS 走 edge-tts，成本低 1~2 個數量級，
 且重用現有 VAD / mixer / TTS，新增程式量小。代價：回合延遲 ~2~4s、不能打斷、
 TTS 平板無情感。真的不夠用再補 Live（兩者觸發入口 / 記帳 / 獨佔 guard 可共用）。
+
+API 金鑰：預設走**免費** key（router.google_client = GOOGLE_API_KEY），跟 STT
+cleaner 共用同一把。免費全掛（429 / 逾時）才退到付費 key（google_paid_client），
+且退付費前過 PaidUsageGuard cap。只有真的用到付費 client 才記帳。
 """
 from __future__ import annotations
 
@@ -96,7 +100,8 @@ class TalkSession:
         *,
         owner_id: int,
         owner_name: str,
-        google_client: Any,
+        free_client: Any,
+        paid_client: Any | None,
         play_tts: PlayTTS,
         persona_provider: Callable[[], str],
         paid_guard: PaidUsageGuard,
@@ -107,7 +112,8 @@ class TalkSession:
     ):
         self.owner_id = owner_id
         self.owner_name = owner_name
-        self._client = google_client
+        self._free_client = free_client
+        self._paid_client = paid_client
         self._play_tts = play_tts
         self._persona_provider = persona_provider
         self._guard = paid_guard
@@ -159,14 +165,6 @@ class TalkSession:
                 logger.warning(f"[MarvinTalk] 音訊轉檔失敗，跳過本回合：{exc}")
                 return
 
-            secs = max(1, len(wav_bytes) // _PCM16_BYTES_PER_SECOND)
-            est_in = _FIXED_PROMPT_TOKENS + secs * _AUDIO_TOKENS_PER_SECOND
-            if not self._guard.allow(estimate_cost(self._model_chain[0], est_in, _ESTIMATED_OUTPUT_TOKENS)):
-                logger.warning("[MarvinTalk] 超 daily/monthly paid cap，結束會話")
-                self.close()
-                await self._safe_tts("我這個月的對話額度用完了，改天吧。")
-                return
-
             result = await self._call_gemini(wav_bytes)
             if result is None:
                 await self._safe_tts("抱歉，我剛剛恍神了，你再說一次。")
@@ -204,29 +202,41 @@ class TalkSession:
             response_schema=_RESPONSE_SCHEMA,
         )
 
-        for model in self._model_chain:
+        # 免費 key 先跑整條 model chain；全掛才退付費 key（且過 paid cap）
+        est_in = _FIXED_PROMPT_TOKENS + max(1, len(wav_bytes) // _PCM16_BYTES_PER_SECOND) * _AUDIO_TOKENS_PER_SECOND
+        attempts: list[tuple[Any, str, bool]] = []
+        if self._free_client is not None:
+            attempts += [(self._free_client, m, False) for m in self._model_chain]
+        if self._paid_client is not None and self._guard.allow(
+            estimate_cost(self._model_chain[0], est_in, _ESTIMATED_OUTPUT_TOKENS)
+        ):
+            attempts += [(self._paid_client, m, True) for m in self._model_chain]
+
+        for client, model, is_paid in attempts:
+            tier = "付費" if is_paid else "免費"
             try:
                 response = await asyncio.wait_for(
-                    self._client.aio.models.generate_content(
+                    client.aio.models.generate_content(
                         model=model, contents=parts, config=config,
                     ),
                     timeout=GEMINI_TIMEOUT_S,
                 )
             except asyncio.TimeoutError:
-                logger.warning(f"[MarvinTalk] {model} 逾時（{GEMINI_TIMEOUT_S}s），換下一家")
+                logger.warning(f"[MarvinTalk] {tier} {model} 逾時（{GEMINI_TIMEOUT_S}s），換下一個")
                 continue
             except Exception as exc:
-                logger.warning(f"[MarvinTalk] {model} 呼叫失敗：{exc}，換下一家")
+                logger.warning(f"[MarvinTalk] {tier} {model} 失敗：{exc}，換下一個")
                 continue
 
             usage = getattr(response, "usage_metadata", None)
             in_tokens = int(getattr(usage, "prompt_token_count", 0) or 0)
             out_tokens = int(getattr(usage, "candidates_token_count", 0) or _ESTIMATED_OUTPUT_TOKENS)
-            self._guard.record(
-                caller="marvin_talk", model=model, tokens=in_tokens + out_tokens,
-                est_usd=estimate_cost(model, in_tokens or _FIXED_PROMPT_TOKENS, out_tokens),
-                in_tokens=in_tokens, out_tokens=out_tokens,
-            )
+            if is_paid:  # 只有真的打到付費 client 才記帳（免費 key 不進帳本）
+                self._guard.record(
+                    caller="marvin_talk", model=model, tokens=in_tokens + out_tokens,
+                    est_usd=estimate_cost(model, in_tokens or _FIXED_PROMPT_TOKENS, out_tokens),
+                    in_tokens=in_tokens, out_tokens=out_tokens,
+                )
 
             raw = (getattr(response, "text", None) or "").strip()
             if not raw:
@@ -255,7 +265,8 @@ class TalkSessionManager:
     def __init__(
         self,
         *,
-        google_client_provider: Callable[[], Any],
+        free_client_provider: Callable[[], Any],
+        paid_client_provider: Callable[[], Any] | None = None,
         play_tts: PlayTTS,
         send_text: SendText,
         pause_music: Callable[[], Any],
@@ -268,7 +279,8 @@ class TalkSessionManager:
         model_chain: tuple[str, ...] = _MODEL_CHAIN,
         clock: Callable[[], float] = time.time,
     ):
-        self._google_client_provider = google_client_provider
+        self._free_client_provider = free_client_provider
+        self._paid_client_provider = paid_client_provider or (lambda: None)
         self._play_tts = play_tts
         self._send_text = send_text
         self._heard_cue = heard_cue
@@ -306,8 +318,9 @@ class TalkSessionManager:
         if self.active:
             return f"🗣️ 我正在跟 {self.session.owner_name} 說話，等一下。"
 
-        client = self._google_client_provider()
-        if client is None:
+        free_client = self._free_client_provider()
+        paid_client = self._paid_client_provider()
+        if free_client is None and paid_client is None:
             return "😑 對話功能沒接上（缺 Gemini client）。"
 
         try:
@@ -317,7 +330,7 @@ class TalkSessionManager:
 
         self.session = TalkSession(
             owner_id=user_id, owner_name=user_name,
-            google_client=client, play_tts=self._play_tts,
+            free_client=free_client, paid_client=paid_client, play_tts=self._play_tts,
             persona_provider=self._persona_provider, paid_guard=self._guard,
             model_chain=self._model_chain, clock=self._clock,
             on_exit_phrase=lambda: self.stop(reason="使用者道別"),

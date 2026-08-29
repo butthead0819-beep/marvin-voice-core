@@ -52,15 +52,21 @@ def _guard(tmp_path, daily=2.0):
     )
 
 
-def _manager(tmp_path, *, client, clock=None, tts=None, pause=None, resume=None, send=None):
+def _manager(tmp_path, *, client=None, free_client="__unset__", paid_client=None,
+             clock=None, tts=None, pause=None, resume=None, send=None, guard=None,
+             mic_gate=None, heard_cue=None):
+    fc = client if free_client == "__unset__" else free_client
     return marvin_talk.TalkSessionManager(
-        google_client_provider=lambda: client,
+        free_client_provider=lambda: fc,
+        paid_client_provider=lambda: paid_client,
         play_tts=tts or AsyncMock(),
         send_text=send or AsyncMock(),
         pause_music=pause or MagicMock(),
         resume_music=resume or MagicMock(),
         persona_provider=lambda: "你是馬文。",
-        paid_guard=_guard(tmp_path),
+        paid_guard=guard or _guard(tmp_path),
+        mic_gate=mic_gate,
+        heard_cue=heard_cue,
         clock=clock or (lambda: 1000.0),
     )
 
@@ -99,13 +105,7 @@ async def test_mic_gate_drops_slice_while_marvin_speaking(tmp_path):
     """馬文自己在出聲時進來的切片（同頻道回授）不送 LLM。"""
     client = _fake_client()
     open_mic = {"v": False}
-    mgr = marvin_talk.TalkSessionManager(
-        google_client_provider=lambda: client,
-        play_tts=AsyncMock(), send_text=AsyncMock(),
-        pause_music=MagicMock(), resume_music=MagicMock(),
-        persona_provider=lambda: "你是馬文。", paid_guard=_guard(tmp_path),
-        mic_gate=lambda: open_mic["v"], clock=lambda: 1000.0,
-    )
+    mgr = _manager(tmp_path, client=client, mic_gate=lambda: open_mic["v"])
     await mgr.start(1, "Alice")
 
     await mgr.feed(1, _PCM)  # 馬文在出聲 → 丟
@@ -154,52 +154,52 @@ async def test_heard_cue_fires_before_gemini(tmp_path):
     async def _cue():
         order.append("cue")
 
-    mgr = marvin_talk.TalkSessionManager(
-        google_client_provider=lambda: client,
-        play_tts=AsyncMock(), send_text=AsyncMock(),
-        pause_music=MagicMock(), resume_music=MagicMock(),
-        persona_provider=lambda: "你是馬文。", paid_guard=_guard(tmp_path),
-        heard_cue=_cue, clock=lambda: 1000.0,
-    )
+    mgr = _manager(tmp_path, client=client, heard_cue=_cue)
     await mgr.start(1, "Alice")
     await mgr.feed(1, _PCM)
     assert order == ["cue", "gemini"]  # 先出提示音，再打 LLM
 
 
 @pytest.mark.asyncio
-async def test_turn_records_paid_usage(tmp_path):
+async def test_free_client_used_first_paid_untouched(tmp_path):
     guard = _guard(tmp_path)
-    mgr = marvin_talk.TalkSessionManager(
-        google_client_provider=lambda: _fake_client(),
-        play_tts=AsyncMock(), send_text=AsyncMock(),
-        pause_music=MagicMock(), resume_music=MagicMock(),
-        persona_provider=lambda: "你是馬文。", paid_guard=guard,
-        clock=lambda: 1000.0,
-    )
+    free = _fake_client()
+    paid = _fake_client()
+    mgr = _manager(tmp_path, client=free, paid_client=paid, guard=guard)
     await mgr.start(1, "Alice")
     await mgr.feed(1, _PCM)
 
-    rows = guard._rows()
-    assert len(rows) == 1
-    assert rows[0]["caller"] == "marvin_talk"
-    assert rows[0]["est_usd"] > 0
+    free.aio.models.generate_content.assert_awaited()
+    paid.aio.models.generate_content.assert_not_called()
+    assert guard._rows() == []  # 免費不進帳本
 
 
 @pytest.mark.asyncio
-async def test_over_cap_ends_session(tmp_path):
-    guard = _guard(tmp_path, daily=0.0)  # 任何花費都超
-    tts = AsyncMock()
-    mgr = marvin_talk.TalkSessionManager(
-        google_client_provider=lambda: _fake_client(),
-        play_tts=tts, send_text=AsyncMock(),
-        pause_music=MagicMock(), resume_music=MagicMock(),
-        persona_provider=lambda: "你是馬文。", paid_guard=guard,
-        clock=lambda: 1000.0,
-    )
+async def test_paid_fallback_records_usage_when_free_fails(tmp_path):
+    guard = _guard(tmp_path)
+    free = _fake_client(exc=RuntimeError("429"))
+    paid = _fake_client()
+    mgr = _manager(tmp_path, client=free, paid_client=paid, guard=guard)
     await mgr.start(1, "Alice")
     await mgr.feed(1, _PCM)
-    assert not mgr.active
-    assert "額度" in tts.await_args.args[0]
+
+    paid.aio.models.generate_content.assert_awaited()
+    rows = guard._rows()
+    assert len(rows) == 1 and rows[0]["caller"] == "marvin_talk" and rows[0]["est_usd"] > 0
+
+
+@pytest.mark.asyncio
+async def test_over_cap_skips_paid_fallback(tmp_path):
+    guard = _guard(tmp_path, daily=0.0)  # 任何花費都超
+    tts = AsyncMock()
+    free = _fake_client(exc=RuntimeError("429"))
+    paid = _fake_client()
+    mgr = _manager(tmp_path, client=free, paid_client=paid, guard=guard, tts=tts)
+    await mgr.start(1, "Alice")
+    await mgr.feed(1, _PCM)
+    paid.aio.models.generate_content.assert_not_called()  # 超 cap → 不退付費
+    assert tts.await_args.args[0] == "抱歉，我剛剛恍神了，你再說一次。"
+    assert mgr.active  # 免費可能會恢復，不強制收
 
 
 @pytest.mark.asyncio
@@ -258,7 +258,7 @@ async def test_no_wall_clock_cap_only_idle(tmp_path):
 async def test_watchdog_ends_on_voice_disconnect(tmp_path, monkeypatch):
     connected = {"v": True}
     mgr = marvin_talk.TalkSessionManager(
-        google_client_provider=lambda: _fake_client(),
+        free_client_provider=lambda: _fake_client(),
         play_tts=AsyncMock(), send_text=AsyncMock(),
         pause_music=MagicMock(), resume_music=MagicMock(),
         persona_provider=lambda: "你是馬文。", paid_guard=_guard(tmp_path),

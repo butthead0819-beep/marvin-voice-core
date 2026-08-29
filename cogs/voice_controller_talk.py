@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 
 class MarvinTalkMixin:
@@ -18,8 +19,12 @@ class MarvinTalkMixin:
         from marvin_talk import TalkSessionManager
 
         self.talk_manager = TalkSessionManager(
-            google_client_provider=lambda: getattr(
-                getattr(self.bot, "router", None), "google_client", None
+            # 免費 key：優先用專屬 MARVIN_TALK_API_KEY（獨立額度，不跟 cleaner 搶）；
+            # 沒設就退回 router 共用的 GOOGLE_API_KEY（但那把常被 cleaner 打到 429）。
+            # 免費全掛才退付費 key。
+            free_client_provider=self._talk_free_client,
+            paid_client_provider=lambda: getattr(
+                getattr(self.bot, "router", None), "google_paid_client", None
             ),
             play_tts=self._talk_say,
             send_text=self._talk_send_text,
@@ -32,6 +37,17 @@ class MarvinTalkMixin:
             heard_cue=lambda: self._play_ack("filler"),
             mic_gate=self._talk_mic_open,
         )
+
+    def _talk_free_client(self):
+        key = os.getenv("MARVIN_TALK_API_KEY")
+        if key:
+            cached = getattr(self, "_talk_dedicated_client", None)
+            if cached is None:
+                from google import genai
+                cached = genai.Client(api_key=key)
+                self._talk_dedicated_client = cached
+            return cached
+        return getattr(getattr(self.bot, "router", None), "google_client", None)
 
     def _talk_mic_open(self) -> bool:
         """True = 收這段切片；False = 馬文回覆還在 mixer 裡播，這時的切片多半是雜訊誤切
