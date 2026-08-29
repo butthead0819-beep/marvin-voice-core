@@ -72,8 +72,8 @@ _VOICE_SUFFIX = (
 _EXIT_MARKER = "<bye>"
 
 MAX_REPLY_CHARS = 140     # 回覆超過就在句尾切——語音對話不聽長篇；也擋 mixer TTS 佇列爆掉
-_MAX_OUTPUT_TOKENS = 800  # 答案本身用不到這麼多，但 thinking 模型連工具呼叫都算在內，
-                          # 留餘裕避免答案被 MAX_TOKENS 截斷；長度靠 persona ＋ _trim_reply 控
+_MAX_OUTPUT_TOKENS = 800  # 涵蓋思考＋工具呼叫＋答案，留餘裕避免答案被 MAX_TOKENS 截斷；
+                          # 唸出來的長度靠 persona ＋ _trim_reply(140) 控，不靠壓這個數字
 PULSE_INTERVAL_S = 1.3    # 等待提示音的呼吸間隔
 
 
@@ -232,11 +232,9 @@ class TalkSession:
         config = types.GenerateContentConfig(
             system_instruction=system,
             temperature=0.8,
-            # gemini-2.5-flash 是 thinking 模型：max_output_tokens 把「思考＋工具呼叫＋
-            # 答案」全算在一起。設太低（220）+ 觸發 google 搜尋 → 思考吃光配額，答案
-            # 講兩句就 finish_reason=MAX_TOKENS 硬斷（19:14 實測「越南河粉的起源，是」）。
-            # 關掉 thinking（語音閒聊不需要）＋放大上限；長度靠 persona ＋ _trim_reply 控。
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
+            # max_output_tokens 涵蓋思考＋工具呼叫＋答案。設 220 + 觸發 google 搜尋
+            # → 答案還沒講完就到頂，finish_reason=MAX_TOKENS 硬斷（19:14 實測
+            # 「越南河粉的起源，是」）。放大上限，長度靠 persona ＋ _trim_reply 控。
             max_output_tokens=_MAX_OUTPUT_TOKENS,
             tools=[types.Tool(google_search=types.GoogleSearch())],
         )
