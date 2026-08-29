@@ -34,8 +34,8 @@ class MarvinTalkMixin:
         )
 
     def _talk_mic_open(self) -> bool:
-        """True = 這段切片收（是使用者要說的）；False = 馬文自己在出聲，切片是同頻道回授要丟。
-        （剛講完的聲學殘響 tail 由 TalkSession 自己的 _reply_done_at 再擋一段。）"""
+        """True = 收這段切片；False = 馬文回覆還在 mixer 裡播，這時的切片多半是雜訊誤切
+        或 barge-in（回合制不支援），等他播完再收。"""
         if getattr(self, "is_playing_audio", False):
             return False
         mixer = getattr(self, "_mixer", None)

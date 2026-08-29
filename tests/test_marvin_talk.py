@@ -117,23 +117,6 @@ async def test_mic_gate_drops_slice_while_marvin_speaking(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_echo_tail_drops_slice_right_after_reply(tmp_path):
-    clock = _FakeClock()
-    client = _fake_client()
-    mgr = _manager(tmp_path, client=client, clock=clock)
-    await mgr.start(1, "Alice")
-    await mgr.feed(1, _PCM)
-    assert client.aio.models.generate_content.await_count == 1
-    mgr.session._reply_done_at = clock.t  # 剛回覆完
-    clock.t += marvin_talk.ECHO_TAIL_S - 0.3
-    await mgr.feed(1, _PCM)  # 殘響窗內 → 丟
-    assert client.aio.models.generate_content.await_count == 1
-    clock.t += 0.5  # 出窗
-    await mgr.feed(1, _PCM)
-    assert client.aio.models.generate_content.await_count == 2
-
-
-@pytest.mark.asyncio
 async def test_second_user_cannot_open_while_active(tmp_path):
     mgr = _manager(tmp_path, client=_fake_client())
     await mgr.start(1, "Alice")
