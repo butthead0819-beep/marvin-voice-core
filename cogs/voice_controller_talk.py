@@ -28,6 +28,8 @@ class MarvinTalkMixin:
             persona_provider=self._talk_persona,
             is_voice_connected=lambda: self.voice_client is not None
             and self.voice_client.is_connected(),
+            # VAD 切走你的話後立刻出個短音「嗯」——讓你知道聽到了、正在想（LLM+TTS 還要幾秒）
+            heard_cue=lambda: self._play_ack("filler"),
         )
 
     def _talk_active(self) -> bool:

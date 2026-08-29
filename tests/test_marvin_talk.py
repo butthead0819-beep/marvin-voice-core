@@ -120,6 +120,31 @@ async def test_feed_only_owner_reaches_gemini(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_heard_cue_fires_before_gemini(tmp_path):
+    order = []
+    client = MagicMock()
+
+    async def _gen(*a, **k):
+        order.append("gemini")
+        return _fake_gemini_response()
+    client.aio.models.generate_content = AsyncMock(side_effect=_gen)
+
+    async def _cue():
+        order.append("cue")
+
+    mgr = marvin_talk.TalkSessionManager(
+        google_client_provider=lambda: client,
+        play_tts=AsyncMock(), send_text=AsyncMock(),
+        pause_music=MagicMock(), resume_music=MagicMock(),
+        persona_provider=lambda: "你是馬文。", paid_guard=_guard(tmp_path),
+        heard_cue=_cue, clock=lambda: 1000.0,
+    )
+    await mgr.start(1, "Alice")
+    await mgr.feed(1, _PCM)
+    assert order == ["cue", "gemini"]  # 先出提示音，再打 LLM
+
+
+@pytest.mark.asyncio
 async def test_turn_records_paid_usage(tmp_path):
     guard = _guard(tmp_path)
     mgr = marvin_talk.TalkSessionManager(

@@ -103,6 +103,7 @@ class TalkSession:
         model_chain: tuple[str, ...] = _MODEL_CHAIN,
         clock: Callable[[], float] = time.time,
         on_exit_phrase: Callable[[], Awaitable[Any]] | None = None,
+        on_heard: Callable[[], Awaitable[Any]] | None = None,
     ):
         self.owner_id = owner_id
         self.owner_name = owner_name
@@ -113,6 +114,7 @@ class TalkSession:
         self._model_chain = model_chain
         self._clock = clock
         self._on_exit_phrase = on_exit_phrase
+        self._on_heard = on_heard
 
         self.active = True
         self.started_at = clock()
@@ -143,6 +145,13 @@ class TalkSession:
                 return
             self._last_activity = self._clock()
             logger.warning(f"[MarvinTalk] 收到 {self.owner_name} 一句（{len(pcm48k_stereo)} bytes），處理中")
+
+            # 出個短音讓使用者知道「聽到了、正在想」——後面 LLM+TTS 還要等幾秒
+            if self._on_heard is not None:
+                try:
+                    await self._on_heard()
+                except Exception as exc:
+                    logger.warning(f"[MarvinTalk] 收到提示音失敗（不擋）：{exc}")
 
             try:
                 wav_bytes = _pcm48k_stereo_to_wav16k_mono(pcm48k_stereo)
@@ -253,6 +262,7 @@ class TalkSessionManager:
         resume_music: Callable[[], Any],
         persona_provider: Callable[[], str],
         is_voice_connected: Callable[[], bool] | None = None,
+        heard_cue: Callable[[], Awaitable[Any]] | None = None,
         paid_guard: PaidUsageGuard | None = None,
         model_chain: tuple[str, ...] = _MODEL_CHAIN,
         clock: Callable[[], float] = time.time,
@@ -260,6 +270,7 @@ class TalkSessionManager:
         self._google_client_provider = google_client_provider
         self._play_tts = play_tts
         self._send_text = send_text
+        self._heard_cue = heard_cue
         self._pause_music = pause_music
         self._resume_music = resume_music
         self._persona_provider = persona_provider
@@ -308,6 +319,7 @@ class TalkSessionManager:
             persona_provider=self._persona_provider, paid_guard=self._guard,
             model_chain=self._model_chain, clock=self._clock,
             on_exit_phrase=lambda: self.stop(reason="使用者道別"),
+            on_heard=self._heard_cue,
         )
         self._watchdog = asyncio.ensure_future(self._watch())
         logger.warning(f"[MarvinTalk] 會話開始：{user_name}({user_id})")
