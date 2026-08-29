@@ -193,6 +193,8 @@ class ProactiveSocialMixin:
         # 🤫 私語模式：聽>>講——SpeakBus 主動表演一律不 tick（narrow allowlist）
         if getattr(self, '_intimate_mode', False):
             return
+        if self._talk_active():  # 🎙️ 回合制對談進行中：獨佔，SpeakBus 不 tick
+            return
         # 沒連 voice channel → bus 跑沒意義
         if not self.bot.voice_clients:
             return
@@ -255,6 +257,8 @@ class ProactiveSocialMixin:
         """
         # 🤫 私語模式：不主動起話題（1-on-1 反應式 only）
         if getattr(self, '_intimate_mode', False):
+            return
+        if self._talk_active():  # 🎙️ 回合制對談進行中：獨佔
             return
         import random
         try:

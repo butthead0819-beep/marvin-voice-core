@@ -114,7 +114,7 @@ async def test_feed_only_owner_reaches_gemini(tmp_path):
 
     await mgr.feed(1, _PCM)  # 觸發者
     client.aio.models.generate_content.assert_awaited_once()
-    tts.assert_awaited_once()
+    # 開場提示語 + 回覆 → 兩次 TTS；最後一次是回覆
     assert tts.await_args.args[0] == "嗯，隨便啦。"
 
 
@@ -190,6 +190,15 @@ async def test_deadline_silence_timeout(tmp_path):
     clock = _FakeClock()
     mgr = _manager(tmp_path, client=_fake_client(), clock=clock)
     await mgr.start(1, "Alice")
+    # 開場前寬限用 FIRST_TURN_GRACE_S
+    clock.t += marvin_talk.SILENCE_TIMEOUT_S + 1
+    assert mgr.session.deadline_reason() is None
+    clock.t += marvin_talk.FIRST_TURN_GRACE_S
+    assert mgr.session.deadline_reason() == "太久沒聲音"
+    # 對過話之後收緊到 SILENCE_TIMEOUT_S
+    mgr.session.turn_count = 1
+    mgr.session.started_at = clock.t
+    mgr.session._last_activity = clock.t
     clock.t += marvin_talk.SILENCE_TIMEOUT_S + 1
     assert mgr.session.deadline_reason() == "太久沒聲音"
 

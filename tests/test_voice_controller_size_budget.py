@@ -26,7 +26,10 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4235      # 實測 4235（2026-08-29 Audio Rescue v2 音訊斷鏈修復 −3：override_query
+LINE_BUDGET = 4240      # 實測 4240（2026-08-29 /marvin_talk 獨佔守衛 +5：handle_raw_speech_start
+                        # 嘲諷鏈 + play_intervention 開頭各加一條 `if self._talk_active(): return`
+                        # ——既有守衛鏈加分支、非新獨立功能，比照下方 is_text_input / idle-hangout
+                        # 同型先例調高）；前 4235（2026-08-29 Audio Rescue v2 音訊斷鏈修復 −3：override_query
                         # 是實際唯一路徑，_process_queued_query 的 if/else 兩份 speech_buffers
                         # 音訊擷取邏輯（其中一份在恆不執行的 else 死枝）合併成 pop 前單一路徑，
                         # 順帶收斂淨減行數）；前 4238（2026-08-29 /marvin_talk 回合制對談 +2：一行 import

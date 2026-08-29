@@ -1008,6 +1008,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🚀 [Atomic Pop] 立即取出並清空，防止 0.5s Watchdog 重複觸發
         if not self.pending_intervention:
             return
+        if self._talk_active():
+            self.pending_intervention = None
+            return  # 🎙️ 回合制對談：獨佔，不插話
         pending = self.pending_intervention
         self.pending_intervention = None
         
@@ -1680,6 +1683,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 self.stt_logger.info(f"[BOT被打斷←{speaker}] 未說完={interrupted_text[:80]}")
             self._current_tts_text = ""
 
+        if self._talk_active():
+            return  # 🎙️ 回合制對談進行中：獨佔，不嘲諷
         # 🚀 [Operation Prosody Perception] 延遲嘲諷邏輯 (Operation Silicon Mockery)
         now = time.time()
         silence_duration = now - self.last_marvin_speech_time

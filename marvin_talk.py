@@ -25,11 +25,14 @@ from typing import Any, Awaitable, Callable
 
 from llm_paid import PaidUsageGuard, estimate_cost
 
-logger = logging.getLogger("marvin_talk")
+# logger 名掛在 cogs.* 家族才會被 main_discord setup_early_logging 的 INFO allowlist 放行
+# （裸頂層名會吃 root WARNING 全被吞——見 main_discord.py 註解裡同型坑三次中鏢）
+logger = logging.getLogger("cogs.voice_controller.talk")
 
 # ── 會話上限 ───────────────────────────────────────────────────────────────────
 HARD_CAP_S = 90.0          # 單場硬上限（使用者訂）
-SILENCE_TIMEOUT_S = 25.0   # 這麼久沒有新回合 → 自動收
+FIRST_TURN_GRACE_S = 55.0  # 開場到講第一句的寬限（>= HARD_CAP 一半，實質「開了就等你講」）
+SILENCE_TIMEOUT_S = 25.0   # 已對過話後，這麼久沒有新回合 → 自動收
 MAX_HISTORY_TURNS = 6      # 送進 prompt 的最近對話輪數
 GEMINI_TIMEOUT_S = 8.0
 
@@ -118,7 +121,9 @@ class TalkSession:
         now = self._clock()
         if now - self.started_at >= HARD_CAP_S:
             return "時間到"
-        if now - self._last_activity >= SILENCE_TIMEOUT_S:
+        # 開場還沒講第一句給多一點寬限（找麥克風、想講什麼）；之後回合間才收緊
+        idle_cap = FIRST_TURN_GRACE_S if self.turn_count == 0 else SILENCE_TIMEOUT_S
+        if now - self._last_activity >= idle_cap:
             return "太久沒聲音"
         return None
 
@@ -137,6 +142,7 @@ class TalkSession:
             if not self.active:
                 return
             self._last_activity = self._clock()
+            logger.warning(f"[MarvinTalk] 收到 {self.owner_name} 一句（{len(pcm48k_stereo)} bytes），處理中")
 
             try:
                 wav_bytes = _pcm48k_stereo_to_wav16k_mono(pcm48k_stereo)
@@ -158,6 +164,7 @@ class TalkSession:
                 return
 
             heard, reply = result
+            logger.warning(f"[MarvinTalk] 回合 {self.turn_count + 1}｜聽到「{heard[:30]}」→ 回「{reply[:40]}」")
             self.turn_count += 1
             self.history.append({"heard": heard, "reply": reply})
             del self.history[:-MAX_HISTORY_TURNS]
@@ -300,7 +307,12 @@ class TalkSessionManager:
             on_exit_phrase=lambda: self.stop(reason="使用者道別"),
         )
         self._watchdog = asyncio.ensure_future(self._watch())
-        logger.info(f"[MarvinTalk] 會話開始：{user_name}({user_id})")
+        logger.warning(f"[MarvinTalk] 會話開始：{user_name}({user_id})")
+        # 出聲確認模式已開，使用者才知道可以講（純文字訊息容易被頻道洗掉沒看到）
+        try:
+            await self._play_tts("嗯，我在聽，你說。")
+        except Exception as exc:
+            logger.warning(f"[MarvinTalk] 開場語音失敗（不擋）：{exc}")
         return f"🎙️ 好，{user_name}，直接說話。{int(HARD_CAP_S)} 秒後自動收，或再打一次 /marvin_talk。"
 
     async def stop(self, reason: str = "") -> None:
@@ -315,7 +327,7 @@ class TalkSessionManager:
             self._resume_music()
         except Exception as exc:
             logger.warning(f"[MarvinTalk] 恢復音樂失敗：{exc}")
-        logger.info(f"[MarvinTalk] 會話結束：{reason}")
+        logger.warning(f"[MarvinTalk] 會話結束：{reason}")
         try:
             await self._send_text(f"🔇 對話結束（{reason}）。")
         except Exception:

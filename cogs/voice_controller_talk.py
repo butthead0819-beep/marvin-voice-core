@@ -33,6 +33,11 @@ class MarvinTalkMixin:
             persona_provider=self._talk_persona,
         )
 
+    def _talk_active(self) -> bool:
+        """回合制對談進行中 → 主動發話 / 嘲諷 / 插話一律讓路（獨佔）。"""
+        mgr = getattr(self, "talk_manager", None)
+        return mgr is not None and mgr.active
+
     def _talk_send_text(self, message: str):
         if self.active_text_channel is not None:
             return self.active_text_channel.send(message)

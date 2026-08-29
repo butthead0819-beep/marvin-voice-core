@@ -48,6 +48,7 @@ async def test_speak_bus_tick_loop_intimate_off_passes_through():
 
     fake = MagicMock()
     fake._intimate_mode = False
+    fake._talk_active = MagicMock(return_value=False)
     fake.bot.voice_clients = [MagicMock()]
     fake._speak_bus.agents.return_value = [MagicMock()]
     fake._speak_bus.tick = AsyncMock(return_value=bid)
@@ -83,6 +84,7 @@ async def test_trigger_proactive_topic_intimate_off_reaches_topics():
 
     fake = MagicMock()
     fake._intimate_mode = False
+    fake._talk_active = MagicMock(return_value=False)
     fake.get_online_members.return_value = ["user1"]
     # return [] → 早退（沒話題），但 get_proactive_topics 已被呼叫
     fake.bot.router.memory.get_proactive_topics = MagicMock(return_value=[])
