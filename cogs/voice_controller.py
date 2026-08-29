@@ -41,6 +41,7 @@ from cogs.voice_controller_playback import (  # noqa: F401 — re-export MAX_HOT
     PlaybackMixin, MAX_HOTSWAP_CHARS,
 )
 from cogs.voice_controller_system_loops import SystemLoopsMixin
+from cogs.voice_controller_talk import MarvinTalkMixin
 from cogs.voice_controller_state_proxy import StateProxyMixin
 from cogs.voice_controller_music_proxy import MusicProxyMixin
 from cogs.voice_controller_gap_notify import GapNotifyMixin
@@ -343,7 +344,7 @@ _FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGN
 
 
 class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixin,
-                      ConnectionMixin, PlaybackMixin, SystemLoopsMixin,
+                      ConnectionMixin, PlaybackMixin, SystemLoopsMixin, MarvinTalkMixin,
                       StateProxyMixin, MusicProxyMixin, GapNotifyMixin, commands.Cog):
     """
     [Operation Paranoid Android] 
@@ -438,44 +439,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             rescue_outcome_sink=_rescue_sink,
             cleaner_call=real_cleaner_call,
         )
-
-        # 🎙️ [Marvin Talk] 回合制語音對談（/marvin_talk）——繞過 STT/IntentBus，
-        # 觸發者 90s 獨佔頻道。獨佔 guard 在 discord_voice_engine.process_audio_slice。
-        from marvin_talk import TalkSessionManager
-
-        def _talk_persona() -> str:
-            try:
-                from marvin_prompts import PromptManager
-                return PromptManager().get_instruction("qa_persona")
-            except Exception:
-                return "你是馬文，一個厭世但博學的機器人。用中文口語回答。"
-
-        def _talk_pause_music() -> None:
-            if getattr(self, "_mixer", None) is not None:
-                self._mixer.set_paused(True)
-            mc = self.bot.cogs.get("MusicCog")
-            if mc is not None:
-                if getattr(mc, "stream_mode", False):
-                    mc.stream_paused = True
-                if getattr(mc, "radio_mode", False):
-                    mc.radio_paused = True
-
-        def _talk_resume_music() -> None:
-            if getattr(self, "_mixer", None) is not None:
-                self._mixer.set_paused(False)
-            mc = self.bot.cogs.get("MusicCog")
-            if mc is not None:
-                mc.stream_paused = False
-                mc.radio_paused = False
-
-        self.talk_manager = TalkSessionManager(
-            google_client_provider=lambda: getattr(getattr(self.bot, "router", None), "google_client", None),
-            play_tts=lambda t: self.play_tts(t, already_in_channel=True, protected=True),
-            send_text=lambda m: self.active_text_channel.send(m) if self.active_text_channel else asyncio.sleep(0),
-            pause_music=_talk_pause_music,
-            resume_music=_talk_resume_music,
-            persona_provider=_talk_persona,
-        )
+        self._init_talk_manager()  # /marvin_talk 回合制對談（見 MarvinTalkMixin）
 
         # 🛡️ [Operation Sentinel] 語音健康監控
         self.connection_time = 0 # 紀錄最後一次連線時間

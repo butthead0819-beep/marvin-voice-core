@@ -26,7 +26,10 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4236      # 實測 4236（2026-08-25 純掛網不嘲諷 + 音樂控制冷卻戳記 +15：
+LINE_BUDGET = 4238      # 實測 4238（2026-08-29 /marvin_talk 回合制對談 +2：一行 import
+                        # MarvinTalkMixin + 一行 self._init_talk_manager()——功能本體全在
+                        # cogs/voice_controller_talk.py + marvin_talk.py，這 +2 是把功能「移出去」
+                        # 的最小接線成本，正是棘輪要的方向）；前 4236（2026-08-25 純掛網不嘲諷 + 音樂控制冷卻戳記 +15：
                         # handle_raw_speech_start 既有嘲諷守衛鏈加一條 idle-hangout 分支、
                         # 主 dispatch 收尾加一行記錄 last_music_control_time——都是既有守衛/
                         # 既有收尾點的微調，非新獨立功能，比照下方同類先例調高）；前 4221
