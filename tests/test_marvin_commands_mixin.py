@@ -96,6 +96,31 @@ async def test_marvin_talk_refuses_when_not_in_voice():
 
 
 @pytest.mark.asyncio
+async def test_talk_say_clears_interrupt_and_protects():
+    """對談回覆出聲前必須清 _tts_interrupted + 拉 _tts_protected，
+    否則使用者剛講完話 → 回覆被 [TTS Interrupt Guard]/[Silence Gate] 整段跳過（11:40 bug）。"""
+    from cogs.voice_controller import VoiceController
+    vc = VoiceController.__new__(VoiceController)
+    seen = {}
+
+    async def _capture(*a, **kw):
+        seen["interrupted"] = vc._tts_interrupted
+        seen["protected"] = vc._tts_protected
+
+    vc.play_tts = AsyncMock(side_effect=_capture)
+    vc._tts_interrupted = True
+    vc._tts_protected = False
+
+    await VoiceController._talk_say(vc, "隨便啦，你自己想。")
+
+    assert seen["interrupted"] is False       # 呼叫當下已清中斷旗標
+    assert seen["protected"] is True          # 呼叫當下受保護
+    assert vc._tts_protected is False         # finally 還原原值
+    _, kwargs = vc.play_tts.call_args
+    assert kwargs["force_macos"] is True
+
+
+@pytest.mark.asyncio
 async def test_marvin_talk_toggles_when_connected():
     from cogs.voice_controller import VoiceController
     vc = VoiceController.__new__(VoiceController)

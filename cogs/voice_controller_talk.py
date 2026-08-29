@@ -21,12 +21,7 @@ class MarvinTalkMixin:
             google_client_provider=lambda: getattr(
                 getattr(self.bot, "router", None), "google_client", None
             ),
-            # force_macos：對談中改用本機 say（Meijia，已照馬文調音）。非為更快
-            # （實測與 edge-tts 相當），是為穩定——避開 edge-tts 限流「整個沒聲音」
-            # 的失效模式，延遲也一致（無冷呼叫尖峰）。見 2026-08-29 對話 / [[tts_edge_ratelimit_and_say_fallback]]
-            play_tts=lambda t: self.play_tts(
-                t, already_in_channel=True, protected=True, force_macos=True
-            ),
+            play_tts=self._talk_say,
             send_text=self._talk_send_text,
             pause_music=lambda: self._talk_set_music_paused(True),
             resume_music=lambda: self._talk_set_music_paused(False),
@@ -39,6 +34,24 @@ class MarvinTalkMixin:
         """回合制對談進行中 → 主動發話 / 嘲諷 / 插話一律讓路（獨佔）。"""
         mgr = getattr(self, "talk_manager", None)
         return mgr is not None and mgr.active
+
+    async def _talk_say(self, text: str) -> None:
+        """對談回覆出聲。比照 marvin_say：
+        - 對談中使用者本來就一直在講話 → _tts_interrupted 會被設 True，不清掉回覆會被
+          [TTS Interrupt Guard] 整段跳過（11:40 實測 bug）。
+        - play_tts 只讀 self._tts_protected、不讀 kwarg（[[p1_conflicts_clarification]] 死參數坑）
+          → 必須手動拉旗標，否則回覆被 [TTS Silence Gate] 當非保護 TTS 丟掉。
+        - force_macos：本機 say（Meijia，已調音），避 edge-tts 限流失聲 [[tts_edge_ratelimit_and_say_fallback]]
+        """
+        self._tts_interrupted = False
+        _prev = self._tts_protected
+        self._tts_protected = True
+        try:
+            await self.play_tts(
+                text, already_in_channel=True, protected=True, force_macos=True
+            )
+        finally:
+            self._tts_protected = _prev
 
     def _talk_send_text(self, message: str):
         if self.active_text_channel is not None:
