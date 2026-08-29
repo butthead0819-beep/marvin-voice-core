@@ -1154,6 +1154,16 @@ class DiscordVoiceEngine:
         """
         # ContextVar propagates into create_task descendants automatically.
         pipeline_timing.start()
+
+        # 🎙️ [Marvin Talk 獨佔] 回合制對談進行中：觸發者的語音切片轉給對談會話，
+        # 其他人的語音一律丟棄，整條 STT→IntentBus 直接跳過（Live/回合制皆無中間文字態）。
+        _vc = self.bot.get_cog("VoiceController")
+        _talk = getattr(_vc, "talk_manager", None) if _vc is not None else None
+        if _talk is not None and _talk.active:
+            if not is_wake_check and user_id == _talk.owner_id:
+                asyncio.create_task(_talk.feed(user_id, raw_pcm))
+            return
+
         # 🚀 [Chief Architect Action] 立即進行 STT，不再進行二次 1.2s Debounce
         if user_id not in self.audio_buffers:
             self.audio_buffers[user_id] = {

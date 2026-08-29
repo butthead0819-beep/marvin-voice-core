@@ -39,3 +39,21 @@ class MarvinCommandsMixin:
             await self.play_tts(text, already_in_channel=True, protected=True, force_macos=True)
         finally:
             self._tts_protected = _prev_protected
+
+    @app_commands.command(
+        name="marvin_talk",
+        description="[Voice] 跟馬文回合制對話 90 秒（暫停音樂、獨佔頻道）；再按一次結束",
+    )
+    async def marvin_talk(self, interaction: discord.Interaction):
+        mgr = getattr(self, "talk_manager", None)
+        if mgr is None:
+            await interaction.response.send_message("😑 對話功能沒初始化。", ephemeral=True)
+            return
+        voice = getattr(interaction.user, "voice", None)
+        if not self.active and (voice is None or voice.channel is None):
+            await interaction.response.send_message("先進語音頻道再叫我。", ephemeral=True)
+            return
+        await interaction.response.defer(thinking=True)
+        msg = await mgr.toggle(interaction.user.id, interaction.user.display_name)
+        await interaction.followup.send(msg)
+        self.stt_logger.info(f"[MarvinTalk←{interaction.user.display_name}] {msg}")
