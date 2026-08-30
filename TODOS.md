@@ -440,3 +440,21 @@ grep "NemoClaw路由\|NemoClaw→\|NemoClaw.*跳過\|NemoClaw.*排隊" bot_main.
 **Why**: `marvin.db` transcripts 存真實 speaker 名（狗與露/陳進文/weakgogo）+ 未過濾原話。v0.1 內部驗證不發所以現在不緊，但 v0.2 一對外就會印真名+原話。這是**發布的前置 gate，不是 polish**。
 **Status**: deferred — v0.2 對外發布前的硬 gate
 **Start**: v0.2 影片管線確定要對外發時，先接 character_store 匿名化層
+
+---
+
+### TODO: 統一三個 grounded-Gemini 呼叫者（gated on AmbientQA 穩定運行幾週）
+**What**: 把 `marvin_talk._call_gemini`、`intent_agents/lyrics_grounded_search.py::search_lyrics_grounded`、`intent_agents/grounded_qa_agent.py::_grounded_answer` 抽成一個共用 helper（L1/L2 幻覺 guard + free→付費 key 鏈 + PaidUsageGuard）。
+**Why**: 三份 L1/L2 grounding guard 邏輯重疊。
+**為什麼現在不做（eng-review 2026-08-30 outside voice）**: 三個形狀真的不同——輸入(audio/wav vs text)、model(chain vs 單一 vs 2.5-flash)、timeout(6s/15s)、session state(`_free_exhausted` 只有 marvin_talk 有)、PaidUsageGuard(lyrics 沒有)。現在只有 2.5 個 use case、第 3 個(AmbientQA)可能低量不 ship，硬統一會產出五 kwargs 的 helper 比重複更糟。且 `test_marvin_talk` mock 掉 Gemini 呼叫，重構 marvin_talk 這條 LIVE exclusive-mode 路徑保不住 failover/timeout regression。
+**Gate**: AmbientQA（見 design doc AmbientQA-20260830）通過 backfill gate 且穩定跑幾週，確實是第三個真實 use case 後，用它反推抽象。
+**Start**: `search_lyrics_grounded` 的 `_extract_chunks` + L1/L2 是最乾淨的骨架起點。
+
+---
+
+### TODO: PaidUsageGuard 低估 Google Search grounding 成本（repo-wide latent）
+**What**: `llm_paid.estimate_cost` 是純 token-based；Gemini 的 `google_search` grounding tool 另外 per-request 計費（grounding 不含在 token 帳裡）。所以任何帶 grounding 的付費呼叫，`PaidUsageGuard` 的 daily/monthly cap 都會 under-count 真實花費。
+**Why**: 帳本（`llm_paid_usage.jsonl`）不準；$2/日 cap 守不到真實 GCP 花費。
+**影響的 caller**: `marvin_talk`（caller="marvin_talk"）、`search_lyrics_grounded`（走 music_cog）、未來的 `ambient_qa`。
+**修法**: `estimate_cost` 加一個 `grounding_request_surcharge` 常數（查當期 Gemini pricing），帶 grounding 的呼叫點傳 flag。
+**Status**: deferred — 低量下（幾題/天 × grounding 小額）$2 cap 遠到不了，PR 註解標明即可；用量上來再修。
