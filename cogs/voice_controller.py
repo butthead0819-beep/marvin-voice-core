@@ -113,6 +113,7 @@ from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.find_song_agent import FindSongAgent
 from intent_agents.game_knowledge_agent import GameKnowledgeAgent
+from intent_agents.grounded_qa_agent import GroundedQAAgent
 from intent_agents.skip_intent import is_short_skip_command
 # Phase 1 M5: PlaybackControlAgent 改成 build_intent_agents() 內 lazy import
 # 避免 macOS python 環境冷啟動時的 import 鏈死結 (2026-05-23 incident)
@@ -267,6 +268,7 @@ def build_intent_agents(controller, bot):
         FarewellAgent(controller),  # 2026-08-09: 喚醒直接說「掰掰/晚安/bye bye」互道再見
         PersonalShuffleAgent(controller),  # 2026-06-29: 語音「連續隨機播我的歌單」（一次墊一首）
         GameKnowledgeAgent(controller),  # 2026-06-06: Plan 4 intent_gap ready — 「查麥塊…」遊戲知識查詢
+        GroundedQAAgent(controller),  # 2026-08-30: AmbientQA — 「馬文幫我查 X」/「X 是什麼」→ grounded 回答
         BustedAgent(bot),
         Busted99Agent(bot),
         TurtleSoupAgent(bot),

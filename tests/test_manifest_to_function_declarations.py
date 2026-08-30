@@ -59,6 +59,20 @@ def test_empty_manifest_produces_empty_list():
     assert manifest_to_function_declarations({"version": "x", "agents": []}) == []
 
 
+def test_intent_description_flows_into_declaration():
+    """有 manifest_description 的 intent → Gemini function description 用它，沒有 → 泛用預設。"""
+    m = {"version": "x", "agents": [{"name": "grounded_qa", "intents": [
+        {"name": "factual_question", "required_slots": ["topic"],
+         "reason_template": "x", "description": "使用者在問需要查證的事實問題"},
+        {"name": "bare", "required_slots": [], "reason_template": "x"},
+    ]}]}
+    decls = manifest_to_function_declarations(m)
+    fq = next(d for d in decls if d.name == "grounded_qa__factual_question")
+    bare = next(d for d in decls if d.name == "grounded_qa__bare")
+    assert fq.description == "使用者在問需要查證的事實問題"
+    assert bare.description == "grounded_qa 的 bare 意圖"
+
+
 def test_agent_name_containing_separator_raises():
     bad_manifest = {
         "version": "x",

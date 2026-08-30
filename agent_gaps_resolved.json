@@ -49,6 +49,12 @@
     "resolved_at": "2026-08-08",
     "note": "「現在播的是什麼歌」由 NowPlayingAgent 接手（5/27 land，比這筆 8/1 的 gap record 還早）。8/1 那筆是冷門說法沒被既有 regex 接住，不是缺 agent。"
   },
+  "song_title_lookup": {
+    "agent": "grounded_qa",
+    "file": "intent_agents/grounded_qa_agent.py",
+    "resolved_at": "2026-08-30",
+    "note": "AmbientQA（design AmbientQA-20260830）：喚醒+明確事實問句（「馬文 0722 的酒是什麼」「馬文幫我查 X」）由 GroundedQAAgent 接手（bid 0.75，Gemini google_search grounded + L1/L2 幻覺 guard）。gap classifier 把這類 web 事實問句誤標 song_title_lookup→ack。真·歌名查詢仍走 FindSongAgent，不受影響。"
+  },
   "frustration": {
     "agent": "frustration",
     "file": "intent_agents/frustration_agent.py",

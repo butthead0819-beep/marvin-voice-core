@@ -95,6 +95,10 @@ class IntentSchema:
     patterns: list[str]
     required_slots: list[str] = field(default_factory=list)
     reason_template: str = "{name}"
+    # audio-rescue manifest 用：Gemini function 的自然語言描述。空 → 用泛用預設
+    # （"{agent} 的 {intent} 意圖"）。開放式 slot 的 intent（如 factual_question）
+    # 描述太糊 Gemini 選不出來，靠這個給提示。
+    manifest_description: str = ""
     # 音素 fallback（opt-in）：regex 全 miss 後才試。phonetic_confidence 是 None
     # 表示這個 schema 不參與音素 fallback（多數開放式 slot schema 應該維持 None——
     # 音素 fuzzy 只在封閉、可窮舉的關鍵詞集合上可靠，見 base.py 模組 docstring）。

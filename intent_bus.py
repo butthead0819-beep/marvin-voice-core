@@ -183,6 +183,7 @@ class IntentBus:
                         "name": s.name,
                         "required_slots": list(s.required_slots),
                         "reason_template": s.reason_template,
+                        "description": getattr(s, "manifest_description", "") or "",
                     }
                     for s in schemas
                 ],

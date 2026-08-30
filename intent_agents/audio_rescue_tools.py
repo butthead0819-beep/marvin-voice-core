@@ -37,6 +37,7 @@ def manifest_to_function_declarations(manifest: dict) -> list[types.FunctionDecl
         for intent in agent_entry.get("intents", []):
             intent_name = intent["name"]
             required_slots = list(intent.get("required_slots", []))
+            desc = intent.get("description") or f"{agent_name} 的 {intent_name} 意圖"
             properties = {
                 slot: types.Schema(type="STRING")
                 for slot in required_slots
@@ -44,7 +45,7 @@ def manifest_to_function_declarations(manifest: dict) -> list[types.FunctionDecl
             declarations.append(
                 types.FunctionDeclaration(
                     name=_tool_name(agent_name, intent_name),
-                    description=f"{agent_name} 的 {intent_name} 意圖",
+                    description=desc,
                     parameters=types.Schema(
                         type="OBJECT",
                         properties=properties or None,
