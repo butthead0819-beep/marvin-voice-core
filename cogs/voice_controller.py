@@ -404,7 +404,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             temperature=getattr(_router, "atmosphere_tracker", None),
             clock=time.time,
         )
-        _rescue_agent, _rescue_shadow, _rescue_sink = build_rescue_components(
+        _rescue_agent, _rescue_shadow, _rescue_sink, _rescue_wav_store = build_rescue_components(
             _tier_router, google_client=getattr(_router, "google_client", None), manifest_provider=lambda: self._intent_bus.build_intent_manifest())
         self._rescue_agent = _rescue_agent
         # 建立實體 cleaner_call 傳給 IntentBus 競速使用
@@ -438,7 +438,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             direct_probe=self._yt_dlp_direct_probe,
             llm_rescue_agent=_rescue_agent,
             rescue_shadow_mode=_rescue_shadow,
-            rescue_outcome_sink=_rescue_sink,
+            rescue_outcome_sink=_rescue_sink, rescue_wav_store=_rescue_wav_store,
             cleaner_call=real_cleaner_call,
         )
         self._init_talk_manager()  # /marvin_talk 回合制對談（見 MarvinTalkMixin）

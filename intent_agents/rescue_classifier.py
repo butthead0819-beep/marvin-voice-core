@@ -117,6 +117,7 @@ _ENV_ENABLED = "MARVIN_INTENT_RESCUE_ENABLED"
 _ENV_SHADOW = "MARVIN_INTENT_RESCUE_SHADOW"
 _ENV_MODE = "MARVIN_INTENT_RESCUE_MODE"  # "text"（預設）| "audio"
 _OUTCOME_PATH = Path("records/rescue_outcomes.jsonl")
+_WAV_DIR = Path("records/rescue_wav")
 
 
 def build_rescue_components(
@@ -125,14 +126,17 @@ def build_rescue_components(
     env: Mapping[str, str] | None = None,
     google_client: Any | None = None,
     manifest_provider: Callable[[], dict] | None = None,
-) -> tuple[Any | None, bool, Callable[[dict], None] | None]:
-    """Returns (rescue_agent, shadow_mode, outcome_sink) 給 IntentBus 接線。
+) -> tuple[Any | None, bool, Callable[[dict], None] | None, Any | None]:
+    """Returns (rescue_agent, shadow_mode, outcome_sink, wav_store) 給 IntentBus 接線。
 
-    回 (None, False, None) 的情境：
+    回 (None, False, None, None) 的情境：
     - env 未開啟（MARVIN_INTENT_RESCUE_ENABLED != "1"）
     - mode="text"（預設）且 tier_router 是 None（pool 都沒 key）
     - mode="audio" 且 google_client / manifest_provider 缺一（Audio Rescue v2
       需要兩者才能運作，缺任一就優雅退回無 rescue，不製造半殘狀態）
+
+    wav_store 只在 mode="audio" 時是 RescueWavStore（audio rescue 的原始 wav
+    sidecar，replay harness 語料）；text mode 是 None。
 
     MARVIN_INTENT_RESCUE_MODE 預設 "text"：不設這個 env 時行為與 Audio Rescue v2
     上線前完全一致，需顯式雙重 opt-in（ENABLED=1 + MODE=audio）才會啟用音訊版。
@@ -140,29 +144,31 @@ def build_rescue_components(
     import os
     from intent_agents.llm_rescue_agent import LLMRescueAgent
     from intent_agents.audio_rescue_agent import AudioRescueAgent
-    from intent_agents.rescue_outcome_logger import RescueOutcomeLogger
+    from intent_agents.rescue_outcome_logger import RescueOutcomeLogger, RescueWavStore
 
     if env is None:
         env = os.environ
 
     if env.get(_ENV_ENABLED) != "1":
-        return None, False, None
+        return None, False, None, None
 
     mode = env.get(_ENV_MODE, "text")
+    wav_store = None
     if mode == "audio":
         if google_client is None or manifest_provider is None:
             logger.warning(
                 "[RescueBuild] MODE=audio 但 google_client/manifest_provider 缺，"
                 "退回無 rescue"
             )
-            return None, False, None
+            return None, False, None, None
         agent = AudioRescueAgent(google_client=google_client, manifest_provider=manifest_provider)
+        wav_store = RescueWavStore(_WAV_DIR)
     else:
         if tier_router is None:
-            return None, False, None
+            return None, False, None, None
         classifier = make_rescue_classifier(tier_router)
         agent = LLMRescueAgent(llm_classifier=classifier)
 
     shadow = env.get(_ENV_SHADOW, "1") != "0"
     outcome_logger = RescueOutcomeLogger(_OUTCOME_PATH)
-    return agent, shadow, outcome_logger.write
+    return agent, shadow, outcome_logger.write, wav_store
