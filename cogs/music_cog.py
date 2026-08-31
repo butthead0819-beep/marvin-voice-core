@@ -3042,8 +3042,11 @@ class MusicCog(commands.Cog):
                 and (time.time() - _last_joke_ts) >= getattr(self, '_DJ_JOKE_COOLDOWN_S', 1800):
             try:
                 from joke_bank import get_joke_bank
+                from music_memory import extract_video_id
                 _recent = getattr(self, '_recent_dj_jokes', ())
-                joke_text = get_joke_bank().match(_song_label or title, exclude=set(_recent)) or ""
+                _vid = extract_video_id(info.get('webpage_url') or info.get('url') or info.get('id') or '')
+                joke_text = get_joke_bank().match(
+                    _song_label or title, video_id=_vid, exclude=set(_recent)) or ""
             except Exception as e:
                 logger.warning(f"⚠️ [DJ Joke] 笑話庫比對失敗: {e}")
                 joke_text = ""

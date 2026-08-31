@@ -24,7 +24,38 @@ def bank(tmp_path):
         - joke: "單字 hook 不該生效。"
           hooks: [愛]
     """), encoding="utf-8")
-    return JokeBank(p)
+    sj = tmp_path / "sj.yaml"
+    sj.write_text(textwrap.dedent("""\
+        - key: VID_CONFESSION
+          title: 周杰倫 告白氣球
+          style: puns
+          joke: "這首歌的專屬笑話。……宇宙也沒回音。"
+        - key: VID_SKIPPED
+          title: 某首生不出的歌
+          style: skip
+          joke: ""
+    """), encoding="utf-8")
+    return JokeBank(p, sj)
+
+
+def test_video_id_specific_joke_wins_over_pinyin(bank):
+    # 有 videoId 專屬笑話 → 用它，不走泛用 hook 庫
+    assert bank.match("周杰倫 告白氣球", video_id="VID_CONFESSION").startswith("這首歌的專屬笑話")
+
+
+def test_video_id_miss_falls_through_to_pinyin(bank):
+    # videoId 沒登記 → 退回歌名拼音比對
+    assert bank.match("周杰倫 告白氣球", video_id="VID_UNKNOWN").startswith("告白氣球的笑話")
+
+
+def test_skip_style_song_joke_ignored(bank):
+    assert bank.match("某首歌", video_id="VID_SKIPPED") is None
+
+
+def test_video_id_joke_respects_exclude(bank):
+    jk = bank.match("x", video_id="VID_CONFESSION")
+    # 被 exclude → 不回這則；歌名也不匹配任何 hook → None
+    assert bank.match("x", video_id="VID_CONFESSION", exclude={jk}) is None
 
 
 def test_exact_title_hits(bank):

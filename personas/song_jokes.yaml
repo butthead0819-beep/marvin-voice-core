@@ -1,0 +1,28 @@
+# 逐首歌的專屬冷笑話 / 諧音梗 —— autopilot 點到這首時，crossfade 剛好講這則（驚喜感）。
+#
+# key    —— YouTube videoId（穩定，取代脆弱的歌名比對）。
+# title  —— 只是給人看的註記，比對不看它。
+# style  —— puns  = 諧音梗 / 同音誤解
+#           absurd = 一派正經、面無表情地陳述極度荒謬的事，還把它當成理所當然的邏輯
+#           skip   = 這首生不出好笑的 → 留著當「已處理」標記，比對時忽略
+# joke   —— 全文，已含馬文招牌厭世收尾（「……」起頭那半句）。念完約 6–10 秒。
+#
+# 由 scripts/generate_song_jokes.py 批次生 draft（records/song_jokes_draft.yaml），
+# Jack 逐則篩，留真的有幽默感的搬進這裡。寧缺勿濫——skip 也是合法答案。
+#
+# 比對順序（joke_bank.py）：videoId 專屬笑話 → 泛用拼音 hook 庫（joke_bank.yaml）。
+
+- key: mZg7Fjc7Zfg
+  title: 周杰倫 告白氣球
+  style: puns
+  joke: "白氣球揍了黑氣球一拳，黑氣球氣不過，決定去告白氣球。……告白這種事的成功率，跟氣球的壽命一樣，撐不了幾天。"
+
+- key: Sr5Mk7Yr9OY
+  title: G.E.M. 鄧紫棋 光年之外
+  style: absurd
+  joke: "一光年是九兆公里。我認真算過，用走的去見你要一億八千萬年，中途還會經過三次冰河期。……所以我決定坐著等，比較省力。"
+
+- key: 3AtDnEC4zak
+  title: 五月天 溫柔
+  style: absurd
+  joke: "我把溫柔調到最大，結果過熱當機了。原廠說這個零件本來就不建議長時間開。……冷卻的時候，大家都說我變了。"
