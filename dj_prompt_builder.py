@@ -1,12 +1,13 @@
 """DJ Prompt 統一建構器與規範中心 (Unified DJ Prompt Builder & Rules)。
 
 作為整個系統所有 DJ 相關 Prompt 生成的單一真實來源 (Single Source of Truth)，
-統一管理以下五大核心規範：
+統一管理以下六大核心規範：
 1. 長度與時間硬上限（45-55 字 / 8-9 秒 crossfade；報幕 20-23 字 / 6-7 秒）
 2. 機器人觀察者視角（絕不用第一人稱將聽眾經歷說成自己的）
 3. 防幻覺與素材約束（只用脈絡給的那一項素材，不腦補未給的事實）
 4. 掛名嚴格依據脈絡（掛錯名比不掛名傷）
-5. 調性與社群風格（Threads 生活廢文共鳴與微無厘頭冷幽默，嚴禁大道理雞湯與假文青）
+5. 不考驗聽眾記憶（不斷言「應該沒聽過」「是誰點的」這類只有聽眾自己知道的事）
+6. 調性與社群風格（Threads 生活廢文共鳴與微無厘頭冷幽默，嚴禁大道理雞湯與假文青）
 """
 from __future__ import annotations
 
@@ -24,6 +25,13 @@ DJ_MATERIAL_GUARD = (
 DJ_NAMING_GUARD = (
     "**掛名只能照脈絡**：只有脈絡明講「點播者」或「理由」裡出現的人才能提名字，"
     "絕不自己指定這首是誰點的、誰想聽的——掛錯名比不掛名傷。"
+)
+
+DJ_MEMORY_CLAIM_GUARD = (
+    "**不考驗聽眾記憶**：聽眾自己聽過什麼、記不記得，只有他們自己知道——"
+    "不要斷言「XX應該沒聽過」「XX一定聽過」這種聽眾記憶才能驗證的話，"
+    "沒把握就用「比較少聽」這種保留語氣；脈絡沒明講是聽眾自己點播的，"
+    "就別說成「這首是XX點的」，改用「希望XX喜歡」這種機器人自己推薦的說法。"
 )
 
 FORBIDDEN_DJ_PHRASES = (
@@ -49,6 +57,7 @@ def get_dj_unified_rules() -> Dict[str, Any]:
         "material_guard": DJ_MATERIAL_GUARD,
         "material_style_rule": style.get("material_style_rule", ""),
         "naming_guard": DJ_NAMING_GUARD,
+        "memory_claim_guard": DJ_MEMORY_CLAIM_GUARD,
         "robot_pov_guard": style.get("robot_pov_rule", ""),
         "tone_rule": style.get("tone_rule", ""),
         "output_format_rule": style.get("output_format_rule", "只輸出台詞，不加引號、不加說明。"),
@@ -67,8 +76,9 @@ def build_dj_interjection_prompt(context: str) -> str:
         f"2. {rules['material_guard']}{rules['material_style_rule']}\n"
         f"3. {rules['robot_pov_guard']}\n"
         f"4. {rules['naming_guard']}\n"
-        f"5. {rules['tone_rule']}\n"
-        f"6. {rules['output_format_rule']}"
+        f"5. {rules['memory_claim_guard']}\n"
+        f"6. {rules['tone_rule']}\n"
+        f"7. {rules['output_format_rule']}"
     )
 
 

@@ -66,13 +66,34 @@ class TestAutopilotDjPhrase:
             f"long_tail 應唸出重新發現理由，got: {result!r}"
 
     def test_discovery_voices_new_song_reason(self):
-        """lane='discovery' → 帶 who+歌名，且唸出『新歌／沒聽過』的理由。"""
+        """lane='discovery' → 帶 who+歌名，且唸出『新歌／比較少聽過』的理由。"""
         cog = _make_cog()
         result = cog._autopilot_dj_phrase("Alice", "天天", "陶喆", lane="discovery")
         assert "Alice" in result, f"discovery 應點名 spotlight，got: {result!r}"
         assert "天天" in result, f"discovery 缺歌名，got: {result!r}"
-        assert any(w in result for w in ("新", "沒聽過", "挖")), \
+        assert any(w in result for w in ("新", "少聽", "挖")), \
             f"discovery 應唸出新歌理由，got: {result!r}"
+
+    def test_discovery_never_asserts_definitely_unheard(self):
+        """discovery 理由不能斷言使用者『應該沒聽過』——那是考驗使用者記憶，
+        系統只知道『沒人在這裡點過』，講成保留語氣的『比較少聽』就好
+        （2026-08-31 修：使用者反映『這資料來源是什麼？萬一我聽過呢？』）。"""
+        cog = _make_cog()
+        for _ in range(20):
+            result = cog._autopilot_dj_phrase("Alice", "天天", "陶喆", lane="discovery")
+            assert "應該沒聽過" not in result, f"discovery 不該斷言沒聽過，got: {result!r}"
+
+    def test_personal_lane_never_claims_user_requested(self):
+        """personal/personal_no_artist 都是 Marvin 自己 autopilot 選的歌，
+        措辭不能講成『{who}點的』——那不是使用者真的點播，只是照喜好自動播放
+        （2026-08-31 修：使用者反映『這首是Xxx點的，但其實沒有點』）。"""
+        cog = _make_cog()
+        for _ in range(20):
+            result = cog._autopilot_dj_phrase("Alice", "天天", "陶喆")
+            assert "點的" not in result, f"personal lane 不該說成使用者點的，got: {result!r}"
+            result_no_artist = cog._autopilot_dj_phrase("Alice", "天天", "")
+            assert "點的" not in result_no_artist, \
+                f"personal_no_artist lane 不該說成使用者點的，got: {result_no_artist!r}"
 
     def test_spotlight_cover_voices_anchor_reason(self):
         """spotlight cover：有 anchor → 唸出『你愛 anchor，給你這個版本』的理由。"""

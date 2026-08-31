@@ -26,6 +26,7 @@ def test_build_dj_interjection_prompt_contains_all_guards():
     assert "長度硬上限" in prompt or "45-55" in prompt
     assert "機器人" in prompt
     assert "掛名只能照脈絡" in prompt
+    assert "不考驗聽眾記憶" in prompt
     assert "Threads" in prompt or "生活小幽默" in prompt
     assert "只輸出台詞" in prompt
 
@@ -54,6 +55,7 @@ def test_get_dj_unified_rules():
     assert "length_rule" in rules
     assert "material_guard" in rules
     assert "naming_guard" in rules
+    assert "memory_claim_guard" in rules
     assert "robot_pov_guard" in rules
     assert "forbidden_phrases" in rules
     assert len(rules["forbidden_phrases"]) >= 5

@@ -2622,6 +2622,17 @@ class MusicCog(commands.Cog):
             return None
 
     @staticmethod
+    def _dj_requester_suffix(requester: str) -> str:
+        """把 requested_by 轉成播報結尾——只有『真人點播』才能講「XX 點的」；
+        autopilot 掛名（`requested_by` 以 "Marvin" 開頭，如 `Marvin推薦（為X）`）
+        不是使用者真的點播，講成「XX 點的」等於考驗使用者記憶（萬一沒點過呢），
+        改用「希望大家喜歡」這種機器人自己推薦的說法。"""
+        requester = (requester or '').strip()
+        if not requester or requester.startswith('Marvin'):
+            return "希望大家喜歡"
+        return f"{requester} 點的"
+
+    @staticmethod
     def _autopilot_dj_phrase(spotlight: str, clean_title: str, clean_artist: str,
                               lane: str = "", anchor: str = "") -> str:
         """為 autopilot 推薦歌曲生成 DJ 台詞，理由依 lane 而定（DJ 編個理由）。"""
@@ -3051,10 +3062,11 @@ class MusicCog(commands.Cog):
                 # 若仍無有效台詞或品質不符，採用 DJ Marvin 經典人設報幕
                 if not text or not _is_qualified_dj_script(text):
                     clean_title, clean_artist = self._dj_clean_name(info)
+                    suffix = self._dj_requester_suffix(requester)
                     if clean_artist:
-                        text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{requester} 點的"
+                        text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{suffix}"
                     else:
-                        text = f"DJ Marvin為你帶來《{clean_title}》，{requester} 點的"
+                        text = f"DJ Marvin為你帶來《{clean_title}》，{suffix}"
                     logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
 
         from tts_length_policy import truncate_for_tts
@@ -3184,12 +3196,12 @@ class MusicCog(commands.Cog):
                 f"⚠️ [Stream] _fetch_song_meta >{self._COLD_META_TIMEOUT_S}s timeout, "
                 f"用 hardcoded fallback (song={title}, by={requested_by})"
             )
-            who = requested_by or "某人"
+            suffix = self._dj_requester_suffix(requested_by)
             return {
                 "lyrics": None,
                 "comment": None,
                 "dj": {
-                    "text": f"下一首是《{title}》，{who} 點的。",
+                    "text": f"下一首是《{title}》，{suffix}。",
                     "audio_path": None,
                 },
             }
@@ -3523,11 +3535,11 @@ class MusicCog(commands.Cog):
                         f"（佇列可能被插播/skip），放棄過期音檔以防報錯歌名"
                     )
                     clean_title, clean_artist = self._dj_clean_name(next_info)
-                    req = next_info.get('requested_by', '')
+                    req_suffix = self._dj_requester_suffix(next_info.get('requested_by', ''))
                     if clean_artist:
-                        safe_text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{req} 點的"
+                        safe_text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{req_suffix}"
                     else:
-                        safe_text = f"DJ Marvin為你帶來《{clean_title}》，{req} 點的"
+                        safe_text = f"DJ Marvin為你帶來《{clean_title}》，{req_suffix}"
                     safe_audio = None
                     try:
                         safe_audio = await self.bot.tts_engine.generate_audio(safe_text, emotion="normal")
