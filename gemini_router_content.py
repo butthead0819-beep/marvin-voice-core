@@ -1038,8 +1038,9 @@ class GeminiRouterContentMixin:
             "radio_now_playing": _DJ_STYLES["radio_now_playing"].format(context=context),
             "stream_now_playing": _DJ_STYLES["stream_now_playing"].format(context=context),
             "dj_interjection": _build_dj_interjection_prompt(context),
-            # 低頻彩蛋：安靜時段偶爾把 crossfade 換成馬文式厭世冷笑話（見
-            # cogs/music_cog.py::_fetch_dj_interjection_raw 的 30 分鐘冷卻判斷）。
+            # 低頻彩蛋：安靜時段偶爾把 crossfade 換成馬文式厭世冷笑話。
+            # ⚠️ 目前休眠：music_cog 的笑話分支已改走 joke_bank.py 純本地查表
+            #（LLM 現編諧音梗品質不穩）。prompt 保留備用——之後若接付費模型可重啟。
             "dj_joke_interjection": _build_dj_joke_interjection_prompt(context),
         }
 
@@ -1067,24 +1068,19 @@ class GeminiRouterContentMixin:
             toxicity = self.dna.get("toxicity", 10)
             sys_prompt = f"你是馬文 (Marvin)。當前性格標籤：{persona}，憂鬱指數：{toxicity}/10。\n脈絡：{context}\n任務：{prompts.get(event_type, '隨便嘆一口氣。')}"
 
-        # dj_joke_interjection 是低頻彩蛋（≥30 分鐘一次），品質敏感（現編諧音梗+厭世收尾），
-        # gemma-4-31b 免費層吐殘句/舞台指示 → 拉到 bus high tier（Groq-70b）。其餘動態台詞
-        # 量大、對品質不敏感，維持 simple。
-        _tier = "high" if event_type == "dj_joke_interjection" else "simple"
-
         try:
             # 使用高隨機性 (Temperature 0.9) 確保不重複
             if is_quip and cache is not None:
                 # 純評語：一次批次生 N 句填池，之後輪播免 LLM
                 from dynamic_msg_cache import QUIP_POOL_SIZE, parse_quips
                 batch = sys_prompt + f"\n\n請一次生成 {QUIP_POOL_SIZE} 句語氣略有不同的版本，每句獨立一行，不要編號、不要引號。"
-                raw = await self._call_llm(batch, "動態台詞批次", speaker="系統", tier=_tier)
+                raw = await self._call_llm(batch, "動態台詞批次", speaker="系統", tier="simple")
                 items = parse_quips(raw or "")
                 if items:
                     cache.set_quips(event_type, items)
                     return random.choice(items)
                 return (raw or "嗯？").strip() or "嗯？"  # 解析失敗 → 退回單句
-            result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier=_tier)
+            result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple")
             if result and is_prompt_echo(sys_prompt, result):
                 logger.warning(f"⚠️ [TTS Echo Guard] {event_type} 回傳與 prompt 高度重複，停止 TTS")
                 return "嗯？"

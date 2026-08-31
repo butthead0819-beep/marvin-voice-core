@@ -1,12 +1,13 @@
 """TDD: DJ crossfade 的「馬文式厭世冷笑話」低頻彩蛋。
 
 規格（使用者訂）：
-- 頻道安靜（非熱烈聊天）且距上次超過 30 分鐘冷卻 → 這輪 crossfade 換成厭世冷笑話，
-  走獨立的 'dj_joke_interjection' event type（不是平常的 'dj_interjection'）。
+- 頻道安靜（非熱烈聊天）且距上次超過 30 分鐘冷卻 → 這輪 crossfade 換成厭世冷笑話。
+- 笑話來源 = 策展笑話庫（joke_bank.py）：下一首歌名字音撞到某則笑話的 hook 就播那則，
+  沒撞到就不講（fallback 回正常串場）。LLM 現編諧音梗品質不穩，已停用。
 - 頻道熱烈聊天（active_chat）→ 不觸發，走平常路徑。
 - 冷卻未到（剛觸發過）→ 不觸發，走平常路徑。
 - themed 歌單自己有預先寫好的口白 → 不搶。
-- 不做去重（使用者明確表示不需要）。
+- 近期播過的笑話（最多 5 則）傳進 exclude，避免短期內重複。
 """
 from __future__ import annotations
 
@@ -54,54 +55,97 @@ def _info(requester="大肚"):
             "url": "https://example/x"}
 
 
-def _event_types_called(cog) -> list[str]:
-    return [c.args[0] for c in cog.bot.router.generate_dynamic_system_msg.await_args_list]
+def _patch_bank(monkeypatch, match_return):
+    """把 joke_bank.get_joke_bank() 換成回傳固定值的 fake。回傳 fake bank 供斷言。"""
+    fake_bank = MagicMock()
+    fake_bank.match = MagicMock(return_value=match_return)
+    monkeypatch.setattr("joke_bank.get_joke_bank", lambda: fake_bank)
+    return fake_bank
+
+
+JOKE = "稻草人站在田裡一整天什麼都沒做，還是被叫做人。……付出跟頭銜從來不成正比。"
 
 
 @pytest.mark.asyncio
-async def test_quiet_and_cooldown_elapsed_fires_joke_lane():
-    """安靜 + 冷卻已過 → 走 'dj_joke_interjection'，不是平常的 'dj_interjection'。"""
+async def test_quiet_and_cooldown_elapsed_plays_bank_joke(monkeypatch):
+    """安靜 + 冷卻已過 + 笑話庫命中 → 播那則笑話，不走 LLM。"""
     import time
+    bank = _patch_bank(monkeypatch, JOKE)
     cog = _make_cog(online_members=["大肚"])
-    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="這笑話跟宇宙一樣尷尬")
-    cog._last_dj_joke_ts = time.time() - 3600  # 上次已是 1 小時前 → 冷卻已過
+    cog._last_dj_joke_ts = time.time() - 3600
 
     dj = await cog._fetch_dj_interjection_raw(_info())
 
-    assert dj["text"] == "這笑話跟宇宙一樣尷尬"
-    assert _event_types_called(cog) == ["dj_joke_interjection"]
+    assert dj["text"] == JOKE
+    bank.match.assert_called_once()
+    called = [c.args[0] for c in cog.bot.router.generate_dynamic_system_msg.await_args_list]
+    assert "dj_joke_interjection" not in called
 
 
 @pytest.mark.asyncio
-async def test_joke_lane_updates_cooldown_timestamp():
-    """觸發成功後要更新冷卻時間戳，避免下一輪立刻又觸發。"""
+async def test_bank_miss_falls_back_to_normal_segue(monkeypatch):
+    """笑話庫沒命中（match 回 None）→ 不講笑話，走平常 dj_interjection。"""
     import time
+    _patch_bank(monkeypatch, None)
     cog = _make_cog(online_members=["大肚"])
-    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="這笑話跟宇宙一樣尷尬")
+    cog._last_dj_joke_ts = time.time() - 3600
+    before = cog._last_dj_joke_ts
+
+    dj = await cog._fetch_dj_interjection_raw(_info())
+
+    assert dj["text"] != JOKE
+    assert cog._last_dj_joke_ts == before  # 沒命中不更新冷卻
+
+
+@pytest.mark.asyncio
+async def test_bank_hit_updates_cooldown_and_recent_list(monkeypatch):
+    """命中後更新冷卻時間戳 + 把該則笑話記進 _recent_dj_jokes。"""
+    import time
+    _patch_bank(monkeypatch, JOKE)
+    cog = _make_cog(online_members=["大肚"])
     cog._last_dj_joke_ts = time.time() - 3600
     before = cog._last_dj_joke_ts
 
     await cog._fetch_dj_interjection_raw(_info())
 
     assert cog._last_dj_joke_ts > before
+    assert JOKE in cog._recent_dj_jokes
 
 
 @pytest.mark.asyncio
-async def test_cooldown_not_elapsed_falls_back_to_normal_path():
-    """冷卻還沒到（例如剛觸發過）→ 不觸發笑話，走平常 'dj_interjection'。"""
+async def test_recent_jokes_passed_as_exclude(monkeypatch):
+    """近期播過的笑話要傳進 match(exclude=...)，讓庫跳過它們。"""
     import time
+    bank = _patch_bank(monkeypatch, JOKE)
     cog = _make_cog(online_members=["大肚"])
-    cog._last_dj_joke_ts = time.time() - 60  # 1 分鐘前才剛講過
+    cog._last_dj_joke_ts = time.time() - 3600
+    cog._recent_dj_jokes = ["舊笑話一", "舊笑話二"]
 
     await cog._fetch_dj_interjection_raw(_info())
 
-    assert "dj_joke_interjection" not in _event_types_called(cog)
+    _, kwargs = bank.match.call_args
+    assert kwargs["exclude"] == {"舊笑話一", "舊笑話二"}
 
 
 @pytest.mark.asyncio
-async def test_active_chat_does_not_fire_joke_even_if_cooldown_elapsed():
-    """頻道熱烈聊天（active_chat）→ 即使冷卻已過也不觸發笑話。"""
+async def test_cooldown_not_elapsed_does_not_touch_bank(monkeypatch):
+    """冷卻還沒到 → 根本不查笑話庫，走平常 dj_interjection。"""
     import time
+    bank = _patch_bank(monkeypatch, JOKE)
+    cog = _make_cog(online_members=["大肚"])
+    cog._last_dj_joke_ts = time.time() - 60
+
+    dj = await cog._fetch_dj_interjection_raw(_info())
+
+    assert dj["text"] != JOKE
+    bank.match.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_active_chat_does_not_touch_bank(monkeypatch):
+    """頻道熱烈聊天（active_chat）→ 即使冷卻已過也不查笑話庫。"""
+    import time
+    bank = _patch_bank(monkeypatch, JOKE)
     cog = _make_cog(online_members=["大肚", "狗與露", "Alice", "Bob"])
     cog.bot.engine.conv_buffer.get_last_n_utterances = MagicMock(
         return_value=[
@@ -115,23 +159,25 @@ async def test_active_chat_does_not_fire_joke_even_if_cooldown_elapsed():
 
     await cog._fetch_dj_interjection_raw(_info())
 
-    assert "dj_joke_interjection" not in _event_types_called(cog)
+    bank.match.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_fresh_cog_cooldown_starts_at_construction_not_zero():
+async def test_fresh_cog_cooldown_starts_at_construction_not_zero(monkeypatch):
     """新建的 cog（剛開機/剛連上）不該立刻講笑話——冷卻起點是建構當下，不是 0。"""
+    bank = _patch_bank(monkeypatch, JOKE)
     cog = _make_cog(online_members=["大肚"])
 
     await cog._fetch_dj_interjection_raw(_info())
 
-    assert "dj_joke_interjection" not in _event_types_called(cog)
+    bank.match.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_themed_lane_never_overridden_by_joke():
+async def test_themed_lane_never_overridden_by_joke(monkeypatch):
     """themed 歌單已經有預先寫好的口白 → 不管冷卻/安靜與否都不換成笑話。"""
     import time
+    bank = _patch_bank(monkeypatch, JOKE)
     cog = _make_cog(online_members=["大肚"])
     cog._last_dj_joke_ts = time.time() - 3600
     info = _info()
@@ -141,7 +187,7 @@ async def test_themed_lane_never_overridden_by_joke():
     dj = await cog._fetch_dj_interjection_raw(info)
 
     assert dj["text"] == "主題歌單策展理由"
-    assert "dj_joke_interjection" not in _event_types_called(cog)
+    bank.match.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -151,6 +197,4 @@ async def test_bypass_init_cog_never_fires_joke():
     from cogs.music_cog import MusicCog
     cog = MusicCog.__new__(MusicCog)
     assert not hasattr(cog, "_last_dj_joke_ts")
-    # 只要不因為缺屬性而拋例外即可；不需要真的跑完整個 _fetch_dj_interjection_raw
-    # （那需要一整套 bot/mm mock，其他測試已經覆蓋），這裡驗證 getattr 防線本身。
     assert getattr(cog, "_last_dj_joke_ts", None) is None

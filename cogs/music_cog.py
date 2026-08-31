@@ -3032,27 +3032,25 @@ class MusicCog(commands.Cog):
         text = self._themed_dj_text(info)   # 主題歌單：直接播策展時寫好的理由，不重複燒 LLM
 
         # 🎭 [DJ Joke Interlude] 頻道安靜（非熱烈聊天）且距上次超過冷卻時間 → 這輪
-        # crossfade 換成馬文式厭世冷笑話，錨在歌名/歌手上現編諧音梗，人設刻意跳戲成
-        # marvin_joke 那套厭世腔（見 dj_prompt_builder.build_dj_joke_interjection_prompt）。
-        # themed 歌單已經有自己寫好的口白（上面 text 已非空），不搶。
+        # crossfade 換成馬文式厭世冷笑話。改用「策展笑話庫 + 歌名拼音比對」（見
+        # joke_bank.py / personas/joke_bank.yaml）：下一首歌名字音撞到哪則笑話的 hook
+        # 就播那則，沒撞到就不講（fallback 回正常串場）。LLM 現編諧音梗實測品質不穩，
+        # 已改成純本地查表（零 LLM、零花費、品質有下限）。themed 歌單有自己寫好的口白，不搶。
         _last_joke_ts = getattr(self, '_last_dj_joke_ts', None)
         if not text and info.get('_lane') != 'themed' and _heat_mode != "active_chat" \
                 and _last_joke_ts is not None \
                 and (time.time() - _last_joke_ts) >= getattr(self, '_DJ_JOKE_COOLDOWN_S', 1800):
-            joke_ctx = [f"歌曲：{_song_label or title}"]
-            if prev_title:
-                joke_ctx.append(f"上一首剛播完：《{prev_title}》")
             try:
-                joke_text = await self.bot.router.generate_dynamic_system_msg(
-                    'dj_joke_interjection', context='\n'.join(joke_ctx)
-                )
+                from joke_bank import get_joke_bank
+                _recent = getattr(self, '_recent_dj_jokes', ())
+                joke_text = get_joke_bank().match(_song_label or title, exclude=set(_recent)) or ""
             except Exception as e:
-                logger.warning(f"⚠️ [DJ Joke] LLM 失敗: {e}")
+                logger.warning(f"⚠️ [DJ Joke] 笑話庫比對失敗: {e}")
                 joke_text = ""
-            joke_text = (joke_text or '').strip()
             if 10 <= len(joke_text) <= 120:
                 text = joke_text
                 self._last_dj_joke_ts = time.time()
+                self._recent_dj_jokes = (list(getattr(self, '_recent_dj_jokes', ()))[-4:] + [joke_text])
         if not text and mode == "quick":
             # 沒有任何素材可用 → 本地固定模板直接接歌，跳過 LLM（零出錯風險、零延遲、零花費）。
             text = self._quick_segue_text(_n_online)
