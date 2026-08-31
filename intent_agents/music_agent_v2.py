@@ -210,11 +210,12 @@ class MusicAgentV2(DeclarativeIntentAgent):
                          required_slots=["song_query"],
                          reason_template="rescue_play:{song_query}",
                          manifest_description=(
-                             "使用者要直接點一首指定的歌來播放——說得出歌名，或"
-                             "歌手＋歌名。把要播的歌整理成一個乾淨的搜尋字串放進 "
-                             "song_query（例如「周杰倫 七里香」）。不是要找一首"
-                             "叫不出名字的歌（那是 find_song）、不是要調音量、"
-                             "不是要跳過或暫停。"
+                             "使用者說得出一首**具體歌名**、要現在播它。song_query "
+                             "填「歌名」或「歌手 歌名」（例：「七里香」「周杰倫 七里香」）。"
+                             "以下情況改用 find_ 開頭的工具，不要用這個：只給歌手名沒"
+                             "說哪一首（「放點五月天的歌」→ find_artist）、給專輯名"
+                             "（「范特西那張的歌」→ find_album）、只描述歌詞或主題"
+                             "（→ find_lyrics / find_theme）。也不是調音量、跳過、暫停。"
                          )),
         ]
         return self._intents_cache

@@ -42,6 +42,7 @@ from intent_agents.audio_rescue_tools import (
     ABSTAIN_TOOL_NAME,
     READONLY_FUNCTION_DECLARATIONS,
     READONLY_TOOL_NAMES,
+    intent_to_agent_map,
     manifest_to_function_declarations,
     parse_tool_call,
 )
@@ -91,7 +92,11 @@ class AudioRescueAgent:
         google_client: Any,
         manifest_provider: Callable[[], dict],
         model: str = "gemini-2.5-flash-lite",  # 2.0 系列 2026-08-20 已下架（404），見 llm_pool.py
-        timeout_s: float = 3.0,
+        # 音訊 + 14-tool function calling 實測（scripts/replay_audio_rescue.py，付費
+        # flash-lite）：median 2.3s / p95 3.3s / max 3.6s。3.0s 會砍掉 p95 以上的
+        # 成功呼叫 → 白等 3s 又掉回聊天。5.0s 給尾巴留餘裕；rescue 是 regex miss
+        # 才走的低頻路徑，這個延遲只影響本來就沒被接住的邊界句。
+        timeout_s: float = 5.0,
         readonly_tool_executor: ReadonlyToolExecutor | None = None,
         paid_guard: PaidUsageGuard | None = None,
     ):
@@ -173,6 +178,7 @@ class AudioRescueAgent:
         if not calls:
             return None
 
+        intent_agents = intent_to_agent_map(manifest)  # Gemini 掉前綴時的 fallback
         resolved: tuple[str, str, dict] | None = None
         for call in calls:
             if call.name == ABSTAIN_TOOL_NAME:
@@ -188,11 +194,11 @@ class AudioRescueAgent:
                     f"忽略: {call.name}"
                 )
                 continue
-            parsed = parse_tool_call(call)
+            parsed = parse_tool_call(call, intent_agents)
             if parsed is not None:
                 resolved = parsed
             else:
-                logger.warning(f"⚠️ [AudioRescue] tool call name 格式異常，忽略: {call.name}")
+                logger.warning(f"⚠️ [AudioRescue] tool call name 無法對應，忽略: {call.name}")
 
         if resolved is None:
             return None

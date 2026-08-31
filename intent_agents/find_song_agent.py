@@ -103,7 +103,8 @@ class FindSongAgent(DeclarativeIntentAgent):
                     required_slots=["album"],
                     reason_template="find_album:{album}",
                     manifest_description=(
-                        "使用者要找某張專輯裡的歌。把專輯名放進 album。"
+                        "使用者提到一張**專輯名**、要放那張專輯的歌（「范特西那張的歌」"
+                        "「放葉惠美專輯」）。album 填專輯名。不是具體單曲名（那是 rescue_play）。"
                     ),
                 ),
                 IntentSchema(
@@ -112,9 +113,10 @@ class FindSongAgent(DeclarativeIntentAgent):
                     required_slots=["artist"],
                     reason_template="find_artist:{artist}",
                     manifest_description=(
-                        "使用者要找某個歌手的歌但沒指定是哪一首（「找周杰倫的歌」）。"
-                        "把歌手名放進 artist。如果使用者說得出具體歌名要直接播，那是"
-                        "點歌不是找歌。"
+                        "使用者明確說「沒有指定哪一首、你挑」——「放點五月天的歌」"
+                        "「隨便放張學友的」「有什麼周杰倫的推薦」。artist 填歌手名。"
+                        "只要句子裡有一首**具體歌名**，或只是「放五月天」這種沒說"
+                        "「挑/隨便/推薦」的，都算 rescue_play 不是這個。"
                     ),
                 ),
             ]

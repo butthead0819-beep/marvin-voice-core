@@ -59,6 +59,7 @@ from intent_agents.audio_rescue_tools import (  # noqa: E402
     ABSTAIN_TOOL_NAME,
     READONLY_FUNCTION_DECLARATIONS,
     READONLY_TOOL_NAMES,
+    intent_to_agent_map,
     manifest_to_function_declarations,
     parse_tool_call,
 )
@@ -133,7 +134,7 @@ def _ctx_for(wav_bytes: bytes):
     )
 
 
-async def _replay_one(client, tools, agents, wav_path: Path) -> dict:
+async def _replay_one(client, tools, agents, intent_agents, wav_path: Path) -> dict:
     """自己打 Gemini（不經 AudioRescueAgent），才能分清 timeout / 棄權 / 沒 call，
     也不套 production 的 3s cap。"""
     wav_bytes = wav_path.read_bytes()
@@ -168,7 +169,7 @@ async def _replay_one(client, tools, agents, wav_path: Path) -> dict:
     if action is None:
         row["tool"] = f"(readonly only: {names})"
         return row
-    parsed = parse_tool_call(action)
+    parsed = parse_tool_call(action, intent_agents)
     if parsed is None:
         row["tool"] = f"(malformed: {action.name})"
         return row
@@ -194,8 +195,10 @@ async def _main(wav_dir: Path, as_json: bool, use_corpus: bool = False,
         sys.exit(f"❌ {wav_dir} 沒有 .wav 檔。")
 
     agents = _build_agents()
-    tools = (manifest_to_function_declarations(_manifest(agents))
+    manifest = _manifest(agents)
+    tools = (manifest_to_function_declarations(manifest)
              + READONLY_FUNCTION_DECLARATIONS + [ABSTAIN_FUNCTION_DECLARATION])
+    intent_agents = intent_to_agent_map(manifest)
     client = genai.Client(api_key=_KEY)
     if not as_json:
         print(f"  client={'paid' if _PAID else 'free (10 RPM — 建議 --delay 7)'}  "
@@ -214,7 +217,7 @@ async def _main(wav_dir: Path, as_json: bool, use_corpus: bool = False,
         if delay and i:
             await asyncio.sleep(delay)
         try:
-            row = await _replay_one(client, tools, agents, w)
+            row = await _replay_one(client, tools, agents, intent_agents, w)
         except Exception as exc:  # noqa: BLE001 — dev tool，單筆炸不該中斷整批
             row = {"wav": w.name, "error": f"{type(exc).__name__}: {exc}"}
         if w.name in expect_by_wav:

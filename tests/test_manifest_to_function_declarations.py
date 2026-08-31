@@ -10,6 +10,7 @@ import pytest
 from intent_agents.audio_rescue_tools import (
     READONLY_FUNCTION_DECLARATIONS,
     READONLY_TOOL_NAMES,
+    intent_to_agent_map,
     manifest_to_function_declarations,
     parse_tool_call,
 )
@@ -142,6 +143,29 @@ def test_parse_tool_call_preserves_args():
 
 def test_parse_tool_call_returns_none_for_malformed_name():
     assert parse_tool_call(_FakeFunctionCall("no_separator_here")) is None
+
+
+def test_intent_to_agent_map_only_keeps_unique_intent_names():
+    m = {"version": "x", "agents": [
+        {"name": "find_song", "intents": [{"name": "find_lyrics"}, {"name": "find_artist"}]},
+        {"name": "volume", "intents": [{"name": "volume_up"}]},
+        {"name": "a", "intents": [{"name": "dup"}]},
+        {"name": "b", "intents": [{"name": "dup"}]},
+    ]}
+    assert intent_to_agent_map(m) == {
+        "find_lyrics": "find_song", "find_artist": "find_song", "volume_up": "volume",
+    }  # "dup" 撞名 → 排除
+
+
+def test_parse_tool_call_recovers_bare_intent_name_via_map():
+    """Gemini 掉前綴（實測 flash-lite 把 find_song__find_lyrics 回成 find_lyrics）。"""
+    imap = {"find_lyrics": "find_song"}
+    assert parse_tool_call(_FakeFunctionCall("find_lyrics", {"lyrics": "x"}), imap) == \
+        ("find_song", "find_lyrics", {"lyrics": "x"})
+
+
+def test_parse_tool_call_bare_name_not_in_map_still_none():
+    assert parse_tool_call(_FakeFunctionCall("mystery"), {"find_lyrics": "find_song"}) is None
 
 
 def test_parse_tool_call_returns_none_when_name_missing():

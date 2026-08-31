@@ -78,19 +78,37 @@ def manifest_to_function_declarations(manifest: dict) -> list[types.FunctionDecl
     return declarations
 
 
-def parse_tool_call(function_call) -> tuple[str, str, dict] | None:
+def intent_to_agent_map(manifest: dict) -> dict[str, str]:
+    """manifest → {intent_name: agent_name}，只收唯一的 intent name。
+    parse_tool_call 的寬鬆 fallback 用：Gemini 偶爾回沒前綴的裸 intent name
+    （實測 flash-lite 會把 find_song__find_lyrics 回成 find_lyrics）。"""
+    seen: dict[str, str | None] = {}
+    for agent_entry in manifest.get("agents", []):
+        for intent in agent_entry.get("intents", []):
+            n = intent["name"]
+            seen[n] = agent_entry["name"] if n not in seen else None  # 撞名 → None
+    return {n: a for n, a in seen.items() if a is not None}
+
+
+def parse_tool_call(function_call, intent_agents: dict[str, str] | None = None
+                    ) -> tuple[str, str, dict] | None:
     """Gemini FunctionCall → (agent_name, intent_name, args dict)。
 
-    name 格式不對（沒有 "__" 分隔符）回 None，不炸——上游只需要優雅降級。
+    name 有 "__" → 直接拆。沒有 "__" 但 intent_agents 給了且該裸名唯一對應一個
+    agent → 用它（Gemini 掉前綴的 fallback）。都不行 → None，不炸。
     """
     name = getattr(function_call, "name", None)
-    if not name or _SEP not in name:
-        return None
-    agent_name, intent_name = name.split(_SEP, 1)
-    if not agent_name or not intent_name:
+    if not name:
         return None
     args = dict(getattr(function_call, "args", None) or {})
-    return agent_name, intent_name, args
+    if _SEP in name:
+        agent_name, intent_name = name.split(_SEP, 1)
+        if agent_name and intent_name:
+            return agent_name, intent_name, args
+        return None
+    if intent_agents and name in intent_agents:
+        return intent_agents[name], name, args
+    return None
 
 
 # ── 棄權 tool ────────────────────────────────────────────────────────────────
