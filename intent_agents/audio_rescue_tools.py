@@ -30,12 +30,23 @@ def manifest_to_function_declarations(manifest: dict) -> list[types.FunctionDecl
     ]}]}
 
     所有 slot 一律視為 string 型參數（現有 regex named group 全部是 str）。
+
+    去重：同一 tool name 只出第一筆。一個 DeclarativeIntentAgent 可能宣告多個
+    同名 IntentSchema（regex 路徑合法，first-match-wins 靠不同 pattern，如
+    PersonalShuffleAgent 的兩個 personal_shuffle_start）。逐 schema 產宣告會撞出
+    重複 name → Gemini 整包 request 回 400「Duplicate function declaration」→
+    audio rescue 全失敗（2026-08-31 prod 實錄）。
     """
     declarations: list[types.FunctionDeclaration] = []
+    seen: set[str] = set()
     for agent_entry in manifest.get("agents", []):
         agent_name = agent_entry["name"]
         for intent in agent_entry.get("intents", []):
             intent_name = intent["name"]
+            tool_name = _tool_name(agent_name, intent_name)
+            if tool_name in seen:
+                continue
+            seen.add(tool_name)
             required_slots = list(intent.get("required_slots", []))
             desc = intent.get("description") or f"{agent_name} 的 {intent_name} 意圖"
             properties = {
@@ -44,7 +55,7 @@ def manifest_to_function_declarations(manifest: dict) -> list[types.FunctionDecl
             }
             declarations.append(
                 types.FunctionDeclaration(
-                    name=_tool_name(agent_name, intent_name),
+                    name=tool_name,
                     description=desc,
                     parameters=types.Schema(
                         type="OBJECT",

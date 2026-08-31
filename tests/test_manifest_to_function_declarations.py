@@ -73,6 +73,30 @@ def test_intent_description_flows_into_declaration():
     assert bare.description == "grounded_qa 的 bare 意圖"
 
 
+def test_duplicate_intent_name_dedupes_to_one_declaration():
+    """一個 agent 宣告兩個同名 IntentSchema（regex 路徑合法，first-match-wins，如
+    PersonalShuffleAgent 的兩個 personal_shuffle_start）→ manifest 會帶兩筆同名
+    intent。逐 schema 產 declaration 會吐兩個同名 tool → Gemini 整包 request 回
+    400 INVALID_ARGUMENT「Duplicate function declaration」→ audio rescue 全失敗
+    （2026-08-31 prod 實錄）。轉換層按 tool name 去重，保留第一個。"""
+    m = {
+        "version": "x",
+        "agents": [{"name": "personal_shuffle", "intents": [
+            {"name": "personal_shuffle_stop", "required_slots": [], "reason_template": "x"},
+            {"name": "personal_shuffle_start", "required_slots": [], "reason_template": "x",
+             "description": "開始個人化洗歌"},
+            {"name": "personal_shuffle_start", "required_slots": [], "reason_template": "x",
+             "description": "第二條 pattern 的同名 schema"},
+        ]}],
+    }
+    decls = manifest_to_function_declarations(m)
+    names = [d.name for d in decls]
+    assert names.count("personal_shuffle__personal_shuffle_start") == 1
+    assert len(decls) == 2
+    kept = next(d for d in decls if d.name == "personal_shuffle__personal_shuffle_start")
+    assert kept.description == "開始個人化洗歌"  # 保留第一個
+
+
 def test_agent_name_containing_separator_raises():
     bad_manifest = {
         "version": "x",
