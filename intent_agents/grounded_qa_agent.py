@@ -21,7 +21,13 @@ import logging
 import re
 from pathlib import Path
 
-from intent_agents.base import DeclarativeIntentAgent, IntentSchema
+from intent_agents.base import (
+    DeclarativeIntentAgent,
+    IntentSchema,
+    audio_rescue_slot,
+    audio_rescue_slots_present,
+    is_audio_rescue,
+)
 from intent_agents.constants import (
     MUSIC_PAUSE_KW, MUSIC_PLAY_KW, MUSIC_RESUME_KW, MUSIC_SKIP_KW, MUSIC_STOP_KW,
 )
@@ -316,7 +322,7 @@ class GroundedQAAgent(DeclarativeIntentAgent):
 
     def gate(self, ctx: IntentContext) -> str | None:
         # audio-rescue：LLM 已聽過音訊才選中這個 intent，比 wake 信心啟發式強，不擋。
-        if ctx.dispatch_source == "llm_rescue_audio":
+        if is_audio_rescue(ctx):
             return None
         if getattr(ctx, "low_confidence_wake", False):
             return "low_confidence_wake"
@@ -324,13 +330,13 @@ class GroundedQAAgent(DeclarativeIntentAgent):
 
     def post_match_filter(self, schema, slots, ctx: IntentContext) -> bool:
         # audio-rescue：topic 由 LLM 從音訊填好，ctx.query 是糊掉的 STT，別再 re-parse。
-        if ctx.dispatch_source == "llm_rescue_audio":
-            return bool((slots.get("topic") or "").strip())
+        if is_audio_rescue(ctx):
+            return audio_rescue_slots_present(slots, "topic")
         return parse_grounded_qa(ctx.query or "") is not None
 
     def make_handler(self, schema, slots, ctx: IntentContext):
-        if ctx.dispatch_source == "llm_rescue_audio":
-            topic = (slots.get("topic") or "").strip() or (ctx.query or "")
+        if is_audio_rescue(ctx):
+            topic = audio_rescue_slot(slots, "topic", ctx)
         else:
             # regex 路徑：parse_grounded_qa 會剝喚醒詞前綴，比 raw named group 乾淨
             topic = parse_grounded_qa(ctx.query or "") or (ctx.query or "")

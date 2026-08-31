@@ -80,6 +80,36 @@ def phonetic_best_match(text: str, keywords) -> float:
     return max((_phonetic_window_score(text, kw) for kw in keywords), default=0.0)
 
 
+# ── Audio-rescue 三分支共用 primitive ─────────────────────────────────────────
+# audio rescue 走 IntentBus._execute_resolved_intent → resolve_intent()，跟正常
+# bid() 路徑差在：ctx.query 是糊掉的 STT（regex 才會 miss），slot 由 LLM 直接聽
+# 音訊填好。每個接 audio rescue 的 agent 要在 gate / post_match_filter /
+# make_handler 三處各加一個 dispatch_source 判斷分支，內容大同小異——這三個 helper
+# 把「判斷 + 取 slot + 檢查 slot」的樣板集中，agent 只留自己那份真正不同的邏輯
+# （哪些 gate 要放行、handler 怎麼呼叫）。範本見 grounded_qa_agent.py。
+
+AUDIO_RESCUE_SOURCE = "llm_rescue_audio"
+
+
+def is_audio_rescue(ctx: IntentContext) -> bool:
+    """這輪是不是 audio rescue（LLM 已聽過原始音訊、指名了 intent）。比 wake 信心
+    啟發式強——gate 裡的 wake 相關檢查應對它放行，但 state 相關檢查（如 VolumeAgent
+    「沒在播放不調音量」）要保留。"""
+    return getattr(ctx, "dispatch_source", None) == AUDIO_RESCUE_SOURCE
+
+
+def audio_rescue_slot(slots: dict[str, str], name: str, ctx: IntentContext) -> str:
+    """audio rescue 分支取 slot 值（strip 過）。LLM 從音訊填的 slot 比糊掉的
+    ctx.query 可信；真的缺 slot 才退回 ctx.query。"""
+    return (slots.get(name) or "").strip() or (ctx.query or "")
+
+
+def audio_rescue_slots_present(slots: dict[str, str], *names: str) -> bool:
+    """audio rescue 的 post_match_filter 分支：指定 slot 全部非空才算命中。
+    不 re-parse 糊掉的 ctx.query（那是 regex 路徑的事）。"""
+    return all((slots.get(n) or "").strip() for n in names)
+
+
 @dataclass(frozen=True)
 class IntentSchema:
     """Declarative intent: name + regex patterns + slot spec.
