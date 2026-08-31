@@ -77,6 +77,10 @@ class VolumeAgent(DeclarativeIntentAgent):
                     "volume_mute", 0.95,
                     patterns=[r"(靜音|mute)"],
                     reason_template="mute:{matched}",
+                    manifest_description=(
+                        "使用者要把聲音完全靜音（一點聲音都不要）。不是調小聲、"
+                        "不是暫停。"
+                    ),
                 ),
                 IntentSchema(
                     "volume_down", 0.90,
@@ -87,6 +91,10 @@ class VolumeAgent(DeclarativeIntentAgent):
                         r"(小聲(\s*一?點)?|音量\s*(調)?(低|小)|調\s*低\s*(的)?\s*音量|volume\s*down)",
                     ],
                     reason_template="volume_down:{matched}",
+                    manifest_description=(
+                        "使用者要把現在播放的音量調小聲一點。不是要暫停、不是要換歌、"
+                        "不是要靜音。"
+                    ),
                 ),
                 IntentSchema(
                     "volume_up", 0.90,
@@ -94,6 +102,9 @@ class VolumeAgent(DeclarativeIntentAgent):
                         r"(大聲(\s*一?點)?|音量\s*(調)?(高|大)|調\s*高\s*(的)?\s*音量|volume\s*up)",
                     ],
                     reason_template="volume_up:{matched}",
+                    manifest_description=(
+                        "使用者要把現在播放的音量調大聲一點。"
+                    ),
                 ),
             ]
         return self._intents_cache

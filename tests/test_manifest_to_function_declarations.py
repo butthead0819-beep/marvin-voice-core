@@ -16,30 +16,48 @@ from intent_agents.audio_rescue_tools import (
 
 
 def _manifest():
+    # opt-in：只有填了 description 的 intent 會曝給 Gemini。
     return {
         "version": "2026-08-22",
         "agents": [
             {
                 "name": "volume",
                 "intents": [
-                    {"name": "volume_down", "required_slots": [], "reason_template": "x"},
-                    {"name": "volume_up", "required_slots": [], "reason_template": "x"},
+                    {"name": "volume_down", "required_slots": [], "reason_template": "x",
+                     "description": "調小聲"},
+                    {"name": "volume_up", "required_slots": [], "reason_template": "x",
+                     "description": "調大聲"},
                 ],
             },
             {
                 "name": "find_song",
                 "intents": [
-                    {"name": "find_artist", "required_slots": ["artist"], "reason_template": "x"},
+                    {"name": "find_artist", "required_slots": ["artist"], "reason_template": "x",
+                     "description": "找某歌手的歌"},
                 ],
             },
         ],
     }
 
 
-def test_produces_one_declaration_per_manifest_intent():
+def test_produces_one_declaration_per_described_manifest_intent():
     decls = manifest_to_function_declarations(_manifest())
     names = {d.name for d in decls}
     assert names == {"volume__volume_down", "volume__volume_up", "find_song__find_artist"}
+
+
+def test_intent_without_description_is_not_exposed():
+    """opt-in：沒填 manifest_description 的 intent 不曝給 Gemini（generic 預設對
+    Gemini 沒有辨識價值，還會稀釋選擇；MusicAgentV2 只曝專用 rescue_play）。"""
+    m = {"version": "x", "agents": [{"name": "music", "intents": [
+        {"name": "strong_play", "required_slots": [], "reason_template": "x"},
+        {"name": "weak_play_directional", "required_slots": ["directional_resolution"],
+         "reason_template": "x", "description": "   "},  # 空白也算沒填
+        {"name": "rescue_play", "required_slots": ["song_query"], "reason_template": "x",
+         "description": "使用者要直接點一首指定的歌"},
+    ]}]}
+    decls = manifest_to_function_declarations(m)
+    assert [d.name for d in decls] == ["music__rescue_play"]
 
 
 def test_required_slots_mapped_into_schema():
@@ -60,17 +78,14 @@ def test_empty_manifest_produces_empty_list():
 
 
 def test_intent_description_flows_into_declaration():
-    """有 manifest_description 的 intent → Gemini function description 用它，沒有 → 泛用預設。"""
+    """填了 manifest_description 的 intent → Gemini function description 用它逐字。"""
     m = {"version": "x", "agents": [{"name": "grounded_qa", "intents": [
         {"name": "factual_question", "required_slots": ["topic"],
          "reason_template": "x", "description": "使用者在問需要查證的事實問題"},
-        {"name": "bare", "required_slots": [], "reason_template": "x"},
     ]}]}
     decls = manifest_to_function_declarations(m)
     fq = next(d for d in decls if d.name == "grounded_qa__factual_question")
-    bare = next(d for d in decls if d.name == "grounded_qa__bare")
     assert fq.description == "使用者在問需要查證的事實問題"
-    assert bare.description == "grounded_qa 的 bare 意圖"
 
 
 def test_duplicate_intent_name_dedupes_to_one_declaration():
@@ -82,7 +97,8 @@ def test_duplicate_intent_name_dedupes_to_one_declaration():
     m = {
         "version": "x",
         "agents": [{"name": "personal_shuffle", "intents": [
-            {"name": "personal_shuffle_stop", "required_slots": [], "reason_template": "x"},
+            {"name": "personal_shuffle_stop", "required_slots": [], "reason_template": "x",
+             "description": "停止個人化洗歌"},
             {"name": "personal_shuffle_start", "required_slots": [], "reason_template": "x",
              "description": "開始個人化洗歌"},
             {"name": "personal_shuffle_start", "required_slots": [], "reason_template": "x",
@@ -101,7 +117,7 @@ def test_agent_name_containing_separator_raises():
     bad_manifest = {
         "version": "x",
         "agents": [{"name": "vol__ume", "intents": [
-            {"name": "down", "required_slots": [], "reason_template": "x"},
+            {"name": "down", "required_slots": [], "reason_template": "x", "description": "調低"},
         ]}],
     }
     with pytest.raises(ValueError):

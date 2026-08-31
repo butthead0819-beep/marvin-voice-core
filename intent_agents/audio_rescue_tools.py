@@ -31,6 +31,15 @@ def manifest_to_function_declarations(manifest: dict) -> list[types.FunctionDecl
 
     所有 slot 一律視為 string 型參數（現有 regex named group 全部是 str）。
 
+    opt-in：只有 IntentSchema 明確填了 manifest_description（→ manifest 的
+    "description"）的 intent 才會曝給 Gemini。理由：(1) build_intent_manifest 的
+    另一個消費者是 intent-gap classifier，它要看到「全部」intent，所以過濾放在
+    audio-rescue 這層而非 manifest 產生層；(2) 沒寫 Gemini-facing 描述的 intent
+    （generic 預設「X 的 Y 意圖」）Gemini 根本分不出來，曝出去只是雜訊、還會稀釋
+    Gemini 的選擇；(3) 讓「這個 intent 要不要接 audio rescue」變成 agent 寫一句
+    描述的明確動作——例如 MusicAgentV2 只曝專用的 rescue_play、其餘 8 個
+    regex/resolver schema 不曝。
+
     去重：同一 tool name 只出第一筆。一個 DeclarativeIntentAgent 可能宣告多個
     同名 IntentSchema（regex 路徑合法，first-match-wins 靠不同 pattern，如
     PersonalShuffleAgent 的兩個 personal_shuffle_start）。逐 schema 產宣告會撞出
@@ -43,12 +52,14 @@ def manifest_to_function_declarations(manifest: dict) -> list[types.FunctionDecl
         agent_name = agent_entry["name"]
         for intent in agent_entry.get("intents", []):
             intent_name = intent["name"]
+            desc = (intent.get("description") or "").strip()
+            if not desc:
+                continue  # opt-in：沒寫 manifest_description → 不曝給 Gemini
             tool_name = _tool_name(agent_name, intent_name)
             if tool_name in seen:
                 continue
             seen.add(tool_name)
             required_slots = list(intent.get("required_slots", []))
-            desc = intent.get("description") or f"{agent_name} 的 {intent_name} 意圖"
             properties = {
                 slot: types.Schema(type="STRING")
                 for slot in required_slots
