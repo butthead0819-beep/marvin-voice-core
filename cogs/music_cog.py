@@ -223,6 +223,12 @@ class MusicCog(commands.Cog):
         self._last_themed_set_ts: float = 0.0
         self._themed_sets_tonight: int = 0
         self._themed_set_date = None
+        # 🎭 [DJ Joke Interlude] 頻道安靜（非熱烈聊天）時，crossfade 串場偶爾換成馬文式
+        # 厭世冷笑話（跟 /marvin_joke 共用風格範例庫，見 joke_examples.py）。冷卻起點設
+        # 在啟動當下（不是 0），避免剛開機/剛連上就先講一則——也讓每個測試用的新 cog
+        # 實例預設冷卻中，不會意外把既有 DJ 串場測試岔到笑話分支。
+        self._DJ_JOKE_COOLDOWN_S = 30 * 60
+        self._last_dj_joke_ts: float = time.time()
         # 📖 [StoryArc] 故事弧線節目（dj_story_arc.py）進行中旗標——自成一體播放協程，
         # 不碰 stream_queue/_stream_loop/_run_tail_dj，跟一般 autopilot 互斥（見 story_arc 指令）。
         self._story_arc_active: bool = False
@@ -3008,12 +3014,13 @@ class MusicCog(commands.Cog):
         # Group size & Chat Heat → 語氣：綜合在線人數與 AtmosphereTracker 對話活躍度。
         # vc() 不可用時靜默略過。quick 模式沒有 LLM 可以照 ctx 調語氣，改本地選模板池。
         _n_online = 0
+        _heat_mode = "default"
         try:
             if _vc_ref is not None:
                 _n_online = len(_vc_ref.get_online_members())
                 _tracker = getattr(getattr(self.bot, 'router', None), 'atmosphere_tracker', None)
                 from dj_social_affinity import assess_channel_heat
-                _, _heat_instr = assess_channel_heat(_tracker, conv_buf, _n_online)
+                _heat_mode, _heat_instr = assess_channel_heat(_tracker, conv_buf, _n_online)
                 if _heat_instr:
                     ctx.append(_heat_instr)
         except Exception:
@@ -3023,6 +3030,29 @@ class MusicCog(commands.Cog):
         # music_intro 砍成「狗與露」這種殘句（autopilot DJ 被截斷的根因）。
         gate_task = "dj_story"
         text = self._themed_dj_text(info)   # 主題歌單：直接播策展時寫好的理由，不重複燒 LLM
+
+        # 🎭 [DJ Joke Interlude] 頻道安靜（非熱烈聊天）且距上次超過冷卻時間 → 這輪
+        # crossfade 換成馬文式厭世冷笑話，錨在歌名/歌手上現編諧音梗，人設刻意跳戲成
+        # marvin_joke 那套厭世腔（見 dj_prompt_builder.build_dj_joke_interjection_prompt）。
+        # themed 歌單已經有自己寫好的口白（上面 text 已非空），不搶。
+        _last_joke_ts = getattr(self, '_last_dj_joke_ts', None)
+        if not text and info.get('_lane') != 'themed' and _heat_mode != "active_chat" \
+                and _last_joke_ts is not None \
+                and (time.time() - _last_joke_ts) >= getattr(self, '_DJ_JOKE_COOLDOWN_S', 1800):
+            joke_ctx = [f"歌曲：{_song_label or title}"]
+            if prev_title:
+                joke_ctx.append(f"上一首剛播完：《{prev_title}》")
+            try:
+                joke_text = await self.bot.router.generate_dynamic_system_msg(
+                    'dj_joke_interjection', context='\n'.join(joke_ctx)
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ [DJ Joke] LLM 失敗: {e}")
+                joke_text = ""
+            joke_text = (joke_text or '').strip()
+            if 10 <= len(joke_text) <= 120:
+                text = joke_text
+                self._last_dj_joke_ts = time.time()
         if not text and mode == "quick":
             # 沒有任何素材可用 → 本地固定模板直接接歌，跳過 LLM（零出錯風險、零延遲、零花費）。
             text = self._quick_segue_text(_n_online)

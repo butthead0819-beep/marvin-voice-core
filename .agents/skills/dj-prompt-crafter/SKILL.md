@@ -103,6 +103,24 @@ LLM 產出若包含以下任何詞彙，本地品管層將直接判為不及格�
 
 ---
 
+## 🎭 低頻彩蛋：DJ Joke Interlude（厭世冷笑話插播）
+
+2026-08-31 加：頻道安靜（`assess_channel_heat` 非 `active_chat`）且距上次超過
+30 分鐘冷卻 → `cogs/music_cog.py::_fetch_dj_interjection_raw` 把這輪 crossfade
+換成走 `dj_prompt_builder.build_dj_joke_interjection_prompt`，故意跳脫平常「不諷刺
+不憂鬱」的暖場人設，改用 `/marvin_joke` 那套馬文本尊厭世腔，針對歌名/歌手現編台灣
+冷笑話收尾。不做去重（使用者明確表示不需要，低頻率隨機生成不太會撞梗）。
+
+- **範例庫單一真實來源**：`joke_examples.py`，`marvin_prompts.py`（/marvin_joke 表演）
+  跟 `dj_prompt_builder.py`（這個插播）共用同一份，改風格只需改一處。
+- **冷卻狀態**：`MusicCog._last_dj_joke_ts` / `_DJ_JOKE_COOLDOWN_S`，起點是 cog
+  建構當下（不是 0），避免剛開機就先講一則。
+- **事件路由**：`gemini_router_content.py` 的 `"dj_joke_interjection"` 歸在
+  `_DJ_EVENT_TYPES`（跟 `dj_interjection` 同組，走 context 快取），厭世腔是靠
+  prompt 本文自己要求，不是靠切到馬文人格分支。
+- 測試：`tests/test_dj_joke_interlude.py`（觸發條件）、
+  `tests/test_joke_examples_shared.py`（共用範例庫 + 抽取後文字不變）。
+
 ## 🛠️ 開發與修改 SOP
 
 ### 1. 修改 Prompt 規則
