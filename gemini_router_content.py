@@ -28,6 +28,7 @@ from dj_prompt_builder import (
     DJ_MATERIAL_GUARD as _DJ_MATERIAL_GUARD,
     DJ_NAMING_GUARD as _DJ_NAMING_GUARD,
     build_dj_interjection_prompt as _build_dj_interjection_prompt,
+    build_dj_joke_interjection_prompt as _build_dj_joke_interjection_prompt,
 )
 
 
@@ -1037,12 +1038,17 @@ class GeminiRouterContentMixin:
             "radio_now_playing": _DJ_STYLES["radio_now_playing"].format(context=context),
             "stream_now_playing": _DJ_STYLES["stream_now_playing"].format(context=context),
             "dj_interjection": _build_dj_interjection_prompt(context),
+            # 低頻彩蛋：安靜時段偶爾把 crossfade 換成馬文式厭世冷笑話（見
+            # cogs/music_cog.py::_fetch_dj_interjection_raw 的 30 分鐘冷卻判斷）。
+            "dj_joke_interjection": _build_dj_joke_interjection_prompt(context),
         }
-        
+
         # DJ 三條走獨立 system prompt（不注入馬文厭世人格），否則 system 跟 task
         # 兩個人設打架（marvin 10/10 憂鬱 vs 專業 DJ），LLM 會走憂鬱腔輸出諷刺台詞，
-        # 「不諷刺、不憂鬱」指示失效。
-        _DJ_EVENT_TYPES = {"dj_interjection", "stream_now_playing", "radio_now_playing"}
+        # 「不諷刺、不憂鬱」指示失效。dj_joke_interjection 例外：它就是故意要那個厭世腔，
+        # 但外層「記得每位常客的專業電台 DJ」只是無害的招呼語，不會蓋掉 prompt 本文裡的
+        # 厭世笑話指示，所以照樣歸在 DJ 組，沿用同一套 context 快取。
+        _DJ_EVENT_TYPES = {"dj_interjection", "stream_now_playing", "radio_now_playing", "dj_joke_interjection"}
         is_dj = event_type in _DJ_EVENT_TYPES
         # 純評語：非 DJ、不吃 context、是已知 prompt → 可快取一池變體輪播（降載 35%LLM 的主刀）
         is_quip = (not is_dj) and (not context) and (event_type in prompts)
