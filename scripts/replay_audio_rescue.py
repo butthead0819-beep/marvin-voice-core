@@ -5,8 +5,12 @@
 語料 = records/rescue_wav/（sidecar，由 IntentBus 在 MODE=audio 時落地），或
 自己錄的對抗集目錄。
 
-  python scripts/replay_audio_rescue.py [wav_dir]        # 預設 records/rescue_wav
-  python scripts/replay_audio_rescue.py fixtures/adversarial --json
+  python scripts/replay_audio_rescue.py [wav_dir]              # 預設 records/rescue_wav
+  python scripts/replay_audio_rescue.py <dir> --corpus         # 對 manifest.jsonl 打分
+  python scripts/replay_audio_rescue.py <dir> --delay 7        # 每筆間隔秒（避開 RPM）
+  python scripts/replay_audio_rescue.py <dir> --json
+
+有 GEMINI_PAID_API_KEY → 自動走付費 client（free tier 只有 10 RPM，一批 26 筆會撞 429）。
 
 每筆輸出：
   tool call        — Gemini 選的 function name（含 just_chatting / 唯讀 tool）
@@ -36,7 +40,9 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv()
 
 # ── key 守衛：漏 load_dotenv / 空 key 池會讓每筆靜默回 None，你會誤判成 manifest 爛
-_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+# 付費 key 優先（free tier flash-lite 只有 10 RPM，26 筆會撞 429）
+_KEY = os.getenv("GEMINI_PAID_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+_PAID = bool(os.getenv("GEMINI_PAID_API_KEY"))
 if not _KEY:
     sys.exit(
         "❌ 沒有 GOOGLE_API_KEY / GEMINI_API_KEY。\n"
@@ -45,8 +51,21 @@ if not _KEY:
 
 from google import genai  # noqa: E402
 
-from intent_agents.audio_rescue_agent import AudioRescueAgent  # noqa: E402
+from google.genai import types  # noqa: E402
+
+from intent_agents.audio_rescue_agent import _PROMPT  # noqa: E402
+from intent_agents.audio_rescue_tools import (  # noqa: E402
+    ABSTAIN_FUNCTION_DECLARATION,
+    ABSTAIN_TOOL_NAME,
+    READONLY_FUNCTION_DECLARATIONS,
+    READONLY_TOOL_NAMES,
+    manifest_to_function_declarations,
+    parse_tool_call,
+)
 from intent_bus import IntentContext  # noqa: E402
+
+_MODEL = "gemini-2.5-flash-lite"
+_REPLAY_TIMEOUT_S = 15.0  # 量真實延遲，不套 production 的 3s cap
 
 
 # opt-in audio-rescue agent 清單（有 manifest_description 的那些）。用寬鬆 stub
@@ -105,26 +124,55 @@ def _why_resolve_none(agent, intent_name, slots, ctx) -> str:
     return "unknown"
 
 
-async def _replay_one(rescue_agent, agents, wav_path: Path) -> dict:
-    ctx = IntentContext(
+def _ctx_for(wav_bytes: bytes):
+    return IntentContext(
         speaker="replay", raw_text="", query="", original_raw="",
         wake_intent=0.9, stream_active=True, game_mode=False, is_owner=False,
-        now=time.time(), mode="normal", audio_wav_bytes=wav_path.read_bytes(),
+        now=time.time(), mode="normal", dispatch_source="llm_rescue_audio",
+        audio_wav_bytes=wav_bytes,
     )
+
+
+async def _replay_one(client, tools, agents, wav_path: Path) -> dict:
+    """自己打 Gemini（不經 AudioRescueAgent），才能分清 timeout / 棄權 / 沒 call，
+    也不套 production 的 3s cap。"""
+    wav_bytes = wav_path.read_bytes()
+    row: dict = {"wav": wav_path.name}
     t0 = time.perf_counter()
-    resolved = await rescue_agent.synthesize(ctx)
-    gemini_ms = (time.perf_counter() - t0) * 1000
-
-    row: dict = {"wav": wav_path.name, "gemini_ms": round(gemini_ms, 1)}
-    if resolved is None:
-        # synthesize 回 None：abstain / 逾時 / 例外 / 沒 function_call / 只有唯讀 tool
-        row["tool"] = "(none — abstain / timeout / no-call)"
-        row["resolve"] = "n/a"
+    try:
+        resp = await asyncio.wait_for(
+            client.aio.models.generate_content(
+                model=_MODEL,
+                contents=[types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
+                          _PROMPT.format(query="")],
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(function_declarations=tools)], temperature=0.0),
+            ),
+            timeout=_REPLAY_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        row["gemini_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        row["tool"] = f"(timeout >{_REPLAY_TIMEOUT_S:.0f}s)"
         return row
+    row["gemini_ms"] = round((time.perf_counter() - t0) * 1000, 1)
 
-    agent_name = resolved.resolved_agent
-    intent_name = resolved.resolved_intent
-    slots = resolved.resolved_slots or {}
+    calls = getattr(resp, "function_calls", None) or []
+    names = [c.name for c in calls]
+    if not calls:
+        row["tool"] = "(no tool call)"
+        return row
+    if ABSTAIN_TOOL_NAME in names:
+        row["tool"] = "just_chatting"
+        return row
+    action = next((c for c in calls if c.name not in READONLY_TOOL_NAMES), None)
+    if action is None:
+        row["tool"] = f"(readonly only: {names})"
+        return row
+    parsed = parse_tool_call(action)
+    if parsed is None:
+        row["tool"] = f"(malformed: {action.name})"
+        return row
+    agent_name, intent_name, slots = parsed
     row["tool"] = f"{agent_name}__{intent_name}"
     row["slots"] = slots
     row["slot_blank"] = [k for k, v in slots.items() if not str(v or "").strip()]
@@ -133,45 +181,74 @@ async def _replay_one(rescue_agent, agents, wav_path: Path) -> dict:
     if agent is None or not hasattr(agent, "resolve_intent"):
         row["resolve"] = f"no_agent:{agent_name}"
         return row
-    bid = agent.resolve_intent(intent_name, slots, resolved)
-    row["resolve"] = "OK" if bid is not None else f"None ({_why_resolve_none(agent, intent_name, slots, resolved)})"
+    ctx = _ctx_for(wav_bytes)
+    bid = agent.resolve_intent(intent_name, slots, ctx)
+    row["resolve"] = "OK" if bid is not None else f"None ({_why_resolve_none(agent, intent_name, slots, ctx)})"
     return row
 
 
-async def _main(wav_dir: Path, as_json: bool) -> None:
+async def _main(wav_dir: Path, as_json: bool, use_corpus: bool = False,
+                delay: float = 0.0) -> None:
     wavs = sorted(wav_dir.glob("*.wav"))
     if not wavs:
         sys.exit(f"❌ {wav_dir} 沒有 .wav 檔。")
 
     agents = _build_agents()
-    manifest = _manifest(agents)
+    tools = (manifest_to_function_declarations(_manifest(agents))
+             + READONLY_FUNCTION_DECLARATIONS + [ABSTAIN_FUNCTION_DECLARATION])
     client = genai.Client(api_key=_KEY)
-    rescue_agent = AudioRescueAgent(google_client=client, manifest_provider=lambda: manifest)
+    if not as_json:
+        print(f"  client={'paid' if _PAID else 'free (10 RPM — 建議 --delay 7)'}  "
+              f"delay={delay}s  timeout={_REPLAY_TIMEOUT_S:.0f}s  n={len(wavs)}  tools={len(tools)}\n")
+
+    # --corpus：讀 wav_dir/manifest.jsonl 的 expect，逐筆打分（synth_audio_rescue_corpus 產）
+    expect_by_wav: dict[str, str] = {}
+    manifest_path = wav_dir / "manifest.jsonl"
+    if use_corpus and manifest_path.exists():
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            m = json.loads(line)
+            expect_by_wav[m["wav"]] = m["expect"]
 
     rows = []
-    for w in wavs:
+    for i, w in enumerate(wavs):
+        if delay and i:
+            await asyncio.sleep(delay)
         try:
-            rows.append(await _replay_one(rescue_agent, agents, w))
+            row = await _replay_one(client, tools, agents, w)
         except Exception as exc:  # noqa: BLE001 — dev tool，單筆炸不該中斷整批
-            rows.append({"wav": w.name, "error": f"{type(exc).__name__}: {exc}"})
+            row = {"wav": w.name, "error": f"{type(exc).__name__}: {exc}"}
+        if w.name in expect_by_wav:
+            row["expect"] = expect_by_wav[w.name]
+            row["hit"] = (row.get("tool", "") == row["expect"])
+        rows.append(row)
 
     if as_json:
         print(json.dumps(rows, ensure_ascii=False, indent=2))
     else:
         for r in rows:
             if "error" in r:
-                print(f"  {r['wav']:<40} ERROR {r['error']}")
+                print(f"  {r['wav']:<44} ERROR {r['error']}")
                 continue
             slots = r.get("slots", {})
             blank = f"  ⚠️blank={r['slot_blank']}" if r.get("slot_blank") else ""
-            print(f"  {r['wav']:<40} {r['gemini_ms']:>7.0f}ms  {r['tool']:<32} "
-                  f"resolve={r.get('resolve','?'):<28} slots={slots}{blank}")
+            mark = ""
+            if "hit" in r:
+                mark = "  ✅" if r["hit"] else f"  ❌ want {r['expect']}"
+            print(f"  {r['wav']:<44} {r['gemini_ms']:>7.0f}ms  {r['tool']:<32} "
+                  f"resolve={r.get('resolve','?'):<26} slots={slots}{blank}{mark}")
 
     ms = [r["gemini_ms"] for r in rows if "gemini_ms" in r]
     ok = sum(1 for r in rows if r.get("resolve") == "OK")
-    abstained = sum(1 for r in rows if str(r.get("tool", "")).startswith("(none"))
-    print(f"\n  n={len(rows)}  resolve_OK={ok}  abstain/none={abstained}  "
-          f"resolve_fail={len(rows) - ok - abstained}")
+    abstain = sum(1 for r in rows if r.get("tool") == "just_chatting")
+    timeout = sum(1 for r in rows if str(r.get("tool", "")).startswith("(timeout"))
+    nocall = sum(1 for r in rows if r.get("tool") in ("(no tool call)",))
+    print(f"\n  n={len(rows)}  resolve_OK={ok}  just_chatting={abstain}  "
+          f"timeout={timeout}  no_call={nocall}  resolve_fail={len(rows) - ok - abstain - timeout - nocall}")
+    scored = [r for r in rows if "hit" in r]
+    if scored:
+        hits = sum(1 for r in scored if r["hit"])
+        print(f"  routing: {hits}/{len(scored)} = {hits / len(scored):.0%} 命中 expect"
+              f"  ({'PASS ≥90%' if hits / len(scored) >= 0.9 else 'FAIL <90%'})")
     if ms:
         ms.sort()
         p95 = ms[min(len(ms) - 1, int(len(ms) * 0.95))]
@@ -179,7 +256,12 @@ async def _main(wav_dir: Path, as_json: bool) -> None:
 
 
 if __name__ == "__main__":
-    args = [a for a in sys.argv[1:] if not a.startswith("-")]
-    as_json = "--json" in sys.argv
-    target = Path(args[0]) if args else Path("records/rescue_wav")
-    asyncio.run(_main(target, as_json))
+    argv = sys.argv[1:]
+    as_json = "--json" in argv
+    use_corpus = "--corpus" in argv
+    delay = 0.0
+    if "--delay" in argv:
+        delay = float(argv[argv.index("--delay") + 1])
+    positional = [a for a in argv if not a.startswith("-") and a != str(delay)]
+    target = Path(positional[0]) if positional else Path("records/rescue_wav")
+    asyncio.run(_main(target, as_json, use_corpus, delay))
