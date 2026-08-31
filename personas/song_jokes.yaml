@@ -1,28 +1,83 @@
-# 逐首歌的專屬冷笑話 / 諧音梗 —— autopilot 點到這首時，crossfade 剛好講這則（驚喜感）。
+# 逐首歌的專屬冷笑話 —— autopilot 點到這首時，crossfade 剛好講這則（驚喜感）。
 #
 # key    —— YouTube videoId（穩定，取代脆弱的歌名比對）。
 # title  —— 只是給人看的註記，比對不看它。
-# style  —— puns  = 諧音梗 / 同音誤解
-#           absurd = 一派正經、面無表情地陳述極度荒謬的事，還把它當成理所當然的邏輯
+# style  —— absurd = 一本正經地鑽歌名字面的牛角尖，講完就停（主力）
+#           puns   = 歌名本身有乾淨同音的諧音梗（少數）
 #           skip   = 這首生不出好笑的 → 留著當「已處理」標記，比對時忽略
-# joke   —— 全文，已含馬文招牌厭世收尾（「……」起頭那半句）。念完約 6–10 秒。
+# joke   —— 全文，收在笑點上。念完約 3~6 秒。不要「……」嘆息收尾。
 #
 # 由 scripts/generate_song_jokes.py 批次生 draft（records/song_jokes_draft.yaml），
-# Jack 逐則篩，留真的有幽默感的搬進這裡。寧缺勿濫——skip 也是合法答案。
+# Jack 逐則篩，把有梗的搬進這裡。以下是首批挑出來的（熱門歌優先）。
 #
 # 比對順序（joke_bank.py）：videoId 專屬笑話 → 泛用拼音 hook 庫（joke_bank.yaml）。
 
-- key: mZg7Fjc7Zfg
-  title: 周杰倫 告白氣球
-  style: puns
-  joke: "白氣球揍了黑氣球一拳，黑氣球氣不過，決定去告白氣球。……告白這種事的成功率，跟氣球的壽命一樣，撐不了幾天。"
+- key: d59XIcWpIZc
+  title: 陶喆 王八蛋
+  style: absurd
+  joke: "王八蛋是一種烏龜。所以如果你罵人王八蛋，其實是在說他很長壽。"
+
+- key: 9YXxCciHRcU
+  title: A-Sun 葉子
+  style: absurd
+  joke: "葉子是樹木用來呼吸的器官。所以當葉子掉光的時候，樹其實是在憋氣。"
+
+- key: 0rpbhqZI0hc
+  title: 庾澄慶 情非得已
+  style: absurd
+  joke: "情非得已，意思是你不是自願的。所以如果你正在聽這首歌，表示你其實不想聽，只是情非得已。"
+
+- key: WzwhMFMTxNU
+  title: 張秀卿 車站
+  style: absurd
+  joke: "車站，就是一個你永遠不知道會不會遇到前任、但每次都偷偷期待的地方。"
+
+- key: mLk61pfiHQ0
+  title: 張惠妹 聽海
+  style: absurd
+  joke: "叫我聽海，我聽了三小時。它從頭到尾只講一個字，還一直重複。"
+
+- key: 3L3Me4JXVqE
+  title: 陶喆 普通朋友
+  style: absurd
+  joke: "如果所有朋友都是普通朋友，把「普通」約分掉，其實你就沒有朋友了。"
+
+- key: tv95k0zqnaA
+  title: 陳綺貞 旅行的意義
+  style: absurd
+  joke: "旅行的意義，就是為了證明你在任何地方，都一樣會迷路。"
+
+- key: 1xZede32V6c
+  title: 陶喆 找自己
+  style: absurd
+  joke: "找自己，就像在找一隻隱形的貓。你永遠不知道牠在哪裡，但牠一定在某個地方看著你。"
+
+- key: aI_SszyOM2A
+  title: 張宇 傘下
+  style: absurd
+  joke: "傘下是個很危險的地方。因為你永遠不知道，傘的主人會不會突然把你收起來。"
+
+- key: 8S-5by4ExEM
+  title: A/DA 阿達 上班不要跟我聊夢想
+  style: absurd
+  joke: "上班不要跟我聊夢想。那下班可以聊嗎？還是說，夢想只能在夢裡聊？"
+
+- key: Bbp9ZaJD_eA
+  title: 周杰倫 七里香
+  style: absurd
+  joke: "七里香聽起來很香。但如果真的有七里那麼香，那大概是香水工廠爆炸了。"
+
+- key: TT-y1rYLl_o
+  title: 黃大煒 妳把我灌醉
+  style: absurd
+  joke: "妳把我灌醉，然後我就開始講一些連自己都聽不懂的冷笑話。"
+
+- key: kfXdP7nZIiE
+  title: 周杰倫 等你下課
+  style: absurd
+  joke: "等你下課，結果你從來沒去上課。那我就要一直等下去了嗎？"
 
 - key: Sr5Mk7Yr9OY
-  title: G.E.M. 鄧紫棋 光年之外
+  title: 鄧紫棋 光年之外
   style: absurd
-  joke: "一光年是九兆公里。我認真算過，用走的去見你要一億八千萬年，中途還會經過三次冰河期。……所以我決定坐著等，比較省力。"
-
-- key: 3AtDnEC4zak
-  title: 五月天 溫柔
-  style: absurd
-  joke: "我把溫柔調到最大，結果過熱當機了。原廠說這個零件本來就不建議長時間開。……冷卻的時候，大家都說我變了。"
+  joke: "一光年是九兆公里。我算過，走路去見你要一億八千萬年，中途還會經過三次冰河期。"
