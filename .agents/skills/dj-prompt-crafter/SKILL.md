@@ -9,9 +9,9 @@ description: Marvin Discord Voice Bot 的 DJ Prompt 撰寫、調優與品質守�
 
 ---
 
-## 🏛️ 五大不可動搖核心原則 (Unified Core Pillars)
+## 🏛️ 六大不可動搖核心原則 (Unified Core Pillars)
 
-所有 DJ Prompt 必須遵循以下 5 大原則（由 `dj_prompt_builder.py` 統一守門）：
+所有 DJ Prompt 必須遵循以下 6 大原則（由 `dj_prompt_builder.py` 統一守門）：
 
 1. **字數與時間硬上限 (Strict Budget)**
    - **Crossfade 串場 (`dj_interjection`)**：**45~55 中文字**（語音唸完約 8~9 秒）。超過 56 字視為失敗，會導致 Crossfade 截斷。
@@ -26,7 +26,16 @@ description: Marvin Discord Voice Bot 的 DJ Prompt 撰寫、調優與品質守�
 4. **掛名嚴格依據脈絡 (Naming Guard)**
    - 只有脈絡明確標註「點播者」或「理由」裡出現的人才能提名字。
    - 絕不自己猜測或指定這首歌是誰點的。
-5. **風格調性：Threads 生活廢文小幽默與陪伴感**
+5. **不考驗聽眾記憶 (Memory Claim Guard)**
+   - 聽眾自己聽過什麼、記不記得，只有他們自己知道——不斷言「XX 應該沒聽過」「XX 一定聽過」
+     這種只有聽眾記憶才能驗證的話，沒把握就用「比較少聽」這種保留語氣。
+   - 脈絡沒明講是聽眾自己點播的，就別說成「這首是 XX 點的」（autopilot 不是真的點播），
+     改用「希望 XX 喜歡」這種機器人自己推薦的說法。
+   - 2026-08-31 案例：`personas/dj_templates.yaml` 的 `autopilot_phrases` 曾出現「這首幫
+     {who}點的」（其實是 Marvin 自己 autopilot 選的，who 沒點過）與「{who}應該沒聽過」
+     （斷言使用者自己的記憶，萬一在別處聽過呢）——已修正為「希望{who}喜歡」「{who}應該
+     比較少聽過」。修改任何 autopilot 掛名/理由模板前，先檢查是否又犯了這兩種說法。
+6. **風格調性：Threads 生活廢文小幽默與陪伴感**
    - **接地氣現代社群風格**：以日常微幽默、生活廢文共鳴（加班、早起、拖延症、購物車、手搖飲、放空）為主。
    - **嚴禁大道理心靈雞湯與說教**：不裝深沉、不搞人生哲理。
    - **嚴禁假文青套話與禁詞**（見下表）。
@@ -115,3 +124,4 @@ python3 -m pytest tests/test_dj_*.py tests/test_news_fetch.py -q
 - [ ] 是否完全無禁詞與假文青修辭？
 - [ ] 視角是否保持為機器人觀察者，未越界使用第一人稱？
 - [ ] 遇到 LLM 超時/失敗時，是否有 `dj_comedy_fallback.py` 安全接軌？
+- [ ] 是否斷言了聽眾記憶（「應該沒聽過」）或把 autopilot 選歌說成「XX 點的」？
