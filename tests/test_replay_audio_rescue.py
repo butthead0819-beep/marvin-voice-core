@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -17,7 +19,11 @@ _SPEC = importlib.util.spec_from_file_location(
     Path(__file__).resolve().parent.parent / "scripts" / "replay_audio_rescue.py",
 )
 replay = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(replay)
+# script 頂層有 load_dotenv()——測試時 no-op，別把真 .env 灌進整個 test session
+# 的 os.environ（會污染後面讀 env 的測試）。
+sys.modules.setdefault("replay_audio_rescue", replay)
+with patch("dotenv.load_dotenv", lambda *a, **k: None):
+    _SPEC.loader.exec_module(replay)
 
 
 def test_manifest_only_exposes_opt_in_intents():
