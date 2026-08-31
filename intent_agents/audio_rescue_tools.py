@@ -93,6 +93,25 @@ def parse_tool_call(function_call) -> tuple[str, str, dict] | None:
     return agent_name, intent_name, args
 
 
+# ── 棄權 tool ────────────────────────────────────────────────────────────────
+# manifest_to_function_declarations 把每個 required_slot 都標成 Gemini required，
+# 一次又給 Gemini 多個誘人的 tool，Gemini 一旦選了某個就被結構逼著吐 slot 值——
+# 唯一的「不動作」出口是「不呼叫任何 tool」，但那要跟一整排 tool 競爭。給它一個
+# 明確的棄權 tool，Gemini 判斷「使用者只是在聊天、以上都不是」時可以直接選它，
+# rescue agent 收到就 return None 走一般聊天，不硬套任何 intent。
+
+ABSTAIN_TOOL_NAME = "just_chatting"
+
+ABSTAIN_FUNCTION_DECLARATION = types.FunctionDeclaration(
+    name=ABSTAIN_TOOL_NAME,
+    description=(
+        "以上工具都不符合。使用者只是在閒聊、發表意見、回應別人，或說的話"
+        "不對應任何已知操作。不確定要選哪個時，選這個而不是硬套一個。"
+    ),
+    parameters=types.Schema(type="OBJECT", properties={}),
+)
+
+
 # ── 唯讀查詢 tool（不對應任何 IntentAgent/handler，rescue agent 自行執行）──────
 
 READONLY_TOOL_NAMES = frozenset({"get_now_playing", "get_recent_history"})

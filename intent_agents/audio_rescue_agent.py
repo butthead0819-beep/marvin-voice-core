@@ -38,6 +38,8 @@ from google.genai import types
 
 from intent_bus import IntentContext
 from intent_agents.audio_rescue_tools import (
+    ABSTAIN_FUNCTION_DECLARATION,
+    ABSTAIN_TOOL_NAME,
     READONLY_FUNCTION_DECLARATIONS,
     READONLY_TOOL_NAMES,
     manifest_to_function_declarations,
@@ -118,11 +120,15 @@ class AudioRescueAgent:
             return None
 
         manifest = self.manifest_provider()
-        function_declarations = (
-            manifest_to_function_declarations(manifest) + READONLY_FUNCTION_DECLARATIONS
-        )
-        if not function_declarations:
+        action_declarations = manifest_to_function_declarations(manifest)
+        if not action_declarations:
+            # 沒有任何 opt-in 的 action intent → 只剩唯讀 + 棄權 tool，rescue 無意義
             return None
+        function_declarations = (
+            action_declarations
+            + READONLY_FUNCTION_DECLARATIONS
+            + [ABSTAIN_FUNCTION_DECLARATION]
+        )
 
         est_in = max(1, len(ctx.audio_wav_bytes) // _PCM_BYTES_PER_SECOND * _AUDIO_TOKENS_PER_SECOND)
         if not self.paid_guard.allow(estimate_cost(self.model, est_in, _ESTIMATED_OUTPUT_TOKENS)):
@@ -169,6 +175,10 @@ class AudioRescueAgent:
 
         resolved: tuple[str, str, dict] | None = None
         for call in calls:
+            if call.name == ABSTAIN_TOOL_NAME:
+                # LLM 明確判斷「以上都不是」——直接放棄，走一般聊天，不理其他 call。
+                logger.info("📡 [AudioRescue] LLM 選了 just_chatting，放棄 rescue")
+                return None
             if call.name in READONLY_TOOL_NAMES:
                 await self._execute_readonly(call, ctx)
                 continue

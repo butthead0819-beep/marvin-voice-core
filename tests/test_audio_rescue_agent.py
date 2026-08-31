@@ -28,10 +28,12 @@ def _ctx(audio: bytes | None = b"fake-wav-bytes", query="小聲一點"):
 
 
 def _manifest():
+    # opt-in：manifest_to_function_declarations 只曝有 description 的 intent。
     return {
         "version": "x",
         "agents": [{"name": "volume", "intents": [
-            {"name": "volume_down", "required_slots": [], "reason_template": "x"},
+            {"name": "volume_down", "required_slots": [], "reason_template": "x",
+             "description": "調小聲"},
         ]}],
     }
 
@@ -139,6 +141,42 @@ async def test_readonly_tool_call_invokes_executor_and_not_resolved():
     assert result is None
     executor.assert_awaited_once()
     assert executor.await_args.args[0] == "get_now_playing"
+
+
+@pytest.mark.asyncio
+async def test_abstain_tool_call_returns_none():
+    """LLM 選 just_chatting（棄權出口）→ 放棄 rescue，走一般聊天。"""
+    from intent_agents.audio_rescue_tools import ABSTAIN_TOOL_NAME
+    client = _make_client(function_calls=[_FakeCall(ABSTAIN_TOOL_NAME)])
+    agent = _make_agent(client)
+
+    result = await agent.synthesize(_ctx())
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_abstain_wins_over_other_calls_in_same_response():
+    """just_chatting 出現在 call list 裡就直接放棄，不理其他 action call。"""
+    from intent_agents.audio_rescue_tools import ABSTAIN_TOOL_NAME
+    calls = [_FakeCall(ABSTAIN_TOOL_NAME), _FakeCall("volume__volume_down")]
+    client = _make_client(function_calls=calls)
+    agent = _make_agent(client)
+
+    assert await agent.synthesize(_ctx()) is None
+
+
+@pytest.mark.asyncio
+async def test_abstain_declaration_included_in_gemini_tools():
+    from intent_agents.audio_rescue_tools import ABSTAIN_TOOL_NAME
+    client = _make_client(function_calls=[_FakeCall("volume__volume_down")])
+    agent = _make_agent(client)
+
+    await agent.synthesize(_ctx())
+
+    cfg = client.aio.models.generate_content.await_args.kwargs["config"]
+    tool_names = {fd.name for fd in cfg.tools[0].function_declarations}
+    assert ABSTAIN_TOOL_NAME in tool_names
 
 
 @pytest.mark.asyncio
