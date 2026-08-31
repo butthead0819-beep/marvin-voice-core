@@ -91,6 +91,9 @@
    - 一句話報「🕒 latency: 最大段=X (p50≈Yms)，turns=N」
    - **STAGE_TIMING/TTS_TIMING turns=0 → 「沒人對話，無延遲數據」**（不捏造）
    - 目的：定位 baseline 2-3s 遲鈍感卡哪段。背景：LLM 中位數 ~507ms 非瓶頸，round-2 speculative pre-gen 已擱置（ROI 差），先量清楚再決定要不要動
+6. **📋 `python scripts/daily_user_needs.py` — 逐筆掃昨天使用者的「需求」與「抱怨」訊號**（`records/agent_gaps.jsonl` + `marvin.db` transcripts + `records/ambient_qa.jsonl`）
+   - 純報表產生器，不打 LLM、不寫檔；把輸出貼給 Jack，Claude 對每筆附一句改善建議，Jack 人工評估要不要做
+   - 已有 agent 的 intent_type（`agent_gaps_resolved.json` 收錄者）會標「既有 coverage」而非隱藏——冷門說法漏接時仍看得到，別誤判成新缺口
 
 ---
 

@@ -29,6 +29,12 @@ GAPS = ROOT / "records" / "agent_gaps.jsonl"
 AMBIENT = ROOT / "records" / "ambient_qa.jsonl"
 RESCUE = ROOT / "records" / "rescue_outcomes.jsonl"
 DB = ROOT / "marvin.db"
+RESOLVED = ROOT / "agent_gaps_resolved.json"
+
+# Asia/Taipei timezone — bot 部署在台灣，跟 intent_agents/time_query_agent.py 同慣例。
+# --date 與預設「昨天」都要照本地日界切，不能用 UTC（見 review：UTC 日界在 UTC+8
+# production 下會漏當地凌晨、混入隔天早上）。
+_TPE_TZ = timezone(timedelta(hours=8))
 
 # 測試 speaker：ritual 一律排除（見 memory intent_health_check_2026-06-22）
 EXCLUDE_SPEAKERS = {"artificial", "test", "TestSpeaker", "測試"}
@@ -48,11 +54,11 @@ _FAULT_RE = re.compile(
 
 def _day_bounds(date_str: str | None, days: int) -> tuple[float, float, str]:
     if date_str:
-        end = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc) + timedelta(days=1)
+        end = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=_TPE_TZ) + timedelta(days=1)
         start = end - timedelta(days=days)
         label = date_str if days == 1 else f"{start.date()}~{(end - timedelta(days=1)).date()}"
     else:
-        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today = datetime.now(_TPE_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
         end = today
         start = end - timedelta(days=days)
         label = str((end - timedelta(days=1)).date()) if days == 1 else f"{start.date()}~{(end - timedelta(days=1)).date()}"
@@ -77,6 +83,14 @@ def _load_jsonl(path: Path, lo: float, hi: float) -> list[dict]:
     return out
 
 
+def _load_resolved() -> set[str]:
+    """已實作的 intent_type（見 scripts/analyze_agent_gaps.py::load_resolved 同慣例）。"""
+    if not RESOLVED.exists():
+        return set()
+    data = json.loads(RESOLVED.read_text(encoding="utf-8"))
+    return set(data.keys()) if isinstance(data, dict) else set(data)
+
+
 def section_needs(lo: float, hi: float) -> str:
     rows = [r for r in _load_jsonl(GAPS, lo, hi) if r.get("speaker") not in EXCLUDE_SPEAKERS]
     if not rows:
@@ -84,13 +98,15 @@ def section_needs(lo: float, hi: float) -> str:
     by_type: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         by_type[r.get("intent_type") or "UNKNOWN"].append(r)
+    resolved = _load_resolved()
 
     lines = ["### 1. 未滿足需求（agent_gaps）\n"]
-    lines.append(f"共 {len(rows)} 筆，{len(by_type)} 類意圖。UNKNOWN（多為 STT 糊字 / 馬文自己的話被誤記）排最後、只列 3 筆。\n")
-    # 非 UNKNOWN 先、按量排；UNKNOWN 一律最後
+    lines.append(f"共 {len(rows)} 筆，{len(by_type)} 類意圖。UNKNOWN（多為 STT 糊字 / 馬文自己的話被誤記）排最後、只列 3 筆；"
+                 "已有 agent 的 intent_type 標「既有 coverage」，非新增缺口。\n")
+    # 非 UNKNOWN、非 resolved 先；已 resolved 次之；UNKNOWN 一律最後
     ordered = sorted(
         by_type.items(),
-        key=lambda kv: (kv[0] == "UNKNOWN", -len(kv[1])),
+        key=lambda kv: (kv[0] == "UNKNOWN", kv[0] in resolved, -len(kv[1])),
     )
     for itype, items in ordered:
         # 同 (speaker, raw_query) 去重
@@ -112,6 +128,8 @@ def section_needs(lo: float, hi: float) -> str:
         if domain:
             meta.append(f"domain={domain}")
         meta.append(f"{acked}/{len(items)} 被模板 ack")
+        if itype in resolved:
+            meta.append("⚠️ 既有 agent coverage（resolved，多為冷門說法漏接，非新增缺口）")
         cap = 3 if itype == "UNKNOWN" else 8
         lines.append(f"{hdr}（{', '.join(meta)}）")
         for it in uniq[:cap]:
