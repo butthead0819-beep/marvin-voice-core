@@ -85,6 +85,52 @@ def test_recall_query_does_not_trigger_on_normal_chat():
     assert is_recall_query("系統狀態如何") is False
 
 
+# ── 對話回指（2026-08-31 daily ritual：「馬文剛剛的數字多少」）───────────
+
+@pytest.mark.parametrize("query", [
+    "剛剛的數字多少",
+    "馬文剛剛的數字多少",
+    "剛剛說的號碼是什麼",
+    "剛剛那串號碼是多少",
+    "剛剛講了什麼",
+    "剛才那個數字是多少",
+])
+def test_recall_query_detects_conversational_reference(query):
+    from recall_handler import is_recall_query
+    assert is_recall_query(query) is True
+
+
+@pytest.mark.parametrize("query", [
+    "剛剛好吃飽",              # 「剛剛」+ 非回指
+    "他剛剛的表現很好",        # 回指但是陳述句、不是問 Marvin
+    "剛剛好而已",
+])
+def test_recall_query_does_not_overtrigger_on_gangang(query):
+    from recall_handler import is_recall_query
+    assert is_recall_query(query) is False
+
+
+@pytest.mark.asyncio
+async def test_recall_conversational_reference_reaches_raw_stt_path():
+    """「剛剛的數字多少」→ 路徑 C → raw transcript 丟給 LLM 合成，答案含號碼。"""
+    now = time.time()
+    summaries = [{
+        "id": 1, "guild_id": 1, "window_start": now - 400, "window_end": now - 100,
+        "summary_text": "兩人在互報一串號碼", "speakers": ["狗與鹿"], "created_at": now - 100,
+    }]
+    utterances = [
+        {"speaker": "狗與鹿", "text": "6932160", "timestamp": now - 90},
+        {"speaker": "showay", "text": "693660", "timestamp": now - 60},
+    ]
+    handler = _make_handler(
+        summaries=summaries,
+        utterances=utterances,
+        llm_response="狗與鹿 剛剛說的是「6932160」。",
+    )
+    result = await handler.handle(speaker="showay", query="馬文剛剛的數字多少")
+    assert "6932160" in result
+
+
 # ═══════════════════════════════════════════════════════
 # RecallHandler pipeline 測試
 # ═══════════════════════════════════════════════════════
