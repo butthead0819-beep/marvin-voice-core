@@ -14,14 +14,15 @@ empathy_hooks:
 
 
 autopilot_phrases:
+  # 注意：這裡全是 Marvin 自己挑歌（autopilot），不是{who}真的點播，
+  # 措辭一律用「希望/猜/為你」這種機器人主動推薦的說法，不能說成「{who}點的」
+  # （2026-08-31 修：講成「點的」等於考驗使用者記憶——萬一使用者根本沒點過呢）。
   personal:
-    - "這首幫{who}點的，{artist}唱的{title}"
     - "{who}應該喜歡這首，{artist}的{title}"
     - "希望{who}喜歡，{artist}演唱的{title}"
     - "馬文特別為{who}帶來，{artist}的{title}"
     - "這首{title}是給{who}的，{artist}唱的"
   personal_no_artist:
-    - "這首幫{who}點的，《{title}》"
     - "{who}應該喜歡，《{title}》"
     - "希望{who}喜歡這首，《{title}》"
     - "馬文特別為{who}帶來《{title}》"
@@ -38,8 +39,10 @@ autopilot_phrases:
     - "從{who}的塵封歌單挖出《{title}》"
     - "{who}，《{title}》冰很久沒聽，解凍一下"
   # discovery：沒人點過的新歌 → 講「挖新歌」的理由
+  # 「沒聽過」是斷言使用者自己的記憶（萬一在別的地方聽過呢），只能講系統這邊
+  # 觀察到的事實（沒人點過），改成保留語氣的「比較少聽」。
   discovery:
-    - "挖到《{title}》，{who}應該沒聽過"
+    - "挖到《{title}》，{who}應該比較少聽過"
     - "{who}，給你首新的《{title}》"
     - "這首《{title}》是挖給{who}的新貨"
   # spotlight cover：以 {who} 常點的 {anchor} 為錨 → 講「你愛 anchor，給你個版本」

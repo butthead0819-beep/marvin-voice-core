@@ -38,8 +38,11 @@ from google.genai import types
 
 from intent_bus import IntentContext
 from intent_agents.audio_rescue_tools import (
+    ABSTAIN_FUNCTION_DECLARATION,
+    ABSTAIN_TOOL_NAME,
     READONLY_FUNCTION_DECLARATIONS,
     READONLY_TOOL_NAMES,
+    intent_to_agent_map,
     manifest_to_function_declarations,
     parse_tool_call,
 )
@@ -65,7 +68,9 @@ _PROMPT = (
     "你是語音助理的意圖辨識器。使用者剛才說了一段話（見附帶音訊），但既有的規則式"
     "辨識沒有命中任何已知指令。請直接聽音訊判斷使用者真正想做什麼，並呼叫最符合的"
     "一個工具；如果使用者只是在問資訊（例如問現在在放什麼歌、剛剛聊了什麼），改呼叫"
-    "對應的查詢工具。如果聽不出使用者想要哪個已知操作，不要呼叫任何工具。\n"
+    "對應的查詢工具；如果是需要查證的事實/常識問題（人事時地物、數字、定義），呼叫"
+    "factual_question 並把問題整理進 topic。如果聽不出使用者想要哪個已知操作，不要"
+    "呼叫任何工具。\n"
     "（STT 轉錄參考，可能有誤：「{query}」）"
 )
 
@@ -87,7 +92,11 @@ class AudioRescueAgent:
         google_client: Any,
         manifest_provider: Callable[[], dict],
         model: str = "gemini-2.5-flash-lite",  # 2.0 系列 2026-08-20 已下架（404），見 llm_pool.py
-        timeout_s: float = 3.0,
+        # 音訊 + 14-tool function calling 實測（scripts/replay_audio_rescue.py，付費
+        # flash-lite）：median 2.3s / p95 3.3s / max 3.6s。3.0s 會砍掉 p95 以上的
+        # 成功呼叫 → 白等 3s 又掉回聊天。5.0s 給尾巴留餘裕；rescue 是 regex miss
+        # 才走的低頻路徑，這個延遲只影響本來就沒被接住的邊界句。
+        timeout_s: float = 5.0,
         readonly_tool_executor: ReadonlyToolExecutor | None = None,
         paid_guard: PaidUsageGuard | None = None,
     ):
@@ -116,11 +125,15 @@ class AudioRescueAgent:
             return None
 
         manifest = self.manifest_provider()
-        function_declarations = (
-            manifest_to_function_declarations(manifest) + READONLY_FUNCTION_DECLARATIONS
-        )
-        if not function_declarations:
+        action_declarations = manifest_to_function_declarations(manifest)
+        if not action_declarations:
+            # 沒有任何 opt-in 的 action intent → 只剩唯讀 + 棄權 tool，rescue 無意義
             return None
+        function_declarations = (
+            action_declarations
+            + READONLY_FUNCTION_DECLARATIONS
+            + [ABSTAIN_FUNCTION_DECLARATION]
+        )
 
         est_in = max(1, len(ctx.audio_wav_bytes) // _PCM_BYTES_PER_SECOND * _AUDIO_TOKENS_PER_SECOND)
         if not self.paid_guard.allow(estimate_cost(self.model, est_in, _ESTIMATED_OUTPUT_TOKENS)):
@@ -165,8 +178,13 @@ class AudioRescueAgent:
         if not calls:
             return None
 
+        intent_agents = intent_to_agent_map(manifest)  # Gemini 掉前綴時的 fallback
         resolved: tuple[str, str, dict] | None = None
         for call in calls:
+            if call.name == ABSTAIN_TOOL_NAME:
+                # LLM 明確判斷「以上都不是」——直接放棄，走一般聊天，不理其他 call。
+                logger.info("📡 [AudioRescue] LLM 選了 just_chatting，放棄 rescue")
+                return None
             if call.name in READONLY_TOOL_NAMES:
                 await self._execute_readonly(call, ctx)
                 continue
@@ -176,11 +194,11 @@ class AudioRescueAgent:
                     f"忽略: {call.name}"
                 )
                 continue
-            parsed = parse_tool_call(call)
+            parsed = parse_tool_call(call, intent_agents)
             if parsed is not None:
                 resolved = parsed
             else:
-                logger.warning(f"⚠️ [AudioRescue] tool call name 格式異常，忽略: {call.name}")
+                logger.warning(f"⚠️ [AudioRescue] tool call name 無法對應，忽略: {call.name}")
 
         if resolved is None:
             return None

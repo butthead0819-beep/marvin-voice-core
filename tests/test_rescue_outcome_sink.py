@@ -280,3 +280,55 @@ async def test_no_sink_configured_uses_no_op():
     )
     winner = await bus.dispatch(_ctx())
     assert winner is not None  # 不該因為缺 sink 而壞掉
+
+
+# ── audio-rescue wav sidecar（T5 of /plan-eng-review 轉正計畫）────────────────
+
+@pytest.mark.asyncio
+async def test_audio_rescue_lands_wav_sidecar_and_records_path(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from intent_agents.rescue_outcome_logger import RescueWavStore
+
+    rescued = replace(
+        _ctx(), query="小聲一點", depth=1, dispatch_source="llm_rescue_audio",
+        resolved_agent="volume", resolved_intent="volume_down", resolved_slots={},
+    )
+    orig = replace(_ctx(), audio_wav_bytes=b"RIFFfakewav", now=1787211701.438)
+
+    records = []
+    bus = IntentBus(
+        [_StubAgent("volume", lambda c: Bid(name="volume", confidence=0.0,
+                                            handler=AsyncMock(), reason="no_match"))],
+        llm_rescue_agent=_StubRescue(rescued),
+        rescue_shadow_mode=True,
+        rescue_outcome_sink=records.append,
+        rescue_wav_store=RescueWavStore(tmp_path / "records" / "rescue_wav"),
+    )
+    await bus.dispatch(orig)
+
+    wav_path = records[0]["wav_path"]
+    assert wav_path == "records/rescue_wav/Alice_1787211701438.wav"
+    assert (tmp_path / wav_path).read_bytes() == b"RIFFfakewav"
+    # base64 wav 不進 jsonl（record 只該有 audio_bytes_len，不該有 raw bytes）
+    assert records[0]["audio_bytes_len"] == len(b"RIFFfakewav")
+    assert b"RIFFfakewav" not in repr(records[0]).encode()
+
+
+@pytest.mark.asyncio
+async def test_text_mode_rescue_writes_no_wav(tmp_path):
+    from intent_agents.rescue_outcome_logger import RescueWavStore
+
+    rescued = replace(_ctx(), query="下一首", depth=1, dispatch_source="llm_rescue")
+    records = []
+    bus = IntentBus(
+        [_StubAgent("z", lambda c: Bid(name="z", confidence=0.0,
+                                       handler=AsyncMock(), reason="no_match"))],
+        llm_rescue_agent=_StubRescue(rescued),
+        rescue_shadow_mode=True,
+        rescue_outcome_sink=records.append,
+        rescue_wav_store=RescueWavStore(tmp_path / "w"),
+    )
+    await bus.dispatch(_ctx())
+
+    assert "wav_path" not in records[0]
+    assert not (tmp_path / "w").exists()

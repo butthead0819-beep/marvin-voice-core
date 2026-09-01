@@ -1,6 +1,23 @@
 
 ## 新功能 — 待完成
 
+### TODO: audio rescue — readonly_tool_executor 接線
+**What:** 給 `AudioRescueAgent` 傳一個 `readonly_tool_executor`，讓 `get_now_playing` / `get_recent_history` 兩個唯讀 tool 真的能執行（現在 `build_rescue_components` 沒傳 → `_execute_readonly` 直接 return，no-op）。
+**Why:** audio rescue 時使用者問「現在放什麼」「剛剛聊了什麼」→ Gemini 會選這兩個 tool，但目前靜默什麼都不做，掉回聊天。
+**Pros:** 補完唯讀查詢那條；薄 executor ~30 行（`audio_rescue_agent.py:75` `ReadonlyToolExecutor` 型別 + `:200 _execute_readonly` 已寫好，只差 `build_rescue_components` 建 executor 傳進去）。
+**Cons:** `NowPlayingAgent` 已接「現在放什麼」的 regex 路徑，重疊度高；單輪限制下唯讀 tool 看不到彼此結果。
+**Context:** 來自 2026-08-31 /plan-eng-review（audio rescue 轉正）。design doc `jackhuang-chore-daily-user-needs-ritual-design-20260831-202558.md`。本 PR 明確排除，「查資料」靠 `factual_question` + `GroundedQAAgent` 已足夠。
+**Depends on:** audio rescue 轉正 PR 上線 + 一週 replay 資料顯示真有人問這類且 regex 接不到。
+**Priority:** P3
+
+### TODO: audio rescue — 延遲緩解（條件觸發）
+**What:** 若上線後量到 Gemini 呼叫 p95 > 3s 或即時控制指令 pause 延遲體感明顯變差：縮 wav（降取樣 / 剪頭尾靜音）、換更快的 Gemini 端點、或加 filler SFX 佔感知。
+**Why:** 「馬文暫停」被糊音 miss → 進 audio rescue → 等 ~2s 才 pause，可能比現況（掉回聊天讓使用者重講）更差。
+**Context:** 來自 2026-08-31 /plan-eng-review + 外部意見。cleaner 已在 regex race 平行跑完（`intent_bus.py:199`），不在關鍵路徑，所以砍 cleaner（舊 Approach B）沒用；真正的增量是 Gemini round-trip。
+**Depends on:** audio rescue 轉正 PR 的 replay p95 數字 + 上線一週 UX 觀察。
+**Priority:** P3（條件觸發，沒數據前不動）
+
+
 ### TODO: Claim-level 可反駁解釋機制（推薦引擎 Phase 2）
 **What:** 讓使用者可以在 Discord 對推薦附帶的「解釋本身」按讚/按噓（不只對歌），把解釋存成結構化 claim（用了哪個訊號、權重多少），讓候選池權重學到「使用者信任哪種理由」而非只是「喜歡哪首歌」。
 **Why:** cross-model 意見（`jackhuang-main-design-MusicRecEngine-20260820-114251.md`）認為這是推薦引擎的最酷版本——Spotify 結構上做不到，因為他們的 explanation 從來不是產品面向使用者的一等公民。長期複利最高，但依賴基本挖舊/新領域切換 + 解釋層先驗證有沒有用。
@@ -440,3 +457,21 @@ grep "NemoClaw路由\|NemoClaw→\|NemoClaw.*跳過\|NemoClaw.*排隊" bot_main.
 **Why**: `marvin.db` transcripts 存真實 speaker 名（狗與露/陳進文/weakgogo）+ 未過濾原話。v0.1 內部驗證不發所以現在不緊，但 v0.2 一對外就會印真名+原話。這是**發布的前置 gate，不是 polish**。
 **Status**: deferred — v0.2 對外發布前的硬 gate
 **Start**: v0.2 影片管線確定要對外發時，先接 character_store 匿名化層
+
+---
+
+### TODO: 統一三個 grounded-Gemini 呼叫者（gated on AmbientQA 穩定運行幾週）
+**What**: 把 `marvin_talk._call_gemini`、`intent_agents/lyrics_grounded_search.py::search_lyrics_grounded`、`intent_agents/grounded_qa_agent.py::_grounded_answer` 抽成一個共用 helper（L1/L2 幻覺 guard + free→付費 key 鏈 + PaidUsageGuard）。
+**Why**: 三份 L1/L2 grounding guard 邏輯重疊。
+**為什麼現在不做（eng-review 2026-08-30 outside voice）**: 三個形狀真的不同——輸入(audio/wav vs text)、model(chain vs 單一 vs 2.5-flash)、timeout(6s/15s)、session state(`_free_exhausted` 只有 marvin_talk 有)、PaidUsageGuard(lyrics 沒有)。現在只有 2.5 個 use case、第 3 個(AmbientQA)可能低量不 ship，硬統一會產出五 kwargs 的 helper 比重複更糟。且 `test_marvin_talk` mock 掉 Gemini 呼叫，重構 marvin_talk 這條 LIVE exclusive-mode 路徑保不住 failover/timeout regression。
+**Gate**: AmbientQA（見 design doc AmbientQA-20260830）通過 backfill gate 且穩定跑幾週，確實是第三個真實 use case 後，用它反推抽象。
+**Start**: `search_lyrics_grounded` 的 `_extract_chunks` + L1/L2 是最乾淨的骨架起點。
+
+---
+
+### TODO: PaidUsageGuard 低估 Google Search grounding 成本（repo-wide latent）
+**What**: `llm_paid.estimate_cost` 是純 token-based；Gemini 的 `google_search` grounding tool 另外 per-request 計費（grounding 不含在 token 帳裡）。所以任何帶 grounding 的付費呼叫，`PaidUsageGuard` 的 daily/monthly cap 都會 under-count 真實花費。
+**Why**: 帳本（`llm_paid_usage.jsonl`）不準；$2/日 cap 守不到真實 GCP 花費。
+**影響的 caller**: `marvin_talk`（caller="marvin_talk"）、`search_lyrics_grounded`（走 music_cog）、未來的 `ambient_qa`。
+**修法**: `estimate_cost` 加一個 `grounding_request_surcharge` 常數（查當期 Gemini pricing），帶 grounding 的呼叫點傳 flag。
+**Status**: deferred — 低量下（幾題/天 × grounding 小額）$2 cap 遠到不了，PR 註解標明即可；用量上來再修。

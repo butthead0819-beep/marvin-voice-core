@@ -17,7 +17,7 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
-from intent_agents.base import DeclarativeIntentAgent, IntentSchema
+from intent_agents.base import DeclarativeIntentAgent, IntentSchema, is_audio_rescue
 from intent_agents.constants import (
     MUSIC_SKIP_KW, MUSIC_STOP_KW, MUSIC_PAUSE_KW, MUSIC_RESUME_KW,
 )
@@ -79,6 +79,10 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
                     "skip_track", 0.95,
                     patterns=[f"({skip_pat})"],
                     reason_template="skip:{matched}",
+                    manifest_description=(
+                        "使用者要跳過現在這首歌、換下一首。不是要暫停、不是要停止、"
+                        "不是要點某首指定的歌。"
+                    ),
                 ),
                 # pause 必須在 stop 之前：「暂停音樂」含「停音樂」，若 stop 先就會被誤判
                 IntentSchema(
@@ -92,16 +96,25 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
                         r"^暫停[!！。\.，,]*$",
                     ],
                     reason_template="pause:{matched}",
+                    manifest_description=(
+                        "使用者要暫停現在的播放（等一下會用「繼續」接回來）。"
+                    ),
                 ),
                 IntentSchema(
                     "stop_playback", 0.95,
                     patterns=[f"({stop_pat})"],
                     reason_template="stop:{matched}",
+                    manifest_description=(
+                        "使用者要停止播放。"
+                    ),
                 ),
                 IntentSchema(
                     "resume_playback", 0.95,
                     patterns=[f"({resume_pat})"],
                     reason_template="resume:{matched}",
+                    manifest_description=(
+                        "使用者要繼續播放剛剛暫停的東西。"
+                    ),
                 ),
             ]
         return self._intents_cache
@@ -120,7 +133,14 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
           - 議題 C prefix filter（應該/為什麼/幾/怒啊… 出現在關鍵字前）→ chat，拒絕
 
         stop/pause/resume：僅議題 C prefix filter（同藏語關鍵字，但不需要位置檢查）。
+
+        audio-rescue：LLM 已聽音訊、指名了控制 intent，ctx.query 是糊字 STT，
+        底下所有基於 ctx.query 的位置/prefix 檢查都不適用——直接放行（沒有 slot
+        要檢查，控制指令是 parameterless action）。
         """
+        if is_audio_rescue(ctx):
+            return True
+
         text = ctx.query or ""
 
         if schema.name == "skip_track":

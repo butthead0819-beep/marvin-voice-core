@@ -26,7 +26,13 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4242      # 實測 4242（2026-08-29 /marvin_talk 回覆滿音量 +2：handle_raw_speech_start
+LINE_BUDGET = 4246      # 實測 4246（2026-09-01 JokeRequestAgent +2：一行 import JokeRequestAgent
+                        # + 一行 agent-list 註冊——handler 本體與 joke_bank 抽取全在
+                        # intent_agents/joke_request_agent.py，比照下方 GroundedQAAgent +2 同型先例）；
+                        # 前 4244（2026-08-30 AmbientQA / GroundedQAAgent +2：一行 import
+                        # GroundedQAAgent + 一行 agent-list 註冊——handler 本體與 grounded 呼叫
+                        # 全在 intent_agents/grounded_qa_agent.py，這 +2 是新 IntentAgent 的
+                        # 最小接線成本，比照下方 /marvin_talk +2 同型先例）；前 4242（2026-08-29 /marvin_talk 回覆滿音量 +2：handle_raw_speech_start
                         # 開頭的 _talk_active() early-return 從嘲諷段前移到最頂，跳過整條 speech-start
                         # 副作用鏈——既有守衛位置微調，非新功能）；前 4240（2026-08-29 /marvin_talk 獨佔守衛 +5：handle_raw_speech_start
                         # 嘲諷鏈 + play_intervention 開頭各加一條 `if self._talk_active(): return`

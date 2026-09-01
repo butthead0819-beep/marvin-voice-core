@@ -223,6 +223,12 @@ class MusicCog(commands.Cog):
         self._last_themed_set_ts: float = 0.0
         self._themed_sets_tonight: int = 0
         self._themed_set_date = None
+        # 🎭 [DJ Joke Interlude] 頻道安靜（非熱烈聊天）時，crossfade 串場偶爾換成馬文式
+        # 厭世冷笑話（跟 /marvin_joke 共用風格範例庫，見 joke_examples.py）。冷卻起點設
+        # 在啟動當下（不是 0），避免剛開機/剛連上就先講一則——也讓每個測試用的新 cog
+        # 實例預設冷卻中，不會意外把既有 DJ 串場測試岔到笑話分支。
+        self._DJ_JOKE_COOLDOWN_S = 30 * 60
+        self._last_dj_joke_ts: float = time.time()
         # 📖 [StoryArc] 故事弧線節目（dj_story_arc.py）進行中旗標——自成一體播放協程，
         # 不碰 stream_queue/_stream_loop/_run_tail_dj，跟一般 autopilot 互斥（見 story_arc 指令）。
         self._story_arc_active: bool = False
@@ -2622,6 +2628,17 @@ class MusicCog(commands.Cog):
             return None
 
     @staticmethod
+    def _dj_requester_suffix(requester: str) -> str:
+        """把 requested_by 轉成播報結尾——只有『真人點播』才能講「XX 點的」；
+        autopilot 掛名（`requested_by` 以 "Marvin" 開頭，如 `Marvin推薦（為X）`）
+        不是使用者真的點播，講成「XX 點的」等於考驗使用者記憶（萬一沒點過呢），
+        改用「希望大家喜歡」這種機器人自己推薦的說法。"""
+        requester = (requester or '').strip()
+        if not requester or requester.startswith('Marvin'):
+            return "希望大家喜歡"
+        return f"{requester} 點的"
+
+    @staticmethod
     def _autopilot_dj_phrase(spotlight: str, clean_title: str, clean_artist: str,
                               lane: str = "", anchor: str = "") -> str:
         """為 autopilot 推薦歌曲生成 DJ 台詞，理由依 lane 而定（DJ 編個理由）。"""
@@ -2997,12 +3014,13 @@ class MusicCog(commands.Cog):
         # Group size & Chat Heat → 語氣：綜合在線人數與 AtmosphereTracker 對話活躍度。
         # vc() 不可用時靜默略過。quick 模式沒有 LLM 可以照 ctx 調語氣，改本地選模板池。
         _n_online = 0
+        _heat_mode = "default"
         try:
             if _vc_ref is not None:
                 _n_online = len(_vc_ref.get_online_members())
                 _tracker = getattr(getattr(self.bot, 'router', None), 'atmosphere_tracker', None)
                 from dj_social_affinity import assess_channel_heat
-                _, _heat_instr = assess_channel_heat(_tracker, conv_buf, _n_online)
+                _heat_mode, _heat_instr = assess_channel_heat(_tracker, conv_buf, _n_online)
                 if _heat_instr:
                     ctx.append(_heat_instr)
         except Exception:
@@ -3012,6 +3030,30 @@ class MusicCog(commands.Cog):
         # music_intro 砍成「狗與露」這種殘句（autopilot DJ 被截斷的根因）。
         gate_task = "dj_story"
         text = self._themed_dj_text(info)   # 主題歌單：直接播策展時寫好的理由，不重複燒 LLM
+
+        # 🎭 [DJ Joke Interlude] 頻道安靜（非熱烈聊天）且距上次超過冷卻時間 → 這輪
+        # crossfade 換成馬文式厭世冷笑話。改用「策展笑話庫 + 歌名拼音比對」（見
+        # joke_bank.py / personas/joke_bank.yaml）：下一首歌名字音撞到哪則笑話的 hook
+        # 就播那則，沒撞到就不講（fallback 回正常串場）。LLM 現編諧音梗實測品質不穩，
+        # 已改成純本地查表（零 LLM、零花費、品質有下限）。themed 歌單有自己寫好的口白，不搶。
+        _last_joke_ts = getattr(self, '_last_dj_joke_ts', None)
+        if not text and info.get('_lane') != 'themed' and _heat_mode != "active_chat" \
+                and _last_joke_ts is not None \
+                and (time.time() - _last_joke_ts) >= getattr(self, '_DJ_JOKE_COOLDOWN_S', 1800):
+            try:
+                from joke_bank import get_joke_bank
+                from music_memory import extract_video_id
+                _recent = getattr(self, '_recent_dj_jokes', ())
+                _vid = extract_video_id(info.get('webpage_url') or info.get('url') or info.get('id') or '')
+                joke_text = get_joke_bank().match(
+                    _song_label or title, video_id=_vid, exclude=set(_recent)) or ""
+            except Exception as e:
+                logger.warning(f"⚠️ [DJ Joke] 笑話庫比對失敗: {e}")
+                joke_text = ""
+            if 10 <= len(joke_text) <= 120:
+                text = joke_text
+                self._last_dj_joke_ts = time.time()
+                self._recent_dj_jokes = (list(getattr(self, '_recent_dj_jokes', ()))[-4:] + [joke_text])
         if not text and mode == "quick":
             # 沒有任何素材可用 → 本地固定模板直接接歌，跳過 LLM（零出錯風險、零延遲、零花費）。
             text = self._quick_segue_text(_n_online)
@@ -3051,10 +3093,11 @@ class MusicCog(commands.Cog):
                 # 若仍無有效台詞或品質不符，採用 DJ Marvin 經典人設報幕
                 if not text or not _is_qualified_dj_script(text):
                     clean_title, clean_artist = self._dj_clean_name(info)
+                    suffix = self._dj_requester_suffix(requester)
                     if clean_artist:
-                        text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{requester} 點的"
+                        text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{suffix}"
                     else:
-                        text = f"DJ Marvin為你帶來《{clean_title}》，{requester} 點的"
+                        text = f"DJ Marvin為你帶來《{clean_title}》，{suffix}"
                     logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
 
         from tts_length_policy import truncate_for_tts
@@ -3184,12 +3227,12 @@ class MusicCog(commands.Cog):
                 f"⚠️ [Stream] _fetch_song_meta >{self._COLD_META_TIMEOUT_S}s timeout, "
                 f"用 hardcoded fallback (song={title}, by={requested_by})"
             )
-            who = requested_by or "某人"
+            suffix = self._dj_requester_suffix(requested_by)
             return {
                 "lyrics": None,
                 "comment": None,
                 "dj": {
-                    "text": f"下一首是《{title}》，{who} 點的。",
+                    "text": f"下一首是《{title}》，{suffix}。",
                     "audio_path": None,
                 },
             }
@@ -3523,11 +3566,11 @@ class MusicCog(commands.Cog):
                         f"（佇列可能被插播/skip），放棄過期音檔以防報錯歌名"
                     )
                     clean_title, clean_artist = self._dj_clean_name(next_info)
-                    req = next_info.get('requested_by', '')
+                    req_suffix = self._dj_requester_suffix(next_info.get('requested_by', ''))
                     if clean_artist:
-                        safe_text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{req} 點的"
+                        safe_text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{req_suffix}"
                     else:
-                        safe_text = f"DJ Marvin為你帶來《{clean_title}》，{req} 點的"
+                        safe_text = f"DJ Marvin為你帶來《{clean_title}》，{req_suffix}"
                     safe_audio = None
                     try:
                         safe_audio = await self.bot.tts_engine.generate_audio(safe_text, emotion="normal")

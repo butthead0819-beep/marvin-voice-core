@@ -82,24 +82,42 @@ class FindSongAgent(DeclarativeIntentAgent):
                     patterns=[r"找.*?歌詞[有是裡含寫到]*(?P<lyrics>.+?)(?:的歌曲|的歌|$)"],
                     required_slots=["lyrics"],
                     reason_template="find_lyrics:{lyrics}",
+                    manifest_description=(
+                        "使用者記得一句歌詞但想不起歌名，要用這句歌詞把歌找出來。"
+                        "把記得的歌詞片段放進 lyrics。不是說得出歌名要直接播的情況。"
+                    ),
                 ),
                 IntentSchema(
                     "find_theme", 0.85,
                     patterns=[r"找.*?(?:在講|關於|描述|講述)(?P<theme>.+?)的(?:歌曲|歌)"],
                     required_slots=["theme"],
                     reason_template="find_theme:{theme}",
+                    manifest_description=(
+                        "使用者要找一首在講某個主題／情境／心情的歌，但講不出歌名也"
+                        "沒引用歌詞。把那個主題放進 theme。"
+                    ),
                 ),
                 IntentSchema(
                     "find_album", 0.85,
                     patterns=[r"找.*?(?P<album>\S+?)(?:這張|那張)?專輯"],
                     required_slots=["album"],
                     reason_template="find_album:{album}",
+                    manifest_description=(
+                        "使用者提到一張**專輯名**、要放那張專輯的歌（「范特西那張的歌」"
+                        "「放葉惠美專輯」）。album 填專輯名。不是具體單曲名（那是 rescue_play）。"
+                    ),
                 ),
                 IntentSchema(
                     "find_artist", 0.80,
                     patterns=[r"找.*?(?P<artist>\S+?)的(?:歌曲|歌)"],
                     required_slots=["artist"],
                     reason_template="find_artist:{artist}",
+                    manifest_description=(
+                        "使用者明確說「沒有指定哪一首、你挑」——「放點五月天的歌」"
+                        "「隨便放張學友的」「有什麼周杰倫的推薦」。artist 填歌手名。"
+                        "只要句子裡有一首**具體歌名**，或只是「放五月天」這種沒說"
+                        "「挑/隨便/推薦」的，都算 rescue_play 不是這個。"
+                    ),
                 ),
             ]
         return self._intents_cache

@@ -113,6 +113,7 @@ from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.find_song_agent import FindSongAgent
 from intent_agents.game_knowledge_agent import GameKnowledgeAgent
+from intent_agents.grounded_qa_agent import GroundedQAAgent
 from intent_agents.skip_intent import is_short_skip_command
 # Phase 1 M5: PlaybackControlAgent 改成 build_intent_agents() 內 lazy import
 # 避免 macOS python 環境冷啟動時的 import 鏈死結 (2026-05-23 incident)
@@ -250,6 +251,7 @@ def build_intent_agents(controller, bot):
     from intent_agents.time_query_agent import TimeQueryAgent
     from intent_agents.personal_shuffle_agent import PersonalShuffleAgent
     from intent_agents.farewell_agent import FarewellAgent
+    from intent_agents.joke_request_agent import JokeRequestAgent
     from intent_agents.dual_speak_agent import DualSpeakAgent
     from intent_agents.frustration_agent import FrustrationAgent
     from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
@@ -265,8 +267,10 @@ def build_intent_agents(controller, bot):
         NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
         TimeQueryAgent(controller),  # 2026-08-18: agent_gaps time_query ready_to_implement — 零成本報時
         FarewellAgent(controller),  # 2026-08-09: 喚醒直接說「掰掰/晚安/bye bye」互道再見
+        JokeRequestAgent(controller),  # 2026-09-01: daily ritual — 「馬文說個笑話」→ 本地 joke bank 抽一則
         PersonalShuffleAgent(controller),  # 2026-06-29: 語音「連續隨機播我的歌單」（一次墊一首）
         GameKnowledgeAgent(controller),  # 2026-06-06: Plan 4 intent_gap ready — 「查麥塊…」遊戲知識查詢
+        GroundedQAAgent(controller),  # 2026-08-30: AmbientQA — 「馬文幫我查 X」/「X 是什麼」→ grounded 回答
         BustedAgent(bot),
         Busted99Agent(bot),
         TurtleSoupAgent(bot),
@@ -402,7 +406,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             temperature=getattr(_router, "atmosphere_tracker", None),
             clock=time.time,
         )
-        _rescue_agent, _rescue_shadow, _rescue_sink = build_rescue_components(
+        _rescue_agent, _rescue_shadow, _rescue_sink, _rescue_wav_store = build_rescue_components(
             _tier_router, google_client=getattr(_router, "google_client", None), manifest_provider=lambda: self._intent_bus.build_intent_manifest())
         self._rescue_agent = _rescue_agent
         # 建立實體 cleaner_call 傳給 IntentBus 競速使用
@@ -436,7 +440,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             direct_probe=self._yt_dlp_direct_probe,
             llm_rescue_agent=_rescue_agent,
             rescue_shadow_mode=_rescue_shadow,
-            rescue_outcome_sink=_rescue_sink,
+            rescue_outcome_sink=_rescue_sink, rescue_wav_store=_rescue_wav_store,
             cleaner_call=real_cleaner_call,
         )
         self._init_talk_manager()  # /marvin_talk 回合制對談（見 MarvinTalkMixin）

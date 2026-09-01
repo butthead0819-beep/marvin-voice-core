@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from intent_agents.rescue_outcome_logger import RescueOutcomeLogger
+from intent_agents.rescue_outcome_logger import RescueOutcomeLogger, RescueWavStore
 
 
 def _sample(**overrides):
@@ -72,3 +72,38 @@ def test_write_uses_utf8_for_chinese(tmp_path: Path):
     logger.write(_sample(original_query="這首歌真好聽（反話）"))
     line = path.read_text(encoding="utf-8").splitlines()[0]
     assert "這首歌真好聽" in line  # 不是 　...
+
+
+# ── RescueWavStore：audio-rescue 原始 wav sidecar ────────────────────────────
+
+def test_wav_store_writes_file_and_returns_path(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    store = RescueWavStore(tmp_path / "records" / "rescue_wav")
+    rel = store.write(b"RIFF....WAVEfake", "Alice_1787211701438")
+    assert rel == "records/rescue_wav/Alice_1787211701438.wav"
+    assert (tmp_path / rel).read_bytes() == b"RIFF....WAVEfake"
+
+
+def test_wav_store_empty_bytes_returns_none(tmp_path: Path):
+    store = RescueWavStore(tmp_path / "w")
+    assert store.write(b"", "tag") is None
+    assert store.write(None, "tag") is None
+    assert not (tmp_path / "w").exists()  # 沒東西就不建目錄
+
+
+def test_wav_store_sanitizes_unsafe_tag(tmp_path: Path):
+    store = RescueWavStore(tmp_path / "w")
+    store.write(b"x", "大肚/../etc passwd")
+    files = list((tmp_path / "w").glob("*.wav"))
+    assert len(files) == 1
+    assert "/" not in files[0].name and ".." not in files[0].name
+
+
+def test_wav_store_prunes_to_keep_newest(tmp_path: Path):
+    store = RescueWavStore(tmp_path / "w", keep=3)
+    import os
+    for i in range(6):
+        p = store.write(b"x", f"utt{i}")
+        os.utime(tmp_path / p, (1000 + i, 1000 + i))  # 遞增 mtime
+    names = sorted(f.stem for f in (tmp_path / "w").glob("*.wav"))
+    assert names == ["utt3", "utt4", "utt5"]

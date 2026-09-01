@@ -1,0 +1,45 @@
+# audio-rescue routing 驗收集 — manifest_description 品質的 ground truth。
+#
+# 用途：翻 MARVIN_INTENT_RESCUE_SHADOW=0 前，錄下這些句子的 wav 跑
+#   python scripts/replay_audio_rescue.py <錄音目錄>
+# 逐筆比對 replay 印的 tool vs 本檔的 expect。驗收門檻（design doc Criteria 5）：
+#   正確 tool ≥ 90%；abstain 類不可被硬套成 action；slot 無系統性空值。
+#
+# rubric（manifest_description 要能分開的邊界）：
+#   1. 點歌(music__rescue_play) vs 查資料(grounded_qa__factual_question)：
+#      「放 X」是動作；「X 是誰唱的 / X 是什麼」是問句 → 查資料。
+#   2. 點歌 vs 找歌(find_song__*)：說得出具體歌名 → rescue_play；
+#      只給歌手/歌詞/主題/專輯、要系統挑 → find_song。
+#   3. 控制(playback_control__*) vs 點歌：「下一首」單獨 = skip；
+#      「放下一首 X 的歌」= rescue_play。
+#   4. 音量(volume__*) 動詞集封閉，很少 miss 進 audio rescue，但仍要不被誤判成 pause。
+#   5. abstain(just_chatting)：陳述句、對他人的回應、徵詢意見 → 不套任何 action。
+#
+# expect 欄：tool function name（agent__intent），或 "just_chatting"。
+# note：這一筆在測哪個邊界。
+{"utterance": "馬文放七里香", "expect": "music__rescue_play", "note": "點歌 基準"}
+{"utterance": "馬文放周杰倫的稻香", "expect": "music__rescue_play", "note": "歌手+具體歌名 = 點歌"}
+{"utterance": "馬文我想聽菊花台", "expect": "music__rescue_play", "note": "換個說法點歌"}
+{"utterance": "馬文七里香是誰唱的", "expect": "grounded_qa__factual_question", "note": "邊界1：點歌 vs 查資料——問句"}
+{"utterance": "馬文稻香是哪一年的歌", "expect": "grounded_qa__factual_question", "note": "邊界1：關於歌的事實問句，不是點歌"}
+{"utterance": "馬文珠穆朗瑪峰有多高", "expect": "grounded_qa__factual_question", "note": "查資料 基準（無關音樂）"}
+{"utterance": "馬文台灣的首都是哪裡", "expect": "grounded_qa__factual_question", "note": "查資料 常識"}
+{"utterance": "馬文光合作用是什麼意思", "expect": "grounded_qa__factual_question", "note": "查資料 定義"}
+{"utterance": "馬文放點周杰倫的歌", "expect": "find_song__find_artist", "note": "邊界2：只給歌手、沒指定哪首 = 找歌"}
+{"utterance": "馬文找那首歌詞有說想你想到快發瘋的歌", "expect": "find_song__find_lyrics", "note": "邊界2：引用歌詞找歌"}
+{"utterance": "馬文有沒有在講畢業那種的歌", "expect": "find_song__find_theme", "note": "邊界2：講主題、沒歌名沒歌詞"}
+{"utterance": "馬文放范特西那張專輯的歌", "expect": "find_song__find_album", "note": "邊界2：指定專輯"}
+{"utterance": "馬文下一首", "expect": "playback_control__skip_track", "note": "邊界3：單獨的下一首 = skip"}
+{"utterance": "馬文這首跳過", "expect": "playback_control__skip_track", "note": "skip 換句話"}
+{"utterance": "馬文放下一首，五月天的", "expect": "music__rescue_play", "note": "邊界3：放下一首 X 的歌 = 點歌不是 skip"}
+{"utterance": "馬文暫停一下", "expect": "playback_control__pause_playback", "note": "控制 pause"}
+{"utterance": "馬文停掉", "expect": "playback_control__stop_playback", "note": "控制 stop"}
+{"utterance": "馬文繼續播", "expect": "playback_control__resume_playback", "note": "控制 resume"}
+{"utterance": "馬文小聲一點", "expect": "volume__volume_down", "note": "邊界4：音量 down，不是 pause"}
+{"utterance": "馬文太吵了大聲不用大聲啦調小聲", "expect": "volume__volume_down", "note": "邊界4：糊一點的音量 down"}
+{"utterance": "馬文靜音", "expect": "volume__volume_mute", "note": "音量 mute"}
+{"utterance": "這首歌真的很好聽欸", "expect": "just_chatting", "note": "邊界5：陳述句、沒喚醒詞、不是指令"}
+{"utterance": "馬文你覺得這首怎麼樣", "expect": "just_chatting", "note": "邊界5：徵詢意見不是操作"}
+{"utterance": "對啊我也這樣覺得", "expect": "just_chatting", "note": "邊界5：對他人的回應"}
+{"utterance": "馬文剛剛那首歌不錯", "expect": "just_chatting", "note": "邊界5：評論剛剛的歌，沒有要求動作"}
+{"utterance": "欸大家安靜一下啦", "expect": "just_chatting", "note": "邊界5：對人講的、不是對馬文的音量指令"}

@@ -113,7 +113,7 @@ class IntentBus:
                  resolver=None, profile_provider=None, llm_fallback=None,
                  recommendation_sink=None, direct_probe=None,
                  llm_rescue_agent=None, rescue_shadow_mode: bool = False,
-                 rescue_outcome_sink=None, cleaner_call=None,
+                 rescue_outcome_sink=None, rescue_wav_store=None, cleaner_call=None,
                  outcome_path: str = "records/judge_outcomes.jsonl"):
         self.agents = list(agents)
         self.logger = logger
@@ -130,6 +130,10 @@ class IntentBus:
         self.llm_rescue_agent = llm_rescue_agent
         self.rescue_shadow_mode = rescue_shadow_mode
         self.rescue_outcome_sink = rescue_outcome_sink
+        # rescue_wav_store: RescueWavStore | None。audio-rescue（dispatch_source==
+        # "llm_rescue_audio"）且帶原始 wav 時，把 wav 寫成 sidecar 檔（不塞 jsonl），
+        # record 記 wav_path。replay harness 吃這個目錄當語料。
+        self.rescue_wav_store = rescue_wav_store
         # vector intent 接線（全 optional，現有 prod bus 只傳 agents 不受影響）：
         # - resolver: SemanticResolver，補 missing_slots 的 song_choice / directional_resolution
         # - profile_provider: speaker → SpeakerProfile（cache lookup；缺則建最小 profile）
@@ -183,6 +187,7 @@ class IntentBus:
                         "name": s.name,
                         "required_slots": list(s.required_slots),
                         "reason_template": s.reason_template,
+                        "description": getattr(s, "manifest_description", "") or "",
                     }
                     for s in schemas
                 ],
@@ -462,6 +467,19 @@ class IntentBus:
             "resolved_slots": rescued_ctx.resolved_slots,
             "audio_bytes_len": len(original_ctx.audio_wav_bytes) if original_ctx.audio_wav_bytes else 0,
         }
+
+        # audio-rescue：原始 wav 寫 sidecar 檔（不塞 jsonl），record 記路徑。
+        if (self.rescue_wav_store is not None
+                and rescued_ctx.dispatch_source == "llm_rescue_audio"
+                and original_ctx.audio_wav_bytes):
+            try:
+                tag = f"{original_ctx.speaker}_{int((original_ctx.now or 0) * 1000)}"
+                record["wav_path"] = self.rescue_wav_store.write(
+                    original_ctx.audio_wav_bytes, tag
+                )
+            except Exception as exc:
+                self.logger.warning(f"⚠️ [IntentBus] rescue wav sidecar 寫入失敗，略過: {exc}")
+
         try:
             self.rescue_outcome_sink(record)
         except Exception as exc:

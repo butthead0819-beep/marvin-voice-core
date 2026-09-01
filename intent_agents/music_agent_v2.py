@@ -23,7 +23,13 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from intent_agents.base import DeclarativeIntentAgent, IntentSchema
+from intent_agents.base import (
+    DeclarativeIntentAgent,
+    IntentSchema,
+    audio_rescue_slot,
+    audio_rescue_slots_present,
+    is_audio_rescue,
+)
 from intent_agents.constants import (
     STRONG_PLAY_KW,
     WEAK_PLAY_KW,
@@ -116,6 +122,11 @@ class MusicAgentV2(DeclarativeIntentAgent):
     # ── Gates ────────────────────────────────────────────────────────────────
 
     def gate(self, ctx: IntentContext) -> str | None:
+        # audio-rescue：LLM 已聽音訊、指名 rescue_play，wake 信心與「糊字看起來很
+        # 重複」的啟發式都不適用（糊掉的 STT 常常字詞重複）。song_query 由 LLM
+        # 從音訊填、post_match_filter 會檢查非空，不需要這兩道 wake-side 守門。
+        if is_audio_rescue(ctx):
+            return None
         if ctx.wake_intent is not None and ctx.wake_intent < self.LOW_WAKE_THRESHOLD:
             return "low_wake_intent"
         if _looks_repetitive(ctx.query or ""):
@@ -188,12 +199,34 @@ class MusicAgentV2(DeclarativeIntentAgent):
                          reason_template="phonetic_play",
                          phonetic_keywords=list(_PHONETIC_PLAY_KW),
                          phonetic_confidence=0.55),
+            # AUDIO-RESCUE 專用：patterns=[] → regex/bid() 路徑永不碰它（比照
+            # phonetic_play 的空 patterns）。只有 IntentBus._execute_resolved_intent
+            # → resolve_intent("rescue_play", {"song_query": ...}) 會走到。LLM 從
+            # 音訊聽出使用者要點的歌、整理成搜尋字串填 song_query；handler 直接把
+            # 它當 query 丟給 _safe_music_command，不碰糊掉的 ctx.query，也不走
+            # resolver curation（audio rescue 是單輪、不接 vector-intent 追問）。
+            # 其餘 8 個 schema 都沒有 manifest_description → 不曝給 Gemini。
+            IntentSchema("rescue_play", 0.90, patterns=[],
+                         required_slots=["song_query"],
+                         reason_template="rescue_play:{song_query}",
+                         manifest_description=(
+                             "使用者說得出一首**具體歌名**、要現在播它。song_query "
+                             "填「歌名」或「歌手 歌名」（例：「七里香」「周杰倫 七里香」）。"
+                             "以下情況改用 find_ 開頭的工具，不要用這個：只給歌手名沒"
+                             "說哪一首（「放點五月天的歌」→ find_artist）、給專輯名"
+                             "（「范特西那張的歌」→ find_album）、只描述歌詞或主題"
+                             "（→ find_lyrics / find_theme）。也不是調音量、跳過、暫停。"
+                         )),
         ]
         return self._intents_cache
 
     # ── Post-match filter (NON_MUSIC_TARGETS blocklist) ──────────────────────
 
     def post_match_filter(self, schema, slots, ctx):
+        if schema.name == "rescue_play":
+            # audio-rescue：只認 song_query 非空；不 re-parse 糊字 ctx.query，
+            # 也不套 NON_MUSIC blocklist（LLM 已判斷是點歌意圖）。
+            return audio_rescue_slots_present(slots, "song_query")
         if schema.name == "phonetic_play":
             text = ctx.query or ""
             if any(kw in text for kw in _CONTROL_FAMILY_KW):
@@ -224,6 +257,14 @@ class MusicAgentV2(DeclarativeIntentAgent):
     def make_handler(self, schema, slots, ctx):
         # Map schema → controller call (parity with v1 handlers)
         # 注意：control_* 已移至 PlaybackControlAgent（2026-07-30），不再出現於此。
+        if schema.name == "rescue_play":
+            # audio-rescue：用 LLM 填的 song_query 當搜尋字串，不用糊掉的 ctx.query。
+            song_query = audio_rescue_slot(slots, "song_query", ctx)
+
+            async def _rescue_play():
+                await self.ctrl._safe_music_command(ctx.speaker, song_query, "play")
+            return _rescue_play
+
         if schema.name in ("weak_play_long_string", "phonetic_play"):
             # missing song_title → ask follow-up (Alexa CanFulfillIntent pattern)
             # bus 不認得 song_title 這個 slot 名（只認 song_choice/directional_resolution，
