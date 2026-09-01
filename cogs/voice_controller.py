@@ -251,6 +251,7 @@ def build_intent_agents(controller, bot):
     from intent_agents.time_query_agent import TimeQueryAgent
     from intent_agents.personal_shuffle_agent import PersonalShuffleAgent
     from intent_agents.farewell_agent import FarewellAgent
+    from intent_agents.joke_request_agent import JokeRequestAgent
     from intent_agents.dual_speak_agent import DualSpeakAgent
     from intent_agents.frustration_agent import FrustrationAgent
     from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
@@ -266,6 +267,7 @@ def build_intent_agents(controller, bot):
         NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
         TimeQueryAgent(controller),  # 2026-08-18: agent_gaps time_query ready_to_implement — 零成本報時
         FarewellAgent(controller),  # 2026-08-09: 喚醒直接說「掰掰/晚安/bye bye」互道再見
+        JokeRequestAgent(controller),  # 2026-09-01: daily ritual — 「馬文說個笑話」→ 本地 joke bank 抽一則
         PersonalShuffleAgent(controller),  # 2026-06-29: 語音「連續隨機播我的歌單」（一次墊一首）
         GameKnowledgeAgent(controller),  # 2026-06-06: Plan 4 intent_gap ready — 「查麥塊…」遊戲知識查詢
         GroundedQAAgent(controller),  # 2026-08-30: AmbientQA — 「馬文幫我查 X」/「X 是什麼」→ grounded 回答

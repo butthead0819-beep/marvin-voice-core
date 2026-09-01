@@ -55,6 +55,12 @@
     "resolved_at": "2026-08-30",
     "note": "AmbientQA（design AmbientQA-20260830）：喚醒+明確事實問句（「馬文 0722 的酒是什麼」「馬文幫我查 X」）由 GroundedQAAgent 接手（bid 0.75，Gemini google_search grounded + L1/L2 幻覺 guard）。gap classifier 把這類 web 事實問句誤標 song_title_lookup→ack。真·歌名查詢仍走 FindSongAgent，不受影響。"
   },
+  "social_joke_request": {
+    "agent": "joke_request",
+    "file": "intent_agents/joke_request_agent.py",
+    "resolved_at": "2026-09-01",
+    "note": "daily ritual 2026-08-31：showay 兩小時內兩次「馬文說個笑話來聽聽」（分別落 social_joke_request / social_talk_request，都被模板 ack）。JokeRequestAgent（bid 0.85）接手，複用 joke_bank.random_joke 泛用池隨機抽一則、零 LLM（中文諧音笑話 LLM 現編是能力斷崖，見 memory project_dj_joke_bank_pinyin_match）。social_talk_request 是 classifier 對同一句的不穩定標記，不另立條目。"
+  },
   "frustration": {
     "agent": "frustration",
     "file": "intent_agents/frustration_agent.py",

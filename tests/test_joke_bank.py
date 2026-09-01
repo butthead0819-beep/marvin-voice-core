@@ -67,6 +67,35 @@ def test_pinyin_homophone_hits(bank):
     assert "稻草人" in bank.match("稻香")
 
 
+# ── random_joke（「馬文說個笑話」直接請求用）────────────────────────────────
+
+
+def test_random_joke_returns_pool_entry(bank):
+    import random as _r
+    jk = bank.random_joke(rng=_r.Random(0))
+    assert jk in {e["joke"] for e in bank._entries}
+
+
+def test_random_joke_skips_excluded(bank):
+    all_jokes = {e["joke"] for e in bank._entries}
+    exclude = set(list(all_jokes)[:-1])  # 只剩一則沒被排除
+    remaining = (all_jokes - exclude).pop()
+    assert bank.random_joke(exclude=exclude) == remaining
+
+
+def test_random_joke_falls_back_when_all_excluded(bank):
+    all_jokes = {e["joke"] for e in bank._entries}
+    assert bank.random_joke(exclude=all_jokes) in all_jokes
+
+
+def test_random_joke_empty_bank_returns_none(tmp_path):
+    p = tmp_path / "empty.yaml"
+    p.write_text("[]", encoding="utf-8")
+    sj = tmp_path / "sj.yaml"
+    sj.write_text("[]", encoding="utf-8")
+    assert JokeBank(p, sj).random_joke() is None
+
+
 def test_substring_syllable_boundary_no_false_positive(bank):
     # 「曹操」cao cao 不該命中「稻草」dao cao（跨音節子串）
     assert bank.match("JJ林俊傑 曹操") is None

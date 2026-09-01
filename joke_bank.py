@@ -17,6 +17,7 @@ runtime 用法（cogs/music_cog.py::_fetch_dj_interjection_raw 笑話分支）�
 from __future__ import annotations
 
 import logging
+import random
 import re
 from pathlib import Path
 
@@ -135,6 +136,21 @@ class JokeBank:
                     if n > best_len:
                         best_len, best = n, e
         return best["joke"] if best is not None else None
+
+    def random_joke(self, *, exclude: set[str] | frozenset[str] = frozenset(),
+                    rng: random.Random | None = None) -> str | None:
+        """泛用池隨機抽一則笑話全文（給「馬文說個笑話」直接請求用）；池空回 None。
+
+        exclude：近期播過的笑話全文，優先跳過；全被排除才 fallback 回整池。
+        """
+        if not self._enabled:
+            return None
+        self._reload_bank()
+        pool = [e["joke"] for e in self._entries]
+        if not pool:
+            return None
+        fresh = [j for j in pool if j not in exclude]
+        return (rng or random).choice(fresh or pool)
 
 
 _SINGLETON: JokeBank | None = None
