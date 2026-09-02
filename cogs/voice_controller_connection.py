@@ -36,6 +36,40 @@ from marvin_voice_core.playback_device import DiscordPlaybackDevice
 logger = logging.getLogger(__name__)
 
 
+class _VoiceFlapObserver(logging.Handler):
+    """掛在 discord.py `discord.voice_state` logger 上，抓「連上→斷線」的**轉換**。
+
+    為何不靠 sentinel_monitor_loop 輪詢：discord.py 內部自動重連常在兩次 60s 巡邏之間
+    就把連線接回來，`is_connected()` 永遠是 True → 輪詢一次也數不到（2026-09-02 PR #79
+    review P1）。這條 log 是真正的斷線邊緣，快到抓不到的自動重連也一定留下。
+
+    為何只數「轉換」不數每則斷線 log：單一場持續斷線，discord.py 會 backoff 重試、
+    每輪都印一次 `Disconnected from voice...` → 數則數會把「一場 5 分鐘的網路中斷」當成
+    五次抖動誤觸 force 重啟（PR #79 review P2）。只有在**期間曾成功連上**（看到
+    `Voice connection complete.`）後又斷，才算一次抖動；持續斷線交給既有修復逾時處理。
+    """
+
+    def __init__(self, on_flap):
+        super().__init__(level=logging.INFO)
+        self._on_flap = on_flap
+        self._saw_connect = False  # 沒先看到一次成功連線就不算抖動（開機連不上是另一回事）
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return
+        if "Voice connection complete" in msg:
+            self._saw_connect = True
+        elif "Disconnected from voice" in msg:
+            if self._saw_connect:
+                self._saw_connect = False
+                try:
+                    self._on_flap()
+                except Exception:
+                    pass
+
+
 # 重啟回報狀態檔。寫於 self_restart pre-execv，讀於 on_ready post-sync。
 REBOOT_STATE_FILE = ".marvin_reboot_state.json"
 
@@ -784,54 +818,69 @@ class ConnectionMixin:
             print("🛑 [Lifecycle] 停止視覺系統擷取迴圈...", flush=True)
             self.bot.screen_capture.stop()
 
-    # ☢️ [Voice Flap Guard] 語音連線在短時間內反覆斷/重連（discord.py 自動重連把每次
+    # ☢️ [Voice Flap Guard] 語音連線在短時間內反覆「連上→斷線」（discord.py 自動重連把每次
     # 掉線都接回來、軟修復計數從沒累積 → Sentinel 每次巡邏都看到「連線正常」，永不升級）。
     # 2026-09-02 實測：CryptoError storm 後語音 WS 每 ~60s 斷一次連 15+ 分，音樂每分鐘被切、
-    # 使用者看到 bot 一直進出頻道，靠人工 kickstart 才停。窗內抖動達門檻 → 放棄軟修復硬重啟。
+    # 使用者看到 bot 一直進出頻道，靠人工 kickstart 才停。事件由 _VoiceFlapObserver 從
+    # discord.voice_state log 的「連上→斷線」轉換餵進來（不是輪詢、不是每則斷線 log）。
     _VOICE_FLAP_WINDOW_S = 360.0
     _VOICE_FLAP_MAX = 5
 
-    def _note_voice_flap(self, why: str) -> bool:
-        """記一次語音連線抖動；窗內達門檻回 True 並排程物理重啟（caller 應即 return）。"""
+    def _install_voice_flap_watch(self) -> None:
+        """把 _VoiceFlapObserver 掛上 discord.voice_state logger（idempotent，防 hot reload 疊掛）。"""
+        lg = logging.getLogger("discord.voice_state")
+        if any(isinstance(h, _VoiceFlapObserver) for h in lg.handlers):
+            return
+        # `Voice connection complete.` 是 INFO：logger 預設 WARNING 會擋在 handler 前，
+        # 拉到 INFO 才收得到「連上」訊號（順帶讓連線事件進 log，這類 bug 本就難追兇）。
+        if lg.level == logging.NOTSET or lg.level > logging.INFO:
+            lg.setLevel(logging.INFO)
+        lg.addHandler(_VoiceFlapObserver(self._on_voice_flap))
+        logger.info("☢️ [Voice Flap Guard] 已掛 discord.voice_state 轉換觀察器")
+
+    def _on_voice_flap(self) -> None:
+        """_VoiceFlapObserver callback：discord.voice_state log 在 loop thread，仍走
+        call_soon_threadsafe 保險（對齊 report_sink_error 的跨執行緒排程）。"""
+        try:
+            self.bot.loop.call_soon_threadsafe(self._record_voice_flap)
+        except Exception:
+            pass
+
+    def _record_voice_flap(self) -> None:
         now = time.time()
         self._voice_flap_ts.append(now)
         recent = [t for t in self._voice_flap_ts if now - t <= self._VOICE_FLAP_WINDOW_S]
         logger.warning(
             f"📡 [Sentinel] 語音連線抖動 {len(recent)}/{self._VOICE_FLAP_MAX}"
-            f"（{why}，{int(self._VOICE_FLAP_WINDOW_S)}s 窗）"
+            f"（連上→斷線，{int(self._VOICE_FLAP_WINDOW_S)}s 窗）"
         )
-        if len(recent) >= self._VOICE_FLAP_MAX:
-            logger.critical(
-                f"☢️ [Sentinel] 語音連線 {int(self._VOICE_FLAP_WINDOW_S)}s 內抖動 {len(recent)} 次，"
-                f"軟修復／discord.py 自動重連都拉不出來 → 放棄軟修復，物理重啟"
-            )
-            self._voice_flap_ts.clear()
-            asyncio.create_task(self.self_restart(
-                reason=f"語音連線持續抖動 {len(recent)} 次（soft-repair 無效）", force=True))
-            return True
-        return False
+        if len(recent) < self._VOICE_FLAP_MAX:
+            return
+        self._voice_flap_ts.clear()
+        logger.critical(
+            f"☢️ [Sentinel] 語音連線 {int(self._VOICE_FLAP_WINDOW_S)}s 內反覆斷/重連 {len(recent)} 次，"
+            f"軟修復／discord.py 自動重連都拉不出來 → 放棄軟修復，物理重啟"
+        )
+        # force=False：靠 self_restart 既有的「距上次重啟 <900s 不重啟」防抖，
+        # 避免『重啟後傳輸層仍壞 → 每 6 分鐘重啟一次』的迴圈（PR #79 review P2）。
+        asyncio.create_task(self.self_restart(
+            reason=f"語音連線持續抖動 {len(recent)} 次（soft-repair 無效）"))
 
     @tasks.loop(seconds=60.0)
     async def sentinel_monitor_loop(self):
         """🛡️ [Operation Sentinel] 強化型語音監控：具備 30s 寬限期與自癒功能"""
         if self.is_recovering: return # 🚀 [Sentinel 強化] 修復中跳過主迴圈
-        # 「本該在台上卻不在」＝抖動；「從沒上台／已 dismiss」＝正常閒置，不算。
-        _recently_connected = 0.0 < time.time() - self.connection_time < 900
         if not self.bot.voice_clients:
             # 🩹 [Full-Disconnect Rejoin] 連線物件整個消失（非殭屍連線，是真的斷了/被踢）
             # →上面 vc.is_connected()==False 那支軟修復管不到（那支要 voice_clients 非空）。
             # 沒人管的話只能等人手動 /summon（2026-08-17 事故：斷線後 10 分鐘沒自動回台，
             # 靠人發現才救回）。鏡像 auto_rejoin_on_boot 的靜默回台核心，60s 巡一次順便兜底。
-            if _recently_connected and self._note_voice_flap("voice_clients 整個消失"):
-                return
             await self.auto_rejoin_on_boot()
             return
         vc = self.bot.voice_clients[0]
         if not vc.is_connected():
             # VoiceClient exists but WebSocket is dead → trigger soft repair
             if time.time() - self.connection_time > 30:
-                if self._note_voice_flap("WebSocket 斷線"):
-                    return
                 logger.warning("📡 [Sentinel] VoiceClient.is_connected() = False，觸發軟修復...")
                 asyncio.create_task(self.soft_repair_connection(reason="VoiceClient WebSocket 斷線"))
             return
