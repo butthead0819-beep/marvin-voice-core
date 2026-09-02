@@ -133,6 +133,24 @@ async def test_synthesize_returns_none_on_llm_exception():
 
 
 @pytest.mark.asyncio
+async def test_last_abandon_reason_set_on_abandon_cleared_on_success():
+    """放棄時 last_abandon_reason 帶原因（IntentBus emit abandoned outcome 用）；成功時清 None。"""
+    low = LLMRescueAgent(llm_classifier=_make_classifier(
+        {"rewritten_query": "下一首", "confidence": 0.3}))
+    await low.synthesize(_ctx())
+    assert low.last_abandon_reason == "low_confidence"
+
+    boom = LLMRescueAgent(llm_classifier=_make_classifier(RuntimeError("groq 503")))
+    await boom.synthesize(_ctx())
+    assert boom.last_abandon_reason.startswith("classifier_error")
+
+    ok = LLMRescueAgent(llm_classifier=_make_classifier(
+        {"rewritten_query": "下一首", "confidence": 0.9}))
+    await ok.synthesize(_ctx())
+    assert ok.last_abandon_reason is None
+
+
+@pytest.mark.asyncio
 async def test_synthesize_returns_none_when_classifier_returns_none():
     """LLM 主動拒絕分類（如句子太短 / 無意義）→ None。"""
     classifier = _make_classifier(None)

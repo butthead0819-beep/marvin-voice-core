@@ -153,6 +153,26 @@ async def test_abstain_tool_call_returns_none():
     result = await agent.synthesize(_ctx())
 
     assert result is None
+    assert agent.last_abandon_reason == "just_chatting"
+
+
+@pytest.mark.asyncio
+async def test_last_abandon_reason_tracks_branch_and_clears_on_success():
+    """各放棄分支記對原因；成功執行時清 None（IntentBus emit abandoned outcome 用）。"""
+    from intent_agents.audio_rescue_tools import ABSTAIN_TOOL_NAME
+
+    ag = _make_agent(_make_client(function_calls=[]))
+    await ag.synthesize(_ctx())
+    assert ag.last_abandon_reason == "no_tool_calls"
+
+    ag = _make_agent(_make_client(raise_exc=RuntimeError("gateway down")))
+    await ag.synthesize(_ctx())
+    assert ag.last_abandon_reason.startswith("gemini_error")
+
+    ag = _make_agent(_make_client(function_calls=[_FakeCall("volume__volume_down")]))
+    ok = await ag.synthesize(_ctx())
+    assert ok is not None
+    assert ag.last_abandon_reason is None
 
 
 @pytest.mark.asyncio

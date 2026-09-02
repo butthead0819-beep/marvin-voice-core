@@ -76,3 +76,31 @@ def test_no_resolved_file_behaves_as_before(tmp_path, monkeypatch):
 
     out = section_needs(0, 2000.0)
     assert "既有 agent coverage（resolved" not in out
+
+
+def test_section_2c_surfaces_abandoned_rescue(tmp_path, monkeypatch):
+    """rescue abandoned（synthesize 回 None）要進 daily 2c，依 abandon_reason 分組。"""
+    from scripts.daily_user_needs import section_complaints
+
+    rescue = tmp_path / "rescue_outcomes.jsonl"
+    rescue.write_text(
+        "\n".join(json.dumps(r) for r in [
+            {"gap_class": "abandoned", "abandon_reason": "just_chatting",
+             "original_query": "欸馬文那個那個", "speaker": "showay", "ts": 1000.0},
+            {"gap_class": "abandoned", "abandon_reason": "gemini_error:400 blah",
+             "original_query": "放那個歌", "speaker": "狗與露", "ts": 1001.0},
+            {"gap_class": "convergent", "pragmatic_signal": "neutral",
+             "original_query": "下一首", "speaker": "showay", "ts": 1002.0},
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scripts.daily_user_needs.RESCUE", rescue)
+    monkeypatch.setattr("scripts.daily_user_needs.DB", tmp_path / "no.db")
+
+    out = section_complaints(0, 2000.0)
+
+    assert "2c. rescue abandoned" in out
+    assert "— 2 筆" in out.split("2c. rescue abandoned")[1][:20]
+    assert "`just_chatting`" in out
+    assert "`gemini_error`" in out          # 冒號後的細節被切掉、只留分類
+    assert "欸馬文那個那個" in out

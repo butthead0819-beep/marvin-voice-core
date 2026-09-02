@@ -50,6 +50,7 @@ class _StubRescue:
     name = "LLMRescue"
     def __init__(self, result):
         self._result = result
+        self.last_abandon_reason = None
     async def synthesize(self, ctx):
         if isinstance(self._result, BaseException):
             raise self._result
@@ -213,25 +214,31 @@ async def test_no_emit_when_regex_wins_directly():
 
 
 @pytest.mark.asyncio
-async def test_no_emit_when_synthesize_returns_none():
-    """LLM 信心不夠 / 主動拒絕 → synthesize 回 None → 不算一次「rescue 嘗試」，不寫 record。
-    （否則低信心 / 短句噪音會塞爆 jsonl）"""
+async def test_emit_abandoned_when_synthesize_returns_none():
+    """synthesize 回 None（低信心 / just_chatting / Gemini error）→ 仍寫一筆
+    gap_class=abandoned，帶 abandon_reason。audio rescue 最常走這條，以前靜默丟
+    資料 → daily ritual 的未滿足需求訊號瞎掉（2026-09-02）。"""
     def _zero(ctx):
         return Bid(name="z", confidence=0.0, handler=AsyncMock(), reason="no_match")
 
+    rescue = _StubRescue(None)
+    rescue.last_abandon_reason = "just_chatting"
     records = []
     bus = IntentBus(
         [_StubAgent("z", _zero)],
-        llm_rescue_agent=_StubRescue(None),
+        llm_rescue_agent=rescue,
         rescue_outcome_sink=records.append,
     )
     await bus.dispatch(_ctx())
-    assert records == []
+    assert len(records) == 1
+    assert records[0]["gap_class"] == "abandoned"
+    assert records[0]["abandon_reason"] == "just_chatting"
+    assert records[0]["rewritten_query"] is None
 
 
 @pytest.mark.asyncio
-async def test_no_emit_when_synthesize_raises():
-    """synthesize 炸了 → 連 record 都寫不出來，與「沒嘗試」一致語意。"""
+async def test_emit_abandoned_when_synthesize_raises():
+    """synthesize 炸了 → 記一筆 abandoned + synthesize_exception 原因（不靜默丟）。"""
     def _zero(ctx):
         return Bid(name="z", confidence=0.0, handler=AsyncMock(), reason="no_match")
 
@@ -242,7 +249,9 @@ async def test_no_emit_when_synthesize_raises():
         rescue_outcome_sink=records.append,
     )
     await bus.dispatch(_ctx())
-    assert records == []
+    assert len(records) == 1
+    assert records[0]["gap_class"] == "abandoned"
+    assert "synthesize_exception" in records[0]["abandon_reason"]
 
 
 # ── 容錯 + 向後相容 ──────────────────────────────────────────────────────────

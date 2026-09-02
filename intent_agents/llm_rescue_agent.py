@@ -45,23 +45,31 @@ class LLMRescueAgent:
     ):
         self.llm_classifier = llm_classifier
         self.confidence_threshold = confidence_threshold
+        # 見 AudioRescueAgent.last_abandon_reason（IntentBus._maybe_rescue emit
+        # abandoned outcome 用）。成功時清 None。
+        self.last_abandon_reason: str | None = None
+
+    def _abandon(self, reason: str) -> None:
+        self.last_abandon_reason = reason
+        return None
 
     async def synthesize(self, ctx: IntentContext) -> IntentContext | None:
+        self.last_abandon_reason = None
         try:
             result = await self.llm_classifier(ctx.query)
         except Exception as exc:
             logger.warning(f"⚠️ [LLMRescue] classifier 炸了，放棄 rescue: {exc}")
-            return None
+            return self._abandon(f"classifier_error:{str(exc)[:80]}")
 
         if result is None:
-            return None
+            return self._abandon("classifier_none")
 
         if result.get("confidence", 0.0) < self.confidence_threshold:
-            return None
+            return self._abandon("low_confidence")
 
         rewritten = (result.get("rewritten_query") or "").strip()
         if not rewritten:
-            return None
+            return self._abandon("empty_rewrite")
 
         return replace(
             ctx,

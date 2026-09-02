@@ -5,7 +5,7 @@
 
 三個訊源：
   1. 未滿足需求  — records/agent_gaps.jsonl（有 intent 但沒 agent / 被模板 ack 打發）
-  2. 抱怨 / 挫折  — marvin.db transcripts 表，比對 frustration_agent 的關鍵字 + 幾個補充
+  2. 抱怨 / 挫折  — 2a rescue pragmatic negative / 2b「馬文…故障詞」/ 2c rescue abandoned
   3. AmbientQA   — records/ambient_qa.jsonl（若存在；grounded 問答上線後的逐筆）
 
 用法：
@@ -149,9 +149,10 @@ def section_complaints(lo: float, hi: float) -> str:
     if RESCUE.exists():
         last = RESCUE.stat().st_mtime
         if time.time() - last > 3 * 86400:
-            stale = f"  ⚠️ rescue_outcomes.jsonl 最後寫入 {datetime.fromtimestamp(last):%Y-%m-%d}——訊號源可能斷了，查 MARVIN_INTENT_RESCUE_SHADOW"
-    neg = [r for r in _load_jsonl(RESCUE, lo, hi)
-           if r.get("pragmatic_signal") == "negative" and r.get("speaker") not in EXCLUDE_SPEAKERS]
+            stale = f"  ⚠️ rescue_outcomes.jsonl 最後寫入 {datetime.fromtimestamp(last):%Y-%m-%d}——訊號源可能斷了（rescue 完全沒觸發？grep bot log `[AudioRescue]`；或 build_rescue_components 回 None）"
+    rescue_rows = [r for r in _load_jsonl(RESCUE, lo, hi)
+                   if r.get("speaker") not in EXCLUDE_SPEAKERS]
+    neg = [r for r in rescue_rows if r.get("pragmatic_signal") == "negative"]
     lines.append(f"**2a. pragmatic negative（rescue_outcomes）** — {len(neg)} 筆")
     if stale:
         lines.append(stale)
@@ -162,6 +163,25 @@ def section_complaints(lo: float, hi: float) -> str:
         for target, items in sorted(by_target.items(), key=lambda kv: -len(kv[1])):
             lines.append(f"  對 `{target}`：{len(items)} 筆")
             for r in items[:10]:
+                t = datetime.fromtimestamp(r.get("ts", 0)).strftime("%m-%d %H:%M")
+                lines.append(f"    - `{r.get('speaker')}` {t}：「{r.get('original_query', '')[:70]}」")
+    else:
+        lines.append("  _無_")
+    lines.append("")
+
+    # 2c — rescue abandoned：進了 bus、沒 agent 接、rescue 也救不動的一句話。
+    # audio rescue 最常走這條（just_chatting / Gemini error / 低信心），是最直接的
+    # 「未滿足需求」訊號。abandon_reason 分組看是「真的沒需求」還是「pipeline 出錯」。
+    aband = [r for r in rescue_rows if r.get("gap_class") == "abandoned"]
+    lines.append(f"**2c. rescue abandoned（試著救、救不動）** — {len(aband)} 筆")
+    if aband:
+        by_reason: dict[str, list] = defaultdict(list)
+        for r in aband:
+            key = (r.get("abandon_reason") or "?").split(":")[0]
+            by_reason[key].append(r)
+        for reason, items in sorted(by_reason.items(), key=lambda kv: -len(kv[1])):
+            lines.append(f"  `{reason}`：{len(items)} 筆")
+            for r in items[:8]:
                 t = datetime.fromtimestamp(r.get("ts", 0)).strftime("%m-%d %H:%M")
                 lines.append(f"    - `{r.get('speaker')}` {t}：「{r.get('original_query', '')[:70]}」")
     else:
