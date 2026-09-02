@@ -70,6 +70,24 @@ def test_start_satellite_schedules_reconnect_loop_via_create_task():
     fake.bot.loop.create_task.assert_called_once()
 
 
+def test_start_satellite_mic_bridge_gate_off_skips_reconnect_loop(monkeypatch):
+    """MARVIN_SATELLITE_MIC_BRIDGE=0 → 不排重連迴圈（Pi wyoming 退役時不洗 log）。
+    其餘接線（local_mode / speaker output / consent）照舊完成。"""
+    monkeypatch.setenv("MARVIN_SATELLITE_MIC_BRIDGE", "0")
+    fake = _make_fake_self()
+    ConnectionMixin.start_satellite_listening(fake)
+    fake.bot.loop.create_task.assert_not_called()
+    assert fake._local_mode is True
+    assert isinstance(fake._local_speaker, LocalSpeakerDevice)
+
+
+def test_start_satellite_mic_bridge_gate_default_on(monkeypatch):
+    monkeypatch.delenv("MARVIN_SATELLITE_MIC_BRIDGE", raising=False)
+    fake = _make_fake_self()
+    ConnectionMixin.start_satellite_listening(fake)
+    fake.bot.loop.create_task.assert_called_once()
+
+
 # ── (e) consent always-allow stub ────────────────────────────────────────────
 
 def test_start_satellite_consent_allows_any_speaker():
