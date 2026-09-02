@@ -1119,6 +1119,13 @@ class ConnectionMixin:
         self.consent = _LocalConsentStub()
 
         # 6. 非阻塞啟動重連迴圈（衛星斷線/重啟 → 5s 後重連，不炸腦＝優雅降級）
+        #    MARVIN_SATELLITE_MIC_BRIDGE=0 → 不連 Pi wyoming（Pi 麥克風已退役/服務關掉時
+        #    用，否則每 5s 一行 "bridge error [Errno 61]" 洗爆 log）。其餘接線照舊，
+        #    /audio_stream 車 puck 路徑、mixer 輸出都不受影響。
+        if os.getenv("MARVIN_SATELLITE_MIC_BRIDGE", "1").strip().lower() not in ("1", "true", "yes", "on"):
+            logger.warning("🛰️ [Satellite] mic 橋已停用（MARVIN_SATELLITE_MIC_BRIDGE=0），不連 Pi wyoming")
+            return
+
         async def _bridge_forever():
             while True:
                 try:
