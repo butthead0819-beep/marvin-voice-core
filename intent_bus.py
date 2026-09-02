@@ -365,9 +365,17 @@ class IntentBus:
             self.logger.warning(
                 f"⚠️ [IntentBus] llm_rescue.synthesize 炸了，略過: {exc}"
             )
+            self._emit_rescue_outcome(
+                ctx, None, winner=None, shadow=self.rescue_shadow_mode,
+                abandon_reason=f"synthesize_exception:{str(exc)[:80]}")
             return None
 
         if rescued_ctx is None:
+            # synthesize 放棄（audio 版最常走這條）——仍記一筆給 daily ritual，
+            # 「試著救糊話、救不動」是最有價值的未滿足需求訊號（2026-09-02）。
+            self._emit_rescue_outcome(
+                ctx, None, winner=None, shadow=self.rescue_shadow_mode,
+                abandon_reason=getattr(self.llm_rescue_agent, "last_abandon_reason", None))
             return None
 
         if self.rescue_shadow_mode:
@@ -427,12 +435,16 @@ class IntentBus:
         return bid
 
     def _emit_rescue_outcome(self, original_ctx: IntentContext,
-                             rescued_ctx: IntentContext,
-                             winner: Bid | None, shadow: bool) -> None:
+                             rescued_ctx: IntentContext | None,
+                             winner: Bid | None, shadow: bool,
+                             abandon_reason: str | None = None) -> None:
         """把 rescue 結果分類後 emit 給觀察層（daily ritual 分析）。
 
         gap_class:
           shadow      — shadow_mode 期間，synthesize 跑了沒重投
+          abandoned   — synthesize 回 None（just_chatting / Gemini error / 低信心…）
+                        rescued_ctx 為 None，abandon_reason 帶原因。audio 版最常走這條，
+                        以前靜默丟資料 → daily ritual 的未滿足需求訊號瞎掉（2026-09-02）
           unmatched   — 重投後仍無 winner（LLM 改寫品質差 / 無對應 agent）
           divergent   — 命中 + 有 positive/negative pragmatic signal（字面≠真意）
           convergent  — 命中 + 無 pragmatic 落差（neutral/None） → regex 可挖
@@ -440,7 +452,9 @@ class IntentBus:
         if self.rescue_outcome_sink is None:
             return
 
-        if shadow:
+        if rescued_ctx is None:
+            gap_class = "abandoned"
+        elif shadow:
             gap_class = "shadow"
         elif winner is None:
             gap_class = "unmatched"
@@ -451,25 +465,27 @@ class IntentBus:
 
         record = {
             "original_query": original_ctx.query,
-            "rewritten_query": rescued_ctx.query,
+            "rewritten_query": rescued_ctx.query if rescued_ctx is not None else None,
             "winner_agent": winner.name if winner is not None else None,
             "winner_reason": winner.reason if winner is not None else None,
-            "pragmatic_signal": rescued_ctx.pragmatic_signal,
-            "pragmatic_target": rescued_ctx.pragmatic_target,
+            "pragmatic_signal": rescued_ctx.pragmatic_signal if rescued_ctx is not None else None,
+            "pragmatic_target": rescued_ctx.pragmatic_target if rescued_ctx is not None else None,
             "gap_class": gap_class,
+            "abandon_reason": abandon_reason,
             "speaker": original_ctx.speaker,
             "ts": original_ctx.now,
             # Audio Rescue v2：文字版 record 這些欄位恆 None/0，只在 dispatch_mode
             # == "llm_rescue_audio" 時有值，供 daily ritual 另開分析維度。
-            "dispatch_mode": rescued_ctx.dispatch_source,
-            "resolved_agent": rescued_ctx.resolved_agent,
-            "resolved_intent": rescued_ctx.resolved_intent,
-            "resolved_slots": rescued_ctx.resolved_slots,
+            "dispatch_mode": rescued_ctx.dispatch_source if rescued_ctx is not None else None,
+            "resolved_agent": rescued_ctx.resolved_agent if rescued_ctx is not None else None,
+            "resolved_intent": rescued_ctx.resolved_intent if rescued_ctx is not None else None,
+            "resolved_slots": rescued_ctx.resolved_slots if rescued_ctx is not None else None,
             "audio_bytes_len": len(original_ctx.audio_wav_bytes) if original_ctx.audio_wav_bytes else 0,
         }
 
         # audio-rescue：原始 wav 寫 sidecar 檔（不塞 jsonl），record 記路徑。
         if (self.rescue_wav_store is not None
+                and rescued_ctx is not None
                 and rescued_ctx.dispatch_source == "llm_rescue_audio"
                 and original_ctx.audio_wav_bytes):
             try:

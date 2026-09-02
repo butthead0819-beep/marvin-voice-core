@@ -109,6 +109,15 @@ class AudioRescueAgent:
             daily_cap_usd=_DAILY_CAP_USD, monthly_cap_usd=_MONTHLY_CAP_USD,
         )
         self._rpm_window: list[float] = []
+        # 最近一次 synthesize 放棄的原因（供 IntentBus._maybe_rescue emit「abandoned」
+        # outcome——daily ritual 靠 rescue_outcomes.jsonl 看未滿足需求，audio 版只在
+        # 成功執行時才寫，放棄路徑靜默丟資料，2026-09-02 追到）。成功時清 None。
+        self.last_abandon_reason: str | None = None
+
+    def _abandon(self, reason: str) -> None:
+        """記放棄原因並回 None（synthesize 各早退點共用）。"""
+        self.last_abandon_reason = reason
+        return None
 
     def _try_acquire_rpm_slot(self) -> bool:
         """非阻塞：RPM 視窗有空位就佔一格回 True，否則回 False（同 gemini_router_llm.py
@@ -121,14 +130,15 @@ class AudioRescueAgent:
         return False
 
     async def synthesize(self, ctx: IntentContext) -> IntentContext | None:
+        self.last_abandon_reason = None
         if not ctx.audio_wav_bytes:
-            return None
+            return self._abandon("no_audio")
 
         manifest = self.manifest_provider()
         action_declarations = manifest_to_function_declarations(manifest)
         if not action_declarations:
             # 沒有任何 opt-in 的 action intent → 只剩唯讀 + 棄權 tool，rescue 無意義
-            return None
+            return self._abandon("no_action_declarations")
         function_declarations = (
             action_declarations
             + READONLY_FUNCTION_DECLARATIONS
@@ -138,10 +148,10 @@ class AudioRescueAgent:
         est_in = max(1, len(ctx.audio_wav_bytes) // _PCM_BYTES_PER_SECOND * _AUDIO_TOKENS_PER_SECOND)
         if not self.paid_guard.allow(estimate_cost(self.model, est_in, _ESTIMATED_OUTPUT_TOKENS)):
             logger.warning("⚠️ [AudioRescue] 超 daily/monthly paid cap，放棄 rescue")
-            return None
+            return self._abandon("paid_cap")
         if not self._try_acquire_rpm_slot():
             logger.info("📡 [AudioRescue] RPM 視窗已滿，跳過本次 rescue")
-            return None
+            return self._abandon("rpm_full")
 
         try:
             audio_part = types.Part.from_bytes(
@@ -160,10 +170,10 @@ class AudioRescueAgent:
             )
         except asyncio.TimeoutError:
             logger.warning("⚠️ [AudioRescue] Gemini 呼叫逾時，放棄 rescue")
-            return None
+            return self._abandon("gemini_timeout")
         except Exception as exc:
             logger.warning(f"⚠️ [AudioRescue] Gemini 呼叫失敗，放棄 rescue: {exc}")
-            return None
+            return self._abandon(f"gemini_error:{str(exc)[:80]}")
 
         usage = getattr(response, "usage_metadata", None)
         in_tokens = int(getattr(usage, "prompt_token_count", 0) or est_in)
@@ -176,7 +186,7 @@ class AudioRescueAgent:
 
         calls = getattr(response, "function_calls", None) or []
         if not calls:
-            return None
+            return self._abandon("no_tool_calls")
 
         intent_agents = intent_to_agent_map(manifest)  # Gemini 掉前綴時的 fallback
         resolved: tuple[str, str, dict] | None = None
@@ -184,7 +194,7 @@ class AudioRescueAgent:
             if call.name == ABSTAIN_TOOL_NAME:
                 # LLM 明確判斷「以上都不是」——直接放棄，走一般聊天，不理其他 call。
                 logger.info("📡 [AudioRescue] LLM 選了 just_chatting，放棄 rescue")
-                return None
+                return self._abandon("just_chatting")
             if call.name in READONLY_TOOL_NAMES:
                 await self._execute_readonly(call, ctx)
                 continue
@@ -201,7 +211,7 @@ class AudioRescueAgent:
                 logger.warning(f"⚠️ [AudioRescue] tool call name 無法對應，忽略: {call.name}")
 
         if resolved is None:
-            return None
+            return self._abandon("tool_call_unresolvable")
 
         agent_name, intent_name, args = resolved
         return replace(
