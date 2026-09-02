@@ -26,10 +26,11 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4248      # 實測 4248（2026-09-02 Voice Flap Guard +2：一行 import collections
-                        # + 一行 self._voice_flap_ts deque 初始化——抖動偵測/物理重啟本體全在
-                        # cogs/voice_controller_connection.py 的 _note_voice_flap + sentinel_monitor_loop，
-                        # 這 +2 只是狀態欄位的最小接線成本，比照下方 GroundedQAAgent +2 同型先例）；
+LINE_BUDGET = 4249      # 實測 4249（2026-09-02 Voice Flap Guard +3：import collections
+                        # + self._voice_flap_ts deque 初始化 + cog_load 一行 _install_voice_flap_watch()
+                        # ——_VoiceFlapObserver / _record_voice_flap / _install_voice_flap_watch 本體
+                        # 全在 cogs/voice_controller_connection.py，這 +3 只是欄位與啟動接線的最小
+                        # 成本，比照下方 GroundedQAAgent +2 同型先例）；
                         # 前 4246（2026-09-01 JokeRequestAgent +2：一行 import JokeRequestAgent
                         # + 一行 agent-list 註冊——handler 本體與 joke_bank 抽取全在
                         # intent_agents/joke_request_agent.py，比照下方 GroundedQAAgent +2 同型先例）；
