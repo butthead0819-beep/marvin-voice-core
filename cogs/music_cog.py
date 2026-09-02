@@ -3126,6 +3126,14 @@ class MusicCog(commands.Cog):
         （Plan12 即時混音，DJ 本就疊在 ducked 音樂上，等它生成完才出聲沒意義）。
         """
         if prefetch_task is not None and prefetch_task.done():
+            # prefetch task 被 cancel（LLM 全家掛掉、語音重連、skip 連打）時
+            # .result() 會拋 CancelledError——它是 BaseException 不是 Exception，
+            # 舊的 `except Exception` 接不住，會一路竄出 _stream_loop 被那邊的
+            # `except asyncio.CancelledError` 誤判成「迴圈被要求停」→ stream_mode
+            # 歸位 False、整條佇列收攤（2026-09-02 實測：一首歌就停）。子 task 的
+            # 取消不是我們的取消，先擋掉再取值（對齊 _apply_bg_meta 的 .cancelled() 寫法）。
+            if prefetch_task.cancelled():
+                return None
             try:
                 m = prefetch_task.result()
             except Exception:

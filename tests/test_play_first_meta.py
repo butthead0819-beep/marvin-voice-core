@@ -3,21 +3,28 @@
 使用者選擇：「先播音樂，meta 阻塞就放棄 TTS」。故串流迴圈只用「已就緒」的 prefetch
 meta；未就緒不等、本首放棄 DJ、meta 背景補。核心決策抽成 _ready_meta 可測。
 """
+import asyncio
 from unittest.mock import MagicMock
 
 from cogs.music_cog import MusicCog
 
 
 class _FakeTask:
-    def __init__(self, done, result=None, exc=None):
+    def __init__(self, done, result=None, exc=None, cancelled=False):
         self._done = done
         self._result = result
         self._exc = exc
+        self._cancelled = cancelled
 
     def done(self):
         return self._done
 
+    def cancelled(self):
+        return self._cancelled
+
     def result(self):
+        if self._cancelled:
+            raise asyncio.CancelledError
         if self._exc:
             raise self._exc
         return self._result
@@ -43,3 +50,9 @@ def test_none_when_task_failed():
 
 def test_none_when_result_not_dict():
     assert MusicCog._ready_meta(_FakeTask(done=True, result="not-a-dict")) is None
+
+
+def test_none_when_task_cancelled_does_not_raise():
+    # prefetch task 被 cancel（CancelledError 是 BaseException）→ 回 None，
+    # 絕不能竄出去害 _stream_loop 誤判「迴圈被停」整條佇列收攤（2026-09-02）。
+    assert MusicCog._ready_meta(_FakeTask(done=True, cancelled=True)) is None
