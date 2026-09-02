@@ -143,3 +143,76 @@ async def test_sentinel_still_repairs_on_silence_when_not_playing_in_radio_mode(
     await cog.sentinel_monitor_loop.coro(cog)
 
     cog.soft_repair_connection.assert_not_awaited()
+
+
+# ── ☢️ [Voice Flap Guard] 短時間反覆斷/重連 → 放棄軟修復、物理重啟 ──────────────
+
+@pytest.mark.asyncio
+async def test_voice_flap_hard_restarts_after_threshold():
+    """WebSocket 斷線在窗內第 5 次 → 物理重啟，不再排軟修復。"""
+    cog = _make_cog()
+    vc = _make_vc_with_member()
+    vc.is_connected.return_value = False
+    cog.bot.voice_clients = [vc]
+    cog.connection_time = time.time() - 100  # 過 30s、算「剛連過」
+
+    now = time.time()
+    cog._voice_flap_ts.extend([now - 40, now - 30, now - 20, now - 10])  # 已 4 次
+
+    await cog.sentinel_monitor_loop.coro(cog)
+
+    cog.self_restart.assert_called_once()
+    assert cog.self_restart.call_args.kwargs.get("force") is True
+    cog.soft_repair_connection.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_voice_flap_below_threshold_still_soft_repairs():
+    """未達門檻（第 2 次）→ 走既有軟修復，不重啟。"""
+    cog = _make_cog()
+    vc = _make_vc_with_member()
+    vc.is_connected.return_value = False
+    cog.bot.voice_clients = [vc]
+    cog.connection_time = time.time() - 100
+
+    cog._voice_flap_ts.append(time.time() - 10)  # 已 1 次
+
+    await cog.sentinel_monitor_loop.coro(cog)
+
+    cog.self_restart.assert_not_called()
+    cog.soft_repair_connection.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_voice_flap_ignores_idle_not_summoned():
+    """從沒上台（connection_time 很舊）+ voice_clients 空 = 正常閒置，不算抖動、不重啟。"""
+    cog = _make_cog()
+    cog.bot.voice_clients = []
+    cog.connection_time = 0  # 從沒連過
+    cog.auto_rejoin_on_boot = AsyncMock()
+
+    now = time.time()
+    cog._voice_flap_ts.extend([now - 40, now - 30, now - 20, now - 10])
+
+    await cog.sentinel_monitor_loop.coro(cog)
+
+    cog.self_restart.assert_not_called()
+    cog.auto_rejoin_on_boot.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_voice_flap_stale_events_outside_window_dont_count():
+    """窗外（>360s）的舊抖動不計入。"""
+    cog = _make_cog()
+    vc = _make_vc_with_member()
+    vc.is_connected.return_value = False
+    cog.bot.voice_clients = [vc]
+    cog.connection_time = time.time() - 100
+
+    now = time.time()
+    cog._voice_flap_ts.extend([now - 900, now - 800, now - 700, now - 600])  # 都在窗外
+
+    await cog.sentinel_monitor_loop.coro(cog)
+
+    cog.self_restart.assert_not_called()
+    cog.soft_repair_connection.assert_called_once()

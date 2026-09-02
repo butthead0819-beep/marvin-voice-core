@@ -784,21 +784,54 @@ class ConnectionMixin:
             print("🛑 [Lifecycle] 停止視覺系統擷取迴圈...", flush=True)
             self.bot.screen_capture.stop()
 
+    # ☢️ [Voice Flap Guard] 語音連線在短時間內反覆斷/重連（discord.py 自動重連把每次
+    # 掉線都接回來、軟修復計數從沒累積 → Sentinel 每次巡邏都看到「連線正常」，永不升級）。
+    # 2026-09-02 實測：CryptoError storm 後語音 WS 每 ~60s 斷一次連 15+ 分，音樂每分鐘被切、
+    # 使用者看到 bot 一直進出頻道，靠人工 kickstart 才停。窗內抖動達門檻 → 放棄軟修復硬重啟。
+    _VOICE_FLAP_WINDOW_S = 360.0
+    _VOICE_FLAP_MAX = 5
+
+    def _note_voice_flap(self, why: str) -> bool:
+        """記一次語音連線抖動；窗內達門檻回 True 並排程物理重啟（caller 應即 return）。"""
+        now = time.time()
+        self._voice_flap_ts.append(now)
+        recent = [t for t in self._voice_flap_ts if now - t <= self._VOICE_FLAP_WINDOW_S]
+        logger.warning(
+            f"📡 [Sentinel] 語音連線抖動 {len(recent)}/{self._VOICE_FLAP_MAX}"
+            f"（{why}，{int(self._VOICE_FLAP_WINDOW_S)}s 窗）"
+        )
+        if len(recent) >= self._VOICE_FLAP_MAX:
+            logger.critical(
+                f"☢️ [Sentinel] 語音連線 {int(self._VOICE_FLAP_WINDOW_S)}s 內抖動 {len(recent)} 次，"
+                f"軟修復／discord.py 自動重連都拉不出來 → 放棄軟修復，物理重啟"
+            )
+            self._voice_flap_ts.clear()
+            asyncio.create_task(self.self_restart(
+                reason=f"語音連線持續抖動 {len(recent)} 次（soft-repair 無效）", force=True))
+            return True
+        return False
+
     @tasks.loop(seconds=60.0)
     async def sentinel_monitor_loop(self):
         """🛡️ [Operation Sentinel] 強化型語音監控：具備 30s 寬限期與自癒功能"""
         if self.is_recovering: return # 🚀 [Sentinel 強化] 修復中跳過主迴圈
+        # 「本該在台上卻不在」＝抖動；「從沒上台／已 dismiss」＝正常閒置，不算。
+        _recently_connected = 0.0 < time.time() - self.connection_time < 900
         if not self.bot.voice_clients:
             # 🩹 [Full-Disconnect Rejoin] 連線物件整個消失（非殭屍連線，是真的斷了/被踢）
             # →上面 vc.is_connected()==False 那支軟修復管不到（那支要 voice_clients 非空）。
             # 沒人管的話只能等人手動 /summon（2026-08-17 事故：斷線後 10 分鐘沒自動回台，
             # 靠人發現才救回）。鏡像 auto_rejoin_on_boot 的靜默回台核心，60s 巡一次順便兜底。
+            if _recently_connected and self._note_voice_flap("voice_clients 整個消失"):
+                return
             await self.auto_rejoin_on_boot()
             return
         vc = self.bot.voice_clients[0]
         if not vc.is_connected():
             # VoiceClient exists but WebSocket is dead → trigger soft repair
             if time.time() - self.connection_time > 30:
+                if self._note_voice_flap("WebSocket 斷線"):
+                    return
                 logger.warning("📡 [Sentinel] VoiceClient.is_connected() = False，觸發軟修復...")
                 asyncio.create_task(self.soft_repair_connection(reason="VoiceClient WebSocket 斷線"))
             return

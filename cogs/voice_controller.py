@@ -14,6 +14,7 @@ import tempfile
 import shutil
 import subprocess
 import weakref
+import collections
 import numpy as np
 from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
 from utils import WAKE_WORDS_LIST as _WAKE_WORDS_LIST, FAST_ONLY_WAKE_WORDS as _FAST_ONLY_WAKE_WORDS
@@ -454,6 +455,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.is_recovering = False   # 🚀 [Sentinel 強化] 標記是否正在修復中
         self.soft_repair_count = 0   # 🚀 [Sentinel 強化] 標記軟修復嘗試次數
         self.last_recovery_time = 0  # 🚀 [Sentinel 強化] 最後一次成功修復或重連的時間
+        self._voice_flap_ts = collections.deque(maxlen=32)  # ☢️ 語音連線抖動事件戳（見 _note_voice_flap）
         
         # 🚀 [Operation Lively Soul] 閒置互動與打卡累加器
         self.idle_streak = 0
