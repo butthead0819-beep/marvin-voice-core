@@ -17,6 +17,7 @@ handler 行為：
 """
 from __future__ import annotations
 
+import logging
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -213,27 +214,43 @@ async def test_handler_radio_mode_adjusts_radio_volume():
     assert ctrl.stream_volume == pytest.approx(0.10)
 
 
-# ── handler: stream_mode 調音量後排一次中途熱切換讓新音量即時生效 ──────────────
+# ── handler: stream_mode 調音量不依賴熱切換（本地混音台自行輪詢套用） ──────────
 
 
-async def test_handler_stream_requests_volume_swap():
-    """stream_mode 調音量 → 請求 second-stream 重 render（排隊套用新音量）。"""
+async def test_handler_stream_mode_does_not_call_removed_volume_swap(caplog):
+    """迴歸測試：controller 是真實形狀（無 request_volume_swap，SimpleNamespace
+    而非 MagicMock）時，stream_mode 調音量不該再噴任何熱切換相關錯誤——過去
+    ctrl.request_volume_swap() 打在不存在的方法上，AttributeError 被 try/except
+    吞掉不會讓測試失敗，但每次調音量都在 log 噴一次假錯誤（2026-09-04 事故，
+    只用 MagicMock 當 ctrl 測不出來，因為 MagicMock 對任何屬性都來者不拒）。"""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
     from intent_agents.volume_agent import VolumeAgent
-    ctrl = _ctrl(stream_mode=True, stream_volume=0.20)
+    ctrl = SimpleNamespace(
+        stream_mode=True, radio_mode=False, stream_volume=0.20,
+        VOL_MIN=0.01, VOL_MAX=1.00, play_tts=AsyncMock(),
+    )
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("小聲一點"))
-    await bid.handler()
-    ctrl.request_volume_swap.assert_called_once()
+    with caplog.at_level(logging.ERROR):
+        await bid.handler()
+    assert ctrl.stream_volume == pytest.approx(0.01)  # 0.20 - 0.25 被 clamp 到 VOL_MIN
+    assert "request_volume_swap" not in caplog.text
 
 
-async def test_handler_radio_does_not_request_volume_swap():
-    """radio_mode 用 PCMVolumeTransformer 已即時生效，不需熱切換。"""
+async def test_handler_radio_mode_does_not_call_removed_volume_swap(caplog):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
     from intent_agents.volume_agent import VolumeAgent
-    ctrl = _ctrl(stream_mode=False, radio_mode=True, radio_volume=0.20)
+    ctrl = SimpleNamespace(
+        stream_mode=False, radio_mode=True, radio_volume=0.20,
+        VOL_MIN=0.01, VOL_MAX=1.00, play_tts=AsyncMock(),
+    )
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("大聲一點"))
-    await bid.handler()
-    ctrl.request_volume_swap.assert_not_called()
+    with caplog.at_level(logging.ERROR):
+        await bid.handler()
+    assert "request_volume_swap" not in caplog.text
 
 
 # ── handler: ack ──────────────────────────────────────────────────────────

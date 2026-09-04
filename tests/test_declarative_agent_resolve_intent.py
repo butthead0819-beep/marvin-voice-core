@@ -28,8 +28,7 @@ def _ctx(query="", mode="normal", audio=False):
 
 def _volume_ctrl(**overrides):
     defaults = dict(stream_mode=False, radio_mode=False, stream_volume=0.5,
-                     VOL_MIN=0.01, VOL_MAX=1.0, play_tts=AsyncMock(),
-                     request_volume_swap=lambda: None)
+                     VOL_MIN=0.01, VOL_MAX=1.0, play_tts=AsyncMock())
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
 
