@@ -13,8 +13,8 @@ Gate：stream_mode 與 radio_mode 都沒開 → dense zero with "no_playback_act
       （避免「我想小聲一點地講話」誤觸發）。
 
 Handler：
-  stream_mode → 調 controller.stream_volume，再 request_volume_swap() 排一次 second-stream
-                重 render 讓新音量即時生效（hotswap 關 → 退回次首生效）。步進 25%。
+  stream_mode → 調 controller.stream_volume（本地混音台每 100ms 輪詢套用，見
+                voice_controller_playback.py _mixer_play_music，無需熱切換）。步進 25%。
   radio_mode  → 調 controller.radio_volume（_radio_volume_fade_loop 即時觀察）
   mute → 設為 VOL_MIN
 
@@ -123,17 +123,10 @@ class VolumeAgent(DeclarativeIntentAgent):
 
         async def _handler() -> None:
             try:
-                target_attr = self._apply_volume(intent)
+                self._apply_volume(intent)
             except Exception:
                 logger.exception(f"[Volume] {intent} apply failed")
-                target_attr = None
-            # stream_mode：ffmpeg 烤死音量無法即時調，排一次 second-stream 重 render 套用新音量。
-            # radio_mode：PCMVolumeTransformer 已即時生效，不需熱切換。
-            if target_attr == "stream_volume":
-                try:
-                    self.ctrl.request_volume_swap()
-                except Exception:
-                    logger.exception("[Volume] request_volume_swap failed")
+            # 本地混音台輪詢 stream_volume/radio_volume 套用新值，兩者都不需要熱切換。
             await self._ack(intent)
 
         return _handler
