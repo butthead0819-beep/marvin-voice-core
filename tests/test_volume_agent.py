@@ -53,6 +53,8 @@ def _ctrl(stream_mode=False, radio_mode=False, stream_volume=0.10, radio_volume=
     ctrl.VOL_MAX = 1.00
     ctrl.VOL_STEP = 0.05
     ctrl.play_tts = AsyncMock()
+    ctrl.active_text_channel = MagicMock()
+    ctrl.active_text_channel.send = AsyncMock()
     return ctrl
 
 
@@ -263,6 +265,29 @@ async def test_handler_plays_ack():
     bid = agent.bid(_ctx("小聲一點"))
     await bid.handler()
     ctrl.play_tts.assert_called_once()
+
+
+async def test_handler_sends_text_channel_ack_as_fallback():
+    """語音 ack 走 play_tts，會被 [TTS Silence Gate]（使用者仍在講話）靜默吞掉，
+    音量調整因此完全沒有回饋、使用者以為指令沒被執行（2026-09-04 實測 case）。
+    pause/stop/skip 都有 ch.send() 文字頻道保底，volume 也要比照補上。"""
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True)
+    agent = VolumeAgent(ctrl)
+    bid = agent.bid(_ctx("小聲一點"))
+    await bid.handler()
+    ctrl.active_text_channel.send.assert_called_once_with("好，調小")
+
+
+async def test_handler_text_channel_ack_survives_missing_play_tts():
+    """就算 ctrl 沒有 play_tts（或掛掉），文字頻道確認仍要送出。"""
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True)
+    ctrl.play_tts = None
+    agent = VolumeAgent(ctrl)
+    bid = agent.bid(_ctx("大聲一點"))
+    await bid.handler()
+    ctrl.active_text_channel.send.assert_called_once_with("好，調大")
 
 
 # ── handler: volume_down 連動全域 TTS Gain ───────────────────────────────

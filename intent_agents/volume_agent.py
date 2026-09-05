@@ -20,6 +20,11 @@ Handler：
 
   TTS 音量跟著同步：全域 mixer._tts_gain 設成跟 stream_volume/radio_volume 一樣的值
   （2026-08-25 起連動；2026-08-26 改成直接對齊同一個值，而非比例衰減）。
+
+Ack：文字頻道 ch.send() + play_tts 雙保險。play_tts 常被 [TTS Silence Gate]
+     （使用者仍在講話）靜默吞掉，音量調整因此完全沒有回饋、使用者以為指令沒被
+     執行（2026-09-04 實測 case）；文字頻道不受這個 gate 影響，比照 pause/
+     stop/skip 的 ch.send() 保底模式（2026-09-05 補上）。
 """
 from __future__ import annotations
 
@@ -159,10 +164,20 @@ class VolumeAgent(DeclarativeIntentAgent):
         return target_attr
 
     async def _ack(self, intent: str) -> None:
+        text = _ACK_TEXT.get(intent, "好")
+        # 文字頻道保底：play_tts 常被 [TTS Silence Gate]（使用者仍在講話）靜默吞掉，
+        # 音量調整因此完全沒有回饋、使用者以為指令沒被執行（2026-09-04 實測 case）。
+        # pause/stop/skip 都靠 ch.send() 保底，volume 也要比照補上。
+        try:
+            ch = getattr(self.ctrl, "active_text_channel", None)
+            if ch is not None:
+                await ch.send(text)
+        except Exception:
+            logger.exception("[Volume] text ack failed")
         try:
             play_tts = getattr(self.ctrl, "play_tts", None)
             if play_tts is None:
                 return
-            await play_tts(_ACK_TEXT.get(intent, "好"), already_in_channel=True)
+            await play_tts(text, already_in_channel=True)
         except Exception:
             logger.exception("[Volume] ack failed")
