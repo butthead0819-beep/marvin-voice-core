@@ -486,7 +486,9 @@ class PlaybackMixin:
             return
 
         # 🦆 [Hot-Chat Guard]
-        if silent_during_stream and self._room_mood_store.get(0).hot_chat:
+        # protected（join 招呼/點名/登場台詞/遊戲主持）是要「插播」的獨立短事件，
+        # 不是會堆疊在熱聊上的閒聊 → 熱聊中照唸（進 mixer 後既有 duck 壓低音樂/背景）。
+        if silent_during_stream and not self._tts_protected and self._room_mood_store.get(0).hot_chat:
             logger.info(f"🦆 [Hot-Chat Mute] 熱聊中靜音主動 TTS: '{text[:30]}'")
             return
 
