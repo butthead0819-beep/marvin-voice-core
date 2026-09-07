@@ -27,6 +27,7 @@ def _fake_vc():
     fake = types.SimpleNamespace()
     fake.play_tts = AsyncMock(return_value=None)
     fake.play_dual_dialogue = AsyncMock(return_value=None)
+    fake._tts_protected = False  # speak() 的 protected 旗標拉/還原（真 VC 恆有此屬性）
     bot = MagicMock()
     bot.router = MagicMock()  # 預設有 router
     fake.bot = bot
