@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from unittest import mock
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -287,41 +288,55 @@ class _BlockingOutput:
 
 # ── Timing tests ──────────────────────────────────────────────────────────────
 
+class _SleepSpyTime:
+    """替換 playback_device 命名空間裡的 time：perf_counter 走真的，sleep 只記錄
+    「被要求睡多久」、不真睡。
+
+    測 _pump 主動要求的 sleep 量、而非牆鐘耗時 —— 前者對 CI runner 負載免疫：
+    排程抖動只會讓 perf_counter 讀到更晚 → remaining 更負 → 要求的 sleep 更少，
+    絕不會誤判成 regression；而雙重計時 bug（write 已阻塞一個 frame、_pump 又睡
+    一個）是結構性的，每輪照樣多要求睡 ~frame_duration，跟負載無關。
+    """
+
+    def __init__(self) -> None:
+        self.requested: list[float] = []
+
+    def sleep(self, seconds: float) -> None:
+        self.requested.append(seconds)
+
+    def perf_counter(self) -> float:
+        return time.perf_counter()
+
+
 def test_pump_no_double_timing_with_blocking_output():
     """阻塞輸出（write 內 sleep frame_duration）下，_pump 不得在 write 已耗掉一個
     frame 之後又睡一個 frame（雙重計時 bug → 總耗時逼近正確的兩倍）。
 
-    絕對時間上界在共用 CI runner 上不可靠（thread/sleep 排程抖動可讓「正確」耗時
-    本身就翻好幾倍）。改測「相對」：先量純 N 次阻塞 write 的基線耗時（同一台機、
-    同一份排程抖動），再量經過 _pump 的耗時。_pump 的額外開銷只有執行緒啟動 + 迴圈
-    （數十 ms）；雙重計時 bug 會多睡整整 N×frame_duration。抓 excess < 半個 N×frame
-    預算，兩者分得開又不受 runner 負載影響。"""
-    from marvin_voice_core.playback_device import LocalSpeakerDevice
+    舊版拿牆鐘耗時比預算，在共用 CI runner 上 flaky（排程抖動可讓 excess 爆表）。
+    改成攔截 _pump 要求的 sleep：write 已阻塞滿一個 frame_duration → 每輪 deadline
+    早就到，正確的 _pump 一律不會再要求 sleep（total == 0）；雙重計時 bug 則會讓
+    要求的 sleep 總量逼近 N×frame_duration。此判斷完全不受 runner 負載影響。"""
+    from marvin_voice_core import playback_device
 
     N = 10
     frame_duration = 0.02
-    budget = N * frame_duration  # 雙重計時 bug 會多花約這麼多
 
-    # 基線：純 N 次阻塞 write（含這台機當下的排程抖動）
-    baseline_out = _BlockingOutput(frame_duration)
-    t0 = time.perf_counter()
-    for _ in range(N):
-        baseline_out.write(FRAME)
-    baseline = time.perf_counter() - t0
+    spy = _SleepSpyTime()
+    output = _BlockingOutput(frame_duration)  # write 走 test 模組自己的 time，真的阻塞
+    dev = playback_device.LocalSpeakerDevice(output=output, frame_duration=frame_duration)
 
-    output = _BlockingOutput(frame_duration)
-    dev = LocalSpeakerDevice(output=output, frame_duration=frame_duration)
-    t0 = time.perf_counter()
-    dev.play(_FakeSource([FRAME] * N))
-    assert dev._thread is not None
-    dev._thread.join(timeout=5.0)
-    via_pump = time.perf_counter() - t0
+    with mock.patch.object(playback_device, "time", spy):
+        dev.play(_FakeSource([FRAME] * N))
+        assert dev._thread is not None
+        dev._thread.join(timeout=5.0)
 
+    assert not dev._thread.is_alive(), "泵執行緒未在 5s 內結束"
     assert len(output.frames) == N, f"應播出 {N} 幀，實際 {len(output.frames)}"
-    excess = via_pump - baseline
-    assert excess < budget * 0.5, (
-        f"雙重計時 bug：_pump 比純阻塞 write 多花 {excess:.3f}s"
-        f"（基線 {baseline:.3f}s → 經泵 {via_pump:.3f}s），超過半個 {budget:.3f}s frame 預算"
+
+    total_requested = sum(s for s in spy.requested if s > 0)
+    assert total_requested < N * frame_duration * 0.5, (
+        f"_pump 在阻塞式 write 已耗滿 frame 後仍要求 sleep 共 {total_requested:.4f}s"
+        f"（各輪：{[round(s, 4) for s in spy.requested]}）— 疑似雙重計時 regression"
     )
 
 
