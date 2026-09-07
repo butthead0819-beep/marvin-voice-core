@@ -951,9 +951,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                          await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
                          asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
                     self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
-                    # 中途進場招呼：唸完不被中斷（protected）；插播新聞式——
-                    # 就算 stream_mode 中（放音樂/直播）也要蓋過去唸出來，不被
-                    # Stream Guard 整句靜音（進 mixer 後交給既有 duck 機制壓低音樂）
+                    # 中途進場招呼：protected 唸完不中斷；bypass_stream_mute 插播式蓋過音樂
                     await self.speak(msg, proactive=True, protected=True, bypass_stream_mute=True)
 
         # --- [Leave Logic] ---
