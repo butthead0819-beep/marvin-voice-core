@@ -64,12 +64,17 @@ play_tts(text, kind: SpeakKind, *, emotion_tag=..., voice=..., force_macos=...)
 
 ## 3. 遷移路徑（增量、可回退）
 
-1. **✅ 已完成（PR #88，待 land）**：`_tts_suppressed()` —— 6 道守則收進單一 async 函式，`protected` 短路開頭。這是「policy 會被查詢」的唯一入口。
-2. `SpeakKind` enum + `RoomState` dataclass。`play_tts` / `speak` 新增 `kind=` 參數；**舊旗標從 kind 推導**（相容墊片）：`protected` → `kind in {JOIN_GREETING, GAME_HOST, ...}`；`silent_during_stream` → `kind in {PROACTIVE_*, NEWS, ...}`。一版之內兩者並存。
-3. 逐一改 79 個呼叫點：刪旗標、加 `kind=`。
-4. `_tts_suppressed` 的 if 鏈換成 `POLICY[kind](room)` 查表。
-5. 從簽名刪掉 `protected` / `bypass_stream_mute` / `silent_during_stream` / `allow_hotswap` / `hotswap_max_chars`。
-6. `_tts_protected` 這個實例旗標退役（改由 policy 依 kind 判斷）。
+1. **✅ PR #88（landed）**：`_tts_suppressed()` —— 6 道守則收進單一 async 函式，`protected` 短路開頭。
+2. **✅ PR #89**：`tts_speak_policy.py`（`SpeakKind` / `RoomState` / `Verdict` / `decide()` 純函式 + 窮舉測試）。`_tts_suppressed` 的 if 鏈換成 `decide()` 查表。`play_tts` / `speak` 新增 `kind=`；沒傳 → `_legacy_speak_kind()` 從舊旗標推導（相容墊片）。已改的呼叫點：`JOIN_GREETING`、`LEAVE_FAREWELL`、`STANDUP`/`JOKE`/`IMITATE`（後三者依 §5 定案降級成主動類）。
+3. **⬜ 逐一改剩下 ~70 個呼叫點**：刪舊旗標、加 `kind=`（多數是 `WAKE_REPLY`，機械性）。
+4. **⬜ 從簽名刪掉** `protected` / `bypass_stream_mute` / `silent_during_stream` / `allow_hotswap` / `hotswap_max_chars` / `priority` + `_legacy_speak_kind` 墊片。
+5. **⬜ `_tts_protected`** 實例旗標退役（barge-in guard 改讀 policy / kind）。
+
+### 使用者定案（2026-09-07）
+
+- **`LEAVE_FAREWELL`**：可略（主動類，房間忙就不講）
+- **`STANDUP` / `JOKE` / `IMITATE`**：降級成主動類（原本掛 protected 會蓋人講話）
+- **`DEFER` 逾時**：→ `DROP_TO_TEXT`（reply 類補文字；proactive 類仍 `DROP`）
 
 驗收：每階段全套 pytest 綠；`test_tts_suppressed_protected_bypasses_every_guard_at_once` 換成「每個 `PLAY_ALWAYS` kind 在全逆境下 policy 回 PLAY」的參數化契約測試。
 

@@ -23,7 +23,9 @@ import time
 import numpy as np
 import discord
 
-from voice_guard_helpers import _should_mute_for_stream_guard
+from tts_speak_policy import (
+    RoomState, SpeakKind, Verdict, decide as _decide_speak, is_committed as _is_committed,
+)
 from utterance_budget import STREAM_BUDGET
 from manzai_interject import compute_interject_ratio, interject_diagnostics
 from local_mixing_source import (
@@ -375,6 +377,7 @@ class PlaybackMixin:
         emotion_tag: str = "neutral",
         protected: bool = False,
         bypass_stream_mute: bool = False,
+        kind: "SpeakKind | None" = None,
     ) -> None:
         """統一的 stream-aware TTS 入口（給 agent handler 用）。
 
@@ -398,10 +401,13 @@ class PlaybackMixin:
           也要蓋過音樂唸出來」（如 join 招呼），繞過 play_tts 的 Stream Guard；
           進 mixer 後交給既有 duck 機制自動壓低音樂音量，效果類似插播。
         """
+        # committed：舊 protected= 旗標 或 kind 是 committed 類（join 招呼 / 遊戲主持…）
+        _committed = protected or (kind is not None and _is_committed(kind))
+
         # 🎭 [Marmo Case B] 機率升級為 dual (Marvin → Marmo)。
-        # 只在 proactive=True 試（主動發話）；protected（如 join 招呼要唸完點名）不升級，
+        # 只在 proactive=True 試（主動發話）；committed（如 join 招呼要唸完點名）不升級，
         # 確保是乾淨單句、不被 dual 機率閘洗掉名字/保護。
-        if proactive and not protected and self._maybe_try_dual_upgrade():
+        if proactive and not _committed and self._maybe_try_dual_upgrade():
             try:
                 segments = await self._generate_dual_marvin_lead(text)
                 if segments:
@@ -410,12 +416,10 @@ class PlaybackMixin:
             except Exception as exc:
                 logger.warning(f"[Speak] dual upgrade failed, fallback single: {exc}")
 
-        # play_tts 的 protected= kwarg 是死的（只讀 self._tts_protected）——這裡替
-        # speak 的呼叫端把旗標拉起來 + try/finally 還原，比照 _proactive_farewell 等
-        # 直呼 play_tts 的既有呼叫點。否則 protected 招呼會被 Interrupt Guard 的陳年
-        # _tts_interrupted 吃掉（實測 showay 進場招呼被丟）。
+        # committed 期間拉 self._tts_protected（barge-in guard 讀它、別中途打斷），
+        # try/finally 還原。play_tts 的 protected= kwarg 本身是死的。
         _prev_protected = getattr(self, "_tts_protected", False)
-        if protected:
+        if _committed:
             self._tts_protected = True
         try:
             await self.play_tts(
@@ -425,11 +429,11 @@ class PlaybackMixin:
                 allow_hotswap=True,
                 hotswap_max_chars=max_chars,
                 emotion_tag=emotion_tag,
-                protected=protected,
                 bypass_stream_mute=bypass_stream_mute,
+                kind=kind,
             )
         finally:
-            if protected:
+            if _committed:
                 self._tts_protected = _prev_protected
 
     def _maybe_try_dual_upgrade(self) -> bool:
@@ -463,71 +467,70 @@ class PlaybackMixin:
             pattern="marvin_lead",
         )
 
+    def _legacy_speak_kind(
+        self, *, silent_during_stream: bool, bypass_stream_mute: bool,
+    ) -> SpeakKind:
+        """沒傳 kind= 的舊呼叫點：從舊旗標推一個等效 kind（相容墊片，見
+        docs/tts_speak_policy_spec.md 遷移路徑 step 2）。呼叫點逐一改傳 kind= 後移除。"""
+        if self._tts_protected or bypass_stream_mute:
+            return SpeakKind.SELF_SAY          # 泛用 committed
+        if silent_during_stream:
+            return SpeakKind.PROACTIVE_TOPIC   # 泛用主動
+        return SpeakKind.WAKE_REPLY
+
     async def _tts_suppressed(
-        self, *, text: str, silent_during_stream: bool, allow_hotswap: bool,
-        already_in_channel: bool, bypass_stream_mute: bool, priority: int,
+        self, *, text: str, silent_during_stream: bool, already_in_channel: bool,
+        bypass_stream_mute: bool, kind: SpeakKind | None = None,
     ) -> bool:
-        """play_tts 的所有「靜音 / 丟句」判斷集中在此一處。回 True = 這句要丟掉。
+        """play_tts 的「這句要不要播」單一裁決點。回 True = 丟掉。
 
-        protected TTS（committed 事件：join/leave 招呼、summon 登場詞、遊戲主持、
-        DJ 口白）一律不被這裡任何一項擋掉 —— 只清「非續句」的殘留旗標後直接放行。
-        SpeakBus 是「要不要開口」的仲裁層；這裡是播放時的安全檢查，兩者不同層。
+        邏輯全在 tts_speak_policy.decide()（純函式、窮舉測試）——這裡只負責
+        蒐集房間狀態、處理 DEFER（await 空檔後重問）、把 Verdict 落地成
+        播 / 補文字 / 丟 + log。
 
-        ⚠️ 新增任何 mute/drop guard 一律加在這個函式裡（protected 短路之後），
-        別再散回 play_tts —— 免得又漏掉 protected（實測 join 招呼被三道 guard
-        各丟一次，見 join_greeting_playtts_guard_stack 記憶）。
+        ⚠️ 新增任何守則規則請改 tts_speak_policy.POLICY，別加 if 回這裡。
+        SpeakBus 是「要不要開口」的仲裁層；這裡是播放層，兩者不同職責。
         """
-        if self._tts_protected:
-            # protected 是獨立完整 unit，不是上次被打斷串流的續句 → 清殘留旗標
-            # （也讓 _stream_tts_to_mixer 餵料迴圈乾淨），比照 play_dual_dialogue。
-            self._tts_interrupted = False
+        kind = kind or self._legacy_speak_kind(
+            silent_during_stream=silent_during_stream, bypass_stream_mute=bypass_stream_mute,
+        )
+        room = RoomState(
+            stream_mode=self.stream_mode,
+            hot_chat=bool(self._room_mood_store.get(0).hot_chat),
+            last_interrupted=already_in_channel and self._tts_interrupted,
+            mixer_load_s=self._mixer.tts_load_seconds() if self._mixer is not None else 0.0,
+            game_mode=self.game_mode,
+        )
+
+        d = _decide_speak(kind, room)
+        if d.verdict is Verdict.DEFER:
+            silence_ok = await self._wait_for_user_silence()
+            d = _decide_speak(kind, room.with_silence(silence_ok))
+
+        if d.verdict in (Verdict.PLAY, Verdict.PLAY_OVER, Verdict.HOTSWAP):
+            if _is_committed(kind):
+                # committed 是獨立完整 unit，不是被打斷串流的續句 → 清殘留旗標
+                self._tts_interrupted = False
             return False
 
-        # 🎮 遊戲中停止所有 TTS
-        if self.game_mode:
-            logger.info(f"🎮 [TTS Game Mute] 遊戲中丟棄: '{text[:30]}'")
-            return True
-
-        # 🎵 [Stream Guard] stream_mode 中的主動發言整句靜音
-        if not bypass_stream_mute and _should_mute_for_stream_guard(
-            self.stream_mode, silent_during_stream, allow_hotswap
-        ):
-            logger.info(f"🎵 [TTS Stream Guard] 直播/放歌中丟棄主動 TTS: '{text[:30]}'")
-            return True
-
-        # 🦆 [Hot-Chat Guard] 熱聊中別把主動 TTS 堆在人類對話上
-        if silent_during_stream and self._room_mood_store.get(0).hot_chat:
-            logger.info(f"🦆 [TTS Hot-Chat Mute] 熱聊中丟棄: '{text[:30]}'")
-            return True
-
-        # 🛡️ [Interrupt Guard] 上一句被使用者打斷 → 排隊中的續句不再餵
-        if already_in_channel and self._tts_interrupted:
-            logger.info(f"⏩ [TTS Interrupt Guard] 中斷後跳過剩餘片段: '{text[:25]}...'")
-            return True
-
-        # ⏸️ [Silence Gate] 使用者仍在說話 → 跳過
-        if not await self._wait_for_user_silence():
-            logger.info(f"⏸️ [TTS Silence Gate] 使用者仍在說話，跳過: '{text[:25]}...'")
-            return True
-
-        # ⏭️ [Load Drop] mixer TTS 佇列積壓超過 priority 對應上限 → 丟句（文字補頻道）
-        _drop = {0: float("inf"), 1: 8.0, 2: 3.0}.get(priority, 8.0)
-        _load = self._mixer.tts_load_seconds() if self._mixer is not None else 0.0
-        if _load > _drop:
-            logger.info(f"⏭️ [TTS Load Drop] mixer TTS 佇列 {_load:.1f}s > {_drop}s（priority={priority}），丟棄本句: '{text[:30]}'")
+        if d.verdict is Verdict.DROP_TO_TEXT:
+            logger.info(f"💬 [TTS→text] {kind.name}/{d.reason}，補文字頻道: '{text[:30]}'")
             if not already_in_channel and self.active_text_channel:
                 asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
             return True
 
-        return False
+        logger.info(f"🔇 [TTS Drop] {kind.name}/{d.reason}: '{text[:30]}'")
+        return True
 
-    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS, protected: bool = False, bypass_stream_mute: bool = False):
+    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS, protected: bool = False, bypass_stream_mute: bool = False, kind: "SpeakKind | None" = None):
         """
         🚀 [T-02 Opt] Hyper-Streaming Version (Plan 12 Simplified)
 
-        所有「靜音 / 丟句」判斷收在 _tts_suppressed()；protected TTS 全部跳過。
-        bypass_stream_mute：連 Stream Guard 也跳過（stream_mode 放歌中也要插播唸出來，
-        如 join 招呼；進 mixer 後交給既有 duck 壓低音樂）。
+        「這句要不要播」全交給 _tts_suppressed() → tts_speak_policy.decide()。
+        kind=SpeakKind.*：新呼叫點請傳這個。沒傳 → 從舊旗標（protected /
+        silent_during_stream / bypass_stream_mute）推等效 kind（相容墊片）。
+        priority / allow_hotswap / hotswap_max_chars / protected / bypass_stream_mute
+        都是待退役的舊參數，見 docs/tts_speak_policy_spec.md。
         """
         if not text: return
         import re
@@ -535,9 +538,9 @@ class PlaybackMixin:
         if not text: return
 
         if await self._tts_suppressed(
-            text=text, silent_during_stream=silent_during_stream, allow_hotswap=allow_hotswap,
+            text=text, silent_during_stream=silent_during_stream,
             already_in_channel=already_in_channel, bypass_stream_mute=bypass_stream_mute,
-            priority=priority,
+            kind=kind,
         ):
             return
 
