@@ -205,6 +205,40 @@ async def test_speak_protected_sets_and_restores_flag_and_speaks_over_stale_inte
     assert cog._tts_protected is False, "speak 播完應還原 _tts_protected"
 
 
+# ── Hot-Chat Guard × protected ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_play_tts_hot_chat_still_mutes_unprotected_proactive():
+    """既有行為基準：熱聊中 + silent_during_stream + 非 protected → Hot-Chat Mute 丟句。"""
+    cog, _ = _make_cog()
+    cog._tts_protected = False
+    cog._room_mood_store = MagicMock()
+    cog._room_mood_store.get.return_value = MagicMock(hot_chat=True)
+    device = MagicMock(spec=DiscordPlaybackDevice)
+
+    with patch.object(cog, "_resolve_playback_device", return_value=device):
+        await cog.play_tts("閒聊一句", silent_during_stream=True)
+
+    cog._stream_tts_to_mixer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_play_tts_protected_speaks_through_hot_chat():
+    """進場招呼修：protected 是要插播的獨立短事件 → 熱聊中照唸、不被 Hot-Chat Mute
+    吃掉（實測 狗與露 進場招呼被 🦆 Hot-Chat Mute 丟的根因）。"""
+    cog, _ = _make_cog()
+    cog._tts_protected = True
+    cog._room_mood_store = MagicMock()
+    cog._room_mood_store.get.return_value = MagicMock(hot_chat=True)
+    device = MagicMock(spec=DiscordPlaybackDevice)
+
+    with patch.object(cog, "_resolve_playback_device", return_value=device):
+        await cog.play_tts("狗與露 登台，歌單打開，今晚想聽什麼交給他安排！",
+                           silent_during_stream=True, already_in_channel=True)
+
+    cog._stream_tts_to_mixer.assert_called_once()
+
+
 # ── _play_dual_interject ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
