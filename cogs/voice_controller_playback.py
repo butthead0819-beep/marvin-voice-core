@@ -410,16 +410,27 @@ class PlaybackMixin:
             except Exception as exc:
                 logger.warning(f"[Speak] dual upgrade failed, fallback single: {exc}")
 
-        await self.play_tts(
-            text,
-            already_in_channel=already_in_channel,
-            silent_during_stream=proactive,
-            allow_hotswap=True,
-            hotswap_max_chars=max_chars,
-            emotion_tag=emotion_tag,
-            protected=protected,
-            bypass_stream_mute=bypass_stream_mute,
-        )
+        # play_tts 的 protected= kwarg 是死的（只讀 self._tts_protected）——這裡替
+        # speak 的呼叫端把旗標拉起來 + try/finally 還原，比照 _proactive_farewell 等
+        # 直呼 play_tts 的既有呼叫點。否則 protected 招呼會被 Interrupt Guard 的陳年
+        # _tts_interrupted 吃掉（實測 showay 進場招呼被丟）。
+        _prev_protected = getattr(self, "_tts_protected", False)
+        if protected:
+            self._tts_protected = True
+        try:
+            await self.play_tts(
+                text,
+                already_in_channel=already_in_channel,
+                silent_during_stream=proactive,
+                allow_hotswap=True,
+                hotswap_max_chars=max_chars,
+                emotion_tag=emotion_tag,
+                protected=protected,
+                bypass_stream_mute=bypass_stream_mute,
+            )
+        finally:
+            if protected:
+                self._tts_protected = _prev_protected
 
     def _maybe_try_dual_upgrade(self) -> bool:
         """Roll the dice：MARMO_DUAL_SPEAK on + 隨機 < MARMO_DUAL_CHANCE + router 可用。
@@ -480,7 +491,12 @@ class PlaybackMixin:
             return
 
         # 🛡️ [Interrupt Guard]
-        if already_in_channel and self._tts_interrupted:
+        # protected（join 招呼/點名/登場台詞/遊戲主持）是獨立完整 unit，不是上次被
+        # 打斷串流的續句 → 清掉殘留的 _tts_interrupted（也讓 line 333 餵料迴圈乾淨），
+        # 別讓陳年打斷把整句吃掉。比照 play_dual_dialogue 的 reset。
+        if self._tts_protected:
+            self._tts_interrupted = False
+        elif already_in_channel and self._tts_interrupted:
             logger.info(f"⏩ [TTS Interrupt Guard] 中斷後跳過剩餘片段: '{text[:25]}...'")
             return
 

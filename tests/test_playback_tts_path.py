@@ -154,6 +154,57 @@ async def test_play_tts_returns_early_when_resolve_returns_none():
     cog._stream_tts_to_mixer.assert_not_called()
 
 
+# ── Interrupt Guard × protected ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_play_tts_interrupt_guard_still_drops_unprotected():
+    """既有行為基準：_tts_interrupted=True + already_in_channel=True + 非 protected
+    → Interrupt Guard 丟句，不進 mixer。"""
+    cog, _ = _make_cog()
+    cog._tts_interrupted = True
+    cog._tts_protected = False
+    device = MagicMock(spec=DiscordPlaybackDevice)
+
+    with patch.object(cog, "_resolve_playback_device", return_value=device):
+        await cog.play_tts("殘句", already_in_channel=True)
+
+    cog._stream_tts_to_mixer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_play_tts_protected_clears_stale_interrupt_and_speaks():
+    """進場招呼修：protected TTS 是獨立完整 unit，遇到上一句留下的 _tts_interrupted
+    不該被 Interrupt Guard 吃掉 —— 清旗標並照唸（實測 showay 進場招呼被丟的根因）。"""
+    cog, _ = _make_cog()
+    cog._tts_interrupted = True   # 上一句被使用者打斷留下的陳年旗標
+    cog._tts_protected = True
+    device = MagicMock(spec=DiscordPlaybackDevice)
+
+    with patch.object(cog, "_resolve_playback_device", return_value=device):
+        await cog.play_tts("狗與露 登台，歌單打開，今晚想聽什麼交給他安排！", already_in_channel=True)
+
+    cog._stream_tts_to_mixer.assert_called_once()
+    assert cog._tts_interrupted is False, "protected 播放前應清掉殘留的中斷旗標"
+
+
+@pytest.mark.asyncio
+async def test_speak_protected_sets_and_restores_flag_and_speaks_over_stale_interrupt():
+    """進場招呼路徑：speak(protected=True) 要自己把 self._tts_protected 拉起來
+    （kwarg 是死的）→ play_tts 的 Interrupt Guard 不再被陳年 _tts_interrupted 擋，
+    句子照進 mixer；播完旗標還原。"""
+    cog, _ = _make_cog()
+    cog._tts_interrupted = True   # 上一句被打斷的陳年旗標
+    cog._tts_protected = False
+    device = MagicMock(spec=DiscordPlaybackDevice)
+
+    with patch.object(cog, "_resolve_playback_device", return_value=device):
+        await cog.speak("showay 一到，手把抓牢，工作的事今晚一律不聊！",
+                        proactive=True, protected=True, bypass_stream_mute=True)
+
+    cog._stream_tts_to_mixer.assert_called_once()
+    assert cog._tts_protected is False, "speak 播完應還原 _tts_protected"
+
+
 # ── _play_dual_interject ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
