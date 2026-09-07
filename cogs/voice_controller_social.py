@@ -27,6 +27,7 @@ import time
 from discord.ext import tasks
 
 from speak_bus import SpeakContext
+from tts_speak_policy import SpeakKind
 from speak_outcome import SpeakOutcome, append_speak_outcome
 from tts_echo_guard import is_prompt_echo
 
@@ -470,13 +471,8 @@ class ProactiveSocialMixin:
                 logger.warning("⚠️ [TTS Echo Guard] imitate_performance 回傳與 prompt 高度重複，停止 TTS")
                 return
             if imitation:
-                self._tts_interrupted = False
-                _prev_protected = self._tts_protected
-                self._tts_protected = True
-                try:
-                    await self.play_tts(imitation.strip(), already_in_channel=True, protected=True)
-                finally:
-                    self._tts_protected = _prev_protected
+                # 使用者定案：模仿秀降級成主動類——房間忙就不硬蓋人講話
+                await self.play_tts(imitation.strip(), already_in_channel=True, kind=SpeakKind.IMITATE)
         except Exception as exc:
             logger.exception("[proactive_play_imitate] failed")
 
@@ -544,13 +540,8 @@ class ProactiveSocialMixin:
                 logger.warning("⚠️ [TTS Echo Guard] standup_performance 回傳與 prompt 高度重複，停止 TTS")
                 return
             if standup_text:
-                self._tts_interrupted = False
-                _prev_protected = self._tts_protected
-                self._tts_protected = True
-                try:
-                    await self.play_tts(standup_text.strip(), already_in_channel=True, protected=True)
-                finally:
-                    self._tts_protected = _prev_protected
+                # 使用者定案：脫口秀降級成主動類——房間忙就不硬蓋人講話
+                await self.play_tts(standup_text.strip(), already_in_channel=True, kind=SpeakKind.STANDUP)
         except Exception as exc:
             logger.exception("[proactive_play_standup] failed")
 
@@ -558,13 +549,8 @@ class ProactiveSocialMixin:
         try:
             joke = await self.bot.router.generate_joke(speaker=topic)
             if joke:
-                self._tts_interrupted = False
-                _prev_protected = self._tts_protected
-                self._tts_protected = True
-                try:
-                    await self.play_tts(joke, already_in_channel=True, protected=True)
-                finally:
-                    self._tts_protected = _prev_protected
+                # 使用者定案：主動講笑話降級成主動類——房間忙就不硬蓋人講話
+                await self.play_tts(joke, already_in_channel=True, kind=SpeakKind.JOKE)
         except Exception as exc:
             logger.exception("[proactive_play_joke] failed")
 

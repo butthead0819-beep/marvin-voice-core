@@ -38,8 +38,8 @@ from cogs.voice_controller_emotion import EmotionMoodMixin
 from cogs.voice_controller_connection import (  # noqa: F401 — re-export 給 main_discord / 測試
     ConnectionMixin, read_and_clear_reboot_state, REBOOT_STATE_FILE,
 )
-from cogs.voice_controller_playback import (  # noqa: F401 — re-export MAX_HOTSWAP_CHARS 給測試
-    PlaybackMixin, MAX_HOTSWAP_CHARS,
+from cogs.voice_controller_playback import (  # noqa: F401 — re-export 給測試
+    PlaybackMixin, MAX_HOTSWAP_CHARS, SpeakKind,
 )
 from cogs.voice_controller_system_loops import SystemLoopsMixin
 from cogs.voice_controller_talk import MarvinTalkMixin
@@ -951,8 +951,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                          await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
                          asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
                     self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
-                    # 中途進場招呼：protected 唸完不中斷；bypass_stream_mute 插播式蓋過音樂
-                    await self.speak(msg, proactive=True, protected=True, bypass_stream_mute=True)
+                    # 中途進場招呼：committed 事件，policy 保證放歌/熱聊/被打斷都照唸
+                    await self.speak(msg, proactive=True, kind=SpeakKind.JOIN_GREETING)
 
         # --- [Leave Logic] ---
         if before.channel == marvin_channel and after.channel != marvin_channel:
@@ -980,7 +980,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         await self.active_text_channel.send(f"👋 **【馬文 送客】**\n{msg}")
                         asyncio.create_task(self._send_mood_sticker(msg, context="farewell"))
                     self.stt_logger.info(f"[BOT送客→{member.display_name}] {msg}")
-                    await self.speak(msg, proactive=True)
+                    await self.speak(msg, proactive=True, kind=SpeakKind.LEAVE_FAREWELL)
 
     # --- [Internal Handlers] ---
     
