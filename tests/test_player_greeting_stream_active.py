@@ -37,7 +37,8 @@ def _make_mixin():
 @pytest.mark.asyncio
 async def test_greeting_stream_active_injects_short_directive():
     mixin = _make_mixin()
-    await mixin.generate_player_greeting("狗與露", stream_active=True)
+    # 用沒建檔的路人：熟面孔會走 PERSONAL_GREETINGS 查表、根本不呼叫 LLM
+    await mixin.generate_player_greeting("測試路人", stream_active=True)
 
     args, _ = mixin._call_llm.call_args
     user_prompt = args[1]
@@ -61,7 +62,7 @@ async def test_farewell_stream_active_injects_short_directive():
 @pytest.mark.asyncio
 async def test_greeting_default_no_stream_directive():
     mixin = _make_mixin()
-    await mixin.generate_player_greeting("狗與露")
+    await mixin.generate_player_greeting("測試路人")
 
     args, _ = mixin._call_llm.call_args
     user_prompt = args[1]
@@ -83,7 +84,7 @@ async def test_farewell_default_no_stream_directive():
 @pytest.mark.asyncio
 async def test_greeting_still_caches():
     mixin = _make_mixin()
-    msg1 = await mixin.generate_player_greeting("狗與露", stream_active=True)
-    msg2 = await mixin.generate_player_greeting("狗與露", stream_active=True)
+    msg1 = await mixin.generate_player_greeting("測試路人", stream_active=True)
+    msg2 = await mixin.generate_player_greeting("測試路人", stream_active=True)
     assert msg1 == msg2
     assert mixin._call_llm.await_count == 1, "重複呼叫應走快取，只觸發 1 次 LLM"

@@ -122,6 +122,20 @@ def local_time_phrase(ts: float) -> str:
     return f"週{_WEEKDAY_ZH[dt.weekday()]} {_slot_zh(dt.hour)} {dt.strftime('%H:%M')}"
 
 
+# 熟面孔進場招呼：固定的「司儀播報」一句話（押韻、扣個人喜好）。
+# 命中就直接回、不呼叫 LLM——減少干擾、講的內容穩定、不會因記憶漂移亂翻舊帳。
+# 沒建檔的路人不在此表 → 維持原本 generate_player_greeting 的 LLM 生成路徑。
+PERSONAL_GREETINGS = {
+    "showay": "showay 一到，手把抓牢，工作的事今晚一律不聊！",
+    "weakgogo": "weakgogo 進場，發車上場，方向盤交給他、誰都別想搶！",
+    "大肚": "大肚 來了，大家乾杯，不醉不歸！",
+    "狗與露": "狗與露 登台，歌單打開，今晚想聽什麼交給他安排！",
+    "陳進文": "陳進文 駕到，全體起立問好，今晚這場他來罩！",
+    "阿銓": "阿銓 進門，不用認生，坐下就是自己人！",
+    "狗與露的徒弟": "狗與露的徒弟 進場，師父就在你旁，快站好、別亂晃！",
+}
+
+
 class GeminiRouterContentMixin:
     """內容生成：記憶萃取、社交分析、日記、問候、音樂藍圖等。"""
 # --- 🧠 [Memory Extraction & Interaction] ---
@@ -910,6 +924,10 @@ class GeminiRouterContentMixin:
         stream_active=True：背景正在播放音樂，要走 hotswap 注入發聲，必須 ≤30 字
         才能通過 is_hotswap_eligible 閘。
         """
+        # 🎤 [熟面孔查表] 命中就回固定的司儀播報句，不呼叫 LLM、不吃快取。
+        if player_name in PERSONAL_GREETINGS:
+            return PERSONAL_GREETINGS[player_name]
+
         # 🚀 [Cache Check] 1 小時內重複使用相同嘲諷
         cached = self._greeting_cache.get(player_name)
         if cached and time.time() - cached[0] < 3600:
