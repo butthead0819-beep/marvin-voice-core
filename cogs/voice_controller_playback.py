@@ -463,49 +463,83 @@ class PlaybackMixin:
             pattern="marvin_lead",
         )
 
+    async def _tts_suppressed(
+        self, *, text: str, silent_during_stream: bool, allow_hotswap: bool,
+        already_in_channel: bool, bypass_stream_mute: bool, priority: int,
+    ) -> bool:
+        """play_tts 的所有「靜音 / 丟句」判斷集中在此一處。回 True = 這句要丟掉。
+
+        protected TTS（committed 事件：join/leave 招呼、summon 登場詞、遊戲主持、
+        DJ 口白）一律不被這裡任何一項擋掉 —— 只清「非續句」的殘留旗標後直接放行。
+        SpeakBus 是「要不要開口」的仲裁層；這裡是播放時的安全檢查，兩者不同層。
+
+        ⚠️ 新增任何 mute/drop guard 一律加在這個函式裡（protected 短路之後），
+        別再散回 play_tts —— 免得又漏掉 protected（實測 join 招呼被三道 guard
+        各丟一次，見 join_greeting_playtts_guard_stack 記憶）。
+        """
+        if self._tts_protected:
+            # protected 是獨立完整 unit，不是上次被打斷串流的續句 → 清殘留旗標
+            # （也讓 _stream_tts_to_mixer 餵料迴圈乾淨），比照 play_dual_dialogue。
+            self._tts_interrupted = False
+            return False
+
+        # 🎮 遊戲中停止所有 TTS
+        if self.game_mode:
+            logger.info(f"🎮 [TTS Game Mute] 遊戲中丟棄: '{text[:30]}'")
+            return True
+
+        # 🎵 [Stream Guard] stream_mode 中的主動發言整句靜音
+        if not bypass_stream_mute and _should_mute_for_stream_guard(
+            self.stream_mode, silent_during_stream, allow_hotswap
+        ):
+            logger.info(f"🎵 [TTS Stream Guard] 直播/放歌中丟棄主動 TTS: '{text[:30]}'")
+            return True
+
+        # 🦆 [Hot-Chat Guard] 熱聊中別把主動 TTS 堆在人類對話上
+        if silent_during_stream and self._room_mood_store.get(0).hot_chat:
+            logger.info(f"🦆 [TTS Hot-Chat Mute] 熱聊中丟棄: '{text[:30]}'")
+            return True
+
+        # 🛡️ [Interrupt Guard] 上一句被使用者打斷 → 排隊中的續句不再餵
+        if already_in_channel and self._tts_interrupted:
+            logger.info(f"⏩ [TTS Interrupt Guard] 中斷後跳過剩餘片段: '{text[:25]}...'")
+            return True
+
+        # ⏸️ [Silence Gate] 使用者仍在說話 → 跳過
+        if not await self._wait_for_user_silence():
+            logger.info(f"⏸️ [TTS Silence Gate] 使用者仍在說話，跳過: '{text[:25]}...'")
+            return True
+
+        # ⏭️ [Load Drop] mixer TTS 佇列積壓超過 priority 對應上限 → 丟句（文字補頻道）
+        _drop = {0: float("inf"), 1: 8.0, 2: 3.0}.get(priority, 8.0)
+        _load = self._mixer.tts_load_seconds() if self._mixer is not None else 0.0
+        if _load > _drop:
+            logger.info(f"⏭️ [TTS Load Drop] mixer TTS 佇列 {_load:.1f}s > {_drop}s（priority={priority}），丟棄本句: '{text[:30]}'")
+            if not already_in_channel and self.active_text_channel:
+                asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
+            return True
+
+        return False
+
     async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS, protected: bool = False, bypass_stream_mute: bool = False):
         """
         🚀 [T-02 Opt] Hyper-Streaming Version (Plan 12 Simplified)
 
-        bypass_stream_mute：跳過下面的 Stream Guard（stream_mode 中的主動發言
-        本來會被整句靜音）。用於「插播新聞」式的發話——像 join 招呼，即使
-        stream_mode 開著（放音樂/直播中）也要蓋過去唸出來；進 mixer 後交給
-        既有的 duck 機制把音樂音量壓低，不是另開一條無 duck 的路徑。
+        所有「靜音 / 丟句」判斷收在 _tts_suppressed()；protected TTS 全部跳過。
+        bypass_stream_mute：連 Stream Guard 也跳過（stream_mode 放歌中也要插播唸出來，
+        如 join 招呼；進 mixer 後交給既有 duck 壓低音樂）。
         """
-        if self.game_mode and not self._tts_protected:
-            return  # 遊戲中停止所有 TTS
         if not text: return
         import re
         text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', text, flags=re.DOTALL).strip()
         if not text: return
 
-        # 🎵 [Stream Guard]
-        if not bypass_stream_mute and _should_mute_for_stream_guard(
-            self.stream_mode, silent_during_stream, allow_hotswap
+        if await self._tts_suppressed(
+            text=text, silent_during_stream=silent_during_stream, allow_hotswap=allow_hotswap,
+            already_in_channel=already_in_channel, bypass_stream_mute=bypass_stream_mute,
+            priority=priority,
         ):
             return
-
-        # 🦆 [Hot-Chat Guard]
-        # protected（join 招呼/點名/登場台詞/遊戲主持）是要「插播」的獨立短事件，
-        # 不是會堆疊在熱聊上的閒聊 → 熱聊中照唸（進 mixer 後既有 duck 壓低音樂/背景）。
-        if silent_during_stream and not self._tts_protected and self._room_mood_store.get(0).hot_chat:
-            logger.info(f"🦆 [Hot-Chat Mute] 熱聊中靜音主動 TTS: '{text[:30]}'")
-            return
-
-        # 🛡️ [Interrupt Guard]
-        # protected（join 招呼/點名/登場台詞/遊戲主持）是獨立完整 unit，不是上次被
-        # 打斷串流的續句 → 清掉殘留的 _tts_interrupted（也讓 line 333 餵料迴圈乾淨），
-        # 別讓陳年打斷把整句吃掉。比照 play_dual_dialogue 的 reset。
-        if self._tts_protected:
-            self._tts_interrupted = False
-        elif already_in_channel and self._tts_interrupted:
-            logger.info(f"⏩ [TTS Interrupt Guard] 中斷後跳過剩餘片段: '{text[:25]}...'")
-            return
-
-        if not self._tts_protected:
-            if not await self._wait_for_user_silence():
-                logger.info(f"⏸️ [TTS Silence Gate] 使用者仍在說話，跳過非保護 TTS: '{text[:25]}...'")
-                return
 
         # ⚠️ [Companion Radar]
         if os.getenv("COMPANION_RADAR_ENABLED", "false").lower() == "true":
@@ -545,13 +579,6 @@ class PlaybackMixin:
             return
         if not already_in_channel:
             self._tts_interrupted = False
-        _drop = {0: float("inf"), 1: 8.0, 2: 3.0}.get(priority, 8.0)
-        _load = self._mixer.tts_load_seconds()
-        if _load > _drop and not self._tts_protected:
-            logger.info(f"⏭️ [TTS Load Drop] mixer TTS 佇列 {_load:.1f}s > {_drop}s（priority={priority}），丟棄本句: '{text[:30]}'")
-            if not already_in_channel and self.active_text_channel:
-                asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
-            return
         self._ensure_mixer_playing(device)
         pushed = await self._stream_tts_to_mixer(text, force_macos=force_macos,
                                                  emotion_tag=emotion_tag, voice=voice)

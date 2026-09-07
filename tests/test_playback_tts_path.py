@@ -239,6 +239,47 @@ async def test_play_tts_protected_speaks_through_hot_chat():
     cog._stream_tts_to_mixer.assert_called_once()
 
 
+# ── _tts_suppressed：單一守門，protected 一次跳過全部 ─────────────────────────
+
+@pytest.mark.asyncio
+async def test_tts_suppressed_protected_bypasses_every_guard_at_once():
+    """契約：protected=True 時，就算 game_mode + stream_mode + 熱聊 + 佇列爆 + 陳年中斷
+    全部成立，_tts_suppressed 仍回 False（且順手清掉 _tts_interrupted）。
+    新增 guard 只要加在 protected 短路之後，就自動吃到這個保證。"""
+    cog, _ = _make_cog()
+    cog._tts_protected = True
+    cog.game_mode = True
+    cog.stream_mode = True
+    cog._tts_interrupted = True
+    cog._room_mood_store = MagicMock()
+    cog._room_mood_store.get.return_value = MagicMock(hot_chat=True)
+    cog._mixer.tts_load_seconds.return_value = 999.0
+
+    suppressed = await cog._tts_suppressed(
+        text="showay 一到，手把抓牢，工作的事今晚一律不聊！",
+        silent_during_stream=True, allow_hotswap=True,
+        already_in_channel=True, bypass_stream_mute=False, priority=1,
+    )
+
+    assert suppressed is False
+    assert cog._tts_interrupted is False
+
+
+@pytest.mark.asyncio
+async def test_tts_suppressed_load_drop_still_gated_for_unprotected():
+    """既有行為基準：非 protected + mixer 佇列積壓超 priority 上限 → 丟句。"""
+    cog, _ = _make_cog()
+    cog._tts_protected = False
+    cog._mixer.tts_load_seconds.return_value = 999.0
+
+    suppressed = await cog._tts_suppressed(
+        text="一句被積壓丟掉的話", silent_during_stream=False, allow_hotswap=False,
+        already_in_channel=True, bypass_stream_mute=False, priority=1,
+    )
+
+    assert suppressed is True
+
+
 # ── _play_dual_interject ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
