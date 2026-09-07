@@ -374,6 +374,7 @@ class PlaybackMixin:
         already_in_channel: bool = True,
         emotion_tag: str = "neutral",
         protected: bool = False,
+        bypass_stream_mute: bool = False,
     ) -> None:
         """統一的 stream-aware TTS 入口（給 agent handler 用）。
 
@@ -392,6 +393,10 @@ class PlaybackMixin:
           - 🎭 Marmo Case B：可能升級為 dual（Marvin → Marmo），機率閘
             MARMO_DUAL_CHANCE (default 0.5) + MARMO_DUAL_SPEAK 必須 on。
             失敗 fallback 走原 single Marvin 路徑。
+
+        bypass_stream_mute=True（插播新聞）：呼叫端明確要求「即使 stream_mode 中
+          也要蓋過音樂唸出來」（如 join 招呼），繞過 play_tts 的 Stream Guard；
+          進 mixer 後交給既有 duck 機制自動壓低音樂音量，效果類似插播。
         """
         # 🎭 [Marmo Case B] 機率升級為 dual (Marvin → Marmo)。
         # 只在 proactive=True 試（主動發話）；protected（如 join 招呼要唸完點名）不升級，
@@ -413,6 +418,7 @@ class PlaybackMixin:
             hotswap_max_chars=max_chars,
             emotion_tag=emotion_tag,
             protected=protected,
+            bypass_stream_mute=bypass_stream_mute,
         )
 
     def _maybe_try_dual_upgrade(self) -> bool:
@@ -446,9 +452,14 @@ class PlaybackMixin:
             pattern="marvin_lead",
         )
 
-    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS, protected: bool = False):
+    async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS, protected: bool = False, bypass_stream_mute: bool = False):
         """
         🚀 [T-02 Opt] Hyper-Streaming Version (Plan 12 Simplified)
+
+        bypass_stream_mute：跳過下面的 Stream Guard（stream_mode 中的主動發言
+        本來會被整句靜音）。用於「插播新聞」式的發話——像 join 招呼，即使
+        stream_mode 開著（放音樂/直播中）也要蓋過去唸出來；進 mixer 後交給
+        既有的 duck 機制把音樂音量壓低，不是另開一條無 duck 的路徑。
         """
         if self.game_mode and not self._tts_protected:
             return  # 遊戲中停止所有 TTS
@@ -458,7 +469,9 @@ class PlaybackMixin:
         if not text: return
 
         # 🎵 [Stream Guard]
-        if _should_mute_for_stream_guard(self.stream_mode, silent_during_stream, allow_hotswap):
+        if not bypass_stream_mute and _should_mute_for_stream_guard(
+            self.stream_mode, silent_during_stream, allow_hotswap
+        ):
             return
 
         # 🦆 [Hot-Chat Guard]

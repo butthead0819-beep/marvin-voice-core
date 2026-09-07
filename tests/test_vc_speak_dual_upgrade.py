@@ -112,6 +112,19 @@ async def test_speak_proactive_gate_off_uses_play_tts(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_speak_forwards_bypass_stream_mute_to_play_tts(monkeypatch):
+    """進場招呼要「插播新聞」蓋過音樂：speak(bypass_stream_mute=True) 要原樣轉給 play_tts，
+    讓呼叫端能繞過 Stream Guard（stream_mode 時原本會把 proactive TTS 整句靜音）。"""
+    monkeypatch.delenv("MARMO_DUAL_SPEAK", raising=False)
+    fake = _fake_vc()
+    await VoiceController.speak(
+        fake, "狗與露上線了", proactive=True, protected=True, bypass_stream_mute=True,
+    )
+    fake.play_tts.assert_awaited_once()
+    assert fake.play_tts.call_args.kwargs.get("bypass_stream_mute") is True
+
+
+@pytest.mark.asyncio
 async def test_speak_proactive_dual_success_skips_play_tts(monkeypatch):
     monkeypatch.setenv("MARMO_DUAL_SPEAK", "true")
     monkeypatch.setenv("MARMO_DUAL_CHANCE", "1.0")

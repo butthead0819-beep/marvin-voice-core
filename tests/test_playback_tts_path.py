@@ -111,6 +111,34 @@ async def test_play_tts_ensure_mixer_called_with_device():
 
 
 @pytest.mark.asyncio
+async def test_play_tts_stream_mode_mutes_without_bypass():
+    """既有行為基準：stream_mode=True + silent_during_stream=True → Stream Guard 靜音，
+    不進 mixer（沒有 bypass_stream_mute 時的既有行為，不該被下面的 bypass 測試 regress）。"""
+    cog, _ = _make_cog()
+    cog.stream_mode = True
+    device = MagicMock(spec=DiscordPlaybackDevice)
+
+    with patch.object(cog, "_resolve_playback_device", return_value=device):
+        await cog.play_tts("測試", silent_during_stream=True)
+
+    cog._stream_tts_to_mixer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_play_tts_bypass_stream_mute_speaks_over_music():
+    """插播新聞：bypass_stream_mute=True → 即使 stream_mode(放音樂/直播中) 也要唸出來，
+    不被 Stream Guard 靜音（進 mixer 後交給既有 duck 機制自動壓低音樂音量）。"""
+    cog, _ = _make_cog()
+    cog.stream_mode = True
+    device = MagicMock(spec=DiscordPlaybackDevice)
+
+    with patch.object(cog, "_resolve_playback_device", return_value=device):
+        await cog.play_tts("狗與露上線了", silent_during_stream=True, bypass_stream_mute=True)
+
+    cog._stream_tts_to_mixer.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_play_tts_returns_early_when_resolve_returns_none():
     """③b: _resolve 回 None → 提早 return，_stream_tts_to_mixer 不被呼叫。
 
