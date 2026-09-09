@@ -93,6 +93,21 @@ def _status_items() -> tuple[tuple[str, str], ...]:
     return tuple(out)
 
 
+def _car_puck_items() -> tuple[tuple[str, str], ...]:
+    """車 puck（Pi Zero 2W）冷啟動/斷線狀態提示——見 device/puck_mixer.py。
+    分兩段連線各自的中/失敗，加串流本身的起/穩/斷，共 7 句，本機播放、
+    不經 voice_controller，跟 _status_items() 同一種短促語氣但不成對 tier。"""
+    return (
+        ("連熱點中", "hotspot_connecting.mp3"),
+        ("連不上熱點", "hotspot_failed.mp3"),
+        ("接大腦中", "core_connecting.mp3"),
+        ("大腦失聯了", "core_failed.mp3"),
+        ("開始放了", "stream_start.mp3"),
+        ("順了", "stream_ok.mp3"),
+        ("斷線了", "stream_dropped.mp3"),
+    )
+
+
 POOLS: dict[str, AckPool] = {
     "wake_zh": AckPool("wake_zh", "assets/acks", "marvin_zh", (
         ("嗯。。。", "ack_1.mp3"),
@@ -144,6 +159,7 @@ POOLS: dict[str, AckPool] = {
         ("無法播放", "music_fail.mp3"),
     )),
     "status": AckPool("status", "assets/acks_status", "marvin_zh", _status_items()),
+    "car_puck": AckPool("car_puck", "assets/car_puck", "marvin_zh", _car_puck_items()),
 }
 
 
