@@ -83,8 +83,11 @@ def _hotspot_connected() -> bool:
     熱點）。查詢本身失敗（指令不在/逾時）視為「沒有可用資訊」，當作有連——跟
     _list_connected_bt_macs() 同一種保守取捨，不要讓偵測手段本身的問題誤報斷線。"""
     try:
+        env = dict(os.environ)
+        if "/sbin" not in env.get("PATH", ""):
+            env["PATH"] = (env.get("PATH", "") + ":/sbin:/usr/sbin").lstrip(":")
         out = subprocess.run(
-            ["iwgetid", "-r"], capture_output=True, text=True, timeout=3,
+            ["iwgetid", "-r"], capture_output=True, text=True, timeout=3, env=env,
         ).stdout.strip()
     except Exception:
         return True
