@@ -69,6 +69,11 @@ _QUEUE_GET_TIMEOUT_S = 0.5
 _RECONNECT_DELAY_S = 2.0
 _TITLE_POLL_INTERVAL_S = 3.0
 
+# 2026-09-09：冷啟動語音狀態提示——BT 一連上車機、Mac 端 /audio_stream 還沒送出
+# 真內容前，這段本機音檔用同一顆 PCM 播一次。空字串＝功能關閉，零行為改變。
+LOCAL_STATUS_AUDIO_PATH = os.getenv("MARVIN_PUCK_LOCAL_STATUS_AUDIO", "").strip()
+_LOCAL_CLIP_READ_CHUNK = BYTES_PER_CHUNK
+
 
 # 2026-08-19：BT 輸出目標從「固定 MAC」改成「候選清單 + 動態挑選」——PuckMixer
 # 自己在每次(重)連線時即時重新挑選，才是真正的動態切換。
@@ -251,6 +256,9 @@ class PuckMixer:
         self._ref_ring = np.zeros(self._ref_frames * CHANNELS, dtype=np.int16)
         self._ref_write_frame = 0  # 下一筆要寫入的 frame 位置（ring index）
         self._ref_frames_written = 0  # 總共寫了多少 frame（供對齊判斷是否已填滿）
+        # 冷啟動語音提示只播一次——process 生命週期內的旗標，BT 中途斷線重連
+        # （_loop() 同一個 thread 繼續跑）不該重播；要重播只有整個 process 重啟。
+        self._boot_announced = False
 
     def _append_reference(self, mixed: np.ndarray):
         """把剛送喇叭的 PCM 存進 ring buffer（_loop 每個 chunk 呼叫一次）。"""
@@ -460,10 +468,49 @@ class PuckMixer:
         self._min_fill_frac = None  # 新連線，舊連線的水位紀錄不該延續過來
         return q, reader_thread, reader_stop
 
+    def _maybe_play_boot_announcement(self, pcm):
+        """process 生命週期內只做一次：BT PCM 剛開成功、還沒接上 /audio_stream
+        前，如果 Mac 端目前沒有真內容在播（純靜音/idle），播一句本機狀態提示。
+        已經有真內容在播（例如其他原因已經在放歌）就不要蓋過去，直接跳過。"""
+        self._boot_announced = True
+        if not LOCAL_STATUS_AUDIO_PATH:
+            return pcm
+        if fetch_car_now_track() is not None:
+            return pcm
+        return self._play_local_status_clip(pcm)
+
+    def _play_local_status_clip(self, pcm):
+        """同步播完本機音檔（或播到 stop() 被呼叫）。單一 writer 在 _loop() 主
+        thread 裡跑，不用背景 thread/queue——跟 _connect_stream() 那套是為了
+        「持續消費會斷線的網路串流」設計的完全不同場景，這裡只是播一次就結束
+        的短檔案。任何失敗（解碼器起不來、PCM 寫入炸開）都安靜放棄，直接落回
+        呼叫端接原本的 /audio_stream 流程，提示播不出來不該讓車 puck 整條啞掉。"""
+        try:
+            proc = _make_decoder(LOCAL_STATUS_AUDIO_PATH)
+        except Exception:
+            return pcm
+        try:
+            while not self._stop_flag.is_set():
+                try:
+                    data = proc.stdout.read(_LOCAL_CLIP_READ_CHUNK)
+                except Exception:
+                    break
+                if not data:
+                    break  # 真正播完（EOF）
+                pcm = self._write_with_reconnect(pcm, data)
+        finally:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return pcm
+
     def _loop(self):
         pcm = self._open_pcm_with_retry()
         if pcm is None:
             return
+        if not self._boot_announced:
+            pcm = self._maybe_play_boot_announcement(pcm)
         try:
             while not self._stop_flag.is_set():
                 q, reader_thread, reader_stop = self._connect_stream()

@@ -14,6 +14,9 @@ Environment=MARVIN_PUCK_BT_MAC=__CAR_HEAD_UNIT_MAC__
 # 連線時上面那個優先。平常不用設，只有要對照測試其他喇叭時才加。
 #Environment=MARVIN_PUCK_BT_MAC_FALLBACK=__SOUNDCORE_MAC__
 Environment=MARVIN_PUCK_MIC_DEVICE=__INMP441_ALSA_DEVICE__
+# 選用：BT 一連上車機、Mac 端 /audio_stream 還沒送出真內容前，播一句本機狀態
+# 提示（開機播一次）。空著＝功能關閉。音檔本身不進 git，離線合成後手動放上 Pi。
+#Environment=MARVIN_PUCK_LOCAL_STATUS_AUDIO=/home/pi/marvin-device/puck_audio/status_connecting.mp3
 ExecStart=/usr/bin/python3 -u /home/pi/marvin-device/volume_server.py
 Restart=always
 RestartSec=2
