@@ -72,7 +72,23 @@ _TITLE_POLL_INTERVAL_S = 3.0
 # 2026-09-09：冷啟動語音狀態提示——BT 一連上車機、Mac 端 /audio_stream 還沒送出
 # 真內容前，這段本機音檔用同一顆 PCM 播一次。空字串＝功能關閉，零行為改變。
 LOCAL_STATUS_AUDIO_PATH = os.getenv("MARVIN_PUCK_LOCAL_STATUS_AUDIO", "").strip()
+# 2026-09-09：iPhone 熱點沒連上時的提示——跟上面那句互斥（熱點都沒連上，Mac
+# 端狀態查了也沒意義），空字串＝功能關閉。
+LOCAL_HOTSPOT_FAILED_AUDIO_PATH = os.getenv("MARVIN_PUCK_LOCAL_HOTSPOT_FAILED_AUDIO", "").strip()
 _LOCAL_CLIP_READ_CHUNK = BYTES_PER_CHUNK
+
+
+def _hotspot_connected() -> bool:
+    """iPhone 熱點判斷：iwgetid 查不到目前關聯的 WiFi SSID 就算沒連上（找不到
+    熱點）。查詢本身失敗（指令不在/逾時）視為「沒有可用資訊」，當作有連——跟
+    _list_connected_bt_macs() 同一種保守取捨，不要讓偵測手段本身的問題誤報斷線。"""
+    try:
+        out = subprocess.run(
+            ["iwgetid", "-r"], capture_output=True, text=True, timeout=3,
+        ).stdout.strip()
+    except Exception:
+        return True
+    return bool(out)
 
 
 # 2026-08-19：BT 輸出目標從「固定 MAC」改成「候選清單 + 動態挑選」——PuckMixer
@@ -470,23 +486,27 @@ class PuckMixer:
 
     def _maybe_play_boot_announcement(self, pcm):
         """process 生命週期內只做一次：BT PCM 剛開成功、還沒接上 /audio_stream
-        前，如果 Mac 端目前沒有真內容在播（純靜音/idle），播一句本機狀態提示。
-        已經有真內容在播（例如其他原因已經在放歌）就不要蓋過去，直接跳過。"""
+        前，依序判斷該播哪句（或不播）：
+        1. iPhone 熱點沒連上 → 播熱點失敗提示，Mac 端狀態不用查了（反正查不到）。
+        2. 熱點通了、但 Mac 端目前沒有真內容在播（純靜音/idle）→ 播一般狀態提示。
+        3. 已經有真內容在播（例如其他原因已經在放歌）→ 不要蓋過去，直接跳過。"""
         self._boot_announced = True
+        if LOCAL_HOTSPOT_FAILED_AUDIO_PATH and not _hotspot_connected():
+            return self._play_local_status_clip(pcm, LOCAL_HOTSPOT_FAILED_AUDIO_PATH)
         if not LOCAL_STATUS_AUDIO_PATH:
             return pcm
         if fetch_car_now_track() is not None:
             return pcm
-        return self._play_local_status_clip(pcm)
+        return self._play_local_status_clip(pcm, LOCAL_STATUS_AUDIO_PATH)
 
-    def _play_local_status_clip(self, pcm):
+    def _play_local_status_clip(self, pcm, path):
         """同步播完本機音檔（或播到 stop() 被呼叫）。單一 writer 在 _loop() 主
         thread 裡跑，不用背景 thread/queue——跟 _connect_stream() 那套是為了
         「持續消費會斷線的網路串流」設計的完全不同場景，這裡只是播一次就結束
         的短檔案。任何失敗（解碼器起不來、PCM 寫入炸開）都安靜放棄，直接落回
         呼叫端接原本的 /audio_stream 流程，提示播不出來不該讓車 puck 整條啞掉。"""
         try:
-            proc = _make_decoder(LOCAL_STATUS_AUDIO_PATH)
+            proc = _make_decoder(path)
         except Exception:
             return pcm
         try:

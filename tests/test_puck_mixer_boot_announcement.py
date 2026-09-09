@@ -33,6 +33,7 @@ def _fake_proc(chunks):
 
 def test_no_announcement_when_path_unset(monkeypatch):
     monkeypatch.setattr(puck_mixer, "LOCAL_STATUS_AUDIO_PATH", "")
+    monkeypatch.setattr(puck_mixer, "LOCAL_HOTSPOT_FAILED_AUDIO_PATH", "")
     fetch_mock = MagicMock()
     monkeypatch.setattr(puck_mixer, "fetch_car_now_track", fetch_mock)
     decoder_mock = MagicMock()
@@ -50,6 +51,7 @@ def test_no_announcement_when_path_unset(monkeypatch):
 
 def test_plays_clip_once_when_idle(monkeypatch):
     monkeypatch.setattr(puck_mixer, "LOCAL_STATUS_AUDIO_PATH", "/fake/status.mp3")
+    monkeypatch.setattr(puck_mixer, "LOCAL_HOTSPOT_FAILED_AUDIO_PATH", "")
     monkeypatch.setattr(puck_mixer, "fetch_car_now_track", lambda: None)
     proc = _fake_proc([b"\x00" * 8])
     decoder_mock = MagicMock(return_value=proc)
@@ -67,6 +69,7 @@ def test_plays_clip_once_when_idle(monkeypatch):
 
 def test_skips_when_real_content_already_playing(monkeypatch):
     monkeypatch.setattr(puck_mixer, "LOCAL_STATUS_AUDIO_PATH", "/fake/status.mp3")
+    monkeypatch.setattr(puck_mixer, "LOCAL_HOTSPOT_FAILED_AUDIO_PATH", "")
     monkeypatch.setattr(
         puck_mixer, "fetch_car_now_track",
         lambda: {"title": "已經在播的歌", "artist": "", "album": ""},
@@ -86,7 +89,6 @@ def test_skips_when_real_content_already_playing(monkeypatch):
 
 def test_clip_playback_stops_immediately_when_stop_flag_set(monkeypatch):
     """假裝解碼器一直吐得出資料（永遠沒 EOF）——不靠 EOF 結束，得靠 stop_flag。"""
-    monkeypatch.setattr(puck_mixer, "LOCAL_STATUS_AUDIO_PATH", "/fake/status.mp3")
     proc = MagicMock()
     proc.stdout.read.return_value = b"\x00" * 8  # 永遠有資料，永遠不 EOF
     monkeypatch.setattr(puck_mixer, "_make_decoder", MagicMock(return_value=proc))
@@ -95,11 +97,99 @@ def test_clip_playback_stops_immediately_when_stop_flag_set(monkeypatch):
     mixer._stop_flag.set()  # 播放前就喊停
     fake_pcm = MagicMock()
 
-    result = mixer._play_local_status_clip(fake_pcm)
+    result = mixer._play_local_status_clip(fake_pcm, "/fake/status.mp3")
 
     assert result is fake_pcm
     fake_pcm.write.assert_not_called()
     proc.kill.assert_called_once()
+
+
+def test_hotspot_not_connected_plays_hotspot_clip_and_skips_car_now(monkeypatch):
+    """熱點沒連上 → 播熱點失敗提示，優先權比一般狀態提示高，不用查 /car_now
+    （查了也沒意義——熱點都沒連上，Mac 端根本連不到）。"""
+    monkeypatch.setattr(puck_mixer, "LOCAL_HOTSPOT_FAILED_AUDIO_PATH", "/fake/hotspot_failed.mp3")
+    monkeypatch.setattr(puck_mixer, "LOCAL_STATUS_AUDIO_PATH", "/fake/status.mp3")
+    monkeypatch.setattr(puck_mixer, "_hotspot_connected", lambda: False)
+    fetch_mock = MagicMock()
+    monkeypatch.setattr(puck_mixer, "fetch_car_now_track", fetch_mock)
+    proc = _fake_proc([b"\x00" * 8])
+    decoder_mock = MagicMock(return_value=proc)
+    monkeypatch.setattr(puck_mixer, "_make_decoder", decoder_mock)
+
+    mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF")
+    fake_pcm = MagicMock()
+    result = mixer._maybe_play_boot_announcement(fake_pcm)
+
+    decoder_mock.assert_called_once_with("/fake/hotspot_failed.mp3")
+    fetch_mock.assert_not_called()
+    assert result is fake_pcm
+
+
+def test_hotspot_connected_falls_through_to_existing_status_check(monkeypatch):
+    """熱點連上了 → 照舊查 /car_now 決定要不要播一般狀態提示，跟熱點功能關閉時
+    行為一致。"""
+    monkeypatch.setattr(puck_mixer, "LOCAL_HOTSPOT_FAILED_AUDIO_PATH", "/fake/hotspot_failed.mp3")
+    monkeypatch.setattr(puck_mixer, "LOCAL_STATUS_AUDIO_PATH", "/fake/status.mp3")
+    monkeypatch.setattr(puck_mixer, "_hotspot_connected", lambda: True)
+    monkeypatch.setattr(puck_mixer, "fetch_car_now_track", lambda: None)
+    proc = _fake_proc([b"\x00" * 8])
+    decoder_mock = MagicMock(return_value=proc)
+    monkeypatch.setattr(puck_mixer, "_make_decoder", decoder_mock)
+
+    mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF")
+    fake_pcm = MagicMock()
+    mixer._maybe_play_boot_announcement(fake_pcm)
+
+    decoder_mock.assert_called_once_with("/fake/status.mp3")
+
+
+def test_hotspot_check_skipped_when_env_unset(monkeypatch):
+    """MARVIN_PUCK_LOCAL_HOTSPOT_FAILED_AUDIO 沒設（預設）→ 完全不查熱點狀態，
+    零行為改變。"""
+    monkeypatch.setattr(puck_mixer, "LOCAL_HOTSPOT_FAILED_AUDIO_PATH", "")
+    monkeypatch.setattr(puck_mixer, "LOCAL_STATUS_AUDIO_PATH", "/fake/status.mp3")
+    hotspot_mock = MagicMock()
+    monkeypatch.setattr(puck_mixer, "_hotspot_connected", hotspot_mock)
+    monkeypatch.setattr(puck_mixer, "fetch_car_now_track", lambda: None)
+    proc = _fake_proc([b"\x00" * 8])
+    monkeypatch.setattr(puck_mixer, "_make_decoder", MagicMock(return_value=proc))
+
+    mixer = PuckMixer(bt_mac="AA:BB:CC:DD:EE:FF")
+    mixer._maybe_play_boot_announcement(MagicMock())
+
+    hotspot_mock.assert_not_called()
+
+
+def test_hotspot_connected_helper_reads_iwgetid(monkeypatch):
+    import subprocess as subprocess_module
+
+    def _fake_run(cmd, **kwargs):
+        assert cmd == ["iwgetid", "-r"]
+        result = MagicMock()
+        result.stdout = "iPhone\n"
+        return result
+
+    monkeypatch.setattr(puck_mixer.subprocess, "run", _fake_run)
+    assert puck_mixer._hotspot_connected() is True
+
+
+def test_hotspot_not_connected_when_iwgetid_returns_empty(monkeypatch):
+    def _fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.stdout = ""
+        return result
+
+    monkeypatch.setattr(puck_mixer.subprocess, "run", _fake_run)
+    assert puck_mixer._hotspot_connected() is False
+
+
+def test_hotspot_check_failure_defaults_to_connected(monkeypatch):
+    """iwgetid 本身跑不起來（指令不在/逾時）→ 當作有連，不誤報斷線。"""
+    def _fake_run(cmd, **kwargs):
+        raise FileNotFoundError("iwgetid not found")
+
+    monkeypatch.setattr(puck_mixer.subprocess, "run", _fake_run)
+    assert puck_mixer._hotspot_connected() is True
 
 
 def test_loop_runs_boot_announcement_once_before_streaming(monkeypatch):
