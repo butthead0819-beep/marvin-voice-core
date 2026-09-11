@@ -26,7 +26,11 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4239      # 實測 4239（2026-09-11 _delayed_player_greeting 搬到
+LINE_BUDGET = 4241      # 實測 4241（2026-09-11 QueueControlAgent +2：一行 import
+                        # + 一行 agent-list 註冊——handler 本體全在
+                        # intent_agents/queue_control_agent.py，PR2，比照下方
+                        # GroundedQAAgent +2 同型先例）；前 4239（2026-09-11
+                        # _delayed_player_greeting 搬到
                         # cogs/voice_controller_social.py 的 ProactiveSocialMixin −50：
                         # 純搬移零行為改動，見 test_delayed_player_greeting.py；此前
                         # 8ef9cbf「進場打招呼延後 5 秒」commit 把整個方法本體直接寫進
