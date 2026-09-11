@@ -26,7 +26,12 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4249      # 實測 4249（2026-09-02 Voice Flap Guard +3：import collections
+LINE_BUDGET = 4239      # 實測 4239（2026-09-11 _delayed_player_greeting 搬到
+                        # cogs/voice_controller_social.py 的 ProactiveSocialMixin −50：
+                        # 純搬移零行為改動，見 test_delayed_player_greeting.py；此前
+                        # 8ef9cbf「進場打招呼延後 5 秒」commit 把整個方法本體直接寫進
+                        # voice_controller.py（+40 淨增），漏調棘輪，此處補回並移出）；
+                        # 前 4249（2026-09-02 Voice Flap Guard +3：import collections
                         # + self._voice_flap_ts deque 初始化 + cog_load 一行 _install_voice_flap_watch()
                         # ——_VoiceFlapObserver / _record_voice_flap / _install_voice_flap_watch 本體
                         # 全在 cogs/voice_controller_connection.py，這 +3 只是欄位與啟動接線的最小
@@ -63,7 +68,8 @@ LINE_BUDGET = 4249      # 實測 4249（2026-09-02 Voice Flap Guard +3：import 
                         # predict_leaving_soon / typical_departure_summary / record_false_alarm 三個
                         # 陪葬的孤兒方法）；前 4329（2026-08-09 farewell wake gap +11）；前 4318
                         # （2026-07-15 f59b7dc device 關閉延遲嘲諷 +6：既有 device 模式行為微調，commit 當時漏調棘輪，此處補回）；前 4312（2026-07-11 da411bb 文字/Siri 介面 +24：既有語音守衛加 is_text_input 文字繞過分支，非新獨立功能、屬既有守衛微調——commit 當時漏調棘輪，此處補回）；前 4288（2026-07-08 ack 音量 bugfix +3：既有 _play_ack 加 peak_normalize_f32 拉滿幅）；前 4285（2026-07-03c 已服務標記 +11）
-METHOD_BUDGET = 89      # VoiceController 自身定義的 method 數；新「功能」別在這加 method
+METHOD_BUDGET = 88      # VoiceController 自身定義的 method 數；新「功能」別在這加 method
+                        # （2026-09-11 -1：_delayed_player_greeting 搬到 ProactiveSocialMixin）
                         # （2026-08-09 -2：拔除 _handle_farewell_speech / _farewell_role_resolve）
                         # （2026-07-03 +1：_process_query_task = worker body Extract Method，行為不變）
 

@@ -24,6 +24,7 @@ import logging
 import os
 import time
 
+import discord
 from discord.ext import tasks
 
 from speak_bus import SpeakContext
@@ -580,3 +581,60 @@ class ProactiveSocialMixin:
             await self.play_tts(msg, already_in_channel=True, protected=True)
         finally:
             self._tts_protected = _prev_protected
+
+    async def _delayed_player_greeting(self, member, marvin_channel, delay_sec: float = 5.0) -> None:
+        """延後發送進場打招呼（語音包）
+
+        1. 等待 delay_sec（預設 5 秒），確保玩家 Discord client WebRTC 連線與音訊輸出初始化完成。
+        2. 防幽靈發言：5 秒後檢查玩家是否仍在 marvin_channel.members，若已不在則取消。
+        3. 怕太大聲先將 TTS 音量設為 0.5，播放完打招呼後恢復為 0.1。
+
+        2026-09-11：從 voice_controller.py 搬進來（防胖棘輪守門，見
+        test_voice_controller_size_budget.py）——純搬移，self 仍是同一個
+        VoiceController 實例，行為零改動。
+        """
+        if delay_sec > 0:
+            await asyncio.sleep(delay_sec)
+
+        # 防幽靈檢查：確認連線存在且成員仍在頻道內
+        vc = discord.utils.get(self.bot.voice_clients, guild=member.guild)
+        if not vc or not getattr(vc, "channel", None) or vc.channel != marvin_channel:
+            logger.info(f"🌑 [Dynamic Greeting] 略過 {member.display_name}：Bot 已不在原頻道")
+            return
+
+        # 確認玩家還在該頻道（比對 id 或 display_name）
+        members = getattr(marvin_channel, "members", [])
+        if not any(getattr(m, "id", None) == member.id for m in members):
+            logger.info(f"🌑 [Dynamic Greeting] 略過 {member.display_name}：玩家已於 {delay_sec}s 內離開頻道")
+            return
+
+        # 調整音量：打招呼設為 0.5，播完恢復為 0.1
+        mixer = getattr(self, "_mixer", None)
+        if mixer is not None:
+            mixer._tts_gain = 0.5
+
+        try:
+            # 🔔 [T3 返場 callback]（flag-gated, 預設 OFF）：有 shareable callback 就講
+            # callback 取代一般點名（XOR — 一次 join 只一個主動發言）。flag off → 退回原點名。
+            if not await self._maybe_speak_join_callback(member.display_name):
+                # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷
+                # stream_mode 中走 hotswap 注入發聲（≤30 字才通過閘）
+                msg = await self.bot.router.generate_player_greeting(
+                    member.display_name, stream_active=self.stream_mode,
+                )
+
+                if self.active_text_channel:
+                    await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
+                    asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
+                self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
+                # 中途進場招呼：committed 事件，policy 保證放歌/熱聊/被打斷都照唸
+                await self.speak(msg, proactive=True, kind=SpeakKind.JOIN_GREETING)
+
+            # 等待佇列中的語音幀播完再恢復音量（最多等待 10 秒，避免死鎖）
+            if mixer is not None and hasattr(mixer, "_tts_load_samples"):
+                _wait_start = time.time()
+                while mixer._tts_load_samples() > 0 and time.time() - _wait_start < 10.0:
+                    await asyncio.sleep(0.1)
+        finally:
+            if mixer is not None:
+                mixer._tts_gain = 0.1
