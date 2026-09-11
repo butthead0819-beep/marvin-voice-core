@@ -2158,87 +2158,8 @@ class MusicCog(commands.Cog):
                 except Exception as e:
                     logger.debug(f"⚠️ [Companion_Bridge] music_started hook skipped: {e}")
 
-                url = info.get('url', '')
-                prefetch_task = self._prefetch_cache.pop(url, None)
-                # 🎵 [Play-First] 只用「已就緒」的 meta；沒好就不等（使用者定：先播音樂，
-                # meta 阻塞就放棄 DJ TTS）。未就緒 → 本首放棄 DJ、先出聲、歌詞/評論背景補。
-                meta = self._ready_meta(prefetch_task)
-                if meta is not None:
-                    logger.info(f"🔮 [Prefetch] 命中預取快取: {title}")
-                    self._current_stream_comment = meta.get('comment')
-                    self._current_lyrics = meta.get('lyrics')
-                    dj_data = meta.get('dj')
-                    self._republish_queue_snapshot()
-                else:
-                    self._current_stream_comment = None
-                    self._current_lyrics = None
-                    dj_data = None   # meta 未就緒 → 放棄 DJ，不阻塞出聲
-                    _bg = prefetch_task if prefetch_task is not None else asyncio.create_task(self._fetch_song_meta(info))
-
-                    def _apply_bg_meta(t, _self=self):
-                        m = t.result() if not t.cancelled() and t.exception() is None else None
-                        if isinstance(m, dict):
-                            _self._current_stream_comment = m.get('comment')
-                            _self._current_lyrics = m.get('lyrics')
-                            _self._republish_queue_snapshot()   # HUD DJ 銳評卡靠這次補推更新
-
-                    _bg.add_done_callback(_apply_bg_meta)
-                    logger.info(f"🎵 [Play-First] meta 未就緒，先播音樂、放棄本首 DJ、meta 背景補：{title}")
-
-                # 🎛️ 每首歌：貼歌曲卡（封面+頭像合成）+ 控制台刪舊貼新在底部。
-                # 背景 task：封面合成要下載圖片，不擋 play_stream_song 出聲；info 傳快照防下一首覆蓋。
-                # active_text_channel 只在 /summon 斜線指令設定；語音召喚/重連時為 None →
-                # 退回貼到語音頻道自己的內建文字區（VoiceChannel.send()），卡片才不會第一首缺席。
-                _vch = getattr(getattr(vc, 'voice_client', None), 'channel', None) if vc is not None else None
-                active_ch = (vc.active_text_channel or _vch) if vc is not None else None
-                if active_ch and vc is not None:
-                    asyncio.create_task(self._post_music_cards(active_ch, vc, dict(info)))
-                else:
-                    logger.info(f"🎛️ [Card] 跳過貼卡：active_ch=None vc={vc is not None}")
-
-                if self.stream_queue:
-                    next_info = self.stream_queue[0]
-                    next_url = next_info.get('url', '')
-                    if next_url not in self._prefetch_cache and vc is not None:
-                        self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(next_info))
-                        logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
-
-                if len(self.stream_queue) < 2:
-                    if self._personal_shuffle is not None:
-                        # 🎲 個人歌單模式：補位走他的歌單。已有 in-flight topup 或已墊一首就
-                        # 不再 spawn（skip 連按時 loop 快速空轉，否則噴一堆 task 互搶）。
-                        if not self._personal_topup_inflight and not self._personal_shuffle_pending():
-                            asyncio.create_task(self._personal_shuffle_topup())
-                    else:
-                        online = self._autopilot_online_members(vc.get_online_members() if vc is not None else [])
-                        seed = self._autorecommend_seed(requested_by, online)
-                        if seed:
-                            asyncio.create_task(self._auto_recommend(seed))
-
-                dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
-                # 🛡️ [Consistency Guard] 檢查退回開頭播放的 DJ 口白是否提及了錯誤的上一首
-                if dj_data and dj_data.get('prev_title_used'):
-                    real_prev = self.stream_history[-2].get('title', '') if len(self.stream_history) >= 2 else ''
-                    if real_prev:
-                        from song_name_clean import clean_title_regex
-                        norm_used = clean_title_regex(dj_data['prev_title_used']).strip().lower()
-                        norm_real = clean_title_regex(real_prev).strip().lower()
-                        if norm_used and norm_real and norm_used != norm_real:
-                            logger.warning(
-                                f"🛡️ [Stream Loop Consistency Guard] 預期上一首《{dj_data['prev_title_used']}》與實際《{real_prev}》不符，捨棄過期口白"
-                            )
-                            dj_data = None
-                            dj_audio = None
-                # [DJ Tail] 尾段派發成功（上一首 _run_tail_dj 播完並標記）→ 本首開頭不重播
-                _dj_played_in_tail = bool(info.get('_dj_played_in_tail'))
-                if _dj_played_in_tail:
-                    logger.info(f"[DJ Tail] {title} DJ 已在上一首尾段播出，跳過開頭重播")
-                    dj_audio = None
-                    dj_data = None
-                if dj_audio:
-                    dj_audio = await self._splice_owner_voice_clip(dj_audio, info)
-                if dj_data and not dj_audio and vc is not None:
-                    await self._maybe_play_dj_interjection(dj_data)
+                dj_audio, _dj_played_in_tail = await self._stream_loop_prepare_and_announce(
+                    info, vc, title, requested_by)
 
                 self._stream_loop_fire_puck(info, _dj_played_in_tail)
 
@@ -2428,6 +2349,105 @@ class MusicCog(commands.Cog):
                     logger.warning(f"⚠️ [Stream] 重試也失敗，讓下一首接手：{title}")
             else:
                 logger.warning(f"⚠️ [Stream] 重抓網址失敗（無 webpage_url 或解析空），讓下一首接手：{title}")
+
+    async def _stream_loop_prepare_and_announce(
+        self, info: dict, vc, title: str, requested_by: str,
+    ) -> "tuple[str | None, bool]":
+        """歌開播前的準備與公告：解析預取 meta（Play-First，未就緒不阻塞出聲）、
+        貼歌曲卡、預取下一首、觸發 autopilot/個人歌單背景補位、DJ 口白一致性守門、
+        開頭 DJ 插話。回 (dj_audio, dj_played_in_tail)：dj_data 本身只在這段內部
+        消費（一致性守門判斷用），呼叫端沒人再讀，故不回傳。
+
+        內部四步順序固定：consistency guard → dj_played_in_tail guard →
+        splice_owner_voice_clip → maybe_play_dj_interjection，不可調換（調換會讓
+        警告 log 消失或 DJ 插話誤發）。
+
+        有跨迭代副作用：讀/寫 self._prefetch_cache（pop 掉本首的、寫入下一首的），
+        不是純函式——下一首的 prefetch 要留到下一輪迭代才會被讀到。"""
+        url = info.get('url', '')
+        prefetch_task = self._prefetch_cache.pop(url, None)
+        # 🎵 [Play-First] 只用「已就緒」的 meta；沒好就不等（使用者定：先播音樂，
+        # meta 阻塞就放棄 DJ TTS）。未就緒 → 本首放棄 DJ、先出聲、歌詞/評論背景補。
+        meta = self._ready_meta(prefetch_task)
+        if meta is not None:
+            logger.info(f"🔮 [Prefetch] 命中預取快取: {title}")
+            self._current_stream_comment = meta.get('comment')
+            self._current_lyrics = meta.get('lyrics')
+            dj_data = meta.get('dj')
+            self._republish_queue_snapshot()
+        else:
+            self._current_stream_comment = None
+            self._current_lyrics = None
+            dj_data = None   # meta 未就緒 → 放棄 DJ，不阻塞出聲
+            _bg = prefetch_task if prefetch_task is not None else asyncio.create_task(self._fetch_song_meta(info))
+
+            def _apply_bg_meta(t, _self=self):
+                m = t.result() if not t.cancelled() and t.exception() is None else None
+                if isinstance(m, dict):
+                    _self._current_stream_comment = m.get('comment')
+                    _self._current_lyrics = m.get('lyrics')
+                    _self._republish_queue_snapshot()   # HUD DJ 銳評卡靠這次補推更新
+
+            _bg.add_done_callback(_apply_bg_meta)
+            logger.info(f"🎵 [Play-First] meta 未就緒，先播音樂、放棄本首 DJ、meta 背景補：{title}")
+
+        # 🎛️ 每首歌：貼歌曲卡（封面+頭像合成）+ 控制台刪舊貼新在底部。
+        # 背景 task：封面合成要下載圖片，不擋 play_stream_song 出聲；info 傳快照防下一首覆蓋。
+        # active_text_channel 只在 /summon 斜線指令設定；語音召喚/重連時為 None →
+        # 退回貼到語音頻道自己的內建文字區（VoiceChannel.send()），卡片才不會第一首缺席。
+        _vch = getattr(getattr(vc, 'voice_client', None), 'channel', None) if vc is not None else None
+        active_ch = (vc.active_text_channel or _vch) if vc is not None else None
+        if active_ch and vc is not None:
+            asyncio.create_task(self._post_music_cards(active_ch, vc, dict(info)))
+        else:
+            logger.info(f"🎛️ [Card] 跳過貼卡：active_ch=None vc={vc is not None}")
+
+        if self.stream_queue:
+            next_info = self.stream_queue[0]
+            next_url = next_info.get('url', '')
+            if next_url not in self._prefetch_cache and vc is not None:
+                self._prefetch_cache[next_url] = asyncio.create_task(self._fetch_song_meta(next_info))
+                logger.info(f"🔮 [Prefetch] 開始預取下一首: {next_info['title']}")
+
+        if len(self.stream_queue) < 2:
+            if self._personal_shuffle is not None:
+                # 🎲 個人歌單模式：補位走他的歌單。已有 in-flight topup 或已墊一首就
+                # 不再 spawn（skip 連按時 loop 快速空轉，否則噴一堆 task 互搶）。
+                if not self._personal_topup_inflight and not self._personal_shuffle_pending():
+                    asyncio.create_task(self._personal_shuffle_topup())
+            else:
+                online = self._autopilot_online_members(vc.get_online_members() if vc is not None else [])
+                seed = self._autorecommend_seed(requested_by, online)
+                if seed:
+                    asyncio.create_task(self._auto_recommend(seed))
+
+        dj_audio = dj_data.get('audio_path') if isinstance(dj_data, dict) else None
+        # 🛡️ [Consistency Guard] 檢查退回開頭播放的 DJ 口白是否提及了錯誤的上一首
+        if dj_data and dj_data.get('prev_title_used'):
+            real_prev = self.stream_history[-2].get('title', '') if len(self.stream_history) >= 2 else ''
+            if real_prev:
+                from song_name_clean import clean_title_regex
+                norm_used = clean_title_regex(dj_data['prev_title_used']).strip().lower()
+                norm_real = clean_title_regex(real_prev).strip().lower()
+                if norm_used and norm_real and norm_used != norm_real:
+                    logger.warning(
+                        f"🛡️ [Stream Loop Consistency Guard] 預期上一首《{dj_data['prev_title_used']}》與實際《{real_prev}》不符，捨棄過期口白"
+                    )
+                    dj_data = None
+                    dj_audio = None
+        # [DJ Tail] 尾段派發成功（上一首 _run_tail_dj 播完並標記）→ 本首開頭不重播
+        dj_played_in_tail = bool(info.get('_dj_played_in_tail'))
+        if dj_played_in_tail:
+            logger.info(f"[DJ Tail] {title} DJ 已在上一首尾段播出，跳過開頭重播")
+            dj_audio = None
+            dj_data = None
+        if dj_audio:
+            dj_audio = await self._splice_owner_voice_clip(dj_audio, info)
+        if dj_data and not dj_audio and vc is not None:
+            await self._maybe_play_dj_interjection(dj_data)
+
+        return dj_audio, dj_played_in_tail
+
 
 
     async def _await_reconnect_device(self, vc, *, timeout_s: float = 12.0, interval_s: float = 0.5):
