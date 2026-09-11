@@ -2121,29 +2121,8 @@ class MusicCog(commands.Cog):
         try:
             while self.stream_mode:
                 if not self.stream_queue:
-                    # 🎲 個人歌單連續播：佇列空先墊他下一首（一次一首）；池空才回退一般推薦
-                    if self._personal_shuffle is not None:
-                        await self._personal_shuffle_topup()
-                        if self.stream_queue:
-                            continue                      # 墊到歌了 → 去播
-                        if self._personal_shuffle is not None:
-                            # ⚠️ 死鎖防護：topup 沒實際入隊（in-flight 的 create_task 還在慢
-                            # resolve）→ 必須 await sleep 讓出 loop，否則 `while 佇列空: await
-                            # topup()→inflight 立刻 return True` 會 busy-spin 凍結 event loop、
-                            # in-flight topup 也永遠跑不完（2026-06-29 心跳阻塞 9 分鐘事故）。
-                            await asyncio.sleep(0.5)
-                            continue
-                        # else：池空、session 已清 → 落下面一般推薦
-                    vc = self._vc()
-                    _rb = (self._current_stream_info or {}).get('requested_by')
-                    online = self._autopilot_online_members(vc.get_online_members() if vc is not None else [])
-                    _seed = self._autorecommend_seed(_rb, online)
-                    if _seed:
-                        await self._auto_recommend(_seed)
-                    # 三層 autopilot 補不到 → 最終安全網：從歷史回收重播，永不靜默停
-                    if not self.stream_queue and await self._last_resort_replay():
-                        continue
-                    if not self.stream_queue:
+                    keep_going = await self._stream_loop_topup()
+                    if not keep_going:
                         break
                     continue
 
@@ -2261,26 +2240,7 @@ class MusicCog(commands.Cog):
                 if dj_data and not dj_audio and vc is not None:
                     await self._maybe_play_dj_interjection(dj_data)
 
-                # [PuckMixer] esp32_edge_mix 專用：沒經過 _fire_puck_crossfade 接手的歌
-                # （開場第一首、skip、或上一首沒排到尾段 task）要送硬 play 讓裝置端從乾淨
-                # 狀態開始播——跟 _fire_puck_crossfade 對稱，那邊只在尾段轉場時接手 standby
-                # deck，不會有人叫它 play。見 _play_open()/_run_tail_dj() 前的說明。
-                #
-                # 2026-08-20：pi_bt（車 puck Pi Zero 2W）不再走這條——換歌決策/DJ口白
-                # 改回跟家用喇叭共用同一顆 mixer（見 main_satellite.py::setup_satellite
-                # 的 TeeSpeakerOutput + /audio_stream「收音機」模式說明），_get_puck_client()
-                # 對 pi_bt 回 None，下面這段自然被跳過。
-                _puck_handed_off = _dj_played_in_tail
-                if not _puck_handed_off:
-                    puck_client = _get_puck_client()
-                    puck_url = info.get('webpage_url', '')
-                    if puck_client is not None and puck_url:
-                        asyncio.create_task(
-                            self._fire_puck_play(
-                                puck_client, puck_url, title=info.get('title'),
-                                highlight_start_s=info.get('highlight_start_s'),
-                                duration=info.get('duration'))
-                        )
+                self._stream_loop_fire_puck(info, _dj_played_in_tail)
 
                 self._current_song_skipped = False
                 song_start_time = time.time()
@@ -2289,23 +2249,7 @@ class MusicCog(commands.Cog):
                 song_lyrics_snapshot = self._current_lyrics or ""
                 playback_completion = "natural"
 
-                # [DJ Tail] 在播 N 期間排尾段 task：只要 duration 已知就排，下一首在點火
-                # 當下才抓 stream_queue[0]（autopilot 常播放中才排下一首，開播時綁定會抓空）。
-                # song_start_time 是「決定要播」那刻蓋的，離「真的出聲」還隔著 highlight_start_s
-                # 的網路 seek + 整首解碼，拿它當基準會讓尾段提早點火（見 project_dj_tail_seek_latency）
-                # ——改傳 playback_started future，_run_tail_dj 改等 _mixer_play_music 真出聲才起算。
-                playback_started: "asyncio.Future | None" = None
-                if vc is not None:
-                    playback_started = asyncio.get_event_loop().create_future()
-                if vc is not None and info.get('duration'):
-                    self._tail_dj_task = asyncio.create_task(
-                        self._run_tail_dj(info, playback_started)
-                    )
-                    def _clear_tail_task(t, _self=self):
-                        if _self._tail_dj_task is t:
-                            _self._tail_dj_task = None
-                    self._tail_dj_task.add_done_callback(_clear_tail_task)
-                    logger.info(f"[DJ Tail] 已排尾段 task：{title}（點火時抓下一首）")
+                playback_started = self._stream_loop_schedule_tail_dj(info, vc, title)
 
                 try:
                     await self.play_stream_song(
@@ -2330,40 +2274,7 @@ class MusicCog(commands.Cog):
                     except Exception as e:
                         logger.debug(f"⚠️ [Companion_Bridge] music_ended hook skipped: {e}")
 
-                # 🔁 點的歌只播了一瞬（疑 yt-dlp 網址過期→ffmpeg 403）→ 重抓網址重試一次，
-                # 別讓它被自動推薦洗掉。DJ 報歌走 mixed（隨 ffmpeg 一起失敗）→ 首次 403 不誤報，
-                # 只在確定能播的那次才響＝「確定能播的歌才說出來」。
-                _played_s = time.time() - song_start_time
-                # 精華起播（highlight_start_s）讓實播天生比 metadata 全長短一截，中途切/短
-                # 播判斷都要扣掉這段位移，否則正常播完的精華曲會被誤判成「中途切」。
-                _effective_duration = info.get('duration')
-                if _effective_duration and info.get('highlight_start_s'):
-                    _effective_duration = max(0.0, _effective_duration - info['highlight_start_s'])
-                # 🔎 中途切偵測（診斷用）：播到一半串流 URL 失效→提早結束，ffmpeg 靜默不留 log。
-                # 只印不重試（中途切要 seek 續播是另一步，先確認頻率再決定）。
-                if not getattr(self, "_current_song_skipped", False) and self._premature_cut(_played_s, _effective_duration):
-                    logger.warning(
-                        f"⚠️ [Stream] 「{title}」疑中途切：實播 {_played_s:.0f}s / 全長 "
-                        f"{_effective_duration}s（串流 URL 中途失效？非開頭 403、非你 skip）"
-                    )
-                if self._should_retry_failed_song(
-                        _played_s, stream_active=self.stream_mode,
-                        skipped=getattr(self, "_current_song_skipped", False),
-                        requested_by=requested_by, already_retried=False):
-                    _wp = info.get('webpage_url') or info.get('url')
-                    logger.info(f"🔁 [Stream] 點的歌只播 {_played_s:.1f}s，疑似 403，重抓網址重試：{title}")
-                    # force_fresh：跳過快取，否則命中的是剛 403 的同一份死 URL → 又 403（無意義重試）
-                    _fresh = await self._resolve_yt_query(_wp, force_fresh=True) if _wp else None
-                    if _fresh and _fresh.get('url'):
-                        try:
-                            await self.play_stream_song(
-                                _fresh['url'], title, dj_audio_path=dj_audio,
-                                highlight_start_s=_fresh.get('highlight_start_s'),
-                            )
-                        except Exception:
-                            logger.warning(f"⚠️ [Stream] 重試也失敗，讓下一首接手：{title}")
-                    else:
-                        logger.warning(f"⚠️ [Stream] 重抓網址失敗（無 webpage_url 或解析空），讓下一首接手：{title}")
+                await self._stream_loop_retry_if_dropped(info, song_start_time, requested_by, dj_audio)
 
                 if vc is not None:
                     asyncio.create_task(self._analyze_song_reactions(info, song_start_time, song_lyrics_snapshot))
@@ -2397,6 +2308,127 @@ class MusicCog(commands.Cog):
             logger.error(f"❌ [Stream Loop] 發生異常: {e}")
             self.stream_mode = False
             self._publish_now_playing_state(None)
+
+    # ── _stream_loop 拆解出的 helper method（Extract Method，2026-09-11，見
+    # plan-eng-review 設計檔 jackhuang-main-design-stream-loop-extract-20260911.md）──
+
+    async def _stream_loop_topup(self) -> bool:
+        """佇列空時的補位邏輯。回 True＝迴圈頂端重查（可能已補到歌或該再等）；
+        回 False＝該 break（三層 autopilot 都補不到 + last_resort 也失敗）。
+        個人歌單補到歌 / busy-spin 防護 sleep / auto_recommend 成功，三種情況目前
+        都回 True（呼叫端只做 continue，無害）——未來要分別記 log/metrics 才需要
+        細分回傳型別。"""
+        # 🎲 個人歌單連續播：佇列空先墊他下一首（一次一首）；池空才回退一般推薦
+        if self._personal_shuffle is not None:
+            await self._personal_shuffle_topup()
+            if self.stream_queue:
+                return True                      # 墊到歌了 → 去播
+            if self._personal_shuffle is not None:
+                # ⚠️ 死鎖防護：topup 沒實際入隊（in-flight 的 create_task 還在慢
+                # resolve）→ 必須 await sleep 讓出 loop，否則 `while 佇列空: await
+                # topup()→inflight 立刻 return True` 會 busy-spin 凍結 event loop、
+                # in-flight topup 也永遠跑不完（2026-06-29 心跳阻塞 9 分鐘事故）。
+                await asyncio.sleep(0.5)
+                return True
+            # else：池空、session 已清 → 落下面一般推薦
+        vc = self._vc()
+        _rb = (self._current_stream_info or {}).get('requested_by')
+        online = self._autopilot_online_members(vc.get_online_members() if vc is not None else [])
+        _seed = self._autorecommend_seed(_rb, online)
+        if _seed:
+            await self._auto_recommend(_seed)
+        # 三層 autopilot 補不到 → 最終安全網：從歷史回收重播，永不靜默停
+        if not self.stream_queue and await self._last_resort_replay():
+            return True
+        if not self.stream_queue:
+            return False
+        return True
+
+    def _stream_loop_fire_puck(self, info: dict, dj_played_in_tail: bool) -> None:
+        """[PuckMixer] esp32_edge_mix 專用：沒經過 _fire_puck_crossfade 接手的歌
+        （開場第一首、skip、或上一首沒排到尾段 task）要送硬 play 讓裝置端從乾淨
+        狀態開始播——跟 _fire_puck_crossfade 對稱，那邊只在尾段轉場時接手 standby
+        deck，不會有人叫它 play。見 _play_open()/_run_tail_dj() 前的說明。
+
+        2026-08-20：pi_bt（車 puck Pi Zero 2W）不再走這條——換歌決策/DJ口白
+        改回跟家用喇叭共用同一顆 mixer（見 main_satellite.py::setup_satellite
+        的 TeeSpeakerOutput + /audio_stream「收音機」模式說明），_get_puck_client()
+        對 pi_bt 回 None，下面這段自然被跳過。"""
+        if dj_played_in_tail:
+            return
+        puck_client = _get_puck_client()
+        puck_url = info.get('webpage_url', '')
+        if puck_client is not None and puck_url:
+            asyncio.create_task(
+                self._fire_puck_play(
+                    puck_client, puck_url, title=info.get('title'),
+                    highlight_start_s=info.get('highlight_start_s'),
+                    duration=info.get('duration'))
+            )
+
+    def _stream_loop_schedule_tail_dj(self, info: dict, vc, title: str) -> "asyncio.Future | None":
+        """[DJ Tail] 在播 N 期間排尾段 task：只要 duration 已知就排，下一首在點火
+        當下才抓 stream_queue[0]（autopilot 常播放中才排下一首，開播時綁定會抓空）。
+        回傳 playback_started future（vc is None 時回 None，原邏輯不變）——
+        song_start_time 是「決定要播」那刻蓋的，離「真的出聲」還隔著 highlight_start_s
+        的網路 seek + 整首解碼，拿它當基準會讓尾段提早點火（見 project_dj_tail_seek_latency）
+        ——改傳 playback_started future，_run_tail_dj 改等 _mixer_play_music 真出聲才起算。"""
+        playback_started: "asyncio.Future | None" = None
+        if vc is not None:
+            playback_started = asyncio.get_event_loop().create_future()
+        if vc is not None and info.get('duration'):
+            self._tail_dj_task = asyncio.create_task(
+                self._run_tail_dj(info, playback_started)
+            )
+            def _clear_tail_task(t, _self=self):
+                if _self._tail_dj_task is t:
+                    _self._tail_dj_task = None
+            self._tail_dj_task.add_done_callback(_clear_tail_task)
+            logger.info(f"[DJ Tail] 已排尾段 task：{title}（點火時抓下一首）")
+        return playback_started
+
+    async def _stream_loop_retry_if_dropped(
+        self, info: dict, song_start_time: float, requested_by: str, dj_audio: str | None,
+    ) -> None:
+        """🔁 點的歌只播了一瞬（疑 yt-dlp 網址過期→ffmpeg 403）→ 重抓網址重試一次，
+        別讓它被自動推薦洗掉。DJ 報歌走 mixed（隨 ffmpeg 一起失敗）→ 首次 403 不誤報，
+        只在確定能播的那次才響＝「確定能播的歌才說出來」。
+
+        刻意比正常播放路徑薄——不重排 tail-dj / 不重發 playback_started / 不重貼卡 /
+        不重 fire puck，這是既有的不對稱行為，不要在這裡「補全」。"""
+        title = info['title']
+        _played_s = time.time() - song_start_time
+        # 精華起播（highlight_start_s）讓實播天生比 metadata 全長短一截，中途切/短
+        # 播判斷都要扣掉這段位移，否則正常播完的精華曲會被誤判成「中途切」。
+        _effective_duration = info.get('duration')
+        if _effective_duration and info.get('highlight_start_s'):
+            _effective_duration = max(0.0, _effective_duration - info['highlight_start_s'])
+        # 🔎 中途切偵測（診斷用）：播到一半串流 URL 失效→提早結束，ffmpeg 靜默不留 log。
+        # 只印不重試（中途切要 seek 續播是另一步，先確認頻率再決定）。
+        if not getattr(self, "_current_song_skipped", False) and self._premature_cut(_played_s, _effective_duration):
+            logger.warning(
+                f"⚠️ [Stream] 「{title}」疑中途切：實播 {_played_s:.0f}s / 全長 "
+                f"{_effective_duration}s（串流 URL 中途失效？非開頭 403、非你 skip）"
+            )
+        if self._should_retry_failed_song(
+                _played_s, stream_active=self.stream_mode,
+                skipped=getattr(self, "_current_song_skipped", False),
+                requested_by=requested_by, already_retried=False):
+            _wp = info.get('webpage_url') or info.get('url')
+            logger.info(f"🔁 [Stream] 點的歌只播 {_played_s:.1f}s，疑似 403，重抓網址重試：{title}")
+            # force_fresh：跳過快取，否則命中的是剛 403 的同一份死 URL → 又 403（無意義重試）
+            _fresh = await self._resolve_yt_query(_wp, force_fresh=True) if _wp else None
+            if _fresh and _fresh.get('url'):
+                try:
+                    await self.play_stream_song(
+                        _fresh['url'], title, dj_audio_path=dj_audio,
+                        highlight_start_s=_fresh.get('highlight_start_s'),
+                    )
+                except Exception:
+                    logger.warning(f"⚠️ [Stream] 重試也失敗，讓下一首接手：{title}")
+            else:
+                logger.warning(f"⚠️ [Stream] 重抓網址失敗（無 webpage_url 或解析空），讓下一首接手：{title}")
+
 
     async def _await_reconnect_device(self, vc, *, timeout_s: float = 12.0, interval_s: float = 0.5):
         """語音 WS 短暫斷線（如 close code 1006）→ discord.py 會自動重連，中間 ~數秒
