@@ -247,6 +247,9 @@ class MusicCog(commands.Cog):
         # 自動復活；_ensure_stream_loop() 一旦真的（重）啟動迴圈就清掉（見該函式與
         # _stream_watchdog_loop，2026-08-01 佇列假死事故後補）。
         self._stream_user_stopped: bool = False
+        # 🧹 [clear_queue] 「這首播完就停」延遲旗標——見 _stream_loop() 開頭 reset
+        # + 迴圈頂端消費、_queue_user_song() 入隊時取消（2026-09-11 PR2）。
+        self._pending_stop_after_song: bool = False
 
     def _vc(self):
         """取得 VoiceController cog；找不到回 None。"""
@@ -2118,8 +2121,18 @@ class MusicCog(commands.Cog):
     async def _stream_loop(self):
         """🎵 依序播放佇列中的歌曲。"""
         logger.info("🎵 [Stream Loop] 串流迴圈啟動。")
+        # 🧹 [clear_queue] 單一 reset 點：不管這個 coroutine 是被 _ensure_stream_loop
+        # 或 personal_shuffle 路徑（直接 create_task）叫起，任何跨 session 殘留的
+        # True 都在這裡歸位，不散落在多個啟動點各補一次（2026-09-11 PR2，
+        # plan-eng-review outside voice round2）。
+        self._pending_stop_after_song = False
+        _stopped_via_pending = False
         try:
             while self.stream_mode:
+                if self._pending_stop_after_song:
+                    self._pending_stop_after_song = False
+                    _stopped_via_pending = True
+                    break
                 if not self.stream_queue:
                     keep_going = await self._stream_loop_topup()
                     if not keep_going:
@@ -2213,7 +2226,9 @@ class MusicCog(commands.Cog):
             active_ch = vc.active_text_channel if vc is not None else None
             if vc is not None and hasattr(vc, 'stt_logger'):
                 vc.stt_logger.info("[串流結束] 音樂佇列播放完畢")
-            if active_ch:
+            # 🧹 [clear_queue] pending-stop 觸發的收尾不重複發「佇列已空」——
+            # clear_queue handler 自己的 ack 已經講過「這首放完就停」了。
+            if active_ch and not _stopped_via_pending:
                 await active_ch.send("🎵 **【串流播放完畢】** 佇列已空。就跟馬文的希望一樣——消失殆盡。")
 
         except asyncio.CancelledError:
@@ -4093,14 +4108,39 @@ class MusicCog(commands.Cog):
                 return i
         return len(queue)
 
-    def _queue_user_song(self, info: dict) -> None:
-        """使用者自選曲照點歌順序排（FIFO），插在既有使用者曲之後、auto-recommend 之前。
+    def _play_next_insert_index(self, queue: list[dict]) -> int:
+        """play_next 專用插入位置：蓋過所有既有排隊（含其他人已經 play_next 插進去
+        的歌），比 `_user_song_insert_index`（只排在既有使用者曲「之後」）更激進。
+
+        仍尊重同一條爆音教訓（slot 0 神聖，見 `_user_song_insert_index` 2026-08-27
+        docstring）：stream_mode 中 queue 非空時，queue[0] 常已被 DJ tail 預載，
+        插它前面會爆音，所以最前只到 index 1。
+
+        FIFO among cut-ins：用 `info['_play_next']` 標記，從 index 1 起掃過已經是
+        play_next 插入的連續段才落地——避免連續多次 play_next 變成 LIFO（先插播的
+        反而排最後），2026-09-11 plan-eng-review outside voice round2 #4 抓到的問題。
+        """
+        if not (self.stream_mode and queue):
+            return 0
+        idx = 1
+        while idx < len(queue) and queue[idx].get('_play_next'):
+            idx += 1
+        return idx
+
+    def _queue_user_song(self, info: dict, *, front: bool = False) -> None:
+        """使用者自選曲入隊——一般點歌（FIFO，插在既有使用者曲之後）跟 play_next
+        （`front=True`，蓋過既有排隊）共用同一個函式：dedup/ledger/tail bookkeeping/
+        pending-stop 取消全部同一份程式碼，不會兩條路徑各自維護、彼此漂移
+        （2026-09-11 PR2，plan-eng-review outside voice round2 #3/#5：play_next
+        若走獨立插入路徑會繞過這裡的 30s 同人同曲去重跟 watchdog 抑制解除）。
 
         skip-override：手動點播蓋過先前 skip——記 played_again + 重置 consecutive-skip 計數。
         """
         # 🎙️ [使用者自選曲] 不快進：略過熱力圖精華起點與後續 LRC 前奏跳過，一律從頭播。
         info['highlight_start_s'] = None
         info['voice_request'] = True
+        if front:
+            info['_play_next'] = True
 
         # 🎵 [ReqDedup] 同人同曲 30s 去重：佇列去重只看佇列（第一發已 pop 去播時
         # 佇列空、第二發漏過，7/3-4 實錘）；ledger 與佇列狀態無關（唯一入隊點）
@@ -4111,7 +4151,15 @@ class MusicCog(commands.Cog):
                 logger.info(f"🎵 [ReqDedup] {_spk} 30s 內重複點 {_vid}，跳過入隊（誤觸/殘餘）")
                 return
             self._req_ledger.mark(_spk, _vid, time.time())
-        self.stream_queue.insert(self._user_song_insert_index(self.stream_queue), info)
+        insert_idx = (self._play_next_insert_index(self.stream_queue) if front
+                      else self._user_song_insert_index(self.stream_queue))
+        self.stream_queue.insert(insert_idx, info)
+        # 🧹 [clear_queue] 有人主動點歌了（不管一般 play 或 play_next）＝要它繼續，
+        # 取消任何待生效的「播完就停」，並解除 watchdog 抑制（兩個旗標必須一起清，
+        # 只清前者會讓 watchdog 在下次 loop 真的掛掉時永久拒絕自癒，2026-08-01
+        # 事故重演——outside voice round2 #1 抓到的）。
+        self._pending_stop_after_song = False
+        self._stream_user_stopped = False
         self._republish_queue_snapshot()
         # 🎵 [Play-First] 點歌當下就背景預取 meta，讓 DJ/歌詞大多來得及（又不阻塞出聲）
         _u = info.get('url', '')
