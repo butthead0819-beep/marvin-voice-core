@@ -475,3 +475,18 @@ grep "NemoClaw路由\|NemoClaw→\|NemoClaw.*跳過\|NemoClaw.*排隊" bot_main.
 **影響的 caller**: `marvin_talk`（caller="marvin_talk"）、`search_lyrics_grounded`（走 music_cog）、未來的 `ambient_qa`。
 **修法**: `estimate_cost` 加一個 `grounding_request_surcharge` 常數（查當期 Gemini pricing），帶 grounding 的呼叫點傳 flag。
 **Status**: deferred — 低量下（幾題/天 × grounding 小額）$2 cap 遠到不了，PR 註解標明即可；用量上來再修。
+
+---
+
+### TODO: 真·持續單曲循環模式（loop_on / loop_off）
+**What**: `_loop_one` 狀態旗標，永遠指向當下正在播的歌。`_stream_loop` pop 點：`_loop_one` 時 `info = _current_stream_info` 不 pop。加進 QueueControlAgent（若 PR2 已落地）或新開，intent `loop_on`（單曲循環/循環播放/一直放這首）+ `loop_off`（取消循環/不要循環了）。
+**Why**: 2026-09-10 eng-review D7/D11：使用者這次選一次性重播（走 ReplayAgent），且「單曲循環」觸發詞刻意沒收——「重覆這一首」有 ReplayAgent 接，但真「一直循環」沒人接（audio rescue 會亂試）。daily ritual 再抓到 2+ 次「一直放這首歌」就做。
+**5 個 `_stream_loop` 觸點**（eng-review 已盤過）:
+1. pop 點（music_cog.py:2151）→ `_loop_one` 時重用 `_current_stream_info`
+2. skip / stop / clear_queue 分支 → 清 `_loop_one`
+3. DJ 尾段（`_run_tail_dj`）→ `_loop_one` 時不排 `_tail_dj_task`（否則每圈「講講下一首」講同一首）
+4. **record_play / stream_history（music_cog.py:2165）→ `_loop_one` 時不重複計播放數**（漏了會洗歪口味統計：循環一小時＝該歌 +30 次，推薦系統以為大家超愛）
+5. autopilot 補位（music_cog.py:2227）→ `_loop_one` 時 skip（補了無害只是白解析）
+**Status**: deferred — gated on daily ritual 再現 2+ 次「持續循環」措辭
+**Start**: `_stream_loop` 進入時（while 前）一次性消費 flag 的 pattern；測試 record_play guard（循環 N 圈、斷言 `music_memory.record_play` 只呼 1 次）
+**Depends on**: 建議在 PR2（clear_queue + play_next）之後，loop_on/off 加進同一個 QueueControlAgent
