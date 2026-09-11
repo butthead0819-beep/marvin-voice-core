@@ -72,18 +72,33 @@ _REPLAY_TIMEOUT_S = 15.0  # 量真實延遲，不套 production 的 3s cap
 # opt-in audio-rescue agent 清單（有 manifest_description 的那些）。用寬鬆 stub
 # controller —— replay 只驗 routing，不執行 handler，也不模擬真實播放狀態。
 def _build_agents():
+    """⚠️ 手動維護清單，必須跟 intent_agents/*.py 裡實際有 manifest_description=
+    的檔案同步——否則這支 eval 腳本的 manifest 會悄悄跟 production（真實
+    build_intent_agents() 的完整清單）脫鉤，跑出來的 tool 數/命中率不代表真實
+    情況（2026-09-11 實測：JokeRequestAgent/QueueControlAgent 落地後這裡沒同步
+    更新，一輪 T6 eval 因此誤判「新增 tool 稀釋既有準確率」，事後查證這支腳本
+    根本沒載入新 agent，是假警報）。
+
+    對帳指令：`grep -rl "manifest_description=" intent_agents/*.py`，跟下面
+    import 的清單比對，缺誰就補誰。不必也不該搬完整 build_intent_agents()
+    那份（含遊戲模式 agent，需要真的 bot/discord 物件，這支腳本只關心
+    declarative intent 的 schema 層，不需要那些重量依賴）。
+    """
     from intent_agents.grounded_qa_agent import GroundedQAAgent
     from intent_agents.volume_agent import VolumeAgent
     from intent_agents.playback_control_agent import PlaybackControlAgent
     from intent_agents.music_agent_v2 import MusicAgentV2
     from intent_agents.find_song_agent import FindSongAgent
+    from intent_agents.joke_request_agent import JokeRequestAgent
+    from intent_agents.queue_control_agent import QueueControlAgent
 
     ctrl = SimpleNamespace(stream_mode=True, radio_mode=True)
     return {
         a.name: a
         for a in (
             GroundedQAAgent(ctrl), VolumeAgent(ctrl), PlaybackControlAgent(ctrl),
-            MusicAgentV2(ctrl), FindSongAgent(ctrl),
+            MusicAgentV2(ctrl), FindSongAgent(ctrl), JokeRequestAgent(ctrl),
+            QueueControlAgent(ctrl),
         )
     }
 
