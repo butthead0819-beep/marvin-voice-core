@@ -28,7 +28,7 @@ import random
 import subprocess
 import tempfile
 import time
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import yt_dlp
 
@@ -4456,6 +4456,51 @@ class MusicCog(commands.Cog):
                 except Exception:
                     pass
 
+    async def _resolve_and_prepare(
+        self, speaker: str, query: str, vc, *,
+        on_query_resolved: Callable[[str, str, str], Awaitable[None]] | None = None,
+    ) -> tuple[dict | None, str, str, str]:
+        """點歌解析：抽搜尋字串 → STT 修正 → `_resolve_yt_query` → 組 info dict。
+        `cmd=="play"` / `cmd=="play_next"` / audio-rescue 三路共用（2026-09-11
+        PR2，plan-eng-review outside voice #9）。
+
+        `vc` 由呼叫端傳入（`_handle_voice_music_command` 已經查過一次），不在這裡
+        重新 `self._vc()`——同一次呼叫內查兩次可能不一致，是今天 `_stream_loop`
+        拆解時踩過的同一類坑（見 memory extract_method_vc_snapshot_not_reparam）。
+
+        不硬塞 Discord I/O 進來——`play` 分支既有的「🔍 正在搜尋」狀態訊息要在
+        STT 修正完、`_resolve_yt_query` 網路呼叫**開始前**顯示（不然使用者在等待
+        期間看不到任何回饋），純函式黑盒子做不到這件事，所以留一個可選 callback
+        `on_query_resolved(raw_search, corrected_search, correction_note)`，
+        resolve 前呼叫一次；`play_next`/audio-rescue 不需要這個中途回饋，傳 None。
+
+        回傳 `(info | None, raw_search, corrected_search, correction_note)`。
+        `search` 抽不出來（使用者沒講歌名）或 `_resolve_yt_query` 找不到 → info
+        為 None，caller 自行決定怎麼 ack 失敗（兩種失敗用 `raw_search` 是否為空
+        分辨）。
+        """
+        search = vc._extract_music_search_query(query) if vc else query
+        if not search:
+            return None, "", "", ""
+
+        raw_search = search
+        correction_note = ""
+        wrong = None
+        if hasattr(self.bot, 'music_memory') and self.bot.music_memory:
+            corrected, wrong = self.bot.music_memory.apply_stt_correction(speaker, search)
+            if wrong:
+                search = corrected
+                correction_note = f" *(語音修正：{wrong} → {corrected})*"
+
+        if on_query_resolved is not None:
+            await on_query_resolved(raw_search, search, correction_note)
+
+        info = await self._resolve_yt_query(search)
+        if not info:
+            return None, raw_search, search, correction_note
+        info['requested_by'] = speaker
+        return info, raw_search, search, correction_note
+
     async def _handle_voice_music_command(self, speaker: str, query: str, cmd: str):
         """執行語音觸發的音樂指令，回應只貼頻道不走 TTS。
 
@@ -4586,34 +4631,29 @@ class MusicCog(commands.Cog):
             if vc: vc.stt_logger.info(f"[音樂控制→{speaker}] 指令=resume | bot={reply} (plan12=True)")
 
         elif cmd == "play":
-            search = vc._extract_music_search_query(query) if vc else query
             if not _can_play:
                 if ch: await ch.send("❌ 我不在語音頻道中，先用 `/summon` 召喚我。")
                 return
-            if not search:
+
+            status_msg = None
+
+            async def _show_searching(raw: str, corrected: str, note: str) -> None:
+                nonlocal status_msg
+                if ch:
+                    status_msg = await ch.send(f"🔍 **正在搜尋：** `{corrected}`...{note}")
+
+            info, raw_search, search, correction_note = await self._resolve_and_prepare(
+                speaker, query, vc, on_query_resolved=_show_searching)
+            wrong = bool(correction_note)
+
+            if not raw_search:
                 if ch: await ch.send("🎵 要放什麼歌？你說了等於沒說。")
                 return
-
-            raw_search = search
-            correction_note = ""
-            wrong = None
-            if hasattr(self.bot, 'music_memory') and self.bot.music_memory:
-                corrected, wrong = self.bot.music_memory.apply_stt_correction(speaker, search)
-                if wrong:
-                    search = corrected
-                    correction_note = f" *(語音修正：{wrong} → {corrected})*"
             self._last_search[speaker] = {'query': raw_search, 'ts': time.time(), 'source': 'voice'}
-
-            if ch:
-                status_msg = await ch.send(f"🔍 **正在搜尋：** `{search}`...{correction_note}")
-            else:
-                status_msg = None
-            info = await self._resolve_yt_query(search)
-            if not info:
+            if info is None:
                 if status_msg: await status_msg.edit(content=f"❌ 找不到 `{search}`，就跟意義一樣——不存在。")
                 if vc: asyncio.create_task(vc._play_ack("music_fail", speaker=speaker))
                 return
-            info['requested_by'] = speaker
             # 🎙️ [語音點歌] 不快進：略過熱力圖精華起點與後續 LRC 前奏跳過，一律從頭播。
             info['highlight_start_s'] = None
             info['voice_request'] = True
@@ -4671,6 +4711,56 @@ class MusicCog(commands.Cog):
                     self._active_control_view = view
                     await status_msg.edit(content=None, embed=view._build_embed(), view=view)
                     view.message = status_msg
+
+        elif cmd == "play_next":
+            if not _can_play:
+                if ch: await ch.send("❌ 我不在語音頻道中，先用 `/summon` 召喚我。")
+                return
+            info, raw_search, search, _note = await self._resolve_and_prepare(speaker, query, vc)
+            if not raw_search:
+                if ch: await ch.send("🎵 要插播什麼歌？你說了等於沒說。")
+                return
+            if info is None:
+                if ch: await ch.send(f"❌ 找不到 `{search}`，插播失敗。")
+                if vc: asyncio.create_task(vc._play_ack("music_fail", speaker=speaker))
+                return
+            info['highlight_start_s'] = None
+            info['voice_request'] = True
+            if vc:
+                vc.stt_logger.info(
+                    f"[插播-語音] 使用者={speaker} | 搜尋={raw_search} | 結果={info['title']}"
+                )
+            if self.radio_mode:
+                await self.stop_radio(reason="語音音樂指令接管")
+            self._queue_user_song(info, front=True)
+            if vc:
+                asyncio.create_task(self._speak_song_ack(vc, info['title']))
+            self._ensure_stream_loop()
+            if ch: await ch.send(f"⏭️ 「{info['title']}」插播到最前面了。")
+
+        elif cmd == "clear_queue":
+            if not self.stream_queue and not self.stream_mode:
+                if ch: await ch.send("😑 待播本來就是空的。")
+                return
+            had_upcoming = bool(self.stream_queue)
+            self.stream_queue.clear()
+            # 🎲 併發清理：正在播的個人歌單 session 一併收掉，避免 loop 之後莫名
+            # 復活繼續播（比照 stop_stream 既有行為）。
+            self._personal_shuffle = None
+            # [DJ Tail] 尾段 task 若已排、還沒點火 → 取消（保險；_run_tail_dj 自己
+            # 點火時也會重查 stream_queue[0] 空而 no-op，這裡只是不留殘留 task）。
+            if self._tail_dj_task is not None and not self._tail_dj_task.done():
+                self._tail_dj_task.cancel()
+                self._tail_dj_task = None
+            self._republish_queue_snapshot()
+            if self.stream_mode:
+                self._pending_stop_after_song = True
+                self._stream_user_stopped = True  # 主動清空 → watchdog 別自己復活
+                reply = "🧹 好，待播清空了，這首放完就停。"
+            else:
+                reply = "🧹 待播清空了。" if had_upcoming else "😑 待播本來就是空的。"
+            if ch: await ch.send(reply)
+            if vc: vc.stt_logger.info(f"[音樂控制→{speaker}] 指令=clear_queue | bot={reply}")
 
     async def _handle_find_song(self, mode: str, payload: str, speaker: str):
         """FindSongAgent handler：依模式識別歌名 → 報出識別結果 → 交給播放路徑。"""
