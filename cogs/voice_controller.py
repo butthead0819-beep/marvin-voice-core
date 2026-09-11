@@ -246,6 +246,7 @@ def build_intent_agents(controller, bot):
     """
     # Phase 1 M5: lazy import 避免 module-level import 鏈死結
     from intent_agents.playback_control_agent import PlaybackControlAgent
+    from intent_agents.queue_control_agent import QueueControlAgent
     from intent_agents.volume_agent import VolumeAgent
     from intent_agents.replay_agent import ReplayAgent
     from intent_agents.now_playing_agent import NowPlayingAgent
@@ -263,6 +264,7 @@ def build_intent_agents(controller, bot):
         MusicAgentV2(controller),
         FindSongAgent(controller),
         PlaybackControlAgent(controller),  # Phase 1 M5: voice skip/stop/pause + ack + auto-blacklist
+        QueueControlAgent(controller),  # 2026-09-11: 清空待播 / 插播到最前（PR2）
         VolumeAgent(controller),  # 2026-05-27: 議題 E #1 — 音量語音控制
         ReplayAgent(controller),  # 2026-05-27: 議題 E #2 — 重播當前歌曲
         NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
