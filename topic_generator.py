@@ -76,7 +76,7 @@ class TopicGenerator:
                         user_prompt=prompt,
                         tier="simple",
                         temperature=0.8,
-                        purpose="generate_topics",
+                        purpose="topic_gen",
                     ),
                     timeout=_TIMEOUT,
                 )

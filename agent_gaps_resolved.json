@@ -78,5 +78,53 @@
     "file": "intent_agents/queue_control_agent.py",
     "resolved_at": "2026-09-11",
     "note": "⚠️ 這個 intent_type 底下可能混著兩種語意——已實查 records/agent_gaps.jsonl，目前唯一真樣本是 showay 09-08「把阿杜的堅持到底放到註列第一首」（插到佇列最前），由 QueueControlAgent 的 play_next intent 接手（bid 0.95）。若未來新樣本其實是一般點歌（MusicAgentV2 早就覆蓋，同 strong_play 條目），不算新缺口；若是真正的插播/優先播放語意，才算 play_next 沒接住。分類器把這兩種都塞進同一個 intent_type 字串，登記時沒有更細的欄位可分——回顧時看 raw_query 判斷是哪一種。"
+  },
+  "playback_control_pause": {
+    "agent": "playback_control",
+    "file": "intent_agents/playback_control_agent.py",
+    "resolved_at": "2026-09-13",
+    "note": "9/13 audit：clustering 把這個字串跟 control_pause（已 resolved）分群在一起，同一顆 PlaybackControlAgent 接手，只是 classifier 對「暫停播放」偶爾吐出不同字串。"
+  },
+  "volume_adjustment": {
+    "agent": "volume",
+    "file": "intent_agents/volume_agent.py",
+    "resolved_at": "2026-09-13",
+    "note": "見 volume_down 條目，同一顆 VolumeAgent，classifier 字串不穩定。"
+  },
+  "music_playback_request": {
+    "agent": "music_v2",
+    "file": "intent_agents/music_agent_v2.py",
+    "resolved_at": "2026-09-13",
+    "note": "見 strong_play 條目，MusicAgentV2 早就覆蓋一般點歌請求；樣本本身是斷句糊字（STT 品質問題），不是新能力缺口。"
+  },
+  "music_play_request": {
+    "agent": "music_v2",
+    "file": "intent_agents/music_agent_v2.py",
+    "resolved_at": "2026-09-13",
+    "note": "見 music_playback_request 條目，同一顆 MusicAgentV2。"
+  },
+  "music_random_play": {
+    "agent": "music_v2",
+    "file": "intent_agents/music_agent_v2.py",
+    "resolved_at": "2026-09-13",
+    "note": "「隨便放一首/想不到聽什麼」由自動點歌 autopilot 候選池（project_infinite_autopilot_tiers）接手，非新缺口。"
+  },
+  "replay_song": {
+    "agent": "music_v2",
+    "file": "intent_agents/music_agent_v2.py",
+    "resolved_at": "2026-09-13",
+    "note": "9/13 audio rescue 實測驗證：showay「重覆這一首」已由 music agent 的 rescue_play 正確接住（records/rescue_outcomes.jsonl 09-03 convergent 案例），regex 版同能力也存在，只是這句冷門措辭偶爾漏接。"
+  },
+  "song_loop_request": {
+    "agent": "music_v2",
+    "file": "intent_agents/music_agent_v2.py",
+    "resolved_at": "2026-09-13",
+    "note": "9/13 audio rescue 實測驗證：showay「單曲循環這首歌」已由 music agent 的 rescue_play 正確接住（09-08 convergent 案例），同一句同天稍晚一次因 Gemini timeout 漏接，屬 API 穩定性問題，不是缺 agent。"
+  },
+  "social_talk_request": {
+    "agent": "joke_request",
+    "file": "intent_agents/joke_request_agent.py",
+    "resolved_at": "2026-09-01",
+    "note": "social_joke_request 條目提過的同句不穩定標記，當時決定不另立條目，但 analyze_agent_gaps.py 是照 key 是否存在判斷 resolved，光寫在 note 裡不會被程式讀到，導致這個字串一直被誤標——9/13 補上這個 key 才是真正生效的修法。"
   }
 }

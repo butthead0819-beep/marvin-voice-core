@@ -96,7 +96,9 @@ class NowPlayingAgent(DeclarativeIntentAgent):
         pending_map = getattr(self.ctrl, "_pending_followups", None)
         if ch is None or pending_map is None:
             return
-        prompt, pending = maybe_offer_more_by_artist("", info.get("uploader", ""))
+        prompt, pending = maybe_offer_more_by_artist(
+            "", info.get("uploader", ""), info.get("title", "")
+        )
         if not pending:
             return
         pending_map[speaker] = pending

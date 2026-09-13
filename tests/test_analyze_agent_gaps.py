@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
 
 from scripts.analyze_agent_gaps import analyze, load
 
@@ -182,4 +185,31 @@ def test_save_clusters_filters_resolved_and_assigns_status(tmp_path: Path):
     monitoring = next(c for c in data if c["cluster_id"] == "monitoring_intent")
     assert monitoring["status"] == "monitoring"
     assert monitoring["occurrence_count"] == 1
+
+
+# ── run_clustering：max_tokens 不能小到讓 thinking model 燒光額度回空字串 ──────
+#
+# 2026-09-13 實測：analyze_pool 常態 fall through 到 OpenRouter 的
+# nemotron-3-super-120b（thinking model，見 llm_pool.py ProviderSpec 註解
+# 「靠 caller 給足 max_tokens 吃掉推理 token」）。原本 max_tokens=1000 太小，
+# reasoning 就把額度燒完，content 變成空字串——dispatch() 把空字串當成功，
+# 不會繼續 fallback 到其實答得出來的 gemini_free，於是 clustering 每次都靜默
+# 寫出 `[]` 蓋掉 records/intent_clusters.json。
+
+@pytest.mark.asyncio
+async def test_run_clustering_requests_enough_tokens_for_thinking_models():
+    from scripts.analyze_agent_gaps import run_clustering
+
+    router = AsyncMock()
+    router.analyze = AsyncMock(return_value='[{"cluster_id": "buy_milk", "members": ["buy_milk"], "occurrence_count": 2}]')
+
+    gaps = [{"intent_type": "buy_milk", "raw_query": "幫我買牛奶"}]
+    result = await run_clustering(gaps, router)
+
+    assert result == [{"cluster_id": "buy_milk", "members": ["buy_milk"], "occurrence_count": 2}]
+    max_tokens = router.analyze.call_args.kwargs["max_tokens"]
+    assert max_tokens >= 4000, (
+        f"max_tokens={max_tokens} 太小，thinking model（如 OpenRouter nemotron）"
+        "推理會燒光額度回空字串，clustering 靜默失敗"
+    )
 

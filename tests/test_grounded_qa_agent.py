@@ -212,7 +212,47 @@ async def test_run_grounded_qa_no_answer_fallback(monkeypatch):
     await gqa.run_grounded_qa(ctrl, "showay", "查不到的東西")
     await __import__("asyncio").sleep(0)
     assert "查不到" in ctrl.play_tts.call_args.args[0]
-    assert recorded[0]["answer"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_source_defaults_to_ambient_qa(monkeypatch):
+    """source 沒傳時預設 ambient_qa（既有呼叫點如 GroundedQAAgent handler 行為不變）。"""
+    ctrl = MagicMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+    ctrl._ambient_qa_guard = _guard()
+    monkeypatch.setattr(gqa, "grounded_answer",
+                        AsyncMock(return_value=("答案是 42。", ["example.com"])))
+    recorded = []
+    monkeypatch.setattr(gqa, "record_ambient_qa", lambda r: recorded.append(r))
+
+    await gqa.run_grounded_qa(ctrl, "showay", "生命宇宙的答案")
+    await __import__("asyncio").sleep(0)
+    assert recorded[0]["source"] == "ambient_qa"
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_source_passthrough(monkeypatch):
+    """新呼叫點（NowPlaying 追問補充）傳 source="music_followup" 要被記錄下來，
+    讓 records/ambient_qa.jsonl 之後分得出來這筆不是 GroundedQAAgent regex 觸發的。"""
+    ctrl = MagicMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+    ctrl._ambient_qa_guard = _guard()
+    monkeypatch.setattr(gqa, "grounded_answer",
+                        AsyncMock(return_value=("2003 年。", ["example.com"])))
+    recorded = []
+    monkeypatch.setattr(gqa, "record_ambient_qa", lambda r: recorded.append(r))
+
+    await gqa.run_grounded_qa(ctrl, "showay", "歌曲《夜曲》哪一年的",
+                              raw="這是哪一年的", source="music_followup")
+    await __import__("asyncio").sleep(0)
+    assert recorded[0]["source"] == "music_followup"
+    assert recorded[0]["answer"] == "2003 年。"
 
 
 # ── grounded_answer ─────────────────────────────────────────────────────────

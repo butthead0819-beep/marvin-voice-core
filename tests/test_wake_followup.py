@@ -5,7 +5,10 @@ voice_controller 持有 per-speaker pending state，這層只負責「是否該�
 """
 from __future__ import annotations
 
-from wake_followup import match_followup, is_expired
+from wake_followup import (
+    match_followup, is_expired, wants_supplement, maybe_offer_more_by_artist,
+    build_supplement_topic,
+)
 
 
 def _signal(text: str) -> bool:
@@ -107,3 +110,59 @@ def test_is_expired_basic():
 
 def test_is_expired_no_pending():
     assert is_expired(None, 110.0, 12.0) is False
+
+
+# ── wants_supplement：music_more_by_artist 但回的不是肯定詞，卻有實質內容 ──
+
+def test_wants_supplement_true_for_open_question():
+    pending = {"type": "music_more_by_artist", "artist": "周杰倫", "title": "夜曲", "ts": 100.0}
+    assert wants_supplement(pending, "這是哪一年的", 105.0, 12.0, _signal) is True
+
+
+def test_wants_supplement_false_for_affirmative():
+    """肯定詞該走原本 play-same-artist 路徑，不該被搶走。"""
+    pending = {"type": "music_more_by_artist", "artist": "周杰倫", "title": "夜曲", "ts": 100.0}
+    assert wants_supplement(pending, "好啊", 105.0, 12.0, _signal) is False
+
+
+def test_wants_supplement_false_for_filler():
+    pending = {"type": "music_more_by_artist", "artist": "周杰倫", "title": "夜曲", "ts": 100.0}
+    assert wants_supplement(pending, "嗯", 105.0, 12.0, _signal) is False
+
+
+def test_wants_supplement_false_for_other_type():
+    pending = {"type": "music_song_title", "original_query": "播首歌", "ts": 100.0}
+    assert wants_supplement(pending, "這是哪一年的", 105.0, 12.0, _signal) is False
+
+
+def test_wants_supplement_false_when_expired():
+    pending = {"type": "music_more_by_artist", "artist": "周杰倫", "title": "夜曲", "ts": 100.0}
+    assert wants_supplement(pending, "這是哪一年的", 113.0, 12.0, _signal) is False
+
+
+def test_wants_supplement_false_when_no_pending():
+    assert wants_supplement(None, "這是哪一年的", 105.0, 12.0, _signal) is False
+
+
+# ── maybe_offer_more_by_artist：pending 帶 title（供補充回答組 query 用）──
+
+def test_maybe_offer_more_by_artist_pending_includes_title():
+    reply, pending = maybe_offer_more_by_artist("", "周杰倫", "夜曲")
+    assert pending["title"] == "夜曲"
+    assert pending["artist"] == "周杰倫"
+
+
+def test_maybe_offer_more_by_artist_title_optional():
+    """title 沒傳時預設空字串，不炸。"""
+    reply, pending = maybe_offer_more_by_artist("", "周杰倫")
+    assert pending["title"] == ""
+
+
+# ── build_supplement_topic ───────────────────────────────────────────────────
+
+def test_build_supplement_topic_includes_song_context_and_question():
+    pending = {"type": "music_more_by_artist", "artist": "周杰倫", "title": "夜曲", "ts": 100.0}
+    topic = build_supplement_topic(pending, "這是哪一年的")
+    assert "夜曲" in topic
+    assert "周杰倫" in topic
+    assert "這是哪一年的" in topic

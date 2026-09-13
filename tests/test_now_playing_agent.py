@@ -185,6 +185,7 @@ async def test_handler_offers_more_by_artist_after_answering():
     assert pending is not None
     assert pending["type"] == "music_more_by_artist"
     assert pending["artist"] == "周杰倫"
+    assert pending["title"] == "夜曲"  # wants_supplement 組 grounded QA query 要用
 
 
 async def test_handler_skips_offer_when_no_uploader():

@@ -65,16 +65,48 @@ def match_followup(
     return f"馬文，{raw_text}"
 
 
-def maybe_offer_more_by_artist(reply: str, uploader: str) -> tuple[str, Optional[dict]]:
+def maybe_offer_more_by_artist(reply: str, uploader: str, title: str = "") -> tuple[str, Optional[dict]]:
     """問歌曲資訊時，若有 uploader，追加「要不要點同歌手的歌」+ 回傳 pending state。
 
     caller（voice_controller._handle_music_info_query）負責把 pending 塞進
     `self._pending_followups[speaker]`；這裡只組文字跟 dict，不碰 controller 狀態。
+
+    `title` 一併存進 pending（snapshot，不是之後回頭讀 `_current_stream_info`）
+    ——給 `wants_supplement` 命中時組 grounded QA query 用（見 wants_supplement）。
     """
     if not uploader:
         return reply, None
     reply = f"{reply} 要不要幫你點一首 {uploader} 的經典曲目？"
-    return reply, {"type": "music_more_by_artist", "artist": uploader, "ts": time.time()}
+    return reply, {"type": "music_more_by_artist", "artist": uploader, "title": title, "ts": time.time()}
+
+
+def wants_supplement(
+    pending: Optional[dict], raw_text: str, now: float, window_s: float,
+    has_signal_fn: Callable[[str], bool],
+) -> bool:
+    """pending 是 music_more_by_artist，但使用者回的不是肯定詞、卻有實質內容
+    （例如「這是哪一年的」）→ 該轉去 LLM 補充回答，而不是被 match_followup
+    當「沒聽懂」丟掉。
+
+    跟 match_followup 同層級的純函式：只判「該不該轉去補充回答」，不碰 I/O、
+    不決定要問什麼——caller 自己組 query 呼叫 grounded QA。
+    """
+    if not pending or pending.get("type") != "music_more_by_artist":
+        return False
+    if is_expired(pending, now, window_s):
+        return False
+    if not raw_text or not raw_text.strip():
+        return False
+    if any(w in raw_text for w in _AFFIRMATIVE_WORDS):
+        return False  # 肯定詞 → 原本 play-same-artist 路徑該接，不搶
+    return has_signal_fn(raw_text)
+
+
+def build_supplement_topic(pending: dict, raw_text: str) -> str:
+    """組 grounded QA 的 query 字串（wants_supplement 命中後給 run_grounded_qa 用）。"""
+    title = pending.get("title", "")
+    artist = pending.get("artist", "")
+    return f"歌曲《{title}》演出/上傳者：{artist}。使用者接著問：{raw_text}"
 
 
 def is_expired(pending: Optional[dict], now: float, window_s: float) -> bool:

@@ -144,7 +144,11 @@ async def run_clustering(gaps: list[dict], router) -> list[dict]:
             prompt=user_prompt,
             caller="gap_clustering",
             system=system_prompt,
-            max_tokens=1000,
+            # analyze_pool 常 fall through 到 OpenRouter 的 nemotron thinking model
+            # （llm_pool.py 該 ProviderSpec 註解：靠 caller 給足 max_tokens 吃掉推理
+            # token）。1000 太小會被推理燒光只回空字串，dispatch() 把空字串當成功
+            # 就不會再 fallback 到答得出來的 endpoint，clustering 靜默全失敗。
+            max_tokens=4000,
             temperature=0.0,
             json=True,
         )

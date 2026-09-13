@@ -226,12 +226,18 @@ async def grounded_answer(
     return None
 
 
-async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "") -> None:
+async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
+                          source: str = "ambient_qa") -> None:
     """handler 本體（放這裡而非 voice_controller，守 size budget 棘輪）。
 
     D7：ack 先出（貴呼叫前給「查詢中」提示，4.5s 死等會被讀成崩潰），再走 free→付費
     grounded 鏈。L1/L2 幻覺 guard 擋下就回「查不到」。用到的 ctrl 介面：_play_ack /
     play_tts / active_text_channel / stt_logger / bot.router。
+
+    `source` 標記呼叫來源，寫進 `records/ambient_qa.jsonl`，讓「馬文幫我查X」
+    （GroundedQAAgent regex 觸發，預設 "ambient_qa"）跟其他重用這條管線的呼叫點
+    （例如 NowPlaying 追問視窗接住的開放式補充問題，"music_followup"）在分析時
+    分得開，不影響既有呼叫點（保留預設值）。
     """
     import time as _time
 
@@ -261,7 +267,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "") -> N
         asyncio.create_task(ctrl.play_tts("這題我查不到。", already_in_channel=True))
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
-                           "latency_ms": latency_ms})
+                           "latency_ms": latency_ms, "source": source})
         return
 
     answer, sources = res
@@ -273,8 +279,29 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "") -> N
             f"🔎 **【查詢】** `{speaker}`：{answer}{src}"))
     record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                        "query": topic, "answer": answer, "sources": sources,
-                       "latency_ms": latency_ms, "downstream": "none"})
+                       "latency_ms": latency_ms, "downstream": "none", "source": source})
     logger.info(f"[AmbientQA] {speaker} 「{topic}」已回答（{latency_ms}ms, src={sources}）。")
+
+
+def maybe_dispatch_followup_supplement(
+    ctrl, speaker: str, pending: dict | None, raw_text: str, now: float, window_s: float,
+    has_signal_fn,
+) -> bool:
+    """NowPlaying 追問視窗接到非肯定詞但有實質內容的回話（「這是哪一年的」之類）
+    → fire-and-forget 轉去 grounded QA 回答，回 True 讓 caller `elif ...: return`。
+
+    放這裡（而非 voice_controller）守 size budget 棘輪——呼叫端只需一行 elif。
+    """
+    from wake_followup import wants_supplement, build_supplement_topic
+    if not wants_supplement(pending, raw_text, now, window_s, has_signal_fn):
+        return False
+    ctrl._pending_followups.pop(speaker, None)
+    ctrl.stt_logger.info(f"[💬Followup→補充] [{speaker}] raw='{raw_text[:30]}'")
+    asyncio.create_task(run_grounded_qa(
+        ctrl, speaker, build_supplement_topic(pending, raw_text),
+        raw=raw_text, source="music_followup",
+    ))
+    return True
 
 
 def record_ambient_qa(rec: dict) -> None:

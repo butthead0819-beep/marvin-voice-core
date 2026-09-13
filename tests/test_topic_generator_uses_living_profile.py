@@ -96,6 +96,30 @@ async def test_generate_topics_profile_passed_to_llm():
 
 
 @pytest.mark.asyncio
+async def test_generate_topics_router_path_uses_known_llm_bus_purpose():
+    """走 router._call_llm 時 purpose 必須是 LLMBus 認得的名稱（topic_gen），
+    不能是 generate_topics —— 那個 typo 會讓這次呼叫吃不到 topic_gen 該有的
+    模型路由/歸因，只留下一句 unknown purpose warning。"""
+    from topic_generator import TopicGenerator
+    from llm_agents.base import KNOWN_PURPOSES
+
+    router = MagicMock()
+    router._call_llm = AsyncMock(return_value="1. 話題A\n2. 話題B\n3. 話題C")
+    gen = TopicGenerator(
+        vector_store=FakeVectorStore({"u1": "愛打遊戲的人"}),
+        transcript_store=FakeTranscriptStore([]),
+        groq_client=make_groq_client(),
+        router=router,
+    )
+    members = [make_member("u1")]
+    await gen.generate_topics("guild1", members)
+
+    purpose = router._call_llm.call_args.kwargs["purpose"]
+    assert purpose in KNOWN_PURPOSES
+    assert purpose == "topic_gen"
+
+
+@pytest.mark.asyncio
 async def test_generate_topics_no_profile_uses_transcript_only():
     """所有 member 無 profile → fallback 只用 transcript，不 crash，仍回傳 3 個話題"""
     from topic_generator import TopicGenerator

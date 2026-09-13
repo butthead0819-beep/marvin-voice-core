@@ -114,7 +114,7 @@ from intent_agents.busted99_agent import Busted99Agent
 from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.find_song_agent import FindSongAgent
 from intent_agents.game_knowledge_agent import GameKnowledgeAgent
-from intent_agents.grounded_qa_agent import GroundedQAAgent
+from intent_agents.grounded_qa_agent import GroundedQAAgent, maybe_dispatch_followup_supplement
 from intent_agents.skip_intent import is_short_skip_command
 # Phase 1 M5: PlaybackControlAgent 改成 build_intent_agents() 內 lazy import
 # 避免 macOS python 環境冷啟動時的 import 鏈死結 (2026-05-23 incident)
@@ -1392,8 +1392,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     self._pending_followups.pop(speaker, None)
                     logger.debug(f"💬 [Followup] {speaker} 視窗過期，清掉")
                 else:
-                    _synth = match_followup(_pending, raw_text, _now_fu,
-                                            _FOLLOWUP_WINDOW_S, has_intent_signal)
+                    _synth = match_followup(_pending, raw_text, _now_fu, _FOLLOWUP_WINDOW_S, has_intent_signal)
                     if _synth:
                         self._pending_followups.pop(speaker, None)
                         self.stt_logger.info(
@@ -1407,6 +1406,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                             bypass_etd=True, wake_intent=None,
                         ))
                         return
+                    elif maybe_dispatch_followup_supplement(self, speaker, _pending, raw_text, _now_fu, _FOLLOWUP_WINDOW_S, has_intent_signal): return
                     # 視窗內但純 filler → 保留 pending，繼續走原路徑（也許 deferred wake 接）
 
             # 🔍 [Deferred Wake] 人類遲疑模型：
