@@ -585,27 +585,35 @@ class BufferedF32MusicSource:
 
 
 class PreloadedF32MusicSource:
-    """整首音樂已完整解碼進記憶體的 frame 序列；read() 純陣列取用，無 ffmpeg pipe
-    依賴、無即時解碼背景執行緒——消除 BufferedF32MusicSource 的 mixer decode underrun
-    （CPU 被搶佔時 decode thread 跟不上混音時鐘→塞靜音頂替→中段爆音，見
+    """整首音樂已完整解碼進記憶體的一塊連續 s16 buffer；read() 逐幀切片取用，無 ffmpeg
+    pipe 依賴、無即時解碼背景執行緒——消除 BufferedF32MusicSource 的 mixer decode
+    underrun（CPU 被搶佔時 decode thread 跟不上混音時鐘→塞靜音頂替→中段爆音，見
     project_car_puck_pops_and_1s_dropout_2026-07-25）。代價：播放前要等整首解碼完，換開頭
     延遲，不再有中段斷點。cleanup() 為 no-op：inner 音源已在 preload_f32_source() 內完整
     耗盡並清過。
 
-    內部存 s16（frames 是 FRAME_BYTES_S16 幀），read() 時才轉 f32——省一半常駐記憶體，
-    s16→f32 無損（見 S16ToF32MusicSource）。2026-08-24：DJ tail crossfade 期間兩首歌
-    同時 preloaded，f32 存底一首 ~5min 歌吃 109MB，量到常駐 ~700MB 後改成 s16 存底。
+    內部存 s16（read() 時才轉 f32——省一半常駐記憶體，s16→f32 無損，見
+    S16ToF32MusicSource）。2026-08-24：DJ tail crossfade 期間兩首歌同時 preloaded，
+    f32 存底一首 ~5min 歌吃 109MB，量到常駐 ~700MB 後改成 s16 存底。
+
+    2026-09-15：改成單一連續 bytes buffer + read() 時才按 offset 切幀（原本 preload 階段
+    逐幀 append 進 list，一首歌上萬次小型 bytes 切片/list操作，會在背景 preload thread 上
+    長時間握著 GIL，跟送幀 thread 搶排程——診斷見換歌後 gap_max_ms 飆到 200ms+ 持續
+    30-40s。切幀動作延後到這裡逐幀被叫到時才做，跟原本 50Hz 節奏一次只切一幀的成本一樣
+    可忽略，但 preload 階段不再有那上萬次操作。
     """
 
-    def __init__(self, frames: list):
-        self._frames = frames
+    def __init__(self, buf: bytes):
+        self._buf = buf
+        self._n_frames = len(buf) // FRAME_BYTES_S16  # 尾巴不足一幀的殘餘丟棄（跟原本行為一致）
         self._i = 0
 
     def read(self) -> bytes:
-        if self._i >= len(self._frames):
+        if self._i >= self._n_frames:
             return b""
-        s16 = self._frames[self._i]
+        off = self._i * FRAME_BYTES_S16
         self._i += 1
+        s16 = self._buf[off:off + FRAME_BYTES_S16]
         f = np.frombuffer(s16, dtype=np.int16).astype(np.float32) / np.float32(32768.0)
         return f.tobytes()
 
@@ -615,29 +623,27 @@ class PreloadedF32MusicSource:
     def stats(self) -> dict:
         """跟 BufferedF32MusicSource.stats() 同形狀，讓 _mixer_play_music 的退出 log
         沿用同一行格式。沒有 underrun 概念（全解碼完才開始播）恆為 0。"""
-        return {"underruns": 0, "depth": len(self._frames) - self._i, "max": len(self._frames),
-                "produced": len(self._frames), "eof": True, "eof_reason": "preloaded"}
+        return {"underruns": 0, "depth": self._n_frames - self._i, "max": self._n_frames,
+                "produced": self._n_frames, "eof": True, "eof_reason": "preloaded"}
 
 
 def preload_f32_source(inner_s16_source) -> PreloadedF32MusicSource:
     """阻塞讀『s16le』inner_s16_source（例如 discord.FFmpegPCMAudio，別再包
-    S16ToF32MusicSource）到耗盡，切成 FRAME_BYTES_S16 幀存進記憶體。呼叫端須自行丟進
-    thread（如 asyncio.to_thread）——此函式本身是同步阻塞的，會等整首解碼完才回傳。
+    S16ToF32MusicSource）到耗盡，join 成一塊連續 buffer（不逐幀切片，見
+    PreloadedF32MusicSource 的 2026-09-15 註解）。呼叫端須自行丟進 thread（如
+    asyncio.to_thread）——此函式本身是同步阻塞的，會等整首解碼完才回傳。inner 回傳的
+    chunk 不必跟 FRAME_BYTES_S16 對齊，join 後才按幀長切，任意切法都能正確組幀。
     """
-    frames = []
-    leftover = b""
+    chunks = []
     while True:
         chunk = inner_s16_source.read()
         if not chunk:
             break
-        leftover += chunk
-        while len(leftover) >= FRAME_BYTES_S16:
-            frames.append(bytes(leftover[:FRAME_BYTES_S16]))
-            leftover = leftover[FRAME_BYTES_S16:]
+        chunks.append(chunk)
     c = getattr(inner_s16_source, "cleanup", None)
     if callable(c):
         c()
-    return PreloadedF32MusicSource(frames)
+    return PreloadedF32MusicSource(b"".join(chunks))
 
 
 def ensure_mixer_playing(device, adapter_factory) -> bool:

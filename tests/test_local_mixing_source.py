@@ -464,6 +464,40 @@ def test_preload_never_returns_silence_underrun_frame():
     assert src.read() == b""
 
 
+def test_preload_handles_non_frame_aligned_chunks():
+    """2026-09-15 惰性切片重構：preload 階段不再逐幀切，改成 join 整塊 buffer 後
+    read() 才按 offset 切幀——inner 回傳的 chunk 不必對齊 FRAME_BYTES_S16 也要能正確
+    組出完整幀，尾巴不足一幀的殘餘要丟棄（跟原本 leftover 累積式寫法行為一致）。"""
+    class _OddChunks:
+        def __init__(self, data: bytes, chunk_size: int):
+            self._data = data
+            self._chunk_size = chunk_size
+            self._off = 0
+
+        def read(self):
+            if self._off >= len(self._data):
+                return b""
+            c = self._data[self._off:self._off + self._chunk_size]
+            self._off += len(c)
+            return c
+
+        def cleanup(self):
+            pass
+
+    two_frames_plus_partial = (
+        np.full(FRAME_SAMPLES, 6554, dtype=np.int16).tobytes()
+        + np.full(FRAME_SAMPLES, 13107, dtype=np.int16).tobytes()
+        + b"\x00" * 100  # 尾巴不足一幀的殘餘，應被丟棄
+    )
+    inner = _OddChunks(two_frames_plus_partial, chunk_size=100)  # 遠小於一幀、也切不整除
+    src = preload_f32_source(inner)
+    f0 = np.frombuffer(src.read(), dtype=np.float32)[0]
+    f1 = np.frombuffer(src.read(), dtype=np.float32)[0]
+    assert round(float(f0), 3) == round(6554 / 32768.0, 3)
+    assert round(float(f1), 3) == round(13107 / 32768.0, 3)
+    assert src.read() == b""
+
+
 def test_preload_feeds_mixer_music_layer():
     mix = LocalMixingAudioSource(seed=1, volume=1.0)
     inner = _FakeS16Frames([0.2, 0.2, 0.2])
