@@ -67,9 +67,12 @@ class LocalMixingAudioSource(_BASE):
         self._duck_cur = 1.0  # 1.0 = 無 duck
         self._ptt_active = False  # 🎙️ [PTT Optimization] PTT 狀態標記
         self._wake_duck_until = 0.0  # 🔇 [Wake Duck] 喚醒確認 → 音樂 duck 到此時戳（不等 TTS）
-        # 🔇 [TTS 對玩家 duck] Marvin 自己的 TTS（尤其長的：DJ interjection / 歌單理由）播放中
-        # 若有玩家還在說話 → TTS 讓路。兩階段（用戶回饋：單一雜音就整段壓到 10%，10 秒的
-        # 播報一下就聽不到——一次觸發可能只是雜音，不代表使用者真的想講話）：
+        # 🔇 [TTS 對玩家 duck]（2026-09-15 起：狀態機仍追蹤，但不再套用到 _read_impl 輸出——
+        # 用戶要求 TTS / DJ 口白改用「頻道」概念，讓路的代價比雜音誤觸發更糟，見
+        # _read_impl 的 layer1 gain 計算。以下欄位/註解保留原始設計意圖供之後參考。）
+        # Marvin 自己的 TTS（尤其長的：DJ interjection / 歌單理由）播放中若有玩家還在說話 →
+        # TTS 讓路。兩階段（用戶回饋：單一雜音就整段壓到 10%，10 秒的播報一下就聽不到——
+        # 一次觸發可能只是雜音，不代表使用者真的想講話）：
         #   1. onset：第一次偵測到 → 先淺 duck 到 80%（禮貌讓路，不到「聽不到」的程度）。
         #   2. confirmed：onset 窗（_confirm_window_s）內又偵測到一次 → 判定是真的在講話，
         #      才繼續壓到 _tts_player_duck_level（10%），之後每次再講話延長 hold。
@@ -311,11 +314,11 @@ class LocalMixingAudioSource(_BASE):
             if _tts_now and not self._prev_tts_marvin and self._clock() >= self._player_speech_until:
                 self._tts_player_duck_cur = 1.0
             self._prev_tts_marvin = _tts_now
-            _pd = self._tts_player_duck_step_toward(self._clock())
+            self._tts_player_duck_step_toward(self._clock())  # 狀態仍追蹤，但不再套用到輸出（見下）
             if tts_f is not None:
-                # 套 tts_gain（音樂 ~10% 時 TTS 滿音量過大）；淡出中再乘 interject_cur；玩家說話再乘 _pd。
+                # 2026-09-15 用戶要求：TTS / DJ 口白（layer1）改用「頻道」概念——不再因玩家說話
+                # duck，讓路的代價（聽不到）比雜音誤觸發更糟。只套 tts_gain；淡出中再乘 interject_cur。
                 _g = self._tts_gain * self._interject_cur if self._interject_cur < 1.0 else self._tts_gain
-                _g *= _pd
                 layers.append(am.apply_gain(tts_f, _g))  # Marvin
             if tts2_f is not None:
                 layers.append(am.apply_gain(tts2_f, self._tts_gain))  # Marmo（同為 TTS）

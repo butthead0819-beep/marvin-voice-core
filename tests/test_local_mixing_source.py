@@ -860,18 +860,19 @@ def test_tts_player_duck_no_change_when_no_speech():
     assert mix._tts_player_duck_cur == 1.0          # 沒人說話 → 不 duck
 
 
-def test_tts_output_ducked_when_player_speaking():
-    """wiring：玩家持續說話（confirmed）+ duck 到位 → TTS 輸出 == apply_gain(tts, tts_gain * duck_level)。"""
+def test_tts_output_not_ducked_when_player_speaking():
+    """wiring：TTS/DJ 口白（layer1）不再因頻道有人說話被 duck——只有 DJ music(BGM) 才 duck。
+    即使玩家說話 duck 狀態機已 ramp 到 confirmed（10%），輸出仍是滿 tts_gain。"""
     clk = [0.0]
     mix = LocalMixingAudioSource(seed=11, tts_gain=0.5, clock=lambda: clk[0])
-    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))        # Marvin 正播的長播報（就是被壓的這幀）
+    mix.push_tts(_f32_frame(0.6, n=FRAME_SAMPLES))        # Marvin 正播的長播報
     mix.note_player_speech()                              # onset
     mix.note_player_speech()                              # 再次觸發（仍在 confirm window 內）→ confirmed
-    mix._tts_player_duck_cur = mix._tts_player_duck_level  # 假設已 ramp 到位
+    mix._tts_player_duck_cur = mix._tts_player_duck_level  # 假設狀態機已 ramp 到位（10%）
     out = np.frombuffer(mix.read(), dtype=np.int16)
     tts = _f32_frame(0.6)
     expected = am.to_s16(am.tpdf_dither(
-        am.apply_gain(tts, 0.5 * mix._tts_player_duck_level), np.random.default_rng(11)))
+        am.apply_gain(tts, 0.5), np.random.default_rng(11)))
     assert np.array_equal(out, expected)
 
 
