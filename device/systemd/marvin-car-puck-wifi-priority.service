@@ -1,0 +1,13 @@
+[Unit]
+Description=Marvin car puck mk2 WiFi priority (iPhone hotspot > home WiFi, BMW BT gated)
+After=NetworkManager.service bluetooth.service
+Requires=NetworkManager.service bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/marvin-car-puck-wifi-priority.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
