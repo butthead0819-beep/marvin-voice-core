@@ -848,24 +848,24 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             return "希望大家喜歡"
         return f"{requester} 點的"
 
-    @staticmethod
-    def _autopilot_dj_phrase(spotlight: str, clean_title: str, clean_artist: str,
+    @classmethod
+    def _autopilot_dj_phrase(cls, spotlight: str, clean_title: str, clean_artist: str,
                               lane: str = "", anchor: str = "") -> str:
         """為 autopilot 推薦歌曲生成 DJ 台詞，理由依 lane 而定（DJ 編個理由）。"""
         import random
         who = spotlight or "你"
         if lane == "group_resonance":
-            pool = (MusicCog._AUTOPILOT_DJ_PHRASES_GROUP if clean_artist
-                    else MusicCog._AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST)
+            pool = (cls._AUTOPILOT_DJ_PHRASES_GROUP if clean_artist
+                    else cls._AUTOPILOT_DJ_PHRASES_GROUP_NO_ARTIST)
         elif lane == "long_tail":
-            pool = MusicCog._AUTOPILOT_DJ_PHRASES_LONG_TAIL
+            pool = cls._AUTOPILOT_DJ_PHRASES_LONG_TAIL
         elif lane == "discovery":
-            pool = MusicCog._AUTOPILOT_DJ_PHRASES_DISCOVERY
+            pool = cls._AUTOPILOT_DJ_PHRASES_DISCOVERY
         elif anchor and anchor != clean_title:
-            pool = MusicCog._AUTOPILOT_DJ_PHRASES_SPOTLIGHT_ANCHOR
+            pool = cls._AUTOPILOT_DJ_PHRASES_SPOTLIGHT_ANCHOR
         else:
-            pool = (MusicCog._AUTOPILOT_DJ_PHRASES_PERSONAL if clean_artist
-                    else MusicCog._AUTOPILOT_DJ_PHRASES_PERSONAL_NO_ARTIST)
+            pool = (cls._AUTOPILOT_DJ_PHRASES_PERSONAL if clean_artist
+                    else cls._AUTOPILOT_DJ_PHRASES_PERSONAL_NO_ARTIST)
         tmpl = random.choice(pool)
         return tmpl.format(who=who, title=clean_title, artist=clean_artist, anchor=anchor)
 
