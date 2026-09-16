@@ -133,7 +133,6 @@ for path in ["/opt/homebrew/bin", "/usr/local/bin"]:
 # from screen_capture import ScreenCaptureEngine, VisualBuffer
 # from tts_engine import SukiTTS
 # from music_engine import SukiMusicEngine
-# from gm_operator import GMOperator
 # print("✅ All core engines imported.")
 
 # ── CompanionBridge wiring（Phase 3a）─────────────────────────────────────
@@ -276,8 +275,6 @@ class MarvinBot(commands.Bot):
         from music_engine import SukiMusicEngine
         self.music_engine = SukiMusicEngine(self.api_key)
         
-        from gm_operator import GMOperator
-        self.gm_operator = GMOperator(self) # 傳入 bot 實例
         self.last_restart_time = time.time()
 
         from sticker_manager import StickerManager
