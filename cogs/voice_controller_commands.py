@@ -33,12 +33,8 @@ class MarvinCommandsMixin:
         await interaction.followup.send(f"🗣️ 「{text}」")
         self.stt_logger.info(f"[MarvinSay←{interaction.user.display_name}] {text}")
         self._tts_interrupted = False
-        _prev_protected = self._tts_protected
-        self._tts_protected = True
-        try:
+        with self._protected_tts_window():
             await self.play_tts(text, already_in_channel=True, protected=True, force_macos=True)
-        finally:
-            self._tts_protected = _prev_protected
 
     @app_commands.command(
         name="marvin_talk",

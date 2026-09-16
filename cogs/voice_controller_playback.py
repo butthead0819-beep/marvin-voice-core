@@ -11,6 +11,7 @@ MAX_HOTSWAP_CHARS（play_tts 預設參數）定義在此，voice_controller re-e
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -68,6 +69,24 @@ class PlaybackMixin:
         mc = bot.cogs.get("MusicCog")
         mixer._tts_gain = getattr(mc, "stream_volume", self._stream_volume_local) if mc else self._stream_volume_local
         return mixer
+
+    @contextlib.contextmanager
+    def _protected_tts_window(self):
+        """單一 choke point：進入時把 self._tts_protected 存檔並設 True，離開時
+        （含例外路徑）還原成先前的值。
+
+        取代散落在多個檔案裡手寫的
+        `_prev = self._tts_protected; self._tts_protected = True; try: ... finally: self._tts_protected = _prev`
+        樣板——這個 save/restore boilerplate 出過至少 3 次同類 bug（PR#84/86/87：
+        某個播放路徑忘記做 save/restore 或忘記檢查旗標，protected 的 TTS 被其他
+        mute/drop 邏輯疊蓋掉）。純粹抽取既有邏輯，不改變任何呼叫點的行為。
+        """
+        _prev = getattr(self, "_tts_protected", False)
+        self._tts_protected = True
+        try:
+            yield
+        finally:
+            self._tts_protected = _prev
 
     def _ensure_mixer_playing(self, device) -> bool:
         """[Plan 12] flag=on 時確保 mixer adapter 正在 device 上播放（連線/重連後 re-arm）。
@@ -443,10 +462,8 @@ class PlaybackMixin:
 
         # committed 期間拉 self._tts_protected（barge-in guard 讀它、別中途打斷），
         # try/finally 還原。play_tts 的 protected= kwarg 本身是死的。
-        _prev_protected = getattr(self, "_tts_protected", False)
-        if _committed:
-            self._tts_protected = True
-        try:
+        _cm = self._protected_tts_window() if _committed else contextlib.nullcontext()
+        with _cm:
             await self.play_tts(
                 text,
                 already_in_channel=already_in_channel,
@@ -457,9 +474,6 @@ class PlaybackMixin:
                 bypass_stream_mute=bypass_stream_mute,
                 kind=kind,
             )
-        finally:
-            if _committed:
-                self._tts_protected = _prev_protected
 
     def _maybe_try_dual_upgrade(self) -> bool:
         """Roll the dice：MARMO_DUAL_SPEAK on + 隨機 < MARMO_DUAL_CHANCE + router 可用。
@@ -647,41 +661,39 @@ class PlaybackMixin:
         self._tts_interrupted = False
         # 🛡️ 漫才是「演出」，整段唸完不該被一句話/咳嗽 barge-in 中斷（否則 _stream_tts_to_mixer
         # 的串流被 kill → 餵入中斷、沒聲音）。_tts_protected=True 讓 barge-in(2480) 略過。
-        _prev_protected = self._tts_protected
         _armed = self._ensure_mixer_playing(device)
         self.is_playing_audio = True
-        self._tts_protected = True
         _m1 = _m2 = 0
-        try:
-            dur = self.bot.tts_engine.get_estimated_duration(marvin_text)
-            # at 沒手動傳 → 動態算（落 Marvin 子句中段、避開標點，不論對白長度都通用）
-            _at = at if at is not None else compute_interject_ratio(marvin_text)
-            marvin_task = asyncio.create_task(self._stream_tts_to_mixer(
-                marvin_text, force_macos=False, emotion_tag="neutral", voice=None, layer=1))
-            # 在 Marvin _at 比例處讓 Marmo 疊進 layer2 打斷（切句中、非標點處才像真打斷）。
-            # 串流期間持續 re-arm adapter（on-demand idle 掉就重 arm，仿 _mixer_play_music）。
-            _t_end = asyncio.get_event_loop().time() + max(0.5, dur * _at)
-            while asyncio.get_event_loop().time() < _t_end:
-                self._ensure_mixer_playing(device)
-                await asyncio.sleep(0.1)
-            # 量測 Marmo 首塊延遲：task 啟動 → 第一幀真正 push 進 mixer 的耗時
-            # （耳朵聽到 Marmo 的時點 = 啟動時點 + 此延遲，是切入比例偏離設計的主因）。
-            _marmo_t0 = asyncio.get_event_loop().time()
-            _marmo_first = {"t": None}
-            def _on_marmo_first():
-                if _marmo_first["t"] is None:
-                    _marmo_first["t"] = asyncio.get_event_loop().time()
-            marmo_task = asyncio.create_task(self._stream_tts_to_mixer(
-                marmo_text, force_macos=False, emotion_tag="marmo", voice=marmo_voice, layer=2,
-                on_first_frame=_on_marmo_first))
-            # 等兩路播完，期間持續 re-arm
-            while not (marvin_task.done() and marmo_task.done()):
-                self._ensure_mixer_playing(device)
-                await asyncio.sleep(0.1)
-            _m1, _m2 = marvin_task.result(), marmo_task.result()
-        finally:
-            self.is_playing_audio = False
-            self._tts_protected = _prev_protected
+        with self._protected_tts_window():
+            try:
+                dur = self.bot.tts_engine.get_estimated_duration(marvin_text)
+                # at 沒手動傳 → 動態算（落 Marvin 子句中段、避開標點，不論對白長度都通用）
+                _at = at if at is not None else compute_interject_ratio(marvin_text)
+                marvin_task = asyncio.create_task(self._stream_tts_to_mixer(
+                    marvin_text, force_macos=False, emotion_tag="neutral", voice=None, layer=1))
+                # 在 Marvin _at 比例處讓 Marmo 疊進 layer2 打斷（切句中、非標點處才像真打斷）。
+                # 串流期間持續 re-arm adapter（on-demand idle 掉就重 arm，仿 _mixer_play_music）。
+                _t_end = asyncio.get_event_loop().time() + max(0.5, dur * _at)
+                while asyncio.get_event_loop().time() < _t_end:
+                    self._ensure_mixer_playing(device)
+                    await asyncio.sleep(0.1)
+                # 量測 Marmo 首塊延遲：task 啟動 → 第一幀真正 push 進 mixer 的耗時
+                # （耳朵聽到 Marmo 的時點 = 啟動時點 + 此延遲，是切入比例偏離設計的主因）。
+                _marmo_t0 = asyncio.get_event_loop().time()
+                _marmo_first = {"t": None}
+                def _on_marmo_first():
+                    if _marmo_first["t"] is None:
+                        _marmo_first["t"] = asyncio.get_event_loop().time()
+                marmo_task = asyncio.create_task(self._stream_tts_to_mixer(
+                    marmo_text, force_macos=False, emotion_tag="marmo", voice=marmo_voice, layer=2,
+                    on_first_frame=_on_marmo_first))
+                # 等兩路播完，期間持續 re-arm
+                while not (marvin_task.done() and marmo_task.done()):
+                    self._ensure_mixer_playing(device)
+                    await asyncio.sleep(0.1)
+                _m1, _m2 = marvin_task.result(), marmo_task.result()
+            finally:
+                self.is_playing_audio = False
         _marmo_lat = (_marmo_first["t"] - _marmo_t0) if _marmo_first["t"] is not None else 0.0
         _diag = interject_diagnostics(
             at_ratio=_at, est_dur_s=dur,

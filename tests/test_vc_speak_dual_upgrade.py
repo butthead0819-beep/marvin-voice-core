@@ -32,9 +32,11 @@ def _fake_vc():
     bot.router = MagicMock()  # 預設有 router
     fake.bot = bot
     # speak() 內部呼叫 self._maybe_try_dual_upgrade() / self._generate_dual_marvin_lead()
-    # — fake self 必須掛這兩個方法，使用真實 unbound class method
+    # / self._protected_tts_window() — fake self 必須掛這三個方法，使用真實 unbound
+    # class method（_protected_tts_window 是 Phase A 抽出的共用 choke point）
     fake._maybe_try_dual_upgrade = lambda: VoiceController._maybe_try_dual_upgrade(fake)
     fake._generate_dual_marvin_lead = lambda text: VoiceController._generate_dual_marvin_lead(fake, text)
+    fake._protected_tts_window = lambda: VoiceController._protected_tts_window(fake)
     return fake
 
 

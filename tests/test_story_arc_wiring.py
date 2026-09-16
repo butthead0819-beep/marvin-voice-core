@@ -41,10 +41,16 @@ def _make_cog():
 
 
 def _fake_vc():
+    from cogs.voice_controller_playback import PlaybackMixin
+
     vc = MagicMock()
     vc._tts_protected = False
     vc.play_local_file = AsyncMock(return_value=None)
     vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    # _play_story_arc 呼叫 vc._protected_tts_window()（Phase A 抽出的共用 choke
+    # point）——MagicMock 預設呼叫回另一個 MagicMock，不會真的讀寫 vc._tts_protected，
+    # 綁真實 PlaybackMixin 實作讓這個 fake 忠實反映生產行為。
+    vc._protected_tts_window = lambda: PlaybackMixin._protected_tts_window(vc)
     return vc
 
 

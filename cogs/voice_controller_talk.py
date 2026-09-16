@@ -91,14 +91,10 @@ class MarvinTalkMixin:
         if mixer is not None:
             mixer._player_speech_until = 0.0
             mixer._tts_player_duck_cur = 1.0
-        _prev = self._tts_protected
-        self._tts_protected = True
-        try:
+        with self._protected_tts_window():
             await self.play_tts(
                 text, already_in_channel=True, protected=True, force_macos=True
             )
-        finally:
-            self._tts_protected = _prev
 
     def _talk_send_text(self, message: str):
         if self.active_text_channel is not None:

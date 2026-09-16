@@ -427,12 +427,8 @@ class ProactiveSocialMixin:
             )
             if segments:
                 self._tts_interrupted = False
-                _prev_protected = self._tts_protected
-                self._tts_protected = True
-                try:
+                with self._protected_tts_window():
                     await self.play_dual_dialogue(segments, interject=True)
-                finally:
-                    self._tts_protected = _prev_protected
         except Exception as exc:
             logger.exception("[proactive_play_manzai] failed")
 
@@ -500,12 +496,8 @@ class ProactiveSocialMixin:
             )
             if segments:
                 self._tts_interrupted = False
-                _prev_protected = self._tts_protected
-                self._tts_protected = True
-                try:
+                with self._protected_tts_window():
                     await self.play_dual_dialogue(segments, interject=True)
-                finally:
-                    self._tts_protected = _prev_protected
         except Exception as exc:
             logger.exception("[proactive_play_news] failed")
 
@@ -575,12 +567,8 @@ class ProactiveSocialMixin:
         # 直接回應使用者道別，唸完不被同頻道其他人講話蓋掉。play_tts 的 protected=
         # 參數本身是死的（該方法只讀 self._tts_protected，不讀傳入的 kwarg——8/9 才
         # 抓到，比照 _proactive_play_joke 等既有呼叫點手動拉旗標，別再被同一個坑絆倒）。
-        _prev_protected = self._tts_protected
-        self._tts_protected = True
-        try:
+        with self._protected_tts_window():
             await self.play_tts(msg, already_in_channel=True, protected=True)
-        finally:
-            self._tts_protected = _prev_protected
 
     async def _delayed_player_greeting(self, member, marvin_channel, delay_sec: float = 5.0) -> None:
         """延後發送進場打招呼（語音包）
