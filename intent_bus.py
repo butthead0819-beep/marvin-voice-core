@@ -37,9 +37,9 @@ class RescuePayload:
     巢狀 dataclass，欄位定義照抄自 `IntentContext` 原本的 flat 欄位（語意不變，
     只是換位置），細節註解見 `IntentContext` docstring / 原欄位旁註解。
 
-    Phase A 現況：`IntentContext.rescue` 由 `__post_init__` 自動從 flat 欄位
-    同步出來，兩邊資料保證一致；30 個現有 agent 仍讀 flat 欄位，完全不用改。
-    Phase B（未做）才會把讀取點遷移到 `ctx.rescue.xxx`。
+    `IntentContext.rescue` 由 `__post_init__` 永遠從 flat 欄位重建（不接受
+    呼叫端傳入自訂值），保證兩邊資料一致，包含 `dataclasses.replace()` 只改
+    flat 欄位的呼叫。flat 欄位是唯一事實來源，`rescue` 是唯讀鏡像。
     """
     dispatch_source: str = "regex"
     pragmatic_signal: str | None = None
@@ -112,31 +112,36 @@ class IntentContext:
     # 既有側效分支（NemoClaw/Marmo/Vision/imitation…）都用它擋環境誤拾音；
     # rescue（尤其音訊版，真的會打付費 API）比照同款守門，見 _maybe_rescue()。
     low_confidence_wake: bool = False
-    # Phase A 相容層：救援專用欄位的結構化鏡像，見 `RescuePayload` docstring。
-    # 不傳時由 __post_init__ 自動從上面那組 flat 欄位同步出來；現有呼叫端
-    # （30 個 agent + 既有建構點）完全不用改就能繼續運作。
+    # 相容層：救援專用欄位的結構化鏡像，見 `RescuePayload` docstring。
+    # __post_init__ 永遠從上面那組 flat 欄位重建（忽略呼叫端傳入的值），
+    # 現有呼叫端（30 個 agent + 既有建構點）完全不用改就能繼續運作。
     rescue: RescuePayload | None = None
 
     def __post_init__(self) -> None:
         # frozen dataclass 沒有 setter，用 object.__setattr__ 繞過限制。
-        # 只在呼叫端沒明確傳 rescue 時才自動建構 —— 避免蓋掉呼叫端刻意傳入的值。
-        if self.rescue is None:
-            object.__setattr__(
-                self,
-                "rescue",
-                RescuePayload(
-                    dispatch_source=self.dispatch_source,
-                    pragmatic_signal=self.pragmatic_signal,
-                    pragmatic_target=self.pragmatic_target,
-                    payload=self.payload,
-                    audio_wav_bytes=self.audio_wav_bytes,
-                    prev_turn_audio_wav_bytes=self.prev_turn_audio_wav_bytes,
-                    resolved_agent=self.resolved_agent,
-                    resolved_intent=self.resolved_intent,
-                    resolved_slots=self.resolved_slots,
-                    low_confidence_wake=self.low_confidence_wake,
-                ),
-            )
+        # 一律從當前 flat 欄位重建 rescue —— 不管建構方式（直接建構／
+        # dataclasses.replace）都保證同步。之前「只在 rescue is None 時才建構」
+        # 的版本會被 replace(ctx, resolved_agent=...) 這類只改 flat 欄位的呼叫
+        # 坑：replace() 沒明確指定的欄位會沿用舊物件當前值，此時 self.rescue
+        # 已經不是 None（是舊物件的 rescue），導致新物件的 flat 欄位是新值、
+        # rescue.xxx 卻是 replace() 之前的舊值，永久不同步。flat 欄位是唯一
+        # 事實來源，rescue 只能是唯讀鏡像，不接受呼叫端覆蓋。
+        object.__setattr__(
+            self,
+            "rescue",
+            RescuePayload(
+                dispatch_source=self.dispatch_source,
+                pragmatic_signal=self.pragmatic_signal,
+                pragmatic_target=self.pragmatic_target,
+                payload=self.payload,
+                audio_wav_bytes=self.audio_wav_bytes,
+                prev_turn_audio_wav_bytes=self.prev_turn_audio_wav_bytes,
+                resolved_agent=self.resolved_agent,
+                resolved_intent=self.resolved_intent,
+                resolved_slots=self.resolved_slots,
+                low_confidence_wake=self.low_confidence_wake,
+            ),
+        )
 
 
 @dataclass

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -249,8 +250,13 @@ def test_rescue_mirrors_flat_fields_when_constructed_old_style():
     assert ctx.low_confidence_wake is True
 
 
-def test_rescue_explicit_override_is_respected():
-    """呼叫端明確傳入 rescue 時，__post_init__ 不覆蓋（尊重呼叫端意圖）。"""
+def test_rescue_explicit_override_is_ignored():
+    """呼叫端明確傳入 rescue 時，__post_init__ 仍然無條件從 flat 欄位重建，
+    忽略傳入值。行為變更（原本是「尊重呼叫端傳入值」）：flat 欄位才是唯一
+    事實來源，rescue 只能是唯讀鏡像，不接受呼叫端覆蓋——否則
+    dataclasses.replace() 只改 flat 欄位時，若舊物件的 rescue 已非 None，
+    __post_init__ 會誤判成「呼叫端明確傳入」而不重新同步，見
+    test_rescue_stays_synced_after_replace_flat_field。"""
     explicit = RescuePayload(dispatch_source="marmo_inject")
     ctx = IntentContext(
         speaker="Alice",
@@ -264,4 +270,28 @@ def test_rescue_explicit_override_is_respected():
         now=100.0,
         rescue=explicit,
     )
-    assert ctx.rescue is explicit
+    assert ctx.rescue is not explicit
+    assert ctx.rescue.dispatch_source == "regex"  # 來自 flat 欄位預設值，非 explicit
+
+
+def test_rescue_stays_synced_after_replace_flat_field():
+    """回歸測試：dataclasses.replace() 只改 flat 欄位時，rescue 鏡像要跟上。
+
+    修復前的 bug：__post_init__ 只在 self.rescue is None 時才重建；
+    replace() 沒明確指定的 rescue 欄位會沿用舊物件當前的 rescue（非
+    None），導致新物件 flat 欄位是新值、rescue.xxx 卻是舊值，永久不同步。
+    """
+    ctx = IntentContext(
+        speaker="a",
+        raw_text="x",
+        query="x",
+        original_raw=None,
+        wake_intent=1.0,
+        stream_active=False,
+        game_mode=False,
+        is_owner=False,
+        now=0.0,
+    )
+    ctx2 = replace(ctx, resolved_agent="music")
+    assert ctx2.resolved_agent == "music"
+    assert ctx2.rescue.resolved_agent == "music"

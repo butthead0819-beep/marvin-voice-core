@@ -131,11 +131,7 @@ class AudioRescueAgent:
 
     async def synthesize(self, ctx: IntentContext) -> IntentContext | None:
         self.last_abandon_reason = None
-        # 這裡的 ctx.audio_wav_bytes 讀取刻意留 flat：呼叫端之一
-        # （FrustrationAgent._handle_rescue）會傳一個用 dataclasses.replace() 換過
-        # audio_wav_bytes 的 ctx，但沒重建 .rescue，改讀 ctx.rescue.audio_wav_bytes
-        # 會拿到 replace() 前的舊音訊（Phase B 遷移範圍見 frustration_agent.py 同款註解）。
-        if not ctx.audio_wav_bytes:
+        if not ctx.rescue.audio_wav_bytes:
             return self._abandon("no_audio")
 
         manifest = self.manifest_provider()
@@ -149,7 +145,7 @@ class AudioRescueAgent:
             + [ABSTAIN_FUNCTION_DECLARATION]
         )
 
-        est_in = max(1, len(ctx.audio_wav_bytes) // _PCM_BYTES_PER_SECOND * _AUDIO_TOKENS_PER_SECOND)
+        est_in = max(1, len(ctx.rescue.audio_wav_bytes) // _PCM_BYTES_PER_SECOND * _AUDIO_TOKENS_PER_SECOND)
         if not self.paid_guard.allow(estimate_cost(self.model, est_in, _ESTIMATED_OUTPUT_TOKENS)):
             logger.warning("⚠️ [AudioRescue] 超 daily/monthly paid cap，放棄 rescue")
             return self._abandon("paid_cap")
@@ -159,7 +155,7 @@ class AudioRescueAgent:
 
         try:
             audio_part = types.Part.from_bytes(
-                data=bytes(ctx.audio_wav_bytes), mime_type="audio/wav"
+                data=bytes(ctx.rescue.audio_wav_bytes), mime_type="audio/wav"
             )
             response = await asyncio.wait_for(
                 self.google_client.aio.models.generate_content(

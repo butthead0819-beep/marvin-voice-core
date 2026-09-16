@@ -124,11 +124,7 @@ class FrustrationAgent:
             logger.error(f"❌ [FrustrationAgent] audio_rescue_agent 執行失敗: {exc}", exc_info=True)
             return
 
-        # rescued_ctx 是 audio_rescue_agent.synthesize() 用 dataclasses.replace() 建的，
-        # 只改了 flat 欄位，沒重建 .rescue（__post_init__ 只在 rescue=None 時才自動同步）——
-        # 這裡故意保留讀 flat 欄位，別改成 rescued_ctx.rescue.xxx（會一直讀到 replace() 前
-        # 的舊值 None，Phase B 遷移時 PR 實測過會炸；根因待 Phase A 的 replace() resync 補上）。
-        if rescued_ctx is None or not rescued_ctx.resolved_agent or not rescued_ctx.resolved_intent:
+        if rescued_ctx is None or not rescued_ctx.rescue.resolved_agent or not rescued_ctx.rescue.resolved_intent:
             logger.info("📡 [FrustrationAgent] Audio LLM 未能解析出已知意圖")
             if self.ctrl and hasattr(self.ctrl, "play_tts"):
                 try:
@@ -142,20 +138,20 @@ class FrustrationAgent:
         target_agent = None
         if bus and hasattr(bus, "agents"):
             target_agent = next(
-                (a for a in bus.agents if getattr(a, "name", None) == rescued_ctx.resolved_agent),
+                (a for a in bus.agents if getattr(a, "name", None) == rescued_ctx.rescue.resolved_agent),
                 None,
             )
 
         if target_agent is None or not hasattr(target_agent, "resolve_intent"):
             logger.warning(
-                f"⚠️ [FrustrationAgent] 目標 Agent={rescued_ctx.resolved_agent} 找不到或不支援 resolve_intent"
+                f"⚠️ [FrustrationAgent] 目標 Agent={rescued_ctx.rescue.resolved_agent} 找不到或不支援 resolve_intent"
             )
             return
 
         try:
             bid = target_agent.resolve_intent(
-                rescued_ctx.resolved_intent,
-                rescued_ctx.resolved_slots or {},
+                rescued_ctx.rescue.resolved_intent,
+                rescued_ctx.rescue.resolved_slots or {},
                 rescued_ctx,
             )
         except Exception as exc:
@@ -164,7 +160,7 @@ class FrustrationAgent:
 
         if bid and bid.handler:
             logger.info(
-                f"✅ [FrustrationAgent] 成功挽回意圖: {rescued_ctx.resolved_agent}.{rescued_ctx.resolved_intent} "
-                f"slots={rescued_ctx.resolved_slots}"
+                f"✅ [FrustrationAgent] 成功挽回意圖: {rescued_ctx.rescue.resolved_agent}.{rescued_ctx.rescue.resolved_intent} "
+                f"slots={rescued_ctx.rescue.resolved_slots}"
             )
             await bid.handler()

@@ -95,13 +95,8 @@ def is_audio_rescue(ctx: IntentContext) -> bool:
     """這輪是不是 audio rescue（LLM 已聽過原始音訊、指名了 intent）。比 wake 信心
     啟發式強——gate 裡的 wake 相關檢查應對它放行，但 state 相關檢查（如 VolumeAgent
     「沒在播放不調音量」）要保留。
-
-    刻意讀 flat 欄位、不讀 ctx.rescue.dispatch_source：audio_rescue_agent.synthesize()
-    用 dataclasses.replace() 設 dispatch_source="llm_rescue_audio" 時沒重建 .rescue，
-    這裡永遠是這個檢查的呼叫端會拿到那個 replace() 後的 ctx，改讀 .rescue 會一直判 False
-    （Phase B 遷移時實測過會炸整條 audio rescue 判斷）。
     """
-    return getattr(ctx, "dispatch_source", None) == AUDIO_RESCUE_SOURCE
+    return getattr(ctx.rescue, "dispatch_source", None) == AUDIO_RESCUE_SOURCE
 
 
 def audio_rescue_slot(slots: dict[str, str], name: str, ctx: IntentContext) -> str:

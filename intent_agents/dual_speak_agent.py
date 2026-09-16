@@ -54,10 +54,7 @@ class DualSpeakAgent(DeclarativeIntentAgent):
             return self._dense_zero(f"mode_mismatch:{ctx.mode}")
 
         # 2. Source gate：只接 marmo_server 注入
-        # 刻意讀 flat 欄位：dispatch_source 會被好幾個 dataclasses.replace() 呼叫點改寫
-        # 卻不重建 .rescue（見 base.py is_audio_rescue 同款註解），flat 才是目前唯一
-        # 保證即時的來源。ctx.payload 則沒有這個問題（見下方 rescue.payload）。
-        if ctx.dispatch_source != "marmo_inject":
+        if ctx.rescue.dispatch_source != "marmo_inject":
             return self._dense_zero("not_marmo_inject")
 
         # 3. Payload gate
