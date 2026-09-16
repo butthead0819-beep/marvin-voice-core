@@ -144,7 +144,7 @@ async def test_tail_dj_fire_delay_uses_effective_duration_with_highlight_start()
 
     with patch("os.path.exists", return_value=True), \
          patch("asyncio.sleep", new=AsyncMock()), \
-         patch("dj_tail_schedule.tail_dj_fire_delay", side_effect=_fake_delay):
+         patch("dj_narration_orchestrator.tail_dj_fire_delay", side_effect=_fake_delay):
         import time
         await cog._run_tail_dj(cur, time.time() - 100.0)
 
@@ -182,7 +182,7 @@ async def test_tail_dj_uses_future_resolution_time_not_task_creation_time():
         return 0.01
 
     with patch("os.path.exists", return_value=True), \
-         patch("dj_tail_schedule.tail_dj_fire_delay", side_effect=_fake_delay), \
+         patch("dj_narration_orchestrator.tail_dj_fire_delay", side_effect=_fake_delay), \
          patch("asyncio.sleep", new=AsyncMock()):
         asyncio.create_task(_resolve_after_simulated_seek_delay())
         await cog._run_tail_dj(cur, started)
@@ -228,7 +228,7 @@ async def test_tail_dj_fire_delay_no_highlight_uses_raw_duration():
 
     with patch("os.path.exists", return_value=True), \
          patch("asyncio.sleep", new=AsyncMock()), \
-         patch("dj_tail_schedule.tail_dj_fire_delay", side_effect=_fake_delay):
+         patch("dj_narration_orchestrator.tail_dj_fire_delay", side_effect=_fake_delay):
         import time
         await cog._run_tail_dj(cur, time.time() - 170.0)
 
