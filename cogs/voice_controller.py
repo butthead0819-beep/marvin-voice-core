@@ -452,6 +452,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.soft_repair_count = 0   # 🚀 [Sentinel 強化] 標記軟修復嘗試次數
         self.last_recovery_time = 0  # 🚀 [Sentinel 強化] 最後一次成功修復或重連的時間
         self._voice_flap_ts = collections.deque(maxlen=32)  # ☢️ 語音連線抖動事件戳（見 _note_voice_flap）
+        self._voice_cooldown_until = 0.0  # ☢️ 官方「不該重連」代碼觸發的 AutoRejoin 冷卻期限
+        self._voice_backoff_s = 0.0       # 目前退避秒數，指數成長、連線穩定 120s 後歸零
         
         # 🚀 [Operation Lively Soul] 閒置互動與打卡累加器
         self.idle_streak = 0

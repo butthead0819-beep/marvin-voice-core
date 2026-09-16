@@ -70,6 +70,72 @@ class _VoiceFlapObserver(logging.Handler):
                     pass
 
 
+# ☢️ [Voice Rate-Limit Guard] Discord 官方語音關閉碼定義（2026-09-17，4006/4021 風暴後補）。
+# 來源：https://discord.com/developers/docs/topics/opcodes-and-status-codes#voice-close-event-codes
+# （對照 discord-api-types.dev 的型別定義交叉核對）。may_reconnect=False 是官方明講「不該
+# 自動重連」的代碼——4021 尤其寫死：收到後就是不該再嘗試連。AutoRejoin 過去對任何失敗都是
+# 每 60s 硬打一輪、discord.py 內部一輪又試 5 次 identify，等於在這些代碼上持續硬闖，正是
+# 9/16 晚間限流風暴的根因（見 incident_voice_4006_ratelimit_2026-09-16 記憶）。
+#
+# discord.py 呈現這些代碼的方式不一致（見 venv_simon/.../discord/voice_state.py）：
+#   - 4021：_poll_voice_ws 直接印純文字警告，代碼沒進訊息本身，只能寫死比對訊息。
+#   - 其餘（含 4006）：_inner_connect / _poll_voice_ws 走 _log.exception(...)，
+#     exc_info[1] 是 discord.errors.ConnectionClosed，帶 .code 屬性可直接讀。
+# 另有已知怪癖：_inner_connect 5 次 attempt 全失敗時 for 迴圈不 raise，_connect() 照印
+# "Voice connection complete." 再馬上以 1000 自我斷線——我們自己的 try/except 在
+# auto_rejoin_on_boot/summon 抓不到例外，只能靠這裡的 log 觀察器抓真正發生的代碼。
+VOICE_CLOSE_CODES: dict[int, tuple[str, bool]] = {
+    # code: (name, may_reconnect)
+    4001: ("UnknownOpcode", False),
+    4002: ("FailedToDecode", False),
+    4003: ("NotAuthenticated", False),
+    4004: ("AuthenticationFailed", False),
+    4005: ("AlreadyAuthenticated", False),
+    4006: ("SessionNoLongerValid", False),
+    4009: ("SessionTimeout", False),
+    4011: ("ServerNotFound", False),
+    4012: ("UnknownProtocol", False),
+    4014: ("Disconnected", False),        # 頻道刪除/被踢/被搬——discord.py 已有 _potential_reconnect 兜底
+    4015: ("VoiceServerCrashed", True),   # 官方建議 resume，discord.py 已自動處理，不歸這裡管
+    4016: ("UnknownEncryptionMode", False),
+    4017: ("DAVERequired", False),
+    4020: ("BadRequest", False),
+    4021: ("RateLimited", False),         # 官方明講：不該重連——本次事故主角
+    4022: ("CallTerminated", False),
+}
+_VOICE_NO_RECONNECT_CODES = frozenset(
+    code for code, (_name, may_reconnect) in VOICE_CLOSE_CODES.items() if not may_reconnect
+)
+
+
+class _VoiceCircuitBreakerObserver(logging.Handler):
+    """掛在 discord.voice_state logger，抓官方定義「不該重連」的關閉碼，餵進冷卻機制。
+
+    只認兩種訊號（見上方 VOICE_CLOSE_CODES 註解）：
+      1. log record 帶 exc_info 且例外物件有 .code（discord.errors.ConnectionClosed）。
+      2. 4021 專屬的純文字警告訊息（discord.py 沒把代碼塞進這則訊息，寫死比對）。
+    4015/4014 等「discord.py 自己會處理」的代碼不觸發——避免正常自癒也被誤判成要退避。
+    """
+
+    _RATE_LIMIT_MSG = "We are being ratelimited while trying to connect to voice"
+
+    def __init__(self, on_no_reconnect_code):
+        super().__init__(level=logging.WARNING)
+        self._on_no_reconnect_code = on_no_reconnect_code
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            code = None
+            if record.exc_info and record.exc_info[1] is not None:
+                code = getattr(record.exc_info[1], "code", None)
+            elif self._RATE_LIMIT_MSG in record.getMessage():
+                code = 4021
+            if code is not None and code in _VOICE_NO_RECONNECT_CODES:
+                self._on_no_reconnect_code(code)
+        except Exception:
+            pass
+
+
 # 重啟回報狀態檔。寫於 self_restart pre-execv，讀於 on_ready post-sync。
 REBOOT_STATE_FILE = ".marvin_reboot_state.json"
 
@@ -441,6 +507,15 @@ class ConnectionMixin:
         """
         if os.getenv("MARVIN_AUTO_REJOIN", "1") == "0":
             logger.warning("🔁 [AutoRejoin] env 關閉，跳過")
+            return
+        now = time.time()
+        if now < self._voice_cooldown_until:
+            # ☢️ [Voice Rate-Limit Guard] 官方代碼說不該重連（見 VOICE_CLOSE_CODES），
+            # 冷卻期內連 pick_rejoin_channel 都不查——手動 /summon 走另一條路不受影響。
+            logger.warning(
+                f"🔁 [AutoRejoin] Discord 限流冷卻中，剩 {int(self._voice_cooldown_until - now)}s，"
+                f"跳過（可手動 /summon）"
+            )
             return
         ch = pick_rejoin_channel(self.bot.guilds, bool(self.bot.voice_clients))
         if ch is None:
@@ -815,16 +890,23 @@ class ConnectionMixin:
     _VOICE_FLAP_WINDOW_S = 360.0
     _VOICE_FLAP_MAX = 5
 
+    # ☢️ [Voice Rate-Limit Guard] 官方「不該重連」代碼觸發的冷卻退避（見 VOICE_CLOSE_CODES）。
+    _VOICE_BACKOFF_BASE_S = 300.0          # 首次違規冷卻 5 分鐘
+    _VOICE_BACKOFF_CAP_S = 3600.0          # 封頂 60 分鐘——別真的卡到隔天都叫不回來
+    _VOICE_BACKOFF_RESET_STABLE_S = 120.0  # 連線穩定 120s 視同恢復（跟 soft_repair_count 歸零門檻一致）
+
     def _install_voice_flap_watch(self) -> None:
-        """把 _VoiceFlapObserver 掛上 discord.voice_state logger（idempotent，防 hot reload 疊掛）。"""
+        """把 _VoiceFlapObserver / _VoiceCircuitBreakerObserver 掛上 discord.voice_state
+        logger（idempotent，防 hot reload 疊掛）。"""
         lg = logging.getLogger("discord.voice_state")
-        if any(isinstance(h, _VoiceFlapObserver) for h in lg.handlers):
-            return
         # `Voice connection complete.` 是 INFO：logger 預設 WARNING 會擋在 handler 前，
         # 拉到 INFO 才收得到「連上」訊號（順帶讓連線事件進 log，這類 bug 本就難追兇）。
         if lg.level == logging.NOTSET or lg.level > logging.INFO:
             lg.setLevel(logging.INFO)
-        lg.addHandler(_VoiceFlapObserver(self._on_voice_flap))
+        if not any(isinstance(h, _VoiceFlapObserver) for h in lg.handlers):
+            lg.addHandler(_VoiceFlapObserver(self._on_voice_flap))
+        if not any(isinstance(h, _VoiceCircuitBreakerObserver) for h in lg.handlers):
+            lg.addHandler(_VoiceCircuitBreakerObserver(self._on_voice_no_reconnect_code))
         logger.info("☢️ [Voice Flap Guard] 已掛 discord.voice_state 轉換觀察器")
 
     def _on_voice_flap(self) -> None:
@@ -854,6 +936,36 @@ class ConnectionMixin:
         # 避免『重啟後傳輸層仍壞 → 每 6 分鐘重啟一次』的迴圈（PR #79 review P2）。
         asyncio.create_task(self.self_restart(
             reason=f"語音連線持續抖動 {len(recent)} 次（soft-repair 無效）"))
+
+    def _on_voice_no_reconnect_code(self, code: int) -> None:
+        """_VoiceCircuitBreakerObserver callback：跨執行緒排程，對齊 _on_voice_flap 的作法。"""
+        try:
+            self.bot.loop.call_soon_threadsafe(self._record_voice_no_reconnect_code, code)
+        except Exception:
+            pass
+
+    def _record_voice_no_reconnect_code(self, code: int) -> None:
+        """官方定義「不該重連」的代碼出現一次，指數退避冷卻 AutoRejoin（不影響手動 /summon）。
+
+        連線若已穩定超過 120s 才又出現新違規，視為全新問題、退避從 base 重新起算；
+        否則視為同一場風暴的延續，退避倍增到封頂——鏡像 soft_repair_count 在 120s
+        穩定後歸零的邏輯（sentinel_monitor_loop），維持同一套「怎樣算恢復」的判斷。
+        """
+        name, _may_reconnect = VOICE_CLOSE_CODES.get(code, ("Unknown", False))
+        now = time.time()
+        if self.connection_time and now - self.connection_time > self._VOICE_BACKOFF_RESET_STABLE_S:
+            self._voice_backoff_s = 0.0
+        self._voice_backoff_s = min(
+            self._VOICE_BACKOFF_CAP_S,
+            self._VOICE_BACKOFF_BASE_S if self._voice_backoff_s <= 0.0 else self._voice_backoff_s * 2,
+        )
+        self._voice_cooldown_until = now + self._voice_backoff_s
+        logger.critical(
+            f"☢️ [Voice Rate-Limit Guard] 收到官方定義不該重連的關閉碼 {code}（{name}），"
+            f"AutoRejoin 冷卻 {int(self._voice_backoff_s)}s"
+            f"（至 {time.strftime('%H:%M:%S', time.localtime(self._voice_cooldown_until))}，"
+            f"手動 /summon 不受影響）"
+        )
 
     @tasks.loop(seconds=60.0)
     async def sentinel_monitor_loop(self):

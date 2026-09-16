@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cogs.voice_controller_connection import _VoiceFlapObserver
+from cogs.voice_controller_connection import _VoiceCircuitBreakerObserver, _VoiceFlapObserver
 
 
 def _rec(msg: str) -> logging.LogRecord:
@@ -115,6 +115,6 @@ def test_install_watch_is_idempotent():
         assert len(added) == 1
     finally:
         for h in list(lg.handlers):
-            if isinstance(h, _VoiceFlapObserver):
+            if isinstance(h, (_VoiceFlapObserver, _VoiceCircuitBreakerObserver)):
                 lg.removeHandler(h)
         assert list(lg.handlers) == before
