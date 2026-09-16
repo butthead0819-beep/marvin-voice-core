@@ -28,8 +28,9 @@ MC = Path(__file__).resolve().parent.parent / "cogs" / "music_cog.py"
 # Phase 3（music_cog_personal_shuffle.py，10個個人歌單/卡片/HUD橋接方法，−281行/−10method）後：4046/104
 # Phase 4（music_cog_audio_meta.py，7個音訊分析/檔案清理方法，−203行/−7method）後：3843/97
 # Phase 5（music_cog_autopilot.py，20個autopilot推薦引擎方法，−508行/−20method）後：3335/77
-LINE_BUDGET = 3335
-METHOD_BUDGET = 77
+# Phase 6（music_cog_story_arc.py，故事弧線節目+_auto_recommend，10個方法，−525行/−10method）後：2810/67
+LINE_BUDGET = 2810
+METHOD_BUDGET = 67
 
 
 def test_music_cog_line_count_within_budget():
