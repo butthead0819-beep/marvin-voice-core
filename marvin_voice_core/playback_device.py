@@ -36,13 +36,19 @@ class DiscordPlaybackDevice:
     def is_connected(self) -> bool:
         return self._vc.is_connected()
 
-    def arm_mixer(self, source) -> None:
-        """啟動持續性 mixer 播放：bitrate 公式對齊頻道允許上限 + vc.play(application='audio')。"""
+    def arm_mixer(self, source, *, after=None) -> None:
+        """啟動持續性 mixer 播放：bitrate 公式對齊頻道允許上限 + vc.play(application='audio')。
+
+        after：discord.py AudioPlayer thread 自然結束時呼叫（不管什麼原因——連線
+        短暫抖動導致 wait_until_connected 逾時是已知常客，見 incident 2026-09-16）。
+        沒掛這個 callback 的話，播放器死掉沒人知道，只能等下一個剛好路過的呼叫點
+        （TTS/VAD/60s sentinel）才補救，最壞情況全靜音到 60 秒。
+        """
         ch_bps = getattr(getattr(self._vc, "channel", None), "bitrate", None)
         kbps = 128
         if isinstance(ch_bps, int) and ch_bps > 0:
             kbps = max(16, min(512, ch_bps // 1000))
-        self._vc.play(source, application="audio", bitrate=kbps)
+        self._vc.play(source, application="audio", bitrate=kbps, after=after)
         print(f"[Plan12_Bitrate] 頻道={ch_bps} bps → opus 編碼設 {kbps} kbps（application=audio）", flush=True)
         print("[Plan12_Mixer] adapter armed（mixer 開始驅動 vc 輸出）", flush=True)
 
@@ -118,7 +124,7 @@ class LocalSpeakerDevice:
     def is_connected(self) -> bool:
         return True
 
-    def arm_mixer(self, source) -> None:
+    def arm_mixer(self, source, *, after=None) -> None:
         """委派 play()（persistent）：idempotent 由既有 _playing 守門保證。
 
         mixer 是 on-demand 來源，閒置超過 grace 會回 b""（給 Discord 的「停送」訊號）。
@@ -126,8 +132,10 @@ class LocalSpeakerDevice:
         TTS/music，只有 stop() 才真中止。否則泵一退出、再 arm 又讀到 stale idle b"" 立刻
         退出→push 進來的 TTS 沒人排→無聲且 tts_load 累積（本機沉默 bug 根因）。
 
-        瀏覽器衛星（PTT）以 persistent=False 建構→泵播完即停、idle 不空轉（省 CPU）。"""
-        self.play(source, persistent=self._persistent)
+        瀏覽器衛星（PTT）以 persistent=False 建構→泵播完即停、idle 不空轉（省 CPU）。
+        after：Protocol 一致性轉發（本機泵目前不像 Discord 端那樣會被連線抖動殺掉，
+        沒有自癒需求，但簽章要跟 DiscordPlaybackDevice 對齊）。"""
+        self.play(source, after=after, persistent=self._persistent)
 
     # ── Internal ─────────────────────────────────────────────────────────────
 

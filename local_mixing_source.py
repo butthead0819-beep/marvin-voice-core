@@ -646,12 +646,13 @@ def preload_f32_source(inner_s16_source) -> PreloadedF32MusicSource:
     return PreloadedF32MusicSource(b"".join(chunks))
 
 
-def ensure_mixer_playing(device, adapter_factory) -> bool:
+def ensure_mixer_playing(device, adapter_factory, *, after=None) -> bool:
     """device 連線中且未在播 → arm_mixer 一個新 adapter，回 True；已在播/無 device → 不動回 False。
 
     OV #4：用 try/except 兜 discord.py 自身 reconnect 與 watcher 的 AlreadyPlaying race
     （is_playing() 檢查到 arm_mixer() 之間的 TOCTOU），永不 raise。
     adapter_factory: () -> AudioSource，每次新建不重用。
+    after：轉發給 device.arm_mixer 的自癒 callback（見 protocols.PlaybackDevice.arm_mixer）。
     """
     if device is None:
         return False
@@ -660,7 +661,7 @@ def ensure_mixer_playing(device, adapter_factory) -> bool:
             return False
         if device.is_playing():
             return False
-        device.arm_mixer(adapter_factory())
+        device.arm_mixer(adapter_factory(), after=after)
         return True
     except Exception:
         logger.warning("[Plan12_Mixer] ensure_mixer_playing 略過（vc 狀態競態或未就緒）", exc_info=True)

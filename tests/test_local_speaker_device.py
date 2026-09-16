@@ -247,6 +247,22 @@ def test_arm_mixer_starts_pump():
     assert output.closed
 
 
+def test_arm_mixer_forwards_after_callback():
+    """arm_mixer(source, after=cb) 要轉發給 play()——Protocol 簽章跟 DiscordPlaybackDevice
+    對齊（2026-09-16 自癒重武裝改動）。persistent=False 泵：source 耗盡才會真的呼叫 after。"""
+    from marvin_voice_core.playback_device import LocalSpeakerDevice
+
+    source = _FakeSource([FRAME])
+    output = _FakeOutput()
+    after = mock.MagicMock()
+
+    dev = LocalSpeakerDevice(output=output, frame_duration=0, persistent=False)
+    dev.arm_mixer(source, after=after)
+
+    assert _wait_until(lambda: after.called, timeout=1.0), "source 耗盡後 after 應被呼叫"
+    after.assert_called_once_with(None)
+
+
 def test_arm_mixer_idempotent_when_already_playing():
     """arm_mixer 已在播時為 no-op：不啟第二個泵、is_playing() 仍 True。"""
     from marvin_voice_core.playback_device import LocalSpeakerDevice

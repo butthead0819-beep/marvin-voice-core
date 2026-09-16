@@ -115,7 +115,19 @@ def test_arm_mixer_calls_play_with_audio_application():
     vc.channel.bitrate = 128000  # 128 kbps
     src = MagicMock()
     d.arm_mixer(src)
-    vc.play.assert_called_once_with(src, application="audio", bitrate=128)
+    vc.play.assert_called_once_with(src, application="audio", bitrate=128, after=None)
+
+
+def test_arm_mixer_forwards_after_to_vc_play():
+    """after callback 要轉發到 vc.play(after=...)，AudioPlayer thread 死掉才能自癒重武裝
+    （2026-09-16 incident：沒轉發時播放器靜默死掉、要等下一個路過的呼叫點才補救，
+    最壞情況全靜音到 60 秒）。"""
+    d, vc = _make_device()
+    vc.channel.bitrate = 128000
+    src = MagicMock()
+    cb = MagicMock()
+    d.arm_mixer(src, after=cb)
+    vc.play.assert_called_once_with(src, application="audio", bitrate=128, after=cb)
 
 
 def test_arm_mixer_bitrate_lower_bound():
@@ -124,7 +136,7 @@ def test_arm_mixer_bitrate_lower_bound():
     vc.channel.bitrate = 8000
     src = MagicMock()
     d.arm_mixer(src)
-    vc.play.assert_called_once_with(src, application="audio", bitrate=16)
+    vc.play.assert_called_once_with(src, application="audio", bitrate=16, after=None)
 
 
 def test_arm_mixer_bitrate_upper_bound():
@@ -133,7 +145,7 @@ def test_arm_mixer_bitrate_upper_bound():
     vc.channel.bitrate = 600000
     src = MagicMock()
     d.arm_mixer(src)
-    vc.play.assert_called_once_with(src, application="audio", bitrate=512)
+    vc.play.assert_called_once_with(src, application="audio", bitrate=512, after=None)
 
 
 def test_arm_mixer_bitrate_default_when_none():
@@ -142,7 +154,7 @@ def test_arm_mixer_bitrate_default_when_none():
     vc.channel.bitrate = None
     src = MagicMock()
     d.arm_mixer(src)
-    vc.play.assert_called_once_with(src, application="audio", bitrate=128)
+    vc.play.assert_called_once_with(src, application="audio", bitrate=128, after=None)
 
 
 def test_arm_mixer_bitrate_default_when_not_int():
@@ -151,7 +163,7 @@ def test_arm_mixer_bitrate_default_when_not_int():
     vc.channel.bitrate = "128k"
     src = MagicMock()
     d.arm_mixer(src)
-    vc.play.assert_called_once_with(src, application="audio", bitrate=128)
+    vc.play.assert_called_once_with(src, application="audio", bitrate=128, after=None)
 
 
 def test_raw_voice_client_removed():

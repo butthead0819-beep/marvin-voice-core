@@ -64,6 +64,67 @@ def test_flag_on_ensure_idempotent_when_playing(monkeypatch):
     assert not vc.play.called
 
 
+# ── 自癒重武裝（2026-09-16 incident：AudioPlayer thread 在連線短暫抖動時靜默死掉，
+# 沒人通知，只能等下一個剛好路過的呼叫點撿到，最壞情況全靜音到 60 秒 sentinel 週期）──
+
+
+def test_ensure_mixer_playing_wires_a_non_none_after_callback(monkeypatch):
+    """arm 時要帶一個 after callback 進 vc.play，不是 None——沒有就代表播放器死掉沒人知道。"""
+    cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
+    vc = _idle_vc()
+    device = DiscordPlaybackDevice(vc)
+    cog._ensure_mixer_playing(device)
+    after_cb = vc.play.call_args.kwargs["after"]
+    assert after_cb is not None
+    assert callable(after_cb)
+
+
+def test_after_callback_reschedules_ensure_mixer_playing_on_event_loop(monkeypatch):
+    """AudioPlayer thread 死掉時 after(None) 被呼叫 → 必須 call_soon_threadsafe 排回
+    event loop 重試 _ensure_mixer_playing（callback 來自非 event-loop 的播放器 thread，
+    不能直接碰 self 狀態）。"""
+    cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
+    cog.bot.loop.is_closed.return_value = False
+    vc = _idle_vc()
+    device = DiscordPlaybackDevice(vc)
+    cog._ensure_mixer_playing(device)
+    after_cb = vc.play.call_args.kwargs["after"]
+
+    after_cb(None)
+
+    cog.bot.loop.call_soon_threadsafe.assert_called_once_with(cog._ensure_mixer_playing, device)
+
+
+def test_after_callback_noop_when_loop_closed(monkeypatch):
+    """bot 正在關閉（loop 已關）時 after 不該再排任何東西進去，避免對已死 loop 操作炸例外。"""
+    cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
+    cog.bot.loop.is_closed.return_value = True
+    vc = _idle_vc()
+    device = DiscordPlaybackDevice(vc)
+    cog._ensure_mixer_playing(device)
+    after_cb = vc.play.call_args.kwargs["after"]
+
+    after_cb(None)
+
+    assert not cog.bot.loop.call_soon_threadsafe.called
+
+
+def test_after_callback_logs_warning_when_error_present(monkeypatch, caplog):
+    """AudioPlayer 因例外（非單純連線抖動）掛掉時，error 不是 None——要留紀錄，別悄悄吞掉。"""
+    import logging
+    cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
+    cog.bot.loop.is_closed.return_value = False
+    vc = _idle_vc()
+    device = DiscordPlaybackDevice(vc)
+    cog._ensure_mixer_playing(device)
+    after_cb = vc.play.call_args.kwargs["after"]
+
+    with caplog.at_level(logging.WARNING):
+        after_cb(RuntimeError("send_audio_packet boom"))
+
+    assert "send_audio_packet boom" in caplog.text
+
+
 # ── T4：狀態欄位委派 mixer ─────────────────────────────────────────────────────
 
 def test_flag_on_state_fields_delegate_to_mixer(monkeypatch):

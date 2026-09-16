@@ -578,6 +578,17 @@ def test_ensure_playing_fresh_adapter_each_call():
     assert len(seen) == 2 and seen[0] is not seen[1]  # 每次新 adapter，不重用
 
 
+def test_ensure_playing_forwards_after_to_arm_mixer():
+    """after callback 要一路轉發到 vc.play(after=...)，播放器死掉才能自癒重武裝
+    （2026-09-16 incident：沒轉發時播放器靜默死掉沒人知道，見 project_three_pillars 等）。"""
+    mix = LocalMixingAudioSource()
+    vc = _vc(connected=True, playing=False)
+    device = DiscordPlaybackDevice(vc)
+    sentinel = MagicMock()
+    assert ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(mix), after=sentinel) is True
+    assert vc.play.call_args.kwargs["after"] is sentinel
+
+
 # ── BufferedF32MusicSource（bug 1 修：背景預讀解耦 ffmpeg pipe）────────────────
 
 class _FakeF32Frames:

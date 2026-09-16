@@ -74,10 +74,28 @@ class PlaybackMixin:
 
         每次交給 device.arm_mixer() 一個新 MixerPlaybackAdapter（不重用、reconnect-safe）。
         idempotent：已在播 → no-op。flag=off → 直接 no-op，不碰舊路徑。
+
+        掛自癒 after callback（2026-09-16 incident）：discord.py 的 AudioPlayer thread
+        在 client.is_connected() 短暫變 False（DAVE key desync / CryptoError 風暴常客）
+        超過 wait_until_connected 逾時時會靜默 return、整條播放器 thread 死掉、沒人通知。
+        沒有這個 callback 時只能靠下一個剛好路過的呼叫點（TTS/VAD/60s sentinel）撿到，
+        實測撞過 4.5 秒斷點、最壞情況全靜音到 60 秒。callback 從播放器 thread（非 event
+        loop）被呼叫，必須 call_soon_threadsafe 排回主 loop 才能碰 self 狀態。只在
+        device.is_connected() 仍為 True（短暫抖動已自行恢復）時才重武裝——真斷線交給既有
+        soft-repair/sentinel 處理，不在這裡搶著重試製造風暴。
         """
         if self._mixer is None:
             return False
-        return ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(self._mixer))
+
+        def _after(error):
+            if error is not None:
+                logger.warning(f"[Plan12_Mixer] AudioPlayer 意外結束: {error!r}")
+            loop = getattr(self.bot, "loop", None)
+            if loop is None or loop.is_closed():
+                return
+            loop.call_soon_threadsafe(self._ensure_mixer_playing, device)
+
+        return ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(self._mixer), after=_after)
 
     async def _mixer_play_music(self, device, s16_source, *, still_active, volume_attr=None,
                                  preloaded=None, started_at=None) -> None:
