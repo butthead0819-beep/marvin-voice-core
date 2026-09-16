@@ -219,3 +219,29 @@ def test_read_log_lines_window_filters_old(tmp_path):
     joined = "\n".join(lines)
     assert "speaker=NEW" in joined
     assert "speaker=OLD" not in joined
+
+
+# ── build_report: route="stream" (使用者實際等待) vs 背景任務不可混算 ──────────
+
+
+def test_build_report_separates_stream_from_background_llm():
+    """route="bus" 背景任務（社交分析/記憶萃取…）latency 常到分鐘級，混進「回應 LLM」
+    會嚴重誤導體感延遲判斷（2026-09 實測撞過：110s 背景任務被當成使用者等待時間）。
+    stream_llm（route="stream"）才是使用者實際聽到回答前等待的那段。
+    """
+    m = _mod()
+    llm_rows = [
+        {"ts": 1000.0, "route": "stream", "purpose": "stream_llm", "provider": "groq",
+         "latency_ms": 800, "success": True},
+        {"ts": 1001.0, "route": "stream", "purpose": "stream_llm", "provider": "groq",
+         "latency_ms": 900, "success": True},
+        {"ts": 1002.0, "route": "bus", "purpose": "_analyze_song_reactions", "provider": "mistral",
+         "latency_ms": 93380, "success": True},
+    ]
+    report = m.build_report([], llm_rows, since_ts=0.0, label="test")
+    assert "回應 LLM" in report
+    assert "900ms" in report or "p90=900ms" in report
+    assert "93380ms" not in report.split("回應 LLM")[1].split("\n")[0], \
+        "背景任務的 93380ms 不該出現在「回應 LLM」那一行"
+    assert "背景任務" in report
+    assert "n=1" in report  # 背景任務樣本數獨立列出

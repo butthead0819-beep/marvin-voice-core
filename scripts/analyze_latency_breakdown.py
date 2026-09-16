@@ -184,8 +184,13 @@ def build_report(stage_lines: list[str], llm_rows: list[dict], since_ts: float, 
         for k, v in stage_durations(rec).items():
             by_stage.setdefault(k, []).append(v)
     tts_first = [r["first_audio"] for r in tts_recs if "first_audio" in r]
-    llm_ok = [r["latency_ms"] for r in llm_recent if r.get("success") and r.get("latency_ms") is not None]
-    llm_succ = sum(1 for r in llm_recent if r.get("success"))
+    # route=="stream" 是 stream_llm（使用者實際等待的主回應）；其餘（route=="bus"）是背景任務
+    # （社交分析/記憶萃取/漫才生成…），latency 常見到分鐘級但不影響體感，別混進「回應 LLM」。
+    llm_stream = [r for r in llm_recent if r.get("route") == "stream"]
+    llm_bg = [r for r in llm_recent if r.get("route") != "stream"]
+    llm_ok = [r["latency_ms"] for r in llm_stream if r.get("success") and r.get("latency_ms") is not None]
+    llm_succ = sum(1 for r in llm_stream if r.get("success"))
+    bg_ok = [r["latency_ms"] for r in llm_bg if r.get("success") and r.get("latency_ms") is not None]
 
     lines.append("## 鏈各段延遲（使用者停話 → 首音）")
     lines.append("")
@@ -210,10 +215,12 @@ def build_report(stage_lines: list[str], llm_rows: list[dict], since_ts: float, 
         p = percentile(xs, 0.5)
         if p is not None:
             stage_summary.append((lab, p))
-    lines.append(f"- **回應 LLM**（llm_routing 成功）: {_fmt_pct(llm_ok)}"
-                 + (f"  | 成功率 {llm_succ}/{len(llm_recent)} ({llm_succ/len(llm_recent):.0%})" if llm_recent else ""))
+    lines.append(f"- **回應 LLM**（stream_llm 主路徑，使用者實際等待首個 chunk）: {_fmt_pct(llm_ok)}"
+                 + (f"  | 成功率 {llm_succ}/{len(llm_stream)} ({llm_succ/len(llm_stream):.0%})" if llm_stream else ""))
     if percentile(llm_ok, 0.5) is not None:
         stage_summary.append(("回應 LLM", percentile(llm_ok, 0.5)))
+    if llm_bg:
+        lines.append(f"- LLM 池背景任務（不影響體感，僅供池健康觀察）: {_fmt_pct(bg_ok)} | n={len(llm_bg)}")
     lines.append(f"- **TTS 首音**: {_fmt_pct(tts_first)}")
     if percentile(tts_first, 0.5) is not None:
         stage_summary.append(("TTS 首音", percentile(tts_first, 0.5)))
@@ -238,7 +245,7 @@ def build_report(stage_lines: list[str], llm_rows: list[dict], since_ts: float, 
     lines.append("## 樣本數")
     lines.append(f"- STAGE_TIMING turns: {len(stage_recs)}")
     lines.append(f"- TTS_TIMING samples: {len(tts_recs)}")
-    lines.append(f"- LLM dispatch（視窗內）: {len(llm_recent)}")
+    lines.append(f"- LLM dispatch（視窗內）: {len(llm_recent)}（stream={len(llm_stream)} / 背景={len(llm_bg)}）")
     if len(stage_recs) < 10:
         lines.append("- ⚠️ 樣本 <10，數據參考性弱，等更多對話再看。")
     return "\n".join(lines) + "\n"

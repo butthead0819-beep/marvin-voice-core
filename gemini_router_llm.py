@@ -714,35 +714,76 @@ class GeminiRouterLLMMixin:
             if random.random() < dere_chance:
                 final_system_prompt = self.prompt_manager.get_instruction("dere_persona", dna=self.dna, speaker=speaker, memory_manager=self.memory)
 
+        from llm_agents.metrics import log_dispatch
+
         # 🥇 [Priority-1] Groq Streaming — 最穩定，30 RPM
         if self.groq_dedicated_client and self.groq_fallback_model:
+            _t0 = time.monotonic()
+            _logged = False
             try:
                 async for chunk in self._stream_groq(final_system_prompt, user_prompt, temperature=temperature, max_output_tokens=max_output_tokens):
+                    if not _logged:
+                        log_dispatch(route="stream", purpose="stream_llm", speaker=speaker,
+                                      provider="groq", model=self.groq_fallback_model,
+                                      latency_ms=int((time.monotonic() - _t0) * 1000),
+                                      tokens=0, success=True)
+                        _logged = True
                     yield chunk
                 await self._reset_tier_to_primary()
                 return
             except Exception as e:
+                if not _logged:
+                    log_dispatch(route="stream", purpose="stream_llm", speaker=speaker,
+                                  provider="groq", model=self.groq_fallback_model,
+                                  latency_ms=int((time.monotonic() - _t0) * 1000),
+                                  tokens=0, success=False, error=str(e)[:200])
                 logger.warning(f"⚠️ [Groq Stream] 失敗，嘗試 Cerebras: {e}")
 
         # 🥈 [Priority-2] Cerebras Streaming — 近無限 RPM，速度最快
         if self.cerebras_client and self.cerebras_model:
+            _t0 = time.monotonic()
+            _logged = False
             try:
                 async for chunk in self._stream_cerebras(final_system_prompt, user_prompt, temperature=temperature, max_output_tokens=max_output_tokens):
+                    if not _logged:
+                        log_dispatch(route="stream", purpose="stream_llm", speaker=speaker,
+                                      provider="cerebras", model=self.cerebras_model,
+                                      latency_ms=int((time.monotonic() - _t0) * 1000),
+                                      tokens=0, success=True)
+                        _logged = True
                     yield chunk
                 await self._reset_tier_to_primary()
                 return
             except Exception as e:
+                if not _logged:
+                    log_dispatch(route="stream", purpose="stream_llm", speaker=speaker,
+                                  provider="cerebras", model=self.cerebras_model,
+                                  latency_ms=int((time.monotonic() - _t0) * 1000),
+                                  tokens=0, success=False, error=str(e)[:200])
                 logger.warning(f"⚠️ [Cerebras Stream] 失敗，嘗試 Gemini: {e}")
 
         # 🥉 [Priority-3] Gemini Streaming — 高品質但頻繁 503
         can_use_cloud = not self.is_exhausted and not self.budget.is_circuit_open()
         if can_use_cloud:
+            _t0 = time.monotonic()
+            _logged = False
             try:
                 async for chunk in self._stream_cloud(final_system_prompt, user_prompt, temperature=temperature, max_output_tokens=max_output_tokens):
+                    if not _logged:
+                        log_dispatch(route="stream", purpose="stream_llm", speaker=speaker,
+                                      provider="gemini_cloud", model=self.model_name,
+                                      latency_ms=int((time.monotonic() - _t0) * 1000),
+                                      tokens=0, success=True)
+                        _logged = True
                     yield chunk
                 await self._reset_tier_to_primary()
                 return
             except Exception as e:
+                if not _logged:
+                    log_dispatch(route="stream", purpose="stream_llm", speaker=speaker,
+                                  provider="gemini_cloud", model=self.model_name,
+                                  latency_ms=int((time.monotonic() - _t0) * 1000),
+                                  tokens=0, success=False, error=str(e)[:200])
                 logger.warning(f"⚠️ [Gemini Stream] 雲端流式中斷，轉向 Ollama: {e}")
 
         # Ollama 已停用，流式全部失敗時靜默結束
