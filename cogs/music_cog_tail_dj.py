@@ -565,8 +565,7 @@ class MusicTailDJMixin:
         if getattr(vc, '_intimate_mode', False):
             logger.info("[DJ Tail] 口白：_intimate_mode=True，這輪不放")
             return
-        vc._tts_protected = True
-        try:
+        with vc._protected_tts_window():
             if audio_path and os.path.exists(audio_path):
                 # 尾段 DJ：走 TTS 層（duck 音樂、非阻塞、撐過歌1→歌2 換源）。
                 # 不可用 play_local_file——那條把檔案設成音樂層來源會替換掉正在播的歌，
@@ -585,8 +584,6 @@ class MusicTailDJMixin:
                     asyncio.create_task(self._fire_puck_speak(puck_client, audio_path))
             else:
                 await vc.play_tts(text, already_in_channel=True)
-        finally:
-            vc._tts_protected = False
 
     async def _synthesize_dynamic_scratch(self, next_info: dict) -> str | None:
         """抓下一首已預解碼的 PCM、即時合成專屬該曲的黑膠刷碟聲。抓不到/沒 ready/合成

@@ -753,9 +753,8 @@ class ConnectionMixin:
         # 3. 播放語音
         # 登場台詞是一次性宣告，不應被進場音樂播放期間的人聲觸發的 interrupt guard 阻擋
         self._tts_interrupted = False
-        self._tts_protected = True
-        await self.play_tts(greeting, already_in_channel=True)
-        self._tts_protected = False
+        with self._protected_tts_window():
+            await self.play_tts(greeting, already_in_channel=True)
         
         # 3.（原喚醒詞宣導 marvin_wakeword_short.mp3）2026-06-03 依用戶要求移除：登場只保留
         # 音樂 + 打招呼兩段，第三段語音包不再播放。

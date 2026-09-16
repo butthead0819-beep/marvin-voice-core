@@ -3002,13 +3002,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             _marmo_voice = os.getenv("MARMO_VOICE", "zh-TW-HsiaoYuNeural")
             logger.info(f"[NemoClaw TTS] 開始播報，text_len={len(tts_text)} plan12={self._plan12}")
             self._tts_interrupted = False
-            self._tts_protected = True
             try:
-                await self.play_tts(tts_text, already_in_channel=False,
-                                    emotion_tag="nemo", voice=_marmo_voice)
-                logger.info("[NemoClaw TTS] play_tts 完成")
+                with self._protected_tts_window():
+                    await self.play_tts(tts_text, already_in_channel=False,
+                                        emotion_tag="nemo", voice=_marmo_voice)
+                    logger.info("[NemoClaw TTS] play_tts 完成")
             finally:
-                self._tts_protected = False
                 # NemoClaw 回應完成後清除 Wake Storm，避免用戶在等待期間多次呼叫導致 storm 無限延伸
                 self._storm_active = False
                 self._wake_burst_times.clear()

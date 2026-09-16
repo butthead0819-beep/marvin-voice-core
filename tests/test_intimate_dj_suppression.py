@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from cogs.voice_controller_playback import PlaybackMixin
+
 
 def _make_cog():
     """最小 MusicCog stub，_vc() 預設回 None。"""
@@ -48,12 +50,18 @@ def _make_vc(intimate: bool) -> MagicMock:
 
 
 def _make_vc_no_intimate() -> SimpleNamespace:
-    """構造無 _intimate_mode 屬性的 stub（getattr 依賴 default False）。"""
+    """構造無 _intimate_mode 屬性的 stub（getattr 依賴 default False）。
+
+    _protected_tts_window 綁真正的 PlaybackMixin 實作（非另造假 stub）——
+    _maybe_play_dj_interjection 現在會呼叫 vc._protected_tts_window()，
+    真正的 vc（VoiceController）一定有這個方法，SimpleNamespace 手動補上。
+    """
     vc = SimpleNamespace()
     vc.play_tts = AsyncMock()
     vc.play_local_file = AsyncMock()
     vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
     vc._tts_protected = False
+    vc._protected_tts_window = PlaybackMixin._protected_tts_window.__get__(vc)
     return vc
 
 
