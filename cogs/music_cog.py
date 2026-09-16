@@ -1170,7 +1170,7 @@ class MusicCog(commands.Cog):
         """讀 chat_summary_log → 日記 DiaryEntry（有 ts_str/core/speakers）。失敗回 []。"""
         try:
             from pathlib import Path
-            from diary_comic.parser import parse_log
+            from chat_summary_parser import parse_log
             return parse_log(Path("records/chat_summary_log.txt").read_text(encoding="utf-8"))
         except Exception:
             return []

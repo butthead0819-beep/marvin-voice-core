@@ -155,7 +155,7 @@ Wake 後的意圖派發**唯一入口**是 `intent_bus.py::IntentBus`。所有 a
 | Template | 觸發 | 範例 |
 |---|---|---|
 | **Declarative** | text pattern (regex + named-group slots) | `intent_agents/music_agent_v2.py` |
-| **State-checking** | cog/service state（非 text） | `intent_agents/busted99_agent.py` |
+| **State-checking** | cog/service state（非 text） | `intent_agents/nemoclaw_agent.py` |
 
 ### 現有 intent agents
 
@@ -166,19 +166,6 @@ Wake 後的意圖派發**唯一入口**是 `intent_bus.py::IntentBus`。所有 a
 | `FindSongAgent` | normal, stream | Declarative | 不知歌名的歌曲探查 |
 | `NemoClawAgent` | normal, stream | State-checking | NemoClaw（openclaw CLI）路由 |
 | `HallucinationGuardAgent` | normal, stream | Declarative | 阻擋空/重複轉錄 |
-| `BustedAgent` | game | State-checking | 接管 busted cog active 期間語音 |
-| `Busted99Agent` | game | State-checking | 同上 busted99 |
-| `TurtleSoupAgent` | game | State-checking | 同上 turtle_soup |
-
-### Game 模式整合
-
-遊戲模式（`busted` / `busted99` / `turtle_soup`）統一走 IntentBus。Cog 介面要求：
-
-- `is_active() -> bool`：當前是否在 active state
-- `should_suppress_for_game(speaker)`：當前不該由此 cog 消化此 speaker → True
-- `receive_voice_answer_by_speaker(speaker, text) -> bool`：消化成功回 True
-
-每個 game cog 對應一個 `intent_agents/<game>_agent.py`，bid 0.95 當 (cog active + 非 suppress)，否則 dense 0.0。
 
 ---
 
@@ -195,20 +182,6 @@ STT 結果在 dispatch 進 IntentBus 之前，會經過**三個 judge 並行賽�
 `intent_judges/race.py` 是 coordinator，FIRST_COMPLETED 策略 + timeout fallback to max-confidence。每場 race 結果寫 `records/judge_outcomes.jsonl`（status / latency / bid / error）供離線分析。
 
 **目前狀態**：shadow mode（不替換 prod 結果，只 log）。預計收 1 週資料後決定 J1 是否能 authoritative replace cleaner（calibration baseline ≥ 85%）。
-
----
-
-## 🎮 Game 模組
-
-獨立資料夾 `game/<game>/`，每個遊戲一個 cog + engine + LLM judge：
-
-| Game | Cog | Engine | 玩法 |
-|---|---|---|---|
-| **Busted (原 99)** | `cogs/game_cog.py` | `game/engine.py` | 多人猜題；setter 出 LLM 線索，guesser 搶 buzz |
-| **Busted99** | `cogs/busted99_cog.py` | `game/busted99/{engine, llm_engine}.py` | 1-99 範圍縮小猜題；反直覺記分（猜中=0 分） |
-| **TurtleSoup（海龜湯）** | `cogs/turtle_soup_cog.py` | `game/turtle_soup/{engine, llm_judge}.py` | LLM 判定 yes/no/irrelevant，玩家用「請問」開頭發問；含 hint graph 個人化排序 |
-
-共用基礎設施 `game/player_score_db.py`（跨遊戲積分）+ `game/game_memory_db.py`（Marvin 對戰局的記憶 context）。Cog 進入 active state 時設 `vc.game_mode = True` 降低 VAD 靜默門檻、bypass silence gate。
 
 ---
 

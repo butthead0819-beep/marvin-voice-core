@@ -87,7 +87,6 @@ def setup_early_logging():
     logging.getLogger("alt_rescue").setLevel(logging.INFO)
     logging.getLogger("memory_quarantine").setLevel(logging.INFO)
     logging.getLogger("liveness_beacon").setLevel(logging.INFO)
-    logging.getLogger("diary_comic_poster").setLevel(logging.INFO)  # 漫畫 skip 原因/已貼 log
 
     stdout_logger = logging.getLogger("MarvinBot.Stdout")
     stdout_logger.setLevel(logging.INFO)
@@ -331,7 +330,7 @@ class MarvinBot(commands.Bot):
             logger.warning(f"⚠️ [Cleanup] 全域指令 sync 失敗: {e}，跳過繼續啟動。")
 
         # 2. 載入 Cogs (在清空樹之後載入，確保指令登記在正確的 local 狀態)
-        cogs = ["cogs.music_cog", "cogs.voice_controller", "cogs.game_cog", "cogs.busted99_cog", "cogs.turtle_soup_cog"]
+        cogs = ["cogs.music_cog", "cogs.voice_controller"]
         for cog in cogs:
             try:
                 await self.load_extension(cog)
@@ -408,70 +407,6 @@ class MarvinBot(commands.Bot):
                 )
         except Exception as e:
             logger.warning(f"[Companion_Bridge] startup failed: {e}")
-
-        # 6b. 啟動 GameWSHub（Busted + Busted99 瀏覽器 UI）
-        _game_ws_port = int(os.getenv("GAME_WS_PORT", "8767"))
-        try:
-            from game_ws_hub import GameWSHub
-            _b99_cog = self.cogs.get("Busted99Cog")
-            _b_cog   = self.cogs.get("BustedCog")
-
-            async def _composite_action_handler(action: dict) -> None:
-                t = action.get("type", "")
-                if t.startswith("b99_") and _b99_cog is not None:
-                    await _b99_cog._handle_web_action(action)
-                elif t.startswith("b_") and _b_cog is not None:
-                    await _b_cog._handle_web_action(action)
-
-            def _composite_token_resolver(token: str):
-                if _b99_cog is not None:
-                    uid = _b99_cog.resolve_token(token)
-                    if uid:
-                        return uid
-                if _b_cog is not None:
-                    uid = _b_cog.resolve_token(token)
-                    if uid:
-                        return uid
-                return None
-
-            _hub = GameWSHub(
-                port=_game_ws_port,
-                host="0.0.0.0",
-                action_handler=_composite_action_handler,
-            )
-            _hub.set_token_resolver(_composite_token_resolver)
-            await _hub.start()
-            self.game_ws_hub = _hub
-            if _b99_cog is not None:
-                _b99_cog._ws_hub = _hub
-            if _b_cog is not None:
-                _b_cog._ws_hub = _hub
-            logger.info(f"[GameWSHub] started on port {_hub._port}")
-        except Exception as e:
-            logger.warning(f"[GameWSHub] startup failed: {e}")
-            self.game_ws_hub = None
-
-        # 6c. 啟動 Cloudflare Quick Tunnel（若 GAME_PUBLIC_URL 未設才自動開）
-        # cloudflared 改由獨立 LaunchAgent 託管，bot 重啟不會帶走 tunnel = URL 跨 restart 穩定
-        # 從固定路徑讀取當前 tunnel URL
-        self._cf_tunnel = None
-        if not os.getenv("GAME_PUBLIC_URL"):
-            url_file = os.path.expanduser("~/Library/Logs/Marvin/tunnel_url.txt")
-            # 等最多 15 秒讓 cloudflared LaunchAgent 寫入 URL（首啟動時）
-            for _ in range(30):
-                if os.path.exists(url_file):
-                    try:
-                        with open(url_file) as _f:
-                            url = _f.read().strip()
-                        if url.startswith("http"):
-                            os.environ["GAME_PUBLIC_URL"] = url
-                            logger.warning(f"[CloudflareTunnel] ✓ tunnel URL from file: {url}")
-                            break
-                    except Exception:
-                        pass
-                await asyncio.sleep(0.5)
-            else:
-                logger.warning("[CloudflareTunnel] ✗ 讀不到 tunnel_url.txt（cloudflared 沒在跑？），玩家連結用 localhost")
 
         # 7. ── 環境智能助理 — DiscordTemperatureMonitor + TopicGenerator ──
         if vc_cog is not None:
@@ -676,8 +611,6 @@ class MarvinBot(commands.Bot):
 
             elapsed = round(time.time() - float(state.get("started_at", time.time())), 1)
             cog_names = sorted(self.cogs.keys())
-            turtle_loaded = "TurtleSoupCog" in cog_names
-            busted99_loaded = "Busted99Cog" in cog_names
 
             commit_before = state.get("commit_before", "?")
             commit_after = state.get("commit_after", "?")
@@ -691,9 +624,7 @@ class MarvinBot(commands.Bot):
                 f"✅ **馬文已重啟完成**（{elapsed}s）\n"
                 f"原因：{state.get('reason', '?')}\n"
                 f"Commit：{commit_line}\n"
-                f"已載入 cogs：{len(cog_names)} 個（"
-                f"TurtleSoupCog {'✅' if turtle_loaded else '❌'} / "
-                f"Busted99Cog {'✅' if busted99_loaded else '❌'}）\n"
+                f"已載入 cogs：{len(cog_names)} 個\n"
                 f"已同步指令：{total_synced} 個"
             )
             await channel.send(msg)
@@ -744,18 +675,6 @@ class MarvinBot(commands.Bot):
                 await bridge.stop()
             except Exception as e:
                 logger.warning(f"[Companion_Bridge] stop failed: {e}")
-        hub = getattr(self, "game_ws_hub", None)
-        if hub is not None:
-            try:
-                await hub.stop()
-            except Exception as e:
-                logger.warning(f"[GameWSHub] stop failed: {e}")
-        tunnel = getattr(self, "_cf_tunnel", None)
-        if tunnel is not None:
-            try:
-                await tunnel.stop()
-            except Exception as e:
-                logger.warning(f"[CloudflareTunnel] stop failed: {e}")
         await super().close()
 
     # --- 🛡️ [Error Handlers] ---

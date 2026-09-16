@@ -32,7 +32,7 @@ wyoming==1.10.0
 yt-dlp==2026.6.9
 ytmusicapi==1.12.2
 
-# diary_comic 漫畫渲染
+# 封面卡片渲染
 Pillow>=12.0.0
 
 # Google API client & OAuth

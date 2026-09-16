@@ -1,9 +1,8 @@
 """TDD — T5: 聽>>講 policy gate — intimate mode suppresses unprompted output.
 
-三條防線：
+兩條防線：
   A. speak_bus_tick_loop  — ON 跳過 _speak_bus.tick；OFF 正常 tick。
   B. trigger_proactive_topic — ON 跳過 get_proactive_topics；OFF 正常進入。
-  C. slow_system_loop diary — ON 跳過 maybe_render_diary；OFF 正常渲染。
 
 TDD 流程：先紅後綠——guard 未加時 ON-suppression case FAIL（tick 被呼叫到）。
 """
@@ -11,7 +10,7 @@ from __future__ import annotations
 
 import time
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 
 # ── A: speak_bus_tick_loop ────────────────────────────────────────────────────
@@ -92,48 +91,3 @@ async def test_trigger_proactive_topic_intimate_off_reaches_topics():
     await VoiceController.trigger_proactive_topic(fake)
 
     fake.bot.router.memory.get_proactive_topics.assert_called_once()
-
-
-# ── C: slow_system_loop diary ─────────────────────────────────────────────────
-
-def _make_diary_fake(*, intimate_on: bool) -> MagicMock:
-    """造一個能走到 diary 分支的 fake self（空累積器, silence=400s>300）。"""
-    fake = MagicMock()
-    fake._intimate_mode = intimate_on
-    fake.bot.engine.conv_buffer = MagicMock()           # truthy → 不提早 return
-    fake.bot.engine.conv_buffer.pop_new_entries.return_value = []
-    fake.slow_loop_accumulator = []                     # 真 list，extend/truthiness 正確
-    fake.last_player_speech_time = time.time() - 400   # silence=400 > 300
-    fake.stream_mode = False
-    fake.get_online_members.return_value = []           # 跳過 post_open_rituals
-    fake.radio_mode = True                              # 跳過 radio / freq-adj elif
-    fake.active_text_channel = MagicMock()
-    return fake
-
-
-@pytest.mark.asyncio
-async def test_slow_system_loop_intimate_on_skips_diary():
-    """_intimate_mode=True → maybe_render_diary 不被呼叫。"""
-    from cogs.voice_controller import VoiceController
-
-    fake = _make_diary_fake(intimate_on=True)
-    mock_render = AsyncMock()
-
-    with patch("diary_comic_poster.maybe_render_diary", mock_render):
-        await VoiceController.slow_system_loop.coro(fake)
-
-    mock_render.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_slow_system_loop_intimate_off_calls_diary():
-    """_intimate_mode=False → maybe_render_diary 被 await（公開日記正常渲染）。"""
-    from cogs.voice_controller import VoiceController
-
-    fake = _make_diary_fake(intimate_on=False)
-    mock_render = AsyncMock()
-
-    with patch("diary_comic_poster.maybe_render_diary", mock_render):
-        await VoiceController.slow_system_loop.coro(fake)
-
-    mock_render.assert_awaited_once()

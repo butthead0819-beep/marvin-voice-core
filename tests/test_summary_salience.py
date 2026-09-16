@@ -5,7 +5,7 @@
 """
 import time
 
-from diary_comic.parser import DiaryEntry, parse_log
+from chat_summary_parser import DiaryEntry, parse_log
 
 
 def _ts(dt_offset_min=0):

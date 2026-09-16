@@ -8,7 +8,7 @@ Marvin lives in your voice channel. After a few sessions he knows who stays unti
 
 ### What a session actually feels like
 
-You join voice. Marvin greets *you* — not "a user," you, in the tone your last hundred sessions earned. You start talking about a game; without being asked, he's already tracking that the room turned to gaming and colours his replies to match. Someone says "放首歌" — no wake word, no menu — and the right song is playing seconds later, picked from what *this room* actually stayed for last time. You argue, you laugh, someone gets roasted. When everyone goes quiet at the end of the night, Marvin quietly draws the funniest three minutes as a one-page comic and drops it in the diary channel. Nobody asked. It just shows up.
+You join voice. Marvin greets *you* — not "a user," you, in the tone your last hundred sessions earned. You start talking about a game; without being asked, he's already tracking that the room turned to gaming and colours his replies to match. Someone says "放首歌" — no wake word, no menu — and the right song is playing seconds later, picked from what *this room* actually stayed for last time. You argue, you laugh, someone gets roasted. At the end of the night he writes a quiet diary entry about it in your text channel, unprompted.
 
 That's the surprise: none of it is a command you memorised. It's a roommate who happens to live in a voice channel — and, increasingly, in a speaker on your shelf and a puck in your car.
 
@@ -30,7 +30,6 @@ Every Discord voice bot solves the same pipeline: STT → LLM → TTS. That part
 | Personality that adapts per-person | ❌ | **✅** |
 | Knows what the room is talking about | ❌ | **✅** |
 | Music taste memory + auto-recommendation | ❌ | **✅** |
-| Draws your funniest moments into a comic | ❌ | **✅** |
 | Relationship that builds over time | ❌ | **✅** |
 
 The difference is not the pipeline — it's the memory and the relationship.
@@ -39,7 +38,6 @@ The difference is not the pipeline — it's the memory and the relationship.
 - **Marvin has opinions about you specifically** — a per-person DNA system, not one prompt for everyone. A hundred-session regular gets warmth buried under sarcasm; a first-timer gets formal disdain.
 - **Marvin reads the room** — an `AtmosphereTracker` watches the STT stream in real time and injects a topic/mood snapshot (gaming / music / food / work) into every LLM call.
 - **Marvin reacts to how you react** — when music plays he tracks who stayed, who skipped, what people felt, and uses that to recommend the next song from what works for *your* room.
-- **Marvin draws what happened** — when a session winds down he picks out the funniest moments and renders them as a Japanese-style comic page, posted back to your diary channel. No one asks for it; it just shows up.
 
 ---
 
@@ -81,24 +79,6 @@ In Discord: join a voice channel, then type `/summon` in any text channel.
 
 ---
 
-## Games
-
-Three multiplayer voice games in `game/`, each backed by a cog + engine + LLM judge. All are voice-driven (players talk, Marvin narrates outcomes via TTS) and dispatch through the IntentBus with `mode_compatible={"game"}`.
-
-| Game | Cog | What it is |
-|---|---|---|
-| **Busted** | `cogs/game_cog.py` | Setter picks a secret answer, others race to buzz on LLM-generated clues |
-| **Busted99** | `cogs/busted99_cog.py` | 1–99 range-narrowing with counter-intuitive scoring: guessing the answer = 0 points, getting last-2-wrong = 100 |
-| **TurtleSoup (海龜湯)** | `cogs/turtle_soup_cog.py` | Paradox riddle; LLM judges yes/no/irrelevant, with a hint graph for personalised ordering |
-
-See `game/busted99/ARCHITECTURE.md` and `game/turtle_soup/ARCHITECTURE.md` for design notes.
-
-## Session comics
-
-When a voice session winds down, Marvin replays the transcript, finds the genuinely funny beats (a punchline, a reversal, someone getting roasted), and lays them out as a one-page Japanese-style comic — paneling, camera distance, and a Hero panel for the biggest laugh — then posts it to your diary channel (`#馬文的厭世日記` / `marvin-diary`). Nobody triggers it; it fires on silence at the end of a session.
-
-It only draws when there's an actual highlight (no laughs → no comic), needs at least a handful of exchanges so short chats don't burn API budget, and de-dupes per session so the same moment isn't drawn twice. Image generation goes through the paid-usage guard with daily/monthly caps. The pipeline lives in `diary_comic/` (see `diary_comic/MANGA_DESIGN.md`).
-
 ## Community Memory
 
 Marvin stores what he knows about each member in a local SQLite database (`marvin.db`) — structured observations that accumulate over real interactions, plus recent transcripts for short-term recall. Created automatically on first run. A `suki_memory.json` export is written after every save for external analysis scripts.
@@ -128,7 +108,6 @@ When a member first joins a voice channel, Marvin posts a notice listing exactly
 Data flow for consented members:
 - Voice → local STT (macOS Speech framework or Whisper); when the cloud cleaner is enabled, audio goes to **Groq** for transcription cleaning
 - Transcription + context → **Google Gemini / Cerebras** (LLM response)
-- Session highlights → **Google Gemini** (text + image models) when a session comic is generated
 - Behavioral observations → local `suki_memory.json` (never leaves your machine)
 
 Marvin runs on your own machine — there is no central server collecting data across deployments.

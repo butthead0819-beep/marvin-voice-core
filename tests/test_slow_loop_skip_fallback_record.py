@@ -41,7 +41,7 @@ def _make_fake(*, summary_return=None):
 async def test_skip_still_writes_fallback_core_for_dj_material(tmp_path, monkeypatch):
     """LLM 回 None（SKIP）+ 有捕捉到人類發言 → 落地的記錄要有『核心：』可讓 parser 解析。"""
     from cogs.voice_controller import VoiceController
-    from diary_comic.parser import parse_log
+    from chat_summary_parser import parse_log
 
     monkeypatch.chdir(tmp_path)
     fake = _make_fake(summary_return=None)

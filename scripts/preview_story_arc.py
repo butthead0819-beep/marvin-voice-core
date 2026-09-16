@@ -15,7 +15,7 @@ sys.path.insert(0, ".")
 from dotenv import load_dotenv
 load_dotenv()
 
-from diary_comic.parser import parse_log
+from chat_summary_parser import parse_log
 from dj_story_arc import (
     BgmCursor,
     build_show_intro,

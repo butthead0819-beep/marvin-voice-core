@@ -79,35 +79,6 @@ class SystemLoopsMixin:
                 now = time.time()
                 silence = now - self.last_player_speech_time
 
-                # 📓 [DiaryComic] 靜默 ≥5 分鐘 = 關台收尾 → 策展出圖存 pending（不立刻貼）
-                # 等下次開台（有人進語音）才貼+置頂；同場次只渲染一次（poster 去重）；全防禦
-                if silence > 300 and not self.stream_mode:
-                    try:
-                        # 🤫 私語模式：公開日記漫畫是面向觀眾的表演，1-on-1 不出圖
-                        if not getattr(self, '_intimate_mode', False):
-                            from diary_comic_poster import maybe_render_diary
-                            await maybe_render_diary(self.bot, self.active_text_channel)
-                    except Exception as _ce:
-                        logger.warning(f"⚠️ [DiaryComic] 渲染 hook 失敗（已吞）: {_ce}")
-                # 📓 [DiaryComic] 掛機族 fallback（2026-07-04b：初版誤放 else 分支——
-                # 掛機場景正是「長靜默+人還連著」永遠走 if，fallback 碰不到）：
-                # 與靜默分支無關，台上有人+有 pending 就貼（poster 冪等去重，10min 一查極便宜）。
-                try:
-                    if self.get_online_members():
-                        from diary_comic_poster import maybe_post_open_rituals
-                        posted = await maybe_post_open_rituals(self.bot)
-                        if posted and hasattr(self, "play_tts"):
-                            asyncio.create_task(self.play_tts(
-                                "昨天的日記畫好貼在日記頻道了，記得去翻翻。"))
-                except Exception as _pe:
-                    logger.debug(f"[DiaryComic] 掛機族貼文略過: {_pe}")
-                    # 📊 [Reveal] 同關台時序：出昨夜回放秀存 pending（不立刻貼），全防禦
-                    try:
-                        from make_reveal import maybe_render_reveal
-                        await maybe_render_reveal(self.bot)
-                    except Exception as _re:
-                        logger.warning(f"⚠️ [Reveal] 渲染 hook 失敗（已吞）: {_re}")
-
                 # 📻 [Marvin Radio] 10 分鐘靜默自動啟動電台（stream_mode 播放中則跳過）
                 if silence > 600 and not self.radio_mode and not self.stream_mode and self.bot.voice_clients:
                     print("🕒 [Slow System] 偵測到 10 分鐘靜默，自動啟動馬文電台...")

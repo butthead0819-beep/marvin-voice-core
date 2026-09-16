@@ -12,7 +12,7 @@ sys.path.insert(0, ".")
 from dotenv import load_dotenv
 load_dotenv()
 
-from diary_comic.parser import parse_log
+from chat_summary_parser import parse_log
 from themed_playlist import gather_theme_brief, curate_themed_set, resolve_themed_set
 from llm_pool import call_paid_review
 

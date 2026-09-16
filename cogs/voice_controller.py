@@ -109,9 +109,6 @@ from manzai_interject import compute_interject_ratio, interject_diagnostics
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
-from intent_agents.busted_agent import BustedAgent
-from intent_agents.busted99_agent import Busted99Agent
-from intent_agents.turtle_soup_agent import TurtleSoupAgent
 from intent_agents.find_song_agent import FindSongAgent
 from intent_agents.game_knowledge_agent import GameKnowledgeAgent
 from intent_agents.grounded_qa_agent import GroundedQAAgent, maybe_dispatch_followup_supplement
@@ -274,9 +271,6 @@ def build_intent_agents(controller, bot):
         PersonalShuffleAgent(controller),  # 2026-06-29: 語音「連續隨機播我的歌單」（一次墊一首）
         GameKnowledgeAgent(controller),  # 2026-06-06: Plan 4 intent_gap ready — 「查麥塊…」遊戲知識查詢
         GroundedQAAgent(controller),  # 2026-08-30: AmbientQA — 「馬文幫我查 X」/「X 是什麼」→ grounded 回答
-        BustedAgent(bot),
-        Busted99Agent(bot),
-        TurtleSoupAgent(bot),
         # 🎭 [Marmo 一搭一唱 PoC] DualSpeakAgent — 只在 dispatch_source="marmo_inject"
         # 時出價 0.95；wake 路徑全 dense 0.0 with reason="not_marmo_inject"，零干擾。
         # 真正 flip 開關在 marmo_server.py 是否改走 bus.dispatch（T9）。
@@ -907,16 +901,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         # --- [Join Logic] ---
         if before.channel != after.channel and after.channel == marvin_channel:
-            # 📓 [DiaryComic] 開台儀式：把昨夜 pending 那頁貼出+置頂，貼成功才語音預告。
-            # idempotent（重複進來不重貼，poster 內 _last_posted 去重）；全防禦不擋 join。
-            try:
-                from diary_comic_poster import maybe_post_open_rituals
-                posted = await maybe_post_open_rituals(self.bot)
-                if posted and hasattr(self, "play_tts"):
-                    asyncio.create_task(self.play_tts(
-                        "昨天的日記畫好貼在日記頻道了，記得去翻翻。"))
-            except Exception as _de:
-                logger.debug(f"[DiaryComic] 開台發布略過: {_de}")
             # 🔔 [Nudge Throttle] (重)進語音 = 新 session，重新武裝該人所有提醒類別
             self._nudges.reset_speaker(member.display_name)
             # 🔐 [Consent] 首次進入時發送資料使用聲明

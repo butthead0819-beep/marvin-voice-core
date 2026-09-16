@@ -1213,18 +1213,6 @@ class DiscordVoiceEngine:
         if is_wake_check:
             self._wake_inflight += 1
         else:
-            # 遊戲狀態：非搶答者/非猜題者語音直接丟棄，不佔 full-STT inflight 名額
-            _cogs = self.bot.cogs if hasattr(self.bot, "cogs") else None
-            if _cogs is not None:
-                for _cog_name in ("Busted99Cog", "BustedCog", "TurtleSoupCog"):
-                    _game_cog = _cogs.get(_cog_name)
-                    if _game_cog is not None and hasattr(_game_cog, "should_suppress_for_game_by_id"):
-                        if _game_cog.should_suppress_for_game_by_id(user_id):
-                            logger.debug(
-                                "[Engine] game suppress (%s): user_id=%d 非參與者，跳過 full-STT dispatch",
-                                _cog_name, user_id,
-                            )
-                            return
             self._full_stt_inflight += 1
 
         # 2026-05-20: idempotent inflight 釋放 closure。_process_stt_hybrid 在 STT

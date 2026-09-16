@@ -89,7 +89,7 @@ play_tts(text, kind: SpeakKind, *, emotion_tag=..., voice=..., force_macos=...)
 | `JOIN_GREETING` | `voice_controller.py:955` | 有人加入 → 司儀播報句。唯一現用 `bypass_stream_mute` |
 | `LEAVE_FAREWELL` | `voice_controller.py:983`, `voice_controller_social.py:594` | 有人離開。**注意現行不對稱**：`:983` 沒帶 protected（可被丟），`social:594` 帶——遷移時要定案 |
 | `SUMMON_INTRO` | `voice_controller_connection.py:762`, `voice_controller_commands.py:39` | `/summon` / auto-join 登場台詞 |
-| `GAME_HOST` | `busted99_cog.py:254/900`, `turtle_soup_cog.py:167`, `game_cog.py:1313` | 遊戲主持，全走 `force_macos=True` |
+| `GAME_HOST` | 無呼叫點（2026-09：Busted/Busted99/TurtleSoup 已移除，kind 保留於 enum 未清） | 遊戲主持，原全走 `force_macos=True` |
 | `DJ_NARRATION` | `music_cog.py:1496/3636`, `voice_controller_social.py` 的 dual interject | 歌曲間口白，全程 `_tts_protected` |
 | `SELF_SAY` | `voice_controller.py:3525` (`/say`) | 使用者叫 Marvin 唸一句 |
 | `EXTERNAL_RELAY` | `voice_controller.py:3027`(NemoClaw), `:3790`(reply) | 外部服務轉述，處理耗時佇列可能積壓 |

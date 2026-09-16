@@ -73,16 +73,6 @@
 
 ---
 
-### TODO: IntentBus — Game agent prod wiring（vertical slice 已完成，wiring 未做）
-**Status:** DEFERRED（明天工作項 #4，等架構改動沉澱後接）
-**What:** voice_controller.py L2400 game cog chain 改成 `IntentContext(mode="game") → bus.dispatch()`，把今天寫的 3 個 game agent（Busted99/Busted/TurtleSoup）真正接到 prod。
-**Why:** 今天只完成 vertical slice + 11 tests/agent，bus 還沒在 game mode 跑過 prod 流量。Adversarial review (2026-05-19) 確認：game agents 目前是 dead code in prod，因為 L2402 early return 在 bus.dispatch 之前。
-**How to start:** handle_stt_result 把 if game_mode: 那段改成建 IntentContext + bus.dispatch(mode="game")。先量測 bid 對 high-rate STT（10+ utterances/sec 搶答場景）的累積延遲（3 agents × ~10ms = ~30ms/utt 預估）。
-**Depends on:** 觀察 1-2 個遊戲 session 確認 bid 延遲不影響搶答體驗。
-**Priority:** P2（vertical slice + tests 已驗證，prod 接 wiring 風險中等）。
-
----
-
 ### TODO: IntentBus base.py — re.compile pattern cache
 **Status:** DEFERRED（perf 優化，當前 schema 數量未觸發）
 **What:** `intent_agents/base.py:101` re.search 每次 bid 重新編譯 pattern。schema 數量大時會超 5ms bid budget。改成 module-level dict cache 或 IntentSchema 加 `_compiled` 屬性。
@@ -435,28 +425,6 @@ grep "NemoClaw路由\|NemoClaw→\|NemoClaw.*跳過\|NemoClaw.*排隊" bot_main.
 **Why**: Phase 1 加的 forwarding stubs 是技術債，清掉後 VC 的 forwarding 層可以完全刪除
 **Status**: deferred — 等 MusicCog 穩定（Phase 3 之後）執行
 **Start**: `grep -n "self\.ctrl\.\(stream\|radio\|_safe_music\|_mixer\|_cover\|_consecutive\)" intent_agents/`
-
----
-
-### TODO: 夜晚回放秀 v0.2 — reveal 影片管線（gated on v0.1 PNG 驗證）
-**What**: 把 v0.1 的靜態 EKG PNG 升級成 15s 動態 MP4：Pillow ~360 幀逐段畫出心電圖 + 峰值定格 + edge_tts/say Marvin 旁白 + ffmpeg 混音。
-**Why**: build-in-public（X/Threads）需要動態影片才有傳播力；靜態圖只是驗證骨架。
-**Gate（先決條件）**: v0.1 PNG 必須先驗證「crosstalk 峰值選的時刻」命中率可接受（你眼睛看歷史夜晚覺得有趣）。命中率低 → 先修選時刻邏輯，不要燒影片管線。
-**外部聲音點出的三個坑（實作時別漏）**:
-- 音畫協調用 `ffmpeg -t 15 ... + apad`（補音訊到固定長度），**不要 `-shortest`**（旁白較長會砍掉定格高潮）。
-- `say` 備援振幅低，要套 `peak_normalize_wav_bytes`（見 memory `tts_edge_ratelimit_and_say_fallback`）；`say` 在 CI/headless 不存在要 guard。
-- smoke test 必須驗**音軌非靜音**（不能只 assert MP4 exists——TTS 全失敗配空音軌照樣產出有效 MP4、測試會假綠）。
-- 360 PNG temp 檔在 `finally` 清理（CLAUDE.md 強制）。
-**Status**: deferred — gated on v0.1 驗證結果
-**Start**: v0.1 的 `make_reveal.py`（靜態 PNG）跑通並眼驗命中率後
-
----
-
-### TODO: 夜晚回放秀對外發布前 — 匿名化/同意前置 gate
-**What**: 任何把回放圖/影片發到 X/Threads 等公開平台前，必須先 (a) speaker → 動物代號（複用 `diary_comic/character_store.py`）(b) 原話過敏感詞/點名濾鏡 (c) 考慮房友 consent。
-**Why**: `marvin.db` transcripts 存真實 speaker 名（狗與露/陳進文/weakgogo）+ 未過濾原話。v0.1 內部驗證不發所以現在不緊，但 v0.2 一對外就會印真名+原話。這是**發布的前置 gate，不是 polish**。
-**Status**: deferred — v0.2 對外發布前的硬 gate
-**Start**: v0.2 影片管線確定要對外發時，先接 character_store 匿名化層
 
 ---
 

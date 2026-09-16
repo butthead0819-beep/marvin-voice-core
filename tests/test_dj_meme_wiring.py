@@ -21,7 +21,7 @@ import pytest
 # ── 1. DiaryEntry 有 meme_id 欄位 ─────────────────────────────────────────────
 
 def test_diary_entry_has_meme_id_field():
-    from diary_comic.parser import DiaryEntry
+    from chat_summary_parser import DiaryEntry
     e = DiaryEntry(ts_str="2026-01-01 00:00:00", core="搬家")
     assert hasattr(e, "meme_id")
     assert e.meme_id == ""   # 預設空字串
@@ -31,7 +31,7 @@ def test_diary_entry_has_meme_id_field():
 
 def test_parse_log_extracts_meme_id():
     """新格式 log 含 meme：標籤 → DiaryEntry.meme_id 被填入。"""
-    from diary_comic.parser import parse_log
+    from chat_summary_parser import parse_log
     log = (
         "[2026-07-29 20:00:00] --- 10分鐘對話總結 ---\n"
         "核心：大肚在準備搬家\n"
@@ -46,7 +46,7 @@ def test_parse_log_extracts_meme_id():
 
 def test_parse_log_meme_id_empty_when_absent():
     """舊格式 log 沒有 meme 行 → meme_id="" (fail-open)。"""
-    from diary_comic.parser import parse_log
+    from chat_summary_parser import parse_log
     log = (
         "[2026-07-29 20:00:00] --- 10分鐘對話總結 ---\n"
         "核心：大肚在準備搬家\n"
@@ -60,7 +60,7 @@ def test_parse_log_meme_id_empty_when_absent():
 
 def test_parse_log_meme_id_bracket_format():
     """也吃舊式 【meme】 bracket 格式（_extract_after_marker 的能力）。"""
-    from diary_comic.parser import parse_log
+    from chat_summary_parser import parse_log
     log = (
         "[2026-07-29 20:00:00] --- 10分鐘對話總結 ---\n"
         "核心：今天宿醉很慘\n"
