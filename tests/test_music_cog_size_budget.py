@@ -25,8 +25,9 @@ MC = Path(__file__).resolve().parent.parent / "cogs" / "music_cog.py"
 # ── 棘輪基準（2026-09-16，拆解前的原始實測值：4863/128）──────────────────────
 # Phase 1（music_cog_commands.py，6個slash指令，−264行/−6method）後：4599/122
 # Phase 2（music_cog_subsystem.py，8個radio/stream loop方法，−272行/−8method）後：4327/114
-LINE_BUDGET = 4327
-METHOD_BUDGET = 114
+# Phase 3（music_cog_personal_shuffle.py，10個個人歌單/卡片/HUD橋接方法，−281行/−10method）後：4046/104
+LINE_BUDGET = 4046
+METHOD_BUDGET = 104
 
 
 def test_music_cog_line_count_within_budget():
