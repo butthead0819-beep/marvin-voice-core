@@ -232,7 +232,7 @@ async def test_tail_dj_fire_delay_no_highlight_uses_raw_duration():
         import time
         await cog._run_tail_dj(cur, time.time() - 170.0)
 
-    from cogs.music_cog import _DJ_TAIL_LEAD_S
+    from cogs.music_cog_tail_dj import _DJ_TAIL_LEAD_S
     assert captured["lead_s"] == _DJ_TAIL_LEAD_S  # 5s→8s，給 preload 更多餘裕
 
     assert captured["duration"] == 180.0
@@ -645,7 +645,7 @@ async def test_dj_tail_sfx_waits_for_slow_preload_within_timeout():
 async def test_dj_tail_sfx_gives_up_after_preload_wait_timeout():
     """preload 在 wait_for 逾時前都還沒完成 → 放棄等待、這輪不放任何音效（沒有靜態
     fallback），且不能把 preload task 本身取消掉（asyncio.shield，換源那邊還要用）。"""
-    import cogs.music_cog as music_cog_module
+    import cogs.music_cog_tail_dj as music_cog_module
     cog = _make_cog()
     nxt = _next_info()
     url = nxt["url"]
