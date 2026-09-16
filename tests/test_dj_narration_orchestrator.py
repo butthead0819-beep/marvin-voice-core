@@ -110,11 +110,9 @@ def test_select_narration_mode_autopilot_reason_overrides_quick(tmp_path):
     assert new[1] == "reason"
 
 
-def test_select_narration_mode_autopilot_reason_does_not_override_life():
+def test_select_narration_mode_autopilot_reason_does_not_override_life(tmp_path):
     # 有具體素材（life）時，autopilot_reason 不該蓋掉它——只搶 quick/atmosphere。
-    store = TopicCooldownStore(":memory-unused:", now=lambda: 1000.0)
-    store._data = {}
-    store._save = lambda: None  # 測試不落地寫檔
+    store = _fresh_store(tmp_path, "c.json")
     topic, mode = select_narration_mode(
         life=["昨天去爬山"], interests=[], topic_store=store,
         autopilot_reason="照你的口味挖出來的新歌",

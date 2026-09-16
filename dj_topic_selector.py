@@ -10,11 +10,10 @@ meme_id 語義冷卻：同一事件換個說法也算冷卻中（不能用文字
 from __future__ import annotations
 
 import hashlib
-import json
-import os
 import time
 
 from dj_life_context import LifeCore
+from state_store import StateStore
 
 DEFAULT_PATH = "records/dj_topic_cooldown.json"
 COOLDOWN_S = 8 * 3600       # 同一具體生活/興趣話題用過 8 小時內不重複
@@ -34,26 +33,42 @@ def _topic_key(text: str) -> str:
 
 
 class TopicCooldownStore:
+    """話題冷卻表，底層改用共用的 `state_store.StateStore`（Phase B 遷移）。
+
+    讀取策略：`self._data` 是 in-memory cache，只在 `__init__`（構造當下 load
+    一次）跟「這個 instance 自己做過 mutation 之後」（`mark_used` /
+    `set_last_fallback`，見下方）更新——`is_cool()` / `get_last_fallback()`
+    這類純讀取一律吃 cache，不每次重新 open 檔案。理由：
+      1. 跟遷移前的行為一致（原本就是建構時 load 一次進 `self._data`），
+         呼叫端（`select_topic`/`select_mode`）的既有測試（例如
+         `test_cooldown_persists_across_store_instances`：重啟＝重新
+         construct 一個新 instance 才會看到別人的更新）已經預設這個語意，
+         沒有理由這次遷移順便改變它。
+      2. 實務上呼叫端幾乎都是「一次串場決策內」建構/複用同一個 instance，
+         連續呼叫多次 `is_cool()`，這段期間頻繁 open+flock+json.load 只有
+         成本沒有效益。
+
+    但寫入路徑（`mark_used()`）不能只改自己這份 cache 再整份 dump 回去
+    ——那正是舊實作的 race 來源（見 module docstring 引用的
+    feedback_music_memory_concurrent_write_race）：兩個 process/instance
+    各自 load 一次、各自 mutate、後寫的會蓋掉先寫的。改用
+    `StateStore.update(fn)` 之後，每次 `mark_used()` 都在拿到 flock 之後
+    重新從 disk load「當下最新」的完整資料、套用這次的 mutation、再存回
+    去——不管呼叫方自己那份 `self._data` cache 多舊，寫回去的一定是「最新
+    資料 + 這次的變更」，不會丟失其他 instance/process 同時寫入的內容。
+    寫完之後才用 `update()` 的回傳值刷新 `self._data`，讓這個 instance
+    後續的 `is_cool()` 讀到自己剛寫的東西。
+    """
+
     def __init__(self, path: str = DEFAULT_PATH, *, now=time.time):
         self._path = path
         self._now = now
-        self._data = self._load()
+        self._store = StateStore(path, default={})
+        self._data = self._store.load()
 
-    def _load(self) -> dict:
-        try:
-            return json.load(open(self._path, encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
-            return {}
-
-    def _save(self) -> None:
-        try:
-            os.makedirs(os.path.dirname(self._path) or ".", exist_ok=True)
-            tmp = f"{self._path}.tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False)
-            os.replace(tmp, self._path)
-        except OSError:
-            pass  # fail-open：寫不進去不影響功能（下次再判斷）
+    def _mutate(self, fn) -> None:
+        """鎖保護的 read-modify-write：fn 吃「當下最新的完整資料」、回傳新資料。"""
+        self._data = self._store.update(lambda current: fn(dict(current) if isinstance(current, dict) else {}))
 
     def is_cool(
         self,
@@ -83,16 +98,24 @@ class TopicCooldownStore:
         cooldown_s: float | None = None,
     ) -> None:
         key = f"meme:{meme_id}" if meme_id else _topic_key(text)
-        self._data[key] = self._now()
-        self._save()
+        ts = self._now()
+
+        def _apply(data: dict) -> dict:
+            data[key] = ts
+            return data
+
+        self._mutate(_apply)
 
     def get_last_fallback(self) -> str | None:
         """上次選到的 fallback mode（conversation/prev_song/quick），跨重啟保存。"""
         return self._data.get(_FALLBACK_KEY)
 
     def set_last_fallback(self, mode: str) -> None:
-        self._data[_FALLBACK_KEY] = mode
-        self._save()
+        def _apply(data: dict) -> dict:
+            data[_FALLBACK_KEY] = mode
+            return data
+
+        self._mutate(_apply)
 
 
 def select_topic(

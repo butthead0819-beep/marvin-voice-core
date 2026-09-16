@@ -47,6 +47,32 @@ def test_topic_becomes_available_again_after_cooldown_expires(tmp_path):
     assert select_topic(["昨天去爬山"], [], store) == ("昨天去爬山", "life")  # 滿了可再用
 
 
+def test_two_instances_mark_used_do_not_clobber_each_other(tmp_path):
+    """Phase B 遷移到 StateStore.update() 後的 race 回歸測試。
+
+    舊實作（手刻 _load/_save，__init__ 時 load 一次進 self._data，mark_used
+    改完整份 self._data 就整份覆寫）在這個情境下會丟資料：store2 在 store1
+    mark_used 之前就已經 __init__（讀到空檔案），store2.mark_used() 時
+    self._data 仍是它自己那份「空」的 stale copy，整份存回去會把 store1
+    剛寫入的 key 蓋掉。
+
+    改用 StateStore.update() 之後，mark_used() 內部一定在拿到鎖之後才重新
+    從 disk load「當下最新」資料，不吃呼叫方自己的 stale in-memory cache，
+    所以兩邊的 mutation 都會保留。
+    """
+    path = str(tmp_path / "c.json")
+    store1 = TopicCooldownStore(path)
+    store2 = TopicCooldownStore(path)  # 跟 store1 同時 __init__，各自讀到空檔案
+
+    store1.mark_used("話題A")
+    store2.mark_used("話題B")  # 舊實作會用 store2 的 stale self._data 蓋掉話題A
+
+    # 用第三個全新 instance 重新從 disk load，驗證兩次 mark_used 都留下來了。
+    store3 = TopicCooldownStore(path)
+    assert store3.is_cool("話題A") is False
+    assert store3.is_cool("話題B") is False
+
+
 def test_cooldown_persists_across_store_instances(tmp_path):
     t, now = _clock()
     path = str(tmp_path / "c.json")
