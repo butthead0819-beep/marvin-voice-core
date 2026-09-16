@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from intent_bus import IntentBus, IntentContext, Bid
+from intent_bus import IntentBus, IntentContext, Bid, RescuePayload
 
 
 def _ctx(query="今天天氣怎樣", wake_intent=None, game_mode=False, is_owner=False, stream_active=False):
@@ -187,3 +187,81 @@ def test_intent_context_is_frozen():
     ctx = _ctx()
     with pytest.raises((AttributeError, Exception)):  # FrozenInstanceError
         ctx.query = "tampered"  # type: ignore
+
+
+# ── RescuePayload 相容層（Phase A）───────────────────────────────────────────
+
+def test_rescue_defaults_to_payload_with_matching_defaults():
+    """舊式建構（不傳任何救援 flat 欄位）時，ctx.rescue 不會是 None，
+    且欄位值等於 flat 欄位的預設值 —— 全部欄位 optional 不會炸。"""
+    ctx = _ctx()
+    assert ctx.rescue is not None
+    assert ctx.rescue == RescuePayload(
+        dispatch_source=ctx.dispatch_source,
+        pragmatic_signal=ctx.pragmatic_signal,
+        pragmatic_target=ctx.pragmatic_target,
+        payload=ctx.payload,
+        audio_wav_bytes=ctx.audio_wav_bytes,
+        prev_turn_audio_wav_bytes=ctx.prev_turn_audio_wav_bytes,
+        resolved_agent=ctx.resolved_agent,
+        resolved_intent=ctx.resolved_intent,
+        resolved_slots=ctx.resolved_slots,
+        low_confidence_wake=ctx.low_confidence_wake,
+    )
+
+
+def test_rescue_mirrors_flat_fields_when_constructed_old_style():
+    """既有 30 個 agent 呼叫端只傳 flat 救援欄位、不傳 rescue —— ctx.rescue
+    要能正確反映出那些 flat 欄位的值，讓新程式碼可以改讀 ctx.rescue.xxx。"""
+    ctx = IntentContext(
+        speaker="Alice",
+        raw_text="播放五月天",
+        query="播放五月天",
+        original_raw="播放五月天",
+        wake_intent=0.9,
+        stream_active=False,
+        game_mode=False,
+        is_owner=True,
+        now=100.0,
+        dispatch_source="llm_rescue_audio",
+        pragmatic_signal="positive",
+        pragmatic_target="current_song",
+        payload={"job_id": "abc123"},
+        audio_wav_bytes=b"\x00\x01",
+        prev_turn_audio_wav_bytes=b"\x02\x03",
+        resolved_agent="music_agent_v2",
+        resolved_intent="play_song",
+        resolved_slots={"song": "五月天"},
+        low_confidence_wake=True,
+    )
+    assert ctx.rescue.dispatch_source == "llm_rescue_audio"
+    assert ctx.rescue.pragmatic_signal == "positive"
+    assert ctx.rescue.pragmatic_target == "current_song"
+    assert ctx.rescue.payload == {"job_id": "abc123"}
+    assert ctx.rescue.audio_wav_bytes == b"\x00\x01"
+    assert ctx.rescue.prev_turn_audio_wav_bytes == b"\x02\x03"
+    assert ctx.rescue.resolved_agent == "music_agent_v2"
+    assert ctx.rescue.resolved_intent == "play_song"
+    assert ctx.rescue.resolved_slots == {"song": "五月天"}
+    assert ctx.rescue.low_confidence_wake is True
+    # flat 欄位本身完全不受影響 —— 這次是新增平行路徑，不是取代。
+    assert ctx.dispatch_source == "llm_rescue_audio"
+    assert ctx.low_confidence_wake is True
+
+
+def test_rescue_explicit_override_is_respected():
+    """呼叫端明確傳入 rescue 時，__post_init__ 不覆蓋（尊重呼叫端意圖）。"""
+    explicit = RescuePayload(dispatch_source="marmo_inject")
+    ctx = IntentContext(
+        speaker="Alice",
+        raw_text="test",
+        query="test",
+        original_raw=None,
+        wake_intent=None,
+        stream_active=False,
+        game_mode=False,
+        is_owner=False,
+        now=100.0,
+        rescue=explicit,
+    )
+    assert ctx.rescue is explicit

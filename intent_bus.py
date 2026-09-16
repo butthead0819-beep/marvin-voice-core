@@ -28,6 +28,32 @@ logger = logging.getLogger("cogs.voice_controller.intent_bus")
 
 
 @dataclass(frozen=True)
+class RescuePayload:
+    """救援路徑專用訊號的集中容器（Phase A：新增相容層，尚未取代 flat 欄位）。
+
+    `IntentContext` 原本把 LLM rescue / audio rescue / pragmatic signal 等
+    專用訊號都攤平成自己的欄位。隨救援管線越加越多，這些欄位彼此的「同屬一組
+    救援訊號」關係只存在於命名慣例裡，沒有結構表達出來。這裡把它們收成一個
+    巢狀 dataclass，欄位定義照抄自 `IntentContext` 原本的 flat 欄位（語意不變，
+    只是換位置），細節註解見 `IntentContext` docstring / 原欄位旁註解。
+
+    Phase A 現況：`IntentContext.rescue` 由 `__post_init__` 自動從 flat 欄位
+    同步出來，兩邊資料保證一致；30 個現有 agent 仍讀 flat 欄位，完全不用改。
+    Phase B（未做）才會把讀取點遷移到 `ctx.rescue.xxx`。
+    """
+    dispatch_source: str = "regex"
+    pragmatic_signal: str | None = None
+    pragmatic_target: str | None = None
+    payload: dict | None = None
+    audio_wav_bytes: bytes | None = field(default=None, repr=False)
+    prev_turn_audio_wav_bytes: bytes | None = field(default=None, repr=False)
+    resolved_agent: str | None = None
+    resolved_intent: str | None = None
+    resolved_slots: dict | None = None
+    low_confidence_wake: bool = False
+
+
+@dataclass(frozen=True)
 class IntentContext:
     """Wake event 的全部 context，傳給每個 agent 看。
 
@@ -86,6 +112,31 @@ class IntentContext:
     # 既有側效分支（NemoClaw/Marmo/Vision/imitation…）都用它擋環境誤拾音；
     # rescue（尤其音訊版，真的會打付費 API）比照同款守門，見 _maybe_rescue()。
     low_confidence_wake: bool = False
+    # Phase A 相容層：救援專用欄位的結構化鏡像，見 `RescuePayload` docstring。
+    # 不傳時由 __post_init__ 自動從上面那組 flat 欄位同步出來；現有呼叫端
+    # （30 個 agent + 既有建構點）完全不用改就能繼續運作。
+    rescue: RescuePayload | None = None
+
+    def __post_init__(self) -> None:
+        # frozen dataclass 沒有 setter，用 object.__setattr__ 繞過限制。
+        # 只在呼叫端沒明確傳 rescue 時才自動建構 —— 避免蓋掉呼叫端刻意傳入的值。
+        if self.rescue is None:
+            object.__setattr__(
+                self,
+                "rescue",
+                RescuePayload(
+                    dispatch_source=self.dispatch_source,
+                    pragmatic_signal=self.pragmatic_signal,
+                    pragmatic_target=self.pragmatic_target,
+                    payload=self.payload,
+                    audio_wav_bytes=self.audio_wav_bytes,
+                    prev_turn_audio_wav_bytes=self.prev_turn_audio_wav_bytes,
+                    resolved_agent=self.resolved_agent,
+                    resolved_intent=self.resolved_intent,
+                    resolved_slots=self.resolved_slots,
+                    low_confidence_wake=self.low_confidence_wake,
+                ),
+            )
 
 
 @dataclass
