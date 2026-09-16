@@ -92,7 +92,7 @@ async def test_playlist_import_youtube_playlist(music_cog):
         {"title": "歌B", "uploader": "歌手B", "webpage_url": "https://youtu.be/b"},
     ]
 
-    with patch("cogs.music_cog.extract_youtube_playlist_flat", new=AsyncMock(return_value=sample_yt_songs)):
+    with patch("cogs.music_cog_commands.extract_youtube_playlist_flat", new=AsyncMock(return_value=sample_yt_songs)):
         await music_cog.marvin_playlist_import.callback(
             music_cog, inter, query_or_url=playlist_url, file=None
         )
