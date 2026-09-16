@@ -119,7 +119,6 @@ async def test_call_llm_writes_bus_metrics_on_success(tmp_path, monkeypatch):
     obj = GeminiRouterLLMMixin.__new__(GeminiRouterLLMMixin)
     obj.dna = {"helpfulness": 3}
     obj.prompt_manager = MagicMock()
-    obj.vision_enabled = False
     obj.memory = MagicMock()
 
     # 構 minimal bus
@@ -155,7 +154,6 @@ def _bus_router(monkeypatch, tmp_path):
     obj = GeminiRouterLLMMixin.__new__(GeminiRouterLLMMixin)
     obj.dna = {"helpfulness": 3}
     obj.prompt_manager = MagicMock()
-    obj.vision_enabled = False
     obj.memory = MagicMock()
     a = MagicMock(spec=LLMAgent)
     a.name = "groq"; a.priority = 10; a.purpose_compatible = frozenset()
@@ -200,7 +198,6 @@ async def test_call_llm_writes_bus_metrics_on_no_llm_available(tmp_path, monkeyp
     obj = GeminiRouterLLMMixin.__new__(GeminiRouterLLMMixin)
     obj.dna = {"helpfulness": 3}
     obj.prompt_manager = MagicMock()
-    obj.vision_enabled = False
     obj.memory = MagicMock()
 
     a = MagicMock(spec=LLMAgent)

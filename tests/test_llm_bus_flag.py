@@ -34,7 +34,6 @@ def _make_router_mixin():
     # 必填 attribute 給 _call_llm 用
     obj.dna = {"helpfulness": 3}
     obj.prompt_manager = MagicMock()
-    obj.vision_enabled = False
     obj.memory = MagicMock()
     obj.is_exhausted = False
     obj.budget = MagicMock()

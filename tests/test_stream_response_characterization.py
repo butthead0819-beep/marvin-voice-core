@@ -44,7 +44,6 @@ def _make_vc(monkeypatch, sentences, *, wake_intent=None, is_helper=False,
     # bot / router
     vc.bot = MagicMock()
     vc.bot.cogs.get.return_value = None          # 關掉 MusicCog 委派 → stream_mode 走 local
-    vc.bot.vision_enabled = False
     vc.bot.router._background_intent_enrich = AsyncMock()
     vc.bot.router._pending_prefetch = {}
     vc.bot.router.memory.list_players.return_value = []

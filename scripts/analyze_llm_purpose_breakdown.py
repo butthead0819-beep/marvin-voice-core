@@ -30,7 +30,7 @@ CLEANER_LOG_PATH = Path.home() / "Library" / "Logs" / "Marvin" / "bot_stdout.log
 # 背景 purpose（與 llm_agents.base.BACKGROUND_PURPOSES 對齊；此處複製避免 import 重依賴）
 _BACKGROUND = frozenset({
     "extract_memory", "batch_extract_memories", "audit_player_memory",
-    "extract_emotional_moments", "analyze_social_dynamics", "analyze_tactical_situation",
+    "extract_emotional_moments", "analyze_social_dynamics",
     "update_toxicity", "summarize_window", "_classify_mood", "compress",
     "marvinize_news", "generate_song_blueprint",
 })

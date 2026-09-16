@@ -204,7 +204,7 @@ def _load_corpus(path: Path) -> list[dict]:
 async def run_sweep(corpus_path: Path, sample_size: int, output_dir: Path) -> dict:
     from marvin_prompts import PromptManager
     pm = PromptManager()
-    system_prompt = pm.get_instruction("stt_cleaner", vision_enabled=False)
+    system_prompt = pm.get_instruction("stt_cleaner")
 
     from groq import AsyncGroq
     groq_key = os.environ.get("GROQ_API_KEY")

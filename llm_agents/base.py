@@ -40,7 +40,7 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
     "_llm_coverify",  # 自動推薦 spotlight lane 的 cover/翻唱覆核（music_cog._llm_coverify）
     # 背景 / 離線分析（見 BACKGROUND_PURPOSES）：
     "extract_memory", "batch_extract_memories", "audit_player_memory",
-    "extract_emotional_moments", "analyze_social_dynamics", "analyze_tactical_situation",
+    "extract_emotional_moments", "analyze_social_dynamics",
     "update_toxicity", "summarize_window", "_classify_mood", "compress",
     "marvinize_news", "generate_song_blueprint", "dual_dialogue",
 })
@@ -51,7 +51,7 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
 # 可見的生成器（問候/笑話/送客等）暫不列入；待 #1 labeled data 累積再依量微調。
 BACKGROUND_PURPOSES: frozenset[str] = frozenset({
     "extract_memory", "batch_extract_memories", "audit_player_memory",
-    "extract_emotional_moments", "analyze_social_dynamics", "analyze_tactical_situation",
+    "extract_emotional_moments", "analyze_social_dynamics",
     "update_toxicity", "summarize_window", "_classify_mood", "compress",
     "marvinize_news", "generate_song_blueprint",
 })

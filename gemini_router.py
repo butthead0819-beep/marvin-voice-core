@@ -90,7 +90,6 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
     def __init__(self, api_key: str = None):
         self.provider = os.getenv("LLM_PROVIDER", "gemini").lower()
         self.model_name = os.getenv("LLM_PRIMARY_MODEL", os.getenv("LLM_MODEL", "gemma-4-31b-it"))
-        self.vision_enabled = os.getenv("VISION_ENABLED", "True").lower() == "true"
         self.current_game = None
         
         # 🧬 [Suki DNA] 初始化性格數據

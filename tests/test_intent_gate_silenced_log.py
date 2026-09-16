@@ -48,7 +48,6 @@ def _make_vc(monkeypatch, *, query_intent_signal: bool, query_text: str):
     vc = VoiceController.__new__(VoiceController)
     vc.bot = MagicMock()
     vc.bot.cogs.get.return_value = None
-    vc.bot.vision_enabled = False
     vc.bot.router._background_intent_enrich = AsyncMock()
     vc.bot.router._pending_prefetch = {}
     vc.bot.router.memory.list_players.return_value = []

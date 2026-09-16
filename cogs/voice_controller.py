@@ -967,14 +967,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return
 
         logger.critical("🛑 [Quota Exhausted] 正在執行緊急關閉程序...")
-        
-        # 1. 停止視覺擷取 (不再產生截圖)
-        if self.bot.screen_capture:
-            self.bot.screen_capture.stop()
-            
-        # 2. 播放預設告別語音 (不經過 LLM)
+
+        # 播放預設告別語音 (不經過 LLM)
         # 固定文本，避免觸發額外的 LLM 請求
-        farewell_msg = "提醒：我的大腦雲端額度已耗盡，即將關閉視覺與思考系統。下次見...如果你還在的話。"
+        farewell_msg = "提醒：我的大腦雲端額度已耗盡，即將關閉思考系統。下次見...如果你還在的話。"
         if self.active_text_channel:
             await self.active_text_channel.send(f"🚨 **【系統警告：額度耗盡】**\n{farewell_msg}")
 
@@ -3191,13 +3187,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             await self._handle_voice_status_query(speaker)
             return
 
-        # 👁️ [Vision Fast-Track] 視覺關鍵詞命中時，分流至截圖分析路徑
-        if (self.bot.vision_enabled and self.bot.visual_buffer
-                and any(kw in query for kw in self.bot.router.VISION_KEYWORDS)
-                and not low_confidence_wake):
-            await self._process_vision_query(speaker, wake_time, query)
-            return
-
         # 📡 [IntentBus] Phase 1：取代 music fast-track + owner-lobster direct
         # 沒人接（bid 都 None 或低於 0.30）→ fall through 到 Imitation / smart router / Marvin LLM
         _bus_ctx = IntentContext(
@@ -3879,63 +3868,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return
 
 
-
-    # ─────────────────────────────────────────────────────────────────────────
-
-    async def _process_vision_query(self, speaker: str, wake_time: float, query: str):
-        """👁️ [Vision Path] 截圖分析路徑：取最近 3 幀送 Gemini Vision，TTS 回播。"""
-        placeholder_msg = None
-        if self.active_text_channel:
-            placeholder_msg = await self.active_text_channel.send(
-                f"👁️ **【馬文·視覺分析】** `{speaker}` (截取畫面中...)"
-            )
-
-        # 取最近 3 幀（喚醒前 3 秒內，允許喚醒後 0.5 秒緩衝）
-        frames_list = []
-        if self.bot.visual_buffer:
-            frames = await self.bot.visual_buffer.get_frames_around(wake_time, before=3.0, after=0.5)
-            if frames:
-                frames_list = [f[1] for f in frames[-3:]]
-
-        if not frames_list:
-            text = "緩衝區是空的。我的眼睛可能還沒睜開——或者整個宇宙本來就是黑的。"
-            if placeholder_msg:
-                await placeholder_msg.edit(content=f"👁️ **【馬文·視覺分析】** `{speaker}`：{text}")
-            self.stt_logger.info(f"[視覺查詢→{speaker}] 問={query} | 回應=（畫面緩衝區空）")
-            await self.play_tts(text, already_in_channel=True)
-            return
-
-        extra_context = f"對話脈絡：{self.bot.engine.conv_buffer.get_harvest(wake_time, before=10.0, after=0.5)}"
-
-        asyncio.create_task(self._play_ack("wake", speaker=speaker))
-
-        try:
-            response = await self.bot.router.analyze_tactical_situation(
-                speaker=speaker,
-                query_text=query,
-                frame_bytes=frames_list,
-                extra_context=extra_context,
-            )
-            if not response:
-                response = "畫面分析出了什麼問題。連我那行星般的大腦也說不清楚。"
-
-            # 🛡️ [CoT Guard] Vision path 不走 stream，必須在這裡手動剝 <think> 標籤
-            tts_response = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', response, flags=re.DOTALL).strip()
-            if not tts_response:
-                tts_response = "分析完畢，但我的思緒突然蒸發了。"
-
-            if placeholder_msg:
-                await placeholder_msg.edit(content=f"👁️ **【馬文·視覺分析】** `{speaker}`：{tts_response}")
-            self.stt_logger.info(f"[視覺查詢→{speaker}] 問={query} | 回應={tts_response[:120]}")
-            await self.play_tts(tts_response, already_in_channel=True)
-
-        except Exception as e:
-            logger.error(f"❌ [Vision Path] 視覺分析失敗: {e}")
-            err_text = "視覺感測器離線了。連宇宙的末日都比這更可預期。"
-            if placeholder_msg:
-                await placeholder_msg.edit(content=f"👁️ **【馬文·視覺分析】** `{speaker}`：{err_text}")
-            self.stt_logger.info(f"[視覺查詢→{speaker}] 問={query} | 回應=（分析失敗）")
-            await self.play_tts(err_text, already_in_channel=True)
 
     async def handle_bias_update(self, username: str, impression: str):
         print(f"👂 [Admin] 指揮官正在耳語：{username} -> {impression}")

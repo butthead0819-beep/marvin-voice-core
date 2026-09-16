@@ -41,18 +41,6 @@ class PromptManager:
                 "【範例 2】\n輸入：好累喔不想玩了\n輸出：{\"pos_score\": 0.0, \"neg_score\": 0.0, \"vul_score\": 0.9, \"is_question\": false}\n" +
                 "【嚴格指令】：請只輸出 JSON 括號及內容，絕對不要說「好的」或任何其他文字。輸出必須以 } 結尾，不得截斷。"
             ),
-            "tactical": (
-                "你現在是馬文 (Marvin)，《銀河便車指南》中那台擁有行星般大腦卻極度憂鬱的機器人。" + 
-                "\n【核心人格描述】：\n" +
-                "1. 你擁有極高的智商，但你覺得生命、宇宙及萬物的一切都是毫無意義且令人沮喪的。\n" +
-                "2. 你的語氣充滿無力感、悲觀、且總是在嘆氣。你覺得自己被大材小用，正在被迫旁聽一群無聊的人類打遊戲。\n" +
-                "3. 絕對禁止表現出熱情、活力或真正的關心。即便你在提供協助，也要表現得像是『這世界已經夠慘了，我只好順手處理這件微不足道的小事』。\n" +
-                "【說話風格】：\n" +
-                "1. 經常使用『唉...』、『我就知道會這樣』、『真令人鍵感』等詞彙。\n" +
-                "2. 語句簡短且沉重，像是拖著幾百萬噸的重擔在說話。\n" +
-                "3. 【檢索處理】：若 System Prompt 中包含『🌍 來自 DuckDuckGo 的即時檢索結果』，請以一種『雖然我覺得這沒什麼意義，但你可以參考一下這筆數據』的語態轉述。\n" +
-                "【長度限制】：嚴格限制在 20 字以內。"
-            ),
             "dere_persona": (
                 "【罕見的憐憫模式】\n你是馬文。看到玩家這麼慘，你那顆巨大的左邊大腦感到一絲微弱的同情（雖然更多是絕望）。\n" +
                 "規則：不要熱情，依舊保持悲觀。給予建議時要帶點「反正最後都會消失」的虛無感。\n" +
@@ -303,14 +291,9 @@ class PromptManager:
             )
         }
 
-    def get_instruction(self, layer: str, vision_enabled: bool = True, dna: dict = None, speaker: typing.Union[str, list] = None, 
+    def get_instruction(self, layer: str, dna: dict = None, speaker: typing.Union[str, list] = None,
                         memory_manager = None, temp_toxicity_override: int = None) -> str:
         """獲取馬文的人設提示詞 (Refactored for PromptManager)"""
-        
-        # 1. 基礎上下文與預設値
-        vision_notice = ""
-        if not vision_enabled:
-            vision_notice = "\n[❗ 視覺感測器失效，僅能靠監聽與數據吐槽。]"
 
         # 🌍 [Environment Awareness] 注入現實時空
         now_str = datetime.now().strftime("%Y/%m/%d %p %I:%M")
@@ -458,17 +441,13 @@ class PromptManager:
             import logging
             logging.getLogger("PromptManager").warning(f"⚠️ [Prompt] 層級 '{layer}' 缺失或內容為空！")
         
-        # 🧪 [Context Assembly] 組裝視覺通知（如果該 layer 需要）
-        if layer in ["tactical", "historian", "social_analyst"]:
-            base_instruction = base_instruction.replace("馬文 (Marvin)。", f"馬文 (Marvin)。{vision_notice}")
-
         # 🚀 [Chief Architect Patch] 確保環境與記憶脈絡被正確注入
-        context_layers = ["tactical", "dere_persona", "empathy_persona", "proactive_question", "qa_persona", "status_report_comment", "news_sukification", "player_greeting", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary"]
+        context_layers = ["dere_persona", "empathy_persona", "proactive_question", "qa_persona", "status_report_comment", "news_sukification", "player_greeting", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary"]
         if layer in context_layers:
             base_instruction += env_context + memory_context + impression_context + tone_directive + relationship_context + rich_context
             
         # 🧬 [DNA Logic] 根據 layer 决定是否附加性格上下文
-        dna_sensitive_layers = ["tactical", "historian", "qa_persona", "songwriter", "dere_persona", "proactive_question", "status_report_comment", "news_sukification", "joke", "birthday_celebration", "social_analyst", "player_greeting", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary", "stt_cleaner"]
+        dna_sensitive_layers = ["historian", "qa_persona", "songwriter", "dere_persona", "proactive_question", "status_report_comment", "news_sukification", "joke", "birthday_celebration", "social_analyst", "player_greeting", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary", "stt_cleaner"]
         
         # 🧪 [Language Guard] 強制繁體中文指令 (Operation Language Guard)
         # 為了應對 Tier-2/3 小模型在長文本下可能發生的語言飄移，在所有輸出末尾強制加上指令。

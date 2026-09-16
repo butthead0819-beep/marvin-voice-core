@@ -378,7 +378,7 @@ class GeminiRouterLLMMixin:
             helpfulness = self.dna.get('helpfulness', 3)
             dere_chance = min(0.05, 0.01 + (helpfulness * 0.005))
             if random.random() < dere_chance:
-                final_system_prompt = self.prompt_manager.get_instruction("dere_persona", vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory)
+                final_system_prompt = self.prompt_manager.get_instruction("dere_persona", dna=self.dna, speaker=speaker, memory_manager=self.memory)
 
         # 🚌 [LLMBus Phase 1] env LLM_BUS=true 且 bus 已 inject → 走 bus 一條路（禁雙跑：bus
         # 失敗回 '' 不 fallback legacy 避免 TPM 雙計，Risk 3）。Bus 沒裝 / flag off → 走下方 legacy。
@@ -712,7 +712,7 @@ class GeminiRouterLLMMixin:
             helpfulness = self.dna.get('helpfulness', 3)
             dere_chance = min(0.05, 0.01 + (helpfulness * 0.005))
             if random.random() < dere_chance:
-                final_system_prompt = self.prompt_manager.get_instruction("dere_persona", vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory)
+                final_system_prompt = self.prompt_manager.get_instruction("dere_persona", dna=self.dna, speaker=speaker, memory_manager=self.memory)
 
         # 🥇 [Priority-1] Groq Streaming — 最穩定，30 RPM
         if self.groq_dedicated_client and self.groq_fallback_model:
@@ -785,7 +785,7 @@ class GeminiRouterLLMMixin:
         target_speakers = present_speakers(speaker, online_members)
 
         _dna = {**self.dna, '_session_calls': self._session_call_count}
-        system_prompt = self.prompt_manager.get_instruction("fast_awakening", vision_enabled=self.vision_enabled, dna=_dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("fast_awakening", dna=_dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
 
         # 🚀 [Context] 注入最近對話歷史，說話者自己的句子加星號標記供 LLM 識別指稱來源
         history_str = ""

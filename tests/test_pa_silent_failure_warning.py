@@ -29,8 +29,6 @@ def _make_cog():
     bot.router.memory = MagicMock()
     bot.router.memory.list_players = MagicMock(return_value=[])
     bot.router.VISION_KEYWORDS = ()
-    bot.vision_enabled = False
-    bot.visual_buffer = None
     bot.engine = MagicMock()
     bot.engine.conv_buffer = MagicMock()
     bot.engine.conv_buffer.get_last_n_utterances = MagicMock(return_value=[])

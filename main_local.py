@@ -23,8 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def build_local_bot():
-    """構建 MarvinBot 腦（不登入 Discord）。VISION_ENABLED 強制 false，避免螢幕擷取依賴。"""
-    os.environ["VISION_ENABLED"] = "false"
+    """構建 MarvinBot 腦（不登入 Discord）。"""
     from main_discord import MarvinBot
     return MarvinBot()
 

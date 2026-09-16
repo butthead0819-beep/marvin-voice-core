@@ -18,7 +18,6 @@ from gemini_router_content import GeminiRouterContentMixin
 def _make_fake_router(*, groq_content: str | None):
     fake = MagicMock()
     fake.last_slow_summary = None
-    fake.vision_enabled = False
     fake.dna = None
     fake.memory = None
     fake.prompt_manager.get_instruction.return_value = "system prompt"

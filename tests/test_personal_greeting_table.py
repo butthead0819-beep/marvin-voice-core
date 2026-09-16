@@ -17,7 +17,6 @@ def _make_mixin():
     inst = GeminiRouterContentMixin.__new__(GeminiRouterContentMixin)
     inst._greeting_cache = {}
     inst._farewell_cache = {}
-    inst.vision_enabled = True
     inst.dna = {}
     inst.memory = MagicMock()
     inst.temp_toxicity_override = None

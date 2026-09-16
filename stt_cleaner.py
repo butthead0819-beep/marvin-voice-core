@@ -281,7 +281,7 @@ class GeminiRouterSTTMixin:
         # TPM guard 改由 CooldownAwarePool per-endpoint 處理（每家自己的 tpm_budget +
         # 429 cooldown），不再手動守 Groq 單一 bucket。
 
-        system_prompt = self.prompt_manager.get_instruction("stt_cleaner", vision_enabled=False)
+        system_prompt = self.prompt_manager.get_instruction("stt_cleaner")
 
         if context:
             background = "\n".join(

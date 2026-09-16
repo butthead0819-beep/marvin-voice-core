@@ -130,7 +130,6 @@ for path in ["/opt/homebrew/bin", "/usr/local/bin"]:
 # print("📦 Loading core engines...")
 # from gemini_router import GeminiRouter
 # from discord_voice_engine import DiscordVoiceEngine
-# from screen_capture import ScreenCaptureEngine, VisualBuffer
 # from tts_engine import SukiTTS
 # from music_engine import SukiMusicEngine
 # print("✅ All core engines imported.")
@@ -247,16 +246,6 @@ class MarvinBot(commands.Bot):
         if not self.api_key and os.getenv("LLM_PROVIDER") == "gemini":
             raise ValueError("請先在 .env 檔案中設定 GEMINI_API_KEY")
             
-        self.vision_enabled = os.getenv("VISION_ENABLED", "True").lower() == "true"
-        self.visual_buffer = None
-        self.screen_capture = None
-        
-        if self.vision_enabled:
-            from screen_capture import ScreenCaptureEngine, VisualBuffer
-            self.visual_buffer = VisualBuffer(max_seconds=30)
-            self.screen_capture = ScreenCaptureEngine(self.visual_buffer)
-            print("👁️  視覺系統已啟動。")
-        
         from gemini_router import GeminiRouter
         self.router = GeminiRouter(self.api_key)
         import atexit as _atexit
@@ -351,10 +340,6 @@ class MarvinBot(commands.Bot):
                 except discord.HTTPException as e:
                     logger.warning(f"[App Command Error] 無法回報錯誤給使用者（interaction 可能已失效）: {e}")
         logger.info("="*60)
-
-        # 3. [Lifecycle] 視覺系統
-        if self.vision_enabled and self.screen_capture:
-            logger.info("👁️  視覺系統已就緒 (等待召喚啟動)。")
 
         # 4. 啟動語音引擎背景任務
         logger.info("🎙️  啟動語音引擎背景任務...")
@@ -652,9 +637,6 @@ class MarvinBot(commands.Bot):
 
     async def close(self):
         """[Lifecycle Cleanup] 確保在關閉 Bot 時，釋放所有擷取資源"""
-        if self.screen_capture:
-            logger.info("🛑 [Shutdown] 正在釋放視覺系統資源...")
-            self.screen_capture.stop()
         if hasattr(self, "marmo_server"):
             await self.marmo_server.stop()
         # 關閉 CompanionBridge（Phase 3a）

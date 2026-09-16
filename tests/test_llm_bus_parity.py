@@ -35,7 +35,6 @@ def _make_router_mixin_legacy():
     obj = GeminiRouterLLMMixin.__new__(GeminiRouterLLMMixin)
     obj.dna = {"helpfulness": 3}
     obj.prompt_manager = MagicMock()
-    obj.vision_enabled = False
     obj.memory = MagicMock()
     obj.is_exhausted = False
     obj.budget = MagicMock()

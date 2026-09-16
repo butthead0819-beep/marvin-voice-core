@@ -164,7 +164,7 @@ def aggregate_ablation(rows: list[AblationRow]) -> dict:
 async def run_ablation(corpus_path: Path, sample_size: int, output_dir: Path) -> dict:
     from marvin_prompts import PromptManager
     pm = PromptManager()
-    baseline_prompt = pm.get_instruction("stt_cleaner", vision_enabled=False)
+    baseline_prompt = pm.get_instruction("stt_cleaner")
     stripped_prompt = strip_forced_mapping(baseline_prompt)
     v3_prompt = replace_with_anchor(baseline_prompt)
     v4_prompt = replace_with_v4(baseline_prompt)

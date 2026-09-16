@@ -17,7 +17,6 @@ from personality_config import (
     apply_schedule_entry,
     normalize_personality_state,
 )
-from google.genai import types
 from tts_echo_guard import is_prompt_echo
 
 logger = logging.getLogger(__name__)
@@ -144,7 +143,7 @@ class GeminiRouterContentMixin:
         [Operation Warm Circuit] 擴充支援 behavioral_patterns 語意考察。"""
         if not speaker or not text: return
         
-        system_prompt = self.prompt_manager.get_instruction("memory_extractor", vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("memory_extractor", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         user_prompt = (
             f"分析以下來自 {speaker} 的對話，提取任何可記錄資訊：\n『{text}』\n"
             f"輸出格式請包含 behavioral_patterns 欄位（口頭禪、常問問題、遊戲習慣等）。\n"
@@ -183,7 +182,7 @@ class GeminiRouterContentMixin:
         
         if birthday == today_str:
             print(f"🎂 [Birthday Special] 偵測到 {speaker} 今天生日 ({birthday})，發送驚喜...")
-            system_prompt = self.prompt_manager.get_instruction("birthday_celebration", vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+            system_prompt = self.prompt_manager.get_instruction("birthday_celebration", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
             user_prompt = f"你發現今天是 {speaker} 的生日。請以沉重而帶點溫度的語氣，用一種『又一年過去了，這宇宙還在轉』的複雜情感給予祝賀，並提到你隨手譜了一首充滿絕望的紀念曲。"
             return await self._call_llm(system_prompt, user_prompt, speaker=speaker, tier="simple")
 
@@ -208,7 +207,7 @@ class GeminiRouterContentMixin:
                 topic = f"我還不知道你的『{cat}』相關的事耶。"
                 mode = "missing"
 
-        system_prompt = self.prompt_manager.get_instruction("proactive_question", vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("proactive_question", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         
         if mode == "social":
              system_prompt += "\n【人類群聚觀察模式】：你發現了這群人之間的共通點。請以一個疲憊觀測者的視角，以沉重而溫和的語氣，點出這種相似性讓宇宙顯得多麼無奈——他們甚至不知道自己有多相似。"
@@ -228,7 +227,7 @@ class GeminiRouterContentMixin:
 
         logger.info(f"🧹 [Audit] 啟動 {username} 的記憶清洗程序...")
         memory = self.memory.get_player_memory(username)
-        system_prompt = self.prompt_manager.get_instruction("memory_audit", vision_enabled=self.vision_enabled, dna=self.dna, speaker=username, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("memory_audit", dna=self.dna, speaker=username, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         user_prompt = f"以下是玩家 {username} 的原始記憶資料：\n{json.dumps(memory, ensure_ascii=False)}"
         
         try:
@@ -318,7 +317,7 @@ class GeminiRouterContentMixin:
 
     async def generate_status_report_comment(self, speaker: str, stats: dict, fragments_count: int) -> str:
         """生成玩家狀態報告的憂鬱觀察點評 (Operation Autonomous Agent)"""
-        system_prompt = self.prompt_manager.get_instruction("status_report_comment", vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("status_report_comment", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         user_prompt = f"玩家 {speaker} 的數據：互動 {stats['interaction_count']} 次, 正向回饋 {stats['pos_feedback']}, 負向回饋 {stats['neg_feedback']}, 記憶碎片 {fragments_count} 片。"
         try:
             return await self._call_llm(system_prompt, user_prompt, speaker=speaker, allow_local=False, tier="simple")
@@ -328,7 +327,7 @@ class GeminiRouterContentMixin:
 
     async def marvinize_news(self, speaker: str, interest: str, news_content: str) -> str:
         """將搜尋到的新聞進行 Suki 化 (Operation Autonomous Agent)"""
-        system_prompt = self.prompt_manager.get_instruction("news_sukification", vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("news_sukification", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         user_prompt = f"針對玩家 {speaker} 喜歡的『{interest}』，改寫以下新聞：『{news_content}』"
         try:
             return await self._call_llm(system_prompt, user_prompt, speaker=speaker, allow_local=False, tier="simple")
@@ -446,7 +445,7 @@ class GeminiRouterContentMixin:
         [Operation APM Economy] O(1) 批次記憶蒸餾。
         一次性處理 5 分鐘的對話內容。
         """
-        system_prompt = self.prompt_manager.get_instruction("memory_extractor", vision_enabled=self.vision_enabled, dna=self.dna, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("memory_extractor", dna=self.dna, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         game_context = self._get_game_context()
         user_prompt = f"{game_context}\n以下是過去 5 分鐘的對話紀錄，請提取玩家相關情報：\n\n{history_text}"
         
@@ -501,7 +500,7 @@ class GeminiRouterContentMixin:
         if online_members:
             target_speakers = [current_speaker] + [m for m in online_members if m != current_speaker]
 
-        base_analyst_prompt = self.prompt_manager.get_instruction("social_analyst", vision_enabled=self.vision_enabled, dna=self.dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        base_analyst_prompt = self.prompt_manager.get_instruction("social_analyst", dna=self.dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         game_context = self._get_game_context()
         
         # 🚀 [Operation Dynamic Pulse] 低溫時注入冷場感知
@@ -585,7 +584,7 @@ class GeminiRouterContentMixin:
             "subject_redirect": "gap_subject_redirect"
         }
         layer = instruction_map.get(gap_type, "tactical")
-        system_prompt = self.prompt_manager.get_instruction(layer, vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction(layer, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
 
         # 🚀 [T-07] 注入短期歷史，讓補位回應能延續上下文而非突兀插入
         history_context = self._format_short_term_history()
@@ -620,7 +619,6 @@ class GeminiRouterContentMixin:
         """
         system_prompt = self.prompt_manager.get_instruction(
             "proactive_rephraser",
-            vision_enabled=self.vision_enabled,
             dna=self.dna,
             speaker=target_players,
             memory_manager=self.memory
@@ -655,7 +653,7 @@ class GeminiRouterContentMixin:
             # 確保說話者在列表首位，其他在線成員隨後 (Operation Social Hooks)
             target_speakers = [speaker] + [m for m in online_members if m != speaker]
 
-        system_prompt = self.prompt_manager.get_instruction("fast_awakening", vision_enabled=self.vision_enabled, dna=self.dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("fast_awakening", dna=self.dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
 
         # 🌡️ [AtmosphereTracker] 注入即時氣氛快照
         if hasattr(self, 'atmosphere_tracker') and self.atmosphere_tracker:
@@ -709,7 +707,7 @@ class GeminiRouterContentMixin:
 
     async def generate_keyword_cloud(self, context: str) -> str:
         """[Operation Visualizer] 生成馬文腦中的關鍵字雲 (Operation Brain Leak)"""
-        system_prompt = self.prompt_manager.get_instruction("keyword_cloud_generator", vision_enabled=self.vision_enabled, dna=self.dna, memory_manager=self.memory)
+        system_prompt = self.prompt_manager.get_instruction("keyword_cloud_generator", dna=self.dna, memory_manager=self.memory)
         # 🧪 [Context Assembly] 注入短期對話與核心情境
         history_context = self._format_short_term_history()
         user_prompt = f"{history_context}當前對話背景：\n{context}\n\n請列出你腦中的關鍵字。"
@@ -731,7 +729,7 @@ class GeminiRouterContentMixin:
             first_line = self.last_slow_summary.strip().splitlines()[0]
             prev_topic = f"\n【前情提要】：{first_line}\n"
 
-        system_prompt = self.prompt_manager.get_instruction("ambient_diary", vision_enabled=self.vision_enabled, dna=self.dna, memory_manager=self.memory)
+        system_prompt = self.prompt_manager.get_instruction("ambient_diary", dna=self.dna, memory_manager=self.memory)
         game_context = self._get_game_context()
 
         history_text = "\n".join([f"{e.get('speaker', '未知')}: {e.get('text', '...')}" for e in log_entries])
@@ -798,78 +796,9 @@ class GeminiRouterContentMixin:
             logger.error(f"Slow summary failed: {e}")
             return None
 
-    # 視覺觸發關鍵詞（供 voice_controller 外部檢查用）
-    VISION_KEYWORDS = ["畫面", "這什麼", "它是誰", "長怎樣", "幫我看", "截圖", "看我"]
-
-    async def analyze_tactical_situation(self, speaker: str, query_text: str, frame_bytes, extra_context: str = "", override_toxicity: int = None, override_layer: str = None) -> str:
-        """Suki 的戰術分析大腦 (Vision Situational Brain)
-
-        frame_bytes: 單張 bytes 或最多 3 張的 list[bytes]
-        """
-        self.temp_toxicity_override = override_toxicity
-        layer = override_layer if override_layer else "tactical"
-        system_prompt = self.prompt_manager.get_instruction(layer, vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
-
-        # 標準化為 list
-        if isinstance(frame_bytes, (bytes, bytearray)):
-            frames_list = [bytes(frame_bytes)]
-        else:
-            frames_list = [bytes(f) for f in frame_bytes] if frame_bytes else []
-
-        requires_vision = any(kw in query_text for kw in self.VISION_KEYWORDS)
-
-        try:
-            if requires_vision and self.vision_enabled and frames_list and self.google_client:
-                try:
-                    logger.info(f"👁️ [Vision Fast-Track] '{query_text}' → {len(frames_list)} 幀，呼叫視覺引擎...")
-
-                    vision_system_prompt = system_prompt + (
-                        "\n【視覺指令判定】：如果玩家的請求過於空泛（例如『幫我看截圖』但沒說要看什麼），"
-                        "請不要進行分析，直接以消極的語氣反問玩家目標物。"
-                        "如果請求明確（包含『這什麼遊戲』、『紅色的角色是誰』等），則正常執行視覺透視分析。"
-                        "\n【視覺長度覆蓋】：本次任務包含截圖分析，回應上限放寬至 60 字，但仍要維持馬文的悲觀語氣與簡潔風格。"
-                    )
-
-                    # 多幀：每張獨立 Part，最後附文字說明
-                    frame_label = f"以上為最近 {len(frames_list)} 張截圖（由舊到新）。" if len(frames_list) > 1 else ""
-                    contents = [
-                        types.Part.from_bytes(data=f, mime_type="image/jpeg") for f in frames_list
-                    ] + [f"{frame_label}{self._get_game_context()}\n{extra_context}\n玩家當前疑問: {query_text}\n請以此畫面給出戰術建議。"]
-
-                    vision_model = os.getenv("GEMINI_FLASH_MODEL", "gemini-3.5-flash-lite")
-                    config = types.GenerateContentConfig(system_instruction=vision_system_prompt)
-
-                    response = await self.google_client.aio.models.generate_content(
-                        model=vision_model,
-                        contents=contents,
-                        config=config
-                    )
-
-                    if response and response.text:
-                        return response.text.strip()
-                    else:
-                        raise ValueError("Gemini 視覺模型回傳了空內容。")
-
-                except Exception as e:
-                    logger.error("❌ [Hybrid Vision Fatal] 視覺分析過程發生重大異常：")
-                    import traceback
-                    logger.error(traceback.format_exc())
-
-                    logger.warning("🛡️ [Fallback] 視覺鏈路斷裂，降級至純文字模擬模式...")
-                    user_prompt = f"{self._get_game_context()}\n{extra_context}\n[系統：視覺感測器臨時離線]\n玩家提問: {query_text}\n請根據語音內容，給出沉重但合理的戰術猜測——用你那行星般的憂鬱大腦推算最可能的情形。"
-                    return await self._call_llm(system_prompt, user_prompt, speaker=speaker)
-            else:
-                if requires_vision and not self.google_client:
-                    logger.warning("⚠️ [Hybrid Vision] 偵測到視覺請求，但未掛載 Google Client，降級使用純文字分析。")
-
-                user_prompt = f"{self._get_game_context()}\n{extra_context}\n玩家當前疑問: {query_text}\n請給出幽默且有幫助的戰術建議。"
-                return await self._call_llm(system_prompt, user_prompt, speaker=speaker)
-        finally:
-            self.temp_toxicity_override = None
-
     async def generate_joke(self, speaker: str = None) -> str:
         """產生一個具有台灣本土風格且充滿宇宙級絕望的笑話 (Operation Joke)"""
-        system_prompt = self.prompt_manager.get_instruction("joke", vision_enabled=self.vision_enabled, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("joke", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         user_prompt = f"Marvin，這裡的人們（特別是 {speaker if speaker else '聽眾'}）顯然還對生活抱有一絲不切實際的希望，去講一個純正的「台式冷笑話」或「諧音梗」來潑他們冷水。別忘了用你那行星般的大腦點評一下這笑話有多麼讓人絕望。"
         return await self._call_llm(system_prompt, user_prompt, speaker=speaker, temperature=0.9, tier="simple")
 
@@ -891,7 +820,6 @@ class GeminiRouterContentMixin:
         layer = "greeting" if style == "brief" else "greeting_ambient"
         system_prompt = self.prompt_manager.get_instruction(
             layer,
-            vision_enabled=self.vision_enabled,
             dna=self.dna,
             speaker=players,
             memory_manager=self.memory,
@@ -934,7 +862,7 @@ class GeminiRouterContentMixin:
             logger.info(f"💾 [Cache Hit] 使用快取的進場嘲諷: {player_name}")
             return cached[1]
 
-        system_prompt = self.prompt_manager.get_instruction("player_greeting", vision_enabled=self.vision_enabled, dna=self.dna, speaker=player_name, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("player_greeting", dna=self.dna, speaker=player_name, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         user_prompt = f"玩家 {player_name} 進來了。"
         if stream_active:
             user_prompt += "\n【環境：背景音樂中】請務必 30 字以內，否則無法即時插話。"
@@ -959,7 +887,7 @@ class GeminiRouterContentMixin:
             logger.info(f"💾 [Cache Hit] 使用快取的離場嘲諷: {player_name}")
             return cached[1]
 
-        system_prompt = self.prompt_manager.get_instruction("player_farewell", vision_enabled=self.vision_enabled, dna=self.dna, speaker=player_name, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("player_farewell", dna=self.dna, speaker=player_name, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
         user_prompt = f"玩家 {player_name} 要下線了。理由是：{reason if reason else '大概是累了吧'}"
         if stream_active:
             user_prompt += "\n【環境：背景音樂中】請務必 30 字以內，否則無法即時插話。"
@@ -973,7 +901,7 @@ class GeminiRouterContentMixin:
 
     async def generate_song_blueprint(self, log_batch: list[dict], extra_context: str = "", chat_temperature: float = 0.5) -> dict:
         """根據戰況與聊天溫度生成音樂藍圖 (Operation Dynamic Single)"""
-        system_prompt = self.prompt_manager.get_instruction("songwriter_director", vision_enabled=self.vision_enabled, dna=self.dna, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("songwriter_director", dna=self.dna, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
 
         formatted_logs = []
         for entry in log_batch[:15]:

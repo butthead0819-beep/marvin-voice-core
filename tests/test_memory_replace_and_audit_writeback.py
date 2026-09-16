@@ -91,7 +91,6 @@ def router_factory(tmp_path, monkeypatch):
         router.memory = mem
         router.prompt_manager = MagicMock()
         router.prompt_manager.get_instruction.return_value = "sys"
-        router.vision_enabled = False
         router.dna = {}
         router.temp_toxicity_override = None
         router._call_llm = AsyncMock(return_value=llm_response)

@@ -697,11 +697,6 @@ class ConnectionMixin:
                 logger.warning(f"❌ [DailyReview] {_name} spawn 失敗: {e}")
 
     async def handle_summon(self, message: str = None):  # noqa: ARG002
-        # 🚀 [Lifecycle Management] 啟動螢幕擷取 (視覺系統)
-        if self.bot.vision_enabled and self.bot.screen_capture:
-            print("👁️  啟動視覺系統擷取迴圈...", flush=True)
-            asyncio.create_task(self.bot.screen_capture.start_capture_loop())
-
         # 🚀 [Bug Fix] 確保獲取正確的 VoiceClient
         vc = next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
         
@@ -812,11 +807,6 @@ class ConnectionMixin:
         self.speech_timers = {}
 
         await self.bot.engine.clear_buffers()
-
-        # 🚀 [Lifecycle Management] 停止螢幕擷取
-        if self.bot.screen_capture:
-            print("🛑 [Lifecycle] 停止視覺系統擷取迴圈...", flush=True)
-            self.bot.screen_capture.stop()
 
     # ☢️ [Voice Flap Guard] 語音連線在短時間內反覆「連上→斷線」（discord.py 自動重連把每次
     # 掉線都接回來、軟修復計數從沒累積 → Sentinel 每次巡邏都看到「連線正常」，永不升級）。

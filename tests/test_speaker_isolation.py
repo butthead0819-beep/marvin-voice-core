@@ -58,7 +58,7 @@ def test_prompt_memory_injection_excludes_absent_member(layer):
         "大肚": {"personal_info": {"salary": "44K"}, "taboos": ["前女友"]},
     }
     prompt = PromptManager().get_instruction(
-        layer, vision_enabled=False,
+        layer,
         speaker=present_speakers("阿明", ["狗與露"]),
         memory_manager=_mem_manager(records),
     )
@@ -77,7 +77,7 @@ def test_prompt_single_speaker_excludes_everyone_else():
         "大肚": {"taboos": ["前女友"]},
     }
     prompt = PromptManager().get_instruction(
-        "dere_persona", vision_enabled=False,
+        "dere_persona",
         speaker="阿明", memory_manager=_mem_manager(records),
     )
     assert "肉圓" in prompt
