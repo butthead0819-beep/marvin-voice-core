@@ -186,7 +186,7 @@ async def test_t2_llm_taste_seeds_and_avoid_filter(monkeypatch, tmp_path):
 
     monkeypatch.setenv("LLM_TASTE_T2", "on")
     cache = tmp_path / "taste.json"
-    monkeypatch.setattr("cogs.music_cog._TASTE_PROFILE_CACHE", str(cache))
+    monkeypatch.setattr("cogs.music_cog_autopilot._TASTE_PROFILE_CACHE", str(cache))
     taste_profile.write_profile(cache, "狗與露",
                                 {"seed_video_ids": ["llmseed0001"],
                                  "avoid_artists": ["雷團"]})
@@ -213,7 +213,7 @@ async def test_t2_llm_taste_off_by_default(monkeypatch, tmp_path):
     import taste_profile
     monkeypatch.delenv("LLM_TASTE_T2", raising=False)
     cache = tmp_path / "taste.json"
-    monkeypatch.setattr("cogs.music_cog._TASTE_PROFILE_CACHE", str(cache))
+    monkeypatch.setattr("cogs.music_cog_autopilot._TASTE_PROFILE_CACHE", str(cache))
     taste_profile.write_profile(cache, "狗與露", {"seed_video_ids": ["llmseed0001"]})
 
     seen = []
