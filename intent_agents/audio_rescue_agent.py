@@ -131,6 +131,10 @@ class AudioRescueAgent:
 
     async def synthesize(self, ctx: IntentContext) -> IntentContext | None:
         self.last_abandon_reason = None
+        # 這裡的 ctx.audio_wav_bytes 讀取刻意留 flat：呼叫端之一
+        # （FrustrationAgent._handle_rescue）會傳一個用 dataclasses.replace() 換過
+        # audio_wav_bytes 的 ctx，但沒重建 .rescue，改讀 ctx.rescue.audio_wav_bytes
+        # 會拿到 replace() 前的舊音訊（Phase B 遷移範圍見 frustration_agent.py 同款註解）。
         if not ctx.audio_wav_bytes:
             return self._abandon("no_audio")
 

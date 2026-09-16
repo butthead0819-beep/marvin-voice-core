@@ -351,7 +351,7 @@ class GroundedQAAgent(DeclarativeIntentAgent):
         # audio-rescue：LLM 已聽過音訊才選中這個 intent，比 wake 信心啟發式強，不擋。
         if is_audio_rescue(ctx):
             return None
-        if getattr(ctx, "low_confidence_wake", False):
+        if getattr(ctx.rescue, "low_confidence_wake", False):
             return "low_confidence_wake"
         return None
 

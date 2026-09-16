@@ -78,7 +78,7 @@ class FrustrationAgent:
     def bid(self, ctx: IntentContext) -> Bid:
         """Sync ≤5ms 競標：無 I/O，偵測挫折詞或口吃重試特徵。"""
         # 沒有原始音訊 → 無法進行 Audio LLM 救援，放棄
-        if not ctx.audio_wav_bytes:
+        if not ctx.rescue.audio_wav_bytes:
             return Bid(name=self.name, confidence=0.0, handler=_noop, reason="no_audio")
 
         query = ctx.query or ""
@@ -92,7 +92,7 @@ class FrustrationAgent:
                 name=self.name,
                 confidence=0.92,
                 handler=lambda: self._handle_rescue(
-                    replace(ctx, audio_wav_bytes=ctx.prev_turn_audio_wav_bytes or ctx.audio_wav_bytes)
+                    replace(ctx, audio_wav_bytes=ctx.rescue.prev_turn_audio_wav_bytes or ctx.rescue.audio_wav_bytes)
                 ),
                 reason="frustration_pattern",
             )
@@ -124,6 +124,10 @@ class FrustrationAgent:
             logger.error(f"❌ [FrustrationAgent] audio_rescue_agent 執行失敗: {exc}", exc_info=True)
             return
 
+        # rescued_ctx 是 audio_rescue_agent.synthesize() 用 dataclasses.replace() 建的，
+        # 只改了 flat 欄位，沒重建 .rescue（__post_init__ 只在 rescue=None 時才自動同步）——
+        # 這裡故意保留讀 flat 欄位，別改成 rescued_ctx.rescue.xxx（會一直讀到 replace() 前
+        # 的舊值 None，Phase B 遷移時 PR 實測過會炸；根因待 Phase A 的 replace() resync 補上）。
         if rescued_ctx is None or not rescued_ctx.resolved_agent or not rescued_ctx.resolved_intent:
             logger.info("📡 [FrustrationAgent] Audio LLM 未能解析出已知意圖")
             if self.ctrl and hasattr(self.ctrl, "play_tts"):
