@@ -414,3 +414,38 @@ async def test_stream_tts_to_mixer_passes_volume_none_discord_path():
     call_kwargs = stream_audio_mock.call_args.kwargs
     assert call_kwargs.get("volume") is None, \
         f"Discord 路徑 volume 預期 None，實際 {call_kwargs}"
+
+
+def _fake_ffmpeg_proc_one_frame():
+    """Fake ffmpeg proc：吐一幀後遇到 IncompleteReadError(b'', 0) 結束。"""
+    from cogs.voice_controller_playback import FRAME_BYTES_F32
+    proc = MagicMock()
+    proc.stdin = MagicMock()
+    proc.stdout = MagicMock()
+    proc.stdout.readexactly = AsyncMock(
+        side_effect=[
+            b"\x00" * FRAME_BYTES_F32,
+            asyncio.IncompleteReadError(b"", 0),
+        ]
+    )
+    return proc
+
+
+@pytest.mark.asyncio
+async def test_stream_tts_to_mixer_logs_first_audio_timing(capsys):
+    """首幀送進 mixer 時要印 [TTS_TIMING]，否則 first-audio 延遲永遠量不到（Plan12 遷移後的盲點）。"""
+    cog = _make_cog_real_stream_tts()
+
+    stream_audio_mock = _fake_stream_audio_empty()
+    cog.bot.tts_engine.stream_audio = stream_audio_mock
+
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_fake_ffmpeg_proc_one_frame())):
+        pushed = await cog._stream_tts_to_mixer(
+            "測試句子", force_macos=False, emotion_tag="neutral", voice=None
+        )
+
+    assert pushed == 1
+    out = capsys.readouterr().out
+    assert "[TTS_TIMING]" in out, f"首幀送出應印 [TTS_TIMING]，實際輸出：{out!r}"
+    assert "first_audio=" in out
+    assert "chars=4" in out

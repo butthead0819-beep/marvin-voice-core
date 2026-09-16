@@ -257,6 +257,7 @@ class PlaybackMixin:
         event loop（非 voice thread）→ 不阻塞混音。回傳 push 進去的幀數。
         edge-tts chunks → ffmpeg stdin；ffmpeg f32le stdout → readexactly(一幀) → push_tts。
         """
+        _t_synth = time.monotonic()
         tp = self._resolve_tts_params(emotion_tag)
         if spatial_control is None:
             if not hasattr(self, "_spatial_engine") or self._spatial_engine is None:
@@ -355,11 +356,17 @@ class PlaybackMixin:
                     buf = self._spatial_renderer.render_spatial_voice(buf, spatial_control)
                 _push(buf)
                 pushed += 1
-                if pushed == 1 and on_first_frame is not None:
-                    try:
-                        on_first_frame()
-                    except Exception:
-                        pass
+                if pushed == 1:
+                    print(
+                        f"[TTS_TIMING] first_audio={(time.monotonic() - _t_synth) * 1000:.0f}ms "
+                        f"chars={len(text)} layer={layer} text={text[:30]!r}",
+                        flush=True,
+                    )
+                    if on_first_frame is not None:
+                        try:
+                            on_first_frame()
+                        except Exception:
+                            pass
             return pushed
 
         _, pushed = await asyncio.gather(_feed(), _drain())
