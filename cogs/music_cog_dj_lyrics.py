@@ -490,7 +490,7 @@ class MusicDJLyricsMixin:
         # 把選定的素材寫成自然的過場文字。
         # 順序：近期生活（主角要在場，否則換下一個候選）→ 在場興趣 → 都沒有時在
         # 對話銜接/上一首銜接/純接歌 之間本地輪替（治「每次都靠環境/天氣開場」）。
-        from dj_topic_selector import select_mode
+        from dj_narration_orchestrator import select_narration_mode
         life = await self._life_cores_async()
         interests = self._present_interests()
         _emo_highlight = self._recent_emotional_highlight(requester)
@@ -505,16 +505,20 @@ class MusicDJLyricsMixin:
         if requester.startswith('Marvin'):
             _autopilot_reason = self._autopilot_pick_reason(info) or ''
 
-        topic, mode = select_mode(
-            life, interests, self._dj_topic_store(),
+        # select_mode 挑話題來源 + autopilot 理由覆蓋 quick/atmosphere 這兩步，
+        # 原封不動交給 orchestrator（見 dj_narration_orchestrator.select_narration_mode
+        # 的 characterization test）。
+        topic, mode = select_narration_mode(
+            life=life,
+            interests=interests,
+            topic_store=self._dj_topic_store(),
             present_members=present_members,
             has_conversation=bool(conv_lines),
             has_prev_song=bool(prev_title),
             emotional_highlights=emotional_highlights,
             news_items=news_items,
+            autopilot_reason=_autopilot_reason,
         )
-        if _autopilot_reason and mode in ("quick", "atmosphere"):
-            mode = "reason"
 
         # 開場鉤子提示依「歌會中的心理機制」分兩類套用：
         #   代入感（life/interest）——這是聽眾自己的事，別只是轉述，要讓人覺得被說中。
@@ -601,7 +605,6 @@ class MusicDJLyricsMixin:
                 text = ""
             text = (text or '').strip()
 
-            from dj_comedy_fallback import get_comedy_fallback, build_news_interjection_template
             _FORBIDDEN_PHRASES = ("時光流動", "歲月靜好", "撫平心靈", "流淌的旋律", "身為AI", "身為一個AI", "大家好我是")
 
             def _is_qualified_dj_script(s: str) -> bool:

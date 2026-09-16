@@ -310,7 +310,7 @@ class MusicTailDJMixin:
         尾段提早點火（見 project_dj_tail_seek_latency）。Future 若中途被取消（歌提早結束/
         skip）視同「等不到」，退回舊行為。
         """
-        from dj_tail_schedule import tail_dj_fire_delay
+        from dj_narration_orchestrator import compute_tail_fire_delay
 
         title_cur = cur_info.get('title', '?')
 
@@ -318,11 +318,6 @@ class MusicTailDJMixin:
         if not duration:
             logger.info(f"[DJ Tail] {title_cur} duration 未知，退回舊行為")
             return
-        # 精華起播（highlight_start_s）讓實際播放時間軸位移了一截——elapsed 是從
-        # 「起播那秒」算起，尾段點火要抓的是「離實際結束還有多久」，duration 要跟著扣掉
-        # 位移，否則會算成離結尾還很久（其實早就快撥完了），點火時間表全錯。
-        if cur_info.get('highlight_start_s'):
-            duration = max(0.0, duration - cur_info['highlight_start_s'])
 
         if isinstance(song_start_time, asyncio.Future):
             try:
@@ -335,7 +330,14 @@ class MusicTailDJMixin:
 
         elapsed = time.time() - real_start
         # 滑動窗：當前歌結束前 _DJ_TAIL_LEAD_S 秒點火，DJ（~15s）疊尾巴 + 溢進下一首開頭。
-        delay = tail_dj_fire_delay(duration, elapsed, lead_s=_DJ_TAIL_LEAD_S)
+        # highlight_start_s 位移調整、實際 fire delay 計算全交給 orchestrator（見
+        # dj_narration_orchestrator.compute_tail_fire_delay 的 characterization test）。
+        delay = compute_tail_fire_delay(
+            duration,
+            elapsed,
+            highlight_start_s=cur_info.get('highlight_start_s'),
+            lead_s=_DJ_TAIL_LEAD_S,
+        )
         if delay is None:
             logger.info(f"[DJ Tail] {title_cur} 過窗或歌太短，退回舊行為")
             return
