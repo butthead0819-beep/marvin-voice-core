@@ -20,6 +20,12 @@ from pathlib import Path
 
 from wake_words_data import words_for, FAST_ONLY_WAKE_WORDS
 
+try:
+    from rapidfuzz import fuzz as _alt_wake_fuzz
+except ImportError:  # 缺 dep → alt-wake 比對靜默停用（跟 music_fastpath 降級一致）
+    _alt_wake_fuzz = None
+from music_fastpath import to_pinyin as _to_pinyin
+
 logger = logging.getLogger(__name__)
 
 # ── File paths ────────────────────────────────────────────────────────────────
@@ -275,6 +281,44 @@ def check_cleaned_text_for_wake(cleaned_text: str) -> bool:
     return bool(_ANY_POS_RE.search(cleaned_text))
 
 
+# ── Alt-Lattice wake rescue（第五通道；2026-09-17，見 project_alt_lattice_rescue）──
+# 核心安全性質：alt 命中單獨永遠不足以喚醒，必須搭配既有 task/control 通道佐證
+# （multi_channel_decide 裡 ALT_WAKE_WEIGHT=0.30 < MULTI_THRESHOLD，見那邊註解）。
+_ALT_WAKE_PINYIN_THRESHOLD = 72
+_ALT_WAKE_GATE_PINYIN: list[tuple[str, str]] = [
+    (w, _to_pinyin(w)) for w in words_for("gate") if re.search(r'[一-鿿]', w)
+]
+
+
+def score_alt_wake(alt_segments: list[list[str]] | None, raw_text: str) -> float:
+    """N-best lattice 的 alt segments 裡有沒有藏著喚醒詞的近音候選？回 0.0/1.0。
+
+    只掃前 2 個 segment（喚醒詞只出現在句首，掃全句會爆誤觸發）。raw_text 本身
+    已含喚醒詞時回 0.0（主文字已有證據，不重複計分）。
+    """
+    if not alt_segments:
+        return 0.0
+    if _ANY_POS_RE.search(raw_text):
+        return 0.0
+    if _alt_wake_fuzz is None:
+        return 0.0
+    for seg in alt_segments[:2]:
+        for cand in seg:
+            cand_pinyin = _to_pinyin(cand)
+            if not cand_pinyin:
+                continue
+            for word, word_pinyin in _ALT_WAKE_GATE_PINYIN:
+                if not word_pinyin:
+                    continue
+                ratio = _alt_wake_fuzz.ratio(cand_pinyin, word_pinyin)
+                if ratio >= _ALT_WAKE_PINYIN_THRESHOLD:
+                    logger.info(
+                        f"🔀 [WakeAltRescue] alt='{cand}' matched wake='{word}' ratio={ratio:.1f}"
+                    )
+                    return 1.0
+    return 0.0
+
+
 # ── WakeDetector (merged WakeSignalFusion + pre_filter logic) ─────────────────
 
 class WakeDetector:
@@ -291,6 +335,7 @@ class WakeDetector:
 
     VOICE_WEIGHT    = 0.50
     MULTI_THRESHOLD = 0.35
+    ALT_WAKE_WEIGHT = 0.30
 
     _DEFAULT_NON_VOICE = {"task": 0.22, "info": 0.04, "control": 0.24}
 
@@ -425,8 +470,9 @@ class WakeDetector:
         marvin_just_spoke: bool = False,
         stream_active: bool = False,
         track: str | None = None,
+        alt_wake: float = 0.0,
     ) -> tuple[bool, float, dict]:
-        """4-channel + custom weighted confidence accumulation.
+        """4-channel + alt-wake + custom weighted confidence accumulation.
 
         Returns (should_wake, total_confidence, channel_scores_dict)
         """
@@ -434,11 +480,13 @@ class WakeDetector:
         task    = _score_task(text)
         info    = _score_info(text, stream_active)
         control = _score_control(text)
+        # alt_wake 只在主文字沒有喚醒證據時計入（voice==0）；有證據時不重複加成
+        alt     = alt_wake if voice == 0.0 else 0.0
         w       = self._non_voice
 
-        # Track B LLM veto: low intent overrides regex boosts
+        # Track B LLM veto: low intent overrides regex boosts（弱訊號 alt_wake 也一併清零）
         if track == "B" and wake_intent is not None and wake_intent < 0.65:
-            task = info = control = 0.0
+            task = info = control = alt = 0.0
 
         threshold = round(
             max(0.25, min(0.60,
@@ -449,13 +497,15 @@ class WakeDetector:
             self.VOICE_WEIGHT * voice +
             w["task"]         * task  +
             w["info"]         * info  +
-            w["control"]      * control
+            w["control"]      * control +
+            self.ALT_WAKE_WEIGHT * alt
         )
         scores: dict = {
-            "voice":   round(voice,   2),
-            "task":    round(task,    2),
-            "info":    round(info,    2),
-            "control": round(control, 2),
+            "voice":    round(voice,   2),
+            "task":     round(task,    2),
+            "info":     round(info,    2),
+            "control":  round(control, 2),
+            "alt_wake": round(alt,     2),
         }
         for name, raw_score, ch_weight in _score_custom(text):
             total += ch_weight * raw_score

@@ -1197,6 +1197,18 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 self.is_playing_audio or
                 (time.time() - getattr(self, '_last_tts_end_time', 0)) < 15
             )
+            # 🔀 [WakeAltRescue] alt-lattice 第五通道：主文字漏喚醒詞時，掃 N-best
+            # 備選的拼音近音（見 wake_detector.score_alt_wake）。整段優雅降級——
+            # 拿不到 lattice 不能讓喚醒整條掛掉。
+            _alt_wake_score = 0.0
+            try:
+                from wake_detector import score_alt_wake
+                _alt_slot = getattr(getattr(self.bot, "engine", None), "_last_alt_segments", {}).get(speaker)
+                if _alt_slot and _alt_slot[0] == raw_text:
+                    _alt_wake_score = score_alt_wake(_alt_slot[1], raw_text)
+            except Exception as _alt_exc:
+                logger.debug(f"🔀 [WakeAltRescue] skip (degraded): {_alt_exc}")
+
             is_fast, _confidence, _ch = _fusion.multi_channel_decide(
                 action=action,
                 wake_intent=wake_intent,
@@ -1206,6 +1218,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 marvin_just_spoke=_just_spoke,
                 stream_active=self.stream_mode,
                 track=track,
+                alt_wake=_alt_wake_score,
             )
             _dominant = max(_ch, key=lambda k: _ch[k] if k not in ("total", "threshold") else -1)
             _wake_voice_score = _ch.get("voice")
@@ -1213,7 +1226,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if _confidence >= 0.20:   # log anything non-trivial
                 logger.info(
                     f"🧠 [IBA] {speaker} total={_confidence:.3f} "
-                    f"(v={_ch['voice']} t={_ch['task']} i={_ch['info']} c={_ch['control']}) "
+                    f"(v={_ch['voice']} t={_ch['task']} i={_ch['info']} c={_ch['control']} alt={_ch.get('alt_wake', 0)}) "
                     f"thr={_ch['threshold']} dom={_dominant} wake={is_fast}"
                 )
         else:
