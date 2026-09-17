@@ -25,6 +25,20 @@ Marvin，分三條分支：
 
 **第三方函式庫（discord.py 等）回呼進來的 handler，不准直接呼叫「安裝這個回呼的那個函式」**——只能設旗標/標記狀態變髒，交給既有巡邏迴圈處理。callback 回頭觸發自己的安裝點＝隱形無窮迴圈：2026-09-17 事故正是 `arm_mixer` 的 `after=` 自癒 callback 無條件重呼叫「安裝它自己」的那個函式，一分鐘 223 次灌爆 voice websocket，被 Discord 4021 踢線 17 小時才查到根因（見 f518c97 / `tests/test_mixer_rearm_storm.py`）。
 
+## 任務執行：實作發包給 sonnet
+
+**確定要改什麼之後，實作交給 `claude -p --model sonnet --permission-mode acceptEdits` 跑，不要自己一行行寫。** 把任務描述寫成檔案再餵（`"$(cat 任務檔)"`），背景跑。
+
+發包前我要先做完的事（這些不外包，外包會失真）：讀懂相關原始碼、定出設計、把驗收標準寫死。**任務檔要把設計定案講到沒有發揮空間**，並明講「有疑問就停下來回報，不要猜」——sonnet 自己發揮出來的設計通常要重做。
+
+**收回來一定要自己驗，不能看它說綠就算數**（2026-09-17 實測兩種假綠）：
+1. `cat` 測試檔——看它有沒有把被測邏輯複製一份進測試檔裡驗算自己（假測試，改實作也不會紅）
+2. `git diff` 逐行看過，確認沒偷改設計、沒順手重構
+3. **測試由我自己跑**：sonnet 在這個 sandbox 跑 `./venv_simon/bin/python` 會被權限擋，它會卡住或偷偷 fallback 到系統 python3
+4. 沒走 TDD 的改動要做 mutation check：突變關鍵常數/條件確認測試會紅，沒紅就是有死角
+
+它卡住沒做完就自己接手，不要重複發包。
+
 ## Skill routing
 
 請求符合現有 skill 就用 Skill tool 呼叫，拿不準就呼叫。常見對應：產品發想→/office-hours、架構→/plan-eng-review、bug→/investigate、QA→/qa、code review→/review、視覺→/design-review、上線→/ship、存/復原上下文→/context-save /context-restore。
