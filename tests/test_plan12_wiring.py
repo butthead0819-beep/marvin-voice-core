@@ -82,7 +82,12 @@ def test_ensure_mixer_playing_wires_a_non_none_after_callback(monkeypatch):
 def test_after_callback_reschedules_ensure_mixer_playing_on_event_loop(monkeypatch):
     """AudioPlayer thread 死掉時 after(None) 被呼叫 → 必須 call_soon_threadsafe 排回
     event loop 重試 _ensure_mixer_playing（callback 來自非 event-loop 的播放器 thread，
-    不能直接碰 self 狀態）。"""
+    不能直接碰 self 狀態）。
+
+    2026-09-17 修正：原版用全新（＝閒置）mixer 斷言「一定重排」，等於把 4021 事故的
+    bug 寫進測試——閒置回 b"" 是正常停送，重武裝會變無窮迴圈（見
+    tests/test_mixer_rearm_storm.py）。這裡改成 mixer 仍有內容（真故障），測試原本要守的
+    「必須走 call_soon_threadsafe 不可直接碰 self」意圖不變。"""
     cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
     cog.bot.loop.is_closed.return_value = False
     vc = _idle_vc()
@@ -90,13 +95,16 @@ def test_after_callback_reschedules_ensure_mixer_playing_on_event_loop(monkeypat
     cog._ensure_mixer_playing(device)
     after_cb = vc.play.call_args.kwargs["after"]
 
-    after_cb(None)
+    with patch.object(cog._mixer, "is_idle", return_value=False):
+        after_cb(None)
 
     cog.bot.loop.call_soon_threadsafe.assert_called_once_with(cog._ensure_mixer_playing, device)
 
 
 def test_after_callback_noop_when_loop_closed(monkeypatch):
-    """bot 正在關閉（loop 已關）時 after 不該再排任何東西進去，避免對已死 loop 操作炸例外。"""
+    """bot 正在關閉（loop 已關）時 after 不該再排任何東西進去，避免對已死 loop 操作炸例外。
+
+    mixer 設成非閒置，才會真的走到 loop 檢查那一步（閒置會更早短路，測不到這個守衛）。"""
     cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
     cog.bot.loop.is_closed.return_value = True
     vc = _idle_vc()
@@ -104,6 +112,23 @@ def test_after_callback_noop_when_loop_closed(monkeypatch):
     cog._ensure_mixer_playing(device)
     after_cb = vc.play.call_args.kwargs["after"]
 
+    with patch.object(cog._mixer, "is_idle", return_value=False):
+        after_cb(None)
+
+    assert not cog.bot.loop.call_soon_threadsafe.called
+
+
+def test_after_callback_does_not_rearm_when_mixer_idle(monkeypatch):
+    """☢️ 2026-09-17 4021 事故守門：閒置停送不是故障，不可重武裝（詳見
+    tests/test_mixer_rearm_storm.py）。"""
+    cog = _make_cog(plan12=True, monkeypatch=monkeypatch)
+    cog.bot.loop.is_closed.return_value = False
+    vc = _idle_vc()
+    device = DiscordPlaybackDevice(vc)
+    cog._ensure_mixer_playing(device)
+    after_cb = vc.play.call_args.kwargs["after"]
+
+    assert cog._mixer.is_idle() is True
     after_cb(None)
 
     assert not cog.bot.loop.call_soon_threadsafe.called

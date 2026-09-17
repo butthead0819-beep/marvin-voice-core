@@ -61,6 +61,11 @@ def _shift_hz_string(value: "str | None", offset: int, clamp: tuple[int, int] = 
 
 
 class PlaybackMixin:
+    # ☢️ mixer 自癒重武裝的最小間隔（見 _ensure_mixer_playing 的 _after）。真故障自癒本來
+    # 就罕見，1s 綽綽有餘；同時讓「arm→b""→stop→after→arm」那種緊迴圈結構上不可能重現
+    # （2026-09-17 4021 事故：實測 1ms 一輪、一分鐘 223 次）。
+    _MIXER_REARM_MIN_INTERVAL_S = 1.0
+
     def _make_initial_mixer(self, bot) -> LocalMixingAudioSource:
         """建 Plan12 mixer，TTS 起始音量對齊各模式（Discord/車機）音樂音量預設值——
         不用等第一次調音量指令才被 sync_tts_gain() 追上（2026-08-26）。setup_hook
@@ -102,6 +107,19 @@ class PlaybackMixin:
         loop）被呼叫，必須 call_soon_threadsafe 排回主 loop 才能碰 self 狀態。只在
         device.is_connected() 仍為 True（短暫抖動已自行恢復）時才重武裝——真斷線交給既有
         soft-repair/sentinel 處理，不在這裡搶著重試製造風暴。
+
+        ☢️ 2026-09-17 事故修正（見 tests/test_mixer_rearm_storm.py）：上面那個 callback
+        原本「player 一結束就重武裝」，但 on-demand mixer 閒置超過 grace 時 read() 回
+        b"" 是**設計上的正常停送**，不是故障。discord.py `_do_run()` 讀到 b"" 就
+        `self.stop()` → `_call_after()` → 重武裝 → 新 player 又讀到 b"" → 無窮迴圈，
+        每輪送 2 個 voice WS SPEAKING(op 5)（`_do_run` 開頭一個、`stop()` 裡一個），
+        實測一分鐘 223 次 armed、間隔約 1ms，等於每秒上千個 op-5 灌進語音 websocket
+        → Discord 回 4021 RateLimited 直接踢線。對照組退版只有 3 次 armed。
+
+        兩道防線：
+          1. mixer 閒置 → 正常停送，不重武裝（對齊 sentinel_monitor_loop 既有的
+             `not self._mixer.is_idle()` 判斷，同一套「什麼叫該在播」的語意）。
+          2. 最小間隔防抖 → 就算日後有別的路徑觸發，也不可能再變成緊迴圈。
         """
         if self._mixer is None:
             return False
@@ -109,6 +127,15 @@ class PlaybackMixin:
         def _after(error):
             if error is not None:
                 logger.warning(f"[Plan12_Mixer] AudioPlayer 意外結束: {error!r}")
+            # 防線 1：閒置停送不是故障，重武裝只會打回無窮迴圈（2026-09-17 4021 事故）
+            if self._mixer is None or self._mixer.is_idle():
+                return
+            # 防線 2：最小間隔防抖，結構性排除緊迴圈
+            now = time.time()
+            if now - self._last_mixer_rearm_ts < self._MIXER_REARM_MIN_INTERVAL_S:
+                logger.warning("[Plan12_Mixer] 自癒重武裝過於頻繁，跳過本次（防重武裝風暴）")
+                return
+            self._last_mixer_rearm_ts = now
             loop = getattr(self.bot, "loop", None)
             if loop is None or loop.is_closed():
                 return
