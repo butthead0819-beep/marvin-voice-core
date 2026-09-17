@@ -94,3 +94,48 @@ def test_stale_events_outside_window_dont_count(caplog):
     with caplog.at_level(logging.CRITICAL, logger="cogs.voice_controller_playback"):
         cog._record_mixer_rearm()  # 只有這一筆在視窗內
     assert not any(r.levelno == logging.CRITICAL for r in caplog.records)
+
+
+# ── 接線守門：上面 5 個測試都直接呼叫 _record_mixer_rearm()，若有人日後把
+# _ensure_mixer_playing 裡的呼叫點刪掉，那 5 個測試依然全綠、看門狗卻已經死了。
+# 這個專案踩過同型的坑（wire code ≠ 真的啟用），所以補測真實接線。
+
+def _plan12_cog(monkeypatch):
+    monkeypatch.setenv("PLAN12_LOCAL_MIX", "true")
+    bot = MagicMock()
+    bot.guilds = []
+    bot.voice_clients = []
+    bot.cogs.get.return_value = None
+    bot.tts_engine = MagicMock()
+    bot.tts_engine.get_estimated_duration.return_value = 2.0
+    with patch("discord_voice_engine.faster_whisper", None, create=True):
+        from discord_voice_engine import DiscordVoiceEngine
+        bot.engine = DiscordVoiceEngine(bot)
+    with patch("discord.ext.tasks.loop", lambda *a, **kw: lambda f: f), \
+         patch("cogs.voice_controller.DepartureStats", MagicMock), \
+         patch("cogs.voice_controller.ConsentManager", MagicMock):
+        from cogs.voice_controller import VoiceController
+        return VoiceController(bot)
+
+
+def test_real_arm_is_counted_by_watchdog(monkeypatch):
+    """真的 arm 成功 → 計數器要真的被推進（證明 choke point 有接上）。"""
+    from marvin_voice_core.playback_device import DiscordPlaybackDevice
+    cog = _plan12_cog(monkeypatch)
+    vc = MagicMock()
+    vc.is_connected.return_value = True
+    vc.is_playing.return_value = False
+    assert len(cog._mixer_rearm_ts) == 0
+    assert cog._ensure_mixer_playing(DiscordPlaybackDevice(vc)) is True
+    assert len(cog._mixer_rearm_ts) == 1
+
+
+def test_noop_arm_is_not_counted(monkeypatch):
+    """已經在播 → ensure 回 False（沒真的 arm）→ 不可計數，否則門檻會被灌水誤報。"""
+    from marvin_voice_core.playback_device import DiscordPlaybackDevice
+    cog = _plan12_cog(monkeypatch)
+    vc = MagicMock()
+    vc.is_connected.return_value = True
+    vc.is_playing.return_value = True  # 已在播
+    assert cog._ensure_mixer_playing(DiscordPlaybackDevice(vc)) is False
+    assert len(cog._mixer_rearm_ts) == 0
