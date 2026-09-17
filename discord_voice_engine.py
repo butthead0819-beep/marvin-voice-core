@@ -187,9 +187,26 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
     logger.warning("🛡️ [KeySync] voice_recv decryptor auto key-sync 補丁已掛載")
 
 
-# 每次說話最多做 3 次 Wake Check，分別在開口後 0.6 / 1.2 / 1.8 秒觸發。
+# 句首三連拍：開口後 0.6 / 1.2 / 1.8 秒各做一次 Wake Check。
 # 0.6s 足以捕捉句首 2-3 音節喚醒詞（原本 1.8s 太慢）。
 _WAKE_CHECK_TIMES: tuple[float, ...] = (0.6, 1.2, 1.8)
+# 🔁 三連拍之後改週期補拍，抓「講話途中才插入的指令」。2026-09-17 18:24 事故：
+# 使用者連續發言到第 ~11 秒才說「馬文，下一首」，句首三連拍早就用完，途中插入的
+# 指令只能等 VAD 切斷才被處理——那次剛好撞上 12s 硬切被劈成兩段，整個指令掉了。
+_WAKE_CHECK_INTERVAL: float = 3.0   # 三連拍後每 N 秒補一次
+_WAKE_CHECK_MAX_COUNT: int = 8      # 單句快照次數上限，防長篇獨白灌爆 STT
+
+
+def wake_check_due_at(check_count: int) -> float:
+    """第 check_count 次 Wake Check 的到期時間（開口後幾秒）。
+
+    0/1/2 → 句首三連拍 0.6/1.2/1.8；之後每 _WAKE_CHECK_INTERVAL 秒一次
+    （3 → 4.8、4 → 7.8、5 → 10.8 ...）。抽成純函式供 sink 熱路徑與測試共用，
+    避免時間軸公式在兩邊各寫一份互相漂移。
+    """
+    if check_count < len(_WAKE_CHECK_TIMES):
+        return _WAKE_CHECK_TIMES[check_count]
+    return _WAKE_CHECK_TIMES[-1] + (check_count - len(_WAKE_CHECK_TIMES) + 1) * _WAKE_CHECK_INTERVAL
 
 class ConversationBuffer:
     """
@@ -382,6 +399,16 @@ class RealtimeVADSink(voice_recv.AudioSink):
     def wants_opus(self) -> bool:
         # 為了手動處理 DAVE 加密，我們要求 voice_recv 給我們解密後的原始 Opus 封包
         return True
+
+    def _should_wake_check(self, user_id: int, elapsed: float) -> bool:
+        """本段語音開口 elapsed 秒後，現在該不該補一張 Wake Check 快照？
+
+        抽出來是為了能被測到——直接測 write() 要先過 DAVE 解密與 opus decode，
+        整條接線會變成沒有測試守門的死角（實測：把這個條件退回只做句首三連拍，
+        其他測試全綠也抓不到）。
+        """
+        check_count = self.user_wake_check_count.get(user_id, 0)
+        return check_count < _WAKE_CHECK_MAX_COUNT and elapsed >= wake_check_due_at(check_count)
 
     def write(self, user: discord.User | discord.Member | None, data: voice_recv.VoiceData):
         if not user:
@@ -612,13 +639,17 @@ class RealtimeVADSink(voice_recv.AudioSink):
                     self.user_near_silence_count[user_id] = 0 # 重置微弱能量
 
                 # 🚀 [Wake Check] 週期性喚醒詞快速通道
-                # 在 0.6 / 1.2 / 1.8 秒分三次快照，讓句首喚醒詞最快 ~600ms 就被抓到。
+                # 句首 0.6 / 1.2 / 1.8 秒三連拍，讓句首喚醒詞最快 ~600ms 就被抓到；
+                # 之後每 _WAKE_CHECK_INTERVAL 秒補一拍，抓講話途中才插入的指令。
                 # 串流播放中停用，避免擴音回聲誤觸發。
                 _first_audio = self.user_first_audio_time.get(user_id, 0)
                 if not suppressing and _first_audio > 0:
                     _elapsed = now - _first_audio
                     _check_count = self.user_wake_check_count.get(user_id, 0)
-                    if _check_count < len(_WAKE_CHECK_TIMES) and _elapsed >= _WAKE_CHECK_TIMES[_check_count]:
+                    if self._should_wake_check(user_id, _elapsed):
+                        if _check_count >= len(_WAKE_CHECK_TIMES):
+                            print(f"🔁 [WakeCheck] User_{user_id} 週期補拍 #{_check_count} "
+                                  f"@{_elapsed:.1f}s（講話途中指令偵測）", flush=True)
                         self.user_wake_check_count[user_id] = _check_count + 1
                         audio_snapshot = bytes(self.user_buffers[user_id])
                         self.loop.create_task(
@@ -1855,8 +1886,20 @@ class DiscordVoiceEngine:
                 logger.info(f"⚡ [Track A] Regex Hit! Immediate wake triggering for '{raw_text}'...")
                 # 立即觸發回調 (使用原始文字，並標記 Track A)
                 await self.stt_callback(speaker_name, raw_text, timestamp, wav_bytes, prosody_data=prosody_data, is_wake_check=is_wake_check, track="A")
-                # 如果只是喚醒檢查 (1.8s Snapshot)，任務已達成，提早退出
+                # 如果只是喚醒檢查 (Snapshot)，任務已達成，提早退出
                 if is_wake_check:
+                    # 🔁 [WakeCheck] 命中後把本段語音的快照次數推到上限，停止後續週期補拍。
+                    # buffer 要等 VAD 切斷才清空，不擋的話同一個「馬文」會在 4.8/7.8/10.8s
+                    # 被反覆抓到、反覆觸發喚醒。VAD 切斷時本來就會 pop 掉這個 count，
+                    # 下一段語音自動恢復三連拍。
+                    try:
+                        _sink = self.get_active_sink()
+                        if _sink is not None and user_id is not None:
+                            _counts = getattr(_sink, "user_wake_check_count", None)
+                            if _counts is not None:
+                                _counts[user_id] = _WAKE_CHECK_MAX_COUNT
+                    except Exception as _wc_exc:
+                        logger.debug(f"🔁 [WakeCheck] 命中後停拍失敗（略過）: {_wc_exc}")
                     return
 
             # --- [Track B] LLM Clean & Fallback Path ---
