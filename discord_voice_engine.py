@@ -297,6 +297,14 @@ class ConversationBuffer:
     # buffer_summarizer_loop 已被注釋停用，此函式是其唯一呼叫方，已成孤島。
 
 
+# ⏳ [B3 Force-Cut Grace] 12s 聚合上限到點時不立即硬切，開一個寬限窗把靜音切斷
+# 門檻暫時收緊，讓話盡量切在自然停頓處；窗內沒等到停頓就照舊硬切（純 fallback）。
+# 模組層級常數：RealtimeVADSink（event-driven 靜音偵測）與 DiscordVoiceEngine（watchdog）
+# 兩邊都要用同一組門檻，用模組常數避免兩份數字互相漂移。
+FORCE_CUT_GRACE_WINDOW = 2.0   # 12s 到點後最多再等幾秒找自然停頓
+FORCE_CUT_GRACE_SILENCE = 0.5  # 寬限窗內的靜音切斷門檻（比常態 0.8/1.5/3.0 都緊）
+
+
 class RealtimeVADSink(voice_recv.AudioSink):
     """
     基於 voice_recv 的純淨 PCM 切片器 (手動 DAVE 解密版)
@@ -328,6 +336,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
         # 供「喚醒後續句可否收緊 VAD 尾巴」決策用；log-only shadow，不影響行為
         self.user_utt_max_gap = {}
         self.user_first_audio_time = {}
+        self.user_force_cut_grace = {}  # user_id -> deadline 時間戳，12s 硬切前的自然停頓寬限窗
         self.user_wake_check_count = {}  # user_id -> int，本次說話已發出的 wake check 次數
         self.decoders = {}
         self.pre_roll_history = {}      # 📦 [Pre-roll] user_id -> deque of last N packets
@@ -631,6 +640,10 @@ class RealtimeVADSink(voice_recv.AudioSink):
                         stt_vad_threshold = self.temperature_callback()
                     else:
                         stt_vad_threshold = 0.8
+                    # ⏳ [B3 Force-Cut Grace] 寬限窗內把門檻收緊，讓自然停頓搶在硬切前切開
+                    _grace_deadline = self.user_force_cut_grace.get(user_id, 0.0)
+                    if _grace_deadline and now < _grace_deadline:
+                        stt_vad_threshold = min(stt_vad_threshold, FORCE_CUT_GRACE_SILENCE)
                     if now - last_spoken > stt_vad_threshold:
                         buffer_bytes = len(self.user_buffers[user_id])
                         if buffer_bytes > 19200:
@@ -643,6 +656,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
                             self.user_buffers[user_id] = bytearray()
                             self.user_last_spoken_time[user_id] = 0 # 重置，等待下一段語音
                             self.user_wake_check_count.pop(user_id, None)
+                            self.user_force_cut_grace.pop(user_id, None)
                             self.user_is_speaking[user_id] = False
                             if self.wake_stream:
                                 self.wake_stream.on_speech_end(user_id)
@@ -661,6 +675,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
                             self.user_buffers[user_id] = bytearray()
                             self.user_last_spoken_time[user_id] = 0
                             self.user_first_audio_time[user_id] = 0
+                            self.user_force_cut_grace.pop(user_id, None)
                             self.user_is_speaking[user_id] = False
                             if user_id in self.pre_roll_history:
                                 self.pre_roll_history[user_id].clear()
@@ -697,6 +712,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
         self.user_last_spoken_time.clear()
         self.user_last_packet_time.clear()
         self.user_first_audio_time.clear()
+        self.user_force_cut_grace.clear()
         self.pre_roll_history.clear()
         self.decoders.clear()
         self.user_noise_stats.clear()
@@ -716,6 +732,7 @@ class RealtimeVADSink(voice_recv.AudioSink):
             # 💡 [RMS Guard] 清除時間紀錄，準備下一輪
             self.user_last_spoken_time[user_id] = 0
             self.user_first_audio_time[user_id] = 0
+            self.user_force_cut_grace.pop(user_id, None)
             self.user_is_speaking[user_id] = False
             self.user_speech_confirm_frames[user_id] = 0
             if user_id in self.pre_roll_history:
@@ -849,6 +866,8 @@ class DiscordVoiceEngine:
         self.audio_buffers = {} # user_id -> {pcm: bytearray, first_start: float}
         self.audio_timers = {}  # user_id -> Task
         self.MAX_AUDIO_CHUNK_DURATION = 12.0 # 聚合上限：縮減為 12 秒，優化辨識負載
+        self.FORCE_CUT_GRACE_WINDOW = FORCE_CUT_GRACE_WINDOW    # ⏳ [B3] 12s 到點後找自然停頓的寬限窗
+        self.FORCE_CUT_GRACE_SILENCE = FORCE_CUT_GRACE_SILENCE  # ⏳ [B3] 寬限窗內收緊的靜音門檻
         
         # 🧠 [Operation Social Lubricant] 滾動對話緩衝區
         self.conv_buffer = ConversationBuffer(max_minutes=6)
@@ -1033,19 +1052,28 @@ class DiscordVoiceEngine:
                 # 🚀 [Logic Fix] 靜默判定邏輯：必須基於「真實人聲」而非「封包心跳」
                 # 若尚未偵測到人聲 (User_Last_Spoken == 0)，則不執行靜默切割，僅累積緩衝
                 last_spoken = sink.user_last_spoken_time.get(user_id, 0)
-                
+
+                # ⏳ [B3 Force-Cut Grace] 寬限窗內收緊靜音門檻，讓自然停頓搶在硬切前切開；
+                # 只准收緊（min）不准放寬。每輪重算成 local 值，不覆寫共用的 stt_vad_threshold，
+                # 否則會把這個 user 的收緊值漏到下一個 user 身上。
+                _effective_vad_threshold = stt_vad_threshold
+                _grace_deadline = sink.user_force_cut_grace.get(user_id, 0.0)
+                if _grace_deadline and now < _grace_deadline:
+                    _effective_vad_threshold = min(stt_vad_threshold, FORCE_CUT_GRACE_SILENCE)
+
                 # 情境 A: 偵測到靜默 (人聲消失超過 1.2s 且曾有過人聲)
-                if last_spoken > 0 and (now - last_spoken > stt_vad_threshold):
+                if last_spoken > 0 and (now - last_spoken > _effective_vad_threshold):
                     buffer_bytes = len(sink.user_buffers[user_id])
                     # [VAD Relaxation] 從 96000 (0.5s) 下調至 19200 (0.1s)，容忍不穩定流
                     if buffer_bytes > 19200:
                         # 📏 [VADGap] 量測落點：這句的句內最大停頓 vs 觸發切句的閾值
                         _mg = sink.user_utt_max_gap.pop(user_id, 0.0)
-                        print(f"📏 [VADGap] User_{user_id} max_gap={_mg:.2f}s thr={stt_vad_threshold}s dur={buffer_bytes/192000:.1f}s", flush=True)
-                        print(f"✂️ [VAD] 偵測到 {stt_vad_threshold}s 靜音 (User_{user_id})，聚合 {buffer_bytes} bytes 並送往 STT。", flush=True)
+                        print(f"📏 [VADGap] User_{user_id} max_gap={_mg:.2f}s thr={_effective_vad_threshold}s dur={buffer_bytes/192000:.1f}s", flush=True)
+                        print(f"✂️ [VAD] 偵測到 {_effective_vad_threshold}s 靜音 (User_{user_id})，聚合 {buffer_bytes} bytes 並送往 STT。", flush=True)
                         audio_data = bytes(sink.user_buffers[user_id])
                         sink.user_buffers[user_id] = bytearray()
                         sink.user_last_spoken_time[user_id] = 0 # 重置，等待下一段語音
+                        sink.user_force_cut_grace.pop(user_id, None)
                         sink._stream_release(user_id)  # 🌊 Plan 12：第三條切句路徑也要 reset daemon span
 
                         # 異步送往 STT
@@ -1060,6 +1088,7 @@ class DiscordVoiceEngine:
                         sink.user_last_spoken_time[user_id] = 0
                         sink.user_utt_max_gap.pop(user_id, None)  # 📏 雜訊丟棄同步清 gap
                         sink.user_wake_check_count.pop(user_id, None)
+                        sink.user_force_cut_grace.pop(user_id, None)
                         if sink.wake_stream:
                             sink.wake_stream.on_speech_end(user_id)
 
@@ -1068,20 +1097,31 @@ class DiscordVoiceEngine:
                 if first_audio > 0 and (now - first_audio > self.MAX_AUDIO_CHUNK_DURATION):
                     buffer_bytes = len(sink.user_buffers[user_id])
                     if buffer_bytes > 19200:
-                        print(f"⏲️ [VAD] 說太長了 ({self.MAX_AUDIO_CHUNK_DURATION}s)，User_{user_id} 聚合 {buffer_bytes} bytes 並強制送往 STT。", flush=True)
-                        audio_data = bytes(sink.user_buffers[user_id])
-                        sink.user_buffers[user_id] = bytearray()
-                        sink.user_utt_max_gap.pop(user_id, None)  # 📏 說太長切塊也重計 gap
-                        # 注意：此處不重置 last_spoken，僅重置 first_audio，讓使用者能繼續說下去
-                        sink.user_first_audio_time[user_id] = now 
-                        
-                        asyncio.create_task(
-                            self.process_audio_slice(user_id, audio_data, first_audio)
-                        )
+                        deadline = sink.user_force_cut_grace.get(user_id, 0.0)
+                        if not deadline:
+                            # 首次到點 → 開寬限窗，本輪不切，讓上面的情境 A 有機會在自然停頓處切
+                            sink.user_force_cut_grace[user_id] = now + self.FORCE_CUT_GRACE_WINDOW
+                            print(f"⏳ [VAD] 達 {self.MAX_AUDIO_CHUNK_DURATION}s 上限但話還沒停，"
+                                  f"開 {self.FORCE_CUT_GRACE_WINDOW}s 寬限窗找自然停頓 (User_{user_id})。", flush=True)
+                        elif now >= deadline:
+                            # 寬限窗過期仍沒停 → 硬切（與改動前行為完全一致）
+                            sink.user_force_cut_grace.pop(user_id, None)
+                            print(f"⏲️ [VAD] 說太長了 ({self.MAX_AUDIO_CHUNK_DURATION}s)，User_{user_id} 聚合 {buffer_bytes} bytes 並強制送往 STT。", flush=True)
+                            audio_data = bytes(sink.user_buffers[user_id])
+                            sink.user_buffers[user_id] = bytearray()
+                            sink.user_utt_max_gap.pop(user_id, None)  # 📏 說太長切塊也重計 gap
+                            # 注意：此處不重置 last_spoken，僅重置 first_audio，讓使用者能繼續說下去
+                            sink.user_first_audio_time[user_id] = now
+
+                            asyncio.create_task(
+                                self.process_audio_slice(user_id, audio_data, first_audio)
+                            )
+                        # else: 仍在寬限窗內，本輪什麼都不做，等情境 A 的靜音路徑切
                     else:
                         sink.user_buffers[user_id] = bytearray()
                         sink.user_first_audio_time[user_id] = 0
-                
+                        sink.user_force_cut_grace.pop(user_id, None)
+
                 # 情境 C: 保護機制 (防止記憶體膨脹)：若持續超過 10 秒都沒有達到靜默 (可能是雜訊過大)，強制觸發 Flush
                 elif len(sink.user_buffers[user_id]) > 192000 * 10:
                     buffer_bytes = len(sink.user_buffers[user_id])
@@ -1089,7 +1129,8 @@ class DiscordVoiceEngine:
                     audio_data = bytes(sink.user_buffers[user_id])
                     sink.user_buffers[user_id] = bytearray()
                     sink.user_last_spoken_time[user_id] = 0
-                    
+                    sink.user_force_cut_grace.pop(user_id, None)
+
                     asyncio.create_task(
                         self.process_audio_slice(user_id, audio_data, now - 10)
                     )
