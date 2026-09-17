@@ -517,57 +517,69 @@ class ConnectionMixin:
                 f"跳過（可手動 /summon）"
             )
             return
-        ch = pick_rejoin_channel(self.bot.guilds, bool(self.bot.voice_clients))
-        if ch is None:
-            # no-op 也要可觀測（7/4 教訓 ×3：沉默無法區分「正確不做」與「沒跑到」）
-            logger.warning("🔁 [AutoRejoin] 台上無真人（或已連線），不回台")
+        # ☢️ [Reentrancy Guard] 2026-09-17 事故：on_ready 的 fire-and-forget create_task
+        # 跟 sentinel_monitor_loop 的 60s tick 之間沒有互斥，實測 log 出現 4 個近乎同毫秒的
+        # cooldown-skip 訊息，代表曾經有多個 auto_rejoin_on_boot() 併發在跑，對同一頻道發出
+        # 多個並行 identify——這正是合理的 Discord 4021 自傷成因。單一旗標擋掉重入即可，
+        # 不需要 asyncio.Lock（沒有排隊等待的需求，晚到的直接放棄，下一輪 tick 自然會再試）。
+        if self._auto_rejoin_running:
+            logger.warning("🔁 [AutoRejoin] 已有一個回台流程在跑，跳過（防併發）")
             return
+        self._auto_rejoin_running = True
         try:
-            print(f"🔁 [AutoRejoin] 開機偵測 {ch.name} 有真人，靜默回台...", flush=True)
-            self.bot.engine.start()
-            from discord_voice_engine import RealtimeVADSink, patch_voice_recv_key_sync
-            voice_client = await ch.connect(cls=voice_recv.VoiceRecvClient, timeout=60.0, reconnect=True)
-            await asyncio.sleep(0.5)
-            sink = RealtimeVADSink(
-                self.bot.engine.process_audio_slice,
-                on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
-                temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
-                sink_error_callback=self.report_sink_error,
-                suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio,
-                wake_active_callback=lambda: self._wake_response_pending,
-            )
-            voice_client.listen(sink)
-            patch_voice_recv_key_sync(voice_client, on_desync_storm=self._on_key_desync_storm)
-            self.bot.engine.sink = sink
-            self.connection_time = time.time()
-            self.sink_failure_count = 0
-            # 🩹 [Text Fallback] 沒有既有 active_text_channel（開機/process 重啟後全新狀態）
-            # → 優先用上次 /summon 的文字頻道頂上，找不到才退語音頻道自帶文字區，否則控制台/
-            # 現正播放/嘲諷/看門狗全部靜默失效，只能靠人 dismiss 再 summon 重設（2026-08-17
-            # 事故：使用者反映自動回台後 music control 不出來；2026-08-19 補：退到語音頻道
-            # 內建文字區使用者根本不會去看，卡片形同消失）。不算「打招呼」——沒送任何訊息，
-            # 只是補回報路徑。
-            if self.active_text_channel is None:
-                self.active_text_channel = _read_last_text_channel(self.bot) or ch
-            logger.warning("🔁 [AutoRejoin] 回台完成，恢復監聽（靜默、未打招呼）")
+            ch = pick_rejoin_channel(self.bot.guilds, bool(self.bot.voice_clients))
+            if ch is None:
+                # no-op 也要可觀測（7/4 教訓 ×3：沉默無法區分「正確不做」與「沒跑到」）
+                logger.warning("🔁 [AutoRejoin] 台上無真人（或已連線），不回台")
+                return
+            try:
+                print(f"🔁 [AutoRejoin] 開機偵測 {ch.name} 有真人，靜默回台...", flush=True)
+                self.bot.engine.start()
+                from discord_voice_engine import RealtimeVADSink, patch_voice_recv_key_sync
+                voice_client = await ch.connect(cls=voice_recv.VoiceRecvClient, timeout=60.0, reconnect=True)
+                await asyncio.sleep(0.5)
+                sink = RealtimeVADSink(
+                    self.bot.engine.process_audio_slice,
+                    on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
+                    temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
+                    sink_error_callback=self.report_sink_error,
+                    suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio,
+                    wake_active_callback=lambda: self._wake_response_pending,
+                )
+                voice_client.listen(sink)
+                patch_voice_recv_key_sync(voice_client, on_desync_storm=self._on_key_desync_storm)
+                self.bot.engine.sink = sink
+                self.connection_time = time.time()
+                self.sink_failure_count = 0
+                # 🩹 [Text Fallback] 沒有既有 active_text_channel（開機/process 重啟後全新狀態）
+                # → 優先用上次 /summon 的文字頻道頂上，找不到才退語音頻道自帶文字區，否則控制台/
+                # 現正播放/嘲諷/看門狗全部靜默失效，只能靠人 dismiss 再 summon 重設（2026-08-17
+                # 事故：使用者反映自動回台後 music control 不出來；2026-08-19 補：退到語音頻道
+                # 內建文字區使用者根本不會去看，卡片形同消失）。不算「打招呼」——沒送任何訊息，
+                # 只是補回報路徑。
+                if self.active_text_channel is None:
+                    self.active_text_channel = _read_last_text_channel(self.bot) or ch
+                logger.warning("🔁 [AutoRejoin] 回台完成，恢復監聽（靜默、未打招呼）")
 
-            # 🎵 [Restart Resume] process 重啟會把 MusicCog 的 stream_queue/stream_mode
-            # 全部歸零（純記憶體狀態，沒有持久化）——重啟前若正在播歌，重啟後 autopilot
-            # 補歌鏈完全沒人觸發，只能乾等到有人手動點歌才會被 _ensure_stream_loop()
-            # 救回（2026-08-01 事故：安靜 17 分鐘）。這裡回台時若台上已有真人，判斷
-            # 多半是重啟打斷了進行中的一場，順手接續一輪 autopilot 推薦；跟登場的
-            # 「靜默不打招呼」同一種克制——不寒暄，但別讓音樂真的斷在那裡。
-            mc = self.bot.cogs.get('MusicCog')
-            if mc is not None and not mc.stream_mode and not mc.radio_mode:
-                online = mc._autopilot_online_members(self.get_online_members())
-                if online:
-                    # 佇列此刻是空的（重啟清空）→ 交給 _ensure_stream_loop() 啟動迴圈，
-                    # 迴圈自己發現佇列空時會走一般 autopilot 補歌路徑（跟平常運作期間
-                    # 佇列見底時同一條路，不另開特例）。
-                    logger.warning(f"🔁 [AutoRejoin] 台上已有人，接續 autopilot 音樂（{len(online)} 人在場）")
-                    mc._ensure_stream_loop()
-        except Exception as e:
-            logger.warning(f"[AutoRejoin] 回台失敗（可手動 /summon）: {e}")
+                # 🎵 [Restart Resume] process 重啟會把 MusicCog 的 stream_queue/stream_mode
+                # 全部歸零（純記憶體狀態，沒有持久化）——重啟前若正在播歌，重啟後 autopilot
+                # 補歌鏈完全沒人觸發，只能乾等到有人手動點歌才會被 _ensure_stream_loop()
+                # 救回（2026-08-01 事故：安靜 17 分鐘）。這裡回台時若台上已有真人，判斷
+                # 多半是重啟打斷了進行中的一場，順手接續一輪 autopilot 推薦；跟登場的
+                # 「靜默不打招呼」同一種克制——不寒暄，但別讓音樂真的斷在那裡。
+                mc = self.bot.cogs.get('MusicCog')
+                if mc is not None and not mc.stream_mode and not mc.radio_mode:
+                    online = mc._autopilot_online_members(self.get_online_members())
+                    if online:
+                        # 佇列此刻是空的（重啟清空）→ 交給 _ensure_stream_loop() 啟動迴圈，
+                        # 迴圈自己發現佇列空時會走一般 autopilot 補歌路徑（跟平常運作期間
+                        # 佇列見底時同一條路，不另開特例）。
+                        logger.warning(f"🔁 [AutoRejoin] 台上已有人，接續 autopilot 音樂（{len(online)} 人在場）")
+                        mc._ensure_stream_loop()
+            except Exception as e:
+                logger.warning(f"[AutoRejoin] 回台失敗（可手動 /summon）: {e}")
+        finally:
+            self._auto_rejoin_running = False
 
     @app_commands.command(name="summon", description="[Operation] 召喚馬文進入語音頻道監聽這無意義的世界")
     async def summon(self, interaction: discord.Interaction):

@@ -194,3 +194,41 @@ def test_install_circuit_breaker_watch_is_idempotent():
             if isinstance(h, (_VoiceCircuitBreakerObserver,)) or type(h).__name__ == "_VoiceFlapObserver":
                 lg.removeHandler(h)
         assert list(lg.handlers) == before
+
+
+# ── auto_rejoin_on_boot 防重入：多個觸發源（on_ready / sentinel 60s tick）沒有互斥鎖，
+# 2026-09-17 15:xx 事故實測 log 出現 4 行近乎同一毫秒的重複 cooldown-skip 訊息，代表
+# 曾經有多個 auto_rejoin_on_boot() 併發在跑。單一 tasks.loop 本身不會自我重疊（discord.py
+# 內部序列化），但 on_ready 用 asyncio.create_task 沒等待、也沒鎖，一旦跟 sentinel tick
+# 或彼此重疊執行，就可能對同一頻道發出多個並行 identify——這正是 Discord 判定濫用/觸發
+# 4021 的合理成因。修法：整段（含 pick_rejoin_channel 到 connect 完成）用旗標防重入。
+
+def test_auto_rejoin_reentrancy_guard_blocks_concurrent_call():
+    cog = _make_cog()
+    cog._auto_rejoin_running = True  # 模拟已经有一个在跑
+    with patch("cogs.voice_controller_connection.pick_rejoin_channel") as mock_pick:
+        import asyncio
+        asyncio.run(cog.auto_rejoin_on_boot())
+        mock_pick.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_auto_rejoin_sets_and_clears_running_flag_on_success():
+    cog = _make_cog()
+    ch = MagicMock()
+    ch.members = [MagicMock(bot=False)]
+    with patch.dict(os.environ, {"MARVIN_AUTO_REJOIN": "1"}), \
+         patch("cogs.voice_controller_connection.pick_rejoin_channel", return_value=None):
+        assert cog._auto_rejoin_running is False
+        await cog.auto_rejoin_on_boot()
+        assert cog._auto_rejoin_running is False  # finally 清乾淨，不會卡死
+
+
+@pytest.mark.asyncio
+async def test_auto_rejoin_clears_running_flag_even_on_exception():
+    cog = _make_cog()
+    with patch.dict(os.environ, {"MARVIN_AUTO_REJOIN": "1"}), \
+         patch("cogs.voice_controller_connection.pick_rejoin_channel", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError):
+            await cog.auto_rejoin_on_boot()
+        assert cog._auto_rejoin_running is False
