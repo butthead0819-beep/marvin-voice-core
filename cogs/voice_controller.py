@@ -455,6 +455,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._voice_cooldown_until = 0.0  # ☢️ 官方「不該重連」代碼觸發的 AutoRejoin 冷卻期限
         self._voice_backoff_s = 0.0       # 目前退避秒數，指數成長、連線穩定 120s 後歸零
         self._last_mixer_rearm_ts = 0.0   # ☢️ mixer 自癒重武裝防抖時戳（見 _ensure_mixer_playing）
+        self._mixer_rearm_ts = collections.deque(maxlen=512)  # ☢️ [Mixer Rearm Watchdog] 真的執行重武裝的時戳
+        self._mixer_rearm_alert_ts = 0.0  # 告警防抖時戳（見 _record_mixer_rearm）
         self._auto_rejoin_running = False  # ☢️ 2026-09-17 事故：on_ready/sentinel 兩個觸發源
         # 沒有互斥，曾實測併發跑出 4 個近乎同毫秒的 auto_rejoin_on_boot() 呼叫——對同一頻道
         # 發出多個並行 identify，疑似正是觸發 Discord 4021 的自傷成因，見

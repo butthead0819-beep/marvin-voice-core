@@ -23,6 +23,8 @@ Marvin，分三條分支：
 
 新增/落地 IntentAgent 後，順手把對應的 intent_type 加進 `agent_gaps_resolved.json`（見 `scripts/analyze_agent_gaps.py` 開頭 docstring）——這份清單沒同步更新，`intent_clusters.json` 的每日/手動 gap clustering 會一直把已經有 agent 的東西誤標 `ready_to_implement`（2026-08-08 實測踩到：`agent_gaps_resolved.json` 從 6/7 後兩個月沒更新，漏了 5 個之後落地的 agent）。
 
+**第三方函式庫（discord.py 等）回呼進來的 handler，不准直接呼叫「安裝這個回呼的那個函式」**——只能設旗標/標記狀態變髒，交給既有巡邏迴圈處理。callback 回頭觸發自己的安裝點＝隱形無窮迴圈：2026-09-17 事故正是 `arm_mixer` 的 `after=` 自癒 callback 無條件重呼叫「安裝它自己」的那個函式，一分鐘 223 次灌爆 voice websocket，被 Discord 4021 踢線 17 小時才查到根因（見 f518c97 / `tests/test_mixer_rearm_storm.py`）。
+
 ## Skill routing
 
 請求符合現有 skill 就用 Skill tool 呼叫，拿不準就呼叫。常見對應：產品發想→/office-hours、架構→/plan-eng-review、bug→/investigate、QA→/qa、code review→/review、視覺→/design-review、上線→/ship、存/復原上下文→/context-save /context-restore。

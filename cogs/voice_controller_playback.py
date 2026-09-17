@@ -66,6 +66,32 @@ class PlaybackMixin:
     # （2026-09-17 4021 事故：實測 1ms 一輪、一分鐘 223 次）。
     _MIXER_REARM_MIN_INTERVAL_S = 1.0
 
+    # ☢️ [Mixer Rearm Watchdog] 2026-09-17 事故花 17 小時才查到真根因，因為當時沒有任何
+    # 東西在數「重武裝頻率」——只能翻 log 數 `adapter armed` 出現次數。這裡在真的執行了
+    # 重武裝（_ensure_mixer_playing 回 True）的單一 choke point 計數，滑動視窗超門檻就
+    # logger.critical 告警（既有 ErrorDispatcher 會接走 DM owner）。純觀測，不做任何
+    # 自動修復——自癒已有 idle 不重武裝 + 上面的最小間隔防抖兩道防線，這裡不跟它們打架。
+    # 門檻 20/分鐘：正常個位數，2026-09-17 事故實測 223 次，中間留足餘裕不誤報。
+    _MIXER_REARM_WATCHDOG_WINDOW_S = 60.0
+    _MIXER_REARM_WATCHDOG_MAX = 20
+    _MIXER_REARM_WATCHDOG_ALERT_DEBOUNCE_S = 300.0  # 同一波風暴 5 分鐘內只告警一次，別刷爆 DM
+
+    def _record_mixer_rearm(self) -> None:
+        """單一 choke point：只在 _ensure_mixer_playing 真的執行了重武裝時呼叫。"""
+        now = time.time()
+        self._mixer_rearm_ts.append(now)
+        recent = [t for t in self._mixer_rearm_ts if now - t <= self._MIXER_REARM_WATCHDOG_WINDOW_S]
+        if len(recent) < self._MIXER_REARM_WATCHDOG_MAX:
+            return
+        if now - self._mixer_rearm_alert_ts < self._MIXER_REARM_WATCHDOG_ALERT_DEBOUNCE_S:
+            return
+        self._mixer_rearm_alert_ts = now
+        logger.critical(
+            f"☢️ [Mixer Rearm Watchdog] {int(self._MIXER_REARM_WATCHDOG_WINDOW_S)}s 內重武裝 "
+            f"{len(recent)} 次（門檻 {self._MIXER_REARM_WATCHDOG_MAX}），疑似重武裝風暴"
+            "（見 2026-09-17 4021 踢線事故：無窮迴圈灌爆 voice WS，僅觀測不自動處理）"
+        )
+
     def _make_initial_mixer(self, bot) -> LocalMixingAudioSource:
         """建 Plan12 mixer，TTS 起始音量對齊各模式（Discord/車機）音樂音量預設值——
         不用等第一次調音量指令才被 sync_tts_gain() 追上（2026-08-26）。setup_hook
@@ -141,7 +167,10 @@ class PlaybackMixin:
                 return
             loop.call_soon_threadsafe(self._ensure_mixer_playing, device)
 
-        return ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(self._mixer), after=_after)
+        _armed = ensure_mixer_playing(device, lambda: MixerPlaybackAdapter(self._mixer), after=_after)
+        if _armed:
+            self._record_mixer_rearm()
+        return _armed
 
     async def _mixer_play_music(self, device, s16_source, *, still_active, volume_attr=None,
                                  preloaded=None, started_at=None) -> None:
