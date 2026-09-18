@@ -126,5 +126,23 @@
     "file": "intent_agents/joke_request_agent.py",
     "resolved_at": "2026-09-01",
     "note": "social_joke_request 條目提過的同句不穩定標記，當時決定不另立條目，但 analyze_agent_gaps.py 是照 key 是否存在判斷 resolved，光寫在 note 裡不會被程式讀到，導致這個字串一直被誤標——9/13 補上這個 key 才是真正生效的修法。"
+  },
+  "taste_correction": {
+    "agent": "taste_correction",
+    "file": "intent_agents/taste_correction_agent.py",
+    "resolved_at": "2026-09-18",
+    "note": "語音勘誤/查詢自己的口味（「把X從我的喜好拿掉」「我沒有喜歡X」「你記得我喜歡什麼」）已由 TasteCorrectionAgent 接手（forget 0.88 / query 0.85）。"
+  },
+  "taste_forget": {
+    "agent": "taste_correction",
+    "file": "intent_agents/taste_correction_agent.py",
+    "resolved_at": "2026-09-18",
+    "note": "語音勘誤/查詢自己的口味（「把X從我的喜好拿掉」「我沒有喜歡X」「你記得我喜歡什麼」）已由 TasteCorrectionAgent 接手（forget 0.88 / query 0.85）。"
+  },
+  "taste_query": {
+    "agent": "taste_correction",
+    "file": "intent_agents/taste_correction_agent.py",
+    "resolved_at": "2026-09-18",
+    "note": "語音勘誤/查詢自己的口味（「把X從我的喜好拿掉」「我沒有喜歡X」「你記得我喜歡什麼」）已由 TasteCorrectionAgent 接手（forget 0.88 / query 0.85）。"
   }
 }
