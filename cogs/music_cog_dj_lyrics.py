@@ -654,12 +654,18 @@ class MusicDJLyricsMixin:
                         text = f"DJ Marvin為你帶來《{clean_title}》，{suffix}"
                     logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
 
-        from tts_length_policy import truncate_for_tts
-        gated_text, was_cut = truncate_for_tts(
-            text, gate_task, self.bot.tts_engine.get_estimated_duration
+        from dj_prev_trim import gate_dj_intro
+        gated_text, was_cut, prev_dropped = gate_dj_intro(
+            text, prev_title, _song_label or title, gate_task,
+            self.bot.tts_engine.get_estimated_duration,
         )
+        if prev_dropped:
+            # 口白已不提上一首 → prev_title_used=None，換歌 Consistency Guard 不必再比對上一首
+            logger.info(f"✂️ [DJ Prev Trim] 口白超長，先拿掉上一首《{prev_title}》")
+            prev_title = ''
         if was_cut:
             logger.info(f"🚦 [TTS Gate] DJ intro 超上限截斷({gate_task}): '{text}' → '{gated_text}'")
+        if was_cut or prev_dropped:
             text = gated_text
 
         audio_path = None
