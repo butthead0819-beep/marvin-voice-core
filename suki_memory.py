@@ -236,7 +236,9 @@ class MemoryManager:
         self._json_compat_path = json_compat_path
         self._conn = self._open_db()
         self._cache: dict[str, dict] = {}
+        self._db_snapshot: dict[str, str] = {}  # 上次讀到/寫入 DB 的原始字串，供外部寫入比對
         self._load_all()
+        self._data_version = self._read_data_version()
 
     @classmethod
     def for_guild(
@@ -367,6 +369,7 @@ class MemoryManager:
                 continue
             try:
                 self._cache[username] = _repair_player(json.loads(data_str))
+                self._db_snapshot[username] = data_str
             except Exception as exc:
                 logger.warning(f"⚠️ [Memory] 無法載入 {username}: {exc}")
         if purged and not memory_sandbox.active():
@@ -399,6 +402,50 @@ class MemoryManager:
         except Exception as exc:
             logger.error(f"❌ [Memory] JSON 遷移失敗: {exc}")
 
+    # ── External write detection ────────────────────────────────────────────
+
+    def _read_data_version(self):
+        try:
+            return self._conn.execute("PRAGMA data_version").fetchone()[0]
+        except Exception:
+            return None
+
+    def _refresh_if_external_write(self) -> None:
+        """別的連線（daily review 等離線腳本）改過某玩家 → 只重載那幾位玩家的 cache。
+
+        Why: cache 啟動後不重讀 DB，bot 對某玩家任何 _save_player 都會把舊快取整筆寫回，
+        蓋掉 daily review 剛寫的 taste（2026-09-08 狗與露 18 筆 taste 被抹成 1 筆）。
+        bot 自己每次改動都立即落盤，所以重載只會丟掉 last_interacted_time 這類未存小欄位。
+        沙盒模式不重載：沙盒的寫入刻意只留在 cache（ephemeral），重載會把它們清掉。
+        data_version 對同庫任何表的外部寫入都會變（transcripts/budget 幾乎每句話都寫），
+        所以變了之後逐列比對原始字串，只換真的被改過的玩家；沒變的玩家 dict 物件不動。
+        """
+        if memory_sandbox.active():
+            return
+        v = self._read_data_version()
+        if v is None or v == self._data_version:
+            return
+        self._data_version = v
+        changed = []
+        try:
+            rows = self._conn.execute(
+                "SELECT username, data FROM players WHERE guild_id = ?", (self._guild_id,)
+            ).fetchall()
+        except Exception as exc:
+            logger.warning(f"⚠️ [Memory] 外部寫入比對失敗，沿用 cache: {exc}")
+            return
+        for username, data_str in rows:
+            if is_pseudo_player(username) or self._db_snapshot.get(username) == data_str:
+                continue
+            try:
+                self._cache[username] = _repair_player(json.loads(data_str))
+                self._db_snapshot[username] = data_str
+                changed.append(username)
+            except Exception as exc:
+                logger.warning(f"⚠️ [Memory] 無法重載 {username}: {exc}")
+        if changed:
+            logger.info(f"🔄 [Memory] 偵測到外部寫入，已重載玩家: {changed}")
+
     # ── Persist ──────────────────────────────────────────────────────────────
 
     def _save_player(self, username: str):
@@ -406,11 +453,13 @@ class MemoryManager:
             return  # 沙盒：不落盤（ephemeral，變更只留 self._cache、斷線丟棄）
         if username not in self._cache:
             return
+        data_str = json.dumps(self._cache[username], ensure_ascii=False)
         self._conn.execute(
             "INSERT OR REPLACE INTO players (guild_id, username, data) VALUES (?, ?, ?)",
-            (self._guild_id, username, json.dumps(self._cache[username], ensure_ascii=False)),
+            (self._guild_id, username, data_str),
         )
         self._conn.commit()
+        self._db_snapshot[username] = data_str
         self._export_json()
 
     def _export_json(self):
@@ -452,6 +501,7 @@ class MemoryManager:
 
     def replace_player_memory(self, username: str, data: dict):
         """Full-record overwrite — for audit/cleaning pipelines that produce a fresh record."""
+        self._refresh_if_external_write()
         if not isinstance(data, dict):
             raise TypeError(f"replace_player_memory expects dict, got {type(data).__name__}")
         self._cache[username] = _repair_player(dict(data))
@@ -459,10 +509,12 @@ class MemoryManager:
 
     def list_players(self) -> list[str]:
         """所有已知玩家 username（不會 silently 建立新紀錄）。"""
+        self._refresh_if_external_write()
         return list(self._cache.keys())
 
     def has_player(self, username: str) -> bool:
         """檢查玩家是否存在；不像 get_player_memory 會 auto-create。"""
+        self._refresh_if_external_write()
         return username in self._cache
 
     def get_meta(self, key: str, default=None):
@@ -485,6 +537,7 @@ class MemoryManager:
     # ── Player access ────────────────────────────────────────────────────────
 
     def get_player_memory(self, username: str) -> dict:
+        self._refresh_if_external_write()
         if is_pseudo_player(username):
             p = _new_player()
             p["last_interacted_time"] = time.time()
@@ -739,6 +792,7 @@ class MemoryManager:
         self._save_player(username)
 
     def get_song_history(self, username: str) -> list:
+        self._refresh_if_external_write()
         if username not in self._cache:
             return []
         return self._cache[username].get("song_history", [])
