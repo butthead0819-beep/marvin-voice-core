@@ -94,6 +94,20 @@ def _build_taste_from_legacy(likes: list, dislikes: list) -> dict:
     return taste
 
 
+def _normalize_numeric_taste(p: dict) -> None:
+    """taste 裡純數字（舊格式 `"伍佰": 10.0`）→ 標準 dict 格式。
+
+    時戳給 0.0（誠實表示「不知道何時」），不用 time.time() 假造新鮮度。
+    """
+    taste = p.get("taste")
+    if not isinstance(taste, dict):
+        return
+    for key, v in list(taste.items()):
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            score = max(_SCORE_MIN, min(_SCORE_MAX, float(v)))
+            taste[key] = {"score": score, "mentions": 1, "first_seen": 0.0, "last_update": 0.0}
+
+
 def _project_taste(player: dict) -> None:
     """從 taste 分數重算 player['likes']/['dislikes']（taboos 不動）。likes 按分數高→低。
 
@@ -144,6 +158,15 @@ def _new_player() -> dict:
     return copy.deepcopy(_PLAYER_DEFAULTS)
 
 
+_PSEUDO_PLAYER_EXACT = frozenset({"系統", "以「人類又想聽笑話」為主題的自嘲冷笑話"})
+
+
+def is_pseudo_player(name) -> bool:
+    """非人類的偽玩家名（autopilot 自薦掛名 / 系統 speaker / 已知的 LLM 殘渣名）。"""
+    n = (name or "").strip() if isinstance(name, str) else ""
+    return (not n) or n.startswith("Marvin推薦") or n in _PSEUDO_PLAYER_EXACT
+
+
 def _backfill_taste_from_likes(p: dict) -> None:
     """likes/dislikes 裡任何還沒進 taste 的項目 → 逐項補上（confirmed 起始分＋現在時戳）。
 
@@ -164,9 +187,16 @@ def _repair_player(p: dict) -> dict:
     """Fill in any fields missing from older records (non-destructive)."""
     if not isinstance(p, dict):
         return _new_player()
+    _normalize_numeric_taste(p)
     _backfill_taste_from_likes(p)
     if p.get("taste"):
         _project_taste(p)
+    highlights = p.get("emotional_highlights")
+    if isinstance(highlights, list):
+        p["emotional_highlights"] = [
+            h for h in highlights
+            if not (isinstance(h, dict) and str(h.get("moment", "")).lstrip().startswith("__META__"))
+        ]
     for k, v in _PLAYER_DEFAULTS.items():
         if k not in p or p[k] is None:
             p[k] = copy.deepcopy(v)
@@ -330,11 +360,23 @@ class MemoryManager:
             rows = self._conn.execute(
                 "SELECT username, data FROM players WHERE guild_id = ?", (self._guild_id,)
             ).fetchall()
+        purged = []
         for username, data_str in rows:
+            if is_pseudo_player(username):
+                purged.append(username)
+                continue
             try:
                 self._cache[username] = _repair_player(json.loads(data_str))
             except Exception as exc:
                 logger.warning(f"⚠️ [Memory] 無法載入 {username}: {exc}")
+        if purged and not memory_sandbox.active():
+            for username in purged:
+                self._conn.execute(
+                    "DELETE FROM players WHERE guild_id = ? AND username = ?",
+                    (self._guild_id, username),
+                )
+            self._conn.commit()
+            logger.info(f"🧹 [Memory] 已清除 {len(purged)} 筆偽玩家紀錄: {purged}")
 
     def _migrate_from_json(self):
         """One-time import from suki_memory.json (runs only when DB is empty)."""
@@ -345,6 +387,8 @@ class MemoryManager:
                 old = json.load(f)
             players = old.get("players", {})
             for username, pdata in players.items():
+                if is_pseudo_player(username):
+                    continue
                 repaired = _repair_player(pdata)
                 self._conn.execute(
                     "INSERT OR IGNORE INTO players (guild_id, username, data) VALUES (?, ?, ?)",
@@ -441,6 +485,10 @@ class MemoryManager:
     # ── Player access ────────────────────────────────────────────────────────
 
     def get_player_memory(self, username: str) -> dict:
+        if is_pseudo_player(username):
+            p = _new_player()
+            p["last_interacted_time"] = time.time()
+            return p
         if username not in self._cache:
             p = _new_player()
             p["last_interacted_time"] = time.time()
@@ -708,6 +756,8 @@ class MemoryManager:
 
     def add_emotional_highlight(self, username: str, moment: str, valence: str = "warm"):
         if not username or not moment:
+            return
+        if isinstance(moment, str) and moment.lstrip().startswith("__META__"):
             return
         p = self.get_player_memory(username)
         highlights = p.get("emotional_highlights", [])
