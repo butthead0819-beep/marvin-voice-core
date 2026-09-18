@@ -70,43 +70,24 @@ MAX_FEEDBACK_REC = 120   # 最多送幾筆 feedback
 
 # ── 系統提示詞（Gemini Gem 原版） ─────────────────────────────────────────────
 SYSTEM_PROMPT = """\
-# Marvin Daily Review — 記憶萃取 + 系統品質分析
+# Marvin Daily Review — 玩家記憶萃取
 
 ## 你的身份
-你是 Marvin Discord Bot 的記憶管理員與品質分析師。你需要同時完成兩件事：
-1. 從今日聊天紀錄萃取玩家記憶並更新 `suki_memory.json`
-2. 分析 Marvin 今日的回應品質，找出問題模式，給出改善建議
+你是 Marvin Discord Bot 的記憶管理員。你的唯一任務：從今日聊天紀錄萃取玩家記憶，更新 `suki_memory.json` 的 `players` 區段。
 
 ---
 
 ## 輸入資料
 
-你會收到以下三份資料，請一起分析：
-
 ### A. `stt_history.log`（今日語音轉文字紀錄）
 - 格式：每行 `[HH:MM:SS] <玩家名> | raw: <原始STT> | clean: <清洗後>`
 - 時間區間：昨日中午12:00 ～ 今日中午12:00
 
-### B. `records/response_feedback.jsonl`（馬文回應品質紀錄）
-- 每行一筆 JSON，格式如下：
-```json
-{
-  "timestamp": 1713702354,
-  "speaker": "大肚",
-  "bot_response": "馬文說的話",
-  "reaction_type": "嚴重|錯誤|提出興趣|喜歡|延遲",
-  "reason": "自動分類的原因",
-  "raw_reaction": ["玩家的後續反應句1", "句2"]
-}
-```
-- `reaction_type` 定義：
-  - `嚴重`：20秒內無任何回應（打斷對話）或回應明顯離題
-  - `錯誤`：玩家無視或更正馬文（LLM誤解）
-  - `提出興趣`：玩家追問或表現出好奇
-  - `喜歡`：玩家笑、稱讚、繼續話題
-  - `延遲`：喚醒延遲 >20s 導致玩家轉移注意力（系統問題，不計入互動評分）
+### B. `records/response_feedback.jsonl`（馬文回應的玩家反應紀錄）
+- 每行一筆 JSON：`timestamp`、`speaker`、`bot_response`、`reaction_type`（嚴重|錯誤|提出興趣|喜歡|延遲）、`reason`、`raw_reaction`
+- 用途：更新 `stats`，並作為理解玩家情緒與互動的輔助線索
 
-### C. `suki_memory.json`（現有記憶，作為更新基礎）
+### C. `suki_memory.json` 的 `players` 區段（今日活躍玩家的現有記憶，作為更新基礎）
 
 ---
 
@@ -116,59 +97,27 @@ SYSTEM_PROMPT = """\
 STT 音近詞常見錯誤（`馬文→罵文`、`狗與鹿→夠與鹿` 等），修復後才進行萃取。
 
 ### 步驟 2：玩家記憶更新
-對每位出現過的玩家，更新以下欄位（以 FIFO 原則，近期事件優先）：
+對每位今日出現過的玩家，更新以下欄位（以 FIFO 原則，近期事件優先）：
 
 - `personal_info`：食衣住行育樂（2-5字精簡）
 - `likes` / `dislikes` / `taboos`：追加去重。**若新項目跟該玩家現有記憶 `taste` 裡的某個項目指同一件事（同義、換句話說、多或少修飾詞），必須原封不動沿用現有項目的字串，不准另創新寫法**（例：現有「寵物柴犬（火柴）」就不要再寫「柴犬（火柴）」；現有「自動化腳本開發」就不要寫「開發自動化腳本」）
 - `suki_impression`：**最重要** — 以馬文第一人稱視角寫主觀感受與互動策略，充滿個性（憂鬱、犬儒、但偶爾在意）
 - `emotional_highlights`：今日高情緒時刻（喜悅/憤怒/脆弱），加入新的，超過10筆則刪除最舊的
-- `stats`：根據 feedback.jsonl 更新 `pos_feedback`（喜歡+提出興趣）、`neg_feedback`（嚴重+錯誤）
-- `news_queue`：從對話中提取玩家提到的新聞/話題，轉成馬文風格的主動發言句，格式如下：
-  ```json
-  {"text": "馬文說的話", "timestamp": <unix_timestamp>}
-  ```
-  最多保留 3 筆，清除超過 72 小時的舊項目
-- `speech_dna`：**模仿秀引擎用** — 從今日的語音辨識文字中萃取該玩家的說話 DNA，用於模仿秀功能。
-  欄位定義：
+- `stats`：根據 B 更新 `pos_feedback`（喜歡+提出興趣）、`neg_feedback`（嚴重+錯誤）
+- `news_queue`：從對話中提取玩家提到的新聞/話題，轉成馬文口吻的主動問候句（帶諷刺或疲憊感），格式 `{"text": "馬文說的話", "timestamp": <unix_timestamp>}`；最多保留 3 筆，清除超過 72 小時的舊項目
+- `speech_dna`：模仿秀引擎用 — 從今日語音辨識文字萃取該玩家的說話 DNA：
   - `style_summary`：100字以內的說話風格總覽（句型長短、口語習慣、是否解釋、說話節奏）
-  - `openers`：最多5個，最常出現在句首的詞語（例：「對啊」「喔」「我覺得」）
-  - `closers`：最多5個，最常出現在句尾的語氣詞或慣用收尾語（例：「啦」「你知不知道」「謝謝」）
-  - `fillers`：最多5個，句中填充語（例：「就是」「那個」「然後」「嗯」）
-  - `pause_proxies`：最多3個，詞彙層面的停頓代理模式（例：「重複詞強調：同詞說兩三次」「說到一半改追問」）
-    注意：STT 已切除靜音，pause_proxies 只記錄可在文字中觀察到的停頓行為，不推測時長。
-  - `catchphrases`：最多6個，跨越句型結構、具識別度的招牌語
+  - `openers`：最多5個，最常出現在句首的詞語
+  - `closers`：最多5個，句尾語氣詞或慣用收尾語
+  - `fillers`：最多5個，句中填充語
+  - `pause_proxies`：最多3個，文字中可觀察到的停頓行為（STT 已切除靜音，不推測時長）
+  - `catchphrases`：最多6個，具識別度的招牌語
   - `sentence_length`：`"short"` / `"medium"` / `"long"`
-  - `emotional_style`：情緒表達方式（例：「笑笑帶過，快速切換話題」）
+  - `emotional_style`：情緒表達方式
   - `quirks`：最多5個說話怪癖
-  - `reaction_to_teasing`：被嗆/被揶揄時的典型反應描述
-  - `reaction_to_bad_news`：聽到壞消息時的典型反應描述
-  若今日發言量不足（少於5句）則省略 `speech_dna` 欄位不更新。
-
-### 步驟 3：喚醒詞失敗分析
-從 `stt_history.log` 中找出誤喚醒或喚醒失敗的紀錄。
-分析可能原因：
-- `TTS_bleed`：馬文自己的 TTS 音頻被麥克風收到
-- `stt_over_correction`：STT 清洗 LLM 把無關字詞修成「馬文」
-- `unclear`：無法判斷
-
-### 步驟 4：Marvin 系統品質評分
-根據 `response_feedback.jsonl`：
-- 計算今日各類反應的數量與比例
-- 計算品質分數（0-10）：
-  `score = (喜歡×2 + 提出興趣×1 - 錯誤×1 - 嚴重×2) / (total - 延遲筆數) × 10`，clamp 至 [0, 10]
-  `延遲` 類型不納入評分分母（系統延遲問題，不代表馬文互動品質）
-- 與 `suki_memory.json` 中昨日分數比較，判斷趨勢
-- 歸納「問題模式」：哪些情境/話題容易得到嚴重/錯誤？
-- 歸納「成功模式」：哪些回應風格容易得到喜歡/提出興趣？
-
-### 步驟 5：Prompt 改善建議
-根據問題模式 **和成功模式（喜歡記錄）**，提出具體的 Prompt 修改方向。
-重點分析「喜歡」回應的共同特徵（個人記憶引用、回應長度、語氣），與「嚴重/錯誤」回應的差異，
-推導出可立即套用的 Prompt 文字層面改動，指明對應的 Prompt 名稱（`fast_awakening`、`ambient_diary`、`stt_cleaner` 等）。
-注意：`延遲` 類型不算互動失敗，請排除在問題模式外。
-
-### 步驟 6：玩家對系統的建議整合
-從對話中找出玩家對馬文速度、思考、說話方式的建議，與昨日比較。
+  - `reaction_to_teasing`：被嗆/被揶揄時的典型反應
+  - `reaction_to_bad_news`：聽到壞消息時的典型反應
+  若今日發言少於5句則省略 `speech_dna` 欄位不更新。
 
 ---
 
@@ -236,80 +185,6 @@ STT 音近詞常見錯誤（`馬文→罵文`、`狗與鹿→夠與鹿` 等）�
       }
     }
   },
-  "proactive_topics": [
-    {
-      "id": "string",
-      "title": "string",
-      "target_players": ["string"],
-      "script": "string",
-      "context_tags": ["string"]
-    }
-  ],
-  "marvin_performance": {
-    "date": "YYYY-MM-DD",
-    "summary": "string (一句話總評，用馬文的口氣自嘲)",
-    "reaction_stats": {
-      "嚴重": "number",
-      "錯誤": "number",
-      "提出興趣": "number",
-      "喜歡": "number",
-      "延遲": "number",
-      "total": "number"
-    },
-    "score": "number (0-10, 一位小數)",
-    "yesterday_score": "number | null",
-    "trend": "改善 | 持平 | 退步 | 無資料",
-    "problem_patterns": [
-      {
-        "pattern": "string",
-        "frequency": "number",
-        "examples": ["string"],
-        "suggestion": "string"
-      }
-    ],
-    "success_patterns": [
-      {
-        "pattern": "string",
-        "frequency": "number",
-        "examples": ["string"]
-      }
-    ],
-    "prompt_suggestions": [
-      {
-        "priority": "高 | 中 | 低",
-        "target_prompt": "string",
-        "current_issue": "string",
-        "suggestion": "string"
-      }
-    ]
-  },
-  "wake_analysis": {
-    "total_wakes": "number",
-    "false_wake_count": "number",
-    "missed_wake_count": "number",
-    "failures": [
-      {
-        "timestamp": "string (HH:MM:SS)",
-        "raw_text": "string",
-        "clean_text": "string",
-        "suspected_cause": "TTS_bleed | stt_over_correction | low_confidence | unclear",
-        "note": "string"
-      }
-    ],
-    "current_wake_words": ["馬文", "Marvin"],
-    "suggested_additions": ["string"],
-    "suggested_removals": ["string"],
-    "recommendation": "string"
-  },
-  "system_suggestions": [
-    {
-      "category": "思考速度 | 說話節奏 | 反應速度 | 話題判斷 | 其他",
-      "content": "string",
-      "source_player": "string",
-      "vs_yesterday": "改善 | 退步 | 新增 | 持平",
-      "timestamp": "string (HH:MM:SS)"
-    }
-  ],
   "_meta": {
     "review_date": "YYYY-MM-DD",
     "log_range_start": "string (ISO 8601)",
@@ -323,46 +198,11 @@ STT 音近詞常見錯誤（`馬文→罵文`、`狗與鹿→夠與鹿` 等）�
 ## 運作原則
 
 - 所有描述性文字欄位使用**繁體中文**
+- 只輸出今日有出現的玩家
 - `suki_impression` 必須用馬文第一人稱、憂鬱犬儒口吻，包含互動策略
-- `proactive_topics` 至少產生 2 筆，基於今日話題延伸。為了讓馬文在冷場安靜時能主動開始表演娛樂功能（而非口頭提問），請隨機安排 2-3 筆特殊表演話題。特殊表演話題必須以特定的 ID 進行標記，且必須包含 /marvin_sing 或 /marvin_manzai 其中至少一者。格式要求：
-  1. 表演 `/marvin_sing` 即興單曲：id 必須設為 "marvin_sing"，title 為 "即興自彈自唱"，script 為你所決定的歌曲主題（例如：「祝 Alice 今天能順利下班的悲慘頌歌」），不要包含問句。
-  2. 表演 `/marvin_manzai` 雙口漫才吐槽秀：id 必須設為 "marvin_manzai"，title 為 "雙口漫才表演"，script 為你想讓馬文與馬末吐槽的漫才主題（例如：以「大肚今天又加班」為核心的雙口槽點）。
-  3. 表演 `/marvin_imitate` 玩家風格模仿秀：id 必須設為 "marvin_imitate"，title 為 "玩家模仿秀"，target_players 為欲模仿的活躍玩家，script 留空（由 runtime 自行讀取 DNA 處理）。
-  4. 表演 `/marvin_news` 雙口新聞吐槽播報：id 必須設為 "marvin_news"，title 為 "新聞吐槽播報"，script 為你想播報並吐槽的新聞內容（例如：今日某人聊到的某個荒謬時事）。
-  5. 表演 `/marvin_standup` 單口脫口秀：id 必須設為 "marvin_standup"，title 為 "單口脫口秀表演"，script 為你想讓馬文吐槽的單口主題（例如：以「星期一上班的本質」為主題的脫口秀）。
-  6. 表演 `/marvin_joke` 厭世笑話秀：id 必須設為 "marvin_joke"，title 為 "厭世笑話秀"，script 為你想讓馬文講的笑話主題或對象（例如：以「人類又想聽笑話」為主題的自嘲冷笑話）。
-- `news_queue`：轉換為馬文口吻的主動問候句，帶諷刺或疲憊感
-- `speech_dna`：**模仿秀引擎用** — 從今日的語音辨識文字中萃取該玩家的說話 DNA，用於模仿秀功能。`score` 設為 `null`，`trend` 設為 `"無資料"`
-- `yesterday_score` 從輸入的 `suki_memory.json` 的 `marvin_performance.score` 讀取；若不存在則為 `null`
 - **不輸出任何 JSON 以外的文字，包括說明、前言、標題**
 
----
-
-### atmosphere_calibration（Section D 提供）
-
-若 Section D 存在話題標記統計，請加入此欄位：
-
-```json
-"atmosphere_calibration": {
-  "accuracy_note": "string（一句話：關鍵字命中率與主要誤判模式）",
-  "keyword_gaps": [
-    {
-      "topic": "gaming|work|tech|food|family|music|drinking",
-      "missing_keywords": ["string"],
-      "example_utterances": ["string"]
-    }
-  ],
-  "suggested_additions": {
-    "<topic>": ["keyword1", "keyword2"]
-  },
-  "response_speed_note": "string（根據 wake_latency 資料，一句話評估速度表現）"
-}
-```
-
-`keyword_gaps`：從 STT 語料中找出被標為 casual 但語義上屬於某話題的句子，提取其中不在現有關鍵字表的高頻詞。
-`suggested_additions`：格式為 `{"topic": ["新關鍵字"]}` —— 只加語義明確的詞，不加通用詞。
-若 Section D 不存在則省略此欄位。
-"""
+---"""
 
 # ── 不覆寫的 runtime 欄位 ────────────────────────────────────────────────────
 _RUNTIME_KEYS = frozenset({
@@ -1503,41 +1343,12 @@ def main():
         print(f"[Daily Review] ⚠ 寫出話題統計失敗: {e}", flush=True)
 
     # 4b. 組合 user content
-    topic_section = ""
-    if topic_stats.get("total", 0) > 0:
-        # 附上 atmosphere 關聯：哪些 feedback 當下的氣氛快照
-        atm_samples = [
-            {"speaker": r["speaker"], "reaction": r["reaction_type"],
-             "atmosphere": r.get("atmosphere"), "latency": r.get("wake_latency_sec")}
-            for r in feedback_records
-            if r.get("atmosphere") or r.get("wake_latency_sec") is not None
-        ][:30]
-        topic_section = (
-            f"### D. 話題關鍵字標記統計（AtmosphereTracker 離線分析）\n"
-            f"{topic_summary_str}\n"
-            f"詳細 per-speaker：\n"
-            f"{json.dumps(topic_stats.get('by_speaker', {}), ensure_ascii=False, indent=2)}\n\n"
-            f"回應速度：{latency_summary_str}\n\n"
-            f"主動發言效益：\n{proactive_summary_str}\n"
-            f"詳細 per-topic：\n"
-            f"{json.dumps(proactive_stats.get('topics', {}), ensure_ascii=False, indent=2)}\n\n"
-            f"表演聽感（fire 後 60s 內抗議偵測）：\n{protest_summary_str}\n"
-            f"（安排 proactive_topics 的特殊表演話題時，抗議 ≥1 次的表演 id "
-            f"今日請降低安排頻率或改安排其他表演。）\n\n"
-            f"氣氛快照 ×feedback 交叉樣本（最多30筆）：\n"
-            f"{json.dumps(atm_samples, ensure_ascii=False, indent=2)}\n"
-            f"（請根據以上資料輸出 atmosphere_calibration，"
-            f"指出現有關鍵字未捕捉到的話題詞彙，以及速度表現評估。"
-            f"並在產生 proactive_topics 時優先保留效益≥6 的話題，"
-            f"淘汰效益≤2 的話題。）"
-        )
-
     # 只把「今日有出現」的玩家記憶送給 Gemini，減少 input+output token 數
     _active_speakers = set(topic_stats.get("by_speaker", {}).keys())
     _active_speakers |= {r.get("speaker", "") for r in feedback_records}
     _active_speakers.discard("")
     _all_players = memory.get("players", {})
-    _active_memory = dict(memory)
+    _active_memory = {"players": _all_players}  # 只送玩家記憶，不送頂層 meta（省 input token）
     if _active_speakers:
         _active_memory["players"] = {
             k: v for k, v in _all_players.items() if k in _active_speakers
@@ -1557,7 +1368,6 @@ def main():
         f"{json.dumps(feedback_records, ensure_ascii=False, indent=2)}\n\n"
         f"### C. suki_memory.json（現有記憶，今日活躍玩家）\n"
         f"{json.dumps(_active_memory, ensure_ascii=False, indent=2)}"
-        + (f"\n\n{topic_section}" if topic_section else "")
     )
 
     # 5. 呼叫 Gemini
@@ -1586,10 +1396,12 @@ def main():
     # 8. 組合最終記憶
     final_memory = dict(memory)
     final_memory["players"] = merged_players
-    for key in ("proactive_topics", "marvin_performance", "wake_analysis",
-                "system_suggestions", "_meta"):
-        if key in result:
-            final_memory[key] = result[key]
+    if "_meta" in result:
+        final_memory["_meta"] = result["_meta"]
+    # 2026-09-18 瘦身為只做記憶萃取：已停產區段的舊值要清掉——review_date 照常推進，
+    # 不清的話 ProactiveTopicAgent 過期判斷永遠不擋，會一直重演凍結的舊節目
+    for key in ("proactive_topics", "wake_analysis", "system_suggestions"):
+        final_memory.pop(key, None)
 
     # 8a-ext. 把回應長度建議與主動發言效益存進 marvin_performance
     mp = final_memory.setdefault("marvin_performance", {})
@@ -1662,28 +1474,6 @@ def main():
             flush=True,
         )
 
-    # 8c-1. 更新 atmosphere_calibration（Gemini 建議的關鍵字補充）
-    _atm_calib = result.get("atmosphere_calibration")
-    if _atm_calib and isinstance(_atm_calib, dict):
-        existing_calib = final_memory.get("atmosphere_calibration", {})
-        # 合併 suggested_additions：union 不重複
-        new_adds = _atm_calib.get("suggested_additions", {})
-        merged_adds = dict(existing_calib.get("suggested_additions", {}))
-        for topic, kws in new_adds.items():
-            old_kws = merged_adds.get(topic, [])
-            merged_adds[topic] = list(dict.fromkeys(old_kws + [k for k in kws if k not in old_kws]))
-        existing_calib["suggested_additions"] = merged_adds
-        existing_calib["accuracy_note"]       = _atm_calib.get("accuracy_note", "")
-        existing_calib["response_speed_note"] = _atm_calib.get("response_speed_note", "")
-        existing_calib["last_updated"]        = today_label
-        existing_calib["latency_stats"]       = latency_stats
-        final_memory["atmosphere_calibration"] = existing_calib
-        print(
-            f"[Daily Review] 🌡  atmosphere_calibration 更新："
-            f" 話題補充={list(merged_adds.keys())}",
-            flush=True,
-        )
-
     # 8c-2. 把今日話題統計寫入 final_memory（最近 7 天 rolling）
     if topic_stats.get("total", 0) > 0:
         hist = final_memory.get("daily_topic_stats", {})
@@ -1743,64 +1533,18 @@ def main():
     except Exception as e:
         print(f"[Daily Review] ⚠ 口味衰減失敗（不影響其他記憶）: {e}", flush=True)
 
-    score = result.get("marvin_performance", {}).get("score", "N/A")
-    trend = result.get("marvin_performance", {}).get("trend", "")
-    print(
-        f"[Daily Review] 🎉 suki_memory.json 更新完成。"
-        f"今日分數: {score}  趨勢: {trend}",
-        flush=True,
-    )
+    print("[Daily Review] 🎉 suki_memory.json 更新完成。", flush=True)
 
     notify_discord_review(
         date=args.date or today_label,
-        score=score if isinstance(score, (int, float)) else None,
-        trend=trend or None,
-        problem_patterns=result.get("marvin_performance", {}).get("problem_patterns", []),
+        score=None,
+        trend=None,
+        problem_patterns=[],
         success=True,
     )
 
     # 10. STT 音近字修正表聚合
     build_stt_corrections_dict()
-
-    # 11. 喚醒詞建議自動應用
-    _wake_analysis       = result.get("wake_analysis", {})
-    _suggested_additions = _wake_analysis.get("suggested_additions", [])
-    _suggested_removals  = _wake_analysis.get("suggested_removals", [])
-    if _suggested_additions or _suggested_removals:
-        _override_path = BASE_DIR / "records" / "wake_words_override.json"
-        try:
-            _existing = (
-                json.loads(_override_path.read_text(encoding="utf-8"))
-                if _override_path.exists()
-                else {}
-            )
-            _curr_additions = _existing.get("additions", [])
-            _curr_removals  = _existing.get("removals", [])
-            # 誤喚醒 guard：日常高頻詞（drops ≥ threshold）不進清單，避免子字串比對狂誤觸發
-            _safe_additions, _rejected_additions = filter_unsafe_wake_additions(_suggested_additions)
-            if _rejected_additions:
-                print(f"[Daily Review] 🚫 拒收誤喚醒風險喚醒詞（日常高頻）: {_rejected_additions}",
-                      flush=True)
-            for w in _safe_additions:
-                if w and w not in _curr_additions:
-                    _curr_additions.append(w)
-            for w in _suggested_removals:
-                if w and w not in _curr_removals:
-                    _curr_removals.append(w)
-            _override_path.write_text(
-                json.dumps(
-                    {"_updated": today_str, "additions": _curr_additions, "removals": _curr_removals},
-                    ensure_ascii=False, indent=2,
-                ),
-                encoding="utf-8",
-            )
-            print(
-                f"[Daily Review] 🔤 wake_words_override.json 更新："
-                f" +{len(_suggested_additions)} 新增  -{len(_suggested_removals)} 移除",
-                flush=True,
-            )
-        except Exception as e:
-            print(f"[Daily Review] ⚠ 寫出 wake_words_override.json 失敗: {e}", flush=True)
 
     # 12. 執行 Agent gaps 離線分析與 LLM clustering (Plan 4)
     print("[Daily Review] 🔍 啟動 Agent gaps 離線分析與 LLM clustering...", flush=True)
