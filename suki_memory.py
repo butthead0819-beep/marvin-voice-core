@@ -124,6 +124,43 @@ def _project_taste(player: dict) -> None:
     player["dislikes"] = dislikes
 
 
+TASTE_DECAY_GRACE_S = 30 * 86400
+TASTE_DECAY_PER_WEEK = 1.0
+TASTE_DECAY_DROP_BELOW = 0.5
+_WEEK_S = 7 * 86400
+
+
+def apply_taste_decay(taste: dict, now: float) -> bool:
+    """30 天沒被強化的口味每週往 0 靠 1 分，|score| < 0.5 刪除。回傳是否有變動。
+
+    `last_update` 由 record_taste_signal 標記強化時間，衰減不能改它——否則會把
+    「口味正在被衰減」誤判成「口味剛被強化」，get_recent_liked_items 排序會跟著壞。
+    改用獨立的 `decay_anchor`/`last_decay` 追蹤衰減起點與進度；被重新強化時
+    last_update 變新，下次衰減自然重新給 30 天寬限，不用特別重置 decay_anchor。
+    """
+    changed = False
+    for key, e in list(taste.items()):
+        if not isinstance(e, dict):
+            continue
+        anchor = max(float(e.get("last_update") or 0), float(e.get("decay_anchor") or 0))
+        if anchor == 0:
+            e["decay_anchor"] = now
+            changed = True
+            continue
+        start = max(anchor + TASTE_DECAY_GRACE_S, float(e.get("last_decay") or 0))
+        if now <= start:
+            continue
+        step = (now - start) / _WEEK_S * TASTE_DECAY_PER_WEEK
+        s = float(e.get("score", 0))
+        new = max(0.0, s - step) if s > 0 else min(0.0, s + step)
+        e["score"] = new
+        e["last_decay"] = now
+        changed = True
+        if abs(new) < TASTE_DECAY_DROP_BELOW:
+            del taste[key]
+    return changed
+
+
 _PLAYER_DEFAULTS: dict = {
     "personal_info": {
         "food": None, "clothing": None,

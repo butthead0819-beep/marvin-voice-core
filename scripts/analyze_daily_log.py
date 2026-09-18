@@ -32,6 +32,7 @@ if str(BASE_DIR) not in sys.path:
 from suki_memory import (  # noqa: E402
     LIKE_THRESHOLD, DISLIKE_THRESHOLD, _SCORE_MIN, _SCORE_MAX,
     _build_taste_from_legacy, _project_taste,
+    apply_taste_decay, is_pseudo_player,
 )
 
 # daily review 一次提及對 taste 加的分量。< LIKE_THRESHOLD(3.0) → 單日弱印象只進「曾提及」，
@@ -118,7 +119,7 @@ STT 音近詞常見錯誤（`馬文→罵文`、`狗與鹿→夠與鹿` 等）�
 對每位出現過的玩家，更新以下欄位（以 FIFO 原則，近期事件優先）：
 
 - `personal_info`：食衣住行育樂（2-5字精簡）
-- `likes` / `dislikes` / `taboos`：追加去重
+- `likes` / `dislikes` / `taboos`：追加去重。**若新項目跟該玩家現有記憶 `taste` 裡的某個項目指同一件事（同義、換句話說、多或少修飾詞），必須原封不動沿用現有項目的字串，不准另創新寫法**（例：現有「寵物柴犬（火柴）」就不要再寫「柴犬（火柴）」；現有「自動化腳本開發」就不要寫「開發自動化腳本」）
 - `suki_impression`：**最重要** — 以馬文第一人稱視角寫主觀感受與互動策略，充滿個性（憂鬱、犬儒、但偶爾在意）
 - `emotional_highlights`：今日高情緒時刻（喜悅/憤怒/脆弱），加入新的，超過10筆則刪除最舊的
 - `stats`：根據 feedback.jsonl 更新 `pos_feedback`（喜歡+提出興趣）、`neg_feedback`（嚴重+錯誤）
@@ -506,6 +507,50 @@ def merge_players_safe(existing_players: dict, updated_players: dict) -> dict:
         else:
             merged[name] = data
     return merged
+
+
+def apply_decay_to_players(players: dict, now: float) -> list:
+    """對所有玩家（含今日沒出現的）套口味衰減，回傳有變動的玩家名。
+
+    隔離策略同 merge_players_safe：單一玩家炸不拖垮其他玩家。
+    """
+    changed = []
+    for name, p in players.items():
+        if is_pseudo_player(name) or not isinstance(p, dict):
+            continue
+        taste = p.get("taste")
+        if not isinstance(taste, dict):
+            continue
+        try:
+            if apply_taste_decay(taste, now):
+                _project_taste(p)
+                changed.append(name)
+        except Exception as e:
+            print(
+                f"[Daily Review] ⚠ taste decay skipped: {name!r} "
+                f"({type(e).__name__}: {e})",
+                flush=True,
+            )
+    return changed
+
+
+def decay_players_in_db(*, db_path: str, json_path: str, now: float) -> list:
+    """從 DB 讀每位玩家當下最新紀錄 → 套口味衰減 → 有變動才寫回。回傳有變動的玩家名。
+
+    直接讀 cache 而不走 get_player_memory：後者會把 last_interacted_time 改成現在，
+    每天衰減一次就等於把所有人的「最後互動時間」都洗成 daily review 執行時間。
+    """
+    import copy
+    if str(BASE_DIR) not in sys.path:
+        sys.path.insert(0, str(BASE_DIR))
+    from suki_memory import MemoryManager
+
+    mm = MemoryManager(db_path=db_path, json_compat_path=json_path)
+    players = {name: copy.deepcopy(mm._cache[name]) for name in mm.list_players()}
+    changed = apply_decay_to_players(players, now)
+    for name in changed:
+        mm.replace_player_memory(name, players[name])
+    return changed
 
 
 def _enforce_meta_review_date(final_memory: dict, target_date: str) -> None:
@@ -1685,6 +1730,18 @@ def main():
     except Exception as e:
         print(f"[Daily Review] ⚠ player 寫回 SQLite 失敗（json 已寫，bot 重啟前不生效）: {e}",
               flush=True)
+
+    # 9c. 口味時間衰減（30 天沒強化開始衰減，含今日沒出現的玩家）。放在寫回之後、從 DB
+    # 讀當下最新紀錄再衰減：不能套在本輪開頭讀的 JSON 快照上——LLM 分析跑好幾分鐘，
+    # 期間 bot 對任何玩家的新寫入都會被舊快照整筆蓋掉（反向 lost-update）。
+    try:
+        decayed_players = decay_players_in_db(
+            db_path=str(BASE_DIR / "marvin.db"), json_path=str(MEMORY_FILE), now=time.time(),
+        )
+        if decayed_players:
+            print(f"[Daily Review] 🍂 口味衰減：{len(decayed_players)} 位 {decayed_players}", flush=True)
+    except Exception as e:
+        print(f"[Daily Review] ⚠ 口味衰減失敗（不影響其他記憶）: {e}", flush=True)
 
     score = result.get("marvin_performance", {}).get("score", "N/A")
     trend = result.get("marvin_performance", {}).get("trend", "")
