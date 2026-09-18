@@ -34,6 +34,7 @@ def _make_guard_self(*, is_playing_audio=True):
     fake._nudges.signal = MagicMock(return_value=False)
     # staticmethod：MagicMock 預設回 truthy Mock 會誤繞 echo，明確設 False
     fake._strong_voice_bypass_echo = MagicMock(return_value=False)
+    fake._intent_bypass_echo = MagicMock(return_value=False)
     return fake
 
 

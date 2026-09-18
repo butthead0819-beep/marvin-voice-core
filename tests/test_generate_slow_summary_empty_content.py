@@ -95,3 +95,57 @@ async def test_llm_explicit_skip_still_returns_none():
 
     assert result is None
     fake._call_cloud.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_groq_call_uses_reasoning_effort_low_for_gpt_oss_model():
+    """gpt-oss 系列推理模型：要傳 reasoning_effort=low 省 token，且 max_tokens 拉到 1500。"""
+    fake = _make_fake_router(groq_content="核心：今天聊了排班系統")
+    fake.groq_fallback_model = "openai/gpt-oss-120b"
+
+    await GeminiRouterContentMixin.generate_slow_summary(fake, _entries())
+
+    _, kwargs = fake.groq_dedicated_client.chat.completions.create.call_args
+    assert kwargs.get("reasoning_effort") == "low"
+    assert kwargs.get("max_tokens") == 1500
+
+
+@pytest.mark.asyncio
+async def test_groq_call_omits_reasoning_effort_for_non_gpt_oss_model():
+    """非 gpt-oss 模型不該多傳 reasoning_effort（該模型 API 可能不吃這個參數）。"""
+    fake = _make_fake_router(groq_content="核心：今天聊了排班系統")
+    fake.groq_fallback_model = "llama-3.3-70b-versatile"
+
+    await GeminiRouterContentMixin.generate_slow_summary(fake, _entries())
+
+    _, kwargs = fake.groq_dedicated_client.chat.completions.create.call_args
+    assert "reasoning_effort" not in kwargs
+    assert kwargs.get("max_tokens") == 1500
+
+
+@pytest.mark.asyncio
+async def test_llm_explicit_skip_logs_warning(caplog):
+    """SKIP 目前是 INFO 會被濾掉，改成 WARNING 才看得到；日記整天沒動靜要能查。"""
+    fake = _make_fake_router(groq_content="SKIP")
+
+    with caplog.at_level("WARNING"):
+        result = await GeminiRouterContentMixin.generate_slow_summary(fake, _entries())
+
+    assert result is None
+    assert any("[Diary] LLM 回傳 SKIP" in record.message for record in caplog.records
+                if record.levelname == "WARNING")
+
+
+@pytest.mark.asyncio
+async def test_groq_empty_content_logs_warning_with_finish_reason(caplog):
+    """Groq 回空內容要留 WARNING（含 finish_reason），不然日記整天沒動靜完全看不出原因。"""
+    fake = _make_fake_router(groq_content="")
+    fake.groq_dedicated_client.chat.completions.create.return_value.choices[0].finish_reason = "length"
+    fake._call_cloud = AsyncMock(return_value="核心：x")
+
+    with caplog.at_level("WARNING"):
+        result = await GeminiRouterContentMixin.generate_slow_summary(fake, _entries())
+
+    assert result == "核心：x"
+    assert any("Groq 回空內容" in record.message for record in caplog.records
+                if record.levelname == "WARNING")

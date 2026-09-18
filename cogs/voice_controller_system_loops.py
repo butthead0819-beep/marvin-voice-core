@@ -176,6 +176,8 @@ class SystemLoopsMixin:
                 return_exceptions=True
             )
             summary  = results[0] if not isinstance(results[0], BaseException) else None
+            if isinstance(results[0], BaseException):
+                print(f"❌ [SlowLoop] 日記生成例外（被 gather 吞掉）: {results[0]!r}", flush=True)
             analysis = results[1] if can_analyze and not isinstance(results[1], BaseException) else None
 
             # 4. 寫入本地日誌 (RAG 來源)
