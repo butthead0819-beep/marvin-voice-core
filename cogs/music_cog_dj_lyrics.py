@@ -474,7 +474,7 @@ class MusicDJLyricsMixin:
             spoken_match = find_spoken_taste_match(_suki_mem, _clean_t, _clean_a, _people)
         except Exception:
             spoken_match = None  # fail-open：記憶讀取失敗不影響 DJ
-        memory_evidence = spoken_match or affinity or ""
+        memory_evidence = (info.get('_state_reason') or '') or spoken_match or affinity or ""
 
         # 🎵 音樂深度知識（作詞作曲、收錄專輯、官方創作背景/維基百科典故）
         try:

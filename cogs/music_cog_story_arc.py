@@ -317,6 +317,54 @@ class MusicStoryArcMixin:
             f"🎬 《{staged.get('arc_title', '')}》，{len(staged.get('nodes', []))} 首歌，開始了。")
         await self._play_story_arc(staged)
 
+    async def _maybe_state_pick(self, spotlight: str, members: list, cands: list) -> list:
+        """💬 [StatePick] spotlight 近期有狀態（如「感冒喉嚨痛」）→ LLM 從他自己的候選池挑一首
+        排第一、附關心理由（DJ 口白 memory_match 用）。任何不符/失敗回原 cands，不中斷選歌。
+        隱私：當事人在場才用；taboos/annoyed 在 collect_fresh_states 排除。見 state_song_pick.py。"""
+        try:
+            if os.getenv("MARVIN_STATE_PICK") != "1":
+                return cands
+            import dataclasses
+            from state_song_pick import (MAX_TITLES, PERSON_COOLDOWN_S, build_state_pick_prompt,
+                                         collect_fresh_states, parse_state_pick)
+            from suki_memory import is_pseudo_player
+            if not spotlight or is_pseudo_player(spotlight) or spotlight not in members:
+                return cands
+            suki = getattr(getattr(self.bot, 'router', None), 'memory', None)
+            if suki is None or not suki.has_player(spotlight):
+                return cands
+            store = self._dj_topic_store()
+            person_key = f"state_pick:{spotlight}"
+            if not store.is_cool("", meme_id=person_key, cooldown_s=PERSON_COOLDOWN_S):
+                return cands
+            states = [s for s in collect_fresh_states(suki.get_player_memory(spotlight), now=time.time())
+                      if store.is_cool(s)]
+            if not states:
+                return cands
+            titles = [c.anchor_title for c in cands[:MAX_TITLES]]
+            if len(titles) < 2:
+                return cands
+            # 不管 LLM 成敗都先冷卻這個人，避免每輪重打 LLM
+            store.mark_used("", meme_id=person_key, cooldown_s=PERSON_COOLDOWN_S)
+            sys_p, user_p = build_state_pick_prompt(spotlight, states, titles)
+            # 不傳 speaker=：會被算進該人的互動次數
+            raw = await asyncio.wait_for(
+                self.bot.router._call_llm(sys_p, user_p, is_json=True, tier="simple",
+                                          purpose="state_song_pick"),
+                timeout=10)
+            parsed = parse_state_pick(raw, n_titles=len(titles), n_states=len(states))
+            if parsed is None:
+                logger.info(f"💬 [StatePick] {spotlight} 有狀態但 LLM 沒挑（無合適/不合格）")
+                return cands
+            idx, s_idx, reason = parsed
+            store.mark_used(states[s_idx])
+            chosen = dataclasses.replace(cands[idx], state_reason=reason)
+            logger.info(f"💬 [StatePick] {spotlight} 狀態『{states[s_idx][:20]}』→《{chosen.anchor_title}》")
+            return [chosen] + [c for i, c in enumerate(cands) if i != idx]
+        except Exception:
+            logger.debug("[StatePick] 失敗，沿用原候選", exc_info=True)
+            return cands
+
     async def _auto_recommend(self, username: str, *, _tier: int = 1):
         """佇列空 → 依在場成員的音樂記憶推薦下一首批。"""
         mm = getattr(self.bot, 'music_memory', None)
@@ -379,6 +427,7 @@ class MusicStoryArcMixin:
         _k_buf = self._round_size * 3
         if _tier == 1:
             cands = pick_candidates(pool, k=_k_buf, top_n=max(9, _k_buf))
+            cands = await self._maybe_state_pick(spotlight, members, cands)
             ring_exclude = exclude_titles
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
             _played_titles = mm.get_recently_played_titles(self._PLAYED_EXCLUDE_TTL_S)
@@ -500,6 +549,8 @@ class MusicStoryArcMixin:
             # 上次聽是 0 週前」這種自我指涉的假解釋算進去。這裡拿到的還是播放前的乾淨
             # 歷史（見 explanation_slotfill.py 開頭動機說明）。
             info['_explanation'] = self._compute_recommend_explanation(mm, cand)
+            if getattr(cand, 'state_reason', ''):
+                info['_state_reason'] = cand.state_reason
             info['_round_position'] = enqueued
             # round 內同批 enqueue 時 stream_history 還沒更新到本輪前面幾首歌（要等真正播放
             # 才 append），DJ 反查 prev_title 會抓到上一輪的舊歷史。round 內歌曲會依序播放，

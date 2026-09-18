@@ -108,6 +108,7 @@ class Candidate:
     score: float
     direct_url: str = ""         # T2 discovery：自帶 YouTube URL → enqueue 時直解不搜尋
     discovery_seed_title: str = ""  # T2 discovery：觸發這首候選的 YT Music radio 種子曲名
+    state_reason: str = ""       # state pick：依個人近期狀態挑中時的關心理由（DJ 口白用）
 
 
 def _last_play_ts(song: dict) -> float:
