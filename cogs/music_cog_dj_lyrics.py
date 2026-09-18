@@ -453,6 +453,7 @@ class MusicDJLyricsMixin:
         from dj_social_affinity import (
             detect_back_to_back_artist,
             find_song_social_affinity,
+            find_spoken_taste_match,
             format_temporal_atmosphere,
         )
 
@@ -463,6 +464,17 @@ class MusicDJLyricsMixin:
         affinity = find_song_social_affinity(mm, info, requester, present_members)
         if affinity:
             ctx.append(f"喜好線索：{affinity}")
+
+        spoken_match = None
+        try:
+            _suki_mem = getattr(getattr(self.bot, 'router', None), 'memory', None)
+            _spotlight = info.get('_spotlight', '') or ''
+            _people = ([requester] if not requester.startswith('Marvin') else ([_spotlight] if _spotlight else []))
+            _people += sorted(present_members or [])
+            spoken_match = find_spoken_taste_match(_suki_mem, _clean_t, _clean_a, _people)
+        except Exception:
+            spoken_match = None  # fail-open：記憶讀取失敗不影響 DJ
+        memory_evidence = spoken_match or affinity or ""
 
         # 🎵 音樂深度知識（作詞作曲、收錄專輯、官方創作背景/維基百科典故）
         try:
@@ -518,13 +530,17 @@ class MusicDJLyricsMixin:
             emotional_highlights=emotional_highlights,
             news_items=news_items,
             autopilot_reason=_autopilot_reason,
+            memory_evidence=memory_evidence,
         )
 
         # 開場鉤子提示依「歌會中的心理機制」分兩類套用：
         #   代入感（life/interest）——這是聽眾自己的事，別只是轉述，要讓人覺得被說中。
         #   氣氛精準（atmosphere）——緊扣這個時間/地點，像特別為這一刻準備的。
         # conversation/prev_song 本身就是銜接類，維持原本的過場方向指示即可。
-        if mode == "life":
+        if mode == "memory_match":
+            ctx.append(f"記憶證據（這首為什麼現在放）：\n・{topic}")
+            ctx.append("開場鉤子：開場直接點名講出這條記憶證據，讓對方聽得出你記得他說過/做過的事；只能講證據裡寫的事實，不准自己補細節或編故事。")
+        elif mode == "life":
             ctx.append(f"最近生活：\n・{topic}")
             ctx.append(random.choice(self._DJ_EMPATHY_HOOK_TEMPLATES))
         elif mode == "interest":

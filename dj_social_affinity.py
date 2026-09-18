@@ -97,6 +97,55 @@ def format_temporal_atmosphere(
     return f"環境：{' · '.join(parts)}"
 
 
+def find_spoken_taste_match(
+    suki,
+    clean_title: str,
+    clean_artist: str,
+    people: list[str],
+) -> str | None:
+    """在場者「親口說過喜歡」的歌手/歌 ↔ 這首歌的強匹配（suki_memory 的 likes）。
+
+    只認 suki_memory 記下的 likes/taboos，不做 fuzzy/拼音/LLM 猜測——證據要
+    「講死」才拿來當這輪口白的主題，猜錯比不猜更傷。依 people 順序找第一個
+    命中的人即回傳，不掃完全部。
+    """
+    if suki is None or not people:
+        return None
+
+    seen: set[str] = set()
+    for person in people:
+        if not person or person in seen:
+            continue
+        seen.add(person)
+        if person.startswith("Marvin"):
+            continue
+        if not suki.has_player(person):
+            continue
+        mem = suki.get_player_memory(person)
+        likes = mem.get("likes")
+        if not isinstance(likes, list):
+            likes = []
+        taboos = mem.get("taboos")
+        if not isinstance(taboos, list):
+            taboos = []
+
+        for raw_like in likes:
+            like = str(raw_like).strip()
+            if len(like) < 2:
+                continue
+            if like in taboos:
+                continue
+            hit = (
+                (clean_artist and like == clean_artist)
+                or (like in clean_title)
+                or (len(clean_artist) >= 2 and clean_artist in like)
+            )
+            if hit:
+                return f"{person} 說過喜歡{like}"
+
+    return None
+
+
 def find_song_social_affinity(
     mm: MusicMemory | None,
     info: dict,

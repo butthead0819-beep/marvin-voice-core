@@ -41,7 +41,9 @@ side effect」的兩段決策——尾段點火時機、話題來源挑選——
    b. `_lane == 'themed'`：直接用主題歌單策展時寫好的選歌理由
       （`_themed_dj_text`），同樣跳過 LLM。
    c. 話題來源挑選（**跟要不要講的「文字」是兩件事**——這一步只決定
-      「這輪如果要講，素材從哪來」）：`dj_topic_selector.select_mode()`
+      「這輪如果要講，素材從哪來」）：優先看 memory_evidence（在場者親口
+      說過喜歡這首歌/歌手的具體證據，命中且未冷卻直接勝出，跳過下面
+      select_mode）→ 都沒有才交給 `dj_topic_selector.select_mode()`
       依生活素材（dj_life_context 抽出、事件主角要在場）→ 在場興趣 →
       情緒高光 → 新聞 → 都沒有時在 conversation/prev_song/atmosphere/quick
       間本地輪替，挑一個 mode。若 autopilot 有算好推薦理由
@@ -123,14 +125,20 @@ def select_narration_mode(
     emotional_highlights=None,
     news_items=None,
     autopilot_reason: str = "",
+    memory_evidence: str = "",
 ) -> tuple[str | None, str]:
     """[Step 5c] 這輪串場的話題素材從哪來——原樣包
     `_fetch_dj_interjection_raw` 裡「呼叫 dj_topic_selector.select_mode
     →autopilot 理由覆蓋 quick/atmosphere」這兩步的固定組合。
 
-    優先序（真正的挑選邏輯在 `dj_topic_selector.select_mode` 裡，這裡不
-    重複實作）：近期生活（主角要在場）→ 在場興趣 → 情緒高光 → 新聞 →
-    conversation/prev_song/atmosphere/quick 本地輪替。
+    優先序：記憶對歌（memory_evidence，在場者親口說過喜歡這首歌/歌手的
+    具體證據，命中且沒冷卻中就直接勝出，不再進 select_mode）→ 近期生活
+    （主角要在場）→ 在場興趣 → 情緒高光 → 新聞 →
+    conversation/prev_song/atmosphere/quick 本地輪替（真正的挑選邏輯在
+    `dj_topic_selector.select_mode` 裡，這裡不重複實作）。
+
+    memory_evidence 命中時**不呼叫** `select_mode`——否則 life/interest
+    話題會被白白 `mark_used` 冷卻掉，等於這輪沒講到卻先燒掉了下次的素材。
 
     autopilot_reason 覆蓋規則原樣照抄 `_fetch_dj_interjection_raw`：只有
     Marvin 自己選歌才會算出 `_autopilot_pick_reason`；只在 select_mode
@@ -140,8 +148,14 @@ def select_narration_mode(
     素材的 mode。
 
     回傳 (topic_text, mode)，跟 `select_mode` 的回傳形狀一致，mode
-    多一種 "reason" 是這一步疊加上去的，不是 `select_mode` 本身會回的值。
+    多兩種 "memory_match"/"reason" 是這一步疊加上去的，不是 `select_mode`
+    本身會回的值。
     """
+    ev = (memory_evidence or "").strip()
+    if ev and topic_store.is_cool(ev):
+        topic_store.mark_used(ev)
+        return ev, "memory_match"
+
     topic, mode = select_mode(
         life,
         interests,
