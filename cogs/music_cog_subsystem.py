@@ -108,6 +108,22 @@ class MusicSubsystemMixin:
                        f"→ 叫醒，佇列 {len(self.stream_queue)} 首")
         return True
 
+    def _resume_when_nothing_paused(self, speaker: str, can_play: bool) -> str:
+        """「繼續播放」但沒東西在暫停時的處理，回傳要貼的回覆。
+
+        沒在播（例如重啟後 loop 不在跑）→「繼續播放」= 叫醒串流迴圈接 autopilot；
+        loop 還活著或 radio 模式 → 維持原本「沒有東西在暫停」（2026-09-18 重啟後
+        「馬文繼續播放」空轉、一片安靜事故）。
+        """
+        loop_alive = self.stream_task is not None and not self.stream_task.done()
+        if loop_alive or self.radio_mode or not can_play:
+            return "😑 沒有東西在暫停。"
+        self._ensure_stream_loop()
+        vc = self._vc()
+        if vc is not None and hasattr(vc, 'stt_logger'):
+            vc.stt_logger.info(f"[音樂控制→{speaker}] 指令=resume→啟動串流 (plan12=True)")
+        return "▶️ 沒東西暫停，那我自己挑歌接著放。"
+
     def _cancel_stream_task(self, reason: str) -> None:
         """統一 stream_task.cancel() 出口 + 記錄呼叫來源。
 

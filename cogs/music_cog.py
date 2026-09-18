@@ -379,7 +379,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 return True
             # else：池空、session 已清 → 落下面一般推薦
         vc = self._vc()
-        _rb = (self._current_stream_info or {}).get('requested_by')
+        _rb = (self._current_stream_info or {}).get('requested_by') or 'Marvin推薦（點給大家）'  # 重啟後無上一首→視同 Marvin 推薦（9/18 回台接不回 autopilot）
         online = self._autopilot_online_members(vc.get_online_members() if vc is not None else [])
         _seed = self._autorecommend_seed(_rb, online)
         if _seed:
@@ -1277,7 +1277,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
 
         elif cmd == "resume":
             if not self.stream_paused and not self.radio_paused:
-                if ch: await ch.send("😑 沒有東西在暫停。")
+                if ch: await ch.send(self._resume_when_nothing_paused(speaker, _can_play))
                 return
             if not _can_play:
                 if ch: await ch.send("😑 找不到語音連線。")

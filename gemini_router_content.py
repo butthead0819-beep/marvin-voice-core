@@ -722,6 +722,7 @@ class GeminiRouterContentMixin:
             if self.groq_dedicated_client and self.groq_fallback_model:
                 try:
                     import asyncio as _asyncio
+                    _extra = {"reasoning_effort": "low"} if "gpt-oss" in (self.groq_fallback_model or "") else {}
                     response = await _asyncio.wait_for(
                         self.groq_dedicated_client.chat.completions.create(
                             model=self.groq_fallback_model,
@@ -730,13 +731,17 @@ class GeminiRouterContentMixin:
                                 {"role": "user", "content": user_prompt}
                             ],
                             temperature=0.75,
-                            max_tokens=300,
-                            stream=False
+                            max_tokens=1500,
+                            stream=False,
+                            **_extra
                         ),
                         timeout=12.0
                     )
                     content = response.choices[0].message.content
                     summary = content.strip() if content else ""
+                    if not summary:
+                        _finish_reason = getattr(response.choices[0], "finish_reason", None)
+                        logger.warning(f"⚠️ [Diary] Groq 回空內容（finish_reason={_finish_reason}），改走雲端")
                 except Exception as e:
                     logger.warning(f"⚠️ [Diary] Groq 失敗，嘗試 Gemini: {e}")
 
@@ -755,7 +760,7 @@ class GeminiRouterContentMixin:
 
             # LLM 主動判斷無新意
             if summary.upper().startswith("SKIP"):
-                logger.info("📭 [Diary] LLM 回傳 SKIP，本輪內容無新意。")
+                logger.warning("📭 [Diary] LLM 回傳 SKIP，本輪內容無新意。")
                 return None
 
             # 只儲存第一行作為下一輪前情提要，不儲存完整摘要防止模板擴散

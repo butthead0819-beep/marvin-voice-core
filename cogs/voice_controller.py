@@ -785,7 +785,25 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return False
         return wake_dom == "voice" and confidence >= 0.45 and (voice_score or 0) >= 0.9
 
+    @staticmethod
+    def _intent_bypass_echo(is_playing_audio: bool, current_tts_text: str,
+                            now: float, tts_cooldown_until: float,
+                            wake_dom, confidence) -> bool:
+        """純音樂播放中（非 TTS 回授窗）意圖明確的指令放行（喚醒詞被 STT 聽糊也能點歌/切歌）。
 
+        2026-09-18：「麻煩播放…」「幫我下一首」「把我們播放迪拜人」total≈0.56 dom=control/task
+        被 Echo Guard 全擋；同時段閒聊 total=0.346 要繼續擋。安全前提同 _strong_voice_bypass_echo：
+        bot 正在講 TTS / TTS 冷卻窗內 / legacy 路徑（confidence=None）一律不繞。
+        """
+        if not is_playing_audio:
+            return False
+        if current_tts_text:
+            return False
+        if now < tts_cooldown_until:
+            return False
+        if confidence is None:
+            return False
+        return wake_dom in ("control", "task") and confidence >= 0.5
 
 
 
@@ -1517,9 +1535,17 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 f"🎙️ [Strong-Voice Bypass] {speaker} 音樂播放中強人聲喚醒放行 "
                 f"(total={_confidence:.2f} v={_wake_voice_score} dom={_wake_dom})"
             )
+        if is_echo and self._intent_bypass_echo(
+                self.is_playing_audio, self._current_tts_text, now,
+                self._tts_echo_cooldown_until, _wake_dom, _confidence):
+            is_echo = False
+            logger.info(
+                f"🎛️ [Intent Bypass] {speaker} 音樂播放中意圖指令放行 "
+                f"(total={_confidence:.2f} dom={_wake_dom}) '{raw_text[:40]}'"
+            )
         if is_echo:
             _reason = "播放中" if self.is_playing_audio else f"TTS冷卻({self._tts_echo_cooldown_until - now:.1f}s)"
-            logger.info(f"⏭️ [Echo Guard] {_reason}，抑制來自 {speaker} 的可能回授觸發。")
+            logger.info(f"⏭️ [Echo Guard] {_reason}，抑制來自 {speaker} 的可能回授觸發：'{raw_text[:60]}'")
             is_fast = False
             is_duplicate = True
             # 🔇 [Noise Nudge] 純音樂播放中（非 TTS 回授窗）被擋掉的喚醒句若含喚醒詞 →
