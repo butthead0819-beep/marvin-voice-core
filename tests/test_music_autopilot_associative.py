@@ -88,8 +88,7 @@ async def test_try_associative_pick_success(monkeypatch):
     mm.get_skipped_video_ids.return_value = set()
     mm.get_recently_played_video_ids.return_value = set()
 
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)), \
-         patch("track_quality.is_non_song_video", return_value=False):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)):
         n = await host._try_associative_pick(
             members=["showay", "狗與露"],
             exclude_titles=[],
@@ -125,8 +124,12 @@ async def test_try_associative_pick_is_non_song_rejected(monkeypatch):
     mm.get_skipped_video_ids.return_value = set()
     mm.get_recently_played_video_ids.return_value = set()
 
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)), \
-         patch("track_quality.is_non_song_video", return_value=True):
+    async def _long_video(query):
+        return {"title": "某Podcast 聊天大會 完整版", "url": "https://www.youtube.com/watch?v=long",
+                "webpage_url": "https://www.youtube.com/watch?v=long", "duration": 3600}
+    host._resolve_yt_query = _long_video
+
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)):
         n = await host._try_associative_pick(
             members=["showay"],
             exclude_titles=[],
@@ -172,3 +175,54 @@ async def test_dj_interjection_uses_associative_dj_line():
     assert res["text"] == info["_dj_line"]
     assert res["audio_path"] == "/tmp/audio.mp3"
 
+
+
+@pytest.mark.asyncio
+async def test_associative_cooldown_starts_even_when_llm_returns_nothing(monkeypatch):
+    """LLM 沒挑出歌也要冷卻，否則每輪 refill 都重打一次付費 LLM。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=None)):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                             spotlight="showay", mm=None)
+    assert n == 0
+    assert host._last_associative_pick_ts > 0
+    assert host._associative_gate_open(time.time()) is False
+
+
+@pytest.mark.asyncio
+async def test_associative_paid_call_tagged_with_own_caller(monkeypatch):
+    """付費呼叫必須以 caller="associative_curation" 記帳，不能混進 paid_review。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    seen = {}
+
+    async def fake_paid(content, *, system, **kw):
+        seen.update(kw)
+        return None
+
+    with patch("llm_pool.call_paid_review", fake_paid):
+        await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                         spotlight="showay", mm=None)
+    assert seen.get("caller") == "associative_curation"
+
+
+@pytest.mark.asyncio
+async def test_associative_slow_llm_times_out_fast(monkeypatch):
+    """LLM 卡住不能讓空佇列一直等：整段選曲有硬上限，逾時回 0 走一般 autopilot。"""
+    import asyncio
+    import cogs.music_cog_autopilot as ap
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    monkeypatch.setattr(ap, "_ASSOCIATIVE_LLM_TIMEOUT_S", 0.05)
+    host = DummyAutopilotHost()
+
+    async def hang(*a, **kw):
+        await asyncio.sleep(30)
+
+    t0 = time.monotonic()
+    with patch("associative_curation.curate_associative_song", hang):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                             spotlight="showay", mm=None)
+    assert n == 0
+    assert time.monotonic() - t0 < 2.0
+    assert host.stream_queue == []

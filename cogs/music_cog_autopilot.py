@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import functools
 import logging
 import os
 import random
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 _TASTE_PROFILE_CACHE = "records/taste_profiles.json"
 _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 _SONG_BPM_STORE = "records/song_bpm.json"
+_ASSOCIATIVE_LLM_TIMEOUT_S = 20.0  # 關聯選曲 LLM 硬上限：空佇列時跑，不能讓頻道靜音太久
 
 
 class MusicAutopilotMixin:
@@ -581,18 +583,28 @@ class MusicAutopilotMixin:
             if len(utts) < 2:
                 return 0
 
+            # 不管 LLM / 搜尋 / 品質閘成敗都先冷卻，避免每輪 refill 重打付費 LLM（同 StatePick）
+            self._last_associative_pick_ts = now
+
             # 2. 準備口味指紋與在場者
             taste_fp = self._load_taste_fingerprint() if hasattr(self, '_load_taste_fingerprint') else {}
             core_artists = [a for a, _ in (taste_fp.get("core_artists") or [])][:8]
 
             # 3. LLM 關聯選曲
-            pick = await curate_associative_song(
-                utts,
-                core_artists=core_artists,
-                exclude_titles=exclude_titles,
-                members=members,
-                call_fn=call_paid_review,
-            )
+            try:
+                pick = await asyncio.wait_for(
+                    curate_associative_song(
+                        utts,
+                        core_artists=core_artists,
+                        exclude_titles=exclude_titles,
+                        members=members,
+                        call_fn=functools.partial(call_paid_review, caller="associative_curation"),
+                    ),
+                    timeout=_ASSOCIATIVE_LLM_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.info(f"🎵 [AssociativePick] LLM 逾時 {_ASSOCIATIVE_LLM_TIMEOUT_S}s，走一般 autopilot")
+                return 0
             if not pick:
                 return 0
 
@@ -603,8 +615,9 @@ class MusicAutopilotMixin:
                 logger.info(f"🎵 [AssociativePick] YouTube 搜尋解析失敗: {query}")
                 return 0
 
-            if is_non_song_video(info):
-                logger.info(f"🛡️ [AssociativePick] 品質閘拒絕非歌曲影片: {info.get('title')}")
+            rejected, reason = is_non_song_video(info.get('title', ''), info.get('duration'))
+            if rejected:
+                logger.info(f"🛡️ [AssociativePick] 品質閘拒絕非歌曲影片({reason}): {info.get('title')}")
                 return 0
 
             if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
@@ -628,7 +641,6 @@ class MusicAutopilotMixin:
                 if mm:
                     mm.add_recent_recommendation(_rt)
             self._republish_queue_snapshot()
-            self._last_associative_pick_ts = now
             logger.info(f"🎵 [AssociativePick] 成功入隊《{info.get('title')}》（話題: {pick.observed_topic}）")
             return 1
         except Exception:
