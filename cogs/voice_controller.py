@@ -124,8 +124,6 @@ from intent_agents.recommendation import (
 )
 from llm_pool import build_tiered_router
 
-from taste_extractor import extract_taste_signals
-
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
 # LLM 品味鄰近 seed 快取（taste_profile，每日離線生成；T2 env-gated LLM_TASTE_T2=on 才讀）
@@ -1296,11 +1294,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if is_fast and wav_bytes and self.bot.router.google_client:
             asyncio.create_task(self._update_emotion_from_audio(speaker, wav_bytes, raw_text))
 
-        # 👅 [Taste C] 即時明示偏好。只掛非喚醒路徑（is_fast 走 wake 熱路徑，不加 I/O）；
-        # inline 與主迴圈同 thread（避免共用 sqlite 連線競態）。命中才寫，罕見。
-        if not is_wake_check and not is_echo and not is_fast:
-            self._record_interest_signals(speaker, raw_text)
-
         if is_fast:
             if os.getenv("MARVIN_WAKE_DUCK", "1") != "0" and getattr(self, "_mixer", None): self._mixer.duck_for_wake()  # 🔇 喚醒→音樂沉一下即時回饋
             _track_label = f"Track={'A' if track is None else track}"
@@ -1779,29 +1772,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if self.stream_mode and self.active_text_channel:
             self.bot.loop.create_task(self.active_text_channel.send(f"😑 {mock_line}"))
         self.bot.loop.create_task(self.play_tts(mock_line, silent_during_stream=True, priority=2))
-
-    # ------------------------------------------------------------------ #
-    # 👅  Taste C — 即時明示偏好偵測                                       #
-    # ------------------------------------------------------------------ #
-
-    def _record_interest_signals(self, speaker: str, raw_text: str) -> None:
-        """[Taste C] 抓明示偏好句（我喜歡/討厭 X）→ record_taste_signal 給小分入「曾提及」。
-
-        確定性 regex（taste_extractor），零 LLM；隱性興趣交 offline daily review（P1 修好同步
-        後已能進 bot）。只掛非喚醒路徑（保護 wake 延遲）、與主迴圈同 thread 寫 memory（避免共用
-        sqlite 連線競態）。active speaker 明示偏好即建 player（group-native）。side-channel：
-        任何例外吞掉，不拖垮 utterance pipeline。
-        """
-        try:
-            signals = extract_taste_signals(raw_text)
-            if not signals:
-                return
-            memory = self.bot.router.memory
-            for item, delta in signals:
-                memory.record_taste_signal(speaker, item, delta, reason="voice_explicit")
-                self.stt_logger.info(f"👅 [Taste-C] {speaker} 明示偏好 『{item}』{delta:+.1f}")
-        except Exception as e:
-            logger.debug(f"⚠️ [Taste-C] 即時偏好記錄失敗（不影響主流程）: {e}")
 
 
     async def process_debounced_speech(self, speaker: str):

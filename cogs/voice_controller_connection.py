@@ -878,8 +878,6 @@ class ConnectionMixin:
                 print(f"⚠️ [Shutdown Warning] {e}")
 
         active_speakers = set(entry.get("speaker") for entry in self.log_buffer if entry.get("speaker"))
-        for speaker in active_speakers:
-            asyncio.create_task(self.bot.router.audit_player_memory(speaker))
 
         self.stt_logger.info(
             f"[系統撤離] 馬文離開語音頻道 | 本次對話成員={list(active_speakers) or '無'}"

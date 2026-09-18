@@ -1,4 +1,4 @@
-"""Bug 2b: MemoryManager.replace_player_memory + audit_player_memory writeback.
+"""Bug 2b: MemoryManager.replace_player_memory（原為 audit_player_memory writeback；audit 已於 2026-09-18 移除）。
 
 舊版 audit pipeline 透過 `memory.data["players"][u] = cleaned` + `memory._save_data()`
 做整片覆寫；SQLite 重構後 .data 和 _save_data 都被刪了，整條記憶清洗 silently broken
@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -67,65 +66,3 @@ def test_replace_player_memory_persists_to_sqlite(tmp_path):
 def test_replace_player_memory_rejects_non_dict(mem):
     with pytest.raises((TypeError, ValueError)):
         mem.replace_player_memory("Alice", "not a dict")  # type: ignore[arg-type]
-
-
-# ── audit_player_memory: 清洗成功後正確回寫 ───────────────────────────────────
-
-@pytest.fixture
-def router_factory(tmp_path, monkeypatch):
-    """Build a ContentRouter wired to a real MemoryManager + mocked LLM."""
-    from gemini_router_content import GeminiRouterContentMixin
-
-    class _Router(GeminiRouterContentMixin):
-        def __init__(self):
-            pass
-
-    def _make(llm_response: str):
-        mem = MemoryManager(
-            db_path=str(tmp_path / "audit.db"),
-            json_compat_path=str(tmp_path / "audit.json"),
-        )
-        mem.update_player_memory("Alice", {"likes": ["dirty"]})
-
-        router = _Router()
-        router.memory = mem
-        router.prompt_manager = MagicMock()
-        router.prompt_manager.get_instruction.return_value = "sys"
-        router.dna = {}
-        router.temp_toxicity_override = None
-        router._call_llm = AsyncMock(return_value=llm_response)
-        return router, mem
-
-    return _make
-
-
-@pytest.mark.asyncio
-async def test_audit_writeback_replaces_cache_and_disk(router_factory):
-    cleaned = {
-        "personal_info": {"food": "拉麵"},
-        "likes": ["clean"],
-        "dislikes": [],
-        "taboos": [],
-        "suki_impression": "清洗後",
-    }
-    router, mem = router_factory(json.dumps(cleaned, ensure_ascii=False))
-
-    await router.audit_player_memory("Alice")
-
-    after = mem.get_player_memory("Alice")
-    assert after["likes"] == ["clean"], (
-        "audit 完成後應該整片覆寫；若仍包含舊的 'dirty' 表示回寫沒生效"
-    )
-    assert after["suki_impression"] == "清洗後"
-
-
-@pytest.mark.asyncio
-async def test_audit_rejects_malformed_llm_output(router_factory):
-    # 缺 personal_info：應拒絕寫入
-    bad = {"likes": ["clean"]}
-    router, mem = router_factory(json.dumps(bad))
-
-    await router.audit_player_memory("Alice")
-
-    after = mem.get_player_memory("Alice")
-    assert "dirty" in after["likes"], "格式異常時不應覆寫，舊資料必須保留"

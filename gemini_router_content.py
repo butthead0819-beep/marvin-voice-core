@@ -222,30 +222,6 @@ class GeminiRouterContentMixin:
             logger.error(f"🧠 [Proactive] 生成失敗: {e}")
             return f"喂，{speaker}，你在幹嘛？怎麼不說話？"
 
-    async def audit_player_memory(self, username: str):
-        """執行離線記憶稽查與清洗 (Operation Memory Audit)"""
-
-        logger.info(f"🧹 [Audit] 啟動 {username} 的記憶清洗程序...")
-        memory = self.memory.get_player_memory(username)
-        system_prompt = self.prompt_manager.get_instruction("memory_audit", dna=self.dna, speaker=username, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
-        user_prompt = f"以下是玩家 {username} 的原始記憶資料：\n{json.dumps(memory, ensure_ascii=False)}"
-        
-        try:
-            raw_json = await self._call_llm(system_prompt, user_prompt, is_json=True, allow_local=False, tier="high")
-            cleaned_data = safe_json_loads(raw_json, memory)
-            
-            # 🛡️ [Bug Fix] 資料品質檢核：確保 cleaned_data 不是 Fallback 或格式錯誤的內容
-            # 如果 cleaned_data 缺少關鍵欄位 (如 personal_info)，則拒絕寫入資料庫
-            if not isinstance(cleaned_data, dict) or "personal_info" not in cleaned_data:
-                logger.error(f"❌ [Audit] {username} 的清洗結果格式異常 (可能觸發了 Fallback)，拒絕寫入以防止資料污染。")
-                return
-
-            # 安全回寫數據（整片覆寫；SQLite 自動 commit）
-            self.memory.replace_player_memory(username, cleaned_data)
-            logger.info(f"✨ [Audit] {username} 的記憶清洗完成並已寫入資料庫。")
-        except Exception as e:
-            logger.error(f"❌ [Audit] 清洗崩潰: {e}")
-
     def _maybe_advance_relationship(self, speaker: str):
         """
         🌡️ [Operation Warm Circuit] 根據互動次數自動升級關係階段（純邏輯，零 LLM 呼叫）
