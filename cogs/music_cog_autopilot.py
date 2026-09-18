@@ -541,3 +541,97 @@ class MusicAutopilotMixin:
         except Exception:
             logger.exception("[ThemedSet] 失敗，fallback 一般 autopilot")
             return 0
+
+    # ── 🎵 Associative curation (對話關聯與歌詞金句選曲) ──────────────────────
+    _ASSOCIATIVE_COOLDOWN_S = 900.0  # 15 分鐘冷卻，防聽覺與選曲疲勞
+    _last_associative_pick_ts = 0.0
+
+    def _associative_gate_open(self, now: float) -> bool:
+        """🎵 關聯性選曲觸發閘：env 開啟（預設 on）+ 過冷卻。"""
+        if os.getenv("ASSOCIATIVE_CURATION", "on").strip().lower() in ("off", "0", "false", "no"):
+            return False
+        if now - getattr(self, "_last_associative_pick_ts", 0.0) < getattr(self, "_ASSOCIATIVE_COOLDOWN_S", 900.0):
+            return False
+        return True
+
+    async def _try_associative_pick(self, members: list, exclude_titles: list,
+                                   spotlight: str, mm) -> int:
+        """嘗試從近期對話中挑選 1 首關聯神曲入隊。回入隊首數（0 = 沒做 → caller 走一般流程）。"""
+        now = time.time()
+        if not self._associative_gate_open(now):
+            return 0
+
+        try:
+            from associative_curation import curate_associative_song
+            from music_recommender import is_already_recommended, ring_titles_for
+            from track_quality import is_non_song_video
+            from llm_pool import call_paid_review
+
+            # 1. 抓取近期對話
+            utts = []
+            conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
+            if conv_buf:
+                utts = conv_buf.get_last_n_utterances(15) or []
+            if not utts:
+                atm = getattr(getattr(self.bot, 'router', None), 'atmosphere_tracker', None)
+                if atm and hasattr(atm, '_window'):
+                    utts = [{'speaker': e.speaker, 'text': e.text} for e in atm._window]
+
+            utts = [u for u in utts if u.get('speaker') != 'Marvin' and u.get('text', '').strip()]
+            if len(utts) < 2:
+                return 0
+
+            # 2. 準備口味指紋與在場者
+            taste_fp = self._load_taste_fingerprint() if hasattr(self, '_load_taste_fingerprint') else {}
+            core_artists = [a for a, _ in (taste_fp.get("core_artists") or [])][:8]
+
+            # 3. LLM 關聯選曲
+            pick = await curate_associative_song(
+                utts,
+                core_artists=core_artists,
+                exclude_titles=exclude_titles,
+                members=members,
+                call_fn=call_paid_review,
+            )
+            if not pick:
+                return 0
+
+            # 4. 解析 YouTube 影片與品質把關
+            query = f"{pick.artist} {pick.song}"
+            info = await self._resolve_yt_query(query)
+            if not info or not info.get('url'):
+                logger.info(f"🎵 [AssociativePick] YouTube 搜尋解析失敗: {query}")
+                return 0
+
+            if is_non_song_video(info):
+                logger.info(f"🛡️ [AssociativePick] 品質閘拒絕非歌曲影片: {info.get('title')}")
+                return 0
+
+            if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
+                                          username=spotlight, webpage_url=info.get('webpage_url', '')):
+                return 0
+
+            if is_already_recommended(info.get('title', ''), exclude_titles):
+                return 0
+
+            # 5. 標註欄位並入隊
+            info['requested_by'] = "Marvin推薦（對話靈感）"
+            info['_lane'] = 'associative'
+            info['_spotlight'] = spotlight
+            info['_dj_line'] = pick.dj_line
+            info['_target_lyric'] = pick.target_lyric
+            info['_explanation'] = pick.reason
+            info['_round_first'] = True
+
+            self.stream_queue.append(info)
+            for _rt in ring_titles_for(info.get('title', ''), 'direct', info.get('title', '')):
+                if mm:
+                    mm.add_recent_recommendation(_rt)
+            self._republish_queue_snapshot()
+            self._last_associative_pick_ts = now
+            logger.info(f"🎵 [AssociativePick] 成功入隊《{info.get('title')}》（話題: {pick.observed_topic}）")
+            return 1
+        except Exception:
+            logger.exception("[AssociativePick] 失敗，fallback 一般 autopilot")
+            return 0
+

@@ -393,6 +393,12 @@ class MusicStoryArcMixin:
             if _n_themed > 0:
                 return
 
+            # 🎵 [AssociativeCuration] 嘗試對話關聯與歌詞金句選曲（env-gated + 冷卻，失敗回 0 → 走原 autopilot）
+            if hasattr(self, '_try_associative_pick'):
+                _n_assoc = await self._try_associative_pick(members, exclude_titles, spotlight, mm)
+                if _n_assoc > 0:
+                    return
+
         vibe_filter = None
         vibe_label = None
         if self._mood_sensor is not None:

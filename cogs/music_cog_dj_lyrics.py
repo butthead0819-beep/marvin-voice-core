@@ -583,6 +583,8 @@ class MusicDJLyricsMixin:
         # music_intro 砍成「狗與露」這種殘句（autopilot DJ 被截斷的根因）。
         gate_task = "dj_story"
         text = self._themed_dj_text(info)   # 主題歌單：直接播策展時寫好的理由，不重複燒 LLM
+        if not text and info.get('_lane') == 'associative':
+            text = (info.get('_dj_line') or '').strip()  # 關聯選曲：直接使用 45-55 字金句串場詞，不重複燒 LLM
 
         # 🎭 [DJ Joke Interlude] 頻道安靜（非熱烈聊天）且距上次超過冷卻時間 → 這輪
         # crossfade 換成馬文式厭世冷笑話。改用「策展笑話庫 + 歌名拼音比對」（見
@@ -662,7 +664,7 @@ class MusicDJLyricsMixin:
 
         audio_path = None
         try:
-            _emotion = self._DJ_MODE_TO_TTS_EMOTION.get(mode, "normal")
+            _emotion = getattr(self, '_DJ_MODE_TO_TTS_EMOTION', {}).get(mode, "normal")
             audio_path = await self.bot.tts_engine.generate_audio(text, emotion=_emotion)
         except Exception as e:
             logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
