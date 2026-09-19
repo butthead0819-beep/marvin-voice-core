@@ -355,22 +355,18 @@ async def test_grounded_model_chain_fallback():
 # ── 任意問題（廣義問句）與 10 分鐘 STT 背景注入測試 ────────────────────────
 
 @pytest.mark.parametrize("raw", [
-    "馬文 為什麼今天台北一直下雨",
-    "馬文 黑神話悟空評價好不好",
-    "馬文 明天台北會下雨嗎",
-    "馬文 大谷翔平今天第幾轟",
-    "馬文 南港展覽館附近牛肉麵推薦",
-    "馬文 最近川普有什麼新聞",
-    "馬文 那款遊戲特價到什麼時候？",
-    "馬文 剛才說的那個套件怎麼用",
-    "馬文 台積電今天跌多少",
-    "馬文 台北明天天氣怎樣",
-    "馬文 這附近有哪幾間咖啡廳？",
-    "馬文 這個問題該怎麼解決呢",
+    "馬文 請問為什麼今天台北一直下雨",
+    "馬文 我想知道黑神話悟空評價好不好",
+    "馬文 幫我搜尋南港展覽館附近牛肉麵",
+    "馬文 想問台積電今天跌多少",
+    "馬文 找一下這附近有哪幾間咖啡廳",
+    "馬文 你知不知道大谷翔平今天第幾轟",
 ])
-def test_parse_arbitrary_questions_hits(raw):
+def test_parse_lookup_verb_questions_hit(raw):
+    """明確查詢動詞（請問/想知道/搜尋/找一下…）帶出的問題要命中；
+    沒有動詞的寬版疑問詞/句尾嗎呢不觸發（閒聊誤觸，見 docstring 收斂版）。"""
     got = parse_grounded_qa(raw)
-    assert got is not None, f"廣義問句 {raw!r} 應命中 Grounded QA"
+    assert got is not None, f"{raw!r} 應命中 Grounded QA"
 
 
 @pytest.mark.parametrize("raw", [
@@ -479,3 +475,25 @@ async def test_run_grounded_qa_fetches_and_passes_stt_context(monkeypatch):
     assert "Jack: 台北今天天氣如何" in called_context["recent_context"]
     assert recorded and recorded[0]["answer"] == "今天台北晴天降雨機率 10%。"
 
+
+
+# ── code review 回歸：寬版疑問詞搶閒聊 / 你字開頭查詢被 _SELF_RE 吃掉 ──────────
+
+@pytest.mark.parametrize("raw", [
+    "馬文我比較喜歡周杰倫",
+    "馬文今天晚餐吃什麼",
+    "馬文我帥嗎",
+    "馬文閉嘴好嗎",
+    "馬文好無聊喔有沒有人要打遊戲",
+])
+def test_parse_chat_with_question_words_not_grounded(raw):
+    assert parse_grounded_qa(raw) is None, f"閒聊 {raw!r} 不該被搶去 Google 查"
+
+
+@pytest.mark.parametrize("raw", [
+    "馬文你幫我查一下台積電股價",
+    "馬文你查一下明天天氣",
+    "馬文妳幫我查一下颱風動態",
+])
+def test_parse_lookup_starting_with_ni_hits(raw):
+    assert parse_grounded_qa(raw) is not None, f"{raw!r} 是明確查詢，不該被當成問 Marvin 自身"

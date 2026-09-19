@@ -5,7 +5,8 @@ design doc AmbientQA-20260830。GameKnowledgeAgent 的 sibling：同款 Declarat
 （真查證 + L1/L2 幻覺 guard），不是 Marvin 主 LLM 常識。
 
 觸發（收斂版；backfill 2026-06→08 實測 3/3 精準、其餘 loose 命中多是閒聊反問）：
-  A. 「查」動詞：馬文(幫我/幫忙/麻煩/請)? 查/查詢/查一下 X
+  A. 查詢動詞：馬文(幫我/幫忙/麻煩/請)? 查/查詢/查一下/搜尋/請問/想知道/找一下 X
+     （寬版疑問詞 / 句尾嗎呢 9/19 試過又拿掉：「今天晚餐吃什麼」「我帥嗎」全被搶去查）
   B. 事實問句尾：X 是什麼 / 是誰 / 叫什麼 / 什麼意思 / 怎麼做 / 有多少 …
   兩者都排除：點歌 / 找歌 / 歌詞、音量控制、問 Marvin 自身狀態、low_confidence_wake
 
@@ -58,16 +59,6 @@ _FACTUAL_TAIL_RE = re.compile(
     r"|有?多[高大長遠重寬深久])"
     r"[啊呢喔嗎\s?？]*$"
 )
-# C：廣義疑問詞與即時資訊主題
-_QUESTION_WORDS_RE = re.compile(
-    r"為什麼|為何|怎會|怎麼會|怎麼|如何|怎樣|幹嘛|什麼|甚麼|誰|"
-    r"哪裡|哪兒|哪間|哪家|哪個|哪種|哪天|哪年|哪國|何時|什麼時候|幾點|多少|幾歲|幾樓|第幾|"
-    r"是不是|會不會|有沒有|能不能|可不可以|好不好|對不對|行不行|算不算|"
-    r"推薦|差別|比較"
-)
-# D：問句標點與句尾疑問語助詞
-_QUESTION_TAIL_RE = re.compile(r"(?:[?？]|(?:嗎|呢|吧[?？]|不|否)\s*$)")
-
 _WAKE_PREFIX_RE = re.compile(r"^\s*(?:馬文|瑪文|麻文|媽文|marvin|marvy)\s*[，,、\s]*", re.IGNORECASE)
 
 # ── 排除 ──────────────────────────────────────────────────────────────────────
@@ -82,7 +73,7 @@ _VOLUME_RE = re.compile(r"大聲|小聲|音量|靜音|mute|volume", re.IGNORECAS
 _FINDSONG_RE = re.compile(r"歌詞|這首歌|哪一?首|誰唱的|什麼歌|甚麼歌|這首是|這是哪")
 # 問 Marvin 自身狀態或人格聊天（不可對外查證，保留走 Marvin 主 LLM 閒聊）
 _SELF_RE = re.compile(
-    r"^(?:你|妳|你們|自己)\s*(?:覺得|認為|喜歡|討厭|怕|愛|想|會|能不能|可不可以|要不要|想不想|是誰|叫什麼|好帥|真帥|好美|很棒|好不好看)?"
+    r"^(?:你|妳|你們|自己)\s*(?:覺得|認為|喜歡|討厭|怕|愛|想|會|能不能|可不可以|要不要|想不想|是誰|叫什麼|好帥|真帥|好美|很棒|好不好看)"
     r"|^(?:你好|您好|嗨|哈囉|早安|午安|晚安)"
     r"|你在(?:播|做|說|幹|聽|看)"
     r"|你(?:好|是誰|叫什麼|會|能不能|可不可以|要不要|想不想|覺得|認為|喜歡|討厭|愛|怕)"
@@ -124,8 +115,6 @@ def parse_grounded_qa(query: str) -> str | None:
         m_tail = _FACTUAL_TAIL_RE.search(q)
         if m_tail:
             topic = (m_tail.group("topic") or "").strip(" ，,、。.!！?？的")
-        elif _QUESTION_WORDS_RE.search(q) or _QUESTION_TAIL_RE.search(q):
-            topic = q.strip(" ，,、。.!！?？")
 
     if not topic:
         return None
@@ -444,9 +433,6 @@ class GroundedQAAgent(DeclarativeIntentAgent):
                     patterns=[
                         _LOOKUP_RE.pattern,
                         _FACTUAL_TAIL_RE.pattern,
-                        rf"(?P<topic>.{{0,30}}?(?:{_QUESTION_WORDS_RE.pattern}).{{0,40}}?)",
-                        r"(?P<topic>.{2,}?[?？])",
-                        r"(?P<topic>.{2,}?(?:嗎|呢))\s*$",
                     ],
                     required_slots=["topic"],
                     reason_template="ambient_qa",
