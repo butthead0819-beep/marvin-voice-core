@@ -605,10 +605,12 @@ class ProactiveSocialMixin:
             # 🔔 [T3 返場 callback]（flag-gated, 預設 OFF）：有 shareable callback 就講
             # callback 取代一般點名（XOR — 一次 join 只一個主動發言）。flag off → 退回原點名。
             if not await self._maybe_speak_join_callback(member.display_name):
-                # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷
+                # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷／動態押韻招呼
                 # stream_mode 中走 hotswap 注入發聲（≤30 字才通過閘）
                 msg = await self.bot.router.generate_player_greeting(
-                    member.display_name, stream_active=self.stream_mode,
+                    member.display_name,
+                    stream_active=self.stream_mode,
+                    guild_id=getattr(getattr(member, "guild", None), "id", None),
                 )
 
                 if self.active_text_channel:

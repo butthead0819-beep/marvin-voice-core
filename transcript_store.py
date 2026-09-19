@@ -87,7 +87,7 @@ class TranscriptStore:
             else:
                 rows = con.execute(
                     "SELECT speaker, text, timestamp FROM transcripts "
-                    "WHERE speaker = ? AND guild_id = ? AND timestamp >= ? "
+                    "WHERE speaker = ? COLLATE NOCASE AND guild_id = ? AND timestamp >= ? "
                     "ORDER BY timestamp ASC",
                     (speaker, guild_id, cutoff),
                 ).fetchall()

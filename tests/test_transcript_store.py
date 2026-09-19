@@ -134,3 +134,13 @@ def test_prune_default_now_uses_wall_clock(store):
     """不傳 now 時用當前時間；遠古資料應被清。"""
     store.save(speaker="J", guild_id=1, text="遠古", timestamp=1.0)
     assert store.prune(retention_days=14) == 1
+
+
+def test_get_recent_speaker_case_insensitive(store):
+    """查詢 speaker 時大小寫不敏感（例如 showay vs Showay 都能查到）。"""
+    now = time.time()
+    store.save(speaker="showay", guild_id=1, text="通靈抓短路", timestamp=now - 60)
+    rows = store.get_recent(speaker="Showay", guild_id=1, days=1)
+    assert len(rows) == 1
+    assert rows[0]["text"] == "通靈抓短路"
+

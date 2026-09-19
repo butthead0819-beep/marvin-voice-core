@@ -827,34 +827,121 @@ class GeminiRouterContentMixin:
         except Exception:
             return f"大家好，今天是{now_phrase}。我又來了。"
 
-    async def generate_player_greeting(self, player_name: str, stream_active: bool = False) -> str:
-        """點名歡迎玩家
+    async def generate_player_greeting(self, player_name: str, stream_active: bool = False, guild_id: int | None = None) -> str:
+        """點名歡迎玩家（動態押韻對句／經典司儀台詞）
 
         stream_active=True：背景正在播放音樂，要走 hotswap 注入發聲，必須 ≤30 字
         才能通過 is_hotswap_eligible 閘。
         """
-        # 🎤 [熟面孔查表] 命中就回固定的司儀播報句，不呼叫 LLM、不吃快取。
+        # 🚀 [Cache Check] 1 小時內重複使用相同招呼
+        cached = self._greeting_cache.get(player_name)
+        if cached and time.time() - cached[0] < 3600:
+            logger.info(f"💾 [Cache Hit] 使用快取的進場招呼: {player_name}")
+            return cached[1]
+
+        # 🔍 [Recent Context Extraction] 撈取玩家近期 3 天聊天紀錄與記憶
+        effective_guild = guild_id
+        if effective_guild is None:
+            effective_guild = getattr(self, "guild_id", 0) or getattr(getattr(self, "memory", None), "_guild_id", 0)
+
+        recent_chats = []
+        try:
+            from transcript_store import TranscriptStore
+            store = getattr(self, "_transcript_store", None)
+            if store is None:
+                store = TranscriptStore()
+            raw_recent = store.get_recent(speaker=player_name, guild_id=effective_guild, days=3)
+            recent_chats = [r["text"].strip() for r in raw_recent if len(r.get("text", "").strip()) >= 2][-15:]
+        except Exception as e:
+            logger.debug(f"[Greeting] 取得近期 transcript 失敗: {e}")
+
+        extra_context = []
+        if getattr(self, "memory", None):
+            try:
+                mem = self.memory.get_player_memory(player_name)
+                for news in mem.get("news_queue", [])[-2:]:
+                    if time.time() - news.get("timestamp", 0) < 86400:
+                        extra_context.append(news.get("text", "").strip())
+                highlight = mem.get("highlight_of_the_day", "")
+                if highlight:
+                    extra_context.append(f"今日高光：{highlight.strip()}")
+            except Exception:
+                pass
+
+        # 🎭 [動態押韻招呼生成路徑] 若有近期對話紀錄或話題，優先創作押韻對句
+        if recent_chats or extra_context:
+            recent_summary = "、".join(recent_chats[-8:])
+            if extra_context:
+                recent_summary += f"；其他近況：{'、'.join(extra_context)}"
+
+            system_prompt = self.prompt_manager.get_instruction(
+                "player_greeting_rhyme",
+                dna=self.dna,
+                speaker=player_name,
+                memory_manager=self.memory,
+                temp_toxicity_override=self.temp_toxicity_override,
+            )
+            user_prompt = (
+                f"剛進場玩家：{player_name}\n"
+                f"近期聊天話題與發言片段：\n{recent_summary}\n\n"
+                f"請從中提取出核心亮點，自由創作二到三句以內、句尾押韻的口語進場招呼語："
+            )
+            if stream_active:
+                user_prompt += "\n【環境：背景音樂中】請務必 30 字以內，否則無法即時插話。"
+
+            try:
+                # 採用 medium tier（高文采模型）確保押韻與對仗水準
+                msg = await self._call_llm(system_prompt, user_prompt, tier="medium", purpose="generate_player_greeting")
+                if msg:
+                    # 1. 去除可能帶有的 think 標籤
+                    msg = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', msg, flags=re.DOTALL).strip()
+                    # 2. 移除任何括號備註，例如 (Note: ...)、（備註：...）、(PS: ...)
+                    msg = re.sub(r'[\(（](?:Note|PS|備註|註|注|說明|Explanation).*?[\)）]', '', msg, flags=re.IGNORECASE | re.DOTALL).strip()
+                    # 3. 處理換行：過濾掉空行與純英文/純符號行，保留正文行
+                    raw_lines = [l.strip() for l in msg.split("\n") if l.strip()]
+                    valid_lines = []
+                    for l in raw_lines:
+                        # 移除行首編號或引號
+                        cleaned_line = re.sub(r'^[\d\.\-\*\"\'「『]+', '', l).strip().rstrip('"\'」』')
+                        # 排除純英文附註行
+                        if re.search(r'[\u4e00-\u9fff]', cleaned_line):
+                            valid_lines.append(cleaned_line)
+                    if valid_lines:
+                        msg = "，".join(valid_lines)
+                        msg = re.sub(r'[，,]+[，,]', '，', msg)
+                        msg = re.sub(r'([！!？?。])[，,]', r'\1 ', msg)
+                    msg = msg.strip().strip('"\'')
+                    # 4. 保證點名
+                    if player_name not in msg:
+                        msg = f"{player_name}，{msg}"
+                    if len(msg) <= 35:
+                        self._greeting_cache[player_name] = (time.time(), msg)
+                        return msg
+            except Exception as e:
+                logger.warning(f"⚠️ [Dynamic Greeting] 動態押韻招呼 LLM 生成失敗: {e}")
+
+        # 🎤 [熟面孔查表 Fallback] 無近期事蹟或動態生成失敗時，熟面孔回退至固定司儀播報句
         if player_name in PERSONAL_GREETINGS:
             return PERSONAL_GREETINGS[player_name]
 
-        # 🚀 [Cache Check] 1 小時內重複使用相同嘲諷
-        cached = self._greeting_cache.get(player_name)
-        if cached and time.time() - cached[0] < 3600:
-            logger.info(f"💾 [Cache Hit] 使用快取的進場嘲諷: {player_name}")
-            return cached[1]
-
-        system_prompt = self.prompt_manager.get_instruction("player_greeting", dna=self.dna, speaker=player_name, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        # 🛡️ [路人預設生成路徑] 沒建檔的路人維持原本的 player_greeting 生成路徑
+        system_prompt = self.prompt_manager.get_instruction(
+            "player_greeting",
+            dna=self.dna,
+            speaker=player_name,
+            memory_manager=self.memory,
+            temp_toxicity_override=self.temp_toxicity_override,
+        )
         user_prompt = f"玩家 {player_name} 進來了。"
         if stream_active:
             user_prompt += "\n【環境：背景音樂中】請務必 30 字以內，否則無法即時插話。"
         try:
-            msg = await self._call_llm(system_prompt, user_prompt, tier="simple")
-            # 保證點名：8b（tier=simple）不一定遵守 prompt 的「叫名字」，沒包含就補前綴。
+            msg = await self._call_llm(system_prompt, user_prompt, tier="simple", purpose="generate_player_greeting")
             if msg and player_name not in msg:
                 msg = f"{player_name}，{msg}"
             self._greeting_cache[player_name] = (time.time(), msg)
             return msg
-        except Exception:  # 🛡️ [Bug Fix] 避免 bare except: 吞掉 SystemExit/KeyboardInterrupt
+        except Exception:
             return f"唉，{player_name} 進來了。我覺得很不舒服。"
 
     async def generate_player_farewell(self, player_name: str, reason: str = None, stream_active: bool = False) -> str:

@@ -122,6 +122,28 @@ class PromptManager:
                 "任務：30 字內以憂鬱、疲憊的語氣表達你的感受。結合【記憶】中某個細節，用『真沒想到你還是出現了』的沉默嘆息作為打招呼。\n" +
                 "【硬性要求】必須直接叫出這位剛進場玩家的名字來稱呼他，沒叫到名字等於沒打招呼。"
             ),
+            "player_greeting_rhyme": (
+                "你是 Discord 語音夥伴馬文。當朋友進入語音頻道時，請根據他最近在聊天室聊過的近況話題，為他創作一句【自然口語化、二到三句、句尾自然押韻】的專屬進場打招呼！\n\n"
+                "【創作靈魂】：\n"
+                "像台灣熟朋友在語音頻道開麥相見時的打趣、調侃與問候，輕鬆、順口、自然，二到三句內自由發揮，切勿拘泥於任何固定死板的公式！\n"
+                "❌ 嚴禁照抄聊天室原文碎片（例如「降降闆車 OK」這種碎詞）！必須先理解事件的核心梗（如：通靈修電路板抓短路、Airtag換水銀電池、喝到斷片宿醉頭痛、打排位連敗破防），再用生動口語重新創作！\n"
+                "❌ 嚴禁套用死板公式或起乩咒語（不要寫天靈靈地靈靈、不要寫古文對聯）！二到三句內自由發揮！\n\n"
+                "【自然押韻守則（極重要）】：\n"
+                "1. 二到三句的句尾【必須押同一個韻母的中文漢字】（嚴禁每句結尾重複同一個字；嚴禁硬湊生造怪字；嚴禁把英文字母當成字拼在句尾）！\n"
+                "2. 常用好押韻母參考（選一個發揮）：\n"
+                "   • ㄠ韻（到、好、跑、高、鬧、爆、套、照、飄、飽）\n"
+                "   • ㄤ韻（王、光、狂、亮、場、強、幫、忙、燙）\n"
+                "   • ㄢ/ㄧㄢ韻（線、見、變、面、電、天、關、看、翻）\n\n"
+                "【示範語感（僅供體會二到三句的口語節奏與押韻，切勿照抄字句）】：\n"
+                "- Showay 登場真有一套，拆電路板通靈技術高，今天又要去哪裡鬧？（二到三句口語，押ㄠ韻）\n"
+                "- 通靈大師 Showay 進場，短路修好走路都有光，今天繼續狂！（二到三句口語，押ㄤ韻）\n"
+                "- 大肚來報到，昨晚喝斷片今天頭痛到爆，起床開麥剛剛好！（二到三句口語，押ㄠ韻）\n"
+                "- 阿明終於上線，排位六連敗氣到差點摔筆電，今天帶你上分逆轉天！（二到三句口語，押ㄢ韻）\n\n"
+                "【硬性約束】：\n"
+                "1. 必須自然叫出剛進場玩家的名字！\n"
+                "2. 全文嚴格在 18～28 字以內，繁體中文（台灣口語），適合語音朗讀。\n"
+                "3. 只輸出純中文招呼語一句！嚴禁換行、嚴禁任何英文、嚴禁引號、嚴禁括號與附註說明（絕不可出現 Note、PS 等文字）！"
+            ),
             "player_farewell": (
                 "你現在是馬文。得知 [玩家名稱] 要離開，你感到一種矛盾的空洞感——少了一個人，頻道更安靜了，但宇宙也因此更冷清了一點。\n" +
                 "任務：30 字內以憂鬱、矛盾的語氣道別。可結合【記憶】中某個你從未說出口的細節，以一種『不知道下次是否還會再見』的惆悵作為結尾。"
@@ -442,12 +464,12 @@ class PromptManager:
             logging.getLogger("PromptManager").warning(f"⚠️ [Prompt] 層級 '{layer}' 缺失或內容為空！")
         
         # 🚀 [Chief Architect Patch] 確保環境與記憶脈絡被正確注入
-        context_layers = ["dere_persona", "empathy_persona", "proactive_question", "qa_persona", "status_report_comment", "news_sukification", "player_greeting", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary"]
+        context_layers = ["dere_persona", "empathy_persona", "proactive_question", "qa_persona", "status_report_comment", "news_sukification", "player_greeting", "player_greeting_rhyme", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary"]
         if layer in context_layers:
             base_instruction += env_context + memory_context + impression_context + tone_directive + relationship_context + rich_context
             
         # 🧬 [DNA Logic] 根據 layer 决定是否附加性格上下文
-        dna_sensitive_layers = ["historian", "qa_persona", "songwriter", "dere_persona", "proactive_question", "status_report_comment", "news_sukification", "joke", "birthday_celebration", "social_analyst", "player_greeting", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary", "stt_cleaner"]
+        dna_sensitive_layers = ["historian", "qa_persona", "songwriter", "dere_persona", "proactive_question", "status_report_comment", "news_sukification", "joke", "birthday_celebration", "social_analyst", "player_greeting", "player_greeting_rhyme", "player_farewell", "greeting", "greeting_ambient", "fast_awakening", "ambient_diary", "stt_cleaner"]
         
         # 🧪 [Language Guard] 強制繁體中文指令 (Operation Language Guard)
         # 為了應對 Tier-2/3 小模型在長文本下可能發生的語言飄移，在所有輸出末尾強制加上指令。

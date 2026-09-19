@@ -116,9 +116,14 @@ class GroqAgent(LLMAgent):
             model=ep.model,
             messages=messages,
             temperature=ctx.temperature if ctx.temperature is not None else 0.7,
-            max_tokens=ctx.max_tokens if ctx.max_tokens is not None else 1024,
+            max_tokens=ctx.max_tokens if ctx.max_tokens is not None else (2048 if "gpt-oss" in ep.model else 1024),
             stream=False,
         )
+        if ep.extra_params:
+            kwargs.update(ep.extra_params)
+        elif "gpt-oss" in ep.model:
+            kwargs["reasoning_effort"] = "low"
+
         if ctx.json_mode:
             kwargs["response_format"] = {"type": "json_object"}
 
