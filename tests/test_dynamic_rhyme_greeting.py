@@ -143,3 +143,82 @@ async def test_rhyme_greeting_multiline_and_note_cleanup():
     assert "今天又要去哪裡鬧" in msg
     assert len(msg) <= 35
 
+
+@pytest.mark.asyncio
+async def test_rhyme_greeting_think_only_output_falls_back():
+    mixin = _make_mixin()
+    mock_store = MagicMock()
+    mock_store.get_recent.return_value = [
+        {"speaker": "showay", "text": "通靈中", "timestamp": time.time() - 100},
+    ]
+    mixin._call_llm = AsyncMock(return_value="<think>想一下押韻</think>")
+
+    with patch("transcript_store.TranscriptStore", return_value=mock_store):
+        msg = await mixin.generate_player_greeting("showay")
+
+    assert msg == PERSONAL_GREETINGS["showay"]
+    assert "showay" not in mixin._greeting_cache
+
+
+@pytest.mark.asyncio
+async def test_rhyme_greeting_english_only_output_falls_back():
+    mixin = _make_mixin()
+    mock_store = MagicMock()
+    mock_store.get_recent.return_value = [
+        {"speaker": "showay", "text": "通靈中", "timestamp": time.time() - 100},
+    ]
+    mixin._call_llm = AsyncMock(return_value="Hey showay, welcome back to the channel!")
+
+    with patch("transcript_store.TranscriptStore", return_value=mock_store):
+        msg = await mixin.generate_player_greeting("showay")
+
+    assert msg == PERSONAL_GREETINGS["showay"]
+    assert "showay" not in mixin._greeting_cache
+
+
+@pytest.mark.asyncio
+async def test_stale_highlight_alone_does_not_trigger_rhyme():
+    mixin = _make_mixin()
+    mock_store = MagicMock()
+    mock_store.get_recent.return_value = []
+    mixin.memory.get_player_memory.return_value = {"highlight_of_the_day": "上個月打贏魔王"}
+
+    with patch("transcript_store.TranscriptStore", return_value=mock_store):
+        msg = await mixin.generate_player_greeting("showay")
+
+    assert msg == PERSONAL_GREETINGS["showay"]
+    mixin._call_llm.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_highlight_included_as_impression_when_recent_chats_exist():
+    mixin = _make_mixin()
+    mock_store = MagicMock()
+    mock_store.get_recent.return_value = [
+        {"speaker": "showay", "text": "通靈中", "timestamp": time.time() - 100},
+    ]
+    mixin.memory.get_player_memory.return_value = {"highlight_of_the_day": "打贏魔王"}
+
+    with patch("transcript_store.TranscriptStore", return_value=mock_store):
+        await mixin.generate_player_greeting("showay")
+
+    user_prompt = mixin._call_llm.call_args[0][1]
+    assert "印象：打贏魔王" in user_prompt
+    assert "今日高光" not in user_prompt
+
+
+@pytest.mark.asyncio
+async def test_transcript_store_created_once_and_reused():
+    mixin = _make_mixin()
+    mock_store = MagicMock()
+    mock_store.get_recent.return_value = []
+
+    with patch("transcript_store.TranscriptStore", return_value=mock_store) as ctor:
+        mixin._greeting_cache.clear()
+        await mixin.generate_player_greeting("showay")
+        mixin._greeting_cache.clear()
+        await mixin.generate_player_greeting("showay")
+
+    assert ctor.call_count == 1
+    assert mixin._transcript_store is mock_store
+
