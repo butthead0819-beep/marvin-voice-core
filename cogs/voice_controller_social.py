@@ -596,10 +596,12 @@ class ProactiveSocialMixin:
             logger.info(f"🌑 [Dynamic Greeting] 略過 {member.display_name}：玩家已於 {delay_sec}s 內離開頻道")
             return
 
-        # 調整音量：打招呼設為 0.5，播完恢復為 0.1
+        # 調整音量：若原音量過小（< 0.5）暫時提升至 0.5，播完恢復原音量（不硬寫死 0.1）
         mixer = getattr(self, "_mixer", None)
-        if mixer is not None:
-            mixer._tts_gain = 0.5
+        orig_gain = getattr(mixer, "_tts_gain", None) if mixer is not None else None
+        if mixer is not None and orig_gain is not None:
+            if orig_gain < 0.5:
+                mixer._tts_gain = 0.5
 
         try:
             # 🔔 [T3 返場 callback]（flag-gated, 預設 OFF）：有 shareable callback 就講
@@ -626,5 +628,5 @@ class ProactiveSocialMixin:
                 while mixer._tts_load_samples() > 0 and time.time() - _wait_start < 10.0:
                     await asyncio.sleep(0.1)
         finally:
-            if mixer is not None:
-                mixer._tts_gain = 0.1
+            if mixer is not None and orig_gain is not None:
+                mixer._tts_gain = orig_gain

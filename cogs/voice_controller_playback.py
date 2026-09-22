@@ -93,12 +93,14 @@ class PlaybackMixin:
         )
 
     def _make_initial_mixer(self, bot) -> LocalMixingAudioSource:
-        """建 Plan12 mixer，TTS 起始音量對齊各模式（Discord/車機）音樂音量預設值——
+        """建 Plan12 mixer，TTS 起始音量對齊各模式（Discord/車機）音樂音量預設值並套用響度補償——
         不用等第一次調音量指令才被 sync_tts_gain() 追上（2026-08-26）。setup_hook
         保證 music_cog 先於 voice_controller 載入，這裡一定拿得到。"""
+        from intent_agents.volume_agent import calculate_tts_gain
         mixer = LocalMixingAudioSource(instrument=True, on_demand=True)
         mc = bot.cogs.get("MusicCog")
-        mixer._tts_gain = getattr(mc, "stream_volume", self._stream_volume_local) if mc else self._stream_volume_local
+        base_vol = getattr(mc, "stream_volume", self._stream_volume_local) if mc else self._stream_volume_local
+        mixer._tts_gain = calculate_tts_gain(base_vol)
         return mixer
 
     @contextlib.contextmanager
