@@ -250,3 +250,120 @@ async def test_both_patterns_include_naming_rule():
         sp = llm_fn.call_args.args[0]
         assert "角色互稱規則" in sp
         assert "點名" in sp
+
+
+# ── 重複性治理：ボケ 手法輪替 + no-repeat ring buffer（2026-09-22）─────────────
+# Why：prompt 寫死「帶傘/喝水」清單 + 只給一種 ボケ 手法，實測五次全中同一模板。
+
+import manzai_variety  # noqa: E402
+
+
+@pytest.fixture
+def variety_store(tmp_path):
+    return manzai_variety.ManzaiVarietyStore(str(tmp_path / "manzai_variety.json"))
+
+
+def _ok_llm():
+    return _llm_returns({"segments": [
+        {"voice": "marvin", "text": "馬文這句"},
+        {"voice": "marmo", "text": "馬末這句"},
+    ]})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pattern", ["marvin_lead", "marmo_lead"])
+async def test_system_prompt_has_no_hardcoded_care_examples(pattern, variety_store):
+    """寫死的「帶傘/喝水/早點睡/回信」清單是 Marmo 每次都講同一句的直接原因。"""
+    llm_fn = _ok_llm()
+    await generate_dual_dialogue(
+        content_text="x", llm_fn=llm_fn, pattern=pattern, variety_store=variety_store,
+    )
+    sp = llm_fn.call_args.args[0]
+    for word in ("帶傘", "喝水", "早點睡", "回信"):
+        assert word not in sp, f"system prompt 仍含寫死的關心範例「{word}」"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pattern", ["marvin_lead", "marmo_lead"])
+async def test_system_prompt_contains_only_selected_boke_block(pattern, variety_store):
+    """只有被選中的手法進 prompt，其他四種不可同時出現（否則等於沒輪替）。"""
+    llm_fn = _ok_llm()
+    await generate_dual_dialogue(
+        content_text="x", llm_fn=llm_fn, pattern=pattern, variety_store=variety_store,
+    )
+    sp = llm_fn.call_args.args[0]
+    chosen = variety_store.get("_last_boke_mode")
+    assert chosen in manzai_variety.BOKE_MODES
+    assert manzai_variety.boke_block(chosen) in sp
+    for mode in manzai_variety.BOKE_MODES:
+        if mode != chosen:
+            assert manzai_variety.boke_block(mode) not in sp
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pattern", ["marvin_lead", "marmo_lead"])
+async def test_non_existential_mode_prompt_has_no_nihilism_wording(pattern, variety_store):
+    """選到非 existential 手法時，pattern 區塊不可再出現「虛無/消散」把手法釘死。"""
+    variety_store.set("_last_boke_mode", "existential")  # → 下一次必挑非 existential
+    llm_fn = _ok_llm()
+    await generate_dual_dialogue(
+        content_text="x", llm_fn=llm_fn, pattern=pattern, variety_store=variety_store,
+    )
+    assert variety_store.get("_last_boke_mode") != "existential"
+    sp = llm_fn.call_args.args[0]
+    assert "虛無" not in sp
+    assert "消散" not in sp
+
+
+@pytest.mark.asyncio
+async def test_boke_mode_rotates_between_calls(variety_store):
+    """連續兩次生成不會用到同一個手法。"""
+    llm_fn = _ok_llm()
+    await generate_dual_dialogue(content_text="x", llm_fn=llm_fn, variety_store=variety_store)
+    first = variety_store.get("_last_boke_mode")
+    await generate_dual_dialogue(content_text="x", llm_fn=llm_fn, variety_store=variety_store)
+    assert variety_store.get("_last_boke_mode") != first
+
+
+@pytest.mark.asyncio
+async def test_recent_lines_injected_as_avoid_block(variety_store):
+    """有用過的句子 → 進 prompt 禁用清單；沒有 → 不出現該區塊。"""
+    llm_fn = _ok_llm()
+    await generate_dual_dialogue(content_text="x", llm_fn=llm_fn, variety_store=variety_store)
+    assert "最近用過的句子" not in llm_fn.call_args.args[0]  # 第一次沒有歷史
+
+    llm_fn2 = _ok_llm()
+    await generate_dual_dialogue(content_text="x", llm_fn=llm_fn2, variety_store=variety_store)
+    sp = llm_fn2.call_args.args[0]
+    assert "最近用過的句子" in sp
+    assert "馬文這句" in sp
+    assert "馬末這句" in sp
+
+
+@pytest.mark.asyncio
+async def test_success_records_lines_into_ring_buffer(variety_store):
+    await generate_dual_dialogue(content_text="x", llm_fn=_ok_llm(), variety_store=variety_store)
+    assert manzai_variety.recent_lines(variety_store) == ["馬末這句", "馬文這句"]
+
+
+@pytest.mark.asyncio
+async def test_failed_generation_does_not_record(variety_store):
+    """紅線命中回 None → ring buffer 不該被污染。"""
+    llm_fn = _llm_returns({"segments": [
+        {"voice": "marvin", "text": "廢物"},
+        {"voice": "marmo", "text": "馬末這句"},
+    ]})
+    result = await generate_dual_dialogue(
+        content_text="x", llm_fn=llm_fn, variety_store=variety_store,
+    )
+    assert result is None
+    assert manzai_variety.recent_lines(variety_store) == []
+
+
+@pytest.mark.asyncio
+async def test_marmo_care_must_come_from_conversation(variety_store):
+    """Marmo 的關心必須貼合當下話題——舊 prompt 的「聊晚餐→帶傘」就是這條沒寫。"""
+    llm_fn = _ok_llm()
+    await generate_dual_dialogue(content_text="x", llm_fn=llm_fn, variety_store=variety_store)
+    sp = llm_fn.call_args.args[0]
+    assert "無關" in sp  # 「嚴禁講與當下話題無關的提醒」
