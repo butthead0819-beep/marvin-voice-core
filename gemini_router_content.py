@@ -712,7 +712,6 @@ class GeminiRouterContentMixin:
         user_prompt = (
             f"【請使用繁體中文撰寫】\n{game_context}\n{prev_topic}"
             f"這是最近 10 分鐘的對話紀錄。\n"
-            f"⚠️ 若本輪對話沒有任何新意、與上一輪話題完全重複或只有零碎語音噪音，請只回傳單詞 SKIP，不要輸出其他任何內容。\n\n"
             f"{history_text}"
         )
 
