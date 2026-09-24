@@ -31,8 +31,10 @@ def test_gain_clamped_both_ends():
     assert compute_loudness_gain(10.0) == MIN_GAIN      # 極大聲 → 不低於 MIN
 
 
-def test_gain_none_is_unity():
-    assert compute_loudness_gain(None) == 1.0           # 量測失敗不調
+def test_gain_none_is_conservative():
+    # 量測中/失敗 → 保守偏小聲，不再用 raw 1.0（2026-09-24 寧悶勿爆）
+    from loudness_norm import UNMEASURED_GAIN
+    assert compute_loudness_gain(None) == UNMEASURED_GAIN < 1.0
 
 
 # ── sample_positions ──────────────────────────────────────────────────────────

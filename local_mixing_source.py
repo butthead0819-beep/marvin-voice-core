@@ -65,6 +65,9 @@ class LocalMixingAudioSource(_BASE):
         self._duck_step = float(duck_step)
         self._tts_gain = float(tts_gain)  # TTS 層增益（2026-08-22 用戶要求：音樂/TTS 都恢復滿音量 1.0）
         self._duck_cur = 1.0  # 1.0 = 無 duck
+        self._limit_gain = 1.0      # 🧱 輸出限幅器目前增益（audio_mixing.limit_frame）
+        self._limit_hits = 0        # 限幅觸發幀累計（>0 代表某個源頭沒控好）
+        self._limit_last_log = 0.0
         self._ptt_active = False  # 🎙️ [PTT Optimization] PTT 狀態標記
         self._wake_duck_until = 0.0  # 🔇 [Wake Duck] 喚醒確認 → 音樂 duck 到此時戳（不等 TTS）
         # 🔇 [TTS 對玩家 duck]（2026-09-15 起：狀態機仍追蹤，但不再套用到 _read_impl 輸出——
@@ -332,6 +335,16 @@ class LocalMixingAudioSource(_BASE):
             self._idle_count = 0  # 有內容 → 重設 idle 計數
 
             mixed = am.mix_layers(layers)
+            # 🧱 最後防線：輸出絕不超過 -1 dBFS（寧悶勿爆，2026-09-24）
+            mixed, self._limit_gain, _hit = am.limit_frame(mixed, self._limit_gain)
+            if _hit:
+                self._limit_hits += 1
+                _now = time.monotonic()
+                if _now - self._limit_last_log >= 60.0:
+                    self._limit_last_log = _now
+                    logger.warning(
+                        f"🧱 [Plan12_Limiter] 輸出超過 -1 dBFS 被限幅 gain={self._limit_gain:.2f} "
+                        f"累計 {self._limit_hits} 幀（>0 代表某個源頭沒控好）")
             s16 = am.to_s16(am.tpdf_dither(mixed, self._rng))
             return s16.tobytes()
         except Exception:

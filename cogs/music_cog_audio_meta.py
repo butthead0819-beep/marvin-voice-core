@@ -127,29 +127,33 @@ class MusicAudioMetaMixin:
         from bpm_estimate import estimate_bpm_from_pcm, median_bpm, write_bpm
         from loudness_norm import (
             sample_positions, parse_ebur128_integrated, average_lufs, compute_loudness_gain,
-            DEFAULT_WINDOW_S,
+            parse_ebur128_true_peak, DEFAULT_WINDOW_S, UNMEASURED_GAIN,
         )
         song_info = info if info is not None else (self._current_stream_info or {})
         dur = float(duration if duration is not None else (song_info.get("duration") or 0))
         start_s = float(highlight_start_s if highlight_start_s is not None else (song_info.get("highlight_start_s") or 0.0))
 
         lufs_vals: list[float | None] = []
+        peak_vals: list[float | None] = []
         bpm_vals: list[float | None] = []
         for pos in sample_positions(dur, start_s=start_s):
             try:
                 proc = await asyncio.create_subprocess_exec(
                     "ffmpeg", "-nostats", "-ss", f"{pos:.1f}", "-t", f"{DEFAULT_WINDOW_S:.0f}", "-i", url,
-                    "-af", "ebur128", "-f", "null", "-",
+                    "-af", "ebur128=peak=true", "-f", "null", "-",
                     "-vn", "-ac", "1", "-ar", str(_BPM_SAMPLE_SR), "-f", "f32le", "pipe:1",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-                lufs_vals.append(parse_ebur128_integrated(stderr.decode("utf-8", "ignore")))
+                _err = stderr.decode("utf-8", "ignore")
+                lufs_vals.append(parse_ebur128_integrated(_err))
+                peak_vals.append(parse_ebur128_true_peak(_err))
                 pcm = np.frombuffer(stdout, dtype=np.float32)
                 bpm_vals.append(await asyncio.to_thread(estimate_bpm_from_pcm, pcm, _BPM_SAMPLE_SR))
             except Exception:
                 lufs_vals.append(None)
+                peak_vals.append(None)
                 bpm_vals.append(None)
         video_id = extract_video_id(song_info.get("webpage_url") or song_info.get("url") or url)
         bpm = median_bpm(bpm_vals)
@@ -158,11 +162,14 @@ class MusicAudioMetaMixin:
             logger.info(f"🥁 [BPM] {url[:40]} 估計 {bpm:.0f} BPM → 存 {video_id}")
         avg = average_lufs(lufs_vals)
         if avg is None:
-            logger.warning(f"⚠️ [LoudNorm] {url[:40]} 響度量測無結果，用 raw 音量")
+            logger.warning(f"⚠️ [LoudNorm] {url[:40]} 響度量測無結果，維持保守增益 {UNMEASURED_GAIN}x")
             return
-        gain = compute_loudness_gain(avg)
+        peaks = [p for p in peak_vals if p is not None]
+        max_peak = max(peaks) if peaks else None
+        gain = compute_loudness_gain(avg, peak_dbfs=max_peak)
         self._stream_norm_gain[url] = gain
-        logger.info(f"🎚️ [LoudNorm] 量測完成 I≈{avg:.1f} LUFS → 增益 {gain:.2f}x（每首套一次）")
+        _pk = f"{max_peak:.1f}" if max_peak is not None else "n/a"
+        logger.info(f"🎚️ [LoudNorm] 量測完成 I≈{avg:.1f} LUFS peak≈{_pk} dBFS → 增益 {gain:.2f}x（每首套一次）")
 
     def _extract_song_metadata(self, file_path: str):
         """📻 [Marvin Radio] 使用 ffprobe 提取標題與演出者。"""

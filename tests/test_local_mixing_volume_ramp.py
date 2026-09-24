@@ -8,7 +8,7 @@ from local_mixing_source import FRAME_BYTES_F32, FRAME_SAMPLES, LocalMixingAudio
 
 
 class DummyMusicSource:
-    """產生常數 1.0 的立體聲 f32 frame"""
+    """產生常數 0.8 的立體聲 f32 frame"""
     def __init__(self, frames: int = 100):
         self.frames_left = frames
 
@@ -16,8 +16,9 @@ class DummyMusicSource:
         if self.frames_left <= 0:
             return b""
         self.frames_left -= 1
-        # Stereo f32 filled with 1.0
-        arr = np.ones(FRAME_SAMPLES * 2, dtype=np.float32)
+        # Stereo f32 filled with 0.8（2026-09-24：滿幅 1.0 會被輸出限幅器夾到 0.89，
+        # 本測試驗的是音量漸變不是滿幅，改用 0.8 讓限幅器不介入）
+        arr = np.full(FRAME_SAMPLES * 2, 0.8, dtype=np.float32)
         return arr.tobytes()
 
     def cleanup(self):
@@ -32,7 +33,7 @@ def test_volume_ramps_smoothly():
     # 讀取第 1 幀（此時 volume = 1.0）
     f1 = mixer.read()
     arr1 = np.frombuffer(f1, dtype=np.int16).astype(np.float32) / 32767.0
-    assert np.mean(arr1) == pytest.approx(1.0, abs=0.05)
+    assert np.mean(arr1) == pytest.approx(0.8, abs=0.05)
 
     # 突然設定音量降為 0.5
     mixer.set_volume(0.5)
@@ -43,6 +44,6 @@ def test_volume_ramps_smoothly():
 
     # 確認 levels 是單調遞減直到接近 0.5
     assert levels[0] < arr1.mean()
-    assert levels[-1] == pytest.approx(0.5, abs=0.05)
-    # 確認不是第一幀就直接跳到 0.5
-    assert levels[0] > 0.55
+    assert levels[-1] == pytest.approx(0.4, abs=0.05)
+    # 確認不是第一幀就直接跳到 0.4
+    assert levels[0] > 0.44

@@ -45,6 +45,8 @@ from cogs.music_cog_tail_dj import MusicTailDJMixin
 from memory_guard import is_memory_critical
 from music_recommender import normalize_title
 from music_memory import extract_video_id
+from audio_mixing import dj_mix_filter_complex
+from intent_agents.volume_agent import calculate_tts_gain
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
@@ -54,6 +56,7 @@ logger = logging.getLogger(__name__)
 # 開播/preload起跑當下解碼正忙著搶 CPU/網路，響度+BPM量測延後這麼久再起跑，
 # 避開開播頭幾秒的資源尖峰（2026-08-25：量測 blocking event loop 疑似造成開頭斷續/加速）。
 _NORM_GAIN_MEASURE_DELAY_S = 6.0
+
 
 # 2026-08-18：YouTube 對這台 Mac 的來源 IP 節流（連續多天 403 Forbidden 攀升，
 # 見 incident_youtube_403_ip_throttle_2026-08-17 記憶），實測登入身分的請求能
@@ -107,8 +110,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
     _SEAMLESS_SKIP_TIMEOUT_S = 10.0  # ⏭️ Seamless Skip 極端守護門檻 (10s)：確保第一首播放不提前中斷
     _MUSIC_CMD_DEDUP_WINDOW = 5.0
     _MUSIC_SAME_SONG_WINDOW = 30.0  # 同 speaker + 同正規化點歌字串：擋同一句重派（喚醒+無喚醒）
-    # DJ 播報疊在歌上的音量（混音時 dj 分支的 gain）。降到 30% 不蓋過音樂。
-    _DJ_INTERJECTION_VOLUME = 0.30
 
     # dj_topic_selector.select_mode() 的 mode → tts_engine 情緒（見 _EMOTION_ADJUST）：
     # 只調 rate/pitch（edge-tts 沒有真情緒 style 可用）。沒列到的 mode（quick/
@@ -639,16 +640,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         use_mix = dj_audio_path and os.path.exists(dj_audio_path)
 
         if use_mix:
-            vol = self.stream_volume
-            djv = self._DJ_INTERJECTION_VOLUME
-            fc = (
-                f"[0:a]asplit=2[dj_sc][dj_mix];"
-                f"[dj_sc]apad=whole_dur=9999[dj_pad];"
-                f"[dj_mix]volume={djv:.3f}[dj_q];"  # DJ 播報降到 30%，不蓋過音樂
-                f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,volume={vol:.3f}[music];"
-                f"[music][dj_pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
-                f"[ducked][dj_q]amix=inputs=2:duration=longest:normalize=0[out]"
-            )
+            fc = dj_mix_filter_complex(self.stream_volume, calculate_tts_gain(self.stream_volume))
             before_opts = (
                 f"-i {shlex.quote(dj_audio_path)} "
                 "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"

@@ -16,6 +16,10 @@ import re
 TARGET_LUFS = -14.0       # 對齊既有 loudnorm I=-14
 MAX_GAIN = 4.0            # 安靜歌最多放大 4x（+12dB），防過度放大噪音
 MIN_GAIN = 0.25          # 大聲歌最多衰減到 0.25x（-12dB），防完全靜音
+# 還沒量到（背景量測進行中）或量測失敗時的保守增益：假設是 -6 LUFS 的熱母帶（6310 首實測
+# 最大聲 10% ≥ -7.6 LUFS、中位數 -11）。寧可先小聲、量完再平滑拉回，絕不先爆音（2026-09-24）。
+UNMEASURED_GAIN = 0.4
+PEAK_CEILING = 0.89       # 套增益後取樣真峰值上限（-1 dBFS）
 # 每點取樣秒數。20s→8s（2026-08-25）：三點×20s＝60s，對 180s 的歌等於解碼 1/3，
 # 音樂 cog 端量測用的 ffmpeg -t 也要跟這裡同步（見 music_cog._measure_norm_gain_bg）。
 DEFAULT_WINDOW_S = 8.0
@@ -26,16 +30,22 @@ HIGHLIGHT_FRACS = (0.0, 1 / 3, 2 / 3)  # 有起播點（熱力圖精華/前奏�
 
 def compute_loudness_gain(measured_lufs: float | None,
                           *, target_lufs: float = TARGET_LUFS,
-                          max_gain: float = MAX_GAIN, min_gain: float = MIN_GAIN) -> float:
+                          max_gain: float = MAX_GAIN, min_gain: float = MIN_GAIN,
+                          peak_dbfs: float | None = None) -> float:
     """整合響度（LUFS）→ 線性增益，使響度趨近 target。clamp 防爆音/過度放大。
 
-    measured_lufs=None（量測失敗）→ 1.0（不調，graceful）。
+    measured_lufs=None（量測中/失敗）→ UNMEASURED_GAIN（保守偏小聲，不用 raw 1.0）。
     gain = 10^((target - measured)/20)：measured 比 target 安靜 → gain>1 放大；反之衰減。
+    peak_dbfs（取樣段真峰值）有給 → 再夾到「峰值×gain ≤ PEAK_CEILING」，此上限優先於
+    min_gain（動態大的歌寧可小聲，不讓峰值爆）。
     """
     if measured_lufs is None:
-        return 1.0
+        return UNMEASURED_GAIN
     gain = 10 ** ((target_lufs - measured_lufs) / 20.0)
-    return max(min_gain, min(max_gain, gain))
+    gain = max(min_gain, min(max_gain, gain))
+    if peak_dbfs is not None:
+        gain = min(gain, PEAK_CEILING / 10 ** (peak_dbfs / 20.0))
+    return gain
 
 
 def sample_positions(duration_s: float, *, window_s: float = DEFAULT_WINDOW_S,
@@ -75,6 +85,19 @@ def parse_ebur128_integrated(stderr: str) -> float | None:
         return None
     # ebur128 Summary 段：'  I:         -14.5 LUFS'（最後一筆 Summary 才是整段整合值）
     matches = re.findall(r"\bI:\s*(-?\d+(?:\.\d+)?)\s*LUFS", stderr)
+    if not matches:
+        return None
+    try:
+        return float(matches[-1])
+    except ValueError:
+        return None
+
+
+def parse_ebur128_true_peak(stderr: str) -> float | None:
+    """從 ebur128=peak=true 的 Summary 抽真峰值 'Peak: -X.X dBFS'（逐幀行的 TPK 不算）。"""
+    if not stderr:
+        return None
+    matches = re.findall(r"\bPeak:\s*(-?\d+(?:\.\d+)?|-inf)\s*dBFS", stderr)
     if not matches:
         return None
     try:

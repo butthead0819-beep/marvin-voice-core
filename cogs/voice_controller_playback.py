@@ -25,6 +25,7 @@ import numpy as np
 import discord
 
 import audio_mixing
+from loudness_norm import UNMEASURED_GAIN
 from tts_speak_policy import (
     RoomState, SpeakKind, Verdict, decide as _decide_speak, is_committed as _is_committed,
 )
@@ -219,9 +220,9 @@ class PlaybackMixin:
                     self._mixer.clear_music()
                     return
                 if volume_attr is not None:
-                    # 每首響度正規化常數增益（背景量好才有；沒量好=1.0 raw）。乘在使用者音量上，
-                    # 一首一個常數 → 不在歌內 pumping。
-                    _ng = self._stream_norm_gain.get(self._current_stream_url, 1.0)
+                    # 每首響度正規化常數增益（背景量好才有；沒量好=保守 0.4，寧可小聲）。乘在
+                    # 使用者音量上，一首一個常數 → 不在歌內 pumping。
+                    _ng = self._stream_norm_gain.get(self._current_stream_url, UNMEASURED_GAIN)
                     self._mixer.set_volume(getattr(self, volume_attr) * _ng)
                 self._ensure_mixer_playing(device)  # on-demand：重連後 adapter 沒了 → 重 arm
                 await asyncio.sleep(0.1)
