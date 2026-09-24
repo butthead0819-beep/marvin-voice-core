@@ -23,7 +23,8 @@ def pick_highlight_start(
     """挑熱度最高的片段起點當播放起點；沒有合理起點就回 None（=從頭播）。
 
     放棄條件：關 flag / 沒 heatmap / 全曲短於 min_duration（跳過去意義不大）/
-    挑到的起點離結尾剩不到 min_remaining 秒（幾乎播不到東西就結束）。
+    挑到的起點離結尾剩不到 min_remaining 秒（幾乎播不到東西就結束）/
+    起點超過總長一半（寧願從頭播，也不要一首歌被跳掉大半）。
     """
     if not enabled() or not heatmap or not duration or duration < min_duration:
         return None
@@ -32,5 +33,7 @@ def pick_highlight_start(
     if start is None or start < 0:
         return None
     if duration - start < min_remaining:
+        return None
+    if start > duration / 2:
         return None
     return float(start)

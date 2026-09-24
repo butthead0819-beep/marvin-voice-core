@@ -51,3 +51,19 @@ def test_disabled_flag_returns_none(monkeypatch):
 def test_missing_start_time_returns_none():
     heatmap = [{"end_time": 10.0, "value": 0.9}]
     assert yh.pick_highlight_start(heatmap, duration=200.0) is None
+
+
+def test_highlight_past_half_returns_none():
+    # 200s 曲，20 段 seg_len=10s，最高值在 index 11 -> start_time=110 > 100 (一半) -> None
+    values = [0.1] * 20
+    values[11] = 0.9
+    heatmap = _heatmap(*values, seg_len=10.0)
+    assert yh.pick_highlight_start(heatmap, duration=200.0) is None
+
+
+def test_highlight_exactly_half_allowed():
+    # 200s 曲，最高值在 index 10 -> start_time=100，剛好等於一半 -> 仍可跳（嚴格大於才擋）
+    values = [0.1] * 20
+    values[10] = 0.9
+    heatmap = _heatmap(*values, seg_len=10.0)
+    assert yh.pick_highlight_start(heatmap, duration=200.0) == 100.0
