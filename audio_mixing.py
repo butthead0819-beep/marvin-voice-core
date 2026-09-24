@@ -25,6 +25,49 @@ TTS_LOUDNESS_AF = (
 )
 
 
+def dj_mix_filter_complex(vol: float, dj_gain: float) -> str:
+    """DJ Mix（口白 input 0 疊在歌 input 1 上）的 ffmpeg filter_complex。
+
+    口白先過 TTS_LOUDNESS_AF（跟其他 TTS 同規則），音量 dj_gain（caller 傳
+    calculate_tts_gain(vol)）；sidechain 用正規化後的口白偵測來 duck 音樂。原本口白
+    寫死 30% 沒正規化，車上（音樂滿幅）聽不到（2026-09-24）。
+    """
+    return (
+        f"[0:a]{TTS_LOUDNESS_AF},asplit=2[dj_sc][dj_raw];"
+        f"[dj_sc]apad=whole_dur=9999[dj_pad];"
+        f"[dj_raw]volume={dj_gain:.3f}[dj_q];"
+        f"[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,volume={vol:.3f}[music];"
+        f"[music][dj_pad]sidechaincompress=threshold=0.02:ratio=8:attack=5:release=600[ducked];"
+        f"[ducked][dj_q]amix=inputs=2:duration=longest:normalize=0[out]"
+    )
+
+
+# mixer 輸出最後一道防線（2026-09-24 使用者：寧願悶或小聲也絕對不能超大音量）。
+# 源頭（TTS 濾鏡 / 音樂每首增益）都控好時不會觸發；觸發代表某個源頭漏了。
+LIMIT_CEILING = 0.89            # -1 dBFS
+LIMIT_RELEASE_PER_FRAME = 0.02  # 每幀（20ms）增益最多回升 0.02 → 0.5→1.0 約 0.5s
+
+
+def limit_frame(frame: np.ndarray, prev_gain: float, *,
+                ceiling: float = LIMIT_CEILING,
+                release: float = LIMIT_RELEASE_PER_FRAME) -> tuple[np.ndarray, float, bool]:
+    """逐幀峰值限幅：壓下去立刻、回升慢；幀內從 prev_gain 線性 ramp 到新增益（防 click），
+    ramp 前段仍超過的樣本最後硬夾到 ceiling（寧悶勿爆）。回 (out, new_gain, 是否觸發)。"""
+    if frame.size == 0:
+        return frame, prev_gain, False
+    pk = float(np.max(np.abs(frame)))
+    target = min(1.0, ceiling / pk) if pk > 0 else 1.0
+    new_gain = target if target < prev_gain else min(target, prev_gain + release)
+    if prev_gain >= 1.0 and new_gain >= 1.0:
+        return frame, 1.0, False
+    if frame.size % 2 == 0:
+        ramp = np.linspace(prev_gain, new_gain, frame.size // 2, dtype=np.float32).repeat(2)
+    else:
+        ramp = np.linspace(prev_gain, new_gain, frame.size, dtype=np.float32)
+    out = np.clip(frame * ramp, -ceiling, ceiling)
+    return out.astype(np.float32, copy=False), new_gain, target < 1.0
+
+
 def apply_gain(frame: np.ndarray, gain: float) -> np.ndarray:
     """f32 frame × gain（量化前增益）。"""
     return frame * np.float32(gain)

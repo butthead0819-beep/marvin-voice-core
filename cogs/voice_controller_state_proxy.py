@@ -113,7 +113,8 @@ class StateProxyMixin:
         mixer = getattr(self, '_mixer', None)
         if mixer is not None and mc is not None and getattr(mc, 'stream_mode', False):
             try:
-                ng = mc._stream_norm_gain.get(getattr(mc, '_current_stream_url', None), 1.0)
+                from loudness_norm import UNMEASURED_GAIN
+                ng = mc._stream_norm_gain.get(getattr(mc, '_current_stream_url', None), UNMEASURED_GAIN)
                 mixer.set_volume(value * ng)
             except Exception:
                 pass
