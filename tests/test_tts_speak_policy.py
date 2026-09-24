@@ -11,7 +11,7 @@ from tts_speak_policy import POLICY, RoomState, SpeakKind, Verdict, decide, load
 COMMITTED = {
     SpeakKind.JOIN_GREETING, SpeakKind.SUMMON_INTRO, SpeakKind.GAME_HOST,
     SpeakKind.DJ_NARRATION, SpeakKind.SELF_SAY, SpeakKind.EXTERNAL_RELAY,
-    SpeakKind.SYSTEM_ALERT,
+    SpeakKind.SYSTEM_ALERT, SpeakKind.DEPARTURE_FAREWELL,
 }
 PROACTIVE = {
     SpeakKind.PROACTIVE_TOPIC, SpeakKind.PROACTIVE_MANZAI, SpeakKind.PROACTIVE_MOCK,

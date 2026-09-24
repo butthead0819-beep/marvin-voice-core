@@ -712,7 +712,6 @@ class GeminiRouterContentMixin:
         user_prompt = (
             f"【請使用繁體中文撰寫】\n{game_context}\n{prev_topic}"
             f"這是最近 10 分鐘的對話紀錄。\n"
-            f"⚠️ 若本輪對話沒有任何新意、與上一輪話題完全重複或只有零碎語音噪音，請只回傳單詞 SKIP，不要輸出其他任何內容。\n\n"
             f"{history_text}"
         )
 
@@ -849,27 +848,32 @@ class GeminiRouterContentMixin:
             from transcript_store import TranscriptStore
             store = getattr(self, "_transcript_store", None)
             if store is None:
-                store = TranscriptStore()
-            raw_recent = store.get_recent(speaker=player_name, guild_id=effective_guild, days=3)
+                store = await asyncio.to_thread(TranscriptStore)
+                self._transcript_store = store
+            raw_recent = await asyncio.to_thread(
+                store.get_recent, speaker=player_name, guild_id=effective_guild, days=3
+            )
             recent_chats = [r["text"].strip() for r in raw_recent if len(r.get("text", "").strip()) >= 2][-15:]
         except Exception as e:
             logger.debug(f"[Greeting] 取得近期 transcript 失敗: {e}")
 
-        extra_context = []
+        fresh_news = []
+        highlight = ""
         if getattr(self, "memory", None):
             try:
                 mem = self.memory.get_player_memory(player_name)
                 for news in mem.get("news_queue", [])[-2:]:
                     if time.time() - news.get("timestamp", 0) < 86400:
-                        extra_context.append(news.get("text", "").strip())
-                highlight = mem.get("highlight_of_the_day", "")
-                if highlight:
-                    extra_context.append(f"今日高光：{highlight.strip()}")
+                        fresh_news.append(news.get("text", "").strip())
+                highlight = (mem.get("highlight_of_the_day", "") or "").strip()
             except Exception:
                 pass
 
-        # 🎭 [動態押韻招呼生成路徑] 若有近期對話紀錄或話題，優先創作押韻對句
-        if recent_chats or extra_context:
+        # 🎭 [動態押韻招呼生成路徑] 若有近期對話紀錄或新鮮話題，優先創作押韻對句
+        if recent_chats or fresh_news:
+            extra_context = list(fresh_news)
+            if highlight:
+                extra_context.append(f"印象：{highlight}")
             recent_summary = "、".join(recent_chats[-8:])
             if extra_context:
                 recent_summary += f"；其他近況：{'、'.join(extra_context)}"
@@ -910,13 +914,13 @@ class GeminiRouterContentMixin:
                         msg = "，".join(valid_lines)
                         msg = re.sub(r'[，,]+[，,]', '，', msg)
                         msg = re.sub(r'([！!？?。])[，,]', r'\1 ', msg)
-                    msg = msg.strip().strip('"\'')
-                    # 4. 保證點名
-                    if player_name not in msg:
-                        msg = f"{player_name}，{msg}"
-                    if len(msg) <= 35:
-                        self._greeting_cache[player_name] = (time.time(), msg)
-                        return msg
+                        msg = msg.strip().strip('"\'')
+                        # 4. 保證點名
+                        if player_name not in msg:
+                            msg = f"{player_name}，{msg}"
+                        if len(msg) <= 35:
+                            self._greeting_cache[player_name] = (time.time(), msg)
+                            return msg
             except Exception as e:
                 logger.warning(f"⚠️ [Dynamic Greeting] 動態押韻招呼 LLM 生成失敗: {e}")
 

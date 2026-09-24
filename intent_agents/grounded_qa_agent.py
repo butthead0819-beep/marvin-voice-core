@@ -5,7 +5,8 @@ design doc AmbientQA-20260830。GameKnowledgeAgent 的 sibling：同款 Declarat
 （真查證 + L1/L2 幻覺 guard），不是 Marvin 主 LLM 常識。
 
 觸發（收斂版；backfill 2026-06→08 實測 3/3 精準、其餘 loose 命中多是閒聊反問）：
-  A. 「查」動詞：馬文(幫我/幫忙/麻煩/請)? 查/查詢/查一下 X
+  A. 查詢動詞：馬文(幫我/幫忙/麻煩/請)? 查/查詢/查一下/搜尋/請問/想知道/找一下 X
+     （寬版疑問詞 / 句尾嗎呢 9/19 試過又拿掉：「今天晚餐吃什麼」「我帥嗎」全被搶去查）
   B. 事實問句尾：X 是什麼 / 是誰 / 叫什麼 / 什麼意思 / 怎麼做 / 有多少 …
   兩者都排除：點歌 / 找歌 / 歌詞、音量控制、問 Marvin 自身狀態、low_confidence_wake
 
@@ -44,8 +45,12 @@ MAX_REPLY_CHARS = 140
 
 # ── 觸發 regex ────────────────────────────────────────────────────────────────
 
-# A：明確「查」動詞（喚醒句裡，re.search 容忍 "馬文" 前綴）
-_LOOKUP_RE = re.compile(r"(?:幫我|幫忙|麻煩|請|欸|快)?\s*查(?:詢|一下|查)?\s*(?P<topic>\S.{1,})")
+# A：明確「查」/「搜尋」/「問」動詞（喚醒句裡，re.search 容忍 "馬文" 前綴）
+_LOOKUP_RE = re.compile(
+    r"(?:幫我|幫忙|麻煩|請|欸|快)?\s*"
+    r"(?:查(?:詢|一下|查)?|搜尋|查查|問一下|請問|想問|想知道|知不知道|找一下|找找)\s*"
+    r"(?P<topic>\S.{1,})"
+)
 # B：事實問句尾
 _FACTUAL_TAIL_RE = re.compile(
     r"(?P<topic>.{2,}?)\s*"
@@ -66,8 +71,13 @@ _MUSIC_EXTRA_RE = re.compile(r"播放|放一?首|點一?首|^搜尋|唱一?首")
 _VOLUME_RE = re.compile(r"大聲|小聲|音量|靜音|mute|volume", re.IGNORECASE)
 # 找歌 / 歌詞（outside voice：「這首歌是什麼」含「什麼」會搶走 search_lyrics_grounded）
 _FINDSONG_RE = re.compile(r"歌詞|這首歌|哪一?首|誰唱的|什麼歌|甚麼歌|這首是|這是哪")
-# 問 Marvin 自身狀態（不可對外查證）
-_SELF_RE = re.compile(r"^(你|妳|你們|馬文|自己)\b|你在(播|做|說|幹)|你(好|是誰|叫什麼|會不會)")
+# 問 Marvin 自身狀態或人格聊天（不可對外查證，保留走 Marvin 主 LLM 閒聊）
+_SELF_RE = re.compile(
+    r"^(?:你|妳|你們|自己)\s*(?:覺得|認為|喜歡|討厭|怕|愛|想|會|能不能|可不可以|要不要|想不想|是誰|叫什麼|好帥|真帥|好美|很棒|好不好看)"
+    r"|^(?:你好|您好|嗨|哈囉|早安|午安|晚安)"
+    r"|你在(?:播|做|說|幹|聽|看)"
+    r"|你(?:好|是誰|叫什麼|會|能不能|可不可以|要不要|想不想|覺得|認為|喜歡|討厭|愛|怕)"
+)
 
 _HAN_RE = re.compile(r"[一-鿿]")
 
@@ -86,7 +96,7 @@ def _excluded(query: str) -> str | None:
 
 
 def parse_grounded_qa(query: str) -> str | None:
-    """喚醒句 → 要查的主題字串，或 None（不是明確事實問句）。
+    """喚醒句 → 要查的主題字串，或 None（不是明確問句或被排除）。
 
     純函式，無 I/O。給 GroundedQAAgent、backfill、測試共用。
     low_confidence_wake 由呼叫端另外擋（見 GroundedQAAgent.gate）。
@@ -96,10 +106,19 @@ def parse_grounded_qa(query: str) -> str | None:
         return None
     if _excluded(q):
         return None
-    m = _LOOKUP_RE.search(q) or _FACTUAL_TAIL_RE.search(q)
-    if not m:
+
+    topic: str | None = None
+    m = _LOOKUP_RE.search(q)
+    if m:
+        topic = (m.group("topic") or "").strip(" ，,、。.!！?？的")
+    else:
+        m_tail = _FACTUAL_TAIL_RE.search(q)
+        if m_tail:
+            topic = (m_tail.group("topic") or "").strip(" ，,、。.!！?？的")
+
+    if not topic:
         return None
-    topic = (m.group("topic") or "").strip(" ，,、。.!！?？的")
+
     # 剝喚醒詞殘留
     topic = re.sub(r"^(馬文|瑪文|麻文|marvin)\s*", "", topic, flags=re.IGNORECASE).strip()
     if len(_HAN_RE.findall(topic)) < 2 and len(topic) < 3:
@@ -110,8 +129,9 @@ def parse_grounded_qa(query: str) -> str | None:
 # ── grounded 呼叫（~40 行，copy search_lyrics_grounded 骨架 + free→paid + guard）──
 
 _SYSTEM_PROMPT = (
-    "你是馬文。使用者在問一個事實問題（語音辨識來的，可能把數字 / 地名 / 專有名詞"
+    "你是馬文。使用者在問一個事實、生活、時事或知識問題（語音辨識來的，可能把數字 / 地名 / 專有名詞"
     "聽糊，例「台北一零一幾樓」可能是「台北 101 幾樓」）。先判斷他到底在問什麼，"
+    "若有提供【過去 10 分鐘語音對話背景】，請結合對話背景理解指稱（例「那款」、「剛剛說的」、「那家店」）。"
     "用 Google 查證，再用繁體中文口語、一兩句話直接給答案。關鍵資訊（日期 / 數字 / "
     "人名）寧可完整。不分點、不 markdown、不鋪陳。查不到就一行「無」。"
 )
@@ -147,12 +167,72 @@ def _trim(text: str) -> str:
     return head + "…"
 
 
+async def build_recent_transcript_context(
+    ctrl,
+    guild_id: int | None = None,
+    minutes: int = 10,
+    max_entries: int = 40,
+    max_chars: int = 2000,
+) -> str:
+    """自 TranscriptStore 異步撈取頻道過去 N 分鐘對話，組裝為簡潔上下文。
+
+    若 store 缺失或發生例外，回傳空字串（安全降級，不影響查詢）。
+    """
+    store = getattr(ctrl, "_transcript_store", None)
+    if store is None:
+        store = getattr(getattr(ctrl, "bot", None), "_transcript_store", None)
+    if store is None:
+        return ""
+
+    if guild_id is None:
+        effective_guild = 0
+        act_chan = getattr(ctrl, "active_text_channel", None)
+        if act_chan and getattr(act_chan, "guild", None):
+            effective_guild = getattr(act_chan.guild, "id", 0)
+        elif getattr(ctrl, "guild_id", None):
+            effective_guild = ctrl.guild_id
+    else:
+        effective_guild = guild_id
+
+    try:
+        rows = await asyncio.to_thread(store.get_recent, guild_id=effective_guild, minutes=minutes)
+        if not rows and effective_guild != 0:
+            rows = await asyncio.to_thread(store.get_recent, guild_id=0, minutes=minutes)
+    except Exception as e:
+        logger.warning(f"[AmbientQA] 取得近期 transcript 失敗（忽略）：{e}")
+        return ""
+
+    if not rows:
+        return ""
+
+    valid_entries = []
+    for r in rows:
+        text = (r.get("text") or "").strip()
+        speaker = (r.get("speaker") or "未知").strip()
+        if len(text) >= 2:
+            valid_entries.append(f"{speaker}: {text}")
+
+    if not valid_entries:
+        return ""
+
+    tail = valid_entries[-max_entries:]
+    combined = "\n".join(tail)
+    if len(combined) > max_chars:
+        combined = combined[-max_chars:]
+        nl_idx = combined.find("\n")
+        if nl_idx != -1:
+            combined = combined[nl_idx + 1:]
+
+    return combined
+
+
 async def grounded_answer(
     free_client,
     paid_client,
     guard,
     query: str,
     *,
+    recent_context: str = "",
     model_chain: tuple[str, ...] = MODEL_CHAIN,
     timeout: float = GROUNDED_TIMEOUT_S,
 ) -> tuple[str, list[str]] | None:
@@ -168,10 +248,20 @@ async def grounded_answer(
         tools=[types.Tool(google_search=types.GoogleSearch())],
     )
 
+    if recent_context and recent_context.strip():
+        contents = (
+            f"【過去 10 分鐘語音對話背景（僅供參考指稱與上下文脈絡，勿逐句回答）】\n"
+            f"{recent_context.strip()}\n\n"
+            f"【使用者當前提問】\n"
+            f"{query.strip()}"
+        )
+    else:
+        contents = query.strip()
+
     attempts: list[tuple[object, str, bool]] = []
     if free_client is not None:
         attempts.append((free_client, model_chain[0], False))
-    est_in = 400
+    est_in = 400 + (len(recent_context) // 2 if recent_context else 0)
     # ⚠️ estimate_cost 只算 token；google_search grounding 另外 per-request 計費，
     # 所以 guard 的 daily cap 會低估真實花費（TODOS.md「PaidUsageGuard 低估 grounding」）。
     if paid_client is not None and guard.allow(estimate_cost(model_chain[0], est_in, 300)):
@@ -181,7 +271,7 @@ async def grounded_answer(
         tier = "付費" if is_paid else "免費"
         try:
             response = await asyncio.wait_for(
-                client.aio.models.generate_content(model=model, contents=query, config=config),
+                client.aio.models.generate_content(model=model, contents=contents, config=config),
                 timeout=timeout,
             )
         except Exception as exc:
@@ -227,7 +317,8 @@ async def grounded_answer(
 
 
 async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
-                          source: str = "ambient_qa") -> None:
+                          source: str = "ambient_qa",
+                          recent_context: str | None = None) -> None:
     """handler 本體（放這裡而非 voice_controller，守 size budget 棘輪）。
 
     D7：ack 先出（貴呼叫前給「查詢中」提示，4.5s 死等會被讀成崩潰），再走 free→付費
@@ -250,6 +341,9 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         guard = PaidUsageGuard(daily_cap_usd=2.0, monthly_cap_usd=10.0)
         ctrl._ambient_qa_guard = guard
 
+    if recent_context is None:
+        recent_context = await build_recent_transcript_context(ctrl, minutes=10)
+
     t0 = _time.monotonic()
     res = None
     try:
@@ -257,6 +351,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
             getattr(router, "google_client", None),
             getattr(router, "google_paid_client", None),
             guard, topic,
+            recent_context=recent_context,
         )
     except Exception as e:
         logger.warning(f"[AmbientQA] grounded_answer 例外: {e}")
@@ -328,19 +423,22 @@ class GroundedQAAgent(DeclarativeIntentAgent):
 
     def declare_intents(self) -> list[IntentSchema]:
         if self._cache is None:
-            # 兩條 pattern 的 (?P<topic>…) named group 讓 regex 路徑自己填 topic slot；
+            # (?P<topic>…) named group 讓 regex 路徑自己填 topic slot；
             # 真正的觸發/排除判斷在 post_match_filter（parse_grounded_qa）。
             # required_slots=["topic"] 同時讓 audio-rescue manifest 把 topic 曝成
             # Gemini function 參數——糊字喚醒問句 → LLM 聽音訊把乾淨問題填進 topic。
             self._cache = [
                 IntentSchema(
                     "factual_question", 0.75,
-                    patterns=[_LOOKUP_RE.pattern, _FACTUAL_TAIL_RE.pattern],
+                    patterns=[
+                        _LOOKUP_RE.pattern,
+                        _FACTUAL_TAIL_RE.pattern,
+                    ],
                     required_slots=["topic"],
                     reason_template="ambient_qa",
                     manifest_description=(
-                        "使用者在問一個需要查證的事實/常識問題（人事時地物、數字、"
-                        "定義、怎麼做、某某是什麼/是誰）。把他要問的東西整理成通順的查詢"
+                        "使用者在問一個需要查證的事實、生活、常識或即時資訊問題（人事時地物、數字、"
+                        "定義、怎麼做、評價、新聞、天氣、某某是什麼/是誰/好不好）。把他要問的東西整理成通順的查詢"
                         "字串放進 topic。不是問正在播的歌、不是問對話歷史、不是點歌時用。"
                     ),
                 ),
@@ -359,7 +457,11 @@ class GroundedQAAgent(DeclarativeIntentAgent):
         # audio-rescue：topic 由 LLM 從音訊填好，ctx.query 是糊掉的 STT，別再 re-parse。
         if is_audio_rescue(ctx):
             return audio_rescue_slots_present(slots, "topic")
-        return parse_grounded_qa(ctx.query or "") is not None
+        parsed = parse_grounded_qa(ctx.query or "")
+        if parsed is not None:
+            slots["topic"] = parsed
+            return True
+        return False
 
     def make_handler(self, schema, slots, ctx: IntentContext):
         if is_audio_rescue(ctx):

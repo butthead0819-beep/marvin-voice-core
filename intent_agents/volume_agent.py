@@ -34,23 +34,41 @@ from typing import Awaitable, Callable
 from intent_agents.base import DeclarativeIntentAgent, IntentSchema
 from intent_bus import IntentContext
 
+import os
+
 logger = logging.getLogger(__name__)
 
 
+def calculate_tts_gain(music_volume: float) -> float:
+    """計算對齊音樂音量的 TTS 增益，並提供響度補償（預設 1.3x，上限 1.0）。
+
+    音樂（YouTube / MP3）經專業壓限母帶處理（-14 LUFS），而 TTS 語音（-20 LUFS）
+    天生動態大、響度弱。套用 1.3x 補償並保證不低於音樂音量，確保 TTS 至少與音樂一樣大聲。
+    可透過環境變數 MARVIN_TTS_BOOST 覆蓋倍率。
+    """
+    try:
+        boost = float(os.getenv("MARVIN_TTS_BOOST", "1.3"))
+    except ValueError:
+        boost = 1.3
+    v = float(music_volume)
+    g = max(v, v * boost)
+    return round(min(1.0, g), 3)
+
+
 def sync_tts_gain(ctrl, value: float) -> None:
-    """把全域 mixer._tts_gain 設成跟音樂音量一樣的值（不是各調各的比例衰減）。
+    """把全域 mixer._tts_gain 設成帶有響度補償的音樂音量值。
 
     語音指令（VolumeAgent）與控制面板按鈕（voice_views.py）共用同一份邏輯，
-    避免兩條路徑各調各的、音樂降了 TTS 卻沒跟著降（2026-08-26 用戶回報）。
+    確保音樂調整時 TTS 跟著連動，且始終維持至少與音樂一樣大聲。
     """
     mixer = getattr(ctrl, "_mixer", None)
     if mixer is None:
         return
     try:
         old_gain = float(getattr(mixer, "_tts_gain", 1.0))
-        new_gain = round(value, 3)
+        new_gain = calculate_tts_gain(value)
         mixer._tts_gain = new_gain
-        logger.info(f"[Volume] TTS gain 同步音樂音量 {old_gain:.2f} → {new_gain:.2f}")
+        logger.info(f"[Volume] TTS gain 同步音樂音量 {old_gain:.2f} → {new_gain:.2f} (base={value:.2f})")
     except Exception:
         logger.exception("[Volume] tts gain sync failed")
 

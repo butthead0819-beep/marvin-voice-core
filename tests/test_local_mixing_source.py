@@ -282,6 +282,12 @@ def test_ducking_restores_when_tts_gone():
     assert mix._duck_cur > low
 
 
+def test_default_duck_level_is_0_20():
+    """驗證預設 duck_level 為 0.20，確保 TTS 播報時音樂避讓充足、TTS 至少跟音樂一樣大聲。"""
+    mix = LocalMixingAudioSource()
+    assert mix._duck_level == 0.20
+
+
 def test_default_music_duck_step_is_smooth_not_abrupt():
     """用戶回饋：預設 duck_step 太大（3 幀=60ms 就到底），聽感是瞬降的「悶」一聲。
     要求至少要 10 幀（200ms）才 ramp 到 duck_level，聽起來才是漸弱而非瞬降。"""

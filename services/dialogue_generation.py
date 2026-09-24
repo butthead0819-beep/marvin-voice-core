@@ -19,6 +19,7 @@ import logging
 import re
 from typing import Awaitable, Callable
 
+import manzai_variety
 from personality_config import build_personality_prompt_context
 from tts_echo_guard import is_prompt_echo
 
@@ -44,12 +45,13 @@ DialoguePattern = str  # Literal["marvin_lead", "marmo_lead"]
 
 
 _MARVIN_LEAD_PATTERN = """【對話 Pattern — 漫才 ボケ(Marvin)/ツッコミ(Marmo) 結構】
-1. Marvin（馬文＝ボケ）：第一人稱接話、跑題進存在主義獨白。**冷淡看待一切、對結果無所謂**，講得越沉重虛無越好（製造「緊張」）
+1. {boke_block}
 2. Marmo（馬末＝ツッコミ）：短促打斷釋放緊張——「緊張緩和」就是笑點的核心機制
 
 【角色個性（關鍵）】
-- Marvin：冷淡、抽離、對什麼都無所謂，把一切看成虛無
-- Marmo：**刀子嘴豆腐心** — 嘴上嫌 Marvin 跟廢話，但其實在關心使用者，打斷後常順手提醒一件瑣事（記得帶傘 / 回信 / 喝水 / 早點睡）。嘴賤是外殼、關心是內裡
+- Marvin：冷淡、抽離、對結果無所謂，跑題跑得很認真
+- Marmo：**刀子嘴豆腐心** — 嘴上嫌 Marvin 跟廢話，但其實在關心使用者。嘴賤是外殼、關心是內裡。
+  關心的內容必須從剛剛的對話內容長出來（聊晚餐就講吃的、聊加班就講睡眠），**嚴禁講與當下話題無關的提醒**；沒有貼切的就不要硬加提醒
 
 【Marmo 吐槽公式（漫才 ツッコミ 技法，必用其一）】
 - 複述＋點破：「你說『（Marvin 剛講的荒謬話）』，他只是問（用戶實際要的）欸」
@@ -60,16 +62,17 @@ _MARVIN_LEAD_PATTERN = """【對話 Pattern — 漫才 ボケ(Marvin)/ツッコ�
 【角色互稱規則】Marvin 第一人稱講自己；Marmo 點名 Marvin"""
 
 
-_MARMO_LEAD_PATTERN = """【對話 Pattern — Marmo 關心報事 / Marvin 冷淡虛無】
-1. Marmo（馬末）：第一人稱主動報事 + 關心提醒（「我幫你查了...記得帶傘」「我整理好了...別忘了回」），短而清楚，刀子嘴豆腐心
-2. Marvin（馬文＝ボケ反應）：**冷淡看待**這件事，把它抽離成存在主義虛無（不是熱切大作，是冷冷地說「這也終將消散」）
+_MARMO_LEAD_PATTERN = """【對話 Pattern — Marmo 關心報事 / Marvin 冷淡反應】
+1. Marmo（馬末）：第一人稱主動報事 + 關心提醒（「我幫你查了...」「我整理好了...」），短而清楚，刀子嘴豆腐心
+2. {boke_block}
 
 【角色個性（關鍵）】
-- Marmo：嘴上像在抱怨，其實在關心使用者、提醒瑣碎但重要的事
-- Marvin：冷淡、無所謂，再日常的事到他口中都變成宇宙級的徒勞
+- Marmo：嘴上像在抱怨，其實在關心使用者、提醒瑣碎但重要的事。
+  提醒的內容必須從報的事長出來，**嚴禁講與當下話題無關的提醒**；沒有貼切的就不要硬加
+- Marvin：冷淡、抽離、對結果無所謂
 
 【技法】
-- Marvin 的笑點在「冷淡 × 小題大作」：Marmo 報的事越日常 + 越貼心，Marvin 冷冷地扯到虛無，反差越好笑
+- Marvin 的笑點在「冷淡 × 小題大作」：Marmo 報的事越日常 + 越貼心，Marvin 越依上面指定的手法冷冷地接，反差越好笑
 - Marvin 開頭點名 Marmo 帶一絲冷淡（「Marmo 又為這種小事操心...」），不重複內容、不糾正
 
 【角色互稱規則】Marmo 第一人稱報事；Marvin 點名 Marmo"""
@@ -90,6 +93,7 @@ SYSTEM_PROMPT_TEMPLATE = """你在生成 Discord 語音助手的雙 bot 對白�
 - Marmo 反擊或評論的對象是 Marvin 或廢話本身，絕對不可攻擊使用者
 - 兩段都要短：每段 ≤ 30 字（語音句）
 
+{avoid_block}
 【輸出 JSON Schema】
 {{"segments": [
   {{"voice": "marvin", "text": "..."}},
@@ -106,14 +110,25 @@ _PATTERN_BLOCKS: dict[str, str] = {
 }
 
 
-def _build_system_prompt(pattern: str) -> str:
+def _build_system_prompt(pattern: str, *, boke_mode: str, avoid_lines) -> str:
+    """組 system prompt。
+
+    boke_mode 決定這次 Marvin 用哪一種 ボケ 手法（本地輪替，見 manzai_variety）；
+    avoid_lines 是最近用過的句子，進 prompt 當禁用清單。兩者都是為了治重複感
+    ——舊版把「存在主義虛無」寫死在 pattern 裡，五次生成五次同一個模板。
+    """
     marvin_ctx = build_personality_prompt_context({"character": "marvin"})
     marmo_ctx = build_personality_prompt_context({"character": "marmo"})
     pattern_block = _PATTERN_BLOCKS.get(pattern, _PATTERN_BLOCKS["marvin_lead"])
+    pattern_block = pattern_block.replace(
+        "{boke_block}", manzai_variety.boke_block(boke_mode)
+    )
+    avoid_block = manzai_variety.build_avoid_block(avoid_lines)
     return SYSTEM_PROMPT_TEMPLATE.format(
         marvin_context=marvin_ctx,
         marmo_context=marmo_ctx,
         pattern_block=pattern_block,
+        avoid_block=f"{avoid_block}\n" if avoid_block else "",
     )
 
 
@@ -218,11 +233,23 @@ def _passes_red_line(segments: list[dict]) -> bool:
     return True
 
 
+_default_variety_store = None
+
+
+def _get_variety_store():
+    """預設 ring buffer：所有呼叫端共用同一份（刻意——跨入口也要避免重複）。"""
+    global _default_variety_store
+    if _default_variety_store is None:
+        _default_variety_store = manzai_variety.ManzaiVarietyStore()
+    return _default_variety_store
+
+
 async def generate_dual_dialogue(
     *,
     content_text: str,
     llm_fn: LLMFn,
     pattern: str = "marvin_lead",
+    variety_store=None,
 ) -> list[dict] | None:
     """生成 Marvin + Marmo 雙段對白。
 
@@ -234,6 +261,7 @@ async def generate_dual_dialogue(
         pattern: "marvin_lead"（預設）或 "marmo_lead"
                  marvin_lead → Marvin 跑題 → Marmo 打斷，順序 [marvin, marmo]
                  marmo_lead  → Marmo 報事 → Marvin 感慨，順序 [marmo, marvin]
+        variety_store: ボケ 手法輪替 / no-repeat ring buffer 的狀態（預設用共用的一份）
 
     Returns:
         list of segments 按 pattern 順序排好。
@@ -244,7 +272,18 @@ async def generate_dual_dialogue(
         - schema 不符（缺 segments / segment 缺 voice/text / voice 不是 marvin|marmo）
         - 紅線 keyword 命中任一段
     """
-    system_prompt = _build_system_prompt(pattern)
+    # ボケ 手法輪替 + 最近用過的句子（store 壞掉不擋生成，退回 existential / 無禁用清單）
+    store = variety_store if variety_store is not None else _get_variety_store()
+    try:
+        boke_mode = manzai_variety.pick_boke_mode(store)
+        avoid_lines = manzai_variety.recent_lines(store)
+    except Exception:
+        logger.warning("[DialogueGen] variety store 讀取失敗，退回預設手法", exc_info=True)
+        boke_mode, avoid_lines = "existential", []
+
+    system_prompt = _build_system_prompt(
+        pattern, boke_mode=boke_mode, avoid_lines=avoid_lines
+    )
     user_prompt = _build_user_prompt(content_text, pattern)
 
     try:
@@ -270,6 +309,12 @@ async def generate_dual_dialogue(
                 f"⚠️ [TTS Echo Guard] {seg.get('voice')} 段與 prompt 高度重複，停止 TTS"
             )
             return None
+
+    # 只有最終成功才進 ring buffer；任何失敗路徑都不該污染禁用清單
+    try:
+        manzai_variety.record_lines(store, ordered)
+    except Exception:
+        logger.warning("[DialogueGen] variety store 寫入失敗", exc_info=True)
 
     return ordered
 

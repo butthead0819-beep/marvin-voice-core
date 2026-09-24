@@ -350,3 +350,150 @@ async def test_grounded_model_chain_fallback():
     out = await grounded_answer(None, paid, _guard(), "某個問題")
     assert out is not None
     assert len(calls) == 2
+
+
+# ── 任意問題（廣義問句）與 10 分鐘 STT 背景注入測試 ────────────────────────
+
+@pytest.mark.parametrize("raw", [
+    "馬文 請問為什麼今天台北一直下雨",
+    "馬文 我想知道黑神話悟空評價好不好",
+    "馬文 幫我搜尋南港展覽館附近牛肉麵",
+    "馬文 想問台積電今天跌多少",
+    "馬文 找一下這附近有哪幾間咖啡廳",
+    "馬文 你知不知道大谷翔平今天第幾轟",
+])
+def test_parse_lookup_verb_questions_hit(raw):
+    """明確查詢動詞（請問/想知道/搜尋/找一下…）帶出的問題要命中；
+    沒有動詞的寬版疑問詞/句尾嗎呢不觸發（閒聊誤觸，見 docstring 收斂版）。"""
+    got = parse_grounded_qa(raw)
+    assert got is not None, f"{raw!r} 應命中 Grounded QA"
+
+
+@pytest.mark.parametrize("raw", [
+    "馬文你覺得今天會贏嗎",
+    "馬文你覺得這款遊戲好玩嗎",
+    "馬文你好帥喔",
+    "馬文你在做什麼",
+    "馬文你會眨眼嗎",
+    "馬文放首告五人的歌",
+    "馬文音量大一點",
+    "馬文這是哪一首歌",
+])
+def test_parse_arbitrary_questions_excludes_banter_and_other_agents(raw):
+    assert parse_grounded_qa(raw) is None, f"{raw!r} 應被排除（由人格聊天或特化 Agent 接手）"
+
+
+@pytest.mark.asyncio
+async def test_build_recent_transcript_context_success():
+    from intent_agents.grounded_qa_agent import build_recent_transcript_context
+
+    ctrl = MagicMock()
+    mock_store = MagicMock()
+    mock_store.get_recent.return_value = [
+        {"speaker": "Jack", "text": "昨天看那款黑神話悟空好帥", "timestamp": 100.0},
+        {"speaker": "Suki", "text": "真的假的？", "timestamp": 105.0},
+        {"speaker": "Jack", "text": "嗯", "timestamp": 106.0},  # 太短被過濾
+        {"speaker": "Suki", "text": "我電腦配備不知道跑不跑得動", "timestamp": 110.0},
+    ]
+    ctrl._transcript_store = mock_store
+    ctrl.active_text_channel = MagicMock()
+    ctrl.active_text_channel.guild.id = 12345
+
+    ctx_text = await build_recent_transcript_context(ctrl, minutes=10)
+    assert "Jack: 昨天看那款黑神話悟空好帥" in ctx_text
+    assert "Suki: 我電腦配備不知道跑不跑得動" in ctx_text
+    # 長度小於 2 的「嗯」被過濾
+    assert "Jack: 嗯\n" not in ctx_text
+    mock_store.get_recent.assert_called_once_with(guild_id=12345, minutes=10)
+
+
+@pytest.mark.asyncio
+async def test_build_recent_transcript_context_store_missing_or_error():
+    from intent_agents.grounded_qa_agent import build_recent_transcript_context
+
+    ctrl = MagicMock()
+    ctrl._transcript_store = None
+    assert await build_recent_transcript_context(ctrl, minutes=10) == ""
+
+    ctrl._transcript_store = MagicMock()
+    ctrl._transcript_store.get_recent.side_effect = RuntimeError("DB locked")
+    assert await build_recent_transcript_context(ctrl, minutes=10) == ""
+
+
+@pytest.mark.asyncio
+async def test_grounded_answer_with_recent_context_injects_prompt():
+    free = _client(_resp("黑神話在 Steam 售價是 1280 元。"))
+    guard = _guard()
+    context = "Jack: 昨天看那個黑神話悟空好帥\nSuki: 不知道多少錢"
+    out = await grounded_answer(
+        free, None, guard, "那款遊戲多少錢？", recent_context=context
+    )
+    assert out is not None
+    ans, sources = out
+    assert "1280" in ans
+
+    # 驗證傳遞給模型的 contents 包含背景與當前提問
+    call_kwargs = free.aio.models.generate_content.call_args.kwargs
+    contents = call_kwargs["contents"]
+    assert "【過去 10 分鐘語音對話背景" in contents
+    assert "黑神話悟空好帥" in contents
+    assert "【使用者當前提問】" in contents
+    assert "那款遊戲多少錢？" in contents
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_fetches_and_passes_stt_context(monkeypatch):
+    ctrl = MagicMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+    ctrl._ambient_qa_guard = _guard()
+    ctrl.active_text_channel.guild.id = 999
+
+    mock_store = MagicMock()
+    mock_store.get_recent.return_value = [
+        {"speaker": "Jack", "text": "台北今天天氣如何", "timestamp": 100.0}
+    ]
+    ctrl._transcript_store = mock_store
+
+    called_context = {}
+
+    async def _mock_grounded_answer(free, paid, guard, query, *, recent_context="", **kwargs):
+        called_context["query"] = query
+        called_context["recent_context"] = recent_context
+        return ("今天台北晴天降雨機率 10%。", ["cwb.gov.tw"])
+
+    monkeypatch.setattr(gqa, "grounded_answer", _mock_grounded_answer)
+    recorded = []
+    monkeypatch.setattr(gqa, "record_ambient_qa", lambda r: recorded.append(r))
+
+    await gqa.run_grounded_qa(ctrl, "showay", "台北明天天氣怎樣", raw="馬文 台北明天天氣怎樣")
+    await __import__("asyncio").sleep(0)
+
+    assert called_context["query"] == "台北明天天氣怎樣"
+    assert "Jack: 台北今天天氣如何" in called_context["recent_context"]
+    assert recorded and recorded[0]["answer"] == "今天台北晴天降雨機率 10%。"
+
+
+
+# ── code review 回歸：寬版疑問詞搶閒聊 / 你字開頭查詢被 _SELF_RE 吃掉 ──────────
+
+@pytest.mark.parametrize("raw", [
+    "馬文我比較喜歡周杰倫",
+    "馬文今天晚餐吃什麼",
+    "馬文我帥嗎",
+    "馬文閉嘴好嗎",
+    "馬文好無聊喔有沒有人要打遊戲",
+])
+def test_parse_chat_with_question_words_not_grounded(raw):
+    assert parse_grounded_qa(raw) is None, f"閒聊 {raw!r} 不該被搶去 Google 查"
+
+
+@pytest.mark.parametrize("raw", [
+    "馬文你幫我查一下台積電股價",
+    "馬文你查一下明天天氣",
+    "馬文妳幫我查一下颱風動態",
+])
+def test_parse_lookup_starting_with_ni_hits(raw):
+    assert parse_grounded_qa(raw) is not None, f"{raw!r} 是明確查詢，不該被當成問 Marvin 自身"

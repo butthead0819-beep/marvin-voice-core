@@ -105,7 +105,8 @@ class MusicAudioMetaMixin:
         info: dict | None = None,
         delay_s: float = 0.0,
     ):
-        """[響度正規化] 背景取樣歌曲 25/50/75% 三點量整合響度 → 算常數增益存 _stream_norm_gain[url]。
+        """[響度正規化] 背景取樣三點量整合響度（有起播點時第一點就是起播點，見
+        loudness_norm.sample_positions）→ 算常數增益存 _stream_norm_gain[url]。
 
         支援傳入 duration、highlight_start_s 與 info，避免在預載或預取時受當前播歌狀態干擾。
         順便在同一趟 ffmpeg（同取樣點、同一個 process 兩個輸出：ebur128→null 給

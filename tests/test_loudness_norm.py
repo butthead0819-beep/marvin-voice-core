@@ -55,8 +55,18 @@ def test_sample_positions_short_song_single_point():
 
 
 def test_sample_positions_with_start_s():
-    # duration=200, start_s=100 (eff_duration=100) -> 100 + [25, 50, 75] = [125, 150, 175]
+    # duration=200, start_s=100 -> HIGHLIGHT_FRACS (0, 1/3, 2/3)：第一點就是 start_s 本身
     pos = sample_positions(200.0, window_s=20.0, start_s=100.0)
+    assert pos == pytest.approx([100.0, 133.333333333, 166.666666667], abs=1e-3)
+
+
+def test_sample_positions_first_sample_is_start_point():
+    pos = sample_positions(240.0, window_s=8.0, start_s=150.0)
+    assert pos[0] == 150.0
+
+
+def test_sample_positions_explicit_fracs_respected():
+    pos = sample_positions(200.0, window_s=20.0, start_s=100.0, fracs=(0.25, 0.5, 0.75))
     assert pos == [125.0, 150.0, 175.0]
 
 
@@ -93,7 +103,16 @@ def test_parse_ebur128_none_when_absent():
 # ── average_lufs ──────────────────────────────────────────────────────────────
 
 def test_average_lufs_filters_none():
-    assert average_lufs([-14.0, -16.0, None]) == pytest.approx(-15.0)
+    assert average_lufs([-14.0, -16.0, None]) == pytest.approx(-14.8859, abs=1e-3)
+
+
+def test_average_lufs_energy_weighted_toward_loud():
+    # 算術平均會是 -16.67；能量平均偏向大聲段，結果應該比算術平均大聲（數值更大）
+    assert average_lufs([-10.0, -20.0, -20.0]) == pytest.approx(-13.9794, abs=1e-3)
+
+
+def test_average_lufs_single_value():
+    assert average_lufs([-12.0]) == pytest.approx(-12.0)
 
 
 def test_average_lufs_all_none():
