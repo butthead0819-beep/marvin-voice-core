@@ -5,8 +5,10 @@ TDD (T2a)：handle_raw_speech_start 的 TTS 打斷 block 必須走
 _resolve_playback_device() 而非 discord.utils.get(voice_clients)。
 
 四個案例：
-(a) is_playing_audio=True, _tts_protected=False → 呼叫 _resolve_playback_device；
-    device.stop() 被呼叫，clear_tts 與 _tts_interrupted=True 執行。
+(a) is_playing_audio=True, _tts_protected=False, 非 Plan12（舊路徑）→ 呼叫
+    _resolve_playback_device；device.stop() 被呼叫，_tts_interrupted=True。
+    Plan12 mixer 路徑不 stop player、只 clear_tts（見 test_opus_encoder_race.py：
+    stop 後立刻重武裝會兩條 AudioPlayer thread 搶同一顆 opus encoder → libopus 崩潰）。
 (b) Discord byte-equivalence：_resolve_playback_device 回 DiscordPlaybackDevice(vc)，
     vc.stop_playing() 被呼叫（NOT vc.stop）。
 (c) device=None → 不 crash，clear_tts 與 _tts_interrupted=True 仍執行。
@@ -23,7 +25,8 @@ from cogs.voice_controller import VoiceController
 from marvin_voice_core.playback_device import DiscordPlaybackDevice
 
 
-def _make_fake_self(*, is_playing_audio: bool = True, tts_protected: bool = False):
+def _make_fake_self(*, is_playing_audio: bool = True, tts_protected: bool = False,
+                    plan12: bool = False):
     """建 MagicMock fake self，含 handle_raw_speech_start 所需的所有屬性。"""
     fake = MagicMock()
     fake.bot.cogs.get.return_value = None
@@ -32,7 +35,7 @@ def _make_fake_self(*, is_playing_audio: bool = True, tts_protected: bool = Fals
     # bool 直接設，不走 is_playing_audio property（unbound call，self=fake）
     fake.is_playing_audio = is_playing_audio
     fake._tts_protected = tts_protected
-    fake._plan12 = True
+    fake._plan12 = plan12
     fake._mixer = MagicMock()
     fake._current_tts_text = "未說完的話"
     fake._current_tts_in_channel = True  # 跳過 asyncio.create_task
@@ -61,7 +64,6 @@ def test_interrupt_calls_resolve_playback_device_stop():
     fake._resolve_playback_device.assert_called_once()
     device.is_playing.assert_called_once()
     device.stop.assert_called_once()
-    fake._mixer.clear_tts.assert_called_once()
     assert fake._tts_interrupted is True
 
 
@@ -83,7 +85,7 @@ def test_interrupt_discord_byte_equiv_routes_to_vc_stop_playing():
 # ── (c) device=None → 不 crash，clear_tts + _tts_interrupted 仍執行 ────────────────
 
 def test_interrupt_device_none_no_crash():
-    fake = _make_fake_self()
+    fake = _make_fake_self(plan12=True)
     fake._resolve_playback_device.return_value = None
 
     VoiceController.handle_raw_speech_start(fake, "Alice")

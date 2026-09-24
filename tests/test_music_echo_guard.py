@@ -129,7 +129,9 @@ def test_barge_in_proceeds_on_discord_during_music(monkeypatch):
     fake._resolve_playback_device.return_value = device
     VoiceController.handle_raw_speech_start(fake, "Alice")
     fake._resolve_playback_device.assert_called_once()
-    device.stop.assert_called_once()
+    # 2026-09-24：Plan12 下打斷＝清 TTS 層，不 stop player（防 opus encoder 共用崩潰）
+    device.stop.assert_not_called()
+    fake._mixer.clear_tts.assert_called_once()
     assert fake._tts_interrupted is True
 
 

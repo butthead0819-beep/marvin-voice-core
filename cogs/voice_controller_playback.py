@@ -836,7 +836,11 @@ class PlaybackMixin:
         """
         self._tts_flush_requested = True
         voice_client = next((vc for vc in self.bot.voice_clients if vc.is_connected()), None)
-        if voice_client and voice_client.is_playing():
+        if self._plan12 and self._mixer is not None:
+            # Plan12：只清 TTS 層，不停 player（stop→重武裝會兩條 AudioPlayer thread 搶同一顆
+            # opus encoder → libopus 崩潰，見 tests/test_opus_encoder_race.py）
+            self._mixer.clear_tts()
+        elif voice_client and voice_client.is_playing():
             voice_client.stop()
         self.tts_queue_duration = 0.0
         await asyncio.sleep(0.3)  # 讓在途 tasks 有機會通過 Flush Gate
