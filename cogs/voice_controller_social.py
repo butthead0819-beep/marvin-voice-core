@@ -613,7 +613,7 @@ class ProactiveSocialMixin:
 
         1. 等待 delay_sec（預設 5 秒），確保玩家 Discord client WebRTC 連線與音訊輸出初始化完成。
         2. 防幽靈發言：5 秒後檢查玩家是否仍在 marvin_channel.members，若已不在則取消。
-        3. 怕太大聲先將 TTS 音量設為 0.5，播放完打招呼後恢復為 0.1。
+        3. 音量不再特別調整：所有 TTS 統一響度（見 audio_mixing.TTS_LOUDNESS_AF）。
 
         2026-09-11：從 voice_controller.py 搬進來（防胖棘輪守門，見
         test_voice_controller_size_budget.py）——純搬移，self 仍是同一個
@@ -634,42 +634,25 @@ class ProactiveSocialMixin:
             logger.info(f"🌑 [Dynamic Greeting] 略過 {member.display_name}：玩家已於 {delay_sec}s 內離開頻道")
             return
 
-        # 調整音量：若原音量過小（< 0.5）暫時提升至 0.5，播完恢復原音量（不硬寫死 0.1）
-        mixer = getattr(self, "_mixer", None)
-        orig_gain = getattr(mixer, "_tts_gain", None) if mixer is not None else None
-        if mixer is not None and orig_gain is not None:
-            if orig_gain < 0.5:
-                mixer._tts_gain = 0.5
+        if welcome_back:
+            # 斷線重連超過 flap 窗、但不到 1 小時 → 只簡單招呼，不打 LLM、不貼文字頻道
+            msg = f"{member.display_name}，你回來啦"
+            self.stt_logger.info(f"[BOT回台→{member.display_name}] {msg}")
+            await self.speak(msg, proactive=True, kind=SpeakKind.JOIN_GREETING)
+        # 🔔 [T3 返場 callback]（flag-gated, 預設 OFF）：有 shareable callback 就講
+        # callback 取代一般點名（XOR — 一次 join 只一個主動發言）。flag off → 退回原點名。
+        elif not await self._maybe_speak_join_callback(member.display_name):
+            # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷／動態押韻招呼
+            # stream_mode 中走 hotswap 注入發聲（≤30 字才通過閘）
+            msg = await self.bot.router.generate_player_greeting(
+                member.display_name,
+                stream_active=self.stream_mode,
+                guild_id=getattr(getattr(member, "guild", None), "id", None),
+            )
 
-        try:
-            if welcome_back:
-                # 斷線重連超過 flap 窗、但不到 1 小時 → 只簡單招呼，不打 LLM、不貼文字頻道
-                msg = f"{member.display_name}，你回來啦"
-                self.stt_logger.info(f"[BOT回台→{member.display_name}] {msg}")
-                await self.speak(msg, proactive=True, kind=SpeakKind.JOIN_GREETING)
-            # 🔔 [T3 返場 callback]（flag-gated, 預設 OFF）：有 shareable callback 就講
-            # callback 取代一般點名（XOR — 一次 join 只一個主動發言）。flag off → 退回原點名。
-            elif not await self._maybe_speak_join_callback(member.display_name):
-                # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷／動態押韻招呼
-                # stream_mode 中走 hotswap 注入發聲（≤30 字才通過閘）
-                msg = await self.bot.router.generate_player_greeting(
-                    member.display_name,
-                    stream_active=self.stream_mode,
-                    guild_id=getattr(getattr(member, "guild", None), "id", None),
-                )
-
-                if self.active_text_channel:
-                    await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
-                    asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
-                self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
-                # 中途進場招呼：committed 事件，policy 保證放歌/熱聊/被打斷都照唸
-                await self.speak(msg, proactive=True, kind=SpeakKind.JOIN_GREETING)
-
-            # 等待佇列中的語音幀播完再恢復音量（最多等待 10 秒，避免死鎖）
-            if mixer is not None and hasattr(mixer, "_tts_load_samples"):
-                _wait_start = time.time()
-                while mixer._tts_load_samples() > 0 and time.time() - _wait_start < 10.0:
-                    await asyncio.sleep(0.1)
-        finally:
-            if mixer is not None and orig_gain is not None:
-                mixer._tts_gain = orig_gain
+            if self.active_text_channel:
+                await self.active_text_channel.send(f"🌑 **【馬文 點名】**\n{msg}")
+                asyncio.create_task(self._send_mood_sticker(msg, context="greeting"))
+            self.stt_logger.info(f"[BOT點名→{member.display_name}] {msg}")
+            # 中途進場招呼：committed 事件，policy 保證放歌/熱聊/被打斷都照唸
+            await self.speak(msg, proactive=True, kind=SpeakKind.JOIN_GREETING)

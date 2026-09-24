@@ -24,6 +24,7 @@ import time
 import numpy as np
 import discord
 
+import audio_mixing
 from tts_speak_policy import (
     RoomState, SpeakKind, Verdict, decide as _decide_speak, is_committed as _is_committed,
 )
@@ -234,18 +235,22 @@ class PlaybackMixin:
             )
 
     async def _ffmpeg_to_f32(self, *, input_path: str | None = None,
-                             input_bytes: bytes | None = None) -> "np.ndarray | None":
+                             input_bytes: bytes | None = None, af: str | None = None) -> "np.ndarray | None":
         """[Plan 12] 解碼音訊（檔案或 bytes）成 48k stereo f32 interleaved array。
 
         async subprocess（對齊 STT 規範，不用 subprocess.run）；失敗回 None 讓 caller 降級。
+        af：選填 ffmpeg -af 濾鏡字串（例如 audio_mixing.TTS_LOUDNESS_AF），套在解碼時。
         """
         src = "pipe:0" if input_bytes is not None else (input_path or "")
         if not src:
             return None
         try:
+            cmd = ["ffmpeg", "-nostdin", "-loglevel", "quiet", "-i", src]
+            if af:
+                cmd += ["-af", af]
+            cmd += ["-ac", "2", "-ar", "48000", "-f", "f32le", "pipe:1"]
             proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-nostdin", "-loglevel", "quiet",
-                "-i", src, "-ac", "2", "-ar", "48000", "-f", "f32le", "pipe:1",
+                *cmd,
                 stdin=asyncio.subprocess.PIPE if input_bytes is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
@@ -398,6 +403,7 @@ class PlaybackMixin:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "ffmpeg", "-nostdin", "-loglevel", "quiet", "-i", "pipe:0",
+                "-af", audio_mixing.TTS_LOUDNESS_AF,
                 "-ac", "2", "-ar", "48000", "-f", "f32le", "pipe:1",
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
@@ -863,24 +869,29 @@ class PlaybackMixin:
         src = discord.FFmpegPCMAudio(file_path, before_options=before_options)
         await self._mixer_play_music(device, src, still_active=lambda: device.is_connected())
 
-    async def play_dj_on_tts_layer(self, file_path: str, *, peak: float = 0.9) -> bool:
+    async def play_dj_on_tts_layer(self, file_path: str, *, peak: float | None = None) -> bool:
         """把預渲染 DJ 音檔解碼後推上 **TTS 層**（push_tts），非阻塞、會 duck 音樂、
         且撐過歌1→歌2 的音樂換源（set_music_source 不碰 TTS 層）→ DJ 橫跨切歌點。
 
         跟 play_local_file 不同：後者走 _mixer_play_music＝把檔案設成**音樂層**來源，
         會替換掉正在播的歌（DJ 尾段 crossfade 不能用那條）。回 True＝已入列。
 
-        peak：正規化目標峰值（0-1）。預設 0.9＝口白原本的滿幅行為（TTS 層還會再乘
-        _tts_gain，講話本就該蓋過 ducked 音樂）。轉場音效不是講話，音量該跟音樂的
-        10% 音量感一致，caller 傳低一點的 peak（例如 0.1）別讓 SFX 比講話還突兀。
+        peak：None（預設，講話：DJ 口白/片頭口白）→ 跟所有 TTS 一樣過統一響度濾鏡
+        audio_mixing.TTS_LOUDNESS_AF，不做 peak_normalize。給非 None 值（轉場 SFX，
+        不是講話）→ 走原本的 peak_normalize 行為，音量該跟音樂的 10% 音量感一致，
+        caller 傳低一點的 peak（例如 0.1）別讓 SFX 比講話還突兀。
         """
         if not os.path.exists(file_path):
             return False
-        f32 = await self._ffmpeg_to_f32(input_path=file_path)
-        if f32 is None or not f32.size:
-            return False
-        import audio_mixing
-        f32 = audio_mixing.peak_normalize_f32(f32, target_peak=peak)
+        if peak is None:
+            f32 = await self._ffmpeg_to_f32(input_path=file_path, af=audio_mixing.TTS_LOUDNESS_AF)
+            if f32 is None or not f32.size:
+                return False
+        else:
+            f32 = await self._ffmpeg_to_f32(input_path=file_path)
+            if f32 is None or not f32.size:
+                return False
+            f32 = audio_mixing.peak_normalize_f32(f32, target_peak=peak)
         self._ensure_mixer_playing(self._resolve_playback_device())
         return bool(self._mixer.push_tts(f32))
 
