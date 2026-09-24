@@ -2675,10 +2675,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         ack_file = random.choice(files)
 
         try:
-            f32 = await self._ffmpeg_to_f32(input_path=ack_file)
+            f32 = await self._ffmpeg_to_f32(input_path=ack_file, af=audio_mixing.TTS_LOUDNESS_AF)
             if f32 is not None and f32.size:
-                # ack mp3 振幅偏低，peak-normalize 拉滿幅再送，避免被 ducked 音樂蓋掉
-                f32 = audio_mixing.peak_normalize_f32(f32)
+                # ack 跟所有 TTS 一樣過統一響度濾鏡
                 self._ensure_mixer_playing(self._resolve_playback_device())
                 self._mixer.push_tts(f32)
                 logger.info(f"🗣️ [Ack:{category_key}] 播放 {variant or os.path.basename(ack_file)}")

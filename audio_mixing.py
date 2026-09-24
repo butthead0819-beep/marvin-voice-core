@@ -13,6 +13,17 @@ import numpy as np
 
 _LSB = np.float32(1.0 / 32768.0)
 
+# 所有 Marvin 講話（TTS / 預錄口白 / ack 音檔）進 TTS 層前統一過這條濾鏡：
+# speechnorm 把各聲線/語調（深夜 -15%、親密 -35%…）拉到同一水位 → 壓縮提高密度 →
+# 限幅 -2 dBFS 留空間給 duck 後的音樂相加（mix 最後是硬 clip）。
+# 2026-09-24 ebur128 實測：YunJhe/HsiaoChen/Ryan/親密 -35% 皆 -14.4±0.7 LUFS（對齊音樂
+# 正規化目標 -14），短句與 say 備援 ±2；串流首幀 +~30ms。原始 edge-tts 只有 -22 LUFS。
+TTS_LOUDNESS_AF = (
+    "speechnorm=e=12.5:r=0.0001:l=1,"
+    "acompressor=threshold=0.125:ratio=6:attack=3:release=60:makeup=3,"
+    "alimiter=limit=0.79:level=false"
+)
+
 
 def apply_gain(frame: np.ndarray, gain: float) -> np.ndarray:
     """f32 frame × gain（量化前增益）。"""

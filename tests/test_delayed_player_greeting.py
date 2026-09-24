@@ -94,8 +94,9 @@ async def test_delayed_player_greeting_cancels_if_member_left(dummy_vc_setup):
 
 
 @pytest.mark.asyncio
-async def test_delayed_player_greeting_adjusts_volume_to_0_5_then_restores_original(dummy_vc_setup):
-    """測試打招呼時音量若低於 0.5 設為 0.5，播完恢復為原本的音量（非硬寫死 0.1）。"""
+async def test_delayed_player_greeting_does_not_touch_volume_when_high(dummy_vc_setup):
+    """所有 TTS 統一響度後（audio_mixing.TTS_LOUDNESS_AF），打招呼不再特別調 _tts_gain——
+    原值 0.8 全程（speak 當下與結束後）都不變。"""
     cog, member, channel, voice_client = dummy_vc_setup
     cog._delayed_player_greeting = VoiceController._delayed_player_greeting.__get__(cog)
     cog._mixer._tts_gain = 0.8  # 原本使用者設定的 TTS 音量
@@ -111,15 +112,14 @@ async def test_delayed_player_greeting_adjusts_volume_to_0_5_then_restores_origi
     with patch("asyncio.sleep", AsyncMock()):
         await cog._delayed_player_greeting(member, channel, delay_sec=0.0)
 
-    # 原本是 0.8（>= 0.5），speak 當下維持 0.8（不被強降到 0.5）
+    # speak 當下與結束後都維持原值 0.8，完全沒被動過
     assert gains_during_speak == [0.8]
-    # 驗證結束後音量恢復為原本的 0.8（絕不硬降為 0.1）
     assert cog._mixer._tts_gain == 0.8
 
 
 @pytest.mark.asyncio
-async def test_delayed_player_greeting_boosts_quiet_volume_then_restores(dummy_vc_setup):
-    """測試若原本音量偏小（如 0.2），打招呼期間提升至 0.5，播完恢復為原本的 0.2。"""
+async def test_delayed_player_greeting_does_not_touch_volume_when_low(dummy_vc_setup):
+    """原本音量偏小（如 0.2）也一樣不再被打招呼邏輯調整——全程維持 0.2 不變。"""
     cog, member, channel, voice_client = dummy_vc_setup
     cog._delayed_player_greeting = VoiceController._delayed_player_greeting.__get__(cog)
     cog._mixer._tts_gain = 0.2
@@ -134,13 +134,13 @@ async def test_delayed_player_greeting_boosts_quiet_volume_then_restores(dummy_v
     with patch("asyncio.sleep", AsyncMock()):
         await cog._delayed_player_greeting(member, channel, delay_sec=0.0)
 
-    assert gains_during_speak == [0.5]
+    assert gains_during_speak == [0.2]
     assert cog._mixer._tts_gain == 0.2
 
 
 @pytest.mark.asyncio
-async def test_delayed_player_greeting_restores_volume_on_error(dummy_vc_setup):
-    """測試若播放打招呼拋出例外，finally 仍確保音量恢復為原本的音量。"""
+async def test_delayed_player_greeting_volume_untouched_on_error(dummy_vc_setup):
+    """播放打招呼拋出例外時，_tts_gain 依然全程未被動過（原值 0.75），例外照樣往外拋。"""
     cog, member, channel, voice_client = dummy_vc_setup
     cog._delayed_player_greeting = VoiceController._delayed_player_greeting.__get__(cog)
     cog._mixer._tts_gain = 0.75
@@ -151,7 +151,7 @@ async def test_delayed_player_greeting_restores_volume_on_error(dummy_vc_setup):
         with pytest.raises(RuntimeError):
             await cog._delayed_player_greeting(member, channel, delay_sec=0.0)
 
-    # 確保例外後依然恢復原本音量 0.75
+    # 例外後 _tts_gain 依然是原值 0.75（沒被調過，也沒東西需要還原）
     assert cog._mixer._tts_gain == 0.75
 
 
