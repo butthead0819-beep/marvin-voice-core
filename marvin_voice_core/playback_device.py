@@ -22,7 +22,25 @@ class DiscordPlaybackDevice:
     def __init__(self, voice_client) -> None:
         self._vc = voice_client
 
+    # 舊 AudioPlayer thread 已 stop 但還在跑最後一輪時，最多等這麼久（正常 ≤1 幀 20ms）
+    _OLD_PLAYER_JOIN_S = 0.1
+
+    def _await_old_player(self) -> None:
+        """discord.py play() 每次換一顆新 self.encoder、開新 thread，stop() 卻不等舊 thread
+        收尾——舊 thread 最後一輪 send_audio_packet 會拿到**新** encoder，跟新 thread 同時
+        encode 同一顆 → libopus 狀態被寫壞崩潰（9/23 SIGBUS、9/24 silk/resampler.c:193）。
+        play 前先等舊 thread 結束；等不到就拒絕（raise），交給呼叫端下一輪重試。"""
+        old = getattr(self._vc, "_player", None)
+        if old is None or old is threading.current_thread() or not old.is_alive():
+            return
+        if old.is_playing():
+            return  # 還在正常播：vc.play 自己會 raise「Already playing」
+        old.join(self._OLD_PLAYER_JOIN_S)
+        if old.is_alive():
+            raise RuntimeError("[Plan12_Mixer] 舊 AudioPlayer thread 尚未結束，拒絕 play（共用 opus encoder 會崩）")
+
     def play(self, source, *, after=None) -> None:
+        self._await_old_player()
         self._vc.play(source, after=after)
 
     def is_playing(self) -> bool:
@@ -44,6 +62,7 @@ class DiscordPlaybackDevice:
         沒掛這個 callback 的話，播放器死掉沒人知道，只能等下一個剛好路過的呼叫點
         （TTS/VAD/60s sentinel）才補救，最壞情況全靜音到 60 秒。
         """
+        self._await_old_player()
         ch_bps = getattr(getattr(self._vc, "channel", None), "bitrate", None)
         kbps = 128
         if isinstance(ch_bps, int) and ch_bps > 0:

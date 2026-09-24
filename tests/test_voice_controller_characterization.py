@@ -112,14 +112,19 @@ async def test_play_tts_no_voice_client_restores_queue_counter():
 
 @pytest.mark.asyncio
 async def test_tts_flush_stops_and_clears_queue_and_resets_flag():
+    # 2026-09-24：Plan12 mixer 下 flush 只清 TTS 層、不停 player（stop→重武裝會兩條
+    # AudioPlayer thread 搶同一顆 opus encoder → libopus 崩潰，見 test_opus_encoder_race.py）
+    import numpy as np
     cog = _make_cog()
     cog.tts_queue_duration = 5.0
+    cog._mixer.push_tts(np.zeros(9600, dtype=np.float32))
     vc = MagicMock()
     vc.is_connected.return_value = True
     vc.is_playing.return_value = True
     cog.bot.voice_clients = [vc]
     await cog.tts_flush()
-    assert vc.stop.called
+    assert not vc.stop.called
+    assert cog._mixer.tts_load_seconds() == 0.0
     assert cog.tts_queue_duration == 0.0
     assert cog._tts_flush_requested is False
 

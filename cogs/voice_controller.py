@@ -1694,10 +1694,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 logger.info(f"🔇 [Music Guard] 播音樂中不硬停播放（{speaker} speech-start 只 duck 不 barge-in）")
                 return
             device = self._resolve_playback_device()
-            if device is not None and device.is_playing():
-                device.stop()
-            if self._plan12 and self._mixer is not None:
+            if self._plan12 and self._mixer is not None:  # 只清 TTS 層；stop player→重武裝會兩條 thread 搶同一顆 opus encoder（9/24 libopus 崩潰）
                 self._mixer.clear_tts()  # 🎛️ 清 mixer TTS 佇列，否則被打斷的 TTS 殘留累積亂播
+            elif device is not None and device.is_playing():
+                device.stop()
             self._tts_interrupted = True  # 封鎖所有排隊中的串流片段（也讓 streaming render 停止餵）
             interrupted_text = self._current_tts_text
             if interrupted_text and not self._current_tts_in_channel and self.active_text_channel:
