@@ -26,6 +26,7 @@ class SpeakKind(enum.Enum):
     SELF_SAY = "self_say"                # 使用者 /say 叫 Marvin 唸一句
     EXTERNAL_RELAY = "external_relay"    # NemoClaw / Marmo / OpenClaw 轉述
     SYSTEM_ALERT = "system_alert"        # 額度耗盡撤離等關機前通知
+    DEPARTURE_FAREWELL = "departure_farewell"  # 預測某人要下線、人還在時先送客（每人命中率≥50%才觸發）
 
     # ── 回應類：使用者喚醒後的答覆，尊重「人還在講話」但被打斷就放棄 ──────────
     WAKE_REPLY = "wake_reply"            # 喚醒問答的正式答覆
@@ -130,6 +131,7 @@ POLICY: dict[SpeakKind, _Policy] = {
     SpeakKind.SELF_SAY: _COMMITTED,
     SpeakKind.EXTERNAL_RELAY: _COMMITTED,
     SpeakKind.SYSTEM_ALERT: _COMMITTED,
+    SpeakKind.DEPARTURE_FAREWELL: _COMMITTED,
 
     SpeakKind.WAKE_REPLY: _REPLY,
     SpeakKind.WAKE_ACK: _REPLY_EPHEMERAL,

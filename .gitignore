@@ -44,6 +44,7 @@ game_log.jsonl
 music_memory.json
 wake_stats.json
 departure_stats.json
+departure_cues.json
 bot_main.py.pid
 consent.json
 data/voice_presence.jsonl

@@ -26,7 +26,10 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 # 例外說明：in-file Extract Method（把巨型方法拆成有名字的子方法、行為不變）會讓
 # 行數/方法數微升——這是「拆解」不是「加功能」，允許據實上修。被擋住時先自問：
 # 這是 Extract Method 把既有邏輯分出來，還是真的新增了功能？只有前者可調高。
-LINE_BUDGET = 4241      # 實測 4241（2026-09-11 QueueControlAgent +2：一行 import
+LINE_BUDGET = 4175      # 實測 4175（2026-09-24 送客改「人還在時先送」：刪 Dynamic Farewell
+                        # 區塊、加 rejoin 分流＋一行 _watch_departure，本體在 departure_predictor.py
+                        # + voice_controller_social.py；實際淨減 1 行，4241→4175 的其餘差額是舊預算
+                        # 本來就沒據實下修）；前 4241（2026-09-11 QueueControlAgent +2：一行 import
                         # + 一行 agent-list 註冊——handler 本體全在
                         # intent_agents/queue_control_agent.py，PR2，比照下方
                         # GroundedQAAgent +2 同型先例）；前 4239（2026-09-11

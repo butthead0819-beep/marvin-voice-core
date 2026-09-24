@@ -552,6 +552,36 @@ class ProactiveSocialMixin:
     #     的 method 棘輪額度，見 test_voice_controller_size_budget.py）
     # ------------------------------------------------------------------ #
 
+    def _watch_departure(self, speaker: str, raw_text: str, timestamp: float) -> None:
+        """[DeparturePredictor] 每句 STT 都餵一次，命中「該人下線線索命中率夠準」就先送客。
+
+        取代舊的「人走了才送客」：人還在講話時就判斷，話講完直接送，別等離場事件。
+        """
+        try:
+            if self._departure_predictor.observe(speaker, raw_text, timestamp):
+                self._departure_predictor.mark_farewelled(speaker, timestamp)
+                asyncio.create_task(self._speak_departure_farewell(speaker, raw_text))
+        except Exception:
+            logger.exception("[Departure] watch failed")
+
+    async def _speak_departure_farewell(self, speaker: str, raw_text: str) -> None:
+        """人還在頻道內、但下線線索命中率夠準時先送客。"""
+        try:
+            n, p = self._departure_predictor.precision(speaker)
+            logger.info(
+                f"👋 [Departure] {speaker} 說了下線線索 '{raw_text[:40]}' "
+                f"命中率={p:.0%} n={n} → 先送客"
+            )
+            msg = await self.bot.router.generate_player_farewell(speaker, stream_active=self.stream_mode)
+
+            if self.active_text_channel:
+                await self.active_text_channel.send(f"👋 **【馬文 送客】**\n{msg}")
+                asyncio.create_task(self._send_mood_sticker(msg, context="farewell"))
+            self.stt_logger.info(f"[BOT先送客→{speaker}] 線索='{raw_text[:40]}' 命中率={p:.0%} n={n} | {msg}")
+            await self.speak(msg, proactive=True, kind=SpeakKind.DEPARTURE_FAREWELL)
+        except Exception:
+            logger.exception("[Departure] speak failed")
+
     async def _handle_wake_farewell(self, speaker: str):
         """[FarewellAgent] 使用者喚醒後直接對 Marvin 說「掰掰/晚安/bye bye」，互道再見。
 
@@ -560,6 +590,12 @@ class ProactiveSocialMixin:
         原本還有一條不限喚醒詞的側通道（聽到 bye 就預測會不會離場、25 秒後驗證猜對沒），
         判斷邏輯複雜又不準，8/9 已整條移除，只留這個 agent。
         """
+        _now = time.time()
+        if self._departure_predictor.recently_farewelled(speaker, _now):
+            logger.info(f"👋 [Farewell] {speaker} 10 分鐘內已送過客，喚醒道別略過")
+            return
+        self._departure_predictor.mark_farewelled(speaker, _now)
+
         msg = await self.bot.router.generate_player_farewell(speaker, stream_active=self.stream_mode)
         if self.active_text_channel:
             await self.active_text_channel.send(f"👋 **【馬文·道別】** {msg}")
@@ -570,7 +606,9 @@ class ProactiveSocialMixin:
         with self._protected_tts_window():
             await self.play_tts(msg, already_in_channel=True, protected=True)
 
-    async def _delayed_player_greeting(self, member, marvin_channel, delay_sec: float = 5.0) -> None:
+    async def _delayed_player_greeting(
+        self, member, marvin_channel, delay_sec: float = 5.0, welcome_back: bool = False,
+    ) -> None:
         """延後發送進場打招呼（語音包）
 
         1. 等待 delay_sec（預設 5 秒），確保玩家 Discord client WebRTC 連線與音訊輸出初始化完成。
@@ -604,9 +642,14 @@ class ProactiveSocialMixin:
                 mixer._tts_gain = 0.5
 
         try:
+            if welcome_back:
+                # 斷線重連超過 flap 窗、但不到 1 小時 → 只簡單招呼，不打 LLM、不貼文字頻道
+                msg = f"{member.display_name}，你回來啦"
+                self.stt_logger.info(f"[BOT回台→{member.display_name}] {msg}")
+                await self.speak(msg, proactive=True, kind=SpeakKind.JOIN_GREETING)
             # 🔔 [T3 返場 callback]（flag-gated, 預設 OFF）：有 shareable callback 就講
             # callback 取代一般點名（XOR — 一次 join 只一個主動發言）。flag off → 退回原點名。
-            if not await self._maybe_speak_join_callback(member.display_name):
+            elif not await self._maybe_speak_join_callback(member.display_name):
                 # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷／動態押韻招呼
                 # stream_mode 中走 hotswap 注入發聲（≤30 字才通過閘）
                 msg = await self.bot.router.generate_player_greeting(

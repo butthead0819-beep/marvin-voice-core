@@ -19,6 +19,7 @@ import numpy as np
 from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
 from utils import WAKE_WORDS_LIST as _WAKE_WORDS_LIST, FAST_ONLY_WAKE_WORDS as _FAST_ONLY_WAKE_WORDS
 from departure_stats import DepartureStats
+from departure_predictor import DeparturePredictor, rejoin_action
 from consent_manager import ConsentManager
 from nudge_throttle import NudgeThrottle
 from transcript_store import TranscriptStore
@@ -481,6 +482,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         
         # 📊 [Departure Stats] 離場習慣統計
         self.departure_stats = DepartureStats()
+        self._departure_predictor = DeparturePredictor()
+        self._last_leave_ts: dict[int, float] = {}  # member.id → 最近離場時間（回台判斷用）
 
         # 🔐 [Consent] 成員語音資料處理同意管理
         self.consent = ConsentManager()
@@ -947,16 +950,26 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     self._active_views.add(consent_view)
                     await self.active_text_channel.send(notice, view=consent_view)
 
-            if now - self.greeting_cooldown.get(member.id, 0) > 10:
+            _last = self._last_leave_ts.pop(member.id, None)
+            action = rejoin_action(None if _last is None else now - _last)
+            if action == "silent":
+                gap = now - _last
+                logger.info(f"🔁 [Rejoin] {member.display_name} {gap:.0f}s 內重連，視為斷線不招呼")
+            elif now - self.greeting_cooldown.get(member.id, 0) > 10:
                 self.greeting_cooldown[member.id] = now
                 print(f"🌑 [Dynamic Greeting] 偵測到玩家 {member.display_name} 進場 (排程 5s 後發送語音包)...")
-                coro = self._delayed_player_greeting(member, marvin_channel, delay_sec=5.0)
+                coro = self._delayed_player_greeting(
+                    member, marvin_channel, delay_sec=5.0, welcome_back=(action == "welcome_back"),
+                )
                 if asyncio.iscoroutine(coro):
                     asyncio.create_task(coro)
 
         # --- [Leave Logic] ---
         if before.channel == marvin_channel and after.channel != marvin_channel:
             human_members = [m for m in marvin_channel.members if not m.bot]
+
+            self._last_leave_ts[member.id] = now
+            self._departure_predictor.on_leave(member.display_name, now)
 
             if len(human_members) == 0:
                 print(f"👋 [Auto Dismiss] 最後一名玩家 {member.display_name} 已離開，執行自動撤離...")
@@ -966,21 +979,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             else:
                 # 無論哪種離場都記錄習慣
                 await self.departure_stats.record_departure(member.display_name, verbal_bye=False)
-
-                if now - self.greeting_cooldown.get(member.id, 0) > 10:
-                    print(f"👋 [Dynamic Farewell] 偵測到玩家 {member.display_name} 離開...")
-
-                    # 🚀 [Memory Injection] 呼叫大腦生成離場嘲諷
-                    # stream_mode 中走 hotswap 注入發聲（≤30 字才通過閘）
-                    msg = await self.bot.router.generate_player_farewell(
-                        member.display_name, stream_active=self.stream_mode,
-                    )
-
-                    if self.active_text_channel:
-                        await self.active_text_channel.send(f"👋 **【馬文 送客】**\n{msg}")
-                        asyncio.create_task(self._send_mood_sticker(msg, context="farewell"))
-                    self.stt_logger.info(f"[BOT送客→{member.display_name}] {msg}")
-                    await self.speak(msg, proactive=True, kind=SpeakKind.LEAVE_FAREWELL)
 
     # _delayed_player_greeting 2026-09-11 搬到 cogs/voice_controller_social.py
     # 的 ProactiveSocialMixin（防胖棘輪守門，純搬移零行為改動）。
@@ -1292,6 +1290,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             self._last_room_stt_time = timestamp
             # week2: 餵 DuckingAgent，命中熱聊就會壓制 SpeakBus multiplier
             self._ducking_agent.on_utterance(speaker, ts=timestamp)
+            self._watch_departure(speaker, raw_text, timestamp)
             # P2: 排 post_utterance speak tick 給 BridgeAgent callback window（2.5s 後）
             asyncio.create_task(self._post_utterance_speak_tick(speaker, raw_text))
             # MemoryGuard: skip chroma upsert under critical RAM to avoid

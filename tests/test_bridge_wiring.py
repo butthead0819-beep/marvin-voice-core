@@ -349,6 +349,8 @@ async def test_voice_state_join_emits_member_joined(monkeypatch):
     cog.stt_logger = MagicMock()
     cog.departure_stats = MagicMock()
     cog.departure_stats.record_departure = AsyncMock()
+    cog._last_leave_ts = {}
+    cog._departure_predictor = MagicMock()
     cog.bot.router = MagicMock()
     cog.bot.router.generate_player_greeting = AsyncMock(return_value="hi")
     cog.bot.router.generate_player_farewell = AsyncMock(return_value="bye")
@@ -419,6 +421,8 @@ async def test_voice_state_leave_emits_member_left(monkeypatch):
     cog.stt_logger = MagicMock()
     cog.departure_stats = MagicMock()
     cog.departure_stats.record_departure = AsyncMock()
+    cog._last_leave_ts = {}
+    cog._departure_predictor = MagicMock()
     cog.bot.router = MagicMock()
     cog.bot.router.generate_player_greeting = AsyncMock(return_value="hi")
     cog.bot.router.generate_player_farewell = AsyncMock(return_value="bye")
