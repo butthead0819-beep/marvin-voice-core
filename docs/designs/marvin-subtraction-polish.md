@@ -952,6 +952,22 @@ codex，unavailable（CLI 未安裝；無 TaskOutput 可做有時限的 native f
 - Parallelization: 沿用第一輪（R1 排在 Lane D 最前面）
 - Lake Score: 1/1
 
+
+## 實作期修正（2026-09-25，以此為準）
+
+實作時用資料回頭驗證，推翻或修正了計畫裡的幾個前提：
+
+| 項目 | 計畫原本的判斷 | 實際查到的 | 處置 |
+|---|---|---|---|
+| 6、7 | 冷場開話題 71% 沒人理；每小時暴衝到 68 次 | ProactiveTopic 187 筆裡 145 筆（78%）是 `trigger_proactive_topic` 提早 return 不更新冷卻造成的**每 5 秒幽靈勝出**；扣掉後接話率 50%。`speak_outcomes` 只記勝出、不知道有沒有講出來 | PR #96 修幽靈勝出＋加 `tts_pushed`（已上線）。**6、7 暫緩**，一週乾淨資料後再決定（使用者 D：A） |
+| 4 | `stt_done→dequeued` 是排隊回歸 | 不是排隊：那段幾乎全是 **Semantic ETD 的 cleaner LLM**（跳過 ETD 的句子 <100ms），且 worker 對同一句又打一次同一個 cleaner | PR #97 worker 重用 ETD 結果（已上線；#100 補 logger INFO） |
+| 1 | 不喊喚醒詞問歌名 0/6 有回應 | nowake 分派從不寫 judge_outcomes，是沒量到 | PR #99 nowake_outcomes.jsonl＋ZDR＋每日儀式（已合併） |
+| 2 | frustration 誤判原因待查 | J3 cleaner 在句首注入「馬文」，口吃規則把「馬文」「播放」不同類詞加總成 2 | PR #98 同類詞計數＋ReplayAgent 補關鍵字（待觀察期後 merge） |
+| 3 | 點歌聽錯（9/23 陳華→陳綺貞、9/24 播錯歌） | 9/23：**陳華是真歌手**，STT 切碎重複，歌最後有播出；9/24：真人點歌被 **autopilot 對話靈感選曲插隊**。近 30 天 45 筆可配對點歌中 **16 筆（36%）被插隊**，多等 3–14 分鐘 | **3a、3b 取消**；改做「點歌優先」：目前這首剩 ≥45s 且下一首是 Marvin 選曲時，真人點歌排最前（使用者選 A，decision 065881b1） |
+| 5 | 改 `marvin_prompts.py:93/108` 的「預設底色」 | 那兩行是 Suno 作曲 prompt；聊天的厭世詞主要來自 `qa_persona`（:152）、時段描述（:416-417）、憂鬱指數（:430） | 實作時把語氣改寫方案交給使用者選（厭世保留） |
+
+另：發包流程改為「任務檔開頭註明你就是實作者」＋「在獨立 git worktree 跑」（主目錄＝bot 執行目錄）；新增頂層模組要同步放行 logger INFO。
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
