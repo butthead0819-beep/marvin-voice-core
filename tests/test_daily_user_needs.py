@@ -146,6 +146,25 @@ def test_polish_nowake_song_query_counts_and_lists_missed(tmp_path, monkeypatch)
     assert "什麼歌這是" not in out  # 測試 speaker 排除
 
 
+def test_polish_song_query_stolen_by_other_agent_counts_as_missed(tmp_path, monkeypatch):
+    """問歌名被別的 agent 搶走（例如被當點歌）也算沒接住，不只 winner=None。"""
+    from scripts.daily_user_needs import section_polish
+
+    nowake = tmp_path / "nowake_outcomes.jsonl"
+    nowake.write_text(
+        json.dumps({"ts": 1000.0, "speaker": "showay", "query": "這是什麼歌",
+                    "winner": "music"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scripts.daily_user_needs.NOWAKE", nowake)
+    monkeypatch.setattr("scripts.daily_user_needs.SPEAK", tmp_path / "no_speak.jsonl")
+
+    out = section_polish(0, 2000.0)
+
+    assert "未被 now_playing 接住 1" in out
+    assert "winner=music" in out
+
+
 def test_polish_speak_tts_pushed_and_peak_hour(tmp_path, monkeypatch):
     from scripts.daily_user_needs import section_polish
 
