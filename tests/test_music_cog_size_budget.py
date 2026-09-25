@@ -31,7 +31,7 @@ MC = Path(__file__).resolve().parent.parent / "cogs" / "music_cog.py"
 # Phase 6（music_cog_story_arc.py，故事弧線節目+_auto_recommend，10個方法，−525行/−10method）後：2810/67
 # Phase 7（music_cog_dj_lyrics.py，歌詞抓取+DJ播報生成，20個方法+_DJ_TEMPLATES衍生常數，−20method）後：2184/47
 # Phase 8（music_cog_tail_dj.py，metadata統籌預取+PuckMixer橋接+DJ尾段串場排程，18個方法，−657行/−18method）後：1527/29
-LINE_BUDGET = 1499  # 2026-09-25 點歌插入位置搬去 queue_priority −20
+LINE_BUDGET = 1500  # 2026-09-25 點歌插入位置搬去 queue_priority −20，真人點歌優先傳 remaining_s +1
 METHOD_BUDGET = 29
 
 

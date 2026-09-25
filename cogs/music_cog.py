@@ -50,7 +50,7 @@ from intent_agents.volume_agent import calculate_tts_gain
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
-from queue_priority import user_song_insert_index
+from queue_priority import user_song_insert_index, remaining_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -742,7 +742,8 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
 
     def _user_song_insert_index(self, queue: list[dict]) -> int:
         """見 queue_priority.user_song_insert_index（2026-08-27 slot 0 爆音教訓）。"""
-        return user_song_insert_index(queue, self.stream_mode)
+        return user_song_insert_index(queue, self.stream_mode, remaining_seconds(
+            self._current_stream_info, self._current_stream_start_time))
 
     def _play_next_insert_index(self, queue: list[dict]) -> int:
         """play_next 專用插入位置：蓋過所有既有排隊（含其他人已經 play_next 插進去
