@@ -165,6 +165,7 @@ class ProactiveSocialMixin:
         if bid is None:
             return
         ts = time.time()
+        push_before = getattr(getattr(self, "_mixer", None), "tts_push_count", None)
         try:
             await bid.handler()
         except Exception:
@@ -175,19 +176,32 @@ class ProactiveSocialMixin:
             bid_count=len(self._speak_bus.agents()),
             silence_seconds=ctx.silence_seconds,
             present_speakers=tuple(ctx.present_speakers),
+            tts_push_before=push_before,
         ))
 
     async def _record_speak_outcome_after(self, *, ts: float, trigger: str, winner: str,
                                           confidence: float, reason: str, bid_count: int,
                                           silence_seconds: float, present_speakers: tuple[str, ...],
+                                          tts_push_before: int | None = None,
                                           followup_window_s: float = 60.0) -> None:
-        """tick 之後等 N 秒，看房間有沒有 STT 回聲，寫一筆 SpeakOutcome。"""
-        await asyncio.sleep(followup_window_s)
+        """tick 之後等 N 秒，看房間有沒有 STT 回聲，寫一筆 SpeakOutcome。
+
+        tts_pushed 只量前 15 秒（勝出後 mixer 第一層有沒有新推入 TTS）：等太久會混進
+        下一輪發話，量不準；had_followup_stt 仍照舊等滿 followup_window_s。
+        """
+        pushed_window_s = min(15.0, followup_window_s)
+        await asyncio.sleep(pushed_window_s)
+        now_count = getattr(getattr(self, "_mixer", None), "tts_push_count", None)
+        tts_pushed = None
+        if tts_push_before is not None and now_count is not None:
+            tts_pushed = now_count > tts_push_before
+        await asyncio.sleep(followup_window_s - pushed_window_s)
         had_followup = self._last_room_stt_time > ts
         append_speak_outcome(SpeakOutcome(
             ts=ts, trigger=trigger, winner=winner, confidence=confidence,
             reason=reason, bid_count=bid_count, had_followup_stt=had_followup,
             silence_seconds=silence_seconds, present_speakers=present_speakers,
+            tts_pushed=tts_pushed,
         ))
 
     @tasks.loop(seconds=5.0)
@@ -219,6 +233,7 @@ class ProactiveSocialMixin:
         if bid is None:
             return
         ts = time.time()
+        push_before = getattr(getattr(self, "_mixer", None), "tts_push_count", None)
         try:
             await bid.handler()
         except Exception:
@@ -229,6 +244,7 @@ class ProactiveSocialMixin:
             bid_count=len(self._speak_bus.agents()),
             silence_seconds=ctx.silence_seconds,
             present_speakers=tuple(ctx.present_speakers),
+            tts_push_before=push_before,
         ))
 
     @tasks.loop(seconds=30.0)

@@ -971,3 +971,28 @@ def test_tts_active_ducks_regardless_of_wake():
     """TTS 播放中一定 duck（回話期間由 TTS duck 維持，與 wake duck 無關）。"""
     m = LocalMixingAudioSource(clock=lambda: 0.0)
     assert m._music_duck_target(True) == m._duck_level
+
+
+# ── tts_push_count（speak outcome 判斷有沒有真的推出 TTS 用）───────────────────
+
+def test_tts_push_count_increments_on_success():
+    mix = LocalMixingAudioSource()
+    assert mix.tts_push_count == 0
+    mix.push_tts(_f32_frame(0.5))
+    assert mix.tts_push_count == 1
+
+
+def test_tts_push_count_unchanged_when_rejected():
+    mix = LocalMixingAudioSource(tts_cap_seconds=1.0)
+    half = np.zeros(SAMPLE_RATE * CHANNELS // 2, dtype=np.float32)  # 0.5s
+    assert mix.push_tts(half) is True
+    assert mix.push_tts(half) is True   # 剛好到上限
+    assert mix.tts_push_count == 2
+    assert mix.push_tts(half) is False  # 超過 → 拒絕
+    assert mix.tts_push_count == 2      # 不變
+
+
+def test_push_tts2_does_not_count():
+    mix = LocalMixingAudioSource()
+    mix.push_tts2(_f32_frame(0.4))
+    assert mix.tts_push_count == 0

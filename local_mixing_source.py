@@ -101,6 +101,7 @@ class LocalMixingAudioSource(_BASE):
         self._tts_queue: collections.deque = collections.deque()  # 預解碼 f32 buffers
         self._tts_cur: np.ndarray | None = None  # 當前 TTS buffer（consumer-local）
         self._tts_off = 0
+        self.tts_push_count: int = 0  # push_tts() 成功推入次數，供 outcome log 判斷有沒有真的推出去
 
         # 🎭 [打岔層 layer2] Marmo 在 Marvin 講話尾段「混音疊進來打斷」。獨立佇列，與
         # layer1 並行混音（mix_layers 逐元素相加）、不互相排隊。layer2 活躍時 layer1(Marvin)
@@ -396,6 +397,7 @@ class LocalMixingAudioSource(_BASE):
         if self._tts_load_samples() + buf.size > self._tts_cap_samples:
             return False
         self._tts_queue.append(buf)
+        self.tts_push_count += 1
         return True
 
     def push_tts2(self, f32_buffer: np.ndarray) -> bool:

@@ -32,16 +32,16 @@ def _sample(**overrides) -> SpeakOutcome:
 # ── schema_version 紀律 ───────────────────────────────────────────────────────
 
 def test_outcome_has_schema_version_field():
-    """每個 record 都帶 schema_version，第一版 = 1。"""
+    """每個 record 都帶 schema_version，目前版 = 2（v2 加 tts_pushed）。"""
     rec = _sample()
-    assert rec.schema_version == 1
+    assert rec.schema_version == 2
 
 
 def test_jsonline_includes_schema_version():
     """serialize 後 schema_version 必須在 JSON 內，外部 consumer 才能版本判斷。"""
     rec = _sample()
     data = json.loads(rec.to_jsonline())
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
 
 
 # ── roundtrip ────────────────────────────────────────────────────────────────
@@ -88,3 +88,14 @@ def test_read_skips_corrupt_lines(tmp_path):
 def test_read_missing_file_returns_empty(tmp_path):
     got = list(read_speak_outcomes(path=tmp_path / "nope.jsonl"))
     assert got == []
+
+
+# ── tts_pushed（v2）──────────────────────────────────────────────────────────
+
+def test_jsonline_includes_tts_pushed():
+    """serialize 後要能分得出勝出後有沒有真的推 TTS；預設值為 None（量不到）。"""
+    default = json.loads(_sample().to_jsonline())
+    assert default["tts_pushed"] is None
+
+    pushed = json.loads(_sample(tts_pushed=True).to_jsonline())
+    assert pushed["tts_pushed"] is True
