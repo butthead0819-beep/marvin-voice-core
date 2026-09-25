@@ -37,7 +37,8 @@ class SpeakOutcome:
     had_followup_stt: bool                 # tick 後 N 秒內房間有 STT 回聲（弱 quality signal）
     silence_seconds: float                 # tick 時的靜默秒數
     present_speakers: tuple[str, ...] = ()
-    schema_version: int = 1                # 紀律：第一筆 record 起算
+    tts_pushed: bool | None = None         # 勝出後 15 秒內 mixer 第一層有沒有新推入 TTS；None = 量不到
+    schema_version: int = 2                # 紀律：第一筆 record 起算，目前版 = 2（v2 加 tts_pushed）
 
     def to_jsonline(self) -> str:
         """Serialize to single-line JSON (no trailing newline; writer adds it)."""
