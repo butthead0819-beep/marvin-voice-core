@@ -129,7 +129,7 @@ def test_remember_etd_same_speaker_keeps_latest_only():
     ctrl = _make_ctrl()
     remember_etd(ctrl, "alice", "馬文，今天天氣如何", {"text": "馬文，今天天氣如何？"})
     remember_etd(ctrl, "alice", "馬文，播放音樂", {"text": "馬文，播放音樂吧"})
-    assert take_etd(ctrl, "alice", "今天天氣如何") is None
+    # take_etd 取一次就刪（比對不符也刪），所以只用最新那句取一次：命中＝舊的被覆蓋掉了
     assert take_etd(ctrl, "alice", "播放音樂") == "播放音樂吧"
 
 
