@@ -103,7 +103,7 @@ from utterance_budget import STREAM_BUDGET
 import audio_mixing
 import ack_templates
 import pipeline_timing
-from etd_clean_reuse import clean_for_worker
+from etd_clean_reuse import clean_for_worker, remember_etd
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
 from helper_wake import is_helper_wake, helper_speak_plan
@@ -1642,6 +1642,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if hasattr(self.bot, "router") and hasattr(self.bot.router, "clean_stt_text"):
                 try:
                     res = await self.bot.router.clean_stt_text(combined_text)
+                    remember_etd(self, speaker, combined_text, res)
                     if isinstance(res, dict) and "is_complete" in res:
                         is_complete = res["is_complete"]
                         if not is_complete:
@@ -2753,7 +2754,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             pipeline_timing.mark("cleaner_done")
             return _cmd
 
-        return await clean_for_worker(self, stripped)
+        return await clean_for_worker(self, stripped, speaker)
 
     def _get_music_fastpath(self):
         """Lazy MusicFastPath（env-gated MARVIN_MUSIC_FASTPATH）。
