@@ -15,6 +15,7 @@ from pathlib import Path
 
 from scripts.scrub_improvement_raw import (
     SCRUB_PREFIX,
+    TARGETS,
     scrub_rows,
     scrub_value,
 )
@@ -101,3 +102,9 @@ def test_scrub_idempotent_on_rerun():
     assert n1 == 1
     assert n2 == 0  # 第二次沒有可 scrub 的
     assert once[0]["raw_query"] == twice[0]["raw_query"]
+
+
+# ── TARGETS：nowake_outcomes 納入 14 天清理 ───────────────────────────────────
+
+def test_nowake_outcomes_in_targets():
+    assert ("records/nowake_outcomes.jsonl", ["raw_text", "query"]) in TARGETS

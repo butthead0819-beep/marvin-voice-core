@@ -338,6 +338,7 @@ class IntentBus:
                     f"📡 [IntentBus] speaker={ctx.speaker} query='{ctx.query[:50]}' "
                     f"wake_intent={ctx.wake_intent} winner=none"
                 )
+                self._record_nowake(ctx, [], None)
                 return await self._maybe_rescue(ctx)
 
             bids.sort(key=lambda b: b.confidence, reverse=True)
@@ -364,12 +365,14 @@ class IntentBus:
                 f"wake_intent={ctx.wake_intent} bids: {bid_summary} "
                 f"winner=none (max={winner.confidence:.2f}<{self.MIN_CONFIDENCE})"
             )
+            self._record_nowake(ctx, bids, None)
             return await self._maybe_rescue(ctx)
 
         self.logger.info(
             f"📡 [IntentBus] speaker={ctx.speaker} query='{ctx.query[:50]}' "
             f"wake_intent={ctx.wake_intent} bids: {bid_summary} winner={winner.name}"
         )
+        self._record_nowake(ctx, bids, winner)
 
         # ── Vector intent：winner 缺 resolver 認得的 slot → 解析後帶 depth+1 重投 ──
         # 不認得的 slot（如 song_title）或無 missing → 走原 handler（保留 _ask / 直接播）。
@@ -396,6 +399,13 @@ class IntentBus:
 
         await winner.handler()
         return winner
+
+    def _record_nowake(self, ctx: IntentContext, bids, winner) -> None:
+        """nowake 分派才記（judge_outcomes 只記 regex，見 nowake_outcomes.py）。"""
+        if ctx.dispatch_source != "nowake":
+            return
+        from nowake_outcomes import append_nowake_outcome
+        append_nowake_outcome(ctx, bids, winner)
 
     async def _maybe_rescue(self, ctx: IntentContext) -> Bid | None:
         """No-winner 兜底：LLM rescue agent 改寫 ctx 後重投。

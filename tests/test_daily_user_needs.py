@@ -104,3 +104,85 @@ def test_section_2c_surfaces_abandoned_rescue(tmp_path, monkeypatch):
     assert "`just_chatting`" in out
     assert "`gemini_error`" in out          # 冒號後的細節被切掉、只留分類
     assert "欸馬文那個那個" in out
+
+
+# ── section_polish：減法打磨觀測（nowake 問歌名 / 主動發話 tts_pushed）────────
+
+def test_polish_no_files_no_data(tmp_path, monkeypatch):
+    from scripts.daily_user_needs import section_polish
+
+    monkeypatch.setattr("scripts.daily_user_needs.NOWAKE", tmp_path / "no_nowake.jsonl")
+    monkeypatch.setattr("scripts.daily_user_needs.SPEAK", tmp_path / "no_speak.jsonl")
+
+    out = section_polish(0, 2000.0)
+    assert "nowake_outcomes：無資料" in out
+    assert "speak_outcomes：無資料" in out
+
+
+def test_polish_nowake_song_query_counts_and_lists_missed(tmp_path, monkeypatch):
+    from scripts.daily_user_needs import section_polish
+
+    nowake = tmp_path / "nowake_outcomes.jsonl"
+    nowake.write_text(
+        "\n".join(json.dumps(r) for r in [
+            {"ts": 1000.0, "speaker": "showay", "query": "這首歌叫什麼歌",
+             "winner": "now_playing"},
+            {"ts": 1001.0, "speaker": "狗與露", "query": "誰唱的這首",
+             "winner": None},
+            {"ts": 1002.0, "speaker": "showay", "query": "今天天氣真好",
+             "winner": None},
+            {"ts": 1003.0, "speaker": "測試", "query": "什麼歌這是",
+             "winner": None},
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scripts.daily_user_needs.NOWAKE", nowake)
+    monkeypatch.setattr("scripts.daily_user_needs.SPEAK", tmp_path / "no_speak.jsonl")
+
+    out = section_polish(0, 2000.0)
+
+    assert "問歌名 2" in out
+    assert "誰唱的這首" in out
+    assert "什麼歌這是" not in out  # 測試 speaker 排除
+
+
+def test_polish_song_query_stolen_by_other_agent_counts_as_missed(tmp_path, monkeypatch):
+    """問歌名被別的 agent 搶走（例如被當點歌）也算沒接住，不只 winner=None。"""
+    from scripts.daily_user_needs import section_polish
+
+    nowake = tmp_path / "nowake_outcomes.jsonl"
+    nowake.write_text(
+        json.dumps({"ts": 1000.0, "speaker": "showay", "query": "這是什麼歌",
+                    "winner": "music"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scripts.daily_user_needs.NOWAKE", nowake)
+    monkeypatch.setattr("scripts.daily_user_needs.SPEAK", tmp_path / "no_speak.jsonl")
+
+    out = section_polish(0, 2000.0)
+
+    assert "未被 now_playing 接住 1" in out
+    assert "winner=music" in out
+
+
+def test_polish_speak_tts_pushed_and_peak_hour(tmp_path, monkeypatch):
+    from scripts.daily_user_needs import section_polish
+
+    speak = tmp_path / "speak_outcomes.jsonl"
+    speak.write_text(
+        "\n".join(json.dumps(r) for r in [
+            {"ts": 0.0, "winner": "ProactiveTopic", "tts_pushed": True},
+            {"ts": 60.0, "winner": "ProactiveTopic", "tts_pushed": False},
+            {"ts": 3700.0, "winner": "ProactiveTopic"},
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scripts.daily_user_needs.NOWAKE", tmp_path / "no_nowake.jsonl")
+    monkeypatch.setattr("scripts.daily_user_needs.SPEAK", speak)
+
+    out = section_polish(0, 4000.0)
+
+    assert "每小時最大 2" in out
+    assert "True 1" in out
+    assert "False 1" in out
+    assert "未知 1" in out
