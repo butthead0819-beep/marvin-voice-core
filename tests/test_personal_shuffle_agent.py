@@ -129,3 +129,9 @@ async def test_handler_calls_cog_start_personal_shuffle():
     bid = a.bid(_ctx("連續播我的歌單", speaker="阿明"))
     await bid.handler()
     cog.start_personal_shuffle.assert_awaited_once_with("阿明")
+
+
+def test_repeat_my_playlist_still_personal_shuffle():
+    # 「重複播放我的歌單」是個人歌單連播，不該被 ReplayAgent 的「重複播放這首」搶走
+    bid = _agent().bid(_ctx("重複播放我的歌單"))
+    assert bid.confidence >= 0.90

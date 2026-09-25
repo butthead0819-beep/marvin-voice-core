@@ -51,6 +51,10 @@ class ReplayAgent(DeclarativeIntentAgent):
                         # replay / play again
                         r"replay",
                         r"play\s*again",
+                        # 重覆/重複播放這(一)?首（9/8 真實語料）；錨定「這首」避免吃掉「重複播放我的歌單」
+                        r"(重覆|重複)\s*播放?\s*這\s*一?\s*首",
+                        # repeat 這首
+                        r"repeat\s*這\s*一?\s*首",
                     ],
                     reason_template="replay:{matched}",
                 ),

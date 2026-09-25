@@ -109,6 +109,10 @@ async def test_no_current_song_dense_zero():
     "從頭再播",
     "replay",
     "play again",
+    "重覆播放這首",
+    "重複播放這一首",
+    "repeat 這首",
+    "馬文重覆播放這首",
 ])
 async def test_replay_patterns(query):
     from intent_agents.replay_agent import ReplayAgent
@@ -126,6 +130,9 @@ async def test_replay_patterns(query):
     "再來一首",      # 加歌 != 重播（語意模糊，不接）
     "播放周杰倫",    # music
     "今天天氣不錯",  # 純對話
+    "重複播放我的歌單",  # PersonalShuffleAgent 的事，非重播當前歌
+    "重複播放我的歌",    # 同上
+    "repeat",            # 單字 repeat 語意不明，不接
 ])
 async def test_no_match_avoids_existing_intents(query):
     from intent_agents.replay_agent import ReplayAgent
