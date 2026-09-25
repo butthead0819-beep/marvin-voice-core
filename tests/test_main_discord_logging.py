@@ -81,3 +81,39 @@ def test_setup_early_logging_allowlists_intent_agents():
         f"intent_agents.playback_control_agent effective level 應為 INFO，"
         f"實際={level!r} stderr={result.stderr[-500:]!r}"
     )
+
+
+def test_setup_early_logging_allowlists_etd_clean_reuse():
+    """2026-09-25（同型坑第三次）：PR #97 新增頂層模組 etd_clean_reuse，
+    `♻️ [ETD reuse]` INFO 被 root WARNING 吞掉，上線後完全看不到重用命中率。
+    做法同 test_setup_early_logging_allowlists_intent_agents：subprocess 裡跑，避免污染 pytest 行程。
+    """
+    import os
+    import subprocess
+    import sys as _sys
+    import tempfile
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory() as tmp_cwd:
+        out_path = Path(tmp_cwd) / "level_result.txt"
+        script = (
+            "import logging, main_discord; "
+            "main_discord.setup_early_logging(); "
+            "lg = logging.getLogger('etd_clean_reuse'); "
+            f"open({str(out_path)!r}, 'w').write(logging.getLevelName(lg.getEffectiveLevel()))"
+        )
+        env = {**os.environ, "PYTHONPATH": str(repo_root)}
+        result = subprocess.run(
+            [_sys.executable, "-c", script],
+            cwd=tmp_cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"subprocess 失敗: {result.stderr}"
+        level = out_path.read_text().strip() if out_path.exists() else ""
+    assert level == "INFO", (
+        f"etd_clean_reuse effective level 應為 INFO，實際={level!r} stderr={result.stderr[-500:]!r}"
+    )
