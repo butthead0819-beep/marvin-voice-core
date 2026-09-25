@@ -167,3 +167,42 @@ async def test_explicit_frustration_falls_back_to_current_audio_when_no_prev_tur
 
     sent_ctx = mock_rescue_agent.synthesize.await_args.args[0]
     assert sent_ctx.audio_wav_bytes == b"only-this-turn-audio"
+
+
+@pytest.mark.parametrize("query", [
+    "馬文播放總會有人",
+    "馬文重覆播放這首",
+    "馬文播放周杰倫的晴天",
+])
+def test_normal_wake_play_command_is_not_stutter(query):
+    # 2026-09 judge_outcomes 誤判：J3 cleaner 在句首注入「馬文」後，
+    # 正常的「馬文播放X」不該被當成口吃重試。
+    agent = FrustrationAgent(controller=MagicMock())
+    ctx = _make_ctx(query)
+    bid = agent.bid(ctx)
+    assert bid.confidence == 0.0, f"{query!r} 不該被判口吃, got {bid.confidence}"
+    assert "no_frustration" in bid.reason
+
+
+def test_stutter_still_detected_for_repeated_names():
+    agent = FrustrationAgent(controller=MagicMock())
+    ctx = _make_ctx("馬文一個半小時的不是馬文後背")
+    bid = agent.bid(ctx)
+    assert bid.confidence >= 0.90
+    assert "stutter_repetition" in bid.reason
+
+
+def test_stutter_still_detected_for_repeated_play():
+    agent = FrustrationAgent(controller=MagicMock())
+    ctx = _make_ctx("法文播放淳華的華文播放陳華的如果")
+    bid = agent.bid(ctx)
+    assert bid.confidence >= 0.90
+    assert "stutter_repetition" in bid.reason
+
+
+def test_stutter_mixed_name_variants():
+    # 不同寫法的口吃錯字（把文/馬文）加總仍算同一類
+    agent = FrustrationAgent(controller=MagicMock())
+    ctx = _make_ctx("把文你好馬文")
+    bid = agent.bid(ctx)
+    assert bid.confidence >= 0.90
