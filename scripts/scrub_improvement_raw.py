@@ -29,6 +29,7 @@ TARGETS: list[tuple[str, list[str]]] = [
     ("records/agent_gaps.jsonl", ["raw_query", "cleaned_query"]),
     ("records/judge_outcomes.jsonl", ["raw_query"]),
     ("records/rescue_outcomes.jsonl", ["original_query", "rewritten_query"]),
+    ("records/nowake_outcomes.jsonl", ["raw_text", "query"]),
 ]
 
 
