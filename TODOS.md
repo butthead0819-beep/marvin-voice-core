@@ -1,6 +1,16 @@
 
 ## 新功能 — 待完成
 
+### TODO: 歌間空檔看場合音效（擱置中，減法輪之後）
+**What:** 把 `_play_dj_tail_sfx`（cogs/music_cog_tail_dj.py）的 early return 拿掉，改成只在房間熱（`atmosphere_tracker._window` 算發言密度 + 講者數）時，於 DJ 尾段挑一支預先解碼好的靜態音效（riser／shoutout），預設不放；scratch 移除。
+**Why:** 2026-09-25 office hours 定位 Marvin＝聊天房電台主持人，「歌與歌之間的空間就是表演的舞台」。音效系統已寫好，8/25 停用理由（疑似斷音）在 8/29 QoS 修好後可能已不成立。
+**Pros:** 基礎建設幾乎都在；預設不放、天生稀少；有 holdout 對照組設計。
+**Cons:** 靜態音效目前播放當下仍會 fork ffmpeg，要改成開機預先解碼；確認窗口、私語模式、`/marvin_talk` 等 guard 要逐一處理（見 doc 的 Spec Review 11 項）。
+**Context:** 完整設計與未解決的審查意見在 `docs/designs/dj-stage-reactive-sfx.md`（2 輪審查，停在 CONVERGENCE）。被使用者改走減法輪而擱置，不作廢。
+**Depends on:** `docs/designs/marvin-subtraction-polish.md` 7 項完成，且開口預算（項目 7）上線滿一週、確認 Marvin 沒有講太多。
+**Priority:** P3
+
+
 ### TODO: audio rescue — readonly_tool_executor 接線
 **What:** 給 `AudioRescueAgent` 傳一個 `readonly_tool_executor`，讓 `get_now_playing` / `get_recent_history` 兩個唯讀 tool 真的能執行（現在 `build_rescue_components` 沒傳 → `_execute_readonly` 直接 return，no-op）。
 **Why:** audio rescue 時使用者問「現在放什麼」「剛剛聊了什麼」→ Gemini 會選這兩個 tool，但目前靜默什麼都不做，掉回聊天。
