@@ -489,6 +489,8 @@ class PromptManager:
                     import random as _rnd
                     if _r_stage != "陌生人" and _rnd.random() < 0.10:
                         catchphrase_injection = f"\n[💬 此刻的心底話]：{_rnd.choice(MARVIN_CATCHPHRASES)}（可以在本次回應的最後自然地說出這句話，用馬文的語氣包裝）"
-            return base_instruction + dna_context + persona_context + lang_directive + catchphrase_injection
+            from phrase_cooldown import COOLDOWN_LAYERS, injection as _phrase_injection
+            phrase_injection = _phrase_injection() if layer in COOLDOWN_LAYERS else ""
+            return base_instruction + dna_context + persona_context + lang_directive + catchphrase_injection + phrase_injection
              
         return base_instruction + lang_directive

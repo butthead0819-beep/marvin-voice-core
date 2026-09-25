@@ -9,6 +9,7 @@ from duckduckgo_search import DDGS
 
 from llm_json_compat import ensure_json_in_messages
 from utterance_budget import environment_directive
+from phrase_cooldown import record as _phrase_record
 
 logger = logging.getLogger(__name__)
 
@@ -906,6 +907,7 @@ class GeminiRouterLLMMixin:
             
             # 結算歷史
             final_text = "".join(full_response)
+            _phrase_record(final_text)
             if final_text:
                 self.short_term_dialogue.append({"player": speaker, "text": query, "marvin": final_text})
                 if len(self.short_term_dialogue) > 6:

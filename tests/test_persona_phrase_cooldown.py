@@ -5,8 +5,16 @@ import inspect
 
 import pytest
 
+import phrase_cooldown
 from marvin_prompts import PromptManager
 from personality_config import normalize_personality_state
+
+
+@pytest.fixture(autouse=True)
+def _reset_phrase_cooldown():
+    phrase_cooldown.reset()
+    yield
+    phrase_cooldown.reset()
 
 
 def test_marvin_prompts_source_has_no_stale_signature_phrases():
@@ -29,3 +37,55 @@ def test_fast_awakening_dna_context_no_universe_weight():
     prompt = PromptManager().get_instruction("fast_awakening", dna=dna)
     assert "宇宙的重量" not in prompt
     assert "提不起任何勁" in prompt
+
+
+# ── phrase_cooldown ──────────────────────────────────────────────────────
+
+def test_found_words_matches_signature_words_dedup_and_empty():
+    assert phrase_cooldown.found_words("這毫無意義，宇宙也是") == ("毫無意義", "宇宙")
+    assert phrase_cooldown.found_words("無意義") == ("無意義",)
+    assert phrase_cooldown.found_words("") == ()
+
+
+def test_record_then_recent_words_dedup_in_order():
+    phrase_cooldown.record("這是宇宙的產物")
+    phrase_cooldown.record("處理器過熱了")
+    phrase_cooldown.record("宇宙與處理器都一樣")
+    assert phrase_cooldown.recent_words() == ["宇宙", "處理器"]
+
+
+def test_recent_words_drops_entries_outside_window():
+    phrase_cooldown.record("熵增加了")
+    for _ in range(phrase_cooldown.WINDOW):
+        phrase_cooldown.record("今天天氣不錯")
+    assert "熵" not in phrase_cooldown.recent_words()
+
+
+def test_injection_empty_when_no_recent_words():
+    assert phrase_cooldown.injection() == ""
+
+
+def test_injection_contains_recent_word_and_marker():
+    phrase_cooldown.record("宇宙又對我做了什麼")
+    text = phrase_cooldown.injection()
+    assert "宇宙" in text
+    assert "換個說法" in text
+
+
+def test_disabled_via_env_skips_record_and_injection(monkeypatch):
+    monkeypatch.setenv("MARVIN_PERSONA_PHRASE_COOLDOWN", "0")
+    phrase_cooldown.record("宇宙又對我做了什麼")
+    assert phrase_cooldown.recent_words() == []
+    assert phrase_cooldown.injection() == ""
+
+
+def test_get_instruction_injects_cooldown_for_cooldown_layer():
+    phrase_cooldown.record("宇宙好大")
+    prompt = PromptManager().get_instruction("fast_awakening")
+    assert "換個說法" in prompt
+
+
+def test_get_instruction_skips_cooldown_for_non_cooldown_layer():
+    phrase_cooldown.record("宇宙好大")
+    prompt = PromptManager().get_instruction("greeting")
+    assert "換個說法" not in prompt
