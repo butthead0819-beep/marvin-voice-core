@@ -48,6 +48,7 @@ class ProactiveTopicAgent:
         self._graph = topic_graph
         self._stale_after_days = stale_after_days
         self._mood = mood_agent
+        self._last_attempt: float = 0.0
 
     def _topics_stale(self) -> bool:
         """suki_memory._meta.review_date 比門檻舊 → True（topics 凍結，不該再講）。
@@ -86,8 +87,11 @@ class ProactiveTopicAgent:
             return None
 
         # 2. 距上次主動不夠久
+        # handler 有好幾條提早 return 的路徑不會更新 last_proactive_time（勝出了卻沒真的
+        # 講話），只看它會讓下一個 5s tick 又勝出、重複空轉——自己也記一次「嘗試時間」。
         last_proactive = getattr(c, "last_proactive_time", 0.0) or 0.0
-        if self._clock() - last_proactive < self._min_gap:
+        last = max(last_proactive, self._last_attempt)
+        if self._clock() - last < self._min_gap:
             return None
 
         # 3. 在場玩家 < 2 / 沒文字頻道 → 自言自語沒意義。
@@ -108,6 +112,7 @@ class ProactiveTopicAgent:
         # 4. 撞模式由 SpeakBus 統一 gate（mode_compatible={"normal"}）→ 此處不再重複檢查
 
         async def _handler() -> None:
+            self._last_attempt = self._clock()
             try:
                 await c.trigger_proactive_topic()
             except Exception:

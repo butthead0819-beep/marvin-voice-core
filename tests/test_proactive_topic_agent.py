@@ -202,3 +202,63 @@ async def test_bid_does_not_fetch_topics():
     # bid 應該安全完成（不碰 get_proactive_topics）
     bid = await a.speak_bid(_ctx(silence_seconds=400.0))
     assert bid is not None  # 沒因 RuntimeError 中斷
+
+
+# ── 幽靈勝出：handler 提早 return 不更新 last_proactive_time，自己記嘗試時間 ──────
+
+@pytest.mark.asyncio
+async def test_no_rebid_within_min_gap_after_noop_handler():
+    """trigger_proactive_topic 是 no-op（不更新 last_proactive_time）→ 之後 min_gap
+    內再 tick 不該再贏，否則每 5s 就重複空贏一次（見 speak_outcomes.jsonl 187 筆裡 145
+    筆重複勝出的幽靈勝出 bug）。"""
+    from unittest.mock import AsyncMock
+
+    now = [1000.0]
+    c = _controller(trigger_proactive_topic=AsyncMock(return_value=None))
+    a = ProactiveTopicAgent(c, min_gap_since_last_s=600.0, clock=lambda: now[0])
+
+    bid = await a.speak_bid(_ctx())
+    assert bid is not None
+    await bid.handler()
+    c.trigger_proactive_topic.assert_awaited_once()
+
+    now[0] += 5.0  # 下一個 5s tick
+    bid2 = await a.speak_bid(_ctx())
+    assert bid2 is None
+
+
+@pytest.mark.asyncio
+async def test_rebids_after_min_gap_even_if_handler_noop():
+    """即使 handler 是 no-op，過了 min_gap 之後還是該再 bid（不能永久卡死）。"""
+    from unittest.mock import AsyncMock
+
+    now = [1000.0]
+    c = _controller(trigger_proactive_topic=AsyncMock(return_value=None))
+    a = ProactiveTopicAgent(c, min_gap_since_last_s=600.0, clock=lambda: now[0])
+
+    bid = await a.speak_bid(_ctx())
+    assert bid is not None
+    await bid.handler()
+
+    now[0] += 600.0 + 1.0
+    bid2 = await a.speak_bid(_ctx())
+    assert bid2 is not None
+
+
+@pytest.mark.asyncio
+async def test_attempt_recorded_even_if_trigger_raises():
+    """trigger_proactive_topic 丟例外 → handler 吞掉不外拋（既有行為），但嘗試時間
+    仍要記到，min_gap 內不該重複 bid。"""
+    from unittest.mock import AsyncMock
+
+    now = [1000.0]
+    c = _controller(trigger_proactive_topic=AsyncMock(side_effect=RuntimeError("boom")))
+    a = ProactiveTopicAgent(c, min_gap_since_last_s=600.0, clock=lambda: now[0])
+
+    bid = await a.speak_bid(_ctx())
+    assert bid is not None
+    await bid.handler()  # 不該向外拋
+
+    now[0] += 5.0
+    bid2 = await a.speak_bid(_ctx())
+    assert bid2 is None
