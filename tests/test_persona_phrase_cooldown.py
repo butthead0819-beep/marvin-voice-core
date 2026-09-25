@@ -61,6 +61,16 @@ def test_recent_words_drops_entries_outside_window():
     assert "熵" not in phrase_cooldown.recent_words()
 
 
+def test_window_is_eight_replies():
+    """核准規格：冷卻窗口＝最近 8 則回應（寫死 8，不跟著 WINDOW 變數走）。"""
+    phrase_cooldown.record("熵增加了")
+    for _ in range(7):
+        phrase_cooldown.record("今天天氣不錯")
+    assert "熵" in phrase_cooldown.recent_words()  # 第 8 則還在窗口內
+    phrase_cooldown.record("今天天氣不錯")
+    assert "熵" not in phrase_cooldown.recent_words()  # 第 9 則把它擠出去
+
+
 def test_injection_empty_when_no_recent_words():
     assert phrase_cooldown.injection() == ""
 
