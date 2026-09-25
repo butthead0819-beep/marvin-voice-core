@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parent.parent
 GAPS = ROOT / "records" / "agent_gaps.jsonl"
 AMBIENT = ROOT / "records" / "ambient_qa.jsonl"
 RESCUE = ROOT / "records" / "rescue_outcomes.jsonl"
+NOWAKE = ROOT / "records" / "nowake_outcomes.jsonl"
+SPEAK = ROOT / "records" / "speak_outcomes.jsonl"
 DB = ROOT / "marvin.db"
 RESOLVED = ROOT / "agent_gaps_resolved.json"
 
@@ -245,6 +247,65 @@ def section_ambient(lo: float, hi: float) -> str:
     return "\n".join(lines)
 
 
+_SONG_QUERY_RE = re.compile(r"(什麼歌|哪首|歌名|誰唱|誰寫)")
+
+
+def section_polish(lo: float, hi: float) -> str:
+    lines = ["## 5. 減法打磨觀測\n"]
+
+    # nowake 分派：不喊喚醒詞的指令有沒有被接住（判歌名尤其）
+    lines.append("**nowake 分派**")
+    nowake_rows = [r for r in _load_jsonl(NOWAKE, lo, hi)
+                   if r.get("speaker") not in EXCLUDE_SPEAKERS]
+    if not nowake_rows:
+        lines.append("- nowake_outcomes：無資料\n")
+    else:
+        no_winner = [r for r in nowake_rows if r.get("winner") is None]
+        song_query_rows = [r for r in nowake_rows if _SONG_QUERY_RE.search(r.get("query") or "")]
+        song_missed = [r for r in song_query_rows if r.get("winner") != "now_playing"]
+        lines.append(f"- 總筆數 {len(nowake_rows)}，無人接（winner=None）{len(no_winner)} 筆")
+        lines.append(f"- 問歌名 {len(song_query_rows)} 筆，其中未被 now_playing 接住 {len(song_missed)} 筆")
+        if song_missed:
+            for r in song_missed:
+                t = datetime.fromtimestamp(r.get("ts", 0)).strftime("%H:%M")
+                lines.append(
+                    f"  - `{r.get('speaker')}` {t}：「{(r.get('query') or '')[:30]}」"
+                    f" → winner={r.get('winner')}"
+                )
+        lines.append("")
+
+    # 主動發話：命中率 + tts_pushed（PR#96 加的欄位，舊紀錄沒有）
+    lines.append("**主動發話**")
+    speak_rows = _load_jsonl(SPEAK, lo, hi)
+    if not speak_rows:
+        lines.append("- speak_outcomes：無資料\n")
+    else:
+        by_winner: dict[str, int] = defaultdict(int)
+        pushed_true = pushed_false = pushed_unknown = 0
+        by_hour: dict[int, int] = defaultdict(int)
+        for r in speak_rows:
+            by_winner[r.get("winner") or "?"] += 1
+            pushed = r.get("tts_pushed")
+            if pushed is True:
+                pushed_true += 1
+            elif pushed is False:
+                pushed_false += 1
+            else:
+                pushed_unknown += 1
+            by_hour[int(r.get("ts", 0) // 3600)] += 1
+        for winner, n in sorted(by_winner.items(), key=lambda kv: -kv[1]):
+            lines.append(f"- `{winner}`：{n} 筆")
+        lines.append(
+            f"- tts_pushed：True {pushed_true} / False {pushed_false} / 未知 {pushed_unknown}"
+        )
+        peak_hour, peak_n = max(by_hour.items(), key=lambda kv: kv[1])
+        peak_label = datetime.fromtimestamp(peak_hour * 3600).strftime("%H")
+        lines.append(f"- 每小時最大 {peak_n} 筆（{peak_label} 點起）")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", help="YYYY-MM-DD（預設昨天）")
@@ -260,6 +321,7 @@ def main() -> None:
     amb = section_ambient(lo, hi)
     if amb:
         print(amb)
+    print(section_polish(lo, hi))
     print("---")
     print("_下一步：Claude 對每筆附一句改善建議，Jack 人工評估要不要做。_")
 
