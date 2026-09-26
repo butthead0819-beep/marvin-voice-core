@@ -54,9 +54,21 @@ class SystemLoopsMixin:
         if _player_spoke_recently(last, time.time()):
             self._mixer.note_player_speech()
 
+    def _maybe_kick_daily_review(self, now_hour: int) -> None:
+        """📊 daily review 兜底觸發：12 點後每 tick 檢查，當天沒跑過就背景跑。
+
+        2026-09-26：原本只靠「當天第一次 summon」+ launchd 週一備援；bot 只走 AutoRejoin
+        靜默回台或連續幾天沒重啟時就整天不跑（9/23 後斷 3 天）。once/day guard 與執行中旗標
+        在 _maybe_run_daily_review 裡，這裡只擋時段與正在跑的情況，不重複建 task。
+        """
+        if now_hour < 12 or getattr(self, "_daily_review_running", False):
+            return
+        asyncio.create_task(self._maybe_run_daily_review())
+
     @tasks.loop(minutes=10.0)
     async def slow_system_loop(self):
         """[Slow System] 每 10 分鐘進行一次對話彙整與馬文評論"""
+        self._maybe_kick_daily_review(datetime.datetime.now().hour)
         try:
             if not self.bot.engine.conv_buffer:
                 return

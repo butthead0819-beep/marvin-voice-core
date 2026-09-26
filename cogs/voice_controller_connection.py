@@ -764,6 +764,17 @@ class ConnectionMixin:
         today = datetime.date.today().isoformat()
         if self._daily_review_done_today(today):
             return  # launchd 或先前 summon 已跑過，不重跑、不重複付費
+        # 跑完才寫完成標記；review 要跑好幾分鐘，期間巡邏迴圈的下一個 tick 不能再觸發第二次
+        if getattr(self, "_daily_review_running", False):
+            return
+        self._daily_review_running = True
+        try:
+            await self._run_daily_review_scripts()
+        finally:
+            self._daily_review_running = False
+
+    async def _run_daily_review_scripts(self) -> None:
+        import datetime
         _scripts = [("scripts/analyze_daily_log.py", "daily_review"),
                     ("scripts/quality_metrics_report.py", "quality_metrics")]
         if datetime.date.today().weekday() == 0:   # 週一加 recall probe
