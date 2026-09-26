@@ -697,20 +697,14 @@ class GeminiRouterContentMixin:
 
     async def generate_slow_summary(self, log_entries: list):
         """[Slow System] 史詩級漫步總結：社會學觀察記錄 (V2.0 記憶強化版)
-        回傳 str 或 None（None = LLM 判斷內容不值得記錄）"""
-
-        # 只取前一輪話題的第一行作為前情提要，避免把重複模板再餵回去
-        prev_topic = ""
-        if self.last_slow_summary:
-            first_line = self.last_slow_summary.strip().splitlines()[0]
-            prev_topic = f"\n【前情提要】：{first_line}\n"
+        回傳 str 或 None（None = 所有 LLM 路徑失敗或回空）"""
 
         system_prompt = self.prompt_manager.get_instruction("ambient_diary", dna=self.dna, memory_manager=self.memory)
         game_context = self._get_game_context()
 
         history_text = "\n".join([f"{e.get('speaker', '未知')}: {e.get('text', '...')}" for e in log_entries])
         user_prompt = (
-            f"【請使用繁體中文撰寫】\n{game_context}\n{prev_topic}"
+            f"【請使用繁體中文撰寫】\n{game_context}\n"
             f"這是最近 10 分鐘的對話紀錄。\n"
             f"{history_text}"
         )
@@ -756,14 +750,6 @@ class GeminiRouterContentMixin:
                 return None
 
             summary = summary.strip()
-
-            # LLM 主動判斷無新意
-            if summary.upper().startswith("SKIP"):
-                logger.warning("📭 [Diary] LLM 回傳 SKIP，本輪內容無新意。")
-                return None
-
-            # 只儲存第一行作為下一輪前情提要，不儲存完整摘要防止模板擴散
-            self.last_slow_summary = summary.splitlines()[0]
 
             # 🌡️ [Operation Warm Circuit] 非阻塞地觸發情緒記憶萃取
             if log_entries:

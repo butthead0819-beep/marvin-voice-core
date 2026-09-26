@@ -188,7 +188,7 @@ class SystemLoopsMixin:
                     f.write(f"[{ts}] --- 10分鐘對話總結 ---\n{text}\n\n")
 
             if summary is None:
-                print("📭 [SlowLoop] LLM 判斷本輪內容不值得記錄，跳過發文。")
+                print("📭 [SlowLoop] 日記 LLM 全部失敗或回空，跳過發文。")
                 # 🎚️ [DJ Life Material] 設計不變：SKIP 依舊不貼進 Discord 日記頻道；
                 # 但這輪確實捕捉到人類發言（human_entries 非空，上面已擋掉「只有馬文自言自語」
                 # 的情況），就該留一筆可被 diary_comic.parser 解析出「核心：」的原始記錄，

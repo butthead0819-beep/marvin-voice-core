@@ -83,18 +83,30 @@ async def test_groq_real_content_still_works_and_skips_cloud():
 
     fake._call_cloud.assert_not_awaited()
     assert result == "核心：今天聊了排班系統"
-    assert fake.last_slow_summary == "核心：今天聊了排班系統"
 
 
 @pytest.mark.asyncio
-async def test_llm_explicit_skip_still_returns_none():
-    """真正的 LLM 主動判斷 SKIP（有內容、明確回 SKIP）行為不變。"""
-    fake = _make_fake_router(groq_content="SKIP")
+async def test_user_prompt_has_no_previous_topic_even_after_a_diary():
+    """SKIP 已拔除（2026-09-26）：前情提要只是給 SKIP 比對用的，連續兩輪都不該再帶。"""
+    fake = _make_fake_router(groq_content="核心：今天聊了排班系統\n摘要：x")
 
-    result = await GeminiRouterContentMixin.generate_slow_summary(fake, _entries())
+    await GeminiRouterContentMixin.generate_slow_summary(fake, _entries())
+    await GeminiRouterContentMixin.generate_slow_summary(fake, _entries())
 
-    assert result is None
-    fake._call_cloud.assert_not_awaited()
+    _, kwargs = fake.groq_dedicated_client.chat.completions.create.call_args
+    user_msg = kwargs["messages"][1]["content"]
+    assert "前情提要" not in user_msg
+
+
+def test_ambient_diary_prompt_never_mentions_skip():
+    """SKIP 已拔除（2026-09-26）：放寬後仍 50-73% 誤判，每輪都要寫日記。"""
+    import inspect
+    import marvin_prompts
+    src = inspect.getsource(marvin_prompts)
+    start = src.index('"ambient_diary": (')
+    block = src[start:src.index("),", start)]
+    assert "SKIP" not in block
+    assert "前情提要" not in block
 
 
 @pytest.mark.asyncio
@@ -121,19 +133,6 @@ async def test_groq_call_omits_reasoning_effort_for_non_gpt_oss_model():
     _, kwargs = fake.groq_dedicated_client.chat.completions.create.call_args
     assert "reasoning_effort" not in kwargs
     assert kwargs.get("max_tokens") == 1500
-
-
-@pytest.mark.asyncio
-async def test_llm_explicit_skip_logs_warning(caplog):
-    """SKIP 目前是 INFO 會被濾掉，改成 WARNING 才看得到；日記整天沒動靜要能查。"""
-    fake = _make_fake_router(groq_content="SKIP")
-
-    with caplog.at_level("WARNING"):
-        result = await GeminiRouterContentMixin.generate_slow_summary(fake, _entries())
-
-    assert result is None
-    assert any("[Diary] LLM 回傳 SKIP" in record.message for record in caplog.records
-                if record.levelname == "WARNING")
 
 
 @pytest.mark.asyncio

@@ -187,7 +187,6 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         self.prompt_manager = PromptManager()
         self.is_exhausted = False # 🛡️ [Tier 1 Hard Limit Flag]
         self.last_exhausted_reset = time.time()
-        self.last_slow_summary = ""
         self.short_term_dialogue = []
         
         # 🔔 [Notification System]
