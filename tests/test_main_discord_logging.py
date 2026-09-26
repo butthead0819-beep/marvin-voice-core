@@ -117,3 +117,39 @@ def test_setup_early_logging_allowlists_etd_clean_reuse():
     assert level == "INFO", (
         f"etd_clean_reuse effective level 應為 INFO，實際={level!r} stderr={result.stderr[-500:]!r}"
     )
+
+
+def test_setup_early_logging_allowlists_queue_priority():
+    """2026-09-25（同型坑第四次）：新增頂層模組 queue_priority，
+    `🎯 [RequestPriority]` INFO 被 root WARNING 吞掉，上線後看不到插隊判斷。
+    做法同 test_setup_early_logging_allowlists_etd_clean_reuse：subprocess 裡跑，避免污染 pytest 行程。
+    """
+    import os
+    import subprocess
+    import sys as _sys
+    import tempfile
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory() as tmp_cwd:
+        out_path = Path(tmp_cwd) / "level_result.txt"
+        script = (
+            "import logging, main_discord; "
+            "main_discord.setup_early_logging(); "
+            "lg = logging.getLogger('queue_priority'); "
+            f"open({str(out_path)!r}, 'w').write(logging.getLevelName(lg.getEffectiveLevel()))"
+        )
+        env = {**os.environ, "PYTHONPATH": str(repo_root)}
+        result = subprocess.run(
+            [_sys.executable, "-c", script],
+            cwd=tmp_cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"subprocess 失敗: {result.stderr}"
+        level = out_path.read_text().strip() if out_path.exists() else ""
+    assert level == "INFO", (
+        f"queue_priority effective level 應為 INFO，實際={level!r} stderr={result.stderr[-500:]!r}"
+    )

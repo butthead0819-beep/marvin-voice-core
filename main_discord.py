@@ -88,6 +88,7 @@ def setup_early_logging():
     logging.getLogger("memory_quarantine").setLevel(logging.INFO)
     logging.getLogger("liveness_beacon").setLevel(logging.INFO)
     logging.getLogger("etd_clean_reuse").setLevel(logging.INFO)  # 2026-09-25 ♻️ [ETD reuse] 命中率
+    logging.getLogger("queue_priority").setLevel(logging.INFO)  # 2026-09-25 🎯 [RequestPriority] 插隊 log
 
     stdout_logger = logging.getLogger("MarvinBot.Stdout")
     stdout_logger.setLevel(logging.INFO)
