@@ -52,3 +52,21 @@ def log_marvin_speech(
         logging.getLogger(LOGGER_NAME).info(json.dumps(payload, ensure_ascii=False))
     except Exception:
         logging.getLogger(__name__).debug("log_marvin_speech 失敗", exc_info=True)
+
+
+def log_song_start(title: str, *, start_ts: float, artist: str | None = None) -> None:
+    """歌曲真正出聲那刻記一筆，給剪片工具放歌名卡用。"""
+    try:
+        clean = title.replace("\r\n", " ").replace("\n", " ").replace("\r", " ").strip()
+        if not clean:
+            return
+        payload = {
+            "start": round(start_ts, 3),
+            "src": "song",
+            "text": clean,
+        }
+        if artist:
+            payload["artist"] = artist
+        logging.getLogger(LOGGER_NAME).info(json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        logging.getLogger(__name__).debug("log_song_start 失敗", exc_info=True)

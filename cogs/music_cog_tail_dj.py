@@ -31,6 +31,8 @@ import time
 
 import discord
 
+from marvin_speech_log import log_marvin_speech, log_song_start
+
 logger = logging.getLogger(__name__)
 
 _TASTE_PROFILE_CACHE = "records/taste_profiles.json"
@@ -147,6 +149,10 @@ class MusicTailDJMixin:
             if intro_start is not None:
                 info['highlight_start_s'] = intro_start
                 logger.info(f"🎬 [IntroSkip] {info.get('title', '?')} 前奏跳過起播點 {intro_start:.1f}s")
+        # 跟 highlight_start_s 同理原地寫 info，給歌曲開頭 DJ Mix 寫 marvin_speech.log 時
+        # 查台詞（見 _new_song_start_future）。用 dict 不用 tuple——info 可能被序列化。
+        if isinstance(dj, dict) and dj.get('audio_path') and dj.get('text'):
+            info['_dj_prefetch'] = {'audio_path': dj['audio_path'], 'text': dj['text']}
         return {
             'lyrics': lyrics if isinstance(lyrics, str) else None,
             'comment': comment if isinstance(comment, str) else None,
@@ -291,6 +297,39 @@ class MusicTailDJMixin:
         if not crossfaded:
             logger.warning(f"[PuckMixer] crossfade 失敗（deck_b 可能還沒 ready）: {next_url}")
         return bool(crossfaded)
+
+    def _new_song_start_future(self, info: dict, dj_audio: str | None) -> asyncio.Future:
+        """建立 playback_started future：`_mixer_play_music` 在歌真正出聲那刻
+        `set_result(time.time())`（沿用原本 playback_started 語意，`_run_tail_dj`
+        照樣 await 它）。掛 done callback 記兩筆 marvin_speech.log：歌曲開播、
+        以及開頭 DJ Mix 口白（ffmpeg 把口白混進音樂層那種，跟尾段串場的
+        `_maybe_play_dj_interjection` 是不同路徑）。接原音彩蛋時（見
+        `_splice_owner_voice_clip`）口白實際比 ts 晚一個原音長度，剪片工具自行微調。
+        """
+        fut = asyncio.get_event_loop().create_future()
+
+        def _on_start(f, _info=info, _dj_audio=dj_audio):
+            if f.cancelled() or f.exception() is not None:
+                return
+            try:
+                ts = f.result()
+                log_song_start(_info.get('title', ''), start_ts=ts, artist=_info.get('artist'))
+                pre = _info.get('_dj_prefetch')
+                if (
+                    _dj_audio
+                    and os.path.exists(_dj_audio)
+                    and isinstance(pre, dict)
+                    and (
+                        _dj_audio == pre.get('audio_path')
+                        or _dj_audio == f"{pre.get('audio_path')}.with_clip.wav"
+                    )
+                ):
+                    log_marvin_speech(pre['text'], start_ts=ts, layer=1, voice=None, src="dj")
+            except Exception:
+                logger.debug("[DJ Tail] 開播 speech log 記錄失敗", exc_info=True)
+
+        fut.add_done_callback(_on_start)
+        return fut
 
     async def _run_tail_dj(self, cur_info: dict, song_start_time):
         """[DJ Tail] 滑動窗串場：當前歌結束前 _DJ_TAIL_LEAD_S 秒點火，DJ 疊當前歌尾巴 + 溢進下一首開頭。

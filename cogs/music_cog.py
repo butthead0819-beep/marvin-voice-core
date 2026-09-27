@@ -296,7 +296,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 song_lyrics_snapshot = self._current_lyrics or ""
                 playback_completion = "natural"
 
-                playback_started = self._stream_loop_schedule_tail_dj(info, vc, title)
+                playback_started = self._stream_loop_schedule_tail_dj(info, vc, title, dj_audio)
 
                 try:
                     await self.play_stream_song(
@@ -415,7 +415,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                     duration=info.get('duration'))
             )
 
-    def _stream_loop_schedule_tail_dj(self, info: dict, vc, title: str) -> "asyncio.Future | None":
+    def _stream_loop_schedule_tail_dj(self, info: dict, vc, title: str, dj_audio: str | None = None) -> "asyncio.Future | None":
         """[DJ Tail] 在播 N 期間排尾段 task：只要 duration 已知就排，下一首在點火
         當下才抓 stream_queue[0]（autopilot 常播放中才排下一首，開播時綁定會抓空）。
         回傳 playback_started future（vc is None 時回 None，原邏輯不變）——
@@ -424,7 +424,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         ——改傳 playback_started future，_run_tail_dj 改等 _mixer_play_music 真出聲才起算。"""
         playback_started: "asyncio.Future | None" = None
         if vc is not None:
-            playback_started = asyncio.get_event_loop().create_future()
+            playback_started = self._new_song_start_future(info, dj_audio)
         if vc is not None and info.get('duration'):
             self._tail_dj_task = asyncio.create_task(
                 self._run_tail_dj(info, playback_started)

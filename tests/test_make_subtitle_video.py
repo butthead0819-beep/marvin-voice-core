@@ -88,6 +88,20 @@ def test_build_cues_offset():
     assert cues[0].end == pytest.approx(12.3)
 
 
+def test_build_cues_skips_song_rows():
+    human_rows = [("狗與露", "你好", 1010.0)]
+    marvin_rows = [
+        {"start": 1015.0, "voice": None, "text": "七里香", "src": "song", "artist": "周杰倫"},
+        {"start": 1020.0, "voice": None, "text": "嗨", "src": "tts"},
+    ]
+    cues = build_cues(
+        human_rows, marvin_rows, rec_start=1000.0, duration=60.0, offset=0.0,
+        anonymize=True, aliases={}, include_marvin=True,
+    )
+    assert all(c.text != "七里香" for c in cues)
+    assert any(c.text == "嗨" for c in cues)
+
+
 def test_build_cues_no_marvin():
     human_rows = [("狗與露", "你好", 1010.0)]
     marvin_rows = [{"start": 1015.0, "voice": None, "text": "嗨"}]

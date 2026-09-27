@@ -137,6 +137,8 @@ def build_cues(
 
     if include_marvin:
         for row in marvin_rows:
+            if row.get("src") == "song":
+                continue
             text = (row.get("text") or "").strip()
             if not text:
                 continue

@@ -30,6 +30,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 _VALID_KINDS = {"human", "marvin", "ack", "song_card"}
 
+SONG_CARD_SECONDS = 4.0  # 歌名卡預設顯示秒數
+
 _BOT_LOG_ACK_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) \[INFO\] "
     r"cogs\.voice_controller: 🗣️ \[Ack:[^\]]+\] 播放 (\S+\.mp3)\s*$"
@@ -118,6 +120,15 @@ def collect_events(human_rows, speech_rows, bot_acks, *, rec_start: float, durat
         if rel < 0 or rel > duration:
             continue
         src = row.get("src")
+        if src == "song":
+            events.append({
+                "kind": "song_card",
+                "from": rel,
+                "to": rel + SONG_CARD_SECONDS,
+                "title": text,
+                "artist": row.get("artist"),
+            })
+            continue
         if src == "ack":
             file = row.get("file")
             events.append({"kind": "ack", "file": file, "from": rel, "text": text})
@@ -179,6 +190,8 @@ def _timeline_event_line(ev: dict) -> str:
         return f"{t}  {category}  {name}：{ev['text']}"
     if kind == "ack":
         return f"{t}  罐頭  馬文：{ev['text']}"
+    if kind == "song_card":
+        return f"{t}  歌曲  🎵《{ev['title']}》" + (f"— {ev['artist']}" if ev.get("artist") else "")
     raise ValueError(f"format_timeline 不支援的 kind：{kind}")
 
 
