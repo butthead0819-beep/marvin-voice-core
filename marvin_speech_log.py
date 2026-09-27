@@ -33,7 +33,9 @@ def configure_marvin_speech_logger(path: str = LOG_PATH) -> logging.Handler:
     return handler
 
 
-def log_marvin_speech(text: str, *, start_ts: float, layer: int, voice: str | None, src: str) -> None:
+def log_marvin_speech(
+    text: str, *, start_ts: float, layer: int, voice: str | None, src: str, file: str | None = None
+) -> None:
     try:
         clean = text.replace("\r\n", " ").replace("\n", " ").replace("\r", " ").strip()
         if not clean:
@@ -45,6 +47,8 @@ def log_marvin_speech(text: str, *, start_ts: float, layer: int, voice: str | No
             "src": src,
             "text": clean,
         }
+        if file is not None:
+            payload["file"] = file
         logging.getLogger(LOGGER_NAME).info(json.dumps(payload, ensure_ascii=False))
     except Exception:
         logging.getLogger(__name__).debug("log_marvin_speech 失敗", exc_info=True)

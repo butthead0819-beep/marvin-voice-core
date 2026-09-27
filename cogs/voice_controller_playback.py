@@ -24,6 +24,7 @@ import time
 import numpy as np
 import discord
 
+import ack_templates
 import audio_mixing
 from marvin_speech_log import log_marvin_speech
 from loudness_norm import UNMEASURED_GAIN
@@ -875,6 +876,18 @@ class PlaybackMixin:
         before_options = f"-ss {start_offset_s}" if start_offset_s > 0 else None
         src = discord.FFmpegPCMAudio(file_path, before_options=before_options)
         await self._mixer_play_music(device, src, still_active=lambda: device.is_connected())
+
+    def _push_ack_tts(self, f32, ack_file: str) -> bool:
+        """罐頭回應（預錄 ack mp3）推上 TTS 層；推成功就把台詞原稿＋原檔路徑寫進
+        marvin_speech.log（src=ack），給字幕工具放回原音檔。從 _play_ack 抽出來放這裡，
+        voice_controller.py 行數棘輪只准降。"""
+        ok = bool(self._mixer.push_tts(f32))
+        if ok:
+            log_marvin_speech(
+                ack_templates.text_for_file(ack_file) or f"[{os.path.basename(ack_file)}]",
+                start_ts=time.time(), layer=1, voice=None, src="ack", file=ack_file,
+            )
+        return ok
 
     async def play_dj_on_tts_layer(self, file_path: str, *, peak: float | None = None,
                                     text: str | None = None) -> bool:

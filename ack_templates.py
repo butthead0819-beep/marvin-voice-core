@@ -44,6 +44,7 @@ voice_controller._llm_wait_ack_watcher 手寫計時器當觸發器。若未來�
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -254,3 +255,13 @@ def glob_pattern(category_key: str, *, lang: str = "zh", variant: str | None = N
     if cat.variant_glob and variant:
         return f"{pool.directory}/{variant}_*.mp3"
     return f"{pool.directory}/*.mp3"
+
+
+def text_for_file(path: str) -> str | None:
+    """用檔名（basename）在所有 POOLS 的 items 裡找對應台詞；找不到回 None。"""
+    name = os.path.basename(path)
+    for pool in POOLS.values():
+        for text, filename in pool.items:
+            if filename == name:
+                return text
+    return None

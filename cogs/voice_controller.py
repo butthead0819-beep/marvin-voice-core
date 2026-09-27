@@ -2681,7 +2681,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if f32 is not None and f32.size:
                 # ack 跟所有 TTS 一樣過統一響度濾鏡
                 self._ensure_mixer_playing(self._resolve_playback_device())
-                self._mixer.push_tts(f32)
+                self._push_ack_tts(f32, ack_file)  # 推成功會寫 marvin_speech.log（src=ack）
                 logger.info(f"🗣️ [Ack:{category_key}] 播放 {variant or os.path.basename(ack_file)}")
         except Exception as e:
             logger.warning(f"[Ack:{category_key}] 播放失敗（忽略）：{e}")

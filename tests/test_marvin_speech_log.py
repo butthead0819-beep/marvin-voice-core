@@ -297,3 +297,98 @@ async def test_speak_song_ack_passes_ack_text_through():
     vc.play_dj_on_tts_layer.assert_awaited_once()
     _, kwargs = vc.play_dj_on_tts_layer.call_args
     assert kwargs["text"] == "幫你點了《七里香》"
+
+
+# ── 11. ack_templates.text_for_file ─────────────────────────────────────────
+
+def test_text_for_file_finds_by_basename():
+    import ack_templates
+
+    assert ack_templates.text_for_file("music_ack_03.mp3") == "這首好聽"
+    assert ack_templates.text_for_file("/any/dir/assets/acks/music/music_ack_03.mp3") == "這首好聽"
+    assert ack_templates.text_for_file("nope.mp3") is None
+
+
+# ── 12. log_marvin_speech 的 file kwarg ──────────────────────────────────────
+
+def test_log_marvin_speech_file_kwarg_present_and_absent(tmp_path):
+    log_path = tmp_path / "x.log"
+    handler = configure_marvin_speech_logger(str(log_path))
+    try:
+        log_marvin_speech("有檔案", start_ts=1.0, layer=1, voice=None, src="ack", file="a/b.mp3")
+        handler.flush()
+        row = _last_json_line(log_path)
+        assert row["file"] == "a/b.mp3"
+
+        log_marvin_speech("沒檔案", start_ts=1.0, layer=1, voice=None, src="tts")
+        handler.flush()
+        row2 = _last_json_line(log_path)
+        assert "file" not in row2
+    finally:
+        _teardown_logger(handler)
+
+
+# ── 13-15. _play_ack 寫 marvin_speech.log ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_play_ack_logs_with_text_and_file(tmp_path):
+    from tests.test_tts_uniform_loudness import _make_ack_cog, _idle_vc
+
+    cog = _make_ack_cog()
+    vc = _idle_vc()
+    cog.voice_client = vc
+    cog._mixer.push_tts.return_value = True
+
+    f = tmp_path / "music_ack_03.mp3"
+    f.write_bytes(b"x")
+
+    with patch("glob.glob", return_value=[str(f)]), \
+         patch("cogs.voice_controller_playback.log_marvin_speech") as mock_log:
+        await cog._play_ack("music", speaker="阿狗")
+
+    mock_log.assert_called_once()
+    args, kwargs = mock_log.call_args
+    assert args[0] == "這首好聽"
+    assert kwargs["src"] == "ack"
+    assert kwargs["file"] == str(f)
+    assert isinstance(kwargs["start_ts"], float)
+
+
+@pytest.mark.asyncio
+async def test_play_ack_push_fails_does_not_log(tmp_path):
+    from tests.test_tts_uniform_loudness import _make_ack_cog, _idle_vc
+
+    cog = _make_ack_cog()
+    vc = _idle_vc()
+    cog.voice_client = vc
+    cog._mixer.push_tts.return_value = False
+
+    f = tmp_path / "music_ack_03.mp3"
+    f.write_bytes(b"x")
+
+    with patch("glob.glob", return_value=[str(f)]), \
+         patch("cogs.voice_controller_playback.log_marvin_speech") as mock_log:
+        await cog._play_ack("music", speaker="阿狗")
+
+    mock_log.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_play_ack_unknown_file_logs_bracketed_basename(tmp_path):
+    from tests.test_tts_uniform_loudness import _make_ack_cog, _idle_vc
+
+    cog = _make_ack_cog()
+    vc = _idle_vc()
+    cog.voice_client = vc
+    cog._mixer.push_tts.return_value = True
+
+    f = tmp_path / "zzz.mp3"
+    f.write_bytes(b"x")
+
+    with patch("glob.glob", return_value=[str(f)]), \
+         patch("cogs.voice_controller_playback.log_marvin_speech") as mock_log:
+        await cog._play_ack("music", speaker="阿狗")
+
+    mock_log.assert_called_once()
+    args, _ = mock_log.call_args
+    assert args[0] == "[zzz.mp3]"
