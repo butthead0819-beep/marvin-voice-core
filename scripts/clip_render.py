@@ -702,10 +702,14 @@ def render_candidates(
 # fetch_avatar
 # ---------------------------------------------------------------------------
 
+# Discord API 前面的 Cloudflare 會擋 Python-urllib 預設 UA（實測 403）；官方要求 "DiscordBot (url, version)"
+_DISCORD_UA = "DiscordBot (https://discord.com, 1.0)"
+
+
 def fetch_avatar(token: str, out_path, *, urlopen=urllib.request.urlopen) -> None:
     req = urllib.request.Request(
         "https://discord.com/api/v10/users/@me",
-        headers={"Authorization": f"Bot {token}"},
+        headers={"Authorization": f"Bot {token}", "User-Agent": _DISCORD_UA},
     )
     with urlopen(req) as resp:
         data = json.loads(resp.read())
@@ -713,7 +717,7 @@ def fetch_avatar(token: str, out_path, *, urlopen=urllib.request.urlopen) -> Non
     user_id = data["id"]
     avatar_hash = data["avatar"]
     cdn_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar_hash}.png?size=256"
-    cdn_req = urllib.request.Request(cdn_url)
+    cdn_req = urllib.request.Request(cdn_url, headers={"User-Agent": _DISCORD_UA})
     with urlopen(cdn_req) as resp:
         png_bytes = resp.read()
 

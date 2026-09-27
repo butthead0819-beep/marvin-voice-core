@@ -391,6 +391,7 @@ def test_fetch_avatar(tmp_path):
     assert calls[1].full_url == "https://cdn.discordapp.com/avatars/1/abc.png?size=256"
     assert calls[0].headers.get("Authorization") == "Bot secret-token"
     assert calls[1].get_header("Authorization") is None  # CDN 不可帶 token
+    assert calls[0].get_header("User-agent", "").startswith("DiscordBot (")  # 沒帶會被 Cloudflare 擋 403
     assert "Authorization" not in calls[1].headers
 
 
