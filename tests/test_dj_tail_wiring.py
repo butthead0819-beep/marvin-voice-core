@@ -431,7 +431,7 @@ async def test_prerendered_dj_plays_on_tts_layer_not_music():
     with patch("os.path.exists", return_value=True):
         await cog._maybe_play_dj_interjection({"text": "狗與露點的這首…", "audio_path": "/tmp/dj.opus"})
 
-    vc.play_dj_on_tts_layer.assert_awaited_once_with("/tmp/dj.opus")
+    vc.play_dj_on_tts_layer.assert_awaited_once_with("/tmp/dj.opus", text="狗與露點的這首…")
     vc.play_local_file.assert_not_called()  # 絕不走音樂層
     vc.play_tts.assert_not_called()          # 有預渲染就不即時 TTS
 

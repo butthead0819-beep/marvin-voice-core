@@ -99,7 +99,7 @@ async def test_play_story_arc_plays_intro_then_enqueues_songs_unchanged():
     # 片頭：BGM播放 + 口白疊播
     vc.play_local_file.assert_any_call("assets/dj_sfx/show_intro.mp3",
                                        volume=cog._STORY_ARC_BGM_VOLUME)
-    vc.play_dj_on_tts_layer.assert_any_call("/tmp/intro.mp3")
+    vc.play_dj_on_tts_layer.assert_any_call("/tmp/intro.mp3", text="歡迎收聽")
 
     # 歌曲：原樣進 stream_queue，不是另外播放；url 保留（不是只有 webpage_url）
     assert [i["title"] for i in cog.stream_queue] == ["晴天", "流沙"]

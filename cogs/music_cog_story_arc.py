@@ -233,7 +233,7 @@ class MusicStoryArcMixin:
             intro_dur = intro_dict.get('audio_duration_s') or 0.0
             if intro_audio and intro_dur > 0:
                 with vc._protected_tts_window():
-                    await vc.play_dj_on_tts_layer(intro_audio)
+                    await vc.play_dj_on_tts_layer(intro_audio, text=intro_dict.get('script') or None)
                     await asyncio.sleep(intro_dur)
             if bgm_task:
                 bgm_task.cancel()

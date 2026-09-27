@@ -299,6 +299,9 @@ class MarvinBot(commands.Bot):
         stt_logger.addHandler(stt_handler)
         stt_logger.info("--- Marvin Bot (Cog Edition) Initialized ---")
 
+        from marvin_speech_log import configure_marvin_speech_logger
+        configure_marvin_speech_logger()
+
     async def setup_hook(self):
         """Discord.py 啟動鉤子：載入 Cogs 並同步指令樹"""
         logger.info("="*60)

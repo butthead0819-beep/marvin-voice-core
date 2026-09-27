@@ -24,6 +24,7 @@ env/
 # Logs — large, runtime-generated
 *.log
 *.log.*
+marvin_speech.log*
 
 # Daily logs (large, regenerated)
 records/daily/

@@ -25,6 +25,7 @@ import numpy as np
 import discord
 
 import audio_mixing
+from marvin_speech_log import log_marvin_speech
 from loudness_norm import UNMEASURED_GAIN
 from tts_speak_policy import (
     RoomState, SpeakKind, Verdict, decide as _decide_speak, is_committed as _is_committed,
@@ -464,6 +465,7 @@ class PlaybackMixin:
                         f"chars={len(text)} layer={layer} text={text[:30]!r}",
                         flush=True,
                     )
+                    log_marvin_speech(text, start_ts=time.time(), layer=layer, voice=voice, src="tts")
                     if on_first_frame is not None:
                         try:
                             on_first_frame()
@@ -874,7 +876,8 @@ class PlaybackMixin:
         src = discord.FFmpegPCMAudio(file_path, before_options=before_options)
         await self._mixer_play_music(device, src, still_active=lambda: device.is_connected())
 
-    async def play_dj_on_tts_layer(self, file_path: str, *, peak: float | None = None) -> bool:
+    async def play_dj_on_tts_layer(self, file_path: str, *, peak: float | None = None,
+                                    text: str | None = None) -> bool:
         """把預渲染 DJ 音檔解碼後推上 **TTS 層**（push_tts），非阻塞、會 duck 音樂、
         且撐過歌1→歌2 的音樂換源（set_music_source 不碰 TTS 層）→ DJ 橫跨切歌點。
 
@@ -885,6 +888,8 @@ class PlaybackMixin:
         audio_mixing.TTS_LOUDNESS_AF，不做 peak_normalize。給非 None 值（轉場 SFX，
         不是講話）→ 走原本的 peak_normalize 行為，音量該跟音樂的 10% 音量感一致，
         caller 傳低一點的 peak（例如 0.1）別讓 SFX 比講話還突兀。
+
+        text：這段音檔的台詞原稿，給 marvin_speech.log；SFX 不傳。
         """
         if not os.path.exists(file_path):
             return False
@@ -898,7 +903,10 @@ class PlaybackMixin:
                 return False
             f32 = audio_mixing.peak_normalize_f32(f32, target_peak=peak)
         self._ensure_mixer_playing(self._resolve_playback_device())
-        return bool(self._mixer.push_tts(f32))
+        ok = bool(self._mixer.push_tts(f32))
+        if ok and text:
+            log_marvin_speech(text, start_ts=time.time(), layer=1, voice=None, src="dj")
+        return ok
 
     def _cleanup_fifo(self, path, tmp_dir):
         """[Operation Cleanup] 安全移除命名管道與暫存目錄"""

@@ -179,15 +179,16 @@ class MusicTailDJMixin:
     async def _speak_song_ack(self, vc, title: str) -> None:
         """語音點歌第三個Ack：合成後直推 TTS 層（同 _play_ack 路徑），不走 play_tts 的
         Silence Gate/Interrupt Guard，才不會被聊天室裡持續講話的其他人擋掉。"""
+        ack_text = f"幫你點了《{title}》"
         try:
-            audio_path = await self.bot.tts_engine.generate_audio(f"幫你點了《{title}》")
+            audio_path = await self.bot.tts_engine.generate_audio(ack_text)
         except Exception as e:
             logger.warning(f"⚠️ [第三個Ack] TTS 生成失敗，跳過報歌名: {e}")
             return
         if not audio_path:
             return
         try:
-            await vc.play_dj_on_tts_layer(audio_path)
+            await vc.play_dj_on_tts_layer(audio_path, text=ack_text)
         except Exception as e:
             logger.warning(f"⚠️ [第三個Ack] 推播失敗: {e}")
 
@@ -572,7 +573,7 @@ class MusicTailDJMixin:
                 # 尾段 DJ：走 TTS 層（duck 音樂、非阻塞、撐過歌1→歌2 換源）。
                 # 不可用 play_local_file——那條把檔案設成音樂層來源會替換掉正在播的歌，
                 # DJ 只播到切歌點就被下一首蓋掉（使用者實測「只聽到狗與露就停」）。
-                await vc.play_dj_on_tts_layer(audio_path)
+                await vc.play_dj_on_tts_layer(audio_path, text=text)
                 # [PuckMixer] vc.play_dj_on_tts_layer 疊的 DJ 口白出現在這個進程自己的
                 # mixer 輸出——pi_bt（車 puck Pi Zero 2W）2026-08-20 起也接進同一顆
                 # mixer（見 main_satellite.py::setup_satellite 的 TeeSpeakerOutput 說明），
