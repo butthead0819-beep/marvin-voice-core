@@ -80,6 +80,37 @@ def test_collect_events():
     assert events[4]["text"] == "找到了"
 
 
+def test_collect_events_song_card():
+    speech_rows = [
+        {"start": 1050.0, "src": "song", "text": "七里香", "artist": "周杰倫"},
+        {"start": 1200.0, "src": "song", "text": "超出範圍"},  # duration=60 → 過濾
+    ]
+
+    events = collect_events([], speech_rows, [], rec_start=1000.0, duration=60.0)
+
+    assert len(events) == 1
+    assert events[0] == {
+        "kind": "song_card", "from": 50.0, "to": 54.0, "title": "七里香", "artist": "周杰倫",
+    }
+
+
+def test_format_timeline_song_card():
+    events = [
+        {"kind": "song_card", "from": 50.0, "to": 54.0, "title": "七里香", "artist": "周杰倫"},
+    ]
+    out = format_timeline(events, rec_start_str="2026-09-23 21:00:00", duration=60.0)
+    assert "00:50.0  歌曲  🎵《七里香》— 周杰倫\n" in out
+
+
+def test_format_timeline_song_card_no_artist():
+    events = [
+        {"kind": "song_card", "from": 50.0, "to": 54.0, "title": "七里香", "artist": None},
+    ]
+    out = format_timeline(events, rec_start_str="2026-09-23 21:00:00", duration=60.0)
+    assert "00:50.0  歌曲  🎵《七里香》\n" in out
+    assert "— " not in out
+
+
 def test_format_timeline():
     events = [
         {"kind": "human", "speaker": "狗與露", "from": 8.0, "to": 10.8, "text": "哈哈哈哈哈哈哈哈哈"},

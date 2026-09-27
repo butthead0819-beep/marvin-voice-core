@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from marvin_speech_log import LOGGER_NAME, configure_marvin_speech_logger, log_marvin_speech
+from marvin_speech_log import LOGGER_NAME, configure_marvin_speech_logger, log_marvin_speech, log_song_start
 
 
 def _last_json_line(path):
@@ -93,6 +93,58 @@ def test_logger_does_not_propagate(tmp_path):
     handler = configure_marvin_speech_logger(str(log_path))
     try:
         assert logging.getLogger(LOGGER_NAME).propagate is False
+    finally:
+        _teardown_logger(handler)
+
+
+# ── 5.1-5.5. log_song_start ──────────────────────────────────────────────────
+
+def test_log_song_start_writes_start_src_text(tmp_path):
+    log_path = tmp_path / "x.log"
+    handler = configure_marvin_speech_logger(str(log_path))
+    try:
+        log_song_start("七里香", start_ts=1790000000.1234)
+        handler.flush()
+        row = _last_json_line(log_path)
+        assert row["start"] == 1790000000.123
+        assert row["src"] == "song"
+        assert row["text"] == "七里香"
+        assert "artist" not in row
+    finally:
+        _teardown_logger(handler)
+
+
+def test_log_song_start_includes_artist_when_given(tmp_path):
+    log_path = tmp_path / "x.log"
+    handler = configure_marvin_speech_logger(str(log_path))
+    try:
+        log_song_start("七里香", start_ts=1.0, artist="周杰倫")
+        handler.flush()
+        row = _last_json_line(log_path)
+        assert row["artist"] == "周杰倫"
+    finally:
+        _teardown_logger(handler)
+
+
+def test_log_song_start_collapses_newlines(tmp_path):
+    log_path = tmp_path / "x.log"
+    handler = configure_marvin_speech_logger(str(log_path))
+    try:
+        log_song_start("第一行\n第二行", start_ts=1.0)
+        handler.flush()
+        row = _last_json_line(log_path)
+        assert row["text"] == "第一行 第二行"
+    finally:
+        _teardown_logger(handler)
+
+
+def test_log_song_start_skips_blank_title(tmp_path):
+    log_path = tmp_path / "x.log"
+    handler = configure_marvin_speech_logger(str(log_path))
+    try:
+        log_song_start("  \n ", start_ts=1.0)
+        handler.flush()
+        assert not log_path.exists() or log_path.read_text(encoding="utf-8").strip() == ""
     finally:
         _teardown_logger(handler)
 
