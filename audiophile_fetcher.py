@@ -60,3 +60,44 @@ async def fetch_audiophile_guide(
     text, sources = res
     store.set(key, {"audiophile_guide": text, "sources": sources, "ts": time.time()})
     return text
+
+
+async def render_audiophile_guide(
+    info: dict,
+    *,
+    title: str,
+    artist: str,
+    free_client,
+    paid_client,
+    guard,
+    store,
+    tts_engine,
+    probe_duration,
+) -> None:
+    """抓導聆稿 + TTS 預渲染 + 量真實秒數，就地標記 info（Phase 3 播放端讀這四個欄位）。
+
+    TTS 失敗或量不到秒數 → 仍標記為導聆歌但沒音檔（Phase 3 跳過 pre-roll、照樣從 0 播），
+    不拋例外。
+    """
+    text = await fetch_audiophile_guide(
+        title, artist, free_client=free_client, paid_client=paid_client,
+        guard=guard, store=store,
+    )
+
+    audio = None
+    dur = 0.0
+    try:
+        audio = await tts_engine.generate_audio(text)
+    except Exception as e:
+        logger.warning(f"[Audiophile] 導聆 TTS 渲染失敗: {e}")
+
+    if audio:
+        dur = await probe_duration(audio)
+
+    if not audio or dur <= 0:
+        audio, dur = None, 0.0
+
+    info['_audiophile_guide'] = True
+    info['_audiophile_guide_text'] = text
+    info['_audiophile_guide_audio'] = audio
+    info['_audiophile_guide_dur'] = dur

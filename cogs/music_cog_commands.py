@@ -188,6 +188,64 @@ class MusicCommandsMixin:
         await self._safe_music_command(user_name, "", "skip")
         await interaction.followup.send("⏭️ 已跳過。", ephemeral=True)
 
+    @app_commands.command(name="guide_song", description="[DJ] 深度導聆：先查證講 20 秒該聽什麼，再從頭播這首")
+    @app_commands.describe(song_name="歌名（例如：周杰倫 雙截棍）或 YouTube 連結")
+    async def guide_song(self, interaction: discord.Interaction, song_name: str):
+        await interaction.response.defer(ephemeral=False)
+        vc = self._vc()
+        if not vc:
+            await interaction.followup.send("❌ 語音系統尚未就緒。", ephemeral=True)
+            return
+        if not interaction.guild.voice_client:
+            await interaction.followup.send("❌ 馬文不在語音頻道中。請先使用 `/summon` 召喚我。", ephemeral=True)
+            return
+
+        msg = await interaction.followup.send(f"🎧 **正在查證導聆資料：** `{song_name}`...")
+
+        info = await self._resolve_yt_query(song_name)
+        if not info:
+            await msg.edit(content=f"❌ 找不到結果：`{song_name}`。")
+            return
+
+        # 先渲染完才入隊：佇列空時歌會立刻開播，背景渲染會來不及
+        await self._prepare_audiophile_guide(info)
+
+        if self.radio_mode:
+            await self.stop_radio(reason="Stream 模式接管")
+
+        info['requested_by'] = interaction.user.display_name
+        self._queue_user_song(info)
+        self._ensure_stream_loop()
+
+        await msg.edit(content=f"🎧 **【深度導聆】** 已排入：{info['title']}\n> {info.get('_audiophile_guide_text', '')}")
+
+    async def _prepare_audiophile_guide(self, info: dict) -> None:
+        """接線——共用 _song_knowledge_store（跟 DJ 賞析同一實例，多實例整份寫檔會互蓋）、
+        router 的 free/paid Gemini client、PaidUsageGuard 記帳、bot.tts_engine、ffprobe 量秒。
+        """
+        from audiophile_fetcher import render_audiophile_guide
+        from llm_paid import PaidUsageGuard
+        from song_knowledge_store import SongKnowledgeStore
+
+        store = getattr(self, '_song_knowledge_store', None)
+        if store is None:
+            store = SongKnowledgeStore()
+            self._song_knowledge_store = store
+        guard = getattr(self, '_audiophile_guard', None)
+        if guard is None:
+            guard = PaidUsageGuard()
+            self._audiophile_guard = guard
+        router = getattr(self.bot, 'router', None)
+        title, artist = self._dj_clean_name(info)
+        await render_audiophile_guide(
+            info, title=title or info.get('title', ''), artist=artist,
+            free_client=getattr(router, 'google_client', None),
+            paid_client=getattr(router, 'google_paid_client', None),
+            guard=guard, store=store,
+            tts_engine=self.bot.tts_engine,
+            probe_duration=self._probe_audio_duration,
+        )
+
     @app_commands.command(name="marvin_play_control", description="[Stream] 播放控制台：音量、暫停、上下首、佇列管理")
     async def marvin_play_control(self, interaction: discord.Interaction):
         from cogs.voice_views import PlayControlView

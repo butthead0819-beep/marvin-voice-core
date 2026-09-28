@@ -183,3 +183,59 @@ def test_fallback_template_has_no_factual_claims():
     text = FALLBACK_GUIDE_TEMPLATE.format(title="X")
     assert "耳機" in text
     assert len(text) <= 40
+
+
+# ── render_audiophile_guide（Phase 4.1：抓稿 + TTS 預渲染 + 量真實秒數，就地標記 info）──
+
+def _tts(path="/tmp/guide.mp3", exc=None):
+    eng = MagicMock()
+    eng.generate_audio = AsyncMock(side_effect=exc) if exc else AsyncMock(return_value=path)
+    return eng
+
+
+async def _render(info, store, *, free=None, tts=None, dur=19.5):
+    from audiophile_fetcher import render_audiophile_guide
+    probe = AsyncMock(return_value=dur)
+    await render_audiophile_guide(
+        info, title="雙截棍", artist="周杰倫",
+        free_client=free if free is not None else _client(_resp(GUIDE)),
+        paid_client=None, guard=_guard(), store=store,
+        tts_engine=tts if tts is not None else _tts(), probe_duration=probe,
+    )
+    return probe
+
+
+@pytest.mark.asyncio
+async def test_render_marks_info_with_text_audio_and_probed_duration(store):
+    info = {"title": "周杰倫 Jay Chou【雙截棍】"}
+    tts = _tts("/tmp/guide.mp3")
+    probe = await _render(info, store, tts=tts, dur=19.5)
+
+    tts.generate_audio.assert_awaited_once_with(GUIDE)
+    probe.assert_awaited_once_with("/tmp/guide.mp3")
+    assert info["_audiophile_guide"] is True
+    assert info["_audiophile_guide_text"] == GUIDE
+    assert info["_audiophile_guide_audio"] == "/tmp/guide.mp3"
+    assert info["_audiophile_guide_dur"] == 19.5
+
+
+@pytest.mark.asyncio
+async def test_render_tts_failure_still_marks_guide_without_audio(store):
+    """TTS 掛掉：仍標記導聆歌（Phase 3 會跳過 pre-roll、照樣從 0 播），不拋例外。"""
+    for tts in (_tts(None), _tts(exc=RuntimeError("edge-tts 429"))):
+        info = {"title": "x"}
+        probe = await _render(info, store, tts=tts)
+        probe.assert_not_awaited()
+        assert info["_audiophile_guide"] is True
+        assert info["_audiophile_guide_text"] == GUIDE
+        assert info["_audiophile_guide_audio"] is None
+        assert info["_audiophile_guide_dur"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_render_probe_failure_means_no_audio(store):
+    """量不到秒數（ffprobe 回 0）就不能保證「講完才開播」→ 當作沒音檔。"""
+    info = {"title": "x"}
+    await _render(info, store, dur=0.0)
+    assert info["_audiophile_guide_audio"] is None
+    assert info["_audiophile_guide_dur"] == 0.0
