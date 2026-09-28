@@ -153,11 +153,22 @@ async def test_handler_inserts_current_to_queue_front():
 async def test_handler_stops_current_playback():
     from intent_agents.replay_agent import ReplayAgent
     ctrl, vc = _ctrl()
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    agent = ReplayAgent(ctrl)
+    bid = agent.bid(_ctx("重播"))
+    await bid.handler()
+    ctrl._mixer.clear_music.assert_called_once()
+
+
+async def test_handler_non_plan12_falls_back_to_vc_stop():
+    from intent_agents.replay_agent import ReplayAgent
+    ctrl, vc = _ctrl()
+    ctrl._plan12 = False
     vc.is_playing.return_value = True
     agent = ReplayAgent(ctrl)
     bid = agent.bid(_ctx("重播"))
     await bid.handler()
-    # stop_playing 或 stop 之一被呼叫
     assert vc.stop_playing.called or vc.stop.called
 
 
@@ -175,7 +186,190 @@ async def test_handler_no_voice_client_does_not_crash():
     from intent_agents.replay_agent import ReplayAgent
     ctrl, _ = _ctrl()
     ctrl.bot.voice_clients = []  # 沒 vc
+    ctrl._plan12 = False
+    ctrl._mixer = None
     agent = ReplayAgent(ctrl)
     bid = agent.bid(_ctx("重播"))
     # 不該 raise
     await bid.handler()
+
+
+# ── extract_title_query ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("query,expected", [
+    ("重播一次告白氣球", "告白氣球"),
+    ("再放一次告白氣球", "告白氣球"),
+    ("告白氣球再放一次", "告白氣球"),
+    ("從頭播告白氣球", "告白氣球"),
+    ("重播", ""),
+    ("重播這首", ""),
+    ("再放一次", ""),
+    ("replay", ""),
+    ("馬文重播一次告白氣球吧", "告白氣球"),
+    ("重播情歌", "情歌"),
+    ("重播這首歌", ""),
+])
+def test_extract_title_query(query, expected):
+    from intent_agents.replay_agent import extract_title_query
+    assert extract_title_query(query) == expected
+
+
+# ── title_matches ────────────────────────────────────────────────────────────
+
+
+def test_title_matches_true_with_cruft():
+    from intent_agents.replay_agent import title_matches
+    assert title_matches(
+        "告白氣球",
+        "周杰倫 Jay Chou (特別演出: 派偉俊)【告白氣球 Love Confession】Official MV",
+    ) is True
+
+
+def test_title_matches_false_for_different_song():
+    from intent_agents.replay_agent import title_matches
+    assert title_matches(
+        "告白氣球",
+        "再見的時候-電影〈陽光女子合唱團〉主題曲-再見版",
+    ) is False
+
+
+def test_title_matches_empty_query_false():
+    from intent_agents.replay_agent import title_matches
+    assert title_matches("", "x") is False
+
+
+# ── handler：歌名比對三分支整合測試 ──────────────────────────────────────────
+
+
+def _music_cog():
+    mc = MagicMock()
+    mc._tail_dj_task = None
+    return mc
+
+
+async def test_handler_accident_reproduction_plays_named_song_via_history_url():
+    """2026-09-28 事故重現：當下播《再見的時候》，使用者說「重播一次告白氣球」。
+    重播X＝點歌X：用最近播過那首的 webpage_url 點歌，不切當下這首、不唸重播 ack。"""
+    from intent_agents.replay_agent import ReplayAgent
+    ctrl, vc = _ctrl(current_info={"url": "yt/goodbye", "title": "再見的時候"})
+    baigeqiu = {"url": "googlevideo/expiring", "title": "告白氣球",
+                "webpage_url": "https://www.youtube.com/watch?v=bu7nU9Mhpyo"}
+    ctrl.stream_history = [baigeqiu, ctrl._current_stream_info]
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    ctrl._safe_music_command = AsyncMock()
+    mc = _music_cog()
+    ctrl.bot.cogs.get.return_value = mc
+
+    agent = ReplayAgent(ctrl)
+    bid = agent.bid(_ctx("重播一次告白氣球"))
+    await bid.handler()
+
+    ctrl._safe_music_command.assert_awaited_once_with(
+        "alice", "https://www.youtube.com/watch?v=bu7nU9Mhpyo", "play")
+    assert ctrl.stream_queue == []
+    ctrl._mixer.clear_music.assert_not_called()
+    ctrl.play_tts.assert_not_called()
+
+
+async def test_handler_title_matches_current_song_ignores_history():
+    from intent_agents.replay_agent import ReplayAgent
+    ctrl, vc = _ctrl(current_info={"url": "yt/baigeqiu", "title": "告白氣球"})
+    ctrl.stream_history = [{"url": "yt/other", "title": "七里香"}, ctrl._current_stream_info]
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    ctrl._safe_music_command = AsyncMock()
+    mc = _music_cog()
+    ctrl.bot.cogs.get.return_value = mc
+
+    agent = ReplayAgent(ctrl)
+    bid = agent.bid(_ctx("重播告白氣球"))
+    await bid.handler()
+
+    assert ctrl.stream_queue[0]["title"] == "告白氣球"
+    ctrl._safe_music_command.assert_not_called()
+
+
+async def test_handler_title_not_in_history_plays_by_title():
+    from intent_agents.replay_agent import ReplayAgent
+    ctrl, vc = _ctrl(current_info={"url": "yt/goodbye", "title": "再見的時候"})
+    ctrl.stream_history = [ctrl._current_stream_info]
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    ctrl._safe_music_command = AsyncMock()
+    mc = _music_cog()
+    ctrl.bot.cogs.get.return_value = mc
+
+    agent = ReplayAgent(ctrl)
+    bid = agent.bid(_ctx("重播一次七里香"))
+    await bid.handler()
+
+    ctrl._safe_music_command.assert_awaited_once_with("alice", "七里香", "play")
+    assert ctrl.stream_queue == []
+    ctrl._mixer.clear_music.assert_not_called()
+    ctrl.play_tts.assert_not_called()
+
+
+async def test_handler_inserted_item_is_copy_without_tail_dj_flag():
+    """重播當下這首：插回佇列的是 copy 且拿掉 _dj_played_in_tail，原 dict 不動。"""
+    from intent_agents.replay_agent import ReplayAgent
+    ctrl, vc = _ctrl(current_info={"url": "yt/goodbye", "title": "再見的時候",
+                                   "_dj_played_in_tail": True})
+    ctrl.stream_history = [ctrl._current_stream_info]
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    ctrl._safe_music_command = AsyncMock()
+    mc = _music_cog()
+    ctrl.bot.cogs.get.return_value = mc
+
+    agent = ReplayAgent(ctrl)
+    bid = agent.bid(_ctx("重播"))
+    await bid.handler()
+
+    assert ctrl.stream_queue[0]["title"] == "再見的時候"
+    assert "_dj_played_in_tail" not in ctrl.stream_queue[0]
+    assert ctrl._current_stream_info["_dj_played_in_tail"] is True
+    ctrl._mixer.clear_music.assert_called_once()
+    assert mc._current_song_skipped is True
+
+
+async def test_handler_does_not_record_skip():
+    from intent_agents.replay_agent import ReplayAgent
+    ctrl, vc = _ctrl(current_info={"url": "yt/goodbye", "title": "再見的時候"})
+    ctrl.stream_history = [ctrl._current_stream_info]
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    ctrl._safe_music_command = AsyncMock()
+    mc = _music_cog()
+    mc._record_song_skip = MagicMock()
+    ctrl.bot.cogs.get.return_value = mc
+
+    agent = ReplayAgent(ctrl)
+    bid = agent.bid(_ctx("重播"))
+    await bid.handler()
+
+    mc._record_song_skip.assert_not_called()
+    for call in ctrl._safe_music_command.await_args_list:
+        assert "skip" not in call.args
+
+
+async def test_handler_cancels_tail_dj_task():
+    from intent_agents.replay_agent import ReplayAgent
+    ctrl, vc = _ctrl(current_info={"url": "yt/goodbye", "title": "再見的時候"})
+    ctrl.stream_history = [ctrl._current_stream_info]
+    ctrl._plan12 = True
+    ctrl._mixer = MagicMock()
+    ctrl._safe_music_command = AsyncMock()
+    mc = _music_cog()
+    task = MagicMock()
+    task.done.return_value = False
+    mc._tail_dj_task = task
+    ctrl.bot.cogs.get.return_value = mc
+
+    agent = ReplayAgent(ctrl)
+    bid = agent.bid(_ctx("重播"))
+    await bid.handler()
+
+    task.cancel.assert_called_once()
+    assert mc._tail_dj_task is None
