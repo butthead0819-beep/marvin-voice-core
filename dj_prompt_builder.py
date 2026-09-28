@@ -132,6 +132,7 @@ def build_audiophile_guide_prompt(song_label: str) -> str:
     grounded_answer 的 L1 拒答 guard。"""
     return (
         f"你是馬文，正在為聽眾做一段「聽覺放大鏡」導聆，即將播放的歌是：{song_label}。\n\n"
+        "一定要先實際執行 Google 搜尋，根據搜尋結果回答，不准只憑記憶。"
         "用 Google 搜尋這首歌的專業樂評、錄音訪談、製作幕後資料，只寫查得到、查證過的細節，"
         "不准腦補、不准無中生有；查不到可靠資料就只回一個字「無」。\n\n"
         "台詞要用三幕式結構寫成一段連貫口白：\n"
@@ -153,6 +154,7 @@ def build_album_tracklist_prompt(artist: str, album: str) -> str:
         "（以原版專輯為準，不含 bonus track）。\n"
         "照專輯曲序每行一首，格式固定為「1. 歌名」「2. 歌名」…，只寫歌名，"
         "不寫歌手、時長、說明或來源。\n"
+        "一定要先實際執行 Google 搜尋，根據搜尋結果回答，不准只憑記憶。\n"
         "查不到、或無法確定是哪一張專輯，就只回一個字「無」，不准猜。"
     )
 

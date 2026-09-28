@@ -108,6 +108,8 @@ def test_build_audiophile_guide_prompt():
     # 零幻覺
     assert "Google" in prompt
     assert "「無」" in prompt
+    # 2026-09-29 真機：不強調時 Gemini 常憑記憶作答 → grounding_chunks 空被 L2 擋
+    assert "不准只憑記憶" in prompt
     # 輸出格式
     assert "只輸出台詞" in prompt
 
@@ -123,3 +125,5 @@ def test_build_album_tracklist_prompt():
     assert "1. " in prompt
     assert "只寫歌名" in prompt
     assert "「無」" in prompt
+    # 2026-09-29 真機：《范特西》不強調時 4 次只 1 次附來源（其餘憑記憶→L2 擋），強調後 3/3
+    assert "不准只憑記憶" in prompt
