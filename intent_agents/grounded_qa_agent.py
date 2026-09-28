@@ -235,6 +235,8 @@ async def grounded_answer(
     recent_context: str = "",
     model_chain: tuple[str, ...] = MODEL_CHAIN,
     timeout: float = GROUNDED_TIMEOUT_S,
+    system_prompt: str = _SYSTEM_PROMPT,
+    caller: str = "ambient_qa",
 ) -> tuple[str, list[str]] | None:
     """query → (答案, 來源 host 清單) 或 None（查不到 / 幻覺 guard 擋下 / 全失敗）。"""
     if not query or not query.strip():
@@ -243,7 +245,7 @@ async def grounded_answer(
     from llm_paid import estimate_cost
 
     config = types.GenerateContentConfig(
-        system_instruction=_SYSTEM_PROMPT,
+        system_instruction=system_prompt,
         temperature=0.2,
         tools=[types.Tool(google_search=types.GoogleSearch())],
     )
@@ -283,7 +285,7 @@ async def grounded_answer(
             in_tok = int(getattr(usage, "prompt_token_count", 0) or est_in)
             out_tok = int(getattr(usage, "candidates_token_count", 0) or 300)
             guard.record(
-                caller="ambient_qa", model=model, tokens=in_tok + out_tok,
+                caller=caller, model=model, tokens=in_tok + out_tok,
                 est_usd=estimate_cost(model, in_tok, out_tok),
                 in_tokens=in_tok, out_tokens=out_tok,
             )

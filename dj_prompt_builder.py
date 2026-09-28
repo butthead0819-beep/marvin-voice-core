@@ -125,6 +125,26 @@ def build_radio_now_playing_prompt(context: str) -> str:
     return template.format(context=context)
 
 
+def build_audiophile_guide_prompt(song_label: str) -> str:
+    """建構「聽覺放大鏡」導聆 Prompt——當 grounded 呼叫（audiophile_fetcher）的
+    system_instruction 用，contents 只帶歌名/歌手 label。要求用 Google 查證專業
+    樂評／錄音訪談／製作幕後，零幻覺：查不到可靠資料就只回「無」，接
+    grounded_answer 的 L1 拒答 guard。"""
+    return (
+        f"你是馬文，正在為聽眾做一段「聽覺放大鏡」導聆，即將播放的歌是：{song_label}。\n\n"
+        "用 Google 搜尋這首歌的專業樂評、錄音訪談、製作幕後資料，只寫查得到、查證過的細節，"
+        "不准腦補、不准無中生有；查不到可靠資料就只回一個字「無」。\n\n"
+        "台詞要用三幕式結構寫成一段連貫口白：\n"
+        "1. 破除既定印象（~25 字）：打破聽眾對這首歌的刻板印象或第一印象。\n"
+        "2. 核心音軌細節與聽覺錨點（~55 字）：指出耳朵該聽什麼——"
+        "聲場定位、樂器的獨特選用、和弦離調或突變瞬間、錄音裡的真實呼吸聲，任選查得到的一兩個細節。\n"
+        "3. 戴耳機進歌引導（~20 字）：引導聽眾戴上耳機、準備進歌。\n\n"
+        "**長度 90-110 個中文字**（唸完約 20 秒）。\n\n"
+        f"禁止使用這些假文青套話：{'、'.join(FORBIDDEN_DJ_PHRASES)}。\n\n"
+        "只輸出台詞，不加引號、不加說明、不列來源。"
+    )
+
+
 def build_stream_now_playing_prompt(context: str) -> str:
     """建構直播點播報幕 Prompt（6-7秒 / 20-23 字）。"""
     template = _DJ_STYLES.get(

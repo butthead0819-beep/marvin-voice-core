@@ -569,14 +569,14 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             logger.info(f"[DJ Tail] {title} DJ 已在上一首尾段播出，跳過開頭重播")
             dj_audio = None
             dj_data = None
+        if await self._play_audiophile_guide_preroll(info, vc):   # 導聆＝這首的開場，開頭 DJ 讓位
+            dj_audio = dj_data = None
         if dj_audio:
             dj_audio = await self._splice_owner_voice_clip(dj_audio, info)
         if dj_data and not dj_audio and vc is not None:
             await self._maybe_play_dj_interjection(dj_data)
 
         return dj_audio, dj_played_in_tail
-
-
 
     async def _await_reconnect_device(self, vc, *, timeout_s: float = 12.0, interval_s: float = 0.5):
         """語音 WS 短暫斷線（如 close code 1006）→ discord.py 會自動重連，中間 ~數秒
