@@ -224,7 +224,8 @@ class MemoryCallbackAgent:
             if stt_logger is not None:
                 stt_logger.info(f"[BOT主題callback→{speaker}] {line}")
 
-            await self._ctrl.speak(line, proactive=True)
+            # 追問的價值就是原句（「你之前說要X，現在呢？」），不准升級成漫才改寫掉（2026-09-27 兩次改寫後聽眾聽不懂）
+            await self._ctrl.speak(line, proactive=True, allow_dual=False)
             # TTS 成功 → consume（idempotent；T3 race 二次 consume 為 no-op）
             mem.consume_callback(speaker, item)
         except Exception as e:

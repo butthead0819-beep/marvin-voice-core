@@ -138,6 +138,65 @@ def test_punctuation_slightly_over_budget_accepted():
     assert len(out) <= 52
 
 
+# ── Step 0：句尾符號優先切點（dj_story budget=56 字，17s/0.3s）───────────────
+
+def test_sentence_end_priority_over_comma():
+    """budget 內有「。」在第 31 字，之後到 budget 只有逗號 → 切在「。」（保留符號）。"""
+    text = "字" * 30 + "。" + "字" * 5 + "，" + "字" * 20
+    assert len(text) > 56
+    out, was_cut = truncate_for_tts(text, "dj_story", _est)
+    assert was_cut is True
+    assert out == text[:31]
+    assert out.endswith("。")
+
+
+def test_sentence_end_carries_closing_quote():
+    """句尾符號後緊接收尾引號（？」）→ 引號一起帶上。"""
+    text = "字" * 30 + "？" + "」" + "字" * 5 + "，" + "字" * 20
+    out, was_cut = truncate_for_tts(text, "dj_story", _est)
+    assert was_cut is True
+    assert out.endswith("？」")
+    assert out == text[:32]
+
+
+def test_sentence_end_too_short_falls_back_to_comma():
+    """budget 內唯一的句尾符號在第 6 字（< budget*1/3≈18.7）→ 退回舊邏輯切在逗號前。"""
+    text = "字" * 5 + "。" + "字" * 10 + "，" + "字" * 40
+    assert len(text) > 56
+    out, was_cut = truncate_for_tts(text, "dj_story", _est)
+    assert was_cut is True
+    comma_idx = text.index("，")
+    assert comma_idx < 56
+    assert out == text[:comma_idx]
+
+
+def test_no_sentence_end_behaves_like_old_comma_cut():
+    """無句尾符號 → 行為跟舊版一樣，切在 budget 內最後一個逗號前。"""
+    text = "字" * 20 + "，" + "字" * 40
+    assert len(text) > 56
+    out, was_cut = truncate_for_tts(text, "dj_story", _est)
+    assert was_cut is True
+    assert out == text[:20]
+
+
+def test_dj_story_regression_stops_at_sentence_end_not_mid_clause():
+    """回歸測試（仿 2026-09-27 DJ 口白截斷 27 次全停在子句中間的型態）：
+    句尾「。」在 index 41（< 56，>= 56/3），輸出應停在「。」而非後面的逗號。
+    """
+    text = (
+        "「剛剛啊，我記得你在說要去買菜，結果你卻說『先看完這集再說』——"
+        "這種拖延症我太懂了。這首《晴天》送給你，聽完再去也不遲，"
+        "反正菜市場不會跑掉，對吧？」"
+    )
+    period_idx = text.index("。")
+    assert period_idx < 56 and period_idx + 1 >= 56 / 3, (
+        f"前提不成立：period_idx={period_idx}，請重新確認測試資料"
+    )
+    out, was_cut = truncate_for_tts(text, "dj_story", _est)
+    assert was_cut is True
+    assert out == "「剛剛啊，我記得你在說要去買菜，結果你卻說『先看完這集再說』——這種拖延症我太懂了。"
+
+
 # ── unknown task → fail-safe（不截）────────────────────────────────────────
 
 def test_unknown_task_unchanged():
