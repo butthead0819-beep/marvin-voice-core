@@ -14,6 +14,7 @@ import json
 import re
 import sqlite3
 import sys
+from datetime import datetime, time
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -32,10 +33,50 @@ _VALID_KINDS = {"human", "marvin", "ack", "song_card"}
 
 SONG_CARD_SECONDS = 4.0  # 歌名卡預設顯示秒數
 
+DEFAULT_OBS_LOG_DIR = Path.home() / "Library" / "Application Support" / "obs-studio" / "logs"
+
 _BOT_LOG_ACK_RE = re.compile(
     r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) \[INFO\] "
     r"cogs\.voice_controller: 🗣️ \[Ack:[^\]]+\] 播放 (\S+\.mp3)\s*$"
 )
+
+_OBS_LOG_NAME_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2}) (\d{2})-(\d{2})-(\d{2})")
+
+_OBS_WRITING_FILE_RE = re.compile(
+    r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3}): .*Writing file '(.+)'"
+)
+
+
+def find_obs_recording_start(recording: Path, logs_dir: Path) -> Optional[datetime]:
+    """從 OBS log 找出錄音檔真正開始的毫秒時間（檔名只到整秒）。"""
+    if not logs_dir.is_dir():
+        return None
+
+    log_files = sorted(logs_dir.glob("*.txt"), key=lambda p: p.name, reverse=True)
+    for log_path in log_files:
+        m = _OBS_LOG_NAME_RE.search(log_path.name)
+        if not m:
+            continue
+        y, mo, d, h, mi, s = (int(g) for g in m.groups())
+        try:
+            log_dt = datetime(y, mo, d, h, mi, s)
+        except ValueError:
+            continue
+
+        for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            wm = _OBS_WRITING_FILE_RE.match(line)
+            if not wm:
+                continue
+            h2, mi2, s2, ms2, file_str = wm.groups()
+            if Path(file_str).name != recording.name:
+                continue
+            result = datetime.combine(log_dt.date(), time(int(h2), int(mi2), int(s2), int(ms2) * 1000))
+            if result < log_dt:
+                from datetime import timedelta
+                result += timedelta(days=1)
+            return result
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -99,10 +140,15 @@ def _read_log_rotations(dir_path, base_name: str, count: int) -> List[str]:
 def collect_events(human_rows, speech_rows, bot_acks, *, rec_start: float, duration: float) -> List[dict]:
     events: List[dict] = []
 
+    seen_human: set = set()
     for speaker, text, ts in human_rows:
         text = (text or "").strip()
         if not text:
             continue
+        dedup_key = (speaker, text, ts)
+        if dedup_key in seen_human:
+            continue
+        seen_human.add(dedup_key)
         start_abs, end_abs = human_cue_window(ts, text)
         start = start_abs - rec_start
         end = end_abs - rec_start
@@ -112,6 +158,8 @@ def collect_events(human_rows, speech_rows, bot_acks, *, rec_start: float, durat
 
     speech_ack_seen: List[tuple] = []
     for row in speech_rows:
+        if row.get("origin", "discord") != "discord":
+            continue
         text = (row.get("text") or "").strip()
         if not text:
             continue
@@ -312,19 +360,28 @@ def validate_candidates(candidates: dict, repo_root: Path) -> List[str]:
 # ---------------------------------------------------------------------------
 
 def _do_timeline(args) -> int:
-    from datetime import datetime
-
     recording = Path(args.recording)
 
     rec_start_dt = None
+    rec_start_source = None
     if args.start:
         rec_start_dt = datetime.strptime(args.start, "%Y-%m-%d %H:%M:%S")
+        rec_start_source = "manual"
     else:
-        rec_start_dt = parse_obs_start(recording.name) or parse_obs_start(str(recording))
+        obs_log_dir = Path(args.obs_log_dir) if args.obs_log_dir else DEFAULT_OBS_LOG_DIR
+        rec_start_dt = find_obs_recording_start(recording, obs_log_dir)
+        if rec_start_dt is not None:
+            rec_start_source = "obs_log"
+        else:
+            rec_start_dt = parse_obs_start(recording.name) or parse_obs_start(str(recording))
+            if rec_start_dt is not None:
+                rec_start_source = "filename"
 
     if rec_start_dt is None:
         print("錯誤：無法判斷錄音開始時間，請用 --start \"YYYY-MM-DD HH:MM:SS\" 指定。", file=sys.stderr)
         return 2
+
+    print(f"錄音開始時間：{rec_start_dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}（來源：{rec_start_source}）")
 
     rec_start = rec_start_dt.timestamp()
     duration = _ffprobe_duration(recording)
@@ -358,7 +415,13 @@ def _do_timeline(args) -> int:
     out_txt.write_text(format_timeline(events, rec_start_str=rec_start_str, duration=duration), encoding="utf-8")
     out_json.write_text(
         json.dumps(
-            {"recording": str(recording), "rec_start": rec_start_str, "duration": duration, "events": events},
+            {
+                "recording": str(recording),
+                "rec_start": rec_start_str,
+                "rec_start_source": rec_start_source,
+                "duration": duration,
+                "events": events,
+            },
             ensure_ascii=False,
             indent=2,
         ),
@@ -407,6 +470,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_timeline.add_argument("--db")
     p_timeline.add_argument("--speech-log-dir")
     p_timeline.add_argument("--bot-log-dir")
+    p_timeline.add_argument("--obs-log-dir")
     p_timeline.add_argument("-o", "--output")
 
     p_review = sub.add_parser("review")

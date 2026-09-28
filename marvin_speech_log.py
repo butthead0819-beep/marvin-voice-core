@@ -14,6 +14,17 @@ import os
 LOGGER_NAME = "MarvinSpeech"
 LOG_PATH = "marvin_speech.log"
 
+_origin = "discord"
+
+
+def set_origin(origin: str) -> None:
+    global _origin
+    _origin = origin
+
+
+def get_origin() -> str:
+    return _origin
+
 
 def configure_marvin_speech_logger(path: str = LOG_PATH) -> logging.Handler:
     logger = logging.getLogger(LOGGER_NAME)
@@ -46,6 +57,7 @@ def log_marvin_speech(
             "voice": voice,
             "src": src,
             "text": clean,
+            "origin": _origin,
         }
         if file is not None:
             payload["file"] = file
@@ -64,6 +76,7 @@ def log_song_start(title: str, *, start_ts: float, artist: str | None = None) ->
             "start": round(start_ts, 3),
             "src": "song",
             "text": clean,
+            "origin": _origin,
         }
         if artist:
             payload["artist"] = artist

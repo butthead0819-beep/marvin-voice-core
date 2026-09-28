@@ -106,3 +106,17 @@ async def test_returns_none_if_all_news_are_unsafe():
     result = await news_fetch.fetch_news_headline("新聞", fetch=fetch)
     assert result is None
 
+
+
+@pytest.mark.asyncio
+async def test_exclude_skips_already_broadcast_titles():
+    fetch = _capturing_fetch(_rss("第一則 - 某媒體", "第二則 - 某媒體"))
+    result = await news_fetch.fetch_news_headline(None, fetch=fetch, exclude={"第一則"})
+    assert result == {"title": "第二則"}
+
+
+@pytest.mark.asyncio
+async def test_exclude_all_titles_returns_none():
+    fetch = _capturing_fetch(_rss("第一則 - 某媒體", "第二則 - 某媒體"))
+    result = await news_fetch.fetch_news_headline(None, fetch=fetch, exclude={"第一則", "第二則"})
+    assert result is None

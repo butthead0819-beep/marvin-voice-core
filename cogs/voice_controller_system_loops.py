@@ -13,6 +13,7 @@ VoiceController 實例；三個迴圈經 cog_load 的 self.X.start() 由 MRO 正
 from __future__ import annotations
 
 import asyncio
+import collections
 import datetime
 import json
 import logging
@@ -281,7 +282,8 @@ class SystemLoopsMixin:
         """靜默夠久時順便報一則新聞（免費 Google News RSS，依在場興趣關鍵字查；
         沒興趣關鍵字就查台灣熱門頭條）。全防禦 fail-open：抓不到就靜靜跳過，
         不影響 slow_system_loop 其餘行為。冷卻時戳在呼叫前就先蓋，避免抓取
-        卡住時同一輪 tick 重入。"""
+        卡住時同一輪 tick 重入。播過的標題記在 `_broadcast_news_titles`（每程序
+        各自記、重啟清空），RSS 只剩播過的就不播。"""
         self._last_news_broadcast_ts = time.time()
         try:
             mc = self.bot.cogs.get("MusicCog")
@@ -295,10 +297,16 @@ class SystemLoopsMixin:
                     else:
                         keyword = first or None
 
+            recent = getattr(self, "_broadcast_news_titles", None)
+            if recent is None:
+                recent = collections.deque(maxlen=50)
+                self._broadcast_news_titles = recent
+
             from news_fetch import fetch_news_headline
-            headline = await fetch_news_headline(keyword)
+            headline = await fetch_news_headline(keyword, exclude=set(recent))
             if not headline or not headline.get("title"):
                 return
+            recent.append(headline["title"])
             text = f"順便報一下新聞：{headline['title']}"
             if hasattr(self, "play_tts"):
                 await self.play_tts(text)

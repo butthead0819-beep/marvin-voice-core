@@ -138,3 +138,35 @@ async def test_broadcast_news_uses_raw_interest_keyword(monkeypatch):
     vc.play_tts.assert_awaited_once()
     assert "AI 最新突破" in vc.play_tts.call_args[0][0]
 
+
+
+@pytest.mark.asyncio
+async def test_broadcast_news_does_not_repeat_same_headline(monkeypatch):
+    """同一則頭條掛著沒換：每 10 分鐘冷卻到就重播（9/28 satellite 21:03/21:23/21:43 同一則）。
+    播過的標題要傳給 fetch 當 exclude，RSS 裡只剩播過的 → 不播。"""
+    from cogs.voice_controller import VoiceController
+    import news_fetch
+
+    feed = ["同一則頭條", "第二則"]
+
+    async def _fake_fetch(keyword=None, *, exclude=(), **kw):
+        for t in feed:
+            if t not in exclude:
+                return {"title": t}
+        return None
+
+    monkeypatch.setattr(news_fetch, "fetch_news_headline", _fake_fetch)
+
+    vc = VoiceController.__new__(VoiceController)
+    vc.bot = MagicMock()
+    vc.bot.cogs.get.return_value = None
+    vc.play_tts = AsyncMock()
+
+    await vc._maybe_broadcast_news()
+    await vc._maybe_broadcast_news()
+    await vc._maybe_broadcast_news()
+
+    spoken = [c.args[0] for c in vc.play_tts.await_args_list]
+    assert len(spoken) == 2
+    assert "同一則頭條" in spoken[0]
+    assert "第二則" in spoken[1]

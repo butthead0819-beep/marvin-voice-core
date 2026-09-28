@@ -444,3 +444,56 @@ async def test_play_ack_unknown_file_logs_bracketed_basename(tmp_path):
     mock_log.assert_called_once()
     args, _ = mock_log.call_args
     assert args[0] == "[zzz.mp3]"
+
+
+# ── origin：Discord bot / satellite / local 三個程序共寫同一份 log，要標出是誰講的 ──
+
+@pytest.fixture
+def _reset_origin():
+    import marvin_speech_log
+    yield
+    marvin_speech_log.set_origin("discord")
+
+
+def test_origin_defaults_to_discord(tmp_path, _reset_origin):
+    log_path = tmp_path / "x.log"
+    handler = configure_marvin_speech_logger(str(log_path))
+    try:
+        log_marvin_speech("嗨", start_ts=1790000000.0, layer=1, voice=None, src="tts")
+        assert _last_json_line(log_path)["origin"] == "discord"
+    finally:
+        _teardown_logger(handler)
+
+
+def test_set_origin_applies_to_speech_and_song(tmp_path, _reset_origin):
+    import marvin_speech_log
+
+    log_path = tmp_path / "x.log"
+    handler = configure_marvin_speech_logger(str(log_path))
+    try:
+        marvin_speech_log.set_origin("satellite")
+        assert marvin_speech_log.get_origin() == "satellite"
+        log_marvin_speech("順便報一下新聞", start_ts=1790000000.0, layer=1, voice=None, src="tts")
+        assert _last_json_line(log_path)["origin"] == "satellite"
+        log_song_start("七里香", start_ts=1790000001.0)
+        assert _last_json_line(log_path)["origin"] == "satellite"
+    finally:
+        _teardown_logger(handler)
+
+
+@pytest.mark.parametrize("module_name, expected", [("main_satellite", "satellite"), ("main_local", "local")])
+def test_entrypoint_sets_origin_before_building_bot(monkeypatch, _reset_origin, module_name, expected):
+    import importlib
+    import main_discord
+    import marvin_speech_log
+
+    seen = {}
+
+    class _FakeBot:
+        def __init__(self):
+            seen["origin"] = marvin_speech_log.get_origin()
+
+    monkeypatch.setattr(main_discord, "MarvinBot", _FakeBot)
+    mod = importlib.import_module(module_name)
+    mod.build_local_bot()
+    assert seen["origin"] == expected

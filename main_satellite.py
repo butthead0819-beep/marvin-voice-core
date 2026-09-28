@@ -204,6 +204,8 @@ def check_identity_alignment(env) -> list:
 
 def build_local_bot():
     """構建 MarvinBot 腦（不登入 Discord）。"""
+    import marvin_speech_log
+    marvin_speech_log.set_origin("satellite")
     from main_discord import MarvinBot
     return MarvinBot()
 
