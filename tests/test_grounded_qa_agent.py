@@ -512,3 +512,12 @@ async def test_grounded_default_system_prompt_unchanged_and_overridable():
     free2 = _client(_resp("答案。"))
     await grounded_answer(free2, None, _guard(), "某個問題", system_prompt="自訂")
     assert free2.aio.models.generate_content.await_args.kwargs["config"].system_instruction == "自訂"
+
+
+@pytest.mark.asyncio
+async def test_grounded_max_chars_default_trims_and_overridable():
+    long_text = "一" * 300
+    out = await grounded_answer(_client(_resp(long_text)), None, _guard(), "q")
+    assert len(out[0]) <= 141  # 預設 MAX_REPLY_CHARS=140（+ 省略號）
+    out2 = await grounded_answer(_client(_resp(long_text)), None, _guard(), "q", max_chars=800)
+    assert out2[0] == long_text

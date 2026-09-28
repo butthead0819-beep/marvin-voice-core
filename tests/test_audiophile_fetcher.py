@@ -239,3 +239,77 @@ async def test_render_probe_failure_means_no_audio(store):
     await _render(info, store, dur=0.0)
     assert info["_audiophile_guide_audio"] is None
     assert info["_audiophile_guide_dur"] == 0.0
+
+
+# ── fetch_album_tracklist（Phase 4.2 /tour：Gemini grounded 查曲目）────────────
+
+ALBUM_KEY = "album_tracklist::周杰倫 - 范特西"
+TRACKS_TEXT = "1. 愛在西元前\n2、爸我回來了\n3) 簡單愛\n這行不是曲目\n4. 《忍者》\n5. 簡單愛\n"
+
+
+async def _tracks(store, free=None, paid=None, guard=None):
+    from audiophile_fetcher import fetch_album_tracklist
+    return await fetch_album_tracklist(
+        "周杰倫", "范特西",
+        free_client=free if free is not None else _client(_resp(TRACKS_TEXT)),
+        paid_client=paid, guard=guard or _guard(), store=store)
+
+
+@pytest.mark.asyncio
+async def test_tracklist_parses_numbered_lines_dedups_and_caches(store, tmp_path):
+    free = _client(_resp(TRACKS_TEXT))
+    out = await _tracks(store, free=free)
+
+    assert out == ["愛在西元前", "爸我回來了", "簡單愛", "忍者"]
+    config = free.aio.models.generate_content.await_args.kwargs["config"]
+    from dj_prompt_builder import build_album_tracklist_prompt
+    assert config.system_instruction == build_album_tracklist_prompt("周杰倫", "范特西")
+    reloaded = SongKnowledgeStore(path=str(tmp_path / "song_knowledge.json"))
+    assert reloaded.get(ALBUM_KEY)["tracks"] == out
+
+
+@pytest.mark.asyncio
+async def test_tracklist_cache_hit_zero_api(store):
+    store.set(ALBUM_KEY, {"tracks": ["A", "B"]})
+    free = _client(_resp("不該被呼叫"))
+    assert await _tracks(store, free=free) == ["A", "B"]
+    free.aio.models.generate_content.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tracklist_long_album_not_truncated(store):
+    """AmbientQA 預設 140 字截斷會把長專輯砍半——曲目查詢要放寬。"""
+    text = "\n".join(f"{i}. 很長很長的一首歌名第{i}首" for i in range(1, 16))
+    out = await _tracks(store, free=_client(_resp(text)))
+    assert len(out) == 15
+
+
+@pytest.mark.asyncio
+async def test_tracklist_caps_track_count(store):
+    from audiophile_fetcher import MAX_TOUR_TRACKS
+    text = "\n".join(f"{i}. 歌{i}" for i in range(1, MAX_TOUR_TRACKS + 10))
+    out = await _tracks(store, free=_client(_resp(text)))
+    assert len(out) == MAX_TOUR_TRACKS
+
+
+@pytest.mark.asyncio
+async def test_tracklist_first_track_starting_with_wu_not_rejected(store):
+    """「無與倫比的美麗」開頭是「無」——編號格式讓它不撞 L1 拒答 guard。"""
+    out = await _tracks(store, free=_client(_resp("1. 無與倫比的美麗\n2. 小情歌")))
+    assert out == ["無與倫比的美麗", "小情歌"]
+
+
+@pytest.mark.asyncio
+async def test_tracklist_failures_return_empty_and_do_not_cache(store):
+    for free in (_client(_resp("無")), _client(exc=RuntimeError("boom")),
+                 _client(_resp(TRACKS_TEXT, chunks=0)), _client(_resp("沒有編號的一段話"))):
+        assert await _tracks(store, free=free) == []
+    assert store.get(ALBUM_KEY) is None
+
+
+@pytest.mark.asyncio
+async def test_tracklist_paid_recorded_with_tour_caller(store):
+    guard = _guard(allow=True)
+    await _tracks(store, free=_client(exc=RuntimeError("429")),
+                  paid=_client(_resp(TRACKS_TEXT)), guard=guard)
+    assert guard.record.call_args.kwargs["caller"] == "album_tour_tracklist"

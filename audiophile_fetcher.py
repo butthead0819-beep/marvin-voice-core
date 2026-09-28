@@ -8,9 +8,10 @@ get_or_extract_insight 的記錄共用 dict（那邊 set 是整份覆寫，共�
 from __future__ import annotations
 
 import logging
+import re
 import time
 
-from dj_prompt_builder import build_audiophile_guide_prompt
+from dj_prompt_builder import build_audiophile_guide_prompt, build_album_tracklist_prompt
 from intent_agents.grounded_qa_agent import grounded_answer
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,11 @@ logger = logging.getLogger(__name__)
 GUIDE_TIMEOUT_S = 20.0
 FALLBACK_GUIDE_TEMPLATE = "這首〈{title}〉我就不多嘴了，戴好耳機，從第一個音開始聽。"
 _KEY_PREFIX = "audiophile::"
+
+MAX_TOUR_TRACKS = 20
+TRACKLIST_MAX_CHARS = 800   # AmbientQA 預設 140 字截斷會把長專輯砍半
+_ALBUM_KEY_PREFIX = "album_tracklist::"
+_TRACK_LINE_RE = re.compile(r"^\s*\d{1,2}\s*[.、)）]\s*(.+?)\s*$")
 
 
 def _song_label(title: str, artist: str) -> str:
@@ -101,3 +107,51 @@ async def render_audiophile_guide(
     info['_audiophile_guide_text'] = text
     info['_audiophile_guide_audio'] = audio
     info['_audiophile_guide_dur'] = dur
+
+
+def parse_tracklist(text: str) -> list[str]:
+    """「1. 歌名」編號行 → 歌名清單（剝《》「」引號、去重、最多 MAX_TOUR_TRACKS）；非編號行忽略。"""
+    out: list[str] = []
+    for line in (text or "").splitlines():
+        m = _TRACK_LINE_RE.match(line)
+        if not m:
+            continue
+        name = m.group(1).strip().strip("《》「」\"'").strip()
+        if name and name not in out:
+            out.append(name)
+        if len(out) >= MAX_TOUR_TRACKS:
+            break
+    return out
+
+
+async def fetch_album_tracklist(
+    artist: str, album: str, *, free_client, paid_client, guard, store,
+) -> list[str]:
+    """artist/album → 官方曲目清單（/tour 用）；快取命中零 API 呼叫。
+    快取 key「album_tracklist::<artist> - <album>」；查不到 / 幻覺 guard 擋下 /
+    解析不出編號行 → []，不寫快取。"""
+    key = f"{_ALBUM_KEY_PREFIX}{artist} - {album}"
+    cached = (store.get(key) or {}).get("tracks")
+    if cached:
+        return list(cached)
+    res = None
+    try:
+        res = await grounded_answer(
+            free_client, paid_client, guard, f"{artist}《{album}》",
+            system_prompt=build_album_tracklist_prompt(artist, album),
+            caller="album_tour_tracklist",
+            timeout=GUIDE_TIMEOUT_S,
+            max_chars=TRACKLIST_MAX_CHARS,
+        )
+    except Exception as e:
+        logger.warning(f"[Audiophile] 曲目查證例外: {e}")
+    if res is None:
+        logger.info(f"[Audiophile] {artist}《{album}》查不到可靠曲目")
+        return []
+    text, sources = res
+    tracks = parse_tracklist(text)
+    if not tracks:
+        logger.info(f"[Audiophile] {artist}《{album}》回應解析不出曲目：{text[:60]!r}")
+        return []
+    store.set(key, {"tracks": tracks, "sources": sources, "ts": time.time()})
+    return tracks

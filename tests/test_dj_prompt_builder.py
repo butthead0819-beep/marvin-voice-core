@@ -110,3 +110,16 @@ def test_build_audiophile_guide_prompt():
     assert "「無」" in prompt
     # 輸出格式
     assert "只輸出台詞" in prompt
+
+
+def test_build_album_tracklist_prompt():
+    """專輯曲目查證 prompt（/tour）：曲目是事實資料，只准 Google 查證、固定編號格式
+    （第一行是「1. 」開頭，歌名本身以「無」開頭也不會被 L1 拒答 guard 誤殺）、查不到回「無」。"""
+    from dj_prompt_builder import build_album_tracklist_prompt
+
+    prompt = build_album_tracklist_prompt("周杰倫", "范特西")
+    assert "周杰倫" in prompt and "范特西" in prompt
+    assert "Google" in prompt
+    assert "1. " in prompt
+    assert "只寫歌名" in prompt
+    assert "「無」" in prompt

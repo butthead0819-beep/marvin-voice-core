@@ -156,11 +156,11 @@ def _extract_sources(response) -> list[str]:
     return out
 
 
-def _trim(text: str) -> str:
+def _trim(text: str, max_chars: int = MAX_REPLY_CHARS) -> str:
     text = text.strip()
-    if len(text) <= MAX_REPLY_CHARS:
+    if len(text) <= max_chars:
         return text
-    head = text[:MAX_REPLY_CHARS]
+    head = text[:max_chars]
     for i in range(len(head) - 1, 0, -1):
         if head[i] in "。！？!?…":
             return head[: i + 1]
@@ -237,6 +237,7 @@ async def grounded_answer(
     timeout: float = GROUNDED_TIMEOUT_S,
     system_prompt: str = _SYSTEM_PROMPT,
     caller: str = "ambient_qa",
+    max_chars: int = MAX_REPLY_CHARS,
 ) -> tuple[str, list[str]] | None:
     """query → (答案, 來源 host 清單) 或 None（查不到 / 幻覺 guard 擋下 / 全失敗）。"""
     if not query or not query.strip():
@@ -313,7 +314,7 @@ async def grounded_answer(
             return None
 
         logger.info(f"[AmbientQA] ✓ query={query!r} src={sources}")
-        return _trim(text), sources
+        return _trim(text, max_chars), sources
 
     return None
 

@@ -145,6 +145,18 @@ def build_audiophile_guide_prompt(song_label: str) -> str:
     )
 
 
+def build_album_tracklist_prompt(artist: str, album: str) -> str:
+    """/tour 曲目查證用 prompt。編號格式讓「無」開頭的歌名（例「無與倫比的美麗」）
+    不撞 L1 拒答 guard（guard 只認整句開頭是「無」）。"""
+    return (
+        f"你是音樂資料查證員。用 Google 搜尋並查證 {artist} 的專輯《{album}》的官方曲目"
+        "（以原版專輯為準，不含 bonus track）。\n"
+        "照專輯曲序每行一首，格式固定為「1. 歌名」「2. 歌名」…，只寫歌名，"
+        "不寫歌手、時長、說明或來源。\n"
+        "查不到、或無法確定是哪一張專輯，就只回一個字「無」，不准猜。"
+    )
+
+
 def build_stream_now_playing_prompt(context: str) -> str:
     """建構直播點播報幕 Prompt（6-7秒 / 20-23 字）。"""
     template = _DJ_STYLES.get(

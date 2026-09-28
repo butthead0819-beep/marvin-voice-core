@@ -137,6 +137,7 @@ class MusicSubsystemMixin:
 
     async def stop_stream(self, reason: str = "未知原因"):
         """🎵 停止串流播放，清空當前狀態。"""
+        self._stop_album_tour(reason)   # 巡禮第一首還在渲染（stream 未開）時喊停也要收掉
         if not self.stream_mode:
             return
         vc = self._vc()
