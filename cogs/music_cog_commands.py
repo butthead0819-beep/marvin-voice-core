@@ -35,6 +35,8 @@ from playlist_utils import (
 
 logger = logging.getLogger(__name__)
 
+_ALBUM_TOUR_POLL_S = 1.0   # 巡禮 runner 等佇列消化的間隔（真 sleep 讓出，別 busy-spin）
+
 
 class MusicCommandsMixin:
     # ── 🎵 Slash commands ─────────────────────────────────────────────────────
@@ -88,6 +90,9 @@ class MusicCommandsMixin:
         guild_vc = interaction.guild.voice_client
         if not guild_vc:
             await interaction.followup.send("❌ 馬文不在語音頻道中。請先使用 `/summon` 召喚我。", ephemeral=True)
+            return
+        if getattr(self, '_album_tour', None):
+            await interaction.followup.send("📀 專輯巡禮進行中，點歌先暫停；要結束巡禮就說「停」。", ephemeral=True)
             return
 
         username = interaction.user.display_name
@@ -187,6 +192,174 @@ class MusicCommandsMixin:
         user_name = interaction.user.display_name if interaction.user else "Discord"
         await self._safe_music_command(user_name, "", "skip")
         await interaction.followup.send("⏭️ 已跳過。", ephemeral=True)
+
+    @app_commands.command(name="guide_song", description="[DJ] 深度導聆：先查證講 20 秒該聽什麼，再從頭播這首")
+    @app_commands.describe(song_name="歌名（例如：周杰倫 雙截棍）或 YouTube 連結")
+    async def guide_song(self, interaction: discord.Interaction, song_name: str):
+        await interaction.response.defer(ephemeral=False)
+        vc = self._vc()
+        if not vc:
+            await interaction.followup.send("❌ 語音系統尚未就緒。", ephemeral=True)
+            return
+        if not interaction.guild.voice_client:
+            await interaction.followup.send("❌ 馬文不在語音頻道中。請先使用 `/summon` 召喚我。", ephemeral=True)
+            return
+        if getattr(self, '_album_tour', None):
+            await interaction.followup.send("📀 專輯巡禮進行中，點歌先暫停；要結束巡禮就說「停」。", ephemeral=True)
+            return
+
+        msg = await interaction.followup.send(f"🎧 **正在查證導聆資料：** `{song_name}`...")
+
+        info = await self._resolve_yt_query(song_name)
+        if not info:
+            await msg.edit(content=f"❌ 找不到結果：`{song_name}`。")
+            return
+
+        # 先渲染完才入隊：佇列空時歌會立刻開播，背景渲染會來不及
+        await self._prepare_audiophile_guide(info)
+
+        if self.radio_mode:
+            await self.stop_radio(reason="Stream 模式接管")
+
+        info['requested_by'] = interaction.user.display_name
+        self._queue_user_song(info)
+        self._ensure_stream_loop()
+
+        await msg.edit(content=f"🎧 **【深度導聆】** 已排入：{info['title']}\n> {info.get('_audiophile_guide_text', '')}")
+
+    def _audiophile_deps(self) -> tuple:
+        """導聆/巡禮共用接線：(store, guard, router)。store 跟 DJ 賞析共用同一實例（多實例整份寫檔會互蓋）。"""
+        from llm_paid import PaidUsageGuard
+        from song_knowledge_store import SongKnowledgeStore
+        store = getattr(self, '_song_knowledge_store', None)
+        if store is None:
+            store = SongKnowledgeStore()
+            self._song_knowledge_store = store
+        guard = getattr(self, '_audiophile_guard', None)
+        if guard is None:
+            guard = PaidUsageGuard()
+            self._audiophile_guard = guard
+        return store, guard, getattr(self.bot, 'router', None)
+
+    async def _prepare_audiophile_guide(self, info: dict) -> None:
+        """接線——共用 _song_knowledge_store（跟 DJ 賞析同一實例，多實例整份寫檔會互蓋）、
+        router 的 free/paid Gemini client、PaidUsageGuard 記帳、bot.tts_engine、ffprobe 量秒。
+        """
+        from audiophile_fetcher import render_audiophile_guide
+
+        store, guard, router = self._audiophile_deps()
+        title, artist = self._dj_clean_name(info)
+        await render_audiophile_guide(
+            info, title=title or info.get('title', ''), artist=artist,
+            free_client=getattr(router, 'google_client', None),
+            paid_client=getattr(router, 'google_paid_client', None),
+            guard=guard, store=store,
+            tts_engine=self.bot.tts_engine,
+            probe_duration=self._probe_audio_duration,
+        )
+
+    async def _album_tour_reject(self, speaker: str) -> bool:
+        """巡禮中擋語音點歌（play/play_next）。只鎖點歌——停/跳照常（使用者 2026-09-28 定）。
+        不換 IntentContext.mode：mode 一換所有沒宣告的 agent 都不出價，聊天/查詢也會死。"""
+        tour = getattr(self, '_album_tour', None)
+        if not tour:
+            return False
+        vc = self._vc()
+        ch = vc.active_text_channel if vc else None
+        if ch:
+            await ch.send(f"📀 專輯巡禮《{tour.get('album', '')}》進行中，點歌先暫停；要結束巡禮就說「停」。")
+        logger.info(f"📀 [AlbumTour] 巡禮中擋下 {speaker} 的點歌")
+        return True
+
+    @app_commands.command(name="tour", description="[DJ] 專輯巡禮：照曲序播整張專輯，每首先講 20 秒導聆")
+    @app_commands.describe(artist="歌手（例如：周杰倫）", album="專輯名（例如：范特西）")
+    async def tour(self, interaction: discord.Interaction, artist: str, album: str):
+        await interaction.response.defer(ephemeral=False)
+        vc = self._vc()
+        if not vc:
+            await interaction.followup.send("❌ 語音系統尚未就緒。", ephemeral=True)
+            return
+        if not interaction.guild.voice_client:
+            await interaction.followup.send("❌ 馬文不在語音頻道中。請先使用 `/summon` 召喚我。", ephemeral=True)
+            return
+        if getattr(self, '_album_tour', None):
+            await interaction.followup.send("📀 已經有專輯巡禮在進行了，要換就先說「停」。", ephemeral=True)
+            return
+
+        msg = await interaction.followup.send(f"📀 **正在查證曲目：** {artist}《{album}》...")
+
+        tracks = await self._fetch_album_tracks(artist, album)
+        if not tracks:
+            await msg.edit(content=f"❌ 查不到 {artist}《{album}》可靠的曲目，巡禮取消。")
+            return
+
+        if self.radio_mode:
+            await self.stop_radio(reason="Stream 模式接管")
+
+        user = interaction.user.display_name
+        self._album_tour = {"artist": artist, "album": album, "requested_by": user, "total": len(tracks)}
+        self._album_tour_task = asyncio.create_task(self._run_album_tour(artist, tracks, user))
+
+        listing = "\n".join(f"{i}. {t}" for i, t in enumerate(tracks, 1))
+        await msg.edit(content=f"📀 **【專輯巡禮】** {artist}《{album}》共 {len(tracks)} 首，每首先導聆再從頭播（巡禮中點歌暫停，說「停」結束）：\n{listing}")
+
+    async def _fetch_album_tracks(self, artist: str, album: str) -> list[str]:
+        from audiophile_fetcher import fetch_album_tracklist   # 函式內 import（測試 patch 模組屬性）
+        store, guard, router = self._audiophile_deps()
+        return await fetch_album_tracklist(
+            artist, album,
+            free_client=getattr(router, 'google_client', None),
+            paid_client=getattr(router, 'google_paid_client', None),
+            guard=guard, store=store,
+        )
+
+    def _album_tour_pending(self) -> bool:
+        return any(i.get('_lane') == 'album_tour' for i in self.stream_queue)
+
+    async def _run_album_tour(self, artist: str, tracks: list[str], requested_by: str) -> None:
+        """JIT 生產線——播第 N 首時背景渲染第 N+1 首（解析+導聆稿+TTS），佇列裡最多
+        一首未開播的巡禮曲。單首解析/渲染失敗就跳過該首，不中斷巡禮。全部播完才解除 _album_tour（放開點歌鎖）。
+        stream_mode 變 False（loop 不在了）就不再等，避免鎖卡死。stop 由 _stop_album_tour cancel 本 task。"""
+        try:
+            for track in tracks:
+                try:
+                    info = await self._resolve_yt_query(f"{artist} {track}")
+                    if not info:
+                        logger.info(f"📀 [AlbumTour] 找不到「{artist} {track}」，跳過")
+                        continue
+                    await self._prepare_audiophile_guide(info)
+                except Exception as e:
+                    logger.warning(f"📀 [AlbumTour] 「{track}」準備失敗，跳過：{e}")
+                    continue
+                # JIT：渲染已提前做完，等上一首巡禮曲開播（離開佇列）才入隊
+                while self.stream_mode and self._album_tour_pending():
+                    await asyncio.sleep(_ALBUM_TOUR_POLL_S)
+                info['requested_by'] = requested_by
+                info['_lane'] = 'album_tour'
+                self._queue_user_song(info)
+                self._ensure_stream_loop()
+            # 最後一首播完才放開點歌鎖
+            while self.stream_mode and (
+                    self._album_tour_pending()
+                    or (self._current_stream_info or {}).get('_lane') == 'album_tour'):
+                await asyncio.sleep(_ALBUM_TOUR_POLL_S)
+            logger.info("📀 [AlbumTour] 巡禮結束")
+        finally:
+            self._album_tour = None
+            self._album_tour_task = None
+
+    def _stop_album_tour(self, reason: str) -> None:
+        """收掉巡禮：cancel runner、解除鎖、清掉佇列裡還沒播的巡禮曲
+        （stop_stream 不清佇列，不清的話之後點歌會接著播到殘留巡禮曲）。沒巡禮 → no-op。"""
+        task = getattr(self, '_album_tour_task', None)
+        if getattr(self, '_album_tour', None) is None and task is None:
+            return
+        if task is not None and not task.done():
+            task.cancel()
+        self._album_tour = None
+        self._album_tour_task = None
+        self.stream_queue[:] = [i for i in self.stream_queue if i.get('_lane') != 'album_tour']
+        logger.info(f"📀 [AlbumTour] 巡禮中止，原因: {reason}")
 
     @app_commands.command(name="marvin_play_control", description="[Stream] 播放控制台：音量、暫停、上下首、佇列管理")
     async def marvin_play_control(self, interaction: discord.Interaction):

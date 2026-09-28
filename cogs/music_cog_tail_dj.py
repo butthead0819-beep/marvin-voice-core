@@ -48,6 +48,8 @@ _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
 # 輪詢 /puck/status 的間隔（_fire_puck_crossfade 用，兩種硬體共用）——resolve
 # 現在多半是 cache 命中幾乎瞬間完成，1s 夠即時又不會洗爆 Pi 的 HTTP handler。
 _PUCK_STATUS_POLL_INTERVAL_S = 1.0
+_AUDIOPHILE_GUIDE_GAP_S = 1.0   # 導聆講完留白，再讓歌從 00:00 爆出來
+_AUDIOPHILE_POLL_S = 0.25       # 導聆等待期間檢查 stop/skip 的間隔
 
 
 class MusicTailDJMixin:
@@ -331,6 +333,35 @@ class MusicTailDJMixin:
         fut.add_done_callback(_on_start)
         return fut
 
+    async def _play_audiophile_guide_preroll(self, info: dict, vc) -> bool:
+        """硬性規則「先聽完導覽，音樂才從 00:00 開播」。回 True＝這首是導聆歌
+        （呼叫端據此讓開頭 DJ 讓位），False＝一般歌、什麼都沒做。
+        stop/skip 在導聆中 → 清 TTS 層提早結束等待；skip 的語意是「跳過導聆」，歌照樣播
+        （呼叫端之後會把 _current_song_skipped 歸 False）。"""
+        if not info.get('_audiophile_guide'):
+            return False
+        # 導聆歌一律從 00:00：清掉熱力圖精華起點（後面排尾段 task / play_stream_song 都讀 info）
+        info['highlight_start_s'] = None
+        guide_audio = info.get('_audiophile_guide_audio')
+        guide_dur = info.get('_audiophile_guide_dur') or 0.0
+        if not guide_audio or guide_dur <= 0 or vc is None:
+            return True
+        # 導聆 20 秒期間背景把整首從 0 秒預解碼好，講完零等待出聲（見 _start_music_preload）
+        self._start_music_preload(info)
+        with vc._protected_tts_window():
+            await vc.play_dj_on_tts_layer(guide_audio, text=info.get('_audiophile_guide_text'))
+            remaining = guide_dur + _AUDIOPHILE_GUIDE_GAP_S
+            # 累加 sleep 秒數而非比牆鐘（測試攔 asyncio.sleep；見 flaky_test_pump 教訓）
+            while remaining > 0:
+                step = min(_AUDIOPHILE_POLL_S, remaining)
+                await asyncio.sleep(step)
+                remaining -= step
+                if not self.stream_mode or getattr(self, '_current_song_skipped', False):
+                    vc._mixer.clear_tts()
+                    logger.info(f"[Audiophile] {info.get('title', '?')} 導聆被 stop/skip 中斷，提早結束等待")
+                    break
+        return True
+
     async def _run_tail_dj(self, cur_info: dict, song_start_time):
         """[DJ Tail] 滑動窗串場：當前歌結束前 _DJ_TAIL_LEAD_S 秒點火，DJ 疊當前歌尾巴 + 溢進下一首開頭。
 
@@ -406,6 +437,10 @@ class MusicTailDJMixin:
             logger.info(f"[DJ Tail] {title_cur} 點火時 queue 仍空、無下一首，退回舊行為")
             return
         title_next = next_info.get('title', '?')
+
+        if next_info.get('_audiophile_guide'):
+            logger.info(f"[DJ Tail] {title_next} 是導聆歌，尾段不講話也不預解碼（開播前自己放導聆+從 0 預解碼）")
+            return
 
         # [PuckMixer] esp32_edge_mix 專用：額外送純音樂 crossfade 訊號給裝置端，跟下面
         # 本地 Discord mixer 的 DJ 口白邏輯完全獨立、不共用旗標、不影響其他硬體行為

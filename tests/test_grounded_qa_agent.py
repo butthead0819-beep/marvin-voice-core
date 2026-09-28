@@ -497,3 +497,27 @@ def test_parse_chat_with_question_words_not_grounded(raw):
 ])
 def test_parse_lookup_starting_with_ni_hits(raw):
     assert parse_grounded_qa(raw) is not None, f"{raw!r} 是明確查詢，不該被當成問 Marvin 自身"
+
+
+@pytest.mark.asyncio
+async def test_grounded_default_system_prompt_unchanged_and_overridable():
+    """grounded_answer 加 system_prompt/caller kwarg 給 audiophile_fetcher 重用；
+    不傳時 AmbientQA 行為不變。"""
+    from intent_agents.grounded_qa_agent import _SYSTEM_PROMPT
+
+    free = _client(_resp("答案。"))
+    await grounded_answer(free, None, _guard(), "某個問題")
+    assert free.aio.models.generate_content.await_args.kwargs["config"].system_instruction == _SYSTEM_PROMPT
+
+    free2 = _client(_resp("答案。"))
+    await grounded_answer(free2, None, _guard(), "某個問題", system_prompt="自訂")
+    assert free2.aio.models.generate_content.await_args.kwargs["config"].system_instruction == "自訂"
+
+
+@pytest.mark.asyncio
+async def test_grounded_max_chars_default_trims_and_overridable():
+    long_text = "一" * 300
+    out = await grounded_answer(_client(_resp(long_text)), None, _guard(), "q")
+    assert len(out[0]) <= 141  # 預設 MAX_REPLY_CHARS=140（+ 省略號）
+    out2 = await grounded_answer(_client(_resp(long_text)), None, _guard(), "q", max_chars=800)
+    assert out2[0] == long_text
