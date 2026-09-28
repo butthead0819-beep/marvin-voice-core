@@ -9,7 +9,7 @@ import asyncio
 import logging
 import os
 import xml.etree.ElementTree as ET
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Collection, Optional
 from urllib.parse import quote
 
 try:
@@ -69,7 +69,7 @@ def is_safe_news_title(title: str) -> bool:
     return not any(kw in t for kw in _UNSAFE_NEWS_KEYWORDS)
 
 
-def _parse_first_item(xml_text: str) -> Optional[dict]:
+def _parse_first_item(xml_text: str, exclude: Collection[str] = ()) -> Optional[dict]:
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
@@ -82,8 +82,11 @@ def _parse_first_item(xml_text: str) -> Optional[dict]:
         if not title:
             continue
         clean_title = _strip_source_suffix(title)
-        if clean_title and is_safe_news_title(clean_title):
-            return {"title": clean_title}
+        if not clean_title or not is_safe_news_title(clean_title):
+            continue
+        if clean_title in exclude:
+            continue
+        return {"title": clean_title}
     return None
 
 
@@ -91,6 +94,7 @@ async def fetch_news_headline(
     keyword: Optional[str] = None,
     *,
     fetch: Optional[Callable[..., Awaitable[Optional[str]]]] = None,
+    exclude: Collection[str] = (),
 ) -> Optional[dict]:
     """抓一則新聞標題。keyword 給時查該關鍵字，否則查台灣熱門頭條。失敗回 None。"""
     if not enabled():
@@ -98,4 +102,4 @@ async def fetch_news_headline(
     xml_text = await (fetch or _default_fetch)(keyword)
     if not xml_text:
         return None
-    return _parse_first_item(xml_text)
+    return _parse_first_item(xml_text, exclude=exclude)

@@ -326,3 +326,143 @@ def test_collect_events_sorted_by_time_across_sources():
     bot_acks = [{"start": 1005.0, "file": "music_ack_03.mp3"}]            # from 5.0
     events = collect_events(human_rows, speech_rows, bot_acks, rec_start=1000.0, duration=60.0)
     assert [(e["kind"], e["from"]) for e in events] == [("ack", 5.0), ("marvin", 15.0), ("human", 28.0)]
+
+
+# ── OBS log 毫秒開始時間（檔名只到整秒，實測 21-36-08.mkv 真正開始是 21:36:08.505）──
+
+def _write_obs_log(logs_dir, log_name, lines):
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    (logs_dir / log_name).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_find_obs_recording_start_ms(tmp_path):
+    from scripts.clip_timeline import find_obs_recording_start
+
+    rec = tmp_path / "2026-09-28 21-36-08.mkv"
+    logs = tmp_path / "obs_logs"
+    _write_obs_log(logs, "2026-09-28 21-22-06.txt", [
+        "21:22:06.100: OBS 32.2.2 (mac)",
+        "21:22:13.165: ==== Recording Start ===============================================",
+        "21:22:13.165: [ffmpeg muxer: 'adv_file_output'] Writing file '/other/2026-09-28 21-22-13.mkv'...",
+        "21:36:08.505: ==== Recording Start ===============================================",
+        f"21:36:08.505: [ffmpeg muxer: 'adv_file_output'] Writing file '{rec}'...",
+    ])
+    assert find_obs_recording_start(rec, logs) == datetime(2026, 9, 28, 21, 36, 8, 505000)
+
+
+def test_find_obs_recording_start_crosses_midnight(tmp_path):
+    from scripts.clip_timeline import find_obs_recording_start
+
+    rec = tmp_path / "2026-09-29 00-10-02.mkv"
+    logs = tmp_path / "obs_logs"
+    _write_obs_log(logs, "2026-09-28 23-50-00.txt", [
+        "23:50:00.000: OBS 32.2.2 (mac)",
+        f"00:10:02.250: [ffmpeg muxer: 'adv_file_output'] Writing file '{rec}'...",
+    ])
+    assert find_obs_recording_start(rec, logs) == datetime(2026, 9, 29, 0, 10, 2, 250000)
+
+
+def test_find_obs_recording_start_searches_older_logs(tmp_path):
+    from scripts.clip_timeline import find_obs_recording_start
+
+    rec = tmp_path / "2026-09-28 21-36-08.mkv"
+    logs = tmp_path / "obs_logs"
+    _write_obs_log(logs, "2026-09-28 21-22-06.txt", [
+        f"21:36:08.505: [ffmpeg muxer: 'adv_file_output'] Writing file '{rec}'...",
+    ])
+    _write_obs_log(logs, "2026-09-28 22-00-00.txt", ["22:00:00.000: OBS 32.2.2 (mac)"])
+    assert find_obs_recording_start(rec, logs) == datetime(2026, 9, 28, 21, 36, 8, 505000)
+
+
+def test_find_obs_recording_start_no_match_returns_none(tmp_path):
+    from scripts.clip_timeline import find_obs_recording_start
+
+    rec = tmp_path / "2026-09-28 21-36-08.mkv"
+    logs = tmp_path / "obs_logs"
+    _write_obs_log(logs, "2026-09-28 21-22-06.txt", [
+        "21:22:13.165: [ffmpeg muxer: 'adv_file_output'] Writing file '/other/2026-09-28 21-22-13.mkv'...",
+    ])
+    assert find_obs_recording_start(rec, logs) is None
+    assert find_obs_recording_start(rec, tmp_path / "does_not_exist") is None
+
+
+def _timeline_fixture(tmp_path, *, speech_rows):
+    wav = tmp_path / "2026-09-26 22-10-05.wav"
+    _write_sine_wav(wav, seconds=5)
+    db_path = tmp_path / "marvin.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "CREATE TABLE transcripts (speaker TEXT, guild_id INTEGER, channel_id INTEGER, "
+        "text TEXT, timestamp REAL)"
+    )
+    conn.commit()
+    conn.close()
+    (tmp_path / "marvin_speech.log").write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in speech_rows), encoding="utf-8"
+    )
+    (tmp_path / "bot_main.log").write_text("", encoding="utf-8")
+    return wav, db_path
+
+
+def _run_timeline(tmp_path, wav, db_path, obs_logs):
+    out_txt = tmp_path / "out.timeline.txt"
+    rc = main([
+        "timeline", str(wav),
+        "--db", str(db_path),
+        "--speech-log-dir", str(tmp_path),
+        "--bot-log-dir", str(tmp_path),
+        "--obs-log-dir", str(obs_logs),
+        "-o", str(out_txt),
+    ])
+    assert rc == 0
+    return json.loads(out_txt.with_suffix(".json").read_text(encoding="utf-8"))
+
+
+def test_timeline_uses_obs_log_start(tmp_path):
+    obs_start = datetime(2026, 9, 26, 22, 10, 5, 500000).timestamp()
+    wav, db_path = _timeline_fixture(tmp_path, speech_rows=[
+        {"start": obs_start + 1.0, "layer": 1, "voice": None, "src": "tts", "text": "嗨"},
+    ])
+    obs_logs = tmp_path / "obs_logs"
+    _write_obs_log(obs_logs, "2026-09-26 22-00-00.txt", [
+        f"22:10:05.500: [ffmpeg muxer: 'adv_file_output'] Writing file '{wav}'...",
+    ])
+    data = _run_timeline(tmp_path, wav, db_path, obs_logs)
+    assert data["rec_start_source"] == "obs_log"
+    [ev] = [e for e in data["events"] if e["kind"] == "marvin"]
+    assert ev["from"] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_timeline_falls_back_to_filename_start(tmp_path):
+    fname_start = datetime(2026, 9, 26, 22, 10, 5).timestamp()
+    wav, db_path = _timeline_fixture(tmp_path, speech_rows=[
+        {"start": fname_start + 1.0, "layer": 1, "voice": None, "src": "tts", "text": "嗨"},
+    ])
+    data = _run_timeline(tmp_path, wav, db_path, tmp_path / "no_obs_logs")
+    assert data["rec_start_source"] == "filename"
+    [ev] = [e for e in data["events"] if e["kind"] == "marvin"]
+    assert ev["from"] == pytest.approx(1.0, abs=1e-3)
+
+
+# ── 台詞來源：satellite / local 程序也寫同一份 marvin_speech.log，不能混進 Discord 錄音的時間軸 ──
+
+def test_collect_events_skips_non_discord_origin():
+    speech_rows = [
+        {"start": 1010.0, "src": "tts", "voice": None, "text": "舊紀錄沒有 origin"},
+        {"start": 1011.0, "src": "tts", "voice": None, "text": "discord 講的", "origin": "discord"},
+        {"start": 1012.0, "src": "tts", "voice": None, "text": "satellite 的新聞", "origin": "satellite"},
+        {"start": 1013.0, "src": "song", "text": "satellite 的歌", "origin": "satellite"},
+        {"start": 1014.0, "src": "ack", "text": "好選擇", "file": "a.mp3", "origin": "local"},
+    ]
+    events = collect_events([], speech_rows, [], rec_start=1000.0, duration=60.0)
+    assert [e["text"] for e in events] == ["舊紀錄沒有 origin", "discord 講的"]
+
+
+def test_collect_events_dedupes_identical_human_rows():
+    human_rows = [
+        ("狗與露", "馬文播放陳綺貞的旅行的意義", 1020.0),
+        ("狗與露", "馬文播放陳綺貞的旅行的意義", 1020.0),
+        ("狗與露", "馬文播放陳綺貞的旅行的意義", 1050.0),  # 不同時間 = 真的講了兩次，保留
+    ]
+    events = collect_events(human_rows, [], [], rec_start=1000.0, duration=60.0)
+    assert len([e for e in events if e["kind"] == "human"]) == 2

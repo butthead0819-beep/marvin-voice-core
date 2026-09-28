@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 def build_local_bot():
     """構建 MarvinBot 腦（不登入 Discord）。"""
+    import marvin_speech_log
+    marvin_speech_log.set_origin("local")
     from main_discord import MarvinBot
     return MarvinBot()
 
