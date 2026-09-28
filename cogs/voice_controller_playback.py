@@ -490,6 +490,7 @@ class PlaybackMixin:
         protected: bool = False,
         bypass_stream_mute: bool = False,
         kind: "SpeakKind | None" = None,
+        allow_dual: bool = True,
     ) -> None:
         """統一的 stream-aware TTS 入口（給 agent handler 用）。
 
@@ -508,6 +509,7 @@ class PlaybackMixin:
           - 🎭 Marmo Case B：可能升級為 dual（Marvin → Marmo），機率閘
             MARMO_DUAL_CHANCE (default 0.5) + MARMO_DUAL_SPEAK 必須 on。
             失敗 fallback 走原 single Marvin 路徑。
+            allow_dual=False → 不升級（記憶追問等「原句就是重點」的主動發話）。
 
         bypass_stream_mute=True（插播新聞）：呼叫端明確要求「即使 stream_mode 中
           也要蓋過音樂唸出來」（如 join 招呼），繞過 play_tts 的 Stream Guard；
@@ -519,7 +521,7 @@ class PlaybackMixin:
         # 🎭 [Marmo Case B] 機率升級為 dual (Marvin → Marmo)。
         # 只在 proactive=True 試（主動發話）；committed（如 join 招呼要唸完點名）不升級，
         # 確保是乾淨單句、不被 dual 機率閘洗掉名字/保護。
-        if proactive and not _committed and self._maybe_try_dual_upgrade():
+        if proactive and allow_dual and not _committed and self._maybe_try_dual_upgrade():
             try:
                 segments = await self._generate_dual_marvin_lead(text)
                 if segments:

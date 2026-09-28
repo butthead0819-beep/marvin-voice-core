@@ -160,6 +160,47 @@ async def test_speak_proactive_dual_returns_none_falls_back(monkeypatch):
     fake.play_tts.assert_awaited_once()
 
 
+# ── speak() 整合：allow_dual=False 強制單句（記憶追問等原句就是重點） ──────────
+
+@pytest.mark.asyncio
+async def test_speak_allow_dual_false_skips_upgrade_even_when_gate_would_hit(monkeypatch):
+    """MARMO_DUAL_SPEAK=1 + MARMO_DUAL_CHANCE=1.0（保證會升級）但 allow_dual=False
+    → 不試 dual，原句透過 play_tts 播出。"""
+    monkeypatch.setenv("MARMO_DUAL_SPEAK", "1")
+    monkeypatch.setenv("MARMO_DUAL_CHANCE", "1.0")
+    fake = _fake_vc()
+    with patch(
+        "cogs.voice_controller.VoiceController._generate_dual_marvin_lead",
+        new=AsyncMock(),
+    ) as mock_generate:
+        await VoiceController.speak(
+            fake, "你之前說要買X，現在呢？", proactive=True, allow_dual=False,
+        )
+    mock_generate.assert_not_called()
+    fake.play_dual_dialogue.assert_not_called()
+    fake.play_tts.assert_awaited_once()
+    assert fake.play_tts.call_args.args[0] == "你之前說要買X，現在呢？"
+
+
+@pytest.mark.asyncio
+async def test_speak_allow_dual_default_true_still_upgrades(monkeypatch):
+    """沒傳 allow_dual（預設 True）→ 行為跟舊版一樣，gate 命中會升級 dual。"""
+    monkeypatch.setenv("MARMO_DUAL_SPEAK", "1")
+    monkeypatch.setenv("MARMO_DUAL_CHANCE", "1.0")
+    fake = _fake_vc()
+    segments = [
+        {"voice": "marvin", "text": "存在仍是虛無"},
+        {"voice": "marmo", "text": "閉嘴他在問正事"},
+    ]
+    with patch(
+        "cogs.voice_controller.VoiceController._generate_dual_marvin_lead",
+        new=AsyncMock(return_value=segments),
+    ):
+        await VoiceController.speak(fake, "你之前說要買X，現在呢？", proactive=True)
+    fake.play_dual_dialogue.assert_awaited_once_with(segments)
+    fake.play_tts.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_speak_proactive_dual_raises_falls_back(monkeypatch):
     """generate 拋例外 → fallback 走 play_tts，整段不爆。"""

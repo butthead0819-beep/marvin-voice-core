@@ -291,6 +291,23 @@ async def test_handler_tts_success_consumes_callback(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handler_speak_forces_allow_dual_false(monkeypatch, tmp_path):
+    """追問句一律單句原文播出，不准被 Marmo 漫才升級改寫掉。"""
+    monkeypatch.setenv("SPEAK_MEMORY_CALLBACK", "true")
+    mem = _mk_mem(tmp_path)
+    mem.enqueue_callback("Alice", "試 grounded search", shareable=True)
+    history = [_utt("Alice", "grounded search 那個")]
+    ctrl = _mk_ctrl_with_tts(mem, history=history)
+    agent = MemoryCallbackAgent(ctrl, confidence=0.7, overlap_threshold=0.3)
+    bid = await agent.speak_bid(_mk_ctx(["Alice"], last_speaker="Alice"))
+    await bid.handler()
+    assert ctrl.speak.await_count == 1
+    kwargs = ctrl.speak.call_args.kwargs
+    assert kwargs.get("allow_dual") is False
+    assert kwargs.get("proactive") is True
+
+
+@pytest.mark.asyncio
 async def test_handler_tts_truncate_gate_still_delivers(monkeypatch, tmp_path):
     """truncate_for_tts 砍掉超 7s 的長句 → 仍然發聲 + consume。"""
     monkeypatch.setenv("SPEAK_MEMORY_CALLBACK", "true")
