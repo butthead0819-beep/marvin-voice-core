@@ -329,6 +329,23 @@ class MusicDJLyricsMixin:
             self._dj_topic_cooldown_store = store
         return store
 
+    def _attach_cached_canon(self, info: dict) -> None:
+        """info 還沒掛 _canon 就從曲庫快取（canon::<videoId>）補上——只讀本地快取、零網路，
+        給歌曲卡用正規化曲名/歌手。任何失敗靜默略過（卡片退回原標題）。"""
+        if info.get('_canon'):
+            return
+        try:
+            from music_memory import extract_video_id
+            vid = extract_video_id(info.get('webpage_url') or info.get('url') or '')
+            if not vid:
+                return
+            store, _guard, _router = self._audiophile_deps()
+            canon = store.get(f"canon::{vid}")
+            if canon:
+                info['_canon'] = canon
+        except Exception as e:
+            logger.debug(f"[Canon] 讀快取失敗，歌曲卡用原標題: {e}")
+
     def _shazam_breaker_lazy(self):
         b = getattr(self, '_shazam_breaker', None)
         if b is None:
@@ -365,6 +382,8 @@ class MusicDJLyricsMixin:
             logger.debug(f"[Canon] 正規化失敗，跳過: {e}")
             canon = None
 
+        if canon:
+            info['_canon'] = canon   # 這首開播貼歌曲卡時用正規化曲名/歌手
         label = _song_label(canon['title'], canon['artist']) if canon else _song_label(clean_title, clean_artist)
 
         requester = info.get('requested_by') or ''

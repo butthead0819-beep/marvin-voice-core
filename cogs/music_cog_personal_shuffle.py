@@ -200,7 +200,8 @@ class MusicPersonalShuffleMixin:
         """貼①歌曲卡（封面全幅+點播者頭像圓徽合成圖）②歌詞（刪舊貼新，查無資料就不貼）
         ③控制台（刪舊貼新在底部）。背景執行。"""
         logger.info(f"🎛️ [Card] 貼卡 requester={info.get('requested_by')} cover={bool(info.get('thumbnail'))} ch={getattr(active_ch,'id',None)}")
-        from cogs.voice_views import PlayControlView, build_song_embed, build_control_embed, build_lyrics_embed
+        from cogs.voice_views import PlayControlView, build_song_embed, build_control_embed, build_lyrics_embed, song_display_title
+        self._attach_cached_canon(info)   # 曲名/歌手用曲庫正規化資料（有的話）
         # ① 歌曲卡：合成封面+頭像；任一步失敗 → 退純封面（不阻斷）
         image_url = None
         file = None
@@ -219,7 +220,7 @@ class MusicPersonalShuffleMixin:
                 pal = info.get('palette') or []
                 png = await asyncio.to_thread(
                     compose_cover_with_avatar, cov, av,
-                    title=info.get('title', ''),
+                    title=song_display_title(info),
                     primary=(pal[0] if len(pal) >= 1 else None),
                     secondary=(pal[1] if len(pal) >= 2 else None),
                 )
