@@ -313,3 +313,34 @@ async def test_tracklist_paid_recorded_with_tour_caller(store):
     await _tracks(store, free=_client(exc=RuntimeError("429")),
                   paid=_client(_resp(TRACKS_TEXT)), guard=guard)
     assert guard.record.call_args.kwargs["caller"] == "album_tour_tracklist"
+
+
+# ── resolved_matches_track（YouTube 髒標題 / 配錯歌守門，2026-09-29 真機：「告五人 過場」
+#     搜出〈在這座城市遺失了你〉MV）──────────────────────────────────────────────
+
+@pytest.mark.parametrize("title,track", [
+    ("周杰倫 Jay Chou【雙截棍 Nunchucks】Official MV", "雙截棍"),
+    ("周杰伦 双截棍 (官方MV)", "雙截棍"),                       # 簡體標題 vs 繁體曲名
+    ("告五人 Accusefive [ WEWE ] Official Music Video", "WEWE"),
+    ("告五人 Accusefive [ wewe ]", "WEWE"),                     # 大小寫
+    ("老王樂隊｜我還年輕 我還年輕 Official Music Video", "我還年輕我還年輕"),  # 空白差異
+    ("老王樂隊 - 我還年輕，我還年輕", "我還年輕 我還年輕"),       # 標點差異
+])
+def test_resolved_matches_track_true(title, track):
+    from audiophile_fetcher import resolved_matches_track
+    assert resolved_matches_track({"title": title}, track) is True
+
+
+def test_resolved_matches_track_uses_track_metadata_too():
+    from audiophile_fetcher import resolved_matches_track
+    assert resolved_matches_track({"title": "Topic upload 123", "track": "簡單愛"}, "簡單愛") is True
+
+
+@pytest.mark.parametrize("info,track", [
+    ({"title": "告五人 Accusefive [ 在這座城市遺失了你 Where I Lost Us ] '遺失的情人節'版MV"}, "過場"),
+    ({"title": "周杰倫 Jay Chou【簡單愛 Simple Love】Official MV"}, "雙截棍"),
+    ({}, "雙截棍"),
+])
+def test_resolved_matches_track_false(info, track):
+    from audiophile_fetcher import resolved_matches_track
+    assert resolved_matches_track(info, track) is False

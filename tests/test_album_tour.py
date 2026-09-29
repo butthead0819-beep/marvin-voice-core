@@ -161,7 +161,7 @@ async def test_voice_skip_not_blocked_during_tour():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("command,kwargs", [
     ("marvin_play", {"query": "陶喆 天天"}),
-    ("guide_song", {"song_name": "陶喆 天天"}),
+    ("guide_song", {"artist": "陶喆", "song": "天天"}),
 ])
 async def test_slash_song_request_blocked_during_tour(command, kwargs):
     cog, _ = _make_cog()
@@ -178,7 +178,7 @@ async def test_slash_song_request_blocked_during_tour(command, kwargs):
 
 # ── JIT 巡禮 runner ─────────────────────────────────────────────────────────
 
-def _runner_cog(events, *, unresolvable=()):
+def _runner_cog(events, *, unresolvable=(), mismatched=()):
     cog, _ = _make_cog()
     cog.stream_mode = False
     cog.stream_queue = []
@@ -188,10 +188,13 @@ def _runner_cog(events, *, unresolvable=()):
     async def _resolve(q):
         if any(u in q for u in unresolvable):
             return None
+        if any(m in q for m in mismatched):
+            return {"title": "完全不相干的歌 Official MV", "url": f"https://ex/x{q}", "webpage_url": f"https://yt/x{q}"}
         return {"title": q, "url": f"https://ex/{q}", "webpage_url": f"https://yt/{q}"}
 
     async def _prep(info):
         events.append(("prepare", info["title"]))
+        events.append(("names", info.get("track"), info.get("artist")))
         info["_audiophile_guide"] = True
 
     def _queue(info, **kw):
@@ -374,3 +377,31 @@ async def test_runner_holds_lock_until_last_track_actually_played():
 
     assert lock_when_playing.get("周杰倫 簡單愛") is True
     assert cog._album_tour is None
+
+
+
+@pytest.mark.asyncio
+async def test_runner_uses_clean_tracklist_names_for_guide():
+    """巡禮已知乾淨的歌手/曲名 → 寫進 info['track']/['artist']，導聆 key、查證字串、
+    後續 DJ/歌詞全用乾淨名字，不再從 YouTube 髒標題洗（2026-09-29 告五人實測洗出
+    「相信音樂BinMusic - 告五人 Accusefive 唯一 The One And Only Official Music Video…」）。"""
+    events = []
+    cog = _runner_cog(events)
+    with patch("asyncio.sleep", new=_player_sleep(cog, events)):
+        await cog._run_album_tour("周杰倫", ["愛在西元前"], "狗與露")
+    assert ("names", "愛在西元前", "周杰倫") in events
+
+
+@pytest.mark.asyncio
+async def test_runner_skips_track_when_youtube_result_is_a_different_song():
+    """YouTube 配到別首歌（「告五人 過場」→〈在這座城市遺失了你〉）→ 跳過並在頻道說明，
+    不播錯歌、不做錯導聆（說錯不如沒說）。"""
+    events = []
+    cog = _runner_cog(events, mismatched=("爸我回來了",))
+    with patch("asyncio.sleep", new=_player_sleep(cog, events)):
+        await cog._run_album_tour("周杰倫", ["愛在西元前", "爸我回來了", "簡單愛"], "狗與露")
+
+    assert [e[1] for e in events if e[0] == "queue"] == ["周杰倫 愛在西元前", "周杰倫 簡單愛"]
+    assert not any(e[0] == "prepare" and "不相干" in e[1] for e in events)
+    ch = cog._vc().active_text_channel
+    assert any("爸我回來了" in c.args[0] for c in ch.send.await_args_list)

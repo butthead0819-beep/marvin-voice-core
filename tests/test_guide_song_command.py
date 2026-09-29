@@ -30,12 +30,13 @@ def _make_cog(events):
     cog = MusicCog(bot)
     cog.radio_mode = False
     cog._vc = MagicMock(return_value=MagicMock())
-    info = {"title": "周杰倫 Jay Chou【雙截棍】", "url": "https://ex/cdn",
+    info = {"title": "周杰倫 Jay Chou【雙截棍 Nunchucks】Official MV", "url": "https://ex/cdn",
             "webpage_url": "https://youtube.com/watch?v=abc"}
     cog._resolve_yt_query = AsyncMock(return_value=info)
 
     async def _prep(i):
         events.append("prepare")
+        events.append(("names", i.get("track"), i.get("artist")))
         i.update({"_audiophile_guide": True, "_audiophile_guide_text": "導聆台詞",
                   "_audiophile_guide_audio": "/tmp/g.mp3", "_audiophile_guide_dur": 20.0})
 
@@ -59,12 +60,13 @@ async def test_guide_song_prepares_guide_before_queueing():
     cog, info = _make_cog(events)
     inter, msg = _make_interaction("狗與露")
 
-    await cog.guide_song.callback(cog, inter, song_name="周杰倫 雙截棍")
+    await cog.guide_song.callback(cog, inter, artist="周杰倫", song="雙截棍")
 
     inter.response.defer.assert_awaited_once()
     cog._resolve_yt_query.assert_awaited_once_with("周杰倫 雙截棍")
     cog._prepare_audiophile_guide.assert_awaited_once_with(info)
-    assert events == ["prepare", "queue", "ensure"]
+    # 乾淨歌手/歌名寫進 info：導聆 key 跟 /tour 同一套（audiophile::周杰倫 - 雙截棍）→ 共用快取
+    assert events == ["prepare", ("names", "雙截棍", "周杰倫"), "queue", "ensure"]
     queued = cog._queue_user_song.call_args.args[0]
     assert queued is info
     assert queued["requested_by"] == "狗與露"
@@ -80,7 +82,7 @@ async def test_guide_song_not_found_does_not_queue():
     cog._resolve_yt_query = AsyncMock(return_value=None)
     inter, msg = _make_interaction()
 
-    await cog.guide_song.callback(cog, inter, song_name="不存在的歌")
+    await cog.guide_song.callback(cog, inter, artist="周杰倫", song="不存在的歌")
 
     cog._prepare_audiophile_guide.assert_not_awaited()
     cog._queue_user_song.assert_not_called()
@@ -93,7 +95,7 @@ async def test_guide_song_requires_bot_in_voice():
     cog, _ = _make_cog(events)
     inter, _ = _make_interaction(in_voice=False)
 
-    await cog.guide_song.callback(cog, inter, song_name="周杰倫 雙截棍")
+    await cog.guide_song.callback(cog, inter, artist="周杰倫", song="雙截棍")
 
     cog._resolve_yt_query.assert_not_awaited()
     cog._queue_user_song.assert_not_called()
@@ -107,7 +109,7 @@ async def test_guide_song_stops_radio_before_queueing():
     cog.stop_radio = AsyncMock(side_effect=lambda **kw: events.append("stop_radio"))
     inter, _ = _make_interaction()
 
-    await cog.guide_song.callback(cog, inter, song_name="周杰倫 雙截棍")
+    await cog.guide_song.callback(cog, inter, artist="周杰倫", song="雙截棍")
 
     assert events.index("stop_radio") < events.index("queue")
 
@@ -157,3 +159,21 @@ async def test_prepare_audiophile_guide_creates_and_keeps_store_when_missing():
     s2 = render.await_args_list[1].kwargs["store"]
     assert isinstance(s1, SongKnowledgeStore)
     assert s1 is s2 is cog._song_knowledge_store
+
+
+
+@pytest.mark.asyncio
+async def test_guide_song_rejects_youtube_result_for_a_different_song():
+    events = []
+    cog, _ = _make_cog(events)
+    cog._resolve_yt_query = AsyncMock(return_value={
+        "title": "告五人 Accusefive [ 在這座城市遺失了你 Where I Lost Us ] MV",
+        "url": "https://ex/cdn", "webpage_url": "https://youtube.com/watch?v=zzz"})
+    inter, msg = _make_interaction()
+
+    await cog.guide_song.callback(cog, inter, artist="告五人", song="過場")
+
+    cog._prepare_audiophile_guide.assert_not_awaited()
+    cog._queue_user_song.assert_not_called()
+    content = msg.edit.call_args.kwargs["content"]
+    assert "對不上" in content and "在這座城市遺失了你" in content
