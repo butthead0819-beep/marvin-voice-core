@@ -195,8 +195,11 @@ async def resolve_canon(store, video_id: str, clean_title: str, clean_artist: st
 
     if shz is not None:
         core = _PAREN_RE.sub("", shz["title"]).strip()
-        if not core or _pinyin_key(core) not in _pinyin_key(f"{clean_title} {artist_hay}"):
-            logger.info(f"[Canon] Shazam 認到《{shz['title']}》不在原標題，不採用")
+        # 歌手也要對得上原標題/頻道名：翻唱影片 Shazam 常認成「另一位翻唱者」且曲名照樣吻合
+        # （9/29 真機：宋雨琦翻唱〈普通朋友〉→ Kiki Lim）
+        if (not core or _pinyin_key(core) not in _pinyin_key(f"{clean_title} {artist_hay}")
+                or not _artist_matches(shz["artist"], f"{clean_artist} {artist_hay}")):
+            logger.info(f"[Canon] Shazam 認到《{shz['title']}》- {shz['artist']} 跟原標題對不上，不採用")
             shz = None
 
     if shz is not None:
@@ -270,7 +273,10 @@ async def resolve_canon(store, video_id: str, clean_title: str, clean_artist: st
 # 不落檔，bot 重啟歸零。真人點歌（human=True）不受此預算，見 song_guide_for_dj。
 AUTO_MIN_INTERVAL_S = 90.0
 AUTO_DAILY_CAP = 18
-AUTO_FAIL_COOLDOWN_S = 7 * 86400
+# 失敗分不出是「免費額度 429」還是「這首真的查不到」：先全域暫停 1 小時別連撞 429，
+# 同一首只冷卻 1 天（原本 7 天——9/29 真機一個下午就把 autopilot 歌拉黑一週）。
+AUTO_FAIL_COOLDOWN_S = 86400
+AUTO_FAIL_PAUSE_S = 3600.0
 
 DJ_GUIDE_WAIT_S = 10.0
 
@@ -288,8 +294,11 @@ class AutoGuideBudget:
         self._daily_count: int = 0
         self._daily_date: tuple | None = None
         self._fail_ts: dict[str, float] = {}
+        self._pause_until: float = 0.0
 
     def allow(self, key: str, now: float) -> bool:
+        if now < self._pause_until:
+            return False
         if now - self._last_attempt_ts < AUTO_MIN_INTERVAL_S:
             return False
         today = time.localtime(now)[:3]
@@ -308,8 +317,10 @@ class AutoGuideBudget:
     def record(self, key: str, now: float, ok: bool) -> None:
         if ok:
             self._fail_ts.pop(key, None)
+            self._pause_until = 0.0   # 查得到＝額度還在，解除全域暫停
         else:
             self._fail_ts[key] = now
+            self._pause_until = now + AUTO_FAIL_PAUSE_S
 
 
 async def song_guide_for_dj(

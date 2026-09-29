@@ -417,8 +417,9 @@ def test_auto_guide_budget_fail_cooldown_blocks_same_key():
     b = AutoGuideBudget()
     assert b.allow("x", 1000.0) is True
     b.record("x", 1000.0, ok=False)
-    assert b.allow("x", 1000.0 + AUTO_MIN_INTERVAL_S) is False  # 同 key 冷卻中
-    assert b.allow("y", 1000.0 + AUTO_MIN_INTERVAL_S) is True   # 別的 key 不受影響
+    from audiophile_fetcher import AUTO_FAIL_PAUSE_S
+    assert b.allow("x", 1000.0 + AUTO_FAIL_PAUSE_S) is False  # 同 key 冷卻中（全域暫停已過）
+    assert b.allow("y", 1000.0 + AUTO_FAIL_PAUSE_S) is True   # 別的 key 不受影響
 
 
 def test_auto_guide_budget_success_clears_fail_cooldown():
@@ -812,3 +813,54 @@ async def test_resolve_canon_cache_hit_skips_identify_and_fetch(store):
     out = await resolve_canon(store, "vid26", "雙截棍", "周杰倫", stream_url="https://x",
                               breaker=object(), identify=_must_not_call, fetch=_must_not_call)
     assert out["title"] == "雙截棍"
+
+
+# ── 9/29 真機修正：額度失敗別把歌拉黑 7 天 / Shazam 翻唱配錯歌手 ─────────────────
+
+def test_auto_guide_budget_failure_pauses_all_keys_for_an_hour():
+    """免費額度 429 跟「這首真的查不到」分不出來——失敗先全域暫停 1 小時（別連續撞 429），
+    同一首只冷卻 1 天（不是 7 天：9/29 真機一個下午就把〈晚安〉等 autopilot 歌拉黑一週）。"""
+    from audiophile_fetcher import (
+        AUTO_FAIL_COOLDOWN_S, AUTO_FAIL_PAUSE_S, AUTO_MIN_INTERVAL_S, AutoGuideBudget,
+    )
+
+    assert AUTO_FAIL_PAUSE_S == 3600.0 and AUTO_FAIL_COOLDOWN_S == 86400
+    b = AutoGuideBudget()
+    assert b.allow("x", 1000.0) is True
+    b.record("x", 1000.0, ok=False)
+    assert b.allow("y", 1000.0 + AUTO_MIN_INTERVAL_S) is False       # 全域暫停中，別首也擋
+    assert b.allow("y", 1000.0 + AUTO_FAIL_PAUSE_S) is True          # 1 小時後恢復
+    assert b.allow("x", 1000.0 + AUTO_FAIL_PAUSE_S * 2) is False     # 同一首 1 天內仍冷卻
+    assert b.allow("x", 1000.0 + AUTO_FAIL_COOLDOWN_S) is True       # 1 天後可重試
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_shazam_artist_not_in_original_falls_back_to_itunes(store):
+    """9/29 真機：showay 點宋雨琦翻唱〈普通朋友〉，Shazam 認成另一位翻唱者 Kiki Lim、曲名守門放行。
+    Shazam 的歌手也要出現在原標題/頻道名，否則不採用，退回 iTunes 路徑。"""
+    from audiophile_fetcher import resolve_canon
+
+    out = await resolve_canon(
+        store, "vid30", "普通朋友", "MikeTrovsky",
+        artist_hay="【(G)I-DLE】宋雨琦(Yuqi)演绎陶喆经典情歌《普通朋友(Regular Friends)》(CHN) MikeTrovsky",
+        stream_url="https://stream/x", breaker=object(),
+        identify=_fake_identify("普通朋友", "Kiki Lim"),
+        fetch=_itunes("普通朋友", "陶喆"),
+    )
+    assert out is None or out["source"] == "itunes"
+    assert (out or {}).get("artist") != "Kiki Lim"
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_shazam_simplified_artist_matches_traditional_title(store):
+    """Shazam 回簡體（陈奕迅）、原標題繁體（陳奕迅）→ 拼音比對仍要放行。"""
+    from audiophile_fetcher import resolve_canon
+
+    out = await resolve_canon(
+        store, "vid31", "好久不見", "",
+        artist_hay="陳奕迅 Eason Chan - 好久不見 官方MV Eason Chan",
+        stream_url="https://stream/x", breaker=object(),
+        identify=_fake_identify("好久不见", "陈奕迅"),
+        fetch=_itunes("好久不見", "陳奕迅"),
+    )
+    assert out["source"] == "shazam+itunes" and out["artist"] == "陳奕迅"
