@@ -1,11 +1,10 @@
-"""DJ 扭蛋式動機組裝器（Gacha Narrator ✕ 4 種世俗說話動機）。
+"""DJ 扭蛋式動機組裝器（Gacha Narrator ✕ 3 種世俗說話動機）。
 
 拒絕 AI 假文青與塑膠扮演濾鏡，維持 Marvin 唯一放鬆/毒舌老友本色。
-依據素材可用性，在 4 種真實說話動機中隨機切換：
+依據素材可用性，在 3 種真實說話動機中隨機切換：
 1. irony: 抓矛盾吐槽（Spot the Irony）——歌詞刺點 ✕ 現實生活反差
 2. tea: 爆世俗小八卦（Spill the Tea）——幕後製作軼事 ✕ 世俗真實八卦
 3. hook: 丟聽覺懸念（Drop the Hook）——音軌彩蛋 ✕ 耳朵聽覺勾引
-4. vibe: 給氣氛點題（Name the Vibe）——社群熱評標籤 ✕ 當前包廂氣氛
 """
 from __future__ import annotations
 
@@ -33,14 +32,11 @@ def pick_gacha_motivation(
         return None
 
     guide = (song_card.get("audiophile_guide") or "").strip()
-    social = song_card.get("social_lore")
     lyric = song_card.get("lyric_hook")
 
     candidates: list[str] = []
     if lyric and isinstance(lyric, dict) and lyric.get("quote"):
         candidates.append("irony")
-    if social and isinstance(social, dict) and social.get("tag"):
-        candidates.append("vibe")
     if guide and guide != "無":
         candidates.append("hook")
         candidates.append("tea")
@@ -62,12 +58,6 @@ def pick_gacha_motivation(
         instruction = (
             f"串場動機【抓矛盾吐槽】：歌詞裡這句「{quote}」刺中要害。"
             "把它拿來跟現場氣氛或生活反差做個幽默吐槽，別講大道理，一句話直戳痛點。"
-        )
-    elif chosen_mode == "vibe":
-        tag = social["tag"]
-        instruction = (
-            f"串場動機【給氣氛點題】：這首歌在社群上的封號是「{tag}」。"
-            "借用這個標籤直接給現在這刻定調，像老友懂玩一樣帶大家進歌。"
         )
     elif chosen_mode == "hook":
         instruction = (

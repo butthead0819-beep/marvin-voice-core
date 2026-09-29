@@ -60,8 +60,7 @@ async def test_fetch_song_card_cache_hit(store):
 
     store.set(KEY, {
         "audiophile_guide": "前奏木吉他刷弦一出來，就是整個千禧年代的校園回憶。",
-        "social_lore": {"tag": "時代眼淚", "context": "下雨天放學必播"},
-        "lyric_hook": {"quote": "從前從前有個人愛妳很久", "timestamp": "02:14", "subtext": "青春無疾而終的遺憾"},
+        "lyric_hook": {"quote": "從前從前有個人愛妳很久", "subtext": "青春無疾而終的遺憾"},
         "ts": time.time(),
     })
     free = _client(_resp("不應呼叫"))
@@ -74,7 +73,6 @@ async def test_fetch_song_card_cache_hit(store):
 
     assert card is not None
     assert "前奏木吉他刷弦" in card["audiophile_guide"]
-    assert card["social_lore"]["tag"] == "時代眼淚"
     assert card["lyric_hook"]["quote"] == "從前從前有個人愛妳很久"
     free.aio.models.generate_content.assert_not_awaited()
     paid.aio.models.generate_content.assert_not_awaited()
@@ -98,7 +96,6 @@ async def test_fetch_song_card_legacy_cache_compatibility(store):
 
     assert card is not None
     assert card["audiophile_guide"] == "舊版導聆台詞"
-    assert card["social_lore"] is None
     assert card["lyric_hook"] is None
     free.aio.models.generate_content.assert_not_awaited()
 
@@ -122,14 +119,12 @@ async def test_fetch_song_card_miss_and_persist(store):
 
     assert card is not None
     assert "下雨採樣" in card["audiophile_guide"]
-    assert card["social_lore"]["tag"] == "千禧年校園回憶神曲"
     assert card["lyric_hook"]["quote"] == "從前從前有個人愛妳很久"
 
     # 確認寫入 store 快取
     saved = store.get(KEY)
     assert saved is not None
     assert saved["audiophile_guide"] == card["audiophile_guide"]
-    assert saved["social_lore"] == card["social_lore"]
     assert saved["lyric_hook"] == card["lyric_hook"]
     assert "sources" in saved
 

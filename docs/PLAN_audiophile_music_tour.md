@@ -253,19 +253,16 @@
 - [x] **Slice 1（9/29 已完成）**：
   - Prompt 破除模板化（封殺八股反轉、引入多維度開門見山）。
   - 短版 DJ 串場雙軌縫合（生活話題 ＋ 導聆接歌橋樑）。
-- [ ] **Slice 2（單次聚合卡片 Ingestion 引擎）— 半成品，未接線**：
-  - ✅ `build_song_card_ingestion_prompt` / `parse_song_card_response` / `fetch_song_card` 已寫、有單元測試。
-  - ⬜ prod 沒有任何呼叫端；`social_lore`/`lyric_hook` 在 prod 永遠空。
-  - ⚠️ 接線前要先實測：多段格式 prompt 9/29 已實測讓 Gemini 不搜尋（0/3 被 L2 擋），三段式很可能重蹈覆轍。
-  - ⚠️ 舊快取同 key 已有 `audiophile_guide` → 會直接命中，永遠不升級成三段卡。
-  - ⬜ 維度 B（syncedlyrics 歌詞時間戳）未做，`lyrics` 參數未傳入。
-  - 🧪 9/30 免費層實測 5 首：4 首 429（額度跟 AmbientQA 共用），僅〈葉子〉成功——**有搜尋**（4 來源），但導聆 155 字超標（規格 90-110）。
-    同一筆回應驗出 parser 兩 bug 已修：欄位分行寫整段歌詞刺點被丟、兩組標籤時標籤/情境配錯對。
-    時間戳改不向 LLM 要（沒餵同步歌詞時「約 02:00」是猜的）；要時間戳等接線時本地用 syncedlyrics 對。
-  - ⬜ 額度重置後再測 5 首（間隔 60s）確認搜尋率與長度，才決定接線。
-- [x] **Slice 3（扭蛋式話題組裝器 Gacha Narrator）**：
-  - `dj_gacha_narrator.py` 已接入 `_fetch_dj_interjection_raw` guide 模式。
-  - 現況只抽得到 hook/tea（irony/vibe 要等 Slice 2 接線才有素材）。
+- [x] **Slice 2（歌曲卡 Ingestion，9/30 接線）**：
+  - `song_guide_for_dj`（DJ prefetch）改打歌曲卡 prompt（`_fetch_card`），每首仍只打一次；舊快取（只有 audiophile_guide）直接命中、不補打。
+  - 【社群熱評】9/30 拔除（使用者判斷：LLM 講社群評論多半是幻覺）；歌曲卡只剩 導聆 + 歌詞刺點。
+  - 時間戳不向 LLM 要（沒餵同步歌詞時是猜的）。
+  - 9/30 付費實測 5 首：4/5 有搜尋、歌詞刺點原句 5/5 為真；導聆背景故事無法查證（新舊 prompt 同風險）；導聆 127-187 字超規格。
+  - ⚠️ `/guide_song` pre-roll 與 DJ prefetch 共用 `audiophile::` 快取：DJ 先建卡的歌，pre-roll 會唸歌曲卡導聆（~30-40 秒）。
+- [x] **Slice 3（扭蛋，9/30 改為全面扭蛋）**：
+  - 短版 DJ 串場的 mode 選擇從「優先序＋fallback 輪替」改成扭蛋池（`dj_topic_selector.select_mode`）：有素材的 mode 進池、`MODE_WEIGHTS` 加權（先全 1.0）、不連抽、只冷卻抽中的話題；log `🎰 [DJ Gacha]` 供未來依回饋調權重。
+  - memory_match 維持直接勝出（使用者定：不進扭蛋池）。
+  - guide 模式內再抽 irony（歌詞刺點）/ hook / tea 動機。
 - [ ] ~~即時品管回饋監測 `dj_feedback_watcher.py`~~ — **9/29 撤回**：沒接切歌、關鍵字對全頻道閒聊誤判（任何人說「好吵」就靜音 5 分鐘）、每句命中都 DM、hook 掛在共用骨幹 ConversationBuffer。要做先決定該不該存在。
 - [ ] **Slice 4（品管與本地救火）— 部分**：
   - ✅ `_is_qualified_dj_script` 改用 `FORBIDDEN_DJ_PHRASES` 單一來源；`COMEDY_FALLBACK_SCRIPTS` 清成零禁詞。

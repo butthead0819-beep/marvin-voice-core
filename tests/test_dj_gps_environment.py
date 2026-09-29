@@ -2,10 +2,10 @@
 
 沒有新鮮 GPS 訊號 → 退回家裡預設「台中」；車上 ESP32 puck 有新鮮訊號 → 用真實區名。
 
-環境行現在只在本地 mode 選擇器選中 "atmosphere" 時才進 ctx（不再無條件塞入，
-見 dj_topic_selector.select_mode）。這兩個測試把 life/interest/conversation/
-prev_song 都清空，讓 fallback 落在候選序列第一位的 atmosphere（全新 store，
-沒有 last_fallback 紀錄時就是排第一的那個）。
+環境行現在只在本地扭蛋池選中 "atmosphere" 時才進 ctx（不再無條件塞入，見
+dj_topic_selector.select_mode）。這兩個測試把 life/interest/conversation/
+prev_song 都清空，並固定 MODE_WEIGHTS 讓扭蛋池必抽中 atmosphere（扭蛋池改版後
+mode 不再是決定性優先序，需要固定權重才能穩定斷言）。
 """
 from __future__ import annotations
 
@@ -13,6 +13,12 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+import dj_topic_selector
+
+
+def _only(monkeypatch, *modes):
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {m: 1.0 for m in modes})
 
 
 def _make_cog(tmp_path=None):
@@ -65,6 +71,7 @@ def _ctx_str(cog):
 @pytest.mark.asyncio
 async def test_no_gps_signal_falls_back_to_taichung(monkeypatch, tmp_path):
     import location_state
+    _only(monkeypatch, "atmosphere")
     monkeypatch.setattr(location_state, "load_location_state", lambda *a, **kw: None)
     cog = _make_cog(tmp_path)
     cog._life_cores = MagicMock(return_value=[])
@@ -76,6 +83,7 @@ async def test_no_gps_signal_falls_back_to_taichung(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_fresh_car_gps_overrides_city_in_environment_line(monkeypatch, tmp_path):
     import location_state
+    _only(monkeypatch, "atmosphere")
     now = time.time()
     monkeypatch.setattr(
         location_state, "load_location_state",

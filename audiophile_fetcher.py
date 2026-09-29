@@ -98,29 +98,26 @@ async def fetch_audiophile_guide(
     return text
 
 
-async def fetch_song_card(
-    title: str,
-    artist: str,
+async def _fetch_card(
+    label: str,
     *,
-    lyrics: str = "",
     free_client,
     paid_client,
     guard,
     store,
+    lyrics: str = "",
 ) -> dict | None:
-    """title/artist (+ lyrics) → 多維度歌曲卡 {audiophile_guide, social_lore, lyric_hook}。
-    
-    一箭三鵰單次 Grounding 呼叫獲取聽覺幕後、社群熱評、歌詞刺點。
+    """label（歌手 - 歌名）(+ lyrics) → 多維度歌曲卡 {audiophile_guide, lyric_hook}。
+
+    單次 Grounding 呼叫獲取聽覺幕後、歌詞刺點。
     快取命中零 API 呼叫；查無資料或格式不符回傳 None 且不寫入快取。
     """
-    label = _song_label(title, artist)
     key = _KEY_PREFIX + label
 
     cached = store.get(key)
     if cached and cached.get("audiophile_guide"):
         return {
             "audiophile_guide": cached.get("audiophile_guide"),
-            "social_lore": cached.get("social_lore"),
             "lyric_hook": cached.get("lyric_hook"),
         }
 
@@ -148,12 +145,30 @@ async def fetch_song_card(
 
     store.set(key, {
         "audiophile_guide": card["audiophile_guide"],
-        "social_lore": card["social_lore"],
         "lyric_hook": card["lyric_hook"],
         "sources": sources,
         "ts": time.time(),
     })
     return card
+
+
+async def fetch_song_card(
+    title: str,
+    artist: str,
+    *,
+    lyrics: str = "",
+    free_client,
+    paid_client,
+    guard,
+    store,
+) -> dict | None:
+    """title/artist (+ lyrics) → 多維度歌曲卡 {audiophile_guide, lyric_hook}。快取命中零
+    API 呼叫；查無資料或格式不符回傳 None 且不寫入快取。"""
+    return await _fetch_card(
+        _song_label(title, artist),
+        free_client=free_client, paid_client=paid_client, guard=guard, store=store,
+        lyrics=lyrics,
+    )
 
 
 
@@ -424,14 +439,16 @@ async def song_guide_for_dj(
                 return None
 
             async def _run():
-                return await _fetch_guide(
+                card = await _fetch_card(
                     label, free_client=free_client, paid_client=None, guard=None, store=store,
                 )
+                return card["audiophile_guide"] if card else None
         else:
             async def _run():
-                return await _fetch_guide(
+                card = await _fetch_card(
                     label, free_client=free_client, paid_client=paid_client, guard=guard, store=store,
                 )
+                return card["audiophile_guide"] if card else None
 
         task = asyncio.create_task(_run())
         inflight[label] = task

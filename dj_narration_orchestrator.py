@@ -39,10 +39,10 @@ side effect」的兩段決策——尾段點火時機、話題來源挑選——
    a. 話題來源挑選（**跟要不要講的「文字」是兩件事**——這一步只決定
       「這輪如果要講，素材從哪來」）：優先看 memory_evidence（在場者親口
       說過喜歡這首歌/歌手的具體證據，命中且未冷卻直接勝出，跳過下面
-      select_mode）→ 都沒有才交給 `dj_topic_selector.select_mode()`
-      依生活素材（dj_life_context 抽出、事件主角要在場）→ 在場興趣 →
-      情緒高光 → 新聞 → 都沒有時在 conversation/prev_song/atmosphere/quick
-      間本地輪替，挑一個 mode。若 autopilot 有算好推薦理由
+      select_mode）→ 其餘交給 `dj_topic_selector.select_mode()` 的扭蛋池：
+      生活素材（事件主角要在場）/在場興趣/情緒高光/新聞/guide/conversation/
+      prev_song/atmosphere/quick 中有素材的進池，加權隨機抽一個 mode。
+      若 autopilot 有算好推薦理由
       （`_autopilot_pick_reason`）且 mode 落在 quick/atmosphere 這兩個
       「敬陪末座」的 fallback，直接蓋掉、改用 "reason"（好料不該被輪替
       吃掉）。→ 對應 `select_narration_mode()`。
@@ -129,11 +129,11 @@ def select_narration_mode(
     →autopilot 理由覆蓋 quick/atmosphere」這兩步的固定組合。
 
     優先序：記憶對歌（memory_evidence，在場者親口說過喜歡這首歌/歌手的
-    具體證據，命中且沒冷卻中就直接勝出，不再進 select_mode）→ 近期生活
-    （主角要在場）→ 在場興趣 → 情緒高光 → 新聞 →
-    guide/conversation/prev_song/atmosphere/quick 本地輪替（真正的挑選邏輯在
-    `dj_topic_selector.select_mode` 裡，這裡不重複實作；has_guide=True 時
-    guide 才會進這輪的候選）。
+    具體證據，命中且沒冷卻中就直接勝出，不再進 select_mode）→ 其餘全部交給
+    `dj_topic_selector.select_mode` 的扭蛋池（近期生活主角要在場、在場興趣、
+    情緒高光、新聞、guide/conversation/prev_song/atmosphere/quick，依各自有沒有
+    素材建池後加權隨機抽一個；真正的挑選邏輯在 `select_mode` 裡，這裡不重複
+    實作；has_guide=True 時 guide 才會進這輪的候選）。
 
     memory_evidence 命中時**不呼叫** `select_mode`——否則 life/interest
     話題會被白白 `mark_used` 冷卻掉，等於這輪沒講到卻先燒掉了下次的素材。

@@ -413,7 +413,6 @@ class MusicDJLyricsMixin:
             if cached and cached.get("audiophile_guide"):
                 info['_song_card'] = {
                     "audiophile_guide": cached.get("audiophile_guide"),
-                    "social_lore": cached.get("social_lore"),
                     "lyric_hook": cached.get("lyric_hook"),
                 }
         return canon, guide
@@ -656,9 +655,6 @@ class MusicDJLyricsMixin:
             if not card and isinstance(guide, str):
                 card = {"audiophile_guide": guide}
             if isinstance(card, dict):
-                if card.get("social_lore") and isinstance(card["social_lore"], dict):
-                    sl = card["social_lore"]
-                    ctx.append(f"社群標籤：{sl.get('tag')}（情境：{sl.get('context')}）")
                 if card.get("lyric_hook") and isinstance(card["lyric_hook"], dict):
                     lh = card["lyric_hook"]
                     ctx.append(f"歌詞靈魂刺點：『{lh.get('quote')}』（{lh.get('subtext')}）")

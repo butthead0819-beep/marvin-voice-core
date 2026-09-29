@@ -1,8 +1,10 @@
 """TDD：單次聚合多維度歌曲卡（Multi-Faceted Song Card Ingestion）。
 
 驗證：
-1. build_song_card_ingestion_prompt：單次呼叫 Google Search 聚合聽覺幕後、社群熱評、歌詞刺點。
-2. parse_song_card_response：解析結構化三段回應，支援完全命中、部分命中與無效降級。
+1. build_song_card_ingestion_prompt：單次呼叫 Google Search 聚合聽覺幕後、歌詞刺點
+   （社群熱評標籤已拔除——LLM 講的社群評論多半是幻覺）。
+2. parse_song_card_response：解析結構化兩段回應，支援完全命中、部分命中與無效降級；
+   模型若仍自行吐出已拔除的社群熱評段落，也不能滲進 audiophile_guide/lyric_hook。
 """
 from __future__ import annotations
 
@@ -23,13 +25,12 @@ def test_build_song_card_ingestion_prompt_contains_all_facets():
     assert "得不到的永遠在騷動" in prompt
     assert "Google" in prompt
     assert "不准只憑記憶" in prompt
-    # 三大維度指示
+    # 兩大維度指示（社群熱評標籤已拔除——LLM 講的社群評論多半是幻覺）
     assert "【聽覺與幕後】" in prompt
-    assert "【社群熱評標籤】" in prompt
+    assert "【社群熱評標籤】" not in prompt
     assert "【歌詞刺點】" in prompt
     # 格式規範
     assert "90-110" in prompt
-    assert "標籤：" in prompt
     assert "句：" in prompt
     assert "析：" in prompt
     # 時間戳不向 LLM 要：沒餵同步歌詞時它只能猜（9/30 實測回「約 02:00」），說錯不如沒說
@@ -44,7 +45,7 @@ def test_build_song_card_ingestion_prompt_without_lyrics():
 
     assert label in prompt
     assert "【聽覺與幕後】" in prompt
-    assert "【社群熱評標籤】" in prompt
+    assert "【社群熱評標籤】" not in prompt
     assert "【歌詞刺點】" in prompt
 
 
@@ -61,10 +62,8 @@ def test_parse_song_card_response_complete():
     assert "雙截棍" in card["audiophile_guide"]
     assert "張惠妹" in card["audiophile_guide"]
 
-    # 2. 社群熱評
-    assert card["social_lore"] is not None
-    assert card["social_lore"]["tag"] == "全台KTV必點但唱不上去的神曲"
-    assert "前奏電吉他一下" in card["social_lore"]["context"]
+    # 2. 社群熱評已拔除（LLM 講的社群評論多半是幻覺）
+    assert "social_lore" not in card
 
     # 3. 歌詞刺點
     assert card["lyric_hook"] is not None
@@ -82,7 +81,7 @@ def test_parse_song_card_response_partial():
     card = parse_song_card_response(raw_response)
     assert card is not None
     assert "精湛鋼琴演奏" in card["audiophile_guide"]
-    assert card["social_lore"] is None
+    assert "social_lore" not in card
     assert card["lyric_hook"] is None
 
 
@@ -108,9 +107,9 @@ def test_parse_real_response_multiline_lyric_fields():
     assert "02:00" not in lh["quote"] + lh["subtext"]
 
 
-def test_parse_real_response_multiple_tags_keeps_first_pair():
+def test_parse_real_response_social_section_does_not_leak():
     card = parse_song_card_response(_REAL_YEZI_RESPONSE)
-    sl = card["social_lore"]
-    assert sl["tag"] == "孤單是狂歡，狂歡是孤單"
-    assert sl["context"].startswith("深夜獨自一人")
-    assert "2024" not in sl["context"]
+    assert "social_lore" not in card
+    assert "孤單是狂歡" not in card["audiophile_guide"]
+    assert "孤單是狂歡" not in card["lyric_hook"]["subtext"]
+    assert card["lyric_hook"]["quote"].startswith("我一個人吃飯")

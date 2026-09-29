@@ -1,7 +1,7 @@
 """TDD：扭蛋式動機組裝整合測試（tests/test_dj_gacha_integration.py）。
 
 驗證：
-1. mode == "guide" 時，結合 _song_card 中的多維度素材（社群熱評、歌詞刺點）。
+1. mode == "guide" 時，結合 _song_card 中的多維度素材（歌詞刺點；社群熱評已拔除）。
 2. 動機指令（串場動機【...】）注入 context，取代死板八股句。
 3. 向下相容只有 guide 純文字的舊呼叫。
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 import pytest
 
+import dj_topic_selector
 from cogs.music_cog_dj_lyrics import MusicDJLyricsMixin
 
 
@@ -54,12 +55,14 @@ class DummyCog(MusicDJLyricsMixin):
 
 @pytest.mark.asyncio
 async def test_dj_guide_mode_injects_gacha_motivation_and_facets(monkeypatch):
+    # 固定扭蛋池只抽 guide——這條測的是 guide mode 底下素材/動機怎麼組裝，
+    # 不是扭蛋池本身的抽樣分布。
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {"guide": 1.0})
     cog = DummyCog()
 
     song_card = {
         "audiophile_guide": "前奏木吉他刷弦一出來，就是千禧年代的校園回憶。",
-        "social_lore": {"tag": "時代眼淚神曲", "context": "下課鈴聲與大雨"},
-        "lyric_hook": {"quote": "從前從前有個人愛妳很久", "timestamp": "02:14", "subtext": "暗戀遺憾"},
+        "lyric_hook": {"quote": "從前從前有個人愛妳很久", "subtext": "暗戀遺憾"},
     }
 
     info = {
@@ -92,9 +95,9 @@ async def test_dj_guide_mode_injects_gacha_motivation_and_facets(monkeypatch):
     assert len(captured_context) == 1
     prompt_ctx = captured_context[0]
 
-    # 驗證多維度素材被注入
+    # 驗證多維度素材被注入（社群熱評標籤已拔除，不該出現在 ctx）
     assert "導聆素材" in prompt_ctx
-    assert "時代眼淚神曲" in prompt_ctx
+    assert "社群標籤" not in prompt_ctx
     assert "從前從前有個人愛妳很久" in prompt_ctx
 
     # 驗證扭蛋動機被注入

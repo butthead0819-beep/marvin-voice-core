@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import dj_topic_selector
 from dj_comedy_fallback import COMEDY_FALLBACK_SCRIPTS, get_comedy_fallback, build_news_interjection_template
 from dj_topic_selector import TopicCooldownStore, NEWS_COOLDOWN_S, select_mode
 from news_fetch import is_safe_news_title
@@ -72,8 +73,9 @@ def test_news_safety_filtering():
 
 # ── 3. 新聞 2 小時冷卻與選題 ──────────────────────────────────────
 
-def test_news_mode_selection_and_cooldown(tmp_path):
+def test_news_mode_selection_and_cooldown(tmp_path, monkeypatch):
     """驗證新聞在有可用素材時會被選中，且受 2 小時冷卻保護。"""
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {"news": 1.0})
     t = [10000.0]
     now = lambda: t[0]
     store = TopicCooldownStore(str(tmp_path / "cd.json"), now=now)

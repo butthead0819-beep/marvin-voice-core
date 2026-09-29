@@ -16,6 +16,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+
+def _weights(monkeypatch, **w):
+    """扭蛋池權重固定（dj_topic_selector.MODE_WEIGHTS）：串場 mode 改成加權隨機後，
+    斷言特定 mode 素材/路徑的測試要把權重釘住才是決定性的。"""
+    import dj_topic_selector
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
+
+def _no_quick(monkeypatch):
+    """排除 quick（本地模板、不呼叫 LLM），其餘照預設權重——只在乎有走 LLM 路徑的測試用。"""
+    import dj_topic_selector
+    w = dict(dj_topic_selector.MODE_WEIGHTS)
+    w["quick"] = 0.0
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
 def _make_cog():
     bot = MagicMock()
     bot.guilds = []
@@ -102,8 +117,9 @@ async def test_dj_skipped_for_empty_requester():
 # ── 3. Fallback 保證一定有聲音 ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_dj_fallback_when_llm_raises():
+async def test_dj_fallback_when_llm_raises(monkeypatch):
     """LLM 炸 → hardcoded fallback 仍含 title + requester。"""
+    _no_quick(monkeypatch)
     cog = _make_cog()
     cog.bot.router.generate_dynamic_system_msg = AsyncMock(
         side_effect=Exception("LLM connection lost")
@@ -116,8 +132,9 @@ async def test_dj_fallback_when_llm_raises():
 
 
 @pytest.mark.asyncio
-async def test_dj_fallback_when_llm_returns_empty():
+async def test_dj_fallback_when_llm_returns_empty(monkeypatch):
     """LLM 回空字串 → hardcoded fallback。"""
+    _no_quick(monkeypatch)
     cog = _make_cog()
     cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="")
     result = await cog._fetch_dj_interjection_raw(_info(title="稻香", requester="狗與露"))
@@ -127,8 +144,9 @@ async def test_dj_fallback_when_llm_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_dj_fallback_when_llm_returns_too_short():
+async def test_dj_fallback_when_llm_returns_too_short(monkeypatch):
     """LLM 回 1 字元 → hardcoded fallback。"""
+    _no_quick(monkeypatch)
     cog = _make_cog()
     cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="嗯")
     result = await cog._fetch_dj_interjection_raw(_info(title="七里香", requester="weakgogo"))
@@ -208,8 +226,9 @@ async def test_round_first_marvin_no_spotlight_falls_back_to_template():
 
 
 @pytest.mark.asyncio
-async def test_fallback_text_uses_dj_marvin_persona():
+async def test_fallback_text_uses_dj_marvin_persona(monkeypatch):
     """LLM fail / 過短 fallback 也要走 DJ Marvin 人設，不能掉回中性「下一首是」。"""
+    _no_quick(monkeypatch)
     cog = _make_cog()
     cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="")
     result = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 七里香", requester="weakgogo"))

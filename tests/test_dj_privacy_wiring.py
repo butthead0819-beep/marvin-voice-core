@@ -20,6 +20,21 @@ import pytest
 
 # ── helper ────────────────────────────────────────────────────────────────────
 
+
+def _weights(monkeypatch, **w):
+    """扭蛋池權重固定（dj_topic_selector.MODE_WEIGHTS）：串場 mode 改成加權隨機後，
+    斷言特定 mode 素材/路徑的測試要把權重釘住才是決定性的。"""
+    import dj_topic_selector
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
+
+def _no_quick(monkeypatch):
+    """排除 quick（本地模板、不呼叫 LLM），其餘照預設權重——只在乎有走 LLM 路徑的測試用。"""
+    import dj_topic_selector
+    w = dict(dj_topic_selector.MODE_WEIGHTS)
+    w["quick"] = 0.0
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
 def _make_cog(online_members: list[str] | None = None, life_entries=None):
     """回傳 MusicCog，_load_summary_entries 注入 life_entries（避免讀真實檔案）。"""
     bot = MagicMock()
@@ -151,8 +166,9 @@ async def test_sensitive_entry_filtered_e2e_via_life_cores_async():
 
 
 @pytest.mark.asyncio
-async def test_sensitive_entry_kept_when_all_speakers_present():
+async def test_sensitive_entry_kept_when_all_speakers_present(monkeypatch):
     """敏感 entry，speakers 全在場 → 保留進 context。"""
+    _weights(monkeypatch, life=1.0)
     sensitive = _entry("大肚跟狗與露的秘密", is_sensitive=True,
                        speakers=["大肚", "狗與露"])
     cog = _make_cog(online_members=["大肚", "狗與露"], life_entries=[sensitive])

@@ -12,9 +12,31 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import dj_topic_selector
 from dj_narration_orchestrator import select_narration_mode
 from dj_social_affinity import find_spoken_taste_match
 from dj_topic_selector import TopicCooldownStore
+
+
+
+def _weights(monkeypatch, **w):
+    """扭蛋池權重固定（dj_topic_selector.MODE_WEIGHTS）：串場 mode 改成加權隨機後，
+    斷言特定 mode 素材/路徑的測試要把權重釘住才是決定性的。"""
+    import dj_topic_selector
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
+
+def _no_quick(monkeypatch):
+    """排除 quick（本地模板、不呼叫 LLM），其餘照預設權重——只在乎有走 LLM 路徑的測試用。"""
+    import dj_topic_selector
+    w = dict(dj_topic_selector.MODE_WEIGHTS)
+    w["quick"] = 0.0
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
+def _only(monkeypatch, *modes):
+    """扭蛋池固定只抽 modes 列的那些——這裡測的是「memory_evidence 冷卻中時該退回
+    select_mode 的正常流程」，跟扭蛋池抽中哪個 mode 無關，固定 life 讓斷言維持決定性。"""
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {m: 1.0 for m in modes})
 
 
 # ── B1. find_spoken_taste_match ─────────────────────────────────────────────
@@ -127,7 +149,8 @@ def test_memory_evidence_wins_and_does_not_consume_life_cooldown(tmp_path):
     assert store.is_cool("今天出去露營了") is True
 
 
-def test_memory_evidence_in_cooldown_falls_back_to_normal_flow(tmp_path):
+def test_memory_evidence_in_cooldown_falls_back_to_normal_flow(tmp_path, monkeypatch):
+    _only(monkeypatch, "life")
     store = _store(tmp_path)
     life = ["今天出去露營了"]
     ev = "陳進文 說過喜歡伍佰"
@@ -141,7 +164,8 @@ def test_memory_evidence_in_cooldown_falls_back_to_normal_flow(tmp_path):
     assert (topic, mode) == ("今天出去露營了", "life")
 
 
-def test_no_memory_evidence_matches_default_behavior(tmp_path):
+def test_no_memory_evidence_matches_default_behavior(tmp_path, monkeypatch):
+    _only(monkeypatch, "life")
     life = ["今天出去露營了"]
     store_a = TopicCooldownStore(path=str(tmp_path / "cd_a.json"))
     result_without = select_narration_mode(life=life, interests=[], topic_store=store_a)
@@ -208,7 +232,8 @@ async def test_memory_match_context_includes_spoken_evidence(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_no_spoken_match_no_memory_evidence_in_context(tmp_path):
+async def test_no_spoken_match_no_memory_evidence_in_context(tmp_path, monkeypatch):
+    _no_quick(monkeypatch)
     cog = _make_cog()
     cog._dj_topic_cooldown_store = TopicCooldownStore(path=str(tmp_path / "cd.json"))
     cog.bot.router.memory = _FakeSuki({"陳進文": {"likes": ["露營"], "taboos": []}})
