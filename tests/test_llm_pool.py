@@ -409,7 +409,14 @@ def test_factory_all_providers_priority_order():
                             "TOGETHER_API_KEY", "OPENROUTER_API_KEY")}
     quick, _a = build_tier_pools(env, client_factory=factory)
     assert [e.name for e in quick.endpoints] == [
-        "groq-quick", "mistral-quick", "sambanova-quick", "together-quick", "openrouter-quick"]
+        "groq-quick", "mistral-quick", "together-quick", "openrouter-quick"]
+
+
+def test_factory_sambanova_key_present_does_not_register():
+    """2026-09-29：SambaNova key 失效（全數 401），provider 移除；key 留在 env 也不進池。"""
+    factory, _ = _fake_factory()
+    quick, analyze = build_tier_pools({"SAMBANOVA_API_KEY": "s"}, client_factory=factory)
+    assert quick.endpoints == [] and analyze.endpoints == []
 
 
 def test_factory_cerebras_key_present_does_not_register():
@@ -453,7 +460,7 @@ def test_factory_default_models_and_env_override():
 
 def test_factory_new_provider_model_override_pattern():
     factory, _ = _fake_factory()
-    env = {"SAMBANOVA_API_KEY": "s", "SAMBANOVA_QUICK_MODEL": "Meta-Llama-3.1-8B-Instruct-v2"}
+    env = {"TOGETHER_API_KEY": "s", "TOGETHER_QUICK_MODEL": "Meta-Llama-3.1-8B-Instruct-v2"}
     quick, _a = build_tier_pools(env, client_factory=factory)
     assert quick.endpoints[0].model == "Meta-Llama-3.1-8B-Instruct-v2"
 
