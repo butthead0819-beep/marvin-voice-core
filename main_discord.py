@@ -90,6 +90,7 @@ def setup_early_logging():
     logging.getLogger("queue_priority").setLevel(logging.INFO)  # 2026-09-25 🎯 [RequestPriority] 插隊 log
     logging.getLogger("audiophile_fetcher").setLevel(logging.INFO)  # 歌曲卡查證/快取命中 log
     logging.getLogger("shazam_identify").setLevel(logging.INFO)  # Shazam 音訊認歌結果/斷路 log
+    logging.getLogger("dj_topic_selector").setLevel(logging.INFO)  # 🎰 [DJ Gacha] 扭蛋池抽選 log（未來依回饋調權重用）
 
     stdout_logger = logging.getLogger("MarvinBot.Stdout")
     stdout_logger.setLevel(logging.INFO)
