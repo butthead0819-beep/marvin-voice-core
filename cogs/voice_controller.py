@@ -120,6 +120,11 @@ from llm_pool import build_tiered_router
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
 
+
+def _append_jsonl(path: str, record: dict) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
 # LLM 品味鄰近 seed 快取（taste_profile，每日離線生成；T2 env-gated LLM_TASTE_T2=on 才讀）
 _TASTE_PROFILE_CACHE = "records/taste_profiles.json"
 # deterministic 口味指紋（週生成；T2 explore 用主導語言當地板，runtime 5 分鐘快取讀）
@@ -3232,7 +3237,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if not has_intent_signal(query):
             self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
             try:
-                gap_append_record(
+                _append_jsonl(
                     "records/intent_gate_silenced.jsonl",
                     {"ts": time.time(), "speaker": speaker, "query": query,
                      "gap_intent_type": gap_rec.intent_type if gap_rec else None},
