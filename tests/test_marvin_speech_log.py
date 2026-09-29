@@ -343,12 +343,57 @@ async def test_speak_song_ack_passes_ack_text_through():
     cog, vc = _make_music_cog_for_interjection()
     cog.bot.tts_engine.generate_audio = AsyncMock(return_value="/tmp/ack.mp3")
 
-    await cog._speak_song_ack(vc, "七里香")
+    await cog._speak_song_ack(vc, {"title": "七里香"})
 
     cog.bot.tts_engine.generate_audio.assert_awaited_once_with("幫你點了《七里香》")
     vc.play_dj_on_tts_layer.assert_awaited_once()
     _, kwargs = vc.play_dj_on_tts_layer.call_args
     assert kwargs["text"] == "幫你點了《七里香》"
+
+
+@pytest.mark.asyncio
+async def test_speak_song_ack_uses_canon_title():
+    """曲庫正規化過就唸正規化曲名，不唸 YouTube 原標題。"""
+    cog, vc = _make_music_cog_for_interjection()
+    cog.bot.tts_engine.generate_audio = AsyncMock(return_value="/tmp/ack.mp3")
+
+    await cog._speak_song_ack(vc, {
+        "title": "周杰倫 Jay Chou【雙截棍 Nunchucks】Official MV",
+        "_canon": {"title": "雙截棍", "artist": "周杰倫"},
+    })
+
+    cog.bot.tts_engine.generate_audio.assert_awaited_once_with("幫你點了《雙截棍》")
+
+
+@pytest.mark.asyncio
+async def test_speak_song_ack_reads_cached_canon():
+    """點歌當下 info 還沒掛 _canon（要等 DJ 預產才掛），播過的歌要從曲庫快取補上。"""
+    cog, vc = _make_music_cog_for_interjection()
+    cog.bot.tts_engine.generate_audio = AsyncMock(return_value="/tmp/ack.mp3")
+    store = MagicMock()
+    store.get = MagicMock(side_effect=lambda k: {"title": "如果我很平庸", "artist": "陳華"}
+                          if k == "canon::dQw4w9WgXcQ" else None)
+    cog._audiophile_deps = MagicMock(return_value=(store, None, None))
+
+    await cog._speak_song_ack(vc, {
+        "title": "陳華Hua Chen【如果我很平庸Perfectly Ordinary】Official MV",
+        "webpage_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    })
+
+    cog.bot.tts_engine.generate_audio.assert_awaited_once_with("幫你點了《如果我很平庸》")
+
+
+@pytest.mark.asyncio
+async def test_speak_song_ack_strips_youtube_cruft():
+    """沒正規化資料時走 DJ 乾淨歌名，至少剝掉 Official MV 這類 YouTube 雜訊。"""
+    cog, vc = _make_music_cog_for_interjection()
+    cog.bot.tts_engine.generate_audio = AsyncMock(return_value="/tmp/ack.mp3")
+
+    await cog._speak_song_ack(vc, {"title": "陳華Hua Chen【如果我很平庸Perfectly Ordinary】Official MV"})
+
+    (ack_text,), _ = cog.bot.tts_engine.generate_audio.call_args
+    assert "Official" not in ack_text and "MV" not in ack_text
+    assert "如果我很平庸" in ack_text
 
 
 # ── 11. ack_templates.text_for_file ─────────────────────────────────────────

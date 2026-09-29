@@ -731,6 +731,9 @@ class MusicDJLyricsMixin:
                 return True
 
             if not text or not _is_qualified_dj_script(text):
+                # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
+                _why = ("空字串" if not text else f"長度{len(text)}" if not 10 <= len(text) <= 120 else "禁詞")
+                logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
                 # LLM 空手或品質不及格 → 優先退回 autopilot 模板（若為 Marvin 自己選歌）
                 if requester.startswith('Marvin'):
                     from song_name_clean import clean_title_regex
