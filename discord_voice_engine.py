@@ -1743,10 +1743,6 @@ class DiscordVoiceEngine:
                     if raw_text:
                         used_engine = "Yating"
                         print(f"✅ [STT Output] {speaker_name}: {raw_text} (Engine: Yating)", flush=True)
-                    # 🔬 [NanShadow] Gemini 台語候選引擎影子比對（env NAN_STT_SHADOW，
-                    # fire-and-forget 零阻塞；雅婷失敗時 yating="" 也是對照數據）
-                    import gemini_nan_stt
-                    gemini_nan_stt.maybe_shadow(whisper_audio, speaker_name, raw_text)
 
                 # 🚀 [SwiftV2] SpeechAnalyzer 新引擎主力 lane（STT_ENGINE_V2 閘控）。
                 # A/B 實證完整性壓倒 v1（v1 丟喚醒詞/砍半句）；空輸出自動降 v1→Groq 既有鏈。
