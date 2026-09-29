@@ -24,6 +24,15 @@ if TYPE_CHECKING:
     from cogs.voice_controller import VoiceController
 
 
+def song_display_title(info: dict | None) -> str:
+    """歌曲卡顯示名：有曲庫正規化資料（info['_canon']，canon::<videoId>）就寫「曲名 - 歌手」，
+    沒有退回 YouTube 原標題（2026-09-29 使用者定）。"""
+    canon = (info or {}).get('_canon') or {}
+    if canon.get('title') and canon.get('artist'):
+        return f"{canon['title']} - {canon['artist']}"
+    return (info or {}).get('title') or ''
+
+
 def build_song_embed(info: dict | None, *, image_url: str | None = None) -> discord.Embed:
     """🎵 歌曲卡（精簡）：只留「可點連結（→video）」＋「全幅封面」。
 
@@ -45,7 +54,7 @@ def build_song_embed(info: dict | None, *, image_url: str | None = None) -> disc
     if not info:
         embed.description = "目前沒有歌曲在播放。"
         return embed
-    embed.title = (info.get('title') or '🎵')[:250]
+    embed.title = (song_display_title(info) or '🎵')[:250]
     wp = info.get('webpage_url')
     if wp:
         embed.url = wp                              # 標題可點 → 影片(video id)
