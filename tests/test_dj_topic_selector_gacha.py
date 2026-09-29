@@ -21,9 +21,9 @@ def _store(tmp_path):
     return TopicCooldownStore(str(tmp_path / "c.json"))
 
 
-# 1. 全素材都有時，連抽 300 次，9 種 mode 每種至少出現一次 ──────────────────
+# 1. 全素材都有時，連抽 300 次：8 種會走 LLM 的 mode 都出現、quick 從不出現 ─────
 
-def test_all_nine_modes_appear_over_many_draws(tmp_path):
+def test_all_llm_modes_appear_and_quick_never_when_material_rich(tmp_path):
     store = _store(tmp_path)
     rng = random.Random(42)
     seen = set()
@@ -35,7 +35,32 @@ def test_all_nine_modes_appear_over_many_draws(tmp_path):
             rng=rng,
         )
         seen.add(mode)
-    assert seen == set(ALL_MODES)
+    assert seen == set(ALL_MODES) - {"quick"}
+
+
+# 1b. quick（本地模板，聽起來像保底口白）只在沒別的可抽時墊底 ─────────────────
+
+def test_quick_not_drawn_while_other_mode_available(tmp_path):
+    store = _store(tmp_path)
+    store.set_last_fallback("atmosphere")
+    for seed in range(30):
+        _, mode = select_mode([], [], store, has_conversation=True, rng=random.Random(seed))
+        assert mode == "conversation"
+        store.set_last_fallback("atmosphere")
+
+
+def test_quick_is_fallback_when_only_atmosphere_was_just_used(tmp_path):
+    store = _store(tmp_path)
+    store.set_last_fallback("atmosphere")
+    _, mode = select_mode([], [], store, rng=random.Random(0))
+    assert mode == "quick"
+
+
+def test_atmosphere_after_quick_when_no_material(tmp_path):
+    store = _store(tmp_path)
+    store.set_last_fallback("quick")
+    _, mode = select_mode([], [], store, rng=random.Random(0))
+    assert mode == "atmosphere"
 
 
 # 2. 連抽 300 次，相鄰兩次 mode 永遠不同（不連抽）───────────────────────────

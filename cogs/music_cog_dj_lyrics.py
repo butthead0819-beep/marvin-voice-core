@@ -725,6 +725,12 @@ class MusicDJLyricsMixin:
                 logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗: {e}")
                 text = ""
             text = (text or '').strip()
+            if text and len(text) > 120:
+                from dj_prev_trim import trim_to_last_sentence
+                _trimmed = trim_to_last_sentence(text, 120, 30)
+                if _trimmed:
+                    logger.info(f"✂️ [DJ Prefetch] LLM 串場超長({len(text)})，截到句尾({len(_trimmed)})")
+                    text = _trimmed
 
             from dj_prompt_builder import FORBIDDEN_DJ_PHRASES
 
@@ -737,7 +743,6 @@ class MusicDJLyricsMixin:
                 return True
 
             if not text or not _is_qualified_dj_script(text):
-                # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
                 # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
                 _why = ("空字串" if not text else f"長度{len(text)}" if not 10 <= len(text) <= 120 else "禁詞")
                 logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
@@ -783,5 +788,8 @@ class MusicDJLyricsMixin:
             logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
 
         logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
-        return {'text': text, 'audio_path': audio_path, 'prev_title_used': prev_title or None}
+        # 只有口白真的提到上一首才記——沒提到的，佇列順序變了也不必被 Consistency Guard 丟掉
+        from dj_prev_trim import mentions_title
+        prev_used = prev_title if prev_title and mentions_title(text, prev_title) else None
+        return {'text': text, 'audio_path': audio_path, 'prev_title_used': prev_used}
 

@@ -327,3 +327,50 @@ async def test_dj_song_material_passes_stream_url_duration_and_shared_breaker(tm
     assert first_kw["duration"] == 245
     assert isinstance(first_kw["breaker"], ShazamBreaker)
     assert first_kw["breaker"] is second_kw["breaker"]
+
+
+# ── Consistency Guard 只記「口白真的提到的上一首」（9/30 真機誤丟修正）─────────
+
+@pytest.mark.asyncio
+async def test_prev_title_used_none_when_script_does_not_mention_prev(monkeypatch):
+    _no_quick(monkeypatch)
+    cog = _make_cog()
+    cog.stream_history = [_info(title="陶喆 - 普通朋友", requester="狗與露")]
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="刷卡機明天再說，先讓耳朵放個假吧")
+    dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+    assert dj["prev_title_used"] is None
+
+
+@pytest.mark.asyncio
+async def test_prev_title_used_kept_when_script_mentions_prev(monkeypatch):
+    _no_quick(monkeypatch)
+    cog = _make_cog()
+    cog.stream_history = [_info(title="陶喆 - 普通朋友", requester="狗與露")]
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="剛聽完普通朋友，換首夜曲接下去")
+    dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+    assert dj["prev_title_used"] == "陶喆 - 普通朋友"
+
+
+# ── LLM 串場超長先截到句尾，不整段退回報幕（9/30 真機 7/39 被丟）─────────────
+
+@pytest.mark.asyncio
+async def test_overlong_llm_script_trimmed_to_sentence_not_fallback(monkeypatch):
+    _no_quick(monkeypatch)
+    cog = _make_cog()
+    head = "這首夜曲接在深夜剛剛好，前奏鋼琴一下就把人拉回那個下雨又睡不著的晚上。"
+    long_text = head + "然後" * 50
+    assert len(long_text) > 120
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value=long_text)
+    dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+    assert dj["text"].startswith(head[:20])
+    assert len(dj["text"]) <= 120
+    assert "DJ Marvin為你帶來" not in dj["text"]
+
+
+@pytest.mark.asyncio
+async def test_overlong_llm_script_without_sentence_end_still_falls_back(monkeypatch):
+    _no_quick(monkeypatch)
+    cog = _make_cog()
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="夜曲，" * 45)
+    dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+    assert "DJ Marvin為你帶來" in dj["text"]

@@ -9,7 +9,7 @@ import re
 from typing import Callable
 
 from song_name_clean import clean_title_regex
-from tts_length_policy import truncate_for_tts
+from tts_length_policy import _CLOSING_QUOTES, _SENTENCE_END_CHARS, truncate_for_tts
 
 _CJK_RUN = re.compile(r"[一-鿿]+")
 _ASCII_WORD = re.compile(r"[A-Za-z]+")
@@ -89,3 +89,33 @@ def gate_dj_intro(
 
     gated, was_cut = truncate_for_tts(trimmed, task, estimate_fn)
     return gated, was_cut, True
+
+
+def mentions_title(text: str, title: str) -> bool:
+    """text 有沒有提到 title（用 name_keys 比對，不分大小寫）。
+
+    給 Consistency Guard 用：口白沒提到上一首，佇列順序變了也不必丟。title 抽不出
+    任何 key 時無法判斷 → 回 True（保守：維持 Guard 比對，寧可多擋不唸錯歌名）。
+    """
+    keys = name_keys(title)
+    if not keys:
+        return True
+    lc = (text or "").lower()
+    return any(k in lc for k in keys)
+
+
+def trim_to_last_sentence(text: str, max_chars: int = 120, min_chars: int = 30) -> str | None:
+    """超過 max_chars 時，截到 max_chars 內最後一個句尾符號（含緊接的收尾引號）。
+
+    截完 < min_chars 或找不到句尾符號 → None（交給呼叫端走原本的退路）。未超長原樣回傳。
+    """
+    if len(text) <= max_chars:
+        return text
+    for i in range(max_chars - 1, -1, -1):
+        if text[i] in _SENTENCE_END_CHARS:
+            j = i + 1
+            while j < len(text) and text[j] in _CLOSING_QUOTES:
+                j += 1
+            out = text[:j].strip()
+            return out if len(out) >= min_chars else None
+    return None
