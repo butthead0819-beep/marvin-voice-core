@@ -4,8 +4,11 @@
 不寫死 model。快取在 SongKnowledgeStore 同檔但獨立 key「audiophile::…」——不跟
 get_or_extract_insight 的記錄共用 dict（那邊 set 是整份覆寫，共用會互洗欄位）。
 
-正規化（歌手/歌名/專輯/年份）改走 iTunes Search（itunes_cover.resolve_metadata，免費、
-結構化、零幻覺），寫進獨立 key「canon::<video_id>」——跟導聆稿分開查證，各自失敗互不影響。
+正規化（歌手/歌名/專輯/年份）優先走 Shazam 音訊認歌（shazam_identify，從串流切一段送
+Shazam 拿乾淨歌名，再用它查 iTunes 換繁體+年份）——比直接拿 YouTube 髒標題查 iTunes
+命中率高很多；Shazam 是非官方 API 隨時可能失效，任何失敗（含守門不通過）都退回原本的
+iTunes 髒標題查詢路徑。寫進獨立 key「canon::<video_id>」——跟導聆稿分開查證，各自
+失敗互不影響。
 
 DJ 串場自動觸發（song_guide_for_dj）受免費層每日預算節流（AutoGuideBudget）：免費
 gemini-2.5-flash 一天只有 20 次、跟 AmbientQA 共用，autopilot 背景串場不能任由每次都燒；
@@ -136,6 +139,7 @@ _SINGLE_SUFFIX_RE = re.compile(r"\s*-\s*(Single|EP)\s*$", re.I)
 
 _NON_ALNUM_RE = re.compile(r"[^0-9a-z]")
 _ARTIST_SPLIT_RE = re.compile(r"\s*(?:&|,|、|/|\bx\b|\bfeat\.?)\s*", re.I)
+_PAREN_RE = re.compile(r"\s*[\(（][^)）]*[\)）]")
 
 
 def _pinyin_key(s: str) -> str:
@@ -151,12 +155,21 @@ def _artist_matches(meta_artist: str, hay: str) -> bool:
 
 
 async def resolve_canon(store, video_id: str, clean_title: str, clean_artist: str, *,
-                        artist_hay: str = "", fetch=None) -> dict | None:
-    """video_id → 正規化 {artist, title, album, year, source, ts}（iTunes Search），
-    或 None（沒有 video_id / 查不到 / 曲名配不上）。快取命中零查詢。
+                        artist_hay: str = "", stream_url: str = "", duration=None,
+                        breaker=None, identify=None, fetch=None) -> dict | None:
+    """video_id → 正規化 {artist, title, album, year, source, ts}，或 None（沒有
+    video_id / 查不到 / 曲名配不上）。快取命中零查詢。
 
-    曲名守門：iTunes 回應的曲名跟查詢曲名（拼音正規化後）互不包含就不採用——
-    iTunes 對中文歌的跨語言救援會信任排名第一筆，這層是防它自信地配錯歌。
+    查證順序：
+      1. Shazam 音訊認歌（有 stream_url + breaker 才會嘗試）：認到的曲名要在原始
+         標題裡守門通過，才拿它的乾淨歌名去查 iTunes 換繁體+年份；iTunes 也確認得
+         上就用 iTunes 版本（source="shazam+itunes"），確認不上就退回用 Shazam 自己
+         給的資料（source="shazam"，年份未知）。
+      2. Shazam 沒有/失敗/守門不過 → 退回原本拿 YouTube 髒標題查 iTunes 的路徑
+         （source="itunes"，行為與改版前完全相同）。
+
+    曲名守門：回應的曲名跟查詢曲名（拼音正規化後）互不包含就不採用——避免跨語言
+    救援自信地配錯歌。
     歌手守門：髒標題夾歌詞時曲名可能「互相包含」誤放行（9/29 真機：〈我的秘密〉歌詞
     「…靠近」配成吳莫愁〈靠近〉），所以歌手也要在 clean_artist + artist_hay 裡對得上。
     """
@@ -168,6 +181,55 @@ async def resolve_canon(store, video_id: str, clean_title: str, clean_artist: st
         return cached
 
     import itunes_cover
+    import shazam_identify
+
+    shz = None
+    if stream_url and breaker is not None:
+        try:
+            shz = await (identify or shazam_identify.identify)(
+                stream_url, duration=duration, breaker=breaker,
+            )
+        except Exception as e:
+            logger.info(f"[Canon] Shazam 查證例外: {e}")
+            shz = None
+
+    if shz is not None:
+        core = _PAREN_RE.sub("", shz["title"]).strip()
+        if not core or _pinyin_key(core) not in _pinyin_key(f"{clean_title} {artist_hay}"):
+            logger.info(f"[Canon] Shazam 認到《{shz['title']}》不在原標題，不採用")
+            shz = None
+
+    if shz is not None:
+        meta = None
+        try:
+            meta = await itunes_cover.resolve_metadata(
+                core, shz["artist"],
+                fetch=fetch or functools.partial(itunes_cover._default_fetch, country="TW"),
+            )
+        except Exception as e:
+            logger.info(f"[Canon] Shazam 認到的歌查 iTunes 例外: {e}")
+            meta = None
+
+        if (meta and meta.get("title") and meta.get("artist")
+                and _pinyin_key(core) in _pinyin_key(meta["title"])
+                and _artist_matches(meta["artist"], shz["artist"])):
+            album = (meta.get("album") or "").strip()
+            if album and _SINGLE_SUFFIX_RE.search(album):
+                album = None
+            canon = {
+                "artist": meta["artist"], "title": meta["title"], "album": album or None,
+                "year": meta.get("year"), "source": "shazam+itunes", "ts": time.time(),
+            }
+        else:
+            album = (shz.get("album") or "").strip()
+            if album and _SINGLE_SUFFIX_RE.search(album):
+                album = None
+            canon = {
+                "artist": shz["artist"], "title": core, "album": album or None,
+                "year": None, "source": "shazam", "ts": time.time(),
+            }
+        store.set(_CANON_KEY_PREFIX + video_id, canon)
+        return canon
 
     try:
         meta = await itunes_cover.resolve_metadata(

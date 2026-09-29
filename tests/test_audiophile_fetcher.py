@@ -703,3 +703,112 @@ async def test_resolve_canon_tribute_act_rejected(store):
                               artist_hay="Dr. Dre - Still D.R.E. ft. Snoop Dogg Octava",
                               fetch=_itunes("Still D.R.E.", "Mixmaster Throwback"))
     assert out is None
+
+
+# ── resolve_canon + Shazam 音訊認歌（POC：18/25 正規化、0 配錯；失效自動退回 iTunes）──
+
+def _fake_identify(title, artist, album=None):
+    async def _id(stream_url, *, duration=None, breaker):
+        return {"title": title, "artist": artist, "album": album}
+    return _id
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_shazam_hit_and_itunes_confirms_uses_itunes_names(store):
+    """Shazam 認到乾淨歌名 + iTunes 確認得上歌手 → 用 iTunes 的名字換繁體+年份。"""
+    from audiophile_fetcher import resolve_canon
+
+    out = await resolve_canon(
+        store, "vid20", "带我去找夜生活", "",
+        artist_hay="帶我去找夜生活 告五人Accusefive",
+        stream_url="https://stream/x", breaker=object(),
+        identify=_fake_identify("带我去找夜生活", "告五人"),
+        fetch=_itunes("帶我去找夜生活", "告五人"),
+    )
+    assert out["title"] == "帶我去找夜生活"
+    assert out["artist"] == "告五人"
+    assert out["source"] == "shazam+itunes"
+    assert out["year"] == 2013
+    assert store.get("canon::vid20") == out
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_shazam_hit_itunes_artist_mismatch_uses_shazam(store):
+    """9/29 真機同款配錯（Dr. Dre vs 致敬團 Mixmaster Throwback）：Shazam 對、
+    iTunes 歌手對不上 → 用 Shazam 自己的資料，title 去括號、year 未知。"""
+    from audiophile_fetcher import resolve_canon
+
+    out = await resolve_canon(
+        store, "vid21", "Still D.R.E.", "Dr. Dre",
+        artist_hay="Dr. Dre - Still D.R.E. ft. Snoop Dogg Octava",
+        stream_url="https://stream/x", breaker=object(),
+        identify=_fake_identify("Still D.R.E. (Remix)", "Dr. Dre"),
+        fetch=_itunes("Still D.R.E.", "Mixmaster Throwback"),
+    )
+    assert out["artist"] == "Dr. Dre"
+    assert out["title"] == "Still D.R.E."
+    assert out["source"] == "shazam"
+    assert out["year"] is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_shazam_title_not_in_original_falls_back_to_itunes(store):
+    """Shazam 認到的曲名不在原標題（誤認）→ 不採用，退回 iTunes 髒標題路徑。"""
+    from audiophile_fetcher import resolve_canon
+
+    out = await resolve_canon(
+        store, "vid22", "帶我去找夜生活", "告五人",
+        artist_hay="帶我去找夜生活 告五人Accusefive",
+        stream_url="https://stream/x", breaker=object(),
+        identify=_fake_identify("Sweet Dreams", "Eurythmics"),
+        fetch=_itunes("帶我去找夜生活", "告五人"),
+    )
+    assert out["source"] == "itunes"
+    assert out["title"] == "帶我去找夜生活"
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_identify_none_falls_back_to_itunes(store):
+    from audiophile_fetcher import resolve_canon
+
+    async def _id_none(stream_url, *, duration=None, breaker):
+        return None
+
+    out = await resolve_canon(
+        store, "vid23", "雙截棍", "周杰倫",
+        stream_url="https://stream/x", breaker=object(),
+        identify=_id_none, fetch=_itunes("雙截棍", "周杰倫"),
+    )
+    assert out["source"] == "itunes"
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_no_stream_url_or_breaker_skips_identify(store):
+    from audiophile_fetcher import resolve_canon
+
+    calls = []
+
+    async def _must_not_call(*a, **kw):
+        calls.append(1)
+        return None
+
+    await resolve_canon(store, "vid24", "雙截棍", "周杰倫", stream_url="", breaker=object(),
+                        identify=_must_not_call, fetch=_itunes("雙截棍", "周杰倫"))
+    await resolve_canon(store, "vid25", "雙截棍", "周杰倫", stream_url="https://x", breaker=None,
+                        identify=_must_not_call, fetch=_itunes("雙截棍", "周杰倫"))
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_cache_hit_skips_identify_and_fetch(store):
+    from audiophile_fetcher import resolve_canon
+
+    store.set("canon::vid26", {"artist": "周杰倫", "title": "雙截棍", "album": "范特西",
+                              "year": 2001, "source": "itunes", "ts": 1.0})
+
+    async def _must_not_call(*a, **kw):
+        raise AssertionError("快取命中不該呼叫")
+
+    out = await resolve_canon(store, "vid26", "雙截棍", "周杰倫", stream_url="https://x",
+                              breaker=object(), identify=_must_not_call, fetch=_must_not_call)
+    assert out["title"] == "雙截棍"

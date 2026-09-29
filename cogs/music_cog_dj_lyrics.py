@@ -329,6 +329,14 @@ class MusicDJLyricsMixin:
             self._dj_topic_cooldown_store = store
         return store
 
+    def _shazam_breaker_lazy(self):
+        b = getattr(self, '_shazam_breaker', None)
+        if b is None:
+            from shazam_identify import ShazamBreaker
+            b = ShazamBreaker()
+            self._shazam_breaker = b
+        return b
+
     async def _dj_song_material(self, info: dict, clean_title: str, clean_artist: str) -> tuple[dict | None, str | None]:
         """DJ 串場的歌曲素材：(canon, guide)。canon 是 iTunes 正規化後的歌手/歌名/專輯/
         年份（resolve_canon，零幻覺），guide 是長版導聆稿（song_guide_for_dj）。
@@ -349,6 +357,9 @@ class MusicDJLyricsMixin:
             canon = await resolve_canon(
                 store, video_id, clean_title, clean_artist,
                 artist_hay=f"{info.get('title') or ''} {info.get('uploader') or ''}",
+                stream_url=info.get('url') or '',
+                duration=info.get('duration'),
+                breaker=self._shazam_breaker_lazy(),
             )
         except Exception as e:
             logger.debug(f"[Canon] 正規化失敗，跳過: {e}")
