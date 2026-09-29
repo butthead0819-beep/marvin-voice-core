@@ -174,23 +174,6 @@ async def test_fresh_cog_cooldown_starts_at_construction_not_zero(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_themed_lane_never_overridden_by_joke(monkeypatch):
-    """themed 歌單已經有預先寫好的口白 → 不管冷卻/安靜與否都不換成笑話。"""
-    import time
-    bank = _patch_bank(monkeypatch, JOKE)
-    cog = _make_cog(online_members=["大肚"])
-    cog._last_dj_joke_ts = time.time() - 3600
-    info = _info()
-    info["_lane"] = "themed"
-    info["_pick_reason"] = "主題歌單策展理由"
-
-    dj = await cog._fetch_dj_interjection_raw(info)
-
-    assert dj["text"] == "主題歌單策展理由"
-    bank.match.assert_not_called()
-
-
-@pytest.mark.asyncio
 async def test_bypass_init_cog_never_fires_joke():
     """透過 __new__ 繞過 __init__ 建構的 cog（其他測試常見手法）沒有冷卻狀態，
     絕不能因此意外觸發笑話分支（也不能因為屬性不存在而炸掉）。"""

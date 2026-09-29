@@ -258,17 +258,6 @@ async def test_autopilot_falls_back_to_template_when_llm_returns_empty():
     assert "為你帶來" not in dj["text"]
 
 
-@pytest.mark.asyncio
-async def test_themed_reason_still_skips_llm():
-    """themed 策展理由是策展時 LLM 寫好的 → 這條不重複呼叫 LLM。"""
-    cog = _make_cog()
-    dj = await cog._fetch_dj_interjection_raw(
-        _info(requester="Marvin", _lane="themed", _pick_reason="這首扣回你們今晚聊的搬家")
-    )
-    cog.bot.router.generate_dynamic_system_msg.assert_not_awaited()
-    assert dj["text"] == "這首扣回你們今晚聊的搬家"
-
-
 # ── 4. 掛名護欄：autopilot 改 LLM 後掛名不再是寫死的 ──────────────────────
 
 @pytest.mark.asyncio

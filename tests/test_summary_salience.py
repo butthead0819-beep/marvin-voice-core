@@ -3,7 +3,6 @@
 2026-07-09：實測策展一直繞「人生百態」通用傘、漏掉獨特話題(馬文實體化/琉璃蝦)。根因＝核心句
 等權無重要性訊號。解＝summarizer 每句標顯著度(語意非聲量)→高顯著度標【重點】餵策展 LLM。
 """
-import time
 
 from chat_summary_parser import DiaryEntry, parse_log
 

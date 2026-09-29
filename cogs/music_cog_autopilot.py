@@ -16,7 +16,6 @@ _TASTE_PROFILE_CACHE / _TASTE_FINGERPRINT_CACHE / _SONG_BPM_STORE 是純字面
 from __future__ import annotations
 
 import asyncio
-import datetime
 import functools
 import logging
 import os
@@ -24,7 +23,7 @@ import random
 import time
 
 from music_memory import extract_video_id
-from music_recommender import is_already_recommended, normalize_title, ring_titles_for
+from music_recommender import normalize_title
 
 logger = logging.getLogger(__name__)
 

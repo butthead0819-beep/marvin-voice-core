@@ -148,20 +148,6 @@ async def test_human_story_not_truncated_to_short():
 
 
 @pytest.mark.asyncio
-async def test_marvin_themed_reason_plays_full_dj_story_gate():
-    """Marvin themed 選歌理由（LLM 策展的故事）走 dj_story gate、完整播出，不被 5s 砍。"""
-    cog = _make_cog(est_per_char=0.3)
-    long_reason = "這首歌是今晚主題的核心，把大家剛剛聊的疲憊都收進了旋律裡，慢慢帶你們降落到夜的最底"
-    assert len(long_reason) >= 30
-    info = _info(title="周杰倫 - 夜曲", requester="Marvin推薦")
-    info["_lane"] = "themed"
-    info["_pick_reason"] = long_reason
-    result = await cog._fetch_dj_interjection_raw(info)
-    assert result is not None
-    assert len(result["text"]) >= 30, f"themed 故事應完整播出、不被 5s 砍: {result['text']!r}"
-
-
-@pytest.mark.asyncio
 async def test_marvin_autopilot_phrase_not_cut_to_garbage():
     """Marvin autopilot 短語（含長 YouTube 標題）不該被 5s 砍成殘句（如「狗與露」）——dj_story gate。"""
     cog = _make_cog(est_per_char=0.3)
