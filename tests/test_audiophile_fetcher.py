@@ -398,7 +398,7 @@ def test_auto_guide_budget_min_interval():
 def test_auto_guide_budget_daily_cap_and_reset_next_day():
     from audiophile_fetcher import AUTO_DAILY_CAP, AUTO_MIN_INTERVAL_S, AutoGuideBudget
 
-    assert AUTO_DAILY_CAP == 10  # 免費一天 20 次、留一半給 AmbientQA（9/29 定案）
+    assert AUTO_DAILY_CAP == 18  # 免費一天 20 次，只留 2 次給「馬文幫我查」（9/29 使用者定：很少用）
     b = AutoGuideBudget()
     base = time.mktime(time.strptime("2026-09-29 08:00:00", "%Y-%m-%d %H:%M:%S"))
     now = base

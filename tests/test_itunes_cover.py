@@ -184,7 +184,8 @@ async def test_default_fetch_adds_country_param_when_given(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_default_fetch_omits_country_param_by_default(monkeypatch):
+async def test_default_fetch_defaults_to_taiwan_store(monkeypatch):
+    """9/29 使用者定：預設台灣商店——美國商店常查不到中文歌（〈說好的幸福呢〉0 筆）。"""
     captured = {}
 
     class _FakeResp:
@@ -207,4 +208,4 @@ async def test_default_fetch_omits_country_param_by_default(monkeypatch):
 
     monkeypatch.setattr(itunes_cover.aiohttp, "ClientSession", lambda: _FakeSession())
     await itunes_cover._default_fetch("七里香")
-    assert "country" not in captured["params"]
+    assert captured["params"]["country"] == "TW"
