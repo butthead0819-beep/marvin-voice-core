@@ -43,7 +43,7 @@ def _make_vc(monkeypatch, *, query_intent_signal: bool, query_text: str):
     def _fake_append(path, record):
         captured["path"] = path
         captured["record"] = record
-    monkeypatch.setattr(vcmod, "gap_append_record", _fake_append)
+    monkeypatch.setattr(vcmod, "_append_jsonl", _fake_append)
 
     vc = VoiceController.__new__(VoiceController)
     vc.bot = MagicMock()

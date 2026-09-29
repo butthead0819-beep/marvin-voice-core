@@ -83,13 +83,6 @@ from intent_agents.constants import (
 from command_fastpath import match_command_action, normalize_command
 from intent_bus import IntentBus, IntentContext
 from intent_gap import GapLogger, handle_intent_gap, make_groq_gap_classifier
-from gap_research import (
-    UncertaintyDetector,
-    append_record as gap_append_record,
-    build_record as gap_build_record,
-    current_mode as gap_research_mode,
-    should_escalate as gap_should_escalate,
-)
 from intent_agents.rescue_classifier import build_rescue_components
 from audio_position_source import PositionTrackingAudioSource
 from voice_guard_helpers import _should_mute_for_stream_guard
@@ -126,6 +119,11 @@ from intent_agents.recommendation import (
 from llm_pool import build_tiered_router
 
 logger = logging.getLogger(__name__)  # 🛡️ [Bug Fix P0] 補上缺失的 logger 定義，修復 process_debounced_speech 崩潰問題
+
+
+def _append_jsonl(path: str, record: dict) -> None:
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 # LLM 品味鄰近 seed 快取（taste_profile，每日離線生成；T2 env-gated LLM_TASTE_T2=on 才讀）
 _TASTE_PROFILE_CACHE = "records/taste_profiles.json"
@@ -393,11 +391,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 給模板 ack。UNKNOWN → fall through 到 Marvin LLM 主路徑。
         self._gap_classifier_cached = None
         self._gap_logger = GapLogger("records/agent_gaps.jsonl")
-        # 🔎 [Gap Research] 免喚醒資訊真空偵測（shadow）。env GAP_RESEARCH_MODE 預設 off
-        # → 整條零開銷。事件驅動掛 debounced utterance + pre-gate + cooldown。
-        self._uncertainty_detector = None  # lazy init from _shared_tier_router
-        self._gap_research_last_fire: float | None = None
-        logger.info(f"[GapResearch] mode={gap_research_mode()}（env GAP_RESEARCH_MODE）")
         self._profile_builder = SpeakerProfileBuilder(
             suki=getattr(self.bot, "suki_memory", None),
             music=getattr(self.bot, "music_memory", None),
@@ -1047,40 +1040,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     asyncio.create_task(bridge.emit_topic_generated(topics[:3], "manual"))
         except Exception:
             await self.play_tts("話題產生器出了點問題，等一下再試", already_in_channel=True)
-
-    def _maybe_gap_research(self, utterance_text: str) -> None:
-        """免喚醒資訊真空偵測（shadow）的同步入口。
-
-        off → 立即 return（零開銷）。pre-gate + cooldown 命中才開背景 task 跑 LLM；
-        shadow 只寫 records/gap_research.jsonl，永不交付（交付屬 Phase 2）。
-        """
-        mode = gap_research_mode()
-        if mode == "off" or self._shared_tier_router is None:
-            return
-        now = time.time()
-        if not gap_should_escalate(utterance_text, self._gap_research_last_fire, now):
-            return
-        self._gap_research_last_fire = now
-        if self._uncertainty_detector is None:
-            self._uncertainty_detector = UncertaintyDetector(router=self._shared_tier_router)
-        buffer_text = "\n".join(
-            f"{e.get('speaker', '?')}: {e.get('raw_text', '')}" for e in self.log_buffer[-10:]
-        )
-        try:
-            asyncio.create_task(self._run_gap_research_shadow(buffer_text, mode))
-        except RuntimeError:
-            pass  # 無 running loop（理論上不會發生在此 async 路徑）
-
-    async def _run_gap_research_shadow(self, buffer_text: str, mode: str) -> None:
-        """背景偵測 + 記錄。失敗一律吞掉，絕不影響語音流程。"""
-        try:
-            request = await self._uncertainty_detector.detect(buffer_text)
-            rec = gap_build_record(mode=mode, snippet=buffer_text[:200], request=request)
-            gap_append_record("records/gap_research.jsonl", rec)
-            if request is not None:
-                self.stt_logger.info(f"[GapResearch:{mode}] query='{request.query}'（shadow，未交付）")
-        except Exception as e:
-            logger.debug(f"[GapResearch] shadow 偵測失敗（忽略）: {e}")
 
     async def handle_stt_result(self, speaker: str, raw_text: str, timestamp: float, wav_bytes: bytes, prosody_data: dict = None, is_wake_check=False, track=None, bypass_etd=False, wake_intent: float = None, is_text_input: bool = False):
         # 🔐 [Consent] 未同意者不送出任何資料（Groq STT / LLM / suki_memory 均跳過）
@@ -1838,10 +1797,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         if len(self.log_buffer) > 50:  # 限制 buffer 大小，防止記憶體膨脹
             self.log_buffer.pop(0)
-
-        # 🔎 [Gap Research shadow] 免喚醒資訊真空偵測。預設 off（env 未設）→ 立即 return。
-        # 同步 pre-gate（廉價、cooldown）後才開背景 task 跑 LLM，不阻塞本路徑。
-        self._maybe_gap_research(full_raw_text)
 
         # 🚀 [T-04 Fix] 移除重複的 pending_task 清空邏輯 (原為兩次相同的 copy-paste)
         if self.user_states.get(speaker, {}).get("pending_task") == current_task:
@@ -2730,12 +2685,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 pipeline_timing.mark("cleaner_done")
                 from music_fastpath import to_play_command  # 補動詞，否則裸 canonical→bus drop→幻覺
                 return to_play_command(_hit[0], _hit[2])
-            else:
-                from alt_rescue import run_alt_rescue  # 🔀 top-1 miss → STT 備選救援（邏輯在 alt_rescue.py，env MARVIN_ALT_RESCUE）
-                _ar = run_alt_rescue(_fp, speaker, stripped, getattr(self.bot, "engine", None), self._strip_wake_word)
-                if _ar:
-                    pipeline_timing.mark("cleaner_done")
-                    return _ar
 
         # 糊字控制指令拼音兜底：下一手→下一首，下游 PlaybackControlAgent regex 命中、跳 cleaner
         _cmd = normalize_command(stripped)
@@ -3288,7 +3237,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if not has_intent_signal(query):
             self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
             try:
-                gap_append_record(
+                _append_jsonl(
                     "records/intent_gate_silenced.jsonl",
                     {"ts": time.time(), "speaker": speaker, "query": query,
                      "gap_intent_type": gap_rec.intent_type if gap_rec else None},
