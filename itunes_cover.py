@@ -68,10 +68,12 @@ def _hi_res(url: str, size: int = 600) -> str:
     return re.sub(r"/\d+x\d+bb\.(jpg|png)", rf"/{size}x{size}bb.\1", url)
 
 
-async def _default_fetch(term: str, *, timeout_s: float = 6.0) -> Optional[dict]:
+async def _default_fetch(term: str, *, timeout_s: float = 6.0, country: Optional[str] = None) -> Optional[dict]:
     if aiohttp is None:
         return None
     params = {"term": term, "entity": "song", "media": "music", "limit": 5}
+    if country:
+        params["country"] = country
     try:
         async with aiohttp.ClientSession() as sess:
             async with sess.get(
@@ -178,9 +180,12 @@ async def resolve_metadata(
     if best is None:
         return None
     art = _art(best)
+    release_date = str(best.get("releaseDate") or "")
+    year = int(release_date[:4]) if release_date[:4].isdigit() else None
     return {
         "cover": _hi_res(art, size) if art else None,
         "artist": best.get("artistName") or None,
         "album": best.get("collectionName") or None,
         "title": best.get("trackName") or None,
+        "year": year,
     }

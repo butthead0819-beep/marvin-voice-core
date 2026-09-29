@@ -329,6 +329,59 @@ class MusicDJLyricsMixin:
             self._dj_topic_cooldown_store = store
         return store
 
+    async def _dj_song_material(self, info: dict, clean_title: str, clean_artist: str) -> tuple[dict | None, str | None]:
+        """DJ 串場的歌曲素材：(canon, guide)。canon 是 iTunes 正規化後的歌手/歌名/專輯/
+        年份（resolve_canon，零幻覺），guide 是長版導聆稿（song_guide_for_dj）。
+
+        canon 決定導聆稿要用哪把 label（有正規化名字優先用，避免 YouTube 髒標題各自
+        查一次）；human（真人點歌）才可以燒付費額度，autopilot 只打免費層且受
+        AutoGuideBudget 節流（budget/inflight 是這個 cog 生命週期內的 lazy 單例）。
+        store 跟 /guide_song、/tour 共用同一實例（見 _audiophile_deps，多實例整份
+        寫檔會互蓋）。"""
+        from music_memory import extract_video_id
+        from audiophile_fetcher import _song_label, resolve_canon, song_guide_for_dj
+
+        store, guard, router = self._audiophile_deps()
+        video_id = extract_video_id(info.get('webpage_url') or info.get('url') or '')
+
+        canon = None
+        try:
+            canon = await resolve_canon(
+                store, video_id, clean_title, clean_artist,
+                artist_hay=f"{info.get('title') or ''} {info.get('uploader') or ''}",
+            )
+        except Exception as e:
+            logger.debug(f"[Canon] 正規化失敗，跳過: {e}")
+            canon = None
+
+        label = _song_label(canon['title'], canon['artist']) if canon else _song_label(clean_title, clean_artist)
+
+        requester = info.get('requested_by') or ''
+        # 個人歌單自動墊歌掛的是真人名字，但不是真人當下點的，跟 autopilot 一樣只走免費
+        human = not requester.startswith('Marvin') and info.get('_lane') != 'personal'
+
+        free_client = getattr(router, 'google_client', None)
+        paid_client = getattr(router, 'google_paid_client', None) if human else None
+        if free_client is None and paid_client is None:
+            return canon, None
+
+        budget = getattr(self, '_auto_guide_budget', None)
+        if budget is None:
+            from audiophile_fetcher import AutoGuideBudget
+            budget = AutoGuideBudget()
+            self._auto_guide_budget = budget
+
+        inflight = getattr(self, '_guide_inflight', None)
+        if inflight is None:
+            inflight = {}
+            self._guide_inflight = inflight
+
+        guide = await song_guide_for_dj(
+            label, human=human, free_client=free_client, paid_client=paid_client,
+            guard=guard, store=store, budget=budget, inflight=inflight,
+        )
+        return canon, guide
+
     def _present_interests(self) -> list[str]:
         """在場成員在 suki_memory 的興趣，供話題選擇器沒有『最近生活』可用時當引子。
         任何失敗回 []（DJ 少一味料，不該讓整條串場掛掉）。"""
@@ -476,18 +529,17 @@ class MusicDJLyricsMixin:
             spoken_match = None  # fail-open：記憶讀取失敗不影響 DJ
         memory_evidence = (info.get('_state_reason') or '') or spoken_match or affinity or ""
 
-        # 🎵 音樂深度知識（作詞作曲、收錄專輯、官方創作背景/維基百科典故）
+        # 🎵 歌曲素材：iTunes 正規化（歌手/歌名/專輯/年份，零幻覺）+ 長版導聆稿（查證過的真實資料）
+        canon, guide = None, None
         try:
-            from song_knowledge_store import SongKnowledgeStore
-            _sks = getattr(self, '_song_knowledge_store', None)
-            if _sks is None:
-                _sks = SongKnowledgeStore()
-                self._song_knowledge_store = _sks
-            music_insight = await _sks.get_or_extract_insight(info, _clean_t, _clean_a)
-            if music_insight:
-                ctx.append(f"音樂賞析：{music_insight}")
+            canon, guide = await self._dj_song_material(info, _clean_t, _clean_a)
+            if canon and canon.get('album'):
+                ctx.append(
+                    f"歌曲資料：{canon['artist']}《{canon['album']}》"
+                    + (f"（{canon['year']}）" if canon.get('year') else "")
+                )
         except Exception:
-            pass  # fail-open：知識庫異常不影響 DJ 生成
+            pass  # fail-open：歌曲素材查證異常不影響 DJ 生成
 
         # 環境沉浸：城市/區（GPS 訊號，沒有則退回台北）+ 季節（日期推）+ 星期/時段。
         # 不再無條件塞進 ctx——只有 mode == "atmosphere" 被選中時才當開場素材用，
@@ -531,6 +583,7 @@ class MusicDJLyricsMixin:
             news_items=news_items,
             autopilot_reason=_autopilot_reason,
             memory_evidence=memory_evidence,
+            has_guide=bool(guide),
         )
 
         # 開場鉤子提示依「歌會中的心理機制」分兩類套用：
@@ -561,6 +614,9 @@ class MusicDJLyricsMixin:
         elif mode == "atmosphere":
             ctx.append(env)
             ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
+        elif mode == "guide":
+            ctx.append(f"導聆素材（查證過的真實資料，只能用這裡寫的事實）：\n{guide}")
+            ctx.append("串場方向：把導聆素材濃縮成一兩句，點出這首歌耳朵該聽的地方；只能講素材裡寫的事實，不准自己補細節或編故事。")
         if _autopilot_reason:
             ctx.append(f"選這首的理由：{_autopilot_reason}")
 

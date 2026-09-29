@@ -1,19 +1,27 @@
-"""聽覺放大鏡導聆稿抓取（docs/PLAN_audiophile_music_tour.md Phase 2）。
+"""聽覺放大鏡導聆稿抓取 + iTunes 正規化（2026-09-29 重新設計）。
 
 重用 grounded_answer（free→付費鏈 + PaidUsageGuard 記帳 + L1/L2 幻覺 guard），不自開 client、
 不寫死 model。快取在 SongKnowledgeStore 同檔但獨立 key「audiophile::…」——不跟
 get_or_extract_insight 的記錄共用 dict（那邊 set 是整份覆寫，共用會互洗欄位）。
-失敗回保底台詞且不寫快取。
+
+正規化（歌手/歌名/專輯/年份）改走 iTunes Search（itunes_cover.resolve_metadata，免費、
+結構化、零幻覺），寫進獨立 key「canon::<video_id>」——跟導聆稿分開查證，各自失敗互不影響。
+
+DJ 串場自動觸發（song_guide_for_dj）受免費層每日預算節流（AutoGuideBudget）：免費
+gemini-2.5-flash 一天只有 20 次、跟 AmbientQA 共用，autopilot 背景串場不能任由每次都燒；
+真人點歌（/guide_song、/tour）不受此預算，可以走免費→付費鏈。
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import re
 import time
 
 from pypinyin import lazy_pinyin
 
-from dj_prompt_builder import build_audiophile_guide_prompt, build_album_tracklist_prompt
+from dj_prompt_builder import build_album_tracklist_prompt, build_audiophile_guide_prompt
 from intent_agents.grounded_qa_agent import grounded_answer
 
 logger = logging.getLogger(__name__)
@@ -33,17 +41,9 @@ def _song_label(title: str, artist: str) -> str:
     return f"{artist} - {title}" if artist else title
 
 
-async def fetch_audiophile_guide(
-    title: str,
-    artist: str,
-    *,
-    free_client,
-    paid_client,
-    guard,
-    store,
-) -> str:
-    """title/artist → 導聆台詞；快取命中零 API 呼叫，失敗回保底台詞且不寫快取。"""
-    label = _song_label(title, artist)
+async def _fetch_guide(label: str, *, free_client, paid_client, guard, store) -> str | None:
+    """label（歌手 - 歌名）→ 導聆稿，或 None（查不到/幻覺 guard 擋下）。
+    快取命中零 API 呼叫；成功寫快取，失敗/None 不寫快取。"""
     key = _KEY_PREFIX + label
 
     cached = (store.get(key) or {}).get("audiophile_guide")
@@ -62,11 +62,30 @@ async def fetch_audiophile_guide(
         logger.warning(f"[Audiophile] grounded_answer 例外: {e}")
 
     if res is None:
-        logger.info(f"[Audiophile] {label} 查不到可靠資料，回保底台詞")
-        return FALLBACK_GUIDE_TEMPLATE.format(title=title)
+        logger.info(f"[Audiophile] {label} 查不到可靠資料")
+        return None
 
     text, sources = res
     store.set(key, {"audiophile_guide": text, "sources": sources, "ts": time.time()})
+    return text
+
+
+async def fetch_audiophile_guide(
+    title: str,
+    artist: str,
+    *,
+    free_client,
+    paid_client,
+    guard,
+    store,
+) -> str:
+    """title/artist → 導聆台詞；快取命中零 API 呼叫，失敗回保底台詞且不寫快取。"""
+    label = _song_label(title, artist)
+    text = await _fetch_guide(label, free_client=free_client, paid_client=paid_client,
+                              guard=guard, store=store)
+    if text is None:
+        logger.info(f"[Audiophile] {label} 回保底台詞")
+        return FALLBACK_GUIDE_TEMPLATE.format(title=title)
     return text
 
 
@@ -111,12 +130,188 @@ async def render_audiophile_guide(
     info['_audiophile_guide_dur'] = dur
 
 
+# ── 正規化：iTunes Search（免費、結構化、零幻覺）─────────────────────────────
+_CANON_KEY_PREFIX = "canon::"
+_SINGLE_SUFFIX_RE = re.compile(r"\s*-\s*(Single|EP)\s*$", re.I)
+
 _NON_ALNUM_RE = re.compile(r"[^0-9a-z]")
+_ARTIST_SPLIT_RE = re.compile(r"\s*(?:&|,|、|/|\bx\b|\bfeat\.?)\s*", re.I)
 
 
 def _pinyin_key(s: str) -> str:
     """轉拼音 + 小寫 + 只留英數：簡繁同音（双截棍/雙截棍）、空白、標點、【】[]｜ 全部抹平。"""
     return _NON_ALNUM_RE.sub("", "".join(lazy_pinyin(s or "")).lower())
+
+
+def _artist_matches(meta_artist: str, hay: str) -> bool:
+    """iTunes 歌手（合唱拆開任一位）的拼音 key 出現在 hay（原始標題/頻道名/乾淨歌手）裡才算對得上。
+    羅馬拼音↔中文名（A-Sun↔阿桑）會誤擋——寧可少正規化，不要配錯歌手。"""
+    h = _pinyin_key(hay)
+    return any(k and k in h for k in (_pinyin_key(p) for p in _ARTIST_SPLIT_RE.split(meta_artist or "")))
+
+
+async def resolve_canon(store, video_id: str, clean_title: str, clean_artist: str, *,
+                        artist_hay: str = "", fetch=None) -> dict | None:
+    """video_id → 正規化 {artist, title, album, year, source, ts}（iTunes Search），
+    或 None（沒有 video_id / 查不到 / 曲名配不上）。快取命中零查詢。
+
+    曲名守門：iTunes 回應的曲名跟查詢曲名（拼音正規化後）互不包含就不採用——
+    iTunes 對中文歌的跨語言救援會信任排名第一筆，這層是防它自信地配錯歌。
+    歌手守門：髒標題夾歌詞時曲名可能「互相包含」誤放行（9/29 真機：〈我的秘密〉歌詞
+    「…靠近」配成吳莫愁〈靠近〉），所以歌手也要在 clean_artist + artist_hay 裡對得上。
+    """
+    if not video_id:
+        return None
+
+    cached = store.get(_CANON_KEY_PREFIX + video_id)
+    if cached:
+        return cached
+
+    import itunes_cover
+
+    try:
+        meta = await itunes_cover.resolve_metadata(
+            clean_title, clean_artist or None,
+            fetch=fetch or functools.partial(itunes_cover._default_fetch, country="TW"),
+        )
+    except Exception as e:
+        logger.info(f"[Canon] iTunes 查證例外: {e}")
+        return None
+
+    if not meta or not meta.get("title") or not meta.get("artist"):
+        return None
+
+    a, b = _pinyin_key(clean_title), _pinyin_key(meta["title"])
+    if not a or not b or (a not in b and b not in a):
+        logger.info(f"[Canon] iTunes 配到別首：查詢《{clean_title}》，回應《{meta['title']}》")
+        return None
+
+    if not _artist_matches(meta["artist"], f"{clean_artist} {artist_hay}"):
+        logger.info(f"[Canon] iTunes 歌手對不上：查詢《{clean_title}》，回應 {meta['artist']}")
+        return None
+
+    album = (meta.get("album") or "").strip()
+    if album and _SINGLE_SUFFIX_RE.search(album):
+        album = None
+
+    canon = {
+        "artist": meta["artist"], "title": meta["title"], "album": album or None,
+        "year": meta.get("year"), "source": "itunes", "ts": time.time(),
+    }
+    store.set(_CANON_KEY_PREFIX + video_id, canon)
+    return canon
+
+
+# ── DJ 串場自動觸發：免費層每日預算 ────────────────────────────────────────
+# 免費 gemini-2.5-flash 一天只有 20 次、跟 AmbientQA 共用，autopilot 背景串場不能
+# 任由每次都打一次 grounded 查詢（安靜背景會把免費額度燒光）。全部 in-memory，
+# 不落檔，bot 重啟歸零。真人點歌（human=True）不受此預算，見 song_guide_for_dj。
+AUTO_MIN_INTERVAL_S = 90.0
+AUTO_DAILY_CAP = 10
+AUTO_FAIL_COOLDOWN_S = 7 * 86400
+
+DJ_GUIDE_WAIT_S = 10.0
+
+
+class AutoGuideBudget:
+    """DJ 串場自動觸發（song_guide_for_dj, human=False）的免費層預算：全域最短間隔 +
+    每日上限 + 單一 key 失敗冷卻。全部 in-memory（純節流，不是永久記錄，不用落檔）。
+
+    `allow()` 回 True 的當下就登記 attempt 時間與當日計數，不等呼叫端事後補登記
+    ——否則兩個呼叫在 allow 判斷完、record 之前之間插進來，會一起穿過間隔限制。
+    """
+
+    def __init__(self):
+        self._last_attempt_ts: float = 0.0
+        self._daily_count: int = 0
+        self._daily_date: tuple | None = None
+        self._fail_ts: dict[str, float] = {}
+
+    def allow(self, key: str, now: float) -> bool:
+        if now - self._last_attempt_ts < AUTO_MIN_INTERVAL_S:
+            return False
+        today = time.localtime(now)[:3]
+        if self._daily_date != today:
+            self._daily_date = today
+            self._daily_count = 0
+        if self._daily_count >= AUTO_DAILY_CAP:
+            return False
+        fail_ts = self._fail_ts.get(key)
+        if fail_ts is not None and now - fail_ts < AUTO_FAIL_COOLDOWN_S:
+            return False
+        self._last_attempt_ts = now
+        self._daily_count += 1
+        return True
+
+    def record(self, key: str, now: float, ok: bool) -> None:
+        if ok:
+            self._fail_ts.pop(key, None)
+        else:
+            self._fail_ts[key] = now
+
+
+async def song_guide_for_dj(
+    label: str,
+    *,
+    human: bool,
+    free_client,
+    paid_client,
+    guard,
+    store,
+    budget: AutoGuideBudget,
+    inflight: dict,
+    wait_s: float = DJ_GUIDE_WAIT_S,
+) -> str | None:
+    """DJ 串場觸發的導聆稿：快取命中直接回、否則背景 task 查證，最多等 wait_s 秒
+    （逾時回 None，但 task 會跑完把快取寫好，給下次用）。
+
+    human=False（autopilot 自動觸發）：受 AutoGuideBudget 節流、只打免費層，不燒付費額度。
+    human=True（真人點歌 /guide_song /tour）：不經 budget，走免費→付費鏈
+    （grounded_answer 內建 guard 記帳）。
+
+    同一 label 併發觸發共用同一個 in-flight task（inflight dict 由呼叫端跨呼叫持有），
+    不會重複打 API。
+    """
+    if not label:
+        return None
+
+    cached = (store.get(_KEY_PREFIX + label) or {}).get("audiophile_guide")
+    if cached:
+        return cached
+
+    task = inflight.get(label)
+    if task is None:
+        if not human:
+            if not budget.allow(label, time.time()):
+                return None
+
+            async def _run():
+                return await _fetch_guide(
+                    label, free_client=free_client, paid_client=None, guard=None, store=store,
+                )
+        else:
+            async def _run():
+                return await _fetch_guide(
+                    label, free_client=free_client, paid_client=paid_client, guard=guard, store=store,
+                )
+
+        task = asyncio.create_task(_run())
+        inflight[label] = task
+
+        def _on_done(t, lbl=label):
+            inflight.pop(lbl, None)
+            if not human:
+                ok = False
+                if not t.cancelled() and t.exception() is None:
+                    ok = t.result() is not None
+                budget.record(lbl, time.time(), ok=ok)
+
+        task.add_done_callback(_on_done)
+
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), wait_s)
+    except Exception:
+        return None
 
 
 def resolved_matches_track(info: dict, track: str) -> bool:

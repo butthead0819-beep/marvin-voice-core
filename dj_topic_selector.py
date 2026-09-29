@@ -19,12 +19,14 @@ DEFAULT_PATH = "records/dj_topic_cooldown.json"
 COOLDOWN_S = 8 * 3600       # 同一具體生活/興趣話題用過 8 小時內不重複
 NEWS_COOLDOWN_S = 2 * 3600  # 新聞頻率可較高，2 小時內不重複
 
-# 話題（life/interest/news）都沒有時，本地在這四種 fallback 之間輪替，別每次都落在
+# 話題（life/interest/news）都沒有時，本地在這五種 fallback 之間輪替，別每次都落在
 # 同一種（尤其是「環境/天氣」那種永遠在場的素材，之前是靠 LLM「自由發揮」硬凹，
 # 結果每次都用它開場——現在改把它變成 atmosphere，跟其他 fallback 平等輪替，
 # 不再是預設值）。atmosphere（時間/地點氛圍）永遠有素材可用，跟 quick 一樣不需要
 # has_* 旗標。quick 沒有任何素材，caller 該走本地模板、跳過 LLM，排最後當墊底選項。
-FALLBACK_ORDER = ("conversation", "prev_song", "atmosphere", "quick")
+# guide（歌曲卡長版導聆）排最前面——有查證過的真實資料時優先講，但只在呼叫端傳
+# has_guide=True（歌曲卡真的抓到）才會進候選，預設 False 時行為跟舊版完全一致。
+FALLBACK_ORDER = ("guide", "conversation", "prev_song", "atmosphere", "quick")
 _FALLBACK_KEY = "_last_fallback_mode"
 
 
@@ -189,11 +191,13 @@ def _pick_fallback_mode(
     *,
     has_conversation: bool,
     has_prev_song: bool,
+    has_guide: bool = False,
 ) -> str:
     candidates = [
         m for m in FALLBACK_ORDER
         if (m != "conversation" or has_conversation)
         and (m != "prev_song" or has_prev_song)
+        and (m != "guide" or has_guide)
     ]
     if not candidates:
         candidates = ["quick"]
@@ -213,16 +217,19 @@ def select_mode(
     has_prev_song: bool = False,
     emotional_highlights: list[str] | None = None,
     news_items: list[str] | None = None,
+    has_guide: bool = False,
 ) -> tuple[str | None, str]:
     """本地決定這次串場要走哪個 mode，LLM 不必自己判斷「有沒有話題、要不要硬掰」。
 
     順序：近期生活（主角要在場）→ 在場興趣 → 情緒高光 → 新聞快訊 → 都沒有時，在
-    conversation/prev_song/quick 間輪替（避免每次都落在同一種 fallback，尤其是最
-    容易變成「每次都環境/天氣」的那個）。
+    guide/conversation/prev_song/atmosphere/quick 間輪替（避免每次都落在同一種
+    fallback，尤其是最容易變成「每次都環境/天氣」的那個；guide 只在 has_guide=True
+    時才進候選——有查證過的歌曲卡導聆可講時優先講）。
 
-    回傳 (topic_text, mode)，mode 比 select_topic 多了 'conversation'/'prev_song'/'quick'。
+    回傳 (topic_text, mode)，mode 比 select_topic 多了
+    'guide'/'conversation'/'prev_song'/'atmosphere'/'quick'。
     topic_text 只有 mode in {'life', 'interest', 'emotional_highlight', 'news'} 才非 None，
-    其餘三種 fallback 沒有具體文字素材——caller 自己依 mode 決定串場方向（quick
+    其餘 fallback 沒有具體文字素材——caller 自己依 mode 決定串場方向（quick
     甚至該跳過 LLM，直接走本地模板）。
     """
     filtered_life = _filter_present_actors(life_cores, present_members)
@@ -237,4 +244,5 @@ def select_mode(
         return topic, kind
     return None, _pick_fallback_mode(
         store, has_conversation=has_conversation, has_prev_song=has_prev_song,
+        has_guide=has_guide,
     )

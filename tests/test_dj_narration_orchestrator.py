@@ -110,6 +110,40 @@ def test_select_narration_mode_autopilot_reason_overrides_quick(tmp_path):
     assert new[1] == "reason"
 
 
+def test_select_narration_mode_has_guide_picks_guide_over_fallback_rotation(tmp_path):
+    # 有歌曲卡導聆可講（has_guide=True）→ guide 排 FALLBACK_ORDER 最前面，優先於
+    # conversation/prev_song/atmosphere/quick 這些沒有具體素材的 fallback。
+    kwargs = dict(
+        life=[], interests=[], has_conversation=True, has_prev_song=True, has_guide=True,
+    )
+    topic, mode = select_narration_mode(topic_store=_fresh_store(tmp_path, "a.json"), **kwargs)
+    assert mode == "guide"
+    assert topic is None  # guide 沒有具體文字素材，caller 自己從 card 讀
+
+
+def test_select_narration_mode_has_guide_false_never_returns_guide(tmp_path):
+    # has_guide 預設 False（未傳）→ guide 不該出現，跟舊版行為完全一致。
+    store = _fresh_store(tmp_path, "a.json")
+    for _ in range(6):
+        _, mode = select_narration_mode(
+            life=[], interests=[], topic_store=store,
+            has_conversation=True, has_prev_song=True,
+        )
+        assert mode != "guide"
+
+
+def test_select_narration_mode_autopilot_reason_does_not_override_guide(tmp_path):
+    # autopilot_reason 只覆蓋 quick/atmosphere，不該搶走 guide（有查證過的真實資料
+    # 時優先權比「Marvin 自己編的推薦理由」高）。
+    store = _fresh_store(tmp_path, "a.json")
+    topic, mode = select_narration_mode(
+        life=[], interests=[], topic_store=store,
+        has_conversation=True, has_prev_song=True, has_guide=True,
+        autopilot_reason="照你的口味挖出來的新歌",
+    )
+    assert mode == "guide"
+
+
 def test_select_narration_mode_autopilot_reason_does_not_override_life(tmp_path):
     # 有具體素材（life）時，autopilot_reason 不該蓋掉它——只搶 quick/atmosphere。
     store = _fresh_store(tmp_path, "c.json")

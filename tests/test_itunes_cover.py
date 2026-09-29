@@ -134,3 +134,77 @@ def test_hi_res_swaps_size():
     url = "https://is1-ssl.mzstatic.com/image/thumb/Music/x/source/100x100bb.jpg"
     out = itunes_cover._hi_res(url, 600)
     assert out == "https://is1-ssl.mzstatic.com/image/thumb/Music/x/source/600x600bb.jpg"
+
+
+# ── resolve_metadata 的 year 欄位 + _default_fetch 的 country 參數 ─────────────
+
+@pytest.mark.asyncio
+async def test_resolve_metadata_includes_year_from_release_date():
+    fetch = _capturing_fetch({"results": [{
+        "trackName": "七里香", "artistName": "周杰倫", "collectionName": "七里香",
+        "releaseDate": "2004-08-03T12:00:00Z",
+        "artworkUrl100": "https://x/100x100bb.jpg",
+    }]})
+    meta = await itunes_cover.resolve_metadata("七里香", "周杰倫", fetch=fetch)
+    assert meta["year"] == 2004
+
+
+@pytest.mark.asyncio
+async def test_resolve_metadata_year_none_when_release_date_missing():
+    fetch = _capturing_fetch(_result("七里香", "周杰倫"))
+    meta = await itunes_cover.resolve_metadata("七里香", "周杰倫", fetch=fetch)
+    assert meta["year"] is None
+
+
+@pytest.mark.asyncio
+async def test_default_fetch_adds_country_param_when_given(monkeypatch):
+    captured = {}
+
+    class _FakeResp:
+        status = 200
+        async def json(self, content_type=None):
+            return {"results": []}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+
+    class _FakeSession:
+        def get(self, url, params=None, timeout=None):
+            captured["params"] = params
+            return _FakeResp()
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(itunes_cover.aiohttp, "ClientSession", lambda: _FakeSession())
+    await itunes_cover._default_fetch("七里香", country="TW")
+    assert captured["params"]["country"] == "TW"
+
+
+@pytest.mark.asyncio
+async def test_default_fetch_omits_country_param_by_default(monkeypatch):
+    captured = {}
+
+    class _FakeResp:
+        status = 200
+        async def json(self, content_type=None):
+            return {"results": []}
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+
+    class _FakeSession:
+        def get(self, url, params=None, timeout=None):
+            captured["params"] = params
+            return _FakeResp()
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(itunes_cover.aiohttp, "ClientSession", lambda: _FakeSession())
+    await itunes_cover._default_fetch("七里香")
+    assert "country" not in captured["params"]
