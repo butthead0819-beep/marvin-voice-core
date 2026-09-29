@@ -84,7 +84,6 @@ def setup_early_logging():
     logging.getLogger("intent_agents").setLevel(logging.INFO)
     # 新頂層模組 logger 需顯式 INFO，否則吃 root WARNING、觀測 log 全被吞
     # （2026-07-02 教訓：AltRescue shadow 上線後沉默，其實是 logger 層級不是邏輯）
-    logging.getLogger("alt_rescue").setLevel(logging.INFO)
     logging.getLogger("memory_quarantine").setLevel(logging.INFO)
     logging.getLogger("liveness_beacon").setLevel(logging.INFO)
     logging.getLogger("etd_clean_reuse").setLevel(logging.INFO)  # 2026-09-25 ♻️ [ETD reuse] 命中率
@@ -371,13 +370,6 @@ class MarvinBot(commands.Bot):
                 logger.info("🫀 [LivenessBeacon] 已啟動（records/heartbeat.json / 30s）")
             except Exception as e:
                 logger.warning(f"[LivenessBeacon] startup failed: {e}")
-
-        # 🔀 [AltRescue] 開機驗證 env 真的有設（J2 空轉 3 天教訓：wire ≠ 啟用）
-        try:
-            from alt_rescue import rescue_mode
-            logger.warning(f"🔀 [AltRescue] mode={rescue_mode()}（env MARVIN_ALT_RESCUE）")
-        except Exception:
-            pass
 
         # 6. 啟動 CompanionBridge（Phase 3a）— 與 MarmoServer 並列
         try:
