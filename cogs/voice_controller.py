@@ -43,7 +43,6 @@ from cogs.voice_controller_playback import (  # noqa: F401 — re-export 給測�
     PlaybackMixin, MAX_HOTSWAP_CHARS, SpeakKind,
 )
 from cogs.voice_controller_system_loops import SystemLoopsMixin
-from cogs.voice_controller_talk import MarvinTalkMixin
 from cogs.voice_controller_state_proxy import StateProxyMixin
 from cogs.voice_controller_music_proxy import MusicProxyMixin
 from cogs.voice_controller_gap_notify import GapNotifyMixin
@@ -347,7 +346,7 @@ _FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGN
 
 
 class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixin,
-                      ConnectionMixin, PlaybackMixin, SystemLoopsMixin, MarvinTalkMixin,
+                      ConnectionMixin, PlaybackMixin, SystemLoopsMixin,
                       StateProxyMixin, MusicProxyMixin, GapNotifyMixin, commands.Cog):
     """
     [Operation Paranoid Android] 
@@ -442,7 +441,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             rescue_outcome_sink=_rescue_sink, rescue_wav_store=_rescue_wav_store,
             cleaner_call=real_cleaner_call,
         )
-        self._init_talk_manager()  # /marvin_talk 回合制對談（見 MarvinTalkMixin）
 
         # 🛡️ [Operation Sentinel] 語音健康監控
         self.connection_time = 0 # 紀錄最後一次連線時間
@@ -1013,9 +1011,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🚀 [Atomic Pop] 立即取出並清空，防止 0.5s Watchdog 重複觸發
         if not self.pending_intervention:
             return
-        if self._talk_active():
-            self.pending_intervention = None
-            return  # 🎙️ 回合制對談：獨佔，不插話
         pending = self.pending_intervention
         self.pending_intervention = None
         
@@ -1668,10 +1663,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return (combined_text, origin_ts)
 
     def handle_raw_speech_start(self, speaker: str, user_id: int = None):
-        # 🎙️ 回合制對談：使用者講話不該 duck / 中斷馬文的回覆——那是「你講完他答」的
-        # 回合制，馬文回覆要滿音量、受保護。整個 speech-start 副作用鏈直接跳過。
-        if self._talk_active():
-            return
         if speaker not in self.user_states:
             self.user_states[speaker] = {"pending_task": None, "is_talking": True}
         else:
