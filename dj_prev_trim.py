@@ -91,19 +91,6 @@ def gate_dj_intro(
     return gated, was_cut, True
 
 
-def mentions_title(text: str, title: str) -> bool:
-    """text 有沒有提到 title（用 name_keys 比對，不分大小寫）。
-
-    給 Consistency Guard 用：口白沒提到上一首，佇列順序變了也不必丟。title 抽不出
-    任何 key 時無法判斷 → 回 True（保守：維持 Guard 比對，寧可多擋不唸錯歌名）。
-    """
-    keys = name_keys(title)
-    if not keys:
-        return True
-    lc = (text or "").lower()
-    return any(k in lc for k in keys)
-
-
 def trim_to_last_sentence(text: str, max_chars: int = 120, min_chars: int = 30) -> str | None:
     """超過 max_chars 時，截到 max_chars 內最後一個句尾符號（含緊接的收尾引號）。
 

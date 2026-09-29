@@ -64,8 +64,9 @@ async def test_fetch_dj_interjection_records_prev_title_used():
         result = await cog._fetch_dj_interjection_raw(info)
 
     assert result is not None
+    # 9/30 起串場不提上一首 → 永遠不記，Consistency Guard 不會丟掉預抓口白
     assert 'prev_title_used' in result
-    assert result['prev_title_used'] == 'Song Prev'
+    assert result['prev_title_used'] is None
 
 
 @pytest.mark.asyncio
@@ -98,7 +99,7 @@ async def test_fetch_dj_interjection_records_hint_as_prev_title_used():
         result = await cog._fetch_dj_interjection_raw(info)
 
     assert result is not None
-    assert result.get('prev_title_used') == 'Hint Song'
+    assert result.get('prev_title_used') is None
 
 
 @pytest.mark.asyncio

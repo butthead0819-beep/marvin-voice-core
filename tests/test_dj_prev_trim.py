@@ -112,31 +112,6 @@ def test_gate_dj_intro_too_long_empty_prev_title():
     assert prev_dropped is False
 
 
-# ── mentions_title：Consistency Guard 只擋真的提到上一首的口白 ──────────────
-
-def test_mentions_title_true_when_text_names_prev_song():
-    from dj_prev_trim import mentions_title
-    assert mentions_title("剛聽完普通朋友，換這首", "陶喆 - 普通朋友") is True
-
-
-def test_mentions_title_false_when_text_does_not_name_prev_song():
-    """真機 9/30：〈國境之南〉的口白講刷卡機、沒提〈突然的自我〉，卻被 Guard 丟掉。"""
-    from dj_prev_trim import mentions_title
-    assert mentions_title("刷卡機明天再說，先聽這首", "突然的自我") is False
-
-
-def test_mentions_title_by_artist_in_raw_youtube_title():
-    from dj_prev_trim import mentions_title
-    raw = "蔡依林 Jolin Tsai《OH LA LA LA（麥當勞40週年主題曲）》Official Music Video"
-    assert mentions_title("剛剛蔡依林那首很嗨", raw) is True
-
-
-def test_mentions_title_true_when_title_has_no_keys():
-    """抽不出比對 key → 無法判斷，保守回 True（維持 Guard，寧可多擋不唸錯歌名）。"""
-    from dj_prev_trim import mentions_title
-    assert mentions_title("隨便一句", "") is True
-
-
 # ── trim_to_last_sentence：LLM 串場超長先截到句尾，不整段丟 ─────────────────
 
 def test_trim_keeps_text_within_limit_untouched():
