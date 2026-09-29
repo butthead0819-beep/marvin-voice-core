@@ -268,3 +268,29 @@ async def test_dj_song_material_passes_raw_title_and_uploader_as_artist_hay(tmp_
 
     hay = canon_mock.await_args.kwargs["artist_hay"]
     assert "帶我去找夜生活" in hay and "告五人Accusefive" in hay
+
+
+@pytest.mark.asyncio
+async def test_dj_song_material_passes_stream_url_duration_and_shared_breaker(tmp_path, monkeypatch):
+    """resolve_canon 要拿到 stream_url/duration 去切 Shazam 音訊，breaker 是
+    ShazamBreaker 實例且跨兩次呼叫是同一個（斷路狀態要跨歌累積，不能每次新建）。"""
+    import audiophile_fetcher
+    from shazam_identify import ShazamBreaker
+
+    cog = _make_cog(tmp_path=tmp_path)
+    cog._audiophile_deps = MagicMock(return_value=(MagicMock(), MagicMock(), cog.bot.router))
+    canon_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(audiophile_fetcher, "resolve_canon", canon_mock)
+    monkeypatch.setattr(audiophile_fetcher, "song_guide_for_dj", AsyncMock(return_value=None))
+
+    info = {"title": "夜曲", "requested_by": "大肚", "url": "https://stream/example.m4a",
+            "duration": 245, "webpage_url": "https://www.youtube.com/watch?v=abcdefghijk"}
+    await cog._dj_song_material(info, "夜曲", "周杰倫")
+    await cog._dj_song_material(info, "夜曲", "周杰倫")
+
+    first_kw = canon_mock.await_args_list[0].kwargs
+    second_kw = canon_mock.await_args_list[1].kwargs
+    assert first_kw["stream_url"] == "https://stream/example.m4a"
+    assert first_kw["duration"] == 245
+    assert isinstance(first_kw["breaker"], ShazamBreaker)
+    assert first_kw["breaker"] is second_kw["breaker"]
