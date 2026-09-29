@@ -1817,12 +1817,7 @@ class DiscordVoiceEngine:
                     alt_segments=stt_meta.get("alt_segments"),
                 )
 
-            # 🔬 [VolatileShadow] Phase 0：volatile 串流時序量測（env VOLATILE_SHADOW，
-            # 取樣 + 單飛 + fire-and-forget；量 stable_ms/翻盤率/喚醒可見時點，
-            # 決定語意斷句與 volatile arm 要不要做）
             if not is_wake_check and raw_text:
-                import volatile_shadow
-                volatile_shadow.maybe_shadow(wav_path, speaker_name, raw_text, used_engine)
                 # 📼 opt-in 存 owner 喚醒 wav 供訓「馬文」（刪除前；env/owner/wake-text 守門）
                 import wake_sample_collector
                 wake_sample_collector.collect(wav_path, user_id, raw_text)
