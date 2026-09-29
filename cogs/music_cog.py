@@ -1315,7 +1315,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             # 層」路徑（play_dj_on_tts_layer），繞開 play_tts 的 Silence Gate/Interrupt Guard——
             # 這兩個 gate 是為長回應設計的，聊天室常有人持續講話，會把這句短報幾乎全擋掉。
             if vc:
-                asyncio.create_task(self._speak_song_ack(vc, info['title']))
+                asyncio.create_task(self._speak_song_ack(vc, info))
             if self._ensure_stream_loop():
                 from cogs.voice_views import PlayControlView
                 existing_view = self._active_control_view
@@ -1373,7 +1373,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 await self.stop_radio(reason="語音音樂指令接管")
             self._queue_user_song(info, front=True)
             if vc:
-                asyncio.create_task(self._speak_song_ack(vc, info['title']))
+                asyncio.create_task(self._speak_song_ack(vc, info))
             self._ensure_stream_loop()
             if ch: await ch.send(f"⏭️ 「{info['title']}」插播到最前面了。")
 

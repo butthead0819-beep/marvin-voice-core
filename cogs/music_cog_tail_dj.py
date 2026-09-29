@@ -184,9 +184,13 @@ class MusicTailDJMixin:
                 },
             }
 
-    async def _speak_song_ack(self, vc, title: str) -> None:
+    async def _speak_song_ack(self, vc, info: dict) -> None:
         """語音點歌第三個Ack：合成後直推 TTS 層（同 _play_ack 路徑），不走 play_tts 的
-        Silence Gate/Interrupt Guard，才不會被聊天室裡持續講話的其他人擋掉。"""
+        Silence Gate/Interrupt Guard，才不會被聊天室裡持續講話的其他人擋掉。
+        歌名走 _dj_clean_name（有正規化用正規化，否則剝 YouTube 雜訊），別唸原標題。
+        點歌當下 _canon 還沒掛（DJ 預產才掛），先從曲庫快取補。"""
+        self._attach_cached_canon(info)
+        title, _ = self._dj_clean_name(info)
         ack_text = f"幫你點了《{title}》"
         try:
             audio_path = await self.bot.tts_engine.generate_audio(ack_text)
