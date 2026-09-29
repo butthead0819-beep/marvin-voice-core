@@ -6,10 +6,6 @@
 `music_recommender.Evidence` 算出、經型別檢查後才 render，結構上不可能出現
 evidence 之外的內容——不需要 LLM 呼叫，也不需要二次驗證/eval suite/shadow 觀察期。
 
-刻意**不衍生自** `dj_story_arc.py` 的 long_tail 消費路徑——那條路徑目的是故事
-驚喜、允許 LLM 自由發揮，跟這裡「解釋必須可查證」的目的相反，兩者連呼叫路徑
-都不共用（本模組完全不呼叫 LLM）。
-
 多套句型模板輪替（仿 `dj_topic_selector._pick_fallback_mode` 的冷卻/輪替 pattern）
 避免「技術上正確但無聊/重複」——同一個 (signal_type, subject) 組合連續兩次
 不選同一個模板。
