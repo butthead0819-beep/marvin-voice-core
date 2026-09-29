@@ -426,7 +426,6 @@ class ConnectionMixin:
                 temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
                 sink_error_callback=self.report_sink_error,
                 suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio,
-                wake_active_callback=lambda: self._wake_response_pending
             )
             voice_client.listen(sink)
             patch_voice_recv_key_sync(voice_client, on_desync_storm=self._on_key_desync_storm)
@@ -479,7 +478,6 @@ class ConnectionMixin:
                     temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
                     sink_error_callback=self.report_sink_error,
                     suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio,
-                wake_active_callback=lambda: self._wake_response_pending
                 )
 
                 try:
@@ -544,7 +542,6 @@ class ConnectionMixin:
                     temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
                     sink_error_callback=self.report_sink_error,
                     suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio,
-                    wake_active_callback=lambda: self._wake_response_pending,
                 )
                 voice_client.listen(sink)
                 patch_voice_recv_key_sync(voice_client, on_desync_storm=self._on_key_desync_storm)
@@ -631,7 +628,6 @@ class ConnectionMixin:
                 temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
                 sink_error_callback=self.report_sink_error, # 💡 [Sentinel] 注入回報通道
                 suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio,
-                wake_active_callback=lambda: self._wake_response_pending
             )
             voice_client.listen(sink)
             patch_voice_recv_key_sync(voice_client, on_desync_storm=self._on_key_desync_storm)
@@ -668,7 +664,6 @@ class ConnectionMixin:
                     temperature_callback=self.bot.engine.conv_buffer.get_conversation_temperature,
                     sink_error_callback=self.report_sink_error,
                     suppress_wake_callback=lambda: self.stream_mode or self.radio_mode or self.is_playing_audio,
-                wake_active_callback=lambda: self._wake_response_pending
                 )
                 voice_client.listen(sink)
                 patch_voice_recv_key_sync(voice_client)

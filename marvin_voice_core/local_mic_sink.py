@@ -223,9 +223,6 @@ class LocalMicSink:
     def elevate_vad(self, user_id: str = _LOCAL_USER_ID, duration: float = 15.0) -> None:
         """Local-mode no-op: VAD elevation is a Discord-specific mechanism."""
 
-    def _stream_release(self, user_id: str = _LOCAL_USER_ID) -> None:
-        """Local-mode no-op: stream-release is a Discord-specific mechanism."""
-
     def stop(self) -> None:
         """Signal the sounddevice stream to stop (no-op in test/source mode)."""
         if hasattr(self, "_stop_event"):

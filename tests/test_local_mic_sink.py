@@ -249,7 +249,7 @@ async def test_local_mic_sink_has_active_sink_interface_attributes():
 
 @pytest.mark.asyncio
 async def test_local_mic_sink_noop_methods_callable():
-    """write / elevate_vad / _stream_release 為安全 no-op，呼叫不 raise 且無副作用。"""
+    """write / elevate_vad 為安全 no-op，呼叫不 raise 且無副作用。"""
     from marvin_voice_core.local_mic_sink import LocalMicSink
 
     async def noop(user_id, pcm, ts, *, is_wake_check=False):
@@ -263,7 +263,6 @@ async def test_local_mic_sink_noop_methods_callable():
 
     sink.write(None, None)
     sink.elevate_vad("local")
-    sink._stream_release("local")
 
     assert sink.user_is_speaking == before_speaking
     assert sink.user_last_spoken_time == before_spoken
