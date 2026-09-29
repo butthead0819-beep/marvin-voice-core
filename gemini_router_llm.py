@@ -341,7 +341,7 @@ class GeminiRouterLLMMixin:
         from llm_agents.openai_compat_agent import OpenAICompatAgent
         # mistral 2026-08-12 加，priority 16：Cerebras(15) free tier 8/17到期前補位，
         # 排在 Cerebras 之後、gemini_free(18)之前，準備接手主力背景流量。
-        for _pname, _prio in (("mistral", 16), ("gemini_free", 18), ("sambanova", 20), ("openrouter", 21)):
+        for _pname, _prio in (("mistral", 16), ("gemini_free", 18), ("openrouter", 21)):
             if quota.endpoint(f"{_pname}-quick") is not None or quota.endpoint(f"{_pname}-analyze") is not None:
                 agents.append(OpenAICompatAgent(quota, provider_name=_pname, priority=_prio))
         # Phase 3 在此加 GeminiAgent (不同 SDK, google.genai 非 OpenAI-compat)；

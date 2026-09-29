@@ -332,10 +332,7 @@ _PROVIDERS: list[ProviderSpec] = [
                  "ministral-8b-latest", "mistral-medium-latest",
                  quick_model_env="MISTRAL_QUICK_MODEL", analyze_model_env="MISTRAL_MODEL",
                  tpm_budget=30000),
-    # SambaNova quick 用 gemma-4-31B（2026-06-23 實測 /models：Maverick-17B 已下架→每次必敗白燒
-    # failover；gemma-4-31B-it completion 驗過可用）；analyze 用 3.3-70B（仍在、只是高峰會 429）
-    ProviderSpec("sambanova", "SAMBANOVA_API_KEY", "https://api.sambanova.ai/v1",
-                 "gemma-4-31B-it", "Meta-Llama-3.3-70B-Instruct"),
+    # SambaNova 2026-09-29 移除：key 失效全數 401，每輪白跑一趟 failover。
     # Together 8b 要帶 'Meta-' 前綴（實測 /models）
     ProviderSpec("together", "TOGETHER_API_KEY", "https://api.together.xyz/v1",
                  "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
