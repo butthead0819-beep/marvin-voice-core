@@ -203,11 +203,11 @@ async def resolve_canon(store, video_id: str, clean_title: str, clean_artist: st
 
 
 # ── DJ 串場自動觸發：免費層每日預算 ────────────────────────────────────────
-# 免費 gemini-2.5-flash 一天只有 20 次、跟 AmbientQA 共用，autopilot 背景串場不能
+# 免費 gemini-2.5-flash 一天只有 20 次、跟 AmbientQA 共用（只留 2 次給它，使用者 9/29 定：很少用），autopilot 背景串場不能
 # 任由每次都打一次 grounded 查詢（安靜背景會把免費額度燒光）。全部 in-memory，
 # 不落檔，bot 重啟歸零。真人點歌（human=True）不受此預算，見 song_guide_for_dj。
 AUTO_MIN_INTERVAL_S = 90.0
-AUTO_DAILY_CAP = 10
+AUTO_DAILY_CAP = 18
 AUTO_FAIL_COOLDOWN_S = 7 * 86400
 
 DJ_GUIDE_WAIT_S = 10.0

@@ -68,7 +68,8 @@ def _hi_res(url: str, size: int = 600) -> str:
     return re.sub(r"/\d+x\d+bb\.(jpg|png)", rf"/{size}x{size}bb.\1", url)
 
 
-async def _default_fetch(term: str, *, timeout_s: float = 6.0, country: Optional[str] = None) -> Optional[dict]:
+async def _default_fetch(term: str, *, timeout_s: float = 6.0, country: Optional[str] = "TW") -> Optional[dict]:
+    # 預設台灣商店：美國商店常查不到中文歌、回羅馬拼音歌手名（2026-09-29 使用者定）
     if aiohttp is None:
         return None
     params = {"term": term, "entity": "song", "media": "music", "limit": 5}
