@@ -11,7 +11,8 @@ meme_id 語義冷卻：同一事件換個說法也算冷卻中（不能用文字
 扭蛋池（select_mode）：先看哪些 mode 有素材可用（life/interest/emotional_highlight/
 news 要各自找到冷卻已過的具體話題；guide/conversation/prev_song 要呼叫端傳
 has_*=True；atmosphere/quick 永遠可用），權重 ≤0 的 mode 移出池，池大小 >1 時把上次
-選到的 mode 也移出池（不連抽），剩下的池依 MODE_WEIGHTS 抽一個。只有被抽中的話題類
+選到的 mode 也移出池（不連抽），還有別的可抽就再把 quick 移出（只當墊底），剩下的池依
+MODE_WEIGHTS 抽一個。只有被抽中的話題類
 mode 才會 mark_used，沒被抽中的候選話題原封不動留給下次。
 """
 from __future__ import annotations
@@ -236,7 +237,8 @@ def select_mode(
        的候選；guide/conversation/prev_song 只在呼叫端傳對應 has_*=True 時才進池；
        atmosphere/quick 永遠進池。
     2. 池裡權重（MODE_WEIGHTS）≤0 的 mode 移出。池空 → (None, "quick")，不寫狀態。
-    3. 不連抽：池大小 >1 時把上次選到的 mode 也移出池。
+    3. 不連抽：池大小 >1 時把上次選到的 mode 也移出池。之後池裡還有非 quick 的 mode
+       就把 quick 移出（quick 是本地模板、聽起來像保底口白，只當墊底）。
     4. 依 MODE_WEIGHTS 加權隨機抽一個；只有抽中話題類 mode 才 mark_used 它的素材，
        沒抽中的候選（包含同一輪沒被選中的話題）不受影響，留給下次。
 
@@ -281,6 +283,9 @@ def select_mode(
     last = store.get_last_fallback()
     if len(pool) > 1 and last in pool:
         pool = [m for m in pool if m != last]
+    # quick 是本地模板（聽起來像保底口白），只在沒有其他可抽的 mode 時才墊底
+    if any(m != "quick" for m in pool):
+        pool = [m for m in pool if m != "quick"]
 
     weights = [MODE_WEIGHTS.get(m, 0) for m in pool]
     mode = rng.choices(pool, weights=weights, k=1)[0]
