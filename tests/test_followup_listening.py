@@ -151,16 +151,12 @@ def _make_connected_vc():
     return vc
 
 
-async def _run_play_tts_with_wake_fusion(cog, text: str, bridge_mode: str | None = None):
+async def _run_play_tts_with_wake_fusion(cog, text: str):
     """Run play_tts with all heavy dependencies mocked; return the wake_fusion mock."""
     wake_fusion = MagicMock()
     router = MagicMock()
     router.wake_fusion = wake_fusion
     cog.bot.router = router
-
-    bridge = MagicMock()
-    bridge._mode = bridge_mode
-    cog.bot.companion_bridge = bridge
 
     cog.bot.voice_clients = [_make_connected_vc()]
     cog._stream_tts_to_mixer = AsyncMock(return_value=100)
@@ -175,9 +171,7 @@ async def _run_play_tts_with_wake_fusion(cog, text: str, bridge_mode: str | None
     with patch("os.mkfifo"), \
          patch("tempfile.mkdtemp", return_value="/tmp/_tts_test"), \
          patch("shutil.rmtree", create=True), \
-         patch("os.remove", create=True), \
-         patch("bridge_emitters.emit_tts_done_to_bridge", new_callable=lambda: lambda: AsyncMock()), \
-         patch("bridge_emitters.emit_tts_started_to_bridge", new_callable=lambda: lambda: AsyncMock()):
+         patch("os.remove", create=True):
         await cog.play_tts(text)
 
     return wake_fusion
@@ -235,14 +229,6 @@ async def test_followup_disabled_in_game_mode():
     cog.bot.router = router
     await cog.play_tts("你今晚還要繼續嗎?")
     wake_fusion.temporary_open_window.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_followup_disabled_by_companion_mode_silent():
-    """companion_bridge._mode='silent_5min' suppresses the follow-up window."""
-    cog = _make_cog()
-    wf = await _run_play_tts_with_wake_fusion(cog, "你今晚還要繼續嗎?", bridge_mode="silent_5min")
-    wf.temporary_open_window.assert_not_called()
 
 
 # ── handle_stt_result integration (tests 18-19) ──────────────────────────────

@@ -653,37 +653,6 @@ class PlaybackMixin:
         ):
             return
 
-        # ⚠️ [Companion Radar]
-        if os.getenv("COMPANION_RADAR_ENABLED", "false").lower() == "true":
-            bridge = getattr(self.bot, "companion_bridge", None)
-            if bridge is not None and getattr(bridge, "is_connected", False):
-                try:
-                    from marvin_voice_core.companion_radar import classify_risk
-                    _atm_tracker = getattr(getattr(self.bot, "router", None), "atmosphere_tracker", None)
-                    _atm_snap = None
-                    if _atm_tracker is not None:
-                        try:
-                            _s = _atm_tracker.get_snapshot()
-                            _atm_snap = {
-                                "room_mood": getattr(_s, "room_mood", ""),
-                                "dominant_topic": getattr(_s, "dominant_topic", ""),
-                            }
-                        except Exception:
-                            _atm_snap = None
-                    context = {"atmosphere_snapshot": _atm_snap}
-                    risk = classify_risk(text, context)
-                    if risk is not None:
-                        approved = await bridge.request_radar_veto(
-                            text, {"risk": risk}, timeout=2.0
-                        )
-                        if not approved:
-                            logger.info(
-                                f"[Companion_Radar] TTS vetoed by user: {text[:60]!r} (rule={risk.get('rule')})"
-                            )
-                            return
-                except Exception as e:
-                    logger.warning(f"[Companion_Radar] check failed (proceeding with TTS): {e}")
-
         # 🎛️ [Plan 12] render → push mixer
         device = self._resolve_playback_device()
         if device is None:
@@ -702,9 +671,7 @@ class PlaybackMixin:
         if pushed_ok and os.getenv("MARVIN_FOLLOWUP_ENABLED", "true").lower() == "true":
             from wake_detector import _has_question_marker
             if _has_question_marker(text):
-                _bridge = getattr(self.bot, "companion_bridge", None)
-                _suppressed = _bridge is not None and getattr(_bridge, "_mode", None) in {"silent_5min", "shutup"}
-                if not self.game_mode and not _suppressed:
+                if not self.game_mode:
                     _wd = getattr(getattr(self.bot, "router", None), "wake_fusion", None)
                     if _wd is not None:
                         _window = float(os.getenv("MARVIN_FOLLOWUP_WINDOW_SEC", "8.0"))

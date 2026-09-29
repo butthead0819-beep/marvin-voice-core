@@ -136,11 +136,6 @@ for path in ["/opt/homebrew/bin", "/usr/local/bin"]:
 # from tts_engine import SukiTTS
 # print("✅ All core engines imported.")
 
-# ── CompanionBridge wiring（Phase 3a）─────────────────────────────────────
-# 模組層級匯入 + 輔助 function，方便測試 patch 與 mock。
-from marvin_voice_core.companion_bridge import CompanionBridge
-
-
 def _is_expired_interaction_error(error) -> bool:
     """interaction token 已失效（Discord error code 10062, Unknown interaction）。
 
@@ -150,80 +145,6 @@ def _is_expired_interaction_error(error) -> bool:
     """
     original = getattr(error, "original", error)
     return isinstance(original, discord.NotFound) and getattr(original, "code", None) == 10062
-
-
-async def start_companion_bridge(bot, voice_controller=None):
-    """根據 env 啟動 CompanionBridge，掛到 bot.companion_bridge。
-
-    依賴：bot.router.atmosphere_tracker、bot.router.memory（suki_memory）、
-    bot.music_memory；guild_id 由 COMPANION_GUILD_ID 環境變數取（預設 0）。
-    """
-    enabled = os.getenv("COMPANION_BRIDGE_ENABLED", "true").lower() != "false"
-    if not enabled:
-        logger.info("[Companion_Bridge] disabled via env, skipping startup")
-        bot.companion_bridge = None
-        return
-
-    # 從 router 取 atmosphere_tracker 與 suki_memory（既有實例，不重建）
-    tracker = getattr(getattr(bot, "router", None), "atmosphere_tracker", None)
-    suki = getattr(getattr(bot, "router", None), "memory", None)
-    music = getattr(bot, "music_memory", None)
-    # vector_store：voice_controller 內部持有，取用其 _vector_store；fallback 新建
-    vs = getattr(voice_controller, "_vector_store", None)
-    if vs is None:
-        from vector_store import VectorStore
-        vs = VectorStore()
-
-    guild_id = int(os.getenv("COMPANION_GUILD_ID", "0") or 0)
-    port = int(os.getenv("COMPANION_BRIDGE_PORT", "8766"))
-
-    music_engine = getattr(bot, "music_engine", None)
-
-    bridge = CompanionBridge(
-        atmosphere_tracker=tracker,
-        vector_store=vs,
-        music_memory=music,
-        suki_memory=suki,
-        voice_controller=voice_controller,
-        music_engine=music_engine,
-        guild_id=guild_id,
-    )
-    await bridge.start(host="127.0.0.1", port=port)
-    bot.companion_bridge = bridge
-    logger.info(f"[Companion_Bridge] started on 127.0.0.1:{port}")
-
-
-async def _atmosphere_emit_loop(bridge, interval: float = 10.0):
-    """周期廣播 atmosphere snapshot。由 bot 啟動時 spawn，shutdown 時 cancel。"""
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            await bridge.emit_atmosphere_snapshot()
-        except Exception as e:
-            logger.warning(f"[Companion_Bridge] periodic emit failed: {e}")
-
-
-async def _voice_snapshot_loop(bridge, bot, interval: float = 15.0):
-    """周期廣播 voice channel snapshot，讓晚連的 companion 能拿到當前成員。"""
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            vcs = list(bot.voice_clients)
-            if not vcs:
-                continue
-            channel = vcs[0].channel
-            members = [
-                {
-                    "speaker": m.display_name,
-                    "avatar_url": str(m.display_avatar.url),
-                }
-                for m in channel.members if not m.bot
-            ]
-            await bridge.emit_voice_channel_snapshot(members)
-        except Exception as e:
-            logger.warning(f"[Companion_Bridge] voice snapshot loop failed: {e}")
-
-
 
 
 class MarvinBot(commands.Bot):
@@ -371,20 +292,6 @@ class MarvinBot(commands.Bot):
             except Exception as e:
                 logger.warning(f"[LivenessBeacon] startup failed: {e}")
 
-        # 6. 啟動 CompanionBridge（Phase 3a）— 與 MarmoServer 並列
-        try:
-            await start_companion_bridge(self, voice_controller=vc_cog)
-            if getattr(self, "companion_bridge", None) is not None:
-                # 周期廣播 atmosphere snapshot；shutdown 時 cancel
-                self._atmosphere_emit_task = self.loop.create_task(
-                    _atmosphere_emit_loop(self.companion_bridge, interval=10.0)
-                )
-                self._voice_snapshot_task = self.loop.create_task(
-                    _voice_snapshot_loop(self.companion_bridge, self, interval=15.0)
-                )
-        except Exception as e:
-            logger.warning(f"[Companion_Bridge] startup failed: {e}")
-
         # 7. ── 環境智能助理 — DiscordTemperatureMonitor + TopicGenerator ──
         if vc_cog is not None:
             from topic_generator import TopicGenerator
@@ -423,10 +330,8 @@ class MarvinBot(commands.Bot):
                     vc_cog.mark_proactive_topic_spoken()  # 戳共用 cooldown，擋下 ProactiveTopicAgent
                 return topics
 
-            _companion_bridge = getattr(self, "companion_bridge", None)
             _temp_monitor = DiscordTemperatureMonitor(
                 topic_generator_fn=_run_topic_proactive,
-                companion_bridge=_companion_bridge,
             )
             vc_cog.temperature_monitor = _temp_monitor
             vc_cog.topic_generator = _topic_gen
@@ -634,21 +539,6 @@ class MarvinBot(commands.Bot):
         """[Lifecycle Cleanup] 確保在關閉 Bot 時，釋放所有擷取資源"""
         if hasattr(self, "marmo_server"):
             await self.marmo_server.stop()
-        # 關閉 CompanionBridge（Phase 3a）
-        for attr in ("_atmosphere_emit_task", "_voice_snapshot_task"):
-            task = getattr(self, attr, None)
-            if task and not task.done():
-                task.cancel()
-                try:
-                    await task
-                except (asyncio.CancelledError, Exception):
-                    pass
-        bridge = getattr(self, "companion_bridge", None)
-        if bridge is not None:
-            try:
-                await bridge.stop()
-            except Exception as e:
-                logger.warning(f"[Companion_Bridge] stop failed: {e}")
         await super().close()
 
     # --- 🛡️ [Error Handlers] ---

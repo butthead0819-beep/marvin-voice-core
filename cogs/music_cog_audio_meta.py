@@ -66,16 +66,6 @@ class MusicAudioMetaMixin:
             if reactions:
                 self.bot.music_memory.record_reactions(info, reactions)
                 logger.info(f"🎵 [MusicMemory] 記錄 {len(reactions)} 人的反應: {info['title']}")
-                try:
-                    from bridge_emitters import emit_music_reaction_to_bridge
-                    for username, r in reactions.items():
-                        feelings = r.get("feelings", []) or []
-                        tag = "love" if feelings else "silent"
-                        asyncio.create_task(emit_music_reaction_to_bridge(
-                            self.bot, username, info, tag
-                        ))
-                except Exception as e:
-                    logger.debug(f"⚠️ [Companion_Bridge] music_reaction hook skipped: {e}")
         except Exception as e:
             logger.debug(f"⚠️ [MusicMemory] 反應分析失敗: {e}")
 
