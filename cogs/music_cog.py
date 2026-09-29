@@ -178,21 +178,12 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         # radio 推薦短期內不太會變，快取原始 50 首、exclude_titles 每次本地重套即可。
         self._t2_seed_cache: dict[str, tuple[float, list[dict]]] = {}
         self._T2_SEED_CACHE_TTL_S = 3600
-        # 🎚️ [ThemedSet] 讀空氣主題歌單（env-gated MARVIN_THEMED_PLAYLIST，預設 OFF）
-        self._THEMED_SET_COOLDOWN_S = 30 * 60   # 一張歌單約 30-40 分鐘，半小時內不重開
-        self._THEMED_SET_NIGHTLY_CAP = 4        # 每晚上限，防抖動重打付費 LLM
-        self._last_themed_set_ts: float = 0.0
-        self._themed_sets_tonight: int = 0
-        self._themed_set_date = None
         # 🎭 [DJ Joke Interlude] 頻道安靜（非熱烈聊天）時，crossfade 串場偶爾換成馬文式
         # 厭世冷笑話（跟 /marvin_joke 共用風格範例庫，見 joke_examples.py）。冷卻起點設
         # 在啟動當下（不是 0），避免剛開機/剛連上就先講一則——也讓每個測試用的新 cog
         # 實例預設冷卻中，不會意外把既有 DJ 串場測試岔到笑話分支。
         self._DJ_JOKE_COOLDOWN_S = 30 * 60
         self._last_dj_joke_ts: float = time.time()
-        # 📖 [StoryArc] 故事弧線節目（dj_story_arc.py）進行中旗標——自成一體播放協程，
-        # 不碰 stream_queue/_stream_loop/_run_tail_dj，跟一般 autopilot 互斥（見 story_arc 指令）。
-        self._story_arc_active: bool = False
         self._STORY_ARC_BGM_VOLUME: float = 0.05  # 口白約10%感覺時，BGM抓一半5%，別蓋過口白
         self._prefetch_cache: dict = {}   # url → Task[{'lyrics', 'comment'}]
         self._preload_music_cache: dict = {}   # url → Task[PreloadedF32MusicSource]
@@ -594,10 +585,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
 
         still_active：`_mixer_play_music` 用來判斷「還要不要繼續播」的 callable，預設
         `None` → 退回 `lambda: self.stream_mode`（一般 autopilot/radio 的既有行為，不變）。
-        `_play_story_arc` 這種自成一體、刻意不設 `stream_mode=True` 的呼叫端要傳自己的
-        判斷（例如 `lambda: self._story_arc_active`）——否則 `still_active()` 一開始就是
-        False，`_mixer_play_music` 的 while 迴圈第一輪就判定「該停了」，歌完全沒真的
-        播出來就被 `clear_music()` 收掉（2026-08-17 story arc 第一次真機測試踩到）。
         """
         import shlex
 

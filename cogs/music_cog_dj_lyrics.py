@@ -6,7 +6,7 @@ MusicDJLyricsMixin — MusicCog 的歌詞/評論抓取 + DJ 播報內容生成�
     class MusicCog(..., MusicDJLyricsMixin, ..., commands.Cog): ...
 因此 self 仍是 MusicCog 實例，bot.router / bot.tts_engine / bot.music_memory /
 _vc / _life_cores_async / _present_interests / _dj_topic_store /
-_recent_emotional_highlight / _autopilot_pick_reason / _themed_dj_text 等
+_recent_emotional_highlight / _autopilot_pick_reason 等
 全部沿用原本的 self 存取，行為零改動。
 
 _DJ_TEMPLATES 及其衍生常數（_DJ_EMPATHY_HOOK_TEMPLATES / _AUTOPILOT_DJ_PHRASES_* /
@@ -248,13 +248,6 @@ class MusicDJLyricsMixin:
         except Exception:
             return "台中"
 
-    @staticmethod
-    def _themed_dj_text(info: dict) -> str:
-        """🎚️ 主題歌單的歌 → 用 LLM 策展時寫的選歌理由當 DJ 播報詞（其餘歌回 ""）。"""
-        if info.get('_lane') == 'themed':
-            return (info.get('_pick_reason') or '').strip()
-        return ''
-
     _QUICK_SEGUE_TEMPLATES = tuple(_DJ_TEMPLATES["quick_segue"]["default"])
     _QUICK_SEGUE_TEMPLATES_INTIMATE = tuple(_DJ_TEMPLATES["quick_segue"]["intimate"])
     _QUICK_SEGUE_TEMPLATES_ENERGETIC = tuple(_DJ_TEMPLATES["quick_segue"]["energetic"])
@@ -469,14 +462,6 @@ class MusicDJLyricsMixin:
 
     async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
         """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
-        # 📖 [StoryArc] 故事弧節點：口白已經在 /story_arc_prepare 階段生成+TTS預渲染好
-        # 了，直接用，不重新過 LLM/TTS（那是這個函式其餘部分在做的事，故事弧要跳過）。
-        if info.get('_lane') == 'story_arc':
-            script = (info.get('_story_interjection_script') or '').strip()
-            if not script:
-                return None
-            return {'text': script, 'audio_path': info.get('_story_interjection_audio_path')}
-
         requester = info.get('requested_by', '')
         if not requester:
             return None
@@ -676,10 +661,10 @@ class MusicDJLyricsMixin:
         except Exception:
             pass  # fail-open：語氣注入失敗不影響 DJ 生成
 
-        # 長度 gate 統一放寬到 dj_story：Marvin autopilot 模板/themed 理由也別再被 5s
+        # 長度 gate 統一放寬到 dj_story：Marvin autopilot 模板也別再被 5s
         # music_intro 砍成「狗與露」這種殘句（autopilot DJ 被截斷的根因）。
         gate_task = "dj_story"
-        text = self._themed_dj_text(info)   # 主題歌單：直接播策展時寫好的理由，不重複燒 LLM
+        text = ''
         if not text and info.get('_lane') == 'associative':
             text = (info.get('_dj_line') or '').strip()  # 關聯選曲：直接使用 45-55 字金句串場詞，不重複燒 LLM
 
@@ -687,9 +672,9 @@ class MusicDJLyricsMixin:
         # crossfade 換成馬文式厭世冷笑話。改用「策展笑話庫 + 歌名拼音比對」（見
         # joke_bank.py / personas/joke_bank.yaml）：下一首歌名字音撞到哪則笑話的 hook
         # 就播那則，沒撞到就不講（fallback 回正常串場）。LLM 現編諧音梗實測品質不穩，
-        # 已改成純本地查表（零 LLM、零花費、品質有下限）。themed 歌單有自己寫好的口白，不搶。
+        # 已改成純本地查表（零 LLM、零花費、品質有下限）。
         _last_joke_ts = getattr(self, '_last_dj_joke_ts', None)
-        if not text and info.get('_lane') != 'themed' and _heat_mode != "active_chat" \
+        if not text and _heat_mode != "active_chat" \
                 and _last_joke_ts is not None \
                 and (time.time() - _last_joke_ts) >= getattr(self, '_DJ_JOKE_COOLDOWN_S', 1800):
             try:

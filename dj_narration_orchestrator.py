@@ -3,7 +3,7 @@
 ## 背景
 
 「DJ 在歌與歌之間要講什麼話」這件事，實際邏輯散落在至少 8 個獨立檔案
-（dj_topic_selector / dj_life_context / dj_story_arc / dj_social_affinity /
+（dj_topic_selector / dj_life_context / dj_social_affinity /
 dj_comedy_fallback / dj_prompt_builder / dj_tail_schedule / joke_bank），
 真正的呼叫順序則寫死在 `cogs/music_cog_tail_dj.py::_run_tail_dj` 跟
 `cogs/music_cog_dj_lyrics.py::_fetch_dj_interjection_raw` 兩支方法的程式碼裡，
@@ -36,11 +36,7 @@ side effect」的兩段決策——尾段點火時機、話題來源挑選——
    就先做，避免 DJ 沒話講時連帶拖慢下一首換源。
 5. 取下一首的 DJ meta（`_resolve_tail_dj_meta` → 沒 prefetch 過就現場呼叫
    `_fetch_dj_interjection_raw`），meta 裡的文字是怎麼決定的：
-   a. `_lane == 'story_arc'`：直接用 `/story_arc_prepare` 階段已經生成+
-      TTS 預渲染好的台詞（dj_story_arc.py 產出），完全跳過下面所有步驟。
-   b. `_lane == 'themed'`：直接用主題歌單策展時寫好的選歌理由
-      （`_themed_dj_text`），同樣跳過 LLM。
-   c. 話題來源挑選（**跟要不要講的「文字」是兩件事**——這一步只決定
+   a. 話題來源挑選（**跟要不要講的「文字」是兩件事**——這一步只決定
       「這輪如果要講，素材從哪來」）：優先看 memory_evidence（在場者親口
       說過喜歡這首歌/歌手的具體證據，命中且未冷卻直接勝出，跳過下面
       select_mode）→ 都沒有才交給 `dj_topic_selector.select_mode()`
@@ -50,17 +46,17 @@ side effect」的兩段決策——尾段點火時機、話題來源挑選——
       （`_autopilot_pick_reason`）且 mode 落在 quick/atmosphere 這兩個
       「敬陪末座」的 fallback，直接蓋掉、改用 "reason"（好料不該被輪替
       吃掉）。→ 對應 `select_narration_mode()`。
-   d. 頻道熱度/社交親密度上下文（dj_social_affinity：連播偵測、
+   b. 頻道熱度/社交親密度上下文（dj_social_affinity：連播偵測、
       社交親近度、環境氛圍字串）併入 LLM prompt 的 ctx，不影響上面的
       mode 選擇，只影響最終文案怎麼寫。
-   e. **文字來源優先序**（尚未抽成純函式，見上方模組說明）：
-      story_arc（見 a）> themed（見 b）> joke_bank 命中（頻道不是熱聊中
+   c. **文字來源優先序**（尚未抽成純函式，見上方模組說明）：
+      joke_bank 命中（頻道不是熱聊中
       + 距上次講笑話超過冷卻 + 拼音撞中 hook）> mode=="quick" 時的本地
       固定模板（`_quick_segue_text`，零 LLM）> LLM 生成
       （`dj_prompt_builder` 組的 prompt，經 `bot.router` 呼叫）> LLM 空手
       或不合格時，Marvin 自選歌退回 `_autopilot_dj_phrase` 模板池 >
       仍無效則退回「DJ Marvin為你帶來《X》」固定格式報幕（保底、永不失敗）。
-   f. 最終文字過 `tts_length_policy.truncate_for_tts` 長度閘門，再送 TTS
+   d. 最終文字過 `tts_length_policy.truncate_for_tts` 長度閘門，再送 TTS
       預渲染成音檔。
 6. 疊播口白（`_maybe_play_dj_interjection`）+ 轉場音效（`_play_dj_tail_sfx`，
    目前整段被暫停），標記 `next_info['_dj_played_in_tail'] = True`。
@@ -182,8 +178,6 @@ def select_narration_mode(
 # Phase B 真的搬動 `music_cog_dj_lyrics.py` 時，可以把這份常數換成真正
 # 驅動邏輯的來源（現在反過來，是靠讀 code 手動謄寫這份常數）。
 NARRATION_TEXT_CASCADE = (
-    "story_arc",       # info['_lane']=='story_arc'：用已預渲染好的台詞，跳過以下全部
-    "themed",          # info['_lane']=='themed'：用策展理由，跳過以下全部
     "joke_bank",        # 非熱聊 + 冷卻已過 + 下一首歌名拼音撞中 hook
     "quick_template",  # mode=="quick" 且以上都沒命中：本地固定模板，零 LLM
     "llm",             # 以上都沒有 → dj_prompt_builder 組 prompt，走 bot.router

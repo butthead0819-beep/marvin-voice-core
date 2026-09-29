@@ -1,22 +1,20 @@
 """
-MusicStoryArcMixin — MusicCog 的「故事弧線節目」（dj_story_arc.py）Prepare/Play
-兩階段管線 + slash 指令，以及一般 autopilot 推薦主流程 `_auto_recommend`。
+MusicStoryArcMixin — MusicCog 的一般 autopilot 推薦主流程 `_auto_recommend` 及其輔助（檔名沿用舊稱）。
 
 從 music_cog.py 抽出（減肥，比照 voice_controller.py 拆解先例），以 mixin 形式
 併入 MusicCog：
     class MusicCog(..., MusicStoryArcMixin, ..., commands.Cog): ...
 因此 self 仍是 MusicCog 實例，bot.music_memory / bot.router / bot.tts_engine /
-_resolve_yt_query / _try_themed_set / _t2_discovery_candidates /
+_resolve_yt_query / _t2_discovery_candidates /
 _t4_fresh_discovery / _current_bpm_filter / _load_taste_fingerprint /
 _attribution_with_suki / _recommend_blurb / _llm_coverify 等全部沿用原本的
 self 存取，行為零改動。
 
-`_auto_recommend` 對 MusicAutopilotMixin 的方法有多條呼叫邊（_try_themed_set/
+`_auto_recommend` 對 MusicAutopilotMixin 的方法有多條呼叫邊（
 _current_bpm_filter/_t2_discovery_candidates/_t4_fresh_discovery/
 _load_taste_fingerprint/_attribution_with_suki/_recommend_blurb/_llm_coverify），
 是這批拆解裡耦合最重的一個檔案——但跨 mixin 檔的 self 呼叫本就安全（同一個
-MusicCog 實例），把它跟其餘 story_arc 內容放在同一份「故事弧線」檔而不硬塞進
-autopilot 檔，純粹是保留原始 section 邊界讓 diff 好審，不影響行為。
+MusicCog 實例）。
 """
 from __future__ import annotations
 
@@ -25,9 +23,6 @@ import logging
 import os
 import subprocess
 import time
-
-import discord
-from discord import app_commands
 
 import owner_song_voice_samples
 from intent_agents.recommendation import Recommendation, append_recommendation, time_of_day_bucket
@@ -46,81 +41,6 @@ logger = logging.getLogger(__name__)
 
 
 class MusicStoryArcMixin:
-    # ── 📖 [StoryArc] 故事弧線節目（dj_story_arc.py）──────────────────────────
-
-    async def _run_story_arc_pipeline(self, members: list, target_minutes: float):
-        """離線 Step1-5：找敘事流→共同/個人回憶→大綱+選歌→口白→resolve+片頭。
-
-        跟 scripts/preview_story_arc.py 同一批函式、同一套邏輯，只是資料源改成
-        cog 內既有的 self.bot.music_memory / suki / self._resolve_yt_query（不用
-        另外拉 yt-dlp standalone resolve）。
-
-        回 (arc, infos, brief, intro) 或 (None, 原因字串) 供指令層告知使用者為何沒開播。
-        """
-        from dj_story_arc import (build_show_intro, build_story_candidate_pools,
-                                  curate_story_interjections, curate_story_outline,
-                                  gather_story_brief, resolve_story_arc)
-        from llm_pool import call_paid_review
-        from track_quality import is_non_song_video, extract_video_id
-
-        entries = self._load_summary_entries()
-        if not entries:
-            return None, "沒有對話記錄可用"
-        now = time.time()
-
-        suki = getattr(getattr(self.bot, 'router', None), 'memory', None)
-        liked_items = []
-        if suki is not None:
-            for m in members:
-                try:
-                    for item in suki.get_recent_liked_items(m, limit=2):
-                        liked_items.append(f"{m}喜歡{item}")
-                except Exception:
-                    pass
-        conv_snippets = [e.core for e in entries[-4:] if getattr(e, "core", None)]
-
-        target_duration_s = target_minutes * 60.0
-        brief = gather_story_brief(entries, members, liked_items, conv_snippets,
-                                   now=now, target_duration_s=target_duration_s)
-        if brief is None:
-            return None, "共同回憶素材不足（近7天可用共同核心句 < 2），無法生成故事弧"
-
-        mm = getattr(self.bot, 'music_memory', None)
-        if mm is None:
-            return None, "音樂記憶尚未就緒"
-        exclude_titles = mm.get_recently_played_titles(7 * 24 * 3600)
-        exclude_vids = mm.get_recently_played_video_ids(7 * 24 * 3600) | mm.get_skipped_video_ids()
-        pools = build_story_candidate_pools(members, mm.all_songs(), exclude_titles, now=now)
-
-        arc = await curate_story_outline(brief, pools, exclude_titles, call_fn=call_paid_review)
-        if arc is None or not arc.nodes:
-            return None, "LLM 生成故事大綱失敗"
-
-        arc = await curate_story_interjections(arc, brief, call_fn=call_paid_review)
-
-        infos = await resolve_story_arc(
-            arc, resolve_fn=self._resolve_yt_query, exclude_vids=exclude_vids,
-            is_non_song_fn=is_non_song_video, extract_vid_fn=extract_video_id)
-        if not infos:
-            return None, "選好的歌都解析失敗，無法播放"
-
-        intro = build_show_intro(arc, brief)
-        return (arc, infos, brief, intro), None
-
-    async def _render_tts_with_duration(self, text: str) -> tuple:
-        """文字轉 TTS 音檔 + ffprobe 量真實秒數（取代 Phase 1 preview 用的粗估）。
-        失敗回 (None, 0.0)——caller 該優雅跳過這段口白，不中斷整場故事弧。"""
-        if not text:
-            return None, 0.0
-        try:
-            audio_path = await self.bot.tts_engine.generate_audio(text)
-        except Exception:
-            logger.warning("⚠️ [StoryArc] TTS 渲染失敗", exc_info=True)
-            return None, 0.0
-        if not audio_path:
-            return None, 0.0
-        dur = await self._probe_audio_duration(audio_path)
-        return audio_path, dur
 
     @staticmethod
     async def _probe_audio_duration(path: str) -> float:
@@ -167,155 +87,6 @@ class MusicStoryArcMixin:
         except Exception as e:
             logger.debug(f"⚠️ [SongVoiceSample] 接原音失敗，退回純TTS: {e}")
             return dj_audio
-
-    async def _prepare_and_stage_story_arc(self, members: list, target_minutes: float):
-        """Prepare 階段：跑生成管線 + 把片頭/每個節點的口白都預渲染成真實 TTS 音檔，
-        存成一份「待播節目」（`dj_story_arc.save_staged_show`）。播放當下（Play 階段）
-        不再做任何 LLM/TTS 工作，零延遲、可排程在生成完成後任何時間點觸發。
-
-        回 (staged_dict, None) 或 (None, 原因字串)。
-        """
-        from dj_story_arc import build_staged_show, save_staged_show
-
-        result, err = await self._run_story_arc_pipeline(members, target_minutes)
-        if result is None:
-            return None, err
-        arc, infos, brief, intro = result
-
-        intro_audio_path, intro_audio_dur = await self._render_tts_with_duration(intro.intro_script)
-
-        for info in infos:
-            script = (info.get('_story_interjection_script') or '').strip()
-            if script:
-                audio_path, dur_s = await self._render_tts_with_duration(script)
-                info['_story_interjection_audio_path'] = audio_path
-                info['_story_interjection_duration_s'] = dur_s
-
-        staged = build_staged_show(
-            infos, intro, intro_audio_path=intro_audio_path,
-            intro_audio_duration_s=intro_audio_dur, ts=time.time(),
-            narrative_day=brief.narrative_day, target_duration_s=brief.target_duration_s)
-        save_staged_show(staged)
-        return staged, None
-
-    async def _play_story_arc(self, staged: dict) -> None:
-        """Play 階段：純播放一份已經 Prepare 好的「待播節目」（見 `dj_story_arc.load_staged_show`）。
-
-        只有片頭（開場一次性 BGM+引導口白）是故事弧自己播；歌曲本身**直接丟進既有
-        `stream_queue`**，交給 `_stream_loop`/`_run_tail_dj`/`play_stream_song` 這套
-        本來就正確的機制接手播放跟 DJ 尾段口白——2026-08-17 真機測試踩到的三個 bug
-        （still_active 誤判/BGM音量蓋過口白/webpage_url不是可播網址）本質上都是自己
-        重造這套邏輯繞開既有正確實作造成的：歌曲只是故事裡的一份待播清單，不需要
-        另外重寫一套播放器。`_fetch_dj_interjection_raw` 認得 `_lane == 'story_arc'`
-        的節點，直接用 Prepare 階段預渲染好的口白，不重新過 LLM/TTS。
-
-        片頭 BGM 音量固定壓到 `_STORY_ARC_BGM_VOLUME`（口白約 10% 感覺時，BGM 抓一半
-        5%，別蓋過口白）。片頭口白 `vc._tts_protected = True` 全程開著，不被
-        barge-in/靜音閘/game_mode 中途打斷（同 `_maybe_play_dj_interjection` 既有慣例）。
-        """
-        from dj_story_arc import ShowIntro, record_story_arc
-
-        vc = self._vc()
-        if vc is None:
-            return
-        intro_dict = staged.get('intro') or {}
-        bgm_path = intro_dict.get('music_path') or ""
-
-        # 只在片頭這段短暫的一次性播放期間開著——擋掉同時間第二個 /story_arc_play
-        # 重複觸發片頭。歌曲交棒給 stream_queue 之後，正常播放狀態就看 stream_mode。
-        self._story_arc_active = True
-        try:
-            # 片頭：一次性播放，跟後面的歌曲佇列無關，播完就結束這段。
-            bgm_task = (asyncio.create_task(
-                vc.play_local_file(bgm_path, volume=self._STORY_ARC_BGM_VOLUME))
-                if bgm_path else None)
-            intro_audio = intro_dict.get('audio_path')
-            intro_dur = intro_dict.get('audio_duration_s') or 0.0
-            if intro_audio and intro_dur > 0:
-                with vc._protected_tts_window():
-                    await vc.play_dj_on_tts_layer(intro_audio, text=intro_dict.get('script') or None)
-                    await asyncio.sleep(intro_dur)
-            if bgm_task:
-                bgm_task.cancel()
-
-            # 歌曲：原樣丟進既有佇列（info dict 保留 resolve_story_arc 給的 url/webpage_url/
-            # duration/highlight_start_s，不重新設計格式），交給 _stream_loop 接手播放。
-            infos = sorted(staged.get('infos', []), key=lambda i: i.get('_story_node_position') or 0)
-            for info in infos:
-                info = dict(info)   # copy，避免共用 staged dict 的可變狀態
-                info['requested_by'] = 'Marvin故事弧'
-                info['_lane'] = 'story_arc'
-                self.stream_queue.append(info)
-            if infos:
-                self._republish_queue_snapshot()
-                self._ensure_stream_loop()
-        finally:
-            self._story_arc_active = False
-
-        record_story_arc(
-            staged.get("arc_title", ""), infos,
-            target_duration_s=staged.get("target_duration_s", 0.0), ts=time.time(),
-            narrative_day=staged.get("narrative_day", ""),
-            intro=ShowIntro(intro_script=intro_dict.get("script", ""), intro_music_path=bgm_path))
-        # 播完（其實是「交棒播放」那一刻）刻意不清 staged show——測播放設定不該每次都
-        # 重新 Prepare 燒一次 LLM token。同一份內容可以重複 /story_arc_play；要換內容
-        # 就重新 /story_arc_prepare，會覆蓋掉舊的（見 save_staged_show 是整檔覆寫）。
-
-    @app_commands.command(name="story_arc_prepare", description="[DJ] 預先生成故事弧節目內容+口白TTS，不播放")
-    @app_commands.describe(minutes="目標時長（分鐘，預設20）")
-    async def story_arc_prepare(self, interaction: discord.Interaction, minutes: int = 20):
-        await interaction.response.defer(ephemeral=False)
-        guild_vc = interaction.guild.voice_client
-        members = ([m.display_name for m in guild_vc.channel.members if not m.bot]
-                  if guild_vc else [])
-        if not members and interaction.user.voice:
-            members = [m.display_name for m in interaction.user.voice.channel.members if not m.bot]
-        if not members:
-            await interaction.followup.send(
-                "❌ 找不到故事對象——請待在語音頻道裡再試（不需要先 /summon，"
-                "Prepare 階段不碰播放）。", ephemeral=True)
-            return
-
-        await interaction.followup.send(f"📖 正在為 {'、'.join(members)} 編一段故事，請稍候…")
-        staged, err = await self._prepare_and_stage_story_arc(members, float(minutes))
-        if staged is None:
-            await interaction.followup.send(f"❌ 故事弧沒生成成功：{err}", ephemeral=True)
-            return
-        n = len(staged.get('nodes', []))
-        await interaction.followup.send(
-            f"✅ 《{staged.get('arc_title', '')}》準備好了，{n} 首歌 + 口白已預渲染。"
-            f"用 `/story_arc_play` 開始播放。")
-
-    @app_commands.command(name="story_arc_play", description="[DJ] 播放已經 /story_arc_prepare 好的故事弧節目")
-    async def story_arc_play(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=False)
-        vc = self._vc()
-        if not vc:
-            await interaction.followup.send("❌ 語音系統尚未就緒。", ephemeral=True)
-            return
-        guild_vc = interaction.guild.voice_client
-        if not guild_vc:
-            await interaction.followup.send("❌ 馬文不在語音頻道中。請先使用 `/summon`。", ephemeral=True)
-            return
-        if self._story_arc_active:
-            await interaction.followup.send("📖 已經有一場故事弧在進行中了。", ephemeral=True)
-            return
-        if self.stream_mode:
-            await interaction.followup.send(
-                "❌ 目前有音樂正在自動播放，故事弧要先淨空播放狀態才能開始——"
-                "先 `/marvin_radio stop` 或等目前播放結束再試。", ephemeral=True)
-            return
-
-        from dj_story_arc import load_staged_show
-        staged = load_staged_show()
-        if staged is None:
-            await interaction.followup.send(
-                "❌ 沒有準備好的節目，先跑 `/story_arc_prepare`。", ephemeral=True)
-            return
-
-        await interaction.followup.send(
-            f"🎬 《{staged.get('arc_title', '')}》，{len(staged.get('nodes', []))} 首歌，開始了。")
-        await self._play_story_arc(staged)
 
     async def _maybe_state_pick(self, spotlight: str, members: list, cands: list) -> list:
         """💬 [StatePick] spotlight 近期有狀態（如「感冒喉嚨痛」）→ LLM 從他自己的候選池挑一首
@@ -387,12 +158,7 @@ class MusicStoryArcMixin:
                 suki_hist += (_suki.get_song_history(m) or [])[:10]
         exclude_titles = list(dict.fromkeys(recently + recommended + skipped + suki_hist))
 
-        # 🎚️ [ThemedSet] 新一輪起手先試讀空氣主題歌單（env-gated，閘關/失敗回 0 → 走原 autopilot）
         if _tier == 1:
-            _n_themed = await self._try_themed_set(members, exclude_titles, spotlight, mm)
-            if _n_themed > 0:
-                return
-
             # 🎵 [AssociativeCuration] 嘗試對話關聯與歌詞金句選曲（env-gated + 冷卻，失敗回 0 → 走原 autopilot）
             if hasattr(self, '_try_associative_pick'):
                 _n_assoc = await self._try_associative_pick(members, exclude_titles, spotlight, mm)

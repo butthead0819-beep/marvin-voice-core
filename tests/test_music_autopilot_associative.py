@@ -160,7 +160,6 @@ async def test_dj_interjection_uses_associative_dj_line():
     host._current_season = MagicMock(return_value="秋天")
     host._city_label = MagicMock(return_value="台中")
     host._dj_clean_name = MagicMock(return_value=("手機錢包鑰匙菸", "美秀集團"))
-    host._themed_dj_text = MagicMock(return_value="")
 
     info = {
         "title": "手機錢包鑰匙菸",

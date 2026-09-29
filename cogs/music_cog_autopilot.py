@@ -1,6 +1,6 @@
 """
 MusicAutopilotMixin — MusicCog 的 autopilot 自動推薦引擎（T2 discovery / T4 冒險
-發現 / cover 推薦 / 主題歌單策展 / 掛名歸因等）。
+發現 / cover 推薦 / 掛名歸因等）。
 
 從 music_cog.py 抽出（減肥，比照 voice_controller.py 拆解先例），以 mixin 形式
 併入 MusicCog：
@@ -16,7 +16,6 @@ _TASTE_PROFILE_CACHE / _TASTE_FINGERPRINT_CACHE / _SONG_BPM_STORE 是純字面
 from __future__ import annotations
 
 import asyncio
-import datetime
 import functools
 import logging
 import os
@@ -24,7 +23,7 @@ import random
 import time
 
 from music_memory import extract_video_id
-from music_recommender import is_already_recommended, normalize_title, ring_titles_for
+from music_recommender import normalize_title
 
 logger = logging.getLogger(__name__)
 
@@ -387,20 +386,6 @@ class MusicAutopilotMixin:
             return f"🎵 **【馬文精選】** 為 `{who}` 挖到新歌《{title}》，聽聽看。"
         return f"🎵 **【馬文精選】** 為 `{who}` 翻出的《{title}》。"
 
-    def _themed_gate_open(self, now: float) -> bool:
-        """🎚️ 主題歌單觸發閘：env on + 過冷卻 + 未超每晚上限（跨日自動重置）。"""
-        if os.getenv("MARVIN_THEMED_PLAYLIST") != "1":
-            return False
-        today = datetime.date.fromtimestamp(now)
-        if today != self._themed_set_date:
-            self._themed_set_date = today
-            self._themed_sets_tonight = 0
-        if now - self._last_themed_set_ts < self._THEMED_SET_COOLDOWN_S:
-            return False
-        if self._themed_sets_tonight >= self._THEMED_SET_NIGHTLY_CAP:
-            return False
-        return True
-
     def _load_summary_entries(self):
         """讀 chat_summary_log → 日記 DiaryEntry（有 ts_str/core/speakers）。失敗回 []。"""
         try:
@@ -446,103 +431,6 @@ class MusicAutopilotMixin:
                 likes_map[m] = []
         owner = self._taste_match_owner(info.get('title', ''), likes_map, order)
         return f"Marvin推薦（為{owner}）" if owner else base
-
-    def _enqueue_themed_infos(self, infos: list, theme_title: str, spotlight: str,
-                              exclude_titles: list, mm) -> list:
-        """成塊入隊：套需 cog 狀態的閘（佇列/正在播去重、ring）+ 標 set 欄位。
-
-        回『實際入隊』的 info 清單（caller 取 len() 當首數、並落日記 record）。
-        """
-        enqueued: list = []
-        for info in infos:
-            if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
-                                          username=spotlight, webpage_url=info.get('webpage_url', '')):
-                continue
-            if is_already_recommended(info.get('title', ''), exclude_titles):
-                continue
-            # 掛名規則：themed 選歌通常非 spotlight 點過 → recommend_attribution 走點給大家，
-            # 但 _attribution_with_suki 會再用 suki 愛歌手強匹配補「為X」
-            info['requested_by'] = self._attribution_with_suki(mm, info, spotlight)
-            info['_lane'] = 'themed'
-            info['_spotlight'] = spotlight
-            info['_set_id'] = theme_title
-            info['_round_first'] = (len(enqueued) == 0)
-            self.stream_queue.append(info)
-            for _rt in ring_titles_for(info.get('title', ''), 'direct', info.get('title', '')):
-                mm.add_recent_recommendation(_rt)
-            enqueued.append(info)
-        if enqueued:
-            self._republish_queue_snapshot()
-        return enqueued
-
-    @staticmethod
-    def _build_themed_announcement(theme_title: str, infos: list) -> str:
-        """今夜歌單文字貼文：主題 + 每首歌名與策展理由（_pick_reason）。截到 Discord 2000 上限內。"""
-        n = len(infos)
-        lines = [f"🎚️ **【今夜歌單】** 我聽你們聊了一晚，為你們策展《{theme_title}》共 {n} 首："]
-        for i, info in enumerate(infos, 1):
-            title = (info.get('title') or '?').strip()[:60]
-            reason = (info.get('_pick_reason') or '').strip()
-            lines.append(f"`{i}.` **{title}**" + (f"\n> {reason}" if reason else ""))
-        text = "\n".join(lines)
-        return (text[:1900] + "…") if len(text) > 1900 else text
-
-    async def _announce_themed_set(self, theme_title: str, enqueued_infos: list) -> None:
-        vc = self._vc()
-        # 同卡片 fallback：active_text_channel 未設(語音召喚)時退語音頻道內建文字區
-        ch = None
-        if vc is not None:
-            ch = vc.active_text_channel or getattr(getattr(vc, 'voice_client', None), 'channel', None)
-        if ch:
-            try:
-                await ch.send(self._build_themed_announcement(theme_title, enqueued_infos))
-            except Exception:
-                logger.debug("[ThemedSet] 宣告貼文失敗（忽略）", exc_info=True)
-
-    async def _try_themed_set(self, members: list, exclude_titles: list,
-                              spotlight: str, mm) -> int:
-        """🎚️ 嘗試策展一張主題歌單入隊。回入隊首數（0 = 沒做 → caller 走一般 autopilot）。
-
-        全程優雅降級：閘關 / 無主題 / LLM 失敗 / resolve 不足 / 任何例外 → 回 0，不中斷音樂。
-        """
-        if not self._themed_gate_open(time.time()):
-            return 0
-        try:
-            from themed_playlist import (curate_themed_set, gather_theme_brief,
-                                         record_themed_set, resolve_themed_set)
-            from track_quality import is_non_song_video
-            from music_memory import extract_video_id
-            from llm_pool import call_paid_review
-
-            brief = gather_theme_brief(self._load_summary_entries(),
-                                       self._load_taste_fingerprint(), members, now=time.time())
-            if brief is None:
-                return 0
-            themed = await curate_themed_set(brief, exclude_titles,
-                                             call_fn=call_paid_review, set_size=self._round_size * 2)
-            if themed is None or not themed.picks:
-                return 0
-            exclude_vids = mm.get_skipped_video_ids() | mm.get_recently_played_video_ids(
-                self._PLAYED_EXCLUDE_TTL_S)
-            infos = await resolve_themed_set(
-                themed, resolve_fn=self._resolve_yt_query, exclude_vids=exclude_vids,
-                is_non_song_fn=is_non_song_video, extract_vid_fn=extract_video_id)
-            enqueued_infos = self._enqueue_themed_infos(infos, themed.theme_title, spotlight,
-                                                        exclude_titles, mm)
-            n = len(enqueued_infos)
-            if n == 0:
-                logger.info("🎚️ [ThemedSet] resolve+閘後 0 首可入隊 → fallback 一般 autopilot")
-                return 0
-            record_themed_set(themed.theme_title, enqueued_infos, ts=time.time())  # 落日記「今夜歌單」
-            self._themed_sets_tonight += 1
-            self._last_themed_set_ts = time.time()
-            logger.info(f"🎚️ [ThemedSet]《{themed.theme_title}》入隊 {n} 首"
-                        f"（今晚第 {self._themed_sets_tonight} 張）")
-            await self._announce_themed_set(themed.theme_title, enqueued_infos)
-            return n
-        except Exception:
-            logger.exception("[ThemedSet] 失敗，fallback 一般 autopilot")
-            return 0
 
     # ── 🎵 Associative curation (對話關聯與歌詞金句選曲) ──────────────────────
     _ASSOCIATIVE_COOLDOWN_S = 900.0  # 15 分鐘冷卻，防聽覺與選曲疲勞

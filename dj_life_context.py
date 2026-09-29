@@ -1,8 +1,7 @@
 """DJ 串場的「最近生活素材」抽取（純函式，無 I/O）。
 
 DJ 只串歌名唸起來像播報清單；摻進最近幾天的生活核心句、用雞湯口吻敘事才像真人 DJ。
-素材來源＝日記主題摘要的核心句（records/chat_summary_log.txt → DiaryEntry），
-與主題歌單 (themed_playlist.gather_theme_brief) 同一批素材，但窗是「天」不是「小時」。
+素材來源＝日記主題摘要的核心句（records/chat_summary_log.txt → DiaryEntry），窗是「天」。
 
 低顯著度的核心句（『無意義對話』那種）不當素材——熬出來的雞湯是水。
 

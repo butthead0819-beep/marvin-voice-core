@@ -1,6 +1,6 @@
 """解析 records/chat_summary_log.txt → 結構化日記條目。
 
-DJ 分支共用：dj_life_context / dj_story_arc / dj_topic_selector 都吃這裡的
+DJ 分支共用：dj_life_context / dj_topic_selector 都吃這裡的
 DiaryEntry（串場故事的「最近生活內容」素材來源）。原本跟漫畫排版函式一起放在
 diary_comic/parser.py，砍掉漫畫日記功能時抽出來獨立，避免 DJ 功能被連坐。
 
