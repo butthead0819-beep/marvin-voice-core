@@ -84,9 +84,9 @@ def test_get_dj_unified_rules():
 
 def test_build_audiophile_guide_prompt():
     """導聆 prompt：當 grounded 呼叫的 system_instruction 用（見 audiophile_fetcher）。
-    要鎖住：90-110 字長度、聽覺線索（聲場/樂器/突變）、三幕式結構、禁假文青套話
-    （沿用 FORBIDDEN_DJ_PHRASES 單一來源）、只輸出台詞，以及零幻覺的兩道門：
-    要求 Google 查證、查不到只回「無」（接 grounded_answer 的 L1 拒答 guard）。"""
+    要鎖住：90-110 字長度、聽覺線索（聲場/樂器/突變）、多維度切入角度（幕後/唱腔/焦點）、
+    禁假文青套話與八股反轉句型（沿用 FORBIDDEN_DJ_PHRASES 單一來源）、只輸出台詞，
+    以及零幻覺的兩道門：要求 Google 查證、查不到只回「無」（接 grounded_answer 的 L1 拒答 guard）。"""
     from dj_prompt_builder import FORBIDDEN_DJ_PHRASES, build_audiophile_guide_prompt
 
     label = "周杰倫 - 雙截棍"
@@ -97,12 +97,18 @@ def test_build_audiophile_guide_prompt():
     # 聽覺線索引導
     for cue in ("聲場", "樂器", "突變"):
         assert cue in prompt, cue
-    # 三幕式：破除既定印象 → 聽覺錨點 → 戴耳機進歌
+    # 破除既定印象與聽覺錨點
     assert "破除" in prompt
     assert "聽覺錨點" in prompt
-    assert "耳機" in prompt
-    # 禁假文青套話：禁詞清單單一來源，不另維護一份
+    # 多維度切入視角引導（幕後軼事、唱腔、聽覺焦點）
+    assert "幕後" in prompt
+    assert "唱腔" in prompt
+    # 嚴禁公式化反轉句型
+    assert "公式化" in prompt
+    # 禁假文青套話與八股詞：禁詞清單單一來源，不另維護一份
     assert "假文青" in prompt
+    assert "許多人以為" in FORBIDDEN_DJ_PHRASES
+    assert "別以為" in FORBIDDEN_DJ_PHRASES
     for phrase in FORBIDDEN_DJ_PHRASES:
         assert phrase in prompt, phrase
     # 零幻覺
