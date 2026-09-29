@@ -44,7 +44,6 @@ def make_sink(user_id, buffer_len=192000, first_audio=0.0, last_spoken=0.0):
     sink.user_wake_check_count = {}
     sink.wake_stream = None
     sink.last_audio_packet_time = 0.0
-    sink._stream_release = MagicMock()
     return sink
 
 
