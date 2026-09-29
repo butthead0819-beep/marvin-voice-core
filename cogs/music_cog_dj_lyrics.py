@@ -57,6 +57,10 @@ class MusicDJLyricsMixin:
     def _dj_clean_name(self, info: dict) -> tuple[str, str]:
         """DJ 播報專用乾淨歌名（track→catalog videoId→regex 剝雜訊）。與歌詞路徑的
         _parse_song_title_artist 分開：catalog 的「藝人 歌名」合併格式不適合 lrclib 查詞。"""
+        # 曲庫正規化過（info['_canon']，canon::<videoId>）就用正規化曲名/歌手（2026-09-29 使用者定）
+        canon = info.get('_canon') or {}
+        if canon.get('title') and canon.get('artist'):
+            return canon['title'], canon['artist']
         from song_name_clean import dj_display_name
         from music_memory import extract_video_id
         return dj_display_name(info, extract_vid=extract_video_id)
@@ -502,6 +506,8 @@ class MusicDJLyricsMixin:
         slot = mm.time_slot(time.time()) if mm else ''
         title = info.get('title', '')
         # 餵 LLM 用乾淨歌名（別給完整 YouTube 標題，否則 DJ 會照唸一長串）。
+        # 之前正規化過的歌先從曲庫快取補上 _canon，_dj_clean_name 就會回正規化名字。
+        self._attach_cached_canon(info)
         _clean_t, _clean_a = self._dj_clean_name(info)
         _song_label = f"{_clean_a} - {_clean_t}" if _clean_a else _clean_t
         ctx = [f"歌曲：{_song_label or title}", f"點播者：{requester}"]
@@ -563,6 +569,11 @@ class MusicDJLyricsMixin:
         canon, guide = None, None
         try:
             canon, guide = await self._dj_song_material(info, _clean_t, _clean_a)
+            if canon and canon.get('title') and canon.get('artist'):
+                # 這輪才正規化完：開頭「歌曲：」那行與後面笑話比對/長度閘門改用正規化名字
+                _clean_t, _clean_a = canon['title'], canon['artist']
+                _song_label = f"{_clean_a} - {_clean_t}"
+                ctx[0] = f"歌曲：{_song_label}"
             if canon and canon.get('album'):
                 ctx.append(
                     f"歌曲資料：{canon['artist']}《{canon['album']}》"
