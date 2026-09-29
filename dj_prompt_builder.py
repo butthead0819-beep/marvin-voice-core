@@ -175,3 +175,121 @@ def build_stream_now_playing_prompt(context: str) -> str:
         "4. 只輸出台詞，不加引號、不加說明"
     )
     return template.format(context=context)
+
+
+def build_song_card_ingestion_prompt(song_label: str, lyrics: str = "") -> str:
+    """建構「單次聚合多維度歌曲卡」Ingestion Prompt。
+    
+    一箭三鵰單次 Grounding 呼叫：同時獲取聽覺幕後口白、社群熱評標籤與歌詞刺點，
+    避免分散呼叫產生的 API 成本與速率限制。
+    """
+    lyrics_block = f"\n附帶歌詞參考（包含時間戳）：\n{lyrics}\n" if lyrics else ""
+    return (
+        f"你是音樂資料庫整編員與導聆專家，正在為歌曲《{song_label}》建立全方位多維度歌曲卡。\n\n"
+        "【查證守門】一定要先實際執行 Google 搜尋，根據搜尋結果回答，不准只憑記憶。"
+        "用 Google 搜尋這首歌的專業樂評、錄音訪談、幕後花絮與聽眾共鳴梗，只寫查得到、查證過的細節，"
+        "不准腦補；若該維度真的查無資料，請填寫「無」。若完全查不到這首歌任何資料，直接回覆「無」。\n\n"
+        f"{lyrics_block}"
+        "請嚴格依據以下三段標籤與格式輸出，不得擅自更改標籤名稱：\n\n"
+        "【聽覺與幕後】：一段三幕式深度聽覺口白（長度 90-110 個中文字）：\n"
+        "  1. 破題與創作軼事（~25字）：開門見山切入創作背景、真實唱腔或打破刻板印象，嚴禁「許多人以為/別以為…其實…」等公式化反轉句型。\n"
+        "  2. 核心音軌細節（~55字）：指出耳機裡最值得留意的具體細節（如聲場定位、特殊樂器、離調突變、環境呼吸聲）。\n"
+        "  3. 進歌引導（~20字）：自然引導聽眾戴上耳機或準備進歌。\n\n"
+        "【社群熱評標籤】：若有廣為流傳的社群梗、時代眼淚或共鳴場景，格式為：\n"
+        "  標籤：[一句話精準毒舌或共鳴標籤] | 情境：[具體觸發時機或回憶畫面]\n"
+        "  （若無流傳梗請填「無」）\n\n"
+        "【歌詞刺點】：從歌詞中挑選最刺痛或最具靈魂的一句，格式為：\n"
+        "  句：[歌詞原文] | 析：[一語道破的情感暗流或矛盾痛點]\n"
+        "  （若無歌詞或純演奏曲請填「無」）\n\n"
+        f"全篇禁止使用這些假文青套話與八股詞：{'、'.join(FORBIDDEN_DJ_PHRASES)}。\n"
+        "只依上述格式輸出內容，不加額外說明。"
+    )
+
+
+def _card_fields(raw: str, names: tuple[str, ...]) -> dict[str, str]:
+    """切出「名：值」欄位；欄位可用 | 串在同一行或分行寫（實測兩種都有）。
+    同名欄位第二次出現就停——LLM 偶爾給兩組標籤，只取第一組，避免標籤配到別組的情境。"""
+    import re
+
+    pat = re.compile(r"(?:^|\|)[ \t]*(" + "|".join(names) + r")[ \t]*[：:]", re.M)
+    matches = list(pat.finditer(raw))
+    out: dict[str, str] = {}
+    for i, m in enumerate(matches):
+        name = m.group(1)
+        if name in out:
+            break
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(raw)
+        out[name] = raw[m.end():end].strip()
+    return out
+
+
+def parse_song_card_response(raw_text: str) -> dict[str, Any] | None:
+    """解析單次聚合歌曲卡 LLM 回應。
+    
+    回傳字典結構：
+    {
+        "audiophile_guide": str,
+        "social_lore": {"tag": str, "context": str} | None,
+        "lyric_hook": {"quote": str, "timestamp": str, "subtext": str} | None,
+    }
+    若回應為「無」或缺少必要的【聽覺與幕後】段落，回傳 None。
+    """
+    import re
+
+    if not raw_text or not isinstance(raw_text, str):
+        return None
+    cleaned = raw_text.strip()
+    if cleaned == "無" or not cleaned:
+        return None
+
+    # 1. 聽覺與幕後
+    guide_match = re.search(
+        r"【聽覺與幕後】[：:]?\s*(.*?)(?=\n*【(?:社群熱評標籤|歌詞刺點)】|$)",
+        cleaned,
+        re.DOTALL,
+    )
+    if not guide_match:
+        return None
+    guide_text = guide_match.group(1).strip()
+    if not guide_text or guide_text == "無":
+        return None
+
+    # 2. 社群熱評標籤
+    social_lore = None
+    social_match = re.search(
+        r"【社群熱評標籤】[：:]?\s*(.*?)(?=\n*【歌詞刺點】|$)",
+        cleaned,
+        re.DOTALL,
+    )
+    if social_match:
+        social_raw = social_match.group(1).strip()
+        if social_raw and social_raw != "無":
+            fields = _card_fields(social_raw, ("標籤", "情境"))
+            tag = fields.get("標籤", "")
+            ctx = fields.get("情境", "")
+            if tag and tag != "無":
+                social_lore = {"tag": tag, "context": ctx}
+
+    # 3. 歌詞刺點
+    lyric_hook = None
+    lyric_match = re.search(
+        r"【歌詞刺點】[：:]?\s*(.*?)$",
+        cleaned,
+        re.DOTALL,
+    )
+    if lyric_match:
+        lyric_raw = lyric_match.group(1).strip()
+        if lyric_raw and lyric_raw != "無":
+            # 「時」仍列為欄位名只為切開舊格式回應，值丟掉：LLM 沒拿到同步歌詞時只能猜
+            fields = _card_fields(lyric_raw, ("句", "時", "析"))
+            quote = fields.get("句", "")
+            subtext = fields.get("析", "")
+            if quote and quote != "無":
+                lyric_hook = {"quote": quote, "subtext": subtext}
+
+    return {
+        "audiophile_guide": guide_text,
+        "social_lore": social_lore,
+        "lyric_hook": lyric_hook,
+    }
+

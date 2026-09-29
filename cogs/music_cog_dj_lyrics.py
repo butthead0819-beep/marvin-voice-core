@@ -407,6 +407,15 @@ class MusicDJLyricsMixin:
             label, human=human, free_client=free_client, paid_client=paid_client,
             guard=guard, store=store, budget=budget, inflight=inflight,
         )
+        if store and guide:
+            from audiophile_fetcher import _KEY_PREFIX
+            cached = store.get(_KEY_PREFIX + label)
+            if cached and cached.get("audiophile_guide"):
+                info['_song_card'] = {
+                    "audiophile_guide": cached.get("audiophile_guide"),
+                    "social_lore": cached.get("social_lore"),
+                    "lyric_hook": cached.get("lyric_hook"),
+                }
         return canon, guide
 
     def _present_interests(self) -> list[str]:
@@ -642,7 +651,23 @@ class MusicDJLyricsMixin:
             ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
         elif mode == "guide":
             ctx.append(f"導聆素材（查證過的真實資料，只能用這裡寫的事實）：\n{guide}")
-            ctx.append("串場方向：把導聆素材濃縮成一兩句，點出這首歌耳朵該聽的地方；只能講素材裡寫的事實，不准自己補細節或編故事。")
+            from dj_gacha_narrator import pick_gacha_motivation
+            card = info.get('_song_card')
+            if not card and isinstance(guide, str):
+                card = {"audiophile_guide": guide}
+            if isinstance(card, dict):
+                if card.get("social_lore") and isinstance(card["social_lore"], dict):
+                    sl = card["social_lore"]
+                    ctx.append(f"社群標籤：{sl.get('tag')}（情境：{sl.get('context')}）")
+                if card.get("lyric_hook") and isinstance(card["lyric_hook"], dict):
+                    lh = card["lyric_hook"]
+                    ctx.append(f"歌詞靈魂刺點：『{lh.get('quote')}』（{lh.get('subtext')}）")
+            gacha = pick_gacha_motivation(card, topic=topic)
+            if gacha:
+                ctx.append(gacha.instruction)
+                ctx.append("只能講上面素材裡寫的事實，不准自己補細節或編故事。")
+            else:
+                ctx.append("串場方向：把導聆素材濃縮成一兩句，點出這首歌耳朵該聽的地方；只能講素材裡寫的事實，不准自己補細節或編故事。")
         if _autopilot_reason:
             ctx.append(f"選這首的理由：{_autopilot_reason}")
 
@@ -705,21 +730,22 @@ class MusicDJLyricsMixin:
                 text = ""
             text = (text or '').strip()
 
-            _FORBIDDEN_PHRASES = ("時光流動", "歲月靜好", "撫平心靈", "流淌的旋律", "身為AI", "身為一個AI", "大家好我是")
+            from dj_prompt_builder import FORBIDDEN_DJ_PHRASES
 
             def _is_qualified_dj_script(s: str) -> bool:
                 if not s or len(s) < 10 or len(s) > 120:
                     return False
-                for fb in _FORBIDDEN_PHRASES:
+                for fb in FORBIDDEN_DJ_PHRASES:
                     if fb in s:
                         return False
                 return True
 
             if not text or not _is_qualified_dj_script(text):
                 # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
+                # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
                 _why = ("空字串" if not text else f"長度{len(text)}" if not 10 <= len(text) <= 120 else "禁詞")
                 logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
-                # LLM 空手或品質不及格 → 優先退回 autopilot 模板（若為 Marvin 自己選歌）
+                # 1. 優先嘗試 autopilot 模板（若為 Marvin 自己選歌）
                 if requester.startswith('Marvin'):
                     from song_name_clean import clean_title_regex
                     clean_title, clean_artist = self._dj_clean_name(info)
