@@ -194,8 +194,8 @@ class MusicCommandsMixin:
         await interaction.followup.send("⏭️ 已跳過。", ephemeral=True)
 
     @app_commands.command(name="guide_song", description="[DJ] 深度導聆：先查證講 20 秒該聽什麼，再從頭播這首")
-    @app_commands.describe(song_name="歌名（例如：周杰倫 雙截棍）或 YouTube 連結")
-    async def guide_song(self, interaction: discord.Interaction, song_name: str):
+    @app_commands.describe(artist="歌手（例如：周杰倫）", song="歌名（例如：雙截棍）")
+    async def guide_song(self, interaction: discord.Interaction, artist: str, song: str):
         await interaction.response.defer(ephemeral=False)
         vc = self._vc()
         if not vc:
@@ -208,12 +208,21 @@ class MusicCommandsMixin:
             await interaction.followup.send("📀 專輯巡禮進行中，點歌先暫停；要結束巡禮就說「停」。", ephemeral=True)
             return
 
-        msg = await interaction.followup.send(f"🎧 **正在查證導聆資料：** `{song_name}`...")
+        msg = await interaction.followup.send(f"🎧 **正在查證導聆資料：** {artist}〈{song}〉...")
 
-        info = await self._resolve_yt_query(song_name)
+        info = await self._resolve_yt_query(f"{artist} {song}")
         if not info:
-            await msg.edit(content=f"❌ 找不到結果：`{song_name}`。")
+            await msg.edit(content=f"❌ 找不到結果：{artist}〈{song}〉。")
             return
+
+        from audiophile_fetcher import resolved_matches_track
+        if not resolved_matches_track(info, song):
+            await msg.edit(content=f"❌ YouTube 搜到的跟〈{song}〉對不上（搜到的是：{info.get('title', '?')}），不播錯歌。")
+            return
+        # 乾淨歌手/歌名寫進 info：導聆 key 與 /tour 同一套（audiophile::歌手 - 歌名）共用快取，
+        # 後續 DJ/歌詞（_dj_clean_name 優先讀 track）也跟著用乾淨名字
+        info['track'] = song
+        info['artist'] = artist
 
         # 先渲染完才入隊：佇列空時歌會立刻開播，背景渲染會來不及
         await self._prepare_audiophile_guide(info)
@@ -320,6 +329,8 @@ class MusicCommandsMixin:
         """JIT 生產線——播第 N 首時背景渲染第 N+1 首（解析+導聆稿+TTS），佇列裡最多
         一首未開播的巡禮曲。單首解析/渲染失敗就跳過該首，不中斷巡禮。全部播完才解除 _album_tour（放開點歌鎖）。
         stream_mode 變 False（loop 不在了）就不再等，避免鎖卡死。stop 由 _stop_album_tour cancel 本 task。"""
+        from audiophile_fetcher import resolved_matches_track
+
         try:
             for track in tracks:
                 try:
@@ -327,6 +338,16 @@ class MusicCommandsMixin:
                     if not info:
                         logger.info(f"📀 [AlbumTour] 找不到「{artist} {track}」，跳過")
                         continue
+                    if not resolved_matches_track(info, track):
+                        logger.info(f"📀 [AlbumTour] 「{artist} {track}」YouTube 配到別首（{info.get('title', '?')}），跳過")
+                        vc = self._vc()
+                        ch = vc.active_text_channel if vc else None
+                        if ch:
+                            await ch.send(f"📀 〈{track}〉在 YouTube 找不到對得上的音源，跳過這首。")
+                        continue
+                    # 巡禮已知乾淨名字：導聆 key / 查證字串 / 後續 DJ 都用它，不從 YouTube 髒標題洗
+                    info['track'] = track
+                    info['artist'] = artist
                     await self._prepare_audiophile_guide(info)
                 except Exception as e:
                     logger.warning(f"📀 [AlbumTour] 「{track}」準備失敗，跳過：{e}")

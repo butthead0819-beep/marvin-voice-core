@@ -11,6 +11,8 @@ import logging
 import re
 import time
 
+from pypinyin import lazy_pinyin
+
 from dj_prompt_builder import build_audiophile_guide_prompt, build_album_tracklist_prompt
 from intent_agents.grounded_qa_agent import grounded_answer
 
@@ -107,6 +109,25 @@ async def render_audiophile_guide(
     info['_audiophile_guide_text'] = text
     info['_audiophile_guide_audio'] = audio
     info['_audiophile_guide_dur'] = dur
+
+
+_NON_ALNUM_RE = re.compile(r"[^0-9a-z]")
+
+
+def _pinyin_key(s: str) -> str:
+    """轉拼音 + 小寫 + 只留英數：簡繁同音（双截棍/雙截棍）、空白、標點、【】[]｜ 全部抹平。"""
+    return _NON_ALNUM_RE.sub("", "".join(lazy_pinyin(s or "")).lower())
+
+
+def resolved_matches_track(info: dict, track: str) -> bool:
+    """YouTube 解析結果是不是這首歌——曲名（拼音正規化）必須出現在影片標題或
+    track metadata 裡。配到別首歌（例「告五人 過場」→〈在這座城市遺失了你〉）回 False，
+    呼叫端跳過，不播錯歌（說錯不如沒說）。同音字會誤判為 True，這層是盡力而為的守門。"""
+    want = _pinyin_key(track)
+    if not want:
+        return False
+    hay = _pinyin_key(f"{info.get('title') or ''} {info.get('track') or ''}")
+    return want in hay
 
 
 def parse_tracklist(text: str) -> list[str]:
