@@ -272,18 +272,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 if hasattr(self.bot, 'music_memory'):
                     self.bot.music_memory.record_play(info, requested_by)
 
-                try:
-                    from bridge_emitters import emit_music_started_to_bridge
-                    asyncio.create_task(emit_music_started_to_bridge(
-                        self.bot,
-                        {"title": title, "style": info.get("style") or info.get("uploader", ""),
-                         "target": requested_by, "started_ts": time.time(),
-                         "source": info.get("source", "stream")},
-                        requested_by,
-                    ))
-                except Exception as e:
-                    logger.debug(f"⚠️ [Companion_Bridge] music_started hook skipped: {e}")
-
                 dj_audio, _dj_played_in_tail = await self._stream_loop_prepare_and_announce(
                     info, vc, title, requested_by)
 
@@ -312,14 +300,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                     if self._tail_dj_task is not None and not self._tail_dj_task.done():
                         self._tail_dj_task.cancel()
                         self._tail_dj_task = None
-                    try:
-                        from bridge_emitters import emit_music_ended_to_bridge
-                        completion = playback_completion if self.stream_mode else "stopped"
-                        asyncio.create_task(emit_music_ended_to_bridge(
-                            self.bot, {"title": title}, completion
-                        ))
-                    except Exception as e:
-                        logger.debug(f"⚠️ [Companion_Bridge] music_ended hook skipped: {e}")
 
                 await self._stream_loop_retry_if_dropped(info, song_start_time, requested_by, dj_audio)
 

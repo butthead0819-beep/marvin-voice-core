@@ -17,7 +17,6 @@ LowTempTrigger：
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections import deque
@@ -45,12 +44,10 @@ class DiscordTemperatureMonitor:
     def __init__(
         self,
         topic_generator_fn,
-        companion_bridge=None,
     ):
         # topic_generator_fn: async callable () -> list[str]，自身負責 TTS 播放。
         # 由 caller 封裝 guild_id / voice_members 取得邏輯。
         self._topic_generator_fn = topic_generator_fn
-        self.companion_bridge    = companion_bridge
 
         # 事件時間戳
         self._msg_times: deque[float]   = deque()
@@ -76,13 +73,9 @@ class DiscordTemperatureMonitor:
         self._prune_old()
 
     async def _run_topic_generator_and_emit(self) -> None:
-        """執行 topic generator 並在成功後廣播 topic_generated 事件。"""
+        """執行 topic generator。"""
         try:
-            topics = await self._topic_generator_fn()
-            if self.companion_bridge and topics:
-                asyncio.ensure_future(
-                    self.companion_bridge.emit_topic_generated(topics, "auto")
-                )
+            await self._topic_generator_fn()
         except Exception:
             logger.exception("[TempMonitor] topic generator 執行失敗")
 
@@ -101,42 +94,34 @@ class DiscordTemperatureMonitor:
         self._prune_old()
         level = self.level
 
-        try:
-            if level != "cold":
-                # 溫度不 cold → 清除連續計數
-                self._cold_streak = 0
-                return
+        if level != "cold":
+            # 溫度不 cold → 清除連續計數
+            self._cold_streak = 0
+            return
 
-            self._cold_streak += 1
-            logger.debug(f"[TempMonitor] cold_streak={self._cold_streak}, temp={self.temperature:.3f}")
+        self._cold_streak += 1
+        logger.debug(f"[TempMonitor] cold_streak={self._cold_streak}, temp={self.temperature:.3f}")
 
-            if self._cold_streak < _COLD_STREAK_NEED:
-                return
+        if self._cold_streak < _COLD_STREAK_NEED:
+            return
 
-            # 達到連續 3 分鐘 COLD —— 先檢查 cooldown 和 session cap
-            now = time.time()
-            if now - self._last_trigger < _COOLDOWN_SECONDS:
-                logger.debug("[TempMonitor] 仍在 cooldown 中，跳過")
-                return
+        # 達到連續 3 分鐘 COLD —— 先檢查 cooldown 和 session cap
+        now = time.time()
+        if now - self._last_trigger < _COOLDOWN_SECONDS:
+            logger.debug("[TempMonitor] 仍在 cooldown 中，跳過")
+            return
 
-            if self._session_count >= _SESSION_CAP:
-                logger.debug("[TempMonitor] 已達 session cap，跳過")
-                return
+        if self._session_count >= _SESSION_CAP:
+            logger.debug("[TempMonitor] 已達 session cap，跳過")
+            return
 
-            # 執行觸發 — 直接講話題，不問
-            self._cold_streak   = 0
-            self._last_trigger  = now
-            self._session_count += 1
+        # 執行觸發 — 直接講話題，不問
+        self._cold_streak   = 0
+        self._last_trigger  = now
+        self._session_count += 1
 
-            logger.info(f"[TempMonitor] LowTempTrigger #{self._session_count} — 直接發起話題")
-            await self._run_topic_generator_and_emit()
-
-        finally:
-            # 廣播溫度更新（每次 check 都廣播，不論是否觸發）
-            if self.companion_bridge:
-                asyncio.ensure_future(
-                    self.companion_bridge.emit_temperature_update(self.level, self.temperature)
-                )
+        logger.info(f"[TempMonitor] LowTempTrigger #{self._session_count} — 直接發起話題")
+        await self._run_topic_generator_and_emit()
 
     # ── Properties ────────────────────────────────────────────────────────────
 

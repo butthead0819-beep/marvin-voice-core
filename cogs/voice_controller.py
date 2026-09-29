@@ -904,22 +904,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         marvin_channel = voice_client.channel
         now = time.time()
 
-        # ── Lane B2：companion bridge member presence hooks ──
-        # 不擋主流程；emit helper 自帶 try/except + bridge 缺失保護。
-        try:
-            from bridge_emitters import (
-                emit_member_joined_to_bridge,
-                emit_member_left_to_bridge,
-            )
-            if before.channel != after.channel and after.channel == marvin_channel:
-                await emit_member_joined_to_bridge(
-                    self.bot, member.display_name, {"name": member.display_name}
-                )
-            elif before.channel == marvin_channel and after.channel != marvin_channel:
-                await emit_member_left_to_bridge(self.bot, member.display_name)
-        except Exception as e:
-            logger.debug(f"[Companion_Bridge] member presence emit skipped: {e}")
-
         # --- [Join Logic] ---
         if before.channel != after.channel and after.channel == marvin_channel:
             # 🔔 [Nudge Throttle] (重)進語音 = 新 session，重新武裝該人所有提醒類別
@@ -1035,9 +1019,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if topics:
                 text = "好，我幫你想了幾個話題：" + "；".join(topics[:3])
                 await self.play_tts(text, already_in_channel=True)
-                bridge = getattr(self.bot, "companion_bridge", None)
-                if bridge:
-                    asyncio.create_task(bridge.emit_topic_generated(topics[:3], "manual"))
         except Exception:
             await self.play_tts("話題產生器出了點問題，等一下再試", already_in_channel=True)
 
@@ -1770,15 +1751,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.stt_logger.info(f"[{speaker}] (Debounced) {full_raw_text}")
         print(f"\n[{speaker}] (Debounced) {full_raw_text}")
 
-        # [Companion_Bridge] Debounced STT 結果是「真正使用者一句話」的時機，
-        # 廣播 stt_chunk 給 companion。Phase 3a 原本的 pipeline.py hook 走 stt_callback
-        # 路徑，但生產 STT 在 voice_controller 這條 Debounced 路徑上，故補在這裡。
-        try:
-            from bridge_emitters import emit_stt_to_bridge
-            emit_stt_to_bridge(self.bot, speaker, full_raw_text, "debounced")
-        except Exception:
-            pass
-
         # 🚀 [Logging] 全量紀錄日誌，維持靜默監聽狀態
         # [Slow System Alignment] 這裡只做基礎資料收集與內存記錄，由慢系統每 5 分鐘統一處理
         metadata = {
@@ -2038,9 +2010,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             answer = "我的記憶系統暫時沒有回應，宇宙可能就是這樣設計的。"
         if answer:
             await self.play_tts(answer, already_in_channel=True)
-            bridge = getattr(self.bot, "companion_bridge", None)
-            if bridge:
-                asyncio.create_task(bridge.emit_recall_result(query=query, answer=answer))
 
     async def _handle_manual_add_query(self, speaker: str, query: str):
         """「記一下，…」立即存入 task_store，不等 SessionSummarizer 批次。"""
