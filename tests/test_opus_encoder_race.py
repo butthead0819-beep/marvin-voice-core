@@ -38,7 +38,6 @@ def _barge_fake():
     fake._current_tts_text = "未說完的話"
     fake._current_tts_in_channel = True
     fake.stt_logger = MagicMock()
-    fake._talk_active = MagicMock(return_value=False)
     fake.last_marvin_speech_time = 0.0
     fake.user_states = {}
     fake.bot.engine.conv_buffer.get_conversation_temperature.return_value = 2.0

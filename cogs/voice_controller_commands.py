@@ -4,7 +4,7 @@ MarvinCommandsMixin — VoiceController 的「表演 / 觀察報告 / 系統診�
 從 voice_controller.py 抽出（減肥），以 mixin 形式併入 VoiceController：
     class VoiceController(MarvinCommandsMixin, commands.Cog): ...
 因此 self 仍是 VoiceController 實例，play_tts / play_dual_dialogue /
-_tts_protected / manual_sing_request / get_online_members / bot.router 等
+_tts_protected / get_online_members / bot.router 等
 全部沿用原本的 self 存取，行為零改動。
 
 留在 VoiceController 的：summon / dismiss（連線生命週期）、marvin_reboot /
@@ -36,22 +36,3 @@ class MarvinCommandsMixin:
         with self._protected_tts_window():
             await self.play_tts(text, already_in_channel=True, protected=True, force_macos=True)
 
-    @app_commands.command(
-        name="marvin_talk",
-        description="[Voice] 跟馬文回合制對話 90 秒（暫停音樂、獨佔頻道）；再按一次結束",
-    )
-    async def marvin_talk(self, interaction: discord.Interaction):
-        mgr = getattr(self, "talk_manager", None)
-        if mgr is None:
-            await interaction.response.send_message("😑 對話功能沒初始化。", ephemeral=True)
-            return
-        # sink 只在 bot 已連進語音頻道時收音——沒連就先 /summon
-        if self.voice_client is None or not self.voice_client.is_connected():
-            await interaction.response.send_message(
-                "我還沒進語音頻道，先 /summon。", ephemeral=True
-            )
-            return
-        await interaction.response.defer(thinking=True)
-        msg = await mgr.toggle(interaction.user.id, interaction.user.display_name)
-        await interaction.followup.send(msg)
-        self.stt_logger.info(f"[MarvinTalk←{interaction.user.display_name}] {msg}")

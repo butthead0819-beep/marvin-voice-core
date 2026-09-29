@@ -10,7 +10,7 @@ design doc AmbientQA-20260830。GameKnowledgeAgent 的 sibling：同款 Declarat
   B. 事實問句尾：X 是什麼 / 是誰 / 叫什麼 / 什麼意思 / 怎麼做 / 有多少 …
   兩者都排除：點歌 / 找歌 / 歌詞、音量控制、問 Marvin 自身狀態、low_confidence_wake
 
-不做：追問視窗、連續對談（走 /marvin_talk）、shadow gating（backfill 當 gate）。
+不做：追問視窗、連續對談、shadow gating（backfill 當 gate）。
 付費鐵則：grounded 呼叫走 free→付費 key 鏈，付費過 PaidUsageGuard cap + 記帳
 caller="ambient_qa"（feedback_paid_calls_must_record）。
 """
