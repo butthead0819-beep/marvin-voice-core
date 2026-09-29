@@ -142,3 +142,37 @@ def test_no_emotional_highlights_still_falls_to_fallback_rotation(tmp_path):
         emotional_highlights=[],
     )
     assert mode in ("atmosphere", "quick")
+
+
+# ── 5. guide（歌曲卡長版導聆）fallback，排最前面 ────────────────────────────
+
+def test_guide_picked_first_when_has_guide_true(tmp_path):
+    """全新 store + has_guide=True → guide 排 FALLBACK_ORDER 最前面，第一次選它。"""
+    store = _store(tmp_path)
+    _, mode = select_mode(
+        [], [], store, has_conversation=True, has_prev_song=True, has_guide=True,
+    )
+    assert mode == "guide"
+
+
+def test_guide_never_picked_when_has_guide_false():
+    """has_guide 預設 False → guide 不進候選，行為跟舊版完全一致。"""
+    import tempfile
+    from dj_topic_selector import TopicCooldownStore
+
+    store = TopicCooldownStore(tempfile.mktemp(suffix=".json"))
+    for _ in range(6):
+        _, mode = select_mode([], [], store, has_conversation=True, has_prev_song=True)
+        assert mode != "guide"
+
+
+def test_guide_falls_through_to_next_candidate_after_used_once(tmp_path):
+    store = _store(tmp_path)
+    _, mode1 = select_mode(
+        [], [], store, has_conversation=True, has_prev_song=True, has_guide=True,
+    )
+    assert mode1 == "guide"
+    _, mode2 = select_mode(
+        [], [], store, has_conversation=True, has_prev_song=True, has_guide=True,
+    )
+    assert mode2 != "guide", "剛選過 guide，同一輪不該再選它（跟其他 fallback 一樣輪替）"

@@ -126,6 +126,7 @@ def select_narration_mode(
     news_items=None,
     autopilot_reason: str = "",
     memory_evidence: str = "",
+    has_guide: bool = False,
 ) -> tuple[str | None, str]:
     """[Step 5c] 這輪串場的話題素材從哪來——原樣包
     `_fetch_dj_interjection_raw` 裡「呼叫 dj_topic_selector.select_mode
@@ -134,8 +135,9 @@ def select_narration_mode(
     優先序：記憶對歌（memory_evidence，在場者親口說過喜歡這首歌/歌手的
     具體證據，命中且沒冷卻中就直接勝出，不再進 select_mode）→ 近期生活
     （主角要在場）→ 在場興趣 → 情緒高光 → 新聞 →
-    conversation/prev_song/atmosphere/quick 本地輪替（真正的挑選邏輯在
-    `dj_topic_selector.select_mode` 裡，這裡不重複實作）。
+    guide/conversation/prev_song/atmosphere/quick 本地輪替（真正的挑選邏輯在
+    `dj_topic_selector.select_mode` 裡，這裡不重複實作；has_guide=True 時
+    guide 才會進這輪的候選）。
 
     memory_evidence 命中時**不呼叫** `select_mode`——否則 life/interest
     話題會被白白 `mark_used` 冷卻掉，等於這輪沒講到卻先燒掉了下次的素材。
@@ -165,6 +167,7 @@ def select_narration_mode(
         has_prev_song=has_prev_song,
         emotional_highlights=emotional_highlights,
         news_items=news_items,
+        has_guide=has_guide,
     )
     if autopilot_reason and mode in ("quick", "atmosphere"):
         mode = "reason"

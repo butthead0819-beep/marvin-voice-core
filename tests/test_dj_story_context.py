@@ -175,3 +175,96 @@ async def test_marvin_autopilot_phrase_not_cut_to_garbage():
     assert result is not None
     # 舊 music_intro 5s → 砍成「狗與露」；dj_story gate 下應保留大部分
     assert len(result["text"]) >= 35, f"Marvin autopilot 被砍成殘句: {result['text']!r}"
+
+
+# ── 4. 歌曲素材 guide mode 取代舊的「音樂賞析」（SongKnowledgeStore.get_or_extract_insight）──
+
+@pytest.mark.asyncio
+async def test_dj_interjection_uses_song_guide_mode_and_skips_old_insight(tmp_path):
+    """_dj_song_material 命中（有導聆可講）→ 沒有對話/上一首/生活/興趣素材時，本地 mode
+    選擇器該優先選 guide（FALLBACK_ORDER 排最前面），context 帶長版導聆原文；且
+    舊的 SongKnowledgeStore.get_or_extract_insight 音樂賞析路徑不該再被呼叫
+    （歌曲導聆取代它）。"""
+    from unittest.mock import patch
+
+    cog = _make_cog(tmp_path=tmp_path)
+    cog.stream_history = []
+    cog._life_cores = MagicMock(return_value=[])
+    canon = {"artist": "周杰倫", "title": "夜曲", "album": "十一月的蕭邦", "year": 2005}
+    guide = ("破除印象：這首曲子聽起來哀傷但其實編曲很複雜。"
+             "聽覺錨點：注意鋼琴與弦樂的對話。戴上耳機吧。")
+    cog._dj_song_material = AsyncMock(return_value=(canon, guide))
+
+    with patch(
+        "song_knowledge_store.SongKnowledgeStore.get_or_extract_insight",
+        new=AsyncMock(return_value="不該被呼叫的舊音樂賞析"),
+    ) as mock_insight:
+        result = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+        mock_insight.assert_not_called()
+
+    assert result is not None
+    ctx = _ctx_str(cog)
+    assert guide in ctx, f"context 應含長版導聆原文: {ctx!r}"
+    assert "不該被呼叫的舊音樂賞析" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_dj_interjection_song_guide_miss_falls_back_without_guide_mode(tmp_path):
+    """_dj_song_material 查不到導聆（guide=None）→ has_guide=False，不進 guide 候選，
+    跟舊版行為一致（照樣落到其他 fallback，這裡不用 atmosphere/quick 特定斷言，只驗證
+    context 不會出現導聆素材字樣、也不會拋例外）。"""
+    cog = _make_cog(tmp_path=tmp_path)
+    cog.stream_history = []
+    cog._life_cores = MagicMock(return_value=[])
+    cog._dj_song_material = AsyncMock(return_value=(None, None))
+
+    result = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+    assert result is not None
+    ctx = _ctx_str(cog)
+    assert "導聆素材" not in ctx
+
+
+@pytest.mark.parametrize("requester,lane,expect_human", [
+    ("大肚", "", True),                          # 真人點歌 → 可走付費
+    ("Marvin推薦（為大肚）", "", False),          # autopilot → 只走免費、受預算
+    ("大肚", "personal", False),                 # 個人歌單自動墊歌：掛真人名但不是真人點歌
+])
+@pytest.mark.asyncio
+async def test_dj_song_material_human_only_for_real_requests(tmp_path, monkeypatch, requester, lane, expect_human):
+    """個人歌單（_lane='personal'）requested_by 是真人名字但實為自動播放，不准燒付費額度。"""
+    import audiophile_fetcher
+    cog = _make_cog(tmp_path=tmp_path)
+    store = MagicMock()
+    cog._audiophile_deps = MagicMock(return_value=(store, MagicMock(), cog.bot.router))
+    monkeypatch.setattr(audiophile_fetcher, "resolve_canon", AsyncMock(return_value=None))
+    guide_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(audiophile_fetcher, "song_guide_for_dj", guide_mock)
+
+    info = {"title": "周杰倫 - 夜曲", "requested_by": requester,
+            "webpage_url": "https://www.youtube.com/watch?v=abcdefghijk"}
+    if lane:
+        info["_lane"] = lane
+    await cog._dj_song_material(info, "夜曲", "周杰倫")
+
+    kw = guide_mock.await_args.kwargs
+    assert kw["human"] is expect_human
+    if not expect_human:
+        assert kw["paid_client"] is None
+
+
+@pytest.mark.asyncio
+async def test_dj_song_material_passes_raw_title_and_uploader_as_artist_hay(tmp_path, monkeypatch):
+    """歌手守門的比對來源要含原始 YouTube 標題 + 頻道名（乾淨歌手常是空的）。"""
+    import audiophile_fetcher
+    cog = _make_cog(tmp_path=tmp_path)
+    cog._audiophile_deps = MagicMock(return_value=(MagicMock(), MagicMock(), cog.bot.router))
+    canon_mock = AsyncMock(return_value=None)
+    monkeypatch.setattr(audiophile_fetcher, "resolve_canon", canon_mock)
+    monkeypatch.setattr(audiophile_fetcher, "song_guide_for_dj", AsyncMock(return_value=None))
+
+    info = {"title": "帶我去找夜生活", "uploader": "告五人Accusefive", "requested_by": "大肚",
+            "webpage_url": "https://www.youtube.com/watch?v=abcdefghijk"}
+    await cog._dj_song_material(info, "帶我去找夜生活", "")
+
+    hay = canon_mock.await_args.kwargs["artist_hay"]
+    assert "帶我去找夜生活" in hay and "告五人Accusefive" in hay

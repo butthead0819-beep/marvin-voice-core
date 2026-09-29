@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -344,3 +346,360 @@ def test_resolved_matches_track_uses_track_metadata_too():
 def test_resolved_matches_track_false(info, track):
     from audiophile_fetcher import resolved_matches_track
     assert resolved_matches_track(info, track) is False
+
+
+# ── _fetch_guide（無保底台詞版本，song_guide_for_dj 的共用核心）───────────────
+
+@pytest.mark.asyncio
+async def test_fetch_guide_cache_hit_zero_api(store):
+    from audiophile_fetcher import _fetch_guide
+
+    store.set(KEY, {"audiophile_guide": "快取裡的導聆台詞"})
+    free = _client(_resp("不該被呼叫"))
+    out = await _fetch_guide("周杰倫 - 雙截棍", free_client=free, paid_client=None,
+                             guard=_guard(), store=store)
+    assert out == "快取裡的導聆台詞"
+    free.aio.models.generate_content.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_guide_success_writes_cache(store):
+    from audiophile_fetcher import _fetch_guide
+
+    free = _client(_resp(GUIDE))
+    out = await _fetch_guide("周杰倫 - 雙截棍", free_client=free, paid_client=None,
+                             guard=_guard(), store=store)
+    assert out == GUIDE
+    assert store.get(KEY)["audiophile_guide"] == GUIDE
+
+
+@pytest.mark.asyncio
+async def test_fetch_guide_failure_returns_none_and_does_not_cache(store):
+    from audiophile_fetcher import _fetch_guide
+
+    free = _client(exc=RuntimeError("boom"))
+    out = await _fetch_guide("周杰倫 - 雙截棍", free_client=free, paid_client=None,
+                             guard=_guard(), store=store)
+    assert out is None
+    assert store.get(KEY) is None
+
+
+# ── AutoGuideBudget（DJ 串場自動觸發的免費層預算）─────────────────────────────
+
+def test_auto_guide_budget_min_interval():
+    from audiophile_fetcher import AUTO_MIN_INTERVAL_S, AutoGuideBudget
+
+    b = AutoGuideBudget()
+    assert b.allow("a", 1000.0) is True
+    assert b.allow("b", 1000.0 + AUTO_MIN_INTERVAL_S - 1) is False
+    assert b.allow("c", 1000.0 + AUTO_MIN_INTERVAL_S) is True
+
+
+def test_auto_guide_budget_daily_cap_and_reset_next_day():
+    from audiophile_fetcher import AUTO_DAILY_CAP, AUTO_MIN_INTERVAL_S, AutoGuideBudget
+
+    assert AUTO_DAILY_CAP == 10  # 免費一天 20 次、留一半給 AmbientQA（9/29 定案）
+    b = AutoGuideBudget()
+    base = time.mktime(time.strptime("2026-09-29 08:00:00", "%Y-%m-%d %H:%M:%S"))
+    now = base
+    for i in range(AUTO_DAILY_CAP):
+        assert b.allow(f"k{i}", now) is True
+        now += AUTO_MIN_INTERVAL_S
+    assert b.allow("k_over", now) is False  # 第 11 次
+
+    next_day = base + 86400
+    assert b.allow("k_next_day", next_day) is True  # 換日恢復
+
+
+def test_auto_guide_budget_fail_cooldown_blocks_same_key():
+    from audiophile_fetcher import AUTO_MIN_INTERVAL_S, AutoGuideBudget
+
+    b = AutoGuideBudget()
+    assert b.allow("x", 1000.0) is True
+    b.record("x", 1000.0, ok=False)
+    assert b.allow("x", 1000.0 + AUTO_MIN_INTERVAL_S) is False  # 同 key 冷卻中
+    assert b.allow("y", 1000.0 + AUTO_MIN_INTERVAL_S) is True   # 別的 key 不受影響
+
+
+def test_auto_guide_budget_success_clears_fail_cooldown():
+    from audiophile_fetcher import AUTO_MIN_INTERVAL_S, AutoGuideBudget
+
+    b = AutoGuideBudget()
+    b.allow("x", 1000.0)
+    b.record("x", 1000.0, ok=False)
+    b.allow("x", 1000.0 + AUTO_MIN_INTERVAL_S)  # 仍會被擋（示範冷卻存在），但下面驗證清除
+    b.record("x", 1000.0 + AUTO_MIN_INTERVAL_S, ok=True)
+    assert b.allow("x", 1000.0 + AUTO_MIN_INTERVAL_S * 2) is True
+
+
+# ── resolve_canon（iTunes 正規化）────────────────────────────────────────────
+
+def _itunes_meta(title="雙截棍", artist="周杰倫", album="范特西", year=2001):
+    return {"title": title, "artist": artist, "album": album, "year": year}
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_cache_hit_zero_query(store):
+    from audiophile_fetcher import resolve_canon
+
+    store.set("canon::vid1", {"artist": "周杰倫", "title": "雙截棍", "album": "范特西",
+                              "year": 2001, "source": "itunes", "ts": 1.0})
+
+    async def _must_not_call(*a, **kw):
+        raise AssertionError("快取命中不該查 iTunes")
+
+    out = await resolve_canon(store, "vid1", "雙截棍", "周杰倫", fetch=_must_not_call)
+    assert out["title"] == "雙截棍"
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_writes_canon_with_year_and_source(store):
+    from audiophile_fetcher import resolve_canon
+
+    async def _fetch(term, **kw):
+        return {"results": [{"trackName": "雙截棍", "artistName": "周杰倫",
+                             "collectionName": "范特西", "releaseDate": "2001-09-14T00:00:00Z",
+                             "artworkUrl100": "https://x/100x100bb.jpg"}]}
+
+    out = await resolve_canon(store, "vid1", "雙截棍", "周杰倫", fetch=_fetch)
+    assert out == {"artist": "周杰倫", "title": "雙截棍", "album": "范特西",
+                   "year": 2001, "source": "itunes", "ts": out["ts"]}
+    assert store.get("canon::vid1") == out
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_single_suffix_album_becomes_none(store):
+    from audiophile_fetcher import resolve_canon
+
+    async def _fetch(term, **kw):
+        return {"results": [{"trackName": "晴天", "artistName": "周杰倫",
+                             "collectionName": "晴天 - Single", "releaseDate": "2003-01-01T00:00:00Z",
+                             "artworkUrl100": "https://x/100x100bb.jpg"}]}
+
+    out = await resolve_canon(store, "vid2", "晴天", "周杰倫", fetch=_fetch)
+    assert out["album"] is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_title_pinyin_mismatch_returns_none_not_written(store):
+    from audiophile_fetcher import resolve_canon
+
+    async def _fetch(term, **kw):
+        return {"results": [{"trackName": "完全不同的歌", "artistName": "周杰倫",
+                             "collectionName": "某專輯", "releaseDate": "2001-01-01T00:00:00Z",
+                             "artworkUrl100": "https://x/100x100bb.jpg"}]}
+
+    out = await resolve_canon(store, "vid3", "雙截棍", "周杰倫", fetch=_fetch)
+    assert out is None
+    assert store.get("canon::vid3") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_meta_none_returns_none(store):
+    from audiophile_fetcher import resolve_canon
+
+    async def _fetch(term, **kw):
+        return {"results": []}
+
+    out = await resolve_canon(store, "vid4", "雙截棍", "周杰倫", fetch=_fetch)
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_no_video_id_returns_none(store):
+    from audiophile_fetcher import resolve_canon
+
+    async def _must_not_call(*a, **kw):
+        raise AssertionError("沒 video_id 不該查")
+
+    out = await resolve_canon(store, "", "雙截棍", "周杰倫", fetch=_must_not_call)
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_default_fetch_uses_country_tw(store, monkeypatch):
+    from audiophile_fetcher import resolve_canon
+    import itunes_cover
+
+    captured = {}
+
+    async def _fake_default_fetch(term, *, timeout_s=6.0, country=None):
+        captured["country"] = country
+        return {"results": [{"trackName": "雙截棍", "artistName": "周杰倫",
+                             "collectionName": "范特西", "releaseDate": "2001-01-01T00:00:00Z",
+                             "artworkUrl100": "https://x/100x100bb.jpg"}]}
+
+    monkeypatch.setattr(itunes_cover, "_default_fetch", _fake_default_fetch)
+    await resolve_canon(store, "vid5", "雙截棍", "周杰倫")
+    assert captured["country"] == "TW"
+
+
+# ── song_guide_for_dj ────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_song_guide_for_dj_cache_hit_zero_calls(store):
+    from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
+
+    store.set(KEY, {"audiophile_guide": "快取裡的導聆台詞"})
+    free = _client(_resp("不該被呼叫"))
+    out = await song_guide_for_dj(
+        "周杰倫 - 雙截棍", human=False, free_client=free, paid_client=None,
+        guard=None, store=store, budget=AutoGuideBudget(), inflight={},
+    )
+    assert out == "快取裡的導聆台詞"
+    free.aio.models.generate_content.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_song_guide_for_dj_autopilot_uses_free_only_and_budget(store):
+    from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
+
+    free = _client(_resp(GUIDE))
+    paid = _client(_resp("不該被呼叫"))
+    out = await song_guide_for_dj(
+        "周杰倫 - 雙截棍", human=False, free_client=free, paid_client=paid,
+        guard=_guard(), store=store, budget=AutoGuideBudget(), inflight={},
+    )
+    assert out == GUIDE
+    paid.aio.models.generate_content.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_song_guide_for_dj_autopilot_free_fails_never_falls_to_paid(store):
+    """免費層 429 時 autopilot 也不准掉到付費鏈（使用者 9/29 定：只有真人點歌可以付費）。"""
+    from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
+
+    free = _client(exc=RuntimeError("429 RESOURCE_EXHAUSTED"))
+    paid = _client(_resp(GUIDE))
+    out = await song_guide_for_dj(
+        "周杰倫 - 雙截棍", human=False, free_client=free, paid_client=paid,
+        guard=_guard(), store=store, budget=AutoGuideBudget(), inflight={},
+    )
+    assert out is None
+    paid.aio.models.generate_content.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_song_guide_for_dj_autopilot_budget_denied_returns_none_zero_calls(store):
+    from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
+
+    budget = AutoGuideBudget()
+    budget._daily_count = 10**9  # 模擬已用盡
+    budget._daily_date = time.localtime()[:3]
+    free = _client(_resp("不該被呼叫"))
+    out = await song_guide_for_dj(
+        "周杰倫 - 雙截棍", human=False, free_client=free, paid_client=None,
+        guard=None, store=store, budget=budget, inflight={},
+    )
+    assert out is None
+    free.aio.models.generate_content.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_song_guide_for_dj_human_uses_paid_client_and_bypasses_budget(store):
+    from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
+
+    budget = AutoGuideBudget()
+    budget._daily_count = 10**9  # 用盡也不影響真人點歌
+    budget._daily_date = time.localtime()[:3]
+    free = _client(exc=RuntimeError("RESOURCE_EXHAUSTED"))
+    paid = _client(_resp(GUIDE))
+    guard = _guard(allow=True)
+    out = await song_guide_for_dj(
+        "周杰倫 - 雙截棍", human=True, free_client=free, paid_client=paid,
+        guard=guard, store=store, budget=budget, inflight={},
+    )
+    assert out == GUIDE
+    paid.aio.models.generate_content.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_song_guide_for_dj_concurrent_same_label_single_call(store):
+    from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
+
+    free = _client(_resp(GUIDE))
+    budget = AutoGuideBudget()
+    inflight = {}
+    results = await asyncio.gather(*[
+        song_guide_for_dj("周杰倫 - 雙截棍", human=False, free_client=free, paid_client=None,
+                          guard=None, store=store, budget=budget, inflight=inflight)
+        for _ in range(3)
+    ])
+    assert results == [GUIDE, GUIDE, GUIDE]
+    free.aio.models.generate_content.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_song_guide_for_dj_timeout_returns_none_but_task_caches_after(store):
+    from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
+
+    async def _slow_generate(*a, **kw):
+        await asyncio.sleep(0.05)
+        return _resp(GUIDE)
+
+    free = MagicMock()
+    free.aio.models.generate_content = AsyncMock(side_effect=_slow_generate)
+    inflight = {}
+    out = await song_guide_for_dj(
+        "周杰倫 - 雙截棍", human=False, free_client=free, paid_client=None,
+        guard=None, store=store, budget=AutoGuideBudget(), inflight=inflight, wait_s=0.001,
+    )
+    assert out is None
+    # task 仍在背景跑，等它完成後快取應該已寫好
+    task = list(inflight.values())[0] if inflight else None
+    if task is not None:
+        await task
+    assert store.get(KEY)["audiophile_guide"] == GUIDE
+
+
+def _itunes(track, artist, album="某專輯"):
+    async def _fetch(term, **kw):
+        return {"results": [{"trackName": track, "artistName": artist, "collectionName": album,
+                             "releaseDate": "2013-01-01T00:00:00Z",
+                             "artworkUrl100": "https://x/100x100bb.jpg"}]}
+    return _fetch
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_artist_mismatch_rejected(store):
+    """9/29 真機：髒標題夾歌詞「…一點點靠近」→ iTunes 配成吳莫愁〈靠近〉，曲名互相包含會放行，
+    歌手對不上才擋得住（說錯不如沒說）。"""
+    from audiophile_fetcher import resolve_canon
+
+    out = await resolve_canon(
+        store, "vid9", "我的秘密『我們之間的距離每天一點點靠近』", "顏人中",
+        artist_hay="我的秘密 - 颜人中『我们之间的距离每天一点点靠近』 LZ Music Channel",
+        fetch=_itunes("靠近", "吳莫愁"),
+    )
+    assert out is None
+    assert store.get("canon::vid9") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_artist_found_in_hay_when_clean_artist_empty(store):
+    from audiophile_fetcher import resolve_canon
+
+    out = await resolve_canon(store, "vid10", "帶我去找夜生活", "",
+                              artist_hay="帶我去找夜生活 告五人Accusefive",
+                              fetch=_itunes("帶我去找夜生活", "告五人"))
+    assert out["artist"] == "告五人"
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_multi_artist_any_part_matches(store):
+    from audiophile_fetcher import resolve_canon
+
+    out = await resolve_canon(store, "vid11", "清空", "王忻辰, 蘇星婕",
+                              fetch=_itunes("清空", "蘇星婕 & 王忻辰"))
+    assert out["artist"] == "蘇星婕 & 王忻辰"
+
+
+@pytest.mark.asyncio
+async def test_resolve_canon_tribute_act_rejected(store):
+    """9/29 真機：Dr. Dre〈Still D.R.E.〉配到致敬團 Mixmaster Throwback。"""
+    from audiophile_fetcher import resolve_canon
+
+    out = await resolve_canon(store, "vid12", "Still D.R.E.", "Dr. Dre",
+                              artist_hay="Dr. Dre - Still D.R.E. ft. Snoop Dogg Octava",
+                              fetch=_itunes("Still D.R.E.", "Mixmaster Throwback"))
+    assert out is None
