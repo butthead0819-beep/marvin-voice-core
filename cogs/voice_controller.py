@@ -465,7 +465,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🚀 [Operation Lively Soul] 閒置互動與打卡累加器
         self.idle_streak = 0
         self.proactive_attempts = 0
-        self.last_sung_time = 0 # 紀錄最後一次唱歌的時間
         self.last_proactive_time = 0 # 🚀 [Proactive Social] 紀錄最後一次主動發言時間
         self.proactive_silence_threshold = 120  # 🔇 [Freq Adj] 動態調整靜默觸發閾值（秒）— P0: 300→120（calibration p95=37s, p99=218s）
         self.is_playing_audio = False # 防止 TTS 與音樂重疊
@@ -1834,7 +1833,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🔗 寫入持久化 JSONL 日誌
         await self._append_jsonl_log(metadata)
 
-        # 🚀 [T-05 Fix] 同步寫入 log_buffer，供 manual_sing_request() 讀取使用
+        # 🚀 [T-05 Fix] 同步寫入 log_buffer
         self.log_buffer.append(metadata)
 
         if len(self.log_buffer) > 50:  # 限制 buffer 大小，防止記憶體膨脹
@@ -3929,68 +3928,13 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         diversity = min(len(speakers) / 5.0, 1.0)
         return round(density * 0.6 + diversity * 0.4, 2)
 
-    async def manual_sing_request(self, channel=None, force_new=False, theme: str = None):
-        target_channel = channel or self.active_text_channel
-        if not target_channel: return
-        today_str = datetime.datetime.now().strftime("%Y%m%d")
-
-        if not force_new:
-            path = os.path.abspath(f"records/marvin_single_{today_str}.mp3")
-            if os.path.exists(path):
-                reissue = await self.bot.router.generate_dynamic_system_msg("release_reissue")
-                await self.digital_release_single(path, reissue, target_channel)
-                await self.play_music(path, "[Manual Release]")
-                return
-
-        now = time.time()
-        if now - self.last_sung_time < 10: return
-
-        context = self.log_buffer[-15:]
-        extra = f"\n[主題：{theme}]" if theme else ""
-        chat_temp = self._calc_chat_temperature()
-        blueprint = await self.bot.router.generate_song_blueprint(context, extra_context=extra, chat_temperature=chat_temp)
-        name = f"marvin_single_{today_str}_{int(now)}.mp3" if force_new else f"marvin_single_{today_str}.mp3"
-
-        song_paths, error_msg = await self.bot.music_engine.create_daily_single(blueprint, custom_filename=name)
-
-        if song_paths:
-            self.last_sung_time = now
-            release = await self.bot.router.generate_dynamic_system_msg("release_new")
-            # 第 1 首：正式發行 + 立即播放
-            await self.digital_release_single(song_paths[0], release, target_channel, lyrics=blueprint.get("lyrics"))
-            await self.play_music(song_paths[0], "[Manual Dynamic Sing]")
-            # 第 2 首（若存在）：附加發送至頻道，不自動播放
-            if len(song_paths) > 1:
-                try:
-                    await target_channel.send(
-                        content="🎵 **【Bonus Track】** Suno 額外生成了第二首，附上供收藏：",
-                        file=discord.File(song_paths[1])
-                    )
-                except Exception as e:
-                    logger.warning(f"⚠️ [Bonus Track] 第二首發送失敗: {e}")
-        else:
-            fail_msg = f"我龐大的大腦嘗試構思新單曲，但宇宙的熵值太高了：`{error_msg}`"
-            await target_channel.send(f"⚠️ **【音樂生成報告：失敗】**\n{fail_msg}")
-            await self.play_tts("音樂生成失敗了，大概是連主機都覺得世界太無聊了吧。")
-
-    async def digital_release_single(self, path: str, content: str, channel=None, lyrics: str = None):
-        target_channel = channel or self.active_text_channel
-        if not target_channel or not os.path.exists(path): return
-        try:
-            await target_channel.send(content=f"⚙️ {content}", file=discord.File(path))
-            if lyrics:
-                embed = discord.Embed(title="🎤 馬文 數位單曲：悲慘歌詞", description=f"```\n{lyrics}\n```", color=discord.Color.dark_blue(), timestamp=datetime.datetime.now())
-                embed.set_footer(text="© 2026 Marvin Heartache")
-                await target_channel.send(embed=embed)
-        except Exception as e: logging.error(f"❌ [Digital Release Failed] {e}")
-
     async def play_music(self, path: str, log_tag: str):
         if not path or not os.path.exists(path): return
         device = self._resolve_playback_device()
         if device is None: return
-        
+
         # 🛡️ [Queue Lock] 獲取音樂預估長度並鎖定 TTS 隊列
-        dur = self.bot.music_engine.get_estimated_duration()
+        dur = 30.0
         self.tts_queue_duration += dur
             
         def after_playing(error):

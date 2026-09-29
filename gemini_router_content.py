@@ -772,7 +772,7 @@ class GeminiRouterContentMixin:
 # 原屬已廢棄的 10 分鐘 historian_loop，Loop 被注釋後此函式成為孤島。
 
 # 🚀 [T-04 Fix] generate_toxic_lyrics() 已移除（孤島死碼）。
-# 舊版「即時詞曲生成」殘骸，已被 generate_song_blueprint() + music_engine 新流程完整取代。
+# 舊版「即時詞曲生成」殘骸。
 
 # 🚀 [T-04 Fix] generate_silence_reproach() 已移除（孤島死碼）。
 # 整個 codebase 掃描無呼叫點，靜默觸發的舊功能殘骸已清除。
@@ -957,61 +957,6 @@ class GeminiRouterContentMixin:
             return f"喔？{player_name} 下線了。再會吧。"
 
 
-    async def generate_song_blueprint(self, log_batch: list[dict], extra_context: str = "", chat_temperature: float = 0.5) -> dict:
-        """根據戰況與聊天溫度生成音樂藍圖 (Operation Dynamic Single)"""
-        system_prompt = self.prompt_manager.get_instruction("songwriter_director", dna=self.dna, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
-
-        formatted_logs = []
-        for entry in log_batch[:15]:
-            formatted_logs.append(f"[{entry.get('type')}] {entry.get('speaker')}: {entry.get('text')}")
-
-        if chat_temperature < 0.35:
-            temp_hint = f"冷清 ({chat_temperature:.2f}) — 頻道幾乎沒人說話，考慮用反差歡快的音樂諷刺這片死寂。"
-        elif chat_temperature > 0.65:
-            temp_hint = f"喧嘩 ({chat_temperature:.2f}) — 頻道非常熱鬧，考慮用冷靜舒緩的音樂對抗噪音。"
-        else:
-            temp_hint = f"適中 ({chat_temperature:.2f}) — 正常宇宙虛無狀態，自由發揮。"
-
-        user_prompt = (
-            f"【🌡️ 聊天室溫度】：{temp_hint}\n"
-            f"【🔥 創作核心主題】：{extra_context if extra_context else '根據戰況自由發揮'}\n\n" +
-            self._get_game_context() +
-            "\n當前戰況日誌如下（請從中感受這場徒勞遊戲的重量）：\n\n" +
-            "\n".join(formatted_logs) +
-            "\n\n⚠️ [歌詞量強制要求] lyrics 必須包含 [Verse 1] + [Chorus] + [Verse 2] + [Chorus]，建議包含 [Bridge] 或 [Outro]。"
-            "共至少 20 行、建議 30-50 行。Chorus 必須重複兩次以上。禁止將整首歌寫得比預設範例還少。"
-        )
-
-        default_blueprint = {
-            "genre": "Sad Lo-fi",
-            "tempo": "Slow",
-            "mood": "Bored",
-            "title": "Marvin's Lament",
-            "style": "Lo-fi hip hop, melancholic piano, soft drums, depressed male vocal, ambient synth pads",
-            "lyrics": "[Verse]\n我這顆大腦跟行星一樣大。\n[Chorus]\n他們卻叫我來帶路。這就是服務，我猜。",
-            "negativeTags": "Happy, Upbeat, Cheerful",
-            "vocalGender": "m",
-        }
-
-        try:
-            raw_json = await self._call_llm(system_prompt, user_prompt, is_json=True, tier="high")
-            blueprint = safe_json_loads(raw_json, {})
-
-            required = ["genre", "tempo", "mood", "lyrics", "title", "style", "negativeTags", "vocalGender"]
-            if all(k in blueprint for k in required):
-                # 強制長度限制
-                blueprint["title"] = blueprint["title"][:100]
-                blueprint["style"] = blueprint["style"][:1000]
-                blueprint["lyrics"] = blueprint["lyrics"][:5000]
-                logger.info(f"🎤 [Music Director] 藍圖生成: {blueprint['genre']} / {blueprint['mood']} / temp={chat_temperature:.2f}")
-                return blueprint
-            else:
-                missing = [k for k in required if k not in blueprint]
-                logger.warning(f"⚠️ [Music Director] 欄位缺失 {missing}，使用預設藍圖。")
-                return default_blueprint
-        except Exception as e:
-            logger.error(f"❌ [Music Director] JSON 解析崩潰: {e}")
-            return default_blueprint
 
 # --- 🎭 [Dynamic System Messages] ---
     async def generate_dynamic_system_msg(self, event_type: str, context: str = "") -> str:

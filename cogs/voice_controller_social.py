@@ -4,7 +4,7 @@ ProactiveSocialMixin — VoiceController 的主動社交子系統。
 從 voice_controller.py 抽出（減肥），以 mixin 併入 VoiceController：
     class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, commands.Cog): ...
 self 仍是 VoiceController 實例，play_tts / play_dual_dialogue / get_online_members /
-manual_sing_request / _schedule_reaction_check / _speak_bus / _mood_agent /
+_schedule_reaction_check / _speak_bus / _mood_agent /
 _room_mood_store / active_text_channel 等全部沿用原本 self 存取，行為零改動。
 
 包含：
@@ -324,7 +324,7 @@ class ProactiveSocialMixin:
             _proactive_ts = time.time()
 
             # 🎭 表演類話題：不口頭提問，直接在語音頻道發起表演
-            if topic_id in {"marvin_sing", "marvin_manzai", "marvin_imitate", "marvin_news", "marvin_standup", "marvin_joke"}:
+            if topic_id in {"marvin_manzai", "marvin_imitate", "marvin_news", "marvin_standup", "marvin_joke"}:
                 # 🛡️ 回台寬限（2026-07-04）：剛 summon/回台就搶著表演=錯誤行為，
                 # 10 分鐘內表演類一律讓路（問答類主動社交不受此限）
                 if too_soon_after_summon(getattr(self, "connection_time", 0), time.time()):
@@ -353,15 +353,7 @@ class ProactiveSocialMixin:
                     logger.debug(f"[Proactive Usage] 寫入失敗: {_e}")
 
                 # 依據 ID 呼叫實體表演播放協程
-                if topic_id == "marvin_sing":
-                    intro = "既然大家都這麼安靜，那我直接唱首歌給你們聽吧，雖然這多半很糟糕。"
-                    await self.play_tts(intro, already_in_channel=True, protected=True)
-                    asyncio.create_task(self.manual_sing_request(
-                        channel=self.active_text_channel,
-                        force_new=True,
-                        theme=selected_topic.get("script")
-                     ))
-                elif topic_id == "marvin_manzai":
+                if topic_id == "marvin_manzai":
                     asyncio.create_task(self._proactive_play_manzai(selected_topic.get("script")))
                 elif topic_id == "marvin_imitate":
                     target_player = None

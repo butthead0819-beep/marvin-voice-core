@@ -42,7 +42,7 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
     "extract_memory", "batch_extract_memories", "audit_player_memory",
     "extract_emotional_moments", "analyze_social_dynamics",
     "update_toxicity", "summarize_window", "_classify_mood", "compress",
-    "marvinize_news", "generate_song_blueprint", "dual_dialogue",
+    "marvinize_news", "dual_dialogue",
 })
 
 # 背景 / 離線 purpose：不阻塞使用者對話回合（記憶挖掘、社交/戰術分析、摘要、情緒分類、
@@ -53,7 +53,7 @@ BACKGROUND_PURPOSES: frozenset[str] = frozenset({
     "extract_memory", "batch_extract_memories", "audit_player_memory",
     "extract_emotional_moments", "analyze_social_dynamics",
     "update_toxicity", "summarize_window", "_classify_mood", "compress",
-    "marvinize_news", "generate_song_blueprint",
+    "marvinize_news",
 })
 
 

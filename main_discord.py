@@ -135,7 +135,6 @@ for path in ["/opt/homebrew/bin", "/usr/local/bin"]:
 # from gemini_router import GeminiRouter
 # from discord_voice_engine import DiscordVoiceEngine
 # from tts_engine import SukiTTS
-# from music_engine import SukiMusicEngine
 # print("✅ All core engines imported.")
 
 # ── CompanionBridge wiring（Phase 3a）─────────────────────────────────────
@@ -264,9 +263,6 @@ class MarvinBot(commands.Bot):
 
         from tts_engine import SukiTTS
         self.tts_engine = SukiTTS()
-        
-        from music_engine import SukiMusicEngine
-        self.music_engine = SukiMusicEngine(self.api_key)
         
         self.last_restart_time = time.time()
 
