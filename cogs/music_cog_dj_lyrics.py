@@ -504,18 +504,8 @@ class MusicDJLyricsMixin:
         _clean_t, _clean_a = self._dj_clean_name(info)
         _song_label = f"{_clean_a} - {_clean_t}" if _clean_a else _clean_t
         ctx = [f"歌曲：{_song_label or title}", f"點播者：{requester}"]
-        # 上一首 ↔ 下一首故事延伸：反向找第一首不是自己的 history 歌（相容 Play-First
-        # 背景路徑 stream_history[-1] 就是自己的情況）。第一首歌沒有上一首，跳過。
-        prev_title = info.get('_prev_title_hint', '') or ''
-        if not prev_title:
-            for s in reversed((getattr(self, 'stream_history', None) or [])[-3:]):
-                if isinstance(s, dict):
-                    t = s.get('title', '')
-                    if t and t != title:
-                        prev_title = t
-                        break
-        if prev_title:
-            ctx.append(f"上一首剛播完：《{prev_title}》")
+        # 串場不提上一首（9/30 使用者定：專注寫下一首）——預抓時的「上一首」常因插播/
+        # 換順序過期，寫進 prompt 再被 Consistency Guard 丟掉改唸報幕，得不償失。
         if play_count >= 2:
             ctx.append(f"喜好線索：這首是 {requester} 常聽的愛歌")
         if feelings:
@@ -533,15 +523,10 @@ class MusicDJLyricsMixin:
             pass  # fail-open：vc 不可用時不過濾在場人
 
         from dj_social_affinity import (
-            detect_back_to_back_artist,
             find_song_social_affinity,
             find_spoken_taste_match,
             format_temporal_atmosphere,
         )
-
-        b2b_artist = detect_back_to_back_artist(prev_title, title)
-        if b2b_artist:
-            ctx.append(f"連播線索：連續第二首 {b2b_artist} 的歌")
 
         affinity = find_song_social_affinity(mm, info, requester, present_members)
         if affinity:
@@ -587,7 +572,7 @@ class MusicDJLyricsMixin:
         # 這件事是不是點播者本人的」——樣版/素材/在場判斷全部本地做完，LLM 只負責
         # 把選定的素材寫成自然的過場文字。
         # 順序：近期生活（主角要在場，否則換下一個候選）→ 在場興趣 → 都沒有時在
-        # 對話銜接/上一首銜接/純接歌 之間本地輪替（治「每次都靠環境/天氣開場」）。
+        # 對話銜接/氣氛/純接歌 之間本地輪替（治「每次都靠環境/天氣開場」）。
         from dj_narration_orchestrator import select_narration_mode
         life = await self._life_cores_async()
         interests = self._present_interests()
@@ -612,7 +597,6 @@ class MusicDJLyricsMixin:
             topic_store=self._dj_topic_store(),
             present_members=present_members,
             has_conversation=bool(conv_lines),
-            has_prev_song=bool(prev_title),
             emotional_highlights=emotional_highlights,
             news_items=news_items,
             autopilot_reason=_autopilot_reason,
@@ -623,7 +607,7 @@ class MusicDJLyricsMixin:
         # 開場鉤子提示依「歌會中的心理機制」分兩類套用：
         #   代入感（life/interest）——這是聽眾自己的事，別只是轉述，要讓人覺得被說中。
         #   氣氛精準（atmosphere）——緊扣這個時間/地點，像特別為這一刻準備的。
-        # conversation/prev_song 本身就是銜接類，維持原本的過場方向指示即可。
+        # conversation 本身就是銜接類，維持原本的過場方向指示即可。
         if mode == "memory_match":
             ctx.append(f"記憶證據（這首為什麼現在放）：\n・{topic}")
             ctx.append("開場鉤子：開場直接點名講出這條記憶證據，讓對方聽得出你記得他說過/做過的事；只能講證據裡寫的事實，不准自己補細節或編故事。")
@@ -641,8 +625,6 @@ class MusicDJLyricsMixin:
         elif mode == "news":
             ctx.append(f"最新時事消息：\n・{topic}")
             ctx.append("開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。")
-        elif mode == "prev_song":
-            ctx.append("串場方向：延續上一首的情緒銜接過去就好，不用硬掰新話題。")
         elif mode == "conversation":
             ctx.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
         elif mode == "atmosphere":
@@ -766,18 +748,12 @@ class MusicDJLyricsMixin:
                         text = f"DJ Marvin為你帶來《{clean_title}》，{suffix}"
                     logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
 
-        from dj_prev_trim import gate_dj_intro
-        gated_text, was_cut, prev_dropped = gate_dj_intro(
-            text, prev_title, _song_label or title, gate_task,
-            self.bot.tts_engine.get_estimated_duration,
+        from tts_length_policy import truncate_for_tts
+        gated_text, was_cut = truncate_for_tts(
+            text, gate_task, self.bot.tts_engine.get_estimated_duration,
         )
-        if prev_dropped:
-            # 口白已不提上一首 → prev_title_used=None，換歌 Consistency Guard 不必再比對上一首
-            logger.info(f"✂️ [DJ Prev Trim] 口白超長，先拿掉上一首《{prev_title}》")
-            prev_title = ''
         if was_cut:
             logger.info(f"🚦 [TTS Gate] DJ intro 超上限截斷({gate_task}): '{text}' → '{gated_text}'")
-        if was_cut or prev_dropped:
             text = gated_text
 
         audio_path = None
@@ -788,8 +764,6 @@ class MusicDJLyricsMixin:
             logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
 
         logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
-        # 只有口白真的提到上一首才記——沒提到的，佇列順序變了也不必被 Consistency Guard 丟掉
-        from dj_prev_trim import mentions_title
-        prev_used = prev_title if prev_title and mentions_title(text, prev_title) else None
-        return {'text': text, 'audio_path': audio_path, 'prev_title_used': prev_used}
+        # 串場不提上一首 → 沒有可過期的上一首，Consistency Guard 不必比對
+        return {'text': text, 'audio_path': audio_path, 'prev_title_used': None}
 

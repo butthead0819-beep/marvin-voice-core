@@ -2,7 +2,7 @@
 
 2026-07-15 使用者：兩天前把 DJ 從 15s 砍到 5s 是因為在唸冗長 YouTube 標題資訊。
 改成「只說故事不唸資訊」後可以放寬。新增兩條沉浸感 context：
-1. 上一首 ↔ 下一首故事延伸（stream_history 已存，接進 prompt context）
+1. 串場不提上一首（9/30 起，專注寫下一首）
 2. 環境沉浸（台北 + 季節，由日期推）
 
 並把 human LLM 串場的長度 gate 從 music_intro(5s) 放寬到 dj_story，
@@ -104,44 +104,65 @@ def _ctx_str(cog):
     return call.kwargs.get("context", "") or (call.args[1] if len(call.args) > 1 else "")
 
 
-# ── 1. 上一首 ↔ 下一首故事延伸 ─────────────────────────────────────────────
+# ── 1. 串場不提上一首（9/30 使用者定：專注寫下一首）────────────────────────
+# 預抓時的「上一首」常因插播/換順序過期，寫進 prompt 再被 Consistency Guard 丟掉
+# 改唸報幕，得不償失——乾脆不給 LLM 上一首。
 
 @pytest.mark.asyncio
-async def test_context_includes_previous_song(monkeypatch):
-    """stream_history 有上一首 → context 帶「上一首」+ 該歌名，讓 DJ 做故事延伸。"""
+async def test_context_never_includes_previous_song(monkeypatch):
     _no_quick(monkeypatch)
     cog = _make_cog()
     cog.stream_history = [_info(title="陶喆 - 普通朋友", requester="狗與露")]
+    dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "上一首" not in ctx, f"不該帶上一首: {ctx!r}"
+    assert "普通朋友" not in ctx, f"不該帶上一首歌名: {ctx!r}"
+    assert dj["prev_title_used"] is None
+
+
+@pytest.mark.asyncio
+async def test_context_ignores_round_prev_title_hint(monkeypatch):
+    _no_quick(monkeypatch)
+    cog = _make_cog()
+    info = _info(title="周杰倫 - 夜曲", requester="大肚")
+    info["_prev_title_hint"] = "同輪前一首"
+    await cog._fetch_dj_interjection_raw(info)
+    assert "同輪前一首" not in _ctx_str(cog)
+
+
+@pytest.mark.asyncio
+async def test_no_back_to_back_artist_hint(monkeypatch):
+    _no_quick(monkeypatch)
+    cog = _make_cog()
+    cog.stream_history = [_info(title="周杰倫 - 晴天", requester="狗與露")]
     await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
-    ctx = _ctx_str(cog)
-    assert "上一首" in ctx, f"context 應帶上一首資訊: {ctx!r}"
-    assert "普通朋友" in ctx, f"context 應含上一首歌名: {ctx!r}"
+    assert "連播線索" not in _ctx_str(cog)
 
 
 @pytest.mark.asyncio
-async def test_context_skips_previous_when_same_title(monkeypatch):
-    """history 最後一首就是自己（Play-First 背景路徑）→ 不當上一首，往前找。"""
+async def test_prev_song_not_offered_to_gacha_pool(monkeypatch):
+    """有上一首也不把 prev_song 送進扭蛋池（cog 不傳 has_prev_song=True）。"""
     _no_quick(monkeypatch)
+    seen = {}
+    real = dj_topic_selector.select_mode
+
+    def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(dj_topic_selector, "select_mode", _spy)
+    import dj_narration_orchestrator
+    monkeypatch.setattr(dj_narration_orchestrator, "select_mode", _spy)
     cog = _make_cog()
-    cur = _info(title="周杰倫 - 夜曲", requester="大肚")
-    cog.stream_history = [
-        _info(title="陶喆 - 飛機場的 10:30", requester="Alice"),
-        cur,  # 自己已在 history 尾端
-    ]
-    await cog._fetch_dj_interjection_raw(cur)
-    ctx = _ctx_str(cog)
-    assert "飛機場" in ctx, f"應跳過自己、取真正上一首: {ctx!r}"
+    cog.stream_history = [_info(title="陶喆 - 普通朋友", requester="狗與露")]
+    await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+    assert "has_conversation" in seen, "spy 應攔到 select_mode 呼叫"
+    assert not seen.get("has_prev_song"), f"不該把上一首送進扭蛋池: {seen!r}"
 
 
-@pytest.mark.asyncio
-async def test_context_no_previous_song_when_history_empty(monkeypatch):
-    """history 空 → 不硬塞上一首（第一首歌沒有故事延伸）。"""
-    _no_quick(monkeypatch)
-    cog = _make_cog()
-    cog.stream_history = []
-    await cog._fetch_dj_interjection_raw(_info())
-    ctx = _ctx_str(cog)
-    assert "上一首" not in ctx, f"history 空時不該有上一首行: {ctx!r}"
+def test_dj_persona_templates_do_not_reference_previous_song():
+    from pathlib import Path
+    assert "上一首" not in Path("personas/dj_templates.yaml").read_text(encoding="utf-8")
 
 
 # ── 2. 環境沉浸（城市 + 季節）─────────────────────────────────────────────
@@ -327,28 +348,6 @@ async def test_dj_song_material_passes_stream_url_duration_and_shared_breaker(tm
     assert first_kw["duration"] == 245
     assert isinstance(first_kw["breaker"], ShazamBreaker)
     assert first_kw["breaker"] is second_kw["breaker"]
-
-
-# ── Consistency Guard 只記「口白真的提到的上一首」（9/30 真機誤丟修正）─────────
-
-@pytest.mark.asyncio
-async def test_prev_title_used_none_when_script_does_not_mention_prev(monkeypatch):
-    _no_quick(monkeypatch)
-    cog = _make_cog()
-    cog.stream_history = [_info(title="陶喆 - 普通朋友", requester="狗與露")]
-    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="刷卡機明天再說，先讓耳朵放個假吧")
-    dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
-    assert dj["prev_title_used"] is None
-
-
-@pytest.mark.asyncio
-async def test_prev_title_used_kept_when_script_mentions_prev(monkeypatch):
-    _no_quick(monkeypatch)
-    cog = _make_cog()
-    cog.stream_history = [_info(title="陶喆 - 普通朋友", requester="狗與露")]
-    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="剛聽完普通朋友，換首夜曲接下去")
-    dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
-    assert dj["prev_title_used"] == "陶喆 - 普通朋友"
 
 
 # ── LLM 串場超長先截到句尾，不整段退回報幕（9/30 真機 7/39 被丟）─────────────
