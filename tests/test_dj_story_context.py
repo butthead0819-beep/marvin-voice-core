@@ -14,6 +14,38 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import dj_topic_selector
+
+
+
+def _weights(monkeypatch, **w):
+    """扭蛋池權重固定（dj_topic_selector.MODE_WEIGHTS）：串場 mode 改成加權隨機後，
+    斷言特定 mode 素材/路徑的測試要把權重釘住才是決定性的。"""
+    import dj_topic_selector
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
+
+def _no_quick(monkeypatch):
+    """排除 quick（本地模板、不呼叫 LLM），其餘照預設權重——只在乎有走 LLM 路徑的測試用。"""
+    import dj_topic_selector
+    w = dict(dj_topic_selector.MODE_WEIGHTS)
+    w["quick"] = 0.0
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
+def _only(monkeypatch, *modes):
+    """扭蛋池固定只抽 modes 列的那些（其餘權重 0）——這幾條測試斷言 ctx 帶特定 mode
+    的素材，本地扭蛋池改版後 mode 不再是決定性優先序，用固定權重讓測試維持決定性。"""
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {m: 1.0 for m in modes})
+
+
+def _exclude(monkeypatch, *modes):
+    """扭蛋池排除 modes 列的那些（權重 0，其餘照舊 1.0）——這幾條測試只在乎 LLM 有被
+    呼叫，不在乎抽中哪個具體 mode，只需要排除會跳過 LLM 的 quick。"""
+    weights = {m: 1.0 for m in dj_topic_selector.NON_TOPIC_MODES + dj_topic_selector.TOPIC_MODES}
+    for m in modes:
+        weights[m] = 0.0
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", weights)
+
 
 def _make_cog(est_per_char: float = 0.0, tmp_path=None):
     bot = MagicMock()
@@ -75,8 +107,9 @@ def _ctx_str(cog):
 # ── 1. 上一首 ↔ 下一首故事延伸 ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_context_includes_previous_song():
+async def test_context_includes_previous_song(monkeypatch):
     """stream_history 有上一首 → context 帶「上一首」+ 該歌名，讓 DJ 做故事延伸。"""
+    _no_quick(monkeypatch)
     cog = _make_cog()
     cog.stream_history = [_info(title="陶喆 - 普通朋友", requester="狗與露")]
     await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
@@ -86,8 +119,9 @@ async def test_context_includes_previous_song():
 
 
 @pytest.mark.asyncio
-async def test_context_skips_previous_when_same_title():
+async def test_context_skips_previous_when_same_title(monkeypatch):
     """history 最後一首就是自己（Play-First 背景路徑）→ 不當上一首，往前找。"""
+    _no_quick(monkeypatch)
     cog = _make_cog()
     cur = _info(title="周杰倫 - 夜曲", requester="大肚")
     cog.stream_history = [
@@ -100,8 +134,9 @@ async def test_context_skips_previous_when_same_title():
 
 
 @pytest.mark.asyncio
-async def test_context_no_previous_song_when_history_empty():
+async def test_context_no_previous_song_when_history_empty(monkeypatch):
     """history 空 → 不硬塞上一首（第一首歌沒有故事延伸）。"""
+    _no_quick(monkeypatch)
     cog = _make_cog()
     cog.stream_history = []
     await cog._fetch_dj_interjection_raw(_info())
@@ -112,14 +147,15 @@ async def test_context_no_previous_song_when_history_empty():
 # ── 2. 環境沉浸（城市 + 季節）─────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_context_includes_environment_city_and_season(tmp_path):
+async def test_context_includes_environment_city_and_season(tmp_path, monkeypatch):
     """context 帶環境行：城市（無 GPS 訊號時退回家裡預設台中）+ 季節（春/夏/秋/冬其一）。
 
-    環境行現在只在本地 mode 選擇器選中 "atmosphere" 時才進 ctx（見
-    dj_topic_selector.select_mode）。清空 life_cores + 隔離的 topic store，讓
-    全新 store 落在候選序列第一位的 atmosphere（不隔離會被硬碟上殘留的
-    _last_fallback_mode 汙染，見 _make_cog 的 tmp_path 說明）。
+    環境行現在只在本地扭蛋池選中 "atmosphere" 時才進 ctx（見
+    dj_topic_selector.select_mode）。清空 life_cores + 隔離的 topic store + 固定
+    MODE_WEIGHTS 讓扭蛋池必抽中 atmosphere（不隔離/不固定會被硬碟上殘留的
+    _last_fallback_mode 或扭蛋隨機性影響，見 _make_cog 的 tmp_path 說明）。
     """
+    _only(monkeypatch, "atmosphere")
     cog = _make_cog(tmp_path=tmp_path)
     cog._life_cores = MagicMock(return_value=[])
     await cog._fetch_dj_interjection_raw(_info())
@@ -131,8 +167,13 @@ async def test_context_includes_environment_city_and_season(tmp_path):
 # ── 3. 長度 gate 放寬（human LLM 故事路徑）──────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_human_story_not_truncated_to_short():
-    """human LLM 故事 ~70 字不該被砍成 16 字（放寬到 dj_story gate）。"""
+async def test_human_story_not_truncated_to_short(monkeypatch):
+    """human LLM 故事 ~70 字不該被砍成 16 字（放寬到 dj_story gate）。
+
+    排除 quick（唯一會跳過 LLM、直接回本地模板的 mode），確保這條測試量的是 LLM
+    輸出的截斷行為，不會被扭蛋池隨機落在 quick 干擾。
+    """
+    _exclude(monkeypatch, "quick")
     cog = _make_cog(est_per_char=0.3)  # 70字≈21s
     story = (
         "剛才那首老靈魂的餘溫還在，窗外的雨也還沒停，"
@@ -148,8 +189,13 @@ async def test_human_story_not_truncated_to_short():
 
 
 @pytest.mark.asyncio
-async def test_marvin_autopilot_phrase_not_cut_to_garbage():
-    """Marvin autopilot 短語（含長 YouTube 標題）不該被 5s 砍成殘句（如「狗與露」）——dj_story gate。"""
+async def test_marvin_autopilot_phrase_not_cut_to_garbage(monkeypatch):
+    """Marvin autopilot 短語（含長 YouTube 標題）不該被 5s 砍成殘句（如「狗與露」）——dj_story gate。
+
+    排除 quick，避免扭蛋池隨機落在本地模板，蓋掉這條測試要驗的 LLM 空手→autopilot
+    模板路徑。
+    """
+    _exclude(monkeypatch, "quick")
     cog = _make_cog(est_per_char=0.3)
     long_phrase = "狗與露，給你首新的《Jay Chou 周杰倫 Aurora in July 七月的極光》，接著剛才的氣氛慢慢聽"
     assert len(long_phrase) >= 40
@@ -166,13 +212,13 @@ async def test_marvin_autopilot_phrase_not_cut_to_garbage():
 # ── 4. 歌曲素材 guide mode 取代舊的「音樂賞析」（SongKnowledgeStore.get_or_extract_insight）──
 
 @pytest.mark.asyncio
-async def test_dj_interjection_uses_song_guide_mode_and_skips_old_insight(tmp_path):
-    """_dj_song_material 命中（有導聆可講）→ 沒有對話/上一首/生活/興趣素材時，本地 mode
-    選擇器該優先選 guide（FALLBACK_ORDER 排最前面），context 帶長版導聆原文；且
-    舊的 SongKnowledgeStore.get_or_extract_insight 音樂賞析路徑不該再被呼叫
-    （歌曲導聆取代它）。"""
+async def test_dj_interjection_uses_song_guide_mode_and_skips_old_insight(tmp_path, monkeypatch):
+    """_dj_song_material 命中（有導聆可講）→ has_guide=True 進扭蛋池，固定權重讓池必
+    抽中 guide，context 帶長版導聆原文；且舊的 SongKnowledgeStore.get_or_extract_insight
+    音樂賞析路徑不該再被呼叫（歌曲導聆取代它）。"""
     from unittest.mock import patch
 
+    _only(monkeypatch, "guide")
     cog = _make_cog(tmp_path=tmp_path)
     cog.stream_history = []
     cog._life_cores = MagicMock(return_value=[])
@@ -195,10 +241,11 @@ async def test_dj_interjection_uses_song_guide_mode_and_skips_old_insight(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_dj_interjection_song_guide_miss_falls_back_without_guide_mode(tmp_path):
+async def test_dj_interjection_song_guide_miss_falls_back_without_guide_mode(tmp_path, monkeypatch):
     """_dj_song_material 查不到導聆（guide=None）→ has_guide=False，不進 guide 候選，
     跟舊版行為一致（照樣落到其他 fallback，這裡不用 atmosphere/quick 特定斷言，只驗證
     context 不會出現導聆素材字樣、也不會拋例外）。"""
+    _no_quick(monkeypatch)
     cog = _make_cog(tmp_path=tmp_path)
     cog.stream_history = []
     cog._life_cores = MagicMock(return_value=[])

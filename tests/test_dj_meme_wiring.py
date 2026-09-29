@@ -17,6 +17,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import dj_topic_selector
+
+
+def _only(monkeypatch, *modes):
+    """扭蛋池固定只抽 modes 列的那些——meme_id 冷卻測的是「同 meme 第二說法被冷卻擋下」，
+    跟扭蛋池抽中哪個 mode 無關，固定 life 讓第一輪 ctx 斷言維持決定性。"""
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {m: 1.0 for m in modes})
+
 
 # ── 1. DiaryEntry 有 meme_id 欄位 ─────────────────────────────────────────────
 
@@ -146,11 +154,12 @@ def test_life_cores_passes_through_tuples():
 # ── 5. 端到端：meme_id 冷卻透過 _fetch_dj_interjection_raw ─────────────────────
 
 @pytest.mark.asyncio
-async def test_meme_id_cooldown_e2e_via_fetch_dj():
+async def test_meme_id_cooldown_e2e_via_fetch_dj(monkeypatch):
     """DJ 播報後，同 meme 的不同說法不再出現在 context。"""
     from cogs.music_cog import MusicCog
     from dj_topic_selector import TopicCooldownStore
 
+    _only(monkeypatch, "life")
     bot = MagicMock()
     bot.guilds = []
     bot.voice_clients = []

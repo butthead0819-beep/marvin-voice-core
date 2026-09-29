@@ -51,6 +51,13 @@ def _guard(allow=True):
     return g
 
 
+def _card_resp(guide_text: str, *, chunks=1, finish="STOP"):
+    """song_guide_for_dj 現在底層走 _fetch_card（單次聚合歌曲卡），LLM 回應要是
+    【聽覺與幕後】格式才 parse 得出來——包一份最小歌曲卡格式，guide 段落原封不動塞
+    guide_text，讓既有斷言（out == GUIDE）不用改。"""
+    return _resp(f"【聽覺與幕後】：{guide_text}", chunks=chunks, finish=finish)
+
+
 @pytest.fixture
 def store(tmp_path):
     return SongKnowledgeStore(path=str(tmp_path / "song_knowledge.json"))
@@ -555,7 +562,7 @@ async def test_song_guide_for_dj_cache_hit_zero_calls(store):
 async def test_song_guide_for_dj_autopilot_uses_free_only_and_budget(store):
     from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
 
-    free = _client(_resp(GUIDE))
+    free = _client(_card_resp(GUIDE))
     paid = _client(_resp("不該被呼叫"))
     out = await song_guide_for_dj(
         "周杰倫 - 雙截棍", human=False, free_client=free, paid_client=paid,
@@ -604,7 +611,7 @@ async def test_song_guide_for_dj_human_uses_paid_client_and_bypasses_budget(stor
     budget._daily_count = 10**9  # 用盡也不影響真人點歌
     budget._daily_date = time.localtime()[:3]
     free = _client(exc=RuntimeError("RESOURCE_EXHAUSTED"))
-    paid = _client(_resp(GUIDE))
+    paid = _client(_card_resp(GUIDE))
     guard = _guard(allow=True)
     out = await song_guide_for_dj(
         "周杰倫 - 雙截棍", human=True, free_client=free, paid_client=paid,
@@ -618,7 +625,7 @@ async def test_song_guide_for_dj_human_uses_paid_client_and_bypasses_budget(stor
 async def test_song_guide_for_dj_concurrent_same_label_single_call(store):
     from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
 
-    free = _client(_resp(GUIDE))
+    free = _client(_card_resp(GUIDE))
     budget = AutoGuideBudget()
     inflight = {}
     results = await asyncio.gather(*[
@@ -636,7 +643,7 @@ async def test_song_guide_for_dj_timeout_returns_none_but_task_caches_after(stor
 
     async def _slow_generate(*a, **kw):
         await asyncio.sleep(0.05)
-        return _resp(GUIDE)
+        return _card_resp(GUIDE)
 
     free = MagicMock()
     free.aio.models.generate_content = AsyncMock(side_effect=_slow_generate)
@@ -651,6 +658,32 @@ async def test_song_guide_for_dj_timeout_returns_none_but_task_caches_after(stor
     if task is not None:
         await task
     assert store.get(KEY)["audiophile_guide"] == GUIDE
+
+
+@pytest.mark.asyncio
+async def test_song_guide_for_dj_cache_miss_uses_song_card_prompt_and_caches_lyric_hook(store):
+    """song_guide_for_dj 底層改走 _fetch_card（歌曲卡 ingestion）後：送給 LLM 的
+    system_instruction 要含【歌詞刺點】；命中歌詞刺點的回應要連 lyric_hook 一起寫進
+    快取；回傳值仍是導聆段落（跟改版前行為一致，caller 不用改）。"""
+    from audiophile_fetcher import AutoGuideBudget, song_guide_for_dj
+
+    raw = (
+        f"【聽覺與幕後】：{GUIDE}\n"
+        "【歌詞刺點】：句：眼淚不聽話地落下 | 析：故作堅強終究破防"
+    )
+    free = _client(_resp(raw))
+    out = await song_guide_for_dj(
+        "周杰倫 - 雙截棍", human=False, free_client=free, paid_client=None,
+        guard=_guard(), store=store, budget=AutoGuideBudget(), inflight={},
+    )
+    assert out == GUIDE
+
+    call_kwargs = free.aio.models.generate_content.call_args.kwargs
+    assert "【歌詞刺點】" in call_kwargs["config"].system_instruction
+
+    saved = store.get(KEY)
+    assert saved is not None
+    assert saved["lyric_hook"]["quote"] == "眼淚不聽話地落下"
 
 
 def _itunes(track, artist, album="某專輯"):

@@ -20,6 +20,21 @@ import pytest
 
 # ── 1. 純函式：dj_life_context.recent_life_cores ──────────────────────────
 
+
+def _weights(monkeypatch, **w):
+    """扭蛋池權重固定（dj_topic_selector.MODE_WEIGHTS）：串場 mode 改成加權隨機後，
+    斷言特定 mode 素材/路徑的測試要把權重釘住才是決定性的。"""
+    import dj_topic_selector
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
+
+def _no_quick(monkeypatch):
+    """排除 quick（本地模板、不呼叫 LLM），其餘照預設權重——只在乎有走 LLM 路徑的測試用。"""
+    import dj_topic_selector
+    w = dict(dj_topic_selector.MODE_WEIGHTS)
+    w["quick"] = 0.0
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
 NOW = 1_752_700_000.0  # 固定時戳，別用 time.time()（測試要可重現）
 
 
@@ -150,8 +165,9 @@ def _ctx_str(cog):
 
 
 @pytest.mark.asyncio
-async def test_human_context_includes_recent_life():
+async def test_human_context_includes_recent_life(monkeypatch):
     """真人點歌 → context 帶最近生活素材，讓 DJ 有得熬湯（話題拆開後只挑一個，不全塞）。"""
+    _weights(monkeypatch, life=1.0)
     cog = _make_cog(life_cores=["大肚在準備搬家", "【重點】狗與露要去環島"])
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     ctx = _ctx_str(cog)
@@ -159,8 +175,9 @@ async def test_human_context_includes_recent_life():
 
 
 @pytest.mark.asyncio
-async def test_life_mode_carries_empathy_hook_instruction():
+async def test_life_mode_carries_empathy_hook_instruction(monkeypatch):
     """life mode → ctx 帶『這根本在講你』的代入感開場鉤子提示。"""
+    _weights(monkeypatch, life=1.0)
     cog = _make_cog(life_cores=["大肚在準備搬家"])
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     ctx = _ctx_str(cog)
@@ -168,8 +185,9 @@ async def test_life_mode_carries_empathy_hook_instruction():
 
 
 @pytest.mark.asyncio
-async def test_atmosphere_mode_carries_env_line_and_hook_instruction():
+async def test_atmosphere_mode_carries_env_line_and_hook_instruction(monkeypatch):
     """atmosphere mode（無 life/interest/對話/上一首）→ ctx 帶環境行 + 氛圍開場鉤子提示。"""
+    _weights(monkeypatch, atmosphere=1.0)
     cog = _make_cog(life_cores=[])
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     ctx = _ctx_str(cog)
@@ -178,8 +196,9 @@ async def test_atmosphere_mode_carries_env_line_and_hook_instruction():
 
 
 @pytest.mark.asyncio
-async def test_interest_fallback_when_no_life_material():
+async def test_interest_fallback_when_no_life_material(monkeypatch):
     """沒有『最近生活』時 → 退而查在場興趣（suki_memory.get_recent_liked_items）當話題。"""
+    _weights(monkeypatch, interest=1.0)
     cog = _make_cog(life_cores=[])
     fake_vc = MagicMock()
     fake_vc.get_online_members = MagicMock(return_value=["大肚"])
@@ -224,8 +243,9 @@ async def test_context_has_no_life_line_when_no_material():
 # ── 3. autopilot 走 LLM 雞湯（不再是純模板）───────────────────────────────
 
 @pytest.mark.asyncio
-async def test_autopilot_uses_llm_with_life_context():
+async def test_autopilot_uses_llm_with_life_context(monkeypatch):
     """Marvin autopilot 點的歌也走 LLM 雞湯，且吃得到生活素材。"""
+    _weights(monkeypatch, life=1.0)
     cog = _make_cog(life_cores=["大肚在準備搬家"])
     dj = await cog._fetch_dj_interjection_raw(
         _info(requester="Marvin", _lane="liked", _spotlight="大肚")
@@ -378,14 +398,16 @@ def _emotion_kwarg(cog) -> str | None:
 
 
 @pytest.mark.asyncio
-async def test_life_mode_uses_upbeat_emotion():
+async def test_life_mode_uses_upbeat_emotion(monkeypatch):
+    _weights(monkeypatch, life=1.0)
     cog = _make_cog(life_cores=["大肚在準備搬家"])
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     assert _emotion_kwarg(cog) == "upbeat"
 
 
 @pytest.mark.asyncio
-async def test_interest_mode_uses_upbeat_emotion():
+async def test_interest_mode_uses_upbeat_emotion(monkeypatch):
+    _weights(monkeypatch, interest=1.0)
     cog = _make_cog(life_cores=[])
     fake_vc = MagicMock()
     fake_vc.get_online_members = MagicMock(return_value=["大肚"])
@@ -397,7 +419,8 @@ async def test_interest_mode_uses_upbeat_emotion():
 
 
 @pytest.mark.asyncio
-async def test_atmosphere_mode_uses_calm_emotion():
+async def test_atmosphere_mode_uses_calm_emotion(monkeypatch):
+    _weights(monkeypatch, atmosphere=1.0)
     cog = _make_cog(life_cores=[])
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     assert _emotion_kwarg(cog) == "calm"
@@ -414,7 +437,8 @@ def _with_highlight(cog, requester, moment, valence="warm", age_s=3600.0):
 
 
 @pytest.mark.asyncio
-async def test_emotional_highlight_used_when_no_life_or_interest():
+async def test_emotional_highlight_used_when_no_life_or_interest(monkeypatch):
+    _weights(monkeypatch, emotional_highlight=1.0)
     cog = _make_cog(life_cores=[])
     _with_highlight(cog, "大肚", "你說覺得被理解的那句話")
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
@@ -424,7 +448,8 @@ async def test_emotional_highlight_used_when_no_life_or_interest():
 
 
 @pytest.mark.asyncio
-async def test_emotional_highlight_uses_calm_emotion():
+async def test_emotional_highlight_uses_calm_emotion(monkeypatch):
+    _weights(monkeypatch, emotional_highlight=1.0)
     cog = _make_cog(life_cores=[])
     _with_highlight(cog, "大肚", "你說覺得被理解的那句話")
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
@@ -432,8 +457,9 @@ async def test_emotional_highlight_uses_calm_emotion():
 
 
 @pytest.mark.asyncio
-async def test_annoyed_valence_excluded_from_dj_material():
+async def test_annoyed_valence_excluded_from_dj_material(monkeypatch):
     """annoyed 是 Marvin 對使用者的負面反應，串場裡講出來很怪——不該被當素材。"""
+    _weights(monkeypatch, emotional_highlight=1.0, atmosphere=1e-9)
     cog = _make_cog(life_cores=[])
     _with_highlight(cog, "大肚", "你放的歌洗腦到讓我很煩", valence="annoyed")
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
@@ -442,8 +468,9 @@ async def test_annoyed_valence_excluded_from_dj_material():
 
 
 @pytest.mark.asyncio
-async def test_stale_emotional_highlight_excluded():
+async def test_stale_emotional_highlight_excluded(monkeypatch):
     """超過 8 天的情緒高光太舊，不當新鮮素材。"""
+    _weights(monkeypatch, emotional_highlight=1.0, atmosphere=1e-9)
     cog = _make_cog(life_cores=[])
     _with_highlight(cog, "大肚", "很久以前的瞬間", age_s=9 * 86400.0)
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
@@ -452,7 +479,9 @@ async def test_stale_emotional_highlight_excluded():
 
 
 @pytest.mark.asyncio
-async def test_life_topic_wins_over_emotional_highlight():
+async def test_life_mode_does_not_also_include_emotional_highlight(monkeypatch):
+    """扭蛋抽中 life 時，同輪的情緒高光不會一起塞進 ctx（一則串場只講一個話題）。"""
+    _weights(monkeypatch, life=1.0)
     cog = _make_cog(life_cores=["大肚在準備搬家"])
     _with_highlight(cog, "大肚", "你說覺得被理解的那句話")
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))

@@ -22,6 +22,21 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
+
+def _weights(monkeypatch, **w):
+    """扭蛋池權重固定（dj_topic_selector.MODE_WEIGHTS）：串場 mode 改成加權隨機後，
+    斷言特定 mode 素材/路徑的測試要把權重釘住才是決定性的。"""
+    import dj_topic_selector
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
+
+def _no_quick(monkeypatch):
+    """排除 quick（本地模板、不呼叫 LLM），其餘照預設權重——只在乎有走 LLM 路徑的測試用。"""
+    import dj_topic_selector
+    w = dict(dj_topic_selector.MODE_WEIGHTS)
+    w["quick"] = 0.0
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", w)
+
 def _make_cog(online_members: list[str]):
     bot = MagicMock()
     bot.guilds = []
@@ -109,8 +124,9 @@ async def test_large_group_gets_live_dj_tone_hint():
 # ── 5. 有話題素材時，group-size 語氣行仍照舊送進 LLM context ────────────────
 
 @pytest.mark.asyncio
-async def test_tone_hint_still_reaches_llm_when_topic_available():
+async def test_tone_hint_still_reaches_llm_when_topic_available(monkeypatch):
     """有素材（走 LLM 路徑）+ 頻道近期密集發言 → active_chat 精簡語氣提示塞進 context。"""
+    _no_quick(monkeypatch)
     cog = _make_cog(online_members=["大肚", "狗與露", "Alice", "Bob"])
     cog._life_cores = MagicMock(return_value=["昨天去爬山"])
     # atmosphere_tracker 若存在會蓋過 conv_buffer 判斷熱度來源，這裡逼它走 conv_buffer 分支。
@@ -129,8 +145,9 @@ async def test_tone_hint_still_reaches_llm_when_topic_available():
 
 
 @pytest.mark.asyncio
-async def test_quiet_group_gets_companion_tone_hint_when_topic_available():
+async def test_quiet_group_gets_companion_tone_hint_when_topic_available(monkeypatch):
     """有素材（走 LLM 路徑）+ 頻道安靜無發言 → quiet_group 陪伴語氣提示塞進 context。"""
+    _no_quick(monkeypatch)
     cog = _make_cog(online_members=["大肚", "狗與露", "Alice", "Bob"])
     cog._life_cores = MagicMock(return_value=["昨天去爬山"])
     cog.bot.router.atmosphere_tracker = None

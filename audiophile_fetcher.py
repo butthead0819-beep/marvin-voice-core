@@ -24,7 +24,12 @@ import time
 
 from pypinyin import lazy_pinyin
 
-from dj_prompt_builder import build_album_tracklist_prompt, build_audiophile_guide_prompt
+from dj_prompt_builder import (
+    build_album_tracklist_prompt,
+    build_audiophile_guide_prompt,
+    build_song_card_ingestion_prompt,
+    parse_song_card_response,
+)
 from intent_agents.grounded_qa_agent import grounded_answer
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,7 @@ _KEY_PREFIX = "audiophile::"
 
 MAX_TOUR_TRACKS = 20
 TRACKLIST_MAX_CHARS = 800   # AmbientQA 預設 140 字截斷會把長專輯砍半
+SONG_CARD_MAX_CHARS = 1000  # 多維度歌曲卡包含三段內容，需放寬長度截斷
 _ALBUM_KEY_PREFIX = "album_tracklist::"
 _TRACK_LINE_RE = re.compile(r"^\s*\d{1,2}\s*[.、)）]\s*(.+?)\s*$")
 
@@ -90,6 +96,80 @@ async def fetch_audiophile_guide(
         logger.info(f"[Audiophile] {label} 回保底台詞")
         return FALLBACK_GUIDE_TEMPLATE.format(title=title)
     return text
+
+
+async def _fetch_card(
+    label: str,
+    *,
+    free_client,
+    paid_client,
+    guard,
+    store,
+    lyrics: str = "",
+) -> dict | None:
+    """label（歌手 - 歌名）(+ lyrics) → 多維度歌曲卡 {audiophile_guide, lyric_hook}。
+
+    單次 Grounding 呼叫獲取聽覺幕後、歌詞刺點。
+    快取命中零 API 呼叫；查無資料或格式不符回傳 None 且不寫入快取。
+    """
+    key = _KEY_PREFIX + label
+
+    cached = store.get(key)
+    if cached and cached.get("audiophile_guide"):
+        return {
+            "audiophile_guide": cached.get("audiophile_guide"),
+            "lyric_hook": cached.get("lyric_hook"),
+        }
+
+    res = None
+    try:
+        res = await grounded_answer(
+            free_client, paid_client, guard, label,
+            system_prompt=build_song_card_ingestion_prompt(label, lyrics),
+            caller="song_card_ingestion",
+            timeout=GUIDE_TIMEOUT_S,
+            max_chars=SONG_CARD_MAX_CHARS,
+        )
+    except Exception as e:
+        logger.warning(f"[Audiophile] grounded_answer (song_card) 例外: {e}")
+
+    if res is None:
+        logger.info(f"[Audiophile] {label} 查不到可靠資料")
+        return None
+
+    text, sources = res
+    card = parse_song_card_response(text)
+    if card is None:
+        logger.info(f"[Audiophile] {label} 回應解析不出有效歌曲卡：{text[:60]!r}")
+        return None
+
+    store.set(key, {
+        "audiophile_guide": card["audiophile_guide"],
+        "lyric_hook": card["lyric_hook"],
+        "sources": sources,
+        "ts": time.time(),
+    })
+    return card
+
+
+async def fetch_song_card(
+    title: str,
+    artist: str,
+    *,
+    lyrics: str = "",
+    free_client,
+    paid_client,
+    guard,
+    store,
+) -> dict | None:
+    """title/artist (+ lyrics) → 多維度歌曲卡 {audiophile_guide, lyric_hook}。快取命中零
+    API 呼叫；查無資料或格式不符回傳 None 且不寫入快取。"""
+    return await _fetch_card(
+        _song_label(title, artist),
+        free_client=free_client, paid_client=paid_client, guard=guard, store=store,
+        lyrics=lyrics,
+    )
+
 
 
 async def render_audiophile_guide(
@@ -359,14 +439,16 @@ async def song_guide_for_dj(
                 return None
 
             async def _run():
-                return await _fetch_guide(
+                card = await _fetch_card(
                     label, free_client=free_client, paid_client=None, guard=None, store=store,
                 )
+                return card["audiophile_guide"] if card else None
         else:
             async def _run():
-                return await _fetch_guide(
+                card = await _fetch_card(
                     label, free_client=free_client, paid_client=paid_client, guard=guard, store=store,
                 )
+                return card["audiophile_guide"] if card else None
 
         task = asyncio.create_task(_run())
         inflight[label] = task

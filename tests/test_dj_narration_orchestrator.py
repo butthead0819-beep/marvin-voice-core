@@ -7,9 +7,18 @@ cogs/music_cog_dj_lyrics.py::_fetch_dj_interjection_raw 裡對應那幾行）
 """
 from __future__ import annotations
 
+import dj_topic_selector
 from dj_narration_orchestrator import compute_tail_fire_delay, select_narration_mode
 from dj_tail_schedule import tail_dj_fire_delay
 from dj_topic_selector import TopicCooldownStore, select_mode
+
+
+def _only(monkeypatch, *modes):
+    """monkeypatch MODE_WEIGHTS，讓扭蛋池只可能抽中 modes 裡列的那些（其餘權重 0）——
+    這些 characterization test 比較「new vs 照抄舊寫法」兩條路徑的輸出，兩條路徑其實
+    呼叫的是同一個（已改成扭蛋池的）select_mode，天然隨機、兩次呼叫不保證一樣；固定
+    權重讓兩條路徑都收斂到同一個 mode，才能公平比較。"""
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {m: 1.0 for m in modes})
 
 
 # ── compute_tail_fire_delay vs. _run_tail_dj 舊寫法 ──────────────────────────
@@ -77,14 +86,16 @@ def _fresh_store(tmp_path, name: str) -> TopicCooldownStore:
     return TopicCooldownStore(str(tmp_path / name), now=lambda: 1000.0)
 
 
-def test_select_narration_mode_matches_legacy_when_life_available(tmp_path):
+def test_select_narration_mode_matches_legacy_when_life_available(tmp_path, monkeypatch):
+    _only(monkeypatch, "life")
     kwargs = dict(life=["昨天去爬山"], interests=["喜歡周杰倫"])
     new = select_narration_mode(topic_store=_fresh_store(tmp_path, "a.json"), **kwargs)
     old = _legacy_select_mode(kwargs["life"], kwargs["interests"], _fresh_store(tmp_path, "b.json"))
     assert new == old == ("昨天去爬山", "life")
 
 
-def test_select_narration_mode_matches_legacy_fallback_rotation(tmp_path):
+def test_select_narration_mode_matches_legacy_fallback_rotation(tmp_path, monkeypatch):
+    _only(monkeypatch, "prev_song")
     kwargs = dict(
         life=[], interests=[], has_conversation=True, has_prev_song=True,
     )
@@ -96,10 +107,11 @@ def test_select_narration_mode_matches_legacy_fallback_rotation(tmp_path):
     assert new == old
 
 
-def test_select_narration_mode_autopilot_reason_overrides_quick(tmp_path):
+def test_select_narration_mode_autopilot_reason_overrides_quick(tmp_path, monkeypatch):
     # life/interest/highlight/news 全空、has_conversation/has_prev_song 全 False
-    # → select_mode 必落在 quick（FALLBACK_ORDER 最後一項），autopilot_reason
+    # → 池只剩 atmosphere/quick，固定權重讓 select_mode 必落在 quick，autopilot_reason
     # 存在時 orchestrator 該把它蓋成 "reason"，跟舊寫法一致。
+    _only(monkeypatch, "quick")
     kwargs = dict(life=[], interests=[], autopilot_reason="照你的口味挖出來的新歌")
     new = select_narration_mode(topic_store=_fresh_store(tmp_path, "a.json"), **kwargs)
     old = _legacy_select_mode(
@@ -110,9 +122,9 @@ def test_select_narration_mode_autopilot_reason_overrides_quick(tmp_path):
     assert new[1] == "reason"
 
 
-def test_select_narration_mode_has_guide_picks_guide_over_fallback_rotation(tmp_path):
-    # 有歌曲卡導聆可講（has_guide=True）→ guide 排 FALLBACK_ORDER 最前面，優先於
-    # conversation/prev_song/atmosphere/quick 這些沒有具體素材的 fallback。
+def test_select_narration_mode_has_guide_picks_guide_over_fallback_rotation(tmp_path, monkeypatch):
+    # 有歌曲卡導聆可講（has_guide=True）→ 固定權重讓扭蛋池必抽中 guide。
+    _only(monkeypatch, "guide")
     kwargs = dict(
         life=[], interests=[], has_conversation=True, has_prev_song=True, has_guide=True,
     )
@@ -132,9 +144,10 @@ def test_select_narration_mode_has_guide_false_never_returns_guide(tmp_path):
         assert mode != "guide"
 
 
-def test_select_narration_mode_autopilot_reason_does_not_override_guide(tmp_path):
+def test_select_narration_mode_autopilot_reason_does_not_override_guide(tmp_path, monkeypatch):
     # autopilot_reason 只覆蓋 quick/atmosphere，不該搶走 guide（有查證過的真實資料
-    # 時優先權比「Marvin 自己編的推薦理由」高）。
+    # 時優先權比「Marvin 自己編的推薦理由」高）。固定權重讓扭蛋池必抽中 guide。
+    _only(monkeypatch, "guide")
     store = _fresh_store(tmp_path, "a.json")
     topic, mode = select_narration_mode(
         life=[], interests=[], topic_store=store,
@@ -144,8 +157,10 @@ def test_select_narration_mode_autopilot_reason_does_not_override_guide(tmp_path
     assert mode == "guide"
 
 
-def test_select_narration_mode_autopilot_reason_does_not_override_life(tmp_path):
+def test_select_narration_mode_autopilot_reason_does_not_override_life(tmp_path, monkeypatch):
     # 有具體素材（life）時，autopilot_reason 不該蓋掉它——只搶 quick/atmosphere。
+    # 固定權重讓扭蛋池必抽中 life。
+    _only(monkeypatch, "life")
     store = _fresh_store(tmp_path, "c.json")
     topic, mode = select_narration_mode(
         life=["昨天去爬山"], interests=[], topic_store=store,
