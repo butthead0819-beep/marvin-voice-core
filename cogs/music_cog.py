@@ -569,7 +569,8 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             logger.info(f"[DJ Tail] {title} DJ 已在上一首尾段播出，跳過開頭重播")
             dj_audio = None
             dj_data = None
-        if await self._play_audiophile_guide_preroll(info, vc): dj_audio = dj_data = None  # 導聆＝這首的開場，開頭 DJ 讓位
+        if await self._play_audiophile_guide_preroll(info, vc):   # 導聆＝這首的開場，開頭 DJ 讓位
+            dj_audio = dj_data = None
         if dj_audio:
             dj_audio = await self._splice_owner_voice_clip(dj_audio, info)
         if dj_data and not dj_audio and vc is not None:
@@ -1162,7 +1163,8 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 return
             self._last_music_query[speaker] = (_nq, _now)
         logger.info(f"🎵 [Music Command] {speaker} 觸發語音音樂指令: {cmd} | query='{query[:40]}'")
-        if cmd in ("play", "play_next") and await self._album_tour_reject(speaker): return  # 📀 巡禮中只鎖點歌
+        if cmd in ("play", "play_next") and await self._album_tour_reject(speaker):  # 📀 巡禮中只鎖點歌
+            return
 
         vc = self._vc()
         if cmd == "play":

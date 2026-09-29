@@ -1,54 +1,85 @@
 """
 🚧 music_cog.py 防胖守門（ratchet / 棘輪）
 
-music_cog.py 是目前全庫最大的檔案（4863 行、128 method），比 voice_controller.py
-拆解前還大，且從未裝過守門——可以無限往上長不會被 CI 擋下來。比照
-test_voice_controller_size_budget.py 補上同款棘輪，並跟著 music_cog.py 拆解計畫
-（cogs/music_cog_*.py mixin）逐階段調降。
+MusicCog 經 Phase 1-8 抽 mixin（2026-09-16，4863 行/128 method → 1527 行/29 method）後，
+這個守門擋的是「往 MusicCog 本體長功能」。
 
 規則（重要）：
-  - 這兩個 budget 只能「往下調」（抽離程式碼後同步降低數字）。
-  - **絕對不要為了塞新功能把 budget 調高。** 新的音樂功能應該去：
+  - 所有 budget 只能「往下調」（抽離程式碼後同步改成新實測值）。
+  - **絕對不要為了塞新功能調高 budget。** 新的音樂功能應該去：
       * 新 IntentAgent（intent_agents/*.py）
       * 新 mixin 模組（cogs/music_cog_*.py）—— 與 MusicCog 共用 self 的內聚方法群
-    而不是在 MusicCog 上多寫一個 method 或往現有巨型方法塞行數。
+      * 純函式模組（如 queue_priority.py）—— 決策邏輯抽成可單測的 pure core
+  - **不要壓行來過關**：量的是 AST statement 數，把兩行併成一行不會變少。
+  - 例外：in-file Extract Method（巨型方法拆出有名字的子方法、行為不變）會讓 method 數 /
+    statement 數微升——這是拆解不是加功能，允許據實上修，並同步下修 FROZEN_METHODS。
 
-調降時機：每次成功抽離一塊 mixin，就把數字改成新的實測值。
+2026-09-29 從行數改為 AST 量測（見 core_size_metrics.py）：行數預算頂滿 1500/1500 後
+出現為過關壓行（48069ba），指標守住、可讀性變差。四個指標：
+  1. STATEMENT_BUDGET：整檔 statement 數（import 不算）
+  2. METHOD_BUDGET：MusicCog 自身 method 數
+  3. SELF_ATTR_BUDGET：檔內被賦值的 self.X 名稱數（共用可變狀態＝耦合）
+  4. 單一 method 上限：新 method ≤ NEW_METHOD_MAX；已超標的大 method 凍結在現值只准縮
+     （縮了就把 FROZEN_METHODS 的數字改成新實測值；縮到 ≤ NEW_METHOD_MAX 就刪掉那行）
+
+行數演進（舊指標，留作歷史）：Phase 1-8 抽 commands/subsystem/personal_shuffle/audio_meta/
+autopilot/story_arc/dj_lyrics/tail_dj 八塊 mixin，4863→1527；2026-09-25 點歌插入位置搬去
+queue_priority 後 1500。
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
+from core_size_metrics import method_statements, self_attrs, statement_count
+
 MC = Path(__file__).resolve().parent.parent / "cogs" / "music_cog.py"
+CLASS = "MusicCog"
 
-# ── 棘輪基準（2026-09-16，拆解前的原始實測值：4863/128）──────────────────────
-# Phase 1（music_cog_commands.py，6個slash指令，−264行/−6method）後：4599/122
-# Phase 2（music_cog_subsystem.py，8個radio/stream loop方法，−272行/−8method）後：4327/114
-# Phase 3（music_cog_personal_shuffle.py，10個個人歌單/卡片/HUD橋接方法，−281行/−10method）後：4046/104
-# Phase 4（music_cog_audio_meta.py，7個音訊分析/檔案清理方法，−203行/−7method）後：3843/97
-# Phase 5（music_cog_autopilot.py，20個autopilot推薦引擎方法，−508行/−20method）後：3335/77
-# Phase 6（music_cog_story_arc.py，故事弧線節目+_auto_recommend，10個方法，−525行/−10method）後：2810/67
-# Phase 7（music_cog_dj_lyrics.py，歌詞抓取+DJ播報生成，20個方法+_DJ_TEMPLATES衍生常數，−20method）後：2184/47
-# Phase 8（music_cog_tail_dj.py，metadata統籌預取+PuckMixer橋接+DJ尾段串場排程，18個方法，−657行/−18method）後：1527/29
-LINE_BUDGET = 1500  # 2026-09-25 點歌插入位置搬去 queue_priority −20，真人點歌優先傳 remaining_s +1
+# ── 棘輪基準（2026-09-29 改 AST 量測時的實測值）──────────────────────────────
+STATEMENT_BUDGET = 880
 METHOD_BUDGET = 29
+SELF_ATTR_BUDGET = 58
+
+NEW_METHOD_MAX = 40
+FROZEN_METHODS = {  # 已超過 NEW_METHOD_MAX 的既有大 method：只准縮
+    "_handle_voice_music_command": 228,
+    "_stream_loop": 76,
+    "_resolve_yt_query": 75,
+    "_stream_loop_prepare_and_announce": 63,
+    "__init__": 55,
+}
+
+_HINT = (
+    "不要為了塞功能調高預算 —— 新功能請進 IntentAgent / mixin / 純函式模組。\n"
+    "若這是把程式碼「移出去」造成的合法下降，請把 budget 改成新的實測值。"
+)
 
 
-def test_music_cog_line_count_within_budget():
-    n = len(MC.read_text(encoding="utf-8").splitlines())
-    assert n <= LINE_BUDGET, (
-        f"music_cog.py 漲到 {n} 行 > 預算 {LINE_BUDGET}。\n"
-        f"不要為了塞功能調高預算 —— 新功能請進 IntentAgent / 新 mixin 模組。\n"
-        f"若這是把程式碼「移出去」造成的合法下降，請把 LINE_BUDGET 改成新的實測值。"
-    )
+def test_music_cog_statement_count_within_budget():
+    n = statement_count(MC)
+    assert n <= STATEMENT_BUDGET, f"music_cog.py statement 數 {n} > 預算 {STATEMENT_BUDGET}。\n{_HINT}"
 
 
 def test_music_cog_method_count_within_budget():
-    # 只數直接定義在 music_cog.py 的 method（4-space 縮排），mixin 不算
-    src = MC.read_text(encoding="utf-8")
-    n = len(re.findall(r"^    (?:async )?def ", src, re.MULTILINE))
-    assert n <= METHOD_BUDGET, (
-        f"MusicCog 自身 method 數漲到 {n} > 預算 {METHOD_BUDGET}。\n"
-        f"新增的音樂功能應該去 IntentAgent / mixin，不要在 MusicCog 上長新 method。"
+    n = len(method_statements(MC, CLASS))
+    assert n <= METHOD_BUDGET, f"MusicCog 自身 method 數 {n} > 預算 {METHOD_BUDGET}。\n{_HINT}"
+
+
+def test_music_cog_self_attr_count_within_budget():
+    n = len(self_attrs(MC))
+    assert n <= SELF_ATTR_BUDGET, (
+        f"music_cog.py 賦值的 self.X 屬性 {n} 個 > 預算 {SELF_ATTR_BUDGET}。\n"
+        f"新狀態請放進功能自己的物件/模組，不要再往 MusicCog 的共用 self 上掛。"
+    )
+
+
+def test_music_cog_method_size_within_budget():
+    over = {
+        name: (n, FROZEN_METHODS.get(name, NEW_METHOD_MAX))
+        for name, n in method_statements(MC, CLASS).items()
+        if n > FROZEN_METHODS.get(name, NEW_METHOD_MAX)
+    }
+    assert not over, (
+        f"method statement 數超標 {{名稱: (實測, 上限)}}：{over}\n"
+        f"大 method 只准縮不准長 —— 新邏輯抽成獨立 method 或純函式模組。"
     )
