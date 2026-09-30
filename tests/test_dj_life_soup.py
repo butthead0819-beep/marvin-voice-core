@@ -171,7 +171,9 @@ async def test_human_context_includes_recent_life(monkeypatch):
     cog = _make_cog(life_cores=["大肚在準備搬家", "【重點】狗與露要去環島"])
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     ctx = _ctx_str(cog)
-    assert "大肚在準備搬家" in ctx, f"context 應含生活素材: {ctx!r}"
+    # 9/30 起生活素材打亂後隨機挑（不再固定挑第一條）→ 兩條恰好出現一條
+    hit = sum(s in ctx for s in ("大肚在準備搬家", "狗與露要去環島"))
+    assert hit == 1, f"context 應恰好含一條生活素材: {ctx!r}"
 
 
 @pytest.mark.asyncio
