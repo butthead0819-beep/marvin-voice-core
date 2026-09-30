@@ -26,8 +26,10 @@ _FRUSTRATION_RE = re.compile(
     re.IGNORECASE,
 )
 
-# 口吃重複特徵（同一句出現多次點播/喚醒標記）
-_STUTTER_WAKE_WORDS = ("播放", "馬文", "把文", "毛文", "放歌", "麻文")
+# 口吃重複特徵：「同一類」詞出現 ≥2 次才算。叫名字類與播放類分開計——
+# 「馬文播放X」各 1 次是正常指令（J3 cleaner 常在句首注入「馬文」），不是口吃。
+_STUTTER_NAME_WORDS = ("馬文", "把文", "毛文", "麻文")
+_STUTTER_PLAY_WORDS = ("播放", "放歌")
 
 
 async def _noop() -> None:
@@ -98,8 +100,9 @@ class FrustrationAgent:
             )
 
         # 2. 口吃/連喊重試特徵（例如「把文文播放馬文播放...」）
-        stutter_count = sum(query.count(w) for w in _STUTTER_WAKE_WORDS)
-        if stutter_count >= 2 or query.count("播放") >= 2 or query.count("馬文") >= 2:
+        name_count = sum(query.count(w) for w in _STUTTER_NAME_WORDS)
+        play_count = sum(query.count(w) for w in _STUTTER_PLAY_WORDS)
+        if name_count >= 2 or play_count >= 2:
             return Bid(
                 name=self.name,
                 confidence=0.91,
