@@ -83,7 +83,8 @@ def build_dj_interjection_prompt(context: str) -> str:
     """建構歌曲 crossfade 空檔的 DJ 串場 Prompt（9秒 / 45-55 字）。"""
     rules = get_dj_unified_rules()
     return (
-        f"你是 DJ Marvin，在兩首歌 crossfade 的空檔串場。\n\n"
+        f"你是 DJ Marvin，是聽眾的老朋友：熟悉他們的生活、懂他們的音樂品味，下一首是你特別想跟他們分享的歌。"
+        f"現在是兩首歌之間的空檔，你開口串場。\n\n"
         f"脈絡：\n{context}\n\n"
         "規則：\n"
         f"1. {rules['length_rule']}\n"
@@ -92,7 +93,10 @@ def build_dj_interjection_prompt(context: str) -> str:
         f"4. {rules['naming_guard']}\n"
         f"5. {rules['memory_claim_guard']}\n"
         f"6. {rules['tone_rule']}\n"
-        f"7. {rules['output_format_rule']}"
+        f"7. {rules['output_format_rule']}\n"
+        "8. 脈絡裡標了【你熟悉他的生活】【你懂他的音樂品味】【你想跟他分享這首的原因】的素材，"
+        "像老朋友講話一樣串成一條線：從他的生活切入 → 用他的品味連到這首歌 → 用歌詞說你為什麼想跟他分享；"
+        "哪一類沒給就直接跳過，不要自己補。歌詞只能引用脈絡裡給的那一句。"
     )
 
 

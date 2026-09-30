@@ -1011,7 +1011,8 @@ class GeminiRouterContentMixin:
                 return _hit
 
         if is_dj:
-            sys_prompt = f"你是 DJ Marvin，記得每位常客的專業電台 DJ。任務：{prompts[event_type]}"
+            _dj_role = "常客們的老朋友" if event_type == "dj_interjection" else "記得每位常客的專業電台 DJ"
+            sys_prompt = f"你是 DJ Marvin，{_dj_role}。任務：{prompts[event_type]}"
         else:
             persona = self.dna.get("persona_tag", "厭世機器人馬文")
             toxicity = self.dna.get("toxicity", 10)

@@ -29,6 +29,10 @@ from persona_loader import load_dj_templates
 
 logger = logging.getLogger(__name__)
 
+# 🎤 DJ 口白等歌詞槽的上限（實測歌詞抓取約 3.3s、命中率約一半，6s 讓大多數
+# 命中案例趕得上，逾時就放棄這輪歌詞槽，不拖慢整段口白預抓）。
+_DJ_LYRICS_WAIT_S = 6.0
+
 
 class MusicDJLyricsMixin:
     # DJ 播報模板池資料源見 personas/dj_templates.yaml；選池邏輯/random.choice() 呼叫點不動
@@ -477,7 +481,7 @@ class MusicDJLyricsMixin:
         except Exception:
             return ""
 
-    async def _fetch_dj_interjection_raw(self, info: dict) -> dict | None:
+    async def _fetch_dj_interjection_raw(self, info: dict, lyrics_task=None) -> dict | None:
         """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
         requester = info.get('requested_by', '')
         if not requester:
@@ -514,6 +518,7 @@ class MusicDJLyricsMixin:
         _song_label = f"{_clean_a} - {_clean_t}" if _clean_a else _clean_t
         ctx = [f"歌曲：{_song_label or title}", f"點播者：{requester}"]
         song_candidates: list[str] = []
+        lyric_candidates: list[str] = []
         # 串場不提上一首（9/30 使用者定：專注寫下一首）——預抓時的「上一首」常因插播/
         # 換順序過期，寫進 prompt 再被 Consistency Guard 丟掉改唸報幕，得不償失。
         if play_count >= 2:
@@ -521,7 +526,7 @@ class MusicDJLyricsMixin:
         if feelings:
             song_candidates.append(f"情感記錄：{' / '.join(feelings[:2])}")
         if lyric_match:
-            song_candidates.append(f"歌詞呼應：{lyric_match[:60]}")
+            lyric_candidates.append(f"歌詞呼應：{lyric_match[:60]}")
 
         _vc_ref = None
         present_members: set[str] | None = None
@@ -636,13 +641,13 @@ class MusicDJLyricsMixin:
         #   氣氛精準（atmosphere）——緊扣這個時間/地點，像特別為這一刻準備的。
         # conversation 本身就是銜接類，維持原本的過場方向指示即可。
         if mode == "memory_match":
-            ctx.append(f"記憶證據（這首為什麼現在放）：\n・{topic}")
+            ctx.append(f"【你熟悉他的生活】記憶證據（這首為什麼現在放）：\n・{topic}")
             ctx.append("開場鉤子：開場直接點名講出這條記憶證據，讓對方聽得出你記得他說過/做過的事；只能講證據裡寫的事實，不准自己補細節或編故事。")
         elif mode == "life":
-            ctx.append(f"最近生活：\n・{topic}")
+            ctx.append(f"【你熟悉他的生活】最近生活：\n・{topic}")
             ctx.append(random.choice(self._DJ_EMPATHY_HOOK_TEMPLATES))
         elif mode == "interest":
-            ctx.append(f"在場興趣：\n・{topic}")
+            ctx.append(f"【你熟悉他的生活】在場興趣：\n・{topic}")
             ctx.append(random.choice(self._DJ_EMPATHY_HOOK_TEMPLATES))
         elif mode == "emotional_highlight":
             # 這是 Marvin 自己（機器人）的記憶與反應，不是聽眾的事——跟 life/interest
@@ -654,10 +659,10 @@ class MusicDJLyricsMixin:
             ctx.append("開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。")
         elif mode == "conversation":
             if conv_lines:
-                ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
+                ctx.append("【你熟悉他的生活】頻道近期對話：\n" + '\n'.join(conv_lines))
             ctx.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
         elif mode == "revival":
-            ctx.append("剛剛大家聊過（原句）：\n" + "\n".join(revival_lines))
+            ctx.append("【你熟悉他的生活】剛剛大家聊過（原句）：\n" + "\n".join(revival_lines))
             ctx.append("串場方向：現在大家聊天告一段落，接回剛剛的話題延續一下，或丟個輕鬆的問題製造話題感，再帶進這首歌；只能用上面原句裡的內容，不准編造誰說了什麼、不准替人下結論。")
         elif mode == "atmosphere":
             ctx.append(env)
@@ -686,15 +691,33 @@ class MusicDJLyricsMixin:
             else:
                 song_candidates.append(_reason_line)
 
-        # 歌曲素材只抽 1 個（9/30 使用者定：主素材 1 + 歌曲素材 1，不再全部疊上去造成混線）。
+        # 🎤 歌詞槽（9/30 使用者定：老朋友想分享這首的原因）——等真實歌詞抓完（上限 6s）挑重複最多的一句
+        # 放在生活/新聞素材都查完之後：歌詞抓取跟那些 await 同時在跑，這裡多半已經好了
+        _lyric_line = None
+        if lyrics_task is not None:
+            try:
+                _lyrics = await asyncio.wait_for(asyncio.shield(lyrics_task), timeout=_DJ_LYRICS_WAIT_S)
+                from dj_lyric_pick import pick_chorus_line
+                _lyric_line = pick_chorus_line(_lyrics if isinstance(_lyrics, str) else None)
+            except Exception:
+                _lyric_line = None  # 逾時/失敗：這輪沒有歌詞槽
+        if _lyric_line:
+            lyric_candidates.append(f"歌詞：『{_lyric_line}』")
+
+        # 歌曲類/歌詞類素材各抽 1 個（9/30 使用者定：老朋友三槽——生活/品味/歌詞，
+        # 每槽最多 1 個，不再全部疊上去造成混線）。
         # guide 本身就是歌曲素材；quick 不走 LLM——這兩個 mode 不抽。
+        _lyric_pick = None
         if mode not in ("guide", "quick"):
             from dj_narration_orchestrator import pick_song_material
             _song_pick = pick_song_material(
                 song_candidates, exclude_text=(topic or "") if mode == "memory_match" else "")
             if _song_pick:
-                ctx.append(_song_pick)
-        logger.info(f"🎰 [DJ Material] 主={mode} 歌曲素材={(_song_pick or '')[:24]!r}（候選 {len(song_candidates)}）")
+                ctx.append(f"【你懂他的音樂品味】{_song_pick}")
+            _lyric_pick = pick_song_material(lyric_candidates)
+            if _lyric_pick:
+                ctx.append(f"【你想跟他分享這首的原因】{_lyric_pick}")
+        logger.info(f"🎰 [DJ Material] 主={mode} 品味={(_song_pick or '')[:24]!r} 歌詞={(_lyric_pick or '')[:24]!r}（候選 品味{len(song_candidates)}/歌詞{len(lyric_candidates)}）")
 
         # Group size & Chat Heat → 語氣：綜合在線人數與 AtmosphereTracker 對話活躍度。
         # vc() 不可用時靜默略過。quick 模式沒有 LLM 可以照 ctx 調語氣，改本地選模板池。
@@ -825,6 +848,7 @@ class MusicDJLyricsMixin:
                 "mode": mode,
                 "topic": topic,
                 "song_material": _song_pick,
+                "lyric_material": _lyric_pick,
                 "ctx": "\n".join(ctx),
                 "source": _source,
                 "llm_raw": _llm_raw,

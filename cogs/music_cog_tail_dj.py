@@ -172,10 +172,11 @@ class MusicTailDJMixin:
         存進 `info['_explanation']`（見 `_compute_recommend_explanation` docstring
         說明時機為何不能延後），這裡不用等、也不用重算。
         """
+        lyrics_task = asyncio.create_task(self._fetch_lyrics_raw(info))
         lyrics, comment, dj, lyrics_synced = await asyncio.gather(
-            self._fetch_lyrics_raw(info),
+            lyrics_task,
             self._fetch_comment_raw(info),
-            self._fetch_dj_interjection_raw(info),
+            self._fetch_dj_interjection_raw(info, lyrics_task=lyrics_task),
             self._fetch_lyrics_synced(info),
             return_exceptions=True,
         )

@@ -83,12 +83,16 @@ def _cog_with_song_materials(tmp_path):
 
 @pytest.mark.asyncio
 async def test_song_materials_capped_to_one(tmp_path, monkeypatch):
+    # 9/30 老朋友三槽改版：歌詞（lyric_match）獨立成自己的一槽，不再跟品味類
+    # 候選（喜好線索/情感記錄）搶同一個「歌曲素材只抽 1 個」名額，因此改成
+    # 分開斷言——品味槽仍恰好 1 個，歌詞槽是唯一候選必中。
     _only(monkeypatch, "atmosphere")
     cog = _cog_with_song_materials(tmp_path)
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     ctx = _ctx_str(cog)
-    hit = sum(s in ctx for s in ("喜好線索：這首是", "情感記錄：", "歌詞呼應："))
-    assert hit == 1, f"歌曲素材應恰好 1 個: {ctx!r}"
+    taste_hit = sum(s in ctx for s in ("喜好線索：這首是", "情感記錄："))
+    assert taste_hit == 1, f"品味素材應恰好 1 個: {ctx!r}"
+    assert "歌詞呼應：" in ctx, f"歌詞素材（唯一候選）應該入選: {ctx!r}"
 
 
 @pytest.mark.asyncio
