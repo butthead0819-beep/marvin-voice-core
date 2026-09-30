@@ -13,6 +13,16 @@ from phrase_cooldown import record as _phrase_record
 
 logger = logging.getLogger(__name__)
 
+
+# 情緒骰子（dere_persona）只給真實玩家的回覆。speaker「系統」（DJ 串場/動態台詞等系統生成）不擲：
+# 被擲中時 system prompt 整段換成 dere 人設，任務說明消失，模型改回應 user prompt「動態台詞生成」，
+# 9/30 prod DJ 口白 103 段有 3 段播出「隨便說句『世界終將毀滅』，反正沒人會在意」這類離題句。
+_NON_PLAYER_SPEAKERS = frozenset({"系統"})
+
+
+def dere_eligible(speaker, system_prompt: str) -> bool:
+    return bool(speaker) and speaker not in _NON_PLAYER_SPEAKERS and "dere_persona" not in system_prompt
+
 # /set_game 清空哨兵：代表「沒有在玩遊戲」，將 current_game 清為 None。
 # 用途：current_game 一旦設定就持久化於 DNA，原本無清除路徑，會默默擋掉 5 分鐘日記。
 GAME_CLEAR_SENTINELS = frozenset({"無", "none", "關閉"})
@@ -374,7 +384,7 @@ class GeminiRouterLLMMixin:
                 purpose = "marvin_chat"
         # 🎲 [Operation Eternal Soul] 情緒骰子 (Dere Mode Logic)
         final_system_prompt = system_prompt
-        if speaker and "dere_persona" not in system_prompt:
+        if dere_eligible(speaker, system_prompt):
             import random
             helpfulness = self.dna.get('helpfulness', 3)
             dere_chance = min(0.05, 0.01 + (helpfulness * 0.005))
@@ -708,7 +718,7 @@ class GeminiRouterLLMMixin:
         """[Operation Hyper-Stream] 通用流式 LLM 進入點，優先順序：Groq → Cerebras → Gemini → Ollama"""
         final_system_prompt = system_prompt
         # 🎲 性格隨機注入
-        if speaker and "dere_persona" not in system_prompt:
+        if dere_eligible(speaker, system_prompt):
             import random
             helpfulness = self.dna.get('helpfulness', 3)
             dere_chance = min(0.05, 0.01 + (helpfulness * 0.005))
