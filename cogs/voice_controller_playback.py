@@ -44,6 +44,15 @@ logger = logging.getLogger(__name__)
 MAX_HOTSWAP_CHARS = 12
 
 
+def barge_in_shielded(until, now: float) -> bool:
+    """講話類 TTS（DJ 口白/點歌 ack/導聆）推上 TTS 層後，整段播完前擋住 barge-in 清 TTS 層。
+
+    9/30：_protected_tts_window 只包住非阻塞的 push，推完保護就結束，有人開口就把 DJ 整段清掉
+    （14:17、14:22 實測只講一句就斷、且無 log）。擋住後有人開口只走 note_player_speech 的 duck。
+    until 非數字（未設/測試 MagicMock）一律視為沒保護。"""
+    return isinstance(until, (int, float)) and now < until
+
+
 def _shift_percent_string(value: "str | None", offset: int, clamp: tuple[int, int] = (-60, 60)) -> str:
     """把 '-20%' 這種 edge-tts rate 字串疊加 offset 百分點，clamp 後回傳同格式字串。"""
     try:
@@ -883,6 +892,11 @@ class PlaybackMixin:
             f32 = audio_mixing.peak_normalize_f32(f32, target_peak=peak)
         self._ensure_mixer_playing(self._resolve_playback_device())
         ok = bool(self._mixer.push_tts(f32))
+        if ok and peak is None:
+            try:
+                self._tts_barge_shield_until = time.time() + float(self._mixer.tts_load_seconds())
+            except Exception:
+                pass
         if ok and text:
             log_marvin_speech(text, start_ts=time.time(), layer=1, voice=None, src="dj")
         elif not ok:
