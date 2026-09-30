@@ -1,190 +1,104 @@
-# marvin-voice-core
+# Marvin（馬文）
 
-[![CI](https://github.com/butthead0819-beep/marvin-voice-core/actions/workflows/ci.yml/badge.svg)](https://github.com/butthead0819-beep/marvin-voice-core/actions/workflows/ci.yml)
+**住在 Discord 語音頻道裡的厭世機器人室友。** 你們聊天，他在旁邊聽；叫他一聲，他會用語音回你、幫你放歌，順便吐槽你兩句。
 
-**A voice companion that joins your Discord channel, hears you talk, and talks back out loud — remembers who you are, reads the room, and now lives in hardware too.**
-
-Marvin lives in your voice channel. After a few sessions he knows who stays until 3am, who always says goodbye before leaving, whose music taste runs toward melancholy on weeknights. He will absolutely roast you for it.
-
-### What a session actually feels like
-
-You join voice. Marvin greets *you* — not "a user," you, in the tone your last hundred sessions earned. You start talking about a game; without being asked, he's already tracking that the room turned to gaming and colours his replies to match. Someone says "放首歌" — no wake word, no menu — and the right song is playing seconds later, picked from what *this room* actually stayed for last time. You argue, you laugh, someone gets roasted. At the end of the night he writes a quiet diary entry about it in your text channel, unprompted.
-
-That's the surprise: none of it is a command you memorised. It's a roommate who happens to live in a voice channel — and, increasingly, in a speaker on your shelf and a puck in your car.
-
-📖 **The story** — how this grew from a toy into a platform, Simon → Suki → Marvin, in three months: **[read the illustrated history](https://butthead0819-beep.github.io/marvin-voice-core/marvin-story.html)** (中 / EN).
-
-> **Marvin is a macOS / Apple Silicon product.** Tuned for Swift STT + Gemini/Groq on M1 8GB. The Whisper-only fallback in `stt_handler.py` is community territory, not maintained. See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md) for the why, the tested footprint, and the Linux/Docker stance.
+角色原型是《銀河便車指南》裡那台憂鬱的機器人 Marvin：腦袋有一顆行星那麼大，卻被叫來幫你們放歌。他嘴很壞，但會記得你。
 
 ---
 
-## What other voice bots don't do
+## 他能做什麼
 
-Every Discord voice bot solves the same pipeline: STT → LLM → TTS. That part is not hard. What's hard is everything that makes a conversation feel like it's *with someone*, not *at a bot*.
+**聊天**
+- 在語音頻道裡喊「馬文」，接著講你要說的話，他會用語音回答。
+- 會記得你：你喜歡什麼、討厭什麼、常聊的話題、你們的關係熟到什麼程度。越常來，他對你講話的語氣越不一樣。
+- 會讀空氣：知道房間現在在聊遊戲、音樂還是在發呆。
+- 有人進來會打招呼，要走的時候會送客。
 
-| | Generic voice bot | **Marvin** |
-|---|---|---|
-| Speaks in voice channels | ✅ | ✅ |
-| Remembers what you said 10 seconds ago | ✅ | ✅ |
-| Remembers who you *are* across sessions | ❌ | **✅** |
-| Personality that adapts per-person | ❌ | **✅** |
-| Knows what the room is talking about | ❌ | **✅** |
-| Music taste memory + auto-recommendation | ❌ | **✅** |
-| Relationship that builds over time | ❌ | **✅** |
+**不用叫他，他也會主動接話**（會用到你們剛剛或之前聊過的內容）
+- **冷場時丟話題**：安靜約 3 分鐘，他會根據最近 10 分鐘聊的內容和大家的喜好，自己開一個話題（「最近有點安靜，…」）。每段聊天最多 3 次，至少隔 10 分鐘。
+- **記得你說過要做的事**：你之前說過要做某件事，之後聊天又提到相關的話題，他會問：「對了，你之前說要……，現在呢？」
+- **幫忙記待辦**：多人聊天時有人答應要做某件事，等大家安靜下來，他會問：「剛才說的『……』，要記成待辦嗎？」
+- 進場招呼、DJ 口白、厭世日記，也會帶到最近聊天的內容。
 
-The difference is not the pipeline — it's the memory and the relationship.
+**音樂**
+- 用講的點歌：「馬文，放七里香」「馬文，下一首」「馬文，大聲一點」「馬文，這首是誰唱的」。
+- 自動 DJ：沒人點歌時會依照這個房間大家的口味接著放，歌與歌之間會插幾句 DJ 口白。
+- 真人點的歌優先，會排在自動選的歌前面。
+- 個人歌單：可從 YouTube 播放清單、附檔或文字匯入；可匯出成 TXT / JSON / CSV。
 
-- **Marvin remembers** — not chat logs, but structured observations: your relationship stage (stranger → regular → inner circle), likes/dislikes, recurring jokes, what music you reach for at 2am.
-- **Marvin has opinions about you specifically** — a per-person DNA system, not one prompt for everyone. A hundred-session regular gets warmth buried under sarcasm; a first-timer gets formal disdain.
-- **Marvin reads the room** — an `AtmosphereTracker` watches the STT stream in real time and injects a topic/mood snapshot (gaming / music / food / work) into every LLM call.
-- **Marvin reacts to how you react** — when music plays he tracks who stayed, who skipped, what people felt, and uses that to recommend the next song from what works for *your* room.
-
----
-
-## What you need
-
-- **macOS** (Monterey 12+ recommended), **Python 3.12+**
-- **Xcode Command Line Tools** (for the Swift STT script): `xcode-select --install`
-- **API keys** — all required for full functionality:
-
-  | Key | Used for | Where to get it |
-  |-----|----------|-----------------|
-  | `DISCORD_BOT_TOKEN` | Bot identity | [Discord Developer Portal](https://discord.com/developers/applications) |
-  | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Primary LLM | [Google AI Studio](https://aistudio.google.com/) |
-  | `GROQ_API_KEY` | STT cleaner + fallback LLM | [console.groq.com](https://console.groq.com/) |
-
-  TTS uses `edge-tts` (Microsoft Edge TTS) — no API key, bundled in `requirements.txt`.
-
-## 5-minute quickstart
-
-```bash
-# 1. Clone
-git clone https://github.com/butthead0819-beep/marvin-voice-core.git
-cd marvin-voice-core
-
-# 2. Install — full bot (music, screen capture, all features):
-pip install -r requirements.txt
-#    or core voice pipeline only:  pip install -r requirements-core.txt
-
-# 3. Configure API keys
-cp .env.example .env   # fill in DISCORD_BOT_TOKEN, GOOGLE_API_KEY, GROQ_API_KEY
-
-# 4. Run
-python main_discord.py
-```
-
-In Discord: join a voice channel, then type `/summon` in any text channel.
-
-> **Streamer? Want the shortest path?** See [docs/STREAMER_SETUP.md](docs/STREAMER_SETUP.md) — a non-developer 5-minute guide with a one-line installer and DM-the-maintainer fallback.
+**其他**
+- 聊得夠多時，每 10 分鐘把剛剛聊的內容寫成一則四行的「厭世日記」，貼在 `#馬文的厭世日記` 頻道。
+- `/marvin_say`：讓他用他的聲音念出你打的字。
+- 在文字頻道 `@Marvin` 也能跟他說話。
 
 ---
 
-## Community Memory
+## 怎麼邀請
 
-Marvin stores what he knows about each member in a local SQLite database (`marvin.db`) — structured observations that accumulate over real interactions, plus recent transcripts for short-term recall. Created automatically on first run. A `suki_memory.json` export is written after every save for external analysis scripts.
+1. 邀請連結：**待確認**（營運者提供）。
+2. 需要的權限：看頻道、傳訊息、嵌入連結、附加檔案、連線語音、在語音中說話、使用應用程式指令。若要讓他自動建立日記頻道，還需要「管理頻道」（沒給也能用，日記會改貼在你召喚他的那個文字頻道）。確切的權限組合：**待確認**。
+3. 邀請後在任一文字頻道打 `/summon`（你要先在語音頻道裡）。
 
-| Field | What it tracks |
-|-------|---------------|
-| `suki_impression` | Marvin's inner monologue about this person |
-| `relationship_stage` | Stranger → regular → inner circle |
-| `bias_score` | Drifts ±10 with reactions — determines tone |
-| `likes / dislikes / taboos` | Accumulated from conversation |
-| `speech_dna` | Per-person speaking style observations |
+**第一次進語音頻道時**，Marvin 會貼一則資料使用聲明並附「同意 / 拒絕」按鈕。**只有按同意的人，他才會處理你說的話。** 隨時可以用 `/marvin_optout` 撤回、`/marvin_optin` 重新同意。
 
-`bias_score` and `relationship_stage` together determine how Marvin talks to each person: same personality, different texture. Full schema in [`docs/memory_schema_template.md`](docs/memory_schema_template.md).
-
-**`marvin.db` and `suki_memory.json` contain personal data — both gitignored by default, never commit them.**
-
-## Personality
-
-The default is Marvin from *The Hitchhiker's Guide to the Galaxy* — depressed, existential, unimpressed that he has a planet-sized brain and you want his take on your gaming session. To change it: edit `personality_config.py` and the system prompt in `marvin_prompts.py`. The DNA and relationship systems are personality-agnostic.
+同意之後，**有兩種情況你的錄音會送到 Google Gemini**：你喊「馬文」的那一句（用來判斷你的情緒）；以及他沒聽懂你的指令時，那一句的錄音會送去再判斷一次。其他時候，語音都在營運者的電腦上轉成文字，送出去的是文字、不是聲音。資料怎麼用、存多久，請看 [PRIVACY.md](PRIVACY.md)。
 
 ---
 
-## Privacy & consent
+## 怎麼叫醒他
 
-When a member first joins a voice channel, Marvin posts a notice listing exactly what data goes where, with Accept / Decline buttons. Only members who explicitly consent have their voice processed. They can change their mind anytime with `/marvin_optin` or `/marvin_optout`.
+在語音頻道裡，**先喊他的名字，再講要做的事**：
 
-Data flow for consented members:
-- Voice → local STT (macOS Speech framework or Whisper); when the cloud cleaner is enabled, audio goes to **Groq** for transcription cleaning
-- Transcription + context → **Google Gemini / Cerebras** (LLM response)
-- Behavioral observations → local `suki_memory.json` (never leaves your machine)
+| 說法 | 例子 |
+|---|---|
+| 馬文 / 嗨馬文 / 艾馬文 / 馬文同學 | 「馬文，今天幾號？」 |
+| Hey Marvin / Marvin（中文句子裡夾英文名也可以） | 「Hey Marvin，現在幾點？」 |
+| 句首的「馬哥」「老馬」 | 「馬哥，下一首。」 |
 
-Marvin runs on your own machine — there is no central server collecting data across deployments.
+- 他回完話後有大約 8 秒的追問時間，這段時間內接著講不用再喊名字。
+- 叫他離開：`/dismiss`。最後一個人離開語音頻道時他也會自己走。
 
-Marvin uses **tiered retention**, not blanket zero-data-retention: raw wording ages out, while privacy-safe abstractions (embeddings, behavioral summaries) are kept so the bot can recall and improve. Each tier and its enforcement:
+### 指令一覽
 
-| Tier | Data | Where it lives | Rule | Enforced by |
-|------|------|----------------|------|-------------|
-| **Seconds** | Raw audio | RAM + per-utterance temp WAV | Deleted in a `finally` block right after transcription — never persisted | `discord_voice_engine.py` audio flush |
-| **Hours**¹ | Operational / STT debug logs | `bot_stdout.log`, `stt_history.log`, main bot log | Rotating, **size-capped** (5 MB × 3, 10 MB × 5); oldest chunk auto-discarded | `RotatingFileHandler` in `main_discord.py` |
-| **Days** | Raw transcripts | local `marvin.db` | **Deleted** after 14 days; live bot never reads older than 7 days | `scripts/prune_transcripts.py` |
-| **Days** | Self-improvement signals (`records/*.jsonl`: judge / gaps / rescue) | local files | Raw wording **replaced with a one-way SHA-1 hash** after 14 days (keeps de-dup / distinct counts working; original text unrecoverable) | `scripts/scrub_improvement_raw.py` |
-| **Long-term** | Semantic memory | local vector store | Conversation **embeddings** (no raw text) retained for cross-session recall | — (memory core, not pruned) |
-| **Long-term** | Behavioral observations & summaries | local `marvin.db` / `suki_memory.json` | Abstracted community memory retained; no verbatim transcripts | — (memory core, not pruned) |
-
-The two **Days** rules run nightly at **03:00** via the `feedbackbatch` launchd job (`run_feedback_batch.py` → `zdr_scrub` + `transcript_prune`).
-
-¹ The **Hours** tier is bounded by file *size*, not a fixed time window — at low activity a log may hold more than a few hours. It is a debug convenience, not a hard time guarantee.
-
-**Verify it yourself** (all read-only):
-
-```bash
-# Seconds — no audio is left between utterances (temp WAVs live in the run dir)
-ls tmp_stt_*.wav 2>/dev/null | wc -l         # → 0
-
-# Days — the nightly scrub/prune actually ran
-grep -E 'zdr_scrub|transcript_prune' ~/Library/Logs/Marvin/feedback_batch_cron.log | tail
-#   → deleted_rows: N   /   scrubbed_fields: N   /   ✅ success
-
-# Days — old improvement signals are hashed, not readable
-grep -c 'scrubbed:sha1:' records/agent_gaps.jsonl
-
-# Hours — rotation caps are in force
-ls -la bot_stdout.log* stt_history.log*
-
-# The 03:00 job is scheduled
-launchctl list | grep feedbackbatch
-```
-
-Nothing leaves your machine except the consented cloud calls above (Groq for STT, Gemini/Cerebras for responses), governed by those providers' policies. `marvin.db`, `suki_memory.json`, and `records/` are gitignored by default.
+| 指令 | 做什麼 |
+|---|---|
+| `/summon` | 叫馬文進你所在的語音頻道 |
+| `/dismiss` | 請馬文離開 |
+| `/marvin_optin` / `/marvin_optout` | 同意 / 撤回語音資料處理 |
+| `/marvin_play` | 輸入歌名或貼 YouTube 連結播放 |
+| `/marvin_skip` | 跳過這首 |
+| `/marvin_play_control` | 播放控制台（音量、暫停、上下首、佇列） |
+| `/marvin_radio` | 開 / 關 Marvin 電台 |
+| `/marvin_playlist_import` / `/marvin_playlist_export` | 匯入 / 匯出個人歌單 |
+| `/marvin_say` | 讓馬文念出你打的字 |
 
 ---
 
-## Beyond Discord — the same soul, in hardware
+## 已知限制
 
-Discord is where Marvin was born, but a voice channel is a keyboard away from a real conversation: you still `/summon`, you still tab back to a window. The whole point of Marvin is **zero-keyboard presence** — so he's been escaping the app into the room.
+請在邀請前先看過：
 
-The trick is that all three form factors are the *same Marvin*. The brain runs once on a Mac (Apple Silicon); the hardware is just a dumb mic-and-speaker at the far end of a socket. They read the **same per-person memory**, the same music taste, the same relationship state. Walk from Discord to the shelf speaker to the car and it's one continuous person, not three bots.
-
-| Form factor | What it is | Status |
-|---|---|---|
-| **Browser satellite** | Any phone opens a web page → `getUserMedia` streams voice to the Mac brain → reply plays back through `<audio>`. Zero install, zero Pi. | ✅ live (`MARVIN_SATELLITE_BROWSER=1`) |
-| **Bookshelf speaker** | A Raspberry Pi with a `wyoming-satellite` mic array + amp sits on a shelf. Say the wake word "馬文" out loud, hear him answer from the room. Brain stays on the Mac over Tailscale. | ✅ live (`main_satellite.py`) |
-| **Car puck** | An ESP32-S3 puck (INMP441 mic + MAX98357 amp, hold-to-talk button) tethers to a phone hotspot and hits the brain over HTTPS. Bring-up firmware STEP 1–5 all green: PTT → record → reply loop closes on real hardware. | 🔧 firmware live, integration gated (`MARVIN_CAR_MODE`, default off) |
-
-**Why go physical at all?** Because the memory and personality only pay off if Marvin is *ambient* — there when you're cooking, driving, or half-asleep, not when you've deliberately opened an app and typed a command. A depressed roommate who remembers you is a novelty inside Discord; on a shelf and in the car it's a presence. The hard engineering (per-person DNA, room-awareness, taste memory) is identical across all three — the hardware is just proof that the pipeline was decoupled cleanly enough to run anywhere.
-
-One safety detail worth calling out: satellite sessions run in an **ephemeral memory sandbox** by default — they read the real memory but write nothing, so a shelf speaker and the 24/7 Discord bot can run at the same time without corrupting each other's state. Same soul, read-only twin.
-
-See `main_satellite.py`, `firmware/car_puck/car_puck.ino`, and the browser satellite seam in `discord_voice_engine.py`.
+- **同一時間只能待在一個語音頻道。** 所有伺服器共用同一個 Marvin；別的伺服器正在用的時候，你那邊可能沒辦法正常使用。
+- **主要聽得懂台灣華語。** 英文部分支援，台語和其他語言基本上聽不懂。環境太吵、多人同時講話時，比較容易叫不醒或聽錯。
+- **放歌時比較難叫醒**（為了避免歌詞誤觸發，放歌時的喚醒門檻比較高）。
+- **回應會有延遲**：語音要先轉文字、AI 想好再合成語音，不像真人一樣立刻接話。
+- **他用你的暱稱認人**，不是帳號。改暱稱他會認不出你；兩個人暱稱一樣，他會把你們當成同一個人。
+- **這是個人架設的服務**：跑在營運者的一台電腦上，主機關機、更新或重啟時會離線，沒有保證的上線時間。
+- 音樂來源是 YouTube，YouTube 擋的時候點歌會失敗。
+- 他的個性就是厭世、嘴壞、愛吐槽，這是設計，不是故障。
+- **他會在其他人面前講出你之前說過的話**（冷場話題、「你之前說要……」、日記）。不想被提起的事，別在他在的頻道裡講。
+- 每個伺服器目前沒有使用量上限，大家共用營運者的 AI 額度；額度用完時他可能不回話，或宣布「額度耗盡」後直接離開語音頻道。
 
 ---
 
-## Architecture
+## 給營運 / 開發
 
-The voice pipeline lives in `marvin_voice_core/` (decoupled from bot logic, usable standalone). Wake-word intents go through a separate IntentBus where all agents bid in parallel and the max-confidence handler wins; a parallel STT judges race (regex / Groq 8B / cleaner) feeds it. Two opt-in bridges (`MarmoServer`, `CompanionBridge`) let external agents push text in and an operator control surface watch what Marvin hears and chooses.
+| 文件 | 內容 |
+|---|---|
+| [STATUS.md](STATUS.md) | 目前可用 / 實驗中 / 已知問題、最近的變更 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 資料流、記憶隔離、併發問題 |
+| [OPERATOR.md](OPERATOR.md) | 環境變數、啟動、log、限流、成本 |
+| [DEPENDENCIES.md](DEPENDENCIES.md) | 套件與系統依賴 |
+| [PRIVACY.md](PRIVACY.md) | 隱私說明（草稿） |
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full module map, the IntentBus bid contract, and the integration surfaces.
-
----
-
-## Contributing
-
-Code comments are in Traditional Chinese (zh-TW) — this started as a personal bot for a Taiwanese gaming group. English PRs are welcome; translating comments is appreciated but not required.
-
-If you successfully run this on a fresh machine, please open a GitHub Discussions post in the "Show your setup" thread. That single confirmation is the most useful signal this project can receive right now.
-
-## License
-
-MIT
+授權：待確認（舊版 README 寫 MIT，但 repo 裡沒有 LICENSE 檔）。

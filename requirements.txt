@@ -1,38 +1,62 @@
-aiofiles==24.1.0
-chromadb>=0.5
-aiohttp==3.13.4
-davey==0.1.5
-discord-ext-voice_recv==0.5.2a179
+# Marvin — bot 執行期 + 測試依賴（鎖版本）
+# 產生方式：AST 掃描全 repo import（2026-09-27），版本對齊 prod venv_simon（Python 3.13.5）實際安裝值。
+# 每個套件的用途 / 使用模組 / 可否拿掉 → 見 DEPENDENCIES.md
+# 離線腳本（scripts/）才用的套件 → requirements-scripts.txt
+# 只要 core 語音 pipeline（marvin_voice_core/）→ requirements-core.txt
+
+# ── Discord / 語音傳輸 ──
 discord.py==2.7.1
-duckduckgo_search==8.1.1
-edge-tts==7.2.8
-faster-whisper==1.2.1
-google-genai==1.70.0
-google-generativeai==0.8.6
-groq==1.2.0
-lameenc==1.8.4
-PyYAML>=6.0
+discord-ext-voice_recv==0.5.2a179
+davey==0.1.5                      # DAVE 端對端加密語音解密
+PyNaCl==1.5.0                     # Discord voice 加解密（discord.py voice 需要）
+audioop-lts==0.2.2; python_version >= "3.13"   # discord.player / voice_recv 仍 import audioop；3.13 已從 stdlib 移除，見 DEPENDENCIES.md 風險節
+
+# ── 音訊處理 ──
 numpy==2.4.4
-openai==2.30.0
-pytest==9.0.3
-pytest-aiohttp==1.1.0
-pytest-asyncio==1.3.0
-pypinyin==0.55.0
-python-dotenv==1.2.2
-rapidfuzz==3.14.5
-requests==2.33.1
 scipy==1.18.0
 sounddevice==0.5.3
-soundfile==0.13.1
-syncedlyrics==1.0.1
-wyoming==1.10.0
-yt-dlp==2026.6.9
+lameenc==1.8.4
+wyoming==1.10.0                   # Pi 衛星（wyoming-satellite）協定
+faster-whisper==1.2.1             # 只有非 Apple 平台（Linux）才載入；macOS 上不用
+
+# ── STT / TTS / LLM ──
+edge-tts==7.2.8
+google-genai==1.70.0
+google-generativeai==0.8.6        # 已停止維護的舊 SDK，只剩 game_dict_manager.py 在用
+groq==1.2.0
+openai==2.30.0                    # 當 OpenAI 相容 client 用（Groq/Mistral/Gemini-compat 等），不是呼叫 OpenAI
+duckduckgo_search==8.1.1
+
+# ── 音樂 ──
+yt-dlp==2026.7.4
 ytmusicapi==1.12.2
+syncedlyrics==1.0.1
+pypinyin==0.55.0
+RapidFuzz==3.14.5
+# Shazam 音訊認歌（shazam_identify.py，曲庫正規化；沒裝會自動退回 iTunes）：
+#   shazamio 0.8.1 宣告 aiofiles<24 跟上面鎖的 24.1.0 衝突（實際只用 aiofiles.open，24 可用），
+#   所以本體不列在這裡，要另外裝：pip install --no-deps shazamio==0.8.1
+shazamio_core==1.1.2
+pydub==0.25.1
+dataclass-factory==2.16
+aiohttp-retry==2.9.1
 
-# 封面卡片渲染
-Pillow>=12.0.0
+# ── 記憶 / 儲存 ──
+chromadb==1.5.9
+aiofiles==24.1.0
 
-# Google API client & OAuth
-google-api-python-client>=2.196.0
-google-auth-oauthlib>=1.4.0
+# ── 網路 / 設定 / 其他 ──
+aiohttp==3.13.4
+websockets==16.0                  # 只有 yating_stt.py（已退役的台語雲端 STT）直接 import
+python-dotenv==1.2.2
+PyYAML==6.0.3
+Pillow==12.2.0
 
+# psutil —— memory_guard.py 會用，但 prod venv 目前「沒裝」→ MemoryGuard 恆回 False（功能失效）。
+# 裝上後 RAM ≥92% 時會開始跳過向量庫寫入（行為改變），要不要裝待決定，故先不列：
+# psutil
+
+# ── 測試（CI 用同一份檔安裝後跑 pytest）──
+pytest==9.0.3
+pytest-asyncio==1.3.0
+pytest-aiohttp==1.1.0

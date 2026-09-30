@@ -1,0 +1,1 @@
+新增/落地 IntentAgent 後，順手把對應的 intent_type 加進 `agent_gaps_resolved.json`（見 `scripts/analyze_agent_gaps.py` 開頭 docstring）——這份清單沒同步更新，`intent_clusters.json` 的每日/手動 gap clustering 會一直把已經有 agent 的東西誤標 `ready_to_implement`（2026-08-08 實測踩到：`agent_gaps_resolved.json` 從 6/7 後兩個月沒更新，漏了 5 個之後落地的 agent）。

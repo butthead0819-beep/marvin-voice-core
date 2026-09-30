@@ -1,0 +1,14 @@
+# scripts/ 離線工具才需要的依賴（bot 本體不需要）。先裝 requirements.txt 再裝這份。
+# 版本對齊 prod venv_simon 實際安裝值（2026-09-27）。用途見 DEPENDENCIES.md。
+
+requests==2.33.1                  # build_music_catalog / musicbrainz_clean_music_memory
+spotipy==2.26.0                   # spotify_clean_music_memory / spotify_connect_smoke_test
+matplotlib==3.11.0                # room_calibration（有 try/except，缺了只是不畫圖）
+google-api-python-client==2.196.0 # run_gmail_calendar_sync（launchd gmailcalendarsync）
+google-auth-oauthlib==1.4.0       # google_auth_setup（一次性 OAuth 授權）
+onnxruntime==1.26.0               # onnx_to_tflite_wakeword
+
+# 以下 venv 未安裝、版本待確認（腳本目前無法直接執行）：
+# onnx                            # onnx_to_tflite_wakeword
+# tensorflow                      # onnx_to_tflite_wakeword
+# openwakeword                    # verify_wake_model / wake_over_music_poc
