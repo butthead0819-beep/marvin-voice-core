@@ -513,14 +513,15 @@ class MusicDJLyricsMixin:
         _clean_t, _clean_a = self._dj_clean_name(info)
         _song_label = f"{_clean_a} - {_clean_t}" if _clean_a else _clean_t
         ctx = [f"歌曲：{_song_label or title}", f"點播者：{requester}"]
+        song_candidates: list[str] = []
         # 串場不提上一首（9/30 使用者定：專注寫下一首）——預抓時的「上一首」常因插播/
         # 換順序過期，寫進 prompt 再被 Consistency Guard 丟掉改唸報幕，得不償失。
         if play_count >= 2:
-            ctx.append(f"喜好線索：這首是 {requester} 常聽的愛歌")
+            song_candidates.append(f"喜好線索：這首是 {requester} 常聽的愛歌")
         if feelings:
-            ctx.append(f"情感記錄：{' / '.join(feelings[:2])}")
+            song_candidates.append(f"情感記錄：{' / '.join(feelings[:2])}")
         if lyric_match:
-            ctx.append(f"歌詞呼應：{lyric_match[:60]}")
+            song_candidates.append(f"歌詞呼應：{lyric_match[:60]}")
 
         _vc_ref = None
         present_members: set[str] | None = None
@@ -552,7 +553,7 @@ class MusicDJLyricsMixin:
 
         affinity = find_song_social_affinity(mm, info, requester, present_members)
         if affinity:
-            ctx.append(f"喜好線索：{affinity}")
+            song_candidates.append(f"喜好線索：{affinity}")
 
         spoken_match = None
         try:
@@ -575,7 +576,7 @@ class MusicDJLyricsMixin:
                 _song_label = f"{_clean_a} - {_clean_t}"
                 ctx[0] = f"歌曲：{_song_label}"
             if canon and canon.get('album'):
-                ctx.append(
+                song_candidates.append(
                     f"歌曲資料：{canon['artist']}《{canon['album']}》"
                     + (f"（{canon['year']}）" if canon.get('year') else "")
                 )
@@ -588,8 +589,6 @@ class MusicDJLyricsMixin:
         season = self._current_season()
         city = self._city_label()
         env = format_temporal_atmosphere(city, season, slot)
-        if conv_lines and not revival_lines:
-            ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
         # 本地決定這次串場怎麼寫，LLM 不必自己判斷「有沒有話題、要不要硬掰、
         # 這件事是不是點播者本人的」——樣版/素材/在場判斷全部本地做完，LLM 只負責
         # 把選定的素材寫成自然的過場文字。
@@ -654,6 +653,8 @@ class MusicDJLyricsMixin:
             ctx.append(f"最新時事消息：\n・{topic}")
             ctx.append("開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。")
         elif mode == "conversation":
+            if conv_lines:
+                ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
             ctx.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
         elif mode == "revival":
             ctx.append("剛剛大家聊過（原句）：\n" + "\n".join(revival_lines))
@@ -677,8 +678,23 @@ class MusicDJLyricsMixin:
                 ctx.append("只能講上面素材裡寫的事實，不准自己補細節或編故事。")
             else:
                 ctx.append("串場方向：把導聆素材濃縮成一兩句，點出這首歌耳朵該聽的地方；只能講素材裡寫的事實，不准自己補細節或編故事。")
+        _song_pick = None
         if _autopilot_reason:
-            ctx.append(f"選這首的理由：{_autopilot_reason}")
+            _reason_line = f"選這首的理由：{_autopilot_reason}"
+            if mode == "reason":
+                ctx.append(_reason_line)   # reason 就是這輪的主素材
+            else:
+                song_candidates.append(_reason_line)
+
+        # 歌曲素材只抽 1 個（9/30 使用者定：主素材 1 + 歌曲素材 1，不再全部疊上去造成混線）。
+        # guide 本身就是歌曲素材；quick 不走 LLM——這兩個 mode 不抽。
+        if mode not in ("guide", "quick"):
+            from dj_narration_orchestrator import pick_song_material
+            _song_pick = pick_song_material(
+                song_candidates, exclude_text=(topic or "") if mode == "memory_match" else "")
+            if _song_pick:
+                ctx.append(_song_pick)
+        logger.info(f"🎰 [DJ Material] 主={mode} 歌曲素材={(_song_pick or '')[:24]!r}（候選 {len(song_candidates)}）")
 
         # Group size & Chat Heat → 語氣：綜合在線人數與 AtmosphereTracker 對話活躍度。
         # vc() 不可用時靜默略過。quick 模式沒有 LLM 可以照 ctx 調語氣，改本地選模板池。
@@ -735,17 +751,17 @@ class MusicDJLyricsMixin:
                 logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗: {e}")
                 text = ""
             text = (text or '').strip()
-            if text and len(text) > 120:
-                from dj_prev_trim import trim_to_last_sentence
-                _trimmed = trim_to_last_sentence(text, 120, 30)
-                if _trimmed:
-                    logger.info(f"✂️ [DJ Prefetch] LLM 串場超長({len(text)})，截到句尾({len(_trimmed)})")
-                    text = _trimmed
+            from dj_script_clean import clean_dj_script
+            _raw_len = len(text)
+            text = clean_dj_script(text)
+            if len(text) != _raw_len:
+                logger.info(f"🧹 [DJ Prefetch] 口白清雜訊 {_raw_len}→{len(text)} 字")
 
             from dj_prompt_builder import FORBIDDEN_DJ_PHRASES
 
+            # 9/30 使用者定：清雜訊後多長都完整播出，不截斷、不因超長退墊底（聽一段時間再調）。
             def _is_qualified_dj_script(s: str) -> bool:
-                if not s or len(s) < 10 or len(s) > 120:
+                if not s or len(s) < 10:
                     return False
                 for fb in FORBIDDEN_DJ_PHRASES:
                     if fb in s:
@@ -754,7 +770,7 @@ class MusicDJLyricsMixin:
 
             if not text or not _is_qualified_dj_script(text):
                 # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
-                _why = ("空字串" if not text else f"長度{len(text)}" if not 10 <= len(text) <= 120 else "禁詞")
+                _why = ("空字串" if not text else f"長度{len(text)}" if len(text) < 10 else "禁詞")
                 logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
                 # 1. 優先嘗試 autopilot 模板（若為 Marvin 自己選歌）
                 if requester.startswith('Marvin'):
