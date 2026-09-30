@@ -50,6 +50,7 @@ class LocalMixingAudioSource(_BASE):
         duck_level: float = 0.20,
         duck_step: float = 0.06,
         tts_gain: float = 1.0,
+        balance: float = 0.50,
         # 9/30 30→60s：DJ 串場改不截斷後口白可能 >30s（實測 ≈41s），30s 會整段拒收無聲消失
         tts_cap_seconds: float = 60.0,
         seed: int | None = None,
@@ -62,6 +63,7 @@ class LocalMixingAudioSource(_BASE):
         self._volume_cur = float(volume)
         self._volume_target = float(volume)
         self._volume_step = 0.04  # 逐幀線性 ramp（每幀 20ms 調整 0.04，~0.25s 平滑到位，防 click/step jump）
+        self._balance = float(balance)  # 0.50 = 50:50 平衡；0.60 = TTS 60% : Music 40%
         self._duck_level = float(duck_level)
         self._duck_step = float(duck_step)
         self._tts_gain = float(tts_gain)  # TTS 層增益（2026-08-22 用戶要求：音樂/TTS 都恢復滿音量 1.0）
@@ -306,12 +308,15 @@ class LocalMixingAudioSource(_BASE):
             elif self._interject_cur > _itarget:
                 self._interject_cur = max(_itarget, self._interject_cur - self._interject_step)
 
+            music_factor = 2.0 * (1.0 - self._balance)
+            tts_factor = 2.0 * self._balance
+
             layers = []
             if music_f is not None:
                 m_frame = music_f
                 if self._sidechain_mid_cut_active and tts_active and self._spatial_renderer is not None:
                     m_frame = self._spatial_renderer.apply_music_sidechain_mid_cut(m_frame, cut_db=-4.0)
-                layers.append(am.apply_gain(m_frame, self._volume_cur * self._duck_cur))
+                layers.append(am.apply_gain(m_frame, self._volume_cur * music_factor * self._duck_cur))
             # 🔇 TTS 對玩家說話 duck：玩家最近說話 → Marvin TTS 讓路到 10%，逐幀 ramp（防 click）
             # onset 復原：新一段 Marvin TTS 進來、且無人說話（窗已過）→ 把 idle 期間凍結的 duck
             # 復原 1.0（前幀無 TTS＝靜音，直接設不會 click），避免下段 TTS 殘留壓低。
@@ -323,10 +328,11 @@ class LocalMixingAudioSource(_BASE):
             if tts_f is not None:
                 # 2026-09-15 用戶要求：TTS / DJ 口白（layer1）改用「頻道」概念——不再因玩家說話
                 # duck，讓路的代價（聽不到）比雜音誤觸發更糟。只套 tts_gain；淡出中再乘 interject_cur。
-                _g = self._tts_gain * self._interject_cur if self._interject_cur < 1.0 else self._tts_gain
+                _base_tts = self._tts_gain * tts_factor
+                _g = _base_tts * self._interject_cur if self._interject_cur < 1.0 else _base_tts
                 layers.append(am.apply_gain(tts_f, _g))  # Marvin
             if tts2_f is not None:
-                layers.append(am.apply_gain(tts2_f, self._tts_gain))  # Marmo（同為 TTS）
+                layers.append(am.apply_gain(tts2_f, self._tts_gain * tts_factor))  # Marmo（同為 TTS）
             if not layers:
                 # idle：always-on 回 silence（永不停）；on-demand 超過 grace 回 b""（discord 停送）
                 if self._on_demand:
@@ -391,6 +397,13 @@ class LocalMixingAudioSource(_BASE):
         if immediate or (self._music is None and not self._tts_queue and self._tts_cur is None):
             self._volume_cur = v
             self._volume = v
+
+    def set_balance(self, balance: float) -> None:
+        """設定 TTS / Music 平衡比例 (0.0 ~ 1.0)。
+        0.50 = 50:50 等比 (1.0x / 1.0x)
+        0.60 = TTS 60% : Music 40% (TTS 1.2x / Music 0.8x)
+        """
+        self._balance = max(0.0, min(1.0, float(balance)))
 
     def push_tts(self, f32_buffer: np.ndarray) -> bool:
         """把預解碼的 TTS f32 buffer 排進 TTS 層。超過 cap → 拒絕回 False（caller 降級貼文）。"""

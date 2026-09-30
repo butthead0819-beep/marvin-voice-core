@@ -996,3 +996,44 @@ def test_push_tts2_does_not_count():
     mix = LocalMixingAudioSource()
     mix.push_tts2(_f32_frame(0.4))
     assert mix.tts_push_count == 0
+
+
+# ── TTS / Music balance ─────────────────────────────────────────────────────
+
+def test_balance_default_is_50_50():
+    mix = LocalMixingAudioSource()
+    assert getattr(mix, "_balance", None) == 0.50
+
+
+def test_set_balance_clamps():
+    mix = LocalMixingAudioSource()
+    mix.set_balance(0.6)
+    assert mix._balance == pytest.approx(0.6)
+    mix.set_balance(1.5)
+    assert mix._balance == 1.0
+    mix.set_balance(-0.2)
+    assert mix._balance == 0.0
+
+
+def test_balance_scales_music_and_tts_layers():
+    # 當 balance=0.6 (TTS 60% : Music 40%)：
+    # music_factor = 2 * 0.4 = 0.8
+    # tts_factor = 2 * 0.6 = 1.2
+    mix = LocalMixingAudioSource(seed=7, volume=0.5, tts_gain=0.5, duck_level=1.0)
+    mix.set_balance(0.60)
+    mix.set_music_source(_FakeMusic(value=0.4, frames=1))
+    mix.push_tts(_f32_frame(0.3))
+    out = np.frombuffer(mix.read(), dtype=np.int16)
+
+    # 手動用 DSP 計算期望結果
+    music = _f32_frame(0.4)
+    tts = _f32_frame(0.3)
+    # music gain: volume(0.5) * music_factor(0.8) * duck(1.0) = 0.4
+    m_scaled = am.apply_gain(music, 0.5 * 0.8 * 1.0)
+    # tts gain: tts_gain(0.5) * tts_factor(1.2) = 0.6
+    t_scaled = am.apply_gain(tts, 0.5 * 1.2)
+    expected_mixed = am.mix_layers([m_scaled, t_scaled])
+    expected_mixed, _, _ = am.limit_frame(expected_mixed, 1.0)
+    expected = am.to_s16(am.tpdf_dither(expected_mixed, np.random.default_rng(7)))
+    assert np.array_equal(out, expected)
+

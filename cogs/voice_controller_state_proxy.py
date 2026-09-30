@@ -120,6 +120,27 @@ class StateProxyMixin:
                 pass
 
     @property
+    def tts_balance(self) -> float:
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None and hasattr(mc, 'tts_balance'):
+            return mc.tts_balance
+        return getattr(self, '_tts_balance_local', 0.50)
+
+    @tts_balance.setter
+    def tts_balance(self, value: float) -> None:
+        val = max(0.10, min(0.90, round(float(value), 2)))
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None and hasattr(mc, 'tts_balance'):
+            mc.tts_balance = val
+        self._tts_balance_local = val
+        mixer = getattr(self, '_mixer', None)
+        if mixer is not None and hasattr(mixer, 'set_balance'):
+            try:
+                mixer.set_balance(val)
+            except Exception:
+                pass
+
+    @property
     def _stream_play_gen(self) -> int:
         mc = self.bot.cogs.get('MusicCog')
         return mc._stream_play_gen if mc is not None else self._stream_play_gen_local

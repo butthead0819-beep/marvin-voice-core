@@ -140,6 +140,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             else 0.10
         )
         self.stream_volume: float = self._default_stream_volume
+        self.tts_balance: float = 0.50
         self._stream_play_gen: int = 0
         self._current_stream_url: Optional[str] = None
         self._stream_norm_gain: dict = {}   # url → 每首響度正規化常數增益

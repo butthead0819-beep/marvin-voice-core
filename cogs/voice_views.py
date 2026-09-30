@@ -104,6 +104,10 @@ class PlayControlView(discord.ui.View):
     VOL_MIN  = 0.01
     VOL_MAX  = 1.00
 
+    BAL_STEP = 0.10   # Balance 步進 10%（例如 50:50 → 60:40）
+    BAL_MIN  = 0.10
+    BAL_MAX  = 0.90
+
     def __init__(self, controller: "VoiceController"):
         super().__init__(timeout=3600)
         self.controller = controller
@@ -111,12 +115,16 @@ class PlayControlView(discord.ui.View):
         self._sync_vol_labels()
 
     def _sync_vol_labels(self) -> None:
-        """按鈕本身就是音量顯示（控制台 embed 不放音量，見 build_control_embed 註解）
+        """按鈕本身就是音量與平衡顯示（控制台 embed 不放音量，見 build_control_embed 註解）
         ——沒有這行，按鈕文字永遠是靜態的「🔉 -」/「🔊 +」，按了音量其實有變但畫面
         完全看不出來，使用者會誤以為按鈕沒反應（2026-08-25 用戶回報）。"""
         pct = int(round(self.controller.stream_volume * 100))
         self.vol_down_button.label = f"🔉 - {pct}%"
         self.vol_up_button.label = f"🔊 + {pct}%"
+        bal = getattr(self.controller, "tts_balance", 0.50)
+        tts_pct = int(round(bal * 100))
+        music_pct = 100 - tts_pct
+        self.balance_status_button.label = f"🎚️ 語音 {tts_pct}% : 音樂 {music_pct}%"
 
     def _build_embed(self) -> discord.Embed:
         """控制台 embed（歌曲資訊已拆到 build_song_embed 獨立貼文）。保留此名讓既有
@@ -232,6 +240,31 @@ class PlayControlView(discord.ui.View):
         await self._refresh(interaction)
         await interaction.followup.send(
             f"🙈 已把「{title[:40]}」從記憶抹除，之後不會再自動點。", ephemeral=True)
+
+    # ── Row 1: TTS / Music Balance ──────────────────────────────────────────
+
+    @discord.ui.button(label="🗣️ 語音 +", style=discord.ButtonStyle.secondary, row=1)
+    async def balance_tts_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        c = self.controller
+        cur = getattr(c, "tts_balance", 0.50)
+        c.tts_balance = min(self.BAL_MAX, round(cur + self.BAL_STEP, 2))
+        logger.info(f"[Balance] tts_button → tts_balance={c.tts_balance:.2f}")
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="🎚️ 語音 50% : 音樂 50%", style=discord.ButtonStyle.primary, row=1)
+    async def balance_status_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        c = self.controller
+        c.tts_balance = 0.50
+        logger.info(f"[Balance] reset_button → tts_balance=0.50")
+        await self._refresh(interaction)
+
+    @discord.ui.button(label="🎵 音樂 +", style=discord.ButtonStyle.secondary, row=1)
+    async def balance_music_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        c = self.controller
+        cur = getattr(c, "tts_balance", 0.50)
+        c.tts_balance = max(self.BAL_MIN, round(cur - self.BAL_STEP, 2))
+        logger.info(f"[Balance] music_button → tts_balance={c.tts_balance:.2f}")
+        await self._refresh(interaction)
 
     async def on_timeout(self):
         for item in self.children:

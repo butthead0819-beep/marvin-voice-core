@@ -26,6 +26,7 @@ def _fake_controller(**overrides):
     c.stream_paused = False
     c.stream_mode = False
     c.stream_volume = 0.50
+    c.tts_balance = 0.50
     c._current_stream_info = None
     c._current_stream_comment = None
     c._current_lyrics = None
@@ -243,3 +244,56 @@ async def test_consent_non_owner_click_blocked():
     await view.accept.callback(interaction)
     assert not cm.set_consent.called
     assert interaction.response.send_message.called
+
+
+# ── PlayControlView Row 1: Balance (TTS : Music) ───────────────────────────
+
+def test_play_control_view_row1_balance_labels():
+    c = _fake_controller(tts_balance=0.50)
+    view = PlayControlView(c)
+    assert view.balance_tts_button.row == 1
+    assert view.balance_status_button.row == 1
+    assert view.balance_music_button.row == 1
+    assert view.balance_status_button.label == "🎚️ 語音 50% : 音樂 50%"
+
+
+@pytest.mark.asyncio
+async def test_balance_tts_button_increases_tts_ratio():
+    c = _fake_controller(tts_balance=0.50)
+    view = PlayControlView(c)
+    await view.balance_tts_button.callback(_fake_interaction())
+    assert c.tts_balance == pytest.approx(0.60)
+    assert view.balance_status_button.label == "🎚️ 語音 60% : 音樂 40%"
+
+
+@pytest.mark.asyncio
+async def test_balance_music_button_increases_music_ratio():
+    c = _fake_controller(tts_balance=0.50)
+    view = PlayControlView(c)
+    await view.balance_music_button.callback(_fake_interaction())
+    assert c.tts_balance == pytest.approx(0.40)
+    assert view.balance_status_button.label == "🎚️ 語音 40% : 音樂 60%"
+
+
+@pytest.mark.asyncio
+async def test_balance_status_button_resets_to_50_50():
+    c = _fake_controller(tts_balance=0.70)
+    view = PlayControlView(c)
+    assert view.balance_status_button.label == "🎚️ 語音 70% : 音樂 30%"
+    await view.balance_status_button.callback(_fake_interaction())
+    assert c.tts_balance == pytest.approx(0.50)
+    assert view.balance_status_button.label == "🎚️ 語音 50% : 音樂 50%"
+
+
+@pytest.mark.asyncio
+async def test_balance_clamped_at_bounds():
+    c = _fake_controller(tts_balance=0.90)
+    view = PlayControlView(c)
+    await view.balance_tts_button.callback(_fake_interaction())
+    assert c.tts_balance == pytest.approx(0.90)
+
+    c.tts_balance = 0.10
+    view._sync_vol_labels()
+    await view.balance_music_button.callback(_fake_interaction())
+    assert c.tts_balance == pytest.approx(0.10)
+
