@@ -44,6 +44,12 @@ _DJ_TAIL_SFX_NAMES = ("scratch",)
 # asyncio.wait_for），避免逼近歌1實際結束點才設 _dj_played_in_tail、跟主
 # stream loop 換歌撞在一起（見 _run_tail_dj docstring）。
 _DJ_TAIL_LEAD_S = 8.0
+# 尾段口白窗口（9/30 使用者定）：曲2 最多只疊口白最後 _DJ_TAIL_NEXT_OVERLAP_S 秒；
+# 口白更長的部分在兩首之間留空白（例：口白 20s → 曲1 尾 8s + 空白 4s + 曲2 頭 8s）。
+# _DJ_TAIL_GAP_MAX_S：空白上限（防 TTS 層卡了別的東西害音樂一直不開）。
+_DJ_TAIL_NEXT_OVERLAP_S = 8.0
+_DJ_TAIL_GAP_MAX_S = 10.0
+_DJ_TAIL_GAP_POLL_S = 0.2
 _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
 # 輪詢 /puck/status 的間隔（_fire_puck_crossfade 用，兩種硬體共用）——resolve
 # 現在多半是 cache 命中幾乎瞬間完成，1s 夠即時又不會洗爆 Pi 的 HTTP handler。
@@ -75,6 +81,38 @@ class MusicTailDJMixin:
                 return None
             return m if isinstance(m, dict) else None
         return None
+
+    async def _wait_dj_tail_window(self, vc) -> float:
+        """口白比「曲1 尾段 + 曲2 頭 _DJ_TAIL_NEXT_OVERLAP_S 秒」長時，在兩首之間留空白，
+        讓曲2 只疊口白最後 _DJ_TAIL_NEXT_OVERLAP_S 秒（見本檔開頭常數註解）。
+
+        回傳實際等待秒數。vc/mixer 不可用、TTS 層讀取失敗一律 fail-open 立即回傳 0.0。
+        """
+        mixer = getattr(vc, '_mixer', None) if vc is not None else None
+        if mixer is None:
+            return 0.0
+
+        start = time.monotonic()
+        slept = False
+        while True:
+            waited = time.monotonic() - start if slept else 0.0
+            try:
+                remaining = float(mixer.tts_load_seconds())
+            except Exception:
+                break
+            if remaining <= _DJ_TAIL_NEXT_OVERLAP_S:
+                break
+            if not self.stream_mode:
+                break
+            if waited >= _DJ_TAIL_GAP_MAX_S:
+                break
+            await asyncio.sleep(_DJ_TAIL_GAP_POLL_S)
+            slept = True
+
+        if not slept:
+            return 0.0
+        logger.info(f"[DJ Tail] 口白較長，兩首之間留白 {waited:.1f}s 再開下一首")
+        return waited
 
     def _compute_recommend_explanation(self, mm, cand) -> str | None:
         """算這次 autopilot 推薦要附的解釋（見 explanation_slotfill.py）。
