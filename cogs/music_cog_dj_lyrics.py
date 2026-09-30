@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 # 命中案例趕得上，逾時就放棄這輪歌詞槽，不拖慢整段口白預抓）。
 _DJ_LYRICS_WAIT_S = 6.0
 
+# 日記生活素材候選上限：原本 recent_life_cores 預設只留最新 3 條（近 3 天實有 ~96 條），
+# DJ 這裡放寬，隨機挑未冷卻的（9/30 使用者定）
+_DJ_LIFE_MAX_CORES = 200
+
 
 class MusicDJLyricsMixin:
     # DJ 播報模板池資料源見 personas/dj_templates.yaml；選池邏輯/random.choice() 呼叫點不動
@@ -282,7 +286,8 @@ class MusicDJLyricsMixin:
         （fail-open，vc 不可用時的預設）。
         """
         from dj_life_context import recent_life_cores_with_speakers
-        return recent_life_cores_with_speakers(entries, now=now, present_speakers=present_speakers)
+        return recent_life_cores_with_speakers(entries, now=now, present_speakers=present_speakers,
+                                               max_cores=_DJ_LIFE_MAX_CORES)
 
     async def _life_cores_async(self) -> list[str]:
         """讀日記檔取生活素材。606K 檔的 read+parse 走 to_thread，不阻塞 event loop。
@@ -291,6 +296,9 @@ class MusicDJLyricsMixin:
         在場人（vc.get_online_members）傳給 privacy filter，
         讓敏感 entry 在參與者不全在場時自動過濾。
         vc 不可用 → present_speakers=None（不過濾，fail-open）。
+
+        日記素材 + 在場成員每日亮點（_present_highlight_cores）合併後打亂：
+        select_mode 取第一個未冷卻的候選，打亂＝隨機挑（9/30 使用者定）。
         """
         present_speakers: set[str] | None = None
         try:
@@ -301,10 +309,37 @@ class MusicDJLyricsMixin:
             logger.debug(f"[DJ Life] 讀在場人失敗，privacy filter 跳過: {e}")
         try:
             entries = await asyncio.to_thread(self._load_summary_entries)
-            return self._life_cores(entries, time.time(),
-                                    present_speakers=present_speakers)
+            cores = list(self._life_cores(entries, time.time(), present_speakers=present_speakers))
+            cores += self._present_highlight_cores(present_speakers)
+            random.shuffle(cores)
+            return cores
         except Exception as e:
             logger.debug(f"⚠️ [DJ Life] 生活素材抽取失敗，DJ 改走無生活素材: {e}")
+            return []
+
+    def _present_highlight_cores(self, present_speakers) -> list:
+        """在場成員記憶檔的 highlight_of_the_day → 生活素材（見 dj_daily_highlight）。
+
+        present_speakers 未知（None）時回 []（不知道誰在場就不帶個人生活細節）。
+        任何失敗回 []（DJ 少一味料，不該讓整條串場掛掉）。
+        """
+        if not present_speakers:
+            return []
+        try:
+            from dj_daily_highlight import highlight_life_cores
+            suki = getattr(getattr(self.bot, 'router', None), 'memory', None)
+            if suki is None:
+                return []
+            out = []
+            for m in sorted(present_speakers):
+                try:
+                    mem = suki.get_player_memory(m)
+                    h = mem.get('highlight_of_the_day')
+                    out.extend(highlight_life_cores(m, h))
+                except Exception:
+                    continue
+            return out
+        except Exception:
             return []
 
     async def _fetch_news_items_async(self, interests: list[str]) -> list[str]:
@@ -602,7 +637,10 @@ class MusicDJLyricsMixin:
         from dj_narration_orchestrator import select_narration_mode
         life = await self._life_cores_async()
         interests = self._present_interests()
-        _emo_highlight = self._recent_emotional_highlight(requester)
+        # autopilot（requester=Marvin…）不是真人，改查在場的人（9/30 使用者定）
+        _emo_targets = ([requester] if not requester.startswith('Marvin')
+                        else sorted(present_members or []))
+        _emo_highlight = next((h for h in (self._recent_emotional_highlight(n) for n in _emo_targets) if h), "")
         emotional_highlights = [_emo_highlight] if _emo_highlight else []
 
         # 獲取安全生活/科技新聞素材（已在 news_fetch 過濾政治/受傷/死亡）
