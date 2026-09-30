@@ -172,6 +172,7 @@ class MusicTailDJMixin:
         存進 `info['_explanation']`（見 `_compute_recommend_explanation` docstring
         說明時機為何不能延後），這裡不用等、也不用重算。
         """
+        self._attach_cached_canon(info)  # 本地快取的正規化曲名（零網路）→ 歌詞先用它查（見 _lyrics_query_pairs）
         lyrics_task = asyncio.create_task(self._fetch_lyrics_raw(info))
         lyrics, comment, dj, lyrics_synced = await asyncio.gather(
             lyrics_task,

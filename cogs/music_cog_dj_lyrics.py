@@ -62,6 +62,19 @@ class MusicDJLyricsMixin:
             return parts[1].strip(), parts[0].strip()
         return info.get('track') or raw_title, artist
 
+    def _lyrics_query_pairs(self, info: dict) -> list[tuple[str, str]]:
+        """歌詞查詢用的 (title, artist) 候選：有正規化曲名（info['_canon']，iTunes）先用它，
+        查不到再退原本解析的 YouTube 標題。9/30 實測：髒標題約一半抓不到，
+        原本抓不到的 13 首裡有正規化快取的 11 首，用正規化名稱救回 10 首。"""
+        pairs: list[tuple[str, str]] = []
+        canon = info.get('_canon') or {}
+        if canon.get('title') and canon.get('artist'):
+            pairs.append((canon['title'], canon['artist']))
+        raw = self._parse_song_title_artist(info)
+        if raw not in pairs:
+            pairs.append(raw)
+        return pairs
+
     def _dj_clean_name(self, info: dict) -> tuple[str, str]:
         """DJ 播報專用乾淨歌名（track→catalog videoId→regex 剝雜訊）。與歌詞路徑的
         _parse_song_title_artist 分開：catalog 的「藝人 歌名」合併格式不適合 lrclib 查詞。"""
@@ -76,18 +89,20 @@ class MusicDJLyricsMixin:
     async def _fetch_lyrics_synced(self, info: dict) -> str | None:
         """像 _fetch_lyrics_raw 但保留 [mm:ss.xx] timestamp（給 lyrics_seek 用）。"""
         import aiohttp
-        title, artist = self._parse_song_title_artist(info)
-        try:
-            import syncedlyrics
-            lrc = await asyncio.to_thread(
-                syncedlyrics.search,
-                f"{title} {artist}".strip(),
-                providers=["NetEase", "Lrclib", "Musixmatch", "Genius"],
-            )
-            if lrc and "[" in lrc:
-                return lrc
-        except Exception as e:
-            logger.debug(f"⚠️ [LyricsSynced/syncedlyrics] {e}")
+        pairs = self._lyrics_query_pairs(info)
+        title, artist = pairs[0]
+        for _t, _a in pairs:
+            try:
+                import syncedlyrics
+                lrc = await asyncio.to_thread(
+                    syncedlyrics.search,
+                    f"{_t} {_a}".strip(),
+                    providers=["NetEase", "Lrclib", "Musixmatch", "Genius"],
+                )
+                if lrc and "[" in lrc:
+                    return lrc
+            except Exception as e:
+                logger.debug(f"⚠️ [LyricsSynced/syncedlyrics] {e}")
         try:
             async with aiohttp.ClientSession() as session:
                 params = {'track_name': title, 'artist_name': artist}
@@ -105,23 +120,25 @@ class MusicDJLyricsMixin:
     async def _fetch_lyrics_raw(self, info: dict) -> str | None:
         """Pure lyrics fetch：syncedlyrics (NetEase 優先) → lrclib.net fallback。"""
         import re, aiohttp
-        title, artist = self._parse_song_title_artist(info)
+        pairs = self._lyrics_query_pairs(info)
+        title, artist = pairs[0]
         duration = int(info.get('duration') or 0)
 
         def _strip_lrc(lrc: str) -> str:
             return re.sub(r'\[\d+:\d+\.\d+\]\s?', '', lrc).strip()
 
-        try:
-            import syncedlyrics
-            lrc = await asyncio.to_thread(
-                syncedlyrics.search,
-                f"{title} {artist}".strip(),
-                providers=["NetEase", "Lrclib", "Musixmatch", "Genius"],
-            )
-            if lrc:
-                return _strip_lrc(lrc)
-        except Exception as e:
-            logger.debug(f"⚠️ [Lyrics/syncedlyrics] {e}")
+        for _t, _a in pairs:
+            try:
+                import syncedlyrics
+                lrc = await asyncio.to_thread(
+                    syncedlyrics.search,
+                    f"{_t} {_a}".strip(),
+                    providers=["NetEase", "Lrclib", "Musixmatch", "Genius"],
+                )
+                if lrc:
+                    return _strip_lrc(lrc)
+            except Exception as e:
+                logger.debug(f"⚠️ [Lyrics/syncedlyrics] {e}")
 
         try:
             async with aiohttp.ClientSession() as session:
