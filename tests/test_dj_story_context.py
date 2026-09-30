@@ -350,10 +350,11 @@ async def test_dj_song_material_passes_stream_url_duration_and_shared_breaker(tm
     assert first_kw["breaker"] is second_kw["breaker"]
 
 
-# ── LLM 串場超長先截到句尾，不整段退回報幕（9/30 真機 7/39 被丟）─────────────
+# ── 9/30 使用者定：清雜訊後多長都完整播出，不截斷、不因超長退墊底 ─────────────
 
 @pytest.mark.asyncio
-async def test_overlong_llm_script_trimmed_to_sentence_not_fallback(monkeypatch):
+async def test_overlong_llm_script_kept_in_full_not_truncated(monkeypatch):
+    """舊行為：>120 字截到句尾。新行為：清雜訊後原文完整保留，不截斷。"""
     _no_quick(monkeypatch)
     cog = _make_cog()
     head = "這首夜曲接在深夜剛剛好，前奏鋼琴一下就把人拉回那個下雨又睡不著的晚上。"
@@ -361,18 +362,20 @@ async def test_overlong_llm_script_trimmed_to_sentence_not_fallback(monkeypatch)
     assert len(long_text) > 120
     cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value=long_text)
     dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
-    assert dj["text"].startswith(head[:20])
-    assert len(dj["text"]) <= 120
+    assert dj["text"] == long_text
     assert "DJ Marvin為你帶來" not in dj["text"]
 
 
 @pytest.mark.asyncio
-async def test_overlong_llm_script_without_sentence_end_still_falls_back(monkeypatch):
+async def test_overlong_llm_script_without_sentence_end_no_longer_falls_back(monkeypatch):
+    """舊行為：找不到句尾符號就退墊底模板。新行為：長度不再是判準，原文保留。"""
     _no_quick(monkeypatch)
     cog = _make_cog()
-    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="夜曲，" * 45)
+    long_text = "夜曲，" * 45
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value=long_text)
     dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
-    assert "DJ Marvin為你帶來" in dj["text"]
+    assert dj["text"] == long_text
+    assert "DJ Marvin為你帶來" not in dj["text"]
 
 
 # ── 🔥 DJ Heat：熱聊時話題庫接回（2026-09-30 使用者定）────────────────────

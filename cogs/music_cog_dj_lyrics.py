@@ -751,17 +751,17 @@ class MusicDJLyricsMixin:
                 logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗: {e}")
                 text = ""
             text = (text or '').strip()
-            if text and len(text) > 120:
-                from dj_prev_trim import trim_to_last_sentence
-                _trimmed = trim_to_last_sentence(text, 120, 30)
-                if _trimmed:
-                    logger.info(f"✂️ [DJ Prefetch] LLM 串場超長({len(text)})，截到句尾({len(_trimmed)})")
-                    text = _trimmed
+            from dj_script_clean import clean_dj_script
+            _raw_len = len(text)
+            text = clean_dj_script(text)
+            if len(text) != _raw_len:
+                logger.info(f"🧹 [DJ Prefetch] 口白清雜訊 {_raw_len}→{len(text)} 字")
 
             from dj_prompt_builder import FORBIDDEN_DJ_PHRASES
 
+            # 9/30 使用者定：清雜訊後多長都完整播出，不截斷、不因超長退墊底（聽一段時間再調）。
             def _is_qualified_dj_script(s: str) -> bool:
-                if not s or len(s) < 10 or len(s) > 120:
+                if not s or len(s) < 10:
                     return False
                 for fb in FORBIDDEN_DJ_PHRASES:
                     if fb in s:
@@ -770,7 +770,7 @@ class MusicDJLyricsMixin:
 
             if not text or not _is_qualified_dj_script(text):
                 # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
-                _why = ("空字串" if not text else f"長度{len(text)}" if not 10 <= len(text) <= 120 else "禁詞")
+                _why = ("空字串" if not text else f"長度{len(text)}" if len(text) < 10 else "禁詞")
                 logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
                 # 1. 優先嘗試 autopilot 模板（若為 Marvin 自己選歌）
                 if requester.startswith('Marvin'):
