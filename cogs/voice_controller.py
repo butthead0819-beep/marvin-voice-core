@@ -40,7 +40,7 @@ from cogs.voice_controller_connection import (  # noqa: F401 — re-export 給 m
     ConnectionMixin, read_and_clear_reboot_state, REBOOT_STATE_FILE,
 )
 from cogs.voice_controller_playback import (  # noqa: F401 — re-export 給測試
-    PlaybackMixin, MAX_HOTSWAP_CHARS, SpeakKind,
+    PlaybackMixin, MAX_HOTSWAP_CHARS, SpeakKind, barge_in_shielded,
 )
 from cogs.voice_controller_system_loops import SystemLoopsMixin
 from cogs.voice_controller_state_proxy import StateProxyMixin
@@ -1617,7 +1617,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             self._mixer.note_player_speech()  # 🔇 玩家說話 → Marvin TTS（保護中的長播報）duck 到 10%
 
         # 🚀 [TTS Interrupt] 使用者開口時中斷 TTS 播放，若文字尚未在聊天室則補發
-        if self.is_playing_audio and not self._tts_protected:
+        # DJ/播報播完前 barge-in 被擋（見 barge_in_shielded）：有人開口只 duck、不清 TTS 層
+        if self.is_playing_audio and not self._tts_protected \
+                and not barge_in_shielded(getattr(self, '_tts_barge_shield_until', 0.0), time.time()):
             # 🔇 [Music Guard] device（local/satellite）播純音樂時，speech-start 不該硬停整首歌：
             # barge-in 的 device.stop() 是為「中斷 bot 講 TTS」設計，純音樂（無 _current_tts_text）
             # 下喚醒只該 duck（_on_satellite_wake 負責）＋交給命令流水線，硬停會誤砍音樂。
