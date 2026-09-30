@@ -3,12 +3,26 @@
 """
 from __future__ import annotations
 
+import re
+
 _MIN_LINE_LEN = 6
 _MAX_LINE_LEN = 30
 _CREDIT_KEYWORDS = (
     "作詞", "作曲", "編曲", "製作", "監製", "演唱", "詞：", "曲：",
     "lyricist", "composer", "producer",
 )
+# 段落標記（[CHORUS]、(Verse 2)、【副歌】）與純哼唱（Oh-oh、la la、yeah）不是能分享的歌詞（9/30 實測挑到）
+_SECTION_TAG = re.compile(r"^[\[(（【].*[\])）】]$")
+_VOCABLES = {"oh", "ooh", "ah", "la", "na", "yeah", "hey", "woo", "whoa", "uh", "mm", "hmm", "da", "ha"}
+
+
+def _is_filler(line: str) -> bool:
+    if _SECTION_TAG.match(line):
+        return True
+    if re.search(r"[\u4e00-\u9fff]", line):
+        return False
+    words = re.findall(r"[a-z]+", line.lower())
+    return bool(words) and all(w in _VOCABLES for w in words)
 
 
 def pick_chorus_line(lyrics: str | None) -> str | None:
@@ -27,6 +41,8 @@ def pick_chorus_line(lyrics: str | None) -> str | None:
             continue
         lowered = line.lower()
         if any(kw.lower() in lowered for kw in _CREDIT_KEYWORDS):
+            continue
+        if _is_filler(line):
             continue
         if line not in counts:
             counts[line] = 0
