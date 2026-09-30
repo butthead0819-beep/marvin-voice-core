@@ -695,9 +695,6 @@ class MusicDJLyricsMixin:
         except Exception:
             pass  # fail-open：語氣注入失敗不影響 DJ 生成
 
-        # 長度 gate 統一放寬到 dj_story：Marvin autopilot 模板也別再被 5s
-        # music_intro 砍成「狗與露」這種殘句（autopilot DJ 被截斷的根因）。
-        gate_task = "dj_story"
         text = ''
         if not text and info.get('_lane') == 'associative':
             text = (info.get('_dj_line') or '').strip()  # 關聯選曲：直接使用 45-55 字金句串場詞，不重複燒 LLM
@@ -779,13 +776,7 @@ class MusicDJLyricsMixin:
                         text = f"DJ Marvin為你帶來《{clean_title}》，{suffix}"
                     logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
 
-        from tts_length_policy import truncate_for_tts
-        gated_text, was_cut = truncate_for_tts(
-            text, gate_task, self.bot.tts_engine.get_estimated_duration,
-        )
-        if was_cut:
-            logger.info(f"🚦 [TTS Gate] DJ intro 超上限截斷({gate_task}): '{text}' → '{gated_text}'")
-            text = gated_text
+        # 9/30 使用者定：DJ 串場不截斷，改由尾段窗口依口白長度在兩首之間留空白（見 music_cog_tail_dj._wait_dj_tail_window）
 
         audio_path = None
         try:

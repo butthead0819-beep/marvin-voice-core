@@ -538,8 +538,9 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         dj_played_in_tail = bool(info.get('_dj_played_in_tail'))
         if dj_played_in_tail:
             logger.info(f"[DJ Tail] {title} DJ 已在上一首尾段播出，跳過開頭重播")
-            dj_audio = None
-            dj_data = None
+            dj_audio = dj_data = None
+            # 口白比 曲1 尾段 + 曲2 頭 8s 長 → 兩首之間留空白，讓曲2 只疊口白最後 8s
+            await self._wait_dj_tail_window(vc)
         if await self._play_audiophile_guide_preroll(info, vc):   # 導聆＝這首的開場，開頭 DJ 讓位
             dj_audio = dj_data = None
         if dj_audio:
