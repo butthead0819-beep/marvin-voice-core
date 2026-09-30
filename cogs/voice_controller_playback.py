@@ -885,6 +885,8 @@ class PlaybackMixin:
         ok = bool(self._mixer.push_tts(f32))
         if ok and text:
             log_marvin_speech(text, start_ts=time.time(), layer=1, voice=None, src="dj")
+        elif not ok:
+            logger.warning(f"⚠️ [DJ TTS] TTS 層滿載拒收（{f32.size / 96000:.1f}s）：{(text or file_path)[:30]}")
         return ok
 
     def _cleanup_fifo(self, path, tmp_dir):

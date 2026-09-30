@@ -50,7 +50,8 @@ class LocalMixingAudioSource(_BASE):
         duck_level: float = 0.20,
         duck_step: float = 0.06,
         tts_gain: float = 1.0,
-        tts_cap_seconds: float = 30.0,
+        # 9/30 30→60s：DJ 串場改不截斷後口白可能 >30s（實測 ≈41s），30s 會整段拒收無聲消失
+        tts_cap_seconds: float = 60.0,
         seed: int | None = None,
         instrument: bool = False,
         on_demand: bool = False,

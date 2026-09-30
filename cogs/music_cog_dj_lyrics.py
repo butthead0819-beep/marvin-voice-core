@@ -712,8 +712,14 @@ class MusicDJLyricsMixin:
             pass  # fail-open：語氣注入失敗不影響 DJ 生成
 
         text = ''
+        _source = ''
+        _llm_raw = None
+        _llm_cleaned = None
+        _disqualify = None
         if not text and info.get('_lane') == 'associative':
             text = (info.get('_dj_line') or '').strip()  # 關聯選曲：直接使用 45-55 字金句串場詞，不重複燒 LLM
+            if text:
+                _source = "associative"
 
         # 🎭 [DJ Joke Interlude] 頻道安靜（非熱烈聊天）且距上次超過冷卻時間 → 這輪
         # crossfade 換成馬文式厭世冷笑話。改用「策展笑話庫 + 歌名拼音比對」（見
@@ -736,11 +742,13 @@ class MusicDJLyricsMixin:
                 joke_text = ""
             if 10 <= len(joke_text) <= 120:
                 text = joke_text
+                _source = "joke"
                 self._last_dj_joke_ts = time.time()
                 self._recent_dj_jokes = (list(getattr(self, '_recent_dj_jokes', ()))[-4:] + [joke_text])
         if not text and mode == "quick":
             # 沒有任何素材可用 → 本地固定模板直接接歌，跳過 LLM（零出錯風險、零延遲、零花費）。
             text = self._quick_segue_text(_n_online)
+            _source = "quick"
         if not text:
             # autopilot 與真人點歌共用這條 LLM 雞湯（走 tier=simple 免費層）。
             try:
@@ -751,9 +759,12 @@ class MusicDJLyricsMixin:
                 logger.warning(f"⚠️ [DJ Prefetch] LLM 失敗: {e}")
                 text = ""
             text = (text or '').strip()
+            _llm_raw = text
             from dj_script_clean import clean_dj_script
             _raw_len = len(text)
             text = clean_dj_script(text)
+            _llm_cleaned = text
+            _source = "llm"
             if len(text) != _raw_len:
                 logger.info(f"🧹 [DJ Prefetch] 口白清雜訊 {_raw_len}→{len(text)} 字")
 
@@ -771,6 +782,7 @@ class MusicDJLyricsMixin:
             if not text or not _is_qualified_dj_script(text):
                 # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
                 _why = ("空字串" if not text else f"長度{len(text)}" if len(text) < 10 else "禁詞")
+                _disqualify = _why
                 logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
                 # 1. 優先嘗試 autopilot 模板（若為 Marvin 自己選歌）
                 if requester.startswith('Marvin'):
@@ -781,6 +793,8 @@ class MusicDJLyricsMixin:
                         lane=info.get('_lane', ''),
                         anchor=clean_title_regex(info.get('_anchor_title', '')),
                     )
+                    if text:
+                        _source = "autopilot_template"
 
                 # 若仍無有效台詞或品質不符，採用 DJ Marvin 經典人設報幕
                 if not text or not _is_qualified_dj_script(text):
@@ -790,6 +804,7 @@ class MusicDJLyricsMixin:
                         text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{suffix}"
                     else:
                         text = f"DJ Marvin為你帶來《{clean_title}》，{suffix}"
+                    _source = "fixed_announcement"
                     logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
 
         # 9/30 使用者定：DJ 串場不截斷，改由尾段窗口依口白長度在兩首之間留空白（見 music_cog_tail_dj._wait_dj_tail_window）
@@ -800,6 +815,29 @@ class MusicDJLyricsMixin:
             audio_path = await self.bot.tts_engine.generate_audio(text, emotion=_emotion)
         except Exception as e:
             logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
+
+        # 📒 一週觀察用：每段串場的主題/素材/LLM 產出/最終口白（9/30 使用者定）
+        try:
+            from dj_narration_log import log_dj_narration, probe_audio_seconds
+            log_dj_narration({
+                "song": _song_label or title,
+                "requester": requester,
+                "mode": mode,
+                "topic": topic,
+                "song_material": _song_pick,
+                "ctx": "\n".join(ctx),
+                "source": _source,
+                "llm_raw": _llm_raw,
+                "llm_cleaned": _llm_cleaned,
+                "disqualify": _disqualify,
+                "text": text,
+                "chars": len(text),
+                "audio_s": await probe_audio_seconds(audio_path),
+                "n_online": _n_online,
+                "heat_mode": _heat_mode,
+            })
+        except Exception as e:
+            logger.debug(f"[DJ Narration Log] 寫紀錄失敗: {e}")
 
         logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
 
