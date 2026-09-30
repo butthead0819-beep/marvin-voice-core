@@ -373,3 +373,99 @@ async def test_overlong_llm_script_without_sentence_end_still_falls_back(monkeyp
     cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="夜曲，" * 45)
     dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
     assert "DJ Marvin為你帶來" in dj["text"]
+
+
+# ── 🔥 DJ Heat：熱聊時話題庫接回（2026-09-30 使用者定）────────────────────
+# 播出前一刻判斷熱度：熱聊時存話題快照、跳過扭蛋池直接 revival；降溫時取出接回。
+
+
+def _hot_vc(members):
+    fake_vc = MagicMock()
+    fake_vc.get_online_members = MagicMock(return_value=list(members))
+    return fake_vc
+
+
+@pytest.mark.asyncio
+async def test_revival_bank_preloaded_skips_gacha_and_uses_original_lines(monkeypatch):
+    """話題庫已有存貨（先前熱聊時存的）→ 這輪直接 revival，不呼叫 select_narration_mode。"""
+    import time
+    import dj_narration_orchestrator
+    spy = MagicMock(wraps=dj_narration_orchestrator.select_narration_mode)
+    monkeypatch.setattr(dj_narration_orchestrator, "select_narration_mode", spy)
+
+    cog = _make_cog()
+    cog._vc = MagicMock(return_value=_hot_vc(["大肚"]))
+    # conv_lines 也有東西（模擬既有的「頻道近期對話」路徑）——revival 命中時應該
+    # 被它蓋過去，不要兩段話題重複出現在同一份 ctx 裡。
+    cog.bot.engine.conv_buffer.get_last_n_utterances = MagicMock(
+        return_value=[{"speaker": "大肚", "text": "普通對話內容"}]
+    )
+    now = time.time()
+    cog._dj_heat_bank().snapshot(
+        [
+            {"timestamp": now - 10, "speaker": "大肚", "text": "剛剛在聊今天好累"},
+            {"timestamp": now - 5, "speaker": "狗與露", "text": "對啊想睡了"},
+        ],
+        now,
+    )
+
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "剛剛大家聊過" in ctx
+    assert "剛剛在聊今天好累" in ctx and "對啊想睡了" in ctx
+    assert "接回剛剛的話題" in ctx
+    assert "頻道近期對話" not in ctx
+    spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_hot_chat_this_round_goes_revival_without_preloaded_bank(monkeypatch):
+    """話題庫本來是空的，但這輪剛好熱聊（2 人在線 + 近期 5 句真人發言）→ 同一次預抓就走 revival。"""
+    import time
+    cog = _make_cog()
+    now = time.time()
+    entries = [
+        {"timestamp": now - 5 * (i + 1), "speaker": ("大肚" if i % 2 == 0 else "狗與露"), "text": f"聊天內容{i}"}
+        for i in range(5)
+    ]
+    cog.bot.engine.conv_buffer.get_history = MagicMock(return_value=entries)
+    cog._vc = MagicMock(return_value=_hot_vc(["大肚", "狗與露"]))
+
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    ctx = _ctx_str(cog)
+    assert "剛剛大家聊過" in ctx
+    for i in range(5):
+        assert f"聊天內容{i}" in ctx
+
+
+@pytest.mark.asyncio
+async def test_short_text_present_for_human_requester():
+    cog = _make_cog()
+    dj = await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+    assert "下一首" in dj["short_text"]
+    assert "大肚 點的" in dj["short_text"]
+
+
+@pytest.mark.asyncio
+async def test_short_text_present_for_autopilot_without_requester_credit():
+    cog = _make_cog()
+    dj = await cog._fetch_dj_interjection_raw(
+        _info(title="周杰倫 - 夜曲", requester="Marvin推薦（為大肚）")
+    )
+    assert "下一首" in dj["short_text"]
+    assert "點的" not in dj["short_text"]
+
+
+@pytest.mark.asyncio
+async def test_not_hot_and_empty_bank_still_uses_gacha(monkeypatch):
+    """不熱、話題庫也是空的 → 照舊走扭蛋池（select_narration_mode 有被呼叫）。"""
+    import dj_narration_orchestrator
+    spy = MagicMock(wraps=dj_narration_orchestrator.select_narration_mode)
+    monkeypatch.setattr(dj_narration_orchestrator, "select_narration_mode", spy)
+
+    _no_quick(monkeypatch)
+    cog = _make_cog()
+    cog._vc = MagicMock(return_value=_hot_vc(["大肚"]))  # 只 1 人在線，不算熱
+
+    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
+    spy.assert_called_once()
