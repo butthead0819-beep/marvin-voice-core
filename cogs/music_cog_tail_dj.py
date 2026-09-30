@@ -629,6 +629,20 @@ class MusicTailDJMixin:
         except Exception as e:
             logger.warning(f"⚠️ [Seamless Skip] 背景 DJ 串場出錯: {e}")
 
+    def _dj_channel_is_hot(self, vc) -> bool:
+        """播出前一刻判斷現場熱度；熱聊中順便把話題存進話題庫。失敗一律當不熱（fail-open）。"""
+        try:
+            from dj_heat import is_hot
+            conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
+            entries = conv_buf.get_history() if conv_buf else []
+            now = time.time()
+            if is_hot(entries, len(vc.get_online_members()), now):
+                self._dj_heat_bank().snapshot(entries, now)
+                return True
+        except Exception:
+            pass
+        return False
+
     async def _maybe_play_dj_interjection(self, dj: dict | None):
         """播放預先生成的 DJ 播報。有預渲染音訊則直接播檔案，否則即時串流。"""
         if not dj:
@@ -646,6 +660,20 @@ class MusicTailDJMixin:
         if getattr(vc, '_intimate_mode', False):
             logger.info("[DJ Tail] 口白：_intimate_mode=True，這輪不放")
             return
+        # 🔥 [DJ Heat] 播出前一刻現場熱聊 → 改唸短版（只報歌名），沒有短版這輪不講
+        # （2026-09-30 使用者定：熱聊時素材最多但沒人在聽 DJ，該少講）。
+        if self._dj_channel_is_hot(vc):
+            short = dj.get('short_text') or ''
+            if not short:
+                logger.info("🔥 [DJ Heat] 熱聊中、沒有短版，這輪不講")
+                return
+            logger.info(f"🔥 [DJ Heat] 熱聊中，改唸短版：{short}")
+            text = short
+            audio_path = None
+            try:
+                audio_path = await self.bot.tts_engine.generate_audio(short, emotion="normal")
+            except Exception as e:
+                logger.debug(f"[DJ Heat] 短版 TTS 失敗，改即時串流: {e}")
         with vc._protected_tts_window():
             if audio_path and os.path.exists(audio_path):
                 # 尾段 DJ：走 TTS 層（duck 音樂、非阻塞、撐過歌1→歌2 換源）。

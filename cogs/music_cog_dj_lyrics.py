@@ -317,6 +317,15 @@ class MusicDJLyricsMixin:
             logger.debug(f"[DJ News] 新聞抓取失敗: {e}")
         return []
 
+    def _dj_heat_bank(self):
+        """DJ 話題庫的 lazy 單例（熱聊時存快照，降溫時取出接回話題）。"""
+        bank = getattr(self, '_dj_topic_bank', None)
+        if bank is None:
+            from dj_heat import TopicBank
+            bank = TopicBank()
+            self._dj_topic_bank = bank
+        return bank
+
     def _dj_topic_store(self):
         """DJ 話題冷卻表的 lazy 單例（跨呼叫共用同一份記憶體狀態＋disk-backed）。"""
         store = getattr(self, "_dj_topic_cooldown_store", None)
@@ -522,6 +531,19 @@ class MusicDJLyricsMixin:
         except Exception:
             pass  # fail-open：vc 不可用時不過濾在場人
 
+        # 🔥 [DJ Heat] 預抓時：熱聊中就存話題快照；話題庫有新鮮存貨就這首改走 revival 接回話題
+        # （2026-09-30 使用者定：熱聊素材最多但沒人在聽 DJ，該熱聊時少講，降溫時延續話題）。
+        revival_lines: list[str] = []
+        try:
+            from dj_heat import is_hot
+            _entries = conv_buf.get_history() if conv_buf else []
+            _now = time.time()
+            if is_hot(_entries, len(present_members or ()), _now):
+                self._dj_heat_bank().snapshot(_entries, _now)
+            revival_lines = self._dj_heat_bank().take(_now)
+        except Exception:
+            revival_lines = []  # fail-open
+
         from dj_social_affinity import (
             find_song_social_affinity,
             find_spoken_taste_match,
@@ -566,7 +588,7 @@ class MusicDJLyricsMixin:
         season = self._current_season()
         city = self._city_label()
         env = format_temporal_atmosphere(city, season, slot)
-        if conv_lines:
+        if conv_lines and not revival_lines:
             ctx.append("頻道近期對話：\n" + '\n'.join(conv_lines))
         # 本地決定這次串場怎麼寫，LLM 不必自己判斷「有沒有話題、要不要硬掰、
         # 這件事是不是點播者本人的」——樣版/素材/在場判斷全部本地做完，LLM 只負責
@@ -588,21 +610,27 @@ class MusicDJLyricsMixin:
         if requester.startswith('Marvin'):
             _autopilot_reason = self._autopilot_pick_reason(info) or ''
 
-        # select_mode 挑話題來源 + autopilot 理由覆蓋 quick/atmosphere 這兩步，
-        # 原封不動交給 orchestrator（見 dj_narration_orchestrator.select_narration_mode
-        # 的 characterization test）。
-        topic, mode = select_narration_mode(
-            life=life,
-            interests=interests,
-            topic_store=self._dj_topic_store(),
-            present_members=present_members,
-            has_conversation=bool(conv_lines),
-            emotional_highlights=emotional_highlights,
-            news_items=news_items,
-            autopilot_reason=_autopilot_reason,
-            memory_evidence=memory_evidence,
-            has_guide=bool(guide),
-        )
+        # 🔥 [DJ Heat] 話題庫有東西可接回 → 直接走 revival，不讓扭蛋池蓋過去
+        # （降溫時的第一要務是接回剛剛聊的話題，不是照常規話題優先序抽獎）。
+        if revival_lines:
+            topic, mode = None, "revival"
+            logger.info(f"🔥 [DJ Heat] 話題庫接回 {len(revival_lines)} 句 → revival")
+        else:
+            # select_mode 挑話題來源 + autopilot 理由覆蓋 quick/atmosphere 這兩步，
+            # 原封不動交給 orchestrator（見 dj_narration_orchestrator.select_narration_mode
+            # 的 characterization test）。
+            topic, mode = select_narration_mode(
+                life=life,
+                interests=interests,
+                topic_store=self._dj_topic_store(),
+                present_members=present_members,
+                has_conversation=bool(conv_lines),
+                emotional_highlights=emotional_highlights,
+                news_items=news_items,
+                autopilot_reason=_autopilot_reason,
+                memory_evidence=memory_evidence,
+                has_guide=bool(guide),
+            )
 
         # 開場鉤子提示依「歌會中的心理機制」分兩類套用：
         #   代入感（life/interest）——這是聽眾自己的事，別只是轉述，要讓人覺得被說中。
@@ -627,6 +655,9 @@ class MusicDJLyricsMixin:
             ctx.append("開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。")
         elif mode == "conversation":
             ctx.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
+        elif mode == "revival":
+            ctx.append("剛剛大家聊過（原句）：\n" + "\n".join(revival_lines))
+            ctx.append("串場方向：現在大家聊天告一段落，接回剛剛的話題延續一下，或丟個輕鬆的問題製造話題感，再帶進這首歌；只能用上面原句裡的內容，不准編造誰說了什麼、不准替人下結論。")
         elif mode == "atmosphere":
             ctx.append(env)
             ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
@@ -764,6 +795,14 @@ class MusicDJLyricsMixin:
             logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
 
         logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
+
+        # 🔥 [DJ Heat] 熱聊時的短版備案：只報歌名，播出前一刻若判定熱聊就改唸這句
+        # （見 cogs/music_cog_tail_dj.py::_maybe_play_dj_interjection）。
+        _st, _sa = self._dj_clean_name(info)
+        short_text = f"下一首，{_sa}的{_st}" if _sa else f"下一首，{_st}"
+        if requester and not requester.startswith('Marvin'):
+            short_text += f"，{requester} 點的"
+
         # 串場不提上一首 → 沒有可過期的上一首，Consistency Guard 不必比對
-        return {'text': text, 'audio_path': audio_path, 'prev_title_used': None}
+        return {'text': text, 'audio_path': audio_path, 'prev_title_used': None, 'short_text': short_text}
 
