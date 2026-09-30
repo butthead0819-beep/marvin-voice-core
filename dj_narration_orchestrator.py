@@ -70,6 +70,8 @@ side effect」的兩段決策——尾段點火時機、話題來源挑選——
 """
 from __future__ import annotations
 
+import random
+
 from dj_tail_schedule import tail_dj_fire_delay
 from dj_topic_selector import TopicCooldownStore, select_mode
 
@@ -168,6 +170,25 @@ def select_narration_mode(
     if autopilot_reason and mode in ("quick", "atmosphere"):
         mode = "reason"
     return topic, mode
+
+
+def pick_song_material(
+    candidates: list[str], *, exclude_text: str = "", rng=random,
+) -> str | None:
+    """歌曲素材（喜好線索/情感記錄/歌詞呼應/歌曲資料/選這首的理由）只抽 1 個，
+    不再全部無條件疊進 ctx（9/30 使用者定：主素材 1 個 + 歌曲素材 1 個，
+    治「素材無條件疊加造成口白混線」——抽到氛圍卻還扯對話裡的床墊）。
+
+    exclude_text 非空時，濾掉「exclude_text 是該行子字串」的候選，避免
+    memory_match 的記憶證據跟 affinity 等行重複講兩次同一件事。
+    """
+    pool = [c for c in candidates if c]
+    ex = (exclude_text or "").strip()
+    if ex:
+        pool = [c for c in pool if ex not in c]
+    if not pool:
+        return None
+    return rng.choice(pool)
 
 
 # [Step 5e 文件化] 見模組開頭「目前實際呼叫順序」第 5e 點——這段優先序目前
