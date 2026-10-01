@@ -110,7 +110,6 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {"ttl_days": args.ttl_days, "dry_run": not args.apply, "files": summary},
             ensure_ascii=False,
-            indent=2,
         )
     )
     return 0

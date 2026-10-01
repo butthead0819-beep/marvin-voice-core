@@ -213,10 +213,9 @@ def test_prune_retention_dry_run_and_apply(tmp_path):
     assert (daily_dir / "2026-09-26.log").exists()
     assert (daily_dir / "review_cron.log").exists()
 
-    # 驗證 presence: 產生了 .bak，且原檔只留 1 行未過期的
-    baks = list(tmp_path.glob("voice_presence.jsonl.bak_*"))
-    assert len(baks) == 1
-    assert len(baks[0].read_text().strip().splitlines()) == 2
+    # 驗證 presence: 每日排程不留 .bak（備份會把過期資料永久留下，清理白做；
+    # 第一次清理前的備份由營運者手動做），原檔只留 1 行未過期的
+    assert list(tmp_path.glob("voice_presence.jsonl.bak_*")) == []
     lines = presence_file.read_text().strip().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["event"] == "leave"

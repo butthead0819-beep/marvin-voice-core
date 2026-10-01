@@ -147,3 +147,14 @@ def test_scrub_improvement_raw_dry_run_and_apply(tmp_path, monkeypatch):
     assert SCRUB_PREFIX in content_after
     assert "新原話1" in content_after
     assert "新原話2" in content_after
+
+
+def test_main_prints_single_line_json_summary(tmp_path, capsys):
+    """run_maintenance 只抓 stdout 最後一行寫進維護 log——摘要必須是單行 JSON，
+    多行縮排會讓 log 只剩一個「}」。"""
+    import json as _json
+    from scripts.scrub_improvement_raw import main
+    assert main(["--records-dir", str(tmp_path)]) == 0
+    out = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+    assert len(out) == 1
+    assert _json.loads(out[0])["dry_run"] is True

@@ -6,7 +6,7 @@ scripts/prune_retention.py — Phase 1 Stage D 資料保留期限清理工具。
 2. session_summaries: 30 天 (created_at < now-30d)
 3. tasks: status IN ('done', 'cancelled') 且 created_at < now-30d；pending 永久保留
 4. records/daily/: 符合 ^(stt_|topic_stats_)?\\d{4}-\\d{2}-\\d{2}\\.(log|json)$ 且日期 < 今天(Asia/Taipei)-14 天
-5. voice_presence.jsonl: ts < now-90d (apply 前先複製為 .bak_<YYYYMMDD>)
+5. voice_presence.jsonl: ts < now-90d（原子改寫，不留 .bak）
 
 預設為 dry-run，只有加 --apply 才會執行刪除。
 遵守 memory_sandbox.active()：沙盒中強制為 no-op。
@@ -17,7 +17,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import sqlite3
 import sys
 import time
@@ -141,10 +140,7 @@ def prune_presence_log(presence_path: Path, cutoff_ts: float, apply: bool) -> di
 
     deleted = 0
     if apply and matched:
-        date_str = datetime.now(TAIPEI_TZ).strftime("%Y%m%d")
-        bak_path = presence_path.parent / f"{presence_path.name}.bak_{date_str}"
-        shutil.copy2(presence_path, bak_path)
-
+        # 不留 .bak：每天跑都備份一份會把過期資料永久留下，清理白做（第一次清理前的備份由營運者手動做）
         tmp_path = presence_path.with_suffix(presence_path.suffix + ".tmp")
         with tmp_path.open("w", encoding="utf-8") as f:
             for line in retained_lines:
