@@ -358,7 +358,11 @@ class MarvinBot(commands.Bot):
             # voice state update → session reset（Jack 離開語音頻道時）+ presence log
             from presence_logger import log_voice_state_change as _log_presence
             async def _on_voice_state_update_for_temp(_member, before, after) -> None:
-                _log_presence(_member, before, after)  # P7 baseline: forward-looking JSONL
+                _vc = _member.guild.voice_client
+                _marvin_ch = _vc.channel if _vc else None
+                _vcog = self.get_cog("VoiceController")
+                _consented = bool(_vcog and _vcog.consent.is_consented(_member.display_name))
+                _log_presence(_member, before, after, marvin_ch=_marvin_ch, consented=_consented)
                 if before.channel and not after.channel:
                     _temp_monitor.reset_session()
             self.add_listener(_on_voice_state_update_for_temp, "on_voice_state_update")
