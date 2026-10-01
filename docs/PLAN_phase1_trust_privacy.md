@@ -9,6 +9,7 @@
 
 1. **照本文件做，不要自己發揮設計。** 本文件跟程式碼對不上、或你覺得設計有問題 → **停下來，把問題寫在回報裡**，不要猜一個你覺得合理的版本。
 2. **只改本文件列出的檔案與位置。** 不順手重構、不清無關的死碼、不改格式。
+   **一律在獨立 git worktree 裡工作**（例：`git worktree add ../dvb-<分支名> -b <分支名> main`）。repo 主目錄是 prod bot 的執行目錄：**不准在主目錄切分支、stash、reset 或 checkout**（2026-10-01 Stage A/B 曾在主目錄切分支並 stash 掉使用者未 commit 的檔案）。
 3. **TDD**：每一項先寫會失敗的測試，跑一次確認是紅的，再寫實作。測試必須真的 import 並呼叫被測程式碼；**不准把被測邏輯複製一份到測試檔裡驗算**。
 4. async 測試用 `@pytest.mark.asyncio`，不要用 `asyncio.run`（會污染其他測試）。
 5. 測試指令：`./venv_simon/bin/python -m pytest -q`（在 repo 根目錄）。不要用系統的 `python3`。全套目前基準 **6142 passed**，做完不能少於這個數、不能有 failed。

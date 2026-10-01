@@ -124,3 +124,15 @@
 ============================================================
 ```
 - **核心觀察**：9 月份總付費成本約 **$3.37 USD**，其中 **84.6%（$2.85 USD）** 集中於 `daily_review`（每日記憶萃取）；目前主群單月成本遠低於原先預估的 $6–20 美金。
+
+---
+
+## Claude Code 驗收註記（2026-10-01）
+
+核對程式碼與 prod 資料後，以下說法需要更正或補充，以本節為準：
+
+1. **B2 launchd 開檔模式**：已實測確認。bot 執行中的程序對 `~/Library/Logs/Marvin/bot_stdout.log` 的 fd 旗標為 `AP`（append），copytruncate 安全。（報告原文引用「Darwin launchd 原始碼」未附出處，以實測為準。）
+2. **B3 社交話題圖**：建議改為 **30 天**，不是 14 天。`speaker_topic_graph.py` 的搭橋查詢預設 `window_days=30`，保留 14 天會改變 BridgeAgent 行為。
+3. **B3 語意向量庫的描述有誤**：`.chroma_db/` 只有一個 collection `marvin_transcripts`（15.5 萬筆逐字稿原文），不存在 `conversation_history`／`user_profiles` 兩個 collection；人物 profile 存在 `marvin.db` 的 `user_profiles` 表。metadata 只有 `speaker`、`guild_id`，沒有時間欄位，但 doc_id 格式為 `<speaker>_<guild_id>_<毫秒時間戳>`，可依時間清理。注意：只清 `transcripts` 表而不清向量庫，同一批原文仍長期留在向量庫；但向量庫也是長期語意記憶來源，保留天數是產品取捨，由 Jack 決定（Claude Code 建議 90 天）。
+4. **B1 第一次補跑前**：`scrub_improvement_raw.py`、`prune_transcripts.py` 都沒有 dry-run，第一次執行不可逆（約 10 萬筆逐字稿、約 1,500 筆紀錄原文）。須先備份 `marvin.db` 與 4 個 jsonl、補 dry-run 並經 Jack 確認。新排程要納入看門狗盯產物（2026-07-06 launchd 曾靜默停 fire）。
+5. **A3 歷史進出紀錄**：dry-run 數字正確（4,331 行；bot 1,966、move 1、未同意 0），但保留的行裡有 12 行不在 Marvin 的頻道（「這裡沒有馬文」10、「小房間」2）。`prune_presence_log.py` 需先補「只保留 Marvin 自己進過的頻道」過濾（依 bot 行判斷，須在丟棄 bot 行之前算），再 `--apply`。
