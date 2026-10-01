@@ -131,7 +131,7 @@ class PlayControlView(discord.ui.View):
         refresh 呼叫點沿用；內容＝控制台狀態（音量/狀態/佇列）。"""
         return build_control_embed(self.controller)
 
-    async def _refresh(self, interaction: discord.Interaction):
+    async def _refresh_message(self, interaction: discord.Interaction):
         self._sync_vol_labels()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
@@ -174,7 +174,7 @@ class PlayControlView(discord.ui.View):
         # 用戶回報：按鈕路徑當時漏接，音樂降了 TTS 沒跟著降）。
         from intent_agents.volume_agent import sync_tts_gain
         sync_tts_gain(c, c.stream_volume)
-        await self._refresh(interaction)
+        await self._refresh_message(interaction)
 
     @discord.ui.button(label="🔊 +", style=discord.ButtonStyle.secondary, row=0)
     async def vol_up_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
@@ -183,7 +183,7 @@ class PlayControlView(discord.ui.View):
         logger.info(f"[Volume] button_up → stream_volume={c.stream_volume:.2f}")
         from intent_agents.volume_agent import sync_tts_gain
         sync_tts_gain(c, c.stream_volume)
-        await self._refresh(interaction)
+        await self._refresh_message(interaction)
 
     @discord.ui.button(label="⏭️ 下一首", style=discord.ButtonStyle.secondary, row=0)
     async def next_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
@@ -192,7 +192,7 @@ class PlayControlView(discord.ui.View):
             await interaction.response.send_message("沒有歌曲在播放。", ephemeral=True)
             return
         self._skip_current(interaction.guild.voice_client)
-        await self._refresh(interaction)
+        await self._refresh_message(interaction)
 
     @discord.ui.button(label="❤️ 喜歡", style=discord.ButtonStyle.success, row=0)
     async def like_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
@@ -237,7 +237,7 @@ class PlayControlView(discord.ui.View):
             except Exception:
                 pass
         self._skip_current(interaction.guild.voice_client)
-        await self._refresh(interaction)
+        await self._refresh_message(interaction)
         await interaction.followup.send(
             f"🙈 已把「{title[:40]}」從記憶抹除，之後不會再自動點。", ephemeral=True)
 
@@ -249,14 +249,14 @@ class PlayControlView(discord.ui.View):
         cur = getattr(c, "tts_balance", 0.50)
         c.tts_balance = min(self.BAL_MAX, round(cur + self.BAL_STEP, 2))
         logger.info(f"[Balance] tts_button → tts_balance={c.tts_balance:.2f}")
-        await self._refresh(interaction)
+        await self._refresh_message(interaction)
 
     @discord.ui.button(label="🎚️ 語音 50% : 音樂 50%", style=discord.ButtonStyle.primary, row=1)
     async def balance_status_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
         c = self.controller
         c.tts_balance = 0.50
         logger.info(f"[Balance] reset_button → tts_balance=0.50")
-        await self._refresh(interaction)
+        await self._refresh_message(interaction)
 
     @discord.ui.button(label="🎵 音樂 +", style=discord.ButtonStyle.secondary, row=1)
     async def balance_music_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
@@ -264,7 +264,7 @@ class PlayControlView(discord.ui.View):
         cur = getattr(c, "tts_balance", 0.50)
         c.tts_balance = max(self.BAL_MIN, round(cur - self.BAL_STEP, 2))
         logger.info(f"[Balance] music_button → tts_balance={c.tts_balance:.2f}")
-        await self._refresh(interaction)
+        await self._refresh_message(interaction)
 
     async def on_timeout(self):
         for item in self.children:

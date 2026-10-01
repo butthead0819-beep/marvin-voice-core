@@ -297,3 +297,10 @@ async def test_balance_clamped_at_bounds():
     await view.balance_music_button.callback(_fake_interaction())
     assert c.tts_balance == pytest.approx(0.10)
 
+
+
+def test_play_control_view_does_not_shadow_discord_internal_refresh():
+    """discord.py 收到訊息更新會同步呼叫 view._refresh(components)；PlayControlView 曾用同名
+    async 方法蓋掉它 → 每次 MESSAGE_UPDATE 都噴 `coroutine '_refresh' was never awaited`
+    且內部元件同步被跳過（2026-10-01 log 一天 18 筆）。"""
+    assert PlayControlView._refresh is discord.ui.View._refresh
