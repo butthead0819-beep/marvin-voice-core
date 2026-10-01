@@ -21,7 +21,7 @@ from utils import WAKE_WORDS_LIST as _WAKE_WORDS_LIST, FAST_ONLY_WAKE_WORDS as _
 from departure_stats import DepartureStats
 from departure_predictor import DeparturePredictor, rejoin_action
 from owner_auth import is_owner
-from consent_manager import ConsentManager
+from consent_manager import ConsentManager, consent_notice
 from nudge_throttle import NudgeThrottle
 from transcript_store import TranscriptStore
 from speaker_topic_graph import SpeakerTopicGraph
@@ -915,15 +915,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if not self.consent.has_seen_notice(member.display_name):
                 self.consent.mark_seen(member.display_name)
                 if self.active_text_channel:
-                    notice = (
-                        f"🔐 **【資料使用聲明】** {member.mention}\n"
-                        f"馬文在你說話時會：\n"
-                        f"• 將語音轉文字後送至 **Groq**（語音清洗）\n"
-                        f"• 連同對話記憶送至 **Google Gemini / Cerebras**（AI 回應）\n"
-                        f"• 存入本地 `suki_memory.json`（個人化記憶）\n\n"
-                        f"請確認是否同意。若不同意，馬文不會處理你的語音。\n"
-                        f"同意後可隨時用 `/marvin_optout` 撤回。"
-                    )
+                    notice = consent_notice(member.mention)
                     consent_view = ConsentView(self.consent, member.display_name)
                     self._active_views.add(consent_view)
                     await self.active_text_channel.send(notice, view=consent_view)
