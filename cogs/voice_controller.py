@@ -652,6 +652,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.reset_stt_counter_loop.start() # 🚀 [STT Rate Limit]
         self.daily_log_export_loop.start() # 📋 [Daily Export] 每天中午 12:00 匯出前一日 log
         self.daily_watchdog_loop.start()   # 🐕 [Watchdog] 每天 13:45 檢查 cron 健康 + Discord 心跳
+        self.daily_vector_retention_loop.start() # 🧹 每天 03:30 (UTC+8) 清理超過 90 天逐字稿向量
         self.background_news_loop.start()  # 📰 [BG News] 每 30 分鐘更新在線玩家喜好新聞
         self.speak_bus_tick_loop.start()   # 🗣️ [SpeakBus] 每 5s tick；無 agent 時靜默回 None
         self.tts_duck_refresh_loop.start() # 🔇 每 1s 刷新 TTS 對玩家 duck 窗口（連續說話不中途解除）

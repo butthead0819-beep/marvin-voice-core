@@ -419,3 +419,25 @@ class SystemLoopsMixin:
             logger.debug(f"🧹 [Rate Limit] 重設 STT 計數器 (上分鐘總計: {self._stt_call_counter})")
         self._stt_call_counter = 0
 
+
+    @tasks.loop(time=datetime.time(hour=3, minute=30, tzinfo=datetime.timezone(datetime.timedelta(hours=8))))
+    async def daily_vector_retention_loop(self):
+        """每天 03:30 (UTC+8) 清理超過 90 天的向量逐字稿。
+
+        由 bot 內部定時執行（避免外部程序存取 Chroma PersistentClient 導致索引不一致）。
+        預設 dry-run，只有環境變數 MARVIN_CHROMA_RETENTION_APPLY=1 時才真的刪除。
+        """
+        try:
+            vector_store = getattr(self, "_vector_store", None)
+            if vector_store is None:
+                logger.error("❌ [VectorRetention] 找不到 self._vector_store 實例")
+                return
+
+            apply = os.getenv("MARVIN_CHROMA_RETENTION_APPLY") == "1"
+            res = await asyncio.to_thread(vector_store.prune_older_than, 90, apply=apply)
+            logger.warning(
+                f"🧹 [VectorRetention] apply={apply} matched={res.get('matched')} "
+                f"deleted={res.get('deleted')} oldest={res.get('oldest_ts')}"
+            )
+        except Exception as e:
+            logger.error(f"❌ [VectorRetention] 逐字稿向量庫清理失敗: {e}", exc_info=True)
