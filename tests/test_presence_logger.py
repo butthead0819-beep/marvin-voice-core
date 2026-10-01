@@ -1,8 +1,10 @@
 """
 test_presence_logger.py — presence_logger 狀態機 + JSONL 寫入測試
 
-測試範圍：
-  - join / leave / move 三種 transition 都寫 JSONL
+測試範圍（Phase 1 隱私規範）：
+  - join / leave 依相對於 Marvin 頻道進出寫入 JSONL
+  - 不再產生 "move"（非 Marvin 頻道移動不寫，移入為 join，移出為 leave）
+  - bot 與未同意者不寫入
   - mute / deaf 等同 channel 變化不寫
   - 例外不外拋（exception swallowing）
   - JSONL schema 與 design doc 對齊
@@ -57,7 +59,7 @@ def test_join_writes_record(temp_log):
     before = _mk_voice_state(channel_id=None)
     after = _mk_voice_state(channel_id="ch1", channel_name="general")
 
-    pl.log_voice_state_change(member, before, after)
+    pl.log_voice_state_change(member, before, after, marvin_ch=after.channel, consented=True)
 
     records = _read_records(temp_log)
     assert len(records) == 1
@@ -78,7 +80,7 @@ def test_leave_writes_record_with_before_channel(temp_log):
     before = _mk_voice_state(channel_id="ch1", channel_name="general")
     after = _mk_voice_state(channel_id=None)
 
-    pl.log_voice_state_change(member, before, after)
+    pl.log_voice_state_change(member, before, after, marvin_ch=before.channel, consented=True)
 
     records = _read_records(temp_log)
     assert len(records) == 1
@@ -87,18 +89,24 @@ def test_leave_writes_record_with_before_channel(temp_log):
     assert records[0]["channel_name"] == "general"
 
 
-def test_move_writes_record_with_after_channel(temp_log):
+def test_move_does_not_generate_move_event(temp_log):
+    """不再產生 move：非 Marvin 頻道間移動不寫；移進 Marvin 頻道為 join；移出為 leave。"""
     member = _mk_member()
     before = _mk_voice_state(channel_id="ch1", channel_name="general")
     after = _mk_voice_state(channel_id="ch2", channel_name="music")
+    marvin_ch = _mk_voice_state(channel_id="ch3", channel_name="lounge").channel
 
-    pl.log_voice_state_change(member, before, after)
+    # 在兩個非 Marvin 頻道間移動 → 不寫
+    pl.log_voice_state_change(member, before, after, marvin_ch=marvin_ch, consented=True)
+    assert _read_records(temp_log) == []
 
+    # 從其他頻道移進 Marvin 頻道 → join
+    after_marvin = MagicMock(channel=marvin_ch)
+    pl.log_voice_state_change(member, before, after_marvin, marvin_ch=marvin_ch, consented=True)
     records = _read_records(temp_log)
     assert len(records) == 1
-    assert records[0]["event"] == "move"
-    assert records[0]["channel_id"] == "ch2"
-    assert records[0]["channel_name"] == "music"
+    assert records[0]["event"] == "join"
+    assert records[0]["channel_id"] == "ch3"
 
 
 def test_same_channel_does_not_write(temp_log):
@@ -112,21 +120,20 @@ def test_same_channel_does_not_write(temp_log):
     after = MagicMock()
     after.channel = ch  # 同一個 channel 物件
 
-    pl.log_voice_state_change(member, before, after)
+    pl.log_voice_state_change(member, before, after, marvin_ch=ch, consented=True)
 
     assert _read_records(temp_log) == []
 
 
-def test_bot_member_is_logged_with_is_bot_true(temp_log):
+def test_bot_member_is_not_logged(temp_log):
+    """bot 進出不記錄。"""
     member = _mk_member(user_id="bot1", display_name="Marvin", is_bot=True)
     before = _mk_voice_state(channel_id=None)
     after = _mk_voice_state(channel_id="ch1", channel_name="general")
 
-    pl.log_voice_state_change(member, before, after)
+    pl.log_voice_state_change(member, before, after, marvin_ch=after.channel, consented=True)
 
-    records = _read_records(temp_log)
-    assert len(records) == 1
-    assert records[0]["is_bot"] is True
+    assert _read_records(temp_log) == []
 
 
 def test_exception_does_not_propagate(temp_log, monkeypatch):
@@ -141,7 +148,7 @@ def test_exception_does_not_propagate(temp_log, monkeypatch):
     monkeypatch.setattr(Path, "open", _broken_open)
 
     # 不該拋
-    pl.log_voice_state_change(member, before, after)
+    pl.log_voice_state_change(member, before, after, marvin_ch=after.channel, consented=True)
 
 
 def test_multiple_events_append_to_same_file(temp_log):
@@ -150,8 +157,8 @@ def test_multiple_events_append_to_same_file(temp_log):
     join_before = _mk_voice_state(channel_id=None)
     ch1_after = _mk_voice_state(channel_id="ch1", channel_name="general")
 
-    pl.log_voice_state_change(member1, join_before, ch1_after)
-    pl.log_voice_state_change(member2, join_before, ch1_after)
+    pl.log_voice_state_change(member1, join_before, ch1_after, marvin_ch=ch1_after.channel, consented=True)
+    pl.log_voice_state_change(member2, join_before, ch1_after, marvin_ch=ch1_after.channel, consented=True)
 
     records = _read_records(temp_log)
     assert len(records) == 2

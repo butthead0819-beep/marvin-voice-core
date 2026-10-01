@@ -75,7 +75,7 @@
 | 自訓聲學喚醒模型（openWakeWord） | 只有 scripts 實驗，沒上線 | — |
 | Spotify Connect 個人 DJ | 營運筆記：Phase 1 完成；程式碼中只找到 scripts 與 metadata 查詢，整合狀態待確認 | — |
 | Linux / Docker 路徑 | 有 Dockerfile，**不維護**（TODOS：等第一個 Linux 用戶再處理） | `STT_ENGINE≠macos` |
-| `/marvin_talk` 回合制對談 | **已不使用**（Jack 2026-09-27）；但指令仍註冊在 Discord，任何人都還叫得出來，且會把語音送 Gemini、不查同意 | 程式碼未移除 |
+| `/marvin_talk` 回合制對談 | 已移除（2026-09-29 刪程式碼，2026-10-01 確認 Discord 已無此指令） | — |
 | Suno 生歌 | 仍可被觸發（`manual_sing_request`），但沒有記帳；Lyria 已永久關閉 | `SUNO_API_KEY` |
 
 ---
@@ -89,12 +89,12 @@
 | 🔴1 | **多伺服器同時使用會互相干擾**：單一 engine / sink / 文字頻道 / 音樂佇列、voice client 取「第一個」、最後一人離開會斷開所有伺服器 | ARCHITECTURE.md §7a（12 項） | 回應可能跑到別的伺服器；一邊散場另一邊被踢 |
 | 🔴2 | **記憶沒有按伺服器隔離**：prod 只有一個 `MemoryManager()`，恆寫主伺服器分區 | `gemini_router.py:177` | 跨伺服器洩漏個人記憶 |
 | 🔴3 | **身分用顯示名稱**：同意、記憶、口味都綁暱稱 | `consent_manager.py:52`、`discord_voice_engine.py:1003` | 同名共用同意與記憶；改名失憶；可冒用 |
-| 🔴4 | `/marvin_reboot` 沒權限檢查（會 `git pull` 並重啟，還把 pull 輸出貼回頻道） | `cogs/voice_controller.py:829` | 任何人可中斷全部服務 |
+| 🔴4 | `/marvin_reboot` 沒權限檢查（會 `git pull` 並重啟，還把 pull 輸出貼回頻道） | `cogs/voice_controller.py:829` | 已修（分支 `feat/phase1-stage-a`，限 owner 且不貼 pull 輸出） |
 | 🔴5 | 資料清理排程停用：`feedbackbatch.plist.disabled`，最後一次執行 2026-07-09 | `~/Library/LaunchAgents`、`feedback_batch_cron.log` | 9.2 萬句超過 14 天的逐字稿沒刪；紀錄原文沒轉雜湊；與 README 舊版的隱私承諾不符 |
-| 🔴6 | 語音頻道進出紀錄不看同意、涵蓋 bot 所在全部伺服器 | `main_discord.py:452` → `presence_logger.py` | 未同意者的帳號 ID 與行蹤被記錄 |
+| 🔴6 | 語音頻道進出紀錄不看同意、涵蓋 bot 所在全部伺服器 | `main_discord.py:452` → `presence_logger.py` | 已修（分支 `feat/phase1-stage-a`，只記 Marvin 所在頻道與已同意者，無 move） |
 | 🔴7 | 沒有每伺服器配額 / 同時房間上限 | OPERATOR.md §5 | 一個伺服器可用光全部免費額度與付費上限 |
-| 🟠8 | `!sync` prefix 指令沒權限檢查 | `main_discord.py:626` | 任何人可觸發指令同步（Discord rate limit） |
-| 🟠9 | 同意通知列的外部服務過時（沒寫 Mistral / SambaNova / Together / OpenRouter，還寫已失效的 Cerebras） | `cogs/voice_controller.py:941-948` | 告知不完整 |
+| 🟠8 | `!sync` prefix 指令沒權限檢查 | `main_discord.py:626` | 不成立：`!sync` 寫在 Bot 子類別裡沒有被註冊，叫不出來（2026-10-01 實測）；死碼保留 |
+| 🟠9 | 同意通知列的外部服務過時（沒寫 Mistral / SambaNova / Together / OpenRouter，還寫已失效的 Cerebras） | `cogs/voice_controller.py:941-948` | 已修（分支 `feat/phase1-stage-a`，同意通知已更新並對齊 PRIVACY.md §4） |
 | 🟠10 | `psutil` 沒裝 → MemoryGuard 恆回 False，RAM 吃緊時不會跳過向量庫寫入 | `memory_guard.py:52` | 5/18 EDEADLK 事故的防護實際失效 |
 | 🟠11 | STT 全 bot 一條 `Semaphore(1)` | `discord_voice_engine.py:883` | 人一多排隊延遲上升 |
 | 🟡12 | launchd 的 `~/Library/Logs/Marvin/bot_stdout.log` 不輪替（215MB，含逐字稿） | OPERATOR.md §4 | 磁碟、隱私 |

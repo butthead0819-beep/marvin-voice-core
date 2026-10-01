@@ -12,6 +12,7 @@ import logging.handlers
 logger = logging.getLogger("MarvinBot")
 from dotenv import load_dotenv
 load_dotenv()
+from owner_auth import OWNER_ONLY_MESSAGE
 
 class _StreamToLogger:
     """File-like stream that sends print()/traceback output to a rotating logger."""
@@ -257,6 +258,14 @@ class MarvinBot(commands.Bot):
             if _is_expired_interaction_error(error):
                 logger.warning(f"⏳ [App Command] interaction 已失效（10062 Unknown interaction），略過回應 (Command: {cmd_name})")
                 return
+            if isinstance(error, app_commands.CheckFailure):
+                logger.info(f"🔒 [Owner Only] {interaction.user} 嘗試 /{cmd_name}，已拒絕")
+                if not interaction.response.is_done():
+                    try:
+                        await interaction.response.send_message(OWNER_ONLY_MESSAGE, ephemeral=True)
+                    except discord.HTTPException:
+                        pass
+                return
             logger.error(f"❌ [App Command Error] {error} (Command: {cmd_name})")
             if not interaction.response.is_done():
                 try:
@@ -349,7 +358,11 @@ class MarvinBot(commands.Bot):
             # voice state update → session reset（Jack 離開語音頻道時）+ presence log
             from presence_logger import log_voice_state_change as _log_presence
             async def _on_voice_state_update_for_temp(_member, before, after) -> None:
-                _log_presence(_member, before, after)  # P7 baseline: forward-looking JSONL
+                _vc = _member.guild.voice_client
+                _marvin_ch = _vc.channel if _vc else None
+                _vcog = self.get_cog("VoiceController")
+                _consented = bool(_vcog and _vcog.consent.is_consented(_member.display_name))
+                _log_presence(_member, before, after, marvin_ch=_marvin_ch, consented=_consented)
                 if before.channel and not after.channel:
                     _temp_monitor.reset_session()
             self.add_listener(_on_voice_state_update_for_temp, "on_voice_state_update")

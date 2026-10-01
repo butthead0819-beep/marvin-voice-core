@@ -1123,13 +1123,6 @@ class ConnectionMixin:
                 logger.info(f"📥 [Restart] git pull 結果（rc={proc.returncode}）:\n{out}")
                 pull_summary = f"rc={proc.returncode}\n{out[:1200]}"
                 commit_after = _git_head_short()
-                if self.active_text_channel:
-                    try:
-                        await self.active_text_channel.send(
-                            f"📥 git pull (rc={proc.returncode}):\n```\n{out[:1500]}\n```"
-                        )
-                    except Exception:
-                        pass
             except asyncio.TimeoutError:
                 logger.error("❌ [Restart] git pull 超時 15s（不阻斷重啟）")
                 pull_summary = "(timeout 15s)"
