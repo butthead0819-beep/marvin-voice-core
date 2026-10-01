@@ -213,6 +213,23 @@ async def render_audiophile_guide(
     info['_audiophile_guide_dur'] = dur
 
 
+_SENTENCE_END_RE = re.compile(r"[^。！？!?]*[。！？!?]")
+
+
+def strip_entry_cue(text: str) -> str:
+    """導聆稿第三幕固定是「進歌引導」（戴耳機/準備進歌）——歌已經在播時講這句很怪，
+    去掉最後一句。切不出兩句以上（沒標點/只有一句）就原樣回傳，寧可多講不要講空。"""
+    stripped = text.strip()
+    sentences = _SENTENCE_END_RE.findall(stripped)
+    consumed = sum(len(s) for s in sentences)
+    remainder = stripped[consumed:]
+    if remainder:
+        sentences.append(remainder)
+    if len(sentences) < 2:
+        return stripped
+    return "".join(sentences[:-1]).strip()
+
+
 # ── 正規化：iTunes Search（免費、結構化、零幻覺）─────────────────────────────
 _CANON_KEY_PREFIX = "canon::"
 _SINGLE_SUFFIX_RE = re.compile(r"\s*-\s*(Single|EP)\s*$", re.I)
