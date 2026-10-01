@@ -48,19 +48,19 @@ Marvin 需要你把他召喚進語音頻道（`/summon`）才會開始聽。他�
 
 | 資料 | 內容 | 存在哪 | 程式設定 | 目前實況 |
 |---|---|---|---|---|
-| 逐字稿 | 誰、哪個頻道、說了什麼、時間 | `marvin.db` `transcripts` 表 | 14 天後刪除（夜間排程） | **排程停用中**，最舊到 2026-06-25，共約 11.8 萬句 |
-| 社交話題圖 | 誰、說了什麼（原文）、語意向量、情緒 | `marvin.db` `speaker_topic_graph` | **沒有刪除規則** | 約 14.6 萬筆 |
-| 語意向量庫 | 每句原文 + 語意向量 + 講者 + 伺服器 | `.chroma_db/` | **沒有刪除規則** | 354 MB |
-| 語音辨識紀錄檔 | 每句辨識結果 | `stt_history.log`（5MB×3 輪替）、`records/daily/stt_*.log`（每日切片）、launchd 的 `bot_stdout.log` | 輪替檔依大小汰換；每日切片與 launchd log **沒有刪除規則** | 每日切片從 2026-04-26 起全留；launchd log 215MB、含 2026-06-01 起約 14 萬句逐字稿 |
+| 逐字稿 | 誰、哪個頻道、說了什麼、時間 | `marvin.db` `transcripts` 表 | 14 天後刪除（夜間排程） | 排程待啟用（Stage D 程式已完成） |
+| 社交話題圖 | 誰、說了什麼（原文）、語意向量、情緒 | `marvin.db` `speaker_topic_graph` | 30 天 | 排程待啟用（Stage D 程式已完成） |
+| 語意向量庫 | 每句原文 + 語意向量 + 講者 + 伺服器 | `.chroma_db/` | 語音轉成的文字會在向量庫保留 90 天，用於長期記憶 | 排程待啟用（Stage D 程式已完成） |
+| 語音辨識紀錄檔 | 每句辨識結果 | `stt_history.log`（5MB×3 輪替）、`records/daily/`、launchd 的 `bot_stdout.log` | stt_history.log 依大小汰換；每日切片保留 14 天；launchd log 每日輪替保留 14 份 | 排程待啟用（Stage D 程式已完成） |
 | 人物記憶 | Marvin 對你的印象、關係階段、好惡、禁忌、音樂口味、說話風格、個人資訊（飲食/穿著/居住/交通、Minecraft ID）、印象深刻的情緒時刻、點歌紀錄、互動統計、待回應的話題 | `marvin.db` `players` 表 + `suki_memory.json` | 長期保留，沒有刪除規則 | 備份：`suki_memory.*.bak` 保留 7 份；`records/backups/` 約 140 份不會自動刪 |
-| 5 分鐘對話摘要 | 摘要文字、在場者 | `marvin.db` `session_summaries` | 沒有刪除規則 | 最舊 2026-05-26 |
-| 待辦 / 承諾 | 誰答應了什麼、原句 | `marvin.db` `tasks` | 沒有刪除規則 | |
+| 5 分鐘對話摘要 | 摘要文字、在場者 | `marvin.db` `session_summaries` | 30 天 | 排程待啟用（Stage D 程式已完成） |
+| 待辦 / 承諾 | 誰答應了什麼、原句 | `marvin.db` `tasks` | done / cancelled 30 天；pending 永久保留 | 排程待啟用（Stage D 程式已完成） |
 | 日記 | 每 10 分鐘的四行日記 | Discord 頻道 `#馬文的厭世日記` + `records/chat_summary_log.txt` | Discord 上的依該伺服器管理；本機檔沒有刪除規則 | |
 | 音樂紀錄 | 每首歌的點歌者與反應、每人推薦、跳過紀錄 | `music_memory.json` | 長期保留 | |
 | 同意狀態 | 顯示名 → 同意 / 已看過聲明 | `consent.json` | 長期保留 | |
 | 離場習慣 | 顯示名 → 何時離開、有沒有說再見 | `departure_stats.json` | 長期保留 | |
-| **語音頻道進出紀錄** | 時間、伺服器 ID、**Discord 帳號 ID**、顯示名、頻道 ID、進 / 出（2026-10-01 起不再記換頻道） | `data/voice_presence.jsonl` | 只記 Marvin 所在頻道、已同意者的進出 | 2026-10-01 前的舊紀錄含未同意者與其他頻道，待營運者確認後清理 |
-| 自我改進紀錄 | 聽不懂的句子、指令判斷結果（含原文） | `records/*.jsonl` | 14 天後原文改成 SHA-1 雜湊 | **排程停用中** |
+| **語音頻道進出紀錄** | 時間、伺服器 ID、**Discord 帳號 ID**、顯示名、頻道 ID、進 / 出（2026-10-01 起不再記換頻道） | `data/voice_presence.jsonl` | 只記 Marvin 所在頻道、已同意者的進出；保留 90 天 | 2026-10-01 前的舊紀錄待營運者確認後清理；90 天保留排程待啟用（Stage D 程式已完成） |
+| 自我改進紀錄 | 聽不懂的句子、指令判斷結果（含原文） | `records/*.jsonl` | 14 天後原文改成 SHA-1 雜湊 | 排程待啟用（Stage D 程式已完成） |
 | 馬文台詞紀錄 | 馬文每句講出來的完整內容（可能引用你說過的話）與播出時間 | `marvin_speech.log` | 依大小輪替（5MB×3） | 2026-09-27 起 |
 | 系統 log | 錯誤、延遲、部分內容片段 | `bot_main.log`、`bot_stdout.log` | 依大小輪替 | |
 

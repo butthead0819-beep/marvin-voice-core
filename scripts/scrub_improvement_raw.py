@@ -9,11 +9,12 @@ analyze_agent_gaps 的 distinct 計數 key on raw_query。直接清空會讓所�
 TTL 預設 14 天（🟡 失敗訊號低頻、clustering 要跨天累積 ≥5；不可壓到 24h）。
 冪等：已 scrub（值帶 SCRUB_PREFIX）的記錄重跑不再處理。
 
-用法：python scripts/scrub_improvement_raw.py
+用法：python scripts/scrub_improvement_raw.py [--apply]
 寫回原檔（atomic：先寫 .tmp 再 rename）。輸出 JSON 摘要到 stdout。
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -82,20 +83,35 @@ def _atomic_write(path: Path, rows: list[dict]) -> None:
     os.replace(tmp, path)
 
 
-def main() -> int:
-    cutoff = time.time() - TTL_DAYS * 86400
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="寬放 ZDR：judge/gaps/rescue 的 raw 原文過 TTL 轉單向 hash 指紋。")
+    parser.add_argument("--ttl-days", type=int, default=TTL_DAYS, help="TTL 天數（預設 14）")
+    parser.add_argument("--records-dir", default=None, help="可選的 records 資料夾路徑（覆蓋 records/）")
+    parser.add_argument("--apply", action="store_true", help="確認執行寫入（預設為 dry-run）")
+    args = parser.parse_args(argv)
+
+    cutoff = time.time() - args.ttl_days * 86400
     summary: dict[str, dict] = {}
     for rel, fields in TARGETS:
-        path = Path(rel)
+        if args.records_dir:
+            fname = Path(rel).name
+            path = Path(args.records_dir) / fname
+        else:
+            path = Path(rel)
         if not path.exists():
-            summary[rel] = {"status": "missing"}
+            summary[str(path)] = {"status": "missing"}
             continue
         rows = _load(path)
-        rows, n = scrub_rows(rows, fields, cutoff)
-        if n:
-            _atomic_write(path, rows)
-        summary[rel] = {"records": len(rows), "scrubbed_fields": n}
-    print(json.dumps({"ttl_days": TTL_DAYS, "files": summary}, ensure_ascii=False, indent=2))
+        scrubbed_rows, n = scrub_rows(rows, fields, cutoff)
+        if n and args.apply:
+            _atomic_write(path, scrubbed_rows)
+        summary[str(path)] = {"records": len(rows), "scrubbed_fields": n}
+    print(
+        json.dumps(
+            {"ttl_days": args.ttl_days, "dry_run": not args.apply, "files": summary},
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

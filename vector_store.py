@@ -1,3 +1,4 @@
+import time
 import chromadb
 from chromadb.config import Settings
 
@@ -122,3 +123,54 @@ class VectorStore:
         merged = dict(existing_metas[0] or {})
         merged.update(metadata)
         self._col.update(ids=[doc_id], metadatas=[merged])
+
+    def prune_older_than(self, days: int, *, now: float | None = None, apply: bool = False) -> dict:
+        """依 doc_id 尾段毫秒時間戳（`<speaker>_<guild_id>_<ms>`）刪除超過 days 天的逐字稿。
+        解析不出時間戳的 id 一律保留。apply=False 只回統計。沙盒中一律 no-op。
+        回傳 {"matched": n, "oldest_ts": float|None, "deleted": n}。"""
+        if memory_sandbox.active():
+            apply = False
+
+        effective_now = time.time() if now is None else float(now)
+        cutoff_ts = effective_now - days * 86400
+
+        matched_ids = []
+        oldest_ts: float | None = None
+        batch_size = 5000
+        offset = 0
+
+        total_count = self._col.count()
+        while offset < total_count:
+            res = self._col.get(include=[], limit=batch_size, offset=offset)
+            batch_ids = res.get("ids", [])
+            if not batch_ids:
+                break
+            for doc_id in batch_ids:
+                ts = None
+                try:
+                    parts = doc_id.rsplit("_", 1)
+                    if len(parts) == 2:
+                        ms = float(parts[1])
+                        ts = ms / 1000.0
+                except (ValueError, TypeError):
+                    ts = None
+
+                if ts is not None and ts < cutoff_ts:
+                    matched_ids.append(doc_id)
+                    if oldest_ts is None or ts < oldest_ts:
+                        oldest_ts = ts
+
+            offset += len(batch_ids)
+
+        deleted = 0
+        if apply and matched_ids:
+            for i in range(0, len(matched_ids), batch_size):
+                chunk = matched_ids[i:i + batch_size]
+                self._col.delete(ids=chunk)
+                deleted += len(chunk)
+
+        return {
+            "matched": len(matched_ids),
+            "oldest_ts": oldest_ts,
+            "deleted": deleted,
+        }

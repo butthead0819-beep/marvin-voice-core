@@ -108,3 +108,53 @@ def test_scrub_idempotent_on_rerun():
 
 def test_nowake_outcomes_in_targets():
     assert ("records/nowake_outcomes.jsonl", ["raw_text", "query"]) in TARGETS
+
+
+# ── CLI dry-run 與 --apply 整合測試 ──────────────────────────────────────────
+
+def test_scrub_improvement_raw_dry_run_and_apply(tmp_path, monkeypatch):
+    import time
+    from scripts.scrub_improvement_raw import main
+
+    test_file = tmp_path / "agent_gaps.jsonl"
+    now = time.time()
+    old_ts = now - 20 * 86400  # 20 天前（>14 天）
+    new_ts = now - 2 * 86400   # 2 天前（<14 天）
+
+    rows = [
+        {"ts": old_ts, "raw_query": "舊原話1", "cleaned_query": "舊原話2"},
+        {"ts": new_ts, "raw_query": "新原話1", "cleaned_query": "新原話2"},
+    ]
+    test_file.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr("scripts.scrub_improvement_raw.TARGETS", [(str(test_file), ["raw_query", "cleaned_query"])])
+
+    # 1. 跑 dry-run（無 --apply）
+    rc = main([])
+    assert rc == 0
+    # 檢查檔案內容完全沒變
+    content = test_file.read_text(encoding="utf-8")
+    assert "舊原話1" in content
+    assert "舊原話2" in content
+
+    # 2. 跑 --apply
+    rc = main(["--apply"])
+    assert rc == 0
+    # 檢查舊的被 scrubbed，新的保留
+    content_after = test_file.read_text(encoding="utf-8")
+    assert "舊原話1" not in content_after
+    assert "舊原話2" not in content_after
+    assert SCRUB_PREFIX in content_after
+    assert "新原話1" in content_after
+    assert "新原話2" in content_after
+
+
+def test_main_prints_single_line_json_summary(tmp_path, capsys):
+    """run_maintenance 只抓 stdout 最後一行寫進維護 log——摘要必須是單行 JSON，
+    多行縮排會讓 log 只剩一個「}」。"""
+    import json as _json
+    from scripts.scrub_improvement_raw import main
+    assert main(["--records-dir", str(tmp_path)]) == 0
+    out = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+    assert len(out) == 1
+    assert _json.loads(out[0])["dry_run"] is True
