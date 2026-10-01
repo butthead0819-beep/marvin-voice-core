@@ -12,6 +12,7 @@ import logging.handlers
 logger = logging.getLogger("MarvinBot")
 from dotenv import load_dotenv
 load_dotenv()
+from owner_auth import OWNER_ONLY_MESSAGE
 
 class _StreamToLogger:
     """File-like stream that sends print()/traceback output to a rotating logger."""
@@ -256,6 +257,14 @@ class MarvinBot(commands.Bot):
             # 不記 ERROR（避免誤觸 incident），也別再回應（必然二次 404）。
             if _is_expired_interaction_error(error):
                 logger.warning(f"⏳ [App Command] interaction 已失效（10062 Unknown interaction），略過回應 (Command: {cmd_name})")
+                return
+            if isinstance(error, app_commands.CheckFailure):
+                logger.info(f"🔒 [Owner Only] {interaction.user} 嘗試 /{cmd_name}，已拒絕")
+                if not interaction.response.is_done():
+                    try:
+                        await interaction.response.send_message(OWNER_ONLY_MESSAGE, ephemeral=True)
+                    except discord.HTTPException:
+                        pass
                 return
             logger.error(f"❌ [App Command Error] {error} (Command: {cmd_name})")
             if not interaction.response.is_done():

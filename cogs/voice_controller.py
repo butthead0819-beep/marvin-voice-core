@@ -20,6 +20,7 @@ from utils import pre_filter_speech, is_whisper_hallucination, WAKE_PATTERN
 from utils import WAKE_WORDS_LIST as _WAKE_WORDS_LIST, FAST_ONLY_WAKE_WORDS as _FAST_ONLY_WAKE_WORDS
 from departure_stats import DepartureStats
 from departure_predictor import DeparturePredictor, rejoin_action
+from owner_auth import is_owner
 from consent_manager import ConsentManager
 from nudge_throttle import NudgeThrottle
 from transcript_store import TranscriptStore
@@ -819,6 +820,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
     @app_commands.command(name="marvin_reboot", description="[Sentinel] 強制馬文執行物理重啟 (預設先 git pull 拿最新 code)")
     @app_commands.describe(pull="是否在重啟前 git pull 拿最新 code（預設 True）")
+    @app_commands.check(lambda i: is_owner(i.user.id))
     async def marvin_reboot(self, interaction: discord.Interaction, pull: bool = True):
         msg = "⚙️ 既然你堅持... 我就重發一遍那顆無意義的大腦吧。"
         if pull:
