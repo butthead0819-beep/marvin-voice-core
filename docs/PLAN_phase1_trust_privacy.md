@@ -228,6 +228,111 @@ _log_presence(_member, before, after, marvin_ch=_marvin_ch, consented=_consented
 
 ---
 
+## Stage D：資料保留與清理（分支 `feat/phase1-stage-d`，2026-10-01 Jack 已拍板）
+
+**Jack 的決定**：清理排程拆成獨立的每日維護任務（加進看門狗）；`bot_stdout.log`／`satellite_stdout.log` 每天 copytruncate + gzip、保留 14 份；保留天數如下表；歷史進出紀錄補頻道過濾後清理。
+
+| 資料 | 保留 | 時間依據 |
+|---|---|---|
+| `marvin.db` `transcripts` | 14 天（既有 `prune_transcripts.py`） | `timestamp` |
+| `records/{agent_gaps,judge_outcomes,rescue_outcomes,nowake_outcomes}.jsonl` 原文 | 14 天後轉雜湊（既有 `scrub_improvement_raw.py`） | 既有邏輯 |
+| `marvin.db` `speaker_topic_graph` | 30 天 | `created_at` |
+| `marvin.db` `session_summaries` | 30 天 | `created_at` |
+| `marvin.db` `tasks` | `status='pending'` 永久；`done`／`cancelled` 30 天 | `created_at`（表沒有完成時間欄位） |
+| `records/daily/` 的 `YYYY-MM-DD.log`、`stt_YYYY-MM-DD.log`、`topic_stats_YYYY-MM-DD.json` | 14 天 | 檔名日期（`*_cron.log` 不動） |
+| `data/voice_presence.jsonl` | 90 天 | `ts` |
+| `.chroma_db/` collection `marvin_transcripts` | 90 天 | doc_id 尾段毫秒時間戳 |
+| `records/rescue_wav/` | 不動（既有 500 檔 FIFO） | — |
+
+**共通規則**：
+- 每支會刪資料的工具都要有 dry-run，**預設就是 dry-run**，要加 `--apply` 才真的刪；dry-run 印出「會刪幾筆、最舊一筆的日期」。
+- 所有刪除都要尊重 `memory_sandbox.active()`（沙盒中一律 no-op），比照 `TranscriptStore.prune`。
+- 時間邊界用嚴格小於（`< cutoff`），比照 `TranscriptStore.prune`。
+- **你只跑 dry-run，不准跑任何 `--apply`，不准建立或修改 launchd、不准動 `~/Library/Application Support/Marvin/`。** 安裝排程與第一次真跑由 Claude Code 在備份後、經 Jack 確認再做。
+
+### D1. `scripts/prune_presence_log.py` 補頻道過濾
+
+- 新增必填參數 `--marvin-user-id`（Marvin 的 Discord 帳號 ID；prod 值是 `1482380213932527647`）。
+- 第一輪掃描：收集 `is_bot is True` 且 `user_id == --marvin-user-id` 的所有 `channel_id` → `marvin_channels`。
+- 第二輪：原本的 bot／未同意／move 過濾之後，再丟掉 `channel_id not in marvin_channels` 的行，計入新欄位「非 Marvin 頻道行數」（印出來、也放進回傳 dict 的 `"other_channel"`）。
+- 測試：補一個 tmp 檔案例，含 Marvin bot 行（頻道 A）、已同意者在頻道 A 與頻道 B 的行 → 只保留頻道 A；`other_channel` 計數正確；`marvin_channels` 為空時全部人類行都算非 Marvin 頻道（保守，不保留）。
+- 跑 dry-run（`--marvin-user-id 1482380213932527647`）把輸出貼進回報。預期非 Marvin 頻道約 12 行。
+
+### D2. 既有兩支清理腳本補 dry-run
+
+- `scripts/prune_transcripts.py`：加 `argparse`，`--apply` 才呼叫 `TranscriptStore.prune`；預設 dry-run 用 `SELECT COUNT(*), MIN(timestamp) FROM transcripts WHERE timestamp < ?` 印出筆數與最舊日期。JSON 摘要多一個 `"dry_run": true/false`。**注意：這支原本無參數就會刪，改完後無參數變成 dry-run——這是刻意的行為改變。**
+- `scripts/scrub_improvement_raw.py`：加 `argparse`，`--apply` 才 `_atomic_write`；dry-run 對每個檔印出「會轉雜湊的筆數」，用既有 `scrub_rows` 算，不寫檔。
+- 測試：兩支都用 tmp DB／tmp jsonl，驗證 dry-run 不改資料、`--apply` 才改；並更新既有測試裡無參數呼叫 `main()` 的地方（若有）。
+
+### D3. 新增 `scripts/prune_retention.py`（上表的 SQLite 三張表、`records/daily/`、`voice_presence.jsonl`）
+
+- 參數：`--apply`、`--db`（預設 `marvin.db`）、`--daily-dir`（預設 `records/daily`）、`--presence`（預設 `data/voice_presence.jsonl`）、`--now`（測試用 unix ts，預設 `time.time()`）。
+- 每一類一個純函式回傳「要刪的對象」，`main` 決定只印還是刪：
+  - `speaker_topic_graph`：`created_at < now-30d`
+  - `session_summaries`：`created_at < now-30d`
+  - `tasks`：`status IN ('done','cancelled') AND created_at < now-30d`
+  - `records/daily/`：檔名符合 `^(stt_|topic_stats_)?\d{4}-\d{2}-\d{2}\.(log|json)$` 且日期 < 今天（Asia/Taipei）-14 天；不符合的檔名一律不動。
+  - `voice_presence.jsonl`：`ts < now-90d` 的行；`--apply` 時先複製成 `.bak_<YYYYMMDD>` 再原子改寫（寫 tmp 再 `os.replace`）。
+- SQLite 用每次呼叫開一條連線、短交易，比照 `TranscriptStore`。
+- 輸出一行 JSON 摘要（每類的筆數、最舊日期、`dry_run`）。
+- 測試 `tests/test_prune_retention.py`：tmp DB 建這三張表（schema 照 `marvin.db` 現況），每類放一筆剛好在邊界內、一筆超過邊界的資料；驗證 dry-run 不改、`--apply` 只刪超過的；`tasks` 的 pending 再舊也不刪；`records/daily` 的 `review_cron.log` 不刪；presence `--apply` 會產生 .bak。
+
+### D4. 向量庫 90 天清理（跑在 bot 程序內，不能另開程序）
+
+理由：bot 長駐持有 Chroma `PersistentClient`，另一個程序刪資料不安全（bot 的記憶體內索引不會同步）。所以這一項放進 bot 自己的每日迴圈。
+
+- `vector_store.py` 的 `VectorStore` 新增：
+  ```python
+  def prune_older_than(self, days: int, *, now: float | None = None, apply: bool = False) -> dict:
+      """依 doc_id 尾段毫秒時間戳（`<speaker>_<guild_id>_<ms>`）刪除超過 days 天的逐字稿。
+      解析不出時間戳的 id 一律保留。apply=False 只回統計。沙盒中一律 no-op。
+      回傳 {"matched": n, "oldest_ts": float|None, "deleted": n}。"""
+  ```
+  分批取 id（`self._col.get(include=[], limit=..., offset=...)`，每批 5000），刪除也分批（每批 ≤5000）。
+- `cogs/voice_controller_system_loops.py` 新增 `@tasks.loop(time=datetime.time(hour=3, minute=30, tzinfo=UTC+8))` 的 `daily_vector_retention_loop`：
+  - 取 VoiceController 既有的向量庫實例（照檔內既有屬性名，**找不到就停下來回報，不要新建 VectorStore**）。
+  - `apply = os.getenv("MARVIN_CHROMA_RETENTION_APPLY") == "1"`；用 `asyncio.to_thread` 呼叫 `prune_older_than(90, apply=apply)`。
+  - `logger.warning` 一行結果（root logger 是 WARNING，INFO 會被吞）：`🧹 [VectorRetention] apply=… matched=… deleted=… oldest=…`。
+  - 例外只記 log 不外拋。
+- `cogs/voice_controller.py` 的 `cog_load` 在 `self.daily_watchdog_loop.start()` 下一行加 `self.daily_vector_retention_loop.start()`（+1 statement，預算有餘裕，**不准改 budget 數字**）。
+- 測試：`prune_older_than` 用 tmp 目錄真的 Chroma（`VectorStore(persist_dir=tmp_path)`），放新舊各一筆加一筆 id 格式不對的 → dry-run 不刪、apply 只刪舊的、格式不對的保留；沙盒 active 時 no-op。迴圈本身測：env 沒設 → 呼叫時 `apply=False`；env=1 → `apply=True`。
+
+### D5. 新增 `scripts/rotate_launchd_logs.py`
+
+- 對 `~/Library/Logs/Marvin/bot_stdout.log`、`~/Library/Logs/Marvin/satellite_stdout.log`（路徑可用 `--log` 重複指定，預設這兩個）：
+  1. 複製成 `<name>.<YYYYMMDD>`（Asia/Taipei 當天；同名已存在就加 `-2`、`-3`），
+  2. 原檔 `truncate` 成 0（**不能刪檔、不能 rename**：launchd 以 append 模式持有 fd，已實測），
+  3. gzip 複本成 `.gz` 並刪掉未壓縮複本，
+  4. 刪掉同目錄下該 log 超過 14 份的舊 `.gz`（依檔名日期排序，留最新 14 份）。
+- 預設 dry-run（印出會做什麼），`--apply` 才執行。原檔是 0 bytes 時跳過。
+- 測試：tmp 目錄，驗證 apply 後原檔仍存在且為 0 bytes、產生 .gz 且內容等於原內容、第 15 份最舊的 .gz 被刪、dry-run 不動任何檔。
+
+### D6. 新增 `scripts/run_maintenance.py`（每日維護入口，給 launchd 03:00 呼叫）
+
+- 依序跑：`scrub_improvement_raw.py`、`prune_transcripts.py`、`prune_retention.py`、`rotate_launchd_logs.py`，`--apply` 傳給每一步（不帶就全部 dry-run）。用 `subprocess.run([sys.executable, 腳本, ...], timeout=600)`。
+- 每步印一行 `[maintenance] <step> rc=<rc> <stdout 最後一行>`；任何一步 rc≠0 → 繼續跑下一步，最後印 `all attempts failed: <失敗的步驟>`（這是 `cron_watchdog.FAIL_MARKERS` 認得的失敗標記）並 exit 1；全成功印 `[maintenance] ✅ done` exit 0。
+- `scripts/cron_watchdog.py` 的 `CHECKS` 加一列：`{"name": "maintenance", "log": f"{_LOG_DIR}/maintenance_cron.log", "max_age_h": 36}`。
+- 測試：patch `subprocess.run`，驗證四步都被呼叫、`--apply` 有傳下去、某步失敗時仍跑完其他步並印出失敗標記且 exit 1；`check_cron_health` 對 maintenance log 過舊會報問題。
+
+### D7. 文件
+
+- PRIVACY.md §3 各資料的「程式設定」欄改成上表的保留期限；「目前實況」欄寫「排程待啟用（Stage D 程式已完成）」。向量庫那列要明寫「語音轉成的文字會在向量庫保留 90 天，用於長期記憶」。
+- STATUS.md 🔴5、🟡12 標「程式已完成，排程待啟用」。
+- 不寫日期承諾。
+
+### D 的回報要附
+
+- 每支工具在 prod 資料上的 dry-run 輸出（D1、D2 兩支、D3；D4 只能在 bot 內跑，不用附；D5 dry-run）。
+- 全套測試最後一行。
+
+### Stage D 之後由 Claude Code 做（不是 Gemini）
+
+1. 備份 `marvin.db`、4 個 jsonl、`data/voice_presence.jsonl`、`.chroma_db/` → 給 Jack 看 dry-run 數字 → 確認後第一次 `--apply`。
+2. 寫 `~/Library/Application Support/Marvin/run_maintenance.py`（用 `_launcher.run_with_retry`）與 `com.antigravity.marvin.maintenance.plist`（03:00，log 到 `maintenance_cron.log`），載入 launchd。
+3. 向量庫第一次清理前先備份，觀察一晚 dry-run log 後再設 `MARVIN_CHROMA_RETENTION_APPLY=1`。
+
+---
+
 ## 驗收清單（Claude Code 收件時逐項檢查）
 
 - [ ] 每個新測試在實作前跑過是紅的（回報裡要附紅燈輸出）。
