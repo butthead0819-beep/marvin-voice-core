@@ -1,8 +1,15 @@
 # 需求文件 v2：遠距朋友的虛擬客廳（給 Claude Code）
 
 > 2026-10-01，Jack 確認方向後由 Cowork 起草。
-> 放在 `Marvin-Validation/validation/REQUIREMENTS_v2.md`。實作在 Marvin 的程式 repo 裡進行。
+> 放在 Marvin 程式 repo 的 `validation/REQUIREMENTS_v2.md`（就在實作的同一個 repo）。
 > 「待確認」的地方請先查程式碼或問 Jack，不要猜。
+>
+> **2026-10-01 現況校正（Claude Code 依程式碼與 Jack 指示更新；與原稿衝突時以本段為準）**
+> - GitHub 帳號 9/30 已解鎖，可以 push；但 PR 節奏照對 GitHub 的承諾，一天 ≤1–2 個 PR，同日修正疊在同一分支。
+> - 重啟規則維持現行：改動 land 且測試全綠就直接重啟 bot + satellite，不用先問；例外是測試紅、merge conflict、crash loop。晚上 20–24 點非緊急不重啟。
+> - 測試基準：6142 passed（2026-10-01），原稿的 5963 已過時。
+> - 1b `/marvin_talk` 已完成：程式碼 9/29 已刪，Discord 端（全域與主群）都查不到這個指令。剩 README／PRIVACY／STATUS／VALIDATION 的文字要同步。
+> - `validation/archetypes.md` 不在 repo 裡（原稿 §0 引用），需要的話請 Cowork 補上。
 
 ---
 
@@ -61,7 +68,7 @@
 - `!sync`（🟠8）：只有 owner 能用。
 - **驗收**：非 owner 呼叫時被拒，並回一句說明；有測試。
 
-### 1b. 移除 `/marvin_talk`
+### 1b. 移除 `/marvin_talk` ✅ 已完成（2026-10-01 確認；只剩文件同步）
 - Jack 已不使用；但指令仍註冊在 Discord，任何人都叫得出來，而且不查同意就把語音送 Gemini。
 - 從 Discord 取消註冊。程式碼要刪除或保留由你判斷，但不能再被叫出來。
 - **驗收**：同步後 Discord 指令清單裡沒有它；README、PRIVACY 同步刪除。
@@ -149,10 +156,10 @@
 
 ## 8. 工作方式
 
-- GitHub 帳號停權中：在本機開分支、commit，**不 push**；每階段結束把變更摘要與測試結果寫進 STATUS.md。
+- 在本機開分支、commit；GitHub 已解鎖可 push，但一天 ≤1–2 個 PR。每階段結束把變更摘要與測試結果寫進 STATUS.md。
 - 會刪資料、遷移資料、改 prod 設定的步驟，**一律先備份、先跟 Jack 確認**。
-- 不重啟 prod bot，除非 Jack 同意（主群正在用）。
-- 全部測試要過（目前基準：5963 passed）。
+- 重啟：land 且測試全綠就直接重啟 bot + satellite（例外：測試紅／conflict／crash loop；晚上 20–24 點非緊急不重啟）。
+- 全部測試要過（目前基準：6142 passed，2026-10-01）。
 
 ---
 
