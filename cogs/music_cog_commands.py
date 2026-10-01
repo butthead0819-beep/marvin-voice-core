@@ -267,6 +267,82 @@ class MusicCommandsMixin:
             probe_duration=self._probe_audio_duration,
         )
 
+    async def speak_now_playing_guide(self, info: dict) -> None:
+        """「馬文這是什麼歌」報完歌名後接導聆：疊在 TTS 層講、歌不中斷（2026-10-01 使用者定）。
+        稿子跟 DJ 預取同一把 label（大多快取命中零 API）；問的是真人 → human=True 可走付費鏈。
+        查不到稿就不講（不用保底台詞——說錯不如沒說）；查稿/TTS 期間換歌了就作廢。"""
+        vc = self._vc()
+        if vc is None:
+            return
+
+        from audiophile_fetcher import _song_label, strip_entry_cue
+
+        canon = info.get('_canon')
+        if canon:
+            label = _song_label(canon['title'], canon['artist'])
+        else:
+            title, artist = self._dj_clean_name(info)
+            label = _song_label(title, artist)
+
+        store, guard, router = self._audiophile_deps()
+        free_client = getattr(router, 'google_client', None)
+        paid_client = getattr(router, 'google_paid_client', None)
+        if free_client is None and paid_client is None:
+            return
+
+        budget = getattr(self, '_auto_guide_budget', None)
+        if budget is None:
+            from audiophile_fetcher import AutoGuideBudget
+            budget = AutoGuideBudget()
+            self._auto_guide_budget = budget
+        inflight = getattr(self, '_guide_inflight', None)
+        if inflight is None:
+            inflight = {}
+            self._guide_inflight = inflight
+
+        from audiophile_fetcher import song_guide_for_dj, GUIDE_TIMEOUT_S
+
+        guide = await song_guide_for_dj(
+            label, human=True,
+            free_client=free_client, paid_client=paid_client,
+            guard=guard, store=store,
+            budget=budget, inflight=inflight,
+            wait_s=GUIDE_TIMEOUT_S,
+        )
+        if not guide:
+            logger.info(f"[NowPlayingGuide] {label} 查不到導聆稿，只報歌名")
+            return
+
+        if self._current_stream_info is not info:
+            logger.info(f"[NowPlayingGuide] {label} 查稿期間換歌了，作廢")
+            return
+
+        text = strip_entry_cue(guide)
+        try:
+            audio = await self.bot.tts_engine.generate_audio(text)
+        except Exception as e:
+            logger.warning(f"[NowPlayingGuide] TTS 渲染失敗: {e}")
+            return
+        if not audio:
+            logger.warning(f"[NowPlayingGuide] {label} TTS 沒產出音檔")
+            return
+
+        if self._current_stream_info is not info:
+            logger.info(f"[NowPlayingGuide] {label} TTS 渲染期間換歌了，作廢")
+            return
+
+        with vc._protected_tts_window():
+            ok = await vc.play_dj_on_tts_layer(audio, text=text)
+
+        ch = getattr(vc, 'active_text_channel', None)
+        if ok and ch is not None:
+            try:
+                await ch.send(f"🎧 **【馬文·導聆】** {text}")
+            except Exception:
+                logger.warning("[NowPlayingGuide] 貼頻道失敗", exc_info=True)
+
+        logger.info(f"🎧 [NowPlayingGuide] {label} 導聆已上 TTS 層 ok={ok}")
+
     async def _album_tour_reject(self, speaker: str) -> bool:
         """巡禮中擋語音點歌（play/play_next）。只鎖點歌——停/跳照常（使用者 2026-09-28 定）。
         不換 IntentContext.mode：mode 一換所有沒宣告的 agent 都不出價，聊天/查詢也會死。"""

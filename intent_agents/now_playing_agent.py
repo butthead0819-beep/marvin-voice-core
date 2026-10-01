@@ -17,9 +17,15 @@ title/uploader/requested_by 組裝 + 送 text channel。
 maybe_offer_more_by_artist）——問歌曲資訊代表對這位歌手有興趣，是自然的追加點播
 訊號。放在這層而非 voice_controller.py：voice_controller 有行數棘輪守門（見
 test_voice_controller_size_budget.py），新語音功能規定要進 IntentAgent/Cog/mixin。
+
+2026-10-01：叫了馬文問歌名（ctx.dispatch_source != "nowake"）報完歌名後，背景
+觸發 MusicCog.speak_now_playing_guide 疊在 TTS 層講導聆，歌不中斷。no-wake
+regex 直達路徑（_MUSIC_INFO_RE 誤觸發多，8 筆有 4 筆是閒聊）不接，避免放大誤觸發
+成本。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Awaitable, Callable
 
@@ -37,6 +43,7 @@ class NowPlayingAgent(DeclarativeIntentAgent):
     def __init__(self, controller):
         self.ctrl = controller
         self._intents_cache: list[IntentSchema] | None = None
+        self._guide_task: asyncio.Task | None = None
 
     def declare_intents(self) -> list[IntentSchema]:
         if self._intents_cache is None:
@@ -70,6 +77,7 @@ class NowPlayingAgent(DeclarativeIntentAgent):
     ) -> Callable[[], Awaitable[None]]:
         speaker = ctx.speaker
         query = ctx.query or ""
+        want_guide = ctx.dispatch_source != "nowake"
 
         async def _handler() -> None:
             handle = getattr(self.ctrl, "_handle_music_info_query", None)
@@ -81,9 +89,33 @@ class NowPlayingAgent(DeclarativeIntentAgent):
             except Exception:
                 logger.exception("[NowPlaying] _handle_music_info_query failed")
                 return
+            if want_guide:
+                self._spawn_guide()
             await self._offer_more_by_artist(speaker)
 
         return _handler
+
+    def _spawn_guide(self) -> None:
+        """叫了馬文問歌名才接導聆（no-wake regex 誤觸發多，8 筆有 4 筆是閒聊，2026-10-01 使用者定）。
+        背景跑：查稿最多等 20s，不能卡住後面的追加點播追問。同時只跑一個，避免連問疊兩段。"""
+        info = getattr(self.ctrl, "_current_stream_info", None)
+        if not info:
+            return
+        bot = getattr(self.ctrl, "bot", None)
+        mc = getattr(bot, "cogs", {}).get("MusicCog") if bot is not None else None
+        if mc is None or not hasattr(mc, "speak_now_playing_guide"):
+            return
+        if self._guide_task is not None and not self._guide_task.done():
+            logger.info("[NowPlaying] 導聆進行中，不重複觸發")
+            return
+
+        async def _run() -> None:
+            try:
+                await mc.speak_now_playing_guide(info)
+            except Exception:
+                logger.exception("[NowPlaying] speak_now_playing_guide failed")
+
+        self._guide_task = asyncio.create_task(_run())
 
     async def _offer_more_by_artist(self, speaker: str) -> None:
         """問完歌曲資訊＝對這位歌手有興趣的訊號，文字追問要不要追加點播同歌手的歌
