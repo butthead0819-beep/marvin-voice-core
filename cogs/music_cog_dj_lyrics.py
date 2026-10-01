@@ -507,9 +507,11 @@ class MusicDJLyricsMixin:
         """requester 最近一則「讓 Marvin 情緒波動的瞬間」（見 gemini_router_content.py
         extract_emotional_moments / suki_memory.add_emotional_highlight），供 DJ 話題選擇器
         當第三優先話題。只取 warm/surprised/moved——annoyed 不當 DJ 素材（串場裡講『你讓我
-        不爽』很怪，跟這個場合的語氣不合）。8 天內才算新鮮。任何失敗回 ""（DJ 少一味料，
+        不爽』很怪，跟這個場合的語氣不合）。8 天內才算新鮮。醫療健康類跳過（同
+        dj_daily_highlight.MEDICAL_KEYWORDS）。任何失敗回 ""（DJ 少一味料，
         不該讓整條串場掛掉，同 _present_interests 的降級哲學）。
         """
+        from dj_daily_highlight import MEDICAL_KEYWORDS
         try:
             suki = getattr(getattr(self.bot, 'router', None), 'memory', None)
             if suki is None or not requester:
@@ -527,8 +529,11 @@ class MusicDJLyricsMixin:
                 if not isinstance(ts, (int, float)) or now - ts > self._EMOTIONAL_HIGHLIGHT_MAX_AGE_S:
                     continue
                 moment = str(h.get('moment', '')).strip()
-                if moment:
-                    return moment
+                if not moment:
+                    continue
+                if any(kw in moment for kw in MEDICAL_KEYWORDS):
+                    continue
+                return moment
             return ""
         except Exception:
             return ""

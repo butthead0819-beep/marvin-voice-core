@@ -5,7 +5,11 @@
 """
 from __future__ import annotations
 
-from dj_social_affinity import _ACTIVE_CHAT_UTTERANCE_COUNT, _ACTIVE_CHAT_WINDOW_S
+from dj_social_affinity import _ACTIVE_CHAT_WINDOW_S
+
+# 2026-10-02：原本借用 social_affinity 的 4 句，群聊中位數 16 句/3 分鐘 → 75% 串場只報歌名。
+# 20 句 ≈ 只有聊得最兇的三成時段才省話。
+DJ_HOT_UTTERANCE_COUNT = 20
 
 BANK_MAX_LINES = 8
 BANK_MAX_AGE_S = 900.0
@@ -36,10 +40,10 @@ def _human_entries(entries, now: float, window_s: float) -> list:
 
 
 def is_hot(entries, n_online: int, now: float) -> bool:
-    """播出前一刻判斷現場是否熱聊：至少 2 人在線，且近 3 分鐘真人發言達門檻。"""
+    """播出前一刻判斷現場是否熱聊：至少 2 人在線，且近 3 分鐘真人發言達 DJ_HOT_UTTERANCE_COUNT 門檻。"""
     if n_online < 2:
         return False
-    return len(_human_entries(entries, now, _ACTIVE_CHAT_WINDOW_S)) >= _ACTIVE_CHAT_UTTERANCE_COUNT
+    return len(_human_entries(entries, now, _ACTIVE_CHAT_WINDOW_S)) >= DJ_HOT_UTTERANCE_COUNT
 
 
 class TopicBank:

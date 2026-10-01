@@ -369,7 +369,7 @@ class GeminiRouterLLMMixin:
         logger.info(f"[LLMBus] 已掛載 — agents: {[a.name for a in agents]} "
                     f"(short_circuit={self._llm_bus._SHORT_CIRCUIT_AFTER}, env LLM_BUS=true 才會走 bus)")
 
-    async def _call_llm(self, system_prompt: str, user_prompt: str, is_json: bool = False, speaker: str = None, allow_local: bool = True, temperature: float = None, thinking_level: str = None, tier: str = "medium", purpose: str = None) -> str:
+    async def _call_llm(self, system_prompt: str, user_prompt: str, is_json: bool = False, speaker: str = None, allow_local: bool = True, temperature: float = None, thinking_level: str = None, tier: str = "medium", purpose: str = None, prefer_providers: tuple = ()) -> str:
         """通用 LLM 呼叫函式。tier: 'simple'=Groq-8b優先, 'medium'=Groq-70b優先(預設), 'high'=直接Gemini
 
         purpose: 呼叫用途標籤，寫進 records/llm_routing.jsonl 供歸因（誰在吃池/誰是無感
@@ -407,6 +407,7 @@ class GeminiRouterLLMMixin:
                 system_prompt=final_system_prompt,
                 json_mode=is_json,
                 temperature=temperature,
+                prefer_providers=tuple(prefer_providers or ()),
             )
             _t0 = time.monotonic()
             try:

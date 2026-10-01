@@ -7,13 +7,18 @@ from __future__ import annotations
 
 import pytest
 
-from dj_heat import BANK_MAX_AGE_S, LINE_MAX_CHARS, TopicBank, is_hot
+from dj_heat import BANK_MAX_AGE_S, DJ_HOT_UTTERANCE_COUNT, LINE_MAX_CHARS, TopicBank, is_hot
 
 NOW = 1_759_200_000.0
 
 
 def _entry(speaker: str, text: str, age_s: float = 0.0) -> dict:
     return {"timestamp": NOW - age_s, "speaker": speaker, "text": text}
+
+
+def _alternating(n: int) -> list:
+    speakers = ["大肚", "狗與露"]
+    return [_entry(speakers[i % 2], f"訊息{i}", age_s=i) for i in range(n)]
 
 
 # ── is_hot ───────────────────────────────────────────────────────────────
@@ -23,26 +28,34 @@ def test_single_person_never_hot_even_with_many_utterances():
     assert is_hot(entries, n_online=1, now=NOW) is False
 
 
-def test_two_online_four_recent_utterances_is_hot():
-    entries = [_entry("大肚", "a", 10), _entry("狗與露", "b", 20),
-               _entry("大肚", "c", 30), _entry("狗與露", "d", 40)]
+def test_dj_hot_threshold_is_20():
+    assert DJ_HOT_UTTERANCE_COUNT == 20
+
+
+def test_two_online_threshold_recent_utterances_is_hot():
+    entries = _alternating(DJ_HOT_UTTERANCE_COUNT)
     assert is_hot(entries, n_online=2, now=NOW) is True
 
 
-def test_two_online_three_recent_utterances_not_hot():
-    entries = [_entry("大肚", "a", 10), _entry("狗與露", "b", 20), _entry("大肚", "c", 30)]
+def test_two_online_below_threshold_not_hot():
+    entries = _alternating(DJ_HOT_UTTERANCE_COUNT - 1)
     assert is_hot(entries, n_online=2, now=NOW) is False
 
 
 def test_marvin_speaker_not_counted():
-    entries = [_entry("Marvin", "a", 1), _entry("Marvin推薦", "b", 2),
-               _entry("大肚", "c", 3), _entry("狗與露", "d", 4)]
+    # 真人發言數剛好低於門檻；若把 Marvin 的發言也算進去會達到門檻。
+    entries = _alternating(DJ_HOT_UTTERANCE_COUNT - 1)
+    entries.append(_entry("Marvin", "a", 1))
+    entries.append(_entry("Marvin推薦", "b", 2))
     assert is_hot(entries, n_online=2, now=NOW) is False
 
 
 def test_utterances_outside_window_not_counted():
-    entries = [_entry("大肚", "a", 200), _entry("狗與露", "b", 210),
-               _entry("大肚", "c", 220), _entry("狗與露", "d", 5)]
+    # 窗內真人發言剛好低於門檻；窗外幾句若算進去會達到門檻。
+    entries = _alternating(DJ_HOT_UTTERANCE_COUNT - 1)
+    entries.append(_entry("大肚", "a", 200))
+    entries.append(_entry("狗與露", "b", 210))
+    entries.append(_entry("大肚", "c", 220))
     assert is_hot(entries, n_online=2, now=NOW) is False
 
 
