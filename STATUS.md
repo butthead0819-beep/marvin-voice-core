@@ -90,14 +90,14 @@
 | 🔴2 | **記憶沒有按伺服器隔離**：prod 只有一個 `MemoryManager()`，恆寫主伺服器分區 | `gemini_router.py:177` | 跨伺服器洩漏個人記憶 |
 | 🔴3 | **身分用顯示名稱**：同意、記憶、口味都綁暱稱 | `consent_manager.py:52`、`discord_voice_engine.py:1003` | 同名共用同意與記憶；改名失憶；可冒用 |
 | 🔴4 | `/marvin_reboot` 沒權限檢查（會 `git pull` 並重啟，還把 pull 輸出貼回頻道） | `cogs/voice_controller.py:829` | 已修（分支 `feat/phase1-stage-a`，限 owner 且不貼 pull 輸出） |
-| 🔴5 | 資料清理排程停用：`feedbackbatch.plist.disabled`，最後一次執行 2026-07-09 | `~/Library/LaunchAgents`、`feedback_batch_cron.log` | 程式已完成，排程待啟用 |
+| 🔴5 | 資料清理排程停用：`feedbackbatch.plist.disabled`，最後一次執行 2026-07-09 | `~/Library/LaunchAgents`、`feedback_batch_cron.log` | 已修：獨立每日維護排程 `com.antigravity.marvin.maintenance`（03:00，2026-10-02 啟用並完成首次清理）；向量庫 90 天清理在 bot 內，觀察後啟用 |
 | 🔴6 | 語音頻道進出紀錄不看同意、涵蓋 bot 所在全部伺服器 | `main_discord.py:452` → `presence_logger.py` | 已修（分支 `feat/phase1-stage-a`，只記 Marvin 所在頻道與已同意者，無 move） |
 | 🔴7 | 沒有每伺服器配額 / 同時房間上限 | OPERATOR.md §5 | 一個伺服器可用光全部免費額度與付費上限 |
 | 🟠8 | `!sync` prefix 指令沒權限檢查 | `main_discord.py:626` | 不成立：`!sync` 寫在 Bot 子類別裡沒有被註冊，叫不出來（2026-10-01 實測）；死碼保留 |
 | 🟠9 | 同意通知列的外部服務過時（沒寫 Mistral / SambaNova / Together / OpenRouter，還寫已失效的 Cerebras） | `cogs/voice_controller.py:941-948` | 已修（分支 `feat/phase1-stage-a`，同意通知已更新並對齊 PRIVACY.md §4） |
 | 🟠10 | `psutil` 沒裝 → MemoryGuard 恆回 False，RAM 吃緊時不會跳過向量庫寫入 | `memory_guard.py:52` | 5/18 EDEADLK 事故的防護實際失效 |
 | 🟠11 | STT 全 bot 一條 `Semaphore(1)` | `discord_voice_engine.py:883` | 人一多排隊延遲上升 |
-| 🟡12 | launchd 的 `~/Library/Logs/Marvin/bot_stdout.log` 不輪替（215MB，含逐字稿） | OPERATOR.md §4 | 程式已完成，排程待啟用 |
+| 🟡12 | launchd 的 `~/Library/Logs/Marvin/bot_stdout.log` 不輪替（215MB，含逐字稿） | OPERATOR.md §4 | 已修：每日 03:00 copytruncate + gzip，保留 14 份（含 satellite_stdout.log） |
 | 🟡13 | Cerebras 已失效但 `.env` 仍有 key → Groq 串流失敗時仍會先打 Cerebras 再轉 Gemini | `gemini_router.py:163`、`gemini_router_llm.py` `stream_llm` | 備援時多一段失敗延遲 |
 | 🟡14 | `macos_stt_bin`（v1，喚醒偵測用）沒進 git、也沒有寫下編譯指令 | DEPENDENCIES.md §3 | 換機器會缺喚醒偵測 |
 | 🟡15 | `music_memory.json` 沒有檔案鎖，長跑腳本與 bot 同時寫會互蓋 | 營運筆記 | 口味資料遺失 |
