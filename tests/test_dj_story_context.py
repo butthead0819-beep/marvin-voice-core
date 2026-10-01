@@ -423,13 +423,15 @@ async def test_revival_bank_preloaded_skips_gacha_and_uses_original_lines(monkey
 
 @pytest.mark.asyncio
 async def test_hot_chat_this_round_goes_revival_without_preloaded_bank(monkeypatch):
-    """話題庫本來是空的，但這輪剛好熱聊（2 人在線 + 近期 5 句真人發言）→ 同一次預抓就走 revival。"""
+    """話題庫本來是空的，但這輪剛好熱聊（2 人在線 + 近期達 DJ_HOT_UTTERANCE_COUNT 句真人發言）→ 同一次預抓就走 revival。"""
     import time
+    from dj_heat import BANK_MAX_LINES, DJ_HOT_UTTERANCE_COUNT
     cog = _make_cog()
     now = time.time()
+    n = DJ_HOT_UTTERANCE_COUNT
     entries = [
-        {"timestamp": now - 5 * (i + 1), "speaker": ("大肚" if i % 2 == 0 else "狗與露"), "text": f"聊天內容{i}"}
-        for i in range(5)
+        {"timestamp": now - 5 * (n - i), "speaker": ("大肚" if i % 2 == 0 else "狗與露"), "text": f"聊天內容{i}"}
+        for i in range(n)
     ]
     cog.bot.engine.conv_buffer.get_history = MagicMock(return_value=entries)
     cog._vc = MagicMock(return_value=_hot_vc(["大肚", "狗與露"]))
@@ -437,7 +439,7 @@ async def test_hot_chat_this_round_goes_revival_without_preloaded_bank(monkeypat
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     ctx = _ctx_str(cog)
     assert "剛剛大家聊過" in ctx
-    for i in range(5):
+    for i in range(n - BANK_MAX_LINES, n):  # 話題庫只留最後 BANK_MAX_LINES 句
         assert f"聊天內容{i}" in ctx
 
 

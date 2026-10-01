@@ -69,6 +69,8 @@ class LLMContext:
     speaker 是 stickiness key — None 表示系統呼叫（cron / background）跳過 stickiness。
     system_prompt / json_mode / temperature / max_tokens 直接 forward 給 agent.handle
     打 OpenAI-相容 API；None 走 agent 預設值。
+    prefer_providers：非空時，viable 的 provider 依此順序優先（同組內維持原本
+    confidence/latency 排序）；不在清單內的排最後。只影響排序，不放寬門檻。
     """
     prompt: str
     purpose: str
@@ -80,6 +82,7 @@ class LLMContext:
     json_mode: bool = False
     temperature: float | None = None
     max_tokens: int | None = None
+    prefer_providers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -221,6 +224,10 @@ class LLMBus:
 
         # Sort: confidence desc, then latency asc
         viable.sort(key=lambda t: (-t[2], t[1].estimated_latency_ms))
+
+        if ctx.prefer_providers:
+            _rank = {p: i for i, p in enumerate(ctx.prefer_providers)}
+            viable.sort(key=lambda t: _rank.get(t[1].provider, len(_rank)))
 
         # 2026-06-12 handle-failover：6 月 1097 筆失敗全是「贏家 handle 429 → 整筆死」，
         # 但 bid 階段明明還有別家 viable。改成 handle 失敗（429 已由 agent 內部 mark

@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 _DJ_STYLES = load_dj_styles()
 
+# DJ 串場優先 gemini_free → groq：ministral-8b 無視「不准編造」規則（2026-10-01 實測 4 段編造私人經歷全出自它）
+DJ_PREFER_PROVIDERS = ("gemini_free", "groq")
+
 from dj_prompt_builder import (
     DJ_MATERIAL_GUARD as _DJ_MATERIAL_GUARD,
     DJ_NAMING_GUARD as _DJ_NAMING_GUARD,
@@ -1030,7 +1033,10 @@ class GeminiRouterContentMixin:
                     cache.set_quips(event_type, items)
                     return random.choice(items)
                 return (raw or "嗯？").strip() or "嗯？"  # 解析失敗 → 退回單句
-            result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple")
+            if event_type == "dj_interjection":
+                result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple", prefer_providers=DJ_PREFER_PROVIDERS)
+            else:
+                result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple")
             if result and is_prompt_echo(sys_prompt, result):
                 logger.warning(f"⚠️ [TTS Echo Guard] {event_type} 回傳與 prompt 高度重複，停止 TTS")
                 return "嗯？"

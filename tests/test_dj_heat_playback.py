@@ -47,7 +47,7 @@ def _make_vc(members):
     return vc
 
 
-def _hot_entries(now, n=5):
+def _hot_entries(now, n=25):
     return [
         {"timestamp": now - 3 * (i + 1), "speaker": ("大肚" if i % 2 == 0 else "狗與露"),
          "text": f"聊天{i}"}
@@ -127,4 +127,4 @@ async def test_hot_channel_snapshots_topic_bank():
 
     lines = cog._dj_heat_bank().take(now)
     assert lines, "熱聊時應該把話題存進話題庫"
-    assert any("聊天0" in line for line in lines)
+    assert any(f"聊天{len(entries) - 1}" in line for line in lines)  # 話題庫只留最後 BANK_MAX_LINES 句

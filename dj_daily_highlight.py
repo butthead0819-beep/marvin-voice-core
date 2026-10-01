@@ -14,7 +14,7 @@ import re
 from dj_life_context import LifeCore
 
 MEDICAL_KEYWORDS = ("醫院", "住院", "生病", "看醫生", "看病", "開刀", "手術", "發燒", "感冒",
-                    "吃藥", "診所", "急診", "病房", "打針", "受傷", "身體不舒服")
+                    "吃藥", "診所", "急診", "病房", "打針", "受傷", "身體不舒服", "健康")
 
 
 def highlight_life_cores(member: str, highlight, *, max_len: int = 40) -> list[LifeCore]:
