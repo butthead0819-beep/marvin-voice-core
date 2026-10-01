@@ -34,6 +34,7 @@ CHECKS = [
     {"name": "tasteprofile",    "log": f"{_LOG_DIR}/taste_profile_cron.log",  "max_age_h": 36},
     {"name": "speechdna",       "log": f"{_LOG_DIR}/speechdna_cron.log",      "max_age_h": 192},
     {"name": "tastefingerprint", "log": f"{_LOG_DIR}/taste_fingerprint_cron.log", "max_age_h": 192},
+    {"name": "maintenance", "log": f"{_LOG_DIR}/maintenance_cron.log", "max_age_h": 36},
 ]
 
 
