@@ -97,3 +97,21 @@ def test_enqueue_callback_stores_life_flag(tmp_path):
     assert items[1]["life"] is False
     assert items[2]["text"] == "預設項"
     assert items[2]["life"] is False
+
+
+def test_on_commitment_detected_enqueues_with_life_flag():
+    """接線守門：voice_controller 把現實生活承諾排進 queue 時必須帶 life=True——
+    少了它，新舊事全部被 DJ 串場與主動追問的 life 過濾擋掉，功能靜默失效。"""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+    from cogs.voice_controller import VoiceController
+    from recall_handler import PendingConfirmation
+
+    fake = SimpleNamespace(_pending_confirmations=[], bot=MagicMock())
+    conf = PendingConfirmation(
+        task_text="買烤雞叉子", speaker="大肚", direction="inbound", assignee="大肚",
+        source_quote="", window_start=0.0, window_end=0.0, expires_at=0.0, real_life=True,
+    )
+    VoiceController._on_commitment_detected(fake, conf)
+    fake.bot.router.memory.enqueue_callback.assert_called_once_with(
+        "大肚", "買烤雞叉子", shareable=True, life=True)
