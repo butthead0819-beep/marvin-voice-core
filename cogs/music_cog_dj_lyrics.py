@@ -373,6 +373,27 @@ class MusicDJLyricsMixin:
             logger.debug(f"[DJ News] 新聞抓取失敗: {e}")
         return []
 
+    def _present_callbacks(self, present_members) -> tuple[list[str], dict[str, tuple[str, dict]]]:
+        """從在場成員的 callback_queue 挑選適合 DJ 串場的現實生活舊事素材。"""
+        if not present_members:
+            return ([], {})
+        try:
+            callback_lines: list[str] = []
+            callback_src: dict[str, tuple[str, dict]] = {}
+            for m in sorted(present_members):
+                raw_items = self.bot.router.memory.peek_all_shareable_callbacks(m)
+                life_items = [it for it in (raw_items or []) if it.get("life") is True]
+                if not life_items:
+                    continue
+                item = life_items[0]
+                line = f"{m} 之前說要{item['text']}"
+                callback_lines.append(line)
+                callback_src[line] = (m, item)
+            return (callback_lines, callback_src)
+        except Exception as e:
+            logger.warning(f"⚠️ [_present_callbacks] 取得 callback 失敗: {e}")
+            return ([], {})
+
     def _dj_heat_bank(self):
         """DJ 話題庫的 lazy 單例（熱聊時存快照，降溫時取出接回話題）。"""
         bank = getattr(self, '_dj_topic_bank', None)
@@ -674,6 +695,8 @@ class MusicDJLyricsMixin:
         if requester.startswith('Marvin'):
             _autopilot_reason = self._autopilot_pick_reason(info) or ''
 
+        callback_lines, callback_src = self._present_callbacks(present_members)
+
         # 🔥 [DJ Heat] 話題庫有東西可接回 → 直接走 revival，不讓扭蛋池蓋過去
         # （降溫時的第一要務是接回剛剛聊的話題，不是照常規話題優先序抽獎）。
         if revival_lines:
@@ -694,6 +717,7 @@ class MusicDJLyricsMixin:
                 autopilot_reason=_autopilot_reason,
                 memory_evidence=memory_evidence,
                 has_guide=bool(guide),
+                callbacks=callback_lines,
             )
 
         # 開場鉤子提示依「歌會中的心理機制」分兩類套用：
@@ -709,6 +733,15 @@ class MusicDJLyricsMixin:
         elif mode == "interest":
             ctx.append(f"【你熟悉他的生活】在場興趣：\n・{topic}")
             ctx.append(random.choice(self._DJ_EMPATHY_HOOK_TEMPLATES))
+        elif mode == "callback":
+            ctx.append(f"【你熟悉他的生活】他之前說過要做的事：\n・{topic}")
+            ctx.append("開場鉤子：點名順口關心這件事後來怎麼樣了，像老朋友隨口問一句；只能講素材裡寫的事，不准自己補細節、不准替他回答。")
+            _cb = callback_src.get(topic)
+            if _cb:
+                try:
+                    self.bot.router.memory.consume_callback(_cb[0], _cb[1])
+                except Exception as e:
+                    logger.warning(f"⚠️ [DJ Callback] consume 失敗: {e}")
         elif mode == "emotional_highlight":
             # 這是 Marvin 自己（機器人）的記憶與反應，不是聽眾的事——跟 life/interest
             # 的「代入感」方向相反，robot_pov_rule 對「第一人稱」的限制在這裡要放行。
