@@ -2067,7 +2067,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             cb = commitment_to_callback(conf)
             if cb:
                 speaker, text = cb
-                self.bot.router.memory.enqueue_callback(speaker, text, shareable=True)
+                self.bot.router.memory.enqueue_callback(speaker, text, shareable=True, life=True)
         except Exception as e:
             logger.warning(f"⚠️ [Callback] enqueue 失敗（不影響 summarizer）: {e}")
 

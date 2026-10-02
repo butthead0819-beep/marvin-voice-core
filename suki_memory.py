@@ -610,7 +610,7 @@ class MemoryManager:
         return news["text"]
 
     # ── 主動 callback 記憶（與 news_queue 分開）──────────────────────────────────
-    def enqueue_callback(self, username: str, text: str, shareable: bool = False):
+    def enqueue_callback(self, username: str, text: str, shareable: bool = False, life: bool = False):
         """存一則主動 callback 記憶到 per-player callback_queue。
 
         shareable=False（fail-private 預設）→ 不會被 peek_shareable_callback 取出，
@@ -619,7 +619,7 @@ class MemoryManager:
         if not username or not text:
             return
         queue = self.get_player_memory(username)["callback_queue"]
-        queue.append({"text": text, "shareable": bool(shareable), "ts": time.time()})
+        queue.append({"text": text, "shareable": bool(shareable), "life": bool(life), "ts": time.time()})
         if len(queue) > _CALLBACK_CAP:
             del queue[: len(queue) - _CALLBACK_CAP]
         self._save_player(username)

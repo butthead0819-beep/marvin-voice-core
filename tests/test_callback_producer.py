@@ -9,8 +9,8 @@ from types import SimpleNamespace
 from session_summarizer import commitment_to_callback
 
 
-def _conf(task_text="戒咖啡", speaker="大肚", direction="inbound"):
-    return SimpleNamespace(task_text=task_text, speaker=speaker, direction=direction)
+def _conf(task_text="戒咖啡", speaker="大肚", direction="inbound", real_life=True):
+    return SimpleNamespace(task_text=task_text, speaker=speaker, direction=direction, real_life=real_life)
 
 
 def test_inbound_commitment_produces_self_reminder():
@@ -38,3 +38,8 @@ def test_none_conf_skipped():
 
 def test_strips_whitespace():
     assert commitment_to_callback(_conf(task_text="  帶木炭  ", speaker="小明")) == ("小明", "帶木炭")
+
+
+def test_non_real_life_commitment_skipped():
+    assert commitment_to_callback(_conf(real_life=False)) is None
+    assert commitment_to_callback(_conf(real_life=None)) is None

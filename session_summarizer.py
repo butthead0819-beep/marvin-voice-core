@@ -38,6 +38,7 @@ _SYSTEM_PROMPT = """\
       "text": "承諾或待辦的內容（簡短描述）",
       "type": "promise 或 todo",
       "target": "交辦對象（沒有則 null）",
+      "real_life": "true 或 false：現實生活中要做的事（家事、購物、聯絡家人、出門、工作）填 true；遊戲裡的操作或任務（探索、打怪、製作裝備、收集道具、整理背包）填 false",
       "due_date": null
     }
   ]
@@ -52,8 +53,11 @@ def commitment_to_callback(conf) -> tuple[str, str] | None:
     只處理 inbound（speaker 自己的承諾）→ 之後返場時提醒本人「你上次說要X」。
     這是自我提醒（把你自己的公開承諾講回給你），低隱私風險 → enqueue 時 shareable=True。
     outbound（叫別人做的）= 跨人 relay，不在此範圍（deferred）。
+    只收現實生活的事；遊戲內操作不追問（2026-10-02）。
     """
     if conf is None or getattr(conf, "direction", None) != "inbound":
+        return None
+    if not getattr(conf, "real_life", False):
         return None
     text = (getattr(conf, "task_text", "") or "").strip()
     speaker = (getattr(conf, "speaker", "") or "").strip()
@@ -177,6 +181,7 @@ class SessionSummarizer:
                     window_start=window_start,
                     window_end=window_end,
                     expires_at=time.time() + _CONFIRMATION_TTL,
+                    real_life=c.get("real_life") in (True, "true", "True"),
                 ))
 
     def _infer_direction(self, speaker: str, target: str | None, commitment_type: str) -> str:
