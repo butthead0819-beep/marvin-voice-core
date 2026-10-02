@@ -31,12 +31,13 @@ DEFAULT_PATH = "records/dj_topic_cooldown.json"
 COOLDOWN_S = 8 * 3600       # 同一具體生活/興趣話題用過 8 小時內不重複
 NEWS_COOLDOWN_S = 2 * 3600  # 新聞頻率可較高，2 小時內不重複
 
-TOPIC_MODES = ("life", "interest", "emotional_highlight", "news")
+TOPIC_MODES = ("life", "interest", "emotional_highlight", "news", "callback")
 NON_TOPIC_MODES = ("guide", "conversation", "prev_song", "atmosphere", "quick")
 
 # 扭蛋池的抽取權重：先全部 1.0（均等機率），未來可依聽眾回饋個別調整。
 MODE_WEIGHTS: dict[str, float] = {
     "life": 1.0, "interest": 1.0, "emotional_highlight": 1.0, "news": 1.0,
+    "callback": 1.0,
     "guide": 1.0, "conversation": 1.0, "prev_song": 1.0, "atmosphere": 1.0, "quick": 1.0,
 }
 
@@ -228,6 +229,7 @@ def select_mode(
     has_prev_song: bool = False,
     emotional_highlights: list[str] | None = None,
     news_items: list[str] | None = None,
+    callbacks: list[str] | None = None,
     has_guide: bool = False,
     rng: random_module.Random | None = None,
 ) -> tuple[str | None, str]:
@@ -244,7 +246,7 @@ def select_mode(
 
     回傳 (topic_text, mode)，mode 比 select_topic 多了
     'guide'/'conversation'/'prev_song'/'atmosphere'/'quick'。
-    topic_text 只有 mode in {'life', 'interest', 'emotional_highlight', 'news'} 才非 None，
+    topic_text 只有 mode in {'life', 'interest', 'emotional_highlight', 'news', 'callback'} 才非 None，
     其餘 mode 沒有具體文字素材——caller 自己依 mode 決定串場方向（quick
     甚至該跳過 LLM，直接走本地模板）。
     """
@@ -264,6 +266,9 @@ def select_mode(
     news_hit = _first_cool(news_items, store, cooldown_s=NEWS_COOLDOWN_S)
     if news_hit:
         material["news"] = news_hit
+    cb_hit = _first_cool(callbacks, store)
+    if cb_hit:
+        material["callback"] = cb_hit
 
     pool = list(material.keys())
     if has_guide:

@@ -26,6 +26,7 @@ class PendingConfirmation:
     window_start: float
     window_end: float
     expires_at: float  # unix timestamp，過期丟棄
+    real_life: bool = False
 
 _RECALL_PATTERNS = re.compile(
     r"剛才說|說了什麼|說過什麼|記得嗎|早上說|記得我說|忘了什麼"

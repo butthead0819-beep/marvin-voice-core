@@ -55,7 +55,7 @@ Marvin 需要你把他召喚進語音頻道（`/summon`）才會開始聽。他�
 | 人物記憶 | Marvin 對你的印象、關係階段、好惡、禁忌、音樂口味、說話風格、個人資訊（飲食/穿著/居住/交通、Minecraft ID）、印象深刻的情緒時刻、點歌紀錄、互動統計、待回應的話題 | `marvin.db` `players` 表 + `suki_memory.json` | 長期保留，沒有刪除規則 | 備份：`suki_memory.*.bak` 保留 7 份；`records/backups/` 約 140 份不會自動刪 |
 | 5 分鐘對話摘要 | 摘要文字、在場者 | `marvin.db` `session_summaries` | 30 天 | 每日 03:00 執行（2026-10-02 啟用，首次清理已完成） |
 | 待辦 / 承諾 | 誰答應了什麼、原句 | `marvin.db` `tasks` | done / cancelled 30 天；pending 永久保留 | 每日 03:00 執行（2026-10-02 啟用，首次清理已完成） |
-| 日記 | 每 10 分鐘的四行日記 | Discord 頻道 `#馬文的厭世日記` + `records/chat_summary_log.txt` | Discord 上的依該伺服器管理；本機檔沒有刪除規則 | |
+| 日記 | 每 10 分鐘的四行日記 | `records/chat_summary_log.txt` | 本機檔沒有刪除規則（2026-10-02 起不再貼到 Discord；舊的 Discord 貼文依該伺服器管理） | |
 | 音樂紀錄 | 每首歌的點歌者與反應、每人推薦、跳過紀錄 | `music_memory.json` | 長期保留 | |
 | 同意狀態 | 顯示名 → 同意 / 已看過聲明 | `consent.json` | 長期保留 | |
 | 離場習慣 | 顯示名 → 何時離開、有沒有說再見 | `departure_stats.json` | 長期保留 | |
@@ -70,7 +70,7 @@ Marvin 需要你把他召喚進語音頻道（`/summon`）才會開始聽。他�
 - 冷場時根據最近 10 分鐘的對話與個人資料生成話題並說出來。
 - 你過去說過要做的事（從對話摘要中偵測），在相關話題出現時問「你之前說要……，現在呢？」
 - 多人對話中偵測到的承諾，靜默後問「剛才說的『……』，要記成待辦嗎？」
-- 進場招呼、DJ 口白、以及貼到 Discord 的日記。
+- 進場招呼、DJ 口白。
 
 ### 3c. 不會存的
 
@@ -86,7 +86,7 @@ Marvin 需要你把他召喚進語音頻道（`/summon`）才會開始聽。他�
 | **Mistral、SambaNova、Together AI、OpenRouter** | 對話文字 | LLM 池（誰有空用誰；近 7 天 68% 的呼叫走 Mistral） |
 | **Microsoft Edge TTS** | Marvin 要講的話 | 每次講話 |
 | **YouTube / YouTube Music、iTunes、Spotify（只查歌曲資訊）、歌詞服務、DuckDuckGo** | 歌名、搜尋關鍵字 | 點歌、封面、歌詞、查資料 |
-| **Discord** | 回覆、日記、同意通知 | — |
+| **Discord** | 回覆、同意通知 | — |
 
 這些服務各自的保留與訓練政策：**待確認**（各家免費層與付費層的條款不同，發布前要逐一查證）。
 未使用：Cerebras（已失效）、雅婷（已退役）、Ollama（未安裝）。
@@ -106,7 +106,7 @@ Marvin 需要你把他召喚進語音頻道（`/summon`）才會開始聽。他�
 | `music_memory.json`、`departure_stats.json`、`consent.json` | 移除該人的 key |
 | `data/voice_presence.jsonl` | 依 `user_id` 刪列（這份是用帳號 ID 記的） |
 | `records/daily/`、`stt_history.log*`、`~/Library/Logs/Marvin/bot_stdout.log`、`records/*.jsonl`、`records/rescue_wav/` | 純文字 / 錄音檔，需逐檔處理 |
-| Discord 上的日記訊息 | 在該伺服器刪除 |
+| Discord 上的日記訊息 | 在該伺服器刪除（2026-10-02 起不再新增） |
 
 已送到外部服務的資料：依各服務政策，營運者無法代為刪除（待確認）。
 

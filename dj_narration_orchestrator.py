@@ -122,6 +122,7 @@ def select_narration_mode(
     has_prev_song: bool = False,
     emotional_highlights=None,
     news_items=None,
+    callbacks=None,
     autopilot_reason: str = "",
     memory_evidence: str = "",
     has_guide: bool = False,
@@ -165,6 +166,7 @@ def select_narration_mode(
         has_prev_song=has_prev_song,
         emotional_highlights=emotional_highlights,
         news_items=news_items,
+        callbacks=callbacks,
         has_guide=has_guide,
     )
     if autopilot_reason and mode in ("quick", "atmosphere"):

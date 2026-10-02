@@ -142,11 +142,12 @@ class MemoryCallbackAgent:
         if not unmuted:
             return self._dense(0.0, "all_muted")
 
-        # 4. 至少一個 present speaker 有 shareable callback
+        # 4. 至少一個 present speaker 有 shareable callback（只收 life=True 現實生活承諾）
         cb_pairs: list[tuple[str, dict]] = []
         for spk in unmuted:
             for item in mem.peek_all_shareable_callbacks(spk):
-                cb_pairs.append((spk, item))
+                if item.get("life") is True:
+                    cb_pairs.append((spk, item))
         if not cb_pairs:
             return self._dense(0.0, "no_callbacks")
 
@@ -205,6 +206,7 @@ class MemoryCallbackAgent:
         try:
             from callback_delivery import format_topic_callback_line
             from tts_length_policy import truncate_for_tts
+            from tts_speak_policy import SpeakKind
 
             line = format_topic_callback_line(item.get("text", ""))
             if not line:
@@ -225,7 +227,7 @@ class MemoryCallbackAgent:
                 stt_logger.info(f"[BOT主題callback→{speaker}] {line}")
 
             # 追問的價值就是原句（「你之前說要X，現在呢？」），不准升級成漫才改寫掉（2026-09-27 兩次改寫後聽眾聽不懂）
-            await self._ctrl.speak(line, proactive=True, allow_dual=False)
+            await self._ctrl.speak(line, proactive=True, allow_dual=False, kind=SpeakKind.MEMORY_CALLBACK)
             # TTS 成功 → consume（idempotent；T3 race 二次 consume 為 no-op）
             mem.consume_callback(speaker, item)
         except Exception as e:

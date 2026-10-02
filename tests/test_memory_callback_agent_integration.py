@@ -22,10 +22,13 @@ def _utt(speaker, text, ts_offset_s=0.0):
 
 
 def _mk_mem(tmp_path):
-    return MemoryManager(
+    mem = MemoryManager(
         db_path=str(tmp_path / "i.db"),
         json_compat_path=str(tmp_path / "i.json"),
     )
+    orig_enqueue = mem.enqueue_callback
+    mem.enqueue_callback = lambda username, text, shareable=False, life=True: orig_enqueue(username, text, shareable=shareable, life=life)
+    return mem
 
 
 def _mk_ctrl_for_both(mem, history):

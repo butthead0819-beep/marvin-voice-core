@@ -30,10 +30,13 @@ from suki_memory import MemoryManager
 
 
 def _mk_mem(tmp_path):
-    return MemoryManager(
+    mem = MemoryManager(
         db_path=str(tmp_path / "mc.db"),
         json_compat_path=str(tmp_path / "mc.json"),
     )
+    orig_enqueue = mem.enqueue_callback
+    mem.enqueue_callback = lambda username, text, shareable=False, life=True: orig_enqueue(username, text, shareable=shareable, life=life)
+    return mem
 
 
 def _mk_ctrl(mem, history=None):
@@ -302,9 +305,11 @@ async def test_handler_speak_forces_allow_dual_false(monkeypatch, tmp_path):
     bid = await agent.speak_bid(_mk_ctx(["Alice"], last_speaker="Alice"))
     await bid.handler()
     assert ctrl.speak.await_count == 1
+    from tts_speak_policy import SpeakKind
     kwargs = ctrl.speak.call_args.kwargs
     assert kwargs.get("allow_dual") is False
     assert kwargs.get("proactive") is True
+    assert kwargs.get("kind") == SpeakKind.MEMORY_CALLBACK
 
 
 @pytest.mark.asyncio
