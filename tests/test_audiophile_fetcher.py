@@ -190,7 +190,8 @@ def test_fallback_template_has_no_factual_claims():
 
     assert "{title}" in FALLBACK_GUIDE_TEMPLATE
     text = FALLBACK_GUIDE_TEMPLATE.format(title="X")
-    assert "耳機" in text
+    assert "耳機" not in text
+    assert "品味" in text or "感受" in text
     assert len(text) <= 40
 
 

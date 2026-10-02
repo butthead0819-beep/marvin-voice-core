@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 # 背景預渲染用，grounded 搜尋+寫 100 字比 AmbientQA 的 8s 慢
 GUIDE_TIMEOUT_S = 20.0
-FALLBACK_GUIDE_TEMPLATE = "這首〈{title}〉我就不多嘴了，戴好耳機，從第一個音開始聽。"
+FALLBACK_GUIDE_TEMPLATE = "這首〈{title}〉我就不多嘴了，靜下心來，從第一個音開始細細品味。"
 _KEY_PREFIX = "audiophile::"
 
 MAX_TOUR_TRACKS = 20

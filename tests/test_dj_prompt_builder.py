@@ -133,3 +133,26 @@ def test_build_album_tracklist_prompt():
     assert "「無」" in prompt
     # 2026-09-29 真機：《范特西》不強調時 4 次只 1 次附來源（其餘憑記憶→L2 擋），強調後 3/3
     assert "不准只憑記憶" in prompt
+
+
+def test_material_guard_song_is_lead_material_is_supporting():
+    """10/2 使用者定：歌才是主角，素材是綠葉——護欄共用於所有 DJ 口白 prompt。"""
+    from dj_prompt_builder import DJ_MATERIAL_GUARD, build_dj_interjection_prompt
+    assert "主角" in DJ_MATERIAL_GUARD
+    assert "綠葉" in DJ_MATERIAL_GUARD
+    assert DJ_MATERIAL_GUARD in build_dj_interjection_prompt("歌曲：周杰倫 - 晴天")
+
+
+def test_tone_rule_has_no_pun_trigger():
+    """LLM 現編中文諧音是能力斷崖（諧音笑話改走 song_jokes 本地查表），風格規則不再誘發。"""
+    from dj_prompt_builder import get_dj_unified_rules
+    rules = get_dj_unified_rules()
+    assert "諧音" not in rules["tone_rule"]
+    assert "諧音" not in rules["material_style_rule"]
+
+
+def test_guide_prompts_do_not_cue_headphones():
+    """導聆/歌曲卡第三幕不再引導「戴上耳機」（跟 FALLBACK_GUIDE_TEMPLATE 一致）。"""
+    from dj_prompt_builder import build_audiophile_guide_prompt, build_song_card_ingestion_prompt
+    assert "耳機" not in build_audiophile_guide_prompt("周杰倫 - 晴天")
+    assert "耳機" not in build_song_card_ingestion_prompt("周杰倫 - 晴天")
