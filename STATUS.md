@@ -95,10 +95,10 @@
 | 🔴7 | 沒有每伺服器配額 / 同時房間上限 | OPERATOR.md §5 | 一個伺服器可用光全部免費額度與付費上限 |
 | 🟠8 | `!sync` prefix 指令沒權限檢查 | `main_discord.py:626` | 不成立：`!sync` 寫在 Bot 子類別裡沒有被註冊，叫不出來（2026-10-01 實測）；死碼保留 |
 | 🟠9 | 同意通知列的外部服務過時（沒寫 Mistral / SambaNova / Together / OpenRouter，還寫已失效的 Cerebras） | `cogs/voice_controller.py:941-948` | 已修（分支 `feat/phase1-stage-a`，同意通知已更新並對齊 PRIVACY.md §4） |
-| 🟠10 | `psutil` 沒裝 → MemoryGuard 恆回 False，RAM 吃緊時不會跳過向量庫寫入 | `memory_guard.py:52` | 5/18 EDEADLK 事故的防護實際失效 |
+| 🟠10 | `psutil` 沒裝 → MemoryGuard 恆回 False，RAM 吃緊時不會跳過向量庫寫入 | `memory_guard.py:52` | 已修（2026-10-02 venv 裝 psutil 7.2.2 並寫進 requirements.txt；門檻 92%，8GB 機平常約 76%） |
 | 🟠11 | STT 全 bot 一條 `Semaphore(1)` | `discord_voice_engine.py:883` | 人一多排隊延遲上升 |
 | 🟡12 | launchd 的 `~/Library/Logs/Marvin/bot_stdout.log` 不輪替（215MB，含逐字稿） | OPERATOR.md §4 | 已修：每日 03:00 copytruncate + gzip，保留 14 份（含 satellite_stdout.log） |
-| 🟡13 | Cerebras 已失效但 `.env` 仍有 key → Groq 串流失敗時仍會先打 Cerebras 再轉 Gemini | `gemini_router.py:163`、`gemini_router_llm.py` `stream_llm` | 備援時多一段失敗延遲 |
+| 🟡13 | Cerebras 已失效但 `.env` 仍有 key → Groq 串流失敗時仍會先打 Cerebras 再轉 Gemini | `gemini_router.py:163`、`gemini_router_llm.py` `stream_llm` | 已修（2026-10-02 `.env` 的 CEREBRAS_API_KEY/MODEL 註解停用，cerebras_client=None） |
 | 🟡14 | `macos_stt_bin`（v1，喚醒偵測用）沒進 git、也沒有寫下編譯指令 | DEPENDENCIES.md §3 | 換機器會缺喚醒偵測 |
 | 🟡15 | `music_memory.json` 沒有檔案鎖，長跑腳本與 bot 同時寫會互蓋 | 營運筆記 | 口味資料遺失 |
 | 🟡16 | `RealtimeVADSink.cleanup()` 在物件未完整初始化時 `__del__` 會 `AttributeError: user_buffers` | pytest 警告（`discord_voice_engine.py:742`） | 目前只看到出現在測試裡 |

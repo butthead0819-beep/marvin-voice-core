@@ -52,9 +52,7 @@ python-dotenv==1.2.2
 PyYAML==6.0.3
 Pillow==12.2.0
 
-# psutil —— memory_guard.py 會用，但 prod venv 目前「沒裝」→ MemoryGuard 恆回 False（功能失效）。
-# 裝上後 RAM ≥92% 時會開始跳過向量庫寫入（行為改變），要不要裝待決定，故先不列：
-# psutil
+psutil==7.2.2                     # memory_guard.py：RAM ≥92% 時跳過向量庫寫入（2026-10-02 啟用；8GB 機平常 ~76%）
 
 # ── 測試（CI 用同一份檔安裝後跑 pytest）──
 pytest==9.0.3
