@@ -216,40 +216,14 @@ class SystemLoopsMixin:
                 await asyncio.to_thread(_write_rag_log, fallback_body)
             else:
                 await asyncio.to_thread(_write_rag_log, summary)
-
-                # 5. 發送到專屬頻道 (#馬文的厭世日記)
-                diary_channel = None
-                if self.active_text_channel and self.active_text_channel.guild:
-                    guild = self.active_text_channel.guild
-                    diary_channel = discord.utils.get(guild.text_channels, name="馬文的厭世日記")
-                    if not diary_channel:
-                        diary_channel = discord.utils.get(guild.text_channels, name="marvin-diary")
-
-                target = diary_channel
-                if not target and self.active_text_channel and self.active_text_channel.guild:
-                    try:
-                        guild = self.active_text_channel.guild
-                        print(f"🛠️ [Slow System] 嘗試為伺服器 '{guild.name}' 建立專屬日記頻道...")
-                        target = await guild.create_text_channel(
-                            name="馬文的厭世日記",
-                            topic="Ambient Presence: 馬文在這裡默默鄙視所有人。",
-                            reason="馬文的厭世日記系統啟動"
-                        )
-                    except Exception as e:
-                        print(f"❌ [Slow System] 建立頻道失敗: {e}")
-                        target = self.active_text_channel
-
-                if target:
-                    if self.pending_intervention:
-                        unplayed_text = self.pending_intervention.get("text", "")
-                        summary += f"\n\n*[未放送的內心獨白：{unplayed_text}]* (環境參數：Confidence={self.current_confidence}, VAD={self.current_vad_delay}s)"
-                        old_path = self.pending_intervention.get("file_path")
-                        if old_path and os.path.exists(old_path):
-                            try: os.remove(old_path)
-                            except: pass
-                        self.pending_intervention = None
-
-                    await target.send(f"📓 **【馬文的厭世日記】** (10min 增量彙整)\n\n{summary}")
+                # 日記不再貼 Discord（2026-10-02 Jack 定）：頻道跟音樂卡共用、被埋掉沒人看；
+                # chat_summary_log.txt 照寫，DJ 串場的生活素材照用。
+                if self.pending_intervention:
+                    old_path = self.pending_intervention.get("file_path")
+                    if old_path and os.path.exists(old_path):
+                        try: os.remove(old_path)
+                        except: pass
+                    self.pending_intervention = None
 
             # 6. 處理社交缺口（使用並行取回的 analysis 結果）
             # 🔇 [社交補位 OFF — 2026-06-03] flag 與 analyze_social_dynamics call gate 都在上方
