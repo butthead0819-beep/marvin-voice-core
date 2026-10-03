@@ -261,3 +261,44 @@ async def test_conversation_lines_used_once_not_repeated_next_prefetch(monkeypat
     call = cog.bot.router.generate_dynamic_system_msg.call_args
     second_ctx = call.kwargs.get("context", "") if call else ""
     assert "耳機沒聲音" not in second_ctx and "麥克風搶走" not in second_ctx, second_ctx
+
+
+@pytest.mark.asyncio
+async def test_concurrent_prefetch_conversation_lines_used_by_only_one(monkeypatch):
+    """PR #102 review：兩首歌同時預抓時，兩個 coroutine 都先複製同一批 conv_entries，
+    再經過 await（生活/新聞素材）才標記 → 同幾句進了兩段口白。選中 conversation 時要
+    同步重查＋標記（中間不 await），只能有一段拿到。"""
+    import asyncio
+    import time as _time
+    _weights(monkeypatch, conversation=1.0)
+    cog = _make_cog()
+    now = _time.time()
+    cog.bot.engine.conv_buffer.get_last_n_utterances = MagicMock(return_value=[
+        {"timestamp": now - 5, "speaker": "weakgogo", "text": "線上模式耳機沒聲音"},
+        {"timestamp": now - 2, "speaker": "狗與露", "text": "麥克風搶走了啦"},
+    ])
+    # 兩個預抓都收集完 conv_entries、卡在生活素材的 await，才一起往下走
+    arrived = 0
+    both_here = asyncio.Event()
+
+    async def _life_barrier():
+        nonlocal arrived
+        arrived += 1
+        if arrived >= 2:
+            both_here.set()
+        await both_here.wait()
+        return []
+
+    cog._life_cores_async = _life_barrier
+    await asyncio.wait_for(asyncio.gather(
+        cog._fetch_dj_interjection_raw(_info(title="林俊傑 - 因你而在", requester="Marvin")),
+        cog._fetch_dj_interjection_raw(_info(title="楊乃文 - 推開世界的門", requester="Marvin")),
+    ), timeout=10)
+
+    ctxs = [c.kwargs.get("context", "")
+            for c in cog.bot.router.generate_dynamic_system_msg.call_args_list
+            if c.args and c.args[0] == "dj_interjection"]
+    hits = [c for c in ctxs if "耳機沒聲音" in c]
+    assert len(hits) == 1, f"同一段對話只能進一段口白，實際 {len(hits)} 段"
+    empty_conv = [c for c in ctxs if "用剛才頻道對話的氣氛" in c and "頻道近期對話" not in c]
+    assert not empty_conv, f"素材被搶光的那段不能寫成沒有對話內容的對話串場: {empty_conv!r}"
