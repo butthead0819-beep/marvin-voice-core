@@ -273,6 +273,23 @@ class MusicDJLyricsMixin:
         except Exception:
             return "台中"
 
+    def _situation_fact(self, present_members) -> str:
+        """atmosphere 模式的「現況」素材（上班時間 / Marvin 開台多久 / 在場者待多久），
+        從 dj_situation.situation_facts 的候選隨機挑 1 條；沒有候選或任何失敗回 ""
+        （DJ 少一味料，不該讓串場掛掉，同 _city_label 的降級哲學）。"""
+        try:
+            from dj_situation import load_join_times, situation_facts
+            now = time.time()
+            since = getattr(self.bot, 'last_restart_time', None)
+            if not isinstance(since, (int, float)):
+                since = None
+            joins = load_join_times(since_ts=since) if since is not None else {}
+            facts = situation_facts(now, on_air_since=since, join_times=joins,
+                                    present_members=present_members)
+            return random.choice(facts) if facts else ""
+        except Exception:
+            return ""
+
     _QUICK_SEGUE_TEMPLATES = tuple(_DJ_TEMPLATES["quick_segue"]["default"])
     _QUICK_SEGUE_TEMPLATES_INTIMATE = tuple(_DJ_TEMPLATES["quick_segue"]["intimate"])
     _QUICK_SEGUE_TEMPLATES_ENERGETIC = tuple(_DJ_TEMPLATES["quick_segue"]["energetic"])
@@ -775,7 +792,12 @@ class MusicDJLyricsMixin:
             ctx.append("串場方向：現在大家聊天告一段落，接回剛剛的話題延續一下，或丟個輕鬆的問題製造話題感，再帶進這首歌；只能用上面原句裡的內容，不准編造誰說了什麼、不准替人下結論。")
         elif mode == "atmosphere":
             ctx.append(env)
-            ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
+            _situ = self._situation_fact(present_members)
+            if _situ:
+                ctx.append(f"現況：{_situ}")
+                ctx.append("開場鉤子：緊扣上面這條現況或現在的時間氛圍切入，像是特別為這一刻準備的，只能講現況裡寫的事實，不准自己補細節。")
+            else:
+                ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
         elif mode == "guide":
             ctx.append(f"導聆素材（查證過的真實資料，只能用這裡寫的事實）：\n{guide}")
             from dj_gacha_narrator import pick_gacha_motivation
