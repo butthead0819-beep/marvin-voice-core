@@ -28,13 +28,18 @@ import owner_song_voice_samples
 from intent_agents.recommendation import Recommendation, append_recommendation, time_of_day_bucket
 from music_memory import extract_video_id
 from music_recommender import (
+    Candidate,
+    arc_nostalgia_candidates,
+    assemble_arc,
     assign_unique_owners,
     build_member_pools,
     demote_low_quality_versions,
     find_recent_same_song,
     is_already_recommended,
+    filter_unfamiliar,
     pick_candidates,
     ring_titles_for,
+    song_video_id_for_title,
 )
 
 logger = logging.getLogger(__name__)
@@ -136,6 +141,40 @@ class MusicStoryArcMixin:
             logger.debug("[StatePick] 失敗，沿用原候選", exc_info=True)
             return cands
 
+    async def _assemble_arc_candidates(self, spotlight, members, pool, fallback, exclude_titles, mm) -> list:
+        """T1 一組三首：懷舊（spotlight 點過、30 天沒播）→ 過門（以第 1 首當 radio 種子）→
+        新歌（T4 冒險發現、伺服器沒播過）。哪個位置湊不到就由 fallback（原 T1 候選）補。"""
+        songs = mm.all_songs()
+        nost = arc_nostalgia_candidates(pool, songs, now=time.time())
+        nost = pick_candidates(nost, k=self._round_size, top_n=9)
+        lead = fallback[0] if fallback[0].state_reason else (nost[0] if nost else None)
+        seed_vid = song_video_id_for_title(songs, lead.anchor_title) if lead else ""
+
+        async def _no_radio():
+            return []
+
+        radio, fresh = await asyncio.gather(
+            self._t2_radio_for_seed(seed_vid, exclude_titles) if seed_vid else _no_radio(),
+            self._t4_fresh_discovery(members, spotlight, exclude_titles),
+            return_exceptions=True,
+        )
+        if isinstance(radio, BaseException):
+            logger.warning(f"⚠️ [AutoRecommend] arc 過門 radio 失敗，略過: {radio}")
+            radio = []
+        if isinstance(fresh, BaseException):
+            logger.warning(f"⚠️ [AutoRecommend] arc 新歌 T4 失敗，略過: {fresh}")
+            fresh = []
+        bridge = [
+            Candidate(anchor_title=c["title"], anchor_artist=c["artist"], lane="discovery",
+                      mode="direct", target_member=None, score=0.0, direct_url=c["url"],
+                      discovery_seed_title=lead.anchor_title)
+            for c in radio
+        ]
+        discovery = filter_unfamiliar(fresh, songs)
+        logger.info(f"🎼 [AutoRecommend] arc: spotlight={spotlight} nostalgia={len(nost)} bridge={len(bridge)} "
+                    f"discovery={len(discovery)}/{len(fresh)} fallback={len(fallback)}")
+        return assemble_arc(nost, bridge, discovery, fallback)
+
     async def _auto_recommend(self, username: str, *, _tier: int = 1):
         """佇列空 → 依在場成員的音樂記憶推薦下一首批。"""
         mm = getattr(self.bot, 'music_memory', None)
@@ -233,9 +272,15 @@ class MusicStoryArcMixin:
             excluded_vids = _skipped_vids | mm.get_recently_played_video_ids(self._PLAYED_EXCLUDE_TTL_S)
             _played_titles = mm.get_recently_played_titles(self._PLAYED_EXCLUDE_TTL_S)
 
+        # 🎼 T1 一組三首（懷舊→過門→新歌）；T1 沒候選就照舊往 T2 遞迴。
+        _arc = _tier == 1 and bool(cands)
+        if _arc:
+            cands = await self._assemble_arc_candidates(spotlight, members, pool, cands, exclude_titles, mm)
+
         # 🎚️ [Quality] cover/現場版降到隊尾——自動推薦 cover 11% vs 真人 3%，humans 避開。
-        # 好版本先填滿 round；沒更好的時 cover/live 仍會播（不丟棄→不枯竭）。
-        cands = demote_low_quality_versions(cands)
+        # 好版本先填滿 round；沒更好的時 cover/live 仍會播（不丟棄→不枯竭）。arc 已分段 demote。
+        if not _arc:
+            cands = demote_low_quality_versions(cands)
         if not cands:
             if _tier < 4:
                 return await self._auto_recommend(username, _tier=_tier + 1)
@@ -252,10 +297,13 @@ class MusicStoryArcMixin:
                 logger.exception("[AutoRecommend] CoverBlacklist init 失敗")
 
         enqueued = 0
+        _filled_roles: set[str] = set()
         _prev_round_title = self.stream_queue[-1].get('title') if self.stream_queue else None
         for cand in cands:
             if enqueued >= self._round_size:
                 break
+            if cand.arc_role and cand.arc_role in _filled_roles:
+                continue
             if cand.direct_url:
                 query = cand.direct_url
             elif cand.mode == "cover":
@@ -291,7 +339,7 @@ class MusicStoryArcMixin:
             if _ns:
                 logger.info(f"🚫 [AutoRecommend] 非單曲略過 '{info['title']}': {_ns_reason}")
                 continue
-            if _tier == 2:
+            if _tier == 2 or cand.arc_role == "bridge":
                 from taste_fingerprint import explore_matches_floor
                 if not explore_matches_floor(info.get('title', ''), _taste_fp):
                     logger.info(f"🎵 [AutoRecommend] explore 不合口味地板(語言)略過: {info['title']}")
@@ -315,6 +363,7 @@ class MusicStoryArcMixin:
             info['_round_first'] = (enqueued == 0)
             info['_spotlight'] = spotlight
             info['_lane'] = cand.lane
+            info['_arc_role'] = cand.arc_role
             info['_anchor_title'] = cand.anchor_title
             # 🎯 推薦解釋：必須在這裡（record_play() 之前）算，不能等到真正播放時才算
             # ——mm.all_songs() 到那時已經把「現在正要播的這次」記進 plays[]，會把「你
@@ -332,9 +381,11 @@ class MusicStoryArcMixin:
             _prev_round_title = info['title']
 
             self.stream_queue.append(info)
+            if cand.arc_role:
+                _filled_roles.add(cand.arc_role)
             for _ring_title in ring_titles_for(info['title'], cand.mode, cand.anchor_title):
                 mm.add_recent_recommendation(_ring_title)
-            logger.info(f"🎵 [AutoRecommend] lane={cand.lane} round-#{enqueued+1}: {info['title']}")
+            logger.info(f"🎵 [AutoRecommend] lane={cand.lane} role={cand.arc_role or '-'} round-#{enqueued+1}: {info['title']}")
             blurb = ""
             if enqueued == 0:
                 vibe_tag = f" [vibe: {vibe_label.mood}]" if vibe_label else ""
@@ -360,6 +411,7 @@ class MusicStoryArcMixin:
                     "queue_depth": len(self.stream_queue),
                     "recent_history_titles": _recent_titles,
                     "spotlight_member": spotlight,
+                    "arc_role": cand.arc_role,
                 },
             ))
 
