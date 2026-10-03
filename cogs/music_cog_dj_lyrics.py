@@ -581,11 +581,13 @@ class MusicDJLyricsMixin:
             lyric_match = r.get('lyric_match', '')
 
         conv_lines = []
+        conv_entries = []
         conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
         if conv_buf:
             for entry in conv_buf.get_last_n_utterances(4):
-                if entry.get('speaker') != 'Marvin':
+                if entry.get('speaker') != 'Marvin' and not self._dj_heat_bank().is_consumed(entry):
                     conv_lines.append(f"{entry['speaker']}：「{entry['text'][:25]}」")
+                    conv_entries.append(entry)
 
         slot = mm.time_slot(time.time()) if mm else ''
         title = info.get('title', '')
@@ -719,6 +721,12 @@ class MusicDJLyricsMixin:
                 has_guide=bool(guide),
                 callbacks=callback_lines,
             )
+
+        if mode == "conversation" and conv_entries:
+            try:
+                self._dj_heat_bank().mark_consumed(conv_entries, time.time())
+            except Exception:
+                pass  # fail-open
 
         # 開場鉤子提示依「歌會中的心理機制」分兩類套用：
         #   代入感（life/interest）——這是聽眾自己的事，別只是轉述，要讓人覺得被說中。

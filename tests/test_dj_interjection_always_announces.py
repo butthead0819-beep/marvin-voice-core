@@ -238,3 +238,26 @@ async def test_fallback_text_uses_dj_marvin_persona(monkeypatch):
     # 仍要點出歌名 + 點播者（沿用既有 always-announce 契約）
     assert "七里香" in text
     assert "weakgogo" in text
+
+
+@pytest.mark.asyncio
+async def test_conversation_lines_used_once_not_repeated_next_prefetch(monkeypatch):
+    """10/2 錄音：conversation mode 連兩段口白都用同 4 句「耳機」對話。
+    用過的原句要記在話題庫，下一次預抓不能再進 LLM context。"""
+    import time as _time
+    _weights(monkeypatch, conversation=1.0)
+    cog = _make_cog()
+    now = _time.time()
+    cog.bot.engine.conv_buffer.get_last_n_utterances = MagicMock(return_value=[
+        {"timestamp": now - 5, "speaker": "weakgogo", "text": "線上模式耳機沒聲音"},
+        {"timestamp": now - 2, "speaker": "狗與露", "text": "麥克風搶走了啦"},
+    ])
+    await cog._fetch_dj_interjection_raw(_info(title="林俊傑 - 因你而在", requester="Marvin"))
+    first_ctx = cog.bot.router.generate_dynamic_system_msg.call_args.kwargs.get("context", "")
+    assert "耳機沒聲音" in first_ctx, f"第一次應用到對話: {first_ctx!r}"
+
+    cog.bot.router.generate_dynamic_system_msg.reset_mock()
+    await cog._fetch_dj_interjection_raw(_info(title="楊乃文 - 推開世界的門", requester="Marvin"))
+    call = cog.bot.router.generate_dynamic_system_msg.call_args
+    second_ctx = call.kwargs.get("context", "") if call else ""
+    assert "耳機沒聲音" not in second_ctx and "麥克風搶走" not in second_ctx, second_ctx

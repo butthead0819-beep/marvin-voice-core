@@ -15,6 +15,14 @@ BANK_MAX_LINES = 8
 BANK_MAX_AGE_S = 900.0
 LINE_MAX_CHARS = 25
 
+# 已用過的原句紀錄保留秒數（避免 _consumed 無限長大）。
+CONSUMED_MAX_AGE_S = 900.0
+
+
+def utterance_key(e: dict) -> tuple:
+    """原句的識別鍵：同一人同一時戳視為同一句。"""
+    return (e.get("speaker"), e.get("timestamp"))
+
 
 def _human_entries(entries, now: float, window_s: float) -> list:
     """ConversationBuffer.history 形狀的 entries → 篩出近 window_s 秒內的真人發言。"""
@@ -52,9 +60,12 @@ class TopicBank:
     def __init__(self) -> None:
         self._lines: list[str] | None = None
         self._ts: float = 0.0
+        self._consumed: dict[tuple, float] = {}
+        self._pending: list[dict] = []
 
     def snapshot(self, entries, now: float) -> None:
         humans = _human_entries(entries, now, _ACTIVE_CHAT_WINDOW_S)
+        humans = [e for e in humans if not self.is_consumed(e)]
         if not humans:
             return  # 沒有可用句子時不覆蓋舊的
         tail = humans[-BANK_MAX_LINES:]
@@ -63,12 +74,31 @@ class TopicBank:
             for e in tail
         ]
         self._ts = now
+        self._pending = tail
 
     def take(self, now: float) -> list[str]:
         if self._lines is None:
             return []
-        lines, ts = self._lines, self._ts
-        self._lines, self._ts = None, 0.0
+        lines, ts, pending = self._lines, self._ts, self._pending
+        self._lines, self._ts, self._pending = None, 0.0, []
         if now - ts > BANK_MAX_AGE_S:
             return []
+        self.mark_consumed(pending, now)
         return lines
+
+    def mark_consumed(self, entries, now: float) -> None:
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            ts = e.get("timestamp")
+            if not isinstance(ts, (int, float)):
+                continue
+            self._consumed[utterance_key(e)] = ts
+        for key, ts in list(self._consumed.items()):
+            if now - ts > CONSUMED_MAX_AGE_S:
+                del self._consumed[key]
+
+    def is_consumed(self, e) -> bool:
+        if not isinstance(e, dict):
+            return False
+        return utterance_key(e) in self._consumed
