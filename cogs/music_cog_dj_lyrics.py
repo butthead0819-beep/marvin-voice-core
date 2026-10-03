@@ -723,8 +723,16 @@ class MusicDJLyricsMixin:
             )
 
         if mode == "conversation" and conv_entries:
+            # 上面有 await（歌曲/生活/新聞素材），同時預抓的另一首可能已把同幾句用掉：
+            # 這裡同步重查＋標記，中間不 await，對 event loop 是原子的（PR #102 review）。
             try:
-                self._dj_heat_bank().mark_consumed(conv_entries, time.time())
+                _bank = self._dj_heat_bank()
+                conv_entries = [e for e in conv_entries if not _bank.is_consumed(e)]
+                conv_lines = [f"{e['speaker']}：「{e['text'][:25]}」" for e in conv_entries]
+                if conv_entries:
+                    _bank.mark_consumed(conv_entries, time.time())
+                else:
+                    topic, mode = None, "quick"  # 素材被搶光，不硬寫空對話串場
             except Exception:
                 pass  # fail-open
 
