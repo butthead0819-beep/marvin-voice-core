@@ -453,6 +453,7 @@ class MusicAutopilotMixin:
 
         try:
             from associative_curation import curate_associative_song
+            from associative_history import append_pick, is_repeat, load_recent_picks
             from music_recommender import is_already_recommended, ring_titles_for
             from track_quality import is_non_song_video
             from llm_pool import call_paid_review
@@ -477,6 +478,7 @@ class MusicAutopilotMixin:
             # 2. 準備口味指紋與在場者
             taste_fp = self._load_taste_fingerprint() if hasattr(self, '_load_taste_fingerprint') else {}
             core_artists = [a for a, _ in (taste_fp.get("core_artists") or [])][:8]
+            recent_picks = load_recent_picks(now)
 
             # 3. LLM 關聯選曲
             try:
@@ -487,6 +489,7 @@ class MusicAutopilotMixin:
                         exclude_titles=exclude_titles,
                         members=members,
                         call_fn=functools.partial(call_paid_review, caller="associative_curation"),
+                        recent_picks=recent_picks,
                     ),
                     timeout=_ASSOCIATIVE_LLM_TIMEOUT_S,
                 )
@@ -494,6 +497,10 @@ class MusicAutopilotMixin:
                 logger.info(f"🎵 [AssociativePick] LLM 逾時 {_ASSOCIATIVE_LLM_TIMEOUT_S}s，走一般 autopilot")
                 return 0
             if not pick:
+                return 0
+
+            if is_repeat(pick.song, recent_picks):
+                logger.info(f"🎵 [AssociativePick] LLM 選了 30 天內選過的《{pick.artist} - {pick.song}》，走一般 autopilot")
                 return 0
 
             # 4. 解析 YouTube 影片與品質把關
@@ -525,6 +532,7 @@ class MusicAutopilotMixin:
             info['_round_first'] = True
 
             self.stream_queue.append(info)
+            append_pick(pick.artist, pick.song, now)
             for _rt in ring_titles_for(info.get('title', ''), 'direct', info.get('title', '')):
                 if mm:
                     mm.add_recent_recommendation(_rt)
