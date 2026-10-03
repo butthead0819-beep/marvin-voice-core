@@ -20,7 +20,7 @@ import logging
 import os
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from music_memory import extract_video_id
 
@@ -109,6 +109,7 @@ class Candidate:
     direct_url: str = ""         # T2 discovery：自帶 YouTube URL → enqueue 時直解不搜尋
     discovery_seed_title: str = ""  # T2 discovery：觸發這首候選的 YT Music radio 種子曲名
     state_reason: str = ""       # state pick：依個人近期狀態挑中時的關心理由（DJ 口白用）
+    arc_role: str = ""           # T1 一組三首的位置：nostalgia | bridge | discovery；空＝一般候選
 
 
 def _last_play_ts(song: dict) -> float:
@@ -332,6 +333,81 @@ def is_low_quality_version(cand: "Candidate") -> bool:
         return True
     t = cand.anchor_title or ""
     return looks_like_cover(t) or looks_like_live(t)
+
+
+# ── T1 一組三首（懷舊 → 過門 → 新歌）──────────────────────────────────────────
+
+def arc_nostalgia_candidates(pool: list[Candidate], songs: dict, *, now: float,
+                             min_age_days: float = 30.0) -> list[Candidate]:
+    """第 1 首「懷舊」：pool 裡最後一次播放超過 min_age_days 的歌，一律改播原曲。
+
+    同一首歌多個上傳（normalize 後同名）取所有上傳中最近一次播放，避免換個上傳就算「久沒播」。
+    """
+    last_ts: dict[str, float] = {}
+    for s in songs.values():
+        nt = normalize_title(s.get("title", ""))
+        if nt:
+            last_ts[nt] = max(last_ts.get(nt, 0.0), _last_play_ts(s))
+    out = []
+    for c in pool:
+        ts = last_ts.get(normalize_title(c.anchor_title))
+        if ts is None or (now - ts) / 86400.0 <= min_age_days:
+            continue
+        out.append(replace(c, lane="long_tail", mode="direct", arc_role="nostalgia"))
+    return out
+
+
+def song_video_id_for_title(songs: dict, title: str) -> str:
+    """歌名（normalize 比對）→ 歌庫裡該歌的 videoId；查不到回 ""。"""
+    nt = normalize_title(title)
+    for s in songs.values():
+        if normalize_title(s.get("title", "")) == nt:
+            return extract_video_id(s.get("webpage_url") or s.get("url") or "") or ""
+    return ""
+
+
+def filter_unfamiliar(cands: list[Candidate], songs: dict) -> list[Candidate]:
+    """第 3 首「新歌」：丟掉伺服器歷史出現過的歌（normalize 歌名或 videoId 任一命中）。"""
+    known_titles = {normalize_title(s.get("title", "")) for s in songs.values()}
+    known_vids = {v for v in (extract_video_id(s.get("webpage_url") or s.get("url") or "")
+                              for s in songs.values()) if v}
+    out = []
+    for c in cands:
+        if normalize_title(c.anchor_title) in known_titles:
+            continue
+        vid = extract_video_id(c.direct_url) or ""
+        if vid and vid in known_vids:
+            continue
+        out.append(c)
+    return out
+
+
+def assemble_arc(nostalgia: list[Candidate], bridge: list[Candidate],
+                 discovery: list[Candidate], fallback: list[Candidate]) -> list[Candidate]:
+    """串成 nostalgia → bridge → discovery → fallback 的候選序列（enqueue 迴圈每角色只收一首）。
+
+    StatePick 挑中的歌（fallback[0] 帶 state_reason）當第 1 首。每段各自 demote cover/live，
+    不整串一起 demote，否則 cover 會跨段跑到後面打亂位置。跨段同名去重，先出現的留下。
+    """
+    nost = [replace(c, arc_role="nostalgia") for c in nostalgia]
+    if fallback and fallback[0].state_reason:
+        nost.insert(0, replace(fallback[0], arc_role="nostalgia"))
+    segments = [
+        nost,
+        [replace(c, arc_role="bridge") for c in bridge],
+        [replace(c, arc_role="discovery") for c in discovery],
+        list(fallback),
+    ]
+    out: list[Candidate] = []
+    seen: set[str] = set()
+    for seg in segments:
+        for c in demote_low_quality_versions(seg):
+            nt = normalize_title(c.anchor_title)
+            if nt in seen:
+                continue
+            seen.add(nt)
+            out.append(c)
+    return out
 
 
 def demote_low_quality_versions(cands: list["Candidate"]) -> list["Candidate"]:
