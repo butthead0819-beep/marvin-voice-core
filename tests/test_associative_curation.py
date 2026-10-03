@@ -2,6 +2,7 @@
 import pytest
 from associative_curation import (
     AssociativePick,
+    _ASSOCIATIVE_SYS_PROMPT,
     build_associative_prompt,
     parse_associative_pick,
     curate_associative_song,
@@ -161,3 +162,30 @@ async def test_curate_associative_song_call_fn_failure():
         call_fn=mock_call_fn_fail,
     )
     assert pick is None
+
+
+def test_build_associative_prompt_includes_recent_picks_when_given():
+    utterances = [{"speaker": "showay", "text": "今天好累"}]
+
+    _, user_p_with = build_associative_prompt(
+        utterances,
+        core_artists=[],
+        exclude_titles=[],
+        members=["showay"],
+        recent_picks=["阿杜 - 他一定很愛你"],
+    )
+    assert "最近 30 天已經選過" in user_p_with
+    assert "阿杜 - 他一定很愛你" in user_p_with
+
+    _, user_p_without = build_associative_prompt(
+        utterances,
+        core_artists=[],
+        exclude_titles=[],
+        members=["showay"],
+    )
+    assert "最近 30 天" not in user_p_without
+
+
+def test_associative_sys_prompt_has_no_hardcoded_song_examples():
+    for banned in ("他一定很愛你", "早安晨之美", "下雨天", "Last Dance", "《"):
+        assert banned not in _ASSOCIATIVE_SYS_PROMPT

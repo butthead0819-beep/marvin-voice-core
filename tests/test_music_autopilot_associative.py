@@ -3,10 +3,16 @@ import time
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
+import associative_history
 from associative_curation import AssociativePick
 
 
 from cogs.music_cog_dj_lyrics import MusicDJLyricsMixin
+
+
+@pytest.fixture(autouse=True)
+def _isolate_associative_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(associative_history, "HISTORY_PATH", tmp_path / "associative_picks.jsonl")
 
 
 class DummyAutopilotHost(MusicDJLyricsMixin):
@@ -225,3 +231,77 @@ async def test_associative_slow_llm_times_out_fast(monkeypatch):
     assert n == 0
     assert time.monotonic() - t0 < 2.0
     assert host.stream_queue == []
+
+
+@pytest.mark.asyncio
+async def test_try_associative_pick_rejects_30day_repeat(monkeypatch):
+    """LLM 選了 30 天內選過的歌要被擋，不入隊。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    associative_history.append_pick("美秀集團", "手機錢包鑰匙菸", time.time() - 3600)
+
+    mock_pick = AssociativePick(
+        observed_topic="出門口訣被偷",
+        target_lyric="手機錢包鑰匙菸，反覆唸幾遍",
+        artist="美秀集團",
+        song="手機錢包鑰匙菸",
+        reason="聊到出門口訣被寫成歌",
+        dj_line="剛才聽showay抱怨出門默念的口訣被樂團偷去寫歌。美秀集團這首手機錢包鑰匙菸奉上，出門前口袋拍兩下吧。",
+    )
+
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                             spotlight="showay", mm=None)
+
+    assert n == 0
+    assert host.stream_queue == []
+
+
+@pytest.mark.asyncio
+async def test_try_associative_pick_success_appends_history(monkeypatch):
+    """成功入隊後，30 天選曲紀錄要多一行該 artist/song。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+
+    mock_pick = AssociativePick(
+        observed_topic="出門口訣被偷",
+        target_lyric="手機錢包鑰匙菸，反覆唸幾遍",
+        artist="美秀集團",
+        song="手機錢包鑰匙菸",
+        reason="聊到出門口訣被寫成歌",
+        dj_line="剛才聽showay抱怨出門默念的口訣被樂團偷去寫歌。美秀集團這首手機錢包鑰匙菸奉上，出門前口袋拍兩下吧。",
+    )
+
+    mm = MagicMock()
+    mm.get_skipped_video_ids.return_value = set()
+    mm.get_recently_played_video_ids.return_value = set()
+
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                             spotlight="showay", mm=mm)
+
+    assert n == 1
+    assert associative_history.HISTORY_PATH.exists()
+    lines = associative_history.HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    import json as _json
+    data = _json.loads(lines[0])
+    assert data["artist"] == "美秀集團"
+    assert data["song"] == "手機錢包鑰匙菸"
+
+
+@pytest.mark.asyncio
+async def test_try_associative_pick_passes_recent_picks_kwarg(monkeypatch):
+    """curate_associative_song 被呼叫時 recent_picks kwarg 要等於 load_recent_picks 的結果。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    associative_history.append_pick("阿杜", "他一定很愛你", time.time() - 3600)
+
+    expected_recent = associative_history.load_recent_picks(time.time())
+
+    mock_fn = AsyncMock(return_value=None)
+    with patch("associative_curation.curate_associative_song", mock_fn):
+        await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                         spotlight="showay", mm=None)
+
+    assert mock_fn.await_args.kwargs["recent_picks"] == expected_recent
