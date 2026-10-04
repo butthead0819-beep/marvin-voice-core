@@ -210,6 +210,7 @@ class _FakeCog(MusicStoryArcMixin):
         self._prefetch_cache = {}
         self._radio, self._fresh = radio, fresh
         self.radio_seeds = []
+        self.queries = []
 
     def _vc(self):
         return None
@@ -231,7 +232,12 @@ class _FakeCog(MusicStoryArcMixin):
         return self._fresh
 
     async def _resolve_yt_query(self, query):
-        title = query.rsplit("|", 1)[-1] if query.startswith("http") else query.split(" ", 1)[-1]
+        self.queries.append(query)
+        songs = self.bot.music_memory.all_songs()
+        if query in songs:  # 曲庫裡的上傳網址（懷舊直播原上傳）
+            title = songs[query]["title"]
+        else:
+            title = query.rsplit("|", 1)[-1] if query.startswith("http") else query.split(" ", 1)[-1]
         return {"title": title, "url": f"stream:{title}", "webpage_url": "", "duration": 200}
 
     def _check_song_duplicate(self, **kw):
@@ -370,3 +376,42 @@ async def test_auto_recommend_records_server_plays_on_info(monkeypatch):
     by_title = {i["title"]: i["_server_plays"] for i in cog.stream_queue}
     assert by_title["老歌甲"] == 4
     assert by_title["新歌0"] == 0
+
+
+# ── 14. 懷舊直播曲庫裡那個久沒播的上傳 + 先濾掉 7 天內同歌不同上傳（10/4 午）──────
+# 同歌多上傳歌名不同（「L’AMOUR DE MA VIE」vs「Billie Eilish - L’AMOUR DE MA VIE (Official…)」）
+# → exact 歌名認不出 → 舊上傳被當懷舊，搜尋卻落到 2.9 天前剛播的上傳被擋。
+def test_nostalgia_candidate_plays_stored_old_upload_directly():
+    songs = {URL_A: _song("舊歌A", URL_A, days_ago=60)}
+    out = arc_nostalgia_candidates([_cand("舊歌A")], songs, now=NOW)
+    assert out[0].direct_url == URL_A
+
+
+@pytest.mark.asyncio
+async def test_auto_recommend_skips_nostalgia_recently_played_under_other_upload(monkeypatch):
+    import cogs.music_cog_story_arc as mod
+    import taste_fingerprint
+    import track_quality
+
+    async def _ok(*a, **kw):
+        return True, ""
+    monkeypatch.setattr(track_quality, "assess_track_quality", _ok)
+    monkeypatch.setattr(taste_fingerprint, "explore_matches_floor", lambda t, fp: True)
+    monkeypatch.setattr(mod, "append_recommendation", lambda rec: None)
+    songs = {URL_A: {"title": "L’AMOUR DE MA VIE", "uploader": "歌手", "webpage_url": URL_A,
+                     "plays": [{"ts": NOW - 44 * DAY, "by": "A"}], "requesters": {"A": 9},
+                     "connections": []},
+             URL_B: {"title": "老歌乙", "uploader": "歌手", "webpage_url": URL_B,
+                     "plays": [{"ts": NOW - 40 * DAY, "by": "A"}], "requesters": {"A": 2},
+                     "connections": []}}
+    monkeypatch.setattr(mod.time, "time", lambda: NOW)
+    cog = _FakeCog(songs, radio=[], fresh=[])
+    cog.bot.music_memory.get_recently_played_titles = (
+        lambda ttl: ["Billie Eilish - L’AMOUR DE MA VIE (Official Lyric Video)"])
+
+    await cog._auto_recommend("A")
+
+    assert URL_A not in cog.queries  # 不浪費一次 resolve 在其實剛聽過的歌
+    nost = [i["title"] for i in cog.stream_queue if i["_arc_role"] == "nostalgia"]
+    assert nost == ["老歌乙"]
+    assert cog.radio_seeds == ["VID00000002"]
