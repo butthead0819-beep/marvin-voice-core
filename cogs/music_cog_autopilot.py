@@ -453,7 +453,7 @@ class MusicAutopilotMixin:
 
         try:
             from associative_curation import curate_associative_song
-            from associative_history import append_pick, is_repeat, load_recent_picks
+            from associative_history import append_pick, is_repeat, is_resolved_repeat, load_recent_picks
             from music_recommender import is_already_recommended, ring_titles_for
             from track_quality import is_non_song_video
             from llm_pool import call_paid_review
@@ -510,6 +510,11 @@ class MusicAutopilotMixin:
                 logger.info(f"🎵 [AssociativePick] YouTube 搜尋解析失敗: {query}")
                 return 0
 
+            _vid = extract_video_id(info.get('webpage_url') or info.get('url') or '') or ''
+            if is_resolved_repeat(info.get('title', ''), _vid, now):
+                logger.info(f"🎵 [AssociativePick] 解析結果《{info.get('title')}》30 天內選過，走一般 autopilot")
+                return 0
+
             rejected, reason = is_non_song_video(info.get('title', ''), info.get('duration'))
             if rejected:
                 logger.info(f"🛡️ [AssociativePick] 品質閘拒絕非歌曲影片({reason}): {info.get('title')}")
@@ -532,7 +537,7 @@ class MusicAutopilotMixin:
             info['_round_first'] = True
 
             self.stream_queue.append(info)
-            append_pick(pick.artist, pick.song, now)
+            append_pick(pick.artist, pick.song, now, title=info.get('title', ''), video_id=_vid)
             for _rt in ring_titles_for(info.get('title', ''), 'direct', info.get('title', '')):
                 if mm:
                     mm.add_recent_recommendation(_rt)
