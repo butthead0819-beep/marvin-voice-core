@@ -144,3 +144,34 @@ async def test_rare_autopilot_song_talks_about_song_not_topics(tmp_path):
     assert "十一月的蕭邦" in ctx
     assert "爬山" not in ctx and "露營" not in ctx
     bank.take.assert_not_called()
+
+
+# ── 講歌模式去套路（10/4 午實測：6 首都是「照口味挖出、比較少聽、某年專輯、這首給你」）──
+
+@pytest.mark.asyncio
+async def test_song_mode_drops_pick_reason_and_bans_meta_words(tmp_path):
+    cog = _make_cog(tmp_path=tmp_path)
+    cog.stream_history = []
+    cog._dj_song_material = AsyncMock(return_value=(
+        {"artist": "周杰倫", "title": "夜曲", "album": "十一月的蕭邦", "year": 2005}, None))
+    info = _auto_info(_arc_role="discovery", _server_plays=0,
+                      _explanation="YouTube Music 常把這首和你們聽過的《晴天》放在同一份歌單")
+
+    await cog._fetch_dj_interjection_raw(info)
+
+    ctx = _ctx_str(cog)
+    assert "十一月的蕭邦" in ctx
+    assert "選這首的理由" not in ctx and "晴天" not in ctx
+    assert "挖出" in ctx and "比較少聽" in ctx  # 出現在禁止詞清單裡
+
+
+@pytest.mark.asyncio
+async def test_song_mode_without_facts_uses_local_template_not_llm(tmp_path):
+    cog = _make_cog(tmp_path=tmp_path)
+    cog.stream_history = []
+    cog._dj_song_material = AsyncMock(return_value=(None, None))
+
+    result = await cog._fetch_dj_interjection_raw(_auto_info(_arc_role="discovery", _server_plays=0))
+
+    assert result is not None
+    cog.bot.router.generate_dynamic_system_msg.assert_not_called()

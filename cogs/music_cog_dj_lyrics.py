@@ -232,14 +232,15 @@ class MusicDJLyricsMixin:
         可用）才退回原本 lane 分流的固定樣版。
         """
         explanation = info.get('_explanation')
-        if explanation:
+        # 10/4 使用者：「幾週前播過 / 很久沒點」對聽眾沒意義 → DJ 素材不給任何時間理由
+        if explanation and "週前" not in explanation:
             return explanation
         who = info.get('_spotlight', '') or '大家'
         lane = info.get('_lane', '')
         if lane == 'group_resonance':
             return "這首是大家都有共鳴的歌"
         if lane == 'long_tail':
-            return f"{who} 很久沒點到這首了"
+            return f"這首是 {who} 點過的歌"  # 不講多久沒點，但人名要留著（掛名鐵則靠它）
         if lane == 'discovery':
             return f"照 {who} 的口味挖出來的新歌"
         anchor = info.get('_anchor_title', '')
@@ -786,7 +787,7 @@ class MusicDJLyricsMixin:
             ctx.append(env)
             ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
         elif mode == "song":
-            ctx.append("串場方向：這是大家比較少聽的歌，介紹這首歌本身（歌手/專輯/年代/歌詞），帶大家進入這首歌；只能用下面素材裡寫的事實，不准自己補細節或編故事，不提生活話題。")
+            ctx.append("串場方向：直接介紹這首歌本身（歌手/專輯/年代/歌詞），帶大家進入這首歌；只能用下面素材裡寫的事實，不准自己補細節或編故事，不提生活話題。不要說「挖出」「冷門」「比較少聽」「照你的口味」這類選歌過程的話。")
         elif mode == "guide":
             ctx.append(f"導聆素材（查證過的真實資料，只能用這裡寫的事實）：\n{guide}")
             from dj_gacha_narrator import pick_gacha_motivation
@@ -829,14 +830,17 @@ class MusicDJLyricsMixin:
         # guide 本身就是歌曲素材；quick 不走 LLM——這兩個 mode 不抽。
         _lyric_pick = None
         if mode == "song":
-            # 少播講歌本身：歌曲資料/選曲理由全附，不附喜好線索/情感記錄（那是人的事）
+            # 少播講歌本身：只給歌曲資料 + 歌詞。不附選曲理由（10/4 實測會變成「照口味挖出、
+            # 比較少聽」套路）、不附喜好線索/情感記錄（那是人的事）。沒有事實素材 → 本地模板。
             from dj_narration_orchestrator import pick_song_material
-            for _line in song_candidates:
-                if _line.startswith(("歌曲資料：", "選這首的理由：")):
-                    ctx.append(f"【這首歌】{_line}")
+            _facts = [l for l in song_candidates if l.startswith("歌曲資料：")]
+            for _line in _facts:
+                ctx.append(f"【這首歌】{_line}")
             _lyric_pick = pick_song_material(lyric_candidates)
             if _lyric_pick:
                 ctx.append(f"【你想跟他分享這首的原因】{_lyric_pick}")
+            if not _facts and not _lyric_pick:
+                mode = "quick"
         elif mode not in ("guide", "quick"):
             from dj_narration_orchestrator import pick_song_material
             _song_pick = pick_song_material(
