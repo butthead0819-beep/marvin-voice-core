@@ -1061,3 +1061,76 @@ def test_balance_applies_immediately_when_idle():
     mix = LocalMixingAudioSource()
     mix.set_balance(0.70)
     assert mix._balance_cur == pytest.approx(0.70)
+
+
+# ── 🎚️ [Crossfade] 淡出槽 / 主槽淡入（接懷舊歌時上一首淡出、下一首淡入）──────────
+
+def _amp(buf: bytes) -> float:
+    return float(np.abs(np.frombuffer(buf, dtype=np.int16)).max())
+
+
+def test_begin_fadeout_returns_false_when_no_music():
+    mix = LocalMixingAudioSource(seed=1)
+    assert mix.begin_music_fadeout(0.1) is False
+
+
+def test_fadeout_moves_music_out_and_decays_monotonically_then_idles():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_music_source(_FakeMusic(value=0.5, frames=100))
+    assert mix.begin_music_fadeout(0.1) is True  # 5 幀
+    assert mix.has_music() is False
+    assert mix.is_idle() is False
+    amps = [_amp(mix.read()) for _ in range(5)]
+    assert all(a > b for a, b in zip(amps, amps[1:]))  # 嚴格遞減
+    assert amps[0] == pytest.approx(0.5 * 32768, rel=0.01)
+    # 浮點殘差：第 6 幀才會把 gain 壓到 <=0 清空，之後必為 silence
+    mix.read()
+    assert mix.is_idle() is True
+    assert mix.read() == mix._silence_bytes
+
+
+def test_set_music_source_fade_in_ramps_up_from_silence():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_music_source(_FakeMusic(value=0.5, frames=100), fade_in_s=0.1)  # 5 幀
+    amps = [_amp(mix.read()) for _ in range(6)]
+    assert amps[0] < 10                                   # 第 1 幀接近 0
+    assert all(a <= b for a, b in zip(amps, amps[1:]))    # 單調上升
+    assert amps[5] == pytest.approx(0.5 * 32768, rel=0.01)  # 第 6 幀已滿
+
+
+def test_fadeout_and_main_both_contribute_on_first_frame():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_music_source(_FakeMusic(value=0.1, frames=100))
+    mix.begin_music_fadeout(0.1)
+    mix.set_music_source(_FakeMusic(value=0.2, frames=100))
+    out = np.frombuffer(mix.read(), dtype=np.int16).astype(np.float32)
+    # 淡出槽第一幀 gain=1.0（0.1），主槽 gain=1.0（0.2）→ 相加 0.3；限幅器不觸發、容許 dither ±2 LSB
+    assert np.allclose(out, 0.3 * 32768, atol=2)
+
+
+def test_clear_music_also_clears_fadeout_slot():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_music_source(_FakeMusic(value=0.5, frames=100))
+    mix.begin_music_fadeout(0.1)
+    mix.set_music_source(_FakeMusic(value=0.2, frames=100))
+    mix.clear_music()
+    assert mix._music_out is None
+    assert mix.is_idle() is True
+
+
+def test_fadeout_source_read_exception_is_contained_main_keeps_playing():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_music_source(_BoomMusic())
+    assert mix.begin_music_fadeout(0.1) is True
+    mix.set_music_source(_FakeMusic(value=0.3, frames=100))
+    out = mix.read()  # 不 raise
+    assert mix._music_out is None
+    assert _amp(out) == pytest.approx(0.3 * 32768, rel=0.01)
+
+
+def test_fadeout_uses_volume_snapshot_not_later_set_volume():
+    mix = LocalMixingAudioSource(seed=1, volume=1.0)
+    mix.set_music_source(_FakeMusic(value=0.5, frames=100))
+    mix.begin_music_fadeout(0.1)
+    mix.set_volume(0.1, immediate=True)
+    assert _amp(mix.read()) == pytest.approx(0.5 * 32768, rel=0.01)

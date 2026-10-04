@@ -103,6 +103,11 @@ class LocalMixingAudioSource(_BASE):
 
         self._paused = False                     # 控制台暫停：read() 回 silence、不前進來源
         self._music = None                       # 可換 f32le source（atomic ref）
+        self._music_out = None        # 🎚️ [Crossfade] 淡出槽：上一首搬進來逐幀降到 0（只在接懷舊歌時用）
+        self._music_out_gain = 0.0    # 淡出槽當前絕對增益（起點＝搬進來那刻的音量快照，不吃之後的 set_volume）
+        self._music_out_step = 0.0    # 每幀遞減量
+        self._music_in_gain = 1.0     # 主槽淡入倍率（1.0＝無淡入）
+        self._music_in_step = 1.0     # 每幀遞增量
         self._tts_queue: collections.deque = collections.deque()  # 預解碼 f32 buffers
         self._tts_cur: np.ndarray | None = None  # 當前 TTS buffer（consumer-local）
         self._tts_off = 0
@@ -284,6 +289,7 @@ class LocalMixingAudioSource(_BASE):
             if self._paused:
                 return self._silence_bytes  # 持位置、adapter 續活（不進 idle→b"" 邏輯）
             music_f = self._next_music_frame()
+            out_f = self._next_music_out_frame()
             tts_f = self._next_tts_frame()
             tts2_f = self._next_tts2_frame()  # 打岔層（Marmo）
             tts_active = tts_f is not None or tts2_f is not None
@@ -321,7 +327,13 @@ class LocalMixingAudioSource(_BASE):
                 m_frame = music_f
                 if self._sidechain_mid_cut_active and tts_active and self._spatial_renderer is not None:
                     m_frame = self._spatial_renderer.apply_music_sidechain_mid_cut(m_frame, cut_db=-4.0)
-                layers.append(am.apply_gain(m_frame, self._volume_cur * music_factor * self._duck_cur))
+                layers.append(am.apply_gain(m_frame, self._volume_cur * music_factor * self._duck_cur * self._music_in_gain))
+                self._music_in_gain = min(1.0, self._music_in_gain + self._music_in_step)
+            if out_f is not None:  # 🎚️ [Crossfade] 淡出槽：上一首逐幀降到 0（不套 sidechain mid cut）
+                layers.append(am.apply_gain(out_f, self._music_out_gain * music_factor * self._duck_cur))
+                self._music_out_gain -= self._music_out_step
+                if self._music_out_gain <= 0.0:
+                    self._music_out = None
             # 🔇 TTS 對玩家說話 duck：玩家最近說話 → Marvin TTS 讓路到 10%，逐幀 ramp（防 click）
             # onset 復原：新一段 Marvin TTS 進來、且無人說話（窗已過）→ 把 idle 期間凍結的 duck
             # 復原 1.0（前幀無 TTS＝靜音，直接設不會 click），避免下段 TTS 殘留壓低。
@@ -369,18 +381,44 @@ class LocalMixingAudioSource(_BASE):
 
     # ── producer API（event loop thread，lock-free）───────────────────────────
 
-    def set_music_source(self, source) -> None:
-        """設音樂層來源（read()→f32le bytes / b"" 表耗盡）。先 atomic swap 再清舊源。"""
+    def set_music_source(self, source, fade_in_s: float = 0.0) -> None:
+        """設音樂層來源（read()→f32le bytes / b"" 表耗盡）。先 atomic swap 再清舊源。
+        fade_in_s > 0：新源從 0 線性淡入到滿（接懷舊歌 crossfade 用，見 begin_music_fadeout）。"""
+        if fade_in_s > 0:
+            self._music_in_gain = 0.0
+            self._music_in_step = 1.0 / max(1, int(fade_in_s / 0.02))
+        else:
+            self._music_in_gain = 1.0
         old = self._music
         self._music = source  # voice thread 立即讀到新源
         if old is not None and old is not source:
             self._cleanup_source(old)
+
+    def begin_music_fadeout(self, fade_s: float) -> bool:
+        """🎚️ [Crossfade] 把主槽的歌搬進淡出槽、fade_s 秒線性降到 0；主槽清空（has_music() 變 False，
+        caller 的播放等待迴圈自然結束、接下一首）。主槽沒歌回 False。淡出槽已有舊歌就丟棄舊的。"""
+        src = self._music
+        if src is None:
+            return False
+        frames = max(1, int(fade_s / 0.02))
+        self._music_out_gain = self._volume_cur * self._music_in_gain
+        self._music_out_step = self._music_out_gain / frames
+        old = self._music_out
+        self._music_out = src
+        self._music = None
+        if old is not None and old is not src:
+            self._cleanup_source(old)  # producer thread，可以 cleanup
+        return True
 
     def clear_music(self) -> None:
         old = self._music
         self._music = None
         if old is not None:
             self._cleanup_source(old)
+        old_out = self._music_out
+        self._music_out = None
+        if old_out is not None:
+            self._cleanup_source(old_out)
 
     @staticmethod
     def _cleanup_source(source) -> None:
@@ -438,7 +476,7 @@ class LocalMixingAudioSource(_BASE):
     # ── 狀態 query（barrier reader 用；T3 讓 cog 兩欄位委派到這）─────────────────
 
     def is_idle(self) -> bool:
-        return (self._music is None
+        return (self._music is None and self._music_out is None
                 and self._tts_cur is None and not self._tts_queue
                 and self._tts2_cur is None and not self._tts2_queue)
 
@@ -492,6 +530,26 @@ class LocalMixingAudioSource(_BASE):
             return None
         if not buf:  # 耗盡
             self._music = None
+            return None
+        f = np.frombuffer(buf, dtype=np.float32)
+        if f.size < FRAME_SAMPLES:
+            f = np.concatenate([f, np.zeros(FRAME_SAMPLES - f.size, dtype=np.float32)])
+        elif f.size > FRAME_SAMPLES:
+            f = f[:FRAME_SAMPLES]
+        return f
+
+    def _next_music_out_frame(self) -> np.ndarray | None:
+        src = self._music_out
+        if src is None:
+            return None
+        try:
+            buf = src.read()
+        except Exception:
+            logger.exception("[Plan12_Mixer] 淡出音樂 source read 失敗，清空淡出槽")
+            self._music_out = None
+            return None
+        if not buf:  # 耗盡
+            self._music_out = None
             return None
         f = np.frombuffer(buf, dtype=np.float32)
         if f.size < FRAME_SAMPLES:

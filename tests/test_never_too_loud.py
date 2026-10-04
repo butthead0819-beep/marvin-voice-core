@@ -249,3 +249,28 @@ async def test_play_stream_song_dj_mix_uses_tts_gain_for_narration(tmp_path, mon
     opts = captured["options"]
     assert am.TTS_LOUDNESS_AF in opts
     assert f"volume={calculate_tts_gain(0.35):.3f}[dj_q]" in opts
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("xfade_marked", [True, False])
+async def test_play_stream_song_fades_in_only_for_xfade_marked_song(xfade_marked):
+    """🎚️ [Crossfade] 懷舊歌（_xfade_in 標記）→ fade_in_s=_XFADE_IN_S；一般歌 → 0.0（不淡入）。"""
+    from cogs.music_cog import MusicCog
+    from cogs.music_cog_tail_dj import _XFADE_IN_S
+    cog = MusicCog(bot=MagicMock())
+    url = "https://t/song"
+    info = {"title": "t", "url": url}
+    if xfade_marked:
+        info["_xfade_in"] = True
+    cog._current_stream_info = info
+    cog._stream_norm_gain = {url: 1.0}  # 已量過 → 不起背景量測
+    cog._resolve_music_source = AsyncMock(return_value=(None, MagicMock()))
+    vc = MagicMock()
+    vc._resolve_playback_device.return_value = MagicMock()
+    vc._mixer_play_music = AsyncMock()
+    cog._vc = lambda: vc
+
+    await cog.play_stream_song(url, "t")
+
+    fade_in_s = vc._mixer_play_music.call_args.kwargs["fade_in_s"]
+    assert fade_in_s == (_XFADE_IN_S if xfade_marked else 0.0)
