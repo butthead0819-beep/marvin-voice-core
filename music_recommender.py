@@ -338,23 +338,43 @@ def is_low_quality_version(cand: "Candidate") -> bool:
 # ── T1 一組三首（懷舊 → 過門 → 新歌）──────────────────────────────────────────
 
 def arc_nostalgia_candidates(pool: list[Candidate], songs: dict, *, now: float,
-                             min_age_days: float = 30.0) -> list[Candidate]:
+                             min_age_days: float = 30.0,
+                             excluded_vids: set[str] | frozenset[str] = frozenset()) -> list[Candidate]:
     """第 1 首「懷舊」：pool 裡最後一次播放超過 min_age_days 的歌，一律改播原曲。
 
     同一首歌多個上傳（normalize 後同名）取所有上傳中最近一次播放，避免換個上傳就算「久沒播」。
+    excluded_vids（永久 skip + 近播）任一上傳命中 → 整個歌名剔除：被 skip 的歌自然最久沒播，
+    不先濾掉懷舊池會塞滿它們、入隊時再被 video-id 閘門擋光（10/4 實測 21 輪只出 2 首）。
     """
     last_ts: dict[str, float] = {}
-    for s in songs.values():
+    blocked: set[str] = set()
+    for url, s in songs.items():
         nt = normalize_title(s.get("title", ""))
         if nt:
             last_ts[nt] = max(last_ts.get(nt, 0.0), _last_play_ts(s))
+            if excluded_vids and extract_video_id(s.get("webpage_url") or url) in excluded_vids:
+                blocked.add(nt)
     out = []
     for c in pool:
+        if normalize_title(c.anchor_title) in blocked:
+            continue
         ts = last_ts.get(normalize_title(c.anchor_title))
         if ts is None or (now - ts) / 86400.0 <= min_age_days:
             continue
         out.append(replace(c, lane="long_tail", mode="direct", arc_role="nostalgia"))
     return out
+
+
+def server_play_count(songs: dict, title: str, video_id: str = "") -> int:
+    """全伺服器這首歌被播過幾次：normalize 歌名相同或 videoId 相同的所有上傳 plays 合計（每個上傳只算一次）。"""
+    nt = normalize_title(title or "")
+    total = 0
+    for url, s in songs.items():
+        same_title = bool(nt) and normalize_title(s.get("title", "")) == nt
+        same_vid = bool(video_id) and extract_video_id(s.get("webpage_url") or url) == video_id
+        if same_title or same_vid:
+            total += len(s.get("plays") or [])
+    return total
 
 
 def song_video_id_for_title(songs: dict, title: str) -> str:

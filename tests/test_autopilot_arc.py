@@ -280,3 +280,93 @@ async def test_auto_recommend_enqueues_one_song_per_arc_role_in_order(monkeypatc
     assert roles == ["nostalgia", "bridge", "discovery"]
     assert cog.stream_queue[0]["title"] in ("老歌甲", "老歌乙")
     assert cog.radio_seeds and cog.radio_seeds[0] in ("VID00000001", "VID00000002")
+
+
+# ── 12. 懷舊候選先濾掉永久 skip / 近播（10/4：懷舊池塞滿被 skip 的歌、每輪被擋）──
+def test_nostalgia_drops_title_when_any_upload_is_excluded():
+    url_a2 = "https://www.youtube.com/watch?v=VID00000003"
+    songs = {
+        URL_A: _song("舊歌A", URL_A, days_ago=60),
+        url_a2: _song("舊歌A", url_a2, days_ago=50),   # 同名另一個上傳，被 skip
+        URL_B: _song("舊歌B", URL_B, days_ago=60),
+    }
+    pool = [_cand("舊歌A"), _cand("舊歌B")]
+    out = arc_nostalgia_candidates(pool, songs, now=NOW, excluded_vids={"VID00000003"})
+    assert [c.anchor_title for c in out] == ["舊歌B"]
+
+
+def test_nostalgia_default_excluded_vids_keeps_old_behavior():
+    songs = {URL_A: _song("舊歌A", URL_A, days_ago=60)}
+    out = arc_nostalgia_candidates([_cand("舊歌A")], songs, now=NOW)
+    assert [c.anchor_title for c in out] == ["舊歌A"]
+
+
+@pytest.mark.asyncio
+async def test_auto_recommend_skipped_nostalgia_not_used_as_lead(monkeypatch):
+    """老歌甲被永久 skip → 懷舊只剩老歌乙，過門種子也用老歌乙。"""
+    import cogs.music_cog_story_arc as mod
+    import taste_fingerprint
+    import track_quality
+
+    async def _ok(*a, **kw):
+        return True, ""
+    monkeypatch.setattr(track_quality, "assess_track_quality", _ok)
+    monkeypatch.setattr(taste_fingerprint, "explore_matches_floor", lambda t, fp: True)
+    monkeypatch.setattr(mod, "append_recommendation", lambda rec: None)
+    songs = {URL_A: {"title": "老歌甲", "uploader": "歌手", "webpage_url": URL_A,
+                     "plays": [{"ts": NOW - 45 * DAY, "by": "A"}], "requesters": {"A": 9},
+                     "connections": []},
+             URL_B: {"title": "老歌乙", "uploader": "歌手", "webpage_url": URL_B,
+                     "plays": [{"ts": NOW - 40 * DAY, "by": "A"}], "requesters": {"A": 2},
+                     "connections": []}}
+    monkeypatch.setattr(mod.time, "time", lambda: NOW)
+    cog = _FakeCog(songs, radio=[], fresh=[])
+    cog.bot.music_memory.get_skipped_video_ids = lambda: {"VID00000001"}
+
+    await cog._auto_recommend("A")
+
+    nost = [i for i in cog.stream_queue if i["_arc_role"] == "nostalgia"]
+    assert [i["title"] for i in nost] == ["老歌乙"]
+    assert cog.radio_seeds == ["VID00000002"]
+
+
+# ── 13. 全伺服器播放次數（口白熟悉度分流用；入隊時、record_play 之前算）──────────
+def test_server_play_count_sums_uploads_by_title_or_video_id():
+    from music_recommender import server_play_count
+    url_a2 = "https://www.youtube.com/watch?v=VID00000003"
+    songs = {
+        URL_A: {"title": "歌A", "webpage_url": URL_A, "plays": [{"ts": 1}, {"ts": 2}]},
+        url_a2: {"title": "歌A", "webpage_url": url_a2, "plays": [{"ts": 3}]},
+        URL_B: {"title": "別首", "webpage_url": URL_B, "plays": [{"ts": 4}]},
+        URL_NEW: {"title": "改名上傳", "webpage_url": URL_NEW, "plays": [{"ts": 5}, {"ts": 6}]},
+    }
+    assert server_play_count(songs, "歌A") == 3
+    assert server_play_count(songs, "完全不同", "VID09999999") == 2
+    assert server_play_count(songs, "沒聽過的歌") == 0
+    assert server_play_count(songs, "", "") == 0
+
+
+@pytest.mark.asyncio
+async def test_auto_recommend_records_server_plays_on_info(monkeypatch):
+    import cogs.music_cog_story_arc as mod
+    import taste_fingerprint
+    import track_quality
+
+    async def _ok(*a, **kw):
+        return True, ""
+    monkeypatch.setattr(track_quality, "assess_track_quality", _ok)
+    monkeypatch.setattr(taste_fingerprint, "explore_matches_floor", lambda t, fp: True)
+    monkeypatch.setattr(mod, "append_recommendation", lambda rec: None)
+    songs = {URL_A: {"title": "老歌甲", "uploader": "歌手", "webpage_url": URL_A,
+                     "plays": [{"ts": NOW - 45 * DAY, "by": "A"}] * 4, "requesters": {"A": 4},
+                     "connections": []}}
+    fresh = [Candidate(anchor_title="新歌0", anchor_artist="Y", lane="discovery", mode="direct",
+                       target_member=None, score=0.0, direct_url="http://f/|新歌0")]
+    monkeypatch.setattr(mod.time, "time", lambda: NOW)
+    cog = _FakeCog(songs, radio=[], fresh=fresh)
+
+    await cog._auto_recommend("A")
+
+    by_title = {i["title"]: i["_server_plays"] for i in cog.stream_queue}
+    assert by_title["老歌甲"] == 4
+    assert by_title["新歌0"] == 0

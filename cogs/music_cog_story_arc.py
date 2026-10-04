@@ -39,6 +39,7 @@ from music_recommender import (
     filter_unfamiliar,
     pick_candidates,
     ring_titles_for,
+    server_play_count,
     song_video_id_for_title,
 )
 
@@ -141,11 +142,12 @@ class MusicStoryArcMixin:
             logger.debug("[StatePick] 失敗，沿用原候選", exc_info=True)
             return cands
 
-    async def _assemble_arc_candidates(self, spotlight, members, pool, fallback, exclude_titles, mm) -> list:
+    async def _assemble_arc_candidates(self, spotlight, members, pool, fallback, exclude_titles, mm,
+                                       excluded_vids=frozenset()) -> list:
         """T1 一組三首：懷舊（spotlight 點過、30 天沒播）→ 過門（以第 1 首當 radio 種子）→
         新歌（T4 冒險發現、伺服器沒播過）。哪個位置湊不到就由 fallback（原 T1 候選）補。"""
         songs = mm.all_songs()
-        nost = arc_nostalgia_candidates(pool, songs, now=time.time())
+        nost = arc_nostalgia_candidates(pool, songs, now=time.time(), excluded_vids=excluded_vids)
         nost = pick_candidates(nost, k=self._round_size, top_n=9)
         lead = fallback[0] if fallback[0].state_reason else (nost[0] if nost else None)
         seed_vid = song_video_id_for_title(songs, lead.anchor_title) if lead else ""
@@ -275,7 +277,8 @@ class MusicStoryArcMixin:
         # 🎼 T1 一組三首（懷舊→過門→新歌）；T1 沒候選就照舊往 T2 遞迴。
         _arc = _tier == 1 and bool(cands)
         if _arc:
-            cands = await self._assemble_arc_candidates(spotlight, members, pool, cands, exclude_titles, mm)
+            cands = await self._assemble_arc_candidates(spotlight, members, pool, cands, exclude_titles, mm,
+                                                        excluded_vids)
 
         # 🎚️ [Quality] cover/現場版降到隊尾——自動推薦 cover 11% vs 真人 3%，humans 避開。
         # 好版本先填滿 round；沒更好的時 cover/live 仍會播（不丟棄→不枯竭）。arc 已分段 demote。
@@ -370,6 +373,8 @@ class MusicStoryArcMixin:
             # 上次聽是 0 週前」這種自我指涉的假解釋算進去。這裡拿到的還是播放前的乾淨
             # 歷史（見 explanation_slotfill.py 開頭動機說明）。
             info['_explanation'] = self._compute_recommend_explanation(mm, cand)
+            # 全伺服器播放次數（DJ 口白熟悉度分流用）：同上，要在 record_play 之前算
+            info['_server_plays'] = server_play_count(mm.all_songs(), info['title'], _cand_vid or "")
             if getattr(cand, 'state_reason', ''):
                 info['_state_reason'] = cand.state_reason
             info['_round_position'] = enqueued
