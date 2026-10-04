@@ -254,7 +254,7 @@ class SystemLoopsMixin:
 
     async def _maybe_broadcast_news(self) -> None:
         """靜默夠久時順便報一則新聞（免費 Google News RSS，依在場興趣關鍵字查；
-        沒興趣關鍵字就查台灣熱門頭條）。全防禦 fail-open：抓不到就靜靜跳過，
+        沒興趣關鍵字就從天氣／科技／科學隨機挑，見 news_fetch.news_url）。全防禦 fail-open：抓不到就靜靜跳過，
         不影響 slow_system_loop 其餘行為。冷卻時戳在呼叫前就先蓋，避免抓取
         卡住時同一輪 tick 重入。播過的標題記在 `_broadcast_news_titles`（每程序
         各自記、重啟清空），RSS 只剩播過的就不播。"""

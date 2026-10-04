@@ -120,3 +120,21 @@ async def test_exclude_all_titles_returns_none():
     fetch = _capturing_fetch(_rss("第一則 - 某媒體", "第二則 - 某媒體"))
     result = await news_fetch.fetch_news_headline(None, fetch=fetch, exclude={"第一則", "第二則"})
     assert result is None
+
+
+# ── 10/4：沒興趣關鍵字時不抓熱門頭條（一半是選舉政治/戰爭/社會案件），改天氣＋科技＋科學 ──
+
+def test_news_url_with_keyword_searches_keyword():
+    url = news_fetch.news_url("露營")
+    assert "/search?q=%E9%9C%B2%E7%87%9F" in url
+
+
+def test_news_url_without_keyword_never_top_headlines():
+    import random
+    seen = {news_fetch.news_url(None, rng=random.Random(i)) for i in range(60)}
+    top = f"{news_fetch.RSS_BASE}?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    assert top not in seen
+    assert len(seen) == 3
+    assert any("/search?q=%E5%A4%A9%E6%B0%A3" in u for u in seen)          # 天氣
+    assert any("/topic/TECHNOLOGY" in u for u in seen)
+    assert any("/topic/SCIENCE" in u for u in seen)
