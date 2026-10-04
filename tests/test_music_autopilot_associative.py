@@ -305,3 +305,69 @@ async def test_try_associative_pick_passes_recent_picks_kwarg(monkeypatch):
                                          spotlight="showay", mm=None)
 
     assert mock_fn.await_args.kwargs["recent_picks"] == expected_recent
+
+
+# ── 解析後以實際結果重查 30 天紀錄（#104 review：LLM 拼錯/搜尋歧義時只比 pick.song 會漏）──
+
+_VID = "MEISHOW0001"  # extract_video_id 只認 11 碼
+
+
+def _host_resolving_vid():
+    host = DummyAutopilotHost()
+    host._resolve_yt_query = AsyncMock(return_value={
+        "title": "美秀集團 Amazing Show－手機錢包鑰匙菸",
+        "url": f"https://www.youtube.com/watch?v={_VID}",
+        "webpage_url": f"https://www.youtube.com/watch?v={_VID}",
+        "duration": 210,
+    })
+    return host
+
+
+def _pick(song):
+    return AssociativePick(
+        observed_topic="出門口訣被偷", target_lyric="手機錢包鑰匙菸", artist="美秀集團",
+        song=song, reason="聊到出門口訣", dj_line="剛才聽showay抱怨出門默念的口訣被樂團偷去寫歌，這首奉上。",
+    )
+
+
+@pytest.mark.asyncio
+async def test_rejects_when_resolved_video_id_was_picked_within_30_days(monkeypatch):
+    """LLM 這次寫成別的歌名，但 YouTube 解析到同一支影片 → 擋。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = _host_resolving_vid()
+    associative_history.append_pick("美秀集團", "某個完全不同的寫法", time.time() - 3600,
+                                    title="不相干的標題", video_id=_VID)
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=_pick("出門口訣之歌"))):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
+    assert n == 0
+    assert host.stream_queue == []
+
+
+@pytest.mark.asyncio
+async def test_rejects_when_resolved_title_is_same_song_as_recent_pick(monkeypatch):
+    """舊紀錄只有 LLM 歌名（沒有 vid），解析出的 YouTube 標題是同一首 → 擋。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = _host_resolving_vid()
+    associative_history.append_pick("美秀集團", "手機錢包鑰匙菸", time.time() - 3600)
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=_pick("出門口訣之歌"))):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_success_records_resolved_title_and_video_id(monkeypatch):
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = _host_resolving_vid()
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=_pick("手機錢包鑰匙菸"))):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
+    assert n == 1
+    import json as _json
+    data = _json.loads(associative_history.HISTORY_PATH.read_text(encoding="utf-8").splitlines()[-1])
+    assert data["title"] == "美秀集團 Amazing Show－手機錢包鑰匙菸"
+    assert data["vid"] == _VID
+
+
+def test_is_resolved_repeat_ignores_records_older_than_30_days():
+    associative_history.append_pick("美秀集團", "手機錢包鑰匙菸", time.time() - 31 * 86400, video_id=_VID)
+    assert associative_history.is_resolved_repeat(
+        "美秀集團 Amazing Show－手機錢包鑰匙菸", _VID, time.time()) is False

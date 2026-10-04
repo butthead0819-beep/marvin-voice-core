@@ -54,13 +54,19 @@ def load_recent_picks(now: float, path: Path | None = None, days: int = HISTORY_
     return result
 
 
-def append_pick(artist: str, song: str, now: float, path: Path | None = None) -> None:
-    """記錄一筆選曲。"""
+def append_pick(artist: str, song: str, now: float, path: Path | None = None, *,
+                title: str = "", video_id: str = "") -> None:
+    """記錄一筆選曲。title/video_id＝YouTube 實際解析結果（LLM 歌名可能拼錯或搜到別首）。"""
     target_path = path if path is not None else HISTORY_PATH
+    rec = {"ts": now, "artist": artist, "song": song}
+    if title:
+        rec["title"] = title
+    if video_id:
+        rec["vid"] = video_id
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with target_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps({"ts": now, "artist": artist, "song": song}, ensure_ascii=False) + "\n")
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except OSError as e:
         logger.warning(f"[AssociativeHistory] 寫入選曲紀錄失敗: {e}")
 
@@ -76,3 +82,29 @@ def is_repeat(song: str, recent_picks: list[str]) -> bool:
         if normalize_title(pick_song) == target_norm:
             return True
     return False
+
+
+def is_resolved_repeat(title: str, video_id: str, now: float, path: Path | None = None,
+                       days: int = HISTORY_DAYS) -> bool:
+    """YouTube 實際解析結果是否 days 天內選過：videoId 相同，或標題跟紀錄的實際標題/LLM 歌名
+    是「同歌不同上傳」（find_recent_same_song）。解析前只比 LLM 歌名會漏拼錯與搜尋歧義（#104 review）。"""
+    from music_recommender import find_recent_same_song
+
+    target_path = path if path is not None else HISTORY_PATH
+    try:
+        lines = target_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    cutoff = now - days * 86400
+    titles: list[str] = []
+    for line in lines:
+        try:
+            data = json.loads(line)
+            if float(data["ts"]) < cutoff:
+                continue
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if video_id and data.get("vid") == video_id:
+            return True
+        titles += [t for t in (data.get("title"), data.get("song")) if isinstance(t, str) and t]
+    return bool(find_recent_same_song(title, titles))
