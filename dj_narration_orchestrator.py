@@ -209,9 +209,6 @@ def select_narration_mode(
     return topic, mode
 
 
-SONG_FACETS = ("guide:irony", "guide:tea", "guide:hook", "album", "lyric", "related")
-
-
 def pick_song_facet(
     available: dict[str, str], *, exclude: Collection[str] = (), rng=random,
 ) -> tuple[str, str] | None:
