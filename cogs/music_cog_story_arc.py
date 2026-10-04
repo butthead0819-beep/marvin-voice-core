@@ -144,7 +144,7 @@ class MusicStoryArcMixin:
 
     async def _assemble_arc_candidates(self, spotlight, members, pool, fallback, exclude_titles, mm,
                                        excluded_vids=frozenset(), played_titles=()) -> list:
-        """T1 一組三首：懷舊（spotlight 點過、30 天沒播）→ 過門（以第 1 首當 radio 種子）→
+        """T1 一組三首：懷舊（spotlight 點過或按讚過、30 天沒播；讚只能對播過的歌按，等於聽過）→ 過門（以第 1 首當 radio 種子）→
         新歌（T4 冒險發現、伺服器沒播過）。哪個位置湊不到就由 fallback（原 T1 候選）補。"""
         songs = mm.all_songs()
         nost = arc_nostalgia_candidates(pool, songs, now=time.time(), excluded_vids=excluded_vids)
