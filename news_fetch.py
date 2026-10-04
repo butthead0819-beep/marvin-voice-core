@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import xml.etree.ElementTree as ET
 from typing import Awaitable, Callable, Collection, Optional
 from urllib.parse import quote
@@ -26,13 +27,27 @@ def enabled() -> bool:
     return os.getenv("MARVIN_NEWS_BROADCAST", "1") == "1"
 
 
+_LOCALE = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+# 10/4：沒興趣關鍵字時不抓熱門頭條（實測最近 25 則約一半是選舉政治/戰爭/社會案件，
+# 關鍵字黑名單擋不完），改從天氣／科技／科學三個來源隨機挑；黑名單仍當第二層。
+DEFAULT_SOURCES = (
+    f"{RSS_BASE}/search?q={quote('天氣')}&{_LOCALE}",
+    f"{RSS_BASE}/headlines/section/topic/TECHNOLOGY?{_LOCALE}",
+    f"{RSS_BASE}/headlines/section/topic/SCIENCE?{_LOCALE}",
+)
+
+
+def news_url(keyword: Optional[str], *, rng=random) -> str:
+    """keyword 給時查該關鍵字，否則從 DEFAULT_SOURCES 隨機挑一個。"""
+    if keyword:
+        return f"{RSS_BASE}/search?q={quote(keyword)}&{_LOCALE}"
+    return rng.choice(DEFAULT_SOURCES)
+
+
 async def _default_fetch(keyword: Optional[str], *, timeout_s: float = 6.0) -> Optional[str]:
     if aiohttp is None:
         return None
-    if keyword:
-        url = f"{RSS_BASE}/search?q={quote(keyword)}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    else:
-        url = f"{RSS_BASE}?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    url = news_url(keyword)
     try:
         async with aiohttp.ClientSession() as sess:
             async with sess.get(url, timeout=aiohttp.ClientTimeout(total=timeout_s)) as resp:
@@ -96,7 +111,7 @@ async def fetch_news_headline(
     fetch: Optional[Callable[..., Awaitable[Optional[str]]]] = None,
     exclude: Collection[str] = (),
 ) -> Optional[dict]:
-    """抓一則新聞標題。keyword 給時查該關鍵字，否則查台灣熱門頭條。失敗回 None。"""
+    """抓一則新聞標題。keyword 給時查該關鍵字，否則從天氣/科技/科學隨機挑來源（見 news_url）。失敗回 None。"""
     if not enabled():
         return None
     xml_text = await (fetch or _default_fetch)(keyword)
