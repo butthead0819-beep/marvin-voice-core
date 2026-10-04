@@ -1095,6 +1095,7 @@ def test_set_music_source_fade_in_ramps_up_from_silence():
     amps = [_amp(mix.read()) for _ in range(6)]
     assert amps[0] < 10                                   # 第 1 幀接近 0
     assert all(a <= b for a, b in zip(amps, amps[1:]))    # 單調上升
+    assert 0.2 * 0.5 * 32768 < amps[2] < 0.8 * 0.5 * 32768  # 中段真的是中間值（不是第 2 幀就跳滿）
     assert amps[5] == pytest.approx(0.5 * 32768, rel=0.01)  # 第 6 幀已滿
 
 

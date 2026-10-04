@@ -184,7 +184,7 @@ class _VolMixer:
         self._seq = [True, False]
         self.volumes = []
 
-    def set_music_source(self, s):
+    def set_music_source(self, s, fade_in_s=0.0):
         pass
 
     def has_music(self):
