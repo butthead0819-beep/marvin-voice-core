@@ -44,6 +44,10 @@ _DJ_TAIL_SFX_NAMES = ("scratch",)
 # asyncio.wait_for），避免逼近歌1實際結束點才設 _dj_played_in_tail、跟主
 # stream loop 換歌撞在一起（見 _run_tail_dj docstring）。
 _DJ_TAIL_LEAD_S = 8.0
+# 🎚️ [Crossfade] 接懷舊歌（不講話）時的音樂 crossfade：上一首最後 _XFADE_S 秒淡出、下一首疊進來
+_XFADE_S = 6.0       # 接懷舊歌的淡出長度（上一首最後 6 秒淡出、下一首疊進來）
+_XFADE_IN_S = 2.0    # 懷舊歌淡入長度（可能從精華段開播，硬切會很突兀）
+_XFADE_MIN_S = 2.0   # 預解碼最晚要在歌尾前這麼久好，否則放棄 crossfade 照常接歌
 # 尾段口白窗口（9/30 使用者定）：曲2 最多只疊口白最後 _DJ_TAIL_NEXT_OVERLAP_S 秒；
 # 口白更長的部分在兩首之間留空白（例：口白 20s → 曲1 尾 8s + 空白 4s + 曲2 頭 8s）。
 # _DJ_TAIL_GAP_MAX_S：空白上限（防 TTS 層卡了別的東西害音樂一直不開）。
@@ -515,6 +519,14 @@ class MusicTailDJMixin:
         # 提前到 dj_meta 判斷之前，確保退回舊行為時下一首依然有機會提前解碼好。
         self._start_music_preload(next_info)
 
+        from dj_narration_orchestrator import autopilot_narration_focus
+        if autopilot_narration_focus(next_info) == "silent":
+            _eff = duration - (cur_info.get('highlight_start_s') or 0.0)
+            if _eff <= 0:
+                return
+            await self._crossfade_into_silent(cur_info, next_info, real_start + _eff)
+            return
+
         dj_meta = await self._resolve_tail_dj_meta(next_info, cur_info=cur_info)
         if dj_meta is None:
             logger.info(f"[DJ Tail] {title_next} 無可用預渲染 DJ，退回舊行為")
@@ -530,6 +542,52 @@ class MusicTailDJMixin:
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
 
+
+    async def _crossfade_into_silent(self, cur_info: dict, next_info: dict, end_ts: float) -> None:
+        """🎚️ [Crossfade] 下一首是不講話的懷舊歌：等它預解碼好，在當前歌尾前 _XFADE_S 秒把當前歌
+        搬進 mixer 淡出槽，下一首由 stream loop 照常接上並淡入（next_info['_xfade_in']）。
+        預解碼在歌尾前 _XFADE_MIN_S 秒還沒好 / 失敗 / 歌已切換 → 放棄，照舊自然接歌。"""
+        title_cur = cur_info.get('title', '?')
+        title_next = next_info.get('title', '?')
+        task = self._preload_music_cache.get(next_info.get('url', ''))
+        if task is None:
+            logger.info("[Crossfade] 無預解碼 task，照常接歌")
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task), timeout=max(0.0, end_ts - time.time() - _XFADE_MIN_S))
+        except asyncio.TimeoutError:
+            logger.info(f"[Crossfade] {title_next} 預解碼沒趕上，照常接歌")
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.info(f"[Crossfade] {title_next} 預解碼失敗，照常接歌")
+            return
+
+        lead = end_ts - time.time() - _XFADE_S
+        if lead > 0:
+            await asyncio.sleep(lead)
+
+        # re-check：歌仍在播、沒被 skip、仍是同一首
+        if not self.stream_mode:
+            return
+        if getattr(self, '_current_song_skipped', False):
+            return
+        if self._current_stream_info is not cur_info:
+            return
+
+        fade_s = max(_XFADE_MIN_S, min(_XFADE_S, end_ts - time.time()))
+        vc = self._vc()
+        mixer = getattr(vc, '_mixer', None) if vc is not None else None
+        if mixer is None:
+            return
+        # 之後到 stream loop 接歌前不准再有 await（stream loop 會在 0.1s 內結束這首並 cancel 尾段 task）
+        next_info['_xfade_in'] = True
+        if not mixer.begin_music_fadeout(fade_s):
+            next_info.pop('_xfade_in', None)
+            return
+        logger.info(f"🎚️ [Crossfade] {title_cur} 淡出 {fade_s:.1f}s → 接懷舊歌 {title_next}（不講話）")
 
     def _start_music_preload(self, info: dict) -> None:
         """[DJ Tail] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song 換源時直接用

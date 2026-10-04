@@ -728,3 +728,104 @@ async def test_tail_dj_cancelled_error_propagates():
         await cog._run_tail_dj(cur, time.time() - 170.0)
 
     cog._maybe_play_dj_interjection.assert_not_called()
+
+
+# ── 🎚️ [Crossfade] 接懷舊歌（autopilot nostalgia，不講話）：上一首進 mixer 淡出槽 ──
+
+def _nostalgia_next_info():
+    return dict(title="懷舊老歌", url="https://ex/next", requested_by="Marvin推薦（為大肚）",
+                _arc_role="nostalgia")
+
+
+def _wire_vc_mixer(cog, begin_ret=True):
+    vc = MagicMock()
+    vc._mixer.begin_music_fadeout.return_value = begin_ret
+    cog._vc = MagicMock(return_value=vc)
+    return vc._mixer
+
+
+@pytest.mark.asyncio
+async def test_crossfade_into_nostalgia_begins_fadeout_and_skips_dj():
+    import time
+    import cogs.music_cog_tail_dj as tail
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _nostalgia_next_info()
+    cog.stream_queue = [nxt]
+    cog._preload_music_cache[nxt["url"]] = _done_future(object())
+    cog._resolve_tail_dj_meta = AsyncMock(return_value=_dj_meta())
+    _prime(cog, cur)
+    mixer = _wire_vc_mixer(cog)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        await cog._run_tail_dj(cur, time.time() - 170.0)
+
+    mixer.begin_music_fadeout.assert_called_once()
+    fade_s = mixer.begin_music_fadeout.call_args.args[0]
+    assert tail._XFADE_MIN_S <= fade_s <= tail._XFADE_S
+    cog._maybe_play_dj_interjection.assert_not_awaited()
+    assert nxt.get("_xfade_in") is True
+    cog._resolve_tail_dj_meta.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_crossfade_gives_up_when_preload_not_ready_in_time(monkeypatch):
+    import time
+    import cogs.music_cog_tail_dj as tail
+    # 點火在歌尾前 8s；把最晚預解碼時限放大到 9s → 預解碼（永不完成）timeout 必定為 0，不真等
+    monkeypatch.setattr(tail, "_XFADE_MIN_S", 9.0)
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _nostalgia_next_info()
+    cog.stream_queue = [nxt]
+    cog._preload_music_cache[nxt["url"]] = asyncio.get_event_loop().create_future()  # 永不完成
+    _prime(cog, cur)
+    mixer = _wire_vc_mixer(cog)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        await cog._run_tail_dj(cur, time.time() - 170.0)
+
+    mixer.begin_music_fadeout.assert_not_called()
+    assert "_xfade_in" not in nxt
+
+
+@pytest.mark.asyncio
+async def test_human_requested_next_song_keeps_normal_dj_path():
+    import time
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _next_info()  # 真人點歌，不套用懷舊 crossfade
+    cog.stream_queue = [nxt]
+    cog._prefetch_cache[nxt["url"]] = _done_future({"dj": _dj_meta()})
+    cog._preload_music_cache[nxt["url"]] = _done_future(object())
+    _prime(cog, cur)
+    mixer = _wire_vc_mixer(cog)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        await cog._run_tail_dj(cur, time.time() - 170.0)
+
+    mixer.begin_music_fadeout.assert_not_called()
+    cog._maybe_play_dj_interjection.assert_called_once()
+    assert "_xfade_in" not in nxt
+
+
+@pytest.mark.asyncio
+async def test_crossfade_rolls_back_xfade_flag_when_mixer_refuses():
+    import time
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _nostalgia_next_info()
+    cog.stream_queue = [nxt]
+    cog._preload_music_cache[nxt["url"]] = _done_future(object())
+    _prime(cog, cur)
+    mixer = _wire_vc_mixer(cog, begin_ret=False)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        await cog._run_tail_dj(cur, time.time() - 170.0)
+
+    mixer.begin_music_fadeout.assert_called_once()
+    assert "_xfade_in" not in nxt

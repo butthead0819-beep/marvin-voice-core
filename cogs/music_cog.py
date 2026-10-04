@@ -41,7 +41,7 @@ from cogs.music_cog_audio_meta import MusicAudioMetaMixin
 from cogs.music_cog_autopilot import MusicAutopilotMixin
 from cogs.music_cog_story_arc import MusicStoryArcMixin
 from cogs.music_cog_dj_lyrics import MusicDJLyricsMixin
-from cogs.music_cog_tail_dj import MusicTailDJMixin
+from cogs.music_cog_tail_dj import MusicTailDJMixin, _XFADE_IN_S
 from memory_guard import is_memory_critical
 from music_recommender import normalize_title
 from music_memory import extract_video_id
@@ -648,6 +648,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                     device, fresh,
                     still_active=still_active, volume_attr="stream_volume",
                     preloaded=preloaded, started_at=started_future,
+                    fade_in_s=_XFADE_IN_S if (self._current_stream_info or {}).get('_xfade_in') else 0.0,
                 )
 
     # ── Phase 7F: queue / resolve helpers ────────────────────────────────────
