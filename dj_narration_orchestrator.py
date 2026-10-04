@@ -71,6 +71,7 @@ side effect」的兩段決策——尾段點火時機、話題來源挑選——
 from __future__ import annotations
 
 import random
+from typing import Collection
 
 from dj_tail_schedule import tail_dj_fire_delay
 from dj_topic_selector import TopicCooldownStore, select_mode
@@ -147,6 +148,7 @@ def select_narration_mode(
     memory_evidence: str = "",
     has_guide: bool = False,
     focus: str = "",
+    exclude_modes: Collection[str] = (),
 ) -> tuple[str | None, str]:
     """[Step 5c] 這輪串場的話題素材從哪來——原樣包
     `_fetch_dj_interjection_raw` 裡「呼叫 dj_topic_selector.select_mode
@@ -174,16 +176,20 @@ def select_narration_mode(
     本身會回的值。
 
     focus（見 `autopilot_narration_focus`，10/4）：memory_match 之後才看。
-    'song'（少播）→ 有導聆走 guide、沒有走 "song"（講歌本身），都不進扭蛋池（不燒話題
-    冷卻）；'topic'（熟歌）→ 照常扭蛋但不放 guide；''→ 完全照舊。
+    'song'（少播）→ 一律回 (None, "song")，不進扭蛋池（不燒話題冷卻）；歌本身的素材
+    由呼叫端 `pick_song_facet` 抽（10/4 導聆也是其中一個 facet）；'topic'（熟歌）→ 照常扭蛋
+    但不放 guide；''→ 完全照舊。
+
+    exclude_modes（10/4）：同一首歌最近 2 次用過的 mode，memory_match 與扭蛋池都避開
+    （見 dj_topic_selector.select_mode）。focus='song' 不受影響。
     """
     ev = (memory_evidence or "").strip()
-    if ev and topic_store.is_cool(ev):
+    if ev and "memory_match" not in exclude_modes and topic_store.is_cool(ev):
         topic_store.mark_used(ev)
         return ev, "memory_match"
 
     if focus == "song":
-        return None, ("guide" if has_guide else "song")
+        return None, "song"
 
     topic, mode = select_mode(
         life,
@@ -196,14 +202,32 @@ def select_narration_mode(
         news_items=news_items,
         callbacks=callbacks,
         has_guide=has_guide and focus != "topic",
+        exclude_modes=exclude_modes,
     )
     if autopilot_reason and mode in ("quick", "atmosphere"):
         mode = "reason"
     return topic, mode
 
 
+SONG_FACETS = ("guide:irony", "guide:tea", "guide:hook", "album", "lyric", "related")
+
+
+def pick_song_facet(
+    available: dict[str, str], *, exclude: Collection[str] = (), rng=random,
+) -> tuple[str, str] | None:
+    """少播歌只抽歌本身的素材：available＝{facet: 素材文字}（只放有素材的 facet），去掉 exclude 後
+    均等隨機挑一個回 (facet, 文字)；全被排除時改從全部 available 挑（素材少的歌也要有話講）；available 空回 None。"""
+    if not available:
+        return None
+    pool = [f for f in available if f not in exclude]
+    if not pool:
+        pool = list(available)
+    facet = rng.choice(pool)
+    return facet, available[facet]
+
+
 def pick_song_material(
-    candidates: list[str], *, exclude_text: str = "", rng=random,
+    candidates: list[str], *, exclude_text: str = "", exclude: Collection[str] = (), rng=random,
 ) -> str | None:
     """歌曲素材（喜好線索/情感記錄/歌詞呼應/歌曲資料/選這首的理由）只抽 1 個，
     不再全部無條件疊進 ctx（9/30 使用者定：主素材 1 個 + 歌曲素材 1 個，
@@ -211,11 +235,13 @@ def pick_song_material(
 
     exclude_text 非空時，濾掉「exclude_text 是該行子字串」的候選，避免
     memory_match 的記憶證據跟 affinity 等行重複講兩次同一件事。
+    exclude：候選完全等於其中任一字串就去掉（同一首歌最近用過的素材，10/4）。
     """
     pool = [c for c in candidates if c]
     ex = (exclude_text or "").strip()
     if ex:
         pool = [c for c in pool if ex not in c]
+    pool = [c for c in pool if c not in exclude]
     if not pool:
         return None
     return rng.choice(pool)

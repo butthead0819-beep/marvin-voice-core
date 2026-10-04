@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import random
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -59,11 +60,12 @@ def _store(tmp_path):
     return TopicCooldownStore(path=str(tmp_path / "cd.json"))
 
 
-def test_song_focus_with_guide_goes_guide_without_gacha(tmp_path, monkeypatch):
+def test_song_focus_with_guide_still_goes_song_facet(tmp_path, monkeypatch):
+    # 10/4 改：導聆變成 song 素材池的一個 facet（pick_song_facet 抽），mode 一律 "song"
     calls = _spy_select_mode(monkeypatch)
     out = select_narration_mode(life=[], interests=[], topic_store=_store(tmp_path),
                                 has_guide=True, focus="song", autopilot_reason="理由")
-    assert out == (None, "guide")
+    assert out == (None, "song")
     assert calls == []
 
 
@@ -143,13 +145,17 @@ async def test_rare_autopilot_song_talks_about_song_not_topics(tmp_path):
     assert "介紹這首歌本身" in ctx
     assert "十一月的蕭邦" in ctx
     assert "爬山" not in ctx and "露營" not in ctx
-    bank.take.assert_not_called()
+    # 10/4 改：熱聊降溫接回話題對所有歌都優先，少播歌也會 take（不再跳過）
+    bank.take.assert_called_once()
 
 
 # ── 講歌模式去套路（10/4 午實測：6 首都是「照口味挖出、比較少聽、某年專輯、這首給你」）──
 
 @pytest.mark.asyncio
-async def test_song_mode_drops_pick_reason_and_bans_meta_words(tmp_path):
+async def test_song_mode_related_facet_is_pick_reason_and_bans_meta_words(tmp_path, monkeypatch):
+    # 10/4 改：「選這首的理由」變成 song 素材池的 related facet（不再無條件剔除）。
+    # 強制 random.choice 取最後一個候選（related），驗證理由以歌本身素材的形式進 ctx。
+    monkeypatch.setattr(random, "choice", lambda seq: seq[-1])
     cog = _make_cog(tmp_path=tmp_path)
     cog.stream_history = []
     cog._dj_song_material = AsyncMock(return_value=(
@@ -160,8 +166,8 @@ async def test_song_mode_drops_pick_reason_and_bans_meta_words(tmp_path):
     await cog._fetch_dj_interjection_raw(info)
 
     ctx = _ctx_str(cog)
-    assert "十一月的蕭邦" in ctx
-    assert "選這首的理由" not in ctx and "晴天" not in ctx
+    assert "選這首的理由：YouTube Music 常把這首和你們聽過的《晴天》" in ctx
+    assert "十一月的蕭邦" not in ctx
     assert "挖出" in ctx and "比較少聽" in ctx  # 出現在禁止詞清單裡
 
 

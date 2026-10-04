@@ -633,8 +633,7 @@ class MusicDJLyricsMixin:
             _now = time.time()
             if is_hot(_entries, len(present_members or ()), _now):
                 self._dj_heat_bank().snapshot(_entries, _now)
-            if _focus != "song":  # 少播講歌本身，別把話題庫存貨白白 take 掉
-                revival_lines = self._dj_heat_bank().take(_now)
+            revival_lines = self._dj_heat_bank().take(_now)
         except Exception:
             revival_lines = []  # fail-open
 
@@ -675,6 +674,13 @@ class MusicDJLyricsMixin:
                 )
         except Exception:
             pass  # fail-open：歌曲素材查證異常不影響 DJ 生成
+
+        # 同一首歌最近 2 次口白用過的素材（10/4）：這輪避開，重播不講同一句。
+        from dj_narration_log import recent_narrations_for_song, used_materials
+        try:
+            used = used_materials(recent_narrations_for_song(_clean_t or title, n=2))
+        except Exception:
+            used = used_materials([])
 
         # 環境沉浸：城市/區（GPS 訊號，沒有則退回台北）+ 季節（日期推）+ 星期/時段。
         # 不再無條件塞進 ctx——只有 mode == "atmosphere" 被選中時才當開場素材用，
@@ -729,6 +735,7 @@ class MusicDJLyricsMixin:
                 has_guide=bool(guide),
                 callbacks=callback_lines,
                 focus=_focus,
+                exclude_modes=used["modes"],
             )
         logger.info(f"🎚️ [DJ Focus] {title} focus={_focus or '-'} plays={info.get('_server_plays')} → mode={mode}")
 
@@ -786,8 +793,6 @@ class MusicDJLyricsMixin:
         elif mode == "atmosphere":
             ctx.append(env)
             ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
-        elif mode == "song":
-            ctx.append("串場方向：直接介紹這首歌本身（歌手/專輯/年代/歌詞），帶大家進入這首歌；只能用下面素材裡寫的事實，不准自己補細節或編故事，不提生活話題。不要說「挖出」「冷門」「比較少聽」「照你的口味」這類選歌過程的話。")
         elif mode == "guide":
             ctx.append(f"導聆素材（查證過的真實資料，只能用這裡寫的事實）：\n{guide}")
             from dj_gacha_narrator import pick_gacha_motivation
@@ -818,8 +823,9 @@ class MusicDJLyricsMixin:
         if lyrics_task is not None:
             try:
                 _lyrics = await asyncio.wait_for(asyncio.shield(lyrics_task), timeout=_DJ_LYRICS_WAIT_S)
-                from dj_lyric_pick import pick_chorus_line
-                _lyric_line = pick_chorus_line(_lyrics if isinstance(_lyrics, str) else None)
+                from dj_lyric_pick import pick_lyric_line
+                _lyric_line = pick_lyric_line(
+                    _lyrics if isinstance(_lyrics, str) else None, exclude=used["lyric_quotes"])
             except Exception:
                 _lyric_line = None  # 逾時/失敗：這輪沒有歌詞槽
         if _lyric_line:
@@ -829,22 +835,51 @@ class MusicDJLyricsMixin:
         # 每槽最多 1 個，不再全部疊上去造成混線）。
         # guide 本身就是歌曲素材；quick 不走 LLM——這兩個 mode 不抽。
         _lyric_pick = None
+        _facet, _facet_text = None, None
         if mode == "song":
-            # 少播講歌本身：只給歌曲資料 + 歌詞。不附選曲理由（10/4 實測會變成「照口味挖出、
-            # 比較少聽」套路）、不附喜好線索/情感記錄（那是人的事）。沒有事實素材 → 本地模板。
-            from dj_narration_orchestrator import pick_song_material
-            _facts = [l for l in song_candidates if l.startswith("歌曲資料：")]
-            for _line in _facts:
-                ctx.append(f"【這首歌】{_line}")
-            _lyric_pick = pick_song_material(lyric_candidates)
-            if _lyric_pick:
-                ctx.append(f"【你想跟他分享這首的原因】{_lyric_pick}")
-            if not _facts and not _lyric_pick:
+            # 少播歌（10/4）：框架決定這首歌有哪些「歌本身」素材可用，扭蛋只在可用素材裡抽。
+            # 不附選曲理由的 meta 套話、不附喜好線索/情感記錄（那是人的事）。沒有素材 → 本地模板。
+            from dj_narration_orchestrator import pick_song_facet
+            from dj_gacha_narrator import pick_gacha_motivation
+            _card = info.get('_song_card')
+            if not _card and isinstance(guide, str):
+                _card = {"audiophile_guide": guide}
+            available: dict[str, str] = {}
+            if guide and isinstance(_card, dict):
+                for _gm in ("irony", "tea", "hook"):
+                    _motive = pick_gacha_motivation(_card, forced_mode=_gm)
+                    if _motive:
+                        available[f"guide:{_gm}"] = _motive.instruction
+            _album = next((l for l in song_candidates if l.startswith("歌曲資料：")), None)
+            if _album:
+                available["album"] = _album
+            if _lyric_line:
+                available["lyric"] = f"歌詞：『{_lyric_line}』"
+            _expl = info.get('_explanation') or ''
+            if '《' in _expl and '週前' not in _expl:
+                available["related"] = f"選這首的理由：{_expl}"
+            _picked = pick_song_facet(available, exclude=used["facets"])
+            if _picked is None:
                 mode = "quick"
+            else:
+                _facet, _facet_text = _picked
+                if _facet.startswith("guide:"):
+                    ctx.append(f"導聆素材（查證過的真實資料，只能用這裡寫的事實）：\n{guide}")
+                    if isinstance(_card, dict) and isinstance(_card.get("lyric_hook"), dict):
+                        _lh = _card["lyric_hook"]
+                        ctx.append(f"歌詞靈魂刺點：『{_lh.get('quote')}』（{_lh.get('subtext')}）")
+                    ctx.append(_facet_text)
+                    ctx.append("只能講上面素材裡寫的事實，不准自己補細節或編故事。")
+                else:
+                    ctx.append("串場方向：直接介紹這首歌本身，帶大家進入這首歌；只能用下面素材裡寫的事實，不准自己補細節或編故事，不提生活話題。不要說「挖出」「冷門」「比較少聽」「照你的口味」這類選歌過程的話。")
+                    ctx.append(f"【這首歌】{_facet_text}")
         elif mode not in ("guide", "quick"):
             from dj_narration_orchestrator import pick_song_material
             _song_pick = pick_song_material(
-                song_candidates, exclude_text=(topic or "") if mode == "memory_match" else "")
+                song_candidates,
+                exclude_text=(topic or "") if mode == "memory_match" else "",
+                exclude=used["song_materials"],
+            )
             if _song_pick:
                 ctx.append(f"【你懂他的音樂品味】{_song_pick}")
             _lyric_pick = pick_song_material(lyric_candidates)
@@ -892,7 +927,7 @@ class MusicDJLyricsMixin:
                 _recent = getattr(self, '_recent_dj_jokes', ())
                 _vid = extract_video_id(info.get('webpage_url') or info.get('url') or info.get('id') or '')
                 joke_text = get_joke_bank().match(
-                    _song_label or title, video_id=_vid, exclude=set(_recent)) or ""
+                    _song_label or title, video_id=_vid, exclude=set(_recent) | used["jokes"]) or ""
             except Exception as e:
                 logger.warning(f"⚠️ [DJ Joke] 笑話庫比對失敗: {e}")
                 joke_text = ""
@@ -982,6 +1017,8 @@ class MusicDJLyricsMixin:
                 "topic": topic,
                 "song_material": _song_pick,
                 "lyric_material": _lyric_pick,
+                "facet": _facet,
+                "facet_text": _facet_text,
                 "ctx": "\n".join(ctx),
                 "source": _source,
                 "llm_raw": _llm_raw,
