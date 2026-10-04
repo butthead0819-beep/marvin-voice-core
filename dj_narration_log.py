@@ -32,6 +32,9 @@ def log_dj_narration(record: dict) -> None:
         logger.debug(f"[DJ Narration Log] write failed: {e}")
 
 
+_TAIL_BYTES = 2_000_000
+
+
 def _song_key(song: str) -> str:
     """紀錄的 song 欄位（"歌手 - 歌名"）取 " - " 後半段；沒有就整段。"""
     part = song.split(" - ", 1)[1] if " - " in song else song
@@ -48,7 +51,14 @@ def recent_narrations_for_song(title: str, n: int = 2, path: Path | None = None)
         return []
     log_path = path if path is not None else _LOG_PATH
     try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
+        # 每段口白都查一次、同步跑在 event loop 上 → 只讀檔尾（約最近一千段），更早的不排除
+        with log_path.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - _TAIL_BYTES))
+            lines = f.read().decode("utf-8", errors="ignore").splitlines()
+        if size > _TAIL_BYTES:
+            lines = lines[1:]  # 第一行可能被切半
     except Exception:
         return []
     hits: list[dict] = []

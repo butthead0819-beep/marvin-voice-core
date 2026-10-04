@@ -132,6 +132,15 @@ def _isolate_record_writes(tmp_path, monkeypatch):
     except Exception:
         pass
 
+    # 6. dj_narration（dj_narration_log._LOG_PATH）——10/4 起口白生成會「讀」這份紀錄做同曲素材
+    #    排除；只攔寫入不夠，讀到 prod 紀錄會讓 DJ 測試結果隨真實資料飄。讀寫一起導到 tmp。
+    try:
+        import dj_narration_log as _dj_narration_log
+        monkeypatch.setattr(_dj_narration_log, "_LOG_PATH",
+                            records_dir / "dj_narration.jsonl", raising=False)
+    except Exception:
+        pass
+
     yield
 
 

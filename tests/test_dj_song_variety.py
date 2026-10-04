@@ -267,3 +267,40 @@ async def test_narration_log_records_facet_fields(tmp_path, narration_log):
     rec = json.loads(narration_log.read_text(encoding="utf-8").splitlines()[-1])
     assert rec["facet"] == "album"
     assert rec["facet_text"].startswith("歌曲資料：")
+
+
+def test_recent_narrations_only_reads_file_tail(tmp_path, monkeypatch):
+    """每段口白都會查一次、跑在 event loop 上 → 只讀檔尾，太舊的紀錄不納入（一年可達上百 MB）。"""
+    import json
+    import dj_narration_log
+    p = tmp_path / "n.jsonl"
+    old = json.dumps({"song": "周杰倫 - 夜曲", "mode": "life"}, ensure_ascii=False)
+    filler = json.dumps({"song": "別首歌", "mode": "news", "ctx": "x" * 200}, ensure_ascii=False)
+    new = json.dumps({"song": "周杰倫 - 晴天", "mode": "song"}, ensure_ascii=False)
+    p.write_text("\n".join([filler] * 5 + [old] + [filler] * 50 + [new]) + "\n", encoding="utf-8")
+    monkeypatch.setattr(dj_narration_log, "_TAIL_BYTES", 2000)
+    assert dj_narration_log.recent_narrations_for_song("夜曲", path=p) == []
+    assert [r["mode"] for r in dj_narration_log.recent_narrations_for_song("晴天", path=p)] == ["song"]
+
+
+@pytest.mark.asyncio
+async def test_repeat_song_excludes_joke_used_recently(tmp_path, narration_log, monkeypatch):
+    """同一則笑話最近 2 次講過這首就不再講（10/4〈如果我很平庸〉兩次口白一字不差）。"""
+    import joke_bank
+    seen = {}
+
+    class _FakeBank:
+        def match(self, title, video_id=None, exclude=()):
+            seen["exclude"] = set(exclude)
+            return None
+    monkeypatch.setattr(joke_bank, "get_joke_bank", lambda: _FakeBank())
+    cog = _make_cog(tmp_path=tmp_path)
+    cog.stream_history = []
+    cog._last_dj_joke_ts = 0.0  # 冷卻已過
+    _write_log(narration_log, [
+        {"song": "周杰倫 - 夜曲", "mode": "atmosphere", "source": "joke", "text": "平庸得很穩定的笑話"},
+    ])
+
+    await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
+
+    assert "平庸得很穩定的笑話" in seen["exclude"]
