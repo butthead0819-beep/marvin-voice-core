@@ -59,7 +59,7 @@ class _FakeMixer:
         self._seq = list(has_music_seq)
         self.cleared = False
 
-    def set_music_source(self, s):
+    def set_music_source(self, s, fade_in_s=0.0):
         self._src = s          # BufferedF32MusicSource：內部 bg thread 讀 s16 源
 
     def has_music(self):
