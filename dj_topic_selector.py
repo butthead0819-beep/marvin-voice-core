@@ -21,6 +21,7 @@ import hashlib
 import logging
 import random as random_module
 import time
+from typing import Collection
 
 from dj_life_context import LifeCore
 from state_store import StateStore
@@ -231,6 +232,7 @@ def select_mode(
     news_items: list[str] | None = None,
     callbacks: list[str] | None = None,
     has_guide: bool = False,
+    exclude_modes: Collection[str] = (),
     rng: random_module.Random | None = None,
 ) -> tuple[str | None, str]:
     """本地扭蛋抽出這次串場要走哪個 mode，LLM 不必自己判斷「有沒有話題、要不要硬掰」。
@@ -283,6 +285,9 @@ def select_mode(
     pool = [m for m in pool if MODE_WEIGHTS.get(m, 0) > 0]
     if not pool:
         return None, "quick"
+    _without_excluded = [m for m in pool if m not in exclude_modes]
+    if _without_excluded:
+        pool = _without_excluded
     candidates_before_last_filter = list(pool)
 
     last = store.get_last_fallback()

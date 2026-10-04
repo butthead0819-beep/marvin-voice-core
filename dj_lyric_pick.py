@@ -3,7 +3,9 @@
 """
 from __future__ import annotations
 
+import random
 import re
+from typing import Collection
 
 _MIN_LINE_LEN = 6
 _MAX_LINE_LEN = 30
@@ -25,10 +27,8 @@ def _is_filler(line: str) -> bool:
     return bool(words) and all(w in _VOCABLES for w in words)
 
 
-def pick_chorus_line(lyrics: str | None) -> str | None:
-    if not lyrics:
-        return None
-
+def _repeat_counts(lyrics: str) -> tuple[dict[str, int], list[str]]:
+    """逐行過濾後數重複次數；回 (counts, 出現順序)。"""
     counts: dict[str, int] = {}
     order: list[str] = []
     for raw_line in lyrics.split("\n"):
@@ -48,6 +48,14 @@ def pick_chorus_line(lyrics: str | None) -> str | None:
             counts[line] = 0
             order.append(line)
         counts[line] += 1
+    return counts, order
+
+
+def pick_chorus_line(lyrics: str | None) -> str | None:
+    if not lyrics:
+        return None
+
+    counts, order = _repeat_counts(lyrics)
 
     best_line = None
     best_count = 1
@@ -58,3 +66,21 @@ def pick_chorus_line(lyrics: str | None) -> str | None:
             best_line = line
 
     return best_line
+
+
+def pick_lyric_line(
+    lyrics: str | None, *, exclude: Collection[str] = (), top_k: int = 3, rng=random,
+) -> str | None:
+    """跟 pick_chorus_line 同一套過濾，候選＝重複次數 ≥2 的句子依次數高→低（同次數保持出現順序）取前 top_k，
+    去掉 exclude 裡的句子後隨機挑一句；沒有候選回 None。"""
+    if not lyrics:
+        return None
+
+    counts, order = _repeat_counts(lyrics)
+    repeated = [line for line in order if counts[line] >= 2]
+    # sorted 是穩定排序：同次數保留出現順序
+    ranked = sorted(repeated, key=lambda line: -counts[line])[:top_k]
+    pool = [line for line in ranked if line not in exclude]
+    if not pool:
+        return None
+    return rng.choice(pool)

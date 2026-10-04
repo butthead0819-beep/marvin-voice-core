@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Collection
 
 
 @dataclass(frozen=True)
@@ -23,10 +23,12 @@ def pick_gacha_motivation(
     song_card: dict[str, Any] | None,
     topic: str = "",
     forced_mode: str | None = None,
+    exclude: Collection[str] = (),
 ) -> GachaMotivation | None:
     """從歌曲卡素材與上下文場景中，扭蛋抽出一段給 LLM 的說話動機指引。
     
     若歌曲卡為空或沒有有效素材，回傳 None（安全回退至一般串場）。
+    exclude：這首歌最近用過的動機（非 forced_mode 時從候選去掉；去完沒有回 None）。
     """
     if not song_card or not isinstance(song_card, dict):
         return None
@@ -51,6 +53,9 @@ def pick_gacha_motivation(
         else:
             return None
     else:
+        candidates = [c for c in candidates if c not in exclude]
+        if not candidates:
+            return None
         chosen_mode = random.choice(candidates)
 
     if chosen_mode == "irony":
