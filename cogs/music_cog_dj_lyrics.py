@@ -565,6 +565,12 @@ class MusicDJLyricsMixin:
         if not requester:
             return None
 
+        from dj_narration_orchestrator import autopilot_narration_focus
+        _focus = autopilot_narration_focus(info)
+        if _focus == "silent":
+            logger.info(f"🔇 [DJ Focus] {info.get('title', '?')} 懷舊位不講話，直接接歌")
+            return None
+
         if requester.startswith('Marvin'):
             _pos = info.get('_round_position', 0)
             if _pos > 0:
@@ -626,7 +632,8 @@ class MusicDJLyricsMixin:
             _now = time.time()
             if is_hot(_entries, len(present_members or ()), _now):
                 self._dj_heat_bank().snapshot(_entries, _now)
-            revival_lines = self._dj_heat_bank().take(_now)
+            if _focus != "song":  # 少播講歌本身，別把話題庫存貨白白 take 掉
+                revival_lines = self._dj_heat_bank().take(_now)
         except Exception:
             revival_lines = []  # fail-open
 
@@ -720,7 +727,9 @@ class MusicDJLyricsMixin:
                 memory_evidence=memory_evidence,
                 has_guide=bool(guide),
                 callbacks=callback_lines,
+                focus=_focus,
             )
+        logger.info(f"🎚️ [DJ Focus] {title} focus={_focus or '-'} plays={info.get('_server_plays')} → mode={mode}")
 
         if mode == "conversation" and conv_entries:
             # 上面有 await（歌曲/生活/新聞素材），同時預抓的另一首可能已把同幾句用掉：
@@ -776,6 +785,8 @@ class MusicDJLyricsMixin:
         elif mode == "atmosphere":
             ctx.append(env)
             ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
+        elif mode == "song":
+            ctx.append("串場方向：這是大家比較少聽的歌，介紹這首歌本身（歌手/專輯/年代/歌詞），帶大家進入這首歌；只能用下面素材裡寫的事實，不准自己補細節或編故事，不提生活話題。")
         elif mode == "guide":
             ctx.append(f"導聆素材（查證過的真實資料，只能用這裡寫的事實）：\n{guide}")
             from dj_gacha_narrator import pick_gacha_motivation
@@ -817,7 +828,16 @@ class MusicDJLyricsMixin:
         # 每槽最多 1 個，不再全部疊上去造成混線）。
         # guide 本身就是歌曲素材；quick 不走 LLM——這兩個 mode 不抽。
         _lyric_pick = None
-        if mode not in ("guide", "quick"):
+        if mode == "song":
+            # 少播講歌本身：歌曲資料/選曲理由全附，不附喜好線索/情感記錄（那是人的事）
+            from dj_narration_orchestrator import pick_song_material
+            for _line in song_candidates:
+                if _line.startswith(("歌曲資料：", "選這首的理由：")):
+                    ctx.append(f"【這首歌】{_line}")
+            _lyric_pick = pick_song_material(lyric_candidates)
+            if _lyric_pick:
+                ctx.append(f"【你想跟他分享這首的原因】{_lyric_pick}")
+        elif mode not in ("guide", "quick"):
             from dj_narration_orchestrator import pick_song_material
             _song_pick = pick_song_material(
                 song_candidates, exclude_text=(topic or "") if mode == "memory_match" else "")
