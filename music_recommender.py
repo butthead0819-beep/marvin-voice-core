@@ -348,10 +348,12 @@ def arc_nostalgia_candidates(pool: list[Candidate], songs: dict, *, now: float,
     """
     last_ts: dict[str, float] = {}
     blocked: set[str] = set()
+    upload: dict[str, str] = {}
     for url, s in songs.items():
         nt = normalize_title(s.get("title", ""))
         if nt:
             last_ts[nt] = max(last_ts.get(nt, 0.0), _last_play_ts(s))
+            upload.setdefault(nt, s.get("webpage_url") or url)
             if excluded_vids and extract_video_id(s.get("webpage_url") or url) in excluded_vids:
                 blocked.add(nt)
     out = []
@@ -361,7 +363,9 @@ def arc_nostalgia_candidates(pool: list[Candidate], songs: dict, *, now: float,
         ts = last_ts.get(normalize_title(c.anchor_title))
         if ts is None or (now - ts) / 86400.0 <= min_age_days:
             continue
-        out.append(replace(c, lane="long_tail", mode="direct", arc_role="nostalgia"))
+        # 直播曲庫裡那個久沒播的上傳，別重新搜尋（搜尋常落到最近剛播/被 skip 的熱門上傳）
+        out.append(replace(c, lane="long_tail", mode="direct", arc_role="nostalgia",
+                           direct_url=upload.get(normalize_title(c.anchor_title), "")))
     return out
 
 
