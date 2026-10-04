@@ -398,7 +398,8 @@ class LocalMixingAudioSource(_BASE):
         """🎚️ [Crossfade] 把主槽的歌搬進淡出槽、fade_s 秒線性降到 0；主槽清空（has_music() 變 False，
         caller 的播放等待迴圈自然結束、接下一首）。主槽沒歌回 False。淡出槽已有舊歌就丟棄舊的。"""
         src = self._music
-        if src is None:
+        # 暫停中不搬：主槽一空 caller 就換下一首，mixer 卻仍 paused → 無聲卡死（#105 review P1）
+        if src is None or self._paused:
             return False
         frames = max(1, int(fade_s / 0.02))
         self._music_out_gain = self._volume_cur * self._music_in_gain
