@@ -112,6 +112,26 @@ def compute_tail_fire_delay(
     return tail_dj_fire_delay(duration_s, elapsed_s, lead_s=lead_s)
 
 
+RARE_MAX_PLAYS = 2  # 10/4 使用者定：全伺服器 ≤2 次＝新歌/少播
+
+
+def autopilot_narration_focus(info: dict) -> str:
+    """autopilot 選的歌依熟悉度決定口白方向：'silent'（懷舊位不講）/'song'（少播→講歌本身）/
+    'topic'（熟歌→串話題）；非 autopilot 或缺播放次數回 ''（維持原扭蛋行為）。
+
+    10/4 使用者定：懷舊位聽的人知道是什麼歌，「幾週前播過」沒意義，直接接歌不打斷節奏；
+    新歌/少播多講歌曲本身；其他熟悉的歌串話題。真人點歌不套用。
+    """
+    if not (info.get('requested_by') or '').startswith('Marvin'):
+        return ""
+    if info.get('_arc_role') == 'nostalgia':
+        return "silent"
+    plays = info.get('_server_plays')
+    if plays is None:
+        return ""
+    return "song" if plays <= RARE_MAX_PLAYS else "topic"
+
+
 def select_narration_mode(
     *,
     life,
@@ -126,6 +146,7 @@ def select_narration_mode(
     autopilot_reason: str = "",
     memory_evidence: str = "",
     has_guide: bool = False,
+    focus: str = "",
 ) -> tuple[str | None, str]:
     """[Step 5c] 這輪串場的話題素材從哪來——原樣包
     `_fetch_dj_interjection_raw` 裡「呼叫 dj_topic_selector.select_mode
@@ -151,11 +172,18 @@ def select_narration_mode(
     回傳 (topic_text, mode)，跟 `select_mode` 的回傳形狀一致，mode
     多兩種 "memory_match"/"reason" 是這一步疊加上去的，不是 `select_mode`
     本身會回的值。
+
+    focus（見 `autopilot_narration_focus`，10/4）：memory_match 之後才看。
+    'song'（少播）→ 有導聆走 guide、沒有走 "song"（講歌本身），都不進扭蛋池（不燒話題
+    冷卻）；'topic'（熟歌）→ 照常扭蛋但不放 guide；''→ 完全照舊。
     """
     ev = (memory_evidence or "").strip()
     if ev and topic_store.is_cool(ev):
         topic_store.mark_used(ev)
         return ev, "memory_match"
+
+    if focus == "song":
+        return None, ("guide" if has_guide else "song")
 
     topic, mode = select_mode(
         life,
@@ -167,7 +195,7 @@ def select_narration_mode(
         emotional_highlights=emotional_highlights,
         news_items=news_items,
         callbacks=callbacks,
-        has_guide=has_guide,
+        has_guide=has_guide and focus != "topic",
     )
     if autopilot_reason and mode in ("quick", "atmosphere"):
         mode = "reason"
