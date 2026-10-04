@@ -1135,3 +1135,13 @@ def test_fadeout_uses_volume_snapshot_not_later_set_volume():
     mix.begin_music_fadeout(0.1)
     mix.set_volume(0.1, immediate=True)
     assert _amp(mix.read()) == pytest.approx(0.5 * 32768, rel=0.01)
+
+
+def test_begin_fadeout_refused_while_paused():
+    """#105 review P1：暫停中搬歌 → 主槽空、stream loop 切下一首重設 stream_paused，mixer 卻仍
+    paused → 下一首永不消耗、resume 也解不開（無聲卡死）。暫停中一律拒絕。"""
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_music_source(_FakeMusic(value=0.5, frames=100))
+    mix.set_paused(True)
+    assert mix.begin_music_fadeout(0.1) is False
+    assert mix.has_music() is True

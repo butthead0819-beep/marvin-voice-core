@@ -829,3 +829,23 @@ async def test_crossfade_rolls_back_xfade_flag_when_mixer_refuses():
 
     mixer.begin_music_fadeout.assert_called_once()
     assert "_xfade_in" not in nxt
+
+
+@pytest.mark.asyncio
+async def test_crossfade_skipped_while_stream_paused():
+    import time
+    cog = _make_cog()
+    cur = _cur_info(duration=180.0)
+    nxt = _nostalgia_next_info()
+    cog.stream_queue = [nxt]
+    cog._preload_music_cache[nxt["url"]] = _done_future(object())
+    _prime(cog, cur)
+    cog.stream_paused = True
+    mixer = _wire_vc_mixer(cog)
+
+    with patch("os.path.exists", return_value=True), \
+         patch("asyncio.sleep", new=AsyncMock()):
+        await cog._run_tail_dj(cur, time.time() - 170.0)
+
+    mixer.begin_music_fadeout.assert_not_called()
+    assert "_xfade_in" not in nxt

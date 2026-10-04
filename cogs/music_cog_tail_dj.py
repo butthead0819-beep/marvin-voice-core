@@ -576,6 +576,9 @@ class MusicTailDJMixin:
             return
         if self._current_stream_info is not cur_info:
             return
+        if getattr(self, 'stream_paused', False):
+            logger.info(f"[Crossfade] {title_cur} 暫停中，放棄 crossfade 照常接歌")
+            return
 
         fade_s = max(_XFADE_MIN_S, min(_XFADE_S, end_ts - time.time()))
         vc = self._vc()
