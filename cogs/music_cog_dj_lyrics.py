@@ -855,9 +855,6 @@ class MusicDJLyricsMixin:
                 available["album"] = _album
             if _lyric_line:
                 available["lyric"] = f"歌詞：『{_lyric_line}』"
-            _expl = info.get('_explanation') or ''
-            if '《' in _expl and '週前' not in _expl:
-                available["related"] = f"選這首的理由：{_expl}"
             _picked = pick_song_facet(available, exclude=used["facets"])
             if _picked is None:
                 mode = "quick"

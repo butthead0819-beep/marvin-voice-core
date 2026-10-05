@@ -206,3 +206,23 @@ async def test_invalid_url_fail_open(mock_fetch_views, temp_blacklist):
     )
     assert passes is True
     assert reason == "invalid_url_fail_open"
+
+
+# ── 懷舊位：YouTube 分類明確非音樂 → 擋（fail-open：未知不擋）──────────────────
+
+def test_non_music_category_blocks_film_video_with_plain_uploader():
+    assert tq.looks_non_music_category(["Film & Animation"], "暗墨解说") is True
+
+
+def test_non_music_category_music_passes_any_case():
+    assert tq.looks_non_music_category(["Music"], "x") is False
+    assert tq.looks_non_music_category(["music"], "x") is False
+
+
+def test_non_music_category_youtube_music_topic_channel_passes():
+    assert tq.looks_non_music_category(["Entertainment"], "周杰倫 - Topic") is False
+
+
+def test_non_music_category_unknown_fails_open():
+    assert tq.looks_non_music_category([], "x") is False
+    assert tq.looks_non_music_category(None, None) is False

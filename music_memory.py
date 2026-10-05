@@ -224,6 +224,8 @@ class MusicMemory:
                 songs[key]["spotify_album"] = info.get("spotify_album")
                 songs[key]["spotify_uri"] = info.get("spotify_uri")
         s = songs[key]
+        if info.get("categories"):
+            s["categories"] = list(info["categories"])
         ts = time.time()
         s["total_plays"] = s.get("total_plays", 0) + 1
         s["plays"].append({

@@ -152,9 +152,10 @@ async def test_rare_autopilot_song_talks_about_song_not_topics(tmp_path):
 # ── 講歌模式去套路（10/4 午實測：6 首都是「照口味挖出、比較少聽、某年專輯、這首給你」）──
 
 @pytest.mark.asyncio
-async def test_song_mode_related_facet_is_pick_reason_and_bans_meta_words(tmp_path, monkeypatch):
-    # 10/4 改：「選這首的理由」變成 song 素材池的 related facet（不再無條件剔除）。
-    # 強制 random.choice 取最後一個候選（related），驗證理由以歌本身素材的形式進 ctx。
+async def test_song_mode_never_uses_pick_reason_as_facet(tmp_path, monkeypatch):
+    # 10/5 改：選曲理由（_explanation）不再當 song 素材（related facet 已拿掉）。
+    # 即使 _explanation 含《》，ctx 也不得出現「選這首的理由」；其他素材照常可被抽中。
+    # 強制 random.choice 取最後一個候選，album 應是最後一個可用素材。
     monkeypatch.setattr(random, "choice", lambda seq: seq[-1])
     cog = _make_cog(tmp_path=tmp_path)
     cog.stream_history = []
@@ -166,8 +167,9 @@ async def test_song_mode_related_facet_is_pick_reason_and_bans_meta_words(tmp_pa
     await cog._fetch_dj_interjection_raw(info)
 
     ctx = _ctx_str(cog)
-    assert "選這首的理由：YouTube Music 常把這首和你們聽過的《晴天》" in ctx
-    assert "十一月的蕭邦" not in ctx
+    assert "選這首的理由" not in ctx
+    assert "晴天" not in ctx
+    assert "十一月的蕭邦" in ctx
     assert "挖出" in ctx and "比較少聽" in ctx  # 出現在禁止詞清單裡
 
 
