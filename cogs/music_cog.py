@@ -928,6 +928,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                     # （=從頭播，跟舊行為相容）。播放端（play_stream_song/_start_music_preload/
                     # _run_tail_dj）要用這個位移調整實際起播點與尾段點火時間表。
                     'highlight_start_s': pick_highlight_start(chosen.get('heatmap'), _duration),
+                    'categories': list(chosen.get('categories') or []),
                 }
 
         def _cache_put(res):

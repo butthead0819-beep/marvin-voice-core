@@ -18,15 +18,19 @@ URL_B = "https://www.youtube.com/watch?v=VID00000002"
 URL_NEW = "https://www.youtube.com/watch?v=VID09999999"
 
 
-def _song(title: str, url: str, days_ago: float | None, uploader: str = "歌手") -> dict:
+def _song(title: str, url: str, days_ago: float | None, uploader: str = "歌手",
+          categories: list[str] | None = None) -> dict:
     plays = [] if days_ago is None else [{"ts": NOW - days_ago * DAY, "by": "A"}]
-    return {
+    s = {
         "title": title,
         "uploader": uploader,
         "webpage_url": url,
         "plays": plays,
         "requesters": {"A": 1} if plays else {},
     }
+    if categories is not None:
+        s["categories"] = categories
+    return s
 
 
 def _cand(title: str, *, lane: str = "long_tail", mode: str = "direct",
@@ -415,3 +419,50 @@ async def test_auto_recommend_skips_nostalgia_recently_played_under_other_upload
     nost = [i["title"] for i in cog.stream_queue if i["_arc_role"] == "nostalgia"]
     assert nost == ["老歌乙"]
     assert cog.radio_seeds == ["VID00000002"]
+
+
+# ── 15. 懷舊位非音樂分類閘（YouTube categories 非 Music 且 uploader 非 - Topic）──
+def test_nostalgia_drops_title_whose_only_upload_is_non_music():
+    songs = {URL_A: _song("舊歌A", URL_A, days_ago=60, categories=["Sports"])}
+    out = arc_nostalgia_candidates([_cand("舊歌A")], songs, now=NOW)
+    assert out == []
+
+
+def test_nostalgia_prefers_music_upload_over_non_music_upload_of_same_title():
+    songs = {URL_A: _song("同歌", URL_A, days_ago=60, categories=["Film & Animation"]),
+             URL_B: _song("同歌", URL_B, days_ago=60, categories=["Music"])}
+    out = arc_nostalgia_candidates([_cand("同歌")], songs, now=NOW)
+    assert len(out) == 1
+    assert out[0].direct_url == URL_B
+
+
+@pytest.mark.asyncio
+async def test_auto_recommend_nostalgia_non_music_category_blocked_bridge_still_enqueued(monkeypatch):
+    """runtime 閘：解析回 categories=["Sports"] → 懷舊位不入隊；過門位照常入隊。"""
+    import cogs.music_cog_story_arc as mod
+    import taste_fingerprint
+    import track_quality
+
+    async def _ok(*a, **kw):
+        return True, ""
+    monkeypatch.setattr(track_quality, "assess_track_quality", _ok)
+    monkeypatch.setattr(taste_fingerprint, "explore_matches_floor", lambda t, fp: True)
+    monkeypatch.setattr(mod, "append_recommendation", lambda rec: None)
+    songs = {URL_A: {"title": "老歌甲", "uploader": "歌手", "webpage_url": URL_A,
+                     "plays": [{"ts": NOW - 45 * DAY, "by": "A"}], "requesters": {"A": 3},
+                     "connections": []}}
+    radio = [{"title": f"過門{i}", "artist": "X", "url": f"http://r/|過門{i}"} for i in range(3)]
+    monkeypatch.setattr(mod.time, "time", lambda: NOW)
+
+    class _SportsCog(_FakeCog):
+        async def _resolve_yt_query(self, query):
+            info = await super()._resolve_yt_query(query)
+            info["categories"] = ["Sports"]
+            return info
+
+    cog = _SportsCog(songs, radio, fresh=[])
+    await cog._auto_recommend("A")
+
+    roles = [i["_arc_role"] for i in cog.stream_queue]
+    assert "nostalgia" not in roles
+    assert "bridge" in roles

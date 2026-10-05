@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass, replace
 
 from music_memory import extract_video_id
+from track_quality import looks_non_music_category
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +346,8 @@ def arc_nostalgia_candidates(pool: list[Candidate], songs: dict, *, now: float,
     同一首歌多個上傳（normalize 後同名）取所有上傳中最近一次播放，避免換個上傳就算「久沒播」。
     excluded_vids（永久 skip + 近播）任一上傳命中 → 整個歌名剔除：被 skip 的歌自然最久沒播，
     不先濾掉懷舊池會塞滿它們、入隊時再被 video-id 閘門擋光（10/4 實測 21 輪只出 2 首）。
+    非音樂分類上傳（looks_non_music_category：YouTube 分類明確非 Music）不能當懷舊的 direct_url；
+    歌名下沒有任何非「非音樂」上傳 → 整個歌名剔除（10/5：搜錯的街拍/新聞/廣告曾被選進懷舊位）。
     """
     last_ts: dict[str, float] = {}
     blocked: set[str] = set()
@@ -353,7 +356,8 @@ def arc_nostalgia_candidates(pool: list[Candidate], songs: dict, *, now: float,
         nt = normalize_title(s.get("title", ""))
         if nt:
             last_ts[nt] = max(last_ts.get(nt, 0.0), _last_play_ts(s))
-            upload.setdefault(nt, s.get("webpage_url") or url)
+            if not looks_non_music_category(s.get("categories"), s.get("uploader")):
+                upload.setdefault(nt, s.get("webpage_url") or url)
             if excluded_vids and extract_video_id(s.get("webpage_url") or url) in excluded_vids:
                 blocked.add(nt)
     out = []
@@ -363,9 +367,11 @@ def arc_nostalgia_candidates(pool: list[Candidate], songs: dict, *, now: float,
         ts = last_ts.get(normalize_title(c.anchor_title))
         if ts is None or (now - ts) / 86400.0 <= min_age_days:
             continue
+        if normalize_title(c.anchor_title) not in upload:   # 全部上傳都是非音樂 → 剔除
+            continue
         # 直播曲庫裡那個久沒播的上傳，別重新搜尋（搜尋常落到最近剛播/被 skip 的熱門上傳）
         out.append(replace(c, lane="long_tail", mode="direct", arc_role="nostalgia",
-                           direct_url=upload.get(normalize_title(c.anchor_title), "")))
+                           direct_url=upload[normalize_title(c.anchor_title)]))
     return out
 
 

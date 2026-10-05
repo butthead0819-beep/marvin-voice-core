@@ -128,6 +128,16 @@ def is_non_song_video(title: str, duration_s) -> tuple[bool, str]:
     return False, "ok"
 
 
+def looks_non_music_category(categories, uploader) -> bool:
+    """True = YouTube 分類明確不是音樂（懷舊位用）。categories 空/None → False（未知不擋，fail-open）。
+    uploader 以 " - Topic" 結尾（YouTube Music 自動頻道）→ False。否則 "Music" 不在 categories → True。"""
+    if not categories:
+        return False
+    if (uploader or "").endswith(" - Topic"):
+        return False
+    return "music" not in {str(c).lower() for c in categories}
+
+
 # ── Cover heuristic ──────────────────────────────────────────────────────────
 
 def looks_like_cover(title: str) -> bool:

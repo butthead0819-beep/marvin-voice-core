@@ -346,6 +346,11 @@ class MusicStoryArcMixin:
             if _ns:
                 logger.info(f"🚫 [AutoRecommend] 非單曲略過 '{info['title']}': {_ns_reason}")
                 continue
+            if cand.arc_role == "nostalgia":
+                from track_quality import looks_non_music_category
+                if looks_non_music_category(info.get('categories'), info.get('uploader')):
+                    logger.info(f"🚫 [AutoRecommend] 懷舊位非音樂分類略過 '{info['title']}': {info.get('categories')}")
+                    continue
             if _tier == 2 or cand.arc_role == "bridge":
                 from taste_fingerprint import explore_matches_floor
                 if not explore_matches_floor(info.get('title', ''), _taste_fp):
