@@ -52,3 +52,80 @@ class DecryptHealthMonitor:
             return False
         self._escalated = True
         return True
+
+
+def _sorted_list(values: set) -> list:
+    """集合轉排序 list；型別混雜無法比較時退回 repr 排序。"""
+    try:
+        return sorted(values)
+    except TypeError:
+        return sorted(values, key=repr)
+
+
+class DecryptAttribution:
+    """解密失敗歸因：依 SSRC 聚合「自上次 emit 以來」的解密結果，定位是誰、什麼特徵的封包解不開。
+
+    純邏輯（無 IO / 無時鐘），now 由 caller 傳入。ok 封包只累加計數（O(1)）；
+    只有失敗封包才收集 payload type / extension / CSRC count / 封包大小範圍。
+    summary() 在有失敗且視窗到期（或 force）時吐一行字串並清空統計。
+    """
+
+    def __init__(self, window_s: float = 60.0, max_ssrcs: int = 8):
+        self.window_s = window_s
+        self.max_ssrcs = max_ssrcs
+        self._stats: dict = {}
+        self._fail_total = 0
+        self._last_emit = None
+
+    def record(self, ssrc, ok: bool, now: float, *, uid=None, payload=None,
+               extended=None, cc=None, size=None) -> None:
+        """餵入一筆解密結果。第一筆時把視窗起點定在 now。"""
+        if self._last_emit is None:
+            self._last_emit = now
+        b = self._stats.get(ssrc)
+        if b is None:
+            b = {"uid": None, "ok": 0, "fail": 0, "payload": set(), "extended": set(),
+                 "cc": set(), "min": None, "max": None}
+            self._stats[ssrc] = b
+        if uid is not None:
+            b["uid"] = uid
+        if ok:
+            b["ok"] += 1
+            return
+        b["fail"] += 1
+        self._fail_total += 1
+        if payload is not None:
+            b["payload"].add(payload)
+        if extended is not None:
+            b["extended"].add(extended)
+        if cc is not None:
+            b["cc"].add(cc)
+        if size is not None:
+            b["min"] = size if b["min"] is None else min(b["min"], size)
+            b["max"] = size if b["max"] is None else max(b["max"], size)
+
+    def summary(self, now: float, force: bool = False) -> str | None:
+        """有失敗且視窗到期（或 force）→ 回字串並清空統計；否則回 None（不清統計）。"""
+        if self._fail_total == 0:
+            return None
+        if not force and now - self._last_emit < self.window_s:
+            return None
+        ranked = sorted(
+            self._stats.items(),
+            key=lambda kv: (-kv[1]["fail"], kv[0] is None, kv[0] if kv[0] is not None else 0),
+        )
+        parts = [self._fmt(ssrc, b) for ssrc, b in ranked[:self.max_ssrcs]]
+        omitted = len(ranked) - self.max_ssrcs
+        if omitted > 0:
+            parts.append(f"…+{omitted} ssrc")
+        self._stats = {}
+        self._fail_total = 0
+        self._last_emit = now
+        return " | ".join(parts)
+
+    @staticmethod
+    def _fmt(ssrc, b: dict) -> str:
+        ln = "-" if b["min"] is None else f"{b['min']}-{b['max']}"
+        return (f"ssrc={ssrc} uid={b['uid']} ok={b['ok']} fail={b['fail']} "
+                f"pt={_sorted_list(b['payload'])} ext={_sorted_list(b['extended'])} "
+                f"cc={_sorted_list(b['cc'])} len={ln}")

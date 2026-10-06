@@ -4,7 +4,7 @@
 驗證來源：2026-06-23 incident——14:29 網路斷線快速 RESUME 後接收金鑰 desync、
 KeySync 重抓 key 無用（key 本身壞）、Sentinel 看不到傳輸層 CryptoError → 炸 40 分沒自癒。
 """
-from decrypt_health import DecryptHealthMonitor
+from decrypt_health import DecryptAttribution, DecryptHealthMonitor
 
 
 def test_no_escalate_below_min_failures():
@@ -53,3 +53,78 @@ def test_escalate_fires_once_until_success():
     for i in range(32, 47):
         m.record_failure(now=float(i))
     assert m.should_escalate(now=46.0) is True
+
+
+def test_attrib_ok_only_never_emits():
+    """只有 ok 沒有 fail → 即使遠超視窗也不吐（不清統計）。"""
+    a = DecryptAttribution(window_s=60.0)
+    for i in range(10):
+        a.record(111, True, now=float(i), uid=42)
+    assert a.summary(now=1000.0) is None
+
+
+def test_attrib_emits_after_window_with_fail():
+    """有 fail 但未滿視窗 → None；滿視窗 → 吐字串，含 ssrc/fail/uid。"""
+    a = DecryptAttribution(window_s=60.0)
+    for i in range(3):
+        a.record(111, False, now=float(i), uid=42)
+    assert a.summary(now=30.0) is None
+    s = a.summary(now=60.0)
+    assert s is not None
+    assert "ssrc=111" in s
+    assert "fail=3" in s
+    assert "uid=42" in s
+
+
+def test_attrib_clears_after_emit():
+    """emit 後統計清空：緊接著再 summary → None。"""
+    a = DecryptAttribution(window_s=60.0)
+    a.record(111, False, now=0.0, uid=42)
+    assert a.summary(now=60.0) is not None
+    assert a.summary(now=1000.0) is None
+
+
+def test_attrib_force_skips_window():
+    """force=True 不用等視窗。"""
+    a = DecryptAttribution(window_s=60.0)
+    a.record(111, False, now=0.0, uid=42)
+    assert a.summary(now=1.0, force=True) is not None
+
+
+def test_attrib_sorts_by_fail_desc_and_lists_ok_only():
+    """依 fail 由大到小；ok-only 的 ssrc 也列出，且 len 寫 -。"""
+    a = DecryptAttribution(window_s=60.0)
+    for i in range(5):
+        a.record(222, False, now=float(i))
+    for i in range(2):
+        a.record(111, False, now=float(i))
+    for i in range(4):
+        a.record(333, True, now=float(i))
+    s = a.summary(now=60.0)
+    assert s.index("ssrc=222") < s.index("ssrc=111") < s.index("ssrc=333")
+    seg_333 = s[s.index("ssrc=333"):]
+    assert "ok=4" in seg_333
+    assert "len=-" in seg_333
+
+
+def test_attrib_features_only_from_failures():
+    """pt/len 只收失敗封包；ok 封包的 payload 不進 pt。"""
+    a = DecryptAttribution(window_s=60.0)
+    a.record(111, False, now=0.0, payload=120, size=60)
+    a.record(111, False, now=1.0, payload=78, size=200)
+    a.record(111, True, now=2.0, payload=99, size=5)
+    s = a.summary(now=60.0)
+    assert "pt=[78, 120]" in s
+    assert "len=60-200" in s
+    assert "99" not in s
+
+
+def test_attrib_max_ssrcs_truncates_with_count():
+    """max_ssrcs=2 時 4 個有 fail 的 ssrc → 只列 2 段，尾端 …+2 ssrc。"""
+    a = DecryptAttribution(window_s=60.0, max_ssrcs=2)
+    for ssrc in (101, 102, 103, 104):
+        a.record(ssrc, False, now=0.0)
+    s = a.summary(now=60.0)
+    assert s.count("ssrc=") == 2
+    assert s.endswith("…+2 ssrc")
+

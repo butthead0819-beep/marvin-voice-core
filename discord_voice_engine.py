@@ -51,8 +51,9 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
     if decryptor is None or getattr(decryptor, '_key_sync_patched', False):
         return
 
-    from decrypt_health import DecryptHealthMonitor
+    from decrypt_health import DecryptHealthMonitor, DecryptAttribution
     _decrypt_monitor = DecryptHealthMonitor()  # 偵測持續零解密 → on_desync_storm
+    _attrib = DecryptAttribution()  # 解密失敗歸因 log（純觀測）
 
     orig_rtp = decryptor.decrypt_rtp
     orig_rtcp = decryptor.decrypt_rtcp
@@ -115,10 +116,40 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
         logger.warning(f"🛡️ [KeySync] decryptor 已用當前 mode={fresh.mode} 重建（{reason}）")
         return True
 
+    def _packet_meta(packet) -> dict:
+        """快照封包特徵（純觀測）。須在 orig_rtp 之前呼叫：voice_recv 的 rtpsize 解密會就地改寫 header/data。"""
+        try:
+            ssrc = getattr(packet, "ssrc", None)
+            return {
+                "ssrc": ssrc,
+                "uid": (getattr(voice_client, "_ssrc_to_id", None) or {}).get(ssrc),
+                "payload": getattr(packet, "payload", None),
+                "extended": getattr(packet, "extended", None),
+                "cc": getattr(packet, "cc", None),
+                "size": len(packet.header) + len(packet.data),
+            }
+        except Exception:
+            return {"ssrc": None, "uid": None, "payload": None, "extended": None, "cc": None, "size": None}
+
+    def _attrib_record(meta, ok: bool, now: float, force: bool = False) -> None:
+        """餵一筆解密結果進歸因統計（純觀測）；meta=None 時只做 summary，force 時立即吐。"""
+        try:
+            if meta is not None:
+                _attrib.record(meta["ssrc"], ok, now, uid=meta["uid"], payload=meta["payload"],
+                               extended=meta["extended"], cc=meta["cc"], size=meta["size"])
+            s = _attrib.summary(now, force=force)
+            if s is not None:
+                logger.warning(f"🔬 [KeySync] 解密歸因（近 {_attrib.window_s:.0f}s）: {s}")
+        except Exception:
+            logger.debug("[KeySync] 解密歸因 log 失敗", exc_info=True)
+
     def _synced_decrypt_rtp(packet):
+        _meta = _packet_meta(packet)
         try:
             out = _maybe_dave_decrypt(packet, orig_rtp(packet))
-            _decrypt_monitor.record_success(time.time())
+            _t = time.time()
+            _decrypt_monitor.record_success(_t)
+            _attrib_record(_meta, True, _t)
             return out
         except _CryptoError:
             try:
@@ -126,7 +157,9 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
                 decryptor.update_secret_key(new_key)
                 logger.debug("[KeySync] RTP CryptoError → reader secret_key 已同步")
                 out = _maybe_dave_decrypt(packet, orig_rtp(packet))
-                _decrypt_monitor.record_success(time.time())
+                _t = time.time()
+                _decrypt_monitor.record_success(_t)
+                _attrib_record(_meta, True, _t)
                 return out
             except _CryptoError:
                 # 重抓 key 後仍 CryptoError → 先試「用當前 mode 整個重建 decryptor」
@@ -134,7 +167,9 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
                 if _rebuild_decryptor("RTP 持續 CryptoError"):
                     try:
                         out = _maybe_dave_decrypt(packet, orig_rtp(packet))
-                        _decrypt_monitor.record_success(time.time())
+                        _t = time.time()
+                        _decrypt_monitor.record_success(_t)
+                        _attrib_record(_meta, True, _t)
                         logger.warning("🛡️ [KeySync] decryptor 重建後 RTP 解密恢復 → 免整條重連")
                         return out
                     except _CryptoError:
@@ -144,7 +179,9 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
                 # （2026-06-23 incident：Sentinel 看不到這層 → 炸 40 分沒自癒）。
                 _now = time.time()
                 _decrypt_monitor.record_failure(_now)
+                _attrib_record(_meta, False, _now)
                 if on_desync_storm is not None and _decrypt_monitor.should_escalate(_now):
+                    _attrib_record(None, False, _now, force=True)  # 先吐歸因再吐升級 warning
                     logger.warning("🛡️ [KeySync] 持續零解密(secret_key desync 風暴) → 觸發完整重連自癒")
                     try:
                         on_desync_storm()
