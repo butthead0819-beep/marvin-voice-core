@@ -78,6 +78,12 @@
                  // 輪詢，改回 8；想完全退回音訊路徑零改動的狀態，改回 7——每一層都
                  // 不用改別的地方，重新燒錄即可）
 
+// 2026-10-07：伺服器 MARVIN_CAR_HARDWARE=pi_bt 時沒有指令佇列，/car_commands 一律 404，
+// 但 commandPollTask 每 60s 仍新開一條 TLS 去問——每次握手吃 35–45KB 內部 RAM（Arduino 預編
+// sdkconfig 是 MBEDTLS_INTERNAL_MEM_ALLOC，用不到 PSRAM）＋搶 LWIP_LOCK；熱點下碰上串流重連
+// 時 minFree 掉到 14.8KB。不建這個 task（deckB 收不到指令就只是閒置）。esp32_edge_mix 才需要改回 1。
+#define CMD_POLL_ENABLED 0
+
 // 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
 // buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
 // 2026-08-11 重開查車上斷線：USB 接筆電、serial monitor 開著主動讀（不會積壓 buffer）
@@ -1664,7 +1670,7 @@ void setup() {
   // 的網路 task 餓到搶不到 LWIP_LOCK，心跳連續 HTTP -1（見 carHeartbeat() 前的註解）。
   xTaskCreatePinnedToCore(carHeartbeatTask, "carHeartbeat", 8192, nullptr, 2, nullptr, 0);
 #endif
-#if STEP >= 8
+#if STEP >= 8 && CMD_POLL_ENABLED
   // STEP 8a：指令輪詢，同核心同優先權 2（原本=1，2026-08-13車上實機踩到：跟
   // carHeartbeatTask 2026-08-12 那次一模一樣的餓死症狀——commandPollTask 在同核心的
   // audioNet/deckNet×2（優先權都是2）忙碌時完全被排擠，/car_commands 連續好幾分鐘
