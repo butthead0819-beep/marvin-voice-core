@@ -101,6 +101,9 @@ const int   MARVIN_PORT  = 443;
 // 只有這條高頻寬串流走這個路徑，/car 心跳、/now 等低流量請求維持原本 HTTPS 不動。
 // ⚠️ 只在家測試網路有效；真的出門用 4G 時這個 IP 打不通，需要退回 Tailscale/Funnel。
 const int   MARVIN_LOCAL_PORT = 8790;
+// MARVIN_LOCAL_HOST 設 "" ＝只走熱點/Funnel，跳過所有區網嘗試（省下每次持 LWIP_LOCK 白等 0.8–1.2s）
+// 用巨集不用函式：Arduino 自動原型會插在第一個函式定義前，放這裡會讓 setLed(LedState) 原型跑到 enum 之前而編譯失敗
+#define lanEnabled() (MARVIN_LOCAL_HOST[0] != '\0')
 
 // ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
 #define PIN_BTN_PTT    0    // 喚醒/打斷 = 我們的 PTT
@@ -553,9 +556,12 @@ void audioNetworkTask(void* pv) {
     // PTT/ring buffer補貨全部餓死在等同一把鎖，症狀＝出門連上熱點後播不到一秒就整個
     // 靜音、心跳log也停。設短逾時，見 testFunnelNow() 前的註解。
     funnelClient.setHandshakeTimeout(5);
-    LWIP_LOCK();
-    bool connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
-    LWIP_UNLOCK();
+    bool connectOk = false;
+    if (lanEnabled()) {
+      LWIP_LOCK();
+      connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
+      LWIP_UNLOCK();
+    }
     bool useFunnel = !connectOk;
     if (useFunnel) {
       LWIP_LOCK();
@@ -1063,7 +1069,8 @@ void commandPollTask(void* pv) {
 
     size_t bodyLen = 0;
     WiFiClient localClient;
-    int code = getHttpBody(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
+    int code = -1;
+    if (lanEnabled()) code = getHttpBody(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
                             path, 3000, cmdPollBodyBuf, CMD_POLL_BODY_MAX, &bodyLen);
     if (code <= 0) {
       WiFiClientSecure funnelClient; funnelClient.setInsecure();
@@ -1199,9 +1206,12 @@ void deckBNetworkTask(void* pv) {
     WiFiClient localClient;
     WiFiClientSecure funnelClient; funnelClient.setInsecure();
     funnelClient.setHandshakeTimeout(5);
-    LWIP_LOCK();
-    bool connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
-    LWIP_UNLOCK();
+    bool connectOk = false;
+    if (lanEnabled()) {
+      LWIP_LOCK();
+      connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
+      LWIP_UNLOCK();
+    }
     bool useFunnel = !connectOk;
     if (useFunnel) {
       LWIP_LOCK();
@@ -1415,7 +1425,7 @@ void carHeartbeat() {
   static char body[96];
   snprintf(body, sizeof(body), "{\"state\":\"present\",\"speaker\":\"%s\"}", MARVIN_SPEAKER);
   int code = -1;
-  bool lanAttempted = gHeartbeatTryLan;
+  bool lanAttempted = gHeartbeatTryLan && lanEnabled();
   if (lanAttempted) {
     // timeout 從 3000ms 砍到 800ms：真的在區網範圍時連線幾毫秒內就會成功，不需要那麼
     // 長的容忍度；失敗時（不在區網範圍）的最壞持鎖時間跟著砍掉，別讓明知可能失敗的
@@ -1565,7 +1575,8 @@ void postAudio(int nSamples) {
   char audioPath[64];   // 身分走 query：/audio?speaker=showay（Mac 端白名單驗證）
   snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s", MARVIN_SPEAKER);
   WiFiClient localClient;
-  int code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
+  int code = -1;
+  if (lanEnabled()) code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
                        audioPath, "audio/wav", wav, wavBytes, 15000);
   if (code <= 0) {
     Serial.println("[POST /audio] 區網打不到，退回 Funnel...");
