@@ -97,6 +97,7 @@ const char* WIFI2_PASS   = "__WIFI2_PASS__";
 const char* MARVIN_HOST  = "macbook-air.tail7ba8d0.ts.net";   // 不含 https://
 const int   MARVIN_PORT  = 443;
 const char* MARVIN_TOKEN = "__MARVIN_TEXT_TOKEN__";           // ⚠️ 別 commit 真 token（燒錄前手動填真值）
+const char* MARVIN_SPEAKER = "showay";   // 這台 puck 的主人；必須是 ASCII（直接放進 URL query），且要在 Mac .env 的 MARVIN_CAR_SPEAKERS 白名單裡
 
 // TEMP 實驗（2026-07-25）：/audio_stream 實測 sustained throughput 只有目標 187.5KB/s
 // 的 ~55-67%（100-126KB/s），懷疑雙重加密——Tailscale WireGuard 本身已加密，這條又走
@@ -896,7 +897,8 @@ static int postHttp(WiFiClient& client, const char* host, uint16_t port, int32_t
   // 2026-07-26 註解，available() 已經一起上鎖，這裡只是控制輪詢節奏）。
   client.setTimeout(500);
 
-  String header = String("POST ") + path + "?t=" + MARVIN_TOKEN + " HTTP/1.1\r\n" +
+  // path 已含 query（如 /audio?speaker=…）時 token 接在後面用 &t=，否則用 ?t=
+  String header = String("POST ") + path + (strchr(path, '?') ? "&t=" : "?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
                   "Host: " + host + "\r\n" +
                   "Content-Type: " + contentType + "\r\n" +
                   "Content-Length: " + bodyLen + "\r\n" +
@@ -930,7 +932,8 @@ static bool postHttpKeepAlive(WiFiClient& client, const char* host, const char* 
   *outCode = -1;
   if (!client.connected()) return false;
 
-  String header = String("POST ") + path + "?t=" + MARVIN_TOKEN + " HTTP/1.1\r\n" +
+  // path 已含 query（如 /car?…）時 token 接在後面用 &t=，否則用 ?t=
+  String header = String("POST ") + path + (strchr(path, '?') ? "&t=" : "?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
                   "Host: " + host + "\r\n" +
                   "Content-Type: " + contentType + "\r\n" +
                   "Content-Length: " + bodyLen + "\r\n" +
@@ -1415,7 +1418,8 @@ void carHeartbeat() {
   // 但心跳區網+Funnel兩條路連續 HTTP -1——connect() 前要先搶 LWIP_LOCK，這個 task
   // 優先權=1，跟同核心的 audioNet/deckNet（優先權=2）搶不過，逾時前常常連鎖都還沒搶到
   // 就過期。逾時值加大給排程延遲留餘裕（見下面 carHeartbeatTask 建立時優先權也一併調高）。
-  const char* body = "{\"state\":\"present\"}";
+  static char body[96];
+  snprintf(body, sizeof(body), "{\"state\":\"present\",\"speaker\":\"%s\"}", MARVIN_SPEAKER);
   int code = -1;
   bool lanAttempted = gHeartbeatTryLan;
   if (lanAttempted) {
@@ -1564,15 +1568,17 @@ void postAudio(int nSamples) {
   // socket + lockedReadLine）而非 HTTPClient：HTTPClient 的 POST() 是不可拆的黑盒，鎖
   // 只要包住它就等於持鎖空等到逾時——carHeartbeat() 上面的除錯記錄③已經實測過這個
   // 組合會在 17-20 秒內撞 task watchdog，不要重踩。
+  char audioPath[64];   // 身分走 query：/audio?speaker=showay（Mac 端白名單驗證）
+  snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s", MARVIN_SPEAKER);
   WiFiClient localClient;
   int code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
-                       "/audio", "audio/wav", wav, wavBytes, 15000);
+                       audioPath, "audio/wav", wav, wavBytes, 15000);
   if (code <= 0) {
     Serial.println("[POST /audio] 區網打不到，退回 Funnel...");
     WiFiClientSecure funnelClient; funnelClient.setInsecure();
     funnelClient.setHandshakeTimeout(5);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
     code = postHttp(funnelClient, MARVIN_HOST, MARVIN_PORT, 5000,
-                     "/audio", "audio/wav", wav, wavBytes, 15000);
+                     audioPath, "audio/wav", wav, wavBytes, 15000);
   }
   Serial.printf("[POST /audio] HTTP %d\n", code);
   free(wav);
