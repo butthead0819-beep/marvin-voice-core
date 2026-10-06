@@ -11,6 +11,7 @@
  *       音量交給 S3 端與喇叭，這裡不衰減。
  *       目標裝置：名稱含 "BMW 04900"（車機）或 "soundcore"（Soundcore Mini 3 Pro），不分大小寫。
  *       已配對裝置記在 NVS（最多 4 台，最近連上的排最前）；連線失敗時輪流換下一台。
+ *       STEP 3.1 掃描過濾自理（不做 COD 過濾、名字 EIR→BDNAME→遠端名稱）+ 配對診斷紀錄（開機印 [DIAG]）。
  *
  * 使用方式：
  *   配對新裝置＝長按 BOOT 3 秒（LED 快閃）→ BMW 在 iDrive 選「連接新裝置」／喇叭進配對模式
@@ -34,7 +35,51 @@
 #include <driver/i2s_std.h>
 #include "bridge_dsp.h"
 #include "known_devices.h"
+#include "diag_log.h"
 #include <nvs.h>
+
+// ---- 配對診斷紀錄的 thread 安全佇列 ----
+// BT callback 只把字串丟進這 4 格（portMUX 保護），loop() 取出後寫進 g_diag 並存 NVS。
+static const int DIAG_Q = 4;
+static char g_diag_q[DIAG_Q][DIAG_TEXT];
+static uint8_t g_diag_q_n = 0;
+static uint32_t g_diag_q_drop = 0;
+static portMUX_TYPE g_diag_mux = portMUX_INITIALIZER_UNLOCKED;
+static DiagLog g_diag;
+
+static void diag_post(const char* text) {
+  portENTER_CRITICAL(&g_diag_mux);
+  if (g_diag_q_n < DIAG_Q) {
+    strncpy(g_diag_q[g_diag_q_n], text, DIAG_TEXT - 1);
+    g_diag_q[g_diag_q_n][DIAG_TEXT - 1] = '\0';
+    g_diag_q_n++;
+  } else {
+    g_diag_q_drop++;
+  }
+  portEXIT_CRITICAL(&g_diag_mux);
+}
+
+// ---- 掃描用的位址集合（本次開機有效，最多 8 筆；加入成功才回 true）----
+static const int ADDR_SET_MAX = 8;
+static uint8_t g_seen_a[ADDR_SET_MAX][6];      // 配對模式下已記過 'S' 摘要的裝置
+static uint8_t g_seen_n = 0;
+static uint8_t g_name_req_a[ADDR_SET_MAX][6];  // 已請求過遠端名稱的裝置
+static uint8_t g_name_req_n = 0;
+
+static bool addr_set_add(uint8_t a[][6], uint8_t& n, const uint8_t bda[6]) {
+  for (int i = 0; i < n; i++) {
+    if (memcmp(a[i], bda, 6) == 0) return false;
+  }
+  if (n >= ADDR_SET_MAX) return false;
+  memcpy(a[n++], bda, 6);
+  return true;
+}
+
+static void bda_fmt(const uint8_t a[6], char out[18]) {
+  snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X", a[0], a[1], a[2], a[3], a[4], a[5]);
+}
+
+bool ssid_match_cb(const char* ssid, esp_bd_addr_t address, int rssi);
 
 // ---- 首次配對補開重連 ----
 // 函式庫在 NVS 沒有上次位址時會整段關掉自動重連，且之後不再打開，這裡補開。
@@ -64,6 +109,108 @@ class BridgeSource : public BluetoothA2DPSource {
       Serial.printf("[BT] 發射功率上限 +9dBm err=%d\n", (int)err);
     }
     return ok;
+  }
+
+  // 照函式庫「找到目標」的做法：設 DISCOVERED、記位址、取消掃描；
+  // 之後 app_gap_callback 在 DISC_STATE STOPPED 看到 DISCOVERED 就 esp_a2d_connect。
+  void adopt_target(const uint8_t bda[6], const char* name) {
+    strncpy((char*)s_peer_bdname, name, ESP_BT_GAP_MAX_BDNAME_LEN);
+    s_peer_bdname[ESP_BT_GAP_MAX_BDNAME_LEN] = '\0';
+    s_a2d_state = APP_AV_STATE_DISCOVERED;
+    memcpy(peer_bd_addr, bda, 6);
+    set_last_connection(peer_bd_addr);
+    esp_bt_gap_cancel_discovery();
+  }
+
+  // 函式庫會靜默丟掉非 RENDERING/AUDIO COD 與無 EIR 的裝置；這裡不做 COD 過濾，名字 EIR→BDNAME→遠端名稱。
+  void filter_inquiry_scan_result(esp_bt_gap_cb_param_t* param) override {
+    uint8_t* bda = param->disc_res.bda;
+    uint32_t cod = 0;
+    int32_t rssi = -129;  // 無效值，同函式庫
+    uint8_t* eir = nullptr;
+    char prop_name[ESP_BT_GAP_MAX_BDNAME_LEN + 1] = {0};
+    for (int i = 0; i < param->disc_res.num_prop; i++) {
+      esp_bt_gap_dev_prop_t* p = param->disc_res.prop + i;
+      switch (p->type) {
+        case ESP_BT_GAP_DEV_PROP_COD:
+          cod = *(uint32_t*)(p->val);
+          break;
+        case ESP_BT_GAP_DEV_PROP_RSSI:
+          rssi = *(int8_t*)(p->val);
+          break;
+        case ESP_BT_GAP_DEV_PROP_EIR:
+          eir = (uint8_t*)(p->val);
+          break;
+        case ESP_BT_GAP_DEV_PROP_BDNAME: {
+          int n = p->len;
+          if (n > ESP_BT_GAP_MAX_BDNAME_LEN) n = ESP_BT_GAP_MAX_BDNAME_LEN;
+          if (n > 0) {
+            memcpy(prop_name, p->val, n);
+            prop_name[n] = '\0';
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+
+    char name[ESP_BT_GAP_MAX_BDNAME_LEN + 1] = {0};
+    if (!(eir && get_name_from_eir(eir, (uint8_t*)name, nullptr))) {
+      strncpy(name, prop_name, ESP_BT_GAP_MAX_BDNAME_LEN);
+    }
+
+    char bs[18];
+    bda_fmt(bda, bs);
+    Serial.printf("[SCAN] %s cod=0x%06lx rssi=%d eir=%d name='%s'\n", bs, (unsigned long)cod, (int)rssi,
+                  eir != nullptr, name);
+
+    if (pairing_mode() && addr_set_add(g_seen_a, g_seen_n, bda)) {
+      char d[DIAG_TEXT];
+      snprintf(d, sizeof(d), "S %02X%02X%02X cod%06lx r%d '%s'", bda[3], bda[4], bda[5], (unsigned long)cod,
+               (int)rssi, name);
+      diag_post(d);
+    }
+
+    if (name[0] != '\0') {
+      if (ssid_match_cb(name, bda, rssi)) adopt_target(bda, name);
+    } else if (addr_set_add(g_name_req_a, g_name_req_n, bda)) {
+      Serial.printf("[SCAN] 無名稱，請求遠端名稱 %s\n", bs);
+      esp_bt_gap_read_remote_name(bda);
+    }
+  }
+
+  void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param) override {
+    if (event == ESP_BT_GAP_READ_REMOTE_NAME_EVT) {
+      uint8_t* bda = param->read_rmt_name.bda;
+      int stat = param->read_rmt_name.stat;
+      const char* name = (const char*)param->read_rmt_name.rmt_name;
+      char bs[18];
+      bda_fmt(bda, bs);
+      Serial.printf("[SCAN] 遠端名稱 %s stat=%d name='%s'\n", bs, stat, name);
+      if (pairing_mode()) {
+        char d[DIAG_TEXT];
+        snprintf(d, sizeof(d), "N %02X%02X%02X st%d '%s'", bda[3], bda[4], bda[5], stat, name);
+        diag_post(d);
+      }
+      if (stat == ESP_BT_STATUS_SUCCESS && ssid_match_cb(name, bda, -1) &&
+          s_a2d_state != APP_AV_STATE_DISCOVERED) {
+        adopt_target(bda, name);
+      }
+      return;  // 基底不處理這個事件
+    }
+    if (event == ESP_BT_GAP_AUTH_CMPL_EVT) {
+      uint8_t* bda = param->auth_cmpl.bda;
+      int stat = param->auth_cmpl.stat;
+      const char* name = (const char*)param->auth_cmpl.device_name;
+      char bs[18];
+      bda_fmt(bda, bs);
+      Serial.printf("[BT] 配對驗證 %s stat=%d name='%s'\n", bs, stat, name);
+      char d[DIAG_TEXT];
+      snprintf(d, sizeof(d), "A %02X%02X%02X st%d '%s'", bda[3], bda[4], bda[5], stat, name);
+      diag_post(d);
+    }
+    BluetoothA2DPSource::app_gap_callback(event, param);
   }
 };
 
@@ -119,6 +266,62 @@ static void known_save() {
   if (err == ESP_OK) err = nvs_commit(h);
   nvs_close(h);
   if (err != ESP_OK) Serial.printf("[BT] 已配對清單寫入失敗 err=%d\n", (int)err);
+}
+
+// ---- 配對診斷紀錄 NVS（namespace "bt_bridge" / key "diag"）----
+static void diag_load() {
+  uint8_t buf[1 + DIAG_TEXT * DIAG_MAX];
+  nvs_handle_t h;
+  if (nvs_open("bt_bridge", NVS_READONLY, &h) == ESP_OK) {
+    size_t len = sizeof(buf);
+    if (nvs_get_blob(h, "diag", buf, &len) == ESP_OK) {
+      diag_deserialize(g_diag, buf, len);
+    }
+    nvs_close(h);
+  }
+  Serial.printf("[DIAG] 上次診斷紀錄 %d 條\n", (int)g_diag.count);
+  for (int i = 0; i < g_diag.count; i++) {
+    char t[DIAG_TEXT];
+    diag_get(g_diag, i, t);
+    Serial.printf("[DIAG] %02d %s\n", i, t);
+  }
+}
+
+static void diag_store() {
+  uint8_t buf[1 + DIAG_TEXT * DIAG_MAX];
+  size_t len = diag_serialize(g_diag, buf, sizeof(buf));
+  nvs_handle_t h;
+  if (nvs_open("bt_bridge", NVS_READWRITE, &h) != ESP_OK) {
+    Serial.println("[DIAG] 寫入失敗（nvs_open）");
+    return;
+  }
+  esp_err_t err = nvs_set_blob(h, "diag", buf, len);
+  if (err == ESP_OK) err = nvs_commit(h);
+  nvs_close(h);
+  if (err != ESP_OK) Serial.printf("[DIAG] 寫入失敗 err=%d\n", (int)err);
+}
+
+// loop() 內取出佇列並寫入紀錄；BT callback 不直接呼叫這裡。
+static void diag_drain() {
+  char q[DIAG_Q][DIAG_TEXT];
+  uint8_t n;
+  uint32_t drop;
+  portENTER_CRITICAL(&g_diag_mux);
+  n = g_diag_q_n;
+  memcpy(q, g_diag_q, sizeof(q));
+  g_diag_q_n = 0;
+  drop = g_diag_q_drop;
+  g_diag_q_drop = 0;
+  portEXIT_CRITICAL(&g_diag_mux);
+  if (drop) Serial.printf("[DIAG] 佇列滿，丟棄 %lu 條\n", (unsigned long)drop);
+  if (n == 0) return;
+  for (int i = 0; i < n; i++) diag_add(g_diag, q[i]);
+  diag_store();
+}
+
+static void diag_loop_add(const char* text) {
+  diag_add(g_diag, text);
+  diag_store();
 }
 
 // ---- I2S slave RX ----
@@ -245,6 +448,7 @@ void setup() {
   a2dp_source.start();
   // 已配對清單在 start() 之後才讀：start() 內部已 init NVS，我們這邊再 init 會讓函式庫 ESP_ERROR_CHECK 失敗
   known_load();
+  diag_load();
   g_pairing_mode = a2dp_source.pairing_mode();
   Serial.printf("[BT] 模式：%s\n", g_pairing_mode ? "配對(掃描)" : "重連已知裝置");
 }
@@ -256,6 +460,8 @@ void loop() {
   static bool led_on = false;
   static bool boot_was_down = false;
   static uint32_t boot_down_ms = 0;
+
+  diag_drain();
 
   if (g_connected_evt) {
     g_connected_evt = false;
@@ -271,11 +477,24 @@ void loop() {
       print_bda(cur);
       Serial.printf("（共 %d 台）\n", (int)g_known.count);
     }
+    // C/F 只在配對模式記：重連模式下目標沒開機會每 ~10s 失敗一次，整晚寫 NVS 白耗壽命
+    if (g_pairing_mode) {
+      char d[DIAG_TEXT];
+      snprintf(d, sizeof(d), "C %02X%02X%02X", cur[3], cur[4], cur[5]);
+      diag_loop_add(d);
+    }
     g_pairing_mode = false;
   }
 
   if (g_page_failed_evt) {
     g_page_failed_evt = false;
+    if (g_pairing_mode) {
+      uint8_t lc[6];
+      a2dp_source.get_last(lc);
+      char d[DIAG_TEXT];
+      snprintf(d, sizeof(d), "F %02X%02X%02X", lc[3], lc[4], lc[5]);
+      diag_loop_add(d);
+    }
     if (!a2dp_source.pairing_mode() && g_known.count >= 2) {
       uint8_t cur[6], nxt[6];
       a2dp_source.get_last(cur);
@@ -298,6 +517,8 @@ void loop() {
   boot_was_down = boot_down;
   if (boot_down && now - boot_down_ms >= BOOT_LONG_MS) {
     Serial.println("[BT] 長按 BOOT：清除上次裝置，重開進入配對模式");
+    g_diag = DiagLog();  // 紀錄只反映最近一次配對嘗試
+    diag_store();
     nvs_handle_t h;
     if (nvs_open("connected_bda", NVS_READWRITE, &h) == ESP_OK) {
       esp_err_t err = nvs_erase_key(h, "src_bda");
