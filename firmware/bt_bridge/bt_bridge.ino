@@ -37,6 +37,18 @@ class BridgeSource : public BluetoothA2DPSource {
     reconnect_retries = max_reconnect_retries;
     return true;
   }
+
+ protected:
+  // 發射功率上限 +3dBm(預設) → +9dBm：開放空間 3 公尺就會斷線（5 公分不會）。
+  // esp_bredr_tx_power_set 必須在 controller enable 之後、profile init 之前呼叫，正好是 bt_start() 結束時。
+  bool bt_start() override {
+    bool ok = BluetoothA2DPSource::bt_start();
+    if (ok) {
+      esp_err_t err = esp_bredr_tx_power_set(ESP_PWR_LVL_N0, ESP_PWR_LVL_P9);
+      Serial.printf("[BT] 發射功率上限 +9dBm err=%d\n", (int)err);
+    }
+    return ok;
+  }
 };
 
 BridgeSource a2dp_source;
