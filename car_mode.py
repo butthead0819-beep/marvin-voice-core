@@ -2,9 +2,9 @@
 car_mode.py — 車載模式 wiring（ESP32 puck 上車開場 / 下車停播）。
 
 把 CarPresence 的 on_arrive/on_depart 接到「讀時段 → 建開場 → 播放/停止」：
-- on_arrive: resolve_time_bucket(now) → build_car_open(復用選曲層、絕不付費 LLM)
-             → 呼叫注入的 play_open(car_open)
-- on_depart / TTL 逾時（熄火）: 呼叫注入的 stop_playback()
+- on_arrive(speaker): resolve_time_bucket(now) → build_car_open(復用選曲層、絕不付費 LLM，
+             候選池用第一個到的人 speaker) → 呼叫注入的 play_open(car_open, speaker)
+- on_depart / TTL 逾時（最後一人離開）: 呼叫注入的 stop_playback()
 
 play_open / stop_playback / pool_provider 都注入（真實綁定在 main_satellite 組裝處），
 ∴ 本模組純邏輯、無 Discord / 播放副作用、好測。
@@ -32,9 +32,9 @@ DEFAULT_OPEN_LINES: dict[str, list[str]] = {
 
 def build_car_presence(
     *,
-    play_open: Callable[[object], Awaitable[None]],
+    play_open: Callable[[object, str], Awaitable[None]],
     stop_playback: Callable[[], Awaitable[None]],
-    pool_provider: Callable[[], list[Candidate]],
+    pool_provider: Callable[[str], list[Candidate]],
     open_lines: dict[str, list[str]] | None = None,
     now_fn: Callable[[], _dt.datetime] | None = None,
     ttl_s: float = 90.0,
@@ -48,13 +48,13 @@ def build_car_presence(
     lines = open_lines or DEFAULT_OPEN_LINES
     _now = now_fn or _dt.datetime.now
 
-    async def on_arrive() -> None:
+    async def on_arrive(speaker: str) -> None:
         car_open = build_car_open(
             resolve_time_bucket(_now()),
-            pool_provider=pool_provider,
+            pool_provider=lambda: pool_provider(speaker),
             open_lines=lines,
         )
-        await play_open(car_open)
+        await play_open(car_open, speaker)
 
     async def on_depart() -> None:
         await stop_playback()
