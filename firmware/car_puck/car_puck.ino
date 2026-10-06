@@ -39,7 +39,7 @@
  *             關掉，不做「切成 deck B 變主線」的部分。STEP<10 完全不受影響。
  *
 
- * ⚠️ 動手前要填：WiFi、MARVIN_TOKEN。（I2S 腳位已實測、不用再查，見下。）
+ * ⚠️ 動手前：cp secrets.h.example secrets.h 並填 WiFi、MARVIN_TOKEN、MARVIN_LOCAL_HOST。（I2S 腳位已實測、不用再查，見下。）
  *
  * ── 2026-07-17 實機體檢結果（Goouuu N16R8 + V1.7，硬體全綠）──
  * efuse 實讀：ESP32-S3 QFN56 rev v0.2 / Flash 16MB / PSRAM 8MB (AP_3v3)，
@@ -78,6 +78,12 @@
                  // 輪詢，改回 8；想完全退回音訊路徑零改動的狀態，改回 7——每一層都
                  // 不用改別的地方，重新燒錄即可）
 
+// 2026-10-07：伺服器 MARVIN_CAR_HARDWARE=pi_bt 時沒有指令佇列，/car_commands 一律 404，
+// 但 commandPollTask 每 60s 仍新開一條 TLS 去問——每次握手吃 35–45KB 內部 RAM（Arduino 預編
+// sdkconfig 是 MBEDTLS_INTERNAL_MEM_ALLOC，用不到 PSRAM）＋搶 LWIP_LOCK；熱點下碰上串流重連
+// 時 minFree 掉到 14.8KB。不建這個 task（deckB 收不到指令就只是閒置）。esp32_edge_mix 才需要改回 1。
+#define CMD_POLL_ENABLED 0
+
 // 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
 // buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
 // 2026-08-11 重開查車上斷線：USB 接筆電、serial monitor 開著主動讀（不會積壓 buffer）
@@ -90,14 +96,9 @@
 // 有登記的那組——在家連家用WiFi（MARVIN_LOCAL_HOST區網明碼路徑成立），出門連iPhone
 // 熱點（區網打不到、走[[Funnel回退]]，見 postAudio()/carHeartbeat()）。
 WiFiMulti wifiMulti;
-const char* WIFI_SSID    = "__WIFI_SSID__";
-const char* WIFI_PASS    = "__WIFI_PASS__";
-const char* WIFI2_SSID   = "__WIFI2_SSID__";
-const char* WIFI2_PASS   = "__WIFI2_PASS__";
+#include "secrets.h"   // WiFi/token/區網IP/身分：複製 secrets.h.example 成 secrets.h 填真值（已 gitignore，別 commit 真值）
 const char* MARVIN_HOST  = "macbook-air.tail7ba8d0.ts.net";   // 不含 https://
 const int   MARVIN_PORT  = 443;
-const char* MARVIN_TOKEN = "__MARVIN_TEXT_TOKEN__";           // ⚠️ 別 commit 真 token（燒錄前手動填真值）
-const char* MARVIN_SPEAKER = "showay";   // 這台 puck 的主人；必須是 ASCII（直接放進 URL query），且要在 Mac .env 的 MARVIN_CAR_SPEAKERS 白名單裡
 
 // TEMP 實驗（2026-07-25）：/audio_stream 實測 sustained throughput 只有目標 187.5KB/s
 // 的 ~55-67%（100-126KB/s），懷疑雙重加密——Tailscale WireGuard 本身已加密，這條又走
@@ -105,8 +106,10 @@ const char* MARVIN_SPEAKER = "showay";   // 這台 puck 的主人；必須是 AS
 // Wi-Fi），先試直連 Mac 區網 IP + 明碼 HTTP，看 throughput 是否顯著改善來確認假設。
 // 只有這條高頻寬串流走這個路徑，/car 心跳、/now 等低流量請求維持原本 HTTPS 不動。
 // ⚠️ 只在家測試網路有效；真的出門用 4G 時這個 IP 打不通，需要退回 Tailscale/Funnel。
-const char* MARVIN_LOCAL_HOST = "192.168.1.130";
 const int   MARVIN_LOCAL_PORT = 8790;
+// MARVIN_LOCAL_HOST 設 "" ＝只走熱點/Funnel，跳過所有區網嘗試（省下每次持 LWIP_LOCK 白等 0.8–1.2s）
+// 用巨集不用函式：Arduino 自動原型會插在第一個函式定義前，放這裡會讓 setLed(LedState) 原型跑到 enum 之前而編譯失敗
+#define lanEnabled() (MARVIN_LOCAL_HOST[0] != '\0')
 
 // ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
 #define PIN_BTN_PTT    0    // 喚醒/打斷 = 我們的 PTT
@@ -559,9 +562,12 @@ void audioNetworkTask(void* pv) {
     // PTT/ring buffer補貨全部餓死在等同一把鎖，症狀＝出門連上熱點後播不到一秒就整個
     // 靜音、心跳log也停。設短逾時，見 testFunnelNow() 前的註解。
     funnelClient.setHandshakeTimeout(5);
-    LWIP_LOCK();
-    bool connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
-    LWIP_UNLOCK();
+    bool connectOk = false;
+    if (lanEnabled()) {
+      LWIP_LOCK();
+      connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
+      LWIP_UNLOCK();
+    }
     bool useFunnel = !connectOk;
     if (useFunnel) {
       LWIP_LOCK();
@@ -1069,7 +1075,8 @@ void commandPollTask(void* pv) {
 
     size_t bodyLen = 0;
     WiFiClient localClient;
-    int code = getHttpBody(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
+    int code = -1;
+    if (lanEnabled()) code = getHttpBody(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
                             path, 3000, cmdPollBodyBuf, CMD_POLL_BODY_MAX, &bodyLen);
     if (code <= 0) {
       WiFiClientSecure funnelClient; funnelClient.setInsecure();
@@ -1205,9 +1212,12 @@ void deckBNetworkTask(void* pv) {
     WiFiClient localClient;
     WiFiClientSecure funnelClient; funnelClient.setInsecure();
     funnelClient.setHandshakeTimeout(5);
-    LWIP_LOCK();
-    bool connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
-    LWIP_UNLOCK();
+    bool connectOk = false;
+    if (lanEnabled()) {
+      LWIP_LOCK();
+      connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
+      LWIP_UNLOCK();
+    }
     bool useFunnel = !connectOk;
     if (useFunnel) {
       LWIP_LOCK();
@@ -1421,7 +1431,7 @@ void carHeartbeat() {
   static char body[96];
   snprintf(body, sizeof(body), "{\"state\":\"present\",\"speaker\":\"%s\"}", MARVIN_SPEAKER);
   int code = -1;
-  bool lanAttempted = gHeartbeatTryLan;
+  bool lanAttempted = gHeartbeatTryLan && lanEnabled();
   if (lanAttempted) {
     // timeout 從 3000ms 砍到 800ms：真的在區網範圍時連線幾毫秒內就會成功，不需要那麼
     // 長的容忍度；失敗時（不在區網範圍）的最壞持鎖時間跟著砍掉，別讓明知可能失敗的
@@ -1571,7 +1581,8 @@ void postAudio(int nSamples) {
   char audioPath[64];   // 身分走 query：/audio?speaker=showay（Mac 端白名單驗證）
   snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s", MARVIN_SPEAKER);
   WiFiClient localClient;
-  int code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
+  int code = -1;
+  if (lanEnabled()) code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
                        audioPath, "audio/wav", wav, wavBytes, 15000);
   if (code <= 0) {
     Serial.println("[POST /audio] 區網打不到，退回 Funnel...");
@@ -1659,7 +1670,7 @@ void setup() {
   // 的網路 task 餓到搶不到 LWIP_LOCK，心跳連續 HTTP -1（見 carHeartbeat() 前的註解）。
   xTaskCreatePinnedToCore(carHeartbeatTask, "carHeartbeat", 8192, nullptr, 2, nullptr, 0);
 #endif
-#if STEP >= 8
+#if STEP >= 8 && CMD_POLL_ENABLED
   // STEP 8a：指令輪詢，同核心同優先權 2（原本=1，2026-08-13車上實機踩到：跟
   // carHeartbeatTask 2026-08-12 那次一模一樣的餓死症狀——commandPollTask 在同核心的
   // audioNet/deckNet×2（優先權都是2）忙碌時完全被排擠，/car_commands 連續好幾分鐘

@@ -105,3 +105,7 @@ Free API key/
 # 日記漫畫產生物（generated，勿入歷史，含 ~9MB bundle）
 marvin_comics*.html
 .loop/
+
+# car puck 韌體機密（範本見 secrets.h.example）
+firmware/car_puck/secrets.h
+firmware/car_puck/build/
