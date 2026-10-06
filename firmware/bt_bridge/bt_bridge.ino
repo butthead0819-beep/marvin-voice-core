@@ -234,6 +234,7 @@ static bool g_pairing_mode = false;
 static const int BOOT_BTN_GPIO = 0;
 static const int LED_PIN = 2;
 static const uint32_t BOOT_LONG_MS = 3000;
+static const uint32_t PAIRING_TIMEOUT_MS = 180000;  // 配對模式 3 分鐘沒連上任何裝置 → 退回重連已知裝置
 static const uint32_t LED_FAST_MS = 125;
 static const uint32_t LED_SLOW_MS = 500;
 
@@ -508,6 +509,20 @@ void loop() {
   }
 
   uint32_t now = millis();
+
+  // 配對模式逾時：否則配對失敗（例如 BMW 沒成功）就永遠卡在配對模式，連已配對的 Soundcore 都不回頭連。
+  // 把最近連過的裝置寫回函式庫的 src_bda 再重開 → 開機即進入重連模式，照常在已知裝置間輪替。
+  if (g_pairing_mode && !a2dp_source.is_connected() && g_known.count > 0 && now >= PAIRING_TIMEOUT_MS) {
+    Serial.println("[BT] 配對模式逾時（3 分鐘未連上），退回重連已知裝置");
+    nvs_handle_t h;
+    if (nvs_open("connected_bda", NVS_READWRITE, &h) == ESP_OK) {
+      nvs_set_blob(h, "src_bda", g_known.addr[0], 6);
+      nvs_commit(h);
+      nvs_close(h);
+    }
+    delay(200);
+    ESP.restart();
+  }
 
   // BOOT 長按 3 秒：清除上次裝置（src_bda）、重開進入配對模式；已知清單保留
   bool boot_down = digitalRead(BOOT_BTN_GPIO) == LOW;
