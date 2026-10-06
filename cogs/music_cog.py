@@ -100,6 +100,15 @@ def _get_puck_client():
     return PuckCommandQueueClient(get_default_queue())
 
 
+def _car_occupants(bot) -> list[str] | None:
+    """車載在場者（main_satellite 把 CarPresence 掛在 bot.car_presence）；未接車載→None。
+    放模組層級而非 method：MusicCog method 數有棘輪預算（test_music_cog_size_budget）。"""
+    cp = getattr(bot, "car_presence", None)
+    if cp is None:
+        return None
+    return list(cp.occupants)
+
+
 class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixin, MusicAudioMetaMixin, MusicAutopilotMixin, MusicStoryArcMixin, MusicDJLyricsMixin, MusicTailDJMixin, commands.Cog):
     """音樂子系統（Strangler Fig 遷移中）。"""
 
@@ -224,13 +233,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 return list(car_occupants)
             return [os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")]
         return online
-
-    def _car_occupants(self) -> list[str] | None:
-        """車載在場者（main_satellite 把 CarPresence 掛在 bot.car_presence）；未接車載→None。"""
-        cp = getattr(self.bot, "car_presence", None)
-        if cp is None:
-            return None
-        return list(cp.occupants)
 
     # ── 🎵 Stream loop & playback ────────────────────────────────────────────
 
@@ -367,7 +369,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         _rb = (self._current_stream_info or {}).get('requested_by') or 'Marvin推薦（點給大家）'  # 重啟後無上一首→視同 Marvin 推薦（9/18 回台接不回 autopilot）
         online = self._autopilot_online_members(
             vc.get_online_members() if vc is not None else [],
-            car_occupants=self._car_occupants(),
+            car_occupants=_car_occupants(self.bot),
         )
         _seed = self._autorecommend_seed(_rb, online)
         if _seed:
@@ -532,7 +534,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             else:
                 online = self._autopilot_online_members(
                     vc.get_online_members() if vc is not None else [],
-                    car_occupants=self._car_occupants(),
+                    car_occupants=_car_occupants(self.bot),
                 )
                 seed = self._autorecommend_seed(requested_by, online)
                 if seed:
@@ -1469,7 +1471,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             return
         online = self._autopilot_online_members(
             vc.get_online_members() if hasattr(vc, 'get_online_members') else [],
-            car_occupants=self._car_occupants(),
+            car_occupants=_car_occupants(self.bot),
         )
         if not online:
             return

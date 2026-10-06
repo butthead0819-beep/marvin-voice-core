@@ -65,3 +65,17 @@ def test_home_mode_ignores_car_occupants(monkeypatch):
     """非車載模式：就算帶了 car_occupants，空 online 仍維持 []。"""
     monkeypatch.delenv("MARVIN_CAR_MODE", raising=False)
     assert MusicCog._autopilot_online_members([], car_occupants=["showay"]) == []
+
+
+def test_car_occupants_reads_bot_car_presence():
+    """_car_occupants 讀 main_satellite 掛上的 bot.car_presence（autopilot 三個呼叫點的資料源）。"""
+    from types import SimpleNamespace
+    from cogs.music_cog import _car_occupants
+    bot = SimpleNamespace(car_presence=SimpleNamespace(occupants=["狗與露", "showay"]))
+    assert _car_occupants(bot) == ["狗與露", "showay"]
+
+
+def test_car_occupants_none_without_car_mode():
+    from types import SimpleNamespace
+    from cogs.music_cog import _car_occupants
+    assert _car_occupants(SimpleNamespace()) is None
