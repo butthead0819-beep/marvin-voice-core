@@ -1649,7 +1649,7 @@ __PERF_JS__
 </body></html>"""
 
 
-async def inject_audio(vc, wav_bytes: bytes) -> bool:
+async def inject_audio(vc, wav_bytes: bytes, speaker: str | None = None) -> bool:
     """把瀏覽器上傳的 WAV 轉錄後，走 inject_text（is_text_input）強制回覆。
 
     為何不走 process_audio_slice：那條經喚醒判定，沒喊「馬文」會被當環境對話→不回話。
@@ -1661,7 +1661,8 @@ async def inject_audio(vc, wav_bytes: bytes) -> bool:
     """
     if not wav_bytes:
         return False
-    speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
+    if speaker is None:
+        speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
     v2 = os.getenv("STT_ENGINE_V2", "").strip().lower() in ("1", "true", "yes", "on")
     fd, tmp_path = tempfile.mkstemp(prefix="satellite_ptt_", suffix=".wav")
     os.close(fd)
@@ -1750,7 +1751,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                    reply_source=None, car_presence=None, audio_rate_limiter=None,
                    stream_source=None, location_state_path=None,
                    now_playing_state_path=None, claude_sessions_state_path=None,
-                   gmail_calendar_state_path=None, puck_command_queue=None):
+                   gmail_calendar_state_path=None, puck_command_queue=None,
+                   device_speakers: dict[str, str] | None = None):
     """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
 
     純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
@@ -1771,6 +1773,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     /car_commands 回 404。/puck_deck 不吃這個旗標（2026-08-18 起 pi_bt 硬體
     也走這條路，見 device/puck_mixer.py::resolve_stream_url() 註解）——只要
     vc.bot 能拿到 MusicCog（bot.cogs.get("MusicCog")）就開放，拿不到才回 500。
+    device_speakers＝車載裝置身分白名單（parse_device_speakers 的結果）；None＝不驗證、
+    裝置送的 speaker 一律當 default_speaker（舊行為）。只影響 /car、/audio，/say 等不動。
     """
     from aiohttp import web
 
@@ -1979,10 +1983,14 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                    or request.remote or "anon")
             if not audio_rate_limiter.allow(key):
                 return web.json_response({"error": "rate_limited"}, status=429, headers=_CORS)
+        spk = resolve_device_speaker(request.query.get("speaker"), device_speakers, default_speaker)
+        if spk is None:
+            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /audio：speaker={request.query.get('speaker')!r}")
+            return web.json_response({"error": "unknown_speaker"}, status=400, headers=_CORS)
         wav_bytes = await request.read()
         if not wav_bytes:
             return web.json_response({"error": "empty"}, status=400, headers=_CORS)
-        ok = await inject_audio(vc, wav_bytes)
+        ok = await inject_audio(vc, wav_bytes, speaker=spk)
         return web.json_response({"ok": ok}, headers=_CORS)
 
     async def handle_reply(request):
@@ -2169,19 +2177,26 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             body = await request.json()
             state = (body.get("state") or "").strip()
             lat, lon = body.get("lat"), body.get("lon")
+            raw_speaker = body.get("speaker")
         else:
             state = (request.query.get("state") or "").strip()
             lat, lon = None, None
-        if state == "present":
-            await car_presence.present()
-        elif state == "absent":
-            await car_presence.absent()
-        else:
+            raw_speaker = request.query.get("speaker")
+        if state not in ("present", "absent"):
             return web.json_response({"error": "bad_state"}, status=400, headers=_CORS)
+        spk = resolve_device_speaker(raw_speaker, device_speakers, default_speaker)
+        if spk is None:
+            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /car：speaker={raw_speaker!r}")
+            return web.json_response({"error": "unknown_speaker"}, status=400, headers=_CORS)
+        if state == "present":
+            await car_presence.present(spk)
+        else:
+            await car_presence.absent(spk)
         if lat is not None and lon is not None:
             save_location_state(lat=float(lat), lon=float(lon), ts=time.time(), path=_gps_path)
         return web.json_response(
-            {"ok": True, "state": state, "present": car_presence.is_present}, headers=_CORS)
+            {"ok": True, "state": state, "present": car_presence.is_present,
+             "occupants": car_presence.occupants}, headers=_CORS)
 
     async def handle_preflight(request):
         return web.Response(status=204, headers=_CORS)
@@ -2301,6 +2316,31 @@ def resolve_car_owner_pool(vc, owner: str, now: float | None = None) -> list:
     return pools.get(owner, [])
 
 
+def parse_device_speakers(raw: str, default_speaker: str) -> dict[str, str]:
+    """MARVIN_CAR_SPEAKERS（逗號分隔）→ {casefold 後的名字: 正式名字}。default_speaker 一定包含在內。空白項略過、前後空白去掉。"""
+    out: dict[str, str] = {}
+    for item in [default_speaker, *raw.split(",")]:
+        name = item.strip()
+        if name:
+            out.setdefault(name.casefold(), name)
+    return out
+
+
+def resolve_device_speaker(raw: str | None, allowed: dict[str, str] | None,
+                           default_speaker: str) -> str | None:
+    """裝置送來的 speaker → 正式名字。
+    allowed=None → 一律回 default_speaker（相容舊行為，忽略裝置送的值）。
+    raw 是 None 或去掉空白後為空 → default_speaker（相容沒帶身分的舊韌體 / Pi）。
+    raw.strip().casefold() 在 allowed 裡 → 回對應的正式名字。
+    其他（不在白名單）→ None。"""
+    if allowed is None or raw is None:
+        return default_speaker
+    key = str(raw).strip().casefold()
+    if not key:
+        return default_speaker
+    return allowed.get(key)
+
+
 async def start_text_http_server(vc, reply_source=None, stream_source=None):
     """起 Siri 文字 HTTP 伺服器（0.0.0.0，走 Tailscale）。回傳 runner（好收）。
 
@@ -2313,6 +2353,8 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
     port = int(os.getenv("MARVIN_TEXT_PORT", "8790"))
     token = os.getenv("MARVIN_TEXT_TOKEN", "").strip() or None
     default_speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
+    # 車載裝置身分白名單（MARVIN_CAR_SPEAKERS）：裝置自己帶 speaker，這裡驗證成正式名字。
+    device_speakers = parse_device_speakers(os.getenv("MARVIN_CAR_SPEAKERS", ""), default_speaker)
 
     # ── 車載模式（ESP32 puck）：MARVIN_CAR_MODE=1 才接；預設 off＝零行為改變 ──
     car_presence = None
@@ -2320,17 +2362,16 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
     if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
         from car_mode import build_car_presence, run_car_ttl_loop
         from rate_limiter import RateLimiter
-        owner = default_speaker
 
-        def _pool_provider():
+        def _pool_provider(speaker):
             # 失敗→空池降級，不讓車載開場因例外整個炸掉。
             try:
-                return resolve_car_owner_pool(vc, owner)
+                return resolve_car_owner_pool(vc, speaker)
             except Exception:  # noqa: BLE001
                 logger.exception("[CarMode] pool_provider 失敗，回空池")
                 return []
 
-        async def _play_open(car_open):
+        async def _play_open(car_open, speaker):
             # 開場：復用 /play 那招 inject_text「放一首X」讓 pipeline 解析+播+DJ；絕不即時付費 LLM。
             #
             # ⚠️ 2026-08-11 實機踩到：這裡原本無條件用 anchor_title 裸字串搜尋，跟
@@ -2360,12 +2401,13 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
                         return await asyncio.wait_for(mc._resolve_yt_query(q), timeout=10)
 
                     query = await resolve_car_open_query(
-                        car_open.song, pool_provider=_pool_provider, resolve_fn=_resolve)
+                        car_open.song, pool_provider=lambda: _pool_provider(speaker),
+                        resolve_fn=_resolve)
                     if query:
-                        await inject_text(vc, owner, f"放一首{query}")
+                        await inject_text(vc, speaker, f"放一首{query}")
                     else:
                         logger.warning("🚗 [CarMode] 開場候選池連試多首都沒過品質閘，本次開場靜音")
-                logger.info("🚗 [CarMode] 上車開場：%s → 放《%s》",
+                logger.info("🚗 [CarMode] 上車開場（%s）：%s → 放《%s》", speaker,
                             car_open.line, car_open.song.anchor_title if car_open.song else "—")
             except Exception:  # noqa: BLE001
                 logger.exception("[CarMode] play_open 失敗")
@@ -2381,6 +2423,7 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
 
         car_presence = build_car_presence(
             play_open=_play_open, stop_playback=_stop_playback, pool_provider=_pool_provider)
+        vc.bot.car_presence = car_presence   # 給 MusicCog 讀在場者（autopilot 續推用）
         # funnel 公開後 /audio per-token 限速：每 token 每分鐘 30 次（架構#2 付費鐵則）。
         audio_rate_limiter = RateLimiter(max_per_window=30, window_s=60.0)
         logger.info("🚗 [CarMode] 車載模式啟用（/car present/absent + TTL 收尾 + /audio 限速）")
@@ -2398,7 +2441,9 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
     app = build_text_app(vc, token=token, default_speaker=default_speaker,
                          reply_source=reply_source, car_presence=car_presence,
                          audio_rate_limiter=audio_rate_limiter, stream_source=stream_source,
-                         puck_command_queue=puck_command_queue)
+                         puck_command_queue=puck_command_queue,
+                         device_speakers=device_speakers)
+    logger.info(f"🚗 [CarMode] 裝置身分白名單：{', '.join(device_speakers.values())}")
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)

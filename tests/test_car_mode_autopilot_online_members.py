@@ -46,3 +46,22 @@ def test_car_mode_unblocks_autorecommend_seed_chain(monkeypatch):
     online = MusicCog._autopilot_online_members([])
     seed = MusicCog._autorecommend_seed("Marvin推薦（為狗與露）", online)
     assert seed == "狗與露"
+
+
+def test_car_mode_uses_all_car_occupants(monkeypatch):
+    """多人同車：在場者全部算進 autopilot，不只一個保底名字。"""
+    monkeypatch.setenv("MARVIN_CAR_MODE", "1")
+    monkeypatch.setenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
+    assert MusicCog._autopilot_online_members([], car_occupants=["狗與露", "showay"]) == ["狗與露", "showay"]
+
+
+def test_car_mode_empty_occupants_falls_back_to_env(monkeypatch):
+    monkeypatch.setenv("MARVIN_CAR_MODE", "1")
+    monkeypatch.setenv("MARVIN_SATELLITE_SPEAKER", "阿凱")
+    assert MusicCog._autopilot_online_members([], car_occupants=[]) == ["阿凱"]
+
+
+def test_home_mode_ignores_car_occupants(monkeypatch):
+    """非車載模式：就算帶了 car_occupants，空 online 仍維持 []。"""
+    monkeypatch.delenv("MARVIN_CAR_MODE", raising=False)
+    assert MusicCog._autopilot_online_members([], car_occupants=["showay"]) == []

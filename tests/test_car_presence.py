@@ -160,3 +160,67 @@ async def test_car_endpoint_off_when_no_presence_wired():
         resp = await client.post("/car?t=s3cret", json={"state": "present"})
         assert resp.status == 400
         assert (await resp.json())["error"] == "car_mode_off"
+
+
+# ── 多人同車（per-device speaker）────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_second_occupant_does_not_refire_arrive():
+    """A 到 → 開場一次（帶 A）；B 再到 → 不重觸發開場，名單依抵達順序。"""
+    from car_presence import CarPresence
+    t, _adv = _clock()
+    arrive, depart = AsyncMock(), AsyncMock()
+    cp = CarPresence(on_arrive=arrive, on_depart=depart, time_fn=t)
+    await cp.present("A")
+    await cp.present("B")
+    arrive.assert_awaited_once_with("A")
+    assert cp.occupants == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_absent_one_of_two_keeps_playing_last_one_stops():
+    from car_presence import CarPresence
+    t, _adv = _clock()
+    arrive, depart = AsyncMock(), AsyncMock()
+    cp = CarPresence(on_arrive=arrive, on_depart=depart, time_fn=t)
+    await cp.present("A")
+    await cp.present("B")
+    await cp.absent("A")
+    depart.assert_not_awaited()
+    assert cp.occupants == ["B"]
+    await cp.absent("B")
+    depart.assert_awaited_once()
+    assert cp.is_present is False
+
+
+@pytest.mark.asyncio
+async def test_ttl_is_per_occupant_only_last_expiry_departs():
+    from car_presence import CarPresence
+    t, adv = _clock()
+    arrive, depart = AsyncMock(), AsyncMock()
+    cp = CarPresence(on_arrive=arrive, on_depart=depart, ttl_s=90.0, time_fn=t)
+    await cp.present("A")
+    await cp.present("B")
+    adv(60.0)
+    await cp.present("B")       # 只有 B 續心跳
+    adv(60.0)                   # A 距上次 120s > 90s；B 距上次 60s
+    fired = await cp.check_ttl()
+    assert fired is False
+    depart.assert_not_awaited()
+    assert cp.occupants == ["B"]
+    adv(40.0)                   # B 也逾時
+    fired = await cp.check_ttl()
+    assert fired is True
+    depart.assert_awaited_once()
+    assert cp.is_present is False
+
+
+@pytest.mark.asyncio
+async def test_absent_unknown_speaker_is_noop():
+    from car_presence import CarPresence
+    t, _adv = _clock()
+    arrive, depart = AsyncMock(), AsyncMock()
+    cp = CarPresence(on_arrive=arrive, on_depart=depart, time_fn=t)
+    await cp.present("A")
+    await cp.absent("X")        # 不在場的人
+    depart.assert_not_awaited()
+    assert cp.occupants == ["A"]

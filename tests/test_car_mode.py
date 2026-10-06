@@ -30,7 +30,7 @@ async def test_on_arrive_builds_open_and_calls_play():
     morning = _dt.datetime(2026, 7, 15, 8, 0)
     cp = build_car_presence(
         play_open=play_open, stop_playback=stop,
-        pool_provider=lambda: [_cand("晴天")],
+        pool_provider=lambda speaker: [_cand("晴天")],
         now_fn=lambda: morning,
     )
     await cp.present()
@@ -46,7 +46,7 @@ async def test_on_arrive_debounced_heartbeat_plays_once():
     play_open, stop = AsyncMock(), AsyncMock()
     cp = build_car_presence(
         play_open=play_open, stop_playback=stop,
-        pool_provider=lambda: [_cand("稻香")],
+        pool_provider=lambda speaker: [_cand("稻香")],
         now_fn=lambda: _dt.datetime(2026, 7, 15, 8, 0),
     )
     await cp.present()      # 到達
@@ -60,7 +60,7 @@ async def test_on_depart_calls_stop():
     play_open, stop = AsyncMock(), AsyncMock()
     cp = build_car_presence(
         play_open=play_open, stop_playback=stop,
-        pool_provider=lambda: [_cand("七里香")],
+        pool_provider=lambda speaker: [_cand("七里香")],
         now_fn=lambda: _dt.datetime(2026, 7, 15, 8, 0),
     )
     await cp.present()
@@ -76,7 +76,7 @@ async def test_ttl_tick_stops_after_timeout():
     play_open, stop = AsyncMock(), AsyncMock()
     cp = build_car_presence(
         play_open=play_open, stop_playback=stop,
-        pool_provider=lambda: [_cand("晴天")],
+        pool_provider=lambda speaker: [_cand("晴天")],
         now_fn=lambda: _dt.datetime(2026, 7, 15, 8, 0),
         ttl_s=90.0, time_fn=t,
     )
@@ -92,3 +92,24 @@ def test_default_open_lines_cover_all_buckets():
     from car_open import TIME_BUCKETS
     for b in TIME_BUCKETS:
         assert DEFAULT_OPEN_LINES.get(b), f"bucket {b} 缺開場白"
+
+
+@pytest.mark.asyncio
+async def test_arrive_passes_speaker_to_pool_and_play_open():
+    """多人同車：第一個到的人（showay）決定候選池與開場播放的身分。"""
+    from car_mode import build_car_presence
+    play_open, stop = AsyncMock(), AsyncMock()
+    seen_pool_speakers = []
+
+    def pool_provider(speaker):
+        seen_pool_speakers.append(speaker)
+        return [_cand("晴天")]
+
+    cp = build_car_presence(
+        play_open=play_open, stop_playback=stop,
+        pool_provider=pool_provider,
+        now_fn=lambda: _dt.datetime(2026, 7, 15, 8, 0),
+    )
+    await cp.present("showay")
+    assert seen_pool_speakers == ["showay"]
+    assert play_open.call_args.args[1] == "showay"
