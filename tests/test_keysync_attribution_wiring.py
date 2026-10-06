@@ -11,6 +11,14 @@ import pytest
 from nacl.exceptions import CryptoError
 
 
+@pytest.fixture(autouse=True)
+def _reset_attrib_state():
+    """_ATTRIB 是模組層狀態，跨測試會殘留 → 每個測試開頭清空。"""
+    import discord_voice_engine
+    discord_voice_engine._ATTRIB = None
+    yield
+
+
 def _make_vc():
     vc = MagicMock()
     vc.secret_key = bytes(32)
@@ -118,5 +126,29 @@ def test_meta_snapshot_taken_before_orig_rewrites_packet(caplog):
 
     attrib = [r.getMessage() for r in caplog.records if "🔬 [KeySync] 解密歸因" in r.getMessage()]
     assert attrib, "應有歸因 log"
-    assert "len=112-112" in attrib[0]
+    fail_part = attrib[0].split(" fail=")[1]
+    assert fail_part.startswith("10(")   # 第 10 次失敗觸發升級 → force 吐出，共 10 筆 fail
+    assert "len=112-112" in fail_part
     assert "len=22" not in attrib[0]   # 22 = 12 + 10，是改寫之後的長度，不該出現
+    # 快照 = 改寫前 header(12×0x80) + data 前 4 bytes("x"=0x78) 共 16 bytes
+    assert "hdr=80808080808080808080808078787878" in fail_part
+
+
+def test_second_patch_reuses_same_attrib_across_reconnect():
+    """重連時會再次 patch（新 decryptor）；歸因統計必須是同一個物件，異常前基準才留得住。"""
+    import discord_voice_engine
+    from discord_voice_engine import patch_voice_recv_key_sync
+
+    vc, reader = _make_vc()
+    with patch("discord.ext.voice_recv.reader.PacketDecryptor", side_effect=lambda *a: _fresh_decryptor()):
+        patch_voice_recv_key_sync(vc)
+        first = discord_voice_engine._ATTRIB
+        assert first is not None
+
+        new_decryptor = MagicMock()   # 模擬重連後 reader 換了未 patched 的 decryptor
+        new_decryptor._key_sync_patched = False
+        reader.decryptor = new_decryptor
+        patch_voice_recv_key_sync(vc)
+
+    assert discord_voice_engine._ATTRIB is first
+    assert new_decryptor._key_sync_patched is True

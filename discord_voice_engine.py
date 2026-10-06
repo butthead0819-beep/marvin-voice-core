@@ -29,6 +29,9 @@ logger = logging.getLogger("MarvinBot.Engine")
 _last_stt_debug_prune = 0.0
 
 
+_ATTRIB = None  # 解密歸因統計：跨重連保留，才留得住「異常前基準」
+
+
 def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
     """Discord voice session 換 key 時，voice_recv reader 的 decryptor 不會自動更新，
     導致持續 CryptoError 使 STT 完全失效。
@@ -53,7 +56,10 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
 
     from decrypt_health import DecryptHealthMonitor, DecryptAttribution
     _decrypt_monitor = DecryptHealthMonitor()  # 偵測持續零解密 → on_desync_storm
-    _attrib = DecryptAttribution()  # 解密失敗歸因 log（純觀測）
+    global _ATTRIB
+    if _ATTRIB is None:
+        _ATTRIB = DecryptAttribution()
+    _attrib = _ATTRIB  # 解密歸因統計（純觀測）；跨重連保留，才留得住「異常前基準」
 
     orig_rtp = decryptor.decrypt_rtp
     orig_rtcp = decryptor.decrypt_rtcp
@@ -127,16 +133,19 @@ def patch_voice_recv_key_sync(voice_client, on_desync_storm=None) -> None:
                 "extended": getattr(packet, "extended", None),
                 "cc": getattr(packet, "cc", None),
                 "size": len(packet.header) + len(packet.data),
+                "sample": (bytes(packet.header) + bytes(packet.data))[:16].hex(),
             }
         except Exception:
-            return {"ssrc": None, "uid": None, "payload": None, "extended": None, "cc": None, "size": None}
+            return {"ssrc": None, "uid": None, "payload": None, "extended": None, "cc": None,
+                    "size": None, "sample": None}
 
     def _attrib_record(meta, ok: bool, now: float, force: bool = False) -> None:
         """餵一筆解密結果進歸因統計（純觀測）；meta=None 時只做 summary，force 時立即吐。"""
         try:
             if meta is not None:
                 _attrib.record(meta["ssrc"], ok, now, uid=meta["uid"], payload=meta["payload"],
-                               extended=meta["extended"], cc=meta["cc"], size=meta["size"])
+                               extended=meta["extended"], cc=meta["cc"], size=meta["size"],
+                               sample=meta["sample"])
             s = _attrib.summary(now, force=force)
             if s is not None:
                 logger.warning(f"🔬 [KeySync] 解密歸因（近 {_attrib.window_s:.0f}s）: {s}")
