@@ -39,7 +39,7 @@
  *             關掉，不做「切成 deck B 變主線」的部分。STEP<10 完全不受影響。
  *
 
- * ⚠️ 動手前要填：WiFi、MARVIN_TOKEN。（I2S 腳位已實測、不用再查，見下。）
+ * ⚠️ 動手前：cp secrets.h.example secrets.h 並填 WiFi、MARVIN_TOKEN、MARVIN_LOCAL_HOST。（I2S 腳位已實測、不用再查，見下。）
  *
  * ── 2026-07-17 實機體檢結果（Goouuu N16R8 + V1.7，硬體全綠）──
  * efuse 實讀：ESP32-S3 QFN56 rev v0.2 / Flash 16MB / PSRAM 8MB (AP_3v3)，
@@ -90,14 +90,9 @@
 // 有登記的那組——在家連家用WiFi（MARVIN_LOCAL_HOST區網明碼路徑成立），出門連iPhone
 // 熱點（區網打不到、走[[Funnel回退]]，見 postAudio()/carHeartbeat()）。
 WiFiMulti wifiMulti;
-const char* WIFI_SSID    = "__WIFI_SSID__";
-const char* WIFI_PASS    = "__WIFI_PASS__";
-const char* WIFI2_SSID   = "__WIFI2_SSID__";
-const char* WIFI2_PASS   = "__WIFI2_PASS__";
+#include "secrets.h"   // WiFi/token/區網IP/身分：複製 secrets.h.example 成 secrets.h 填真值（已 gitignore，別 commit 真值）
 const char* MARVIN_HOST  = "macbook-air.tail7ba8d0.ts.net";   // 不含 https://
 const int   MARVIN_PORT  = 443;
-const char* MARVIN_TOKEN = "__MARVIN_TEXT_TOKEN__";           // ⚠️ 別 commit 真 token（燒錄前手動填真值）
-const char* MARVIN_SPEAKER = "showay";   // 這台 puck 的主人；必須是 ASCII（直接放進 URL query），且要在 Mac .env 的 MARVIN_CAR_SPEAKERS 白名單裡
 
 // TEMP 實驗（2026-07-25）：/audio_stream 實測 sustained throughput 只有目標 187.5KB/s
 // 的 ~55-67%（100-126KB/s），懷疑雙重加密——Tailscale WireGuard 本身已加密，這條又走
@@ -105,7 +100,6 @@ const char* MARVIN_SPEAKER = "showay";   // 這台 puck 的主人；必須是 AS
 // Wi-Fi），先試直連 Mac 區網 IP + 明碼 HTTP，看 throughput 是否顯著改善來確認假設。
 // 只有這條高頻寬串流走這個路徑，/car 心跳、/now 等低流量請求維持原本 HTTPS 不動。
 // ⚠️ 只在家測試網路有效；真的出門用 4G 時這個 IP 打不通，需要退回 Tailscale/Funnel。
-const char* MARVIN_LOCAL_HOST = "192.168.1.130";
 const int   MARVIN_LOCAL_PORT = 8790;
 
 // ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
