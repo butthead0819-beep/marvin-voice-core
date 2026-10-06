@@ -5,10 +5,16 @@
  *       ESP32-S3 沒有 Classic BT，所以這塊板子另用原版 ESP32-D0WD-V3。
  *       WiFi 不開，所以跟藍牙零共存問題。
  *
- * 目前階段：STEP 2 — I2S slave 收 S3 音訊 → 48k→44.1k 重取樣 → A2DP
+ * 目前階段：STEP 3 — 多裝置記憶 + 失敗輪替 + BOOT 長按配對 + LED
+ *       I2S slave 收 S3 音訊 → 48k→44.1k 重取樣 → A2DP。
  *       S3 為 I2S master（48000Hz / 16-bit / stereo / Philips），本板並聯收同一組線當 slave。
  *       音量交給 S3 端與喇叭，這裡不衰減。
- *       目標喇叭：Anker Soundcore Mini 3（名稱比對 "soundcore"，不分大小寫）。
+ *       目標裝置：名稱含 "BMW 04900"（車機）或 "soundcore"（Soundcore Mini 3 Pro），不分大小寫。
+ *       已配對裝置記在 NVS（最多 4 台，最近連上的排最前）；連線失敗時輪流換下一台。
+ *
+ * 使用方式：
+ *   配對新裝置＝長按 BOOT 3 秒（LED 快閃）→ BMW 在 iDrive 選「連接新裝置」／喇叭進配對模式
+ *   → 連上後 LED 恆亮；之後開機自動輪流重連已知裝置（LED 慢閃，連上恆亮）。
  *
  * 接線表（S3 為 master，本板並聯 slave RX）：
  *   S3 GPIO15 (BCLK)  → ESP32 GPIO26
@@ -16,6 +22,8 @@
  *   S3 GPIO7  (DIN)   → ESP32 GPIO22
  *   GND ↔ GND（必接）
  *   PCM5102 照接，不用拔。
+ *   GPIO0 (BOOT) 按鈕：長按 3 秒 = 清除上次裝置、重開進入配對模式
+ *   GPIO2 LED：恆亮=已連線 / 快閃=配對中未連線 / 慢閃=重連中未連線
  *
  * 燒錄指令：
  *   arduino-cli compile -b esp32:esp32:esp32 firmware/bt_bridge
@@ -25,6 +33,8 @@
 #include "BluetoothA2DPSource.h"
 #include <driver/i2s_std.h>
 #include "bridge_dsp.h"
+#include "known_devices.h"
+#include <nvs.h>
 
 // ---- 首次配對補開重連 ----
 // 函式庫在 NVS 沒有上次位址時會整段關掉自動重連，且之後不再打開，這裡補開。
@@ -36,6 +46,12 @@ class BridgeSource : public BluetoothA2DPSource {
     reconnect_status = AutoReconnect;
     reconnect_retries = max_reconnect_retries;
     return true;
+  }
+  bool pairing_mode() { return !is_autoreconnect_allowed; }   // 開機無上次位址 → 掃描=配對模式
+  void get_last(uint8_t out[6]) { memcpy(out, last_connection, 6); }
+  void retarget(const uint8_t a[6]) {
+    memcpy(last_connection, a, 6);
+    reconnect_retries = max_reconnect_retries;
   }
 
  protected:
@@ -62,6 +78,48 @@ static FrameRing g_ring;
 static OutputState g_out_state;
 volatile uint32_t g_frames_in = 0;  // 累計 I2S 收到的 48k 格數（reader task 寫）
 static volatile bool g_connected_evt = false;
+static volatile bool g_page_failed_evt = false;
+
+// ---- 已配對清單 / 模式 / 按鈕與 LED ----
+static const char* TARGET_NAMES[] = {"BMW 04900", "soundcore"};
+static KnownDevices g_known;
+static bool g_pairing_mode = false;
+static const int BOOT_BTN_GPIO = 0;
+static const int LED_PIN = 2;
+static const uint32_t BOOT_LONG_MS = 3000;
+static const uint32_t LED_FAST_MS = 125;
+static const uint32_t LED_SLOW_MS = 500;
+
+static void print_bda(const uint8_t a[6]) {
+  Serial.printf("%02X:%02X:%02X:%02X:%02X:%02X", a[0], a[1], a[2], a[3], a[4], a[5]);
+}
+
+static void known_load() {
+  uint8_t buf[1 + 6 * KNOWN_MAX];
+  nvs_handle_t h;
+  if (nvs_open("bt_bridge", NVS_READONLY, &h) == ESP_OK) {
+    size_t len = sizeof(buf);
+    if (nvs_get_blob(h, "known", buf, &len) == ESP_OK) {
+      known_deserialize(g_known, buf, len);
+    }
+    nvs_close(h);
+  }
+  Serial.printf("[BT] 已配對裝置 %d 台\n", (int)g_known.count);
+}
+
+static void known_save() {
+  uint8_t buf[1 + 6 * KNOWN_MAX];
+  size_t len = known_serialize(g_known, buf, sizeof(buf));
+  nvs_handle_t h;
+  if (nvs_open("bt_bridge", NVS_READWRITE, &h) != ESP_OK) {
+    Serial.println("[BT] 已配對清單寫入失敗（nvs_open）");
+    return;
+  }
+  esp_err_t err = nvs_set_blob(h, "known", buf, len);
+  if (err == ESP_OK) err = nvs_commit(h);
+  nvs_close(h);
+  if (err != ESP_OK) Serial.printf("[BT] 已配對清單寫入失敗 err=%d\n", (int)err);
+}
 
 // ---- I2S slave RX ----
 static bool i2s_rx_init() {
@@ -141,21 +199,38 @@ static bool contains_ignore_case(const char* haystack, const char* needle) {
 // ---- 名稱比對 callback ----
 bool ssid_match_cb(const char* ssid, esp_bd_addr_t address, int rssi) {
   Serial.printf("[BT] 掃到 '%s' rssi=%d\n", ssid, rssi);
-  return contains_ignore_case(ssid, "soundcore");
+  bool named = false;
+  for (const char* name : TARGET_NAMES) {
+    if (contains_ignore_case(ssid, name)) named = true;
+  }
+  if (!named) return false;
+  if (g_pairing_mode && known_find(g_known, address) >= 0) {
+    Serial.printf("[BT] 配對模式：略過已配對 '%s'\n", ssid);
+    return false;
+  }
+  return true;
 }
 
 // ---- 連線狀態 callback（只設旗標，reconnect 由 loop() 處理）----
 void connection_state_cb(esp_a2d_connection_state_t state, void* obj) {
+  static esp_a2d_connection_state_t prev = ESP_A2D_CONNECTION_STATE_DISCONNECTED;
   Serial.printf("[BT] 連線狀態 -> %s\n", a2dp_source.to_str(state));
   if (state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
     g_connected_evt = true;
   }
+  if (state == ESP_A2D_CONNECTION_STATE_DISCONNECTED && prev == ESP_A2D_CONNECTION_STATE_CONNECTING) {
+    g_page_failed_evt = true;
+  }
+  prev = state;
 }
 
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("[BT] bt_bridge STEP2 boot");
+  Serial.println("[BT] bt_bridge STEP3 boot");
+  pinMode(BOOT_BTN_GPIO, INPUT_PULLUP);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
   // I2S 失敗就不起 reader task，只讓 BT 照常跑（靜音），避免空讀迴圈吃光 CPU
   if (i2s_rx_init()) {
@@ -168,26 +243,93 @@ void setup() {
   a2dp_source.set_auto_reconnect(true);
   a2dp_source.set_volume(127);
   a2dp_source.start();
+  // 已配對清單在 start() 之後才讀：start() 內部已 init NVS，我們這邊再 init 會讓函式庫 ESP_ERROR_CHECK 失敗
+  known_load();
+  g_pairing_mode = a2dp_source.pairing_mode();
+  Serial.printf("[BT] 模式：%s\n", g_pairing_mode ? "配對(掃描)" : "重連已知裝置");
 }
 
 void loop() {
   static uint32_t last_ms = 0;
   static uint32_t last_frames = 0;
+  static uint32_t led_ms = 0;
+  static bool led_on = false;
+  static bool boot_was_down = false;
+  static uint32_t boot_down_ms = 0;
 
   if (g_connected_evt) {
     g_connected_evt = false;
     if (a2dp_source.arm_reconnect()) {
       Serial.println("[BT] 首次配對：補開自動重連");
     }
+    uint8_t cur[6];
+    a2dp_source.get_last(cur);
+    if (!addr_is_zero(cur)) {
+      known_touch(g_known, cur);
+      known_save();
+      Serial.print("[BT] 已記住裝置 ");
+      print_bda(cur);
+      Serial.printf("（共 %d 台）\n", (int)g_known.count);
+    }
+    g_pairing_mode = false;
+  }
+
+  if (g_page_failed_evt) {
+    g_page_failed_evt = false;
+    if (!a2dp_source.pairing_mode() && g_known.count >= 2) {
+      uint8_t cur[6], nxt[6];
+      a2dp_source.get_last(cur);
+      if (known_next_after_fail(g_known, cur, nxt)) {
+        a2dp_source.retarget(nxt);
+        Serial.print("[BT] 連線失敗，下一台 ");
+        print_bda(nxt);
+        Serial.println();
+      }
+    }
   }
 
   uint32_t now = millis();
+
+  // BOOT 長按 3 秒：清除上次裝置（src_bda）、重開進入配對模式；已知清單保留
+  bool boot_down = digitalRead(BOOT_BTN_GPIO) == LOW;
+  if (boot_down && !boot_was_down) {
+    boot_down_ms = now;
+  }
+  boot_was_down = boot_down;
+  if (boot_down && now - boot_down_ms >= BOOT_LONG_MS) {
+    Serial.println("[BT] 長按 BOOT：清除上次裝置，重開進入配對模式");
+    nvs_handle_t h;
+    if (nvs_open("connected_bda", NVS_READWRITE, &h) == ESP_OK) {
+      esp_err_t err = nvs_erase_key(h, "src_bda");
+      if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+      if (err == ESP_OK) nvs_commit(h);
+      nvs_close(h);
+    }
+    delay(200);
+    ESP.restart();
+  }
+
+  // LED：恆亮=已連線；配對中未連線=快閃；重連中未連線=慢閃
+  if (a2dp_source.is_connected()) {
+    if (!led_on) {
+      led_on = true;
+      digitalWrite(LED_PIN, HIGH);
+    }
+  } else {
+    uint32_t period = g_pairing_mode ? LED_FAST_MS : LED_SLOW_MS;
+    if (now - led_ms >= period) {
+      led_ms = now;
+      led_on = !led_on;
+      digitalWrite(LED_PIN, led_on ? HIGH : LOW);
+    }
+  }
+
   if (now - last_ms >= 5000) {
     uint32_t cur = g_frames_in;
     uint32_t in_rate = (cur - last_frames) / 5;
     last_frames = cur;
     last_ms = now;
-    Serial.printf("[BR] conn=%d in_rate=%lu fill=%lu prime=%d under=%lu over=%lu drop=%lu dup=%lu\n",
+    Serial.printf("[BR] conn=%d in_rate=%lu fill=%lu prime=%d under=%lu over=%lu drop=%lu dup=%lu known=%d mode=%s\n",
                   a2dp_source.is_connected() ? 1 : 0,
                   (unsigned long)in_rate,
                   (unsigned long)g_ring.fill(),
@@ -195,7 +337,9 @@ void loop() {
                   (unsigned long)g_out_state.underruns,
                   (unsigned long)g_ring.overruns,
                   (unsigned long)g_out_state.drops,
-                  (unsigned long)g_out_state.dups);
+                  (unsigned long)g_out_state.dups,
+                  (int)g_known.count,
+                  g_pairing_mode ? "pair" : "recon");
   }
-  delay(100);
+  delay(25);
 }
