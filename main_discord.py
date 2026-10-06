@@ -287,6 +287,11 @@ class MarvinBot(commands.Bot):
         else:
             logger.warning("[MarmoServer] VoiceController cog not found — Marmo webhook not started")
 
+        # 5a. 🔊 [單一 mixer 第1刀] Discord mixer 輸出 → /audio_stream 給 car puck（env 未設＝不啟動）
+        if vc_cog:
+            from marvin_voice_core.discord_audio_stream_server import maybe_start as _start_stream
+            self.discord_audio_stream_server = await _start_stream(self.loop, vc_cog)
+
         # 5b. 啟動 ErrorDispatcher — 真錯誤 → openclaw triage → DM owner
         await self._install_error_dispatcher(vc_cog)
 
@@ -553,6 +558,8 @@ class MarvinBot(commands.Bot):
         """[Lifecycle Cleanup] 確保在關閉 Bot 時，釋放所有擷取資源"""
         if hasattr(self, "marmo_server"):
             await self.marmo_server.stop()
+        if getattr(self, "discord_audio_stream_server", None):
+            await self.discord_audio_stream_server.stop()
         await super().close()
 
     # --- 🛡️ [Error Handlers] ---

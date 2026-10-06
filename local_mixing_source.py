@@ -102,6 +102,7 @@ class LocalMixingAudioSource(_BASE):
         self._silence_bytes = b"\x00" * FRAME_BYTES_S16
 
         self._paused = False                     # 控制台暫停：read() 回 silence、不前進來源
+        self._tap = None                         # [單一 mixer] 輸出旁聽者，見 set_tap
         self._music = None                       # 可換 f32le source（atomic ref）
         self._music_out = None        # 🎚️ [Crossfade] 淡出槽：上一首搬進來逐幀降到 0（只在接懷舊歌時用）
         self._music_out_gain = 0.0    # 淡出槽當前絕對增益（起點＝搬進來那刻的音量快照，不吃之後的 set_volume）
@@ -226,7 +227,9 @@ class LocalMixingAudioSource(_BASE):
 
     def read(self) -> bytes:
         if not self._instrument:
-            return self._read_impl()
+            out = self._read_impl()
+            self._emit_tap(out)
+            return out
         t0 = time.perf_counter()
         if self._last_read_ts is not None:
             gap_ms = (t0 - self._last_read_ts) * 1000.0
@@ -241,7 +244,22 @@ class LocalMixingAudioSource(_BASE):
         self._last_read_ts = t0
         out = self._read_impl()
         self._record_stat((time.perf_counter() - t0) * 1000.0)
+        self._emit_tap(out)
         return out
+
+    def set_tap(self, tap) -> None:
+        """[單一 mixer] 掛一個輸出旁聽者（例：StreamSpeakerOutput），每幀 read() 的輸出原樣 tap.write(frame)。
+        tap.write 必須非阻塞（AudioPlayer 執行緒呼叫）；None＝拔掉。"""
+        self._tap = tap
+
+    def _emit_tap(self, out: bytes) -> None:
+        tap = self._tap
+        if tap is None:
+            return
+        try:
+            tap.write(out)
+        except Exception:
+            pass  # 旁聽者壞掉不准拖垮 Discord 送幀（永不 raise，同 _read_impl 原則）
 
     def _record_stat(self, dt_ms: float) -> None:
         self._stat_frames += 1
