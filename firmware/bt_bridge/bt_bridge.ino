@@ -80,6 +80,7 @@ static void bda_fmt(const uint8_t a[6], char out[18]) {
 }
 
 bool ssid_match_cb(const char* ssid, esp_bd_addr_t address, int rssi);
+const char* addr_target_label(const uint8_t* bda);
 
 // ---- 首次配對補開重連 ----
 // 函式庫在 NVS 沒有上次位址時會整段關掉自動重連，且之後不再打開，這裡補開。
@@ -172,8 +173,16 @@ class BridgeSource : public BluetoothA2DPSource {
       diag_post(d);
     }
 
+    const char* addr_label = nullptr;
     if (name[0] != '\0') {
       if (ssid_match_cb(name, bda, rssi)) adopt_target(bda, name);
+    } else if ((addr_label = addr_target_label(bda)) != nullptr) {
+      // BMW 04900 搜尋回應不帶名稱、遠端名稱請求回 stat=1（10/7 [DIAG] 實測），只能靠位址認
+      Serial.printf("[SCAN] 位址命中 '%s'（無名稱）%s\n", addr_label, bs);
+      char d[DIAG_TEXT];
+      snprintf(d, sizeof(d), "M %02X%02X%02X '%s'", bda[3], bda[4], bda[5], addr_label);
+      diag_post(d);
+      adopt_target(bda, addr_label);
     } else if (addr_set_add(g_name_req_a, g_name_req_n, bda)) {
       Serial.printf("[SCAN] 無名稱，請求遠端名稱 %s\n", bs);
       esp_bt_gap_read_remote_name(bda);
@@ -229,8 +238,26 @@ static volatile bool g_page_failed_evt = false;
 
 // ---- 已配對清單 / 模式 / 按鈕與 LED ----
 static const char* TARGET_NAMES[] = {"BMW 04900", "soundcore"};
+// 名稱拿不到的目標改用位址認（位址取自 Pi Zero carpuck2 已配對清單）
+struct TargetAddr { uint8_t a[6]; const char* label; };
+static const TargetAddr TARGET_ADDRS[] = {
+  {{0xB8, 0x24, 0x10, 0x12, 0x78, 0x50}, "BMW 04900"},
+};
 static KnownDevices g_known;
 static bool g_pairing_mode = false;
+
+// 掃到的位址是否為目標；配對模式下已配對過的不算（跟 ssid_match_cb 同規則）
+const char* addr_target_label(const uint8_t* bda) {
+  for (const TargetAddr& t : TARGET_ADDRS) {
+    if (memcmp(t.a, bda, 6) != 0) continue;
+    if (g_pairing_mode && known_find(g_known, bda) >= 0) {
+      Serial.printf("[BT] 配對模式：略過已配對 '%s'\n", t.label);
+      return nullptr;
+    }
+    return t.label;
+  }
+  return nullptr;
+}
 static const int BOOT_BTN_GPIO = 0;
 static const int LED_PIN = 2;
 static const uint32_t BOOT_LONG_MS = 3000;
