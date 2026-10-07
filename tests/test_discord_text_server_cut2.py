@@ -410,3 +410,68 @@ async def test_discord_car_absent_dismisses_only_when_no_humans_left(monkeypatch
         await runner.cleanup()
         for t in asyncio.all_tasks() - before:
             t.cancel()
+
+
+# ---------- (9) Discord 進程車載模式不依賴 MARVIN_CAR_MODE env ----------
+
+@pytest.mark.asyncio
+async def test_discord_process_car_mode_on_even_when_env_blank(monkeypatch):
+    """run_bot.py 會把 MARVIN_CAR_MODE 強制清空（防音量污染），但 Discord 進程
+    傳了 discord_voice，車載模式仍該接上。"""
+    fake = _FakeVoiceControllerForCarMode()
+    monkeypatch.setenv("MARVIN_CAR_MODE", "")
+    monkeypatch.setenv("MARVIN_CLAUDE_STATUS_SCAN", "0")
+    monkeypatch.setattr("car_presence_state.save_car_presence_state", lambda **kw: None)
+
+    class _FakeSite:
+        def __init__(self, *a, **k):
+            pass
+
+        async def start(self):
+            pass
+
+    monkeypatch.setattr("aiohttp.web.TCPSite", _FakeSite)
+
+    before = asyncio.all_tasks()
+    runner = await car_http_app.start_text_http_server(fake, discord_voice=fake)
+    try:
+        car_presence = fake.bot.car_presence
+        assert car_presence is not None
+
+        await asyncio.wait_for(car_presence.present("狗與露"), timeout=1.0)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        fake.auto_rejoin_on_boot.assert_awaited_once_with(car_join=True, resume_music=False)
+    finally:
+        await runner.cleanup()
+        for t in asyncio.all_tasks() - before:
+            t.cancel()
+
+
+@pytest.mark.asyncio
+async def test_satellite_process_car_mode_still_env_gated(monkeypatch):
+    """satellite 進程（沒傳 discord_voice）仍照舊只看 MARVIN_CAR_MODE env，
+    env 空就不接車載模式——零行為改變。"""
+    fake = _FakeVoiceControllerForCarMode()
+    fake.bot.car_presence = None
+    monkeypatch.setenv("MARVIN_CAR_MODE", "")
+    monkeypatch.setenv("MARVIN_CLAUDE_STATUS_SCAN", "0")
+
+    class _FakeSite:
+        def __init__(self, *a, **k):
+            pass
+
+        async def start(self):
+            pass
+
+    monkeypatch.setattr("aiohttp.web.TCPSite", _FakeSite)
+
+    before = asyncio.all_tasks()
+    runner = await car_http_app.start_text_http_server(fake)
+    try:
+        assert getattr(fake.bot, "car_presence", None) is None
+    finally:
+        await runner.cleanup()
+        for t in asyncio.all_tasks() - before:
+            t.cancel()

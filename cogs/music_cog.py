@@ -225,12 +225,14 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         「空房」而永久停止續推（2026-07-25 車 puck 佇列播完停播事故）。
         車 puck 本身有 present/absent 心跳，會在這裡才進來就代表真的有人在車上：
         用 car_presence 的在場者（多人同車，全部算在場）；名單空時退回
-        MARVIN_SATELLITE_SPEAKER（舊行為的保底）。"""
+        MARVIN_SATELLITE_SPEAKER（舊行為的保底）。car_occupants 非空時不看
+        env（Discord 進程的 MARVIN_CAR_MODE 被 run_bot.py 清空，見
+        car_http_app.start_text_http_server）。"""
         if online:
             return online
+        if car_occupants:
+            return list(car_occupants)
         if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
-            if car_occupants:
-                return list(car_occupants)
             return [os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")]
         return online
 

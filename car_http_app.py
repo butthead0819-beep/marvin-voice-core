@@ -2272,10 +2272,13 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None, *, d
     # 車載裝置身分白名單（MARVIN_CAR_SPEAKERS）：裝置自己帶 speaker，這裡驗證成正式名字。
     device_speakers = parse_device_speakers(os.getenv("MARVIN_CAR_SPEAKERS", ""), default_speaker)
 
-    # ── 車載模式（ESP32 puck）：MARVIN_CAR_MODE=1 才接；預設 off＝零行為改變 ──
+    # ── 車載模式（ESP32 puck）：satellite 進程仍看 MARVIN_CAR_MODE env；
+    # Discord 進程（傳 discord_voice）一律接車載模式，因為 run_bot.py 會清空
+    # MARVIN_CAR_MODE（防音量污染，見 music_cog.py 的 _default_stream_volume）──
     car_presence = None
     audio_rate_limiter = None
-    if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+    _car_mode_env = os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+    if discord_voice is not None or _car_mode_env:
         from car_mode import build_car_presence, run_car_ttl_loop
         from rate_limiter import RateLimiter
 
