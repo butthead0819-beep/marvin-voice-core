@@ -219,6 +219,24 @@ class BridgeSource : public BluetoothA2DPSource {
       snprintf(d, sizeof(d), "A %02X%02X%02X st%d '%s'", bda[3], bda[4], bda[5], stat, name);
       diag_post(d);
     }
+    // SSP 配對過程也記下來（BMW 要求比對數字 / 要我們輸入 passkey / 顯示 passkey）
+    if (event == ESP_BT_GAP_CFM_REQ_EVT || event == ESP_BT_GAP_KEY_REQ_EVT || event == ESP_BT_GAP_KEY_NOTIF_EVT) {
+      char d[DIAG_TEXT];
+      if (event == ESP_BT_GAP_CFM_REQ_EVT) {
+        uint8_t* b = param->cfm_req.bda;
+        Serial.printf("[BT] 配對比對數字 %06lu（自動同意）\n", (unsigned long)param->cfm_req.num_val);
+        snprintf(d, sizeof(d), "P %02X%02X%02X cfm %06lu", b[3], b[4], b[5], (unsigned long)param->cfm_req.num_val);
+      } else if (event == ESP_BT_GAP_KEY_NOTIF_EVT) {
+        uint8_t* b = param->key_notif.bda;
+        Serial.printf("[BT] 配對顯示 passkey %06lu\n", (unsigned long)param->key_notif.passkey);
+        snprintf(d, sizeof(d), "P %02X%02X%02X notif %06lu", b[3], b[4], b[5], (unsigned long)param->key_notif.passkey);
+      } else {
+        uint8_t* b = param->key_req.bda;
+        Serial.println("[BT] 對方要求輸入 passkey（無法輸入）");
+        snprintf(d, sizeof(d), "P %02X%02X%02X keyreq", b[3], b[4], b[5]);
+      }
+      diag_post(d);
+    }
     BluetoothA2DPSource::app_gap_callback(event, param);
   }
 };
@@ -472,6 +490,9 @@ void setup() {
   a2dp_source.set_ssid_callback(ssid_match_cb);
   a2dp_source.set_on_connection_state_changed(connection_state_cb);
   a2dp_source.set_auto_reconnect(true);
+  // 開 SSP：IO 能力宣告為 DisplayYesNo（ESP_BT_IO_CAP_IO），比對數字請求函式庫自動同意。
+  // 預設 false 不設 IO 能力，BMW 回 AUTH_CMPL stat=9（AUTH_FAILURE，10/7 [DIAG] 實測）。
+  a2dp_source.set_ssp_enabled(true);
   a2dp_source.set_volume(127);
   a2dp_source.start();
   // 已配對清單在 start() 之後才讀：start() 內部已 init NVS，我們這邊再 init 會讓函式庫 ESP_ERROR_CHECK 失敗
@@ -523,7 +544,9 @@ void loop() {
       snprintf(d, sizeof(d), "F %02X%02X%02X", lc[3], lc[4], lc[5]);
       diag_loop_add(d);
     }
-    if (!a2dp_source.pairing_mode() && g_known.count >= 2) {
+    // >=1 而非 >=2：上次連線對象可能是「配對中途斷電、從沒連成功」的裝置（不在清單裡，
+    // 例如 10/7 的 BMW），這時清單只有 1 台也要切過去，否則永遠 page 一台不存在的車機
+    if (!a2dp_source.pairing_mode() && g_known.count >= 1) {
       uint8_t cur[6], nxt[6];
       a2dp_source.get_last(cur);
       if (known_next_after_fail(g_known, cur, nxt)) {
