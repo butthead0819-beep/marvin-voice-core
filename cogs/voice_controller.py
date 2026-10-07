@@ -946,7 +946,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 print(f"👋 [Auto Dismiss] 最後一名玩家 {member.display_name} 已離開，執行自動撤離...")
                 # 記錄離場習慣（最後一人離場也算）
                 await self.departure_stats.record_departure(member.display_name, verbal_bye=False)
-                await self.handle_dismiss()
+                await self.handle_auto_dismiss()
             else:
                 # 無論哪種離場都記錄習慣
                 await self.departure_stats.record_departure(member.display_name, verbal_bye=False)

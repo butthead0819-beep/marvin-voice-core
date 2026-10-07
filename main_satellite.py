@@ -36,6 +36,7 @@ from dotenv import load_dotenv
 
 import memory_sandbox
 from marvin_voice_core.audio_stream_batcher import iter_batched_encoded_frames
+from marvin_voice_core.discord_audio_stream_server import SilenceFillQueue
 from marvin_voice_core.mp3_stream_encoder import Mp3StreamEncoder
 
 logger = logging.getLogger(__name__)
@@ -2056,8 +2057,11 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             rate=stream_source.rate, channels=stream_source.channels,
             bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
         try:
+            # SilenceFillQueue：satellite 的 mixer 本來就一直有幀（跟單一 mixer 第1刀的
+            # Discord mixer 不同，那裡才是 on_demand 真正需要補靜音的理由），包了也無害，
+            # 跟 marvin_voice_core.discord_audio_stream_server.handle_audio_stream 走同一份邏輯。
             async for chunk in iter_batched_encoded_frames(
-                    q, encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
+                    SilenceFillQueue(q), encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
                 await resp.write(chunk)
         except (ConnectionError, asyncio.CancelledError):
             # ConnectionError 涵蓋 BrokenPipeError/ConnectionResetError，也涵蓋 aiohttp
@@ -2341,12 +2345,83 @@ def resolve_device_speaker(raw: str | None, allowed: dict[str, str] | None,
     return allowed.get(key)
 
 
-async def start_text_http_server(vc, reply_source=None, stream_source=None):
+def decide_car_arrive(*, connected: bool, music_active: bool) -> str:
+    """單一 mixer 第2刀：car puck 上車（/car present）時，Discord bot 目前狀態決定怎麼開場。
+
+    not connected → join_and_open（先進頻道再開場）；connected 且已在放歌 →
+    skip_open（車上直接收聽現正在播的，別蓋掉）；connected 但沒在放歌 → open
+    （已在頻道，直接開場不用重新進）。"""
+    if not connected:
+        return "join_and_open"
+    if music_active:
+        return "skip_open"
+    return "open"
+
+
+def decide_car_depart(*, connected: bool, human_count: int) -> str:
+    """單一 mixer 第2刀：car puck 下車（/car absent）時要不要撤離。
+
+    已連線且頻道裡真人數為 0 → dismiss；其餘（未連線，或頻道還有其他真人在聽）→ keep。"""
+    if connected and human_count == 0:
+        return "dismiss"
+    return "keep"
+
+
+async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
+    """車載上車開場的選歌+播放邏輯，satellite/Discord 兩版 _play_open 共用（見
+    start_text_http_server 裡的呼叫端）。
+
+    復用 /play 那招 inject_text「放一首X」讓 pipeline 解析+播+DJ；絕不即時付費 LLM。
+
+    ⚠️ 2026-08-11 實機踩到：這裡原本無條件用 anchor_title 裸字串搜尋，跟
+    music_cog.py 的一般 autopilot enqueue（_auto_recommend 系列）邏輯不一致——
+    那邊會優先吃 Candidate.direct_url（T2 discovery 自帶 YouTube URL，見
+    music_recommender.py 開頭註解「自帶 YouTube URL → enqueue 時直解不搜尋」），
+    沒有才退回文字搜尋，且用 artist+title 組合（不是裸 title）換更準的搜尋結果。
+    car mode 開場沒吃 direct_url、也沒帶 artist，實機驗證：候選池挑到一首
+    anchor_title 是雜亂爬蟲標題的歌（「清纯大眼旗袍美女,优美古镇唯美街拍」），
+    yt-dlp 用這串裸標題搜不到東西，resolve 靜默失敗、整趟開場沒聲音。
+    改成比照 _auto_recommend 的優先序：direct_url > artist+title > title。
+    """
+    try:
+        if car_open.song:
+            # 車載開場繞過 _auto_recommend 的 enqueue 迴圈、直接走手動點歌路徑，
+            # 沒吃到那邊本來就有的 is_non_song_video 品質閘——候選池 build_member_pools
+            # 對音樂/非音樂內容零過濾，久沒播的有聲書/podcast 一樣有資格被選中當開場曲。
+            # 這裡補一次同款檢查（不重造邏輯，直接 reuse track_quality，邏輯抽在
+            # car_open.resolve_car_open_query 方便單元測試——見該函式 docstring）。
+            from car_open import resolve_car_open_query
+
+            mc = vc.bot.cogs.get("MusicCog")
+
+            async def _resolve(q):
+                if mc is None:
+                    raise RuntimeError("music_cog_unavailable")
+                # 車上 4G 訊號差時 yt-dlp 可能整個掛住，10s 逾時避免卡住整趟開場。
+                return await asyncio.wait_for(mc._resolve_yt_query(q), timeout=10)
+
+            query = await resolve_car_open_query(
+                car_open.song, pool_provider=pool_provider, resolve_fn=_resolve)
+            if query:
+                await inject_text(vc, speaker, f"放一首{query}")
+            else:
+                logger.warning("🚗 [CarMode] 開場候選池連試多首都沒過品質閘，本次開場靜音")
+        logger.info("🚗 [CarMode] 上車開場（%s）：%s → 放《%s》", speaker,
+                    car_open.line, car_open.song.anchor_title if car_open.song else "—")
+    except Exception:  # noqa: BLE001
+        logger.exception("[CarMode] play_open 失敗")
+
+
+async def start_text_http_server(vc, reply_source=None, stream_source=None, *, discord_voice=None):
     """起 Siri 文字 HTTP 伺服器（0.0.0.0，走 Tailscale）。回傳 runner（好收）。
 
     埠＝MARVIN_TEXT_PORT（預設 8790）；token＝MARVIN_TEXT_TOKEN（空＝不驗證）。
     reply_source＝純軟體 satellite 的 BrowserSpeakerOutput（GET /reply）；Pi 模式傳 None。
     stream_source＝車載模式的 StreamSpeakerOutput（GET /audio_stream）；非車載模式傳 None。
+    discord_voice＝None（預設，satellite 進程用）＝現有行為一行不變。單一 mixer 第2刀：
+    Discord 進程呼叫本函式時傳自己的 VoiceController cog（`vc` 本身），車載 /car
+    present/absent 的開場/停播語意改走 Discord 版（_play_open 背景 task 化避免卡住
+    HTTP 回應；_stop_playback 改問頻道內還有沒有真人，見下方 if discord_voice 分支）。
     """
     from aiohttp import web
 
@@ -2371,55 +2446,57 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None):
                 logger.exception("[CarMode] pool_provider 失敗，回空池")
                 return []
 
-        async def _play_open(car_open, speaker):
-            # 開場：復用 /play 那招 inject_text「放一首X」讓 pipeline 解析+播+DJ；絕不即時付費 LLM。
-            #
-            # ⚠️ 2026-08-11 實機踩到：這裡原本無條件用 anchor_title 裸字串搜尋，跟
-            # music_cog.py 的一般 autopilot enqueue（_auto_recommend 系列）邏輯不一致——
-            # 那邊會優先吃 Candidate.direct_url（T2 discovery 自帶 YouTube URL，見
-            # music_recommender.py 開頭註解「自帶 YouTube URL → enqueue 時直解不搜尋」），
-            # 沒有才退回文字搜尋，且用 artist+title 組合（不是裸 title）換更準的搜尋結果。
-            # car mode 開場沒吃 direct_url、也沒帶 artist，實機驗證：候選池挑到一首
-            # anchor_title 是雜亂爬蟲標題的歌（「清纯大眼旗袍美女,优美古镇唯美街拍」），
-            # yt-dlp 用這串裸標題搜不到東西，resolve 靜默失敗、整趟開場沒聲音。
-            # 改成比照 _auto_recommend 的優先序：direct_url > artist+title > title。
-            try:
-                if car_open.song:
-                    # 車載開場繞過 _auto_recommend 的 enqueue 迴圈、直接走手動點歌路徑，
-                    # 沒吃到那邊本來就有的 is_non_song_video 品質閘——候選池 build_member_pools
-                    # 對音樂/非音樂內容零過濾，久沒播的有聲書/podcast 一樣有資格被選中當開場曲。
-                    # 這裡補一次同款檢查（不重造邏輯，直接 reuse track_quality，邏輯抽在
-                    # car_open.resolve_car_open_query 方便單元測試——見該函式 docstring）。
-                    from car_open import resolve_car_open_query
+        if discord_voice is not None:
+            # 單一 mixer 第2刀：Discord 版開場/停播。
 
-                    mc = vc.bot.cogs.get("MusicCog")
+            async def _discord_car_arrive(car_open, speaker):
+                # CarPresence.present() 在 /car handler 裡是 inline await on_arrive——
+                # auto_rejoin_on_boot 最久可能卡 60s connect timeout，若在這裡 inline
+                # await 會讓 HTTP 回應跟著卡住。只做一件事：丟背景 task 立刻 return。
+                try:
+                    connected = bool(discord_voice.bot.voice_clients)
+                    mc = discord_voice.bot.cogs.get("MusicCog")
+                    music_active = bool(mc and (mc.stream_mode or mc.radio_mode))
+                    action = decide_car_arrive(connected=connected, music_active=music_active)
+                    if action == "skip_open":
+                        logger.info("🚗 [CarMode/Discord] 已在頻道且正在放歌，車上直接收聽，不放開場曲")
+                        return
+                    if action == "join_and_open":
+                        await discord_voice.auto_rejoin_on_boot(car_join=True, resume_music=False)
+                        if not discord_voice.bot.voice_clients:
+                            logger.warning("🚗 [CarMode/Discord] 進頻道失敗，略過開場（sentinel 60s 會再試）")
+                            return
+                    await _execute_car_open(discord_voice, car_open, speaker, lambda: _pool_provider(speaker))
+                except Exception:  # noqa: BLE001
+                    logger.exception("[CarMode/Discord] play_open 失敗")
 
-                    async def _resolve(q):
-                        if mc is None:
-                            raise RuntimeError("music_cog_unavailable")
-                        # 車上 4G 訊號差時 yt-dlp 可能整個掛住，10s 逾時避免卡住整趟開場。
-                        return await asyncio.wait_for(mc._resolve_yt_query(q), timeout=10)
+            async def _play_open(car_open, speaker):
+                asyncio.create_task(_discord_car_arrive(car_open, speaker))
 
-                    query = await resolve_car_open_query(
-                        car_open.song, pool_provider=lambda: _pool_provider(speaker),
-                        resolve_fn=_resolve)
-                    if query:
-                        await inject_text(vc, speaker, f"放一首{query}")
+            async def _stop_playback():
+                try:
+                    action = decide_car_depart(
+                        connected=bool(discord_voice.bot.voice_clients),
+                        human_count=len(discord_voice.get_online_members()))
+                    if action == "dismiss":
+                        await discord_voice.handle_dismiss()
+                        logger.info("🚗 [CarMode/Discord] 下車且頻道無真人，撤離")
                     else:
-                        logger.warning("🚗 [CarMode] 開場候選池連試多首都沒過品質閘，本次開場靜音")
-                logger.info("🚗 [CarMode] 上車開場（%s）：%s → 放《%s》", speaker,
-                            car_open.line, car_open.song.anchor_title if car_open.song else "—")
-            except Exception:  # noqa: BLE001
-                logger.exception("[CarMode] play_open 失敗")
+                        logger.info("🚗 [CarMode/Discord] 下車但頻道還有人，音樂繼續")
+                except Exception:  # noqa: BLE001
+                    logger.exception("[CarMode/Discord] stop_playback 失敗")
+        else:
+            async def _play_open(car_open, speaker):
+                await _execute_car_open(vc, car_open, speaker, lambda: _pool_provider(speaker))
 
-        async def _stop_playback():
-            try:
-                mc = vc.bot.cogs.get("MusicCog")
-                if mc and hasattr(mc, "stop_stream"):
-                    await mc.stop_stream(reason="下車（puck absent）")
-                logger.info("🚗 [CarMode] 下車停播")
-            except Exception:  # noqa: BLE001
-                logger.exception("[CarMode] stop_playback 失敗")
+            async def _stop_playback():
+                try:
+                    mc = vc.bot.cogs.get("MusicCog")
+                    if mc and hasattr(mc, "stop_stream"):
+                        await mc.stop_stream(reason="下車（puck absent）")
+                    logger.info("🚗 [CarMode] 下車停播")
+                except Exception:  # noqa: BLE001
+                    logger.exception("[CarMode] stop_playback 失敗")
 
         car_presence = build_car_presence(
             play_open=_play_open, stop_playback=_stop_playback, pool_provider=_pool_provider)

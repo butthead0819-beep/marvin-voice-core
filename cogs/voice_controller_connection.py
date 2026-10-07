@@ -227,11 +227,13 @@ def read_and_clear_reboot_state() -> dict | None:
         return None
 
 
-def pick_rejoin_channel(guilds, already_connected: bool):
-    """開機自動回台目標：任一語音頻道有真人在 → 回傳該頻道；否則 None。
+def pick_rejoin_channel(guilds, already_connected: bool, car_fallback=None):
+    """開機自動回台目標：任一語音頻道有真人在 → 回傳該頻道；否則回 car_fallback（預設 None）。
 
     2026-07-04：kickstart 後 bot 是離台狀態、要人手動 /summon——部署重啟
     每次把馬文踢下台（當晨四連發實錘：10:06 後離台 1.5h 沒人發現）。
+    car_fallback：單一 mixer 第2刀——車上有 puck 在線但頻道內暫無其他真人時，仍要
+    自動補進車載頻道接續 autopilot（見 auto_rejoin_on_boot）。已連線時一律回 None。
     """
     if already_connected:
         return None
@@ -239,7 +241,40 @@ def pick_rejoin_channel(guilds, already_connected: bool):
         for ch in getattr(g, "voice_channels", None) or []:
             if any(not m.bot for m in ch.members):
                 return ch
+    return car_fallback
+
+
+def pick_car_channel(guilds, guild_id: int | None, channel_id: int | None):
+    """車載自動進頻道的候選頻道（純函式，不判斷真人，純粹依設定挑頻道）。
+
+    channel_id 給定 → 在所有 guild 的 voice_channels 精準比對 id；找不到回 None。
+    否則 → 在 id == guild_id 的 guild 裡取 position 最小的語音頻道；guild 找不到或
+    guild 內沒有語音頻道 → None。
+    """
+    if channel_id is not None:
+        for g in guilds or []:
+            for ch in getattr(g, "voice_channels", None) or []:
+                if getattr(ch, "id", None) == channel_id:
+                    return ch
+        return None
+    for g in guilds or []:
+        if getattr(g, "id", None) == guild_id:
+            channels = getattr(g, "voice_channels", None) or []
+            if not channels:
+                return None
+            return min(channels, key=lambda c: getattr(c, "position", 0))
     return None
+
+
+def _int_env(name: str) -> int | None:
+    """env 轉 int；未設/空字串/非數字一律回 None。"""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 class ConnectionMixin:
@@ -496,12 +531,21 @@ class ConnectionMixin:
                 except Exception as e:
                     logger.error(f"❌ [Resilience] 自發性恢復監聽失敗: {e}")
 
-    async def auto_rejoin_on_boot(self):
+    async def auto_rejoin_on_boot(self, car_join: bool = False, resume_music: bool = True):
         """🔁 開機自動回台（2026-07-04）：語音頻道有真人 → 靜默回台恢復監聽。
 
         鏡像 summon 的連線核心（DAVE 連線+sink 掛載），刻意不打招呼、不動
         active_text_channel（安靜回歸）。失敗只 log，可手動 /summon 兜底。
         env MARVIN_AUTO_REJOIN=0 可關。
+
+        car_join / resume_music：單一 mixer 第2刀——car puck 上車（main_satellite.py
+        的 Discord 版 _play_open）呼叫時傳 car_join=True, resume_music=False：car_join
+        讓沒有真人頻道時也補一個車載 fallback 頻道（見 pick_car_channel），
+        resume_music=False 跳過下方「接續 autopilot」那段（開場邏輯自己會選歌，不用
+        這裡搶著補歌）。預設值＝現有行為一行不變（on_ready / sentinel 60s tick 呼叫
+        都沒帶參數）。sentinel 60s tick 沒有真人頻道、但車上有 puck 在場時，
+        car_fallback 判斷一樣會成立（看 self.bot.car_presence.is_present），因此車上
+        有人時斷線也會自動補進頻道、接續 autopilot，不需要另開一條迴圈。
         """
         if os.getenv("MARVIN_AUTO_REJOIN", "1") == "0":
             logger.warning("🔁 [AutoRejoin] env 關閉，跳過")
@@ -525,13 +569,21 @@ class ConnectionMixin:
             return
         self._auto_rejoin_running = True
         try:
-            ch = pick_rejoin_channel(self.bot.guilds, bool(self.bot.voice_clients))
+            car_fallback = None
+            _car_presence = getattr(self.bot, "car_presence", None)
+            if car_join or (_car_presence is not None and _car_presence.is_present):
+                car_fallback = pick_car_channel(
+                    self.bot.guilds, _int_env("GUILD_ID"), _int_env("MARVIN_CAR_VOICE_CHANNEL_ID"))
+            ch = pick_rejoin_channel(self.bot.guilds, bool(self.bot.voice_clients), car_fallback=car_fallback)
             if ch is None:
                 # no-op 也要可觀測（7/4 教訓 ×3：沉默無法區分「正確不做」與「沒跑到」）
                 logger.warning("🔁 [AutoRejoin] 台上無真人（或已連線），不回台")
                 return
             try:
-                print(f"🔁 [AutoRejoin] 開機偵測 {ch.name} 有真人，靜默回台...", flush=True)
+                if any(not m.bot for m in ch.members):
+                    print(f"🔁 [AutoRejoin] 開機偵測 {ch.name} 有真人，靜默回台...", flush=True)
+                else:
+                    print(f"🔁 [AutoRejoin] car puck 在線，進 {ch.name}...", flush=True)
                 self.bot.engine.start()
                 from discord_voice_engine import RealtimeVADSink, patch_voice_recv_key_sync
                 voice_client = await ch.connect(cls=voice_recv.VoiceRecvClient, timeout=60.0, reconnect=True)
@@ -565,7 +617,7 @@ class ConnectionMixin:
                 # 多半是重啟打斷了進行中的一場，順手接續一輪 autopilot 推薦；跟登場的
                 # 「靜默不打招呼」同一種克制——不寒暄，但別讓音樂真的斷在那裡。
                 mc = self.bot.cogs.get('MusicCog')
-                if mc is not None and not mc.stream_mode and not mc.radio_mode:
+                if resume_music and mc is not None and not mc.stream_mode and not mc.radio_mode:
                     online = mc._autopilot_online_members(self.get_online_members())
                     if online:
                         # 佇列此刻是空的（重啟清空）→ 交給 _ensure_stream_loop() 啟動迴圈，
@@ -897,6 +949,18 @@ class ConnectionMixin:
         self.speech_timers = {}
 
         await self.bot.engine.clear_buffers()
+
+    async def handle_auto_dismiss(self):
+        """單一 mixer 第2刀：on_voice_state_update 的「最後一人離場」自動撤離入口。
+
+        car puck 還在線（self.bot.car_presence.is_present）時不撤離——頻道內剛好沒有
+        其他真人，不代表車上沒人在聽，撤離會把車上音樂也斷了。其餘情況照舊走
+        handle_dismiss。"""
+        car_presence = getattr(self.bot, "car_presence", None)
+        if car_presence is not None and car_presence.is_present:
+            logger.info("👋 [Auto Dismiss] car puck 在線，不撤離")
+            return
+        await self.handle_dismiss()
 
     # ☢️ [Voice Flap Guard] 語音連線在短時間內反覆「連上→斷線」（discord.py 自動重連把每次
     # 掉線都接回來、軟修復計數從沒累積 → Sentinel 每次巡邏都看到「連線正常」，永不升級）。
