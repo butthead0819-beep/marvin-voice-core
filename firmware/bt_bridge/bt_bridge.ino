@@ -9,7 +9,8 @@
  *       I2S slave 收 S3 音訊 → 48k→44.1k 重取樣 → A2DP。
  *       S3 為 I2S master（48000Hz / 16-bit / stereo / Philips），本板並聯收同一組線當 slave。
  *       音量交給 S3 端與喇叭，這裡不衰減。
- *       目標裝置：名稱含 "BMW 04900"（車機）或 "soundcore"（Soundcore Mini 3 Pro），不分大小寫。
+ *       目標裝置：配對模式下自動認任何車機/藍牙喇叭（COD 主類別 Audio/Video＋Rendering/Audio 服務，
+ *       見 cod_filter.h；手機、電腦不收）；名稱 "BMW 04900"/"soundcore" 與 BMW 位址比對保留為後備。
  *       已配對裝置記在 NVS（最多 4 台，最近連上的排最前）；連線失敗時輪流換下一台。
  *       STEP 3.1 掃描過濾自理（不做 COD 過濾、名字 EIR→BDNAME→遠端名稱）+ 配對診斷紀錄（開機印 [DIAG]）。
  *
@@ -36,6 +37,7 @@
 #include "bridge_dsp.h"
 #include "known_devices.h"
 #include "diag_log.h"
+#include "cod_filter.h"
 #include <nvs.h>
 
 // ---- 配對診斷紀錄的 thread 安全佇列 ----
@@ -81,6 +83,7 @@ static void bda_fmt(const uint8_t a[6], char out[18]) {
 
 bool ssid_match_cb(const char* ssid, esp_bd_addr_t address, int rssi);
 const char* addr_target_label(const uint8_t* bda);
+bool pairing_accepts_cod(const uint8_t* bda, uint32_t cod);
 
 // ---- 首次配對補開重連 ----
 // 函式庫在 NVS 沒有上次位址時會整段關掉自動重連，且之後不再打開，這裡補開。
@@ -171,6 +174,18 @@ class BridgeSource : public BluetoothA2DPSource {
       snprintf(d, sizeof(d), "S %02X%02X%02X cod%06lx r%d '%s'", bda[3], bda[4], bda[5], (unsigned long)cod,
                (int)rssi, name);
       diag_post(d);
+    }
+
+    // 配對模式：任何未配對過的車機/藍牙喇叭都收（不靠名稱/位址，Lexus 等新車免改韌體）。
+    // 同一輪掃描已選定目標就不再換（cancel_discovery 生效前還會陸續收到其他結果）。
+    if (s_a2d_state != APP_AV_STATE_DISCOVERED && pairing_accepts_cod(bda, cod)) {
+      const char* label = name[0] != '\0' ? name : "音訊裝置";
+      Serial.printf("[SCAN] 配對模式：類型命中車機/喇叭 '%s' %s\n", label, bs);
+      char d[DIAG_TEXT];
+      snprintf(d, sizeof(d), "V %02X%02X%02X cod%06lx '%s'", bda[3], bda[4], bda[5], (unsigned long)cod, label);
+      diag_post(d);
+      adopt_target(bda, label);
+      return;
     }
 
     const char* addr_label = nullptr;
@@ -275,6 +290,11 @@ const char* addr_target_label(const uint8_t* bda) {
     return t.label;
   }
   return nullptr;
+}
+
+// 配對模式下依裝置類型收車機/喇叭；已配對過的不收（配對模式只為了加新裝置）
+bool pairing_accepts_cod(const uint8_t* bda, uint32_t cod) {
+  return g_pairing_mode && cod_is_audio_sink(cod) && known_find(g_known, bda) < 0;
 }
 static const int BOOT_BTN_GPIO = 0;
 static const int LED_PIN = 2;
