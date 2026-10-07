@@ -20,6 +20,12 @@ method 先做成安全的 no-op（車機真的按下去不會炸，但沒有實�
 控制走 Marvin 既有的語音/文字指令，這裡只是為了讓車機的能力協商判定「這是個
 正常玩家、值得顯示資訊」。
 
+2026-10-07：補 mpris:length（總長度）+ Position（播放位置）給 BlueZ，讓車機
+能算「剩餘時間」——之前只報 Title/Artist/Album，車機沒有總長度/進度可用。
+Pi 端有 ~5s 的 /audio_stream 預載緩衝，這裡送出的進度是 Mac 端 mixer 實際
+播放的進度，車上實際聽到的聲音會比這個進度晚個幾秒——沒有做任何補償，顯示的
+剩餘時間會比實際聽到的快一點。
+
 需要系統套件（這台 Pi 的 volume_server.py 跑系統 python3、沒用 venv，直接
 apt 裝，不要 pip）：
     sudo apt-get install -y python3-dbus python3-gi
@@ -40,6 +46,21 @@ except ImportError:
 PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 PROPS_IFACE = "org.freedesktop.DBus.Properties"
 PLAYER_PATH = "/marvin/player0"
+
+
+def build_track_update(title, artist=None, album=None, duration_s=None, position_s=None) -> dict:
+    """純函式（不碰 dbus）：組出 set_track() 要送進 BlueZ 的 metadata + 播放位置。
+    mpris:length 只有 duration_s 有值且 >0 時才放進去——BlueZ/車機沒收到這個
+    key 就當作「沒有總長度」，不要塞 0 進去誤導車機算出負的剩餘時間。"""
+    metadata = {
+        "xesam:title": title or "",
+        "xesam:artist": [artist] if artist else [],
+        "xesam:album": album or "",
+    }
+    if duration_s is not None and duration_s > 0:
+        metadata["mpris:length"] = int(round(duration_s * 1_000_000))
+    position_us = int(round(position_s * 1_000_000)) if position_s is not None else 0
+    return {"metadata": metadata, "position_us": position_us}
 
 
 if _AVAILABLE:
@@ -166,15 +187,21 @@ class AvrcpMediaPlayer:
         self._loop = GLib.MainLoop()
         self._loop.run()
 
-    def set_track(self, title: str, artist: str = None, album: str = None):
+    def set_track(self, title: str, artist: str = None, album: str = None,
+                   duration_s: float = None, position_s: float = None):
         if not self.available:
             return
-        metadata = dbus.Dictionary({
-            "xesam:title": title or "",
-            "xesam:artist": dbus.Array([artist] if artist else [], signature="s"),
-            "xesam:album": album or "",
-        }, signature="sv")
-        GLib.idle_add(self._player.update, {"Metadata": metadata, "PlaybackStatus": "Playing"})
+        update = build_track_update(title, artist, album, duration_s, position_s)
+        raw_metadata = dict(update["metadata"])
+        raw_metadata["xesam:artist"] = dbus.Array(raw_metadata["xesam:artist"], signature="s")
+        if "mpris:length" in raw_metadata:
+            raw_metadata["mpris:length"] = dbus.Int64(raw_metadata["mpris:length"])
+        metadata = dbus.Dictionary(raw_metadata, signature="sv")
+        GLib.idle_add(self._player.update, {
+            "Metadata": metadata,
+            "PlaybackStatus": "Playing",
+            "Position": dbus.Int64(update["position_us"]),
+        })
 
     def set_playing(self, playing: bool):
         if not self.available:

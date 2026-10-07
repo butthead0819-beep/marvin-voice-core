@@ -78,6 +78,7 @@ def test_fetch_car_now_track_returns_title_artist_album_when_playing(monkeypatch
 
     assert puck_mixer.fetch_car_now_track() == {
         "title": "現正播放的歌", "artist": "某歌手", "album": "某專輯",
+        "duration_s": None, "song_start_time": None,
     }
 
 
@@ -99,6 +100,7 @@ def test_fetch_car_now_track_defaults_artist_album_to_empty_string(monkeypatch):
 
     assert puck_mixer.fetch_car_now_track() == {
         "title": "現正播放的歌", "artist": "", "album": "",
+        "duration_s": None, "song_start_time": None,
     }
 
 
@@ -125,3 +127,43 @@ def test_fetch_car_now_track_returns_none_on_connection_failure(monkeypatch):
     monkeypatch.setattr(puck_mixer.urllib.request, "urlopen", _boom)
 
     assert puck_mixer.fetch_car_now_track() is None
+
+
+def _fake_resp(body: bytes):
+    import io
+
+    class _FakeResp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    return _FakeResp(body)
+
+
+def test_fetch_car_now_track_converts_duration_and_start_time(monkeypatch):
+    import json
+
+    body = json.dumps({
+        "playing": True, "title": "現正播放的歌",
+        "duration": 215, "song_start_time": 1791000000.5,
+    }).encode()
+    monkeypatch.setattr(puck_mixer.urllib.request, "urlopen", lambda url, timeout=3.0: _fake_resp(body))
+
+    track = puck_mixer.fetch_car_now_track()
+    assert track["duration_s"] == 215.0
+    assert track["song_start_time"] == 1791000000.5
+
+
+def test_fetch_car_now_track_rejects_invalid_duration_values(monkeypatch):
+    import json
+
+    for bad_duration in (0, "abc", True):
+        body = json.dumps({
+            "playing": True, "title": "現正播放的歌", "duration": bad_duration,
+        }).encode()
+        monkeypatch.setattr(puck_mixer.urllib.request, "urlopen",
+                             lambda url, timeout=3.0, body=body: _fake_resp(body))
+        track = puck_mixer.fetch_car_now_track()
+        assert track["duration_s"] is None
