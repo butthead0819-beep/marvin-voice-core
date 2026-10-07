@@ -25,14 +25,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+import car_http_app
 import main_discord
-import main_satellite
 from cogs.voice_controller_connection import (
     ConnectionMixin,
     pick_car_channel,
     pick_rejoin_channel,
 )
-from main_satellite import decide_car_arrive, decide_car_depart
+from car_http_app import decide_car_arrive, decide_car_depart
 from marvin_voice_core.stream_speaker_output import StreamSpeakerOutput
 
 
@@ -249,7 +249,7 @@ async def test_satellite_audio_stream_fills_silence_when_idle():
     loop = asyncio.get_running_loop()
     out = StreamSpeakerOutput(loop)  # 沒有任何 write()＝idle，沒有真幀
     vc = MagicMock()
-    app = main_satellite.build_text_app(vc, token=None, stream_source=out)
+    app = car_http_app.build_text_app(vc, token=None, stream_source=out)
     async with TestClient(TestServer(app)) as client:
         async with client.get("/audio_stream") as resp:
             try:
@@ -279,7 +279,7 @@ async def test_start_discord_text_server_degrades_on_exception():
     async def _boom(*a, **k):
         raise OSError("port in use")
 
-    with patch("main_satellite.start_text_http_server", _boom):
+    with patch("car_http_app.start_text_http_server", _boom):
         result = await main_discord._start_discord_text_server(asyncio.get_running_loop(), vc)
     assert result is None
 
@@ -296,7 +296,7 @@ async def test_start_discord_text_server_wires_tap_and_discord_voice(monkeypatch
         recorded["kwargs"] = kwargs
         return fake_runner
 
-    with patch("main_satellite.start_text_http_server", _fake_start):
+    with patch("car_http_app.start_text_http_server", _fake_start):
         result = await main_discord._start_discord_text_server(asyncio.get_running_loop(), vc)
 
     assert result is fake_runner
@@ -348,7 +348,7 @@ async def test_discord_car_present_does_not_block_and_triggers_auto_rejoin(monke
     monkeypatch.setattr("aiohttp.web.TCPSite", _FakeSite)
 
     before = asyncio.all_tasks()
-    runner = await main_satellite.start_text_http_server(fake, discord_voice=fake)
+    runner = await car_http_app.start_text_http_server(fake, discord_voice=fake)
     try:
         car_presence = fake.bot.car_presence
         assert car_presence is not None
@@ -388,7 +388,7 @@ async def test_discord_car_absent_dismisses_only_when_no_humans_left(monkeypatch
     monkeypatch.setattr("aiohttp.web.TCPSite", _FakeSite)
 
     before = asyncio.all_tasks()
-    runner = await main_satellite.start_text_http_server(fake, discord_voice=fake)
+    runner = await car_http_app.start_text_http_server(fake, discord_voice=fake)
     try:
         car_presence = fake.bot.car_presence
         # 先上車（song/pool 皆空，開場靜音；不影響這裡要測的下車邏輯）

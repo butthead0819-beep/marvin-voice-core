@@ -1,0 +1,2397 @@
+"""car_http_app.py — :8790 車載/HUD HTTP app（/say /audio /car /car_now /hud
+/audio_stream /puck_deck /puck_voice …）；由 Discord 進程（main_discord.py）呼叫
+start_text_http_server() 起這套 server。單一 mixer 第3a刀：從 main_satellite.py
+原樣搬出，純搬移、零行為改變。
+"""
+import asyncio
+import json
+import logging
+import os
+import tempfile
+import time
+from typing import Awaitable, Callable
+
+from aiohttp import web
+
+from marvin_voice_core.audio_stream_batcher import iter_batched_encoded_frames
+from marvin_voice_core.discord_audio_stream_server import SilenceFillQueue
+from marvin_voice_core.mp3_stream_encoder import Mp3StreamEncoder
+
+logger = logging.getLogger(__name__)
+
+
+# /audio_stream 即時轉成 MP3 再送出（見 project_car_puck_funnel_tls_and_fallback：Funnel+
+# 熱點實測 throughput 只有 ~60KB/s，遠低於未壓縮 stereo 48k 需要的 187.5KB/s）。家用WiFi/
+# 熱點兩條網路路徑都套用同一份編碼，firmware 端只需維護一套 arduino-libhelix 解碼路徑。
+_AUDIO_STREAM_MP3_KBPS = int(os.getenv("MARVIN_AUDIO_STREAM_MP3_KBPS", "128"))
+
+# /audio_stream 送出前合併小 MP3 chunk 的門檻（bytes），降低對車載 WiFi 逐封包時序抖動
+# 的敏感度（見 audio_stream_batcher.py）。門檻依編碼後的 bitrate 換算，不是原始 PCM。
+_AUDIO_STREAM_BATCH_BYTES = max(
+    1, _AUDIO_STREAM_MP3_KBPS * 1000 // 8 * int(os.getenv("MARVIN_AUDIO_STREAM_BATCH_MS", "100")) // 1000)
+
+_CORS = {"Access-Control-Allow-Origin": "*",
+         "Access-Control-Allow-Headers": "*",
+         "Access-Control-Allow-Methods": "POST, OPTIONS"}
+
+
+async def _stream_ffmpeg_input_as_mp3(request, ffmpeg_input_args: list[str]):
+    """[PuckMixer] /puck_deck 跟 /puck_voice 共用：起 ffmpeg 把任意輸入（yt-dlp
+    直連URL 或本機檔案路徑）轉成 48kHz/2ch PCM，即時編碼 MP3 chunked 回傳。差異
+    只在 ffmpeg 的 -i 來源，其餘轉碼/串流/斷線處理完全一樣，抽出來避免兩邊各自
+    維護一份、之後改壞其中一個沒同步改到另一個。
+
+    2026-08-18：從 build_text_app() 內部 hoist 到 module level，跟 handle_puck_voice
+    共用同一份邏輯，不用各自維護一份（見上方 docstring 的教訓）。"""
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-nostdin", "-loglevel", "error", *ffmpeg_input_args,
+        "-ar", "48000", "-ac", "2", "-f", "s16le", "-",
+        stdout=asyncio.subprocess.PIPE)
+    resp = web.StreamResponse(status=200, headers={
+        **_CORS, "Content-Type": "audio/mpeg", "X-Audio-Codec": "mp3",
+        "X-Audio-Rate": "48000", "X-Audio-Channels": "2", "X-Audio-Bits": "16",
+    })
+    await resp.prepare(request)
+    encoder = Mp3StreamEncoder(rate=48000, channels=2, bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
+    try:
+        while True:
+            pcm = await proc.stdout.read(4096)
+            if not pcm:
+                break
+            chunk = encoder.encode(pcm)
+            if chunk:
+                await resp.write(chunk)
+        tail = encoder.flush()
+        if tail:
+            await resp.write(tail)
+    except (ConnectionError, asyncio.CancelledError):
+        pass   # client 斷線/取消，見 handle_audio_stream 同款 except 的理由
+    finally:
+        # ⚠️ 2026-08-13 實機踩到：ffmpeg 正常轉完（read() 讀到 EOF 自然 break）代表
+        # 子行程早就自己結束了，這裡還無條件 proc.kill() 對一個已經死掉的行程送
+        # SIGKILL，asyncio 的 subprocess transport 會在 _check_proc() 直接 raise
+        # ProcessLookupError——這條 except 沒接住，整個 handler 直接炸穿到
+        # aiohttp，puck 收到的不是乾淨的串流結束、是斷開的爛尾連線（實機日誌：
+        # 356 次同一支 traceback，幾乎每個 /puck_deck、/puck_voice 請求都中一次；
+        # 症狀＝一直回到歌曲開頭/無聲idle/DJ口白放不出來，三個都是同一個根因）。
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        await proc.wait()
+    return resp
+
+
+def _make_puck_deck_handler(vc, puck_command_queue=None):
+    """回傳一個 /puck_deck 的 handler closure。2026-08-18：car puck mk2(pi_bt)
+    跟 ESP32(esp32_edge_mix) 都走這裡——兩種硬體的音源都由 satellite 這個進程
+    （com.antigravity.marvin.satellite）統一 resolve+轉碼，跟 24/7 Discord bot
+    的關係是「誰在決策播放」而非「誰能 serve 音源」（見 device/puck_mixer.py::
+    resolve_stream_url() 註解、car-presence 心跳打 satellite 的 :8790 而非 bot）。
+
+    puck_command_queue＝None（pi_bt 沒有這個佇列）就跳過 mark_deck_hit()，那是
+    ESP32 專用的 deck stall 判斷。"""
+    async def handle_puck_deck(request):
+        if puck_command_queue is not None:
+            puck_command_queue.mark_deck_hit()
+        watch_url = (request.query.get("url") or "").strip()
+        if not watch_url:
+            return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
+        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
+        if music_cog is None:
+            return web.json_response({"error": "music_cog_unavailable"}, status=500, headers=_CORS)
+        info = await music_cog._resolve_yt_query(watch_url)
+        stream_url = info.get("url") if info else None
+        if not stream_url:
+            return web.json_response({"error": "resolve_failed"}, status=502, headers=_CORS)
+
+        # seek：斷線（非自然播完）重連時帶著「已下載到第幾秒」回來，接回原本位置而不是
+        # 從頭重播（見 car_puck.ino::deckNetworkTask 的 deckDownloadedSec 說明）。-ss 放在
+        # -i 前面＝快速 seek（用容器索引跳，不精確 decode 到那一幀），音訊來源夠準。
+        ffmpeg_args = ["-i", stream_url]
+        # -af volume：/puck_deck 直接轉碼原始音源，沒有 /audio_stream 那邊中央 mixer 的
+        # stream_volume 衰減（MusicCog.stream_volume 預設 0.10，見 cogs/music_cog.py）
+        # ——不加的話比使用者已經聽慣的 /audio_stream 音量大上一截（2026-08-11 實機
+        # 反饋：「音量太大」）。套同一個比例讓裝置端混音跟中央 mixer 音量感受一致。
+        # ⚠️ 2026-08-19：這個 0.10 只對 esp32_edge_mix 成立——car puck mk2(pi_bt) 的
+        # device/puck_mixer.py 是直接把解碼出的 PCM 送去已經開滿的 bluealsa BT 音量，
+        # 沒有中間任何 mixer 再衰減一次，套同一個 0.10 等於音樂天生只剩一成音量（實機
+        # 反饋「聲音很小」的真因，見 incident_car_puck_hotspot_tailscale_relay 記憶）。
+        # resolve_stream_url() 現在帶 hw=pi_bt 讓這裡分辨、跳過這層衰減。
+        if request.query.get("hw") != "pi_bt":
+            ffmpeg_args += ["-af", "volume=0.10"]
+        seek_raw = (request.query.get("seek") or "").strip()
+        if seek_raw:
+            try:
+                seek_s = max(0.0, float(seek_raw))
+                if seek_s > 0:
+                    ffmpeg_args = ["-ss", f"{seek_s:.2f}"] + ffmpeg_args
+            except ValueError:
+                pass   # 帶了垃圾值就當沒帶，別讓整個 deck 連不上
+
+        return await _stream_ffmpeg_input_as_mp3(request, ffmpeg_args)
+    return handle_puck_deck
+
+
+async def inject_text(vc, speaker: str, text: str) -> bool:
+    """把一段文字當成「已轉錄結果」注入 Marvin pipeline（stdin / HTTP 共用）。
+
+    跳過 STT、虛擬空 wav_bytes、bypass_etd（文字輸入無語音、不需語意終止檢測）。
+    回傳 True＝已送出、False＝空字串略過。
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    logger.info(f"📝 [TextInput] 收到文字（{speaker}）: {text}")
+    # 用牆鐘 time.time()：下游 Stale Drop 檢查是 time.time()-timestamp，
+    # 傳單調時鐘（loop.time()）會被誤判成排隊上億秒而丟棄。
+    timestamp = time.time()
+    await vc.handle_stt_result(
+        speaker=speaker,
+        raw_text=text,
+        timestamp=timestamp,
+        wav_bytes=b"",  # 文字模式無音訊
+        prosody_data=None,
+        is_wake_check=False,
+        bypass_etd=True,  # 文字輸入跳過語意終止檢測
+        is_text_input=True,  # 跳過 Echo Guard（播音樂時仍能下文字指令）+ 不等後續語音
+    )
+    return True
+
+
+# 純軟體 iOS satellite 網頁（Mac :8790 自服務；Pi 完全不參與）。
+# 瀏覽器用 WebAudio 擷取 PCM 自行編 WAV（跨 iOS Safari 穩、免伺服器 ffmpeg），
+# 一次 POST 整句 → Mac STT → pipeline。__TOKEN__ 由伺服器填入。
+SATELLITE_HTML = """<!DOCTYPE html>
+<html lang="zh-Hant"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>馬文 Satellite</title>
+<style>
+  :root{ --bg:#0e0f13; --card:#1a1c23; --line:#2a2d38; --fg:#e8eaf0; --mut:#8b90a0;
+         --accent:#6c8cff; --danger:#ff6b6b; --ok:#4ec07a; }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body{ margin:0; background:var(--bg); color:var(--fg);
+        font:16px/1.4 -apple-system,"PingFang TC",system-ui,sans-serif;
+        padding:16px 14px 40px; max-width:520px; margin:0 auto; }
+  h1{ font-size:20px; margin:6px 2px 14px; display:flex; align-items:center; gap:8px; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:16px;
+         padding:18px 16px; margin-bottom:14px; }
+  .lbl{ font-size:13px; color:var(--mut); margin:0 2px 10px; }
+  #ptt{ width:100%; border:none; border-radius:16px; padding:34px 10px; font-size:22px;
+        font-weight:700; color:#0b1020; background:var(--accent); cursor:pointer;
+        transition:transform .12s, background .2s; }
+  #ptt:active{ transform:scale(.98); }
+  #ptt.rec{ background:var(--danger); color:#0e0f13; }
+  #you{ font-size:17px; font-weight:600; line-height:1.4; min-height:24px; }
+  #status{ font-size:13px; color:var(--mut); min-height:18px; margin:10px 2px 0; text-align:center; }
+</style></head><body>
+<h1>🛰️ 馬文 Satellite</h1>
+
+<div class="card">
+  <button id="ptt">🎙️ 按住講話</button>
+</div>
+
+<div class="card">
+  <div class="lbl">📝 狀態</div>
+  <div id="you">—</div>
+</div>
+
+<div class="card">
+  <div class="lbl">🔊 馬文</div>
+  <div id="marvin" style="font-size:15px;color:var(--mut)">—</div>
+</div>
+
+<audio id="player" playsinline></audio>
+<div id="status">就緒（本機瀏覽器收音，不經 Pi）</div>
+
+<script>
+const TOKEN="__TOKEN__";
+// 無聲 clip：在 PTT 手勢內播一次以「解鎖」<audio> 元素（走 media 類別，不受 iOS 靜音鍵影響）。
+const SILENT="data:audio/wav;base64,UklGRsQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const $=id=>document.getElementById(id);
+function stat(m,ok){ $("status").textContent=m; $("status").style.color=ok?"#4ec07a":"#8b90a0"; }
+
+// 馬文回覆：輪詢 /reply，新段（seq 遞增）就播。用 <audio>（media 類別，靜音鍵不消音），
+// 於 PTT 手勢內先播無聲 clip 解鎖，之後從輪詢回呼 play() 才不被 iOS 自動播放政策擋。
+let replySeq=0, unlocked=false;
+const player=$("player");
+function unlockPlayer(){
+  if(unlocked) return;
+  try{
+    player.src=SILENT;
+    const p=player.play();
+    if(p) p.then(()=>{ player.pause(); player.currentTime=0; unlocked=true; })
+          .catch(e=>{ stat("音訊解鎖失敗："+e.name, false); });
+  }catch(e){}
+}
+async function pollReply(){
+  try{
+    const r=await fetch("/reply?t="+encodeURIComponent(TOKEN)+"&since="+replySeq, {cache:"no-store"});
+    if(r.status!==200) return;
+    replySeq=parseInt(r.headers.get("X-Reply-Seq")||replySeq);
+    const blob=await r.blob();
+    player.src=URL.createObjectURL(blob);
+    const p=player.play();
+    if(p) p.catch(e=>{ $("marvin").textContent="播放失敗（"+e.name+"）——檢查手機靜音鍵/音量"; });
+    $("marvin").textContent="🔊 播放中…"; $("marvin").style.color="#e8eaf0";
+  }catch(e){ $("marvin").textContent="播放失敗（"+e+"）"; }
+}
+setInterval(pollReply, 1200);
+
+let ctx, stream, node, src, chunks=[], sampleRate=48000, recording=false, busy=false;
+
+async function startRec(){
+  if(recording||busy) return;
+  unlockPlayer();                       // 手勢中解鎖 audio（iOS 自動播放限制）
+  try{
+    stream = await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:true, noiseSuppression:true, autoGainControl:true }});
+  }catch(e){ stat("拿不到麥克風權限", false); return; }
+  ctx = new (window.AudioContext||window.webkitAudioContext)();
+  sampleRate = ctx.sampleRate;
+  src = ctx.createMediaStreamSource(stream);
+  node = ctx.createScriptProcessor(4096, 1, 1);   // 廣泛支援（含 iOS Safari）
+  chunks = [];
+  node.onaudioprocess = e => {
+    const d = e.inputBuffer.getChannelData(0);
+    chunks.push(new Float32Array(d));
+  };
+  src.connect(node); node.connect(ctx.destination);
+  recording = true;
+  $("ptt").classList.add("rec"); $("ptt").textContent="🔴 放開結束";
+  stat("錄音中…請說話", true);
+}
+
+async function stopRec(){
+  if(!recording) return;
+  recording=false; busy=true;
+  $("ptt").classList.remove("rec"); $("ptt").textContent="⌛ 傳送中…";
+  try{ node.disconnect(); src.disconnect(); stream.getTracks().forEach(t=>t.stop()); await ctx.close(); }catch(e){}
+  const wav = encodeWAV(chunks, sampleRate);
+  chunks=[];
+  try{
+    const r = await fetch("/audio?t="+encodeURIComponent(TOKEN),
+      {method:"POST", headers:{"Content-Type":"audio/wav"}, body:wav});
+    const j = await r.json();
+    if(j.ok){ $("you").textContent="✓ 已聽到，馬文思考中…"; stat("已送進馬文大腦", true); }
+    else if(r.status===401){ stat("token 錯誤", false); }
+    else{ $("you").textContent="（沒聽清楚）"; stat("沒聽到有效語音", false); }
+  }catch(e){ stat("連不到大腦（Mac 上 main_satellite 沒跑？）", false); }
+  busy=false; $("ptt").textContent="🎙️ 按住講話";
+}
+
+// 按住＝錄音；放開＝送出（滑鼠 + 觸控都綁）
+const b=$("ptt");
+b.addEventListener("mousedown", startRec);
+b.addEventListener("mouseup", stopRec);
+b.addEventListener("mouseleave", ()=>{ if(recording) stopRec(); });
+b.addEventListener("touchstart", e=>{ e.preventDefault(); startRec(); }, {passive:false});
+b.addEventListener("touchend", e=>{ e.preventDefault(); stopRec(); }, {passive:false});
+
+// Float32 chunks → 16-bit PCM mono WAV bytes
+function encodeWAV(buffers, rate){
+  let len=0; buffers.forEach(b=>len+=b.length);
+  const pcm=new Float32Array(len); let off=0;
+  buffers.forEach(b=>{ pcm.set(b,off); off+=b.length; });
+  const buf=new ArrayBuffer(44+pcm.length*2), view=new DataView(buf);
+  const ws=(o,s)=>{ for(let i=0;i<s.length;i++) view.setUint8(o+i, s.charCodeAt(i)); };
+  ws(0,"RIFF"); view.setUint32(4, 36+pcm.length*2, true); ws(8,"WAVE");
+  ws(12,"fmt "); view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
+  view.setUint32(24,rate,true); view.setUint32(28,rate*2,true); view.setUint16(32,2,true); view.setUint16(34,16,true);
+  ws(36,"data"); view.setUint32(40, pcm.length*2, true);
+  let p=44; for(let i=0;i<pcm.length;i++){ let s=Math.max(-1,Math.min(1,pcm[i])); view.setInt16(p, s<0?s*0x8000:s*0x7FFF, true); p+=2; }
+  return new Blob([view], {type:"audio/wav"});
+}
+</script>
+</body></html>"""
+
+
+# hud_performance.js 是「動作(Action)+情緒(Emotion)兩層疊加表演」的唯一真相來源——
+# node --test 直接測這個檔案，HUD_HTML 用 __PERF_JS__ 佔位字串把整段內容內嵌進 <script>，
+# 不是另外複製一份邏輯進這個字串裡（見 tests_js/hud_performance.test.js）。
+with open(os.path.join(os.path.dirname(__file__), "hud_performance.js"), encoding="utf-8") as _f:
+    _PERF_JS = _f.read()
+
+# Marvin HUD v12（設計稿 → 接上真實 /now 現正播放資料）。1920×480 寬屏顯示框架，
+# 重要性階梯卡片 + 會動 Marvin 頭 + 旋轉黑膠（封面調色盤 splatter）。
+# 場景/通知中心示範資料仍是靜態 demo；「現正播放」卡輪詢 /now，playing=true 時
+# 用真實 title/by/palette 蓋掉 demo 黑膠，沒歌在播就維持 demo 樣子。__TOKEN__ 由伺服器填入。
+HUD_HTML = """<!DOCTYPE html>
+<html lang="zh-Hant"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marvin HUD v12 — 寬屏顯示框架</title>
+<style>
+  :root{
+    color-scheme: dark;
+    --ink:#080B11; --ink2:#0C1119; --surf:rgba(255,255,255,.04);
+    --text:#EEF2F6; --muted:#93A0AE; --dim:#5C6774; --line:rgba(160,180,200,.12);
+    --ok:52,224,190; --info:76,157,255; --warn:245,178,62; --urgent:255,107,94; --marvin:155,224,75;
+    --display: "Futura","Avenir Next",-apple-system,system-ui,sans-serif;
+    --font: "Avenir Next","Avenir",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; }
+  body{
+    background:radial-gradient(120% 100% at 50% -20%,#111826 0%,var(--ink) 60%,#04060A 100%);
+    color:var(--text); font-family:var(--font); min-height:100vh;
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:clamp(18px,3.4vh,36px); padding:clamp(20px,4vh,52px) 18px; overflow-x:hidden;
+  }
+  .brand{ text-align:center; display:flex; flex-direction:column; gap:8px; align-items:center; }
+  .brand h1{ margin:0; font-family:var(--display); font-size:clamp(19px,2.7vw,28px); font-weight:600; letter-spacing:.18em; text-transform:uppercase;
+    background:linear-gradient(180deg,#fff,#B7C4D0); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  .brand p{ margin:0; font-family:var(--mono); font-size:clamp(10px,1.3vw,12px); color:var(--muted); letter-spacing:.04em; }
+
+  .device{ width:min(1180px,95vw); filter:drop-shadow(0 40px 80px rgba(0,0,0,.6)); }
+  .bezel{ background:linear-gradient(180deg,#1b212b,#0b0f16); border:1px solid #2a323d; border-radius:24px; padding:12px; }
+  .screen{
+    position:relative; width:100%; aspect-ratio:1920/480; border-radius:14px; overflow:hidden;
+    background:var(--ink); container-type:size; box-shadow:inset 0 0 0 1px #000, inset 0 0 60px rgba(0,0,0,.7);
+    display:flex; flex-direction:column;
+  }
+
+  /* ---- stage: <=3 importance-weighted cards ---- */
+  /* 未聚焦卡片依內容權重(KIND.w)分配寬度，但夾在 15%-45% 之間，避免單張獨佔或擠成一條；
+     卡片總寬不滿版時置中，不留死氣沉沉的右側空白。 */
+  .stage{ flex:1; display:flex; gap:2.2cqh; padding:3cqh 3cqh 1.6cqh; min-height:0; justify-content:center; }
+  .card{
+    --c:var(--ok);
+    position:relative; min-width:15%; max-width:45%; border-radius:3cqh; padding:3.2cqh 3.4cqh;
+    display:flex; flex-direction:column; justify-content:space-between; overflow:hidden;
+    background:radial-gradient(135% 150% at 16% -12%, rgba(var(--c),.22), transparent 60%), var(--surf);
+    border:1px solid rgba(var(--c),.30);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 42px rgba(var(--c),.07);
+    animation:rise .5s cubic-bezier(.2,.7,.2,1) both;
+  }
+  .card.hero{ box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 0 60px rgba(var(--c),.14); border-color:rgba(var(--c),.45); }
+  .card .top{ display:flex; align-items:center; gap:1.6cqh; }
+  .card .label{ font-family:var(--mono); font-size:2.9cqh; letter-spacing:.12em; text-transform:uppercase; color:rgba(var(--c),.95); }
+  .card .dot{ width:1.7cqh; height:1.7cqh; border-radius:50%; background:rgb(var(--c)); box-shadow:0 0 8px rgba(var(--c),.8); margin-left:auto; }
+  .card .title{ font-family:var(--display); font-size:8.5cqh; font-weight:600; line-height:1.04; letter-spacing:.005em; text-wrap:balance; }
+  .card.hero .title{ font-size:12cqh; }
+  .card .sub{ font-size:3.8cqh; color:var(--muted); font-weight:500; margin-top:.6cqh; }
+  .card .sub strong{ color:var(--text); font-weight:700; }
+  .card .acts{ display:flex; gap:1.4cqh; margin-top:2cqh; }
+  .chip{ font-family:var(--font); font-size:3.2cqh; font-weight:650; padding:1.3cqh 2.6cqh; border-radius:2cqh; cursor:pointer;
+    border:1px solid rgba(var(--c),.4); background:rgba(var(--c),.14); color:#fff; transition:.15s; }
+  .chip.primary{ background:rgb(var(--c)); color:#0b1204; border-color:transparent; }
+  .chip:hover{ filter:brightness(1.12); }
+  .card .glyph{ position:absolute; right:2.6cqh; bottom:2.4cqh; width:11cqh; height:11cqh; color:rgba(var(--c),.5); opacity:.5; }
+  .card .glyph.face{ opacity:.95; width:13cqh; height:13cqh; }
+  .card .glyph svg{ width:100%; height:100%; }
+  .card .qstack{ position:relative; flex:1; margin-top:1.4cqh; min-height:0; }
+  .card .qnext{ position:relative; z-index:2; width:72%; height:100%; border-radius:2.2cqh; overflow:hidden;
+    background-size:cover; background-position:center; background-color:rgba(var(--c),.16);
+    box-shadow:0 1cqh 3cqh rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.10); }
+  .card .qnext .qplaceholder{ position:absolute; inset:0; display:grid; place-items:center; color:rgba(var(--c),.6); }
+  .card .qnext .qplaceholder svg{ width:30%; height:30%; }
+  .card .qnext .qmeta{ position:absolute; left:0; right:0; bottom:0; padding:1.8cqh 2cqh;
+    background:linear-gradient(180deg, transparent, rgba(6,10,16,.88) 85%); }
+  .card .qnext .qt{ font-size:4cqh; font-weight:700; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .card .qnext .qb{ font-size:2.9cqh; color:rgba(255,255,255,.78); margin-top:.3cqh; }
+  .card .qpeek{ position:absolute; right:0; top:6%; z-index:1; width:40%; height:88%; border-radius:2.2cqh;
+    background-size:cover; background-position:center; background-color:rgba(var(--c),.12);
+    opacity:.5; filter:saturate(.6) brightness(.65); box-shadow:0 1cqh 2.4cqh rgba(0,0,0,.45); }
+  .card .qempty{ font-size:3.2cqh; color:var(--dim); margin-top:1.4cqh; }
+  .mcard .mrow{ flex:1; display:flex; align-items:center; gap:2.4cqh; min-height:0; }
+  /* mvhead 不設 aspect-ratio 綁死寬高：卡片變寬時這個 canvas 也跟著變寬（flex:1 吃滿剩餘空間），
+     但頭像本身大小是 mountHead() 依「高度」畫的（見 frame() 的 headBase），寬度只拿來給
+     Marvin 多一點左右漂浮的活動範圍——卡片變大＝地盤變大，不是頭變大。 */
+  .mcard .mvhead{ flex:1 1 0; min-width:0; height:100%; }
+  .mcard .mrow.shrunk{ justify-content:center; }
+  .mcard .mrow.shrunk .mvhead{ flex:none; width:88%; }
+  .mcard .mtext{ min-width:0; }
+  .mcard .mtext .title{ font-size:7.5cqh; }
+  .mcard .mtext .sub{ font-size:3.6cqh; }
+  .card{ transition:flex-grow .45s cubic-bezier(.2,.7,.2,1), transform .3s, box-shadow .3s, border-color .3s; }
+  /* Marvin 待命中卡片不受一般卡片 45% 上限約束——旁邊沒別的卡（或別的卡都被壓到
+     capped 45%）騰出來的空間，讓 Marvin 吃滿，不留死氣沉沉的空白；點開聚焦時
+     .card.focused 的 max-width:70% 選擇器優先度更高，不受這裡影響。 */
+  .mcard{ max-width:100%; cursor:pointer;
+    /* 底色已經是接近黑的頁面，卡片外圍的陰影疊上去會直接隱形——深度感不能靠外陰影，
+       要靠「卡片自己的填色」由上往下漸亮到暗，加上底部一圈跟著圓角走的 inset 陰影
+       （inset 陰影是畫在卡片自己的填色上，不是疊到頁面背景，才不會被吃掉），
+       讓底部像往內凹進去的一層「地板」，撐出立體感。 */
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.16) 0%, rgba(255,255,255,0) 30%, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%),
+      radial-gradient(135% 150% at 16% -12%, rgba(var(--c),.22), transparent 60%), var(--surf);
+    box-shadow: inset 0 1.5px 0 rgba(255,255,255,.28),
+                inset 0 -3.4cqh 4.2cqh -1.6cqh rgba(0,0,0,.85),
+                0 0 42px rgba(var(--marvin),.07);
+  }
+  .mcard:hover{ border-color:rgba(var(--marvin),.55); }
+  /* ---- 點卡片聚焦：該卡佔寬≤70%、字放大，其他卡讓出15%-30%（不縮放內容，擠不下就被裁掉/蓋住，
+     通用所有卡片，含 marvin 卡）---- */
+  .card:not(.mcard){ cursor:pointer; }
+  .card .sub{ display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .stage.focused-mode .card:not(.focused){ flex:1 1 0 !important; min-width:0; opacity:.32; filter:saturate(.6); }
+  .card.focused{ flex:0 0 70% !important; max-width:70%; z-index:5;
+    box-shadow:0 0 70px rgba(var(--c),.3); border-color:rgba(var(--c),.65); }
+  .card.focused .title{ font-size:14cqh; }
+  .card.focused .sub{ font-size:5.6cqh; line-height:1.35; -webkit-line-clamp:unset; overflow:visible; }
+  .card.focused .vmeta{ font-size:6cqh; }
+  .card.focused .qt{ font-size:6cqh; }
+  .card.focused .qb{ font-size:4.2cqh; }
+  .card.focused .vexpand{ gap:2.2cqh; }
+  .card.focused .vprogress{ height:1.2cqh; }
+  .card.focused .vcomment{ font-size:4.4cqh; }
+  .card.focused .vqrow{ gap:1.8cqh; padding:1.1cqh 1.4cqh; }
+  .card.focused .vqcover{ width:7.6cqh; height:7.6cqh; }
+  .card.focused .vqt{ font-size:4cqh; }
+  .card.focused .vqb{ font-size:3cqh; }
+  /* Marvin 卡被點開聚焦時：確保 Marvin 頭部 min-width 與 align-self:stretch 保護，絕不塌陷 */
+  .card.focused.mcard .mrow{ gap:4cqh; align-items:stretch; }
+  .card.focused.mcard .mrow .mvhead{ flex:0 0 auto; height:100%; min-width:30cqh; aspect-ratio:1/1; align-self:stretch; }
+  .card.focused.mcard .mtext{ flex:1 1 0; min-width:0; padding-left:1cqh; }
+  .card.focused.mcard .mtext .title{ font-size:11.5cqh; line-height:1.15; }
+  .card.focused.mcard .mtext .sub{ font-size:4.8cqh; line-height:1.3; }
+
+
+
+  .exhint{ position:absolute; left:3cqh; bottom:1.2cqh; font-family:var(--mono); font-size:3cqh; color:rgba(var(--marvin),.85); z-index:5; }
+
+  .vinyl-card{ position:relative; overflow:hidden; }
+  .vinyl-card .vwrap{ position:absolute; top:44%; left:41%; height:140%; aspect-ratio:1/1; transform:translate(-50%,-50%); z-index:0; }
+  .vinyl-card .vdisc{ position:absolute; inset:0; width:100%; height:100%; border-radius:50%; animation:spin 12s linear infinite; will-change:transform; }
+  .vinyl-card::after{ content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
+    background:linear-gradient(180deg, transparent 52%, rgba(6,10,16,.78) 100%); }
+  .vinyl-card .top, .vinyl-card .vmeta, .vinyl-card .vexpand{ position:relative; z-index:3; }
+  .vinyl-card .vmeta{ margin-top:auto; font-family:var(--display); font-size:4cqh; font-weight:600; color:#F1F5F8; text-shadow:0 2px 12px rgba(0,0,0,.75); }
+  /* ---- 黑膠展開內容（點卡片聚焦才畫）：進度條 + DJ 銳評 + 完整待播清單 ---- */
+  .vinyl-card .vexpand{ flex:1; min-height:0; margin:1.6cqh 0; display:flex; flex-direction:column; gap:1.4cqh; overflow-y:auto; }
+  .vinyl-card .vprogress{ flex:none; height:.9cqh; border-radius:1cqh; background:rgba(255,255,255,.14); overflow:hidden; }
+  .vinyl-card .vprogress-bar{ height:100%; background:rgb(var(--c)); border-radius:1cqh; transition:width .3s linear; }
+  .vinyl-card .vcomment{ flex:none; font-family:var(--display); font-size:3.4cqh; font-style:italic; line-height:1.4; color:rgba(255,255,255,.92); text-shadow:0 2px 10px rgba(0,0,0,.6); }
+  .vinyl-card .vqueue{ flex:1; min-height:0; display:flex; flex-direction:column; gap:.9cqh; overflow-y:auto; }
+  .vinyl-card .vqrow{ flex:none; display:flex; align-items:center; gap:1.3cqh; padding:.8cqh 1.1cqh; border-radius:1.6cqh; background:rgba(255,255,255,.06); }
+  .vinyl-card .vqcover{ flex:none; width:5.6cqh; height:5.6cqh; border-radius:1.2cqh; background-size:cover; background-position:center;
+    background-color:rgba(var(--c),.18); display:grid; place-items:center; color:rgba(var(--c),.7); overflow:hidden; }
+  .vinyl-card .vqcover svg{ width:2.8cqh; height:2.8cqh; }
+  .vinyl-card .vqtext{ min-width:0; }
+  .vinyl-card .vqt{ font-size:2.9cqh; font-weight:650; color:#fff; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .vinyl-card .vqb{ font-size:2.3cqh; color:rgba(255,255,255,.62); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  /* ---- 聚焦展開時：唱片靠左縮小，資訊改站右欄，不疊在唱片上 ---- */
+  .vinyl-card.focused .vwrap{ left:17%; top:50%; height:104%; }
+  .vinyl-card.focused .top,
+  .vinyl-card.focused .vexpand,
+  .vinyl-card.focused .vmeta{ margin-left:38%; }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+  @media (prefers-reduced-motion:reduce){ .vinyl-card .vdisc{ animation:none; } }
+  /* ---- Gmail 卡片內嵌展開與聚焦適配 (避免巨大 .title 擠掉摘要內容) ---- */
+  .card.gmail-card { cursor: pointer; }
+  .card.gmail-card .title { transition: font-size 0.3s ease; }
+  .card.gmail-card.focused .title {
+    font-size: 5cqh !important; line-height: 1.2; margin-bottom: 1cqh; flex: none;
+  }
+  .gmailexpand {
+    flex: 1; min-height: 0; margin: 1.2cqh 0; display: flex; flex-direction: column;
+    gap: 1.2cqh; overflow-y: auto; z-index: 3; text-align: left; padding-right: 0.5cqh;
+  }
+  .gmail-card-item {
+    flex: none; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(76, 157, 255, 0.25);
+    border-radius: 2cqh; padding: 1.4cqh 1.8cqh; transition: background 0.2s;
+  }
+  .gmail-card-item:hover { background: rgba(255, 255, 255, 0.12); }
+  .gmail-card-item .g-top { display: flex; justify-content: space-between; align-items: center; }
+  .gmail-card-item .g-sender { font-size: 3cqh; font-weight: 700; color: #fff; }
+  .gmail-card-item .g-date { font-family: var(--mono); font-size: 2.4cqh; color: var(--muted); }
+  .gmail-card-item .g-subject { font-family: var(--font); font-size: 3.4cqh; font-weight: 700; color: #fff; margin: 0.5cqh 0; line-height: 1.25; }
+  .gmail-card-item .g-summary { font-size: 2.8cqh; color: rgba(238, 242, 246, 0.85); line-height: 1.35; margin-bottom: 0.8cqh; }
+  .gmail-card-item .g-action {
+    display: inline-flex; align-items: center; gap: 0.6cqh; font-size: 2.6cqh; font-weight: 650;
+    padding: 0.5cqh 1.2cqh; border-radius: 1cqh;
+  }
+  .gmail-card-item.priority-high .g-action { background: rgba(255, 107, 94, 0.2); color: #ff6b5e; border: 1px solid rgba(255, 107, 94, 0.4); }
+  .gmail-card-item.priority-medium .g-action { background: rgba(245, 178, 62, 0.2); color: #f5b23e; border: 1px solid rgba(245, 178, 62, 0.4); }
+  .gmail-card-item.priority-low .g-action { background: rgba(76, 157, 255, 0.2); color: #4c9dfd; border: 1px solid rgba(76, 157, 255, 0.4); }
+  
+  .card.focused .gmailexpand { gap: 1.6cqh; }
+  .card.focused .gmail-card-item { padding: 1.8cqh 2.2cqh; border-radius: 2.2cqh; background: rgba(255, 255, 255, 0.08); }
+  .card.focused .gmail-card-item .g-sender { font-size: 3.6cqh; }
+  .card.focused .gmail-card-item .g-date { font-size: 2.8cqh; }
+  .card.focused .gmail-card-item .g-subject { font-size: 4.2cqh; margin: 0.6cqh 0; }
+  .card.focused .gmail-card-item .g-summary { font-size: 3.4cqh; line-height: 1.4; }
+  .card.focused .gmail-card-item .g-action { font-size: 3cqh; padding: 0.6cqh 1.4cqh; }
+  .gmail-empty-hint { font-size: 3.2cqh; color: var(--muted); padding: 2cqh 0; font-style: italic; }
+
+
+  .card .done{ margin-top:2cqh; font-size:3.6cqh; font-weight:650; color:rgb(var(--c)); font-family:var(--mono); }
+
+
+  @keyframes rise{ from{ opacity:0; transform:translateY(2cqh) scale(.985); } to{ opacity:1; transform:none; } }
+
+  /* dock 收起時整個變矮（不只 icon 橫向收），讓 .stage（flex:1）自動吃到多出來的高度；
+     展開時 dock 變高、卡片自動讓出空間——flexbox column 天生會算，不用 JS 量高度。 */
+  .dock{ height:16.5cqh; display:flex; align-items:center; gap:2cqh; padding:0 3cqh 1.4cqh; border-top:1px solid var(--line);
+    overflow:hidden; transition:height .35s cubic-bezier(.2,.7,.2,1); }
+  .dock.icons-collapsed{ height:9cqh; }
+  .mshort{ position:relative; display:flex; align-items:center; gap:1.6cqh; padding:1.4cqh 2.6cqh 1.4cqh 1.6cqh; border-radius:3cqh;
+    background:radial-gradient(120% 160% at 20% 0%, rgba(var(--marvin),.20), transparent 60%), var(--surf);
+    border:1px solid rgba(var(--marvin),.34); cursor:pointer;
+    transition:border-color .18s, transform .18s, padding .35s, gap .35s; }
+  .mshort:hover{ border-color:rgba(var(--marvin),.65); transform:translateY(-0.4cqh); }
+  .dock.icons-collapsed .mshort{ padding:0.7cqh 1.8cqh 0.7cqh 1cqh; gap:1cqh; }
+  .mface-wrap{ position:relative; display:inline-flex; flex:none; }
+  .mface{ width:9.5cqh; height:9.5cqh; flex:none; transition:width .35s, height .35s; }
+  .dock.icons-collapsed .mface{ width:6cqh; height:6cqh; }
+  /* 資訊量降到最低：平常只有這顆小紅點，有事才提醒，其餘都收起來（點 Marvin 才滑出來）。
+     掛在 .mface-wrap 而非 .mface 本身——mface 的 innerHTML 會被 SVG 覆蓋掉，紅點放裡面會被吃掉。 */
+  .mdot{ position:absolute; top:-0.3cqh; right:-0.3cqh; width:2.6cqh; height:2.6cqh; border-radius:50%;
+    background:rgb(var(--urgent)); box-shadow:0 0 0 2px var(--ink), 0 0 6px rgba(var(--urgent),.7);
+    display:none; }
+  .mdot.show{ display:block; }
+  .mshort .mlabel{ display:flex; flex-direction:column; line-height:1.12; }
+  .mshort .mlabel b{ font-size:3.3cqh; font-weight:650; transition:font-size .35s; }
+  .mshort .mlabel span{ font-family:var(--mono); font-size:2.4cqh; color:rgba(var(--marvin),.92); letter-spacing:.05em; transition:font-size .35s; }
+  .dock.icons-collapsed .mshort .mlabel b{ font-size:2.8cqh; }
+  .dock.icons-collapsed .mshort .mlabel span{ font-size:2cqh; }
+  .vdiv{ width:1px; align-self:stretch; margin:2.6cqh 0.6cqh; background:var(--line); transition:opacity .3s; }
+  .icons{ display:flex; gap:1.5cqh; max-width:100cqh; opacity:1; overflow:hidden;
+    transition:max-width .35s cubic-bezier(.2,.7,.2,1), opacity .25s, gap .35s; }
+  .icons.collapsed{ max-width:0; gap:0; opacity:0; pointer-events:none; }
+  .dock.icons-collapsed .vdiv{ opacity:0; }
+  .ibtn{ --ic:150,180,200; position:relative; width:11cqh; height:11cqh; border-radius:2.8cqh;
+    background:radial-gradient(120% 150% at 30% 0%, rgba(var(--ic),.34), rgba(var(--ic),.10) 70%), rgba(255,255,255,.05);
+    border:1px solid rgba(var(--ic),.55); color:rgb(var(--ic)); display:grid; place-items:center; cursor:pointer; transition:.16s;
+    box-shadow:0 0 16px rgba(var(--ic),.28), inset 0 1px 0 rgba(255,255,255,.12); }
+  .ibtn:hover{ transform:translateY(-0.5cqh); box-shadow:0 0 24px rgba(var(--ic),.5), inset 0 1px 0 rgba(255,255,255,.15); }
+  .ibtn svg{ width:6cqh; height:6cqh; filter:drop-shadow(0 0 5px rgba(var(--ic),.85)); }
+  .ibtn .badge{ position:absolute; top:-0.9cqh; right:-0.9cqh; min-width:3.6cqh; height:3.6cqh; padding:0 1cqh;
+    border-radius:2cqh; background:rgb(var(--bc)); color:#0a0a0a; font-family:var(--mono); font-size:2.5cqh; font-weight:700;
+    display:grid; place-items:center; box-shadow:0 0 0 2px var(--ink); }
+  .clock{ margin-left:auto; text-align:right; font-family:var(--mono); }
+  .clock b{ font-size:4.6cqh; font-weight:600; font-variant-numeric:tabular-nums; transition:font-size .35s; }
+  .clock span{ display:block; font-size:2.5cqh; color:var(--dim); transition:font-size .35s; }
+  .dock.icons-collapsed .clock b{ font-size:3.6cqh; }
+  .dock.icons-collapsed .clock span{ font-size:2cqh; }
+
+  .nc{ position:absolute; left:0; right:0; top:0; bottom:16.5cqh; z-index:20;
+    background:rgba(8,11,17,.74); backdrop-filter:blur(22px) saturate(1.2); -webkit-backdrop-filter:blur(22px) saturate(1.2);
+    transform:translateY(calc(100% + 17cqh)); transition:transform .34s cubic-bezier(.2,.7,.2,1); padding:3cqh; display:flex; flex-direction:column; gap:2cqh; }
+  .nc.open{ transform:translateY(0); }
+  .nc .head{ display:flex; align-items:center; gap:1.6cqh; }
+  .nc .head .t{ font-size:5cqh; font-weight:650; }
+  .nc .head .t small{ font-family:var(--mono); font-weight:400; color:var(--muted); font-size:2.8cqh; margin-left:1.2cqh; letter-spacing:.06em; }
+  .nc .close{ margin-left:auto; width:8cqh; height:8cqh; border-radius:50%; border:1px solid var(--line); background:var(--surf);
+    color:var(--muted); font-size:4cqh; cursor:pointer; display:grid; place-items:center; transition:.16s; }
+  .nc .close:hover{ color:var(--text); border-color:rgba(160,180,200,.3); }
+  .nc .list{ flex:1; display:grid; grid-template-columns:1fr 1fr; grid-auto-rows:min-content; gap:1.6cqh; overflow:auto; align-content:start; }
+  .note{ --c:var(--info); display:flex; gap:1.8cqh; padding:2.2cqh 2.4cqh; border-radius:2.6cqh;
+    background:radial-gradient(120% 160% at 12% 0%, rgba(var(--c),.14), transparent 62%), rgba(255,255,255,.045);
+    border:1px solid rgba(var(--c),.22); animation:rise .4s both; }
+  .note .ni{ width:7cqh; height:7cqh; border-radius:2cqh; background:rgba(var(--c),.18); color:rgb(var(--c)); display:grid; place-items:center; flex:none; }
+  .note .ni svg{ width:4.2cqh; height:4.2cqh; }
+  .note .nb{ min-width:0; display:flex; flex-direction:column; gap:.4cqh; }
+  .note .nb .nt{ font-size:3.4cqh; font-weight:600; display:flex; gap:1cqh; align-items:baseline; }
+  .note .nb .nt time{ margin-left:auto; font-family:var(--mono); font-size:2.5cqh; color:var(--dim); flex:none; }
+  .note .nb .nm{ font-size:3cqh; color:var(--muted); line-height:1.3; }
+  .qa{ display:grid; grid-template-columns:repeat(4,1fr); gap:1.6cqh; grid-column:1/-1; }
+  .qbtn{ padding:2.4cqh 2cqh; border-radius:2.6cqh; border:1px solid rgba(var(--marvin),.3);
+    background:radial-gradient(120% 150% at 20% 0%, rgba(var(--marvin),.14), transparent 62%), rgba(255,255,255,.04);
+    color:var(--text); font-size:3.2cqh; font-weight:600; cursor:pointer; text-align:left; transition:.16s; display:flex; flex-direction:column; gap:1cqh; }
+  .qbtn:hover{ border-color:rgba(var(--marvin),.6); }
+  .qbtn svg{ width:5cqh; height:5cqh; color:rgb(var(--marvin)); }
+
+  .dock2{ display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; justify-content:center; }
+  .seg{ display:flex; background:var(--ink2); border:1px solid var(--line); border-radius:12px; padding:4px; gap:4px; }
+  .seg button{ font-family:var(--mono); font-size:12px; color:var(--muted); background:transparent; border:0; cursor:pointer; padding:9px 14px; border-radius:9px; transition:.18s; }
+  .seg button:hover{ color:var(--text); }
+  .seg button[aria-pressed="true"]{ background:rgba(var(--marvin),.9); color:#0c1406; font-weight:600; }
+  .ghost{ font-family:var(--mono); font-size:12px; color:var(--muted); background:transparent; border:1px solid var(--line); border-radius:11px; padding:10px 15px; cursor:pointer; }
+  .ghost[data-on="true"]{ border-color:rgba(var(--marvin),.6); color:rgb(var(--marvin)); }
+  .cap{ max-width:700px; text-align:center; color:var(--dim); font-size:13px; line-height:1.6; }
+  .cap b{ color:var(--muted); font-weight:500; }
+  button:focus-visible,.ibtn:focus-visible,.mshort:focus-visible{ outline:2px solid rgb(var(--marvin)); outline-offset:2px; }
+  /* kiosk 模式（?kiosk=1）：拿掉簡報用外殼，screen 直接滿版貼齊實體螢幕，不留展示留白。 */
+  body.kiosk{ padding:0; gap:0; }
+  body.kiosk .brand, body.kiosk .cap, body.kiosk .dock2{ display:none; }
+  body.kiosk .device{ width:100vw; filter:none; }
+  body.kiosk .bezel{ background:none; border:none; border-radius:0; padding:0; }
+  body.kiosk .screen{ border-radius:0; aspect-ratio:auto; width:100vw; height:100vh; }
+</style>
+</head>
+<body class="__BODY_CLASS__">
+
+<div class="brand">
+  <h1>Marvin HUD</h1>
+  <p>寬屏顯示框架 · 1920&times;480 · 與 macOS 的常駐互動夥伴</p>
+</div>
+
+<div class="device"><div class="bezel">
+  <div class="screen">
+    <div class="stage" id="stage"></div>
+    <div class="nc" id="nc">
+      <div class="head"><span class="t" id="nc-title"></span><button class="close" id="nc-close" aria-label="關閉">&#10005;</button></div>
+      <div class="list" id="nc-list"></div>
+    </div>
+    <div class="dock icons-collapsed" id="dock">
+      <div class="mshort" id="mshort" role="button" tabindex="0" aria-expanded="false" aria-label="Marvin，點擊展開通知列">
+        <span class="mface-wrap"><span class="mface" id="mface"></span><span class="mdot" id="mdot"></span></span>
+        <span class="mlabel"><b>Marvin</b><span id="mstatus">待命中</span></span>
+      </div>
+      <div class="vdiv"></div>
+      <div class="icons collapsed" id="icons"></div>
+      <div class="clock"><b id="clk">10:48</b><span id="clkd">週日 7/20</span></div>
+    </div>
+  </div>
+</div></div>
+
+<p class="cap">
+  單一頁面，沒有場景切換：<b>Marvin</b> 固定佔一格，其餘最多 2 格照重要性階梯（<b>需要回應</b> &gt;
+  <b>單純資訊</b>）從真實資料動態挑，沒資料就不佔位。
+</p>
+
+<script>
+(function(){
+  const TOKEN="__TOKEN__";
+  const I = {
+    calendar:'<rect x="4" y="6" width="16" height="15" rx="2.5"/><path d="M4 10h16M8 3v4M16 3v4"/>',
+    messages:'<path d="M4 5h16v11H10l-4 4v-4H4z" stroke-linejoin="round"/>',
+    music:'<circle cx="7.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="15.5" r="2.5"/><path d="M10 17.5V6l10-2v11.5"/>',
+    build:'<path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/>',
+    system:'<path d="M6 19v-6M12 19V6M18 19v-4"/>',
+    weather:'<path d="M7.5 18a4.2 4.2 0 0 1-.3-8.4 5.2 5.2 0 0 1 9.9-1.1A3.7 3.7 0 0 1 16.8 18z"/>',
+    alerts:'<path d="M12 4a5 5 0 0 0-5 5v4l-1.8 2.6h13.6L17 13V9a5 5 0 0 0-5-5z"/><path d="M10.2 19a1.8 1.8 0 0 0 3.6 0"/>',
+    check:'<path d="M5 12l5 5 9-10"/>', mic:'<rect x="9" y="4" width="6" height="11" rx="3"/><path d="M6 12a6 6 0 0 0 12 0M12 18v3"/>',
+    list:'<path d="M8 7h11M8 12h11M8 17h11M4 7h.01M4 12h.01M4 17h.01"/>',
+    sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>'
+  };
+  const svg=k=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">${I[k]||''}</svg>`;
+  const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  // 極簡 markdown 排版：輸入必須已經是 esc() 過的字串（不會反轉義，只在安全字元上加標籤）。
+  // 把 Claude Code transcript 常見的 **粗體**/換行/條列排出來，不然整段黏成一坨看不出結構。
+  const mdLite=s=>String(s||'')
+    .replace(/\\*\\*(.+?)\\*\\*/g,'<strong>$1</strong>')
+    .replace(/\\n[-•]\\s+/g,'<br>• ')
+    .replace(/\\n{2,}/g,'<br><br>')
+    .replace(/\\n/g,'<br>');
+  const MFACE=`<svg viewBox="0 0 40 40"><defs><radialGradient id="mg" cx="38%" cy="34%" r="70%">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="0.6" stop-color="#d3dae0"/><stop offset="1" stop-color="#8b959d"/></radialGradient></defs>
+      <circle cx="20" cy="20" r="16" fill="url(#mg)"/>
+      <path d="M10 18 L17 18 L14 24 Z" fill="#9BE04B"/><path d="M30 18 L23 18 L26 24 Z" fill="#9BE04B"/>
+      <path d="M9 17.5 Q20 16 31 17.5" stroke="#12150f" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg>`;
+  document.getElementById('mface').innerHTML=MFACE;
+
+  // ---- importance ladder (weights + who becomes hero) ----
+  // 單一頁面、無場景：Marvin 固定佔一格，其餘卡片全部來自真實資料源（buildCards()），
+  // 沒資料的來源就不產生卡片——不再用假資料撐頁面。
+  const KIND={ respond:{w:2.6,hero:1}, marvin:{w:1.5}, info:{w:1}, ambient:{w:0.75} };
+
+  const stage=document.getElementById('stage');
+  const mvParams={ mood:'idle', focusDir:0 };
+  const reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // 一次性反應（被搖晃/快速核准）＝暫時把 mood 借去播放專屬的色彩/眨眼/視線設定，
+  // 時間到自動還原成原本的 mood；不另開狀態機，跟 frame() 共用同一套讀法。
+  function triggerReaction(name, ms){
+    const prev=mvParams.mood; mvParams.mood=name;
+    setTimeout(()=>{ if(mvParams.mood===name) mvParams.mood=prev; }, ms);
+  }
+
+  // ---- live 現正播放（/now 輪詢覆蓋 demo 黑膠）----
+  let liveNow=null;
+  // ---- live Claude Code 狀態（/claude_status 輪詢，動態插卡，demo 沒有對應格子）----
+  let liveClaude=null;
+  let claudeMoodOverride=null;   // 真的有 session 在等你回應/等太久 → 蓋掉 marvin 卡自己的 demo mood
+  const CLAUDE_ESCALATE_SEC=600; // 等超過 10 分鐘算升級，粗粒度門檻，非死規則
+  const NOTIFY_BRIDGE_SEC=90; // Notification hook 即時推播，但只推一次沒有「已解決」事件；
+                               // 這段時間內先信它，之後讓 sessions.waiting（持續追蹤的真相來源）接手
+  function claudeCard(){
+    claudeMoodOverride=null;
+    if(!liveClaude) return null;
+    const sessions=liveClaude.sessions||[], rl=liveClaude.rateLimits, notif=liveClaude.notification;
+    // 多個 session 同時等待時，挑最近更新那個（不是檔案列表的任意順序），
+    // 否則舊的、早就晾在那的 session 會一直霸佔卡片，蓋掉真正在動的那個。
+    const waiting=sessions.filter(s=>s.waiting);
+    let waitingOne=waiting.length
+      ? waiting.reduce((a,b)=>(b.updated_at||0)>(a.updated_at||0)?b:a)
+      : null;
+    // scan_claude_sessions.py 20s 一拍才追得到 sessions.waiting；permission_prompt hook
+    // 是 Claude Code 自己在對話框跳出來那瞬間推的，用來墊這段空窗期。
+    if(!waitingOne && notif && notif.notification_type==='permission_prompt'){
+      const age=notif.received_at ? (Date.now()/1000-notif.received_at) : Infinity;
+      if(age<NOTIFY_BRIDGE_SEC){
+        waitingOne={project:(notif.cwd||'').split('/').filter(Boolean).pop()||'Claude Code',
+          last_text:notif.message||'', updated_at:notif.received_at, title:null};
+      }
+    }
+    if(waitingOne){
+      const staleSec=waitingOne.updated_at ? (Date.now()/1000-waitingOne.updated_at) : 0;
+      const escalated=staleSec>CLAUDE_ESCALATE_SEC;
+      // 真的需要你回應（還卡在許可對話框／問題還沒問完）＝沒有 🏁 收尾行可解析
+      // （CLAUDE.md 規定只有「純聊天/還在釐清需求」才會省略這行，所以沒有這行視同
+      // 還在等你）；有 🏁 收尾行代表這輪已經結束、只是通知結果，跟其他 info 卡一樣
+      // 看完可以關掉，不該永遠霸佔卡片。
+      const needsResponse=!waitingOne.title;
+      claudeMoodOverride = needsResponse ? (escalated?'escalate':'pending') : null;
+      if(needsResponse){
+        return {kind:'respond', s:escalated?'urgent':'warn', l:'Claude Code',
+          t:`${esc(waitingOne.project)} 等你回應`, sub:esc(waitingOne.last_text||''), g:'messages'};
+      }
+      return {kind:'info', s:escalated?'warn':'ok', l:'Claude Code', t:esc(waitingOne.title),
+        sub:esc(waitingOne.last_text||''), g:'messages'};
+    }
+    if(rl && rl.five_hour && rl.five_hour.used_percentage!=null){
+      const p5=Math.round(rl.five_hour.used_percentage), p7=rl.seven_day&&rl.seven_day.used_percentage!=null?Math.round(rl.seven_day.used_percentage):null;
+      return {kind:'info', s:'info', l:'Claude Code', t:`用量 5hr ${p5}%`,
+        sub:p7!=null?`本週 ${p7}%`:'', g:'system'};
+    }
+    return null;
+  }
+  let focusKey=null;   // 目前聚焦的卡片 key（'c'+場景idx+'_'+位置idx）；null＝沒人聚焦
+  const FALLBACK_PAL=['#9BE04B','#4C9DFF','#2A1A44','#080B11'];
+  function padPal(pal){
+    const out=(Array.isArray(pal)?pal:[]).filter(Boolean).slice(0,4);
+    while(out.length<4) out.push(FALLBACK_PAL[out.length]);
+    return out;
+  }
+  function resolveVinyl(demo){
+    if(liveNow && liveNow.title) return {title:liveNow.title, pal:padPal(liveNow.pal), cover:liveNow.cover||''};
+    return demo;
+  }
+  function resolveMeta(demo){
+    if(liveNow && liveNow.title) return esc(liveNow.title)+(liveNow.by?' · '+esc(liveNow.by):'');
+    return demo||'';
+  }
+  function resolveQueue(demo){
+    if(liveNow && Array.isArray(liveNow.queue) && liveNow.queue.length) return liveNow.queue;
+    return demo||[];
+  }
+  // ---- 黑膠展開內容：進度條（duration+song_start_time）+ DJ 銳評（現成，不現生）+ 完整待播清單 ----
+  function progressPct(){
+    if(!liveNow || !liveNow.duration || !liveNow.songStartTime) return null;
+    const elapsed=Date.now()/1000-liveNow.songStartTime;
+    return Math.max(0, Math.min(100, elapsed/liveNow.duration*100));
+  }
+  function renderVinylExpand(){
+    if(!liveNow || !liveNow.title) return '';
+    const pct=progressPct();
+    const progress=pct==null?'':`<div class="vprogress"><div class="vprogress-bar" style="width:${pct}%"></div></div>`;
+    const comment=liveNow.comment?`<div class="vcomment">${esc(liveNow.comment)}</div>`:'';
+    const items=resolveQueue([]);
+    const qlist=items.length?`<div class="vqueue">${items.map(it=>{
+      const bg=it.thumbnail?`style="background-image:url('${esc(it.thumbnail)}')"`:'';
+      return `<div class="vqrow"><div class="vqcover" ${bg}>${it.thumbnail?'':svg('music')}</div>
+        <div class="vqtext"><div class="vqt">${esc(it.title)}</div>${it.by?`<div class="vqb">${esc(it.by)}</div>`:''}</div></div>`;
+    }).join('')}</div>`:'';
+    if(!progress && !comment && !qlist) return '';
+    return `<div class="vexpand">${progress}${comment}${qlist}</div>`;
+  }
+
+  function renderGmailExpand(emails, focused){
+    if(!emails || !emails.length) {
+      return `<div class="gmailexpand"><div class="gmail-empty-hint">📩 目前沒有需要特別處理的信件</div></div>`;
+    }
+    return `<div class="gmailexpand">
+      ${emails.map(m=>`
+        <div class="gmail-card-item priority-${esc(m.priority||'medium')}">
+          <div class="g-top"><span class="g-sender">${esc(m.sender||'')}</span><span class="g-date">${esc(m.date||'')}</span></div>
+          <div class="g-subject">${esc(m.subject||'')}</div>
+          <div class="g-summary">${esc(m.summary||'')}</div>
+          ${m.action_item?`<div class="g-action">💡 ${esc(m.action_item)}</div>`:''}
+        </div>
+      `).join('')}
+    </div>`;
+  }
+
+
+  const MAX_CARDS=3;
+  // ---- 資訊提供類卡片可被看完關閉：respond（需要使用者真的回應）跟 marvin 永遠不算，
+  // 其餘 kind 屬於「看完即可消失」——用 kind+label 當識別、內容雜湊當版本號，
+  // 同一份內容關掉後不會再彈出來，但內容變了（新信/新歌/新用量數字）視同新資訊照樣重新出現。
+  const dismissed={};
+  function cardIdentity(c){ return c.kind+':'+c.l; }
+  function cardContentHash(c){
+    return JSON.stringify([c.t, c.sub, c.gmailEmails&&c.gmailEmails.length, c.vinyl&&c.vinyl.title]);
+  }
+  function isDismissible(c){ return c.kind!=='respond' && c.kind!=='marvin'; }
+  function dismissCard(c){ dismissed[cardIdentity(c)]=cardContentHash(c); }
+  function isDismissed(c){ return isDismissible(c) && dismissed[cardIdentity(c)]===cardContentHash(c); }
+  // Marvin 狀態文字跟著真實 mood 走（claudeMoodOverride 見 claudeCard()），不再靠場景假資料。
+  function marvinBaseCard(){
+    let t='待命中', sub='「又是漫長的一天，而它才過了兩秒。」';
+    if(claudeMoodOverride==='escalate'){ t='已經等好一陣子了'; sub='要不要看一下？'; }
+    else if(claudeMoodOverride==='pending'){ t='等你回應'; sub='說一聲我就繼續。'; }
+    return {kind:'marvin', s:'marvin', l:'Marvin', t, sub, mood:claudeMoodOverride||'idle'};
+  }
+  // Marvin 固定佔一格；其餘最多 MAX_CARDS-1 格從真實資料源（Claude Code／現正播放／
+  // 待播清單）依重要性階梯挑，沒資料的來源就不產生卡片——不再用demo卡片撐頁面。
+  function buildCards(){
+    const others=[];
+    const cc=claudeCard();
+    if(cc) others.push(cc);
+    if(liveNow && liveNow.title){
+      others.push({kind:'info', s:'ok', l:'現正播放', vinyl:{title:liveNow.title, pal:liveNow.pal||[]}, meta:''});
+    }
+    // Gmail 用 ambient（比 info 小）——資訊密度低於現正播放；有分類資料就顯示分類×數量，
+    // 否則退化成總數。行事曆獨立一行走 info。沒資料就不佔位。
+    if(liveGmailCal && (liveGmailCal.unread||0)>0){
+      const cats=liveGmailCal.cats||{};
+      const importantEmails=liveGmailCal.important_emails||[];
+      const CAT_ORDER=['關注的信件','重要通知','工作郵件','發票郵件','銀行通知'];
+      const catParts=CAT_ORDER.filter(k=>cats[k]>0).map(k=>`${k} ${cats[k]}`);
+      const unreadText=catParts.length?catParts.join(' · '):`${liveGmailCal.unread} 封未讀`;
+      const t=importantEmails.length?`✉️ ${importantEmails.length} 封重要待處理 · ${unreadText}`:unreadText;
+      others.push({kind:'ambient', s:'info', l:'收件匣（今天）', t, g:'messages', gmailEmails: importantEmails});
+
+    }
+    if(liveGmailCal && (liveGmailCal.calToday||0)>0){
+      others.push({kind:'info', s:'info', l:'行事曆', t:`今天 ${liveGmailCal.calToday} 場行程`, g:'calendar'});
+    }
+    if(resolveQueue([]).length){
+      others.push({kind:'info', s:'info', l:'待播清單', queue:[], g:'list'});
+    }
+    const visible=others.filter(c=>!isDismissed(c));
+    visible.sort((a,b)=>KIND[b.kind].w-KIND[a.kind].w);
+    const top=visible.slice(0, MAX_CARDS-1);
+    // Marvin 卡固定在正中央：其餘卡片依重要性排序後，前半排左邊、後半排右邊
+    // （2 張時剛好一左一右夾住 Marvin；0/1 張時退化成單獨或偏一邊，沒有真正的「中間」可佔）。
+    const mid=Math.floor(top.length/2);
+    return [...top.slice(0,mid), marvinBaseCard(), ...top.slice(mid)];
+  }
+  function render(){
+    const cards=buildCards();
+    stage.innerHTML=cards.map((c,x)=>{
+      const k=KIND[c.kind];
+      const key='c'+x;
+      const focused=focusKey===key;
+      const focCls=focused?'focused':'';
+      if(c.kind==='marvin'){
+        const showComment=focused && marvinCommentText;
+        // 平常（沒被點開聚焦）一律不塞「待命中」這類文字——留空給 canvas，讓 Marvin
+        // 能在整張卡左右自由漂浮；點開聚焦才顯示現生的 LLM 銳評（見 requestMarvinComment）。
+        const roam=!focused;
+        const mtext=roam?'':`<div class="mtext"><div class="title">${showComment?esc(marvinCommentText):c.t}</div>${(!showComment&&c.sub)?`<div class="sub">${mdLite(c.sub)}</div>`:''}</div>`;
+        return `<div class="card mcard ${focCls}" data-key="${key}" role="button" tabindex="0" aria-label="Marvin，點擊聽牠對目前畫面的評論" style="flex:${k.w} 1 0;--c:var(--marvin)">
+          <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+          <div class="mrow ${roam?'shrunk':''}"><canvas class="mvhead"></canvas>${mtext}</div>
+          ${roam?'<div class="exhint">點我＝聽牠講評</div>':''}</div>`;
+      }
+      if(c.vinyl){
+        const expand=focused?renderVinylExpand():'';
+        return `<div class="card vinyl-card ${focCls}" data-key="${key}" style="flex:${k.w} 1 0;--c:var(--${c.s})">
+          <div class="vwrap"><canvas class="vdisc"></canvas></div>
+          <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+          ${expand}
+          <div class="vmeta">${resolveMeta(c.meta)}</div></div>`;
+      }
+      if(c.gmailEmails){
+        const expand=focused?renderGmailExpand(c.gmailEmails, focused):'';
+        return `<div class="card gmail-card ${focCls}" data-key="${key}" style="flex:${k.w} 1 0;--c:var(--${c.s})">
+          <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+          <div><div class="title">${c.t}</div>${c.sub?`<div class="sub">${mdLite(c.sub)}</div>`:''}</div>
+          ${expand}
+          <div class="glyph">${svg(c.g||'messages')}</div></div>`;
+      }
+      if(c.queue){
+        const items=resolveQueue(c.queue);
+        if(!items.length){
+          return `<div class="card ${focCls}" data-key="${key}" style="flex:${k.w} 1 0;--c:var(--${c.s})">
+            <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+            <div class="qempty">目前沒有排隊中的歌</div>
+            <div class="glyph">${svg(c.g||'list')}</div></div>`;
+        }
+        const [next, after]=items;
+        const nextBg=next.thumbnail?`style="background-image:url('${esc(next.thumbnail)}')"`:'';
+        const afterBg=(after&&after.thumbnail)?`style="background-image:url('${esc(after.thumbnail)}')"`:'';
+        return `<div class="card ${focCls}" data-key="${key}" style="flex:${k.w} 1 0;--c:var(--${c.s})">
+          <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+          <div class="qstack">
+            ${after?`<div class="qpeek" ${afterBg}></div>`:''}
+            <div class="qnext" ${nextBg}>
+              ${next.thumbnail?'':`<div class="qplaceholder">${svg('music')}</div>`}
+              <div class="qmeta"><div class="qt">${esc(next.title)}</div>${next.by?`<div class="qb">${esc(next.by)}</div>`:''}</div>
+            </div>
+          </div></div>`;
+      }
+      const acts=c.actions?`<div class="acts">${c.actions.map((a,x)=>`<button class="chip ${x===0?'primary':''}">${a}</button>`).join('')}</div>`:'';
+      return `<div class="card ${k.hero?'hero':''} ${focCls}" data-key="${key}" style="flex:${k.w} 1 0;--c:var(--${c.s})">
+        <div class="top"><span class="label">${c.l}</span><span class="dot"></span></div>
+        <div><div class="title">${c.t}</div>${c.sub?`<div class="sub">${mdLite(c.sub)}</div>`:''}${acts}</div>
+        <div class="glyph ${c.g==='marvin'?'face':''}">${c.g==='marvin'?MFACE:svg(c.g)}</div></div>`;
+    }).join('');
+
+
+    stage.classList.toggle('focused-mode', !!focusKey);
+    // 別張卡被聚焦時保留目前 mood（不被 marvinBaseCard() 的預設值蓋掉），其餘情況
+    // 直接吃 marvin 卡的 mood（已經在 buildCards() 裡把 claudeMoodOverride 算進去了）。
+    mvParams.mood = (focusKey && stage.querySelector('.mcard.focused')) ? mvParams.mood
+      : (cards.find(c=>c.kind==='marvin')||{}).mood||'idle';
+    document.getElementById('mstatus').textContent =
+      claudeMoodOverride==='escalate' ? '好一陣子沒回應' : claudeMoodOverride==='pending' ? '等你回應' : '待命中';
+    mountHead(stage.querySelector('.mvhead'));
+    const vc=cards.find(c=>c.vinyl); mountVinyl(stage.querySelector('.vinyl-card'), vc?resolveVinyl(vc.vinyl):null);
+    updateFocusDir();
+    lastCards=cards;
+  }
+
+  // ---- Marvin 銳評要能講畫面上其他卡片，不是只看得到自己播的歌：把上一次 render()
+  // 產出的非 marvin 卡片（含 live 資料解析後的實際內容）濃縮成 {label,text}，隨 /marvin_comment 送出 ----
+  let lastCards=[];
+  function summarizeCard(c){
+    if(c.kind==='marvin') return null;
+    if(c.vinyl){ const text=resolveMeta(c.meta); return text?{label:c.l, text}:null; }
+    if(c.queue){
+      const items=resolveQueue(c.queue);
+      if(!items.length) return {label:c.l, text:'沒有排隊中的歌'};
+      return {label:c.l, text:items.slice(0,2).map(it=>it.title).filter(Boolean).join('、')};
+    }
+    const text=[c.t, c.sub].filter(Boolean).join(' - ');
+    return text?{label:c.l, text}:null;
+  }
+  function otherCardsSnapshot(){
+    return lastCards.map(summarizeCard).filter(Boolean);
+  }
+
+  function updateFocusDir(){
+    // Marvin 自己被聚焦時沒有「別張卡」可看，就看正前方（focusDir=0）。
+    const mv=stage.querySelector('.mcard');
+    const focus=stage.querySelector('.card.focused:not(.mcard)');
+    if(!mv||!focus){ mvParams.focusDir=0; return; }
+    const a=mv.getBoundingClientRect(), b=focus.getBoundingClientRect();
+    mvParams.focusDir=Math.max(-1,Math.min(1, ((b.left+b.right)-(a.left+a.right))/2 / a.width ));
+  }
+
+  // ---- 點 Marvin 卡＝現生一句對目前畫面的銳評（/marvin_comment，走 LLM bus）----
+  let marvinCommentText='';
+  async function requestMarvinComment(){
+    mvParams.mood='think'; marvinCommentText=''; render();
+    try{
+      const cardsParam=encodeURIComponent(JSON.stringify(otherCardsSnapshot()));
+      const r=await fetch("/marvin_comment?t="+encodeURIComponent(TOKEN)+"&cards="+cardsParam,{cache:"no-store"});
+      const j=await r.json();
+      marvinCommentText=j.comment||'……我現在沒什麼想講的。';
+    }catch(e){ marvinCommentText='……訊號有點怪，等等再試。'; }
+    mvParams.mood='speak'; render();
+  }
+  const REPLY={'加入':'好，開連結。','稍後':'好，30 分鐘後再叫你。','重跑 CI':'重跑了。八成會過。','忽略':'隨你。反正我也不意外。'};
+  function handleChip(chip){
+    const card=chip.closest('.card'), label=chip.textContent.trim();
+    const acts=card.querySelector('.acts'); if(acts) acts.outerHTML=`<div class="done">&#10003; ${label}</div>`;
+    const mt=stage.querySelector('.mcard .mtext .title'); if(mt) mt.textContent=REPLY[label]||'好。';
+    triggerReaction('quickApprove', 500);
+  }
+  // 點任一卡片（含 marvin）＝聚焦該卡（≤70% 寬＋放大字），其他卡縮到旁邊堆疊；
+  // 再點一次同一張卡或點空白處收回。點 marvin 卡額外現生一句銳評（見 requestMarvinComment）。
+  // 資訊提供類卡片（見 isDismissible）已經聚焦過一次、使用者再點第二次＝看完了，直接關掉
+  // 不用再收回聚焦——respond（需要真的回應）跟 marvin 卡不適用，只能收回聚焦不會消失。
+  stage.addEventListener('click',e=>{
+    const chip=e.target.closest('.chip'); if(chip){ handleChip(chip); return; }
+    const card=e.target.closest('.card[data-key]');
+    if(card){
+      const wasFocused=focusKey===card.dataset.key;
+      const cdata=lastCards[Number(card.dataset.key.slice(1))];
+      if(wasFocused && cdata && isDismissible(cdata)){
+        dismissCard(cdata);
+        focusKey=null;
+        render();
+        return;
+      }
+      focusKey = wasFocused ? null : card.dataset.key;
+      if(card.classList.contains('mcard')){
+        if(!wasFocused) requestMarvinComment();
+        else { marvinCommentText=''; mvParams.mood=claudeMoodOverride||'idle'; }
+      }
+      render();
+      return;
+    }
+    if(focusKey){ focusKey=null; render(); }
+  });
+  stage.addEventListener('keydown',e=>{
+    const card=e.target.closest('.card[data-key]');
+    if(card && (e.key==='Enter'||e.key===' ')){ e.preventDefault(); card.click(); }
+  });
+
+  // ---------- spinning vinyl for 現正播放 ----------
+  function rng(seed){ return ()=>{ seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }; }
+  function shade(hex, amt){   // amt<0 變暗（往黑混）、amt>0 變亮（往白混）
+    const n=parseInt(String(hex).replace('#',''),16), rr=(n>>16)&255, gg=(n>>8)&255, bb=n&255;
+    const mix=c=> amt<0 ? Math.round(c*(1+amt)) : Math.round(c+(255-c)*amt);
+    return `rgb(${mix(rr)},${mix(gg)},${mix(bb)})`;
+  }
+  function drawLabelArt(ctx,cx,cy,LR,tk){
+    const [a,b,c,d]=tk.pal, PI2=Math.PI*2;
+    ctx.save(); ctx.beginPath(); ctx.arc(cx,cy,LR,0,PI2); ctx.clip();
+    const g=ctx.createLinearGradient(cx-LR,cy-LR,cx+LR,cy+LR); g.addColorStop(0,c); g.addColorStop(1,d);
+    ctx.fillStyle=g; ctx.fillRect(cx-LR,cy-LR,LR*2,LR*2);
+    [[a,-0.4,-0.3,1.1],[b,0.5,-0.1,1.0],[a,0.2,0.6,0.9]].forEach(([col,px,py,rad])=>{
+      const x=cx+LR*px,y=cy+LR*py,R=LR*rad; const bg=ctx.createRadialGradient(x,y,0,x,y,R);
+      bg.addColorStop(0,col+'DD'); bg.addColorStop(0.5,col+'55'); bg.addColorStop(1,col+'00');
+      ctx.fillStyle=bg; ctx.beginPath(); ctx.arc(x,y,R,0,PI2); ctx.fill(); });
+    ctx.globalCompositeOperation='soft-light'; ctx.fillStyle='#fff';
+    ctx.globalAlpha=.45;
+    for(let i=0;i<9;i++){ ctx.save(); ctx.translate(cx,cy); ctx.rotate(i/9*PI2);
+      ctx.beginPath(); ctx.ellipse(0,LR*0.45,LR*0.12,LR*0.4,0,0,PI2); ctx.fill(); ctx.restore(); }
+    ctx.globalCompositeOperation='source-over'; ctx.globalAlpha=1;
+    ctx.fillStyle='rgba(255,255,255,.96)'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.font='700 '+(LR*0.34)+'px Futura,"Avenir Next",sans-serif';
+    ctx.shadowColor='rgba(0,0,0,.35)'; ctx.shadowBlur=LR*0.08;
+    ctx.fillText(tk.title,cx,cy-LR*0.02);
+    ctx.shadowBlur=0; ctx.textAlign='left'; ctx.textBaseline='alphabetic'; ctx.restore();
+  }
+  // 中央標籤優先用真封面圖（iTunes/YouTube thumbnail，見 cover_palette.py）；
+  // 沒有圖或圖還沒載完 → 退回程序化 splatter 標籤。快取 Image 物件避免每次 render 重抓。
+  const imgCache=new Map();   // url -> Image | 'error'
+  function getCoverImage(url, onReady){
+    if(!url) return null;
+    const cached=imgCache.get(url);
+    if(cached==='error') return null;
+    if(cached instanceof Image) return (cached.complete && cached.naturalWidth) ? cached : null;
+    const img=new Image();
+    imgCache.set(url, img);
+    img.onload=onReady;
+    img.onerror=()=>imgCache.set(url,'error');
+    img.src=url;
+    return null;
+  }
+  let vinyl=null;
+  function mountVinyl(card, cover){
+    if(vinyl){ vinyl.ro.disconnect(); vinyl=null; }
+    if(!card||!cover) return;
+    const disc=card.querySelector('.vdisc');
+    const dctx=disc.getContext('2d'); let DPR=1;
+    function drawDisc(){
+      const W=disc.width,H=disc.height,S=Math.min(W,H),cx=W/2,cy=H/2,Rdisc=S*0.49,LR=S*0.205,PI2=Math.PI*2;
+      const pal=cover.pal, r=rng(cover.title.length*131+7);
+      dctx.clearRect(0,0,W,H);
+      const baseCol=pal[0]||'#1b1620';
+      const body=dctx.createRadialGradient(cx-Rdisc*0.25,cy-Rdisc*0.3,Rdisc*0.1,cx,cy,Rdisc);
+      body.addColorStop(0,shade(baseCol,0.32)); body.addColorStop(0.6,shade(baseCol,-0.15)); body.addColorStop(1,shade(baseCol,-0.55));
+      dctx.fillStyle=body; dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.fill();
+      dctx.save(); dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.arc(cx,cy,LR*0.98,0,PI2,true); dctx.clip();
+      // 真潑漆黑膠的樣子：從標籤邊緣往外放射的噴痕，每條方向長短完全不均——多數噴痕很短、
+      // 少數噴得很遠，方向之間留大片空白，不是整圈平均鋪滿（見參考圖：翻譯半透明藍膠+黑噴痕）。
+      // 三種筆觸（細噴痕/潑濺塊/孤立小點）的比例每張唱片自己隨機抽一次，不是固定配方——
+      // 有的歌噴痕多、有的歌潑濺塊多，混合起來才不會每張看起來都同一套公式。
+      const mixRay=0.55+r()*0.7, mixSplash=0.45+r()*0.9, mixDot=0.45+r()*0.9;
+      const rays=Math.floor((90+r()*70)*mixRay);
+      for(let i=0;i<rays;i++){
+        const ang=r()*PI2;
+        const reach=Math.pow(r(),2.4);                    // 平方以上→大部分噴痕短，少數噴得遠
+        const endR=LR+reach*(Rdisc-LR)*1.02;
+        const segs=3+Math.floor(reach*9);                  // 噴得越遠，沿路留的斑點越多（拖尾感）
+        const col=pal[Math.floor(r()*pal.length)];
+        for(let s=0;s<segs;s++){
+          const t=s/Math.max(1,segs-1);
+          const rr=LR+t*(endR-LR)+(r()-0.5)*S*0.006;       // 半徑方向也帶點抖動，噴痕不是死直線
+          const ja=ang+(r()-0.5)*0.05;
+          const w=S*(0.005*(1-t*0.75)+r()*0.0025);         // 越接近尾端越細
+          dctx.globalAlpha=(0.85-t*0.45)*(0.6+r()*0.4);
+          dctx.fillStyle=col;
+          dctx.beginPath();
+          dctx.arc(cx+Math.cos(ja)*rr, cy+Math.sin(ja)*rr, w, 0, PI2);
+          dctx.fill();
+        }
+      }
+      // 混一些較大的潑濺塊（splash），不是只有細噴痕——每塊由幾顆重疊圓組成不規則形狀，
+      // 大多落在靠標籤近的地方（reach 冪次偏小），少數飛遠一點。
+      const splashes=Math.floor((8+r()*8)*mixSplash);
+      for(let i=0;i<splashes;i++){
+        const ang=r()*PI2, reach=Math.pow(r(),1.6), rr=LR+reach*(Rdisc-LR)*0.85;
+        const bx=cx+Math.cos(ang)*rr, by=cy+Math.sin(ang)*rr;
+        const blobR=S*(0.012+r()*0.022), col=pal[Math.floor(r()*pal.length)];
+        const lumps=3+Math.floor(r()*4);
+        dctx.fillStyle=col;
+        for(let k=0;k<lumps;k++){
+          const lx=bx+(r()-0.5)*blobR*1.6, ly=by+(r()-0.5)*blobR*1.6, lr=blobR*(0.4+r()*0.7);
+          dctx.globalAlpha=0.55+r()*0.35;
+          dctx.beginPath(); dctx.arc(lx,ly,lr,0,PI2); dctx.fill();
+        }
+      }
+      // 少量脫離主噴痕、飛得比噴痕更遠的孤立小點
+      for(let i=0;i<Math.floor(rays*0.25*mixDot);i++){
+        const ang=r()*PI2, rr=LR+Math.pow(r(),0.35)*(Rdisc-LR);
+        dctx.globalAlpha=0.5+r()*0.4; dctx.fillStyle=pal[Math.floor(r()*pal.length)];
+        dctx.beginPath(); dctx.arc(cx+Math.cos(ang)*rr, cy+Math.sin(ang)*rr, S*(0.0015+r()*0.003), 0, PI2); dctx.fill();
+      }
+      dctx.globalAlpha=1;
+      // 溝槽反光：畫在潑漆最上層（亮線+暗線成對＝溝槽斷面的高光/陰影），alpha 要夠強才不會
+      // 被下面較實心的 splash/ray 蓋掉、在整張潑漆圖案上仍看得出一圈圈唱片紋理。
+      dctx.lineWidth=Math.max(1,DPR*0.6);
+      for(let R=LR*1.15; R<Rdisc*0.98; R+=S*0.008){
+        dctx.strokeStyle='rgba(255,255,255,0.16)'; dctx.beginPath(); dctx.arc(cx,cy,R,0,PI2); dctx.stroke();
+        dctx.strokeStyle='rgba(0,0,0,0.12)'; dctx.beginPath(); dctx.arc(cx,cy,R+DPR*0.7,0,PI2); dctx.stroke();
+      }
+      dctx.restore();
+      const gl=dctx.createRadialGradient(cx-Rdisc*0.4,cy-Rdisc*0.5,0,cx-Rdisc*0.4,cy-Rdisc*0.5,Rdisc*1.1);
+      gl.addColorStop(0,'rgba(255,255,255,0.12)'); gl.addColorStop(0.4,'rgba(255,255,255,0)');
+      dctx.globalCompositeOperation='screen'; dctx.fillStyle=gl; dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.fill();
+      dctx.globalCompositeOperation='source-over';
+      dctx.strokeStyle='rgba(255,255,255,0.10)'; dctx.lineWidth=DPR; dctx.beginPath(); dctx.arc(cx,cy,Rdisc,0,PI2); dctx.stroke();
+      const coverImg=cover.cover ? getCoverImage(cover.cover, ()=>drawDisc()) : null;
+      if(coverImg){
+        // 真封面：撐滿整個中央標籤圓（expand+fill，不留縫、不加邊框）。
+        dctx.save(); dctx.beginPath(); dctx.arc(cx,cy,LR+DPR,0,PI2); dctx.clip();
+        const iw=coverImg.naturalWidth, ih=coverImg.naturalHeight, s=Math.max((LR*2)/iw,(LR*2)/ih);
+        const dw=iw*s, dh=ih*s;
+        dctx.drawImage(coverImg, cx-dw/2, cy-dh/2, dw, dh);
+        dctx.restore();
+      } else {
+        drawLabelArt(dctx,cx,cy,LR,cover);
+        dctx.strokeStyle='rgba(0,0,0,.4)'; dctx.lineWidth=DPR*1.5; dctx.beginPath(); dctx.arc(cx,cy,LR,0,PI2); dctx.stroke();
+      }
+    }
+    function size(){ DPR=Math.min(2,window.devicePixelRatio||1);
+      const dr=disc.getBoundingClientRect(); disc.width=Math.max(1,dr.width*DPR); disc.height=Math.max(1,dr.height*DPR);
+      drawDisc(); }
+    const ro=new ResizeObserver(size); ro.observe(card); size();
+    vinyl={ro};
+  }
+
+  // ---------- performance script: 疊加表演（Action + Emotion 兩層，見 hud_performance.js）----------
+  // 下面這段佔位字串由 handle_hud 讀 hud_performance.js 檔案內容整段替換進來——
+  // 這個檔案是唯一真相來源，node --test 直接測它，不是另外重寫一份邏輯到這個字串裡。
+__PERF_JS__
+  const PERF_THEME_NAME="__PERF_THEME__"; // 空字串＝關閉（MARVIN_PERFORMANCE_SCRIPT off 或未設定主題）
+  let perf=null;
+  function ensurePerf(){
+    const theme=PERF_THEMES[PERF_THEME_NAME];
+    if(!theme) return null;
+    if(!perf || (Date.now()-perf.roundStart)/1000>=PERF_ROUND_SEC){
+      // wearing 跨輪延續(不隨新的一輪重置)：表演後穿著的 costume 要撐到下一次表演，
+      // 不能因為開新的一輪就憑空重置成裸面。
+      const wearing=perf?perf.wearing:{};
+      const emoKeys=Object.keys(EMOTIONS);
+      const emotion=emoKeys[Math.floor(Math.random()*emoKeys.length)];
+      perf={ order:buildRoundOrder(theme,wearing), emotion, roundStart:Date.now(), wearing };
+      console.log('[perf] round start', perf.order, 'emotion='+emotion, 'wearing='+JSON.stringify(wearing), new Date(perf.roundStart).toISOString());
+    }
+    return perf;
+  }
+
+  // ---------- live Marvin head (metallic + green triangle eyes) ----------
+  // 每個情緒只用三個既有槓桿驅動：眼睛顏色/亮度（col+alpha+pulse）、眨眼節奏（blink）、
+  // 視線方向（gaze）——不加新繪製層/新幾何，Pi 3B 要跑得動，全部只是餵給既有 frame() 的數字。
+  const MOODCFG={
+    idle:    { col:[104,158,58], blink:{min:2,max:6,dur:0.16},
+               gaze:t=>[Math.sin(t*0.33)*0.18, Math.sin(t*0.23+1.1)*0.12] },
+    wake:    { col:[150,224,72], blink:{min:2,max:6,dur:0.16}, gaze:()=>[0,-0.03] },
+    speak:   { col:[152,222,82], blink:{min:2,max:6,dur:0.16}, gaze:t=>[Math.sin(t*0.8)*0.05,-0.02],
+               pulse:{speed:7.3,amp:0.5,speed2:11.1,amp2:0.3} },
+    think:   { col:[92,178,120], blink:{min:2,max:6,dur:0.16},
+               gaze:t=>[-0.1+Math.sin(t*0.5)*0.08, -0.16+Math.sin(t*0.7)*0.05] },
+    // ---- 新增七態（睡眠/待機/工作中/待核准/升級 為持續態；被搖晃/快速核准 為一次性反應）----
+    sleep:   { col:[60,75,95], alpha:0.45, blink:{forceClosed:true,min:5,max:9,dur:0.5},
+               gaze:()=>[0,0], noSaccade:true },
+    working: { col:[70,190,160], blink:{min:1.2,max:3,dur:0.12},
+               gaze:t=>[-0.12+Math.sin(t*1.1)*0.04,-0.05+Math.sin(t*0.9)*0.03], pulse:{speed:1.6,amp:0.15} },
+    pending: { col:[220,175,60], blink:{min:4,max:8,dur:0.2}, gaze:()=>[0,0], pulse:{speed:0.8,amp:0.1} },
+    escalate:{ col:[230,90,55], blink:{min:0.6,max:1.5,dur:0.1},
+               gaze:t=>[Math.sin(t*3.4)*0.3,0], pulse:{speed:3.9,amp:0.25} },
+    shaken:  { col:[240,240,235], blink:{forceOpen:true},
+               gaze:t=>[Math.sin(t*9)*0.35, Math.sin(t*7)*0.15] },
+    quickApprove:{ col:[150,255,120], blink:{min:0.05,max:0.15,dur:0.18}, gaze:()=>[0,0] },
+  };
+  let head=null;
+  function mountHead(canvas){
+    if(head){ cancelAnimationFrame(head.raf); head.ro.disconnect(); head=null; }
+    if(!canvas) return;
+    const ctx=canvas.getContext('2d');
+    const st={t:0,gphi:0,glam:0,vphi:0,vlam:0,blink:1,blinkT:1.2,blinkStart:-1,sacT:0,sacX:0,sacY:0,ec:[104,158,58].slice(),cam:1};
+    let W=0,Hh=0,DPR=1;
+    // 24fps 節流：畫面在弱 GPU 裝置（如 Pi 3B kiosk）上很吃重，60Hz 全速重畫沒必要。
+    // st.t 改用實際經過秒數推進（renderDt*1.8，1.8＝原本 0.03/frame 假設 60fps 換算的速率），
+    // 節流後動畫速度才不會被拖慢——不能只是跳過重畫卻仍固定加 0.03。
+    const FRAME_MS=1000/24; let lastRenderTs=0;
+    function size(){ const r=canvas.getBoundingClientRect(); DPR=Math.min(2,window.devicePixelRatio||1);
+      W=canvas.width=Math.max(1,r.width*DPR); Hh=canvas.height=Math.max(1,r.height*DPR); }
+    const ro=new ResizeObserver(size); ro.observe(canvas); size();
+    const P2=Math.PI*2;
+    function frame(ts){
+      if(!lastRenderTs) lastRenderTs=ts;
+      const sinceRender=ts-lastRenderTs;
+      if(sinceRender<FRAME_MS){ if(!reduce) head.raf=requestAnimationFrame(frame); return; }
+      const renderDt=sinceRender/1000; lastRenderTs=ts;
+      const mood=mvParams.mood;
+      // 疊加表演取樣——吃到未知 action_id/資料缺漏就 console.warn 跳過，不能讓例外拋出
+      // 去害整顆頭的 requestAnimationFrame 排程停掉（main_satellite.py 原本 frame() 無防護）。
+      let pv={}, perfCtx=null;
+      try{
+        if(perfShouldRender(mood)){
+          const theme=PERF_THEMES[PERF_THEME_NAME];
+          if(theme){
+            const p=ensurePerf();
+            const elapsed=(Date.now()-p.roundStart)/1000;
+            const active=pickActiveAction(theme,p.order,elapsed);
+            if(active){
+              const progress=active.action.dur?Math.min(1,active.localT/active.action.dur):0;
+              pv=sampleAction(active.action, EMOTIONS[p.emotion]||EMOTIONS.neutral, progress);
+              if(p.lastActionId!==active.id){
+                p.lastActionId=active.id;
+                p.wearing=applyWearingTransition(p.wearing, theme, active.id);
+                console.log('[perf] action', active.id, 'emotion='+p.emotion, 'wearing='+JSON.stringify(p.wearing), new Date().toISOString());
+              }
+            }
+            perfCtx={theme,order:p.order,elapsed,wearing:p.wearing};
+          }
+        }
+      }catch(e){ console.warn('[perf] sample failed, skipping', e); pv={}; perfCtx=null; }
+      if(!(pv.freeze>0.5)) st.t+=renderDt*1.8;
+      ctx.clearRect(0,0,W,Hh);
+      const cfg=MOODCFG[mood]||MOODCFG.idle;
+      const p=cfg.pulse;
+      const env = p ? Math.max(0, Math.sin(st.t*p.speed)*p.amp + (p.speed2?Math.sin(st.t*p.speed2)*p.amp2:0)) : 0;
+      st.cam += (((mood==='speak'||mood==='wake')?1.05:1)-st.cam)*0.05;
+      // headBase 只吃「高度」——卡片變寬只讓 canvas(W) 變寬，不會放大頭（卡片高度不隨
+      // flex-grow 橫向分配變動，是穩定的頭部尺寸基準）。cx 的左右漂浮改吃全部的 W，
+      // 卡片越寬、Marvin 能晃動的地盤就越大，這才是「卡片變大＝拓展活動空間」而非放大頭。
+      const headBase=Hh;
+      const perfShakeX=pv.shake?Math.sin(st.t*41)*pv.shake*headBase*0.02:0;
+      const perfShakeY=pv.shake?Math.cos(st.t*37)*pv.shake*headBase*0.02:0;
+      const cx=W/2+Math.sin(st.t*0.4)*W*0.02+(pv.swayX||0)*headBase*0.05+(pv.driftX||0)*headBase*0.08+perfShakeX;
+      const floatY=Math.sin(st.t*0.28)*headBase*0.045;   // 明顯一點的上下起伏，才有懸浮感（不只是待機微動）
+      const cy=Hh*0.45+floatY+env*headBase*0.03+(pv.bobY||0)*headBase*0.05+(pv.driftY||0)*headBase*0.08+perfShakeY;
+      const R=headBase*0.40*st.cam*(1+Math.sin(st.t*0.9)*0.006)*(pv.scale??1);
+      // 陰影跟球體脫開一段距離、且隨浮動高度縮放變淡——飄得越高陰影越小越淡、
+      // 沉得越低陰影越大越實，這種「陰影跟物體不貼在一起」才會讀成懸浮，不是貼地站著。
+      const floatNorm=(floatY/(headBase*0.045)+1)/2;
+      const shadowGap=headBase*0.10+floatNorm*headBase*0.05;
+      const shadowScale=1-floatNorm*0.22, shadowAlpha=0.40-floatNorm*0.16;
+      ctx.save(); ctx.translate(cx,cy+R+shadowGap); ctx.scale(shadowScale,0.22*shadowScale);
+      const cs=ctx.createRadialGradient(0,0,0,0,0,R*0.85);
+      cs.addColorStop(0,`rgba(0,0,0,${shadowAlpha})`); cs.addColorStop(0.7,`rgba(0,0,0,${shadowAlpha*0.4})`); cs.addColorStop(1,'rgba(0,0,0,0)');
+      ctx.fillStyle=cs; ctx.beginPath(); ctx.arc(0,0,R*0.85,0,P2); ctx.fill();
+      // 卡片底色接近黑，純黑陰影對比不夠、看不出來（跟卡片 box-shadow 那次同個問題）。
+      // 疊一層 screen 混合的淡綠光暈——加法混合永遠比背景亮，暗底也讀得出來，順便呼應
+      // 整個 HUD 的霓虹風格，讀起來像懸浮物投下的光暈而不是純陰影。
+      const glowAlpha=0.16-floatNorm*0.09;
+      const gl=ctx.createRadialGradient(0,0,0,0,0,R*0.75);
+      gl.addColorStop(0,`rgba(140,214,90,${glowAlpha})`); gl.addColorStop(1,'rgba(140,214,90,0)');
+      ctx.globalCompositeOperation='screen'; ctx.fillStyle=gl; ctx.beginPath(); ctx.arc(0,0,R*0.75,0,P2); ctx.fill();
+      ctx.globalCompositeOperation='source-over';
+      ctx.restore();
+      const sph=ctx.createRadialGradient(cx-R*0.34,cy-R*0.42,R*0.05,cx,cy,R*1.07);
+      sph.addColorStop(0,'#ffffff');sph.addColorStop(0.3,'#eef2f4');sph.addColorStop(0.66,'#cfd6dc');sph.addColorStop(0.9,'#b6c0c8');sph.addColorStop(1,'#8b959d');
+      ctx.fillStyle=sph;ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.fill();
+      ctx.save();ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.clip();
+      const hot=ctx.createRadialGradient(cx-R*0.33,cy-R*0.42,0,cx-R*0.33,cy-R*0.42,R*0.5);
+      hot.addColorStop(0,'rgba(255,255,255,0.9)');hot.addColorStop(1,'rgba(255,255,255,0)');
+      ctx.fillStyle=hot;ctx.fillRect(cx-R,cy-R,2*R,2*R);
+      ctx.restore();
+      ctx.strokeStyle='rgba(255,255,255,.4)';ctx.lineWidth=DPR;ctx.beginPath();ctx.arc(cx,cy,R,0,P2);ctx.stroke();
+      const tc=cfg.col; st.ec=st.ec.map((v,i)=>v+(tc[i]-v)*0.06);
+      const boost=1+env*0.5, gr=Math.min(255,st.ec[0]*boost), gg=Math.min(255,st.ec[1]*boost), gb=Math.min(255,st.ec[2]*boost);
+      const alpha=cfg.alpha!=null?cfg.alpha:0.98;
+      const dark=k=>`rgba(${gr*k|0},${gg*k|0},${gb*k|0},${alpha})`;
+      const bright=`rgba(${Math.min(255,gr+80)|0},${Math.min(255,gg+70)|0},${Math.min(255,gb+70)|0},${alpha})`;
+      let [tphi,tlam]=cfg.gaze(st.t);
+      tphi += mvParams.focusDir*0.42;
+      tphi += pv.gazeDir||0;
+      if(!cfg.noSaccade){
+        if(st.t>st.sacT){ st.sacT=st.t+0.4+Math.random()*1.7; st.sacX=(Math.random()-0.5)*0.1; st.sacY=(Math.random()-0.5)*0.06; }
+        tphi+=st.sacX; tlam+=st.sacY;
+      }
+      st.vphi+=(tphi-st.gphi)*0.018-st.vphi*0.14; st.gphi+=st.vphi;
+      st.vlam+=(tlam-st.glam)*0.018-st.vlam*0.14; st.glam+=st.vlam;
+      const bc=cfg.blink||{min:2,max:6,dur:0.16};
+      if(bc.forceOpen){ st.blink=1; st.blinkStart=-1; }
+      else if(bc.forceClosed){
+        if(st.blinkStart<0&&st.t>st.blinkT){ st.blinkStart=st.t; st.blinkT=st.t+bc.min+Math.random()*(bc.max-bc.min); }
+        const rest=0.15;
+        if(st.blinkStart>=0){ const pr=(st.t-st.blinkStart)/bc.dur; if(pr>=1) st.blinkStart=-1; else st.blink=rest+(1-rest)*0.4*Math.sin(pr*Math.PI); }
+        else st.blink=rest;
+      } else {
+        if(st.blinkStart<0&&st.t>st.blinkT){ st.blinkStart=st.t; st.blinkT=st.t+bc.min+Math.random()*(bc.max-bc.min); }
+        st.blink=1;
+        if(st.blinkStart>=0){ const pr=(st.t-st.blinkStart)/bc.dur; if(pr>=1) st.blinkStart=-1; else st.blink=1-0.92*Math.sin(pr*Math.PI); }
+      }
+      const phiC=0.72,dw=0.27,lamC=0.15,dhA=0.26, proj=(phi,lam)=>[cx+R*Math.cos(lam)*Math.sin(phi),cy+R*Math.sin(lam)];
+      function eye(sign){
+        const p0=sign*phiC+st.gphi, lam0=lamC+st.glam;
+        const P=[proj(p0+sign*dw,lam0+0.05*st.blink),proj(p0-sign*dw,lam0),proj(p0,lam0+dhA*st.blink)];
+        const path=()=>{ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.closePath();};
+        path();ctx.fillStyle=dark(0.45);ctx.fill();
+        ctx.save();path();ctx.clip();
+        const sx=(P[1][0]+P[2][0])/2+st.gphi*R*0.9, sy=(P[1][1]+P[2][1])/2;
+        const g=ctx.createRadialGradient(sx,sy,0,sx,sy,R*0.46);
+        g.addColorStop(0,bright);g.addColorStop(0.4,dark(1));g.addColorStop(1,dark(0.42));ctx.fillStyle=g;ctx.fill();
+        const topY=Math.min(P[0][1],P[1][1]);
+        const sh=ctx.createLinearGradient(0,topY-R*0.01,0,topY+R*0.16);sh.addColorStop(0,'rgba(0,0,0,.5)');sh.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.fillStyle=sh;ctx.fill();ctx.restore();
+        ctx.lineJoin='round';ctx.lineCap='round';ctx.lineWidth=Math.max(2,R*0.035);ctx.strokeStyle='rgba(8,10,9,.96)';
+        ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.stroke();
+        return P;
+      }
+      // 墨鏡鏡片直接從 eye() 回傳的實際三角形頂點算 bounding box——不是另外用 proj() 算一次
+      // 獨立座標，才能保證鏡片跟眼睛(含 saccade/blink 造成的偏移)完全同步移動，不會跑掉。
+      function eyeBounds(P){
+        const xs=P.map(p=>p[0]), ys=P.map(p=>p[1]);
+        const minX=Math.min(...xs), maxX=Math.max(...xs), minY=Math.min(...ys), maxY=Math.max(...ys);
+        return {cx:(minX+maxX)/2, cy:(minY+maxY)/2, w:maxX-minX, h:maxY-minY};
+      }
+      // 參考 Matrix 主題墨鏡設計：長方形鏡片(圓角)、深綠黑漸層＋幾道淡綠色橫紋模擬數位反光、
+      // 細金屬框、鏡橋、外側鉸鏈螺絲——不是純色橢圓疊圖。
+      function drawLens(b){
+        const w=b.w*1.2, h=b.h*1.45;
+        const x=b.cx-w/2, y=b.cy-h*0.58;
+        const r=Math.min(w,h)*0.26;
+        ctx.beginPath();
+        if(ctx.roundRect) ctx.roundRect(x,y,w,h,r); else ctx.rect(x,y,w,h);
+        const lg=ctx.createLinearGradient(x,y,x+w,y+h);
+        lg.addColorStop(0,'rgba(8,16,11,0.95)');lg.addColorStop(0.55,'rgba(16,36,20,0.88)');lg.addColorStop(1,'rgba(6,10,8,0.95)');
+        ctx.fillStyle=lg;ctx.fill();
+        ctx.save();ctx.clip();
+        ctx.fillStyle='rgba(120,230,140,0.22)';
+        for(let i=0;i<3;i++){ const sy=y+h*(0.22+i*0.28)+Math.sin(st.t*2+i*2)*h*0.05; ctx.fillRect(x,sy,w,h*0.05); }
+        ctx.restore();
+        ctx.lineWidth=Math.max(1.5,R*0.022);ctx.strokeStyle='rgba(18,20,22,0.95)';ctx.stroke();
+        return {x,y,w,h};
+      }
+      // 球體本身是圓形、繞中心轉沒有視覺差異，headTiltZ 只需要轉「眼睛＋眉毛＋墨鏡」這個子群組。
+      const tiltRad=(pv.headTiltZ||0)*Math.PI/180;
+      ctx.save(); if(tiltRad){ ctx.translate(cx,cy); ctx.rotate(tiltRad); ctx.translate(-cx,-cy); }
+      const eyeP=[eye(-1),eye(1)];
+      ctx.save();ctx.strokeStyle='rgba(16,19,17,.92)';ctx.lineWidth=Math.max(1.5,R*0.02);ctx.lineCap='round';ctx.lineJoin='round';
+      const phiEnd=phiC+dw+0.26,curve=0.035;ctx.beginPath();
+      for(let i=0;i<=24;i++){ const s=-1+i/12, ph=st.gphi+s*phiEnd, lm=lamC+st.glam+curve*s*s, q=proj(ph,lm); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
+      ctx.stroke();ctx.restore();
+      if(perfCtx && perfCtx.wearing && perfCtx.wearing.put_on_sunglasses){
+        const lb=[eyeBounds(eyeP[0]),eyeBounds(eyeP[1])].sort((a,b)=>a.cx-b.cx).map(drawLens);
+        ctx.strokeStyle='rgba(18,20,22,0.95)';ctx.lineWidth=Math.max(1.5,R*0.025);
+        ctx.beginPath();ctx.moveTo(lb[0].x+lb[0].w,lb[0].y+lb[0].h*0.4);ctx.lineTo(lb[1].x,lb[1].y+lb[1].h*0.4);ctx.stroke();
+        const hingeR=Math.max(1.2,R*0.018);
+        ctx.fillStyle='rgba(40,42,45,0.95)';
+        [[lb[0].x,lb[0].y+lb[0].h*0.35,-1],[lb[1].x+lb[1].w,lb[1].y+lb[1].h*0.35,1]].forEach(([hx,hy,dir])=>{
+          ctx.beginPath();ctx.arc(hx,hy,hingeR,0,P2);ctx.fill();
+          ctx.beginPath();ctx.moveTo(hx,hy);ctx.lineTo(hx+dir*R*0.12,hy+R*0.02);ctx.stroke();
+        });
+      }
+      ctx.restore();
+      if(!reduce) head.raf=requestAnimationFrame(frame);
+    }
+    head={raf:requestAnimationFrame(frame),ro};
+  }
+
+  // ---- dock sources + notification center (demo) ----
+  const SRC = {
+    calendar:{name:'行事曆', c:'info', items:[
+      {c:'warn', i:'calendar', t:'設計評審', m:'10:30 · Zoom · 設計組', time:'5 分後'},
+      {c:'info', i:'calendar', t:'一對一 · Jack', m:'14:00 · 辦公室', time:'今天'},
+      {c:'info', i:'calendar', t:'Marvin 週檢討', m:'明天 09:00', time:'明天'} ]},
+    messages:{name:'訊息', c:'info', items:[
+      {c:'info', i:'messages', t:'Jack', m:'記得看一下那個 STT 佇列的圖', time:'3 分'},
+      {c:'info', i:'messages', t:'設計組', m:'新的 bar 螢幕稿放上去了', time:'21 分'},
+      {c:'urgent', i:'build', t:'CI Bot', m:'main 建置失敗', time:'2 分'} ]},
+    music:{name:'音樂', c:'ok', items:[
+      {c:'ok', i:'music', t:'現正播放', m:'七里香 — 周杰倫', time:'now'},
+      {c:'ok', i:'music', t:'待播', m:'遇見 — 孫燕姿', time:'—'},
+      {c:'ok', i:'list', t:'Marvin 選的', m:'千禧華語抒情 · 8 首', time:'—'} ]},
+    build:{name:'建置', c:'urgent', items:[
+      {c:'urgent', i:'build', t:'marvin · main 失敗', m:'test_stt_queue 逾時 · 3m12s', time:'2 分'},
+      {c:'ok', i:'check', t:'marvin · feat/hud 通過', m:'全綠 · 2m48s', time:'26 分'},
+      {c:'ok', i:'check', t:'部署 prod 成功', m:'v0.9.1', time:'1 小時'} ]},
+    system:{name:'系統', c:'ok', items:[
+      {c:'ok', i:'system', t:'CPU 38% · 記憶體 61%', m:'一切正常', time:'now'},
+      {c:'ok', i:'system', t:'電量 92%', m:'預估可用 6 小時', time:'now'},
+      {c:'info', i:'system', t:'備份完成', m:'Time Machine · 昨晚', time:'昨天'} ]},
+    weather:{name:'天氣', c:'info', items:[
+      {c:'info', i:'sun', t:'台北 · 晴 31°', m:'體感 34° · 午後有雷陣雨', time:'now'},
+      {c:'info', i:'weather', t:'15:00 降雨', m:'機率 60%', time:'午後'} ]},
+    alerts:{name:'通知', c:'warn', items:[
+      {c:'warn', i:'calendar', t:'設計評審 5 分鐘後', m:'要我開連結嗎？', time:'5 分'},
+      {c:'urgent', i:'build', t:'CI 失敗', m:'main · test_stt_queue', time:'2 分'} ]}
+  };
+  const order=['calendar','messages','music','build','system','weather','alerts'];
+  const badges={ messages:['3','info'], build:['!','urgent'], alerts:['2','warn'] };
+  document.getElementById('icons').innerHTML = order.map(k=>{
+    const b=badges[k]; const c=SRC[k].c;
+    return `<button class="ibtn" data-src="${k}" aria-label="${SRC[k].name}" style="--ic:var(--${c})">
+      ${svg(SRC[k].items[0].i)}${b?`<span class="badge" style="--bc:var(--${b[1]})">${b[0]}</span>`:''}</button>`;
+  }).join('');
+  // 資訊量降到最低：整排 icon 預設收起，Marvin 頭像只掛一顆紅點——有任何分類有未讀才亮。
+  document.getElementById('mdot').classList.toggle('show', Object.keys(badges).length>0);
+
+  const nc=document.getElementById('nc'), ncTitle=document.getElementById('nc-title'), ncList=document.getElementById('nc-list');
+  function openSrc(k){
+    const s=SRC[k]; ncTitle.innerHTML=`${s.name} <small>${s.items.length} 則</small>`;
+    ncList.innerHTML=s.items.map(n=>`<div class="note" style="--c:var(--${n.c})">
+      <div class="ni">${svg(n.i)}</div>
+      <div class="nb"><div class="nt">${n.t}<time>${n.time}</time></div><div class="nm">${n.m}</div></div></div>`).join('');
+    nc.classList.add('open');
+  }
+  const closeNC=()=>nc.classList.remove('open');
+  document.getElementById('icons').addEventListener('click',e=>{ const b=e.target.closest('.ibtn'); if(b) openSrc(b.dataset.src); });
+  // 點 Marvin＝滑出整排 icon（不是打開通知面板）；再點一次收回去，跟 iOS 縮時通知同一套邏輯。
+  const dock=document.getElementById('dock'), iconsEl=document.getElementById('icons'), mshortEl=document.getElementById('mshort');
+  let iconsOpen=false;
+  function setIconsOpen(open){
+    iconsOpen=open;
+    iconsEl.classList.toggle('collapsed', !open);
+    dock.classList.toggle('icons-collapsed', !open);
+    mshortEl.setAttribute('aria-expanded', String(open));
+  }
+  mshortEl.addEventListener('click', ()=>setIconsOpen(!iconsOpen));
+  mshortEl.addEventListener('keydown', e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); setIconsOpen(!iconsOpen); } });
+  document.getElementById('nc-close').addEventListener('click',closeNC);
+  nc.addEventListener('click',e=>{ if(e.target===nc) closeNC(); });
+
+  const pad=n=>String(n).padStart(2,'0');
+  function clock(){ const d=new Date(); document.getElementById('clk').textContent=pad(d.getHours())+':'+pad(d.getMinutes());
+    document.getElementById('clkd').textContent=`週${['日','一','二','三','四','五','六'][d.getDay()]} ${d.getMonth()+1}/${d.getDate()}`; }
+  clock(); setInterval(clock,10000);
+
+  // ---- 輪詢 /now：有歌在播就把「現正播放」卡換成真資料 ----
+  let lastLiveKey='';
+  async function refreshNow(){
+    try{
+      const r=await fetch("/now?t="+encodeURIComponent(TOKEN),{cache:"no-store"});
+      const j=await r.json();
+      liveNow = j.playing ? {title:j.title||'', by:j.by||'', pal:Array.isArray(j.palette)?j.palette:[], cover:j.cover||'',
+        queue:Array.isArray(j.queue)?j.queue:[], duration:j.duration||0, songStartTime:j.song_start_time||0,
+        comment:j.comment||''} : null;
+    }catch(e){ liveNow=null; }
+    const key = liveNow ? liveNow.title+'|'+liveNow.by+'|'+liveNow.pal.join(',')+'|'+liveNow.cover+'|'+liveNow.queue.map(q=>q.title).join(',')+'|'+liveNow.comment+'|'+liveNow.songStartTime : '';
+    if(key!==lastLiveKey){ lastLiveKey=key; render(); }
+  }
+  // ---- 黑膠展開進度條每秒補間，不用等 4s /now 輪詢才動（不重繪整卡，只改一個 style.width）----
+  function tickProgress(){
+    const bar=stage.querySelector('.vprogress-bar');
+    if(!bar) return;
+    const pct=progressPct();
+    if(pct!=null) bar.style.width=pct+'%';
+  }
+  setInterval(tickProgress, 1000);
+
+  // ---- 輪詢 /claude_status：有等你回應的 session 或用量資料就插一張動態卡 ----
+  let lastClaudeKey='';
+  async function refreshClaudeStatus(){
+    try{
+      const r=await fetch("/claude_status?t="+encodeURIComponent(TOKEN),{cache:"no-store"});
+      const j=await r.json();
+      liveClaude = {sessions:Array.isArray(j.sessions)?j.sessions:[], rateLimits:j.rate_limits||null, notification:j.notification||null};
+    }catch(e){ liveClaude=null; }
+    const key=JSON.stringify(liveClaude);
+    if(key!==lastClaudeKey){ lastClaudeKey=key; render(); }
+  }
+
+  // ---- 輪詢 /gmail_calendar_status：count-only，有未讀/今天有行程才插一張 info 卡 ----
+  let liveGmailCal=null, lastGmailCalKey='';
+  async function refreshGmailCal(){
+    try{
+      const r=await fetch("/gmail_calendar_status?t="+encodeURIComponent(TOKEN),{cache:"no-store"});
+      const j=await r.json();
+      liveGmailCal = {unread:j.gmail_unread, calToday:j.calendar_today_count, cats:j.gmail_categories||{}, important_emails:j.important_emails||[]};
+
+    }catch(e){ liveGmailCal=null; }
+    const key=JSON.stringify(liveGmailCal);
+    if(key!==lastGmailCalKey){ lastGmailCalKey=key; render(); }
+  }
+
+  render();
+  refreshNow(); setInterval(refreshNow,4000);
+  refreshClaudeStatus(); setInterval(refreshClaudeStatus,15000);
+  refreshGmailCal(); setInterval(refreshGmailCal,120000);
+})();
+</script>
+
+</body></html>"""
+
+
+async def inject_audio(vc, wav_bytes: bytes, speaker: str | None = None) -> bool:
+    """把瀏覽器上傳的 WAV 轉錄後，走 inject_text（is_text_input）強制回覆。
+
+    為何不走 process_audio_slice：那條經喚醒判定，沒喊「馬文」會被當環境對話→不回話。
+    PTT 按鈕＝明確在跟馬文講話，故先用引擎的編譯 STT 二進位（_run_swift_stt，Speech
+    辨識需簽章 entitlements，直譯 swift 會被 SIGKILL）拿文字，再走已驗證會回覆的 /say 路
+    （inject_text→is_text_input=True）。回覆 TTS 走 mixer → BrowserSpeakerOutput → /reply。
+
+    回 True＝已注入；False＝空 / STT 無結果。
+    """
+    if not wav_bytes:
+        return False
+    if speaker is None:
+        speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
+    v2 = os.getenv("STT_ENGINE_V2", "").strip().lower() in ("1", "true", "yes", "on")
+    fd, tmp_path = tempfile.mkstemp(prefix="satellite_ptt_", suffix=".wav")
+    os.close(fd)
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(wav_bytes)
+        raw_text, _meta = await vc.bot.engine._run_swift_stt(
+            tmp_path, is_wake_check=False, v2=v2)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+    raw_text = (raw_text or "").strip()
+    if not raw_text:
+        logger.info("🎙️ [SatelliteAudio] STT 無結果（雜訊/靜音），略過")
+        return False
+    logger.info(f"🎙️ [SatelliteAudio] {speaker}: {raw_text}")
+    await inject_text(vc, speaker, raw_text)   # is_text_input=True → 強制回覆
+    return True
+
+
+def build_marvin_comment_prompt(*, playing: bool, title: str = "", by: str = "",
+                                 queue: list | None = None,
+                                 other_cards: list[dict] | None = None) -> tuple[str, str]:
+    """組「點 HUD Marvin 卡片」要送去 LLM 的 system/user prompt（純函式，好測）。
+
+    目標是自言自語式銳評，不是回答問題——限字數、不裝 JSON。
+    other_cards＝HUD 當下畫面上同時顯示的其他卡片快照（Claude Code／行事曆／通知…），
+    有給就把它們也塞進去，讓 Marvin 真的能評論音樂以外的東西，不是只看得到自己播的歌。
+    """
+    system_prompt = (
+        "你是馬文（Marvin）——語氣冷淡厭世、偶爾毒舌但不失溫暖的語音助理。"
+        "現在你被人點了一下，要對 HUD 畫面上正在發生的事講一句銳評（自言自語式吐槽，"
+        "不是在回答問題）。限 50 字內，繁體中文，不要加引號、不要用 JSON，直接回傳這句話。"
+    )
+    queue = queue or []
+    lines = [f"現正播放：{title}" + (f" · {by}" if by else "")] if playing else ["現在沒歌在播。"]
+    titles = "、".join(q.get("title", "") for q in queue[:3] if q.get("title"))
+    if titles:
+        lines.append(f"待播清單：{titles}")
+    other_cards = other_cards or []
+    card_lines = []
+    for c in other_cards:
+        label = (c.get("label") or "").strip()
+        text = (c.get("text") or "").strip()
+        if not label and not text:
+            continue
+        card_lines.append(f"- {label}：{text}" if label else f"- {text}")
+    if card_lines:
+        lines.append("畫面上同時還顯示著這些卡片：")
+        lines.extend(card_lines)
+        user_prompt = "\n".join(lines) + "\n請從畫面上的東西（不限音樂）挑一個講你的看法或吐槽。"
+    else:
+        user_prompt = "\n".join(lines) + "\n請講一句你的看法或吐槽。"
+    return system_prompt, user_prompt
+
+
+def parse_other_cards_param(raw: str | None) -> list[dict]:
+    """解析 HUD 傳來的『畫面上其他卡片』快照（?cards= URL 帶的 JSON 字串）。
+
+    來源是瀏覽器端使用者可控的 query string，壞掉/超量/型別不對一律丟空，
+    不讓一個壞 payload 打斷銳評卡（優雅降級同一精神）；順便擋一下惡意超長字串。
+    """
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    out = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", ""))[:20]
+        text = str(item.get("text", ""))[:60]
+        if label or text:
+            out.append({"label": label, "text": text})
+        if len(out) >= 5:
+            break
+    return out
+
+
+def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗與露",
+                   reply_source=None, car_presence=None, audio_rate_limiter=None,
+                   stream_source=None, location_state_path=None,
+                   now_playing_state_path=None, claude_sessions_state_path=None,
+                   gmail_calendar_state_path=None, puck_command_queue=None,
+                   device_speakers: dict[str, str] | None = None):
+    """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
+
+    純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
+    （Tailscale 私網信任）；設了 token 就檢查 X-Marvin-Token header。
+    location_state_path＝GPS 訊號存檔路徑（None＝用 location_state.DEFAULT_PATH，測試時
+    傳 tmp_path 隔離）。
+    now_playing_state_path＝跨進程現正播放橋接檔路徑（None＝用
+    now_playing_state.DEFAULT_PATH；main_discord.py 的 MusicCog 寫、這裡的 /now 讀，見
+    now_playing_state.py docstring）。
+    claude_sessions_state_path＝Claude Code session 狀態橋接檔路徑（None＝用
+    claude_sessions_state.DEFAULT_PATH；scripts/scan_claude_sessions.py +
+    scripts/claude_statusline.py 寫、這裡的 /claude_status 讀）。
+    gmail_calendar_state_path＝Gmail/Calendar count-only 橋接檔路徑（None＝用
+    gmail_calendar_state.DEFAULT_PATH；scripts/sync_gmail_calendar_state.py（排程
+    agent 呼叫）寫、這裡的 /gmail_calendar_status 讀，見該檔開頭說明）。
+    puck_command_queue＝ESP32 edge端混音（MARVIN_CAR_HARDWARE=esp32_edge_mix）的控制
+    指令佇列（見 marvin_voice_core/puck_command_queue.py）；None＝該功能關閉，
+    /car_commands 回 404。/puck_deck 不吃這個旗標（2026-08-18 起 pi_bt 硬體
+    也走這條路，見 device/puck_mixer.py::resolve_stream_url() 註解）——只要
+    vc.bot 能拿到 MusicCog（bot.cogs.get("MusicCog")）就開放，拿不到才回 500。
+    device_speakers＝車載裝置身分白名單（parse_device_speakers 的結果）；None＝不驗證、
+    裝置送的 speaker 一律當 default_speaker（舊行為）。只影響 /car、/audio，/say 等不動。
+    """
+    from aiohttp import web
+
+    from location_state import DEFAULT_PATH as _GPS_DEFAULT_PATH
+    from location_state import save_location_state
+    from now_playing_state import DEFAULT_PATH as _NOW_DEFAULT_PATH
+    from now_playing_state import load_now_playing_state
+    from claude_sessions_state import DEFAULT_PATH as _CLAUDE_DEFAULT_PATH
+    from claude_sessions_state import load_claude_sessions_state
+    from claude_sessions_state import save_claude_notification
+    from gmail_calendar_state import DEFAULT_PATH as _GMAIL_CAL_DEFAULT_PATH
+    from gmail_calendar_state import DEFAULT_STALE_AFTER_S as _GMAIL_CAL_STALE_S
+    from gmail_calendar_state import load_gmail_calendar_state
+
+    _gps_path = location_state_path or _GPS_DEFAULT_PATH
+    _now_path = now_playing_state_path or _NOW_DEFAULT_PATH
+    _claude_path = claude_sessions_state_path or _CLAUDE_DEFAULT_PATH
+    _gmail_cal_path = gmail_calendar_state_path or _GMAIL_CAL_DEFAULT_PATH
+
+    _CORS = {"Access-Control-Allow-Origin": "*",
+             "Access-Control-Allow-Headers": "*",
+             "Access-Control-Allow-Methods": "POST, OPTIONS"}
+
+    async def handle_say(request):
+        ctype = request.headers.get("Content-Type", "")
+        if "application/json" in ctype:
+            data = await request.json()
+            text = (data.get("text") or "").strip()
+            speaker = data.get("speaker") or default_speaker
+        else:
+            text = (await request.text()).strip()
+            speaker = request.query.get("speaker") or default_speaker
+        if not text:
+            return web.json_response({"error": "empty"}, status=400, headers=_CORS)
+        await inject_text(vc, speaker, text)
+        return web.json_response({"ok": True, "speaker": speaker, "text": text}, headers=_CORS)
+
+    async def handle_play(request):
+        """GET /play?q=歌名&t=token — Siri 捷徑點歌（伺服器補「放一首」，捷徑只要一格 URL）。"""
+        q = (request.query.get("q") or "").strip()
+        if not q:
+            return web.json_response({"error": "empty"}, status=400, headers=_CORS)
+        # 統一成 strong_play「放一首X」：裸「放X」不夠強（見記憶）；已含「放一首」不重複補
+        if q.startswith("放一首"):
+            text = q
+        else:
+            core = q[1:].strip() if q.startswith("放") else q
+            text = f"放一首{core}"
+        speaker = request.query.get("speaker") or default_speaker
+        await inject_text(vc, speaker, text)
+        return web.json_response({"ok": True, "speaker": speaker, "text": text}, headers=_CORS)
+
+    async def _now_info() -> dict:
+        """算現正播放資訊（永遠讀跨進程橋接檔，不看本地 MusicCog）。
+
+        給 handle_now（HUD 輪詢）跟 handle_marvin_comment（Marvin 銳評抓上下文）
+        共用。HUD 只在家用，要跟 Pi satellite（main_discord.py 在 Discord 真正播放
+        的狀態）連動；本地 MusicCog 只在 car puck／瀏覽器 satellite 這種在外模式才有
+        東西，不該讓在外播放蓋掉家裡 HUD 的畫面，所以這裡不再檢查本地 MusicCog。
+        """
+        state = load_now_playing_state(path=_now_path)
+        if state and state.get("playing"):
+            return {
+                "playing": True,
+                "paused": False,
+                "title": state.get("title", ""),
+                "by": state.get("by", ""),
+                "cover": state.get("cover", ""),
+                "palette": state.get("palette", []),
+                "queue": state.get("queue", []),
+                "duration": state.get("duration"),
+                "song_start_time": state.get("song_start_time"),
+                "comment": state.get("comment"),
+            }
+        return {"playing": False}
+
+    async def handle_now(request):
+        """回當前播放的歌（HUD「現正播放」輪詢）。走統一 token gate（?t= 帶 token）。
+
+        永遠讀跨進程橋接檔（main_discord.py／Pi satellite 真正在播的狀態），不看
+        satellite 進程本地的 MusicCog——本地只在 car puck／瀏覽器 satellite 在外
+        播放時才有東西，跟家用的 HUD 是兩回事。
+        """
+        return web.json_response(await _now_info(), headers=_CORS)
+
+    async def handle_marvin_comment(request):
+        """GET /marvin_comment — 點 HUD 上 Marvin 卡片時現生一句對目前畫面的銳評。
+
+        走既有 GeminiRouter bus（跟 imitate/standup 那些一次性小生成同款：
+        tier=quick、allow_local=False），不自己開 client、不繞過帳務。失敗
+        （沒有 router、LLM 掛了）就回退一句罐頭台詞，不讓整張卡片壞掉。
+        """
+        info = await _now_info()
+        other_cards = parse_other_cards_param(request.query.get("cards"))
+        system_prompt, user_prompt = build_marvin_comment_prompt(
+            playing=info.get("playing", False), title=info.get("title", ""),
+            by=info.get("by", ""), queue=info.get("queue", []), other_cards=other_cards)
+        router = getattr(getattr(vc, "bot", None), "router", None)
+        comment = None
+        if router is not None:
+            try:
+                comment = await router._call_llm(
+                    system_prompt, user_prompt, is_json=False,
+                    allow_local=False, tier="quick", purpose="hud_marvin_comment")
+                comment = (comment or "").strip() or None
+            except Exception:  # noqa: BLE001
+                logger.exception("[HUD] marvin_comment LLM 呼叫失敗")
+        return web.json_response({"comment": comment or "……我現在沒什麼想講的。"}, headers=_CORS)
+
+    async def handle_claude_status(request):
+        """GET /claude_status — HUD 讀這台 Mac 上所有 Claude Code session 狀態。
+
+        資料完全來自跨進程橋接檔（scripts/scan_claude_sessions.py 定期掃寫
+        sessions、scripts/claude_statusline.py 的 statusLine hook 寫
+        rate_limits），這個 handler 純讀檔，不做任何運算。
+        """
+        state = load_claude_sessions_state(path=_claude_path)
+        if not state:
+            return web.json_response({"sessions": [], "rate_limits": None, "notification": None}, headers=_CORS)
+        return web.json_response({
+            "sessions": state.get("sessions", []),
+            "rate_limits": state.get("rate_limits"),
+            "notification": state.get("notification"),
+        }, headers=_CORS)
+
+    async def handle_claude_hook(request):
+        """POST /claude_hook — Claude Code 的 Notification hook（matcher permission_prompt）
+        直接推播，permission 對話框跳出來那瞬間就寫檔，不用等 scan_claude_sessions.py
+        下一次 20s 輪詢——純寫檔，不影響 hook 本身的 fail-open 行為（這裡出錯也只是
+        log，不回傳非 200，避免 Claude Code 那邊誤判 hook 失敗）。
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        save_claude_notification(
+            session_id=body.get("session_id", ""),
+            cwd=body.get("cwd", ""),
+            message=body.get("message", ""),
+            notification_type=body.get("notification_type", ""),
+            received_at=time.time(),
+            path=_claude_path,
+        )
+        return web.json_response({"ok": True}, headers=_CORS)
+
+    async def handle_gmail_calendar_status(request):
+        """GET /gmail_calendar_status — HUD 讀 Gmail 未讀數／今天剩下的行程數。
+
+        Count-only（DAKboard 那種做法，見 [[project_hud_actionable_open_loops]]）：
+        只回數字，不回信件內容。資料完全來自跨進程橋接檔（排程 agent 定期查 MCP
+        Gmail/Calendar connector 寫入，這個進程本身碰不到那些 MCP 工具）。太久沒更新
+        （排程可能停了）就當作沒有，不回傳過期數字誤導使用者。
+        """
+        state = load_gmail_calendar_state(path=_gmail_cal_path)
+        if not state or (time.time() - (state.get("updated_at") or 0)) > _GMAIL_CAL_STALE_S:
+            return web.json_response({"gmail_unread": None, "calendar_today_count": None}, headers=_CORS)
+        return web.json_response({
+            "gmail_unread": state.get("gmail_unread"),
+            "gmail_categories": state.get("gmail_categories", {}),
+            "important_emails": state.get("important_emails", []),
+            "calendar_today_count": state.get("calendar_today_count"),
+        }, headers=_CORS)
+
+
+    async def handle_wake(request):
+        if hasattr(vc, "_on_satellite_wake"):
+            # 🎙️ [PTT Optimization] 設定 mixer 的 PTT 狀態為 True，使其在 80ms 內平滑降至 0% 靜音
+            if getattr(vc, "_mixer", None) is not None:
+                vc._mixer._ptt_active = True
+            
+            vc._on_satellite_wake("hey_marvin")
+            bridge = getattr(vc, "_satellite_bridge", None)
+            if bridge and bridge.sink and hasattr(bridge.sink, "reset"):
+                bridge.sink.reset()
+                # 🎙️ [PTT Optimization] PTT 期間將自動靜默切句閾值拉高至 999 秒，
+                # 防止說話中途停頓或播音時間長導致 VAD 自動切句，強制只在 PTT 結束時由 /flush 切句。
+                bridge.sink._silence_cut_s = 999.0
+            logger.info("🎙️ [PTT] Mac 端已收到 /wake 請求，成功 Ducking 音樂並重置語音緩衝區（停用自動 VAD）")
+            return web.json_response({"ok": True}, headers=_CORS)
+        return web.json_response({"error": "method_not_found"}, status=500, headers=_CORS)
+
+    async def handle_flush(request):
+        
+        # 🎙️ [PTT Optimization] 解除 mixer PTT 狀態，音樂將自動淡入恢復播放
+        if getattr(vc, "_mixer", None) is not None:
+            vc._mixer._ptt_active = False
+        
+        bridge = getattr(vc, "_satellite_bridge", None)
+        if bridge and bridge.sink:
+            # 🎙️ [PTT Optimization] 恢復標準 VAD 靜默切句時間 (1.5s) 並立刻強制切句
+            bridge.sink._silence_cut_s = 1.5
+            bridge.sink._cut_segment()
+            logger.info("🎙️ [PTT] Mac 端已收到 /flush 請求，已強行斷句進行 STT（恢復 VAD）")
+            return web.json_response({"ok": True}, headers=_CORS)
+        return web.json_response({"error": "no_active_bridge"}, status=400, headers=_CORS)
+
+    async def handle_audio(request):
+        """POST /audio — 純軟體 satellite：瀏覽器收音的 WAV → 引擎 pipeline。
+
+        body＝原始 WAV bytes。餵 process_audio_slice（user_id=satellite），STT / 回覆非同
+        步；回覆音訊走 GET /reply。回 {ok}；ok=False＝空 / 非法 WAV。
+        """
+        # eng review 架構#2：funnel 公開後 per-token 限速，擋 token 外洩→付費灌爆。
+        if audio_rate_limiter is not None:
+            key = (request.headers.get("X-Marvin-Token") or request.query.get("t")
+                   or request.remote or "anon")
+            if not audio_rate_limiter.allow(key):
+                return web.json_response({"error": "rate_limited"}, status=429, headers=_CORS)
+        spk = resolve_device_speaker(request.query.get("speaker"), device_speakers, default_speaker)
+        if spk is None:
+            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /audio：speaker={request.query.get('speaker')!r}")
+            return web.json_response({"error": "unknown_speaker"}, status=400, headers=_CORS)
+        wav_bytes = await request.read()
+        if not wav_bytes:
+            return web.json_response({"error": "empty"}, status=400, headers=_CORS)
+        ok = await inject_audio(vc, wav_bytes, speaker=spk)
+        return web.json_response({"ok": ok}, headers=_CORS)
+
+    async def handle_reply(request):
+        """GET /reply?since=N — 純軟體 satellite：回馬文最新一段 TTS 的 WAV。
+
+        seq 遞增；瀏覽器帶上次 since，新段（seq>since）回 200+WAV，否則 204。
+        無 reply_source（未接輸出 tee）→ 一律 204。
+        """
+        if reply_source is None:
+            return web.Response(status=204, headers=_CORS)
+        try:
+            since = int(request.query.get("since", "0"))
+        except ValueError:
+            since = 0
+        seq, wav = reply_source.latest_wav()
+        if seq <= since or not wav:
+            return web.Response(status=204, headers=_CORS)
+        headers = {**_CORS, "X-Reply-Seq": str(seq)}
+        return web.Response(body=wav, content_type="audio/wav", headers=headers)
+
+    async def handle_satellite(request):
+        """GET /satellite — Mac 自服務的純軟體 satellite 網頁（Pi 不參與）。"""
+        return web.Response(
+            text=SATELLITE_HTML.replace("__TOKEN__", token or ""),
+            content_type="text/html", headers=_CORS)
+
+    async def handle_hud(request):
+        """GET /hud — Marvin HUD v12 寬屏顯示頁（Mac 自服務，比照 /satellite）。
+
+        ?kiosk=1 拿掉簡報用外殼（品牌標題/裝置邊框/說明文字），screen 滿版貼齊實體螢幕；
+        不帶則是瀏覽器預覽模式（保留外殼方便截圖/討論）。
+        """
+        kiosk = (request.query.get("kiosk") or "").strip().lower() in ("1", "true", "yes")
+        body_class = "kiosk" if kiosk else ""
+        perf_enabled = os.getenv("MARVIN_PERFORMANCE_SCRIPT", "1").strip().lower() in ("1", "true", "yes", "on")
+        perf_theme = os.getenv("MARVIN_PERFORMANCE_THEME", "matrix").strip() if perf_enabled else ""
+        html = (HUD_HTML.replace("__TOKEN__", token or "").replace("__BODY_CLASS__", body_class)
+                .replace("__PERF_JS__", _PERF_JS).replace("__PERF_THEME__", perf_theme))
+        return web.Response(text=html, content_type="text/html", headers=_CORS)
+
+    async def handle_audio_stream(request):
+        """GET /audio_stream — 車載 puck 連續收音：chunked 即時轉送 mixer PCM（MP3編碼）。
+
+        跟 /reply 不同：不做靜音切段緩衝整段回，而是 frame 一到就吐給連線中的 client，
+        讓 ESP32 能像收音機一樣連續播放整份歌單，不受單段緩衝上限限制（見 StreamSpeakerOutput）。
+        送出前即時轉成 MP3（Mp3StreamEncoder）——原始 stereo 48k PCM 需要 187.5KB/s，
+        Funnel+熱點實測只有 ~60KB/s throughput，128kbps MP3 只需 ~16KB/s（見
+        project_car_puck_funnel_tls_and_fallback）。無 stream_source（車載模式未接串流
+        輸出）→ 404。
+        """
+        if stream_source is None:
+            return web.Response(status=404, headers=_CORS)
+        resp = web.StreamResponse(status=200, headers={
+            **_CORS, "Content-Type": "audio/mpeg",
+            "X-Audio-Codec": "mp3",
+            "X-Audio-Rate": str(stream_source.rate),
+            "X-Audio-Channels": str(stream_source.channels),
+            "X-Audio-Bits": str(stream_source.bits),
+        })
+        await resp.prepare(request)
+        q = stream_source.subscribe()
+        encoder = Mp3StreamEncoder(
+            rate=stream_source.rate, channels=stream_source.channels,
+            bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
+        try:
+            # SilenceFillQueue：satellite 的 mixer 本來就一直有幀（跟單一 mixer 第1刀的
+            # Discord mixer 不同，那裡才是 on_demand 真正需要補靜音的理由），包了也無害，
+            # 跟 marvin_voice_core.discord_audio_stream_server.handle_audio_stream 走同一份邏輯。
+            async for chunk in iter_batched_encoded_frames(
+                    SilenceFillQueue(q), encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
+                await resp.write(chunk)
+        except (ConnectionError, asyncio.CancelledError):
+            # ConnectionError 涵蓋 BrokenPipeError/ConnectionResetError，也涵蓋 aiohttp
+            # base_protocol._drain_helper 包裝後直接丟的通用 ConnectionError("Connection
+            # lost")（2026-07-25 車puck實測：底層 BrokenPipeError 被包成這個，narrow except
+            # 接不住，一輪輪重連照樣噴 traceback）。
+            pass
+        finally:
+            stream_source.unsubscribe(q)
+        return resp
+
+    async def handle_car_commands(request):
+        """GET /car_commands?since=<seq> — ESP32 edge端混音輪詢指令（pull model）。
+
+        Pi mk2 是 Mac 主動 POST 到 Pi（push，Pi 在 LAN 內可被連進來）；ESP32 car puck
+        永遠是自己撥出連線，Mac 沒辦法主動推指令，只能讓 ESP32 用既有輪詢節奏來拿
+        （見 puck_command_queue.py 開頭說明）。無 puck_command_queue（功能未開）→ 404。
+        """
+        if puck_command_queue is None:
+            return web.Response(status=404, headers=_CORS)
+        try:
+            since = int(request.query.get("since", "0"))
+        except ValueError:
+            since = 0
+        seq, pending = puck_command_queue.since(since)
+        return web.json_response({"seq": seq, "commands": pending}, headers=_CORS)
+
+    async def handle_car_control(request):
+        """GET /car_control?cmd=play&url=<url> 或 ?cmd=stop — 人手動下指令給 ESP32 car puck。
+
+        跟 /car_commands 的關係：這裡只負責「寫進佇列」，ESP32 下次輪詢 /car_commands
+        才會真的撿到、執行——手動指令跟 music_cog.py 的 DJ 自動化共用同一份佇列，寫進去
+        後兩邊都看得到、順序也照寫入先後（見 puck_command_queue.py）。無
+        puck_command_queue（功能未開）→ 404。
+
+        ⚠️ 2026-08-13 起 MARVIN_CAR_HARDWARE=esp32_edge_mix 預設關閉（STEP10 韌體收到
+        crossfade/play 會跟真正播放用的 audioNetworkTask 搶 LWIP_LOCK，見 .env 註解），
+        這條路目前對 deck A（真正在響的那條）沒有效果，deck A 固定吃 /audio_stream。
+        真正能控制車上播放的是 /say 文字指令（跟 handle_car_now 同一份 MusicCog）。這個
+        端點留著給以後 STEP11 正式 deck 架構重新開啟時用。"""
+        if puck_command_queue is None:
+            return web.Response(status=404, headers=_CORS)
+        cmd = (request.query.get("cmd") or "").strip()
+        if cmd == "play":
+            url = (request.query.get("url") or "").strip()
+            if not url:
+                return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
+            seq = puck_command_queue.play(url)
+        elif cmd == "stop":
+            seq = puck_command_queue.stop()
+        else:
+            return web.json_response({"error": "bad_cmd"}, status=400, headers=_CORS)
+        return web.json_response({"ok": True, "cmd": cmd, "seq": seq}, headers=_CORS)
+
+    async def handle_car_now(request):
+        """GET /car_now — 車 puck 實際在播的歌（:8766 面板黑膠/控制項用）。
+
+        跟 /now 的差異：/now 故意只讀 Discord 的跨進程橋接檔，車模式主動在場時
+        本地 MusicCog 不會去寫那份檔（見 music_cog.py::_publish_now_playing_state
+        docstring，避免蓋掉家用 HUD）。車上真正在放什麼，得直接讀 satellite 這個
+        進程自己的本地 MusicCog 即時狀態——STEP10 韌體 deck A 固定吃 /audio_stream，
+        而 /audio_stream 就是這個本地 MusicCog 餵給中央 mixer 的內容。
+        沒有 MusicCog／沒歌在播 → playing:false。"""
+        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
+        info = getattr(music_cog, "_current_stream_info", None) if music_cog else None
+        if not info:
+            return web.json_response({"playing": False}, headers=_CORS)
+        return web.json_response({
+            "playing": True,
+            "title": info.get("title", ""),
+            "by": info.get("requested_by", ""),
+            "artist": info.get("artist") or info.get("uploader", "") or "",
+            "album": info.get("album", "") or "",
+            "cover": info.get("thumbnail", "") or "",
+            "palette": info.get("palette", []) or [],
+            "duration": info.get("duration"),
+            "song_start_time": getattr(music_cog, "_current_stream_start_time", None),
+        }, headers=_CORS)
+
+    # _stream_ffmpeg_input_as_mp3 2026-08-18 起是 module-level 函式（見檔案上方），
+    # 跟 handle_puck_voice 共用，這裡不再自己定義一份。
+
+    async def handle_puck_voice(request):
+        """GET /puck_voice?clip_id=<id> — ESP32 edge端混音的 DJ 口白/SFX 原始音源。
+
+        跟 /puck_deck 的差異：來源不是 yt-dlp URL，是本機已經生成好的 TTS/SFX 檔案
+        （見 cogs/music_cog.py::_fire_puck_speak/_fire_puck_sfx）。不直接把檔案系統
+        路徑暴露在 /car_commands 回應裡（那條走 Funnel 公開）——clip_id 是短效索引，
+        見 marvin_voice_core/puck_command_queue.py::register_voice_clip。
+        """
+        if puck_command_queue is None:
+            return web.Response(status=404, headers=_CORS)
+        from marvin_voice_core.puck_command_queue import resolve_voice_clip
+        clip_id = (request.query.get("clip_id") or "").strip()
+        path = resolve_voice_clip(clip_id) if clip_id else None
+        if not path or not os.path.exists(path):
+            return web.json_response({"error": "clip_not_found"}, status=404, headers=_CORS)
+        return await _stream_ffmpeg_input_as_mp3(request, ["-i", path])
+
+    # handle_puck_deck 2026-08-18 起由 module-level _make_puck_deck_handler() 產生
+    # （見檔案上方）——car puck mk2(pi_bt) 也走這裡（跟 ESP32 共用），這支
+    # satellite 進程是兩種車puck硬體共同的音源+決策來源（見該函式 docstring）。
+    handle_puck_deck = _make_puck_deck_handler(vc, puck_command_queue)
+
+    async def handle_car(request):
+        """POST /car {"state": "present"|"absent", "lat"?, "lon"?} — ESP32 puck 車載觸發。
+
+        present＝上車/heartbeat（到達觸發讀空氣開場一次、後續續期）；
+        absent＝主動離開停播。熄火斷電靠 CarPresence 的 TTL 收尾（present 不 sticky）。
+        車載模式未接（car_presence=None）→ 400 car_mode_off。
+        lat/lon 為韌體端 15 分鐘節流後才附帶的 GPS 讀數；沒帶就不動 location_state
+        （其餘心跳沒座標，不該把上次存的座標覆蓋成空）。
+        """
+        if car_presence is None:
+            return web.json_response({"error": "car_mode_off"}, status=400, headers=_CORS)
+        if "application/json" in request.headers.get("Content-Type", ""):
+            body = await request.json()
+            state = (body.get("state") or "").strip()
+            lat, lon = body.get("lat"), body.get("lon")
+            raw_speaker = body.get("speaker")
+        else:
+            state = (request.query.get("state") or "").strip()
+            lat, lon = None, None
+            raw_speaker = request.query.get("speaker")
+        if state not in ("present", "absent"):
+            return web.json_response({"error": "bad_state"}, status=400, headers=_CORS)
+        spk = resolve_device_speaker(raw_speaker, device_speakers, default_speaker)
+        if spk is None:
+            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /car：speaker={raw_speaker!r}")
+            return web.json_response({"error": "unknown_speaker"}, status=400, headers=_CORS)
+        if state == "present":
+            await car_presence.present(spk)
+        else:
+            await car_presence.absent(spk)
+        if lat is not None and lon is not None:
+            save_location_state(lat=float(lat), lon=float(lon), ts=time.time(), path=_gps_path)
+        return web.json_response(
+            {"ok": True, "state": state, "present": car_presence.is_present,
+             "occupants": car_presence.occupants}, headers=_CORS)
+
+    async def handle_preflight(request):
+        return web.Response(status=204, headers=_CORS)
+
+    @web.middleware
+    async def _token_gate(request, handler):
+        # eng review 架構#1：Funnel 公開整台 server → 統一 token gate 全端點。
+        # token=None＝Tailscale 私網信任、不驗證；OPTIONS preflight 帶不了自訂 auth 故放行。
+        # token 可走 X-Marvin-Token header 或 ?t=（控制台網頁跨網域呼叫方便）。
+        if token and request.method != "OPTIONS":
+            tok = request.headers.get("X-Marvin-Token") or request.query.get("t")
+            if tok != token:
+                return web.json_response({"error": "unauthorized"}, status=401, headers=_CORS)
+        return await handler(request)
+
+    app = web.Application(client_max_size=32 * 1024 * 1024,  # 容納整句 PTT 音訊
+                          middlewares=[_token_gate])
+    app.router.add_post("/say", handle_say)
+    app.router.add_options("/say", handle_preflight)
+    app.router.add_get("/play", handle_play)
+    app.router.add_get("/now", handle_now)
+    app.router.add_get("/claude_status", handle_claude_status)
+    app.router.add_post("/claude_hook", handle_claude_hook)
+    app.router.add_get("/gmail_calendar_status", handle_gmail_calendar_status)
+    app.router.add_get("/marvin_comment", handle_marvin_comment)
+    app.router.add_post("/wake", handle_wake)
+    app.router.add_options("/wake", handle_preflight)
+    app.router.add_post("/flush", handle_flush)
+    app.router.add_options("/flush", handle_preflight)
+    app.router.add_post("/audio", handle_audio)
+    app.router.add_options("/audio", handle_preflight)
+    app.router.add_get("/reply", handle_reply)
+    app.router.add_get("/audio_stream", handle_audio_stream)
+    app.router.add_get("/car_commands", handle_car_commands)
+    app.router.add_get("/car_control", handle_car_control)
+    app.router.add_get("/car_now", handle_car_now)
+    app.router.add_get("/puck_deck", handle_puck_deck)
+    app.router.add_get("/puck_voice", handle_puck_voice)
+    app.router.add_get("/satellite", handle_satellite)
+    app.router.add_get("/hud", handle_hud)
+    app.router.add_post("/car", handle_car)
+    app.router.add_options("/car", handle_preflight)
+    return app
+
+
+async def _puck_watchdog_loop(
+    car_presence, puck_command_queue, *,
+    interval_s: float = 5.0,
+    dm_fn=None,
+    sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    should_stop: Callable[[], bool] | None = None,
+    now_fn: Callable[[], float] = time.time,
+):
+    """N 秒一輪偵測 car puck 是否卡住/斷線，只在車主還在車上時才警報（見 puck_watchdog.py
+    的 poll/deck stall 判斷邏輯——這裡只負責串：讀狀態、決定要不要 DM、狀態轉換去重）。
+
+    去重用一個記憶體內布林值就夠：這是長駐 in-process 迴圈，不像 pipeline_heartbeat_probe.py
+    那種每 30 分鐘各自獨立啟動的 cron，不需要跨進程 persist 的去重狀態機——同一段連續
+    stalled episode 只 DM 一次，恢復時再 DM 一次即可。
+
+    dm_fn 預設用 puck_watchdog.dm_owner_sync（同步、跑在 asyncio.to_thread 裡避免卡住
+    event loop）；sleep_fn/should_stop/now_fn 比照 car_mode.run_car_ttl_loop 同款注入
+    測試點，好測、零真的 sleep。"""
+    from puck_watchdog import STALL_REASON_TEXT, check_puck_stall
+    from puck_watchdog import dm_owner_sync as _default_dm_fn
+
+    dm_fn = dm_fn or _default_dm_fn
+    was_stalled = False
+    was_present = False
+    presence_since = 0.0   # 上車那一刻的時間戳，當 puck 還沒打過 /car_commands 時當基準用
+    while should_stop is None or not should_stop():
+        try:
+            now = now_fn()
+            is_present = car_presence.is_present
+            if is_present and not was_present:
+                # 剛上車，puck 可能還在連 WiFi 的路上——用「上車時間」當輪詢基準，
+                # 讓 poll_stall_threshold 從這一刻起算，別在 puck 連上前那零點幾秒
+                # 就因為 last_polled_ts 還是 0 而立刻誤報。
+                presence_since = now
+            was_present = is_present
+            last_polled = puck_command_queue.last_polled_ts or presence_since
+            status = check_puck_stall(
+                is_present=is_present, last_polled_ts=last_polled,
+                stall_seconds=puck_command_queue.stall_seconds(now=now), now=now)
+            if status.stalled and not was_stalled:
+                text = f"🚨 [CarPuck] {STALL_REASON_TEXT.get(status.reason, '沒反應')}"
+                logger.warning(text)
+                await asyncio.to_thread(dm_fn, text)
+            elif was_stalled and not status.stalled and is_present:
+                # ⚠️ 2026-08-13 實機踩到假恢復：is_present 一旦變 False，check_puck_stall
+                # 一律回 stalled=False（車主不在車上不用管），如果不額外檢查 is_present，
+                # 這個 elif 會把「presence 剛好在這拍翻成離開」誤判成「puck 真的恢復回應
+                # 了」，兩者其實毫無關係——departure 不代表 puck 連線問題解決了。只有
+                # 車主還在場、且這拍真的不再 stalled，才算數。presence 翻成 False 時
+                # 靜默重置 was_stalled，不發任何訊息（沒有恢復可言，只是不用再管了）。
+                text = "✅ [CarPuck] puck 恢復回應了"
+                logger.info(text)
+                await asyncio.to_thread(dm_fn, text)
+            was_stalled = status.stalled
+        except Exception:  # noqa: BLE001 — 一拍失敗不弄垮迴圈
+            logger.exception("[PuckWatchdog] 檢查失敗")
+        await sleep_fn(interval_s)
+
+
+def resolve_car_owner_pool(vc, owner: str, now: float | None = None) -> list:
+    """車載＝機主一人的候選池（復用既有 build_member_pools 純函式，見 CodeQ#4）。
+
+    音樂記憶掛在 vc.bot.music_memory（非 MusicCog 物件本身），別再誤抓 cog 屬性。
+    """
+    from music_recommender import build_member_pools
+
+    mm = getattr(vc.bot, "music_memory", None)
+    if mm is None:
+        return []
+    pools = build_member_pools(members=[owner], songs=mm.all_songs(),
+                               exclude_titles=[], now=now if now is not None else time.time())
+    return pools.get(owner, [])
+
+
+def parse_device_speakers(raw: str, default_speaker: str) -> dict[str, str]:
+    """MARVIN_CAR_SPEAKERS（逗號分隔）→ {casefold 後的名字: 正式名字}。default_speaker 一定包含在內。空白項略過、前後空白去掉。"""
+    out: dict[str, str] = {}
+    for item in [default_speaker, *raw.split(",")]:
+        name = item.strip()
+        if name:
+            out.setdefault(name.casefold(), name)
+    return out
+
+
+def resolve_device_speaker(raw: str | None, allowed: dict[str, str] | None,
+                           default_speaker: str) -> str | None:
+    """裝置送來的 speaker → 正式名字。
+    allowed=None → 一律回 default_speaker（相容舊行為，忽略裝置送的值）。
+    raw 是 None 或去掉空白後為空 → default_speaker（相容沒帶身分的舊韌體 / Pi）。
+    raw.strip().casefold() 在 allowed 裡 → 回對應的正式名字。
+    其他（不在白名單）→ None。"""
+    if allowed is None or raw is None:
+        return default_speaker
+    key = str(raw).strip().casefold()
+    if not key:
+        return default_speaker
+    return allowed.get(key)
+
+
+def decide_car_arrive(*, connected: bool, music_active: bool) -> str:
+    """單一 mixer 第2刀：car puck 上車（/car present）時，Discord bot 目前狀態決定怎麼開場。
+
+    not connected → join_and_open（先進頻道再開場）；connected 且已在放歌 →
+    skip_open（車上直接收聽現正在播的，別蓋掉）；connected 但沒在放歌 → open
+    （已在頻道，直接開場不用重新進）。"""
+    if not connected:
+        return "join_and_open"
+    if music_active:
+        return "skip_open"
+    return "open"
+
+
+def decide_car_depart(*, connected: bool, human_count: int) -> str:
+    """單一 mixer 第2刀：car puck 下車（/car absent）時要不要撤離。
+
+    已連線且頻道裡真人數為 0 → dismiss；其餘（未連線，或頻道還有其他真人在聽）→ keep。"""
+    if connected and human_count == 0:
+        return "dismiss"
+    return "keep"
+
+
+async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
+    """車載上車開場的選歌+播放邏輯，satellite/Discord 兩版 _play_open 共用（見
+    start_text_http_server 裡的呼叫端）。
+
+    復用 /play 那招 inject_text「放一首X」讓 pipeline 解析+播+DJ；絕不即時付費 LLM。
+
+    ⚠️ 2026-08-11 實機踩到：這裡原本無條件用 anchor_title 裸字串搜尋，跟
+    music_cog.py 的一般 autopilot enqueue（_auto_recommend 系列）邏輯不一致——
+    那邊會優先吃 Candidate.direct_url（T2 discovery 自帶 YouTube URL，見
+    music_recommender.py 開頭註解「自帶 YouTube URL → enqueue 時直解不搜尋」），
+    沒有才退回文字搜尋，且用 artist+title 組合（不是裸 title）換更準的搜尋結果。
+    car mode 開場沒吃 direct_url、也沒帶 artist，實機驗證：候選池挑到一首
+    anchor_title 是雜亂爬蟲標題的歌（「清纯大眼旗袍美女,优美古镇唯美街拍」），
+    yt-dlp 用這串裸標題搜不到東西，resolve 靜默失敗、整趟開場沒聲音。
+    改成比照 _auto_recommend 的優先序：direct_url > artist+title > title。
+    """
+    try:
+        if car_open.song:
+            # 車載開場繞過 _auto_recommend 的 enqueue 迴圈、直接走手動點歌路徑，
+            # 沒吃到那邊本來就有的 is_non_song_video 品質閘——候選池 build_member_pools
+            # 對音樂/非音樂內容零過濾，久沒播的有聲書/podcast 一樣有資格被選中當開場曲。
+            # 這裡補一次同款檢查（不重造邏輯，直接 reuse track_quality，邏輯抽在
+            # car_open.resolve_car_open_query 方便單元測試——見該函式 docstring）。
+            from car_open import resolve_car_open_query
+
+            mc = vc.bot.cogs.get("MusicCog")
+
+            async def _resolve(q):
+                if mc is None:
+                    raise RuntimeError("music_cog_unavailable")
+                # 車上 4G 訊號差時 yt-dlp 可能整個掛住，10s 逾時避免卡住整趟開場。
+                return await asyncio.wait_for(mc._resolve_yt_query(q), timeout=10)
+
+            query = await resolve_car_open_query(
+                car_open.song, pool_provider=pool_provider, resolve_fn=_resolve)
+            if query:
+                await inject_text(vc, speaker, f"放一首{query}")
+            else:
+                logger.warning("🚗 [CarMode] 開場候選池連試多首都沒過品質閘，本次開場靜音")
+        logger.info("🚗 [CarMode] 上車開場（%s）：%s → 放《%s》", speaker,
+                    car_open.line, car_open.song.anchor_title if car_open.song else "—")
+    except Exception:  # noqa: BLE001
+        logger.exception("[CarMode] play_open 失敗")
+
+
+async def start_text_http_server(vc, reply_source=None, stream_source=None, *, discord_voice=None):
+    """起 Siri 文字 HTTP 伺服器（0.0.0.0，走 Tailscale）。回傳 runner（好收）。
+
+    埠＝MARVIN_TEXT_PORT（預設 8790）；token＝MARVIN_TEXT_TOKEN（空＝不驗證）。
+    reply_source＝純軟體 satellite 的 BrowserSpeakerOutput（GET /reply）；Pi 模式傳 None。
+    stream_source＝車載模式的 StreamSpeakerOutput（GET /audio_stream）；非車載模式傳 None。
+    discord_voice＝None（預設，satellite 進程用）＝現有行為一行不變。單一 mixer 第2刀：
+    Discord 進程呼叫本函式時傳自己的 VoiceController cog（`vc` 本身），車載 /car
+    present/absent 的開場/停播語意改走 Discord 版（_play_open 背景 task 化避免卡住
+    HTTP 回應；_stop_playback 改問頻道內還有沒有真人，見下方 if discord_voice 分支）。
+    """
+    from aiohttp import web
+
+    port = int(os.getenv("MARVIN_TEXT_PORT", "8790"))
+    token = os.getenv("MARVIN_TEXT_TOKEN", "").strip() or None
+    default_speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
+    # 車載裝置身分白名單（MARVIN_CAR_SPEAKERS）：裝置自己帶 speaker，這裡驗證成正式名字。
+    device_speakers = parse_device_speakers(os.getenv("MARVIN_CAR_SPEAKERS", ""), default_speaker)
+
+    # ── 車載模式（ESP32 puck）：MARVIN_CAR_MODE=1 才接；預設 off＝零行為改變 ──
+    car_presence = None
+    audio_rate_limiter = None
+    if os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on"):
+        from car_mode import build_car_presence, run_car_ttl_loop
+        from rate_limiter import RateLimiter
+
+        def _pool_provider(speaker):
+            # 失敗→空池降級，不讓車載開場因例外整個炸掉。
+            try:
+                return resolve_car_owner_pool(vc, speaker)
+            except Exception:  # noqa: BLE001
+                logger.exception("[CarMode] pool_provider 失敗，回空池")
+                return []
+
+        if discord_voice is not None:
+            # 單一 mixer 第2刀：Discord 版開場/停播。
+
+            async def _discord_car_arrive(car_open, speaker):
+                # CarPresence.present() 在 /car handler 裡是 inline await on_arrive——
+                # auto_rejoin_on_boot 最久可能卡 60s connect timeout，若在這裡 inline
+                # await 會讓 HTTP 回應跟著卡住。只做一件事：丟背景 task 立刻 return。
+                try:
+                    connected = bool(discord_voice.bot.voice_clients)
+                    mc = discord_voice.bot.cogs.get("MusicCog")
+                    music_active = bool(mc and (mc.stream_mode or mc.radio_mode))
+                    action = decide_car_arrive(connected=connected, music_active=music_active)
+                    if action == "skip_open":
+                        logger.info("🚗 [CarMode/Discord] 已在頻道且正在放歌，車上直接收聽，不放開場曲")
+                        return
+                    if action == "join_and_open":
+                        await discord_voice.auto_rejoin_on_boot(car_join=True, resume_music=False)
+                        if not discord_voice.bot.voice_clients:
+                            logger.warning("🚗 [CarMode/Discord] 進頻道失敗，略過開場（sentinel 60s 會再試）")
+                            return
+                    await _execute_car_open(discord_voice, car_open, speaker, lambda: _pool_provider(speaker))
+                except Exception:  # noqa: BLE001
+                    logger.exception("[CarMode/Discord] play_open 失敗")
+
+            async def _play_open(car_open, speaker):
+                asyncio.create_task(_discord_car_arrive(car_open, speaker))
+
+            async def _stop_playback():
+                try:
+                    action = decide_car_depart(
+                        connected=bool(discord_voice.bot.voice_clients),
+                        human_count=len(discord_voice.get_online_members()))
+                    if action == "dismiss":
+                        await discord_voice.handle_dismiss()
+                        logger.info("🚗 [CarMode/Discord] 下車且頻道無真人，撤離")
+                    else:
+                        logger.info("🚗 [CarMode/Discord] 下車但頻道還有人，音樂繼續")
+                except Exception:  # noqa: BLE001
+                    logger.exception("[CarMode/Discord] stop_playback 失敗")
+        else:
+            async def _play_open(car_open, speaker):
+                await _execute_car_open(vc, car_open, speaker, lambda: _pool_provider(speaker))
+
+            async def _stop_playback():
+                try:
+                    mc = vc.bot.cogs.get("MusicCog")
+                    if mc and hasattr(mc, "stop_stream"):
+                        await mc.stop_stream(reason="下車（puck absent）")
+                    logger.info("🚗 [CarMode] 下車停播")
+                except Exception:  # noqa: BLE001
+                    logger.exception("[CarMode] stop_playback 失敗")
+
+        car_presence = build_car_presence(
+            play_open=_play_open, stop_playback=_stop_playback, pool_provider=_pool_provider)
+        vc.bot.car_presence = car_presence   # 給 MusicCog 讀在場者（autopilot 續推用）
+        # funnel 公開後 /audio per-token 限速：每 token 每分鐘 30 次（架構#2 付費鐵則）。
+        audio_rate_limiter = RateLimiter(max_per_window=30, window_s=60.0)
+        logger.info("🚗 [CarMode] 車載模式啟用（/car present/absent + TTL 收尾 + /audio 限速）")
+
+    # ── ESP32 edge端混音（見 marvin_voice_core/puck_command_queue.py）：
+    # MARVIN_CAR_HARDWARE=esp32_edge_mix 才接，跟 pi_bt（Pi mk2）走的 push model 互斥、
+    # 預設 off＝零行為改變。跟 music_cog.py 共用同一個 process-wide 單例（見該模組
+    # get_default_queue() 的說明），這裡不用額外傳遞物件。
+    puck_command_queue = None
+    if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() == "esp32_edge_mix":
+        from marvin_voice_core.puck_command_queue import get_default_queue
+        puck_command_queue = get_default_queue()
+        logger.info("🎛️ [PuckEdgeMix] ESP32 edge端混音啟用（/car_commands + /puck_deck）")
+
+    app = build_text_app(vc, token=token, default_speaker=default_speaker,
+                         reply_source=reply_source, car_presence=car_presence,
+                         audio_rate_limiter=audio_rate_limiter, stream_source=stream_source,
+                         puck_command_queue=puck_command_queue,
+                         device_speakers=device_speakers)
+    logger.info(f"🚗 [CarMode] 裝置身分白名單：{', '.join(device_speakers.values())}")
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    if car_presence is not None:
+        asyncio.create_task(run_car_ttl_loop(car_presence))
+
+        async def _sync_car_presence_state():
+            # 定期寫（不只在 arrive/depart 那瞬間），讓 updated_at 持續新鮮；main_discord.py
+            # 那邊的 music_cog 靠這份新鮮度判斷「car puck 真的還在用嗎」，決定現正播放要不要
+            # 照樣寫回 Discord 給家用 HUD（見 car_presence_state.py 開頭說明）。
+            from car_presence_state import save_car_presence_state
+            while True:
+                try:
+                    save_car_presence_state(present=car_presence.is_present, updated_at=time.time())
+                except Exception:  # noqa: BLE001
+                    pass
+                await asyncio.sleep(10.0)
+
+        asyncio.create_task(_sync_car_presence_state())
+    if car_presence is not None and puck_command_queue is not None:
+        # ESP32 edge端混音才有 poll/deck 這兩個訊號可觀察（pi_bt 是 push model，Mac
+        # 主動連 Pi，沒有這種「puck 該來輪詢卻沒來」的判斷方式）。見 puck_watchdog.py。
+        asyncio.create_task(_puck_watchdog_loop(car_presence, puck_command_queue))
+        logger.info("🐕 [PuckWatchdog] car puck 沒反應偵測啟動（poll/deck stall，5s 一輪）")
+    if os.getenv("MARVIN_CLAUDE_STATUS_SCAN", "1").strip().lower() in ("1", "true", "yes", "on"):
+        from scripts.scan_claude_sessions import run_claude_sessions_scan_loop
+        asyncio.create_task(run_claude_sessions_scan_loop())
+        logger.info("🤖 [ClaudeStatus] 背景掃描迴圈啟動（~/.claude/sessions，每 20s）")
+    _auth = "有 token 保護" if token else "⚠️ 無 token（僅靠 Tailscale 私網）"
+    logger.info(
+        f"📝 [TextInput] Siri HTTP 伺服器啟動：POST :{port}/say（speaker={default_speaker}，{_auth}）")
+    return runner

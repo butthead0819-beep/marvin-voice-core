@@ -125,7 +125,7 @@ class _FakeCarPresence:
 @pytest.mark.asyncio
 async def test_watchdog_loop_dms_once_on_stall_and_once_on_recovery():
     from marvin_voice_core.puck_command_queue import PuckCommandQueue
-    from main_satellite import _puck_watchdog_loop
+    from car_http_app import _puck_watchdog_loop
 
     q = PuckCommandQueue()
     presence = _FakeCarPresence(is_present=True)
@@ -165,7 +165,7 @@ async def test_watchdog_loop_dms_once_on_stall_and_once_on_recovery():
 @pytest.mark.asyncio
 async def test_watchdog_loop_silent_when_never_stalled():
     from marvin_voice_core.puck_command_queue import PuckCommandQueue
-    from main_satellite import _puck_watchdog_loop
+    from car_http_app import _puck_watchdog_loop
 
     q = PuckCommandQueue()
     q.since(0)   # 一直有在正常輪詢
@@ -189,7 +189,7 @@ async def test_watchdog_loop_silent_when_never_stalled():
 @pytest.mark.asyncio
 async def test_watchdog_loop_not_present_stays_silent_even_if_stale():
     from marvin_voice_core.puck_command_queue import PuckCommandQueue
-    from main_satellite import _puck_watchdog_loop
+    from car_http_app import _puck_watchdog_loop
 
     q = PuckCommandQueue()   # 從沒輪詢過
     presence = _FakeCarPresence(is_present=False)   # 車主不在車上（熄火/沒配對）
@@ -213,7 +213,7 @@ async def test_watchdog_loop_not_present_stays_silent_even_if_stale():
 async def test_watchdog_loop_dm_failure_does_not_crash_loop():
     """DM 送失敗（網路問題/token壞掉）不該讓整個 watchdog 迴圈掛掉。"""
     from marvin_voice_core.puck_command_queue import PuckCommandQueue
-    from main_satellite import _puck_watchdog_loop
+    from car_http_app import _puck_watchdog_loop
 
     q = PuckCommandQueue()   # 從沒輪詢過 → 一直是 poll stall
     presence = _FakeCarPresence(is_present=True)
@@ -242,7 +242,7 @@ async def test_watchdog_loop_departure_does_not_fire_false_recovery():
     真的連回來。這裡驗證：departure 不該觸發恢復訊息，只有還在場、且真的不再 stalled
     才算數。"""
     from marvin_voice_core.puck_command_queue import PuckCommandQueue
-    from main_satellite import _puck_watchdog_loop
+    from car_http_app import _puck_watchdog_loop
 
     q = PuckCommandQueue()   # 從沒輪詢過 → poll stall
     presence = _FakeCarPresence(is_present=True)
@@ -277,7 +277,7 @@ async def test_watchdog_loop_real_recovery_while_still_present_fires_message():
     """對照組：真的還在場、且真的不再 stalled，恢復訊息要照樣發，前一個測試不能
     連帶把真恢復也悶掉。"""
     from marvin_voice_core.puck_command_queue import PuckCommandQueue
-    from main_satellite import _puck_watchdog_loop
+    from car_http_app import _puck_watchdog_loop
 
     q = PuckCommandQueue()
     presence = _FakeCarPresence(is_present=True)

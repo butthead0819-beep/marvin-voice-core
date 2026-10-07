@@ -30,7 +30,7 @@ def _make_vc():
 @pytest.mark.asyncio
 async def test_car_control_404_when_not_wired():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     app = build_text_app(_make_vc(), token="s3cret")   # 無 puck_command_queue
     async with TestClient(TestServer(app)) as client:
@@ -41,7 +41,7 @@ async def test_car_control_404_when_not_wired():
 @pytest.mark.asyncio
 async def test_car_control_play_enqueues_command():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     q = PuckCommandQueue()
     app = build_text_app(_make_vc(), token="s3cret", puck_command_queue=q)
@@ -60,7 +60,7 @@ async def test_car_control_play_enqueues_command():
 @pytest.mark.asyncio
 async def test_car_control_play_missing_url_400():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     q = PuckCommandQueue()
     app = build_text_app(_make_vc(), token="s3cret", puck_command_queue=q)
@@ -72,7 +72,7 @@ async def test_car_control_play_missing_url_400():
 @pytest.mark.asyncio
 async def test_car_control_stop_enqueues_command():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     q = PuckCommandQueue()
     app = build_text_app(_make_vc(), token="s3cret", puck_command_queue=q)
@@ -87,7 +87,7 @@ async def test_car_control_stop_enqueues_command():
 @pytest.mark.asyncio
 async def test_car_control_bad_cmd_400():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     q = PuckCommandQueue()
     app = build_text_app(_make_vc(), token="s3cret", puck_command_queue=q)
@@ -99,7 +99,7 @@ async def test_car_control_bad_cmd_400():
 @pytest.mark.asyncio
 async def test_car_control_token_gated():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     q = PuckCommandQueue()
     app = build_text_app(_make_vc(), token="s3cret", puck_command_queue=q)
@@ -123,7 +123,7 @@ def _make_vc_with_current_stream(info: dict | None, *, start_time=None):
 @pytest.mark.asyncio
 async def test_car_now_playing_false_when_no_music_cog():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     app = build_text_app(_make_vc(), token="s3cret")   # cogs.get 回 None
     async with TestClient(TestServer(app)) as client:
@@ -136,7 +136,7 @@ async def test_car_now_playing_false_when_no_music_cog():
 @pytest.mark.asyncio
 async def test_car_now_playing_false_when_nothing_streaming():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     app = build_text_app(_make_vc_with_current_stream(None), token="s3cret")
     async with TestClient(TestServer(app)) as client:
@@ -148,7 +148,7 @@ async def test_car_now_playing_false_when_nothing_streaming():
 @pytest.mark.asyncio
 async def test_car_now_reflects_local_music_cog_stream_info():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     info = {
         "title": "測試歌曲", "requested_by": "狗與露",
@@ -174,7 +174,7 @@ async def test_car_now_includes_artist_and_album():
     """2026-08-21 車機要求顯示演出者/專輯——artist 優先讀 info['artist']，沒有就退回
     info['uploader']（yt-dlp 常見欄位）；album 缺欄位回空字串，不是 None。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     info = {
         "title": "測試歌曲", "requested_by": "狗與露", "uploader": "某頻道",
@@ -191,7 +191,7 @@ async def test_car_now_includes_artist_and_album():
 @pytest.mark.asyncio
 async def test_car_now_artist_falls_back_to_uploader_album_defaults_empty():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     info = {"title": "測試歌曲", "requested_by": "狗與露", "uploader": "某頻道"}
     app = build_text_app(_make_vc_with_current_stream(info), token="s3cret")
@@ -205,7 +205,7 @@ async def test_car_now_artist_falls_back_to_uploader_album_defaults_empty():
 @pytest.mark.asyncio
 async def test_car_now_token_gated():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:

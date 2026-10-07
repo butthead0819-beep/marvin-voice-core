@@ -22,7 +22,7 @@ def _make_vc(mc=None):
 @pytest.mark.asyncio
 async def test_now_reads_bridge_file_when_local_cog_idle(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     path = str(tmp_path / "now_playing_state.json")
     save_now_playing_state(playing=True, title="夜曲", by="大肚",
                             cover="http://x/y.jpg", palette=["#111111"],
@@ -43,7 +43,7 @@ async def test_now_reads_bridge_file_when_local_cog_idle(tmp_path):
 async def test_now_bridge_includes_duration_start_time_and_comment(tmp_path):
     """HUD 黑膠展開（進度條/DJ 銳評）要靠這三個欄位，跨進程橋接檔路徑要帶到。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     path = str(tmp_path / "now_playing_state.json")
     save_now_playing_state(playing=True, title="夜曲", by="大肚", cover="http://x/y.jpg",
                             palette=["#111111"], queue=[], duration=245.0,
@@ -61,7 +61,7 @@ async def test_now_bridge_includes_duration_start_time_and_comment(tmp_path):
 async def test_now_ignores_local_cog_when_bridge_file_idle(tmp_path):
     """本地 MusicCog 在播（car puck／瀏覽器 satellite 在外）不該讓家用 HUD 顯示為在播。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     path = str(tmp_path / "now_playing_state.json")   # 橋接檔不存在＝家裡沒在播
     mc = MagicMock()
     mc.stream_mode = True
@@ -79,7 +79,7 @@ async def test_now_ignores_local_cog_when_bridge_file_idle(tmp_path):
 @pytest.mark.asyncio
 async def test_now_returns_false_when_neither_local_nor_bridge_playing(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     path = str(tmp_path / "now_playing_state.json")   # 不存在
     app = build_text_app(_make_vc(mc=None), token=None, now_playing_state_path=path)
     async with TestClient(TestServer(app)) as client:
@@ -91,7 +91,7 @@ async def test_now_returns_false_when_neither_local_nor_bridge_playing(tmp_path)
 async def test_now_prefers_bridge_file_over_local_cog(tmp_path):
     """car puck／瀏覽器 satellite 本地在播歌，但家裡橋接檔才是 HUD 該顯示的真相。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     path = str(tmp_path / "now_playing_state.json")
     save_now_playing_state(playing=True, title="家裡真的在播", by="Pi",
                             cover="", palette=[], path=path)

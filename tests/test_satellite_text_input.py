@@ -19,7 +19,7 @@ def _make_vc():
 # --- 共用注入函式 ---
 @pytest.mark.asyncio
 async def test_inject_text_calls_handle_stt_result_as_transcribed():
-    from main_satellite import inject_text
+    from car_http_app import inject_text
     vc = _make_vc()
     await inject_text(vc, "狗與露", "下一首")
     vc.handle_stt_result.assert_awaited_once()
@@ -39,7 +39,7 @@ async def test_inject_text_uses_wallclock_timestamp():
     下游 Stale Drop 是 time.time()-timestamp；傳單調時鐘會被誤判排隊上億秒而丟棄。
     """
     import time as _time
-    from main_satellite import inject_text
+    from car_http_app import inject_text
     vc = _make_vc()
     before = _time.time()
     await inject_text(vc, "狗與露", "下一首")
@@ -50,7 +50,7 @@ async def test_inject_text_uses_wallclock_timestamp():
 
 @pytest.mark.asyncio
 async def test_inject_text_skips_empty_and_whitespace():
-    from main_satellite import inject_text
+    from car_http_app import inject_text
     vc = _make_vc()
     await inject_text(vc, "狗與露", "   ")
     vc.handle_stt_result.assert_not_awaited()
@@ -60,7 +60,7 @@ async def test_inject_text_skips_empty_and_whitespace():
 @pytest.mark.asyncio
 async def test_http_play_prepends_放一首():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
@@ -73,7 +73,7 @@ async def test_http_play_prepends_放一首():
 @pytest.mark.asyncio
 async def test_http_play_no_double_prefix_when_already_放一首():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret")
     async with TestClient(TestServer(app)) as client:
@@ -85,7 +85,7 @@ async def test_http_play_no_double_prefix_when_already_放一首():
 async def test_http_play_normalizes_bare_放():
     """裸「放X」不夠強（記憶），統一補成「放一首X」。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret")
     async with TestClient(TestServer(app)) as client:
@@ -96,7 +96,7 @@ async def test_http_play_normalizes_bare_放():
 @pytest.mark.asyncio
 async def test_http_play_rejects_wrong_token():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret")
     async with TestClient(TestServer(app)) as client:
@@ -108,7 +108,7 @@ async def test_http_play_rejects_wrong_token():
 @pytest.mark.asyncio
 async def test_http_play_empty_q_returns_400():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret")
     async with TestClient(TestServer(app)) as client:
@@ -121,7 +121,7 @@ async def test_http_play_empty_q_returns_400():
 @pytest.mark.asyncio
 async def test_http_say_injects_text_and_returns_ok():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
@@ -140,7 +140,7 @@ async def test_http_say_injects_text_and_returns_ok():
 @pytest.mark.asyncio
 async def test_http_say_rejects_wrong_token():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
@@ -153,7 +153,7 @@ async def test_http_say_rejects_wrong_token():
 @pytest.mark.asyncio
 async def test_http_say_rejects_empty_text():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
@@ -167,7 +167,7 @@ async def test_http_say_rejects_empty_text():
 async def test_http_say_no_token_configured_allows_request():
     """token=None（Tailscale 私網）→ 不驗證，直接放行。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token=None, default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
@@ -180,7 +180,7 @@ async def test_http_say_no_token_configured_allows_request():
 async def test_http_now_reports_current_song_from_bridge_file(tmp_path):
     """HUD 只在家用，/now 要跟橋接檔（Pi satellite／main_discord.py 真正播放狀態）連動。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     from now_playing_state import save_now_playing_state
     vc = _make_vc()
     path = str(tmp_path / "now_playing_state.json")
@@ -202,7 +202,7 @@ async def test_http_now_reports_current_song_from_bridge_file(tmp_path):
 async def test_http_now_ignores_local_music_cog(tmp_path):
     """satellite 進程自己的 MusicCog（car puck／瀏覽器 satellite 在外播放）不該蓋掉家用 HUD。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     mc = MagicMock()
     mc.stream_mode = True
@@ -223,7 +223,7 @@ async def test_http_now_ignores_local_music_cog(tmp_path):
 @pytest.mark.asyncio
 async def test_http_now_reports_not_playing_when_idle(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     mc = MagicMock()
     mc.stream_mode = False
@@ -244,7 +244,7 @@ async def test_http_now_reports_not_playing_when_idle(tmp_path):
 async def test_http_say_token_via_query_param():
     """控制台網頁跨網域呼叫：token 走網址 ?t= 也要能過。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
@@ -257,7 +257,7 @@ async def test_http_say_token_via_query_param():
 @pytest.mark.asyncio
 async def test_http_say_options_preflight_returns_cors():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:
@@ -269,7 +269,7 @@ async def test_http_say_options_preflight_returns_cors():
 @pytest.mark.asyncio
 async def test_http_say_json_speaker_override():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc()
     app = build_text_app(vc, token=None, default_speaker="狗與露")
     async with TestClient(TestServer(app)) as client:

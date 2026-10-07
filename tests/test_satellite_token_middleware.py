@@ -24,7 +24,7 @@ def _make_vc():
 @pytest.mark.asyncio
 async def test_now_rejects_missing_token():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/now")           # 無 token
@@ -34,7 +34,7 @@ async def test_now_rejects_missing_token():
 @pytest.mark.asyncio
 async def test_now_accepts_valid_token():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/now?t=s3cret")
@@ -45,7 +45,7 @@ async def test_now_accepts_valid_token():
 @pytest.mark.asyncio
 async def test_satellite_page_rejects_missing_token():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/satellite")     # 無 token
@@ -55,7 +55,7 @@ async def test_satellite_page_rejects_missing_token():
 @pytest.mark.asyncio
 async def test_satellite_page_accepts_valid_token():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/satellite?t=s3cret")
@@ -66,7 +66,7 @@ async def test_satellite_page_accepts_valid_token():
 @pytest.mark.asyncio
 async def test_say_still_rejects_missing_token():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/say", data="哈囉")   # 無 token
@@ -76,7 +76,7 @@ async def test_say_still_rejects_missing_token():
 @pytest.mark.asyncio
 async def test_reply_still_rejects_missing_token():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/reply")               # 無 token
@@ -87,7 +87,7 @@ async def test_reply_still_rejects_missing_token():
 @pytest.mark.asyncio
 async def test_options_preflight_not_gated():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         resp = await client.options("/say")             # 無 token
@@ -98,7 +98,7 @@ async def test_options_preflight_not_gated():
 @pytest.mark.asyncio
 async def test_no_token_configured_allows_all():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token=None)
     async with TestClient(TestServer(app)) as client:
         assert (await client.get("/now")).status == 200

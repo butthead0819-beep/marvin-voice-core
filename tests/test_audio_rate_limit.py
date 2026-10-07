@@ -59,7 +59,7 @@ def _make_vc():
 async def test_audio_over_limit_returns_429():
     """超限的第 3 次（空 body 本會 400）應先被限速攔成 429。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     from rate_limiter import RateLimiter
     rl = RateLimiter(max_per_window=2, window_s=60.0)
     app = build_text_app(_make_vc(), token="s3cret", audio_rate_limiter=rl)
@@ -76,7 +76,7 @@ async def test_audio_over_limit_returns_429():
 async def test_audio_no_limiter_configured_never_429():
     """未接 limiter（None）→ 不限速，維持現狀。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")   # 無 audio_rate_limiter
     async with TestClient(TestServer(app)) as client:
         for _ in range(5):

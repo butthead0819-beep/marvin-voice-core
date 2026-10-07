@@ -20,7 +20,7 @@ def _make_vc():
 @pytest.mark.asyncio
 async def test_hud_serves_html_page():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/hud?t=s3cret")
@@ -35,7 +35,7 @@ async def test_hud_serves_html_page():
 @pytest.mark.asyncio
 async def test_hud_injects_token_into_page():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         html = await (await client.get("/hud?t=s3cret")).text()
@@ -46,7 +46,7 @@ async def test_hud_injects_token_into_page():
 @pytest.mark.asyncio
 async def test_hud_rejects_missing_token():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/hud")
@@ -56,7 +56,7 @@ async def test_hud_rejects_missing_token():
 @pytest.mark.asyncio
 async def test_hud_no_token_configured_allows_access():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token=None)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/hud")
@@ -67,7 +67,7 @@ async def test_hud_no_token_configured_allows_access():
 async def test_hud_default_keeps_presentation_chrome():
     """沒帶 ?kiosk=1 → 瀏覽器預覽模式，body 不掛 kiosk class，外殼照舊顯示。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token=None)
     async with TestClient(TestServer(app)) as client:
         html = await (await client.get("/hud")).text()
@@ -78,7 +78,7 @@ async def test_hud_default_keeps_presentation_chrome():
 async def test_hud_kiosk_param_strips_chrome_class():
     """?kiosk=1 → body 加 kiosk class，CSS 拿掉外殼、screen 滿版。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token=None)
     async with TestClient(TestServer(app)) as client:
         html = await (await client.get("/hud?kiosk=1")).text()
@@ -89,7 +89,7 @@ async def test_hud_kiosk_param_strips_chrome_class():
 async def test_hud_includes_queue_card_markup():
     """待播清單卡片：demo scene 帶 queue markup，前端輪詢 /now 時用真實 queue 覆蓋。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token=None)
     async with TestClient(TestServer(app)) as client:
         html = await (await client.get("/hud")).text()

@@ -1,7 +1,7 @@
 """車載模式開場候選池 wiring 測試（見 memory: main_satellite 誤抓 MusicCog.mm 而非 bot.music_memory）。"""
 from types import SimpleNamespace
 
-from main_satellite import resolve_car_owner_pool
+from car_http_app import resolve_car_owner_pool
 
 
 def _fake_music_memory(songs: dict):

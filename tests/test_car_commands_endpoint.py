@@ -28,7 +28,7 @@ def _make_vc():
 @pytest.mark.asyncio
 async def test_car_commands_404_when_not_wired():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     app = build_text_app(_make_vc(), token="s3cret")   # 無 puck_command_queue
     async with TestClient(TestServer(app)) as client:
@@ -39,7 +39,7 @@ async def test_car_commands_404_when_not_wired():
 @pytest.mark.asyncio
 async def test_car_commands_returns_pending_commands():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     q = PuckCommandQueue()
     q.play("https://youtu.be/a")
@@ -57,7 +57,7 @@ async def test_car_commands_returns_pending_commands():
 @pytest.mark.asyncio
 async def test_car_commands_since_current_seq_returns_empty():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     q = PuckCommandQueue()
     q.play("https://youtu.be/a")
@@ -73,7 +73,7 @@ async def test_car_commands_since_current_seq_returns_empty():
 @pytest.mark.asyncio
 async def test_car_commands_token_gated():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     q = PuckCommandQueue()
     app = build_text_app(_make_vc(), token="s3cret", puck_command_queue=q)

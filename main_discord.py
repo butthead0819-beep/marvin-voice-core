@@ -160,7 +160,7 @@ async def _start_discord_text_server(loop, vc):
         from marvin_voice_core.stream_speaker_output import StreamSpeakerOutput
         stream_out = StreamSpeakerOutput(loop)
         mixer.set_tap(stream_out)
-        from main_satellite import start_text_http_server
+        from car_http_app import start_text_http_server
         return await start_text_http_server(vc, stream_source=stream_out, discord_voice=vc)
     except Exception:
         logger.exception("[DiscordTextServer] 啟動失敗，bot 照常運作")
