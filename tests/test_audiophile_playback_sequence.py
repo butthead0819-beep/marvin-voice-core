@@ -104,8 +104,7 @@ async def _run_loop(cog, song, events, *, meta=None, on_sleep=None):
     cog.stream_queue = [song]
     cog.stream_mode = True
     cog._prefetch_cache[song["url"]] = _done_future(meta)
-    with patch("cogs.music_cog._get_puck_client", return_value=None), \
-         patch("asyncio.sleep", new=_fake_sleep(events, on_sleep)):
+    with patch("asyncio.sleep", new=_fake_sleep(events, on_sleep)):
         await cog._stream_loop()
         await _real_sleep(0)
 

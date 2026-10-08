@@ -327,8 +327,7 @@ async def test_maybe_play_dj_interjection_passes_text_through(tmp_path):
     audio_path.write_bytes(b"x")
     dj = {"text": "這首歌是狗與露點的", "audio_path": str(audio_path)}
 
-    with patch("os.path.exists", return_value=True), \
-         patch("cogs.music_cog._get_puck_client", return_value=None):
+    with patch("os.path.exists", return_value=True):
         await cog._maybe_play_dj_interjection(dj)
 
     vc.play_dj_on_tts_layer.assert_awaited_once()
@@ -526,7 +525,7 @@ def test_set_origin_applies_to_speech_and_song(tmp_path, _reset_origin):
         _teardown_logger(handler)
 
 
-@pytest.mark.parametrize("module_name, expected", [("main_satellite", "satellite"), ("main_local", "local")])
+@pytest.mark.parametrize("module_name, expected", [("main_local", "local")])
 def test_entrypoint_sets_origin_before_building_bot(monkeypatch, _reset_origin, module_name, expected):
     import importlib
     import main_discord

@@ -18,7 +18,7 @@ outside voice round 2 修正後定版）。
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -153,8 +153,7 @@ async def test_stream_loop_resets_pending_stop_on_fresh_start():
     cog.stream_mode = True
     cog._prefetch_cache[song["url"]] = _done_future(None)
 
-    with patch("cogs.music_cog._get_puck_client", return_value=None):
-        await cog._stream_loop()
+    await cog._stream_loop()
 
     # 沒被舊旗標誤停：正常播完一首後因佇列空 + 無 autopilot 補位而 break（自然結束），
     # 不是被 pending-stop 攔在第一首之前。play_stream_song 應該真的被呼叫過一次。
@@ -177,8 +176,7 @@ async def test_stream_loop_pending_stop_true_breaks_after_current_song():
     cog.stream_mode = True
     cog._prefetch_cache[song["url"]] = _done_future(None)
 
-    with patch("cogs.music_cog._get_puck_client", return_value=None):
-        await cog._stream_loop()
+    await cog._stream_loop()
 
     # 只播了第一首（A）就停，B 沒被播到——pending-stop 在第二輪迴圈頂端攔下。
     cog.play_stream_song.assert_awaited_once()
@@ -209,8 +207,7 @@ async def test_stream_loop_pending_stop_skips_duplicate_queue_empty_message():
     vc.stt_logger = MagicMock()
     cog.bot.cogs.get.return_value = vc
 
-    with patch("cogs.music_cog._get_puck_client", return_value=None):
-        await cog._stream_loop()
+    await cog._stream_loop()
 
     # send 會被叫（貼歌曲卡是合法的，song A 真的播了）——要擋的只是「佇列已空」
     # 那則重複的收尾文字訊息，不是全部 send 呼叫。

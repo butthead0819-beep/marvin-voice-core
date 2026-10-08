@@ -141,8 +141,7 @@ async def test_nemoclaw_tts_restores_outer_nested_protected_window_not_cleared(m
 
 
 class _DjTailVC(PlaybackMixin):
-    """_maybe_play_dj_interjection 所需的最小 vc 依賴（文字分支，不吃 audio_path，
-    避免另外 mock _get_puck_client）。"""
+    """_maybe_play_dj_interjection 所需的最小 vc 依賴（文字分支，不吃 audio_path）。"""
 
     def __init__(self):
         self.play_tts = AsyncMock()

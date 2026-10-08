@@ -7,8 +7,7 @@ TDD：device 韻律活化 (T6b-1)。先紅後綠。
     meta_analyzer=None 時 no-op 不崩。
 (B) VoiceMetaAnalyzer.calculate_prosody 回傳包含 mean_rms 鍵；
     無採樣時仍回 {}（不加 mean_rms）。
-(C) start_local_listening 把 sink.meta_analyzer 接上 engine.meta_analyzer；
-    start_satellite_listening 把 bridge.sink.meta_analyzer 接上 engine.meta_analyzer。
+(C) start_local_listening 把 sink.meta_analyzer 接上 engine.meta_analyzer。
 """
 from __future__ import annotations
 
@@ -123,7 +122,7 @@ def test_calculate_prosody_returns_empty_dict_when_user_has_no_samples():
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# (C) 接線：start_local_listening / start_satellite_listening
+# (C) 接線：start_local_listening
 # ════════════════════════════════════════════════════════════════════════════════
 
 def _make_fake_self():
@@ -147,16 +146,3 @@ def test_start_local_listening_wires_meta_analyzer_to_sink():
     sink = fake.bot.engine.sink
     assert isinstance(sink, LocalMicSink)
     assert sink.meta_analyzer is fake.bot.engine.meta_analyzer
-
-
-def test_start_satellite_listening_wires_meta_analyzer_to_bridge_sink():
-    """start_satellite_listening 後 bridge.sink.meta_analyzer is engine.meta_analyzer。"""
-    from marvin_voice_core.local_mic_sink import LocalMicSink
-    from cogs.voice_controller_connection import ConnectionMixin
-
-    fake = _make_fake_self()
-    ConnectionMixin.start_satellite_listening(fake)
-
-    bridge = fake._satellite_bridge
-    assert isinstance(bridge.sink, LocalMicSink)
-    assert bridge.sink.meta_analyzer is fake.bot.engine.meta_analyzer

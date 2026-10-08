@@ -1262,46 +1262,6 @@ class ConnectionMixin:
         # 6. 非阻塞啟動麥克風擷取（對齊 sink.write 用 loop.create_task 的規範）
         self.bot.loop.create_task(sink.start())
 
-    def start_browser_satellite_listening(self, browser_output, *, persistent: bool = True) -> None:
-        """純軟體 satellite 輸出接縫：mixer 泵 → BrowserSpeakerOutput/StreamSpeakerOutput → 輸出。
-
-        與 start_satellite_listening 差異＝無 Pi/wyoming mic 橋、無 Mac mic sink：輸入唯一
-        來源是 main_satellite 的 POST /audio（inject_audio→handle_stt_result）。輸出預設注入
-        BrowserSpeakerOutput（GET /reply 服務給瀏覽器）。Discord / Pi 路徑完全不受影響。
-
-        persistent＝True（預設，比照 Pi 常駐喇叭／車載 StreamSpeakerOutput）：泵不因 mixer
-        on-demand idle 判定「播完」而提前退出。2026-07-23 ESP32 puck 實測踩到的 race：
-        play_tts() 先 _ensure_mixer_playing() arm 泵、才 await _stream_tts_to_mixer() 把
-        TTS frame 推進 mixer；若 edge-tts 首塊延遲超過 mixer 的 idle grace（預設 1s，日常
-        LLM/搜尋併發下並不罕見），泵在任何 TTS frame 抵達前就讀到 mixer 的 b""（耗盡）、
-        close() 對空 _current no-op，整段回覆靜默遺失、無任何錯誤或警告可查。persistent=True
-        讓泵永遠等，改靠 BrowserSpeakerOutput.write() 自己的靜音 hangover 偵測（300ms）分
-        段，不受 mixer 退出時序影響。CPU 成本可忽略（同一顆本機 process 早已為車載模式常駐）。
-        """
-        from marvin_voice_core.playback_device import LocalSpeakerDevice
-
-        # 1. 起 VAD watchdog（idempotent；emit/timing 用）
-        self.bot.engine.start()
-
-        # 2. local 模式旗標（共用 _resolve_playback_device 輸出接縫）
-        self._local_mode = True
-        self._intimate_mode = os.getenv("MARVIN_INTIMATE_MODE", "").strip().lower() in ("1", "true", "yes", "on")
-        if self._mixer is not None:
-            self._mixer._tts_gain = float(os.getenv("MARVIN_TTS_GAIN", "1.0"))
-
-        # 3. 放寬 late-skip（免費 LLM 限流下慢回應仍出聲；單人用不怕蓋）
-        self._LATE_RESPONSE_SKIP_SEC = 120.0
-        self._LATENCY_DOMINATED_THRESHOLD = 120.0
-
-        # 4. 喇叭輸出接縫：mixer 泵 → browser_output（BrowserSpeakerOutput/reply 或
-        #    StreamSpeakerOutput/audio_stream，見呼叫端）
-        #    persistent=False（預設）：回覆是離散 TTS，播完（含 mixer grace）泵即停，idle 不空轉
-        #    →CPU 0（PTT 最小化）。Pi 常駐喇叭仍用預設 persistent=True，不受影響。
-        self.set_local_speaker(LocalSpeakerDevice(output=browser_output, persistent=persistent))
-
-        # 5. always-allow consent stub（單人用，無 Discord 同意流程）
-        self.consent = _LocalConsentStub()
-
     def _on_satellite_wake(self, name: str) -> None:
         """衛星（Pi openwakeword）喚醒候選 → duck 音樂即時回饋。
 
@@ -1315,83 +1275,6 @@ class ConnectionMixin:
             return
         if getattr(self, "_mixer", None) and os.getenv("MARVIN_WAKE_DUCK", "1") != "0":
             self._mixer.duck_for_wake()
-
-    def start_satellite_listening(self, extra_output=None) -> None:
-        """衛星模式輸入接縫：Pi wyoming-satellite → 現有 pipeline（實體音箱 S4）。
-
-        對齊 start_local_listening；差異＝mic 來源是 WyomingSatelliteBridge（TCP 收 Pi
-        麥、走同一 VAD/切句/STT），喇叭輸出注入 WyomingSpeakerOutput（音訊回送 Pi 播放），
-        喚醒在 Pi 本地 openwakeword→送 Detection→duck。Discord 路徑完全不受影響。
-
-        extra_output：2026-08-20 補上，車 puck（pi_bt）跟家用喇叭共用同一個進程/同一顆
-        mixer——給了就用 TeeSpeakerOutput 把 WyomingSpeakerOutput（家用）跟這個額外輸出
-        （車 puck 的 StreamSpeakerOutput，見 main_satellite.py::setup_satellite）一起接
-        到同一份 mixer 輸出，兩邊各自消化各自那份，互不影響。None（預設）＝零行為改變，
-        只接家用喇叭。"""
-        from marvin_voice_core.playback_device import LocalSpeakerDevice
-        from marvin_voice_core.wyoming_bridge import WyomingSatelliteBridge
-        from marvin_voice_core.wyoming_speaker_output import WyomingSpeakerOutput
-
-        # 1. 起 VAD watchdog（idempotent，對齊 summon 第一步）
-        self.bot.engine.start()
-
-        # 2. 建衛星橋，綁 pipeline 入口 + 喚醒 duck hook
-        bridge = WyomingSatelliteBridge(
-            self.bot.engine.process_audio_slice,
-            host=os.getenv("MARVIN_SATELLITE_HOST", "marvinpi.local"),
-            user_id="satellite",
-            on_detection=self._on_satellite_wake,
-            on_speech_start_callback=self.bot.engine._handle_raw_speech_start,
-            loop=self.bot.loop,
-        )
-        self._satellite_bridge = bridge
-        # 韻律活化：衛星路徑，把共享 VoiceMetaAnalyzer 掛上橋內部 LocalMicSink。
-        bridge.sink.meta_analyzer = self.bot.engine.meta_analyzer
-        # Sentinel 心跳監控的是橋內部那顆 LocalMicSink（與本機模式同型）
-        self.bot.engine.sink = bridge.sink
-
-        # 3. 設 local 模式旗標（衛星共用 local 輸出接縫 _resolve_playback_device）
-        self._local_mode = True
-        # 親密模式旗標（對齊 start_local_listening；Discord 路徑永不設）
-        self._intimate_mode = os.getenv("MARVIN_INTIMATE_MODE", "").strip().lower() in ("1", "true", "yes", "on")
-        # device TTS 音量：mixer 預設 tts_gain=1.0（2026-08-22 用戶要求：音樂/TTS 都為 1.0）。
-        # env MARVIN_TTS_GAIN 可覆蓋；只 device（satellite）路徑，Discord 不受影響。
-        if self._mixer is not None:
-            self._mixer._tts_gain = float(os.getenv("MARVIN_TTS_GAIN", "1.0"))
-
-        # 3b. 放寬 late-skip（對齊 start_local_listening：免費 LLM 限流下慢回應仍出聲）
-        self._LATE_RESPONSE_SKIP_SEC = 120.0
-        self._LATENCY_DOMINATED_THRESHOLD = 120.0
-
-        # 4. 喇叭輸出接縫：mixer 泵 → WyomingSpeakerOutput → 衛星喇叭
-        #    （extra_output 給了就用 TeeSpeakerOutput 多扇出一路給車 puck）
-        output = WyomingSpeakerOutput(bridge, self.bot.loop)
-        if extra_output is not None:
-            from marvin_voice_core.tee_speaker_output import TeeSpeakerOutput
-            output = TeeSpeakerOutput([output, extra_output])
-        self.set_local_speaker(LocalSpeakerDevice(output=output))
-
-        # 5. always-allow consent stub（衛星單人用，無 Discord 同意流程）
-        self.consent = _LocalConsentStub()
-
-        # 6. 非阻塞啟動重連迴圈（衛星斷線/重啟 → 5s 後重連，不炸腦＝優雅降級）
-        #    MARVIN_SATELLITE_MIC_BRIDGE=0 → 不連 Pi wyoming（Pi 麥克風已退役/服務關掉時
-        #    用，否則每 5s 一行 "bridge error [Errno 61]" 洗爆 log）。其餘接線照舊，
-        #    /audio_stream 車 puck 路徑、mixer 輸出都不受影響。
-        if os.getenv("MARVIN_SATELLITE_MIC_BRIDGE", "1").strip().lower() not in ("1", "true", "yes", "on"):
-            logger.warning("🛰️ [Satellite] mic 橋已停用（MARVIN_SATELLITE_MIC_BRIDGE=0），不連 Pi wyoming")
-            return
-
-        async def _bridge_forever():
-            while True:
-                try:
-                    await bridge.run()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(f"🛰️ [Satellite] bridge error: {e}")
-                await asyncio.sleep(5)
-
-        self.bot.loop.create_task(_bridge_forever())
-
 
 class _LocalConsentStub:
     """Local 模式 consent 放行 stub：一律允許，覆蓋完整 ConsentManager 介面。"""

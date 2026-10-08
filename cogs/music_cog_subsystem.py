@@ -8,10 +8,6 @@ MusicSubsystemMixin — MusicCog 的電台（radio）與 stream loop 生命週�
 _extract_song_metadata / _extract_song_cover / _extract_dominant_color /
 _delayed_cleanup / _publish_now_playing_state / _cancel_stream_task 等全部
 沿用原本的 self 存取，行為零改動。
-
-_get_puck_client() 是 music_cog.py 模組層級的純函式（跟主檔核心區塊共用，非
-self 方法），這裡在方法內 local import 取用，避免跟主檔互相 import 造成循環
-（同一招在 music_cog_commands.py 對 cogs.voice_views.PlayControlView 已用過）。
 """
 from __future__ import annotations
 
@@ -159,10 +155,6 @@ class MusicSubsystemMixin:
         self._radio_source = None
         if vc is not None and vc._mixer is not None:
             vc._mixer.clear_music()
-        from cogs.music_cog import _get_puck_client
-        puck_client = _get_puck_client()
-        if puck_client is not None:
-            asyncio.create_task(self._fire_puck_stop(puck_client))
 
     async def _radio_volume_fade_loop(self):
         """📻 動態音量漸變：有人說話 → duck to 1%；靜默 1.5s 後 → fade up to 10%。"""

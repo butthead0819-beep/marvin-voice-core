@@ -171,21 +171,3 @@ def test_start_local_listening_sets_intimate_mode_false_when_env_false(monkeypat
     fake = _make_fake_self()
     ConnectionMixin.start_local_listening(fake)
     assert fake._intimate_mode is False
-
-
-# ── flag wiring: start_satellite_listening ────────────────────────────────────
-
-def test_start_satellite_listening_sets_intimate_mode_true_when_env_1(monkeypatch):
-    """MARVIN_INTIMATE_MODE=1 → start_satellite_listening 設 self._intimate_mode is True。"""
-    monkeypatch.setenv("MARVIN_INTIMATE_MODE", "1")
-    fake = _make_fake_self()
-    ConnectionMixin.start_satellite_listening(fake)
-    assert fake._intimate_mode is True
-
-
-def test_start_satellite_listening_sets_intimate_mode_false_when_env_unset(monkeypatch):
-    """MARVIN_INTIMATE_MODE 未設 → self._intimate_mode is False。"""
-    monkeypatch.delenv("MARVIN_INTIMATE_MODE", raising=False)
-    fake = _make_fake_self()
-    ConnectionMixin.start_satellite_listening(fake)
-    assert fake._intimate_mode is False

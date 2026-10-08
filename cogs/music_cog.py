@@ -82,24 +82,6 @@ _YT_COOKIES_FROM_BROWSER = os.getenv("MARVIN_YT_COOKIES_FROM_BROWSER", "chrome")
 _YT_COOKIES_FILE = os.path.expanduser(
     os.getenv("MARVIN_YT_COOKIES_FILE", "~/.config/marvin/youtube_cookies.txt"))
 
-def _get_puck_client():
-    """MARVIN_CAR_HARDWARE=esp32_edge_mix 才回傳 client；其餘硬體（pi_bt 車 puck、家用
-    Pi 3B 等）回 None。
-
-    2026-08-20：pi_bt（Pi Zero 2W 車 puck）不再有專屬 client——換歌決策/DJ口白改回
-    跟家用喇叭共用同一顆 mixer、走 /audio_stream「收音機」模式（見
-    main_satellite.py::setup_satellite 的 TeeSpeakerOutput 說明），不需要 Mac 主動
-    POST 指令給 Pi 這條 control-plane 了（原本的 marvin_voice_core/puck_mixer_client.py
-    已隨之退役）。esp32_edge_mix 車 puck 永遠是它自己撥出連線，Mac 沒辦法主動推指令，
-    改寫進本地佇列，ESP32 用既有心跳節奏輪詢 /car_commands 拿指令
-    （見 marvin_voice_core/puck_command_queue.py）。"""
-    hardware = os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower()
-    if hardware != "esp32_edge_mix":
-        return None
-    from marvin_voice_core.puck_command_queue import PuckCommandQueueClient, get_default_queue
-    return PuckCommandQueueClient(get_default_queue())
-
-
 def _car_occupants(bot) -> list[str] | None:
     """車載在場者（main_satellite 把 CarPresence 掛在 bot.car_presence）；未接車載→None。
     放模組層級而非 method：MusicCog method 數有棘輪預算（test_music_cog_size_budget）。"""
@@ -282,8 +264,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 dj_audio, _dj_played_in_tail = await self._stream_loop_prepare_and_announce(
                     info, vc, title, requested_by)
 
-                self._stream_loop_fire_puck(info, _dj_played_in_tail)
-
                 self._current_song_skipped = False
                 song_start_time = time.time()
                 self._current_stream_start_time = song_start_time
@@ -382,28 +362,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         if not self.stream_queue:
             return False
         return True
-
-    def _stream_loop_fire_puck(self, info: dict, dj_played_in_tail: bool) -> None:
-        """[PuckMixer] esp32_edge_mix 專用：沒經過 _fire_puck_crossfade 接手的歌
-        （開場第一首、skip、或上一首沒排到尾段 task）要送硬 play 讓裝置端從乾淨
-        狀態開始播——跟 _fire_puck_crossfade 對稱，那邊只在尾段轉場時接手 standby
-        deck，不會有人叫它 play。見 _play_open()/_run_tail_dj() 前的說明。
-
-        2026-08-20：pi_bt（車 puck Pi Zero 2W）不再走這條——換歌決策/DJ口白
-        改回跟家用喇叭共用同一顆 mixer（見 main_satellite.py::setup_satellite
-        的 TeeSpeakerOutput + /audio_stream「收音機」模式說明），_get_puck_client()
-        對 pi_bt 回 None，下面這段自然被跳過。"""
-        if dj_played_in_tail:
-            return
-        puck_client = _get_puck_client()
-        puck_url = info.get('webpage_url', '')
-        if puck_client is not None and puck_url:
-            asyncio.create_task(
-                self._fire_puck_play(
-                    puck_client, puck_url, title=info.get('title'),
-                    highlight_start_s=info.get('highlight_start_s'),
-                    duration=info.get('duration'))
-            )
 
     def _stream_loop_schedule_tail_dj(self, info: dict, vc, title: str, dj_audio: str | None = None) -> "asyncio.Future | None":
         """[DJ Tail] 在播 N 期間排尾段 task：只要 duration 已知就排，下一首在點火

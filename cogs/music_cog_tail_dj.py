@@ -1,5 +1,5 @@
 """
-MusicTailDJMixin — MusicCog 的歌曲 metadata 統籌預取 + PuckMixer 硬體橋接原語 +
+MusicTailDJMixin — MusicCog 的歌曲 metadata 統籌預取 +
 DJ 尾段滑動窗串場排程（_run_tail_dj 是整條 DJ Tail 機制的核心）。
 
 從 music_cog.py 抽出（減肥，比照 voice_controller.py 拆解先例），以 mixin 形式
@@ -11,15 +11,10 @@ _fetch_lyrics_synced / _dj_requester_suffix / _dj_clean_name /
 _preload_music_cache / _prefetch_cache / stream_queue 等全部沿用原本的
 self 存取，行為零改動。
 
-_get_puck_client() 是 music_cog.py 模組層級純函式，這裡在三處呼叫點各自
-method-內 local import 取用，避免跟主檔互相 import 造成循環（同招
-music_cog_subsystem.py 的 stop_stream 已用過）。
-
 _DJ_TAIL_SFX_DIR / _DJ_TAIL_SFX_NAMES / _DJ_TAIL_LEAD_S /
-_DJ_TAIL_SFX_PRELOAD_WAIT_S / _PUCK_STATUS_POLL_INTERVAL_S 這五個常數的
-消費者全部都在這個檔案裡（搬離後主檔已無引用），跟著搬過來、主檔對應定義
-一併移除。_NORM_GAIN_MEASURE_DELAY_S / _TASTE_PROFILE_CACHE 主檔（stream
-loop/autopilot）也用得到，各自定義一份不搬移。
+_DJ_TAIL_SFX_PRELOAD_WAIT_S 這四個常數的消費者全部都在這個檔案裡（搬離後
+主檔已無引用），跟著搬過來、主檔對應定義一併移除。_NORM_GAIN_MEASURE_DELAY_S /
+_TASTE_PROFILE_CACHE 主檔（stream loop/autopilot）也用得到，各自定義一份不搬移。
 """
 from __future__ import annotations
 
@@ -55,9 +50,6 @@ _DJ_TAIL_NEXT_OVERLAP_S = 8.0
 _DJ_TAIL_GAP_MAX_S = 10.0
 _DJ_TAIL_GAP_POLL_S = 0.2
 _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
-# 輪詢 /puck/status 的間隔（_fire_puck_crossfade 用，兩種硬體共用）——resolve
-# 現在多半是 cache 命中幾乎瞬間完成，1s 夠即時又不會洗爆 Pi 的 HTTP handler。
-_PUCK_STATUS_POLL_INTERVAL_S = 1.0
 _AUDIOPHILE_GUIDE_GAP_S = 1.0   # 導聆講完留白，再讓歌從 00:00 爆出來
 _AUDIOPHILE_POLL_S = 0.25       # 導聆等待期間檢查 stop/skip 的間隔
 
@@ -248,106 +240,6 @@ class MusicTailDJMixin:
         except Exception as e:
             logger.warning(f"⚠️ [第三個Ack] 推播失敗: {e}")
 
-    async def _fire_puck_play(self, puck_client, url: str, title: str = None,
-                               highlight_start_s: float = None, duration: float = None) -> None:
-        """[PuckMixer] esp32_edge_mix 專用硬 play：沒有 standby deck 可 crossfade 接手時
-        （開場第一首/skip/上一首無尾段task）用這個讓 ESP32 從乾淨狀態開播（見
-        car_puck.ino dispatchNewCommands 的 play 分支：兩個 deck 都停、deck0 接新
-        URL）。fire-and-forget，失敗只記警告，不影響本地 Discord/家用播放路徑。
-
-        title/highlight_start_s/duration：ESP32 的 PuckCommandQueueClient 目前忽略
-        這幾個欄位，接受它們只是跟其他 client 維持同款介面（見
-        marvin_voice_core/puck_command_queue.py::PuckCommandQueueClient.play）。"""
-        ok = await puck_client.play(url, title=title, seek=highlight_start_s, duration=duration)
-        if not ok:
-            logger.warning(f"[PuckMixer] play 失敗: {url}")
-
-    async def _fire_puck_stop(self, puck_client) -> None:
-        """[PuckMixer] esp32_edge_mix 專用。2026-08-17 實機踩到：stop_stream() 原本
-        從沒通知裝置端，Mac 說「停止播放」後 stream_mode 歸位，但裝置端狀態沒同步，
-        下次送新歌時容易殘留舊狀態。裝置端通知是盡力而為，失敗不擋 Mac 端本身的
-        停播流程。"""
-        try:
-            ok = await puck_client.stop()
-            if not ok:
-                logger.warning("[PuckMixer] stop 失敗")
-        except Exception as e:
-            logger.warning(f"[PuckMixer] stop 呼叫例外: {e}")
-
-    async def _fire_puck_speak(self, puck_client, audio_path: str) -> None:
-        """[PuckMixer Phase3] DJ 口白：ESP32 端會 duck 音樂再疊播（見
-        car_puck.ino::mixOutputTask 的 VOICE_DUCK_GAIN）。esp32_edge_mix 專用
-        （送 Mac 本機預渲染音檔路徑，ESP32 pull 播放）。"""
-        ok = await puck_client.speak(audio_path)
-        if not ok:
-            logger.warning(f"[PuckMixer] speak 失敗: {audio_path}")
-
-    async def _fire_puck_sfx(self, puck_client, audio_path: str) -> None:
-        """[PuckMixer Phase3] 轉場音效：不 duck，直接疊播。"""
-        ok = await puck_client.sfx(audio_path)
-        if not ok:
-            logger.warning(f"[PuckMixer] sfx 失敗: {audio_path}")
-
-    async def _fire_puck_crossfade(self, puck_client, next_url: str,
-                                    buffer_s: float = 4.0, crossfade_s: float = 4.0,
-                                    title: str = None) -> bool:
-        """[PuckMixer] 純音樂 crossfade：queue_next 後留 buffer_s 給裝置端背景
-        ffmpeg 起手緩衝，再送 crossfade。跟本地 Discord mixer/DJ 口白邏輯
-        完全獨立（見呼叫點 _run_tail_dj），queue_next 失敗就放棄、不重試（下一輪
-        tail-fire 或下一首開頭會再給機會）。回傳裝置端是否真的接手了下一首
-        （queue_next 或 crossfade 任一步失敗都是 False）。esp32_edge_mix 專用——
-
-        2026-08-20：pi_bt（Pi Zero 2W 車 puck）換歌決策/DJ口白改回跟家用喇叭共用
-        同一顆 mixer（見 main_satellite.py::setup_satellite 的 TeeSpeakerOutput +
-        /audio_stream「收音機」模式說明），不再需要 Mac 送 play/queue_next/crossfade
-        指令，這支函式跟 pi_bt 完全脫鉤，只剩 esp32_edge_mix 會呼叫。
-
-        buffer_s 2.0→4.0（2026-08-11）：esp32_edge_mix 實機驗證，2.0s 對 ESP32 的
-        /puck_deck 鏈路（Mac resolve+ffmpeg轉碼+MP3編碼+網路傳輸)不夠，crossfade
-        觸發時 standby deck 常常還沒緩衝夠，混音瞬間出現真的靜音空白。
-
-        ⚠️ 2026-08-17：這裡收到的 buffer_s 上限由呼叫端決定的觸發窗口決定——
-        esp32_edge_mix 走 _run_tail_dj 內建的 _DJ_TAIL_LEAD_S(=8.0)s 窗口，不能
-        逼近甚至超過它。
-
-        ⚠️ 2026-08-18：pi_bt 接上 YouTube cookies 後，resolve 常要吃到 ~24s CPU
-        time（deno 解 JS challenge，見 puck_mixer.py::resolve_stream_url()
-        docstring），遠超原本假設的 ~7s。固定 sleep(buffer_s) 賭一個時長不管用——
-        猜太短會在 deck_b 還沒 ready 時打 /puck/crossfade，Pi 端 raise
-        RuntimeError（deck_b is None）被吞掉、这次转场直接放弃、当前曲播完只剩靜音；
-        猜太長又浪費窗口。改成輪詢 /puck/status 的 next_queued 是否已等於
-        next_url，ready 就提早出手，buffer_s 退化成「polling 的上限」，esp32_edge_mix
-        的 client 沒有 status() 保留舊的固定 sleep 行為不變（hasattr 分辨，同
-        speak/speak_text 的既有 pattern）。"""
-        ok = await puck_client.queue_next(next_url, title=title)
-        if not ok:
-            logger.warning(f"[PuckMixer] queue_next 失敗，放棄本次 crossfade: {next_url}")
-            return False
-        if hasattr(puck_client, "status"):
-            # 2026-08-19：狀態驅動到底——輪詢逾時代表裝置端還沒真的 ready，
-            # 直接放棄這次 crossfade，不要賭一把硬打（那個賭注就是「花田錯
-            # 提早結束 20s 空白」的根因：逼近真正歌曲結尾時 Pi 端 deck_b 常常
-            # 還沒好，crossfade() 丟 RuntimeError 失敗，反而比乾脆不打還慢）。
-            # 放棄後回傳 False，呼叫端（_run_tail_dj）不會標記 _dj_played_in_tail，
-            # 下一首開頭走 _fire_puck_play 的既有硬 play 回退路徑（見該函式）。
-            deadline = time.time() + buffer_s
-            ready = False
-            while time.time() < deadline:
-                await asyncio.sleep(_PUCK_STATUS_POLL_INTERVAL_S)
-                st = await puck_client.status()
-                if st is not None and st.get("next_queued") == next_url:
-                    ready = True
-                    break
-            if not ready:
-                logger.warning(f"[PuckMixer] queue_next 逾時仍未就緒，放棄本次 crossfade（交給下一首開頭補 play）: {next_url}")
-                return False
-        else:
-            await asyncio.sleep(buffer_s)
-        crossfaded = await puck_client.crossfade(crossfade_s)
-        if not crossfaded:
-            logger.warning(f"[PuckMixer] crossfade 失敗（deck_b 可能還沒 ready）: {next_url}")
-        return bool(crossfaded)
-
     def _new_song_start_future(self, info: dict, dj_audio: str | None) -> asyncio.Future:
         """建立 playback_started future：`_mixer_play_music` 在歌真正出聲那刻
         `set_result(time.time())`（沿用原本 playback_started 語意，`_run_tail_dj`
@@ -489,29 +381,6 @@ class MusicTailDJMixin:
         if next_info.get('_audiophile_guide'):
             logger.info(f"[DJ Tail] {title_next} 是導聆歌，尾段不講話也不預解碼（開播前自己放導聆+從 0 預解碼）")
             return
-
-        # [PuckMixer] esp32_edge_mix 專用：額外送純音樂 crossfade 訊號給裝置端，跟下面
-        # 本地 Discord mixer 的 DJ 口白邏輯完全獨立、不共用旗標、不影響其他硬體行為
-        # （DJ 口白走另一條未實作的 TTS 串流管線，這裡只管換歌）。fire-and-forget
-        # 背景 task，不阻塞/不改變既有 flow 的時序。pi_bt（車 puck Pi Zero 2W）
-        # 2026-08-20 起不再呼叫這裡——換歌決策/DJ口白改回跟家用喇叭共用同一顆 mixer
-        # （見 main_satellite.py::setup_satellite 的 TeeSpeakerOutput + /audio_stream
-        # 說明），_get_puck_client() 對 pi_bt 回 None，下面這段自然被跳過。
-        #
-        # ⚠️ 2026-08-11 實機踩到：這裡一定要用 webpage_url（可重新 yt-dlp resolve 的
-        # youtube 頁面網址），不能用 'url'——後者是 _resolve_yt_query() 當下呼叫 yt-dlp
-        # 解出來、已經是 googlevideo CDN 的最終直連網址（見該函式 return dict）。
-        # esp32_edge_mix 收到 webpage_url 後靠 /puck_deck 端點在 Mac 端重新
-        # resolve（main_satellite.py::handle_puck_deck），餵一個已經是 CDN 網址
-        # 的字串進去再 resolve 一次 100% 失敗（實機驗證：ESP32 /puck_deck 穩定
-        # 回 502）。
-        from cogs.music_cog import _get_puck_client
-        puck_client = _get_puck_client()
-        next_url = next_info.get('webpage_url', '')
-        if puck_client is not None and next_url:
-            asyncio.create_task(
-                self._fire_puck_crossfade(puck_client, next_url, title=next_info.get('title'))
-            )
 
         # 2026-08-14：preload 只跟「下一首歌本身」有關，不該綁在 DJ 口白是否成功
         # 預渲染上——DJ meta 拿不到時（生成失敗/逾時/quick 模式不講話）以前會直接
@@ -781,17 +650,6 @@ class MusicTailDJMixin:
                 # 不可用 play_local_file——那條把檔案設成音樂層來源會替換掉正在播的歌，
                 # DJ 只播到切歌點就被下一首蓋掉（使用者實測「只聽到狗與露就停」）。
                 await vc.play_dj_on_tts_layer(audio_path, text=text)
-                # [PuckMixer] vc.play_dj_on_tts_layer 疊的 DJ 口白出現在這個進程自己的
-                # mixer 輸出——pi_bt（車 puck Pi Zero 2W）2026-08-20 起也接進同一顆
-                # mixer（見 main_satellite.py::setup_satellite 的 TeeSpeakerOutput 說明），
-                # DJ 口白自然隨 /audio_stream 一起播到車上，不用另外傳。esp32_edge_mix
-                # 仍是獨立通道（送 Mac 本機預渲染音檔路徑，ESP32 pull 播放，見
-                # car_puck.ino 的 speak 分支）——只有 audio_path 有預渲染檔的情況才送，
-                # 即時 TTS（else 分支）沒有檔案/固定文字可傳，這裡先不接。
-                from cogs.music_cog import _get_puck_client
-                puck_client = _get_puck_client()
-                if puck_client is not None and hasattr(puck_client, "speak"):
-                    asyncio.create_task(self._fire_puck_speak(puck_client, audio_path))
             else:
                 await vc.play_tts(text, already_in_channel=True)
 
@@ -886,13 +744,5 @@ class MusicTailDJMixin:
             await vc.play_dj_on_tts_layer(path, peak=0.1)
         except Exception as e:
             logger.debug(f"⚠️ [DJ Tail] SFX 疊播失敗（不影響主流程）: {e}")
-
-        # [PuckMixer Phase3] 比照 _maybe_play_dj_interjection：Discord/家用混音走 vc
-        # 自己的輸出，esp32_edge_mix 要另外送一份給裝置端（不 duck，見 car_puck.ino
-        # 的 sfx 分支）。
-        from cogs.music_cog import _get_puck_client
-        puck_client = _get_puck_client()
-        if puck_client is not None and hasattr(puck_client, "sfx"):
-            asyncio.create_task(self._fire_puck_sfx(puck_client, path))
 
 

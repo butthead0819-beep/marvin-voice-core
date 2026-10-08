@@ -7,11 +7,12 @@
 (4) handle_auto_dismiss：car puck 在線不撤離，其餘照舊 handle_dismiss
 (5) auto_rejoin_on_boot(car_join=True, resume_music=False)：無真人頻道時補進車載頻道，
     且不接續 autopilot；resume_music=True + 有真人時照舊接續
-(6) main_satellite.build_text_app 的 /audio_stream：SilenceFillQueue 有接上
+(6) car_http_app.build_text_app 的 /audio_stream：SilenceFillQueue 有接上
 (7) main_discord._start_discord_text_server：失敗降級 / 沒 _mixer 降級 / 正常接線
 (8) Discord 版 _play_open / _stop_playback 透過 start_text_http_server(discord_voice=...)
     接線：present() 不卡住、背景 task 呼叫 auto_rejoin_on_boot；absent() 按人數決定
     撤離與否
+(9) Discord 進程車載模式不依賴 MARVIN_CAR_MODE env（傳 discord_voice 即接車載模式）
 """
 from __future__ import annotations
 
@@ -463,34 +464,6 @@ async def test_discord_process_car_mode_on_even_when_env_blank(monkeypatch):
             await asyncio.sleep(0)
 
         fake.auto_rejoin_on_boot.assert_awaited_once_with(car_join=True, resume_music=False)
-    finally:
-        await runner.cleanup()
-        for t in asyncio.all_tasks() - before:
-            t.cancel()
-
-
-@pytest.mark.asyncio
-async def test_satellite_process_car_mode_still_env_gated(monkeypatch):
-    """satellite 進程（沒傳 discord_voice）仍照舊只看 MARVIN_CAR_MODE env，
-    env 空就不接車載模式——零行為改變。"""
-    fake = _FakeVoiceControllerForCarMode()
-    fake.bot.car_presence = None
-    monkeypatch.setenv("MARVIN_CAR_MODE", "")
-    monkeypatch.setenv("MARVIN_CLAUDE_STATUS_SCAN", "0")
-
-    class _FakeSite:
-        def __init__(self, *a, **k):
-            pass
-
-        async def start(self):
-            pass
-
-    monkeypatch.setattr("aiohttp.web.TCPSite", _FakeSite)
-
-    before = asyncio.all_tasks()
-    runner = await car_http_app.start_text_http_server(fake)
-    try:
-        assert getattr(fake.bot, "car_presence", None) is None
     finally:
         await runner.cleanup()
         for t in asyncio.all_tasks() - before:
