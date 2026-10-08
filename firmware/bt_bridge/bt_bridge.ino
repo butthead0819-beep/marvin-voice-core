@@ -92,10 +92,18 @@ bool ssid_match_cb(const char* ssid, esp_bd_addr_t address, int rssi);
 const char* addr_target_label(const uint8_t* bda);
 bool pairing_accepts_cod(const uint8_t* bda, uint32_t cod);
 
+// 重連模式真正連上的位址（對方主動連入時，函式庫的 peer_bd_addr/last_connection
+// 不一定會先被我方設好，靠 CONNECTED 事件的 remote_bda 才準）。
+static uint8_t g_conn_bda[6];
+static volatile bool g_conn_bda_valid = false;
+static volatile char g_conn_from = '?';  // 'C'=我方連線中收到 / 'U'=對方主動連入 / 'O'=其他狀態
+
 // ---- 首次配對補開重連 ----
 // 函式庫在 NVS 沒有上次位址時會整段關掉自動重連，且之後不再打開，這裡補開。
 class BridgeSource : public BluetoothA2DPSource {
  public:
+  BridgeSource() { discoverability = ESP_BT_NON_DISCOVERABLE; }
+
   bool arm_reconnect() {  // 回傳是否真的補開了
     if (is_autoreconnect_allowed) return false;
     is_autoreconnect_allowed = true;
@@ -111,6 +119,37 @@ class BridgeSource : public BluetoothA2DPSource {
   }
 
  protected:
+  // esp-idf #15913：已配對 sink（車機/喇叭）開機會主動連「上次的裝置」，忙著主動連時不回應
+  // ESP32 的 page，導致 ESP32 連 5–10 次才成功。函式庫預設重連模式也設不可連入（寫死 false），
+  // 這裡改成：配對模式維持不可連入（避免路人誤連），重連模式開放可連入但仍不可被發現
+  // （discoverability 建構子已設 NON_DISCOVERABLE）。
+  void set_scan_mode_connectable_default() override {
+    set_scan_mode_connectable(!pairing_mode());
+  }
+
+  // 函式庫在 APP_AV_STATE_UNCONNECTED 狀態收到 CONNECTED 事件會被忽略（unconnected_hdlr
+  // 只處理 DISCONNECTED），對方主動連入時我方仍是 UNCONNECTED → 狀態機不認、永遠卡住。
+  // 這裡在呼叫基底前，於 UNCONNECTED 狀態下把 CONNECTED 事件先轉成 CONNECTING，
+  // 讓基底的 connecting_hdlr 照正常流程轉成 CONNECTED。
+  void bt_app_av_sm_hdlr(uint16_t event, void* param) override {
+    if (event == ESP_A2D_CONNECTION_STATE_EVT && param) {
+      auto* a2d = (esp_a2d_cb_param_t*)param;
+      if (a2d->conn_stat.state == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+        memcpy(g_conn_bda, a2d->conn_stat.remote_bda, 6);
+        g_conn_bda_valid = true;
+        g_conn_from = (s_a2d_state == APP_AV_STATE_CONNECTING)
+                          ? 'C'
+                          : (s_a2d_state == APP_AV_STATE_UNCONNECTED ? 'U' : 'O');
+        if (!pairing_mode() && s_a2d_state == APP_AV_STATE_UNCONNECTED) {
+          s_a2d_state = APP_AV_STATE_CONNECTING;
+        }
+        set_last_connection(a2d->conn_stat.remote_bda);
+        memcpy(peer_bd_addr, a2d->conn_stat.remote_bda, 6);
+      }
+    }
+    BluetoothA2DPSource::bt_app_av_sm_hdlr(event, param);
+  }
+
   // 發射功率上限 +3dBm(預設) → +9dBm：開放空間 3 公尺就會斷線（5 公分不會）。
   // esp_bredr_tx_power_set 必須在 controller enable 之後、profile init 之前呼叫，正好是 bt_start() 結束時。
   bool bt_start() override {
@@ -604,7 +643,15 @@ void loop() {
       Serial.println("[BT] 首次配對：補開自動重連");
     }
     uint8_t cur[6];
-    a2dp_source.get_last(cur);
+    if (g_conn_bda_valid) {
+      memcpy(cur, g_conn_bda, 6);
+    } else {
+      a2dp_source.get_last(cur);
+    }
+    char conn_from = g_conn_from;
+    g_conn_bda_valid = false;
+    g_conn_from = '?';
+    Serial.printf("[BT] 連上來源=%c\n", conn_from);
     if (!addr_is_zero(cur)) {
       known_touch(g_known, cur);
       known_save();
@@ -615,7 +662,7 @@ void loop() {
     // C/F/D 重連模式下也記（每次開機上限 RECON_DIAG_MAX 筆，避免目標沒開機每 ~10s 失敗一次整晚寫 NVS）
     {
       char d[DIAG_TEXT];
-      snprintf(d, sizeof(d), "C %02X%02X%02X", cur[3], cur[4], cur[5]);
+      snprintf(d, sizeof(d), "C %02X%02X%02X %c", cur[3], cur[4], cur[5], conn_from);
       if (g_pairing_mode) {
         diag_loop_add(d);
       } else {
