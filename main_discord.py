@@ -92,6 +92,8 @@ def setup_early_logging():
     logging.getLogger("audiophile_fetcher").setLevel(logging.INFO)  # 歌曲卡查證/快取命中 log
     logging.getLogger("shazam_identify").setLevel(logging.INFO)  # Shazam 音訊認歌結果/斷路 log
     logging.getLogger("dj_topic_selector").setLevel(logging.INFO)  # 🎰 [DJ Gacha] 扭蛋池抽選 log（未來依回饋調權重用）
+    # 2026-10-08 同型坑第三次：單一 mixer 第2刀把 :8790 車載 app 搬進來後，🚗 [CarMode] 上車/開場/下車 INFO 全被吞
+    logging.getLogger("car_http_app").setLevel(logging.INFO)
 
     stdout_logger = logging.getLogger("MarvinBot.Stdout")
     stdout_logger.setLevel(logging.INFO)
@@ -137,6 +139,37 @@ for path in ["/opt/homebrew/bin", "/usr/local/bin"]:
 # from discord_voice_engine import DiscordVoiceEngine
 # from tts_engine import SukiTTS
 # print("✅ All core engines imported.")
+
+async def _start_discord_text_server(loop, vc):
+    """單一 mixer 第2刀：整套 :8790 車載 HTTP app（/say /audio /car /car_now /hud
+    /audio_stream…）搬進 Discord 進程，裝置端零改動（原本連 main_satellite.py 的
+    :8790，改成連 Discord 進程的 :8790）。
+
+    跟第1刀（marvin_voice_core.discord_audio_stream_server.maybe_start）的差異：
+    第1刀只起獨立 port 的 /audio_stream；這裡整套車載 app 都在，/audio_stream
+    也含在裡面，不另外起第1刀的獨立 port（見呼叫端二選一）。
+
+    discord_voice=vc：main_satellite.start_text_http_server 的車載 /car present/absent
+    開場/停播語意會改走 Discord 版（見該函式 docstring）。
+
+    失敗（含 port 被占用時 aiohttp 丟的 OSError）只 log，絕不讓 bot 起不來。
+    """
+    mixer = getattr(vc, "_mixer", None)
+    if mixer is None:
+        logger.warning("[DiscordTextServer] voice controller 沒有 _mixer，:8790 車載 app 不啟動")
+        return None
+    try:
+        from marvin_voice_core.stream_speaker_output import StreamSpeakerOutput, car_makeup_gain
+        # 車上要 100%，Discord 預設 0.10，只補車機這條輸出（Discord 不動）
+        stream_out = StreamSpeakerOutput(
+            loop, gain_fn=lambda: car_makeup_gain(getattr(mixer, "_volume_target", 1.0)))
+        mixer.set_tap(stream_out)
+        from car_http_app import start_text_http_server
+        return await start_text_http_server(vc, stream_source=stream_out, discord_voice=vc)
+    except Exception:
+        logger.exception("[DiscordTextServer] 啟動失敗，bot 照常運作")
+        return None
+
 
 def _is_expired_interaction_error(error) -> bool:
     """interaction token 已失效（Discord error code 10062, Unknown interaction）。
@@ -287,10 +320,14 @@ class MarvinBot(commands.Bot):
         else:
             logger.warning("[MarmoServer] VoiceController cog not found — Marmo webhook not started")
 
-        # 5a. 🔊 [單一 mixer 第1刀] Discord mixer 輸出 → /audio_stream 給 car puck（env 未設＝不啟動）
+        # 5a. 🔊 [單一 mixer 第2刀] Discord mixer 輸出 → /audio_stream 給 car puck
         if vc_cog:
-            from marvin_voice_core.discord_audio_stream_server import maybe_start as _start_stream
-            self.discord_audio_stream_server = await _start_stream(self.loop, vc_cog)
+            if os.getenv("MARVIN_DISCORD_TEXT_SERVER", "").strip().lower() in ("1", "true", "yes", "on"):
+                # 第2刀：整套 :8790 app 搬進來（/audio_stream 也在裡面），不另起第1刀的獨立 port
+                self.discord_text_runner = await _start_discord_text_server(self.loop, vc_cog)
+            else:
+                from marvin_voice_core.discord_audio_stream_server import maybe_start as _start_stream
+                self.discord_audio_stream_server = await _start_stream(self.loop, vc_cog)
 
         # 5b. 啟動 ErrorDispatcher — 真錯誤 → openclaw triage → DM owner
         await self._install_error_dispatcher(vc_cog)
@@ -560,6 +597,8 @@ class MarvinBot(commands.Bot):
             await self.marmo_server.stop()
         if getattr(self, "discord_audio_stream_server", None):
             await self.discord_audio_stream_server.stop()
+        if getattr(self, "discord_text_runner", None):
+            await self.discord_text_runner.cleanup()
         await super().close()
 
     # --- 🛡️ [Error Handlers] ---

@@ -61,10 +61,19 @@ def test_car_mode_empty_occupants_falls_back_to_env(monkeypatch):
     assert MusicCog._autopilot_online_members([], car_occupants=[]) == ["阿凱"]
 
 
-def test_home_mode_ignores_car_occupants(monkeypatch):
-    """非車載模式：就算帶了 car_occupants，空 online 仍維持 []。"""
-    monkeypatch.delenv("MARVIN_CAR_MODE", raising=False)
-    assert MusicCog._autopilot_online_members([], car_occupants=["showay"]) == []
+def test_car_occupants_used_even_when_env_blank(monkeypatch):
+    """單一 mixer 第2刀後 Discord 進程也掛 car_presence，但 run_bot.py 會清空
+    MARVIN_CAR_MODE（防音量污染）→ car_occupants 非空就算在場，不看 env。
+    （取代 10/6 的 test_home_mode_ignores_car_occupants：當時 Discord 進程不會有 car_occupants。）"""
+    monkeypatch.setenv("MARVIN_CAR_MODE", "")
+    assert MusicCog._autopilot_online_members([], car_occupants=["showay"]) == ["showay"]
+
+
+def test_env_blank_no_occupants_stays_empty(monkeypatch):
+    """家用 Discord、車不在線：空 online 仍維持 []，交給既有 auto-dismiss。"""
+    monkeypatch.setenv("MARVIN_CAR_MODE", "")
+    assert MusicCog._autopilot_online_members([], car_occupants=[]) == []
+    assert MusicCog._autopilot_online_members([], car_occupants=None) == []
 
 
 def test_car_occupants_reads_bot_car_presence():

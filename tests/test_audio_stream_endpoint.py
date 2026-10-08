@@ -63,7 +63,7 @@ class _FakeStreamSource:
 @pytest.mark.asyncio
 async def test_audio_stream_returns_valid_mp3_with_format_headers():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     src = _FakeStreamSource([_sine_pcm_frame(), _sine_pcm_frame(), None])
     app = build_text_app(_make_vc(), token="s3cret", stream_source=src)
@@ -83,7 +83,7 @@ async def test_audio_stream_returns_valid_mp3_with_format_headers():
 @pytest.mark.asyncio
 async def test_audio_stream_unsubscribes_on_close():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     src = _FakeStreamSource([None])
     app = build_text_app(_make_vc(), token="s3cret", stream_source=src)
@@ -96,7 +96,7 @@ async def test_audio_stream_unsubscribes_on_close():
 @pytest.mark.asyncio
 async def test_audio_stream_404_when_not_wired():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     app = build_text_app(_make_vc(), token="s3cret")   # 無 stream_source
     async with TestClient(TestServer(app)) as client:
@@ -107,7 +107,7 @@ async def test_audio_stream_404_when_not_wired():
 @pytest.mark.asyncio
 async def test_audio_stream_token_gated():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     src = _FakeStreamSource([None])
     app = build_text_app(_make_vc(), token="s3cret", stream_source=src)
@@ -120,7 +120,7 @@ async def test_audio_stream_token_gated():
 async def test_audio_stream_swallows_broken_pipe_and_still_unsubscribes(caplog):
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     src = _FakeStreamSource([b"\x01\x02" * 4, b"\x03\x04" * 4, None])
     app = build_text_app(_make_vc(), token="s3cret", stream_source=src)
@@ -144,7 +144,7 @@ async def test_audio_stream_swallows_wrapped_connection_lost_error(caplog):
     包裝過的類別，一樣噴 traceback。"""
     from aiohttp import web
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     def _raise_wrapped(*_a, **_kw):
         raise ConnectionError("Connection lost") from BrokenPipeError()

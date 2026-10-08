@@ -20,7 +20,7 @@ def _make_vc():
 @pytest.mark.asyncio
 async def test_returns_counts_when_fresh(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     import time
     path = str(tmp_path / "gmail_calendar_state.json")
     important_emails = [
@@ -48,7 +48,7 @@ async def test_returns_counts_when_fresh(tmp_path):
 @pytest.mark.asyncio
 async def test_returns_none_when_stale(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     path = str(tmp_path / "gmail_calendar_state.json")
     save_gmail_calendar_state(gmail_unread=12, calendar_today_count=2, updated_at=0.0, path=path)
 
@@ -63,7 +63,7 @@ async def test_returns_none_when_stale(tmp_path):
 @pytest.mark.asyncio
 async def test_returns_none_when_bridge_file_missing(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     path = str(tmp_path / "does_not_exist.json")
 
     app = build_text_app(_make_vc(), token=None, gmail_calendar_state_path=path)

@@ -20,7 +20,7 @@ def _make_vc():
 @pytest.mark.asyncio
 async def test_claude_status_returns_sessions_and_rate_limits(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     path = str(tmp_path / "claude_sessions_state.json")
     save_claude_sessions_state(sessions=[
         {"session_id": "abc", "project": "Discord-voice-bot", "cwd": "/x",
@@ -43,7 +43,7 @@ async def test_claude_status_returns_sessions_and_rate_limits(tmp_path):
 @pytest.mark.asyncio
 async def test_claude_status_returns_empty_when_bridge_file_missing(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     path = str(tmp_path / "claude_sessions_state.json")  # 不存在
     app = build_text_app(_make_vc(), token=None, claude_sessions_state_path=path)
     async with TestClient(TestServer(app)) as client:

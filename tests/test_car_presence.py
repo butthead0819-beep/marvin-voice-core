@@ -98,7 +98,7 @@ def _make_vc():
 @pytest.mark.asyncio
 async def test_car_endpoint_present_triggers_arrive():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     from car_presence import CarPresence
     arrive, depart = AsyncMock(), AsyncMock()
     cp = CarPresence(on_arrive=arrive, on_depart=depart)
@@ -113,7 +113,7 @@ async def test_car_endpoint_present_triggers_arrive():
 @pytest.mark.asyncio
 async def test_car_endpoint_absent_triggers_depart():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     from car_presence import CarPresence
     arrive, depart = AsyncMock(), AsyncMock()
     cp = CarPresence(on_arrive=arrive, on_depart=depart)
@@ -129,7 +129,7 @@ async def test_car_endpoint_absent_triggers_depart():
 async def test_car_endpoint_token_gated():
     """新端點也吃 middleware：無 token → 401。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     from car_presence import CarPresence
     cp = CarPresence(on_arrive=AsyncMock(), on_depart=AsyncMock())
     app = build_text_app(_make_vc(), token="s3cret", car_presence=cp)
@@ -141,7 +141,7 @@ async def test_car_endpoint_token_gated():
 @pytest.mark.asyncio
 async def test_car_endpoint_bad_state_400():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     from car_presence import CarPresence
     cp = CarPresence(on_arrive=AsyncMock(), on_depart=AsyncMock())
     app = build_text_app(_make_vc(), token="s3cret", car_presence=cp)
@@ -154,7 +154,7 @@ async def test_car_endpoint_bad_state_400():
 async def test_car_endpoint_off_when_no_presence_wired():
     """車載模式沒接（car_presence=None）→ 400 car_mode_off，不炸。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     app = build_text_app(_make_vc(), token="s3cret")   # 無 car_presence
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/car?t=s3cret", json={"state": "present"})

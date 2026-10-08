@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import asyncio
 
+import numpy as np
 import pytest
 
-from marvin_voice_core.stream_speaker_output import StreamSpeakerOutput
+from marvin_voice_core.stream_speaker_output import StreamSpeakerOutput, car_makeup_gain
 
 
 async def _settle():
@@ -156,3 +157,85 @@ async def test_mono_downmix_ignores_empty_frame():
     await _settle()
 
     assert q.empty()
+
+
+def test_car_makeup_gain_values():
+    assert car_makeup_gain(0.10) == pytest.approx(10.0)
+    assert car_makeup_gain(0.05) == pytest.approx(10.0)
+    assert car_makeup_gain(0.20) == pytest.approx(5.0)
+    assert car_makeup_gain(0.5) == pytest.approx(2.0)
+    assert car_makeup_gain(1.0) == pytest.approx(1.0)
+    assert car_makeup_gain(0.0) == pytest.approx(10.0)
+
+
+@pytest.mark.asyncio
+async def test_gain_fn_applies_gain_and_clips():
+    import struct
+
+    loop = asyncio.get_running_loop()
+    out = StreamSpeakerOutput(loop, gain_fn=lambda: 2.0)
+    q = out.subscribe()
+
+    frame = np.array([1000, -1000, 20000, -20000], dtype="<i2").tobytes()
+    out.write(frame)
+    await _settle()
+
+    result = q.get_nowait()
+    assert struct.unpack("<4h", result) == (2000, -2000, 32767, -32768)
+
+
+@pytest.mark.asyncio
+async def test_gain_fn_none_leaves_frame_unchanged():
+    loop = asyncio.get_running_loop()
+    out = StreamSpeakerOutput(loop, gain_fn=None)
+    q = out.subscribe()
+
+    frame = b"\x0b\x0c" * 480
+    out.write(frame)
+    await _settle()
+
+    assert q.get_nowait() == frame
+
+
+@pytest.mark.asyncio
+async def test_gain_fn_exception_leaves_frame_unchanged_and_does_not_raise():
+    def boom():
+        raise RuntimeError("boom")
+
+    loop = asyncio.get_running_loop()
+    out = StreamSpeakerOutput(loop, gain_fn=boom)
+    q = out.subscribe()
+
+    frame = b"\x0d\x0e" * 480
+    out.write(frame)
+    await _settle()
+
+    assert q.get_nowait() == frame
+
+
+@pytest.mark.asyncio
+async def test_close_broadcasts_sentinel_with_gain_fn():
+    loop = asyncio.get_running_loop()
+    out = StreamSpeakerOutput(loop, gain_fn=lambda: 2.0)
+    q = out.subscribe()
+
+    out.close()
+    await _settle()
+
+    assert q.get_nowait() is None
+
+
+@pytest.mark.asyncio
+async def test_gain_fn_applies_same_gain_to_all_subscribers():
+    loop = asyncio.get_running_loop()
+    out = StreamSpeakerOutput(loop, gain_fn=lambda: 2.0)
+    q1 = out.subscribe()
+    q2 = out.subscribe()
+
+    frame = np.array([1000, -1000], dtype="<i2").tobytes()
+    out.write(frame)
+    await _settle()
+
+    expected = np.array([2000, -2000], dtype="<i2").tobytes()
+    assert q1.get_nowait() == expected
+    assert q2.get_nowait() == expected

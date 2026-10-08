@@ -28,51 +28,51 @@ def _make_vc():
 
 # ── parse_device_speakers ───────────────────────────────────────────────────
 def test_parse_device_speakers_strips_and_skips_blanks():
-    from main_satellite import parse_device_speakers
+    from car_http_app import parse_device_speakers
     out = parse_device_speakers("狗與露, showay ,,", DEFAULT)
     assert out == {"狗與露": "狗與露", "showay": "showay"}
 
 
 def test_parse_device_speakers_always_includes_default():
-    from main_satellite import parse_device_speakers
+    from car_http_app import parse_device_speakers
     out = parse_device_speakers("showay", DEFAULT)
     assert out == {"狗與露": "狗與露", "showay": "showay"}
 
 
 def test_parse_device_speakers_keys_are_casefolded():
-    from main_satellite import parse_device_speakers
+    from car_http_app import parse_device_speakers
     out = parse_device_speakers("ShowAy", DEFAULT)
     assert out["showay"] == "ShowAy"
 
 
 # ── resolve_device_speaker ──────────────────────────────────────────────────
 def test_resolve_allowed_none_ignores_device_value():
-    from main_satellite import resolve_device_speaker
+    from car_http_app import resolve_device_speaker
     assert resolve_device_speaker("showay", None, DEFAULT) == DEFAULT
 
 
 @pytest.mark.parametrize("raw", [None, "  "])
 def test_resolve_missing_or_blank_falls_back_to_default(raw):
-    from main_satellite import parse_device_speakers, resolve_device_speaker
+    from car_http_app import parse_device_speakers, resolve_device_speaker
     allowed = parse_device_speakers("showay", DEFAULT)
     assert resolve_device_speaker(raw, allowed, DEFAULT) == DEFAULT
 
 
 def test_resolve_case_insensitive_returns_formal_name():
-    from main_satellite import parse_device_speakers, resolve_device_speaker
+    from car_http_app import parse_device_speakers, resolve_device_speaker
     allowed = parse_device_speakers("showay", DEFAULT)
     assert resolve_device_speaker("Showay", allowed, DEFAULT) == "showay"
 
 
 def test_resolve_unknown_returns_none():
-    from main_satellite import parse_device_speakers, resolve_device_speaker
+    from car_http_app import parse_device_speakers, resolve_device_speaker
     allowed = parse_device_speakers("showay", DEFAULT)
     assert resolve_device_speaker("eve", allowed, DEFAULT) is None
 
 
 # ── POST /car ───────────────────────────────────────────────────────────────
 def _car_app(cp, device_speakers):
-    from main_satellite import build_text_app, parse_device_speakers
+    from car_http_app import build_text_app, parse_device_speakers
     allowed = parse_device_speakers(device_speakers, DEFAULT)
     return build_text_app(_make_vc(), token="s3cret", car_presence=cp,
                           default_speaker=DEFAULT, device_speakers=allowed)
@@ -142,9 +142,9 @@ async def test_car_present_query_string_speaker():
 @pytest.mark.asyncio
 async def test_audio_passes_device_speaker_to_inject(monkeypatch):
     from aiohttp.test_utils import TestClient, TestServer
-    import main_satellite
+    import car_http_app
     fake = AsyncMock(return_value=True)
-    monkeypatch.setattr(main_satellite, "inject_audio", fake)
+    monkeypatch.setattr(car_http_app, "inject_audio", fake)
     app = _car_app(None, "showay")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/audio?t=s3cret&speaker=showay", data=b"RIFFfake")
@@ -156,9 +156,9 @@ async def test_audio_passes_device_speaker_to_inject(monkeypatch):
 @pytest.mark.asyncio
 async def test_audio_unknown_speaker_400_and_no_inject(monkeypatch):
     from aiohttp.test_utils import TestClient, TestServer
-    import main_satellite
+    import car_http_app
     fake = AsyncMock(return_value=True)
-    monkeypatch.setattr(main_satellite, "inject_audio", fake)
+    monkeypatch.setattr(car_http_app, "inject_audio", fake)
     app = _car_app(None, "showay")
     async with TestClient(TestServer(app)) as client:
         resp = await client.post("/audio?t=s3cret&speaker=eve", data=b"RIFFfake")
@@ -170,24 +170,24 @@ async def test_audio_unknown_speaker_400_and_no_inject(monkeypatch):
 # ── inject_audio(speaker=...) ───────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_inject_audio_uses_given_speaker(monkeypatch):
-    import main_satellite
+    import car_http_app
     fake_inject_text = AsyncMock(return_value=True)
-    monkeypatch.setattr(main_satellite, "inject_text", fake_inject_text)
+    monkeypatch.setattr(car_http_app, "inject_text", fake_inject_text)
     monkeypatch.setenv("MARVIN_SATELLITE_SPEAKER", DEFAULT)
     vc = MagicMock()
     vc.bot.engine._run_swift_stt = AsyncMock(return_value=("現在幾點", {}))
-    ok = await main_satellite.inject_audio(vc, b"RIFFfake", speaker="showay")
+    ok = await car_http_app.inject_audio(vc, b"RIFFfake", speaker="showay")
     assert ok is True
     assert fake_inject_text.call_args.args[1] == "showay"
 
 
 @pytest.mark.asyncio
 async def test_inject_audio_without_speaker_falls_back_to_env(monkeypatch):
-    import main_satellite
+    import car_http_app
     fake_inject_text = AsyncMock(return_value=True)
-    monkeypatch.setattr(main_satellite, "inject_text", fake_inject_text)
+    monkeypatch.setattr(car_http_app, "inject_text", fake_inject_text)
     monkeypatch.setenv("MARVIN_SATELLITE_SPEAKER", "阿凱")
     vc = MagicMock()
     vc.bot.engine._run_swift_stt = AsyncMock(return_value=("現在幾點", {}))
-    await main_satellite.inject_audio(vc, b"RIFFfake")
+    await car_http_app.inject_audio(vc, b"RIFFfake")
     assert fake_inject_text.call_args.args[1] == "阿凱"

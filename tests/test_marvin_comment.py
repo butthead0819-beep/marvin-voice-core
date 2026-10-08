@@ -10,7 +10,7 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from main_satellite import build_marvin_comment_prompt, parse_other_cards_param
+from car_http_app import build_marvin_comment_prompt, parse_other_cards_param
 
 
 def _make_vc(router=None):
@@ -87,7 +87,7 @@ def test_parse_other_cards_param_truncates_long_label_and_text():
 @pytest.mark.asyncio
 async def test_marvin_comment_returns_llm_text(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     router = MagicMock()
     router._call_llm = AsyncMock(return_value="這首歌播了三次了，你是不是卡帶了？")
     vc = _make_vc(router=router)
@@ -103,7 +103,7 @@ async def test_marvin_comment_returns_llm_text(tmp_path):
 async def test_marvin_comment_passes_other_cards_from_query_to_prompt():
     """HUD 帶 ?cards= 快照過來 → 送進 LLM 的 user_prompt 要看得到那些卡片內容。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     router = MagicMock()
     router._call_llm = AsyncMock(return_value="欸，你的 CI 又紅了。")
     vc = _make_vc(router=router)
@@ -120,7 +120,7 @@ async def test_marvin_comment_passes_other_cards_from_query_to_prompt():
 @pytest.mark.asyncio
 async def test_marvin_comment_falls_back_when_router_missing():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     vc = _make_vc(router=None)
     app = build_text_app(vc, token=None)
     async with TestClient(TestServer(app)) as client:
@@ -132,7 +132,7 @@ async def test_marvin_comment_falls_back_when_router_missing():
 @pytest.mark.asyncio
 async def test_marvin_comment_falls_back_when_llm_call_raises():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     router = MagicMock()
     router._call_llm = AsyncMock(side_effect=RuntimeError("boom"))
     vc = _make_vc(router=router)

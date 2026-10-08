@@ -70,12 +70,12 @@ async def test_puck_deck_works_without_puck_command_queue():
     """pi_bt 硬體不會傳 puck_command_queue（那是 ESP32 專用的控制指令佇列），
     2026-08-18 起 /puck_deck 不該再因此 404——只要 MusicCog 拿得到就正常服務。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc()
     fake_proc = _FakeProc([_sine_pcm()])
     app = build_text_app(vc, token="s3cret")   # 無 puck_command_queue
-    with patch("main_satellite.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+    with patch("car_http_app.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
             assert resp.status == 200
@@ -84,14 +84,14 @@ async def test_puck_deck_works_without_puck_command_queue():
 @pytest.mark.asyncio
 async def test_puck_deck_marks_deck_hit_only_when_queue_present():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc()
     fake_proc = _FakeProc([_sine_pcm()])
     queue = PuckCommandQueue()
     queue.mark_deck_hit = MagicMock()
     app = build_text_app(vc, token="s3cret", puck_command_queue=queue)
-    with patch("main_satellite.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+    with patch("car_http_app.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
             assert resp.status == 200
@@ -101,7 +101,7 @@ async def test_puck_deck_marks_deck_hit_only_when_queue_present():
 @pytest.mark.asyncio
 async def test_puck_deck_missing_url_400():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     app = build_text_app(_make_vc(), token="s3cret", puck_command_queue=PuckCommandQueue())
     async with TestClient(TestServer(app)) as client:
@@ -112,7 +112,7 @@ async def test_puck_deck_missing_url_400():
 @pytest.mark.asyncio
 async def test_puck_deck_500_when_music_cog_unavailable():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc(music_cog_present=False)
     app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
@@ -124,7 +124,7 @@ async def test_puck_deck_500_when_music_cog_unavailable():
 @pytest.mark.asyncio
 async def test_puck_deck_502_when_resolve_fails():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc(resolved_url=None)
     app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
@@ -136,12 +136,12 @@ async def test_puck_deck_502_when_resolve_fails():
 @pytest.mark.asyncio
 async def test_puck_deck_streams_mp3_on_success():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc()
     fake_proc = _FakeProc([_sine_pcm(), _sine_pcm()])
     app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
-    with patch("main_satellite.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+    with patch("car_http_app.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
             assert resp.status == 200
@@ -158,12 +158,12 @@ async def test_puck_deck_seek_param_adds_ffmpeg_ss_before_i():
     """ESP32 端真斷線重連時帶 &seek=<秒數>，ffmpeg 要用 -ss 接回原本位置（放在 -i
     前面才是快速 seek）——見 car_puck.ino::deckNetworkTask 的 deckDownloadedSec。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc()
     fake_proc = _FakeProc([_sine_pcm()])
     app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
-    with patch("main_satellite.asyncio.create_subprocess_exec",
+    with patch("car_http_app.asyncio.create_subprocess_exec",
                AsyncMock(return_value=fake_proc)) as mock_exec:
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret&seek=87.65")
@@ -182,12 +182,12 @@ async def test_puck_deck_seek_param_adds_ffmpeg_ss_before_i():
 async def test_puck_deck_no_seek_param_omits_ss():
     """沒帶 seek（新歌開播的正常情況）→ 不該出現 -ss，從頭播。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc()
     fake_proc = _FakeProc([_sine_pcm()])
     app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
-    with patch("main_satellite.asyncio.create_subprocess_exec",
+    with patch("car_http_app.asyncio.create_subprocess_exec",
                AsyncMock(return_value=fake_proc)) as mock_exec:
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
@@ -202,12 +202,12 @@ async def test_puck_deck_no_seek_param_omits_ss():
 async def test_puck_deck_seek_zero_omits_ss():
     """seek=0（理論上不該發生，但保守處理）→ 不加 -ss，等同從頭播。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc()
     fake_proc = _FakeProc([_sine_pcm()])
     app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
-    with patch("main_satellite.asyncio.create_subprocess_exec",
+    with patch("car_http_app.asyncio.create_subprocess_exec",
                AsyncMock(return_value=fake_proc)) as mock_exec:
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret&seek=0")
@@ -222,12 +222,12 @@ async def test_puck_deck_seek_zero_omits_ss():
 async def test_puck_deck_garbage_seek_ignored():
     """seek 帶垃圾值 → 忽略、照樣正常開播，不能讓整個 deck 連不上。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc()
     fake_proc = _FakeProc([_sine_pcm()])
     app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
-    with patch("main_satellite.asyncio.create_subprocess_exec",
+    with patch("car_http_app.asyncio.create_subprocess_exec",
                AsyncMock(return_value=fake_proc)) as mock_exec:
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret&seek=not-a-number")
@@ -247,12 +247,12 @@ async def test_puck_deck_survives_process_already_exited_naturally():
     /puck_deck 跟 /puck_voice 共用這支函式）。這裡驗證：行程已經自然結束時，回應仍要
     完整送達（不能讓 ProcessLookupError 逃出去讓整個請求炸掉）。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     vc = _make_vc()
     fake_proc = _FakeProc([_sine_pcm()], already_exited=True)
     app = build_text_app(vc, token="s3cret", puck_command_queue=PuckCommandQueue())
-    with patch("main_satellite.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
+    with patch("car_http_app.asyncio.create_subprocess_exec", AsyncMock(return_value=fake_proc)):
         async with TestClient(TestServer(app)) as client:
             resp = await client.get("/puck_deck?url=https://youtu.be/a&t=s3cret")
             assert resp.status == 200
@@ -264,7 +264,7 @@ async def test_puck_deck_survives_process_already_exited_naturally():
 @pytest.mark.asyncio
 async def test_puck_deck_token_gated():
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
 
     app = build_text_app(_make_vc(), token="s3cret", puck_command_queue=PuckCommandQueue())
     async with TestClient(TestServer(app)) as client:

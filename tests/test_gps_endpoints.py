@@ -20,7 +20,7 @@ def _make_vc():
 @pytest.mark.asyncio
 async def test_car_present_with_latlon_saves_location(tmp_path):
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     from car_presence import CarPresence
     from location_state import load_location_state
 
@@ -45,7 +45,7 @@ async def test_car_present_with_latlon_saves_location(tmp_path):
 async def test_car_present_without_latlon_does_not_touch_location_state(tmp_path):
     """ESP32 puck 只有前 15 分鐘那次心跳帶座標，其餘心跳不帶——不該覆蓋成 None。"""
     from aiohttp.test_utils import TestClient, TestServer
-    from main_satellite import build_text_app
+    from car_http_app import build_text_app
     from car_presence import CarPresence
     from location_state import load_location_state
 
