@@ -127,3 +127,30 @@ def test_probe_public_tls_connection_failure_is_reported():
     ok, detail = probe_public_tls("host.ts.net", "9.9.9.9", "tok", run_fn=fake_run)
     assert ok is False
     assert "35" in detail
+
+
+def test_heal_raising_still_reports_heal_failed_so_alert_fires():
+    """2026-10-08：heal 丟例外（launchd PATH 找不到 tailscale）時整支腳本崩潰、
+    告警沒發出——Funnel 斷了一下午沒人知道。heal 失敗也要回 heal_failed 讓告警照發。"""
+    check = _counting_check([(False, "curl exit=28")] * 2)
+
+    def _boom():
+        raise FileNotFoundError(2, "No such file or directory", "tailscale")
+
+    result = decide_and_act(check, _boom, retry_sleep_fn=lambda s: None)
+
+    assert result["action"] == "heal_failed"
+    assert "FileNotFoundError" in result["detail"]
+
+
+def test_heal_funnel_uses_absolute_tailscale_path_when_not_on_path(monkeypatch):
+    """launchd 的 PATH 沒有 /usr/local/bin：找不到時要退回絕對路徑，不能用裸 'tailscale'。"""
+    from scripts import funnel_healthcheck as fh
+    monkeypatch.setattr(fh.shutil, "which", lambda name: None)
+    calls = []
+
+    fh.heal_funnel(8790, run_fn=lambda argv, **kw: calls.append(argv), sleep_fn=lambda s: None)
+
+    assert [c[0] for c in calls] == ["/usr/local/bin/tailscale", "/usr/local/bin/tailscale"]
+    assert calls[0][1:] == ["funnel", "reset"]
+    assert calls[1][1:] == ["funnel", "--bg", "8790"]

@@ -24,6 +24,7 @@ kill-switch：env MARVIN_FUNNEL_HEALTHCHECK=0 → 直接退出（不檢查、不
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -39,6 +40,8 @@ FUNNEL_PORT = 8790
 REALERT_AFTER_S = 6 * 3600
 TRANSIENT_RETRY_DELAY_S = 5
 HEAL_PROPAGATE_WAIT_S = 20
+# launchd 的 PATH 沒有 /usr/local/bin，裸 "tailscale" 會 FileNotFoundError（2026-10-08 自癒從沒成功過）
+TAILSCALE_FALLBACK = "/usr/local/bin/tailscale"
 
 
 # ── 純邏輯（好測，不碰真網路/subprocess）─────────────────────────────────────
@@ -92,9 +95,10 @@ def check_funnel_public(host: str, token: str,
 
 def heal_funnel(port: int, *, run_fn=subprocess.run, sleep_fn=time.sleep) -> None:
     """`tailscale funnel reset` 清掉卡住的 ingress 狀態，重新套用同一組設定。"""
-    run_fn(["tailscale", "funnel", "reset"], capture_output=True, timeout=15)
+    ts = shutil.which("tailscale") or TAILSCALE_FALLBACK
+    run_fn([ts, "funnel", "reset"], capture_output=True, timeout=15)
     sleep_fn(1)
-    run_fn(["tailscale", "funnel", "--bg", str(port)], capture_output=True, timeout=15)
+    run_fn([ts, "funnel", "--bg", str(port)], capture_output=True, timeout=15)
     sleep_fn(HEAL_PROPAGATE_WAIT_S)
 
 
@@ -111,7 +115,10 @@ def decide_and_act(check_fn, heal_fn, *, retry_sleep_fn=time.sleep) -> dict:
     ok2, detail2 = check_fn()
     if ok2:
         return {"action": "transient", "detail": f"重測後恢復: {detail2}（首次失敗: {detail}）"}
-    heal_fn()
+    try:
+        heal_fn()
+    except Exception as e:  # noqa: BLE001 — 自癒壞掉也要讓告警照發，不能整支崩潰
+        return {"action": "heal_failed", "detail": f"自癒執行失敗: {type(e).__name__}: {e}（{detail2}）"}
     ok3, detail3 = check_fn()
     if ok3:
         return {"action": "healed", "detail": f"自癒後恢復: {detail3}"}
