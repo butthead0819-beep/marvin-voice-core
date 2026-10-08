@@ -154,6 +154,30 @@ int main() {
     printf("D6 ok\n");
   }
 
+  // D7：diag_budget_take max=3，前 3 次回 true 且 used 依序變 1/2/3，第 4、5 次回 false 且 used 仍 3
+  {
+    uint8_t used = 0;
+    assert(diag_budget_take(used, 3) == true);
+    assert(used == 1);
+    assert(diag_budget_take(used, 3) == true);
+    assert(used == 2);
+    assert(diag_budget_take(used, 3) == true);
+    assert(used == 3);
+    assert(diag_budget_take(used, 3) == false);
+    assert(used == 3);
+    assert(diag_budget_take(used, 3) == false);
+    assert(used == 3);
+    printf("D7 ok\n");
+  }
+
+  // D8：diag_budget_take max=0，第一次就回 false，used 仍 0
+  {
+    uint8_t used = 0;
+    assert(diag_budget_take(used, 0) == false);
+    assert(used == 0);
+    printf("D8 ok\n");
+  }
+
   printf("ALL PASS\n");
   return 0;
 }

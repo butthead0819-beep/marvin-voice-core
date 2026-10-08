@@ -64,4 +64,11 @@ inline bool diag_deserialize(DiagLog& d, const uint8_t* buf, size_t len) {
   return true;
 }
 
+// 每次開機的寫入額度：used < max 時 used++ 並回 true；否則回 false（不動 used）。
+static inline bool diag_budget_take(uint8_t& used, uint8_t max) {
+  if (used >= max) return false;
+  used++;
+  return true;
+}
+
 #endif  // DIAG_LOG_H

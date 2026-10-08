@@ -268,6 +268,7 @@ static OutputState g_out_state;
 volatile uint32_t g_frames_in = 0;  // 累計 I2S 收到的 48k 格數（reader task 寫）
 static volatile bool g_connected_evt = false;
 static volatile bool g_page_failed_evt = false;
+static volatile bool g_dropped_evt = false;
 
 // ---- 已配對清單 / 模式 / 按鈕與 LED ----
 static const char* TARGET_NAMES[] = {"BMW 04900", "soundcore"};
@@ -390,6 +391,13 @@ static void diag_loop_add(const char* text) {
   diag_store();
 }
 
+// 重連模式每次開機最多記 8 筆（避免目標不在時每 ~10s 失敗一次整晚寫 NVS）。
+static const uint8_t RECON_DIAG_MAX = 8;
+static uint8_t g_recon_diag_used = 0;
+static void recon_diag_add(const char* text) {
+  if (diag_budget_take(g_recon_diag_used, RECON_DIAG_MAX)) diag_loop_add(text);
+}
+
 // ---- I2S slave RX ----
 static bool i2s_rx_init() {
   i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_SLAVE);
@@ -490,6 +498,9 @@ void connection_state_cb(esp_a2d_connection_state_t state, void* obj) {
   if (state == ESP_A2D_CONNECTION_STATE_DISCONNECTED && prev == ESP_A2D_CONNECTION_STATE_CONNECTING) {
     g_page_failed_evt = true;
   }
+  if (state == ESP_A2D_CONNECTION_STATE_DISCONNECTED && prev == ESP_A2D_CONNECTION_STATE_CONNECTED) {
+    g_dropped_evt = true;
+  }
   prev = state;
 }
 
@@ -520,6 +531,13 @@ void setup() {
   diag_load();
   g_pairing_mode = a2dp_source.pairing_mode();
   Serial.printf("[BT] 模式：%s\n", g_pairing_mode ? "配對(掃描)" : "重連已知裝置");
+  if (!g_pairing_mode) {
+    uint8_t lc[6];
+    a2dp_source.get_last(lc);
+    char d[DIAG_TEXT];
+    snprintf(d, sizeof(d), "B r %02X%02X%02X k%d", lc[3], lc[4], lc[5], (int)g_known.count);
+    recon_diag_add(d);
+  }
 }
 
 void loop() {
@@ -546,23 +564,31 @@ void loop() {
       print_bda(cur);
       Serial.printf("（共 %d 台）\n", (int)g_known.count);
     }
-    // C/F 只在配對模式記：重連模式下目標沒開機會每 ~10s 失敗一次，整晚寫 NVS 白耗壽命
-    if (g_pairing_mode) {
+    // C/F/D 重連模式下也記（每次開機上限 RECON_DIAG_MAX 筆，避免目標沒開機每 ~10s 失敗一次整晚寫 NVS）
+    {
       char d[DIAG_TEXT];
       snprintf(d, sizeof(d), "C %02X%02X%02X", cur[3], cur[4], cur[5]);
-      diag_loop_add(d);
+      if (g_pairing_mode) {
+        diag_loop_add(d);
+      } else {
+        recon_diag_add(d);
+      }
     }
     g_pairing_mode = false;
   }
 
   if (g_page_failed_evt) {
     g_page_failed_evt = false;
-    if (g_pairing_mode) {
+    {
       uint8_t lc[6];
       a2dp_source.get_last(lc);
       char d[DIAG_TEXT];
       snprintf(d, sizeof(d), "F %02X%02X%02X", lc[3], lc[4], lc[5]);
-      diag_loop_add(d);
+      if (g_pairing_mode) {
+        diag_loop_add(d);
+      } else {
+        recon_diag_add(d);
+      }
     }
     // >=1 而非 >=2：上次連線對象可能是「配對中途斷電、從沒連成功」的裝置（不在清單裡，
     // 例如 10/7 的 BMW），這時清單只有 1 台也要切過去，否則永遠 page 一台不存在的車機
@@ -576,6 +602,15 @@ void loop() {
         Serial.println();
       }
     }
+  }
+
+  if (g_dropped_evt) {
+    g_dropped_evt = false;
+    uint8_t lc[6];
+    a2dp_source.get_last(lc);
+    char d[DIAG_TEXT];
+    snprintf(d, sizeof(d), "D %02X%02X%02X", lc[3], lc[4], lc[5]);
+    recon_diag_add(d);
   }
 
   uint32_t now = millis();
