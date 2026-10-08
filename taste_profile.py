@@ -20,7 +20,6 @@ import re
 import time
 from pathlib import Path
 
-import memory_sandbox
 from music_recommender import Evidence
 
 logger = logging.getLogger(__name__)
@@ -131,8 +130,6 @@ def read_profiles(path) -> dict:
 
 def write_profile(path, user: str, data: dict) -> None:
     """寫單一使用者 profile（含 seed_video_ids + ts）。合併既有檔。"""
-    if memory_sandbox.active():
-        return  # 沙盒：整檔覆寫 no-op（ephemeral）
     p = Path(path)
     profiles = read_profiles(p)
     entry = dict(data)

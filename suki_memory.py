@@ -6,8 +6,6 @@ import sqlite3
 import time
 from datetime import datetime
 
-import memory_sandbox
-
 logger = logging.getLogger("SukiMemory")
 
 _DB_PATH = "marvin.db"
@@ -304,9 +302,6 @@ class MemoryManager:
     # ── DB init ──────────────────────────────────────────────────────────────
 
     def _open_db(self) -> sqlite3.Connection:
-        if memory_sandbox.active():
-            # 沙盒：唯讀開正本（物理牆），schema 已由 live bot 維護、不建不遷不設 WAL
-            return memory_sandbox.connect(self._db_path, check_same_thread=False)
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         self._ensure_players_schema(conn)
@@ -393,8 +388,7 @@ class MemoryManager:
         rows = self._conn.execute(
             "SELECT username, data FROM players WHERE guild_id = ?", (self._guild_id,)
         ).fetchall()
-        if not rows and self._is_home and not memory_sandbox.active():
-            # 沙盒：不做 JSON→DB 遷移（那是寫入；正本 schema/資料已由 live bot 維護）
+        if not rows and self._is_home:
             self._migrate_from_json()
             rows = self._conn.execute(
                 "SELECT username, data FROM players WHERE guild_id = ?", (self._guild_id,)
@@ -409,7 +403,7 @@ class MemoryManager:
                 self._db_snapshot[username] = data_str
             except Exception as exc:
                 logger.warning(f"⚠️ [Memory] 無法載入 {username}: {exc}")
-        if purged and not memory_sandbox.active():
+        if purged:
             for username in purged:
                 self._conn.execute(
                     "DELETE FROM players WHERE guild_id = ? AND username = ?",
@@ -453,12 +447,9 @@ class MemoryManager:
         Why: cache 啟動後不重讀 DB，bot 對某玩家任何 _save_player 都會把舊快取整筆寫回，
         蓋掉 daily review 剛寫的 taste（2026-09-08 狗與露 18 筆 taste 被抹成 1 筆）。
         bot 自己每次改動都立即落盤，所以重載只會丟掉 last_interacted_time 這類未存小欄位。
-        沙盒模式不重載：沙盒的寫入刻意只留在 cache（ephemeral），重載會把它們清掉。
         data_version 對同庫任何表的外部寫入都會變（transcripts/budget 幾乎每句話都寫），
         所以變了之後逐列比對原始字串，只換真的被改過的玩家；沒變的玩家 dict 物件不動。
         """
-        if memory_sandbox.active():
-            return
         v = self._read_data_version()
         if v is None or v == self._data_version:
             return
@@ -486,8 +477,6 @@ class MemoryManager:
     # ── Persist ──────────────────────────────────────────────────────────────
 
     def _save_player(self, username: str):
-        if memory_sandbox.active():
-            return  # 沙盒：不落盤（ephemeral，變更只留 self._cache、斷線丟棄）
         if username not in self._cache:
             return
         data_str = json.dumps(self._cache[username], ensure_ascii=False)
@@ -508,8 +497,6 @@ class MemoryManager:
         只在 home guild 匯出：JSON 的 players 區段是扁平 username map，guest guild
         若也寫會互相蓋掉、也會污染 offline script 讀的 home guild 資料。
         """
-        if memory_sandbox.active():
-            return  # 沙盒：整檔 JSON 覆寫是最危險的並行寫（會 nuke live bot 的 cron meta），絕不寫
         if not self._is_home:
             return
         try:
@@ -921,8 +908,6 @@ class MemoryManager:
         speaker: str | None = None,
     ) -> None:
         """記錄一筆氣氛回饋。label ∈ {"too_loud", "too_sharp", "too_jolly"}。"""
-        if memory_sandbox.active():
-            return  # 沙盒：寫入 no-op
         self._conn.execute(
             "INSERT INTO atmosphere_corrections "
             "(snapshot_ts, label, speaker, created_ts) VALUES (?, ?, ?, ?)",

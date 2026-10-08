@@ -9,7 +9,6 @@ scripts/prune_retention.py — Phase 1 Stage D 資料保留期限清理工具。
 5. voice_presence.jsonl: ts < now-90d（原子改寫，不留 .bak）
 
 預設為 dry-run，只有加 --apply 才會執行刪除。
-遵守 memory_sandbox.active()：沙盒中強制為 no-op。
 """
 from __future__ import annotations
 
@@ -26,8 +25,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-
-import memory_sandbox  # noqa: E402
 
 TAIPEI_TZ = timezone(timedelta(hours=8))
 DAILY_PATTERN = re.compile(r"^(?:stt_|topic_stats_)?(\d{4}-\d{2}-\d{2})\.(?:log|json)$")
@@ -158,9 +155,6 @@ def prune_all(
     now: float | None = None,
     apply: bool = False,
 ) -> dict:
-    if memory_sandbox.active():
-        apply = False
-
     effective_now = time.time() if now is None else float(now)
     cutoff_30d = effective_now - 30 * 86400
     cutoff_90d = effective_now - 90 * 86400

@@ -3,8 +3,6 @@ import logging
 import sqlite3
 from datetime import datetime
 
-import memory_sandbox
-
 logger = logging.getLogger("SukiBudget")
 
 _DB_PATH = "marvin.db"
@@ -25,9 +23,6 @@ class SukiBudget:
     # ── DB init ──────────────────────────────────────────────────────────────
 
     def _open_db(self) -> sqlite3.Connection:
-        if memory_sandbox.active():
-            # 沙盒：唯讀開正本（讀當日累積當付費保護代理）、不建表不設 WAL
-            return memory_sandbox.connect(self._db_path, check_same_thread=False)
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
@@ -44,8 +39,6 @@ class SukiBudget:
         return json.loads(row[0]) if row else default
 
     def _set(self, key: str, value) -> None:
-        if memory_sandbox.active():
-            return  # 沙盒：寫入 no-op（ephemeral，不累積回正本）
         self._conn.execute(
             "INSERT OR REPLACE INTO budget (key, value) VALUES (?, ?)",
             (key, json.dumps(value)),

@@ -7,7 +7,6 @@ import time
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 import pytest
-import memory_sandbox
 
 
 def _create_schema(db_path: Path):
@@ -219,38 +218,3 @@ def test_prune_retention_dry_run_and_apply(tmp_path):
     lines = presence_file.read_text().strip().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["event"] == "leave"
-
-
-def test_prune_retention_sandbox_active(tmp_path, monkeypatch):
-    """沙盒 active 時即使帶 --apply 也必須是 no-op。"""
-    from scripts.prune_retention import prune_all
-    db_file = tmp_path / "test_marvin.db"
-    _create_schema(db_file)
-    now = 1790800000.0
-    conn = sqlite3.connect(db_file)
-    conn.execute(
-        "INSERT INTO speaker_topic_graph (speaker, channel_id, text, created_at) VALUES ('Alice', 1, 'old topic', ?)",
-        (now - 40 * 86400,),
-    )
-    conn.commit()
-    conn.close()
-
-    daily_dir = tmp_path / "daily"
-    daily_dir.mkdir()
-    presence_file = tmp_path / "voice_presence.jsonl"
-    presence_file.write_text(json.dumps({"ts": now - 100 * 86400, "user_id": "1", "event": "join"}) + "\n")
-
-    monkeypatch.setattr(memory_sandbox, "active", lambda: True)
-
-    summary = prune_all(
-        db_path=db_file,
-        daily_dir=daily_dir,
-        presence_path=presence_file,
-        now=now,
-        apply=True,
-    )
-    assert summary["dry_run"] is True or summary["speaker_topic_graph"]["deleted"] == 0
-
-    conn = sqlite3.connect(db_file)
-    assert conn.execute("SELECT count(*) FROM speaker_topic_graph").fetchone()[0] == 1
-    conn.close()

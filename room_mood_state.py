@@ -22,8 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-import memory_sandbox
-
 logger = logging.getLogger(__name__)
 
 MoodLabel = Literal["放鬆", "興奮", "低落", "分歧"]
@@ -91,8 +89,6 @@ class RoomMoodStateStore:
 
     def dump(self) -> None:
         """Best-effort dump to JSON. 失敗只 log。"""
-        if memory_sandbox.active():
-            return  # 沙盒：整檔覆寫 no-op（ephemeral）
         try:
             payload = {
                 str(cid): {
