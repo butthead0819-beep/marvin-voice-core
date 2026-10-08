@@ -109,6 +109,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
     _DJ_MODE_TO_TTS_EMOTION = {
         "life": "upbeat",
         "interest": "upbeat",
+        "activity": "upbeat",
         "atmosphere": "calm",
         "prev_song": "calm",
         "emotional_highlight": "calm",
