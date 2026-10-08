@@ -157,8 +157,10 @@ async def _start_discord_text_server(loop, vc):
         logger.warning("[DiscordTextServer] voice controller 沒有 _mixer，:8790 車載 app 不啟動")
         return None
     try:
-        from marvin_voice_core.stream_speaker_output import StreamSpeakerOutput
-        stream_out = StreamSpeakerOutput(loop)
+        from marvin_voice_core.stream_speaker_output import StreamSpeakerOutput, car_makeup_gain
+        # 車上要 100%，Discord 預設 0.10，只補車機這條輸出（Discord 不動）
+        stream_out = StreamSpeakerOutput(
+            loop, gain_fn=lambda: car_makeup_gain(getattr(mixer, "_volume_target", 1.0)))
         mixer.set_tap(stream_out)
         from car_http_app import start_text_http_server
         return await start_text_http_server(vc, stream_source=stream_out, discord_voice=vc)
