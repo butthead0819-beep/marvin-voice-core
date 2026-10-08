@@ -16,9 +16,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import discord
+
 import intent_agents.grounded_qa_agent as gqa
 from intent_agents.grounded_qa_agent import (
-    GroundedQAAgent, grounded_answer, parse_grounded_qa,
+    GroundedQAAgent, current_games, grounded_answer, parse_grounded_qa,
 )
 from intent_bus import IntentContext
 
@@ -521,3 +523,115 @@ async def test_grounded_max_chars_default_trims_and_overridable():
     assert len(out[0]) <= 141  # 預設 MAX_REPLY_CHARS=140（+ 省略號）
     out2 = await grounded_answer(_client(_resp(long_text)), None, _guard(), "q", max_chars=800)
     assert out2[0] == long_text
+
+
+# ── current_games（10/8：grounded 查詢帶上語音頻道裡大家正在玩的遊戲） ─────────
+
+def _member(display_name, *, bot=False, activities=None):
+    from types import SimpleNamespace
+    return SimpleNamespace(display_name=display_name, bot=bot, activities=activities or [])
+
+
+def _playing(name):
+    from types import SimpleNamespace
+    return SimpleNamespace(type=discord.ActivityType.playing, name=name)
+
+
+def _listening(name):
+    from types import SimpleNamespace
+    return SimpleNamespace(type=discord.ActivityType.listening, name=name)
+
+
+def _ctrl_with_members(members):
+    from types import SimpleNamespace
+    ctrl = MagicMock()
+    ctrl.voice_client = SimpleNamespace(channel=SimpleNamespace(members=members))
+    return ctrl
+
+
+def test_current_games_excludes_bots():
+    members = [
+        _member("Marvin", bot=True, activities=[_playing("原神")]),
+        _member("showay", activities=[_playing("傳說對決")]),
+    ]
+    ctrl = _ctrl_with_members(members)
+    assert current_games(ctrl, "狗與露") == ["傳說對決"]
+
+
+def test_current_games_excludes_non_playing_activities():
+    members = [_member("showay", activities=[_listening("Spotify")])]
+    ctrl = _ctrl_with_members(members)
+    assert current_games(ctrl, "狗與露") == []
+
+
+def test_current_games_speaker_game_first():
+    members = [
+        _member("showay", activities=[_playing("傳說對決")]),
+        _member("狗與露", activities=[_playing("原神")]),
+    ]
+    ctrl = _ctrl_with_members(members)
+    assert current_games(ctrl, "狗與露") == ["原神", "傳說對決"]
+
+
+def test_current_games_dedups_names():
+    members = [
+        _member("showay", activities=[_playing("原神")]),
+        _member("狗與露", activities=[_playing("原神")]),
+    ]
+    ctrl = _ctrl_with_members(members)
+    assert current_games(ctrl, "狗與露") == ["原神"]
+
+
+def test_current_games_no_voice_client_returns_empty():
+    ctrl = MagicMock()
+    ctrl.voice_client = None
+    assert current_games(ctrl, "狗與露") == []
+
+
+@pytest.mark.asyncio
+async def test_grounded_answer_with_game_context_injects_prompt():
+    free = _client(_resp("這是跟遊戲相關的答案。"))
+    guard = _guard()
+    out = await grounded_answer(
+        free, None, guard, "那個 boss 怎麼打？", game_context=["Grounded 2"],
+    )
+    assert out is not None
+    call_kwargs = free.aio.models.generate_content.call_args.kwargs
+    contents = call_kwargs["contents"]
+    assert "Grounded 2" in contents
+    assert "【使用者當前提問】" in contents
+
+
+@pytest.mark.asyncio
+async def test_grounded_answer_without_game_or_recent_context_is_bare_query():
+    free = _client(_resp("答案。"))
+    out = await grounded_answer(free, None, _guard(), "某個問題")
+    assert out is not None
+    call_kwargs = free.aio.models.generate_content.call_args.kwargs
+    assert call_kwargs["contents"] == "某個問題"
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_passes_current_games_and_logs_them(monkeypatch):
+    """run_grounded_qa 要把頻道裡正在玩的遊戲傳給 grounded_answer，並寫進 ambient_qa 紀錄。"""
+    ctrl = _ctrl_with_members([_member("showay", activities=[_playing("Grounded 2")])])
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+    ctrl._ambient_qa_guard = _guard()
+
+    seen = {}
+
+    async def _fake_grounded_answer(free, paid, guard, query, **kwargs):
+        seen.update(kwargs)
+        return ("有斧頭、矛、弓。", ["fandom.com"])
+
+    monkeypatch.setattr(gqa, "grounded_answer", _fake_grounded_answer)
+    recorded = []
+    monkeypatch.setattr(gqa, "record_ambient_qa", lambda r: recorded.append(r))
+
+    await gqa.run_grounded_qa(ctrl, "showay", "武器種類有哪些", recent_context="")
+
+    assert seen.get("game_context") == ["Grounded 2"]
+    assert recorded and recorded[-1]["games"] == ["Grounded 2"]

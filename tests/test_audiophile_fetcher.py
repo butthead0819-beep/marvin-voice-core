@@ -356,6 +356,37 @@ def test_resolved_matches_track_false(info, track):
     assert resolved_matches_track(info, track) is False
 
 
+# ── pick_album_followups（10/8：「播放這張專輯」挑接下來排進佇列的曲目）───────
+
+def test_pick_album_followups_from_middle_wraps_around():
+    from audiophile_fetcher import pick_album_followups
+    tracks = ["愛在西元前", "雙截棍", "簡單愛", "開不了口", "上海一九四三"]
+    got = pick_album_followups(tracks, "周杰倫 Jay Chou【簡單愛 Simple Love】Official MV")
+    assert got == ["開不了口", "上海一九四三", "愛在西元前", "雙截棍"]
+
+
+def test_pick_album_followups_current_not_found_returns_first_n():
+    from audiophile_fetcher import pick_album_followups
+    tracks = ["愛在西元前", "雙截棍", "簡單愛", "開不了口", "上海一九四三"]
+    got = pick_album_followups(tracks, "完全找不到的標題")
+    assert got == ["愛在西元前", "雙截棍", "簡單愛", "開不了口"]
+
+
+def test_pick_album_followups_respects_n():
+    from audiophile_fetcher import pick_album_followups
+    tracks = ["愛在西元前", "雙截棍", "簡單愛", "開不了口", "上海一九四三"]
+    got = pick_album_followups(tracks, "完全找不到的標題", n=2)
+    assert got == ["愛在西元前", "雙截棍"]
+
+
+def test_pick_album_followups_recognizes_dirty_current_title():
+    from audiophile_fetcher import pick_album_followups
+    tracks = ["晴天", "七里香", "困獸之鬥"]
+    got = pick_album_followups(
+        tracks, "周杰倫 Jay Chou【晴天 Sunny Day】Official MV")
+    assert got == ["七里香", "困獸之鬥"]
+
+
 # ── _fetch_guide（無保底台詞版本，song_guide_for_dj 的共用核心）───────────────
 
 @pytest.mark.asyncio

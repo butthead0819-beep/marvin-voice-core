@@ -179,8 +179,13 @@ async def handle_intent_gap(
     gap_logger: GapLogger,
     manifest: dict,
     tts_call: Callable[[str], Awaitable[None]],
+    play_ack: bool = True,
 ) -> IntentGapRecord:
-    """Return 寫入的 record — caller 看 intent_type 決定要不要 fall through 到 Marvin。"""
+    """Return 寫入的 record — caller 看 intent_type 決定要不要 fall through 到 Marvin。
+
+    play_ack=False：JSONL 永遠寫，但不播模板 ack（10/8 定案：classifier 只做測量，
+    有意圖的 query 改交給 Marvin 主 LLM 自然接話，不再講「功能開發中」）。
+    """
     try:
         result = await classifier(ctx.query, manifest)
     except Exception as exc:
@@ -197,7 +202,8 @@ async def handle_intent_gap(
     query_domain = result.get("query_domain")
 
     should_play = bool(
-        intent_type != "UNKNOWN"
+        play_ack
+        and intent_type != "UNKNOWN"
         and llm_ack_text
         and gap_logger.should_ack(ctx.speaker, intent_type, ctx.now)
     )

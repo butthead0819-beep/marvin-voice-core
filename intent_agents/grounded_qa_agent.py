@@ -167,6 +167,44 @@ def _trim(text: str, max_chars: int = MAX_REPLY_CHARS) -> str:
     return head + "…"
 
 
+def current_games(ctrl, speaker: str) -> list[str]:
+    """語音頻道裡大家正在玩的遊戲（Discord Rich Presence），說話者排最前。
+
+    純函式風格（只讀 ctrl），任何一層缺失都安全降級回 []。
+    """
+    try:
+        import discord
+
+        members = ctrl.voice_client.channel.members
+        speaker_games: list[str] = []
+        other_games: list[str] = []
+        for m in members:
+            if getattr(m, "bot", False):
+                continue
+            names: list[str] = []
+            for act in (getattr(m, "activities", None) or []):
+                if getattr(act, "type", None) == discord.ActivityType.playing:
+                    name = (getattr(act, "name", None) or "").strip()
+                    if name:
+                        names.append(name)
+            if getattr(m, "display_name", None) == speaker:
+                speaker_games.extend(names)
+            else:
+                other_games.extend(names)
+
+        seen: set[str] = set()
+        out: list[str] = []
+        for name in speaker_games + other_games:
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
+            if len(out) >= 3:
+                break
+        return out
+    except Exception:
+        return []
+
+
 async def build_recent_transcript_context(
     ctrl,
     guild_id: int | None = None,
@@ -233,6 +271,7 @@ async def grounded_answer(
     query: str,
     *,
     recent_context: str = "",
+    game_context: list[str] | None = None,
     model_chain: tuple[str, ...] = MODEL_CHAIN,
     timeout: float = GROUNDED_TIMEOUT_S,
     system_prompt: str = _SYSTEM_PROMPT,
@@ -251,13 +290,20 @@ async def grounded_answer(
         tools=[types.Tool(google_search=types.GoogleSearch())],
     )
 
-    if recent_context and recent_context.strip():
-        contents = (
-            f"【過去 10 分鐘語音對話背景（僅供參考指稱與上下文脈絡，勿逐句回答）】\n"
-            f"{recent_context.strip()}\n\n"
-            f"【使用者當前提問】\n"
-            f"{query.strip()}"
+    segments: list[str] = []
+    if game_context:
+        segments.append(
+            f"【語音頻道裡大家正在玩的遊戲（問題跟遊戲有關但沒講是哪款時，就是指這款）】"
+            f"{'、'.join(game_context)}"
         )
+    if recent_context and recent_context.strip():
+        segments.append(
+            f"【過去 10 分鐘語音對話背景（僅供參考指稱與上下文脈絡，勿逐句回答）】\n"
+            f"{recent_context.strip()}"
+        )
+    if segments:
+        segments.append(f"【使用者當前提問】\n{query.strip()}")
+        contents = "\n\n".join(segments)
     else:
         contents = query.strip()
 
@@ -346,6 +392,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
 
     if recent_context is None:
         recent_context = await build_recent_transcript_context(ctrl, minutes=10)
+    games = current_games(ctrl, speaker)
 
     t0 = _time.monotonic()
     res = None
@@ -355,6 +402,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
             getattr(router, "google_paid_client", None),
             guard, topic,
             recent_context=recent_context,
+            game_context=games,
         )
     except Exception as e:
         logger.warning(f"[AmbientQA] grounded_answer 例外: {e}")
@@ -365,7 +413,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         asyncio.create_task(ctrl.play_tts("這題我查不到。", already_in_channel=True))
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
-                           "latency_ms": latency_ms, "source": source})
+                           "latency_ms": latency_ms, "source": source, "games": games})
         return
 
     answer, sources = res
@@ -377,7 +425,8 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
             f"🔎 **【查詢】** `{speaker}`：{answer}{src}"))
     record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                        "query": topic, "answer": answer, "sources": sources,
-                       "latency_ms": latency_ms, "downstream": "none", "source": source})
+                       "latency_ms": latency_ms, "downstream": "none", "source": source,
+                       "games": games})
     logger.info(f"[AmbientQA] {speaker} 「{topic}」已回答（{latency_ms}ms, src={sources}）。")
 
 
