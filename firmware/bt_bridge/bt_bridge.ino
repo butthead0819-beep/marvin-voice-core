@@ -48,6 +48,7 @@ static uint8_t g_diag_q_n = 0;
 static uint32_t g_diag_q_drop = 0;
 static portMUX_TYPE g_diag_mux = portMUX_INITIALIZER_UNLOCKED;
 static DiagLog g_diag;
+static A2DPNoVolumeControl g_no_vol;
 
 static void diag_post(const char* text) {
   portENTER_CRITICAL(&g_diag_mux);
@@ -67,6 +68,12 @@ static uint8_t g_seen_a[ADDR_SET_MAX][6];      // 配對模式下已記過 'S' �
 static uint8_t g_seen_n = 0;
 static uint8_t g_name_req_a[ADDR_SET_MAX][6];  // 已請求過遠端名稱的裝置
 static uint8_t g_name_req_n = 0;
+
+// 配對模式整輪掃描挑 RSSI 最強的 COD 候選（STARTED 時重置，STOPPED 時才真正 adopt）
+static bool g_cand_valid = false;
+static uint8_t g_cand_bda[6];
+static int g_cand_rssi = -129;
+static char g_cand_name[ESP_BT_GAP_MAX_BDNAME_LEN + 1];
 
 static bool addr_set_add(uint8_t a[][6], uint8_t& n, const uint8_t bda[6]) {
   for (int i = 0; i < n; i++) {
@@ -177,14 +184,17 @@ class BridgeSource : public BluetoothA2DPSource {
     }
 
     // 配對模式：任何未配對過的車機/藍牙喇叭都收（不靠名稱/位址，Lexus 等新車免改韌體）。
-    // 同一輪掃描已選定目標就不再換（cancel_discovery 生效前還會陸續收到其他結果）。
-    if (s_a2d_state != APP_AV_STATE_DISCOVERED && pairing_accepts_cod(bda, cod)) {
+    // 不馬上 adopt：整輪掃描收完才挑 RSSI 最強的一個（見 app_gap_callback 的 DISC STOPPED）。
+    if (pairing_accepts_cod(bda, cod)) {
       const char* label = name[0] != '\0' ? name : "音訊裝置";
-      Serial.printf("[SCAN] 配對模式：類型命中車機/喇叭 '%s' %s\n", label, bs);
-      char d[DIAG_TEXT];
-      snprintf(d, sizeof(d), "V %02X%02X%02X cod%06lx '%s'", bda[3], bda[4], bda[5], (unsigned long)cod, label);
-      diag_post(d);
-      adopt_target(bda, label);
+      if (cod_candidate_better(g_cand_valid, (int)rssi, g_cand_rssi)) {
+        memcpy(g_cand_bda, bda, 6);
+        g_cand_rssi = (int)rssi;
+        strncpy(g_cand_name, label, ESP_BT_GAP_MAX_BDNAME_LEN);
+        g_cand_name[ESP_BT_GAP_MAX_BDNAME_LEN] = '\0';
+        g_cand_valid = true;
+      }
+      Serial.printf("[SCAN] 配對模式候選 '%s' %s rssi=%d\n", label, bs, (int)rssi);
       return;
     }
 
@@ -205,6 +215,21 @@ class BridgeSource : public BluetoothA2DPSource {
   }
 
   void app_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param) override {
+    if (event == ESP_BT_GAP_DISC_STATE_CHANGED_EVT) {
+      if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STARTED) {
+        g_cand_valid = false;
+        g_cand_rssi = -129;
+      } else if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED && g_cand_valid &&
+                 s_a2d_state != APP_AV_STATE_DISCOVERED) {
+        char d[DIAG_TEXT];
+        snprintf(d, sizeof(d), "V %02X%02X%02X r%d '%s'", g_cand_bda[3], g_cand_bda[4], g_cand_bda[5], g_cand_rssi,
+                 g_cand_name);
+        diag_post(d);
+        Serial.printf("[SCAN] 配對模式選中 '%s' rssi=%d\n", g_cand_name, g_cand_rssi);
+        adopt_target(g_cand_bda, g_cand_name);
+        g_cand_valid = false;
+      }
+    }
     if (event == ESP_BT_GAP_READ_REMOTE_NAME_EVT) {
       uint8_t* bda = param->read_rmt_name.bda;
       int stat = param->read_rmt_name.stat;
@@ -254,7 +279,28 @@ class BridgeSource : public BluetoothA2DPSource {
     }
     BluetoothA2DPSource::app_gap_callback(event, param);
   }
+
+ public:
+  // 車機送來的 AVRCP 絕對音量通知；只記錄驗證用，不衰減 PCM（見 g_no_vol）。
+  void set_volume(uint8_t volume) override {
+    Serial.printf("[BT] 音量 -> %d\n", (int)volume);
+    if (volume != s_last_vol_logged && s_vol_diag_n < 4) {
+      char d[DIAG_TEXT];
+      snprintf(d, sizeof(d), "Q v%d", (int)volume);
+      diag_post(d);
+      s_last_vol_logged = volume;
+      s_vol_diag_n++;
+    }
+    BluetoothA2DPSource::set_volume(volume);
+  }
+
+ private:
+  static int s_last_vol_logged;
+  static int s_vol_diag_n;
 };
+
+int BridgeSource::s_last_vol_logged = -1;
+int BridgeSource::s_vol_diag_n = 0;
 
 BridgeSource a2dp_source;
 
@@ -382,12 +428,12 @@ static void diag_drain() {
   portEXIT_CRITICAL(&g_diag_mux);
   if (drop) Serial.printf("[DIAG] 佇列滿，丟棄 %lu 條\n", (unsigned long)drop);
   if (n == 0) return;
-  for (int i = 0; i < n; i++) diag_add(g_diag, q[i]);
+  for (int i = 0; i < n; i++) diag_add_ts(g_diag, millis() / 1000, q[i]);
   diag_store();
 }
 
 static void diag_loop_add(const char* text) {
-  diag_add(g_diag, text);
+  diag_add_ts(g_diag, millis() / 1000, text);
   diag_store();
 }
 
@@ -525,6 +571,8 @@ void setup() {
   // 預設 false 不設 IO 能力，BMW 回 AUTH_CMPL stat=9（AUTH_FAILURE，10/7 [DIAG] 實測）。
   a2dp_source.set_ssp_enabled(true);
   a2dp_source.set_volume(127);
+  // 音量交給車機：函式庫預設音量曲線會把 PCM 一起衰減，車機再衰減一次（見 BridgeSource::set_volume）。
+  a2dp_source.set_volume_control(&g_no_vol);
   a2dp_source.start();
   // 已配對清單在 start() 之後才讀：start() 內部已 init NVS，我們這邊再 init 會讓函式庫 ESP_ERROR_CHECK 失敗
   known_load();

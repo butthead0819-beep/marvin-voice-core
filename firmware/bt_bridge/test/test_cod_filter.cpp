@@ -31,6 +31,12 @@ int main() {
   assert(cod_is_audio_sink(0x040404));  // Rendering only
   assert(cod_is_audio_sink(0x200404));  // Audio only
 
+  // cod_candidate_better：還沒有候選一律接受；有候選時只挑訊號更強的
+  assert(cod_candidate_better(false, -90, -129) == true);
+  assert(cod_candidate_better(true, -60, -70) == true);
+  assert(cod_candidate_better(true, -80, -70) == false);
+  assert(cod_candidate_better(true, -70, -70) == false);
+
   printf("ALL PASS\n");
   return 0;
 }

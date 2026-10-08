@@ -18,4 +18,9 @@ inline bool cod_is_audio_sink(uint32_t cod) {
   return (cod & (COD_SRVC_RENDERING | COD_SRVC_AUDIO)) != 0;
 }
 
+// 配對模式整輪掃描挑 RSSI 最強的候選；還沒有候選，或新訊號比目前候選強就換。
+inline bool cod_candidate_better(bool has_best, int rssi, int best_rssi) {
+  return !has_best || rssi > best_rssi;
+}
+
 #endif  // COD_FILTER_H

@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdio.h>
 
 static const int DIAG_MAX = 16;
 static const int DIAG_TEXT = 40;
@@ -62,6 +63,13 @@ inline bool diag_deserialize(DiagLog& d, const uint8_t* buf, size_t len) {
   }
   d.head = (uint8_t)(d.count % DIAG_MAX);
   return true;
+}
+
+// 前綴開機秒數："<sec>s <text>"，總長截到 DIAG_TEXT-1。
+inline void diag_add_ts(DiagLog& d, uint32_t sec, const char* text) {
+  char buf[DIAG_TEXT];
+  snprintf(buf, sizeof(buf), "%lus %s", (unsigned long)sec, text);
+  diag_add(d, buf);
 }
 
 // 每次開機的寫入額度：used < max 時 used++ 並回 true；否則回 false（不動 used）。

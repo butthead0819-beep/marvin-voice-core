@@ -178,6 +178,24 @@ int main() {
     printf("D8 ok\n");
   }
 
+  // D9：diag_add_ts 前綴開機秒數；超長字串截到 DIAG_TEXT-1 並以 "7s x" 開頭
+  {
+    DiagLog d;
+    diag_add_ts(d, 123, "C 064C72");
+    char out[DIAG_TEXT];
+    assert(diag_get(d, 0, out) == 1);
+    assert(strcmp(out, "123s C 064C72") == 0);
+
+    char longs[51];
+    memset(longs, 'x', sizeof(longs) - 1);
+    longs[sizeof(longs) - 1] = '\0';
+    diag_add_ts(d, 7, longs);
+    assert(diag_get(d, 1, out) == 1);
+    assert(strlen(out) == DIAG_TEXT - 1);
+    assert(strncmp(out, "7s x", 4) == 0);
+    printf("D9 ok\n");
+  }
+
   printf("ALL PASS\n");
   return 0;
 }
