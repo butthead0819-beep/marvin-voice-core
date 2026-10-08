@@ -6,13 +6,15 @@
   - trigger miss：非查詢句 → no_match
   - trigger miss：查但無遊戲 marker（如「查歌詞」）→ no_match（避免吃掉音樂/一般查詢）
   - happy path：3 個真實 gap 樣本 → bid 0.80 + handler
-  - handler integration：winning handler 呼叫 ctrl._handle_game_knowledge_query(speaker, query)
+  - handler integration：winning handler 呼叫 run_grounded_qa(ctrl, speaker, query,
+    raw=query, source="game_knowledge")
 """
 from __future__ import annotations
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
+import intent_agents.game_knowledge_agent as gka
 from intent_agents.game_knowledge_agent import GameKnowledgeAgent
 from intent_bus import IntentContext
 
@@ -28,7 +30,6 @@ def _ctx(raw, speaker="player1", mode="normal", wake_intent=0.9):
 
 def _agent():
     ctrl = MagicMock()
-    ctrl._handle_game_knowledge_query = AsyncMock()
     return GameKnowledgeAgent(ctrl), ctrl
 
 
@@ -88,8 +89,12 @@ def test_real_samples_bid(raw):
 # ── Handler integration ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_handler_calls_controller():
+async def test_handler_calls_controller(monkeypatch):
     agent, ctrl = _agent()
+    mock_run = AsyncMock()
+    monkeypatch.setattr(gka, "run_grounded_qa", mock_run)
     bid = agent.bid(_ctx(REAL_SAMPLES[0], speaker="狗與露"))
     await bid.handler()
-    ctrl._handle_game_knowledge_query.assert_awaited_once_with("狗與露", REAL_SAMPLES[0])
+    mock_run.assert_awaited_once_with(
+        ctrl, "狗與露", REAL_SAMPLES[0], raw=REAL_SAMPLES[0], source="game_knowledge"
+    )

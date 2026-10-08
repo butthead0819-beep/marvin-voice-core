@@ -260,6 +260,42 @@ async def test_classifier_raise_writes_unknown_record_no_tts(tmp_path: Path):
     tts.assert_not_awaited()
 
 
+# ── play_ack=False（10/8：classifier 只做測量，不再播模板 ack）──────────────
+
+@pytest.mark.asyncio
+async def test_play_ack_false_writes_record_without_tts(tmp_path: Path):
+    classifier = _classifier_returning({
+        "intent_type": "replay_user_history",
+        "slots": {"target_user": "showay"},
+        "nearest_agent": "music_v2",
+        "nearest_distance": 0.45,
+        "ack_text": "想播 showay 點過的歌，這個還沒會。",
+    })
+    gap_logger = GapLogger(tmp_path / "gaps.jsonl")
+    tts = AsyncMock()
+
+    rec = await handle_intent_gap(
+        _ctx(),
+        utterance_id="u-noack",
+        classifier=classifier,
+        gap_logger=gap_logger,
+        manifest=_manifest(),
+        tts_call=tts,
+        play_ack=False,
+    )
+
+    tts.assert_not_awaited()
+    assert rec.intent_type == "replay_user_history"
+    assert rec.acknowledged is False
+    assert rec.ack_text is None
+
+    line = (tmp_path / "gaps.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    written = json.loads(line)
+    assert written["acknowledged"] is False
+    assert written["ack_text"] is None
+    assert written["intent_type"] == "replay_user_history"
+
+
 # ── Return value：caller (voice_controller) 用 intent_type 判 fall-through ──
 
 @pytest.mark.asyncio

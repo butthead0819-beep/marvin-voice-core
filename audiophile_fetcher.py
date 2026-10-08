@@ -512,6 +512,25 @@ def parse_tracklist(text: str) -> list[str]:
     return out
 
 
+def pick_album_followups(tracks: list[str], current_title: str, n: int = 4) -> list[str]:
+    """曲目清單 + 目前正在播的（可能很髒的）標題 → 接下來要排進佇列的曲名清單。
+
+    找到目前這首在清單中的位置就從下一首開始、繞回開頭、排除目前這首；
+    找不到（標題配不上任何曲目）就回清單前 n 首。"""
+    key_current = _pinyin_key(current_title)
+    idx = None
+    for i, track in enumerate(tracks):
+        k = _pinyin_key(track)
+        if k and k in key_current:
+            idx = i
+            break
+    if idx is None:
+        candidates = tracks
+    else:
+        candidates = tracks[idx + 1:] + tracks[:idx]
+    return candidates[:n]
+
+
 async def fetch_album_tracklist(
     artist: str, album: str, *, free_client, paid_client, guard, store,
 ) -> list[str]:

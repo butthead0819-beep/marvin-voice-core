@@ -7,14 +7,15 @@
 設計（最小）：
   - trigger = 查/查詢 + 遊戲 marker（封閉集合，非無止境調 pattern）；
     刻意要求 marker，避免吃掉「查歌詞 / 查資料」這類非遊戲查詢。
-  - handler 把整句交給 controller._handle_game_knowledge_query → 走 Marvin LLM 回答 + TTS。
-  - 知識來源走既有 LLM bus（Marvin 已知主流遊戲常識）；未來要更準可在 handler 內加 web search。
+  - handler 走 run_grounded_qa（Gemini google_search grounded），不再讓 Marvin 主 LLM
+    憑常識回答（10/8 改：常識容易答錯遊戲版本/數值細節，grounded 真能查證）。
 """
 from __future__ import annotations
 
 import re
 
 from intent_agents.base import DeclarativeIntentAgent, IntentSchema
+from intent_agents.grounded_qa_agent import run_grounded_qa
 from intent_bus import IntentContext
 
 
@@ -53,5 +54,6 @@ class GameKnowledgeAgent(DeclarativeIntentAgent):
 
     def make_handler(self, schema, slots, ctx: IntentContext):
         async def _answer():
-            await self.ctrl._handle_game_knowledge_query(ctx.speaker, ctx.query)
+            await run_grounded_qa(self.ctrl, ctx.speaker, ctx.query, raw=ctx.query,
+                                  source="game_knowledge")
         return _answer

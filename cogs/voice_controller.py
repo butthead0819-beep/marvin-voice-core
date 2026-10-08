@@ -252,6 +252,7 @@ def build_intent_agents(controller, bot):
     from intent_agents.joke_request_agent import JokeRequestAgent
     from intent_agents.dual_speak_agent import DualSpeakAgent
     from intent_agents.frustration_agent import FrustrationAgent
+    from intent_agents.current_album_agent import CurrentAlbumAgent
     from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
     return [
         HallucinationGuardAgent(controller),
@@ -264,6 +265,7 @@ def build_intent_agents(controller, bot):
         VolumeAgent(controller),  # 2026-05-27: 議題 E #1 — 音量語音控制
         ReplayAgent(controller),  # 2026-05-27: 議題 E #2 — 重播當前歌曲
         NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
+        CurrentAlbumAgent(controller),  # 2026-10-08: 「播放這張專輯」→ 正在播的歌的專輯排 4 首
         TimeQueryAgent(controller),  # 2026-08-18: agent_gaps time_query ready_to_implement — 零成本報時
         FarewellAgent(controller),  # 2026-08-09: 喚醒直接說「掰掰/晚安/bye bye」互道再見
         JokeRequestAgent(controller),  # 2026-09-01: daily ritual — 「馬文說個笑話」→ 本地 joke bank 抽一則
@@ -2172,37 +2174,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         asyncio.create_task(self.play_tts(speech, already_in_channel=True))
         logger.info(f"🩺 [Status Query] {speaker} 查詢系統狀態，已回報。")
 
-    async def _handle_game_knowledge_query(self, speaker: str, query: str):
-        """遊戲知識查詢：走 Marvin LLM 回答 + TTS。
-
-        來源 = GameKnowledgeAgent（2026-06-06 intent_gap ready_to_implement，把「查麥塊…」
-        從模板 ack 升級成真正回答）。知識走既有 LLM bus；要更準可未來加 web search。
-        """
-        system_prompt = (
-            "你是馬文，毒舌但博學的語音助手。使用者在問電玩遊戲的玩法/攻略/知識。"
-            "用繁體中文、口語、兩三句話內直接給答案，講重點不鋪陳。"
-            "若不確定該遊戲版本的精確數值，誠實說大概範圍，不要編造精確數字。"
-        )
-        answer = None
-        try:
-            answer = await self.bot.router._call_llm(
-                system_prompt=system_prompt,
-                user_prompt=query,
-                is_json=False,
-                tier="simple",
-            )
-        except Exception as e:
-            logger.warning(f"🎮 [GameKnowledge] LLM 失敗: {e}")
-        if not isinstance(answer, str) or not answer.strip():
-            answer = "我的大腦剛剛卡了一下，這題等我回神再答你。"
-        answer = answer.strip()
-        if self.active_text_channel:
-            asyncio.create_task(self.active_text_channel.send(
-                f"🎮 **【遊戲查詢】** `{speaker}`：{answer}"))
-        self.stt_logger.info(f"[BOT→{speaker}] (遊戲知識查詢) {answer}")
-        asyncio.create_task(self.play_tts(answer, already_in_channel=True))
-        logger.info(f"🎮 [GameKnowledge] {speaker} 查詢已回答。")
-
     async def _handle_voice_imitate_command(self, speaker: str, target: str):
         """
         🎭 [Operation Impression Show] 執行模仿秀：讓 Marvin 以目標玩家的口吻即興表演。
@@ -3174,6 +3145,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # cheap classifier 判讀「有 intent 但沒 agent」，寫 agent_gaps.jsonl。8/18 修正：
         # 測量（classifier+log）跟要不要回應 Marvin 拆開——has_intent_signal 只留在分類完
         # 仍是 UNKNOWN 時才決定要不要閒聊，之前短指令（裸字「暫停」）連 log 都進不去。
+        # 10/8 使用者定案：classifier 只做測量（寫 JSONL），不再用來否決 Marvin、也不再播
+        # 「功能開發中」模板 ack——使用者講話不照公式，硬規則會漏接。有意圖但沒 agent 的
+        # query：web 類資訊問題走 grounded（真能查到答案），其餘交 Marvin 主 LLM 自然接話。
         gap_rec = None
         if self._gap_classifier_cached is None and self._shared_tier_router is not None:
             self._gap_classifier_cached = make_groq_gap_classifier(self._shared_tier_router)
@@ -3187,21 +3161,18 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     gap_logger=self._gap_logger,
                     manifest=self._intent_bus.build_intent_manifest(),
                     tts_call=self.play_tts,
+                    play_ack=False,
                 )
                 self._dm_owner_intent_gap(gap_rec)
-                if gap_rec.intent_type != "UNKNOWN":
-                    self.stt_logger.info(
-                        f"[IntentGap] [{speaker}] type={gap_rec.intent_type} "
-                        f"nearest={gap_rec.nearest_agent} acked={gap_rec.acknowledged} → skip Marvin"
-                    )
-                    self._cancel_stale_prefetch(speaker)
+                if await self._route_gap_record(gap_rec, speaker, query, low_confidence_wake):
                     return
             except Exception as _gap_exc:
                 logger.warning(f"⚠️ [IntentGap] gap path 炸了，fall through 到 Marvin: {_gap_exc}")
 
         # 🚫 [Intent Presence Gate] classifier 判 UNKNOWN（或不可用）後，進 Marvin 前最後
         # 一道 code gate：raw 只是 filler/短應答 → silent（測量已在上面 classifier 做完）。
-        if not has_intent_signal(query):
+        # classifier 已判出有意圖（非 UNKNOWN）就不再受這道 gate 擋，直接進 Marvin。
+        if not (gap_rec is not None and gap_rec.intent_type != "UNKNOWN") and not has_intent_signal(query):
             self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
             try:
                 _append_jsonl(

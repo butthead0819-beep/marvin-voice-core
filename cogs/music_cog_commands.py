@@ -398,6 +398,72 @@ class MusicCommandsMixin:
             guard=guard, store=store,
         )
 
+    async def queue_current_album(self, speaker: str) -> None:
+        """「播放這張專輯」=正在播的這首歌的專輯，挑幾首排進佇列（不打斷別人點歌，
+        跟 /tour 整張巡禮不同）。CurrentAlbumAgent 的 handler 本體（10/8）。"""
+        from audiophile_fetcher import pick_album_followups, resolved_matches_track
+
+        vc = self._vc()
+
+        async def _say(text: str) -> None:
+            if vc:
+                await vc.play_tts(text, already_in_channel=True)
+            else:
+                logger.info(f"📀 [CurrentAlbum] 無 vc，只 log：{text}")
+
+        if await self._album_tour_reject(speaker):
+            return
+
+        info = self._current_stream_info
+        if not info:
+            await _say("現在沒在放歌，你說的是哪張專輯？")
+            return
+
+        album = info.get('album')
+        artist = info.get('artist') or info.get('uploader') or ''
+        if not album:
+            await _say("這首我查不到是哪張專輯。")
+            return
+
+        ch = vc.active_text_channel if vc else None
+        if ch:
+            await ch.send(f"📀 查《{album}》的曲目中…")
+
+        tracks = await self._fetch_album_tracks(artist, album)
+        if not tracks:
+            await _say(f"查不到《{album}》可靠的曲目。")
+            return
+
+        picks = pick_album_followups(
+            tracks, f"{info.get('track') or ''} {info.get('title') or ''}")
+
+        queued: list[str] = []
+        for track in picks:
+            try:
+                res = await self._resolve_yt_query(f"{artist} {track}")
+                if not res or not resolved_matches_track(res, track):
+                    logger.info(f"📀 [CurrentAlbum] 「{artist} {track}」找不到對得上的音源，跳過")
+                    continue
+                res['requested_by'] = speaker
+                res['track'] = track
+                res['artist'] = artist
+                self._queue_user_song(res)
+                queued.append(track)
+            except Exception as e:
+                logger.warning(f"📀 [CurrentAlbum] 「{track}」準備失敗，跳過：{e}")
+                continue
+
+        if not queued:
+            await _say(f"《{album}》的歌在 YouTube 都對不上，沒排進去。")
+            return
+
+        self._ensure_stream_loop()
+        tail = "⋯" if len(queued) > 2 else ""
+        await _say(f"好，《{album}》再排 {len(queued)} 首：{'、'.join(queued[:2])}{tail}")
+        if ch:
+            listing = "\n".join(f"{i}. {t}" for i, t in enumerate(queued, 1))
+            await ch.send(f"📀 **【專輯接著聽】** 《{album}》：\n{listing}")
+
     def _album_tour_pending(self) -> bool:
         return any(i.get('_lane') == 'album_tour' for i in self.stream_queue)
 

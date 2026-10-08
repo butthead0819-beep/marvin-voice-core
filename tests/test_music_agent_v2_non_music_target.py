@@ -94,3 +94,18 @@ def test_blocklist_word_mid_song_does_not_reject():
     agent = MusicAgentV2(_FakeCtrl())
     bid = agent.bid(_ctx("播放魏如萱的網站之歌"))
     assert bid.confidence == 0.95
+
+
+# ── 「播放這張專輯」不該被當成歌手名/長字串去 curation/搜 YouTube（10/8） ─────
+
+
+@pytest.mark.parametrize("query", [
+    "馬文播放這張專輯",
+    "放這張專輯",
+    "我想聽這張專輯",
+])
+def test_current_album_phrase_not_captured_as_weak_play(query):
+    agent = MusicAgentV2(_FakeCtrl())
+    bid = agent.bid(_ctx(query))
+    # reason 是 template 字串（weak_play_curation:/weak_play_only:），比 schema 名會假綠——直接看出價
+    assert bid.confidence == 0.0, bid.reason

@@ -129,14 +129,16 @@ async def test_real_query_does_not_get_silenced_log(monkeypatch):
 
 async def test_gap_classifier_runs_even_when_has_intent_signal_false(monkeypatch):
     """核心修正：classifier 現在對 winner=none 一律先跑，不再被 has_intent_signal
-    擋在前面。分類出非 UNKNOWN → ack + skip Marvin，且完全不該碰
-    intent_gate_silenced.jsonl（那是 classifier 也判不出來時才用的後備管道）。"""
+    擋在前面。10/8 再修正：classifier 判出非 UNKNOWN 不再否決 Marvin、也不再播模板
+    ack（play_ack=False）——只要不是 web 類查詢，就放行讓 Marvin 主 LLM（_stream_response）
+    接話。完全不該碰 intent_gate_silenced.jsonl（那是 classifier 也判不出來時的後備管道）。"""
     import cogs.voice_controller as vcmod
     from intent_gap import IntentGapRecord
 
     vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text="暫停播放")
     vc._shared_tier_router = MagicMock()  # 讓 classifier 不再是 None
     vc._gap_logger = MagicMock()
+    vc._stream_response = AsyncMock()
 
     monkeypatch.setattr(vcmod, "make_groq_gap_classifier", lambda router: MagicMock())
 
@@ -144,7 +146,7 @@ async def test_gap_classifier_runs_even_when_has_intent_signal_false(monkeypatch
         utterance_id="u1", ts=time.time(), speaker="狗與露", mode="normal",
         raw_query="暫停播放", cleaned_query="暫停播放", intent_type="playback_control_pause",
         slots={}, nearest_agent="playback_control", nearest_distance=0.0,
-        ack_text="收到！", acknowledged=True,
+        ack_text=None, acknowledged=False,
     )
     handle_gap_mock = AsyncMock(return_value=fake_rec)
     monkeypatch.setattr(vcmod, "handle_intent_gap", handle_gap_mock)
@@ -152,8 +154,75 @@ async def test_gap_classifier_runs_even_when_has_intent_signal_false(monkeypatch
     await vc._process_queued_query("狗與露", time.time(), wake_intent=None)
 
     handle_gap_mock.assert_awaited_once()  # classifier 真的被叫到，即便 has_intent_signal=False
+    assert handle_gap_mock.await_args.kwargs["play_ack"] is False
+    vc._stream_response.assert_awaited_once()
     assert captured == {}  # 分類成功 → 不落 intent_gate_silenced.jsonl
     vc._cancel_stale_prefetch.assert_called_once()
+
+
+async def test_gap_web_domain_routes_to_grounded(monkeypatch):
+    """10/8 定案：classifier 判出 query_domain="web" 的 gap（高信心喚醒）→ 轉去
+    run_grounded_qa 真查證，不進 Marvin 主 LLM（常識容易答錯）。"""
+    import cogs.voice_controller as vcmod
+    from intent_gap import IntentGapRecord
+
+    query_text = "這禮拜的F1在哪裡比賽"
+    vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text=query_text)
+    vc._shared_tier_router = MagicMock()
+    vc._gap_logger = MagicMock()
+    vc._stream_response = AsyncMock()
+
+    monkeypatch.setattr(vcmod, "make_groq_gap_classifier", lambda router: MagicMock())
+
+    fake_rec = IntentGapRecord(
+        utterance_id="u4", ts=time.time(), speaker="狗與露", mode="normal",
+        raw_query=query_text, cleaned_query=query_text, intent_type="factual_question",
+        slots={}, nearest_agent="grounded_qa", nearest_distance=0.1,
+        ack_text=None, acknowledged=False, query_domain="web",
+    )
+    monkeypatch.setattr(vcmod, "handle_intent_gap", AsyncMock(return_value=fake_rec))
+
+    run_grounded_mock = AsyncMock()
+    monkeypatch.setattr("intent_agents.grounded_qa_agent.run_grounded_qa", run_grounded_mock)
+
+    await vc._process_queued_query("狗與露", time.time(), wake_intent=None)
+
+    run_grounded_mock.assert_awaited_once()
+    args, kwargs = run_grounded_mock.await_args
+    assert args == (vc, "狗與露", query_text)
+    assert kwargs["source"] == "gap_web"
+    vc._stream_response.assert_not_awaited()
+
+
+async def test_gap_web_domain_low_confidence_goes_to_marvin(monkeypatch):
+    """同樣是 query_domain="web"，但 low_confidence_wake（可能是背景對話誤判喚醒）
+    → 不該觸發有副作用的 grounded 查詢，照常放行給 Marvin 主 LLM。"""
+    import cogs.voice_controller as vcmod
+    from intent_gap import IntentGapRecord
+
+    query_text = "這禮拜的F1在哪裡比賽"
+    vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text=query_text)
+    vc._shared_tier_router = MagicMock()
+    vc._gap_logger = MagicMock()
+    vc._stream_response = AsyncMock()
+
+    monkeypatch.setattr(vcmod, "make_groq_gap_classifier", lambda router: MagicMock())
+
+    fake_rec = IntentGapRecord(
+        utterance_id="u5", ts=time.time(), speaker="狗與露", mode="normal",
+        raw_query=query_text, cleaned_query=query_text, intent_type="factual_question",
+        slots={}, nearest_agent="grounded_qa", nearest_distance=0.1,
+        ack_text=None, acknowledged=False, query_domain="web",
+    )
+    monkeypatch.setattr(vcmod, "handle_intent_gap", AsyncMock(return_value=fake_rec))
+
+    run_grounded_mock = AsyncMock()
+    monkeypatch.setattr("intent_agents.grounded_qa_agent.run_grounded_qa", run_grounded_mock)
+
+    await vc._process_queued_query("狗與露", time.time(), wake_intent=0.0)
+
+    run_grounded_mock.assert_not_awaited()
+    vc._stream_response.assert_awaited_once()
 
 
 async def test_gap_record_dms_owner(monkeypatch):
