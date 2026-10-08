@@ -1,0 +1,7 @@
+MODE_ARG=conversation_downgrade
+LLM_CALLED=False
+TTS_EMOTION=normal
+---CONTEXT---
+<none>
+---TEXT---
+這首收得漂亮，換個口味，接下來這首。

@@ -138,7 +138,7 @@ class NarrationPlan:
    - **計算**：分母 = `song_plays.jsonl` 按 mode 分組的開播數（mode=null 為基準組）；分子 = `song_skips.jsonl` 中 `elapsed_s ≤ 30` 且以 `narration_id`（基準組以 `ts`+`video_id` 對應最近一次開播）配回的 skip 數。各 mode skip 率與基準組比較。分析腳本 `scripts/dj_mode_skip_rate.py` 在第 4 刀前寫好。
    - 刪 `prev_song`（select_mode 參數、MODE_WEIGHTS、NON_TOPIC_MODES、orchestrator 參數、相關測試）。
 2. **行為護欄**（純測試，對現行程式碼寫、現行就要綠）：沿用 `tests/test_dj_callback.py` 的 harness，固定 rng：
-   - **ctx/TTS 快照**：13 個 mode（刪掉 prev_song 後）各一組素材，快照 `generate_dynamic_system_msg` 收到的 ctx 與 TTS 情緒；另加「conversation 抽中但素材被搶光 → quick」降級快照。
+   - **ctx/TTS 快照**：14 個 mode（刪掉 prev_song 後）各一組素材，快照 `generate_dynamic_system_msg` 收到的 ctx 與 TTS 情緒；另加「conversation 抽中但素材被搶光 → quick」降級快照。
    - **冷卻/副作用斷言**：每條路徑（各 forced、gacha 抽中、reason 覆蓋、conversation 降級）跑完後斷言 TopicCooldownStore 內容（哪些 key 被 mark_used、last_fallback 值）與 consume 呼叫；特別斷言 memory_match 命中時 life/interest 的冷卻 key 不存在。
    後面一刀以「快照與斷言全部不變」為驗收。
 3. **註冊表 + 規劃器**（行為不變）：新模組 `dj_narration_modes.py`（MODES 表 + plan_narration）；`select_mode` / `select_narration_mode` 改為薄包裝或刪除（呼叫端改用 plan_narration）；`_fetch_dj_interjection_raw` 的 mode 段改成「收 DJMaterials → plan → 套副作用 → ctx.extend(plan.ctx_lines)」；`_DJ_MODE_TO_TTS_EMOTION` 改讀 `MODES[mode].tts_emotion`。`song`（pick_song_facet）、`reason`（song_candidates 拼接）、`quick`（文字 cascade 的本地模板）這三個 mode 的特殊組裝**第 3 刀不搬**，留在原位；其餘 10 個 mode 的 ctx 由 `render` 產生。新模組需在 `main_discord.setup_early_logging` 放行 INFO。驗收：第 2 刀快照與冷卻斷言全綠 + 既有 gacha/orchestrator 測試全綠。
@@ -153,7 +153,7 @@ class NarrationPlan:
 ## Success Criteria
 
 - 加一個新扭蛋 mode 的**非測試檔**只動 2 個：`dj_narration_modes.py`（MODES 一筆 + DJMaterials 一個欄位）與 `cogs/music_cog_dj_lyrics.py`（收集素材一行）。測試檔需要：一個快照 fixture + 一個「收集接線」測試（真實 vc 成員/素材來源 → DJMaterials 欄位，避免 activity 那種接線漏測）。以「把 activity 重新實作一次」驗證這個數字。
-- 第 2 刀的 13 個 mode ctx 快照＋conversation 降級快照，在第 3 刀前後完全一致。
+- 第 2 刀的 14 個 mode ctx 快照＋conversation 降級快照，在第 3 刀前後完全一致。
 - `_fetch_dj_interjection_raw` statement 數下降（AST 量測）；mode→ctx 的 if/elif 鏈只剩 song / reason / quick 三個分支。
 - 第 1 刀上線後一週，每個 mode 有 skip 率數據（n≥20 的 mode）。
 
