@@ -9,7 +9,7 @@ meme_id 語義冷卻：同一事件換個說法也算冷卻中（不能用文字
   meme_id 用 "meme:{meme_id}" 作 key，與純文字 SHA1 key 是分離的 namespace。
 
 扭蛋池（select_mode）：先看哪些 mode 有素材可用（life/interest/emotional_highlight/
-news 要各自找到冷卻已過的具體話題；guide/conversation/prev_song 要呼叫端傳
+news 要各自找到冷卻已過的具體話題；guide/conversation 要呼叫端傳
 has_*=True；atmosphere/quick 永遠可用），權重 ≤0 的 mode 移出池，池大小 >1 時把上次
 選到的 mode 也移出池（不連抽），還有別的可抽就再把 quick 移出（只當墊底），剩下的池依
 MODE_WEIGHTS 抽一個。只有被抽中的話題類
@@ -33,13 +33,13 @@ COOLDOWN_S = 8 * 3600       # 同一具體生活/興趣話題用過 8 小時內�
 NEWS_COOLDOWN_S = 2 * 3600  # 新聞頻率可較高，2 小時內不重複
 
 TOPIC_MODES = ("life", "interest", "emotional_highlight", "news", "callback", "activity")
-NON_TOPIC_MODES = ("guide", "conversation", "prev_song", "atmosphere", "quick")
+NON_TOPIC_MODES = ("guide", "conversation", "atmosphere", "quick")
 
 # 扭蛋池的抽取權重：先全部 1.0（均等機率），未來可依聽眾回饋個別調整。
 MODE_WEIGHTS: dict[str, float] = {
     "life": 1.0, "interest": 1.0, "emotional_highlight": 1.0, "news": 1.0,
     "callback": 1.0, "activity": 1.0,
-    "guide": 1.0, "conversation": 1.0, "prev_song": 1.0, "atmosphere": 1.0, "quick": 1.0,
+    "guide": 1.0, "conversation": 1.0, "atmosphere": 1.0, "quick": 1.0,
 }
 
 _FALLBACK_KEY = "_last_fallback_mode"
@@ -227,7 +227,6 @@ def select_mode(
     *,
     present_members: set[str] | None = None,
     has_conversation: bool = False,
-    has_prev_song: bool = False,
     emotional_highlights: list[str] | None = None,
     news_items: list[str] | None = None,
     callbacks: list[str] | None = None,
@@ -239,7 +238,7 @@ def select_mode(
     """本地扭蛋抽出這次串場要走哪個 mode，LLM 不必自己判斷「有沒有話題、要不要硬掰」。
 
     1. 建池：life（主角要在場）/interest/emotional_highlight/news/callback/activity
-       各自找第一個未冷卻的候選；guide/conversation/prev_song 只在呼叫端傳對應
+       各自找第一個未冷卻的候選；guide/conversation 只在呼叫端傳對應
        has_*=True 時才進池；atmosphere/quick 永遠進池。
     2. 池裡權重（MODE_WEIGHTS）≤0 的 mode 移出。池空 → (None, "quick")，不寫狀態。
     3. 不連抽：池大小 >1 時把上次選到的 mode 也移出池。之後池裡還有非 quick 的 mode
@@ -248,7 +247,7 @@ def select_mode(
        沒抽中的候選（包含同一輪沒被選中的話題）不受影響，留給下次。
 
     回傳 (topic_text, mode)，mode 比 select_topic 多了
-    'guide'/'conversation'/'prev_song'/'atmosphere'/'quick'。
+    'guide'/'conversation'/'atmosphere'/'quick'。
     topic_text 只有 mode in {'life', 'interest', 'emotional_highlight', 'news', 'callback', 'activity'}
     才非 None，其餘 mode 沒有具體文字素材——caller 自己依 mode 決定串場方向（quick
     甚至該跳過 LLM，直接走本地模板）。
@@ -281,8 +280,6 @@ def select_mode(
         pool.append("guide")
     if has_conversation:
         pool.append("conversation")
-    if has_prev_song:
-        pool.append("prev_song")
     pool.append("atmosphere")
     pool.append("quick")
 

@@ -79,14 +79,14 @@ def test_falls_through_to_next_candidate_when_actor_absent(tmp_path, monkeypatch
 def test_fallback_skips_unavailable_candidates(tmp_path):
     """沒有對話、沒有上一首 → 只剩 atmosphere/quick 可抽。"""
     store = _store(tmp_path)
-    _, mode = select_mode([], [], store, has_conversation=False, has_prev_song=False)
+    _, mode = select_mode([], [], store, has_conversation=False)
     assert mode in ("atmosphere", "quick")
 
 
 def test_no_emotional_highlights_still_falls_to_fallback_rotation(tmp_path):
     store = _store(tmp_path)
     _, mode = select_mode(
-        [], [], store, has_conversation=False, has_prev_song=False,
+        [], [], store, has_conversation=False,
         emotional_highlights=[],
     )
     assert mode in ("atmosphere", "quick")
@@ -96,9 +96,9 @@ def test_fallback_state_persists_across_store_instances(tmp_path):
     """不連抽狀態跨 store 實例（模擬重啟）持久化：池大小 >1 時，第二次一定跟第一次不同。"""
     path = str(tmp_path / "c.json")
     store1 = TopicCooldownStore(path)
-    _, mode1 = select_mode([], [], store1, has_conversation=True, has_prev_song=True)
+    _, mode1 = select_mode([], [], store1, has_conversation=True)
     store2 = TopicCooldownStore(path)  # 模擬重啟
-    _, mode2 = select_mode([], [], store2, has_conversation=True, has_prev_song=True)
+    _, mode2 = select_mode([], [], store2, has_conversation=True)
     assert mode2 != mode1
 
 
@@ -132,5 +132,5 @@ def test_guide_never_picked_when_has_guide_false():
 
     store = TopicCooldownStore(tempfile.mktemp(suffix=".json"))
     for _ in range(6):
-        _, mode = select_mode([], [], store, has_conversation=True, has_prev_song=True)
+        _, mode = select_mode([], [], store, has_conversation=True)
         assert mode != "guide"

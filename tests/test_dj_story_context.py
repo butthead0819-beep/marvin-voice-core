@@ -139,27 +139,6 @@ async def test_no_back_to_back_artist_hint(monkeypatch):
     assert "連播線索" not in _ctx_str(cog)
 
 
-@pytest.mark.asyncio
-async def test_prev_song_not_offered_to_gacha_pool(monkeypatch):
-    """有上一首也不把 prev_song 送進扭蛋池（cog 不傳 has_prev_song=True）。"""
-    _no_quick(monkeypatch)
-    seen = {}
-    real = dj_topic_selector.select_mode
-
-    def _spy(*args, **kwargs):
-        seen.update(kwargs)
-        return real(*args, **kwargs)
-
-    monkeypatch.setattr(dj_topic_selector, "select_mode", _spy)
-    import dj_narration_orchestrator
-    monkeypatch.setattr(dj_narration_orchestrator, "select_mode", _spy)
-    cog = _make_cog()
-    cog.stream_history = [_info(title="陶喆 - 普通朋友", requester="狗與露")]
-    await cog._fetch_dj_interjection_raw(_info(title="周杰倫 - 夜曲", requester="大肚"))
-    assert "has_conversation" in seen, "spy 應攔到 select_mode 呼叫"
-    assert not seen.get("has_prev_song"), f"不該把上一首送進扭蛋池: {seen!r}"
-
-
 def test_dj_persona_templates_do_not_reference_previous_song():
     from pathlib import Path
     assert "上一首" not in Path("personas/dj_templates.yaml").read_text(encoding="utf-8")

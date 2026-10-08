@@ -3,8 +3,8 @@
 沒有新鮮 GPS 訊號 → 退回家裡預設「台中」；車上 ESP32 puck 有新鮮訊號 → 用真實區名。
 
 環境行現在只在本地扭蛋池選中 "atmosphere" 時才進 ctx（不再無條件塞入，見
-dj_topic_selector.select_mode）。這兩個測試把 life/interest/conversation/
-prev_song 都清空，並固定 MODE_WEIGHTS 讓扭蛋池必抽中 atmosphere（扭蛋池改版後
+dj_topic_selector.select_mode）。這兩個測試把 life/interest/conversation
+都清空，並固定 MODE_WEIGHTS 讓扭蛋池必抽中 atmosphere（扭蛋池改版後
 mode 不再是決定性優先序，需要固定權重才能穩定斷言）。
 """
 from __future__ import annotations

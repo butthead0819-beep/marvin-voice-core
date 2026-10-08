@@ -1013,9 +1013,12 @@ class MusicDJLyricsMixin:
             logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
 
         # 📒 一週觀察用：每段串場的主題/素材/LLM 產出/最終口白（9/30 使用者定）
+        import uuid
+        narration_id = uuid.uuid4().hex
         try:
             from dj_narration_log import log_dj_narration, probe_audio_seconds
             log_dj_narration({
+                "narration_id": narration_id,
                 "song": _song_label or title,
                 "requester": requester,
                 "mode": mode,
@@ -1048,5 +1051,8 @@ class MusicDJLyricsMixin:
             short_text += f"，{requester} 點的"
 
         # 串場不提上一首 → 沒有可過期的上一首，Consistency Guard 不必比對
-        return {'text': text, 'audio_path': audio_path, 'prev_title_used': None, 'short_text': short_text}
+        return {
+            'text': text, 'audio_path': audio_path, 'prev_title_used': None, 'short_text': short_text,
+            'narration_id': narration_id, 'mode': mode,
+        }
 

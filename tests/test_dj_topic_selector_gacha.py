@@ -13,7 +13,7 @@ from dj_topic_selector import TopicCooldownStore, select_mode
 
 ALL_MODES = (
     "life", "interest", "emotional_highlight", "news",
-    "guide", "conversation", "prev_song", "atmosphere", "quick",
+    "guide", "conversation", "atmosphere", "quick",
 )
 
 
@@ -21,7 +21,7 @@ def _store(tmp_path):
     return TopicCooldownStore(str(tmp_path / "c.json"))
 
 
-# 1. 全素材都有時，連抽 300 次：8 種會走 LLM 的 mode 都出現、quick 從不出現 ─────
+# 1. 全素材都有時，連抽 300 次：7 種會走 LLM 的 mode 都出現、quick 從不出現 ─────
 
 def test_all_llm_modes_appear_and_quick_never_when_material_rich(tmp_path):
     store = _store(tmp_path)
@@ -30,7 +30,7 @@ def test_all_llm_modes_appear_and_quick_never_when_material_rich(tmp_path):
     for i in range(300):
         _, mode = select_mode(
             [f"life{i}"], [f"interest{i}"], store,
-            has_conversation=True, has_prev_song=True, has_guide=True,
+            has_conversation=True, has_guide=True,
             emotional_highlights=[f"emo{i}"], news_items=[f"news{i}"],
             rng=rng,
         )
@@ -72,7 +72,7 @@ def test_adjacent_draws_never_repeat(tmp_path):
     for i in range(300):
         _, mode = select_mode(
             [f"life{i}"], [f"interest{i}"], store,
-            has_conversation=True, has_prev_song=True, has_guide=True,
+            has_conversation=True, has_guide=True,
             emotional_highlights=[f"emo{i}"], news_items=[f"news{i}"],
             rng=rng,
         )
@@ -102,10 +102,10 @@ def test_modes_without_material_never_appear(tmp_path):
         _, mode = select_mode(
             life, ["已冷卻的興趣"], store,
             present_members={"在場的人"},
-            has_conversation=False, has_prev_song=False, has_guide=False,
+            has_conversation=False, has_guide=False,
             rng=rng,
         )
-        assert mode not in ("guide", "conversation", "prev_song", "life", "interest")
+        assert mode not in ("guide", "conversation", "life", "interest")
 
 
 # 5. 權重 0 的 mode 永不出現 ────────────────────────────────────────────────
@@ -118,7 +118,7 @@ def test_zero_weight_mode_never_appears(tmp_path, monkeypatch):
     rng = random.Random(9)
     for i in range(100):
         _, mode = select_mode(
-            [f"life{i}"], [], store, has_conversation=True, has_prev_song=True,
+            [f"life{i}"], [], store, has_conversation=True,
             rng=rng,
         )
         assert mode != "life"

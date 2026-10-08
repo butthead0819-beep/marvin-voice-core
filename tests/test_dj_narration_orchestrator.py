@@ -63,7 +63,7 @@ def test_tail_fire_delay_accounts_for_highlight_start_offset():
 
 def _legacy_select_mode(
     life, interests, store, *,
-    present_members=None, has_conversation=False, has_prev_song=False,
+    present_members=None, has_conversation=False,
     emotional_highlights=None, news_items=None, autopilot_reason="",
 ):
     """逐行照抄 _fetch_dj_interjection_raw 裡 select_mode + reason 覆蓋那段。"""
@@ -71,7 +71,6 @@ def _legacy_select_mode(
         life, interests, store,
         present_members=present_members,
         has_conversation=has_conversation,
-        has_prev_song=has_prev_song,
         emotional_highlights=emotional_highlights,
         news_items=news_items,
     )
@@ -95,20 +94,20 @@ def test_select_narration_mode_matches_legacy_when_life_available(tmp_path, monk
 
 
 def test_select_narration_mode_matches_legacy_fallback_rotation(tmp_path, monkeypatch):
-    _only(monkeypatch, "prev_song")
+    _only(monkeypatch, "conversation")
     kwargs = dict(
-        life=[], interests=[], has_conversation=True, has_prev_song=True,
+        life=[], interests=[], has_conversation=True,
     )
     new = select_narration_mode(topic_store=_fresh_store(tmp_path, "a.json"), **kwargs)
     old = _legacy_select_mode(
         kwargs["life"], kwargs["interests"], _fresh_store(tmp_path, "b.json"),
-        has_conversation=kwargs["has_conversation"], has_prev_song=kwargs["has_prev_song"],
+        has_conversation=kwargs["has_conversation"],
     )
     assert new == old
 
 
 def test_select_narration_mode_autopilot_reason_overrides_quick(tmp_path, monkeypatch):
-    # life/interest/highlight/news 全空、has_conversation/has_prev_song 全 False
+    # life/interest/highlight/news 全空、has_conversation 全 False
     # → 池只剩 atmosphere/quick，固定權重讓 select_mode 必落在 quick，autopilot_reason
     # 存在時 orchestrator 該把它蓋成 "reason"，跟舊寫法一致。
     _only(monkeypatch, "quick")
@@ -126,7 +125,7 @@ def test_select_narration_mode_has_guide_picks_guide_over_fallback_rotation(tmp_
     # 有歌曲卡導聆可講（has_guide=True）→ 固定權重讓扭蛋池必抽中 guide。
     _only(monkeypatch, "guide")
     kwargs = dict(
-        life=[], interests=[], has_conversation=True, has_prev_song=True, has_guide=True,
+        life=[], interests=[], has_conversation=True, has_guide=True,
     )
     topic, mode = select_narration_mode(topic_store=_fresh_store(tmp_path, "a.json"), **kwargs)
     assert mode == "guide"
@@ -139,7 +138,7 @@ def test_select_narration_mode_has_guide_false_never_returns_guide(tmp_path):
     for _ in range(6):
         _, mode = select_narration_mode(
             life=[], interests=[], topic_store=store,
-            has_conversation=True, has_prev_song=True,
+            has_conversation=True,
         )
         assert mode != "guide"
 
@@ -151,7 +150,7 @@ def test_select_narration_mode_autopilot_reason_does_not_override_guide(tmp_path
     store = _fresh_store(tmp_path, "a.json")
     topic, mode = select_narration_mode(
         life=[], interests=[], topic_store=store,
-        has_conversation=True, has_prev_song=True, has_guide=True,
+        has_conversation=True, has_guide=True,
         autopilot_reason="照你的口味挖出來的新歌",
     )
     assert mode == "guide"
@@ -178,7 +177,7 @@ def test_select_narration_mode_passes_activities_through_to_select_mode(tmp_path
         life=[], interests=[], topic_store=store,
         activities=["小明 正在玩《Ball X Pit》"],
         exclude_modes=("life", "interest", "emotional_highlight", "news", "callback",
-                       "guide", "conversation", "prev_song", "atmosphere", "quick"),
+                       "guide", "conversation", "atmosphere", "quick"),
     )
     assert mode == "activity"
     assert topic == "小明 正在玩《Ball X Pit》"

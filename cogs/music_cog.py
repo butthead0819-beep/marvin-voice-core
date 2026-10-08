@@ -111,7 +111,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         "interest": "upbeat",
         "activity": "upbeat",
         "atmosphere": "calm",
-        "prev_song": "calm",
         "emotional_highlight": "calm",
         "news": "upbeat",
     }
@@ -265,10 +264,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 dj_audio, _dj_played_in_tail = await self._stream_loop_prepare_and_announce(
                     info, vc, title, requested_by)
 
-                self._current_song_skipped = False
-                song_start_time = time.time()
-                self._current_stream_start_time = song_start_time
-                self._republish_queue_snapshot()   # HUD 進度條要靠這次補推的 song_start_time
+                song_start_time = self._mark_song_started(info)
                 song_lyrics_snapshot = self._current_lyrics or ""
                 playback_completion = "natural"
 
@@ -525,9 +521,9 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         if await self._play_audiophile_guide_preroll(info, vc):   # 導聆＝這首的開場，開頭 DJ 讓位
             dj_audio = dj_data = None
         if dj_audio:
-            dj_audio = await self._splice_owner_voice_clip(dj_audio, info)
+            dj_audio = await self._splice_and_attach(dj_audio, info, dj_data)
         if dj_data and not dj_audio and vc is not None:
-            await self._maybe_play_dj_interjection(dj_data)
+            await self._play_and_attach_narration(info, dj_data)
 
         return dj_audio, dj_played_in_tail
 
@@ -793,6 +789,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         cur = self._current_stream_info
         if mm is None or not cur:
             return
+        self._log_song_skip(cur)
         url = cur.get("webpage_url") or cur.get("url") or ""
         if url:
             try:

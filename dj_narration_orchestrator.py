@@ -41,7 +41,7 @@ side effect」的兩段決策——尾段點火時機、話題來源挑選——
       說過喜歡這首歌/歌手的具體證據，命中且未冷卻直接勝出，跳過下面
       select_mode）→ 其餘交給 `dj_topic_selector.select_mode()` 的扭蛋池：
       生活素材（事件主角要在場）/在場興趣/情緒高光/新聞/guide/conversation/
-      prev_song/atmosphere/quick 中有素材的進池，加權隨機抽一個 mode。
+      atmosphere/quick 中有素材的進池，加權隨機抽一個 mode。
       若 autopilot 有算好推薦理由
       （`_autopilot_pick_reason`）且 mode 落在 quick/atmosphere 這兩個
       「敬陪末座」的 fallback，直接蓋掉、改用 "reason"（好料不該被輪替
@@ -140,7 +140,6 @@ def select_narration_mode(
     topic_store: TopicCooldownStore,
     present_members=None,
     has_conversation: bool = False,
-    has_prev_song: bool = False,
     emotional_highlights=None,
     news_items=None,
     callbacks=None,
@@ -158,7 +157,7 @@ def select_narration_mode(
     優先序：記憶對歌（memory_evidence，在場者親口說過喜歡這首歌/歌手的
     具體證據，命中且沒冷卻中就直接勝出，不再進 select_mode）→ 其餘全部交給
     `dj_topic_selector.select_mode` 的扭蛋池（近期生活主角要在場、在場興趣、
-    情緒高光、新聞、在場者的 Discord 動態、guide/conversation/prev_song/
+    情緒高光、新聞、在場者的 Discord 動態、guide/conversation/
     atmosphere/quick，依各自有沒有素材建池後加權隨機抽一個；真正的挑選邏輯在
     `select_mode` 裡，這裡不重複實作；has_guide=True 時 guide 才會進這輪的候選）。
 
@@ -169,7 +168,7 @@ def select_narration_mode(
     Marvin 自己選歌才會算出 `_autopilot_pick_reason`；只在 select_mode
     選到 quick 或 atmosphere 這兩個「沒有具體話題可用」的墊底 fallback
     時才蓋掉，換成有憑有據的推薦理由（mode="reason"）——不搶 life/interest/
-    emotional_highlight/news/conversation/prev_song 這些已經挑到具體
+    emotional_highlight/news/conversation 這些已經挑到具體
     素材的 mode。
 
     回傳 (topic_text, mode)，跟 `select_mode` 的回傳形狀一致，mode
@@ -198,7 +197,6 @@ def select_narration_mode(
         topic_store,
         present_members=present_members,
         has_conversation=has_conversation,
-        has_prev_song=has_prev_song,
         emotional_highlights=emotional_highlights,
         news_items=news_items,
         callbacks=callbacks,

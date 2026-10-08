@@ -19,17 +19,33 @@ from typing import Optional
 logger = logging.getLogger("MarvinBot.DJ.NarrationLog")
 
 _LOG_PATH: Path = Path("records") / "dj_narration.jsonl"
+_SONG_PLAYS_PATH: Path = Path("records") / "song_plays.jsonl"
+_SONG_SKIPS_PATH: Path = Path("records") / "song_skips.jsonl"
+
+
+def _append_jsonl(path: Path, record: dict) -> None:
+    entry = {"ts": time.time(), **record} if "ts" not in record else dict(record)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.debug(f"[DJ Narration Log] write failed ({path}): {e}")
 
 
 def log_dj_narration(record: dict) -> None:
     """Append one jsonl entry（自動補 "ts": time.time()）。Silent on failure。"""
-    entry = {"ts": time.time(), **record}
-    try:
-        _LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with _LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception as e:
-        logger.debug(f"[DJ Narration Log] write failed: {e}")
+    _append_jsonl(_LOG_PATH, record)
+
+
+def log_song_play(record: dict) -> None:
+    """Append 一筆開播/口白歸屬紀錄到 records/song_plays.jsonl。Silent on failure。"""
+    _append_jsonl(_SONG_PLAYS_PATH, record)
+
+
+def log_song_skip(record: dict) -> None:
+    """Append 一筆 skip 紀錄到 records/song_skips.jsonl。Silent on failure。"""
+    _append_jsonl(_SONG_SKIPS_PATH, record)
 
 
 _TAIL_BYTES = 2_000_000

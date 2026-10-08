@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock
 
 
@@ -63,3 +64,65 @@ def test_record_song_skip_noop_when_no_music_memory():
     cog._current_stream_info = {"webpage_url": "https://youtu.be/dQw4w9WgXcQ"}
 
     cog._record_song_skip()  # fail-open，不丟例外
+
+
+# ── 第 1 刀 skip 訊號：_log_song_skip 帶 play_id/narration_id/elapsed_s ──────
+
+def test_record_song_skip_logs_play_id_and_elapsed_when_same_play(tmp_path, monkeypatch):
+    """_current_play_info 跟目前要 skip 的 cur 是同一個物件（正常手動 skip）→
+    帶 play_id/narration_id/elapsed_s。"""
+    from music_memory import MusicMemory
+    import cogs.music_cog_subsystem as subsystem
+
+    rows = []
+    monkeypatch.setattr(subsystem, "log_song_skip", lambda rec: rows.append(rec))
+
+    mm = MusicMemory(path=str(tmp_path / "mm.json"))
+    cog = _make_cog()
+    cog.bot.music_memory = mm
+    cur = {"webpage_url": "https://youtu.be/dQw4w9WgXcQ", "url": "x", "requested_by": "大肚"}
+    cog._current_stream_info = cur
+    cog._current_play_info = cur
+    cog._current_play_id = "play1"
+    cog._current_narration = ("nid1", "life")
+    cog._current_stream_start_time = time.time() - 5.0
+
+    cog._record_song_skip()
+
+    assert len(rows) == 1
+    rec = rows[0]
+    assert rec["play_id"] == "play1"
+    assert rec["narration_id"] == "nid1"
+    assert rec["mode"] == "life"
+    assert rec["video_id"] == "dQw4w9WgXcQ"
+    assert rec["elapsed_s"] is not None and rec["elapsed_s"] >= 5.0
+    assert rec["requested_by"] == "大肚"
+
+
+def test_record_song_skip_logs_none_fields_when_different_play(tmp_path, monkeypatch):
+    """_current_play_info 不是目前要 skip 的這首（例如已經換了新 current）→
+    play_id/narration_id/elapsed_s 全 None。"""
+    from music_memory import MusicMemory
+    import cogs.music_cog_subsystem as subsystem
+
+    rows = []
+    monkeypatch.setattr(subsystem, "log_song_skip", lambda rec: rows.append(rec))
+
+    mm = MusicMemory(path=str(tmp_path / "mm.json"))
+    cog = _make_cog()
+    cog.bot.music_memory = mm
+    cur = {"webpage_url": "https://youtu.be/dQw4w9WgXcQ", "url": "x"}
+    cog._current_stream_info = cur
+    cog._current_play_info = {"webpage_url": "https://youtu.be/other", "url": "y"}
+    cog._current_play_id = "play2"
+    cog._current_narration = ("nid2", "quick")
+    cog._current_stream_start_time = time.time() - 5.0
+
+    cog._record_song_skip()
+
+    assert len(rows) == 1
+    rec = rows[0]
+    assert rec["play_id"] is None
+    assert rec["narration_id"] is None
+    assert rec["mode"] is None
+    assert rec["elapsed_s"] is None

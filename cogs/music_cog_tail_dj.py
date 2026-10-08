@@ -406,7 +406,7 @@ class MusicTailDJMixin:
         # 消除 mixer 中段爆音的代價是換源前要等整首解碼完；不先做，這段延遲就會落在
         # 「DJ 開場白講完」跟「下一首出聲」中間，變成聽得到的中斷）。DJ 開場白＋尾段疊播
         # 還有 ~_DJ_TAIL_LEAD_S 秒窗口，剛好夠蓋掉解碼時間。
-        await self._maybe_play_dj_interjection(dj_meta)
+        await self._play_and_attach_narration(next_info, dj_meta)
         await self._play_dj_tail_sfx(next_info)
         next_info['_dj_played_in_tail'] = True
         logger.info(f"[DJ Tail] {title_next} 已標記 _dj_played_in_tail=True")
@@ -595,7 +595,7 @@ class MusicTailDJMixin:
 
             if dj_meta is not None:
                 next_info['_dj_played_in_tail'] = True
-                await self._maybe_play_dj_interjection(dj_meta)
+                await self._play_and_attach_narration(next_info, dj_meta)
         except Exception as e:
             logger.warning(f"⚠️ [Seamless Skip] 背景 DJ 串場出錯: {e}")
 
@@ -613,45 +613,89 @@ class MusicTailDJMixin:
             pass
         return False
 
-    async def _maybe_play_dj_interjection(self, dj: dict | None):
-        """播放預先生成的 DJ 播報。有預渲染音訊則直接播檔案，否則即時串流。"""
+    async def _maybe_play_dj_interjection(self, dj: dict | None) -> "str | None":
+        """播放預先生成的 DJ 播報。有預渲染音訊則直接播檔案，否則即時串流。
+
+        回傳 None＝沒播出；"full"＝播了完整口白；"short"＝熱聊改唸短版
+        （供呼叫端判斷要不要歸屬這段口白，見 _attach_narration）。"""
         if not dj:
-            return
+            return None
         text = dj.get('text', '')
         audio_path = dj.get('audio_path')
         if not text:
-            return
+            return None
 
         vc = self._vc()
         if vc is None:
             logger.info("[DJ Tail] 口白：找不到 VoiceController cog（_vc()→None），這輪不放")
-            return
+            return None
         # 私語模式：聽>>講，不主動唸 DJ 播報（autopilot 與今夜歌單共用此路）
         if getattr(vc, '_intimate_mode', False):
             logger.info("[DJ Tail] 口白：_intimate_mode=True，這輪不放")
-            return
+            return None
+        kind = "full"
         # 🔥 [DJ Heat] 播出前一刻現場熱聊 → 改唸短版（只報歌名），沒有短版這輪不講
         # （2026-09-30 使用者定：熱聊時素材最多但沒人在聽 DJ，該少講）。
         if self._dj_channel_is_hot(vc):
             short = dj.get('short_text') or ''
             if not short:
                 logger.info("🔥 [DJ Heat] 熱聊中、沒有短版，這輪不講")
-                return
+                return None
             logger.info(f"🔥 [DJ Heat] 熱聊中，改唸短版：{short}")
             text = short
             audio_path = None
+            kind = "short"
             try:
                 audio_path = await self.bot.tts_engine.generate_audio(short, emotion="normal")
             except Exception as e:
                 logger.debug(f"[DJ Heat] 短版 TTS 失敗，改即時串流: {e}")
+        played = False
         with vc._protected_tts_window():
             if audio_path and os.path.exists(audio_path):
                 # 尾段 DJ：走 TTS 層（duck 音樂、非阻塞、撐過歌1→歌2 換源）。
                 # 不可用 play_local_file——那條把檔案設成音樂層來源會替換掉正在播的歌，
                 # DJ 只播到切歌點就被下一首蓋掉（使用者實測「只聽到狗與露就停」）。
-                await vc.play_dj_on_tts_layer(audio_path, text=text)
+                played = (await vc.play_dj_on_tts_layer(audio_path, text=text)) is True
             else:
-                await vc.play_tts(text, already_in_channel=True)
+                played = (await vc.play_tts(text, already_in_channel=True)) is True
+        return kind if played else None
+
+    def _attach_narration(self, info: dict, dj: "dict | None", kind: str) -> None:
+        """把一段已確定播出的口白歸屬到它引介的歌（見 §6.3b 設計）。
+
+        歌還沒開播（info 還在 queue/準備階段）→ 存進 info，等 _mark_song_started
+        簽收；歌已開播（口白晚到，例如 skip 後的背景串場）→ 直接改
+        self._current_narration 並補記一筆 narration_attach。"""
+        if not dj:
+            return
+        nid = dj.get('narration_id')
+        if not nid:
+            return
+        mode = "short" if kind == "short" else dj.get('mode')
+        from dj_narration_log import log_dj_narration, log_song_play
+        log_dj_narration({"type": "aired", "narration_id": nid, "kind": kind})
+        if getattr(self, "_current_play_info", None) is info:
+            self._current_narration = (nid, mode)
+            log_song_play({
+                "type": "narration_attach",
+                "play_id": getattr(self, "_current_play_id", None),
+                "narration_id": nid,
+                "mode": mode,
+            })
+        else:
+            info["_narration_id"] = nid
+            info["_narration_mode"] = mode
+
+    async def _play_and_attach_narration(self, info: dict, dj: "dict | None") -> None:
+        kind = await self._maybe_play_dj_interjection(dj)
+        if kind:
+            self._attach_narration(info, dj, kind)
+
+    async def _splice_and_attach(self, dj_audio: "str | None", info: dict, dj: "dict | None") -> "str | None":
+        out = await self._splice_owner_voice_clip(dj_audio, info)
+        if out and os.path.exists(out):
+            self._attach_narration(info, dj, "full")
+        return out
 
     async def _synthesize_dynamic_scratch(self, next_info: dict) -> str | None:
         """抓下一首已預解碼的 PCM、即時合成專屬該曲的黑膠刷碟聲。抓不到/沒 ready/合成

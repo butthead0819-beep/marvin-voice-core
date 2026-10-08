@@ -458,3 +458,13 @@ grep "NemoClaw路由\|NemoClaw→\|NemoClaw.*跳過\|NemoClaw.*排隊" bot_main.
 **Status**: deferred — gated on daily ritual 再現 2+ 次「持續循環」措辭
 **Start**: `_stream_loop` 進入時（while 前）一次性消費 flag 的 pattern；測試 record_play guard（循環 N 圈、斷言 `music_memory.record_play` 只呼 1 次）
 **Depends on**: 建議在 PR2（clear_queue + play_next）之後，loop_on/off 加進同一個 QueueControlAgent
+
+---
+
+### TODO: 移除 select_narration_mode 舊包裝（DJ 口白註冊表第 3 刀之後）
+**What**: `dj_narration_orchestrator.select_narration_mode` 在第 3 刀改成呼叫 `plan_narration` 的薄包裝；穩定後刪掉它，正式呼叫端（`cogs/music_cog_dj_lyrics.py`）改用 `plan_narration`，9 個測試檔約 48 處引用改測 `plan_narration`。
+**Why**: 2026-10-08 eng review D13 刻意保留舊入口當重構護欄；不清掉會兩個決策入口並存，之後有人從舊入口加邏輯就分岔。
+**Pros**: 只剩一條口白決策路徑；測試直接覆蓋註冊表。
+**Cons**: 一次改寫約 48 處測試，要逐一確認斷言語意不變（human ~半天 / CC ~20 分）。
+**Context**: 設計見 `docs/designs/dj-narration-mode-registry.md`；eng review 報告在 `~/.gstack/projects/butthead0819-beep-marvin-voice-core/main-eng-review-20261008-141758.md`（R3/R5）。從 `grep -rn select_narration_mode tests/` 開始。
+**Depends on / blocked by**: 第 3 刀（註冊表＋規劃器）land 且穩定一週。
