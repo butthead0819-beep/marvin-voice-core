@@ -304,6 +304,26 @@ async def test_start_discord_text_server_wires_tap_and_discord_voice(monkeypatch
     assert recorded["kwargs"].get("discord_voice") is vc
 
 
+@pytest.mark.asyncio
+async def test_start_discord_text_server_car_gain_follows_mixer_volume_target():
+    """車機輸出補增益讀 mixer 的音量目標值（不是 ramp 中的 _volume）：0.10→×10、0.5→×2。"""
+    vc = MagicMock()
+    vc._mixer = MagicMock()
+    vc._mixer._volume_target = 0.10
+    vc._mixer._volume = 1.0   # ramp 中的值不該被讀到
+
+    async def _fake_start(*args, **kwargs):
+        return MagicMock()
+
+    with patch("car_http_app.start_text_http_server", _fake_start):
+        await main_discord._start_discord_text_server(asyncio.get_running_loop(), vc)
+
+    stream_out = vc._mixer.set_tap.call_args.args[0]
+    assert stream_out._gain_fn() == pytest.approx(10.0)
+    vc._mixer._volume_target = 0.5
+    assert stream_out._gain_fn() == pytest.approx(2.0)
+
+
 # ---------- (8) Discord 版 _play_open / _stop_playback 接線 ----------
 
 class _FakeVoiceControllerForCarMode:
