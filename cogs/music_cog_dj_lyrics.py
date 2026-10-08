@@ -712,6 +712,10 @@ class MusicDJLyricsMixin:
             _autopilot_reason = self._autopilot_pick_reason(info) or ''
 
         callback_lines, callback_src = self._present_callbacks(present_members)
+        from dj_presence_material import presence_materials
+        _vc_now = self._vc()
+        activity_lines = presence_materials(
+            getattr(getattr(getattr(_vc_now, 'voice_client', None), 'channel', None), 'members', None))
 
         # 🔥 [DJ Heat] 話題庫有東西可接回 → 直接走 revival，不讓扭蛋池蓋過去
         # （降溫時的第一要務是接回剛剛聊的話題，不是照常規話題優先序抽獎）。
@@ -734,6 +738,7 @@ class MusicDJLyricsMixin:
                 memory_evidence=memory_evidence,
                 has_guide=bool(guide),
                 callbacks=callback_lines,
+                activities=activity_lines,
                 focus=_focus,
                 exclude_modes=used["modes"],
             )
@@ -775,6 +780,9 @@ class MusicDJLyricsMixin:
                     self.bot.router.memory.consume_callback(_cb[0], _cb[1])
                 except Exception as e:
                     logger.warning(f"⚠️ [DJ Callback] consume 失敗: {e}")
+        elif mode == "activity":
+            ctx.append(f"【你熟悉他的生活】在場的人現在的 Discord 動態：\n・{topic}")
+            ctx.append("開場鉤子：像注意到朋友正在幹嘛順口一提（例如邊打遊戲邊聽這首），再帶進歌；只能講素材裡寫的遊戲名/狀態文字，不准猜遊戲內容、劇情或他玩得怎樣，狀態文字看不懂就照念、不解讀。")
         elif mode == "emotional_highlight":
             # 這是 Marvin 自己（機器人）的記憶與反應，不是聽眾的事——跟 life/interest
             # 的「代入感」方向相反，robot_pov_rule 對「第一人稱」的限制在這裡要放行。

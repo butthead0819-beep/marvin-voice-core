@@ -152,3 +152,37 @@ def test_topic_text_non_none_for_topic_modes(tmp_path, monkeypatch):
     topic, mode = select_mode(["生活話題"], [], store)
     assert mode == "life"
     assert topic == "生活話題"
+
+
+# 8. activity（10/8 使用者定案：在場者的 Discord 正在玩/自訂狀態）───────────
+
+def test_activity_in_pool_and_drawn_marks_used(tmp_path):
+    store = _store(tmp_path)
+    store.set_last_fallback("atmosphere")
+    rng = random.Random(42)
+
+    topic, mode = select_mode(
+        [], [], store,
+        activities=["小明 正在玩《Ball X Pit》"],
+        rng=rng,
+    )
+    assert mode == "activity"
+    assert topic == "小明 正在玩《Ball X Pit》"
+    assert store.is_cool("小明 正在玩《Ball X Pit》") is False
+
+
+def test_activity_cooldown_excludes_it_from_pool(tmp_path, monkeypatch):
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {"activity": 1.0, "quick": 1.0})
+    store = _store(tmp_path)
+    store.mark_used("小明 正在玩《Ball X Pit》")
+    topic, mode = select_mode([], [], store, activities=["小明 正在玩《Ball X Pit》"])
+    assert mode != "activity"
+    assert topic is None
+
+
+def test_no_activities_passed_behaves_like_before(tmp_path, monkeypatch):
+    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {"activity": 1.0, "quick": 1.0})
+    store = _store(tmp_path)
+    topic, mode = select_mode([], [], store)
+    assert mode == "quick"
+    assert topic is None

@@ -168,3 +168,17 @@ def test_select_narration_mode_autopilot_reason_does_not_override_life(tmp_path,
     )
     assert mode == "life"
     assert topic == "昨天去爬山"
+
+
+def test_select_narration_mode_passes_activities_through_to_select_mode(tmp_path):
+    # select_narration_mode 把 activities 原樣轉給 select_mode；固定權重讓扭蛋池
+    # 必抽中 activity，確認這條 kwarg 真的接到了底層（不是被吞掉）。
+    store = _fresh_store(tmp_path, "a.json")
+    topic, mode = select_narration_mode(
+        life=[], interests=[], topic_store=store,
+        activities=["小明 正在玩《Ball X Pit》"],
+        exclude_modes=("life", "interest", "emotional_highlight", "news", "callback",
+                       "guide", "conversation", "prev_song", "atmosphere", "quick"),
+    )
+    assert mode == "activity"
+    assert topic == "小明 正在玩《Ball X Pit》"
