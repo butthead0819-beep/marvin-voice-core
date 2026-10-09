@@ -137,6 +137,14 @@ PERSONAL_GREETINGS = {
 }
 
 
+def _as_toxicity(value, default: int = 5) -> int:
+    """LLM/舊狀態可能給非數字；轉不了就回預設值。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class GeminiRouterContentMixin:
     """內容生成：記憶萃取、社交分析、日記、問候、音樂藍圖等。"""
 # --- 🧠 [Memory Extraction & Interaction] ---
@@ -348,7 +356,8 @@ class GeminiRouterContentMixin:
 
     async def update_toxicity(self, delta: int):
         """動態調整憂鬱指數，並實作『極點反轉』性格突變 (Operation Soul Depth)"""
-        self.dna["toxicity"] += delta
+        # 2026-10-09：LLM 回的 toxicity_reset 曾是 dict，污染記憶體後每次 += 都炸
+        self.dna["toxicity"] = _as_toxicity(self.dna.get("toxicity")) + delta
         
         # 🧬 觸發性格突變：當人格極度倦怠時
         if self.dna["toxicity"] <= 0:
@@ -364,7 +373,7 @@ class GeminiRouterContentMixin:
                 res = await self._call_llm(mutation_prompt, "性格演化系統", is_json=True, tier="medium")
                 mutation = safe_json_loads(res, {"new_tag": "虛無主義", "toxicity_reset": 5})
                 self.dna["persona_tag"] = mutation.get("new_tag", "虛無主義")
-                self.dna["toxicity"] = mutation.get("toxicity_reset", 5)
+                self.dna["toxicity"] = _as_toxicity(mutation.get("toxicity_reset"))
                 logger.info(f"🔮 [DNA Mutation] 演化完成！馬文現在是：{self.dna['persona_tag']}")
             except Exception as e:
                 logger.error(f"❌ [DNA Mutation] 演化崩潰，強制設定為虛無模式: {e}")
