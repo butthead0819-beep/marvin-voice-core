@@ -32,6 +32,7 @@ yt-dlp==2026.7.4
 ytmusicapi==1.12.2
 syncedlyrics==1.0.1
 pypinyin==0.55.0
+zhconv==1.4.3
 RapidFuzz==3.14.5
 # Shazam 音訊認歌（shazam_identify.py，曲庫正規化；沒裝會自動退回 iTunes）：
 #   shazamio 0.8.1 宣告 aiofiles<24 跟上面鎖的 24.1.0 衝突（實際只用 aiofiles.open，24 可用），

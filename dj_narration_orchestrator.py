@@ -119,6 +119,7 @@ class DJMaterials:
     guide: str | None = None
     song_card: Any = None
     empathy_hooks: tuple = ()
+    collision: Any = None  # hook_collision.Collision；只有已決定要上播的撞點才放進來
 
 
 @dataclass(frozen=True)
@@ -159,7 +160,21 @@ def _pick_song(m: DJMaterials, store: TopicCooldownStore):
     return (None, None) if m.focus == "song" else None
 
 
+def _pick_collision(m: DJMaterials, store: TopicCooldownStore):
+    return (None, None) if m.collision is not None else None
+
+
 # ── render 函式（逐字照抄 `_fetch_dj_interjection_raw` 現行 if/elif） ────────
+
+def _render_collision(topic, m: DJMaterials) -> list[str]:
+    c = m.collision
+    if c is None:
+        return []
+    return [
+        f"聊天室剛才 {c.speaker} 說：「{c.chat_quote}」\n這首歌詞有一句：「{c.lyric_line}」",
+        "開場鉤子：點名講出這個巧合，兩句原文一字不改，不解釋、不延伸。",
+    ]
+
 
 def _render_memory_match(topic, m: DJMaterials) -> list[str]:
     return [
@@ -241,8 +256,9 @@ def _render_guide(topic, m: DJMaterials) -> list[str]:
 
 MODES: dict[str, NarrationMode] = {
     "revival": NarrationMode("revival", "forced", order=0, pick=_pick_revival, render=_render_revival),
-    "memory_match": NarrationMode("memory_match", "forced", order=1, pick=_pick_memory_match, render=_render_memory_match),
-    "song": NarrationMode("song", "forced", order=2, pick=_pick_song),
+    "collision": NarrationMode("collision", "forced", order=1, pick=_pick_collision, render=_render_collision),
+    "memory_match": NarrationMode("memory_match", "forced", order=2, pick=_pick_memory_match, render=_render_memory_match),
+    "song": NarrationMode("song", "forced", order=3, pick=_pick_song),
     "life": NarrationMode("life", "gacha", render=_render_life, tts_emotion="upbeat"),
     "interest": NarrationMode("interest", "gacha", render=_render_interest, tts_emotion="upbeat"),
     "news": NarrationMode("news", "gacha", render=_render_news, tts_emotion="upbeat"),

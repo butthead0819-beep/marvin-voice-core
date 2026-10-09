@@ -9,9 +9,11 @@ from dj_narration_orchestrator import (
     NarrationPlan,
     apply_side_effects,
     choose_mode,
+    plan_narration,
     tts_emotion_for,
 )
 from dj_topic_selector import TopicCooldownStore
+from hook_collision import Collision
 
 
 def test_apply_side_effects_is_not_a_coroutine_function():
@@ -20,7 +22,7 @@ def test_apply_side_effects_is_not_a_coroutine_function():
 
 def test_modes_registry_has_exactly_expected_names():
     expected = {
-        "revival", "memory_match", "song", "life", "interest",
+        "revival", "collision", "memory_match", "song", "life", "interest",
         "news", "callback", "activity", "guide",
         "conversation", "atmosphere", "quick", "reason",
     }
@@ -108,3 +110,49 @@ def test_reason_overrides_atmosphere_and_last_fallback_keeps_gacha_pick(tmp_path
     topic, mode = choose_mode(DJMaterials(autopilot_reason="這首是 Alice 點過的歌"), store)
     assert (topic, mode) == (None, "reason")
     assert store.get_last_fallback() == "atmosphere"
+
+
+def _coll() -> Collision:
+    return Collision(speaker="showay", chat_quote="我覺得他真的拿走了什麼東西",
+                     lyric_line="拿走了什麼", matched_key="拿走了什麼", score=5, kind="literal")
+
+
+def test_collision_forced_wins_over_gacha(tmp_path):
+    m = DJMaterials(collision=_coll(), life=["生活素材"], has_conversation=True)
+    plan = plan_narration(m, TopicCooldownStore(path=str(tmp_path / "cd.json")))
+    assert plan.mode == "collision"
+
+
+def test_collision_loses_to_revival(tmp_path):
+    m = DJMaterials(collision=_coll(), revival_lines=["剛剛大家聊過的話"])
+    plan = plan_narration(m, TopicCooldownStore(path=str(tmp_path / "cd.json")))
+    assert plan.mode == "revival"
+
+
+def test_collision_beats_memory_match(tmp_path):
+    m = DJMaterials(collision=_coll(), memory_evidence="showay 說過喜歡這首")
+    plan = plan_narration(m, TopicCooldownStore(path=str(tmp_path / "cd.json")))
+    assert plan.mode == "collision"
+
+
+def test_collision_ctx_has_both_quotes_verbatim(tmp_path):
+    m = DJMaterials(collision=_coll())
+    plan = plan_narration(m, TopicCooldownStore(path=str(tmp_path / "cd.json")))
+    joined = "\n".join(plan.ctx_lines)
+    assert "我覺得他真的拿走了什麼東西" in joined
+    assert "拿走了什麼" in joined
+    assert "showay" in joined
+
+
+def test_collision_does_not_touch_topic_cooldown(tmp_path):
+    """collision 是 forced 層，命中就直接回傳、不進 select_mode 的扭蛋池——
+    若真的被 mark_used/set_last_fallback 寫到，get_last_fallback() 會被改成非 None。"""
+    store = TopicCooldownStore(path=str(tmp_path / "cd.json"))
+    plan = plan_narration(DJMaterials(collision=_coll()), store)
+    assert plan.mode == "collision"
+    assert store.get_last_fallback() is None
+
+
+def test_no_collision_means_no_collision_mode(tmp_path):
+    plan = plan_narration(DJMaterials(), TopicCooldownStore(path=str(tmp_path / "cd.json")))
+    assert plan.mode != "collision"

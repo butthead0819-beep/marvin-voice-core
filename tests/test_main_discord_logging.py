@@ -225,3 +225,39 @@ def test_setup_early_logging_allowlists_queue_priority():
     assert level == "INFO", (
         f"queue_priority effective level 應為 INFO，實際={level!r} stderr={result.stderr[-500:]!r}"
     )
+
+
+def test_setup_early_logging_allowlists_hook_collision():
+    """聊天撞歌詞命中 log（hook_collision.py 用 getLogger(__name__)）
+    同型坑：新頂層模組沒補進 allowlist，INFO 會被 root WARNING 吞掉。
+    做法同 test_setup_early_logging_allowlists_queue_priority：subprocess 裡跑，避免污染 pytest 行程。
+    """
+    import os
+    import subprocess
+    import sys as _sys
+    import tempfile
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory() as tmp_cwd:
+        out_path = Path(tmp_cwd) / "level_result.txt"
+        script = (
+            "import logging, main_discord; "
+            "main_discord.setup_early_logging(); "
+            "lg = logging.getLogger('hook_collision'); "
+            f"open({str(out_path)!r}, 'w').write(logging.getLevelName(lg.getEffectiveLevel()))"
+        )
+        env = {**os.environ, "PYTHONPATH": str(repo_root)}
+        result = subprocess.run(
+            [_sys.executable, "-c", script],
+            cwd=tmp_cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, f"subprocess 失敗: {result.stderr}"
+        level = out_path.read_text().strip() if out_path.exists() else ""
+    assert level == "INFO", (
+        f"hook_collision effective level 應為 INFO，實際={level!r} stderr={result.stderr[-500:]!r}"
+    )

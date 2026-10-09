@@ -10,6 +10,9 @@ golden 檔案在 tests/snapshots/dj_narration/<case>.txt，用
 """
 from __future__ import annotations
 
+import asyncio
+import time
+
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -311,3 +314,95 @@ async def test_snapshot_revival(tmp_path, monkeypatch):
     ):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("revival", _render_snapshot("revival", bot, result))
+
+
+_COLL_LYRICS = "拿走了什麼\n別的一句歌詞"
+_COLL_CHAT = "我覺得他真的拿走了什麼東西"
+
+
+def _setup_collision(cog, bot, monkeypatch, *, speaker="showay", chat=_COLL_CHAT,
+                     consent=True, rnd=0.9):
+    vc = MagicMock()
+    vc.voice_client = None
+    vc.get_online_members = MagicMock(return_value=[speaker])
+    vc.consent.is_consented = MagicMock(return_value=consent)
+    monkeypatch.setattr(cog, "_vc", lambda: vc)
+    monkeypatch.setattr(dj_lyrics_mod.random, "random", lambda: rnd)
+    cog._current_stream_start_time = None
+    bot.engine.conv_buffer.get_history = MagicMock(return_value=[
+        {"timestamp": time.time(), "speaker": speaker, "text": chat}])
+
+
+async def _run_with_lyrics(cog, info, lyrics=_COLL_LYRICS):
+    async def _lyr():
+        return lyrics
+    return await cog._fetch_dj_interjection_raw(info, lyrics_task=asyncio.create_task(_lyr()))
+
+
+@pytest.mark.asyncio
+async def test_snapshot_collision(tmp_path, monkeypatch):
+    bot, cog = _make_cog(tmp_path, monkeypatch)
+    _setup_collision(cog, bot, monkeypatch)
+    llm_text = "聊天室剛才 showay 說：「我覺得他真的拿走了什麼東西」，這句歌詞也有「拿走了什麼」，真巧。"
+    bot.router.generate_dynamic_system_msg.return_value = llm_text
+    result = await _run_with_lyrics(cog, _make_info())
+    assert result["mode"] == "collision"
+    assert result["text"] == llm_text
+    context = bot.router.generate_dynamic_system_msg.call_args.kwargs["context"]
+    assert "聊天室剛才 showay 說" in context
+    assert "這首歌詞有一句" in context
+
+
+@pytest.mark.asyncio
+async def test_snapshot_collision_template(tmp_path, monkeypatch):
+    bot, cog = _make_cog(tmp_path, monkeypatch)
+    _setup_collision(cog, bot, monkeypatch)
+    bot.router.generate_dynamic_system_msg.return_value = "這首歌真好聽，大家都很喜歡。"
+    result = await _run_with_lyrics(cog, _make_info())
+    assert result["mode"] == "collision"
+    assert "我覺得他真的拿走了什麼東西" in result["text"]
+    assert "拿走了什麼" in result["text"]
+    assert "《測試歌》" in result["text"]
+
+
+@pytest.mark.asyncio
+async def test_collision_holdout_is_not_aired(tmp_path, monkeypatch):
+    bot, cog = _make_cog(tmp_path, monkeypatch)
+    _setup_collision(cog, bot, monkeypatch, rnd=0.0)
+    result = await _run_with_lyrics(cog, _make_info())
+    assert result["mode"] != "collision"
+    assert "拿走了什麼" in cog._dj_collision_ledger().exclude()
+
+
+@pytest.mark.asyncio
+async def test_collision_skipped_for_non_consented_speaker(tmp_path, monkeypatch):
+    bot, cog = _make_cog(tmp_path, monkeypatch)
+    _setup_collision(cog, bot, monkeypatch, consent=False)
+    result = await _run_with_lyrics(cog, _make_info())
+    assert result["mode"] != "collision"
+
+
+@pytest.mark.asyncio
+async def test_collision_ledger_blocks_second_collision_within_gap(tmp_path, monkeypatch):
+    bot, cog = _make_cog(tmp_path, monkeypatch)
+    _setup_collision(cog, bot, monkeypatch)
+    first = await _run_with_lyrics(cog, _make_info())
+    assert first["mode"] == "collision"
+    bot.engine.conv_buffer.get_history = MagicMock(return_value=[
+        {"timestamp": time.time(), "speaker": "showay", "text": _COLL_CHAT},
+        {"timestamp": time.time(), "speaker": "Bob", "text": "剛才聽到別的一句歌詞真好"},
+    ])
+    second = await _run_with_lyrics(cog, _make_info())
+    assert second["mode"] != "collision"
+
+
+@pytest.mark.asyncio
+async def test_collision_beats_associative_line(tmp_path, monkeypatch):
+    bot, cog = _make_cog(tmp_path, monkeypatch)
+    _setup_collision(cog, bot, monkeypatch)
+    llm_text = "聊天室剛才 showay 說：「我覺得他真的拿走了什麼東西」，這句歌詞也有「拿走了什麼」，真巧。"
+    bot.router.generate_dynamic_system_msg.return_value = llm_text
+    info = _make_info(_lane="associative", _dj_line="關聯金句測試用的一句話")
+    result = await _run_with_lyrics(cog, info)
+    assert result["mode"] == "collision"
+    assert result["text"] == llm_text

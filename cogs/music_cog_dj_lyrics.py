@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 # 命中案例趕得上，逾時就放棄這輪歌詞槽，不拖慢整段口白預抓）。
 _DJ_LYRICS_WAIT_S = 6.0
 
+COLLISION_HOLDOUT_RATE = 0.2
+
 # 日記生活素材候選上限：原本 recent_life_cores 預設只留最新 3 條（近 3 天實有 ~96 條），
 # DJ 這裡放寬，隨機挑未冷卻的（9/30 使用者定）
 _DJ_LIFE_MAX_CORES = 200
@@ -404,6 +406,13 @@ class MusicDJLyricsMixin:
             self._dj_topic_bank = bank
         return bank
 
+    def _dj_collision_ledger(self):
+        led = getattr(self, '_collision_ledger_obj', None)
+        if led is None:
+            from hook_collision import CollisionLedger
+            led = self._collision_ledger_obj = CollisionLedger()
+        return led
+
     def _dj_topic_store(self):
         """DJ 話題冷卻表的 lazy 單例（跨呼叫共用同一份記憶體狀態＋disk-backed）。"""
         store = getattr(self, "_dj_topic_cooldown_store", None)
@@ -675,6 +684,49 @@ class MusicDJLyricsMixin:
         activity_lines = presence_materials(
             getattr(getattr(getattr(_vc_now, 'voice_client', None), 'channel', None), 'members', None))
 
+        # 🎤 歌詞槽（9/30 使用者定：老朋友想分享這首的原因）——等真實歌詞抓完（上限 6s）挑重複最多的一句
+        # 放在生活/新聞素材都查完之後：歌詞抓取跟那些 await 同時在跑，這裡多半已經好了
+        # 撞點（聊天撞歌詞）要用到歌詞原文，所以提前到註冊表決策之前
+        _lyric_line = None
+        _lyrics_text = None
+        _t_lyr = time.monotonic()
+        if lyrics_task is not None:
+            try:
+                _lyrics = await asyncio.wait_for(asyncio.shield(lyrics_task), timeout=_DJ_LYRICS_WAIT_S)
+                from dj_lyric_pick import pick_lyric_line
+                _lyrics_text = _lyrics if isinstance(_lyrics, str) else None
+                _lyric_line = pick_lyric_line(_lyrics_text, exclude=used["lyric_quotes"])
+            except Exception:
+                _lyric_line = None  # 逾時/失敗：這輪沒有歌詞槽
+        _lyrics_wait_s = round(time.monotonic() - _t_lyr, 2) if lyrics_task is not None else None
+        if _lyric_line:
+            lyric_candidates.append(f"歌詞：『{_lyric_line}』")
+
+        _coll_ledger = self._dj_collision_ledger()
+        _coll_ledger.tick_song()
+        _collision = None      # 這輪真的要上播的撞點（只有 literal、未 holdout）
+        _coll_cand = None      # 比對到的候選（含 pinyin_only／holdout，只給 log）
+        _coll_holdout = False
+        _coll_verify = None
+        _coll_now = time.time()
+        if lyrics_task is not None and _lyrics_text and conv_buf and _coll_ledger.ready():
+            _since = max(getattr(self, '_current_stream_start_time', None) or 0.0, _coll_now - 360.0)
+            _cons = getattr(_vc_ref, 'consent', None)
+            if _cons is not None:
+                from hook_collision import filter_consented, find_collision, utts_since
+                _blocked = _coll_ledger.blocked_speakers(_coll_now)
+                _utts = filter_consented(
+                    [u for u in utts_since(conv_buf.get_history(), _since) if u[0] not in _blocked],
+                    _cons.is_consented)
+                if _utts:
+                    _coll_cand = await asyncio.to_thread(
+                        find_collision, _utts, _lyrics_text,
+                        title=_clean_t or "", artist=_clean_a or "", exclude=_coll_ledger.exclude())
+                    if _coll_cand is not None and _coll_cand.kind == "literal":
+                        _coll_holdout = random.random() < COLLISION_HOLDOUT_RATE
+                        if not _coll_holdout:
+                            _collision = _coll_cand
+
         from dj_narration_orchestrator import DJMaterials, apply_side_effects, plan_narration
         _card = info.get('_song_card')
         if not _card and isinstance(guide, str):
@@ -688,6 +740,7 @@ class MusicDJLyricsMixin:
             autopilot_reason=_autopilot_reason, exclude_modes=used["modes"],
             env=env, conv_lines=conv_lines, guide=guide, song_card=_card,
             empathy_hooks=self._DJ_EMPATHY_HOOK_TEMPLATES,
+            collision=_collision,
         )
         # 決策＋各 mode 的 ctx 段落由註冊表驅動（dj_narration_orchestrator.MODES）；
         # apply_side_effects 是同步 def、緊接 plan 之後：conversation 重查＋標記對 event loop 是原子的（PR #102 review）。
@@ -697,6 +750,8 @@ class MusicDJLyricsMixin:
             callback_src=callback_src,
             consume_callback=lambda who, item: self.bot.router.memory.consume_callback(who, item),
         )
+        if _coll_cand is not None and _coll_cand.kind == "literal" and (plan.mode == "collision" or _coll_holdout):
+            _coll_ledger.mark(_coll_cand, _coll_now)
         topic, mode = plan.topic, plan.mode
         if mode == "revival":
             logger.info(f"🔥 [DJ Heat] 話題庫接回 {len(revival_lines)} 句 → revival")
@@ -710,20 +765,6 @@ class MusicDJLyricsMixin:
                 ctx.append(_reason_line)   # reason 就是這輪的主素材
             else:
                 song_candidates.append(_reason_line)
-
-        # 🎤 歌詞槽（9/30 使用者定：老朋友想分享這首的原因）——等真實歌詞抓完（上限 6s）挑重複最多的一句
-        # 放在生活/新聞素材都查完之後：歌詞抓取跟那些 await 同時在跑，這裡多半已經好了
-        _lyric_line = None
-        if lyrics_task is not None:
-            try:
-                _lyrics = await asyncio.wait_for(asyncio.shield(lyrics_task), timeout=_DJ_LYRICS_WAIT_S)
-                from dj_lyric_pick import pick_lyric_line
-                _lyric_line = pick_lyric_line(
-                    _lyrics if isinstance(_lyrics, str) else None, exclude=used["lyric_quotes"])
-            except Exception:
-                _lyric_line = None  # 逾時/失敗：這輪沒有歌詞槽
-        if _lyric_line:
-            lyric_candidates.append(f"歌詞：『{_lyric_line}』")
 
         # 歌曲類/歌詞類素材各抽 1 個（9/30 使用者定：老朋友三槽——生活/品味/歌詞，
         # 每槽最多 1 個，不再全部疊上去造成混線）。
@@ -798,7 +839,7 @@ class MusicDJLyricsMixin:
         _llm_raw = None
         _llm_cleaned = None
         _disqualify = None
-        if not text and info.get('_lane') == 'associative':
+        if not text and info.get('_lane') == 'associative' and mode != "collision":
             text = (info.get('_dj_line') or '').strip()  # 關聯選曲：直接使用 45-55 字金句串場詞，不重複燒 LLM
             if text:
                 _source = "associative"
@@ -810,6 +851,7 @@ class MusicDJLyricsMixin:
         # 已改成純本地查表（零 LLM、零花費、品質有下限）。
         _last_joke_ts = getattr(self, '_last_dj_joke_ts', None)
         if not text and _heat_mode != "active_chat" \
+                and mode != "collision" \
                 and _last_joke_ts is not None \
                 and (time.time() - _last_joke_ts) >= getattr(self, '_DJ_JOKE_COOLDOWN_S', 1800):
             try:
@@ -889,6 +931,16 @@ class MusicDJLyricsMixin:
                     _source = "fixed_announcement"
                     logger.info("🎙️ [DJ Prefetch] 採用 fallback template")
 
+        if mode == "collision" and _collision is not None:
+            from hook_collision import collision_template, verbatim_ok
+            if verbatim_ok(text, _collision):
+                _coll_verify = "ok"
+            else:
+                text = collision_template(_collision, _clean_t or title)
+                _source = "collision_template"
+                _coll_verify = "template"
+                logger.info(f"🎯 [Collision] LLM 改寫引文，改用模板 chat={_collision.chat_quote!r}")
+
         # 9/30 使用者定：DJ 串場不截斷，改由尾段窗口依口白長度在兩首之間留空白（見 music_cog_tail_dj._wait_dj_tail_window）
 
         audio_path = None
@@ -924,6 +976,14 @@ class MusicDJLyricsMixin:
                 "audio_s": await probe_audio_seconds(audio_path),
                 "n_online": _n_online,
                 "heat_mode": _heat_mode,
+                "collision_found": _coll_cand is not None,
+                "collision_kind": _coll_cand.kind if _coll_cand is not None else None,
+                "collision_score": _coll_cand.score if _coll_cand is not None else None,
+                "matched_key": _coll_cand.matched_key if _coll_cand is not None else None,
+                "collision_aired": mode == "collision",
+                "collision_holdout": _coll_holdout,
+                "collision_verify": _coll_verify,
+                "lyrics_wait_s": _lyrics_wait_s,
             })
         except Exception as e:
             logger.debug(f"[DJ Narration Log] 寫紀錄失敗: {e}")
