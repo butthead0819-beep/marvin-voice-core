@@ -164,7 +164,7 @@ def _pick_song(m: DJMaterials, store: TopicCooldownStore):
 def _render_memory_match(topic, m: DJMaterials) -> list[str]:
     return [
         f"【你熟悉他的生活】記憶證據（這首為什麼現在放）：\n・{topic}",
-        "開場鉤子：開場直接點名講出這條記憶證據，讓對方聽得出你記得他說過/做過的事；只能講證據裡寫的事實，不准自己補細節或編故事。",
+        "開場鉤子：開場直接點名，講出這條記憶證據裡他說過或做過的事；只能講證據裡寫的事實，不准自己補細節或編故事。",
     ]
 
 

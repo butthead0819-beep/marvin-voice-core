@@ -44,3 +44,10 @@ class TestAutopilotPickReason:
     def test_long_tail_has_no_time_reason(self):
         info = {"_lane": "long_tail", "_spotlight": "suki", "_explanation": None}
         assert MusicCog._autopilot_pick_reason(info) == "這首是 suki 點過的歌"
+
+    def test_anchor_lane_reads_naturally_in_reason_line(self):
+        from dj_narration_orchestrator import format_reason_line
+        info = {"_lane": "spotlight", "_spotlight": "suki", "_anchor_title": "晴天", "_explanation": None}
+        reason = MusicCog._autopilot_pick_reason(info)
+        assert reason == "suki 點過《晴天》"
+        assert "理由是因為" not in format_reason_line("suki", "七里香", reason)

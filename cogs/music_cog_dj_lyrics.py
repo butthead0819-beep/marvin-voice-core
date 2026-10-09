@@ -245,7 +245,7 @@ class MusicDJLyricsMixin:
             return f"跟 {who} 平常聽的歌風格相近的新歌"
         anchor = info.get('_anchor_title', '')
         if anchor:
-            return f"因為 {who} 點過《{anchor}》才接這首"
+            return f"{who} 點過《{anchor}》"
         return f"這首是 {who} 平常會聽的歌"
 
     @staticmethod

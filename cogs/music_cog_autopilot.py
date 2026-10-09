@@ -527,6 +527,11 @@ class MusicAutopilotMixin:
             if is_already_recommended(info.get('title', ''), exclude_titles):
                 return 0
 
+            from associative_curation import resolved_title_matches_pick
+            if not resolved_title_matches_pick(info.get('title', ''), pick.song):
+                logger.info(f"🎵 [AssociativePick] 解析到《{info.get('title')}》≠ LLM 選的《{pick.song}》，理由對不上，走一般 autopilot")
+                return 0
+
             # 5. 標註欄位並入隊
             info['requested_by'] = "Marvin推薦（對話靈感）"
             info['_lane'] = 'associative'

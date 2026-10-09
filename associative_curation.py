@@ -11,6 +11,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
+try:
+    from pypinyin import lazy_pinyin
+except ImportError:  # pragma: no cover
+    lazy_pinyin = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,6 +27,33 @@ class AssociativePick:
     song: str
     reason: str
     dj_line: str
+
+
+_NON_ALNUM_RE = re.compile(r"[^0-9a-z]")
+
+
+def _pinyin_key(s: str) -> str:
+    """拼音＋只留英數：抹平簡繁（什么/什麼）、異體字（煙/菸）、空白標點。"""
+    if lazy_pinyin is None or not s:
+        return ""
+    return _NON_ALNUM_RE.sub("", "".join(lazy_pinyin(s)).lower())
+
+
+def resolved_title_matches_pick(resolved_title: str, song: str) -> bool:
+    """YouTube 解析回來的標題是否就是 LLM 選的那首（10/9 review：理由講《剪掉》實播《愛你無條件》）。
+
+    YouTube 標題帶歌手/Cover/動態歌詞等雜訊，所以比「包含」不比相等：
+    normalize_title 包含，或拼音 key 包含（處理簡繁、異體字）任一成立即算同一首。
+    song 空字串一律不算。
+    """
+    from music_recommender import normalize_title
+    if not song or not resolved_title:
+        return False
+    n_song, n_title = normalize_title(song), normalize_title(resolved_title)
+    if n_song and n_song in n_title:
+        return True
+    p_song, p_title = _pinyin_key(song), _pinyin_key(resolved_title)
+    return bool(p_song) and p_song in p_title
 
 
 _ASSOCIATIVE_SYS_PROMPT = (

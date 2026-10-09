@@ -61,3 +61,19 @@ def test_emotional_highlight_mode_removed():
 def test_select_mode_signature_has_no_emotional_highlights_param():
     params = inspect.signature(select_mode).parameters
     assert "emotional_highlights" not in params
+
+
+def test_no_render_or_rule_tells_dj_it_remembers():
+    """10/9 review：robot_pov_rule 不准說自己記得，同一 prompt 不能有別的指示叫它「你記得」。"""
+    from dj_narration_orchestrator import MODES, DJMaterials
+    from dj_prompt_builder import get_dj_unified_rules
+
+    materials = DJMaterials(empathy_hooks=["某個鉤子"])
+    texts = []
+    for mode in MODES.values():
+        if mode.render is not None:
+            texts.extend(mode.render("某個話題", materials))
+    texts.extend(str(v) for v in get_dj_unified_rules().values())
+    for t in texts:
+        for banned in ("你記得", "記得你"):
+            assert banned not in t, f"含「{banned}」：{t}"
