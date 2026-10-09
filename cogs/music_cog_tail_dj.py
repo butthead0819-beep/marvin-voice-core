@@ -674,6 +674,7 @@ class MusicTailDJMixin:
         mode = "short" if kind == "short" else dj.get('mode')
         from dj_narration_log import log_dj_narration, log_song_play
         log_dj_narration({"type": "aired", "narration_id": nid, "kind": kind})
+        self._schedule_reaction_count(nid)
         if getattr(self, "_current_play_info", None) is info:
             self._current_narration = (nid, mode)
             log_song_play({
@@ -685,6 +686,30 @@ class MusicTailDJMixin:
         else:
             info["_narration_id"] = nid
             info["_narration_mode"] = mode
+
+    def _schedule_reaction_count(self, nid: str) -> None:
+        try:
+            task = asyncio.get_running_loop().create_task(self._log_reaction_count(nid, time.time()))
+        except RuntimeError:
+            return
+        tasks = getattr(self, "_reaction_tasks", None)
+        if tasks is None:
+            tasks = self._reaction_tasks = set()
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    async def _log_reaction_count(self, nid: str, t0: float, delay_s: "float | None" = None) -> None:
+        """口白播出後等一個窗口，記前後各 60 秒的在場者發言數。失敗只少一筆量測。"""
+        try:
+            from hook_collision import REACTION_WINDOW_S, reaction_counts
+            await asyncio.sleep(REACTION_WINDOW_S if delay_s is None else delay_s)
+            conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
+            entries = conv_buf.get_history() if conv_buf else []
+            pre, post = reaction_counts(entries, t0)
+            from dj_narration_log import log_dj_narration
+            log_dj_narration({"type": "reaction", "narration_id": nid, "pre_60": pre, "post_60": post})
+        except Exception as e:
+            logger.debug(f"[DJ Reaction] 計數失敗: {e}")
 
     async def _play_and_attach_narration(self, info: dict, dj: "dict | None") -> None:
         kind = await self._maybe_play_dj_interjection(dj)

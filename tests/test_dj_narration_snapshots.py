@@ -406,3 +406,27 @@ async def test_collision_beats_associative_line(tmp_path, monkeypatch):
     result = await _run_with_lyrics(cog, info)
     assert result["mode"] == "collision"
     assert result["text"] == llm_text
+
+
+@pytest.mark.asyncio
+async def test_collision_log_records_holdout_and_has_lyrics(tmp_path, monkeypatch):
+    bot, cog = _make_cog(tmp_path, monkeypatch)
+    _setup_collision(cog, bot, monkeypatch, rnd=0.0)
+    records = []
+    monkeypatch.setattr(dj_narration_log, "log_dj_narration", records.append)
+    await _run_with_lyrics(cog, _make_info())
+    rec = next(r for r in records if "narration_id" in r and "type" not in r)
+    assert rec["has_lyrics"] is True
+    assert rec["collision_holdout"] is True
+    assert rec["collision_kind"] == "literal"
+
+
+@pytest.mark.asyncio
+async def test_log_has_lyrics_false_without_lyrics(tmp_path, monkeypatch):
+    bot, cog = _make_cog(tmp_path, monkeypatch)
+    _setup_collision(cog, bot, monkeypatch)
+    records = []
+    monkeypatch.setattr(dj_narration_log, "log_dj_narration", records.append)
+    await _run_with_lyrics(cog, _make_info(), lyrics="")
+    rec = next(r for r in records if "narration_id" in r and "type" not in r)
+    assert rec["has_lyrics"] is False

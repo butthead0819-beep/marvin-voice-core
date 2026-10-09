@@ -173,6 +173,23 @@ def find_collision(utts, lyrics, *, title="", artist="", exclude=frozenset()) ->
 
 COLLISION_MIN_GAP_SONGS = 2
 COLLISION_SPEAKER_COOLDOWN_S = 1800.0
+REACTION_WINDOW_S = 60.0
+
+
+def reaction_counts(entries: Iterable[dict], t0: float, window_s: float = REACTION_WINDOW_S) -> tuple[int, int]:
+    """口白播出時刻 t0 前後各 window_s 秒的在場者發言數（不含 Marvin）。"""
+    pre = post = 0
+    for e in entries:
+        if e.get("speaker") in MARVIN_SPEAKERS:
+            continue
+        ts = e.get("timestamp")
+        if ts is None:
+            continue
+        if t0 - window_s <= ts < t0:
+            pre += 1
+        elif t0 <= ts < t0 + window_s:
+            post += 1
+    return pre, post
 
 
 def utts_since(entries: Iterable[dict], since_ts: float) -> list[tuple[str, str]]:

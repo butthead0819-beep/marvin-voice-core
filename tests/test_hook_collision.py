@@ -141,3 +141,27 @@ def test_filter_consented_drops_non_consented_before_match():
 def test_utts_since_keeps_only_window():
     entries = [{"timestamp": 10.0, "speaker": "a", "text": "舊"}, {"timestamp": 20.0, "speaker": "b", "text": "新"}]
     assert utts_since(entries, 15.0) == [("b", "新")]
+
+
+def test_reaction_counts_splits_pre_and_post_window():
+    from hook_collision import reaction_counts
+    t0 = 1000.0
+    entries = [
+        {"timestamp": 930.0, "speaker": "a", "text": "太早"},
+        {"timestamp": 940.0, "speaker": "a", "text": "前"},
+        {"timestamp": 999.0, "speaker": "b", "text": "前"},
+        {"timestamp": 1000.0, "speaker": "a", "text": "後"},
+        {"timestamp": 1059.0, "speaker": "b", "text": "後"},
+        {"timestamp": 1060.0, "speaker": "b", "text": "太晚"},
+    ]
+    assert reaction_counts(entries, t0) == (2, 2)
+
+
+def test_reaction_counts_excludes_marvin():
+    from hook_collision import reaction_counts
+    entries = [
+        {"timestamp": 990.0, "speaker": "Marvin", "text": "口白"},
+        {"timestamp": 1010.0, "speaker": "馬文", "text": "口白"},
+        {"timestamp": 1010.0, "speaker": "a", "text": "哈"},
+    ]
+    assert reaction_counts(entries, 1000.0) == (0, 1)

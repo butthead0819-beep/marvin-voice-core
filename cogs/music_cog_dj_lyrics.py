@@ -984,6 +984,7 @@ class MusicDJLyricsMixin:
                 "collision_holdout": _coll_holdout,
                 "collision_verify": _coll_verify,
                 "lyrics_wait_s": _lyrics_wait_s,
+                "has_lyrics": bool(_lyrics_text),
             })
         except Exception as e:
             logger.debug(f"[DJ Narration Log] 寫紀錄失敗: {e}")

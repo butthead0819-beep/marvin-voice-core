@@ -31,6 +31,7 @@ TARGETS: list[tuple[str, list[str]]] = [
     ("records/judge_outcomes.jsonl", ["raw_query"]),
     ("records/rescue_outcomes.jsonl", ["original_query", "rewritten_query"]),
     ("records/nowake_outcomes.jsonl", ["raw_text", "query"]),
+    ("records/dj_narration.jsonl", ["matched_key", "ctx", "text", "llm_raw", "llm_cleaned"]),
 ]
 
 

@@ -158,3 +158,7 @@ def test_main_prints_single_line_json_summary(tmp_path, capsys):
     out = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
     assert len(out) == 1
     assert _json.loads(out[0])["dry_run"] is True
+
+
+def test_dj_narration_chat_fields_in_targets():
+    assert ("records/dj_narration.jsonl", ["matched_key", "ctx", "text", "llm_raw", "llm_cleaned"]) in TARGETS
