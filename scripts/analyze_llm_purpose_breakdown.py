@@ -31,7 +31,7 @@ CLEANER_LOG_PATH = Path.home() / "Library" / "Logs" / "Marvin" / "bot_stdout.log
 _BACKGROUND = frozenset({
     "extract_memory", "batch_extract_memories", "audit_player_memory",
     "extract_emotional_moments", "analyze_social_dynamics",
-    "update_toxicity", "summarize_window", "_classify_mood", "compress",
+    "summarize_window", "_classify_mood", "compress",
     "marvinize_news",
 })
 

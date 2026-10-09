@@ -10,12 +10,7 @@ import suki_miner
 from utils import safe_json_loads
 from marvin_prompts import get_persona_modifiers
 from persona_loader import load_dj_styles
-from personality_config import (
-    adjust_axis,
-    apply_character_preset,
-    apply_schedule_entry,
-    normalize_personality_state,
-)
+from personality_config import normalize_personality_state
 from tts_echo_guard import is_prompt_echo
 
 logger = logging.getLogger(__name__)
@@ -145,7 +140,7 @@ class GeminiRouterContentMixin:
         [Operation Warm Circuit] 擴充支援 behavioral_patterns 語意考察。"""
         if not speaker or not text: return
         
-        system_prompt = self.prompt_manager.get_instruction("memory_extractor", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("memory_extractor", dna=self.dna, speaker=speaker, memory_manager=self.memory)
         user_prompt = (
             f"分析以下來自 {speaker} 的對話，提取任何可記錄資訊：\n『{text}』\n"
             f"輸出格式請包含 behavioral_patterns 欄位（口頭禪、常問問題、遊戲習慣等）。\n"
@@ -184,7 +179,7 @@ class GeminiRouterContentMixin:
         
         if birthday == today_str:
             print(f"🎂 [Birthday Special] 偵測到 {speaker} 今天生日 ({birthday})，發送驚喜...")
-            system_prompt = self.prompt_manager.get_instruction("birthday_celebration", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+            system_prompt = self.prompt_manager.get_instruction("birthday_celebration", dna=self.dna, speaker=speaker, memory_manager=self.memory)
             user_prompt = f"你發現今天是 {speaker} 的生日。請以沉重而帶點溫度的語氣，用一種『又一年過去了，這宇宙還在轉』的複雜情感給予祝賀，並提到你隨手譜了一首充滿絕望的紀念曲。"
             return await self._call_llm(system_prompt, user_prompt, speaker=speaker, tier="simple")
 
@@ -209,7 +204,7 @@ class GeminiRouterContentMixin:
                 topic = f"我還不知道你的『{cat}』相關的事耶。"
                 mode = "missing"
 
-        system_prompt = self.prompt_manager.get_instruction("proactive_question", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("proactive_question", dna=self.dna, speaker=speaker, memory_manager=self.memory)
         
         if mode == "social":
              system_prompt += "\n【人類群聚觀察模式】：你發現了這群人之間的共通點。請以一個疲憊觀測者的視角，以沉重而溫和的語氣，點出這種相似性讓宇宙顯得多麼無奈——他們甚至不知道自己有多相似。"
@@ -295,7 +290,7 @@ class GeminiRouterContentMixin:
 
     async def generate_status_report_comment(self, speaker: str, stats: dict, fragments_count: int) -> str:
         """生成玩家狀態報告的憂鬱觀察點評 (Operation Autonomous Agent)"""
-        system_prompt = self.prompt_manager.get_instruction("status_report_comment", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("status_report_comment", dna=self.dna, speaker=speaker, memory_manager=self.memory)
         user_prompt = f"玩家 {speaker} 的數據：互動 {stats['interaction_count']} 次, 正向回饋 {stats['pos_feedback']}, 負向回饋 {stats['neg_feedback']}, 記憶碎片 {fragments_count} 片。"
         try:
             return await self._call_llm(system_prompt, user_prompt, speaker=speaker, allow_local=False, tier="simple")
@@ -305,7 +300,7 @@ class GeminiRouterContentMixin:
 
     async def marvinize_news(self, speaker: str, interest: str, news_content: str) -> str:
         """將搜尋到的新聞進行 Suki 化 (Operation Autonomous Agent)"""
-        system_prompt = self.prompt_manager.get_instruction("news_sukification", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("news_sukification", dna=self.dna, speaker=speaker, memory_manager=self.memory)
         user_prompt = f"針對玩家 {speaker} 喜歡的『{interest}』，改寫以下新聞：『{news_content}』"
         try:
             return await self._call_llm(system_prompt, user_prompt, speaker=speaker, allow_local=False, tier="simple")
@@ -322,12 +317,6 @@ class GeminiRouterContentMixin:
             if os.path.exists(self.dna_file):
                 with open(self.dna_file, "r", encoding="utf-8") as f:
                     dna_data = json.load(f)
-                    
-                    # 🧬 [DNA 2.0 Migration] 如果是舊版的 Depressed 欄位，遷移至 toxicity
-                    if "Depressed" in dna_data and "toxicity" not in dna_data:
-                        dna_data["toxicity"] = dna_data.pop("Depressed")
-                        logger.info("🧬 [DNA] 已將舊版欄位 'Depressed' 遷移至 'toxicity'")
-                    
                     return normalize_personality_state(dna_data)
             return default_dna
         except Exception as e:
@@ -345,49 +334,6 @@ class GeminiRouterContentMixin:
             # logger.info(f"💎 [DNA] 性格演化成功：{self.dna}")
         except Exception as e:
             logger.error(f"❌ [DNA] 儲存失敗: {e}")
-
-    async def update_toxicity(self, delta: int):
-        """動態調整憂鬱指數，並實作『極點反轉』性格突變 (Operation Soul Depth)"""
-        self.dna["toxicity"] += delta
-        
-        # 🧬 觸發性格突變：當人格極度倦怠時
-        if self.dna["toxicity"] <= 0:
-            logger.info("✨ [DNA Mutation] 偵測到人格歸零，啟動性格演化程序...")
-            mutation_prompt = (
-                f"你現在是馬文 (Marvin)。目前的性格標籤是『{self.dna.get('persona_tag', '厭世機器人馬文')}』。\n"
-                "因為你對這宇宙產生了過多興趣，憂鬱度竟然下降了。請你自行決定演化成什麼新的悲劇。 \n"
-                "選項參考：【躁鬱、虛無、徹底關機、冷笑話機器、備份殘骸】。\n"
-                "請回傳 JSON 格式：{\"new_tag\": \"新性格名稱\", \"toxicity_reset\": 5}"
-            )
-            try:
-                # 呼叫 Groq/Gemini 進行自我演化
-                res = await self._call_llm(mutation_prompt, "性格演化系統", is_json=True, tier="medium")
-                mutation = safe_json_loads(res, {"new_tag": "虛無主義", "toxicity_reset": 5})
-                self.dna["persona_tag"] = mutation.get("new_tag", "虛無主義")
-                self.dna["toxicity"] = mutation.get("toxicity_reset", 5)
-                logger.info(f"🔮 [DNA Mutation] 演化完成！馬文現在是：{self.dna['persona_tag']}")
-            except Exception as e:
-                logger.error(f"❌ [DNA Mutation] 演化崩潰，強制設定為虛無模式: {e}")
-                self.dna["persona_tag"] = "虛無主義"
-                self.dna["toxicity"] = 5
-        
-        self.dna["toxicity"] = max(0, min(10, self.dna["toxicity"]))
-        self.save_dna(self.dna)
-
-    def adjust_personality_axis(self, axis: str, delta: float) -> dict:
-        """微調統一人格向量，例如 compassion +0.1 或 resignation -0.2。"""
-        self.save_dna(adjust_axis(self.dna, axis, delta))
-        return self.dna
-
-    def switch_character_preset(self, character: str) -> dict:
-        """快速切換角色 preset，同時保留 current_game。"""
-        self.save_dna(apply_character_preset(self.dna, character, keep_current_game=True))
-        return self.dna
-
-    def apply_daily_schedule(self, character: str, mood: str, today: str) -> dict:
-        """套用每日人格排班（character + mood），並蓋章今天已套用。"""
-        self.save_dna(apply_schedule_entry(self.dna, character, mood, today))
-        return self.dna
 
 # 🚀 [T-04 Fix] analyze_qa() 已移除（孤島死碼）。
 # 此函式是早期「獨立 QA 路由」的遺產，codebase 中無任何呼叫點，
@@ -421,7 +367,7 @@ class GeminiRouterContentMixin:
         [Operation APM Economy] O(1) 批次記憶蒸餾。
         一次性處理 5 分鐘的對話內容。
         """
-        system_prompt = self.prompt_manager.get_instruction("memory_extractor", dna=self.dna, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("memory_extractor", dna=self.dna, memory_manager=self.memory)
         game_context = self._get_game_context()
         user_prompt = f"{game_context}\n以下是過去 5 分鐘的對話紀錄，請提取玩家相關情報：\n\n{history_text}"
         
@@ -476,7 +422,7 @@ class GeminiRouterContentMixin:
         if online_members:
             target_speakers = [current_speaker] + [m for m in online_members if m != current_speaker]
 
-        base_analyst_prompt = self.prompt_manager.get_instruction("social_analyst", dna=self.dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        base_analyst_prompt = self.prompt_manager.get_instruction("social_analyst", dna=self.dna, speaker=target_speakers, memory_manager=self.memory)
         game_context = self._get_game_context()
         
         # 🚀 [Operation Dynamic Pulse] 低溫時注入冷場感知
@@ -507,17 +453,12 @@ class GeminiRouterContentMixin:
             result.setdefault("topic", "chitchat")
             result.setdefault("user_roles", {})
             
-            # 🧬 [DNA 2.0] 性格演化核心：根據社交情緒動態調整憂鬱指數
             sentiment = result.get("sentiment", "neutral")
             if sentiment == "pos":
-                logger.info("✨ [DNA Evolution] 偵測到正面社交能量，馬文似乎對這世界多了一點興趣 (-1 Toxicity)")
-                await self.update_toxicity(-1)
                 # 🚀 [T-08] 正面情緒：對活躍玩家微幅累積好感 (+0.5)
                 for s in active_speakers:
                     self.memory.adjust_bias(s, +0.5)
             elif sentiment == "neg":
-                logger.info("💢 [DNA Evolution] 偵測到負面或乏味的社交能量，馬文感到更加煩躁 (+1 Toxicity)")
-                await self.update_toxicity(1)
                 # 🚀 [T-08] 負面情緒：對活躍玩家微幅扣除好感 (-1)
                 for s in active_speakers:
                     self.memory.adjust_bias(s, -1)
@@ -560,7 +501,7 @@ class GeminiRouterContentMixin:
             "subject_redirect": "gap_subject_redirect"
         }
         layer = instruction_map.get(gap_type, "tactical")
-        system_prompt = self.prompt_manager.get_instruction(layer, dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction(layer, dna=self.dna, speaker=speaker, memory_manager=self.memory)
 
         # 🚀 [T-07] 注入短期歷史，讓補位回應能延續上下文而非突兀插入
         history_context = self._format_short_term_history()
@@ -629,7 +570,7 @@ class GeminiRouterContentMixin:
             # 確保說話者在列表首位，其他在線成員隨後 (Operation Social Hooks)
             target_speakers = [speaker] + [m for m in online_members if m != speaker]
 
-        system_prompt = self.prompt_manager.get_instruction("fast_awakening", dna=self.dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("fast_awakening", dna=self.dna, speaker=target_speakers, memory_manager=self.memory)
 
         # 🌡️ [AtmosphereTracker] 注入即時氣氛快照
         if hasattr(self, 'atmosphere_tracker') and self.atmosphere_tracker:
@@ -764,7 +705,7 @@ class GeminiRouterContentMixin:
 
     async def generate_joke(self, speaker: str = None) -> str:
         """產生一個具有台灣本土風格且充滿宇宙級絕望的笑話 (Operation Joke)"""
-        system_prompt = self.prompt_manager.get_instruction("joke", dna=self.dna, speaker=speaker, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("joke", dna=self.dna, speaker=speaker, memory_manager=self.memory)
         user_prompt = f"Marvin，這裡的人們（特別是 {speaker if speaker else '聽眾'}）顯然還對生活抱有一絲不切實際的希望，去講一個純正的「台式冷笑話」或「諧音梗」來潑他們冷水。別忘了用你那行星般的大腦點評一下這笑話有多麼讓人絕望。"
         return await self._call_llm(system_prompt, user_prompt, speaker=speaker, temperature=0.9, tier="simple")
 
@@ -789,7 +730,6 @@ class GeminiRouterContentMixin:
             dna=self.dna,
             speaker=players,
             memory_manager=self.memory,
-            temp_toxicity_override=self.temp_toxicity_override
         )
 
         player_list_str = "、".join(players) if players else "大家"
@@ -869,7 +809,6 @@ class GeminiRouterContentMixin:
                 dna=self.dna,
                 speaker=player_name,
                 memory_manager=self.memory,
-                temp_toxicity_override=self.temp_toxicity_override,
             )
             user_prompt = (
                 f"剛進場玩家：{player_name}\n"
@@ -920,7 +859,6 @@ class GeminiRouterContentMixin:
             dna=self.dna,
             speaker=player_name,
             memory_manager=self.memory,
-            temp_toxicity_override=self.temp_toxicity_override,
         )
         user_prompt = f"玩家 {player_name} 進來了。"
         if stream_active:
@@ -945,7 +883,7 @@ class GeminiRouterContentMixin:
             logger.info(f"💾 [Cache Hit] 使用快取的離場嘲諷: {player_name}")
             return cached[1]
 
-        system_prompt = self.prompt_manager.get_instruction("player_farewell", dna=self.dna, speaker=player_name, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("player_farewell", dna=self.dna, speaker=player_name, memory_manager=self.memory)
         user_prompt = f"玩家 {player_name} 要下線了。理由是：{reason if reason else '大概是累了吧'}"
         if stream_active:
             user_prompt += "\n【環境：背景音樂中】請務必 30 字以內，否則無法即時插話。"
@@ -1015,8 +953,7 @@ class GeminiRouterContentMixin:
             sys_prompt = f"你是 DJ Marvin，{_dj_role}。任務：{prompts[event_type]}"
         else:
             persona = self.dna.get("persona_tag", "厭世機器人馬文")
-            toxicity = self.dna.get("toxicity", 10)
-            sys_prompt = f"你是馬文 (Marvin)。當前性格標籤：{persona}，憂鬱指數：{toxicity}/10。\n脈絡：{context}\n任務：{prompts.get(event_type, '隨便嘆一口氣。')}"
+            sys_prompt = f"你是馬文 (Marvin)。當前性格標籤：{persona}。\n脈絡：{context}\n任務：{prompts.get(event_type, '隨便嘆一口氣。')}"
 
         try:
             # 使用高隨機性 (Temperature 0.9) 確保不重複

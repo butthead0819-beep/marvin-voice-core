@@ -20,7 +20,6 @@ def _make_mixin():
     inst.dna = {}
     inst.memory = MagicMock()
     inst.memory.get_player_memory.return_value = {}
-    inst.temp_toxicity_override = None
     inst.prompt_manager = MagicMock()
     inst.prompt_manager.get_instruction = MagicMock(return_value="[fake system prompt]")
     inst._call_llm = AsyncMock(return_value="阿，又是你。")

@@ -33,10 +33,10 @@ def test_qa_persona_base_instruction_rewritten():
 
 
 def test_fast_awakening_dna_context_no_universe_weight():
-    dna = normalize_personality_state({"toxicity": 5})
+    dna = normalize_personality_state({})
     prompt = PromptManager().get_instruction("fast_awakening", dna=dna)
     assert "宇宙的重量" not in prompt
-    assert "提不起任何勁" in prompt
+    assert "協助度" in prompt
 
 
 # ── phrase_cooldown ──────────────────────────────────────────────────────

@@ -18,7 +18,7 @@ import re
 import time
 
 DEFAULT_PATH = "records/dynamic_msg_cache.json"
-QUIP_TTL_S = 7 * 86400      # 評語池每 7 天刷新（撈進 persona/toxicity 飄移）
+QUIP_TTL_S = 7 * 86400      # 評語池每 7 天刷新（撈進 persona 變動）
 DJ_TTL_S = 30 * 86400       # 同首歌 DJ 介紹 30 天內重用
 QUIP_POOL_SIZE = 8
 

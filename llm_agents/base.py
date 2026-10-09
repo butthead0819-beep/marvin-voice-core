@@ -41,7 +41,7 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
     # 背景 / 離線分析（見 BACKGROUND_PURPOSES）：
     "extract_memory", "batch_extract_memories", "audit_player_memory",
     "extract_emotional_moments", "analyze_social_dynamics",
-    "update_toxicity", "summarize_window", "_classify_mood", "compress",
+    "summarize_window", "_classify_mood", "compress",
     "marvinize_news", "dual_dialogue",
 })
 
@@ -52,7 +52,7 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
 BACKGROUND_PURPOSES: frozenset[str] = frozenset({
     "extract_memory", "batch_extract_memories", "audit_player_memory",
     "extract_emotional_moments", "analyze_social_dynamics",
-    "update_toxicity", "summarize_window", "_classify_mood", "compress",
+    "summarize_window", "_classify_mood", "compress",
     "marvinize_news",
 })
 
