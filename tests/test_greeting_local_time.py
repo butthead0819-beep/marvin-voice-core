@@ -57,7 +57,6 @@ def _fake_router():
     fake._call_llm = AsyncMock(return_value="嗨")
     fake.prompt_manager.get_instruction = MagicMock(return_value="sys")
     fake.dna = {}
-    fake.temp_toxicity_override = None
     return fake
 
 

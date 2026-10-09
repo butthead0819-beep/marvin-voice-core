@@ -129,9 +129,6 @@
 ### 信心度門檻 (Operation Confidence Gate)
 若喚醒後 LLM 判斷查詢無法理解，輸出 `[SKIP]` 信號。Bot 偵測後不播 TTS，改在文字頻道以馬文式嗆聲告知，保持對話品質。
 
-### DNA 2.0 性格動力系統 (Soul Depth)
-馬文的 `toxicity`（0-10）與 `persona_tag` 會根據社交情緒自動演化：正面社交 -1 憂鬱，負面社交 +1 憂鬱；憂鬱歸零觸發 LLM 自我宣告性格突變（躁鬱、虛無、冷笑話機器、備份殘骸、邏輯關機）。
-
 ### Visual Social Intervention (視覺化社交補位)
 當馬文決定介入時，他會吐出一份精美的 Embed 觀測報告：
 - **🧬 Toxicity 憂鬱指數**: 10/10 為極致沮喪，0/10 為莫名的好奇。

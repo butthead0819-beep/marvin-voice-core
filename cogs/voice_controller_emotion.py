@@ -147,7 +147,6 @@ class EmotionMoodMixin:
         elif context == "farewell":
             mood = "farewell"
         else:
-            toxicity = self.bot.router.dna.get("toxicity", 5)
             user_emotion = self.user_emotion_cache.get(speaker, "neutral")
-            mood = infer_mood(response_text, toxicity, user_emotion)
+            mood = infer_mood(response_text, user_emotion)
         await self.bot.sticker_manager.send(self.active_text_channel, mood)

@@ -175,9 +175,6 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
         
         # 🧠 [Operation Eternal Soul] 初始化長期記憶
         self.memory = MemoryManager()
-        
-        # 🧬 [Suki DNA State]
-        self.temp_toxicity_override = None
 
         # 📊 [Session Mood] 今日被呼喚次數，重啟歸零
         self._session_call_count = 0

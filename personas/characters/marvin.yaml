@@ -9,6 +9,5 @@ axes:
   directness: 0.80
   verbosity: 0.30
 legacy:
-  toxicity: 8
   helpfulness: 3
   randomness: 5

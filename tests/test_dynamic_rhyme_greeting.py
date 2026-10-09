@@ -23,7 +23,6 @@ def _make_mixin():
     inst.dna = {}
     inst.memory = MagicMock()
     inst.memory.get_player_memory.return_value = {}
-    inst.temp_toxicity_override = None
     inst.prompt_manager = MagicMock()
     inst.prompt_manager.get_instruction.return_value = "[rhyme system prompt]"
     inst._call_llm = AsyncMock(return_value="天靈靈，地靈靈，拜請 showay 來通靈！")
@@ -50,7 +49,6 @@ async def test_player_with_recent_transcripts_triggers_rhyme_greeting_llm():
         dna=mixin.dna,
         speaker="showay",
         memory_manager=mixin.memory,
-        temp_toxicity_override=mixin.temp_toxicity_override,
     )
     # 驗證 user_prompt 包含近期通靈對話
     call_args = mixin._call_llm.call_args[0]

@@ -293,7 +293,7 @@ class PromptManager:
         }
 
     def get_instruction(self, layer: str, dna: dict = None, speaker: typing.Union[str, list] = None,
-                        memory_manager = None, temp_toxicity_override: int = None) -> str:
+                        memory_manager = None) -> str:
         """獲取馬文的人設提示詞 (Refactored for PromptManager)"""
 
         # 🌍 [Environment Awareness] 注入現實時空
@@ -401,11 +401,7 @@ class PromptManager:
                 f"思路線性（{_randomness}/10），每句話都帶著疲憊的邏輯性。" if _randomness <= 3 else
                 ""
             )
-            current_tox = temp_toxicity_override if temp_toxicity_override is not None else dna.get('toxicity', 1)
-            dna_context = (
-                f"\n\n[當前性格狀態]憂鬱指數：{current_tox}/10（10 = 極致沮喪、提不起任何勁；0 = 對存在感到一絲莫名的好奇）。"
-                f" 當前協助度: {dna.get('helpfulness', 3)}/10。"
-            )
+            dna_context = f"\n\n[當前性格狀態]協助度: {dna.get('helpfulness', 3)}/10。"
             dna_context += build_personality_prompt_context(dna)
             dna_context += f"\n[現在時段：{_time_ctx}]"
             if _rand_ctx:

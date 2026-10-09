@@ -1085,21 +1085,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             # Robotic Resonance (背景狀態計算，不播TTS)
             if 0 < variance < 30.0:
                 self.user_prosody_tags[speaker].append("同類的共鳴 (Robotic/Steady Tone)")
-                # 降低毒性
-                asyncio.create_task(self.bot.router.update_toxicity(-1))
-            
+
             # 🎭 [Operation Emotion Inference] 分類情緒標籤並存入 cache
             emotion = self._classify_emotion(prosody_data)
             self.user_emotion_cache[speaker] = emotion
             logger.info(f"🎭 [Emotion] {speaker} → {emotion}")
-            
-            # DNA 副作用：根據情緒微幅調整馬文的憂鬱指數
-            if emotion == "excited":
-                asyncio.create_task(self.bot.router.update_toxicity(-1))
-            elif emotion == "depressed":
-                # 玩家沮喪時馬文反而感到「終於有共鳴了」，輕微降低毒性
-                asyncio.create_task(self.bot.router.update_toxicity(-1))
-        
+
         # 🗣️ [Dialogue State] 攔截多回合確認流程中的回應
         _ds = self.speaker_dialogue_states.get(speaker)
         if _ds:
@@ -3925,11 +3916,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         # 1. 取得 DNA 數據
         dna = self.bot.router.dna
-        toxicity = dna.get("toxicity", 10)
         helpfulness = dna.get("helpfulness", 5)
-        
-        # 2. 計算比例 (由用戶指定邏輯：好感度為毒性反轉，焦慮值對應協助度)
-        likability_pct = max(0, min(100, (10 - toxicity) * 10))
+
+        # 2. 計算比例 (焦慮值對應協助度)
         anxiety_pct = max(0, min(100, helpfulness * 10))
         
         # 3. 獲取關鍵字 (On-the-fly)
@@ -3944,7 +3933,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         )
         
         # 視覺化條狀圖
-        likability_bar = self._generate_progress_bar(likability_pct)
         anxiety_bar = self._generate_progress_bar(anxiety_pct)
         
         # CPU 焦慮值的狀態後綴 (語境驅動)
@@ -3954,7 +3942,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         elif "百威" in context or "酒" in context:
              anxiety_status = "(正在計算酒精對人類智商的負面影響...)"
 
-        embed.add_field(name="🧬 Toxicity 對人類的好感度", value=f"`{likability_bar}`", inline=False)
         embed.add_field(name="🧠 Helpfulness CPU 焦慮值", value=f"`{anxiety_bar}` {anxiety_status}", inline=False)
         embed.add_field(name="☁️ 關鍵字雲 (馬文最近的腦內殘留)", value=f"**{keywords}**", inline=False)
         
