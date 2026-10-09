@@ -693,7 +693,6 @@ class MusicDJLyricsMixin:
         # 把選定的素材寫成自然的過場文字。
         # 順序：近期生活（主角要在場，否則換下一個候選）→ 在場興趣 → 都沒有時在
         # 對話銜接/氣氛/純接歌 之間本地輪替（治「每次都靠環境/天氣開場」）。
-        from dj_narration_orchestrator import select_narration_mode
         life = await self._life_cores_async()
         interests = self._present_interests()
         # autopilot（requester=Marvin…）不是真人，改查在場的人（9/30 使用者定）
@@ -712,103 +711,38 @@ class MusicDJLyricsMixin:
             _autopilot_reason = self._autopilot_pick_reason(info) or ''
 
         callback_lines, callback_src = self._present_callbacks(present_members)
+        from dj_presence_material import presence_materials
+        _vc_now = self._vc()
+        activity_lines = presence_materials(
+            getattr(getattr(getattr(_vc_now, 'voice_client', None), 'channel', None), 'members', None))
 
-        # 🔥 [DJ Heat] 話題庫有東西可接回 → 直接走 revival，不讓扭蛋池蓋過去
-        # （降溫時的第一要務是接回剛剛聊的話題，不是照常規話題優先序抽獎）。
-        if revival_lines:
-            topic, mode = None, "revival"
+        from dj_narration_orchestrator import DJMaterials, apply_side_effects, plan_narration
+        _card = info.get('_song_card')
+        if not _card and isinstance(guide, str):
+            _card = {"audiophile_guide": guide}
+        materials = DJMaterials(
+            revival_lines=revival_lines, memory_evidence=memory_evidence, focus=_focus,
+            life=life, present_members=present_members, interests=interests,
+            emotional_highlights=emotional_highlights, news_items=news_items,
+            callbacks=callback_lines, activities=activity_lines,
+            has_guide=bool(guide), has_conversation=bool(conv_lines),
+            autopilot_reason=_autopilot_reason, exclude_modes=used["modes"],
+            env=env, conv_lines=conv_lines, guide=guide, song_card=_card,
+            empathy_hooks=self._DJ_EMPATHY_HOOK_TEMPLATES,
+        )
+        # 決策＋各 mode 的 ctx 段落由註冊表驅動（dj_narration_orchestrator.MODES）；
+        # apply_side_effects 是同步 def、緊接 plan 之後：conversation 重查＋標記對 event loop 是原子的（PR #102 review）。
+        plan = plan_narration(materials, self._dj_topic_store())
+        plan = apply_side_effects(
+            plan, materials, conv_entries=conv_entries, heat_bank=self._dj_heat_bank,
+            callback_src=callback_src,
+            consume_callback=lambda who, item: self.bot.router.memory.consume_callback(who, item),
+        )
+        topic, mode = plan.topic, plan.mode
+        if mode == "revival":
             logger.info(f"🔥 [DJ Heat] 話題庫接回 {len(revival_lines)} 句 → revival")
-        else:
-            # select_mode 挑話題來源 + autopilot 理由覆蓋 quick/atmosphere 這兩步，
-            # 原封不動交給 orchestrator（見 dj_narration_orchestrator.select_narration_mode
-            # 的 characterization test）。
-            topic, mode = select_narration_mode(
-                life=life,
-                interests=interests,
-                topic_store=self._dj_topic_store(),
-                present_members=present_members,
-                has_conversation=bool(conv_lines),
-                emotional_highlights=emotional_highlights,
-                news_items=news_items,
-                autopilot_reason=_autopilot_reason,
-                memory_evidence=memory_evidence,
-                has_guide=bool(guide),
-                callbacks=callback_lines,
-                focus=_focus,
-                exclude_modes=used["modes"],
-            )
         logger.info(f"🎚️ [DJ Focus] {title} focus={_focus or '-'} plays={info.get('_server_plays')} → mode={mode}")
-
-        if mode == "conversation" and conv_entries:
-            # 上面有 await（歌曲/生活/新聞素材），同時預抓的另一首可能已把同幾句用掉：
-            # 這裡同步重查＋標記，中間不 await，對 event loop 是原子的（PR #102 review）。
-            try:
-                _bank = self._dj_heat_bank()
-                conv_entries = [e for e in conv_entries if not _bank.is_consumed(e)]
-                conv_lines = [f"{e['speaker']}：「{e['text'][:25]}」" for e in conv_entries]
-                if conv_entries:
-                    _bank.mark_consumed(conv_entries, time.time())
-                else:
-                    topic, mode = None, "quick"  # 素材被搶光，不硬寫空對話串場
-            except Exception:
-                pass  # fail-open
-
-        # 開場鉤子提示依「歌會中的心理機制」分兩類套用：
-        #   代入感（life/interest）——這是聽眾自己的事，別只是轉述，要讓人覺得被說中。
-        #   氣氛精準（atmosphere）——緊扣這個時間/地點，像特別為這一刻準備的。
-        # conversation 本身就是銜接類，維持原本的過場方向指示即可。
-        if mode == "memory_match":
-            ctx.append(f"【你熟悉他的生活】記憶證據（這首為什麼現在放）：\n・{topic}")
-            ctx.append("開場鉤子：開場直接點名講出這條記憶證據，讓對方聽得出你記得他說過/做過的事；只能講證據裡寫的事實，不准自己補細節或編故事。")
-        elif mode == "life":
-            ctx.append(f"【你熟悉他的生活】最近生活：\n・{topic}")
-            ctx.append(random.choice(self._DJ_EMPATHY_HOOK_TEMPLATES))
-        elif mode == "interest":
-            ctx.append(f"【你熟悉他的生活】在場興趣：\n・{topic}")
-            ctx.append(random.choice(self._DJ_EMPATHY_HOOK_TEMPLATES))
-        elif mode == "callback":
-            ctx.append(f"【你熟悉他的生活】他之前說過要做的事：\n・{topic}")
-            ctx.append("開場鉤子：點名順口關心這件事後來怎麼樣了，像老朋友隨口問一句；只能講素材裡寫的事，不准自己補細節、不准替他回答。")
-            _cb = callback_src.get(topic)
-            if _cb:
-                try:
-                    self.bot.router.memory.consume_callback(_cb[0], _cb[1])
-                except Exception as e:
-                    logger.warning(f"⚠️ [DJ Callback] consume 失敗: {e}")
-        elif mode == "emotional_highlight":
-            # 這是 Marvin 自己（機器人）的記憶與反應，不是聽眾的事——跟 life/interest
-            # 的「代入感」方向相反，robot_pov_rule 對「第一人稱」的限制在這裡要放行。
-            ctx.append(f"你（機器人自己）記得的一個瞬間：\n・{topic}")
-            ctx.append("開場鉤子：這是你自己的記憶與反應，可以用第一人稱提起這個瞬間，不是在講聽眾的事。")
-        elif mode == "news":
-            ctx.append(f"最新時事消息：\n・{topic}")
-            ctx.append("開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。")
-        elif mode == "conversation":
-            if conv_lines:
-                ctx.append("【你熟悉他的生活】頻道近期對話：\n" + '\n'.join(conv_lines))
-            ctx.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
-        elif mode == "revival":
-            ctx.append("【你熟悉他的生活】剛剛大家聊過（原句）：\n" + "\n".join(revival_lines))
-            ctx.append("串場方向：現在大家聊天告一段落，接回剛剛的話題延續一下，或丟個輕鬆的問題製造話題感，再帶進這首歌；只能用上面原句裡的內容，不准編造誰說了什麼、不准替人下結論。")
-        elif mode == "atmosphere":
-            ctx.append(env)
-            ctx.append("開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。")
-        elif mode == "guide":
-            ctx.append(f"導聆素材（查證過的真實資料，只能用這裡寫的事實）：\n{guide}")
-            from dj_gacha_narrator import pick_gacha_motivation
-            card = info.get('_song_card')
-            if not card and isinstance(guide, str):
-                card = {"audiophile_guide": guide}
-            if isinstance(card, dict):
-                if card.get("lyric_hook") and isinstance(card["lyric_hook"], dict):
-                    lh = card["lyric_hook"]
-                    ctx.append(f"歌詞靈魂刺點：『{lh.get('quote')}』（{lh.get('subtext')}）")
-            gacha = pick_gacha_motivation(card, topic=topic)
-            if gacha:
-                ctx.append(gacha.instruction)
-                ctx.append("只能講上面素材裡寫的事實，不准自己補細節或編故事。")
-            else:
-                ctx.append("串場方向：把導聆素材濃縮成一兩句，點出這首歌耳朵該聽的地方；只能講素材裡寫的事實，不准自己補細節或編故事。")
+        ctx.extend(plan.ctx_lines)
         _song_pick = None
         if _autopilot_reason:
             _reason_line = f"選這首的理由：{_autopilot_reason}"
@@ -999,15 +933,19 @@ class MusicDJLyricsMixin:
 
         audio_path = None
         try:
-            _emotion = getattr(self, '_DJ_MODE_TO_TTS_EMOTION', {}).get(mode, "normal")
+            from dj_narration_orchestrator import tts_emotion_for
+            _emotion = tts_emotion_for(mode)
             audio_path = await self.bot.tts_engine.generate_audio(text, emotion=_emotion)
         except Exception as e:
             logger.warning(f"⚠️ [DJ Prefetch] TTS 預渲染失敗，改用即時串流: {e}")
 
         # 📒 一週觀察用：每段串場的主題/素材/LLM 產出/最終口白（9/30 使用者定）
+        import uuid
+        narration_id = uuid.uuid4().hex
         try:
             from dj_narration_log import log_dj_narration, probe_audio_seconds
             log_dj_narration({
+                "narration_id": narration_id,
                 "song": _song_label or title,
                 "requester": requester,
                 "mode": mode,
@@ -1040,5 +978,8 @@ class MusicDJLyricsMixin:
             short_text += f"，{requester} 點的"
 
         # 串場不提上一首 → 沒有可過期的上一首，Consistency Guard 不必比對
-        return {'text': text, 'audio_path': audio_path, 'prev_title_used': None, 'short_text': short_text}
+        return {
+            'text': text, 'audio_path': audio_path, 'prev_title_used': None, 'short_text': short_text,
+            'narration_id': narration_id, 'mode': mode,
+        }
 

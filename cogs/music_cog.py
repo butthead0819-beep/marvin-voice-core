@@ -82,24 +82,6 @@ _YT_COOKIES_FROM_BROWSER = os.getenv("MARVIN_YT_COOKIES_FROM_BROWSER", "chrome")
 _YT_COOKIES_FILE = os.path.expanduser(
     os.getenv("MARVIN_YT_COOKIES_FILE", "~/.config/marvin/youtube_cookies.txt"))
 
-def _get_puck_client():
-    """MARVIN_CAR_HARDWARE=esp32_edge_mix 才回傳 client；其餘硬體（pi_bt 車 puck、家用
-    Pi 3B 等）回 None。
-
-    2026-08-20：pi_bt（Pi Zero 2W 車 puck）不再有專屬 client——換歌決策/DJ口白改回
-    跟家用喇叭共用同一顆 mixer、走 /audio_stream「收音機」模式（見
-    main_satellite.py::setup_satellite 的 TeeSpeakerOutput 說明），不需要 Mac 主動
-    POST 指令給 Pi 這條 control-plane 了（原本的 marvin_voice_core/puck_mixer_client.py
-    已隨之退役）。esp32_edge_mix 車 puck 永遠是它自己撥出連線，Mac 沒辦法主動推指令，
-    改寫進本地佇列，ESP32 用既有心跳節奏輪詢 /car_commands 拿指令
-    （見 marvin_voice_core/puck_command_queue.py）。"""
-    hardware = os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower()
-    if hardware != "esp32_edge_mix":
-        return None
-    from marvin_voice_core.puck_command_queue import PuckCommandQueueClient, get_default_queue
-    return PuckCommandQueueClient(get_default_queue())
-
-
 def _car_occupants(bot) -> list[str] | None:
     """車載在場者（main_satellite 把 CarPresence 掛在 bot.car_presence）；未接車載→None。
     放模組層級而非 method：MusicCog method 數有棘輪預算（test_music_cog_size_budget）。"""
@@ -120,18 +102,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
     _SEAMLESS_SKIP_TIMEOUT_S = 10.0  # ⏭️ Seamless Skip 極端守護門檻 (10s)：確保第一首播放不提前中斷
     _MUSIC_CMD_DEDUP_WINDOW = 5.0
     _MUSIC_SAME_SONG_WINDOW = 30.0  # 同 speaker + 同正規化點歌字串：擋同一句重派（喚醒+無喚醒）
-
-    # dj_topic_selector.select_mode() 的 mode → tts_engine 情緒（見 _EMOTION_ADJUST）：
-    # 只調 rate/pitch（edge-tts 沒有真情緒 style 可用）。沒列到的 mode（quick/
-    # conversation/reason 等）用預設 "normal"，不特別調。
-    _DJ_MODE_TO_TTS_EMOTION = {
-        "life": "upbeat",
-        "interest": "upbeat",
-        "atmosphere": "calm",
-        "prev_song": "calm",
-        "emotional_highlight": "calm",
-        "news": "upbeat",
-    }
 
     def __init__(self, bot):
         self.bot = bot
@@ -282,12 +252,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 dj_audio, _dj_played_in_tail = await self._stream_loop_prepare_and_announce(
                     info, vc, title, requested_by)
 
-                self._stream_loop_fire_puck(info, _dj_played_in_tail)
-
-                self._current_song_skipped = False
-                song_start_time = time.time()
-                self._current_stream_start_time = song_start_time
-                self._republish_queue_snapshot()   # HUD 進度條要靠這次補推的 song_start_time
+                song_start_time = self._mark_song_started(info)
                 song_lyrics_snapshot = self._current_lyrics or ""
                 playback_completion = "natural"
 
@@ -382,28 +347,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         if not self.stream_queue:
             return False
         return True
-
-    def _stream_loop_fire_puck(self, info: dict, dj_played_in_tail: bool) -> None:
-        """[PuckMixer] esp32_edge_mix 專用：沒經過 _fire_puck_crossfade 接手的歌
-        （開場第一首、skip、或上一首沒排到尾段 task）要送硬 play 讓裝置端從乾淨
-        狀態開始播——跟 _fire_puck_crossfade 對稱，那邊只在尾段轉場時接手 standby
-        deck，不會有人叫它 play。見 _play_open()/_run_tail_dj() 前的說明。
-
-        2026-08-20：pi_bt（車 puck Pi Zero 2W）不再走這條——換歌決策/DJ口白
-        改回跟家用喇叭共用同一顆 mixer（見 main_satellite.py::setup_satellite
-        的 TeeSpeakerOutput + /audio_stream「收音機」模式說明），_get_puck_client()
-        對 pi_bt 回 None，下面這段自然被跳過。"""
-        if dj_played_in_tail:
-            return
-        puck_client = _get_puck_client()
-        puck_url = info.get('webpage_url', '')
-        if puck_client is not None and puck_url:
-            asyncio.create_task(
-                self._fire_puck_play(
-                    puck_client, puck_url, title=info.get('title'),
-                    highlight_start_s=info.get('highlight_start_s'),
-                    duration=info.get('duration'))
-            )
 
     def _stream_loop_schedule_tail_dj(self, info: dict, vc, title: str, dj_audio: str | None = None) -> "asyncio.Future | None":
         """[DJ Tail] 在播 N 期間排尾段 task：只要 duration 已知就排，下一首在點火
@@ -566,9 +509,9 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         if await self._play_audiophile_guide_preroll(info, vc):   # 導聆＝這首的開場，開頭 DJ 讓位
             dj_audio = dj_data = None
         if dj_audio:
-            dj_audio = await self._splice_owner_voice_clip(dj_audio, info)
+            dj_audio = await self._splice_and_attach(dj_audio, info, dj_data)
         if dj_data and not dj_audio and vc is not None:
-            await self._maybe_play_dj_interjection(dj_data)
+            await self._play_and_attach_narration(info, dj_data)
 
         return dj_audio, dj_played_in_tail
 
@@ -834,6 +777,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         cur = self._current_stream_info
         if mm is None or not cur:
             return
+        self._log_song_skip(cur)
         url = cur.get("webpage_url") or cur.get("url") or ""
         if url:
             try:

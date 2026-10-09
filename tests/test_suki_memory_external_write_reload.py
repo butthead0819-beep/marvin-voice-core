@@ -4,7 +4,6 @@ Bug: bot 進程的 MemoryManager 啟動時把玩家讀進 self._cache，之後�
 daily review（另一個進程/連線）把新 taste 寫進 marvin.db 後，bot 對同一玩家任何
 _save_player() 都會把舊快取整筆寫回 DB，蓋掉 daily review 的寫入。
 """
-import memory_sandbox
 from suki_memory import MemoryManager
 
 
@@ -89,39 +88,6 @@ def test_no_reload_when_no_external_write(tmp_path):
     bot.record_taste_signal("狗與露", "法拉利", 1.0)
 
     assert bot.get_player_memory("狗與露") is p1
-
-
-def test_sandbox_mode_does_not_reload(tmp_path):
-    db = str(tmp_path / "m.db")
-    j = str(tmp_path / "m.json")
-
-    bot = MemoryManager(db_path=db, json_compat_path=j)
-    bot.get_player_memory("狗與露")
-
-    review = MemoryManager(db_path=db, json_compat_path=j)
-    review.replace_player_memory(
-        "狗與露",
-        {
-            **review.get_player_memory("狗與露"),
-            "taste": {
-                "周杰倫": {
-                    "score": 10.0,
-                    "mentions": 3,
-                    "first_seen": 1.0,
-                    "last_update": 1.0,
-                }
-            },
-        },
-    )
-
-    memory_sandbox.activate()
-    try:
-        bot.add_song_history("狗與露", "沙盒歌")
-        player = bot.get_player_memory("狗與露")
-        assert "周杰倫" not in player.get("taste", {})
-        assert "沙盒歌" in player.get("song_history", [])
-    finally:
-        memory_sandbox.deactivate()
 
 
 def test_unrelated_table_write_does_not_replace_player_dicts(tmp_path):

@@ -1,7 +1,7 @@
 """
 scripts/rotate_launchd_logs.py — launchd 日誌 copytruncate + gzip 輪替。
 
-針對被 launchd 持有 fd 的 log（bot_stdout.log, satellite_stdout.log）：
+針對被 launchd 持有 fd 的 log（bot_stdout.log）：
 1. 複製成 <name>.<YYYYMMDD>（同名則 -2, -3）
 2. 原檔以 truncate 截斷成 0 bytes（絕不 unlink 或 rename）
 3. 壓縮複本為 .gz，刪除未壓縮複本
@@ -21,7 +21,6 @@ from pathlib import Path
 TAIPEI_TZ = timezone(timedelta(hours=8))
 DEFAULT_LOGS = [
     Path.home() / "Library/Logs/Marvin/bot_stdout.log",
-    Path.home() / "Library/Logs/Marvin/satellite_stdout.log",
 ]
 DEFAULT_RETENTION = 14
 
@@ -100,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         "--log",
         action="append",
         dest="logs",
-        help="指定要輪替的 log 檔案（可重複指定，預設 bot_stdout.log 與 satellite_stdout.log）",
+        help="指定要輪替的 log 檔案（可重複指定，預設 bot_stdout.log）",
     )
     parser.add_argument("--retention", type=int, default=DEFAULT_RETENTION, help="保留份數（預設 14）")
     parser.add_argument("--apply", action="store_true", help="確認執行輪替（預設 dry-run）")

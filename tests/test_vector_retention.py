@@ -3,7 +3,6 @@ import os
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
-import memory_sandbox
 from vector_store import VectorStore
 
 
@@ -45,20 +44,6 @@ def test_vector_store_prune_older_than(tmp_path):
     assert old_id not in remaining_ids
     assert new_id in remaining_ids
     assert invalid_id in remaining_ids
-
-
-def test_vector_store_prune_sandbox_active(tmp_path, monkeypatch):
-    store = VectorStore(persist_dir=str(tmp_path))
-    now = 1790800000.0
-    old_ts = now - 100 * 86400
-    old_id = f"Alice_1_{int(old_ts * 1000)}"
-    store._col.add(ids=[old_id], documents=["舊逐字稿"])
-
-    monkeypatch.setattr(memory_sandbox, "active", lambda: True)
-
-    res = store.prune_older_than(90, now=now, apply=True)
-    assert res["deleted"] == 0
-    assert store._col.count() == 1
 
 
 @pytest.mark.asyncio

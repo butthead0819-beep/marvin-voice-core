@@ -1,5 +1,5 @@
 """car_http_app.py — :8790 車載/HUD HTTP app（/say /audio /car /car_now /hud
-/audio_stream /puck_deck /puck_voice …）；由 Discord 進程（main_discord.py）呼叫
+/audio_stream …）；由 Discord 進程（main_discord.py）呼叫
 start_text_http_server() 起這套 server。單一 mixer 第3a刀：從 main_satellite.py
 原樣搬出，純搬移、零行為改變。
 """
@@ -9,7 +9,6 @@ import logging
 import os
 import tempfile
 import time
-from typing import Awaitable, Callable
 
 from aiohttp import web
 
@@ -33,105 +32,6 @@ _AUDIO_STREAM_BATCH_BYTES = max(
 _CORS = {"Access-Control-Allow-Origin": "*",
          "Access-Control-Allow-Headers": "*",
          "Access-Control-Allow-Methods": "POST, OPTIONS"}
-
-
-async def _stream_ffmpeg_input_as_mp3(request, ffmpeg_input_args: list[str]):
-    """[PuckMixer] /puck_deck 跟 /puck_voice 共用：起 ffmpeg 把任意輸入（yt-dlp
-    直連URL 或本機檔案路徑）轉成 48kHz/2ch PCM，即時編碼 MP3 chunked 回傳。差異
-    只在 ffmpeg 的 -i 來源，其餘轉碼/串流/斷線處理完全一樣，抽出來避免兩邊各自
-    維護一份、之後改壞其中一個沒同步改到另一個。
-
-    2026-08-18：從 build_text_app() 內部 hoist 到 module level，跟 handle_puck_voice
-    共用同一份邏輯，不用各自維護一份（見上方 docstring 的教訓）。"""
-    proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-nostdin", "-loglevel", "error", *ffmpeg_input_args,
-        "-ar", "48000", "-ac", "2", "-f", "s16le", "-",
-        stdout=asyncio.subprocess.PIPE)
-    resp = web.StreamResponse(status=200, headers={
-        **_CORS, "Content-Type": "audio/mpeg", "X-Audio-Codec": "mp3",
-        "X-Audio-Rate": "48000", "X-Audio-Channels": "2", "X-Audio-Bits": "16",
-    })
-    await resp.prepare(request)
-    encoder = Mp3StreamEncoder(rate=48000, channels=2, bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
-    try:
-        while True:
-            pcm = await proc.stdout.read(4096)
-            if not pcm:
-                break
-            chunk = encoder.encode(pcm)
-            if chunk:
-                await resp.write(chunk)
-        tail = encoder.flush()
-        if tail:
-            await resp.write(tail)
-    except (ConnectionError, asyncio.CancelledError):
-        pass   # client 斷線/取消，見 handle_audio_stream 同款 except 的理由
-    finally:
-        # ⚠️ 2026-08-13 實機踩到：ffmpeg 正常轉完（read() 讀到 EOF 自然 break）代表
-        # 子行程早就自己結束了，這裡還無條件 proc.kill() 對一個已經死掉的行程送
-        # SIGKILL，asyncio 的 subprocess transport 會在 _check_proc() 直接 raise
-        # ProcessLookupError——這條 except 沒接住，整個 handler 直接炸穿到
-        # aiohttp，puck 收到的不是乾淨的串流結束、是斷開的爛尾連線（實機日誌：
-        # 356 次同一支 traceback，幾乎每個 /puck_deck、/puck_voice 請求都中一次；
-        # 症狀＝一直回到歌曲開頭/無聲idle/DJ口白放不出來，三個都是同一個根因）。
-        if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-        await proc.wait()
-    return resp
-
-
-def _make_puck_deck_handler(vc, puck_command_queue=None):
-    """回傳一個 /puck_deck 的 handler closure。2026-08-18：car puck mk2(pi_bt)
-    跟 ESP32(esp32_edge_mix) 都走這裡——兩種硬體的音源都由 satellite 這個進程
-    （com.antigravity.marvin.satellite）統一 resolve+轉碼，跟 24/7 Discord bot
-    的關係是「誰在決策播放」而非「誰能 serve 音源」（見 device/puck_mixer.py::
-    resolve_stream_url() 註解、car-presence 心跳打 satellite 的 :8790 而非 bot）。
-
-    puck_command_queue＝None（pi_bt 沒有這個佇列）就跳過 mark_deck_hit()，那是
-    ESP32 專用的 deck stall 判斷。"""
-    async def handle_puck_deck(request):
-        if puck_command_queue is not None:
-            puck_command_queue.mark_deck_hit()
-        watch_url = (request.query.get("url") or "").strip()
-        if not watch_url:
-            return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
-        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
-        if music_cog is None:
-            return web.json_response({"error": "music_cog_unavailable"}, status=500, headers=_CORS)
-        info = await music_cog._resolve_yt_query(watch_url)
-        stream_url = info.get("url") if info else None
-        if not stream_url:
-            return web.json_response({"error": "resolve_failed"}, status=502, headers=_CORS)
-
-        # seek：斷線（非自然播完）重連時帶著「已下載到第幾秒」回來，接回原本位置而不是
-        # 從頭重播（見 car_puck.ino::deckNetworkTask 的 deckDownloadedSec 說明）。-ss 放在
-        # -i 前面＝快速 seek（用容器索引跳，不精確 decode 到那一幀），音訊來源夠準。
-        ffmpeg_args = ["-i", stream_url]
-        # -af volume：/puck_deck 直接轉碼原始音源，沒有 /audio_stream 那邊中央 mixer 的
-        # stream_volume 衰減（MusicCog.stream_volume 預設 0.10，見 cogs/music_cog.py）
-        # ——不加的話比使用者已經聽慣的 /audio_stream 音量大上一截（2026-08-11 實機
-        # 反饋：「音量太大」）。套同一個比例讓裝置端混音跟中央 mixer 音量感受一致。
-        # ⚠️ 2026-08-19：這個 0.10 只對 esp32_edge_mix 成立——car puck mk2(pi_bt) 的
-        # device/puck_mixer.py 是直接把解碼出的 PCM 送去已經開滿的 bluealsa BT 音量，
-        # 沒有中間任何 mixer 再衰減一次，套同一個 0.10 等於音樂天生只剩一成音量（實機
-        # 反饋「聲音很小」的真因，見 incident_car_puck_hotspot_tailscale_relay 記憶）。
-        # resolve_stream_url() 現在帶 hw=pi_bt 讓這裡分辨、跳過這層衰減。
-        if request.query.get("hw") != "pi_bt":
-            ffmpeg_args += ["-af", "volume=0.10"]
-        seek_raw = (request.query.get("seek") or "").strip()
-        if seek_raw:
-            try:
-                seek_s = max(0.0, float(seek_raw))
-                if seek_s > 0:
-                    ffmpeg_args = ["-ss", f"{seek_s:.2f}"] + ffmpeg_args
-            except ValueError:
-                pass   # 帶了垃圾值就當沒帶，別讓整個 deck 連不上
-
-        return await _stream_ffmpeg_input_as_mp3(request, ffmpeg_args)
-    return handle_puck_deck
 
 
 async def inject_text(vc, speaker: str, text: str) -> bool:
@@ -158,155 +58,6 @@ async def inject_text(vc, speaker: str, text: str) -> bool:
         is_text_input=True,  # 跳過 Echo Guard（播音樂時仍能下文字指令）+ 不等後續語音
     )
     return True
-
-
-# 純軟體 iOS satellite 網頁（Mac :8790 自服務；Pi 完全不參與）。
-# 瀏覽器用 WebAudio 擷取 PCM 自行編 WAV（跨 iOS Safari 穩、免伺服器 ffmpeg），
-# 一次 POST 整句 → Mac STT → pipeline。__TOKEN__ 由伺服器填入。
-SATELLITE_HTML = """<!DOCTYPE html>
-<html lang="zh-Hant"><head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<title>馬文 Satellite</title>
-<style>
-  :root{ --bg:#0e0f13; --card:#1a1c23; --line:#2a2d38; --fg:#e8eaf0; --mut:#8b90a0;
-         --accent:#6c8cff; --danger:#ff6b6b; --ok:#4ec07a; }
-  *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
-  body{ margin:0; background:var(--bg); color:var(--fg);
-        font:16px/1.4 -apple-system,"PingFang TC",system-ui,sans-serif;
-        padding:16px 14px 40px; max-width:520px; margin:0 auto; }
-  h1{ font-size:20px; margin:6px 2px 14px; display:flex; align-items:center; gap:8px; }
-  .card{ background:var(--card); border:1px solid var(--line); border-radius:16px;
-         padding:18px 16px; margin-bottom:14px; }
-  .lbl{ font-size:13px; color:var(--mut); margin:0 2px 10px; }
-  #ptt{ width:100%; border:none; border-radius:16px; padding:34px 10px; font-size:22px;
-        font-weight:700; color:#0b1020; background:var(--accent); cursor:pointer;
-        transition:transform .12s, background .2s; }
-  #ptt:active{ transform:scale(.98); }
-  #ptt.rec{ background:var(--danger); color:#0e0f13; }
-  #you{ font-size:17px; font-weight:600; line-height:1.4; min-height:24px; }
-  #status{ font-size:13px; color:var(--mut); min-height:18px; margin:10px 2px 0; text-align:center; }
-</style></head><body>
-<h1>🛰️ 馬文 Satellite</h1>
-
-<div class="card">
-  <button id="ptt">🎙️ 按住講話</button>
-</div>
-
-<div class="card">
-  <div class="lbl">📝 狀態</div>
-  <div id="you">—</div>
-</div>
-
-<div class="card">
-  <div class="lbl">🔊 馬文</div>
-  <div id="marvin" style="font-size:15px;color:var(--mut)">—</div>
-</div>
-
-<audio id="player" playsinline></audio>
-<div id="status">就緒（本機瀏覽器收音，不經 Pi）</div>
-
-<script>
-const TOKEN="__TOKEN__";
-// 無聲 clip：在 PTT 手勢內播一次以「解鎖」<audio> 元素（走 media 類別，不受 iOS 靜音鍵影響）。
-const SILENT="data:audio/wav;base64,UklGRsQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const $=id=>document.getElementById(id);
-function stat(m,ok){ $("status").textContent=m; $("status").style.color=ok?"#4ec07a":"#8b90a0"; }
-
-// 馬文回覆：輪詢 /reply，新段（seq 遞增）就播。用 <audio>（media 類別，靜音鍵不消音），
-// 於 PTT 手勢內先播無聲 clip 解鎖，之後從輪詢回呼 play() 才不被 iOS 自動播放政策擋。
-let replySeq=0, unlocked=false;
-const player=$("player");
-function unlockPlayer(){
-  if(unlocked) return;
-  try{
-    player.src=SILENT;
-    const p=player.play();
-    if(p) p.then(()=>{ player.pause(); player.currentTime=0; unlocked=true; })
-          .catch(e=>{ stat("音訊解鎖失敗："+e.name, false); });
-  }catch(e){}
-}
-async function pollReply(){
-  try{
-    const r=await fetch("/reply?t="+encodeURIComponent(TOKEN)+"&since="+replySeq, {cache:"no-store"});
-    if(r.status!==200) return;
-    replySeq=parseInt(r.headers.get("X-Reply-Seq")||replySeq);
-    const blob=await r.blob();
-    player.src=URL.createObjectURL(blob);
-    const p=player.play();
-    if(p) p.catch(e=>{ $("marvin").textContent="播放失敗（"+e.name+"）——檢查手機靜音鍵/音量"; });
-    $("marvin").textContent="🔊 播放中…"; $("marvin").style.color="#e8eaf0";
-  }catch(e){ $("marvin").textContent="播放失敗（"+e+"）"; }
-}
-setInterval(pollReply, 1200);
-
-let ctx, stream, node, src, chunks=[], sampleRate=48000, recording=false, busy=false;
-
-async function startRec(){
-  if(recording||busy) return;
-  unlockPlayer();                       // 手勢中解鎖 audio（iOS 自動播放限制）
-  try{
-    stream = await navigator.mediaDevices.getUserMedia({audio:{
-      echoCancellation:true, noiseSuppression:true, autoGainControl:true }});
-  }catch(e){ stat("拿不到麥克風權限", false); return; }
-  ctx = new (window.AudioContext||window.webkitAudioContext)();
-  sampleRate = ctx.sampleRate;
-  src = ctx.createMediaStreamSource(stream);
-  node = ctx.createScriptProcessor(4096, 1, 1);   // 廣泛支援（含 iOS Safari）
-  chunks = [];
-  node.onaudioprocess = e => {
-    const d = e.inputBuffer.getChannelData(0);
-    chunks.push(new Float32Array(d));
-  };
-  src.connect(node); node.connect(ctx.destination);
-  recording = true;
-  $("ptt").classList.add("rec"); $("ptt").textContent="🔴 放開結束";
-  stat("錄音中…請說話", true);
-}
-
-async function stopRec(){
-  if(!recording) return;
-  recording=false; busy=true;
-  $("ptt").classList.remove("rec"); $("ptt").textContent="⌛ 傳送中…";
-  try{ node.disconnect(); src.disconnect(); stream.getTracks().forEach(t=>t.stop()); await ctx.close(); }catch(e){}
-  const wav = encodeWAV(chunks, sampleRate);
-  chunks=[];
-  try{
-    const r = await fetch("/audio?t="+encodeURIComponent(TOKEN),
-      {method:"POST", headers:{"Content-Type":"audio/wav"}, body:wav});
-    const j = await r.json();
-    if(j.ok){ $("you").textContent="✓ 已聽到，馬文思考中…"; stat("已送進馬文大腦", true); }
-    else if(r.status===401){ stat("token 錯誤", false); }
-    else{ $("you").textContent="（沒聽清楚）"; stat("沒聽到有效語音", false); }
-  }catch(e){ stat("連不到大腦（Mac 上 main_satellite 沒跑？）", false); }
-  busy=false; $("ptt").textContent="🎙️ 按住講話";
-}
-
-// 按住＝錄音；放開＝送出（滑鼠 + 觸控都綁）
-const b=$("ptt");
-b.addEventListener("mousedown", startRec);
-b.addEventListener("mouseup", stopRec);
-b.addEventListener("mouseleave", ()=>{ if(recording) stopRec(); });
-b.addEventListener("touchstart", e=>{ e.preventDefault(); startRec(); }, {passive:false});
-b.addEventListener("touchend", e=>{ e.preventDefault(); stopRec(); }, {passive:false});
-
-// Float32 chunks → 16-bit PCM mono WAV bytes
-function encodeWAV(buffers, rate){
-  let len=0; buffers.forEach(b=>len+=b.length);
-  const pcm=new Float32Array(len); let off=0;
-  buffers.forEach(b=>{ pcm.set(b,off); off+=b.length; });
-  const buf=new ArrayBuffer(44+pcm.length*2), view=new DataView(buf);
-  const ws=(o,s)=>{ for(let i=0;i<s.length;i++) view.setUint8(o+i, s.charCodeAt(i)); };
-  ws(0,"RIFF"); view.setUint32(4, 36+pcm.length*2, true); ws(8,"WAVE");
-  ws(12,"fmt "); view.setUint32(16,16,true); view.setUint16(20,1,true); view.setUint16(22,1,true);
-  view.setUint32(24,rate,true); view.setUint32(28,rate*2,true); view.setUint16(32,2,true); view.setUint16(34,16,true);
-  ws(36,"data"); view.setUint32(40, pcm.length*2, true);
-  let p=44; for(let i=0;i<pcm.length;i++){ let s=Math.max(-1,Math.min(1,pcm[i])); view.setInt16(p, s<0?s*0x8000:s*0x7FFF, true); p+=2; }
-  return new Blob([view], {type:"audio/wav"});
-}
-</script>
-</body></html>"""
 
 
 # hud_performance.js 是「動作(Action)+情緒(Emotion)兩層疊加表演」的唯一真相來源——
@@ -1590,10 +1341,10 @@ def parse_other_cards_param(raw: str | None) -> list[dict]:
 
 
 def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗與露",
-                   reply_source=None, car_presence=None, audio_rate_limiter=None,
+                   car_presence=None, audio_rate_limiter=None,
                    stream_source=None, location_state_path=None,
                    now_playing_state_path=None, claude_sessions_state_path=None,
-                   gmail_calendar_state_path=None, puck_command_queue=None,
+                   gmail_calendar_state_path=None,
                    device_speakers: dict[str, str] | None = None):
     """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
 
@@ -1610,11 +1361,6 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     gmail_calendar_state_path＝Gmail/Calendar count-only 橋接檔路徑（None＝用
     gmail_calendar_state.DEFAULT_PATH；scripts/sync_gmail_calendar_state.py（排程
     agent 呼叫）寫、這裡的 /gmail_calendar_status 讀，見該檔開頭說明）。
-    puck_command_queue＝ESP32 edge端混音（MARVIN_CAR_HARDWARE=esp32_edge_mix）的控制
-    指令佇列（見 marvin_voice_core/puck_command_queue.py）；None＝該功能關閉，
-    /car_commands 回 404。/puck_deck 不吃這個旗標（2026-08-18 起 pi_bt 硬體
-    也走這條路，見 device/puck_mixer.py::resolve_stream_url() 註解）——只要
-    vc.bot 能拿到 MusicCog（bot.cogs.get("MusicCog")）就開放，拿不到才回 500。
     device_speakers＝車載裝置身分白名單（parse_device_speakers 的結果）；None＝不驗證、
     裝置送的 speaker 一律當 default_speaker（舊行為）。只影響 /car、/audio，/say 等不動。
     """
@@ -1786,32 +1532,20 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             # 🎙️ [PTT Optimization] 設定 mixer 的 PTT 狀態為 True，使其在 80ms 內平滑降至 0% 靜音
             if getattr(vc, "_mixer", None) is not None:
                 vc._mixer._ptt_active = True
-            
+
             vc._on_satellite_wake("hey_marvin")
-            bridge = getattr(vc, "_satellite_bridge", None)
-            if bridge and bridge.sink and hasattr(bridge.sink, "reset"):
-                bridge.sink.reset()
-                # 🎙️ [PTT Optimization] PTT 期間將自動靜默切句閾值拉高至 999 秒，
-                # 防止說話中途停頓或播音時間長導致 VAD 自動切句，強制只在 PTT 結束時由 /flush 切句。
-                bridge.sink._silence_cut_s = 999.0
-            logger.info("🎙️ [PTT] Mac 端已收到 /wake 請求，成功 Ducking 音樂並重置語音緩衝區（停用自動 VAD）")
+            logger.info("🎙️ [PTT] Mac 端已收到 /wake 請求，成功 Ducking 音樂")
             return web.json_response({"ok": True}, headers=_CORS)
         return web.json_response({"error": "method_not_found"}, status=500, headers=_CORS)
 
     async def handle_flush(request):
-        
+
         # 🎙️ [PTT Optimization] 解除 mixer PTT 狀態，音樂將自動淡入恢復播放
         if getattr(vc, "_mixer", None) is not None:
             vc._mixer._ptt_active = False
-        
-        bridge = getattr(vc, "_satellite_bridge", None)
-        if bridge and bridge.sink:
-            # 🎙️ [PTT Optimization] 恢復標準 VAD 靜默切句時間 (1.5s) 並立刻強制切句
-            bridge.sink._silence_cut_s = 1.5
-            bridge.sink._cut_segment()
-            logger.info("🎙️ [PTT] Mac 端已收到 /flush 請求，已強行斷句進行 STT（恢復 VAD）")
-            return web.json_response({"ok": True}, headers=_CORS)
-        return web.json_response({"error": "no_active_bridge"}, status=400, headers=_CORS)
+
+        logger.info("🎙️ [PTT] Mac 端已收到 /flush 請求，解除 Ducking")
+        return web.json_response({"ok": True}, headers=_CORS)
 
     async def handle_audio(request):
         """POST /audio — 純軟體 satellite：瀏覽器收音的 WAV → 引擎 pipeline。
@@ -1834,30 +1568,6 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             return web.json_response({"error": "empty"}, status=400, headers=_CORS)
         ok = await inject_audio(vc, wav_bytes, speaker=spk)
         return web.json_response({"ok": ok}, headers=_CORS)
-
-    async def handle_reply(request):
-        """GET /reply?since=N — 純軟體 satellite：回馬文最新一段 TTS 的 WAV。
-
-        seq 遞增；瀏覽器帶上次 since，新段（seq>since）回 200+WAV，否則 204。
-        無 reply_source（未接輸出 tee）→ 一律 204。
-        """
-        if reply_source is None:
-            return web.Response(status=204, headers=_CORS)
-        try:
-            since = int(request.query.get("since", "0"))
-        except ValueError:
-            since = 0
-        seq, wav = reply_source.latest_wav()
-        if seq <= since or not wav:
-            return web.Response(status=204, headers=_CORS)
-        headers = {**_CORS, "X-Reply-Seq": str(seq)}
-        return web.Response(body=wav, content_type="audio/wav", headers=headers)
-
-    async def handle_satellite(request):
-        """GET /satellite — Mac 自服務的純軟體 satellite 網頁（Pi 不參與）。"""
-        return web.Response(
-            text=SATELLITE_HTML.replace("__TOKEN__", token or ""),
-            content_type="text/html", headers=_CORS)
 
     async def handle_hud(request):
         """GET /hud — Marvin HUD v12 寬屏顯示頁（Mac 自服務，比照 /satellite）。
@@ -1914,49 +1624,6 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             stream_source.unsubscribe(q)
         return resp
 
-    async def handle_car_commands(request):
-        """GET /car_commands?since=<seq> — ESP32 edge端混音輪詢指令（pull model）。
-
-        Pi mk2 是 Mac 主動 POST 到 Pi（push，Pi 在 LAN 內可被連進來）；ESP32 car puck
-        永遠是自己撥出連線，Mac 沒辦法主動推指令，只能讓 ESP32 用既有輪詢節奏來拿
-        （見 puck_command_queue.py 開頭說明）。無 puck_command_queue（功能未開）→ 404。
-        """
-        if puck_command_queue is None:
-            return web.Response(status=404, headers=_CORS)
-        try:
-            since = int(request.query.get("since", "0"))
-        except ValueError:
-            since = 0
-        seq, pending = puck_command_queue.since(since)
-        return web.json_response({"seq": seq, "commands": pending}, headers=_CORS)
-
-    async def handle_car_control(request):
-        """GET /car_control?cmd=play&url=<url> 或 ?cmd=stop — 人手動下指令給 ESP32 car puck。
-
-        跟 /car_commands 的關係：這裡只負責「寫進佇列」，ESP32 下次輪詢 /car_commands
-        才會真的撿到、執行——手動指令跟 music_cog.py 的 DJ 自動化共用同一份佇列，寫進去
-        後兩邊都看得到、順序也照寫入先後（見 puck_command_queue.py）。無
-        puck_command_queue（功能未開）→ 404。
-
-        ⚠️ 2026-08-13 起 MARVIN_CAR_HARDWARE=esp32_edge_mix 預設關閉（STEP10 韌體收到
-        crossfade/play 會跟真正播放用的 audioNetworkTask 搶 LWIP_LOCK，見 .env 註解），
-        這條路目前對 deck A（真正在響的那條）沒有效果，deck A 固定吃 /audio_stream。
-        真正能控制車上播放的是 /say 文字指令（跟 handle_car_now 同一份 MusicCog）。這個
-        端點留著給以後 STEP11 正式 deck 架構重新開啟時用。"""
-        if puck_command_queue is None:
-            return web.Response(status=404, headers=_CORS)
-        cmd = (request.query.get("cmd") or "").strip()
-        if cmd == "play":
-            url = (request.query.get("url") or "").strip()
-            if not url:
-                return web.json_response({"error": "missing_url"}, status=400, headers=_CORS)
-            seq = puck_command_queue.play(url)
-        elif cmd == "stop":
-            seq = puck_command_queue.stop()
-        else:
-            return web.json_response({"error": "bad_cmd"}, status=400, headers=_CORS)
-        return web.json_response({"ok": True, "cmd": cmd, "seq": seq}, headers=_CORS)
-
     async def handle_car_now(request):
         """GET /car_now — 車 puck 實際在播的歌（:8766 面板黑膠/控制項用）。
 
@@ -1981,31 +1648,6 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             "duration": info.get("duration"),
             "song_start_time": getattr(music_cog, "_current_stream_start_time", None),
         }, headers=_CORS)
-
-    # _stream_ffmpeg_input_as_mp3 2026-08-18 起是 module-level 函式（見檔案上方），
-    # 跟 handle_puck_voice 共用，這裡不再自己定義一份。
-
-    async def handle_puck_voice(request):
-        """GET /puck_voice?clip_id=<id> — ESP32 edge端混音的 DJ 口白/SFX 原始音源。
-
-        跟 /puck_deck 的差異：來源不是 yt-dlp URL，是本機已經生成好的 TTS/SFX 檔案
-        （見 cogs/music_cog.py::_fire_puck_speak/_fire_puck_sfx）。不直接把檔案系統
-        路徑暴露在 /car_commands 回應裡（那條走 Funnel 公開）——clip_id 是短效索引，
-        見 marvin_voice_core/puck_command_queue.py::register_voice_clip。
-        """
-        if puck_command_queue is None:
-            return web.Response(status=404, headers=_CORS)
-        from marvin_voice_core.puck_command_queue import resolve_voice_clip
-        clip_id = (request.query.get("clip_id") or "").strip()
-        path = resolve_voice_clip(clip_id) if clip_id else None
-        if not path or not os.path.exists(path):
-            return web.json_response({"error": "clip_not_found"}, status=404, headers=_CORS)
-        return await _stream_ffmpeg_input_as_mp3(request, ["-i", path])
-
-    # handle_puck_deck 2026-08-18 起由 module-level _make_puck_deck_handler() 產生
-    # （見檔案上方）——car puck mk2(pi_bt) 也走這裡（跟 ESP32 共用），這支
-    # satellite 進程是兩種車puck硬體共同的音源+決策來源（見該函式 docstring）。
-    handle_puck_deck = _make_puck_deck_handler(vc, puck_command_queue)
 
     async def handle_car(request):
         """POST /car {"state": "present"|"absent", "lat"?, "lon"?} — ESP32 puck 車載觸發。
@@ -2073,77 +1715,12 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_options("/flush", handle_preflight)
     app.router.add_post("/audio", handle_audio)
     app.router.add_options("/audio", handle_preflight)
-    app.router.add_get("/reply", handle_reply)
     app.router.add_get("/audio_stream", handle_audio_stream)
-    app.router.add_get("/car_commands", handle_car_commands)
-    app.router.add_get("/car_control", handle_car_control)
     app.router.add_get("/car_now", handle_car_now)
-    app.router.add_get("/puck_deck", handle_puck_deck)
-    app.router.add_get("/puck_voice", handle_puck_voice)
-    app.router.add_get("/satellite", handle_satellite)
     app.router.add_get("/hud", handle_hud)
     app.router.add_post("/car", handle_car)
     app.router.add_options("/car", handle_preflight)
     return app
-
-
-async def _puck_watchdog_loop(
-    car_presence, puck_command_queue, *,
-    interval_s: float = 5.0,
-    dm_fn=None,
-    sleep_fn: Callable[[float], Awaitable[None]] = asyncio.sleep,
-    should_stop: Callable[[], bool] | None = None,
-    now_fn: Callable[[], float] = time.time,
-):
-    """N 秒一輪偵測 car puck 是否卡住/斷線，只在車主還在車上時才警報（見 puck_watchdog.py
-    的 poll/deck stall 判斷邏輯——這裡只負責串：讀狀態、決定要不要 DM、狀態轉換去重）。
-
-    去重用一個記憶體內布林值就夠：這是長駐 in-process 迴圈，不像 pipeline_heartbeat_probe.py
-    那種每 30 分鐘各自獨立啟動的 cron，不需要跨進程 persist 的去重狀態機——同一段連續
-    stalled episode 只 DM 一次，恢復時再 DM 一次即可。
-
-    dm_fn 預設用 puck_watchdog.dm_owner_sync（同步、跑在 asyncio.to_thread 裡避免卡住
-    event loop）；sleep_fn/should_stop/now_fn 比照 car_mode.run_car_ttl_loop 同款注入
-    測試點，好測、零真的 sleep。"""
-    from puck_watchdog import STALL_REASON_TEXT, check_puck_stall
-    from puck_watchdog import dm_owner_sync as _default_dm_fn
-
-    dm_fn = dm_fn or _default_dm_fn
-    was_stalled = False
-    was_present = False
-    presence_since = 0.0   # 上車那一刻的時間戳，當 puck 還沒打過 /car_commands 時當基準用
-    while should_stop is None or not should_stop():
-        try:
-            now = now_fn()
-            is_present = car_presence.is_present
-            if is_present and not was_present:
-                # 剛上車，puck 可能還在連 WiFi 的路上——用「上車時間」當輪詢基準，
-                # 讓 poll_stall_threshold 從這一刻起算，別在 puck 連上前那零點幾秒
-                # 就因為 last_polled_ts 還是 0 而立刻誤報。
-                presence_since = now
-            was_present = is_present
-            last_polled = puck_command_queue.last_polled_ts or presence_since
-            status = check_puck_stall(
-                is_present=is_present, last_polled_ts=last_polled,
-                stall_seconds=puck_command_queue.stall_seconds(now=now), now=now)
-            if status.stalled and not was_stalled:
-                text = f"🚨 [CarPuck] {STALL_REASON_TEXT.get(status.reason, '沒反應')}"
-                logger.warning(text)
-                await asyncio.to_thread(dm_fn, text)
-            elif was_stalled and not status.stalled and is_present:
-                # ⚠️ 2026-08-13 實機踩到假恢復：is_present 一旦變 False，check_puck_stall
-                # 一律回 stalled=False（車主不在車上不用管），如果不額外檢查 is_present，
-                # 這個 elif 會把「presence 剛好在這拍翻成離開」誤判成「puck 真的恢復回應
-                # 了」，兩者其實毫無關係——departure 不代表 puck 連線問題解決了。只有
-                # 車主還在場、且這拍真的不再 stalled，才算數。presence 翻成 False 時
-                # 靜默重置 was_stalled，不發任何訊息（沒有恢復可言，只是不用再管了）。
-                text = "✅ [CarPuck] puck 恢復回應了"
-                logger.info(text)
-                await asyncio.to_thread(dm_fn, text)
-            was_stalled = status.stalled
-        except Exception:  # noqa: BLE001 — 一拍失敗不弄垮迴圈
-            logger.exception("[PuckWatchdog] 檢查失敗")
-        await sleep_fn(interval_s)
 
 
 def resolve_car_owner_pool(vc, owner: str, now: float | None = None) -> list:
@@ -2253,13 +1830,12 @@ async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
         logger.exception("[CarMode] play_open 失敗")
 
 
-async def start_text_http_server(vc, reply_source=None, stream_source=None, *, discord_voice=None):
+async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
     """起 Siri 文字 HTTP 伺服器（0.0.0.0，走 Tailscale）。回傳 runner（好收）。
 
     埠＝MARVIN_TEXT_PORT（預設 8790）；token＝MARVIN_TEXT_TOKEN（空＝不驗證）。
-    reply_source＝純軟體 satellite 的 BrowserSpeakerOutput（GET /reply）；Pi 模式傳 None。
     stream_source＝車載模式的 StreamSpeakerOutput（GET /audio_stream）；非車載模式傳 None。
-    discord_voice＝None（預設，satellite 進程用）＝現有行為一行不變。單一 mixer 第2刀：
+    discord_voice＝None（預設）＝不接車載模式（/car 回 car_mode_off）。單一 mixer 第2刀：
     Discord 進程呼叫本函式時傳自己的 VoiceController cog（`vc` 本身），車載 /car
     present/absent 的開場/停播語意改走 Discord 版（_play_open 背景 task 化避免卡住
     HTTP 回應；_stop_playback 改問頻道內還有沒有真人，見下方 if discord_voice 分支）。
@@ -2272,13 +1848,9 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None, *, d
     # 車載裝置身分白名單（MARVIN_CAR_SPEAKERS）：裝置自己帶 speaker，這裡驗證成正式名字。
     device_speakers = parse_device_speakers(os.getenv("MARVIN_CAR_SPEAKERS", ""), default_speaker)
 
-    # ── 車載模式（ESP32 puck）：satellite 進程仍看 MARVIN_CAR_MODE env；
-    # Discord 進程（傳 discord_voice）一律接車載模式，因為 run_bot.py 會清空
-    # MARVIN_CAR_MODE（防音量污染，見 music_cog.py 的 _default_stream_volume）──
     car_presence = None
     audio_rate_limiter = None
-    _car_mode_env = os.getenv("MARVIN_CAR_MODE", "").strip().lower() in ("1", "true", "yes", "on")
-    if discord_voice is not None or _car_mode_env:
+    if discord_voice is not None:
         from car_mode import build_car_presence, run_car_ttl_loop
         from rate_limiter import RateLimiter
 
@@ -2290,57 +1862,44 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None, *, d
                 logger.exception("[CarMode] pool_provider 失敗，回空池")
                 return []
 
-        if discord_voice is not None:
-            # 單一 mixer 第2刀：Discord 版開場/停播。
+        # 單一 mixer 第2刀：Discord 版開場/停播。
 
-            async def _discord_car_arrive(car_open, speaker):
-                # CarPresence.present() 在 /car handler 裡是 inline await on_arrive——
-                # auto_rejoin_on_boot 最久可能卡 60s connect timeout，若在這裡 inline
-                # await 會讓 HTTP 回應跟著卡住。只做一件事：丟背景 task 立刻 return。
-                try:
-                    connected = bool(discord_voice.bot.voice_clients)
-                    mc = discord_voice.bot.cogs.get("MusicCog")
-                    music_active = bool(mc and (mc.stream_mode or mc.radio_mode))
-                    action = decide_car_arrive(connected=connected, music_active=music_active)
-                    if action == "skip_open":
-                        logger.info("🚗 [CarMode/Discord] 已在頻道且正在放歌，車上直接收聽，不放開場曲")
+        async def _discord_car_arrive(car_open, speaker):
+            # CarPresence.present() 在 /car handler 裡是 inline await on_arrive——
+            # auto_rejoin_on_boot 最久可能卡 60s connect timeout，若在這裡 inline
+            # await 會讓 HTTP 回應跟著卡住。只做一件事：丟背景 task 立刻 return。
+            try:
+                connected = bool(discord_voice.bot.voice_clients)
+                mc = discord_voice.bot.cogs.get("MusicCog")
+                music_active = bool(mc and (mc.stream_mode or mc.radio_mode))
+                action = decide_car_arrive(connected=connected, music_active=music_active)
+                if action == "skip_open":
+                    logger.info("🚗 [CarMode/Discord] 已在頻道且正在放歌，車上直接收聽，不放開場曲")
+                    return
+                if action == "join_and_open":
+                    await discord_voice.auto_rejoin_on_boot(car_join=True, resume_music=False)
+                    if not discord_voice.bot.voice_clients:
+                        logger.warning("🚗 [CarMode/Discord] 進頻道失敗，略過開場（sentinel 60s 會再試）")
                         return
-                    if action == "join_and_open":
-                        await discord_voice.auto_rejoin_on_boot(car_join=True, resume_music=False)
-                        if not discord_voice.bot.voice_clients:
-                            logger.warning("🚗 [CarMode/Discord] 進頻道失敗，略過開場（sentinel 60s 會再試）")
-                            return
-                    await _execute_car_open(discord_voice, car_open, speaker, lambda: _pool_provider(speaker))
-                except Exception:  # noqa: BLE001
-                    logger.exception("[CarMode/Discord] play_open 失敗")
+                await _execute_car_open(discord_voice, car_open, speaker, lambda: _pool_provider(speaker))
+            except Exception:  # noqa: BLE001
+                logger.exception("[CarMode/Discord] play_open 失敗")
 
-            async def _play_open(car_open, speaker):
-                asyncio.create_task(_discord_car_arrive(car_open, speaker))
+        async def _play_open(car_open, speaker):
+            asyncio.create_task(_discord_car_arrive(car_open, speaker))
 
-            async def _stop_playback():
-                try:
-                    action = decide_car_depart(
-                        connected=bool(discord_voice.bot.voice_clients),
-                        human_count=len(discord_voice.get_online_members()))
-                    if action == "dismiss":
-                        await discord_voice.handle_dismiss()
-                        logger.info("🚗 [CarMode/Discord] 下車且頻道無真人，撤離")
-                    else:
-                        logger.info("🚗 [CarMode/Discord] 下車但頻道還有人，音樂繼續")
-                except Exception:  # noqa: BLE001
-                    logger.exception("[CarMode/Discord] stop_playback 失敗")
-        else:
-            async def _play_open(car_open, speaker):
-                await _execute_car_open(vc, car_open, speaker, lambda: _pool_provider(speaker))
-
-            async def _stop_playback():
-                try:
-                    mc = vc.bot.cogs.get("MusicCog")
-                    if mc and hasattr(mc, "stop_stream"):
-                        await mc.stop_stream(reason="下車（puck absent）")
-                    logger.info("🚗 [CarMode] 下車停播")
-                except Exception:  # noqa: BLE001
-                    logger.exception("[CarMode] stop_playback 失敗")
+        async def _stop_playback():
+            try:
+                action = decide_car_depart(
+                    connected=bool(discord_voice.bot.voice_clients),
+                    human_count=len(discord_voice.get_online_members()))
+                if action == "dismiss":
+                    await discord_voice.handle_dismiss()
+                    logger.info("🚗 [CarMode/Discord] 下車且頻道無真人，撤離")
+                else:
+                    logger.info("🚗 [CarMode/Discord] 下車但頻道還有人，音樂繼續")
+            except Exception:  # noqa: BLE001
+                logger.exception("[CarMode/Discord] stop_playback 失敗")
 
         car_presence = build_car_presence(
             play_open=_play_open, stop_playback=_stop_playback, pool_provider=_pool_provider)
@@ -2349,20 +1908,9 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None, *, d
         audio_rate_limiter = RateLimiter(max_per_window=30, window_s=60.0)
         logger.info("🚗 [CarMode] 車載模式啟用（/car present/absent + TTL 收尾 + /audio 限速）")
 
-    # ── ESP32 edge端混音（見 marvin_voice_core/puck_command_queue.py）：
-    # MARVIN_CAR_HARDWARE=esp32_edge_mix 才接，跟 pi_bt（Pi mk2）走的 push model 互斥、
-    # 預設 off＝零行為改變。跟 music_cog.py 共用同一個 process-wide 單例（見該模組
-    # get_default_queue() 的說明），這裡不用額外傳遞物件。
-    puck_command_queue = None
-    if os.getenv("MARVIN_CAR_HARDWARE", "").strip().lower() == "esp32_edge_mix":
-        from marvin_voice_core.puck_command_queue import get_default_queue
-        puck_command_queue = get_default_queue()
-        logger.info("🎛️ [PuckEdgeMix] ESP32 edge端混音啟用（/car_commands + /puck_deck）")
-
     app = build_text_app(vc, token=token, default_speaker=default_speaker,
-                         reply_source=reply_source, car_presence=car_presence,
+                         car_presence=car_presence,
                          audio_rate_limiter=audio_rate_limiter, stream_source=stream_source,
-                         puck_command_queue=puck_command_queue,
                          device_speakers=device_speakers)
     logger.info(f"🚗 [CarMode] 裝置身分白名單：{', '.join(device_speakers.values())}")
     runner = web.AppRunner(app)
@@ -2385,11 +1933,6 @@ async def start_text_http_server(vc, reply_source=None, stream_source=None, *, d
                 await asyncio.sleep(10.0)
 
         asyncio.create_task(_sync_car_presence_state())
-    if car_presence is not None and puck_command_queue is not None:
-        # ESP32 edge端混音才有 poll/deck 這兩個訊號可觀察（pi_bt 是 push model，Mac
-        # 主動連 Pi，沒有這種「puck 該來輪詢卻沒來」的判斷方式）。見 puck_watchdog.py。
-        asyncio.create_task(_puck_watchdog_loop(car_presence, puck_command_queue))
-        logger.info("🐕 [PuckWatchdog] car puck 沒反應偵測啟動（poll/deck stall，5s 一輪）")
     if os.getenv("MARVIN_CLAUDE_STATUS_SCAN", "1").strip().lower() in ("1", "true", "yes", "on"):
         from scripts.scan_claude_sessions import run_claude_sessions_scan_loop
         asyncio.create_task(run_claude_sessions_scan_loop())

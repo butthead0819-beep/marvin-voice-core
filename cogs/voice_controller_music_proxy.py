@@ -110,7 +110,8 @@ class MusicProxyMixin:
         """[Phase 7E stub] → MusicCog._maybe_play_dj_interjection"""
         mc = self.bot.cogs.get('MusicCog')
         if mc is not None:
-            await mc._maybe_play_dj_interjection(dj)
+            return await mc._maybe_play_dj_interjection(dj)
+        return None
 
     async def _t2_discovery_candidates(self, members: list[str], exclude_titles: list[str]) -> list:
         mc = self.bot.cogs.get('MusicCog')

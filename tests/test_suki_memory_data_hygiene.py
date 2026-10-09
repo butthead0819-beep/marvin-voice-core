@@ -8,7 +8,6 @@ A3. STT `__META__` leakage must not be stored in / loaded from emotional_highlig
 import json
 import sqlite3
 
-import memory_sandbox
 from suki_memory import (
     MemoryManager,
     _new_player,
@@ -138,33 +137,6 @@ def test_migrate_from_json_skips_pseudo_players(tmp_path):
     m = MemoryManager(db_path=db, json_compat_path=j)
     assert "大肚" in m.list_players()
     assert "系統" not in m.list_players()
-
-
-def test_sandbox_active_does_not_delete_pseudo_player_row(tmp_path):
-    """Sandbox is read-only against the real DB — must not attempt a DELETE."""
-    db = str(tmp_path / "m.db")
-    j = str(tmp_path / "m.json")
-
-    seed = MemoryManager(db_path=db, json_compat_path=j)
-    seed._conn.execute(
-        "INSERT OR REPLACE INTO players (guild_id, username, data) VALUES (?, ?, ?)",
-        (seed._guild_id, "系統", json.dumps(_new_player(), ensure_ascii=False)),
-    )
-    seed._conn.commit()
-
-    memory_sandbox.activate()
-    try:
-        m = MemoryManager(db_path=db, json_compat_path=j)
-        assert "系統" not in m.list_players()  # skipped in-memory
-    finally:
-        memory_sandbox.deactivate()
-
-    con = sqlite3.connect(db)
-    count = con.execute(
-        "SELECT COUNT(*) FROM players WHERE username = ?", ("系統",)
-    ).fetchone()[0]
-    con.close()
-    assert count == 1  # row untouched on disk
 
 
 # ── A3: __META__ leakage in emotional_highlights ───────────────────────────────

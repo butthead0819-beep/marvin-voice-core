@@ -1,8 +1,7 @@
 """
 tests/test_satellite_audio_ingest.py
-TDD：純軟體 iOS satellite 的音訊入口（Mac :8790）。
+TDD：車載/裝置端的音訊入口（Mac :8790）。
 
-與 Pi satellite（wyoming / process_audio_slice）完全解耦：
 瀏覽器收音 → POST /audio → inject_audio → transcribe_hybrid → handle_stt_result。
 無網路（aiohttp TestServer）、無 Discord、vc/stt_handler 用 Mock。
 """
@@ -122,85 +121,3 @@ async def test_http_audio_no_speech_returns_ok_false():
         assert resp.status == 200
         assert (await resp.json())["ok"] is False
     vc.handle_stt_result.assert_not_awaited()
-
-
-# ── GET /satellite HTML（Mac 自服務、Pi 不碰）────────────────────────────
-@pytest.mark.asyncio
-async def test_http_satellite_serves_html_page():
-    from aiohttp.test_utils import TestClient, TestServer
-    from car_http_app import build_text_app
-    vc = _make_vc()
-    app = build_text_app(vc, token="s3cret")
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/satellite?t=s3cret")
-        assert resp.status == 200
-        assert "text/html" in resp.headers["Content-Type"]
-        html = await resp.text()
-        assert "getUserMedia" in html   # 瀏覽器收音
-        assert "/audio" in html         # 上傳入口
-
-
-@pytest.mark.asyncio
-async def test_http_satellite_injects_token_into_page():
-    """token 要嵌進頁面，瀏覽器呼叫 /audio 才帶得上。"""
-    from aiohttp.test_utils import TestClient, TestServer
-    from car_http_app import build_text_app
-    vc = _make_vc()
-    app = build_text_app(vc, token="s3cret")
-    async with TestClient(TestServer(app)) as client:
-        html = await (await client.get("/satellite?t=s3cret")).text()
-        assert "s3cret" in html
-
-
-# ── GET /reply（馬文回覆的 TTS 音訊回傳瀏覽器）──────────────────────────────
-class _FakeReplySource:
-    def __init__(self, seq, wav):
-        self._seq, self._wav = seq, wav
-    def latest_wav(self):
-        return self._seq, self._wav
-
-
-@pytest.mark.asyncio
-async def test_http_reply_returns_204_when_no_source():
-    from aiohttp.test_utils import TestClient, TestServer
-    from car_http_app import build_text_app
-    app = build_text_app(_make_vc(), token="s3cret")   # 無 reply_source
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/reply?t=s3cret&since=0")
-        assert resp.status == 204
-
-
-@pytest.mark.asyncio
-async def test_http_reply_returns_wav_when_newer_seq():
-    from aiohttp.test_utils import TestClient, TestServer
-    from car_http_app import build_text_app
-    src = _FakeReplySource(3, b"RIFFxxxxWAVEdata")
-    app = build_text_app(_make_vc(), token="s3cret", reply_source=src)
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/reply?t=s3cret&since=2")
-        assert resp.status == 200
-        assert "audio/wav" in resp.headers["Content-Type"]
-        assert resp.headers["X-Reply-Seq"] == "3"
-        assert (await resp.read()) == b"RIFFxxxxWAVEdata"
-
-
-@pytest.mark.asyncio
-async def test_http_reply_returns_204_when_not_newer():
-    from aiohttp.test_utils import TestClient, TestServer
-    from car_http_app import build_text_app
-    src = _FakeReplySource(3, b"RIFFxxxxWAVEdata")
-    app = build_text_app(_make_vc(), token="s3cret", reply_source=src)
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/reply?t=s3cret&since=3")   # 已播過同一段
-        assert resp.status == 204
-
-
-@pytest.mark.asyncio
-async def test_http_reply_rejects_wrong_token():
-    from aiohttp.test_utils import TestClient, TestServer
-    from car_http_app import build_text_app
-    src = _FakeReplySource(1, b"RIFFxxxxWAVEdata")
-    app = build_text_app(_make_vc(), token="s3cret", reply_source=src)
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/reply?t=wrong&since=0")
-        assert resp.status == 401

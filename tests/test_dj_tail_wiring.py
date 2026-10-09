@@ -436,53 +436,6 @@ async def test_prerendered_dj_plays_on_tts_layer_not_music():
     vc.play_tts.assert_not_called()          # 有預渲染就不即時 TTS
 
 
-# ── (j) esp32_edge_mix：DJ 口白另外送一份給裝置端（Phase3） ─────────────────
-
-@pytest.mark.asyncio
-async def test_dj_interjection_fires_puck_speak_when_client_has_speak():
-    """deck A/B 改吃 /puck_deck 乾淨音源後，vc 自己疊的口白到不了 ESP32——
-    有預渲染 audio_path 時要另外送 speak 給裝置端自己疊播+duck。"""
-    cog = _make_cog()
-    vc = MagicMock()
-    vc._intimate_mode = False
-    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
-    cog.bot.cogs.get.return_value = vc
-
-    # spec 限制只有 speak（沒有 speak_text）——比照真正的 PuckCommandQueueClient
-    # 介面，不能用裸 MagicMock（auto-mock 屬性會讓 hasattr(client,"speak_text")
-    # 誤判為 True，走錯分支）。
-    fake_client = MagicMock(spec=["play", "queue_next", "crossfade", "stop", "speak"])
-    fake_client.speak = AsyncMock(return_value=True)
-
-    with patch("os.path.exists", return_value=True), \
-         patch("cogs.music_cog._get_puck_client", return_value=fake_client):
-        await cog._maybe_play_dj_interjection({"text": "接下來這首…", "audio_path": "/tmp/dj.opus"})
-        await asyncio.sleep(0)   # 讓 create_task 起的 _fire_puck_speak 真的跑
-
-    fake_client.speak.assert_awaited_once_with("/tmp/dj.opus")
-
-
-@pytest.mark.asyncio
-async def test_dj_interjection_skips_puck_speak_when_client_lacks_speak():
-    """client 沒有 speak 介面（例如家用 Pi 3B、或 pi_bt 車 puck——2026-08-20 起
-    pi_bt 的 DJ 口白隨 /audio_stream 共用 mixer 自然播出，_get_puck_client() 對它
-    一律回 None，見 main_satellite.py::setup_satellite 說明）→ 靜靜放棄，不該炸
-    AttributeError。"""
-    cog = _make_cog()
-    vc = MagicMock()
-    vc._intimate_mode = False
-    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
-    cog.bot.cogs.get.return_value = vc
-
-    fake_client = MagicMock(spec=["play", "queue_next", "crossfade", "stop"])
-
-    with patch("os.path.exists", return_value=True), \
-         patch("cogs.music_cog._get_puck_client", return_value=fake_client):
-        await cog._maybe_play_dj_interjection({"text": "接下來這首…", "audio_path": "/tmp/dj.opus"})
-        await asyncio.sleep(0)
-    # 沒拋例外就是過。
-
-
 # ── (i) 尾段 SFX 疊播：DJ 口白播完後接一支轉場音效（見 scripts/gen_dj_sfx.py）──
 
 @pytest.mark.asyncio
@@ -536,28 +489,6 @@ async def test_dj_tail_sfx_skips_when_file_missing():
         await cog._play_dj_tail_sfx()
 
     vc.play_dj_on_tts_layer.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-@pytest.mark.skip(reason="2026-08-25 _play_dj_tail_sfx 暫時停用（換歌斷續調查，見 music_cog.py 該函式開頭 return）")
-async def test_dj_tail_sfx_fires_puck_sfx_when_client_has_sfx():
-    """比照 speak：SFX 也要另外送一份給 esp32_edge_mix 裝置端（不 duck）。"""
-    cog = _make_cog()
-    vc = MagicMock()
-    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
-    cog.bot.cogs.get.return_value = vc
-
-    fake_client = MagicMock()
-    fake_client.sfx = AsyncMock(return_value=True)
-
-    with patch("os.path.exists", return_value=True), \
-         patch("random.choice", return_value="dj_airhorn"), \
-         patch("cogs.music_cog._get_puck_client", return_value=fake_client):
-        await cog._play_dj_tail_sfx()
-        await asyncio.sleep(0)
-
-    fake_client.sfx.assert_awaited_once()
-    assert fake_client.sfx.await_args.args[0].endswith(".wav")
 
 
 @pytest.mark.asyncio
@@ -674,38 +605,6 @@ async def test_dj_tail_sfx_gives_up_after_preload_wait_timeout():
         await task
 
 
-
-
-# ── [PuckMixer] queue_next 必須送 webpage_url，不能送已解析過的 CDN 直連網址 ──────
-# 2026-08-11 實機踩到：next_info['url'] 是 _resolve_yt_query() 當下解出來的 googlevideo
-# CDN 直連網址（時效性、非 youtube 頁面），裝置端（Pi/ESP32）收到後還會再對它跑一次
-# yt-dlp resolve，餵 CDN 網址進去 100% 失敗（實機驗證：ESP32 /puck_deck 穩定回 502）。
-
-@pytest.mark.asyncio
-async def test_tail_dj_fires_puck_crossfade_with_webpage_url_not_resolved_url():
-    cog = _make_cog()
-    cur = _cur_info(duration=180.0)
-    nxt = _next_info()
-    nxt["webpage_url"] = "https://youtube.com/watch?v=abc123"
-    assert nxt["url"] != nxt["webpage_url"]   # 這條測試才有意義：兩者必須不同
-    cog.stream_queue = [nxt]
-    cog._prefetch_cache[nxt["url"]] = _done_future({"dj": _dj_meta()})
-    _prime(cog, cur)
-
-    fake_client = MagicMock()
-    fake_client.queue_next = AsyncMock(return_value=True)
-
-    with patch("os.path.exists", return_value=True), \
-         patch("asyncio.sleep", new=AsyncMock()), \
-         patch("cogs.music_cog._get_puck_client", return_value=fake_client):
-        import time
-        await cog._run_tail_dj(cur, time.time() - 170.0)
-    # asyncio.create_task 起的 _fire_puck_crossfade 要等回到 event loop 才會真的跑；
-    # 移出 patch 區塊外用真正的 asyncio.sleep(0) 讓出控制權一次（patch 已經在
-    # _run_tail_dj 執行期間把 fake_client 綁進 task 的 closure，不需要 patch 還開著）。
-    await asyncio.sleep(0)
-
-    fake_client.queue_next.assert_awaited_once_with(nxt["webpage_url"], title=nxt["title"])
 
 
 # ── (f) CancelledError 被 catch ──────────────────────────────────────────────

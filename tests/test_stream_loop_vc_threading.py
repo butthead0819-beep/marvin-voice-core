@@ -14,7 +14,7 @@ voice #1）。這裡補上 vc 非 None 的路徑，鎖住：
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -65,8 +65,7 @@ async def test_stream_loop_completes_with_real_vc_and_sets_start_time():
     cog.stream_mode = True
     cog._prefetch_cache[song["url"]] = _done_future(None)
 
-    with patch("cogs.music_cog._get_puck_client", return_value=None):
-        await cog._stream_loop()
+    await cog._stream_loop()
 
     assert cog._current_stream_start_time is not None
     # autopilot 補位路徑真的走了這個 vc，不是因為 vc 被誤判 None 而短路跳過。
@@ -83,8 +82,7 @@ async def test_stream_loop_republishes_queue_snapshot_after_meta_resolved():
     cog._prefetch_cache[song["url"]] = _done_future({"comment": None, "lyrics": None, "dj": None})
     cog._republish_queue_snapshot = MagicMock(wraps=cog._republish_queue_snapshot)
 
-    with patch("cogs.music_cog._get_puck_client", return_value=None):
-        await cog._stream_loop()
+    await cog._stream_loop()
 
     # meta 就緒那次（2192）+ song_start_time 設定那次（2288，此路徑必經）。
     assert cog._republish_queue_snapshot.call_count >= 2

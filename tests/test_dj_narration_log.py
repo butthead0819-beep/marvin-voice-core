@@ -150,3 +150,64 @@ async def test_fetch_dj_interjection_survives_log_failure(monkeypatch, tmp_path)
     result = await cog._fetch_dj_interjection_raw(_info())
     assert isinstance(result, dict)
     assert "text" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_dj_interjection_result_carries_narration_id_and_mode(monkeypatch, tmp_path):
+    _exclude(monkeypatch, "quick")
+    cog = _make_cog(tmp_path=tmp_path)
+
+    result = await cog._fetch_dj_interjection_raw(_info())
+    assert isinstance(result.get("narration_id"), str) and result["narration_id"]
+    assert "mode" in result
+
+
+# ── log_song_play / log_song_skip ────────────────────────────────────────────
+
+def test_log_song_play_writes_to_song_plays_path(monkeypatch, tmp_path):
+    path = tmp_path / "song_plays.jsonl"
+    monkeypatch.setattr(dj_narration_log, "_SONG_PLAYS_PATH", path)
+    dj_narration_log.log_song_play({"type": "play", "play_id": "abc"})
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["type"] == "play"
+    assert entry["play_id"] == "abc"
+    assert "ts" in entry
+
+
+def test_log_song_play_keeps_given_ts(monkeypatch, tmp_path):
+    path = tmp_path / "song_plays.jsonl"
+    monkeypatch.setattr(dj_narration_log, "_SONG_PLAYS_PATH", path)
+    dj_narration_log.log_song_play({"ts": 123.0, "play_id": "abc"})
+
+    entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert entry["ts"] == 123.0
+
+
+def test_log_song_play_silent_on_write_failure(tmp_path, monkeypatch):
+    blocking_file = tmp_path / "not_a_dir"
+    blocking_file.write_text("x")
+    monkeypatch.setattr(dj_narration_log, "_SONG_PLAYS_PATH", blocking_file / "song_plays.jsonl")
+    dj_narration_log.log_song_play({"play_id": "abc"})  # 不該拋例外
+
+
+def test_log_song_skip_writes_to_song_skips_path(monkeypatch, tmp_path):
+    path = tmp_path / "song_skips.jsonl"
+    monkeypatch.setattr(dj_narration_log, "_SONG_SKIPS_PATH", path)
+    dj_narration_log.log_song_skip({"play_id": "abc", "elapsed_s": 5.0})
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["play_id"] == "abc"
+    assert entry["elapsed_s"] == 5.0
+    assert "ts" in entry
+
+
+def test_log_song_skip_silent_on_write_failure(tmp_path, monkeypatch):
+    blocking_file = tmp_path / "not_a_dir"
+    blocking_file.write_text("x")
+    monkeypatch.setattr(dj_narration_log, "_SONG_SKIPS_PATH", blocking_file / "song_skips.jsonl")
+    dj_narration_log.log_song_skip({"play_id": "abc"})  # 不該拋例外

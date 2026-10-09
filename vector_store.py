@@ -2,8 +2,6 @@ import time
 import chromadb
 from chromadb.config import Settings
 
-import memory_sandbox
-
 
 class VectorStore:
     def __init__(self, persist_dir: str = ".chroma_db"):
@@ -14,8 +12,6 @@ class VectorStore:
         self._col = self._client.get_or_create_collection("marvin_transcripts")
 
     def upsert(self, speaker: str, guild_id: int, text: str, doc_id: str) -> None:
-        if memory_sandbox.active():
-            return  # 沙盒：向量寫入 no-op（ephemeral，不動正本 .chroma_db）
         self._col.upsert(
             ids=[doc_id],
             documents=[text],
@@ -42,8 +38,6 @@ class VectorStore:
         return docs if docs else []
 
     def delete_speaker(self, speaker: str, guild_id: int) -> None:
-        if memory_sandbox.active():
-            return
         results = self._col.get(
             where={"$and": [
                 {"speaker": {"$eq": speaker}},
@@ -92,8 +86,6 @@ class VectorStore:
 
     def delete(self, doc_id: str) -> None:
         """刪除單一文件；不存在時無動作（ChromaDB delete 對未知 id 本身就是 no-op）。"""
-        if memory_sandbox.active():
-            return
         try:
             self._col.delete(ids=[doc_id])
         except Exception as e:
@@ -114,8 +106,6 @@ class VectorStore:
         場景，這裡需要外掛 asyncio.Lock 或改用 ChromaDB 的 upsert + 文件
         版本欄位來防覆蓋。
         """
-        if memory_sandbox.active():
-            return
         existing = self._col.get(ids=[doc_id])
         existing_metas = existing.get("metadatas", []) or []
         if not existing_metas:
@@ -126,11 +116,8 @@ class VectorStore:
 
     def prune_older_than(self, days: int, *, now: float | None = None, apply: bool = False) -> dict:
         """依 doc_id 尾段毫秒時間戳（`<speaker>_<guild_id>_<ms>`）刪除超過 days 天的逐字稿。
-        解析不出時間戳的 id 一律保留。apply=False 只回統計。沙盒中一律 no-op。
+        解析不出時間戳的 id 一律保留。apply=False 只回統計。
         回傳 {"matched": n, "oldest_ts": float|None, "deleted": n}。"""
-        if memory_sandbox.active():
-            apply = False
-
         effective_now = time.time() if now is None else float(now)
         cutoff_ts = effective_now - days * 86400
 

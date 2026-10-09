@@ -1,0 +1,12 @@
+MODE_ARG=conversation
+LLM_CALLED=True
+TTS_EMOTION=normal
+---CONTEXT---
+歌曲：測試歌手 - 測試歌
+點播者：Alice
+【你熟悉他的生活】頻道近期對話：
+Bob：「今天好累」
+Alice：「我也是」
+串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。
+---TEXT---
+這是一句測試用的口白內容。

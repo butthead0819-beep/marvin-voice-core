@@ -1,4 +1,4 @@
-"""DJ 串場「這輪要不要講、講什麼」協調順序的顯式化入口（Phase A）。
+"""DJ 串場「這輪要不要講、講什麼」協調順序的顯式化入口。
 
 ## 背景
 
@@ -9,72 +9,36 @@ dj_comedy_fallback / dj_prompt_builder / dj_tail_schedule / joke_bank），
 `cogs/music_cog_dj_lyrics.py::_fetch_dj_interjection_raw` 兩支方法的程式碼裡，
 要理解「Marvin 這輪為什麼講了這句話」得自己讀 8 個檔案拼順序。
 
-這個模組**不改變任何行為**，只是把其中「輸入輸出乾淨、無 Discord/LLM/TTS
-side effect」的兩段決策——尾段點火時機、話題來源挑選——原封不動包一層，
-用清楚的函式名稱 + docstring 顯式標出「這一步在幹嘛、為什麼是這個順序、
-什麼情況會跳過誰」。
+第 3 刀起，口白 mode 的決策（優先序鏈＋扭蛋池＋覆蓋層）與各 mode 的
+ctx 段落由本模組的 MODES 註冊表驅動；文字 cascade 與 TTS 仍在 cog。
 
-`_fetch_dj_interjection_raw` 裡其餘會碰網路/LLM/TTS/self 狀態的步驟
-（歌詞抓取、LLM 生文案、TTS 預渲染、joke_bank 冷卻時間戳讀寫等）**沒有**
-包進來——那些牽涉 IO、無法在不動 `music_cog_dj_lyrics.py` 的前提下抽成
-純函式做 characterization test，屬於 Phase B（真的合併/搬動檔案時）才處理
-的範圍。下面 `NARRATION_TEXT_CASCADE` 只是把那段的優先順序「寫下來」，
-供人類/下一個改動者對照，不是可執行的邏輯替代品。
+## 決策圖
 
-## 目前實際呼叫順序（讀 `_run_tail_dj` + `_fetch_dj_interjection_raw` 得出）
-
-1. **要不要點火**（`_run_tail_dj`）：duration 已知 → 扣掉 highlight_start_s
-   位移 → 丟給 `dj_tail_schedule.tail_dj_fire_delay` 算「離歌尾還有幾秒該
-   點火」。None 就整輪放棄、退回舊路（開頭混播 / `_maybe_play_dj_interjection`
-   的既有呼叫點）。→ 對應 `compute_tail_fire_delay()`。
-2. 點火後 re-check（stream 是否已停 / 有沒有被 skip / 歌是否已切換）、
-   再從 `stream_queue[0]` 現抓下一首（不能在點火前綁定，autopilot 常常
-   點火當下才把下一首排進 queue）。
-3. PuckMixer（esp32_edge_mix）crossfade 訊號 fire-and-forget 送出，跟
-   本地 Discord mixer 的口白邏輯完全獨立、互不影響。
-4. 下一首背景 preload（`_start_music_preload`）——**在** DJ meta 判斷之前
-   就先做，避免 DJ 沒話講時連帶拖慢下一首換源。
-5. 取下一首的 DJ meta（`_resolve_tail_dj_meta` → 沒 prefetch 過就現場呼叫
-   `_fetch_dj_interjection_raw`），meta 裡的文字是怎麼決定的：
-   a. 話題來源挑選（**跟要不要講的「文字」是兩件事**——這一步只決定
-      「這輪如果要講，素材從哪來」）：優先看 memory_evidence（在場者親口
-      說過喜歡這首歌/歌手的具體證據，命中且未冷卻直接勝出，跳過下面
-      select_mode）→ 其餘交給 `dj_topic_selector.select_mode()` 的扭蛋池：
-      生活素材（事件主角要在場）/在場興趣/情緒高光/新聞/guide/conversation/
-      prev_song/atmosphere/quick 中有素材的進池，加權隨機抽一個 mode。
-      若 autopilot 有算好推薦理由
-      （`_autopilot_pick_reason`）且 mode 落在 quick/atmosphere 這兩個
-      「敬陪末座」的 fallback，直接蓋掉、改用 "reason"（好料不該被輪替
-      吃掉）。→ 對應 `select_narration_mode()`。
-   b. 頻道熱度/社交親密度上下文（dj_social_affinity：連播偵測、
-      社交親近度、環境氛圍字串）併入 LLM prompt 的 ctx，不影響上面的
-      mode 選擇，只影響最終文案怎麼寫。
-   c. **文字來源優先序**（尚未抽成純函式，見上方模組說明）：
-      joke_bank 命中（頻道不是熱聊中
-      + 距上次講笑話超過冷卻 + 拼音撞中 hook）> mode=="quick" 時的本地
-      固定模板（`_quick_segue_text`，零 LLM）> LLM 生成
-      （`dj_prompt_builder` 組的 prompt，經 `bot.router` 呼叫）> LLM 空手
-      或不合格時，Marvin 自選歌退回 `_autopilot_dj_phrase` 模板池 >
-      仍無效則退回「DJ Marvin為你帶來《X》」固定格式報幕（保底、永不失敗）。
-   d. 最終文字過 `tts_length_policy.truncate_for_tts` 長度閘門，再送 TTS
-      預渲染成音檔。
-6. 疊播口白（`_maybe_play_dj_interjection`）+ 轉場音效（`_play_dj_tail_sfx`，
-   目前整段被暫停），標記 `next_info['_dj_played_in_tail'] = True`。
-
-## 使用方式
-
-這個模組目前**沒有任何呼叫點**接它——`music_cog_tail_dj.py` /
-`music_cog_dj_lyrics.py` 仍直接呼叫底層模組，行為完全不變。是否要讓
-`_run_tail_dj` / `_fetch_dj_interjection_raw` 改叫這裡的函式取代自己的
-邏輯，是 Phase B 的事。
+```
+DJMaterials ──► forced 層（order）：revival → memory_match → song(focus)
+                 └─ 命中即回傳，不進扭蛋（不碰 life/interest 冷卻）
+             ──► gacha 層：委派 dj_topic_selector.select_mode（mark_used + last_fallback）
+             ──► override 層：reason.override_when(chosen ∈ {quick, atmosphere} 且 autopilot_reason)
+             ──► NarrationPlan(mode, topic, ctx_lines, tts_emotion, side_effects)
+apply_side_effects(plan)  ← 同步 def，緊接 plan_narration，無 await（PR #102）
+   ├─ consume_conversation：is_consumed 重查 → 搶光則 downgrade(plan,"quick")（不寫冷卻）
+   └─ consume_callback
+select_narration_mode(...) = 薄包裝 → choose_mode → (topic, mode)   [D13]
+加一個扭蛋 mode：MODES 一筆 + DJMaterials 一欄 + cog 收集一行 + select_mode 一個參數。
+```
 """
 from __future__ import annotations
 
+import logging
 import random
-from typing import Collection
+import time
+from dataclasses import dataclass, field, replace
+from typing import Any, Callable, Collection, Literal
 
 from dj_tail_schedule import tail_dj_fire_delay
 from dj_topic_selector import TopicCooldownStore, select_mode
+
+logger = logging.getLogger(__name__)
 
 # 與 cogs/music_cog_tail_dj.py 的 _DJ_TAIL_LEAD_S 同值——尾段疊播窗口寬度，
 # 不在這裡重新定義成 import（避免跟主檔互相 import 造成循環，同該檔案
@@ -133,6 +97,262 @@ def autopilot_narration_focus(info: dict) -> str:
     return "song" if plays <= RARE_MAX_PLAYS else "topic"
 
 
+@dataclass(frozen=True)
+class DJMaterials:
+    """一輪串場的全部素材（_fetch_dj_interjection_raw 的 IO 段一次收齊）。"""
+    revival_lines: list = field(default_factory=list)
+    memory_evidence: str = ""
+    focus: str = ""
+    life: list = field(default_factory=list)
+    present_members: set | None = None
+    interests: list = field(default_factory=list)
+    emotional_highlights: list = field(default_factory=list)
+    news_items: list = field(default_factory=list)
+    callbacks: list = field(default_factory=list)
+    activities: list = field(default_factory=list)
+    has_guide: bool = False
+    has_conversation: bool = False
+    autopilot_reason: str = ""
+    exclude_modes: Collection[str] = ()
+    # 以下只給 render 用（D10：吸收原 RenderCtx）
+    env: str = ""
+    conv_lines: list = field(default_factory=list)
+    guide: str | None = None
+    song_card: Any = None
+    empathy_hooks: tuple = ()
+
+
+@dataclass(frozen=True)
+class NarrationMode:
+    name: str
+    tier: Literal["forced", "gacha", "override"]
+    order: int = 0
+    pick: Callable[[DJMaterials, TopicCooldownStore], tuple | None] | None = None
+    render: Callable[[str | None, DJMaterials], list[str]] = lambda topic, m: []
+    tts_emotion: str = "normal"
+    on_chosen: str | None = None
+    override_when: Callable[[str, DJMaterials], bool] | None = None
+
+
+@dataclass(frozen=True)
+class NarrationPlan:
+    mode: str
+    topic: str | None
+    ctx_lines: list
+    tts_emotion: str
+    side_effects: list
+
+
+# ── forced 層 pick ───────────────────────────────────────────────────────────
+
+def _pick_revival(m: DJMaterials, store: TopicCooldownStore):
+    return (None, None) if m.revival_lines else None
+
+
+def _pick_memory_match(m: DJMaterials, store: TopicCooldownStore):
+    ev = (m.memory_evidence or "").strip()
+    if ev and "memory_match" not in m.exclude_modes and store.is_cool(ev):
+        return ev, None
+    return None
+
+
+def _pick_song(m: DJMaterials, store: TopicCooldownStore):
+    return (None, None) if m.focus == "song" else None
+
+
+# ── render 函式（逐字照抄 `_fetch_dj_interjection_raw` 現行 if/elif） ────────
+
+def _render_memory_match(topic, m: DJMaterials) -> list[str]:
+    return [
+        f"【你熟悉他的生活】記憶證據（這首為什麼現在放）：\n・{topic}",
+        "開場鉤子：開場直接點名講出這條記憶證據，讓對方聽得出你記得他說過/做過的事；只能講證據裡寫的事實，不准自己補細節或編故事。",
+    ]
+
+
+def _render_life(topic, m: DJMaterials) -> list[str]:
+    return [
+        f"【你熟悉他的生活】最近生活：\n・{topic}",
+        random.choice(m.empathy_hooks),
+    ]
+
+
+def _render_interest(topic, m: DJMaterials) -> list[str]:
+    return [
+        f"【你熟悉他的生活】在場興趣：\n・{topic}",
+        random.choice(m.empathy_hooks),
+    ]
+
+
+def _render_callback(topic, m: DJMaterials) -> list[str]:
+    return [
+        f"【你熟悉他的生活】他之前說過要做的事：\n・{topic}",
+        "開場鉤子：點名順口關心這件事後來怎麼樣了，像老朋友隨口問一句；只能講素材裡寫的事，不准自己補細節、不准替他回答。",
+    ]
+
+
+def _render_activity(topic, m: DJMaterials) -> list[str]:
+    return [
+        f"【你熟悉他的生活】在場的人現在的 Discord 動態：\n・{topic}",
+        "開場鉤子：像注意到朋友正在幹嘛順口一提（例如邊打遊戲邊聽這首），再帶進歌；只能講素材裡寫的遊戲名/狀態文字，不准猜遊戲內容、劇情或他玩得怎樣，狀態文字看不懂就照念、不解讀。",
+    ]
+
+
+def _render_emotional_highlight(topic, m: DJMaterials) -> list[str]:
+    return [
+        f"你（機器人自己）記得的一個瞬間：\n・{topic}",
+        "開場鉤子：這是你自己的記憶與反應，可以用第一人稱提起這個瞬間，不是在講聽眾的事。",
+    ]
+
+
+def _render_news(topic, m: DJMaterials) -> list[str]:
+    return [
+        f"最新時事消息：\n・{topic}",
+        "開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。",
+    ]
+
+
+def _render_conversation(topic, m: DJMaterials) -> list[str]:
+    out = []
+    if m.conv_lines:
+        out.append("【你熟悉他的生活】頻道近期對話：\n" + '\n'.join(m.conv_lines))
+    out.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
+    return out
+
+
+def _render_revival(topic, m: DJMaterials) -> list[str]:
+    return [
+        "【你熟悉他的生活】剛剛大家聊過（原句）：\n" + "\n".join(m.revival_lines),
+        "串場方向：現在大家聊天告一段落，接回剛剛的話題延續一下，或丟個輕鬆的問題製造話題感，再帶進這首歌；只能用上面原句裡的內容，不准編造誰說了什麼、不准替人下結論。",
+    ]
+
+
+def _render_atmosphere(topic, m: DJMaterials) -> list[str]:
+    return [m.env, "開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。"]
+
+
+def _render_guide(topic, m: DJMaterials) -> list[str]:
+    from dj_gacha_narrator import pick_gacha_motivation
+    out = [f"導聆素材（查證過的真實資料，只能用這裡寫的事實）：\n{m.guide}"]
+    card = m.song_card
+    if isinstance(card, dict):
+        if card.get("lyric_hook") and isinstance(card["lyric_hook"], dict):
+            lh = card["lyric_hook"]
+            out.append(f"歌詞靈魂刺點：『{lh.get('quote')}』（{lh.get('subtext')}）")
+    gacha = pick_gacha_motivation(card, topic=topic)
+    if gacha:
+        out.append(gacha.instruction)
+        out.append("只能講上面素材裡寫的事實，不准自己補細節或編故事。")
+    else:
+        out.append("串場方向：把導聆素材濃縮成一兩句，點出這首歌耳朵該聽的地方；只能講素材裡寫的事實，不准自己補細節或編故事。")
+    return out
+
+
+MODES: dict[str, NarrationMode] = {
+    "revival": NarrationMode("revival", "forced", order=0, pick=_pick_revival, render=_render_revival),
+    "memory_match": NarrationMode("memory_match", "forced", order=1, pick=_pick_memory_match, render=_render_memory_match),
+    "song": NarrationMode("song", "forced", order=2, pick=_pick_song),
+    "life": NarrationMode("life", "gacha", render=_render_life, tts_emotion="upbeat"),
+    "interest": NarrationMode("interest", "gacha", render=_render_interest, tts_emotion="upbeat"),
+    "emotional_highlight": NarrationMode("emotional_highlight", "gacha", render=_render_emotional_highlight, tts_emotion="calm"),
+    "news": NarrationMode("news", "gacha", render=_render_news, tts_emotion="upbeat"),
+    "callback": NarrationMode("callback", "gacha", render=_render_callback, on_chosen="consume_callback"),
+    "activity": NarrationMode("activity", "gacha", render=_render_activity, tts_emotion="upbeat"),
+    "guide": NarrationMode("guide", "gacha", render=_render_guide),
+    "conversation": NarrationMode("conversation", "gacha", render=_render_conversation, on_chosen="consume_conversation"),
+    "atmosphere": NarrationMode("atmosphere", "gacha", render=_render_atmosphere, tts_emotion="calm"),
+    "quick": NarrationMode("quick", "gacha"),
+    "reason": NarrationMode(
+        "reason", "override", order=0,
+        override_when=lambda chosen, m: chosen in ("quick", "atmosphere") and bool(m.autopilot_reason),
+    ),
+}
+
+
+def tts_emotion_for(mode: str) -> str:
+    m = MODES.get(mode)
+    return m.tts_emotion if m else "normal"
+
+
+def choose_mode(materials: DJMaterials, store: TopicCooldownStore, rng=None) -> tuple[str | None, str]:
+    """決策鏈：forced（依 order）→ gacha（委派 select_mode）→ override。"""
+    for nm in sorted((x for x in MODES.values() if x.tier == "forced"), key=lambda x: x.order):
+        hit = nm.pick(materials, store)
+        if hit is not None:
+            topic, meme_id = hit
+            if topic is not None:
+                store.mark_used(topic, meme_id=meme_id)
+            return topic, nm.name
+
+    select_kwargs = dict(
+        present_members=materials.present_members,
+        has_conversation=materials.has_conversation,
+        emotional_highlights=materials.emotional_highlights,
+        news_items=materials.news_items,
+        callbacks=materials.callbacks,
+        activities=materials.activities,
+        has_guide=materials.has_guide and materials.focus != "topic",
+        exclude_modes=materials.exclude_modes,
+    )
+    if rng is not None:
+        select_kwargs["rng"] = rng
+    topic, mode = select_mode(materials.life, materials.interests, store, **select_kwargs)
+
+    for nm in sorted((x for x in MODES.values() if x.tier == "override"), key=lambda x: x.order):
+        if nm.override_when(mode, materials):
+            mode = nm.name
+            break
+
+    return topic, mode
+
+
+def plan_narration(materials: DJMaterials, store: TopicCooldownStore, rng=None) -> NarrationPlan:
+    topic, mode = choose_mode(materials, store, rng)
+    nm = MODES.get(mode)
+    return NarrationPlan(
+        mode=mode, topic=topic,
+        ctx_lines=nm.render(topic, materials) if nm else [],
+        tts_emotion=nm.tts_emotion if nm else "normal",
+        side_effects=[nm.on_chosen] if nm and nm.on_chosen else [],
+    )
+
+
+def downgrade(plan: NarrationPlan, mode: str, materials: DJMaterials) -> NarrationPlan:
+    nm = MODES[mode]
+    return NarrationPlan(
+        mode=mode, topic=None, ctx_lines=nm.render(None, materials),
+        tts_emotion=nm.tts_emotion, side_effects=[],
+    )
+
+
+def apply_side_effects(
+    plan: NarrationPlan, materials: DJMaterials, *,
+    conv_entries, heat_bank, callback_src, consume_callback,
+) -> NarrationPlan:
+    if "consume_conversation" in plan.side_effects and conv_entries:
+        try:
+            bank = heat_bank()
+            entries = [e for e in conv_entries if not bank.is_consumed(e)]
+            lines = [f"{e['speaker']}：「{e['text'][:25]}」" for e in entries]
+            if entries:
+                bank.mark_consumed(entries, time.time())
+                plan = replace(plan, ctx_lines=MODES["conversation"].render(
+                    plan.topic, replace(materials, conv_lines=lines)))
+            else:
+                plan = downgrade(plan, "quick", materials)  # 素材被搶光，不硬寫空對話串場
+        except Exception:
+            pass  # fail-open
+
+    if "consume_callback" in plan.side_effects:
+        _cb = callback_src.get(plan.topic)
+        if _cb:
+            try:
+                consume_callback(_cb[0], _cb[1])
+            except Exception as e:
+                logger.warning(f"⚠️ [DJ Callback] consume 失敗: {e}")
+
+    return plan
+
+
 def select_narration_mode(
     *,
     life,
@@ -140,10 +360,10 @@ def select_narration_mode(
     topic_store: TopicCooldownStore,
     present_members=None,
     has_conversation: bool = False,
-    has_prev_song: bool = False,
     emotional_highlights=None,
     news_items=None,
     callbacks=None,
+    activities=None,
     autopilot_reason: str = "",
     memory_evidence: str = "",
     has_guide: bool = False,
@@ -157,9 +377,9 @@ def select_narration_mode(
     優先序：記憶對歌（memory_evidence，在場者親口說過喜歡這首歌/歌手的
     具體證據，命中且沒冷卻中就直接勝出，不再進 select_mode）→ 其餘全部交給
     `dj_topic_selector.select_mode` 的扭蛋池（近期生活主角要在場、在場興趣、
-    情緒高光、新聞、guide/conversation/prev_song/atmosphere/quick，依各自有沒有
-    素材建池後加權隨機抽一個；真正的挑選邏輯在 `select_mode` 裡，這裡不重複
-    實作；has_guide=True 時 guide 才會進這輪的候選）。
+    情緒高光、新聞、在場者的 Discord 動態、guide/conversation/
+    atmosphere/quick，依各自有沒有素材建池後加權隨機抽一個；真正的挑選邏輯在
+    `select_mode` 裡，這裡不重複實作；has_guide=True 時 guide 才會進這輪的候選）。
 
     memory_evidence 命中時**不呼叫** `select_mode`——否則 life/interest
     話題會被白白 `mark_used` 冷卻掉，等於這輪沒講到卻先燒掉了下次的素材。
@@ -168,7 +388,7 @@ def select_narration_mode(
     Marvin 自己選歌才會算出 `_autopilot_pick_reason`；只在 select_mode
     選到 quick 或 atmosphere 這兩個「沒有具體話題可用」的墊底 fallback
     時才蓋掉，換成有憑有據的推薦理由（mode="reason"）——不搶 life/interest/
-    emotional_highlight/news/conversation/prev_song 這些已經挑到具體
+    emotional_highlight/news/conversation 這些已經挑到具體
     素材的 mode。
 
     回傳 (topic_text, mode)，跟 `select_mode` 的回傳形狀一致，mode
@@ -182,31 +402,16 @@ def select_narration_mode(
 
     exclude_modes（10/4）：同一首歌最近 2 次用過的 mode，memory_match 與扭蛋池都避開
     （見 dj_topic_selector.select_mode）。focus='song' 不受影響。
+
+    第 3 刀起為薄包裝：組 DJMaterials → choose_mode；移除見 TODOS.md。
     """
-    ev = (memory_evidence or "").strip()
-    if ev and "memory_match" not in exclude_modes and topic_store.is_cool(ev):
-        topic_store.mark_used(ev)
-        return ev, "memory_match"
-
-    if focus == "song":
-        return None, "song"
-
-    topic, mode = select_mode(
-        life,
-        interests,
-        topic_store,
-        present_members=present_members,
-        has_conversation=has_conversation,
-        has_prev_song=has_prev_song,
-        emotional_highlights=emotional_highlights,
-        news_items=news_items,
-        callbacks=callbacks,
-        has_guide=has_guide and focus != "topic",
-        exclude_modes=exclude_modes,
-    )
-    if autopilot_reason and mode in ("quick", "atmosphere"):
-        mode = "reason"
-    return topic, mode
+    return choose_mode(DJMaterials(
+        life=life, interests=interests, present_members=present_members,
+        has_conversation=has_conversation, emotional_highlights=emotional_highlights,
+        news_items=news_items, callbacks=callbacks, activities=activities,
+        autopilot_reason=autopilot_reason, memory_evidence=memory_evidence,
+        has_guide=has_guide, focus=focus, exclude_modes=exclude_modes,
+    ), topic_store)
 
 
 def pick_song_facet(
@@ -244,13 +449,11 @@ def pick_song_material(
     return rng.choice(pool)
 
 
-# [Step 5e 文件化] 見模組開頭「目前實際呼叫順序」第 5e 點——這段優先序目前
-# 只存在於 `_fetch_dj_interjection_raw` 的一連串 if/elif 裡（joke_bank
-# 冷卻時間戳讀寫、LLM 呼叫、TTS 生成都是 side effect，無法在不動那支方法
-# 的前提下抽成可 characterization test 的純函式），這裡先用一份唯讀常數
-# 把順序「寫下來」，讓下一個改動者不用重新讀一次整支方法才拼得出順序。
-# Phase B 真的搬動 `music_cog_dj_lyrics.py` 時，可以把這份常數換成真正
-# 驅動邏輯的來源（現在反過來，是靠讀 code 手動謄寫這份常數）。
+# [Step 5e 文件化] 見模組開頭「決策圖」——這段優先序目前只存在於
+# `_fetch_dj_interjection_raw` 的一連串 if/elif 裡（joke_bank 冷卻時間戳
+# 讀寫、LLM 呼叫、TTS 生成都是 side effect，無法在不動那支方法的前提下
+# 抽成可 characterization test 的純函式），這裡先用一份唯讀常數把順序
+# 「寫下來」，讓下一個改動者不用重新讀一次整支方法才拼得出順序。
 NARRATION_TEXT_CASCADE = (
     "joke_bank",        # 非熱聊 + 冷卻已過 + 下一首歌名拼音撞中 hook
     "quick_template",  # mode=="quick" 且以上都沒命中：本地固定模板，零 LLM

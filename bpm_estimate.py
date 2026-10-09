@@ -15,8 +15,6 @@ from pathlib import Path
 
 import numpy as np
 
-import memory_sandbox
-
 MIN_BPM = 60.0
 MAX_BPM = 200.0
 _OCTAVE_LO = 70.0
@@ -96,9 +94,7 @@ def read_bpm_store(path: str) -> dict:
 
 
 def write_bpm(path: str, video_id: str, bpm: float) -> None:
-    """寫單一 videoId 的 BPM 估計（合併既有檔）。沙盒模式 no-op（ephemeral）。"""
-    if memory_sandbox.active():
-        return
+    """寫單一 videoId 的 BPM 估計（合併既有檔）。"""
     p = Path(path)
     store = read_bpm_store(path)
     store[video_id] = {"bpm": bpm, "ts": time.time()}

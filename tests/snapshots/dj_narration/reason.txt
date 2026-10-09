@@ -1,0 +1,9 @@
+MODE_ARG=reason
+LLM_CALLED=True
+TTS_EMOTION=normal
+---CONTEXT---
+歌曲：測試歌手 - 測試歌
+點播者：Marvin推薦（點給大家）
+選這首的理由：這首是 Alice 點過的歌
+---TEXT---
+這是一句測試用的口白內容。

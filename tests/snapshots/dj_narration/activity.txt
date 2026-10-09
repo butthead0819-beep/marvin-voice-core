@@ -1,0 +1,11 @@
+MODE_ARG=activity
+LLM_CALLED=True
+TTS_EMOTION=upbeat
+---CONTEXT---
+歌曲：測試歌手 - 測試歌
+點播者：Alice
+【你熟悉他的生活】在場的人現在的 Discord 動態：
+・Alice 正在玩《Ball X Pit》
+開場鉤子：像注意到朋友正在幹嘛順口一提（例如邊打遊戲邊聽這首），再帶進歌；只能講素材裡寫的遊戲名/狀態文字，不准猜遊戲內容、劇情或他玩得怎樣，狀態文字看不懂就照念、不解讀。
+---TEXT---
+這是一句測試用的口白內容。

@@ -3,8 +3,6 @@ from __future__ import annotations
 import sqlite3
 import time
 
-import memory_sandbox
-
 _VALID_STATUSES = {"pending", "done", "cancelled"}
 _VALID_DIRECTIONS = {"inbound", "outbound"}
 
@@ -23,15 +21,13 @@ class TaskStore:
     def _connect(self) -> sqlite3.Connection:
         if self._con is not None:
             return self._con
-        return memory_sandbox.connect(self._db_path)
+        return sqlite3.connect(self._db_path)
 
     def _release(self, con: sqlite3.Connection) -> None:
         if self._con is None:
             con.close()
 
     def _init_db(self) -> None:
-        if memory_sandbox.active():
-            return  # 沙盒：正本 schema 已存在、唯讀連線不能建表
         con = self._connect()
         try:
             con.execute("""
@@ -78,8 +74,6 @@ class TaskStore:
         speaker: str = "",
         due_date: float | None = None,
     ) -> int:
-        if memory_sandbox.active():
-            return 0  # 沙盒：寫入 no-op（ephemeral，斷線丟棄）
         con = self._connect()
         try:
             cur = con.execute(
@@ -121,8 +115,6 @@ class TaskStore:
             self._release(con)
 
     def update_text(self, task_id: int, new_text: str) -> None:
-        if memory_sandbox.active():
-            return
         con = self._connect()
         try:
             con.execute("UPDATE tasks SET text = ? WHERE id = ?", (new_text, task_id))
@@ -133,8 +125,6 @@ class TaskStore:
     def update_status(self, task_id: int, status: str) -> None:
         if status not in _VALID_STATUSES:
             raise ValueError(f"Invalid status: {status!r}. Must be one of {_VALID_STATUSES}")
-        if memory_sandbox.active():
-            return
         con = self._connect()
         try:
             con.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))

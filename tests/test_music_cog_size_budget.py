@@ -43,7 +43,7 @@ SELF_ATTR_BUDGET = 58
 NEW_METHOD_MAX = 40
 FROZEN_METHODS = {  # 已超過 NEW_METHOD_MAX 的既有大 method：只准縮
     "_handle_voice_music_command": 228,
-    "_stream_loop": 76,
+    "_stream_loop": 66,
     "_resolve_yt_query": 75,
     "_stream_loop_prepare_and_announce": 63,
     "__init__": 55,

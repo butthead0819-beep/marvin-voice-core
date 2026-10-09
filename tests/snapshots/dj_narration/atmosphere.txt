@@ -1,0 +1,10 @@
+MODE_ARG=atmosphere
+LLM_CALLED=True
+TTS_EMOTION=calm
+---CONTEXT---
+歌曲：測試歌手 - 測試歌
+點播者：Alice
+環境：台北 · 秋天 · 週四 · 午後
+開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。
+---TEXT---
+這是一句測試用的口白內容。

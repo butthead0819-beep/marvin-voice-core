@@ -85,11 +85,3 @@ def test_write_bpm_merges_existing_entries(tmp_path):
 def test_read_bpm_store_missing_file_returns_empty(tmp_path):
     path = tmp_path / "nope.json"
     assert read_bpm_store(str(path)) == {}
-
-
-def test_write_bpm_noop_in_memory_sandbox(tmp_path, monkeypatch):
-    import memory_sandbox
-    monkeypatch.setattr(memory_sandbox, "active", lambda: True)
-    path = tmp_path / "song_bpm.json"
-    write_bpm(str(path), "abc123", 128.0)
-    assert not path.exists()

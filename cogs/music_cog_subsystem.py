@@ -8,10 +8,6 @@ MusicSubsystemMixin — MusicCog 的電台（radio）與 stream loop 生命週�
 _extract_song_metadata / _extract_song_cover / _extract_dominant_color /
 _delayed_cleanup / _publish_now_playing_state / _cancel_stream_task 等全部
 沿用原本的 self 存取，行為零改動。
-
-_get_puck_client() 是 music_cog.py 模組層級的純函式（跟主檔核心區塊共用，非
-self 方法），這裡在方法內 local import 取用，避免跟主檔互相 import 造成循環
-（同一招在 music_cog_commands.py 對 cogs.voice_views.PlayControlView 已用過）。
 """
 from __future__ import annotations
 
@@ -20,8 +16,12 @@ import datetime
 import logging
 import os
 import time
+import uuid
 
 import discord
+
+from dj_narration_log import log_song_play, log_song_skip
+from music_memory import extract_video_id
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,42 @@ class MusicSubsystemMixin:
             vc.stt_logger.info(f"[音樂控制→{speaker}] 指令=resume→啟動串流 (plan12=True)")
         return "▶️ 沒東西暫停，那我自己挑歌接著放。"
 
+    def _mark_song_started(self, info: dict) -> float:
+        """🎯 [Skip 訊號] 一首歌真正開播的單一簽收點：歸零 skip 旗標、戳開播時間戳、
+        補推 HUD 進度條快照、把 info 上暫存的口白歸屬（_narration_id/_narration_mode，
+        見 music_cog_tail_dj._attach_narration）簽收進 self._current_narration，
+        並記一筆 song_plays.jsonl 供日後配對 skip。回傳開播時間戳（供呼叫端沿用）。"""
+        self._current_song_skipped = False
+        song_start_time = time.time()
+        self._current_stream_start_time = song_start_time
+        self._republish_queue_snapshot()
+        nid = info.pop('_narration_id', None)
+        mode = info.pop('_narration_mode', None)
+        self._current_play_id = uuid.uuid4().hex
+        self._current_play_info = info
+        self._current_narration = (nid, mode)
+        log_song_play({
+            "type": "play", "ts": song_start_time, "play_id": self._current_play_id,
+            "video_id": extract_video_id(info.get('webpage_url') or info.get('url') or ''),
+            "narration_id": nid, "mode": mode, "requested_by": info.get('requested_by'),
+        })
+        return song_start_time
+
+    def _log_song_skip(self, cur: dict) -> None:
+        """記一筆 song_skips.jsonl：只有「正在播的那首」被 skip 才帶 play_id/口白歸屬/
+        實際播了多久（elapsed_s），不然全留 None（見 _mark_song_started 設的
+        self._current_play_info 身分比對）。"""
+        now = time.time()
+        started = getattr(self, '_current_stream_start_time', None)
+        same_play = getattr(self, '_current_play_info', None) is cur
+        nid, mode = getattr(self, '_current_narration', (None, None)) if same_play else (None, None)
+        log_song_skip({
+            "ts": now, "play_id": getattr(self, '_current_play_id', None) if same_play else None,
+            "video_id": extract_video_id(cur.get('webpage_url') or cur.get('url') or ''),
+            "elapsed_s": round(now - started, 1) if (same_play and started) else None,
+            "narration_id": nid, "mode": mode, "requested_by": cur.get('requested_by'),
+        })
+
     def _cancel_stream_task(self, reason: str) -> None:
         """統一 stream_task.cancel() 出口 + 記錄呼叫來源。
 
@@ -159,10 +195,6 @@ class MusicSubsystemMixin:
         self._radio_source = None
         if vc is not None and vc._mixer is not None:
             vc._mixer.clear_music()
-        from cogs.music_cog import _get_puck_client
-        puck_client = _get_puck_client()
-        if puck_client is not None:
-            asyncio.create_task(self._fire_puck_stop(puck_client))
 
     async def _radio_volume_fade_loop(self):
         """📻 動態音量漸變：有人說話 → duck to 1%；靜默 1.5s 後 → fade up to 10%。"""
