@@ -369,11 +369,11 @@ def _hot_vc(members):
 
 @pytest.mark.asyncio
 async def test_revival_bank_preloaded_skips_gacha_and_uses_original_lines(monkeypatch):
-    """話題庫已有存貨（先前熱聊時存的）→ 這輪直接 revival，不呼叫 select_narration_mode。"""
+    """話題庫已有存貨（先前熱聊時存的）→ 這輪直接 revival，不進扭蛋（select_mode）。"""
     import time
     import dj_narration_orchestrator
-    spy = MagicMock(wraps=dj_narration_orchestrator.select_narration_mode)
-    monkeypatch.setattr(dj_narration_orchestrator, "select_narration_mode", spy)
+    spy = MagicMock(wraps=dj_narration_orchestrator.select_mode)
+    monkeypatch.setattr(dj_narration_orchestrator, "select_mode", spy)
 
     cog = _make_cog()
     cog._vc = MagicMock(return_value=_hot_vc(["大肚"]))
@@ -442,10 +442,10 @@ async def test_short_text_present_for_autopilot_without_requester_credit():
 
 @pytest.mark.asyncio
 async def test_not_hot_and_empty_bank_still_uses_gacha(monkeypatch):
-    """不熱、話題庫也是空的 → 照舊走扭蛋池（select_narration_mode 有被呼叫）。"""
+    """不熱、話題庫也是空的 → 照舊走扭蛋池（select_mode 有被呼叫）。"""
     import dj_narration_orchestrator
-    spy = MagicMock(wraps=dj_narration_orchestrator.select_narration_mode)
-    monkeypatch.setattr(dj_narration_orchestrator, "select_narration_mode", spy)
+    spy = MagicMock(wraps=dj_narration_orchestrator.select_mode)
+    monkeypatch.setattr(dj_narration_orchestrator, "select_mode", spy)
 
     _no_quick(monkeypatch)
     cog = _make_cog()

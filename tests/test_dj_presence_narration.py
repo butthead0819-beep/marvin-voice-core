@@ -38,7 +38,7 @@ async def test_dj_interjection_activity_context(tmp_path):
 
     with patch.object(cog, "_dj_clean_name", return_value=("歌曲", "歌手")), \
          patch(
-             "dj_narration_orchestrator.select_narration_mode",
+             "dj_narration_orchestrator.choose_mode",
              return_value=("小明 正在玩《Ball X Pit》", "activity"),
          ):
         info = {"title": "歌曲 - 歌手", "uploader": "歌手", "requested_by": "Alice", "url": "https://example/x"}
@@ -54,7 +54,7 @@ async def test_dj_interjection_activity_context(tmp_path):
 
 @pytest.mark.asyncio
 async def test_dj_interjection_feeds_voice_members_activity_into_gacha(tmp_path):
-    """呼叫端接線：語音頻道在場成員的「正在玩」要真的進到 select_narration_mode 的 activities。"""
+    """呼叫端接線：語音頻道在場成員的「正在玩」要真的進到 choose_mode 的 activities。"""
     from types import SimpleNamespace
 
     import discord
@@ -91,9 +91,9 @@ async def test_dj_interjection_feeds_voice_members_activity_into_gacha(tmp_path)
 
     selector = MagicMock(return_value=(None, "quick"))
     with patch.object(cog, "_dj_clean_name", return_value=("歌曲", "歌手")), \
-         patch("dj_narration_orchestrator.select_narration_mode", selector):
+         patch("dj_narration_orchestrator.choose_mode", selector):
         info = {"title": "歌曲 - 歌手", "uploader": "歌手", "requested_by": "Alice", "url": "https://example/x"}
         await cog._fetch_dj_interjection_raw(info)
 
     assert selector.called
-    assert selector.call_args.kwargs["activities"] == ["狗與露 正在玩《Ball X Pit》"]
+    assert selector.call_args.args[0].activities == ["狗與露 正在玩《Ball X Pit》"]

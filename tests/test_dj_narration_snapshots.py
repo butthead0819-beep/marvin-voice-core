@@ -132,7 +132,7 @@ def _make_info(**overrides) -> dict:
 async def test_snapshot_life(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info()
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=("Alice 最近在學日文", "life")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("life", _render_snapshot("life", bot, result))
@@ -142,7 +142,7 @@ async def test_snapshot_life(tmp_path, monkeypatch):
 async def test_snapshot_interest(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info()
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=("Alice 喜歡登山", "interest")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("interest", _render_snapshot("interest", bot, result))
@@ -152,7 +152,7 @@ async def test_snapshot_interest(tmp_path, monkeypatch):
 async def test_snapshot_emotional_highlight(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info()
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=("那天大家一起唱到破音", "emotional_highlight")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("emotional_highlight", _render_snapshot("emotional_highlight", bot, result))
@@ -162,7 +162,7 @@ async def test_snapshot_emotional_highlight(tmp_path, monkeypatch):
 async def test_snapshot_news(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info()
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=("颱風明天轉向", "news")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("news", _render_snapshot("news", bot, result))
@@ -180,7 +180,7 @@ async def test_snapshot_callback(tmp_path, monkeypatch):
             {"Alice 之前說要買叉子": ("Alice", cb_item)},
         ),
     )
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=("Alice 之前說要買叉子", "callback")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("callback", _render_snapshot("callback", bot, result))
@@ -191,7 +191,7 @@ async def test_snapshot_callback(tmp_path, monkeypatch):
 async def test_snapshot_activity(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info()
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=("Alice 正在玩《Ball X Pit》", "activity")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("activity", _render_snapshot("activity", bot, result))
@@ -201,7 +201,7 @@ async def test_snapshot_activity(tmp_path, monkeypatch):
 async def test_snapshot_memory_match(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info()
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=("Alice 說過最愛這首", "memory_match")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("memory_match", _render_snapshot("memory_match", bot, result))
@@ -211,7 +211,7 @@ async def test_snapshot_memory_match(tmp_path, monkeypatch):
 async def test_snapshot_atmosphere(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info()
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=(None, "atmosphere")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("atmosphere", _render_snapshot("atmosphere", bot, result))
@@ -221,7 +221,7 @@ async def test_snapshot_atmosphere(tmp_path, monkeypatch):
 async def test_snapshot_quick(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info()
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=(None, "quick")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("quick", _render_snapshot("quick", bot, result))
@@ -235,7 +235,7 @@ async def test_snapshot_guide(tmp_path, monkeypatch):
         cog, "_dj_song_material",
         AsyncMock(return_value=(None, "這首歌的導聆：前奏的鋼琴是重點。")),
     )
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=(None, "guide")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("guide", _render_snapshot("guide", bot, result))
@@ -251,7 +251,7 @@ async def test_snapshot_conversation(tmp_path, monkeypatch):
     ])
     fake_bank = _make_fake_bank()
     monkeypatch.setattr(cog, "_dj_heat_bank", lambda: fake_bank)
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=(None, "conversation")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("conversation", _render_snapshot("conversation", bot, result))
@@ -274,11 +274,11 @@ async def test_snapshot_conversation_downgrade(tmp_path, monkeypatch):
     fake_bank.mark_consumed = MagicMock()
     monkeypatch.setattr(cog, "_dj_heat_bank", lambda: fake_bank)
 
-    def _select_side_effect(**kwargs):
+    def _select_side_effect(*args, **kwargs):
         state["after_select"] = True
         return (None, "conversation")
 
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                side_effect=_select_side_effect):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("conversation_downgrade", _render_snapshot("conversation_downgrade", bot, result))
@@ -290,7 +290,7 @@ async def test_snapshot_reason(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info(requested_by="Marvin推薦（點給大家）")
     monkeypatch.setattr(cog, "_autopilot_pick_reason", lambda info: "這首是 Alice 點過的歌")
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=(None, "reason")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("reason", _render_snapshot("reason", bot, result))
@@ -304,7 +304,7 @@ async def test_snapshot_song(tmp_path, monkeypatch):
     # 給導聆稿，song 分支才有素材可抽（沒素材會降級成 quick，等於沒測到 song）
     monkeypatch.setattr(cog, "_dj_song_material",
                         AsyncMock(return_value=(None, "這首歌的導聆：前奏的鋼琴是重點。")))
-    with patch("dj_narration_orchestrator.select_narration_mode",
+    with patch("dj_narration_orchestrator.choose_mode",
                return_value=(None, "song")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("song", _render_snapshot("song", bot, result))
@@ -317,7 +317,7 @@ async def test_snapshot_revival(tmp_path, monkeypatch):
     fake_bank = _make_fake_bank(take_return=["Bob：「今天好累」", "Alice：「我也是」"])
     monkeypatch.setattr(cog, "_dj_heat_bank", lambda: fake_bank)
     with patch(
-        "dj_narration_orchestrator.select_narration_mode",
+        "dj_narration_orchestrator.select_mode",
         MagicMock(side_effect=AssertionError("revival 不該呼叫扭蛋")),
     ):
         result = await cog._fetch_dj_interjection_raw(info)

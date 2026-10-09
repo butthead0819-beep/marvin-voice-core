@@ -107,7 +107,7 @@ async def test_dj_interjection_callback_context_and_consume(tmp_path):
     cb_item = {"text": "做伏地挺身", "life": True, "ts": 100}
     with patch.object(cog, "_present_callbacks", return_value=(["Alice 之前說要做伏地挺身"], {"Alice 之前說要做伏地挺身": ("Alice", cb_item)})), \
          patch.object(cog, "_dj_clean_name", return_value=("歌曲", "歌手")), \
-         patch("dj_narration_orchestrator.select_narration_mode", return_value=("Alice 之前說要做伏地挺身", "callback")):
+         patch("dj_narration_orchestrator.choose_mode", return_value=("Alice 之前說要做伏地挺身", "callback")):
         
         info = {"title": "歌曲 - 歌手", "uploader": "歌手", "requested_by": "Alice", "url": "https://example/x"}
         await cog._fetch_dj_interjection_raw(info)

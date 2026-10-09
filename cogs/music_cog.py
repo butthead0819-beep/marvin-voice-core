@@ -103,18 +103,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
     _MUSIC_CMD_DEDUP_WINDOW = 5.0
     _MUSIC_SAME_SONG_WINDOW = 30.0  # 同 speaker + 同正規化點歌字串：擋同一句重派（喚醒+無喚醒）
 
-    # dj_topic_selector.select_mode() 的 mode → tts_engine 情緒（見 _EMOTION_ADJUST）：
-    # 只調 rate/pitch（edge-tts 沒有真情緒 style 可用）。沒列到的 mode（quick/
-    # conversation/reason 等）用預設 "normal"，不特別調。
-    _DJ_MODE_TO_TTS_EMOTION = {
-        "life": "upbeat",
-        "interest": "upbeat",
-        "activity": "upbeat",
-        "atmosphere": "calm",
-        "emotional_highlight": "calm",
-        "news": "upbeat",
-    }
-
     def __init__(self, bot):
         self.bot = bot
         # 跨切狀態 — VoiceController 透過 proxy property 讀寫這裡
