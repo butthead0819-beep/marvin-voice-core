@@ -124,7 +124,9 @@ def _vc_with_player(player):
 
 
 @pytest.mark.parametrize("call", ["arm_mixer", "play"])
-def test_waits_for_stopped_player_thread_before_play(call):
+def test_waits_for_stopped_player_thread_before_play(call, monkeypatch):
+    # join 上限放寬：舊 thread 結束 join 就返回，不拖慢；只防 CI 排程延遲 >0.1s 時假紅（10/9 PR#113）
+    monkeypatch.setattr(DiscordPlaybackDevice, "_OLD_PLAYER_JOIN_S", 5.0)
     old = _OldPlayer(0.03)
     old.start()
     vc, alive_at_play = _vc_with_player(old)
