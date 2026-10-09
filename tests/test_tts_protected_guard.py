@@ -79,7 +79,6 @@ class _SummonHarness(ConnectionMixin, PlaybackMixin):
         self._pending_greeting_task = None
         self.active_text_channel = None
         self.stt_logger = MagicMock()
-        self._maybe_apply_daily_persona_schedule = AsyncMock()
         self._maybe_run_daily_review = AsyncMock()
         self.temperature_monitor = None
         self._tts_interrupted = False

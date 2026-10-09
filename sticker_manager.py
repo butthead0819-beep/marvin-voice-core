@@ -36,8 +36,8 @@ FALLBACK_CHAIN: dict[str, list[str]] = {
 }
 
 
-def infer_mood(response_text: str, toxicity: int, user_emotion: str = "neutral") -> str:
-    """根據 Marvin 的 DNA 毒性值、說話者情緒與回應文字推斷此次回應的 mood key。"""
+def infer_mood(response_text: str, user_emotion: str = "neutral") -> str:
+    """根據說話者情緒與回應文字推斷 mood key（人格固定為厭世基調）。"""
     text_lower = response_text.lower()
 
     # 規則 1：問號多 → thinking
@@ -46,21 +46,14 @@ def infer_mood(response_text: str, toxicity: int, user_emotion: str = "neutral")
 
     # 規則 2：說話者情緒對應
     if user_emotion in ("frustrated", "angry"):
-        return "contempt" if toxicity >= 6 else "sad"
-    if user_emotion == "excited":
-        return "excited" if toxicity <= 5 else "contempt"
-
-    # 規則 3：DNA 毒性 → 基底情緒
-    if toxicity >= 8:
-        # 看回應是否有強攻擊性詞彙
-        if re.search(r"(滾|廢物|白痴|蠢|算了|懶得|無聊|閉嘴)", text_lower):
-            return "angry"
         return "contempt"
-    if toxicity >= 5:
-        return "neutral"
-    if toxicity >= 3:
-        return "happy"
-    return "love"
+    if user_emotion == "excited":
+        return "contempt"
+
+    # 規則 3：看回應是否有強攻擊性詞彙
+    if re.search(r"(滾|廢物|白痴|蠢|算了|懶得|無聊|閉嘴)", text_lower):
+        return "angry"
+    return "contempt"
 
 
 class StickerManager:

@@ -53,25 +53,6 @@ def barge_in_shielded(until, now: float) -> bool:
     return isinstance(until, (int, float)) and now < until
 
 
-def _shift_percent_string(value: "str | None", offset: int, clamp: tuple[int, int] = (-60, 60)) -> str:
-    """把 '-20%' 這種 edge-tts rate 字串疊加 offset 百分點，clamp 後回傳同格式字串。"""
-    try:
-        base = int(str(value).rstrip("%")) if value else 0
-    except ValueError:
-        base = 0
-    shifted = max(clamp[0], min(clamp[1], base + offset))
-    return f"{shifted:+d}%"
-
-
-def _shift_hz_string(value: "str | None", offset: int, clamp: tuple[int, int] = (-50, 50)) -> str:
-    """把 '-15Hz' 這種 edge-tts pitch 字串疊加 offset Hz，clamp 後回傳同格式字串。"""
-    try:
-        base = int(str(value).rstrip("Hz")) if value else 0
-    except ValueError:
-        base = 0
-    shifted = max(clamp[0], min(clamp[1], base + offset))
-    return f"{shifted:+d}Hz"
-
 
 class PlaybackMixin:
     # ☢️ mixer 自癒重武裝的最小間隔（見 _ensure_mixer_playing 的 _after）。真故障自癒本來
@@ -335,29 +316,6 @@ class PlaybackMixin:
             return out
         return self._EMOTION_TTS_PARAMS.get(emotion_tag, self._EMOTION_TTS_PARAMS["neutral"])
 
-    def _apply_persona_mood_tts_offset(self, tp: dict[str, str]) -> dict[str, str]:
-        """疊加人格週排程 mood（bot.router.dna['persona_tag']）的 rate/pitch offset。
-
-        offset 定義在 personas/moods/persona_behavior_map.yaml（見 rate_offset_percent /
-        pitch_offset_hz），讓 Marvin 目前的排班人格（躁鬱/虛無/邏輯關機…）連動 TTS 表現，
-        不只影響 prompt 語氣。查無 router/dna/persona_tag 一律不調整，回傳原值。
-        """
-        router = getattr(self.bot, "router", None)
-        dna = getattr(router, "dna", None)
-        persona_tag = dna.get("persona_tag") if isinstance(dna, dict) else None
-        if not persona_tag:
-            return tp
-        from marvin_prompts import get_persona_modifiers
-        modifiers = get_persona_modifiers(persona_tag)
-        rate_offset = int(modifiers.get("rate_offset_percent", 0) or 0)
-        pitch_offset = int(modifiers.get("pitch_offset_hz", 0) or 0)
-        if rate_offset == 0 and pitch_offset == 0:
-            return tp
-        out = dict(tp)
-        out["rate"] = _shift_percent_string(tp.get("rate"), rate_offset)
-        out["pitch"] = _shift_hz_string(tp.get("pitch"), pitch_offset)
-        return out
-
     async def _stream_tts_to_mixer(self, text: str, *, force_macos: bool,
                                    emotion_tag: str, voice: str | None, layer: int = 1,
                                    on_first_frame=None, target_user: str | None = None,
@@ -399,8 +357,6 @@ class PlaybackMixin:
                 if tp.get("volume") is None and tc.volume_offset_percent != 0.0:
                     tp["volume"] = edge_params["volume"]
                 spatial_control = tc.audio_effects
-
-        tp = self._apply_persona_mood_tts_offset(tp)
 
         if not hasattr(self, "_spatial_renderer") or self._spatial_renderer is None:
             try:

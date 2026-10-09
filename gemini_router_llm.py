@@ -838,7 +838,7 @@ class GeminiRouterLLMMixin:
         target_speakers = present_speakers(speaker, online_members)
 
         _dna = {**self.dna, '_session_calls': self._session_call_count}
-        system_prompt = self.prompt_manager.get_instruction("fast_awakening", dna=_dna, speaker=target_speakers, memory_manager=self.memory, temp_toxicity_override=self.temp_toxicity_override)
+        system_prompt = self.prompt_manager.get_instruction("fast_awakening", dna=_dna, speaker=target_speakers, memory_manager=self.memory)
 
         # 🚀 [Context] 注入最近對話歷史，說話者自己的句子加星號標記供 LLM 識別指稱來源
         history_str = ""

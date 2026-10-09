@@ -1,6 +1,4 @@
 from personality_config import (
-    adjust_axis,
-    apply_character_preset,
     build_personality_prompt_context,
     normalize_personality_state,
 )
@@ -11,36 +9,26 @@ def test_normalize_personality_state_adds_axes_and_legacy_fields():
     state = normalize_personality_state({"toxicity": 5, "current_game": "none"})
 
     assert state["character"] == "marvin"
-    assert state["toxicity"] == 5
+    assert "toxicity" not in state
     assert state["current_game"] == "none"
     assert set(state["axes"]) >= {"oppression", "resignation", "compassion"}
 
 
-def test_adjust_axis_clamps_value():
-    state = normalize_personality_state({})
+def test_normalize_personality_state_forces_persona_tag_to_preset_and_strips_stale_fields():
+    state = normalize_personality_state({
+        "persona_tag": "宇宙之泪的詩聖",
+        "toxicity": 1,
+        "schedule_applied_date": "2026-10-08",
+    })
 
-    state = adjust_axis(state, "compassion", 2.0)
-    assert state["axes"]["compassion"] == 1.0
-
-    state = adjust_axis(state, "compassion", -5.0)
-    assert state["axes"]["compassion"] == 0.0
-
-
-def test_apply_character_preset_preserves_current_game():
-    state = apply_character_preset({"current_game": "Apex Legends"}, "deadpan_operator")
-
-    assert state["character"] == "deadpan_operator"
-    assert state["current_game"] == "Apex Legends"
-    assert state["axes"]["directness"] >= 0.9
+    assert state["persona_tag"] == "厭世機器人馬文"
+    assert "toxicity" not in state
+    assert "schedule_applied_date" not in state
 
 
 def test_apply_character_preset_switches_prompt_context():
-    """switch_character_preset()（gemini_router_content.py）本質上就是
-    apply_character_preset() + save_dna()；這裡驗證前半段確實會反映到
-    build_personality_prompt_context() 的輸出裡，因為該 router 方法目前
-    沒有任何呼叫點、從未被驗證過。"""
-    marvin_state = apply_character_preset({}, "marvin")
-    marmo_state = apply_character_preset({}, "marmo")
+    marvin_state = normalize_personality_state({"character": "marvin"})
+    marmo_state = normalize_personality_state({"character": "marmo"})
 
     marvin_prompt = build_personality_prompt_context(marvin_state)
     marmo_prompt = build_personality_prompt_context(marmo_state)
