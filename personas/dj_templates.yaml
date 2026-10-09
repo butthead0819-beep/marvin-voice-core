@@ -14,42 +14,33 @@ empathy_hooks:
 
 
 autopilot_phrases:
-  # 注意：這裡全是 Marvin 自己挑歌（autopilot），不是{who}真的點播，
-  # 措辭一律用「希望/猜/為你」這種機器人主動推薦的說法，不能說成「{who}點的」
-  # （2026-08-31 修：講成「點的」等於考驗使用者記憶——萬一使用者根本沒點過呢）。
   personal:
-    - "{who}應該喜歡這首，{artist}的{title}"
-    - "希望{who}喜歡，{artist}演唱的{title}"
-    - "馬文特別為{who}帶來，{artist}的{title}"
-    - "這首{title}是給{who}的，{artist}唱的"
+  # 注意：這裡全是 Marvin 自己挑歌（autopilot），不是{who}真的點播，不能說成「{who}點的」
+  # （2026-08-31 修：等於考驗使用者記憶）。10/9 使用者定句型「{who}會喜歡這首…」，不用「我/馬文覺得」主觀說法。
+    - "{who}會喜歡這首，{artist}的{title}"
+    - "{who}會喜歡這首{artist}演唱的{title}"
+    - "這首{title}適合{who}，{artist}唱的"
   personal_no_artist:
-    - "{who}應該喜歡，《{title}》"
-    - "希望{who}喜歡這首，《{title}》"
-    - "馬文特別為{who}帶來《{title}》"
+    - "{who}會喜歡這首《{title}》"
+    - "這首《{title}》適合{who}聽"
   group:
-    - "這首大家應該都喜歡，{artist}的{title}"
-    - "為大家挑的，{artist}演唱的{title}"
-    - "馬文覺得大家都喜歡這首，{artist}的{title}"
+    - "大家會喜歡這首，{artist}的{title}"
+    - "這首適合大家，{artist}演唱的{title}"
   group_no_artist:
-    - "這首大家應該都喜歡，《{title}》"
-    - "馬文為大家挑的，《{title}》"
-  # long_tail：在場者點過但久沒播 → 講「重新發現」的理由
+    - "大家會喜歡這首《{title}》"
+    - "這首《{title}》適合大家一起聽"
   long_tail:
-    - "{who}好久沒聽《{title}》了，翻出來"
-    - "從{who}的塵封歌單挖出《{title}》"
-    - "{who}，《{title}》冰很久沒聽，解凍一下"
-  # discovery：沒人點過的新歌 → 講「挖新歌」的理由
-  # 「沒聽過」是斷言使用者自己的記憶（萬一在別的地方聽過呢），只能講系統這邊
-  # 觀察到的事實（沒人點過），改成保留語氣的「比較少聽」。
+  # long_tail：在場者點過但有陣子沒播 → 講「重新聽」的理由
+    - "{who}有陣子沒聽《{title}》了，再放一次"
+    - "{who}點過的《{title}》，有陣子沒聽了"
   discovery:
-    - "挖到《{title}》，{who}應該比較少聽過"
-    - "{who}，給你首新的《{title}》"
-    - "這首《{title}》是挖給{who}的新貨"
-  # spotlight cover：以 {who} 常點的 {anchor} 為錨 → 講「你愛 anchor，給你個版本」
+  # discovery：沒人點過的新歌；不斷言使用者沒聽過，只講「新歌、風格相近」
+    - "{who}會喜歡這首新歌《{title}》"
+    - "給{who}一首風格相近的新歌，《{title}》"
   spotlight_anchor:
-    - "{who}愛{anchor}，給你個《{title}》"
+  # spotlight cover：以 {who} 常點的 {anchor} 為錨
+    - "{who}愛{anchor}，也會喜歡這首《{title}》"
     - "{who}常點{anchor}，換首《{title}》"
-    - "知道{who}喜歡{anchor}，這首《{title}》你會愛"
 
 quick_segue:
   default:

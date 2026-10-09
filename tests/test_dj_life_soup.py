@@ -388,7 +388,7 @@ def test_dj_prompt_encourages_specific_personal_callback():
     blk = _dj_prompt_block()
     assert "個人化" in blk
     assert "具體" in blk
-    assert "記得我" in blk, "prompt 應引導營造『DJ 真的記得聽眾』的具體感"
+    assert "被記住的感覺" in blk, "prompt 應引導營造『DJ 真的記得聽眾』的具體感"
 
 
 # ── 5. TTS 情緒微調：mode → emotion 接進 generate_audio（2026-08-21）────────
@@ -426,68 +426,4 @@ async def test_atmosphere_mode_uses_calm_emotion(monkeypatch):
     cog = _make_cog(life_cores=[])
     await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
     assert _emotion_kwarg(cog) == "calm"
-
-
-# ── 6. 情緒高光（emotional_highlights）接進 DJ 話題選擇（2026-08-21）─────────
-
-def _with_highlight(cog, requester, moment, valence="warm", age_s=3600.0):
-    cog.bot.router.memory.get_player_memory = MagicMock(return_value={
-        "emotional_highlights": [
-            {"moment": moment, "valence": valence, "timestamp": time.time() - age_s},
-        ],
-    })
-
-
-@pytest.mark.asyncio
-async def test_emotional_highlight_used_when_no_life_or_interest(monkeypatch):
-    _weights(monkeypatch, emotional_highlight=1.0)
-    cog = _make_cog(life_cores=[])
-    _with_highlight(cog, "大肚", "你說覺得被理解的那句話")
-    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
-    ctx = _ctx_str(cog)
-    assert "你說覺得被理解的那句話" in ctx
-    assert "第一人稱" in ctx and "機器人" in ctx
-
-
-@pytest.mark.asyncio
-async def test_emotional_highlight_uses_calm_emotion(monkeypatch):
-    _weights(monkeypatch, emotional_highlight=1.0)
-    cog = _make_cog(life_cores=[])
-    _with_highlight(cog, "大肚", "你說覺得被理解的那句話")
-    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
-    assert _emotion_kwarg(cog) == "calm"
-
-
-@pytest.mark.asyncio
-async def test_annoyed_valence_excluded_from_dj_material(monkeypatch):
-    """annoyed 是 Marvin 對使用者的負面反應，串場裡講出來很怪——不該被當素材。"""
-    _weights(monkeypatch, emotional_highlight=1.0, atmosphere=1e-9)
-    cog = _make_cog(life_cores=[])
-    _with_highlight(cog, "大肚", "你放的歌洗腦到讓我很煩", valence="annoyed")
-    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
-    ctx = _ctx_str(cog)
-    assert "你放的歌洗腦到讓我很煩" not in ctx
-
-
-@pytest.mark.asyncio
-async def test_stale_emotional_highlight_excluded(monkeypatch):
-    """超過 8 天的情緒高光太舊，不當新鮮素材。"""
-    _weights(monkeypatch, emotional_highlight=1.0, atmosphere=1e-9)
-    cog = _make_cog(life_cores=[])
-    _with_highlight(cog, "大肚", "很久以前的瞬間", age_s=9 * 86400.0)
-    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
-    ctx = _ctx_str(cog)
-    assert "很久以前的瞬間" not in ctx
-
-
-@pytest.mark.asyncio
-async def test_life_mode_does_not_also_include_emotional_highlight(monkeypatch):
-    """扭蛋抽中 life 時，同輪的情緒高光不會一起塞進 ctx（一則串場只講一個話題）。"""
-    _weights(monkeypatch, life=1.0)
-    cog = _make_cog(life_cores=["大肚在準備搬家"])
-    _with_highlight(cog, "大肚", "你說覺得被理解的那句話")
-    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
-    ctx = _ctx_str(cog)
-    assert "大肚在準備搬家" in ctx
-    assert "你說覺得被理解的那句話" not in ctx
 

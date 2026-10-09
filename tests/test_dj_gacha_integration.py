@@ -35,9 +35,6 @@ class DummyCog(MusicDJLyricsMixin):
     def _present_interests(self):
         return []
 
-    def _recent_emotional_highlight(self, requester):
-        return None
-
     def _dj_topic_store(self):
         from dj_topic_selector import TopicCooldownStore
         import tempfile

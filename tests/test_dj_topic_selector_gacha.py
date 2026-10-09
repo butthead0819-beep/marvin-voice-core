@@ -12,7 +12,7 @@ from dj_life_context import LifeCore
 from dj_topic_selector import TopicCooldownStore, select_mode
 
 ALL_MODES = (
-    "life", "interest", "emotional_highlight", "news",
+    "life", "interest", "news",
     "guide", "conversation", "atmosphere", "quick",
 )
 
@@ -31,7 +31,7 @@ def test_all_llm_modes_appear_and_quick_never_when_material_rich(tmp_path):
         _, mode = select_mode(
             [f"life{i}"], [f"interest{i}"], store,
             has_conversation=True, has_guide=True,
-            emotional_highlights=[f"emo{i}"], news_items=[f"news{i}"],
+            news_items=[f"news{i}"],
             rng=rng,
         )
         seen.add(mode)
@@ -73,7 +73,7 @@ def test_adjacent_draws_never_repeat(tmp_path):
         _, mode = select_mode(
             [f"life{i}"], [f"interest{i}"], store,
             has_conversation=True, has_guide=True,
-            emotional_highlights=[f"emo{i}"], news_items=[f"news{i}"],
+            news_items=[f"news{i}"],
             rng=rng,
         )
         if prev is not None:

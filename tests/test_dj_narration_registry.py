@@ -21,7 +21,7 @@ def test_apply_side_effects_is_not_a_coroutine_function():
 def test_modes_registry_has_exactly_expected_names():
     expected = {
         "revival", "memory_match", "song", "life", "interest",
-        "emotional_highlight", "news", "callback", "activity", "guide",
+        "news", "callback", "activity", "guide",
         "conversation", "atmosphere", "quick", "reason",
     }
     assert set(MODES.keys()) == expected
@@ -29,7 +29,7 @@ def test_modes_registry_has_exactly_expected_names():
 
 def test_tts_emotion_for_matches_known_table():
     upbeat = {"life", "interest", "activity", "news"}
-    calm = {"atmosphere", "emotional_highlight"}
+    calm = {"atmosphere"}
     normal = {"quick", "reason", "song", "conversation", "memory_match", "revival", "guide", "callback"}
     for mode in upbeat:
         assert tts_emotion_for(mode) == "upbeat", mode

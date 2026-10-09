@@ -157,7 +157,6 @@ async def test_dj_interjection_uses_associative_dj_line():
     host._vc = MagicMock(return_value=None)
     host._life_cores_async = AsyncMock(return_value=[])
     host._present_interests = MagicMock(return_value=[])
-    host._recent_emotional_highlight = MagicMock(return_value=None)
     host._fetch_news_items_async = AsyncMock(return_value=[])
     from dj_topic_selector import TopicCooldownStore
     import tempfile
