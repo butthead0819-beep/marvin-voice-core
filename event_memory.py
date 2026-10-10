@@ -324,6 +324,14 @@ def _activity_similarity(a: str, b: str) -> float:
     return fuzz.ratio(a, b)
 
 
+def _same_place(a: str | None, b: str | None) -> bool:
+    """兩邊都有地點且正規化後相同（台/臺視為同字）。"""
+    if not a or not b:
+        return False
+    na, nb = _normalize(a).replace("台", "臺"), _normalize(b).replace("台", "臺")
+    return bool(na) and na == nb
+
+
 def find_merge_target(ev: dict, recent: list[dict], window_end: float) -> int | None:
     candidates = [r for r in recent if r["owner"] == ev["owner"]]
 
@@ -339,7 +347,9 @@ def find_merge_target(ev: dict, recent: list[dict], window_end: float) -> int | 
         else:
             date_close = (window_end - r["last_seen"]) <= MERGE_NULL_DATE_WINDOW_S
 
-        if date_close and _activity_similarity(ev["activity"], r["activity"]) >= MERGE_PINYIN_THRESHOLD:
+        # 同地也算同一件：「去臺東」vs「回老家（臺東）」活動名不像但是同一趟（2026-10-10 重播 9/29）
+        if date_close and (_activity_similarity(ev["activity"], r["activity"]) >= MERGE_PINYIN_THRESHOLD
+                           or _same_place(ev.get("place"), r.get("place"))):
             return r["id"]
 
     return None

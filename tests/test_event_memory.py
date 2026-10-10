@@ -289,10 +289,10 @@ def test_validate_event_same_as_variants(same_as, expected):
 # find_merge_target
 # ═══════════════════════════════════════════════════════
 
-def _recent_row(id_, owner="showay", activity="露營", event_date=None, last_seen=0.0):
+def _recent_row(id_, owner="showay", activity="露營", event_date=None, last_seen=0.0, place=None):
     return {"id": id_, "owner": owner, "activity": activity, "event_date": event_date,
             "last_seen": last_seen, "heard_by": [], "participants": [], "quotes": [],
-            "date_text": "", "place": None, "first_seen": last_seen, "created_at": last_seen,
+            "date_text": "", "place": place, "first_seen": last_seen, "created_at": last_seen,
             "guild_id": 1}
 
 
@@ -544,3 +544,37 @@ async def test_extract_and_store_stats_counts_correct():
     router = _router_with([content])
     stats = await extract_and_store(router, store, 1, "逐字稿", ["showay"], time.time())
     assert stats == {"added": 1, "merged": 0, "dropped": 1}
+
+
+# ── 缺口 1（2026-10-10 重播 9/29）：同一趟行程活動名不同（去臺東 vs 回老家）但同地同日 → 合併 ──
+
+def test_find_merge_target_same_place_same_day_different_activity_merges():
+    recent = [_recent_row(1, activity="去臺東", event_date=1000.0, place="臺東")]
+    ev = {"owner": "showay", "activity": "回老家", "event_date": 1000.0, "place": "台東", "same_as": None}
+    assert find_merge_target(ev, recent, time.time()) == 1
+
+
+def test_find_merge_target_same_place_date_diff_too_large_no_merge():
+    day = 86400.0
+    recent = [_recent_row(1, activity="去臺東", event_date=1000.0, place="臺東")]
+    ev = {"owner": "showay", "activity": "回老家", "event_date": 1000.0 + 2 * day, "place": "臺東", "same_as": None}
+    assert find_merge_target(ev, recent, time.time()) is None
+
+
+def test_find_merge_target_same_place_null_dates_within_window_merges():
+    window_end = 10000.0
+    recent = [_recent_row(1, activity="去臺東", event_date=None, last_seen=window_end - 3600, place="臺東")]
+    ev = {"owner": "showay", "activity": "回老家", "event_date": None, "place": "臺東", "same_as": None}
+    assert find_merge_target(ev, recent, window_end) == 1
+
+
+def test_find_merge_target_different_place_different_activity_no_merge():
+    recent = [_recent_row(1, activity="去臺東", event_date=1000.0, place="臺東")]
+    ev = {"owner": "showay", "activity": "跑恆春", "event_date": 1000.0, "place": "恆春", "same_as": None}
+    assert find_merge_target(ev, recent, time.time()) is None
+
+
+def test_find_merge_target_one_place_missing_no_place_merge():
+    recent = [_recent_row(1, activity="去臺東", event_date=1000.0, place="臺東")]
+    ev = {"owner": "showay", "activity": "回老家", "event_date": 1000.0, "place": None, "same_as": None}
+    assert find_merge_target(ev, recent, time.time()) is None
