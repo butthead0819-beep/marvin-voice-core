@@ -332,3 +332,131 @@ async def test_router_path_uses_call_llm_not_groq():
     # tier=simple（背景任務走 fast）
     assert router._call_llm.call_args.kwargs.get("tier") == "simple"
     groq_client.chat.completions.create.assert_not_called()
+
+
+# ── event_memory 整合（事件記憶 Phase 1）─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_summarizer_without_event_store_calls_llm_once():
+    """event_store=None（預設）時只呼叫一次 LLM（不做事件抽取）。"""
+    from unittest.mock import AsyncMock, MagicMock
+    from summary_store import SummaryStore
+    from session_summarizer import SessionSummarizer
+
+    utterances = _make_multi_speaker_utterances()
+    summary_store = SummaryStore(db_path=":memory:")
+    transcript_store = _make_transcript_store(utterances)
+    router = MagicMock()
+    router._call_llm = AsyncMock(return_value=_VALID_LLM_RESPONSE)
+
+    summ = SessionSummarizer(
+        transcript_store=transcript_store, summary_store=summary_store,
+        groq_client=MagicMock(), owner_speaker="狗與鹿", router=router,
+    )
+    now = time.time()
+    await summ.summarize_window(guild_id=1, window_start=now - 300, window_end=now)
+
+    router._call_llm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_summarizer_event_store_second_llm_call_failure_does_not_lose_summary():
+    """有 event_store + router：第二次（抽事件）LLM 呼叫失敗，摘要/承諾仍照常存。"""
+    from unittest.mock import AsyncMock, MagicMock
+    from summary_store import SummaryStore
+    from event_memory import EventStore
+    from session_summarizer import SessionSummarizer
+
+    utterances = _make_multi_speaker_utterances()
+    summary_store = SummaryStore(db_path=":memory:")
+    event_store = EventStore(":memory:")
+    transcript_store = _make_transcript_store(utterances)
+
+    router = MagicMock()
+    router._call_llm = AsyncMock(side_effect=[_VALID_LLM_RESPONSE, RuntimeError("boom")])
+
+    captured = []
+    summ = SessionSummarizer(
+        transcript_store=transcript_store, summary_store=summary_store,
+        groq_client=MagicMock(), owner_speaker="狗與鹿", router=router,
+        event_store=event_store, on_commitment_detected=captured.append,
+    )
+    now = time.time()
+    await summ.summarize_window(guild_id=1, window_start=now - 300, window_end=now)
+
+    assert router._call_llm.await_count == 2
+    results = summary_store.get_summaries(guild_id=1)
+    assert len(results) == 1
+    assert "拉麵" in results[0]["summary_text"]
+    assert len(captured) == 2  # commitments callback 照常被呼叫
+
+
+@pytest.mark.asyncio
+async def test_summarizer_members_fn_extra_person_added_to_heard_by():
+    """members_fn 回傳額外的人 → 寫進 events 的 heard_by 包含他。"""
+    from unittest.mock import AsyncMock, MagicMock
+    from summary_store import SummaryStore
+    from event_memory import EventStore
+    from session_summarizer import SessionSummarizer
+    import json as _json
+
+    utterances = _make_multi_speaker_utterances()
+    summary_store = SummaryStore(db_path=":memory:")
+    event_store = EventStore(":memory:")
+    transcript_store = _make_transcript_store(utterances)
+
+    extract_response = _json.dumps({"events": [
+        {"owner": "狗與鹿", "activity": "露營", "place": None, "date": None,
+         "date_text": "", "participants": [], "quote": "", "same_as": None},
+    ]}, ensure_ascii=False)
+    router = MagicMock()
+    router._call_llm = AsyncMock(side_effect=[_VALID_LLM_RESPONSE, extract_response])
+
+    summ = SessionSummarizer(
+        transcript_store=transcript_store, summary_store=summary_store,
+        groq_client=MagicMock(), owner_speaker="狗與鹿", router=router,
+        event_store=event_store, members_fn=lambda: ["旁觀者"],
+    )
+    now = time.time()
+    await summ.summarize_window(guild_id=1, window_start=now - 300, window_end=now)
+
+    events = event_store.list_guild(1, 0)
+    assert len(events) == 1
+    assert "旁觀者" in events[0]["heard_by"]
+
+
+@pytest.mark.asyncio
+async def test_summarizer_members_fn_raises_event_still_written_with_speakers_only():
+    """members_fn raise → heard_by 只有說話者，事件仍寫入（不整個中斷）。"""
+    from unittest.mock import AsyncMock, MagicMock
+    from summary_store import SummaryStore
+    from event_memory import EventStore
+    from session_summarizer import SessionSummarizer
+    import json as _json
+
+    utterances = _make_multi_speaker_utterances()
+    summary_store = SummaryStore(db_path=":memory:")
+    event_store = EventStore(":memory:")
+    transcript_store = _make_transcript_store(utterances)
+
+    extract_response = _json.dumps({"events": [
+        {"owner": "狗與鹿", "activity": "露營", "place": None, "date": None,
+         "date_text": "", "participants": [], "quote": "", "same_as": None},
+    ]}, ensure_ascii=False)
+    router = MagicMock()
+    router._call_llm = AsyncMock(side_effect=[_VALID_LLM_RESPONSE, extract_response])
+
+    def _boom():
+        raise RuntimeError("boom")
+
+    summ = SessionSummarizer(
+        transcript_store=transcript_store, summary_store=summary_store,
+        groq_client=MagicMock(), owner_speaker="狗與鹿", router=router,
+        event_store=event_store, members_fn=_boom,
+    )
+    now = time.time()
+    await summ.summarize_window(guild_id=1, window_start=now - 300, window_end=now)
+
+    events = event_store.list_guild(1, 0)
+    assert len(events) == 1
+    assert sorted(events[0]["heard_by"]) == sorted(["狗與鹿", "showay"])

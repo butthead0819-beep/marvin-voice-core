@@ -144,5 +144,12 @@
     "file": "intent_agents/taste_correction_agent.py",
     "resolved_at": "2026-09-18",
     "note": "語音勘誤/查詢自己的口味（「把X從我的喜好拿掉」「我沒有喜歡X」「你記得我喜歡什麼」）已由 TasteCorrectionAgent 接手（forget 0.88 / query 0.85）。"
+  },
+  "event_recall": {
+    "agent": "event_recall",
+    "file": "intent_agents/event_recall_agent.py",
+    "commit": "",
+    "resolved_at": "2026-10-10",
+    "note": "問過去/計畫行程（上個月去哪露營）由 EventRecallAgent 接手（bid 0.88，事件記憶 Phase 1）。"
   }
 }
