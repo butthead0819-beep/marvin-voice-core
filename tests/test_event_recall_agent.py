@@ -12,7 +12,6 @@ from event_memory import EventStore, NOT_REMEMBER
 from intent_agents.event_recall_agent import EventRecallAgent
 from intent_bus import IntentContext
 
-pytestmark = pytest.mark.asyncio
 
 
 def _ctx(speaker: str, query: str, mode: str = "normal") -> IntentContext:
@@ -58,6 +57,7 @@ def test_regex_no_match_negative_samples(query):
     assert not any(re.search(p, query) for p in schema.patterns), query
 
 
+@pytest.mark.asyncio
 async def test_handler_present_in_heard_by_speaks_event(monkeypatch):
     monkeypatch.setenv("GUILD_ID", "1")
     store = EventStore(":memory:")
@@ -79,6 +79,7 @@ async def test_handler_present_in_heard_by_speaks_event(monkeypatch):
     assert "下禮拜六我要去溪頭露營" in spoken
 
 
+@pytest.mark.asyncio
 async def test_handler_present_not_in_heard_by_not_remember_no_llm_call(monkeypatch):
     monkeypatch.setenv("GUILD_ID", "1")
     store = EventStore(":memory:")
@@ -99,6 +100,7 @@ async def test_handler_present_not_in_heard_by_not_remember_no_llm_call(monkeypa
 
 
 @pytest.mark.parametrize("content", ['{"ids":[999]}', "not json"])
+@pytest.mark.asyncio
 async def test_handler_llm_bad_response_not_remember(monkeypatch, content):
     monkeypatch.setenv("GUILD_ID", "1")
     store = EventStore(":memory:")
@@ -116,6 +118,7 @@ async def test_handler_llm_bad_response_not_remember(monkeypatch, content):
     assert ctrl.play_tts.call_args.args[0] == NOT_REMEMBER
 
 
+@pytest.mark.asyncio
 async def test_handler_llm_raises_not_remember(monkeypatch):
     monkeypatch.setenv("GUILD_ID", "1")
     store = EventStore(":memory:")
@@ -133,6 +136,7 @@ async def test_handler_llm_raises_not_remember(monkeypatch):
     assert ctrl.play_tts.call_args.args[0] == NOT_REMEMBER
 
 
+@pytest.mark.asyncio
 async def test_handler_event_older_than_30_days_not_spoken(monkeypatch):
     monkeypatch.setenv("GUILD_ID", "1")
     store = EventStore(":memory:")

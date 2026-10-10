@@ -14,7 +14,6 @@ import pytest
 from event_memory import (
     EventStore,
     NOT_REMEMBER,
-    TPE_TZ,
     _activity_similarity,
     _md,
     _normalize,
@@ -29,7 +28,6 @@ from event_memory import (
     visible_events,
 )
 
-pytestmark = pytest.mark.asyncio
 
 
 # ═══════════════════════════════════════════════════════
@@ -235,17 +233,15 @@ def test_validate_event_activity_too_long_rejected():
 
 
 def test_validate_event_date_in_range_converted_to_taipei_midnight():
-    window_end = time.time()
+    window_end = 1791640000.0  # 2026-10-10 21:46 台北（固定值，避免牆鐘讓測試過期）
     raw = {"owner": "showay", "activity": "露營", "date": "2026-10-11"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, window_end)
     assert ev is not None
-    import datetime
-    expected = datetime.datetime(2026, 10, 11, tzinfo=TPE_TZ).timestamp()
-    assert ev["event_date"] == expected
+    assert ev["event_date"] == 1791648000.0  # 2026-10-11 00:00 台北
 
 
 def test_validate_event_date_too_far_future_kept_but_date_none():
-    window_end = time.time()
+    window_end = 1791640000.0  # 2026-10-10；2030-01-01 超過 +365 天
     raw = {"owner": "showay", "activity": "露營", "date": "2030-01-01"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, window_end)
     assert ev is not None
@@ -447,6 +443,7 @@ def _events_json(events):
     return json.dumps({"events": events}, ensure_ascii=False)
 
 
+@pytest.mark.asyncio
 async def test_extract_and_store_calls_llm_with_correct_kwargs():
     store = EventStore(":memory:")
     router = _router_with([_events_json([])])
@@ -458,6 +455,7 @@ async def test_extract_and_store_calls_llm_with_correct_kwargs():
     assert kwargs["is_json"] is True
 
 
+@pytest.mark.asyncio
 async def test_extract_and_store_three_windows_merge_into_one():
     store = EventStore(":memory:")
     transcript = "showay 說下禮拜六要去溪頭露營，引述句一。路營也是這句。"
@@ -482,6 +480,7 @@ async def test_extract_and_store_three_windows_merge_into_one():
     assert sorted(events[0]["heard_by"]) == ["showay", "狗與露"]
 
 
+@pytest.mark.asyncio
 async def test_extract_and_store_same_as_merges_despite_different_activity():
     store = EventStore(":memory:")
     transcript = "showay 說要去溪頭露營，引述句一。去玩也是這句。"
@@ -501,6 +500,7 @@ async def test_extract_and_store_same_as_merges_despite_different_activity():
     assert len(events) == 1
 
 
+@pytest.mark.asyncio
 async def test_extract_and_store_two_events_same_window_merge_via_recent_insert():
     store = EventStore(":memory:")
     transcript = "showay 說要去溪頭露營，引述句一。路營也是這句。"
@@ -518,6 +518,7 @@ async def test_extract_and_store_two_events_same_window_merge_via_recent_insert(
     assert len(store.list_guild(1, 0)) == 1
 
 
+@pytest.mark.asyncio
 async def test_extract_and_store_invalid_owner_dropped():
     store = EventStore(":memory:")
     content = _events_json([{"owner": "狗與露", "activity": "露營", "place": None, "date": None,
@@ -528,6 +529,7 @@ async def test_extract_and_store_invalid_owner_dropped():
     assert store.list_guild(1, 0) == []
 
 
+@pytest.mark.asyncio
 async def test_extract_and_store_stats_counts_correct():
     store = EventStore(":memory:")
     content = _events_json([
