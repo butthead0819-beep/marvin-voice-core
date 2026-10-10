@@ -1,9 +1,9 @@
-"""TDD — DJ 口白改走付費 gemini-3.1-flash-lite（記帳+guard），失敗退回免費 bus。
+"""TDD — DJ 口白走 _call_llm(tier="premium")：付費 gemini-3.1-flash-lite（記帳+guard）優先，失敗退回免費 bus。
 
 _call_paid_gemini 抽自原本 _call_cloud 的「💰 [Paid Fallback]」段落：先過
 PaidUsageGuard、成功記帳；沒有 paid client / 超 cap → raise RuntimeError。
-generate_dynamic_system_msg 的 dj_interjection 分支優先打它，失敗（任何
-Exception）退回免費 bus（_call_llm + DJ_PREFER_PROVIDERS）。
+_call_llm(tier="premium") 先打它，失敗/空回應退回 simple 走免費 bus；
+generate_dynamic_system_msg 的 dj_interjection 分支用 tier="premium"、purpose="dj_narration"。
 """
 from __future__ import annotations
 
@@ -26,37 +26,26 @@ def _make_mixin():
 
 
 @pytest.mark.asyncio
-async def test_dj_interjection_uses_paid_gemini_first():
+async def test_dj_interjection_calls_llm_with_premium_tier():
     mixin = _make_mixin()
-    mixin._call_paid_gemini = AsyncMock(return_value="付費台詞")
-
-    result = await mixin.generate_dynamic_system_msg("dj_interjection", context="周杰倫 七里香")
-
-    assert result == "付費台詞"
-    mixin._call_llm.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_dj_interjection_falls_back_to_bus_on_paid_failure():
-    mixin = _make_mixin()
-    mixin._call_paid_gemini = AsyncMock(side_effect=RuntimeError("paid_cap_exceeded"))
 
     result = await mixin.generate_dynamic_system_msg("dj_interjection", context="周杰倫 七里香")
 
     assert result == "唉..."
-    mixin._call_llm.assert_awaited_once()
     _, kwargs = mixin._call_llm.call_args
+    assert kwargs.get("tier") == "premium"
+    assert kwargs.get("purpose") == "dj_narration"
     assert kwargs.get("prefer_providers") == DJ_PREFER_PROVIDERS
 
 
 @pytest.mark.asyncio
-async def test_non_dj_event_does_not_call_paid_gemini():
+async def test_non_dj_event_does_not_use_premium_tier():
     mixin = _make_mixin()
-    mixin._call_paid_gemini = AsyncMock(return_value="付費台詞")
 
     await mixin.generate_dynamic_system_msg("radio_now_playing", context="周杰倫 七里香")
 
-    mixin._call_paid_gemini.assert_not_awaited()
+    _, kwargs = mixin._call_llm.call_args
+    assert kwargs.get("tier") != "premium"
 
 
 # ── _call_paid_gemini helper 單元測試 ────────────────────────────────────────
@@ -136,3 +125,92 @@ async def test_call_paid_gemini_no_paid_client_raises(tmp_path):
 
     with pytest.raises(RuntimeError):
         await router._call_paid_gemini("系統", "動態台詞生成", caller="dj_narration")
+
+
+# ── _call_llm tier="premium" 與 SPOKEN 排除接線 ──────────────────────────────
+
+class _FakeBus:
+    def __init__(self, result="免費台詞"):
+        self.result = result
+        self.ctxs = []
+        self.last_dispatch = None
+
+    async def dispatch(self, ctx):
+        self.ctxs.append(ctx)
+        return self.result
+
+
+def _make_llm_router(monkeypatch, tmp_path, paid_client=None):
+    import llm_agents.metrics as metrics
+    monkeypatch.setattr(metrics, "log_dispatch", lambda **kw: None)
+    monkeypatch.setenv("LLM_BUS", "true")
+    r, guard = _make_router(tmp_path, paid_client=paid_client)
+    r.dna = {}
+    r._llm_bus = _FakeBus()
+    return r, guard
+
+
+@pytest.mark.asyncio
+async def test_premium_tier_uses_paid_and_skips_bus(monkeypatch, tmp_path):
+    client, _ = _fake_paid_client(text="付費台詞")
+    r, _ = _make_llm_router(monkeypatch, tmp_path, paid_client=client)
+
+    out = await r._call_llm("系統", "動態台詞生成", tier="premium", purpose="dj_narration")
+
+    assert out == "付費台詞"
+    assert r._llm_bus.ctxs == []
+    assert _rows(tmp_path)[0]["caller"] == "dj_narration"
+
+
+@pytest.mark.asyncio
+async def test_premium_tier_falls_back_to_bus_when_paid_unavailable(monkeypatch, tmp_path):
+    r, _ = _make_llm_router(monkeypatch, tmp_path, paid_client=None)
+
+    out = await r._call_llm("系統", "動態台詞生成", tier="premium", purpose="dj_narration",
+                            prefer_providers=("gemini_free", "groq"))
+
+    assert out == "免費台詞"
+    ctx = r._llm_bus.ctxs[0]
+    assert ctx.min_quality == "fast"           # 降回 simple
+    assert ctx.prefer_providers == ("gemini_free", "groq")
+    assert "mistral" in ctx.exclude_providers  # dj_narration 屬 SPOKEN_PURPOSES
+
+
+@pytest.mark.asyncio
+async def test_premium_tier_falls_back_when_paid_returns_empty(monkeypatch, tmp_path):
+    client, _ = _fake_paid_client(text="")
+    r, _ = _make_llm_router(monkeypatch, tmp_path, paid_client=client)
+
+    out = await r._call_llm("系統", "動態台詞生成", tier="premium", purpose="dj_narration")
+
+    assert out == "免費台詞"
+    assert len(r._llm_bus.ctxs) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_premium_tier_never_calls_paid(monkeypatch, tmp_path):
+    client, _ = _fake_paid_client(text="付費台詞")
+    r, _ = _make_llm_router(monkeypatch, tmp_path, paid_client=client)
+
+    out = await r._call_llm("系統", "x", tier="simple", purpose="dj_narration")
+
+    assert out == "免費台詞"
+    assert _rows(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_background_purpose_does_not_exclude_mistral(monkeypatch, tmp_path):
+    r, _ = _make_llm_router(monkeypatch, tmp_path)
+
+    await r._call_llm("系統", "x", tier="simple", purpose="summarize_window")
+
+    assert r._llm_bus.ctxs[0].exclude_providers == ()
+
+
+@pytest.mark.asyncio
+async def test_spoken_purpose_excludes_mistral(monkeypatch, tmp_path):
+    r, _ = _make_llm_router(monkeypatch, tmp_path)
+
+    await r._call_llm("系統", "x", tier="simple", purpose="generate_player_farewell")
+
+    assert r._llm_bus.ctxs[0].exclude_providers == ("mistral",)

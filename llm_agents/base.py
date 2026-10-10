@@ -43,6 +43,7 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
     "extract_emotional_moments", "analyze_social_dynamics",
     "summarize_window", "_classify_mood", "compress",
     "marvinize_news", "dual_dialogue",
+    "dj_narration",  # DJ 口白（tier=premium，付費優先、失敗退回 bus）
 })
 
 # 背景 / 離線 purpose：不阻塞使用者對話回合（記憶挖掘、社交/戰術分析、摘要、情緒分類、
@@ -56,13 +57,15 @@ BACKGROUND_PURPOSES: frozenset[str] = frozenset({
     "marvinize_news",
 })
 
-# 使用者聽得到/看得到的生成：排除品質不足的 provider（2026-10-10：ministral-8b 會吐舞台指示、
-# markdown、半句斷掉）。背景摘要/分類不在此列，照常使用。
+# 使用者聽得到/看得到的生成：排除品質不足的 provider（2026-10-10：ministral-8b 口白半句斷掉、
+# 超長、漏歌名、出現第一人稱；舞台指示/markdown 雖會被 TTS _clean_text 剝掉但同樣反映品質）。
+# 背景摘要/分類不在此列，照常使用。
 SPOKEN_PURPOSES: frozenset[str] = frozenset({
     "generate_greeting", "generate_player_greeting", "generate_player_farewell",
     "generate_dynamic_system_msg", "topic_gen", "marvinize_news", "generate_joke",
     "generate_fast_response", "generate_gap_filling_response", "generate_proactive_question",
     "generate_status_report_comment", "rephrase_proactive_script", "marvin_chat", "dual_dialogue",
+    "dj_narration",
 })
 SPOKEN_EXCLUDED_PROVIDERS: tuple[str, ...] = ("mistral",)
 

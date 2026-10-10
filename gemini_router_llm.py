@@ -370,7 +370,8 @@ class GeminiRouterLLMMixin:
                     f"(short_circuit={self._llm_bus._SHORT_CIRCUIT_AFTER}, env LLM_BUS=true 才會走 bus)")
 
     async def _call_llm(self, system_prompt: str, user_prompt: str, is_json: bool = False, speaker: str = None, allow_local: bool = True, temperature: float = None, thinking_level: str = None, tier: str = "medium", purpose: str = None, prefer_providers: tuple = ()) -> str:
-        """通用 LLM 呼叫函式。tier: 'simple'=Groq-8b優先, 'medium'=Groq-70b優先(預設), 'high'=直接Gemini
+        """通用 LLM 呼叫函式。tier: 'simple'=Groq-8b優先, 'medium'=Groq-70b優先(預設), 'high'=直接Gemini,
+        'premium'=付費 Gemini 優先（過 guard、記帳，caller=purpose），失敗/超 cap 退回 simple 走免費 bus
 
         purpose: 呼叫用途標籤，寫進 records/llm_routing.jsonl 供歸因（誰在吃池/誰是無感
         call）。不傳 → 自動取呼叫方 method 名（22 個 generate_* 各自正確歸因、免逐一手標）；
@@ -390,6 +391,27 @@ class GeminiRouterLLMMixin:
             dere_chance = min(0.05, 0.01 + (helpfulness * 0.005))
             if random.random() < dere_chance:
                 final_system_prompt = self.prompt_manager.get_instruction("dere_persona", dna=self.dna, speaker=speaker, memory_manager=self.memory)
+
+        # 💰 [Premium] 品質敏感的生成（如 DJ 口白）先走付費；失敗/超 cap/空回應 → 降回 simple 走免費 bus
+        if tier == "premium":
+            from llm_agents.metrics import log_dispatch
+            _t0 = time.monotonic()
+            try:
+                result = await self._call_paid_gemini(
+                    final_system_prompt, user_prompt, caller=purpose, is_json=is_json,
+                    temperature=temperature, thinking_level=thinking_level,
+                )
+                if result:
+                    log_dispatch(
+                        route="paid", purpose=purpose, speaker=speaker,
+                        provider="gemini_paid", model=self.cleaner_model,
+                        latency_ms=int((time.monotonic() - _t0) * 1000),
+                        tokens=0, success=True,
+                    )
+                    return result
+            except Exception as _pe:
+                logger.warning(f"💰 [Premium] {purpose} 付費生成失敗，退回免費 bus: {_pe}")
+            tier = "simple"
 
         # 🚌 [LLMBus Phase 1] env LLM_BUS=true 且 bus 已 inject → 走 bus 一條路（禁雙跑：bus
         # 失敗回 '' 不 fallback legacy 避免 TPM 雙計，Risk 3）。Bus 沒裝 / flag off → 走下方 legacy。
@@ -660,20 +682,20 @@ class GeminiRouterLLMMixin:
                     # upstream jitter 是 graceful-degrade case，不該叫醒人。
                     logger.warning(f"⚠️ [Tier-1 Exhausted] 雲端重試 {max_retries} 次後依然失敗，啟動 paid fallback: {e}")
                     # 💰 [Paid Fallback] 主 key 三重重試全部失敗後，嘗試付費備援
-                    try:
-                        logger.warning("💰 [Paid Fallback] 啟用付費 API 最後防線...")
-                        result = await self._call_paid_gemini(
-                            system_prompt, user_prompt, caller="marvin_reply_fallback",
-                            is_json=is_json, temperature=temperature, thinking_level=thinking_level)
-                        logger.info("💰 [Paid Fallback] 成功。")
-                        return result
-                    except RuntimeError as pe:
-                        if str(pe) == "paid_cap_exceeded":
-                            raise e
-                        if str(pe) != "paid_unavailable":
+                    if getattr(self, 'google_paid_client', None) and self.provider == "gemini":
+                        try:
+                            logger.warning("💰 [Paid Fallback] 啟用付費 API 最後防線...")
+                            result = await self._call_paid_gemini(
+                                system_prompt, user_prompt, caller="marvin_reply_fallback",
+                                is_json=is_json, temperature=temperature, thinking_level=thinking_level)
+                            logger.info("💰 [Paid Fallback] 成功。")
+                            return result
+                        except RuntimeError as pe:
+                            if str(pe) == "paid_cap_exceeded":
+                                raise e
                             logger.error(f"❌ [Paid Fallback] 付費備援也失敗: {pe}")
-                    except Exception as pe:
-                        logger.error(f"❌ [Paid Fallback] 付費備援也失敗: {pe}")
+                        except Exception as pe:
+                            logger.error(f"❌ [Paid Fallback] 付費備援也失敗: {pe}")
                     raise e
                 
                 # ⏳ 指數退避等待
