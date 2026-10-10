@@ -111,6 +111,7 @@ class DJMaterials:
     activities: list = field(default_factory=list)
     has_guide: bool = False
     has_conversation: bool = False
+    perspective_topic: str | None = None
     autopilot_reason: str = ""
     exclude_modes: Collection[str] = ()
     # 以下只給 render 用（D10：吸收原 RenderCtx）
@@ -119,6 +120,7 @@ class DJMaterials:
     guide: str | None = None
     song_card: Any = None
     empathy_hooks: tuple = ()
+    news_context: dict = field(default_factory=dict)  # 新聞標題 → 搜它的在場興趣原句（"showay喜歡露營車"），render 講給誰聽
 
 
 @dataclass(frozen=True)
@@ -159,6 +161,17 @@ def _pick_song(m: DJMaterials, store: TopicCooldownStore):
     return (None, None) if m.focus == "song" else None
 
 
+def match_perspective_topic(texts) -> str | None:
+    """熱聊原句含某主題任一關鍵詞 → 回主題名（yaml 順序第一個命中）；都沒命中回 None。"""
+    from persona_loader import load_dj_perspectives
+    topics = load_dj_perspectives().get("topics") or {}
+    for name, t in topics.items():
+        kws = t.get("keywords") or []
+        if any(kw and kw in (text or "") for text in texts for kw in kws):
+            return name
+    return None
+
+
 # ── render 函式（逐字照抄 `_fetch_dj_interjection_raw` 現行 if/elif） ────────
 
 def _render_memory_match(topic, m: DJMaterials) -> list[str]:
@@ -197,9 +210,15 @@ def _render_activity(topic, m: DJMaterials) -> list[str]:
 
 
 def _render_news(topic, m: DJMaterials) -> list[str]:
+    why = m.news_context.get(topic)
+    if not why:
+        return [
+            f"最新時事消息：\n・{topic}",
+            "開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。",
+        ]
     return [
-        f"最新時事消息：\n・{topic}",
-        "開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。",
+        f"【你熟悉他的生活】在場興趣：{why}\n剛好有則相關新聞：\n・{topic}",
+        "開場鉤子：像朋友看到他會在意的新聞，點名順口跟他提一句，再自然帶進歌；只能講標題裡寫的事，不准自己補細節、不准替他表態或猜他的反應。",
     ]
 
 
@@ -208,6 +227,21 @@ def _render_conversation(topic, m: DJMaterials) -> list[str]:
     if m.conv_lines:
         out.append("【你熟悉他的生活】頻道近期對話：\n" + '\n'.join(m.conv_lines))
     out.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
+    return out
+
+
+def _render_perspective(topic, m: DJMaterials) -> list[str]:
+    from persona_loader import load_dj_perspectives
+    cfg = load_dj_perspectives()
+    t = (cfg.get("topics") or {}).get(m.perspective_topic or "")
+    out = []
+    if m.conv_lines:
+        out.append("【你熟悉他的生活】頻道近期對話：\n" + '\n'.join(m.conv_lines))
+    if t:
+        out.append(cfg["technique"])
+        out.append(f"你心裡對「{m.perspective_topic}」的看法（只是角度，不是句子）：可以誇的是{t['praise']}；翻點是{t['flip']}")
+    else:
+        out.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
     return out
 
 
@@ -250,6 +284,7 @@ MODES: dict[str, NarrationMode] = {
     "activity": NarrationMode("activity", "gacha", render=_render_activity, tts_emotion="upbeat"),
     "guide": NarrationMode("guide", "gacha", render=_render_guide),
     "conversation": NarrationMode("conversation", "gacha", render=_render_conversation, on_chosen="consume_conversation"),
+    "perspective": NarrationMode("perspective", "gacha", render=_render_perspective, on_chosen="consume_conversation"),
     "atmosphere": NarrationMode("atmosphere", "gacha", render=_render_atmosphere, tts_emotion="calm"),
     "quick": NarrationMode("quick", "gacha"),
     "reason": NarrationMode(
@@ -282,6 +317,7 @@ def choose_mode(materials: DJMaterials, store: TopicCooldownStore, rng=None) -> 
         activities=materials.activities,
         has_guide=materials.has_guide and materials.focus != "topic",
         exclude_modes=materials.exclude_modes,
+        has_perspective=bool(materials.perspective_topic) and materials.has_conversation,
     )
     if rng is not None:
         select_kwargs["rng"] = rng
@@ -325,7 +361,7 @@ def apply_side_effects(
             lines = [f"{e['speaker']}：「{e['text'][:25]}」" for e in entries]
             if entries:
                 bank.mark_consumed(entries, time.time())
-                plan = replace(plan, ctx_lines=MODES["conversation"].render(
+                plan = replace(plan, ctx_lines=MODES[plan.mode].render(
                     plan.topic, replace(materials, conv_lines=lines)))
             else:
                 plan = downgrade(plan, "quick", materials)  # 素材被搶光，不硬寫空對話串場

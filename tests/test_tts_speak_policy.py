@@ -84,13 +84,7 @@ def test_wake_ack_is_ephemeral():
     assert load_limit_s(k) == 3.0
 
 
-# ── NEWS / MEMORY_CALLBACK 的變體 ───────────────────────────────────────────
-
-def test_news_drops_to_text_when_busy():
-    k = SpeakKind.NEWS
-    assert decide(k, RoomState(stream_mode=True)).verdict is Verdict.DROP
-    assert decide(k, RoomState().with_silence(False)).verdict is Verdict.DROP_TO_TEXT
-
+# ── MEMORY_CALLBACK 的變體 ───────────────────────────────────────────────
 
 def test_memory_callback_waits_out_hot_chat():
     k = SpeakKind.MEMORY_CALLBACK

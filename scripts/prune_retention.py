@@ -7,6 +7,8 @@ scripts/prune_retention.py — Phase 1 Stage D 資料保留期限清理工具。
 3. tasks: status IN ('done', 'cancelled') 且 created_at < now-30d；pending 永久保留
 4. records/daily/: 符合 ^(stt_|topic_stats_)?\\d{4}-\\d{2}-\\d{2}\\.(log|json)$ 且日期 < 今天(Asia/Taipei)-14 天
 5. voice_presence.jsonl: ts < now-90d（原子改寫，不留 .bak）
+6. events: last_seen < now-30d
+7. hometowns: learned_at < now-30d
 
 預設為 dry-run，只有加 --apply 才會執行刪除。
 """
@@ -67,6 +69,36 @@ def prune_tasks(conn: sqlite3.Connection, cutoff_ts: float, apply: bool) -> dict
             "DELETE FROM tasks WHERE status IN ('done', 'cancelled') AND created_at < ?",
             (cutoff_ts,),
         )
+        conn.commit()
+        deleted = cur.rowcount
+    return {"matched": matched or 0, "oldest": oldest, "deleted": deleted}
+
+
+def prune_events(conn: sqlite3.Connection, cutoff_ts: float, apply: bool) -> dict:
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='events'")
+    if cur.fetchone() is None:
+        return {"matched": 0, "oldest": None, "deleted": 0}
+    cur.execute("SELECT COUNT(*), MIN(last_seen) FROM events WHERE last_seen < ?", (cutoff_ts,))
+    matched, oldest = cur.fetchone()
+    deleted = 0
+    if apply and matched:
+        cur.execute("DELETE FROM events WHERE last_seen < ?", (cutoff_ts,))
+        conn.commit()
+        deleted = cur.rowcount
+    return {"matched": matched or 0, "oldest": oldest, "deleted": deleted}
+
+
+def prune_hometowns(conn: sqlite3.Connection, cutoff_ts: float, apply: bool) -> dict:
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='hometowns'")
+    if cur.fetchone() is None:
+        return {"matched": 0, "oldest": None, "deleted": 0}
+    cur.execute("SELECT COUNT(*), MIN(learned_at) FROM hometowns WHERE learned_at < ?", (cutoff_ts,))
+    matched, oldest = cur.fetchone()
+    deleted = 0
+    if apply and matched:
+        cur.execute("DELETE FROM hometowns WHERE learned_at < ?", (cutoff_ts,))
         conn.commit()
         deleted = cur.rowcount
     return {"matched": matched or 0, "oldest": oldest, "deleted": deleted}
@@ -163,6 +195,8 @@ def prune_all(
     db_res_stg = {"matched": 0, "oldest": None, "deleted": 0}
     db_res_sum = {"matched": 0, "oldest": None, "deleted": 0}
     db_res_tasks = {"matched": 0, "oldest": None, "deleted": 0}
+    db_res_events = {"matched": 0, "oldest": None, "deleted": 0}
+    db_res_hometowns = {"matched": 0, "oldest": None, "deleted": 0}
 
     if db_path.exists():
         conn = sqlite3.connect(db_path)
@@ -170,6 +204,8 @@ def prune_all(
             db_res_stg = prune_speaker_topic_graph(conn, cutoff_30d, apply)
             db_res_sum = prune_session_summaries(conn, cutoff_30d, apply)
             db_res_tasks = prune_tasks(conn, cutoff_30d, apply)
+            db_res_events = prune_events(conn, cutoff_30d, apply)
+            db_res_hometowns = prune_hometowns(conn, cutoff_30d, apply)
         finally:
             conn.close()
 
@@ -181,6 +217,8 @@ def prune_all(
         "speaker_topic_graph": db_res_stg,
         "session_summaries": db_res_sum,
         "tasks": db_res_tasks,
+        "events": db_res_events,
+        "hometowns": db_res_hometowns,
         "daily_files": daily_res,
         "voice_presence": presence_res,
     }

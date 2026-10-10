@@ -8,6 +8,8 @@ session_summarizer.py
 設計原則：
   - 單人窗口（自言自語）→ 只存摘要，不送承諾（需 is_manual_add_query 顯式觸發）
   - 多人討論窗口 → 承諾透過 callback 進確認佇列，等靜默時 Marvin 詢問確認
+  - 摘要/承諾存完後，若有 event_store 會再做一次獨立 LLM 呼叫抽事件記憶（event_memory.py），
+    失敗不影響上面已存的摘要/承諾
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ import logging
 import time
 from typing import Callable
 
+from event_memory import extract_and_store
 from recall_handler import PendingConfirmation
 
 logger = logging.getLogger(__name__)
@@ -75,6 +78,8 @@ class SessionSummarizer:
         owner_speaker: str,
         on_commitment_detected: Callable[[PendingConfirmation], None] | None = None,
         router=None,
+        event_store=None,
+        members_fn=None,
     ):
         self.transcript_store = transcript_store
         self.summary_store = summary_store
@@ -83,6 +88,8 @@ class SessionSummarizer:
         self.on_commitment_detected = on_commitment_detected
         # router 有 → 走 LLM Bus（5 provider + Gemini 兜底）；無 → groq 直打（測試相容）
         self.router = router
+        self.event_store = event_store
+        self.members_fn = members_fn
         self._task: asyncio.Task | None = None
 
     async def start(self, guild_id: int, interval_seconds: int = 300) -> None:
@@ -183,6 +190,22 @@ class SessionSummarizer:
                     expires_at=time.time() + _CONFIRMATION_TTL,
                     real_life=c.get("real_life") in (True, "true", "True"),
                 ))
+
+        # 🗓️ [EventMemory] 事件抽取：獨立 LLM 呼叫，失敗不影響上面已存的摘要/承諾
+        if self.event_store is not None and self.router is not None:
+            try:
+                heard_by = list(speakers)
+                if self.members_fn is not None:
+                    try:
+                        for m in self.members_fn() or []:
+                            if m and m not in heard_by:
+                                heard_by.append(m)
+                    except Exception as e:
+                        logger.warning(f"[Summarizer] members_fn 失敗，heard_by 只用說話者: {e}")
+                await extract_and_store(self.router, self.event_store, guild_id,
+                                        transcript_text, heard_by, window_end)
+            except Exception as e:
+                logger.warning(f"[Summarizer] 事件抽取失敗（摘要不受影響）: {e}")
 
     def _infer_direction(self, speaker: str, target: str | None, commitment_type: str) -> str:
         """promise 永遠 inbound（我自己要做）；todo 且 target 是別人 → outbound。"""

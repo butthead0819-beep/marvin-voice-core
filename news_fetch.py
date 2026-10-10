@@ -1,7 +1,7 @@
-"""Google News RSS 新聞抓取：免費、不需 API key，給長時間靜默時的新聞播報素材用。
+"""Google News RSS 新聞抓取：免費、不需 API key，給 DJ 口白 news mode 當素材用。
 
 fetch 可注入（同 itunes_cover.py pattern），方便測試不真連網。任何失敗（逾時/非
-200/XML 壞掉/沒 aiohttp）一律 fail-open 回 None，不擋主流程。
+200/XML 壞掉/沒 aiohttp）一律 fail-open 回 []，不擋主流程。
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import logging
 import os
 import random
 import xml.etree.ElementTree as ET
-from typing import Awaitable, Callable, Collection, Optional
+from typing import Awaitable, Callable, Optional, Sequence
 from urllib.parse import quote
 
 try:
@@ -28,23 +28,14 @@ def enabled() -> bool:
 
 
 _LOCALE = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-# 10/4：沒興趣關鍵字時不抓熱門頭條（實測最近 25 則約一半是選舉政治/戰爭/社會案件，
-# 關鍵字黑名單擋不完），改從天氣／科技／科學三個來源隨機挑；黑名單仍當第二層。
-DEFAULT_SOURCES = (
-    f"{RSS_BASE}/search?q={quote('天氣')}&{_LOCALE}",
-    f"{RSS_BASE}/headlines/section/topic/TECHNOLOGY?{_LOCALE}",
-    f"{RSS_BASE}/headlines/section/topic/SCIENCE?{_LOCALE}",
-)
 
 
-def news_url(keyword: Optional[str], *, rng=random) -> str:
-    """keyword 給時查該關鍵字，否則從 DEFAULT_SOURCES 隨機挑一個。"""
-    if keyword:
-        return f"{RSS_BASE}/search?q={quote(keyword)}&{_LOCALE}"
-    return rng.choice(DEFAULT_SOURCES)
+def news_url(keyword: str) -> str:
+    """查該 keyword 的 Google News RSS 搜尋網址。"""
+    return f"{RSS_BASE}/search?q={quote(keyword)}&{_LOCALE}"
 
 
-async def _default_fetch(keyword: Optional[str], *, timeout_s: float = 6.0) -> Optional[str]:
+async def _default_fetch(keyword: str, *, timeout_s: float = 6.0) -> Optional[str]:
     if aiohttp is None:
         return None
     url = news_url(keyword)
@@ -84,14 +75,16 @@ def is_safe_news_title(title: str) -> bool:
     return not any(kw in t for kw in _UNSAFE_NEWS_KEYWORDS)
 
 
-def _parse_first_item(xml_text: str, exclude: Collection[str] = ()) -> Optional[dict]:
+def _parse_items(xml_text: str, limit: int) -> list[str]:
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
-        return None
+        return []
     items = root.findall("./channel/item")
     if not items:
-        return None
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
     for item in items:
         title = (item.findtext("title") or "").strip()
         if not title:
@@ -99,22 +92,50 @@ def _parse_first_item(xml_text: str, exclude: Collection[str] = ()) -> Optional[
         clean_title = _strip_source_suffix(title)
         if not clean_title or not is_safe_news_title(clean_title):
             continue
-        if clean_title in exclude:
+        if clean_title in seen:
             continue
-        return {"title": clean_title}
-    return None
+        seen.add(clean_title)
+        out.append(clean_title)
+        if len(out) >= limit:
+            break
+    return out
 
 
-async def fetch_news_headline(
+async def fetch_news_headlines(
     keyword: Optional[str] = None,
     *,
     fetch: Optional[Callable[..., Awaitable[Optional[str]]]] = None,
-    exclude: Collection[str] = (),
-) -> Optional[dict]:
-    """抓一則新聞標題。keyword 給時查該關鍵字，否則從天氣/科技/科學隨機挑來源（見 news_url）。失敗回 None。"""
+    limit: int = 5,
+) -> list[str]:
+    """抓最多 limit 則新聞標題，查 keyword。沒有 keyword 不抓（回 []）。
+    剝完來源後綴、過濾不安全標題、同標題只留第一個，保留 RSS 順序。
+    任何失敗回 []。"""
     if not enabled():
-        return None
+        return []
+    if not keyword:
+        return []
     xml_text = await (fetch or _default_fetch)(keyword)
     if not xml_text:
+        return []
+    return _parse_items(xml_text, limit)
+
+
+def pick_news_interest(interests: Sequence[str], *, rng=random) -> Optional[tuple[str, str]]:
+    """在場興趣平均抽一個，回 (興趣原句, 搜尋關鍵字)；興趣原句給 render 講「講給誰
+    聽」。interests 元素格式是 "{成員名}喜歡{東西}"：含「喜歡」取其後的部分當關鍵字，
+    不含則原樣使用。沒有候選回 None。"""
+    candidates: list[tuple[str, str]] = []
+    seen_keywords: set[str] = set()
+    for item in interests or []:
+        s = str(item).strip()
+        if "喜歡" in s:
+            keyword = s.split("喜歡", 1)[-1].strip()
+        else:
+            keyword = s
+        if not keyword or keyword in seen_keywords:
+            continue
+        seen_keywords.add(keyword)
+        candidates.append((s, keyword))
+    if not candidates:
         return None
-    return _parse_first_item(xml_text, exclude=exclude)
+    return rng.choice(candidates)

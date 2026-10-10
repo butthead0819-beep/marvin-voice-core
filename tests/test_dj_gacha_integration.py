@@ -47,7 +47,7 @@ class DummyCog(MusicDJLyricsMixin):
         return []
 
     async def _fetch_news_items_async(self, interests):
-        return []
+        return [], {}
 
 
 @pytest.mark.asyncio

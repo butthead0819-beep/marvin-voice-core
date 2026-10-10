@@ -370,7 +370,8 @@ class GeminiRouterLLMMixin:
                     f"(short_circuit={self._llm_bus._SHORT_CIRCUIT_AFTER}, env LLM_BUS=true 才會走 bus)")
 
     async def _call_llm(self, system_prompt: str, user_prompt: str, is_json: bool = False, speaker: str = None, allow_local: bool = True, temperature: float = None, thinking_level: str = None, tier: str = "medium", purpose: str = None, prefer_providers: tuple = ()) -> str:
-        """通用 LLM 呼叫函式。tier: 'simple'=Groq-8b優先, 'medium'=Groq-70b優先(預設), 'high'=直接Gemini
+        """通用 LLM 呼叫函式。tier: 'simple'=Groq-8b優先, 'medium'=Groq-70b優先(預設), 'high'=直接Gemini,
+        'premium'=付費 Gemini 優先（過 guard、記帳，caller=purpose），失敗/超 cap 退回 simple 走免費 bus
 
         purpose: 呼叫用途標籤，寫進 records/llm_routing.jsonl 供歸因（誰在吃池/誰是無感
         call）。不傳 → 自動取呼叫方 method 名（22 個 generate_* 各自正確歸因、免逐一手標）；
@@ -391,11 +392,32 @@ class GeminiRouterLLMMixin:
             if random.random() < dere_chance:
                 final_system_prompt = self.prompt_manager.get_instruction("dere_persona", dna=self.dna, speaker=speaker, memory_manager=self.memory)
 
+        # 💰 [Premium] 品質敏感的生成（如 DJ 口白）先走付費；失敗/超 cap/空回應 → 降回 simple 走免費 bus
+        if tier == "premium":
+            from llm_agents.metrics import log_dispatch
+            _t0 = time.monotonic()
+            try:
+                result = await self._call_paid_gemini(
+                    final_system_prompt, user_prompt, caller=purpose, is_json=is_json,
+                    temperature=temperature, thinking_level=thinking_level,
+                )
+                if result:
+                    log_dispatch(
+                        route="paid", purpose=purpose, speaker=speaker,
+                        provider="gemini_paid", model=self.cleaner_model,
+                        latency_ms=int((time.monotonic() - _t0) * 1000),
+                        tokens=0, success=True,
+                    )
+                    return result
+            except Exception as _pe:
+                logger.warning(f"💰 [Premium] {purpose} 付費生成失敗，退回免費 bus: {_pe}")
+            tier = "simple"
+
         # 🚌 [LLMBus Phase 1] env LLM_BUS=true 且 bus 已 inject → 走 bus 一條路（禁雙跑：bus
         # 失敗回 '' 不 fallback legacy 避免 TPM 雙計，Risk 3）。Bus 沒裝 / flag off → 走下方 legacy。
         if (os.getenv("LLM_BUS", "").lower() in ("1", "true", "yes")
                 and getattr(self, "_llm_bus", None) is not None):
-            from llm_agents.base import LLMContext, NoLLMAvailable
+            from llm_agents.base import LLMContext, NoLLMAvailable, SPOKEN_PURPOSES, SPOKEN_EXCLUDED_PROVIDERS
             from llm_agents.metrics import log_dispatch
             _TIER_TO_QUALITY = {"simple": "fast", "medium": "balanced", "high": "high"}
             _bus_purpose = purpose  # caller 顯式傳的用途標籤（預設 marvin_chat 向後相容）
@@ -408,6 +430,7 @@ class GeminiRouterLLMMixin:
                 json_mode=is_json,
                 temperature=temperature,
                 prefer_providers=tuple(prefer_providers or ()),
+                exclude_providers=SPOKEN_EXCLUDED_PROVIDERS if _bus_purpose in SPOKEN_PURPOSES else (),
             )
             _t0 = time.monotonic()
             try:
@@ -549,6 +572,56 @@ class GeminiRouterLLMMixin:
             if self.on_fallback_callback:
                 asyncio.create_task(self.on_fallback_callback("Tier-1", self.model_name))
 
+    async def _call_paid_gemini(self, system_prompt: str, user_prompt: str, *, caller: str,
+                                is_json: bool = False, temperature: float = None,
+                                thinking_level: str = None, timeout: float = 10.0) -> str:
+        """付費 Gemini（GEMINI_PAID_API_KEY + self.cleaner_model）單次呼叫：先過 PaidUsageGuard、成功記帳。
+        沒有 paid client / 超 cap → raise RuntimeError；API 失敗照原樣 raise。"""
+        paid_client = getattr(self, 'google_paid_client', None)
+        if not paid_client or self.provider != "gemini":
+            raise RuntimeError("paid_unavailable")
+
+        from llm_paid import estimate_cost
+        guard = self._get_paid_guard()
+        est_in = (len(system_prompt) + len(user_prompt)) // 3
+        est_cost = estimate_cost(self.cleaner_model, est_in, est_in // 2)
+        if not guard.allow(est_cost):
+            logger.error(f"🛑 [Paid Cap] 已達 daily/monthly 上限 (est=${est_cost:.4f})，跳過付費備援")
+            raise RuntimeError("paid_cap_exceeded")
+
+        await self._acquire_cloud_rpm_slot()
+        config = genai.types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            response_mime_type="application/json" if is_json else None,
+            temperature=temperature,
+            thinking_config=genai.types.ThinkingConfig(thinking_level=thinking_level) if (thinking_level and self._supports_thinking()) else None
+        )
+        response = await asyncio.wait_for(
+            paid_client.aio.models.generate_content(
+                model=self.cleaner_model,
+                contents=user_prompt,
+                config=config
+            ),
+            timeout=timeout
+        )
+        usage = response.usage_metadata
+        if usage:
+            self.budget.add_tokens(usage.total_token_count)
+            in_tok = getattr(usage, "prompt_token_count", 0) or 0
+            out_tok = getattr(usage, "candidates_token_count", 0) or 0
+        else:
+            # SDK 偶爾不回 usage_metadata（race / partial response）
+            # → 用 prompt+response 長度估算（保守略高，避免 cost 不可見）
+            logger.warning("⚠️ [Paid Fallback] response 無 usage_metadata，用長度估算入帳")
+            _resp_text = response.text or ""
+            in_tok = (len(system_prompt) + len(user_prompt)) // 3
+            out_tok = len(_resp_text) // 3
+        actual_cost = estimate_cost(self.cleaner_model, in_tok, out_tok)
+        guard.record(caller=caller, model=self.cleaner_model,
+                     tokens=int(in_tok + out_tok), est_usd=actual_cost,
+                     in_tokens=in_tok, out_tokens=out_tok)
+        return response.text.strip()
+
     async def _call_cloud(self, system_prompt: str, user_prompt: str, is_json: bool, temperature: float = None, thinking_level: str = None) -> str:
         """核心雲端模型呼叫邏輯 (Gemini / OpenAI Compatible) - 增加重試機制"""
         max_retries = 3
@@ -609,51 +682,18 @@ class GeminiRouterLLMMixin:
                     # upstream jitter 是 graceful-degrade case，不該叫醒人。
                     logger.warning(f"⚠️ [Tier-1 Exhausted] 雲端重試 {max_retries} 次後依然失敗，啟動 paid fallback: {e}")
                     # 💰 [Paid Fallback] 主 key 三重重試全部失敗後，嘗試付費備援
-                    paid_client = getattr(self, 'google_paid_client', None)
-                    if paid_client and self.provider == "gemini":
-                        # Pre-flight：估 cost；超 cap 直接跳過（保守 in≈prompt/3, out≈in/2）
-                        from llm_paid import estimate_cost
-                        guard = self._get_paid_guard()
-                        est_in = (len(system_prompt) + len(user_prompt)) // 3
-                        est_cost = estimate_cost(self.cleaner_model, est_in, est_in // 2)
-                        if not guard.allow(est_cost):
-                            logger.error(f"🛑 [Paid Cap] 已達 daily/monthly 上限 (est=${est_cost:.4f})，跳過付費備援")
-                            raise e
+                    if getattr(self, 'google_paid_client', None) and self.provider == "gemini":
                         try:
                             logger.warning("💰 [Paid Fallback] 啟用付費 API 最後防線...")
-                            await self._acquire_cloud_rpm_slot()
-                            config = genai.types.GenerateContentConfig(
-                                system_instruction=system_prompt,
-                                response_mime_type="application/json" if is_json else None,
-                                temperature=temperature,
-                                thinking_config=genai.types.ThinkingConfig(thinking_level=thinking_level) if (thinking_level and self._supports_thinking()) else None
-                            )
-                            response = await asyncio.wait_for(
-                                paid_client.aio.models.generate_content(
-                                    model=self.cleaner_model,
-                                    contents=user_prompt,
-                                    config=config
-                                ),
-                                timeout=10.0
-                            )
-                            usage = response.usage_metadata
-                            if usage:
-                                self.budget.add_tokens(usage.total_token_count)
-                                in_tok = getattr(usage, "prompt_token_count", 0) or 0
-                                out_tok = getattr(usage, "candidates_token_count", 0) or 0
-                            else:
-                                # SDK 偶爾不回 usage_metadata（race / partial response）
-                                # → 用 prompt+response 長度估算（保守略高，避免 cost 不可見）
-                                logger.warning("⚠️ [Paid Fallback] response 無 usage_metadata，用長度估算入帳")
-                                _resp_text = response.text or ""
-                                in_tok = (len(system_prompt) + len(user_prompt)) // 3
-                                out_tok = len(_resp_text) // 3
-                            actual_cost = estimate_cost(self.cleaner_model, in_tok, out_tok)
-                            guard.record(caller="marvin_reply_fallback", model=self.cleaner_model,
-                                         tokens=int(in_tok + out_tok), est_usd=actual_cost,
-                                         in_tokens=in_tok, out_tokens=out_tok)
+                            result = await self._call_paid_gemini(
+                                system_prompt, user_prompt, caller="marvin_reply_fallback",
+                                is_json=is_json, temperature=temperature, thinking_level=thinking_level)
                             logger.info("💰 [Paid Fallback] 成功。")
-                            return response.text.strip()
+                            return result
+                        except RuntimeError as pe:
+                            if str(pe) == "paid_cap_exceeded":
+                                raise e
+                            logger.error(f"❌ [Paid Fallback] 付費備援也失敗: {pe}")
                         except Exception as pe:
                             logger.error(f"❌ [Paid Fallback] 付費備援也失敗: {pe}")
                     raise e

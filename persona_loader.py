@@ -50,5 +50,9 @@ def load_dj_styles() -> dict:
     return _load_yaml("dj_styles.yaml")
 
 
+def load_dj_perspectives() -> dict:
+    return _load_yaml("dj_perspectives.yaml")
+
+
 def load_tts_limits() -> dict:
     return _load_yaml("tts_limits.yaml")

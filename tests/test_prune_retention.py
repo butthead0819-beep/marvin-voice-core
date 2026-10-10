@@ -218,3 +218,57 @@ def test_prune_retention_dry_run_and_apply(tmp_path):
     lines = presence_file.read_text().strip().splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["event"] == "leave"
+
+
+def test_prune_events_dry_run_and_apply(tmp_path):
+    from scripts.prune_retention import prune_events
+
+    db_file = tmp_path / "events.db"
+    conn = sqlite3.connect(db_file)
+    conn.execute(
+        """CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL, owner TEXT NOT NULL, activity TEXT NOT NULL,
+            place TEXT, event_date REAL, date_text TEXT NOT NULL DEFAULT '',
+            participants TEXT NOT NULL DEFAULT '[]', heard_by TEXT NOT NULL DEFAULT '[]',
+            quotes TEXT NOT NULL DEFAULT '[]', first_seen REAL NOT NULL,
+            last_seen REAL NOT NULL, created_at REAL NOT NULL
+        )"""
+    )
+    now = 1790800000.0
+    cutoff_30d = now - 30 * 86400
+    conn.execute(
+        "INSERT INTO events (guild_id, owner, activity, first_seen, last_seen, created_at) "
+        "VALUES (1, 'showay', 'old', ?, ?, ?)",
+        (now - 35 * 86400, now - 35 * 86400, now - 35 * 86400),
+    )
+    conn.execute(
+        "INSERT INTO events (guild_id, owner, activity, first_seen, last_seen, created_at) "
+        "VALUES (1, 'showay', 'new', ?, ?, ?)",
+        (now - 5 * 86400, now - 5 * 86400, now - 5 * 86400),
+    )
+    conn.commit()
+
+    res_dry = prune_events(conn, cutoff_30d, apply=False)
+    assert res_dry["matched"] == 1
+    assert res_dry["deleted"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 2
+
+    res_apply = prune_events(conn, cutoff_30d, apply=True)
+    assert res_apply["deleted"] == 1
+    rows = conn.execute("SELECT activity FROM events").fetchall()
+    assert [r[0] for r in rows] == ["new"]
+    conn.close()
+
+
+def test_prune_events_missing_table_returns_zero_matched(tmp_path):
+    from scripts.prune_retention import prune_events
+
+    db_file = tmp_path / "no_events.db"
+    conn = sqlite3.connect(db_file)
+    conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+    conn.commit()
+
+    res = prune_events(conn, time.time(), apply=True)
+    assert res == {"matched": 0, "oldest": None, "deleted": 0}
+    conn.close()

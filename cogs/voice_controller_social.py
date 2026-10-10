@@ -8,7 +8,7 @@ _schedule_reaction_check / _speak_bus / _mood_agent /
 _room_mood_store / active_text_channel 等全部沿用原本 self 存取，行為零改動。
 
 包含：
-  - background_news_loop / speak_bus_tick_loop / dynamic_social_loop（@tasks.loop）
+  - speak_bus_tick_loop / dynamic_social_loop（@tasks.loop）
   - SpeakBus context/outcome helpers（_build_speak_context / _compute_speak_mode /
     _post_utterance_speak_tick / _record_speak_outcome_after）
   - 共用 proactive-topic cooldown（proactive_topic_on_cooldown / mark_..._spoken）
@@ -55,37 +55,6 @@ def too_soon_after_summon(connection_time, now: float,
 
 
 class ProactiveSocialMixin:
-    @tasks.loop(minutes=30.0)
-    async def background_news_loop(self):
-        """[Background News] 每 30 分鐘對在線玩家的喜好進行 DDG 更新，結果存入 news_queue。
-        get_rich_context() 會在下次喚醒時自動注入最新一筆。"""
-        online = self.get_online_members()
-        if not online:
-            return
-
-        import random
-        for player in online:
-            try:
-                mem = self.bot.router.memory.get_player_memory(player)
-                likes = mem.get("likes", [])
-                if not likes:
-                    continue
-
-                interest = random.choice(likes)
-                results = await self.bot.router._execute_web_search(f"{interest} 新聞")
-                if not results:
-                    continue
-
-                marvinized = await self.bot.router.marvinize_news(player, interest, results[:400])
-                if marvinized:
-                    self.bot.router.memory.enqueue_news(player, marvinized)
-                    logger.info(f"📰 [BG News] {player} 新聞更新完成: {interest}")
-
-            except Exception as e:
-                logger.warning(f"⚠️ [BG News] {player} 新聞更新失敗: {e}")
-
-            await asyncio.sleep(15)  # 每個玩家間隔 15 秒，避免 DDG rate limit
-
     # ── SpeakBus 5s idle tick（social-catalyst week1） ─────────────────────────
     # 沒 SpeakAgent 註冊時整段是 no-op；agent 進來後負責收 bid + 寫 outcome log。
     # 跑得起在 voice channel 內才有意義，沒連線就 early return（節省功耗）。

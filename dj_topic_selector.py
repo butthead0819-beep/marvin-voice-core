@@ -30,16 +30,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PATH = "records/dj_topic_cooldown.json"
 COOLDOWN_S = 8 * 3600       # 同一具體生活/興趣話題用過 8 小時內不重複
-NEWS_COOLDOWN_S = 2 * 3600  # 新聞頻率可較高，2 小時內不重複
+NEWS_COOLDOWN_S = 30 * 86400  # 新聞用過就不再用（30 天 > RSS 舊文殘留期）；10/10 實測 2h 冷卻讓同一則 Berlingo 一天講 14 次
 
 TOPIC_MODES = ("life", "interest", "news", "callback", "activity")
-NON_TOPIC_MODES = ("guide", "conversation", "atmosphere", "quick")
+NON_TOPIC_MODES = ("guide", "conversation", "perspective", "atmosphere", "quick")
 
 # 扭蛋池的抽取權重：先全部 1.0（均等機率），未來可依聽眾回饋個別調整。
 MODE_WEIGHTS: dict[str, float] = {
     "life": 1.0, "interest": 1.0, "news": 1.0,
     "callback": 1.0, "activity": 1.0,
-    "guide": 1.0, "conversation": 1.0, "atmosphere": 1.0, "quick": 1.0,
+    "guide": 1.0, "conversation": 1.0, "perspective": 1.0, "atmosphere": 1.0, "quick": 1.0,
 }
 
 _FALLBACK_KEY = "_last_fallback_mode"
@@ -98,7 +98,7 @@ class TopicCooldownStore:
 
         meme_id: 語義 tag。傳入時用 "meme:{meme_id}" 作 key，
                  與純 text hash 是獨立 namespace，互不影響。
-        cooldown_s: 自訂冷卻秒數（預設使用 COOLDOWN_S 8小時，新聞為 2 小時）。
+        cooldown_s: 自訂冷卻秒數（預設使用 COOLDOWN_S 8小時，新聞為 30 天）。
         """
         cd = cooldown_s if cooldown_s is not None else COOLDOWN_S
         key = f"meme:{meme_id}" if meme_id else _topic_key(text)
@@ -231,13 +231,14 @@ def select_mode(
     callbacks: list[str] | None = None,
     activities: list[str] | None = None,
     has_guide: bool = False,
+    has_perspective: bool = False,
     exclude_modes: Collection[str] = (),
     rng: random_module.Random | None = None,
 ) -> tuple[str | None, str]:
     """本地扭蛋抽出這次串場要走哪個 mode，LLM 不必自己判斷「有沒有話題、要不要硬掰」。
 
     1. 建池：life（主角要在場）/interest/news/callback/activity
-       各自找第一個未冷卻的候選；guide/conversation 只在呼叫端傳對應
+       各自找第一個未冷卻的候選；guide/conversation/perspective 只在呼叫端傳對應
        has_*=True 時才進池；atmosphere/quick 永遠進池。
     2. 池裡權重（MODE_WEIGHTS）≤0 的 mode 移出。池空 → (None, "quick")，不寫狀態。
     3. 不連抽：池大小 >1 時把上次選到的 mode 也移出池。之後池裡還有非 quick 的 mode
@@ -246,7 +247,7 @@ def select_mode(
        沒抽中的候選（包含同一輪沒被選中的話題）不受影響，留給下次。
 
     回傳 (topic_text, mode)，mode 比 select_topic 多了
-    'guide'/'conversation'/'atmosphere'/'quick'。
+    'guide'/'conversation'/'perspective'/'atmosphere'/'quick'。
     topic_text 只有 mode in {'life', 'interest', 'news', 'callback', 'activity'}
     才非 None，其餘 mode 沒有具體文字素材——caller 自己依 mode 決定串場方向（quick
     甚至該跳過 LLM，直接走本地模板）。
@@ -276,6 +277,8 @@ def select_mode(
         pool.append("guide")
     if has_conversation:
         pool.append("conversation")
+    if has_perspective:
+        pool.append("perspective")
     pool.append("atmosphere")
     pool.append("quick")
 

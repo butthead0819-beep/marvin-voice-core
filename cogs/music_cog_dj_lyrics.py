@@ -360,19 +360,23 @@ class MusicDJLyricsMixin:
         except Exception:
             return []
 
-    async def _fetch_news_items_async(self, interests: list[str]) -> list[str]:
-        """從 Google News 獲取適合電台播報的乾淨新聞（已過濾受傷/死亡/政治/八卦）。"""
+    async def _fetch_news_items_async(self, interests: list[str]) -> tuple[list[str], dict[str, str]]:
+        """只用在場興趣搜新聞（沒興趣就不抓），已過濾受傷/死亡/政治/八卦。
+        回傳 (標題們, 標題→搜它的在場興趣原句)，最多 5 則，讓冷卻中的第一則不會擋住
+        後面沒用過的。"""
         if not getattr(self, "_enable_dj_news_fetch", True):
-            return []
+            return [], {}
         try:
-            from news_fetch import fetch_news_headline
-            _kw = interests[0] if interests else None
-            _news_res = await fetch_news_headline(_kw)
-            if _news_res and _news_res.get('title'):
-                return [_news_res['title']]
+            from news_fetch import fetch_news_headlines, pick_news_interest
+            picked = pick_news_interest(interests)
+            if picked is None:
+                return [], {}
+            why, keyword = picked
+            titles = await fetch_news_headlines(keyword)
+            return titles, {t: why for t in titles}
         except Exception as e:
             logger.debug(f"[DJ News] 新聞抓取失敗: {e}")
-        return []
+        return [], {}
 
     def _present_callbacks(self, present_members) -> tuple[list[str], dict[str, tuple[str, dict]]]:
         """從在場成員的 callback_queue 挑選適合 DJ 串場的現實生活舊事素材。"""
@@ -660,8 +664,8 @@ class MusicDJLyricsMixin:
         life = await self._life_cores_async()
         interests = self._present_interests()
 
-        # 獲取安全生活/科技新聞素材（已在 news_fetch 過濾政治/受傷/死亡）
-        news_items = await self._fetch_news_items_async(interests)
+        # 在場興趣相關新聞（已在 news_fetch 過濾政治/受傷/死亡）
+        news_items, news_context = await self._fetch_news_items_async(interests)
 
         # autopilot 策展理由算在 mode 選擇之前：有理由可講時別讓它被 fallback 輪替
         # 排進 quick（quick 沒素材時直接跳過 LLM，會把這個好料浪費掉）。
@@ -675,7 +679,9 @@ class MusicDJLyricsMixin:
         activity_lines = presence_materials(
             getattr(getattr(getattr(_vc_now, 'voice_client', None), 'channel', None), 'members', None))
 
-        from dj_narration_orchestrator import DJMaterials, apply_side_effects, plan_narration
+        from dj_narration_orchestrator import (
+            DJMaterials, apply_side_effects, match_perspective_topic, plan_narration,
+        )
         _card = info.get('_song_card')
         if not _card and isinstance(guide, str):
             _card = {"audiophile_guide": guide}
@@ -683,8 +689,10 @@ class MusicDJLyricsMixin:
             revival_lines=revival_lines, memory_evidence=memory_evidence, focus=_focus,
             life=life, present_members=present_members, interests=interests,
             news_items=news_items,
+            news_context=news_context,
             callbacks=callback_lines, activities=activity_lines,
             has_guide=bool(guide), has_conversation=bool(conv_lines),
+            perspective_topic=match_perspective_topic([e['text'] for e in conv_entries]),
             autopilot_reason=_autopilot_reason, exclude_modes=used["modes"],
             env=env, conv_lines=conv_lines, guide=guide, song_card=_card,
             empathy_hooks=self._DJ_EMPATHY_HOOK_TEMPLATES,

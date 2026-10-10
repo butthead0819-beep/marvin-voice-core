@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from llm_pool import TieredLLMRouter, CooldownAwarePool, PoolEndpoint
+from llm_pool import TieredLLMRouter, CooldownAwarePool, PoolEndpoint, build_tier_pools
 from llm_paid import PaidUsageGuard
 
 
@@ -82,3 +82,35 @@ async def test_paid_endpoint_blocked_when_over_cap(tmp_path):
     out = await router.quick("測試", caller="cleaner_rescue", max_tokens=500)
     assert out is None
     assert client.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_paid_endpoint_suffixed_name_records_usage(tmp_path):
+    """真實命名是 build_tier_pools 產生的 'gemini_paid-quick'，不是裸 'gemini_paid'。"""
+    client = _FakeClient(prompt_tokens=200, completion_tokens=80)
+    router, _ = _router("gemini_paid-quick", client, tmp_path)
+    out = await router.quick("測試", caller="cleaner_rescue")
+    assert out == "好"
+    rows = _rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["caller"] == "cleaner_rescue"
+
+
+@pytest.mark.asyncio
+async def test_paid_endpoint_suffixed_name_blocked_when_over_cap(tmp_path):
+    client = _FakeClient()
+    router, guard = _router("gemini_paid-quick", client, tmp_path, daily_cap=0.001)
+    guard.record(caller="x", model="gemini-2.5-flash", tokens=99999, est_usd=0.5)
+    out = await router.quick("測試", caller="cleaner_rescue", max_tokens=500)
+    assert out is None
+    assert client.calls == 0
+
+
+def test_build_tier_pools_paid_endpoint_naming():
+    """鎖住 build_tier_pools 的付費端點命名慣例，防未來再錯配 _is_paid 判斷。"""
+    quick_pool, _ = build_tier_pools(
+        env={"GEMINI_PAID_API_KEY": "x"},
+        client_factory=lambda base, key: object(),
+    )
+    names = [ep.name for ep in quick_pool.endpoints]
+    assert any(n.startswith("gemini_paid") for n in names)

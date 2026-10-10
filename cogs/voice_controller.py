@@ -63,6 +63,7 @@ from recall_handler import (
 from summary_store import SummaryStore
 from task_store import TaskStore
 from session_summarizer import SessionSummarizer, commitment_to_callback
+from event_memory import EventStore
 from callback_delivery import is_join_callback_enabled, format_callback_line
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
@@ -253,6 +254,7 @@ def build_intent_agents(controller, bot):
     from intent_agents.dual_speak_agent import DualSpeakAgent
     from intent_agents.frustration_agent import FrustrationAgent
     from intent_agents.current_album_agent import CurrentAlbumAgent
+    from intent_agents.event_recall_agent import EventRecallAgent
     from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
     return [
         HallucinationGuardAgent(controller),
@@ -272,6 +274,7 @@ def build_intent_agents(controller, bot):
         TasteCorrectionAgent(controller),  # 2026-09-18: 語音勘誤/查詢自己的喜好（「把X從我的喜好拿掉」）
         PersonalShuffleAgent(controller),  # 2026-06-29: 語音「連續隨機播我的歌單」（一次墊一首）
         GameKnowledgeAgent(controller),  # 2026-06-06: Plan 4 intent_gap ready — 「查麥塊…」遊戲知識查詢
+        EventRecallAgent(controller),  # 2026-10-10: 事件記憶——「我上個月去哪露營」→ 只念 DB 欄位
         GroundedQAAgent(controller),  # 2026-08-30: AmbientQA — 「馬文幫我查 X」/「X 是什麼」→ grounded 回答
         # 🎭 [Marmo 一搭一唱 PoC] DualSpeakAgent — 只在 dispatch_source="marmo_inject"
         # 時出價 0.95；wake 路徑全 dense 0.0 with reason="not_marmo_inject"，零干擾。
@@ -655,7 +658,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.daily_log_export_loop.start() # 📋 [Daily Export] 每天中午 12:00 匯出前一日 log
         self.daily_watchdog_loop.start()   # 🐕 [Watchdog] 每天 13:45 檢查 cron 健康 + Discord 心跳
         self.daily_vector_retention_loop.start() # 🧹 每天 03:30 (UTC+8) 清理超過 90 天逐字稿向量
-        self.background_news_loop.start()  # 📰 [BG News] 每 30 分鐘更新在線玩家喜好新聞
         self.speak_bus_tick_loop.start()   # 🗣️ [SpeakBus] 每 5s tick；無 agent 時靜默回 None
         self.tts_duck_refresh_loop.start() # 🔇 每 1s 刷新 TTS 對玩家 duck 窗口（連續說話不中途解除）
         
@@ -689,6 +691,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 owner_speaker=_owner,
                 on_commitment_detected=self._on_commitment_detected,
                 router=self.bot.router,  # 走 LLM Bus
+                event_store=EventStore(),  # 🗓️ 事件記憶 Phase 1（docs/designs/event-memory.md）
+                members_fn=lambda: [m for m in self.get_online_members() if self.consent.is_consented(m)],
             )
             asyncio.create_task(self._session_summarizer.start(guild_id=_guild_id))
             self._confirmation_checker_task = asyncio.create_task(self._confirmation_checker_loop())
@@ -746,7 +750,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.sentinel_monitor_loop.stop()
         self.tts_duck_refresh_loop.stop()
         self.reset_stt_counter_loop.stop()
-        self.background_news_loop.stop()
         self.speak_bus_tick_loop.stop()
         
         # 取消所有待處理的任務

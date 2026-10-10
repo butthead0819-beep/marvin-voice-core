@@ -100,7 +100,7 @@ def _make_cog(tmp_path, monkeypatch):
     monkeypatch.setattr(cog, "_dj_song_material", AsyncMock(return_value=(None, None)))
     monkeypatch.setattr(cog, "_life_cores_async", AsyncMock(return_value=[]))
     monkeypatch.setattr(cog, "_present_interests", lambda: [])
-    monkeypatch.setattr(cog, "_fetch_news_items_async", AsyncMock(return_value=[]))
+    monkeypatch.setattr(cog, "_fetch_news_items_async", AsyncMock(return_value=([], {})))
     monkeypatch.setattr(cog, "_present_callbacks", lambda present_members: ([], {}))
     monkeypatch.setattr(cog, "_autopilot_pick_reason", lambda info: "")
     monkeypatch.setattr(cog, "_dj_heat_bank", lambda: _make_fake_bank())

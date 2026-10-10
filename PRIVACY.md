@@ -54,6 +54,8 @@ Marvin 需要你把他召喚進語音頻道（`/summon`）才會開始聽。他�
 | 語音辨識紀錄檔 | 每句辨識結果 | `stt_history.log`（5MB×3 輪替）、`records/daily/`、launchd 的 `bot_stdout.log` | stt_history.log 依大小汰換；每日切片保留 14 天；launchd log 每日輪替保留 14 份 | 每日 03:00 執行（2026-10-02 啟用，首次清理已完成） |
 | 人物記憶 | Marvin 對你的印象、關係階段、好惡、禁忌、音樂口味、說話風格、個人資訊（飲食/穿著/居住/交通、Minecraft ID）、印象深刻的情緒時刻、點歌紀錄、互動統計、待回應的話題 | `marvin.db` `players` 表 + `suki_memory.json` | 長期保留，沒有刪除規則 | 備份：`suki_memory.*.bak` 保留 7 份；`records/backups/` 約 140 份不會自動刪 |
 | 5 分鐘對話摘要 | 摘要文字、在場者 | `marvin.db` `session_summaries` | 30 天 | 每日 03:00 執行（2026-10-02 啟用，首次清理已完成） |
+| 事件記憶 | 誰、什麼活動、地點、日期、同行者、當時在場者、最多 5 句原話 | `marvin.db` `events` | 最後一次被提到後 30 天 | 每日 03:00 執行（2026-10-10 起） |
+| 人物老家 | 誰的老家在哪、學到時的那句原話 | `marvin.db` `hometowns` | 最後一次被提到後 30 天 | 每日 03:00 執行（2026-10-10 起） |
 | 待辦 / 承諾 | 誰答應了什麼、原句 | `marvin.db` `tasks` | done / cancelled 30 天；pending 永久保留 | 每日 03:00 執行（2026-10-02 啟用，首次清理已完成） |
 | 日記 | 每 10 分鐘的四行日記 | `records/chat_summary_log.txt` | 本機檔沒有刪除規則（2026-10-02 起不再貼到 Discord；舊的 Discord 貼文依該伺服器管理） | |
 | 音樂紀錄 | 每首歌的點歌者與反應、每人推薦、跳過紀錄 | `music_memory.json` | 長期保留 | |

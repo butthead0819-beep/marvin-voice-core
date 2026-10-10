@@ -132,9 +132,9 @@ def test_select_topic_picks_news_when_available(tmp_path):
     assert (topic, kind) == ("台積電新廠完工", "news")
 
 
-def test_news_cooldown_is_2_hours(tmp_path):
+def test_news_cooldown_is_30_days(tmp_path):
     from dj_topic_selector import NEWS_COOLDOWN_S
-    assert NEWS_COOLDOWN_S == 2 * 3600
+    assert NEWS_COOLDOWN_S == 30 * 86400
 
     t, now = _clock()
     store = TopicCooldownStore(str(tmp_path / "c.json"), now=now)
@@ -144,7 +144,11 @@ def test_news_cooldown_is_2_hours(tmp_path):
     t[0] += 3600
     assert select_topic([], [], store, news_items=["台積電新廠完工"]) == (None, "none")
 
-    # 滿 2 小時（+3601s）：冷卻結束，可再次使用
-    t[0] += 3601
+    # 29 天後：仍在冷卻中
+    t[0] += 29 * 86400
+    assert select_topic([], [], store, news_items=["台積電新廠完工"]) == (None, "none")
+
+    # 滿 30 天（+1s）：冷卻結束，可再次使用
+    t[0] += 86400 + 1
     assert select_topic([], [], store, news_items=["台積電新廠完工"]) == ("台積電新廠完工", "news")
 

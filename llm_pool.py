@@ -248,7 +248,7 @@ class TieredLLMRouter:
         async def _call(ep: PoolEndpoint):
             # 💰 付費端點守門：呼叫前過 PaidUsageGuard（超 daily/monthly 上限
             # → 不打 API 直接讓位，dispatch 冷卻此端點換下一家/回 None 兜底）。
-            _is_paid = ep.name == "gemini_paid"
+            _is_paid = ep.name.startswith("gemini_paid")
             if _is_paid:
                 from llm_paid import PaidUsageGuard, estimate_cost
                 _guard = self._paid_guard or PaidUsageGuard()

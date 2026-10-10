@@ -22,7 +22,7 @@ def test_modes_registry_has_exactly_expected_names():
     expected = {
         "revival", "memory_match", "song", "life", "interest",
         "news", "callback", "activity", "guide",
-        "conversation", "atmosphere", "quick", "reason",
+        "conversation", "perspective", "atmosphere", "quick", "reason",
     }
     assert set(MODES.keys()) == expected
 
@@ -30,7 +30,7 @@ def test_modes_registry_has_exactly_expected_names():
 def test_tts_emotion_for_matches_known_table():
     upbeat = {"life", "interest", "activity", "news"}
     calm = {"atmosphere"}
-    normal = {"quick", "reason", "song", "conversation", "memory_match", "revival", "guide", "callback"}
+    normal = {"quick", "reason", "song", "conversation", "perspective", "memory_match", "revival", "guide", "callback"}
     for mode in upbeat:
         assert tts_emotion_for(mode) == "upbeat", mode
     for mode in calm:
