@@ -21,6 +21,7 @@ from event_memory import (
     build_select_user_prompt,
     extract_and_store,
     find_merge_target,
+    learn_hometowns_local,
     parse_events,
     parse_hometowns,
     parse_ids,
@@ -786,3 +787,50 @@ async def test_extract_and_store_hometown_learned_this_window_validates_event_pl
     router = _router_with([content])
     await extract_and_store(router, store, 1, transcript, ["showay"], 1791640000.0)
     assert store.list_guild(1, 0)[0]["place"] == "臺東"
+
+
+# ═══════════════════════════════════════════════════════
+# learn_hometowns_local（本地 regex 補漏：LLM 漏抓 9/29 陳進文「我臺東老家」）
+# ═══════════════════════════════════════════════════════
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("[23:24:39] 陳進文: 所以說我臺東老家那邊我臺東老家不是", [("陳進文", "臺東")]),
+        ("[00:24:56] 陳進文: 他也知道有去過我們臺東老家", [("陳進文", "臺東")]),
+        ("[10:00:00] showay: 我老家在高雄啦", [("showay", "高雄")]),
+        ("[10:00:00] showay: 我家鄉在花蓮", [("showay", "花蓮")]),
+        ("[10:00:00] showay: 我們的老家很大", []),
+        ("[10:00:00] 狗與露: 但是其實黑老家", []),
+        ("[10:00:00] showay: 老家在那邊", []),
+        ("[10:00:00] showay: 我要回老家", []),
+        ("[10:00:00] 馬文: 我臺東老家", []),
+        ("[10:00:00] weakgogo: 我臺東老家", []),  # 不在 heard_by
+    ],
+)
+def test_learn_hometowns_local(line, expected):
+    got = learn_hometowns_local(line, ["陳進文", "showay", "狗與露", "馬文"])
+    assert [(h["person"], h["place"]) for h in got] == expected
+
+
+def test_learn_hometowns_local_quote_is_the_line_text():
+    got = learn_hometowns_local("[23:24:39] 陳進文: 所以說我臺東老家那邊", ["陳進文"])
+    assert got[0]["quote"] == "所以說我臺東老家那邊"
+
+
+def test_learn_hometowns_local_dedup_same_person_place():
+    t = "[23:24:39] 陳進文: 我臺東老家\n[23:25:00] 陳進文: 我們臺東老家那邊"
+    assert len(learn_hometowns_local(t, ["陳進文"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_local_hometown_learned_before_llm_and_in_prompt():
+    """LLM 沒回 hometowns 也要學到；且在 LLM 呼叫前學到，所以本窗 prompt 背景就有。"""
+    store = EventStore(":memory:")
+    transcript = "[23:24:39] 陳進文: 所以說我臺東老家那邊"
+    router = _router_with([_mixed_json(events=[], hometowns=[])])
+    stats = await extract_and_store(router, store, 1, transcript, ["陳進文"], 1791640000.0)
+    assert store.get_hometowns(1, ["陳進文"]) == {"陳進文": "臺東"}
+    assert stats["hometowns"] == 1
+    user_prompt = router._call_llm.call_args.args[1]
+    assert "陳進文 老家在臺東" in user_prompt

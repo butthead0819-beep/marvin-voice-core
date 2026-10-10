@@ -403,6 +403,39 @@ def validate_hometown(raw: dict, heard_by: list[str], transcript_text: str) -> d
     return {"person": person, "place": place, "quote": quote}
 
 
+_TRANSCRIPT_LINE_RE = re.compile(r"^\[[\d:]+\]\s*(.+?):\s*(.*)$")
+# 本地補漏（LLM 漏抓 9/29 陳進文「所以說我臺東老家那邊」）：只認「我(們)X老家」「我(的)老家在X」兩種自述句型
+_HOMETOWN_LOCAL_PATTERNS = (
+    re.compile(r"我們?([\u4e00-\u9fff]{2,3}?)(?:老家|家鄉|故鄉)"),
+    re.compile(r"我們?的?(?:老家|家鄉|故鄉)在([\u4e00-\u9fff]{2,3}?)(?=$|[^\u4e00-\u9fff]|[啦啊呢喔哦耶吧嗎])"),
+)
+_HOMETOWN_PLACE_STOPCHARS = set("們的我你他她要回去在那這個是到說了也都就")
+
+
+def learn_hometowns_local(transcript_text: str, heard_by: list[str]) -> list[dict]:
+    """從逐字稿（"[HH:MM:SS] 說話者: 內容" 每行一句）用 regex 抓自述老家，不靠 LLM。
+    結果再過 validate_hometown（同一套在場/原話/關鍵詞檢查）；同人同地去重。"""
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for line in (transcript_text or "").splitlines():
+        m = _TRANSCRIPT_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        speaker, text = m.group(1).strip(), m.group(2).strip()
+        for pat in _HOMETOWN_LOCAL_PATTERNS:
+            for pm in pat.finditer(text):
+                place = pm.group(1)
+                if set(place) & _HOMETOWN_PLACE_STOPCHARS:
+                    continue
+                h = validate_hometown({"person": speaker, "place": place, "quote": text},
+                                      heard_by, transcript_text)
+                if h is None or (h["person"], h["place"]) in seen:
+                    continue
+                seen.add((h["person"], h["place"]))
+                out.append(h)
+    return out
+
+
 def _activity_similarity(a: str, b: str) -> float:
     pa, pb = to_pinyin(a), to_pinyin(b)
     if pa and pb:
@@ -557,6 +590,13 @@ def build_select_user_prompt(query: str, speaker: str, events: list[dict]) -> st
 async def extract_and_store(router, store, guild_id: int, transcript_text: str, heard_by: list[str], window_end: float) -> dict:
     recent = await asyncio.to_thread(store.recent_for_owners, guild_id, heard_by, window_end - RECENT_DAYS * 86400)
     known = await asyncio.to_thread(store.get_hometowns, guild_id, heard_by)
+    learned: set[tuple[str, str]] = set()
+    # 本地 regex 先學（在 LLM 呼叫前，讓本窗 prompt 背景就有）
+    for h in learn_hometowns_local(transcript_text, heard_by):
+        await asyncio.to_thread(store.set_hometown, guild_id, h["person"], h["place"], h["quote"], window_end)
+        known[h["person"]] = h["place"]
+        learned.add((h["person"], _normalize(h["place"]).replace("台", "臺")))
+        logger.info(f"🏠 [EventMemory] 學到 {h['person']} 老家在 {h['place']}（本地）")
     content = await asyncio.wait_for(
         router._call_llm(
             EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt(transcript_text, recent, window_end, known),
@@ -565,11 +605,12 @@ async def extract_and_store(router, store, guild_id: int, transcript_text: str, 
         ),
         timeout=EXTRACT_TIMEOUT_S,
     )
-    stats = {"added": 0, "merged": 0, "dropped": 0, "hometowns": 0}
+    stats = {"added": 0, "merged": 0, "dropped": 0, "hometowns": len(learned)}
     for raw in parse_hometowns(content or ""):
         h = validate_hometown(raw, heard_by, transcript_text)
-        if h is None:
+        if h is None or (h["person"], _normalize(h["place"]).replace("台", "臺")) in learned:
             continue
+        learned.add((h["person"], _normalize(h["place"]).replace("台", "臺")))
         await asyncio.to_thread(store.set_hometown, guild_id, h["person"], h["place"], h["quote"], window_end)
         known[h["person"]] = h["place"]
         stats["hometowns"] += 1
