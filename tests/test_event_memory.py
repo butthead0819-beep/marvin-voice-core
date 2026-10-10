@@ -652,7 +652,7 @@ def test_parse_hometowns_missing_key_returns_empty():
 # validate_hometown
 # ═══════════════════════════════════════════════════════
 
-_HOME_TRANSCRIPT = "showay 說：我老家在臺東，過年都會回去，引述句：我老家在臺東"
+_HOME_TRANSCRIPT = "showay 說：我老家在臺東，過年都會回去，引述句：我老家在臺東。下禮拜我要去臺東玩"
 
 
 @pytest.mark.parametrize(
@@ -662,7 +662,7 @@ _HOME_TRANSCRIPT = "showay 說：我老家在臺東，過年都會回去，引�
         ({"person": "狗與露", "place": "臺東", "quote": "我老家在臺東"}, ["showay"], True),  # 不在 heard_by
         ({"person": "馬文", "place": "臺東", "quote": "我老家在臺東"}, ["馬文"], True),  # 馬文
         ({"person": "showay", "place": "臺東", "quote": "完全不相關的句子"}, ["showay"], True),  # quote 不在逐字稿
-        ({"person": "showay", "place": "臺東", "quote": "我要去臺東玩"}, ["showay"], True),  # 無老家/家鄉/故鄉
+        ({"person": "showay", "place": "臺東", "quote": "我要去臺東玩"}, ["showay"], True),  # 原話在逐字稿、含地名，但無老家/家鄉/故鄉
         ({"person": "showay", "place": "高雄", "quote": "我老家在臺東"}, ["showay"], True),  # place 不在 quote 內
     ],
 )
@@ -770,3 +770,19 @@ async def test_extract_and_store_second_window_uses_known_hometown_and_merges():
 
     user_prompt = router2._call_llm.call_args.args[1]
     assert "showay 老家在臺東" in user_prompt
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_hometown_learned_this_window_validates_event_place():
+    """同窗剛學到的老家要立刻能放行本窗事件的地點：逐字稿寫「台東」，事件 place 寫「臺東」
+    （不是逐字稿子字串），只能靠剛學到的 showay 老家=台東 通過。"""
+    store = EventStore(":memory:")
+    transcript = "showay 說：我老家在台東，這週末回老家"
+    content = _mixed_json(
+        events=[{"owner": "showay", "activity": "回老家", "place": "臺東", "date": None,
+                 "date_text": "", "participants": [], "quote": "", "same_as": None}],
+        hometowns=[{"person": "showay", "place": "台東", "quote": "我老家在台東"}],
+    )
+    router = _router_with([content])
+    await extract_and_store(router, store, 1, transcript, ["showay"], 1791640000.0)
+    assert store.list_guild(1, 0)[0]["place"] == "臺東"
