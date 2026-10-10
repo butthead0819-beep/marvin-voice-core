@@ -968,7 +968,11 @@ class GeminiRouterContentMixin:
                     return random.choice(items)
                 return (raw or "嗯？").strip() or "嗯？"  # 解析失敗 → 退回單句
             if event_type == "dj_interjection":
-                result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple", prefer_providers=DJ_PREFER_PROVIDERS)
+                try:
+                    result = await self._call_paid_gemini(sys_prompt, "動態台詞生成", caller="dj_narration")
+                except Exception as _pe:
+                    logger.warning(f"💰 [DJ Paid] 付費口白失敗，退回免費 bus: {_pe}")
+                    result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple", prefer_providers=DJ_PREFER_PROVIDERS)
             else:
                 result = await self._call_llm(sys_prompt, "動態台詞生成", speaker="系統", tier="simple")
             if result and is_prompt_echo(sys_prompt, result):
