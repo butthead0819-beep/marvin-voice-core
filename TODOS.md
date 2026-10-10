@@ -1,6 +1,24 @@
 
 ## 新功能 — 待完成
 
+### TODO: 事件記憶 Phase 2 — 事件過後主動追問，取代 commitment callback
+**What:** event_date 已過、當事人在場且在場者全部 ⊆ heard_by → 走 MemoryCallbackAgent 管道問「上個月去 X 露營好玩嗎？」；同時拔掉 `commitment_to_callback` → `callback_queue` 這條（使用者 2026-10-10 拍板「取代」）。
+**Why:** callback_queue 收進大量雜訊（去上廁所、查詢什麼是生綠塔），且 records/speak_outcomes.jsonl 中 MemoryCallbackAgent 得標 696 次只有 12 次真的講出口。
+**Pros:** 一條有日期、有活動、驗過原話的來源取代雜訊佇列；隱私規則與 Phase 1 問答共用。
+**Cons:** 行程取消/延期時問「好玩嗎」會尷尬，需要狀態判斷（例如之後窗口提到取消就標記）。
+**Context:** 設計與 eng review 見 `docs/designs/event-memory.md`（D1~D7）。Phase 1 只做「問了能答」，刻意不碰 callback_queue。
+**Depends on:** Phase 1 上線 + `scripts/replay_event_extraction.py` 重播評估通過。
+**Priority:** P2
+
+### TODO: 事件記憶 — 「馬文忘掉這件事」語音撤回
+**What:** 「馬文忘掉我要去露營這件事」→ 刪除該事件；只能刪自己是 owner 的事件。
+**Why:** 虛擬客廳 Phase 1 重點是信任與隱私；目前只能等 30 天自動過期。
+**Pros:** 讓人敢在 Marvin 面前聊行程；EventStore 已有刪除基礎。
+**Cons:** 多一個寫入意圖，誤觸會刪錯，需確認步驟或只刪最可能的一筆並講出來。
+**Context:** 2026-10-10 eng review（D9）決定不塞進 Phase 1。設計見 `docs/designs/event-memory.md`。
+**Depends on:** 事件記憶 Phase 1 上線。
+**Priority:** P3
+
 ### TODO: audio rescue — readonly_tool_executor 接線
 **What:** 給 `AudioRescueAgent` 傳一個 `readonly_tool_executor`，讓 `get_now_playing` / `get_recent_history` 兩個唯讀 tool 真的能執行（現在 `build_rescue_components` 沒傳 → `_execute_readonly` 直接 return，no-op）。
 **Why:** audio rescue 時使用者問「現在放什麼」「剛剛聊了什麼」→ Gemini 會選這兩個 tool，但目前靜默什麼都不做，掉回聊天。
