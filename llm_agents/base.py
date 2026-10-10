@@ -44,6 +44,8 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
     "summarize_window", "_classify_mood", "compress",
     "marvinize_news", "dual_dialogue",
     "dj_narration",  # DJ 口白（tier=premium，付費優先、失敗退回 bus）
+    "extract_events",  # 事件記憶：摘要窗口抽生活事件（event_memory.extract_and_store，背景）
+    "event_recall",  # 事件記憶：問答時挑事件 id（EventRecallAgent，reactive）
 })
 
 # 背景 / 離線 purpose：不阻塞使用者對話回合（記憶挖掘、社交/戰術分析、摘要、情緒分類、
