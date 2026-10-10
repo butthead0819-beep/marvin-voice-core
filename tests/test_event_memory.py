@@ -545,7 +545,7 @@ async def test_extract_and_store_stats_counts_correct():
     ])
     router = _router_with([content])
     stats = await extract_and_store(router, store, 1, "逐字稿", ["showay"], time.time())
-    assert stats == {"added": 1, "merged": 0, "dropped": 1}
+    assert stats == {"added": 1, "merged": 0, "dropped": 1, "hometowns": 0}
 
 
 # ── 缺口 1（2026-10-10 重播 9/29）：同一趟行程活動名不同（去臺東 vs 回老家）但同地同日 → 合併 ──
