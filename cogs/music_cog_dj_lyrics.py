@@ -675,7 +675,9 @@ class MusicDJLyricsMixin:
         activity_lines = presence_materials(
             getattr(getattr(getattr(_vc_now, 'voice_client', None), 'channel', None), 'members', None))
 
-        from dj_narration_orchestrator import DJMaterials, apply_side_effects, plan_narration
+        from dj_narration_orchestrator import (
+            DJMaterials, apply_side_effects, match_perspective_topic, plan_narration,
+        )
         _card = info.get('_song_card')
         if not _card and isinstance(guide, str):
             _card = {"audiophile_guide": guide}
@@ -685,6 +687,7 @@ class MusicDJLyricsMixin:
             news_items=news_items,
             callbacks=callback_lines, activities=activity_lines,
             has_guide=bool(guide), has_conversation=bool(conv_lines),
+            perspective_topic=match_perspective_topic([e['text'] for e in conv_entries]),
             autopilot_reason=_autopilot_reason, exclude_modes=used["modes"],
             env=env, conv_lines=conv_lines, guide=guide, song_card=_card,
             empathy_hooks=self._DJ_EMPATHY_HOOK_TEMPLATES,
