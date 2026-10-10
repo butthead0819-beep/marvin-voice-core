@@ -496,6 +496,12 @@ Lane A: S1 → S2 → S3（S2/S3 都碰 cogs/voice_controller.py，序列化）�
 
 無。
 
+## 實作後修正（2026-10-10 重播 10/3 真實資料）
+
+- 回答不念地點（使用者選 a）：重播把「我還在臺中，明天早上走」存成 place=臺中（出發地被當目的地）。D6 只保證地名出現在逐字稿，保證不了語意。place 仍存著，只用於選事件。
+- 抽取模型：重播時 prefer gemini_free/groq 仍有 43/73 落到 ministral-8b（連續重播把兩家 TPM 打滿）。使用者決定先上線觀察 records/llm_routing.jsonl 的 extract_events 模型分佈，不加排除名單。
+- 登記 purpose：extract_events / event_recall 加進 llm_agents/base.py 已知 purpose。
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |

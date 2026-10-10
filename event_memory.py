@@ -394,8 +394,7 @@ def _md(ts: float) -> str:
 def render_answer(ev: dict, speaker: str) -> str:
     who = "你" if ev["owner"] == speaker else ev["owner"]
     text = f"我記得{who}{_md(ev['first_seen'])}說過要{ev['activity']}"
-    if ev["place"]:
-        text += f"，地點是{ev['place']}"
+    # 不念 place：地名在逐字稿出現 ≠ 意思對（10/10 重播把出發地臺中存成地點），只用來選事件
     if ev["event_date"] is not None:
         text += f"，日期是{_md(ev['event_date'])}"
     quote = ev["quotes"][0] if ev["quotes"] else ""

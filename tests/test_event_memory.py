@@ -401,10 +401,13 @@ def test_render_answer_other_uses_name():
     assert "showay" in text
 
 
-def test_render_answer_no_place_text_omitted():
-    ev = {"owner": "showay", "activity": "露營", "place": None, "event_date": None,
+def test_render_answer_never_speaks_place():
+    """2026-10-10 重播：「我還在臺中，明天早上走」被存成 place=臺中（出發地當目的地）。
+    地名出現在逐字稿 ≠ 意思對，所以回答一律不念地點（place 仍存著供選事件用）。"""
+    ev = {"owner": "showay", "activity": "露營", "place": "臺中", "event_date": None,
           "quotes": [], "first_seen": time.time()}
-    assert "地點" not in render_answer(ev, "showay")
+    text = render_answer(ev, "showay")
+    assert "臺中" not in text and "地點" not in text
 
 
 def test_render_answer_no_date_text_omitted():

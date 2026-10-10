@@ -35,6 +35,7 @@ async def _run() -> int:
     ap.add_argument("--end", required=True, help="YYYY-MM-DD（台北時區，含）")
     ap.add_argument("--out-db", required=True, help="暫存 EventStore 路徑（若已存在先刪掉）")
     ap.add_argument("--max-windows", type=int, default=150)
+    ap.add_argument("--sleep", type=float, default=8.0, help="每窗之間等幾秒，避免把免費 provider TPM 打滿（預設 8）")
     args = ap.parse_args()
 
     out_db_path = Path(args.out_db)
@@ -115,9 +116,10 @@ async def _run() -> int:
             total_merged += stats["merged"]
             total_dropped += stats["dropped"]
         except Exception as e:
-            print(f"[窗口 {window_start}~{window_end}] 例外: {e}")
+            print(f"[窗口 {window_start}~{window_end}] 例外: {type(e).__name__} {e}")
 
         windows_done += 1
+        await asyncio.sleep(args.sleep)
         window_start = window_end
 
     print(f"\n處理窗數：{windows_done}")
