@@ -22,9 +22,11 @@ from event_memory import (
     extract_and_store,
     find_merge_target,
     parse_events,
+    parse_hometowns,
     parse_ids,
     render_answer,
     validate_event,
+    validate_hometown,
     visible_events,
 )
 
@@ -578,3 +580,193 @@ def test_find_merge_target_one_place_missing_no_place_merge():
     recent = [_recent_row(1, activity="去臺東", event_date=1000.0, place="臺東")]
     ev = {"owner": "showay", "activity": "回老家", "event_date": 1000.0, "place": None, "same_as": None}
     assert find_merge_target(ev, recent, time.time()) is None
+
+
+# ═══════════════════════════════════════════════════════
+# hometowns — set/get/prune
+# ═══════════════════════════════════════════════════════
+
+def test_set_then_get_hometown_roundtrip():
+    store = EventStore(":memory:")
+    now = time.time()
+    store.set_hometown(1, "showay", "臺東", "我老家在臺東", now)
+    assert store.get_hometowns(1, ["showay"]) == {"showay": "臺東"}
+
+
+def test_set_hometown_overwrites_with_latest():
+    store = EventStore(":memory:")
+    now = time.time()
+    store.set_hometown(1, "showay", "臺東", "我老家在臺東", now)
+    store.set_hometown(1, "showay", "高雄", "我老家其實在高雄", now + 10)
+    assert store.get_hometowns(1, ["showay"]) == {"showay": "高雄"}
+
+
+def test_get_hometowns_empty_persons_returns_empty_without_query():
+    store = EventStore(":memory:")
+    store.set_hometown(1, "showay", "臺東", "我老家在臺東", time.time())
+    assert store.get_hometowns(1, []) == {}
+
+
+def test_get_hometowns_only_returns_requested_persons():
+    store = EventStore(":memory:")
+    now = time.time()
+    store.set_hometown(1, "showay", "臺東", "我老家在臺東", now)
+    store.set_hometown(1, "狗與露", "宜蘭", "我老家在宜蘭", now)
+    assert store.get_hometowns(1, ["showay"]) == {"showay": "臺東"}
+
+
+def test_prune_also_deletes_expired_hometowns_return_value_is_events_count():
+    store = EventStore(":memory:")
+    now = time.time()
+    store.add(1, _ev(), ["showay"], now - 31 * 86400)
+    store.add(1, _ev(), ["showay"], now - 1 * 86400)
+    store.set_hometown(1, "showay", "臺東", "我老家在臺東", now - 31 * 86400)
+    store.set_hometown(1, "狗與露", "宜蘭", "我老家在宜蘭", now - 1 * 86400)
+    deleted = store.prune(retention_days=30, now=now)
+    assert deleted == 1  # 仍是 events 刪除筆數
+    assert store.get_hometowns(1, ["showay", "狗與露"]) == {"狗與露": "宜蘭"}
+
+
+# ═══════════════════════════════════════════════════════
+# parse_hometowns
+# ═══════════════════════════════════════════════════════
+
+def test_parse_hometowns_plain_json():
+    assert parse_hometowns('{"hometowns":[{"person":"showay"}]}') == [{"person": "showay"}]
+
+
+def test_parse_hometowns_code_fence():
+    content = '```json\n{"hometowns":[{"person":"showay"}]}\n```'
+    assert parse_hometowns(content) == [{"person": "showay"}]
+
+
+def test_parse_hometowns_bad_json_returns_empty():
+    assert parse_hometowns("not json") == []
+
+
+def test_parse_hometowns_missing_key_returns_empty():
+    assert parse_hometowns('{"events":[]}') == []
+
+
+# ═══════════════════════════════════════════════════════
+# validate_hometown
+# ═══════════════════════════════════════════════════════
+
+_HOME_TRANSCRIPT = "showay 說：我老家在臺東，過年都會回去，引述句：我老家在臺東"
+
+
+@pytest.mark.parametrize(
+    "raw,heard_by,expected_none",
+    [
+        ({"person": "showay", "place": "臺東", "quote": "我老家在臺東"}, ["showay"], False),
+        ({"person": "狗與露", "place": "臺東", "quote": "我老家在臺東"}, ["showay"], True),  # 不在 heard_by
+        ({"person": "馬文", "place": "臺東", "quote": "我老家在臺東"}, ["馬文"], True),  # 馬文
+        ({"person": "showay", "place": "臺東", "quote": "完全不相關的句子"}, ["showay"], True),  # quote 不在逐字稿
+        ({"person": "showay", "place": "臺東", "quote": "我要去臺東玩"}, ["showay"], True),  # 無老家/家鄉/故鄉
+        ({"person": "showay", "place": "高雄", "quote": "我老家在臺東"}, ["showay"], True),  # place 不在 quote 內
+    ],
+)
+def test_validate_hometown_parametrized(raw, heard_by, expected_none):
+    result = validate_hometown(raw, heard_by, _HOME_TRANSCRIPT)
+    assert (result is None) == expected_none
+
+
+def test_validate_hometown_valid_returns_dict():
+    raw = {"person": "showay", "place": "臺東", "quote": "我老家在臺東"}
+    result = validate_hometown(raw, ["showay"], _HOME_TRANSCRIPT)
+    assert result == {"person": "showay", "place": "臺東", "quote": "我老家在臺東"}
+
+
+# ═══════════════════════════════════════════════════════
+# validate_event with hometowns background
+# ═══════════════════════════════════════════════════════
+
+def test_validate_event_place_not_in_transcript_but_matches_hometown_kept():
+    raw = {"owner": "showay", "activity": "回老家", "place": "臺東"}
+    ev = validate_event(raw, ["showay"], "showay 說要回老家了", time.time(), {"showay": "台東"})
+    assert ev["place"] == "臺東"
+
+
+def test_validate_event_place_not_in_transcript_and_not_hometown_is_none():
+    raw = {"owner": "showay", "activity": "回老家", "place": "臺東"}
+    ev = validate_event(raw, ["showay"], "showay 說要回老家了", time.time(), {"showay": "高雄"})
+    assert ev["place"] is None
+
+
+def test_validate_event_hometowns_none_behaves_like_before():
+    raw = {"owner": "showay", "activity": "回老家", "place": "臺東"}
+    ev = validate_event(raw, ["showay"], "showay 說要回老家了", time.time(), None)
+    assert ev["place"] is None
+
+
+# ═══════════════════════════════════════════════════════
+# build_extract_user_prompt with hometowns
+# ═══════════════════════════════════════════════════════
+
+def test_build_extract_user_prompt_with_hometowns_includes_background_line():
+    prompt = build_extract_user_prompt("逐字稿", [], time.time(), {"showay": "臺東"})
+    assert "showay 老家在臺東" in prompt
+
+
+def test_build_extract_user_prompt_without_hometowns_includes_placeholder():
+    prompt = build_extract_user_prompt("逐字稿", [], time.time())
+    assert "背景：\n（無）" in prompt
+
+
+# ═══════════════════════════════════════════════════════
+# extract_and_store — hometown learning + background usage
+# ═══════════════════════════════════════════════════════
+
+def _mixed_json(events, hometowns):
+    return json.dumps({"events": events, "hometowns": hometowns}, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_learns_hometown_and_uses_it_for_place():
+    store = EventStore(":memory:")
+    transcript = "showay 說：我老家在臺東，過年要回去。引述句：我老家在臺東"
+    window_end = time.time()
+    content = _mixed_json(
+        events=[{"owner": "showay", "activity": "回老家", "place": "臺東", "date": None,
+                 "date_text": "", "participants": [], "quote": "", "same_as": None}],
+        hometowns=[{"person": "showay", "place": "臺東", "quote": "我老家在臺東"}],
+    )
+    router = _router_with([content])
+    stats = await extract_and_store(router, store, 1, transcript, ["showay"], window_end)
+
+    assert stats["hometowns"] == 1
+    assert store.get_hometowns(1, ["showay"]) == {"showay": "臺東"}
+    events = store.list_guild(1, 0)
+    assert len(events) == 1
+    assert events[0]["place"] == "臺東"
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_second_window_uses_known_hometown_and_merges():
+    store = EventStore(":memory:")
+    transcript1 = "showay 說：我老家在臺東，過年要回去。引述句：我老家在臺東"
+    window_end = time.time()
+    content1 = _mixed_json(
+        events=[{"owner": "showay", "activity": "回老家", "place": "臺東", "date": None,
+                 "date_text": "", "participants": [], "quote": "", "same_as": None}],
+        hometowns=[{"person": "showay", "place": "臺東", "quote": "我老家在臺東"}],
+    )
+    router1 = _router_with([content1])
+    await extract_and_store(router1, store, 1, transcript1, ["showay"], window_end)
+
+    transcript2 = "showay 說晚點要回老家了"
+    content2 = _mixed_json(
+        events=[{"owner": "showay", "activity": "回老家", "place": "臺東", "date": None,
+                 "date_text": "", "participants": [], "quote": "", "same_as": None}],
+        hometowns=[],
+    )
+    router2 = _router_with([content2])
+    stats2 = await extract_and_store(router2, store, 1, transcript2, ["showay"], window_end + 1000)
+
+    assert stats2["merged"] == 1
+    events = store.list_guild(1, 0)
+    assert len(events) == 1
+    assert events[0]["place"] == "臺東"
+
+    user_prompt = router2._call_llm.call_args.args[1]
+    assert "showay 老家在臺東" in user_prompt

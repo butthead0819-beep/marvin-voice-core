@@ -36,6 +36,7 @@ EXTRACT_TIMEOUT_S = 20.0
 EXTRACT_PREFER_PROVIDERS = ("gemini_free", "groq")
 NOT_REMEMBER = "我不記得有聽過這件事。"
 _MARVIN_NAMES = {"馬文", "marvin"}
+HOMETOWN_KEYWORDS = ("老家", "家鄉", "故鄉")
 
 
 class EventStore:
@@ -78,6 +79,16 @@ class EventStore:
             con.execute("""
                 CREATE INDEX IF NOT EXISTS idx_events_guild_owner_seen
                 ON events (guild_id, owner, last_seen)
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS hometowns (
+                    guild_id   INTEGER NOT NULL,
+                    person     TEXT    NOT NULL,
+                    place      TEXT    NOT NULL,
+                    quote      TEXT    NOT NULL DEFAULT '',
+                    learned_at REAL    NOT NULL,
+                    PRIMARY KEY (guild_id, person)
+                )
             """)
             con.commit()
         finally:
@@ -203,8 +214,37 @@ class EventStore:
         con = self._connect()
         try:
             cur = con.execute("DELETE FROM events WHERE last_seen < ?", (cutoff,))
+            con.execute("DELETE FROM hometowns WHERE learned_at < ?", (cutoff,))
             con.commit()
             return cur.rowcount
+        finally:
+            self._release(con)
+
+    def set_hometown(self, guild_id: int, person: str, place: str, quote: str, learned_at: float) -> None:
+        con = self._connect()
+        try:
+            con.execute(
+                """INSERT INTO hometowns (guild_id, person, place, quote, learned_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(guild_id, person) DO UPDATE SET
+                       place=excluded.place, quote=excluded.quote, learned_at=excluded.learned_at""",
+                (guild_id, person, place, quote, learned_at),
+            )
+            con.commit()
+        finally:
+            self._release(con)
+
+    def get_hometowns(self, guild_id: int, persons: list[str]) -> dict[str, str]:
+        if not persons:
+            return {}
+        con = self._connect()
+        try:
+            placeholders = ",".join("?" * len(persons))
+            rows = con.execute(
+                f"SELECT person, place FROM hometowns WHERE guild_id = ? AND person IN ({placeholders})",
+                (guild_id, *persons),
+            ).fetchall()
+            return {person: place for person, place in rows}
         finally:
             self._release(con)
 
@@ -232,18 +272,22 @@ def _normalize(text: str) -> str:
     return re.sub(r"[\W_]+", "", text or "").lower()
 
 
+def _strip_code_fence(text: str) -> str:
+    text = (text or "").strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        elif lines and lines[-1].strip().endswith("```"):
+            lines[-1] = lines[-1].rsplit("```", 1)[0]
+        text = "\n".join(lines)
+    return text
+
+
 def parse_events(content: str) -> list[dict]:
     try:
-        text = (content or "").strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            elif lines and lines[-1].strip().endswith("```"):
-                lines[-1] = lines[-1].rsplit("```", 1)[0]
-            text = "\n".join(lines)
-        data = json.loads(text)
+        data = json.loads(_strip_code_fence(content))
         if not isinstance(data, dict):
             return []
         events = data.get("events")
@@ -254,7 +298,23 @@ def parse_events(content: str) -> list[dict]:
         return []
 
 
-def validate_event(raw: dict, heard_by: list[str], transcript_text: str, window_end: float) -> dict | None:
+def parse_hometowns(content: str) -> list[dict]:
+    try:
+        data = json.loads(_strip_code_fence(content))
+        if not isinstance(data, dict):
+            return []
+        hometowns = data.get("hometowns")
+        if not isinstance(hometowns, list):
+            return []
+        return [h for h in hometowns if isinstance(h, dict)]
+    except Exception:
+        return []
+
+
+def validate_event(
+    raw: dict, heard_by: list[str], transcript_text: str, window_end: float,
+    hometowns: dict[str, str] | None = None,
+) -> dict | None:
     owner = str(raw.get("owner") or "").strip()
     if not owner or owner not in heard_by or owner.lower() in _MARVIN_NAMES:
         return None
@@ -279,7 +339,11 @@ def validate_event(raw: dict, heard_by: list[str], transcript_text: str, window_
                 event_date = event_dt.timestamp()
 
     place = str(raw.get("place") or "").strip()
-    if not place or not _normalize(place) or _normalize(place) not in _normalize(transcript_text):
+    if not place or not _normalize(place):
+        place = None
+    elif _normalize(place) not in _normalize(transcript_text) and not _same_place(
+        place, (hometowns or {}).get(owner)
+    ):
         place = None
 
     quote = str(raw.get("quote") or "").strip()
@@ -315,6 +379,28 @@ def validate_event(raw: dict, heard_by: list[str], transcript_text: str, window_
         "quote": quote,
         "same_as": same_as,
     }
+
+
+def validate_hometown(raw: dict, heard_by: list[str], transcript_text: str) -> dict | None:
+    person = str(raw.get("person") or "").strip()
+    if not person or person not in heard_by or person.lower() in _MARVIN_NAMES:
+        return None
+
+    place = str(raw.get("place") or "").strip()
+    if not _normalize(place):
+        return None
+
+    quote = str(raw.get("quote") or "").strip()
+    norm_quote = _normalize(quote)
+    if not norm_quote or norm_quote not in _normalize(transcript_text):
+        return None
+
+    if not any(kw in quote for kw in HOMETOWN_KEYWORDS):
+        return None
+    if _normalize(place) not in norm_quote:
+        return None
+
+    return {"person": person, "place": place, "quote": quote}
 
 
 def _activity_similarity(a: str, b: str) -> float:
@@ -364,16 +450,7 @@ def visible_events(events: list[dict], present: list[str]) -> list[dict]:
 
 def parse_ids(content: str, allowed_ids: set[int]) -> list[int]:
     try:
-        text = (content or "").strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            elif lines and lines[-1].strip().endswith("```"):
-                lines[-1] = lines[-1].rsplit("```", 1)[0]
-            text = "\n".join(lines)
-        data = json.loads(text)
+        data = json.loads(_strip_code_fence(content))
         if not isinstance(data, dict):
             return []
         ids_raw = data.get("ids")
@@ -425,8 +502,10 @@ quote：逐字稿中提到這件事的一句原話，一字不改。
 place：只填逐字稿裡出現過的地名原文，沒有填 null。
 participants：同行者名稱，沒有填 []。
 activity：兩到六個字的活動名，例如 露營、出國、看醫生。
-只輸出 JSON：{"events":[{"same_as":null,"owner":"","activity":"","place":null,"date":null,"date_text":"","participants":[],"quote":""}]}
-沒有事件就輸出 {"events":[]}。"""
+「背景」列出已知的人物老家。有人說「回老家」「回家鄉」時，place 填背景裡這個人的老家地名。
+hometowns：若有人在同一句話裡同時說出自己的「老家」「家鄉」或「故鄉」和地名（例：我老家在臺東），列出 {"person":說話者名稱,"place":地名原文,"quote":那句原話一字不改}；沒有填 []。
+只輸出 JSON：{"events":[{"same_as":null,"owner":"","activity":"","place":null,"date":null,"date_text":"","participants":[],"quote":""}],"hometowns":[]}
+沒有事件就輸出 {"events":[],"hometowns":[]}。"""
 
 SELECT_SYSTEM_PROMPT = """\
 你是記憶查詢助理。根據使用者的問題，從「事件清單」中挑出問題在問的事件編號。
@@ -434,10 +513,17 @@ SELECT_SYSTEM_PROMPT = """\
 只輸出 JSON：{"ids":[編號]}"""
 
 
-def build_extract_user_prompt(transcript_text: str, recent: list[dict], window_end: float) -> str:
+def build_extract_user_prompt(
+    transcript_text: str, recent: list[dict], window_end: float,
+    hometowns: dict[str, str] | None = None,
+) -> str:
     dt = datetime.datetime.fromtimestamp(window_end, TPE_TZ)
     weekday = "一二三四五六日"[dt.weekday()]
     header = f"窗口時間：{dt.year}-{dt.month:02d}-{dt.day:02d}（星期{weekday}）{dt.hour:02d}:{dt.minute:02d}"
+    if hometowns:
+        hometown_lines = [f"{person} 老家在{place}" for person, place in hometowns.items()]
+    else:
+        hometown_lines = ["（無）"]
     if recent:
         lines = [
             f"#{r['id']} {r['owner']}｜{r['activity']}｜{r['place'] or '-'}｜{r['date_text'] or '-'}"
@@ -447,6 +533,7 @@ def build_extract_user_prompt(transcript_text: str, recent: list[dict], window_e
         lines = ["（無）"]
     return (
         f"{header}\n"
+        f"背景：\n" + "\n".join(hometown_lines) + "\n"
         f"近期事件清單：\n" + "\n".join(lines) + "\n"
         f"逐字稿：\n{transcript_text}"
     )
@@ -469,17 +556,26 @@ def build_select_user_prompt(query: str, speaker: str, events: list[dict]) -> st
 
 async def extract_and_store(router, store, guild_id: int, transcript_text: str, heard_by: list[str], window_end: float) -> dict:
     recent = await asyncio.to_thread(store.recent_for_owners, guild_id, heard_by, window_end - RECENT_DAYS * 86400)
+    known = await asyncio.to_thread(store.get_hometowns, guild_id, heard_by)
     content = await asyncio.wait_for(
         router._call_llm(
-            EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt(transcript_text, recent, window_end),
+            EXTRACT_SYSTEM_PROMPT, build_extract_user_prompt(transcript_text, recent, window_end, known),
             is_json=True, tier="simple", temperature=0.2,
             purpose="extract_events", prefer_providers=EXTRACT_PREFER_PROVIDERS,
         ),
         timeout=EXTRACT_TIMEOUT_S,
     )
-    stats = {"added": 0, "merged": 0, "dropped": 0}
+    stats = {"added": 0, "merged": 0, "dropped": 0, "hometowns": 0}
+    for raw in parse_hometowns(content or ""):
+        h = validate_hometown(raw, heard_by, transcript_text)
+        if h is None:
+            continue
+        await asyncio.to_thread(store.set_hometown, guild_id, h["person"], h["place"], h["quote"], window_end)
+        known[h["person"]] = h["place"]
+        stats["hometowns"] += 1
+        logger.info(f"🏠 [EventMemory] 學到 {h['person']} 老家在 {h['place']}")
     for raw in parse_events(content or ""):
-        ev = validate_event(raw, heard_by, transcript_text, window_end)
+        ev = validate_event(raw, heard_by, transcript_text, window_end, known)
         if ev is None:
             stats["dropped"] += 1
             continue

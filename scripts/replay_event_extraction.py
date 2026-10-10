@@ -81,7 +81,7 @@ async def _run() -> int:
     store = EventStore(str(out_db_path))
     script_start = time.time()
 
-    total_added = total_merged = total_dropped = 0
+    total_added = total_merged = total_dropped = total_hometowns = 0
     windows_done = 0
     window_start = start_ts
     idx = 0
@@ -115,6 +115,7 @@ async def _run() -> int:
             total_added += stats["added"]
             total_merged += stats["merged"]
             total_dropped += stats["dropped"]
+            total_hometowns += stats["hometowns"]
         except Exception as e:
             print(f"[窗口 {window_start}~{window_end}] 例外: {type(e).__name__} {e}")
 
@@ -123,7 +124,7 @@ async def _run() -> int:
         window_start = window_end
 
     print(f"\n處理窗數：{windows_done}")
-    print(f"added={total_added} merged={total_merged} dropped={total_dropped}\n")
+    print(f"added={total_added} merged={total_merged} dropped={total_dropped} hometowns={total_hometowns}\n")
 
     events = store.list_guild(args.guild_id, 0)
     events.sort(key=lambda e: e["first_seen"])
@@ -141,6 +142,16 @@ async def _run() -> int:
         )
         for q in e["quotes"]:
             print(f"    「{q}」")
+
+    print("\n--- 學到的老家 ---")
+    hometown_con = sqlite3.connect(str(out_db_path))
+    try:
+        for person, place, quote in hometown_con.execute(
+            "SELECT person, place, quote FROM hometowns WHERE guild_id = ?", (args.guild_id,)
+        ).fetchall():
+            print(f"{person} 老家在 {place}「{quote}」")
+    finally:
+        hometown_con.close()
 
     records_path = ROOT / "records" / "llm_routing.jsonl"
     if records_path.exists():
