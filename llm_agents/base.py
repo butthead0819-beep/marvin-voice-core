@@ -56,6 +56,16 @@ BACKGROUND_PURPOSES: frozenset[str] = frozenset({
     "marvinize_news",
 })
 
+# 使用者聽得到/看得到的生成：排除品質不足的 provider（2026-10-10：ministral-8b 會吐舞台指示、
+# markdown、半句斷掉）。背景摘要/分類不在此列，照常使用。
+SPOKEN_PURPOSES: frozenset[str] = frozenset({
+    "generate_greeting", "generate_player_greeting", "generate_player_farewell",
+    "generate_dynamic_system_msg", "topic_gen", "marvinize_news", "generate_joke",
+    "generate_fast_response", "generate_gap_filling_response", "generate_proactive_question",
+    "generate_status_report_comment", "rephrase_proactive_script", "marvin_chat", "dual_dialogue",
+})
+SPOKEN_EXCLUDED_PROVIDERS: tuple[str, ...] = ("mistral",)
+
 
 # ---------------------------------------------------------------------------
 # Dataclasses
@@ -71,6 +81,7 @@ class LLMContext:
     打 OpenAI-相容 API；None 走 agent 預設值。
     prefer_providers：非空時，viable 的 provider 依此順序優先（同組內維持原本
     confidence/latency 排序）；不在清單內的排最後。只影響排序，不放寬門檻。
+    exclude_providers：這些 provider 的 bid 直接移出 viable（硬排除，不是排序）。
     """
     prompt: str
     purpose: str
@@ -83,6 +94,7 @@ class LLMContext:
     temperature: float | None = None
     max_tokens: int | None = None
     prefer_providers: tuple[str, ...] = ()
+    exclude_providers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -209,6 +221,8 @@ class LLMBus:
 
         # Filter
         viable = [(a, b, c) for (a, b, c) in bids if c >= self._MIN_CONFIDENCE]
+        if ctx.exclude_providers:
+            viable = [t for t in viable if t[1].provider not in ctx.exclude_providers]
 
         # ④ degraded 偵測：可用 provider 數過低 → debounced 告警（不阻斷 dispatch）
         distinct_viable = len({b.provider for (_, b, _) in viable})

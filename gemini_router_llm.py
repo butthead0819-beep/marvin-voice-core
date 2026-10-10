@@ -395,7 +395,7 @@ class GeminiRouterLLMMixin:
         # 失敗回 '' 不 fallback legacy 避免 TPM 雙計，Risk 3）。Bus 沒裝 / flag off → 走下方 legacy。
         if (os.getenv("LLM_BUS", "").lower() in ("1", "true", "yes")
                 and getattr(self, "_llm_bus", None) is not None):
-            from llm_agents.base import LLMContext, NoLLMAvailable
+            from llm_agents.base import LLMContext, NoLLMAvailable, SPOKEN_PURPOSES, SPOKEN_EXCLUDED_PROVIDERS
             from llm_agents.metrics import log_dispatch
             _TIER_TO_QUALITY = {"simple": "fast", "medium": "balanced", "high": "high"}
             _bus_purpose = purpose  # caller 顯式傳的用途標籤（預設 marvin_chat 向後相容）
@@ -408,6 +408,7 @@ class GeminiRouterLLMMixin:
                 json_mode=is_json,
                 temperature=temperature,
                 prefer_providers=tuple(prefer_providers or ()),
+                exclude_providers=SPOKEN_EXCLUDED_PROVIDERS if _bus_purpose in SPOKEN_PURPOSES else (),
             )
             _t0 = time.monotonic()
             try:
