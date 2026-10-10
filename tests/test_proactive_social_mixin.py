@@ -27,7 +27,7 @@ PLAIN_METHODS = [
     "_proactive_play_joke",
 ]
 
-LOOP_METHODS = ["background_news_loop", "speak_bus_tick_loop", "dynamic_social_loop"]
+LOOP_METHODS = ["speak_bus_tick_loop", "dynamic_social_loop"]
 
 
 def test_mixin_in_voice_controller_mro():
