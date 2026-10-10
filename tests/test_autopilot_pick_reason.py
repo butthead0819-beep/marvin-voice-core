@@ -25,7 +25,7 @@ class TestAutopilotPickReason:
 
     def test_falls_back_to_lane_template_without_explanation(self):
         info = {"_lane": "discovery", "_spotlight": "jack", "_explanation": None}
-        assert MusicCog._autopilot_pick_reason(info) == "照 jack 的口味挖出來的新歌"
+        assert MusicCog._autopilot_pick_reason(info) == "跟 jack 平常聽的歌風格相近的新歌"
 
     def test_falls_back_when_explanation_key_missing(self):
         info = {"_lane": "group_resonance", "_spotlight": "jack"}
@@ -33,14 +33,21 @@ class TestAutopilotPickReason:
 
     def test_empty_string_explanation_falls_back(self):
         info = {"_lane": "discovery", "_spotlight": "suki", "_explanation": ""}
-        assert MusicCog._autopilot_pick_reason(info) == "照 suki 的口味挖出來的新歌"
+        assert MusicCog._autopilot_pick_reason(info) == "跟 suki 平常聽的歌風格相近的新歌"
 
     # 10/4 使用者：「幾週前播過」對聽眾沒意義 → DJ 素材不給任何「多久沒聽」的時間理由
     def test_weeks_ago_explanation_not_used(self):
         info = {"_lane": "discovery", "_spotlight": "jack",
                 "_explanation": "老歌新聽——你 7 週前就愛過這首了"}
-        assert MusicCog._autopilot_pick_reason(info) == "照 jack 的口味挖出來的新歌"
+        assert MusicCog._autopilot_pick_reason(info) == "跟 jack 平常聽的歌風格相近的新歌"
 
     def test_long_tail_has_no_time_reason(self):
         info = {"_lane": "long_tail", "_spotlight": "suki", "_explanation": None}
         assert MusicCog._autopilot_pick_reason(info) == "這首是 suki 點過的歌"
+
+    def test_anchor_lane_reads_naturally_in_reason_line(self):
+        from dj_narration_orchestrator import format_reason_line
+        info = {"_lane": "spotlight", "_spotlight": "suki", "_anchor_title": "晴天", "_explanation": None}
+        reason = MusicCog._autopilot_pick_reason(info)
+        assert reason == "suki 點過《晴天》"
+        assert "理由是因為" not in format_reason_line("suki", "七里香", reason)

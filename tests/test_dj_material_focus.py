@@ -129,4 +129,4 @@ async def test_autopilot_reason_becomes_main_material_when_mode_overridden(tmp_p
     info["_explanation"] = "因為大肚最近常點這首"
     await cog._fetch_dj_interjection_raw(info)
     ctx = _ctx_str(cog)
-    assert "選這首的理由：因為大肚最近常點這首" in ctx
+    assert "推薦理由：大家會喜歡這首《夜曲》，理由是因為大肚最近常點這首" in ctx

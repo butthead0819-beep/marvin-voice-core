@@ -157,7 +157,6 @@ async def test_dj_interjection_uses_associative_dj_line():
     host._vc = MagicMock(return_value=None)
     host._life_cores_async = AsyncMock(return_value=[])
     host._present_interests = MagicMock(return_value=[])
-    host._recent_emotional_highlight = MagicMock(return_value=None)
     host._fetch_news_items_async = AsyncMock(return_value=[])
     from dj_topic_selector import TopicCooldownStore
     import tempfile
@@ -371,3 +370,30 @@ def test_is_resolved_repeat_ignores_records_older_than_30_days():
     associative_history.append_pick("美秀集團", "手機錢包鑰匙菸", time.time() - 31 * 86400, video_id=_VID)
     assert associative_history.is_resolved_repeat(
         "美秀集團 Amazing Show－手機錢包鑰匙菸", _VID, time.time()) is False
+
+
+def test_resolved_title_matches_pick_contains_with_noise():
+    from associative_curation import resolved_title_matches_pick
+    assert resolved_title_matches_pick("美秀集團 Amazing Show－手機錢包鑰匙菸", "手機錢包鑰匙菸")
+
+
+def test_resolved_title_matches_pick_simplified_vs_traditional():
+    from associative_curation import resolved_title_matches_pick
+    assert resolved_title_matches_pick("陈麒名_拿走了什么 Cover:A Lin 高音质 动态歌词版", "拿走了什麼")
+
+
+def test_resolved_title_matches_pick_rejects_different_song():
+    from associative_curation import resolved_title_matches_pick
+    assert not resolved_title_matches_pick("蘇打綠 - 愛你無條件", "剪掉")
+    assert not resolved_title_matches_pick("任何標題", "")
+
+
+@pytest.mark.asyncio
+async def test_rejects_when_resolved_title_differs_from_pick(monkeypatch):
+    """LLM 選《剪掉》但 YouTube 解析成別首 → 不入隊，走一般 autopilot。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=_pick("剪掉"))):
+        added = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
+    assert added == 0
+    assert host.stream_queue == []

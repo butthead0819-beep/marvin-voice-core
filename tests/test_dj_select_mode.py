@@ -83,15 +83,6 @@ def test_fallback_skips_unavailable_candidates(tmp_path):
     assert mode in ("atmosphere", "quick")
 
 
-def test_no_emotional_highlights_still_falls_to_fallback_rotation(tmp_path):
-    store = _store(tmp_path)
-    _, mode = select_mode(
-        [], [], store, has_conversation=False,
-        emotional_highlights=[],
-    )
-    assert mode in ("atmosphere", "quick")
-
-
 def test_fallback_state_persists_across_store_instances(tmp_path):
     """不連抽狀態跨 store 實例（模擬重啟）持久化：池大小 >1 時，第二次一定跟第一次不同。"""
     path = str(tmp_path / "c.json")
@@ -110,17 +101,6 @@ def test_plain_str_and_tuple_life_items_still_work(tmp_path, monkeypatch):
     store = _store(tmp_path)
     topic, mode = select_mode(["昨天去爬山"], [], store)
     assert (topic, mode) == ("昨天去爬山", "life")
-
-
-# ── 4. emotional_highlight：有素材時進池 ─────────────────────────────────────
-
-def test_emotional_highlight_used_when_no_life_or_interest(tmp_path, monkeypatch):
-    _only(monkeypatch, "emotional_highlight")
-    store = _store(tmp_path)
-    topic, mode = select_mode(
-        [], [], store, emotional_highlights=["上次你說覺得被理解那句話"],
-    )
-    assert (topic, mode) == ("上次你說覺得被理解那句話", "emotional_highlight")
 
 
 # ── 5. guide（歌曲卡長版導聆）：只在 has_guide=True 時進池 ───────────────────

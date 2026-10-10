@@ -106,7 +106,6 @@ class DJMaterials:
     life: list = field(default_factory=list)
     present_members: set | None = None
     interests: list = field(default_factory=list)
-    emotional_highlights: list = field(default_factory=list)
     news_items: list = field(default_factory=list)
     callbacks: list = field(default_factory=list)
     activities: list = field(default_factory=list)
@@ -165,7 +164,7 @@ def _pick_song(m: DJMaterials, store: TopicCooldownStore):
 def _render_memory_match(topic, m: DJMaterials) -> list[str]:
     return [
         f"【你熟悉他的生活】記憶證據（這首為什麼現在放）：\n・{topic}",
-        "開場鉤子：開場直接點名講出這條記憶證據，讓對方聽得出你記得他說過/做過的事；只能講證據裡寫的事實，不准自己補細節或編故事。",
+        "開場鉤子：開場直接點名，講出這條記憶證據裡他說過或做過的事；只能講證據裡寫的事實，不准自己補細節或編故事。",
     ]
 
 
@@ -194,13 +193,6 @@ def _render_activity(topic, m: DJMaterials) -> list[str]:
     return [
         f"【你熟悉他的生活】在場的人現在的 Discord 動態：\n・{topic}",
         "開場鉤子：像注意到朋友正在幹嘛順口一提（例如邊打遊戲邊聽這首），再帶進歌；只能講素材裡寫的遊戲名/狀態文字，不准猜遊戲內容、劇情或他玩得怎樣，狀態文字看不懂就照念、不解讀。",
-    ]
-
-
-def _render_emotional_highlight(topic, m: DJMaterials) -> list[str]:
-    return [
-        f"你（機器人自己）記得的一個瞬間：\n・{topic}",
-        "開場鉤子：這是你自己的記憶與反應，可以用第一人稱提起這個瞬間，不是在講聽眾的事。",
     ]
 
 
@@ -253,7 +245,6 @@ MODES: dict[str, NarrationMode] = {
     "song": NarrationMode("song", "forced", order=2, pick=_pick_song),
     "life": NarrationMode("life", "gacha", render=_render_life, tts_emotion="upbeat"),
     "interest": NarrationMode("interest", "gacha", render=_render_interest, tts_emotion="upbeat"),
-    "emotional_highlight": NarrationMode("emotional_highlight", "gacha", render=_render_emotional_highlight, tts_emotion="calm"),
     "news": NarrationMode("news", "gacha", render=_render_news, tts_emotion="upbeat"),
     "callback": NarrationMode("callback", "gacha", render=_render_callback, on_chosen="consume_callback"),
     "activity": NarrationMode("activity", "gacha", render=_render_activity, tts_emotion="upbeat"),
@@ -286,7 +277,6 @@ def choose_mode(materials: DJMaterials, store: TopicCooldownStore, rng=None) -> 
     select_kwargs = dict(
         present_members=materials.present_members,
         has_conversation=materials.has_conversation,
-        emotional_highlights=materials.emotional_highlights,
         news_items=materials.news_items,
         callbacks=materials.callbacks,
         activities=materials.activities,
@@ -360,7 +350,6 @@ def select_narration_mode(
     topic_store: TopicCooldownStore,
     present_members=None,
     has_conversation: bool = False,
-    emotional_highlights=None,
     news_items=None,
     callbacks=None,
     activities=None,
@@ -377,7 +366,7 @@ def select_narration_mode(
     優先序：記憶對歌（memory_evidence，在場者親口說過喜歡這首歌/歌手的
     具體證據，命中且沒冷卻中就直接勝出，不再進 select_mode）→ 其餘全部交給
     `dj_topic_selector.select_mode` 的扭蛋池（近期生活主角要在場、在場興趣、
-    情緒高光、新聞、在場者的 Discord 動態、guide/conversation/
+    新聞、在場者的 Discord 動態、guide/conversation/
     atmosphere/quick，依各自有沒有素材建池後加權隨機抽一個；真正的挑選邏輯在
     `select_mode` 裡，這裡不重複實作；has_guide=True 時 guide 才會進這輪的候選）。
 
@@ -388,7 +377,7 @@ def select_narration_mode(
     Marvin 自己選歌才會算出 `_autopilot_pick_reason`；只在 select_mode
     選到 quick 或 atmosphere 這兩個「沒有具體話題可用」的墊底 fallback
     時才蓋掉，換成有憑有據的推薦理由（mode="reason"）——不搶 life/interest/
-    emotional_highlight/news/conversation 這些已經挑到具體
+    news/conversation 這些已經挑到具體
     素材的 mode。
 
     回傳 (topic_text, mode)，跟 `select_mode` 的回傳形狀一致，mode
@@ -407,7 +396,7 @@ def select_narration_mode(
     """
     return choose_mode(DJMaterials(
         life=life, interests=interests, present_members=present_members,
-        has_conversation=has_conversation, emotional_highlights=emotional_highlights,
+        has_conversation=has_conversation,
         news_items=news_items, callbacks=callbacks, activities=activities,
         autopilot_reason=autopilot_reason, memory_evidence=memory_evidence,
         has_guide=has_guide, focus=focus, exclude_modes=exclude_modes,
@@ -447,6 +436,12 @@ def pick_song_material(
     if not pool:
         return None
     return rng.choice(pool)
+
+
+def format_reason_line(who: str, title: str, reason: str) -> str:
+    """選歌理由進 context 的固定句型（10/9 使用者定）：「XXX會喜歡這首《歌名》，理由是XXX」。"""
+    who = (who or "").strip() or "大家"
+    return f"推薦理由：{who}會喜歡這首《{title}》，理由是{reason}"
 
 
 # [Step 5e 文件化] 見模組開頭「決策圖」——這段優先序目前只存在於

@@ -102,7 +102,6 @@ def _make_cog(tmp_path, monkeypatch):
     monkeypatch.setattr(cog, "_present_interests", lambda: [])
     monkeypatch.setattr(cog, "_fetch_news_items_async", AsyncMock(return_value=[]))
     monkeypatch.setattr(cog, "_present_callbacks", lambda present_members: ([], {}))
-    monkeypatch.setattr(cog, "_recent_emotional_highlight", lambda requester: "")
     monkeypatch.setattr(cog, "_autopilot_pick_reason", lambda info: "")
     monkeypatch.setattr(cog, "_dj_heat_bank", lambda: _make_fake_bank())
     monkeypatch.setattr(dj_narration_log, "recent_narrations_for_song", lambda *a, **k: [])
@@ -146,16 +145,6 @@ async def test_snapshot_interest(tmp_path, monkeypatch):
                return_value=("Alice 喜歡登山", "interest")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("interest", _render_snapshot("interest", bot, result))
-
-
-@pytest.mark.asyncio
-async def test_snapshot_emotional_highlight(tmp_path, monkeypatch):
-    bot, cog = _make_cog(tmp_path, monkeypatch)
-    info = _make_info()
-    with patch("dj_narration_orchestrator.choose_mode",
-               return_value=("那天大家一起唱到破音", "emotional_highlight")):
-        result = await cog._fetch_dj_interjection_raw(info)
-    _assert_snapshot("emotional_highlight", _render_snapshot("emotional_highlight", bot, result))
 
 
 @pytest.mark.asyncio

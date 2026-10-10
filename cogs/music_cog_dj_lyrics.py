@@ -6,7 +6,7 @@ MusicDJLyricsMixin — MusicCog 的歌詞/評論抓取 + DJ 播報內容生成�
     class MusicCog(..., MusicDJLyricsMixin, ..., commands.Cog): ...
 因此 self 仍是 MusicCog 實例，bot.router / bot.tts_engine / bot.music_memory /
 _vc / _life_cores_async / _present_interests / _dj_topic_store /
-_recent_emotional_highlight / _autopilot_pick_reason 等
+_autopilot_pick_reason 等
 全部沿用原本的 self 存取，行為零改動。
 
 _DJ_TEMPLATES 及其衍生常數（_DJ_EMPATHY_HOOK_TEMPLATES / _AUTOPILOT_DJ_PHRASES_* /
@@ -228,7 +228,7 @@ class MusicDJLyricsMixin:
         優先用 `info['_explanation']`（`_compute_recommend_explanation` 算好的 grounded
         解釋，見 explanation_slotfill.py）——比下面 lane 分流的固定樣版更具體、更可查證
         （例如 T2 discovery 會有「YouTube Music 常把這首和你們聽過的《XX》放在一起」，
-        而非「照口味挖出來的新歌」這種空泛說法）。沒有 explanation（例如沒 evidence
+        而非「跟平常聽的歌風格相近的新歌」這種空泛說法）。沒有 explanation（例如沒 evidence
         可用）才退回原本 lane 分流的固定樣版。
         """
         explanation = info.get('_explanation')
@@ -242,10 +242,10 @@ class MusicDJLyricsMixin:
         if lane == 'long_tail':
             return f"這首是 {who} 點過的歌"  # 不講多久沒點，但人名要留著（掛名鐵則靠它）
         if lane == 'discovery':
-            return f"照 {who} 的口味挖出來的新歌"
+            return f"跟 {who} 平常聽的歌風格相近的新歌"
         anchor = info.get('_anchor_title', '')
         if anchor:
-            return f"因為 {who} 點過《{anchor}》才接這首"
+            return f"{who} 點過《{anchor}》"
         return f"這首是 {who} 平常會聽的歌"
 
     @staticmethod
@@ -523,42 +523,6 @@ class MusicDJLyricsMixin:
         except Exception:
             return []
 
-    _EMOTIONAL_HIGHLIGHT_MAX_AGE_S = 8 * 86400  # 跟 taste_profile 其他 freshness window 一致
-
-    def _recent_emotional_highlight(self, requester: str) -> str:
-        """requester 最近一則「讓 Marvin 情緒波動的瞬間」（見 gemini_router_content.py
-        extract_emotional_moments / suki_memory.add_emotional_highlight），供 DJ 話題選擇器
-        當第三優先話題。只取 warm/surprised/moved——annoyed 不當 DJ 素材（串場裡講『你讓我
-        不爽』很怪，跟這個場合的語氣不合）。8 天內才算新鮮。醫療健康類跳過（同
-        dj_daily_highlight.MEDICAL_KEYWORDS）。任何失敗回 ""（DJ 少一味料，
-        不該讓整條串場掛掉，同 _present_interests 的降級哲學）。
-        """
-        from dj_daily_highlight import MEDICAL_KEYWORDS
-        try:
-            suki = getattr(getattr(self.bot, 'router', None), 'memory', None)
-            if suki is None or not requester:
-                return ""
-            highlights = suki.get_player_memory(requester).get('emotional_highlights', [])
-            if not isinstance(highlights, list):
-                return ""
-            now = time.time()
-            for h in reversed(highlights):
-                if not isinstance(h, dict):
-                    continue
-                if h.get('valence') == 'annoyed':
-                    continue
-                ts = h.get('timestamp')
-                if not isinstance(ts, (int, float)) or now - ts > self._EMOTIONAL_HIGHLIGHT_MAX_AGE_S:
-                    continue
-                moment = str(h.get('moment', '')).strip()
-                if not moment:
-                    continue
-                if any(kw in moment for kw in MEDICAL_KEYWORDS):
-                    continue
-                return moment
-            return ""
-        except Exception:
-            return ""
 
     async def _fetch_dj_interjection_raw(self, info: dict, lyrics_task=None) -> dict | None:
         """預先生成 DJ 播報：LLM 文字 + TTS 預渲染音訊。回傳 {'text', 'audio_path'} 或 None。"""
@@ -695,11 +659,6 @@ class MusicDJLyricsMixin:
         # 對話銜接/氣氛/純接歌 之間本地輪替（治「每次都靠環境/天氣開場」）。
         life = await self._life_cores_async()
         interests = self._present_interests()
-        # autopilot（requester=Marvin…）不是真人，改查在場的人（9/30 使用者定）
-        _emo_targets = ([requester] if not requester.startswith('Marvin')
-                        else sorted(present_members or []))
-        _emo_highlight = next((h for h in (self._recent_emotional_highlight(n) for n in _emo_targets) if h), "")
-        emotional_highlights = [_emo_highlight] if _emo_highlight else []
 
         # 獲取安全生活/科技新聞素材（已在 news_fetch 過濾政治/受傷/死亡）
         news_items = await self._fetch_news_items_async(interests)
@@ -723,7 +682,7 @@ class MusicDJLyricsMixin:
         materials = DJMaterials(
             revival_lines=revival_lines, memory_evidence=memory_evidence, focus=_focus,
             life=life, present_members=present_members, interests=interests,
-            emotional_highlights=emotional_highlights, news_items=news_items,
+            news_items=news_items,
             callbacks=callback_lines, activities=activity_lines,
             has_guide=bool(guide), has_conversation=bool(conv_lines),
             autopilot_reason=_autopilot_reason, exclude_modes=used["modes"],
@@ -745,7 +704,8 @@ class MusicDJLyricsMixin:
         ctx.extend(plan.ctx_lines)
         _song_pick = None
         if _autopilot_reason:
-            _reason_line = f"選這首的理由：{_autopilot_reason}"
+            from dj_narration_orchestrator import format_reason_line
+            _reason_line = format_reason_line(info.get('_spotlight', ''), _clean_t or title, _autopilot_reason)
             if mode == "reason":
                 ctx.append(_reason_line)   # reason 就是這輪的主素材
             else:

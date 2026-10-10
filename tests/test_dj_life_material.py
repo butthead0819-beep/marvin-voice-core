@@ -159,51 +159,6 @@ async def test_life_cores_async_merges_full_diary_and_highlight_then_shuffles(mo
     assert shuffle_calls, "應呼叫 random.shuffle 打亂候選"
 
 
-# ── 6. 自選歌情緒記憶：autopilot 改查在場的人 ────────────────────────────────
-
-def _with_highlight_for(cog, target_names_and_moments: dict, valence="warm", age_s=3600.0):
-    def _get_player_memory(name):
-        moment = target_names_and_moments.get(name, "")
-        if not moment:
-            return {"emotional_highlights": []}
-        return {"emotional_highlights": [
-            {"moment": moment, "valence": valence, "timestamp": time.time() - age_s},
-        ]}
-    cog.bot.router.memory.get_player_memory = MagicMock(side_effect=_get_player_memory)
-
-
-@pytest.mark.asyncio
-async def test_autopilot_emotional_highlight_queries_present_members(monkeypatch):
-    import dj_topic_selector
-    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {"emotional_highlight": 1.0})
-    cog = _make_cog()
-    cog._life_cores_async = AsyncMock(return_value=[])
-    cog._present_interests = MagicMock(return_value=[])
-    cog._vc = MagicMock(return_value=MagicMock(get_online_members=MagicMock(return_value=["大肚"])))
-    _with_highlight_for(cog, {"大肚": "大肚說他升職了"})
-
-    await cog._fetch_dj_interjection_raw(_info(requester="Marvin推薦（點給大家）"))
-    ctx = _ctx_str(cog)
-    assert "大肚說他升職了" in ctx
-
-
-@pytest.mark.asyncio
-async def test_human_requester_emotional_highlight_only_queries_requester(monkeypatch):
-    import dj_topic_selector
-    # requester 沒有情緒記憶時池裡沒有 emotional_highlight，留 atmosphere 讓 LLM 仍被呼叫（否則退 quick 不走 LLM）
-    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {"emotional_highlight": 1.0, "atmosphere": 1.0})
-    cog = _make_cog()
-    cog._life_cores_async = AsyncMock(return_value=[])
-    cog._present_interests = MagicMock(return_value=[])
-    cog._vc = MagicMock(return_value=MagicMock(get_online_members=MagicMock(return_value=["大肚", "狗與露"])))
-    # 只有狗與露有 highlight；requester=大肚 不該撈到別人的
-    cog._recent_emotional_highlight = MagicMock(return_value="")
-
-    await cog._fetch_dj_interjection_raw(_info(requester="大肚"))
-    queried = [c.args[0] for c in cog._recent_emotional_highlight.call_args_list]
-    assert queried == ["大肚"], f"真人點歌只該查點播者本人: {queried}"
-
-
 # ── 歌詞槽品質：段落標記、純哼唱不當副歌（9/30 實測挑到「[CHORUS]」「Oh-oh-oh」）────
 
 def test_chorus_pick_skips_section_tags():

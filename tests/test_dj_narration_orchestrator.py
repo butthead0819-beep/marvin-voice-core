@@ -64,14 +64,13 @@ def test_tail_fire_delay_accounts_for_highlight_start_offset():
 def _legacy_select_mode(
     life, interests, store, *,
     present_members=None, has_conversation=False,
-    emotional_highlights=None, news_items=None, autopilot_reason="",
+    news_items=None, autopilot_reason="",
 ):
     """逐行照抄 _fetch_dj_interjection_raw 裡 select_mode + reason 覆蓋那段。"""
     topic, mode = select_mode(
         life, interests, store,
         present_members=present_members,
         has_conversation=has_conversation,
-        emotional_highlights=emotional_highlights,
         news_items=news_items,
     )
     if autopilot_reason and mode in ("quick", "atmosphere"):
@@ -176,7 +175,7 @@ def test_select_narration_mode_passes_activities_through_to_select_mode(tmp_path
     topic, mode = select_narration_mode(
         life=[], interests=[], topic_store=store,
         activities=["小明 正在玩《Ball X Pit》"],
-        exclude_modes=("life", "interest", "emotional_highlight", "news", "callback",
+        exclude_modes=("life", "interest", "news", "callback",
                        "guide", "conversation", "atmosphere", "quick"),
     )
     assert mode == "activity"
