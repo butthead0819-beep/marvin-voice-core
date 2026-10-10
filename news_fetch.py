@@ -28,23 +28,14 @@ def enabled() -> bool:
 
 
 _LOCALE = "hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-# 10/4：沒興趣關鍵字時不抓熱門頭條（實測最近 25 則約一半是選舉政治/戰爭/社會案件，
-# 關鍵字黑名單擋不完），改從天氣／科技／科學三個來源隨機挑；黑名單仍當第二層。
-DEFAULT_SOURCES = (
-    f"{RSS_BASE}/search?q={quote('天氣')}&{_LOCALE}",
-    f"{RSS_BASE}/headlines/section/topic/TECHNOLOGY?{_LOCALE}",
-    f"{RSS_BASE}/headlines/section/topic/SCIENCE?{_LOCALE}",
-)
 
 
-def news_url(keyword: Optional[str], *, rng=random) -> str:
-    """keyword 給時查該關鍵字，否則從 DEFAULT_SOURCES 隨機挑一個。"""
-    if keyword:
-        return f"{RSS_BASE}/search?q={quote(keyword)}&{_LOCALE}"
-    return rng.choice(DEFAULT_SOURCES)
+def news_url(keyword: str) -> str:
+    """查該 keyword 的 Google News RSS 搜尋網址。"""
+    return f"{RSS_BASE}/search?q={quote(keyword)}&{_LOCALE}"
 
 
-async def _default_fetch(keyword: Optional[str], *, timeout_s: float = 6.0) -> Optional[str]:
+async def _default_fetch(keyword: str, *, timeout_s: float = 6.0) -> Optional[str]:
     if aiohttp is None:
         return None
     url = news_url(keyword)
@@ -116,10 +107,12 @@ async def fetch_news_headlines(
     fetch: Optional[Callable[..., Awaitable[Optional[str]]]] = None,
     limit: int = 5,
 ) -> list[str]:
-    """抓最多 limit 則新聞標題。keyword 給時查該關鍵字，否則從天氣/科技/科學隨機挑來源
-    （見 news_url）。剝完來源後綴、過濾不安全標題、同標題只留第一個，保留 RSS 順序。
+    """抓最多 limit 則新聞標題，查 keyword。沒有 keyword 不抓（回 []）。
+    剝完來源後綴、過濾不安全標題、同標題只留第一個，保留 RSS 順序。
     任何失敗回 []。"""
     if not enabled():
+        return []
+    if not keyword:
         return []
     xml_text = await (fetch or _default_fetch)(keyword)
     if not xml_text:
@@ -127,20 +120,22 @@ async def fetch_news_headlines(
     return _parse_items(xml_text, limit)
 
 
-def pick_news_keyword(interests: Sequence[str], *, rng=random) -> Optional[str]:
-    """在場興趣關鍵字與三個預設來源平均抽一個。interests 元素格式是
-    "{成員名}喜歡{東西}"：含「喜歡」取其後的部分，不含則原樣使用。回傳 None 代表
-    交給 news_url 從 DEFAULT_SOURCES 隨機挑。"""
-    keywords: list[str] = []
-    seen: set[str] = set()
+def pick_news_interest(interests: Sequence[str], *, rng=random) -> Optional[tuple[str, str]]:
+    """在場興趣平均抽一個，回 (興趣原句, 搜尋關鍵字)；興趣原句給 render 講「講給誰
+    聽」。interests 元素格式是 "{成員名}喜歡{東西}"：含「喜歡」取其後的部分當關鍵字，
+    不含則原樣使用。沒有候選回 None。"""
+    candidates: list[tuple[str, str]] = []
+    seen_keywords: set[str] = set()
     for item in interests or []:
         s = str(item).strip()
         if "喜歡" in s:
-            s = s.split("喜歡", 1)[-1].strip()
-        if s and s not in seen:
-            seen.add(s)
-            keywords.append(s)
-    if not keywords:
+            keyword = s.split("喜歡", 1)[-1].strip()
+        else:
+            keyword = s
+        if not keyword or keyword in seen_keywords:
+            continue
+        seen_keywords.add(keyword)
+        candidates.append((s, keyword))
+    if not candidates:
         return None
-    candidates: list[Optional[str]] = keywords + [None] * len(DEFAULT_SOURCES)
     return rng.choice(candidates)

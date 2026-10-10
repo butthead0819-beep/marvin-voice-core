@@ -34,10 +34,12 @@ async def test_returns_first_headline_with_source_suffix_stripped():
 
 
 @pytest.mark.asyncio
-async def test_no_keyword_queries_top_headlines():
-    fetch = _capturing_fetch(_rss("頭條新聞 - 某媒體"))
-    await news_fetch.fetch_news_headlines(fetch=fetch)
-    assert fetch.calls == [None]
+async def test_no_keyword_returns_empty_without_fetching():
+    async def _must_not_call(keyword, **kw):
+        raise AssertionError("沒有 keyword 不該打 Google News")
+
+    assert await news_fetch.fetch_news_headlines(fetch=_must_not_call) == []
+    assert await news_fetch.fetch_news_headlines("", fetch=_must_not_call) == []
 
 
 @pytest.mark.asyncio
@@ -141,25 +143,12 @@ async def test_duplicate_titles_after_suffix_strip_deduped():
     assert result == ["同一則新聞", "第二則"]
 
 
-# ── 10/4：沒興趣關鍵字時不抓熱門頭條（一半是選舉政治/戰爭/社會案件），改天氣＋科技＋科學 ──
-
 def test_news_url_with_keyword_searches_keyword():
     url = news_fetch.news_url("露營")
     assert "/search?q=%E9%9C%B2%E7%87%9F" in url
 
 
-def test_news_url_without_keyword_never_top_headlines():
-    import random
-    seen = {news_fetch.news_url(None, rng=random.Random(i)) for i in range(60)}
-    top = f"{news_fetch.RSS_BASE}?hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    assert top not in seen
-    assert len(seen) == 3
-    assert any("/search?q=%E5%A4%A9%E6%B0%A3" in u for u in seen)          # 天氣
-    assert any("/topic/TECHNOLOGY" in u for u in seen)
-    assert any("/topic/SCIENCE" in u for u in seen)
-
-
-# ── pick_news_keyword：在場興趣與預設來源平均抽 ──────────────────────────────
+# ── pick_news_interest：在場興趣平均抽 ──────────────────────────────────────
 
 class _FirstChoiceRng:
     """假 rng：choice 永遠回傳第一個元素，順便記錄被傳入的候選 list。"""
@@ -172,23 +161,26 @@ class _FirstChoiceRng:
         return candidates[0]
 
 
-def test_pick_news_keyword_strips_喜歡_prefix():
+def test_pick_news_interest_strips_喜歡_prefix():
     rng = _FirstChoiceRng()
-    result = news_fetch.pick_news_keyword(["showay喜歡露營車"], rng=rng)
-    assert result == "露營車"
+    result = news_fetch.pick_news_interest(["showay喜歡露營車"], rng=rng)
+    assert result == ("showay喜歡露營車", "露營車")
 
 
-def test_pick_news_keyword_empty_interests_returns_none():
+def test_pick_news_interest_empty_interests_returns_none():
     rng = _FirstChoiceRng()
-    result = news_fetch.pick_news_keyword([], rng=rng)
+    result = news_fetch.pick_news_interest([], rng=rng)
     assert result is None
 
 
-def test_pick_news_keyword_candidates_dedup_plus_default_source_nones():
+def test_pick_news_interest_candidates_dedup_by_keyword():
     rng = _FirstChoiceRng()
-    news_fetch.pick_news_keyword(
-        ["showay喜歡露營車", "狗與露喜歡PS5", "weakgogo喜歡露營車"],
+    news_fetch.pick_news_interest(
+        ["showay喜歡露營車", "狗與露喜歡PS5", "weakgogo喜歡露營車", "爵士樂"],
         rng=rng,
     )
-    none_count = len(news_fetch.DEFAULT_SOURCES)
-    assert rng.seen_candidates == ["露營車", "PS5"] + [None] * none_count
+    assert rng.seen_candidates == [
+        ("showay喜歡露營車", "露營車"),
+        ("狗與露喜歡PS5", "PS5"),
+        ("爵士樂", "爵士樂"),
+    ]

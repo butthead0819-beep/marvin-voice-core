@@ -120,6 +120,7 @@ class DJMaterials:
     guide: str | None = None
     song_card: Any = None
     empathy_hooks: tuple = ()
+    news_context: dict = field(default_factory=dict)  # 新聞標題 → 搜它的在場興趣原句（"showay喜歡露營車"），render 講給誰聽
 
 
 @dataclass(frozen=True)
@@ -209,9 +210,15 @@ def _render_activity(topic, m: DJMaterials) -> list[str]:
 
 
 def _render_news(topic, m: DJMaterials) -> list[str]:
+    why = m.news_context.get(topic)
+    if not why:
+        return [
+            f"最新時事消息：\n・{topic}",
+            "開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。",
+        ]
     return [
-        f"最新時事消息：\n・{topic}",
-        "開場鉤子：簡潔提及這則時事消息，像電台順帶關心生活一樣，自然引導大家聽下一首歌，不說教、不嚴肅。",
+        f"【你熟悉他的生活】在場興趣：{why}\n剛好有則相關新聞：\n・{topic}",
+        "開場鉤子：像朋友看到他會在意的新聞，點名順口跟他提一句，再自然帶進歌；只能講標題裡寫的事，不准自己補細節、不准替他表態或猜他的反應。",
     ]
 
 
