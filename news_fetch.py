@@ -1,7 +1,7 @@
-"""Google News RSS 新聞抓取：免費、不需 API key，給長時間靜默時的新聞播報素材用。
+"""Google News RSS 新聞抓取：免費、不需 API key，給 DJ 口白 news mode 當素材用。
 
 fetch 可注入（同 itunes_cover.py pattern），方便測試不真連網。任何失敗（逾時/非
-200/XML 壞掉/沒 aiohttp）一律 fail-open 回 None，不擋主流程。
+200/XML 壞掉/沒 aiohttp）一律 fail-open 回 []，不擋主流程。
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import logging
 import os
 import random
 import xml.etree.ElementTree as ET
-from typing import Awaitable, Callable, Collection, Optional
+from typing import Awaitable, Callable, Optional, Sequence
 from urllib.parse import quote
 
 try:
@@ -84,14 +84,16 @@ def is_safe_news_title(title: str) -> bool:
     return not any(kw in t for kw in _UNSAFE_NEWS_KEYWORDS)
 
 
-def _parse_first_item(xml_text: str, exclude: Collection[str] = ()) -> Optional[dict]:
+def _parse_items(xml_text: str, limit: int) -> list[str]:
     try:
         root = ET.fromstring(xml_text)
     except ET.ParseError:
-        return None
+        return []
     items = root.findall("./channel/item")
     if not items:
-        return None
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
     for item in items:
         title = (item.findtext("title") or "").strip()
         if not title:
@@ -99,22 +101,46 @@ def _parse_first_item(xml_text: str, exclude: Collection[str] = ()) -> Optional[
         clean_title = _strip_source_suffix(title)
         if not clean_title or not is_safe_news_title(clean_title):
             continue
-        if clean_title in exclude:
+        if clean_title in seen:
             continue
-        return {"title": clean_title}
-    return None
+        seen.add(clean_title)
+        out.append(clean_title)
+        if len(out) >= limit:
+            break
+    return out
 
 
-async def fetch_news_headline(
+async def fetch_news_headlines(
     keyword: Optional[str] = None,
     *,
     fetch: Optional[Callable[..., Awaitable[Optional[str]]]] = None,
-    exclude: Collection[str] = (),
-) -> Optional[dict]:
-    """抓一則新聞標題。keyword 給時查該關鍵字，否則從天氣/科技/科學隨機挑來源（見 news_url）。失敗回 None。"""
+    limit: int = 5,
+) -> list[str]:
+    """抓最多 limit 則新聞標題。keyword 給時查該關鍵字，否則從天氣/科技/科學隨機挑來源
+    （見 news_url）。剝完來源後綴、過濾不安全標題、同標題只留第一個，保留 RSS 順序。
+    任何失敗回 []。"""
     if not enabled():
-        return None
+        return []
     xml_text = await (fetch or _default_fetch)(keyword)
     if not xml_text:
+        return []
+    return _parse_items(xml_text, limit)
+
+
+def pick_news_keyword(interests: Sequence[str], *, rng=random) -> Optional[str]:
+    """在場興趣關鍵字與三個預設來源平均抽一個。interests 元素格式是
+    "{成員名}喜歡{東西}"：含「喜歡」取其後的部分，不含則原樣使用。回傳 None 代表
+    交給 news_url 從 DEFAULT_SOURCES 隨機挑。"""
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for item in interests or []:
+        s = str(item).strip()
+        if "喜歡" in s:
+            s = s.split("喜歡", 1)[-1].strip()
+        if s and s not in seen:
+            seen.add(s)
+            keywords.append(s)
+    if not keywords:
         return None
-    return _parse_first_item(xml_text, exclude=exclude)
+    candidates: list[Optional[str]] = keywords + [None] * len(DEFAULT_SOURCES)
+    return rng.choice(candidates)

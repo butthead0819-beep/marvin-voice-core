@@ -3,7 +3,7 @@
 測試涵蓋：
 1. 社交喜好自然表述（無「第 N 次」生硬計數，改為「常聽/多人常聽」）。
 2. 新聞模式整合與負面新聞（社會/死亡/政治）安全過濾。
-3. 新聞 2 小時冷卻機制。
+3. 新聞 30 天冷卻機制。
 4. LLM 產出品管檢查（字數超長/過短/假文青禁用詞）與 Threads 生活小幽默兜底。
 """
 from __future__ import annotations
@@ -71,10 +71,10 @@ def test_news_safety_filtering():
         assert is_safe_news_title(title), f"應該通過安全檢查: {title}"
 
 
-# ── 3. 新聞 2 小時冷卻與選題 ──────────────────────────────────────
+# ── 3. 新聞 30 天冷卻與選題 ──────────────────────────────────────
 
 def test_news_mode_selection_and_cooldown(tmp_path, monkeypatch):
-    """驗證新聞在有可用素材時會被選中，且受 2 小時冷卻保護。"""
+    """驗證新聞在有可用素材時會被選中，且受 30 天冷卻保護。"""
     monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {"news": 1.0})
     t = [10000.0]
     now = lambda: t[0]
@@ -89,7 +89,7 @@ def test_news_mode_selection_and_cooldown(tmp_path, monkeypatch):
     assert mode == "news"
     assert topic == "台北週末好天氣"
 
-    # 立即再次請求 → 進入 2 小時冷卻，不再選取該新聞
+    # 立即再次請求 → 進入 30 天冷卻，不再選取該新聞
     topic2, mode2 = select_mode(
         life_cores=[],
         interests=[],
@@ -98,7 +98,7 @@ def test_news_mode_selection_and_cooldown(tmp_path, monkeypatch):
     )
     assert mode2 != "news"
 
-    # 經過 2 小時 + 1 秒後 → 冷卻結束
+    # 經過 30 天 + 1 秒後 → 冷卻結束
     t[0] += NEWS_COOLDOWN_S + 1
     topic3, mode3 = select_mode(
         life_cores=[],

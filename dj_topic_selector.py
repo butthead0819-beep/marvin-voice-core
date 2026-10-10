@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PATH = "records/dj_topic_cooldown.json"
 COOLDOWN_S = 8 * 3600       # 同一具體生活/興趣話題用過 8 小時內不重複
-NEWS_COOLDOWN_S = 2 * 3600  # 新聞頻率可較高，2 小時內不重複
+NEWS_COOLDOWN_S = 30 * 86400  # 新聞用過就不再用（30 天 > RSS 舊文殘留期）；10/10 實測 2h 冷卻讓同一則 Berlingo 一天講 14 次
 
 TOPIC_MODES = ("life", "interest", "news", "callback", "activity")
 NON_TOPIC_MODES = ("guide", "conversation", "perspective", "atmosphere", "quick")
@@ -98,7 +98,7 @@ class TopicCooldownStore:
 
         meme_id: 語義 tag。傳入時用 "meme:{meme_id}" 作 key，
                  與純 text hash 是獨立 namespace，互不影響。
-        cooldown_s: 自訂冷卻秒數（預設使用 COOLDOWN_S 8小時，新聞為 2 小時）。
+        cooldown_s: 自訂冷卻秒數（預設使用 COOLDOWN_S 8小時，新聞為 30 天）。
         """
         cd = cooldown_s if cooldown_s is not None else COOLDOWN_S
         key = f"meme:{meme_id}" if meme_id else _topic_key(text)

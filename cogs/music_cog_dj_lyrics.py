@@ -361,15 +361,13 @@ class MusicDJLyricsMixin:
             return []
 
     async def _fetch_news_items_async(self, interests: list[str]) -> list[str]:
-        """從 Google News 獲取適合電台播報的乾淨新聞（已過濾受傷/死亡/政治/八卦）。"""
+        """從 Google News 獲取適合電台播報的乾淨新聞（已過濾受傷/死亡/政治/八卦）。
+        回傳最多 5 則，讓冷卻中的第一則不會擋住後面沒用過的。"""
         if not getattr(self, "_enable_dj_news_fetch", True):
             return []
         try:
-            from news_fetch import fetch_news_headline
-            _kw = interests[0] if interests else None
-            _news_res = await fetch_news_headline(_kw)
-            if _news_res and _news_res.get('title'):
-                return [_news_res['title']]
+            from news_fetch import fetch_news_headlines, pick_news_keyword
+            return await fetch_news_headlines(pick_news_keyword(interests))
         except Exception as e:
             logger.debug(f"[DJ News] 新聞抓取失敗: {e}")
         return []

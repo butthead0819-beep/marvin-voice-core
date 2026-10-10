@@ -113,14 +113,3 @@ def test_excluded_memory_match_falls_to_gacha(tmp_path, monkeypatch):
     assert store.is_cool("E") is True
 
 
-def test_news_reenters_pool_after_news_cooldown_but_before_topic_cooldown(tmp_path, monkeypatch):
-    """新聞用 2h 冷卻（不是話題的 8h）：抽過的新聞 2h 後就能再進池。"""
-    monkeypatch.setattr(dj_topic_selector, "MODE_WEIGHTS", {"news": 1.0, "quick": 1.0})
-    t = [1_000_000.0]
-    store = TopicCooldownStore(path=str(tmp_path / "cd.json"), now=lambda: t[0])
-    store.mark_used("颱風轉向")
-    t[0] += dj_topic_selector.NEWS_COOLDOWN_S + 1  # 過了 2h、還不到 8h
-    assert dj_topic_selector.NEWS_COOLDOWN_S + 1 < dj_topic_selector.COOLDOWN_S
-    _topic, mode = select_narration_mode(
-        life=[], interests=[], topic_store=store, news_items=["颱風轉向"])
-    assert mode == "news"
