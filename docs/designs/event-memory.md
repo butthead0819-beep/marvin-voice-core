@@ -503,6 +503,7 @@ Lane A: S1 → S2 → S3（S2/S3 都碰 cogs/voice_controller.py，序列化）�
 - 登記 purpose：extract_events / event_recall 加進 llm_agents/base.py 已知 purpose。
 - 同人同日同地也合併（缺口 1，重播 9/29「去臺東」vs「回老家（臺東）」）。
 - 從聊天學老家（缺口 2，使用者選「從聊天自己學」）：同一句同時有老家/家鄉/故鄉與地名才學；抽事件時附背景；「回老家」的 place 可用已知老家通過驗證。hometowns 表保留 30 天。
+- 本地 regex 補學老家：LLM 漏抓 9/29「我臺東老家」；只認「我(們)X老家」「我(的)老家在X」自述句型，LLM 呼叫前先學。14 天 26,604 句實測學到 2 次皆正確、0 誤抓。
 
 ## GSTACK REVIEW REPORT
 
