@@ -1,488 +1,126 @@
 
-## 新功能 — 待完成
+> 2026-10-11 整理：拿掉已完成、前提已經不在（功能被刪、方向換了）、被新設計取代的項目，全部可以從 git 歷史找回。
+> 分四區：**接下來做** → **小修** → **條件觸發（等數據，沒數據不動）** → **長期停放**。
+
+## 🔜 接下來做
 
 ### TODO: 事件記憶 Phase 2 — 事件過後主動追問，取代 commitment callback
 **What:** event_date 已過、當事人在場且在場者全部 ⊆ heard_by → 走 MemoryCallbackAgent 管道問「上個月去 X 露營好玩嗎？」；同時拔掉 `commitment_to_callback` → `callback_queue` 這條（使用者 2026-10-10 拍板「取代」）。
 **Why:** callback_queue 收進大量雜訊（去上廁所、查詢什麼是生綠塔），且 records/speak_outcomes.jsonl 中 MemoryCallbackAgent 得標 696 次只有 12 次真的講出口。
 **Pros:** 一條有日期、有活動、驗過原話的來源取代雜訊佇列；隱私規則與 Phase 1 問答共用。
 **Cons:** 行程取消/延期時問「好玩嗎」會尷尬，需要狀態判斷（例如之後窗口提到取消就標記）。
-**Context:** 設計與 eng review 見 `docs/designs/event-memory.md`（D1~D7）。Phase 1 只做「問了能答」，刻意不碰 callback_queue。
-**Depends on:** Phase 1 上線 + `scripts/replay_event_extraction.py` 重播評估通過。
+**Context:** 設計與 eng review 見 `docs/designs/event-memory.md`（D1~D7）。Phase 1 只做「問了能答」，刻意不碰 callback_queue。舊的 MemoryCallbackAgent 升級項目（embedding / LLM 關聯 / 跨 speaker / LLM 潤飾 / 動態 TTL / post_utterance）都是針對 callback_queue，隨這項一起作廢；其中 post_utterance 即時接話若 Phase 2 上線後覺得 5s 太慢再另開。
+**Depends on:** Phase 1 ✅（PR#117 10/11 merged）+ `scripts/replay_event_extraction.py` 重播評估通過。
 **Priority:** P2
 
-### TODO: 事件記憶 — 「馬文忘掉這件事」語音撤回
-**What:** 「馬文忘掉我要去露營這件事」→ 刪除該事件；只能刪自己是 owner 的事件。
-**Why:** 虛擬客廳 Phase 1 重點是信任與隱私；目前只能等 30 天自動過期。
+### TODO: 事件記憶 — owner 轉述歸屬錯
+**What:** A 轉述 B 的行程（「他下週要去露營」）時，事件 owner 被記成 A。
+**Context:** Phase 1 上線時已知未修（見記憶 project_event_memory_phase1）。Phase 2 會依 owner 主動追問，歸屬錯會變成問錯人，建議 Phase 2 之前或一起修。
+**Priority:** P2
+
+### TODO: 信任與隱私 — 「馬文忘掉這件事」/「這個別說出去」
+**What:** 語音撤回：「馬文忘掉我要去露營這件事」→ 刪除該事件；「這個別說出去」→ 把對應記憶標 private。只能動自己是 owner 的事件/記憶。
+**Why:** 虛擬客廳 Phase 1 重點是信任與隱私；目前只能等 30 天自動過期，「可分享 vs 私下」只靠啟發式猜。
 **Pros:** 讓人敢在 Marvin 面前聊行程；EventStore 已有刪除基礎。
 **Cons:** 多一個寫入意圖，誤觸會刪錯，需確認步驟或只刪最可能的一筆並講出來。
-**Context:** 2026-10-10 eng review（D9）決定不塞進 Phase 1。設計見 `docs/designs/event-memory.md`。
-**Depends on:** 事件記憶 Phase 1 上線。
+**Context:** 合併舊的兩項：2026-10-10 eng review（D9）不塞進 Phase 1 的語音撤回，與 2026-05-21 CEO review 的「別記/別說」同意線。意圖辨識照 LLM 優先，別只靠 regex。設計見 `docs/designs/event-memory.md`。
+**Priority:** P2
+
+### TODO: DJ 口白註冊表第 4 刀 — 依 skip 率砍 mode（10/15）
+**What:** 10/15 拿口白 skip 反應訊號（第 1 刀）的資料，砍掉 skip 率明顯偏高的 mode。
+**Context:** `docs/designs/dj-narration-mode-registry.md`；記憶 project_dj_narration_mode_registry。
+**Priority:** P2（有日期）
+
+### TODO: 移除 select_narration_mode 舊包裝（10/16 起可做）
+**What**: `dj_narration_orchestrator.select_narration_mode` 在第 3 刀改成呼叫 `plan_narration` 的薄包裝；穩定後刪掉它，正式呼叫端改用 `plan_narration`，7 個測試檔約 47 處引用改測 `plan_narration`。
+**Why**: 2026-10-08 eng review D13 刻意保留舊入口當重構護欄；不清掉會兩個決策入口並存，之後有人從舊入口加邏輯就分岔。
+**Cons**: 一次改寫約 47 處測試，要逐一確認斷言語意不變。
+**Context**: 第 3 刀 eb01f5c（10/9）已 land，穩定一週＝10/16。設計見 `docs/designs/dj-narration-mode-registry.md`；eng review 報告 `~/.gstack/projects/butthead0819-beep-marvin-voice-core/main-eng-review-20261008-141758.md`（R3/R5）。從 `grep -rn select_narration_mode tests/` 開始。
 **Priority:** P3
+
+### TODO: suki 雜訊假 player 清理（待確認）
+**What:** `marvin.db` players 表仍有「測試者 / 未知人 / 會別人怎麼講話 / 修為講話」這些 STT 噪音建的假 player（2026-10-11 確認還在）。「狗與露」有兩列，要先確認是不同 guild 還是重複。
+**How:** 清理 script，**bot 停止時跑**（避免 `_cache` 覆蓋）；深夜做，不在晚間 20-24。
+**Priority:** P3
+
+---
+
+## 🧹 小修（隨手可做）
+
+### TODO: IntentBus base.py — reason_template 漏接 ValueError
+**What:** `intent_agents/base.py` 三處 `except (KeyError, IndexError)`（約 :216 / :262 / :296）。reason_template 含無效 format spec → ValueError 未接 → bid 被 bus 的 bare except 吞掉，silent loss。改成也接 ValueError。
+**How to start:** 先寫紅：reason_template="{x!q}" 斷言 reason fallback 到 schema.name。
+**Priority:** P3
+
+### TODO: IntentBus agents 清掉 voice_controller forwarding stubs
+**What**: intent_agents/ 裡還有 9 處 `self.ctrl.X`（stream / radio / _mixer…）走 VC 的轉發 stub，改成直接拿 MusicCog，清完 VC 的轉發層可以刪。
+**Start**: `grep -n "self\.ctrl\.\(stream\|radio\|_safe_music\|_mixer\|_cover\|_consecutive\)" intent_agents/`
+**Priority:** P3（技術債，不急）
+
+---
+
+## ⏳ 條件觸發（沒數據前不動）
 
 ### TODO: audio rescue — readonly_tool_executor 接線
-**What:** 給 `AudioRescueAgent` 傳一個 `readonly_tool_executor`，讓 `get_now_playing` / `get_recent_history` 兩個唯讀 tool 真的能執行（現在 `build_rescue_components` 沒傳 → `_execute_readonly` 直接 return，no-op）。
-**Why:** audio rescue 時使用者問「現在放什麼」「剛剛聊了什麼」→ Gemini 會選這兩個 tool，但目前靜默什麼都不做，掉回聊天。
-**Pros:** 補完唯讀查詢那條；薄 executor ~30 行（`audio_rescue_agent.py:75` `ReadonlyToolExecutor` 型別 + `:200 _execute_readonly` 已寫好，只差 `build_rescue_components` 建 executor 傳進去）。
-**Cons:** `NowPlayingAgent` 已接「現在放什麼」的 regex 路徑，重疊度高；單輪限制下唯讀 tool 看不到彼此結果。
-**Context:** 來自 2026-08-31 /plan-eng-review（audio rescue 轉正）。design doc `jackhuang-chore-daily-user-needs-ritual-design-20260831-202558.md`。本 PR 明確排除，「查資料」靠 `factual_question` + `GroundedQAAgent` 已足夠。
-**Depends on:** audio rescue 轉正 PR 上線 + 一週 replay 資料顯示真有人問這類且 regex 接不到。
+**What:** 給 `AudioRescueAgent` 傳一個 `readonly_tool_executor`，讓 `get_now_playing` / `get_recent_history` 兩個唯讀 tool 真的能執行（現在沒有任何地方傳 → `_execute_readonly` 直接 return，no-op）。
+**Cons:** `NowPlayingAgent` 已接「現在放什麼」，重疊度高。
+**觸發條件:** replay 資料顯示真有人問這類且其他路徑接不到。
 **Priority:** P3
 
-### TODO: audio rescue — 延遲緩解（條件觸發）
-**What:** 若上線後量到 Gemini 呼叫 p95 > 3s 或即時控制指令 pause 延遲體感明顯變差：縮 wav（降取樣 / 剪頭尾靜音）、換更快的 Gemini 端點、或加 filler SFX 佔感知。
-**Why:** 「馬文暫停」被糊音 miss → 進 audio rescue → 等 ~2s 才 pause，可能比現況（掉回聊天讓使用者重講）更差。
-**Context:** 來自 2026-08-31 /plan-eng-review + 外部意見。cleaner 已在 regex race 平行跑完（`intent_bus.py:199`），不在關鍵路徑，所以砍 cleaner（舊 Approach B）沒用；真正的增量是 Gemini round-trip。
-**Depends on:** audio rescue 轉正 PR 的 replay p95 數字 + 上線一週 UX 觀察。
-**Priority:** P3（條件觸發，沒數據前不動）
-
-
-### TODO: Claim-level 可反駁解釋機制（推薦引擎 Phase 2）
-**What:** 讓使用者可以在 Discord 對推薦附帶的「解釋本身」按讚/按噓（不只對歌），把解釋存成結構化 claim（用了哪個訊號、權重多少），讓候選池權重學到「使用者信任哪種理由」而非只是「喜歡哪首歌」。
-**Why:** cross-model 意見（`jackhuang-main-design-MusicRecEngine-20260820-114251.md`）認為這是推薦引擎的最酷版本——Spotify 結構上做不到，因為他們的 explanation 從來不是產品面向使用者的一等公民。長期複利最高，但依賴基本挖舊/新領域切換 + 解釋層先驗證有沒有用。
-**Context:** 推薦引擎第一輪（情境切換版）已 land 挖舊/新領域切換 + grounded 解釋層（複用 `music_recommender.py` 的 `long_tail` lane 與 `taste_profile.py` 的 `adjacent_artists`）。這個 TODO 是在那之上加一層使用者回饋——evidence 結構化物件本身天然適合擴充成可被 emoji 反饋的形式，但第一輪明確排除，避免在基本假設都還沒驗證前就加複雜度。
-**Depends on:** 推薦引擎情境切換版（挖舊+新領域雙模式 + grounding 驗證）先上線並驗證過。
-**Priority:** P3（長期複利項，非阻擋當前推薦引擎上線）
-
-
-### TODO: Marvin 表演腳本 — 疊加動作指向目前畫面卡片
-**What:** Marvin 播放主題動作時，能「看向/指向」目前 HUD 畫面上實際存在的卡片（例如有 Gmail 卡就轉頭看一眼），而不是動作永遠對著固定方向。
-**Why:** `/office-hours` 設計文件（`jackhuang-main-design-MarvinPerformanceScript-20260727-104135.md`）Open Question #2——結構性互動能讓表演感覺跟畫面有連結，而不是自己演自己的，但不是 v1 骨架驗證的必要條件。
-**Context:** `lastCards`（`main_satellite.py`）已經有「目前畫面上有哪些卡、是什麼 kind」的結構化資料，直接讀取即可，不用新建資料源。需要設計一個 `action_id=point_at, target=card_kind` 的參數格式，讓疊加動作播放器能查目前有沒有這張卡、有的話往哪個方向轉頭。
-**Depends on:** v1 動作庫骨架（idle_bob/wave/put_on_sunglasses 等基礎動作）先驗證過、疊加播放器狀態已提升到 `render()` 外部（見 eng review Issue 1）之後再做，避免同時動兩層架構。
-**Priority:** P3（錦上添花，非阻擋 v1 上線）
-
-
-### TODO: ⭐ suki DB/JSON 同步斷裂修復（下一輪最先做；taste Phase B2 前置）
-**Status:** ✅ DONE（2026-05-22 實作選項 1）。`analyze_daily_log.py` 加 `persist_players_to_db()`，在 json 寫出後把本輪 Gemini 實際更新的 player（`updated_players` keys）用 `MemoryManager.replace_player_memory` 寫進 `marvin.db`；meta 仍寫 json。測試 `tests/test_daily_review_db_sync.py`（4 條：落盤 / 只寫列名 / 保留 meta / 缺名跳過）。**B2 已解鎖。**
-**What:** daily review（`scripts/analyze_daily_log.py:1383`）只寫 `suki_memory.json`，但 bot（`MemoryManager._load_all`）只從 `marvin.db` 讀，`_migrate_from_json` 只在 db 空時跑 → **daily review 的 player 分析（likes/impression/relationship）永遠進不了 bot runtime**；bot `_export_json` 還會用 db 覆蓋抹掉 daily 寫的 json。
-**證據（2026-05-22 驗證）:** 比對 `records/backups/suki_memory_20260521_121020.json` vs `marvin.db`：大肚 likes daily 寫「與友共飲/駕駛油車」，db 是「飲酒聚會/開燃油車」（不同版本）；impression 64 vs 45 字。daily 5/20–5/21 兩天分析都沒進 db。
-**關鍵細節:** bot 對 suki 是**混合讀取**——players 從 db（權威），頂層 meta（marvin_performance/proactive_topics）從 json（`get_meta_state` suki_memory.py:189）。**只有 player 部分斷裂，meta OK**。修復只處理 player 部分。
-**順序設計:** json 寫出（含新 meta）在前，db 寫回在後——`replace_player_memory` 的 `_export_json` 保留剛寫的 meta、並把 json player 區段同步成 db repaired 版本 → db/json 最終一致。
-**並發殘留（v1 接受）:** daily 12:05 寫 db 時 bot 在跑，若該 player 該時段有語音活動，bot `_save_player` 會用舊 `_cache` 覆蓋。只寫本輪更新者（不碰未出現玩家）已縮小衝突面；白天多數 player 無活動 → 多半保留、重啟後穩定。v2 再做「bot save 前比對 db 版本 / pending queue」徹底解並發。
-**Priority:** ~~P1~~ 已完成
-
----
-
-### TODO: taste 分數分級系統 — Phase B2 / C / D
-**Status:** Phase A + B1（commit 0dfd8ca, d099a85）；**B2 ✅ + C ✅ DONE（2026-05-22）**。D 待做。
-**What:**
-- **B2** ✅：`merge_player` 的 likes/dislikes 改走 taste 加 `_DAILY_TASTE_DELTA=1.5`（新項目只進「曾提及」，跨日累積過 ±3.0 才投影 confirmed），existing confirmed 用 `_build_taste_from_legacy` 保留，結尾 `_project_taste`。端到端驗證：11 個 Gemini likes 一次 → 0 confirmed，解掉「daily 一次加 11 個 likes」。測試 `tests/test_daily_review_taste_merge.py`（8 條）。
-- **C** ✅：**改為確定性偵測**（Jack 2026-05-22 拍板，否決原 LLM 即時抽取）。P1 修好同步後 daily 的 LLM 抽取已能進 bot，C 不重做即時 LLM（與 slow-learning 衝突）。新 `taste_extractor.py`：regex 抓明示偏好句「我喜歡/超愛/討厭 X」→ `record_taste_signal(±1.0)` 入曾提及。`VoiceController._record_interest_signals` 接 handle_stt_result 非喚醒路徑（保護 wake 延遲、inline 同 thread 避 sqlite 競態）。隱性興趣仍交 offline daily。測試 `tests/test_taste_extractor.py`(13) + `tests/test_interest_signal_wiring.py`(5)。
-- **D**：❌ **否決（2026-05-22）**。「你問我答」校準介面（Jack 確認/否定 → 設高分 / `remove_taste_item`）會新增「持續人類回饋」依賴，與 Jack 硬原則「資料不依賴人類回饋」衝突。盤點確認學習管線已全自動（daily/feedback loop/即時偏好三條都 0 人類；feedback 是 LLM 自動分類非人手按 reaction），唯一人類觸點是 `recall_probe_cases.json` 15 條一次性量測考卷（不餵記憶）。除非 Jack 主動要，不做 D。詳記憶 `feedback_autonomous_learning_no_human_loop`。
-**參考:** `suki_memory.py` `LIKE/DISLIKE_THRESHOLD=±3`、`record_taste_signal` / `remove_taste_item` / `_project_taste` / `_build_taste_from_legacy`；記憶 `feedback_dual_path_taste_writes`。
-**Priority:** ~~B2 P1 / C P2~~ 已完成 / D P3
-
----
-
-### TODO: 品質指標 — Phase 2.5 / 4.5
-**Status:** P1–4 + cron 已上線（commit eee0c8e, 7e7e5f3, 34a44f7），bot 累積資料中，每日 12:05 出報告 `records/quality_metrics_<date>.md`
-**What:**
-- **P2.5**：react time 完整端到端——目前量 wake hit→first audio，補一個 utterance-ts→wake-hit 的更早 mark（含 STT/cleaner/pool），看 pool 對反應時間的真實影響。改 `latency_tracker.py` + `discord_voice_engine.py`。
-- **P4.5**：RecallHandler 端到端對話 recall（含 LLM 路徑 C），不只 suki 確定性查核。
-**先決:** 等幾天 wake→audio baseline 數字出來，看 P2.5 值不值得。recall_probe_cases.json 真實 ground truth 已填 15 條（Jack 確認）。
-**Priority:** P2
-
----
-
-### TODO: suki 雜訊假 player 清理（待 Jack 確認）
-**What:** 「測試者/未知人/系統/會別人怎麼講話/修為講話」明顯是 STT 噪音建的假 player（likes 全空）。「狗與鹿」可能是「狗與露」的 STT 變體（兩個都存在、likes 不同）→ 待釐清是否合併。
-**How:** suki 加 `delete_player` API 或清理 script，**bot 停止時跑**（避免 `_cache` 覆蓋，像 2026-05-22 移除西藏佛學那樣）。狗與鹿/狗與露 是否同一人要 Jack 確認。
-**Priority:** P3（清理，非阻擋）
-
----
-
-### TODO: IntentBus base.py — re.compile pattern cache
-**Status:** DEFERRED（perf 優化，當前 schema 數量未觸發）
-**What:** `intent_agents/base.py:101` re.search 每次 bid 重新編譯 pattern。schema 數量大時會超 5ms bid budget。改成 module-level dict cache 或 IntentSchema 加 `_compiled` 屬性。
-**Why:** Adversarial review (2026-05-19) 指出。當前 MusicAgentV2 只 7 schemas，未觸發。但若 StatusAgent / VisionAgent / Marmo / PA / Imitation 5 agents 全部加進去 = ~35 schemas/bid，會持續打到 bid budget warning。
-**How to start:** IntentSchema 加 `__post_init__` 編譯 patterns；bid() 用 `schema._compiled` 直接 search。
-**Priority:** P3（perf，當前未觸發）。
-
----
-
-### TODO: IntentBus base.py — reason_template ValueError coverage
-**Status:** DEFERRED
-**What:** `intent_agents/base.py:112` 只 catch KeyError/IndexError。若 reason_template 含 `{slot!r:>10}` 或無效 format spec → ValueError 未 catch → bid 被 bus 的 bare except 吞掉，silent loss。改成 catch (KeyError, IndexError, ValueError)。
-**Why:** Adversarial review (2026-05-19) 指出。
-**How to start:** 一行改動。加 regression test：reason_template="{x!q}" assert reason fallback 到 schema.name。
-**Priority:** P3（trivial fix）。
-
----
-
-### TODO: CLAUDE.md — 「禁 return None」rule 加註只適用 DeclarativeIntentAgent
-**Status:** DEFERRED
-**What:** CLAUDE.md「`bid()` 永遠回 Bid 物件，禁 return None」太 absolute——只適用繼承 DeclarativeIntentAgent 的新 agent。v1 MusicAgent / NemoClawAgent / HallucinationGuardAgent 都還是 return None，沒問題。加註避免未來 Claude session 誤改 v1。
-**Why:** Adversarial review (2026-05-19) 指出。
-**How to start:** 在那條 rule 加「（適用 DeclarativeIntentAgent subclass；v1 legacy agent 不受影響）」。
-**Priority:** P3（doc clarity）。
-
----
-
-### TODO: install-marvin.sh — 預檢 Xcode CLI Tools
-**Status:** DEFERRED
-**What:** Marvin 多個 Python deps（faster-whisper、numpy wheels）需要 Xcode CLI Tools 編譯。STREAMER_SETUP.md 只在 troubleshooting 提到。install-marvin.sh 應在 Step 1 預先檢查 `xcode-select -p` 並引導安裝。
-**Why:** Adversarial review (2026-05-19) 指出。預測 mid-install pip 失敗 + 無 recovery。
-**How to start:** 加 `xcode-select -p &>/dev/null || die "請先跑 xcode-select --install 再重試"`。
-**Priority:** P2（會擋部分 streamer）。
-
----
-
-### TODO: error_dispatcher.py — _inflight thread safety
-**Status:** DEFERRED（pre-existing module；race 罕見但真實）
-**What:** `error_dispatcher.py:103,169,204` `self._inflight` 從 logging thread 寫、從 event loop 讀，無 lock。race 可能丟錯誤或重複 dispatch。
-**Why:** Adversarial review (2026-05-19) 指出。改 threading.Lock 或 atomic counter。
-**How to start:** 引入 threading.Lock 包住 _inflight 讀寫；或改用 collections.deque 配 atomic-ish ops。
-**Priority:** P3（單人 dev 階段罕見觸發）。
-
----
-
-### TODO: Companion FOLLOWUP_ACTIVE/EXPIRED 事件（Follow-up v2）
-**Status:** DEFERRED（v2）
-**What:** 在 companion_bridge.py 與 event_protocol.py 加入 `FOLLOWUP_ACTIVE` / `FOLLOWUP_EXPIRED` 事件常數，TTS 問句窗口開啟/到期時廣播給 Companion UI。
-**Why:** v1 沒有 UI 倒數計器 chip，事件回路無消費端。Bot 端行為完全不依賴 Companion 知道窗口狀態。v1 diff 縮小，測試集中在 wake_detector + pipeline。
-**How to start:** companion_bridge.py 加常數 + emit method；event_protocol.py 對稱常數；app.js 加倒數 chip。
-**Depends on:** Follow-up listening v1 上線後確認需要 UI 視覺回饋。
-
----
-
-### TODO: Follow-up speaker affinity（Jack 的 user_id 優先）
-**Status:** DEFERRED（v2，根據 v1 session 資料決定）
-**What:** `temporary_open_window(duration, reason, speaker_affinity=None)` — 當指定 speaker_affinity 時，只捕捉該 user_id 的第一語句；其他人的聲音在窗口期間被忽略。
-**Why:** first-wins 可能被隊友插話吃掉 Marvin 問 Jack 的問題。v1 接受為群組對話行為，但若實際 session 中誤觸發頻率高，v2 需要 speaker affinity。
-**How to start:** 在 handle_stt_result 的 is_open() 判斷處加 speaker 過濾；temporary_open_window 傳入觸發 TTS 的對象 speaker（如能取得）。
-**Depends on:** v1 部署後觀察 1 個月誤觸發次數。
-
----
-
-### TODO: 吧 字尾問句 regex 精實（Follow-up v2）
-**Status:** DEFERRED（v2，根據 v1 session 資料決定）
-**What:** v1 regex `[?？嗎呢]\s*$` 排除「吧」以降低假陽性。v2 根據 session 日誌評估是否加入 `吧` 並附加形式限制（如 `吧[？?]\s*$` 要求雙重標記）。
-**Why:** 「吧」在中文高度 ambiguous（建議詞 vs. 問句），v1 謹慎排除，但會錯過「你合適吧？」等真實問句。
-**How to start:** 查 session log 中 Marvin TTS 以「吧」結尾的次數；分類真問句 vs. 建議句，再決定 regex。
-**Depends on:** v1 session 日誌（至少 3-5 個 Saturday session）。
-
----
-
-### TODO: 語音逐字稿儲存層
-**Status:** SHIPPED（2026-05-14）
-**What:** 所有 voice channel 語音轉錄自動存入 SQLite，每筆含 `speaker_id`、`guild_id`、`timestamp`、`text`。
-**Why:** 「壓縮時間變 prompt」的基礎資料層。沒有這個，以下所有記憶功能無從建起。
-**How to start:** 在 STT 回調後加 `transcript_store.save()` call，建 `transcripts` table。
-**Effort:** S（半天）
-
----
-
-### TODO: Living Profile 壓縮器
-**Status:** SHIPPED（2026-05-14）
-**What:** 每日背景 LLM job，把過去 N 天逐字稿壓縮成 per-user semantic profile：習慣、進行中的事、決策模式、常提到的人與關係。
-**Why:** 讓使用者不需要解釋背景，Marvin 已經知道。「用過去時間節省現在時間」的核心元件。
-**How to start:** asyncio 定時任務（每24小時），讀 `transcripts` table，呼叫 LLM 產生 JSON profile，存 `user_profiles` table。
-**Depends on:** 語音逐字稿儲存層
-**Effort:** M（2天）
-
----
-
-### TODO: 向量語意搜尋
-**Status:** SHIPPED（2026-05-14）
-**What:** 對 user profile 和逐字稿建立 embedding index，查詢時找出與當前問題最相關的過去片段（top-k semantic retrieval）。
-**Why:** 不是所有過去都跟當前問題有關，向量搜尋讓 context 注入精準，不是把所有歷史塞進 prompt。
-**How to start:** 用 `sqlite-vec` 或本地 `chromadb`，對每個 profile segment 建 vector。查詢時語意相關 top-k。
-**Depends on:** Living Profile 壓縮器
-**Effort:** M（2天）
-
----
-
-### TODO: Context 自動注入
-**Status:** SHIPPED（2026-05-14）
-**What:** 使用者向 Marvin 提問前，系統自動從 profile 撈出相關上下文，prepend 到 LLM prompt，使用者感覺不到這個過程。
-**Why:** 讓「你說『那件事』，Marvin 就知道是哪件事」真正運作的最後一哩路。
-**How to start:** 在 `stream_fast_response` 之前加 `context_injector.enrich(speaker, query)` call，返回 enriched prompt。
-**Depends on:** 向量語意搜尋
-**Effort:** S（1天）
-
----
-
-### TODO: ProactiveArbiter — 全遷移 3 個主動發言者進 bidding（CP2 deferred）
-**Status:** DEFERRED（2026-05-21 CEO review）
-**What:** 把 TopicGenerator social gap / leave_prob 送客 / pending 確認 這 3 個現有主動發言者，全部改成 bid 進 ProactiveArbiter（max wins），取代目前只共用 cooldown 的做法。
-**Why:** 收斂「主動發言」這個 latent agent bus，徹底消除互搶麥的 collision class（對上 project_agent_pattern 標的待遷移）。基線只做了 cooldown 防撞，沒收斂邏輯。
-**How to start:** 先確認 ProactiveArbiter（基線）上線穩定後，逐一把每個發言者的 `voice_client.play()` 路徑改成 `arbiter.bid()`。一次遷一個 + 測試。
-**Depends on:** ProactiveArbiter 基線（本 plan）
-**Effort:** M（human ~2-3d / CC ~40min）
-**Priority:** P3 — 等 STT/wake/stream 穩定性 incident 平息再動 4 條熱路徑
-
-### TODO: 語音控制同意線 —「別記/別說出去」（CP3 deferred）
-**Status:** DEFERRED（2026-05-21 CEO review）
-**What:** 新 intent：使用者語音說「別記這個」「這個別說出去」→ 把對應群組記憶標 private 或刪除。把 shareable 同意線從啟發式猜測，升級成使用者可控的信任功能。
-**Why:** office-hours：「可分享 vs 私下」這條線劃好本身就是護城河。啟發式預設能擋大部分，但使用者可控才是信任的完整形態。
-**How to start:** 加一個 DeclarativeIntentAgent（text pattern：別記/別說/刪掉那個），handler 對 SummaryStore/suki_memory 標 private。先寫紅。
-**Depends on:** 返場 callback 上線（先看到真實「講了不該講」案例）
-**Effort:** S/M（human ~2d / CC ~30min）
-**Priority:** P2
-
----
-
-### TODO: MemoryCallbackAgent — 升 embedding similarity（D 選項）
-**Status:** DEFERRED（等 v1 char-overlap 收 outcome 資料）
-**What:** v1 用 unique-char 重疊（沿 speaker_topic_graph.py:227 pattern），對「同意不同詞」無感。升 sentence-transformers cosine 解決。
-**Why:** char-overlap 抓不到「我說 AI 他講 model」這類同義詞 callback。但要先看 v1 命中率是否真的太低。
-**How to start:** speak_outcome.jsonl 觀察 2 週，若 callback win/天 < 1，加 sentence-transformers 比對。
-**Depends on:** MemoryCallbackAgent v1 上線 + outcome 資料。
-**Priority:** P3（資料驅動觸發）。
-
----
-
-### TODO: MemoryCallbackAgent — 升 LLM 關聯判斷（E 選項）
-**Status:** DEFERRED
-**What:** embedding 仍不夠時，用 gpt-4o-mini 判斷「commitment + 當前 utterance 是否相關」。
-**Why:** 最高語意品質但 +500ms-2s latency → 必須非 sync-fast 路徑（pre-compute？背景跑？）+ cost gate。
-**How to start:** 等 embedding 也不夠再評估；目前不規劃。
-**Depends on:** embedding 升完 + 仍有 quality 缺口。
-**Priority:** P3。
-
----
-
-### TODO: MemoryCallbackAgent — 跨 speaker callback
-**Status:** DEFERRED
-**What:** v1 只對「commitment 本人在場」bid。未來：Jack 三天前說要試 X、今天 Suki 在場、Suki 講到 X → Marvin 對 Suki 提「Jack 上次也說要試 X」。
-**Why:** 社交感最強——「Marvin 把房間裡兩人連起來」是 callback 的高 whoa 變體。但跨 speaker 涉及隱私線（shareable=True 已過濾，但語境延伸需審）。
-**How to start:** 加 `MemoryCallbackAgent` mode flag `cross_speaker=True`，bid 時掃所有 present speakers 的 callback queue，handler 措辭模板加「{commit_speaker} 之前說要 X」。
-**Depends on:** v1 上線 + 至少 4 週觀察。
-**Priority:** P3。
-
----
-
-### TODO: MemoryCallbackAgent — LLM 措辭潤飾 callback line
-**Status:** DEFERRED
-**What:** v1 callback 句純模板「對了，你之前說要 X，現在呢？」。未來：根據當前話題 + speaker 情緒 LLM 改寫成「呃 grounded search 那個你後來實際試了嗎」。
-**Why:** 模板講多次會像機器人。但 LLM 改寫加 latency + cost，要先看 v1 講多了會不會煩。
-**How to start:** speak_outcome 觀察 callback win 之後 30s 內有 STT 比率；< 30% 再考慮潤飾。
-**Depends on:** v1 上線 + outcome 觀察。
-**Priority:** P3。
-
----
-
-### TODO: MemoryCallbackAgent — per-commitment 動態 TTL
-**Status:** DEFERRED
-**What:** 現在 callback_queue 全 7 天 TTL（_CALLBACK_TTL_SECONDS）。「今天買 X」應 1 天、「想學日文」應 30 天。
-**Why:** 短期 commitment 過期還在 queue → 假陽性 callback；長期被 TTL 砍掉 → 漏 callback。
-**How to start:** commitment 偵測時讓 LLM 額外標 `urgency: short/medium/long`，TTL 對應 1/7/30 天。改 `enqueue_callback` 接 ttl 參數。
-**Depends on:** 視 v1 是否真的看到 TTL 失準案例。
-**Priority:** P3。
-
----
-
-### TODO: MemoryCallbackAgent — 升 post_utterance trigger（D7 deferred A）
-**Status:** DEFERRED（plan-eng-review 2026-05-26 拍定 v1 走 5s tick）
-**What:** v1 走 SpeakBus 既有 5s idle tick → callback latency 0-5s。未來：在 handle_stt_result 末尾加 `await self._speak_bus.tick(SpeakContext(trigger="post_utterance", ...))`，讓 Marvin 0.5s 內接話。
-**Why:** 5s latency 跟「Marvin 聰明接話」的瞬時感差距明顯。但加 trigger 要改 SpeakBus.tick + handle_stt_result + recent_utterances 填值，且每句話 +5-15ms STT 路徑 latency。先看 v1 用戶實測感受是否真的「太慢」。
-**How to start:** SpeakBus.tick 加 trigger 區分；handle_stt_result 在 cleaner 後叫 tick(trigger="post_utterance")；_build_speak_context 接收 last_text 參數。
-**Depends on:** v1 上線 2 週 + Jack 主觀「等太久」回饋。
-**Priority:** P3（如真改善 whoa 感則升 P2）。
-
----
-
-## 低重要性 — 暫不執行
-
-### TODO: Twitch 上線通知 cog
-**Status:** DEFERRED（暫不執行）
-**What:** 當指定 Twitch 頻道開台，Marvin 自動發通知到指定 Discord 文字頻道。
-**Why deferred:** 免費工具（Pingcord）已解決此需求，非差異化功能。需要時 1-2 天可補上。
-**How to start:** Twitch EventSub `stream.online` → 新增 `cogs/twitch_notify_cog.py`。
-
----
-
-### TODO: Reaction roles cog
-**Status:** DEFERRED（暫不執行）
-**What:** 成員對特定訊息加 emoji reaction → 自動獲得對應身份組。
-**Why deferred:** Discord Onboarding 原生支援，非差異化。需要時半天可完成。
-**How to start:** `on_raw_reaction_add` / `on_raw_reaction_remove` → 新增 `cogs/reaction_roles_cog.py`。
-
----
-
-### TODO: STT 替換為 Deepgram
-**Status:** DEFERRED（暫不執行）
-**What:** 將目前 macOS-only 的 Swift/MLX Whisper STT 替換為 Deepgram API（延遲 ~150ms，$0.0043/分鐘）。
-**Why deferred:** SaaS 化前置條件，但目前產品仍在本地驗證階段。
-**Blocks:** 多租戶架構、雲端部署
-**Effort:** M（2-3 天）
-
----
-
-### TODO: Marmo webhook — text-channel fallback
-**Status:** DEFERRED（暫不執行）
-**What:** Marvin 不在語音頻道時，webhook 結果改送文字頻道而非靜默丟棄。
-**How to start:** `MarmoServer._handle_result()` 加 voice_clients 空值判斷，改送 `active_text_channel`。
-**Effort:** S（1小時）
-
----
-
-### TODO: speak_via_marvin() 錯誤處理
-**Status:** DEFERRED（暫不執行）
-**What:** Marvin webhook 下線時，NemoClaw 側 `aiohttp.ClientError` 優雅降級而非拋出未處理例外。
-**How to start:** `session.post()` 加 `try/except aiohttp.ClientError`，log warning 繼續執行。
-**Effort:** XS（30分鐘）
-
----
-
-### TODO: NemoClaw Smart Router 觀察期
-**Status:** IN PROGRESS（低優先）
-**What:** 跑一輪後分析 log 確認 auto-route 觸發率合理、無假陽性。
-```
-grep "NemoClaw路由\|NemoClaw→\|NemoClaw.*跳過\|NemoClaw.*排隊" bot_main.log | tail -50
-```
-**前置條件:** Bot 在有主人在線的 session 跑至少 30 分鐘。
-
----
-
-### TODO: 方案2 音訊直輸
-**Status:** DEFERRED（前置條件未完成）
-**What:** 喚醒後將 `wav_bytes`（16kHz PCM）直送 Gemini Audio，跳過 STT 文字層。
-**Depends on:** 喚醒誤觸率診斷完成 + NemoClaw 觀察期通過
-**Effort:** M
-
----
-
-### TODO: Docker / Linux path
-**Status:** DEFERRED（待首個 Linux 用戶確認後再處理）
-**What:** Full Docker image。Linux voice path (Whisper-only) 需 end-to-end 驗證。
-**Effort:** M (~2 hours CC, 1-2 days human)
-
----
-
-### TODO: 性格突變 3.0 — Phase 2
-**Status:** DEFERRED（需 Phase 1 資料先跑幾場）
-**What:** per-player DNA apply — `player_reactions[speaker]` overlay global DNA。
-**Blocked by:** Op 33 Phase 1 需 3-5 sessions 資料。
-
----
-
-### TODO: voice_controller.py refactor
-**Status:** IN PROGRESS — Phase 0 已完成（2026-06-02），Phase 1 取消，後續抽取待議
-**What:** 拆解 7,857 行 God file。原「AudioPipeline / LLMOrchestrator / PersonalityEngine」三分法**已否決**（不符實況）。
-**進度：**
-- ✅ **Phase 0**：抽離 PlayControlView + ConsentView → `cogs/voice_views.py`，cog_unload 釋 view ref（commit c4b6401）；god-class characterization golden snapshots 10 條（commit 42ed316）
-- ❌ **Phase 1 AudioPlaybackArbiter 取消**：Plan 12 本地混音台拍定 always-on source-level mixer（單一 play()、`playback_lock` 退役），arbiter 失去存在理由。詳見 `~/.gstack/.../jackhuang-main-design-Plan12-20260602-155144.md`
-- ⏳ **下一個抽取目標待議**：候選 STT ingest（handle_stt_result 474 行）；但播放核心會被 Plan 12 重寫，抽取順序應等 Plan 12 eng-review 後重排
-**Effort:** Phase 0 已 ship。Risk: **Medium**（Phase 0 完成、characterization 快照保駕後）。
-
----
-
-### TODO: 串流觀眾轉化智能
-**Status:** DEFERRED（暫不執行）
-**What:** Twitch EventSub per-viewer 行為追蹤，計算轉化優先分數，偵測「鑽石機會」觀眾。
-**Why deferred:** 本質是 Twitch API 資料分析，與全時語音喚醒無關，任何開發者都能建。不是 Marvin 的核心差異化。
-**Effort:** M（3天）
-
----
-
-### TODO: 開播前簡報系統
-**Status:** DEFERRED（暫不執行）
-**What:** 開播前30分鐘預熱觀眾資料，前5分鐘推送重點觀眾摘要給實況主。
-**Why deferred:** 依附於串流觀眾轉化智能，同樣與語音架構無關。
-**Depends on:** 串流觀眾轉化智能
-
----
-
-### TODO: 直播中耳語系統
-**Status:** DEFERRED（暫不執行）
-**What:** 事件驅動的實況主即時語音提醒，每分鐘上限一則。
-**Why deferred:** 依附於串流觀眾轉化智能，同樣與語音架構無關。
-**Depends on:** 串流觀眾轉化智能
-
----
-
-## Twitch 整合 — 不執行（參考用）
-
-> 產品方向從「聲音克隆 agent」轉向「上下文壓縮助理」後暫停。保留作為未來 Twitch-first 商業化路徑參考。
-
-### TODO: ElevenLabs 聲音克隆 onboarding
-**Status:** NOT EXECUTING（參考）
-**What:** Twitch VOD → Demucs 人聲分離 → ElevenLabs Professional Voice Clone → Marvin 使用實況主聲音說話。
-**Why parked:** Uncanny valley 風險、需要實況主預先審批流程、產品核心已轉向上下文壓縮。若未來有明確聲音克隆需求可重啟。
-
----
-
-### TODO: VOD 個性訓練（說話方式克隆）
-**Status:** NOT EXECUTING（參考）
-**What:** 分析 VOD 字幕 + Twitch 聊天紀錄，提取用詞習慣注入 system prompt。
-**Why parked:** 依附於聲音克隆方向，一起暫停。
-
----
-
-### TODO: Landing page 實作
-**Status:** NOT EXECUTING（參考）
-**What:** 將 `DESIGN.md` 做成可部署靜態頁面。
-**Why parked:** 設計稿基於「語音克隆 agent」定位，產品定位已轉向，頁面需從頭重定義再實作。DESIGN.md 保留設計系統參考價值。
-
----
-
-### TODO: 統計 API endpoint
-**Status:** NOT EXECUTING（參考）
-**What:** `/api/stats` 回傳 `{"servers": N, "voice_hours": N}`。
-**Why parked:** 依附於 landing page，一起延後。
-
----
-
-## 已完成
-
-### TODO: Approach B — Semantic emotion detection
-**Status:** SHIPPED（Op 31, 2026-05-07）
-**What:** `_classify_marvin_self_emotion(speaker, full_text)` 背景任務，Groq flash 分類 Marvin 自身文字情緒，結果存 `marvin_self_emotion` 供下次 TTS prosody 使用。
-
-## MusicCog 抽離後的 Phase 2 工作
-
-### STT pipeline 層抽離
-**What**: 把 `handle_stt_result` → `_process_queued_query` 這 ~2500 行抽成獨立 `pipeline_layer.py`
-**Why**: MusicCog 移完後 VC 仍有 ~4800 行，主體是 STT pipeline。需要明確的輸入（音訊 record）和輸出（callback）interface 才能測試
-**Status**: deferred — MusicCog Phase 1-6 完成後執行
-**Start**: 先設計 PipelineContext dataclass（輸入）和 ResultHandler Protocol（輸出 callback）
-
-### IntentBus agents 改寫 — 直接存取 MusicCog
-**What**: `MusicAgentV2` 和 `PlaybackControlAgent` 的 ~14 處 `self.ctrl.X` 改成 `self.ctrl.bot.cogs.get('MusicCog').X`
-**Why**: Phase 1 加的 forwarding stubs 是技術債，清掉後 VC 的 forwarding 層可以完全刪除
-**Status**: deferred — 等 MusicCog 穩定（Phase 3 之後）執行
-**Start**: `grep -n "self\.ctrl\.\(stream\|radio\|_safe_music\|_mixer\|_cover\|_consecutive\)" intent_agents/`
-
----
-
-### TODO: 統一三個 grounded-Gemini 呼叫者（gated on AmbientQA 穩定運行幾週）
-**What**: 把 `marvin_talk._call_gemini`、`intent_agents/lyrics_grounded_search.py::search_lyrics_grounded`、`intent_agents/grounded_qa_agent.py::_grounded_answer` 抽成一個共用 helper（L1/L2 幻覺 guard + free→付費 key 鏈 + PaidUsageGuard）。
-**Why**: 三份 L1/L2 grounding guard 邏輯重疊。
-**為什麼現在不做（eng-review 2026-08-30 outside voice）**: 三個形狀真的不同——輸入(audio/wav vs text)、model(chain vs 單一 vs 2.5-flash)、timeout(6s/15s)、session state(`_free_exhausted` 只有 marvin_talk 有)、PaidUsageGuard(lyrics 沒有)。現在只有 2.5 個 use case、第 3 個(AmbientQA)可能低量不 ship，硬統一會產出五 kwargs 的 helper 比重複更糟。且 `test_marvin_talk` mock 掉 Gemini 呼叫，重構 marvin_talk 這條 LIVE exclusive-mode 路徑保不住 failover/timeout regression。
-**Gate**: AmbientQA（見 design doc AmbientQA-20260830）通過 backfill gate 且穩定跑幾週，確實是第三個真實 use case 後，用它反推抽象。
-**Start**: `search_lyrics_grounded` 的 `_extract_chunks` + L1/L2 是最乾淨的骨架起點。
-
----
-
-### TODO: PaidUsageGuard 低估 Google Search grounding 成本（repo-wide latent）
-**What**: `llm_paid.estimate_cost` 是純 token-based；Gemini 的 `google_search` grounding tool 另外 per-request 計費（grounding 不含在 token 帳裡）。所以任何帶 grounding 的付費呼叫，`PaidUsageGuard` 的 daily/monthly cap 都會 under-count 真實花費。
-**Why**: 帳本（`llm_paid_usage.jsonl`）不準；$2/日 cap 守不到真實 GCP 花費。
-**影響的 caller**: `marvin_talk`（caller="marvin_talk"）、`search_lyrics_grounded`（走 music_cog）、未來的 `ambient_qa`。
-**修法**: `estimate_cost` 加一個 `grounding_request_surcharge` 常數（查當期 Gemini pricing），帶 grounding 的呼叫點傳 flag。
-**Status**: deferred — 低量下（幾題/天 × grounding 小額）$2 cap 遠到不了，PR 註解標明即可；用量上來再修。
-
----
+### TODO: audio rescue — 延遲緩解
+**What:** 若量到 Gemini 呼叫 p95 > 3s 或「馬文暫停」這類即時指令體感變慢：縮 wav（降取樣 / 剪頭尾靜音）、換更快端點、或加 filler SFX。
+**Context:** cleaner 已在 regex race 平行跑，不在關鍵路徑；真正的增量是 Gemini round-trip。
+**觸發條件:** p95 數字或使用者抱怨。
+**Priority:** P3
 
 ### TODO: 真·持續單曲循環模式（loop_on / loop_off）
-**What**: `_loop_one` 狀態旗標，永遠指向當下正在播的歌。`_stream_loop` pop 點：`_loop_one` 時 `info = _current_stream_info` 不 pop。加進 QueueControlAgent（若 PR2 已落地）或新開，intent `loop_on`（單曲循環/循環播放/一直放這首）+ `loop_off`（取消循環/不要循環了）。
-**Why**: 2026-09-10 eng-review D7/D11：使用者這次選一次性重播（走 ReplayAgent），且「單曲循環」觸發詞刻意沒收——「重覆這一首」有 ReplayAgent 接，但真「一直循環」沒人接（audio rescue 會亂試）。daily ritual 再抓到 2+ 次「一直放這首歌」就做。
-**5 個 `_stream_loop` 觸點**（eng-review 已盤過）:
-1. pop 點（music_cog.py:2151）→ `_loop_one` 時重用 `_current_stream_info`
+**What**: `_loop_one` 狀態旗標，`_stream_loop` pop 點在 `_loop_one` 時重用 `_current_stream_info` 不 pop。intent `loop_on`（單曲循環/一直放這首）+ `loop_off`。
+**5 個 `_stream_loop` 觸點**（2026-09-10 eng-review 已盤過；行號可能已漂移）:
+1. pop 點 → `_loop_one` 時重用 `_current_stream_info`
 2. skip / stop / clear_queue 分支 → 清 `_loop_one`
-3. DJ 尾段（`_run_tail_dj`）→ `_loop_one` 時不排 `_tail_dj_task`（否則每圈「講講下一首」講同一首）
-4. **record_play / stream_history（music_cog.py:2165）→ `_loop_one` 時不重複計播放數**（漏了會洗歪口味統計：循環一小時＝該歌 +30 次，推薦系統以為大家超愛）
-5. autopilot 補位（music_cog.py:2227）→ `_loop_one` 時 skip（補了無害只是白解析）
-**Status**: deferred — gated on daily ritual 再現 2+ 次「持續循環」措辭
-**Start**: `_stream_loop` 進入時（while 前）一次性消費 flag 的 pattern；測試 record_play guard（循環 N 圈、斷言 `music_memory.record_play` 只呼 1 次）
-**Depends on**: 建議在 PR2（clear_queue + play_next）之後，loop_on/off 加進同一個 QueueControlAgent
+3. DJ 尾段（`_run_tail_dj`）→ `_loop_one` 時不排 `_tail_dj_task`
+4. **record_play / stream_history → `_loop_one` 時不重複計播放數**（漏了會洗歪口味統計）
+5. autopilot 補位 → `_loop_one` 時 skip
+**觸發條件**: daily ritual 再抓到 2+ 次「一直放這首歌」措辭。
+**Priority:** P3
+
+### TODO: Follow-up 聆聽窗 — speaker affinity / 「吧」字尾問句
+**What:** (a) `wake_detector.temporary_open_window` 加 `speaker_affinity`，只收被問的那個人；(b) `_QUESTION_MARKER_RE`（`wake_detector.py:68`）評估是否加「吧[？?]」。
+**觸發條件:** 觀察到隊友插話吃掉 follow-up 窗口，或漏接真問句的案例。
+**Priority:** P3
+
+### TODO: PaidUsageGuard 低估 Google Search grounding 成本
+**What**: `llm_paid.estimate_cost` 純 token-based；grounding 另外 per-request 計費，所以帶 grounding 的付費呼叫會 under-count。影響 `grounded_qa_agent`、`lyrics_grounded_search`、`game_knowledge_agent`。
+**修法**: `estimate_cost` 加 `grounding_request_surcharge` 常數，帶 grounding 的呼叫點傳 flag。
+**觸發條件**: grounding 付費用量上來（目前低量，$2/日 cap 遠到不了）。
+**Priority:** P3
+
+### TODO: 品質指標 — Phase 2.5 / 4.5
+**What:**
+- **P2.5**：react time 補 utterance-ts→wake-hit 的更早 mark（含 STT/cleaner/pool），改 `latency_tracker.py`。
+- **P4.5**：RecallHandler 端到端對話 recall（含 LLM 路徑 C）。
+**觸發條件:** 每日 `records/quality_metrics_<date>.md` 顯示延遲是痛點、或 recall 被抱怨。
+**Priority:** P3
 
 ---
 
-### TODO: 移除 select_narration_mode 舊包裝（DJ 口白註冊表第 3 刀之後）
-**What**: `dj_narration_orchestrator.select_narration_mode` 在第 3 刀改成呼叫 `plan_narration` 的薄包裝；穩定後刪掉它，正式呼叫端（`cogs/music_cog_dj_lyrics.py`）改用 `plan_narration`，9 個測試檔約 48 處引用改測 `plan_narration`。
-**Why**: 2026-10-08 eng review D13 刻意保留舊入口當重構護欄；不清掉會兩個決策入口並存，之後有人從舊入口加邏輯就分岔。
-**Pros**: 只剩一條口白決策路徑；測試直接覆蓋註冊表。
-**Cons**: 一次改寫約 48 處測試，要逐一確認斷言語意不變（human ~半天 / CC ~20 分）。
-**Context**: 設計見 `docs/designs/dj-narration-mode-registry.md`；eng review 報告在 `~/.gstack/projects/butthead0819-beep-marvin-voice-core/main-eng-review-20261008-141758.md`（R3/R5）。從 `grep -rn select_narration_mode tests/` 開始。
-**Depends on / blocked by**: 第 3 刀（註冊表＋規劃器）land 且穩定一週。
+## 🅿️ 長期停放
+
+### TODO: Claim-level 可反駁解釋機制（推薦引擎 Phase 2）
+**What:** 讓使用者對推薦附帶的「解釋本身」按讚/按噓，把解釋存成結構化 claim，讓候選池學到「使用者信任哪種理由」。
+**Context:** 設計 `jackhuang-main-design-MusicRecEngine-20260820-114251.md`。DJ 口白已有「X會喜歡這首《Y》，理由是Z」句型，可當 claim 的來源。
+**Priority:** P3（長期複利項）
+
+### TODO: Marvin 表演腳本 — 疊加動作指向目前畫面卡片
+**What:** HUD 上 Marvin 播放動作時「看向/指向」畫面上實際存在的卡片。
+**Context:** 設計 `jackhuang-main-design-MarvinPerformanceScript-20260727-104135.md` Open Question #2。原本寫的 `main_satellite.py` 已不存在，`lastCards` 現在在 `car_http_app.py`，動工前先確認資料源。
+**Depends on:** v1 動作庫骨架驗證過。
+**Priority:** P3
+
+### TODO: install-marvin.sh — 預檢 Xcode CLI Tools
+**What:** Step 1 加 `xcode-select -p &>/dev/null || die "請先跑 xcode-select --install 再重試"`。
+**Priority:** P3（等有外部使用者要裝時再做）
+
+### TODO: Docker / Linux path
+**What:** Full Docker image；Linux voice path（Whisper-only）需 end-to-end 驗證。
+**Priority:** P3（待首個 Linux 用戶）
