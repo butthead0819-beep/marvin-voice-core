@@ -20,7 +20,6 @@ def test_consent_notice_content():
         "Google Gemini",
         "Groq",
         "Mistral",
-        "SambaNova",
         "Together AI",
         "OpenRouter",
     ]
@@ -29,6 +28,7 @@ def test_consent_notice_content():
 
     # 不應包含已淘汰或過時內部檔名
     assert "Cerebras" not in notice
+    assert "SambaNova" not in notice  # 2026-09-29 已移出 LLM 池
     assert "suki_memory" not in notice
 
 
@@ -49,7 +49,6 @@ def test_consent_notice_aligns_with_privacy_md():
         "Google Gemini",
         "Groq",
         "Mistral",
-        "SambaNova",
         "Together AI",
         "OpenRouter",
     ]

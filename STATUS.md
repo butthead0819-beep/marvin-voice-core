@@ -96,7 +96,7 @@
 | 🔴6 | 語音頻道進出紀錄不看同意 | `presence_logger.py` | ✅ 已修（Phase 1 Stage A：只記 Marvin 所在頻道與已同意者） |
 | 🔴7 | 沒有每伺服器配額 / 同時房間上限 | OPERATOR.md §5 | 未處理 |
 | 🔴8 | 沒有「馬文忘掉這件事」／「這個別說出去」語音撤回 | TODOS.md | 未處理（事件記憶上線後更需要） |
-| 🟠9 | 同意通知與 `consent_manager.py` 仍列 SambaNova（9/29 已拔），多揭露一家 | `consent_manager.py:7,23` | 未改 |
+| 🟠9 | 同意通知仍列 SambaNova（9/29 已拔） | `consent_manager.py:7,23` | ✅ 已修（10/11） |
 | 🟠10 | 事件記憶抽取雜訊：STT 糊句被抽成事件、對馬文的指令被當成事件 | 9/29 重播 | 拼圖制（湊齊 who+what+when）擋掉一部分，觀察中 |
 | 🟠11 | STT 全 bot 一條 `Semaphore(1)`（另有喚醒專用一條） | `discord_voice_engine.py:812` | 人一多排隊延遲上升 |
 | 🟠12 | DJ 口白零星編造（「店裡」）、歌名寫錯、新聞同事件不同媒體重複講 | `records/dj_narration.jsonl` 10/11 | 未處理 |
