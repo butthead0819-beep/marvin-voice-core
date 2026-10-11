@@ -76,18 +76,20 @@ async def test_hot_channel_speaks_nothing_and_skips_tts():
 
 
 @pytest.mark.asyncio
-async def test_not_hot_speaks_original_text_and_audio():
+async def test_not_hot_speaks_original_text_and_audio(tmp_path):
     """不熱 → 照舊播原本預渲染的 audio_path 與原口白文字，回 "full"。"""
     cog = _make_cog()
     vc = _make_vc(["大肚"])  # 只 1 人在線，不算熱
     cog._vc = MagicMock(return_value=vc)
+    original = tmp_path / "original_dj.opus"
+    original.write_bytes(b"x")
 
-    dj = {"text": "這是原本的長口白", "audio_path": "/tmp/original_dj.opus"}
+    dj = {"text": "這是原本的長口白", "audio_path": str(original)}
     result = await cog._maybe_play_dj_interjection(dj)
 
     assert result == "full"
     cog.bot.tts_engine.generate_audio.assert_not_awaited()
-    vc.play_dj_on_tts_layer.assert_awaited_once_with("/tmp/original_dj.opus", text=dj["text"])
+    vc.play_dj_on_tts_layer.assert_awaited_once_with(str(original), text=dj["text"])
 
 
 # ── (c) 尾段點火：熱聊 → crossfade 不講話；不熱且非懷舊 → 照舊走口白 ────────

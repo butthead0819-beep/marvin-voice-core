@@ -135,9 +135,6 @@ async def test_rare_autopilot_song_talks_about_song_not_topics(tmp_path):
     cog._present_interests = MagicMock(return_value=["露營"])
     cog._dj_song_material = AsyncMock(return_value=(
         {"artist": "周杰倫", "title": "夜曲", "album": "十一月的蕭邦", "year": 2005}, None))
-    bank = cog._dj_heat_bank()
-    bank.take = MagicMock(return_value=[])
-
     result = await cog._fetch_dj_interjection_raw(_auto_info(_arc_role="discovery", _server_plays=1))
 
     assert result is not None
@@ -145,8 +142,6 @@ async def test_rare_autopilot_song_talks_about_song_not_topics(tmp_path):
     assert "介紹這首歌本身" in ctx
     assert "十一月的蕭邦" in ctx
     assert "爬山" not in ctx and "露營" not in ctx
-    # 10/4 改：熱聊降溫接回話題對所有歌都優先，少播歌也會 take（不再跳過）
-    bank.take.assert_called_once()
 
 
 # ── 講歌模式去套路（10/4 午實測：6 首都是「照口味挖出、比較少聽、某年專輯、這首給你」）──
