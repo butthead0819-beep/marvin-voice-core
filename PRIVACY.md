@@ -85,13 +85,13 @@ Marvin 需要你把他召喚進語音頻道（`/summon`）才會開始聽。他�
 |---|---|---|
 | **Google Gemini**（免費與付費 API） | 對話文字、人物記憶片段；**原始語音片段** | 回應、摘要、每日記憶萃取；你喊「馬文」時那段語音會送去做情緒分析（`cogs/voice_controller.py:1314`）；Marvin 沒聽懂指令時，那段語音會送去再判斷一次（`MARVIN_INTENT_RESCUE_MODE=audio`） |
 | **Groq** | 對話文字 | 串流回應第一順位、LLM 池 |
-| **Mistral、SambaNova、Together AI、OpenRouter** | 對話文字 | LLM 池（誰有空用誰；近 7 天 68% 的呼叫走 Mistral） |
+| **Mistral、Together AI、OpenRouter** | 對話文字 | LLM 池（誰有空用誰；2026-10-04～10-11 約 44% 的呼叫走 Mistral）。DJ 口白等會念出來的生成排除 Mistral |
 | **Microsoft Edge TTS** | Marvin 要講的話 | 每次講話 |
 | **YouTube / YouTube Music、iTunes、Spotify（只查歌曲資訊）、歌詞服務、DuckDuckGo** | 歌名、搜尋關鍵字 | 點歌、封面、歌詞、查資料 |
 | **Discord** | 回覆、同意通知 | — |
 
 這些服務各自的保留與訓練政策：**待確認**（各家免費層與付費層的條款不同，發布前要逐一查證）。
-未使用：Cerebras（已失效）、雅婷（已退役）、Ollama（未安裝）。
+未使用：Cerebras（已失效）、SambaNova（2026-09-29 移除；同意通知 `consent_manager.py` 仍列出，待更新）、雅婷（已退役）、Ollama（未安裝）。
 
 ## 5. 怎麼刪除
 
