@@ -733,6 +733,30 @@ async def test_extract_and_store_followup_same_as_not_in_recent_dropped_not_adde
 
 
 @pytest.mark.asyncio
+async def test_extract_and_store_update_only_never_creates_even_if_merge_target_missing(monkeypatch):
+    """防禦：update_only 事件若 find_merge_target 沒找到目標（日後改壞），也不能新建成新 owner。"""
+    import event_memory
+    store = EventStore(":memory:")
+    window_end = time.time()
+    first = _events_json([{"owner": "狗與露", "activity": "住院", "place": None, "date": None,
+                           "date_text": "", "participants": [], "quote": "", "same_as": None,
+                           "subject": "狗與露"}])
+    await extract_and_store(_router_with([first]), store, 1, "逐字稿", ["狗與露"], window_end)
+    existing_id = store.list_guild(1, 0)[0]["id"]
+
+    monkeypatch.setattr(event_memory, "find_merge_target", lambda ev, recent, we: None)
+    second = _events_json([{"owner": "showay", "activity": "醫院", "place": None, "date": None,
+                            "date_text": "", "participants": [], "quote": "你離開醫院了嗎",
+                            "same_as": existing_id, "subject": "你"}])
+    stats = await extract_and_store(_router_with([second]), store, 1,
+                                    "[15:40:52] showay: 你離開醫院了嗎", ["showay", "狗與露"], window_end + 300)
+
+    assert stats["added"] == 0
+    assert stats["dropped"] == 1
+    assert len(store.list_guild(1, 0)) == 1
+
+
+@pytest.mark.asyncio
 async def test_extract_and_store_stats_counts_correct():
     store = EventStore(":memory:")
     content = _events_json([
