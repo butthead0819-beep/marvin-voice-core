@@ -357,6 +357,12 @@ def test_validate_event_subject_wo_men_quote_substring_of_speaker_line():
     assert ev["owner"] == "showay"
 
 
+def test_validate_event_subject_wo_quote_speaker_not_in_heard_by_dropped():
+    raw = {"owner": "showay", "activity": "露營", "subject": "我",
+           "quote": "我下禮拜六要去溪頭露營"}
+    assert validate_event(raw, ["showay"], _SUBJECT_TRANSCRIPT, time.time()) is None
+
+
 @pytest.mark.parametrize(
     "quote,expected",
     [
