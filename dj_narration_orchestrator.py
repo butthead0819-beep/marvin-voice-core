@@ -15,7 +15,7 @@ ctx 段落由本模組的 MODES 註冊表驅動；文字 cascade 與 TTS 仍在 
 ## 決策圖
 
 ```
-DJMaterials ──► forced 層（order）：revival → memory_match → song(focus)
+DJMaterials ──► forced 層（order）：memory_match → song(focus)
                  └─ 命中即回傳，不進扭蛋（不碰 life/interest 冷卻）
              ──► gacha 層：委派 dj_topic_selector.select_mode（mark_used + last_fallback）
              ──► override 層：reason.override_when(chosen ∈ {quick, atmosphere} 且 autopilot_reason)
@@ -100,7 +100,6 @@ def autopilot_narration_focus(info: dict) -> str:
 @dataclass(frozen=True)
 class DJMaterials:
     """一輪串場的全部素材（_fetch_dj_interjection_raw 的 IO 段一次收齊）。"""
-    revival_lines: list = field(default_factory=list)
     memory_evidence: str = ""
     focus: str = ""
     life: list = field(default_factory=list)
@@ -145,10 +144,6 @@ class NarrationPlan:
 
 
 # ── forced 層 pick ───────────────────────────────────────────────────────────
-
-def _pick_revival(m: DJMaterials, store: TopicCooldownStore):
-    return (None, None) if m.revival_lines else None
-
 
 def _pick_memory_match(m: DJMaterials, store: TopicCooldownStore):
     ev = (m.memory_evidence or "").strip()
@@ -245,13 +240,6 @@ def _render_perspective(topic, m: DJMaterials) -> list[str]:
     return out
 
 
-def _render_revival(topic, m: DJMaterials) -> list[str]:
-    return [
-        "【你熟悉他的生活】剛剛大家聊過（原句）：\n" + "\n".join(m.revival_lines),
-        "串場方向：現在大家聊天告一段落，接回剛剛的話題延續一下，或丟個輕鬆的問題製造話題感，再帶進這首歌；只能用上面原句裡的內容，不准編造誰說了什麼、不准替人下結論。",
-    ]
-
-
 def _render_atmosphere(topic, m: DJMaterials) -> list[str]:
     return [m.env, "開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。"]
 
@@ -274,9 +262,8 @@ def _render_guide(topic, m: DJMaterials) -> list[str]:
 
 
 MODES: dict[str, NarrationMode] = {
-    "revival": NarrationMode("revival", "forced", order=0, pick=_pick_revival, render=_render_revival),
-    "memory_match": NarrationMode("memory_match", "forced", order=1, pick=_pick_memory_match, render=_render_memory_match),
-    "song": NarrationMode("song", "forced", order=2, pick=_pick_song),
+    "memory_match": NarrationMode("memory_match", "forced", order=0, pick=_pick_memory_match, render=_render_memory_match),
+    "song": NarrationMode("song", "forced", order=1, pick=_pick_song),
     "life": NarrationMode("life", "gacha", render=_render_life, tts_emotion="upbeat"),
     "interest": NarrationMode("interest", "gacha", render=_render_interest, tts_emotion="upbeat"),
     "news": NarrationMode("news", "gacha", render=_render_news, tts_emotion="upbeat"),

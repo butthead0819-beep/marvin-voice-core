@@ -59,11 +59,9 @@ def _render_snapshot(mode_arg: str, bot, result: dict | None) -> str:
     )
 
 
-def _make_fake_bank(*, take_return=(), is_consumed=False):
+def _make_fake_bank(*, is_consumed=False):
     bank = MagicMock()
-    bank.take = MagicMock(return_value=list(take_return))
     bank.is_consumed = MagicMock(return_value=is_consumed)
-    bank.snapshot = MagicMock()
     bank.mark_consumed = MagicMock()
     return bank
 
@@ -263,9 +261,7 @@ async def test_snapshot_conversation_downgrade(tmp_path, monkeypatch):
     ])
     state = {"after_select": False}
     fake_bank = MagicMock()
-    fake_bank.take = MagicMock(return_value=[])
     fake_bank.is_consumed = MagicMock(side_effect=lambda entry: state["after_select"])
-    fake_bank.snapshot = MagicMock()
     fake_bank.mark_consumed = MagicMock()
     monkeypatch.setattr(cog, "_dj_heat_bank", lambda: fake_bank)
 
@@ -305,15 +301,3 @@ async def test_snapshot_song(tmp_path, monkeypatch):
     _assert_snapshot("song", _render_snapshot("song", bot, result))
 
 
-@pytest.mark.asyncio
-async def test_snapshot_revival(tmp_path, monkeypatch):
-    bot, cog = _make_cog(tmp_path, monkeypatch)
-    info = _make_info()
-    fake_bank = _make_fake_bank(take_return=["Bob：「今天好累」", "Alice：「我也是」"])
-    monkeypatch.setattr(cog, "_dj_heat_bank", lambda: fake_bank)
-    with patch(
-        "dj_narration_orchestrator.select_mode",
-        MagicMock(side_effect=AssertionError("revival 不該呼叫扭蛋")),
-    ):
-        result = await cog._fetch_dj_interjection_raw(info)
-    _assert_snapshot("revival", _render_snapshot("revival", bot, result))

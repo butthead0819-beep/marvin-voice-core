@@ -415,7 +415,7 @@ class MusicDJLyricsMixin:
             return ([], {})
 
     def _dj_heat_bank(self):
-        """DJ 話題庫的 lazy 單例（熱聊時存快照，降溫時取出接回話題）。"""
+        """DJ 已用對話原句紀錄的 lazy 單例（conversation mode 防重複用同一句）。"""
         bank = getattr(self, '_dj_topic_bank', None)
         if bank is None:
             from dj_heat import TopicBank
@@ -607,19 +607,6 @@ class MusicDJLyricsMixin:
         except Exception:
             pass  # fail-open：vc 不可用時不過濾在場人
 
-        # 🔥 [DJ Heat] 預抓時：熱聊中就存話題快照；話題庫有新鮮存貨就這首改走 revival 接回話題
-        # （2026-09-30 使用者定：熱聊素材最多但沒人在聽 DJ，該熱聊時少講，降溫時延續話題）。
-        revival_lines: list[str] = []
-        try:
-            from dj_heat import is_hot
-            _entries = conv_buf.get_history() if conv_buf else []
-            _now = time.time()
-            if is_hot(_entries, len(present_members or ()), _now):
-                self._dj_heat_bank().snapshot(_entries, _now)
-            revival_lines = self._dj_heat_bank().take(_now)
-        except Exception:
-            revival_lines = []  # fail-open
-
         from dj_social_affinity import (
             find_song_social_affinity,
             find_spoken_taste_match,
@@ -701,7 +688,7 @@ class MusicDJLyricsMixin:
         if not _card and isinstance(guide, str):
             _card = {"audiophile_guide": guide}
         materials = DJMaterials(
-            revival_lines=revival_lines, memory_evidence=memory_evidence, focus=_focus,
+            memory_evidence=memory_evidence, focus=_focus,
             life=life, present_members=present_members, interests=interests,
             news_items=news_items,
             news_context=news_context,
@@ -721,8 +708,6 @@ class MusicDJLyricsMixin:
             consume_callback=lambda who, event_id: self._event_store.mark_followed_up(event_id, time.time()),
         )
         topic, mode = plan.topic, plan.mode
-        if mode == "revival":
-            logger.info(f"🔥 [DJ Heat] 話題庫接回 {len(revival_lines)} 句 → revival")
         logger.info(f"🎚️ [DJ Focus] {title} focus={_focus or '-'} plays={info.get('_server_plays')} → mode={mode}")
         ctx.extend(plan.ctx_lines)
         _song_pick = None
@@ -953,16 +938,9 @@ class MusicDJLyricsMixin:
 
         logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
 
-        # 🔥 [DJ Heat] 熱聊時的短版備案：只報歌名，播出前一刻若判定熱聊就改唸這句
-        # （見 cogs/music_cog_tail_dj.py::_maybe_play_dj_interjection）。
-        _st, _sa = self._dj_clean_name(info)
-        short_text = f"下一首，{_sa}的{_st}" if _sa else f"下一首，{_st}"
-        if requester and not requester.startswith('Marvin'):
-            short_text += f"，{requester} 點的"
-
         # 串場不提上一首 → 沒有可過期的上一首，Consistency Guard 不必比對
         return {
-            'text': text, 'audio_path': audio_path, 'prev_title_used': None, 'short_text': short_text,
+            'text': text, 'audio_path': audio_path, 'prev_title_used': None,
             'narration_id': narration_id, 'mode': mode,
         }
 

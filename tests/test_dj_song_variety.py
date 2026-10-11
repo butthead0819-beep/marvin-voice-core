@@ -220,7 +220,6 @@ async def test_rare_autopilot_song_avoids_facet_used_twice(tmp_path, narration_l
     cog = _make_cog(tmp_path=tmp_path)
     cog.stream_history = []
     cog._dj_song_material = AsyncMock(return_value=_canon_album())
-    cog._dj_heat_bank().take = MagicMock(return_value=[])
     _write_log(narration_log, [
         {"song": "周杰倫 - 夜曲", "facet": "album", "text": "x"},
         {"song": "周杰倫 - 夜曲", "facet": "related", "text": "y"},
@@ -258,7 +257,6 @@ async def test_narration_log_records_facet_fields(tmp_path, narration_log):
     cog = _make_cog(tmp_path=tmp_path)
     cog.stream_history = []
     cog._dj_song_material = AsyncMock(return_value=_canon_album())
-    cog._dj_heat_bank().take = MagicMock(return_value=[])
     info = _info(title="周杰倫 - 夜曲", requester=AUTO)
     info.update(_arc_role="discovery", _server_plays=0)
 
