@@ -12,11 +12,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from event_memory import (
+    EXTRACT_SYSTEM_PROMPT,
     EventStore,
     NOT_REMEMBER,
     _activity_similarity,
     _md,
     _normalize,
+    _quote_speaker,
     build_extract_user_prompt,
     build_select_user_prompt,
     extract_and_store,
@@ -215,29 +217,29 @@ _TRANSCRIPT = "showay 說要去溪頭露營，date_text 是下禮拜六，引述
 
 
 def test_validate_event_owner_not_in_heard_by_rejected():
-    raw = {"owner": "狗與露", "activity": "露營"}
+    raw = {"owner": "狗與露", "activity": "露營", "subject": "狗與露"}
     assert validate_event(raw, ["showay"], _TRANSCRIPT, time.time()) is None
 
 
 @pytest.mark.parametrize("name", ["馬文", "Marvin", "marvin"])
 def test_validate_event_marvin_rejected(name):
-    raw = {"owner": name, "activity": "露營"}
+    raw = {"owner": name, "activity": "露營", "subject": name}
     assert validate_event(raw, [name], _TRANSCRIPT, time.time()) is None
 
 
 def test_validate_event_empty_activity_rejected():
-    raw = {"owner": "showay", "activity": ""}
+    raw = {"owner": "showay", "activity": "", "subject": "showay"}
     assert validate_event(raw, ["showay"], _TRANSCRIPT, time.time()) is None
 
 
 def test_validate_event_activity_too_long_rejected():
-    raw = {"owner": "showay", "activity": "一二三四五六七八九十十一十二十三"}
+    raw = {"owner": "showay", "activity": "一二三四五六七八九十十一十二十三", "subject": "showay"}
     assert validate_event(raw, ["showay"], _TRANSCRIPT, time.time()) is None
 
 
 def test_validate_event_date_in_range_converted_to_taipei_midnight():
     window_end = 1791640000.0  # 2026-10-10 21:46 台北（固定值，避免牆鐘讓測試過期）
-    raw = {"owner": "showay", "activity": "露營", "date": "2026-10-11"}
+    raw = {"owner": "showay", "activity": "露營", "date": "2026-10-11", "subject": "showay"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, window_end)
     assert ev is not None
     assert ev["event_date"] == 1791648000.0  # 2026-10-11 00:00 台北
@@ -245,47 +247,138 @@ def test_validate_event_date_in_range_converted_to_taipei_midnight():
 
 def test_validate_event_date_too_far_future_kept_but_date_none():
     window_end = 1791640000.0  # 2026-10-10；2030-01-01 超過 +365 天
-    raw = {"owner": "showay", "activity": "露營", "date": "2030-01-01"}
+    raw = {"owner": "showay", "activity": "露營", "date": "2030-01-01", "subject": "showay"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, window_end)
     assert ev is not None
     assert ev["event_date"] is None
 
 
 def test_validate_event_date_relative_word_invalid_format_is_none():
-    raw = {"owner": "showay", "activity": "露營", "date": "明天"}
+    raw = {"owner": "showay", "activity": "露營", "date": "明天", "subject": "showay"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, time.time())
     assert ev["event_date"] is None
 
 
 def test_validate_event_place_found_with_punct_variation_kept():
-    raw = {"owner": "showay", "activity": "露營", "place": "溪頭"}
+    raw = {"owner": "showay", "activity": "露營", "place": "溪頭", "subject": "showay"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, time.time())
     assert ev["place"] == "溪頭"
 
 
 def test_validate_event_place_not_in_transcript_is_none():
-    raw = {"owner": "showay", "activity": "露營", "place": "日本"}
+    raw = {"owner": "showay", "activity": "露營", "place": "日本", "subject": "showay"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, time.time())
     assert ev["place"] is None
 
 
 def test_validate_event_quote_not_in_transcript_is_empty():
-    raw = {"owner": "showay", "activity": "露營", "quote": "完全不相關的句子"}
+    raw = {"owner": "showay", "activity": "露營", "quote": "完全不相關的句子", "subject": "showay"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, time.time())
     assert ev["quote"] == ""
 
 
 def test_validate_event_quote_in_transcript_kept():
-    raw = {"owner": "showay", "activity": "露營", "quote": "下禮拜六我要去溪頭露營"}
+    raw = {"owner": "showay", "activity": "露營", "quote": "下禮拜六我要去溪頭露營", "subject": "showay"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, time.time())
     assert ev["quote"] == "下禮拜六我要去溪頭露營"
 
 
 @pytest.mark.parametrize("same_as,expected", [("12", 12), ("abc", None), (True, None)])
 def test_validate_event_same_as_variants(same_as, expected):
-    raw = {"owner": "showay", "activity": "露營", "same_as": same_as}
+    raw = {"owner": "showay", "activity": "露營", "same_as": same_as, "subject": "showay"}
     ev = validate_event(raw, ["showay"], _TRANSCRIPT, time.time())
     assert ev["same_as"] == expected
+
+
+# ═══════════════════════════════════════════════════════
+# validate_event — subject 判定主角歸屬（owner 轉述歸屬錯修正）
+# ═══════════════════════════════════════════════════════
+
+_SUBJECT_TRANSCRIPT = (
+    "[15:24:57] showay: 我媽是腰嘛然後我爸是那個眼睛啊還在跑醫院\n"
+    "[15:25:10] 狗與露: 我下禮拜六要去溪頭露營"
+)
+_SUBJECT_HEARD_BY = ["showay", "狗與露"]
+
+
+def test_validate_event_subject_wo_uses_quote_speaker_not_llm_owner():
+    raw = {"owner": "showay", "activity": "露營", "subject": "我",
+           "quote": "我下禮拜六要去溪頭露營"}
+    ev = validate_event(raw, _SUBJECT_HEARD_BY, _SUBJECT_TRANSCRIPT, time.time())
+    assert ev is not None
+    assert ev["owner"] == "狗與露"
+
+
+def test_validate_event_subject_family_member_dropped():
+    raw = {"owner": "showay", "activity": "看醫生", "subject": "我媽",
+           "quote": "我媽是腰嘛然後我爸是那個眼睛啊還在跑醫院"}
+    assert validate_event(raw, _SUBJECT_HEARD_BY, _SUBJECT_TRANSCRIPT, time.time()) is None
+
+
+def test_validate_event_subject_ta_pronoun_dropped():
+    raw = {"owner": "狗與露", "activity": "露營", "subject": "他",
+           "quote": "我下禮拜六要去溪頭露營"}
+    assert validate_event(raw, _SUBJECT_HEARD_BY, _SUBJECT_TRANSCRIPT, time.time()) is None
+
+
+def test_validate_event_subject_missing_dropped():
+    raw = {"owner": "showay", "activity": "露營"}
+    assert validate_event(raw, _SUBJECT_HEARD_BY, _SUBJECT_TRANSCRIPT, time.time()) is None
+
+
+def test_validate_event_subject_wo_quote_not_in_transcript_dropped():
+    raw = {"owner": "showay", "activity": "露營", "subject": "我",
+           "quote": "完全不相關的句子"}
+    assert validate_event(raw, _SUBJECT_HEARD_BY, _SUBJECT_TRANSCRIPT, time.time()) is None
+
+
+def test_validate_event_subject_speaker_name_with_empty_quote_kept():
+    raw = {"owner": "狗與露", "activity": "露營", "subject": "狗與露", "quote": ""}
+    ev = validate_event(raw, _SUBJECT_HEARD_BY, _SUBJECT_TRANSCRIPT, time.time())
+    assert ev is not None
+    assert ev["owner"] == "狗與露"
+
+
+def test_validate_event_subject_speaker_name_not_in_heard_by_dropped():
+    raw = {"owner": "showay", "activity": "露營", "subject": "狗與露", "quote": ""}
+    assert validate_event(raw, ["showay"], _SUBJECT_TRANSCRIPT, time.time()) is None
+
+
+def test_validate_event_subject_marvin_dropped():
+    raw = {"owner": "showay", "activity": "露營", "subject": "馬文", "quote": ""}
+    assert validate_event(raw, _SUBJECT_HEARD_BY, _SUBJECT_TRANSCRIPT, time.time()) is None
+
+
+def test_validate_event_subject_wo_men_quote_substring_of_speaker_line():
+    raw = {"owner": "狗與露", "activity": "看醫生", "subject": "我們",
+           "quote": "我媽是腰嘛然後我爸是那個眼睛啊還在跑醫院"}
+    ev = validate_event(raw, _SUBJECT_HEARD_BY, _SUBJECT_TRANSCRIPT, time.time())
+    assert ev is not None
+    assert ev["owner"] == "showay"
+
+
+def test_validate_event_subject_wo_quote_speaker_not_in_heard_by_dropped():
+    raw = {"owner": "showay", "activity": "露營", "subject": "我",
+           "quote": "我下禮拜六要去溪頭露營"}
+    assert validate_event(raw, ["showay"], _SUBJECT_TRANSCRIPT, time.time()) is None
+
+
+@pytest.mark.parametrize(
+    "quote,expected",
+    [
+        ("我下禮拜六要去溪頭露營", "狗與露"),
+        ("", None),
+        ("完全不相關的句子", None),
+    ],
+)
+def test_quote_speaker(quote, expected):
+    assert _quote_speaker(quote, _SUBJECT_TRANSCRIPT) == expected
+
+
+def test_extract_system_prompt_has_subject_field_not_old_owner_wording():
+    assert '"subject":""' in EXTRACT_SYSTEM_PROMPT
+    assert "必須是逐字稿中出現的說話者名稱" not in EXTRACT_SYSTEM_PROMPT
+    assert "陪家人或朋友看病住院" in EXTRACT_SYSTEM_PROMPT
 
 
 # ═══════════════════════════════════════════════════════
@@ -469,11 +562,14 @@ async def test_extract_and_store_three_windows_merge_into_one():
 
     contents = [
         _events_json([{"owner": "showay", "activity": "露營", "place": None, "date": None,
-                       "date_text": "", "participants": [], "quote": "", "same_as": None}]),
+                       "date_text": "", "participants": [], "quote": "", "same_as": None,
+                       "subject": "showay"}]),
         _events_json([{"owner": "showay", "activity": "路營", "place": None, "date": None,
-                       "date_text": "", "participants": [], "quote": "", "same_as": None}]),
+                       "date_text": "", "participants": [], "quote": "", "same_as": None,
+                       "subject": "showay"}]),
         _events_json([{"owner": "showay", "activity": "露營", "place": None, "date": None,
-                       "date_text": "", "participants": [], "quote": "", "same_as": None}]),
+                       "date_text": "", "participants": [], "quote": "", "same_as": None,
+                       "subject": "showay"}]),
     ]
     router = _router_with(contents)
 
@@ -492,13 +588,15 @@ async def test_extract_and_store_same_as_merges_despite_different_activity():
     transcript = "showay 說要去溪頭露營，引述句一。去玩也是這句。"
     window_end = time.time()
     first = _events_json([{"owner": "showay", "activity": "露營", "place": None, "date": None,
-                           "date_text": "", "participants": [], "quote": "", "same_as": None}])
+                           "date_text": "", "participants": [], "quote": "", "same_as": None,
+                           "subject": "showay"}])
     router1 = _router_with([first])
     await extract_and_store(router1, store, 1, transcript, ["showay"], window_end)
     existing_id = store.list_guild(1, 0)[0]["id"]
 
     second = _events_json([{"owner": "showay", "activity": "去玩", "place": None, "date": None,
-                            "date_text": "", "participants": [], "quote": "", "same_as": existing_id}])
+                            "date_text": "", "participants": [], "quote": "", "same_as": existing_id,
+                            "subject": "showay"}])
     router2 = _router_with([second])
     await extract_and_store(router2, store, 1, transcript, ["showay"], window_end + 300)
 
@@ -513,9 +611,9 @@ async def test_extract_and_store_two_events_same_window_merge_via_recent_insert(
     window_end = time.time()
     content = _events_json([
         {"owner": "showay", "activity": "露營", "place": None, "date": None,
-         "date_text": "", "participants": [], "quote": "", "same_as": None},
+         "date_text": "", "participants": [], "quote": "", "same_as": None, "subject": "showay"},
         {"owner": "showay", "activity": "路營", "place": None, "date": None,
-         "date_text": "", "participants": [], "quote": "", "same_as": None},
+         "date_text": "", "participants": [], "quote": "", "same_as": None, "subject": "showay"},
     ])
     router = _router_with([content])
     stats = await extract_and_store(router, store, 1, transcript, ["showay"], window_end)
@@ -528,7 +626,8 @@ async def test_extract_and_store_two_events_same_window_merge_via_recent_insert(
 async def test_extract_and_store_invalid_owner_dropped():
     store = EventStore(":memory:")
     content = _events_json([{"owner": "狗與露", "activity": "露營", "place": None, "date": None,
-                             "date_text": "", "participants": [], "quote": "", "same_as": None}])
+                             "date_text": "", "participants": [], "quote": "", "same_as": None,
+                             "subject": "狗與露"}])
     router = _router_with([content])
     stats = await extract_and_store(router, store, 1, "逐字稿", ["showay"], time.time())
     assert stats["dropped"] == 1
@@ -540,9 +639,9 @@ async def test_extract_and_store_stats_counts_correct():
     store = EventStore(":memory:")
     content = _events_json([
         {"owner": "showay", "activity": "露營", "place": None, "date": None,
-         "date_text": "", "participants": [], "quote": "", "same_as": None},
+         "date_text": "", "participants": [], "quote": "", "same_as": None, "subject": "showay"},
         {"owner": "狗與露", "activity": "露營", "place": None, "date": None,
-         "date_text": "", "participants": [], "quote": "", "same_as": None},
+         "date_text": "", "participants": [], "quote": "", "same_as": None, "subject": "狗與露"},
     ])
     router = _router_with([content])
     stats = await extract_and_store(router, store, 1, "逐字稿", ["showay"], time.time())
@@ -683,19 +782,19 @@ def test_validate_hometown_valid_returns_dict():
 # ═══════════════════════════════════════════════════════
 
 def test_validate_event_place_not_in_transcript_but_matches_hometown_kept():
-    raw = {"owner": "showay", "activity": "回老家", "place": "臺東"}
+    raw = {"owner": "showay", "activity": "回老家", "place": "臺東", "subject": "showay"}
     ev = validate_event(raw, ["showay"], "showay 說要回老家了", time.time(), {"showay": "台東"})
     assert ev["place"] == "臺東"
 
 
 def test_validate_event_place_not_in_transcript_and_not_hometown_is_none():
-    raw = {"owner": "showay", "activity": "回老家", "place": "臺東"}
+    raw = {"owner": "showay", "activity": "回老家", "place": "臺東", "subject": "showay"}
     ev = validate_event(raw, ["showay"], "showay 說要回老家了", time.time(), {"showay": "高雄"})
     assert ev["place"] is None
 
 
 def test_validate_event_hometowns_none_behaves_like_before():
-    raw = {"owner": "showay", "activity": "回老家", "place": "臺東"}
+    raw = {"owner": "showay", "activity": "回老家", "place": "臺東", "subject": "showay"}
     ev = validate_event(raw, ["showay"], "showay 說要回老家了", time.time(), None)
     assert ev["place"] is None
 
@@ -729,7 +828,8 @@ async def test_extract_and_store_learns_hometown_and_uses_it_for_place():
     window_end = time.time()
     content = _mixed_json(
         events=[{"owner": "showay", "activity": "回老家", "place": "臺東", "date": None,
-                 "date_text": "", "participants": [], "quote": "", "same_as": None}],
+                 "date_text": "", "participants": [], "quote": "", "same_as": None,
+                 "subject": "showay"}],
         hometowns=[{"person": "showay", "place": "臺東", "quote": "我老家在臺東"}],
     )
     router = _router_with([content])
@@ -749,7 +849,8 @@ async def test_extract_and_store_second_window_uses_known_hometown_and_merges():
     window_end = time.time()
     content1 = _mixed_json(
         events=[{"owner": "showay", "activity": "回老家", "place": "臺東", "date": None,
-                 "date_text": "", "participants": [], "quote": "", "same_as": None}],
+                 "date_text": "", "participants": [], "quote": "", "same_as": None,
+                 "subject": "showay"}],
         hometowns=[{"person": "showay", "place": "臺東", "quote": "我老家在臺東"}],
     )
     router1 = _router_with([content1])
@@ -758,7 +859,8 @@ async def test_extract_and_store_second_window_uses_known_hometown_and_merges():
     transcript2 = "showay 說晚點要回老家了"
     content2 = _mixed_json(
         events=[{"owner": "showay", "activity": "回老家", "place": "臺東", "date": None,
-                 "date_text": "", "participants": [], "quote": "", "same_as": None}],
+                 "date_text": "", "participants": [], "quote": "", "same_as": None,
+                 "subject": "showay"}],
         hometowns=[],
     )
     router2 = _router_with([content2])
@@ -781,7 +883,8 @@ async def test_extract_and_store_hometown_learned_this_window_validates_event_pl
     transcript = "showay 說：我老家在台東，這週末回老家"
     content = _mixed_json(
         events=[{"owner": "showay", "activity": "回老家", "place": "臺東", "date": None,
-                 "date_text": "", "participants": [], "quote": "", "same_as": None}],
+                 "date_text": "", "participants": [], "quote": "", "same_as": None,
+                 "subject": "showay"}],
         hometowns=[{"person": "showay", "place": "台東", "quote": "我老家在台東"}],
     )
     router = _router_with([content])

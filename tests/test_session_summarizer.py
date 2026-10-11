@@ -406,7 +406,7 @@ async def test_summarizer_members_fn_extra_person_added_to_heard_by():
     transcript_store = _make_transcript_store(utterances)
 
     extract_response = _json.dumps({"events": [
-        {"owner": "狗與鹿", "activity": "露營", "place": None, "date": None,
+        {"subject": "狗與鹿", "owner": "狗與鹿", "activity": "露營", "place": None, "date": None,
          "date_text": "", "participants": [], "quote": "", "same_as": None},
     ]}, ensure_ascii=False)
     router = MagicMock()
@@ -440,7 +440,7 @@ async def test_summarizer_members_fn_raises_event_still_written_with_speakers_on
     transcript_store = _make_transcript_store(utterances)
 
     extract_response = _json.dumps({"events": [
-        {"owner": "狗與鹿", "activity": "露營", "place": None, "date": None,
+        {"subject": "狗與鹿", "owner": "狗與鹿", "activity": "露營", "place": None, "date": None,
          "date_text": "", "participants": [], "quote": "", "same_as": None},
     ]}, ensure_ascii=False)
     router = MagicMock()
