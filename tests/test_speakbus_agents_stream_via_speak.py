@@ -1,10 +1,10 @@
 """
 SpeakBus agent stream-awareness 統一化（Option B）：
 
-1. MemoryCallbackAgent.speak_bid stream_mode 時回 dense 0.0("stream_mode")
-   — 看齊 ProactiveTopicAgent / BridgeAgent，補既有缺口（silent 中標 bug）。
+1. MemoryCallbackAgent（事件記憶 Phase 2）handler 走
+   `vc.speak(text, proactive=True, allow_dual=False, kind=SpeakKind.MEMORY_CALLBACK)`。
 
-2. MemoryCallbackAgent._speak_callback / BridgeAgent._speak_bridge 走
+2. BridgeAgent._speak_bridge 走
    `vc.speak(text, proactive=True)` 而非 `play_tts(...)`，自動接 hotswap：
    - 非 stream → 正常播
    - stream + ≤30 字 → hotswap 注入
@@ -17,29 +17,28 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from event_memory import EventStore
 from intent_agents.memory_callback_agent import MemoryCallbackAgent
 from speak_bus import SpeakContext
-from suki_memory import MemoryManager
+from tts_speak_policy import SpeakKind
 
 
-# ── helpers (與 test_memory_callback_agent.py 同 pattern) ────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────
 
 
-def _mk_mem(tmp_path):
-    mem = MemoryManager(
-        db_path=str(tmp_path / "mc.db"),
-        json_compat_path=str(tmp_path / "mc.json"),
-    )
-    orig_enqueue = mem.enqueue_callback
-    mem.enqueue_callback = lambda username, text, shareable=False, life=True: orig_enqueue(username, text, shareable=shareable, life=life)
-    return mem
+def _mk_event(owner="Alice", activity="露營", event_date=None, heard_by=None, event_id=1):
+    now = time.time()
+    return {
+        "id": event_id, "guild_id": 0, "owner": owner, "activity": activity,
+        "place": None, "event_date": event_date if event_date is not None else now - 2 * 86400,
+        "date_text": "", "participants": [], "heard_by": heard_by or [owner],
+        "quotes": [], "first_seen": now, "last_seen": now, "created_at": now,
+    }
 
 
-def _mk_ctrl(mem, history=None):
+def _mk_ctrl():
     """Minimal controller stub。voice mode gating 已升到 SpeakBus 層，agent 不再讀。"""
     ctrl = MagicMock()
-    ctrl.bot.router.memory = mem
-    ctrl.bot.engine.conv_buffer.history = history or []
     ctrl.bot.tts_engine.get_estimated_duration = MagicMock(return_value=3.0)
     ctrl.speak = AsyncMock()
     ctrl.play_tts = AsyncMock()
@@ -56,27 +55,14 @@ def _mk_ctx(present_speakers, last_speaker=None, mode="normal"):
     )
 
 
-def _utt(speaker, text, ts_offset_s=0.0):
-    return {"speaker": speaker, "text": text, "timestamp": time.time() + ts_offset_s}
-
-
-# ── 1. MemoryCallback 在 normal mode 仍正常 bid（agent 不再 ad-hoc gate stream）─
+# ── 1. MemoryCallback 在 normal mode 仍正常 bid ─────────────────────────────
 
 @pytest.mark.asyncio
-async def test_memory_callback_bid_still_works_when_not_in_stream(monkeypatch, tmp_path):
-    """非 stream 行為不變（原本能贏的 case 仍贏）。
-
-    Note: stream_mode gate 已升級到 SpeakBus 層（mode_compatible），覆蓋於
-    test_speakbus_mode_compatible / test_speakbus_agents_mode_compatible。
-    """
+async def test_memory_callback_bid_still_works_when_not_in_stream(monkeypatch):
     monkeypatch.setenv("SPEAK_MEMORY_CALLBACK", "true")
-    mem = _mk_mem(tmp_path)
-    mem.enqueue_callback("Alice", "試 grounded search", shareable=True)
-    history = [_utt("Alice", "grounded search 那個怎樣")]
-    agent = MemoryCallbackAgent(
-        _mk_ctrl(mem, history=history),
-        confidence=0.7, overlap_threshold=0.3,
-    )
+    store = EventStore(":memory:")
+    agent = MemoryCallbackAgent(_mk_ctrl(), store=store, confidence=0.7)
+    agent._candidates = [_mk_event()]
 
     bid = await agent.speak_bid(_mk_ctx(["Alice"], last_speaker="Alice"))
 
@@ -88,14 +74,13 @@ async def test_memory_callback_bid_still_works_when_not_in_stream(monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_memory_callback_speak_uses_speak_helper(monkeypatch, tmp_path):
-    """_speak_callback 改呼叫 ctrl.speak(text, proactive=True)，不直接打 play_tts。"""
+async def test_memory_callback_speak_uses_speak_helper(monkeypatch):
+    """handler 呼叫 ctrl.speak(text, proactive=True, allow_dual=False, kind=MEMORY_CALLBACK)。"""
     monkeypatch.setenv("SPEAK_MEMORY_CALLBACK", "true")
-    mem = _mk_mem(tmp_path)
-    mem.enqueue_callback("Alice", "試 grounded search", shareable=True)
-    history = [_utt("Alice", "grounded search 怎樣了")]
-    ctrl = _mk_ctrl(mem, history=history)
-    agent = MemoryCallbackAgent(ctrl, confidence=0.7, overlap_threshold=0.3)
+    store = EventStore(":memory:")
+    ctrl = _mk_ctrl()
+    agent = MemoryCallbackAgent(ctrl, store=store, confidence=0.7)
+    agent._candidates = [_mk_event()]
 
     bid = await agent.speak_bid(_mk_ctx(["Alice"], last_speaker="Alice"))
     await bid.handler()
@@ -104,6 +89,8 @@ async def test_memory_callback_speak_uses_speak_helper(monkeypatch, tmp_path):
     ctrl.play_tts.assert_not_called()
     _, kwargs = ctrl.speak.call_args
     assert kwargs.get("proactive") is True
+    assert kwargs.get("allow_dual") is False
+    assert kwargs.get("kind") == SpeakKind.MEMORY_CALLBACK
 
 
 # ── 3. BridgeAgent handler 走 vc.speak ──────────────────────────────────────

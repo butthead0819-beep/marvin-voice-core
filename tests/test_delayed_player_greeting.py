@@ -23,7 +23,6 @@ def dummy_vc_setup():
     cog.departure_stats.record_departure = AsyncMock()
     cog.bot.router = MagicMock()
     cog.bot.router.generate_player_greeting = AsyncMock(return_value="測試點名台詞")
-    cog._maybe_speak_join_callback = AsyncMock(return_value=False)
     cog.speak = AsyncMock()
     cog._send_mood_sticker = AsyncMock()
     cog.handle_dismiss = AsyncMock()

@@ -378,22 +378,37 @@ class MusicDJLyricsMixin:
             logger.debug(f"[DJ News] 新聞抓取失敗: {e}")
         return [], {}
 
-    def _present_callbacks(self, present_members) -> tuple[list[str], dict[str, tuple[str, dict]]]:
-        """從在場成員的 callback_queue 挑選適合 DJ 串場的現實生活舊事素材。"""
+    async def _present_callbacks(self, present_members) -> tuple[list[str], dict[str, tuple[str, int]]]:
+        """從事件記憶挑選適合 DJ 串場的現實生活舊事素材（事件記憶 Phase 2，取代 callback_queue）。
+
+        候選來自 event_memory.EventStore.list_followup_candidates，過濾走
+        event_memory.pick_followups（owner 在場 + 隱私濾網 + 時間窗）；每個 owner 只取
+        第一筆（已依 event_date 新到舊排序）。"""
         if not present_members:
             return ([], {})
         try:
+            import os
+
+            from event_memory import EventStore, pick_followups, render_followup_material
+
+            store = getattr(self, "_event_store", None)
+            if store is None:
+                store = EventStore()
+                self._event_store = store
+            rows = await asyncio.to_thread(
+                store.list_followup_candidates, int(os.environ.get("GUILD_ID") or "0")
+            )
+            picks = pick_followups(rows, sorted(present_members), time.time())
             callback_lines: list[str] = []
-            callback_src: dict[str, tuple[str, dict]] = {}
-            for m in sorted(present_members):
-                raw_items = self.bot.router.memory.peek_all_shareable_callbacks(m)
-                life_items = [it for it in (raw_items or []) if it.get("life") is True]
-                if not life_items:
+            callback_src: dict[str, tuple[str, int]] = {}
+            seen_owners: set[str] = set()
+            for ev in picks:
+                if ev["owner"] in seen_owners:
                     continue
-                item = life_items[0]
-                line = f"{m} 之前說要{item['text']}"
+                seen_owners.add(ev["owner"])
+                line = render_followup_material(ev)
                 callback_lines.append(line)
-                callback_src[line] = (m, item)
+                callback_src[line] = (ev["owner"], ev["id"])
             return (callback_lines, callback_src)
         except Exception as e:
             logger.warning(f"⚠️ [_present_callbacks] 取得 callback 失敗: {e}")
@@ -673,7 +688,7 @@ class MusicDJLyricsMixin:
         if requester.startswith('Marvin'):
             _autopilot_reason = self._autopilot_pick_reason(info) or ''
 
-        callback_lines, callback_src = self._present_callbacks(present_members)
+        callback_lines, callback_src = await self._present_callbacks(present_members)
         from dj_presence_material import presence_materials
         _vc_now = self._vc()
         activity_lines = presence_materials(
@@ -703,7 +718,7 @@ class MusicDJLyricsMixin:
         plan = apply_side_effects(
             plan, materials, conv_entries=conv_entries, heat_bank=self._dj_heat_bank,
             callback_src=callback_src,
-            consume_callback=lambda who, item: self.bot.router.memory.consume_callback(who, item),
+            consume_callback=lambda who, event_id: self._event_store.mark_followed_up(event_id, time.time()),
         )
         topic, mode = plan.topic, plan.mode
         if mode == "revival":

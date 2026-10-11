@@ -1,6 +1,6 @@
 """TDD: 個人狀態驅動選歌（state pick）→ DJ 口白講出理由。
 
-自動點歌輪到某人時，若他 48h 內有狀態（callback_queue 可分享項 / 非 annoyed 的情緒高光），
+自動點歌輪到某人時，若他 48h 內有狀態（非 annoyed 的情緒高光），
 LLM 從他自己的候選池挑一首＋一句關心口吻理由，排本輪第一首，DJ 口白用理由開場。
 隱私邊界（使用者拍板）：當事人在場才用；taboos、annoyed 一律排除。
 """
@@ -25,26 +25,22 @@ H = 3600.0
 
 # ── C1. collect_fresh_states ────────────────────────────────────────────────
 
-def _mem(cbq=(), eh=(), taboos=()):
-    return {"callback_queue": list(cbq), "emotional_highlights": list(eh), "taboos": list(taboos)}
+def _mem(eh=(), taboos=()):
+    return {"emotional_highlights": list(eh), "taboos": list(taboos)}
 
 
-def test_collect_uses_shareable_callbacks_and_non_annoyed_highlights():
+def test_collect_uses_non_annoyed_highlights():
     mem = _mem(
-        cbq=[{"text": "等雙十一買打蠟機", "shareable": True, "ts": NOW - 2 * H}],
         eh=[{"moment": "感冒喉嚨痛", "valence": "unwell", "timestamp": NOW - 1 * H}],
     )
-    assert collect_fresh_states(mem, now=NOW) == ["感冒喉嚨痛", "等雙十一買打蠟機"]
+    assert collect_fresh_states(mem, now=NOW) == ["感冒喉嚨痛"]
 
 
-def test_collect_drops_stale_private_annoyed_meta_and_taboo():
+def test_collect_drops_stale_annoyed_meta_and_taboo():
     mem = _mem(
-        cbq=[
-            {"text": "過期的事", "shareable": True, "ts": NOW - 49 * H},
-            {"text": "私密的事", "shareable": False, "ts": NOW - H},
-            {"text": "家裡吵架", "shareable": True, "ts": NOW - H},
-        ],
         eh=[
+            {"moment": "過期的事", "valence": "warm", "timestamp": NOW - 49 * H},
+            {"moment": "家裡吵架", "valence": "warm", "timestamp": NOW - H},
             {"moment": "被馬文氣到", "valence": "annoyed", "timestamp": NOW - H},
             {"moment": "__META__ {}", "valence": "warm", "timestamp": NOW - H},
         ],
@@ -55,16 +51,15 @@ def test_collect_drops_stale_private_annoyed_meta_and_taboo():
 
 def test_collect_dedups_keeps_newest_and_caps_at_three():
     mem = _mem(
-        cbq=[{"text": f"事{i}", "shareable": True, "ts": NOW - i * H} for i in range(1, 6)]
-        + [{"text": "事1", "shareable": True, "ts": NOW - 10 * H}],
+        eh=[{"moment": f"事{i}", "valence": "warm", "timestamp": NOW - i * H} for i in range(1, 6)]
+        + [{"moment": "事1", "valence": "warm", "timestamp": NOW - 10 * H}],
     )
     assert collect_fresh_states(mem, now=NOW) == ["事1", "事2", "事3"]
 
 
 def test_collect_tolerates_missing_and_malformed_fields():
     assert collect_fresh_states({}, now=NOW) == []
-    mem = {"callback_queue": "壞", "emotional_highlights": [None, "x", {"moment": "ok"}],
-           "taboos": None}
+    mem = {"emotional_highlights": [None, "x", {"moment": "ok"}], "taboos": None}
     assert collect_fresh_states(mem, now=NOW) == []
 
 

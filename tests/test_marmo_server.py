@@ -185,7 +185,7 @@ async def test_port_already_in_use_does_not_crash():
 @pytest.mark.asyncio
 async def test_speak_via_marvin_connection_refused():
     """speak_via_marvin() raises aiohttp.ClientError if Marvin webhook is down.
-    This path is currently unhandled on the Marmo side — tracked in TODOS.md.
+    This path is currently unhandled on the Marmo side.
     This test documents the failure mode.
     """
     import aiohttp

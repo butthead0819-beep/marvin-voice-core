@@ -101,7 +101,10 @@ def _make_cog(tmp_path, monkeypatch):
     monkeypatch.setattr(cog, "_life_cores_async", AsyncMock(return_value=[]))
     monkeypatch.setattr(cog, "_present_interests", lambda: [])
     monkeypatch.setattr(cog, "_fetch_news_items_async", AsyncMock(return_value=([], {})))
-    monkeypatch.setattr(cog, "_present_callbacks", lambda present_members: ([], {}))
+    async def _default_present_callbacks(present_members):
+        return ([], {})
+
+    monkeypatch.setattr(cog, "_present_callbacks", _default_present_callbacks)
     monkeypatch.setattr(cog, "_autopilot_pick_reason", lambda info: "")
     monkeypatch.setattr(cog, "_dj_heat_bank", lambda: _make_fake_bank())
     monkeypatch.setattr(dj_narration_log, "recent_narrations_for_song", lambda *a, **k: [])
@@ -161,19 +164,22 @@ async def test_snapshot_news(tmp_path, monkeypatch):
 async def test_snapshot_callback(tmp_path, monkeypatch):
     bot, cog = _make_cog(tmp_path, monkeypatch)
     info = _make_info()
-    cb_item = {"text": "買叉子"}
-    monkeypatch.setattr(
-        cog, "_present_callbacks",
-        lambda present_members: (
+    event_id = 7
+    cog._event_store = MagicMock()
+
+    async def _fake_present_callbacks(present_members):
+        return (
             ["Alice 之前說要買叉子"],
-            {"Alice 之前說要買叉子": ("Alice", cb_item)},
-        ),
-    )
+            {"Alice 之前說要買叉子": ("Alice", event_id)},
+        )
+
+    monkeypatch.setattr(cog, "_present_callbacks", _fake_present_callbacks)
     with patch("dj_narration_orchestrator.choose_mode",
                return_value=("Alice 之前說要買叉子", "callback")):
         result = await cog._fetch_dj_interjection_raw(info)
     _assert_snapshot("callback", _render_snapshot("callback", bot, result))
-    bot.router.memory.consume_callback.assert_called_once_with("Alice", cb_item)
+    cog._event_store.mark_followed_up.assert_called_once()
+    assert cog._event_store.mark_followed_up.call_args.args[0] == event_id
 
 
 @pytest.mark.asyncio
