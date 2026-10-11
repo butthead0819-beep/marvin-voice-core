@@ -591,7 +591,7 @@ class MusicDJLyricsMixin:
         lyric_candidates: list[str] = []
         # 串場不提上一首（9/30 使用者定：專注寫下一首）——預抓時的「上一首」常因插播/
         # 換順序過期，寫進 prompt 再被 Consistency Guard 丟掉改唸報幕，得不償失。
-        if play_count >= 2:
+        if play_count >= 2 and not requester.startswith('Marvin'):
             song_candidates.append(f"喜好線索：這首是 {requester} 常聽的愛歌")
         if feelings:
             song_candidates.append(f"情感記錄：{' / '.join(feelings[:2])}")

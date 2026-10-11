@@ -128,6 +128,54 @@ def test_long_time_no_play_recency_affinity():
     assert "十年" in affinity or "Alice" in affinity or "上次" in affinity or "久" in affinity
 
 
+def test_social_bridge_when_requester_is_marvin_autopilot():
+    """requester 是 Marvin 自動推薦（非真人）時，不應把 Marvin 當成人寫進提示。"""
+    songs = {
+        "https://www.youtube.com/watch?v=song3": {
+            "title": "稻香",
+            "uploader": "周杰倫",
+            "webpage_url": "https://www.youtube.com/watch?v=song3",
+            "total_plays": 3,
+            "plays": [{"by": "Marvin推薦（為weakgogo）", "ts": time.time() - 3600}],
+            "requesters": {"Bob": 3},
+            "likes": {},
+            "reactions": {},
+        }
+    }
+    mm = _make_mm(songs)
+    info = {"title": "稻香", "webpage_url": "https://www.youtube.com/watch?v=song3"}
+
+    affinity = find_song_social_affinity(
+        mm, info, requester="Marvin推薦（為weakgogo）", present_members={"Bob"}
+    )
+    assert affinity is not None
+    assert "Marvin" not in affinity
+    assert affinity == "在場的 Bob 常聽/點過這首"
+
+
+def test_recency_skipped_when_requester_is_marvin_autopilot():
+    """requester 是 Marvin 自動推薦時，久別重逢段應整段跳過。"""
+    now = 1700000000.0
+    songs = {
+        "url_old2": {
+            "title": "十年",
+            "uploader": "陳奕迅",
+            "webpage_url": "url_old2",
+            "total_plays": 2,
+            "plays": [{"by": "Marvin推薦（點給大家）", "ts": now - 40 * 86400}],
+            "requesters": {},
+        }
+    }
+    mm = _make_mm(songs)
+    info = {"title": "十年", "webpage_url": "url_old2"}
+
+    affinity = find_song_social_affinity(
+        mm, info, requester="Marvin推薦（點給大家）", present_members=set(), now_ts=now
+    )
+    assert affinity is None
+    assert "上次點這首" not in (affinity or "")
+
+
 def test_detect_back_to_back_artist():
     """前後兩首為同一歌手時，應正確偵測連播。"""
     assert detect_back_to_back_artist("周杰倫 - 晴天", "周杰倫 - 稻香") == "周杰倫"

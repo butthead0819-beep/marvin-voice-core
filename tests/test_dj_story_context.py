@@ -209,6 +209,37 @@ async def test_marvin_autopilot_phrase_not_cut_to_garbage(monkeypatch):
     assert len(result["text"]) >= 35, f"Marvin autopilot 被砍成殘句: {result['text']!r}"
 
 
+# ── 3b. Marvin 自動推薦不當真人寫進「常聽的愛歌」喜好線索 ─────────────────────
+
+@pytest.mark.asyncio
+async def test_marvin_autopilot_requester_not_treated_as_frequent_listener(monkeypatch):
+    """requester 是 Marvin 自動推薦（非真人）時，即使 music_memory 裡該 requester
+    字串點播次數 >= 2，也不該寫出「常聽的愛歌」這種把 Marvin 當成人的喜好線索。"""
+    _exclude(monkeypatch, "quick")
+    cog = _make_cog()
+    requester = "Marvin推薦（點給大家）"
+    cog.bot.music_memory._data = {
+        "songs": {"song_key_xyz": {"requesters": {requester: 3}}}
+    }
+    await cog._fetch_dj_interjection_raw(_info(requester=requester))
+    ctx = _ctx_str(cog)
+    assert "常聽的愛歌" not in ctx, f"不該把 Marvin 推薦當成人常聽: {ctx!r}"
+
+
+@pytest.mark.asyncio
+async def test_real_requester_frequent_listener_hint_kept(monkeypatch):
+    """真人 requester 點播次數 >= 2 時，仍應保留「常聽的愛歌」喜好線索（防止整段被誤刪）。"""
+    _exclude(monkeypatch, "quick")
+    cog = _make_cog()
+    requester = "大肚"
+    cog.bot.music_memory._data = {
+        "songs": {"song_key_xyz": {"requesters": {requester: 2}}}
+    }
+    await cog._fetch_dj_interjection_raw(_info(requester=requester))
+    ctx = _ctx_str(cog)
+    assert "常聽的愛歌" in ctx, f"真人常聽線索不該被拔掉: {ctx!r}"
+
+
 # ── 4. 歌曲素材 guide mode 取代舊的「音樂賞析」（SongKnowledgeStore.get_or_extract_insight）──
 
 @pytest.mark.asyncio
