@@ -348,12 +348,8 @@ def parse_hometowns(content: str) -> list[dict]:
 
 def validate_event(
     raw: dict, heard_by: list[str], transcript_text: str, window_end: float,
-    hometowns: dict[str, str] | None = None,
+    hometowns: dict[str, str] | None = None, recent: list[dict] | None = None,
 ) -> dict | None:
-    owner = str(raw.get("owner") or "").strip()
-    if not owner or owner not in heard_by or owner.lower() in _MARVIN_NAMES:
-        return None
-
     activity = str(raw.get("activity") or "").strip()
     if not activity or len(activity) > ACTIVITY_MAX_LEN:
         return None
@@ -373,37 +369,9 @@ def validate_event(
                 event_dt = datetime.datetime(d.year, d.month, d.day, tzinfo=TPE_TZ)
                 event_date = event_dt.timestamp()
 
-    place = str(raw.get("place") or "").strip()
-    if not place or not _normalize(place):
-        place = None
-    elif _normalize(place) not in _normalize(transcript_text) and not _same_place(
-        place, (hometowns or {}).get(owner)
-    ):
-        place = None
-
     quote = str(raw.get("quote") or "").strip()
     if not _normalize(quote) or _normalize(quote) not in _normalize(transcript_text):
         quote = ""
-
-    subject = str(raw.get("subject") or "").strip()
-    if subject in _SELF_SUBJECTS:
-        speaker = _quote_speaker(quote, transcript_text)
-        if not speaker or speaker not in heard_by or speaker.lower() in _MARVIN_NAMES:
-            return None
-        owner = speaker
-    elif subject and subject in heard_by and subject.lower() not in _MARVIN_NAMES:
-        owner = subject
-    else:
-        return None
-
-    date_text = str(raw.get("date_text") or "").strip()[:20]
-
-    participants = []
-    raw_participants = raw.get("participants")
-    if isinstance(raw_participants, list):
-        for p in raw_participants:
-            if isinstance(p, str) and p.strip():
-                participants.append(p.strip())
 
     same_as = raw.get("same_as")
     if isinstance(same_as, bool):
@@ -415,6 +383,42 @@ def validate_event(
     else:
         same_as = None
 
+    target = None
+    if same_as is not None:
+        target = next((r for r in (recent or []) if r["id"] == same_as), None)
+    update_only = False
+    if target is not None and target["owner"] in heard_by:
+        owner = target["owner"]
+        update_only = True
+    else:
+        subject = str(raw.get("subject") or "").strip()
+        if subject in _SELF_SUBJECTS:
+            speaker = _quote_speaker(quote, transcript_text)
+            if not speaker or speaker not in heard_by or speaker.lower() in _MARVIN_NAMES:
+                return None
+            owner = speaker
+        elif subject and subject in heard_by and subject.lower() not in _MARVIN_NAMES:
+            owner = subject
+        else:
+            return None
+
+    place = str(raw.get("place") or "").strip()
+    if not place or not _normalize(place):
+        place = None
+    elif _normalize(place) not in _normalize(transcript_text) and not _same_place(
+        place, (hometowns or {}).get(owner)
+    ):
+        place = None
+
+    date_text = str(raw.get("date_text") or "").strip()[:20]
+
+    participants = []
+    raw_participants = raw.get("participants")
+    if isinstance(raw_participants, list):
+        for p in raw_participants:
+            if isinstance(p, str) and p.strip():
+                participants.append(p.strip())
+
     return {
         "owner": owner,
         "activity": activity,
@@ -424,6 +428,7 @@ def validate_event(
         "participants": participants,
         "quote": quote,
         "same_as": same_as,
+        "update_only": update_only,
     }
 
 
@@ -711,11 +716,14 @@ async def extract_and_store(router, store, guild_id: int, transcript_text: str, 
         stats["hometowns"] += 1
         logger.info(f"🏠 [EventMemory] 學到 {h['person']} 老家在 {h['place']}")
     for raw in parse_events(content or ""):
-        ev = validate_event(raw, heard_by, transcript_text, window_end, known)
+        ev = validate_event(raw, heard_by, transcript_text, window_end, known, recent)
         if ev is None:
             stats["dropped"] += 1
             continue
         target = find_merge_target(ev, recent, window_end)
+        if target is None and ev.get("update_only"):
+            stats["dropped"] += 1
+            continue
         if target is not None:
             await asyncio.to_thread(store.merge, target, ev, heard_by, window_end)
             stats["merged"] += 1

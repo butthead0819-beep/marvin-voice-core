@@ -4,21 +4,6 @@
 
 ## 🔜 接下來做
 
-### TODO: 事件記憶 — 拼圖制：湊齊 who＋what＋when 才拿出來用
-**What:** 事件表裡的每一筆當「碎片」，跨窗口/跨天靠既有合併（same_as、拼音＋日期）補空欄位；只有 owner＋activity＋event_date 都齊的才給 `EventRecallAgent` 問答用（追問 `pick_followups` 本來就要求 event_date）。where 有就拿來輔助合併，不列必要。
-**Why:** 使用者 2026-10-11 定：「訊號當拼圖，事件沒那麼多，湊齊才當事件」。9/29+10/9 重播 7 筆：門檻設 when 剛好擋掉兩筆雜訊（STT 糊句「出國」、叫馬文祝賀「慶祝」），保留 5 筆真事件；若連 where 都要只剩 1 筆（大家很少講地點，看醫生/考試本來就沒地點）。
-**How to start:** `event_recall_agent.py` 在 `visible_events` 前濾 `event_date is not None`；先寫紅：無日期事件在場也答「不記得」。碎片要靠 what 當骨架才接得起來，單獨的「下禮拜六」不接。⚠️ 碎片合併窗口目前是 `RECENT_DAYS=7`（last_seen），跨更久的碎片接不上，觀察後再調。
-**Depends on:** 跟下一項「後續關心併回既有事件」一起做——後續對話併得回去，碎片才補得齊。
-**Priority:** P2
-
-### TODO: 事件記憶 — 後續關心（你/他）要能併回既有事件
-**What:** `validate_event` 拆兩條路：`same_as` 指向有效近期事件（owner ∈ heard_by）→ 直接 merge，不看 subject，owner 沿用 DB 原值；只有「新建事件」才套 PR#119 的 subject 規則（我/我們→quote 說話者、說話者名稱→該人、其他丟）。
-**Why:** 大家常關心對方事件進度（「你離開醫院了嗎」「他還在醫院嗎」），主詞是你/他、不帶我。PR#119 會把這類整筆丟掉，即使 LLM 已正確連到既有事件 → 後續原話與 heard_by 都不更新。這是 #119 的退步。
-**Pros:** 確定性規則、更新不產生新 owner，LLM 連錯的代價只是多一句原話。
-**Cons:** merge 路徑多信一點 LLM 的 same_as（已有「id 須在近期清單且同 owner 在場」的本地檢查）。
-**Context:** 2026-10-11 使用者指出。順帶評估「多給上下文」（帶前一窗最後幾句）是否改善歸屬——先用 `scripts/replay_event_extraction.py` 重播比較，別直接上。重播在 worktree 要先 load 主目錄 .env。
-**Priority:** P2
-
 ### TODO: 事件記憶 — 抽取雜訊（STT 糊句、對馬文的指令）
 **What:** 9/29 重播仍抽到：STT 糊句「下麵一位臺中地方姐姐想借夢工幾人出國弟弟」→ showay 出國；「我老婆 Kimi媽今日生日 Ke以幫我祝她生日快樂」（叫馬文祝賀）→ showay 慶祝。
 **Why:** Phase 2 會拿事件去追問，雜訊事件 = 問莫名其妙的事。
