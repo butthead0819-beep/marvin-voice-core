@@ -36,6 +36,7 @@ EXTRACT_TIMEOUT_S = 20.0
 EXTRACT_PREFER_PROVIDERS = ("gemini_free", "groq")
 NOT_REMEMBER = "我不記得有聽過這件事。"
 _MARVIN_NAMES = {"馬文", "marvin"}
+_SELF_SUBJECTS = {"我", "我們", "我自己"}
 HOMETOWN_KEYWORDS = ("老家", "家鄉", "故鄉")
 FOLLOWUP_MAX_DAYS_AFTER = 14
 
@@ -384,6 +385,17 @@ def validate_event(
     if not _normalize(quote) or _normalize(quote) not in _normalize(transcript_text):
         quote = ""
 
+    subject = str(raw.get("subject") or "").strip()
+    if subject in _SELF_SUBJECTS:
+        speaker = _quote_speaker(quote, transcript_text)
+        if not speaker or speaker not in heard_by or speaker.lower() in _MARVIN_NAMES:
+            return None
+        owner = speaker
+    elif subject and subject in heard_by and subject.lower() not in _MARVIN_NAMES:
+        owner = subject
+    else:
+        return None
+
     date_text = str(raw.get("date_text") or "").strip()[:20]
 
     participants = []
@@ -438,6 +450,23 @@ def validate_hometown(raw: dict, heard_by: list[str], transcript_text: str) -> d
 
 
 _TRANSCRIPT_LINE_RE = re.compile(r"^\[[\d:]+\]\s*(.+?):\s*(.*)$")
+
+
+def _quote_speaker(quote: str, transcript_text: str) -> str | None:
+    """逐字稿裡第一句內容包含 quote 的說話者，找不到回 None。"""
+    norm_quote = _normalize(quote)
+    if not norm_quote:
+        return None
+    for line in (transcript_text or "").splitlines():
+        m = _TRANSCRIPT_LINE_RE.match(line.strip())
+        if not m:
+            continue
+        speaker, text = m.group(1).strip(), m.group(2).strip()
+        if norm_quote in _normalize(text):
+            return speaker
+    return None
+
+
 # 本地補漏（LLM 漏抓 9/29 陳進文「所以說我臺東老家那邊」）：只認「我(們)X老家」「我(的)老家在X」兩種自述句型
 _HOMETOWN_LOCAL_PATTERNS = (
     re.compile(r"我們?([\u4e00-\u9fff]{2,3}?)(?:老家|家鄉|故鄉)"),
@@ -592,17 +621,18 @@ def render_followup_material(ev: dict) -> str:
 
 EXTRACT_SYSTEM_PROMPT = """\
 你是事件記錄助理。從語音聊天逐字稿中找出「現實生活中、有時間指向的個人事件」：出遊、露營、出國、旅行、看醫生、聚餐、搬家、考試、面試、回老家、參加婚禮等。
-不要收：遊戲裡的行動或任務、當下的小動作（去上廁所、去倒水、等一下吃飯）、抱怨與心情、對 AI 助理「馬文」的指令或提問、單純討論新聞或產品。
+不要收：遊戲裡的行動或任務、當下的小動作（去上廁所、去倒水、等一下吃飯）、抱怨與心情、對 AI 助理「馬文」的指令或提問、單純討論新聞或產品、陪家人或朋友看病住院（主角是被陪的人，即使說「我們住雙人房」也不收）。
 「近期事件清單」是之前已記下的事件。若逐字稿講的是清單裡的同一件事（即使用字不同、語音辨識有錯字），same_as 填該事件的編號數字；新事件填 null。
 date：用「窗口時間」把「明天」「下禮拜六」「上個月」等換算成 YYYY-MM-DD；無法確定填 null。date_text 填原文時間詞。
-owner：事件主角，必須是逐字稿中出現的說話者名稱。
+subject：這件事的主角在原話裡的稱呼，一字不改照抄（例：我、我們、showay、我媽、他）。
+owner：subject 是「我」「我們」時填講那句話的說話者；subject 是說話者名稱時填該名稱。主角是家人、朋友、同事、「他」「她」或其他不在說話者名單的人時，這件事不要收。
 quote：逐字稿中提到這件事的一句原話，一字不改。
 place：只填逐字稿裡出現過的地名原文，沒有填 null。
 participants：同行者名稱，沒有填 []。
 activity：兩到六個字的活動名，例如 露營、出國、看醫生。
 「背景」列出已知的人物老家。有人說「回老家」「回家鄉」時，place 填背景裡這個人的老家地名。
 hometowns：若有人在同一句話裡同時說出自己的「老家」「家鄉」或「故鄉」和地名（例：我老家在臺東），列出 {"person":說話者名稱,"place":地名原文,"quote":那句原話一字不改}；沒有填 []。
-只輸出 JSON：{"events":[{"same_as":null,"owner":"","activity":"","place":null,"date":null,"date_text":"","participants":[],"quote":""}],"hometowns":[]}
+只輸出 JSON：{"events":[{"same_as":null,"subject":"","owner":"","activity":"","place":null,"date":null,"date_text":"","participants":[],"quote":""}],"hometowns":[]}
 沒有事件就輸出 {"events":[],"hometowns":[]}。"""
 
 SELECT_SYSTEM_PROMPT = """\
