@@ -37,6 +37,7 @@ EXTRACT_PREFER_PROVIDERS = ("gemini_free", "groq")
 NOT_REMEMBER = "我不記得有聽過這件事。"
 _MARVIN_NAMES = {"馬文", "marvin"}
 HOMETOWN_KEYWORDS = ("老家", "家鄉", "故鄉")
+FOLLOWUP_MAX_DAYS_AFTER = 14
 
 
 class EventStore:
@@ -88,6 +89,12 @@ class EventStore:
                     quote      TEXT    NOT NULL DEFAULT '',
                     learned_at REAL    NOT NULL,
                     PRIMARY KEY (guild_id, person)
+                )
+            """)
+            con.execute("""
+                CREATE TABLE IF NOT EXISTS event_followups (
+                    event_id       INTEGER PRIMARY KEY,
+                    followed_up_at REAL    NOT NULL
                 )
             """)
             con.commit()
@@ -208,6 +215,32 @@ class EventStore:
         finally:
             self._release(con)
 
+    def list_followup_candidates(self, guild_id: int) -> list[dict]:
+        con = self._connect()
+        try:
+            rows = con.execute(
+                "SELECT id, guild_id, owner, activity, place, event_date, date_text, "
+                "participants, heard_by, quotes, first_seen, last_seen, created_at "
+                "FROM events WHERE guild_id = ? AND event_date IS NOT NULL "
+                "AND id NOT IN (SELECT event_id FROM event_followups) "
+                "ORDER BY event_date DESC",
+                (guild_id,),
+            ).fetchall()
+            return [self._row_to_dict(r) for r in rows]
+        finally:
+            self._release(con)
+
+    def mark_followed_up(self, event_id: int, ts: float) -> None:
+        con = self._connect()
+        try:
+            con.execute(
+                "INSERT OR IGNORE INTO event_followups (event_id, followed_up_at) VALUES (?, ?)",
+                (event_id, ts),
+            )
+            con.commit()
+        finally:
+            self._release(con)
+
     def prune(self, retention_days: int = RETENTION_DAYS, now: float | None = None) -> int:
         effective_now = time.time() if now is None else now
         cutoff = effective_now - retention_days * 86400
@@ -215,6 +248,7 @@ class EventStore:
         try:
             cur = con.execute("DELETE FROM events WHERE last_seen < ?", (cutoff,))
             con.execute("DELETE FROM hometowns WHERE learned_at < ?", (cutoff,))
+            con.execute("DELETE FROM event_followups WHERE event_id NOT IN (SELECT id FROM events)")
             con.commit()
             return cur.rowcount
         finally:
@@ -523,6 +557,37 @@ def render_answer(ev: dict, speaker: str) -> str:
             quote = quote[:QUOTE_SPEAK_MAX] + "…"
         text += f"。那時說「{quote}」"
     return text + "。"
+
+
+def pick_followups(events: list[dict], present: list[str], now: float) -> list[dict]:
+    """事件過後追問候選（保持輸入順序）：事件當天已過完、未超過 FOLLOWUP_MAX_DAYS_AFTER 天、
+    owner 在場、且通過既有 visible_events 隱私濾網（在場者全部 ⊆ heard_by）。"""
+    if not present:
+        return []
+    present_set = set(present)
+    visible_ids = {e["id"] for e in visible_events(events, present)}
+    out = []
+    for e in events:
+        if e["event_date"] is None:
+            continue
+        if now < e["event_date"] + 86400:
+            continue
+        if now > e["event_date"] + (FOLLOWUP_MAX_DAYS_AFTER + 1) * 86400:
+            continue
+        if e["owner"] not in present_set:
+            continue
+        if e["id"] not in visible_ids:
+            continue
+        out.append(e)
+    return out
+
+
+def render_followup_line(ev: dict) -> str:
+    return f"對了{ev['owner']}，你之前說{_md(ev['event_date'])}要{ev['activity']}，後來怎麼樣？"
+
+
+def render_followup_material(ev: dict) -> str:
+    return f"{ev['owner']} 之前說{_md(ev['event_date'])}要{ev['activity']}"
 
 
 EXTRACT_SYSTEM_PROMPT = """\

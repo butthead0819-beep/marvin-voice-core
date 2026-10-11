@@ -26,9 +26,9 @@ def test_bridge_agent_mode_compatible_normal_only():
     assert BridgeAgent.mode_compatible == frozenset({"normal"})
 
 
-def test_memory_callback_agent_mode_compatible_normal_and_stream():
-    """走 vc.speak(proactive=True) → stream 中 hotswap 可發聲（≤30 字）。"""
-    assert MemoryCallbackAgent.mode_compatible == frozenset({"normal", "stream"})
+def test_memory_callback_agent_mode_compatible_normal_only():
+    """事件記憶 Phase 2：播歌中（stream）的事件追問改由 DJ callback mode 講。"""
+    assert MemoryCallbackAgent.mode_compatible == frozenset({"normal"})
 
 
 # ── 對應的內部 mode 檢查必須移除（避免重複 gate）─────────────────────────────

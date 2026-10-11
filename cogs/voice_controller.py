@@ -62,9 +62,8 @@ from recall_handler import (
 )
 from summary_store import SummaryStore
 from task_store import TaskStore
-from session_summarizer import SessionSummarizer, commitment_to_callback
+from session_summarizer import SessionSummarizer
 from event_memory import EventStore
-from callback_delivery import is_join_callback_enabled, format_callback_line
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
 from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
@@ -612,7 +611,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             self, topic_graph=self._speaker_topic_graph, mood_agent=self._mood_agent,
             min_gap_since_last_s=PROACTIVE_TOPIC_COOLDOWN_S,  # 與冷場 TopicGenerator 同源 cooldown
         ))   # P0: 接 graph + P3: heavy mood 時 yield
-        self._speak_bus.register(MemoryCallbackAgent(self))   # v3: 主題關聯 → 「你之前說要 X 現在呢」（flag SPEAK_MEMORY_CALLBACK 預設 OFF）
+        self._speak_bus.register(MemoryCallbackAgent(self))   # 事件記憶 Phase 2：事件日期過後追問當事人（flag SPEAK_MEMORY_CALLBACK；播歌中改由 DJ callback mode 講）
         self._speak_bus.register(BridgeAgent(
             self, topic_graph=self._speaker_topic_graph, mood_agent=self._mood_agent,
         ))  # P2: cross-person 橋接 + P3: heavy mood 時 yield
@@ -2054,52 +2053,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
     def _on_commitment_detected(self, conf):
         """SessionSummarizer 偵測到 commitment 的 hook（sync，從 summarizer loop 呼叫）。
 
-        (1) 保留原行為：進 pending-confirmation 佇列（30s 靜默後主動問）。
-        (2) T2：inbound 自我承諾額外存進該 speaker 的 callback_queue（返場時提醒本人）。
-        enqueue 失敗不可影響 summarizer loop → 包 try/except graceful degrade。
+        進 pending-confirmation 佇列（30s 靜默後主動問）。
         """
         self._pending_confirmations.append(conf)
-        try:
-            cb = commitment_to_callback(conf)
-            if cb:
-                speaker, text = cb
-                self.bot.router.memory.enqueue_callback(speaker, text, shareable=True, life=True)
-        except Exception as e:
-            logger.warning(f"⚠️ [Callback] enqueue 失敗（不影響 summarizer）: {e}")
-
-    async def _maybe_speak_join_callback(self, speaker: str) -> bool:
-        """T3 返場 callback（feature flag，預設 OFF）：返場時若該 speaker 有 shareable
-        callback 就講出來，取代一般點名。回 True = 講了（呼叫端跳過點名）。
-
-        peek（不移除）→ TTS → 成功才 consume（idempotent，失敗留著下次重投）。
-        任何錯誤都 return False 退回一般點名，不讓 callback 路徑壞掉進場流程。
-        """
-        if not is_join_callback_enabled():
-            return False
-        try:
-            mem = self.bot.router.memory
-            item = mem.peek_shareable_callback(speaker)
-            if not item:
-                return False
-            line = format_callback_line(item.get("text", ""))
-            if not line:
-                return False
-            # 🚦 [TTS Gate] callback 7s 上限，超過在符號處截斷（template + text 容易爆）
-            from tts_length_policy import truncate_for_tts
-            gated_line, was_cut = truncate_for_tts(
-                line, "callback", self.bot.tts_engine.get_estimated_duration
-            )
-            if was_cut:
-                logger.info(f"🚦 [TTS Gate] callback 超 7s 截斷: '{line}' → '{gated_line}'")
-                line = gated_line
-            self.stt_logger.info(f"[BOT返場callback→{speaker}] {line}")
-            await self.play_tts(line, already_in_channel=True, silent_during_stream=True)
-            mem.consume_callback(speaker, item)   # 成功才移除
-            self.last_proactive_time = time.time()
-            return True
-        except Exception as e:
-            logger.warning(f"⚠️ [Callback] 返場投遞失敗，退回一般點名: {e}")
-            return False
 
     async def _confirmation_checker_loop(self):
         """靜默 30 秒後從佇列取出一個 pending confirmation，Marvin 主動詢問。"""

@@ -1,7 +1,7 @@
 """個人狀態驅動選歌（state pick）— 純函式部分。
 
-自動點歌輪到某人（spotlight）時，若他 48h 內有「狀態」（callback_queue 可分享項 /
-非 annoyed 的情緒高光，例如「感冒喉嚨痛」），讓 LLM 從**他自己的候選池**挑一首最貼合
+自動點歌輪到某人（spotlight）時，若他 48h 內有「狀態」（非 annoyed 的情緒高光，
+例如「感冒喉嚨痛」），讓 LLM 從**他自己的候選池**挑一首最貼合
 的歌＋一句關心口吻理由；這首排本輪第一首，DJ 口白用這句理由開場（memory_match mode）。
 
 隱私邊界（2026-09-18 使用者拍板）：當事人在場才用；健康/疲累可講但只能關心口吻；
@@ -22,14 +22,6 @@ MAX_TITLES = 15
 def collect_fresh_states(mem: dict, *, now: float, max_age_s: float = STATE_MAX_AGE_S) -> list[str]:
     """這個人近期可公開講的狀態文字（新到舊、去重、最多 MAX_STATES 條）。"""
     found: list[tuple[float, str]] = []
-
-    cbq = mem.get("callback_queue")
-    for item in cbq if isinstance(cbq, list) else []:
-        if not isinstance(item, dict) or item.get("shareable") is not True:
-            continue
-        ts, text = item.get("ts"), str(item.get("text") or "").strip()
-        if isinstance(ts, (int, float)) and now - ts <= max_age_s and text:
-            found.append((float(ts), text))
 
     highlights = mem.get("emotional_highlights")
     for h in highlights if isinstance(highlights, list) else []:

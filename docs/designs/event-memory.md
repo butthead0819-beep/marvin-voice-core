@@ -519,3 +519,17 @@ Lane A: S1 → S2 → S3（S2/S3 都碰 cogs/voice_controller.py，序列化）�
 - **VERDICT:** Eng Review ISSUES OPEN（問題皆已決策並轉成 T1~T5 實作任務）— eng review required 狀態以實作完成後 /review 收尾
 
 NO UNRESOLVED DECISIONS
+
+## Phase 2（2026-10-11 定案）
+
+事件過後追問當事人「後來怎麼樣」，取代舊版 callback_queue 主題關聯 callback（整套拔除，
+使用者 10/11 拍板；suki_memory 既有 callback_queue 資料留著不讀，不遷移）。
+
+- **管道雙軌**：stream 中（播歌）由 DJ callback mode 講（`cogs/music_cog_dj_lyrics.py::_present_callbacks`）；
+  normal mode 由 `MemoryCallbackAgent`（SpeakBus）講。兩條共用 `event_memory.pick_followups` 選候選，
+  共用 `event_followups` 表標記——每個事件只問一次，不管哪條管道先問到。
+- **條件**（`pick_followups`）：事件當天已過完（`event_date + 1天` 之後）、未超過
+  `FOLLOWUP_MAX_DAYS_AFTER`（14 天）、owner 在場、且在場者全部 ⊆ `heard_by`（沿用 Phase 1
+  `visible_events` 隱私濾網）。
+- **措辭**中性，不念地點、不念原話：「對了{owner}，你之前說{日期}要{activity}，後來怎麼樣？」
+  （不用「好玩嗎」——事件可能是看醫生或已取消）。

@@ -103,14 +103,3 @@ def test_vector_search_never_crosses_guild(tmp_path):
     vs.upsert("阿明", 123, "guild123 的秘密計畫", doc_id="g1")
     hits = vs.search("阿明", 999, "秘密計畫", top_k=5)
     assert hits == []
-
-
-# ── I4: shareable gate 反向斷言 ──────────────────────────────────────────────
-
-def test_non_shareable_callback_never_leaves_via_shareable_exit(tmp_path):
-    from suki_memory import MemoryManager
-    mem = MemoryManager(db_path=str(tmp_path / "m.db"))
-    mem.enqueue_callback("阿明", "私密：上次喝掛吐在超商門口", shareable=False)
-
-    assert mem.peek_shareable_callback("阿明") is None
-    assert all("喝掛" not in str(c) for c in mem.peek_all_shareable_callbacks("阿明"))

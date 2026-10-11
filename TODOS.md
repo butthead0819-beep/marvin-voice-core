@@ -4,15 +4,6 @@
 
 ## 🔜 接下來做
 
-### TODO: 事件記憶 Phase 2 — 事件過後主動追問，取代 commitment callback
-**What:** event_date 已過、當事人在場且在場者全部 ⊆ heard_by → 走 MemoryCallbackAgent 管道問「上個月去 X 露營好玩嗎？」；同時拔掉 `commitment_to_callback` → `callback_queue` 這條（使用者 2026-10-10 拍板「取代」）。
-**Why:** callback_queue 收進大量雜訊（去上廁所、查詢什麼是生綠塔），且 records/speak_outcomes.jsonl 中 MemoryCallbackAgent 得標 696 次只有 12 次真的講出口。
-**Pros:** 一條有日期、有活動、驗過原話的來源取代雜訊佇列；隱私規則與 Phase 1 問答共用。
-**Cons:** 行程取消/延期時問「好玩嗎」會尷尬，需要狀態判斷（例如之後窗口提到取消就標記）。
-**Context:** 設計與 eng review 見 `docs/designs/event-memory.md`（D1~D7）。Phase 1 只做「問了能答」，刻意不碰 callback_queue。舊的 MemoryCallbackAgent 升級項目（embedding / LLM 關聯 / 跨 speaker / LLM 潤飾 / 動態 TTL / post_utterance）都是針對 callback_queue，隨這項一起作廢；其中 post_utterance 即時接話若 Phase 2 上線後覺得 5s 太慢再另開。
-**Depends on:** Phase 1 ✅（PR#117 10/11 merged）+ `scripts/replay_event_extraction.py` 重播評估通過。
-**Priority:** P2
-
 ### TODO: 事件記憶 — owner 轉述歸屬錯
 **What:** A 轉述 B 的行程（「他下週要去露營」）時，事件 owner 被記成 A。
 **Context:** Phase 1 上線時已知未修（見記憶 project_event_memory_phase1）。Phase 2 會依 owner 主動追問，歸屬錯會變成問錯人，建議 Phase 2 之前或一起修。

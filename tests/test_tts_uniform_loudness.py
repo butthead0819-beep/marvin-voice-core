@@ -358,7 +358,6 @@ async def test_delayed_player_greeting_never_touches_tts_gain():
     cog.departure_stats.record_departure = AsyncMock()
     cog.bot.router = MagicMock()
     cog.bot.router.generate_player_greeting = AsyncMock(return_value="測試點名台詞")
-    cog._maybe_speak_join_callback = AsyncMock(return_value=False)
     cog._send_mood_sticker = AsyncMock()
     cog.handle_dismiss = AsyncMock()
     cog.active_text_channel = MagicMock()

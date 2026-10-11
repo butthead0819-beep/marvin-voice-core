@@ -612,9 +612,7 @@ class ProactiveSocialMixin:
             msg = f"{member.display_name}，你回來啦"
             self.stt_logger.info(f"[BOT回台→{member.display_name}] {msg}")
             await self.speak(msg, proactive=True, kind=SpeakKind.JOIN_GREETING)
-        # 🔔 [T3 返場 callback]（flag-gated, 預設 OFF）：有 shareable callback 就講
-        # callback 取代一般點名（XOR — 一次 join 只一個主動發言）。flag off → 退回原點名。
-        elif not await self._maybe_speak_join_callback(member.display_name):
+        else:
             # 🚀 [Memory Injection] 呼叫大腦生成專屬嘲諷／動態押韻招呼
             # stream_mode 中走 hotswap 注入發聲（≤30 字才通過閘）
             msg = await self.bot.router.generate_player_greeting(
