@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 from persona_loader import load_dj_styles
 from joke_examples import format_joke_examples_block, JOKE_TYPES
@@ -25,9 +26,25 @@ DJ_MATERIAL_GUARD = (
 )
 
 DJ_NAMING_GUARD = (
-    "**掛名只能照脈絡**：只有脈絡明講「點播者」或「理由」裡出現的人才能提名字，"
-    "絕不自己指定這首是誰點的、誰想聽的——掛錯名比不掛名傷。"
+    "**掛名只能照脈絡**：只有「點播來源」寫「親自點的」才能說是那個人點的；"
+    "寫「Marvin 自動選歌」時沒有人點播，只能說「X 常聽」「放給 X」，"
+    "任何「點」的說法（點的、點過、又點、點名要聽）都不准——掛錯名比不掛名傷。"
 )
+
+# autopilot 口白不准講成有人點播（10/12 使用者定：autopilot 只准「X 常聽／放給 X」）。
+# 比對前先清空《》內歌名、保留書名號（例：《命運點歌》不算，「X點的《Y》」仍算）。
+_REQUEST_CLAIM_RE = re.compile(
+    r"點播|點名|點歌|點過(?!不)|點了(?:這|那|[0-9一二三兩幾]+次)|點這首|點那首|又點(?!頭)"
+    r"|常點|愛點|都點|再點|剛點|剛才點|[你他她]們?點(?!頭|子)"
+    r"|(?<![0-9一二三四五六七八九十兩幾半])點的(?:歌|《|這首|那首)|點給"
+)
+
+
+def claims_request(text: str) -> bool:
+    """口白是否把歌講成「有人點的」。autopilot 串場命中就不合格（見 music_cog_dj_lyrics）。"""
+    stripped = re.sub(r"《[^》]*》", "《》", text or "")
+    return bool(_REQUEST_CLAIM_RE.search(stripped))
+
 
 DJ_MEMORY_CLAIM_GUARD = (
     "**不考驗聽眾記憶**：聽眾自己聽過什麼、記不記得，只有他們自己知道——"

@@ -179,7 +179,7 @@ def find_song_social_affinity(
             req_cnt = (song.get("requesters") or {}).get(m, 0)
             if req_cnt > 0:
                 if is_bot:
-                    return f"在場的 {m} 常聽/點過這首"
+                    return f"在場的 {m} 常聽這首"
                 return f"這首 {requester} 常聽，在場的 {m} 也常聽/點過"
             # 按讚
             if m in (song.get("likes") or {}):

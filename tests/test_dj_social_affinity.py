@@ -150,7 +150,7 @@ def test_social_bridge_when_requester_is_marvin_autopilot():
     )
     assert affinity is not None
     assert "Marvin" not in affinity
-    assert affinity == "在場的 Bob 常聽/點過這首"
+    assert affinity == "在場的 Bob 常聽這首"
 
 
 def test_recency_skipped_when_requester_is_marvin_autopilot():
