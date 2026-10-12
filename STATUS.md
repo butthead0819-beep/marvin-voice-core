@@ -23,7 +23,7 @@
 - IntentBus 意圖 agent；同一人先來後到、不同人並行（`MARVIN_PER_SPEAKER_QUEUE=1`）。2026-10-08 起意圖判斷以 LLM 為主，新 agent 必填 manifest 描述；網路查詢類問題走 Gemini grounded 搜尋
 - 聽不懂的指令用原始語音送 Gemini 再判斷（Audio Rescue，`MARVIN_INTENT_RESCUE_MODE=audio`）
 - 聊天回應：Groq → Gemini 串流；LLM Bus（Groq、Gemini 免費、Mistral、Together、OpenRouter 輪替 + Gemini 付費兜底）。使用者聽得到的生成排除 Mistral 小模型
-- TTS：edge-tts → macOS `say` 備援；全部講話統一響度（約 −14 LUFS）＋ mixer 限幅；TTS／音樂音量平衡可在播放控制台調
+- TTS：edge-tts → Azure Speech F0（同聲音，2026-10-12 起；edge 回 401/403 時斷路 10 分鐘直接走 Azure）→ macOS `say` 備援；全部講話統一響度（約 −14 LUFS）＋ mixer 限幅；TTS／音樂音量平衡可在播放控制台調
 - 同意機制（`/marvin_optin`、`/marvin_optout`）
 - 人格固定一套 preset（2026-10-09 拔除憂鬱指數、DNA 突變、每日人格排班）
 
@@ -100,6 +100,7 @@
 | 🟠10 | 事件記憶抽取雜訊：STT 糊句被抽成事件、對馬文的指令被當成事件 | 9/29 重播 | 拼圖制（湊齊 who+what+when）擋掉一部分，觀察中 |
 | 🟠11 | STT 全 bot 一條 `Semaphore(1)`（另有喚醒專用一條） | `discord_voice_engine.py:812` | 人一多排隊延遲上升 |
 | 🟠12 | DJ 口白零星編造（「店裡」）、歌名寫錯、新聞同事件不同媒體重複講 | `records/dj_narration.jsonl` 10/11 | 未處理 |
+| 🟠12b | edge-tts 被微軟拒絕（403，上游 rany2/edge-tts#490 未修）：目前全走 Azure 備援；Azure F0 每月 50 萬計費字元（中文 ×2），Marvin 月用量約 55 萬，可能月底被擋退回 `say` | `tts_engine.py`、HeartbeatProbe 10/12 10:54 | 等上游修好升級 edge-tts |
 | 🟡13 | `macos_stt_bin`（v1，喚醒偵測用）沒進 git、也沒有寫下編譯指令 | DEPENDENCIES.md §3 | 換機器會缺喚醒偵測 |
 | 🟡14 | `music_memory.json` 沒有檔案鎖，長跑腳本與 bot 同時寫會互蓋 | 營運筆記 | 口味資料遺失 |
 | 🟡15 | 冷場話題的 LLM 失敗時，fallback 字串「我想不到好話題，等一下再試」也會被念出來 | `topic_generator.py:16,102` | 未處理 |
