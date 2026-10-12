@@ -11,10 +11,20 @@ import hashlib
 import time
 import io
 import wave
+import aiohttp
 from array import array
 from xml.sax.saxutils import escape as xml_escape
 
 logger = logging.getLogger(__name__)
+
+_EDGE_BREAKER_S = 600.0
+_AZURE_BREAKER_S = 600.0
+_AZURE_TIMEOUT_S = 15.0
+
+
+def _is_edge_blocked(e: BaseException) -> bool:
+    """微軟拒絕連線（401/403）＝驗證機制變了，短時間內重試無用。"""
+    return isinstance(e, aiohttp.WSServerHandshakeError) and e.status in (401, 403)
 
 # 🎭 [Emotion] edge-tts 沒有 SSML style/express-as 可用（Communicate 只吃
 # rate/pitch/volume；zh-TW-YunJheNeural 在 Azure 語音清單裡也沒有 StyleList），
@@ -87,7 +97,7 @@ class SukiTTS:
     """
     Suki 專屬神經語音引擎 (Operation Neural Voice)
     採用 Microsoft Edge TTS，內建傲嬌人格微調與旁白過濾。
-    實作三層容錯架構 (Primary -> Secondary -> macOS Native Fallback)
+    實作四層容錯架構 (Primary -> Secondary -> Azure -> macOS Native Fallback)
     """
     def __init__(self, voice="zh-TW-YunJheNeural", rate="-20%", pitch="-15Hz"):
         self.voice = voice
@@ -97,6 +107,8 @@ class SukiTTS:
         self._english_voice = "en-GB-RyanNeural"
         self._last_prewarm = 0.0  # on-wake 連線預熱節流（monotonic）
         self._installed_voices_cache = None  # macOS say 聲音清單快取（首次列舉後填）
+        self._edge_down_until = 0.0  # edge-tts 斷路器解除時間（monotonic）
+        self._azure_down_until = 0.0  # Azure 斷路器解除時間（monotonic）
         os.makedirs(self.temp_dir, exist_ok=True)
 
     _PREWARM_THROTTLE_S = 5.0
@@ -114,6 +126,8 @@ class SukiTTS:
         if now - self._last_prewarm < self._PREWARM_THROTTLE_S:
             return
         self._last_prewarm = now
+        if time.monotonic() < self._edge_down_until:
+            return
         try:
             comm = edge_tts.Communicate(
                 text="嗯", voice=self.voice, rate=self.rate, pitch=self.pitch,
@@ -272,11 +286,57 @@ class SukiTTS:
             logger.error(f"❌ [TTS] macOS say 子進程異常: {e}")
             return False
 
+    async def _stream_azure(self, text: str, voice: str, rate: str, pitch: str, volume: str = None):
+        """Azure Speech REST 備援（F0 免費層）。失敗一律 fail-open，不丟例外。"""
+        key = os.getenv("AZURE_SPEECH_KEY", "").strip()
+        region = os.getenv("AZURE_SPEECH_REGION", "").strip()
+        if not key or not region:
+            return
+        if time.monotonic() < self._azure_down_until:
+            return
+
+        lang = "-".join(voice.split("-")[:2])
+        vol_attr = f' volume="{volume}"' if volume else ""
+        ssml = (
+            '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+            f'xml:lang="{lang}"><voice name="{voice}">'
+            f'<prosody rate="{rate}" pitch="{pitch}"{vol_attr}>{xml_escape(text)}</prosody>'
+            '</voice></speak>'
+        )
+        url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
+        headers = {
+            "Ocp-Apim-Subscription-Key": key,
+            "Content-Type": "application/ssml+xml",
+            "X-Microsoft-OutputFormat": "audio-24khz-48kbitrate-mono-mp3",
+            "User-Agent": "marvin-voice-bot",
+        }
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=_AZURE_TIMEOUT_S)) as session:
+                async with session.post(url, headers=headers, data=ssml) as resp:
+                    status = resp.status
+                    body = await resp.read()
+        except Exception as e:
+            logger.warning(f"⚠️ [TTS] Azure 備援請求異常: {e}")
+            return
+
+        if status in (401, 403, 429):
+            self._azure_down_until = time.monotonic() + _AZURE_BREAKER_S
+            logger.warning(f"⚠️ [TTS] Azure 回 {status}（額度/金鑰），{int(_AZURE_BREAKER_S/60)} 分鐘內跳過 Azure")
+            return
+
+        if status != 200 or not body:
+            logger.warning(f"⚠️ [TTS] Azure 備援失敗 status={status} bytes={len(body)}")
+            return
+
+        logger.info(f"🔷 [TTS] Azure 備援 ok chars={len(text)} bytes={len(body)}")
+        for i in range(0, len(body), 4096):
+            yield body[i:i + 4096]
+
     async def stream_audio(self, text: str, voice: str = None, rate: str = None, pitch: str = None, volume: str = None, force_macos: bool = False):
         """
-        [Operation Hyper-Stream] 
+        [Operation Hyper-Stream]
         將文字轉為音訊串流 (Async Generator)，直接回傳音訊 chunk。
-        支援三層容錯架構 (Primary -> Secondary -> macOS Native Fallback)
+        支援四層容錯架構 (Primary -> Secondary -> Azure -> macOS Native Fallback)
         """
         processed_text = self._clean_text(text)
         if not processed_text:
@@ -316,23 +376,27 @@ class SukiTTS:
         # --- 第二路徑：Primary Edge TTS ---
         _vol_kw = {"volume": volume} if volume is not None else {}
         success = False
-        try:
-            comm = edge_tts.Communicate(text=processed_text, voice=v, rate=r, pitch=p, **_vol_kw)
-            _audio_chunks = 0
-            async for chunk in comm.stream():
-                if chunk["type"] == "audio":
-                    yield chunk["data"]
-                    _audio_chunks += 1
-            if _audio_chunks == 0:
-                # edge-tts 完成但未回傳任何 audio — 視為靜默失敗，走 fallback
-                logger.warning(f"⚠️ [TTS Stream] Primary ({v}) 零 audio chunk，啟動 Secondary 備援...")
-            else:
-                success = True
-        except Exception as e:
-            logger.error(f"❌ [TTS Stream Error] Primary ({v}) 失敗: {e}")
+        if time.monotonic() >= self._edge_down_until:
+            try:
+                comm = edge_tts.Communicate(text=processed_text, voice=v, rate=r, pitch=p, **_vol_kw)
+                _audio_chunks = 0
+                async for chunk in comm.stream():
+                    if chunk["type"] == "audio":
+                        yield chunk["data"]
+                        _audio_chunks += 1
+                if _audio_chunks == 0:
+                    # edge-tts 完成但未回傳任何 audio — 視為靜默失敗，走 fallback
+                    logger.warning(f"⚠️ [TTS Stream] Primary ({v}) 零 audio chunk，啟動 Secondary 備援...")
+                else:
+                    success = True
+            except Exception as e:
+                logger.error(f"❌ [TTS Stream Error] Primary ({v}) 失敗: {e}")
+                if _is_edge_blocked(e):
+                    self._edge_down_until = time.monotonic() + _EDGE_BREAKER_S
+                    logger.warning(f"🔌 [TTS] edge-tts 被微軟拒絕（{e.status}），{int(_EDGE_BREAKER_S/60)} 分鐘內跳過 edge 直接走備援")
 
         # --- 第三路徑：Secondary Edge TTS ---
-        if not success:
+        if not success and time.monotonic() >= self._edge_down_until:
             await asyncio.sleep(0.5)
             try:
                 # 使用備援語音（中文重試同聲音，0.5s 後暫時性失敗通常已恢復）
@@ -349,10 +413,21 @@ class SukiTTS:
                     success = True
             except Exception as e:
                 logger.error(f"❌ [TTS Stream Error] Secondary 失敗: {e}")
+                if _is_edge_blocked(e):
+                    self._edge_down_until = time.monotonic() + _EDGE_BREAKER_S
+                    logger.warning(f"🔌 [TTS] edge-tts 被微軟拒絕（{e.status}），{int(_EDGE_BREAKER_S/60)} 分鐘內跳過 edge 直接走備援")
 
-        # --- 第四路徑：Ultimate Fallback (macOS Native) ---
+        # --- 第四路徑：Azure Speech 備援 ---
         if not success:
-            logger.warning(f"🚨 [TTS] edge-tts 雙層失敗，啟動 macOS say 終極備援（voice={self.voice}，請確認 edge-tts rate limit）")
+            _az_chunks = 0
+            async for chunk in self._stream_azure(processed_text, v, r, p, volume):
+                yield chunk
+                _az_chunks += 1
+            success = _az_chunks > 0
+
+        # --- 第五路徑：Ultimate Fallback (macOS Native) ---
+        if not success:
+            logger.warning(f"🚨 [TTS] edge-tts 與 Azure 都失敗，啟動 macOS say 終極備援（voice={self.voice}）")
             async for chunk in _yield_macos_say(processed_text):
                 yield chunk
 
