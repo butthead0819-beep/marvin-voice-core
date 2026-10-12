@@ -18,8 +18,9 @@ Handler：
   radio_mode  → 調 controller.radio_volume（_radio_volume_fade_loop 即時觀察）
   mute → 設為 VOL_MIN
 
-  TTS 音量跟著同步：全域 mixer._tts_gain 設成跟 stream_volume/radio_volume 一樣的值
-  （2026-08-25 起連動；2026-08-26 改成直接對齊同一個值，而非比例衰減）。
+  出口音量統一管音樂+TTS：mixer.set_volume() 是 Discord 出口層，調 stream_volume/
+  radio_volume 時直接同步設成同一個值（不再對 TTS 另外做響度補償，2026-10 統一
+  輸出增益架構後 TTS 相對增益固定 1.0）。
 
 Ack：文字頻道 ch.send() + play_tts 雙保險。play_tts 常被 [TTS Silence Gate]
      （使用者仍在講話）靜默吞掉，音量調整因此完全沒有回饋、使用者以為指令沒被
@@ -34,41 +35,22 @@ from typing import Awaitable, Callable
 from intent_agents.base import DeclarativeIntentAgent, IntentSchema
 from intent_bus import IntentContext
 
-import os
-
 logger = logging.getLogger(__name__)
 
 
-def calculate_tts_gain(music_volume: float) -> float:
-    """計算對齊音樂音量的 TTS 增益，並提供響度補償（預設 1.3x，上限 1.0）。
-
-    音樂（YouTube / MP3）經專業壓限母帶處理（-14 LUFS），而 TTS 語音（-20 LUFS）
-    天生動態大、響度弱。套用 1.3x 補償並保證不低於音樂音量，確保 TTS 至少與音樂一樣大聲。
-    可透過環境變數 MARVIN_TTS_BOOST 覆蓋倍率。
-    """
-    try:
-        boost = float(os.getenv("MARVIN_TTS_BOOST", "1.3"))
-    except ValueError:
-        boost = 1.3
-    v = float(music_volume)
-    g = max(v, v * boost)
-    return round(min(1.0, g), 3)
-
-
 def sync_tts_gain(ctrl, value: float) -> None:
-    """把全域 mixer._tts_gain 設成帶有響度補償的音樂音量值。
+    """把 mixer 的 Discord 出口音量設成新的音樂音量值。
 
-    語音指令（VolumeAgent）與控制面板按鈕（voice_views.py）共用同一份邏輯，
-    確保音樂調整時 TTS 跟著連動，且始終維持至少與音樂一樣大聲。
+    語音指令（VolumeAgent）與控制面板按鈕（voice_views.py）共用同一份邏輯。出口層
+    統一管音樂+TTS（兩者在內容層已各自到參考準位，TTS 相對增益固定 1.0），調音量
+    不用再對 TTS 另外做響度補償。
     """
     mixer = getattr(ctrl, "_mixer", None)
     if mixer is None:
         return
     try:
-        old_gain = float(getattr(mixer, "_tts_gain", 1.0))
-        new_gain = calculate_tts_gain(value)
-        mixer._tts_gain = new_gain
-        logger.info(f"[Volume] TTS gain 同步音樂音量 {old_gain:.2f} → {new_gain:.2f} (base={value:.2f})")
+        mixer.set_volume(float(value))
+        logger.info(f"[Volume] Discord 出口音量 → {float(value):.2f}（音樂+TTS 同一出口）")
     except Exception:
         logger.exception("[Volume] tts gain sync failed")
 

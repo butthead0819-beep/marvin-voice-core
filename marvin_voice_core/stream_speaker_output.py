@@ -18,33 +18,24 @@ import asyncio
 
 import numpy as np
 
-CAR_MAKEUP_GAIN_CAP = 10.0
-
-
-def car_makeup_gain(music_volume: float, cap: float = CAR_MAKEUP_GAIN_CAP) -> float:
-    """車機輸出補償增益：車上音量＝min(100%, mixer音量×cap)。
-    （Discord 預設 0.10 → 車上 100%；調小聲照比例變小；調大聲封頂 100% 不破音）"""
-    v = float(music_volume)
-    if v <= 0:
-        return cap
-    return min(cap, 1.0 / v)
-
 
 class StreamSpeakerOutput:
     def __init__(self, loop: asyncio.AbstractEventLoop, *,
                  rate: int = 48000, channels: int = 2, bits: int = 16,
-                 mono_downmix: bool = False, gain_fn=None):
+                 mono_downmix: bool = False):
         """mono_downmix=True：write() 收到的 stereo s16 frame 先平均左右聲道降成 mono
         再廣播（見 music_request_latency_anatomy 系列 debug——車 puck 只有一顆喇叭，
         傳 stereo 純粹浪費頻寬；離家用 4G 走 Tailscale Funnel 時 CPU 軟體 TLS 解密量
         減半，直接换 throughput 餘裕）。channels 屬性同步報 1，給 /audio_stream
-        的 X-Audio-Channels 標頭對齊。"""
+        的 X-Audio-Channels 標頭對齊。
+
+        車機出口固定 100%（見統一輸出增益架構：車機旁聽的是 mixer 出口層已經乘過
+        car_volume=1.0 的那份，不在這裡另外補償）。"""
         self._loop = loop
         self.rate = rate
         self.channels = 1 if mono_downmix else channels
         self.bits = bits
         self._mono_downmix = mono_downmix
-        self._gain_fn = gain_fn
         self._subscribers: set[asyncio.Queue] = set()
 
     def write(self, frame: bytes) -> None:   # 泵執行緒呼叫
@@ -59,14 +50,6 @@ class StreamSpeakerOutput:
         self._loop.call_soon_threadsafe(self._broadcast, None)
 
     def _broadcast(self, frame) -> None:   # loop 執行緒
-        if frame is not None and self._gain_fn is not None:
-            try:
-                g = float(self._gain_fn())
-            except Exception:
-                g = 1.0
-            if g != 1.0:
-                samples = np.frombuffer(frame, dtype="<i2").astype(np.float32) * g
-                frame = np.clip(samples, -32768, 32767).astype("<i2").tobytes()
         for q in list(self._subscribers):
             try:
                 q.put_nowait(frame)

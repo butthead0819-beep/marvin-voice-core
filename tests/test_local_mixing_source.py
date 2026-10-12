@@ -1029,18 +1029,20 @@ def test_balance_factors_attenuate_only():
 
 
 def test_balance_scales_music_and_tts_layers():
-    # balance=0.6（TTS 60% : Music 40%）→ music ×0.8、TTS ×1.0（不放大）
+    # balance=0.6（TTS 60% : Music 40%）→ music ×0.8、TTS ×1.0（不放大）。volume（出口音量）
+    # 現在是混音+限幅之後才套用在整個輸出上，不再疊在個別層的增益裡（統一輸出增益架構）。
     mix = LocalMixingAudioSource(seed=7, volume=0.5, tts_gain=0.5, duck_level=1.0)
     mix.set_balance(0.60)
     mix.set_music_source(_FakeMusic(value=0.4, frames=1))
     mix.push_tts(_f32_frame(0.3))
     out = np.frombuffer(mix.read(), dtype=np.int16)
 
-    m_scaled = am.apply_gain(_f32_frame(0.4), 0.5 * 0.8 * 1.0)
-    t_scaled = am.apply_gain(_f32_frame(0.3), 0.5 * 1.0)
+    m_scaled = am.apply_gain(_f32_frame(0.4), 1.0 * 0.8 * 1.0)  # music_gain(預設1.0) * balance * duck
+    t_scaled = am.apply_gain(_f32_frame(0.3), 0.5 * 1.0)         # tts_gain * balance
     expected_mixed = am.mix_layers([m_scaled, t_scaled])
     expected_mixed, _, _ = am.limit_frame(expected_mixed, 1.0)
-    expected = am.to_s16(am.tpdf_dither(expected_mixed, np.random.default_rng(7)))
+    expected_out = am.apply_gain(expected_mixed, 0.5)  # 出口音量（volume=0.5）在限幅器之後套用
+    expected = am.to_s16(am.tpdf_dither(expected_out, np.random.default_rng(7)))
     assert np.array_equal(out, expected)
 
 
@@ -1129,11 +1131,14 @@ def test_fadeout_source_read_exception_is_contained_main_keeps_playing():
     assert _amp(out) == pytest.approx(0.3 * 32768, rel=0.01)
 
 
-def test_fadeout_uses_volume_snapshot_not_later_set_volume():
+def test_fadeout_uses_music_gain_snapshot_not_later_set_music_gain():
+    # 淡出槽的增益快照現在來自內容層 _music_gain_cur（跟出口音量 set_volume 無關，見統一
+    # 輸出增益架構）；之後再 set_music_gain 不會回頭影響已經在淡出的槓。volume 維持預設
+    # 1.0（no-op），確保這裡驗的是 music_gain 快照本身，不被出口音量干擾。
     mix = LocalMixingAudioSource(seed=1, volume=1.0)
     mix.set_music_source(_FakeMusic(value=0.5, frames=100))
     mix.begin_music_fadeout(0.1)
-    mix.set_volume(0.1, immediate=True)
+    mix.set_music_gain(0.1, immediate=True)
     assert _amp(mix.read()) == pytest.approx(0.5 * 32768, rel=0.01)
 
 

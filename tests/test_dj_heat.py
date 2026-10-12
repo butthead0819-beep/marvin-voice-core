@@ -10,7 +10,9 @@ from __future__ import annotations
 from dj_heat import (
     CONSUMED_MAX_AGE_S,
     DJ_HOT_UTTERANCE_COUNT,
+    DJ_HOT_UTTERANCE_COUNT_SOLO,
     TopicBank,
+    heat_snapshot,
     is_hot,
 )
 
@@ -28,13 +30,34 @@ def _alternating(n: int) -> list:
 
 # ── is_hot ───────────────────────────────────────────────────────────────
 
-def test_single_person_never_hot_even_with_many_utterances():
+def test_dj_hot_threshold_is_20():
+    assert DJ_HOT_UTTERANCE_COUNT == 20
+
+
+def test_dj_hot_threshold_solo_is_10():
+    assert DJ_HOT_UTTERANCE_COUNT_SOLO == 10
+
+
+def test_solo_speaker_ten_utterances_is_hot():
     entries = [_entry("大肚", f"訊息{i}", age_s=i) for i in range(10)]
+    assert is_hot(entries, n_online=1, now=NOW) is True
+
+
+def test_solo_speaker_nine_utterances_not_hot():
+    entries = [_entry("大肚", f"訊息{i}", age_s=i) for i in range(9)]
     assert is_hot(entries, n_online=1, now=NOW) is False
 
 
-def test_dj_hot_threshold_is_20():
-    assert DJ_HOT_UTTERANCE_COUNT == 20
+def test_solo_speaker_nine_plus_marvin_not_hot():
+    entries = [_entry("大肚", f"訊息{i}", age_s=i) for i in range(9)]
+    entries.append(_entry("Marvin", "a", 1))
+    entries.append(_entry("Marvin推薦", "b", 2))
+    assert is_hot(entries, n_online=1, now=NOW) is False
+
+
+def test_zero_online_not_hot_even_with_many_utterances():
+    entries = _alternating(30)
+    assert is_hot(entries, n_online=0, now=NOW) is False
 
 
 def test_two_online_threshold_recent_utterances_is_hot():
@@ -67,6 +90,23 @@ def test_utterances_outside_window_not_counted():
 def test_entries_not_list_is_not_hot():
     assert is_hot(None, n_online=5, now=NOW) is False
     assert is_hot("garbage", n_online=5, now=NOW) is False
+
+
+# ── heat_snapshot ────────────────────────────────────────────────────────
+
+def test_heat_snapshot_two_online_hot():
+    entries = _alternating(20)
+    assert heat_snapshot(entries, n_online=2, now=NOW) == (20, 20, True)
+
+
+def test_heat_snapshot_solo_below_threshold():
+    entries = [_entry("大肚", f"訊息{i}", age_s=i) for i in range(9)]
+    assert heat_snapshot(entries, n_online=1, now=NOW) == (9, 10, False)
+
+
+def test_heat_snapshot_zero_online():
+    count, threshold, hot = heat_snapshot(_alternating(30), n_online=0, now=NOW)
+    assert (threshold, hot) == (0, False)
 
 
 # ── TopicBank：conversation mode 已用原句紀錄 ─────────────────────────────
