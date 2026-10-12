@@ -12,3 +12,7 @@ onnxruntime==1.26.0               # onnx_to_tflite_wakeword
 # onnx                            # onnx_to_tflite_wakeword
 # tensorflow                      # onnx_to_tflite_wakeword
 # openwakeword                    # verify_wake_model / wake_over_music_poc
+
+# voice_embed_bench（語音向量指令比對 benchmark，venv 未安裝、版本待實測確認）：
+# sentence-transformers[audio]>=6.1.0
+# torch
