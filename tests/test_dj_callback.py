@@ -133,7 +133,7 @@ async def test_dj_interjection_callback_context_and_consume(tmp_path):
     ctx = call.kwargs.get("context", "")
     assert "【你熟悉他的生活】他之前說過要做的事：" in ctx
     assert "Alice 之前說要做伏地挺身" in ctx
-    assert "開場鉤子：點名順口關心這件事後來怎麼樣了" in ctx
+    assert "開場鉤子：叫他名字順口關心這件事後來怎麼樣了" in ctx
 
     # 驗證 mark_followed_up 被以正確 event_id 呼叫一次
     cog._event_store.mark_followed_up.assert_called_once()

@@ -71,11 +71,11 @@ async def test_returns_none_when_intimate_mode():
 
 
 @pytest.mark.asyncio
-async def test_returns_none_when_hot_and_no_short_text():
+async def test_returns_none_when_hot():
     cog = _make_cog()
     cog._dj_channel_is_hot = MagicMock(return_value=True)
     cog._vc = MagicMock(return_value=_make_vc())
-    result = await cog._maybe_play_dj_interjection({"text": "口白", "short_text": ""})
+    result = await cog._maybe_play_dj_interjection({"text": "口白"})
     assert result is None
 
 
@@ -99,21 +99,6 @@ async def test_returns_none_when_audio_path_plays_false(tmp_path):
     audio.write_bytes(b"x")
     result = await cog._maybe_play_dj_interjection({"text": "口白", "audio_path": str(audio)})
     assert result is None
-
-
-@pytest.mark.asyncio
-async def test_returns_short_when_hot_and_short_text_plays(tmp_path):
-    cog = _make_cog()
-    cog._dj_channel_is_hot = MagicMock(return_value=True)
-    short_audio = tmp_path / "short.opus"
-    short_audio.write_bytes(b"x")
-    cog.bot.tts_engine.generate_audio = AsyncMock(return_value=str(short_audio))
-    vc = _make_vc(play_dj_result=True)
-    cog._vc = MagicMock(return_value=vc)
-    result = await cog._maybe_play_dj_interjection(
-        {"text": "原口白", "audio_path": "/tmp/orig.opus", "short_text": "下一首，夜曲"}
-    )
-    assert result == "short"
 
 
 @pytest.mark.asyncio

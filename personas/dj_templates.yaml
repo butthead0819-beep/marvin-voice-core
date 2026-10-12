@@ -32,15 +32,15 @@ autopilot_phrases:
   long_tail:
   # long_tail：在場者點過但有陣子沒播 → 講「重新聽」的理由
     - "{who}有陣子沒聽《{title}》了，再放一次"
-    - "{who}點過的《{title}》，有陣子沒聽了"
+    - "{who}常聽的《{title}》，有陣子沒聽了"
   discovery:
   # discovery：沒人點過的新歌；不斷言使用者沒聽過，只講「新歌、風格相近」
     - "{who}會喜歡這首新歌《{title}》"
     - "給{who}一首風格相近的新歌，《{title}》"
   spotlight_anchor:
-  # spotlight cover：以 {who} 常點的 {anchor} 為錨
+  # spotlight cover：以 {who} 常聽的 {anchor} 為錨
     - "{who}愛{anchor}，也會喜歡這首《{title}》"
-    - "{who}常點{anchor}，換首《{title}》"
+    - "{who}常聽{anchor}，換首《{title}》"
 
 quick_segue:
   default:

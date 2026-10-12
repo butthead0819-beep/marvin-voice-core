@@ -15,7 +15,7 @@ def test_render_news_with_context_names_who_and_keeps_title():
     lines = _render_news("Berlingo出露營套件", materials)
     assert "showay喜歡露營車" in lines[0]
     assert "Berlingo出露營套件" in lines[0]
-    assert "點名" in lines[1]
+    assert "叫他名字" in lines[1]
     assert "只能講標題裡寫的事" in lines[1]
 
 

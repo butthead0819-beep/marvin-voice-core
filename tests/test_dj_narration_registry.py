@@ -20,7 +20,7 @@ def test_apply_side_effects_is_not_a_coroutine_function():
 
 def test_modes_registry_has_exactly_expected_names():
     expected = {
-        "revival", "memory_match", "song", "life", "interest",
+        "memory_match", "song", "life", "interest",
         "news", "callback", "activity", "guide",
         "conversation", "perspective", "atmosphere", "quick", "reason",
     }
@@ -30,7 +30,7 @@ def test_modes_registry_has_exactly_expected_names():
 def test_tts_emotion_for_matches_known_table():
     upbeat = {"life", "interest", "activity", "news"}
     calm = {"atmosphere"}
-    normal = {"quick", "reason", "song", "conversation", "perspective", "memory_match", "revival", "guide", "callback"}
+    normal = {"quick", "reason", "song", "conversation", "perspective", "memory_match", "guide", "callback"}
     for mode in upbeat:
         assert tts_emotion_for(mode) == "upbeat", mode
     for mode in calm:
@@ -38,14 +38,6 @@ def test_tts_emotion_for_matches_known_table():
     for mode in normal:
         assert tts_emotion_for(mode) == "normal", mode
     assert tts_emotion_for("short") == "normal"
-
-
-def test_revival_takes_priority_over_memory_match_and_does_not_cool_down(tmp_path):
-    store = TopicCooldownStore(path=str(tmp_path / "cd.json"))
-    materials = DJMaterials(revival_lines=["a"], memory_evidence="證據")
-    topic, mode = choose_mode(materials, store)
-    assert (topic, mode) == (None, "revival")
-    assert store.is_cool("證據"), "revival 命中不該連帶把 memory_evidence 標記冷卻"
 
 
 def test_apply_side_effects_conversation_partially_consumed(tmp_path):

@@ -398,6 +398,63 @@ def test_find_merge_target_same_as_valid():
     assert find_merge_target(ev, recent, time.time()) == 5
 
 
+# ═══════════════════════════════════════════════════════
+# validate_event — 後續關心（你/他）併回既有事件（拼圖制）
+# ═══════════════════════════════════════════════════════
+
+_FOLLOWUP_TRANSCRIPT = (
+    "[15:40:52] showay: 你離開醫院了嗎\n"
+    "[15:41:20] 狗與露: 因為可能病房沒辦法做那麼多人吧"
+)
+_FOLLOWUP_HEARD_BY = ["showay", "狗與露", "weakgogo"]
+
+
+def test_validate_event_followup_subject_ni_merges_into_recent_owner():
+    recent = [_recent_row(5, owner="狗與露")]
+    raw = {"owner": "showay", "activity": "醫院", "subject": "你", "same_as": 5}
+    ev = validate_event(raw, _FOLLOWUP_HEARD_BY, _FOLLOWUP_TRANSCRIPT, time.time(), None, recent)
+    assert ev is not None
+    assert ev["owner"] == "狗與露"
+    assert ev["update_only"] is True
+    assert ev["same_as"] == 5
+
+
+def test_validate_event_followup_subject_ta_merges_into_recent_owner():
+    recent = [_recent_row(5, owner="狗與露")]
+    raw = {"owner": "showay", "activity": "醫院", "subject": "他", "same_as": 5}
+    ev = validate_event(raw, _FOLLOWUP_HEARD_BY, _FOLLOWUP_TRANSCRIPT, time.time(), None, recent)
+    assert ev is not None
+    assert ev["owner"] == "狗與露"
+    assert ev["update_only"] is True
+
+
+def test_validate_event_followup_same_as_not_in_recent_dropped():
+    recent = [_recent_row(5, owner="狗與露")]
+    raw = {"owner": "showay", "activity": "醫院", "subject": "你", "same_as": 99}
+    assert validate_event(raw, _FOLLOWUP_HEARD_BY, _FOLLOWUP_TRANSCRIPT, time.time(), None, recent) is None
+
+
+def test_validate_event_followup_target_owner_not_present_dropped():
+    recent = [_recent_row(5, owner="狗與露")]
+    raw = {"owner": "showay", "activity": "醫院", "subject": "你", "same_as": 5}
+    heard_by = ["showay", "weakgogo"]
+    assert validate_event(raw, heard_by, _FOLLOWUP_TRANSCRIPT, time.time(), None, recent) is None
+
+
+def test_validate_event_followup_self_subject_without_same_as_not_update_only():
+    raw = {"owner": "showay", "activity": "醫院", "subject": "我", "same_as": None,
+           "quote": "你離開醫院了嗎"}
+    ev = validate_event(raw, _FOLLOWUP_HEARD_BY, _FOLLOWUP_TRANSCRIPT, time.time(), None, None)
+    assert ev is not None
+    assert ev["owner"] == "showay"
+    assert ev["update_only"] is False
+
+
+def test_validate_event_followup_no_recent_arg_dropped():
+    raw = {"owner": "showay", "activity": "醫院", "subject": "你", "same_as": 5}
+    assert validate_event(raw, _FOLLOWUP_HEARD_BY, _FOLLOWUP_TRANSCRIPT, time.time(), None, None) is None
+
+
 def test_find_merge_target_same_as_other_owner_falls_back():
     recent = [_recent_row(5, owner="狗與露")]
     ev = {"owner": "showay", "activity": "露營", "event_date": None, "same_as": 5}
@@ -632,6 +689,71 @@ async def test_extract_and_store_invalid_owner_dropped():
     stats = await extract_and_store(router, store, 1, "逐字稿", ["showay"], time.time())
     assert stats["dropped"] == 1
     assert store.list_guild(1, 0) == []
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_followup_subject_merges_into_existing_event():
+    store = EventStore(":memory:")
+    window_end = time.time()
+    first = _events_json([{"owner": "狗與露", "activity": "住院", "place": None, "date": None,
+                           "date_text": "", "participants": [], "quote": "", "same_as": None,
+                           "subject": "狗與露"}])
+    router1 = _router_with([first])
+    await extract_and_store(router1, store, 1, "逐字稿", ["狗與露"], window_end)
+    existing_id = store.list_guild(1, 0)[0]["id"]
+
+    transcript = "[15:40:52] showay: 你離開醫院了嗎"
+    second = _events_json([{"owner": "showay", "activity": "醫院", "place": None, "date": None,
+                            "date_text": "", "participants": [], "quote": "你離開醫院了嗎",
+                            "same_as": existing_id, "subject": "你"}])
+    router2 = _router_with([second])
+    stats = await extract_and_store(router2, store, 1, transcript, ["showay", "狗與露"], window_end + 300)
+
+    assert stats["merged"] == 1
+    assert stats["added"] == 0
+    events = store.list_guild(1, 0)
+    assert len(events) == 1
+    assert events[0]["owner"] == "狗與露"
+    assert "你離開醫院了嗎" in events[0]["quotes"]
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_followup_same_as_not_in_recent_dropped_not_added():
+    store = EventStore(":memory:")
+    window_end = time.time()
+    content = _events_json([{"owner": "showay", "activity": "醫院", "place": None, "date": None,
+                             "date_text": "", "participants": [], "quote": "",
+                             "same_as": 999, "subject": "你"}])
+    router = _router_with([content])
+    stats = await extract_and_store(router, store, 1, "逐字稿", ["showay"], window_end)
+
+    assert stats["added"] == 0
+    assert stats["dropped"] == 1
+    assert store.list_guild(1, 0) == []
+
+
+@pytest.mark.asyncio
+async def test_extract_and_store_update_only_never_creates_even_if_merge_target_missing(monkeypatch):
+    """防禦：update_only 事件若 find_merge_target 沒找到目標（日後改壞），也不能新建成新 owner。"""
+    import event_memory
+    store = EventStore(":memory:")
+    window_end = time.time()
+    first = _events_json([{"owner": "狗與露", "activity": "住院", "place": None, "date": None,
+                           "date_text": "", "participants": [], "quote": "", "same_as": None,
+                           "subject": "狗與露"}])
+    await extract_and_store(_router_with([first]), store, 1, "逐字稿", ["狗與露"], window_end)
+    existing_id = store.list_guild(1, 0)[0]["id"]
+
+    monkeypatch.setattr(event_memory, "find_merge_target", lambda ev, recent, we: None)
+    second = _events_json([{"owner": "showay", "activity": "醫院", "place": None, "date": None,
+                            "date_text": "", "participants": [], "quote": "你離開醫院了嗎",
+                            "same_as": existing_id, "subject": "你"}])
+    stats = await extract_and_store(_router_with([second]), store, 1,
+                                    "[15:40:52] showay: 你離開醫院了嗎", ["showay", "狗與露"], window_end + 300)
+
+    assert stats["added"] == 0
+    assert stats["dropped"] == 1
+    assert len(store.list_guild(1, 0)) == 1
 
 
 @pytest.mark.asyncio

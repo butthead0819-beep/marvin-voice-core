@@ -389,7 +389,10 @@ class MusicTailDJMixin:
         self._start_music_preload(next_info)
 
         from dj_narration_orchestrator import autopilot_narration_focus
-        if autopilot_narration_focus(next_info) == "silent":
+        _hot = self._dj_channel_is_hot(self._vc())
+        if autopilot_narration_focus(next_info) == "silent" or _hot:
+            if _hot:
+                logger.info(f"🔥 [DJ Heat] 熱聊中，{title_next} 不講話直接 crossfade")
             _eff = duration - (cur_info.get('highlight_start_s') or 0.0)
             if _eff <= 0:
                 return
@@ -413,7 +416,7 @@ class MusicTailDJMixin:
 
 
     async def _crossfade_into_silent(self, cur_info: dict, next_info: dict, end_ts: float) -> None:
-        """🎚️ [Crossfade] 下一首是不講話的懷舊歌：等它預解碼好，在當前歌尾前 _XFADE_S 秒把當前歌
+        """🎚️ [Crossfade] 下一首不講話（懷舊歌或熱聊中）：等它預解碼好，在當前歌尾前 _XFADE_S 秒把當前歌
         搬進 mixer 淡出槽，下一首由 stream loop 照常接上並淡入（next_info['_xfade_in']）。
         預解碼在歌尾前 _XFADE_MIN_S 秒還沒好 / 失敗 / 歌已切換 → 放棄，照舊自然接歌。"""
         title_cur = cur_info.get('title', '?')
@@ -459,7 +462,7 @@ class MusicTailDJMixin:
         if not mixer.begin_music_fadeout(fade_s):
             next_info.pop('_xfade_in', None)
             return
-        logger.info(f"🎚️ [Crossfade] {title_cur} 淡出 {fade_s:.1f}s → 接懷舊歌 {title_next}（不講話）")
+        logger.info(f"🎚️ [Crossfade] {title_cur} 淡出 {fade_s:.1f}s → 接 {title_next}（不講話）")
 
     def _start_music_preload(self, info: dict) -> None:
         """[DJ Tail] 背景預解碼下一首整首音樂進記憶體，供 play_stream_song 換源時直接用
@@ -600,14 +603,13 @@ class MusicTailDJMixin:
             logger.warning(f"⚠️ [Seamless Skip] 背景 DJ 串場出錯: {e}")
 
     def _dj_channel_is_hot(self, vc) -> bool:
-        """播出前一刻判斷現場熱度；熱聊中順便把話題存進話題庫。失敗一律當不熱（fail-open）。"""
+        """播出前一刻判斷現場熱度。失敗一律當不熱（fail-open）。"""
         try:
             from dj_heat import is_hot
             conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
             entries = conv_buf.get_history() if conv_buf else []
             now = time.time()
             if is_hot(entries, len(vc.get_online_members()), now):
-                self._dj_heat_bank().snapshot(entries, now)
                 return True
         except Exception:
             pass
@@ -616,7 +618,7 @@ class MusicTailDJMixin:
     async def _maybe_play_dj_interjection(self, dj: dict | None) -> "str | None":
         """播放預先生成的 DJ 播報。有預渲染音訊則直接播檔案，否則即時串流。
 
-        回傳 None＝沒播出；"full"＝播了完整口白；"short"＝熱聊改唸短版
+        回傳 None＝沒播出；"full"＝播了完整口白
         （供呼叫端判斷要不要歸屬這段口白，見 _attach_narration）。"""
         if not dj:
             return None
@@ -633,22 +635,10 @@ class MusicTailDJMixin:
         if getattr(vc, '_intimate_mode', False):
             logger.info("[DJ Tail] 口白：_intimate_mode=True，這輪不放")
             return None
-        kind = "full"
-        # 🔥 [DJ Heat] 播出前一刻現場熱聊 → 改唸短版（只報歌名），沒有短版這輪不講
-        # （2026-09-30 使用者定：熱聊時素材最多但沒人在聽 DJ，該少講）。
         if self._dj_channel_is_hot(vc):
-            short = dj.get('short_text') or ''
-            if not short:
-                logger.info("🔥 [DJ Heat] 熱聊中、沒有短版，這輪不講")
-                return None
-            logger.info(f"🔥 [DJ Heat] 熱聊中，改唸短版：{short}")
-            text = short
-            audio_path = None
-            kind = "short"
-            try:
-                audio_path = await self.bot.tts_engine.generate_audio(short, emotion="normal")
-            except Exception as e:
-                logger.debug(f"[DJ Heat] 短版 TTS 失敗，改即時串流: {e}")
+            logger.info("🔥 [DJ Heat] 熱聊中，這輪不講")
+            return None
+        kind = "full"
         played = False
         with vc._protected_tts_window():
             if audio_path and os.path.exists(audio_path):

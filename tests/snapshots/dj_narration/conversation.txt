@@ -3,7 +3,7 @@ LLM_CALLED=True
 TTS_EMOTION=normal
 ---CONTEXT---
 歌曲：測試歌手 - 測試歌
-點播者：Alice
+點播來源：Alice 親自點的
 【你熟悉他的生活】頻道近期對話：
 Bob：「今天好累」
 Alice：「我也是」

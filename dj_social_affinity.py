@@ -163,6 +163,7 @@ def find_song_social_affinity(
     if mm is None or not info:
         return None
 
+    is_bot = (requester or "").startswith("Marvin")
     members = set(present_members or [])
     now = now_ts if now_ts is not None else time.time()
     songs = mm._data.get("songs", {})
@@ -177,6 +178,8 @@ def find_song_social_affinity(
             # 點播過
             req_cnt = (song.get("requesters") or {}).get(m, 0)
             if req_cnt > 0:
+                if is_bot:
+                    return f"在場的 {m} 常聽這首"
                 return f"這首 {requester} 常聽，在場的 {m} 也常聽/點過"
             # 按讚
             if m in (song.get("likes") or {}):
@@ -188,7 +191,7 @@ def find_song_social_affinity(
                 return f"在場的 {m} 曾記錄對這首歌的感受：{' / '.join(feelings[:2])}"
 
     # 2. 久別重逢（Recency）
-    if song and requester:
+    if song and requester and not is_bot:
         plays = [p for p in song.get("plays", []) if p.get("by") == requester]
         if plays:
             last_play = plays[-1].get("ts")

@@ -75,6 +75,7 @@ class EventRecallAgent(DeclarativeIntentAgent):
                 now = time.time()
                 present = present_speakers(ctx.speaker, self.ctrl.get_online_members())
                 events = await asyncio.to_thread(store.list_guild, guild_id, now - RETENTION_DAYS * 86400)
+                events = [e for e in events if e["event_date"] is not None]  # 拼圖制：who+what+when 湊齊才拿出來用
                 visible = visible_events(events, present)[:SELECT_CANDIDATE_LIMIT]
                 text = NOT_REMEMBER
                 if visible:

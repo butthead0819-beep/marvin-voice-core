@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
 
 from persona_loader import load_dj_templates
@@ -200,6 +201,19 @@ class MusicDJLyricsMixin:
             return "希望大家喜歡"
         return f"{requester} 點的"
 
+    @staticmethod
+    def _dj_source_line(requester: str) -> str:
+        """DJ prompt 的點播來源行：真人點播 vs autopilot 講清楚（10/12：autopilot 被 LLM 講成「X 點的」）。"""
+        requester = (requester or '').strip()
+        if not requester.startswith('Marvin'):
+            return f"點播來源：{requester} 親自點的"
+        m = re.fullmatch(r"Marvin推薦（為(.+)）", requester)
+        if m:
+            who = m.group(1)
+            return (f"點播來源：Marvin 自動選歌，沒有人點播；這首是挑給 {who} 的（{who} 常聽）。"
+                    f"只能說「{who} 常聽」「放給 {who}」，不准說成任何人點的")
+        return "點播來源：Marvin 自動選歌，沒有人點播，不准說成任何人點的"
+
     @classmethod
     def _autopilot_dj_phrase(cls, spotlight: str, clean_title: str, clean_artist: str,
                               lane: str = "", anchor: str = "") -> str:
@@ -234,18 +248,18 @@ class MusicDJLyricsMixin:
         explanation = info.get('_explanation')
         # 10/4 使用者：「幾週前播過 / 很久沒點」對聽眾沒意義 → DJ 素材不給任何時間理由
         if explanation and "週前" not in explanation:
-            return explanation
+            return explanation.replace("點過", "聽過").replace("點了", "聽了")
         who = info.get('_spotlight', '') or '大家'
         lane = info.get('_lane', '')
         if lane == 'group_resonance':
             return "這首是大家都有共鳴的歌"
         if lane == 'long_tail':
-            return f"這首是 {who} 點過的歌"  # 不講多久沒點，但人名要留著（掛名鐵則靠它）
+            return f"這首是 {who} 常聽的歌"  # 不講多久沒點，但人名要留著（掛名鐵則靠它）
         if lane == 'discovery':
             return f"跟 {who} 平常聽的歌風格相近的新歌"
         anchor = info.get('_anchor_title', '')
         if anchor:
-            return f"{who} 點過《{anchor}》"
+            return f"{who} 常聽《{anchor}》"
         return f"這首是 {who} 平常會聽的歌"
 
     @staticmethod
@@ -415,7 +429,7 @@ class MusicDJLyricsMixin:
             return ([], {})
 
     def _dj_heat_bank(self):
-        """DJ 話題庫的 lazy 單例（熱聊時存快照，降溫時取出接回話題）。"""
+        """DJ 已用對話原句紀錄的 lazy 單例（conversation mode 防重複用同一句）。"""
         bank = getattr(self, '_dj_topic_bank', None)
         if bank is None:
             from dj_heat import TopicBank
@@ -586,12 +600,12 @@ class MusicDJLyricsMixin:
         self._attach_cached_canon(info)
         _clean_t, _clean_a = self._dj_clean_name(info)
         _song_label = f"{_clean_a} - {_clean_t}" if _clean_a else _clean_t
-        ctx = [f"歌曲：{_song_label or title}", f"點播者：{requester}"]
+        ctx = [f"歌曲：{_song_label or title}", self._dj_source_line(requester)]
         song_candidates: list[str] = []
         lyric_candidates: list[str] = []
         # 串場不提上一首（9/30 使用者定：專注寫下一首）——預抓時的「上一首」常因插播/
         # 換順序過期，寫進 prompt 再被 Consistency Guard 丟掉改唸報幕，得不償失。
-        if play_count >= 2:
+        if play_count >= 2 and not requester.startswith('Marvin'):
             song_candidates.append(f"喜好線索：這首是 {requester} 常聽的愛歌")
         if feelings:
             song_candidates.append(f"情感記錄：{' / '.join(feelings[:2])}")
@@ -606,19 +620,6 @@ class MusicDJLyricsMixin:
                 present_members = set(_vc_ref.get_online_members())
         except Exception:
             pass  # fail-open：vc 不可用時不過濾在場人
-
-        # 🔥 [DJ Heat] 預抓時：熱聊中就存話題快照；話題庫有新鮮存貨就這首改走 revival 接回話題
-        # （2026-09-30 使用者定：熱聊素材最多但沒人在聽 DJ，該熱聊時少講，降溫時延續話題）。
-        revival_lines: list[str] = []
-        try:
-            from dj_heat import is_hot
-            _entries = conv_buf.get_history() if conv_buf else []
-            _now = time.time()
-            if is_hot(_entries, len(present_members or ()), _now):
-                self._dj_heat_bank().snapshot(_entries, _now)
-            revival_lines = self._dj_heat_bank().take(_now)
-        except Exception:
-            revival_lines = []  # fail-open
 
         from dj_social_affinity import (
             find_song_social_affinity,
@@ -701,7 +702,7 @@ class MusicDJLyricsMixin:
         if not _card and isinstance(guide, str):
             _card = {"audiophile_guide": guide}
         materials = DJMaterials(
-            revival_lines=revival_lines, memory_evidence=memory_evidence, focus=_focus,
+            memory_evidence=memory_evidence, focus=_focus,
             life=life, present_members=present_members, interests=interests,
             news_items=news_items,
             news_context=news_context,
@@ -721,8 +722,6 @@ class MusicDJLyricsMixin:
             consume_callback=lambda who, event_id: self._event_store.mark_followed_up(event_id, time.time()),
         )
         topic, mode = plan.topic, plan.mode
-        if mode == "revival":
-            logger.info(f"🔥 [DJ Heat] 話題庫接回 {len(revival_lines)} 句 → revival")
         logger.info(f"🎚️ [DJ Focus] {title} focus={_focus or '-'} plays={info.get('_server_plays')} → mode={mode}")
         ctx.extend(plan.ctx_lines)
         _song_pick = None
@@ -873,7 +872,7 @@ class MusicDJLyricsMixin:
             if len(text) != _raw_len:
                 logger.info(f"🧹 [DJ Prefetch] 口白清雜訊 {_raw_len}→{len(text)} 字")
 
-            from dj_prompt_builder import FORBIDDEN_DJ_PHRASES
+            from dj_prompt_builder import FORBIDDEN_DJ_PHRASES, claims_request
 
             # 9/30 使用者定：清雜訊後多長都完整播出，不截斷、不因超長退墊底（聽一段時間再調）。
             def _is_qualified_dj_script(s: str) -> bool:
@@ -884,9 +883,12 @@ class MusicDJLyricsMixin:
                         return False
                 return True
 
-            if not text or not _is_qualified_dj_script(text):
+            _is_autopilot = requester.startswith('Marvin')
+            _claims = bool(text) and _is_autopilot and claims_request(text)
+            if not text or not _is_qualified_dj_script(text) or _claims:
                 # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
-                _why = ("空字串" if not text else f"長度{len(text)}" if len(text) < 10 else "禁詞")
+                _why = ("空字串" if not text else f"長度{len(text)}" if len(text) < 10
+                        else "禁詞" if not _is_qualified_dj_script(text) else "點播掛名")
                 _disqualify = _why
                 logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
                 # 1. 優先嘗試 autopilot 模板（若為 Marvin 自己選歌）
@@ -953,16 +955,9 @@ class MusicDJLyricsMixin:
 
         logger.info(f"🎙️ [DJ Prefetch] 完成: {text[:30]}… (audio={'✓' if audio_path else '✗'})")
 
-        # 🔥 [DJ Heat] 熱聊時的短版備案：只報歌名，播出前一刻若判定熱聊就改唸這句
-        # （見 cogs/music_cog_tail_dj.py::_maybe_play_dj_interjection）。
-        _st, _sa = self._dj_clean_name(info)
-        short_text = f"下一首，{_sa}的{_st}" if _sa else f"下一首，{_st}"
-        if requester and not requester.startswith('Marvin'):
-            short_text += f"，{requester} 點的"
-
         # 串場不提上一首 → 沒有可過期的上一首，Consistency Guard 不必比對
         return {
-            'text': text, 'audio_path': audio_path, 'prev_title_used': None, 'short_text': short_text,
+            'text': text, 'audio_path': audio_path, 'prev_title_used': None,
             'narration_id': narration_id, 'mode': mode,
         }
 
