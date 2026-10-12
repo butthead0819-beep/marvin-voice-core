@@ -224,7 +224,9 @@ async def test_mixer_play_music_norm_gain_false_uses_unity():
     await PlaybackMixin._mixer_play_music(
         fake, _Dev(), _Exhausted(), still_active=lambda: True,
         volume_attr="stream_volume", norm_gain=False)
-    assert mixer.music_gain_calls and mixer.music_gain_calls[0] == pytest.approx(1.0)
+    # 換歌前 immediate 那次 + 100ms 迴圈那次都必須是 1.0（不准疊 ng）
+    assert len(mixer.music_gain_calls) >= 2
+    assert all(g == pytest.approx(1.0) for g in mixer.music_gain_calls)
     assert mixer.volume_calls and mixer.volume_calls[0] == pytest.approx(0.7)
 
 
