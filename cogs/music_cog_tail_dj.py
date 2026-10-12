@@ -605,11 +605,14 @@ class MusicTailDJMixin:
     def _dj_channel_is_hot(self, vc) -> bool:
         """播出前一刻判斷現場熱度。失敗一律當不熱（fail-open）。"""
         try:
-            from dj_heat import is_hot
+            from dj_heat import heat_snapshot
             conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
             entries = conv_buf.get_history() if conv_buf else []
             now = time.time()
-            if is_hot(entries, len(vc.get_online_members()), now):
+            n_online = len(vc.get_online_members())
+            count, threshold, hot = heat_snapshot(entries, n_online, now)
+            logger.info(f"🌡️ [DJ Heat] 在線{n_online}人 近3分{count}句 門檻{threshold} → {'熱' if hot else '不熱'}")
+            if hot:
                 return True
         except Exception:
             pass
