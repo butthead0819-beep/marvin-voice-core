@@ -293,50 +293,29 @@ async def test_handler_text_channel_ack_survives_missing_play_tts():
 # ── handler: volume_down 連動全域 TTS Gain ───────────────────────────────
 
 
-async def test_calculate_tts_gain_boosts_loudness_above_music(monkeypatch):
-    """驗證 calculate_tts_gain 至少跟音樂一樣大聲，且帶有 1.3x 響度補償（上限 1.0）。"""
-    from intent_agents.volume_agent import calculate_tts_gain
-    monkeypatch.delenv("MARVIN_TTS_BOOST", raising=False)
-    assert calculate_tts_gain(0.10) == pytest.approx(0.13)
-    assert calculate_tts_gain(0.25) == pytest.approx(0.325)
-    assert calculate_tts_gain(0.50) == pytest.approx(0.65)
-    assert calculate_tts_gain(0.90) == pytest.approx(1.0)
-    assert calculate_tts_gain(1.00) == pytest.approx(1.0)
-
-
-async def test_calculate_tts_gain_respects_custom_env_boost(monkeypatch):
-    """驗證 MARVIN_TTS_BOOST 環境變數可覆蓋補償倍率。"""
-    from intent_agents.volume_agent import calculate_tts_gain
-    monkeypatch.setenv("MARVIN_TTS_BOOST", "1.0")
-    assert calculate_tts_gain(0.50) == pytest.approx(0.50)
-    monkeypatch.setenv("MARVIN_TTS_BOOST", "1.5")
-    assert calculate_tts_gain(0.50) == pytest.approx(0.75)
-
-
-async def test_handler_volume_down_syncs_tts_gain_to_music_volume():
-    """「小聲一點」時全域 mixer._tts_gain 套用響度補償後對齊音樂音量。"""
+async def test_handler_volume_down_syncs_output_volume_to_music_volume():
+    """「小聲一點」時 mixer 出口音量（set_volume）跟著新的音樂音量值一起變——統一輸出
+    增益架構後出口層統一管音樂+TTS，不再對 TTS 另外做響度補償。"""
     from intent_agents.volume_agent import VolumeAgent
     ctrl = _ctrl(stream_mode=True, stream_volume=0.50)
     ctrl._mixer = MagicMock()
-    ctrl._mixer._tts_gain = 1.0
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("小聲一點"))
     await bid.handler()
-    # 音樂音量 0.50 → 0.25，TTS gain 套用 1.3x 補償為 0.325（>= 音樂音量 0.25）
-    assert ctrl._mixer._tts_gain == pytest.approx(0.325)
+    # 音樂音量 0.50 → 0.25，出口音量直接對齊同一個值
+    ctrl._mixer.set_volume.assert_called_once_with(0.25)
 
 
-async def test_handler_volume_up_also_syncs_tts_gain():
-    """「大聲一點」也該同步 TTS 音量並套用響度補償。"""
+async def test_handler_volume_up_also_syncs_output_volume():
+    """「大聲一點」也該同步出口音量，不再對 TTS 另外做響度補償。"""
     from intent_agents.volume_agent import VolumeAgent
     ctrl = _ctrl(stream_mode=True, stream_volume=0.20)
     ctrl._mixer = MagicMock()
-    ctrl._mixer._tts_gain = 1.0
     agent = VolumeAgent(ctrl)
     bid = agent.bid(_ctx("大聲一點"))
     await bid.handler()
-    # 音樂音量 0.20 → 0.45，TTS gain 套用 1.3x 補償為 0.585
-    assert ctrl._mixer._tts_gain == pytest.approx(0.585)
+    # 音樂音量 0.20 → 0.45，出口音量直接對齊同一個值
+    ctrl._mixer.set_volume.assert_called_once_with(0.45)
 
 
 

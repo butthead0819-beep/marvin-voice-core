@@ -169,10 +169,11 @@ def test_music_cog_dj_mix_uses_shared_filter():
 
 
 def test_dj_mix_filter_uses_uniform_tts_loudness():
-    from intent_agents.volume_agent import calculate_tts_gain
-    fc = am.dj_mix_filter_complex(0.35, calculate_tts_gain(0.35))
+    # calculate_tts_gain(0.35) 已隨統一輸出增益架構刪除（呼叫端改傳 dj_mix_filter_complex(1.0, 1.0)，
+    # 不再烤音量）；此處用等值常數直測 dj_mix_filter_complex 本身不受影響。
+    fc = am.dj_mix_filter_complex(0.35, 0.455)
     assert am.TTS_LOUDNESS_AF in fc
-    assert f"volume={calculate_tts_gain(0.35):.3f}[dj_q]" in fc
+    assert "volume=0.455[dj_q]" in fc
     assert "volume=0.300" not in fc
     assert "loudnorm=I=-14:TP=-1.5:LRA=11,volume=0.350[music]" in fc
 
@@ -183,6 +184,7 @@ class _VolMixer:
     def __init__(self):
         self._seq = [True, False]
         self.volumes = []
+        self.music_gains = []
 
     def set_music_source(self, s, fade_in_s=0.0):
         pass
@@ -193,8 +195,11 @@ class _VolMixer:
     def clear_music(self):
         pass
 
-    def set_volume(self, v):
+    def set_volume(self, v, immediate=False):
         self.volumes.append(v)
+
+    def set_music_gain(self, g, immediate=False):
+        self.music_gains.append(g)
 
 
 class _Dev:
@@ -221,15 +226,19 @@ async def test_play_loop_uses_unmeasured_gain_until_measured(norm_gain, expected
                            stream_volume=0.5)
     await PlaybackMixin._mixer_play_music(fake, _Dev(), _Exhausted(),
                                           still_active=lambda: True, volume_attr="stream_volume")
-    assert mixer.volumes and mixer.volumes[0] == pytest.approx(0.5 * expected)
+    # 內容層（響度正規化常數）與出口層（stream_volume）分離：set_music_gain 吃 ng，
+    # set_volume 吃使用者音量本身，兩者不再疊乘成一個值。
+    assert mixer.music_gains and mixer.music_gains[0] == pytest.approx(expected)
+    assert mixer.volumes and mixer.volumes[0] == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
-async def test_play_stream_song_dj_mix_uses_tts_gain_for_narration(tmp_path, monkeypatch):
-    """use_mix 分支實際組出的 ffmpeg 選項：口白過統一濾鏡、音量 = calculate_tts_gain(stream_volume)。"""
+async def test_play_stream_song_dj_mix_uses_shared_filter_and_skips_norm_gain(tmp_path, monkeypatch):
+    """use_mix 分支：口白/音樂都過統一濾鏡、不再烤音量（dj_mix_filter_complex(1.0, 1.0)）；
+    出口音量統一交給 mixer 出口層（_mixer_play_music 帶 volume_attr="stream_volume",
+    norm_gain=False——DJ Mix 口白已過 ffmpeg loudnorm，不該疊加響度正規化常數）。"""
     import discord
     from cogs.music_cog import MusicCog
-    from intent_agents.volume_agent import calculate_tts_gain
     dj = tmp_path / "dj.mp3"
     dj.write_bytes(b"x")
     cog = MusicCog(bot=MagicMock())
@@ -248,7 +257,11 @@ async def test_play_stream_song_dj_mix_uses_tts_gain_for_narration(tmp_path, mon
     await cog.play_stream_song("https://t/song", "t", dj_audio_path=str(dj))
     opts = captured["options"]
     assert am.TTS_LOUDNESS_AF in opts
-    assert f"volume={calculate_tts_gain(0.35):.3f}[dj_q]" in opts
+    assert "volume=1.000[dj_q]" in opts
+    assert "loudnorm=I=-14:TP=-1.5:LRA=11,volume=1.000[music]" in opts
+    call_kwargs = vc._mixer_play_music.call_args.kwargs
+    assert call_kwargs["volume_attr"] == "stream_volume"
+    assert call_kwargs["norm_gain"] is False
 
 
 @pytest.mark.asyncio

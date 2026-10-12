@@ -109,13 +109,12 @@ class StateProxyMixin:
             self._stream_volume_local = value
         # 即時套進 mixer：_mixer_play_music 的 100ms sync loop 可能提早結束（has_music
         # race）→ 按鈕/語音改音量只在下一首生效。這裡直接推 mixer，當前播放即時生效。
-        # 只在 stream 活躍時套，避免誤蓋 radio_volume。
+        # 只在 stream 活躍時套，避免誤蓋 radio_volume。set_volume 是出口層（Discord 出口
+        # 音量），音樂內容增益（響度正規化）另外在 _mixer_play_music 的 norm loop 套。
         mixer = getattr(self, '_mixer', None)
         if mixer is not None and mc is not None and getattr(mc, 'stream_mode', False):
             try:
-                from loudness_norm import UNMEASURED_GAIN
-                ng = mc._stream_norm_gain.get(getattr(mc, '_current_stream_url', None), UNMEASURED_GAIN)
-                mixer.set_volume(value * ng)
+                mixer.set_volume(value)
             except Exception:
                 pass
 

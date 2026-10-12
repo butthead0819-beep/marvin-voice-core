@@ -63,6 +63,8 @@ class LocalMixingAudioSource(_BASE):
         self._volume_cur = float(volume)
         self._volume_target = float(volume)
         self._volume_step = 0.04  # 逐幀線性 ramp（每幀 20ms 調整 0.04，~0.25s 平滑到位，防 click/step jump）
+        self._music_gain_cur = 1.0     # 內容層：音樂增益（獨立於出口音量）
+        self._music_gain_target = 1.0
         self._balance = float(balance)  # 目標：0.50 = 50:50 平衡；0.60 = TTS 60% : Music 40%
         self._balance_cur = float(balance)
         self._balance_step = 0.02  # 逐幀 ramp（一次按鈕 0.1 → 5 幀 ~0.1s，防 click）
@@ -103,6 +105,7 @@ class LocalMixingAudioSource(_BASE):
 
         self._paused = False                     # 控制台暫停：read() 回 silence、不前進來源
         self._tap = None                         # [單一 mixer] 輸出旁聽者，見 set_tap
+        self._tap_frame = self._silence_bytes    # 車機那份輸出（出口層 car_volume=1.0），_read_impl 每個 return 前設好
         self._music = None                       # 可換 f32le source（atomic ref）
         self._music_out = None        # 🎚️ [Crossfade] 淡出槽：上一首搬進來逐幀降到 0（只在接懷舊歌時用）
         self._music_out_gain = 0.0    # 淡出槽當前絕對增益（起點＝搬進來那刻的音量快照，不吃之後的 set_volume）
@@ -228,7 +231,7 @@ class LocalMixingAudioSource(_BASE):
     def read(self) -> bytes:
         if not self._instrument:
             out = self._read_impl()
-            self._emit_tap(out)
+            self._emit_tap(self._tap_frame)
             return out
         t0 = time.perf_counter()
         if self._last_read_ts is not None:
@@ -244,11 +247,13 @@ class LocalMixingAudioSource(_BASE):
         self._last_read_ts = t0
         out = self._read_impl()
         self._record_stat((time.perf_counter() - t0) * 1000.0)
-        self._emit_tap(out)
+        self._emit_tap(self._tap_frame)
         return out
 
     def set_tap(self, tap) -> None:
-        """[單一 mixer] 掛一個輸出旁聽者（例：StreamSpeakerOutput），每幀 read() 的輸出原樣 tap.write(frame)。
+        """[單一 mixer] 掛一個輸出旁聽者（例：StreamSpeakerOutput）。車機 tap 走出口層固定
+        car_volume=1.0（不受 Discord 出口音量 set_volume 影響，車上靠車機旋鈕）；paused/
+        idle/例外時跟 Discord 那份一致（silence 就 silence，b"" 就 b""）。
         tap.write 必須非阻塞（AudioPlayer 執行緒呼叫）；None＝拔掉。"""
         self._tap = tap
 
@@ -305,6 +310,7 @@ class LocalMixingAudioSource(_BASE):
     def _read_impl(self) -> bytes:
         try:
             if self._paused:
+                self._tap_frame = self._silence_bytes  # 車機那份跟 Discord 一致
                 return self._silence_bytes  # 持位置、adapter 續活（不進 idle→b"" 邏輯）
             music_f = self._next_music_frame()
             out_f = self._next_music_out_frame()
@@ -319,12 +325,19 @@ class LocalMixingAudioSource(_BASE):
             elif self._duck_cur > target:
                 self._duck_cur = max(target, self._duck_cur - self._duck_step)
 
-            # volume ramp：逐幀線性往 _volume_target 漸變（防 Auto Gain 更新或手動調音量時產生 step jump/click）
+            # volume ramp（出口層：Discord 出口音量）：逐幀線性往 _volume_target 漸變（防
+            # Auto Gain 更新或手動調音量時產生 step jump/click）
             if self._volume_cur < self._volume_target:
                 self._volume_cur = min(self._volume_target, self._volume_cur + self._volume_step)
             elif self._volume_cur > self._volume_target:
                 self._volume_cur = max(self._volume_target, self._volume_cur - self._volume_step)
             self._volume = self._volume_cur
+
+            # music gain ramp（內容層：音樂增益，與出口音量無關）：同樣逐幀線性漸變
+            if self._music_gain_cur < self._music_gain_target:
+                self._music_gain_cur = min(self._music_gain_target, self._music_gain_cur + self._volume_step)
+            elif self._music_gain_cur > self._music_gain_target:
+                self._music_gain_cur = max(self._music_gain_target, self._music_gain_cur - self._volume_step)
 
             # 打岔 duck ramp：layer2(Marmo) 在 → layer1(Marvin) 逐幀往 _interject_duck 淡出；
             # layer2 走 → 逐幀回 1.0。線性、防突兀（用戶回饋：瞬降太快，要漸進 fade out）。
@@ -345,7 +358,7 @@ class LocalMixingAudioSource(_BASE):
                 m_frame = music_f
                 if self._sidechain_mid_cut_active and tts_active and self._spatial_renderer is not None:
                     m_frame = self._spatial_renderer.apply_music_sidechain_mid_cut(m_frame, cut_db=-4.0)
-                layers.append(am.apply_gain(m_frame, self._volume_cur * music_factor * self._duck_cur * self._music_in_gain))
+                layers.append(am.apply_gain(m_frame, self._music_gain_cur * music_factor * self._duck_cur * self._music_in_gain))
                 self._music_in_gain = min(1.0, self._music_in_gain + self._music_in_step)
             if out_f is not None:  # 🎚️ [Crossfade] 淡出槽：上一首逐幀降到 0（不套 sidechain mid cut）
                 layers.append(am.apply_gain(out_f, self._music_out_gain * music_factor * self._duck_cur))
@@ -373,12 +386,15 @@ class LocalMixingAudioSource(_BASE):
                 if self._on_demand:
                     self._idle_count += 1
                     if self._idle_count > self._idle_grace_frames:
+                        self._tap_frame = b""  # 車機跟 Discord 一致
                         return b""
+                self._tap_frame = self._silence_bytes
                 return self._silence_bytes
             self._idle_count = 0  # 有內容 → 重設 idle 計數
 
             mixed = am.mix_layers(layers)
-            # 🧱 最後防線：輸出絕不超過 -1 dBFS（寧悶勿爆，2026-09-24）
+            # 🧱 最後防線：輸出絕不超過 -1 dBFS（寧悶勿爆，2026-09-24）——限幅作用在參考準位上，
+            # 出口層（Discord 音量 / 車機固定 100%）在這之後才分別套用
             mixed, self._limit_gain, _hit = am.limit_frame(mixed, self._limit_gain)
             if _hit:
                 self._limit_hits += 1
@@ -388,10 +404,17 @@ class LocalMixingAudioSource(_BASE):
                     logger.warning(
                         f"🧱 [Plan12_Limiter] 輸出超過 -1 dBFS 被限幅 gain={self._limit_gain:.2f} "
                         f"累計 {self._limit_hits} 幀（>0 代表某個源頭沒控好）")
-            s16 = am.to_s16(am.tpdf_dither(mixed, self._rng))
-            return s16.tobytes()
+            # 出口層：車機 tap 固定 100%（車上靠車機旋鈕），Discord 套目前出口音量 _volume_cur。
+            if self._tap is not None:
+                car = am.to_s16(am.tpdf_dither(mixed, self._rng))
+                self._tap_frame = car.tobytes()
+            else:
+                self._tap_frame = self._silence_bytes
+            discord_out = am.to_s16(am.tpdf_dither(am.apply_gain(mixed, self._volume_cur), self._rng))
+            return discord_out.tobytes()
         except Exception:
             logger.exception("[Plan12_Mixer] read() 內部錯誤，回 silence（永不 raise）")
+            self._tap_frame = self._silence_bytes
             return self._silence_bytes
 
     def cleanup(self):  # discord 停播時呼叫；mixer 狀態持久，no-op
@@ -420,7 +443,7 @@ class LocalMixingAudioSource(_BASE):
         if src is None or self._paused:
             return False
         frames = max(1, int(fade_s / 0.02))
-        self._music_out_gain = self._volume_cur * self._music_in_gain
+        self._music_out_gain = self._music_gain_cur * self._music_in_gain
         self._music_out_step = self._music_out_gain / frames
         old = self._music_out
         self._music_out = src
@@ -453,12 +476,23 @@ class LocalMixingAudioSource(_BASE):
         self._sidechain_mid_cut_active = bool(active)
 
     def set_volume(self, volume: float, immediate: bool = False) -> None:
-        """音量設定。預設逐幀平滑漸變（無接縫、防 click/pop/step jump）；immediate=True 則立即硬設。"""
-        v = float(volume)
+        """出口層：Discord 出口音量（限幅器之後，音樂+TTS 混完的參考準位乘這個值；
+        車機 tap 不受影響，固定 100%，見 _read_impl）。預設逐幀平滑漸變（無接縫、防
+        click/pop/step jump）；immediate=True 則立即硬設。
+        夾在 [0, 1]：出口在限幅器之後，只准衰減不准放大（絕不超大音量）。"""
+        v = max(0.0, min(1.0, float(volume)))
         self._volume_target = v
         if immediate or (self._music is None and not self._tts_queue and self._tts_cur is None):
             self._volume_cur = v
             self._volume = v
+
+    def set_music_gain(self, gain: float, immediate: bool = False) -> None:
+        """內容層：音樂增益（例如每首響度正規化常數、DJ Mix 口白音量），跟出口音量無關。
+        預設逐幀平滑漸變，immediate=True 則立即硬設（同 set_volume 寫法）。"""
+        g = float(gain)
+        self._music_gain_target = g
+        if immediate or (self._music is None and not self._tts_queue and self._tts_cur is None):
+            self._music_gain_cur = g
 
     @staticmethod
     def _balance_factors(balance: float) -> tuple[float, float]:

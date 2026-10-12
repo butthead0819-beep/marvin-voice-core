@@ -46,7 +46,6 @@ from memory_guard import is_memory_critical
 from music_recommender import normalize_title
 from music_memory import extract_video_id
 from audio_mixing import dj_mix_filter_complex
-from intent_agents.volume_agent import calculate_tts_gain
 from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
@@ -574,7 +573,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         use_mix = dj_audio_path and os.path.exists(dj_audio_path)
 
         if use_mix:
-            fc = dj_mix_filter_complex(self.stream_volume, calculate_tts_gain(self.stream_volume))
+            fc = dj_mix_filter_complex(1.0, 1.0)
             before_opts = (
                 f"-i {shlex.quote(dj_audio_path)} "
                 "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -probesize 32M"
@@ -582,10 +581,9 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             options = f"-vn -bufsize 512k -filter_complex \"{fc}\" -map [out]"
             logger.info(f"🎙️ [DJ Mix] 混音模式：{os.path.basename(dj_audio_path)}")
             if vc is not None:
-                vc._mixer.set_volume(1.0)
                 await vc._mixer_play_music(
                     device, discord.FFmpegPCMAudio(url, before_options=before_opts, options=options),
-                    still_active=still_active,
+                    still_active=still_active, volume_attr="stream_volume", norm_gain=False,
                     started_at=started_future,
                 )
         else:

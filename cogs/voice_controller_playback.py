@@ -87,14 +87,14 @@ class PlaybackMixin:
         )
 
     def _make_initial_mixer(self, bot) -> LocalMixingAudioSource:
-        """建 Plan12 mixer，TTS 起始音量對齊各模式（Discord/車機）音樂音量預設值並套用響度補償——
-        不用等第一次調音量指令才被 sync_tts_gain() 追上（2026-08-26）。setup_hook
-        保證 music_cog 先於 voice_controller 載入，這裡一定拿得到。"""
-        from intent_agents.volume_agent import calculate_tts_gain
+        """建 Plan12 mixer，出口音量對齊各模式（Discord/車機）音樂音量預設值——
+        不用等第一次調音量指令才被設定（2026-08-26）。setup_hook 保證 music_cog
+        先於 voice_controller 載入，這裡一定拿得到。出口層統一管音樂+TTS，
+        TTS 不再另外連動補償（見 volume_agent.sync_tts_gain）。"""
         mixer = LocalMixingAudioSource(instrument=True, on_demand=True)
         mc = bot.cogs.get("MusicCog")
         base_vol = getattr(mc, "stream_volume", self._stream_volume_local) if mc else self._stream_volume_local
-        mixer._tts_gain = calculate_tts_gain(base_vol)
+        mixer.set_volume(base_vol, immediate=True)
         return mixer
 
     @contextlib.contextmanager
@@ -169,11 +169,17 @@ class PlaybackMixin:
         return _armed
 
     async def _mixer_play_music(self, device, s16_source, *, still_active, volume_attr=None,
+                                 norm_gain: bool = True,
                                  preloaded=None, started_at=None, fade_in_s: float = 0.0) -> None:
         """[Plan 12] 把 s16 音源餵 mixer 音樂層，等到播完 / 連線斷 / still_active() 變 False。
 
         volume_attr：要持續同步進 mixer 的 cog 音量屬性名（如 "stream_volume"）→ 語音/按鈕
-        調音量 100ms 內即時生效（無 hotswap）。播完（來源耗盡 mixer 自清）或被中止即 return。
+        調音量 100ms 內即時生效（無 hotswap），套在 mixer 的出口音量（set_volume）上。
+        None（intro / 本地檔）→ 這個迴圈完全不動 music gain / volume，由呼叫端事先設好。
+
+        norm_gain：是否套每首響度正規化常數增益（音樂內容層，set_music_gain）。DJ Mix 模式
+        口白已過 ffmpeg loudnorm 統一響度、不該疊加 → 傳 False（固定 1.0）。播完（來源耗盡
+        mixer 自清）或被中止即 return。
 
         preloaded：呼叫端已經背景解碼好的 PreloadedF32MusicSource（見 music_cog.py 的
         DJ Tail 點火 preload）→ 直接用、跳過這裡的現場解碼；s16_source 此時可為 None。
@@ -195,6 +201,11 @@ class PlaybackMixin:
             buffered = preloaded
         else:
             buffered = await asyncio.to_thread(preload_f32_source, s16_source)
+        if volume_attr is not None:
+            # 掛上新歌前先 immediate 設好它的內容增益：否則從上一首的 ng 逐幀 ramp
+            # （例 2.28→0.4 以 0.04/幀要 ~1s），新歌開頭偏大聲。淡出槽用自己的快照不受影響。
+            _ng0 = self._stream_norm_gain.get(self._current_stream_url, UNMEASURED_GAIN) if norm_gain else 1.0
+            self._mixer.set_music_gain(_ng0, immediate=True)
         self._mixer.set_music_source(buffered, fade_in_s=fade_in_s)
         if started_at is not None and not started_at.done():
             started_at.set_result(time.time())
@@ -214,10 +225,11 @@ class PlaybackMixin:
                     self._mixer.clear_music()
                     return
                 if volume_attr is not None:
-                    # 每首響度正規化常數增益（背景量好才有；沒量好=保守 0.4，寧可小聲）。乘在
-                    # 使用者音量上，一首一個常數 → 不在歌內 pumping。
-                    _ng = self._stream_norm_gain.get(self._current_stream_url, UNMEASURED_GAIN)
-                    self._mixer.set_volume(getattr(self, volume_attr) * _ng)
+                    # 每首響度正規化常數增益（背景量好才有；沒量好=保守 0.4，寧可小聲）→ 內容層
+                    # music gain；出口音量（stream_volume 等）另外套在 mixer 出口層，兩者分離。
+                    _ng = self._stream_norm_gain.get(self._current_stream_url, UNMEASURED_GAIN) if norm_gain else 1.0
+                    self._mixer.set_music_gain(_ng)
+                    self._mixer.set_volume(getattr(self, volume_attr))
                 self._ensure_mixer_playing(device)  # on-demand：重連後 adapter 沒了 → 重 arm
                 await asyncio.sleep(0.1)
         finally:
@@ -795,7 +807,7 @@ class PlaybackMixin:
         阻塞到整首播完/被中止才 return；呼叫端若要背景播放（BGM 段常常比口白長很多）
         要自己包 asyncio.create_task，且換源前必須 cancel 掉，見 _mixer_play_music 內文。
 
-        volume：音樂層音量（0-1），預設 1.0。
+        volume：音樂層內容增益（0-1，set_music_gain），預設 1.0；不動 Discord 出口音量。
         """
         if not os.path.exists(file_path):
             logger.warning(f"⚠️ [Local Play] 找不到檔案: {file_path}")
@@ -805,7 +817,7 @@ class PlaybackMixin:
         if device is None:
             return
 
-        self._mixer.set_volume(volume)
+        self._mixer.set_music_gain(volume)
         before_options = f"-ss {start_offset_s}" if start_offset_s > 0 else None
         src = discord.FFmpegPCMAudio(file_path, before_options=before_options)
         await self._mixer_play_music(device, src, still_active=lambda: device.is_connected())

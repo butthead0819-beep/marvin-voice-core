@@ -824,7 +824,7 @@ class ConnectionMixin:
                 print("🎸 [Intro] Plan 12：intro → mixer 音樂層（greeting 將 duck）")
                 src = discord.FFmpegPCMAudio(intro_file, before_options=before_opts, options="-vn")
                 self._ensure_mixer_playing(DiscordPlaybackDevice(vc))
-                self._mixer.set_volume(0.7)
+                self._mixer.set_music_gain(0.7)
                 # 整首先解碼進記憶體（intro 只有 7s 本地檔，解碼幾乎瞬間完成，換零中段爆音
                 # 沒有代價，見 project_car_puck_pops_and_1s_dropout）。
                 self._mixer.set_music_source(await asyncio.to_thread(preload_f32_source, src))
