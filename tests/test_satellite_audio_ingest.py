@@ -65,11 +65,15 @@ async def test_inject_audio_require_wake_with_wake_word_proceeds():
 @pytest.mark.asyncio
 async def test_inject_audio_require_wake_without_wake_word_discards(caplog):
     """車機自己送 PAUSE（來電等）錄到的內容沒喚醒詞 → 丟棄，且不記錄原文。"""
+    import logging
     from car_http_app import inject_audio
+    # car_http_app 的丟棄訊息是 INFO；不設等級 caplog 抓不到任何東西，「原文不在 log」會恆真。
+    caplog.set_level(logging.INFO, logger="car_http_app")
     vc = _make_vc(stt_text="我等一下就到")
     ok = await inject_audio(vc, b"RIFFfake-wav", require_wake=True)
     assert ok is False
     vc.handle_stt_result.assert_not_awaited()
+    assert "無喚醒詞，丟棄" in caplog.text      # 證明 log 有抓到
     assert "我等一下就到" not in caplog.text
 
 
