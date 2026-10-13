@@ -14,6 +14,7 @@ from aiohttp import web
 
 from marvin_voice_core.audio_stream_batcher import iter_batched_encoded_frames
 from marvin_voice_core.discord_audio_stream_server import SilenceFillQueue
+from marvin_voice_core.icy_meta import ICY_METAINT, IcyInterleaver, build_now_playing_payload
 from marvin_voice_core.mp3_stream_encoder import Mp3StreamEncoder
 
 logger = logging.getLogger(__name__)
@@ -1583,6 +1584,12 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                 .replace("__PERF_JS__", _PERF_JS).replace("__PERF_THEME__", perf_theme))
         return web.Response(text=html, content_type="text/html", headers=_CORS)
 
+    def _current_now_playing():
+        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
+        info = getattr(music_cog, "_current_stream_info", None) if music_cog else None
+        start_time = getattr(music_cog, "_current_stream_start_time", None) if music_cog else None
+        return info, start_time
+
     async def handle_audio_stream(request):
         """GET /audio_stream — 車載 puck 連續收音：chunked 即時轉送 mixer PCM（MP3編碼）。
 
@@ -1592,27 +1599,40 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         Funnel+熱點實測只有 ~60KB/s throughput，128kbps MP3 只需 ~16KB/s（見
         project_car_puck_funnel_tls_and_fallback）。無 stream_source（車載模式未接串流
         輸出）→ 404。
+
+        車機顯示曲名第一刀：request header 帶 Icy-MetaData:1 才啟用 ICY in-band
+        metadata（見 marvin_voice_core/icy_meta.py），沒帶（Pi 的 ffmpeg 不帶這個
+        header）→ 行為完全不變，不多送 icy-metaint。
         """
         if stream_source is None:
             return web.Response(status=404, headers=_CORS)
-        resp = web.StreamResponse(status=200, headers={
+        icy_enabled = request.headers.get("Icy-MetaData") == "1"
+        headers = {
             **_CORS, "Content-Type": "audio/mpeg",
             "X-Audio-Codec": "mp3",
             "X-Audio-Rate": str(stream_source.rate),
             "X-Audio-Channels": str(stream_source.channels),
             "X-Audio-Bits": str(stream_source.bits),
-        })
+        }
+        if icy_enabled:
+            headers["icy-metaint"] = str(ICY_METAINT)
+        resp = web.StreamResponse(status=200, headers=headers)
         await resp.prepare(request)
         q = stream_source.subscribe()
         encoder = Mp3StreamEncoder(
             rate=stream_source.rate, channels=stream_source.channels,
             bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
+        interleaver = IcyInterleaver() if icy_enabled else None
         try:
             # SilenceFillQueue：satellite 的 mixer 本來就一直有幀（跟單一 mixer 第1刀的
             # Discord mixer 不同，那裡才是 on_demand 真正需要補靜音的理由），包了也無害，
             # 跟 marvin_voice_core.discord_audio_stream_server.handle_audio_stream 走同一份邏輯。
             async for chunk in iter_batched_encoded_frames(
                     SilenceFillQueue(q), encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
+                if interleaver is not None:
+                    info, start_time = _current_now_playing()
+                    payload = build_now_playing_payload(info, start_time, time.time())
+                    chunk = interleaver.feed(chunk, payload, time.time())
                 await resp.write(chunk)
         except (ConnectionError, asyncio.CancelledError):
             # ConnectionError 涵蓋 BrokenPipeError/ConnectionResetError，也涵蓋 aiohttp

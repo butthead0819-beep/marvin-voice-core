@@ -158,3 +158,55 @@ async def test_audio_stream_swallows_wrapped_connection_lost_error(caplog):
                 assert resp.status == 200
     assert len(src.unsubscribed) == 1
     assert not any("Error handling request" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_audio_stream_without_icy_header_has_no_icy_metaint():
+    """既有行為：沒帶 Icy-MetaData header（Pi 的 ffmpeg 不帶）→ 完全不變，無 icy-metaint。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+
+    src = _FakeStreamSource([_sine_pcm_frame(), None])
+    app = build_text_app(_make_vc(), token="s3cret", stream_source=src)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/audio_stream?t=s3cret")
+        assert resp.status == 200
+        assert "icy-metaint" not in resp.headers
+        await resp.read()
+
+
+@pytest.mark.asyncio
+async def test_audio_stream_with_icy_header_embeds_now_playing_payload():
+    """帶 Icy-MetaData: 1 → 有 icy-metaint header，body 能依 ICY 規格拆出以 M1\x1f 開頭的 payload。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+    from marvin_voice_core.icy_meta import ICY_METAINT
+
+    # ~1.5s 音訊，128kbps 編碼後遠超過一個 ICY_METAINT（16000 bytes），確保至少跨過一個邊界。
+    src = _FakeStreamSource([_sine_pcm_frame(seconds=1.5), None])
+    app = build_text_app(_make_vc(), token="s3cret", stream_source=src)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/audio_stream?t=s3cret", headers={"Icy-MetaData": "1"})
+        assert resp.status == 200
+        assert resp.headers["icy-metaint"] == str(ICY_METAINT)
+        body = await resp.read()
+
+    # 依 ICY 規格手動拆：每 ICY_METAINT bytes 音訊後跟一個長度 byte + L*16 bytes metadata。
+    i = 0
+    n = len(body)
+    found_payload = None
+    while i < n:
+        take = min(ICY_METAINT, n - i)
+        i += take
+        if i >= n:
+            break
+        length_byte = body[i]
+        i += 1
+        if length_byte > 0:
+            block = body[i:i + length_byte * 16].rstrip(b"\x00")
+            i += length_byte * 16
+            found_payload = block
+            break
+    assert found_payload is not None, "沒有找到任何完整 metadata 區塊（音訊量不足一個 metaint？）"
+    assert found_payload.startswith(b"M1\x1f")

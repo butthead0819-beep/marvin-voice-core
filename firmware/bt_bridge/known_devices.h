@@ -4,6 +4,7 @@
 #ifndef KNOWN_DEVICES_H
 #define KNOWN_DEVICES_H
 
+#include <ctype.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -45,6 +46,35 @@ inline bool known_next_after_fail(KnownDevices& k, const uint8_t current[6], uin
   int next = (i + 1) % k.count;
   k.cursor = next;
   memcpy(out, k.addr[next], 6);
+  return true;
+}
+
+// 從清單移除一台；後面的往前補位，cursor 歸 0。找不到回 false（清單不動）。
+inline bool known_remove(KnownDevices& k, const uint8_t a[6]) {
+  int i = known_find(k, a);
+  if (i < 0) return false;
+  for (int j = i; j < k.count - 1; j++) memcpy(k.addr[j], k.addr[j + 1], 6);
+  k.count--;
+  k.cursor = 0;
+  return true;
+}
+
+// 解析 "XX:XX:XX:XX:XX:XX"（大小寫 hex 皆可，必須剛好 17 字元、冒號位置正確）→ out。失敗回 false。
+inline bool parse_bda(const char* s, size_t len, uint8_t out[6]) {
+  if (len != 17) return false;
+  for (int i = 0; i < 6; i++) {
+    int hi_pos = i * 3;
+    char hi = s[hi_pos];
+    char lo = s[hi_pos + 1];
+    if (!isxdigit((unsigned char)hi) || !isxdigit((unsigned char)lo)) return false;
+    if (i < 5 && s[hi_pos + 2] != ':') return false;
+    auto hexval = [](char c) -> int {
+      if (c >= '0' && c <= '9') return c - '0';
+      if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+      return c - 'A' + 10;
+    };
+    out[i] = (uint8_t)((hexval(hi) << 4) | hexval(lo));
+  }
   return true;
 }
 
