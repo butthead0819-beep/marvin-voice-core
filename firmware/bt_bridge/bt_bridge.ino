@@ -490,6 +490,85 @@ static void known_save() {
   if (err != ESP_OK) Serial.printf("[BT] 已配對清單寫入失敗 err=%d\n", (int)err);
 }
 
+// 量產/使用中清掉誤配的裝置（例：10/13 配對模式把 AeroClip 2 耳機當喇叭配進來）。
+// 刪 bond 是因為重連模式接受對方主動連入，只刪清單裡的位址耳機還是會自己連回來。
+static void handleSerialCommand(const char* line) {
+  static const char PREFIX[] = "forget ";
+  static const size_t PREFIX_LEN = sizeof(PREFIX) - 1;
+  if (strncmp(line, PREFIX, PREFIX_LEN) == 0) {
+    const char* addr_str = line + PREFIX_LEN;
+    uint8_t bda[6];
+    if (!parse_bda(addr_str, strlen(addr_str), bda)) {
+      Serial.println("[CMD] 用法：forget XX:XX:XX:XX:XX:XX");
+      return;
+    }
+
+    esp_err_t be = esp_bt_gap_remove_bond_device(bda);
+    bool kr = known_remove(g_known, bda);
+    if (kr) known_save();
+
+    bool erased = false;
+    nvs_handle_t h;
+    if (nvs_open("connected_bda", NVS_READWRITE, &h) == ESP_OK) {
+      uint8_t stored[6];
+      size_t slen = sizeof(stored);
+      if (nvs_get_blob(h, "src_bda", stored, &slen) == ESP_OK && slen == 6 && memcmp(stored, bda, 6) == 0) {
+        esp_err_t err = nvs_erase_key(h, "src_bda");
+        if (err == ESP_ERR_NVS_NOT_FOUND) err = ESP_OK;
+        if (err == ESP_OK) {
+          nvs_commit(h);
+          erased = true;
+        }
+      }
+      nvs_close(h);
+    }
+
+    Serial.print("[CMD] forget ");
+    print_bda(bda);
+    Serial.print("  ");
+    Serial.printf("bond=%d known=%d src_bda=%d 剩 %d 台\n", (int)be, kr ? 1 : 0, erased ? 1 : 0, (int)g_known.count);
+    for (int i = 0; i < g_known.count; i++) {
+      Serial.print("  ");
+      print_bda(g_known.addr[i]);
+      Serial.println();
+    }
+
+    // 正連著這台就重開，讓它重新跑重連流程。不能用 g_conn_bda_valid：那個旗標只在
+    // 剛連上那一圈 loop 有效，之後就清掉了。
+    if (a2dp_source.is_connected() && memcmp(*a2dp_source.get_last_peer_address(), bda, 6) == 0) {
+      delay(200);
+      ESP.restart();
+    }
+    return;
+  }
+  Serial.println("[CMD] 未知指令（可用：forget XX:XX:XX:XX:XX:XX）");
+}
+
+// 非阻塞讀 USB Serial 湊行；上限 64 bytes，超長丟整行。
+static void pollSerialCommand() {
+  static char buf[64];
+  static size_t idx = 0;
+  static bool overflow = false;
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\r') continue;
+    if (c == '\n') {
+      if (!overflow && idx > 0) {
+        buf[idx] = '\0';
+        handleSerialCommand(buf);
+      }
+      idx = 0;
+      overflow = false;
+      continue;
+    }
+    if (idx < sizeof(buf) - 1) {
+      buf[idx++] = c;
+    } else {
+      overflow = true;
+    }
+  }
+}
+
 // ---- 配對診斷紀錄 NVS（namespace "bt_bridge" / key "diag"）----
 static void diag_load() {
   uint8_t buf[1 + DIAG_TEXT * DIAG_MAX];
@@ -830,6 +909,7 @@ void loop() {
   static uint32_t boot_down_ms = 0;
 
   diag_drain();
+  pollSerialCommand();
   pollNowPlayingFromS3();
   sendDueRnNotifications();
   drainWheelKeys();

@@ -151,6 +151,70 @@ static void test_serialize_roundtrip() {
   assert(r.count == 0);
 }
 
+// K7 known_remove：刪中間、刪第一台、刪最後一台、刪不存在、刪到 count=0
+static void test_remove() {
+  KnownDevices k;
+  uint8_t d[3][6];
+  for (int i = 0; i < 3; i++) mk(d[i], (uint8_t)(i + 1));
+  for (int i = 0; i < 3; i++) known_touch(k, d[i]);  // [d2, d1, d0]
+
+  // 刪中間那台（d1，在索引 1）
+  assert(known_remove(k, d[1]));
+  assert(k.count == 2);
+  assert(known_find(k, d[2]) == 0);
+  assert(known_find(k, d[0]) == 1);
+  assert(known_find(k, d[1]) == -1);
+
+  // 刪不存在 → false，清單完全不變
+  k.cursor = 1;  // 前一步刪除已把 cursor 歸 0，設成非 0 才驗得出「找不到時 cursor 也不動」
+  KnownDevices snapshot = k;
+  assert(!known_remove(k, d[1]));
+  assert(k.count == snapshot.count);
+  assert(memcmp(k.addr, snapshot.addr, sizeof(k.addr)) == 0);
+  assert(k.cursor == snapshot.cursor);
+
+  // 刪第一台
+  assert(known_remove(k, d[2]));
+  assert(k.count == 1);
+  assert(known_find(k, d[0]) == 0);
+
+  // 刪最後一台 → count=0
+  assert(known_remove(k, d[0]));
+  assert(k.count == 0);
+}
+
+// K8 parse_bda：大小寫 hex、長度/冒號/非 hex 失敗
+static void test_parse_bda() {
+  uint8_t out[6], expect[6] = {0x00, 0x7F, 0x1D, 0x26, 0x8F, 0x2E};
+
+  const char* upper = "00:7F:1D:26:8F:2E";
+  assert(parse_bda(upper, strlen(upper), out));
+  assert(memcmp(out, expect, 6) == 0);
+
+  const char* lower = "00:7f:1d:26:8f:2e";
+  assert(parse_bda(lower, strlen(lower), out));
+  assert(memcmp(out, expect, 6) == 0);
+
+  const char* mixed = "00:7F:1d:26:8F:2e";
+  assert(parse_bda(mixed, strlen(mixed), out));
+  assert(memcmp(out, expect, 6) == 0);
+
+  const char* too_short = "00:7F:1D:26:8F:2";   // 16 字元
+  assert(!parse_bda(too_short, strlen(too_short), out));
+
+  const char* too_long = "00:7F:1D:26:8F:2E0";  // 18 字元
+  assert(!parse_bda(too_long, strlen(too_long), out));
+
+  const char* bad_colon = "00:7F:1D:26:8F2E";    // 冒號位置錯（17 字元）
+  assert(!parse_bda(bad_colon, strlen(bad_colon), out));
+
+  const char* dashes = "00-7F-1D-26-8F-2E";      // 17 字元但分隔符不是冒號（上面那個其實是 16 字元，被長度擋掉，測不到冒號檢查）
+  assert(!parse_bda(dashes, strlen(dashes), out));
+
+  const char* non_hex = "00:7F:1D:26:8F:GZ";     // 非 hex 字元
+  assert(!parse_bda(non_hex, strlen(non_hex), out));
+}
+
 int main() {
   test_touch_order();
   test_touch_evicts_oldest();
@@ -158,6 +222,8 @@ int main() {
   test_rotation_unknown_current();
   test_rotation_edge_counts();
   test_serialize_roundtrip();
+  test_remove();
+  test_parse_bda();
   printf("ALL PASS\n");
   return 0;
 }
