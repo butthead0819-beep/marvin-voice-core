@@ -1,0 +1,234 @@
+"""tests/test_icy_meta.py — marvin_voice_core/icy_meta.py 的純函式/純類別測試。
+
+驗：
+(1) truncate_utf8：中文不切半字、ASCII 不超過原樣
+(2) build_now_playing_payload：欄位數/順序、清掉控制字元、dur/pos 換算、pos 上下限、
+    None info → state S、track_id 隨 start_time 換歌而變
+(3) IcyInterleaver：用一個獨立的 ICY 解析函式（規格的解碼方，不複製被測的編碼邏輯）
+    驗證音訊還原、完整/空區塊的送出時機
+"""
+from __future__ import annotations
+
+from marvin_voice_core.icy_meta import (
+    ALBUM_MAX_BYTES,
+    ARTIST_MAX_BYTES,
+    TITLE_MAX_BYTES,
+    IcyInterleaver,
+    build_now_playing_payload,
+    truncate_utf8,
+)
+
+
+# ---------- truncate_utf8 ----------
+
+def test_truncate_utf8_chinese_does_not_split_char():
+    s = "歌" * 41  # 每個「歌」3 bytes，41*3=123 > 120
+    out = truncate_utf8(s, 120)
+    assert len(out.encode("utf-8")) <= 120
+    # 截斷必須落在字元邊界：120/3=40 整，應該剛好拿到 40 個字
+    assert out == "歌" * 40
+
+
+def test_truncate_utf8_ascii_not_over_original():
+    s = "hello world"
+    assert truncate_utf8(s, 120) == s
+
+
+def test_truncate_utf8_ascii_cuts_to_exact_byte_len():
+    s = "a" * 10
+    assert truncate_utf8(s, 5) == "a" * 5
+
+
+# ---------- build_now_playing_payload ----------
+
+def test_payload_none_info_has_8_fields_and_state_s():
+    payload = build_now_playing_payload(None, None, 100.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 8
+    assert parts[0] == "M1"
+    assert parts[1] == ""
+    assert parts[2] == "0"
+    assert parts[3] == "0"
+    assert parts[4] == "S"
+    assert parts[5] == parts[6] == parts[7] == ""
+
+
+def test_payload_field_order_and_count():
+    info = {"title": "Song", "artist": "Artist", "album": "Album", "duration": 200.0}
+    payload = build_now_playing_payload(info, 1000.0, 1050.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 8
+    assert parts[0] == "M1"
+    assert parts[4] == "P"
+    assert parts[5] == "Song"
+    assert parts[6] == "Artist"
+    assert parts[7] == "Album"
+
+
+def test_payload_title_control_chars_cleaned():
+    info = {"title": "Bad\x1fTitle\nHere\r\x00", "duration": 100.0}
+    payload = build_now_playing_payload(info, None, 0.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 8
+    assert "\n" not in parts[5] and "\r" not in parts[5] and "\x00" not in parts[5]
+
+
+def test_payload_dur_pos_conversion():
+    info = {"title": "T", "duration": 200.0}
+    payload = build_now_playing_payload(info, 1000.0, 1010.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert parts[2] == "200000"
+    assert parts[3] == "10000"
+
+
+def test_payload_pos_clamped_to_duration():
+    info = {"title": "T", "duration": 5.0}
+    payload = build_now_playing_payload(info, 1000.0, 1999.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert parts[3] == "5000"
+
+
+def test_payload_pos_clamped_to_zero_lower_bound():
+    info = {"title": "T", "duration": 5.0}
+    payload = build_now_playing_payload(info, 1000.0, 990.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert parts[3] == "0"
+
+
+def test_payload_pos_zero_when_no_start_time():
+    info = {"title": "T", "duration": 5.0}
+    payload = build_now_playing_payload(info, None, 1999.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert parts[3] == "0"
+
+
+def test_payload_missing_duration_is_zero():
+    info = {"title": "T"}
+    payload = build_now_playing_payload(info, 1000.0, 1010.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert parts[2] == "0"
+
+
+def test_payload_track_id_changes_with_start_time():
+    info = {"title": "Same Title"}
+    p1 = build_now_playing_payload(info, 1000.0, 1000.0)
+    p2 = build_now_playing_payload(info, 2000.0, 2000.0)
+    id1 = p1.decode("utf-8").split("\x1f")[1]
+    id2 = p2.decode("utf-8").split("\x1f")[1]
+    assert id1 != id2
+
+
+def test_payload_track_id_same_for_same_track():
+    info = {"title": "Same Title"}
+    p1 = build_now_playing_payload(info, 1000.0, 1000.0)
+    p2 = build_now_playing_payload(info, 1000.0, 1050.0)
+    id1 = p1.decode("utf-8").split("\x1f")[1]
+    id2 = p2.decode("utf-8").split("\x1f")[1]
+    assert id1 == id2
+
+
+def test_payload_fields_truncated_to_max_bytes():
+    info = {"title": "A" * 300, "artist": "B" * 300, "album": "C" * 300}
+    payload = build_now_playing_payload(info, 1.0, 1.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts[5].encode("utf-8")) <= TITLE_MAX_BYTES
+    assert len(parts[6].encode("utf-8")) <= ARTIST_MAX_BYTES
+    assert len(parts[7].encode("utf-8")) <= ALBUM_MAX_BYTES
+
+
+# ---------- IcyInterleaver：獨立 ICY 解析（規格解碼方，不複製被測編碼邏輯） ----------
+
+def _icy_decode(stream: bytes, metaint: int):
+    """依 ICY 規格把音訊 bytes 跟 metadata 區塊分開。回傳 (audio_bytes, [meta_payloads])。
+
+    規格：每 metaint bytes 音訊後跟一個長度 byte L，L*16 bytes 的 metadata（含補零），
+    L=0 代表沒有 metadata（空區塊）。
+    """
+    audio = bytearray()
+    metas = []
+    i = 0
+    n = len(stream)
+    while i < n:
+        take = min(metaint, n - i)
+        audio += stream[i:i + take]
+        i += take
+        if i >= n:
+            break
+        length_byte = stream[i]
+        i += 1
+        if length_byte > 0:
+            block = stream[i:i + length_byte * 16]
+            i += length_byte * 16
+            metas.append(block.rstrip(b"\x00"))
+    return bytes(audio), metas
+
+
+def _feed_in_pieces(interleaver, audio: bytes, payload: bytes, now: float, piece_sizes):
+    out = bytearray()
+    offset = 0
+    for size in piece_sizes:
+        chunk = audio[offset:offset + size]
+        if not chunk:
+            break
+        out += interleaver.feed(chunk, payload, now)
+        offset += size
+    if offset < len(audio):
+        out += interleaver.feed(audio[offset:], payload, now)
+    return bytes(out)
+
+
+def test_interleaver_audio_bytes_round_trip_arbitrary_chunking():
+    metaint = 10
+    audio = bytes(range(256)) * 2  # 512 bytes，多個 metaint 邊界
+    interleaver = IcyInterleaver(metaint=metaint, full_refresh_s=5.0)
+    payload = b"M1\x1f1\x1f1000\x1f0\x1fP\x1ftitle\x1fartist\x1falbum"
+    # chunk 大小包含 1 byte chunk 跟跨多個邊界的大 chunk
+    piece_sizes = [1, 1, 1, 7, 33, 100, 50]
+    out = _feed_in_pieces(interleaver, audio, payload, 0.0, piece_sizes)
+    decoded_audio, _ = _icy_decode(out, metaint)
+    assert decoded_audio == audio
+
+
+def test_interleaver_first_block_is_full_payload():
+    metaint = 10
+    audio = b"x" * 10
+    interleaver = IcyInterleaver(metaint=metaint, full_refresh_s=5.0)
+    payload = b"M1\x1f1\x1f1000\x1f0\x1fP\x1ftitle\x1fartist\x1falbum"
+    out = interleaver.feed(audio, payload, 0.0)
+    _, metas = _icy_decode(out, metaint)
+    assert len(metas) == 1
+    assert metas[0] == payload
+
+
+def test_interleaver_pos_only_change_within_refresh_window_is_empty():
+    metaint = 10
+    interleaver = IcyInterleaver(metaint=metaint, full_refresh_s=5.0)
+    payload1 = b"M1\x1f1\x1f1000\x1f0\x1fP\x1ftitle\x1fartist\x1falbum"
+    payload2 = b"M1\x1f1\x1f1000\x1f500\x1fP\x1ftitle\x1fartist\x1falbum"  # 只有 pos 不同
+    out1 = interleaver.feed(b"x" * 10, payload1, 0.0)
+    out2 = interleaver.feed(b"x" * 10, payload2, 1.0)  # 1 秒後，未滿 5 秒
+    _, metas1 = _icy_decode(out1, metaint)
+    _, metas2 = _icy_decode(out2, metaint)
+    assert metas1 == [payload1]
+    assert metas2 == []  # 空區塊，不是完整 payload
+
+
+def test_interleaver_title_change_sends_full_immediately():
+    metaint = 10
+    interleaver = IcyInterleaver(metaint=metaint, full_refresh_s=5.0)
+    payload1 = b"M1\x1f1\x1f1000\x1f0\x1fP\x1ftitle-A\x1fartist\x1falbum"
+    payload2 = b"M1\x1f2\x1f1000\x1f0\x1fP\x1ftitle-B\x1fartist\x1falbum"
+    interleaver.feed(b"x" * 10, payload1, 0.0)
+    out2 = interleaver.feed(b"x" * 10, payload2, 0.1)  # 遠小於 5 秒，但內容變了
+    _, metas2 = _icy_decode(out2, metaint)
+    assert metas2 == [payload2]
+
+
+def test_interleaver_full_refresh_after_5s_even_if_unchanged():
+    metaint = 10
+    interleaver = IcyInterleaver(metaint=metaint, full_refresh_s=5.0)
+    payload = b"M1\x1f1\x1f1000\x1f0\x1fP\x1ftitle\x1fartist\x1falbum"
+    interleaver.feed(b"x" * 10, payload, 0.0)
+    out2 = interleaver.feed(b"x" * 10, payload, 5.5)
+    _, metas2 = _icy_decode(out2, metaint)
+    assert metas2 == [payload]

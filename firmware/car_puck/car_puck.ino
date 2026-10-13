@@ -71,6 +71,7 @@
 #include <MP3DecoderHelix.h>   // pschatzmann/arduino-libhelix — decode-only(不接管連線),
                                 // 塞進既有 audioNetworkTask(填ring buffer)/audioPlaybackTask
                                 // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
+#include "icy_demux.h"         // 車機顯示曲名第一刀：拆 /audio_stream 夾帶的 ICY in-band metadata
 
 // ========== 你要填的 ==========
 #define STEP 10  // ← 從 1 開始，每步綠了再 +1（10＝STEP 10 混音數學測試，見檔頭說明；
@@ -134,6 +135,11 @@ const int   MARVIN_LOCAL_PORT = 8790;
 #define I2S_AMP_DIN   7
 #define I2S_MIC_PORT  I2S_NUM_0
 #define I2S_SPK_PORT  I2S_NUM_1   // 喇叭用獨立 I2S 埠，跟麥克風 I2S_NUM_0 不共用時脈
+
+// ========== 跟 WROOM（bt_bridge）之間的 UART（車機顯示曲名/方向盤按鍵通道）==========
+// S3 GPIO17 → WROOM GPIO16、WROOM GPIO17 → S3 GPIO18、GND 共用。
+#define PIN_WROOM_UART_TX 17
+#define PIN_WROOM_UART_RX 18
 
 // ========== 錄音參數 ==========
 #define SAMPLE_RATE   16000          // 16kHz mono 16-bit（STT 夠用、省 RAM）
@@ -539,12 +545,36 @@ static size_t ringRead(uint8_t* out, size_t maxLen) {
   return want;
 }
 
+// 車機顯示曲名：icy_feed() 湊到一筆完整 metadata 就呼叫這裡轉送給 WROOM（見
+// icy_demux.h 的 on_meta 簽名）。只有第一次或換歌（比對前 19 bytes＝"M1␟"+16 hex
+// track_id，不含後面每次都變的 pos_ms）才印 Serial log——這裡跑在 audioNetworkTask，
+// HWCDC 下 Serial.printf 可能阻塞（見 STREAM_DEBUG_PRINT 註解），能少印就少印。
+static uint8_t g_lastMetaPrefix[19];
+static size_t g_lastMetaPrefixLen = 0;
+static bool g_haveLastMeta = false;
+
+static void onIcyMeta(const uint8_t* payload, size_t len, void* /*ctx*/) {
+  Serial1.write(payload, len);
+  Serial1.write('\n');
+  size_t cmpLen = len < sizeof(g_lastMetaPrefix) ? len : sizeof(g_lastMetaPrefix);
+  bool changed = !g_haveLastMeta || cmpLen != g_lastMetaPrefixLen ||
+                 memcmp(payload, g_lastMetaPrefix, cmpLen) != 0;
+  if (changed) {
+    memcpy(g_lastMetaPrefix, payload, cmpLen);
+    g_lastMetaPrefixLen = cmpLen;
+    g_haveLastMeta = true;
+    Serial.printf("[Meta] %.*s\n", (int)len, payload);
+  }
+}
+
 void audioNetworkTask(void* pv) {
   Serial.println("[Stream] audioNetworkTask 已啟動");
   // 2026-07-25：512→4096。實測 idle 靜音期間 ring buffer 仍穩定下探（96KB→3.8KB/~2s，
   // 實際補貨速率只有需求的 ~75%），優先權已經調過還是一樣，指向每次 readBytes 的 TLS
   // 解密呼叫開銷才是瓶頸，不是排程。加大單次讀取量減少呼叫次數換 throughput。
   uint8_t buf[4096];
+  static uint8_t audioBuf[4096];   // icy_feed() 拆出的音訊 bytes 落在這裡，再交給 ringWrite
+  IcyDemux demux;
   for (;;) {
     if (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
 
@@ -603,18 +633,24 @@ void audioNetworkTask(void* pv) {
     // lockedReadLine/lockedReadBytes（見上方定義），逾時改由呼叫端明講的 timeoutMs
     // 參數控制，setTimeout 已無作用、拿掉。
     String req = String("GET /audio_stream?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
-                 "Host: " + host + "\r\nConnection: close\r\n\r\n";
+                 "Host: " + host + "\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n";
     LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
 
     String status;
     lockedReadLine(client, status, 20000);
     bool ok200 = status.indexOf("200") > 0;
     bool chunked = false;
+    uint32_t metaint = 0;
     while (client.connected()) {
       String h;
       if (!lockedReadLine(client, h, 20000)) break;   // 逾時/斷線＝跳出，走下面的重連
       if (h.length() == 0) break;                     // 空行＝標頭結束
       if (h.indexOf("chunked") >= 0) chunked = true;
+      String hl = h; hl.toLowerCase();
+      int metaIdx = hl.indexOf("icy-metaint:");
+      if (metaIdx >= 0) {
+        metaint = (uint32_t)strtoul(hl.c_str() + metaIdx + strlen("icy-metaint:"), nullptr, 10);
+      }
     }
 
     if (!ok200 || !chunked) {
@@ -625,6 +661,7 @@ void audioNetworkTask(void* pv) {
       continue;
     }
     Serial.println("[Stream] /audio_stream 連上，開始灌 buffer");
+    icy_init(demux, metaint);   // 沒看到 icy-metaint header 時 metaint=0，全部當音訊
     // 2026-07-25 raw PCM 時代的邏輯：ring 還有存量就不強制重蓄，讓 audioPlaybackTask
     // 繼續吃舊資料撐過重連、聽不出斷點。2026-07-26 MP3 化後這個優化不能再用——每個
     // HTTP 連線在 server 端都是全新一份 Mp3StreamEncoder，舊連線尾巴的 bytes 接上新
@@ -669,7 +706,8 @@ void audioNetworkTask(void* pv) {
           vTaskDelay(pdMS_TO_TICKS(1));
           continue;
         }
-        ringWrite(buf, n);       // 只塞 buffer，不碰 I2S——播放節奏交給 audioPlaybackTask
+        size_t an = icy_feed(demux, buf, n, audioBuf, onIcyMeta, nullptr);
+        if (an) ringWrite(audioBuf, an);   // 只塞 buffer，不碰 I2S——播放節奏交給 audioPlaybackTask
         remain -= (long)n;
 
 #if STREAM_DEBUG_PRINT
@@ -1614,6 +1652,12 @@ void setup() {
   delay(500);
   Serial.println("\n=== Marvin car_puck bring-up ===");
 
+  // 跟 WROOM 的 UART（曲名送出、方向盤按鍵收回），接線見 PIN_WROOM_UART_* 定義前註解。
+  // TX buffer 加大到 1024：一筆 metadata 約 400 bytes，預設 128 會讓 audioNetworkTask
+  // 在 Serial1.write 裡等 UART 吐完（115200 下約 30ms）；放得下就是純 memcpy 不阻塞。
+  Serial1.setTxBufferSize(1024);
+  Serial1.begin(115200, SERIAL_8N1, PIN_WROOM_UART_RX, PIN_WROOM_UART_TX);
+
   setLed(LED_BOOT);
   neopixelWrite(PIN_RGB, 40, 28, 0);   // 立刻亮黃：setup 期間 loop 還沒跑
 
@@ -1704,6 +1748,33 @@ void setup() {
   Serial.printf("[READY] STEP=%d\n", STEP);
 }
 
+// 方向盤按鍵通道（第二刀預備）：WROOM 收到車機 AVRCP passthru 後經 UART2 轉送過來，
+// 這裡非阻塞湊一行（'\n' 結尾，上限 64 bytes，超長丟棄整行），這階段只印 log，
+// 不做任何播放控制。
+static void pollWheelFromWroom() {
+  static char lineBuf[64];
+  static size_t lineLen = 0;
+  static bool overflow = false;
+  while (Serial1.available() > 0) {
+    char c = (char)Serial1.read();
+    if (c == '\n') {
+      if (!overflow && lineLen > 0) {
+        lineBuf[lineLen] = '\0';
+        Serial.printf("[Wheel] %s\n", lineBuf);
+      }
+      lineLen = 0;
+      overflow = false;
+      continue;
+    }
+    if (c == '\r') continue;
+    if (lineLen >= sizeof(lineBuf) - 1) {
+      overflow = true;
+      continue;
+    }
+    lineBuf[lineLen++] = c;
+  }
+}
+
 void loop() {
 #if STEP == 3 || STEP == 4
   // STEP 3/4 只驗按鍵通不通（印一下）。STEP 5 的 PTT 改走 hold-to-talk，
@@ -1716,6 +1787,7 @@ void loop() {
 #if STEP >= 5
   pttHoldToTalk();   // 按住說話、放開送出
 #endif
+  pollWheelFromWroom();   // 方向盤按鍵通道（這階段只印 log）
   // 心跳 2026-07-25 起改由 carHeartbeatTask（core 0 專用任務）驅動，不再從這裡呼叫。
   updateLed();       // 狀態燈動畫（非阻塞）
   delay(5);
