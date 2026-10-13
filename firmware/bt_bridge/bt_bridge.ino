@@ -62,6 +62,7 @@
 #include "bridge_dsp.h"
 #include "known_devices.h"
 #include "diag_log.h"
+#include "diag_summary.h"
 #include "cod_filter.h"
 #include "now_playing.h"
 #include "avrc_meta_wrap.h"
@@ -77,6 +78,12 @@ static uint32_t g_diag_q_drop = 0;
 static portMUX_TYPE g_diag_mux = portMUX_INITIALIZER_UNLOCKED;
 static DiagLog g_diag;
 static A2DPNoVolumeControl g_no_vol;
+
+// ---- 每次開機統計摘要（見 diag_summary.h）：固定一筆，隨時覆寫，不會被 g_diag 環形
+// 擠掉。BT/BTC task 只能改計數欄位並設 g_sum_dirty，不准寫 NVS、不准 print；
+// loop() 負責存。----
+DiagSummary g_sum;
+volatile bool g_sum_dirty = false;
 
 static void diag_post(const char* text) {
   portENTER_CRITICAL(&g_diag_mux);
@@ -396,6 +403,10 @@ class BridgeSource : public BluetoothA2DPSource {
         snprintf(d, sizeof(d), "R %d", (int)rc->reg_ntf.event_id);
         diag_post(d);
       }
+      if (rc->reg_ntf.event_id < 16) {
+        g_sum.rn_mask |= (uint16_t)(1u << rc->reg_ntf.event_id);
+        g_sum_dirty = true;
+      }
       NowPlaying np;
       avrc_meta_get(np);
       esp_avrc_rn_param_t param;
@@ -428,14 +439,17 @@ class BridgeSource : public BluetoothA2DPSource {
         g_rn_pos_registered = false;
       }
     } else if (event == ESP_AVRC_TG_REMOTE_FEATURES_EVT) {
+      auto* rc = (esp_avrc_tg_cb_param_t*)p_param;
       if (!s_rmt_feats_logged) {
         s_rmt_feats_logged = true;
-        auto* rc = (esp_avrc_tg_cb_param_t*)p_param;
         char d[DIAG_TEXT];
         snprintf(d, sizeof(d), "Rf %lx %x", (unsigned long)rc->rmt_feats.feat_mask,
                  (unsigned)rc->rmt_feats.ct_feat_flag);
         diag_post(d);
       }
+      g_sum.rf_feat = (uint32_t)rc->rmt_feats.feat_mask;
+      g_sum.rf_ct = (uint16_t)rc->rmt_feats.ct_feat_flag;
+      g_sum_dirty = true;
     }
     BluetoothA2DPSource::av_hdl_avrc_tg_evt(event, p_param);
   }
@@ -582,7 +596,12 @@ static void handleSerialCommand(const char* line) {
     }
     return;
   }
-  Serial.println("[CMD] 未知指令（可用：forget XX:XX:XX:XX:XX:XX）");
+  if (strcmp(line, "sum") == 0) {
+    char out[160];
+    Serial.printf("[SUM] 本次 %s\n", ds_format(g_sum, out, sizeof(out)));
+    return;
+  }
+  Serial.println("[CMD] 未知指令（可用：forget XX:XX:XX:XX:XX:XX、sum）");
 }
 
 // 非阻塞讀 USB Serial 湊行；上限 64 bytes，超長丟整行。
@@ -641,6 +660,44 @@ static void diag_store() {
   if (err == ESP_OK) err = nvs_commit(h);
   nvs_close(h);
   if (err != ESP_OK) Serial.printf("[DIAG] 寫入失敗 err=%d\n", (int)err);
+}
+
+// ---- 每次開機統計摘要 NVS（namespace "bt_bridge" / key "sum0" 本次、"sum1" 上次）----
+static void sum_load() {
+  uint8_t buf[sizeof(DiagSummary)];
+  nvs_handle_t h;
+  if (nvs_open("bt_bridge", NVS_READONLY, &h) == ESP_OK) {
+    size_t len = sizeof(buf);
+    if (nvs_get_blob(h, "sum0", buf, &len) == ESP_OK && len == sizeof(DiagSummary)) {
+      DiagSummary prev;
+      memcpy(&prev, buf, sizeof(prev));
+      nvs_close(h);
+      nvs_handle_t hw;
+      if (nvs_open("bt_bridge", NVS_READWRITE, &hw) == ESP_OK) {
+        nvs_set_blob(hw, "sum1", &prev, sizeof(prev));
+        nvs_commit(hw);
+        nvs_close(hw);
+      }
+      char line[160];
+      Serial.printf("[SUM] 上次開機 %s\n", ds_format(prev, line, sizeof(line)));
+      return;
+    }
+    nvs_close(h);
+  }
+  Serial.println("[SUM] 無上次開機紀錄");
+}
+
+static uint32_t g_sum_last_store_ms = 0;
+static void sum_store() {
+  nvs_handle_t h;
+  if (nvs_open("bt_bridge", NVS_READWRITE, &h) != ESP_OK) {
+    Serial.println("[SUM] 寫入失敗（nvs_open）");
+    return;
+  }
+  esp_err_t err = nvs_set_blob(h, "sum0", &g_sum, sizeof(g_sum));
+  if (err == ESP_OK) err = nvs_commit(h);
+  nvs_close(h);
+  if (err != ESP_OK) Serial.printf("[SUM] 寫入失敗 err=%d\n", (int)err);
 }
 
 // loop() 內取出佇列並寫入紀錄；BT callback 不直接呼叫這裡。
@@ -767,6 +824,10 @@ bool ssid_match_cb(const char* ssid, esp_bd_addr_t address, int rssi) {
 // ---- 方向盤按鍵：車機 AVRCP passthrough → 函式庫 callback（BT app task）→ 這裡只推
 // 進 ring，不做任何播放控制（第二刀才接），交給 loop() 的 drainWheelKeys() 轉送 S3。----
 static void on_wheel_key(uint8_t key, bool isReleased) {
+  if (!isReleased) {
+    ds_add_key(g_sum, key);
+    g_sum_dirty = true;
+  }
   uint8_t next = (uint8_t)((g_wheel_q_head + 1) % WHEEL_Q);
   if (next == g_wheel_q_tail) return;  // 滿了，丟（這階段只是 log 通道）
   g_wheel_q[g_wheel_q_head] = {key, isReleased};
@@ -810,6 +871,8 @@ static void pollNowPlayingFromS3() {
           bool stateChanged = !firstTime && g_np.state != np.state;
           g_np = np;
           avrc_meta_set(np);
+          ds_inc(g_sum.meta_lines);
+          g_sum_dirty = true;
           if (firstTime) diag_loop_add("M ok");
           if (firstTime || trackChanged) {
             Serial.printf("[Meta] %s / %s\n", np.title, np.artist);
@@ -889,6 +952,22 @@ static void diagLogFirstAvrcHits() {
     g_diag_unserved_status_logged = true;
     diag_loop_add("G nov s");
   }
+
+  uint32_t raw_elem = avrc_meta_hits_elem();
+  uint32_t raw_stat = avrc_meta_hits_status();
+  uint32_t raw_nov_e = avrc_meta_unserved_elem();
+  uint32_t raw_nov_s = avrc_meta_unserved_status();
+  uint16_t elem = (uint16_t)(raw_elem > 0xFFFF ? 0xFFFF : raw_elem);
+  uint16_t stat = (uint16_t)(raw_stat > 0xFFFF ? 0xFFFF : raw_stat);
+  uint16_t nov_e = (uint16_t)(raw_nov_e > 0xFFFF ? 0xFFFF : raw_nov_e);
+  uint16_t nov_s = (uint16_t)(raw_nov_s > 0xFFFF ? 0xFFFF : raw_nov_s);
+  if (elem != g_sum.g_elem || stat != g_sum.g_stat || nov_e != g_sum.nov_elem || nov_s != g_sum.nov_stat) {
+    g_sum.g_elem = elem;
+    g_sum.g_stat = stat;
+    g_sum.nov_elem = nov_e;
+    g_sum.nov_stat = nov_s;
+    g_sum_dirty = true;
+  }
 }
 
 // ---- 連線狀態 callback（只設旗標，reconnect 由 loop() 處理）----
@@ -943,6 +1022,8 @@ void setup() {
   // 已配對清單在 start() 之後才讀：start() 內部已 init NVS，我們這邊再 init 會讓函式庫 ESP_ERROR_CHECK 失敗
   known_load();
   diag_load();
+  sum_load();
+  g_sum = DiagSummary();
   g_pairing_mode = a2dp_source.pairing_mode();
   Serial.printf("[BT] 模式：%s\n", g_pairing_mode ? "配對(掃描)" : "重連已知裝置");
   if (!g_pairing_mode) {
@@ -970,6 +1051,19 @@ void loop() {
   diagLogFirstAvrcHits();
   hfp_ptt_poll();
 
+  // 統計摘要存 NVS：有變化且距上次存 >=3s，或每 60s 定期存一次（更新 uptime）。
+  {
+    uint32_t nowMs = millis();
+    bool dueDirty = g_sum_dirty && (nowMs - g_sum_last_store_ms >= 3000);
+    bool duePeriodic = (nowMs - g_sum_last_store_ms >= 60000);
+    if (dueDirty || duePeriodic) {
+      g_sum.uptime_s = nowMs / 1000;
+      sum_store();
+      g_sum_dirty = false;
+      g_sum_last_store_ms = nowMs;
+    }
+  }
+
   if (g_connected_evt) {
     g_connected_evt = false;
     if (a2dp_source.arm_reconnect()) {
@@ -985,6 +1079,10 @@ void loop() {
     g_conn_bda_valid = false;
     g_conn_from = '?';
     Serial.printf("[BT] 連上來源=%c\n", conn_from);
+    g_sum.peer[0] = cur[3];
+    g_sum.peer[1] = cur[4];
+    g_sum.peer[2] = cur[5];
+    g_sum_dirty = true;
     if (!addr_is_zero(cur)) {
       known_touch(g_known, cur);
       known_save();

@@ -11,9 +11,13 @@
 
 #include "esp_hf_ag_api.h"
 #include "diag_log.h"
+#include "diag_summary.h"
 
 // bt_bridge.ino 內的 diag_loop_add() 把文字加進 g_diag 並存 NVS；移除其 static 以便這裡呼叫。
 extern void diag_loop_add(const char* text);
+// bt_bridge.ino 內的統計摘要全域變數：BTC task 這裡只改計數欄位並設 dirty，不寫 NVS、不印。
+extern DiagSummary g_sum;
+extern volatile bool g_sum_dirty;
 
 namespace {
 
@@ -63,6 +67,8 @@ void hfp_cb(esp_hf_cb_event_t event, esp_hf_cb_param_t* param) {
         memcpy(s_peer, param->conn_stat.remote_bda, 6);
         s_peer_valid = true;
       }
+      g_sum.hf_state = (uint8_t)param->conn_stat.state;
+      g_sum_dirty = true;
       q_push('c', (int32_t)param->conn_stat.state);
       break;
     }
@@ -72,6 +78,11 @@ void hfp_cb(esp_hf_cb_event_t event, esp_hf_cb_param_t* param) {
       if (param->audio_stat.state == ESP_HF_AUDIO_STATE_DISCONNECTED) {
         s_sco_open_ms = 0;
       }
+      if (param->audio_stat.state == ESP_HF_AUDIO_STATE_CONNECTED ||
+          param->audio_stat.state == ESP_HF_AUDIO_STATE_CONNECTED_MSBC) {
+        ds_inc(g_sum.sco_open);
+        g_sum_dirty = true;
+      }
       q_push('a', (int32_t)param->audio_stat.state);
       break;
     }
@@ -79,11 +90,14 @@ void hfp_cb(esp_hf_cb_event_t event, esp_hf_cb_param_t* param) {
     case ESP_HF_BVRA_RESPONSE_EVT: {
       q_push('v', (int32_t)param->vra_rep.value);
       if (param->vra_rep.value == ESP_HF_VR_STATE_ENABLED) {
+        ds_inc(g_sum.bvra_on);
         esp_hf_ag_audio_connect(param->vra_rep.remote_addr);
         s_sco_open_ms = millis();
       } else {
+        ds_inc(g_sum.bvra_off);
         esp_hf_ag_audio_disconnect(param->vra_rep.remote_addr);
       }
+      g_sum_dirty = true;
       break;
     }
 
@@ -188,7 +202,8 @@ void hfp_ptt_poll() {
     s_q_tail = (uint8_t)((tail + 1) % HFP_Q);
 
     Serial.printf("[HFP] %c %ld\n", ev.kind, (long)ev.val);
-    if (diag_budget_take(s_diag_used, HFP_DIAG_MAX)) {
+    // 'u'（未知 AT）不寫進 DIAG 環形：一趟車可能狂洗，會把曲名/語音鍵等紀錄擠掉。
+    if (ev.kind != 'u' && diag_budget_take(s_diag_used, HFP_DIAG_MAX)) {
       char d[DIAG_TEXT];
       snprintf(d, sizeof(d), "H %c %ld", ev.kind, (long)ev.val);
       diag_loop_add(d);
@@ -202,6 +217,8 @@ void hfp_ptt_poll() {
     esp_hf_ag_vra_control(s_peer, ESP_HF_VR_STATE_DISABLED);
     esp_hf_ag_audio_disconnect(s_peer);
     s_sco_open_ms = 0;
+    ds_inc(g_sum.sco_timeout);
+    g_sum_dirty = true;
     if (diag_budget_take(s_diag_used, HFP_DIAG_MAX)) diag_loop_add("H T");
   }
 
