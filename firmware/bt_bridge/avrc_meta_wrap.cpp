@@ -49,6 +49,8 @@ static NowPlaying s_np;
 static portMUX_TYPE s_np_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_hits_elem = 0;
 static uint32_t s_hits_status = 0;
+static volatile uint32_t s_unserved_elem = 0;
+static volatile uint32_t s_unserved_status = 0;
 // __wrap_AVRC_BldResponse 跟 __wrap_BTA_AvMetaRsp 在 send_reject_response() 裡同一
 // task 緊接著呼叫（中間不會被其他事件插進來），這個旗標不需要鎖。
 static bool s_upgrade_next = false;
@@ -76,6 +78,8 @@ void avrc_meta_get(NowPlaying& out) {
 
 uint32_t avrc_meta_hits_elem() { return s_hits_elem; }
 uint32_t avrc_meta_hits_status() { return s_hits_status; }
+uint32_t avrc_meta_unserved_elem() { return s_unserved_elem; }
+uint32_t avrc_meta_unserved_status() { return s_unserved_status; }
 
 extern "C" tAVRC_STS __wrap_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_rsp, void **pp_pkt) {
   if (p_rsp == nullptr || p_rsp->rsp.status != AVRC_STS_BAD_CMD ||
@@ -88,6 +92,11 @@ extern "C" tAVRC_STS __wrap_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_r
   np = s_np;
   portEXIT_CRITICAL(&s_np_mux);
   if (!np.valid) {
+    if (p_rsp->rsp.pdu == AVRC_PDU_GET_ELEMENT_ATTR) {
+      s_unserved_elem++;
+    } else {
+      s_unserved_status++;
+    }
     return __real_AVRC_BldResponse(handle, p_rsp, pp_pkt);
   }
 

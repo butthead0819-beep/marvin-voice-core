@@ -11,5 +11,10 @@ void avrc_meta_set(const NowPlaying& np);
 void avrc_meta_get(NowPlaying& out);
 uint32_t avrc_meta_hits_elem();
 uint32_t avrc_meta_hits_status();
+// 車機有問（pdu 0x20/0x30 走到拒絕路徑）但當下 !np.valid（WROOM 還沒收到 S3 曲目資訊）
+// 而放行原本拒絕的次數——用來跟 hits_elem/hits_status 分辨「車機沒來問」還是
+// 「來問了但沒資料」。
+uint32_t avrc_meta_unserved_elem();
+uint32_t avrc_meta_unserved_status();
 
 #endif  // AVRC_META_WRAP_H

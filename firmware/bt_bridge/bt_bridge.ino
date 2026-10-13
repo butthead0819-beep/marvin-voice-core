@@ -43,6 +43,18 @@
  *   DIAG "H <kind> <val>" 系列代碼（kind 即 hfp_ptt.cpp 事件佇列的 kind 字元）：
  *     c=連線狀態 a=音訊狀態 v=BVRA(語音辨識)值 u=未知AT d=DIAL A=ATA(接聽) h=CHUP(拒接)
  *     g=音量控制 e=其他事件；"H T" = SCO 開太久被安全逾時關掉。
+ *
+ * AVRCP 曲名診斷 DIAG 代碼（車機沒顯示曲名時用來分辨卡在哪一段）：
+ *   "M ok"   = pollNowPlayingFromS3 第一次從 S3 解析出曲目資訊成功（開機後僅記一次）。
+ *   "G elem"/"G stat" = 車機來問 GetElementAttributes/GetPlayStatus 且當下有曲目資訊可答。
+ *   "G nov e"/"G nov s" = 車機來問 GetElementAttributes/GetPlayStatus，但當下還沒曲目
+ *                         資訊（!np.valid），只能放行原本的拒絕——代表「車機有問，WROOM
+ *                         沒資料」，不是「車機根本沒來問」。
+ *   "R <id>" = 車機第一次對某個 event_id 送 AVRCP RegisterNotification（0–15，每個 id
+ *              開機後只記一次），確認車機有沒有訂閱 TRACK_CHANGE(2)/PLAY_STATUS_CHANGE(1)
+ *              等通知。
+ *   "Rf <feat_mask hex> <ct_feat_flag hex>" = 車機當 CT 的 AVRC 能力（SDP 探出來的），開機
+ *              後只記一次。
  */
 
 #include "BluetoothA2DPSource.h"
@@ -378,6 +390,12 @@ class BridgeSource : public BluetoothA2DPSource {
   void av_hdl_avrc_tg_evt(uint16_t event, void* p_param) override {
     if (event == ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT) {
       auto* rc = (esp_avrc_tg_cb_param_t*)p_param;
+      if (rc->reg_ntf.event_id < 16 && !(s_rn_event_seen & (1u << rc->reg_ntf.event_id))) {
+        s_rn_event_seen |= (1u << rc->reg_ntf.event_id);
+        char d[DIAG_TEXT];
+        snprintf(d, sizeof(d), "R %d", (int)rc->reg_ntf.event_id);
+        diag_post(d);
+      }
       NowPlaying np;
       avrc_meta_get(np);
       esp_avrc_rn_param_t param;
@@ -409,6 +427,15 @@ class BridgeSource : public BluetoothA2DPSource {
         g_rn_status_registered = false;
         g_rn_pos_registered = false;
       }
+    } else if (event == ESP_AVRC_TG_REMOTE_FEATURES_EVT) {
+      if (!s_rmt_feats_logged) {
+        s_rmt_feats_logged = true;
+        auto* rc = (esp_avrc_tg_cb_param_t*)p_param;
+        char d[DIAG_TEXT];
+        snprintf(d, sizeof(d), "Rf %lx %x", (unsigned long)rc->rmt_feats.feat_mask,
+                 (unsigned)rc->rmt_feats.ct_feat_flag);
+        diag_post(d);
+      }
     }
     BluetoothA2DPSource::av_hdl_avrc_tg_evt(event, p_param);
   }
@@ -416,10 +443,14 @@ class BridgeSource : public BluetoothA2DPSource {
  private:
   static int s_last_vol_logged;
   static int s_vol_diag_n;
+  static uint16_t s_rn_event_seen;
+  static bool s_rmt_feats_logged;
 };
 
 int BridgeSource::s_last_vol_logged = -1;
 int BridgeSource::s_vol_diag_n = 0;
+uint16_t BridgeSource::s_rn_event_seen = 0;
+bool BridgeSource::s_rmt_feats_logged = false;
 
 BridgeSource a2dp_source;
 
@@ -779,6 +810,7 @@ static void pollNowPlayingFromS3() {
           bool stateChanged = !firstTime && g_np.state != np.state;
           g_np = np;
           avrc_meta_set(np);
+          if (firstTime) diag_loop_add("M ok");
           if (firstTime || trackChanged) {
             Serial.printf("[Meta] %s / %s\n", np.title, np.artist);
           }
@@ -838,6 +870,8 @@ static void sendDueRnNotifications() {
 // 在車上證明車機真的有來問。
 static bool g_diag_elem_logged = false;
 static bool g_diag_status_logged = false;
+static bool g_diag_unserved_elem_logged = false;
+static bool g_diag_unserved_status_logged = false;
 static void diagLogFirstAvrcHits() {
   if (!g_diag_elem_logged && avrc_meta_hits_elem() > 0) {
     g_diag_elem_logged = true;
@@ -846,6 +880,14 @@ static void diagLogFirstAvrcHits() {
   if (!g_diag_status_logged && avrc_meta_hits_status() > 0) {
     g_diag_status_logged = true;
     diag_loop_add("G stat");
+  }
+  if (!g_diag_unserved_elem_logged && avrc_meta_unserved_elem() > 0) {
+    g_diag_unserved_elem_logged = true;
+    diag_loop_add("G nov e");
+  }
+  if (!g_diag_unserved_status_logged && avrc_meta_unserved_status() > 0) {
+    g_diag_unserved_status_logged = true;
+    diag_loop_add("G nov s");
   }
 }
 
