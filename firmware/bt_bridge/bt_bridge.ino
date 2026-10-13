@@ -34,6 +34,18 @@
  *   ⚠️ 少了 --wrap 旗標會連結失敗（__real_AVRC_BldResponse/__real_BTA_AvMetaRsp 找
  *   不到）——這是刻意的（見 avrc_meta_wrap.cpp），防止忘記加旗標卻燒進去一個靜默
  *   不顯示曲名的版本。
+ *
+ * AVRCP 曲名診斷 DIAG 代碼（車機沒顯示曲名時用來分辨卡在哪一段）：
+ *   "M ok"   = pollNowPlayingFromS3 第一次從 S3 解析出曲目資訊成功（開機後僅記一次）。
+ *   "G elem"/"G stat" = 車機來問 GetElementAttributes/GetPlayStatus 且當下有曲目資訊可答。
+ *   "G nov e"/"G nov s" = 車機來問 GetElementAttributes/GetPlayStatus，但當下沒有真曲目
+ *                         資訊，回了佔位資料（標題"Marvin"／song_len,song_pos=0xFFFFFFFF）
+ *                         ——代表「車機有問，WROOM 沒資料」，不是「車機根本沒來問」。
+ *   "R <id>" = 車機第一次對某個 event_id 送 AVRCP RegisterNotification（0–15，每個 id
+ *              開機後只記一次），確認車機有沒有訂閱 TRACK_CHANGE(2)/PLAY_STATUS_CHANGE(1)
+ *              等通知。
+ *   "Rf <feat_mask hex> <ct_feat_flag hex>" = 車機當 CT 的 AVRC 能力（SDP 探出來的），開機
+ *              後只記一次。
  */
 
 #include "BluetoothA2DPSource.h"
@@ -41,6 +53,7 @@
 #include "bridge_dsp.h"
 #include "known_devices.h"
 #include "diag_log.h"
+#include "diag_summary.h"
 #include "cod_filter.h"
 #include "now_playing.h"
 #include "avrc_meta_wrap.h"
@@ -55,6 +68,12 @@ static uint32_t g_diag_q_drop = 0;
 static portMUX_TYPE g_diag_mux = portMUX_INITIALIZER_UNLOCKED;
 static DiagLog g_diag;
 static A2DPNoVolumeControl g_no_vol;
+
+// ---- 每次開機統計摘要（見 diag_summary.h）：固定一筆，隨時覆寫，不會被 g_diag 環形
+// 擠掉。BT/BTC task 只能改計數欄位並設 g_sum_dirty，不准寫 NVS、不准 print；
+// loop() 負責存。----
+DiagSummary g_sum;
+volatile bool g_sum_dirty = false;
 
 static void diag_post(const char* text) {
   portENTER_CRITICAL(&g_diag_mux);
@@ -118,6 +137,11 @@ static volatile bool g_rn_status_due = false;    // 播放狀態變了，待送 
 static volatile bool g_rn_pos_force_due = false; // 換歌時位置也要立刻跟著送一次
 static volatile uint32_t g_rn_pos_interval_s = 1;
 static uint32_t g_rn_pos_last_sent_ms = 0;
+
+// ---- 回報給車機的播放狀態＝車機最後一次下的方向盤指令（WROOM 只要 A2DP 連著就一直送
+// 音訊，沒有自己的播放/暫停狀態）。on_wheel_key（BT app task）寫，av_hdl_avrc_tg_evt
+// （BT app task）跟 sendDueRnNotifications（loop()）讀，單一 byte 不需要鎖。----
+volatile uint8_t g_reported_playback = ESP_AVRC_PLAYBACK_PLAYING;
 
 // ---- 方向盤按鍵：on_wheel_key（BT app task）推進、loop() 取出——單生產者單消費者
 // ring，head 只被 producer 動、tail 只被 consumer 動，不需要鎖。滿了就丟（這階段只是
@@ -368,6 +392,16 @@ class BridgeSource : public BluetoothA2DPSource {
   void av_hdl_avrc_tg_evt(uint16_t event, void* p_param) override {
     if (event == ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT) {
       auto* rc = (esp_avrc_tg_cb_param_t*)p_param;
+      if (rc->reg_ntf.event_id < 16 && !(s_rn_event_seen & (1u << rc->reg_ntf.event_id))) {
+        s_rn_event_seen |= (1u << rc->reg_ntf.event_id);
+        char d[DIAG_TEXT];
+        snprintf(d, sizeof(d), "R %d", (int)rc->reg_ntf.event_id);
+        diag_post(d);
+      }
+      if (rc->reg_ntf.event_id < 16) {
+        g_sum.rn_mask |= (uint16_t)(1u << rc->reg_ntf.event_id);
+        g_sum_dirty = true;
+      }
       NowPlaying np;
       avrc_meta_get(np);
       esp_avrc_rn_param_t param;
@@ -375,12 +409,12 @@ class BridgeSource : public BluetoothA2DPSource {
       switch (rc->reg_ntf.event_id) {
         case ESP_AVRC_RN_TRACK_CHANGE:
           g_rn_track_registered = true;
-          memcpy(param.elm_id, np.track_id, 8);
+          np_fill_elm_id(np, param.elm_id);
           esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_TRACK_CHANGE, ESP_AVRC_RN_RSP_INTERIM, &param);
           return;
         case ESP_AVRC_RN_PLAY_STATUS_CHANGE:
           g_rn_status_registered = true;
-          param.playback = (np.state == 'P') ? ESP_AVRC_PLAYBACK_PLAYING : ESP_AVRC_PLAYBACK_STOPPED;
+          param.playback = (esp_avrc_playback_stat_t)g_reported_playback;
           esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_INTERIM, &param);
           return;
         case ESP_AVRC_RN_PLAY_POS_CHANGED:
@@ -399,6 +433,18 @@ class BridgeSource : public BluetoothA2DPSource {
         g_rn_status_registered = false;
         g_rn_pos_registered = false;
       }
+    } else if (event == ESP_AVRC_TG_REMOTE_FEATURES_EVT) {
+      auto* rc = (esp_avrc_tg_cb_param_t*)p_param;
+      if (!s_rmt_feats_logged) {
+        s_rmt_feats_logged = true;
+        char d[DIAG_TEXT];
+        snprintf(d, sizeof(d), "Rf %lx %x", (unsigned long)rc->rmt_feats.feat_mask,
+                 (unsigned)rc->rmt_feats.ct_feat_flag);
+        diag_post(d);
+      }
+      g_sum.rf_feat = (uint32_t)rc->rmt_feats.feat_mask;
+      g_sum.rf_ct = (uint16_t)rc->rmt_feats.ct_feat_flag;
+      g_sum_dirty = true;
     }
     BluetoothA2DPSource::av_hdl_avrc_tg_evt(event, p_param);
   }
@@ -406,10 +452,14 @@ class BridgeSource : public BluetoothA2DPSource {
  private:
   static int s_last_vol_logged;
   static int s_vol_diag_n;
+  static uint16_t s_rn_event_seen;
+  static bool s_rmt_feats_logged;
 };
 
 int BridgeSource::s_last_vol_logged = -1;
 int BridgeSource::s_vol_diag_n = 0;
+uint16_t BridgeSource::s_rn_event_seen = 0;
+bool BridgeSource::s_rmt_feats_logged = false;
 
 BridgeSource a2dp_source;
 
@@ -541,7 +591,12 @@ static void handleSerialCommand(const char* line) {
     }
     return;
   }
-  Serial.println("[CMD] 未知指令（可用：forget XX:XX:XX:XX:XX:XX）");
+  if (strcmp(line, "sum") == 0) {
+    char out[160];
+    Serial.printf("[SUM] 本次 %s\n", ds_format(g_sum, out, sizeof(out)));
+    return;
+  }
+  Serial.println("[CMD] 未知指令（可用：forget XX:XX:XX:XX:XX:XX、sum）");
 }
 
 // 非阻塞讀 USB Serial 湊行；上限 64 bytes，超長丟整行。
@@ -600,6 +655,44 @@ static void diag_store() {
   if (err == ESP_OK) err = nvs_commit(h);
   nvs_close(h);
   if (err != ESP_OK) Serial.printf("[DIAG] 寫入失敗 err=%d\n", (int)err);
+}
+
+// ---- 每次開機統計摘要 NVS（namespace "bt_bridge" / key "sum0" 本次、"sum1" 上次）----
+static void sum_load() {
+  uint8_t buf[sizeof(DiagSummary)];
+  nvs_handle_t h;
+  if (nvs_open("bt_bridge", NVS_READONLY, &h) == ESP_OK) {
+    size_t len = sizeof(buf);
+    if (nvs_get_blob(h, "sum0", buf, &len) == ESP_OK && len == sizeof(DiagSummary)) {
+      DiagSummary prev;
+      memcpy(&prev, buf, sizeof(prev));
+      nvs_close(h);
+      nvs_handle_t hw;
+      if (nvs_open("bt_bridge", NVS_READWRITE, &hw) == ESP_OK) {
+        nvs_set_blob(hw, "sum1", &prev, sizeof(prev));
+        nvs_commit(hw);
+        nvs_close(hw);
+      }
+      char line[160];
+      Serial.printf("[SUM] 上次開機 %s\n", ds_format(prev, line, sizeof(line)));
+      return;
+    }
+    nvs_close(h);
+  }
+  Serial.println("[SUM] 無上次開機紀錄");
+}
+
+static uint32_t g_sum_last_store_ms = 0;
+static void sum_store() {
+  nvs_handle_t h;
+  if (nvs_open("bt_bridge", NVS_READWRITE, &h) != ESP_OK) {
+    Serial.println("[SUM] 寫入失敗（nvs_open）");
+    return;
+  }
+  esp_err_t err = nvs_set_blob(h, "sum0", &g_sum, sizeof(g_sum));
+  if (err == ESP_OK) err = nvs_commit(h);
+  nvs_close(h);
+  if (err != ESP_OK) Serial.printf("[SUM] 寫入失敗 err=%d\n", (int)err);
 }
 
 // loop() 內取出佇列並寫入紀錄；BT callback 不直接呼叫這裡。
@@ -724,7 +817,29 @@ bool ssid_match_cb(const char* ssid, esp_bd_addr_t address, int rssi) {
 
 // ---- 方向盤按鍵：車機 AVRCP passthrough → 函式庫 callback（BT app task）→ 這裡只推
 // 進 ring，不做任何播放控制（第二刀才接），交給 loop() 的 drainWheelKeys() 轉送 S3。----
+// AVRCP TRACK_CHANGE 用的 elm_id：np.valid 且 track_id 非全 0 才回真 track_id，否則回
+// 「尚未選曲」的全 FF（NowPlaying 預設建構值 track_id 全 0，不能直接當真 track_id 送出）。
+static void np_fill_elm_id(const NowPlaying& np, uint8_t out[8]) {
+  static const uint8_t kZero8[8] = {0};
+  if (np.valid && memcmp(np.track_id, kZero8, 8) != 0) {
+    memcpy(out, np.track_id, 8);
+  } else {
+    memset(out, 0xFF, 8);
+  }
+}
+
 static void on_wheel_key(uint8_t key, bool isReleased) {
+  if (!isReleased) {
+    ds_add_key(g_sum, key);
+    g_sum_dirty = true;
+    if (key == ESP_AVRC_PT_CMD_PLAY) {
+      g_reported_playback = ESP_AVRC_PLAYBACK_PLAYING;
+      g_rn_status_due = true;
+    } else if (key == ESP_AVRC_PT_CMD_PAUSE) {
+      g_reported_playback = ESP_AVRC_PLAYBACK_PAUSED;
+      g_rn_status_due = true;
+    }
+  }
   uint8_t next = (uint8_t)((g_wheel_q_head + 1) % WHEEL_Q);
   if (next == g_wheel_q_tail) return;  // 滿了，丟（這階段只是 log 通道）
   g_wheel_q[g_wheel_q_head] = {key, isReleased};
@@ -765,9 +880,11 @@ static void pollNowPlayingFromS3() {
           np.rx_ms = millis();
           bool firstTime = !g_np.valid;
           bool trackChanged = firstTime || !np_same_track(g_np, np);
-          bool stateChanged = !firstTime && g_np.state != np.state;
           g_np = np;
           avrc_meta_set(np);
+          ds_inc(g_sum.meta_lines);
+          g_sum_dirty = true;
+          if (firstTime) diag_loop_add("M ok");
           if (firstTime || trackChanged) {
             Serial.printf("[Meta] %s / %s\n", np.title, np.artist);
           }
@@ -775,7 +892,9 @@ static void pollNowPlayingFromS3() {
             g_rn_track_due = true;
             g_rn_pos_force_due = true;
           }
-          if (stateChanged) g_rn_status_due = true;
+          // S3 每次設曲目都等效「現在在播放」；第一筆曲目進來也要送一次 PLAY_STATUS
+          // CHANGED（修掉第一筆不通知的 bug），車機才會真的去問 GetElementAttributes。
+          if (firstTime) g_rn_status_due = true;
         }
       }
       g_npLineLen = 0;
@@ -797,7 +916,7 @@ static void sendDueRnNotifications() {
   if (g_rn_track_registered && g_rn_track_due) {
     esp_avrc_rn_param_t param;
     memset(&param, 0, sizeof(param));
-    memcpy(param.elm_id, g_np.track_id, 8);
+    np_fill_elm_id(g_np, param.elm_id);
     esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_TRACK_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &param);
     g_rn_track_registered = false;
     g_rn_track_due = false;
@@ -805,13 +924,14 @@ static void sendDueRnNotifications() {
   if (g_rn_status_registered && g_rn_status_due) {
     esp_avrc_rn_param_t param;
     memset(&param, 0, sizeof(param));
-    param.playback = (g_np.state == 'P') ? ESP_AVRC_PLAYBACK_PLAYING : ESP_AVRC_PLAYBACK_STOPPED;
+    param.playback = (esp_avrc_playback_stat_t)g_reported_playback;
     esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &param);
     g_rn_status_registered = false;
     g_rn_status_due = false;
   }
   uint32_t nowMs = millis();
-  bool intervalDue = g_np.state == 'P' && (nowMs - g_rn_pos_last_sent_ms) >= g_rn_pos_interval_s * 1000;
+  bool intervalDue = g_reported_playback == ESP_AVRC_PLAYBACK_PLAYING && g_np.state == 'P' &&
+                      (nowMs - g_rn_pos_last_sent_ms) >= g_rn_pos_interval_s * 1000;
   if (g_rn_pos_registered && (intervalDue || g_rn_pos_force_due)) {
     esp_avrc_rn_param_t param;
     memset(&param, 0, sizeof(param));
@@ -827,6 +947,8 @@ static void sendDueRnNotifications() {
 // 在車上證明車機真的有來問。
 static bool g_diag_elem_logged = false;
 static bool g_diag_status_logged = false;
+static bool g_diag_unserved_elem_logged = false;
+static bool g_diag_unserved_status_logged = false;
 static void diagLogFirstAvrcHits() {
   if (!g_diag_elem_logged && avrc_meta_hits_elem() > 0) {
     g_diag_elem_logged = true;
@@ -835,6 +957,30 @@ static void diagLogFirstAvrcHits() {
   if (!g_diag_status_logged && avrc_meta_hits_status() > 0) {
     g_diag_status_logged = true;
     diag_loop_add("G stat");
+  }
+  if (!g_diag_unserved_elem_logged && avrc_meta_unserved_elem() > 0) {
+    g_diag_unserved_elem_logged = true;
+    diag_loop_add("G nov e");
+  }
+  if (!g_diag_unserved_status_logged && avrc_meta_unserved_status() > 0) {
+    g_diag_unserved_status_logged = true;
+    diag_loop_add("G nov s");
+  }
+
+  uint32_t raw_elem = avrc_meta_hits_elem();
+  uint32_t raw_stat = avrc_meta_hits_status();
+  uint32_t raw_nov_e = avrc_meta_unserved_elem();
+  uint32_t raw_nov_s = avrc_meta_unserved_status();
+  uint16_t elem = (uint16_t)(raw_elem > 0xFFFF ? 0xFFFF : raw_elem);
+  uint16_t stat = (uint16_t)(raw_stat > 0xFFFF ? 0xFFFF : raw_stat);
+  uint16_t nov_e = (uint16_t)(raw_nov_e > 0xFFFF ? 0xFFFF : raw_nov_e);
+  uint16_t nov_s = (uint16_t)(raw_nov_s > 0xFFFF ? 0xFFFF : raw_nov_s);
+  if (elem != g_sum.g_elem || stat != g_sum.g_stat || nov_e != g_sum.nov_elem || nov_s != g_sum.nov_stat) {
+    g_sum.g_elem = elem;
+    g_sum.g_stat = stat;
+    g_sum.nov_elem = nov_e;
+    g_sum.nov_stat = nov_s;
+    g_sum_dirty = true;
   }
 }
 
@@ -889,6 +1035,8 @@ void setup() {
   // 已配對清單在 start() 之後才讀：start() 內部已 init NVS，我們這邊再 init 會讓函式庫 ESP_ERROR_CHECK 失敗
   known_load();
   diag_load();
+  sum_load();
+  g_sum = DiagSummary();
   g_pairing_mode = a2dp_source.pairing_mode();
   Serial.printf("[BT] 模式：%s\n", g_pairing_mode ? "配對(掃描)" : "重連已知裝置");
   if (!g_pairing_mode) {
@@ -915,6 +1063,19 @@ void loop() {
   drainWheelKeys();
   diagLogFirstAvrcHits();
 
+  // 統計摘要存 NVS：有變化且距上次存 >=3s，或每 60s 定期存一次（更新 uptime）。
+  {
+    uint32_t nowMs = millis();
+    bool dueDirty = g_sum_dirty && (nowMs - g_sum_last_store_ms >= 3000);
+    bool duePeriodic = (nowMs - g_sum_last_store_ms >= 60000);
+    if (dueDirty || duePeriodic) {
+      g_sum.uptime_s = nowMs / 1000;
+      sum_store();
+      g_sum_dirty = false;
+      g_sum_last_store_ms = nowMs;
+    }
+  }
+
   if (g_connected_evt) {
     g_connected_evt = false;
     if (a2dp_source.arm_reconnect()) {
@@ -930,6 +1091,10 @@ void loop() {
     g_conn_bda_valid = false;
     g_conn_from = '?';
     Serial.printf("[BT] 連上來源=%c\n", conn_from);
+    g_sum.peer[0] = cur[3];
+    g_sum.peer[1] = cur[4];
+    g_sum.peer[2] = cur[5];
+    g_sum_dirty = true;
     if (!addr_is_zero(cur)) {
       known_touch(g_known, cur);
       known_save();

@@ -154,6 +154,35 @@ async def test_audio_passes_device_speaker_to_inject(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_audio_trigger_pause_passes_require_wake(monkeypatch):
+    """車機暫停鍵觸發（?trigger=pause）要以 require_wake=True 呼叫 inject_audio。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    import car_http_app
+    fake = AsyncMock(return_value=True)
+    monkeypatch.setattr(car_http_app, "inject_audio", fake)
+    app = _car_app(None, "showay")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/audio?t=s3cret&speaker=showay&trigger=pause", data=b"RIFFfake")
+        assert resp.status == 200
+    fake.assert_awaited_once()
+    assert fake.call_args.kwargs["require_wake"] is True
+
+
+@pytest.mark.asyncio
+async def test_audio_without_trigger_does_not_require_wake(monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+    import car_http_app
+    fake = AsyncMock(return_value=True)
+    monkeypatch.setattr(car_http_app, "inject_audio", fake)
+    app = _car_app(None, "showay")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/audio?t=s3cret&speaker=showay", data=b"RIFFfake")
+        assert resp.status == 200
+    fake.assert_awaited_once()
+    assert fake.call_args.kwargs["require_wake"] is False
+
+
+@pytest.mark.asyncio
 async def test_audio_unknown_speaker_400_and_no_inject(monkeypatch):
     from aiohttp.test_utils import TestClient, TestServer
     import car_http_app

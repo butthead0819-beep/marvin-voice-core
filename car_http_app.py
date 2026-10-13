@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 
@@ -16,6 +17,7 @@ from marvin_voice_core.audio_stream_batcher import iter_batched_encoded_frames
 from marvin_voice_core.discord_audio_stream_server import SilenceFillQueue
 from marvin_voice_core.icy_meta import ICY_METAINT, IcyInterleaver, build_now_playing_payload
 from marvin_voice_core.mp3_stream_encoder import Mp3StreamEncoder
+from utils import WAKE_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -1243,7 +1245,8 @@ __PERF_JS__
 </body></html>"""
 
 
-async def inject_audio(vc, wav_bytes: bytes, speaker: str | None = None) -> bool:
+async def inject_audio(vc, wav_bytes: bytes, speaker: str | None = None, *,
+                        require_wake: bool = False) -> bool:
     """把瀏覽器上傳的 WAV 轉錄後，走 inject_text（is_text_input）強制回覆。
 
     為何不走 process_audio_slice：那條經喚醒判定，沒喊「馬文」會被當環境對話→不回話。
@@ -1251,7 +1254,11 @@ async def inject_audio(vc, wav_bytes: bytes, speaker: str | None = None) -> bool
     辨識需簽章 entitlements，直譯 swift 會被 SIGKILL）拿文字，再走已驗證會回覆的 /say 路
     （inject_text→is_text_input=True）。回覆 TTS 走 mixer → BrowserSpeakerOutput → /reply。
 
-    回 True＝已注入；False＝空 / STT 無結果。
+    require_wake：車機 master volume 旋鈕觸發的錄音（trigger=pause）要走這個；車機自己
+    也會送 PAUSE（iPhone 來電、切音源、導航插播），不是跟馬文講話卻會被錄到，所以沒有
+    喚醒詞就丟棄且不記錄文字內容。實體 PTT 按鈕不受影響。
+
+    回 True＝已注入；False＝空 / STT 無結果 / 無喚醒詞被丟棄。
     """
     if not wav_bytes:
         return False
@@ -1272,6 +1279,9 @@ async def inject_audio(vc, wav_bytes: bytes, speaker: str | None = None) -> bool
     raw_text = (raw_text or "").strip()
     if not raw_text:
         logger.info("🎙️ [SatelliteAudio] STT 無結果（雜訊/靜音），略過")
+        return False
+    if require_wake and not re.search(WAKE_PATTERN, raw_text, re.IGNORECASE):
+        logger.info(f"🎙️ [SatelliteAudio] {speaker}: 車機暫停鍵錄音無喚醒詞，丟棄（{len(raw_text)} 字）")
         return False
     logger.info(f"🎙️ [SatelliteAudio] {speaker}: {raw_text}")
     await inject_text(vc, speaker, raw_text)   # is_text_input=True → 強制回覆
@@ -1567,7 +1577,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         wav_bytes = await request.read()
         if not wav_bytes:
             return web.json_response({"error": "empty"}, status=400, headers=_CORS)
-        ok = await inject_audio(vc, wav_bytes, speaker=spk)
+        require_wake = request.query.get("trigger") == "pause"
+        ok = await inject_audio(vc, wav_bytes, speaker=spk, require_wake=require_wake)
         return web.json_response({"ok": ok}, headers=_CORS)
 
     async def handle_hud(request):

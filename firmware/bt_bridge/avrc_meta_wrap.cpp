@@ -38,17 +38,20 @@ static const uint32_t AVRC_ATTR_ID_TITLE        = 1;
 static const uint32_t AVRC_ATTR_ID_ARTIST       = 2;
 static const uint32_t AVRC_ATTR_ID_ALBUM        = 3;
 static const uint32_t AVRC_ATTR_ID_PLAYING_TIME = 7;
-static const uint8_t  AVRC_PLAYSTATE_STOPPED    = 0;
-static const uint8_t  AVRC_PLAYSTATE_PLAYING    = 1;
-
 extern "C" tAVRC_STS __real_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_rsp, void **pp_pkt);
 extern "C" void __real_BTA_AvMetaRsp(uint8_t rc_handle, uint8_t label, uint8_t rsp_code, void *p_pkt);
+
+// 回報給車機的播放狀態（IDF esp_avrc_playback_stat_t 的原始值，PLAYING=1/PAUSED=2）
+// ——bt_bridge.ino 的 on_wheel_key 跟著方向盤 PLAY/PAUSE 鍵寫，單一 byte 不需要鎖。
+extern volatile uint8_t g_reported_playback;
 
 // ---- 狀態：BTC task（__wrap_* 這裡）跟 loop()（avrc_meta_set）兩個 task 互斥保護 ----
 static NowPlaying s_np;
 static portMUX_TYPE s_np_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_hits_elem = 0;
 static uint32_t s_hits_status = 0;
+static volatile uint32_t s_unserved_elem = 0;
+static volatile uint32_t s_unserved_status = 0;
 // __wrap_AVRC_BldResponse 跟 __wrap_BTA_AvMetaRsp 在 send_reject_response() 裡同一
 // task 緊接著呼叫（中間不會被其他事件插進來），這個旗標不需要鎖。
 static bool s_upgrade_next = false;
@@ -76,6 +79,8 @@ void avrc_meta_get(NowPlaying& out) {
 
 uint32_t avrc_meta_hits_elem() { return s_hits_elem; }
 uint32_t avrc_meta_hits_status() { return s_hits_status; }
+uint32_t avrc_meta_unserved_elem() { return s_unserved_elem; }
+uint32_t avrc_meta_unserved_status() { return s_unserved_status; }
 
 extern "C" tAVRC_STS __wrap_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_rsp, void **pp_pkt) {
   if (p_rsp == nullptr || p_rsp->rsp.status != AVRC_STS_BAD_CMD ||
@@ -87,61 +92,76 @@ extern "C" tAVRC_STS __wrap_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_r
   portENTER_CRITICAL(&s_np_mux);
   np = s_np;
   portEXIT_CRITICAL(&s_np_mux);
-  if (!np.valid) {
-    return __real_AVRC_BldResponse(handle, p_rsp, pp_pkt);
-  }
 
   tAVRC_RESPONSE r;
   memset(&r, 0, sizeof(r));
   tAVRC_STS result;
 
   if (p_rsp->rsp.pdu == AVRC_PDU_GET_ELEMENT_ATTR) {
+    // 沒收過 S3 曲目資訊、或收過但標題是空字串，都算「沒真資料」——回佔位標題，不拒絕。
+    bool has_title = np.valid && np.title[0];
+    const char* title = has_title ? np.title : "Marvin";
+    const char* artist = np.valid ? np.artist : "";
+    const char* album = np.valid ? np.album : "";
+    bool have_duration = np.valid && np.dur_ms != 0;
     char dur_str[16];
-    snprintf(dur_str, sizeof(dur_str), "%lu", (unsigned long)np.dur_ms);
+    if (have_duration) snprintf(dur_str, sizeof(dur_str), "%lu", (unsigned long)np.dur_ms);
+
     tAVRC_ATTR_ENTRY attrs[4];
     attrs[0].attr_id = AVRC_ATTR_ID_TITLE;
     attrs[0].name.charset_id = AVRC_CHARSET_ID_UTF8;
-    attrs[0].name.p_str = (uint8_t*)np.title;
-    attrs[0].name.str_len = (uint16_t)strlen(np.title);
+    attrs[0].name.p_str = (uint8_t*)title;
+    attrs[0].name.str_len = (uint16_t)strlen(title);
     attrs[1].attr_id = AVRC_ATTR_ID_ARTIST;
     attrs[1].name.charset_id = AVRC_CHARSET_ID_UTF8;
-    attrs[1].name.p_str = (uint8_t*)np.artist;
-    attrs[1].name.str_len = (uint16_t)strlen(np.artist);
+    attrs[1].name.p_str = (uint8_t*)artist;
+    attrs[1].name.str_len = (uint16_t)strlen(artist);
     attrs[2].attr_id = AVRC_ATTR_ID_ALBUM;
     attrs[2].name.charset_id = AVRC_CHARSET_ID_UTF8;
-    attrs[2].name.p_str = (uint8_t*)np.album;
-    attrs[2].name.str_len = (uint16_t)strlen(np.album);
-    attrs[3].attr_id = AVRC_ATTR_ID_PLAYING_TIME;
-    attrs[3].name.charset_id = AVRC_CHARSET_ID_UTF8;
-    attrs[3].name.p_str = (uint8_t*)dur_str;
-    attrs[3].name.str_len = (uint16_t)strlen(dur_str);
+    attrs[2].name.p_str = (uint8_t*)album;
+    attrs[2].name.str_len = (uint16_t)strlen(album);
+    uint8_t num_attr = 3;
+    if (have_duration) {
+      attrs[3].attr_id = AVRC_ATTR_ID_PLAYING_TIME;
+      attrs[3].name.charset_id = AVRC_CHARSET_ID_UTF8;
+      attrs[3].name.p_str = (uint8_t*)dur_str;
+      attrs[3].name.str_len = (uint16_t)strlen(dur_str);
+      num_attr = 4;
+    }
 
     r.get_elem_attrs.pdu = AVRC_PDU_GET_ELEMENT_ATTR;
     r.get_elem_attrs.status = AVRC_STS_NO_ERROR;
     r.get_elem_attrs.opcode = p_rsp->rsp.opcode;
-    r.get_elem_attrs.num_attr = 4;
+    r.get_elem_attrs.num_attr = num_attr;
     r.get_elem_attrs.p_attrs = attrs;
 
     result = __real_AVRC_BldResponse(handle, &r, pp_pkt);
     if (result == AVRC_STS_NO_ERROR) {
       s_upgrade_next = true;
-      s_hits_elem++;
+      if (has_title) s_hits_elem++; else s_unserved_elem++;
     }
     return result;
   }
 
-  // AVRC_PDU_GET_PLAY_STATUS
+  // AVRC_PDU_GET_PLAY_STATUS：沒資料時 song_len/song_pos 回 0xFFFFFFFF（AVRCP 的
+  // 「不支援/未知」值），播放狀態仍照車機最後下的指令回報（見 g_reported_playback）。
+  bool have_duration = np.valid && np.dur_ms != 0;
   r.get_play_status.pdu = AVRC_PDU_GET_PLAY_STATUS;
   r.get_play_status.status = AVRC_STS_NO_ERROR;
   r.get_play_status.opcode = p_rsp->rsp.opcode;
-  r.get_play_status.song_len = np.dur_ms;
-  r.get_play_status.song_pos = np_position_now(np, millis());
-  r.get_play_status.play_status = (np.state == 'P') ? AVRC_PLAYSTATE_PLAYING : AVRC_PLAYSTATE_STOPPED;
+  if (have_duration) {
+    r.get_play_status.song_len = np.dur_ms;
+    r.get_play_status.song_pos = np_position_now(np, millis());
+  } else {
+    r.get_play_status.song_len = 0xFFFFFFFF;
+    r.get_play_status.song_pos = 0xFFFFFFFF;
+  }
+  r.get_play_status.play_status = g_reported_playback;
 
   result = __real_AVRC_BldResponse(handle, &r, pp_pkt);
   if (result == AVRC_STS_NO_ERROR) {
     s_upgrade_next = true;
-    s_hits_status++;
+    if (have_duration) s_hits_status++; else s_unserved_status++;
   }
   return result;
 }

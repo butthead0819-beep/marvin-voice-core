@@ -1560,20 +1560,32 @@ void carHeartbeatTask(void* pv) {
   }
 }
 
-void postAudio(int nSamples);  // 前置宣告（hold-to-talk 放開時呼叫）
+void postAudio(int nSamples, bool viaPause);  // 前置宣告（hold-to-talk 放開時呼叫）
 
-// hold-to-talk：按住 PTT 期間持續錄音、放開送出。長度自適應，
-// 不像固定秒數會切掉長句或錄多餘環境音。每 loop 呼叫一次（非阻塞）。
+// 車機 master volume 旋鈕按下＝送 AVRCP PAUSE（車機自己把音量降到 0），再按＝PLAY。
+// 把它當 PTT：PAUSE 開始錄音、PLAY 結束送出。只在 loop() task 讀寫
+// （pollWheelFromWroom 與 pttHoldToTalk 都在 loop() 裡呼叫），不需要鎖。
+// 隱私風險：車機自己也會送 PAUSE（iPhone 來電、切音源、導航插播），所以這種觸發的錄音
+// 要在 Mac 端有喚醒詞把關才處理（見 car_http_app.py inject_audio require_wake），
+// 不是喚醒詞就丟棄且不記錄文字內容。實體 PTT 按鈕不受影響，維持現行行為。
+static bool g_pausePtt = false;
+
+// hold-to-talk：按住 PTT（實體按鈕或車機暫停鍵）期間持續錄音、放開（或再按一次播放鍵）
+// 送出。長度自適應，不像固定秒數會切掉長句或錄多餘環境音。每 loop 呼叫一次（非阻塞）。
 void pttHoldToTalk() {
   static bool recording = false;
   static int  recCount = 0;
-  bool pressed = (digitalRead(PIN_BTN_PTT) == LOW);
+  static bool recViaPause = false;
+  bool physical = (digitalRead(PIN_BTN_PTT) == LOW);
+  bool pressed = physical || g_pausePtt;
 
   if (pressed && !recording) {           // ▼ 按下：開錄
     recording = true; recCount = 0;
+    recViaPause = !physical;
     i2s_zero_dma_buffer(I2S_MIC_PORT);    // 丟掉按下前 DMA 累積的舊音
     setLed(LED_LISTENING);                // 收聽中：藍燈
-    Serial.println("[PTT] ▼ 按下，開始錄音（按住說話）");
+    if (recViaPause) Serial.println("[PTT] ▼ 車機暫停鍵，開始錄音（再按一次結束）");
+    else             Serial.println("[PTT] ▼ 按下，開始錄音（按住說話）");
   }
 
   if (recording) {
@@ -1590,14 +1602,16 @@ void pttHoldToTalk() {
       float secs = recCount / (float)SAMPLE_RATE;
       if (full) Serial.printf("[PTT] ■ 達上限 %ds，送出（%.1fs）\n", MAX_REC_SECONDS, secs);
       else      Serial.printf("[PTT] ▲ 放開，送出（%.1fs）\n", secs);
-      if (recCount >= MIN_REC_SAMPLES) { setLed(LED_PLAYING); postAudio(recCount); }
+      if (recCount >= MIN_REC_SAMPLES) { setLed(LED_PLAYING); postAudio(recCount, recViaPause); }
       else { Serial.println("[PTT] 太短（手滑？），忽略不送"); setLed(LED_STANDBY); }
+      // 撞上限且是車機暫停鍵觸發：車機還在暫停狀態，不清旗標的話下一圈會立刻再開錄。
+      if (full && recViaPause) g_pausePtt = false;
     }
   }
 }
 
 // STEP 5：把 recBuf 前 nSamples 個樣本包成 WAV，POST /audio
-void postAudio(int nSamples) {
+void postAudio(int nSamples, bool viaPause) {
   const int dataBytes = nSamples * 2;
   const int wavBytes = 44 + dataBytes;
   uint8_t* wav = (uint8_t*)ps_malloc(wavBytes);
@@ -1616,8 +1630,12 @@ void postAudio(int nSamples) {
   // socket + lockedReadLine）而非 HTTPClient：HTTPClient 的 POST() 是不可拆的黑盒，鎖
   // 只要包住它就等於持鎖空等到逾時——carHeartbeat() 上面的除錯記錄③已經實測過這個
   // 組合會在 17-20 秒內撞 task watchdog，不要重踩。
-  char audioPath[64];   // 身分走 query：/audio?speaker=showay（Mac 端白名單驗證）
-  snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s", MARVIN_SPEAKER);
+  char audioPath[96];   // 身分走 query：/audio?speaker=showay（Mac 端白名單驗證）
+  if (viaPause) {
+    snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s&trigger=pause", MARVIN_SPEAKER);
+  } else {
+    snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s", MARVIN_SPEAKER);
+  }
   WiFiClient localClient;
   int code = -1;
   if (lanEnabled()) code = postHttp(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
@@ -1748,9 +1766,9 @@ void setup() {
   Serial.printf("[READY] STEP=%d\n", STEP);
 }
 
-// 方向盤按鍵通道（第二刀預備）：WROOM 收到車機 AVRCP passthru 後經 UART2 轉送過來，
-// 這裡非阻塞湊一行（'\n' 結尾，上限 64 bytes，超長丟棄整行），這階段只印 log，
-// 不做任何播放控制。
+// 方向盤按鍵通道：WROOM 收到車機 AVRCP passthru 後經 UART2 轉送過來，這裡非阻塞湊一行
+// （'\n' 結尾，上限 64 bytes，超長丟棄整行）。master volume 旋鈕按下＝PAUSE(0x46)、
+// 再按＝PLAY(0x44)，當成 PTT 開錄/結束（見 g_pausePtt）；其他按鍵只印 log，不做播放控制。
 static void pollWheelFromWroom() {
   static char lineBuf[64];
   static size_t lineLen = 0;
@@ -1761,6 +1779,8 @@ static void pollWheelFromWroom() {
       if (!overflow && lineLen > 0) {
         lineBuf[lineLen] = '\0';
         Serial.printf("[Wheel] %s\n", lineBuf);
+        if (strcmp(lineBuf, "K|46|p") == 0) g_pausePtt = true;
+        else if (strcmp(lineBuf, "K|44|p") == 0) g_pausePtt = false;
       }
       lineLen = 0;
       overflow = false;
