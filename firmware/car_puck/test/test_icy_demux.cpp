@@ -167,6 +167,43 @@ int main() {
     printf("T5 ok\n");
   }
 
+  // T6：空區塊後要重新對齊 metaint——空區塊後面接的下一個完整區塊仍要被正確拆出
+  // （T2 只在結尾放空區塊，抓不到空區塊後 until_meta 重設錯位）
+  {
+    const uint32_t metaint = 5;
+    std::vector<uint8_t> stream(metaint, 'x');
+    stream.push_back(0);  // 空區塊
+    stream.insert(stream.end(), metaint, 'y');
+    auto block = build_block(1, "hi");
+    stream.insert(stream.end(), block.begin(), block.end());
+    stream.insert(stream.end(), metaint, 'z');
+    IcyDemux d;
+    icy_init(d, metaint);
+    MetaCollector mc;
+    std::vector<uint8_t> audio_out(stream.size());
+    size_t an = icy_feed(d, stream.data(), stream.size(), audio_out.data(), collect_meta, &mc);
+    assert(an == 15);
+    assert(memcmp(audio_out.data(), "xxxxxyyyyyzzzzz", 15) == 0);
+    assert(mc.metas.size() == 1 && mc.metas[0] == "hi");
+    printf("T6 ok\n");
+  }
+  // T7：長度非 0 但內容全是 '\0' 補位的區塊——去掉補位後是空的，不該回呼
+  // （否則 S3 會往 WROOM 送一行空字串）
+  {
+    const uint32_t metaint = 4;
+    std::vector<uint8_t> stream(metaint, 'a');
+    auto block = build_block(1, "");
+    stream.insert(stream.end(), block.begin(), block.end());
+    stream.insert(stream.end(), metaint, 'b');
+    IcyDemux d;
+    icy_init(d, metaint);
+    MetaCollector mc;
+    std::vector<uint8_t> audio_out(stream.size());
+    size_t an = icy_feed(d, stream.data(), stream.size(), audio_out.data(), collect_meta, &mc);
+    assert(an == 8);
+    assert(mc.metas.empty());
+    printf("T7 ok\n");
+  }
   printf("all icy_demux tests passed\n");
   return 0;
 }
