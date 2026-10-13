@@ -35,15 +35,6 @@
  *   不到）——這是刻意的（見 avrc_meta_wrap.cpp），防止忘記加旗標卻燒進去一個靜默
  *   不顯示曲名的版本。
  *
- * HFP AG 實驗（hfp_ptt.h/.cpp，見該檔）：
- *   BMW 方向盤語音鍵長按＝叫「主電話」，走 HFP AT+BVRA。iPhone 不當電話時，WROOM 若
- *   宣告 HFP AG 就可能成為主電話收到長按。這一刀只做協定層握手＋計數，不收發任何語音
- *   （車機麥克風的 SCO 資料收到就丟）。目的是驗證：①長按有沒有送到 WROOM ②開 SCO 後
- *   車機音樂有沒有被壓掉 ③iDrive 畫面。
- *   DIAG "H <kind> <val>" 系列代碼（kind 即 hfp_ptt.cpp 事件佇列的 kind 字元）：
- *     c=連線狀態 a=音訊狀態 v=BVRA(語音辨識)值 u=未知AT d=DIAL A=ATA(接聽) h=CHUP(拒接)
- *     g=音量控制 e=其他事件；"H T" = SCO 開太久被安全逾時關掉。
- *
  * AVRCP 曲名診斷 DIAG 代碼（車機沒顯示曲名時用來分辨卡在哪一段）：
  *   "M ok"   = pollNowPlayingFromS3 第一次從 S3 解析出曲目資訊成功（開機後僅記一次）。
  *   "G elem"/"G stat" = 車機來問 GetElementAttributes/GetPlayStatus 且當下有曲目資訊可答。
@@ -66,7 +57,6 @@
 #include "cod_filter.h"
 #include "now_playing.h"
 #include "avrc_meta_wrap.h"
-#include "hfp_ptt.h"
 #include <nvs.h>
 
 // ---- 配對診斷紀錄的 thread 安全佇列 ----
@@ -151,7 +141,7 @@ static uint32_t g_rn_pos_last_sent_ms = 0;
 // ---- 回報給車機的播放狀態＝車機最後一次下的方向盤指令（WROOM 只要 A2DP 連著就一直送
 // 音訊，沒有自己的播放/暫停狀態）。on_wheel_key（BT app task）寫，av_hdl_avrc_tg_evt
 // （BT app task）跟 sendDueRnNotifications（loop()）讀，單一 byte 不需要鎖。----
-static volatile uint8_t g_reported_playback = ESP_AVRC_PLAYBACK_PLAYING;
+volatile uint8_t g_reported_playback = ESP_AVRC_PLAYBACK_PLAYING;
 
 // ---- 方向盤按鍵：on_wheel_key（BT app task）推進、loop() 取出——單生產者單消費者
 // ring，head 只被 producer 動、tail 只被 consumer 動，不需要鎖。滿了就丟（這階段只是
@@ -424,7 +414,7 @@ class BridgeSource : public BluetoothA2DPSource {
           return;
         case ESP_AVRC_RN_PLAY_STATUS_CHANGE:
           g_rn_status_registered = true;
-          param.playback = g_reported_playback;
+          param.playback = (esp_avrc_playback_stat_t)g_reported_playback;
           esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_INTERIM, &param);
           return;
         case ESP_AVRC_RN_PLAY_POS_CHANGED:
@@ -723,8 +713,7 @@ static void diag_drain() {
   diag_store();
 }
 
-// 非 static：hfp_ptt.cpp 用 extern 宣告呼叫這個函式記 DIAG。
-void diag_loop_add(const char* text) {
+static void diag_loop_add(const char* text) {
   diag_add_ts(g_diag, millis() / 1000, text);
   diag_store();
 }
@@ -935,7 +924,7 @@ static void sendDueRnNotifications() {
   if (g_rn_status_registered && g_rn_status_due) {
     esp_avrc_rn_param_t param;
     memset(&param, 0, sizeof(param));
-    param.playback = g_reported_playback;
+    param.playback = (esp_avrc_playback_stat_t)g_reported_playback;
     esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &param);
     g_rn_status_registered = false;
     g_rn_status_due = false;
@@ -1043,7 +1032,6 @@ void setup() {
   a2dp_source.set_avrc_rn_events({ESP_AVRC_RN_VOLUME_CHANGE, ESP_AVRC_RN_PLAY_STATUS_CHANGE,
                                    ESP_AVRC_RN_TRACK_CHANGE, ESP_AVRC_RN_PLAY_POS_CHANGED});
   a2dp_source.start();
-  hfp_ptt_init();  // HFP AG 實驗，見檔頭說明；A2DP 失敗不中斷
   // 已配對清單在 start() 之後才讀：start() 內部已 init NVS，我們這邊再 init 會讓函式庫 ESP_ERROR_CHECK 失敗
   known_load();
   diag_load();
@@ -1074,7 +1062,6 @@ void loop() {
   sendDueRnNotifications();
   drainWheelKeys();
   diagLogFirstAvrcHits();
-  hfp_ptt_poll();
 
   // 統計摘要存 NVS：有變化且距上次存 >=3s，或每 60s 定期存一次（更新 uptime）。
   {
@@ -1115,7 +1102,6 @@ void loop() {
       print_bda(cur);
       Serial.printf("（共 %d 台）\n", (int)g_known.count);
     }
-    if (!addr_is_zero(cur)) hfp_ptt_on_a2dp_connected(cur);
     // C/F/D 重連模式下也記（每次開機上限 RECON_DIAG_MAX 筆，避免目標沒開機每 ~10s 失敗一次整晚寫 NVS）
     {
       char d[DIAG_TEXT];

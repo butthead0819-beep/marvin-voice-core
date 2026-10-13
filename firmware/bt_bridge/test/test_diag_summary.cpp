@@ -56,11 +56,6 @@ int main() {
     s.rn_mask = 0x0006;
     s.rf_feat = 0x1234;
     s.rf_ct = 0x5;
-    s.bvra_on = 2;
-    s.bvra_off = 1;
-    s.sco_open = 2;
-    s.sco_timeout = 0;
-    s.hf_state = 3;
     ds_add_key(s, 0x41);
     ds_add_key(s, 0x42);
     s.peer[0] = 0xAB;
@@ -70,7 +65,7 @@ int main() {
     char out[160];
     ds_format(s, out, sizeof(out));
     const char* expect =
-        "t=123s m=7 ge=3 gs=4 ne=1 ns=2 rn=0006 rf=1234/5 bv=2/1 sco=2/0 hf=3 k=41,42 p=ABCDEF";
+        "t=123s m=7 ge=3 gs=4 ne=1 ns=2 rn=0006 rf=1234/5 k=41,42 p=ABCDEF";
     assert(strcmp(out, expect) == 0);
     printf("S3 ok\n");
   }

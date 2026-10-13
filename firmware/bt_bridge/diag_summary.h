@@ -18,9 +18,6 @@ struct DiagSummary {
   uint16_t rn_mask = 0;    // 車機註冊過的 AVRCP 通知 event_id bitmask（0–15）
   uint32_t rf_feat = 0;    // 車機 CT feat_mask（REMOTE_FEATURES_EVT，最後一次）
   uint16_t rf_ct = 0;      // ct_feat_flag
-  uint16_t bvra_on = 0, bvra_off = 0;     // HFP BVRA value=1 / value=0 次數
-  uint16_t sco_open = 0, sco_timeout = 0; // SCO 連上次數（AUDIO_STATE CONNECTED 或 CONNECTED_MSBC）/ 安全逾時次數
-  uint8_t  hf_state = 0;   // 最後一次 HFP 連線狀態
   uint8_t  key_n = 0;      // keys[] 已用數
   uint8_t  keys[8] = {0};  // 收過的 passthrough key code（去重，最多 8 種）
   uint8_t  peer[3] = {0};  // 最後一次 A2DP 連上的位址後 3 bytes
@@ -49,11 +46,10 @@ inline const char* ds_format(const DiagSummary& s, char* out, size_t cap) {
     if (n < 0) break;
     keylen += (size_t)n;
   }
-  snprintf(out, cap, "t=%lus m=%u ge=%u gs=%u ne=%u ns=%u rn=%04x rf=%lx/%x bv=%u/%u sco=%u/%u hf=%u k=%s p=%02X%02X%02X",
+  snprintf(out, cap, "t=%lus m=%u ge=%u gs=%u ne=%u ns=%u rn=%04x rf=%lx/%x k=%s p=%02X%02X%02X",
            (unsigned long)s.uptime_s, (unsigned)s.meta_lines, (unsigned)s.g_elem, (unsigned)s.g_stat,
            (unsigned)s.nov_elem, (unsigned)s.nov_stat, (unsigned)s.rn_mask, (unsigned long)s.rf_feat,
-           (unsigned)s.rf_ct, (unsigned)s.bvra_on, (unsigned)s.bvra_off, (unsigned)s.sco_open,
-           (unsigned)s.sco_timeout, (unsigned)s.hf_state, keybuf, s.peer[0], s.peer[1], s.peer[2]);
+           (unsigned)s.rf_ct, keybuf, s.peer[0], s.peer[1], s.peer[2]);
   return out;
 }
 

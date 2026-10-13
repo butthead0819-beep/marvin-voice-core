@@ -52,6 +52,38 @@ async def test_inject_audio_empty_transcript_skips_reply():
 
 
 @pytest.mark.asyncio
+async def test_inject_audio_require_wake_with_wake_word_proceeds():
+    """車機暫停鍵觸發（require_wake=True）但 STT 文字含喚醒詞 → 照常注入。"""
+    from car_http_app import inject_audio
+    vc = _make_vc(stt_text="馬文現在幾點")
+    ok = await inject_audio(vc, b"RIFFfake-wav", require_wake=True)
+    assert ok is True
+    vc.handle_stt_result.assert_awaited_once()
+    assert vc.handle_stt_result.call_args.kwargs["raw_text"] == "馬文現在幾點"
+
+
+@pytest.mark.asyncio
+async def test_inject_audio_require_wake_without_wake_word_discards(caplog):
+    """車機自己送 PAUSE（來電等）錄到的內容沒喚醒詞 → 丟棄，且不記錄原文。"""
+    from car_http_app import inject_audio
+    vc = _make_vc(stt_text="我等一下就到")
+    ok = await inject_audio(vc, b"RIFFfake-wav", require_wake=True)
+    assert ok is False
+    vc.handle_stt_result.assert_not_awaited()
+    assert "我等一下就到" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_inject_audio_default_no_require_wake_proceeds_without_wake_word():
+    """實體 PTT 按鈕（require_wake 預設 False）沒喚醒詞也照常注入，行為不變。"""
+    from car_http_app import inject_audio
+    vc = _make_vc(stt_text="講個笑話")
+    ok = await inject_audio(vc, b"RIFFfake-wav")
+    assert ok is True
+    vc.handle_stt_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_inject_audio_deletes_temp_wav():
     """守則：暫存 WAV 必須清除。"""
     from car_http_app import inject_audio
