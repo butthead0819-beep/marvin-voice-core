@@ -47,9 +47,9 @@
  * AVRCP 曲名診斷 DIAG 代碼（車機沒顯示曲名時用來分辨卡在哪一段）：
  *   "M ok"   = pollNowPlayingFromS3 第一次從 S3 解析出曲目資訊成功（開機後僅記一次）。
  *   "G elem"/"G stat" = 車機來問 GetElementAttributes/GetPlayStatus 且當下有曲目資訊可答。
- *   "G nov e"/"G nov s" = 車機來問 GetElementAttributes/GetPlayStatus，但當下還沒曲目
- *                         資訊（!np.valid），只能放行原本的拒絕——代表「車機有問，WROOM
- *                         沒資料」，不是「車機根本沒來問」。
+ *   "G nov e"/"G nov s" = 車機來問 GetElementAttributes/GetPlayStatus，但當下沒有真曲目
+ *                         資訊，回了佔位資料（標題"Marvin"／song_len,song_pos=0xFFFFFFFF）
+ *                         ——代表「車機有問，WROOM 沒資料」，不是「車機根本沒來問」。
  *   "R <id>" = 車機第一次對某個 event_id 送 AVRCP RegisterNotification（0–15，每個 id
  *              開機後只記一次），確認車機有沒有訂閱 TRACK_CHANGE(2)/PLAY_STATUS_CHANGE(1)
  *              等通知。
@@ -147,6 +147,11 @@ static volatile bool g_rn_status_due = false;    // 播放狀態變了，待送 
 static volatile bool g_rn_pos_force_due = false; // 換歌時位置也要立刻跟著送一次
 static volatile uint32_t g_rn_pos_interval_s = 1;
 static uint32_t g_rn_pos_last_sent_ms = 0;
+
+// ---- 回報給車機的播放狀態＝車機最後一次下的方向盤指令（WROOM 只要 A2DP 連著就一直送
+// 音訊，沒有自己的播放/暫停狀態）。on_wheel_key（BT app task）寫，av_hdl_avrc_tg_evt
+// （BT app task）跟 sendDueRnNotifications（loop()）讀，單一 byte 不需要鎖。----
+static volatile uint8_t g_reported_playback = ESP_AVRC_PLAYBACK_PLAYING;
 
 // ---- 方向盤按鍵：on_wheel_key（BT app task）推進、loop() 取出——單生產者單消費者
 // ring，head 只被 producer 動、tail 只被 consumer 動，不需要鎖。滿了就丟（這階段只是
@@ -414,12 +419,12 @@ class BridgeSource : public BluetoothA2DPSource {
       switch (rc->reg_ntf.event_id) {
         case ESP_AVRC_RN_TRACK_CHANGE:
           g_rn_track_registered = true;
-          memcpy(param.elm_id, np.track_id, 8);
+          np_fill_elm_id(np, param.elm_id);
           esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_TRACK_CHANGE, ESP_AVRC_RN_RSP_INTERIM, &param);
           return;
         case ESP_AVRC_RN_PLAY_STATUS_CHANGE:
           g_rn_status_registered = true;
-          param.playback = (np.state == 'P') ? ESP_AVRC_PLAYBACK_PLAYING : ESP_AVRC_PLAYBACK_STOPPED;
+          param.playback = g_reported_playback;
           esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_INTERIM, &param);
           return;
         case ESP_AVRC_RN_PLAY_POS_CHANGED:
@@ -823,10 +828,28 @@ bool ssid_match_cb(const char* ssid, esp_bd_addr_t address, int rssi) {
 
 // ---- 方向盤按鍵：車機 AVRCP passthrough → 函式庫 callback（BT app task）→ 這裡只推
 // 進 ring，不做任何播放控制（第二刀才接），交給 loop() 的 drainWheelKeys() 轉送 S3。----
+// AVRCP TRACK_CHANGE 用的 elm_id：np.valid 且 track_id 非全 0 才回真 track_id，否則回
+// 「尚未選曲」的全 FF（NowPlaying 預設建構值 track_id 全 0，不能直接當真 track_id 送出）。
+static void np_fill_elm_id(const NowPlaying& np, uint8_t out[8]) {
+  static const uint8_t kZero8[8] = {0};
+  if (np.valid && memcmp(np.track_id, kZero8, 8) != 0) {
+    memcpy(out, np.track_id, 8);
+  } else {
+    memset(out, 0xFF, 8);
+  }
+}
+
 static void on_wheel_key(uint8_t key, bool isReleased) {
   if (!isReleased) {
     ds_add_key(g_sum, key);
     g_sum_dirty = true;
+    if (key == ESP_AVRC_PT_CMD_PLAY) {
+      g_reported_playback = ESP_AVRC_PLAYBACK_PLAYING;
+      g_rn_status_due = true;
+    } else if (key == ESP_AVRC_PT_CMD_PAUSE) {
+      g_reported_playback = ESP_AVRC_PLAYBACK_PAUSED;
+      g_rn_status_due = true;
+    }
   }
   uint8_t next = (uint8_t)((g_wheel_q_head + 1) % WHEEL_Q);
   if (next == g_wheel_q_tail) return;  // 滿了，丟（這階段只是 log 通道）
@@ -868,7 +891,6 @@ static void pollNowPlayingFromS3() {
           np.rx_ms = millis();
           bool firstTime = !g_np.valid;
           bool trackChanged = firstTime || !np_same_track(g_np, np);
-          bool stateChanged = !firstTime && g_np.state != np.state;
           g_np = np;
           avrc_meta_set(np);
           ds_inc(g_sum.meta_lines);
@@ -881,7 +903,9 @@ static void pollNowPlayingFromS3() {
             g_rn_track_due = true;
             g_rn_pos_force_due = true;
           }
-          if (stateChanged) g_rn_status_due = true;
+          // S3 每次設曲目都等效「現在在播放」；第一筆曲目進來也要送一次 PLAY_STATUS
+          // CHANGED（修掉第一筆不通知的 bug），車機才會真的去問 GetElementAttributes。
+          if (firstTime) g_rn_status_due = true;
         }
       }
       g_npLineLen = 0;
@@ -903,7 +927,7 @@ static void sendDueRnNotifications() {
   if (g_rn_track_registered && g_rn_track_due) {
     esp_avrc_rn_param_t param;
     memset(&param, 0, sizeof(param));
-    memcpy(param.elm_id, g_np.track_id, 8);
+    np_fill_elm_id(g_np, param.elm_id);
     esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_TRACK_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &param);
     g_rn_track_registered = false;
     g_rn_track_due = false;
@@ -911,13 +935,14 @@ static void sendDueRnNotifications() {
   if (g_rn_status_registered && g_rn_status_due) {
     esp_avrc_rn_param_t param;
     memset(&param, 0, sizeof(param));
-    param.playback = (g_np.state == 'P') ? ESP_AVRC_PLAYBACK_PLAYING : ESP_AVRC_PLAYBACK_STOPPED;
+    param.playback = g_reported_playback;
     esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &param);
     g_rn_status_registered = false;
     g_rn_status_due = false;
   }
   uint32_t nowMs = millis();
-  bool intervalDue = g_np.state == 'P' && (nowMs - g_rn_pos_last_sent_ms) >= g_rn_pos_interval_s * 1000;
+  bool intervalDue = g_reported_playback == ESP_AVRC_PLAYBACK_PLAYING && g_np.state == 'P' &&
+                      (nowMs - g_rn_pos_last_sent_ms) >= g_rn_pos_interval_s * 1000;
   if (g_rn_pos_registered && (intervalDue || g_rn_pos_force_due)) {
     esp_avrc_rn_param_t param;
     memset(&param, 0, sizeof(param));
