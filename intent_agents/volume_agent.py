@@ -3,10 +3,13 @@
 對應 2026-05-27 judge outcomes 分析議題 E：L21「把調小聲一點」是 both-dense-zero
 但實際是有效 intent，需要新 agent 接住。
 
-三個 intent：
+六個 intent：
   volume_down (0.90) — 小聲/調低/音量小/volume down
   volume_up   (0.90) — 大聲/調高/音量大/volume up
   volume_mute (0.95) — 靜音/mute
+  balance_tts_up   (0.92) — 「你講話/語音/人聲」大聲一點 → 語音:音樂平衡（非總音量）
+  balance_tts_down (0.92) — 「你講話/語音/人聲」小聲一點 → 語音:音樂平衡（非總音量）
+  balance_reset    (0.92) — 平衡/各半 → 語音:音樂恢復 50:50
 
 模式相容：{"normal", "stream"}，game 不該誤觸發。
 Gate：stream_mode 與 radio_mode 都沒開 → dense zero with "no_playback_active"
@@ -59,10 +62,19 @@ def sync_tts_gain(ctrl, value: float) -> None:
 # 2026-08-25：使用者反映「小聲一點」原本 10% 降幅無感，改大幅遞減。
 VOICE_VOL_STEP = 0.25
 
+# 平衡（語音:音樂）語音步進 20%；夾在 PlayControlView.BAL_MIN/BAL_MAX 同範圍。
+VOICE_BAL_STEP = 0.20
+BAL_MIN = 0.10
+BAL_MAX = 0.90
+_VOICE_SUBJ = r"(?:(?:你|馬文)的?(?:講話|說話|聲音)|語音|人聲)"
+
 _ACK_TEXT = {
     "volume_down": "好，調小",
     "volume_up": "好，調大",
     "volume_mute": "靜音",
+    "balance_tts_up": "好，語音調大",
+    "balance_tts_down": "好，語音調小",
+    "balance_reset": "好，語音音樂各半",
 }
 
 
@@ -85,6 +97,40 @@ class VolumeAgent(DeclarativeIntentAgent):
                     manifest_description=(
                         "使用者要把聲音完全靜音（一點聲音都不要）。不是調小聲、"
                         "不是暫停。"
+                    ),
+                ),
+                IntentSchema(
+                    "balance_tts_up", 0.92,
+                    patterns=[
+                        rf"{_VOICE_SUBJ}\s*(?:再|調)?\s*(?:大聲|大一?點|大)",
+                        r"聽不(?:到|清楚?)你(?:講話|說話|的聲音)?",
+                        r"音樂.{0,3}(?:蓋過|壓過|蓋掉)你",
+                    ],
+                    reason_template="balance_tts_up:{matched}",
+                    manifest_description=(
+                        "使用者要 Marvin 講話（語音/人聲）相對音樂大聲一點，調的是"
+                        "語音:音樂平衡，不是總音量。"
+                    ),
+                ),
+                IntentSchema(
+                    "balance_tts_down", 0.92,
+                    patterns=[
+                        rf"{_VOICE_SUBJ}\s*(?:再|調)?\s*(?:小聲|小一?點|小)",
+                    ],
+                    reason_template="balance_tts_down:{matched}",
+                    manifest_description=(
+                        "使用者要 Marvin 講話（語音/人聲）相對音樂小聲一點，調的是"
+                        "語音:音樂平衡，不是總音量。"
+                    ),
+                ),
+                IntentSchema(
+                    "balance_reset", 0.92,
+                    patterns=[
+                        r"(?:平衡|各半|一半一半)",
+                    ],
+                    reason_template="balance_reset:{matched}",
+                    manifest_description=(
+                        "使用者要把語音和音樂的音量比例恢復成一半一半。"
                     ),
                 ),
                 IntentSchema(
@@ -137,8 +183,22 @@ class VolumeAgent(DeclarativeIntentAgent):
         return _handler
 
     def _apply_volume(self, intent: str) -> str | None:
-        """套用音量變更，回傳實際被調的屬性名（"stream_volume" / "radio_volume"）；無變更回 None。"""
+        """套用音量變更，回傳實際被調的屬性名（"stream_volume" / "radio_volume" /
+        "tts_balance"）；無變更回 None。"""
         ctrl = self.ctrl
+
+        if intent in ("balance_tts_up", "balance_tts_down", "balance_reset"):
+            cur = getattr(ctrl, "tts_balance", 0.50)
+            if intent == "balance_reset":
+                new_bal = 0.50
+            elif intent == "balance_tts_up":
+                new_bal = min(BAL_MAX, round(cur + VOICE_BAL_STEP, 2))
+            else:
+                new_bal = max(BAL_MIN, round(cur - VOICE_BAL_STEP, 2))
+            ctrl.tts_balance = new_bal
+            logger.info(f"[Balance] {intent} → tts_balance={new_bal:.2f}")
+            return "tts_balance"
+
         vol_min = getattr(ctrl, "VOL_MIN", 0.01)
         vol_max = getattr(ctrl, "VOL_MAX", 1.00)
 

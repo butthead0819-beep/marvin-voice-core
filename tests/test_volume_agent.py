@@ -327,3 +327,103 @@ async def test_handler_volume_down_no_mixer_does_not_crash():
     bid = agent.bid(_ctx("小聲一點"))
     await bid.handler()  # 不該拋例外
     assert ctrl.stream_volume == pytest.approx(0.25)
+
+
+# ── 語音平衡（tts_balance）：只動「你講話/語音/人聲」，不是調總音量 ───────────
+
+
+@pytest.mark.parametrize("query", [
+    "你講話大聲一點", "馬文說話大聲點", "語音大聲一點", "人聲大一點",
+    "你的聲音大一點", "聽不到你講話", "音樂蓋過你了",
+])
+async def test_balance_tts_up_patterns(query):
+    from intent_agents.volume_agent import VolumeAgent
+    agent = VolumeAgent(_ctrl(stream_mode=True))
+    bid = agent.bid(_ctx(query))
+    assert bid.confidence == 0.92, f"expected 0.92 for {query!r}, got {bid.confidence}"
+    assert bid.reason.startswith("balance_tts_up:")
+
+
+@pytest.mark.parametrize("query", [
+    "你講話小聲一點", "語音小聲一點", "人聲小一點",
+])
+async def test_balance_tts_down_patterns(query):
+    from intent_agents.volume_agent import VolumeAgent
+    agent = VolumeAgent(_ctrl(stream_mode=True))
+    bid = agent.bid(_ctx(query))
+    assert bid.confidence == 0.92, f"expected 0.92 for {query!r}, got {bid.confidence}"
+    assert bid.reason.startswith("balance_tts_down:")
+
+
+@pytest.mark.parametrize("query", [
+    "平衡一下", "語音音樂各半",
+])
+async def test_balance_reset_patterns(query):
+    from intent_agents.volume_agent import VolumeAgent
+    agent = VolumeAgent(_ctrl(stream_mode=True))
+    bid = agent.bid(_ctx(query))
+    assert bid.confidence == 0.92, f"expected 0.92 for {query!r}, got {bid.confidence}"
+    assert bid.reason.startswith("balance_reset:")
+
+
+@pytest.mark.parametrize("query", [
+    "大聲一點", "音樂大聲一點", "你把音樂大聲一點",
+])
+async def test_balance_subject_does_not_hijack_plain_volume_up(query):
+    """「大聲一點」「音樂大聲一點」維持調總音量，只有講到「你講話/語音/人聲」才動平衡。"""
+    from intent_agents.volume_agent import VolumeAgent
+    agent = VolumeAgent(_ctrl(stream_mode=True))
+    bid = agent.bid(_ctx(query))
+    assert bid.confidence == 0.90
+    assert bid.reason.startswith("volume_up:")
+
+
+@pytest.mark.parametrize("query", [
+    "小聲一點", "音樂小聲一點",
+])
+async def test_balance_subject_does_not_hijack_plain_volume_down(query):
+    from intent_agents.volume_agent import VolumeAgent
+    agent = VolumeAgent(_ctrl(stream_mode=True))
+    bid = agent.bid(_ctx(query))
+    assert bid.confidence == 0.90
+    assert bid.reason.startswith("volume_down:")
+
+
+async def test_apply_volume_balance_tts_up_steps_and_clamps():
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True)
+    ctrl.tts_balance = 0.50
+    agent = VolumeAgent(ctrl)
+    agent._apply_volume("balance_tts_up")
+    assert ctrl.tts_balance == pytest.approx(0.70)
+
+    ctrl.tts_balance = 0.80
+    agent._apply_volume("balance_tts_up")
+    assert ctrl.tts_balance == pytest.approx(0.90)  # 夾上限 BAL_MAX
+
+
+async def test_apply_volume_balance_tts_down_clamps():
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True)
+    ctrl.tts_balance = 0.20
+    agent = VolumeAgent(ctrl)
+    agent._apply_volume("balance_tts_down")
+    assert ctrl.tts_balance == pytest.approx(0.10)  # 夾下限 BAL_MIN
+
+
+async def test_apply_volume_balance_reset():
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True)
+    ctrl.tts_balance = 0.70
+    agent = VolumeAgent(ctrl)
+    agent._apply_volume("balance_reset")
+    assert ctrl.tts_balance == pytest.approx(0.50)
+
+
+async def test_apply_volume_balance_does_not_touch_stream_volume():
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True, stream_volume=0.50)
+    ctrl.tts_balance = 0.50
+    agent = VolumeAgent(ctrl)
+    agent._apply_volume("balance_tts_up")
+    assert ctrl.stream_volume == pytest.approx(0.50)

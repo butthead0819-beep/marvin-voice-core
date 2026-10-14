@@ -151,5 +151,19 @@
     "commit": "",
     "resolved_at": "2026-10-10",
     "note": "問過去/計畫行程（上個月去哪露營）由 EventRecallAgent 接手（bid 0.88，事件記憶 Phase 1）。"
+  },
+  "misclick_delete": {
+    "agent": "song_feedback",
+    "file": "intent_agents/song_feedback_agent.py",
+    "commit": "",
+    "resolved_at": "2026-10-14",
+    "note": "控制卡「🙈 誤點刪除」按鈕語音化：「誤點刪除」由 SongFeedbackAgent 接手（bid 0.92）。2026-10-13 showay 喚醒唸按鈕名稱被 too_short gate 擋掉才發現語音本來沒有這條路徑。"
+  },
+  "like_song": {
+    "agent": "song_feedback",
+    "file": "intent_agents/song_feedback_agent.py",
+    "commit": "",
+    "resolved_at": "2026-10-14",
+    "note": "控制卡「❤️ 喜歡」按鈕語音化：「喜歡這首/按讚」由 SongFeedbackAgent 接手（bid 0.90）。"
   }
 }
