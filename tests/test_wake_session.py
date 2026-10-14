@@ -5,7 +5,9 @@ TDD — WakeSession 純核心狀態機（wake_session.py）。
 """
 from __future__ import annotations
 
-from wake_session import WakeSession
+import pytest
+
+from wake_session import WakeSession, is_closing_phrase
 
 
 def test_on_utterance_false_before_replied():
@@ -161,3 +163,85 @@ def test_on_utterance_false_when_not_opened_even_after_await_window():
     s = WakeSession()
     s.on_wake_accepted("A", 0.0)
     assert s.on_utterance("A", 31.0, marvin_speaking=False) is False
+
+
+# ── v2：query_mode / closing phrase / music action ───────────────────────────
+
+@pytest.mark.parametrize("text", [
+    "謝謝", "謝謝馬文", "知道了", "好了啦", "OK", "馬文 謝謝你", "了解！",
+])
+def test_is_closing_phrase_true(text):
+    assert is_closing_phrase(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "謝謝你上次推薦的歌那首叫什麼", "好了沒", "知道了嗎他幾歲", "",
+])
+def test_is_closing_phrase_false(text):
+    assert is_closing_phrase(text) is False
+
+
+def test_on_utterance_closing_phrase_ends_session():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    assert s.on_utterance("A", 1.0, marvin_speaking=False, text="謝謝") is False
+    assert s.target is None
+
+
+def test_on_utterance_non_closing_text_still_caught():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    assert s.on_utterance("A", 1.0, marvin_speaking=False, text="他上一張專輯呢") is True
+    assert s.target == "A"
+
+
+def test_on_music_action_ends_session():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.on_music_action(1.0)
+    assert s.target is None
+
+
+def test_on_music_action_noop_without_target():
+    s = WakeSession()
+    s.on_music_action(1.0)   # 不炸
+    assert s.target is None
+
+
+def test_note_grounded_sets_query_mode_after_opened():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.note_grounded("A")
+    assert s.wants_grounded_followup("A") is True
+    assert s.wants_grounded_followup("B") is False
+
+
+def test_note_grounded_before_opened_not_sticky():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)   # 只 arm，未 on_replied
+    s.note_grounded("A")
+    assert s.wants_grounded_followup("A") is False
+
+
+def test_note_grounded_for_non_target_ignored():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.note_grounded("B")
+    assert s.wants_grounded_followup("A") is False
+
+
+def test_transfer_to_new_target_resets_query_mode():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.note_grounded("A")
+    assert s.wants_grounded_followup("A") is True
+    s.on_wake_accepted("B", 10.0)
+    assert s.wants_grounded_followup("B") is False
+    s.on_replied(10.5)
+    assert s.wants_grounded_followup("B") is False

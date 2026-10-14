@@ -32,16 +32,30 @@ _WAKE_SESSION_REPLY_KINDS = frozenset({
 })
 
 
+def _is_music_action(winner) -> bool:
+    """點播 / 下一首 / 重播被執行＝歌曲對話以指令收尾。"""
+    if winner is None:
+        return False
+    name = getattr(winner, "name", "")
+    if name == "music":
+        return not getattr(winner, "missing_slots", None)   # 還在反問哪一首 → 對話繼續
+    if name == "replay":
+        return True
+    if name == "playback_control":
+        return str(getattr(winner, "reason", "")).startswith("skip:")
+    return False
+
+
 class WakeSessionMixin:
     def _marvin_tts_speaking(self) -> bool:
         mixer = getattr(self, "_mixer", None)
         return mixer is not None and mixer.tts_load_seconds() > _SPEAKING_EPS_S
 
-    def _followup_override(self, speaker, fusion) -> bool:
+    def _followup_override(self, speaker, fusion, text="") -> bool:
         """取代舊的 follow-up 判斷：WakeSession 對發起者免喚醒（優先）＋ 舊問句窗（D2-A 不變）。"""
         session = getattr(self, "_wake_session", None)
         if session is not None and session.on_utterance(
-                speaker, time.time(), marvin_speaking=self._marvin_tts_speaking()):
+                speaker, time.time(), marvin_speaking=self._marvin_tts_speaking(), text=text):
             return True        # log 已在核心印
         if not self._wake_response_pending and fusion is not None and fusion.is_open():
             logger.info(f"🎧 [Follow-Up] {speaker} captured in follow-up window (reason={getattr(fusion, '_open_reason', '?')})")
@@ -58,8 +72,30 @@ class WakeSessionMixin:
         if session is not None:
             session.on_ignored(speaker, time.time())
 
-    def _wake_session_on_replied(self) -> None:
+    def _wake_session_on_shortcut(self, sc: str) -> None:
+        from music_fastpath import FASTPATH_PLAY_PREFIX
         session = getattr(self, "_wake_session", None)
+        if session is None:
+            return
+        if sc.startswith(FASTPATH_PLAY_PREFIX) or sc == "下一首":
+            session.on_music_action(time.time())
+            return
+        self._wake_session_on_replied()
+
+    def _wake_session_note_grounded(self, speaker) -> None:
+        session = getattr(self, "_wake_session", None)
+        if session is not None:
+            session.note_grounded(speaker)
+
+    def _wake_session_grounded_sticky(self, speaker) -> bool:
+        session = getattr(self, "_wake_session", None)
+        return session is not None and session.wants_grounded_followup(speaker)
+
+    def _wake_session_on_replied(self, winner=None) -> None:
+        session = getattr(self, "_wake_session", None)
+        if session is not None and _is_music_action(winner):
+            session.on_music_action(time.time())
+            return
         if session is None or not session.on_replied(time.time()):
             return
         if os.getenv("MARVIN_WAKE_SESSION_ACK", "1") == "0":

@@ -294,3 +294,135 @@ def test_apply_wake_guards_accepted_wake_arms_session():
         None, None, None, None)
     assert is_fast is True
     assert vc._wake_session.target == "A"
+
+
+# ── v2：_wake_session_on_replied(winner) / _wake_session_on_shortcut / sticky grounded ──
+
+from intent_bus import Bid
+
+
+def _bid(name, *, missing_slots=None, reason=""):
+    return Bid(name=name, confidence=0.9, handler=AsyncMock(),
+               reason=reason, missing_slots=missing_slots or [])
+
+
+def test_on_replied_music_winner_no_missing_slots_ends_session():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    with patch("time.time", return_value=1.0):
+        cog._wake_session_on_replied(_bid("music", missing_slots=[]))
+    assert cog._wake_session.target is None
+
+
+@pytest.mark.asyncio
+async def test_on_replied_music_winner_with_missing_slots_does_not_end_session():
+    cog = _FakeCog()
+    cog._wake_session_play_ack = AsyncMock()   # 照常 on_replied → 會排提示音 task
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    with patch("time.time", return_value=0.5):
+        cog._wake_session_on_replied(_bid("music", missing_slots=["song_choice"]))
+    assert cog._wake_session.target == "A"
+    assert cog._wake_session.opened is True
+
+
+def test_on_replied_replay_winner_ends_session():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    with patch("time.time", return_value=1.0):
+        cog._wake_session_on_replied(_bid("replay"))
+    assert cog._wake_session.target is None
+
+
+def test_on_replied_playback_control_skip_reason_ends_session():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    with patch("time.time", return_value=1.0):
+        cog._wake_session_on_replied(_bid("playback_control", reason="skip:下一首"))
+    assert cog._wake_session.target is None
+
+
+def test_on_replied_playback_control_pause_reason_does_not_end_session():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    with patch("time.time", return_value=1.0):
+        cog._wake_session_on_replied(_bid("playback_control", reason="pause:暫停"))
+    assert cog._wake_session.target == "A"
+
+
+def test_on_replied_volume_winner_does_not_end_session():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    with patch("time.time", return_value=1.0):
+        cog._wake_session_on_replied(_bid("volume"))
+    assert cog._wake_session.target == "A"
+
+
+def test_on_shortcut_play_prefix_ends_session():
+    from music_fastpath import FASTPATH_PLAY_PREFIX
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    with patch("time.time", return_value=1.0):
+        cog._wake_session_on_shortcut(FASTPATH_PLAY_PREFIX + "晴天")
+    assert cog._wake_session.target is None
+
+
+def test_on_shortcut_skip_ends_session():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    with patch("time.time", return_value=1.0):
+        cog._wake_session_on_shortcut("下一首")
+    assert cog._wake_session.target is None
+
+
+@pytest.mark.asyncio
+async def test_on_shortcut_pause_does_not_end_session_and_opens_listening():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session_play_ack = AsyncMock()
+    with patch("time.time", return_value=0.5):
+        cog._wake_session_on_shortcut("暫停音樂")
+    await asyncio.sleep(0)
+    assert cog._wake_session.target == "A"
+    assert cog._wake_session.opened is True
+
+
+def test_followup_override_closing_text_ends_session():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.return_value = 0.0
+    with patch("time.time", return_value=1.0):
+        assert cog._followup_override("A", None, "謝謝") is False
+    assert cog._wake_session.target is None
+
+
+def test_apply_wake_guards_closing_text_ends_listening_session():
+    """真 VoiceController._apply_wake_guards：session 聆聽中對象說結束語 → raw_text 有接上。"""
+    from tests.test_wake_guards_unit import _make_vc
+    session = WakeSession()
+    session.on_wake_accepted("A", time.time())
+    session.on_replied(time.time())
+    vc = _make_vc(_wake_session=session, _mixer=None)
+    is_fast, _ = vc._apply_wake_guards(
+        "A", "謝謝", time.time(), "A", False,
+        None, None, None, None)
+    assert is_fast is False
+    assert vc._wake_session.target is None

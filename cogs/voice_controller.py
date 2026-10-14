@@ -1270,7 +1270,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         mode=("stream" if self.stream_mode else "normal"),
                         dispatch_source="wake_shortcut")
                     asyncio.create_task(dispatch_with_feedback(self._intent_bus, self.active_text_channel, speaker, raw_text, _sc_ctx))
-                    self._wake_session_on_replied()
+                    self._wake_session_on_shortcut(_sc)
                     return
 
             # 排隊時改走文字頻道通知，不打斷當前語音播放
@@ -1496,7 +1496,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
              is_duplicate = True
 
         # 🗣️ [WakeSession] 對發起者免喚醒（優先）＋ 🎧 [Follow-Up] 舊問句窗（D2-A 不變）——判斷在 WakeSessionMixin
-        if not is_fast and not self.game_mode and self._followup_override(speaker, _fusion):
+        if not is_fast and not self.game_mode and self._followup_override(speaker, _fusion, raw_text):
             is_fast = True
             is_echo = False
             is_duplicate = False
@@ -3043,7 +3043,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         _winner = await self._intent_bus.dispatch(_bus_ctx)
         if _winner:
-            self._wake_session_on_replied()
+            self._wake_session_on_replied(_winner)
             # B1: bus 接走 intent → LLM 路徑不會跑 → 取消 dangling speculative
             # prefetch（避免吃 LLM quota；且防 1976 行 race 把舊 result 帶到
             # 下次 chat turn 變成幻覺起手回答）
