@@ -419,3 +419,11 @@ async def test_prewarm_skips_when_voice_breaker_open(monkeypatch):
         await tts.prewarm()
 
     comm_factory.assert_not_called()
+
+
+def test_split_first_chunk_skips_break_before_min_len():
+    """開頭「嗯，」太短不切（Azure 每段有固定開銷，首段太短不划算）→ 找下一個 ≥8 字的斷點。"""
+    text = "嗯，周杰倫最新專輯是太陽之子，收錄了十三首新歌，其中有好幾首都很好聽喔。"
+    first, rest = _split_first_chunk(text)
+    assert first == "嗯，周杰倫最新專輯是太陽之子，"
+    assert rest.startswith("收錄了")
