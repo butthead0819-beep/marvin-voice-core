@@ -67,6 +67,7 @@
 #include <HTTPClient.h>
 #include <driver/i2s.h>
 #include <freertos/semphr.h>
+#include <esp_heap_caps.h>     // heap_caps_get_free_size/largest_free_block（Funnel TLS 內部 RAM 診斷用）
 #include <string.h>
 #include <MP3DecoderHelix.h>   // pschatzmann/arduino-libhelix — decode-only(不接管連線),
                                 // 塞進既有 audioNetworkTask(填ring buffer)/audioPlaybackTask
@@ -1450,6 +1451,31 @@ void dispatchNewCommands(const uint8_t* body, size_t bodyLen) {
 // 用完即丟的 client——避免每 30 秒都重新做一次完整 handshake。
 static WiFiClientSecure gHeartbeatFunnelClient;
 
+// 2026-10-14：這塊板子的 Arduino 預編 CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y（TLS 只能用
+// 內部 RAM，不能用 PSRAM）。熱點（無區網）下實測：心跳走 gHeartbeatFunnelClient 這條
+// 常駐 TLS 一直成功，但 postAudio() 原本自己 new 一個 WiFiClientSecure 開「第三條」
+// TLS（/audio_stream 常駐一條、心跳一條）——內部 RAM 不夠，第三條握手失敗，HTTP -1。
+// 解法：postAudio() 的 Funnel 路徑也直接複用 gHeartbeatFunnelClient，跟心跳共用同一條
+// 連線；用 gFunnelMutex 互斥，避免兩邊同時讀寫同一個 client 物件、或心跳在上傳音訊時
+// 硬插進來把對話回應的 response 吃掉。
+static SemaphoreHandle_t gFunnelMutex = nullptr;
+
+// 把 carHeartbeat() 原本「connected() 檢查→沒連就 setInsecure/setHandshakeTimeout/
+// LWIP_LOCK connect/UNLOCK→成功就 setTimeout(500)」那段抽出來，postAudio() 也要用。
+// 呼叫端必須已持有 gFunnelMutex。
+static bool funnelEnsureConnected(uint32_t handshakeTimeoutS, int32_t connectTimeoutMs) {
+  bool alive = gHeartbeatFunnelClient.connected();
+  if (!alive) {
+    gHeartbeatFunnelClient.setInsecure();
+    gHeartbeatFunnelClient.setHandshakeTimeout(handshakeTimeoutS);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
+    LWIP_LOCK();
+    alive = gHeartbeatFunnelClient.connect(MARVIN_HOST, MARVIN_PORT, connectTimeoutMs);
+    LWIP_UNLOCK();
+    if (alive) gHeartbeatFunnelClient.setTimeout(500);
+  }
+  return alive;
+}
+
 // 2026-08-13：熱點/Funnel 下每次心跳都無條件先試區網——LWIP_LOCK 包住整個 connect()
 // timeout，區網打不到時等於每 30 秒白白持鎖最多 timeout 那麼久，直接跟 audioNetworkTask
 // 搶讀取視窗，是斷續的另一個貢獻源（跟上面的 Funnel keep-alive 是同一個問題的兩面：
@@ -1493,25 +1519,24 @@ void carHeartbeat() {
       gHeartbeatTryLan = true;
     }
 
-    // Funnel：keep-alive 複用連線（見 gHeartbeatFunnelClient 前的說明）——連線還活著
-    // 就直接送、不重新握手；斷了（或這是第一次）才真的 connect()+handshake。
-    bool alive = gHeartbeatFunnelClient.connected();
-    if (!alive) {
-      gHeartbeatFunnelClient.setInsecure();
-      gHeartbeatFunnelClient.setHandshakeTimeout(8);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
-      LWIP_LOCK();
-      alive = gHeartbeatFunnelClient.connect(MARVIN_HOST, MARVIN_PORT, 8000);
-      LWIP_UNLOCK();
-      if (alive) gHeartbeatFunnelClient.setTimeout(500);
-    }
-    if (alive) {
-      int httpCode = -1;
-      bool ok = postHttpKeepAlive(gHeartbeatFunnelClient, MARVIN_HOST, "/car", "application/json",
-                                   (const uint8_t*)body, strlen(body), 6000, &httpCode);
-      if (!ok) { LWIP_LOCK(); gHeartbeatFunnelClient.stop(); LWIP_UNLOCK(); }
-      code = ok ? httpCode : -1;
+    // Funnel：跟 postAudio() 共用 gHeartbeatFunnelClient，用 gFunnelMutex 互斥（見
+    // gFunnelMutex 前的說明）——keep-alive 複用連線，連線還活著就直接送、不重新握手；
+    // 斷了（或這是第一次）才真的 connect()+handshake。
+    if (xSemaphoreTake(gFunnelMutex, pdMS_TO_TICKS(20000)) == pdTRUE) {
+      bool alive = funnelEnsureConnected(8, 8000);
+      if (alive) {
+        int httpCode = -1;
+        bool ok = postHttpKeepAlive(gHeartbeatFunnelClient, MARVIN_HOST, "/car", "application/json",
+                                     (const uint8_t*)body, strlen(body), 6000, &httpCode);
+        if (!ok) { LWIP_LOCK(); gHeartbeatFunnelClient.stop(); LWIP_UNLOCK(); }
+        code = ok ? httpCode : -1;
+      } else {
+        code = -1;
+      }
+      xSemaphoreGive(gFunnelMutex);
     } else {
       code = -1;
+      Serial.println("[Car] Funnel 連線忙（上傳中），跳過這輪");
     }
     Serial.printf("[Car] present 心跳(Funnel) HTTP %d\n", code);
   }
@@ -1642,10 +1667,32 @@ void postAudio(int nSamples, bool viaPause) {
                        audioPath, "audio/wav", wav, wavBytes, 15000);
   if (code <= 0) {
     Serial.println("[POST /audio] 區網打不到，退回 Funnel...");
-    WiFiClientSecure funnelClient; funnelClient.setInsecure();
-    funnelClient.setHandshakeTimeout(5);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
-    code = postHttp(funnelClient, MARVIN_HOST, MARVIN_PORT, 5000,
-                     audioPath, "audio/wav", wav, wavBytes, 15000);
+    // 2026-10-14：改用 gHeartbeatFunnelClient（跟心跳共用），不再自己 new 一個
+    // WiFiClientSecure——這塊板子 TLS 只能用內部 RAM，/audio_stream 常駐一條、心跳
+    // 常駐一條，硬開第三條會因為內部 RAM 不夠握手失敗（熱點下實測連續 HTTP -1）。
+    // gFunnelMutex 保護這條共用連線，避免跟 carHeartbeat() 同時搶著讀寫。
+    if (xSemaphoreTake(gFunnelMutex, pdMS_TO_TICKS(10000)) == pdTRUE) {
+      Serial.printf("[POST /audio] Funnel 前 internal free=%u largest=%u\n",
+                    (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                    (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+      bool alive = funnelEnsureConnected(8, 8000);
+      if (alive) {
+        int httpCode = -1;
+        bool ok = postHttpKeepAlive(gHeartbeatFunnelClient, MARVIN_HOST, audioPath, "audio/wav",
+                                     wav, wavBytes, 15000, &httpCode);
+        if (!ok) { LWIP_LOCK(); gHeartbeatFunnelClient.stop(); LWIP_UNLOCK(); }
+        code = ok ? httpCode : -1;
+      } else {
+        char eb[100];
+        int e = gHeartbeatFunnelClient.lastError(eb, sizeof(eb));
+        Serial.printf("[POST /audio] TLS 失敗 err=%d %s\n", e, eb);
+        code = -1;
+      }
+      xSemaphoreGive(gFunnelMutex);
+    } else {
+      Serial.println("[POST /audio] Funnel 連線忙");
+      code = -1;
+    }
   }
   Serial.printf("[POST /audio] HTTP %d\n", code);
   free(wav);
@@ -1666,6 +1713,7 @@ void postAudio(int nSamples, bool viaPause) {
 void setup() {
   loopTaskHandle = xTaskGetCurrentTaskHandle();   // setup()/loop() 是同一顆 Arduino loopTask
   lwipMutex = xSemaphoreCreateMutex();            // 必須在 audioNet/carHeartbeat 任務起來前建好
+  gFunnelMutex = xSemaphoreCreateMutex();         // 必須在 carHeartbeatTask 起來前建好（見 gFunnelMutex 前的說明）
   Serial.begin(115200);
   delay(500);
   Serial.println("\n=== Marvin car_puck bring-up ===");

@@ -594,6 +594,18 @@ static void handleSerialCommand(const char* line) {
   if (strcmp(line, "sum") == 0) {
     char out[160];
     Serial.printf("[SUM] 本次 %s\n", ds_format(g_sum, out, sizeof(out)));
+    nvs_handle_t hc;
+    if (nvs_open("bt_bridge", NVS_READONLY, &hc) == ESP_OK) {
+      uint8_t cbuf[sizeof(DiagSummary)];
+      size_t clen = sizeof(cbuf);
+      if (nvs_get_blob(hc, "sumc", cbuf, &clen) == ESP_OK && clen == sizeof(DiagSummary)) {
+        DiagSummary lastConn;
+        memcpy(&lastConn, cbuf, sizeof(lastConn));
+        char cline[160];
+        Serial.printf("[SUM] 最近連上車機那次 %s\n", ds_format(lastConn, cline, sizeof(cline)));
+      }
+      nvs_close(hc);
+    }
     return;
   }
   Serial.println("[CMD] 未知指令（可用：forget XX:XX:XX:XX:XX:XX、sum）");
@@ -657,7 +669,13 @@ static void diag_store() {
   if (err != ESP_OK) Serial.printf("[DIAG] 寫入失敗 err=%d\n", (int)err);
 }
 
-// ---- 每次開機統計摘要 NVS（namespace "bt_bridge" / key "sum0" 本次、"sum1" 上次）----
+// ---- 每次開機統計摘要 NVS（namespace "bt_bridge" / key "sum0" 本次、"sum1" 上次、
+// "sumc" 最近一次「有 A2DP 連上」那次開機的摘要）----
+//
+// 2026-10-14：每次開機都會把 sum0 搬成 sum1，但下車後在家插 USB、序列埠一開又會重開
+// 一次機——那趟車上session 的 sum0/sum1 就被這次在家開機推掉了。sumc 只在 g_sum.peer
+// 非全0（這次開機真的連上過車機）時才覆寫，所以沒連過線的開機（比如在家插 USB）不會
+// 蓋掉它，可以隨時回去看「最近一次連上車機」那趟的摘要。
 static void sum_load() {
   uint8_t buf[sizeof(DiagSummary)];
   nvs_handle_t h;
@@ -675,11 +693,26 @@ static void sum_load() {
       }
       char line[160];
       Serial.printf("[SUM] 上次開機 %s\n", ds_format(prev, line, sizeof(line)));
-      return;
+    } else {
+      nvs_close(h);
+      Serial.println("[SUM] 無上次開機紀錄");
     }
-    nvs_close(h);
+  } else {
+    Serial.println("[SUM] 無上次開機紀錄");
   }
-  Serial.println("[SUM] 無上次開機紀錄");
+
+  nvs_handle_t hc;
+  if (nvs_open("bt_bridge", NVS_READONLY, &hc) == ESP_OK) {
+    uint8_t cbuf[sizeof(DiagSummary)];
+    size_t clen = sizeof(cbuf);
+    if (nvs_get_blob(hc, "sumc", cbuf, &clen) == ESP_OK && clen == sizeof(DiagSummary)) {
+      DiagSummary lastConn;
+      memcpy(&lastConn, cbuf, sizeof(lastConn));
+      char cline[160];
+      Serial.printf("[SUM] 最近連上車機那次 %s\n", ds_format(lastConn, cline, sizeof(cline)));
+    }
+    nvs_close(hc);
+  }
 }
 
 static uint32_t g_sum_last_store_ms = 0;
@@ -690,6 +723,10 @@ static void sum_store() {
     return;
   }
   esp_err_t err = nvs_set_blob(h, "sum0", &g_sum, sizeof(g_sum));
+  bool hasPeer = (g_sum.peer[0] || g_sum.peer[1] || g_sum.peer[2]);
+  if (err == ESP_OK && hasPeer) {
+    err = nvs_set_blob(h, "sumc", &g_sum, sizeof(g_sum));
+  }
   if (err == ESP_OK) err = nvs_commit(h);
   nvs_close(h);
   if (err != ESP_OK) Serial.printf("[SUM] 寫入失敗 err=%d\n", (int)err);
