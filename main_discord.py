@@ -88,6 +88,7 @@ def setup_early_logging():
     logging.getLogger("memory_quarantine").setLevel(logging.INFO)
     logging.getLogger("liveness_beacon").setLevel(logging.INFO)
     logging.getLogger("etd_clean_reuse").setLevel(logging.INFO)  # 2026-09-25 ♻️ [ETD reuse] 命中率
+    logging.getLogger("wake_session").setLevel(logging.INFO)  # 2026-10-14 🗣️ [WakeSession] arm/聆聽中/接住/結束 狀態 log
     logging.getLogger("queue_priority").setLevel(logging.INFO)  # 2026-09-25 🎯 [RequestPriority] 插隊 log
     logging.getLogger("audiophile_fetcher").setLevel(logging.INFO)  # 歌曲卡查證/快取命中 log
     logging.getLogger("shazam_identify").setLevel(logging.INFO)  # Shazam 音訊認歌結果/斷路 log

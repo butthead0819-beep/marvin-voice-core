@@ -25,6 +25,7 @@ WAKE_SESSION_ACK_PATH = "assets/wake_session_open.wav"
 _ACK_POLL_S = 0.1
 _ACK_IDLE_REQUIRED_S = 1.5   # mixer TTS 層連續空閒這麼久才算「回應播完」（跨過串流句與句的空檔）
 _ACK_MAX_WAIT_S = 60.0
+_ACK_SPEECH_WAIT_S = 15.0   # 等 Marvin 開口的上限；超過視為無語音回應，直接進入等空閒
 _SPEAKING_EPS_S = 0.05
 _WAKE_SESSION_REPLY_KINDS = frozenset({
     SpeakKind.WAKE_REPLY, SpeakKind.RESULT_NOTICE,
@@ -109,6 +110,12 @@ class WakeSessionMixin:
         try:
             if getattr(self, "_mixer", None) is None:
                 return
+            speech_wait_s = 0.0
+            while not self._marvin_tts_speaking():
+                if speech_wait_s >= _ACK_SPEECH_WAIT_S:
+                    break
+                await asyncio.sleep(_ACK_POLL_S)
+                speech_wait_s += _ACK_POLL_S
             idle_s = 0.0
             waited_s = 0.0
             while idle_s < _ACK_IDLE_REQUIRED_S:

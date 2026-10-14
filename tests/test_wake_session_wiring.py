@@ -128,6 +128,7 @@ async def test_play_ack_plays_via_dj_layer_not_play_tts(monkeypatch):
     monkeypatch.setattr(wsm, "_ACK_POLL_S", 0.001)
     monkeypatch.setattr(wsm, "_ACK_IDLE_REQUIRED_S", 0.002)
     monkeypatch.setattr(wsm, "_ACK_MAX_WAIT_S", 1.0)
+    monkeypatch.setattr(wsm, "_ACK_SPEECH_WAIT_S", 0.001)
 
     cog = _FakeCog()
     cog._wake_session = WakeSession()
@@ -150,6 +151,7 @@ async def test_play_ack_skips_when_session_transferred(monkeypatch):
     monkeypatch.setattr(wsm, "_ACK_POLL_S", 0.001)
     monkeypatch.setattr(wsm, "_ACK_IDLE_REQUIRED_S", 0.002)
     monkeypatch.setattr(wsm, "_ACK_MAX_WAIT_S", 1.0)
+    monkeypatch.setattr(wsm, "_ACK_SPEECH_WAIT_S", 0.001)
 
     cog = _FakeCog()
     cog._wake_session = WakeSession()
@@ -171,6 +173,7 @@ async def test_play_ack_skips_when_no_mixer(monkeypatch):
     monkeypatch.setattr(wsm, "_ACK_POLL_S", 0.001)
     monkeypatch.setattr(wsm, "_ACK_IDLE_REQUIRED_S", 0.002)
     monkeypatch.setattr(wsm, "_ACK_MAX_WAIT_S", 1.0)
+    monkeypatch.setattr(wsm, "_ACK_SPEECH_WAIT_S", 0.001)
 
     cog = _FakeCog()
     cog._wake_session = WakeSession()
@@ -270,6 +273,7 @@ async def test_play_ack_skips_when_new_turn_already_captured(monkeypatch):
     monkeypatch.setattr(wsm, "_ACK_POLL_S", 0.001)
     monkeypatch.setattr(wsm, "_ACK_IDLE_REQUIRED_S", 0.002)
     monkeypatch.setattr(wsm, "_ACK_MAX_WAIT_S", 1.0)
+    monkeypatch.setattr(wsm, "_ACK_SPEECH_WAIT_S", 0.001)
 
     cog = _FakeCog()
     cog._wake_session = WakeSession()
@@ -468,3 +472,61 @@ async def test_handle_stt_result_shortcut_skip_ends_session():
         await cog.handle_stt_result("TestUser", "下一首", time.time(), b"fake_audio", bypass_etd=True)
 
     assert cog._wake_session.target is None
+
+
+# ── v3：提示音等「Marvin 開始講 → 講完」才響 ─────────────────────────────────
+
+def _seq_then_zero(seq):
+    """回傳一個 side_effect 函式：按序列回值，耗盡後持續回 0.0。"""
+    it = iter(seq)
+
+    def _side_effect():
+        try:
+            return next(it)
+        except StopIteration:
+            return 0.0
+    return _side_effect
+
+
+@pytest.mark.asyncio
+async def test_play_ack_waits_for_marvin_to_start_speaking_before_playing(monkeypatch):
+    import cogs.voice_controller_wake_session as wsm
+    monkeypatch.setattr(wsm, "_ACK_POLL_S", 0.001)
+    monkeypatch.setattr(wsm, "_ACK_IDLE_REQUIRED_S", 0.002)
+    monkeypatch.setattr(wsm, "_ACK_SPEECH_WAIT_S", 1.0)
+    monkeypatch.setattr(wsm, "_ACK_MAX_WAIT_S", 1.0)
+
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.side_effect = _seq_then_zero([0.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+    cog.play_dj_on_tts_layer = AsyncMock(return_value=True)
+
+    await cog._wake_session_play_ack("A")
+
+    cog.play_dj_on_tts_layer.assert_called_once_with(WAKE_SESSION_ACK_PATH, peak=0.15)
+    assert cog._mixer.tts_load_seconds.call_count > 6, "提示音不該在 Marvin 開口前就播"
+
+
+@pytest.mark.asyncio
+async def test_play_ack_speech_timeout_still_plays(monkeypatch):
+    """沒有語音回應（一路靜默）→ 逾時後仍進入等空閒並播出，不會卡死。"""
+    import cogs.voice_controller_wake_session as wsm
+    monkeypatch.setattr(wsm, "_ACK_POLL_S", 0.001)
+    monkeypatch.setattr(wsm, "_ACK_IDLE_REQUIRED_S", 0.002)
+    monkeypatch.setattr(wsm, "_ACK_SPEECH_WAIT_S", 0.005)
+    monkeypatch.setattr(wsm, "_ACK_MAX_WAIT_S", 1.0)
+
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.return_value = 0.0
+    cog.play_dj_on_tts_layer = AsyncMock(return_value=True)
+
+    await cog._wake_session_play_ack("A")
+
+    cog.play_dj_on_tts_layer.assert_called_once_with(WAKE_SESSION_ACK_PATH, peak=0.15)

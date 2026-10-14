@@ -17,9 +17,41 @@ from xml.sax.saxutils import escape as xml_escape
 
 logger = logging.getLogger(__name__)
 
-_EDGE_BREAKER_S = 600.0
+_EDGE_BREAKER_S = 3600.0
+_EDGE_VOICE_BREAKER_S = 3600.0
 _AZURE_BREAKER_S = 600.0
 _AZURE_TIMEOUT_S = 15.0
+
+_AZURE_SPLIT_MIN = 8
+_AZURE_SPLIT_MAX = 30
+_STRONG_BREAKS = "。！？!?；;\n"
+_WEAK_BREAKS = "，,、：:"
+
+
+def _split_first_chunk(text: str) -> tuple[str, str]:
+    """Azure F0 幾乎整段合成完才回首 byte → 先合成短首段（~1s 出聲），其餘一段在首段播放時合成。
+    回 (first, rest)；不切時 rest == ""。只切兩段（F0 每 60s 20 次請求上限，別切碎）。"""
+    if len(text) <= _AZURE_SPLIT_MAX:
+        return text, ""
+
+    cut = None
+    for i in range(_AZURE_SPLIT_MIN - 1, _AZURE_SPLIT_MAX):
+        if i < len(text) and text[i] in _STRONG_BREAKS:
+            cut = i + 1
+            break
+    if cut is None:
+        for i in range(_AZURE_SPLIT_MIN - 1, _AZURE_SPLIT_MAX):
+            if i < len(text) and text[i] in _WEAK_BREAKS:
+                cut = i + 1
+                break
+    if cut is None:
+        return text, ""
+
+    rest = text[cut:].strip()
+    if not re.search(r'[一-鿿぀-ヿA-Za-z0-9]', rest):
+        return text, ""
+
+    return text[:cut], rest
 
 
 def _is_edge_blocked(e: BaseException) -> bool:
@@ -108,6 +140,7 @@ class SukiTTS:
         self._last_prewarm = 0.0  # on-wake 連線預熱節流（monotonic）
         self._installed_voices_cache = None  # macOS say 聲音清單快取（首次列舉後填）
         self._edge_down_until = 0.0  # edge-tts 斷路器解除時間（monotonic）
+        self._edge_voice_down: dict[str, float] = {}  # 單一聲音在 edge 無音訊（NoAudioReceived）→ 該聲音斷路，不影響其他聲音
         self._azure_down_until = 0.0  # Azure 斷路器解除時間（monotonic）
         os.makedirs(self.temp_dir, exist_ok=True)
 
@@ -126,7 +159,7 @@ class SukiTTS:
         if now - self._last_prewarm < self._PREWARM_THROTTLE_S:
             return
         self._last_prewarm = now
-        if time.monotonic() < self._edge_down_until:
+        if not self._edge_usable(self.voice):
             return
         try:
             comm = edge_tts.Communicate(
@@ -137,6 +170,10 @@ class SukiTTS:
                     break  # 首音到手＝連線已暖，丟棄不播
         except Exception as e:
             logger.debug(f"[TTS Prewarm] 暖機失敗（忽略）: {e}")
+
+    def _edge_usable(self, voice: str) -> bool:
+        now = time.monotonic()
+        return now >= self._edge_down_until and now >= self._edge_voice_down.get(voice, 0.0)
 
     def _is_english_text(self, text: str) -> bool:
         """English voice ONLY when the text has zero CJK chars.
@@ -376,7 +413,7 @@ class SukiTTS:
         # --- 第二路徑：Primary Edge TTS ---
         _vol_kw = {"volume": volume} if volume is not None else {}
         success = False
-        if time.monotonic() >= self._edge_down_until:
+        if self._edge_usable(v):
             try:
                 comm = edge_tts.Communicate(text=processed_text, voice=v, rate=r, pitch=p, **_vol_kw)
                 _audio_chunks = 0
@@ -394,13 +431,16 @@ class SukiTTS:
                 if _is_edge_blocked(e):
                     self._edge_down_until = time.monotonic() + _EDGE_BREAKER_S
                     logger.warning(f"🔌 [TTS] edge-tts 被微軟拒絕（{e.status}），{int(_EDGE_BREAKER_S/60)} 分鐘內跳過 edge 直接走備援")
+                elif isinstance(e, edge_tts.exceptions.NoAudioReceived):
+                    self._edge_voice_down[v] = time.monotonic() + _EDGE_VOICE_BREAKER_S
+                    logger.warning(f"🔌 [TTS] edge 對 {v} 無音訊，{int(_EDGE_VOICE_BREAKER_S/60)} 分鐘內此聲音直接走備援")
 
         # --- 第三路徑：Secondary Edge TTS ---
-        if not success and time.monotonic() >= self._edge_down_until:
+        _secondary = self._english_voice if self._is_english_text(processed_text) else self.voice
+        if not success and self._edge_usable(_secondary):
             await asyncio.sleep(0.5)
             try:
                 # 使用備援語音（中文重試同聲音，0.5s 後暫時性失敗通常已恢復）
-                _secondary = self._english_voice if self._is_english_text(processed_text) else self.voice
                 comm = edge_tts.Communicate(text=processed_text, voice=_secondary, rate=r, pitch=p, **_vol_kw)
                 _sec_chunks = 0
                 async for chunk in comm.stream():
@@ -416,14 +456,25 @@ class SukiTTS:
                 if _is_edge_blocked(e):
                     self._edge_down_until = time.monotonic() + _EDGE_BREAKER_S
                     logger.warning(f"🔌 [TTS] edge-tts 被微軟拒絕（{e.status}），{int(_EDGE_BREAKER_S/60)} 分鐘內跳過 edge 直接走備援")
+                elif isinstance(e, edge_tts.exceptions.NoAudioReceived):
+                    self._edge_voice_down[_secondary] = time.monotonic() + _EDGE_VOICE_BREAKER_S
+                    logger.warning(f"🔌 [TTS] edge 對 {_secondary} 無音訊，{int(_EDGE_VOICE_BREAKER_S/60)} 分鐘內此聲音直接走備援")
 
         # --- 第四路徑：Azure Speech 備援 ---
         if not success:
             _az_chunks = 0
-            async for chunk in self._stream_azure(processed_text, v, r, p, volume):
+            _first, _rest = _split_first_chunk(processed_text)
+            async for chunk in self._stream_azure(_first, v, r, p, volume):
                 yield chunk
                 _az_chunks += 1
             success = _az_chunks > 0
+            if success and _rest:
+                _rest_chunks = 0
+                async for chunk in self._stream_azure(_rest, v, r, p, volume):
+                    yield chunk
+                    _rest_chunks += 1
+                if _rest_chunks == 0:
+                    logger.warning(f"⚠️ [TTS] Azure 第二段失敗，只播出首段: '{_rest[:30]}'")
 
         # --- 第五路徑：Ultimate Fallback (macOS Native) ---
         if not success:

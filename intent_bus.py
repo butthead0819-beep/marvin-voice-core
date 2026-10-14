@@ -160,6 +160,13 @@ class IntentAgent(Protocol):
     def bid(self, ctx: IntentContext) -> Bid | None: ...
 
 
+# J1 regex 短路門檻的 per-agent 覆寫。全域維持 0.85。
+# 資料（records/judge_outcomes.jsonl，2026-10-14 撈）：J1 落在 [0.5, 0.85) 時，
+# grounded_qa 18/18 cleaner 從未改判；music 同區間 6/78 被改判成 frustration → 不能全域降。
+# grounded_qa 0.5 涵蓋 WakeSession 追問黏著出價（session_followup，已排除音樂/音量/找歌句）。
+_J1_SHORT_CIRCUIT_MIN: dict[str, float] = {"grounded_qa": 0.5}
+
+
 class IntentBus:
     MIN_CONFIDENCE = 0.30
     # bid() 預算：> 5ms 觸發 WARNING，守住 sync ≤5ms 契約不漂移（5/18 NotebookLM review）
@@ -268,7 +275,7 @@ class IntentBus:
             elapsed_short_ms = (time.perf_counter() - t_short) * 1000
 
             # 閥值 0.85 且排除 guard，直接進行短路 (Short-Circuit)
-            if j1_bid.confidence >= 0.85 and j1_bid.name != "guard":
+            if j1_bid.name != "guard" and j1_bid.confidence >= _J1_SHORT_CIRCUIT_MIN.get(j1_bid.name, 0.85):
                 utt_id = new_utterance_id(ctx.speaker)
                 j1_outcome = JudgeOutcome(name="j1_regex", status="completed", bid=j1_bid, latency_ms=elapsed_short_ms)
                 j3_outcome = JudgeOutcome(name="j3_cleaner", status="cancelled", bid=None, latency_ms=0.0)
