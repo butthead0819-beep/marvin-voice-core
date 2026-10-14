@@ -118,6 +118,7 @@ class MusicPersonalShuffleMixin:
                                               username=user, webpage_url=info.get('webpage_url', ''), check_history=False):
                     continue
                 info['requested_by'] = user
+                info['_record_as'] = f"Marvin推薦（為{user}）"  # 個人歌單是自動墊歌，不算本人點播（否則每抽一次 requesters+1 自我放大）
                 info['_lane'] = 'personal'
                 self.stream_queue.append(info)
                 self._republish_queue_snapshot()
