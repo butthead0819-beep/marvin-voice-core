@@ -32,7 +32,7 @@ from intent_agents.base import (
 from intent_agents.constants import (
     MUSIC_PAUSE_KW, MUSIC_PLAY_KW, MUSIC_RESUME_KW, MUSIC_SKIP_KW, MUSIC_STOP_KW,
 )
-from intent_bus import IntentContext
+from intent_bus import Bid, IntentContext
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,10 @@ _SELF_RE = re.compile(
 )
 
 _HAN_RE = re.compile(r"[一-鿿]")
+# session 追問黏著 grounded 的額外排除：口語點歌（「播晴天」「那就播這首」「聽聽看第一首」「放五月天」）
+# 沒有 music agent 出價、_excluded 也不擋 → 不排除就會被當查詢丟去 Google。
+# 「放」只認後接點歌語境，避免誤擋「他放了幾張專輯」。
+_SESSION_PLAY_RE = re.compile(r"播|放(?:一|這|那|第|來|首|吧|個|點)|^放(?!假|心|棄|學|榜|過|了)|來聽|聽聽|點(?:一|這|那|第)?首|唱")
 
 
 def _excluded(query: str) -> str | None:
@@ -381,6 +385,10 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     """
     import time as _time
 
+    _note = getattr(ctrl, "_wake_session_note_grounded", None)   # 🗣️ WakeSession：本 session 進入查詢模式
+    if callable(_note):
+        _note(speaker)
+
     asyncio.create_task(ctrl._play_ack("status", speaker=speaker))
 
     router = getattr(ctrl.bot, "router", None)
@@ -468,6 +476,9 @@ class GroundedQAAgent(DeclarativeIntentAgent):
     name = "grounded_qa"
     # 一般資訊請求，normal/stream 都活；game session 模式不出價（比照 GameKnowledgeAgent）。
     mode_compatible = frozenset({"normal", "stream"})
+    # session 內已有過 grounded 查詢後的非音樂追問黏著分數；刻意低於 music/playback 0.95
+    # 與自身 factual 0.75（regex 本來就中的路徑優先，不被這條蓋掉）。
+    SESSION_FOLLOWUP_CONFIDENCE = 0.5
 
     def __init__(self, controller):
         self.ctrl = controller
@@ -504,6 +515,36 @@ class GroundedQAAgent(DeclarativeIntentAgent):
         if getattr(ctx.rescue, "low_confidence_wake", False):
             return "low_confidence_wake"
         return None
+
+    def bid(self, ctx: IntentContext) -> Bid:
+        b = super().bid(ctx)
+        if b.confidence > 0:
+            return b
+        return self._session_followup_bid(ctx) or b
+
+    def _session_followup_bid(self, ctx: IntentContext) -> Bid | None:
+        """session 內已有過 grounded 查詢 → 對象接下來的非音樂追問一律走 grounded
+        （帶既有逐字稿上下文，避免掉進 Marvin 主 LLM 編答案）。純同步、不做 IO。"""
+        if ctx.mode not in self.mode_compatible:
+            return None
+        if self.gate(ctx) is not None:
+            return None
+        if is_audio_rescue(ctx):
+            return None
+        sticky = getattr(self.ctrl, "_wake_session_grounded_sticky", None)
+        if not callable(sticky) or sticky(ctx.speaker) is not True:   # is True：MagicMock 的 truthy 回傳不算
+            return None
+        q = _WAKE_PREFIX_RE.sub("", (ctx.query or "").strip()).strip()
+        if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
+            return None
+        if len(_HAN_RE.findall(q)) < 2:
+            return None
+
+        async def _answer():
+            await run_grounded_qa(self.ctrl, ctx.speaker, q, raw=ctx.query or "", source="session_followup")
+
+        return Bid(name=self.name, confidence=self.SESSION_FOLLOWUP_CONFIDENCE,
+                   handler=_answer, reason="session_followup")
 
     def post_match_filter(self, schema, slots, ctx: IntentContext) -> bool:
         # audio-rescue：topic 由 LLM 從音訊填好，ctx.query 是糊掉的 STT，別再 re-parse。

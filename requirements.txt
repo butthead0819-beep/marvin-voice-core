@@ -20,7 +20,7 @@ wyoming==1.10.0                   # Pi 衛星（wyoming-satellite）協定
 faster-whisper==1.2.1             # 只有非 Apple 平台（Linux）才載入；macOS 上不用
 
 # ── STT / TTS / LLM ──
-edge-tts==7.2.8
+edge-tts==7.3.1
 google-genai==1.70.0
 google-generativeai==0.8.6        # 已停止維護的舊 SDK，只剩 game_dict_manager.py 在用
 groq==1.2.0

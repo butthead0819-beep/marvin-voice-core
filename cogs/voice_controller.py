@@ -47,6 +47,8 @@ from cogs.voice_controller_system_loops import SystemLoopsMixin
 from cogs.voice_controller_state_proxy import StateProxyMixin
 from cogs.voice_controller_music_proxy import MusicProxyMixin
 from cogs.voice_controller_gap_notify import GapNotifyMixin
+from cogs.voice_controller_wake_session import WakeSessionMixin
+from wake_session import WakeSession
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
 
@@ -352,7 +354,7 @@ _FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGN
 
 class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixin,
                       ConnectionMixin, PlaybackMixin, SystemLoopsMixin,
-                      StateProxyMixin, MusicProxyMixin, GapNotifyMixin, commands.Cog):
+                      StateProxyMixin, MusicProxyMixin, GapNotifyMixin, WakeSessionMixin, commands.Cog):
     """
     [Operation Paranoid Android] 
     馬文 (Marvin) 的語音控制器：負責語音監聽、社交分析、TTS 廣播與史官系統。
@@ -589,6 +591,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.game_mode: bool = False
         self._wake_response_pending: bool = False   # 🔒 [Response Lock] 已接受喚醒、回應尚未送達
         self._wake_accepted_time: float = 0.0      # 最近一次喚醒被接受的時間
+        self._wake_session = WakeSession() if os.getenv("MARVIN_WAKE_SESSION", "1") != "0" else None  # 🗣️ 喚醒後對發起者免喚醒回合對話
 
         # 🗣️ [Dialogue State] 多回合確認流程狀態機
         # speaker -> {"state": str, "event": asyncio.Event, "question": str, "result": str, "corrected": str}
@@ -1269,6 +1272,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         mode=("stream" if self.stream_mode else "normal"),
                         dispatch_source="wake_shortcut")
                     asyncio.create_task(dispatch_with_feedback(self._intent_bus, self.active_text_channel, speaker, raw_text, _sc_ctx))
+                    self._wake_session_on_shortcut(_sc)
                     return
 
             # 排隊時改走文字頻道通知，不打斷當前語音播放
@@ -1493,13 +1497,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
              is_fast = False
              is_duplicate = True
 
-        # 🎧 [Follow-Up] D2-A + D1-A: follow-up window overrides all guards except Response Lock.
-        # Response Lock (_wake_response_pending) is intentionally NOT bypassed (design decision D2-A).
-        if not is_fast and not self.game_mode and not self._wake_response_pending and _fusion is not None and _fusion.is_open():
+        # 🗣️ [WakeSession] 對發起者免喚醒（優先）＋ 🎧 [Follow-Up] 舊問句窗（D2-A 不變）——判斷在 WakeSessionMixin
+        if not is_fast and not self.game_mode and self._followup_override(speaker, _fusion, raw_text):
             is_fast = True
             is_echo = False
             is_duplicate = False
-            logger.info(f"🎧 [Follow-Up] {speaker} captured in follow-up window (reason={getattr(_fusion, '_open_reason', '?')})")
 
         if is_fast and not is_duplicate:
             self.processed_wake_segments[segment_id] = track
@@ -1512,6 +1514,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             # 🔒 [Response Lock] 記錄本次喚醒被接受
             self._wake_response_pending = True
             self._wake_accepted_time = now
+            self._wake_session_on_accept(speaker, now)
             # 🛡️ [Wake Storm Guard] 計數：滾動窗口超限 → 啟動動態風暴壓抑
             self._wake_burst_times.append(now)
             self._wake_burst_times = [t for t in self._wake_burst_times if now - t < _STORM_WINDOW]
@@ -2962,6 +2965,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             should_answer, gate_reason = self._query_quality_gate(query)
         if not should_answer:
             self._wake_response_pending = False  # 🔒 Gate 拒絕，不走 TTS，主動解鎖
+            self._wake_session_on_ignored(speaker)
             msg = "我聽到你叫我，但問題本身像宇宙背景噪音一樣空。再說一次。"
             self.stt_logger.info(f"[🔕Query拒絕] [{speaker}] reason={gate_reason} | query='{query[:80]}'")
             if self.active_text_channel:
@@ -3042,6 +3046,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         _winner = await self._intent_bus.dispatch(_bus_ctx)
         if _winner:
+            self._wake_session_on_replied(_winner)
             # B1: bus 接走 intent → LLM 路徑不會跑 → 取消 dangling speculative
             # prefetch（避免吃 LLM quota；且防 1976 行 race 把舊 result 帶到
             # 下次 chat turn 變成幻覺起手回答）
