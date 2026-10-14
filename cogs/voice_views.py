@@ -226,16 +226,8 @@ class PlayControlView(discord.ui.View):
         if not c.stream_mode or not cur:
             await interaction.response.send_message("現在沒有正在播放的歌可以抹除。", ephemeral=True)
             return
-        title = cur.get("title", "這首")
-        mm = getattr(c.bot, "music_memory", None)
-        if mm is not None:
-            try:
-                mm.undo_play(cur)
-                url = cur.get("webpage_url") or cur.get("url") or ""
-                if url:
-                    mm.record_skipped_video_id(url)
-            except Exception:
-                pass
+        from intent_agents.song_feedback_agent import erase_misclick
+        title = erase_misclick(c)
         self._skip_current(interaction.guild.voice_client)
         await self._refresh_message(interaction)
         await interaction.followup.send(

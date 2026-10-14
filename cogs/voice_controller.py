@@ -254,6 +254,7 @@ def build_intent_agents(controller, bot):
     from intent_agents.frustration_agent import FrustrationAgent
     from intent_agents.current_album_agent import CurrentAlbumAgent
     from intent_agents.event_recall_agent import EventRecallAgent
+    from intent_agents.song_feedback_agent import SongFeedbackAgent
     from services.dialogue_generation import make_gemini_dual_dialogue_llm_fn
     return [
         HallucinationGuardAgent(controller),
@@ -263,6 +264,7 @@ def build_intent_agents(controller, bot):
         FindSongAgent(controller),
         PlaybackControlAgent(controller),  # Phase 1 M5: voice skip/stop/pause + ack + auto-blacklist
         QueueControlAgent(controller),  # 2026-09-11: 清空待播 / 插播到最前（PR2）
+        SongFeedbackAgent(controller),  # 2026-10-14: 控制卡按鈕語音化——誤點刪除／喜歡
         VolumeAgent(controller),  # 2026-05-27: 議題 E #1 — 音量語音控制
         ReplayAgent(controller),  # 2026-05-27: 議題 E #2 — 重播當前歌曲
         NowPlayingAgent(controller),  # 2026-05-27: 議題 E #3 — 「現在播的是什麼」wake gap
@@ -2631,6 +2633,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             "是不是", "可不可以", "能不能", "要不要", "幫我", "幫忙",
             "看", "查", "找", "解釋", "翻譯", "比較", "推薦", "告訴",
             "播放", "暫停", "停止", "跳過", "下一首", "上一首",
+            "刪除", "刪掉", "誤點", "讚", "平衡",
             "who", "what", "where", "when", "why", "how", "play", "stop", "skip",
         ]
         if len(compact) < 4 and not any(marker.lower() in compact.lower() for marker in intent_markers):
