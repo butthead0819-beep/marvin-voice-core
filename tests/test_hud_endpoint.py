@@ -115,3 +115,13 @@ async def test_hud_includes_queue_card_markup():
         assert "qstack" in html
         assert "qnext" in html
         assert "qpeek" in html
+
+
+def test_template_placeholders_appear_exactly_once():
+    """佔位字樣出現在註解裡會被整段程式碼替換進 // 註解行，整頁 JS 語法錯誤、HUD 全黑。"""
+    import re
+    import car_http_app as c
+    for tpl in (c.HUD_HTML, c._STAGE_HTML):
+        for p in set(re.findall(r"__[A-Z_]+__", tpl)):
+            assert tpl.count(p) == 1, p
+    assert re.findall(r"__[A-Z_]+__", c._SHARED_JS) == []

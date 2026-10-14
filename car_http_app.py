@@ -795,8 +795,8 @@ HUD_HTML = """<!DOCTYPE html>
   });
 
   // ---------- 共用繪圖（黑膠潑漆 canvas + Marvin 頭）：唯一真相來源見 hud_shared.js ----------
-  // 放在 __PERF_JS__ 之前：MOODCFG/createMarvinHead 等在被呼叫（mountHead/frame()）前
-  // 已經定義，不受後面 __PERF_JS__ 區塊的 const 宣告影響。
+  // 放在演出腳本佔位之前：MOODCFG/createMarvinHead 等在被呼叫（mountHead/frame()）前
+  // 已經定義，不受後面演出腳本區塊的 const 宣告影響。
 __SHARED_JS__
   let vinyl=null;
   function mountVinyl(card, cover){

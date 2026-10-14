@@ -1,5 +1,5 @@
 // hud_shared.js — /hud 與 /stage 共用繪圖的唯一真相來源（黑膠潑漆繪製 + Marvin 頭）。
-// car_http_app.py 用 __SHARED_JS__ 佔位字串把這份檔案整段內嵌進 <script>，這裡同時是
+// car_http_app.py 用 SHARED_JS 佔位字串把這份檔案整段內嵌進 <script>，這裡同時是
 // 唯一真相來源，不是另外複製一份邏輯進 HUD_HTML / hud_stage.html 字串裡。
 // 不得引用 hud_performance.js 的任何符號（PERF_*／perfShouldRender／ensurePerf／
 // EMOTIONS 等）——疊加表演取樣由呼叫端透過 opts.samplePerf 注入。
