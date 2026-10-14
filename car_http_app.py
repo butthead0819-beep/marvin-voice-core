@@ -695,7 +695,25 @@ HUD_HTML = """<!DOCTYPE html>
     const vc=cards.find(c=>c.vinyl); mountVinyl(stage.querySelector('.vinyl-card'), vc?resolveVinyl(vc.vinyl):null);
     updateFocusDir();
     lastCards=cards;
+    fitTexts();
   }
+
+  // 字級是照螢幕高度（cqh）定的，窄卡片（手機 /stage、聚焦後的直立欄）裝長字會被裁掉：
+  // render 完逐步縮字直到裝進框（最小 11px），寬螢幕裝得下就完全不動。
+  function fitText(el, box){
+    if(!el || !box) return;
+    el.style.fontSize='';
+    let size=parseFloat(getComputedStyle(el).fontSize);
+    while(box.scrollHeight>box.clientHeight+1 && size>11){
+      size=Math.max(11, size*0.92);
+      el.style.fontSize=size+'px';
+    }
+  }
+  function fitTexts(){
+    fitText(stage.querySelector('.mcard.focused .mtext .title'), stage.querySelector('.mcard.focused .mtext'));
+    fitText(stage.querySelector('.vinyl-card.focused .vcomment'), stage.querySelector('.vinyl-card.focused .vexpand'));
+  }
+  window.addEventListener('resize', fitTexts);
 
   // ---- Marvin 銳評要能講畫面上其他卡片，不是只看得到自己播的歌：把上一次 render()
   // 產出的非 marvin 卡片（含 live 資料解析後的實際內容）濃縮成 {label,text}，隨 /marvin_comment 送出 ----
