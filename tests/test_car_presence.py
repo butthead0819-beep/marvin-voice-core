@@ -162,6 +162,97 @@ async def test_car_endpoint_off_when_no_presence_wired():
         assert (await resp.json())["error"] == "car_mode_off"
 
 
+# ── WROOM 遙測（搭心跳夾帶的 wroom_sum/wroom_diag）──────────────────────────
+@pytest.mark.asyncio
+async def test_car_endpoint_logs_wroom_telemetry(caplog):
+    import logging
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+    from car_presence import CarPresence
+    cp = CarPresence(on_arrive=AsyncMock(), on_depart=AsyncMock())
+    app = build_text_app(_make_vc(), token="s3cret", car_presence=cp)
+    caplog.set_level(logging.INFO, logger="car_http_app")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/car?t=s3cret", json={
+            "state": "present",
+            "wroom_sum": "u120 p1 c0",
+            "wroom_diag": ["S 112233 cod240404 r-60 'BMW 04900'", "R 2"],
+        })
+        assert resp.status == 200
+    wroom_lines = [r.message for r in caplog.records if "[WROOM]" in r.message]
+    assert len(wroom_lines) == 3
+    assert any("u120 p1 c0" in m for m in wroom_lines)
+    assert any("S 112233 cod240404 r-60 'BMW 04900'" in m for m in wroom_lines)
+    assert any("R 2" in m for m in wroom_lines)
+
+
+@pytest.mark.asyncio
+async def test_car_endpoint_wroom_diag_bad_items_ignored(caplog):
+    import logging
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+    from car_presence import CarPresence
+    cp = CarPresence(on_arrive=AsyncMock(), on_depart=AsyncMock())
+    app = build_text_app(_make_vc(), token="s3cret", car_presence=cp)
+    caplog.set_level(logging.INFO, logger="car_http_app")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/car?t=s3cret", json={
+            "state": "present",
+            "wroom_diag": "not a list",
+        })
+        assert resp.status == 200
+    assert not any("[WROOM]" in r.message for r in caplog.records)
+
+    caplog.clear()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/car?t=s3cret", json={
+            "state": "present",
+            "wroom_diag": [123, None, "R 2", {"x": 1}],
+        })
+        assert resp.status == 200
+    wroom_lines = [r.message for r in caplog.records if "[WROOM]" in r.message]
+    assert len(wroom_lines) == 1
+    assert "R 2" in wroom_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_car_endpoint_wroom_diag_truncated_at_16_and_120_chars(caplog):
+    import logging
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+    from car_presence import CarPresence
+    cp = CarPresence(on_arrive=AsyncMock(), on_depart=AsyncMock())
+    app = build_text_app(_make_vc(), token="s3cret", car_presence=cp)
+    caplog.set_level(logging.INFO, logger="car_http_app")
+    long_line = "X" * 200
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/car?t=s3cret", json={
+            "state": "present",
+            "wroom_diag": [long_line] + [f"line{i}" for i in range(20)],
+        })
+        assert resp.status == 200
+    wroom_lines = [r.message for r in caplog.records if "[WROOM]" in r.message]
+    assert len(wroom_lines) == 16
+    assert "X" * 120 in wroom_lines[0]
+    assert "X" * 121 not in wroom_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_car_endpoint_without_telemetry_unchanged(caplog):
+    import logging
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+    from car_presence import CarPresence
+    cp = CarPresence(on_arrive=AsyncMock(), on_depart=AsyncMock())
+    app = build_text_app(_make_vc(), token="s3cret", car_presence=cp)
+    caplog.set_level(logging.INFO, logger="car_http_app")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/car?t=s3cret", json={"state": "present"})
+        assert resp.status == 200
+        assert (await resp.json())["present"] is True
+    assert not any("[WROOM]" in r.message for r in caplog.records)
+
+
 # ── 多人同車（per-device speaker）────────────────────────────────────────────
 @pytest.mark.asyncio
 async def test_second_occupant_does_not_refire_arrive():
