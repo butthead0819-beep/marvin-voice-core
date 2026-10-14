@@ -1447,6 +1447,18 @@ void dispatchNewCommands(const uint8_t* body, size_t bodyLen) {
 }
 #endif  // STEP >= 9
 
+// 2026-10-14：WROOM 的 DIAG/統計摘要只存在它自己的 NVS，要拔線插 Mac 才讀得到，而且一
+// 插上序列埠就重開一次機、那趟車上 session 的紀錄就沒了。WROOM 已經有一條 UART 把方向盤
+// 按鍵轉送過來（pollWheelFromWroom()），這裡原樣加碼：WROOM 送 "D|"/"S|" 開頭的行時存進
+// 這兩個暫存，carHeartbeatTask 每 30s 心跳時順便夾帶出去——不開新連線（第三條 TLS 握手
+// 失敗的前車之鑑，見 gFunnelMutex 前的說明），一律搭心跳。loop task（pollWheelFromWroom）
+// 寫、carHeartbeatTask 讀，兩個不同 task 用 gWroomLogMutex 互斥。
+static SemaphoreHandle_t gWroomLogMutex = nullptr;
+static char gWroomSum[160];
+static bool gWroomSumNew = false;
+static char gWroomDiag[8][64];
+static uint8_t gWroomDiagN = 0;
+
 // 2026-08-13：心跳走 Funnel 時複用同一個 TLS 連線（keep-alive），不是 postHttp() 那種
 // 用完即丟的 client——避免每 30 秒都重新做一次完整 handshake。
 static WiFiClientSecure gHeartbeatFunnelClient;
@@ -1476,6 +1488,26 @@ static bool funnelEnsureConnected(uint32_t handshakeTimeoutS, int32_t connectTim
   return alive;
 }
 
+// WROOM 轉送過來的 DIAG/摘要文字可能含引號/反斜線/控制字元，要跳脫才能塞進 JSON 字串
+// 值。保證 dst '\0' 結尾、不溢位，回傳實際寫入長度（不含結尾 '\0'）。
+static size_t json_escape(char* dst, size_t cap, const char* src) {
+  size_t o = 0;
+  for (const char* s = src; *s && o + 1 < cap; s++) {
+    unsigned char c = (unsigned char)*s;
+    if (c == '"' || c == '\\') {
+      if (o + 2 >= cap) break;
+      dst[o++] = '\\';
+      dst[o++] = (char)c;
+    } else if (c < 0x20) {
+      dst[o++] = ' ';
+    } else {
+      dst[o++] = (char)c;
+    }
+  }
+  dst[o] = '\0';
+  return o;
+}
+
 // 2026-08-13：熱點/Funnel 下每次心跳都無條件先試區網——LWIP_LOCK 包住整個 connect()
 // timeout，區網打不到時等於每 30 秒白白持鎖最多 timeout 那麼久，直接跟 audioNetworkTask
 // 搶讀取視窗，是斷續的另一個貢獻源（跟上面的 Funnel keep-alive 是同一個問題的兩面：
@@ -1492,8 +1524,65 @@ void carHeartbeat() {
   // 但心跳區網+Funnel兩條路連續 HTTP -1——connect() 前要先搶 LWIP_LOCK，這個 task
   // 優先權=1，跟同核心的 audioNet/deckNet（優先權=2）搶不過，逾時前常常連鎖都還沒搶到
   // 就過期。逾時值加大給排程延遲留餘裕（見下面 carHeartbeatTask 建立時優先權也一併調高）。
-  static char body[96];
-  snprintf(body, sizeof(body), "{\"state\":\"present\",\"speaker\":\"%s\"}", MARVIN_SPEAKER);
+  // body 加大到 1024：除了原本的 state/speaker，還要夾帶 WROOM 遙測（wroom_sum 一筆
+  // ~140 字 + wroom_diag 最多 8 筆 ~64 字），搭這班心跳一起送出，不開新連線（見
+  // gWroomLogMutex 前的說明）。
+  static char body[1024];
+  size_t len = (size_t)snprintf(body, sizeof(body), "{\"state\":\"present\",\"speaker\":\"%s\"",
+                                 MARVIN_SPEAKER);
+  if (xSemaphoreTake(gWroomLogMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+    if (gWroomSumNew) {
+      char esc[320];
+      json_escape(esc, sizeof(esc), gWroomSum);
+      size_t escLen = strlen(esc);
+      // +2 給尾端收尾的 "}" 留餘裕，放不下就跳過這次、下次心跳再試
+      if (len + strlen(",\"wroom_sum\":\"\"") + escLen + 2 < sizeof(body)) {
+        int n = snprintf(body + len, sizeof(body) - len, ",\"wroom_sum\":\"%s\"", esc);
+        if (n > 0) {
+          len += (size_t)n;
+          gWroomSumNew = false;
+        }
+      }
+    }
+    if (gWroomDiagN > 0) {
+      size_t savedLen = len;
+      int n = snprintf(body + len, sizeof(body) - len, ",\"wroom_diag\":[");
+      if (n > 0 && len + (size_t)n < sizeof(body)) {
+        len += (size_t)n;
+        uint8_t fitCount = 0;
+        for (uint8_t i = 0; i < gWroomDiagN; i++) {
+          char esc[130];
+          json_escape(esc, sizeof(esc), gWroomDiag[i]);
+          size_t escLen = strlen(esc);
+          // (逗號) + 兩個引號 + 內容 + 尾端 "]}" 留餘裕
+          size_t needed = (fitCount > 0 ? 1 : 0) + 2 + escLen + 2;
+          if (len + needed >= sizeof(body)) break;   // 放不下，剩下的留到下次心跳
+          if (fitCount > 0) body[len++] = ',';
+          body[len++] = '"';
+          memcpy(body + len, esc, escLen);
+          len += escLen;
+          body[len++] = '"';
+          fitCount++;
+        }
+        if (fitCount > 0) {
+          body[len++] = ']';
+          // 只清掉成功放進 body 的前 fitCount 筆，其餘往前移，留到下次心跳
+          for (uint8_t i = fitCount; i < gWroomDiagN; i++) {
+            memcpy(gWroomDiag[i - fitCount], gWroomDiag[i], sizeof(gWroomDiag[0]));
+          }
+          gWroomDiagN -= fitCount;
+        } else {
+          len = savedLen;   // 一筆都放不下，整段 header 退回，別留下空陣列
+        }
+      } else {
+        len = savedLen;
+      }
+    }
+    xSemaphoreGive(gWroomLogMutex);
+  }
+  if (len + 1 >= sizeof(body)) len = sizeof(body) - 2;   // 理論上不會發生，前面都留了餘裕，保底別溢位
+  body[len++] = '}';
+  body[len] = '\0';
   int code = -1;
   bool lanAttempted = gHeartbeatTryLan && lanEnabled();
   if (lanAttempted) {
@@ -1714,6 +1803,7 @@ void setup() {
   loopTaskHandle = xTaskGetCurrentTaskHandle();   // setup()/loop() 是同一顆 Arduino loopTask
   lwipMutex = xSemaphoreCreateMutex();            // 必須在 audioNet/carHeartbeat 任務起來前建好
   gFunnelMutex = xSemaphoreCreateMutex();         // 必須在 carHeartbeatTask 起來前建好（見 gFunnelMutex 前的說明）
+  gWroomLogMutex = xSemaphoreCreateMutex();       // 必須在 carHeartbeatTask 起來前建好（見 gWroomLogMutex 前的說明）
   Serial.begin(115200);
   delay(500);
   Serial.println("\n=== Marvin car_puck bring-up ===");
@@ -1815,10 +1905,12 @@ void setup() {
 }
 
 // 方向盤按鍵通道：WROOM 收到車機 AVRCP passthru 後經 UART2 轉送過來，這裡非阻塞湊一行
-// （'\n' 結尾，上限 64 bytes，超長丟棄整行）。master volume 旋鈕按下＝PAUSE(0x46)、
-// 再按＝PLAY(0x44)，當成 PTT 開錄/結束（見 g_pausePtt）；其他按鍵只印 log，不做播放控制。
+// （'\n' 結尾，上限 192 bytes——"S|" 統計摘要可能到 ~140 字，超長仍丟棄整行）。
+// master volume 旋鈕按下＝PAUSE(0x46)、再按＝PLAY(0x44)，當成 PTT 開錄/結束（見
+// g_pausePtt）；"D|"/"S|" 開頭是 WROOM 轉送過來的遙測（見 gWroomLogMutex 前的說明），
+// 存進暫存給 carHeartbeat() 夾帶出去；其他按鍵只印 log，不做播放控制。
 static void pollWheelFromWroom() {
-  static char lineBuf[64];
+  static char lineBuf[192];
   static size_t lineLen = 0;
   static bool overflow = false;
   while (Serial1.available() > 0) {
@@ -1826,9 +1918,36 @@ static void pollWheelFromWroom() {
     if (c == '\n') {
       if (!overflow && lineLen > 0) {
         lineBuf[lineLen] = '\0';
-        Serial.printf("[Wheel] %s\n", lineBuf);
-        if (strcmp(lineBuf, "K|46|p") == 0) g_pausePtt = true;
-        else if (strcmp(lineBuf, "K|44|p") == 0) g_pausePtt = false;
+        if (strncmp(lineBuf, "D|", 2) == 0) {
+          const char* text = lineBuf + 2;
+          Serial.printf("[WROOM] %s\n", text);
+          if (xSemaphoreTake(gWroomLogMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            if (gWroomDiagN < 8) {
+              strncpy(gWroomDiag[gWroomDiagN], text, sizeof(gWroomDiag[0]) - 1);
+              gWroomDiag[gWroomDiagN][sizeof(gWroomDiag[0]) - 1] = '\0';
+              gWroomDiagN++;
+            } else {
+              // 滿了就丟最舊的一筆，整體往前移一格再放最後
+              for (uint8_t i = 1; i < 8; i++) memcpy(gWroomDiag[i - 1], gWroomDiag[i], sizeof(gWroomDiag[0]));
+              strncpy(gWroomDiag[7], text, sizeof(gWroomDiag[0]) - 1);
+              gWroomDiag[7][sizeof(gWroomDiag[0]) - 1] = '\0';
+            }
+            xSemaphoreGive(gWroomLogMutex);
+          }
+        } else if (strncmp(lineBuf, "S|", 2) == 0) {
+          const char* text = lineBuf + 2;
+          Serial.printf("[WROOM] %s\n", text);
+          if (xSemaphoreTake(gWroomLogMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            strncpy(gWroomSum, text, sizeof(gWroomSum) - 1);
+            gWroomSum[sizeof(gWroomSum) - 1] = '\0';
+            gWroomSumNew = true;
+            xSemaphoreGive(gWroomLogMutex);
+          }
+        } else {
+          Serial.printf("[Wheel] %s\n", lineBuf);
+          if (strcmp(lineBuf, "K|46|p") == 0) g_pausePtt = true;
+          else if (strcmp(lineBuf, "K|44|p") == 0) g_pausePtt = false;
+        }
       }
       lineLen = 0;
       overflow = false;

@@ -1712,6 +1712,17 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             await car_presence.absent(spk)
         if lat is not None and lon is not None:
             save_location_state(lat=float(lat), lon=float(lon), ts=time.time(), path=_gps_path)
+        # WROOM（bt_bridge）的 DIAG/統計摘要搭這班心跳夾帶過來（見韌體 car_puck.ino
+        # carHeartbeat() 的 wroom_sum/wroom_diag），只是即時 log，不影響心跳本身的回應。
+        if "application/json" in request.headers.get("Content-Type", ""):
+            wroom_sum = body.get("wroom_sum")
+            if isinstance(wroom_sum, str) and wroom_sum:
+                logger.info(f"🚗 [WROOM] {spk} 摘要 {wroom_sum[:200]}")
+            wroom_diag = body.get("wroom_diag")
+            if isinstance(wroom_diag, list):
+                for line in wroom_diag[:16]:
+                    if isinstance(line, str) and line:
+                        logger.info(f"🚗 [WROOM] {spk} {line[:120]}")
         return web.json_response(
             {"ok": True, "state": state, "present": car_presence.is_present,
              "occupants": car_presence.occupants}, headers=_CORS)

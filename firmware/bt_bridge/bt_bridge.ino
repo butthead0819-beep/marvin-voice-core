@@ -732,6 +732,14 @@ static void sum_store() {
   if (err != ESP_OK) Serial.printf("[SUM] 寫入失敗 err=%d\n", (int)err);
 }
 
+// 遙測：g_diag/g_sum 本來只存本機 NVS，要拔線插 Mac 才讀得到。這裡把同一筆內容順著
+// 既有的 WROOM→S3 UART（S3 RX=GPIO18，S3 端 pollWheelFromWroom() 逐行讀）送一份出去，
+// S3 收到後搭自己每 30 秒送的心跳一起轉給 Mac log（見 car_puck.ino carHeartbeat()），
+// 不開新連線——理由同 gFunnelMutex 註解提到的「第三條 TLS 握手失敗」前車之鑑。
+static void uart_diag(uint32_t ts, const char* text) {
+  Serial2.printf("D|%lu %s\n", (unsigned long)ts, text);
+}
+
 // loop() 內取出佇列並寫入紀錄；BT callback 不直接呼叫這裡。
 static void diag_drain() {
   char q[DIAG_Q][DIAG_TEXT];
@@ -746,12 +754,18 @@ static void diag_drain() {
   portEXIT_CRITICAL(&g_diag_mux);
   if (drop) Serial.printf("[DIAG] 佇列滿，丟棄 %lu 條\n", (unsigned long)drop);
   if (n == 0) return;
-  for (int i = 0; i < n; i++) diag_add_ts(g_diag, millis() / 1000, q[i]);
+  for (int i = 0; i < n; i++) {
+    uint32_t ts = millis() / 1000;
+    diag_add_ts(g_diag, ts, q[i]);
+    uart_diag(ts, q[i]);
+  }
   diag_store();
 }
 
 static void diag_loop_add(const char* text) {
-  diag_add_ts(g_diag, millis() / 1000, text);
+  uint32_t ts = millis() / 1000;
+  diag_add_ts(g_diag, ts, text);
+  uart_diag(ts, text);
   diag_store();
 }
 
@@ -919,8 +933,9 @@ static void pollNowPlayingFromS3() {
           bool trackChanged = firstTime || !np_same_track(g_np, np);
           g_np = np;
           avrc_meta_set(np);
+          // 不設 g_sum_dirty：曲目每 ~5 秒一筆，設了就變成每 ~6 秒寫一次 NVS（一天上萬次磨損
+          // flash，10/14 遙測實測）。計數交給 loop() 每 60 秒的定期存檔帶過去即可。
           ds_inc(g_sum.meta_lines);
-          g_sum_dirty = true;
           if (firstTime) diag_loop_add("M ok");
           if (firstTime || trackChanged) {
             Serial.printf("[Meta] %s / %s\n", np.title, np.artist);
@@ -1108,6 +1123,8 @@ void loop() {
     if (dueDirty || duePeriodic) {
       g_sum.uptime_s = nowMs / 1000;
       sum_store();
+      char buf[160];
+      Serial2.printf("S|%s\n", ds_format(g_sum, buf, sizeof(buf)));
       g_sum_dirty = false;
       g_sum_last_store_ms = nowMs;
     }
