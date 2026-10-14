@@ -120,3 +120,10 @@ def test_sticky_requires_literal_true_not_truthy_mock():
     """ctrl 是裸 MagicMock（_wake_session_grounded_sticky 回 truthy Mock）→ 不黏。"""
     agent = GroundedQAAgent(MagicMock())
     assert agent.bid(_ctx("那他上一張專輯呢")).confidence == 0.0
+
+
+def test_sticky_skips_audio_rescue_ctx():
+    """audio rescue 由 LLM 聽音訊自己指名 intent，sticky 不插手。"""
+    agent, _ = _agent(sticky=True)
+    ctx = _ctx("那他上一張專輯呢", dispatch_source="llm_rescue_audio")
+    assert agent.bid(ctx).confidence == 0.0

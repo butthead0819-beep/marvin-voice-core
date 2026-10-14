@@ -426,3 +426,45 @@ def test_apply_wake_guards_closing_text_ends_listening_session():
         None, None, None, None)
     assert is_fast is False
     assert vc._wake_session.target is None
+
+
+# ── voice_controller.py 接線：winner 有傳進 on_replied / shortcut 有走 on_shortcut ──
+
+def _listening_session(speaker):
+    s = WakeSession()
+    t0 = time.time()
+    s.on_wake_accepted(speaker, t0)
+    s.on_replied(t0)
+    return s
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("winner_name,ended", [("replay", True), ("volume", False)])
+async def test_process_queued_query_passes_winner_to_session(winner_name, ended):
+    from intent_bus import Bid
+    from tests.test_process_queued_query_wav_capture import _make_cog as _make_pq_cog
+    cog = _make_pq_cog()
+    cog._wake_session = _listening_session("Alice")
+    cog._wake_session_play_ack = AsyncMock()
+    cog._intent_bus.dispatch = AsyncMock(return_value=Bid(name=winner_name, confidence=0.9, handler=AsyncMock()))
+    cog.bot.engine.conv_buffer.get_harvest = MagicMock(return_value="再放一次")
+
+    await cog._process_queued_query("Alice", wake_time=time.time(), wake_intent=0.95)
+
+    assert (cog._wake_session.target is None) is ended
+
+
+@pytest.mark.asyncio
+async def test_handle_stt_result_shortcut_skip_ends_session():
+    """session 接住「下一首」→ WakeShortcut 直派 → 走 _wake_session_on_shortcut → 結束。"""
+    import wake_shortcut
+    cog, wf = _make_cog_for_stt()
+    wf.is_open.return_value = False
+    cog._wake_session = _listening_session("TestUser")
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.return_value = 0.0
+    with patch.object(wake_shortcut, "shortcut_query", return_value="下一首"), \
+         patch.object(wake_shortcut, "dispatch_with_feedback", AsyncMock()):
+        await cog.handle_stt_result("TestUser", "下一首", time.time(), b"fake_audio", bypass_etd=True)
+
+    assert cog._wake_session.target is None
