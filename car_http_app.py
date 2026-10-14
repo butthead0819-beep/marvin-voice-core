@@ -17,6 +17,7 @@ from marvin_voice_core.audio_stream_batcher import iter_batched_encoded_frames
 from marvin_voice_core.discord_audio_stream_server import SilenceFillQueue
 from marvin_voice_core.icy_meta import ICY_METAINT, IcyInterleaver, build_now_playing_payload
 from marvin_voice_core.mp3_stream_encoder import Mp3StreamEncoder
+import marvin_speech_log
 from utils import WAKE_PATTERN
 
 logger = logging.getLogger(__name__)
@@ -1071,6 +1072,39 @@ def build_marvin_comment_prompt(*, playing: bool, title: str = "", by: str = "",
     return system_prompt, user_prompt
 
 
+# /stage 的 Marvin 字幕泡泡：讀 marvin_speech.log 尾巴（每句真正播出的台詞，見 marvin_speech_log.py），
+# 不碰 TTS 播放路徑；只認 Discord 那邊講的 DJ 串場／TTS——ack（嗯嗯、音效檔名）太碎、song 是歌名卡。
+_SPEECH_LOG_PATH = marvin_speech_log.LOG_PATH
+_SPEECH_SRCS = ("dj", "tts")
+_SPEECH_TAIL_BYTES = 8192
+
+
+def latest_marvin_speech(lines: list[str]) -> dict | None:
+    """從 log 行（舊→新）挑最新一句 Discord 的 DJ／TTS 台詞；壞行跳過，沒有就 None。"""
+    for raw in reversed(lines):
+        try:
+            row = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(row, dict) or row.get("src") not in _SPEECH_SRCS or row.get("origin") != "discord":
+            continue
+        text = str(row.get("text") or "").strip()
+        if text:
+            return {"text": text, "src": row["src"], "start": row.get("start")}
+    return None
+
+
+def _read_latest_speech() -> dict | None:
+    try:
+        with open(_SPEECH_LOG_PATH, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - _SPEECH_TAIL_BYTES))
+            tail = f.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return None
+    return latest_marvin_speech(tail.splitlines())
+
+
 def parse_other_cards_param(raw: str | None) -> list[dict]:
     """解析 HUD 傳來的『畫面上其他卡片』快照（?cards= URL 帶的 JSON 字串）。
 
@@ -1194,8 +1228,9 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                 "duration": state.get("duration"),
                 "song_start_time": state.get("song_start_time"),
                 "comment": state.get("comment"),
+                "speech": _read_latest_speech(),
             }
-        return {"playing": False}
+        return {"playing": False, "speech": _read_latest_speech()}
 
     async def handle_now(request):
         """回當前播放的歌（HUD「現正播放」輪詢）。走統一 token gate（?t= 帶 token）。

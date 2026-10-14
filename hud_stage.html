@@ -42,6 +42,7 @@
     border:1px solid rgba(155,224,75,.25); padding:12px 14px;
     font-size:17px; line-height:1.45; overflow-wrap:anywhere; color:rgba(238,242,245,.55); }
   .speech.has-comment{ color:#EEF2F5; }
+  .speech-meta{ margin-top:6px; font-size:12px; color:rgba(238,242,245,.45); min-height:1em; }
 
   .now[hidden], .idle[hidden]{ display:none; }
   .disc-wrap{ width:min(78vw, 360px); aspect-ratio:1/1; margin:0 auto; position:relative; }
@@ -103,6 +104,7 @@
     <div class="speech-col">
       <div class="speech-label">MARVIN</div>
       <div class="speech" id="speech">點我，聽牠講評。</div>
+      <div class="speech-meta" id="speech-meta"></div>
     </div>
   </div>
 
@@ -285,6 +287,7 @@ __SHARED_JS__
         failCount=0;
         liveNow={ playing:false };
       }
+      updateSpeech(j.speech);
     }catch(e){
       failCount++;
       if(failCount>=3) liveNow={ playing:false };
@@ -306,9 +309,45 @@ __SHARED_JS__
     if(!document.hidden) refreshNow();
   });
 
-  // ---- 點頭講評 ----
+  // ---- 泡泡：平常＝Marvin 最新講出口的 DJ 串場/TTS（/now 的 speech，讀 marvin_speech.log）；
+  //      點頭＝現生講評暫時蓋過，直到牠下一句真的開口 ----
   const elSpeech=document.getElementById('speech');
+  const elSpeechMeta=document.getElementById('speech-meta');
   let commentInFlight=false;
+  let lastSpeechStart=null;   // 已顯示過的最新台詞 start；同一句不重播 speak 表情
+  let bubbleSrc=null, bubbleStart=null;   // 泡泡目前內容的來源（dj/tts/comment）與時間
+  let speakTimer=null;
+  function speakFor(sec){
+    params.mood='speak';
+    clearTimeout(speakTimer);
+    speakTimer=setTimeout(()=>{ if(params.mood==='speak') params.mood='idle'; }, sec*1000);
+  }
+  function ago(ts){
+    const d=Math.max(0, Date.now()/1000-ts);
+    if(d<60) return '剛剛';
+    if(d<3600) return Math.floor(d/60)+' 分鐘前';
+    return Math.floor(d/3600)+' 小時前';
+  }
+  function renderSpeechMeta(){
+    const label={dj:'DJ 串場', tts:'Marvin', comment:'講評'}[bubbleSrc];
+    const text=label ? label+(bubbleStart?' · '+ago(bubbleStart):'') : '';
+    if(elSpeechMeta.textContent!==text) elSpeechMeta.textContent=text;
+  }
+  function updateSpeech(sp){
+    renderSpeechMeta();
+    // 講評請求中不蓋掉「……」；lastSpeechStart 不前進，下一輪輪詢再套用
+    if(!sp || !sp.text || commentInFlight || sp.start===lastSpeechStart) return;
+    const first=lastSpeechStart===null;
+    lastSpeechStart=sp.start;
+    elSpeech.textContent=sp.text; elSpeech.classList.add('has-comment');
+    bubbleSrc=sp.src; bubbleStart=sp.start;
+    renderSpeechMeta();
+    // 剛開頁拿到的是舊台詞，不演說話；新台詞依字數估 TTS 長度（約 0.22 秒/字），扣掉輪詢延遲
+    if(!first && sp.start){
+      const remain=sp.start+Math.min(15, Math.max(3, sp.text.length*0.22))-Date.now()/1000;
+      if(remain>0) speakFor(remain);
+    }
+  }
   headCanvas.addEventListener('click', async ()=>{
     if(commentInFlight) return;
     commentInFlight=true;
@@ -328,8 +367,8 @@ __SHARED_JS__
     }catch(e){
       elSpeech.textContent='……訊號有點怪，等等再試。';
     }
-    params.mood='speak';
-    setTimeout(()=>{ if(params.mood==='speak') params.mood='idle'; }, 6000);
+    bubbleSrc='comment'; bubbleStart=Date.now()/1000; renderSpeechMeta();
+    speakFor(6);
     commentInFlight=false;
   });
 
