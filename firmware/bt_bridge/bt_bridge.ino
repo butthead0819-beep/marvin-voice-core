@@ -933,8 +933,9 @@ static void pollNowPlayingFromS3() {
           bool trackChanged = firstTime || !np_same_track(g_np, np);
           g_np = np;
           avrc_meta_set(np);
+          // 不設 g_sum_dirty：曲目每 ~5 秒一筆，設了就變成每 ~6 秒寫一次 NVS（一天上萬次磨損
+          // flash，10/14 遙測實測）。計數交給 loop() 每 60 秒的定期存檔帶過去即可。
           ds_inc(g_sum.meta_lines);
-          g_sum_dirty = true;
           if (firstTime) diag_loop_add("M ok");
           if (firstTime || trackChanged) {
             Serial.printf("[Meta] %s / %s\n", np.title, np.artist);
