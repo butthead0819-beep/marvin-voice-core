@@ -367,6 +367,10 @@ HUD_HTML = """<!DOCTYPE html>
   body.kiosk .device{ width:100vw; filter:none; }
   body.kiosk .bezel{ background:none; border:none; border-radius:0; padding:0; }
   body.kiosk .screen{ border-radius:0; aspect-ratio:auto; width:100vw; height:100vh; }
+  /* ---- /stage 橫置雙欄（layout=stage）：滿版、無 dock/通知中心，卡片不受 45% 上限 ---- */
+  body.stage .dock, body.stage .nc{ display:none; }
+  body.stage .card:not(.focused){ max-width:none; }
+  body.stage .vinyl-card .vwrap{ top:50%; left:50%; height:84%; }
 </style>
 </head>
 <body class="__BODY_CLASS__">
@@ -403,6 +407,8 @@ HUD_HTML = """<!DOCTYPE html>
 <script>
 (function(){
   const TOKEN="__TOKEN__";
+  const LAYOUT="__LAYOUT__"; // "stage"＝/stage 橫置雙欄；空字串＝/hud 原版
+  const IS_STAGE=LAYOUT==='stage';
   const I = {
     calendar:'<rect x="4" y="6" width="16" height="15" rx="2.5"/><path d="M4 10h16M8 3v4M16 3v4"/>',
     messages:'<path d="M4 5h16v11H10l-4 4v-4H4z" stroke-linejoin="round"/>',
@@ -435,6 +441,8 @@ HUD_HTML = """<!DOCTYPE html>
   // 單一頁面、無場景：Marvin 固定佔一格，其餘卡片全部來自真實資料源（buildCards()），
   // 沒資料的來源就不產生卡片——不再用假資料撐頁面。
   const KIND={ respond:{w:2.6,hero:1}, marvin:{w:1.5}, info:{w:1}, ambient:{w:0.75} };
+  // /stage 權重：黑膠是主角（1:2）；沒歌時只剩 Marvin 一張，自然吃滿。
+  const STAGE_KIND={ marvin:{w:1}, info:{w:2} };
 
   const stage=document.getElementById('stage');
   const mvParams={ mood:'idle', focusDir:0 };
@@ -575,6 +583,12 @@ HUD_HTML = """<!DOCTYPE html>
   // Marvin 固定佔一格；其餘最多 MAX_CARDS-1 格從真實資料源（Claude Code／現正播放／
   // 待播清單）依重要性階梯挑，沒資料的來源就不產生卡片——不再用demo卡片撐頁面。
   function buildCards(){
+    if(IS_STAGE){
+      // /stage：Marvin 固定在左，有歌才在右邊加黑膠；不放 Claude/Gmail 卡（不輪詢那些來源）。
+      const cards=[marvinBaseCard()];
+      if(liveNow && liveNow.title) cards.push({kind:'info', s:'ok', l:'現正播放', vinyl:{title:liveNow.title, pal:liveNow.pal||[]}, meta:''});
+      return cards;
+    }
     const others=[];
     const cc=claudeCard();
     if(cc) others.push(cc);
@@ -610,7 +624,7 @@ HUD_HTML = """<!DOCTYPE html>
   function render(){
     const cards=buildCards();
     stage.innerHTML=cards.map((c,x)=>{
-      const k=KIND[c.kind];
+      const k=(IS_STAGE?STAGE_KIND:KIND)[c.kind];
       const key='c'+x;
       const focused=focusKey===key;
       const focCls=focused?'focused':'';
@@ -993,7 +1007,8 @@ __PERF_JS__
       // headBase 只吃「高度」——卡片變寬只讓 canvas(W) 變寬，不會放大頭（卡片高度不隨
       // flex-grow 橫向分配變動，是穩定的頭部尺寸基準）。cx 的左右漂浮改吃全部的 W，
       // 卡片越寬、Marvin 能晃動的地盤就越大，這才是「卡片變大＝拓展活動空間」而非放大頭。
-      const headBase=Hh;
+      // 例外：卡片比高還窄（/stage 放歌時左欄是直立窄卡）就改吃寬度，不然頭比卡片寬會被裁掉。
+      const headBase=Math.min(Hh,W);
       const perfShakeX=pv.shake?Math.sin(st.t*41)*pv.shake*headBase*0.02:0;
       const perfShakeY=pv.shake?Math.cos(st.t*37)*pv.shake*headBase*0.02:0;
       const cx=W/2+Math.sin(st.t*0.4)*W*0.02+(pv.swayX||0)*headBase*0.05+(pv.driftX||0)*headBase*0.08+perfShakeX;
@@ -1237,8 +1252,10 @@ __PERF_JS__
 
   render();
   refreshNow(); setInterval(refreshNow,4000);
-  refreshClaudeStatus(); setInterval(refreshClaudeStatus,15000);
-  refreshGmailCal(); setInterval(refreshGmailCal,120000);
+  if(!IS_STAGE){
+    refreshClaudeStatus(); setInterval(refreshClaudeStatus,15000);
+    refreshGmailCal(); setInterval(refreshGmailCal,120000);
+  }
 })();
 </script>
 
@@ -1589,9 +1606,20 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         """
         kiosk = (request.query.get("kiosk") or "").strip().lower() in ("1", "true", "yes")
         body_class = "kiosk" if kiosk else ""
+        return _hud_page(body_class, "")
+
+    async def handle_stage(request):
+        """GET /stage — Marvin 橫置雙欄頁（左 Marvin 頭、右黑膠現正播放），給 Pi HDMI kiosk／平板全螢幕掛著。
+
+        跟 /hud 同一份 HUD_HTML，只注入 layout=stage：永遠滿版無外殼、只輪詢 /now、卡片只有 Marvin＋黑膠。
+        """
+        return _hud_page("kiosk stage", "stage")
+
+    def _hud_page(body_class: str, layout: str):
         perf_enabled = os.getenv("MARVIN_PERFORMANCE_SCRIPT", "1").strip().lower() in ("1", "true", "yes", "on")
         perf_theme = os.getenv("MARVIN_PERFORMANCE_THEME", "matrix").strip() if perf_enabled else ""
         html = (HUD_HTML.replace("__TOKEN__", token or "").replace("__BODY_CLASS__", body_class)
+                .replace("__LAYOUT__", layout)
                 .replace("__PERF_JS__", _PERF_JS).replace("__PERF_THEME__", perf_theme))
         return web.Response(text=html, content_type="text/html", headers=_CORS)
 
@@ -1760,6 +1788,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_get("/audio_stream", handle_audio_stream)
     app.router.add_get("/car_now", handle_car_now)
     app.router.add_get("/hud", handle_hud)
+    app.router.add_get("/stage", handle_stage)
     app.router.add_post("/car", handle_car)
     app.router.add_options("/car", handle_preflight)
     return app
