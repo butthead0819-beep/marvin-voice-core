@@ -44,6 +44,23 @@ async def test_hud_injects_token_into_page():
 
 
 @pytest.mark.asyncio
+async def test_hud_includes_shared_drawing_and_performance_script():
+    """/hud 共用 hud_shared.js 的繪圖函式 + 仍載完整 hud_performance.js 疊加表演；
+    /stage 套殼（layout 旗標）已經拔掉，不該再出現在頁面裡。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+    app = build_text_app(_make_vc(), token=None)
+    async with TestClient(TestServer(app)) as client:
+        html = await (await client.get("/hud")).text()
+        assert "function createMarvinHead" in html
+        assert "function drawVinylDisc" in html
+        assert "PERF_ROUND_SEC" in html
+        assert "__SHARED_JS__" not in html
+        assert "IS_STAGE" not in html
+        assert "__LAYOUT__" not in html
+
+
+@pytest.mark.asyncio
 async def test_hud_rejects_missing_token():
     from aiohttp.test_utils import TestClient, TestServer
     from car_http_app import build_text_app
