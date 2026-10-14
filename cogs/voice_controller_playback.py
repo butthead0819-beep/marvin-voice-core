@@ -31,6 +31,7 @@ from loudness_norm import UNMEASURED_GAIN
 from tts_speak_policy import (
     RoomState, SpeakKind, Verdict, decide as _decide_speak, is_committed as _is_committed,
 )
+from cogs.voice_controller_wake_session import _WAKE_SESSION_REPLY_KINDS
 from utterance_budget import STREAM_BUDGET
 from manzai_interject import compute_interject_ratio, interject_diagnostics
 from local_mixing_source import (
@@ -647,6 +648,11 @@ class PlaybackMixin:
             pushed_ok = bool(pushed > 0)
         except TypeError:
             pushed_ok = True
+        # 🗣️ [WakeSession] 回應類 TTS 真的推出去＝Marvin 回應了 session 對象
+        if pushed_ok and (kind or self._legacy_speak_kind(
+                silent_during_stream=silent_during_stream, bypass_stream_mute=bypass_stream_mute,
+        )) in _WAKE_SESSION_REPLY_KINDS:
+            self._wake_session_on_replied()
         if pushed_ok and os.getenv("MARVIN_FOLLOWUP_ENABLED", "true").lower() == "true":
             from wake_detector import _has_question_marker
             if _has_question_marker(text):

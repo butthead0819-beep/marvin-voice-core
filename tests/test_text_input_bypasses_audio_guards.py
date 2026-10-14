@@ -35,6 +35,7 @@ def _make_guard_self(*, is_playing_audio=True):
     # staticmethod：MagicMock 預設回 truthy Mock 會誤繞 echo，明確設 False
     fake._strong_voice_bypass_echo = MagicMock(return_value=False)
     fake._intent_bypass_echo = MagicMock(return_value=False)
+    fake._followup_override = MagicMock(return_value=False)  # WakeSessionMixin：同理，別讓 truthy Mock 誤開免喚醒
     return fake
 
 
