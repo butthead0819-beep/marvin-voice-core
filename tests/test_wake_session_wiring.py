@@ -261,3 +261,36 @@ async def test_handle_stt_result_wake_session_other_speaker_still_needs_wake_wor
         bypass_etd=True,
     )
     assert cog._wake_response_pending is False
+
+
+@pytest.mark.asyncio
+async def test_play_ack_skips_when_new_turn_already_captured(monkeypatch):
+    """等播完期間對象已經又講了一句被接住（awaiting）→ 不在他講話/等回應時插提示音。"""
+    import cogs.voice_controller_wake_session as wsm
+    monkeypatch.setattr(wsm, "_ACK_POLL_S", 0.001)
+    monkeypatch.setattr(wsm, "_ACK_IDLE_REQUIRED_S", 0.002)
+    monkeypatch.setattr(wsm, "_ACK_MAX_WAIT_S", 1.0)
+
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    assert cog._wake_session.on_utterance("A", 1.0, marvin_speaking=False) is True
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.return_value = 0.0
+    cog.play_dj_on_tts_layer = AsyncMock(return_value=True)
+
+    await cog._wake_session_play_ack("A")
+
+    cog.play_dj_on_tts_layer.assert_not_called()
+
+
+def test_apply_wake_guards_accepted_wake_arms_session():
+    """真 VoiceController._apply_wake_guards：接受喚醒 → session arm 給該 speaker。"""
+    from tests.test_wake_guards_unit import _make_vc
+    vc = _make_vc(_wake_session=WakeSession(), _mixer=None)
+    is_fast, _ = vc._apply_wake_guards(
+        "A", "馬文查周杰倫新歌", time.time(), "A", True,
+        None, None, None, None)
+    assert is_fast is True
+    assert vc._wake_session.target == "A"

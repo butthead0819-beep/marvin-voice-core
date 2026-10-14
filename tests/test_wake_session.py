@@ -154,3 +154,10 @@ def test_on_replied_resets_unanswered_count():
     s.on_ignored("A", 9.0)
     assert s.unanswered == 2
     assert s.target == "A"   # 還沒到第三次，session 仍在
+
+
+def test_on_utterance_false_when_not_opened_even_after_await_window():
+    """arm 後一直沒回應也沒被 gate 拒（靜默丟棄）：過了 await 窗仍不准免喚醒接話。"""
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    assert s.on_utterance("A", 31.0, marvin_speaking=False) is False
