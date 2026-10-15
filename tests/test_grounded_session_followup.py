@@ -127,3 +127,57 @@ def test_sticky_skips_audio_rescue_ctx():
     agent, _ = _agent(sticky=True)
     ctx = _ctx("那他上一張專輯呢", dispatch_source="llm_rescue_audio")
     assert agent.bid(ctx).confidence == 0.0
+
+
+# ── B：session_followup 查詢結果要回報 WakeSession（2026-10-15 事故：
+# 追問黏著連續查不到卻一直被 on_replied 救回，session 永遠不結束）──────────
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_reports_miss_on_session_followup_no_answer():
+    ctrl = MagicMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+
+    with patch.object(gqa, "grounded_answer", new=AsyncMock(return_value=None)), \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=[]), \
+         patch.object(gqa, "record_ambient_qa"):
+        await gqa.run_grounded_qa(ctrl, "A", "x", source="session_followup")
+
+    ctrl._wake_session_on_followup_result.assert_called_once_with("A", False)
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_reports_hit_on_session_followup_answer():
+    ctrl = MagicMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+
+    with patch.object(gqa, "grounded_answer", new=AsyncMock(return_value=("答", ["src"]))), \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=[]), \
+         patch.object(gqa, "record_ambient_qa"):
+        await gqa.run_grounded_qa(ctrl, "A", "x", source="session_followup")
+
+    ctrl._wake_session_on_followup_result.assert_called_once_with("A", True)
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_does_not_report_for_ambient_qa_source():
+    ctrl = MagicMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+
+    with patch.object(gqa, "grounded_answer", new=AsyncMock(return_value=None)), \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=[]), \
+         patch.object(gqa, "record_ambient_qa"):
+        await gqa.run_grounded_qa(ctrl, "A", "x", source="ambient_qa")
+
+    ctrl._wake_session_on_followup_result.assert_not_called()

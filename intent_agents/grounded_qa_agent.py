@@ -422,6 +422,10 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
                            "latency_ms": latency_ms, "source": source, "games": games})
+        if source == "session_followup":
+            _report = getattr(ctrl, "_wake_session_on_followup_result", None)
+            if callable(_report):
+                _report(speaker, False)
         return
 
     answer, sources = res
@@ -435,6 +439,10 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
                        "query": topic, "answer": answer, "sources": sources,
                        "latency_ms": latency_ms, "downstream": "none", "source": source,
                        "games": games})
+    if source == "session_followup":
+        _report = getattr(ctrl, "_wake_session_on_followup_result", None)
+        if callable(_report):
+            _report(speaker, True)
     logger.info(f"[AmbientQA] {speaker} 「{topic}」已回答（{latency_ms}ms, src={sources}）。")
 
 

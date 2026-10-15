@@ -169,6 +169,7 @@ def test_on_utterance_false_when_not_opened_even_after_await_window():
 
 @pytest.mark.parametrize("text", [
     "謝謝", "謝謝馬文", "知道了", "好了啦", "OK", "馬文 謝謝你", "了解！",
+    "沒事了謝謝", "好了謝啦", "OK 謝謝馬文",
 ])
 def test_is_closing_phrase_true(text):
     assert is_closing_phrase(text) is True
@@ -176,6 +177,7 @@ def test_is_closing_phrase_true(text):
 
 @pytest.mark.parametrize("text", [
     "謝謝你上次推薦的歌那首叫什麼", "好了沒", "知道了嗎他幾歲", "",
+    "沒事了謝謝你上次推薦的歌", "好了上見",
 ])
 def test_is_closing_phrase_false(text):
     assert is_closing_phrase(text) is False
@@ -245,3 +247,58 @@ def test_transfer_to_new_target_resets_query_mode():
     assert s.wants_grounded_followup("B") is False
     s.on_replied(10.5)
     assert s.wants_grounded_followup("B") is False
+
+
+# ── B：追問黏著連續查不到 → 結束 session（2026-10-15 事故）─────────────────
+
+def test_on_followup_result_two_misses_still_target_third_ends():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.on_followup_result("A", False)
+    assert s.target == "A"
+    s.on_followup_result("A", False)
+    assert s.target == "A"
+    s.on_followup_result("A", False)
+    assert s.target is None
+
+
+def test_on_followup_result_hit_resets_miss_count():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.on_followup_result("A", False)
+    s.on_followup_result("A", False)
+    s.on_followup_result("A", True)
+    assert s.target == "A"
+    s.on_followup_result("A", False)
+    s.on_followup_result("A", False)
+    assert s.target == "A"
+
+
+def test_on_followup_result_non_target_speaker_not_counted():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.on_followup_result("B", False)
+    s.on_followup_result("B", False)
+    s.on_followup_result("B", False)
+    assert s.target == "A"
+    assert s.followup_misses == 0
+
+
+def test_followup_misses_survives_on_replied_but_not_fixed_by_it():
+    """事故序列：每輪 on_utterance → on_followup_result(False) → on_replied，
+    on_replied 不會救回（followup_misses 獨立於 unanswered），第 3 輪後結束。"""
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.0)
+    now = 1.0
+    for i in range(3):
+        assert s.on_utterance("A", now, marvin_speaking=False) is True
+        s.on_followup_result("A", False)
+        if i < 2:
+            assert s.target == "A"
+            s.on_replied(now + 0.5)
+        now += 1.0
+    assert s.target is None
