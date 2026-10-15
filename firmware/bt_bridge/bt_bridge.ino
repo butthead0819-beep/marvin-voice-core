@@ -67,7 +67,7 @@
  *              num_attr 為 0 時只有 "Q20 n0"。
  *   "P20 len=<n>" + "P0/P1/P2 <hex>" = WROOM 第一次回給車機的 GetElementAttributes 回應
  *              原始 bytes（len＝BT_HDR 的 len，P0/P1/P2 每行 12 bytes 的小寫 hex，依序接續）。
- *   "Z q=<n> r1=<n> r2=<n> r5=<n> n1=<n> n2=<n> n5=<n>" = 每 30 秒（A2DP 連線中才送）的累計
+ *   "Z q<n> r<r1>,<r2>,<r5> n<n1>,<n2>,<n5>" = 每 30 秒（A2DP 連線中才送）的累計
  *              計數：q＝車機送出的 GetElementAttributes 請求總數；r1/r2/r5＝車機對
  *              PLAY_STATUS_CHANGE(1)/TRACK_CHANGE(2)/PLAY_POS_CHANGED(5) 送
  *              RegisterNotification 的累計次數；n1/n2/n5＝WROOM 自己組包成功送出對應事件
@@ -1077,47 +1077,53 @@ static void diagLogPduTrace() {
 // DIAG：GetElementAttributes 車機請求內容（Q20）、WROOM 回應原始 bytes（P20/P0-P2，各開機
 // 後只記一次）、每 30 秒（A2DP 連線中）一筆的訂閱/通知累計計數（Z）。見 bt_bridge.ino 檔頭
 // "Q20"/"P20"/"Z" 說明。這裡只送遙測（uart_diag），不寫 NVS。
-static bool s_elem_req_logged = false;
-static bool s_elem_rsp_logged = false;
+// S3 每 30 秒心跳只夾帶 8 筆 WROOM 記錄（滿了丟最舊），剛連上時其他 DIAG 一口氣冒出來會把
+// 探針擠掉（10/15 實測 C/Rf/T caps 就被擠掉）——探針每 10 秒最多送一行，依序 Q20→P20→P0..P2，
+// Z 每 30 秒一行也走同一個節流。Z 行用 64 字緩衝（S3 每筆存 63 字），不受 DIAG_TEXT 40 限制。
+static const uint32_t PROBE_GAP_MS = 10000;
+static uint8_t s_probe_stage = 0;      // 0 等 Q20、1 等 P20、2..4 送 P0..P2、5 完成
+static uint32_t s_probe_last_ms = 0;
 static uint32_t s_elemz_last_ms = 0;
 static void diagElemProbe() {
+  uint32_t nowMs = millis();
+  if (s_probe_last_ms != 0 && nowMs - s_probe_last_ms < PROBE_GAP_MS) return;
   ElemProbe p;
   avrc_elem_probe_get(p);
-  char d[DIAG_TEXT];
-
-  if (!s_elem_req_logged && p.req_captured) {
-    s_elem_req_logged = true;
+  char d[64];
+  if (s_probe_stage == 0 && p.req_captured) {
     int n = snprintf(d, sizeof(d), "Q20 n%d", (int)p.req_num_attr);
-    if (n < 0) n = 0;
-    if (n > (int)sizeof(d) - 1) n = (int)sizeof(d) - 1;
     uint8_t take = p.req_num_attr > 8 ? 8 : p.req_num_attr;
-    for (uint8_t i = 0; i < take && n < (int)sizeof(d) - 1; i++) {
+    for (uint8_t i = 0; i < take && n > 0 && n < (int)sizeof(d) - 1; i++) {
       int m = snprintf(d + n, sizeof(d) - n, "%s%d", i == 0 ? " " : ",", (int)p.req_attrs[i]);
       if (m < 0) break;
       n += m;
-      if (n > (int)sizeof(d) - 1) n = (int)sizeof(d) - 1;
     }
-    uart_diag(millis() / 1000, d);
+    uart_diag(nowMs / 1000, d);
+    s_probe_stage = 1;
+    s_probe_last_ms = nowMs;
+    return;
   }
-
-  if (!s_elem_rsp_logged && p.rsp_captured) {
-    s_elem_rsp_logged = true;
-    snprintf(d, sizeof(d), "P20 len=%u", (unsigned)p.rsp_len);
-    uart_diag(millis() / 1000, d);
-    for (uint8_t k = 0; k < 3; k++) {
-      uint16_t off = (uint16_t)(k * 12);
-      if (off >= p.rsp_n) break;
+  if (s_probe_stage >= 1 && s_probe_stage <= 4 && p.rsp_captured) {
+    if (s_probe_stage == 1) {
+      snprintf(d, sizeof(d), "P20 len=%u", (unsigned)p.rsp_len);
+    } else {
+      uint16_t off = (uint16_t)((s_probe_stage - 2) * 12);
+      if (off >= p.rsp_n) {
+        s_probe_stage = 5;
+        return;
+      }
       uint16_t take = (uint16_t)(p.rsp_n - off);
       if (take > 12) take = 12;
       char hex[25];
       for (uint16_t i = 0; i < take; i++) snprintf(hex + i * 2, 3, "%02x", p.rsp_bytes[off + i]);
       hex[take * 2] = '\0';
-      snprintf(d, sizeof(d), "P%d %s", (int)k, hex);
-      uart_diag(millis() / 1000, d);
+      snprintf(d, sizeof(d), "P%d %s", (int)(s_probe_stage - 2), hex);
     }
+    uart_diag(nowMs / 1000, d);
+    s_probe_stage++;
+    s_probe_last_ms = nowMs;
+    return;
   }
-
-  uint32_t nowMs = millis();
   if (a2dp_source.is_connected() && (nowMs - s_elemz_last_ms >= 30000)) {
     s_elemz_last_ms = nowMs;
     PduTrace pt;
@@ -1129,10 +1135,11 @@ static void diagElemProbe() {
       else if (pt.e[i].pdu == ESP_AVRC_RN_TRACK_CHANGE) n2 = pt.e[i].cnt;
       else if (pt.e[i].pdu == ESP_AVRC_RN_PLAY_POS_CHANGED) n5 = pt.e[i].cnt;
     }
-    snprintf(d, sizeof(d), "Z q=%lu r1=%lu r2=%lu r5=%lu n1=%u n2=%u n5=%u", (unsigned long)p.req_cnt,
+    snprintf(d, sizeof(d), "Z q%lu r%lu,%lu,%lu n%u,%u,%u", (unsigned long)p.req_cnt,
              (unsigned long)g_rn_reg_cnt_status, (unsigned long)g_rn_reg_cnt_track,
              (unsigned long)g_rn_reg_cnt_pos, (unsigned)n1, (unsigned)n2, (unsigned)n5);
-    uart_diag(millis() / 1000, d);
+    uart_diag(nowMs / 1000, d);
+    s_probe_last_ms = nowMs;
   }
 }
 

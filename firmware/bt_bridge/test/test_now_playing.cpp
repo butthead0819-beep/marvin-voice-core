@@ -203,9 +203,11 @@ int main() {
     printf("T13 ok\n");
   }
 
-  // T14：valid=false → 全 0xFF
+  // T14：valid=false → 全 0xFF（標題刻意塞字：只看 title 不看 valid 的實作要在這裡紅）
   {
     NowPlaying np;
+    np.valid = false;
+    strncpy(np.title, "leftover", sizeof(np.title) - 1);
     uint8_t uid[8];
     np_track_uid(np, uid);
     uint8_t expect_ff[8];
