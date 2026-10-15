@@ -58,10 +58,13 @@ int main() {
   }
 
   // S5：event_id 超出範圍（0、14）→ false
+  // 陣列刻意開大並在「假如有第 14 格」的位置擺 registered=1：上限沒擋住時會讀到它而回 true，
+  // 不能靠讀到陣列外的隨機值碰巧回 false。
   {
-    uint8_t cb[42] = {0};
+    uint8_t cb[64] = {0};
     cb[0] = 1;
     cb[16 + 0] = 1;  // event_id=1 的 registered
+    cb[16 + 2 * 13] = 1;  // 若 event_id=14 合法，它的 registered 會在這裡
     uint8_t handle = 0, label = 0;
     assert(rcv_can_notify(cb, 0, &handle, &label) == false);
     assert(rcv_can_notify(cb, 14, &handle, &label) == false);
