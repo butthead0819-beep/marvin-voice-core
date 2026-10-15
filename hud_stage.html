@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="zh-Hant"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Marvin">
+<meta name="theme-color" content="#07090c">
+<link rel="apple-touch-icon" href="/stage_icon.png">
+<title>Marvin</title>
+<style>
+  :root{
+    --p0:#1b2a14; --p1:#0d1a24; --p2:#07090c; --p3:#07090c;
+  }
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; background:#07090c; color:#EEF2F5;
+    font-family:"Avenir Next",-apple-system,"PingFang TC",sans-serif;
+    -webkit-text-size-adjust:100%; overflow-x:hidden; }
+  .ambient{ position:fixed; inset:0; z-index:-1;
+    background:
+      radial-gradient(120% 90% at 15% -10%, var(--p0), transparent 55%),
+      radial-gradient(130% 100% at 100% 10%, var(--p1), transparent 60%),
+      radial-gradient(150% 120% at 50% 120%, var(--p2), transparent 65%),
+      var(--p3);
+    transition: background 1.2s;
+  }
+  .app{
+    min-height:100dvh;
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+             max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    display:flex; flex-direction:column; gap:20px;
+  }
+
+  .marvin{ display:flex; flex-direction:row; align-items:center; gap:14px; }
+  .head{ width:clamp(110px, 34vw, 180px); aspect-ratio:1/1; flex:none;
+    cursor:pointer; -webkit-tap-highlight-color:transparent; transition:transform .15s; }
+  .head:active{ transform:scale(.97); }
+  .speech-col{ flex:1; min-width:0; }
+  .speech-label{ font-size:12px; letter-spacing:.14em; color:#9BE04B; margin-bottom:6px; }
+  .speech{ border-radius:18px; background:rgba(255,255,255,.06);
+    border:1px solid rgba(155,224,75,.25); padding:12px 14px;
+    font-size:17px; line-height:1.45; overflow-wrap:anywhere; color:rgba(238,242,245,.55); }
+  .speech.has-comment{ color:#EEF2F5; }
+  .speech-meta{ margin-top:6px; font-size:12px; color:rgba(238,242,245,.45); min-height:1em; }
+
+  .now[hidden], .idle[hidden]{ display:none; }
+  .disc-wrap{ width:min(78vw, 360px); aspect-ratio:1/1; margin:0 auto; position:relative; }
+  .disc-wrap canvas{ width:100%; height:100%; display:block; border-radius:50%;
+    animation: spin 14s linear infinite; will-change:transform; }
+  @keyframes spin{ to{ transform:rotate(1turn); } }
+  @media (prefers-reduced-motion: reduce){ .disc-wrap canvas{ animation:none; } }
+
+  .title{ font-size:22px; line-height:1.3; font-weight:700; text-align:center; margin-top:16px;
+    overflow-wrap:anywhere; }
+  .by{ font-size:14px; color:rgba(238,242,245,.6); text-align:center; margin-top:4px; }
+
+  .progress{ margin-top:14px; }
+  .progress-track{ height:4px; border-radius:2px; background:rgba(255,255,255,.14); overflow:hidden; }
+  .progress-bar{ height:100%; width:0%; background:var(--p1,#9BE04B); transition:width .3s linear; }
+  .progress-times{ display:flex; justify-content:space-between; margin-top:6px;
+    font-size:12px; font-variant-numeric:tabular-nums; color:rgba(238,242,245,.5); }
+
+  .guide{ margin-top:16px; font-size:17px; line-height:1.6; font-style:italic;
+    border-left:3px solid var(--p1,#9BE04B); padding-left:12px; }
+
+  .queue{ margin-top:16px; }
+  .queue-label{ font-size:12px; letter-spacing:.14em; color:rgba(238,242,245,.5); margin-bottom:8px; }
+  .queue-row{ display:flex; align-items:center; gap:10px; padding:6px 0; }
+  .queue-thumb{ width:44px; height:44px; flex:none; border-radius:8px; background-size:cover;
+    background-position:center; background-color:rgba(255,255,255,.08);
+    display:flex; align-items:center; justify-content:center; color:rgba(255,255,255,.4); }
+  .queue-text{ min-width:0; }
+  .queue-title{ font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .queue-by{ font-size:12px; color:rgba(238,242,245,.5); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  .idle{ text-align:center; color:rgba(238,242,245,.5); font-size:15px; padding:24px 0; }
+
+  @media (orientation: landscape) and (max-height: 600px){
+    .app{ display:grid; grid-template-columns: minmax(0,0.85fr) minmax(0,1.15fr); gap:24px;
+      height:100dvh; box-sizing:border-box; }
+    .marvin{ grid-column:1; flex-direction:column; justify-content:center; text-align:center; overflow:hidden; min-height:0; }
+    .now, .idle{ grid-column:2; }
+    .marvin .head{ width:min(40vh, 34vw); }
+    .marvin .speech-col{ margin-top:12px; max-height:100%; overflow-y:auto; width:100%; }
+    .now, .idle{ overflow-y:auto; min-height:0; }
+    .now .disc-row{ display:flex; flex-direction:row; align-items:center; gap:16px; }
+    .now .disc-wrap{ width:min(46vh, 220px); margin:0; flex:none; }
+    .now .disc-row .meta{ flex:1; min-width:0; }
+    .now .title, .now .by{ text-align:left; margin-top:0; }
+  }
+  .disc-row .meta{ display:none; }
+  @media (orientation: landscape) and (max-height: 600px){
+    .disc-row .meta{ display:block; }
+    #title-portrait, #by-portrait{ display:none; }
+  }
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+<div class="app">
+  <div class="marvin">
+    <canvas class="head" id="head"></canvas>
+    <div class="speech-col">
+      <div class="speech-label">MARVIN</div>
+      <div class="speech" id="speech">點我，聽牠講評。</div>
+      <div class="speech-meta" id="speech-meta"></div>
+    </div>
+  </div>
+
+  <div class="now" id="now" hidden>
+    <div class="disc-row">
+      <div class="disc-wrap"><canvas id="disc"></canvas></div>
+      <div class="meta">
+        <div class="title" id="title"></div>
+        <div class="by" id="by"></div>
+      </div>
+    </div>
+    <div class="title" id="title-portrait"></div>
+    <div class="by" id="by-portrait"></div>
+    <div class="progress" id="progress" hidden>
+      <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+      <div class="progress-times"><span id="progress-elapsed">0:00</span><span id="progress-duration">0:00</span></div>
+    </div>
+    <div class="guide" id="guide" hidden></div>
+    <div class="queue" id="queue" hidden>
+      <div class="queue-label">待播</div>
+      <div id="queue-list"></div>
+    </div>
+  </div>
+
+  <div class="idle" id="idle">現在沒在放歌</div>
+</div>
+
+<script>
+(function(){
+  const TOKEN="__TOKEN__";
+__SHARED_JS__
+
+  const params={ mood:'idle', focusDir:0 };
+  const reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+  const headCanvas=document.getElementById('head');
+  const head=createMarvinHead(headCanvas, {params, reduce, fps:30});
+
+  const FALLBACK_PAL=['#9BE04B','#4C9DFF','#2A1A44','#080B11'];
+  function padPal(pal){
+    const out=(Array.isArray(pal)?pal:[]).filter(Boolean).slice(0,4);
+    while(out.length<4) out.push(FALLBACK_PAL[out.length]);
+    return out;
+  }
+
+  // ---- 黑膠：只在歌換了或 canvas 尺寸變了才重畫，平常靠 CSS 轉動（省電） ----
+  const discCanvas=document.getElementById('disc');
+  const discCtx=discCanvas.getContext('2d');
+  let discDPR=1, discCover=null, lastDiscKey='';
+  function redrawDisc(){
+    if(!discCover) return;
+    drawVinylDisc(discCtx, discCover, discDPR, redrawDisc);
+  }
+  function sizeDisc(){
+    discDPR=Math.min(2, window.devicePixelRatio||1);
+    const r=discCanvas.getBoundingClientRect();
+    discCanvas.width=Math.max(1, r.width*discDPR);
+    discCanvas.height=Math.max(1, r.height*discDPR);
+    redrawDisc();
+  }
+  new ResizeObserver(sizeDisc).observe(document.querySelector('.disc-wrap'));
+  sizeDisc();
+  function mountDisc(title, pal, cover){
+    const key=title+'|'+cover;
+    if(key===lastDiscKey) return;
+    lastDiscKey=key;
+    discCover={title, pal:padPal(pal), cover};
+    redrawDisc();
+  }
+
+  // ---- /now 輪詢：差異更新，不整頁重建 ----
+  const elNow=document.getElementById('now'), elIdle=document.getElementById('idle');
+  const elTitle=document.getElementById('title'), elBy=document.getElementById('by');
+  const elTitleP=document.getElementById('title-portrait'), elByP=document.getElementById('by-portrait');
+  const elProgress=document.getElementById('progress'), elProgressBar=document.getElementById('progress-bar');
+  const elElapsed=document.getElementById('progress-elapsed'), elDuration=document.getElementById('progress-duration');
+  const elGuide=document.getElementById('guide');
+  const elQueue=document.getElementById('queue'), elQueueList=document.getElementById('queue-list');
+
+  let liveNow=null;
+  let lastRenderedKey='';
+  let failCount=0;
+
+  function fmtTime(sec){
+    sec=Math.max(0, Math.floor(sec||0));
+    const m=Math.floor(sec/60), s=sec%60;
+    return m+':'+String(s).padStart(2,'0');
+  }
+
+  function renderNow(){
+    if(!liveNow || !liveNow.playing){
+      elNow.hidden=true; elIdle.hidden=false;
+      return;
+    }
+    elNow.hidden=false; elIdle.hidden=true;
+
+    const metaText=esc(liveNow.title)+(liveNow.by?' · '+esc(liveNow.by):'');
+    if(elTitle.textContent!==liveNow.title) elTitle.textContent=liveNow.title;
+    if(elTitleP.textContent!==liveNow.title) elTitleP.textContent=liveNow.title;
+    const byText=liveNow.by||'';
+    if(elBy.textContent!==byText) elBy.textContent=byText;
+    if(elByP.textContent!==byText) elByP.textContent=byText;
+
+    mountDisc(liveNow.title, liveNow.palette, liveNow.cover);
+    document.documentElement.style.setProperty('--p0', (liveNow.palette&&liveNow.palette[0])||'#1b2a14');
+    document.documentElement.style.setProperty('--p1', (liveNow.palette&&liveNow.palette[1])||'#0d1a24');
+    document.documentElement.style.setProperty('--p2', (liveNow.palette&&liveNow.palette[2])||'#07090c');
+    document.documentElement.style.setProperty('--p3', (liveNow.palette&&liveNow.palette[3])||'#07090c');
+
+    if(liveNow.duration){
+      elProgress.hidden=false;
+      tickProgress();
+    } else {
+      elProgress.hidden=true;
+    }
+
+    if(liveNow.comment){
+      elGuide.hidden=false;
+      if(elGuide.textContent!==liveNow.comment) elGuide.textContent=liveNow.comment;
+    } else {
+      elGuide.hidden=true;
+    }
+
+    const queueKey=(liveNow.queue||[]).map(q=>q.title).join('|');
+    if(queueKey!==elQueueList.dataset.key){
+      elQueueList.dataset.key=queueKey;
+      const items=(liveNow.queue||[]).slice(0,5);
+      if(items.length){
+        elQueue.hidden=false;
+        elQueueList.innerHTML='';
+        items.forEach(it=>{
+          const row=document.createElement('div');
+          row.className='queue-row';
+          const thumb=document.createElement('div');
+          thumb.className='queue-thumb';
+          if(it.thumbnail){
+            thumb.style.backgroundImage=`url('${esc(it.thumbnail).replace(/'/g,"\\'")}')`;
+          } else {
+            thumb.textContent='♪';
+          }
+          const text=document.createElement('div');
+          text.className='queue-text';
+          const t=document.createElement('div'); t.className='queue-title'; t.textContent=it.title||'';
+          text.appendChild(t);
+          if(it.by){
+            const b=document.createElement('div'); b.className='queue-by'; b.textContent=it.by;
+            text.appendChild(b);
+          }
+          row.appendChild(thumb); row.appendChild(text);
+          elQueueList.appendChild(row);
+        });
+      } else {
+        elQueue.hidden=true;
+        elQueueList.innerHTML='';
+      }
+    }
+  }
+
+  function tickProgress(){
+    if(!liveNow || !liveNow.playing || !liveNow.duration || document.hidden) return;
+    const elapsed=Math.max(0, Math.min(liveNow.duration, Date.now()/1000 - (liveNow.songStartTime||0)));
+    elProgressBar.style.width=(elapsed/liveNow.duration*100)+'%';
+    elElapsed.textContent=fmtTime(elapsed);
+    elDuration.textContent=fmtTime(liveNow.duration);
+  }
+  setInterval(tickProgress, 1000);
+
+  async function refreshNow(){
+    try{
+      const r=await fetch("/now?t="+encodeURIComponent(TOKEN), {cache:"no-store"});
+      const j=await r.json();
+      if(j.playing){
+        failCount=0;
+        liveNow={ playing:true, title:j.title||'', by:j.by||'',
+          palette:Array.isArray(j.palette)?j.palette:[], cover:j.cover||'',
+          queue:Array.isArray(j.queue)?j.queue:[], duration:j.duration||0,
+          songStartTime:j.song_start_time||0, comment:j.comment||'' };
+      } else {
+        failCount=0;
+        liveNow={ playing:false };
+      }
+      updateSpeech(j.speech);
+    }catch(e){
+      failCount++;
+      if(failCount>=3) liveNow={ playing:false };
+      else return; // 連續失敗未達門檻：保留上次畫面，不閃成沒歌
+    }
+    const key=JSON.stringify(liveNow);
+    if(key!==lastRenderedKey){ lastRenderedKey=key; renderNow(); }
+  }
+
+  let nowTimer=null;
+  function scheduleNow(delayMs){
+    if(nowTimer) clearTimeout(nowTimer);
+    nowTimer=setTimeout(async ()=>{
+      if(!document.hidden) await refreshNow();
+      scheduleNow(5000);
+    }, delayMs);
+  }
+  document.addEventListener('visibilitychange', ()=>{
+    if(!document.hidden) refreshNow();
+  });
+
+  // ---- 泡泡：平常＝Marvin 最新講出口的 DJ 串場/TTS（/now 的 speech，讀 marvin_speech.log）；
+  //      點頭＝現生講評暫時蓋過，直到牠下一句真的開口 ----
+  const elSpeech=document.getElementById('speech');
+  const elSpeechMeta=document.getElementById('speech-meta');
+  let commentInFlight=false;
+  let lastSpeechStart=null;   // 已顯示過的最新台詞 start；同一句不重播 speak 表情
+  let bubbleSrc=null, bubbleStart=null;   // 泡泡目前內容的來源（dj/tts/comment）與時間
+  let speakTimer=null;
+  function speakFor(sec){
+    params.mood='speak';
+    clearTimeout(speakTimer);
+    speakTimer=setTimeout(()=>{ if(params.mood==='speak') params.mood='idle'; }, sec*1000);
+  }
+  function ago(ts){
+    const d=Math.max(0, Date.now()/1000-ts);
+    if(d<60) return '剛剛';
+    if(d<3600) return Math.floor(d/60)+' 分鐘前';
+    return Math.floor(d/3600)+' 小時前';
+  }
+  function renderSpeechMeta(){
+    const label={dj:'DJ 串場', tts:'Marvin', comment:'講評'}[bubbleSrc];
+    const text=label ? label+(bubbleStart?' · '+ago(bubbleStart):'') : '';
+    if(elSpeechMeta.textContent!==text) elSpeechMeta.textContent=text;
+  }
+  function updateSpeech(sp){
+    renderSpeechMeta();
+    // 講評請求中不蓋掉「……」；lastSpeechStart 不前進，下一輪輪詢再套用
+    if(!sp || !sp.text || commentInFlight || sp.start===lastSpeechStart) return;
+    const first=lastSpeechStart===null;
+    lastSpeechStart=sp.start;
+    elSpeech.textContent=sp.text; elSpeech.classList.add('has-comment');
+    bubbleSrc=sp.src; bubbleStart=sp.start;
+    renderSpeechMeta();
+    // 剛開頁拿到的是舊台詞，不演說話；新台詞依字數估 TTS 長度（約 0.22 秒/字），扣掉輪詢延遲
+    if(!first && sp.start){
+      const remain=sp.start+Math.min(15, Math.max(3, sp.text.length*0.22))-Date.now()/1000;
+      if(remain>0) speakFor(remain);
+    }
+  }
+  headCanvas.addEventListener('click', async ()=>{
+    if(commentInFlight) return;
+    commentInFlight=true;
+    params.mood='think';
+    elSpeech.textContent='……'; elSpeech.classList.add('has-comment');
+    const cards=liveNow && liveNow.playing
+      ? [
+          {label:'現正播放', text: liveNow.title+(liveNow.by?' · '+liveNow.by:'')},
+          {label:'待播清單', text: (liveNow.queue||[]).slice(0,2).map(q=>q.title).filter(Boolean).join('、') || '沒有排隊中的歌'},
+        ]
+      : [];
+    try{
+      const cardsParam=encodeURIComponent(JSON.stringify(cards));
+      const r=await fetch("/marvin_comment?t="+encodeURIComponent(TOKEN)+"&cards="+cardsParam, {cache:"no-store"});
+      const j=await r.json();
+      elSpeech.textContent=j.comment||'……我現在沒什麼想講的。';
+    }catch(e){
+      elSpeech.textContent='……訊號有點怪，等等再試。';
+    }
+    bubbleSrc='comment'; bubbleStart=Date.now()/1000; renderSpeechMeta();
+    speakFor(6);
+    commentInFlight=false;
+  });
+
+  renderNow();
+  refreshNow();
+  scheduleNow(5000);
+})();
+</script>
+</body></html>

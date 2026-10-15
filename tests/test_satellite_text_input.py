@@ -196,7 +196,7 @@ async def test_http_now_reports_current_song_from_bridge_file(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_http_now_ignores_local_music_cog(tmp_path):
+async def test_http_now_ignores_local_music_cog(tmp_path, monkeypatch):
     """satellite 進程自己的 MusicCog（car puck／瀏覽器 satellite 在外播放）不該蓋掉家用 HUD。"""
     from aiohttp.test_utils import TestClient, TestServer
     from car_http_app import build_text_app
@@ -209,12 +209,13 @@ async def test_http_now_ignores_local_music_cog(tmp_path):
     mc._current_stream_start_time = None
     mc._current_stream_comment = None
     vc.bot.cogs.get.return_value = mc
+    monkeypatch.setattr("car_http_app._SPEECH_LOG_PATH", str(tmp_path / "no_speech.log"))  # 別讀到真的 marvin_speech.log
     path = str(tmp_path / "now_playing_state.json")   # 橋接檔不存在＝家裡沒在播
     app = build_text_app(vc, token="s3cret", default_speaker="狗與露",
                           now_playing_state_path=path)
     async with TestClient(TestServer(app)) as client:
         body = await (await client.get("/now?t=s3cret")).json()
-        assert body == {"playing": False}
+        assert body == {"playing": False, "speech": None}
 
 
 @pytest.mark.asyncio
