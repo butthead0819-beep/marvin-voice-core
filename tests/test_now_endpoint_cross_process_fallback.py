@@ -58,11 +58,12 @@ async def test_now_bridge_includes_duration_start_time_and_comment(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_now_ignores_local_cog_when_bridge_file_idle(tmp_path):
+async def test_now_ignores_local_cog_when_bridge_file_idle(tmp_path, monkeypatch):
     """本地 MusicCog 在播（car puck／瀏覽器 satellite 在外）不該讓家用 HUD 顯示為在播。"""
     from aiohttp.test_utils import TestClient, TestServer
     from car_http_app import build_text_app
     path = str(tmp_path / "now_playing_state.json")   # 橋接檔不存在＝家裡沒在播
+    monkeypatch.setattr("car_http_app._SPEECH_LOG_PATH", str(tmp_path / "no_speech.log"))  # 別讀到真的 marvin_speech.log
     mc = MagicMock()
     mc.stream_mode = True
     mc._current_stream_info = {"title": "本地正在播", "requested_by": "車上", "duration": 180.0}
@@ -73,18 +74,19 @@ async def test_now_ignores_local_cog_when_bridge_file_idle(tmp_path):
     app = build_text_app(_make_vc(mc=mc), token=None, now_playing_state_path=path)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/now")
-        assert (await resp.json()) == {"playing": False}
+        assert (await resp.json()) == {"playing": False, "speech": None}
 
 
 @pytest.mark.asyncio
-async def test_now_returns_false_when_neither_local_nor_bridge_playing(tmp_path):
+async def test_now_returns_false_when_neither_local_nor_bridge_playing(tmp_path, monkeypatch):
     from aiohttp.test_utils import TestClient, TestServer
     from car_http_app import build_text_app
     path = str(tmp_path / "now_playing_state.json")   # 不存在
+    monkeypatch.setattr("car_http_app._SPEECH_LOG_PATH", str(tmp_path / "no_speech.log"))  # 別讀到真的 marvin_speech.log
     app = build_text_app(_make_vc(mc=None), token=None, now_playing_state_path=path)
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/now")
-        assert (await resp.json()) == {"playing": False}
+        assert (await resp.json()) == {"playing": False, "speech": None}
 
 
 @pytest.mark.asyncio
