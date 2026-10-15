@@ -21,4 +21,14 @@ uint32_t avrc_meta_unserved_status();
 // 加鎖取快照：AVRCP metadata PDU 追蹤（診斷用，見 pdu_trace.h）。
 void avrc_pdu_trace_get(PduTrace& out);
 
+// 自己組 RegisterNotification 回應送給車機（繞過 btc_avrc_tg_send_rn_rsp 只實作
+// VOLUME_CHANGE 的限制，見 avrc_meta_wrap.cpp 檔頭與 rc_cb_view.h）。
+// event_id 只接受 1(PLAY_STATUS_CHANGE)/2(TRACK_CHANGE)/5(PLAY_POS_CHANGED)，其餘回 false。
+// changed=false 送 INTERIM；true 送 CHANGED（送完會把 btc 的 registered 旗標清掉，車機收到
+// 後會重新註冊）。track8：TRACK_CHANGE 用的 8 bytes UID；play_status：PLAY_STATUS_CHANGE
+// 用；play_pos：PLAY_POS_CHANGED 用（ms）；不相關的參數會被忽略。
+// 回傳是否真的送出（車機沒註冊/結構對不上/組包失敗都回 false，不會丟例外或當掉）。
+bool avrc_rn_send(uint8_t event_id, bool changed, const uint8_t track8[8], uint8_t play_status, uint32_t play_pos);
+uint32_t avrc_rn_fail_count();
+
 #endif  // AVRC_META_WRAP_H

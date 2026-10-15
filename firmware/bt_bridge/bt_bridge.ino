@@ -28,12 +28,14 @@
  *   GPIO2 LED：恆亮=已連線 / 快閃=配對中未連線 / 慢閃=重連中未連線
  *
  * 燒錄指令：
- *   arduino-cli compile -b esp32:esp32:esp32 --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=AVRC_BldResponse -Wl,--wrap=BTA_AvMetaRsp -Wl,--wrap=AVRC_VendorRsp" firmware/bt_bridge
+ *   arduino-cli compile -b esp32:esp32:esp32 --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=AVRC_BldResponse -Wl,--wrap=BTA_AvMetaRsp -Wl,--wrap=AVRC_VendorRsp -Wl,--wrap=btc_avrc_tg_rn_evt_supported -Wl,--wrap=btc_avrc_tg_get_rn_supported_evt" firmware/bt_bridge
  *   arduino-cli upload  -b esp32:esp32:esp32 -p /dev/cu.usbserial-0001 firmware/bt_bridge
  *
  *   ⚠️ 少了 --wrap 旗標會連結失敗（__real_AVRC_BldResponse/__real_BTA_AvMetaRsp/
- *   __real_AVRC_VendorRsp 找不到）——這是刻意的（見 avrc_meta_wrap.cpp），防止忘記
- *   加旗標卻燒進去一個靜默不顯示曲名的版本。
+ *   __real_AVRC_VendorRsp/__real_btc_avrc_tg_rn_evt_supported/
+ *   __real_btc_avrc_tg_get_rn_supported_evt 找不到）——這是刻意的（見 avrc_meta_wrap.cpp），
+ *   防止忘記加旗標卻燒進去一個靜默不顯示曲名、或車機訂閱不到 TRACK/PLAY_STATUS/POS
+ *   通知的版本。
  *
  * AVRCP 曲名診斷 DIAG 代碼（車機沒顯示曲名時用來分辨卡在哪一段）：
  *   "M ok"   = pollNowPlayingFromS3 第一次從 S3 解析出曲目資訊成功（開機後僅記一次）。
@@ -54,6 +56,12 @@
  *              60 SetAddressedPlayer。全無 T 行＝車機沒送任何 metadata 指令。
  *   "T caps n<count> <ids>" = 回給車機的 GetCapabilities(EVENTS_SUPPORTED) 內容
  *              （event id：01 PLAY_STATUS、02 TRACK_CHANGE、05 PLAY_POS、0d VOLUME）。
+ *   "T N<evt> s0f/s0d" = WROOM 自己組包送出 TRACK/PLAY_STATUS/PLAY_POS 其中一種事件的
+ *              通知，0f＝INTERIM（車機剛註冊時的第一次回覆）、0d＝CHANGED（內容變化時）。
+ *              繞過 IDF TG 只實作 VOLUME_CHANGE 的 send_rn_rsp（見 avrc_meta_wrap.cpp）。
+ *   "T X<evt> sEE/sEB" = WROOM 想送某事件的通知但沒送出：EE＝btc 的全域狀態顯示車機當下
+ *              沒註冊這個事件（或還沒連線／結構對不上），EB＝組包失敗（AVRC_BldResponse
+ *              沒回成功或沒拿到封包）。
  */
 
 #include "BluetoothA2DPSource.h"
@@ -412,24 +420,22 @@ class BridgeSource : public BluetoothA2DPSource {
       }
       NowPlaying np;
       avrc_meta_get(np);
-      esp_avrc_rn_param_t param;
-      memset(&param, 0, sizeof(param));
       switch (rc->reg_ntf.event_id) {
-        case ESP_AVRC_RN_TRACK_CHANGE:
+        case ESP_AVRC_RN_TRACK_CHANGE: {
           g_rn_track_registered = true;
-          np_fill_elm_id(np, param.elm_id);
-          esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_TRACK_CHANGE, ESP_AVRC_RN_RSP_INTERIM, &param);
+          uint8_t uid[8];
+          np_fill_elm_id(np, uid);
+          avrc_rn_send(ESP_AVRC_RN_TRACK_CHANGE, false, uid, 0, 0);
           return;
+        }
         case ESP_AVRC_RN_PLAY_STATUS_CHANGE:
           g_rn_status_registered = true;
-          param.playback = (esp_avrc_playback_stat_t)g_reported_playback;
-          esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_INTERIM, &param);
+          avrc_rn_send(ESP_AVRC_RN_PLAY_STATUS_CHANGE, false, nullptr, g_reported_playback, 0);
           return;
         case ESP_AVRC_RN_PLAY_POS_CHANGED:
           g_rn_pos_registered = true;
           g_rn_pos_interval_s = rc->reg_ntf.event_parameter > 0 ? rc->reg_ntf.event_parameter : 1;
-          param.play_pos = np_position_now(np, millis());
-          esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_POS_CHANGED, ESP_AVRC_RN_RSP_INTERIM, &param);
+          avrc_rn_send(ESP_AVRC_RN_PLAY_POS_CHANGED, false, nullptr, 0, np_position_now(np, millis()));
           return;
         default:
           break;  // 其他事件（含 VOLUME_CHANGE）落到下面交給父類別
@@ -974,18 +980,14 @@ static void pollNowPlayingFromS3() {
 // 回一次 CHANGED，車機收到後會再重新註冊。
 static void sendDueRnNotifications() {
   if (g_rn_track_registered && g_rn_track_due) {
-    esp_avrc_rn_param_t param;
-    memset(&param, 0, sizeof(param));
-    np_fill_elm_id(g_np, param.elm_id);
-    esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_TRACK_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &param);
+    uint8_t uid[8];
+    np_fill_elm_id(g_np, uid);
+    avrc_rn_send(ESP_AVRC_RN_TRACK_CHANGE, true, uid, 0, 0);
     g_rn_track_registered = false;
     g_rn_track_due = false;
   }
   if (g_rn_status_registered && g_rn_status_due) {
-    esp_avrc_rn_param_t param;
-    memset(&param, 0, sizeof(param));
-    param.playback = (esp_avrc_playback_stat_t)g_reported_playback;
-    esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_STATUS_CHANGE, ESP_AVRC_RN_RSP_CHANGED, &param);
+    avrc_rn_send(ESP_AVRC_RN_PLAY_STATUS_CHANGE, true, nullptr, g_reported_playback, 0);
     g_rn_status_registered = false;
     g_rn_status_due = false;
   }
@@ -993,10 +995,7 @@ static void sendDueRnNotifications() {
   bool intervalDue = g_reported_playback == ESP_AVRC_PLAYBACK_PLAYING && g_np.state == 'P' &&
                       (nowMs - g_rn_pos_last_sent_ms) >= g_rn_pos_interval_s * 1000;
   if (g_rn_pos_registered && (intervalDue || g_rn_pos_force_due)) {
-    esp_avrc_rn_param_t param;
-    memset(&param, 0, sizeof(param));
-    param.play_pos = np_position_now(g_np, nowMs);
-    esp_avrc_tg_send_rn_rsp(ESP_AVRC_RN_PLAY_POS_CHANGED, ESP_AVRC_RN_RSP_CHANGED, &param);
+    avrc_rn_send(ESP_AVRC_RN_PLAY_POS_CHANGED, true, nullptr, 0, np_position_now(g_np, nowMs));
     g_rn_pos_registered = false;
     g_rn_pos_force_due = false;
     g_rn_pos_last_sent_ms = nowMs;
