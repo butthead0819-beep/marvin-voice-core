@@ -208,7 +208,12 @@ class SukiTTS:
         # 4. 移除殘留的符號與多餘空白
         cleaned = re.sub(r'[\*\[\]\(\)（）]', '', cleaned)
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        
+
+        # 4.5 停頓標點保留：白名單 regex 會刪掉 ⋯ / 破折號 / 波浪號，先換成會產生停頓的等價標點
+        cleaned = cleaned.replace("⋯", "…")              # U+22EF → U+2026，之後沿用既有 … → 。。。 路徑
+        cleaned = re.sub(r"[—―─]+", "，", cleaned)        # 破折號（U+2014/U+2015/U+2500，連續視為一個）→ 逗號
+        cleaned = re.sub(r"[～~]+", "，", cleaned)         # 波浪號（全形/半形，連續視為一個）→ 逗號
+
         # 5. 🛡️ [Operation Voice Armor] 終極字元清洗
         # Unicode 正規化，消除隱藏控制字元
         cleaned = unicodedata.normalize('NFKC', cleaned)
