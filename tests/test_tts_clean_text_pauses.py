@@ -52,6 +52,7 @@ def _make_tts(monkeypatch, key="fake-key", region="eastasia"):
         ("這首歌的旋律當然後來也被很多人翻唱過", "這首歌的旋律當然後來也被很多人翻唱過"),
         ("我最近一直重複在聽《因為愛情》的那段前奏", "我最近一直重複在聽因為愛情的那段前奏"),
         ("Hello! How are you?", "Hello! How are you?"),
+        ("你好嗎? Hello Kitty", "你好嗎？ Hello Kitty"),  # 中英混排：長停頓後的空白要留著
         ("大概3~5分鐘", "大概3到5分鐘"),
         ("大概3～5分鐘", "大概3到5分鐘"),
     ],
