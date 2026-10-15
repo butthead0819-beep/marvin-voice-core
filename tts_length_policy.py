@@ -35,10 +35,10 @@ _MIN_SENTENCE_FRACTION = 1 / 3
 _BUDGET_CEIL_TOLERANCE  = 2
 
 
-def _budget_chars(limit_sec: float, est_duration_fn: Callable[[str], float]) -> int:
-    """反推 budget 字數：用 estimator 對長度 100 字採樣得平均秒/字。"""
-    sample = "字" * 100
-    per_char = est_duration_fn(sample) / 100 if est_duration_fn(sample) > 0 else 0.3
+def _budget_chars(limit_sec: float, est_duration_fn: Callable[[str], float], text: str) -> int:
+    """反推 budget 字數：用這段文字本身的平均秒/字——句號多（edge 每個 。≈1.5s）的文字預算自動變少。"""
+    est = est_duration_fn(text)
+    per_char = est / len(text) if est > 0 else 0.3
     return max(1, int(limit_sec / per_char))
 
 
@@ -68,7 +68,7 @@ def truncate_for_tts(
     if estimate_duration_fn(text) <= limit:
         return text, False
 
-    budget = _budget_chars(limit, estimate_duration_fn)
+    budget = _budget_chars(limit, estimate_duration_fn, text)
 
     # Step 0：budget 內由右到左找最後一個句尾符號，保留符號＋收尾引號整段切下
     for i in range(min(budget, len(text) - 1), 0, -1):

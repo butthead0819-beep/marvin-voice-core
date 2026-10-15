@@ -204,3 +204,14 @@ def test_unknown_task_unchanged():
     out, was_cut = truncate_for_tts(text, "no_such_task", _est)
     assert out == text
     assert was_cut is False
+
+
+def test_dj_story_budget_accounts_for_sentence_pauses():
+    """句號多的口白（edge 每個 。≈1.5s）截完也不能超過上限——預算要用這段文字本身換算每字秒數。"""
+    def _est_with_pauses(text: str) -> float:
+        return len(text.replace("。", "")) * 0.3 + text.count("。") * 1.5
+    text = "這首歌是他二十歲寫的。" * 6
+    out, was_cut = truncate_for_tts(text, "dj_story", _est_with_pauses)
+    assert was_cut
+    assert _est_with_pauses(out) <= LIMITS["dj_story"]
+    assert out.endswith("。")

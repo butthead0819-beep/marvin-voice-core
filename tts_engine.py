@@ -125,6 +125,33 @@ def peak_normalize_wav_bytes(wav_bytes: bytes, target_peak_ratio: float = 0.9) -
     except Exception:
         return wav_bytes
 
+# 防「一路講到底」：LLM 常寫出 15 字以上沒標點的長串（尤其夾歌名《》時），edge 會一口氣念完。
+# 只在高把握的位置補逗號（歌名《》之後），找不到就不動——寧可不補也不要切錯詞。
+# 在 2,676 句實際口白上試過：「」『』後補逗號常切錯（『兒童安全座椅』，抱怨聲），所以只認 》；
+# 強連接詞（然後/不過…）子字串比對會切斷常用詞（當，然後來／再適合，不過了），且只貢獻 ~1% 已拔。
+_BREATH_MAX_RUN = 14
+# get_estimated_duration 每個句中長停頓（。！？ 實測 ≈1.5s）的估算秒數，外層還會 ×1.2
+_LONG_PAUSE_EST_S = 1.25
+_BREATH_SPLIT_RE = re.compile(r"([，,。.！!？?；;：:、…⋯—―─～~\s]+)")
+_BREATH_STRIP_RE = re.compile(r"[《》「」『』【】\"'()（）*]")
+_BREATH_TITLE_END_RE = re.compile(r"》(?=[^的之了嗎吧呢啊》」』，,]{3,})")
+
+
+def _breath_comma_one(seg: str) -> str:
+    for m in _BREATH_TITLE_END_RE.finditer(seg):
+        if m.start() >= 4:
+            return seg[:m.end()] + "，" + seg[m.end():]
+    return seg
+
+
+def _insert_breath_commas(text: str) -> str:
+    parts = _BREATH_SPLIT_RE.split(text)
+    for i in range(0, len(parts), 2):  # 偶數 index 是片段，奇數是分隔標點
+        if len(_BREATH_STRIP_RE.sub("", parts[i])) > _BREATH_MAX_RUN:
+            parts[i] = _breath_comma_one(parts[i])
+    return "".join(parts)
+
+
 class SukiTTS:
     """
     Suki 專屬神經語音引擎 (Operation Neural Voice)
@@ -208,17 +235,24 @@ class SukiTTS:
         # 4. 移除殘留的符號與多餘空白
         cleaned = re.sub(r'[\*\[\]\(\)（）]', '', cleaned)
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        
+
+        # 4.5 停頓標點保留：白名單 regex 會刪掉 ⋯ / 破折號 / 波浪號，先換成會產生停頓的等價標點
+        cleaned = cleaned.replace("⋯", "…")              # U+22EF → U+2026，之後 NFKC 成 ... 再收成單一 。（見函式尾）
+        cleaned = re.sub(r"[—―─]+", "，", cleaned)        # 破折號（U+2014/U+2015/U+2500，連續視為一個）→ 逗號
+        cleaned = re.sub(r"(?<=\d)\s*[～~]+\s*(?=\d)", "到", cleaned)  # 數字範圍「3~5分鐘」→「3到5分鐘」
+        cleaned = re.sub(r"[～~]+", "，", cleaned)         # 其餘波浪號（全形/半形，連續視為一個）→ 逗號
+
+        # 4.6 防一路講到底：超過 14 字沒標點的片段，在安全位置補一個逗號（見 _insert_breath_commas）
+        cleaned = _insert_breath_commas(cleaned)
+
         # 5. 🛡️ [Operation Voice Armor] 終極字元清洗
         # Unicode 正規化，消除隱藏控制字元
         cleaned = unicodedata.normalize('NFKC', cleaned)
 
-        # 🚀 [Punctuation Normalization] 將全形標點替換為半形 (English)，以優化 Edge TTS 停頓感
+        # 🚀 [Punctuation Normalization] 短停頓標點轉半形（全形半形停頓一樣 ≈0.4s）。
+        # 。！？ 刻意不轉：轉半形會把 ≈1.5s 句間停頓砍成 ≈0.4s（量測見 docs/tts_breath_plan.md）
         punctuation_map = {
             '，': ',',
-            '。': '.',
-            '！': '!',
-            '？': '?',
             '；': ';',
             '：': ':',
             '「': '"',
@@ -230,16 +264,19 @@ class SukiTTS:
         for zh_punc, en_punc in punctuation_map.items():
             cleaned = cleaned.replace(zh_punc, en_punc)
         
-        # 僅保留核心字元集：中、日、英、數與基本標點（半形為主），移除 Emoji 與不支援的符號
-        # 🧪 [Bug Fix] 此處 regex 會殺掉全形 。，故呼吸標記必須在此之後或在此排除
-        cleaned = re.sub(r'[^\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ffA-Za-z0-9,.\!?;:"\'\-\s]', '', cleaned)
-        
-        # 🚀 [SSML Breathing] 最後一步：將 ... 或 … 替換為三個全形句號。
-        # 因為 Step 5 已經清除了其他無用符號，現在在這裡安全地注入停頓標記
-        cleaned = cleaned.replace("...", "。。。")
-        cleaned = cleaned.replace("…", "。。。")
-        
-        return cleaned.strip()
+        # 僅保留核心字元集：中、日、英、數與基本標點（含長停頓用的全形 。！？），移除 Emoji 與不支援的符號
+        cleaned = re.sub(r'[^\u4e00-\u9fff\u3040-\u309f\u30a0-\u30ffA-Za-z0-9,.\!?;:"\'\-\s。！？]', '', cleaned)
+
+        # 🚀 [停頓] edge 只有兩檔停頓：全形 。！？ ≈1.5s、其餘標點 ≈0.4s（量測見 docs/tts_breath_plan.md）
+        # 刪節號 → 單一 。（停頓上限 1.5s，避免聽眾以為講完了）
+        cleaned = re.sub(r"\.{2,}", "。", cleaned)
+        # 中文後的半形 !?（NFKC 會把全形轉半形）轉回全形，連續的只留第一個；英文句子不動（英文聲音沒量過）
+        cleaned = re.sub(r"(?<=[\u4e00-\u9fff\u3040-\u30ff])([!?])[!?]*", lambda m: "！" if m.group(1) == "!" else "？", cleaned)
+        # 連續長停頓只留第一個（「？！」「。。」「。,」→ 一個），上限同樣 1.5s；不吃空白（英文字會黏在一起）
+        cleaned = re.sub(r"([。！？])[。！？,]*", r"\1", cleaned)
+
+        # 開頭的長停頓沒意義（「…好吧」→「。好吧」），去掉
+        return cleaned.strip().lstrip("。！？,").strip()
 
     def apply_ssml_breathing(self, text: str) -> str:
         """ [Deprecated] 已併入 _clean_text。為了相容性暫時保留，直接呼叫 _clean_text """
@@ -534,9 +571,10 @@ class SukiTTS:
         
         chinese_chars = len(re.findall(r'[\u4e00-\u9fa5]', clean_text))
         english_chars = len(re.findall(r'[a-zA-Z0-9]', clean_text))
-        breaks = text.count("...") + text.count("…")
-        
-        duration = (chinese_chars * 0.25) + (english_chars * 0.08) + (breaks * 0.8)
+        # 句中長停頓（。！？ ≈1.5s；刪節號已在 _clean_text 轉成 。）；句尾那個 edge 本來就會補靜音，不算
+        long_pauses = len(re.findall(r"[。！？]", clean_text.rstrip("。！？\"' ").rstrip("。！？")))
+
+        duration = (chinese_chars * 0.25) + (english_chars * 0.08) + (long_pauses * _LONG_PAUSE_EST_S)
         return duration * 1.2
 
 # 單體測試區塊
