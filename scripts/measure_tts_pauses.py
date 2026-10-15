@@ -62,11 +62,18 @@ def _detect_silences(path: Path) -> str:
 async def _synthesize(text: str, out_path: Path) -> None:
     import edge_tts
 
-    comm = edge_tts.Communicate(text, voice=VOICE, rate=RATE, pitch=PITCH)
-    with open(out_path, "wb") as f:
-        async for chunk in comm.stream():
-            if chunk["type"] == "audio":
-                f.write(chunk["data"])
+    # edge 約每 16~20 次會隨機回 NoAudioReceived（同句重送就好），重試 3 次
+    for attempt in range(3):
+        try:
+            comm = edge_tts.Communicate(text, voice=VOICE, rate=RATE, pitch=PITCH)
+            with open(out_path, "wb") as f:
+                async for chunk in comm.stream():
+                    if chunk["type"] == "audio":
+                        f.write(chunk["data"])
+            return
+        except edge_tts.exceptions.NoAudioReceived:
+            if attempt == 2:
+                raise
 
 
 def main() -> None:
