@@ -39,3 +39,19 @@ def test_mid_sentence_pause_counted(monkeypatch):
 def test_ellipsis_becomes_mid_sentence_pause(monkeypatch):
     tts = _make_tts(monkeypatch)
     assert tts.get_estimated_duration("好⋯⋯吧") == pytest.approx((2 * 0.25 + 1.25) * 1.2)
+
+
+def test_trailing_pause_inside_closing_quote_not_counted(monkeypatch):
+    # 」 會被清成 "，句尾 。 被引號擋住也不能算成句中停頓
+    tts = _make_tts(monkeypatch)
+    assert tts.get_estimated_duration("好吧。」") == pytest.approx(2 * 0.25 * 1.2)
+
+
+def test_mid_sentence_question_counted(monkeypatch):
+    tts = _make_tts(monkeypatch)
+    assert tts.get_estimated_duration("好？吧") == pytest.approx((2 * 0.25 + 1.25) * 1.2)
+
+
+def test_leading_ellipsis_not_counted(monkeypatch):
+    tts = _make_tts(monkeypatch)
+    assert tts.get_estimated_duration("…好吧") == pytest.approx(2 * 0.25 * 1.2)

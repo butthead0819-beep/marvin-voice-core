@@ -32,6 +32,8 @@
 
 ## Phase 1：修 `_clean_text` 吃掉停頓標點（TDD）
 
+> ⚠️ 本段期望值／規則文字已被文末「實作結果與量測」的 10/15 定案取代；以測試為準。
+
 ### 改動（只動 `tts_engine.py` 的 `_clean_text`）
 
 在 **step 4 之後、step 5 的 `unicodedata.normalize('NFKC', ...)` 之前**，插入一步：
@@ -100,6 +102,8 @@ cleaned = re.sub(r"[～~]+", "，", cleaned)         # 波浪號（全形/半形
 ---
 
 ## Phase 3：DJ 口白 prompt 加口語節奏規則
+
+> ⚠️ 本段期望值／規則文字已被文末「實作結果與量測」的 10/15 定案取代；以測試為準。
 
 範圍**只限 DJ 組**（`gemini_router_content.py` 約 L938 的 `_DJ_EVENT_TYPES`，is_dj 分支）。
 馬文聊天 / 其他 SPOKEN_PURPOSES 本次不動（各自有字數、押韻、格式約束，要個別評估）。

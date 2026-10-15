@@ -46,6 +46,9 @@ def _make_tts(monkeypatch, key="fake-key", region="eastasia"):
         ("我一直很喜歡《晴天》的那段前奏跟副歌旋律", "我一直很喜歡晴天的那段前奏跟副歌旋律"),
         ("所以我一直覺得這首歌真的很適合現在", "所以我一直覺得這首歌真的很適合現在"),
         ("下一首《夜曲》然後換你", "下一首夜曲然後換你"),
+        ("…好吧", "好吧"),
+        ("我一直在想這件事所以就先聽吧", "我一直在想這件事所以就先聽吧"),
+        ("我一直在想這件事所以就先聽聽吧", "我一直在想這件事,所以就先聽聽吧"),
     ],
 )
 def test_clean_text_preserves_pause_punctuation(monkeypatch, text, expected):

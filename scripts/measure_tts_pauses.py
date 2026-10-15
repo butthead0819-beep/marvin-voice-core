@@ -29,16 +29,17 @@ _SILENCE_END_RE = re.compile(r"silence_end:\s*([0-9.]+)\s*\|\s*silence_duration:
 
 def parse_silences(stderr: str, total_dur: float) -> list[float]:
     """從 ffmpeg silencedetect stderr 解析句中（排除開頭/結尾）靜音段的長度。"""
-    starts = [float(m.group(1)) for m in _SILENCE_START_RE.finditer(stderr)]
-    ends = [(float(m.group(1)), float(m.group(2))) for m in _SILENCE_END_RE.finditer(stderr)]
-
+    # 依行序配對：每個 end 配它前面最近的 start（缺行時不會整串錯位；只有 start 沒 end＝延伸到檔尾，丟掉）
     durations = []
-    for start, (end, duration) in zip(starts, ends):
-        if start <= 0.05:
-            continue
-        if end >= total_dur - 0.05:
-            continue
-        durations.append(duration)
+    start = None
+    for line in stderr.splitlines():
+        if m := _SILENCE_START_RE.search(line):
+            start = float(m.group(1))
+        elif (m := _SILENCE_END_RE.search(line)) and start is not None:
+            end, duration = float(m.group(1)), float(m.group(2))
+            if start > 0.05 and end < total_dur - 0.05:
+                durations.append(duration)
+            start = None
     return durations
 
 
