@@ -28,14 +28,14 @@
  *   GPIO2 LED：恆亮=已連線 / 快閃=配對中未連線 / 慢閃=重連中未連線
  *
  * 燒錄指令：
- *   arduino-cli compile -b esp32:esp32:esp32 --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=AVRC_BldResponse -Wl,--wrap=BTA_AvMetaRsp -Wl,--wrap=AVRC_VendorRsp -Wl,--wrap=btc_avrc_tg_rn_evt_supported -Wl,--wrap=btc_avrc_tg_get_rn_supported_evt" firmware/bt_bridge
+ *   arduino-cli compile -b esp32:esp32:esp32 --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=AVRC_BldResponse -Wl,--wrap=BTA_AvMetaRsp -Wl,--wrap=AVRC_VendorRsp -Wl,--wrap=btc_avrc_tg_rn_evt_supported -Wl,--wrap=btc_avrc_tg_get_rn_supported_evt -Wl,--wrap=AVRC_ParsCommand" firmware/bt_bridge
  *   arduino-cli upload  -b esp32:esp32:esp32 -p /dev/cu.usbserial-0001 firmware/bt_bridge
  *
  *   ⚠️ 少了 --wrap 旗標會連結失敗（__real_AVRC_BldResponse/__real_BTA_AvMetaRsp/
  *   __real_AVRC_VendorRsp/__real_btc_avrc_tg_rn_evt_supported/
- *   __real_btc_avrc_tg_get_rn_supported_evt 找不到）——這是刻意的（見 avrc_meta_wrap.cpp），
- *   防止忘記加旗標卻燒進去一個靜默不顯示曲名、或車機訂閱不到 TRACK/PLAY_STATUS/POS
- *   通知的版本。
+ *   __real_btc_avrc_tg_get_rn_supported_evt/__real_AVRC_ParsCommand 找不到）——這是刻意的
+ *   （見 avrc_meta_wrap.cpp），防止忘記加旗標卻燒進去一個靜默不顯示曲名、或車機訂閱不到
+ *   TRACK/PLAY_STATUS/POS 通知的版本。
  *
  * AVRCP 曲名診斷 DIAG 代碼（車機沒顯示曲名時用來分辨卡在哪一段）：
  *   "M ok"   = pollNowPlayingFromS3 第一次從 S3 解析出曲目資訊成功（開機後僅記一次）。
@@ -62,6 +62,17 @@
  *   "T X<evt> sEE/sEB" = WROOM 想送某事件的通知但沒送出：EE＝btc 的全域狀態顯示車機當下
  *              沒註冊這個事件（或還沒連線／結構對不上），EB＝組包失敗（AVRC_BldResponse
  *              沒回成功或沒拿到封包）。
+ *   "Q20 n<num_attr> <id>,<id>,..." = 車機第一次送出的 GetElementAttributes 請求內容（經
+ *              AVRC_ParsCommand 解析），num_attr 後最多列 8 個 attribute id（十進位）；
+ *              num_attr 為 0 時只有 "Q20 n0"。
+ *   "P20 len=<n>" + "P0/P1/P2 <hex>" = WROOM 第一次回給車機的 GetElementAttributes 回應
+ *              原始 bytes（len＝BT_HDR 的 len，P0/P1/P2 每行 12 bytes 的小寫 hex，依序接續）。
+ *   "Z q=<n> r1=<n> r2=<n> r5=<n> n1=<n> n2=<n> n5=<n>" = 每 30 秒（A2DP 連線中才送）的累計
+ *              計數：q＝車機送出的 GetElementAttributes 請求總數；r1/r2/r5＝車機對
+ *              PLAY_STATUS_CHANGE(1)/TRACK_CHANGE(2)/PLAY_POS_CHANGED(5) 送
+ *              RegisterNotification 的累計次數；n1/n2/n5＝WROOM 自己組包成功送出對應事件
+ *              通知的累計次數。r 比 n 少很多＝車機沒收到我們送的 CHANGED 通知；q 很大但 r
+ *              不增＝車機只是一直重問曲名，沒有再訂閱。
  */
 
 #include "BluetoothA2DPSource.h"
@@ -153,6 +164,12 @@ static volatile bool g_rn_status_due = false;    // 播放狀態變了，待送 
 static volatile bool g_rn_pos_force_due = false; // 換歌時位置也要立刻跟著送一次
 static volatile uint32_t g_rn_pos_interval_s = 1;
 static uint32_t g_rn_pos_last_sent_ms = 0;
+
+// ---- 車機對三種事件送 RegisterNotification 的累計次數（診斷用 Z 行，見 diagElemProbe）：
+// av_hdl_avrc_tg_evt（BT app task）寫、diagElemProbe（loop()）讀，單純累加不需要鎖。----
+static volatile uint32_t g_rn_reg_cnt_status = 0;  // event 1 PLAY_STATUS_CHANGE
+static volatile uint32_t g_rn_reg_cnt_track = 0;   // event 2 TRACK_CHANGE
+static volatile uint32_t g_rn_reg_cnt_pos = 0;     // event 5 PLAY_POS_CHANGED
 
 // ---- 回報給車機的播放狀態＝車機最後一次下的方向盤指令（WROOM 只要 A2DP 連著就一直送
 // 音訊，沒有自己的播放/暫停狀態）。on_wheel_key（BT app task）寫，av_hdl_avrc_tg_evt
@@ -408,6 +425,13 @@ class BridgeSource : public BluetoothA2DPSource {
   void av_hdl_avrc_tg_evt(uint16_t event, void* p_param) override {
     if (event == ESP_AVRC_TG_REGISTER_NOTIFICATION_EVT) {
       auto* rc = (esp_avrc_tg_cb_param_t*)p_param;
+      if (rc->reg_ntf.event_id == ESP_AVRC_RN_PLAY_STATUS_CHANGE) {
+        g_rn_reg_cnt_status++;
+      } else if (rc->reg_ntf.event_id == ESP_AVRC_RN_TRACK_CHANGE) {
+        g_rn_reg_cnt_track++;
+      } else if (rc->reg_ntf.event_id == ESP_AVRC_RN_PLAY_POS_CHANGED) {
+        g_rn_reg_cnt_pos++;
+      }
       if (rc->reg_ntf.event_id < 16 && !(s_rn_event_seen & (1u << rc->reg_ntf.event_id))) {
         s_rn_event_seen |= (1u << rc->reg_ntf.event_id);
         char d[DIAG_TEXT];
@@ -424,7 +448,7 @@ class BridgeSource : public BluetoothA2DPSource {
         case ESP_AVRC_RN_TRACK_CHANGE: {
           g_rn_track_registered = true;
           uint8_t uid[8];
-          np_fill_elm_id(np, uid);
+          np_track_uid(np, uid);
           avrc_rn_send(ESP_AVRC_RN_TRACK_CHANGE, false, uid, 0, 0);
           return;
         }
@@ -882,17 +906,6 @@ bool ssid_match_cb(const char* ssid, esp_bd_addr_t address, int rssi) {
 
 // ---- 方向盤按鍵：車機 AVRCP passthrough → 函式庫 callback（BT app task）→ 這裡只推
 // 進 ring，不做任何播放控制（第二刀才接），交給 loop() 的 drainWheelKeys() 轉送 S3。----
-// AVRCP TRACK_CHANGE 用的 elm_id：np.valid 且 track_id 非全 0 才回真 track_id，否則回
-// 「尚未選曲」的全 FF（NowPlaying 預設建構值 track_id 全 0，不能直接當真 track_id 送出）。
-static void np_fill_elm_id(const NowPlaying& np, uint8_t out[8]) {
-  static const uint8_t kZero8[8] = {0};
-  if (np.valid && memcmp(np.track_id, kZero8, 8) != 0) {
-    memcpy(out, np.track_id, 8);
-  } else {
-    memset(out, 0xFF, 8);
-  }
-}
-
 static void on_wheel_key(uint8_t key, bool isReleased) {
   if (!isReleased) {
     ds_add_key(g_sum, key);
@@ -981,7 +994,7 @@ static void pollNowPlayingFromS3() {
 static void sendDueRnNotifications() {
   if (g_rn_track_registered && g_rn_track_due) {
     uint8_t uid[8];
-    np_fill_elm_id(g_np, uid);
+    np_track_uid(g_np, uid);
     avrc_rn_send(ESP_AVRC_RN_TRACK_CHANGE, true, uid, 0, 0);
     g_rn_track_registered = false;
     g_rn_track_due = false;
@@ -1058,6 +1071,68 @@ static void diagLogPduTrace() {
   if (!s_caps_logged && pt.caps_seen) {
     s_caps_logged = true;
     diag_loop_add(pt_format_caps(pt, d, sizeof(d)));
+  }
+}
+
+// DIAG：GetElementAttributes 車機請求內容（Q20）、WROOM 回應原始 bytes（P20/P0-P2，各開機
+// 後只記一次）、每 30 秒（A2DP 連線中）一筆的訂閱/通知累計計數（Z）。見 bt_bridge.ino 檔頭
+// "Q20"/"P20"/"Z" 說明。這裡只送遙測（uart_diag），不寫 NVS。
+static bool s_elem_req_logged = false;
+static bool s_elem_rsp_logged = false;
+static uint32_t s_elemz_last_ms = 0;
+static void diagElemProbe() {
+  ElemProbe p;
+  avrc_elem_probe_get(p);
+  char d[DIAG_TEXT];
+
+  if (!s_elem_req_logged && p.req_captured) {
+    s_elem_req_logged = true;
+    int n = snprintf(d, sizeof(d), "Q20 n%d", (int)p.req_num_attr);
+    if (n < 0) n = 0;
+    if (n > (int)sizeof(d) - 1) n = (int)sizeof(d) - 1;
+    uint8_t take = p.req_num_attr > 8 ? 8 : p.req_num_attr;
+    for (uint8_t i = 0; i < take && n < (int)sizeof(d) - 1; i++) {
+      int m = snprintf(d + n, sizeof(d) - n, "%s%d", i == 0 ? " " : ",", (int)p.req_attrs[i]);
+      if (m < 0) break;
+      n += m;
+      if (n > (int)sizeof(d) - 1) n = (int)sizeof(d) - 1;
+    }
+    uart_diag(millis() / 1000, d);
+  }
+
+  if (!s_elem_rsp_logged && p.rsp_captured) {
+    s_elem_rsp_logged = true;
+    snprintf(d, sizeof(d), "P20 len=%u", (unsigned)p.rsp_len);
+    uart_diag(millis() / 1000, d);
+    for (uint8_t k = 0; k < 3; k++) {
+      uint16_t off = (uint16_t)(k * 12);
+      if (off >= p.rsp_n) break;
+      uint16_t take = (uint16_t)(p.rsp_n - off);
+      if (take > 12) take = 12;
+      char hex[25];
+      for (uint16_t i = 0; i < take; i++) snprintf(hex + i * 2, 3, "%02x", p.rsp_bytes[off + i]);
+      hex[take * 2] = '\0';
+      snprintf(d, sizeof(d), "P%d %s", (int)k, hex);
+      uart_diag(millis() / 1000, d);
+    }
+  }
+
+  uint32_t nowMs = millis();
+  if (a2dp_source.is_connected() && (nowMs - s_elemz_last_ms >= 30000)) {
+    s_elemz_last_ms = nowMs;
+    PduTrace pt;
+    avrc_pdu_trace_get(pt);
+    uint16_t n1 = 0, n2 = 0, n5 = 0;
+    for (uint8_t i = 0; i < pt.n; i++) {
+      if (pt.e[i].src != 'N') continue;
+      if (pt.e[i].pdu == ESP_AVRC_RN_PLAY_STATUS_CHANGE) n1 = pt.e[i].cnt;
+      else if (pt.e[i].pdu == ESP_AVRC_RN_TRACK_CHANGE) n2 = pt.e[i].cnt;
+      else if (pt.e[i].pdu == ESP_AVRC_RN_PLAY_POS_CHANGED) n5 = pt.e[i].cnt;
+    }
+    snprintf(d, sizeof(d), "Z q=%lu r1=%lu r2=%lu r5=%lu n1=%u n2=%u n5=%u", (unsigned long)p.req_cnt,
+             (unsigned long)g_rn_reg_cnt_status, (unsigned long)g_rn_reg_cnt_track,
+             (unsigned long)g_rn_reg_cnt_pos, (unsigned)n1, (unsigned)n2, (unsigned)n5);
+    uart_diag(millis() / 1000, d);
   }
 }
 
@@ -1140,6 +1215,7 @@ void loop() {
   drainWheelKeys();
   diagLogFirstAvrcHits();
   diagLogPduTrace();
+  diagElemProbe();
 
   // 統計摘要存 NVS：有變化且距上次存 >=3s，或每 60s 定期存一次（更新 uptime）。
   {

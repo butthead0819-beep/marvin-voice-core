@@ -44,11 +44,18 @@ typedef uint8_t tAVRC_UID[8];
 typedef union { uint8_t play_status; tAVRC_UID track; uint32_t play_pos; uint8_t volume; uint8_t _pad[20]; } tAVRC_NOTIF_RSP_PARAM;
 typedef struct { uint8_t pdu; tAVRC_STS status; uint8_t opcode; uint8_t event_id; tAVRC_NOTIF_RSP_PARAM param; } tAVRC_REG_NOTIF_RSP;
 typedef union { uint8_t pdu; tAVRC_RSP rsp; tAVRC_GET_ELEM_ATTRS_RSP get_elem_attrs; tAVRC_GET_PLAY_STATUS_RSP get_play_status; tAVRC_GET_CAPS_RSP get_caps; tAVRC_REG_NOTIF_RSP reg_notif; uint8_t _pad[64]; } tAVRC_RESPONSE;
+// GetElementAttributes(0x20) 的車機請求結構（只讀，給 __wrap_AVRC_ParsCommand 探針用）。
+typedef struct { uint8_t pdu; tAVRC_STS status; uint8_t opcode; uint8_t num_attr; uint32_t attrs[8]; } tAVRC_GET_ELEM_ATTRS_CMD;
+typedef union { uint8_t pdu; tAVRC_GET_ELEM_ATTRS_CMD get_elem_attrs; uint8_t _pad[64]; } tAVRC_COMMAND;
+// BT_HDR（bt_target.h）：payload 在 data+offset，長度 len（只讀，給探針用）。
+typedef struct { uint16_t event; uint16_t len; uint16_t offset; uint16_t layer_specific; uint8_t data[1]; } BT_HDR;
 
 static_assert(offsetof(tAVRC_GET_CAPS_RSP, param) == 8, "tAVRC_GET_CAPS_RSP 欄位配置跟 IDF 5.5.4 不符");
 static_assert(offsetof(tAVRC_MSG_VENDOR, p_vendor_data) == 8, "tAVRC_MSG_VENDOR 欄位配置跟 IDF 5.5.4 不符");
 static_assert(offsetof(tAVRC_MSG_VENDOR, vendor_len) == 12, "tAVRC_MSG_VENDOR 欄位配置跟 IDF 5.5.4 不符");
 static_assert(offsetof(tAVRC_REG_NOTIF_RSP, param) == 4, "tAVRC_REG_NOTIF_RSP 欄位配置跟 IDF 5.5.4 不符");
+static_assert(offsetof(tAVRC_GET_ELEM_ATTRS_CMD, attrs) == 4, "tAVRC_GET_ELEM_ATTRS_CMD 欄位配置跟 IDF 5.5.4 不符");
+static_assert(offsetof(BT_HDR, data) == 8, "BT_HDR 欄位配置跟 IDF 5.5.4 不符");
 
 static const uint8_t  AVRC_PDU_GET_ELEMENT_ATTR = 0x20;
 static const uint8_t  AVRC_PDU_GET_PLAY_STATUS  = 0x30;
@@ -77,6 +84,7 @@ extern "C" void __real_BTA_AvMetaRsp(uint8_t rc_handle, uint8_t label, uint8_t r
 extern "C" uint16_t __real_AVRC_VendorRsp(uint8_t handle, uint8_t label, tAVRC_MSG_VENDOR *p_msg);
 extern "C" bool __real_btc_avrc_tg_rn_evt_supported(uint8_t event_id);
 extern "C" uint16_t __real_btc_avrc_tg_get_rn_supported_evt(void);
+extern "C" tAVRC_STS __real_AVRC_ParsCommand(void* p_msg, tAVRC_COMMAND* p_result, uint8_t* p_buf, uint16_t buf_len);
 
 // btc_avrc.c 的全域 btc_rc_cb_ptr（AVRC_DYNAMIC_MEMORY=TRUE 時是指標）；見 rc_cb_view.h。
 extern "C" void* btc_rc_cb_ptr;
@@ -101,6 +109,18 @@ static bool s_upgrade_next = false;
 static PduTrace s_pt;
 static portMUX_TYPE s_pt_mux = portMUX_INITIALIZER_UNLOCKED;
 
+// ---- GetElementAttributes 請求/回應探針（診斷用，不影響任何行為）----
+// 獨立的 mux：跟上面兩份資料無關，不共用避免臨界區互相拖長。
+static portMUX_TYPE s_probe_mux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t s_req_cnt = 0;
+static bool s_req_captured = false;
+static uint8_t s_req_num_attr = 0;
+static uint8_t s_req_attrs[8] = {0};
+static bool s_rsp_captured = false;
+static uint16_t s_rsp_len = 0;
+static uint8_t s_rsp_n = 0;
+static uint8_t s_rsp_bytes[36] = {0};
+
 // 連結防呆：沒加 --wrap 旗標時 __wrap_* 沒人呼叫、會被 gc-sections 整段丟掉，連帶
 // 對 __real_* 的引用也消失 → 照樣連結成功、燒進去一個靜默不顯示曲名的版本（10/13 實測）。
 // 這裡從一定會被保留的 avrc_meta_set（loop 每筆都呼叫）讀一次 volatile 指標表，
@@ -108,6 +128,7 @@ static portMUX_TYPE s_pt_mux = portMUX_INITIALIZER_UNLOCKED;
 static void* const volatile s_force_wrap_link[] = {
   (void*)&__real_AVRC_BldResponse, (void*)&__real_BTA_AvMetaRsp, (void*)&__real_AVRC_VendorRsp,
   (void*)&__real_btc_avrc_tg_rn_evt_supported, (void*)&__real_btc_avrc_tg_get_rn_supported_evt,
+  (void*)&__real_AVRC_ParsCommand,
 };
 
 // RegisterNotification 自己組包送出失敗的次數（車機沒註冊/結構對不上/組包失敗）。
@@ -135,6 +156,39 @@ void avrc_pdu_trace_get(PduTrace& out) {
   portENTER_CRITICAL(&s_pt_mux);
   out = s_pt;
   portEXIT_CRITICAL(&s_pt_mux);
+}
+
+void avrc_elem_probe_get(ElemProbe& out) {
+  portENTER_CRITICAL(&s_probe_mux);
+  out.req_cnt = s_req_cnt;
+  out.req_captured = s_req_captured;
+  out.req_num_attr = s_req_num_attr;
+  memcpy(out.req_attrs, s_req_attrs, sizeof(out.req_attrs));
+  out.rsp_captured = s_rsp_captured;
+  out.rsp_len = s_rsp_len;
+  out.rsp_n = s_rsp_n;
+  memcpy(out.rsp_bytes, s_rsp_bytes, sizeof(out.rsp_bytes));
+  portEXIT_CRITICAL(&s_probe_mux);
+}
+
+extern "C" tAVRC_STS __wrap_AVRC_ParsCommand(void* p_msg, tAVRC_COMMAND* p_result, uint8_t* p_buf, uint16_t buf_len) {
+  tAVRC_STS st = __real_AVRC_ParsCommand(p_msg, p_result, p_buf, buf_len);
+  if (p_result != nullptr && p_result->pdu == AVRC_PDU_GET_ELEMENT_ATTR) {
+    portENTER_CRITICAL(&s_probe_mux);
+    s_req_cnt++;
+    if (!s_req_captured && st == AVRC_STS_NO_ERROR) {
+      uint8_t num_attr = p_result->get_elem_attrs.num_attr;
+      uint8_t take = num_attr > 8 ? 8 : num_attr;
+      for (uint8_t i = 0; i < take; i++) {
+        uint32_t a = p_result->get_elem_attrs.attrs[i];
+        s_req_attrs[i] = (uint8_t)(a > 0xFF ? 0xFF : a);
+      }
+      s_req_num_attr = num_attr;
+      s_req_captured = true;
+    }
+    portEXIT_CRITICAL(&s_probe_mux);
+  }
+  return st;
 }
 
 extern "C" tAVRC_STS __wrap_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_rsp, void **pp_pkt) {
@@ -205,6 +259,18 @@ extern "C" tAVRC_STS __wrap_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_r
     if (result == AVRC_STS_NO_ERROR) {
       s_upgrade_next = true;
       if (has_title) s_hits_elem++; else s_unserved_elem++;
+      if (!s_rsp_captured && pp_pkt != nullptr && *pp_pkt != nullptr) {
+        BT_HDR* h = (BT_HDR*)*pp_pkt;
+        portENTER_CRITICAL(&s_probe_mux);
+        if (!s_rsp_captured) {
+          uint16_t take = h->len < 36 ? h->len : 36;
+          memcpy(s_rsp_bytes, h->data + h->offset, take);
+          s_rsp_len = h->len;
+          s_rsp_n = (uint8_t)take;
+          s_rsp_captured = true;
+        }
+        portEXIT_CRITICAL(&s_probe_mux);
+      }
     }
     return result;
   }
