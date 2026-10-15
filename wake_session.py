@@ -11,15 +11,19 @@ import re
 
 IDLE_TIMEOUT_S = 120.0
 MAX_UNANSWERED = 3
+MAX_FOLLOWUP_MISSES = 3
 AWAIT_REPLY_TIMEOUT_S = 30.0
 
 logger = logging.getLogger("wake_session")
 
 # 結束語（fullmatch——只認整句就是結束語，避免「謝謝你上次推薦的歌那首叫什麼」被吃掉）。
+# 允許串接（「沒事了謝謝」「好了謝啦」，2026-10-15 事故）。
 _CLOSING_RE = re.compile(
     r"\s*(?:馬文|瑪文)?[\s,，、]*"
+    r"(?:"
     r"(?:謝謝|謝啦|感謝|多謝|3q|thank\s*you|thanks|知道了|了解|瞭解|明白了|懂了|好了|沒事了|沒問題了|OK|ok|好喔|好哦)"
-    r"(?:了|啦|喔|哦|囉|耶|你|妳|馬文|瑪文|[\s,，。.!！~～])*",
+    r"(?:了|啦|喔|哦|囉|耶|你|妳|馬文|瑪文|[\s,，。.!！~～])*"
+    r")+",
     re.IGNORECASE,
 )
 
@@ -37,6 +41,7 @@ class WakeSession:
         self.unanswered: int = 0
         self.awaiting_since: float | None = None   # 最近一次「接住的句子」還沒得到回應的起點
         self.query_mode: bool = False      # session 內是否已有過 grounded 查詢 → 非音樂追問黏著 grounded
+        self.followup_misses: int = 0
 
     def _end(self, reason: str) -> None:
         logger.info(f"🗣️ [WakeSession] 結束 target={self.target} reason={reason}")
@@ -45,6 +50,7 @@ class WakeSession:
         self.awaiting_since = None
         self.unanswered = 0
         self.query_mode = False
+        self.followup_misses = 0
 
     def on_wake_accepted(self, speaker: str, now: float) -> None:
         if self.target == speaker:
@@ -56,6 +62,7 @@ class WakeSession:
         self.unanswered = 0
         self.awaiting_since = now
         self.query_mode = False
+        self.followup_misses = 0
         logger.info(f"🗣️ [WakeSession] arm target={speaker}")
 
     def on_replied(self, now: float) -> bool:
@@ -126,3 +133,16 @@ class WakeSession:
 
     def wants_grounded_followup(self, speaker: str) -> bool:
         return self.target is not None and speaker == self.target and self.opened and self.query_mode
+
+    def on_followup_result(self, speaker: str, hit: bool) -> None:
+        """追問黏著（session_followup）的 grounded 查詢結果：查到歸零；連續查不到
+        MAX_FOLLOWUP_MISSES 次 → 結束。「查不到」仍會走 on_replied（不動那條），
+        所以必須獨立計數，不能用 unanswered。"""
+        if self.target is None or speaker != self.target:
+            return
+        if hit:
+            self.followup_misses = 0
+            return
+        self.followup_misses += 1
+        if self.followup_misses >= MAX_FOLLOWUP_MISSES:
+            self._end("followup_misses")
