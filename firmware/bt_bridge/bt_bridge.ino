@@ -28,12 +28,12 @@
  *   GPIO2 LED：恆亮=已連線 / 快閃=配對中未連線 / 慢閃=重連中未連線
  *
  * 燒錄指令：
- *   arduino-cli compile -b esp32:esp32:esp32 --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=AVRC_BldResponse -Wl,--wrap=BTA_AvMetaRsp" firmware/bt_bridge
+ *   arduino-cli compile -b esp32:esp32:esp32 --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=AVRC_BldResponse -Wl,--wrap=BTA_AvMetaRsp -Wl,--wrap=AVRC_VendorRsp" firmware/bt_bridge
  *   arduino-cli upload  -b esp32:esp32:esp32 -p /dev/cu.usbserial-0001 firmware/bt_bridge
  *
- *   ⚠️ 少了 --wrap 旗標會連結失敗（__real_AVRC_BldResponse/__real_BTA_AvMetaRsp 找
- *   不到）——這是刻意的（見 avrc_meta_wrap.cpp），防止忘記加旗標卻燒進去一個靜默
- *   不顯示曲名的版本。
+ *   ⚠️ 少了 --wrap 旗標會連結失敗（__real_AVRC_BldResponse/__real_BTA_AvMetaRsp/
+ *   __real_AVRC_VendorRsp 找不到）——這是刻意的（見 avrc_meta_wrap.cpp），防止忘記
+ *   加旗標卻燒進去一個靜默不顯示曲名的版本。
  *
  * AVRCP 曲名診斷 DIAG 代碼（車機沒顯示曲名時用來分辨卡在哪一段）：
  *   "M ok"   = pollNowPlayingFromS3 第一次從 S3 解析出曲目資訊成功（開機後僅記一次）。
@@ -46,6 +46,14 @@
  *              等通知。
  *   "Rf <feat_mask hex> <ct_feat_flag hex>" = 車機當 CT 的 AVRC 能力（SDP 探出來的），開機
  *              後只記一次。
+ *   "T <B|V><pdu> s<st>" = 第一次看到 WROOM 對車機某個 AVRCP metadata PDU 的回應
+ *              （B＝經 AVRC_BldResponse，st＝AVRC 狀態碼，04＝成功、00＝BAD_CMD；
+ *              V＝經 AVRC_VendorRsp 回 NOT_IMPL/REJ，st＝ctype）。每個 (src,pdu) 開機
+ *              後只記一次。常見 pdu：10 GetCapabilities、20 GetElementAttributes、
+ *              30 GetPlayStatus、31 RegisterNotification、50 SetAbsoluteVolume、
+ *              60 SetAddressedPlayer。全無 T 行＝車機沒送任何 metadata 指令。
+ *   "T caps n<count> <ids>" = 回給車機的 GetCapabilities(EVENTS_SUPPORTED) 內容
+ *              （event id：01 PLAY_STATUS、02 TRACK_CHANGE、05 PLAY_POS、0d VOLUME）。
  */
 
 #include "BluetoothA2DPSource.h"
@@ -1036,6 +1044,24 @@ static void diagLogFirstAvrcHits() {
   }
 }
 
+// DIAG：AVRCP metadata PDU 追蹤，每個 (src,pdu) 開機後只記一次新 entry；GetCapabilities
+// 內容只記一次。見 bt_bridge.ino 檔頭 "T ..." 說明與 pdu_trace.h。
+static uint8_t s_pt_logged = 0;
+static bool s_caps_logged = false;
+static void diagLogPduTrace() {
+  PduTrace pt;
+  avrc_pdu_trace_get(pt);
+  char d[DIAG_TEXT];
+  for (uint8_t i = s_pt_logged; i < pt.n; i++) {
+    diag_loop_add(pt_format_entry(pt.e[i], d, sizeof(d)));
+  }
+  s_pt_logged = pt.n;
+  if (!s_caps_logged && pt.caps_seen) {
+    s_caps_logged = true;
+    diag_loop_add(pt_format_caps(pt, d, sizeof(d)));
+  }
+}
+
 // ---- 連線狀態 callback（只設旗標，reconnect 由 loop() 處理）----
 void connection_state_cb(esp_a2d_connection_state_t state, void* obj) {
   static esp_a2d_connection_state_t prev = ESP_A2D_CONNECTION_STATE_DISCONNECTED;
@@ -1114,6 +1140,7 @@ void loop() {
   sendDueRnNotifications();
   drainWheelKeys();
   diagLogFirstAvrcHits();
+  diagLogPduTrace();
 
   // 統計摘要存 NVS：有變化且距上次存 >=3s，或每 60s 定期存一次（更新 uptime）。
   {

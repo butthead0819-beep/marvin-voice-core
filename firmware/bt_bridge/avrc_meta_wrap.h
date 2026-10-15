@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "now_playing.h"
+#include "pdu_trace.h"
 
 void avrc_meta_set(const NowPlaying& np);
 // 加鎖取快照：給其他 task（BT app task 的 TG 事件）讀，避免讀到 loop 寫到一半的資料。
@@ -16,5 +17,8 @@ uint32_t avrc_meta_hits_status();
 // 次數——用來跟 hits_elem/hits_status 分辨「車機沒來問」還是「來問了但沒真資料」。
 uint32_t avrc_meta_unserved_elem();
 uint32_t avrc_meta_unserved_status();
+
+// 加鎖取快照：AVRCP metadata PDU 追蹤（診斷用，見 pdu_trace.h）。
+void avrc_pdu_trace_get(PduTrace& out);
 
 #endif  // AVRC_META_WRAP_H
