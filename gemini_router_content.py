@@ -15,6 +15,9 @@ from tts_echo_guard import is_prompt_echo
 
 logger = logging.getLogger(__name__)
 
+# 口白會被 edge-tts 念出來，edge 只靠標點換氣；長句會一口氣念完。只給規則不給字面範例（範例會被照抄）。見 docs/tts_breath_plan.md
+SPOKEN_RHYTHM_RULE = "【口語節奏】這段會被念出來：每句不超過 15 個字，用逗號或句號斷開。"
+
 _DJ_STYLES = load_dj_styles()
 
 # DJ 串場優先 gemini_free → groq：ministral-8b 無視「不准編造」規則（2026-10-01 實測 4 段編造私人經歷全出自它）
@@ -950,7 +953,7 @@ class GeminiRouterContentMixin:
 
         if is_dj:
             _dj_role = "常客們的老朋友" if event_type == "dj_interjection" else "記得每位常客的專業電台 DJ"
-            sys_prompt = f"你是 DJ Marvin，{_dj_role}。任務：{prompts[event_type]}"
+            sys_prompt = f"你是 DJ Marvin，{_dj_role}。任務：{prompts[event_type]}\n{SPOKEN_RHYTHM_RULE}"
         else:
             persona = self.dna.get("persona_tag", "厭世機器人馬文")
             sys_prompt = f"你是馬文 (Marvin)。當前性格標籤：{persona}。\n脈絡：{context}\n任務：{prompts.get(event_type, '隨便嘆一口氣。')}"
