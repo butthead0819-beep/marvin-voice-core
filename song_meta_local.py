@@ -12,7 +12,11 @@ artist/album＝本地 spotify > iTunes > 不寫（ICY/AVRCP 退回 uploader）�
 """
 from __future__ import annotations
 
+import logging
+
 from music_memory import extract_video_id
+
+logger = logging.getLogger(__name__)
 
 
 def local_meta_lookup(webpage_url: str | None, songs: dict, catalog_index: dict) -> dict:
@@ -52,3 +56,44 @@ def local_meta_lookup(webpage_url: str | None, songs: dict, catalog_index: dict)
             return {"query": catalog_index[vid]}
 
     return {}
+
+
+def _local_meta_for(res, music_memory) -> dict:
+    """IO shell：讀 music_memory 與 catalog 索引後查本地資料。失敗一律回 {}，絕不擋播放。"""
+    if not res:
+        return {}
+    try:
+        import song_name_clean
+
+        songs = music_memory.all_songs() if music_memory else {}
+        idx = song_name_clean._default_catalog_index()
+        return local_meta_lookup(res.get('webpage_url'), songs, idx)
+    except Exception as e:
+        logger.warning(f"⚠️ [LocalMeta] 本地 metadata 查詢失敗：{type(e).__name__}: {e}")
+        return {}
+
+
+async def enrich_metadata(cog, res, orig_query: str | None):
+    """點歌解析完補 metadata（cogs/music_cog.py::_resolve_yt_query 結尾呼叫）。
+
+    查詢文字優先序：使用者原文 > 本地（spotify 組字 / catalog 名稱）> YT 標題；
+    artist/album 優先序：本地 spotify > iTunes > 不寫（ICY/AVRCP 退回 uploader）。
+    放在 music_cog 外面是因為 music_cog.py 有防胖守門（tests/test_music_cog_size_budget.py）。
+    """
+    local = _local_meta_for(res, getattr(cog.bot, 'music_memory', None))
+    meta_query = orig_query or local.get("query")
+    res = await cog._apply_itunes_cover(res, meta_query)
+    if local.get("spotify"):
+        sp = local["spotify"]
+        res['spotify_title'] = sp.get("title")
+        res['spotify_artist'] = sp.get("artist")
+        res['spotify_album'] = sp.get("album")
+        res['spotify_uri'] = sp.get("uri")
+    else:
+        res = await cog._apply_spotify_metadata(res, meta_query)
+    if res is not None:
+        if local.get("artist"):
+            res['artist'] = local["artist"]
+        if local.get("album"):
+            res['album'] = local["album"]
+    return res

@@ -50,6 +50,7 @@ from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
 from queue_priority import user_song_insert_index, remaining_seconds
+from song_meta_local import enrich_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -931,43 +932,8 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             query = _orig_text_query
             is_url = False
             res = await _extract_with_retry()
-        local = self._local_song_meta(res)
-        meta_query = _orig_text_query or local.get("query")
-        res = await self._apply_itunes_cover(res, meta_query)
-        if local.get("spotify"):
-            sp = local["spotify"]
-            res['spotify_title'] = sp.get("title")
-            res['spotify_artist'] = sp.get("artist")
-            res['spotify_album'] = sp.get("album")
-            res['spotify_uri'] = sp.get("uri")
-        else:
-            res = await self._apply_spotify_metadata(res, meta_query)
-        if res is not None:
-            if local.get("artist"):
-                res['artist'] = local["artist"]
-            if local.get("album"):
-                res['album'] = local["album"]
+        res = await enrich_metadata(self, res, _orig_text_query)
         return _cache_put(res)
-
-    def _local_song_meta(self, res) -> dict:
-        """點歌補 metadata 前先查本地正規化資料（見 song_meta_local.py）。
-
-        查詢文字優先序：使用者原文 > 本地（spotify 組字 / catalog 名稱）> YT 標題；
-        artist/album 優先序：本地 spotify > iTunes > 不寫。失敗一律回 {}，絕不擋播放。
-        """
-        if not res:
-            return {}
-        try:
-            import song_name_clean
-            from song_meta_local import local_meta_lookup
-
-            mm = getattr(self.bot, 'music_memory', None)
-            songs = mm.all_songs() if mm else {}
-            idx = song_name_clean._default_catalog_index()
-            return local_meta_lookup(res.get('webpage_url'), songs, idx)
-        except Exception as e:
-            logger.warning(f"⚠️ [LocalMeta] 本地 metadata 查詢失敗：{type(e).__name__}: {e}")
-            return {}
 
     async def _apply_itunes_cover(self, res, orig_query: str = None):
         """用 iTunes 方形專輯封面取代 YT 縮圖 + 補 artist/album（失敗/低信心一律
