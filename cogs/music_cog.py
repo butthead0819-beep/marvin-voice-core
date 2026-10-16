@@ -50,6 +50,7 @@ from intent_agents.find_song_agent import find_song_prompt
 from intent_agents.lyrics_grounded_search import search_lyrics_grounded
 from intent_agents.lyrics_seek import find_lyrics_timestamp
 from queue_priority import user_song_insert_index, remaining_seconds
+from song_meta_local import enrich_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -931,8 +932,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
             query = _orig_text_query
             is_url = False
             res = await _extract_with_retry()
-        res = await self._apply_itunes_cover(res, _orig_text_query)
-        res = await self._apply_spotify_metadata(res, _orig_text_query)
+        res = await enrich_metadata(self, res, _orig_text_query)
         return _cache_put(res)
 
     async def _apply_itunes_cover(self, res, orig_query: str = None):

@@ -226,7 +226,8 @@ async def test_itunes_cover_falls_back_to_yt_title_when_no_orig_query():
         return None
 
     with patch("yt_dlp.YoutubeDL", _DirectYDL), \
-         patch("itunes_cover.resolve_metadata", _fake_resolve_metadata):
+         patch("itunes_cover.resolve_metadata", _fake_resolve_metadata), \
+         patch("song_name_clean._default_catalog_index", return_value={}):
         await cog._resolve_yt_query("https://youtu.be/abc123")
 
     assert captured["title"] == "Direct URL Song"
@@ -274,3 +275,165 @@ async def test_itunes_metadata_none_leaves_artist_and_album_unset():
 
     assert "artist" not in res
     assert "album" not in res
+
+
+@pytest.mark.asyncio
+async def test_direct_url_uses_catalog_name_as_meta_query():
+    """直點 URL（無 orig_text_query）時，catalog 命中要把「藝人 歌名」整串當
+    iTunes/Spotify 查詢文字，取代髒的 YT 標題。"""
+    cog = _make_cog()
+    _FakeYDL.calls = []
+
+    class _DirectYDL(_FakeYDL):
+        def extract_info(self, search, download=False):
+            type(self).calls.append(search)
+            return {
+                "title": "左邊的人-陳華 歌詞字幕版",
+                "url": "http://stream.direct/x",
+                "uploader": "MuSiC CC",
+                "categories": ["Music"],
+                "duration": 200,
+                "webpage_url": search,
+                "thumbnail": "t.png",
+            }
+
+    captured_itunes = {}
+    captured_spotify = {}
+
+    async def _fake_itunes(title, artist=None, **kw):
+        captured_itunes["title"] = title
+        captured_itunes["artist"] = artist
+        return None
+
+    async def _fake_spotify(title, artist=None, **kw):
+        captured_spotify["title"] = title
+        captured_spotify["artist"] = artist
+        return None
+
+    with patch("yt_dlp.YoutubeDL", _DirectYDL), \
+         patch("itunes_cover.resolve_metadata", _fake_itunes), \
+         patch("spotify_metadata.resolve_metadata", _fake_spotify), \
+         patch("song_name_clean._default_catalog_index",
+               return_value={"abc1234567a": "陳華 左邊的人"}):
+        await cog._resolve_yt_query("https://www.youtube.com/watch?v=abc1234567a")
+
+    assert captured_itunes["title"] == "陳華 左邊的人"
+    assert captured_itunes["artist"] is None
+    assert captured_spotify["title"] == "陳華 左邊的人"
+    assert captured_spotify["artist"] is None
+
+
+@pytest.mark.asyncio
+async def test_text_query_wins_over_catalog_name():
+    """文字點歌時，就算 catalog 命中同一首歌，iTunes/Spotify 仍該收到使用者原文
+    （優先序：原文 > 本地 > YT 標題）。"""
+    cog = _make_cog()
+    _FakeYDL.calls = []
+    _FakeYDL.script = {
+        "ytsearch5:": [_music_entry(
+            "左邊的人-陳華 歌詞字幕版",
+            url="http://stream.test/song",
+        )],
+    }
+    _FakeYDL.script["ytsearch5:"][0]["webpage_url"] = \
+        "https://www.youtube.com/watch?v=abc1234567a"
+
+    captured = {}
+
+    async def _fake_resolve_metadata(title, artist=None, **kw):
+        captured["title"] = title
+        return None
+
+    with patch("yt_dlp.YoutubeDL", _FakeYDL), \
+         patch("itunes_cover.resolve_metadata", _fake_resolve_metadata), \
+         patch("song_name_clean._default_catalog_index",
+               return_value={"abc1234567a": "陳華 左邊的人"}):
+        await cog._resolve_yt_query("左邊的人")
+
+    assert captured["title"] == "左邊的人"
+
+
+@pytest.mark.asyncio
+async def test_local_spotify_metadata_overrides_itunes_and_skips_spotify_call():
+    """music_memory 裡已有 spotify_artist/album 的歌 → 直接用它補 artist/album，
+    不被 iTunes 蓋掉，也不再多打一次 spotify_metadata.resolve_metadata。"""
+    cog = _make_cog()
+    _FakeYDL.calls = []
+    webpage_url = "https://www.youtube.com/watch?v=abc1234567a"
+
+    class _DirectYDL(_FakeYDL):
+        def extract_info(self, search, download=False):
+            type(self).calls.append(search)
+            return {
+                "title": "左邊的人-陳華 歌詞字幕版",
+                "url": "http://stream.direct/x",
+                "uploader": "MuSiC CC",
+                "categories": ["Music"],
+                "duration": 200,
+                "webpage_url": search,
+                "thumbnail": "t.png",
+            }
+
+    mm = MagicMock()
+    mm.all_songs.return_value = {
+        webpage_url: {
+            "spotify_title": "左邊的人",
+            "spotify_artist": "陳華",
+            "spotify_album": "左邊的人",
+            "spotify_uri": "spotify:track:x",
+        }
+    }
+    cog.bot.music_memory = mm
+
+    async def _fake_itunes(title, artist=None, **kw):
+        return {"cover": "https://itunes/cover.jpg", "artist": "別人", "album": "別的專輯"}
+
+    spotify_mock = MagicMock(side_effect=AssertionError("spotify_metadata.resolve_metadata 不該被呼叫"))
+
+    with patch("yt_dlp.YoutubeDL", _DirectYDL), \
+         patch("itunes_cover.resolve_metadata", _fake_itunes), \
+         patch("spotify_metadata.resolve_metadata", spotify_mock), \
+         patch("song_name_clean._default_catalog_index", return_value={}):
+        res = await cog._resolve_yt_query(webpage_url)
+
+    assert res["artist"] == "陳華"
+    assert res["album"] == "左邊的人"
+    assert res["spotify_uri"] == "spotify:track:x"
+    spotify_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_catalog_lookup_failure_falls_back_to_yt_title():
+    """`_default_catalog_index` 丟例外 → 不擋播放，照舊用 YT 標題查（舊行為）。"""
+    cog = _make_cog()
+    _FakeYDL.calls = []
+
+    class _DirectYDL(_FakeYDL):
+        def extract_info(self, search, download=False):
+            type(self).calls.append(search)
+            return {
+                "title": "Direct URL Song",
+                "url": "http://stream.direct/x",
+                "uploader": "Channel",
+                "categories": ["Music"],
+                "duration": 200,
+                "webpage_url": search,
+                "thumbnail": "t.png",
+            }
+
+    captured = {}
+
+    async def _fake_resolve_metadata(title, artist=None, **kw):
+        captured["title"] = title
+        captured["artist"] = artist
+        return None
+
+    with patch("yt_dlp.YoutubeDL", _DirectYDL), \
+         patch("itunes_cover.resolve_metadata", _fake_resolve_metadata), \
+         patch("song_name_clean._default_catalog_index",
+               side_effect=RuntimeError("boom")):
+        res = await cog._resolve_yt_query("https://youtu.be/zz9999999z")
+
+    assert res is not None
+    assert captured["title"] == "Direct URL Song"
+    assert captured["artist"] == "Channel"
