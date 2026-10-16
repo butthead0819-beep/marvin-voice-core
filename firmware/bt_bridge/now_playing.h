@@ -120,4 +120,11 @@ inline bool np_same_track(const NowPlaying& a, const NowPlaying& b) {
   return memcmp(a.track_id, b.track_id, 8) == 0;
 }
 
+// AVRCP 1.3 TRACK_CHANGED identifier（我們的 TG 沒宣告 browsing，Identifier 只有兩種合法
+// 值）：有曲目（np.valid 且 title 非空）→ 8 bytes 全 0x00；否則（尚未選曲）→ 全 0xFF。
+inline void np_track_uid(const NowPlaying& np, uint8_t out[8]) {
+  bool has_title = np.valid && np.title[0];
+  memset(out, has_title ? 0x00 : 0xFF, 8);
+}
+
 #endif  // NOW_PLAYING_H

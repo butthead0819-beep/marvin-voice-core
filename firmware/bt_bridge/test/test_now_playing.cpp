@@ -187,6 +187,49 @@ int main() {
     printf("T12 ok\n");
   }
 
+  // ---------- np_track_uid ----------
+
+  // T13：有效且 title 非空 → 全 0x00
+  {
+    NowPlaying np;
+    bool ok;
+    feed("M1\x1f" "0123456789abcdef" "\x1f" "0" "\x1f" "0" "\x1f" "P" "\x1f"
+         "Song" "\x1f" "Artist" "\x1f" "Album", np, ok);
+    assert(ok);
+    uint8_t uid[8];
+    np_track_uid(np, uid);
+    uint8_t expect_zero[8] = {0};
+    assert(memcmp(uid, expect_zero, 8) == 0);
+    printf("T13 ok\n");
+  }
+
+  // T14：valid=false → 全 0xFF（標題刻意塞字：只看 title 不看 valid 的實作要在這裡紅）
+  {
+    NowPlaying np;
+    np.valid = false;
+    strncpy(np.title, "leftover", sizeof(np.title) - 1);
+    uint8_t uid[8];
+    np_track_uid(np, uid);
+    uint8_t expect_ff[8];
+    memset(expect_ff, 0xFF, 8);
+    assert(memcmp(uid, expect_ff, 8) == 0);
+    printf("T14 ok\n");
+  }
+
+  // T15：valid 但 title 空字串 → 全 0xFF
+  {
+    NowPlaying np;
+    bool ok;
+    feed("M1\x1f" "\x1f" "0" "\x1f" "0" "\x1f" "S" "\x1f" "" "\x1f" "" "\x1f" "", np, ok);
+    assert(ok);
+    uint8_t uid[8];
+    np_track_uid(np, uid);
+    uint8_t expect_ff[8];
+    memset(expect_ff, 0xFF, 8);
+    assert(memcmp(uid, expect_ff, 8) == 0);
+    printf("T15 ok\n");
+  }
+
   printf("all now_playing tests passed\n");
   return 0;
 }
