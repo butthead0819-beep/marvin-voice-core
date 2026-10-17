@@ -15,9 +15,12 @@ from aiohttp import web
 
 from marvin_voice_core.audio_stream_batcher import iter_batched_encoded_frames
 from marvin_voice_core.discord_audio_stream_server import SilenceFillQueue
-from marvin_voice_core.icy_meta import ICY_METAINT, IcyInterleaver, build_now_playing_payload
+from marvin_voice_core.icy_meta import (
+    ICY_METAINT, BpmLookup, IcyInterleaver, build_now_playing_payload)
 from marvin_voice_core.mp3_stream_encoder import Mp3StreamEncoder
+import bpm_estimate
 import marvin_speech_log
+import music_memory
 from utils import WAKE_PATTERN
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,14 @@ _AUDIO_STREAM_BATCH_BYTES = max(
 _CORS = {"Access-Control-Allow-Origin": "*",
          "Access-Control-Allow-Headers": "*",
          "Access-Control-Allow-Methods": "POST, OPTIONS"}
+
+# ICY 第 9 欄送 BPM：預設關閉。WROOM 端的 ICY 解析器（firmware/bt_bridge/now_playing.h）
+# 規定剛好 8 欄，多一欄整行會被丟棄→車機曲名消失；必須先燒錄會砍第 9 欄的 S3 韌體
+# （icy_fields.h::icy_prefix_len），再開這個旗標。
+_ICY_BPM_ENABLED = os.getenv("MARVIN_ICY_BPM", "0").strip().lower() in ("1", "true", "yes", "on")
+
+# 跟 cogs/music_cog_audio_meta.py::_SONG_BPM_STORE 同一檔。
+_SONG_BPM_STORE = "records/song_bpm.json"
 
 
 async def inject_text(vc, speaker: str, text: str) -> bool:
@@ -1406,6 +1417,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         start_time = getattr(music_cog, "_current_stream_start_time", None) if music_cog else None
         return info, start_time
 
+    _bpm_lookup = BpmLookup(lambda: bpm_estimate.read_bpm_store(_SONG_BPM_STORE))
+
     async def handle_audio_stream(request):
         """GET /audio_stream — 車載 puck 連續收音：chunked 即時轉送 mixer PCM（MP3編碼）。
 
@@ -1446,9 +1459,16 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             async for chunk in iter_batched_encoded_frames(
                     SilenceFillQueue(q), encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
                 if interleaver is not None:
+                    now = time.time()
                     info, start_time = _current_now_playing()
-                    payload = build_now_playing_payload(info, start_time, time.time())
-                    chunk = interleaver.feed(chunk, payload, time.time())
+                    if _ICY_BPM_ENABLED:
+                        url = (info or {}).get("webpage_url") or (info or {}).get("original_url") or (info or {}).get("url") or ""
+                        vid = music_memory.extract_video_id(url)
+                        bpm = _bpm_lookup.get(vid, now)
+                        payload = build_now_playing_payload(info, start_time, now, bpm=bpm, include_bpm=True)
+                    else:
+                        payload = build_now_playing_payload(info, start_time, now)
+                    chunk = interleaver.feed(chunk, payload, now)
                 await resp.write(chunk)
         except (ConnectionError, asyncio.CancelledError):
             # ConnectionError 涵蓋 BrokenPipeError/ConnectionResetError，也涵蓋 aiohttp

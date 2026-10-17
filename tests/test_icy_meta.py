@@ -232,3 +232,73 @@ def test_interleaver_full_refresh_after_5s_even_if_unchanged():
     out2 = interleaver.feed(b"x" * 10, payload, 5.5)
     _, metas2 = _icy_decode(out2, metaint)
     assert metas2 == [payload]
+
+
+# ---------- build_now_playing_payload：include_bpm ----------
+
+def test_payload_default_still_8_fields_unchanged():
+    info = {"title": "Song", "artist": "Artist", "album": "Album", "duration": 200.0}
+    payload = build_now_playing_payload(info, 1000.0, 1050.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 8
+    assert parts == ["M1", parts[1], "200000", "50000", "P", "Song", "Artist", "Album"]
+
+
+def test_payload_include_bpm_rounds():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(info, 1000.0, 1050.0, bpm=127.6, include_bpm=True)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 9
+    assert parts[8] == "128"
+
+
+def test_payload_include_bpm_none_is_empty():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(info, 1000.0, 1050.0, bpm=None, include_bpm=True)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 9
+    assert parts[8] == ""
+
+
+def test_payload_include_bpm_zero_is_empty():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(info, 1000.0, 1050.0, bpm=0, include_bpm=True)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert parts[8] == ""
+
+
+def test_payload_include_bpm_negative_is_empty():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(info, 1000.0, 1050.0, bpm=-5, include_bpm=True)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert parts[8] == ""
+
+
+def test_payload_include_bpm_non_numeric_is_empty():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(info, 1000.0, 1050.0, bpm="abc", include_bpm=True)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert parts[8] == ""
+
+
+def test_payload_none_info_include_bpm_still_9_fields():
+    payload = build_now_playing_payload(None, None, 100.0, bpm=140, include_bpm=True)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 9
+    assert parts[4] == "S"
+    assert parts[8] == ""
+
+
+# ---------- IcyInterleaver：9 欄 payload 只有 pos 變動時仍送空區塊 ----------
+
+def test_interleaver_9_field_payload_pos_only_change_is_empty():
+    metaint = 10
+    interleaver = IcyInterleaver(metaint=metaint, full_refresh_s=5.0)
+    payload1 = b"M1\x1f1\x1f1000\x1f0\x1fP\x1ftitle\x1fartist\x1falbum\x1f128"
+    payload2 = b"M1\x1f1\x1f1000\x1f500\x1fP\x1ftitle\x1fartist\x1falbum\x1f128"  # 只有 pos 不同
+    out1 = interleaver.feed(b"x" * 10, payload1, 0.0)
+    out2 = interleaver.feed(b"x" * 10, payload2, 1.0)  # 1 秒後，未滿 5 秒
+    _, metas1 = _icy_decode(out1, metaint)
+    _, metas2 = _icy_decode(out2, metaint)
+    assert metas1 == [payload1]
+    assert metas2 == []

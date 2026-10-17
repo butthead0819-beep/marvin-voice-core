@@ -8,6 +8,7 @@ car_http_app.py::handle_audio_stream。
 from __future__ import annotations
 
 import hashlib
+from typing import Callable
 
 ICY_METAINT = 16000          # 每 16000 bytes 音訊插一個 metadata 區塊（128kbps ≈ 1 秒）
 ICY_FULL_REFRESH_S = 5.0     # 內容沒變時，至少每 5 秒重送一次完整 payload（重同步/位置校正）
@@ -40,13 +41,21 @@ def _clean(s) -> str:
     return s.strip()
 
 
-def build_now_playing_payload(info: dict | None, start_time: float | None, now: float) -> bytes:
-    """組出一行 ICY payload：M1\x1ftrack_id\x1fdur_ms\x1fpos_ms\x1fstate\x1ftitle\x1fartist\x1falbum。
+def build_now_playing_payload(
+    info: dict | None, start_time: float | None, now: float,
+    *, bpm: float | None = None, include_bpm: bool = False,
+) -> bytes:
+    """組出一行 ICY payload：
+    M1\x1ftrack_id\x1fdur_ms\x1fpos_ms\x1fstate\x1ftitle\x1fartist\x1falbum[\x1fbpm]。
 
     info 為 None/空 → 無歌在播，state=S、其餘欄位空。
+    include_bpm=True 才多接第 9 欄 bpm（四捨五入成整數字串；None/非正數/非數字 → 空字串）。
+    預設 include_bpm=False，輸出跟原本一樣是 8 欄。
     """
     if not info:
-        return (_SEP.join(["M1", "", "0", "0", "S", "", "", ""])).encode("utf-8")
+        # 沒歌在播：BPM 沒有意義，第 9 欄一律空字串（include_bpm 時仍保持 9 欄）
+        return (_SEP.join(["M1", "", "0", "0", "S", "", "", ""] + ([""] if include_bpm else []))).encode("utf-8")
+    bpm_field = [_format_bpm(bpm)] if include_bpm else []
 
     title_raw = info.get("title", "")
     artist_raw = info.get("artist") or info.get("uploader", "") or ""
@@ -75,8 +84,18 @@ def build_now_playing_payload(info: dict | None, start_time: float | None, now: 
     if track_id in ("ffffffffffffffff", "0000000000000000"):
         track_id = "0000000000000001"
 
-    fields = ["M1", track_id, str(dur_ms), str(pos_ms), state, title, artist, album]
+    fields = ["M1", track_id, str(dur_ms), str(pos_ms), state, title, artist, album] + bpm_field
     return _SEP.join(fields).encode("utf-8")
+
+
+def _format_bpm(bpm) -> str:
+    try:
+        bpm_f = float(bpm)
+    except (TypeError, ValueError):
+        return ""
+    if bpm_f <= 0:
+        return ""
+    return str(int(round(bpm_f)))
 
 
 class IcyInterleaver:
@@ -93,7 +112,7 @@ class IcyInterleaver:
         # pos_ms 是第 4 個欄位（index 3），比對「內容是否變了」要忽略它，否則單純時間
         # 流逝就會被誤判成內容變化，每個 metaint 都送完整 payload。
         parts = payload.split(_SEP.encode("utf-8"))
-        if len(parts) != 8:
+        if len(parts) < 8:
             return payload
         parts[3] = b""
         return _SEP.encode("utf-8").join(parts)
@@ -132,3 +151,43 @@ class IcyInterleaver:
                 out += self._build_block(payload, now)
                 self._until_meta = self._metaint
         return bytes(out)
+
+
+class BpmLookup:
+    """videoId → BPM 快取。命中就永久記住；查不到的 videoId 每 retry_s 秒最多重讀一次 store
+    （BPM 是歌開播後才非同步估出來寫檔的，剛換歌時常常還沒有）。"""
+
+    def __init__(self, read_store: Callable[[], dict], *, retry_s: float = 10.0):
+        self._read_store = read_store
+        self._retry_s = retry_s
+        self._hits: dict[str, float] = {}
+        self._last_miss_at: dict[str, float] = {}
+
+    def get(self, video_id: str | None, now: float) -> float | None:
+        if not video_id:
+            return None
+        if video_id in self._hits:
+            return self._hits[video_id]
+        last_miss = self._last_miss_at.get(video_id)
+        if last_miss is not None and (now - last_miss) < self._retry_s:
+            return None
+
+        try:
+            store = self._read_store()
+        except Exception:
+            store = {}
+
+        entry = store.get(video_id) if isinstance(store, dict) else None
+        bpm = entry.get("bpm") if isinstance(entry, dict) else None
+        try:
+            bpm_f = float(bpm)
+        except (TypeError, ValueError):
+            bpm_f = None
+
+        if bpm_f is not None and bpm_f > 0:
+            self._hits[video_id] = bpm_f
+            self._last_miss_at.pop(video_id, None)
+            return bpm_f
+
+        self._last_miss_at[video_id] = now
+        return None
