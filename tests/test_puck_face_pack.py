@@ -116,6 +116,12 @@ def test_section_offsets_are_4_byte_aligned():
     assert clips_offset % 4 == 0
     assert frames_offset % 4 == 0
     assert base_offset % 4 == 0
+    # 每一格像素的起點也要對齊（S3 會整塊讀進 PSRAM）：直接讀 frame table 的 pixel_offset
+    n_frames = struct.unpack_from("<H", data, 14)[0]
+    assert n_frames > 0
+    for i in range(n_frames):
+        pixel_offset = struct.unpack_from("<I", data, frames_offset + i * 12)[0]
+        assert pixel_offset % 4 == 0
 
 
 def test_pixel_byte_order_is_big_endian():
