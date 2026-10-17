@@ -22,7 +22,7 @@ def test_save_then_load_round_trips(tmp_path):
         "cover": "http://x/y.jpg", "palette": ["#111111", "#222222"],
         "queue": [{"title": "晴天", "by": "小明"}],
         "duration": 245.0, "song_start_time": 1700000000.0, "comment": "這首不錯。",
-        "explanation": None,
+        "explanation": None, "video_id": "",
     }
 
 
@@ -49,3 +49,17 @@ def test_load_corrupt_json_returns_none(tmp_path):
     with open(path, "w", encoding="utf-8") as f:
         f.write("{not json")
     assert load_now_playing_state(path=path) is None
+
+
+def test_save_then_load_round_trips_video_id(tmp_path):
+    path = str(tmp_path / "now_playing_state.json")
+    save_now_playing_state(playing=True, title="夜曲", video_id="abcdefghijk", path=path)
+    state = load_now_playing_state(path=path)
+    assert state["video_id"] == "abcdefghijk"
+
+
+def test_save_without_video_id_defaults_to_empty_string(tmp_path):
+    path = str(tmp_path / "now_playing_state.json")
+    save_now_playing_state(playing=True, title="夜曲", path=path)
+    state = load_now_playing_state(path=path)
+    assert state["video_id"] == ""

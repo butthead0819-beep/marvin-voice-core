@@ -136,13 +136,21 @@
 (function(){
   const TOKEN="__TOKEN__";
 __SHARED_JS__
+__GROOVE_JS__
 
   const params={ mood:'idle', focusDir:0 };
   const reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
   const headCanvas=document.getElementById('head');
-  const head=createMarvinHead(headCanvas, {params, reduce, fps:30});
+  const groove=createGroove();
+  const head=createMarvinHead(headCanvas, {params, reduce, fps:30, samplePerf:(mood)=>{
+    const nowSec=Date.now()/1000, ln=liveNow;
+    const pv=groove.step(nowSec,{ playing:!!(ln&&ln.playing), bpm:ln&&ln.playing?ln.bpm:null,
+      remainingSec: ln&&ln.playing?grooveRemainingSec(ln.duration, ln.songStartTime, nowSec):Infinity,
+      moodIdle: mood==='idle' });
+    return {pv, perfCtx:null};
+  }});
 
   const FALLBACK_PAL=['#9BE04B','#4C9DFF','#2A1A44','#080B11'];
   function padPal(pal){
@@ -282,7 +290,8 @@ __SHARED_JS__
         liveNow={ playing:true, title:j.title||'', by:j.by||'',
           palette:Array.isArray(j.palette)?j.palette:[], cover:j.cover||'',
           queue:Array.isArray(j.queue)?j.queue:[], duration:j.duration||0,
-          songStartTime:j.song_start_time||0, comment:j.comment||'' };
+          songStartTime:j.song_start_time||0, comment:j.comment||'',
+          bpm:(typeof j.bpm==='number'?j.bpm:null) };
       } else {
         failCount=0;
         liveNow={ playing:false };

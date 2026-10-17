@@ -37,6 +37,8 @@ async def test_stage_serves_iphone_page():
         assert "__SHARED_JS__" not in html
         assert "PERF_ROUND_SEC" not in html   # 不載演出
         assert "cqh" not in html
+        assert "function createGroove" in html
+        assert "__GROOVE_JS__" not in html
 
 
 @pytest.mark.asyncio

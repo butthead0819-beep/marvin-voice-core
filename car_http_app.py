@@ -81,6 +81,12 @@ async def inject_text(vc, speaker: str, text: str) -> bool:
 with open(os.path.join(os.path.dirname(__file__), "hud_performance.js"), encoding="utf-8") as _f:
     _PERF_JS = _f.read()
 
+# hud_groove.js 是「放歌時 Marvin 頭跟著律動」的唯一真相來源——node --test 直接測這個
+# 檔案，HUD_HTML／hud_stage.html 都用 __GROOVE_JS__ 佔位字串把整段內容內嵌進 <script>，
+# 不是另外複製一份邏輯進這兩份字串裡。
+with open(os.path.join(os.path.dirname(__file__), "hud_groove.js"), encoding="utf-8") as _f:
+    _GROOVE_JS = _f.read()
+
 # hud_shared.js 是「/hud 與 /stage 共用繪圖」（黑膠潑漆 canvas + Marvin 頭）的唯一真相
 # 來源——HUD_HTML／hud_stage.html 都用 __SHARED_JS__ 佔位字串把整段內容內嵌進 <script>，
 # 不是另外複製一份繪圖邏輯進這兩份字串裡（見 hud_shared.js 開頭說明）。
@@ -828,6 +834,7 @@ __SHARED_JS__
   // 下面這段佔位字串由 handle_hud 讀 hud_performance.js 檔案內容整段替換進來——
   // 這個檔案是唯一真相來源，node --test 直接測它，不是另外重寫一份邏輯到這個字串裡。
 __PERF_JS__
+__GROOVE_JS__
   const PERF_THEME_NAME="__PERF_THEME__"; // 空字串＝關閉（MARVIN_PERFORMANCE_SCRIPT off 或未設定主題）
   let perf=null;
   function ensurePerf(){
@@ -847,9 +854,17 @@ __PERF_JS__
   // 疊加表演取樣——吃到未知 action_id/資料缺漏就 console.warn 跳過，不能讓例外拋出去害整顆頭
   // 的 requestAnimationFrame 排程停掉（main_satellite.py 原本 frame() 無防護）。這段原本就在
   // frame() 內，搬成獨立函式餵給 createMarvinHead(canvas,{samplePerf}) 的 opts.samplePerf。
+  const groove=createGroove();
   function samplePerf(mood, st){
     let pv={}, perfCtx=null;
     try{
+      const nowSec=Date.now()/1000;
+      const gpv=groove.step(nowSec,{ playing:!!liveNow, bpm:liveNow?liveNow.bpm:null,
+        remainingSec: liveNow?grooveRemainingSec(liveNow.duration, liveNow.songStartTime, nowSec):Infinity,
+        moodIdle: mood==='idle' });
+      if(Object.keys(gpv).length){
+        return {pv:gpv, perfCtx:(perf&&perf.wearing)?{wearing:perf.wearing}:null};  // 放歌時律動優先、暫停疊加演出；墨鏡照戴
+      }
       if(perfShouldRender(mood)){
         const theme=PERF_THEMES[PERF_THEME_NAME];
         if(theme){
@@ -955,7 +970,7 @@ __PERF_JS__
       const j=await r.json();
       liveNow = j.playing ? {title:j.title||'', by:j.by||'', pal:Array.isArray(j.palette)?j.palette:[], cover:j.cover||'',
         queue:Array.isArray(j.queue)?j.queue:[], duration:j.duration||0, songStartTime:j.song_start_time||0,
-        comment:j.comment||''} : null;
+        comment:j.comment||'', bpm:(typeof j.bpm==='number' ? j.bpm : null)} : null;
     }catch(e){ liveNow=null; }
     const key = liveNow ? liveNow.title+'|'+liveNow.by+'|'+liveNow.pal.join(',')+'|'+liveNow.cover+'|'+liveNow.queue.map(q=>q.title).join(',')+'|'+liveNow.comment+'|'+liveNow.songStartTime : '';
     if(key!==lastLiveKey){ lastLiveKey=key; render(); }
@@ -1218,6 +1233,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         await inject_text(vc, speaker, text)
         return web.json_response({"ok": True, "speaker": speaker, "text": text}, headers=_CORS)
 
+    _bpm_lookup = BpmLookup(lambda: bpm_estimate.read_bpm_store(_SONG_BPM_STORE))
+
     async def _now_info() -> dict:
         """算現正播放資訊（永遠讀跨進程橋接檔，不看本地 MusicCog）。
 
@@ -1240,6 +1257,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                 "song_start_time": state.get("song_start_time"),
                 "comment": state.get("comment"),
                 "speech": _read_latest_speech(),
+                "bpm": _bpm_lookup.get(state.get("video_id") or None, time.time()),
             }
         return {"playing": False, "speech": _read_latest_speech()}
 
@@ -1391,7 +1409,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         hud_performance.js（不疊加演出，省電）；全部卡片常駐顯示，不走 /hud 的卡片聚焦/
         重要性階梯那一套。
         """
-        html = _STAGE_HTML.replace("__TOKEN__", token or "").replace("__SHARED_JS__", _SHARED_JS)
+        html = (_STAGE_HTML.replace("__TOKEN__", token or "").replace("__SHARED_JS__", _SHARED_JS)
+                .replace("__GROOVE_JS__", _GROOVE_JS))
         return web.Response(text=html, content_type="text/html", headers=_CORS)
 
     async def handle_stage_icon(request):
@@ -1408,7 +1427,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         perf_theme = os.getenv("MARVIN_PERFORMANCE_THEME", "matrix").strip() if perf_enabled else ""
         html = (HUD_HTML.replace("__TOKEN__", token or "").replace("__BODY_CLASS__", body_class)
                 .replace("__SHARED_JS__", _SHARED_JS)
-                .replace("__PERF_JS__", _PERF_JS).replace("__PERF_THEME__", perf_theme))
+                .replace("__PERF_JS__", _PERF_JS).replace("__GROOVE_JS__", _GROOVE_JS)
+                .replace("__PERF_THEME__", perf_theme))
         return web.Response(text=html, content_type="text/html", headers=_CORS)
 
     def _current_now_playing():
@@ -1416,8 +1436,6 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         info = getattr(music_cog, "_current_stream_info", None) if music_cog else None
         start_time = getattr(music_cog, "_current_stream_start_time", None) if music_cog else None
         return info, start_time
-
-    _bpm_lookup = BpmLookup(lambda: bpm_estimate.read_bpm_store(_SONG_BPM_STORE))
 
     async def handle_audio_stream(request):
         """GET /audio_stream — 車載 puck 連續收音：chunked 即時轉送 mixer PCM（MP3編碼）。
