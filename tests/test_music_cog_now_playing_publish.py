@@ -55,7 +55,21 @@ def test_publish_with_info_writes_playing_true(monkeypatch):
         "cover": "http://x/y.jpg", "palette": ["#111111"],
         "queue": [{"title": "晴天", "by": "小明", "thumbnail": "http://x/next.jpg"}],
         "duration": None, "song_start_time": None, "comment": None, "explanation": None,
+        "video_id": "",
     }
+
+
+def test_publish_with_webpage_url_extracts_video_id(monkeypatch):
+    import now_playing_state
+    calls = []
+    monkeypatch.setattr(now_playing_state, "save_now_playing_state",
+                         lambda **kw: calls.append(kw))
+    cog = _make_cog()
+    cog._publish_now_playing_state({
+        "title": "夜曲", "requested_by": "大肚",
+        "webpage_url": "https://www.youtube.com/watch?v=abcdefghijk",
+    })
+    assert calls[0]["video_id"] == "abcdefghijk"
 
 
 def test_publish_with_info_includes_duration_start_time_and_comment(monkeypatch):

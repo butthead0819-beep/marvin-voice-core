@@ -296,6 +296,7 @@ class MusicPersonalShuffleMixin:
                     song_start_time=self._current_stream_start_time,
                     comment=self._current_stream_comment,
                     explanation=self._current_stream_explanation,
+                    video_id=extract_video_id(info.get("webpage_url") or info.get("original_url") or info.get("url") or "") or "",
                 )
             else:
                 save_now_playing_state(playing=False)

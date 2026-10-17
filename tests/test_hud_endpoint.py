@@ -58,6 +58,8 @@ async def test_hud_includes_shared_drawing_and_performance_script():
         assert "__SHARED_JS__" not in html
         assert "IS_STAGE" not in html
         assert "__LAYOUT__" not in html
+        assert "function createGroove" in html
+        assert "__GROOVE_JS__" not in html
 
 
 @pytest.mark.asyncio

@@ -73,6 +73,7 @@
                                 // 塞進既有 audioNetworkTask(填ring buffer)/audioPlaybackTask
                                 // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
 #include "icy_demux.h"         // 車機顯示曲名第一刀：拆 /audio_stream 夾帶的 ICY in-band metadata
+#include "icy_fields.h"        // 轉送給 WROOM 前砍掉第 9 欄（bpm）；WROOM 解析器規定剛好 8 欄
 
 // ========== 你要填的 ==========
 #define STEP 10  // ← 從 1 開始，每步綠了再 +1（10＝STEP 10 混音數學測試，見檔頭說明；
@@ -553,9 +554,12 @@ static size_t ringRead(uint8_t* out, size_t maxLen) {
 static uint8_t g_lastMetaPrefix[19];
 static size_t g_lastMetaPrefixLen = 0;
 static bool g_haveLastMeta = false;
+static volatile int g_icyBpm = 0;
 
 static void onIcyMeta(const uint8_t* payload, size_t len, void* /*ctx*/) {
-  Serial1.write(payload, len);
+  g_icyBpm = icy_bpm_field(payload, len);
+  size_t sendLen = icy_prefix_len(payload, len, 8);
+  Serial1.write(payload, sendLen);
   Serial1.write('\n');
   size_t cmpLen = len < sizeof(g_lastMetaPrefix) ? len : sizeof(g_lastMetaPrefix);
   bool changed = !g_haveLastMeta || cmpLen != g_lastMetaPrefixLen ||

@@ -245,7 +245,7 @@ function createMarvinHead(canvas, opts){
     }
     const phiC=0.72,dw=0.27,lamC=0.15,dhA=0.26, proj=(phi,lam)=>[cx+R*Math.cos(lam)*Math.sin(phi),cy+R*Math.sin(lam)];
     function eye(sign){
-      const p0=sign*phiC+st.gphi, lam0=lamC+st.glam;
+      const p0=sign*phiC+st.gphi, lam0=lamC+st.glam+(pv.pitch||0);
       const P=[proj(p0+sign*dw,lam0+0.05*st.blink),proj(p0-sign*dw,lam0),proj(p0,lam0+dhA*st.blink)];
       const path=()=>{ctx.beginPath();ctx.moveTo(P[0][0],P[0][1]);ctx.lineTo(P[1][0],P[1][1]);ctx.lineTo(P[2][0],P[2][1]);ctx.closePath();};
       path();ctx.fillStyle=dark(0.45);ctx.fill();
@@ -291,7 +291,7 @@ function createMarvinHead(canvas, opts){
     const eyeP=[eye(-1),eye(1)];
     ctx.save();ctx.strokeStyle='rgba(16,19,17,.92)';ctx.lineWidth=Math.max(1.5,R*0.02);ctx.lineCap='round';ctx.lineJoin='round';
     const phiEnd=phiC+dw+0.26,curve=0.035;ctx.beginPath();
-    for(let i=0;i<=24;i++){ const s=-1+i/12, ph=st.gphi+s*phiEnd, lm=lamC+st.glam+curve*s*s, q=proj(ph,lm); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
+    for(let i=0;i<=24;i++){ const s=-1+i/12, ph=st.gphi+s*phiEnd, lm=lamC+st.glam+(pv.pitch||0)+curve*s*s, q=proj(ph,lm); i?ctx.lineTo(q[0],q[1]):ctx.moveTo(q[0],q[1]); }
     ctx.stroke();ctx.restore();
     if(perfCtx && perfCtx.wearing && perfCtx.wearing.put_on_sunglasses){
       const lb=[eyeBounds(eyeP[0]),eyeBounds(eyeP[1])].sort((a,b)=>a.cx-b.cx).map(drawLens);

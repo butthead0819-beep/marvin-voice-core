@@ -1,0 +1,548 @@
+<title>Marvin 圓屏樣機</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: 工作台——左邊 1:1 裝置＋能量軌跡，右邊是驅動它的三層訊號（系統 / 自動播放 / 沒歌），底下是容量與 SPI 預算 */
+:root{
+  --bg:#0d1210; --panel:#141b17; --line:#24302a; --fg:#dce5df; --muted:#86948b;
+  --accent:#8cd65a; --warn:#e8c547; --hot:#ff8a4c; --flash:#ff3df0;
+  --f-body:"Noto Sans TC",system-ui,-apple-system,"PingFang TC",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  color-scheme:dark;
+}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);line-height:1.55;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:28px 48px}
+.wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+header h1{font-size:1.5rem;font-weight:700;margin:0;text-wrap:balance}
+header p{margin:.35rem 0 0;color:var(--muted);max-width:70ch}
+.mono{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:24px;align-items:start}
+@media (max-width:800px){.grid{grid-template-columns:minmax(0,1fr)}}
+.bench{display:flex;flex-direction:column;align-items:center;gap:14px;padding:22px 16px;
+  background:radial-gradient(circle at 50% 35%,#18211c 0,var(--bg) 70%);border:1px solid var(--line);border-radius:14px}
+.bezel{padding:14px;border-radius:50%;background:linear-gradient(145deg,#3a403c,#1c201e);box-shadow:0 10px 30px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.08)}
+.screen{position:relative;width:min(340px,70vw);max-width:100%;aspect-ratio:1;border-radius:50%;overflow:hidden;background:#000}
+.screen.real{width:32.4mm}
+.screen canvas{position:absolute;inset:0;width:100%;height:100%;image-rendering:pixelated}
+.caption{font-size:.8rem;color:var(--muted);text-align:center}
+.now{width:100%;display:flex;flex-direction:column;gap:6px}
+.layer{font-size:.9rem;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline}
+.chip{font-size:.72rem;letter-spacing:.04em;border:1px solid var(--line);border-radius:999px;padding:1px 8px;color:var(--muted)}
+.chip.l1{border-color:var(--warn);color:var(--warn)}
+.chip.l2{border-color:var(--accent);color:var(--accent)}
+.chip.l3{border-color:#6f8fb0;color:#9fc0e0}
+.icy{font-family:var(--f-mono);font-size:.74rem;color:var(--muted);word-break:break-all}
+#meter{width:100%;height:70px;display:block;background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:.72rem;color:var(--muted)}
+.legend i{display:inline-block;width:14px;height:2px;vertical-align:middle;margin-right:4px}
+.panel{display:flex;flex-direction:column;gap:16px;min-width:0}
+fieldset{border:1px solid var(--line);border-radius:10px;margin:0;padding:12px 14px;display:flex;flex-direction:column;gap:10px;background:var(--panel);min-width:0}
+legend{font-size:.72rem;letter-spacing:.08em;color:var(--muted);padding:0 6px}
+.seg{display:flex;flex-wrap:wrap;gap:6px}
+.seg button,.btn{font:500 .84rem var(--f-body);color:var(--fg);background:transparent;border:1px solid var(--line);border-radius:8px;padding:6px 10px;cursor:pointer}
+.seg button:hover,.btn:hover{border-color:var(--muted)}
+.seg button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:rgba(140,214,90,.08)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.seg button .k{font-family:var(--f-mono);font-size:.66rem;color:var(--muted);margin-left:4px}
+.row{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;font-size:.86rem}
+select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:5px 8px;min-width:0;max-width:100%}
+input[type=range]{accent-color:var(--accent)}
+label{display:inline-flex;gap:6px;align-items:center}
+.hint{font-size:.76rem;color:var(--muted);margin:0}
+.tbl{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.82rem}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-weight:500;font-size:.7rem;letter-spacing:.04em}
+td.n,th.n{font-family:var(--f-mono);font-variant-numeric:tabular-nums;text-align:right}
+td .lv{font-size:.66rem;border-radius:4px;padding:0 5px;margin-right:4px;border:1px solid var(--line);color:var(--muted)}
+tr.on td{color:var(--accent)}
+.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+@media (max-width:800px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.stat{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:var(--panel);min-width:0}
+.stat .v{font-family:var(--f-mono);font-size:1.2rem;font-weight:600;font-variant-numeric:tabular-nums}
+.stat .l{font-size:.76rem;color:var(--muted)}
+.budget{height:8px;border-radius:4px;background:var(--line);overflow:hidden;margin-top:8px}
+.budget b{display:block;height:100%;background:var(--accent)}
+.budget.over b{background:var(--hot)}
+h2{font-size:1rem;margin:0 0 8px}
+.note{font-size:.82rem;color:var(--muted);max-width:80ch;margin:8px 0 0}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Marvin 圓屏樣機 · 精簡版</h1>
+    <p>HUD 頭像預先算成 RGB565 畫格，由三層狀態挑片段播放。表情全部靠頭的動作：轉頭時眼睛沿著球面滑向邊緣、被輪廓擠扁，製造立體感；不再用眼睛大小、亮度、顏色做律動。動作幅度大、速度慢（8–10fps、每個動作 1.5–3 秒），在 32mm 的螢幕上才看得出來。全部片段固定 24fps。動作全看 Mac 給的 BPM：100 以上點頭（挑 1、2、4 拍裡最接近一次 1 秒的，一重一輕），其他搖擺。小動作只留看得見的：換歌反應、每首歌一次的轉頭或抬頭、收聽、講話、錯誤、開機。</p>
+  </header>
+
+  <div class="grid">
+    <div class="bench">
+      <div class="bezel"><div class="screen" id="screen">
+        <canvas id="lcd" width="240" height="240" aria-label="模擬 240×240 圓形螢幕"></canvas>
+        <canvas id="ov" width="240" height="240" aria-hidden="true"></canvas>
+      </div></div>
+      <div class="caption" id="cap">放大顯示 · 顯示區直徑約 32.4mm</div>
+      <div class="now">
+        <div class="layer" id="layer"></div>
+        <div class="icy" id="icy"></div>
+        <canvas id="meter" width="600" height="140" aria-label="音樂能量軌跡"></canvas>
+        <div class="legend"><span><i style="background:#8cd65a"></i>姿勢（點頭：越高頭越低；搖擺：左右）</span><span><i style="background:#3a4a40"></i>每一輪開始</span></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <fieldset>
+        <legend>第 1 層 · 系統狀態（LedState，最優先）</legend>
+        <div class="seg" id="states"></div>
+        <p class="hint">選「待機」就交回給第 2、3 層。開機和連線成功播完會自動回待機。</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>第 2 層 · 自動播放（ICY + 音樂能量）</legend>
+        <div class="row">
+          <select id="song" aria-label="選擇歌曲"></select>
+          <button class="btn" id="play" type="button">停止播放</button>
+          <button class="btn" id="next" type="button">下一首</button>
+        </div>
+        <div class="row">
+          <button class="btn" id="tail" type="button">跳到歌尾（剩 16 秒）</button>
+          <button class="btn" id="act" type="button">現在演小動作</button>
+        </div>
+        <p class="hint">BPM ≥ 100 點頭，其他（含沒有 BPM）搖擺。每首歌只在 45%–65% 的位置演一次小動作，轉頭看兩側和抬頭輪流。</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>第 3 層 · 沒有歌在播</legend>
+        <div class="row">
+          <button class="btn" id="sleep" type="button">快轉到沒歌 10 分鐘</button>
+        </div>
+        <p class="hint">停止播放後靜止，每 20–40 秒轉頭看兩側一次；沒歌超過 10 分鐘只把背光降到 35%。</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>顯示</legend>
+        <div class="row">
+          <label>背光 PWM <input type="range" id="bl" min="5" max="100" value="100"> <span class="mono" id="blv">100%</span></label>
+        </div>
+        <div class="row">
+          <label><input type="checkbox" id="dither" checked> RGB565 抖色</label>
+          <label><input type="checkbox" id="dirty" checked> 標出推送區域</label>
+          <label><input type="checkbox" id="real"> 實際尺寸</label>
+        </div>
+      </fieldset>
+    </div>
+  </div>
+
+  <section>
+    <h2>容量與 SPI 預算</h2>
+    <div class="stats">
+      <div class="stat"><div class="v" id="sTotal">–</div><div class="l" id="sBudLabel">全部畫格 + 底圖</div><div class="budget" id="bud"><b id="budb"></b></div></div>
+      <div class="stat"><div class="v" id="sCount">–</div><div class="l">實際存的格數（重複的格只算一次）</div></div>
+      <div class="stat"><div class="v" id="sMs">0 ms</div><div class="l">過去 1 秒 SPI 佔用（40MHz）</div></div>
+      <div class="stat"><div class="v" id="sFps">0</div><div class="l">過去 1 秒推送次數（畫面節拍固定 24fps，沒變的格不推）</div></div>
+    </div>
+    <div class="tbl" style="margin-top:14px"><table>
+      <thead><tr><th>片段</th><th>用在</th><th class="n">格數</th><th class="n">長度</th><th class="n">裁切範圍</th><th class="n">容量</th></tr></thead>
+      <tbody id="clips"></tbody>
+    </table></div>
+    <p class="note">每段各自裁切，只存這段跟底圖不一樣的那一塊；同一段裡完全相同的格（停住的格、轉過去再轉回來的對稱格）只存一份，片段只記索引。切換片段時，如果上一段的範圍沒有被新範圍蓋住，先把底圖補回那一塊，這次補回也算進 SPI 統計。「醒來」直接借用「開機睜眼」的後半段，不另外占容量。歌尾收束沒有自己的畫格：能量漸弱、強制改成慢搖擺。</p>
+  </section>
+</div>
+
+<script>
+(()=>{
+const W=240, C=120, R=108, BUDGET=3.4*1048576;
+const MOODCFG={
+  idle:        {col:[104,158,58]},
+  wake:        {col:[150,224,72]},
+    sleep:       {col:[60,75,95], alpha:0.45},
+  quickApprove:{col:[150,255,120]},
+  escalate:    {col:[230,90,55]},
+};
+
+// ---------- 渲染：照搬 hud_shared.js 的球體＋眼睛＋眉線，球固定不漂；另加「瞇眼笑」畫法 ----------
+const rc=document.createElement('canvas'); rc.width=W; rc.height=W;
+const r=rc.getContext('2d',{willReadFrequently:true});
+function renderHead(p){
+  const cfg=MOODCFG[p.mood], col=p.col||cfg.col, alpha=p.alpha??cfg.alpha??0.98;
+  const cx=C, cy=C, P2=Math.PI*2;
+  // 每格從乾淨的繪圖狀態開始，否則上一格的 lineCap='round' 會讓球外框接縫長出圓頭
+  r.setTransform(1,0,0,1,0,0); r.globalAlpha=1; r.lineCap='butt'; r.lineJoin='miter'; r.fillStyle='#000'; r.fillRect(0,0,W,W);
+  const sph=r.createRadialGradient(cx-R*0.34,cy-R*0.42,R*0.05,cx,cy,R*1.07);
+  sph.addColorStop(0,'#ffffff');sph.addColorStop(0.3,'#eef2f4');sph.addColorStop(0.66,'#cfd6dc');sph.addColorStop(0.9,'#b6c0c8');sph.addColorStop(1,'#8b959d');
+  r.fillStyle=sph;r.beginPath();r.arc(cx,cy,R,0,P2);r.fill();
+  r.save();r.beginPath();r.arc(cx,cy,R,0,P2);r.clip();
+  const hot=r.createRadialGradient(cx-R*0.33,cy-R*0.42,0,cx-R*0.33,cy-R*0.42,R*0.5);
+  hot.addColorStop(0,'rgba(255,255,255,0.9)');hot.addColorStop(1,'rgba(255,255,255,0)');
+  r.fillStyle=hot;r.fillRect(cx-R,cy-R,2*R,2*R);
+  r.restore();
+  r.strokeStyle='rgba(255,255,255,.4)';r.lineWidth=1;r.beginPath();r.arc(cx,cy,R,0,P2);r.stroke();
+
+  const dark=k=>`rgba(${col[0]*k|0},${col[1]*k|0},${col[2]*k|0},${alpha})`;
+  const bright=`rgba(${Math.min(255,col[0]+80)|0},${Math.min(255,col[1]+70)|0},${Math.min(255,col[2]+70)|0},${alpha})`;
+  const yaw=p.yaw||0, pitch=p.pitch||0, roll=p.roll||0, blink=p.blink??1;
+  const phiC=0.72,dw=0.27,lamC=0.15,dhA=0.26;
+  // 球面投影：轉到背面的點（|phi| 或 |lam| 超過 90°）壓在邊緣上，眼睛就會貼著輪廓被擠扁、消失
+  const H=Math.PI/2, cl=v=>Math.max(-H,Math.min(H,v));
+  const proj=(phi,lam)=>{ const hid=Math.abs(phi)>H-0.02||Math.abs(lam)>H-0.02; phi=cl(phi); lam=cl(lam); const q=[cx+R*Math.cos(lam)*Math.sin(phi),cy+R*Math.sin(lam)]; q.hid=hid; return q; };
+  // 描邊時跳過轉到背面的那段，不然它會被壓在輪廓上、沿著邊緣畫出一條黑線
+  const strokeVisible=pts=>{ r.beginPath(); let pen=false; pts.forEach((q,i)=>{ const prev=pts[i-1]; const ok=!q.hid&&prev&&!prev.hid; if(ok){ if(!pen) r.moveTo(prev[0],prev[1]); r.lineTo(q[0],q[1]); pen=true; } else pen=false; }); r.stroke(); };
+  // 邊用很多點細分，壓扁時才會沿著球面彎，不是直線三角形
+  const seg=(a,b,n)=>N(n+1,(i)=>{const t=i/n;return proj(a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t);});
+  r.save(); r.beginPath(); r.arc(cx,cy,R-0.5,0,P2); r.clip();
+  if(roll){ r.translate(cx,cy); r.rotate(roll); r.translate(-cx,-cy); }
+  function eye(sign){
+    const p0=sign*phiC+yaw, lam0=lamC+pitch;
+    if(p.happy){
+      const lift=0.07+(p.bounce||0)*0.02;
+      const pts=N(13,(i)=>{const s=-1+i/6;return proj(p0+sign*dw*0.95*s,lam0+0.07-lift*(1-s*s));});
+      const stroke=(w,c)=>{r.lineCap='round';r.lineJoin='round';r.lineWidth=w;r.strokeStyle=c;strokeVisible(pts);};
+      stroke(R*0.07,'rgba(8,10,9,.96)'); stroke(R*0.045,dark(1));
+      return;
+    }
+    const A=[p0+sign*dw,lam0+0.05*blink], B=[p0-sign*dw,lam0], Cc=[p0,lam0+dhA*blink];
+    const poly=[...seg(A,B,8),...seg(B,Cc,8).slice(1),...seg(Cc,A,8).slice(1)];
+    const path=()=>{r.beginPath();poly.forEach((q,i)=>i?r.lineTo(q[0],q[1]):r.moveTo(q[0],q[1]));r.closePath();};
+    path();r.fillStyle=dark(0.45);r.fill();
+    const PB=proj(B[0],B[1]), PC=proj(Cc[0],Cc[1]);
+    r.save();path();r.clip();
+    const sx=(PB[0]+PC[0])/2+Math.sin(cl(yaw))*R*0.5, sy=(PB[1]+PC[1])/2;
+    const g=r.createRadialGradient(sx,sy,0,sx,sy,R*0.46);
+    g.addColorStop(0,bright);g.addColorStop(0.4,dark(1));g.addColorStop(1,dark(0.42));r.fillStyle=g;r.fill();
+    const topY=Math.min(...poly.map(q=>q[1]));
+    const sh=r.createLinearGradient(0,topY-R*0.01,0,topY+R*0.16);sh.addColorStop(0,'rgba(0,0,0,.5)');sh.addColorStop(1,'rgba(0,0,0,0)');
+    r.fillStyle=sh;r.fill();r.restore();
+    r.lineJoin='round';r.lineCap='round';r.lineWidth=Math.max(2,R*0.035);r.strokeStyle='rgba(8,10,9,.96)';
+    const rim=[...seg(A,Cc,8),...seg(Cc,B,8).slice(1)];
+    strokeVisible(rim);
+  }
+  eye(-1); eye(1);
+  r.strokeStyle='rgba(16,19,17,.92)';r.lineWidth=Math.max(1.5,R*0.02);r.lineCap='round';r.lineJoin='round';
+  const phiEnd=phiC+dw+0.26,curve=0.035, browUp=p.browUp||0;
+  strokeVisible(N(49,(i)=>{ const s=-1+i/24; return proj(yaw+s*phiEnd,lamC+pitch-browUp+curve*s*s); }));
+  r.restore();
+  return r.getImageData(0,0,W,W).data;
+}
+
+// ---------- RGB565（可選 4×4 Bayer 抖色）----------
+const BAYER=[0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
+function to565(d,dither){
+  const out=new Uint16Array(W*W);
+  for(let y=0;y<W;y++) for(let x=0;x<W;x++){
+    const i=y*W+x, j=i*4, b=dither?(BAYER[(y&3)*4+(x&3)]/16-0.5):0;
+    const R5=Math.max(0,Math.min(31,Math.round(d[j]/255*31+b)));
+    const G6=Math.max(0,Math.min(63,Math.round(d[j+1]/255*63+b)));
+    const B5=Math.max(0,Math.min(31,Math.round(d[j+2]/255*31+b)));
+    out[i]=(R5<<11)|(G6<<5)|B5;
+  }
+  return out;
+}
+function decode(buf,rect){
+  const id=new ImageData(rect.w,rect.h), d=id.data;
+  for(let y=0;y<rect.h;y++) for(let x=0;x<rect.w;x++){
+    const v=buf[(rect.y+y)*W+rect.x+x], k=(y*rect.w+x)*4;
+    const r5=v>>11, g6=(v>>5)&63, b5=v&31;
+    d[k]=(r5<<3)|(r5>>2); d[k+1]=(g6<<2)|(g6>>4); d[k+2]=(b5<<3)|(b5>>2); d[k+3]=255;
+  }
+  return id;
+}
+
+// ---------- 片段 ----------
+const N=(n,f)=>Array.from({length:n},(_,i)=>f(i,n));
+const lerp=(a,b,t)=>a.map((v,i)=>v+(b[i]-v)*t);
+const ss=x=>x*x*(3-2*x);
+const L1='l1', L2='l2', L3='l3';
+// 全部片段固定 24fps（死守畫面節拍，不靠降 fps 省容量）。時間用秒寫，換算成格數。
+const BPM_NOD=100;
+const FPS=24, F=sec=>Math.max(1,Math.round(sec*FPS));
+const go=(sec,f)=>{const n=F(sec);return N(n,(i)=>f(ss((i+1)/n)));};   // 0→1 緩動
+const back=arr=>arr.slice(0,-1).reverse();                              // 原路回來
+const hold=(p,sec)=>N(F(sec),()=>p);
+function trip(sec,h,f){ const out=go(sec,f); return [...out,...hold(out[out.length-1],h),...back(out),f(0)]; }
+// 律動用的姿勢表：S3 依 BPM 算出相位，再從表裡挑一格（表本身跟 BPM 無關）
+const NOD_P=20, NOD_PMAX=0.42, SW_N=25;
+const CLIPS=[
+  // 第 3 層
+  {id:'still', name:'待機靜止', layer:L3, use:'沒歌待機', frames:[{mood:'idle'}]},
+  {id:'look', name:'轉頭看兩側', layer:L3, use:'沒歌時每 20–40 秒；每首歌中段（輪流）',
+    frames:[...trip(1.2,1.2,t=>({mood:'idle',yaw:-1.25*t,roll:-0.12*t})), ...trip(1.2,1.2,t=>({mood:'idle',yaw:1.25*t,roll:0.12*t}))]},
+  // 第 2 層
+  {id:'nod', name:'律動 · 點頭', layer:L2, use:'BPM ≥ 100（快歌）', ladder:true,
+    frames:N(NOD_P,(d)=>({mood:'idle',pitch:NOD_PMAX*d/(NOD_P-1),roll:0.06*d/(NOD_P-1)}))},
+  {id:'sway', name:'律動 · 搖擺', layer:L2, use:'BPM < 100 或沒有 BPM', ladder:true,
+    frames:N(SW_N,(i)=>{const s=-1+2*i/(SW_N-1);return {mood:'idle',roll:0.3*s,yaw:0.45*s,pitch:0.06*s*s};})},
+  {id:'newsong', name:'換歌反應', layer:L2, use:'track_id 改變',
+    frames:trip(0.6,0.7,t=>({mood:'idle',yaw:0.85*t,roll:0.32*t,pitch:-0.08*t,browUp:0.05*t}))},
+  {id:'lookup', name:'抬頭想事情', layer:L2, use:'每首歌中段（輪流）',
+    frames:trip(1.0,1.4,t=>({mood:'idle',pitch:-0.5*t,yaw:0.4*t,roll:-0.16*t,browUp:0.04*t}))},
+  // 第 1 層
+  {id:'listen', name:'收聽', layer:L1, use:'PTT 按住',
+    frames:[...go(0.6,t=>({mood:'idle',roll:0.34*t,yaw:-0.35*t,pitch:-0.06*t})),
+            ...hold({mood:'idle',roll:0.34,yaw:-0.35,pitch:-0.06},1.2),
+            ...trip(0.35,0.05,t=>({mood:'idle',roll:0.34,yaw:-0.35,pitch:-0.06+0.1*t}))], loopFrom:F(0.6)},
+  {id:'speak', name:'講話', layer:L1, use:'回應中', frames:trip(0.45,0.05,t=>({mood:'idle',pitch:0.16*t,yaw:0.2*t}))},
+  {id:'boot', name:'開機睜眼', layer:L1, use:'開機',
+    frames:[...hold({mood:'sleep',blink:0.12,pitch:0.36,roll:0.16},0.6),
+            ...go(0.9,t=>({mood:'idle',blink:0.12+0.88*t,pitch:0.36*(1-t),roll:0.16*(1-t),col:lerp([60,75,95],[104,158,58],t),alpha:0.45+0.53*t}))]},
+  {id:'error', name:'搖頭（錯誤）', layer:L1, use:'錯誤',
+    frames:[...trip(0.35,0.05,t=>({mood:'escalate',yaw:-0.7*t})),...trip(0.35,0.05,t=>({mood:'escalate',yaw:0.7*t}))]},
+];
+const byId=id=>CLIPS.find(c=>c.id===id);
+
+// ---------- 烤畫格：每段各自裁切 ----------
+let base=null, baseFull=null;
+function bboxVsBase(bufs){
+  let x0=W,y0=W,x1=-1,y1=-1;
+  bufs.forEach(buf=>{ for(let i=0;i<buf.length;i++) if(buf[i]!==base[i]){const x=i%W,y=(i/W)|0; if(x<x0)x0=x; if(x>x1)x1=x; if(y<y0)y0=y; if(y>y1)y1=y;} });
+  if(x1<0) return null;
+  x0&=~1; y0&=~1; x1|=1; y1|=1;
+  return {x:x0,y:y0,w:x1-x0+1,h:y1-y0+1};
+}
+function bake(dither){
+  const raw={};
+  CLIPS.forEach(c=>{ if(c.frames) raw[c.id]=c.frames.map(p=>to565(renderHead(p),dither)); });
+  base=raw.still[0];
+  baseFull=decode(base,{x:0,y:0,w:W,h:W});
+  CLIPS.forEach(c=>{
+    const bufs=c.shareOf?raw[c.shareOf].slice(c.shareFrom):raw[c.id];
+    c.rect=bboxVsBase(bufs);
+    // 相同的畫格只存一份（停住的格、轉過去再轉回來的對稱格），片段只記索引
+    const uniq=[], idx=bufs.map(b=>{ let k=uniq.findIndex(u=>u.length===b.length&&u.every((v,i)=>v===b[i])); if(k<0){ uniq.push(b); k=uniq.length-1; } return k; });
+    c.uniq=uniq.length;
+    const imgs=c.rect?uniq.map(b=>decode(b,c.rect)):[];
+    c.img=idx.map(k=>imgs[k]);
+    c.baseImg=c.rect?decode(base,c.rect):null;
+    c.count=bufs.length;
+  });
+  renderTable(); renderSizes();
+}
+
+// ---------- 推送（= 韌體 display task）----------
+const lcd=document.getElementById('lcd').getContext('2d');
+const ovc=document.getElementById('ov').getContext('2d');
+const lcdEl=document.getElementById('lcd');
+const dirtyCb=document.getElementById('dirty');
+let pushes=[], flashes=[], shownRect=null;
+const contains=(a,b)=>a&&b&&b.x>=a.x&&b.y>=a.y&&b.x+b.w<=a.x+a.w&&b.y+b.h<=a.y+a.h;
+function note(rr){ const t=performance.now(); pushes.push([t,rr.w*rr.h]); if(dirtyCb.checked) flashes.push({...rr,t}); }
+function restoreShown(){ if(shownRect){ lcd.putImageData(baseFull,0,0,shownRect.x,shownRect.y,shownRect.w,shownRect.h); note(shownRect); shownRect=null; } }
+function pushFrame(c,i){
+  if(!c.rect){ restoreShown(); return; }
+  if(shownRect && !contains(c.rect,shownRect)) restoreShown();
+  lcd.putImageData(c.img[i],c.rect.x,c.rect.y); note(c.rect); shownRect=c.rect;
+}
+function pushFull(){ lcd.putImageData(baseFull,0,0); note({x:0,y:0,w:W,h:W}); shownRect=null; }
+
+// ---------- 模擬：歌曲與能量 ----------
+const SONGS=[  // BPM 是 records/song_bpm.json 裡 Mac 實際估出來的值
+  {title:'派對動物',artist:'五月天',dur:233,bpm:136},
+  {title:'小幸運',artist:'田馥甄',dur:265,bpm:80},
+  {title:'倔強',artist:'五月天',dur:262,bpm:158},
+  {title:'龍捲風',artist:'周杰倫',dur:249,bpm:71},
+  {title:'光年之外',artist:'G.E.M. 鄧紫棋',dur:235,bpm:88},
+  {title:'說好的幸福呢（誤判示範：慢歌被估成 120）',artist:'周杰倫',dur:254,bpm:120},
+  {title:'（還沒估出 BPM 的新歌）',artist:'—',dur:240,bpm:null},
+]
+let songIdx=0, playing=true, pos=40, trackChanged=true, idleSinceSim=0, simNow=0;
+let ladder='sway', level=0, hist=[], gPhase=0, gNum=0, gIdxShown=-1, gIdx=0, frameNext=0, gPeriod=1, gBeats=2;
+
+// ---------- 三層狀態機 ----------
+const SYS=[
+  {k:'BOOT',n:'開機',clip:'boot',then:'STANDBY'},
+  {k:'STANDBY',n:'待機',clip:null},
+  {k:'LISTENING',n:'收聽',clip:'listen'},
+  {k:'PLAYING',n:'回應中',clip:'speak'},
+  {k:'ERROR',n:'錯誤',clip:'error'},
+];
+let sys='STANDBY', cur=null, asleep=false, nextAct=0, nextBlink=0, nextGlance=0, label='';
+function play(id,{once=true,onEnd=null}={}){ cur={clip:byId(id),i:0,next:performance.now(),once,onEnd}; }
+function setSys(k){
+  sys=k; SYS.forEach(s=>document.getElementById('st-'+s.k).setAttribute('aria-pressed',s.k===k));
+  const s=SYS.find(x=>x.k===k);
+  if(s.clip){ asleep=false; idleSinceSim=simNow; play(s.clip,{once:!!s.then,onEnd:s.then?()=>setSys(s.then):null}); }
+  else { cur=null; scheduleIdle(performance.now()); if(asleep) wake(); }
+}
+function scheduleIdle(t){ nextGlance=t+20000+Math.random()*20000; }
+function wake(){ asleep=false; idleSinceSim=simNow; }
+let actFlip=0, actDoneSong=-1;
+function randomAction(){ play(actFlip++%2===0?'look':'lookup'); }
+
+let lastTick=performance.now(), grooveNext=0;
+function tick(t){
+  const dt=(t-lastTick)/1000; lastTick=t;
+  simNow+=dt;
+  if(playing && !asleep){ pos+=dt; if(pos>=SONGS[songIdx].dur){ nextSong(); } }
+
+  const outro=playing && SONGS[songIdx].dur-pos<15;
+  const song=SONGS[songIdx];
+  // ---- 固定 24fps：每個 tick 剛好處理一格；落後太多就重新對齊，不追格（不跳格、不殘影）----
+  if(t<frameNext){ finish(t,outro); return; }
+  frameNext=(t-frameNext>200)?t+1000/FPS:frameNext+1000/FPS;
+
+  // ---- 律動相位：只靠 Mac 給的 BPM 數格子，不追拍子 ----
+  const mode=(playing&&song.bpm>=BPM_NOD&&!outro)?'nod':'sway';     // 全看 BPM：≥100 點頭，其他（含沒有 BPM）搖擺
+  if(mode==='nod'){
+    // 每幾拍點一次：挑 1/2/4 拍裡最接近「一次 1 秒」的。Mac 估錯一倍或一半也沒差，都會落到差不多 1 秒
+    gBeats=[1,2,4].reduce((a,b)=>Math.abs(60*b/song.bpm-1)<Math.abs(60*a/song.bpm-1)?b:a);
+    gPeriod=60*gBeats/song.bpm;
+  } else { gBeats=8; gPeriod=song.bpm?60*8/song.bpm:6.5; }
+  if(mode!==ladder){ ladder=mode; gPhase=0; gNum=0; }
+  if(playing&&!cur){ gPhase+=1/(FPS*gPeriod); if(gPhase>=1){ gPhase-=1; gNum++; } }
+  let neutral=false;
+  if(mode==='nod'){
+    const ph=gPhase, depth=ph<0.45?ss(ph/0.45):1-ss((ph-0.45)/0.55);   // 落下 45%、抬起 55%
+    let A=(gNum%2===0)?1.0:0.6;                                              // 一重一輕
+    if(playing&&SONGS[songIdx].dur-pos<15) A*=Math.max(0,(song.dur-pos)/15);
+    gIdx=Math.round(A*depth*(NOD_P-1)); neutral=gIdx===0;
+  } else {
+    gIdx=Math.round((Math.sin(2*Math.PI*gPhase)+1)/2*(SW_N-1)); neutral=Math.abs(gIdx-(SW_N-1)/2)<=1;
+  }
+  hist.push([t,playing&&!cur?(mode==='nod'?gIdx/(NOD_P-1):gIdx/(SW_N-1)):null,gPhase<1/(FPS*gPeriod)]); hist=hist.filter(h=>t-h[0]<8000);
+
+  // 第 1 層或一次性片段正在播
+  const sysClip=SYS.find(x=>x.k===sys).clip;
+  if(cur){
+    const c=cur.clip;
+    pushFrame(c,cur.i); cur.i++;
+    if(cur.i>=c.count){
+      if(cur.once){ const end=cur.onEnd; cur=null; gIdxShown=-1; if(end) end(); else if(!playing) { if(!asleep) pushFrame(byId('still'),0); } }
+      else cur.i=c.loopFrom||0;
+    }
+  }
+  else if(!sysClip){
+    if(playing){
+      // 第 2 層：其他動作只在頭回到中立姿勢時切入
+      if(trackChanged && (neutral||gIdxShown<0)){ trackChanged=false; actDoneSong=-1; gPhase=0; gNum=0; play('newsong'); }
+      else if(actDoneSong!==songIdx && neutral && pos>song.dur*0.45 && pos<song.dur*0.65){ actDoneSong=songIdx; randomAction(); }  // 每首歌中段只演一次
+      else {
+        const clip=byId(mode);
+        if(gIdx!==gIdxShown || shownRect!==clip.rect){ gIdxShown=gIdx; level=gIdx; pushFrame(clip,gIdx); }
+      }
+    } else {
+      // 第 3 層：沒歌就靜止，偶爾轉頭看兩側；10 分鐘後只把背光壓暗（不另做睡著動畫）
+      asleep=simNow-idleSinceSim>600;
+      if(shownRect) pushFrame(byId('still'),0);
+      if(!asleep && t>=nextGlance){ play('look'); nextGlance=t+20000+Math.random()*20000; }
+    }
+  }
+  finish(t,outro);
+}
+function finish(t,outro){
+  // 背光：睡著時 35%
+  const blPct=+bl.value*(asleep?0.35:1);
+  lcdEl.style.filter=`brightness(${blPct/100})`;
+
+  drawOverlay(t); drawMeter(t); updateText(t, outro);
+  requestAnimationFrame(tick);
+}
+function nextSong(){ songIdx=(songIdx+1)%SONGS.length; songSel.value=songIdx; pos=0; trackChanged=true; }
+
+// ---------- 畫面周邊 ----------
+function drawOverlay(t){
+  ovc.clearRect(0,0,W,W);
+  flashes=flashes.filter(f=>t-f.t<350);
+  flashes.forEach(f=>{ ovc.globalAlpha=1-(t-f.t)/350; ovc.strokeStyle='#ff3df0'; ovc.lineWidth=1; ovc.strokeRect(f.x+.5,f.y+.5,f.w-1,f.h-1); });
+  ovc.globalAlpha=1;
+  pushes=pushes.filter(p=>t-p[0]<1000);
+  if(!drawOverlay.ls||t-drawOverlay.ls>250){
+    const px=pushes.reduce((a,p)=>a+p[1],0);
+    document.getElementById('sMs').textContent=(px*16/40e6*1000).toFixed(1)+' ms';
+    document.getElementById('sFps').textContent=pushes.length;
+    drawOverlay.ls=t;
+  }
+}
+const mc=document.getElementById('meter').getContext('2d');
+function drawMeter(t){
+  const w=600,h=140; mc.clearRect(0,0,w,h);
+  const y=v=>h-10-v*(h-24), X=tt=>w-(t-tt)/8000*w;
+  mc.strokeStyle='#3a4a40'; mc.lineWidth=2;
+  hist.forEach(p=>{ if(p[2]){ mc.beginPath(); mc.moveTo(X(p[0]),h); mc.lineTo(X(p[0]),h-8); mc.stroke(); } });
+  mc.strokeStyle='#8cd65a'; mc.lineWidth=2.5; mc.beginPath(); let pen=false;
+  hist.forEach(p=>{ if(p[1]==null){pen=false;return;} pen?mc.lineTo(X(p[0]),y(p[1])):mc.moveTo(X(p[0]),y(p[1])); pen=true; }); mc.stroke();
+  mc.fillStyle='#86948b'; mc.font='20px "JetBrains Mono", monospace';
+  const s=SONGS[songIdx];
+  mc.fillText(!playing?'沒有歌在播':ladder==='nod'?`BPM ${s.bpm} → 每 ${gBeats} 拍點一次（${gPeriod.toFixed(2)} 秒 = ${Math.round(gPeriod*FPS)} 格）`:`${s.bpm?'BPM '+s.bpm+' → 8 拍搖一輪':'沒有 BPM → 6.5 秒搖一輪'}`, 10, 26);
+}
+const layerEl=document.getElementById('layer'), icyEl=document.getElementById('icy');
+function updateText(t,outro){
+  let html;
+  const sysClip=SYS.find(x=>x.k===sys);
+  if(sysClip.clip) html=`<span class="chip l1">第 1 層</span> ${sysClip.n}`;
+  else if(playing && !asleep){
+    const what=cur?byId(cur.clip.id).name:(outro?'歌尾收束（律動漸弱）':`${ladder==='nod'?'律動 · 點頭（'+(gNum%2===0?'重':'輕')+'）':'律動 · 搖擺'}`);
+    html=`<span class="chip l2">第 2 層</span> ${what}`;
+  } else {
+    const what=asleep?'靜止，背光 35%':(cur?byId(cur.clip.id).name:'待機靜止');
+    const idleMin=Math.floor((simNow-idleSinceSim)/60);
+    html=`<span class="chip l3">第 3 層</span> ${what} <span class="mono" style="color:var(--muted);font-size:.75rem">沒歌 ${idleMin} 分</span>`;
+  }
+  if(layerEl.innerHTML!==html) layerEl.innerHTML=html;
+  const s=SONGS[songIdx], mm=v=>`${Math.floor(v/60)}:${String(Math.floor(v%60)).padStart(2,'0')}`;
+  icyEl.textContent=playing?`ICY P · ${s.title} — ${s.artist} · ${mm(pos)} / ${mm(s.dur)}`:'ICY S · 沒有歌在播';
+  document.querySelectorAll('#clips tr').forEach(tr=>{
+    const on=(cur&&tr.dataset.id===cur.clip.id)||(!cur&&playing&&!asleep&&tr.dataset.id===ladder);
+    tr.classList.toggle('on',on);
+  });
+}
+
+// ---------- 表格與容量 ----------
+const kb=b=>b>=1048576?(b/1048576).toFixed(2)+' MB':(b/1024).toFixed(0)+' KB';
+const LV={l1:'第 1 層',l2:'第 2 層',l3:'第 3 層'};
+function renderTable(){
+  const tb=document.getElementById('clips'); tb.innerHTML='';
+  CLIPS.forEach(c=>{
+    const sz=c.shareOf?0:(c.rect?c.uniq*c.rect.w*c.rect.h*2:0);
+    const tr=document.createElement('tr'); tr.dataset.id=c.id;
+    tr.innerHTML=`<td><span class="lv">${LV[c.layer]}</span>${c.name}</td><td>${c.use}</td><td class="n">${c.count}${c.uniq<c.count&&!c.shareOf?` <span style="color:var(--muted)">(存 ${c.uniq})</span>`:''}</td>`+
+      `<td class="n">${c.ladder?'依 BPM 挑格':(c.count/FPS).toFixed(1)+' 秒'}</td><td class="n">${c.rect?c.rect.w+'×'+c.rect.h:'—'}</td><td class="n">${c.shareOf?'共用':kb(sz)}</td>`;
+    tb.appendChild(tr);
+  });
+}
+function renderSizes(){
+  let bytes=W*W*2, frames=0;
+  CLIPS.forEach(c=>{ if(!c.shareOf && c.rect){ bytes+=c.uniq*c.rect.w*c.rect.h*2; frames+=c.uniq; } });
+  document.getElementById('sTotal').textContent=kb(bytes);
+  document.getElementById('sCount').textContent=frames+' 格';
+  const FLASH=9*1048576, over=bytes>BUDGET;
+  const pct=Math.min(100,bytes/(over?FLASH:BUDGET)*100);
+  document.getElementById('budb').style.width=pct+'%';
+  document.getElementById('bud').classList.toggle('over',over);
+  document.getElementById('sBudLabel').textContent=over
+    ?`超過 PSRAM 預算 3.4MB → 改放 flash 分區（9MB，用掉 ${Math.round(bytes/FLASH*100)}%）`
+    :`PSRAM 預算 3.4MB 以內（用掉 ${Math.round(bytes/BUDGET*100)}%）`;
+}
+
+// ---------- 控制項 ----------
+const seg=document.getElementById('states');
+SYS.forEach(s=>{
+  const b=document.createElement('button'); b.type='button'; b.id='st-'+s.k;
+  b.innerHTML=`${s.n}<span class="k">${s.k}</span>`; b.onclick=()=>setSys(s.k); seg.appendChild(b);
+});
+const songSel=document.getElementById('song');
+SONGS.forEach((s,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${s.title} — ${s.artist}（${s.bpm} BPM）`;songSel.appendChild(o);});
+songSel.onchange=()=>{ songIdx=+songSel.value; pos=0; trackChanged=true; if(!playing) togglePlay(); };
+const playBtn=document.getElementById('play');
+function togglePlay(){
+  playing=!playing; playBtn.textContent=playing?'停止播放':'開始播放';
+  if(playing){ trackChanged=true; if(asleep) wake(); }
+  else { idleSinceSim=simNow; cur=null; scheduleIdle(performance.now()); }
+}
+playBtn.onclick=togglePlay;
+document.getElementById('next').onclick=()=>{ if(!playing) togglePlay(); nextSong(); };
+document.getElementById('tail').onclick=()=>{ if(!playing) togglePlay(); pos=Math.max(0,SONGS[songIdx].dur-16); };
+document.getElementById('act').onclick=()=>{ if(!playing) togglePlay(); if(sys==='STANDBY') randomAction(); };
+document.getElementById('sleep').onclick=()=>{ if(playing) togglePlay(); idleSinceSim=simNow-601; };
+const bl=document.getElementById('bl'), blv=document.getElementById('blv');
+bl.oninput=()=>{blv.textContent=bl.value+'%';};
+document.getElementById('real').onchange=e=>{
+  document.getElementById('screen').classList.toggle('real',e.target.checked);
+  document.getElementById('cap').textContent=e.target.checked?'實際尺寸（依螢幕 DPI 約略）· 32.4mm':'放大顯示 · 顯示區直徑約 32.4mm';
+};
+document.getElementById('dither').onchange=e=>{ bake(e.target.checked); pushFull(); };
+
+bake(true);
+pushFull();
+setSys('BOOT');
+requestAnimationFrame(tick);
+})();
+</script>

@@ -109,3 +109,5 @@ marvin_comics*.html
 # car puck 韌體機密（範本見 secrets.h.example）
 firmware/car_puck/secrets.h
 firmware/car_puck/build/
+
+tools/puck_face/out/
