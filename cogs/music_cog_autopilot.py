@@ -452,7 +452,7 @@ class MusicAutopilotMixin:
             return 0
 
         try:
-            from associative_curation import curate_associative_song
+            from associative_curation import curate_associative_song, local_associative_candidates
             from associative_history import append_pick, is_repeat, is_resolved_repeat, load_recent_picks
             from music_recommender import is_already_recommended, ring_titles_for
             from track_quality import is_non_song_video
@@ -480,9 +480,28 @@ class MusicAutopilotMixin:
             core_artists = [a for a, _ in (taste_fp.get("core_artists") or [])][:8]
             recent_picks = load_recent_picks(now)
 
+            # 本地歌單（這群人點過的歌）給 LLM 優先挑；跳過/近期播過的不給
+            try:
+                _excl_vids = mm.get_skipped_video_ids() | mm.get_recently_played_video_ids(
+                    getattr(self, '_PLAYED_EXCLUDE_TTL_S', 7 * 24 * 3600))
+            except Exception:
+                _excl_vids = set()
+            local_cands = local_associative_candidates(
+                mm.all_songs() if mm else {}, members, exclude_titles, _excl_vids)
+            # 日記氣氛只內化（選歌可受影響，dj_line 不准講破，見 dj_mood_hint.py）
+            _mood_hint, _mood_names = "", set(members)
+            try:
+                from dj_mood_hint import build_mood_hint, latest_mood
+                _latest = latest_mood(await asyncio.to_thread(self._load_summary_entries), now)
+                if _latest is not None:
+                    _mood_names |= set(_latest[1])
+                    _mood_hint = build_mood_hint(_latest[0], _latest[1], members)
+            except Exception:
+                _mood_hint = ""
+
             # 3. LLM 關聯選曲
             try:
-                pick = await asyncio.wait_for(
+                picks = await asyncio.wait_for(
                     curate_associative_song(
                         utts,
                         core_artists=core_artists,
@@ -490,53 +509,73 @@ class MusicAutopilotMixin:
                         members=members,
                         call_fn=functools.partial(call_paid_review, caller="associative_curation"),
                         recent_picks=recent_picks,
+                        local_titles=[d for d, _ in local_cands],
+                        mood_hint=_mood_hint,
                     ),
                     timeout=_ASSOCIATIVE_LLM_TIMEOUT_S,
                 )
             except asyncio.TimeoutError:
                 logger.info(f"🎵 [AssociativePick] LLM 逾時 {_ASSOCIATIVE_LLM_TIMEOUT_S}s，走一般 autopilot")
                 return 0
-            if not pick:
+            if not picks:
                 return 0
 
-            if is_repeat(pick.song, recent_picks):
-                logger.info(f"🎵 [AssociativePick] LLM 選了 30 天內選過的《{pick.artist} - {pick.song}》，走一般 autopilot")
-                return 0
-
-            # 4. 解析 YouTube 影片與品質把關
-            query = f"{pick.artist} {pick.song}"
-            info = await self._resolve_yt_query(query)
-            if not info or not info.get('url'):
-                logger.info(f"🎵 [AssociativePick] YouTube 搜尋解析失敗: {query}")
-                return 0
-
-            _vid = extract_video_id(info.get('webpage_url') or info.get('url') or '') or ''
-            if is_resolved_repeat(info.get('title', ''), _vid, now):
-                logger.info(f"🎵 [AssociativePick] 解析結果《{info.get('title')}》30 天內選過，走一般 autopilot")
-                return 0
-
-            rejected, reason = is_non_song_video(info.get('title', ''), info.get('duration'))
-            if rejected:
-                logger.info(f"🛡️ [AssociativePick] 品質閘拒絕非歌曲影片({reason}): {info.get('title')}")
-                return 0
-
-            if self._check_song_duplicate(url=info.get('url', ''), title=info.get('title', ''),
-                                          username=spotlight, webpage_url=info.get('webpage_url', '')):
-                return 0
-
-            if is_already_recommended(info.get('title', ''), exclude_titles):
-                return 0
-
+            # 4. 逐首檢查候選，取第一首全部通過的
             from associative_curation import resolved_title_matches_pick
-            if not resolved_title_matches_pick(info.get('title', ''), pick.song):
-                logger.info(f"🎵 [AssociativePick] 解析到《{info.get('title')}》≠ LLM 選的《{pick.song}》，理由對不上，走一般 autopilot")
+            pick, info, _vid = None, None, ""
+            for _cand in picks:
+                _is_local = _cand.local_index is not None and _cand.local_index < len(local_cands)
+
+                if is_repeat(_cand.song, recent_picks):
+                    logger.info(f"🎵 [AssociativePick] 候選《{_cand.artist} - {_cand.song}》30 天內選過，換下一首")
+                    continue
+
+                query = local_cands[_cand.local_index][1]["webpage_url"] if _is_local else f"{_cand.artist} {_cand.song}"
+                _info = await self._resolve_yt_query(query)
+                if not _info or not _info.get('url'):
+                    logger.info(f"🎵 [AssociativePick] YouTube 搜尋解析失敗: {query}")
+                    continue
+
+                _cand_vid = extract_video_id(_info.get('webpage_url') or _info.get('url') or '') or ''
+                if is_resolved_repeat(_info.get('title', ''), _cand_vid, now):
+                    logger.info(f"🎵 [AssociativePick] 解析結果《{_info.get('title')}》30 天內選過，換下一首")
+                    continue
+
+                rejected, reason = is_non_song_video(_info.get('title', ''), _info.get('duration'))
+                if rejected:
+                    logger.info(f"🛡️ [AssociativePick] 品質閘拒絕非歌曲影片({reason}): {_info.get('title')}")
+                    continue
+
+                if self._check_song_duplicate(url=_info.get('url', ''), title=_info.get('title', ''),
+                                              username=spotlight, webpage_url=_info.get('webpage_url', '')):
+                    continue
+
+                if is_already_recommended(_info.get('title', ''), exclude_titles):
+                    continue
+
+                if not _is_local and not resolved_title_matches_pick(_info.get('title', ''), _cand.song):
+                    logger.info(f"🎵 [AssociativePick] 解析到《{_info.get('title')}》≠ LLM 選的《{_cand.song}》，理由對不上，換下一首")
+                    continue
+
+                pick, info, _vid = _cand, _info, _cand_vid
+                break
+
+            if pick is None:
+                logger.info(f"🎵 [AssociativePick] {len(picks)} 首候選都不合格，走一般 autopilot")
                 return 0
 
-            # 5. 標註欄位並入隊
+            # 5. 露餡檢查（讀氣氛不露餡，見 dj_mood_hint.py）
+            from dj_mood_hint import leaks_mood
+            _dj_line = pick.dj_line
+            if _dj_line and _mood_hint and leaks_mood(_dj_line, _mood_hint, _mood_names):
+                logger.info(f"🤫 [AssociativePick] dj_line 講破氣氛，改走一般 DJ 口白: {_dj_line[:40]!r}")
+                _dj_line = ""
+
+            # 6. 標註欄位並入隊
             info['requested_by'] = "Marvin推薦（對話靈感）"
             info['_lane'] = 'associative'
             info['_spotlight'] = spotlight
-            info['_dj_line'] = pick.dj_line
+            info['_dj_line'] = _dj_line
             info['_target_lyric'] = pick.target_lyric
             info['_explanation'] = pick.reason
             info['_round_first'] = True
@@ -547,7 +586,10 @@ class MusicAutopilotMixin:
                 if mm:
                     mm.add_recent_recommendation(_rt)
             self._republish_queue_snapshot()
-            logger.info(f"🎵 [AssociativePick] 成功入隊《{info.get('title')}》（話題: {pick.observed_topic}）")
+            logger.info(
+                f"🎵 [AssociativePick] 成功入隊《{info.get('title')}》"
+                f"（{'本地' if pick.local_index is not None else '提名'}，話題: {pick.observed_topic}）"
+            )
             return 1
         except Exception:
             logger.exception("[AssociativePick] 失敗，fallback 一般 autopilot")
