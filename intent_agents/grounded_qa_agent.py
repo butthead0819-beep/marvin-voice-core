@@ -389,6 +389,11 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     if callable(_note):
         _note(speaker)
 
+    _addr = getattr(ctrl, "_reply_address_prefix", None)
+    prefix = _addr(speaker) if callable(_addr) else ""
+    if not isinstance(prefix, str):   # MagicMock 回傳不算
+        prefix = ""
+
     asyncio.create_task(ctrl._play_ack("status", speaker=speaker))
 
     router = getattr(ctrl.bot, "router", None)
@@ -418,19 +423,19 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
 
     if res is None:
         ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 查不到) {topic}")
-        asyncio.create_task(ctrl.play_tts("這題我查不到。", already_in_channel=True))
+        asyncio.create_task(ctrl.play_tts(prefix + "這題我查不到。", already_in_channel=True))
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
                            "latency_ms": latency_ms, "source": source, "games": games})
-        if source == "session_followup":
-            _report = getattr(ctrl, "_wake_session_on_followup_result", None)
-            if callable(_report):
-                _report(speaker, False)
+        # 任何 source 都回報 WakeSession（regex 路徑查不到也要計數，否則 session 停不下來，10/17 事故）
+        _report = getattr(ctrl, "_wake_session_on_followup_result", None)
+        if callable(_report):
+            _report(speaker, False)
         return
 
     answer, sources = res
     ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA) {answer}")
-    asyncio.create_task(ctrl.play_tts(answer, already_in_channel=True))
+    asyncio.create_task(ctrl.play_tts(prefix + answer, already_in_channel=True))
     if ctrl.active_text_channel:
         src = f"\n_來源：{', '.join(sources)}_" if sources else ""
         asyncio.create_task(ctrl.active_text_channel.send(
@@ -439,10 +444,9 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
                        "query": topic, "answer": answer, "sources": sources,
                        "latency_ms": latency_ms, "downstream": "none", "source": source,
                        "games": games})
-    if source == "session_followup":
-        _report = getattr(ctrl, "_wake_session_on_followup_result", None)
-        if callable(_report):
-            _report(speaker, True)
+    _report = getattr(ctrl, "_wake_session_on_followup_result", None)
+    if callable(_report):
+        _report(speaker, True)
     logger.info(f"[AmbientQA] {speaker} 「{topic}」已回答（{latency_ms}ms, src={sources}）。")
 
 

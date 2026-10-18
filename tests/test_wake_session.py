@@ -170,6 +170,7 @@ def test_on_utterance_false_when_not_opened_even_after_await_window():
 @pytest.mark.parametrize("text", [
     "謝謝", "謝謝馬文", "知道了", "好了啦", "OK", "馬文 謝謝你", "了解！",
     "沒事了謝謝", "好了謝啦", "OK 謝謝馬文",
+    "嗯奧克嗯 OK", "不用了謝謝", "先這樣", "嗯，好了", "停", "結束了", "okay", "沒事",
 ])
 def test_is_closing_phrase_true(text):
     assert is_closing_phrase(text) is True
@@ -178,6 +179,8 @@ def test_is_closing_phrase_true(text):
 @pytest.mark.parametrize("text", [
     "謝謝你上次推薦的歌那首叫什麼", "好了沒", "知道了嗎他幾歲", "",
     "沒事了謝謝你上次推薦的歌", "好了上見",
+    "不用等一下啊，那天下禮拜去幹沒有那麼急", "停車場在哪", "OK 那你幫我查一下",
+    "可以了嗎", "嗯",
 ])
 def test_is_closing_phrase_false(text):
     assert is_closing_phrase(text) is False

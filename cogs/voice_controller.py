@@ -2376,7 +2376,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 立即播 filler（延遲遮掩）
         if raw_text:
             self._speaker_lang[speaker] = self._detect_text_lang(raw_text)
-        asyncio.create_task(self._play_ack("filler", speaker=speaker))
+        if not self._wake_session_captured(speaker):   # 🗣️ 連續對話接住的句子不疊 filler（10/17 每句疊 4 個聲音）
+            asyncio.create_task(self._play_ack("filler", speaker=speaker))
 
         # 多回合確認流程，回傳最終確認的問句
         confirmed_query = await self._confirmation_flow(speaker, timestamp, initial_text=raw_text, is_text_input=_is_text)
@@ -3302,7 +3303,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     # helper query：串流期間先不逐句念，收完整段後再決定整段念 or 短通知
                     pass
                 else:
-                    asyncio.create_task(self.play_tts(sentence, already_in_channel=True, emotion_tag=emotion_tag))
+                    self._speak_reply_sentence(speaker, sentence, first=(full_text == sentence), emotion_tag=emotion_tag)
 
                 if placeholder_msg:
                     try:
@@ -3315,11 +3316,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 logger.info(f"🔕 [Weak Filter] 偵測到弱回應『{full_text}』，替換為 in-character 台詞。")
                 full_text = replacement
 
-            # 🎚️ [Mid-song Answer] 音樂中逐句 play_tts 本就被 Stream Guard 靜音；收完整段後，
+            # 🎚️ [Mid-song Answer] 音樂中不逐句念（_speak_reply_sentence 跳過）；收完整段後，
             # 若整段夠短（≤ STREAM_BUDGET，= B 給 LLM 的音樂字數預算）一次性走熱切換注入發聲，
             # 過長則維持靜音、只留貼文。短答案才聽得到，避免長答案佔用音樂太久。
             if self.stream_mode and not tts_suppressed and full_text:
-                asyncio.create_task(self.speak(full_text, emotion_tag=emotion_tag))
+                asyncio.create_task(self.speak(self._reply_address_prefix(speaker, full_text) + full_text, emotion_tag=emotion_tag))
 
             # 🔍 [Helper Query] 非串流模式收完整段後：短答案整段念、長答案只念短通知
             # （完整內容已在文字貼文）。串流期間已 defer，這裡是唯一發聲點。
@@ -3328,7 +3329,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 if _mode == "notify":
                     logger.info(f"🔍 [Helper Query] {speaker} 長答案({len(full_text)}字)→貼文＋口播通知")
                 # information 類：唸完不被使用者開口中斷（用戶政策 tier 1）
-                asyncio.create_task(self.play_tts(_say, already_in_channel=True, emotion_tag=emotion_tag, protected=True))
+                asyncio.create_task(self.play_tts(self._reply_address_prefix(speaker, _say) + _say, already_in_channel=True, emotion_tag=emotion_tag, protected=True))
 
             if placeholder_msg:
                 if full_text:

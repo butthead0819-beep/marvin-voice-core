@@ -17,6 +17,7 @@ import logging
 import os
 import time
 
+from reply_address import address_prefix
 from tts_speak_policy import SpeakKind
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,26 @@ class WakeSessionMixin:
     def _wake_session_grounded_sticky(self, speaker) -> bool:
         session = getattr(self, "_wake_session", None)
         return session is not None and session.wants_grounded_followup(speaker)
+
+    def _wake_session_captured(self, speaker) -> bool:
+        """session 已開窗且是 target 的句子（免喚醒接住的追問）→ 不播 filler ack（提示音已表示在聽）。"""
+        session = getattr(self, "_wake_session", None)
+        return session is not None and session.target == speaker and session.opened
+
+    def _reply_address_prefix(self, speaker, text: str = "") -> str:
+        try:
+            members = self.get_online_members()
+        except Exception:
+            return ""
+        return address_prefix(speaker, members, text)
+
+    def _speak_reply_sentence(self, speaker, sentence: str, *, first: bool, emotion_tag: str = "neutral") -> None:
+        """串流回覆的逐句發聲。stream_mode（放歌中）不逐句念——結尾整段 speak 會念（否則念兩次，10/17）。
+        第一句多人在場前面加名字。"""
+        if self.stream_mode:
+            return
+        prefix = self._reply_address_prefix(speaker, sentence) if first else ""
+        asyncio.create_task(self.play_tts(prefix + sentence, already_in_channel=True, emotion_tag=emotion_tag))
 
     def _wake_session_on_replied(self, winner=None) -> None:
         session = getattr(self, "_wake_session", None)
