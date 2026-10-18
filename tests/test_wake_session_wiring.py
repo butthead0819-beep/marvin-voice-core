@@ -624,3 +624,17 @@ async def test_play_ack_speech_timeout_still_plays(monkeypatch):
     await cog._wake_session_play_ack("A")
 
     cog.play_dj_on_tts_layer.assert_called_once_with(WAKE_SESSION_ACK_PATH, peak=0.15)
+def test_process_query_task_filler_gated_by_wake_session_captured():
+    """C 接線守門：連續對話接住的句子不疊 filler ack（10/17）。"""
+    import inspect
+    from cogs.voice_controller import VoiceController
+    src = inspect.getsource(VoiceController._process_query_task)
+    assert "if not self._wake_session_captured(speaker):" in src
+
+
+def test_stream_response_mid_song_speak_has_address_prefix():
+    """E 接線守門：放歌中整段 speak 也要叫名字（逐句已被 D 跳過，這是唯一發聲點）。"""
+    import inspect
+    from cogs.voice_controller import VoiceController
+    src = inspect.getsource(VoiceController._stream_response)
+    assert "self.speak(self._reply_address_prefix(speaker, full_text) + full_text" in src
