@@ -235,3 +235,19 @@ def test_auto_balance_tick_kill_switch_on_by_default(monkeypatch):
     ProactiveSocialMixin._auto_balance_tick(s)
     ProactiveSocialMixin._auto_balance_tick(s)
     s._apply_auto_balance.assert_called_once_with(0.90)
+
+
+def test_auto_balance_tick_creates_state_lazily(monkeypatch):
+    """VoiceController.__init__ 不建狀態（防胖棘輪），第一次 tick 自己建。"""
+    from cogs.voice_controller_social import ProactiveSocialMixin
+    import time as time_mod
+
+    monkeypatch.delenv("MARVIN_AUTO_BALANCE", raising=False)
+    now = time_mod.time()
+    entries = [_entry("A" if i % 2 == 0 else "B", f"講話{i}", now - i) for i in range(20)]
+    s = _fake_social_self(entries, n_online=2)
+    del s._auto_balance_state
+    del s._balance_manual_at
+    ProactiveSocialMixin._auto_balance_tick(s)
+    ProactiveSocialMixin._auto_balance_tick(s)
+    s._apply_auto_balance.assert_called_once_with(0.90)

@@ -177,14 +177,17 @@ class ProactiveSocialMixin:
         """Active Music Balance：依聊天熱度設定平衡。只設值，不呼叫任何安裝 callback 的函式。"""
         if os.environ.get("MARVIN_AUTO_BALANCE", "1") == "0":
             return
-        from auto_balance import manual_hold_active, target_balance
+        from auto_balance import AutoBalanceState, manual_hold_active, target_balance
         if manual_hold_active(getattr(self, '_balance_manual_at', float('-inf')), time.monotonic()):
             return
         conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
         entries = conv_buf.get_history() if conv_buf else []
         n_online = len(self.get_online_members())
         target = target_balance(entries, n_online, time.time())
-        new = self._auto_balance_state.update(target, self.tts_balance)
+        state = getattr(self, '_auto_balance_state', None)
+        if state is None:  # 狀態放這裡不放 VoiceController.__init__（防胖棘輪）
+            state = self._auto_balance_state = AutoBalanceState()
+        new = state.update(target, self.tts_balance)
         if new is None:
             return
         self._apply_auto_balance(new)

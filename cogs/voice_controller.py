@@ -31,7 +31,6 @@ from ducking_agent import DuckingAgent
 from room_mood_state import RoomMoodStateStore
 from mood_agent import MoodAgent
 from bridge_agent import BridgeAgent
-from auto_balance import AutoBalanceState
 from intent_agents.memory_callback_agent import MemoryCallbackAgent
 from proactive_topic_agent import ProactiveTopicAgent
 from intent_agents.spontaneous_manzai_agent import SpontaneousManzaiAgent
@@ -559,8 +558,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._stream_mode_local = False           # fallback when MusicCog not loaded
         self._stream_volume_local = 0.10
         self._tts_balance_local = 0.50
-        self._balance_manual_at = float('-inf')
-        self._auto_balance_state = AutoBalanceState()
         self._stream_play_gen_local = 0
         self._current_stream_url_local = None
         self._stream_norm_gain_local: dict[str, float] = {}
