@@ -202,11 +202,21 @@ class MusicDJLyricsMixin:
         return f"{requester} 點的"
 
     @staticmethod
+    def _dj_narration_requester(info: dict) -> str:
+        """DJ 口白用的點播來源：個人歌單自動墊歌掛真人名，但不是本人當下點的，
+        口白一律當 autopilot（10/18 使用者：「我們大多數都是常常聽而已」）。"""
+        rec = info.get('_record_as') or ''
+        if info.get('_lane') == 'personal' and rec.startswith('Marvin'):
+            return rec
+        return info.get('requested_by') or ''
+
+    @staticmethod
     def _dj_source_line(requester: str) -> str:
         """DJ prompt 的點播來源行：真人點播 vs autopilot 講清楚（10/12：autopilot 被 LLM 講成「X 點的」）。"""
         requester = (requester or '').strip()
         if not requester.startswith('Marvin'):
-            return f"點播來源：{requester} 親自點的"
+            return (f"點播來源：{requester} 親自點的。只有這首是他這次點的；"
+                    f"講他平常的習慣只能說「常聽」，不准說常點、又點、總是點")
         m = re.fullmatch(r"Marvin推薦（為(.+)）", requester)
         if m:
             who = m.group(1)
@@ -562,6 +572,7 @@ class MusicDJLyricsMixin:
         requester = info.get('requested_by', '')
         if not requester:
             return None
+        dj_requester = self._dj_narration_requester(info)
 
         from dj_narration_orchestrator import autopilot_narration_focus
         _focus = autopilot_narration_focus(info)
@@ -600,7 +611,7 @@ class MusicDJLyricsMixin:
         self._attach_cached_canon(info)
         _clean_t, _clean_a = self._dj_clean_name(info)
         _song_label = f"{_clean_a} - {_clean_t}" if _clean_a else _clean_t
-        ctx = [f"歌曲：{_song_label or title}", self._dj_source_line(requester)]
+        ctx = [f"歌曲：{_song_label or title}", self._dj_source_line(dj_requester)]
         song_candidates: list[str] = []
         lyric_candidates: list[str] = []
         # 串場不提上一首（9/30 使用者定：專注寫下一首）——預抓時的「上一首」常因插播/
@@ -872,7 +883,7 @@ class MusicDJLyricsMixin:
             if len(text) != _raw_len:
                 logger.info(f"🧹 [DJ Prefetch] 口白清雜訊 {_raw_len}→{len(text)} 字")
 
-            from dj_prompt_builder import FORBIDDEN_DJ_PHRASES, claims_request
+            from dj_prompt_builder import FORBIDDEN_DJ_PHRASES, claims_frequent_request, claims_request
 
             # 9/30 使用者定：清雜訊後多長都完整播出，不截斷、不因超長退墊底（聽一段時間再調）。
             def _is_qualified_dj_script(s: str) -> bool:
@@ -883,16 +894,17 @@ class MusicDJLyricsMixin:
                         return False
                 return True
 
-            _is_autopilot = requester.startswith('Marvin')
-            _claims = bool(text) and _is_autopilot and claims_request(text)
+            _is_autopilot = dj_requester.startswith('Marvin')
+            _claims = bool(text) and (claims_request(text) if _is_autopilot else claims_frequent_request(text))
             if not text or not _is_qualified_dj_script(text) or _claims:
                 # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
                 _why = ("空字串" if not text else f"長度{len(text)}" if len(text) < 10
                         else "禁詞" if not _is_qualified_dj_script(text) else "點播掛名")
                 _disqualify = _why
                 logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
+                text = ""  # 不合格就丟掉；否則真人點播命中點播掛名時原句照播（下面只有 autopilot 會覆寫 text）
                 # 1. 優先嘗試 autopilot 模板（若為 Marvin 自己選歌）
-                if requester.startswith('Marvin'):
+                if dj_requester.startswith('Marvin'):
                     from song_name_clean import clean_title_regex
                     clean_title, clean_artist = self._dj_clean_name(info)
                     text = self._autopilot_dj_phrase(
@@ -906,7 +918,7 @@ class MusicDJLyricsMixin:
                 # 若仍無有效台詞或品質不符，採用 DJ Marvin 經典人設報幕
                 if not text or not _is_qualified_dj_script(text):
                     clean_title, clean_artist = self._dj_clean_name(info)
-                    suffix = self._dj_requester_suffix(requester)
+                    suffix = self._dj_requester_suffix(dj_requester)
                     if clean_artist:
                         text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{suffix}"
                     else:

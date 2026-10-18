@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from dj_prompt_builder import claims_request
+from dj_prompt_builder import claims_frequent_request, claims_request
 from dj_social_affinity import find_song_social_affinity
 from persona_loader import load_dj_templates
 from cogs.music_cog import MusicCog
@@ -43,7 +43,8 @@ def test_claims_request_allows_non_claim_text(text):
 
 def test_dj_source_line_human_requester():
     line = MusicCog._dj_source_line("狗與露")
-    assert line == "點播來源：狗與露 親自點的"
+    assert line.startswith("點播來源：狗與露 親自點的")
+    assert "常聽" in line
 
 
 def test_dj_source_line_autopilot_for_someone():
@@ -183,3 +184,153 @@ async def test_human_requester_dj_llm_claim_is_not_blocked():
     )
     assert result is not None
     assert result["text"] == human_text
+
+
+# ── claims_frequent_request（10/18 使用者定：真人點歌不准講成「常點/又點」）────
+
+@pytest.mark.parametrize("text", [
+    "weakgogo，看你又點了陶喆的歌。這節奏適合放空，就聽這首《沙灘》。",
+    "狗與露，你跟 showay 整天重複點播這首，看來是很適合這氛圍，那就《小半》。",
+    "狗與露，你總是在這裡點這首，聽聽這首《葉子》。",
+    "showay 常點 陳華的歌。",
+    "這首你點過 3 次了。",
+])
+def test_claims_frequent_request_detects_frequency_claims(text):
+    assert claims_frequent_request(text) is True
+
+
+@pytest.mark.parametrize("text", [
+    "這首是狗與露點的《能不能》。",
+    "showay 剛才點的，聽聽《Hotel California》。",
+    "來聽這首《命運點歌》。",
+    "看你又點頭了，十二點了。",
+    "",
+])
+def test_claims_frequent_request_allows_non_frequency_text(text):
+    assert claims_frequent_request(text) is False
+
+
+# ── _dj_narration_requester ───────────────────────────────────────────────
+
+def test_dj_narration_requester_personal_lane_uses_record_as():
+    info = {"requested_by": "狗與露", "_record_as": "Marvin推薦（為狗與露）", "_lane": "personal"}
+    assert MusicCog._dj_narration_requester(info) == "Marvin推薦（為狗與露）"
+
+
+def test_dj_narration_requester_human_request():
+    info = {"requested_by": "狗與露"}
+    assert MusicCog._dj_narration_requester(info) == "狗與露"
+
+
+def test_dj_narration_requester_personal_lane_without_record_as():
+    info = {"requested_by": "狗與露", "_lane": "personal"}
+    assert MusicCog._dj_narration_requester(info) == "狗與露"
+
+
+def test_dj_narration_requester_group_resonance_lane_unaffected():
+    info = {"requested_by": "Marvin推薦（點給大家）", "_lane": "group_resonance"}
+    assert MusicCog._dj_narration_requester(info) == "Marvin推薦（點給大家）"
+
+
+# ── _dj_requester_suffix 搭配 _dj_narration_requester ──────────────────────
+
+def test_dj_requester_suffix_for_personal_lane_is_autopilot_phrase():
+    info = {"requested_by": "狗與露", "_record_as": "Marvin推薦（為狗與露）", "_lane": "personal"}
+    suffix = MusicCog._dj_requester_suffix(MusicCog._dj_narration_requester(info))
+    assert suffix == "希望大家喜歡"
+
+
+# ── find_song_social_affinity：真人點歌素材字串不准帶「點」────────────────
+
+def test_social_affinity_human_requester_social_bridge_has_no_dian():
+    import tempfile
+    from music_memory import MusicMemory
+
+    songs = {
+        "https://www.youtube.com/watch?v=song4": {
+            "title": "稻香",
+            "uploader": "周杰倫",
+            "webpage_url": "https://www.youtube.com/watch?v=song4",
+            "total_plays": 3,
+            "plays": [{"by": "狗與露", "ts": 0}],
+            "requesters": {"showay": 2},
+            "likes": {},
+            "reactions": {},
+        }
+    }
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        mm = MusicMemory(tmp.name)
+        mm._data = {"songs": songs, "recommendations": {}}
+
+    info = {"title": "稻香", "webpage_url": "https://www.youtube.com/watch?v=song4"}
+    affinity = find_song_social_affinity(
+        mm, info, requester="狗與露", present_members={"showay"}
+    )
+    assert affinity == "這首 狗與露 常聽，在場的 showay 也常聽"
+    assert "點" not in affinity
+
+
+def test_social_affinity_artist_preference_has_no_dian():
+    import tempfile
+    from music_memory import MusicMemory
+
+    songs = {
+        "https://www.youtube.com/watch?v=song5": {
+            "title": "周杰倫 - 晴天",
+            "uploader": "周杰倫",
+            "webpage_url": "https://www.youtube.com/watch?v=song5",
+            "total_plays": 3,
+            "plays": [],
+            "requesters": {"狗與露": 3},
+            "likes": {},
+            "reactions": {},
+        },
+    }
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+        mm = MusicMemory(tmp.name)
+        mm._data = {"songs": songs, "recommendations": {}}
+
+    info = {"title": "周杰倫 - 稻香", "webpage_url": "https://www.youtube.com/watch?v=song6"}
+    affinity = find_song_social_affinity(
+        mm, info, requester="狗與露", present_members=set()
+    )
+    assert affinity == "狗與露 常聽 周杰倫 的歌"
+    assert "點" not in affinity
+    assert "常聽" in affinity
+
+
+# ── 接線：_fetch_dj_interjection_raw 真的用上個人歌單判定與頻率檢查 ──────────
+
+@pytest.mark.asyncio
+async def test_personal_shuffle_dj_llm_claim_gets_rejected():
+    """個人歌單墊歌（requested_by 是真人名）：LLM 講「狗與露點的」→ 照 autopilot 擋掉，context 不寫「親自點的」。"""
+    cog = _make_cog()
+    claim_text = "狗與露點的《If Only…》，休息一下吧。"
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value=claim_text)
+
+    result = await cog._fetch_dj_interjection_raw(
+        {"title": "If Only…", "uploader": "x", "requested_by": "狗與露",
+         "_record_as": "Marvin推薦（為狗與露）", "_lane": "personal",
+         "url": "https://example/x"}
+    )
+    assert result is not None
+    assert result["text"] != claim_text
+    assert "點的" not in result["text"]
+
+    context = cog.bot.router.generate_dynamic_system_msg.call_args.kwargs.get("context", "")
+    assert "親自點的" not in context
+    assert "點播來源：Marvin 自動選歌" in context
+
+
+@pytest.mark.asyncio
+async def test_human_requester_frequency_claim_gets_rejected():
+    """真人點播：LLM 講「又點了」→ 不能原樣播出。"""
+    cog = _make_cog()
+    freq_text = "weakgogo，看你又點了陶喆的歌。這節奏適合放空，就聽這首《沙灘》。"
+    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value=freq_text)
+
+    result = await cog._fetch_dj_interjection_raw(
+        _info(title="陶喆 - 沙灘", requester="weakgogo")
+    )
+    assert result is not None
+    assert result["text"] != freq_text

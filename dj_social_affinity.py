@@ -180,7 +180,7 @@ def find_song_social_affinity(
             if req_cnt > 0:
                 if is_bot:
                     return f"在場的 {m} 常聽這首"
-                return f"這首 {requester} 常聽，在場的 {m} 也常聽/點過"
+                return f"這首 {requester} 常聽，在場的 {m} 也常聽"
             # 按讚
             if m in (song.get("likes") or {}):
                 return f"在場的 {m} 也按過這首歌讚"
@@ -196,7 +196,7 @@ def find_song_social_affinity(
         if plays:
             last_play = plays[-1].get("ts")
             if isinstance(last_play, (int, float)) and (now - last_play) >= _RECENCY_DAYS_THRESHOLD:
-                return f"距 {requester} 上次點這首已經過了一陣子"
+                return f"距 {requester} 上次聽這首已經過了一陣子"
 
     # 3. 歌手偏好 (Artist Affinity)
     title = info.get("title", "")
@@ -213,7 +213,7 @@ def find_song_social_affinity(
                         artist_counts[u] = artist_counts.get(u, 0) + c
 
         if requester and artist_counts.get(requester, 0) >= _ARTIST_FREQ_THRESHOLD:
-            return f"{requester} 常點 {target_artist} 的歌"
+            return f"{requester} 常聽 {target_artist} 的歌"
 
         for m in members:
             if m and m != requester and "Marvin" not in m:
