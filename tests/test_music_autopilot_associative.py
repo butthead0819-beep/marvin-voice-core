@@ -551,7 +551,7 @@ async def test_dj_line_leaking_mood_is_cleared(monkeypatch):
     leaking_pick = AssociativePick(
         observed_topic="t", target_lyric="無", artist="美秀集團",
         song="手機錢包鑰匙菸", reason="無",
-        dj_line="showay剛才一直抱怨被重複問，這首給他壓壓驚。",
+        dj_line="剛才一片戲謔爭執，這首給大家壓壓驚。",
     )
     with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[leaking_pick])):
         n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)

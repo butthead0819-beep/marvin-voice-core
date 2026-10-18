@@ -82,7 +82,8 @@ async def test_fresh_mood_injected_into_context(monkeypatch):
     ctx = cog.bot.router.generate_dynamic_system_msg.call_args
     ctx_str = ctx.kwargs.get("context", "") if ctx else ""
     assert MOOD_HINT_HEADER in ctx_str
-    assert "熱絡｜showay 不爽隊友講不聽" in ctx_str
+    assert "熱絡" in ctx_str
+    assert "不爽隊友講不聽" not in ctx_str, "事件不准進 LLM context（10/19 live 實測會被換句話講出來）"
 
 
 # ── 2. 氣氛過期 → 不注入 ──────────────────────────────────────────────────────
@@ -104,8 +105,8 @@ async def test_stale_mood_not_injected(monkeypatch):
 @pytest.mark.asyncio
 async def test_leaked_mood_falls_back_to_template(monkeypatch):
     _no_quick(monkeypatch)
-    entry = _mood_entry("熱絡｜showay 不爽隊友講不聽", ["showay"], minutes_ago=2)
-    leak_text = "showay 遇到隊友講不聽很不爽，下一首給大家"
+    entry = _mood_entry("戲謔爭執｜showay 不爽隊友講不聽", ["showay"], minutes_ago=2)
+    leak_text = "現場一片戲謔爭執，下一首給大家緩一緩"
     cog = _make_cog(online_members=["showay"], life_entries=[entry], llm_text=leak_text)
 
     result = await cog._fetch_dj_interjection_raw(_info(requester="Marvin推薦"))

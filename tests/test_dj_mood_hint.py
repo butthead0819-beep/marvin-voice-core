@@ -76,14 +76,32 @@ def test_latest_mood_empty_list():
 
 # ── build_mood_hint ──────────────────────────────────────────────────────────
 
-def test_build_mood_hint_keeps_event_when_subject_present():
+def test_build_mood_hint_never_includes_event_even_if_subject_present():
+    """10/19：live 實測事件會被 LLM 換句話講出來（腰痛/找不到路），事件一律不給 LLM。"""
     hint = build_mood_hint("熱絡｜showay 不爽隊友講不聽", ["showay", "狗與露"], {"showay"})
-    assert hint == "熱絡｜showay 不爽隊友講不聽"
+    assert hint == "熱絡"
 
 
 def test_build_mood_hint_drops_event_when_subject_absent():
     hint = build_mood_hint("熱絡｜showay 不爽隊友講不聽", ["showay", "狗與露"], {"狗與露"})
     assert hint == "熱絡"
+
+
+def test_build_mood_hint_drops_tone_containing_present_name():
+    assert build_mood_hint("showay主導", ["showay"], {"showay"}) == ""
+
+
+def test_build_mood_hint_drops_tone_containing_diary_speaker_name():
+    assert build_mood_hint("大肚碎念", ["大肚", "showay"], {"showay"}) == ""
+
+
+def test_build_mood_hint_drops_tone_containing_roster_name():
+    # 名冊內的人就算不在在場名單、也不在日記 speakers 裡，也不准出現在提示裡
+    assert build_mood_hint("weakgogo狂衝", [], {"showay"}) == ""
+
+
+def test_build_mood_hint_event_only_gives_nothing():
+    assert build_mood_hint("-｜showay 不爽", ["showay"], {"showay"}) == ""
 
 
 def test_build_mood_hint_empty_when_nobody_from_diary_present():
@@ -108,7 +126,7 @@ def test_build_mood_hint_dash_tone_is_empty():
 
 def test_build_mood_hint_halfwidth_separator():
     hint = build_mood_hint("熱絡|showay 不爽隊友講不聽", ["showay"], {"showay"})
-    assert hint == "熱絡｜showay 不爽隊友講不聽"
+    assert hint == "熱絡"
 
 
 def test_build_mood_hint_present_none_does_not_crash():

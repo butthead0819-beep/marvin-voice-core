@@ -2,7 +2,8 @@
 
 使用者 2026-10-18 定：Marvin 讀得到氣氛，但不能講出來、不能暗示知道——像人類一樣
 不露餡地體會他人情緒。表現只透過語助詞、口語程度、句子長短、要不要鬧。
-氣氛行格式（ambient_diary prompt）：「基調｜情緒事件」，事件選填。
+氣氛行格式（ambient_diary prompt）：只寫基調（2-8 字），不准人名、不准事件。
+10/18 舊格式「基調｜情緒事件」的事件段在 build_mood_hint 一律丟掉。
 """
 from __future__ import annotations
 
@@ -40,28 +41,23 @@ def latest_mood(entries, now: float, max_age_s: float = MOOD_MAX_AGE_S) -> tuple
 
 
 def build_mood_hint(mood: str, speakers: list[str], present) -> str:
-    """把日記氣氛行濾成「只給 LLM 內心調語氣」的提示，event 主角不在場就丟事件。"""
+    """把日記氣氛行濾成「只給 LLM 內心調語氣」的提示：只留基調，不帶人名、不帶事件。
+
+    10/19 live 實測：給了「大肚抱怨腰痛」這種事件，LLM 會換句話講出來（「腰痛就先別動」），
+    字面檢查攔不住——LLM 沒看到的事才講不破。舊日記的「｜事件」段一律丟掉；
+    基調裡出現在場者／日記發言者／名冊成員的名字 → 整個不給。
+    """
+    from chat_summary_parser import DEFAULT_ROSTER
+
     present_set = set(present) if present else set()
-
-    sep = "｜" if "｜" in mood else ("|" if "|" in mood else None)
-    if sep is not None:
-        tone, _, event = mood.partition(sep)
-        tone, event = tone.strip(), event.strip()
-    else:
-        tone, event = mood.strip(), ""
-
+    tone = re.split(r"[｜|]", mood, maxsplit=1)[0].strip()
     if tone in ("", "-", "—", "無"):
-        tone = ""
-
+        return ""
     if speakers and not (set(speakers) & present_set):
         return ""
-
-    if event and not any(name and name in event for name in present_set):
-        event = ""
-
-    if tone and event:
-        return f"{tone}｜{event}"
-    return tone or event
+    if any(name and name in tone for name in present_set | set(speakers) | set(DEFAULT_ROSTER)):
+        return ""
+    return tone
 
 
 def mood_hint_ctx_lines(hint: str) -> list[str]:
