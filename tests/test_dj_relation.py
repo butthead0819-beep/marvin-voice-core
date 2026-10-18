@@ -164,9 +164,9 @@ def test_render_relation_respects_recent():
 def test_render_relation_no_artist_uses_title_only_song():
     lines = _relation_lines()
     rel = Relation("listens_song", "showay", "黃昏", "")
-    text, _tmpl = render_relation(rel, lines)
-    assert "《黃昏》" in text
-    assert "的《黃昏》" not in text
+    for _ in range(30):
+        text, tmpl = render_relation(rel, lines)
+        assert text == tmpl.format(who="showay", title="黃昏", artist="", anchor="", song="《黃昏》")
 
 
 @pytest.mark.parametrize("kind", ["listens_song", "group_listened", "anchor_song", "same_artist", "personal_list"])
@@ -269,3 +269,33 @@ def test_quick_segue_template_need_song_only_picks_song_templates():
     for n in (1, 2, 5):
         for _ in range(20):
             assert "{song}" in MusicCog._quick_segue_template(n, need_song=True)
+
+
+@pytest.mark.asyncio
+async def test_rare_song_with_relation_still_speaks_relation(monkeypatch):
+    """少播歌（focus=song）也要先講關係：relation 排在 song 之前。"""
+    _no_quick(monkeypatch)
+    cog = _make_cog(online_members=["showay", "狗與露"])
+    cog.bot.music_memory._data = {"songs": {"u1": _song("周傳雄 - 黃昏", {"showay": 3})}}
+    info = _autopilot_info()
+    info["_server_plays"] = 1
+    dj = await cog._fetch_dj_interjection_raw(info)
+    from cogs.music_cog import MusicCog
+    assert any(dj["text"].startswith(t.split("{")[0]) for t in MusicCog._RELATION_LINES["listens_song"])
+    assert "showay" in dj["text"]
+
+
+@pytest.mark.asyncio
+async def test_seed_title_becomes_anchor_relation(monkeypatch):
+    """T2 discovery 的種子歌（_seed_title）showay 常聽 → 講「常聽《堅持到底》」。"""
+    _no_quick(monkeypatch)
+    cog = _make_cog(online_members=["showay", "狗與露"])
+    cog.bot.music_memory._data = {"songs": {
+        "u2": _song("阿杜 - 堅持到底", {"showay": 3}, url="https://www.youtube.com/watch?v=bbbbbbbbbbb"),
+    }}
+    info = _autopilot_info()
+    info["_lane"] = "discovery"
+    info["_seed_title"] = "阿杜 - 堅持到底"
+    dj = await cog._fetch_dj_interjection_raw(info)
+    assert "《堅持到底》" in dj["text"]
+    assert "showay" in dj["text"]
