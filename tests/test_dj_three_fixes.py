@@ -154,3 +154,12 @@ async def test_dirty_stt_conv_line_excluded_from_llm_context(monkeypatch):
     assert call is not None
     ctx = call.kwargs.get("context", "") or (call.args[1] if len(call.args) > 1 else "")
     assert "o see so" not in ctx
+
+
+@pytest.mark.parametrize("text", [
+    "好啊對",                    # 只靠「中文 < 4 字」擋
+    "Okay so the build 我覺得好",  # 中文 4 字但比例 < 0.5，只靠比例擋
+    "馬文幫我放周杰倫的夜曲",      # 全中文，只靠「對 Marvin 下指令」擋
+])
+def test_usable_conv_text_each_rule_alone(text):
+    assert usable_conv_text(text) is False
