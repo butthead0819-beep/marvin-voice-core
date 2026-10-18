@@ -548,7 +548,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._radio_paused_local = False
         # 🎵 [Autoplay] — 狀態由 MusicCog 持有，透過 proxy property 存取
         self._recommend_spotlight_idx_local: int = -1
-        self._mood_sensor_local = None
         self._cover_blacklist_local = None
         self._round_track_count_local: int = 0
         self._round_size_local: int = 3

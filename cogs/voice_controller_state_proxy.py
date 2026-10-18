@@ -411,19 +411,6 @@ class StateProxyMixin:
             self._recommend_spotlight_idx_local = value
 
     @property
-    def _mood_sensor(self):
-        mc = self.bot.cogs.get('MusicCog')
-        return mc._mood_sensor if mc is not None else self._mood_sensor_local
-
-    @_mood_sensor.setter
-    def _mood_sensor(self, value) -> None:
-        mc = self.bot.cogs.get('MusicCog')
-        if mc is not None:
-            mc._mood_sensor = value
-        else:
-            self._mood_sensor_local = value
-
-    @property
     def _cover_blacklist(self):
         mc = self.bot.cogs.get('MusicCog')
         return mc._cover_blacklist if mc is not None else self._cover_blacklist_local

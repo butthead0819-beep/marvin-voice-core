@@ -423,23 +423,11 @@ class MarvinBot(commands.Bot):
 
             logger.info("[AmbientIntelligence] DiscordTemperatureMonitor + TopicGenerator initialized")
 
-            # Phase 1 M2: wire MoodSensor for vibe-aware autopilot
+            # social-catalyst week3: temperature_monitor 注入 MoodAgent（mood_sensor 已於 10/18 拔除）
             try:
-                from mood_sensor import MoodSensor
-                vc_cog._mood_sensor = MoodSensor(
-                    transcript_store=vc_cog._transcript_store,
-                    groq_client=groq_client,
-                    temperature_monitor=_temp_monitor,
-                    router=getattr(self, "router", None),  # 走 LLM Bus（5 provider + Gemini 兜底）
-                )
-                logger.info("[AmbientIntelligence] MoodSensor wired into VoiceController._mood_sensor")
-                # social-catalyst week3: 把 mood_sensor + temperature_monitor 注入 MoodAgent
-                vc_cog._mood_agent.wire_dependencies(
-                    mood_sensor=vc_cog._mood_sensor,
-                    temperature_monitor=_temp_monitor,
-                )
+                vc_cog._mood_agent.wire_dependencies(temperature_monitor=_temp_monitor)
             except Exception:
-                logger.exception("[AmbientIntelligence] MoodSensor wire failed — autopilot will fallback to no vibe")
+                logger.exception("[AmbientIntelligence] MoodAgent wire failed")
 
     async def on_ready(self):
         logger.info(f"🤖 馬文已連線。帳號: {self.user} (ID: {self.user.id})")

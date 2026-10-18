@@ -210,7 +210,7 @@ class ProactiveSocialMixin:
         if not self._speak_bus.agents():
             return  # 還沒有 agent 註冊（Week 1 基建期）→ 不打擾
         # P3: 跑 MoodAgent.observe() 先讓 mood_store 有最新訊號；下方 agent bid 才有東西讀
-        # mood_sensor 有 5 分鐘 cache，每 5s 跑代價極低
+        # MoodAgent.observe 只讀溫度（mood_sensor 已拔），每 5s 跑代價極低
         ch = self.active_text_channel
         if ch is not None:
             try:

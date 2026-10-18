@@ -208,7 +208,6 @@ class _FakeCog(MusicStoryArcMixin):
                                   "router": type("R", (), {"memory": None})()})()
         self.stream_history = []
         self.stream_queue = []
-        self._mood_sensor = None
         self._cover_blacklist = object()
         self._recommend_spotlight_idx = -1
         self._prefetch_cache = {}

@@ -2,8 +2,8 @@
 
 2026-06-12：llm_purpose_breakdown 最大戶 "wait_for"（43 筆/天）是歸因假象：
 _call_llm 的 frame 自動歸因抓到 asyncio.wait_for 而非真 caller。真身是
-mood_sensor / recall_handler / session_summarizer 三個呼叫點。修法＝顯式傳
-purpose=。其中 _classify_mood / summarize_window 在 BACKGROUND_PURPOSES 內，
+recall_handler / session_summarizer 等呼叫點。修法＝顯式傳
+purpose=。其中 summarize_window 在 BACKGROUND_PURPOSES 內，
 歸因修對後自動吃到背景降權（高峰把 Groq 留給 reactive）。
 """
 from __future__ import annotations
@@ -12,28 +12,6 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-
-@pytest.mark.asyncio
-async def test_mood_sensor_passes_classify_mood_purpose():
-    from mood_sensor import MoodSensor
-
-    router = MagicMock()
-    router._call_llm = AsyncMock(return_value="放鬆")
-    sensor = MoodSensor(
-        transcript_store=MagicMock(),
-        groq_client=MagicMock(),
-        temperature_monitor=MagicMock(),
-        router=router,
-    )
-
-    await sensor._classify_mood([
-        {"speaker": "狗與露", "text": "今天好累", "timestamp": time.time()},
-        {"speaker": "showay", "text": "喝杯茶吧", "timestamp": time.time()},
-    ])
-
-    router._call_llm.assert_awaited_once()
-    assert router._call_llm.call_args.kwargs.get("purpose") == "_classify_mood"
 
 
 @pytest.mark.asyncio
