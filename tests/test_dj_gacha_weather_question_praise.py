@@ -92,10 +92,29 @@ async def test_weather_items_present_none_is_empty():
     assert await weather_items(None) == []
 
 
+def _fake_weather(monkeypatch):
+    import dj_weather
+    monkeypatch.setattr(dj_weather, "load_member_cities", lambda: {"showay": "高雄", "狗與露": "台中"})
+
+    async def _fake_fetch(city):
+        return {"max": 30, "min": 25, "rain": 10}
+
+    monkeypatch.setattr(dj_weather, "fetch_daily", _fake_fetch)
+
+
 @pytest.mark.asyncio
 async def test_weather_items_env_off_is_empty(monkeypatch):
+    _fake_weather(monkeypatch)
     monkeypatch.setenv("MARVIN_DJ_WEATHER", "0")
     assert await weather_items({"showay"}) == []
+
+
+@pytest.mark.asyncio
+async def test_weather_items_skips_present_member_without_city(monkeypatch):
+    _fake_weather(monkeypatch)
+    monkeypatch.setenv("MARVIN_DJ_WEATHER", "1")
+    lines = await weather_items({"showay", "陌生人"})
+    assert lines == ["showay在高雄：今天25到30度，降雨機率10%"]
 
 
 # ── select_mode 扭蛋池含新 mode ─────────────────────────────────────────────
@@ -164,3 +183,22 @@ async def test_praise_mode_wired_into_llm_context(monkeypatch):
     assert call is not None
     ctx = call.kwargs.get("context", "") or (call.args[1] if len(call.args) > 1 else "")
     assert "熱情推這首歌" in ctx
+
+
+@pytest.mark.asyncio
+async def test_weather_mode_wired_into_llm_context(monkeypatch):
+    """cog 抓到的天氣行要一路進 DJMaterials → 扭蛋 → LLM context。"""
+    _fake_weather(monkeypatch)
+    monkeypatch.setenv("MARVIN_DJ_WEATHER", "1")
+    _weights(
+        monkeypatch,
+        life=0.0, interest=0.0, news=0.0, callback=0.0, activity=0.0, weather=1.0,
+        guide=0.0, conversation=0.0, perspective=0.0, atmosphere=0.0, quick=0.0,
+        question=0.0, praise=0.0,
+    )
+    cog = _make_cog(online_members=["showay", "狗與露"])
+    await cog._fetch_dj_interjection_raw(_info())
+    call = cog.bot.router.generate_dynamic_system_msg.call_args
+    assert call is not None
+    ctx = call.kwargs.get("context", "") or (call.args[1] if len(call.args) > 1 else "")
+    assert "狗與露在台中：今天25到30度" in ctx or "showay在高雄：今天25到30度" in ctx
