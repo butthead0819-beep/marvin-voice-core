@@ -212,10 +212,26 @@ def test_auto_balance_tick_skipped_during_manual_hold(monkeypatch):
 def test_auto_balance_tick_noop_when_kill_switch_off(monkeypatch):
     from cogs.voice_controller_social import ProactiveSocialMixin
 
+    import time as time_mod
+
     monkeypatch.setenv("MARVIN_AUTO_BALANCE", "0")
-    now = 1000.0
+    now = time_mod.time()  # 用真實時間：沒有 kill switch 時這組 entries 一定會套用 0.90
     entries = [_entry("A" if i % 2 == 0 else "B", f"講話{i}", now - i) for i in range(20)]
     s = _fake_social_self(entries, n_online=2)
     ProactiveSocialMixin._auto_balance_tick(s)
     ProactiveSocialMixin._auto_balance_tick(s)
     s._apply_auto_balance.assert_not_called()
+
+
+def test_auto_balance_tick_kill_switch_on_by_default(monkeypatch):
+    """對照組：同一組 entries 沒設 kill switch 會套用（證明上一個測試不是空轉）。"""
+    from cogs.voice_controller_social import ProactiveSocialMixin
+    import time as time_mod
+
+    monkeypatch.delenv("MARVIN_AUTO_BALANCE", raising=False)
+    now = time_mod.time()
+    entries = [_entry("A" if i % 2 == 0 else "B", f"講話{i}", now - i) for i in range(20)]
+    s = _fake_social_self(entries, n_online=2)
+    ProactiveSocialMixin._auto_balance_tick(s)
+    ProactiveSocialMixin._auto_balance_tick(s)
+    s._apply_auto_balance.assert_called_once_with(0.90)
