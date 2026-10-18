@@ -95,6 +95,16 @@ def test_build_mood_hint_drops_tone_containing_diary_speaker_name():
     assert build_mood_hint("大肚碎念", ["大肚", "showay"], {"showay"}) == ""
 
 
+def test_build_mood_hint_drops_tone_containing_non_roster_present_name():
+    # 名冊外的新人：靠在場名單擋
+    assert build_mood_hint("小明主導", [], {"小明"}) == ""
+
+
+def test_build_mood_hint_drops_tone_containing_non_roster_speaker_name():
+    # 名冊外的新人：在日記 speakers 裡但已離場，也不准出現
+    assert build_mood_hint("阿凱碎念", ["阿凱", "showay"], {"showay"}) == ""
+
+
 def test_build_mood_hint_drops_tone_containing_roster_name():
     # 名冊內的人就算不在在場名單、也不在日記 speakers 裡，也不准出現在提示裡
     assert build_mood_hint("weakgogo狂衝", [], {"showay"}) == ""

@@ -421,7 +421,10 @@ async def test_three_candidates_first_is_repeat_second_succeeds(monkeypatch):
         ),
     ]
 
+    resolved_queries = []
+
     async def _resolve_by_query(query: str):  # 解析結果跟著 query 走，第二首才會解析成第二首
+        resolved_queries.append(query)
         return {"title": query, "url": f"https://www.youtube.com/watch?v={abs(hash(query))}",
                 "webpage_url": f"https://www.youtube.com/watch?v={abs(hash(query))}", "duration": 210}
     host._resolve_yt_query = _resolve_by_query
@@ -432,6 +435,7 @@ async def test_three_candidates_first_is_repeat_second_succeeds(monkeypatch):
     assert n == 1
     assert len(host.stream_queue) == 1
     assert "披星戴月的想你" in host.stream_queue[0]["title"]
+    assert not any("手機錢包鑰匙菸" in q for q in resolved_queries), "30 天內選過的候選不該白跑 YouTube 解析"
 
 
 @pytest.mark.asyncio
