@@ -1452,9 +1452,18 @@ def build_text_app(vc, *, token: str | None = None, stream_token: str | None = N
         車機顯示曲名第一刀：request header 帶 Icy-MetaData:1 才啟用 ICY in-band
         metadata（見 marvin_voice_core/icy_meta.py），沒帶（Pi 的 ffmpeg 不帶這個
         header）→ 行為完全不變，不多送 icy-metaint。
+
+        presence=1＝串流連線即在場（手機電台 app 用，iOS 捷徑送不了 /car 心跳）：連上時 present(speaker)、每送出一塊音訊續期一次；斷線不主動 absent，交給 CarPresence TTL 收尾，短暫斷線（隧道、基地台切換、app 重連）不會讓 bot 撤離。speaker 走 resolve_device_speaker，不在白名單 → 400。
         """
         if stream_source is None:
             return web.Response(status=404, headers=_CORS)
+        presence_spk = None
+        if request.query.get("presence") == "1" and car_presence is not None:
+            presence_spk = resolve_device_speaker(
+                request.query.get("speaker"), device_speakers, default_speaker)
+            if presence_spk is None:
+                logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /audio_stream presence：speaker={request.query.get('speaker')!r}")
+                return web.json_response({"error": "unknown_speaker"}, status=400, headers=_CORS)
         icy_enabled = request.headers.get("Icy-MetaData") == "1"
         headers = {
             **_CORS, "Content-Type": "audio/mpeg",
@@ -1467,6 +1476,8 @@ def build_text_app(vc, *, token: str | None = None, stream_token: str | None = N
             headers["icy-metaint"] = str(ICY_METAINT)
         resp = web.StreamResponse(status=200, headers=headers)
         await resp.prepare(request)
+        if presence_spk is not None:
+            await car_presence.present(presence_spk)
         q = stream_source.subscribe()
         encoder = Mp3StreamEncoder(
             rate=stream_source.rate, channels=stream_source.channels,
@@ -1490,6 +1501,8 @@ def build_text_app(vc, *, token: str | None = None, stream_token: str | None = N
                         payload = build_now_playing_payload(info, start_time, now)
                     chunk = interleaver.feed(chunk, payload, now)
                 await resp.write(chunk)
+                if presence_spk is not None:
+                    await car_presence.present(presence_spk)
         except (ConnectionError, asyncio.CancelledError):
             # ConnectionError 涵蓋 BrokenPipeError/ConnectionResetError，也涵蓋 aiohttp
             # base_protocol._drain_helper 包裝後直接丟的通用 ConnectionError("Connection
@@ -1582,7 +1595,7 @@ def build_text_app(vc, *, token: str | None = None, stream_token: str | None = N
         # token 可走 X-Marvin-Token header 或 ?t=（控制台網頁跨網域呼叫方便）。
         # /stage_icon.png 額外放行：iOS 抓 apple-touch-icon（加入主畫面）不會帶 query token，
         # 其餘路徑行為完全不變。
-        # stream_token 只放行 /audio_stream（第三方電台 app 用，外流只能聽串流）。
+        # stream_token 只放行 /audio_stream（第三方電台 app 用，外流只能聽串流＋帶 presence=1 觸發上車）。
         if token and request.method != "OPTIONS" and request.path != "/stage_icon.png":
             tok = request.headers.get("X-Marvin-Token") or request.query.get("t")
             if tok != token and not (stream_token and request.path == "/audio_stream"
