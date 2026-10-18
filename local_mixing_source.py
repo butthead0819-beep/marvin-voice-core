@@ -68,6 +68,7 @@ class LocalMixingAudioSource(_BASE):
         self._balance = float(balance)  # 目標：0.50 = 50:50 平衡；0.60 = TTS 60% : Music 40%
         self._balance_cur = float(balance)
         self._balance_step = 0.02  # 逐幀 ramp（一次按鈕 0.1 → 5 幀 ~0.1s，防 click）
+        self._balance_step_active = self._balance_step
         self._duck_level = float(duck_level)
         self._duck_step = float(duck_step)
         self._tts_gain = float(tts_gain)  # TTS 層增益（2026-08-22 用戶要求：音樂/TTS 都恢復滿音量 1.0）
@@ -348,9 +349,9 @@ class LocalMixingAudioSource(_BASE):
                 self._interject_cur = max(_itarget, self._interject_cur - self._interject_step)
 
             if self._balance_cur < self._balance:
-                self._balance_cur = min(self._balance, self._balance_cur + self._balance_step)
+                self._balance_cur = min(self._balance, self._balance_cur + self._balance_step_active)
             elif self._balance_cur > self._balance:
-                self._balance_cur = max(self._balance, self._balance_cur - self._balance_step)
+                self._balance_cur = max(self._balance, self._balance_cur - self._balance_step_active)
             music_factor, tts_factor = self._balance_factors(self._balance_cur)
 
             layers = []
@@ -501,9 +502,15 @@ class LocalMixingAudioSource(_BASE):
         0.50 → (1.0, 1.0)；0.60 → (0.8, 1.0)；0.40 → (1.0, 0.8)。"""
         return min(1.0, 2.0 * (1.0 - balance)), min(1.0, 2.0 * balance)
 
-    def set_balance(self, balance: float) -> None:
-        """設定 TTS / Music 平衡比例 (0.0 ~ 1.0)。播放中逐幀漸變；閒置時直接到位（同 set_volume）。"""
+    def set_balance(self, balance: float, ramp_s: float = 0.0) -> None:
+        """設定 TTS / Music 平衡比例 (0.0 ~ 1.0)。播放中逐幀漸變；閒置時直接到位（同 set_volume）。
+        ramp_s>0 時在 ramp_s 秒內線性滑到位（自動平衡用）；預設 0 = 原本按鈕速度。"""
         b = max(0.0, min(1.0, float(balance)))
+        if ramp_s > 0:
+            frames = ramp_s / 0.02
+            self._balance_step_active = max(abs(b - self._balance_cur) / frames, 1e-4)
+        else:
+            self._balance_step_active = self._balance_step
         self._balance = b
         if self._music is None and not self._tts_queue and self._tts_cur is None:
             self._balance_cur = b

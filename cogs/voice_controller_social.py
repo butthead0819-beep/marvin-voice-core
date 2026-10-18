@@ -173,8 +173,31 @@ class ProactiveSocialMixin:
             tts_pushed=tts_pushed,
         ))
 
+    def _auto_balance_tick(self) -> None:
+        """Active Music Balance：依聊天熱度設定平衡。只設值，不呼叫任何安裝 callback 的函式。"""
+        if os.environ.get("MARVIN_AUTO_BALANCE", "1") == "0":
+            return
+        from auto_balance import manual_hold_active, target_balance
+        if manual_hold_active(getattr(self, '_balance_manual_at', float('-inf')), time.monotonic()):
+            return
+        conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
+        entries = conv_buf.get_history() if conv_buf else []
+        n_online = len(self.get_online_members())
+        target = target_balance(entries, n_online, time.time())
+        new = self._auto_balance_state.update(target, self.tts_balance)
+        if new is None:
+            return
+        self._apply_auto_balance(new)
+        tts_pct = int(round(new * 100))
+        logger.info(f"🎚️ [AutoBalance] 在線{n_online}人 → 語音 {tts_pct}% : 音樂 {100 - tts_pct}%")
+
     @tasks.loop(seconds=5.0)
     async def speak_bus_tick_loop(self):
+        if self.bot.voice_clients:
+            try:
+                self._auto_balance_tick()
+            except Exception:
+                logger.exception("[AutoBalance] tick raised")
         # 🤫 私語模式：聽>>講——SpeakBus 主動表演一律不 tick（narrow allowlist）
         if getattr(self, '_intimate_mode', False):
             return

@@ -12,6 +12,8 @@ fallback，於 __init__ 設定）。全是 self 存取的 descriptor，以 mixin
 """
 from __future__ import annotations
 
+import time
+
 from marvin_voice_core.playback_device import DiscordPlaybackDevice
 
 
@@ -127,6 +129,9 @@ class StateProxyMixin:
 
     @tts_balance.setter
     def tts_balance(self, value: float) -> None:
+        # 所有手動改平衡（控制卡按鈕 / 語音指令）都走這裡；自動平衡走
+        # _apply_auto_balance 不經這個 setter（不記手動時間、mixer 走慢速 ramp）。
+        self._balance_manual_at = time.monotonic()
         val = max(0.10, min(0.90, round(float(value), 2)))
         mc = self.bot.cogs.get('MusicCog')
         if mc is not None and hasattr(mc, 'tts_balance'):
@@ -136,6 +141,21 @@ class StateProxyMixin:
         if mixer is not None and hasattr(mixer, 'set_balance'):
             try:
                 mixer.set_balance(val)
+            except Exception:
+                pass
+
+    def _apply_auto_balance(self, value: float) -> None:
+        """自動平衡專用：同 setter 寫值但不記手動時間、mixer 用慢速 ramp。"""
+        from auto_balance import AUTO_BALANCE_RAMP_S
+        val = max(0.10, min(0.90, round(float(value), 2)))
+        mc = self.bot.cogs.get('MusicCog')
+        if mc is not None and hasattr(mc, 'tts_balance'):
+            mc.tts_balance = val
+        self._tts_balance_local = val
+        mixer = getattr(self, '_mixer', None)
+        if mixer is not None and hasattr(mixer, 'set_balance'):
+            try:
+                mixer.set_balance(val, ramp_s=AUTO_BALANCE_RAMP_S)
             except Exception:
                 pass
 
