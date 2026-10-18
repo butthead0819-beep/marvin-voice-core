@@ -23,6 +23,7 @@ def test_modes_registry_has_exactly_expected_names():
         "memory_match", "relation", "song", "life", "interest",
         "news", "callback", "activity", "guide",
         "conversation", "perspective", "atmosphere", "quick", "reason",
+        "weather", "question", "praise",
     }
     assert set(MODES.keys()) == expected
 

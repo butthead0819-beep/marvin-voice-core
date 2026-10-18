@@ -714,6 +714,11 @@ class MusicDJLyricsMixin:
             _autopilot_reason = self._autopilot_pick_reason(info) or ''
 
         callback_lines, callback_src = await self._present_callbacks(present_members)
+        try:
+            from dj_weather import weather_items as _dj_weather_items
+            weather_lines = await _dj_weather_items(present_members)
+        except Exception:
+            weather_lines = []
         from dj_presence_material import presence_materials
         _vc_now = self._vc()
         activity_lines = presence_materials(
@@ -756,6 +761,7 @@ class MusicDJLyricsMixin:
             news_items=news_items,
             news_context=news_context,
             callbacks=callback_lines, activities=activity_lines,
+            weather_items=weather_lines,
             has_guide=bool(guide), has_conversation=bool(conv_lines),
             perspective_topic=match_perspective_topic([e['text'] for e in conv_entries]),
             autopilot_reason=_autopilot_reason, relation_text=_relation_text, exclude_modes=used["modes"],

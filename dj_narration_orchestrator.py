@@ -108,6 +108,7 @@ class DJMaterials:
     news_items: list = field(default_factory=list)
     callbacks: list = field(default_factory=list)
     activities: list = field(default_factory=list)
+    weather_items: list = field(default_factory=list)
     has_guide: bool = False
     has_conversation: bool = False
     perspective_topic: str | None = None
@@ -250,6 +251,27 @@ def _render_perspective(topic, m: DJMaterials) -> list[str]:
     return out
 
 
+def _render_weather(topic, m: DJMaterials) -> list[str]:
+    return [
+        f"【天氣】在場的人那邊的天氣：\n・{topic}",
+        "開場鉤子：像電台主持人叫名字提醒他那邊今天的天氣，有提醒就一定要講到提醒，再自然帶進歌；只能講這裡寫的數字和天氣，不准自己補。",
+    ]
+
+
+def _render_question(topic, m: DJMaterials) -> list[str]:
+    return [
+        "串場方向：丟一個跟這首歌有關、輕鬆好回答的問題給在場的人（跟歌名、歌詞或聽歌的情境有關），問完直接帶進歌，不用等回答。"
+        "不准問隱私、健康、感情狀況，不准假設對方經歷過什麼，不准用「我」。",
+    ]
+
+
+def _render_praise(topic, m: DJMaterials) -> list[str]:
+    return [
+        "串場方向：像電台主持人熱情推這首歌，誇它好聽在哪（旋律、聲音、副歌的感覺）。"
+        "不准講年份、得獎、銷量、創作故事這類事實（除非下面素材有寫），不准用「我」「我挑的」。",
+    ]
+
+
 def _render_atmosphere(topic, m: DJMaterials) -> list[str]:
     return [m.env, "開場鉤子：緊扣現在的時間/地點氛圍切入，像是特別為這一刻準備的，不用硬掰別的話題。"]
 
@@ -280,6 +302,9 @@ MODES: dict[str, NarrationMode] = {
     "news": NarrationMode("news", "gacha", render=_render_news, tts_emotion="upbeat"),
     "callback": NarrationMode("callback", "gacha", render=_render_callback, on_chosen="consume_callback"),
     "activity": NarrationMode("activity", "gacha", render=_render_activity, tts_emotion="upbeat"),
+    "weather": NarrationMode("weather", "gacha", render=_render_weather, tts_emotion="upbeat"),
+    "question": NarrationMode("question", "gacha", render=_render_question, tts_emotion="upbeat"),
+    "praise": NarrationMode("praise", "gacha", render=_render_praise, tts_emotion="upbeat"),
     "guide": NarrationMode("guide", "gacha", render=_render_guide),
     "conversation": NarrationMode("conversation", "gacha", render=_render_conversation, on_chosen="consume_conversation"),
     "perspective": NarrationMode("perspective", "gacha", render=_render_perspective, on_chosen="consume_conversation"),
@@ -313,6 +338,7 @@ def choose_mode(materials: DJMaterials, store: TopicCooldownStore, rng=None) -> 
         news_items=materials.news_items,
         callbacks=materials.callbacks,
         activities=materials.activities,
+        weather_items=materials.weather_items,
         has_guide=materials.has_guide and materials.focus != "topic",
         exclude_modes=materials.exclude_modes,
         has_perspective=bool(materials.perspective_topic) and materials.has_conversation,
