@@ -13,7 +13,7 @@ _DJ_TEMPLATES 及其衍生常數（_DJ_EMPATHY_HOOK_TEMPLATES / _AUTOPILOT_DJ_PH
 _QUICK_SEGUE_TEMPLATES*）跟著搬進這裡：這些是 class-body 層級（非 self/cls）的
 衍生常數宣告，靠 Python 循序 class-body namespace 解析、不是 MRO——留在主檔會讓
 這裡的 _QUICK_SEGUE_TEMPLATES* 宣告在 import 時找不到 _DJ_TEMPLATES 炸
-NameError。所有消費者（_autopilot_dj_phrase 的 cls.X / _quick_segue_text 的
+NameError。所有消費者（_autopilot_dj_phrase 的 cls.X / _quick_segue_template 的
 cls.X / _fetch_dj_interjection_raw 的 self.X）都在這個檔案裡，搬過來後行為
 零改動；_autopilot_dj_phrase 已在前一個 commit 改成 classmethod + cls.，避免
 搬檔後硬寫 MusicCog 類名造成循環 import。
@@ -303,11 +303,12 @@ class MusicDJLyricsMixin:
     _QUICK_SEGUE_TEMPLATES_ENERGETIC = tuple(_DJ_TEMPLATES["quick_segue"]["energetic"])
 
     @classmethod
-    def _quick_segue_text(cls, n_online: int = 0) -> str:
+    def _quick_segue_template(cls, n_online: int = 0, recent=()) -> str:
         """沒有任何話題/素材可用時的本地過場模板——純接歌，跳過 LLM。
 
         n_online 決定語氣（跟原本 group-size ctx 提示同一套門檻），quick 模式
         沒有 LLM 可以照 ctx 調語氣，改本地挑模板池達到同樣效果。
+        回傳未代入的模板；recent 內的模板這次不選（池全被排除就整池可選）。
         """
         import random
         if n_online == 1:
@@ -316,7 +317,13 @@ class MusicDJLyricsMixin:
             pool = cls._QUICK_SEGUE_TEMPLATES_ENERGETIC
         else:
             pool = cls._QUICK_SEGUE_TEMPLATES
-        return random.choice(pool)
+        fresh = [t for t in pool if t not in recent] or list(pool)
+        return random.choice(fresh)
+
+    @staticmethod
+    def _quick_song_label(title: str, artist: str) -> str:
+        """quick 模板 {song} 代入值。"""
+        return f"{artist}的《{title}》" if artist else f"《{title}》"
 
     def _life_cores(self, entries, now: float,
                     present_speakers: set[str] | None = None) -> list:
@@ -599,8 +606,10 @@ class MusicDJLyricsMixin:
         conv_entries = []
         conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
         if conv_buf:
+            from dj_heat import usable_conv_text
             for entry in conv_buf.get_last_n_utterances(4):
-                if entry.get('speaker') != 'Marvin' and not self._dj_heat_bank().is_consumed(entry):
+                if (entry.get('speaker') != 'Marvin' and not self._dj_heat_bank().is_consumed(entry)
+                        and usable_conv_text(entry.get('text', ''))):
                     conv_lines.append(f"{entry['speaker']}：「{entry['text'][:25]}」")
                     conv_entries.append(entry)
 
@@ -862,7 +871,10 @@ class MusicDJLyricsMixin:
                 self._recent_dj_jokes = (list(getattr(self, '_recent_dj_jokes', ()))[-4:] + [joke_text])
         if not text and mode == "quick":
             # 沒有任何素材可用 → 本地固定模板直接接歌，跳過 LLM（零出錯風險、零延遲、零花費）。
-            text = self._quick_segue_text(_n_online)
+            _qt = self._quick_segue_template(_n_online, recent=getattr(self, '_recent_quick_templates', ()))
+            self._recent_quick_templates = (list(getattr(self, '_recent_quick_templates', ()))[-2:] + [_qt])
+            _qc_title, _qc_artist = self._dj_clean_name(info)
+            text = _qt.format(song=self._quick_song_label(_qc_title, _qc_artist))
             _source = "quick"
         if not text:
             # autopilot 與真人點歌共用這條 LLM 雞湯（走 tier=simple 免費層）。

@@ -217,10 +217,15 @@ def _render_news(topic, m: DJMaterials) -> list[str]:
     ]
 
 
+# 10/18：32% 對話串場把 STT 原句加引號照念（糊字、斷句一起念出來）
+_CONV_HEADER = "【你熟悉他的生活】頻道近期對話（語音辨識稿，常有錯字和斷句）：\n"
+_CONV_RULE = "對話只能用自己的話帶到看得懂的事：不准照抄原句、不准把對話加引號引用；看不懂、像亂碼的句子直接略過。"
+
+
 def _render_conversation(topic, m: DJMaterials) -> list[str]:
     out = []
     if m.conv_lines:
-        out.append("【你熟悉他的生活】頻道近期對話：\n" + '\n'.join(m.conv_lines))
+        out.append(_CONV_HEADER + '\n'.join(m.conv_lines) + "\n" + _CONV_RULE)
     out.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
     return out
 
@@ -231,7 +236,7 @@ def _render_perspective(topic, m: DJMaterials) -> list[str]:
     t = (cfg.get("topics") or {}).get(m.perspective_topic or "")
     out = []
     if m.conv_lines:
-        out.append("【你熟悉他的生活】頻道近期對話：\n" + '\n'.join(m.conv_lines))
+        out.append(_CONV_HEADER + '\n'.join(m.conv_lines) + "\n" + _CONV_RULE)
     if t:
         out.append(cfg["technique"])
         out.append(f"你心裡對「{m.perspective_topic}」的看法（只是角度，不是句子）：可以誇的是{t['praise']}；翻點是{t['flip']}")

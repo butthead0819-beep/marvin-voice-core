@@ -92,7 +92,7 @@ async def test_single_listener_gets_intimate_tone_hint():
     cog._dj_topic_cooldown_store.set_last_fallback("atmosphere")
     dj = await cog._fetch_dj_interjection_raw(_info())
     cog.bot.router.generate_dynamic_system_msg.assert_not_awaited()
-    assert dj["text"] in MusicCog._QUICK_SEGUE_TEMPLATES_INTIMATE
+    assert dj["text"] in {t.format(song=MusicCog._quick_song_label(*cog._dj_clean_name(_info()))) for t in MusicCog._QUICK_SEGUE_TEMPLATES_INTIMATE}
 
 
 # ── 2. 2-3 人：正常池（不干擾現有行為）──────────────────────────────────────
@@ -104,9 +104,9 @@ async def test_small_group_no_tone_hint():
     cog = _make_cog(online_members=["大肚", "狗與露"])
     cog._dj_topic_cooldown_store.set_last_fallback("atmosphere")
     dj = await cog._fetch_dj_interjection_raw(_info())
-    assert dj["text"] in MusicCog._QUICK_SEGUE_TEMPLATES
-    assert dj["text"] not in MusicCog._QUICK_SEGUE_TEMPLATES_INTIMATE
-    assert dj["text"] not in MusicCog._QUICK_SEGUE_TEMPLATES_ENERGETIC
+    assert dj["text"] in {t.format(song=MusicCog._quick_song_label(*cog._dj_clean_name(_info()))) for t in MusicCog._QUICK_SEGUE_TEMPLATES}
+    assert dj["text"] not in {t.format(song=MusicCog._quick_song_label(*cog._dj_clean_name(_info()))) for t in MusicCog._QUICK_SEGUE_TEMPLATES_INTIMATE}
+    assert dj["text"] not in {t.format(song=MusicCog._quick_song_label(*cog._dj_clean_name(_info()))) for t in MusicCog._QUICK_SEGUE_TEMPLATES_ENERGETIC}
 
 
 # ── 3. 4+ 人：live DJ 精簡節奏 ───────────────────────────────────────────────
@@ -118,7 +118,7 @@ async def test_large_group_gets_live_dj_tone_hint():
     cog = _make_cog(online_members=["大肚", "狗與露", "Alice", "Bob"])
     cog._dj_topic_cooldown_store.set_last_fallback("atmosphere")
     dj = await cog._fetch_dj_interjection_raw(_info())
-    assert dj["text"] in MusicCog._QUICK_SEGUE_TEMPLATES_ENERGETIC
+    assert dj["text"] in {t.format(song=MusicCog._quick_song_label(*cog._dj_clean_name(_info()))) for t in MusicCog._QUICK_SEGUE_TEMPLATES_ENERGETIC}
 
 
 # ── 5. 有話題素材時，group-size 語氣行仍照舊送進 LLM context ────────────────
