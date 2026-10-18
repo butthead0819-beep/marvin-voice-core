@@ -46,6 +46,19 @@ def claims_request(text: str) -> bool:
     return bool(_REQUEST_CLAIM_RE.search(stripped))
 
 
+# 真人點歌：「這次是 X 點的」是真的，但「又點/常點/總是點這首」是把常聽講成點（10/18 使用者定）。
+_FREQUENT_REQUEST_RE = re.compile(
+    r"常點|愛點|都點|又點(?!頭)|再點|重複點|一直點|老是點|總是[^，。！？]{0,6}點(?!頭|子)"
+    r"|點過(?!不)|點了(?:[0-9一二三兩幾好多]+次)|點播過"
+)
+
+
+def claims_frequent_request(text: str) -> bool:
+    """口白是否把「常聽」講成「常點/又點」。真人點歌串場命中就不合格。"""
+    stripped = re.sub(r"《[^》]*》", "《》", text or "")
+    return bool(_FREQUENT_REQUEST_RE.search(stripped))
+
+
 DJ_MEMORY_CLAIM_GUARD = (
     "**不考驗聽眾記憶**：聽眾自己聽過什麼、記不記得，只有他們自己知道——"
     "不要斷言聽眾聽過或沒聽過哪首歌；脈絡沒明講是聽眾自己點播的，就別說成是他點的。"

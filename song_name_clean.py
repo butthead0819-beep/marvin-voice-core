@@ -79,6 +79,19 @@ def _default_catalog_index(path: str = "records/music_catalog.json") -> dict:
         return {}
 
 
+_GENERIC_TOPIC_UPLOADERS = {"release"}
+
+
+def _artist_from_uploader(uploader: str) -> str:
+    """YouTube 自動頻道「XX - Topic」→ XX；XX 不是歌手（Release）→ ""。"""
+    name = (uploader or "").strip()
+    if name.endswith(" - Topic"):
+        name = name[: -len(" - Topic")].strip()
+        if name.lower() in _GENERIC_TOPIC_UPLOADERS:
+            return ""
+    return name
+
+
 def dj_display_name(
     info: dict,
     *,
@@ -101,4 +114,4 @@ def dj_display_name(
     if " - " in cleaned:  # 保留 "Artist - Title" 拆分（剝雜訊後才拆）
         artist, title = cleaned.split(" - ", 1)
         return title.strip(), artist.strip()
-    return cleaned, (info.get("artist") or info.get("uploader") or "").strip()
+    return cleaned, _artist_from_uploader(info.get("artist") or info.get("uploader") or "")

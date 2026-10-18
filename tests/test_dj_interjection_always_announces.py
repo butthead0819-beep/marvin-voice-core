@@ -191,12 +191,9 @@ async def test_dj_fallback_audio_render_attempted():
 # ── 5. DJ Marvin 人設（避免每路徑都跑回「專業電台 DJ」泛人設）─────────────────
 
 @pytest.mark.asyncio
-async def test_round_first_marvin_pick_passes_spotlight_to_llm():
-    """Marvin 自選走 LLM 雞湯（2026-07-17 改），spotlight 必須進 context。
-
-    掛名鐵則：LLM 只能照脈絡掛名，所以 spotlight 名字要餵進去它才掛得對。
-    （舊契約是 hardcoded 個人化短語不走 LLM，已被雞湯化取代；模板退為 fallback。）
-    """
+async def test_round_first_marvin_pick_no_vague_reason_to_llm():
+    """Marvin 自選、算不出具體關係（無播放紀錄）→ 走 LLM，但不給空泛推薦理由、不點名 spotlight
+    （10/18 使用者定：關係只由 dj_relation 依播放紀錄寫死，LLM 不得自己替人掛關係）。"""
     cog = _make_cog()
     info = _info(title="周杰倫 - 青花瓷", requester="Marvin")
     info["_round_first"] = True
@@ -207,7 +204,8 @@ async def test_round_first_marvin_pick_passes_spotlight_to_llm():
     assert call is not None, "autopilot 應走 LLM"
     assert call.args[0] == "dj_interjection"
     ctx = call.kwargs.get("context", "")
-    assert "狗與露" in ctx, f"spotlight 應進 LLM context: {ctx!r}"
+    assert "推薦理由" not in ctx, f"不該給空泛推薦理由: {ctx!r}"
+    assert "狗與露" not in ctx, f"無具體關係時不點名 spotlight: {ctx!r}"
     assert "青花瓷" in ctx, f"歌名應進 LLM context: {ctx!r}"
 
 

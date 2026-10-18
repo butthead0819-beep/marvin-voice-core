@@ -9,6 +9,7 @@ diary_comic/parser.py，砍掉漫畫日記功能時抽出來獨立，避免 DJ �
   【核心】：...
   【摘要】：
   - 說話者：...
+  【氣氛】：基調｜情緒事件
   【碎念】：...
 """
 from __future__ import annotations
@@ -35,6 +36,7 @@ class DiaryEntry:
     raw: str = ""
     salience: str = "中"   # 話題顯著度 高|中|低（summarizer 標；舊 entry 無→中）
     meme_id: str = ""      # 語義 meme tag（搬家/宿醉 等）；summarizer 標；無→""
+    mood: str = ""      # 氣氛行（基調｜情緒事件）；summarizer 標；無/"-"→""
 
 
 def _extract_after_marker(body: str, key: str) -> str:
@@ -83,6 +85,8 @@ def parse_log(text: str) -> list[DiaryEntry]:
         raw_meme = _extract_after_marker(body, "meme")
         # LLM 無法歸納時填「-」，視同空字串（走 text hash 冷卻）
         meme_id = "" if raw_meme in ("-", "—", "無") else raw_meme
+        raw_mood = _extract_after_marker(body, "氣氛")
+        mood = "" if raw_mood in ("-", "—", "無") else raw_mood
         entries.append(DiaryEntry(
             ts_str=ts_str,
             core=core,
@@ -90,6 +94,7 @@ def parse_log(text: str) -> list[DiaryEntry]:
             aside=_extract_after_marker(body, "碎念"),  # 6 月無碎念 → ""
             salience=(_extract_after_marker(body, "顯著度") or "中"),  # 舊 entry 無→中
             meme_id=meme_id,  # 新格式；無/"-" → ""（fail-open）
+            mood=mood,  # 新格式；無/"-" → ""（fail-open）
             raw=body,
         ))
 

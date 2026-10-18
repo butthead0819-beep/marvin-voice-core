@@ -144,6 +144,21 @@ def _isolate_record_writes(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _no_dj_weather_network(monkeypatch):
+    """DJ 天氣素材會打 Open-Meteo；測試一律關掉（要測的測試自己 setenv 回 1 並 mock fetch）。"""
+    monkeypatch.setenv("MARVIN_DJ_WEATHER", "0")
+
+
+@pytest.fixture(autouse=True)
+def _dj_always_on_modes_off(monkeypatch):
+    """question/praise 永遠進扭蛋池（10/18）；舊測試的池假設是「只剩 atmosphere/quick 墊底」，
+    預設把這兩個權重關 0。要測它們的測試自己把 MODE_WEIGHTS 設回 >0。"""
+    import dj_topic_selector
+    monkeypatch.setitem(dj_topic_selector.MODE_WEIGHTS, "question", 0.0)
+    monkeypatch.setitem(dj_topic_selector.MODE_WEIGHTS, "praise", 0.0)
+
+
 def make_music_cog_mock(*, stream_mode: bool = False, radio_mode: bool = False):
     """建一個 MusicCog mock，供需要操控 stream_mode/radio_mode 的測試使用。
 

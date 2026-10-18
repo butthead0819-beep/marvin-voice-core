@@ -113,37 +113,3 @@ class TestAutopilotDjPhrase:
         assert "Alice" in result and "天天" in result
         assert result.count("天天") == 1, f"anchor==title 不應重複歌名，got: {result!r}"
 
-
-@pytest.mark.asyncio
-async def test_dj_interjection_includes_spotlight(monkeypatch):
-    """_fetch_dj_interjection_raw 在 Marvin round_first 路徑，text 應含 spotlight 名。"""
-    from cogs.music_cog import MusicCog
-    cog = MusicCog.__new__(MusicCog)
-
-    # 最小 bot stub
-    bot = MagicMock()
-    bot.music_memory = None
-    bot.tts_engine = MagicMock()
-    bot.tts_engine.get_estimated_duration = MagicMock(return_value=3.0)
-
-    async def _fake_generate(t):
-        return None
-    bot.tts_engine.generate_audio = _fake_generate
-
-    cog.bot = bot
-
-    # _parse_song_title_artist 回傳固定值
-    cog._parse_song_title_artist = MagicMock(return_value=("天天", "陶喆"))
-
-    # TTS gate mock（回傳原文，未截斷）
-    with patch("tts_length_policy.truncate_for_tts", return_value=("天天陶喆text", False)):
-        info = {
-            'requested_by': 'Marvin推薦（為Alice）',
-            '_round_first': True,
-            '_spotlight': 'Alice',
-            'title': '天天',
-        }
-        result = await cog._fetch_dj_interjection_raw(info)
-
-    assert result is not None
-    assert "Alice" in result['text'], f"DJ text 缺少 spotlight，got: {result['text']!r}"

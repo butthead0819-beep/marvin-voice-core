@@ -15,7 +15,7 @@ ctx 段落由本模組的 MODES 註冊表驅動；文字 cascade 與 TTS 仍在 
 ## 決策圖
 
 ```
-DJMaterials ──► forced 層（order）：memory_match → song(focus)
+DJMaterials ──► forced 層（order）：memory_match → relation → song(focus)
                  └─ 命中即回傳，不進扭蛋（不碰 life/interest 冷卻）
              ──► gacha 層：委派 dj_topic_selector.select_mode（mark_used + last_fallback）
              ──► override 層：reason.override_when(chosen ∈ {quick, atmosphere} 且 autopilot_reason)
@@ -108,10 +108,12 @@ class DJMaterials:
     news_items: list = field(default_factory=list)
     callbacks: list = field(default_factory=list)
     activities: list = field(default_factory=list)
+    weather_items: list = field(default_factory=list)
     has_guide: bool = False
     has_conversation: bool = False
     perspective_topic: str | None = None
     autopilot_reason: str = ""
+    relation_text: str = ""
     exclude_modes: Collection[str] = ()
     # 以下只給 render 用（D10：吸收原 RenderCtx）
     env: str = ""
@@ -150,6 +152,10 @@ def _pick_memory_match(m: DJMaterials, store: TopicCooldownStore):
     if ev and "memory_match" not in m.exclude_modes and store.is_cool(ev):
         return ev, None
     return None
+
+
+def _pick_relation(m: DJMaterials, store: TopicCooldownStore):
+    return (None, None) if m.relation_text else None
 
 
 def _pick_song(m: DJMaterials, store: TopicCooldownStore):
@@ -217,10 +223,15 @@ def _render_news(topic, m: DJMaterials) -> list[str]:
     ]
 
 
+# 10/18：32% 對話串場把 STT 原句加引號照念（糊字、斷句一起念出來）
+_CONV_HEADER = "【你熟悉他的生活】頻道近期對話（語音辨識稿，常有錯字和斷句）：\n"
+_CONV_RULE = "對話只能用自己的話帶到看得懂的事：不准照抄原句、不准把對話加引號引用；看不懂、像亂碼的句子直接略過。"
+
+
 def _render_conversation(topic, m: DJMaterials) -> list[str]:
     out = []
     if m.conv_lines:
-        out.append("【你熟悉他的生活】頻道近期對話：\n" + '\n'.join(m.conv_lines))
+        out.append(_CONV_HEADER + '\n'.join(m.conv_lines) + "\n" + _CONV_RULE)
     out.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
     return out
 
@@ -231,13 +242,34 @@ def _render_perspective(topic, m: DJMaterials) -> list[str]:
     t = (cfg.get("topics") or {}).get(m.perspective_topic or "")
     out = []
     if m.conv_lines:
-        out.append("【你熟悉他的生活】頻道近期對話：\n" + '\n'.join(m.conv_lines))
+        out.append(_CONV_HEADER + '\n'.join(m.conv_lines) + "\n" + _CONV_RULE)
     if t:
         out.append(cfg["technique"])
         out.append(f"你心裡對「{m.perspective_topic}」的看法（只是角度，不是句子）：可以誇的是{t['praise']}；翻點是{t['flip']}")
     else:
         out.append("串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。")
     return out
+
+
+def _render_weather(topic, m: DJMaterials) -> list[str]:
+    return [
+        f"【天氣】在場的人那邊的天氣：\n・{topic}",
+        "開場鉤子：像電台主持人叫名字提醒他那邊今天的天氣，有提醒就一定要講到提醒，再自然帶進歌；只能講這裡寫的數字和天氣，不准自己補。",
+    ]
+
+
+def _render_question(topic, m: DJMaterials) -> list[str]:
+    return [
+        "串場方向：丟一個跟這首歌有關、輕鬆好回答的問題給在場的人（跟歌名、歌詞或聽歌的情境有關），問完直接帶進歌，不用等回答。"
+        "不准問隱私、健康、感情狀況，不准假設對方經歷過什麼，不准用「我」。",
+    ]
+
+
+def _render_praise(topic, m: DJMaterials) -> list[str]:
+    return [
+        "串場方向：像電台主持人熱情推這首歌，誇它好聽在哪（旋律、聲音、副歌的感覺）。"
+        "不准講年份、得獎、銷量、創作故事這類事實（除非下面素材有寫），不准用「我」「我挑的」。",
+    ]
 
 
 def _render_atmosphere(topic, m: DJMaterials) -> list[str]:
@@ -263,12 +295,16 @@ def _render_guide(topic, m: DJMaterials) -> list[str]:
 
 MODES: dict[str, NarrationMode] = {
     "memory_match": NarrationMode("memory_match", "forced", order=0, pick=_pick_memory_match, render=_render_memory_match),
-    "song": NarrationMode("song", "forced", order=1, pick=_pick_song),
+    "relation": NarrationMode("relation", "forced", order=1, pick=_pick_relation),
+    "song": NarrationMode("song", "forced", order=2, pick=_pick_song),
     "life": NarrationMode("life", "gacha", render=_render_life, tts_emotion="upbeat"),
     "interest": NarrationMode("interest", "gacha", render=_render_interest, tts_emotion="upbeat"),
     "news": NarrationMode("news", "gacha", render=_render_news, tts_emotion="upbeat"),
     "callback": NarrationMode("callback", "gacha", render=_render_callback, on_chosen="consume_callback"),
     "activity": NarrationMode("activity", "gacha", render=_render_activity, tts_emotion="upbeat"),
+    "weather": NarrationMode("weather", "gacha", render=_render_weather, tts_emotion="upbeat"),
+    "question": NarrationMode("question", "gacha", render=_render_question, tts_emotion="upbeat"),
+    "praise": NarrationMode("praise", "gacha", render=_render_praise, tts_emotion="upbeat"),
     "guide": NarrationMode("guide", "gacha", render=_render_guide),
     "conversation": NarrationMode("conversation", "gacha", render=_render_conversation, on_chosen="consume_conversation"),
     "perspective": NarrationMode("perspective", "gacha", render=_render_perspective, on_chosen="consume_conversation"),
@@ -302,6 +338,7 @@ def choose_mode(materials: DJMaterials, store: TopicCooldownStore, rng=None) -> 
         news_items=materials.news_items,
         callbacks=materials.callbacks,
         activities=materials.activities,
+        weather_items=materials.weather_items,
         has_guide=materials.has_guide and materials.focus != "topic",
         exclude_modes=materials.exclude_modes,
         has_perspective=bool(materials.perspective_topic) and materials.has_conversation,

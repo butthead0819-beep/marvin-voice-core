@@ -210,7 +210,7 @@ class MusicTailDJMixin:
                 f"⚠️ [Stream] _fetch_song_meta >{self._COLD_META_TIMEOUT_S}s timeout, "
                 f"用 hardcoded fallback (song={title}, by={requested_by})"
             )
-            suffix = self._dj_requester_suffix(requested_by)
+            suffix = self._dj_requester_suffix(self._dj_narration_requester(info))
             return {
                 "lyrics": None,
                 "comment": None,
@@ -560,7 +560,7 @@ class MusicTailDJMixin:
                         f"（佇列可能被插播/skip），放棄過期音檔以防報錯歌名"
                     )
                     clean_title, clean_artist = self._dj_clean_name(next_info)
-                    req_suffix = self._dj_requester_suffix(next_info.get('requested_by', ''))
+                    req_suffix = self._dj_requester_suffix(self._dj_narration_requester(next_info))
                     if clean_artist:
                         safe_text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{req_suffix}"
                     else:

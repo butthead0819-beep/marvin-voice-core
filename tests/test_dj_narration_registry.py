@@ -20,9 +20,10 @@ def test_apply_side_effects_is_not_a_coroutine_function():
 
 def test_modes_registry_has_exactly_expected_names():
     expected = {
-        "memory_match", "song", "life", "interest",
+        "memory_match", "relation", "song", "life", "interest",
         "news", "callback", "activity", "guide",
         "conversation", "perspective", "atmosphere", "quick", "reason",
+        "weather", "question", "praise",
     }
     assert set(MODES.keys()) == expected
 
@@ -61,7 +62,8 @@ def test_apply_side_effects_conversation_partially_consumed(tmp_path):
     )
     assert result.mode == "conversation"
     assert result.ctx_lines == [
-        "【你熟悉他的生活】頻道近期對話：\nAlice：「我也是」",
+        "【你熟悉他的生活】頻道近期對話（語音辨識稿，常有錯字和斷句）：\nAlice：「我也是」\n"
+        "對話只能用自己的話帶到看得懂的事：不准照抄原句、不准把對話加引號引用；看不懂、像亂碼的句子直接略過。",
         "串場方向：用剛才頻道對話的氣氛自然接過去就好，不用硬掰新話題。",
     ]
     assert bank.marked == [{"speaker": "Alice", "text": "我也是"}]

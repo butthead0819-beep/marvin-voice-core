@@ -188,27 +188,6 @@ async def test_human_story_not_truncated_to_short(monkeypatch):
     assert len(result["text"]) >= 55, f"故事被過度截斷: {result['text']!r}"
 
 
-@pytest.mark.asyncio
-async def test_marvin_autopilot_phrase_not_cut_to_garbage(monkeypatch):
-    """Marvin autopilot 短語（含長 YouTube 標題）不該被 5s 砍成殘句（如「狗與露」）——dj_story gate。
-
-    排除 quick，避免扭蛋池隨機落在本地模板，蓋掉這條測試要驗的 LLM 空手→autopilot
-    模板路徑。
-    """
-    _exclude(monkeypatch, "quick")
-    cog = _make_cog(est_per_char=0.3)
-    long_phrase = "狗與露，給你首新的《Jay Chou 周杰倫 Aurora in July 七月的極光》，接著剛才的氣氛慢慢聽"
-    assert len(long_phrase) >= 40
-    # autopilot 改走 LLM 雞湯後，模板退居 fallback：讓 LLM 空手以走到模板路徑。
-    cog.bot.router.generate_dynamic_system_msg = AsyncMock(return_value="")
-    cog._autopilot_dj_phrase = MagicMock(return_value=long_phrase)
-    info = _info(title="Jay Chou 周杰倫 Aurora in July 七月的極光", requester="Marvin推薦（為狗與露）")
-    result = await cog._fetch_dj_interjection_raw(info)
-    assert result is not None
-    # 舊 music_intro 5s → 砍成「狗與露」；dj_story gate 下應保留大部分
-    assert len(result["text"]) >= 35, f"Marvin autopilot 被砍成殘句: {result['text']!r}"
-
-
 # ── 3b. Marvin 自動推薦不當真人寫進「常聽的愛歌」喜好線索 ─────────────────────
 
 @pytest.mark.asyncio

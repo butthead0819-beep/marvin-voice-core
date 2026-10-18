@@ -149,7 +149,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
 
         # 🎵 [Phase 4] Autoplay / recommendation state (proxied from VoiceController)
         self._recommend_spotlight_idx: int = -1
-        self._mood_sensor = None
         self._cover_blacklist = None
         self._round_track_count: int = 0
         self._round_size: int = 3
@@ -797,10 +796,6 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 if isinstance(s, dict)
             ],
         }
-        if self._mood_sensor is not None:
-            cached_vibe = getattr(self._mood_sensor, "_cache", None)
-            if cached_vibe is not None:
-                extras["vibe_mood"] = getattr(cached_vibe, "mood", None)
         return extras
 
     async def _resolve_yt_query(self, query: str, force_fresh: bool = False) -> dict | None:

@@ -7,6 +7,8 @@ revival，改成熱聊時整段不講）。
 """
 from __future__ import annotations
 
+import re
+
 from dj_social_affinity import _ACTIVE_CHAT_WINDOW_S
 
 # 2026-10-02：原本借用 social_affinity 的 4 句，群聊中位數 16 句/3 分鐘 → 75% 串場只報歌名。
@@ -23,6 +25,24 @@ CONSUMED_MAX_AGE_S = 900.0
 def utterance_key(e: dict) -> tuple:
     """原句的識別鍵：同一人同一時戳視為同一句。"""
     return (e.get("speaker"), e.get("timestamp"))
+
+
+_CJK_RE = re.compile(r"[一-鿿]")
+
+
+def usable_conv_text(text: str) -> bool:
+    """這句 STT 能不能當 DJ 對話素材：濾掉網址、對 Marvin 下的指令、中文太少的糊字（如 "o see so don notet's come"）。
+    只管 DJ 素材，熱度計數不用它。"""
+    t = (text or "").strip()
+    if re.search(r"https?://|www\.", t, re.I):
+        return False
+    if re.match(r"(馬文|瑪文|marvin)", t, re.I):
+        return False
+    compact = re.sub(r"\s", "", t)
+    n_cjk = len(_CJK_RE.findall(compact))
+    if n_cjk < 4 or n_cjk / max(len(compact), 1) < 0.5:
+        return False
+    return True
 
 
 def _human_entries(entries, now: float, window_s: float) -> list:

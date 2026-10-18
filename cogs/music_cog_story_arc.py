@@ -210,19 +210,6 @@ class MusicStoryArcMixin:
                 if _n_assoc > 0:
                     return
 
-        vibe_filter = None
-        vibe_label = None
-        if self._mood_sensor is not None:
-            try:
-                self._mood_sensor.invalidate()
-                active_ch = vc.active_text_channel if vc is not None else None
-                guild_id = active_ch.guild.id if active_ch else 0
-                vibe_label = await self._mood_sensor.current_vibe(guild_id=guild_id)
-                vibe_filter = {"mood": vibe_label.mood, "topic": vibe_label.topic, "min_score": 0.0}
-                logger.info(f"🎵 [AutoRecommend] vibe={vibe_label.mood} (engagement={vibe_label.engagement:.2f}, source={vibe_label.source})")
-            except Exception as e:
-                logger.warning(f"⚠️ [AutoRecommend] vibe sensor 失敗，fallback to no vibe filter: {e}")
-
         bpm_filter = self._current_bpm_filter()
 
         # per-member 候選 → 跨使用者唯一歸屬：同一首歌只歸一人（round-robin 平手代表），
@@ -232,7 +219,6 @@ class MusicStoryArcMixin:
             songs=mm.all_songs(),
             exclude_titles=exclude_titles,
             now=time.time(),
-            vibe_filter=vibe_filter,
             bpm_filter=bpm_filter,
         )
         pool = assign_unique_owners(_member_pools, rotation_order=members).get(spotlight, [])
@@ -262,7 +248,7 @@ class MusicStoryArcMixin:
             _relaxed_pools = build_member_pools(
                 members=members, songs=mm.all_songs(),
                 exclude_titles=_t3_exclude,
-                now=time.time(), vibe_filter=vibe_filter, bpm_filter=bpm_filter,
+                now=time.time(), bpm_filter=bpm_filter,
             )
             relaxed_pool = assign_unique_owners(_relaxed_pools, rotation_order=members).get(spotlight, [])
             cands = pick_candidates(relaxed_pool, k=_k_buf, top_n=max(9, _k_buf))
@@ -377,6 +363,7 @@ class MusicStoryArcMixin:
             info['_lane'] = cand.lane
             info['_arc_role'] = cand.arc_role
             info['_anchor_title'] = cand.anchor_title
+            info['_seed_title'] = getattr(cand, 'discovery_seed_title', '') or ''
             # 🎯 推薦解釋：必須在這裡（record_play() 之前）算，不能等到真正播放時才算
             # ——mm.all_songs() 到那時已經把「現在正要播的這次」記進 plays[]，會把「你
             # 上次聽是 0 週前」這種自我指涉的假解釋算進去。這裡拿到的還是播放前的乾淨
@@ -402,12 +389,11 @@ class MusicStoryArcMixin:
             logger.info(f"🎵 [AutoRecommend] lane={cand.lane} role={cand.arc_role or '-'} round-#{enqueued+1}: {info['title']}")
             blurb = ""
             if enqueued == 0:
-                vibe_tag = f" [vibe: {vibe_label.mood}]" if vibe_label else ""
                 # 文案與掛名同規則：blurb 指名的人（target_member 優先）也要真的點過這首
                 _blurb_who = cand.target_member or spotlight
                 _personal = bool(_blurb_who) and mm.is_requester(info, _blurb_who)
                 blurb = self._recommend_blurb(cand, info['title'], spotlight=spotlight,
-                                              personal=_personal) + vibe_tag
+                                              personal=_personal)
                 # 2026-07-08 使用者：這段推薦文字不貼頻道了——推薦會播出來(DJ 語音)+有歌曲卡，文字多餘。
                 # blurb 仍計算，供日記/推薦紀錄 append_recommendation 用。
 
@@ -418,8 +404,6 @@ class MusicStoryArcMixin:
                 spotlight=spotlight, title=info['title'], lane=cand.lane, mode=cand.mode,
                 anchor_title=cand.anchor_title, blurb=blurb, now=time.time(),
                 channel_state_extras={
-                    "vibe_mood": vibe_label.mood if vibe_label else None,
-                    "vibe_engagement": round(vibe_label.engagement, 2) if vibe_label else None,
                     "queue_position": enqueued,
                     "round_first": info['_round_first'],
                     "queue_depth": len(self.stream_queue),
