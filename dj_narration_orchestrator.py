@@ -15,7 +15,7 @@ ctx 段落由本模組的 MODES 註冊表驅動；文字 cascade 與 TTS 仍在 
 ## 決策圖
 
 ```
-DJMaterials ──► forced 層（order）：memory_match → song(focus)
+DJMaterials ──► forced 層（order）：memory_match → relation → song(focus)
                  └─ 命中即回傳，不進扭蛋（不碰 life/interest 冷卻）
              ──► gacha 層：委派 dj_topic_selector.select_mode（mark_used + last_fallback）
              ──► override 層：reason.override_when(chosen ∈ {quick, atmosphere} 且 autopilot_reason)
@@ -112,6 +112,7 @@ class DJMaterials:
     has_conversation: bool = False
     perspective_topic: str | None = None
     autopilot_reason: str = ""
+    relation_text: str = ""
     exclude_modes: Collection[str] = ()
     # 以下只給 render 用（D10：吸收原 RenderCtx）
     env: str = ""
@@ -150,6 +151,10 @@ def _pick_memory_match(m: DJMaterials, store: TopicCooldownStore):
     if ev and "memory_match" not in m.exclude_modes and store.is_cool(ev):
         return ev, None
     return None
+
+
+def _pick_relation(m: DJMaterials, store: TopicCooldownStore):
+    return (None, None) if m.relation_text else None
 
 
 def _pick_song(m: DJMaterials, store: TopicCooldownStore):
@@ -268,7 +273,8 @@ def _render_guide(topic, m: DJMaterials) -> list[str]:
 
 MODES: dict[str, NarrationMode] = {
     "memory_match": NarrationMode("memory_match", "forced", order=0, pick=_pick_memory_match, render=_render_memory_match),
-    "song": NarrationMode("song", "forced", order=1, pick=_pick_song),
+    "relation": NarrationMode("relation", "forced", order=1, pick=_pick_relation),
+    "song": NarrationMode("song", "forced", order=2, pick=_pick_song),
     "life": NarrationMode("life", "gacha", render=_render_life, tts_emotion="upbeat"),
     "interest": NarrationMode("interest", "gacha", render=_render_interest, tts_emotion="upbeat"),
     "news": NarrationMode("news", "gacha", render=_render_news, tts_emotion="upbeat"),

@@ -301,9 +301,10 @@ class MusicDJLyricsMixin:
     _QUICK_SEGUE_TEMPLATES = tuple(_DJ_TEMPLATES["quick_segue"]["default"])
     _QUICK_SEGUE_TEMPLATES_INTIMATE = tuple(_DJ_TEMPLATES["quick_segue"]["intimate"])
     _QUICK_SEGUE_TEMPLATES_ENERGETIC = tuple(_DJ_TEMPLATES["quick_segue"]["energetic"])
+    _RELATION_LINES = dict(_DJ_TEMPLATES["relation_lines"])
 
     @classmethod
-    def _quick_segue_template(cls, n_online: int = 0, recent=()) -> str:
+    def _quick_segue_template(cls, n_online: int = 0, recent=(), need_song: bool = False) -> str:
         """沒有任何話題/素材可用時的本地過場模板——純接歌，跳過 LLM。
 
         n_online 決定語氣（跟原本 group-size ctx 提示同一套門檻），quick 模式
@@ -317,6 +318,8 @@ class MusicDJLyricsMixin:
             pool = cls._QUICK_SEGUE_TEMPLATES_ENERGETIC
         else:
             pool = cls._QUICK_SEGUE_TEMPLATES
+        if need_song:  # LLM 退路：一定要報出歌名
+            pool = [t for t in pool if "{song}" in t] or list(pool)
         fresh = [t for t in pool if t not in recent] or list(pool)
         return random.choice(fresh)
 
@@ -580,6 +583,7 @@ class MusicDJLyricsMixin:
         if not requester:
             return None
         dj_requester = self._dj_narration_requester(info)
+        _is_autopilot_dj = dj_requester.startswith('Marvin')
 
         from dj_narration_orchestrator import autopilot_narration_focus
         _focus = autopilot_narration_focus(info)
@@ -648,7 +652,7 @@ class MusicDJLyricsMixin:
         )
 
         affinity = find_song_social_affinity(mm, info, requester, present_members)
-        if affinity:
+        if affinity and not _is_autopilot_dj:
             song_candidates.append(f"喜好線索：{affinity}")
 
         spoken_match = None
@@ -660,7 +664,7 @@ class MusicDJLyricsMixin:
             spoken_match = find_spoken_taste_match(_suki_mem, _clean_t, _clean_a, _people)
         except Exception:
             spoken_match = None  # fail-open：記憶讀取失敗不影響 DJ
-        memory_evidence = (info.get('_state_reason') or '') or spoken_match or affinity or ""
+        memory_evidence = (info.get('_state_reason') or '') or spoken_match or ("" if _is_autopilot_dj else affinity) or ""
 
         # 🎵 歌曲素材：iTunes 正規化（歌手/歌名/專輯/年份，零幻覺）+ 長版導聆稿（查證過的真實資料）
         canon, guide = None, None
@@ -706,7 +710,7 @@ class MusicDJLyricsMixin:
         # autopilot 策展理由算在 mode 選擇之前：有理由可講時別讓它被 fallback 輪替
         # 排進 quick（quick 沒素材時直接跳過 LLM，會把這個好料浪費掉）。
         _autopilot_reason = ''
-        if requester.startswith('Marvin'):
+        if False:  # 10/18：空泛推薦理由不再進 prompt，改由關係句（dj_relation）
             _autopilot_reason = self._autopilot_pick_reason(info) or ''
 
         callback_lines, callback_src = await self._present_callbacks(present_members)
@@ -714,6 +718,31 @@ class MusicDJLyricsMixin:
         _vc_now = self._vc()
         activity_lines = presence_materials(
             getattr(getattr(getattr(_vc_now, 'voice_client', None), 'channel', None), 'members', None))
+
+        # 🔗 關係句（10/18）：autopilot 歌先講跟在場的人有什麼關係，只用播放紀錄算
+        _relation = None
+        if _is_autopilot_dj and mm is not None:
+            try:
+                from dj_relation import build_relation
+                from music_memory import extract_video_id
+                from song_name_clean import dj_display_name
+                _relation = build_relation(
+                    songs=mm._data.get('songs', {}), title=_clean_t, artist=_clean_a,
+                    present=present_members,
+                    display=lambda e: dj_display_name(e, extract_vid=extract_video_id),
+                    spotlight=info.get('_spotlight', '') or '',
+                    personal_user=(info.get('requested_by', '') if info.get('_lane') == 'personal' else ''),
+                    anchor_title=info.get('_seed_title') or (
+                        info.get('_anchor_title', '') if info.get('_lane') == 'spotlight' else ''),
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ [DJ Relation] 關係計算失敗，略過: {e}")
+                _relation = None
+        _relation_text, _relation_tmpl = "", ""
+        if _relation is not None:
+            from dj_relation import render_relation
+            _relation_text, _relation_tmpl = render_relation(
+                _relation, self._RELATION_LINES, recent=getattr(self, '_recent_relation_templates', ()))
 
         from dj_narration_orchestrator import (
             DJMaterials, apply_side_effects, match_perspective_topic, plan_narration,
@@ -729,7 +758,7 @@ class MusicDJLyricsMixin:
             callbacks=callback_lines, activities=activity_lines,
             has_guide=bool(guide), has_conversation=bool(conv_lines),
             perspective_topic=match_perspective_topic([e['text'] for e in conv_entries]),
-            autopilot_reason=_autopilot_reason, exclude_modes=used["modes"],
+            autopilot_reason=_autopilot_reason, relation_text=_relation_text, exclude_modes=used["modes"],
             env=env, conv_lines=conv_lines, guide=guide, song_card=_card,
             empathy_hooks=self._DJ_EMPATHY_HOOK_TEMPLATES,
         )
@@ -772,6 +801,20 @@ class MusicDJLyricsMixin:
         # guide 本身就是歌曲素材；quick 不走 LLM——這兩個 mode 不抽。
         _lyric_pick = None
         _facet, _facet_text = None, None
+        _relation_tail_material = None
+        if mode == "relation":
+            # 補一句歌本身用：只取歌詞或專輯資料
+            _album = next((l for l in song_candidates if l.startswith("歌曲資料：")), None)
+            _tail_opts = {}
+            if _lyric_line:
+                _tail_opts["lyric"] = f"歌詞：『{_lyric_line}』"
+            if _album:
+                _tail_opts["album"] = _album
+            from dj_narration_orchestrator import pick_song_facet
+            _tp = pick_song_facet(_tail_opts, exclude=used["facets"])
+            if _tp is not None:
+                _facet, _facet_text = _tp
+                _relation_tail_material = _facet_text
         if mode == "song":
             # 少播歌（10/4）：框架決定這首歌有哪些「歌本身」素材可用，扭蛋只在可用素材裡抽。
             # 不附選曲理由的 meta 套話、不附喜好線索/情感記錄（那是人的事）。沒有素材 → 本地模板。
@@ -806,7 +849,7 @@ class MusicDJLyricsMixin:
                 else:
                     ctx.append("串場方向：直接介紹這首歌本身，帶大家進入這首歌；只能用下面素材裡寫的事實，不准自己補細節或編故事，不提生活話題。不要說「挖出」「冷門」「比較少聽」「照你的口味」這類選歌過程的話。")
                     ctx.append(f"【這首歌】{_facet_text}")
-        elif mode not in ("guide", "quick"):
+        elif mode not in ("guide", "quick", "relation"):
             from dj_narration_orchestrator import pick_song_material
             _song_pick = pick_song_material(
                 song_candidates,
@@ -844,6 +887,33 @@ class MusicDJLyricsMixin:
             text = (info.get('_dj_line') or '').strip()  # 關聯選曲：直接使用 45-55 字金句串場詞，不重複燒 LLM
             if text:
                 _source = "associative"
+
+        if not text and mode == "relation" and _relation_text:
+            text = _relation_text
+            _source = "relation"
+            self._recent_relation_templates = (list(getattr(self, '_recent_relation_templates', ()))[-2:] + [_relation_tmpl])
+            if _relation_tail_material and _heat_mode != "active_chat":
+                try:
+                    _tail_ctx = "\n".join([
+                        f"歌曲：{_song_label or title}",
+                        f"這段口白的前半已經寫好：「{_relation_text}」",
+                        "你只寫接在後面的一句（25 字內），只講這首歌本身，素材如下：",
+                        _relation_tail_material,
+                        "不准提到任何人名、不准說誰常聽或誰點的、不准用「我」、不准重複前半句的歌名或歌手。只輸出那一句。",
+                    ])
+                    from dj_script_clean import clean_dj_script
+                    from dj_relation import valid_relation_tail
+                    _tail = clean_dj_script((await self.bot.router.generate_dynamic_system_msg(
+                        'dj_interjection', context=_tail_ctx)) or '').strip()
+                    _names = set(present_members or ()) | {info.get('_spotlight', '') or ''}
+                    if valid_relation_tail(_tail, _names):
+                        text = f"{_relation_text}{_tail}"
+                        _source = "relation+llm"
+                        _llm_raw = _tail
+                    else:
+                        logger.info(f"🔗 [DJ Relation] 補句不合格，只講關係句: {_tail[:40]!r}")
+                except Exception as e:
+                    logger.warning(f"⚠️ [DJ Relation] 補句失敗，只講關係句: {e}")
 
         # 🎭 [DJ Joke Interlude] 頻道安靜（非熱烈聊天）且距上次超過冷卻時間 → 這輪
         # crossfade 換成馬文式厭世冷笑話。改用「策展笑話庫 + 歌名拼音比對」（見
@@ -915,17 +985,15 @@ class MusicDJLyricsMixin:
                 _disqualify = _why
                 logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
                 text = ""  # 不合格就丟掉；否則真人點播命中點播掛名時原句照播（下面只有 autopilot 會覆寫 text）
-                # 1. 優先嘗試 autopilot 模板（若為 Marvin 自己選歌）
                 if dj_requester.startswith('Marvin'):
-                    from song_name_clean import clean_title_regex
-                    clean_title, clean_artist = self._dj_clean_name(info)
-                    text = self._autopilot_dj_phrase(
-                        info.get('_spotlight', ''), clean_title, clean_artist,
-                        lane=info.get('_lane', ''),
-                        anchor=clean_title_regex(info.get('_anchor_title', '')),
-                    )
+                    # 10/18：不再用 lane 的空泛模板（「X 會喜歡這首新歌」）；退本地接歌模板（帶歌名）
+                    _qt = self._quick_segue_template(_n_online, recent=getattr(self, '_recent_quick_templates', ()),
+                                                     need_song=True)
+                    self._recent_quick_templates = (list(getattr(self, '_recent_quick_templates', ()))[-2:] + [_qt])
+                    _qc_title, _qc_artist = self._dj_clean_name(info)
+                    text = _qt.format(song=self._quick_song_label(_qc_title, _qc_artist))
                     if text:
-                        _source = "autopilot_template"
+                        _source = "quick"
 
                 # 若仍無有效台詞或品質不符，採用 DJ Marvin 經典人設報幕
                 if not text or not _is_qualified_dj_script(text):
@@ -968,6 +1036,7 @@ class MusicDJLyricsMixin:
                 "llm_raw": _llm_raw,
                 "llm_cleaned": _llm_cleaned,
                 "disqualify": _disqualify,
+                "relation_kind": _relation.kind if _relation is not None else None,
                 "text": text,
                 "chars": len(text),
                 "audio_s": await probe_audio_seconds(audio_path),

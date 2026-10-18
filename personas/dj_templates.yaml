@@ -64,3 +64,34 @@ quick_segue:
     - 不停歌，{song}！
     - 繼續，{song}！
     - 換歌了，{song}，跟上！
+
+relation_lines:
+  # 10/18：autopilot 口白先講這首歌跟在場的人有什麼關係；{song}=「歌手的《歌名》」或「《歌名》」
+  # 不寫「最近/這陣子」：次數是全期累計，不代表最近
+  listens_song:
+    - "{who}，這首你很常放欸，{song}。"
+    - "又是這首！{who}的固定班底，{song}。"
+    - "{who}歌單裡出場率超高的這首，來，{song}。"
+    - "{who}應該一聽前奏就知道是哪首，{song}。"
+    - "老面孔了，{who}常聽的{song}。"
+  group_listened:
+    - "{who}都聽過的這首，{song}。"
+    - "這首在這裡放過好幾輪了，{who}應該都熟，{song}。"
+    - "{who}的共同回憶來了，{song}。"
+    - "{who}都有份的這首，{song}。"
+  anchor_song:
+    - "{who}常聽《{anchor}》嘛，這首{song}是同一個味道。"
+    - "既然{who}常聽《{anchor}》，這首{song}應該也對味。"
+    - "常聽《{anchor}》的{who}，接著聽這首{song}。"
+    - "{who}，跟你常聽的《{anchor}》放在一起剛剛好，{song}。"
+  same_artist:
+    - "{who}很常聽{artist}，換一首{artist}的《{title}》。"
+    - "{who}常聽{artist}嘛，這首《{title}》也是{artist}的。"
+    - "{artist}是{who}的愛將，來首《{title}》。"
+    - "又是{artist}！{who}常聽的歌手，這首《{title}》。"
+    - "{who}，{artist}的《{title}》，你應該會有感。"
+  personal_list:
+    - "{who}的歌單抽到這首，{song}。"
+    - "從{who}的歌單裡翻出來的，{song}。"
+    - "{who}的私房歌單，下一首{song}。"
+    - "繼續播{who}的歌單，{song}。"

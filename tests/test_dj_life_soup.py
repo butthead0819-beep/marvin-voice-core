@@ -283,13 +283,14 @@ async def test_autopilot_falls_back_to_template_when_llm_returns_empty():
 # ── 4. 掛名護欄：autopilot 改 LLM 後掛名不再是寫死的 ──────────────────────
 
 @pytest.mark.asyncio
-async def test_autopilot_context_carries_spotlight_for_attribution():
-    """掛名鐵則：LLM 只能照脈絡掛名 → spotlight 必須進 context，它才掛得對。"""
+async def test_autopilot_context_has_no_vague_reason_or_spotlight():
+    """10/18：autopilot 算不出具體關係時不給空泛理由、不點名 spotlight（關係只由 dj_relation 寫死）。"""
     cog = _make_cog()
     await cog._fetch_dj_interjection_raw(
         _info(requester="Marvin", _lane="long_tail", _spotlight="狗與露")
     )
-    assert "狗與露" in _ctx_str(cog)
+    assert "推薦理由" not in _ctx_str(cog)
+    assert "狗與露" not in _ctx_str(cog)
 
 
 def _dj_prompt_block() -> str:

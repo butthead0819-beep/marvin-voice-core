@@ -118,15 +118,3 @@ async def test_conversation_lines_present_when_mode_is_conversation(tmp_path, mo
     ctx = _ctx_str(cog)
     assert "頻道近期對話" in ctx
 
-
-@pytest.mark.asyncio
-async def test_autopilot_reason_becomes_main_material_when_mode_overridden(tmp_path, monkeypatch):
-    """quick/atmosphere 落選 + autopilot 有理由 → select_narration_mode 蓋成 "reason"，
-    這時「選這首的理由」是主素材，該進 ctx。"""
-    _only(monkeypatch, "quick")
-    cog = _cog_with_song_materials(tmp_path)
-    info = _info(title="周杰倫 - 夜曲", requester="Marvin推薦（為大肚）")
-    info["_explanation"] = "因為大肚最近常點這首"
-    await cog._fetch_dj_interjection_raw(info)
-    ctx = _ctx_str(cog)
-    assert "推薦理由：大家會喜歡這首《夜曲》，理由是因為大肚最近常點這首" in ctx

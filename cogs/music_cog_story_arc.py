@@ -377,6 +377,7 @@ class MusicStoryArcMixin:
             info['_lane'] = cand.lane
             info['_arc_role'] = cand.arc_role
             info['_anchor_title'] = cand.anchor_title
+            info['_seed_title'] = getattr(cand, 'discovery_seed_title', '') or ''
             # 🎯 推薦解釋：必須在這裡（record_play() 之前）算，不能等到真正播放時才算
             # ——mm.all_songs() 到那時已經把「現在正要播的這次」記進 plays[]，會把「你
             # 上次聽是 0 週前」這種自我指涉的假解釋算進去。這裡拿到的還是播放前的乾淨

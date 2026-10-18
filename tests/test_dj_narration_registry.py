@@ -20,7 +20,7 @@ def test_apply_side_effects_is_not_a_coroutine_function():
 
 def test_modes_registry_has_exactly_expected_names():
     expected = {
-        "memory_match", "song", "life", "interest",
+        "memory_match", "relation", "song", "life", "interest",
         "news", "callback", "activity", "guide",
         "conversation", "perspective", "atmosphere", "quick", "reason",
     }
