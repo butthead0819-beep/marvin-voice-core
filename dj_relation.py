@@ -6,7 +6,19 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Collection
 
-LISTEN_MIN = 3   # 「常聽」門檻：某人點這首/這位歌手 ≥3 次
+LISTEN_MIN = 3   # 「常聽」門檻：某人聽這首/這位歌手 ≥3 次
+
+# 10/18 使用者：「我們大多數都是常常聽而已」——autopilot 挑給 X 的播放（Marvin推薦（為X））也算 X 聽過；
+# 「點給大家」等其他 Marvin 掛名不算任何人。
+_FOR_WHO = re.compile(r"Marvin推薦（為(.+)）")
+
+
+def _listener(name: str) -> str:
+    """requesters 的 key → 聽的人；不屬於任何人回 ""。"""
+    m = _FOR_WHO.fullmatch(name or "")
+    if m:
+        return m.group(1)
+    return "" if "Marvin" in (name or "") else (name or "")
 
 
 @dataclass(frozen=True)
@@ -39,7 +51,8 @@ def song_counts(songs: dict, title: str, artist: str, *, display: Callable[[dict
         if norm_artist and norm_e_artist and norm_artist != norm_e_artist:
             continue
         for name, count in (entry.get("requesters") or {}).items():
-            if "Marvin" in name:
+            name = _listener(name)
+            if not name:
                 continue
             if not isinstance(count, int) or count <= 0:
                 continue
@@ -60,7 +73,8 @@ def artist_counts(songs: dict, artist: str, *, display: Callable[[dict], tuple[s
         if _norm(e_artist) != norm_artist:
             continue
         for name, count in (entry.get("requesters") or {}).items():
-            if "Marvin" in name:
+            name = _listener(name)
+            if not name:
                 continue
             if not isinstance(count, int) or count <= 0:
                 continue

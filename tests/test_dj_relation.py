@@ -50,11 +50,19 @@ def test_present_none_is_none():
     assert rel is None
 
 
-def test_marvin_requester_not_counted():
-    songs = {"u1": _song("周傳雄 - 黃昏", {"Marvin推薦（為showay）": 10})}
+def test_marvin_for_everyone_not_counted():
+    songs = {"u1": _song("周傳雄 - 黃昏", {"Marvin推薦（點給大家）": 10})}
     rel = build_relation(songs=songs, title="黃昏", artist="周傳雄",
                           present={"showay", "狗與露"}, display=_display)
     assert rel is None
+
+
+def test_marvin_picked_for_x_counts_as_x_listening():
+    """10/18：「我們大多數都是常常聽」——挑給 showay 聽的 3 次算 showay 常聽。"""
+    songs = {"u1": _song("周傳雄 - 黃昏", {"Marvin推薦（為showay）": 2, "showay": 1})}
+    rel = build_relation(songs=songs, title="黃昏", artist="周傳雄",
+                          present={"showay", "狗與露"}, display=_display)
+    assert rel == Relation("listens_song", "showay", "黃昏", "周傳雄")
 
 
 def test_group_listened_two_present_members():
