@@ -1158,7 +1158,8 @@ def parse_other_cards_param(raw: str | None) -> list[dict]:
     return out
 
 
-def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗與露",
+def build_text_app(vc, *, token: str | None = None, stream_token: str | None = None,
+                   default_speaker: str = "狗與露",
                    car_presence=None, audio_rate_limiter=None,
                    stream_source=None, location_state_path=None,
                    now_playing_state_path=None, claude_sessions_state_path=None,
@@ -1168,6 +1169,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
 
     純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
     （Tailscale 私網信任）；設了 token 就檢查 X-Marvin-Token header。
+    stream_token＝串流專用 token（MARVIN_STREAM_TOKEN），只放行 /audio_stream，給第三方電台 app 用；token=None 時不驗證，此參數無作用。
     location_state_path＝GPS 訊號存檔路徑（None＝用 location_state.DEFAULT_PATH，測試時
     傳 tmp_path 隔離）。
     now_playing_state_path＝跨進程現正播放橋接檔路徑（None＝用
@@ -1580,9 +1582,11 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         # token 可走 X-Marvin-Token header 或 ?t=（控制台網頁跨網域呼叫方便）。
         # /stage_icon.png 額外放行：iOS 抓 apple-touch-icon（加入主畫面）不會帶 query token，
         # 其餘路徑行為完全不變。
+        # stream_token 只放行 /audio_stream（第三方電台 app 用，外流只能聽串流）。
         if token and request.method != "OPTIONS" and request.path != "/stage_icon.png":
             tok = request.headers.get("X-Marvin-Token") or request.query.get("t")
-            if tok != token:
+            if tok != token and not (stream_token and request.path == "/audio_stream"
+                                     and tok == stream_token):
                 return web.json_response({"error": "unauthorized"}, status=401, headers=_CORS)
         return await handler(request)
 
@@ -1733,6 +1737,7 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
 
     port = int(os.getenv("MARVIN_TEXT_PORT", "8790"))
     token = os.getenv("MARVIN_TEXT_TOKEN", "").strip() or None
+    stream_token = os.getenv("MARVIN_STREAM_TOKEN", "").strip() or None
     default_speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
     # 車載裝置身分白名單（MARVIN_CAR_SPEAKERS）：裝置自己帶 speaker，這裡驗證成正式名字。
     device_speakers = parse_device_speakers(os.getenv("MARVIN_CAR_SPEAKERS", ""), default_speaker)
@@ -1797,7 +1802,8 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
         audio_rate_limiter = RateLimiter(max_per_window=30, window_s=60.0)
         logger.info("🚗 [CarMode] 車載模式啟用（/car present/absent + TTL 收尾 + /audio 限速）")
 
-    app = build_text_app(vc, token=token, default_speaker=default_speaker,
+    app = build_text_app(vc, token=token, stream_token=stream_token,
+                         default_speaker=default_speaker,
                          car_presence=car_presence,
                          audio_rate_limiter=audio_rate_limiter, stream_source=stream_source,
                          device_speakers=device_speakers)
