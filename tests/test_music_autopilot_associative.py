@@ -420,11 +420,18 @@ async def test_three_candidates_first_is_repeat_second_succeeds(monkeypatch):
             song="浪子回頭", reason="無", dj_line="第三首候選。",
         ),
     ]
+
+    async def _resolve_by_query(query: str):  # 解析結果跟著 query 走，第二首才會解析成第二首
+        return {"title": query, "url": f"https://www.youtube.com/watch?v={abs(hash(query))}",
+                "webpage_url": f"https://www.youtube.com/watch?v={abs(hash(query))}", "duration": 210}
+    host._resolve_yt_query = _resolve_by_query
+
     with patch("associative_curation.curate_associative_song", AsyncMock(return_value=picks)):
         n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
 
     assert n == 1
     assert len(host.stream_queue) == 1
+    assert "披星戴月的想你" in host.stream_queue[0]["title"]
 
 
 @pytest.mark.asyncio
