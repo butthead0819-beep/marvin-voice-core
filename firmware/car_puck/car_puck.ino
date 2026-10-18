@@ -76,10 +76,11 @@
 #include "icy_fields.h"        // 轉送給 WROOM 前砍掉第 9 欄（bpm）；WROOM 解析器規定剛好 8 欄
 
 // ========== 你要填的 ==========
-#define STEP 10  // ← 從 1 開始，每步綠了再 +1（10＝STEP 10 混音數學測試，見檔頭說明；
-                 // 想退回只有deck B解碼統計、已驗證過的狀態，改回 9；想退回只有指令
-                 // 輪詢，改回 8；想完全退回音訊路徑零改動的狀態，改回 7——每一層都
-                 // 不用改別的地方，重新燒錄即可）
+#define STEP 8   // ← 從 1 開始，每步綠了再 +1。2026-10-18 從 10 退回 8：edge-mix 已於
+                 // 10-08 移除（Mac mixer 混好 A/B/TTS 只送單一 /audio_stream），STEP 9/10
+                 // 的 deck B 兩個 task（24KB stack 佔內部 RAM，跟 TLS 搶）＋~1.1MB PSRAM
+                 // ring 全是閒置殘骸。8 的指令輪詢由 CMD_POLL_ENABLED=0 關著，等同 7＋
+                 // 後續功能。STEP 9/10 程式碼仍在，要重做 edge-mix 才改回去。
 
 // 2026-10-07：伺服器 MARVIN_CAR_HARDWARE=pi_bt 時沒有指令佇列，/car_commands 一律 404，
 // 但 commandPollTask 每 60s 仍新開一條 TLS 去問——每次握手吃 35–45KB 內部 RAM（Arduino 預編
