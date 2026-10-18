@@ -510,6 +510,100 @@ async def test_play_ack_waits_for_marvin_to_start_speaking_before_playing(monkey
     assert cog._mixer.tts_load_seconds.call_count > 6, "提示音不該在 Marvin 開口前就播"
 
 
+# ── C：_wake_session_captured（連續對話接住的句子不疊 filler ack）───────────
+
+def test_wake_session_captured_true_when_target_opened():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    assert cog._wake_session_captured("A") is True
+
+
+def test_wake_session_captured_false_for_other_speaker():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    assert cog._wake_session_captured("B") is False
+
+
+def test_wake_session_captured_false_when_not_opened_yet():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    assert cog._wake_session_captured("A") is False
+
+
+def test_wake_session_captured_false_when_no_session():
+    cog = _FakeCog()
+    cog._wake_session = None
+    assert cog._wake_session_captured("A") is False
+
+
+# ── D/E：_reply_address_prefix / _speak_reply_sentence ───────────────────────
+
+class _FakeSpeakCog(WakeSessionMixin):
+    def __init__(self, *, stream_mode, online_members):
+        self._wake_session = None
+        self._mixer = None
+        self._wake_response_pending = False
+        self.stream_mode = stream_mode
+        self._online_members = online_members
+        self.play_tts = AsyncMock()
+
+    def get_online_members(self):
+        return self._online_members
+
+
+@pytest.mark.asyncio
+async def test_speak_reply_sentence_stream_mode_skips_play_tts():
+    cog = _FakeSpeakCog(stream_mode=True, online_members=["showay", "B"])
+    cog._speak_reply_sentence("showay", "句子", first=True)
+    await asyncio.sleep(0)
+    cog.play_tts.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_speak_reply_sentence_multi_member_first_adds_name():
+    cog = _FakeSpeakCog(stream_mode=False, online_members=["showay", "B"])
+    cog._speak_reply_sentence("showay", "句子", first=True)
+    await asyncio.sleep(0)
+    cog.play_tts.assert_called_once_with("showay，句子", already_in_channel=True, emotion_tag="neutral")
+
+
+@pytest.mark.asyncio
+async def test_speak_reply_sentence_not_first_no_name():
+    cog = _FakeSpeakCog(stream_mode=False, online_members=["showay", "B"])
+    cog._speak_reply_sentence("showay", "句子", first=False)
+    await asyncio.sleep(0)
+    cog.play_tts.assert_called_once_with("句子", already_in_channel=True, emotion_tag="neutral")
+
+
+@pytest.mark.asyncio
+async def test_speak_reply_sentence_single_member_no_name():
+    cog = _FakeSpeakCog(stream_mode=False, online_members=["showay"])
+    cog._speak_reply_sentence("showay", "句子", first=True)
+    await asyncio.sleep(0)
+    cog.play_tts.assert_called_once_with("句子", already_in_channel=True, emotion_tag="neutral")
+
+
+def test_reply_address_prefix_exception_returns_empty():
+    cog = _FakeSpeakCog(stream_mode=False, online_members=[])
+    cog.get_online_members = MagicMock(side_effect=Exception("boom"))
+    assert cog._reply_address_prefix("showay") == ""
+
+
+# ── D 接線守門：_stream_response 不准再直呼 play_tts(sentence ───────────────
+
+def test_stream_response_source_uses_speak_reply_sentence_not_play_tts():
+    import inspect
+    from cogs.voice_controller import VoiceController
+    src = inspect.getsource(VoiceController._stream_response)
+    assert "self._speak_reply_sentence(" in src
+    assert "self.play_tts(sentence" not in src
+
+
 @pytest.mark.asyncio
 async def test_play_ack_speech_timeout_still_plays(monkeypatch):
     """沒有語音回應（一路靜默）→ 逾時後仍進入等空閒並播出，不會卡死。"""
@@ -530,3 +624,17 @@ async def test_play_ack_speech_timeout_still_plays(monkeypatch):
     await cog._wake_session_play_ack("A")
 
     cog.play_dj_on_tts_layer.assert_called_once_with(WAKE_SESSION_ACK_PATH, peak=0.15)
+def test_process_query_task_filler_gated_by_wake_session_captured():
+    """C 接線守門：連續對話接住的句子不疊 filler ack（10/17）。"""
+    import inspect
+    from cogs.voice_controller import VoiceController
+    src = inspect.getsource(VoiceController._process_query_task)
+    assert "if not self._wake_session_captured(speaker):" in src
+
+
+def test_stream_response_mid_song_speak_has_address_prefix():
+    """E 接線守門：放歌中整段 speak 也要叫名字（逐句已被 D 跳過，這是唯一發聲點）。"""
+    import inspect
+    from cogs.voice_controller import VoiceController
+    src = inspect.getsource(VoiceController._stream_response)
+    assert "self.speak(self._reply_address_prefix(speaker, full_text) + full_text" in src

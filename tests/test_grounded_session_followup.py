@@ -167,7 +167,8 @@ async def test_run_grounded_qa_reports_hit_on_session_followup_answer():
 
 
 @pytest.mark.asyncio
-async def test_run_grounded_qa_does_not_report_for_ambient_qa_source():
+async def test_run_grounded_qa_reports_miss_for_ambient_qa_source():
+    """10/17 事故修正：regex 路徑（ambient_qa）查不到也要計數，否則 session 停不下來。"""
     ctrl = MagicMock()
     ctrl.active_text_channel.send = AsyncMock()
     ctrl._play_ack = AsyncMock()
@@ -180,4 +181,62 @@ async def test_run_grounded_qa_does_not_report_for_ambient_qa_source():
          patch.object(gqa, "record_ambient_qa"):
         await gqa.run_grounded_qa(ctrl, "A", "x", source="ambient_qa")
 
-    ctrl._wake_session_on_followup_result.assert_not_called()
+    ctrl._wake_session_on_followup_result.assert_called_once_with("A", False)
+
+
+# ── E：多人在場回覆第一句叫名字（2026-10-17）──────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_no_answer_prefixes_address():
+    ctrl = MagicMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+    ctrl._reply_address_prefix = MagicMock(return_value="showay，")
+
+    with patch.object(gqa, "grounded_answer", new=AsyncMock(return_value=None)), \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=[]), \
+         patch.object(gqa, "record_ambient_qa"):
+        await gqa.run_grounded_qa(ctrl, "A", "x")
+
+    assert ctrl.play_tts.call_args.args[0] == "showay，這題我查不到。"
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_answer_prefixes_address_but_not_text_channel():
+    ctrl = MagicMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+    ctrl._reply_address_prefix = MagicMock(return_value="showay，")
+
+    with patch.object(gqa, "grounded_answer", new=AsyncMock(return_value=("答", ["src"]))), \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=[]), \
+         patch.object(gqa, "record_ambient_qa"):
+        await gqa.run_grounded_qa(ctrl, "A", "x")
+
+    assert ctrl.play_tts.call_args.args[0] == "showay，答"
+    _sent = ctrl.active_text_channel.send.call_args.args[0]
+    assert "showay，答" not in _sent
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_plain_mock_ctrl_no_prefix():
+    """ctrl 是普通 MagicMock（沒設 _reply_address_prefix）→ 不加前綴。"""
+    ctrl = MagicMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+
+    with patch.object(gqa, "grounded_answer", new=AsyncMock(return_value=None)), \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=[]), \
+         patch.object(gqa, "record_ambient_qa"):
+        await gqa.run_grounded_qa(ctrl, "A", "x")
+
+    assert ctrl.play_tts.call_args.args[0] == "這題我查不到。"
