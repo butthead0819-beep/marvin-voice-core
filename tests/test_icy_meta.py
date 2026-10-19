@@ -15,6 +15,7 @@ from marvin_voice_core.icy_meta import (
     TITLE_MAX_BYTES,
     IcyInterleaver,
     build_now_playing_payload,
+    display_album,
     truncate_utf8,
 )
 
@@ -302,3 +303,86 @@ def test_interleaver_9_field_payload_pos_only_change_is_empty():
     _, metas2 = _icy_decode(out2, metaint)
     assert metas1 == [payload1]
     assert metas2 == []
+
+
+# ---------- display_title / display_album：乾淨曲名 + 點播掛名（透過 payload 驗） ----------
+
+def _title_album(info):
+    payload = build_now_playing_payload(info, 1000.0, 1000.0)
+    parts = payload.decode("utf-8").split("\x1f")
+    return parts[5], parts[7]
+
+
+def test_display_title_prefers_spotify_title_when_contained():
+    info = {"title": "周杰倫 Jay Chou【龍捲風 Tornado】-Official Music Video", "spotify_title": "龍捲風"}
+    title, _ = _title_album(info)
+    assert title == "龍捲風"
+
+
+def test_display_title_falls_back_to_itunes_title_when_contained():
+    info = {"title": "倪安東 Anthony Neely [散場的擁抱 The Last Embrace] Official MV", "itunes_title": "散場的擁抱"}
+    title, _ = _title_album(info)
+    assert title == "散場的擁抱"
+
+
+def test_display_title_spotify_wins_over_itunes_when_both_contained():
+    info = {"title": "A - 晴天 Official", "spotify_title": "晴天 Official", "itunes_title": "晴天"}
+    title, _ = _title_album(info)
+    assert title == "晴天 Official"
+
+
+def test_display_title_mismatch_guard_falls_back_to_yt_title():
+    info = {"title": "周杰倫 Jay Chou【珊瑚海 Coral Sea】", "itunes_title": "稻香"}
+    title, _ = _title_album(info)
+    assert title == "周杰倫 Jay Chou【珊瑚海 Coral Sea】"
+
+
+def test_display_title_spotify_not_contained_falls_to_itunes():
+    info = {"title": "X【後來】MV", "spotify_title": "陰天", "itunes_title": "後來"}
+    title, _ = _title_album(info)
+    assert title == "後來"
+
+
+def test_display_title_match_ignores_punctuation_whitespace_case():
+    info = {"title": "BOL4 - HUG (Lyrics)", "itunes_title": "Hug"}
+    title, _ = _title_album(info)
+    assert title == "Hug"
+
+
+def test_track_id_still_based_on_yt_title_regardless_of_itunes_title():
+    base_info = {"title": "周杰倫 Jay Chou【龍捲風 Tornado】-Official Music Video"}
+    info_with_itunes = dict(base_info, itunes_title="龍捲風")
+    p1 = build_now_playing_payload(base_info, 1000.0, 1000.0)
+    p2 = build_now_playing_payload(info_with_itunes, 1000.0, 1000.0)
+    id1 = p1.decode("utf-8").split("\x1f")[1]
+    id2 = p2.decode("utf-8").split("\x1f")[1]
+    assert id1 == id2
+
+
+def test_display_album_uses_album_when_present():
+    info = {"title": "T", "album": "Fantasy"}
+    _, album = _title_album(info)
+    assert album == "Fantasy"
+
+
+def test_display_album_falls_back_to_requested_by_name():
+    info = {"title": "T", "requested_by": "狗與露"}
+    _, album = _title_album(info)
+    assert album == "狗與露點播"
+
+
+def test_display_album_recommend_attribution_kept_as_is():
+    info = {"title": "T", "requested_by": "Marvin推薦（為狗與露）"}
+    _, album = _title_album(info)
+    assert album == "Marvin推薦（為狗與露）"
+
+
+def test_display_album_generic_recommend_kept_as_is():
+    info = {"title": "T", "requested_by": "Marvin推薦（點給大家）"}
+    _, album = _title_album(info)
+    assert album == "Marvin推薦（點給大家）"
+
+
+def test_display_album_empty_when_requested_by_missing_or_unknown():
+    assert display_album({"title": "T"}) == ""
+    assert display_album({"title": "T", "requested_by": "未知"}) == ""
