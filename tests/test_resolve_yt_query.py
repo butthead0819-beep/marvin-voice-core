@@ -245,7 +245,8 @@ async def test_itunes_metadata_writes_artist_and_album_into_result():
     }
 
     async def _fake_resolve_metadata(title, artist=None, **kw):
-        return {"cover": "https://itunes/cover.jpg", "artist": "周杰倫", "album": "范特西"}
+        return {"cover": "https://itunes/cover.jpg", "artist": "周杰倫", "album": "范特西",
+                "title": "晴天"}
 
     with patch("yt_dlp.YoutubeDL", _FakeYDL), \
          patch("itunes_cover.resolve_metadata", _fake_resolve_metadata):
@@ -254,6 +255,8 @@ async def test_itunes_metadata_writes_artist_and_album_into_result():
     assert res["thumbnail"] == "https://itunes/cover.jpg"
     assert res["artist"] == "周杰倫"
     assert res["album"] == "范特西"
+    # 乾淨曲名給 ICY 車機顯示（icy_meta.display_title）
+    assert res["itunes_title"] == "晴天"
 
 
 @pytest.mark.asyncio
