@@ -4,8 +4,9 @@ from associative_curation import (
     AssociativePick,
     _ASSOCIATIVE_SYS_PROMPT,
     build_associative_prompt,
-    parse_associative_pick,
+    parse_associative_picks,
     curate_associative_song,
+    local_associative_candidates,
 )
 
 
@@ -50,8 +51,9 @@ def test_parse_associative_pick_valid_json():
         "dj_line": "剛才聽showay抱怨出門默念的口訣被樂團偷去寫歌。美秀集團這首手機錢包鑰匙菸直接奉上，出門前口袋再拍兩下吧。"
     }
     """
-    pick = parse_associative_pick(raw)
-    assert pick is not None
+    picks = parse_associative_picks(raw)
+    assert len(picks) == 1
+    pick = picks[0]
     assert isinstance(pick, AssociativePick)
     assert pick.artist == "美秀集團"
     assert pick.song == "手機錢包鑰匙菸"
@@ -71,23 +73,89 @@ def test_parse_associative_pick_markdown_wrapped():
         "dj_line": "大肚一進語音就瘋狂揪人喝酒，結果全場只有他明天放假。茄子蛋這首浪子回頭，留給大肚自己乾一杯。"
     }
     ```"""
-    pick = parse_associative_pick(raw)
-    assert pick is not None
-    assert pick.artist == "茄子蛋"
-    assert pick.song == "浪子回頭"
+    picks = parse_associative_picks(raw)
+    assert len(picks) == 1
+    assert picks[0].artist == "茄子蛋"
+    assert picks[0].song == "浪子回頭"
 
 
 def test_parse_associative_pick_invalid_or_missing_fields():
     # 缺歌名
     bad1 = '{"artist": "周杰倫", "song": ""}'
-    assert parse_associative_pick(bad1) is None
+    assert parse_associative_picks(bad1) == []
 
     # 非 JSON
     bad2 = "這不是 JSON"
-    assert parse_associative_pick(bad2) is None
+    assert parse_associative_picks(bad2) == []
 
     # 空字串
-    assert parse_associative_pick("") is None
+    assert parse_associative_picks("") == []
+
+
+def test_parse_associative_picks_multi():
+    raw = """
+    {
+        "observed_topic": "出門口訣",
+        "picks": [
+            {"artist": "A", "song": "歌A", "local": 1, "dj_line": "x"},
+            {"artist": "B", "song": "歌B", "dj_line": "y"},
+            {"artist": "C", "song": "歌C", "dj_line": "z"}
+        ]
+    }
+    """
+    picks = parse_associative_picks(raw, n_local=3)
+    assert len(picks) == 3
+    assert picks[0].local_index == 1
+    assert picks[1].local_index is None
+    assert picks[2].local_index is None
+
+
+def test_parse_associative_picks_local_out_of_range_or_bool():
+    raw_oor = '{"picks": [{"artist": "A", "song": "歌A", "local": 5, "dj_line": "x"}]}'
+    picks = parse_associative_picks(raw_oor, n_local=3)
+    assert picks[0].local_index is None
+
+    raw_bool = '{"picks": [{"artist": "A", "song": "歌A", "local": true, "dj_line": "x"}]}'
+    picks = parse_associative_picks(raw_bool, n_local=3)
+    assert picks[0].local_index is None
+
+
+def test_parse_associative_picks_caps_at_three():
+    raw = """
+    {"picks": [
+        {"artist": "A", "song": "歌A", "dj_line": "a"},
+        {"artist": "B", "song": "歌B", "dj_line": "b"},
+        {"artist": "C", "song": "歌C", "dj_line": "c"},
+        {"artist": "D", "song": "歌D", "dj_line": "d"}
+    ]}
+    """
+    picks = parse_associative_picks(raw)
+    assert len(picks) == 3
+    assert [p.artist for p in picks] == ["A", "B", "C"]
+
+
+def test_parse_associative_picks_skips_item_missing_song():
+    raw = """
+    {"picks": [
+        {"artist": "A", "song": "", "dj_line": "a"},
+        {"artist": "B", "song": "歌B", "dj_line": "b"}
+    ]}
+    """
+    picks = parse_associative_picks(raw)
+    assert len(picks) == 1
+    assert picks[0].artist == "B"
+
+
+def test_parse_associative_picks_empty_list():
+    assert parse_associative_picks('{"picks": []}') == []
+
+
+def test_parse_associative_picks_item_uses_top_level_observed_topic():
+    raw = """
+    {"observed_topic": "共同話題", "picks": [{"artist": "A", "song": "歌A", "dj_line": "a"}]}
+    """
+    picks = parse_associative_picks(raw)
+    assert picks[0].observed_topic == "共同話題"
 
 
 @pytest.mark.asyncio
@@ -112,7 +180,7 @@ async def test_curate_associative_song_success():
         {"speaker": "showay", "text": "我的詞被偷走了"},
     ]
 
-    pick = await curate_associative_song(
+    picks = await curate_associative_song(
         utterances,
         core_artists=["美秀集團"],
         exclude_titles=[],
@@ -121,9 +189,9 @@ async def test_curate_associative_song_success():
         min_utterances=2,
     )
 
-    assert pick is not None
-    assert pick.artist == "美秀集團"
-    assert pick.song == "手機錢包鑰匙菸"
+    assert len(picks) == 1
+    assert picks[0].artist == "美秀集團"
+    assert picks[0].song == "手機錢包鑰匙菸"
 
 
 @pytest.mark.asyncio
@@ -133,7 +201,7 @@ async def test_curate_associative_song_insufficient_utterances():
 
     # 只有 1 句，低於門檻
     utterances = [{"speaker": "A", "text": "嗨"}]
-    pick = await curate_associative_song(
+    picks = await curate_associative_song(
         utterances,
         core_artists=[],
         exclude_titles=[],
@@ -141,7 +209,7 @@ async def test_curate_associative_song_insufficient_utterances():
         call_fn=mock_call_fn,
         min_utterances=3,
     )
-    assert pick is None
+    assert picks == []
 
 
 @pytest.mark.asyncio
@@ -154,14 +222,14 @@ async def test_curate_associative_song_call_fn_failure():
         {"speaker": "B", "text": "全身都濕透了"},
         {"speaker": "A", "text": "真的煩死了"},
     ]
-    pick = await curate_associative_song(
+    picks = await curate_associative_song(
         utterances,
         core_artists=[],
         exclude_titles=[],
         members=[],
         call_fn=mock_call_fn_fail,
     )
-    assert pick is None
+    assert picks == []
 
 
 def test_build_associative_prompt_includes_recent_picks_when_given():
@@ -189,3 +257,79 @@ def test_build_associative_prompt_includes_recent_picks_when_given():
 def test_associative_sys_prompt_has_no_hardcoded_song_examples():
     for banned in ("他一定很愛你", "早安晨之美", "下雨天", "Last Dance", "《"):
         assert banned not in _ASSOCIATIVE_SYS_PROMPT
+
+
+def test_associative_sys_prompt_has_local_pool_and_no_emotion_leak_rule():
+    assert "本地歌單" in _ASSOCIATIVE_SYS_PROMPT
+    assert "picks" in _ASSOCIATIVE_SYS_PROMPT
+    assert "不准提到任何人的情緒或心情" in _ASSOCIATIVE_SYS_PROMPT
+
+
+def test_build_associative_prompt_includes_local_titles_and_mood_hint():
+    utterances = [{"speaker": "showay", "text": "今天好累"}]
+
+    _, user_p_with = build_associative_prompt(
+        utterances,
+        core_artists=[],
+        exclude_titles=[],
+        members=["showay"],
+        local_titles=["周杰倫 - 晴天", "告五人 - 披星戴月的想你"],
+        mood_hint="戲謔爭執",
+    )
+    assert "0. 周杰倫 - 晴天" in user_p_with
+    assert "1. 告五人 - 披星戴月的想你" in user_p_with
+    assert "戲謔爭執" in user_p_with
+    assert "不准提到" in user_p_with
+
+    _, user_p_without = build_associative_prompt(
+        utterances,
+        core_artists=[],
+        exclude_titles=[],
+        members=["showay"],
+    )
+    assert "本地歌單" not in user_p_without
+    assert "現場氣氛" not in user_p_without
+
+
+def _song_entry(title, artist, requesters, total_plays, vid="AAAAAAAAAAA"):
+    return {
+        "title": title,
+        "track": title,
+        "artist": artist,
+        "requesters": requesters,
+        "total_plays": total_plays,
+        "webpage_url": f"https://www.youtube.com/watch?v={vid}",
+    }
+
+
+def test_local_associative_candidates_filters_and_sorts():
+    songs = {
+        "a": _song_entry("歌A", "artistA", {"showay": 1}, 5, vid="AAAAAAAAAAA"),
+        "b": _song_entry("歌B", "artistB", {"showay": 1}, 9, vid="BBBBBBBBBBB"),
+        "c": _song_entry("歌C", "artistC", {"外人": 1}, 100, vid="CCCCCCCCCCC"),
+        "d": _song_entry("排除歌", "artistD", {"showay": 1}, 50, vid="DDDDDDDDDDD"),
+        "e": _song_entry("歌E", "artistE", {"showay": 1}, 999, vid="EEEEEEEEEEE"),
+    }
+    result = local_associative_candidates(
+        songs,
+        members=["showay"],
+        exclude_titles=["排除歌"],
+        excluded_vids={"EEEEEEEEEEE"},
+    )
+    assert [display for display, _ in result] == ["artistB - 歌B", "artistA - 歌A"]
+
+
+def test_local_associative_candidates_non_dict_songs():
+    from unittest.mock import MagicMock
+    assert local_associative_candidates(MagicMock(), ["showay"], [], set()) == []
+
+
+def test_local_associative_candidates_respects_limit():
+    songs = {
+        "a": _song_entry("歌A", "artistA", {"showay": 1}, 5, vid="AAAAAAAAAAA"),
+        "b": _song_entry("歌B", "artistB", {"showay": 1}, 9, vid="BBBBBBBBBBB"),
+    }
+    result = local_associative_candidates(
+        songs, members=["showay"], exclude_titles=[], excluded_vids=set(), limit=1,
+    )
+    assert [display for display, _ in result] == ["artistB - 歌B"]

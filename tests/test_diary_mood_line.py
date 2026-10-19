@@ -50,5 +50,6 @@ def test_ambient_diary_prompt_mentions_mood_line():
     start = src.index('"ambient_diary": (')
     block = src[start:src.index("),", start)]
     assert "氣氛：" in block
-    assert "｜" in block
+    assert "｜" not in block, "10/19：氣氛行只寫基調，不再有「｜情緒事件」"
+    assert "不准出現任何人名" in block
     assert "五行" in block

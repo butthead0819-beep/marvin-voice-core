@@ -94,7 +94,7 @@ async def test_try_associative_pick_success(monkeypatch):
     mm.get_skipped_video_ids.return_value = set()
     mm.get_recently_played_video_ids.return_value = set()
 
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[mock_pick])):
         n = await host._try_associative_pick(
             members=["showay", "狗與露"],
             exclude_titles=[],
@@ -135,7 +135,7 @@ async def test_try_associative_pick_is_non_song_rejected(monkeypatch):
                 "webpage_url": "https://www.youtube.com/watch?v=long", "duration": 3600}
     host._resolve_yt_query = _long_video
 
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[mock_pick])):
         n = await host._try_associative_pick(
             members=["showay"],
             exclude_titles=[],
@@ -186,7 +186,7 @@ async def test_associative_cooldown_starts_even_when_llm_returns_nothing(monkeyp
     """LLM 沒挑出歌也要冷卻，否則每輪 refill 都重打一次付費 LLM。"""
     monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
     host = DummyAutopilotHost()
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=None)):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[])):
         n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
                                              spotlight="showay", mm=None)
     assert n == 0
@@ -248,7 +248,7 @@ async def test_try_associative_pick_rejects_30day_repeat(monkeypatch):
         dj_line="剛才聽showay抱怨出門默念的口訣被樂團偷去寫歌。美秀集團這首手機錢包鑰匙菸奉上，出門前口袋拍兩下吧。",
     )
 
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[mock_pick])):
         n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
                                              spotlight="showay", mm=None)
 
@@ -275,7 +275,7 @@ async def test_try_associative_pick_success_appends_history(monkeypatch):
     mm.get_skipped_video_ids.return_value = set()
     mm.get_recently_played_video_ids.return_value = set()
 
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=mock_pick)):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[mock_pick])):
         n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
                                              spotlight="showay", mm=mm)
 
@@ -336,7 +336,7 @@ async def test_rejects_when_resolved_video_id_was_picked_within_30_days(monkeypa
     host = _host_resolving_vid()
     associative_history.append_pick("美秀集團", "某個完全不同的寫法", time.time() - 3600,
                                     title="不相干的標題", video_id=_VID)
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=_pick("出門口訣之歌"))):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[_pick("出門口訣之歌")])):
         n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
     assert n == 0
     assert host.stream_queue == []
@@ -348,7 +348,7 @@ async def test_rejects_when_resolved_title_is_same_song_as_recent_pick(monkeypat
     monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
     host = _host_resolving_vid()
     associative_history.append_pick("美秀集團", "手機錢包鑰匙菸", time.time() - 3600)
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=_pick("出門口訣之歌"))):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[_pick("出門口訣之歌")])):
         n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
     assert n == 0
 
@@ -357,7 +357,7 @@ async def test_rejects_when_resolved_title_is_same_song_as_recent_pick(monkeypat
 async def test_success_records_resolved_title_and_video_id(monkeypatch):
     monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
     host = _host_resolving_vid()
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=_pick("手機錢包鑰匙菸"))):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[_pick("手機錢包鑰匙菸")])):
         n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
     assert n == 1
     import json as _json
@@ -393,7 +393,214 @@ async def test_rejects_when_resolved_title_differs_from_pick(monkeypatch):
     """LLM 選《剪掉》但 YouTube 解析成別首 → 不入隊，走一般 autopilot。"""
     monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
     host = DummyAutopilotHost()
-    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=_pick("剪掉"))):
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[_pick("剪掉")])):
         added = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
     assert added == 0
     assert host.stream_queue == []
+
+
+# ── 10/19：本地歌單優先＋一次三首候選＋內化氣氛 ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_three_candidates_first_is_repeat_second_succeeds(monkeypatch):
+    """第一首候選 30 天內選過，換第二首入隊。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    associative_history.append_pick("美秀集團", "手機錢包鑰匙菸", time.time() - 3600)
+
+    picks = [
+        _pick("手機錢包鑰匙菸"),  # 30 天內選過
+        AssociativePick(
+            observed_topic="出門口訣被偷", target_lyric="無", artist="告五人",
+            song="披星戴月的想你", reason="無", dj_line="第二首候選奉上。",
+        ),
+        AssociativePick(
+            observed_topic="出門口訣被偷", target_lyric="無", artist="茄子蛋",
+            song="浪子回頭", reason="無", dj_line="第三首候選。",
+        ),
+    ]
+
+    resolved_queries = []
+
+    async def _resolve_by_query(query: str):  # 解析結果跟著 query 走，第二首才會解析成第二首
+        resolved_queries.append(query)
+        return {"title": query, "url": f"https://www.youtube.com/watch?v={abs(hash(query))}",
+                "webpage_url": f"https://www.youtube.com/watch?v={abs(hash(query))}", "duration": 210}
+    host._resolve_yt_query = _resolve_by_query
+
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=picks)):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
+
+    assert n == 1
+    assert len(host.stream_queue) == 1
+    assert "披星戴月的想你" in host.stream_queue[0]["title"]
+    assert not any("手機錢包鑰匙菸" in q for q in resolved_queries), "30 天內選過的候選不該白跑 YouTube 解析"
+
+
+@pytest.mark.asyncio
+async def test_all_three_candidates_rejected_no_enqueue(monkeypatch):
+    """三首候選全被 30 天內選過擋下 → 不入隊。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    for song in ("歌A", "歌B", "歌C"):
+        associative_history.append_pick("某歌手", song, time.time() - 3600)
+
+    picks = [AssociativePick(observed_topic="t", target_lyric="無", artist="某歌手",
+                             song=s, reason="無", dj_line="d") for s in ("歌A", "歌B", "歌C")]
+
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=picks)):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
+
+    assert n == 0
+    assert host.stream_queue == []
+
+
+def _local_song_entry(vid="LOCALSONG01"):
+    return {
+        "title": "本地老歌",
+        "track": "本地老歌",
+        "artist": "本地歌手",
+        "requesters": {"showay": 3},
+        "total_plays": 3,
+        "webpage_url": f"https://www.youtube.com/watch?v={vid}",
+    }
+
+
+@pytest.mark.asyncio
+async def test_local_hit_skips_title_match_check(monkeypatch):
+    """local_index 命中本地歌單：即使 LLM song 名跟解析標題不同，也不做標題比對，照樣入隊，
+    且 _resolve_yt_query 收到的 query 是該首的 webpage_url。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    mm = MagicMock()
+    mm.get_skipped_video_ids.return_value = set()
+    mm.get_recently_played_video_ids.return_value = set()
+    mm.all_songs.return_value = {"https://www.youtube.com/watch?v=LOCALSONG01": _local_song_entry()}
+
+    seen_queries = []
+
+    async def _resolve(query):
+        seen_queries.append(query)
+        return {
+            "title": "完全不同的解析標題",
+            "url": "https://www.youtube.com/watch?v=LOCALSONG01",
+            "webpage_url": "https://www.youtube.com/watch?v=LOCALSONG01",
+            "duration": 200,
+        }
+    host._resolve_yt_query = _resolve
+
+    local_pick = AssociativePick(
+        observed_topic="t", target_lyric="無", artist="本地歌手",
+        song="跟解析標題完全不同的歌名", reason="無", dj_line="本地歌單命中。",
+        local_index=0,
+    )
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[local_pick])):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=mm)
+
+    assert n == 1
+    assert seen_queries == ["https://www.youtube.com/watch?v=LOCALSONG01"]
+
+
+@pytest.mark.asyncio
+async def test_non_local_pick_with_mismatched_title_rejected(monkeypatch):
+    """對照組：同樣的 song/解析標題不符，但 local_index=None（提名）→ 被標題比對擋下。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    mm = MagicMock()
+    mm.get_skipped_video_ids.return_value = set()
+    mm.get_recently_played_video_ids.return_value = set()
+    mm.all_songs.return_value = {"https://www.youtube.com/watch?v=LOCALSONG01": _local_song_entry()}
+
+    async def _resolve(query):
+        return {
+            "title": "完全不同的解析標題",
+            "url": "https://www.youtube.com/watch?v=LOCALSONG01",
+            "webpage_url": "https://www.youtube.com/watch?v=LOCALSONG01",
+            "duration": 200,
+        }
+    host._resolve_yt_query = _resolve
+
+    nominated_pick = AssociativePick(
+        observed_topic="t", target_lyric="無", artist="本地歌手",
+        song="跟解析標題完全不同的歌名", reason="無", dj_line="提名。",
+        local_index=None,
+    )
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[nominated_pick])):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=mm)
+
+    assert n == 0
+    assert host.stream_queue == []
+
+
+def _diary_entry_now(mood: str, speakers: list[str]):
+    from chat_summary_parser import DiaryEntry
+    return DiaryEntry(
+        ts_str=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+        core="",
+        speakers=speakers,
+        mood=mood,
+    )
+
+
+@pytest.mark.asyncio
+async def test_dj_line_leaking_mood_is_cleared(monkeypatch):
+    """dj_line 講破氣氛 → 仍入隊，但 info["_dj_line"] 被清空。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    host._load_summary_entries = MagicMock(return_value=[
+        _diary_entry_now("戲謔爭執｜showay不爽因被重複問", ["showay"])
+    ])
+
+    leaking_pick = AssociativePick(
+        observed_topic="t", target_lyric="無", artist="美秀集團",
+        song="手機錢包鑰匙菸", reason="無",
+        dj_line="剛才一片戲謔爭執，這首給大家壓壓驚。",
+    )
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[leaking_pick])):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
+
+    assert n == 1
+    assert host.stream_queue[0]["_dj_line"] == ""
+
+
+@pytest.mark.asyncio
+async def test_dj_line_unrelated_to_mood_is_kept(monkeypatch):
+    """對照組：dj_line 跟氣氛無關 → 原樣保留。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    host._load_summary_entries = MagicMock(return_value=[
+        _diary_entry_now("戲謔爭執｜showay不爽因被重複問", ["showay"])
+    ])
+
+    unrelated_pick = AssociativePick(
+        observed_topic="t", target_lyric="無", artist="美秀集團",
+        song="手機錢包鑰匙菸", reason="無",
+        dj_line="出門前記得檢查手機錢包鑰匙菸，這首奉上。",
+    )
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[unrelated_pick])):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
+
+    assert n == 1
+    assert host.stream_queue[0]["_dj_line"] == unrelated_pick.dj_line
+
+
+@pytest.mark.asyncio
+async def test_curate_called_with_local_titles_and_mood_hint_kwargs(monkeypatch):
+    """curate_associative_song 呼叫時要收到 local_titles 與 mood_hint kwarg。"""
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    host = DummyAutopilotHost()
+    mm = MagicMock()
+    mm.get_skipped_video_ids.return_value = set()
+    mm.get_recently_played_video_ids.return_value = set()
+    mm.all_songs.return_value = {"https://www.youtube.com/watch?v=LOCALSONG01": _local_song_entry()}
+    host._load_summary_entries = MagicMock(return_value=[
+        _diary_entry_now("戲謔爭執", ["showay"])
+    ])
+
+    mock_fn = AsyncMock(return_value=[])
+    with patch("associative_curation.curate_associative_song", mock_fn):
+        await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=mm)
+
+    assert mock_fn.await_args.kwargs["local_titles"] == ["本地歌手 - 本地老歌"]
+    assert mock_fn.await_args.kwargs["mood_hint"] == "戲謔爭執"

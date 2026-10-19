@@ -9,7 +9,7 @@ diary_comic/parser.py，砍掉漫畫日記功能時抽出來獨立，避免 DJ �
   【核心】：...
   【摘要】：
   - 說話者：...
-  【氣氛】：基調｜情緒事件
+  【氣氛】：基調（2-8 字，不帶人名與事件）
   【碎念】：...
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ class DiaryEntry:
     raw: str = ""
     salience: str = "中"   # 話題顯著度 高|中|低（summarizer 標；舊 entry 無→中）
     meme_id: str = ""      # 語義 meme tag（搬家/宿醉 等）；summarizer 標；無→""
-    mood: str = ""      # 氣氛行（基調｜情緒事件）；summarizer 標；無/"-"→""
+    mood: str = ""      # 氣氛行（基調；10/18 舊格式帶「｜事件」）；summarizer 標；無/"-"→""
 
 
 def _extract_after_marker(body: str, key: str) -> str:
