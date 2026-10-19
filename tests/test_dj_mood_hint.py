@@ -105,6 +105,12 @@ def test_build_mood_hint_drops_tone_containing_non_roster_speaker_name():
     assert build_mood_hint("阿凱碎念", ["阿凱", "showay"], {"showay"}) == ""
 
 
+def test_build_mood_hint_drops_overlong_tone():
+    # 10/19 實測：超長基調會夾帶事件（「技術嘗試成功後的興奮」），超過 MOOD_TONE_MAX_CHARS 不給
+    assert build_mood_hint("深夜放鬆討論且帶有技術嘗試成功後的興奮", [], None) == ""
+    assert build_mood_hint("語速極快且互相搶話", [], None) == "語速極快且互相搶話"
+
+
 def test_build_mood_hint_drops_tone_containing_roster_name():
     # 名冊內的人就算不在在場名單、也不在日記 speakers 裡，也不准出現在提示裡
     assert build_mood_hint("weakgogo狂衝", [], {"showay"}) == ""

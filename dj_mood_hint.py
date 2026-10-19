@@ -11,6 +11,7 @@ import re
 import time
 
 MOOD_MAX_AGE_S = 25 * 60   # 日記每 10 分鐘一筆；超過 25 分鐘的氣氛視為過期
+MOOD_TONE_MAX_CHARS = 12   # prompt 要 2-8 字；超過 12 字的基調實測會夾帶事件（10/19），整個不給
 LEAK_NGRAM = 4             # 口白與氣氛提示有 ≥4 字連續相同 → 視為講破
 # 口白與氣氛提示「都」出現這些詞 → 視為講破（2 字詞抓 4-gram 抓不到的情緒字眼）
 EMOTION_WORDS = ("不爽", "生氣", "火大", "焦慮", "緊張", "難過", "傷心", "低落", "沮喪",
@@ -51,7 +52,7 @@ def build_mood_hint(mood: str, speakers: list[str], present) -> str:
 
     present_set = set(present) if present else set()
     tone = re.split(r"[｜|]", mood, maxsplit=1)[0].strip()
-    if tone in ("", "-", "—", "無"):
+    if tone in ("", "-", "—", "無") or len(tone) > MOOD_TONE_MAX_CHARS:
         return ""
     if speakers and not (set(speakers) & present_set):
         return ""
