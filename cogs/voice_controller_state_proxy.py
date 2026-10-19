@@ -146,7 +146,7 @@ class StateProxyMixin:
 
     def _apply_auto_balance(self, value: float) -> None:
         """自動平衡專用：同 setter 寫值但不記手動時間、mixer 用慢速 ramp。"""
-        from auto_balance import AUTO_BALANCE_RAMP_S
+        from auto_balance import AUTO_BALANCE_RATE_PER_S
         val = max(0.10, min(0.90, round(float(value), 2)))
         mc = self.bot.cogs.get('MusicCog')
         if mc is not None and hasattr(mc, 'tts_balance'):
@@ -155,7 +155,7 @@ class StateProxyMixin:
         mixer = getattr(self, '_mixer', None)
         if mixer is not None and hasattr(mixer, 'set_balance'):
             try:
-                mixer.set_balance(val, ramp_s=AUTO_BALANCE_RAMP_S)
+                mixer.set_balance(val, rate_per_s=AUTO_BALANCE_RATE_PER_S)
             except Exception:
                 pass
 

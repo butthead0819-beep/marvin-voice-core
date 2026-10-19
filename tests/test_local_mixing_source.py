@@ -1153,14 +1153,17 @@ def test_begin_fadeout_refused_while_paused():
 
 
 def test_balance_slow_ramp_while_playing():
-    # 自動平衡 ramp_s=3.0：0.50→0.90 要 150 幀才到位，不是按鈕的 20 幀
+    # 自動平衡每秒 2%：0.50→0.90 要 20 秒（1000 幀）才到位，不是按鈕的 20 幀；中途線性
     mix = LocalMixingAudioSource(seed=1, volume=1.0)
-    mix.set_music_source(_FakeMusic(value=0.1, frames=400))
+    mix.set_music_source(_FakeMusic(value=0.1, frames=1200))
     mix.read()
-    mix.set_balance(0.90, ramp_s=3.0)
-    for _ in range(75):
+    mix.set_balance(0.90, rate_per_s=0.02)
+    for _ in range(250):  # 5 秒
         mix.read()
-    assert mix._balance_cur == pytest.approx(0.70)
-    for _ in range(80):
+    assert mix._balance_cur == pytest.approx(0.60)
+    for _ in range(500):  # 再 10 秒
+        mix.read()
+    assert mix._balance_cur == pytest.approx(0.80)
+    for _ in range(260):
         mix.read()
     assert mix._balance_cur == pytest.approx(0.90)
