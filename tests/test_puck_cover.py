@@ -159,10 +159,11 @@ def test_non_square_cover_center_cropped():
     cover = buf.getvalue()
 
     img = render_puck_cover_image(cover, chroma=0, vignette=0, highlight=0, rim=0)
-    for x, y in [(233, 232), (440, 232)]:
+    for x, y in [(26, 232), (233, 232), (440, 232)]:
         px = img.getpixel((x, y))
         assert px[2] > 200
         assert px[1] < 60
+    # (26,232) 在左側：沒裁切的話會取到左邊 280px 的綠
 
 
 def test_render_puck_cover_returns_baseline_jpeg():
@@ -173,3 +174,14 @@ def test_render_puck_cover_returns_baseline_jpeg():
     assert img.format == "JPEG"
     assert img.size == (466, 466)
     assert "progressive" not in img.info and "progression" not in img.info
+
+
+def test_rim_brightens_outer_ring():
+    cover = _png(600, 600, (10, 10, 10))
+    img_r = render_puck_cover_image(cover, vignette=0, highlight=0, chroma=0, rim=0.35)
+    img_r0 = render_puck_cover_image(cover, vignette=0, highlight=0, chroma=0, rim=0)
+    # (464,232)：r≈0.9936，落在亮線帶 [1-2.5/R, 1-0.5/R]
+    assert img_r.getpixel((464, 232))[0] >= 80
+    assert img_r0.getpixel((464, 232))[0] <= 12
+    # (440,232) 在亮線帶內側，不受影響
+    assert img_r.getpixel((440, 232))[0] <= 12
