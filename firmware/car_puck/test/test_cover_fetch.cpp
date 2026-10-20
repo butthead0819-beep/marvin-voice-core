@@ -77,6 +77,18 @@ int main() {
     printf("T21 ok\n");
   }
 
+  // T22: 狀態碼第三位不是數字 → 0
+  {
+    assert(http_status_code("HTTP/1.1 20x OK") == 0);
+    printf("T22 ok\n");
+  }
+
+  // T23: 名稱後面沒有冒號 → 不是 Content-Length 標頭
+  {
+    assert(http_content_length("Content-Length 5") == -1);
+    printf("T23 ok\n");
+  }
+
   printf("all cover_fetch tests passed\n");
   return 0;
 }
