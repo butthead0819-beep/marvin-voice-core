@@ -135,6 +135,7 @@ async def test_gap_classifier_runs_even_when_has_intent_signal_false(monkeypatch
     import cogs.voice_controller as vcmod
     from intent_gap import IntentGapRecord
 
+    monkeypatch.setenv("MARVIN_GAP_CLASSIFIER", "1")
     vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text="暫停播放")
     vc._shared_tier_router = MagicMock()  # 讓 classifier 不再是 None
     vc._gap_logger = MagicMock()
@@ -166,6 +167,7 @@ async def test_gap_web_domain_routes_to_grounded(monkeypatch):
     import cogs.voice_controller as vcmod
     from intent_gap import IntentGapRecord
 
+    monkeypatch.setenv("MARVIN_GAP_CLASSIFIER", "1")
     query_text = "這禮拜的F1在哪裡比賽"
     vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text=query_text)
     vc._shared_tier_router = MagicMock()
@@ -200,6 +202,7 @@ async def test_gap_web_domain_low_confidence_goes_to_marvin(monkeypatch):
     import cogs.voice_controller as vcmod
     from intent_gap import IntentGapRecord
 
+    monkeypatch.setenv("MARVIN_GAP_CLASSIFIER", "1")
     query_text = "這禮拜的F1在哪裡比賽"
     vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text=query_text)
     vc._shared_tier_router = MagicMock()
@@ -232,6 +235,7 @@ async def test_gap_record_dms_owner(monkeypatch):
     import cogs.voice_controller as vcmod
     from intent_gap import IntentGapRecord
 
+    monkeypatch.setenv("MARVIN_GAP_CLASSIFIER", "1")
     vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text="暫停播放")
     vc._shared_tier_router = MagicMock()
     vc._gap_logger = MagicMock()
@@ -267,6 +271,7 @@ async def test_gap_classifier_unknown_then_falls_to_silenced_log(monkeypatch):
     import cogs.voice_controller as vcmod
     from intent_gap import IntentGapRecord
 
+    monkeypatch.setenv("MARVIN_GAP_CLASSIFIER", "1")
     vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text="呃")
     vc._shared_tier_router = MagicMock()
     vc._gap_logger = MagicMock()
