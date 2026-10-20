@@ -3040,6 +3040,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             is_owner=self._is_owner_speaker(speaker),
             now=time.time(), audio_wav_bytes=_captured_wav_bytes,
             prev_turn_audio_wav_bytes=_prev_turn_wav_bytes, low_confidence_wake=low_confidence_wake,
+            in_wake_session=self._wake_session_captured(speaker),
         )
         pipeline_timing.mark("intent_dispatched")
         pipeline_timing.emit(speaker, _bus_ctx.raw_text or "", suffix=" route=main_bus")
@@ -3106,8 +3107,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 10/8 使用者定案：classifier 只做測量（寫 JSONL），不再用來否決 Marvin、也不再播
         # 「功能開發中」模板 ack——使用者講話不照公式，硬規則會漏接。有意圖但沒 agent 的
         # query：web 類資訊問題走 grounded（真能查到答案），其餘交 Marvin 主 LLM 自然接話。
+        # 10/20 使用者定案：預設關閉（串行多等 ~1.7s、web→grounded 10 天 12 次多為誤判）；MARVIN_GAP_CLASSIFIER=1 才開。
         gap_rec = None
-        if self._gap_classifier_cached is None and self._shared_tier_router is not None:
+        if (self._gap_classifier_cached is None and self._shared_tier_router is not None
+                and os.getenv("MARVIN_GAP_CLASSIFIER") == "1"):
             self._gap_classifier_cached = make_groq_gap_classifier(self._shared_tier_router)
         if self._gap_classifier_cached is not None:
             try:
