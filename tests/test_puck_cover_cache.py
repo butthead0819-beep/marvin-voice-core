@@ -145,3 +145,18 @@ async def test_logging_success_and_failure(caplog):
     with caplog.at_level(logging.WARNING, logger="puck_cover_cache"):
         await fail_cache.get(_info("https://img/b.jpg"))
     assert any("⚠️ [PuckCover] 失敗" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_lru_hit_refreshes_recency():
+    # a、b 進快取 → 命中 a（a 變最新）→ 放 c 時該被踢的是 b，不是 a
+    cache, calls = _make(max_items=2)
+    await cache.get(_info("https://img/a.jpg"))
+    await cache.get(_info("https://img/b.jpg"))
+    await cache.get(_info("https://img/a.jpg"))
+    await cache.get(_info("https://img/c.jpg"))
+    assert calls["fetch"] == 3
+    await cache.get(_info("https://img/a.jpg"))
+    assert calls["fetch"] == 3
+    await cache.get(_info("https://img/b.jpg"))
+    assert calls["fetch"] == 4
