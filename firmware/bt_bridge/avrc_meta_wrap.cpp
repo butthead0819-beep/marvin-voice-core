@@ -31,8 +31,6 @@ typedef struct { uint32_t attr_id; tAVRC_FULL_NAME name; } tAVRC_ATTR_ENTRY;
 typedef struct { uint8_t pdu; tAVRC_STS status; uint8_t opcode; } tAVRC_RSP;
 typedef struct { uint8_t pdu; tAVRC_STS status; uint8_t opcode; uint8_t num_attr; tAVRC_ATTR_ENTRY *p_attrs; } tAVRC_GET_ELEM_ATTRS_RSP;
 typedef struct { uint8_t pdu; tAVRC_STS status; uint8_t opcode; uint32_t song_len; uint32_t song_pos; uint8_t play_status; } tAVRC_GET_PLAY_STATUS_RSP;
-typedef struct { uint8_t ctype; uint8_t subunit_type; uint8_t subunit_id; uint8_t opcode; } tAVRC_HDR;
-typedef struct { tAVRC_HDR hdr; uint32_t company_id; uint8_t *p_vendor_data; uint16_t vendor_len; } tAVRC_MSG_VENDOR;
 #define AVRC_CAP_MAX_NUM_COMP_ID 4
 #define AVRC_CAP_MAX_NUM_EVT_ID 16
 typedef union { uint32_t company_id[AVRC_CAP_MAX_NUM_COMP_ID]; uint8_t event_id[AVRC_CAP_MAX_NUM_EVT_ID]; } tAVRC_CAPS_PARAM;
@@ -44,23 +42,12 @@ typedef uint8_t tAVRC_UID[8];
 typedef union { uint8_t play_status; tAVRC_UID track; uint32_t play_pos; uint8_t volume; uint8_t _pad[20]; } tAVRC_NOTIF_RSP_PARAM;
 typedef struct { uint8_t pdu; tAVRC_STS status; uint8_t opcode; uint8_t event_id; tAVRC_NOTIF_RSP_PARAM param; } tAVRC_REG_NOTIF_RSP;
 typedef union { uint8_t pdu; tAVRC_RSP rsp; tAVRC_GET_ELEM_ATTRS_RSP get_elem_attrs; tAVRC_GET_PLAY_STATUS_RSP get_play_status; tAVRC_GET_CAPS_RSP get_caps; tAVRC_REG_NOTIF_RSP reg_notif; uint8_t _pad[64]; } tAVRC_RESPONSE;
-// GetElementAttributes(0x20) 的車機請求結構（只讀，給 __wrap_AVRC_ParsCommand 探針用）。
-typedef struct { uint8_t pdu; tAVRC_STS status; uint8_t opcode; uint8_t num_attr; uint32_t attrs[8]; } tAVRC_GET_ELEM_ATTRS_CMD;
-typedef union { uint8_t pdu; tAVRC_GET_ELEM_ATTRS_CMD get_elem_attrs; uint8_t _pad[64]; } tAVRC_COMMAND;
-// BT_HDR（bt_target.h）：payload 在 data+offset，長度 len（只讀，給探針用）。
-typedef struct { uint16_t event; uint16_t len; uint16_t offset; uint16_t layer_specific; uint8_t data[1]; } BT_HDR;
 
 static_assert(offsetof(tAVRC_GET_CAPS_RSP, param) == 8, "tAVRC_GET_CAPS_RSP 欄位配置跟 IDF 5.5.4 不符");
-static_assert(offsetof(tAVRC_MSG_VENDOR, p_vendor_data) == 8, "tAVRC_MSG_VENDOR 欄位配置跟 IDF 5.5.4 不符");
-static_assert(offsetof(tAVRC_MSG_VENDOR, vendor_len) == 12, "tAVRC_MSG_VENDOR 欄位配置跟 IDF 5.5.4 不符");
 static_assert(offsetof(tAVRC_REG_NOTIF_RSP, param) == 4, "tAVRC_REG_NOTIF_RSP 欄位配置跟 IDF 5.5.4 不符");
-static_assert(offsetof(tAVRC_GET_ELEM_ATTRS_CMD, attrs) == 4, "tAVRC_GET_ELEM_ATTRS_CMD 欄位配置跟 IDF 5.5.4 不符");
-static_assert(offsetof(BT_HDR, data) == 8, "BT_HDR 欄位配置跟 IDF 5.5.4 不符");
 
 static const uint8_t  AVRC_PDU_GET_ELEMENT_ATTR = 0x20;
 static const uint8_t  AVRC_PDU_GET_PLAY_STATUS  = 0x30;
-static const uint8_t  AVRC_PDU_GET_CAPABILITIES = 0x10;
-static const uint8_t  AVRC_CAP_EVENTS_SUPPORTED = 0x03;
 static const tAVRC_STS AVRC_STS_BAD_CMD         = 0x00;
 static const tAVRC_STS AVRC_STS_NO_ERROR        = 0x04;
 static const uint8_t  AVRC_RSP_REJ              = 10;
@@ -81,10 +68,8 @@ static const uint32_t AVRC_ATTR_ID_ALBUM        = 3;
 static const uint32_t AVRC_ATTR_ID_PLAYING_TIME = 7;
 extern "C" tAVRC_STS __real_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_rsp, void **pp_pkt);
 extern "C" void __real_BTA_AvMetaRsp(uint8_t rc_handle, uint8_t label, uint8_t rsp_code, void *p_pkt);
-extern "C" uint16_t __real_AVRC_VendorRsp(uint8_t handle, uint8_t label, tAVRC_MSG_VENDOR *p_msg);
 extern "C" bool __real_btc_avrc_tg_rn_evt_supported(uint8_t event_id);
 extern "C" uint16_t __real_btc_avrc_tg_get_rn_supported_evt(void);
-extern "C" tAVRC_STS __real_AVRC_ParsCommand(void* p_msg, tAVRC_COMMAND* p_result, uint8_t* p_buf, uint16_t buf_len);
 
 // btc_avrc.c 的全域 btc_rc_cb_ptr（AVRC_DYNAMIC_MEMORY=TRUE 時是指標）；見 rc_cb_view.h。
 extern "C" void* btc_rc_cb_ptr;
@@ -96,43 +81,18 @@ extern volatile uint8_t g_reported_playback;
 // ---- 狀態：BTC task（__wrap_* 這裡）跟 loop()（avrc_meta_set）兩個 task 互斥保護 ----
 static NowPlaying s_np;
 static portMUX_TYPE s_np_mux = portMUX_INITIALIZER_UNLOCKED;
-static uint32_t s_hits_elem = 0;
-static uint32_t s_hits_status = 0;
-static volatile uint32_t s_unserved_elem = 0;
-static volatile uint32_t s_unserved_status = 0;
 // __wrap_AVRC_BldResponse 跟 __wrap_BTA_AvMetaRsp 在 send_reject_response() 裡同一
 // task 緊接著呼叫（中間不會被其他事件插進來），這個旗標不需要鎖。
 static bool s_upgrade_next = false;
-
-// ---- AVRCP metadata PDU 追蹤（診斷用，不影響任何回應內容）----
-// 獨立的 mux：跟 s_np_mux 保護的資料無關，不共用避免臨界區互相拖長。
-static PduTrace s_pt;
-static portMUX_TYPE s_pt_mux = portMUX_INITIALIZER_UNLOCKED;
-
-// ---- GetElementAttributes 請求/回應探針（診斷用，不影響任何行為）----
-// 獨立的 mux：跟上面兩份資料無關，不共用避免臨界區互相拖長。
-static portMUX_TYPE s_probe_mux = portMUX_INITIALIZER_UNLOCKED;
-static uint32_t s_req_cnt = 0;
-static bool s_req_captured = false;
-static uint8_t s_req_num_attr = 0;
-static uint8_t s_req_attrs[8] = {0};
-static bool s_rsp_captured = false;
-static uint16_t s_rsp_len = 0;
-static uint8_t s_rsp_n = 0;
-static uint8_t s_rsp_bytes[36] = {0};
 
 // 連結防呆：沒加 --wrap 旗標時 __wrap_* 沒人呼叫、會被 gc-sections 整段丟掉，連帶
 // 對 __real_* 的引用也消失 → 照樣連結成功、燒進去一個靜默不顯示曲名的版本（10/13 實測）。
 // 這裡從一定會被保留的 avrc_meta_set（loop 每筆都呼叫）讀一次 volatile 指標表，
 // 逼連結器一定要解析 __real_*，少了旗標就 undefined reference。
 static void* const volatile s_force_wrap_link[] = {
-  (void*)&__real_AVRC_BldResponse, (void*)&__real_BTA_AvMetaRsp, (void*)&__real_AVRC_VendorRsp,
+  (void*)&__real_AVRC_BldResponse, (void*)&__real_BTA_AvMetaRsp,
   (void*)&__real_btc_avrc_tg_rn_evt_supported, (void*)&__real_btc_avrc_tg_get_rn_supported_evt,
-  (void*)&__real_AVRC_ParsCommand,
 };
-
-// RegisterNotification 自己組包送出失敗的次數（車機沒註冊/結構對不上/組包失敗）。
-static volatile uint32_t s_rn_fail = 0;
 
 void avrc_meta_set(const NowPlaying& np) {
   (void)s_force_wrap_link[0];
@@ -147,62 +107,7 @@ void avrc_meta_get(NowPlaying& out) {
   portEXIT_CRITICAL(&s_np_mux);
 }
 
-uint32_t avrc_meta_hits_elem() { return s_hits_elem; }
-uint32_t avrc_meta_hits_status() { return s_hits_status; }
-uint32_t avrc_meta_unserved_elem() { return s_unserved_elem; }
-uint32_t avrc_meta_unserved_status() { return s_unserved_status; }
-
-void avrc_pdu_trace_get(PduTrace& out) {
-  portENTER_CRITICAL(&s_pt_mux);
-  out = s_pt;
-  portEXIT_CRITICAL(&s_pt_mux);
-}
-
-void avrc_elem_probe_get(ElemProbe& out) {
-  portENTER_CRITICAL(&s_probe_mux);
-  out.req_cnt = s_req_cnt;
-  out.req_captured = s_req_captured;
-  out.req_num_attr = s_req_num_attr;
-  memcpy(out.req_attrs, s_req_attrs, sizeof(out.req_attrs));
-  out.rsp_captured = s_rsp_captured;
-  out.rsp_len = s_rsp_len;
-  out.rsp_n = s_rsp_n;
-  memcpy(out.rsp_bytes, s_rsp_bytes, sizeof(out.rsp_bytes));
-  portEXIT_CRITICAL(&s_probe_mux);
-}
-
-extern "C" tAVRC_STS __wrap_AVRC_ParsCommand(void* p_msg, tAVRC_COMMAND* p_result, uint8_t* p_buf, uint16_t buf_len) {
-  tAVRC_STS st = __real_AVRC_ParsCommand(p_msg, p_result, p_buf, buf_len);
-  if (p_result != nullptr && p_result->pdu == AVRC_PDU_GET_ELEMENT_ATTR) {
-    portENTER_CRITICAL(&s_probe_mux);
-    s_req_cnt++;
-    if (!s_req_captured && st == AVRC_STS_NO_ERROR) {
-      uint8_t num_attr = p_result->get_elem_attrs.num_attr;
-      uint8_t take = num_attr > 8 ? 8 : num_attr;
-      for (uint8_t i = 0; i < take; i++) {
-        uint32_t a = p_result->get_elem_attrs.attrs[i];
-        s_req_attrs[i] = (uint8_t)(a > 0xFF ? 0xFF : a);
-      }
-      s_req_num_attr = num_attr;
-      s_req_captured = true;
-    }
-    portEXIT_CRITICAL(&s_probe_mux);
-  }
-  return st;
-}
-
 extern "C" tAVRC_STS __wrap_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_rsp, void **pp_pkt) {
-  if (p_rsp != nullptr) {
-    portENTER_CRITICAL(&s_pt_mux);
-    pt_record(s_pt, 'B', p_rsp->pdu, p_rsp->rsp.status);
-    if (p_rsp->pdu == AVRC_PDU_GET_CAPABILITIES && p_rsp->get_caps.capability_id == AVRC_CAP_EVENTS_SUPPORTED &&
-        p_rsp->get_caps.status == AVRC_STS_NO_ERROR) {
-      uint8_t count = p_rsp->get_caps.count > 16 ? 16 : p_rsp->get_caps.count;
-      pt_set_caps(s_pt, count, p_rsp->get_caps.param.event_id);
-    }
-    portEXIT_CRITICAL(&s_pt_mux);
-  }
-
   if (p_rsp == nullptr || p_rsp->rsp.status != AVRC_STS_BAD_CMD ||
       !(p_rsp->rsp.pdu == AVRC_PDU_GET_ELEMENT_ATTR || p_rsp->rsp.pdu == AVRC_PDU_GET_PLAY_STATUS)) {
     return __real_AVRC_BldResponse(handle, p_rsp, pp_pkt);
@@ -258,19 +163,6 @@ extern "C" tAVRC_STS __wrap_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_r
     result = __real_AVRC_BldResponse(handle, &r, pp_pkt);
     if (result == AVRC_STS_NO_ERROR) {
       s_upgrade_next = true;
-      if (has_title) s_hits_elem++; else s_unserved_elem++;
-      if (!s_rsp_captured && pp_pkt != nullptr && *pp_pkt != nullptr) {
-        BT_HDR* h = (BT_HDR*)*pp_pkt;
-        portENTER_CRITICAL(&s_probe_mux);
-        if (!s_rsp_captured) {
-          uint16_t take = h->len < 36 ? h->len : 36;
-          memcpy(s_rsp_bytes, h->data + h->offset, take);
-          s_rsp_len = h->len;
-          s_rsp_n = (uint8_t)take;
-          s_rsp_captured = true;
-        }
-        portEXIT_CRITICAL(&s_probe_mux);
-      }
     }
     return result;
   }
@@ -293,7 +185,6 @@ extern "C" tAVRC_STS __wrap_AVRC_BldResponse(uint8_t handle, tAVRC_RESPONSE *p_r
   result = __real_AVRC_BldResponse(handle, &r, pp_pkt);
   if (result == AVRC_STS_NO_ERROR) {
     s_upgrade_next = true;
-    if (have_duration) s_hits_status++; else s_unserved_status++;
   }
   return result;
 }
@@ -304,17 +195,6 @@ extern "C" void __wrap_BTA_AvMetaRsp(uint8_t rc_handle, uint8_t label, uint8_t r
   }
   s_upgrade_next = false;
   __real_BTA_AvMetaRsp(rc_handle, label, rsp_code, p_pkt);
-}
-
-// 功能旗標不符（沒 VENDOR）或 subunit 不是 PANEL 時，Bluedroid 改走這條回 NOT_IMPL/REJ，
-// 不經過 AVRC_BldResponse——追蹤用，不改行為。
-extern "C" uint16_t __wrap_AVRC_VendorRsp(uint8_t handle, uint8_t label, tAVRC_MSG_VENDOR *p_msg) {
-  uint8_t pdu = (p_msg != nullptr && p_msg->p_vendor_data != nullptr && p_msg->vendor_len != 0) ? p_msg->p_vendor_data[0] : 0xFF;
-  uint8_t st = p_msg != nullptr ? p_msg->hdr.ctype : 0xFF;
-  portENTER_CRITICAL(&s_pt_mux);
-  pt_record(s_pt, 'V', pdu, st);
-  portEXIT_CRITICAL(&s_pt_mux);
-  return __real_AVRC_VendorRsp(handle, label, p_msg);
 }
 
 // IDF TG 只准 VOLUME_CHANGE（cs_rn_allowed_evt=0x2000）——這兩個 wrap 讓 btc 以為我們宣告
@@ -338,10 +218,6 @@ bool avrc_rn_send(uint8_t event_id, bool changed, const uint8_t track8[8], uint8
   uint8_t* cb = (uint8_t*)btc_rc_cb_ptr;
   uint8_t handle = 0, label = 0;
   if (!rcv_can_notify(cb, event_id, &handle, &label)) {
-    s_rn_fail++;
-    portENTER_CRITICAL(&s_pt_mux);
-    pt_record(s_pt, 'X', event_id, 0xEE);
-    portEXIT_CRITICAL(&s_pt_mux);
     return false;
   }
 
@@ -361,10 +237,6 @@ bool avrc_rn_send(uint8_t event_id, bool changed, const uint8_t track8[8], uint8
 
   void* pkt = nullptr;
   if (__real_AVRC_BldResponse(handle, &r, &pkt) != AVRC_STS_NO_ERROR || pkt == nullptr) {
-    s_rn_fail++;
-    portENTER_CRITICAL(&s_pt_mux);
-    pt_record(s_pt, 'X', event_id, 0xEB);
-    portEXIT_CRITICAL(&s_pt_mux);
     return false;
   }
 
@@ -372,10 +244,5 @@ bool avrc_rn_send(uint8_t event_id, bool changed, const uint8_t track8[8], uint8
   if (changed) {
     rcv_mark_unregistered(cb, event_id);
   }
-  portENTER_CRITICAL(&s_pt_mux);
-  pt_record(s_pt, 'N', event_id, changed ? AVRC_RSP_CHANGED : AVRC_RSP_INTERIM);
-  portEXIT_CRITICAL(&s_pt_mux);
   return true;
 }
-
-uint32_t avrc_rn_fail_count() { return s_rn_fail; }

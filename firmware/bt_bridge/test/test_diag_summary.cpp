@@ -49,13 +49,6 @@ int main() {
     DiagSummary s;
     s.uptime_s = 123;
     s.meta_lines = 7;
-    s.g_elem = 3;
-    s.g_stat = 4;
-    s.nov_elem = 1;
-    s.nov_stat = 2;
-    s.rn_mask = 0x0006;
-    s.rf_feat = 0x1234;
-    s.rf_ct = 0x5;
     ds_add_key(s, 0x41);
     ds_add_key(s, 0x42);
     s.peer[0] = 0xAB;
@@ -65,7 +58,7 @@ int main() {
     char out[160];
     ds_format(s, out, sizeof(out));
     const char* expect =
-        "t=123s m=7 ge=3 gs=4 ne=1 ns=2 rn=0006 rf=1234/5 k=41,42 p=ABCDEF";
+        "t=123s m=7 k=41,42 p=ABCDEF";
     assert(strcmp(out, expect) == 0);
     printf("S3 ok\n");
   }

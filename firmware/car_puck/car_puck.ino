@@ -2,41 +2,12 @@
  * car_puck.ino — Marvin ESP32-S3 車載 puck bring-up 骨架（Arduino）
  * 板：Goouuu ESP32-S3 N16R8 DevKit + S3 智能擴展板 V1.7
  *
- * 目的：板子到貨當天，「分步驗證」硬體 + 連線 + 麥克風 + 全鏈路，
- *      不用等 PCM5102/LiPo/喇叭。改下面 STEP 常數，一步一步點綠。
- *
- *   STEP 1 = PSRAM 檢查 + WiFi 連線          （驗你買對 N16R8 + 上網）
- *   STEP 2 = + HTTPS GET /now?t=token         （驗 Funnel 端到端 + S3 上 TLS）★最重要
- *   STEP 3 = + 三顆按鈕（GPIO0/38/39）
- *   STEP 4 = + INMP441 麥克風錄音到 PSRAM
- *   STEP 5 = + 按 PTT 錄 3s → POST /audio → 收 /reply（全鏈路，除了聽不到）
- *   STEP 6 = + PCM5102 I2S 喇叭輸出，放開 PTT 後自動輪詢 /reply 並就地播放（板子自己出聲）
- *   STEP 7 = + 開機自動上車：WiFi 連上→POST /car present（+30s 心跳）→常駐讀
- *            GET /audio_stream 播整個 mixer 輸出（音樂+TTS+DJ 全部，非單次 /reply
- *            輪詢；核心 0 專任務常駐讀、核心 1 跑 loop()/PTT，兩者不互卡）。
- *            斷電＝心跳自然停送，由伺服器 TTL(90s) 收尾停播，不用板子主動告知。
- *   STEP 8a = + 每 1s 輪詢 GET /car_commands?since=<seq>（見 main_satellite.py::
- *             handle_car_commands + marvin_voice_core/puck_command_queue.py），收到
- *             新指令只 log 到 Serial，完全不碰音訊路徑——edge端混音（雙 deck 自己
- *             crossfade，見 project 計畫文件）第一刀，只驗證「連得上新端點、seq 正確
- *             往前推進」，deck 邏輯留到下一刀再加。STEP<8 完全不受影響（沿用 STEP7
- *             既有的單一 /audio_stream 全混音路徑）。實機驗證過（2026-08-11）：四種
- *             指令 play/queue_next/crossfade/stop 皆收發正確。
- *   STEP 9  = + Deck B：獨立第二條 network+decode pipeline，收到 queue_next 指令才連
- *             GET /puck_deck?url=... 抓+解碼，但解碼出的 PCM 只做峰值統計 log，完全
- *             不寫 i2s_write——這一刀只驗證「同時撐住第二個 MP3 解碼器+第二條網路連線
- *             會不會影響/餓死既有 /audio_stream 播放」，真正疊加混音留到下一刀。收到
- *             stop 指令會關掉 deck B。STEP<9 完全不受影響，想退回只驗證過指令輪詢的
- *             狀態，改回 8 重新燒錄即可。
- *   STEP 10 = + 混音數學測試：deck B 解碼出的 PCM 額外寫進一個獨立的 PCM ring
- *             （deckBPcmRing），收到 crossfade 指令才真的算 gain（crossfadeGains()，
- *             照抄 device/puck_mixer.py::crossfade_gains() 邏輯）疊加進 deck A 輸出
- *             （mp3DataCallback 寫 i2s 前）。⚠️ deck A 的來源本身還是沒換——仍然吃
- *             /audio_stream（Mac 中央 mixer 已混好的完整輸出），這一刀純粹測試「疊加
- *             運算本身+兩個解碼器並行」的數學/CPU負擔對不對，不是真正的產品行為（正式
- *             行為要 deck A 也改吃 /puck_deck，那是之後單獨一刀，會動到主播放來源、
- *             風險更高）。crossfade 視窗跑完（elapsed>=duration）就把 crossfadeActive
- *             關掉，不做「切成 deck B 變主線」的部分。STEP<10 完全不受影響。
+ * 現行架構（2026-10 起 bring-up 的 STEP 漸進結構已移除，edge-mix STEP 8–10 隨伺服器端移除一併刪掉）：
+ *   core 0：audioNetworkTask 常駐讀 GET /audio_stream（MP3 + ICY 曲名）→ PSRAM ring
+ *           carHeartbeatTask 每 30s POST /car present（夾帶 WROOM 遙測）
+ *   core 1：audioPlaybackTask 解 MP3 → I2S 輸出（給 WROOM bt_bridge 轉 A2DP）
+ *           loop()：PTT hold-to-talk 錄 INMP441 → POST /audio、方向盤按鍵/遙測 UART、LED
+ *   斷電＝心跳自然停送，由伺服器 TTL(90s) 收尾停播。
  *
 
  * ⚠️ 動手前：cp secrets.h.example secrets.h 並填 WiFi、MARVIN_TOKEN、MARVIN_LOCAL_HOST。（I2S 腳位已實測、不用再查，見下。）
@@ -76,17 +47,6 @@
 #include "icy_fields.h"        // 轉送給 WROOM 前砍掉第 9 欄（bpm）；WROOM 解析器規定剛好 8 欄
 
 // ========== 你要填的 ==========
-#define STEP 10  // ← 從 1 開始，每步綠了再 +1（10＝STEP 10 混音數學測試，見檔頭說明；
-                 // 想退回只有deck B解碼統計、已驗證過的狀態，改回 9；想退回只有指令
-                 // 輪詢，改回 8；想完全退回音訊路徑零改動的狀態，改回 7——每一層都
-                 // 不用改別的地方，重新燒錄即可）
-
-// 2026-10-07：伺服器 MARVIN_CAR_HARDWARE=pi_bt 時沒有指令佇列，/car_commands 一律 404，
-// 但 commandPollTask 每 60s 仍新開一條 TLS 去問——每次握手吃 35–45KB 內部 RAM（Arduino 預編
-// sdkconfig 是 MBEDTLS_INTERNAL_MEM_ALLOC，用不到 PSRAM）＋搶 LWIP_LOCK；熱點下碰上串流重連
-// 時 minFree 掉到 14.8KB。不建這個 task（deckB 收不到指令就只是閒置）。esp32_edge_mix 才需要改回 1。
-#define CMD_POLL_ENABLED 0
-
 // 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
 // buffer（檔頭已知怪癖），會製造出我們正在追的那種週期性卡頓。先關掉排除，需要時開。
 // 2026-08-11 重開查車上斷線：USB 接筆電、serial monitor 開著主動讀（不會積壓 buffer）
@@ -116,8 +76,6 @@ const int   MARVIN_LOCAL_PORT = 8790;
 
 // ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
 #define PIN_BTN_PTT    0    // 喚醒/打斷 = 我們的 PTT
-#define PIN_BTN_VOLUP  38
-#define PIN_BTN_VOLDN  39
 
 // ========== 板載 RGB 狀態燈（WS2812，核心板 GPIO48）==========
 // ESP32 Arduino core 3.x 內建 neopixelWrite(pin,r,g,b)，不需函式庫。
@@ -196,8 +154,7 @@ void updateLed() {
     case LED_LISTENING:                            // 藍色常亮
       neopixelWrite(PIN_RGB, 0, 0, 80); break;
     case LED_PLAYING: {                            // 青色呼吸
-      // STEP>=6：pollAndPlayReply() 播完/逾時會主動 setLed(LED_STANDBY)，這條 10s 只是兜底。
-      // STEP<6（無喇叭）：沒有真播放事件，靠這個上限自動落回待機。
+      // 送出後等回覆的青燈，10s 上限自動落回待機（回覆從 /audio_stream 播出，沒有明確結束事件）。
       if (t >= 10000) { setLed(LED_STANDBY); break; }
       uint8_t b = ledBreathe(now, 1500, 4, 70);
       neopixelWrite(PIN_RGB, 0, b, b); break;
@@ -234,39 +191,7 @@ void connectWiFi() {
   }
 }
 
-// STEP 2：HTTPS GET /now?t=token —— 驗 Funnel 端到端 + TLS
-void testFunnelNow() {
-  WiFiClientSecure client;
-  client.setInsecure();   // bring-up 先跳過憑證驗證（Funnel 是有效 LetsEncrypt，之後可加 CA）
-  // ⚠️ WiFiClientSecure 預設 handshake_timeout=120000ms，跟 connect() 的 timeout 參數是
-  // 兩回事（那個只管 TCP 連線階段）——握手卡住最長會空等 2 分鐘，這裡先設短。
-  client.setHandshakeTimeout(5);
-  Serial.println("[HTTPS] 連 Funnel ...");
-  if (!client.connect(MARVIN_HOST, MARVIN_PORT)) {
-    char errBuf[128];
-    client.lastError(errBuf, sizeof(errBuf));
-    Serial.printf("[HTTPS] ❌ TLS 連不上（TLS 太重/沒網/Funnel 沒開）lastError=%s\n", errBuf);
-    setLed(LED_ERROR);
-    return;
-  }
-  String req = String("GET /now?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
-               "Host: " + MARVIN_HOST + "\r\nConnection: close\r\n\r\n";
-  client.print(req);
-  String statusLine = client.readStringUntil('\n');
-  Serial.printf("[HTTPS] 回應：%s", statusLine.c_str());
-  if (statusLine.indexOf("200") > 0) {
-    Serial.println("[HTTPS] ✅ 端到端通了！token 對、Funnel 對、TLS 沒問題");
-    setLed(LED_CONNECTED);   // 綠色閃兩下 → 自動落回待機
-  } else if (statusLine.indexOf("401") > 0) {
-    Serial.println("[HTTPS] ⚠️ 401 = 通了但 token 錯，改 MARVIN_TOKEN");
-    setLed(LED_ERROR);
-  } else {
-    setLed(LED_ERROR);
-  }
-  client.stop();
-}
-
-// STEP 4：起 INMP441 I2S 麥
+// 起 INMP441 I2S 麥
 void startMic() {
   i2s_config_t cfg = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
@@ -293,7 +218,7 @@ void startMic() {
   Serial.println("[MIC] INMP441 I2S 起動");
 }
 
-// STEP 6：起 PCM5102 I2S 喇叭輸出（TX）
+// 起 PCM5102 I2S 喇叭輸出（TX）
 void startSpeaker() {
   i2s_config_t cfg = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
@@ -318,93 +243,7 @@ void startSpeaker() {
   Serial.println("[SPK] PCM5102 I2S 起動");
 }
 
-// 解 RIFF/WAVE 標頭：找 fmt/data chunk，不假設固定 44-byte 標頭長度（穩健對付上游格式微調）
-static bool parseWav(uint8_t* buf, size_t len, size_t* dataOff, size_t* dataLen,
-                      uint32_t* sr, uint16_t* ch, uint16_t* bits) {
-  if (len < 12 || memcmp(buf, "RIFF", 4) != 0 || memcmp(buf + 8, "WAVE", 4) != 0) return false;
-  size_t p = 12;
-  bool haveFmt = false;
-  while (p + 8 <= len) {
-    char id[4]; memcpy(id, buf + p, 4);
-    uint32_t csz; memcpy(&csz, buf + p + 4, 4);
-    size_t body = p + 8;
-    if (memcmp(id, "fmt ", 4) == 0 && body + 16 <= len) {
-      memcpy(ch, buf + body + 2, 2);
-      memcpy(sr, buf + body + 4, 4);
-      memcpy(bits, buf + body + 14, 2);
-      haveFmt = true;
-    } else if (memcmp(id, "data", 4) == 0) {
-      *dataOff = body; *dataLen = min((size_t)csz, len - body);
-      return haveFmt;
-    }
-    if (body + csz > len) break;
-    p = body + csz + (csz & 1);   // chunk 對齊 word boundary
-  }
-  return false;
-}
-
-// STEP 6：POST /audio 成功後呼叫。輪詢 GET /reply?since=<seq>，收到就播、逾時就放棄。
-// 阻塞式（沿用 STEP 5 live 版驗證過的作法），輪詢/播放期間持續 updateLed() 讓青燈呼吸不凍。
-static uint32_t lastReplySeq = 0;
-
-void pollAndPlayReply() {
-  const uint32_t timeoutMs = 20000, pollMs = 300;
-  uint32_t t0 = millis();
-  while (millis() - t0 < timeoutMs) {
-    HTTPClient http;
-    WiFiClientSecure client; client.setInsecure();
-    client.setHandshakeTimeout(5);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
-    const char* headerKeys[] = { "X-Reply-Seq" };
-    http.collectHeaders(headerKeys, 1);
-    String url = String("https://") + MARVIN_HOST + "/reply?since=" + lastReplySeq + "&t=" + MARVIN_TOKEN;
-    http.begin(client, url);
-    int code = http.GET();
-
-    if (code == 200) {
-      int len = http.getSize();
-      uint8_t* wav = (len > 0) ? (uint8_t*)ps_malloc(len) : nullptr;
-      if (wav) {
-        WiFiClient* stream = http.getStreamPtr();
-        int got = 0;
-        while (got < len && http.connected()) {
-          got += stream->readBytes(wav + got, len - got);
-        }
-        String seqHdr = http.header("X-Reply-Seq");
-        http.end();
-        if (seqHdr.length()) lastReplySeq = (uint32_t)seqHdr.toInt();
-        size_t dataOff, dataLen; uint32_t sr; uint16_t ch, bits;
-        if (parseWav(wav, got, &dataOff, &dataLen, &sr, &ch, &bits)) {
-          Serial.printf("[SPK] 播放 %u Hz / %uch / %u-bit / %u bytes\n", sr, ch, bits, (unsigned)dataLen);
-          i2s_set_clk(I2S_SPK_PORT, sr, (i2s_bits_per_sample_t)bits,
-                      ch == 1 ? I2S_CHANNEL_MONO : I2S_CHANNEL_STEREO);
-          size_t written, off = 0;
-          while (off < dataLen) {
-            i2s_write(I2S_SPK_PORT, wav + dataOff + off, dataLen - off, &written, portMAX_DELAY);
-            off += written;
-            updateLed();   // 播放期間讓青燈呼吸繼續動
-          }
-        } else {
-          Serial.println("[SPK] ⚠️ wav 標頭解析失敗，跳過播放");
-        }
-        free(wav);
-      } else {
-        if (len > 0) Serial.println("[SPK] ⚠️ ps_malloc 失敗，跳過播放");
-        String seqHdr = http.header("X-Reply-Seq");
-        http.end();
-        if (seqHdr.length()) lastReplySeq = (uint32_t)seqHdr.toInt();
-      }
-      setLed(LED_STANDBY);
-      return;
-    }
-    http.end();
-    delay(pollMs);
-    updateLed();
-  }
-  Serial.println("[SPK] /reply 逾時（20s 沒等到回覆）");
-  setLed(LED_STANDBY);
-}
-
-// STEP 7：常駐音訊串流（車載模式）——開機後常駐一條到 /audio_stream 的連線，讀到就播；
+// 常駐音訊串流（車載模式）——開機後常駐一條到 /audio_stream 的連線，讀到就播；
 // 跑在獨立 FreeRTOS 任務、釘死 core 0（Arduino loop()/PTT/心跳跑在預設的 core 1），
 // 讀取阻塞不會卡住 PTT 錄音或心跳送出。/audio_stream 是整個 mixer 輸出（音樂+TTS+DJ
 // 全部），車載模式下伺服器 /reply 已停用，對話回覆也會自動從這條串流播出，postAudio()
@@ -595,7 +434,7 @@ void audioNetworkTask(void* pv) {
     // ⚠️ 2026-07-26 實機重現：handshake_timeout 預設120s跟connect()的timeout參數是兩回事
     // （後者只管TCP連線階段），握手卡住的話 LWIP_LOCK() 會被鎖住到120秒——carHeartbeat/
     // PTT/ring buffer補貨全部餓死在等同一把鎖，症狀＝出門連上熱點後播不到一秒就整個
-    // 靜音、心跳log也停。設短逾時，見 testFunnelNow() 前的註解。
+    // 靜音、心跳log也停。設短逾時，見 funnelEnsureConnected() 前的註解。
     funnelClient.setHandshakeTimeout(5);
     bool connectOk = false;
     if (lanEnabled()) {
@@ -743,66 +582,6 @@ void audioNetworkTask(void* pv) {
   }
 }
 
-#if STEP >= 10
-// ============================================================
-// STEP 10：混音狀態 + deck B 解碼 PCM ring——放在 mp3DataCallback（deck A）之前，
-// 因為它需要讀這些東西；deck B 那組（本節之後、STEP>=9 區塊裡的 mp3DataCallbackB）
-// 只是往這裡寫，兩邊共用同一份宣告，避免 Arduino 對「變數」（不像函式）不會自動產生
-// forward declaration 而編譯失敗。
-// ============================================================
-#define DECKB_PCM_RING_SIZE (48000 * 2 * 2 * 6)   // 6秒 stereo s16 @48kHz ≈ 1.1MB
-static uint8_t* deckBPcmRing = nullptr;
-static volatile size_t deckBPcmHead = 0, deckBPcmTail = 0;
-
-static volatile bool crossfadeActive = false;
-static volatile uint32_t crossfadeStartMs = 0;
-static volatile uint32_t crossfadeDurationMs = 4000;
-
-static inline size_t deckBPcmUsed() {
-  size_t h = deckBPcmHead, t = deckBPcmTail;
-  return (h >= t) ? (h - t) : (DECKB_PCM_RING_SIZE - t + h);
-}
-static inline size_t deckBPcmFree() { return DECKB_PCM_RING_SIZE - 1 - deckBPcmUsed(); }
-
-// 跟其他 ring 不同：滿了就丟這批，不 vTaskDelay 等（PCM ring 只在 crossfade 附近才
-// 有人消費，deck B 解碼 task 不該被這裡卡住——寧可丟音訊樣本，不要拖累 deck B 自己
-// 的 decode 節奏）。
-static void deckBPcmWrite(const uint8_t* data, size_t len) {
-  if (deckBPcmRing == nullptr) return;   // ps_malloc 失敗時安靜跳過，別寫進空指標
-  size_t freeNow = deckBPcmFree();
-  if (freeNow == 0) return;
-  size_t chunk = len > freeNow ? freeNow : len;
-  size_t firstPart = DECKB_PCM_RING_SIZE - deckBPcmHead;
-  if (firstPart > chunk) firstPart = chunk;
-  memcpy(deckBPcmRing + deckBPcmHead, data, firstPart);
-  if (chunk > firstPart) memcpy(deckBPcmRing, data + firstPart, chunk - firstPart);
-  deckBPcmHead = (deckBPcmHead + chunk) % DECKB_PCM_RING_SIZE;
-}
-static size_t deckBPcmRead(uint8_t* out, size_t maxLen) {
-  size_t avail = deckBPcmUsed();
-  size_t want = maxLen < avail ? maxLen : avail;
-  if (want == 0) return 0;
-  size_t firstPart = DECKB_PCM_RING_SIZE - deckBPcmTail;
-  if (firstPart > want) firstPart = want;
-  memcpy(out, deckBPcmRing + deckBPcmTail, firstPart);
-  if (want > firstPart) memcpy(out + firstPart, deckBPcmRing, want - firstPart);
-  deckBPcmTail = (deckBPcmTail + want) % DECKB_PCM_RING_SIZE;
-  return want;
-}
-
-// 照抄 device/puck_mixer.py::crossfade_gains() 的邏輯（線性 crossfade），純 C 重寫，
-// 行為要跟 Python 版一致，方便日後對照除錯。elapsedS<=0→(1,0)；elapsedS>=durationS→
-// (0,1)；durationS<=0→立即切到 b。
-static void crossfadeGains(float elapsedS, float durationS, float* gainA, float* gainB) {
-  if (durationS <= 0.0f) { *gainA = 0.0f; *gainB = 1.0f; return; }
-  float frac = elapsedS / durationS;
-  if (frac < 0.0f) frac = 0.0f;
-  if (frac > 1.0f) frac = 1.0f;
-  *gainA = 1.0f - frac;
-  *gainB = frac;
-}
-#endif  // STEP >= 10
-
 // 2026-07-26：/audio_stream 現在送 MP3，ring buffer 裡裝的是壓縮 bytes——消費端不能再
 // 直接 i2s_write，要先解碼。用 pschatzmann/arduino-libhelix 的 MP3DecoderHelix：
 // decode-only（不像 ESP32-audioI2S 整包接管連線），塞 bytes 進去、解碼完的 PCM 經
@@ -827,34 +606,6 @@ static void mp3DataCallback(MP3FrameInfo &info, short *pcm_buffer, size_t len, v
     mp3LastChans = info.nChans;
     Serial.printf("[Stream] MP3 格式：%dHz %dch\n", info.samprate, info.nChans);
   }
-#if STEP >= 10
-  // STEP 10：crossfade 測試視窗內，把 deck B 的 PCM 依 gain 疊加進來——deck A 來源
-  //本身沒換（仍是 /audio_stream），純測混音數學/CPU負擔，見檔頭 STEP 10 說明。
-  if (crossfadeActive) {
-    static int16_t mixBuf[4096];
-    size_t nSamples = len;
-    if (nSamples > sizeof(mixBuf) / sizeof(mixBuf[0])) nSamples = sizeof(mixBuf) / sizeof(mixBuf[0]);
-    size_t gotBytes = deckBPcmRead((uint8_t*)mixBuf, nSamples * sizeof(int16_t));
-    size_t gotSamples = gotBytes / sizeof(int16_t);
-
-    uint32_t elapsedMs = millis() - crossfadeStartMs;
-    float gainA, gainB;
-    crossfadeGains(elapsedMs / 1000.0f, crossfadeDurationMs / 1000.0f, &gainA, &gainB);
-
-    for (size_t i = 0; i < nSamples; i++) {
-      float a = pcm_buffer[i] * gainA;
-      float b = (i < gotSamples) ? mixBuf[i] * gainB : 0.0f;
-      float mixed = a + b;
-      if (mixed > 32767.0f) mixed = 32767.0f;
-      if (mixed < -32768.0f) mixed = -32768.0f;
-      pcm_buffer[i] = (int16_t)mixed;
-    }
-    if (elapsedMs >= crossfadeDurationMs) {
-      crossfadeActive = false;   // 這一刀不做「切成deck B變主線」，測試視窗跑完就收手
-      Serial.println("[Mix] crossfade 測試視窗結束");
-    }
-  }
-#endif
   size_t written;
   i2s_write(I2S_SPK_PORT, pcm_buffer, len * sizeof(short), &written, portMAX_DELAY);
 #if STREAM_DEBUG_PRINT
@@ -913,7 +664,7 @@ void audioPlaybackTask(void* pv) {
   }
 }
 
-// STEP 7：車載 present 心跳（POST /car）——伺服器 TTL 預設 90s，這裡每 30s 送一次留足
+// 車載 present 心跳（POST /car）——伺服器 TTL 預設 90s，這裡每 30s 送一次留足
 // margin。斷電＝板子直接死掉、心跳自然停送，交給伺服器 TTL 收尾（不用板子主動告知斷電）。
 //
 // 2026-07-25 除錯記錄（別再重踩，方案 A 已落地）：
@@ -1021,436 +772,6 @@ static bool postHttpKeepAlive(WiFiClient& client, const char* host, const char* 
   return true;
 }
 
-// STEP 8a：手動 GET + 讀 body（跟 postHttp 對稱、同款鎖紀律；body 走 Connection: close
-// 讀到斷線為止，不解析 Content-Length——/car_commands 回應很小，這樣最簡單）。
-// bodyBuf 由呼叫端提供（ps_malloc，避免佔 stack），塞不下就截斷（回傳值 = 實際讀到的
-// bytes，可能等於 bodyBufSize）。回傳 HTTP 狀態碼，connect 失敗回 -1。
-static int getHttpBody(WiFiClient& client, const char* host, uint16_t port, int32_t connectTimeoutMs,
-                        const char* path, uint32_t readTimeoutMs,
-                        uint8_t* bodyBuf, size_t bodyBufSize, size_t* outBodyLen) {
-  *outBodyLen = 0;
-  LWIP_LOCK();
-  bool connectOk = client.connect(host, port, connectTimeoutMs);
-  LWIP_UNLOCK();
-  if (!connectOk) return -1;
-  client.setTimeout(500);
-
-  String req = String("GET ") + path + " HTTP/1.1\r\n" +
-               "Host: " + host + "\r\nConnection: close\r\n\r\n";
-  LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
-
-  String status;
-  lockedReadLine(client, status, readTimeoutMs);
-  int code = 0;
-  int sp1 = status.indexOf(' ');
-  if (sp1 > 0) code = status.substring(sp1 + 1, sp1 + 4).toInt();
-
-  // 跳過 headers，讀到空行＝標頭結束。⚠️ 2026-08-11 實機踩到：外層不能用
-  // `while (client.connected())` 當守門（audioNetworkTask 的 chunked 長連線那份可以，
-  // 因為連線持續開著）——/car_commands 是 Connection: close 的短回應，本地區網幾乎
-  // 瞬間送完+關閉，ESP32 使用者層跑到這行時 connected() 常常已經回 false（即使 socket
-  // buffer 裡還有沒讀完的 header/body），outer while 直接 0 次跳過、標頭全部漏進
-  // body buffer（實測：body 開頭印出一堆 Access-Control-*/Content-Type header 行）。
-  // 改成純靠 lockedReadLine() 自己的回傳值收尾——它內部先查 available() 才查
-  // connected()，能正確吃到「已斷線但還有緩衝資料」這種情況。
-  for (;;) {
-    String h;
-    if (!lockedReadLine(client, h, readTimeoutMs)) break;
-    if (h.length() == 0) break;
-  }
-  size_t got = 0;
-  while (got < bodyBufSize) {
-    size_t n = lockedReadBytes(client, bodyBuf + got, bodyBufSize - got, readTimeoutMs);
-    if (n == 0) break;                  // 逾時空讀或斷線＝body 讀完了
-    got += n;
-  }
-  *outBodyLen = got;
-  LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
-  return code;
-}
-
-// STEP 8a：抽 JSON 最外層 "seq":<N>——回應固定是 {"seq":N,"commands":[...]}，"seq" 這個
-// key 第一次出現的位置一定是最外層那個（commands 陣列裡每個指令物件的 "seq" 排在它
-// 後面），用第一次出現位置抽數字即可，不需要完整 JSON parser。指令內容（cmd/url/
-// duration_s）留到下一刀真的要套用到 deck 邏輯時再解析，這一刀只求「seq 有沒有往前
-// 推進、能不能連上」。
-static uint32_t parseTopLevelSeq(const uint8_t* body, size_t len) {
-  const char* key = "\"seq\":";
-  size_t klen = strlen(key);
-  for (size_t i = 0; i + klen < len; i++) {
-    if (memcmp(body + i, key, klen) == 0) {
-      return (uint32_t)strtoul((const char*)(body + i + klen), nullptr, 10);
-    }
-  }
-  return 0;
-}
-
-#define CMD_POLL_BODY_MAX 2048
-static uint8_t* cmdPollBodyBuf = nullptr;
-static uint32_t lastCmdSeq = 0;
-
-// STEP 8a：每 60s 輪詢一次 /car_commands，收到新指令只 log、不套用（edge端混音第一刀，
-// 見檔頭 STEP 8a 說明）。跟 carHeartbeatTask 同款區網優先／Funnel 回退、同款
-// LWIP_LOCK 紀律，釘同一顆 core（0）、優先權 2（2026-08-13 調的，見 setup() 建立這個
-// task 那行的說明——原本=1 會被同核心優先權2的 audioNet/deckNet×2 餓死，跟
-// carHeartbeatTask 2026-08-12 那次同一種症狀）。
-//
-// 2026-08-13：原本 1s 一次——這條路每次都要「先試區網（持鎖）、失敗退 Funnel TLS
-// handshake」，跟心跳是同一種搶 LWIP_LOCK 的模式，但頻率是心跳（30s）的 30 倍，
-// 是熱點/Funnel 下最大宗的搶鎖來源。車用場景幾乎不會操作 car_control 面板，這條
-// 輪詢本身也只是 log（.env 的 MARVIN_CAR_HARDWARE 沒開時 /car_commands 直接 404，
-// 連指令都收不到），拉長到 60s 對「有沒有新指令」這件事影響可忽略，換來的是把這裡
-// 的鎖競爭砍到心跳的 1/2。
-void commandPollTask(void* pv) {
-  Serial.println("[CmdPoll] commandPollTask 已啟動（STEP 8a：只 log，不套用指令）");
-  cmdPollBodyBuf = (uint8_t*)ps_malloc(CMD_POLL_BODY_MAX);
-  if (cmdPollBodyBuf == nullptr) {
-    Serial.println("[CmdPoll] ❌ ps_malloc 失敗，指令輪詢停用");
-    vTaskDelete(nullptr);
-    return;
-  }
-  for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(60000));
-    if (WiFi.status() != WL_CONNECTED) continue;
-
-    char path[96];
-    snprintf(path, sizeof(path), "/car_commands?since=%u&t=%s", (unsigned)lastCmdSeq, MARVIN_TOKEN);
-
-    size_t bodyLen = 0;
-    WiFiClient localClient;
-    int code = -1;
-    if (lanEnabled()) code = getHttpBody(localClient, MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200,
-                            path, 3000, cmdPollBodyBuf, CMD_POLL_BODY_MAX, &bodyLen);
-    if (code <= 0) {
-      WiFiClientSecure funnelClient; funnelClient.setInsecure();
-      funnelClient.setHandshakeTimeout(5);
-      code = getHttpBody(funnelClient, MARVIN_HOST, MARVIN_PORT, 5000,
-                          path, 5000, cmdPollBodyBuf, CMD_POLL_BODY_MAX, &bodyLen);
-    }
-    if (code != 200 || bodyLen == 0) continue;
-
-    uint32_t newSeq = parseTopLevelSeq(cmdPollBodyBuf, bodyLen);
-    // 2026-08-13 實機踩到：seq 只存在 Mac 端 PuckCommandQueue 的進程記憶體裡，puck
-    // 沒重開機的情況下 Mac 端重啟一次，seq 就從 0 重算——這裡的 newSeq 會小於 puck
-    // 記得的 lastCmdSeq，導致 `newSeq > lastCmdSeq` 從此永遠不成立、新指令永遠被判定
-    // 成「舊的」而略過，puck 卡死不再有任何反應（症狀：/car_commands 一路回 200 但
-    // since 卡住不動，/puck_deck 完全沒被打過）。加這個分支：只要看到 seq 比記憶中的
-    // 還小，代表 Mac 端重開過，比照開機首次同步的規則重新校準基準（不重播這一輪
-    // body 裡的內容，避免把 Mac 重啟瞬間新塞進去的指令當「舊歷史」或「新指令」誤判），
-    // 下一輪 poll 起才恢復正常增量處理。
-    if (newSeq < lastCmdSeq) {
-      Serial.printf("[CmdPoll] ⚠️ server seq %u→%u 倒退，判定 Mac 端進程重啟過，重新校準基準（不重播這輪）\n",
-                    (unsigned)lastCmdSeq, (unsigned)newSeq);
-      lastCmdSeq = newSeq;
-      continue;
-    }
-
-    if (newSeq > lastCmdSeq) {
-      Serial.printf("[CmdPoll] 新指令 seq %u→%u：%.*s\n",
-                    (unsigned)lastCmdSeq, (unsigned)newSeq, (int)bodyLen, (const char*)cmdPollBodyBuf);
-      lastCmdSeq = newSeq;
-#if STEP >= 9
-      dispatchNewCommands(cmdPollBodyBuf, bodyLen);
-#endif
-    }
-  }
-}
-
-#if STEP >= 9
-// ============================================================
-// STEP 9：Deck B —— 獨立第二條 network+decode pipeline（見檔頭說明）。跟主 deck（STEP7
-// 的 streamRing/mp3Decoder 那組）完全分開的一組全域狀態，零共用，確保這一刀就算整個
-// 崩潰/卡死也不會拖累既有 /audio_stream 播放（deckB 的 task 掛了頂多 deck B 沒聲音統計、
-// 主播放不受影響）。目前解碼出的 PCM 只做峰值統計 log，不接 i2s_write。
-// ============================================================
-#define DECKB_RING_SIZE (256 * 1024)
-static uint8_t* deckBRing = nullptr;
-static volatile size_t deckBHead = 0, deckBTail = 0;
-static volatile bool deckBActive = false;       // queue_next 開、stop 關
-static volatile bool deckBNeedsReset = false;   // 換URL/重連：跟主deck mp3NeedsReset同款做法
-static char deckBUrl[256] = {0};
-static SemaphoreHandle_t deckBUrlMutex = nullptr;   // 保護 deckBUrl（commandPollTask寫、deckBNetworkTask讀）
-
-static inline size_t deckBUsed() {
-  size_t h = deckBHead, t = deckBTail;
-  return (h >= t) ? (h - t) : (DECKB_RING_SIZE - t + h);
-}
-static inline size_t deckBFree() { return DECKB_RING_SIZE - 1 - deckBUsed(); }
-
-// 跟主 deck 的 ringWrite/ringRead 同款 memcpy 版實作，理由見那兩個函式前的註解。
-static void deckBRingWrite(const uint8_t* data, size_t len) {
-  size_t offset = 0;
-  while (offset < len) {
-    while (deckBFree() == 0) {
-      if (!deckBActive) return;   // 被 stop 掉了，不要在這裡卡死等 free
-      vTaskDelay(pdMS_TO_TICKS(1));
-    }
-    size_t chunk = len - offset;
-    size_t freeNow = deckBFree();
-    if (chunk > freeNow) chunk = freeNow;
-    size_t firstPart = DECKB_RING_SIZE - deckBHead;
-    if (firstPart > chunk) firstPart = chunk;
-    memcpy(deckBRing + deckBHead, data + offset, firstPart);
-    if (chunk > firstPart) memcpy(deckBRing, data + offset + firstPart, chunk - firstPart);
-    deckBHead = (deckBHead + chunk) % DECKB_RING_SIZE;
-    offset += chunk;
-  }
-}
-static size_t deckBRingRead(uint8_t* out, size_t maxLen) {
-  size_t avail = deckBUsed();
-  size_t want = maxLen < avail ? maxLen : avail;
-  if (want == 0) return 0;
-  size_t firstPart = DECKB_RING_SIZE - deckBTail;
-  if (firstPart > want) firstPart = want;
-  memcpy(out, deckBRing + deckBTail, firstPart);
-  if (want > firstPart) memcpy(out + firstPart, deckBRing, want - firstPart);
-  deckBTail = (deckBTail + want) % DECKB_RING_SIZE;
-  return want;
-}
-
-// deck B 的 MP3 解碼 callback：只統計峰值+frame數，不寫 i2s（這一刀不接主輸出）。
-static void mp3DataCallbackB(MP3FrameInfo &info, short *pcm_buffer, size_t len, void *ref);
-static MP3DecoderHelix mp3DecoderB(mp3DataCallbackB);
-static uint32_t deckBFrameCount = 0;
-static int16_t deckBPeak = 0;
-
-static void mp3DataCallbackB(MP3FrameInfo &info, short *pcm_buffer, size_t len, void *ref) {
-  if (len == 0) return;
-#if STEP >= 10
-  deckBPcmWrite((const uint8_t*)pcm_buffer, len * sizeof(int16_t));
-#endif
-  deckBFrameCount++;
-  for (size_t i = 0; i < len; i++) {
-    int16_t a = pcm_buffer[i] < 0 ? (int16_t)-pcm_buffer[i] : pcm_buffer[i];
-    if (a > deckBPeak) deckBPeak = a;
-  }
-  if (deckBFrameCount % 40 == 0) {   // 128kbps下每frame~26ms，~1s印一次
-    Serial.printf("[DeckB] decode#%u %dHz %dch samples=%u peak=%d ringUsed=%u\n",
-                  (unsigned)deckBFrameCount, info.samprate, info.nChans,
-                  (unsigned)len, (int)deckBPeak, (unsigned)deckBUsed());
-    deckBPeak = 0;
-  }
-}
-
-// 跟主 deck audioNetworkTask 同款：手動解 chunked，區網優先/Funnel回退，LWIP_LOCK 紀律。
-// 差異：deckBActive=false 時直接空轉（deck 沒開），不像主 deck 永遠常駐連線。
-void deckBNetworkTask(void* pv) {
-  Serial.println("[DeckB] deckBNetworkTask 已啟動（STEP 9：只統計，不接i2s）");
-  for (;;) {
-    if (!deckBActive) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
-    if (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
-
-    char urlLocal[256];
-    xSemaphoreTake(deckBUrlMutex, portMAX_DELAY);
-    strncpy(urlLocal, deckBUrl, sizeof(urlLocal) - 1);
-    urlLocal[sizeof(urlLocal) - 1] = 0;
-    xSemaphoreGive(deckBUrlMutex);
-    if (urlLocal[0] == 0) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
-
-    // ⚠️ url 沒做 URL-encode——/car_commands 目前只會塞乾淨的 youtube watch url（不含
-    // 需要 encode 的字元），真撞到特殊字元的 url 再補，這一刀先不處理。
-    char path[320];
-    snprintf(path, sizeof(path), "/puck_deck?url=%s&t=%s", urlLocal, MARVIN_TOKEN);
-
-    WiFiClient localClient;
-    WiFiClientSecure funnelClient; funnelClient.setInsecure();
-    funnelClient.setHandshakeTimeout(5);
-    bool connectOk = false;
-    if (lanEnabled()) {
-      LWIP_LOCK();
-      connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
-      LWIP_UNLOCK();
-    }
-    bool useFunnel = !connectOk;
-    if (useFunnel) {
-      LWIP_LOCK();
-      connectOk = funnelClient.connect(MARVIN_HOST, MARVIN_PORT, 5000);
-      LWIP_UNLOCK();
-    }
-    WiFiClient& client = useFunnel ? (WiFiClient&)funnelClient : localClient;
-    if (!connectOk) {
-      Serial.println("[DeckB] ⚠️ connect() 失敗（區網+Funnel都失敗），2s後重試");
-      vTaskDelay(pdMS_TO_TICKS(2000));
-      continue;
-    }
-    const char* host = useFunnel ? MARVIN_HOST : MARVIN_LOCAL_HOST;
-    client.setTimeout(500);
-    String req = String("GET ") + path + " HTTP/1.1\r\nHost: " + host + "\r\nConnection: close\r\n\r\n";
-    LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
-
-    String status;
-    lockedReadLine(client, status, 20000);
-    bool ok200 = status.indexOf("200") > 0;
-    bool chunked = false;
-    while (client.connected()) {   // /puck_deck 跟 /audio_stream 一樣是長連線 chunked
-      String h;                    // stream，這裡沿用同款 connected() 守門沒問題（見
-      if (!lockedReadLine(client, h, 20000)) break;   // getHttpBody 那個 bug 的註解：
-      if (h.length() == 0) break;                      // 短 Connection:close 回應才會撞）
-      if (h.indexOf("chunked") >= 0) chunked = true;
-    }
-    if (!ok200 || !chunked) {
-      Serial.printf("[DeckB] /puck_deck 非預期回應（200=%d chunked=%d）：%s",
-                    ok200, chunked, status.c_str());
-      LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
-      vTaskDelay(pdMS_TO_TICKS(2000));
-      continue;
-    }
-    Serial.printf("[DeckB] /puck_deck 連上：%s\n", urlLocal);
-    deckBNeedsReset = true;
-
-    uint8_t buf[4096];
-    while (client.connected() && deckBActive) {
-      String sizeLine;
-      if (!lockedReadLine(client, sizeLine, 20000)) sizeLine = "";
-      long chunkSize = strtol(sizeLine.c_str(), nullptr, 16);
-      if (chunkSize <= 0) {
-        Serial.println("[DeckB] chunk-size 異常，斷線重連");
-        break;
-      }
-      long remain = chunkSize;
-      while (remain > 0 && client.connected() && deckBActive) {
-        size_t want = remain < (long)sizeof(buf) ? (size_t)remain : sizeof(buf);
-        size_t n = lockedReadBytes(client, buf, want, 20000);
-        if (n == 0) { vTaskDelay(pdMS_TO_TICKS(1)); continue; }
-        deckBRingWrite(buf, n);
-        remain -= (long)n;
-      }
-      { String _crlf; lockedReadLine(client, _crlf, 20000); }
-    }
-    LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
-    Serial.println("[DeckB] /puck_deck 斷線");
-    if (!deckBActive) {
-      Serial.println("[DeckB] 已被 stop，等下一次 queue_next");
-    } else {
-      vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-  }
-}
-
-void deckBPlaybackTask(void* pv) {
-  Serial.println("[DeckB] deckBPlaybackTask 已啟動");
-  mp3DecoderB.begin();
-  uint8_t buf[512];
-  for (;;) {
-    if (!deckBActive) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
-    if (deckBNeedsReset) {
-      deckBTail = deckBHead;   // 只從 consumer 自己動 tail，理由同主 deck 的說明
-      mp3DecoderB.begin();
-      deckBNeedsReset = false;
-    }
-    size_t avail = deckBUsed();
-    if (avail == 0) { vTaskDelay(pdMS_TO_TICKS(5)); continue; }
-    size_t want = avail < sizeof(buf) ? avail : sizeof(buf);
-    size_t n = deckBRingRead(buf, want);
-    mp3DecoderB.write(buf, n);   // 解碼出的 PCM 經 mp3DataCallbackB 統計，不寫i2s
-  }
-}
-
-// STEP 9：抽單一 JSON 物件裡 "key":"value" 字串欄位，搜尋範圍限制在 [from,to) 避免抽到
-// 相鄰下一個 command 物件的同名欄位。回傳擷取長度（0＝沒找到）。
-// ⚠️ 2026-08-11 實機踩到：pattern 不能寫死「冒號後緊接引號」——aiohttp web.json_response
-// 底層 json.dumps 預設分隔符是 ": "（冒號後有空格），寫死不含空格的 pattern 永遠比對
-// 不到，第一版 STEP 9 因此整段 deckB 邏輯從沒被觸發過（log 全靜默、查了老半天才發現
-// 不是連線問題，是這裡的字串比對問題）。改成 pattern 只到冒號為止，冒號後手動跳過
-// 空格再找開頭引號。
-static size_t extractJsonStringField(const uint8_t* body, size_t from, size_t to,
-                                      const char* key, char* out, size_t outSize) {
-  char pattern[32];
-  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-  size_t plen = strlen(pattern);
-  for (size_t i = from; i + plen < to; i++) {
-    if (memcmp(body + i, pattern, plen) != 0) continue;
-    size_t p = i + plen;
-    while (p < to && body[p] == ' ') p++;
-    if (p >= to || body[p] != '"') continue;   // 撞到同名但非字串欄位，跳過找下一個
-    size_t vstart = p + 1, vend = vstart;
-    while (vend < to && body[vend] != '"') vend++;
-    size_t vlen = vend - vstart;
-    if (vlen >= outSize) vlen = outSize - 1;
-    memcpy(out, body + vstart, vlen);
-    out[vlen] = 0;
-    return vlen;
-  }
-  out[0] = 0;
-  return 0;
-}
-
-#if STEP >= 10
-// STEP 10：抽單一 JSON 物件裡 "key": <number> 數字欄位（duration_s 用），同款空格容忍
-// + 搜尋範圍限制，找不到回 false（out 不變，呼叫端自己決定 fallback）。
-static bool extractJsonNumberField(const uint8_t* body, size_t from, size_t to,
-                                    const char* key, float* out) {
-  char pattern[32];
-  snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-  size_t plen = strlen(pattern);
-  for (size_t i = from; i + plen < to; i++) {
-    if (memcmp(body + i, pattern, plen) != 0) continue;
-    size_t p = i + plen;
-    while (p < to && body[p] == ' ') p++;
-    if (p >= to || (body[p] != '-' && (body[p] < '0' || body[p] > '9'))) continue;
-    *out = strtof((const char*)(body + p), nullptr);
-    return true;
-  }
-  return false;
-}
-#endif
-
-// STEP 9：真的套用指令——queue_next（開 deck B）、stop（關 deck B）；STEP 10 起
-// crossfade 也真的套用（算 gain 疊加，見 mp3DataCallback）。bodyLen 內可能不只一筆
-// 指令，逐筆掃過 "cmd": 出現的位置套用（同款空格容忍，見上）。
-void dispatchNewCommands(const uint8_t* body, size_t bodyLen) {
-  const char* cmdKey = "\"cmd\":";
-  size_t klen = strlen(cmdKey);
-  for (size_t i = 0; i + klen < bodyLen; i++) {
-    if (memcmp(body + i, cmdKey, klen) != 0) continue;
-    size_t p = i + klen;
-    while (p < bodyLen && body[p] == ' ') p++;
-    if (p >= bodyLen || body[p] != '"') continue;
-    size_t nameStart = p + 1, nameEnd = nameStart;
-    while (nameEnd < bodyLen && body[nameEnd] != '"') nameEnd++;
-    size_t nameLen = nameEnd - nameStart;
-
-    if (nameLen == 10 && memcmp(body + nameStart, "queue_next", 10) == 0) {
-      char url[256];
-      size_t searchTo = bodyLen < i + 300 ? bodyLen : i + 300;
-      if (extractJsonStringField(body, i, searchTo, "url", url, sizeof(url)) > 0) {
-        xSemaphoreTake(deckBUrlMutex, portMAX_DELAY);
-        strncpy(deckBUrl, url, sizeof(deckBUrl) - 1);
-        deckBUrl[sizeof(deckBUrl) - 1] = 0;
-        xSemaphoreGive(deckBUrlMutex);
-        deckBActive = true;
-#if STEP >= 10
-        // 新歌換源：清掉舊歌可能殘留在 PCM ring 裡的樣本，避免下次 crossfade 混進
-        // 上一首的尾巴。crossfadeActive 也一併關掉——舊的 crossfade 視窗不該延續到
-        // 新歌上。
-        crossfadeActive = false;
-        deckBPcmHead = 0; deckBPcmTail = 0;
-#endif
-        Serial.printf("[DeckB] queue_next → %s\n", url);
-      }
-    } else if (nameLen == 4 && memcmp(body + nameStart, "stop", 4) == 0) {
-      deckBActive = false;
-#if STEP >= 10
-      crossfadeActive = false;
-      deckBPcmHead = 0; deckBPcmTail = 0;
-#endif
-      Serial.println("[DeckB] stop → deck B 停用");
-#if STEP >= 10
-    } else if (nameLen == 9 && memcmp(body + nameStart, "crossfade", 9) == 0) {
-      float durationS = 4.0f;   // 找不到 duration_s 欄位就用跟 Mac 端 PuckCommandQueue
-                                 // 同款預設值（見 puck_command_queue.py::crossfade()）
-      size_t searchTo = bodyLen < i + 300 ? bodyLen : i + 300;
-      extractJsonNumberField(body, i, searchTo, "duration_s", &durationS);
-      crossfadeStartMs = millis();
-      crossfadeDurationMs = (uint32_t)(durationS * 1000.0f);
-      crossfadeActive = true;
-      Serial.printf("[Mix] crossfade → duration=%.1fs\n", durationS);
-#endif
-    }
-  }
-}
-#endif  // STEP >= 9
-
 // 2026-10-14：WROOM 的 DIAG/統計摘要只存在它自己的 NVS，要拔線插 Mac 才讀得到，而且一
 // 插上序列埠就重開一次機、那趟車上 session 的紀錄就沒了。WROOM 已經有一條 UART 把方向盤
 // 按鍵轉送過來（pollWheelFromWroom()），這裡原樣加碼：WROOM 送 "D|"/"S|" 開頭的行時存進
@@ -1479,11 +800,13 @@ static SemaphoreHandle_t gFunnelMutex = nullptr;
 // 把 carHeartbeat() 原本「connected() 檢查→沒連就 setInsecure/setHandshakeTimeout/
 // LWIP_LOCK connect/UNLOCK→成功就 setTimeout(500)」那段抽出來，postAudio() 也要用。
 // 呼叫端必須已持有 gFunnelMutex。
+// ⚠️ WiFiClientSecure 預設 handshake_timeout=120000ms，跟 connect() 的 timeout 參數是兩回事
+// （那個只管 TCP 連線階段）——握手卡住最長會空等 2 分鐘，所以這裡先設短。
 static bool funnelEnsureConnected(uint32_t handshakeTimeoutS, int32_t connectTimeoutMs) {
   bool alive = gHeartbeatFunnelClient.connected();
   if (!alive) {
     gHeartbeatFunnelClient.setInsecure();
-    gHeartbeatFunnelClient.setHandshakeTimeout(handshakeTimeoutS);   // 見 testFunnelNow() 前的註解：預設120s跟connect()逾時無關
+    gHeartbeatFunnelClient.setHandshakeTimeout(handshakeTimeoutS);   // 見 funnelEnsureConnected() 前的註解：預設120s跟connect()逾時無關
     LWIP_LOCK();
     alive = gHeartbeatFunnelClient.connect(MARVIN_HOST, MARVIN_PORT, connectTimeoutMs);
     LWIP_UNLOCK();
@@ -1728,7 +1051,7 @@ void pttHoldToTalk() {
   }
 }
 
-// STEP 5：把 recBuf 前 nSamples 個樣本包成 WAV，POST /audio
+// 把 recBuf 前 nSamples 個樣本包成 WAV，POST /audio
 void postAudio(int nSamples, bool viaPause) {
   const int dataBytes = nSamples * 2;
   const int wavBytes = 44 + dataBytes;
@@ -1792,14 +1115,8 @@ void postAudio(int nSamples, bool viaPause) {
   Serial.printf("[StackWM] loopTask after postAudio: %u words\n",
                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
   if (code != 200) { setLed(LED_STANDBY); return; }   // 沒送成功＝沒回覆要播，別卡在青燈
-#if STEP >= 7
   // 車載常駐串流模式：/reply 已停用，回覆會自動從 audioStreamTask 的 /audio_stream 播出。
   setLed(LED_STANDBY);
-#elif STEP >= 6
-  pollAndPlayReply();   // 輪詢 /reply，收到就用 PCM5102 就地播放
-#else
-  Serial.println("[POST] 送出後，Mac 會轉錄+回覆；回覆音訊走 GET /reply（STEP<6，板子還不會自己播）");
-#endif
 }
 
 // ------------------------------------------------------------------
@@ -1821,7 +1138,7 @@ void setup() {
   setLed(LED_BOOT);
   neopixelWrite(PIN_RGB, 40, 28, 0);   // 立刻亮黃：setup 期間 loop 還沒跑
 
-  // STEP 1：PSRAM 檢查（驗你買對 N16R8）
+  // PSRAM 檢查（驗你買對 N16R8）
   Serial.printf("[PSRAM] size = %u bytes（N16R8 應 ~8388608）\n", (unsigned)ESP.getPsramSize());
   if (ESP.getPsramSize() < 4*1024*1024)
     Serial.println("[PSRAM] ❌ 沒偵測到大 PSRAM！確認買的是 N16R8 + Arduino 有開 PSRAM");
@@ -1830,19 +1147,9 @@ void setup() {
   connectWiFi();
 
   pinMode(PIN_BTN_PTT, INPUT_PULLUP);
-  pinMode(PIN_BTN_VOLUP, INPUT_PULLUP);
-  pinMode(PIN_BTN_VOLDN, INPUT_PULLUP);
 
-#if STEP >= 2
-  testFunnelNow();
-#endif
-#if STEP >= 4
   startMic();
-#endif
-#if STEP >= 6
   startSpeaker();
-#endif
-#if STEP >= 7
   streamRing = (uint8_t*)ps_malloc(STREAM_RING_SIZE);
   Serial.printf("[Stream] streamRing ps_malloc %s（%u bytes）\n",
                 streamRing ? "成功" : "❌失敗", (unsigned)STREAM_RING_SIZE);
@@ -1873,39 +1180,10 @@ void setup() {
   // 2026-08-12：優先權從 1 調到 2，跟 audioNet/deckNet 同級——原本=1 時實機常被同核心
   // 的網路 task 餓到搶不到 LWIP_LOCK，心跳連續 HTTP -1（見 carHeartbeat() 前的註解）。
   xTaskCreatePinnedToCore(carHeartbeatTask, "carHeartbeat", 8192, nullptr, 2, nullptr, 0);
-#endif
-#if STEP >= 8 && CMD_POLL_ENABLED
-  // STEP 8a：指令輪詢，同核心同優先權 2（原本=1，2026-08-13車上實機踩到：跟
-  // carHeartbeatTask 2026-08-12 那次一模一樣的餓死症狀——commandPollTask 在同核心的
-  // audioNet/deckNet×2（優先權都是2）忙碌時完全被排擠，/car_commands 連續好幾分鐘
-  // 收不到任何輪詢，car_control面板也一起失去回應，只有puck端手動reset才能恢復。
-  // 上面 carHeartbeatTask 已經因為同一個原因調到2、這裡當初漏改，註解還誤寫「同優先權」
-  // 但兩邊其實不同級。跟其餘同核心 task 一致調到2，靠FreeRTOS同優先權round-robin
-  // 保底輪詢不被完全餓死（不解決任何task真的卡死自旋的情況，但那另有其事）。
-  xTaskCreatePinnedToCore(commandPollTask, "cmdPoll", 8192, nullptr, 2, nullptr, 0);
-#endif
-#if STEP >= 9
-  // STEP 9：deck B —— 優先權都給 1（比主 deck 的 audioNet/audioPlay 的 2 低一階），
-  // 這一刀是「順便驗證能不能撐」，不該搶主播放的 CPU/網路優先權。network 跟主 deck
-  // 一樣釘 core 0（I/O bound），decode 跟主 deck 一樣釘 core 1（CPU bound，這一刀最想
-  // 觀察的就是這裡會不會餓死 audioPlaybackTask）。
-  deckBRing = (uint8_t*)ps_malloc(DECKB_RING_SIZE);
-  deckBUrlMutex = xSemaphoreCreateMutex();
-  Serial.printf("[DeckB] deckBRing ps_malloc %s（%u bytes）free heap=%u\n",
-                deckBRing ? "成功" : "❌失敗", (unsigned)DECKB_RING_SIZE, (unsigned)ESP.getFreeHeap());
-#if STEP >= 10
-  // STEP 10：混音 PCM ring，要在 deckB 任務起來、真的開始解碼寫入前分配好。
-  deckBPcmRing = (uint8_t*)ps_malloc(DECKB_PCM_RING_SIZE);
-  Serial.printf("[Mix] deckBPcmRing ps_malloc %s（%u bytes）free heap=%u\n",
-                deckBPcmRing ? "成功" : "❌失敗", (unsigned)DECKB_PCM_RING_SIZE, (unsigned)ESP.getFreeHeap());
-#endif
-  xTaskCreatePinnedToCore(deckBNetworkTask, "deckBNet", 16384, nullptr, 1, nullptr, 0);
-  xTaskCreatePinnedToCore(deckBPlaybackTask, "deckBPlay", 8192, nullptr, 1, nullptr, 1);
-#endif
-  // 收尾定燈：WiFi 通但沒跑 Funnel 檢查（STEP 1）也給個 connected 提示；
+  // 收尾定燈：WiFi 通但沒跑 Funnel 檢查也給個 connected 提示；
   // 若前面已 setLed(ERROR/CONNECTED) 則不覆蓋。
   if (WiFi.status() == WL_CONNECTED && ledState == LED_BOOT) setLed(LED_CONNECTED);
-  Serial.printf("[READY] STEP=%d\n", STEP);
+  Serial.println("[READY]");
 }
 
 // 方向盤按鍵通道：WROOM 收到車機 AVRCP passthru 後經 UART2 轉送過來，這裡非阻塞湊一行
@@ -1967,17 +1245,7 @@ static void pollWheelFromWroom() {
 }
 
 void loop() {
-#if STEP == 3 || STEP == 4
-  // STEP 3/4 只驗按鍵通不通（印一下）。STEP 5 的 PTT 改走 hold-to-talk，
-  // 不在這印（那個 delay 會打斷錄音節奏）。
-  if (digitalRead(PIN_BTN_PTT)  == LOW) { Serial.println("[BTN] PTT 按下"); delay(150); }
-  if (digitalRead(PIN_BTN_VOLUP)== LOW) { Serial.println("[BTN] Vol+"); delay(150); }
-  if (digitalRead(PIN_BTN_VOLDN)== LOW) { Serial.println("[BTN] Vol-"); delay(150); }
-#endif
-
-#if STEP >= 5
   pttHoldToTalk();   // 按住說話、放開送出
-#endif
   pollWheelFromWroom();   // 方向盤按鍵通道（這階段只印 log）
   // 心跳 2026-07-25 起改由 carHeartbeatTask（core 0 專用任務）驅動，不再從這裡呼叫。
   updateLed();       // 狀態燈動畫（非阻塞）
