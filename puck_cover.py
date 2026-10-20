@@ -1,9 +1,10 @@
-"""車機 AMOLED 圓屏封面合成：凸透鏡 + 玻璃感 + 點播者頭像 → JPEG bytes。
+"""車機圓屏封面合成：徽章別針（lapel pin）造型 → JPEG bytes。
 
-凸透鏡：中央 inner 半徑內等比放大、不變形；外圍用二次曲線壓縮回邊界，
-兩段在 inner 處一階導數連續（看起來像真的玻璃鏡片）。
-玻璃感：外圈輕微色差（R/B 反向縮放）、邊緣暗角、左上高光、外圈一圈亮線。
-點播者頭像貼在玻璃效果之後（不經過透鏡、不吃高光），放右下 45°、白框圓形徽章。
+造型：封面圖印在平頂（flat 半徑內）上，外圈從 flat 到邊界沿 1/4 圓弧捲邊往後包
+（像徽章別針邊緣），印刷紙貼合捲邊一路包過去（不是裁切/模糊）。
+捲邊打光：依捲邊法向量算光源（左上）入射角，平頂法向量朝正前方、打光係數恰為 1，
+只有捲邊會因角度變暗/變亮；疊一層高光（只在捲邊，模擬邊緣反光）+ 一層固定位置的
+亮面膜高光（模擬印刷表面膜層）。
 輸出 baseline（非 progressive）JPEG，給 ESP32-S3 解碼。
 """
 from __future__ import annotations
@@ -14,38 +15,29 @@ import math
 import numpy as np
 
 
-def lens_radius(r, *, center_scale: float = 0.8, inner: float = 0.7):
-    """凸透鏡半徑映射：r<=inner 線性放大，r>inner 二次曲線壓回 1，在 inner 處一階導數連續。"""
-    a = center_scale
-    r0 = inner
-    b = (1 - a) / (1 - r0) ** 2
+def pin_radius(r, *, flat: float = 0.8):
+    """徽章別針半徑映射：r<=flat 原樣（平頂），r>flat 沿 1/4 圓弧捲邊壓回 1。"""
+    rho = 1.0 - flat
+    smax = flat + rho * (math.pi / 2)
     r_arr = np.asarray(r, dtype=np.float64)
-    linear = a * r_arr
-    outer = a * r_arr + b * (r_arr - r0) ** 2
-    out = np.where(r_arr <= r0, linear, outer)
+    theta = np.arcsin(np.clip((r_arr - flat) / rho, 0.0, 1.0))
+    s = np.where(r_arr <= flat, r_arr, flat + rho * theta)
+    out = s / smax
     if np.isscalar(r) or isinstance(r, (int, float)):
         return float(out)
     return out
 
 
-def _smoothstep(e0, e1, x):
-    t = np.clip((x - e0) / (e1 - e0), 0.0, 1.0)
-    return t * t * (3 - 2 * t)
-
-
 def render_puck_cover_image(
     cover_bytes: bytes,
-    avatar_bytes: bytes | None = None,
     *,
     size: int = 466,
-    center_scale: float = 0.8,
-    inner: float = 0.7,
-    chroma: float = 0.012,
-    vignette: float = 0.35,
-    highlight: float = 0.22,
-    rim: float = 0.35,
+    flat: float = 0.8,
+    gloss: float = 0.18,
+    spec: float = 0.6,
+    ambient: float = 0.35,
 ):
-    from PIL import Image, ImageDraw
+    from PIL import Image
 
     cover = Image.open(io.BytesIO(cover_bytes)).convert("RGB")
     w, h = cover.size
@@ -57,6 +49,9 @@ def render_puck_cover_image(
     src = np.asarray(cover, dtype=np.float32)
     n = src.shape[0]
 
+    rho = 1.0 - flat
+    smax = flat + rho * (math.pi / 2)
+
     R = size / 2.0
     xs = np.arange(size, dtype=np.float64)
     ys = np.arange(size, dtype=np.float64)
@@ -66,27 +61,21 @@ def render_puck_cover_image(
     r = np.hypot(nx, ny)
     r_safe = np.where(r == 0, 1.0, r)
 
-    f = lens_radius(r_safe, center_scale=center_scale, inner=inner)
-    scale = np.where(r == 0, center_scale, f / r_safe)
+    s = pin_radius(r_safe, flat=flat)
+    scale = np.where(r == 0, 1.0 / smax, s / r_safe)
 
-    t = np.clip((r - inner) / (1 - inner), 0.0, 1.0)
-    wgt = t * t * (3 - 2 * t)
+    sx = np.clip(nx * scale, -1.0, 1.0)
+    sy = np.clip(ny * scale, -1.0, 1.0)
+    px = np.clip((sx + 1) / 2 * n - 0.5, 0, n - 1)
+    py = np.clip((sy + 1) / 2 * n - 0.5, 0, n - 1)
+    x0 = np.floor(px).astype(np.int64)
+    y0 = np.floor(py).astype(np.int64)
+    x1 = np.clip(x0 + 1, 0, n - 1)
+    y1 = np.clip(y0 + 1, 0, n - 1)
+    fx = px - x0
+    fy = py - y0
 
-    scale_r = scale * (1 + chroma * wgt)
-    scale_g = scale
-    scale_b = scale * (1 - chroma * wgt)
-
-    def _sample(channel_idx, s):
-        sx = np.clip(nx * s, -1.0, 1.0)
-        sy = np.clip(ny * s, -1.0, 1.0)
-        px = np.clip((sx + 1) / 2 * n - 0.5, 0, n - 1)
-        py = np.clip((sy + 1) / 2 * n - 0.5, 0, n - 1)
-        x0 = np.floor(px).astype(np.int64)
-        y0 = np.floor(py).astype(np.int64)
-        x1 = np.clip(x0 + 1, 0, n - 1)
-        y1 = np.clip(y0 + 1, 0, n - 1)
-        fx = px - x0
-        fy = py - y0
+    def _sample(channel_idx):
         plane = src[:, :, channel_idx]
         v00 = plane[y0, x0]
         v01 = plane[y0, x1]
@@ -96,55 +85,49 @@ def render_puck_cover_image(
         bot_v = v10 * (1 - fx) + v11 * fx
         return top_v * (1 - fy) + bot_v * fy
 
-    out_r = _sample(0, scale_r)
-    out_g = _sample(1, scale_g)
-    out_b = _sample(2, scale_b)
+    out_r = _sample(0)
+    out_g = _sample(1)
+    out_b = _sample(2)
     out = np.stack([out_r, out_g, out_b], axis=-1)
 
-    out *= (1 - vignette * _smoothstep(0.88, 1.0, r))[:, :, None]
+    # 捲邊角度 + 法向量（平頂 r<=flat 時法向量朝正前方 (0,0,1)）。
+    theta = np.where(r <= flat, 0.0, np.arcsin(np.clip((r - flat) / rho, 0.0, 1.0)))
+    ux = np.where(r == 0, 0.0, nx / r_safe)
+    uy = np.where(r == 0, 0.0, ny / r_safe)
+    sin_t = np.sin(theta)
+    Nx = ux * sin_t
+    Ny = uy * sin_t
+    Nz = np.cos(theta)
+
+    Lx, Ly, Lz = -0.35, -0.45, 0.82
+    l_norm = math.sqrt(Lx * Lx + Ly * Ly + Lz * Lz)
+    Lx, Ly, Lz = Lx / l_norm, Ly / l_norm, Lz / l_norm
+
+    dot_nl = Nx * Lx + Ny * Ly + Nz * Lz
+    light = (ambient + (1 - ambient) * np.maximum(0.0, dot_nl)) / (ambient + (1 - ambient) * Lz)
+    out = out * light[:, :, None]
+
+    Hx, Hy, Hz = Lx, Ly, Lz + 1.0
+    h_norm = math.sqrt(Hx * Hx + Hy * Hy + Hz * Hz)
+    Hx, Hy, Hz = Hx / h_norm, Hy / h_norm, Hz / h_norm
+    dot_nh = Nx * Hx + Ny * Hy + Nz * Hz
+    sp = spec * np.maximum(0.0, dot_nh) ** 40
+    sp = np.where(r > flat, sp, 0.0)
 
     d2 = (nx + 0.33) ** 2 + (ny + 0.42) ** 2
-    hl = highlight * np.exp(-d2 / (2 * 0.28 ** 2))
-    out = out + (255 - out) * hl[:, :, None]
+    gl = gloss * np.exp(-d2 / (2 * 0.3 ** 2))
 
-    rim_mask = (r >= 1 - 2.5 / R) & (r <= 1 - 0.5 / R)
-    out[rim_mask] = out[rim_mask] + (255 - out[rim_mask]) * rim
+    a = np.clip(sp + gl, 0.0, 1.0)
+    out = out + (255 - out) * a[:, :, None]
 
     out[r > 1] = 0
 
     out = np.clip(out, 0, 255).astype(np.uint8)
-    result = Image.fromarray(out, mode="RGB")
-
-    if avatar_bytes is not None:
-        try:
-            av = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA")
-            d = round(0.2 * size)
-            av = av.resize((d, d))
-            mask = Image.new("L", (d, d), 0)
-            ImageDraw.Draw(mask).ellipse((0, 0, d - 1, d - 1), fill=255)
-
-            ring_d = d + 8
-            ring_img = Image.new("RGBA", (ring_d, ring_d), (0, 0, 0, 0))
-            ImageDraw.Draw(ring_img).ellipse((0, 0, ring_d - 1, ring_d - 1), fill=(255, 255, 255, 235))
-
-            cx = R + 0.62 * R * math.cos(math.pi / 4)
-            cy = R + 0.62 * R * math.sin(math.pi / 4)
-
-            av_left = round(cx - d / 2)
-            av_top = round(cy - d / 2)
-
-            result_rgba = result.convert("RGBA")
-            result_rgba.alpha_composite(ring_img, (av_left - 4, av_top - 4))
-            result_rgba.paste(av, (av_left, av_top), mask)
-            result = result_rgba.convert("RGB")
-        except Exception:
-            pass
-
-    return result
+    return Image.fromarray(out)
 
 
-def render_puck_cover(cover_bytes: bytes, avatar_bytes: bytes | None = None, **kw) -> bytes:
-    img = render_puck_cover_image(cover_bytes, avatar_bytes, **kw)
+def render_puck_cover(cover_bytes: bytes, **kw) -> bytes:
+    img = render_puck_cover_image(cover_bytes, **kw)
     out = io.BytesIO()
     img.save(out, format="JPEG", quality=85, progressive=False)
     return out.getvalue()
