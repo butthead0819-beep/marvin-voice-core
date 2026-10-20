@@ -112,6 +112,9 @@ class IntentContext:
     # 既有側效分支（NemoClaw/Marmo/Vision/imitation…）都用它擋環境誤拾音；
     # rescue（尤其音訊版，真的會打付費 API）比照同款守門，見 _maybe_rescue()。
     low_confidence_wake: bool = False
+    # 10/20：連續對談窗內（WakeSession 已開窗且是 target 的句子）→ _maybe_rescue 跳過。
+    # 對談中幾乎都是閒聊，rescue 串行多等 ~2.9s；要救指令以後再另外攔截。
+    in_wake_session: bool = False
     # 相容層：救援專用欄位的結構化鏡像，見 `RescuePayload` docstring。
     # __post_init__ 永遠從上面那組 flat 欄位重建（忽略呼叫端傳入的值），
     # 現有呼叫端（30 個 agent + 既有建構點）完全不用改就能繼續運作。
@@ -430,6 +433,9 @@ class IntentBus:
         if self.llm_rescue_agent is None:
             return None
         if ctx.depth > 0:
+            return None
+        if ctx.in_wake_session:
+            self.logger.info(f"📡 [IntentBus] {ctx.speaker} 連續對談窗內，跳過 rescue")
             return None
 
         try:
