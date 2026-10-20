@@ -45,6 +45,7 @@
                                 // (解碼+i2s_write)雙task架構，見 audioPlaybackTask 前的說明
 #include "icy_demux.h"         // 車機顯示曲名第一刀：拆 /audio_stream 夾帶的 ICY in-band metadata
 #include "icy_fields.h"        // 轉送給 WROOM 前砍掉第 9 欄（bpm）；WROOM 解析器規定剛好 8 欄
+#include "cover_fetch.h"   // 換歌下載徽章封面（/car_cover）：JPEG 粗驗、HTTP 標頭解析、遙測字串
 
 // ========== 你要填的 ==========
 // 2026-07-25 懷疑：串流 debug 用的 Serial.printf 本身在 HWCDC 底下可能阻塞等 USB
@@ -73,6 +74,12 @@ const int   MARVIN_LOCAL_PORT = 8790;
 // MARVIN_LOCAL_HOST 設 "" ＝只走熱點/Funnel，跳過所有區網嘗試（省下每次持 LWIP_LOCK 白等 0.8–1.2s）
 // 用巨集不用函式：Arduino 自動原型會插在第一個函式定義前，放這裡會讓 setLed(LedState) 原型跑到 enum 之前而編譯失敗
 #define lanEnabled() (MARVIN_LOCAL_HOST[0] != '\0')
+
+// 2026-10-20：換歌時下載 Mac 預算的徽章封面（/car_cover）進 PSRAM，先做壓力測試（還沒接螢幕）。
+// 0＝整段關掉（不配 buffer、不下載、心跳不夾 cover_sum）。
+#define COVER_FETCH 1
+#define COVER_SIZE_PX 240              // mk1 GC9A01 240×240
+#define COVER_BUF_CAP (64 * 1024)      // 240px JPEG 實測約 10–20KB
 
 // ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
 #define PIN_BTN_PTT    0    // 喚醒/打斷 = 我們的 PTT
@@ -390,6 +397,17 @@ static size_t ringRead(uint8_t* out, size_t maxLen) {
 // icy_demux.h 的 on_meta 簽名）。只有第一次或換歌（比對前 19 bytes＝"M1␟"+16 hex
 // track_id，不含後面每次都變的 pos_ms）才印 Serial log——這裡跑在 audioNetworkTask，
 // HWCDC 下 Serial.printf 可能阻塞（見 STREAM_DEBUG_PRINT 註解），能少印就少印。
+#if COVER_FETCH
+// onIcyMeta（audioNetworkTask）只設 g_coverDirty；真正下載在 carHeartbeatTask 的巡邏迴圈。
+static volatile bool g_coverDirty = false;
+static uint8_t* g_coverBuf = nullptr;
+static size_t g_coverLen = 0;          // 最近一次成功下載的 JPEG 長度（之後給顯示 task 用）
+static CoverStats g_coverStats = {0, 0, 0, 0, 0, 0, 0, 0, '-', 0, 0};
+static bool g_coverStatsNew = false;
+static uint8_t g_coverRetries = 0;
+static uint32_t g_coverRetryAt = 0;    // 0＝沒有排重試
+#endif
+
 static uint8_t g_lastMetaPrefix[19];
 static size_t g_lastMetaPrefixLen = 0;
 static bool g_haveLastMeta = false;
@@ -407,6 +425,9 @@ static void onIcyMeta(const uint8_t* payload, size_t len, void* /*ctx*/) {
     memcpy(g_lastMetaPrefix, payload, cmpLen);
     g_lastMetaPrefixLen = cmpLen;
     g_haveLastMeta = true;
+#if COVER_FETCH
+    g_coverDirty = true;   // 只設旗標，交給 carHeartbeatTask 下載（回呼不准直接做網路）
+#endif
     Serial.printf("[Meta] %.*s\n", (int)len, payload);
   }
 }
@@ -772,6 +793,54 @@ static bool postHttpKeepAlive(WiFiClient& client, const char* host, const char* 
   return true;
 }
 
+// GET 進呼叫端給的 buffer（沿用 lockedReadLine/lockedReadBytes 的鎖紀律）。呼叫端已 connect。
+// 回傳 true＝回應完整讀完（keep-alive 連線位置乾淨可複用）；false＝讀取異常，呼叫端要 stop()。
+// 200 且 Content-Length <= cap 才寫進 buf（*outLen）；其餘狀態或太大一律讀掉丟棄。
+static bool getHttpToBuf(WiFiClient& client, const char* host, const char* path, bool keepAlive,
+                         uint8_t* buf, size_t cap, size_t* outLen, int* outCode, uint32_t readTimeoutMs) {
+  *outLen = 0;
+  *outCode = -1;
+  if (!client.connected()) return false;
+
+  String header = String("GET ") + path + (strchr(path, '?') ? "&t=" : "?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
+                  "Host: " + host + "\r\n" +
+                  "Connection: " + (keepAlive ? "keep-alive" : "close") + "\r\n\r\n";
+  LWIP_LOCK();
+  client.print(header);
+  LWIP_UNLOCK();
+
+  String status;
+  if (!lockedReadLine(client, status, readTimeoutMs)) return false;
+  int code = http_status_code(status.c_str());
+
+  long contentLength = -1;
+  for (;;) {
+    String h;
+    if (!lockedReadLine(client, h, readTimeoutMs)) return false;
+    if (h.length() == 0) break;   // 空行＝標頭結束
+    long cl = http_content_length(h.c_str());
+    if (cl >= 0) contentLength = cl;
+  }
+  if (contentLength < 0) return false;
+
+  if (code == 200 && (size_t)contentLength <= cap) {
+    size_t n = lockedReadBytes(client, buf, (size_t)contentLength, readTimeoutMs);
+    if (n != (size_t)contentLength) return false;
+    *outLen = n;
+  } else {
+    uint8_t drain[256];
+    long remain = contentLength;
+    while (remain > 0) {
+      size_t want = remain < (long)sizeof(drain) ? (size_t)remain : sizeof(drain);
+      size_t n = lockedReadBytes(client, drain, want, readTimeoutMs);
+      if (n == 0) return false;
+      remain -= (long)n;
+    }
+  }
+  *outCode = code;
+  return true;
+}
+
 // 2026-10-14：WROOM 的 DIAG/統計摘要只存在它自己的 NVS，要拔線插 Mac 才讀得到，而且一
 // 插上序列埠就重開一次機、那趟車上 session 的紀錄就沒了。WROOM 已經有一條 UART 把方向盤
 // 按鍵轉送過來（pollWheelFromWroom()），這裡原樣加碼：WROOM 送 "D|"/"S|" 開頭的行時存進
@@ -907,6 +976,16 @@ void carHeartbeat() {
     }
     xSemaphoreGive(gWroomLogMutex);
   }
+#if COVER_FETCH
+  if (g_coverStatsNew) {
+    char cs[160];
+    cover_sum_format(cs, sizeof(cs), g_coverStats);   // 只有數字/英文/=/空白，不用跳脫
+    if (len + strlen(",\"cover_sum\":\"\"") + strlen(cs) + 2 < sizeof(body)) {
+      int n = snprintf(body + len, sizeof(body) - len, ",\"cover_sum\":\"%s\"", cs);
+      if (n > 0) { len += (size_t)n; g_coverStatsNew = false; }
+    }
+  }
+#endif
   if (len + 1 >= sizeof(body)) len = sizeof(body) - 2;   // 理論上不會發生，前面都留了餘裕，保底別溢位
   body[len++] = '}';
   body[len] = '\0';
@@ -972,6 +1051,101 @@ void carHeartbeat() {
                 audioPlayTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(audioPlayTaskHandle) : 0);
 }
 
+#if COVER_FETCH
+// 換歌下載封面。只在 carHeartbeatTask 裡呼叫（跟心跳同 task，stats 不用另外加鎖）。
+// 區網優先（跟心跳同一個 gHeartbeatTryLan 判斷）；Funnel 一律複用 gHeartbeatFunnelClient＋
+// gFunnelMutex——不開第三條 TLS（見 gFunnelMutex 前的說明）。fromRetry=false＝新換歌。
+static void coverFetch(bool fromRetry) {
+  g_coverDirty = false;
+  if (!fromRetry) {
+    g_coverRetries = 0;
+    g_coverRetryAt = 0;
+  }
+  if (!g_coverBuf || WiFi.status() != WL_CONNECTED) return;
+
+  char path[64];
+  snprintf(path, sizeof(path), "/car_cover?which=current&size=%d", COVER_SIZE_PX);
+  uint32_t t0 = millis();
+  uint32_t waitMs = 0;
+  int code = -1;
+  size_t n = 0;
+  char via = '-';
+  bool ok = false;
+
+  if (gHeartbeatTryLan && lanEnabled()) {
+    WiFiClient c;
+    LWIP_LOCK();
+    bool con = c.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 800);
+    LWIP_UNLOCK();
+    if (con) {
+      c.setTimeout(500);
+      via = 'L';
+      ok = getHttpToBuf(c, MARVIN_LOCAL_HOST, path, false, g_coverBuf, COVER_BUF_CAP, &n, &code, 4000);
+      LWIP_LOCK();
+      c.stop();
+      LWIP_UNLOCK();
+    }
+  }
+
+  if (code <= 0) {
+    uint32_t tw = millis();
+    if (xSemaphoreTake(gFunnelMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+      waitMs = millis() - tw;
+      via = 'F';
+      if (funnelEnsureConnected(8, 8000)) {
+        ok = getHttpToBuf(gHeartbeatFunnelClient, MARVIN_HOST, path, true, g_coverBuf, COVER_BUF_CAP, &n, &code, 6000);
+        if (!ok) { LWIP_LOCK(); gHeartbeatFunnelClient.stop(); LWIP_UNLOCK(); }
+      }
+      xSemaphoreGive(gFunnelMutex);
+    } else {
+      g_coverStats.busy++;
+      g_coverStatsNew = true;
+      if (g_coverRetries < 2) {
+        g_coverRetries++;
+        g_coverRetryAt = millis() + 5000;
+        if (g_coverRetryAt == 0) g_coverRetryAt = 1;
+      } else {
+        g_coverRetries = 0;
+        g_coverRetryAt = 0;
+      }
+      Serial.println("[Cover] Funnel 鎖忙，稍後重試");
+      return;
+    }
+  }
+
+  uint32_t ms = millis() - t0;
+  if (ok && code == 200 && cover_jpeg_valid(g_coverBuf, n)) {
+    g_coverStats.ok++;
+    g_coverLen = n;
+    g_coverStats.lastBytes = n;
+    g_coverRetries = 0;
+  } else if (ok && code == 404) {
+    g_coverStats.none++;
+    g_coverRetries = 0;
+  } else {
+    g_coverStats.fail++;
+    if (g_coverRetries < 2) {
+      g_coverRetries++;
+      g_coverRetryAt = millis() + 5000;
+      if (g_coverRetryAt == 0) g_coverRetryAt = 1;
+    } else {
+      g_coverRetries = 0;
+      g_coverRetryAt = 0;
+    }
+  }
+  g_coverStats.lastMs = ms;
+  g_coverStats.lastWaitMs = waitMs;
+  g_coverStats.lastVia = via;
+  if (ms > g_coverStats.maxMs) g_coverStats.maxMs = ms;
+  g_coverStats.ifree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  g_coverStats.imin = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+  g_coverStatsNew = true;
+  Serial.printf("[Cover] HTTP %d ok=%d %uB %ums via=%c wait=%ums ifree=%u imin=%u\n",
+                code, (int)ok, (unsigned)n, (unsigned)ms, via, (unsigned)waitMs,
+                (unsigned)g_coverStats.ifree, (unsigned)g_coverStats.imin);
+}
+#endif
+
 // 獨立任務，釘死 core 0（跟 audioNetworkTask 同核，理由見 carHeartbeat() 前的註解）。
 // 開機立刻打一次（不等第一輪 30s），之後每 30s 一次。
 //
@@ -986,7 +1160,16 @@ void carHeartbeatTask(void* pv) {
   for (;;) {
     if (WiFi.status() == WL_CONNECTED) {
       carHeartbeat();
+#if COVER_FETCH
+      // 30s 心跳間隔拆成 1s 一格巡邏：換歌旗標或到期重試就下載封面（跟心跳同 task，自然不會撞在一起）。
+      for (int i = 0; i < 30 && WiFi.status() == WL_CONNECTED; i++) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (g_coverDirty) coverFetch(false);
+        else if (g_coverRetryAt && (int32_t)(millis() - g_coverRetryAt) >= 0) { g_coverRetryAt = 0; coverFetch(true); }
+      }
+#else
       vTaskDelay(pdMS_TO_TICKS(30000));
+#endif
     } else {
       Serial.println("[WiFi] ⚠️ 斷線，嘗試重連...");
       setLed(LED_ERROR);
@@ -1153,6 +1336,10 @@ void setup() {
   streamRing = (uint8_t*)ps_malloc(STREAM_RING_SIZE);
   Serial.printf("[Stream] streamRing ps_malloc %s（%u bytes）\n",
                 streamRing ? "成功" : "❌失敗", (unsigned)STREAM_RING_SIZE);
+#if COVER_FETCH
+  g_coverBuf = (uint8_t*)ps_malloc(COVER_BUF_CAP);
+  Serial.printf("[Cover] coverBuf ps_malloc %s（%u bytes）\n", g_coverBuf ? "成功" : "❌失敗", (unsigned)COVER_BUF_CAP);
+#endif
   // 2026-07-25 修正：network 優先權要 >= playback，不是反過來。playback 本來就靠
   // i2s_write(...,portMAX_DELAY) 被 DMA 硬體節奏卡住、天然限速，不需要搶 CPU；
   // 反而是 network 要追一個真即時的來源（伺服器批次送 100ms 一包），優先權太低會被
