@@ -3345,7 +3345,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             if full_text:
                 wake_latency = respond_time - wake_time
                 self.stt_logger.info(
-                    f"[BOT→{speaker}] (喚醒延遲={wake_latency:.1f}s) {full_text}"
+                    f"[BOT→{speaker}] (主聊天 | {getattr(self.bot.router, 'stream_model_label', lambda _s: '?')(speaker)} 喚醒延遲={wake_latency:.1f}s) {full_text}"
                 )
                 # 擷取當下氣氛快照（20 秒後才寫 feedback，快照要在此時取）
                 _atm_snap = None
