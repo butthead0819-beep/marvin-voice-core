@@ -42,9 +42,15 @@ AMBIENT_QA_LOG = Path("records/ambient_qa.jsonl")
 MODEL_CHAIN: tuple[str, ...] = ("gemini-2.5-flash", "gemini-flash-latest")
 GROUNDED_TIMEOUT_S = 8.0
 MAX_REPLY_CHARS = 140
-# session 內免費常卡滿逾時才換付費（13-18s），但免費成功時都在 3-7s → 不縮逾時改 hedge：
-# 免費超過這個時間還沒回就並行開付費，誰先到用誰（10/21 事故）。
-SESSION_HEDGE_AFTER_S = 3.5
+
+# 對談窗查詢：使用者 10/21 定「要正確、付費可以」→ 不走免費 2.5-flash（常卡滿 8s），直走付費 3.5-flash
+# 預設思考（實測同上下文 3-10s、答案比 thinking low / 3.8-flash 合理；3.8 9-21s 太慢）。2.5-flash 當付費備援。
+SESSION_MODEL_CHAIN: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
+SESSION_TIMEOUT_S = 15.0
+
+# Gemini 3.x grounding 按「模型實際執行的搜尋次數」計費（$14/1000，超過每月免費額度後）；
+# 2.5 按 prompt 計但每天 1500 免費。統一按搜尋次數估，寧可高估。
+GROUNDING_USD_PER_SEARCH = 0.014
 
 # ── 觸發 regex ────────────────────────────────────────────────────────────────
 
@@ -158,7 +164,6 @@ _SESSION_SYSTEM_PROMPT = _SYSTEM_PROMPT + (
 NOT_A_QUESTION = object()   # grounded_answer 回這個＝模型判定不是問題（只有 session prompt 會產生）
 
 _NEXT = object()   # _attempt 內部哨兵：這次嘗試失敗（例外/空回應）→ 換下一個
-_BACKGROUND_TASKS: set[asyncio.Task] = set()   # hedge：免費先回時，付費仍須跑完記帳，防 GC
 
 
 def _extract_sources(response) -> list[str]:
@@ -177,6 +182,16 @@ def _extract_sources(response) -> list[str]:
             host = "?"
         out.append(host)
     return out
+
+
+def _count_searches(response) -> int:
+    try:
+        cands = getattr(response, "candidates", None) or []
+        gm = getattr(cands[0], "grounding_metadata", None) if cands else None
+        qs = getattr(gm, "web_search_queries", None) if gm else None
+        return len(qs) if isinstance(qs, (list, tuple)) else 0
+    except Exception:
+        return 0
 
 
 def _trim(text: str, max_chars: int = MAX_REPLY_CHARS) -> str:
@@ -301,7 +316,6 @@ async def grounded_answer(
     system_prompt: str = _SYSTEM_PROMPT,
     caller: str = "ambient_qa",
     max_chars: int = MAX_REPLY_CHARS,
-    hedge_after_s: float | None = None,
 ) -> tuple[str, list[str]] | object | None:
     """query → (答案, 來源 host 清單) 或 None（查不到 / 幻覺 guard 擋下 / 全失敗）或 NOT_A_QUESTION
     （session prompt 判定這句其實不是要查的問題）。"""
@@ -356,10 +370,12 @@ async def grounded_answer(
         if is_paid:
             usage = getattr(response, "usage_metadata", None)
             in_tok = int(getattr(usage, "prompt_token_count", 0) or est_in)
-            out_tok = int(getattr(usage, "candidates_token_count", 0) or 300)
+            # candidates_token_count 不含思考 token（2.5/3.x 預設會思考）→ 要加 thoughts_token_count，否則帳本低估
+            out_tok = int(getattr(usage, "candidates_token_count", 0) or 300) + int(getattr(usage, "thoughts_token_count", 0) or 0)
+            n_search = _count_searches(response)
             guard.record(
                 caller=caller, model=model, tokens=in_tok + out_tok,
-                est_usd=estimate_cost(model, in_tok, out_tok),
+                est_usd=estimate_cost(model, in_tok, out_tok) + n_search * GROUNDING_USD_PER_SEARCH,
                 in_tokens=in_tok, out_tokens=out_tok,
             )
 
@@ -402,40 +418,12 @@ async def grounded_answer(
     if free_client is not None:
         free_atts.append((free_client, model_chain[0], False))
     paid_atts: list[tuple[object, str, bool]] = []
-    # ⚠️ estimate_cost 只算 token；google_search grounding 另外 per-request 計費，
-    # 所以 guard 的 daily cap 會低估真實花費（TODOS.md「PaidUsageGuard 低估 grounding」）。
+    # guard.allow 預估只算 token；實際記帳（_attempt）有加搜尋費。
     if paid_client is not None and guard.allow(estimate_cost(model_chain[0], est_in, 300)):
         paid_atts = [(paid_client, m, True) for m in model_chain]
 
-    if hedge_after_s is None or not free_atts or not paid_atts:
-        r = await _chain(free_atts + paid_atts)
-        return None if r is _NEXT else r
-
-    free_task = asyncio.create_task(_chain(free_atts))
-    done, _ = await asyncio.wait({free_task}, timeout=hedge_after_s)
-    if free_task in done:
-        r = free_task.result()
-        if r is not _NEXT:
-            return r
-        r = await _chain(paid_atts)
-        return None if r is _NEXT else r
-
-    logger.info(f"[AmbientQA] 免費 {hedge_after_s}s 未回，並行開付費 hedge")
-    paid_task = asyncio.create_task(_chain(paid_atts))
-    pending = {free_task, paid_task}
-    while pending:
-        done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-        for finished in done:
-            r = finished.result()
-            if r is _NEXT:
-                continue
-            if finished is paid_task:
-                free_task.cancel()
-            else:
-                _BACKGROUND_TASKS.add(paid_task)
-                paid_task.add_done_callback(_BACKGROUND_TASKS.discard)
-            return r
-    return None
+    r = await _chain(free_atts + paid_atts)
+    return None if r is _NEXT else r
 
 
 async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
@@ -488,13 +476,16 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     if source == "session_followup":
         extra_kwargs["system_prompt"] = _SESSION_SYSTEM_PROMPT
     if in_session:
-        extra_kwargs["hedge_after_s"] = SESSION_HEDGE_AFTER_S
+        extra_kwargs["model_chain"] = SESSION_MODEL_CHAIN
+        extra_kwargs["timeout"] = SESSION_TIMEOUT_S
+
+    free_client = None if in_session else getattr(router, "google_client", None)
 
     t0 = _time.monotonic()
     res = None
     try:
         res = await grounded_answer(
-            getattr(router, "google_client", None),
+            free_client,
             getattr(router, "google_paid_client", None),
             guard, topic,
             recent_context=recent_context,
