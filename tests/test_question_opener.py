@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import intent_agents.grounded_qa_agent as gqa
-from intent_agents.grounded_qa_agent import try_question_opener
+from intent_agents.grounded_qa_agent import parse_grounded_qa, try_question_opener
 
 
 def _ctx(query, speaker="A", raw_text=None, low_confidence_wake=False):
@@ -172,7 +172,7 @@ async def test_run_grounded_qa_question_opener_uses_opener_prompt_and_session_ch
     kwargs = mock_ga.call_args.kwargs
     assert args[0] is None
     assert kwargs["system_prompt"] is gqa._OPENER_SYSTEM_PROMPT
-    assert kwargs["model_chain"] == gqa.SESSION_MODEL_CHAIN
+    assert kwargs["model_chain"] == gqa.QA_MODEL_CHAIN
 
 
 @pytest.mark.asyncio
@@ -218,7 +218,7 @@ async def test_run_grounded_qa_question_opener_no_answer_returns_no_answer(monke
 
 @pytest.mark.asyncio
 async def test_run_grounded_qa_session_followup_not_a_question_unchanged(monkeypatch):
-    """既有行為不變：session_followup 的 NOT_A_QUESTION 仍呼叫 _wake_session_on_ignored。"""
+    """10/21：NOT_A_QUESTION 一律交回聊天（不再呼叫 _wake_session_on_ignored 安靜吞掉）。"""
     ctrl = _mk_ctrl()
     monkeypatch.setattr(gqa, "grounded_answer", AsyncMock(return_value=gqa.NOT_A_QUESTION))
     monkeypatch.setattr(gqa, "record_ambient_qa", lambda r: None)
@@ -227,7 +227,7 @@ async def test_run_grounded_qa_session_followup_not_a_question_unchanged(monkeyp
     await asyncio.sleep(0)
 
     assert status == "not_question"
-    ctrl._wake_session_on_ignored.assert_called_once_with("A")
+    ctrl._wake_session_on_ignored.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -241,3 +241,55 @@ async def test_run_grounded_qa_default_source_notes_grounded_once_at_start_only(
     await asyncio.sleep(0)
 
     ctrl._wake_session_note_grounded.assert_called_once_with("A")
+
+
+# ── 6. _LOOKUP_RE 只認句首（2026-10-21 事故：句中「查詢」被誤當指令） ───────
+
+@pytest.mark.parametrize("query", [
+    "馬文我有一個疑問我進入了那個輪巡查詢之後還可以嗎",
+    "馬文對他的降級會不會是馬不是查詢降級",
+])
+def test_lookup_re_does_not_match_mid_sentence_lookup_verb(query):
+    assert parse_grounded_qa(query) is None
+
+
+@pytest.mark.parametrize("query", [
+    "馬文幫我查光點兔的三級鏟子材料去哪裡拿",
+    "馬文你幫我查一下台積電股價",
+    "馬文 我想知道黑神話悟空評價好不好",
+    "幫我查 Grandy Two遊戲裡面的水下武器要怎麼製作",
+])
+def test_lookup_re_matches_sentence_initial_lookup_verb(query):
+    assert parse_grounded_qa(query) is not None
+
+
+# ── 7. try_question_opener sticky=True 但模型判定非查詢 → 交回聊天（False） ──
+
+@pytest.mark.asyncio
+async def test_opener_sticky_true_not_question_returns_false(monkeypatch):
+    monkeypatch.setattr(gqa, "run_grounded_qa", AsyncMock(return_value="not_question"))
+    ctrl = MagicMock()
+    ctrl._wake_session_grounded_sticky = MagicMock(return_value=True)
+
+    result = await try_question_opener(ctrl, _ctx("臺積電今天收盤股價多少"))
+
+    assert result is False
+
+
+# ── 8. run_grounded_qa 全部 source 都一律直走付費 QA_MODEL_CHAIN、free_client=None ──
+
+@pytest.mark.parametrize("source", ["game_knowledge", "ambient_qa", "music_followup"])
+@pytest.mark.asyncio
+async def test_run_grounded_qa_all_sources_use_paid_qa_chain(monkeypatch, source):
+    ctrl = _mk_ctrl()
+    mock_ga = AsyncMock(return_value=("答。", ["x"]))
+    monkeypatch.setattr(gqa, "grounded_answer", mock_ga)
+    monkeypatch.setattr(gqa, "record_ambient_qa", lambda r: None)
+
+    await gqa.run_grounded_qa(ctrl, "A", "某問題", source=source)
+    await asyncio.sleep(0)
+
+    args = mock_ga.call_args.args
+    kwargs = mock_ga.call_args.kwargs
+    assert args[0] is None
+    assert kwargs["model_chain"] == gqa.QA_MODEL_CHAIN
