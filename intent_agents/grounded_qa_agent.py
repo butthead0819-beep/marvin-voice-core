@@ -320,6 +320,7 @@ async def grounded_answer(
     system_prompt: str = _SYSTEM_PROMPT,
     caller: str = "ambient_qa",
     max_chars: int = MAX_REPLY_CHARS,
+    meta: dict | None = None,
 ) -> tuple[str, list[str]] | object | None:
     """query → (答案, 來源 host 清單) 或 None（查不到 / 幻覺 guard 擋下 / 全失敗）或 NOT_A_QUESTION
     （session prompt 判定這句其實不是要查的問題）。"""
@@ -369,7 +370,12 @@ async def grounded_answer(
             )
         except Exception as exc:
             logger.warning(f"[AmbientQA] {tier} {model} 失敗：{str(exc)[:120]}，換下一個")
+            if meta is not None:
+                meta.setdefault("tried", []).append(f"{model}{tier}✗")
             return _NEXT
+
+        if meta is not None:
+            meta.update(model=model, paid=is_paid, searches=_count_searches(response))
 
         if is_paid:
             usage = getattr(response, "usage_metadata", None)
@@ -386,6 +392,8 @@ async def grounded_answer(
         text = (getattr(response, "text", None) or "").strip()
         if not text:
             logger.info(f"[AmbientQA] {model} 空回應")
+            if meta is not None:
+                meta.setdefault("tried", []).append(f"{model}{tier}✗")
             return _NEXT
         try:
             fr = str(response.candidates[0].finish_reason)
@@ -428,6 +436,24 @@ async def grounded_answer(
 
     r = await _chain(free_atts + paid_atts)
     return None if r is _NEXT else r
+
+
+def format_provenance(meta: dict, latency_ms: int, n_history: int, n_context: int, games: list[str]) -> str:
+    """[BOT→] 標籤：這句回答用了哪個模型、付不付費、搜尋幾次、帶了多少上下文。"""
+    parts = []
+    if meta.get("tried"):
+        parts.append(" ".join(meta["tried"]) + " →")
+    if meta.get("model"):
+        parts.append(f"{meta['model']}{'付費' if meta.get('paid') else '免費'}")
+        parts.append(f"搜尋{meta.get('searches', 0)}次")
+    else:
+        parts.append("全部失敗")
+    parts.append(f"{latency_ms / 1000:.1f}s")
+    ctx = f"上下文:問答{n_history}輪/背景{n_context}句"
+    if games:
+        ctx += f"/遊戲{'、'.join(games)}"
+    parts.append(ctx)
+    return " ".join(parts)
 
 
 async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
@@ -491,6 +517,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
 
     free_client = None if in_session else getattr(router, "google_client", None)
 
+    meta: dict = {}
     t0 = _time.monotonic()
     res = None
     try:
@@ -501,23 +528,28 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
             recent_context=recent_context,
             game_context=games,
             session_history=session_history,
+            meta=meta,
             **extra_kwargs,
         )
     except Exception as e:
         logger.warning(f"[AmbientQA] grounded_answer 例外: {e}")
     latency_ms = int((_time.monotonic() - t0) * 1000)
+    n_context = len([l for l in (recent_context or "").splitlines() if l.strip()])
+    prov = format_provenance(meta, latency_ms, len(session_history), n_context, games)
 
     if res is NOT_A_QUESTION:
         if source == "question_opener":
-            ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 開場非查詢→交回聊天) {topic}")
+            ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 開場非查詢→交回聊天 | {prov}) {topic}")
             record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                                "query": topic, "answer": None, "reason": "not_question",
-                               "latency_ms": latency_ms, "source": source, "games": games})
+                               "latency_ms": latency_ms, "source": source, "games": games,
+                               "model": meta.get("model")})
             return "not_question"
-        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 略過非問題) {topic}")
+        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 略過非問題 | {prov}) {topic}")
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "not_question",
-                           "latency_ms": latency_ms, "source": source, "games": games})
+                           "latency_ms": latency_ms, "source": source, "games": games,
+                           "model": meta.get("model")})
         # 不念話、不算 followup miss；釋放 session 的「等回應」狀態（不然下一句 30s 內會被當成上一句還在處理）
         _ignored = getattr(ctrl, "_wake_session_on_ignored", None)
         if callable(_ignored):
@@ -525,11 +557,12 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         return "not_question"
 
     if res is None:
-        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 查不到) {topic}")
+        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 查不到 | {prov}) {topic}")
         asyncio.create_task(ctrl.play_tts(prefix + "這題我查不到。", already_in_channel=True))
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
-                           "latency_ms": latency_ms, "source": source, "games": games})
+                           "latency_ms": latency_ms, "source": source, "games": games,
+                           "model": meta.get("model")})
         # 任何 source 都回報 WakeSession（regex 路徑查不到也要計數，否則 session 停不下來，10/17 事故）
         _report = getattr(ctrl, "_wake_session_on_followup_result", None)
         if callable(_report):
@@ -539,7 +572,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         return "no_answer"
 
     answer, sources = res
-    ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA) {answer}")
+    ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA | {prov}) {answer}")
     asyncio.create_task(ctrl.play_tts(prefix + answer, already_in_channel=True))
     if ctrl.active_text_channel:
         src = f"\n_來源：{', '.join(sources)}_" if sources else ""
@@ -548,7 +581,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                        "query": topic, "answer": answer, "sources": sources,
                        "latency_ms": latency_ms, "downstream": "none", "source": source,
-                       "games": games})
+                       "games": games, "model": meta.get("model")})
     _report = getattr(ctrl, "_wake_session_on_followup_result", None)
     if callable(_report):
         _report(speaker, True)
