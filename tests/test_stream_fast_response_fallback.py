@@ -1,0 +1,95 @@
+"""主聊天 stream_fast_response 雲端 503 備援（2026-10-21 事故）。
+
+10/21 兩次 edge case：Gemini _stream_cloud 503 一個字都沒出，直接落到外層 except
+念出「宇宙的熵值突然激增」錯誤台詞。修法：雲端一個字都沒出就失敗 → 改走 stream_llm
+（Groq 優先）備援；已經念出一半才失敗，不能半路換模型重講，維持原有錯誤台詞行為。
+"""
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import pytest
+
+import gemini_router_llm as grl
+
+
+def _make_fake_router(stream_cloud, stream_llm):
+    """最小 fake：只給 stream_fast_response 實際用到的屬性/方法，其餘用 mixin 真方法。"""
+    fake = object.__new__(grl.GeminiRouterLLMMixin)
+    fake.dna = {}
+    fake._session_call_count = 0
+    fake.prompt_manager = MagicMock()
+    fake.prompt_manager.get_instruction.return_value = "system prompt"
+    fake.memory = MagicMock()
+    fake.current_game = None
+    fake._intent_search_cache = {}
+    fake.provider = "gemini"
+    fake.is_exhausted = False
+    fake.budget = MagicMock()
+    fake.budget.is_circuit_open.return_value = False
+    fake.cleaner_model = "flash-lite"
+    fake.short_term_dialogue = []
+    fake.last_stream_error_time = 0.0
+    fake._maybe_advance_relationship = MagicMock()
+    fake._stream_cloud = stream_cloud
+    fake.stream_llm = stream_llm
+    return fake
+
+
+async def _collect(fake, query="測試訊息"):
+    out = []
+    async for chunk in fake.stream_fast_response("A", query):
+        out.append(chunk)
+    return "".join(out)
+
+
+@pytest.mark.asyncio
+async def test_cloud_fails_before_any_chunk_falls_back_to_stream_llm():
+    async def _raising_cloud(*a, **kw):
+        raise RuntimeError("503")
+        yield  # pragma: no cover
+
+    async def _fallback_llm(*a, **kw):
+        yield "備援"
+        yield "回應"
+
+    fake = _make_fake_router(_raising_cloud, _fallback_llm)
+    text = await _collect(fake)
+
+    assert text == "備援回應"
+    assert "宇宙的熵值" not in text
+
+
+@pytest.mark.asyncio
+async def test_cloud_fails_after_partial_chunk_does_not_fall_back():
+    calls = {"stream_llm": 0}
+
+    async def _partial_cloud(*a, **kw):
+        yield "前半"
+        raise RuntimeError("fail after partial")
+
+    async def _fallback_llm(*a, **kw):
+        calls["stream_llm"] += 1
+        yield "不該被呼叫"
+
+    fake = _make_fake_router(_partial_cloud, _fallback_llm)
+    text = await _collect(fake)
+
+    assert calls["stream_llm"] == 0
+    assert "前半" in text
+
+
+@pytest.mark.asyncio
+async def test_both_cloud_and_fallback_fail_keeps_original_error_line():
+    async def _raising_cloud(*a, **kw):
+        raise RuntimeError("503")
+        yield  # pragma: no cover
+
+    async def _raising_llm(*a, **kw):
+        raise RuntimeError("groq down too")
+        yield  # pragma: no cover
+
+    fake = _make_fake_router(_raising_cloud, _raising_llm)
+    text = await _collect(fake)
+
+    assert "宇宙的熵值" in text
