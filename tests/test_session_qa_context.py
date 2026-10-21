@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import intent_agents.grounded_qa_agent as gqa
-from intent_agents.grounded_qa_agent import GroundedQAAgent, grounded_answer
+from intent_agents.grounded_qa_agent import grounded_answer
 from intent_bus import IntentContext
 from wake_session import MAX_QA_TURNS, WakeSession
 
@@ -152,7 +152,7 @@ async def test_grounded_answer_returns_not_a_question_on_model_skip():
 # ── 4. run_grounded_qa 收到 NOT_A_QUESTION ──────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_run_grounded_qa_not_a_question_stays_silent(monkeypatch):
+async def test_run_grounded_qa_not_a_question_returns_to_chat(monkeypatch):
     ctrl = MagicMock()
     ctrl._play_ack = AsyncMock()
     ctrl.play_tts = AsyncMock()
@@ -164,12 +164,12 @@ async def test_run_grounded_qa_not_a_question_stays_silent(monkeypatch):
     monkeypatch.setattr(gqa, "grounded_answer", AsyncMock(return_value=gqa.NOT_A_QUESTION))
     monkeypatch.setattr(gqa, "record_ambient_qa", lambda r: None)
 
-    await gqa.run_grounded_qa(ctrl, "A", "那就是你的問題了", source="session_followup")
+    status = await gqa.run_grounded_qa(ctrl, "A", "那就是你的問題了", source="session_followup")
     await asyncio.sleep(0)
 
+    assert status == "not_question"
     ctrl.play_tts.assert_not_awaited()
-    ctrl._wake_session_on_ignored.assert_called_once_with("A")
-    ctrl._wake_session_on_followup_result.assert_not_called()
+    ctrl._wake_session_on_ignored.assert_not_called()
 
 
 # ── 5. run_grounded_qa 成功 → note_qa 被呼叫；查不到則不呼叫 ───────────────
@@ -233,23 +233,22 @@ async def test_run_grounded_qa_session_followup_goes_paid_session_chain(monkeypa
     args = mock_ga.call_args.args
     kwargs = mock_ga.call_args.kwargs
     assert args[0] is None
-    assert kwargs["model_chain"] == gqa.SESSION_MODEL_CHAIN
-    assert kwargs["timeout"] == gqa.SESSION_TIMEOUT_S
+    assert kwargs["model_chain"] == gqa.QA_MODEL_CHAIN
+    assert kwargs["timeout"] == gqa.QA_TIMEOUT_S
     assert kwargs["system_prompt"] is gqa._SESSION_SYSTEM_PROMPT
     assert "hedge_after_s" not in kwargs
 
 
 @pytest.mark.asyncio
-async def test_run_grounded_qa_captured_ambient_source_goes_paid_session_chain(monkeypatch):
-    """source 預設("ambient_qa")但 ctrl._wake_session_captured 回 literal True
-    → 仍視為 session 內，走付費 SESSION_MODEL_CHAIN（不帶 session system_prompt）。"""
+async def test_run_grounded_qa_default_source_also_paid_qa_chain(monkeypatch):
+    """source 預設("ambient_qa")、ctrl 是裸 MagicMock → 仍一律走付費 QA_MODEL_CHAIN
+    （10/21：全部 grounded 查詢統一直走付費 3.5-flash，不分 session 內外）。"""
     ctrl = MagicMock()
     ctrl._play_ack = AsyncMock()
     ctrl.play_tts = AsyncMock()
     ctrl.active_text_channel.send = AsyncMock()
     ctrl.stt_logger = MagicMock()
     ctrl._ambient_qa_guard = _guard()
-    ctrl._wake_session_captured = MagicMock(return_value=True)
 
     mock_ga = AsyncMock(return_value=("答。", ["x"]))
     monkeypatch.setattr(gqa, "grounded_answer", mock_ga)
@@ -261,34 +260,8 @@ async def test_run_grounded_qa_captured_ambient_source_goes_paid_session_chain(m
     args = mock_ga.call_args.args
     kwargs = mock_ga.call_args.kwargs
     assert args[0] is None
-    assert kwargs["model_chain"] == gqa.SESSION_MODEL_CHAIN
-    assert "system_prompt" not in kwargs
-
-
-@pytest.mark.asyncio
-async def test_run_grounded_qa_default_source_bare_mock_no_session_kwargs(monkeypatch):
-    """source 預設("ambient_qa")且 ctrl 是裸 MagicMock（_wake_session_captured 回 truthy Mock，
-    不是 literal True）→ 不視為 session 內，model_chain/timeout/system_prompt 都不傳，
-    free_client 用 router.google_client。"""
-    ctrl = MagicMock()
-    ctrl._play_ack = AsyncMock()
-    ctrl.play_tts = AsyncMock()
-    ctrl.active_text_channel.send = AsyncMock()
-    ctrl.stt_logger = MagicMock()
-    ctrl._ambient_qa_guard = _guard()
-
-    mock_ga = AsyncMock(return_value=("答。", ["x"]))
-    monkeypatch.setattr(gqa, "grounded_answer", mock_ga)
-    monkeypatch.setattr(gqa, "record_ambient_qa", lambda r: None)
-
-    await gqa.run_grounded_qa(ctrl, "A", "某問題")
-    await asyncio.sleep(0)
-
-    args = mock_ga.call_args.args
-    kwargs = mock_ga.call_args.kwargs
-    assert args[0] is ctrl.bot.router.google_client
-    assert "model_chain" not in kwargs
-    assert "timeout" not in kwargs
+    assert kwargs["model_chain"] == gqa.QA_MODEL_CHAIN
+    assert kwargs["timeout"] == gqa.QA_TIMEOUT_S
     assert "system_prompt" not in kwargs
 
 
@@ -334,25 +307,32 @@ async def test_run_grounded_qa_qa_history_non_list_becomes_empty(monkeypatch):
     assert mock_ga.call_args.kwargs["session_history"] == []
 
 
-# ── 8. _session_followup_bid：問句門檻 ──────────────────────────────────────
+# ── 8. try_question_opener（sticky=True）：問句門檻 ───────────────────────────
 
-def _agent(sticky: bool):
+def _ctrl_sticky(sticky: bool):
     ctrl = MagicMock()
     ctrl._wake_session_grounded_sticky = MagicMock(return_value=sticky)
-    return GroundedQAAgent(ctrl), ctrl
+    return ctrl
 
 
 @pytest.mark.parametrize("query", ["那就是你的問題了", "就自然不是有的"])
-def test_session_followup_bid_rejects_non_questions(query):
-    agent, _ = _agent(True)
-    assert agent.bid(_ctx(query)).confidence == 0.0
+@pytest.mark.asyncio
+async def test_session_followup_bid_rejects_non_questions(query):
+    ctrl = _ctrl_sticky(True)
+    with patch.object(gqa, "run_grounded_qa", new=AsyncMock()) as mock_run:
+        result = await gqa.try_question_opener(ctrl, _ctx(query))
+    assert result is False
+    mock_run.assert_not_awaited()
 
 
 @pytest.mark.parametrize("query", ["人民區的傳送點怎麼開", "房子舊的涼亭區域在哪裏"])
-def test_session_followup_bid_accepts_questions(query):
-    agent, _ = _agent(True)
-    bid = agent.bid(_ctx(query))
-    assert bid.confidence == GroundedQAAgent.SESSION_FOLLOWUP_CONFIDENCE
+@pytest.mark.asyncio
+async def test_session_followup_bid_accepts_questions(query):
+    ctrl = _ctrl_sticky(True)
+    with patch.object(gqa, "run_grounded_qa", new=AsyncMock(return_value="answered")) as mock_run:
+        result = await gqa.try_question_opener(ctrl, _ctx(query))
+    assert result is True
+    mock_run.assert_awaited_once_with(ctrl, "A", query, raw=query, source="session_followup")
 
 
 # ── 9. 付費記帳：思考 token + 搜尋費 ─────────────────────────────────────────

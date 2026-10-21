@@ -32,7 +32,7 @@ from intent_agents.base import (
 from intent_agents.constants import (
     MUSIC_PAUSE_KW, MUSIC_PLAY_KW, MUSIC_RESUME_KW, MUSIC_SKIP_KW, MUSIC_STOP_KW,
 )
-from intent_bus import Bid, IntentContext
+from intent_bus import IntentContext
 
 logger = logging.getLogger(__name__)
 
@@ -43,10 +43,9 @@ MODEL_CHAIN: tuple[str, ...] = ("gemini-2.5-flash", "gemini-flash-latest")
 GROUNDED_TIMEOUT_S = 8.0
 MAX_REPLY_CHARS = 140
 
-# 對談窗查詢：使用者 10/21 定「要正確、付費可以」→ 不走免費 2.5-flash（常卡滿 8s），直走付費 3.5-flash
-# 預設思考（實測同上下文 3-10s、答案比 thinking low / 3.8-flash 合理；3.8 9-21s 太慢）。2.5-flash 當付費備援。
-SESSION_MODEL_CHAIN: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
-SESSION_TIMEOUT_S = 15.0
+# 喚醒查詢一律直走付費 3.5-flash（使用者 10/21：要正確、付費可以；第一句最重要）。預設思考，2.5-flash 付費備援。
+QA_MODEL_CHAIN: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
+QA_TIMEOUT_S = 15.0
 
 # Gemini 3.x grounding 按「模型實際執行的搜尋次數」計費（$14/1000，超過每月免費額度後）；
 # 2.5 按 prompt 計但每天 1500 免費。統一按搜尋次數估，寧可高估。
@@ -54,11 +53,15 @@ GROUNDING_USD_PER_SEARCH = 0.014
 
 # ── 觸發 regex ────────────────────────────────────────────────────────────────
 
-# A：明確「查」/「搜尋」/「問」動詞（喚醒句裡，re.search 容忍 "馬文" 前綴）
+# A：明確「查」/「搜尋」/「問」動詞——只認句首（可帶喚醒詞、我/你、幫我…）。
+# 10/21：re.search 任意位置會把「我進入了那個輪巡查詢之後還可以嗎」的句中「查詢」當指令；
+# 句中提到的交給 try_question_opener（3.5-flash 判斷，「略」交回聊天）。
 _LOOKUP_RE = re.compile(
-    r"(?:幫我|幫忙|麻煩|請|欸|快)?\s*"
+    r"^\s*(?:(?:馬文|瑪文|麻文|媽文|marvin|marvy)\s*[，,、\s]*)?"
+    r"(?:我|你|妳)?\s*(?:幫我|幫忙|麻煩|請|欸|快)?\s*"
     r"(?:查(?:詢|一下|查)?|搜尋|查查|問一下|請問|想問|想知道|知不知道|找一下|找找)\s*"
-    r"(?P<topic>\S.{1,})"
+    r"(?P<topic>\S.{1,})",
+    re.IGNORECASE,
 )
 # B：事實問句尾
 _FACTUAL_TAIL_RE = re.compile(
@@ -502,27 +505,20 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     if not isinstance(session_history, list):   # MagicMock 回傳不算
         session_history = []
 
-    _captured = getattr(ctrl, "_wake_session_captured", None)
-    in_session = (source in ("session_followup", "question_opener")
-                  or (callable(_captured) and _captured(speaker) is True))
-
     extra_kwargs: dict = {}
     if source == "session_followup":
         extra_kwargs["system_prompt"] = _SESSION_SYSTEM_PROMPT
     elif source == "question_opener":
         extra_kwargs["system_prompt"] = _OPENER_SYSTEM_PROMPT
-    if in_session:
-        extra_kwargs["model_chain"] = SESSION_MODEL_CHAIN
-        extra_kwargs["timeout"] = SESSION_TIMEOUT_S
-
-    free_client = None if in_session else getattr(router, "google_client", None)
+    extra_kwargs["model_chain"] = QA_MODEL_CHAIN
+    extra_kwargs["timeout"] = QA_TIMEOUT_S
 
     meta: dict = {}
     t0 = _time.monotonic()
     res = None
     try:
         res = await grounded_answer(
-            free_client,
+            None,
             getattr(router, "google_paid_client", None),
             guard, topic,
             recent_context=recent_context,
@@ -538,22 +534,11 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     prov = format_provenance(meta, latency_ms, len(session_history), n_context, games)
 
     if res is NOT_A_QUESTION:
-        if source == "question_opener":
-            ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 開場非查詢→交回聊天 | {prov}) {topic}")
-            record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
-                               "query": topic, "answer": None, "reason": "not_question",
-                               "latency_ms": latency_ms, "source": source, "games": games,
-                               "model": meta.get("model")})
-            return "not_question"
-        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 略過非問題 | {prov}) {topic}")
+        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 非查詢→交回聊天 | {prov}) {topic}")
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "not_question",
                            "latency_ms": latency_ms, "source": source, "games": games,
                            "model": meta.get("model")})
-        # 不念話、不算 followup miss；釋放 session 的「等回應」狀態（不然下一句 30s 內會被當成上一句還在處理）
-        _ignored = getattr(ctrl, "_wake_session_on_ignored", None)
-        if callable(_ignored):
-            _ignored(speaker)
         return "not_question"
 
     if res is None:
@@ -595,21 +580,27 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
 
 
 async def try_question_opener(ctrl, ctx) -> bool:
-    """IntentBus 沒人接的喚醒句：像問句 → 3.5-flash 自己判斷要不要查。
+    """IntentBus 沒人接的喚醒句 / 對談窗追問：像問句 → 3.5-flash 自己判斷要不要查。
 
     True＝已處理（有答案或「這題我查不到」）；False＝不是查詢，交回 Marvin 主聊天。
-    10/21 使用者定案：開場說法每個人不一樣（「股價多少」「什麼時候開賣」「你知道X嗎」），
-    句型 regex 補不完 → 問句形狀就交給模型判斷，閒聊由模型回「略」退回聊天。
+    10/21 使用者定案：開場說法每個人不一樣 → 句型 regex 補不完，問句形狀就交給模型判斷；
+    模型回「略」一律交回聊天（對談窗內也是——安靜會被當成沒在聽）。
+    session 已進查詢模式（sticky）→ source=session_followup（連續對談 prompt），否則 question_opener。
     """
     if getattr(ctx, "low_confidence_wake", False) is True:
+        return False
+    if getattr(ctx, "mode", "normal") not in GroundedQAAgent.mode_compatible:
         return False
     q = _WAKE_PREFIX_RE.sub("", (getattr(ctx, "query", "") or "").strip()).strip()
     if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
         return False
     if len(_HAN_RE.findall(q)) < 2 or not _SESSION_QUESTION_RE.search(q):
         return False
+    sticky_fn = getattr(ctrl, "_wake_session_grounded_sticky", None)
+    sticky = callable(sticky_fn) and sticky_fn(ctx.speaker) is True   # is True：MagicMock 回傳不算
+    source = "session_followup" if sticky else "question_opener"
     status = await run_grounded_qa(ctrl, ctx.speaker, q, raw=getattr(ctx, "raw_text", "") or "",
-                                   source="question_opener")
+                                   source=source)
     return status != "not_question"
 
 
@@ -651,9 +642,6 @@ class GroundedQAAgent(DeclarativeIntentAgent):
     name = "grounded_qa"
     # 一般資訊請求，normal/stream 都活；game session 模式不出價（比照 GameKnowledgeAgent）。
     mode_compatible = frozenset({"normal", "stream"})
-    # session 內已有過 grounded 查詢後的非音樂追問黏著分數；刻意低於 music/playback 0.95
-    # 與自身 factual 0.75（regex 本來就中的路徑優先，不被這條蓋掉）。
-    SESSION_FOLLOWUP_CONFIDENCE = 0.5
 
     def __init__(self, controller):
         self.ctrl = controller
@@ -690,38 +678,6 @@ class GroundedQAAgent(DeclarativeIntentAgent):
         if getattr(ctx.rescue, "low_confidence_wake", False):
             return "low_confidence_wake"
         return None
-
-    def bid(self, ctx: IntentContext) -> Bid:
-        b = super().bid(ctx)
-        if b.confidence > 0:
-            return b
-        return self._session_followup_bid(ctx) or b
-
-    def _session_followup_bid(self, ctx: IntentContext) -> Bid | None:
-        """session 內已有過 grounded 查詢 → 對象接下來的非音樂追問一律走 grounded
-        （帶既有逐字稿上下文，避免掉進 Marvin 主 LLM 編答案）。純同步、不做 IO。"""
-        if ctx.mode not in self.mode_compatible:
-            return None
-        if self.gate(ctx) is not None:
-            return None
-        if is_audio_rescue(ctx):
-            return None
-        sticky = getattr(self.ctrl, "_wake_session_grounded_sticky", None)
-        if not callable(sticky) or sticky(ctx.speaker) is not True:   # is True：MagicMock 的 truthy 回傳不算
-            return None
-        q = _WAKE_PREFIX_RE.sub("", (ctx.query or "").strip()).strip()
-        if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
-            return None
-        if len(_HAN_RE.findall(q)) < 2:
-            return None
-        if not _SESSION_QUESTION_RE.search(q):
-            return None
-
-        async def _answer():
-            await run_grounded_qa(self.ctrl, ctx.speaker, q, raw=ctx.query or "", source="session_followup")
-
-        return Bid(name=self.name, confidence=self.SESSION_FOLLOWUP_CONFIDENCE,
-                   handler=_answer, reason="session_followup")
 
     def post_match_filter(self, schema, slots, ctx: IntentContext) -> bool:
         # audio-rescue：topic 由 LLM 從音訊填好，ctx.query 是糊掉的 STT，別再 re-parse。
