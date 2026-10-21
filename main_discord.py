@@ -345,6 +345,12 @@ class MarvinBot(commands.Bot):
             except Exception as e:
                 logger.warning(f"[LivenessBeacon] startup failed: {e}")
 
+        # 6.5 ── 對話鏡像：STT / 清理後 / 回答（含用了哪個 LLM）貼到文字頻道（10/21，穩定前預設開）──
+        if vc_cog is not None and os.getenv("MARVIN_TRANSCRIPT_MIRROR", "1") != "0":
+            from transcript_mirror import install_transcript_mirror
+            install_transcript_mirror(self.loop, lambda: getattr(vc_cog, "active_text_channel", None))
+            logger.info("🪞 [TranscriptMirror] 已啟用（MARVIN_TRANSCRIPT_MIRROR=0 關閉）")
+
         # 7. ── 環境智能助理 — DiscordTemperatureMonitor + TopicGenerator ──
         if vc_cog is not None:
             from topic_generator import TopicGenerator
