@@ -161,6 +161,10 @@ _SESSION_SYSTEM_PROMPT = _SYSTEM_PROMPT + (
     "這是連續對談中的一句話：如果【使用者當前提問】其實不是要你查的問題（評論、抱怨、感嘆、"
     "在跟旁邊的人講話、問你馬文自己的狀態），不要查、不要回答，只回一個字「略」。"
 )
+_OPENER_SYSTEM_PROMPT = _SYSTEM_PROMPT + (
+    "使用者叫了你的名字說這句話：如果它不是需要查證的事實、知識、時事或攻略問題（閒聊、問你的意見或心情、"
+    "開玩笑、在跟旁邊的人講話），不要查、不要回答，只回一個字「略」。"
+)
 NOT_A_QUESTION = object()   # grounded_answer 回這個＝模型判定不是問題（只有 session prompt 會產生）
 
 _NEXT = object()   # _attempt 內部哨兵：這次嘗試失敗（例外/空回應）→ 換下一個
@@ -428,7 +432,7 @@ async def grounded_answer(
 
 async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
                           source: str = "ambient_qa",
-                          recent_context: str | None = None) -> None:
+                          recent_context: str | None = None) -> str:
     """handler 本體（放這裡而非 voice_controller，守 size budget 棘輪）。
 
     D7：ack 先出（貴呼叫前給「查詢中」提示，4.5s 死等會被讀成崩潰），再走 free→付費
@@ -439,11 +443,14 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     （GroundedQAAgent regex 觸發，預設 "ambient_qa"）跟其他重用這條管線的呼叫點
     （例如 NowPlaying 追問視窗接住的開放式補充問題，"music_followup"）在分析時
     分得開，不影響既有呼叫點（保留預設值）。
+
+    回傳 "not_question" / "no_answer" / "answered"，供 `try_question_opener` 判斷
+    這句開場話有沒有被接走。
     """
     import time as _time
 
     _note = getattr(ctrl, "_wake_session_note_grounded", None)   # 🗣️ WakeSession：本 session 進入查詢模式
-    if callable(_note):
+    if source != "question_opener" and callable(_note):
         _note(speaker)
 
     _addr = getattr(ctrl, "_reply_address_prefix", None)
@@ -470,11 +477,14 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         session_history = []
 
     _captured = getattr(ctrl, "_wake_session_captured", None)
-    in_session = source == "session_followup" or (callable(_captured) and _captured(speaker) is True)
+    in_session = (source in ("session_followup", "question_opener")
+                  or (callable(_captured) and _captured(speaker) is True))
 
     extra_kwargs: dict = {}
     if source == "session_followup":
         extra_kwargs["system_prompt"] = _SESSION_SYSTEM_PROMPT
+    elif source == "question_opener":
+        extra_kwargs["system_prompt"] = _OPENER_SYSTEM_PROMPT
     if in_session:
         extra_kwargs["model_chain"] = SESSION_MODEL_CHAIN
         extra_kwargs["timeout"] = SESSION_TIMEOUT_S
@@ -498,6 +508,12 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     latency_ms = int((_time.monotonic() - t0) * 1000)
 
     if res is NOT_A_QUESTION:
+        if source == "question_opener":
+            ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 開場非查詢→交回聊天) {topic}")
+            record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
+                               "query": topic, "answer": None, "reason": "not_question",
+                               "latency_ms": latency_ms, "source": source, "games": games})
+            return "not_question"
         ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 略過非問題) {topic}")
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "not_question",
@@ -506,7 +522,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         _ignored = getattr(ctrl, "_wake_session_on_ignored", None)
         if callable(_ignored):
             _ignored(speaker)
-        return
+        return "not_question"
 
     if res is None:
         ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 查不到) {topic}")
@@ -518,7 +534,9 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         _report = getattr(ctrl, "_wake_session_on_followup_result", None)
         if callable(_report):
             _report(speaker, False)
-        return
+        if source == "question_opener" and callable(_note):
+            _note(speaker)
+        return "no_answer"
 
     answer, sources = res
     ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA) {answer}")
@@ -537,7 +555,29 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     _note_qa = getattr(ctrl, "_wake_session_note_qa", None)
     if callable(_note_qa):
         _note_qa(speaker, topic, answer)
+    if source == "question_opener" and callable(_note):
+        _note(speaker)
     logger.info(f"[AmbientQA] {speaker} 「{topic}」已回答（{latency_ms}ms, src={sources}）。")
+    return "answered"
+
+
+async def try_question_opener(ctrl, ctx) -> bool:
+    """IntentBus 沒人接的喚醒句：像問句 → 3.5-flash 自己判斷要不要查。
+
+    True＝已處理（有答案或「這題我查不到」）；False＝不是查詢，交回 Marvin 主聊天。
+    10/21 使用者定案：開場說法每個人不一樣（「股價多少」「什麼時候開賣」「你知道X嗎」），
+    句型 regex 補不完 → 問句形狀就交給模型判斷，閒聊由模型回「略」退回聊天。
+    """
+    if getattr(ctx, "low_confidence_wake", False) is True:
+        return False
+    q = _WAKE_PREFIX_RE.sub("", (getattr(ctx, "query", "") or "").strip()).strip()
+    if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
+        return False
+    if len(_HAN_RE.findall(q)) < 2 or not _SESSION_QUESTION_RE.search(q):
+        return False
+    status = await run_grounded_qa(ctrl, ctx.speaker, q, raw=getattr(ctx, "raw_text", "") or "",
+                                   source="question_opener")
+    return status != "not_question"
 
 
 def maybe_dispatch_followup_supplement(

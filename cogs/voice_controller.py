@@ -108,7 +108,7 @@ from intent_agents.music_agent_v2 import MusicAgentV2
 from intent_agents.nemoclaw_agent import NemoClawAgent
 from intent_agents.find_song_agent import FindSongAgent
 from intent_agents.game_knowledge_agent import GameKnowledgeAgent
-from intent_agents.grounded_qa_agent import GroundedQAAgent, maybe_dispatch_followup_supplement
+from intent_agents.grounded_qa_agent import GroundedQAAgent, maybe_dispatch_followup_supplement, try_question_opener
 from intent_agents.skip_intent import is_short_skip_command
 # Phase 1 M5: PlaybackControlAgent 改成 build_intent_agents() 內 lazy import
 # 避免 macOS python 環境冷啟動時的 import 鏈死結 (2026-05-23 incident)
@@ -3046,7 +3046,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         pipeline_timing.emit(speaker, _bus_ctx.raw_text or "", suffix=" route=main_bus")
 
         _winner = await self._intent_bus.dispatch(_bus_ctx)
-        if _winner:
+        if _winner or await try_question_opener(self, _bus_ctx):
             self._wake_session_on_replied(_winner)
             # B1: bus 接走 intent → LLM 路徑不會跑 → 取消 dangling speculative
             # prefetch（避免吃 LLM quota；且防 1976 行 race 把舊 result 帶到
@@ -3054,7 +3054,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             self._cancel_stale_prefetch(speaker)
             # 2026-08-25：music/volume intent 命中 → 戳音樂控制時間戳，
             # 給 MemoryCallbackAgent 前後 30s 讓路用（見 music_control_cooldown_s）
-            if _winner.name in ("music", "volume"):
+            if getattr(_winner, "name", None) in ("music", "volume"):
                 self.last_music_control_time = time.time()
             return  # bus 已執行 winner.handler()
 

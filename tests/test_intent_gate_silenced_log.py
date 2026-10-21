@@ -21,6 +21,12 @@ import pytest
 pytestmark = pytest.mark.asyncio
 
 
+
+@pytest.fixture(autouse=True)
+def _no_question_opener(monkeypatch):
+    """這檔測的是 bus 沒人接之後的主聊天 / gap 路徑；問句開場（10/21）另有 tests/test_question_opener.py。"""
+    monkeypatch.setattr("cogs.voice_controller.try_question_opener", AsyncMock(return_value=False))
+
 async def _agen(items):
     for it in items:
         yield it
@@ -290,3 +296,29 @@ async def test_gap_classifier_unknown_then_falls_to_silenced_log(monkeypatch):
 
     assert captured.get("path") == "records/intent_gate_silenced.jsonl"
     assert captured["record"]["gap_intent_type"] == "UNKNOWN"
+
+
+# ── 問句開場接線（10/21）：bus 沒人接 → try_question_opener；True 就不進主聊天 ──
+
+async def test_question_opener_handles_query_skips_marvin_chat(monkeypatch):
+    opener = AsyncMock(return_value=True)
+    monkeypatch.setattr("cogs.voice_controller.try_question_opener", opener)
+    vc, _ = _make_vc(monkeypatch, query_intent_signal=True, query_text="臺積電今天收盤股價多少")
+    await vc._process_queued_query("狗與露", time.time(), wake_intent=None)
+
+    opener.assert_awaited_once()
+    args, _kw = opener.await_args
+    assert args[0] is vc
+    assert args[1].query == "臺積電今天收盤股價多少"
+    vc.bot.router.stream_fast_response.assert_not_called()
+    vc._cancel_stale_prefetch.assert_called()
+
+
+async def test_question_opener_declines_falls_through_to_marvin_chat(monkeypatch):
+    opener = AsyncMock(return_value=False)
+    monkeypatch.setattr("cogs.voice_controller.try_question_opener", opener)
+    vc, _ = _make_vc(monkeypatch, query_intent_signal=True, query_text="今天心情怎麼樣")
+    await vc._process_queued_query("狗與露", time.time(), wake_intent=None)
+
+    opener.assert_awaited_once()
+    vc.bot.router.stream_fast_response.assert_called_once()
