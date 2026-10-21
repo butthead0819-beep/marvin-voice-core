@@ -948,14 +948,25 @@ class GeminiRouterLLMMixin:
         full_response = []
         try:
             # 語音快速回應走 flash-lite（低延遲優先），僅 gemini provider 時生效
-            if self.provider == "gemini" and not self.is_exhausted and not self.budget.is_circuit_open():
-                stream_src = self._stream_cloud(system_prompt, user_prompt, temperature=temperature, model_override=self.cleaner_model, max_output_tokens=220)
+            use_cloud = self.provider == "gemini" and not self.is_exhausted and not self.budget.is_circuit_open()
+            if use_cloud:
+                try:
+                    async for chunk in self._stream_cloud(system_prompt, user_prompt, temperature=temperature, model_override=self.cleaner_model, max_output_tokens=220):
+                        full_response.append(chunk)
+                        yield chunk
+                except Exception as cloud_err:
+                    if full_response:   # 已經念出一半，不能換模型重講
+                        raise
+                    # 10/21：雲端 503 一個字都沒出就直接念「宇宙的熵值」錯誤台詞 → 改走 stream_llm 備援（Groq 優先）
+                    logger.warning(f"⚠️ [Stream Fast Response] 雲端未出字即失敗（{str(cloud_err)[:80]}）→ 改走 stream_llm 備援")
+                    async for chunk in self.stream_llm(system_prompt, user_prompt, speaker=speaker, temperature=temperature, max_output_tokens=220):
+                        full_response.append(chunk)
+                        yield chunk
             else:
-                stream_src = self.stream_llm(system_prompt, user_prompt, speaker=speaker, temperature=temperature, max_output_tokens=220)
-            async for chunk in stream_src:
-                full_response.append(chunk)
-                yield chunk
-            
+                async for chunk in self.stream_llm(system_prompt, user_prompt, speaker=speaker, temperature=temperature, max_output_tokens=220):
+                    full_response.append(chunk)
+                    yield chunk
+
             # 結算歷史
             final_text = "".join(full_response)
             _phrase_record(final_text)

@@ -9,6 +9,12 @@ except ImportError:
     class WebSearchError(RuntimeError):
         pass
 
+
+@pytest.fixture(autouse=True)
+def _no_question_opener(monkeypatch):
+    """這檔測的是 bus 沒人接之後的主聊天 / gap 路徑；問句開場（10/21）另有 tests/test_question_opener.py。"""
+    monkeypatch.setattr("cogs.voice_controller.try_question_opener", AsyncMock(return_value=False))
+
 def _make_cog():
     bot = MagicMock()
     bot.guilds = []
