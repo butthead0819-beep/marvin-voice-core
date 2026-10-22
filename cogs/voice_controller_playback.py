@@ -447,6 +447,8 @@ class PlaybackMixin:
                         flush=True,
                     )
                     log_marvin_speech(text, start_ts=time.time(), layer=layer, voice=voice, src="tts")
+                    if layer == 1 and hasattr(self, "_reply_lines"):
+                        self._reply_lines.append((time.time(), text))
                     if on_first_frame is not None:
                         try:
                             on_first_frame()

@@ -15,8 +15,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import time
 
+from barge_in import (
+    ACK_WAIT_MAX_S, BARGE_ACK_FILES, CONFIRM_TIMEOUT_S,
+    clean_confirm, confirm_step, interrupted_text, user_done,
+)
 from reply_address import address_prefix
 from tts_speak_policy import SpeakKind
 
@@ -28,6 +33,13 @@ _ACK_IDLE_REQUIRED_S = 1.5   # mixer TTS 層連續空閒這麼久才算「回應
 _ACK_MAX_WAIT_S = 60.0
 _ACK_SPEECH_WAIT_S = 15.0   # 等 Marvin 開口的上限；超過視為無語音回應，直接進入等空閒
 _SPEAKING_EPS_S = 0.05
+_BARGE_WATCH_POLL_S = 0.1
+
+_BARGE_CONFIRM_SYSTEM = (
+    "你是 Marvin。你剛才在回答使用者，講到一半被他打斷。用一句不超過20字的口語確認他現在"
+    "真正想問什麼，例如『喔，你是要問XX』。不要回答問題、不要道歉、不要解釋。只輸出那一句；"
+    "看不出他要問什麼就只輸出「略」。"
+)
 _WAKE_SESSION_REPLY_KINDS = frozenset({
     SpeakKind.WAKE_REPLY, SpeakKind.RESULT_NOTICE,
     SpeakKind.RECALL_CONFIRM, SpeakKind.LONG_READ,
@@ -53,11 +65,15 @@ class WakeSessionMixin:
         mixer = getattr(self, "_mixer", None)
         return mixer is not None and mixer.tts_load_seconds() > _SPEAKING_EPS_S
 
-    def _followup_override(self, speaker, fusion, text="") -> bool:
+    def _followup_override(self, speaker, fusion, text="", is_wake_check=False) -> bool:
         """取代舊的 follow-up 判斷：WakeSession 對發起者免喚醒（優先）＋ 舊問句窗（D2-A 不變）。"""
         session = getattr(self, "_wake_session", None)
         if session is not None and session.on_utterance(
-                speaker, time.time(), marvin_speaking=self._marvin_tts_speaking(), text=text):
+                speaker, time.time(), marvin_speaking=self._marvin_tts_speaking(),
+                text=text, final=not is_wake_check):
+            if session.barge_captured:
+                session.barge_captured = False
+                asyncio.create_task(self._barge_in_confirm(speaker, text))
             return True        # log 已在核心印
         if not self._wake_response_pending and fusion is not None and fusion.is_open():
             logger.info(f"🎧 [Follow-Up] {speaker} captured in follow-up window (reason={getattr(fusion, '_open_reason', '?')})")
@@ -170,3 +186,86 @@ class WakeSessionMixin:
             logger.info(f"🔔 [WakeSession] 開窗提示音 target={target}")
         except Exception as e:
             logger.debug(f"[WakeSession] 提示音播放失敗（忽略）: {e}", exc_info=True)
+
+    async def _barge_in_confirm(self, speaker, user_text) -> None:
+        """target 打斷成功後，用一句話確認他真正想問什麼（同時 Marvin 準備新回答）。"""
+        try:
+            t0 = time.time()
+            prev = interrupted_text(getattr(self, "_reply_lines", ()), t0)
+            router = getattr(self, "_shared_tier_router", None)
+            if router is None:
+                return
+            prompt = f"你剛才說（被打斷）：{prev or '（無）'}\n他打斷你說：{user_text}"
+            try:
+                raw = await asyncio.wait_for(
+                    router.quick(prompt=prompt, caller="barge_in_confirm",
+                                 system=_BARGE_CONFIRM_SYSTEM, max_tokens=60, temperature=0.3),
+                    CONFIRM_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                logger.info("⏭️ [BargeIn] 確認句逾時")
+                return
+            sent = clean_confirm(raw)
+            if not sent:
+                logger.info(f"⏭️ [BargeIn] 確認句無效 raw={raw!r}")
+                return
+            if any(ts > t0 for ts, _ in getattr(self, "_reply_lines", ())):
+                logger.info("⏭️ [BargeIn] 主答案已開始，略過確認句")
+                return
+            self._tts_interrupted = False
+            await self._stream_tts_to_mixer(sent, force_macos=False, emotion_tag="neutral", voice=None)
+            logger.info(f"💬 [BargeIn] 確認句 {sent!r} latency={(time.time() - t0) * 1000:.0f}ms")
+        except Exception as e:
+            logger.debug(f"[BargeIn] 確認句處理失敗（忽略）: {e}", exc_info=True)
+
+    async def _barge_in_watch(self, speaker, user_id, onset: float) -> None:
+        """對談窗 target 持續講話超過 BARGE_CONFIRM_S → 真的切 TTS；短促出聲（dip）則放棄。"""
+        try:
+            while True:
+                sink = self.bot.engine.get_active_sink()
+                if sink is None:
+                    return
+                last = sink.user_last_spoken_time.get(user_id, 0.0)
+                session = getattr(self, "_wake_session", None)
+                if session is None or session.target != speaker or not session.opened:
+                    return
+                if not self._marvin_tts_speaking():
+                    return
+                step = confirm_step(onset, time.time(), last)
+                if step == "dip":
+                    logger.info(f"🤏 [BargeIn] {speaker} 短促出聲 {time.time() - onset:.1f}s，不切")
+                    return
+                if step == "cut":
+                    break
+                await asyncio.sleep(_BARGE_WATCH_POLL_S)
+
+            if self._plan12 and self._mixer is not None:
+                self._mixer.clear_tts()
+            else:
+                device = self._resolve_playback_device()
+                if device is not None and device.is_playing():
+                    device.stop()
+            self._tts_interrupted = True
+            self._reply_gen += 1
+            ack_task = getattr(self, "_wake_session_ack_task", None)
+            if ack_task is not None and not ack_task.done():
+                ack_task.cancel()
+            prev = interrupted_text(getattr(self, "_reply_lines", ()), time.time())
+            session.mark_last_answer_interrupted(prev)
+            session.note_barge_in(time.time())
+            logger.info(f"✋ [BargeIn] {speaker} 打斷 Marvin（持續 {time.time() - onset:.1f}s）")
+            self.stt_logger.info(f"[BOT被打斷←{speaker}] 未說完={prev[:80]}")
+
+            waited = 0.0
+            while True:
+                sink = self.bot.engine.get_active_sink()
+                last = sink.user_last_spoken_time.get(user_id, 0.0) if sink is not None else 0.0
+                if user_done(time.time(), last):
+                    break
+                if waited >= ACK_WAIT_MAX_S:
+                    return
+                await asyncio.sleep(_BARGE_WATCH_POLL_S)
+                waited += _BARGE_WATCH_POLL_S
+            await self.play_dj_on_tts_layer(random.choice(BARGE_ACK_FILES))
+            logger.info(f"🔔 [BargeIn] ack 已播 target={speaker}")
+        except Exception as e:
+            logger.debug(f"[BargeIn] watcher 失敗（忽略）: {e}", exc_info=True)
