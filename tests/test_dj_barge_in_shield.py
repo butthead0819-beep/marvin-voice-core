@@ -77,8 +77,11 @@ def test_speech_start_during_shield_does_not_clear_tts():
 
 
 def test_speech_start_after_shield_expires_clears_tts():
+    """10/22 改為只有對談窗 target 能打斷：_barge_fake 沒設 _wake_session target，
+    shield 過期後 handle_raw_speech_start 仍不同步切（只在 target 持續講話時由
+    _barge_in_watch 切，見 tests/test_barge_in_wiring.py）。"""
     fake = _barge_fake()
     fake._tts_barge_shield_until = time.time() - 1.0
     fake._resolve_playback_device.return_value = MagicMock()
     VoiceController.handle_raw_speech_start(fake, "狗與露")
-    fake._mixer.clear_tts.assert_called_once()
+    fake._mixer.clear_tts.assert_not_called()

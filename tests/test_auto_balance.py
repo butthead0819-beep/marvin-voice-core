@@ -113,18 +113,19 @@ def test_manual_hold_active_never_manually_set():
 # mixer 慢速 ramp
 # ---------------------------------------------------------------------------
 
-def test_mixer_set_balance_ramp_s_sets_slow_step():
+def test_mixer_set_balance_rate_sets_slow_step():
+    # 每秒 2% → 每幀(20ms) 0.0004，跟距離無關（線性定速）
     mixer = LocalMixingAudioSource(balance=0.50)
     mixer._balance_cur = 0.50
-    mixer.set_balance(0.90, ramp_s=3.0)
-    assert mixer._balance_step_active == pytest.approx(0.4 / 150)
+    mixer.set_balance(0.90, rate_per_s=0.02)
+    assert mixer._balance_step_active == pytest.approx(0.0004)
 
 
 def test_mixer_set_balance_default_ramp_is_button_speed():
     mixer = LocalMixingAudioSource(balance=0.50)
     mixer._balance_cur = 0.50
-    mixer.set_balance(0.90, ramp_s=3.0)  # 先變慢
-    mixer.set_balance(0.70)              # 不帶 ramp_s → 恢復按鈕速度
+    mixer.set_balance(0.90, rate_per_s=0.02)  # 先變慢
+    mixer.set_balance(0.70)                   # 不帶 rate_per_s → 恢復按鈕速度
     assert mixer._balance_step_active == 0.02
 
 
@@ -155,7 +156,7 @@ def test_apply_auto_balance_does_not_update_manual_at_and_ramps_mixer():
     vc._mixer = MagicMock()
     vc._apply_auto_balance(0.9)
     assert vc._balance_manual_at == float('-inf')
-    vc._mixer.set_balance.assert_called_once_with(0.9, ramp_s=3.0)
+    vc._mixer.set_balance.assert_called_once_with(0.9, rate_per_s=0.02)
 
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,8 @@ def _make_barge_self(*, local_mode=True, current_tts_text=""):
 # barge-in 硬停音樂＝永遠不該（純音樂只 duck，播放交命令流水線）→ 與 kill-switch 脫鉤。
 
 def test_barge_in_skipped_during_pure_music_guard_on(monkeypatch):
+    # 10/22：現在不切的真正原因是「沒有 session target」，Music Guard 的 local_mode
+    # 分支已從 handle_raw_speech_start 整段移除（barge-in 改走對談窗 target + watcher）。
     monkeypatch.setenv("MARVIN_MUSIC_ECHO_GUARD", "1")
     fake = _make_barge_self()  # local + 純音樂（無 TTS 文字）
     VoiceController.handle_raw_speech_start(fake, "Alice")
@@ -112,6 +114,7 @@ def test_barge_in_skipped_during_pure_music_guard_on(monkeypatch):
 def test_barge_in_skipped_during_pure_music_even_when_killswitch_off(monkeypatch):
     # 關鍵回歸（2026-07-10 使用者實測「還是停掉了」）：kill-switch 關掉是為了 honor 喚醒 duck，
     # 但 barge-in 硬停音樂與那旗標無關，純音樂仍一律不該砍整首。
+    # 10/22：同上，現在不切的真正原因是「沒有 session target」，見前一個測試的註解。
     monkeypatch.setenv("MARVIN_MUSIC_ECHO_GUARD", "0")
     fake = _make_barge_self()  # local 純音樂
     VoiceController.handle_raw_speech_start(fake, "Alice")
@@ -120,26 +123,29 @@ def test_barge_in_skipped_during_pure_music_even_when_killswitch_off(monkeypatch
 
 
 def test_barge_in_proceeds_on_discord_during_music(monkeypatch):
+    """10/22 改為只有對談窗 target 能打斷：_make_barge_self 沒設 _wake_session target，
+    handle_raw_speech_start 不再同步切（device-routing 保證已搬進 _barge_in_watch，
+    見 tests/test_barge_in_wiring.py）。"""
     monkeypatch.setenv("MARVIN_MUSIC_ECHO_GUARD", "0")
     fake = _make_barge_self(local_mode=False)  # Discord（_local_mode 不存在）→ 不受影響
     device = MagicMock()
     device.is_playing.return_value = True
     fake._resolve_playback_device.return_value = device
     VoiceController.handle_raw_speech_start(fake, "Alice")
-    fake._resolve_playback_device.assert_called_once()
-    # 2026-09-24：Plan12 下打斷＝清 TTS 層，不 stop player（防 opus encoder 共用崩潰）
+    fake._resolve_playback_device.assert_not_called()
     device.stop.assert_not_called()
-    fake._mixer.clear_tts.assert_called_once()
-    assert fake._tts_interrupted is True
+    fake._mixer.clear_tts.assert_not_called()
+    assert fake._tts_interrupted is not True
 
 
 def test_barge_in_proceeds_during_tts_on_local(monkeypatch):
-    # device 上 bot 正講 TTS（_current_tts_text 非空）→ 使用者打斷 bot 仍要中斷（非純音樂）。
+    """10/22 改為只有對談窗 target 能打斷：_make_barge_self 沒設 _wake_session target，
+    handle_raw_speech_start 不再同步切，即使 bot 正在講 TTS。"""
     monkeypatch.setenv("MARVIN_MUSIC_ECHO_GUARD", "0")
     fake = _make_barge_self(current_tts_text="說到一半的回應")
     device = MagicMock()
     device.is_playing.return_value = True
     fake._resolve_playback_device.return_value = device
     VoiceController.handle_raw_speech_start(fake, "Alice")
-    fake._resolve_playback_device.assert_called_once()
-    assert fake._tts_interrupted is True
+    fake._resolve_playback_device.assert_not_called()
+    assert fake._tts_interrupted is not True

@@ -49,7 +49,10 @@ D. 拔掉 mood_sensor（含 main_discord 接線、story_arc vibe_filter 呼叫�
 
 驗收（上線 24h）：日記有氣氛行 ≥90%；`mood_hint` 注入的口白中「露餡」不合格率；人工聽感——同一段氣氛前後口白語氣有差。
 
-## 4. PR②（待做）：AssociativePick ＋ VibePick 融成一條話題選歌
+## 4. PR②（✅ #137 10/19 上線）：AssociativePick ＋ VibePick 融成一條話題選歌
+
+> 實作與計劃差異：一次付費呼叫同時做「本地優先＋提名」（不是兩段式）；第 5 項 lead 不需要（associative 本來就單獨入隊）。
+> 同 PR 修：氣氛只給 LLM 基調——10/19 live 實測事件被換句話講出 ≥7 段，日記不再寫「｜事件」。
 
 1. 輸入：最近 15 句逐字對話為主，最新日記 core（＋氣氛，僅內化）當背景
 2. **先從本地候選池挑**（免費 LLM `router._call_llm tier="simple"`，只回 index 或 null），挑不到才走提名

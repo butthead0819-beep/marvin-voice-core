@@ -13,10 +13,17 @@ _wake_session_on_replied，提示音走 play_tts＝提示音觸發自己的安�
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import os
+import random
 import time
+import weakref
 
+from barge_in import (
+    ACK_WAIT_MAX_S, BARGE_ACK_FILES, CONFIRM_TIMEOUT_S,
+    clean_confirm, confirm_step, interrupted_text, user_done,
+)
 from reply_address import address_prefix
 from tts_speak_policy import SpeakKind
 
@@ -28,6 +35,13 @@ _ACK_IDLE_REQUIRED_S = 1.5   # mixer TTS 層連續空閒這麼久才算「回應
 _ACK_MAX_WAIT_S = 60.0
 _ACK_SPEECH_WAIT_S = 15.0   # 等 Marvin 開口的上限；超過視為無語音回應，直接進入等空閒
 _SPEAKING_EPS_S = 0.05
+_BARGE_WATCH_POLL_S = 0.1
+
+_BARGE_CONFIRM_SYSTEM = (
+    "你是 Marvin。你剛才在回答使用者，講到一半被他打斷。用一句不超過20字的口語確認他現在"
+    "真正想問什麼，例如『喔，你是要問XX』。不要回答問題、不要道歉、不要解釋。只輸出那一句；"
+    "看不出他要問什麼就只輸出「略」。"
+)
 _WAKE_SESSION_REPLY_KINDS = frozenset({
     SpeakKind.WAKE_REPLY, SpeakKind.RESULT_NOTICE,
     SpeakKind.RECALL_CONFIRM, SpeakKind.LONG_READ,
@@ -49,15 +63,73 @@ def _is_music_action(winner) -> bool:
 
 
 class WakeSessionMixin:
+    def _release_response_lock(self, reason: str) -> None:
+        """回應處理結束 → 解除 Response Lock（1b790f9 刪掉 play_tts 結束解鎖後的補回）。"""
+        if getattr(self, "_wake_response_pending", False):
+            self._wake_response_pending = False
+            logger.info(f"🔓 [Response Lock] 解鎖（{reason}）")
+
+    async def _process_query_task_locked(self, task_data: dict) -> None:
+        """佇列處理一筆喚醒查詢；不論成功、被丟棄或例外，結束時都解鎖。"""
+        try:
+            await self._process_query_task(task_data)
+        finally:
+            self._release_response_lock("query_done")
+
+    async def _release_lock_after(self, coro) -> None:
+        """WakeShortcut 直派（不經佇列）：派發結束後解鎖。"""
+        try:
+            await coro
+        finally:
+            self._release_response_lock("shortcut_done")
+
+    def _init_barge_in_state(self) -> None:
+        """✋ [BargeIn] 狀態初始化（VoiceController.__init__ 呼叫）。"""
+        self._reply_lines = collections.deque(maxlen=8)   # Marvin 實際開口的句子（_stream_tts_to_mixer 記）
+        self._reply_gen = 0                               # 被打斷 +1；舊世代串流的後續句子不念
+        self._reply_stream_gens = weakref.WeakKeyDictionary()   # 串流 task → 開始時的世代號
+        self._barge_watch_task = None
+
+    def _maybe_start_barge_watch(self, speaker, user_id) -> None:
+        """VAD speech-start 回呼進來：只有對談窗 target、Marvin 正在講 TTS（非 protected/shield）
+        才建 watcher task。這裡不准直接切 TTS 或播聲音（回呼只標記，交給 task 處理）。"""
+        from cogs.voice_controller_playback import barge_in_shielded   # 延遲 import：playback 反向 import 本模組
+        session = getattr(self, "_wake_session", None)
+        if (session is None or session.target != speaker or not session.opened
+                or user_id is None
+                or not self._marvin_tts_speaking()
+                or self._tts_protected
+                or barge_in_shielded(getattr(self, '_tts_barge_shield_until', 0.0), time.time())):
+            return
+        onset = time.time()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # prod：speech-start 回呼跑在 voice_recv PacketRouter 執行緒，不能在這裡 create_task
+            self.bot.loop.call_soon_threadsafe(self._spawn_barge_watch, speaker, user_id, onset)
+            return
+        self._spawn_barge_watch(speaker, user_id, onset)
+
+    def _spawn_barge_watch(self, speaker, user_id, onset: float) -> None:
+        """在 event loop 上建 watcher task（同時只留一個）。"""
+        task = getattr(self, "_barge_watch_task", None)
+        if task is None or task.done():
+            self._barge_watch_task = asyncio.create_task(
+                self._barge_in_watch(speaker, user_id, onset))
+
     def _marvin_tts_speaking(self) -> bool:
         mixer = getattr(self, "_mixer", None)
         return mixer is not None and mixer.tts_load_seconds() > _SPEAKING_EPS_S
 
-    def _followup_override(self, speaker, fusion, text="") -> bool:
+    def _followup_override(self, speaker, fusion, text="", is_wake_check=False) -> bool:
         """取代舊的 follow-up 判斷：WakeSession 對發起者免喚醒（優先）＋ 舊問句窗（D2-A 不變）。"""
         session = getattr(self, "_wake_session", None)
         if session is not None and session.on_utterance(
-                speaker, time.time(), marvin_speaking=self._marvin_tts_speaking(), text=text):
+                speaker, time.time(), marvin_speaking=self._marvin_tts_speaking(),
+                text=text, final=not is_wake_check):
+            if session.barge_captured:
+                session.barge_captured = False
+                asyncio.create_task(self._barge_in_confirm(speaker, text))
             return True        # log 已在核心印
         if not self._wake_response_pending and fusion is not None and fusion.is_open():
             logger.info(f"🎧 [Follow-Up] {speaker} captured in follow-up window (reason={getattr(fusion, '_open_reason', '?')})")
@@ -124,6 +196,15 @@ class WakeSessionMixin:
         第一句多人在場前面加名字。"""
         if self.stream_mode:
             return
+        gens = getattr(self, "_reply_stream_gens", None)
+        task = asyncio.current_task()
+        if gens is not None and task is not None:
+            gen = getattr(self, "_reply_gen", 0)
+            if first or task not in gens:
+                gens[task] = gen
+            elif gens[task] != gen:
+                logger.info(f"✋ [BargeIn] {speaker} 舊回答串流已被打斷，不念: '{sentence[:20]}'")
+                return
         prefix = self._reply_address_prefix(speaker, sentence) if first else ""
         asyncio.create_task(self.play_tts(prefix + sentence, already_in_channel=True, emotion_tag=emotion_tag))
 
@@ -170,3 +251,86 @@ class WakeSessionMixin:
             logger.info(f"🔔 [WakeSession] 開窗提示音 target={target}")
         except Exception as e:
             logger.debug(f"[WakeSession] 提示音播放失敗（忽略）: {e}", exc_info=True)
+
+    async def _barge_in_confirm(self, speaker, user_text) -> None:
+        """target 打斷成功後，用一句話確認他真正想問什麼（同時 Marvin 準備新回答）。"""
+        try:
+            t0 = time.time()
+            prev = interrupted_text(getattr(self, "_reply_lines", ()), t0)
+            router = getattr(self, "_shared_tier_router", None)
+            if router is None:
+                return
+            prompt = f"你剛才說（被打斷）：{prev or '（無）'}\n他打斷你說：{user_text}"
+            try:
+                raw = await asyncio.wait_for(
+                    router.quick(prompt=prompt, caller="barge_in_confirm",
+                                 system=_BARGE_CONFIRM_SYSTEM, max_tokens=60, temperature=0.3),
+                    CONFIRM_TIMEOUT_S)
+            except asyncio.TimeoutError:
+                logger.info("⏭️ [BargeIn] 確認句逾時")
+                return
+            sent = clean_confirm(raw)
+            if not sent:
+                logger.info(f"⏭️ [BargeIn] 確認句無效 raw={raw!r}")
+                return
+            if any(ts > t0 for ts, _ in getattr(self, "_reply_lines", ())):
+                logger.info("⏭️ [BargeIn] 主答案已開始，略過確認句")
+                return
+            self._tts_interrupted = False
+            await self._stream_tts_to_mixer(sent, force_macos=False, emotion_tag="neutral", voice=None)
+            logger.info(f"💬 [BargeIn] 確認句 {sent!r} latency={(time.time() - t0) * 1000:.0f}ms")
+        except Exception as e:
+            logger.debug(f"[BargeIn] 確認句處理失敗（忽略）: {e}", exc_info=True)
+
+    async def _barge_in_watch(self, speaker, user_id, onset: float) -> None:
+        """對談窗 target 持續講話超過 BARGE_CONFIRM_S → 真的切 TTS；短促出聲（dip）則放棄。"""
+        try:
+            while True:
+                sink = self.bot.engine.get_active_sink()
+                if sink is None:
+                    return
+                last = sink.user_last_spoken_time.get(user_id, 0.0)
+                session = getattr(self, "_wake_session", None)
+                if session is None or session.target != speaker or not session.opened:
+                    return
+                if not self._marvin_tts_speaking():
+                    return
+                step = confirm_step(onset, time.time(), last)
+                if step == "dip":
+                    logger.info(f"🤏 [BargeIn] {speaker} 短促出聲 {time.time() - onset:.1f}s，不切")
+                    return
+                if step == "cut":
+                    break
+                await asyncio.sleep(_BARGE_WATCH_POLL_S)
+
+            if self._plan12 and self._mixer is not None:
+                self._mixer.clear_tts()
+            else:
+                device = self._resolve_playback_device()
+                if device is not None and device.is_playing():
+                    device.stop()
+            self._tts_interrupted = True
+            self._reply_gen += 1
+            ack_task = getattr(self, "_wake_session_ack_task", None)
+            if ack_task is not None and not ack_task.done():
+                ack_task.cancel()
+            prev = interrupted_text(getattr(self, "_reply_lines", ()), time.time())
+            session.mark_last_answer_interrupted(prev)
+            session.note_barge_in(time.time())
+            logger.info(f"✋ [BargeIn] {speaker} 打斷 Marvin（持續 {time.time() - onset:.1f}s）")
+            self.stt_logger.info(f"[BOT被打斷←{speaker}] 未說完={prev[:80]}")
+
+            waited = 0.0
+            while True:
+                sink = self.bot.engine.get_active_sink()
+                last = sink.user_last_spoken_time.get(user_id, 0.0) if sink is not None else 0.0
+                if user_done(time.time(), last):
+                    break
+                if waited >= ACK_WAIT_MAX_S:
+                    return
+                await asyncio.sleep(_BARGE_WATCH_POLL_S)
+                waited += _BARGE_WATCH_POLL_S
+            await self.play_dj_on_tts_layer(random.choice(BARGE_ACK_FILES))
+            logger.info(f"🔔 [BargeIn] ack 已播 target={speaker}")
+        except Exception as e:
+            logger.debug(f"[BargeIn] watcher 失敗（忽略）: {e}", exc_info=True)

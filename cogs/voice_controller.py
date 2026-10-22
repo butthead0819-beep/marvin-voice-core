@@ -375,7 +375,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._speaker_dispatch = None
         if os.getenv("MARVIN_PER_SPEAKER_QUEUE", "0") == "1":
             from speaker_dispatch import SpeakerDispatcher
-            self._speaker_dispatch = SpeakerDispatcher(self._process_query_task)
+            self._speaker_dispatch = SpeakerDispatcher(self._process_query_task_locked)
         self._latency_marks = LatencyMarks()  # ⏱️ wake → llm → sentence → audio 分階段計時
         # 📡 [IntentBus] Phase 1：取代 music + owner-lobster fast-track；其他 fast-track 留 legacy
         # 5/18 audit 後加 guard：主動 bid 高分吞 STT 幻覺 wake（wake-word loop /
@@ -524,6 +524,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._current_tts_in_channel: bool = False
         self._tts_resume_silence = 0.35
         self._tts_resume_timeout = 2.5
+        self._init_barge_in_state()  # ✋ [BargeIn] 狀態在 WakeSessionMixin
         
         # 日誌系統
         self.stt_logger = logging.getLogger("STTHistory")
@@ -1190,7 +1191,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         is_fast, is_echo = self._apply_wake_guards(
             speaker, raw_text, timestamp, track, is_fast,
             _fusion, _wake_dom, _confidence, _wake_voice_score,
-            is_text_input=is_text_input)
+            is_text_input=is_text_input, is_wake_check=is_wake_check)
         
         if speaker not in self.speech_buffers:
             self.speech_buffers[speaker] = {"texts": [], "first_timestamp": timestamp, "wav_bytes": bytearray()}
@@ -1270,7 +1271,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         is_owner=self._is_owner_speaker(speaker), now=time.time(),
                         mode=("stream" if self.stream_mode else "normal"),
                         dispatch_source="wake_shortcut")
-                    asyncio.create_task(dispatch_with_feedback(self._intent_bus, self.active_text_channel, speaker, raw_text, _sc_ctx))
+                    asyncio.create_task(self._release_lock_after(dispatch_with_feedback(self._intent_bus, self.active_text_channel, speaker, raw_text, _sc_ctx)))
                     self._wake_session_on_shortcut(_sc)
                     return
 
@@ -1401,7 +1402,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
     def _apply_wake_guards(self, speaker, raw_text, timestamp, track, is_fast,
                            _fusion, _wake_dom, _confidence, _wake_voice_score,
-                           is_text_input: bool = False):
+                           is_text_input: bool = False, is_wake_check: bool = False):
         """[Wake Guards] handle_stt_result 中段的喚醒守衛叢集（抽出，行為不變）。
 
         Double Wake / Response Lock / Storm / Echo(+Strong-Voice Bypass) / Global /
@@ -1497,7 +1498,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
              is_duplicate = True
 
         # 🗣️ [WakeSession] 對發起者免喚醒（優先）＋ 🎧 [Follow-Up] 舊問句窗（D2-A 不變）——判斷在 WakeSessionMixin
-        if not is_fast and not self.game_mode and self._followup_override(speaker, _fusion, raw_text):
+        if not is_fast and not self.game_mode and self._followup_override(
+                speaker, _fusion, raw_text, is_wake_check=is_wake_check):
             is_fast = True
             is_echo = False
             is_duplicate = False
@@ -1611,31 +1613,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if self._mixer is not None:
             self._mixer.note_player_speech()  # 🔇 玩家說話 → Marvin TTS（保護中的長播報）duck 到 10%
 
-        # 🚀 [TTS Interrupt] 使用者開口時中斷 TTS 播放，若文字尚未在聊天室則補發
-        # DJ/播報播完前 barge-in 被擋（見 barge_in_shielded）：有人開口只 duck、不清 TTS 層
-        if self.is_playing_audio and not self._tts_protected \
-                and not barge_in_shielded(getattr(self, '_tts_barge_shield_until', 0.0), time.time()):
-            # 🔇 [Music Guard] device（local/satellite）播純音樂時，speech-start 不該硬停整首歌：
-            # barge-in 的 device.stop() 是為「中斷 bot 講 TTS」設計，純音樂（無 _current_tts_text）
-            # 下喚醒只該 duck（_on_satellite_wake 負責）＋交給命令流水線，硬停會誤砍音樂。
-            # 與 MARVIN_MUSIC_ECHO_GUARD 無關（那旗標只管要不要忽略喚醒 duck）。Discord 不受影響。
-            if getattr(self, "_local_mode", False) and not self._current_tts_text:
-                logger.info(f"🔇 [Music Guard] 播音樂中不硬停播放（{speaker} speech-start 只 duck 不 barge-in）")
-                return
-            device = self._resolve_playback_device()
-            if self._plan12 and self._mixer is not None:  # 只清 TTS 層；stop player→重武裝會兩條 thread 搶同一顆 opus encoder（9/24 libopus 崩潰）
-                self._mixer.clear_tts()  # 🎛️ 清 mixer TTS 佇列，否則被打斷的 TTS 殘留累積亂播
-            elif device is not None and device.is_playing():
-                device.stop()
-            self._tts_interrupted = True  # 封鎖所有排隊中的串流片段（也讓 streaming render 停止餵）
-            interrupted_text = self._current_tts_text
-            if interrupted_text and not self._current_tts_in_channel and self.active_text_channel:
-                asyncio.create_task(
-                    self.active_text_channel.send(f"💬 **【馬文·被打斷】** {interrupted_text}")
-                )
-            if interrupted_text:
-                self.stt_logger.info(f"[BOT被打斷←{speaker}] 未說完={interrupted_text[:80]}")
-            self._current_tts_text = ""
+        # ✋ [BargeIn] 只有對談窗 target 能打斷，且要持續講話才算（見 barge_in.py）；其他人開口只 duck
+        self._maybe_start_barge_watch(speaker, user_id)
 
         # 🚀 [Operation Prosody Perception] 延遲嘲諷邏輯 (Operation Silicon Mockery)
         now = time.time()
@@ -2335,7 +2314,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         while True:
             try:
                 task_data = await self.query_queue.get()
-                await self._process_query_task(task_data)
+                await self._process_query_task_locked(task_data)
                 self.query_queue.task_done()
             except asyncio.CancelledError:
                 break

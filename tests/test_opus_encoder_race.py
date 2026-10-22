@@ -45,6 +45,10 @@ def _barge_fake():
 
 
 def test_plan12_barge_in_clears_tts_without_stopping_player():
+    """10/22 改為只有對談窗 target 能打斷：_barge_fake 沒設 _wake_session target，
+    handle_raw_speech_start 不再同步切——這道 Plan12「不停 player」保證現在在
+    _barge_in_watch 裡（見 tests/test_barge_in_wiring.py 的 test_barge_in_watch_cuts_then_plays_ack：
+    _plan12=True 時 cut 只呼叫 clear_tts，從不呼叫 device.stop）。"""
     fake = _barge_fake()
     device = MagicMock()
     device.is_playing.return_value = True
@@ -53,8 +57,8 @@ def test_plan12_barge_in_clears_tts_without_stopping_player():
     VoiceController.handle_raw_speech_start(fake, "Alice")
 
     device.stop.assert_not_called()
-    fake._mixer.clear_tts.assert_called_once()
-    assert fake._tts_interrupted is True
+    fake._mixer.clear_tts.assert_not_called()
+    assert fake._tts_interrupted is not True
 
 
 @pytest.mark.asyncio

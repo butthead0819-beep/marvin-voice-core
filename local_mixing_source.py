@@ -502,13 +502,13 @@ class LocalMixingAudioSource(_BASE):
         0.50 → (1.0, 1.0)；0.60 → (0.8, 1.0)；0.40 → (1.0, 0.8)。"""
         return min(1.0, 2.0 * (1.0 - balance)), min(1.0, 2.0 * balance)
 
-    def set_balance(self, balance: float, ramp_s: float = 0.0) -> None:
+    def set_balance(self, balance: float, rate_per_s: float = 0.0) -> None:
         """設定 TTS / Music 平衡比例 (0.0 ~ 1.0)。播放中逐幀漸變；閒置時直接到位（同 set_volume）。
-        ramp_s>0 時在 ramp_s 秒內線性滑到位（自動平衡用）；預設 0 = 原本按鈕速度。"""
+        rate_per_s>0 時以每秒 rate_per_s 的定速線性滑到位（自動平衡用，距離越遠越久）；
+        預設 0 = 原本按鈕速度。"""
         b = max(0.0, min(1.0, float(balance)))
-        if ramp_s > 0:
-            frames = ramp_s / 0.02
-            self._balance_step_active = max(abs(b - self._balance_cur) / frames, 1e-4)
+        if rate_per_s > 0:
+            self._balance_step_active = rate_per_s * 0.02
         else:
             self._balance_step_active = self._balance_step
         self._balance = b

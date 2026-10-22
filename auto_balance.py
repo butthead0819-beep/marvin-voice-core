@@ -6,7 +6,7 @@ from dj_heat import _human_entries, heat_snapshot
 
 AUTO_BALANCE_QUIET_S = 60.0          # 這麼久沒真人講話 → 回 50/50
 AUTO_BALANCE_MANUAL_HOLD_S = 600.0   # 手動按過平衡後，自動暫停這麼久
-AUTO_BALANCE_RAMP_S = 3.0            # 自動調整的漸變時間
+AUTO_BALANCE_RATE_PER_S = 0.02       # 自動調整定速線性漸變：每秒 2%（50→90 約 20 秒）
 AUTO_BALANCE_CONFIRM_TICKS = 2       # 同一新目標連續幾次才套用（防邊界抖動）
 
 BALANCE_QUIET = 0.50

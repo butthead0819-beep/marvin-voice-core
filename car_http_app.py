@@ -1163,7 +1163,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                    stream_source=None, location_state_path=None,
                    now_playing_state_path=None, claude_sessions_state_path=None,
                    gmail_calendar_state_path=None,
-                   device_speakers: dict[str, str] | None = None):
+                   device_speakers: dict[str, str] | None = None,
+                   puck_cover_cache=None):
     """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
 
     純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
@@ -1199,6 +1200,9 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     _now_path = now_playing_state_path or _NOW_DEFAULT_PATH
     _claude_path = claude_sessions_state_path or _CLAUDE_DEFAULT_PATH
     _gmail_cal_path = gmail_calendar_state_path or _GMAIL_CAL_DEFAULT_PATH
+
+    from puck_cover_cache import PuckCoverCache
+    _puck_cache = puck_cover_cache if puck_cover_cache is not None else PuckCoverCache()
 
     _CORS = {"Access-Control-Allow-Origin": "*",
              "Access-Control-Allow-Headers": "*",
@@ -1523,6 +1527,27 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             "song_start_time": getattr(music_cog, "_current_stream_start_time", None),
         }, headers=_CORS)
 
+    async def handle_car_cover(request):
+        """GET /car_cover?which=current|next&size=240|466 — 車機圓屏徽章封面 JPEG（puck_cover.py 預算）。
+
+        size＝240（mk1 GC9A01）或 466（mk2 AMOLED，預設）。current＝本地 MusicCog 在播的（同 /car_now 的資料源）；next＝stream_queue[0]。
+        沒歌／不是 iTunes 封面／生成失敗 → 404。"""
+        music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
+        which = request.query.get("which", "current")
+        size = 240 if request.query.get("size") == "240" else 466
+        info = None
+        if music_cog:
+            if which == "next":
+                q = getattr(music_cog, "stream_queue", None) or []
+                info = q[0] if q else None
+            else:
+                info = getattr(music_cog, "_current_stream_info", None)
+        jpg = await _puck_cache.get(info, size=size) if info else None
+        if not jpg:
+            return web.json_response({"cover": None}, status=404, headers=_CORS)
+        return web.Response(body=jpg, content_type="image/jpeg",
+                            headers={**_CORS, "Cache-Control": "no-store"})
+
     async def handle_car(request):
         """POST /car {"state": "present"|"absent", "lat"?, "lon"?} — ESP32 puck 車載觸發。
 
@@ -1566,6 +1591,9 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                 for line in wroom_diag[:16]:
                     if isinstance(line, str) and line:
                         logger.info(f"🚗 [WROOM] {spk} {line[:120]}")
+            cover_sum = body.get("cover_sum")
+            if isinstance(cover_sum, str) and cover_sum:
+                logger.info(f"🔘 [PuckCover/S3] {spk} {cover_sum[:200]}")
         return web.json_response(
             {"ok": True, "state": state, "present": car_presence.is_present,
              "occupants": car_presence.occupants}, headers=_CORS)
@@ -1604,11 +1632,13 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_options("/audio", handle_preflight)
     app.router.add_get("/audio_stream", handle_audio_stream)
     app.router.add_get("/car_now", handle_car_now)
+    app.router.add_get("/car_cover", handle_car_cover)
     app.router.add_get("/hud", handle_hud)
     app.router.add_get("/stage", handle_stage)
     app.router.add_get("/stage_icon.png", handle_stage_icon)
     app.router.add_post("/car", handle_car)
     app.router.add_options("/car", handle_preflight)
+    app["puck_cover_cache"] = _puck_cache
     return app
 
 
@@ -1672,6 +1702,27 @@ def decide_car_depart(*, connected: bool, human_count: int) -> str:
     if connected and human_count == 0:
         return "dismiss"
     return "keep"
+
+
+async def run_puck_cover_prefetch_loop(vc, cache, *, interval: float = 5.0, sizes: tuple = (240, 466),
+                                       max_loops: int | None = None) -> None:
+    """巡邏迴圈：每 interval 秒把目前+下一首的徽章封面預算進快取（壓力測試＋之後給 S3 預取）。
+    快取本身會去重/記住失敗，這裡每圈呼叫很便宜；任何例外只吞掉，迴圈不死。
+    max_loops 只給測試用（None＝無限）。"""
+    n = 0
+    while max_loops is None or n < max_loops:
+        n += 1
+        try:
+            music_cog = getattr(vc, "bot", None) and vc.bot.cogs.get("MusicCog")
+            if music_cog:
+                q = getattr(music_cog, "stream_queue", None) or []
+                for info in (getattr(music_cog, "_current_stream_info", None), q[0] if q else None):
+                    if info:
+                        for sz in sizes:
+                            await cache.get(info, size=sz)
+        except Exception:  # noqa: BLE001
+            logger.debug("[PuckCover] 預取迴圈例外", exc_info=True)
+        await asyncio.sleep(interval)
 
 
 async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
@@ -1822,6 +1873,9 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
                 await asyncio.sleep(10.0)
 
         asyncio.create_task(_sync_car_presence_state())
+    if os.getenv("MARVIN_PUCK_COVER_PREFETCH", "1").strip().lower() in ("1", "true", "yes", "on"):
+        asyncio.create_task(run_puck_cover_prefetch_loop(vc, app["puck_cover_cache"]))
+        logger.info("🔘 [PuckCover] 背景預取迴圈啟動（目前+下一首 × 240/466，每 5s）")
     if os.getenv("MARVIN_CLAUDE_STATUS_SCAN", "1").strip().lower() in ("1", "true", "yes", "on"):
         from scripts.scan_claude_sessions import run_claude_sessions_scan_loop
         asyncio.create_task(run_claude_sessions_scan_loop())

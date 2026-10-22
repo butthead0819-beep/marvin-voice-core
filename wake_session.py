@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 import re
 
+from barge_in import BARGE_PENDING_TTL_S
+
 IDLE_TIMEOUT_S = 120.0
 MAX_UNANSWERED = 3
 MAX_FOLLOWUP_MISSES = 3
@@ -46,6 +48,8 @@ class WakeSession:
         self.query_mode: bool = False      # session 內是否已有過 grounded 查詢 → 非音樂追問黏著 grounded
         self.followup_misses: int = 0
         self.qa_turns: list[tuple[str, str]] = []
+        self.barge_in_pending_at: float | None = None
+        self.barge_captured: bool = False
 
     def _end(self, reason: str) -> None:
         logger.info(f"🗣️ [WakeSession] 結束 target={self.target} reason={reason}")
@@ -56,6 +60,8 @@ class WakeSession:
         self.query_mode = False
         self.followup_misses = 0
         self.qa_turns = []
+        self.barge_in_pending_at = None
+        self.barge_captured = False
 
     def on_wake_accepted(self, speaker: str, now: float) -> None:
         if self.target == speaker:
@@ -100,11 +106,39 @@ class WakeSession:
         if self.unanswered >= MAX_UNANSWERED:
             self._end("ignored")
 
-    def on_utterance(self, speaker: str, now: float, *, marvin_speaking: bool, text: str = "") -> bool:
+    def note_barge_in(self, now: float) -> None:
+        """target 打斷成功（TTS 已切）→ 下一句 target 的正式句子要接住，即使 Marvin 還在發聲（ack）。"""
+        if self.target is None or not self.opened:
+            return
+        self.barge_in_pending_at = now
+        logger.info(f"✋ [WakeSession] barge-in pending target={self.target}")
+
+    def mark_last_answer_interrupted(self, text: str) -> None:
+        """把被打斷的內容記進 qa_turns，讓下一輪查詢知道上一個方向被打斷。"""
+        if self.target is None:
+            return
+        if self.qa_turns:
+            q, a = self.qa_turns[-1]
+            self.qa_turns[-1] = (q, a + "（念到一半被使用者打斷）")
+        elif text:
+            self.qa_turns.append(("", text + "（念到一半被使用者打斷）"))
+            self.qa_turns = self.qa_turns[-MAX_QA_TURNS:]
+
+    def on_utterance(self, speaker: str, now: float, *, marvin_speaking: bool,
+                      text: str = "", final: bool = True) -> bool:
         if self.target is None or speaker != self.target:
             return False
         if not self.opened:
             return False
+        barge = False
+        if self.barge_in_pending_at is not None:
+            if now - self.barge_in_pending_at > BARGE_PENDING_TTL_S:
+                self.barge_in_pending_at = None
+            elif not final:
+                return False   # 等正式斷句，wake-check 的半句片段不接
+            else:
+                self.barge_in_pending_at = None
+                barge = True
         if is_closing_phrase(text):
             self._end("closing")
             return False
@@ -112,18 +146,23 @@ class WakeSession:
             self._end("idle")
             return False
         self.last_speech = now
-        if marvin_speaking:
+        if marvin_speaking and not barge:
             return False
-        if self.awaiting_since is not None:
-            if now - self.awaiting_since < AWAIT_REPLY_TIMEOUT_S:
-                return False   # 上一句還在處理
-            self.unanswered += 1                                                 # 上一句逾時沒回應
-            self.awaiting_since = None
-            if self.unanswered >= MAX_UNANSWERED:
-                self._end("ignored")
-                return False
+        if not barge:
+            if self.awaiting_since is not None:
+                if now - self.awaiting_since < AWAIT_REPLY_TIMEOUT_S:
+                    return False   # 上一句還在處理
+                self.unanswered += 1                                                 # 上一句逾時沒回應
+                self.awaiting_since = None
+                if self.unanswered >= MAX_UNANSWERED:
+                    self._end("ignored")
+                    return False
+        if barge:
+            self.barge_captured = True
+            logger.info(f"🗣️ [WakeSession] 接住 {speaker} 打斷句")
+        else:
+            logger.info(f"🗣️ [WakeSession] 接住 {speaker} 免喚醒句（unanswered={self.unanswered}）")
         self.awaiting_since = now
-        logger.info(f"🗣️ [WakeSession] 接住 {speaker} 免喚醒句（unanswered={self.unanswered}）")
         return True
 
     def on_music_action(self, now: float) -> None:

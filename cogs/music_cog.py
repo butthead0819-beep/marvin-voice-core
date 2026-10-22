@@ -963,6 +963,8 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                     res['artist'] = meta['artist']
                 if meta.get('album'):
                     res['album'] = meta['album']
+                if meta.get('title'):
+                    res['itunes_title'] = meta['title']
         except Exception as e:
             logger.warning(f"⚠️ [Cover] iTunes 解析失敗，用原縮圖：{type(e).__name__}: {e}")
         # 從最終封面抽主色調色盤（給 vinyl splatter 用；失敗 → [] 不影響封面）

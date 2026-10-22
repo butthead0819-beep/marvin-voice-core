@@ -8,6 +8,7 @@ car_http_app.py::handle_audio_stream。
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Callable
 
 ICY_METAINT = 16000          # 每 16000 bytes 音訊插一個 metadata 區塊（128kbps ≈ 1 秒）
@@ -41,6 +42,41 @@ def _clean(s) -> str:
     return s.strip()
 
 
+def _norm_for_match(s) -> str:
+    """比對用：去掉所有非字母數字（含 _）、轉小寫。不做繁簡轉換（無依賴）。"""
+    return re.sub(r"[\W_]", "", str(s or "")).lower()
+
+
+def display_title(info: dict) -> str:
+    """車機曲名：依序試 spotify_title → itunes_title，候選正規化後要「被包含」在 YT 標題
+    正規化後的字串裡才採用（防外部查詢錯配：例 YT〈珊瑚海〉被 iTunes 配成〈稻香〉）；
+    都不合格就回 YT 標題原樣。"""
+    yt = info.get("title", "") or ""
+    yt_n = _norm_for_match(yt)
+    for key in ("spotify_title", "itunes_title"):
+        cand = info.get(key)
+        cand_n = _norm_for_match(cand)
+        if cand_n and cand_n in yt_n:
+            return cand
+    return yt
+
+
+def display_album(info: dict) -> str:
+    """車機專輯欄：有 album 就用；查不到時改顯示點播掛名。
+    requested_by 是真人名字 → 「{name}點播」；含「Marvin」或「推薦」（自動推薦掛名，
+    例「Marvin推薦（為狗與露）」）→ 原樣顯示（不可改寫成「X點播」，掛名鐵則：
+    自動推薦不能說成某人點的）；requested_by 空/「未知」→ 空字串。"""
+    album = info.get("album", "") or ""
+    if album:
+        return album
+    by = (info.get("requested_by") or "").strip()
+    if not by or by == "未知":
+        return ""
+    if "Marvin" in by or "推薦" in by:
+        return by
+    return f"{by}點播"
+
+
 def build_now_playing_payload(
     info: dict | None, start_time: float | None, now: float,
     *, bpm: float | None = None, include_bpm: bool = False,
@@ -59,9 +95,9 @@ def build_now_playing_payload(
 
     title_raw = info.get("title", "")
     artist_raw = info.get("artist") or info.get("uploader", "") or ""
-    album_raw = info.get("album", "") or ""
+    album_raw = display_album(info)
 
-    title = truncate_utf8(_clean(title_raw), TITLE_MAX_BYTES)
+    title = truncate_utf8(_clean(display_title(info)), TITLE_MAX_BYTES)
     artist = truncate_utf8(_clean(artist_raw), ARTIST_MAX_BYTES)
     album = truncate_utf8(_clean(album_raw), ALBUM_MAX_BYTES)
 
