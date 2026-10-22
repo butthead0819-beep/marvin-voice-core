@@ -1426,9 +1426,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         
         # 2. 或是 3 秒內該玩家已經觸發過喚醒 (防止 STT 拆句導致雙重喚醒)
         last_wake = getattr(self, "last_wake_time", {}).get(speaker, 0)
-        
-        _STORM_WINDOW      = 60.0   # 計數窗口
-        _STORM_LIMIT       = 4      # 窗口內喚醒次數門檻
+
         _STORM_CLEAR_QUIET = 12.0   # 連續 12s 無新喚醒 → 風暴消散
         _RESPONSE_LOCK_MAX = 30.0   # Response Lock 超時保護（LLM + TTS 最長等待）
 
@@ -1505,25 +1503,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             is_duplicate = False
 
         if is_fast and not is_duplicate:
-            self.processed_wake_segments[segment_id] = track
-            self._last_global_wake_time = now
-            if not hasattr(self, "last_wake_time"): self.last_wake_time = {}
-            self.last_wake_time[speaker] = now
-            # 清理過期紀錄 (O(N) 雖然不完美但量少)
-            if len(self.processed_wake_segments) > 100:
-                self.processed_wake_segments = {k: v for k, v in list(self.processed_wake_segments.items())[-20:]}
-            # 🔒 [Response Lock] 記錄本次喚醒被接受
-            self._wake_response_pending = True
-            self._wake_accepted_time = now
-            self._wake_session_on_accept(speaker, now)
-            # 🛡️ [Wake Storm Guard] 計數：滾動窗口超限 → 啟動動態風暴壓抑
-            self._wake_burst_times.append(now)
-            self._wake_burst_times = [t for t in self._wake_burst_times if now - t < _STORM_WINDOW]
-            if len(self._wake_burst_times) >= _STORM_LIMIT:
-                self._storm_active = True
-                self._storm_last_wake_time = now
-                self._wake_burst_times.clear()
-                logger.warning(f"⚠️ [Wake Storm] {_STORM_WINDOW:.0f}s 內喚醒 {_STORM_LIMIT} 次，啟動風暴壓抑（{_STORM_CLEAR_QUIET:.0f}s 靜默後自動解除）")
+            self._record_accepted_wake(speaker, segment_id, track, now)
         elif is_duplicate:
             is_fast = False
             logger.debug(f"⏭️ [Double Wake Guard] {segment_id} 已過濾。")

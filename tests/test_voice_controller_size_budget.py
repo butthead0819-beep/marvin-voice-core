@@ -50,7 +50,7 @@ FROZEN_METHODS = {  # 已超過 NEW_METHOD_MAX 的既有大 method：只准縮
     "__init__": 168,
     "_stream_response": 151,
     "_process_queued_query": 119,
-    "_apply_wake_guards": 79,
+    "_apply_wake_guards": 61,
     "process_debounced_speech": 64,
     "handle_raw_speech_start": 58,
     "_cot_filter_stream": 57,
