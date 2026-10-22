@@ -186,6 +186,8 @@ def prune_all(
     presence_path: Path,
     now: float | None = None,
     apply: bool = False,
+    turn_outcomes_path: Path | None = None,
+    gate_decisions_path: Path | None = None,
 ) -> dict:
     effective_now = time.time() if now is None else float(now)
     cutoff_30d = effective_now - 30 * 86400
@@ -212,6 +214,16 @@ def prune_all(
     daily_res = prune_daily_records(daily_dir, today_taipei, retention_days=14, apply=apply)
     presence_res = prune_presence_log(presence_path, cutoff_90d, apply=apply)
 
+    empty_res = {"matched": 0, "oldest": None, "deleted": 0}
+    turn_outcomes_res = (
+        prune_presence_log(turn_outcomes_path, cutoff_30d, apply=apply)
+        if turn_outcomes_path is not None else empty_res
+    )
+    gate_decisions_res = (
+        prune_presence_log(gate_decisions_path, cutoff_30d, apply=apply)
+        if gate_decisions_path is not None else empty_res
+    )
+
     return {
         "dry_run": not apply,
         "speaker_topic_graph": db_res_stg,
@@ -221,6 +233,8 @@ def prune_all(
         "hometowns": db_res_hometowns,
         "daily_files": daily_res,
         "voice_presence": presence_res,
+        "turn_outcomes": turn_outcomes_res,
+        "turn_gate_decisions": gate_decisions_res,
     }
 
 
@@ -231,6 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--presence", default="data/voice_presence.jsonl", help="語音進出紀錄 (預設: data/voice_presence.jsonl)")
     parser.add_argument("--now", type=float, default=None, help="覆寫當前時間戳 (測試用)")
     parser.add_argument("--apply", action="store_true", help="確認執行刪除 (預設 dry-run)")
+    parser.add_argument("--turn-outcomes", default="records/turn_outcomes.jsonl", help="意圖漏斗 turn outcome 紀錄 (預設: records/turn_outcomes.jsonl)")
+    parser.add_argument("--gate-decisions", default="records/turn_gate_decisions.jsonl", help="意圖漏斗守衛判斷紀錄 (預設: records/turn_gate_decisions.jsonl)")
     args = parser.parse_args(argv)
 
     summary = prune_all(
@@ -239,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
         presence_path=Path(args.presence),
         now=args.now,
         apply=args.apply,
+        turn_outcomes_path=Path(args.turn_outcomes),
+        gate_decisions_path=Path(args.gate_decisions),
     )
     print(json.dumps(summary, ensure_ascii=False))
     return 0

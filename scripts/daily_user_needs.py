@@ -30,6 +30,8 @@ AMBIENT = ROOT / "records" / "ambient_qa.jsonl"
 RESCUE = ROOT / "records" / "rescue_outcomes.jsonl"
 NOWAKE = ROOT / "records" / "nowake_outcomes.jsonl"
 SPEAK = ROOT / "records" / "speak_outcomes.jsonl"
+TURN_OUTCOMES = ROOT / "records" / "turn_outcomes.jsonl"
+GATE_DECISIONS = ROOT / "records" / "turn_gate_decisions.jsonl"
 DB = ROOT / "marvin.db"
 RESOLVED = ROOT / "agent_gaps_resolved.json"
 
@@ -83,6 +85,27 @@ def _load_jsonl(path: Path, lo: float, hi: float) -> list[dict]:
         if lo <= ts < hi:
             out.append(rec)
     return out
+
+
+def _load_jsonl_counting(path: Path, lo: float, hi: float) -> tuple[list[dict] | None, int]:
+    """同 _load_jsonl，但檔不存在回 (None, 0)，且回傳壞行數供漏斗段落顯示。"""
+    if not path.exists():
+        return None, 0
+    out = []
+    bad = 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            bad += 1
+            continue
+        ts = rec.get("ts") or rec.get("timestamp") or 0
+        if lo <= ts < hi:
+            out.append(rec)
+    return out, bad
 
 
 def _load_resolved() -> set[str]:
@@ -306,6 +329,56 @@ def section_polish(lo: float, hi: float) -> str:
     return "\n".join(lines)
 
 
+def section_funnel(lo: float, hi: float) -> str:
+    lines = ["## 漏斗（意圖漏斗 E3）\n"]
+
+    outcomes, bad_outcomes = _load_jsonl_counting(TURN_OUTCOMES, lo, hi)
+    if outcomes is not None:
+        outcomes = [r for r in outcomes if r.get("speaker") not in EXCLUDE_SPEAKERS]
+        dedup: dict[str, dict] = {}
+        for r in outcomes:
+            tid = r.get("turn_id")
+            dedup[tid] = r
+        uniq = list(dedup.values())
+        wake_n = sum(1 for r in uniq if r.get("discovered_by") in ("wake_word", "wake_shortcut"))
+        m_total = len(uniq)
+        executed_n = sum(1 for r in uniq if r.get("executed") is True)
+        lines.append(f"- 喚醒數：{wake_n}")
+        if m_total:
+            lines.append(f"- 執行率：{executed_n / m_total:.0%}（{executed_n}/{m_total}）")
+        else:
+            lines.append("- 執行率：尚無資料")
+    else:
+        lines.append("- 喚醒數：尚無資料")
+        lines.append("- 執行率：尚無資料")
+
+    gate_rows, bad_gate = _load_jsonl_counting(GATE_DECISIONS, lo, hi)
+    if gate_rows is not None:
+        gate_rows = [r for r in gate_rows if r.get("speaker") not in EXCLUDE_SPEAKERS
+                     and r.get("decision") != "preempt"]
+        _priority = {"accept": 0, "block": 1, "ignore": 2}
+        by_turn: dict[str, dict] = {}
+        for r in gate_rows:
+            key = r.get("turn_key")
+            cur = by_turn.get(key)
+            if cur is None or _priority.get(r.get("decision"), 99) < _priority.get(cur.get("decision"), 99):
+                by_turn[key] = r
+        blocked_n = sum(
+            1 for r in by_turn.values()
+            if r.get("decision") == "block" and str(r.get("reason") or "").startswith("guard_")
+        )
+        lines.append(f"- 守衛擋下數：{blocked_n}")
+    else:
+        lines.append("- 守衛擋下數：尚無資料")
+
+    lines.append("- 修正率：尚無資料")
+
+    if bad_outcomes or bad_gate:
+        lines.append(f"- 壞行：turn_outcomes {bad_outcomes}／turn_gate_decisions {bad_gate}")
+
+    return "\n".join(lines)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", help="YYYY-MM-DD（預設昨天）")
@@ -322,6 +395,7 @@ def main() -> None:
     if amb:
         print(amb)
     print(section_polish(lo, hi))
+    print(section_funnel(lo, hi))
     print("---")
     print("_下一步：Claude 對每筆附一句改善建議，Jack 人工評估要不要做。_")
 
