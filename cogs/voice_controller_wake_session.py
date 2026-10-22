@@ -63,6 +63,26 @@ def _is_music_action(winner) -> bool:
 
 
 class WakeSessionMixin:
+    def _release_response_lock(self, reason: str) -> None:
+        """回應處理結束 → 解除 Response Lock（1b790f9 刪掉 play_tts 結束解鎖後的補回）。"""
+        if getattr(self, "_wake_response_pending", False):
+            self._wake_response_pending = False
+            logger.info(f"🔓 [Response Lock] 解鎖（{reason}）")
+
+    async def _process_query_task_locked(self, task_data: dict) -> None:
+        """佇列處理一筆喚醒查詢；不論成功、被丟棄或例外，結束時都解鎖。"""
+        try:
+            await self._process_query_task(task_data)
+        finally:
+            self._release_response_lock("query_done")
+
+    async def _release_lock_after(self, coro) -> None:
+        """WakeShortcut 直派（不經佇列）：派發結束後解鎖。"""
+        try:
+            await coro
+        finally:
+            self._release_response_lock("shortcut_done")
+
     def _init_barge_in_state(self) -> None:
         """✋ [BargeIn] 狀態初始化（VoiceController.__init__ 呼叫）。"""
         self._reply_lines = collections.deque(maxlen=8)   # Marvin 實際開口的句子（_stream_tts_to_mixer 記）

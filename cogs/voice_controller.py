@@ -375,7 +375,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._speaker_dispatch = None
         if os.getenv("MARVIN_PER_SPEAKER_QUEUE", "0") == "1":
             from speaker_dispatch import SpeakerDispatcher
-            self._speaker_dispatch = SpeakerDispatcher(self._process_query_task)
+            self._speaker_dispatch = SpeakerDispatcher(self._process_query_task_locked)
         self._latency_marks = LatencyMarks()  # ⏱️ wake → llm → sentence → audio 分階段計時
         # 📡 [IntentBus] Phase 1：取代 music + owner-lobster fast-track；其他 fast-track 留 legacy
         # 5/18 audit 後加 guard：主動 bid 高分吞 STT 幻覺 wake（wake-word loop /
@@ -1271,7 +1271,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         is_owner=self._is_owner_speaker(speaker), now=time.time(),
                         mode=("stream" if self.stream_mode else "normal"),
                         dispatch_source="wake_shortcut")
-                    asyncio.create_task(dispatch_with_feedback(self._intent_bus, self.active_text_channel, speaker, raw_text, _sc_ctx))
+                    asyncio.create_task(self._release_lock_after(dispatch_with_feedback(self._intent_bus, self.active_text_channel, speaker, raw_text, _sc_ctx)))
                     self._wake_session_on_shortcut(_sc)
                     return
 
@@ -2314,7 +2314,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         while True:
             try:
                 task_data = await self.query_queue.get()
-                await self._process_query_task(task_data)
+                await self._process_query_task_locked(task_data)
                 self.query_queue.task_done()
             except asyncio.CancelledError:
                 break
