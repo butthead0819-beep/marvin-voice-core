@@ -305,3 +305,42 @@ def test_followup_misses_survives_on_replied_but_not_fixed_by_it():
             s.on_replied(now + 0.5)
         now += 1.0
     assert s.target is None
+
+
+# ── is_window_open：唯讀查詢（D3=C，對談極速通道唯一接點）──────────────────
+
+def _opened_session(target="A", replied_at=10.0):
+    s = WakeSession()
+    s.on_wake_accepted(target, 0.0)
+    s.on_replied(replied_at)
+    return s
+
+
+def test_window_closed_when_no_target():
+    assert WakeSession().is_window_open("A", 1.0) is False
+
+
+def test_window_closed_while_armed_before_first_reply():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    assert s.is_window_open("A", 1.0) is False
+
+
+def test_window_open_for_target_only():
+    s = _opened_session()
+    assert s.is_window_open("A", 11.0) is True
+    assert s.is_window_open("B", 11.0) is False
+
+
+def test_window_idle_boundary():
+    s = _opened_session(replied_at=10.0)
+    assert s.is_window_open("A", 130.0) is True     # 剛好 120s：on_utterance 也還接
+    assert s.is_window_open("A", 130.001) is False
+
+
+def test_window_query_does_not_mutate_state():
+    s = _opened_session(replied_at=10.0)
+    before = dict(vars(s))
+    s.is_window_open("A", 500.0)   # 已逾時：只回 False，不能順手 _end
+    s.is_window_open("B", 11.0)
+    assert vars(s) == before

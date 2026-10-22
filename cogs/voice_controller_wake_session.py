@@ -170,6 +170,24 @@ class WakeSessionMixin:
             self._wake_burst_times.clear()
             logger.warning(f"⚠️ [Wake Storm] {_STORM_WINDOW:.0f}s 內喚醒 {_STORM_LIMIT} 次，啟動風暴壓抑（{_STORM_CLEAR_QUIET:.0f}s 靜默後自動解除）")
 
+    async def _etd_semantic_check(self, speaker, combined_text):
+        """Semantic ETD Track B-2 的呼叫點（對談極速通道 F）。
+        對談窗內：不問 Groq，回合成結果（已講完、文字不改），remember_etd 照存 → worker 必命中重用。
+        MARVIN_FASTLANE_SKIP_CLEAN=0 時照舊呼叫 clean_stt_text。"""
+        if os.environ.get("MARVIN_FASTLANE_SKIP_CLEAN", "1") != "0" and \
+                self.in_conversation_window(speaker, time.time()):
+            logger.info(f"⚡ [FastLane] {speaker} 對談窗內跳過 Groq ETD")
+            return {"text": combined_text, "is_complete": True}
+        return await self.bot.router.clean_stt_text(combined_text)
+
+    def in_conversation_window(self, speaker, now) -> bool:
+        """唯讀接點（意圖漏斗 eng review D3=C）：speaker 是否在對談窗內。
+
+        對談極速通道判斷「是否在對談窗」只准用這個；VAD（voice_recv 執行緒）也會呼叫，
+        所以只讀、不改狀態、不建 task。漏斗 3b 換成 ConversationState 時只改這裡的實作。"""
+        session = getattr(self, "_wake_session", None)
+        return session is not None and session.is_window_open(speaker, now)
+
     def _wake_session_on_accept(self, speaker, now) -> None:
         session = getattr(self, "_wake_session", None)
         if session is not None:

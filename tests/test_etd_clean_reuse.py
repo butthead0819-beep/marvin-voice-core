@@ -184,6 +184,8 @@ async def test_apply_semantic_etd_populates_reusable_cache():
         bot=bot,
         user_sentence_buffer={},
         _strip_wake_word=_strip_wake,
+        # B-2 經 WakeSessionMixin._etd_semantic_check（對談極速通道 F）；這裡模擬對談窗外 → 照舊問 Groq
+        _etd_semantic_check=lambda spk, text: clean_stt_text(text),
     )
 
     result = await VoiceController._apply_semantic_etd(

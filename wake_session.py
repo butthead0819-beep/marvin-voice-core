@@ -165,6 +165,14 @@ class WakeSession:
         self.awaiting_since = now
         return True
 
+    def is_window_open(self, speaker: str, now: float) -> bool:
+        """唯讀：speaker 現在是否在對談窗內（target、Marvin 已回過話、未超過 idle）。
+
+        不改任何狀態——逾時也不 _end，那留給 on_utterance／on_replied。
+        對談極速通道（TODOS P1）只准透過 WakeSessionMixin.in_conversation_window 讀這個。"""
+        return (self.target is not None and speaker == self.target and self.opened
+                and now - self.last_speech <= IDLE_TIMEOUT_S)
+
     def on_music_action(self, now: float) -> None:
         """討論轉成點播/下一首/重播被執行 → 歌曲對話以指令收尾，session 結束。"""
         if self.target is None:
