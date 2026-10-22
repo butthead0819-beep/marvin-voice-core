@@ -50,7 +50,7 @@ def _make_barge_fake(*, target="Alice", opened=True, speaking=True,
 @pytest.mark.asyncio
 async def test_non_target_speaker_does_not_create_watcher():
     fake = _make_barge_fake(target="Bob")
-    VoiceController.handle_raw_speech_start(fake, "Alice", user_id=1)
+    WakeSessionMixin._maybe_start_barge_watch(fake, "Alice", 1)
     await asyncio.sleep(0)
     fake._mixer.clear_tts.assert_not_called()
     assert fake._barge_watch_task is None
@@ -59,7 +59,7 @@ async def test_non_target_speaker_does_not_create_watcher():
 @pytest.mark.asyncio
 async def test_no_session_does_not_create_watcher():
     fake = _make_barge_fake(no_session=True)
-    VoiceController.handle_raw_speech_start(fake, "Alice", user_id=1)
+    WakeSessionMixin._maybe_start_barge_watch(fake, "Alice", 1)
     await asyncio.sleep(0)
     fake._mixer.clear_tts.assert_not_called()
     assert fake._barge_watch_task is None
@@ -68,7 +68,7 @@ async def test_no_session_does_not_create_watcher():
 @pytest.mark.asyncio
 async def test_tts_protected_does_not_create_watcher():
     fake = _make_barge_fake(target="Alice", tts_protected=True)
-    VoiceController.handle_raw_speech_start(fake, "Alice", user_id=1)
+    WakeSessionMixin._maybe_start_barge_watch(fake, "Alice", 1)
     await asyncio.sleep(0)
     assert fake._barge_watch_task is None
 
@@ -76,7 +76,7 @@ async def test_tts_protected_does_not_create_watcher():
 @pytest.mark.asyncio
 async def test_shielded_does_not_create_watcher():
     fake = _make_barge_fake(target="Alice", shield_until=time.time() + 10.0)
-    VoiceController.handle_raw_speech_start(fake, "Alice", user_id=1)
+    WakeSessionMixin._maybe_start_barge_watch(fake, "Alice", 1)
     await asyncio.sleep(0)
     assert fake._barge_watch_task is None
 
@@ -84,7 +84,7 @@ async def test_shielded_does_not_create_watcher():
 @pytest.mark.asyncio
 async def test_not_speaking_does_not_create_watcher():
     fake = _make_barge_fake(target="Alice", speaking=False)
-    VoiceController.handle_raw_speech_start(fake, "Alice", user_id=1)
+    WakeSessionMixin._maybe_start_barge_watch(fake, "Alice", 1)
     await asyncio.sleep(0)
     assert fake._barge_watch_task is None
 
@@ -93,7 +93,7 @@ async def test_not_speaking_does_not_create_watcher():
 async def test_target_opened_speaking_creates_watcher():
     fake = _make_barge_fake(target="Alice", opened=True, speaking=True)
     fake._barge_in_watch = AsyncMock()
-    VoiceController.handle_raw_speech_start(fake, "Alice", user_id=42)
+    WakeSessionMixin._maybe_start_barge_watch(fake, "Alice", 42)
     await asyncio.sleep(0)
     assert fake._barge_watch_task is not None
     fake._barge_in_watch.assert_called_once()
@@ -109,11 +109,70 @@ async def test_existing_unfinished_watcher_not_replaced():
     fake._barge_in_watch = AsyncMock()
     old_task = asyncio.get_event_loop().create_future()
     fake._barge_watch_task = old_task
-    VoiceController.handle_raw_speech_start(fake, "Alice", user_id=42)
+    WakeSessionMixin._maybe_start_barge_watch(fake, "Alice", 42)
     await asyncio.sleep(0)
     assert fake._barge_watch_task is old_task
     fake._barge_in_watch.assert_not_called()
     old_task.cancel()
+
+
+def test_handle_raw_speech_start_delegates_to_barge_gate():
+    """VAD 回呼只委派給 _maybe_start_barge_watch，自己不碰 mixer TTS 層。"""
+    fake = _make_barge_fake(target="Alice")
+    VoiceController.handle_raw_speech_start(fake, "Alice", user_id=42)
+    fake._maybe_start_barge_watch.assert_called_once_with("Alice", 42)
+    fake._mixer.clear_tts.assert_not_called()
+
+
+# ── _speak_reply_sentence 世代號：被打斷的舊串流後續句子不念 ─────────────────
+
+class _SpeakFakeCog(WakeSessionMixin):
+    def __init__(self):
+        self._init_barge_in_state()
+        self.stream_mode = False
+        self.play_tts = AsyncMock()
+
+    def _reply_address_prefix(self, speaker, text=""):
+        return ""
+
+
+@pytest.mark.asyncio
+async def test_old_stream_sentences_dropped_after_barge_in():
+    cog = _SpeakFakeCog()
+
+    async def old_stream():
+        cog._speak_reply_sentence("A", "第一句", first=True)
+        await asyncio.sleep(0)
+        cog._reply_gen += 1          # watcher 切掉了
+        await new_turn               # 新一輪先開始念
+        cog._speak_reply_sentence("A", "舊的第二句", first=False)
+
+    async def new_stream():
+        cog._speak_reply_sentence("A", "新答案", first=True)
+        cog._speak_reply_sentence("A", "新答案第二句", first=False)
+
+    new_turn = asyncio.ensure_future(asyncio.sleep(0))
+    t_old = asyncio.create_task(old_stream())
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.create_task(new_stream())
+    await t_old
+    await asyncio.sleep(0)
+    said = [c.args[0] for c in cog.play_tts.call_args_list]
+    assert said == ["第一句", "新答案", "新答案第二句"]
+
+
+@pytest.mark.asyncio
+async def test_same_stream_keeps_speaking_without_barge_in():
+    cog = _SpeakFakeCog()
+
+    async def stream():
+        cog._speak_reply_sentence("A", "一", first=True)
+        cog._speak_reply_sentence("A", "二", first=False)
+
+    await asyncio.create_task(stream())
+    await asyncio.sleep(0)
+    assert [c.args[0] for c in cog.play_tts.call_args_list] == ["一", "二"]
 
 
 # ── _barge_in_watch：cut → 切 + 等講完播 ack；dip → 不切 ─────────────────────

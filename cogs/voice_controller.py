@@ -524,9 +524,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._current_tts_in_channel: bool = False
         self._tts_resume_silence = 0.35
         self._tts_resume_timeout = 2.5
-        # ✋ [BargeIn] Marvin 實際開口的句子（供打斷時回溯「未說完」內容，見 barge_in.py）
-        self._reply_lines = collections.deque(maxlen=8)
-        self._reply_gen = 0  # 串流回答世代號：被打斷後 +1，擋掉舊世代還在產的句子
+        self._init_barge_in_state()  # ✋ [BargeIn] 狀態在 WakeSessionMixin
         
         # 日誌系統
         self.stt_logger = logging.getLogger("STTHistory")
@@ -1616,16 +1614,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             self._mixer.note_player_speech()  # 🔇 玩家說話 → Marvin TTS（保護中的長播報）duck 到 10%
 
         # ✋ [BargeIn] 只有對談窗 target 能打斷，且要持續講話才算（見 barge_in.py）；其他人開口只 duck
-        session = getattr(self, "_wake_session", None)
-        if (session is not None and session.target == speaker and session.opened
-                and user_id is not None
-                and self._marvin_tts_speaking()
-                and not self._tts_protected
-                and not barge_in_shielded(getattr(self, '_tts_barge_shield_until', 0.0), time.time())):
-            task = getattr(self, "_barge_watch_task", None)
-            if task is None or task.done():
-                self._barge_watch_task = asyncio.create_task(
-                    self._barge_in_watch(speaker, user_id, time.time()))
+        self._maybe_start_barge_watch(speaker, user_id)
 
         # 🚀 [Operation Prosody Perception] 延遲嘲諷邏輯 (Operation Silicon Mockery)
         now = time.time()

@@ -13,10 +13,12 @@ _wake_session_on_replied，提示音走 play_tts＝提示音觸發自己的安�
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import os
 import random
 import time
+import weakref
 
 from barge_in import (
     ACK_WAIT_MAX_S, BARGE_ACK_FILES, CONFIRM_TIMEOUT_S,
@@ -61,6 +63,29 @@ def _is_music_action(winner) -> bool:
 
 
 class WakeSessionMixin:
+    def _init_barge_in_state(self) -> None:
+        """✋ [BargeIn] 狀態初始化（VoiceController.__init__ 呼叫）。"""
+        self._reply_lines = collections.deque(maxlen=8)   # Marvin 實際開口的句子（_stream_tts_to_mixer 記）
+        self._reply_gen = 0                               # 被打斷 +1；舊世代串流的後續句子不念
+        self._reply_stream_gens = weakref.WeakKeyDictionary()   # 串流 task → 開始時的世代號
+        self._barge_watch_task = None
+
+    def _maybe_start_barge_watch(self, speaker, user_id) -> None:
+        """VAD speech-start 回呼進來：只有對談窗 target、Marvin 正在講 TTS（非 protected/shield）
+        才建 watcher task。這裡不准直接切 TTS 或播聲音（回呼只標記，交給 task 處理）。"""
+        from cogs.voice_controller_playback import barge_in_shielded   # 延遲 import：playback 反向 import 本模組
+        session = getattr(self, "_wake_session", None)
+        if (session is None or session.target != speaker or not session.opened
+                or user_id is None
+                or not self._marvin_tts_speaking()
+                or self._tts_protected
+                or barge_in_shielded(getattr(self, '_tts_barge_shield_until', 0.0), time.time())):
+            return
+        task = getattr(self, "_barge_watch_task", None)
+        if task is None or task.done():
+            self._barge_watch_task = asyncio.create_task(
+                self._barge_in_watch(speaker, user_id, time.time()))
+
     def _marvin_tts_speaking(self) -> bool:
         mixer = getattr(self, "_mixer", None)
         return mixer is not None and mixer.tts_load_seconds() > _SPEAKING_EPS_S
@@ -140,6 +165,15 @@ class WakeSessionMixin:
         第一句多人在場前面加名字。"""
         if self.stream_mode:
             return
+        gens = getattr(self, "_reply_stream_gens", None)
+        task = asyncio.current_task()
+        if gens is not None and task is not None:
+            gen = getattr(self, "_reply_gen", 0)
+            if first or task not in gens:
+                gens[task] = gen
+            elif gens[task] != gen:
+                logger.info(f"✋ [BargeIn] {speaker} 舊回答串流已被打斷，不念: '{sentence[:20]}'")
+                return
         prefix = self._reply_address_prefix(speaker, sentence) if first else ""
         asyncio.create_task(self.play_tts(prefix + sentence, already_in_channel=True, emotion_tag=emotion_tag))
 
