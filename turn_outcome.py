@@ -47,8 +47,8 @@ def _append(path: Path, rec: dict) -> None:
     except OSError:
         now = time.monotonic()
         key = str(path)
-        last = _last_warn.get(key, 0.0)
-        if now - last >= _WARN_THROTTLE_S:
+        last = _last_warn.get(key)
+        if last is None or now - last >= _WARN_THROTTLE_S:
             _last_warn[key] = now
             ident = rec.get("turn_key") or rec.get("turn_id")
             logger.warning(f"[TurnOutcome] 寫檔失敗 path={path} turn_key={ident}")

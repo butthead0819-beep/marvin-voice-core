@@ -47,7 +47,7 @@ from cogs.voice_controller_system_loops import SystemLoopsMixin
 from cogs.voice_controller_state_proxy import StateProxyMixin
 from cogs.voice_controller_music_proxy import MusicProxyMixin
 from cogs.voice_controller_gap_notify import GapNotifyMixin
-from cogs.voice_controller_wake_session import WakeSessionMixin
+from cogs.voice_controller_wake_session import WakeSessionMixin, _STORM_CLEAR_QUIET  # 風暴消散靜默秒數（與接受喚醒計數共用一份）
 from cogs.voice_controller_turn_outcome import TurnOutcomeMixin
 import turn_outcome
 from turn_outcome import gate_reason, discovered_from_reason, turn_route
@@ -1437,7 +1437,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 2. 或是 3 秒內該玩家已經觸發過喚醒 (防止 STT 拆句導致雙重喚醒)
         last_wake = getattr(self, "last_wake_time", {}).get(speaker, 0)
 
-        _STORM_CLEAR_QUIET = 12.0   # 連續 12s 無新喚醒 → 風暴消散
         _RESPONSE_LOCK_MAX = 30.0   # Response Lock 超時保護（LLM + TTS 最長等待）
 
         # 🔒 [Response Lock] 已接受喚醒、回應尚未送達前，壓抑所有快速喚醒

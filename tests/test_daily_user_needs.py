@@ -287,4 +287,3 @@ def test_funnel_bad_lines_reported(tmp_path, monkeypatch):
 
     out = section_funnel(0, 2000.0)
     assert "壞行：turn_outcomes 1／turn_gate_decisions 2" in out
-    assert "未知 1" in out

@@ -245,3 +245,17 @@ async def test_turn_route_decorator_marks_route_and_preserves_return(tmp_path, m
     await turn_outcome.run_turn(body(), speaker="A", ts=1.0, discovered_by="wake_word")
     recs = _read_jsonl(path)
     assert recs[0]["route"] == "legacy:status_keywords"
+
+
+def test_append_oserror_warns_even_right_after_boot(tmp_path, monkeypatch, caplog):
+    """monotonic 時鐘從開機起算：開機 <1 小時的第一次寫檔失敗也要 warning，不能被節流吞掉。"""
+    import logging as _logging
+
+    monkeypatch.setattr(turn_outcome, "_last_warn", {})
+    monkeypatch.setattr(turn_outcome.time, "monotonic", lambda: 10.0)
+    (tmp_path / "not_a_dir").write_text("x")
+
+    with caplog.at_level(_logging.WARNING, logger="turn_outcome"):
+        turn_outcome._append(tmp_path / "not_a_dir" / "out.jsonl", {"turn_key": "A@1.000"})
+
+    assert len([r for r in caplog.records if r.name == "turn_outcome"]) == 1

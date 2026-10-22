@@ -158,8 +158,10 @@ def test_note_gate_decision_track_mapping(tmp_path, monkeypatch):
     vc._note_gate_decision("showay", 1.0, "A", False, True, "text", None)
     vc._note_gate_decision("showay", 2.0, None, True, False, "guard_echo", 0.1)
     vc._note_gate_decision("showay", 3.0, "B", False, False, "wake_word", 0.9)
+    vc._note_gate_decision("showay", 4.0, None, False, False, "wake_word", 0.9)
 
     recs = _read_jsonl(tmp_path / "gate.jsonl")
     assert recs[0]["track"] == "text"
     assert recs[1]["track"] == "wake_check"
     assert recs[2]["track"] == "B"
+    assert recs[3]["track"] == "A"

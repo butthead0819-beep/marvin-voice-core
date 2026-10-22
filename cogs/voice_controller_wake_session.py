@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 _STORM_WINDOW = 60.0   # 計數窗口（從 _apply_wake_guards 搬來，供 _record_accepted_wake 用）
 _STORM_LIMIT = 4       # 窗口內喚醒次數門檻
-_STORM_CLEAR_QUIET = 12.0   # 風暴啟動 log 訊息需要這個數字；隨 _record_accepted_wake 一起搬成模組常數
+_STORM_CLEAR_QUIET = 12.0   # 連續 12s 無新喚醒 → 風暴消散（_apply_wake_guards 也用這一份）
 
 WAKE_SESSION_ACK_PATH = "assets/wake_session_open.wav"
 _ACK_POLL_S = 0.1
