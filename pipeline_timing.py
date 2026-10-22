@@ -87,7 +87,7 @@ def build_timing_row(d: dict | None, speaker: str, text: str, suffix: str = "") 
         return None
     ep = d["endpoint"]
     stages = {s: round((d[s] - ep) * 1000, 1) for s in _STAGES if s in d}
-    total_end = d.get("intent_dispatched", max(d.values()) if stages else ep)
+    total_end = d.get("intent_dispatched", max((v for v in d.values() if isinstance(v, float)), default=ep) if stages else ep)  # note() 會放字串（llm_route），只取時間戳
     route = suffix.strip()
     if route.startswith("route="):
         route = route[len("route="):]

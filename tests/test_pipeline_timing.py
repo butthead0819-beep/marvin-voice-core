@@ -295,3 +295,12 @@ def test_restore_with_none_is_noop():
 
     contextvars.Context().run(isolated)
     assert result["snap"] is None, "restore(None) 不該建出空 dict"
+
+
+def test_build_timing_row_ignores_noted_string_values():
+    """note() 放進 dict 的字串（llm_route）不可讓 STAGE_TIMING 的 max() 丟 TypeError（E1 回歸）。"""
+    import pipeline_timing
+    d = {"endpoint": 100.0, "stt_done": 100.4, "llm_route": "cloud"}
+    row = pipeline_timing.build_timing_row(d, "alice", "hello")
+    assert row["stages"] == {"stt_done": 400.0}
+    assert row["total_ms"] == 400.0

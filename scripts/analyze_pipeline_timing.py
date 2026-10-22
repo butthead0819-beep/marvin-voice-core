@@ -60,7 +60,8 @@ def analyze(rows: list[dict], days: int, min_samples: int) -> str:
     now = max(r.get("ts", 0) for r in rows)
     cut = now - days * 86400
     win = [r for r in rows
-           if r.get("ts", 0) >= cut and r.get("speaker") not in _TEST_SPEAKERS]
+           if r.get("ts", 0) >= cut and r.get("speaker") not in _TEST_SPEAKERS
+           and r.get("kind") != "llm"]   # E1 的 [LLM_STAGE] 列是另一條量測軸，不算派發筆數
     n = len(win)
     span_lo = datetime.datetime.fromtimestamp(min(r["ts"] for r in win)).date() if win else "—"
     span_hi = datetime.datetime.fromtimestamp(now).date()
