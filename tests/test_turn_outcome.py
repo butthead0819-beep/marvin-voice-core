@@ -203,6 +203,8 @@ async def test_mark_route_after_turn_ends_is_noop(tmp_path, monkeypatch):
 
     recs = _read_jsonl(path)
     assert recs[0]["route"] == "inside"
+    # 同一個 task 裡 turn 結束後不能殘留「目前回合」，否則之後的 mark/note 會寫進舊紀錄
+    assert turn_outcome._current.get() is None
 
 
 def test_mark_route_and_note_winner_outside_turn_do_not_raise():
