@@ -90,6 +90,7 @@ async def test_query_worker_loop_calls_locked_version():
     vc = VoiceController.__new__(VoiceController)
     vc.query_queue = asyncio.Queue()
     vc._process_query_task_locked = AsyncMock(side_effect=asyncio.CancelledError())
+    vc._process_query_task = AsyncMock(side_effect=asyncio.CancelledError())  # 走錯版本也會結束迴圈，不會卡住
     await vc.query_queue.put({"speaker": "A"})
 
     await vc._query_worker_loop()
@@ -149,3 +150,22 @@ def test_response_lock_released_after_query_done_lets_next_speaker_fast_wake(mon
     is_fast_b, is_echo_b = _call_guards(vc, "B", 105.0, True)
     assert is_fast_b is True
     assert is_echo_b is False
+
+
+# ── 接線：SpeakerDispatcher 與 WakeShortcut（無法輕量行為測試，照 test_wake_session_wiring 的原始碼斷言寫法）──
+def _vc_source():
+    import inspect
+    import cogs.voice_controller as vcmod
+    return inspect.getsource(vcmod)
+
+
+def test_speaker_dispatcher_wired_to_locked_version():
+    src = _vc_source()
+    assert "SpeakerDispatcher(self._process_query_task_locked)" in src
+    assert "SpeakerDispatcher(self._process_query_task)" not in src
+
+
+def test_wake_shortcut_dispatch_wrapped_with_release():
+    src = _vc_source()
+    assert "asyncio.create_task(self._release_lock_after(dispatch_with_feedback(" in src
+    assert "asyncio.create_task(dispatch_with_feedback(" not in src
