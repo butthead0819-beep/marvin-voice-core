@@ -170,6 +170,14 @@ class WakeSessionMixin:
             self._wake_burst_times.clear()
             logger.warning(f"⚠️ [Wake Storm] {_STORM_WINDOW:.0f}s 內喚醒 {_STORM_LIMIT} 次，啟動風暴壓抑（{_STORM_CLEAR_QUIET:.0f}s 靜默後自動解除）")
 
+    def in_conversation_window(self, speaker, now) -> bool:
+        """唯讀接點（意圖漏斗 eng review D3=C）：speaker 是否在對談窗內。
+
+        對談極速通道判斷「是否在對談窗」只准用這個；VAD（voice_recv 執行緒）也會呼叫，
+        所以只讀、不改狀態、不建 task。漏斗 3b 換成 ConversationState 時只改這裡的實作。"""
+        session = getattr(self, "_wake_session", None)
+        return session is not None and session.is_window_open(speaker, now)
+
     def _wake_session_on_accept(self, speaker, now) -> None:
         session = getattr(self, "_wake_session", None)
         if session is not None:

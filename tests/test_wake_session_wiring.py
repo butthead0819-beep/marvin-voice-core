@@ -638,3 +638,45 @@ def test_stream_response_mid_song_speak_has_address_prefix():
     from cogs.voice_controller import VoiceController
     src = inspect.getsource(VoiceController._stream_response)
     assert "self.speak(self._reply_address_prefix(speaker, full_text) + full_text" in src
+
+
+# ── in_conversation_window：唯讀接點，VAD（voice_recv）執行緒也會呼叫 ──────────
+
+def test_in_conversation_window_without_session_is_false():
+    cog = _FakeCog()
+    cog._wake_session = None
+    assert cog.in_conversation_window("A", 1.0) is False
+
+
+def test_in_conversation_window_delegates_to_session():
+    from wake_session import WakeSession
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(1.0)
+    assert cog.in_conversation_window("A", 2.0) is True
+    assert cog.in_conversation_window("B", 2.0) is False
+
+
+def test_in_conversation_window_callable_from_non_loop_thread():
+    import threading
+    from wake_session import WakeSession
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(1.0)
+    before = dict(vars(cog._wake_session))
+    out = {}
+
+    def _worker():
+        try:
+            out["v"] = cog.in_conversation_window("A", 2.0)
+        except BaseException as e:   # noqa: BLE001 — 要把任何例外帶回主執行緒斷言
+            out["err"] = e
+
+    t = threading.Thread(target=_worker)
+    t.start()
+    t.join(5)
+    assert "err" not in out
+    assert out["v"] is True
+    assert vars(cog._wake_session) == before
