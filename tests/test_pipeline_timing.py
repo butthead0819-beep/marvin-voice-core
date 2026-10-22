@@ -174,6 +174,110 @@ async def test_restore_carries_timing_across_queue_boundary():
     assert "intentdispatched=" in out, "consumer side mark 沒打進來"
 
 
+# ── E1：主 LLM 路徑分段打點（mark_once / note / detach / build_llm_row / emit_llm） ──
+
+def test_mark_once_does_not_overwrite_second_call():
+    import pipeline_timing
+
+    pipeline_timing.start()
+    pipeline_timing.mark_once("llm_start")
+    first = pipeline_timing.snapshot()["llm_start"]
+    pipeline_timing.mark_once("llm_start")
+    second = pipeline_timing.snapshot()["llm_start"]
+    assert first == second
+
+
+def test_mark_once_silent_without_context():
+    import pipeline_timing
+    pipeline_timing.mark_once("llm_start")  # 不該炸
+
+
+def test_note_writes_llm_route():
+    import pipeline_timing
+
+    pipeline_timing.start()
+    pipeline_timing.note("llm_route", "cloud")
+    assert pipeline_timing.snapshot()["llm_route"] == "cloud"
+
+
+def test_detach_stops_further_marks_on_original_dict():
+    import pipeline_timing
+
+    d = pipeline_timing.start()
+    pipeline_timing.detach()
+    pipeline_timing.mark_once("llm_start")
+    pipeline_timing.note("llm_route", "cloud")
+    assert "llm_start" not in d
+    assert "llm_route" not in d
+    assert pipeline_timing.snapshot() is None
+
+
+def test_build_llm_row_literal_values():
+    import pipeline_timing
+
+    d = {
+        "endpoint": 100.0,
+        "llm_start": 100.5,
+        "first_chunk": 101.0,
+        "first_sentence": 101.2,
+        "llm_route": "cloud",
+    }
+    row = pipeline_timing.build_llm_row(d, "狗與露")
+    assert row["kind"] == "llm"
+    assert row["speaker"] == "狗與露"
+    assert row["route"] == "cloud"
+    assert row["stages"] == {"llm_start": 500.0, "first_chunk": 1000.0, "first_sentence": 1200.0}
+
+
+def test_build_llm_row_no_llm_start_is_prefetch():
+    import pipeline_timing
+
+    d = {"endpoint": 100.0, "dequeued": 100.1}
+    row = pipeline_timing.build_llm_row(d, "狗與露")
+    assert row["route"] == "prefetch"
+
+
+def test_build_llm_row_no_endpoint_is_none():
+    import pipeline_timing
+    assert pipeline_timing.build_llm_row({"llm_start": 1.0}, "狗與露") is None
+    assert pipeline_timing.build_llm_row(None, "狗與露") is None
+
+
+def test_emit_llm_prints_and_writes_jsonl(monkeypatch):
+    import pipeline_timing
+
+    pipeline_timing.start()
+    pipeline_timing.mark_once("llm_start")
+    pipeline_timing.mark_once("first_chunk")
+    pipeline_timing.note("llm_route", "cloud")
+
+    written = []
+    monkeypatch.setattr(pipeline_timing, "_append_timing_jsonl", written.append)
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        pipeline_timing.emit_llm("狗與露")
+    out = buf.getvalue()
+    assert "[LLM_STAGE]" in out
+    assert "speaker=狗與露" in out
+    assert "route=cloud" in out
+    assert len(written) == 1
+    assert written[0]["kind"] == "llm"
+
+
+def test_emit_llm_exception_does_not_raise(monkeypatch):
+    import pipeline_timing
+
+    pipeline_timing.start()
+    pipeline_timing.mark_once("llm_start")
+
+    def _boom(row):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(pipeline_timing, "_append_timing_jsonl", _boom)
+    pipeline_timing.emit_llm("狗與露")  # 不該炸
+
+
 def test_restore_with_none_is_noop():
     """consumer 沒拿到 timing dict 也別炸 — 老 queue item 沒 _timing 是常態。
 
@@ -191,3 +295,12 @@ def test_restore_with_none_is_noop():
 
     contextvars.Context().run(isolated)
     assert result["snap"] is None, "restore(None) 不該建出空 dict"
+
+
+def test_build_timing_row_ignores_noted_string_values():
+    """note() 放進 dict 的字串（llm_route）不可讓 STAGE_TIMING 的 max() 丟 TypeError（E1 回歸）。"""
+    import pipeline_timing
+    d = {"endpoint": 100.0, "stt_done": 100.4, "llm_route": "cloud"}
+    row = pipeline_timing.build_timing_row(d, "alice", "hello")
+    assert row["stages"] == {"stt_done": 400.0}
+    assert row["total_ms"] == 400.0

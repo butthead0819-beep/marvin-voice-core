@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import pytest
 
+import latency_tracker
 from latency_tracker import LatencyMarks
 
 
@@ -85,6 +86,35 @@ def test_new_wake_overwrites_pending_state():
     assert m.wake_ts == 200.0
     assert m.llm_start_ts is None
     assert m.first_sentence_ts is None
+
+
+# ── E1：mark_first_sentence 耦合 pipeline_timing.emit_llm ─────────────────────
+
+def test_mark_first_sentence_marks_and_emits(monkeypatch):
+    calls = []
+    monkeypatch.setattr(latency_tracker.pipeline_timing, "mark_once", lambda s: calls.append(("mark", s)))
+    monkeypatch.setattr(latency_tracker.pipeline_timing, "emit_llm", lambda spk: calls.append(("emit", spk)))
+
+    m = LatencyMarks()
+    m.mark_wake("Alice", now=100.0)
+    m.mark_llm_start(now=100.5)
+    d = m.mark_first_sentence(now=101.2)
+
+    assert ("mark", "first_sentence") in calls
+    assert ("emit", "Alice") in calls
+    assert d is not None  # 既有回傳語意不變
+
+
+def test_mark_first_sentence_emits_even_without_wake(monkeypatch):
+    calls = []
+    monkeypatch.setattr(latency_tracker.pipeline_timing, "mark_once", lambda s: calls.append(("mark", s)))
+    monkeypatch.setattr(latency_tracker.pipeline_timing, "emit_llm", lambda spk: calls.append(("emit", spk)))
+
+    m = LatencyMarks()
+    result = m.mark_first_sentence(now=101.0)
+
+    assert result is None  # 既有回傳語意不變：沒 wake 回 None
+    assert ("emit", "?") in calls  # m.speaker is None → "?"
 
 
 def test_full_cycle_end_to_end():

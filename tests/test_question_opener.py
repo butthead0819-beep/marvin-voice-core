@@ -66,6 +66,22 @@ async def test_opener_not_question_returns_false(monkeypatch):
     assert result is False
 
 
+@pytest.mark.asyncio
+async def test_opener_marks_start_and_done_even_on_early_not_question_exit():
+    """E1 打點：低信心喚醒等早退路徑（不呼叫 run_grounded_qa）也要標 opener_start/opener_done，
+    否則早退佔多數的 not_question case 會在分段時間裡看起來「沒進開場判斷」。"""
+    import pipeline_timing
+
+    pipeline_timing.start()
+    ctrl = MagicMock()
+    result = await try_question_opener(ctrl, _ctx("隨便聊聊", low_confidence_wake=True))
+
+    assert result is False
+    snap = pipeline_timing.snapshot()
+    assert "opener_start" in snap
+    assert "opener_done" in snap
+
+
 # ── 2. 剝喚醒詞前綴 ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

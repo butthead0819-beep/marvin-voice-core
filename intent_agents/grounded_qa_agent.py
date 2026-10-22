@@ -33,6 +33,7 @@ from intent_agents.constants import (
     MUSIC_PAUSE_KW, MUSIC_PLAY_KW, MUSIC_RESUME_KW, MUSIC_SKIP_KW, MUSIC_STOP_KW,
 )
 from intent_bus import IntentContext
+import pipeline_timing
 import turn_outcome
 
 logger = logging.getLogger(__name__)
@@ -588,24 +589,28 @@ async def try_question_opener(ctrl, ctx) -> bool:
     模型回「略」一律交回聊天（對談窗內也是——安靜會被當成沒在聽）。
     session 已進查詢模式（sticky）→ source=session_followup（連續對談 prompt），否則 question_opener。
     """
-    if getattr(ctx, "low_confidence_wake", False) is True:
-        return False
-    if getattr(ctx, "mode", "normal") not in GroundedQAAgent.mode_compatible:
-        return False
-    q = _WAKE_PREFIX_RE.sub("", (getattr(ctx, "query", "") or "").strip()).strip()
-    if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
-        return False
-    if len(_HAN_RE.findall(q)) < 2 or not _SESSION_QUESTION_RE.search(q):
-        return False
-    sticky_fn = getattr(ctrl, "_wake_session_grounded_sticky", None)
-    sticky = callable(sticky_fn) and sticky_fn(ctx.speaker) is True   # is True：MagicMock 回傳不算
-    source = "session_followup" if sticky else "question_opener"
-    status = await run_grounded_qa(ctrl, ctx.speaker, q, raw=getattr(ctx, "raw_text", "") or "",
-                                   source=source)
-    handled = status != "not_question"
-    if handled:
-        turn_outcome.mark_route("question_opener")
-    return handled
+    pipeline_timing.mark_once("opener_start")
+    try:
+        if getattr(ctx, "low_confidence_wake", False) is True:
+            return False
+        if getattr(ctx, "mode", "normal") not in GroundedQAAgent.mode_compatible:
+            return False
+        q = _WAKE_PREFIX_RE.sub("", (getattr(ctx, "query", "") or "").strip()).strip()
+        if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
+            return False
+        if len(_HAN_RE.findall(q)) < 2 or not _SESSION_QUESTION_RE.search(q):
+            return False
+        sticky_fn = getattr(ctrl, "_wake_session_grounded_sticky", None)
+        sticky = callable(sticky_fn) and sticky_fn(ctx.speaker) is True   # is True：MagicMock 回傳不算
+        source = "session_followup" if sticky else "question_opener"
+        status = await run_grounded_qa(ctrl, ctx.speaker, q, raw=getattr(ctx, "raw_text", "") or "",
+                                       source=source)
+        handled = status != "not_question"
+        if handled:
+            turn_outcome.mark_route("question_opener")
+        return handled
+    finally:
+        pipeline_timing.mark_once("opener_done")
 
 
 def maybe_dispatch_followup_supplement(
