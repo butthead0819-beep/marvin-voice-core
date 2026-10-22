@@ -10,6 +10,7 @@ session barge-in 接線測試（10/22）：
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -44,6 +45,7 @@ def _make_barge_fake(*, target="Alice", opened=True, speaking=True,
     # 讓後段「延遲嘲諷」早退，不污染斷言（照 test_tts_interrupt_device_path.py 的手法）
     fake.bot.voice_clients = []
     fake.bot.engine.conv_buffer.get_conversation_temperature.return_value = 2.0
+    fake._spawn_barge_watch = lambda *a: WakeSessionMixin._spawn_barge_watch(fake, *a)
     return fake
 
 
@@ -114,6 +116,32 @@ async def test_existing_unfinished_watcher_not_replaced():
     assert fake._barge_watch_task is old_task
     fake._barge_in_watch.assert_not_called()
     old_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_gate_called_from_sink_thread_schedules_watch_on_loop():
+    """prod 的 speech-start 回呼跑在 voice_recv PacketRouter 執行緒（非 event loop）：
+    閘門不能在那個執行緒直接 asyncio.create_task（RuntimeError: no running event loop），
+    要 call_soon_threadsafe 丟回 bot.loop 再建 watcher。"""
+    fake = _make_barge_fake(target="Alice")
+    fake.bot.loop = asyncio.get_running_loop()
+    fake._barge_in_watch = AsyncMock()
+    errors = []
+
+    def sink_thread():
+        try:
+            WakeSessionMixin._maybe_start_barge_watch(fake, "Alice", 42)
+        except Exception as e:   # noqa: BLE001
+            errors.append(e)
+
+    t = threading.Thread(target=sink_thread)
+    t.start()
+    t.join()
+    for _ in range(5):
+        await asyncio.sleep(0.01)
+    assert errors == []
+    fake._barge_in_watch.assert_called_once()
+    assert fake._barge_in_watch.call_args[0][:2] == ("Alice", 42)
 
 
 def test_handle_raw_speech_start_delegates_to_barge_gate():

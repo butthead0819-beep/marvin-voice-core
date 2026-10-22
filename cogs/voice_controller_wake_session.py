@@ -81,10 +81,21 @@ class WakeSessionMixin:
                 or self._tts_protected
                 or barge_in_shielded(getattr(self, '_tts_barge_shield_until', 0.0), time.time())):
             return
+        onset = time.time()
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # prod：speech-start 回呼跑在 voice_recv PacketRouter 執行緒，不能在這裡 create_task
+            self.bot.loop.call_soon_threadsafe(self._spawn_barge_watch, speaker, user_id, onset)
+            return
+        self._spawn_barge_watch(speaker, user_id, onset)
+
+    def _spawn_barge_watch(self, speaker, user_id, onset: float) -> None:
+        """在 event loop 上建 watcher task（同時只留一個）。"""
         task = getattr(self, "_barge_watch_task", None)
         if task is None or task.done():
             self._barge_watch_task = asyncio.create_task(
-                self._barge_in_watch(speaker, user_id, time.time()))
+                self._barge_in_watch(speaker, user_id, onset))
 
     def _marvin_tts_speaking(self) -> bool:
         mixer = getattr(self, "_mixer", None)
