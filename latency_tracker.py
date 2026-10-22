@@ -19,6 +19,8 @@ Stage 切點：
 """
 from __future__ import annotations
 
+import pipeline_timing
+
 
 class LatencyMarks:
     """Single-slot wake-cycle timestamp recorder."""
@@ -42,7 +44,17 @@ class LatencyMarks:
             self.llm_start_ts = now
 
     def mark_first_sentence(self, now: float) -> dict | None:
-        """第一個 sentence 到手。回傳 stage-1 latency dict，None=量測未完成。"""
+        """第一個 sentence 到手。回傳 stage-1 latency dict，None=量測未完成。
+
+        _stream_response 棘輪凍結、不收改動，但這是「第一句出來」唯一的呼叫點 ——
+        E1（主 LLM 路徑分段打點）的 first_sentence 標記 + [LLM_STAGE] 落盤只能接在
+        這裡，因此允許 LatencyMarks（本該是純計時類別）耦合 pipeline_timing。
+        """
+        try:
+            pipeline_timing.mark_once("first_sentence")
+            pipeline_timing.emit_llm(self.speaker or "?")
+        except Exception:
+            pass
         if self.wake_ts is None or self.llm_start_ts is None:
             return None
         self.first_sentence_ts = now

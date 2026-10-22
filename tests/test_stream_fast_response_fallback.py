@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import gemini_router_llm as grl
+import pipeline_timing
 
 
 def _make_fake_router(stream_cloud, stream_llm):
@@ -93,3 +94,64 @@ async def test_both_cloud_and_fallback_fail_keeps_original_error_line():
     text = await _collect(fake)
 
     assert "宇宙的熵值" in text
+
+
+# ── E1：主 LLM 路徑打點（llm_route / first_chunk） ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_cloud_success_marks_cloud_route_and_first_chunk():
+    async def _cloud(*a, **kw):
+        yield "你好"
+
+    async def _unused_llm(*a, **kw):
+        yield "不該被呼叫"  # pragma: no cover
+
+    fake = _make_fake_router(_cloud, _unused_llm)
+    pipeline_timing.start()
+    await _collect(fake)
+
+    snap = pipeline_timing.snapshot()
+    assert snap["llm_route"] == "cloud"
+    assert "llm_start" in snap
+    assert "first_chunk" in snap
+
+
+@pytest.mark.asyncio
+async def test_cloud_fails_before_any_chunk_marks_fallback_route():
+    async def _raising_cloud(*a, **kw):
+        raise RuntimeError("503")
+        yield  # pragma: no cover
+
+    async def _fallback_llm(*a, **kw):
+        yield "備援"
+
+    fake = _make_fake_router(_raising_cloud, _fallback_llm)
+    pipeline_timing.start()
+    await _collect(fake)
+
+    snap = pipeline_timing.snapshot()
+    assert snap["llm_route"] == "cloud→fallback"
+    assert "first_chunk" in snap
+
+
+@pytest.mark.asyncio
+async def test_speculative_response_does_not_leak_llm_start_into_caller_dict():
+    """_speculative_response 是獨立 prefetch task，呼叫前 detach() 讓它不寫進
+    呼叫端（主路徑）的 timing dict，否則預取會把 llm_start/first_chunk 誤標進主路徑量測。"""
+    import asyncio
+
+    async def _cloud(*a, **kw):
+        yield "預取內容"
+
+    async def _unused_llm(*a, **kw):
+        yield "不該被呼叫"  # pragma: no cover
+
+    fake = _make_fake_router(_cloud, _unused_llm)
+    fake._prefetch_semaphore = asyncio.Semaphore(1)
+
+    caller_dict = pipeline_timing.start()
+    result = await fake._speculative_response("A", "測試訊息")
+
+    assert result == "預取內容"
+    assert "llm_start" not in caller_dict
+    assert "first_chunk" not in caller_dict

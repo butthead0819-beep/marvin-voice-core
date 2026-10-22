@@ -10,6 +10,7 @@ from duckduckgo_search import DDGS
 from llm_json_compat import ensure_json_in_messages
 from utterance_budget import environment_directive
 from phrase_cooldown import record as _phrase_record
+import pipeline_timing
 
 logger = logging.getLogger(__name__)
 
@@ -718,6 +719,7 @@ class GeminiRouterLLMMixin:
         try:
             if self.provider == "gemini":
                 await self._acquire_cloud_rpm_slot()
+                pipeline_timing.mark_once("rpm_done")
                 config = genai.types.GenerateContentConfig(
                     system_instruction=system_prompt,
                     temperature=temperature,
@@ -888,6 +890,7 @@ class GeminiRouterLLMMixin:
 
     async def stream_fast_response(self, speaker: str, query: str, history: list = None, online_members: list[str] = None, temperature: float = None, emotion_tag: str = "neutral", stream_active: bool = False, game_mode: bool = False, hot_chat: bool = False):
         """[Fast System] 極速回應流式版本：專為 TTS 串流橋接設計"""
+        pipeline_timing.mark_once("llm_start")
         # 🔒 [防線②] 記憶注入名單唯一建構點——不變量由 test_speaker_isolation 守
         from speaker_isolation import present_speakers
         target_speakers = present_speakers(speaker, online_members)
@@ -940,6 +943,7 @@ class GeminiRouterLLMMixin:
         if search_query:
             yield "__SEARCHING__"
             search_results = await self._execute_web_search(search_query)
+            pipeline_timing.mark_once("search_done")
             if search_results:
                 search_context = f"\n{search_results}"
 
@@ -953,6 +957,7 @@ class GeminiRouterLLMMixin:
                     user_prompt = _ctx + "\n" + user_prompt
             except Exception as _ci_err:
                 logger.warning(f"[ContextInjector] enrich 失敗，略過: {_ci_err}")
+        pipeline_timing.mark_once("ctx_done")
 
         self.memory.adjust_bias(speaker, +1)
 
@@ -966,9 +971,11 @@ class GeminiRouterLLMMixin:
             use_cloud = self.provider == "gemini" and not self.is_exhausted and not self.budget.is_circuit_open()
             if use_cloud:
                 self._note_stream_model(speaker, "gemini/" + str(self.cleaner_model))
+                pipeline_timing.note("llm_route", "cloud")
                 try:
                     async for chunk in self._stream_cloud(system_prompt, user_prompt, temperature=temperature, model_override=self.cleaner_model, max_output_tokens=220):
                         full_response.append(chunk)
+                        pipeline_timing.mark_once("first_chunk")
                         yield chunk
                 except Exception as cloud_err:
                     if full_response:   # 已經念出一半，不能換模型重講
@@ -976,13 +983,17 @@ class GeminiRouterLLMMixin:
                     # 10/21：雲端 503 一個字都沒出就直接念「宇宙的熵值」錯誤台詞 → 改走 stream_llm 備援（Groq 優先）
                     logger.warning(f"⚠️ [Stream Fast Response] 雲端未出字即失敗（{str(cloud_err)[:80]}）→ 改走 stream_llm 備援")
                     self._note_stream_model(speaker, "?")
+                    pipeline_timing.note("llm_route", "cloud→fallback")
                     async for chunk in self.stream_llm(system_prompt, user_prompt, speaker=speaker, temperature=temperature, max_output_tokens=220):
                         full_response.append(chunk)
+                        pipeline_timing.mark_once("first_chunk")
                         yield chunk
                     self._note_stream_model(speaker, "雲端失敗→備援 " + self.stream_model_label(speaker))
             else:
+                pipeline_timing.note("llm_route", "stream_llm")
                 async for chunk in self.stream_llm(system_prompt, user_prompt, speaker=speaker, temperature=temperature, max_output_tokens=220):
                     full_response.append(chunk)
+                    pipeline_timing.mark_once("first_chunk")
                     yield chunk
 
             # 結算歷史
@@ -1060,6 +1071,7 @@ class GeminiRouterLLMMixin:
 
     async def _speculative_response(self, speaker: str, query: str, history: list = None) -> str:
         """[Phase 3] Drain stream_fast_response into a string for speculative prefetch."""
+        pipeline_timing.detach()
         async with self._prefetch_semaphore:
             chunks = []
             try:

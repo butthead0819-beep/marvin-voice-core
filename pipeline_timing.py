@@ -36,6 +36,12 @@ _timing: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "pipeline_timing", default=None
 )
 
+# E1：主 LLM 路徑分段打點 stage 清單（IntentBus 結束 → 問句開場 → 主 LLM 組 prompt →
+# 雲端首字 → 第一句），跟 _STAGES（VAD→STT→Cleaner→Intent）是兩條獨立量測軸，
+# 各自的 emit() / emit_llm() 分開印行、分開落 jsonl（kind 欄區分）。
+_LLM_STAGES = ("dequeued", "opener_start", "opener_done", "llm_start", "ctx_done",
+               "search_done", "rpm_done", "first_chunk", "first_sentence")
+
 
 def start() -> dict:
     """Begin a new timing record at the current async frame. Idempotent per task."""
@@ -49,6 +55,26 @@ def mark(stage: str) -> None:
     d = _timing.get()
     if d is not None:
         d[stage] = time.monotonic()
+
+
+def mark_once(stage: str) -> None:
+    """同 mark，但已有該 stage 就不覆蓋（多個 return 路徑都呼叫也只記第一次）。"""
+    d = _timing.get()
+    if d is not None and stage not in d:
+        d[stage] = time.monotonic()
+
+
+def note(key: str, value: str) -> None:
+    """記一個非時間戳欄位（目前只有 llm_route）；無 context no-op。"""
+    d = _timing.get()
+    if d is not None:
+        d[key] = value
+
+
+def detach() -> None:
+    """讓目前 task 之後的 mark/mark_once 不再寫進共用 dict（給 speculative prefetch
+    用：它是自己的 task，不該把 llm_start/first_chunk 寫進主路徑那份 timing dict）。"""
+    _timing.set(None)
 
 
 def build_timing_row(d: dict | None, speaker: str, text: str, suffix: str = "") -> dict | None:
@@ -113,6 +139,48 @@ def emit(speaker: str, text: str, suffix: str = "") -> None:
     row = build_timing_row(d, speaker, text, suffix)
     if row is not None:
         _append_timing_jsonl(row)
+
+
+def build_llm_row(d: dict | None, speaker: str) -> dict | None:
+    """純函式：主 LLM 路徑 timing dict → 結構化 jsonl row（無 context / 無 endpoint 回 None）。
+
+    route 來源：d["llm_route"]（note() 寫入的 "cloud" / "cloud→fallback" / "stream_llm"）；
+    沒有 llm_route 且沒有 llm_start → 這段 timing 其實是 speculative prefetch 殘留
+    （detach() 本該擋掉，雙重保險）→ "prefetch"；有 llm_start 但沒 llm_route → "?"。
+    """
+    if d is None or "endpoint" not in d:
+        return None
+    ep = d["endpoint"]
+    route = d.get("llm_route") or ("prefetch" if "llm_start" not in d else "?")
+    return {
+        "ts": time.time(),
+        "kind": "llm",
+        "speaker": speaker,
+        "route": route,
+        "stages": {s: round((d[s] - ep) * 1000, 1) for s in _LLM_STAGES if s in d},
+    }
+
+
+def emit_llm(speaker: str) -> None:
+    """Print 一行 [LLM_STAGE] + append jsonl（kind=llm）。遙測絕不可炸斷 dispatch。"""
+    try:
+        d = _timing.get()
+        row = build_llm_row(d, speaker)
+        if row is None:
+            return
+        ep = d["endpoint"]
+        parts = []
+        for s in _LLM_STAGES:
+            if s in d:
+                tag = s.replace("_", "")
+                parts.append(f"{tag}={(d[s] - ep) * 1000:.0f}ms")
+        print(
+            f"[LLM_STAGE] speaker={speaker} route={row['route']} " + " ".join(parts),
+            flush=True,
+        )
+        _append_timing_jsonl(row)
+    except Exception:
+        pass
 
 
 def snapshot() -> dict | None:
