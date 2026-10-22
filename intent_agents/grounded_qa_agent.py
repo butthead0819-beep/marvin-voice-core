@@ -579,39 +579,6 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     return "answered"
 
 
-def question_opener_query(ctx) -> str | None:
-    """這句喚醒句是否該交給問句開場（3.5-flash）：是 → 回剝掉喚醒詞的 query，否 → None。
-
-    純函式、零 IO。try_question_opener 與 IntentBus._maybe_rescue（像問句就跳過 Audio Rescue）共用，
-    兩邊條件必須一致——否則會出現「跳過了 rescue、opener 又不接」直接掉進主聊天。
-    """
-    if getattr(ctx, "low_confidence_wake", False) is True:
-        return None
-    if getattr(ctx, "mode", "normal") not in GroundedQAAgent.mode_compatible:
-        return None
-    q = _WAKE_PREFIX_RE.sub("", (getattr(ctx, "query", "") or "").strip()).strip()
-    if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
-        return None
-    if len(_HAN_RE.findall(q)) < 2 or not _SESSION_QUESTION_RE.search(q):
-        return None
-    return q
-
-
-# Audio Rescue 的主場（點歌 / 播放控制 / 音量）：句子沾到這些字就照樣先跑 rescue，不跳過。
-# 10/22：「希望下次可以找到好聽的歌」「呃 那個 下一手 什麼 的」（糊掉的下一首）都像問句，
-# 跳過 rescue 會被 3.5 判略丟去主聊天，指令就救不回來了。
-_RESCUE_DOMAIN_RE = re.compile(r"歌|首|曲|播|聽|音樂|音量|大聲|小聲|下一|上一|暫停|繼續|跳過|切")
-
-
-def should_skip_rescue(ctx) -> bool:
-    """IntentBus._maybe_rescue 用：像問句且不沾 rescue 主場 → 跳過 Audio Rescue 交給問句開場。
-
-    條件是 question_opener_query 的子集（跳過的一定會被 try_question_opener 接），不會漏接。
-    """
-    q = question_opener_query(ctx)
-    return q is not None and not _RESCUE_DOMAIN_RE.search(q)
-
-
 async def try_question_opener(ctrl, ctx) -> bool:
     """IntentBus 沒人接的喚醒句 / 對談窗追問：像問句 → 3.5-flash 自己判斷要不要查。
 
@@ -620,8 +587,14 @@ async def try_question_opener(ctrl, ctx) -> bool:
     模型回「略」一律交回聊天（對談窗內也是——安靜會被當成沒在聽）。
     session 已進查詢模式（sticky）→ source=session_followup（連續對談 prompt），否則 question_opener。
     """
-    q = question_opener_query(ctx)
-    if q is None:
+    if getattr(ctx, "low_confidence_wake", False) is True:
+        return False
+    if getattr(ctx, "mode", "normal") not in GroundedQAAgent.mode_compatible:
+        return False
+    q = _WAKE_PREFIX_RE.sub("", (getattr(ctx, "query", "") or "").strip()).strip()
+    if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
+        return False
+    if len(_HAN_RE.findall(q)) < 2 or not _SESSION_QUESTION_RE.search(q):
         return False
     sticky_fn = getattr(ctrl, "_wake_session_grounded_sticky", None)
     sticky = callable(sticky_fn) and sticky_fn(ctx.speaker) is True   # is True：MagicMock 回傳不算
