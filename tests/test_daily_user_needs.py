@@ -185,4 +185,105 @@ def test_polish_speak_tts_pushed_and_peak_hour(tmp_path, monkeypatch):
     assert "每小時最大 2" in out
     assert "True 1" in out
     assert "False 1" in out
-    assert "未知 1" in out
+
+
+# ── section_funnel：意圖漏斗 E3 ──────────────────────────────────────────────
+
+def test_funnel_no_files_shows_no_data(tmp_path, monkeypatch):
+    from scripts.daily_user_needs import section_funnel
+
+    monkeypatch.setattr("scripts.daily_user_needs.TURN_OUTCOMES", tmp_path / "no_outcomes.jsonl")
+    monkeypatch.setattr("scripts.daily_user_needs.GATE_DECISIONS", tmp_path / "no_gate.jsonl")
+
+    out = section_funnel(0, 2000.0)
+    assert "喚醒數：尚無資料" in out
+    assert "執行率：尚無資料" in out
+    assert "守衛擋下數：尚無資料" in out
+    assert "修正率：尚無資料" in out
+
+
+def test_funnel_counts_wake_and_execution_rate(tmp_path, monkeypatch):
+    from scripts.daily_user_needs import section_funnel
+
+    outcomes = tmp_path / "turn_outcomes.jsonl"
+    outcomes.write_text(
+        "\n".join(json.dumps(r) for r in [
+            {"turn_id": "A@1.000", "ts": 1.0, "speaker": "showay",
+             "discovered_by": "wake_word", "executed": True},
+            {"turn_id": "A@2.000", "ts": 2.0, "speaker": "showay",
+             "discovered_by": "wake_shortcut", "executed": True},
+            {"turn_id": "A@3.000", "ts": 3.0, "speaker": "showay",
+             "discovered_by": "wakeless", "executed": False},
+            {"turn_id": "測試@4.000", "ts": 4.0, "speaker": "測試",
+             "discovered_by": "wake_word", "executed": True},
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scripts.daily_user_needs.TURN_OUTCOMES", outcomes)
+    monkeypatch.setattr("scripts.daily_user_needs.GATE_DECISIONS", tmp_path / "no_gate.jsonl")
+
+    out = section_funnel(0, 2000.0)
+    assert "喚醒數：2" in out
+    assert "執行率：67%（2/3）" in out
+
+
+def test_funnel_dedups_outcomes_by_turn_id_keeps_last(tmp_path, monkeypatch):
+    """同一 turn_id 被重投（redispatch）寫了兩筆，去重保留檔案中最後一筆。"""
+    from scripts.daily_user_needs import section_funnel
+
+    outcomes = tmp_path / "turn_outcomes.jsonl"
+    outcomes.write_text(
+        "\n".join(json.dumps(r) for r in [
+            {"turn_id": "A@1.000", "ts": 1.0, "speaker": "showay",
+             "discovered_by": "wake_word", "executed": False},
+            {"turn_id": "A@1.000", "ts": 1.0, "speaker": "showay",
+             "discovered_by": "wake_word", "executed": True},
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scripts.daily_user_needs.TURN_OUTCOMES", outcomes)
+    monkeypatch.setattr("scripts.daily_user_needs.GATE_DECISIONS", tmp_path / "no_gate.jsonl")
+
+    out = section_funnel(0, 2000.0)
+    assert "執行率：100%（1/1）" in out
+
+
+def test_funnel_blocked_count_uses_group_representative_decision(tmp_path, monkeypatch):
+    """同一 turn_key 的多筆 gate decision 取代表（accept > block > ignore）；
+    preempt 不參與；只算 block 且 reason 以 guard_ 開頭。"""
+    from scripts.daily_user_needs import section_funnel
+
+    gate = tmp_path / "turn_gate_decisions.jsonl"
+    gate.write_text(
+        "\n".join(json.dumps(r) for r in [
+            {"ts": 1.0, "turn_key": "A@1.000", "speaker": "showay",
+             "decision": "block", "reason": "guard_echo"},
+            {"ts": 2.0, "turn_key": "B@2.000", "speaker": "showay",
+             "decision": "block", "reason": "guard_storm"},
+            {"ts": 2.5, "turn_key": "B@2.000", "speaker": "showay",
+             "decision": "accept", "reason": "wake_word"},
+            {"ts": 3.0, "turn_key": "C@3.000", "speaker": "showay",
+             "decision": "preempt", "reason": "guard_global"},
+        ]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("scripts.daily_user_needs.TURN_OUTCOMES", tmp_path / "no_outcomes.jsonl")
+    monkeypatch.setattr("scripts.daily_user_needs.GATE_DECISIONS", gate)
+
+    out = section_funnel(0, 2000.0)
+    # B 組代表筆是 accept（優先序贏過 block）；C 組 preempt 不參與；只剩 A 組 block 算一筆
+    assert "守衛擋下數：1" in out
+
+
+def test_funnel_bad_lines_reported(tmp_path, monkeypatch):
+    from scripts.daily_user_needs import section_funnel
+
+    outcomes = tmp_path / "turn_outcomes.jsonl"
+    outcomes.write_text("not json\n", encoding="utf-8")
+    gate = tmp_path / "turn_gate_decisions.jsonl"
+    gate.write_text("also not json\nalso not json\n", encoding="utf-8")
+    monkeypatch.setattr("scripts.daily_user_needs.TURN_OUTCOMES", outcomes)
+    monkeypatch.setattr("scripts.daily_user_needs.GATE_DECISIONS", gate)
+
+    out = section_funnel(0, 2000.0)
+    assert "壞行：turn_outcomes 1／turn_gate_decisions 2" in out

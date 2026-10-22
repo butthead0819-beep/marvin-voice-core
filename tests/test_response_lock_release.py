@@ -44,8 +44,9 @@ def test_release_response_lock_clears_when_pending(caplog):
 async def test_process_query_task_locked_releases_on_success():
     vc = _FakeVC(_wake_response_pending=True)
     vc._process_query_task = AsyncMock(return_value=None)
-    await vc._process_query_task_locked({"speaker": "A"})
-    vc._process_query_task.assert_awaited_once_with({"speaker": "A"})
+    task_data = {"speaker": "A", "timestamp": 100.0}
+    await vc._process_query_task_locked(task_data)
+    vc._process_query_task.assert_awaited_once_with(task_data)
     assert vc._wake_response_pending is False
 
 
@@ -54,7 +55,7 @@ async def test_process_query_task_locked_releases_on_exception():
     vc = _FakeVC(_wake_response_pending=True)
     vc._process_query_task = AsyncMock(side_effect=RuntimeError("boom"))
     with pytest.raises(RuntimeError):
-        await vc._process_query_task_locked({"speaker": "A"})
+        await vc._process_query_task_locked({"speaker": "A", "timestamp": 100.0})
     assert vc._wake_response_pending is False
 
 
@@ -137,7 +138,7 @@ def test_response_lock_released_after_query_done_lets_next_speaker_fast_wake(mon
     vc = _make_vc_for_guards()
 
     # A 喚醒被接受 → Response Lock 開
-    is_fast_a, _ = _call_guards(vc, "A", 100.0, True)
+    is_fast_a, _, _ = _call_guards(vc, "A", 100.0, True)
     assert is_fast_a is True
     assert vc._wake_response_pending is True
 
@@ -147,9 +148,10 @@ def test_response_lock_released_after_query_done_lets_next_speaker_fast_wake(mon
 
     # 5 秒後 B 喚醒（避開 2 秒 Global Wake Guard）：鎖已解，不該被 Response Lock 壓
     clock["t"] += 5.0
-    is_fast_b, is_echo_b = _call_guards(vc, "B", 105.0, True)
+    is_fast_b, is_echo_b, reason_b = _call_guards(vc, "B", 105.0, True)
     assert is_fast_b is True
     assert is_echo_b is False
+    assert reason_b == "wake_word"
 
 
 # ── 接線：SpeakerDispatcher 與 WakeShortcut（無法輕量行為測試，照 test_wake_session_wiring 的原始碼斷言寫法）──
@@ -167,5 +169,5 @@ def test_speaker_dispatcher_wired_to_locked_version():
 
 def test_wake_shortcut_dispatch_wrapped_with_release():
     src = _vc_source()
-    assert "asyncio.create_task(self._release_lock_after(dispatch_with_feedback(" in src
+    assert "asyncio.create_task(self._release_lock_after(turn_outcome.run_turn(dispatch_with_feedback(" in src
     assert "asyncio.create_task(dispatch_with_feedback(" not in src

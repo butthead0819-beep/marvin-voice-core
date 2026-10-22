@@ -33,6 +33,7 @@ from intent_agents.constants import (
     MUSIC_PAUSE_KW, MUSIC_PLAY_KW, MUSIC_RESUME_KW, MUSIC_SKIP_KW, MUSIC_STOP_KW,
 )
 from intent_bus import IntentContext
+import turn_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -601,7 +602,10 @@ async def try_question_opener(ctrl, ctx) -> bool:
     source = "session_followup" if sticky else "question_opener"
     status = await run_grounded_qa(ctrl, ctx.speaker, q, raw=getattr(ctx, "raw_text", "") or "",
                                    source=source)
-    return status != "not_question"
+    handled = status != "not_question"
+    if handled:
+        turn_outcome.mark_route("question_opener")
+    return handled
 
 
 def maybe_dispatch_followup_supplement(

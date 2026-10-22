@@ -26,8 +26,13 @@ from barge_in import (
 )
 from reply_address import address_prefix
 from tts_speak_policy import SpeakKind
+import turn_outcome
 
 logger = logging.getLogger(__name__)
+
+_STORM_WINDOW = 60.0   # 計數窗口（從 _apply_wake_guards 搬來，供 _record_accepted_wake 用）
+_STORM_LIMIT = 4       # 窗口內喚醒次數門檻
+_STORM_CLEAR_QUIET = 12.0   # 連續 12s 無新喚醒 → 風暴消散（_apply_wake_guards 也用這一份）
 
 WAKE_SESSION_ACK_PATH = "assets/wake_session_open.wav"
 _ACK_POLL_S = 0.1
@@ -72,7 +77,10 @@ class WakeSessionMixin:
     async def _process_query_task_locked(self, task_data: dict) -> None:
         """佇列處理一筆喚醒查詢；不論成功、被丟棄或例外，結束時都解鎖。"""
         try:
-            await self._process_query_task(task_data)
+            await turn_outcome.run_turn(
+                self._process_query_task(task_data),
+                speaker=task_data["speaker"], ts=task_data["timestamp"],
+                discovered_by=task_data.get("discovered_by") or "wake_word")
         finally:
             self._release_response_lock("query_done")
 
@@ -123,6 +131,10 @@ class WakeSessionMixin:
 
     def _followup_override(self, speaker, fusion, text="", is_wake_check=False) -> bool:
         """取代舊的 follow-up 判斷：WakeSession 對發起者免喚醒（優先）＋ 舊問句窗（D2-A 不變）。"""
+        return self._followup_override_kind(speaker, fusion, text, is_wake_check=is_wake_check) is not None
+
+    def _followup_override_kind(self, speaker, fusion, text="", is_wake_check=False) -> str | None:
+        """同 _followup_override，但回傳命中的窗口種類（給 TurnOutcome 記錄用）。"""
         session = getattr(self, "_wake_session", None)
         if session is not None and session.on_utterance(
                 speaker, time.time(), marvin_speaking=self._marvin_tts_speaking(),
@@ -130,11 +142,33 @@ class WakeSessionMixin:
             if session.barge_captured:
                 session.barge_captured = False
                 asyncio.create_task(self._barge_in_confirm(speaker, text))
-            return True        # log 已在核心印
+            return "window_session"        # log 已在核心印
         if not self._wake_response_pending and fusion is not None and fusion.is_open():
             logger.info(f"🎧 [Follow-Up] {speaker} captured in follow-up window (reason={getattr(fusion, '_open_reason', '?')})")
-            return True
-        return False
+            return "window_question"
+        return None
+
+    def _record_accepted_wake(self, speaker, segment_id, track, now) -> None:
+        """[Wake Guards] 接受喚醒時的副作用（自 _apply_wake_guards 抽出，行為不變）。"""
+        self.processed_wake_segments[segment_id] = track
+        self._last_global_wake_time = now
+        if not hasattr(self, "last_wake_time"): self.last_wake_time = {}
+        self.last_wake_time[speaker] = now
+        # 清理過期紀錄 (O(N) 雖然不完美但量少)
+        if len(self.processed_wake_segments) > 100:
+            self.processed_wake_segments = {k: v for k, v in list(self.processed_wake_segments.items())[-20:]}
+        # 🔒 [Response Lock] 記錄本次喚醒被接受
+        self._wake_response_pending = True
+        self._wake_accepted_time = now
+        self._wake_session_on_accept(speaker, now)
+        # 🛡️ [Wake Storm Guard] 計數：滾動窗口超限 → 啟動動態風暴壓抑
+        self._wake_burst_times.append(now)
+        self._wake_burst_times = [t for t in self._wake_burst_times if now - t < _STORM_WINDOW]
+        if len(self._wake_burst_times) >= _STORM_LIMIT:
+            self._storm_active = True
+            self._storm_last_wake_time = now
+            self._wake_burst_times.clear()
+            logger.warning(f"⚠️ [Wake Storm] {_STORM_WINDOW:.0f}s 內喚醒 {_STORM_LIMIT} 次，啟動風暴壓抑（{_STORM_CLEAR_QUIET:.0f}s 靜默後自動解除）")
 
     def _wake_session_on_accept(self, speaker, now) -> None:
         session = getattr(self, "_wake_session", None)
@@ -142,6 +176,7 @@ class WakeSessionMixin:
             session.on_wake_accepted(speaker, now)
 
     def _wake_session_on_ignored(self, speaker) -> None:
+        turn_outcome.mark_route("dropped:quality_gate")
         session = getattr(self, "_wake_session", None)
         if session is not None:
             session.on_ignored(speaker, time.time())

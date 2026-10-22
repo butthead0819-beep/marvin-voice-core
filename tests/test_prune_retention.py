@@ -146,6 +146,8 @@ def test_prune_retention_dry_run_and_apply(tmp_path):
             "--daily-dir", str(daily_dir),
             "--presence", str(presence_file),
             "--now", str(now),
+            "--turn-outcomes", str(tmp_path / "turn_outcomes.jsonl"),
+            "--gate-decisions", str(tmp_path / "turn_gate_decisions.jsonl"),
         ],
         capture_output=True,
         text=True,
@@ -178,6 +180,8 @@ def test_prune_retention_dry_run_and_apply(tmp_path):
             "--daily-dir", str(daily_dir),
             "--presence", str(presence_file),
             "--now", str(now),
+            "--turn-outcomes", str(tmp_path / "turn_outcomes.jsonl"),
+            "--gate-decisions", str(tmp_path / "turn_gate_decisions.jsonl"),
             "--apply",
         ],
         capture_output=True,
@@ -272,3 +276,60 @@ def test_prune_events_missing_table_returns_zero_matched(tmp_path):
     res = prune_events(conn, time.time(), apply=True)
     assert res == {"matched": 0, "oldest": None, "deleted": 0}
     conn.close()
+
+
+def test_prune_all_turn_outcomes_and_gate_decisions_30_day_retention(tmp_path):
+    """意圖漏斗步驟 1：turn_outcomes / turn_gate_decisions 30 天保留。"""
+    from scripts.prune_retention import prune_all
+
+    now = 1790800000.0
+    just_over_30d = now - 30 * 86400 - 1   # 剛好超過 30 天一秒 → 應刪
+    within_30d = now - 30 * 86400 + 1      # 30 天內一秒 → 應留
+
+    turn_outcomes = tmp_path / "turn_outcomes.jsonl"
+    turn_outcomes.write_text(
+        "\n".join(json.dumps(r) for r in [
+            {"ts": just_over_30d, "turn_id": "old@1"},
+            {"ts": within_30d, "turn_id": "new@1"},
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    gate_decisions = tmp_path / "turn_gate_decisions.jsonl"
+    gate_decisions.write_text(
+        "\n".join(json.dumps(r) for r in [
+            {"ts": just_over_30d, "turn_key": "old@1"},
+            {"ts": within_30d, "turn_key": "new@1"},
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    summary = prune_all(
+        db_path=tmp_path / "no.db",
+        daily_dir=tmp_path / "no_daily",
+        presence_path=tmp_path / "no_presence.jsonl",
+        now=now,
+        apply=True,
+        turn_outcomes_path=turn_outcomes,
+        gate_decisions_path=gate_decisions,
+    )
+
+    assert summary["turn_outcomes"]["deleted"] == 1
+    assert summary["turn_gate_decisions"]["deleted"] == 1
+    remaining = [json.loads(l) for l in turn_outcomes.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert [r["turn_id"] for r in remaining] == ["new@1"]
+    remaining_gate = [json.loads(l) for l in gate_decisions.read_text(encoding="utf-8").splitlines() if l.strip()]
+    assert [r["turn_key"] for r in remaining_gate] == ["new@1"]
+
+
+def test_prune_all_turn_outcomes_none_path_returns_zero(tmp_path):
+    from scripts.prune_retention import prune_all
+
+    summary = prune_all(
+        db_path=tmp_path / "no.db",
+        daily_dir=tmp_path / "no_daily",
+        presence_path=tmp_path / "no_presence.jsonl",
+        now=1790800000.0,
+        apply=True,
+    )
+    assert summary["turn_outcomes"] == {"matched": 0, "oldest": None, "deleted": 0}
+    assert summary["turn_gate_decisions"] == {"matched": 0, "oldest": None, "deleted": 0}
