@@ -1570,7 +1570,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if is_complete and not heuristic_triggered:
             if hasattr(self.bot, "router") and hasattr(self.bot.router, "clean_stt_text"):
                 try:
-                    res = await self.bot.router.clean_stt_text(combined_text)
+                    res = await self._etd_semantic_check(speaker, combined_text)
                     remember_etd(self, speaker, combined_text, res)
                     if isinstance(res, dict) and "is_complete" in res:
                         is_complete = res["is_complete"]
