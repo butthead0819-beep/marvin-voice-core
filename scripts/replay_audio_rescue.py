@@ -91,6 +91,11 @@ def _build_agents():
     from intent_agents.find_song_agent import FindSongAgent
     from intent_agents.joke_request_agent import JokeRequestAgent
     from intent_agents.queue_control_agent import QueueControlAgent
+    from intent_agents.now_playing_agent import NowPlayingAgent
+    from intent_agents.current_album_agent import CurrentAlbumAgent
+    from intent_agents.event_recall_agent import EventRecallAgent
+    from intent_agents.song_feedback_agent import SongFeedbackAgent
+    from intent_agents.taste_correction_agent import TasteCorrectionAgent
 
     ctrl = SimpleNamespace(stream_mode=True, radio_mode=True)
     return {
@@ -98,7 +103,8 @@ def _build_agents():
         for a in (
             GroundedQAAgent(ctrl), VolumeAgent(ctrl), PlaybackControlAgent(ctrl),
             MusicAgentV2(ctrl), FindSongAgent(ctrl), JokeRequestAgent(ctrl),
-            QueueControlAgent(ctrl),
+            QueueControlAgent(ctrl), NowPlayingAgent(ctrl), CurrentAlbumAgent(ctrl),
+            EventRecallAgent(ctrl), SongFeedbackAgent(ctrl), TasteCorrectionAgent(ctrl),
         )
     }
 
