@@ -212,9 +212,13 @@ async def test_barge_in_watch_cuts_then_plays_ack(monkeypatch):
 
     fake, sink = _make_watch_fake()
     sink.user_last_spoken_time[7] = 0.0
+    chime = MagicMock()
+    chime.done.return_value = False
+    fake._wake_session_ack_task = chime   # 開窗提示音還在等 → 切的時候要取消
 
     await WakeSessionMixin._barge_in_watch(fake, "Alice", 7, 0.0)
 
+    chime.cancel.assert_called_once()
     fake._mixer.clear_tts.assert_called_once()
     assert fake._tts_interrupted is True
     assert fake._reply_gen == 1
