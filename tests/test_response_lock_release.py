@@ -129,7 +129,10 @@ def _call_guards(vc, speaker, now, is_fast):
                                   fusion, "voice", 0.9, 0.8)
 
 
-def test_response_lock_released_after_query_done_lets_next_speaker_fast_wake():
+def test_response_lock_released_after_query_done_lets_next_speaker_fast_wake(monkeypatch):
+    import cogs.voice_controller as vcmod
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(vcmod.time, "time", lambda: clock["t"])
     vc = _make_vc_for_guards()
 
     # A 喚醒被接受 → Response Lock 開
@@ -141,7 +144,8 @@ def test_response_lock_released_after_query_done_lets_next_speaker_fast_wake():
     vc._release_response_lock("query_done")
     assert vc._wake_response_pending is False
 
-    # 5 秒後 B 喚醒：鎖已解，不該被 Response Lock 壓
+    # 5 秒後 B 喚醒（避開 2 秒 Global Wake Guard）：鎖已解，不該被 Response Lock 壓
+    clock["t"] += 5.0
     is_fast_b, is_echo_b = _call_guards(vc, "B", 105.0, True)
     assert is_fast_b is True
     assert is_echo_b is False
