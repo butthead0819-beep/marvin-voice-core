@@ -293,7 +293,7 @@ def test_apply_wake_guards_accepted_wake_arms_session():
     """真 VoiceController._apply_wake_guards：接受喚醒 → session arm 給該 speaker。"""
     from tests.test_wake_guards_unit import _make_vc
     vc = _make_vc(_wake_session=WakeSession(), _mixer=None)
-    is_fast, _ = vc._apply_wake_guards(
+    is_fast, _, _ = vc._apply_wake_guards(
         "A", "馬文查周杰倫新歌", time.time(), "A", True,
         None, None, None, None)
     assert is_fast is True
@@ -425,7 +425,7 @@ def test_apply_wake_guards_closing_text_ends_listening_session():
     session.on_wake_accepted("A", time.time())
     session.on_replied(time.time())
     vc = _make_vc(_wake_session=session, _mixer=None)
-    is_fast, _ = vc._apply_wake_guards(
+    is_fast, _, _ = vc._apply_wake_guards(
         "A", "謝謝", time.time(), "A", False,
         None, None, None, None)
     assert is_fast is False

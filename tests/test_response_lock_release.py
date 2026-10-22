@@ -44,8 +44,9 @@ def test_release_response_lock_clears_when_pending(caplog):
 async def test_process_query_task_locked_releases_on_success():
     vc = _FakeVC(_wake_response_pending=True)
     vc._process_query_task = AsyncMock(return_value=None)
-    await vc._process_query_task_locked({"speaker": "A"})
-    vc._process_query_task.assert_awaited_once_with({"speaker": "A"})
+    task_data = {"speaker": "A", "timestamp": 100.0}
+    await vc._process_query_task_locked(task_data)
+    vc._process_query_task.assert_awaited_once_with(task_data)
     assert vc._wake_response_pending is False
 
 
@@ -54,7 +55,7 @@ async def test_process_query_task_locked_releases_on_exception():
     vc = _FakeVC(_wake_response_pending=True)
     vc._process_query_task = AsyncMock(side_effect=RuntimeError("boom"))
     with pytest.raises(RuntimeError):
-        await vc._process_query_task_locked({"speaker": "A"})
+        await vc._process_query_task_locked({"speaker": "A", "timestamp": 100.0})
     assert vc._wake_response_pending is False
 
 

@@ -35,14 +35,14 @@ def _make_guard_self(*, is_playing_audio=True):
     # staticmethod：MagicMock 預設回 truthy Mock 會誤繞 echo，明確設 False
     fake._strong_voice_bypass_echo = MagicMock(return_value=False)
     fake._intent_bypass_echo = MagicMock(return_value=False)
-    fake._followup_override = MagicMock(return_value=False)  # WakeSessionMixin：同理，別讓 truthy Mock 誤開免喚醒
+    fake._followup_override_kind = MagicMock(return_value=None)  # WakeSessionMixin：同理，別讓 truthy Mock 誤開免喚醒
     return fake
 
 
 def test_text_input_bypasses_echo_guard_during_music():
     """播音樂中（is_playing_audio）文字喚醒 → is_echo False、is_fast 保留。"""
     fake = _make_guard_self(is_playing_audio=True)
-    is_fast, is_echo = VoiceController._apply_wake_guards(
+    is_fast, is_echo, _ = VoiceController._apply_wake_guards(
         fake, "狗與露", "馬文停", 123.0, "A", True,
         None, None, None, None, is_text_input=True)
     assert is_echo is False
@@ -59,7 +59,7 @@ def test_text_input_bypasses_response_lock_and_storm():
     fake._wake_accepted_time = 1e18      # 遠未逾時
     fake._storm_active = True            # 風暴壓抑中
     fake._storm_last_wake_time = 1e18
-    is_fast, is_echo = VoiceController._apply_wake_guards(
+    is_fast, is_echo, _ = VoiceController._apply_wake_guards(
         fake, "狗與露", "馬文停", 123.0, "A", True,
         None, None, None, None, is_text_input=True)
     assert is_fast is True
@@ -69,7 +69,7 @@ def test_text_input_bypasses_response_lock_and_storm():
 def test_voice_input_still_echo_guarded_during_music():
     """回歸對照：同情境但語音（is_text_input=False）→ Echo Guard 照舊擋下。"""
     fake = _make_guard_self(is_playing_audio=True)
-    is_fast, is_echo = VoiceController._apply_wake_guards(
+    is_fast, is_echo, _ = VoiceController._apply_wake_guards(
         fake, "狗與露", "馬文停", 123.0, "A", True,
         None, None, None, None, is_text_input=False)
     assert is_echo is True

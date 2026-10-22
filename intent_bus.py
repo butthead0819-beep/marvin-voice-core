@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Awaitable, Callable, Protocol
 
+import turn_outcome
+
 # 用 cogs.voice_controller 的子 logger，繼承 main_discord.py 設的 INFO level；
 # 否則 root logger 是 WARNING，INFO 級的 dispatch log 會全部被吞掉。
 logger = logging.getLogger("cogs.voice_controller.intent_bus")
@@ -383,6 +385,7 @@ class IntentBus:
             f"wake_intent={ctx.wake_intent} bids: {bid_summary} winner={winner.name}"
         )
         self._record_nowake(ctx, bids, winner)
+        turn_outcome.note_winner(winner)
 
         # ── Vector intent：winner 缺 resolver 認得的 slot → 解析後帶 depth+1 重投 ──
         # 不認得的 slot（如 song_title）或無 missing → 走原 handler（保留 _ask / 直接播）。
@@ -510,6 +513,7 @@ class IntentBus:
             return None
         if bid is None:
             return None
+        turn_outcome.note_winner(bid)
         await bid.handler()
         return bid
 

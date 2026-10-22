@@ -97,6 +97,7 @@ def setup_early_logging():
     # 2026-10-08 同型坑第三次：單一 mixer 第2刀把 :8790 車載 app 搬進來後，🚗 [CarMode] 上車/開場/下車 INFO 全被吞
     logging.getLogger("car_http_app").setLevel(logging.INFO)
     logging.getLogger("puck_cover_cache").setLevel(logging.INFO)  # 2026-10-20 🔘 [PuckCover] 生成/失敗（壓力測試看耗時）
+    logging.getLogger("turn_outcome").setLevel(logging.INFO)  # 2026-10-22 🏁 [TurnOutcome] 寫檔失敗節流警告
 
     stdout_logger = logging.getLogger("MarvinBot.Stdout")
     stdout_logger.setLevel(logging.INFO)

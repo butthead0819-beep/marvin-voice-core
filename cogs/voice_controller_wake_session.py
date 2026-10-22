@@ -26,6 +26,7 @@ from barge_in import (
 )
 from reply_address import address_prefix
 from tts_speak_policy import SpeakKind
+import turn_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +77,10 @@ class WakeSessionMixin:
     async def _process_query_task_locked(self, task_data: dict) -> None:
         """佇列處理一筆喚醒查詢；不論成功、被丟棄或例外，結束時都解鎖。"""
         try:
-            await self._process_query_task(task_data)
+            await turn_outcome.run_turn(
+                self._process_query_task(task_data),
+                speaker=task_data["speaker"], ts=task_data["timestamp"],
+                discovered_by=task_data.get("discovered_by") or "wake_word")
         finally:
             self._release_response_lock("query_done")
 
@@ -127,6 +131,10 @@ class WakeSessionMixin:
 
     def _followup_override(self, speaker, fusion, text="", is_wake_check=False) -> bool:
         """取代舊的 follow-up 判斷：WakeSession 對發起者免喚醒（優先）＋ 舊問句窗（D2-A 不變）。"""
+        return self._followup_override_kind(speaker, fusion, text, is_wake_check=is_wake_check) is not None
+
+    def _followup_override_kind(self, speaker, fusion, text="", is_wake_check=False) -> str | None:
+        """同 _followup_override，但回傳命中的窗口種類（給 TurnOutcome 記錄用）。"""
         session = getattr(self, "_wake_session", None)
         if session is not None and session.on_utterance(
                 speaker, time.time(), marvin_speaking=self._marvin_tts_speaking(),
@@ -134,11 +142,11 @@ class WakeSessionMixin:
             if session.barge_captured:
                 session.barge_captured = False
                 asyncio.create_task(self._barge_in_confirm(speaker, text))
-            return True        # log 已在核心印
+            return "window_session"        # log 已在核心印
         if not self._wake_response_pending and fusion is not None and fusion.is_open():
             logger.info(f"🎧 [Follow-Up] {speaker} captured in follow-up window (reason={getattr(fusion, '_open_reason', '?')})")
-            return True
-        return False
+            return "window_question"
+        return None
 
     def _record_accepted_wake(self, speaker, segment_id, track, now) -> None:
         """[Wake Guards] 接受喚醒時的副作用（自 _apply_wake_guards 抽出，行為不變）。"""
@@ -168,6 +176,7 @@ class WakeSessionMixin:
             session.on_wake_accepted(speaker, now)
 
     def _wake_session_on_ignored(self, speaker) -> None:
+        turn_outcome.mark_route("dropped:quality_gate")
         session = getattr(self, "_wake_session", None)
         if session is not None:
             session.on_ignored(speaker, time.time())

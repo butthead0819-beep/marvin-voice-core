@@ -48,6 +48,9 @@ from cogs.voice_controller_state_proxy import StateProxyMixin
 from cogs.voice_controller_music_proxy import MusicProxyMixin
 from cogs.voice_controller_gap_notify import GapNotifyMixin
 from cogs.voice_controller_wake_session import WakeSessionMixin
+from cogs.voice_controller_turn_outcome import TurnOutcomeMixin
+import turn_outcome
+from turn_outcome import gate_reason, discovered_from_reason, turn_route
 from wake_session import WakeSession
 from vector_store import VectorStore
 from memory_guard import is_memory_critical
@@ -354,7 +357,8 @@ _FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGN
 
 class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixin,
                       ConnectionMixin, PlaybackMixin, SystemLoopsMixin,
-                      StateProxyMixin, MusicProxyMixin, GapNotifyMixin, WakeSessionMixin, commands.Cog):
+                      StateProxyMixin, MusicProxyMixin, GapNotifyMixin, WakeSessionMixin,
+                      TurnOutcomeMixin, commands.Cog):
     """
     [Operation Paranoid Android] 
     馬文 (Marvin) 的語音控制器：負責語音監聽、社交分析、TTS 廣播與史官系統。
@@ -1027,7 +1031,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         except Exception:
             await self.play_tts("話題產生器出了點問題，等一下再試", already_in_channel=True)
 
-    async def handle_stt_result(self, speaker: str, raw_text: str, timestamp: float, wav_bytes: bytes, prosody_data: dict = None, is_wake_check=False, track=None, bypass_etd=False, wake_intent: float = None, is_text_input: bool = False):
+    async def handle_stt_result(self, speaker: str, raw_text: str, timestamp: float, wav_bytes: bytes, prosody_data: dict = None, is_wake_check=False, track=None, bypass_etd=False, wake_intent: float = None, is_text_input: bool = False, discovered_by: str | None = None):
         # 🔐 [Consent] 未同意者不送出任何資料（Groq STT / LLM / suki_memory 均跳過）
         if not self.consent.is_consented(speaker):
             return
@@ -1188,11 +1192,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 )
                 is_fast = False
 
-        is_fast, is_echo = self._apply_wake_guards(
+        is_fast, is_echo, _gate_reason = self._apply_wake_guards(
             speaker, raw_text, timestamp, track, is_fast,
             _fusion, _wake_dom, _confidence, _wake_voice_score,
             is_text_input=is_text_input, is_wake_check=is_wake_check)
-        
+        self._note_gate_decision(speaker, timestamp, track, is_wake_check, is_text_input, _gate_reason, _confidence)
+
         if speaker not in self.speech_buffers:
             self.speech_buffers[speaker] = {"texts": [], "first_timestamp": timestamp, "wav_bytes": bytearray()}
         
@@ -1271,7 +1276,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         is_owner=self._is_owner_speaker(speaker), now=time.time(),
                         mode=("stream" if self.stream_mode else "normal"),
                         dispatch_source="wake_shortcut")
-                    asyncio.create_task(self._release_lock_after(dispatch_with_feedback(self._intent_bus, self.active_text_channel, speaker, raw_text, _sc_ctx)))
+                    asyncio.create_task(self._release_lock_after(turn_outcome.run_turn(dispatch_with_feedback(self._intent_bus, self.active_text_channel, speaker, raw_text, _sc_ctx), speaker=speaker, ts=timestamp, discovered_by="wake_shortcut", route="wake_shortcut")))
                     self._wake_session_on_shortcut(_sc)
                     return
 
@@ -1297,6 +1302,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 "wake_voice_score": _wake_voice_score,  # helper query 判定：沒喊馬文→低
                 "wake_dom":    _wake_dom,               # 主導通道（task/info → helper）
                 "is_text_input": is_text_input,         # 文字輸入（Siri/stdin）→ 下游跳過等後續語音
+                "discovered_by": discovered_by or discovered_from_reason(_gate_reason),
                 # ContextVar 不會跨 asyncio.Queue 邊界 — 手動 forward timing dict 給 consumer
                 "_timing":     pipeline_timing.snapshot(),
             }
@@ -1350,6 +1356,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                             prosody_data=prosody_data,
                             is_wake_check=False, track="B",
                             bypass_etd=True, wake_intent=None,
+                            discovered_by="followup",
                         ))
                         return
                     elif maybe_dispatch_followup_supplement(self, speaker, _pending, raw_text, _now_fu, _FOLLOWUP_WINDOW_S, has_intent_signal): return
@@ -1376,6 +1383,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         prosody_data=prosody_data,
                         is_wake_check=False, track="B",
                         bypass_etd=True, wake_intent=None,
+                        discovered_by="deferred",
                     ))
                     return
                 elif _dw["utt_count"] >= _DEFERRED_WAKE_MAX_UTTS:
@@ -1406,24 +1414,26 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         """[Wake Guards] handle_stt_result 中段的喚醒守衛叢集（抽出，行為不變）。
 
         Double Wake / Response Lock / Storm / Echo(+Strong-Voice Bypass) / Global /
-        Follow-up override。回授防護安全核心。回 (is_fast, is_echo)；is_duplicate /
-        now / segment_id 純內部；接受喚醒時記 segment + 開 Response Lock + 風暴計數。
+        Follow-up override。回授防護安全核心。回 (is_fast, is_echo, reason)；
+        is_duplicate / now / segment_id 純內部；接受喚醒時記 segment + 開
+        Response Lock + 風暴計數；reason 給 TurnOutcome 記錄守衛判斷（見 turn_outcome.py）。
         """
         # 📝 [Text Input] Siri/stdin 文字非音訊：整組守衛（Double Wake / Response Lock /
         # Storm / Echo / Global）都為「防音訊快速誤觸發」而設，對刻意、完整、離散的文字
         # 指令一律不適用（否則播音樂時 Response Lock 會壓掉「停」）。每句文字都要處理。
         if is_text_input:
-            return True, False
+            return True, False, "text"
 
         # 🛡️ [Double Wake Guard 2.0] 強化版：結合 Segment ID 與時間窗口
         segment_id = f"{speaker}_{timestamp}"
         now = time.time()
-        
+        _was_fast = is_fast
+        _bypass = None
+
         # 1. 檢查是否是 2 秒內重複的片段
-        is_duplicate = False
-        if segment_id in self.processed_wake_segments:
-            is_duplicate = True
-        
+        is_duplicate = segment_id in self.processed_wake_segments
+        _hits = ["guard_double_wake"] if is_duplicate and is_fast else []
+
         # 2. 或是 3 秒內該玩家已經觸發過喚醒 (防止 STT 拆句導致雙重喚醒)
         last_wake = getattr(self, "last_wake_time", {}).get(speaker, 0)
 
@@ -1439,6 +1449,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 logger.info(f"⏸️ [Response Lock] {speaker} 回應進行中，壓抑快速喚醒")
                 is_fast = False
                 is_duplicate = True
+                _hits.append("guard_response_lock")
 
         # 🛡️ [Wake Storm Guard] 連續喚醒風暴：動態壓抑，靜默 12s 後自動解除
         if self._storm_active and is_fast:
@@ -1450,6 +1461,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 logger.info(f"⛔ [Wake Storm Guard] 風暴進行中，{speaker} 跳過")
                 is_fast = False
                 is_duplicate = True
+                _hits.append("guard_storm")
 
         # 🛡️ [Echo Guard] 核心防禦：TTS 播放中或 2s 冷卻期內，抑制所有喚醒詞防止回授
         _in_echo_window = self.is_playing_audio or (now < self._tts_echo_cooldown_until)
@@ -1460,6 +1472,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 self.is_playing_audio, self._current_tts_text, now,
                 self._tts_echo_cooldown_until, _wake_dom, _confidence, _wake_voice_score):
             is_echo = False
+            _bypass = "bypass_strong_voice"
             logger.info(
                 f"🎙️ [Strong-Voice Bypass] {speaker} 音樂播放中強人聲喚醒放行 "
                 f"(total={_confidence:.2f} v={_wake_voice_score} dom={_wake_dom})"
@@ -1468,6 +1481,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 self.is_playing_audio, self._current_tts_text, now,
                 self._tts_echo_cooldown_until, _wake_dom, _confidence):
             is_echo = False
+            _bypass = "bypass_intent"
             logger.info(
                 f"🎛️ [Intent Bypass] {speaker} 音樂播放中意圖指令放行 "
                 f"(total={_confidence:.2f} dom={_wake_dom}) '{raw_text[:40]}'"
@@ -1477,6 +1491,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             logger.info(f"⏭️ [Echo Guard] {_reason}，抑制來自 {speaker} 的可能回授觸發：'{raw_text[:60]}'")
             is_fast = False
             is_duplicate = True
+            _hits.append("guard_echo")
             # 🔇 [Noise Nudge] 純音樂播放中（非 TTS 回授窗）被擋掉的喚醒句若含喚醒詞 →
             # 可能環境太吵把喚醒詞糊掉；走通用節流器（窄訊號 + 每 speaker 每 session 1 次）。
             if self.is_playing_audio and not self._current_tts_text and \
@@ -1489,15 +1504,19 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             logger.info(f"⏭️ [Global Wake Guard] 2.0s 內已有過喚醒，抑制來自 {speaker} 的重複觸發。")
             is_fast = False
             is_duplicate = True
+            _hits.append("guard_global")
 
         if now - last_wake < 3.0 and is_fast:
-             logger.debug(f"⏭️ [Wake Guard] {speaker} 在 3 秒內已喚醒過，抑制重複觸發。")
+             logger.info(f"⏭️ [Wake Guard] {speaker} 在 3 秒內已喚醒過，抑制重複觸發。")
              is_fast = False
              is_duplicate = True
+             _hits.append("guard_per_speaker")
 
         # 🗣️ [WakeSession] 對發起者免喚醒（優先）＋ 🎧 [Follow-Up] 舊問句窗（D2-A 不變）——判斷在 WakeSessionMixin
-        if not is_fast and not self.game_mode and self._followup_override(
-                speaker, _fusion, raw_text, is_wake_check=is_wake_check):
+        # ⚠️ 懶求值：is_fast 或 game_mode 時絕不能呼叫 _followup_override_kind（它有副作用）
+        _ov = None if is_fast or self.game_mode else self._followup_override_kind(
+            speaker, _fusion, raw_text, is_wake_check=is_wake_check)
+        if _ov:
             is_fast = True
             is_echo = False
             is_duplicate = False
@@ -1512,7 +1531,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 # 暴力清理超過 30 秒前的紀錄
                 now = time.time()
                 self.processed_wake_segments = {k: v for k, v in self.processed_wake_segments.items() if (now - float(k.split("_")[-1])) < 30.0}
-        return is_fast, is_echo
+        return is_fast, is_echo, gate_reason(_was_fast, is_fast, _hits, _ov, _bypass)
     async def _apply_semantic_etd(self, speaker, raw_text, timestamp,
                                   prosody_data, wav_bytes, track):
         """[Semantic ETD] 雙軌語意終止偵測：Track B-1 啟發式 + B-2 Groq + 硬門檻。
@@ -1733,10 +1752,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🦾 [NemoClaw Debounced Rescue] 即使 Echo Guard 把流量壓到 Debounced 路徑，
         # 仍要攔截「龍蝦」/「openclaw」觸發詞，直接呼叫 NemoClaw 或 Marmo 處理器。
         if _NEMOCLAW_RE.search(full_raw_text):
-            asyncio.create_task(self._handle_nemoclaw_query(speaker, full_raw_text))
+            asyncio.create_task(turn_outcome.run_turn(self._handle_nemoclaw_query(speaker, full_raw_text), speaker=speaker, ts=timestamp, discovered_by="wakeless"))
             return
         if _MARMO_RE.search(full_raw_text):
-            asyncio.create_task(self._handle_marmo_query(speaker, full_raw_text))
+            asyncio.create_task(turn_outcome.run_turn(self._handle_marmo_query(speaker, full_raw_text), speaker=speaker, ts=timestamp, discovered_by="wakeless"))
             return
 
         # 🎮 遊戲中：語音答案走 IntentBus（mode="game" → 只 game agent 出價）。
@@ -1745,8 +1764,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if self.game_mode:
             pipeline_timing.mark("intent_dispatched")
             pipeline_timing.emit(speaker, full_raw_text, suffix=" route=game")
-            await self._intent_bus.dispatch(
-                build_game_ctx(speaker, full_raw_text, is_owner=self._is_owner_speaker(speaker))
+            await turn_outcome.run_turn(
+                self._intent_bus.dispatch(
+                    build_game_ctx(speaker, full_raw_text, is_owner=self._is_owner_speaker(speaker))
+                ),
+                speaker=speaker, ts=timestamp, discovered_by="game",
             )
             return
 
@@ -1822,7 +1844,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     logger.info(f"📡 [IBA-T0/T1/Find-Song→Bus] {speaker} no-wake 進 bus | query='{_nw_ctx.query[:40]}'")
                     pipeline_timing.mark("intent_dispatched")
                     pipeline_timing.emit(speaker, full_raw_text, suffix=f" route=nowake_bus:{_nw_ctx.query[:15]}")
-                    asyncio.create_task(self._intent_bus.dispatch(_nw_ctx))
+                    asyncio.create_task(turn_outcome.run_turn(self._intent_bus.dispatch(_nw_ctx), speaker=speaker, ts=timestamp, discovered_by="wakeless"))
                     return
 
     async def _schedule_reaction_check(self, speaker: str, bot_response: str, respond_time: float,
@@ -1940,6 +1962,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             f"[玩家反應→{speaker}] 評級={reaction_type} | 原因={reason} | 玩家說={raw_preview}"
         )
 
+    @turn_route("legacy:pa_write")
     async def _handle_mark_done_query(self, speaker: str, query: str):
         """語音標記任務完成或取消，回答後 TTS 播放。"""
         if not self._recall_handler:
@@ -1955,6 +1978,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if answer:
             await self.play_tts(answer, already_in_channel=True)
 
+    @turn_route("legacy:pa_recall")
     async def _handle_recall_query(self, speaker: str, query: str):
         """語音日記 Recall：從 summary_store / task_store 找記憶，LLM 合成回答後 TTS 播放。"""
         if not self._recall_handler:
@@ -1967,6 +1991,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if answer:
             await self.play_tts(answer, already_in_channel=True)
 
+    @turn_route("legacy:pa_write")
     async def _handle_manual_add_query(self, speaker: str, query: str):
         """「記一下，…」立即存入 task_store，不等 SessionSummarizer 批次。"""
         if not self._recall_handler:
@@ -1980,6 +2005,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if answer:
             await self.play_tts(answer, already_in_channel=True)
 
+    @turn_route("legacy:pa_write")
     async def _handle_task_update_query(self, speaker: str, query: str):
         """「那件事改成…」更新已有任務內容，不產生新任務。"""
         if not self._recall_handler:
@@ -1994,6 +2020,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if answer:
             await self.play_tts(answer, already_in_channel=True)
 
+    @turn_route("legacy:pa_confirm")
     async def _handle_confirmation_response(self, speaker: str, query: str):
         """處理 yes/no 回應，確認或放棄 pending confirmation。"""
         from recall_handler import is_yes_response, is_no_response
@@ -2050,6 +2077,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             except Exception as e:
                 logger.error("[VC] _confirmation_checker_loop 意外錯誤: %s", e)
 
+    @turn_route("legacy:status_keywords")
     async def _handle_voice_status_query(self, speaker: str):
         """語音觸發系統健康狀態報告，不走 LLM，直接生成回答並 TTS 播放。"""
         router = self.bot.router
@@ -2087,6 +2115,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         asyncio.create_task(self.play_tts(speech, already_in_channel=True))
         logger.info(f"🩺 [Status Query] {speaker} 查詢系統狀態，已回報。")
 
+    @turn_route("legacy:imitate")
     async def _handle_voice_imitate_command(self, speaker: str, target: str):
         """
         🎭 [Operation Impression Show] 執行模仿秀：讓 Marvin 以目標玩家的口吻即興表演。
@@ -2329,6 +2358,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if _age > self._LATE_RESPONSE_SKIP_SEC:
             logger.info(f"⏱️ [Stale Drop] {speaker} 查詢已排隊 {_age:.0f}s "
                         f"(>{self._LATE_RESPONSE_SKIP_SEC:.0f}s)，dequeue 即丟、不處理（斷佇列雪崩）。")
+            turn_outcome.mark_route("dropped:stale")
             return
 
         # 立即播 filler（延遲遮掩）
@@ -2718,6 +2748,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         except asyncio.CancelledError:
             pass
 
+    @turn_route("legacy:nemoclaw")
     async def _handle_nemoclaw_query(self, speaker: str, raw_query: str):
         """NemoClaw 語音查詢全流程：鑑權 → 去重 → 序列化 → CLI → TTS + 文字頻道。"""
         # P0: 鑑權 — 只允許主人的語音指令（在鎖外先做，快速拒絕）
@@ -2812,6 +2843,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 self._wake_burst_times.clear()
                 self._storm_last_wake_time = 0.0
 
+    @turn_route("legacy:marmo")
     async def _handle_marmo_query(self, speaker: str, raw_query: str):
         """語音觸發 @AI Marmo：在文字頻道 mention NemoClaw bot，等待其回覆後 TTS 朗讀。"""
         if not self._is_owner_speaker(speaker):
@@ -3109,6 +3141,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             speaker, query, history, wake_time, wake_intent, _is_helper, _head,
         )
 
+    @turn_route("llm:main")
     async def _stream_response(self, speaker, query, history, wake_time,
                                wake_intent, _is_helper, _head):
         """[Fast System] 渲染 LLM 串流回應：句子分割 → 逐句 TTS/貼文 → 收尾。
@@ -3606,6 +3639,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return None
         return await self._resolve_yt_query(search)
 
+    @turn_route("legacy:music_drop")
     async def _ask_music_followup(
         self, speaker: str, query: str, missing_slots: list[str]
     ) -> None:
