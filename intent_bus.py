@@ -438,6 +438,14 @@ class IntentBus:
             self.logger.info(f"📡 [IntentBus] {ctx.speaker} 連續對談窗內，跳過 rescue")
             return None
 
+        # 10/21 方案 B：像問句的沒人接喚醒句不等 Audio Rescue（flash-lite ~4s），直接回 None
+        # 讓 voice_controller 的 try_question_opener 交給 3.5-flash 查證（「略」→ 主聊天）。
+        # nowake（無喚醒詞救援）沒有接問句開場，跳過就等於丟掉 → 只對喚醒句生效。
+        from intent_agents.grounded_qa_agent import should_skip_rescue   # lazy：避免循環 import
+        if ctx.dispatch_source != "nowake" and should_skip_rescue(ctx):
+            self.logger.info(f"📡 [IntentBus] {ctx.speaker} 像問句，跳過 rescue → 問句開場")
+            return None
+
         try:
             rescued_ctx = await self.llm_rescue_agent.synthesize(ctx)
         except Exception as exc:
