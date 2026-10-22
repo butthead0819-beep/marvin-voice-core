@@ -94,6 +94,15 @@ class WakeSessionMixin:
         if session is not None:
             session.on_followup_result(speaker, hit)
 
+    def _wake_session_note_qa(self, speaker, question, answer) -> None:
+        session = getattr(self, "_wake_session", None)
+        if session is not None:
+            session.note_qa_turn(speaker, question, answer)
+
+    def _wake_session_qa_history(self, speaker) -> list:
+        session = getattr(self, "_wake_session", None)
+        return session.qa_history(speaker) if session is not None else []
+
     def _wake_session_grounded_sticky(self, speaker) -> bool:
         session = getattr(self, "_wake_session", None)
         return session is not None and session.wants_grounded_followup(speaker)

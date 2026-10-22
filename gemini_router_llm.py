@@ -755,6 +755,18 @@ class GeminiRouterLLMMixin:
             logger.error(f"❌ [Cloud Stream Error] {e}")
             raise e
 
+    def _note_stream_model(self, speaker, label: str) -> None:
+        """記下這位 speaker 最近一次串流回答實際用的模型（給 [BOT→] 標籤 / 文字頻道鏡像）。"""
+        if not speaker:
+            return
+        d = getattr(self, "_stream_model_by_speaker", None)
+        if d is None:
+            d = self._stream_model_by_speaker = {}
+        d[speaker] = label
+
+    def stream_model_label(self, speaker) -> str:
+        return (getattr(self, "_stream_model_by_speaker", None) or {}).get(speaker, "?")
+
     async def stream_llm(self, system_prompt: str, user_prompt: str, speaker: str = None, temperature: float = None, max_output_tokens: int = None) -> str:
         """[Operation Hyper-Stream] 通用流式 LLM 進入點，優先順序：Groq → Cerebras → Gemini → Ollama"""
         final_system_prompt = system_prompt
@@ -779,6 +791,7 @@ class GeminiRouterLLMMixin:
                                       provider="groq", model=self.groq_fallback_model,
                                       latency_ms=int((time.monotonic() - _t0) * 1000),
                                       tokens=0, success=True)
+                        self._note_stream_model(speaker, "groq/" + str(self.groq_fallback_model))
                         _logged = True
                     yield chunk
                 await self._reset_tier_to_primary()
@@ -802,6 +815,7 @@ class GeminiRouterLLMMixin:
                                       provider="cerebras", model=self.cerebras_model,
                                       latency_ms=int((time.monotonic() - _t0) * 1000),
                                       tokens=0, success=True)
+                        self._note_stream_model(speaker, "cerebras/" + str(self.cerebras_model))
                         _logged = True
                     yield chunk
                 await self._reset_tier_to_primary()
@@ -826,6 +840,7 @@ class GeminiRouterLLMMixin:
                                       provider="gemini_cloud", model=self.model_name,
                                       latency_ms=int((time.monotonic() - _t0) * 1000),
                                       tokens=0, success=True)
+                        self._note_stream_model(speaker, "gemini/" + str(self.model_name))
                         _logged = True
                     yield chunk
                 await self._reset_tier_to_primary()
@@ -948,14 +963,28 @@ class GeminiRouterLLMMixin:
         full_response = []
         try:
             # 語音快速回應走 flash-lite（低延遲優先），僅 gemini provider 時生效
-            if self.provider == "gemini" and not self.is_exhausted and not self.budget.is_circuit_open():
-                stream_src = self._stream_cloud(system_prompt, user_prompt, temperature=temperature, model_override=self.cleaner_model, max_output_tokens=220)
+            use_cloud = self.provider == "gemini" and not self.is_exhausted and not self.budget.is_circuit_open()
+            if use_cloud:
+                self._note_stream_model(speaker, "gemini/" + str(self.cleaner_model))
+                try:
+                    async for chunk in self._stream_cloud(system_prompt, user_prompt, temperature=temperature, model_override=self.cleaner_model, max_output_tokens=220):
+                        full_response.append(chunk)
+                        yield chunk
+                except Exception as cloud_err:
+                    if full_response:   # 已經念出一半，不能換模型重講
+                        raise
+                    # 10/21：雲端 503 一個字都沒出就直接念「宇宙的熵值」錯誤台詞 → 改走 stream_llm 備援（Groq 優先）
+                    logger.warning(f"⚠️ [Stream Fast Response] 雲端未出字即失敗（{str(cloud_err)[:80]}）→ 改走 stream_llm 備援")
+                    self._note_stream_model(speaker, "?")
+                    async for chunk in self.stream_llm(system_prompt, user_prompt, speaker=speaker, temperature=temperature, max_output_tokens=220):
+                        full_response.append(chunk)
+                        yield chunk
+                    self._note_stream_model(speaker, "雲端失敗→備援 " + self.stream_model_label(speaker))
             else:
-                stream_src = self.stream_llm(system_prompt, user_prompt, speaker=speaker, temperature=temperature, max_output_tokens=220)
-            async for chunk in stream_src:
-                full_response.append(chunk)
-                yield chunk
-            
+                async for chunk in self.stream_llm(system_prompt, user_prompt, speaker=speaker, temperature=temperature, max_output_tokens=220):
+                    full_response.append(chunk)
+                    yield chunk
+
             # 結算歷史
             final_text = "".join(full_response)
             _phrase_record(final_text)

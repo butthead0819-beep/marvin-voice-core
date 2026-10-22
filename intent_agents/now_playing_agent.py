@@ -22,6 +22,8 @@ test_voice_controller_size_budget.py），新語音功能規定要進 IntentAgen
 觸發 MusicCog.speak_now_playing_guide 疊在 TTS 層講導聆，歌不中斷。no-wake
 regex 直達路徑（_MUSIC_INFO_RE 誤觸發多，8 筆有 4 筆是閒聊）不接，避免放大誤觸發
 成本。
+
+2026-10-22：補「介紹一下這首歌」說法 + manifest_description（Audio Rescue 原本選不到 now_playing）。
 """
 from __future__ import annotations
 
@@ -59,8 +61,16 @@ class NowPlayingAgent(DeclarativeIntentAgent):
                         r"(?:現在|剛才|正在)(?:播|放|唱)的",
                         # 「歌名/歌手/藝人/誰唱/誰寫」系列
                         r"(?:歌名|歌手|藝人|誰唱|誰寫)(?:是什麼|叫什麼|是誰|叫)?",
+                        # 「介紹(一下)這首/現在這首」——要導聆（10/22 使用者：就是要 /guide_song 的資訊）
+                        r"介紹(?:一下)?(?:現在)?(?:這首|播的)",
+                        # 「這首(歌)在講什麼/在唱什麼/的故事/的背景」
+                        r"這首(?:歌|曲)?(?:在講什麼|在唱什麼|的故事|的背景|想表達什麼)",
                     ],
                     reason_template="now_playing:{matched}",
+                    manifest_description=(
+                        "使用者在問現在正在播的這首歌：歌名、歌手、誰唱的，或請你介紹/導聆這首歌"
+                        "（背景、在講什麼、該聽什麼）。不是點新的歌、不是查跟這首歌無關的知識。"
+                    ),
                 ),
             ]
         return self._intents_cache

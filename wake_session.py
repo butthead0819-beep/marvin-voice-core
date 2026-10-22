@@ -13,6 +13,7 @@ IDLE_TIMEOUT_S = 120.0
 MAX_UNANSWERED = 3
 MAX_FOLLOWUP_MISSES = 3
 AWAIT_REPLY_TIMEOUT_S = 30.0
+MAX_QA_TURNS = 3
 
 logger = logging.getLogger("wake_session")
 
@@ -44,6 +45,7 @@ class WakeSession:
         self.awaiting_since: float | None = None   # 最近一次「接住的句子」還沒得到回應的起點
         self.query_mode: bool = False      # session 內是否已有過 grounded 查詢 → 非音樂追問黏著 grounded
         self.followup_misses: int = 0
+        self.qa_turns: list[tuple[str, str]] = []
 
     def _end(self, reason: str) -> None:
         logger.info(f"🗣️ [WakeSession] 結束 target={self.target} reason={reason}")
@@ -53,6 +55,7 @@ class WakeSession:
         self.unanswered = 0
         self.query_mode = False
         self.followup_misses = 0
+        self.qa_turns = []
 
     def on_wake_accepted(self, speaker: str, now: float) -> None:
         if self.target == speaker:
@@ -65,6 +68,7 @@ class WakeSession:
         self.awaiting_since = now
         self.query_mode = False
         self.followup_misses = 0
+        self.qa_turns = []
         logger.info(f"🗣️ [WakeSession] arm target={speaker}")
 
     def on_replied(self, now: float) -> bool:
@@ -148,3 +152,15 @@ class WakeSession:
         self.followup_misses += 1
         if self.followup_misses >= MAX_FOLLOWUP_MISSES:
             self._end("followup_misses")
+
+    def note_qa_turn(self, speaker: str, question: str, answer: str) -> None:
+        """session 內 target 的一輪查詢問答（含 Marvin 自己的回答）→ 下一輪查詢當上下文。只留最近 MAX_QA_TURNS 輪。"""
+        if self.target is None or speaker != self.target:
+            return
+        self.qa_turns.append((question, answer))
+        self.qa_turns = self.qa_turns[-MAX_QA_TURNS:]
+
+    def qa_history(self, speaker: str) -> list[tuple[str, str]]:
+        if self.target is None or speaker != self.target:
+            return []
+        return list(self.qa_turns)

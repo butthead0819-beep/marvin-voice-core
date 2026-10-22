@@ -32,7 +32,7 @@ from intent_agents.base import (
 from intent_agents.constants import (
     MUSIC_PAUSE_KW, MUSIC_PLAY_KW, MUSIC_RESUME_KW, MUSIC_SKIP_KW, MUSIC_STOP_KW,
 )
-from intent_bus import Bid, IntentContext
+from intent_bus import IntentContext
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +43,25 @@ MODEL_CHAIN: tuple[str, ...] = ("gemini-2.5-flash", "gemini-flash-latest")
 GROUNDED_TIMEOUT_S = 8.0
 MAX_REPLY_CHARS = 140
 
+# 喚醒查詢一律直走付費 3.5-flash（使用者 10/21：要正確、付費可以；第一句最重要）。預設思考，2.5-flash 付費備援。
+QA_MODEL_CHAIN: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
+QA_TIMEOUT_S = 15.0
+
+# Gemini 3.x grounding 按「模型實際執行的搜尋次數」計費（$14/1000，超過每月免費額度後）；
+# 2.5 按 prompt 計但每天 1500 免費。統一按搜尋次數估，寧可高估。
+GROUNDING_USD_PER_SEARCH = 0.014
+
 # ── 觸發 regex ────────────────────────────────────────────────────────────────
 
-# A：明確「查」/「搜尋」/「問」動詞（喚醒句裡，re.search 容忍 "馬文" 前綴）
+# A：明確「查」/「搜尋」/「問」動詞——只認句首（可帶喚醒詞、我/你、幫我…）。
+# 10/21：re.search 任意位置會把「我進入了那個輪巡查詢之後還可以嗎」的句中「查詢」當指令；
+# 句中提到的交給 try_question_opener（3.5-flash 判斷，「略」交回聊天）。
 _LOOKUP_RE = re.compile(
-    r"(?:幫我|幫忙|麻煩|請|欸|快)?\s*"
+    r"^\s*(?:(?:馬文|瑪文|麻文|媽文|marvin|marvy)\s*[，,、\s]*)?"
+    r"(?:我|你|妳)?\s*(?:幫我|幫忙|麻煩|請|欸|快)?\s*"
     r"(?:查(?:詢|一下|查)?|搜尋|查查|問一下|請問|想問|想知道|知不知道|找一下|找找)\s*"
-    r"(?P<topic>\S.{1,})"
+    r"(?P<topic>\S.{1,})",
+    re.IGNORECASE,
 )
 # B：事實問句尾
 _FACTUAL_TAIL_RE = re.compile(
@@ -84,6 +96,13 @@ _HAN_RE = re.compile(r"[一-鿿]")
 # 沒有 music agent 出價、_excluded 也不擋 → 不排除就會被當查詢丟去 Google。
 # 「放」只認後接點歌語境，避免誤擋「他放了幾張專輯」。
 _SESSION_PLAY_RE = re.compile(r"播|放(?:一|這|那|第|來|首|吧|個|點)|^放(?!假|心|棄|學|榜|過|了)|來聽|聽聽|點(?:一|這|那|第)?首|唱")
+
+# session 黏著只接看起來像問句的話；「那就是你的問題了」「就自然不是有的」這種評論/跟旁人說話不送 Google
+# （10/21 一個 session 4 句被硬查成「這題我查不到」）。漏判的交給 _SESSION_SYSTEM_PROMPT 的「略」。
+_SESSION_QUESTION_RE = re.compile(
+    r"[?？]|嗎|呢|什麼|甚麼|啥|怎麼|怎樣|如何|為什麼|為何|哪|誰|幾|多少"
+    r"|是不是|有沒有|能不能|可不可以|會不會|要不要|還是|知道|告訴我|查|找|介紹"
+)
 
 
 def _excluded(query: str) -> str | None:
@@ -141,6 +160,18 @@ _SYSTEM_PROMPT = (
 )
 _REFUSAL_PREFIXES = ("無", "抱歉", "我不", "我沒辦法", "沒有這", "不清楚", "無法")
 
+_SESSION_SYSTEM_PROMPT = _SYSTEM_PROMPT + (
+    "這是連續對談中的一句話：如果【使用者當前提問】其實不是要你查的問題（評論、抱怨、感嘆、"
+    "在跟旁邊的人講話、問你馬文自己的狀態），不要查、不要回答，只回一個字「略」。"
+)
+_OPENER_SYSTEM_PROMPT = _SYSTEM_PROMPT + (
+    "使用者叫了你的名字說這句話：如果它不是需要查證的事實、知識、時事或攻略問題（閒聊、問你的意見或心情、"
+    "開玩笑、在跟旁邊的人講話），不要查、不要回答，只回一個字「略」。"
+)
+NOT_A_QUESTION = object()   # grounded_answer 回這個＝模型判定不是問題（只有 session prompt 會產生）
+
+_NEXT = object()   # _attempt 內部哨兵：這次嘗試失敗（例外/空回應）→ 換下一個
+
 
 def _extract_sources(response) -> list[str]:
     try:
@@ -158,6 +189,16 @@ def _extract_sources(response) -> list[str]:
             host = "?"
         out.append(host)
     return out
+
+
+def _count_searches(response) -> int:
+    try:
+        cands = getattr(response, "candidates", None) or []
+        gm = getattr(cands[0], "grounding_metadata", None) if cands else None
+        qs = getattr(gm, "web_search_queries", None) if gm else None
+        return len(qs) if isinstance(qs, (list, tuple)) else 0
+    except Exception:
+        return 0
 
 
 def _trim(text: str, max_chars: int = MAX_REPLY_CHARS) -> str:
@@ -276,13 +317,16 @@ async def grounded_answer(
     *,
     recent_context: str = "",
     game_context: list[str] | None = None,
+    session_history: list[tuple[str, str]] | None = None,
     model_chain: tuple[str, ...] = MODEL_CHAIN,
     timeout: float = GROUNDED_TIMEOUT_S,
     system_prompt: str = _SYSTEM_PROMPT,
     caller: str = "ambient_qa",
     max_chars: int = MAX_REPLY_CHARS,
-) -> tuple[str, list[str]] | None:
-    """query → (答案, 來源 host 清單) 或 None（查不到 / 幻覺 guard 擋下 / 全失敗）。"""
+    meta: dict | None = None,
+) -> tuple[str, list[str]] | object | None:
+    """query → (答案, 來源 host 清單) 或 None（查不到 / 幻覺 guard 擋下 / 全失敗）或 NOT_A_QUESTION
+    （session prompt 判定這句其實不是要查的問題）。"""
     if not query or not query.strip():
         return None
     from google.genai import types
@@ -305,22 +349,22 @@ async def grounded_answer(
             f"【過去 10 分鐘語音對話背景（僅供參考指稱與上下文脈絡，勿逐句回答）】\n"
             f"{recent_context.strip()}"
         )
+    if session_history:
+        qa_lines = "\n".join(f"問：{q}\n答：{a}" for q, a in session_history)
+        segments.append(
+            f"【這次對話你剛回答過的問答（使用者說「這個 / 那個 / 那裡」多半指這裡提到的東西）】\n"
+            f"{qa_lines}"
+        )
     if segments:
         segments.append(f"【使用者當前提問】\n{query.strip()}")
         contents = "\n\n".join(segments)
     else:
         contents = query.strip()
 
-    attempts: list[tuple[object, str, bool]] = []
-    if free_client is not None:
-        attempts.append((free_client, model_chain[0], False))
     est_in = 400 + (len(recent_context) // 2 if recent_context else 0)
-    # ⚠️ estimate_cost 只算 token；google_search grounding 另外 per-request 計費，
-    # 所以 guard 的 daily cap 會低估真實花費（TODOS.md「PaidUsageGuard 低估 grounding」）。
-    if paid_client is not None and guard.allow(estimate_cost(model_chain[0], est_in, 300)):
-        attempts += [(paid_client, m, True) for m in model_chain]
+    est_in += sum(len(q) + len(a) for q, a in (session_history or [])) // 2
 
-    for client, model, is_paid in attempts:
+    async def _attempt(client, model: str, is_paid: bool):
         tier = "付費" if is_paid else "免費"
         try:
             response = await asyncio.wait_for(
@@ -329,22 +373,31 @@ async def grounded_answer(
             )
         except Exception as exc:
             logger.warning(f"[AmbientQA] {tier} {model} 失敗：{str(exc)[:120]}，換下一個")
-            continue
+            if meta is not None:
+                meta.setdefault("tried", []).append(f"{model}{tier}✗")
+            return _NEXT
+
+        if meta is not None:
+            meta.update(model=model, paid=is_paid, searches=_count_searches(response))
 
         if is_paid:
             usage = getattr(response, "usage_metadata", None)
             in_tok = int(getattr(usage, "prompt_token_count", 0) or est_in)
-            out_tok = int(getattr(usage, "candidates_token_count", 0) or 300)
+            # candidates_token_count 不含思考 token（2.5/3.x 預設會思考）→ 要加 thoughts_token_count，否則帳本低估
+            out_tok = int(getattr(usage, "candidates_token_count", 0) or 300) + int(getattr(usage, "thoughts_token_count", 0) or 0)
+            n_search = _count_searches(response)
             guard.record(
                 caller=caller, model=model, tokens=in_tok + out_tok,
-                est_usd=estimate_cost(model, in_tok, out_tok),
+                est_usd=estimate_cost(model, in_tok, out_tok) + n_search * GROUNDING_USD_PER_SEARCH,
                 in_tokens=in_tok, out_tokens=out_tok,
             )
 
         text = (getattr(response, "text", None) or "").strip()
         if not text:
             logger.info(f"[AmbientQA] {model} 空回應")
-            continue
+            if meta is not None:
+                meta.setdefault("tried", []).append(f"{model}{tier}✗")
+            return _NEXT
         try:
             fr = str(response.candidates[0].finish_reason)
             if "STOP" not in fr:
@@ -353,6 +406,9 @@ async def grounded_answer(
             pass
 
         first = text.splitlines()[0].strip()
+        if first.rstrip("。.!！ ") == "略":
+            logger.info(f"[AmbientQA] 判定非問題（略）query={query!r}")
+            return NOT_A_QUESTION
         # L1：Gemini 自承查不到 / 拒答
         if first.startswith(_REFUSAL_PREFIXES):
             logger.info(f"[AmbientQA] L1 拒（LLM 回 {first[:20]!r}）query={query!r}")
@@ -366,12 +422,46 @@ async def grounded_answer(
         logger.info(f"[AmbientQA] ✓ query={query!r} src={sources}")
         return _trim(text, max_chars), sources
 
-    return None
+    async def _chain(atts: list[tuple[object, str, bool]]):
+        for client, model, is_paid in atts:
+            r = await _attempt(client, model, is_paid)
+            if r is not _NEXT:
+                return r
+        return _NEXT
+
+    free_atts: list[tuple[object, str, bool]] = []
+    if free_client is not None:
+        free_atts.append((free_client, model_chain[0], False))
+    paid_atts: list[tuple[object, str, bool]] = []
+    # guard.allow 預估只算 token；實際記帳（_attempt）有加搜尋費。
+    if paid_client is not None and guard.allow(estimate_cost(model_chain[0], est_in, 300)):
+        paid_atts = [(paid_client, m, True) for m in model_chain]
+
+    r = await _chain(free_atts + paid_atts)
+    return None if r is _NEXT else r
+
+
+def format_provenance(meta: dict, latency_ms: int, n_history: int, n_context: int, games: list[str]) -> str:
+    """[BOT→] 標籤：這句回答用了哪個模型、付不付費、搜尋幾次、帶了多少上下文。"""
+    parts = []
+    if meta.get("tried"):
+        parts.append(" ".join(meta["tried"]) + " →")
+    if meta.get("model"):
+        parts.append(f"{meta['model']}{'付費' if meta.get('paid') else '免費'}")
+        parts.append(f"搜尋{meta.get('searches', 0)}次")
+    else:
+        parts.append("全部失敗")
+    parts.append(f"{latency_ms / 1000:.1f}s")
+    ctx = f"上下文:問答{n_history}輪/背景{n_context}句"
+    if games:
+        ctx += f"/遊戲{'、'.join(games)}"
+    parts.append(ctx)
+    return " ".join(parts)
 
 
 async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
                           source: str = "ambient_qa",
-                          recent_context: str | None = None) -> None:
+                          recent_context: str | None = None) -> str:
     """handler 本體（放這裡而非 voice_controller，守 size budget 棘輪）。
 
     D7：ack 先出（貴呼叫前給「查詢中」提示，4.5s 死等會被讀成崩潰），再走 free→付費
@@ -382,11 +472,14 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     （GroundedQAAgent regex 觸發，預設 "ambient_qa"）跟其他重用這條管線的呼叫點
     （例如 NowPlaying 追問視窗接住的開放式補充問題，"music_followup"）在分析時
     分得開，不影響既有呼叫點（保留預設值）。
+
+    回傳 "not_question" / "no_answer" / "answered"，供 `try_question_opener` 判斷
+    這句開場話有沒有被接走。
     """
     import time as _time
 
     _note = getattr(ctrl, "_wake_session_note_grounded", None)   # 🗣️ WakeSession：本 session 進入查詢模式
-    if callable(_note):
+    if source != "question_opener" and callable(_note):
         _note(speaker)
 
     _addr = getattr(ctrl, "_reply_address_prefix", None)
@@ -407,34 +500,64 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         recent_context = await build_recent_transcript_context(ctrl, minutes=10)
     games = current_games(ctrl, speaker)
 
+    _hist_fn = getattr(ctrl, "_wake_session_qa_history", None)
+    session_history = _hist_fn(speaker) if callable(_hist_fn) else []
+    if not isinstance(session_history, list):   # MagicMock 回傳不算
+        session_history = []
+
+    extra_kwargs: dict = {}
+    if source == "session_followup":
+        extra_kwargs["system_prompt"] = _SESSION_SYSTEM_PROMPT
+    elif source == "question_opener":
+        extra_kwargs["system_prompt"] = _OPENER_SYSTEM_PROMPT
+    extra_kwargs["model_chain"] = QA_MODEL_CHAIN
+    extra_kwargs["timeout"] = QA_TIMEOUT_S
+
+    meta: dict = {}
     t0 = _time.monotonic()
     res = None
     try:
         res = await grounded_answer(
-            getattr(router, "google_client", None),
+            None,
             getattr(router, "google_paid_client", None),
             guard, topic,
             recent_context=recent_context,
             game_context=games,
+            session_history=session_history,
+            meta=meta,
+            **extra_kwargs,
         )
     except Exception as e:
         logger.warning(f"[AmbientQA] grounded_answer 例外: {e}")
     latency_ms = int((_time.monotonic() - t0) * 1000)
+    n_context = len([l for l in (recent_context or "").splitlines() if l.strip()])
+    prov = format_provenance(meta, latency_ms, len(session_history), n_context, games)
+
+    if res is NOT_A_QUESTION:
+        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 非查詢→交回聊天 | {prov}) {topic}")
+        record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
+                           "query": topic, "answer": None, "reason": "not_question",
+                           "latency_ms": latency_ms, "source": source, "games": games,
+                           "model": meta.get("model")})
+        return "not_question"
 
     if res is None:
-        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 查不到) {topic}")
+        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 查不到 | {prov}) {topic}")
         asyncio.create_task(ctrl.play_tts(prefix + "這題我查不到。", already_in_channel=True))
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
-                           "latency_ms": latency_ms, "source": source, "games": games})
+                           "latency_ms": latency_ms, "source": source, "games": games,
+                           "model": meta.get("model")})
         # 任何 source 都回報 WakeSession（regex 路徑查不到也要計數，否則 session 停不下來，10/17 事故）
         _report = getattr(ctrl, "_wake_session_on_followup_result", None)
         if callable(_report):
             _report(speaker, False)
-        return
+        if source == "question_opener" and callable(_note):
+            _note(speaker)
+        return "no_answer"
 
     answer, sources = res
-    ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA) {answer}")
+    ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA | {prov}) {answer}")
     asyncio.create_task(ctrl.play_tts(prefix + answer, already_in_channel=True))
     if ctrl.active_text_channel:
         src = f"\n_來源：{', '.join(sources)}_" if sources else ""
@@ -443,11 +566,42 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                        "query": topic, "answer": answer, "sources": sources,
                        "latency_ms": latency_ms, "downstream": "none", "source": source,
-                       "games": games})
+                       "games": games, "model": meta.get("model")})
     _report = getattr(ctrl, "_wake_session_on_followup_result", None)
     if callable(_report):
         _report(speaker, True)
+    _note_qa = getattr(ctrl, "_wake_session_note_qa", None)
+    if callable(_note_qa):
+        _note_qa(speaker, topic, answer)
+    if source == "question_opener" and callable(_note):
+        _note(speaker)
     logger.info(f"[AmbientQA] {speaker} 「{topic}」已回答（{latency_ms}ms, src={sources}）。")
+    return "answered"
+
+
+async def try_question_opener(ctrl, ctx) -> bool:
+    """IntentBus 沒人接的喚醒句 / 對談窗追問：像問句 → 3.5-flash 自己判斷要不要查。
+
+    True＝已處理（有答案或「這題我查不到」）；False＝不是查詢，交回 Marvin 主聊天。
+    10/21 使用者定案：開場說法每個人不一樣 → 句型 regex 補不完，問句形狀就交給模型判斷；
+    模型回「略」一律交回聊天（對談窗內也是——安靜會被當成沒在聽）。
+    session 已進查詢模式（sticky）→ source=session_followup（連續對談 prompt），否則 question_opener。
+    """
+    if getattr(ctx, "low_confidence_wake", False) is True:
+        return False
+    if getattr(ctx, "mode", "normal") not in GroundedQAAgent.mode_compatible:
+        return False
+    q = _WAKE_PREFIX_RE.sub("", (getattr(ctx, "query", "") or "").strip()).strip()
+    if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
+        return False
+    if len(_HAN_RE.findall(q)) < 2 or not _SESSION_QUESTION_RE.search(q):
+        return False
+    sticky_fn = getattr(ctrl, "_wake_session_grounded_sticky", None)
+    sticky = callable(sticky_fn) and sticky_fn(ctx.speaker) is True   # is True：MagicMock 回傳不算
+    source = "session_followup" if sticky else "question_opener"
+    status = await run_grounded_qa(ctrl, ctx.speaker, q, raw=getattr(ctx, "raw_text", "") or "",
+                                   source=source)
+    return status != "not_question"
 
 
 def maybe_dispatch_followup_supplement(
@@ -488,9 +642,6 @@ class GroundedQAAgent(DeclarativeIntentAgent):
     name = "grounded_qa"
     # 一般資訊請求，normal/stream 都活；game session 模式不出價（比照 GameKnowledgeAgent）。
     mode_compatible = frozenset({"normal", "stream"})
-    # session 內已有過 grounded 查詢後的非音樂追問黏著分數；刻意低於 music/playback 0.95
-    # 與自身 factual 0.75（regex 本來就中的路徑優先，不被這條蓋掉）。
-    SESSION_FOLLOWUP_CONFIDENCE = 0.5
 
     def __init__(self, controller):
         self.ctrl = controller
@@ -527,36 +678,6 @@ class GroundedQAAgent(DeclarativeIntentAgent):
         if getattr(ctx.rescue, "low_confidence_wake", False):
             return "low_confidence_wake"
         return None
-
-    def bid(self, ctx: IntentContext) -> Bid:
-        b = super().bid(ctx)
-        if b.confidence > 0:
-            return b
-        return self._session_followup_bid(ctx) or b
-
-    def _session_followup_bid(self, ctx: IntentContext) -> Bid | None:
-        """session 內已有過 grounded 查詢 → 對象接下來的非音樂追問一律走 grounded
-        （帶既有逐字稿上下文，避免掉進 Marvin 主 LLM 編答案）。純同步、不做 IO。"""
-        if ctx.mode not in self.mode_compatible:
-            return None
-        if self.gate(ctx) is not None:
-            return None
-        if is_audio_rescue(ctx):
-            return None
-        sticky = getattr(self.ctrl, "_wake_session_grounded_sticky", None)
-        if not callable(sticky) or sticky(ctx.speaker) is not True:   # is True：MagicMock 的 truthy 回傳不算
-            return None
-        q = _WAKE_PREFIX_RE.sub("", (ctx.query or "").strip()).strip()
-        if _excluded(q) is not None or _SESSION_PLAY_RE.search(q):
-            return None
-        if len(_HAN_RE.findall(q)) < 2:
-            return None
-
-        async def _answer():
-            await run_grounded_qa(self.ctrl, ctx.speaker, q, raw=ctx.query or "", source="session_followup")
-
-        return Bid(name=self.name, confidence=self.SESSION_FOLLOWUP_CONFIDENCE,
-                   handler=_answer, reason="session_followup")
 
     def post_match_filter(self, schema, slots, ctx: IntentContext) -> bool:
         # audio-rescue：topic 由 LLM 從音訊填好，ctx.query 是糊掉的 STT，別再 re-parse。

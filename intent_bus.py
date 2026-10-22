@@ -563,9 +563,9 @@ class IntentBus:
         }
 
         # audio-rescue：原始 wav 寫 sidecar 檔（不塞 jsonl），record 記路徑。
+        # 10/22：每次 audio rescue 嘗試都存（含 just_chatting / 逾時 / 放棄），供方向判斷評估。
+        # wav_store 只在 MODE=audio 才建立（build_rescue_components），保留上限沿用 RescueWavStore.keep。
         if (self.rescue_wav_store is not None
-                and rescued_ctx is not None
-                and rescued_ctx.dispatch_source == "llm_rescue_audio"
                 and original_ctx.audio_wav_bytes):
             try:
                 tag = f"{original_ctx.speaker}_{int((original_ctx.now or 0) * 1000)}"
