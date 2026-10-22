@@ -220,6 +220,7 @@ async def test_barge_in_watch_cuts_then_plays_ack(monkeypatch):
 
     chime.cancel.assert_called_once()
     fake._mixer.clear_tts.assert_called_once()
+    fake._resolve_playback_device.assert_not_called()   # Plan12 只清 TTS 層、不 stop player（9/24 opus encoder 崩潰）
     assert fake._tts_interrupted is True
     assert fake._reply_gen == 1
     fake._wake_session.note_barge_in.assert_called_once()
