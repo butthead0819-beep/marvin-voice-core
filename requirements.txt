@@ -22,6 +22,7 @@ faster-whisper==1.2.1             # 只有非 Apple 平台（Linux）才載入�
 # ── STT / TTS / LLM ──
 edge-tts==7.3.1
 google-genai==1.70.0
+google-api-python-client==2.196.0  # Gmail/行事曆同步（scripts/run_gmail_calendar_sync.py）；原本靠已移除的 google-generativeai 順帶裝
 groq==1.2.0
 openai==2.30.0                    # 當 OpenAI 相容 client 用（Groq/Mistral/Gemini-compat 等），不是呼叫 OpenAI
 duckduckgo_search==8.1.1
