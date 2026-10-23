@@ -40,15 +40,14 @@ def test_build_rewrite_input_full():
     assert idx_games < idx_ctx < idx_hist < idx_user
 
 
-def test_build_rewrite_input_with_glossary(tmp_path, monkeypatch):
-    glossary_file = tmp_path / "grounded2.txt"
-    glossary_file.write_text("水下呼吸管,基地,樹籬實驗室", encoding="utf-8")
-    monkeypatch.setattr(gqa, "GLOSSARY_DIR", tmp_path)
+def test_build_rewrite_input_has_no_glossary_segment():
+    """10/23：舊 LLM 生成術語表混一代用語、13 題實測有無無差 → 拿掉，等從整理紀錄長出用語表。"""
     out = build_rewrite_input(
         "幫註怎麼做", speaker="showay", recent_context="", session_history=[],
         games=["Grounded 2"],
     )
-    assert "【Grounded 2 常見術語（拿來修正聽糊的詞）】水下呼吸管,基地,樹籬實驗室" in out
+    assert "常見術語" not in out
+    assert out == "【大家最近在玩的遊戲】Grounded 2\n\n【提問人】showay\n【使用者原句】幫註怎麼做"
 
 
 def test_build_rewrite_input_all_empty_only_user_segment():
@@ -56,27 +55,6 @@ def test_build_rewrite_input_all_empty_only_user_segment():
         "馬文幾歲", speaker="showay", recent_context="", session_history=[], games=[],
     )
     assert out == "【提問人】showay\n【使用者原句】馬文幾歲"
-
-
-# ── _glossary_for ────────────────────────────────────────────────────────────
-
-def test_glossary_for_existing_game(tmp_path, monkeypatch):
-    f = tmp_path / "grounded2.txt"
-    f.write_text("術語A,術語B", encoding="utf-8")
-    monkeypatch.setattr(gqa, "GLOSSARY_DIR", tmp_path)
-    assert gqa._glossary_for("Grounded 2") == "術語A,術語B"
-
-
-def test_glossary_for_missing_game(tmp_path, monkeypatch):
-    monkeypatch.setattr(gqa, "GLOSSARY_DIR", tmp_path)
-    assert gqa._glossary_for("沒有這個遊戲") == ""
-
-
-def test_glossary_for_strips_all_whitespace_in_filename(tmp_path, monkeypatch):
-    f = tmp_path / "monsterhunterwild.txt"
-    f.write_text("怪物A", encoding="utf-8")
-    monkeypatch.setattr(gqa, "GLOSSARY_DIR", tmp_path)
-    assert gqa._glossary_for("Monster Hunter Wild") == "怪物A"
 
 
 # ── rewrite_question ──────────────────────────────────────────────────────────

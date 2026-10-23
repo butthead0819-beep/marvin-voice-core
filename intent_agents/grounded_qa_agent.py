@@ -63,8 +63,6 @@ GROUNDING_USD_PER_SEARCH = 0.0  # 2026-10-23：Gemini 3+ 每月前 5000 次搜�
 REWRITE_MODEL = "gemini-3.5-flash"
 REWRITE_TIMEOUT_S = 8.0
 READBACK_MAX_CHARS = 40
-GLOSSARY_DIR = Path("dictionaries")
-GLOSSARY_MAX_CHARS = 600
 _REWRITE_SYSTEM_PROMPT = (
     "你是馬文的「問題整理」：使用者用語音問問題，語音辨識常把專有名詞、遊戲名、數字聽糊，"
     "句子也常省略主詞或接著前面的話。你的工作只有一件：根據提供的資料，把【使用者原句】整理"
@@ -342,16 +340,6 @@ async def build_recent_transcript_context(
     return combined
 
 
-def _glossary_for(game: str) -> str:
-    """遊戲名 → dictionaries/<去空白小寫>.txt 的術語表前 GLOSSARY_MAX_CHARS 字，缺就回 ""。"""
-    try:
-        fname = re.sub(r"\s+", "", game).lower() + ".txt"
-        path = GLOSSARY_DIR / fname
-        return path.read_text(encoding="utf-8")[:GLOSSARY_MAX_CHARS]
-    except Exception:
-        return ""
-
-
 def build_rewrite_input(
     query: str,
     *,
@@ -364,10 +352,6 @@ def build_rewrite_input(
     segments: list[str] = []
     if games:
         segments.append(f"【大家最近在玩的遊戲】{'、'.join(games)}")
-        for g in games:
-            glossary = _glossary_for(g)
-            if glossary:
-                segments.append(f"【{g} 常見術語（拿來修正聽糊的詞）】{glossary}")
     if recent_context and recent_context.strip():
         segments.append(f"【過去 10 分鐘語音對話背景】\n{recent_context.strip()}")
     if session_history:
