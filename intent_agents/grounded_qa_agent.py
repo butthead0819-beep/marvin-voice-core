@@ -597,9 +597,12 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         _note(speaker)
 
     _addr = getattr(ctrl, "_reply_address_prefix", None)
-    prefix = _addr(speaker) if callable(_addr) else ""
-    if not isinstance(prefix, str):   # MagicMock 回傳不算
-        prefix = ""
+
+    def _with_addr(text: str) -> str:
+        p = _addr(speaker, text) if callable(_addr) else ""
+        if not isinstance(p, str):   # MagicMock 回傳不算
+            p = ""
+        return p + text
 
     asyncio.create_task(ctrl._play_ack("status", speaker=speaker))
 
@@ -647,7 +650,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     if rewritten:
         rb = readback_text(topic, rewritten)
         if rb is not None:
-            asyncio.create_task(ctrl.play_tts(prefix + rb, already_in_channel=True))
+            asyncio.create_task(ctrl.play_tts(_with_addr(rb), already_in_channel=True))
 
     meta: dict = {}
     t0 = _time.monotonic()
@@ -679,7 +682,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
 
     if res is None:
         ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 查不到 | {prov}) {topic}")
-        asyncio.create_task(ctrl.play_tts(prefix + "這題我查不到。", already_in_channel=True))
+        asyncio.create_task(ctrl.play_tts(_with_addr("這題我查不到。"), already_in_channel=True))
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
                            "latency_ms": latency_ms, "source": source, "games": games,
@@ -694,7 +697,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
 
     answer, sources = res
     ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA | {prov}) {answer}")
-    asyncio.create_task(ctrl.play_tts(prefix + answer, already_in_channel=True))
+    asyncio.create_task(ctrl.play_tts(_with_addr(answer), already_in_channel=True))
     if ctrl.active_text_channel:
         src = f"\n_來源：{', '.join(sources)}_" if sources else ""
         asyncio.create_task(ctrl.active_text_channel.send(

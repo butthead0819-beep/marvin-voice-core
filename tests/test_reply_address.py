@@ -19,3 +19,16 @@ def test_text_already_starts_with_speaker_case_insensitive():
 
 def test_empty_speaker_no_prefix():
     assert address_prefix("", ["showay", "B"], "句子") == ""
+
+
+def test_name_prefix_boundary_false_positive_adds_prefix():
+    """10/23 review：「Also」誤判成 "Al" 開頭，名字後接英數字不算叫過名字。"""
+    assert address_prefix("Al", ["Al", "B"], "Also good") == "Al，"
+
+
+def test_name_prefix_boundary_real_address_no_prefix():
+    assert address_prefix("Al", ["Al", "B"], "Al, hi") == ""
+
+
+def test_name_prefix_exact_whole_sentence_no_prefix():
+    assert address_prefix("showay", ["showay", "B"], "showay") == ""

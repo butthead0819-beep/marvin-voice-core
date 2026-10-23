@@ -637,6 +637,8 @@ def test_stream_response_mid_song_speak_has_address_prefix():
     import inspect
     from cogs.voice_controller import VoiceController
     src = inspect.getsource(VoiceController._stream_response)
+    assert "self._speak_whole_reply(" in src
+    src = inspect.getsource(VoiceController._speak_whole_reply)
     assert "self.speak(self._reply_address_prefix(speaker, full_text) + full_text" in src
 
 
