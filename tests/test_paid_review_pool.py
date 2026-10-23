@@ -112,3 +112,64 @@ async def test_call_paid_review_passes_system_and_thinking_off():
     assert cfg.system_instruction == "SYSTEM"          # system 帶入
     assert cfg.response_mime_type == "application/json"  # JSON mode
     assert cfg.thinking_config.thinking_budget == 0      # thinking 關掉（關鍵修正）
+
+
+# ── 10/23：daily review 單次指定 model / response_schema（其他呼叫者不傳＝行為不變）──
+
+@pytest.mark.asyncio
+async def test_call_paid_review_forwards_response_schema():
+    captured = {}
+
+    async def _gen(**kw):
+        captured.update(kw)
+        return _genai_resp('{"ok": true}')
+
+    ep = PoolEndpoint(name="g", model="gemini-3.1-flash-lite")
+    ep.client = _genai_client(_gen)
+    from llm_pool import CooldownAwarePool
+    schema = {"type": "OBJECT", "properties": {"ok": {"type": "BOOLEAN"}}}
+    await call_paid_review("hello", system="S", pool=CooldownAwarePool([ep]), response_schema=schema)
+    assert captured["config"].response_schema is not None
+
+
+@pytest.mark.asyncio
+async def test_call_paid_review_without_schema_leaves_it_unset():
+    captured = {}
+
+    async def _gen(**kw):
+        captured.update(kw)
+        return _genai_resp('{"ok": true}')
+
+    ep = PoolEndpoint(name="g", model="gemini-2.5-flash")
+    ep.client = _genai_client(_gen)
+    from llm_pool import CooldownAwarePool
+    await call_paid_review("hello", system="S", pool=CooldownAwarePool([ep]))
+    assert captured["config"].response_schema is None
+
+
+@pytest.mark.asyncio
+async def test_call_paid_review_model_override_builds_pool_with_model_first(monkeypatch):
+    import llm_pool
+    seen = {}
+
+    def fake_build(env=None, **kw):
+        seen["env"] = env
+        return llm_pool.CooldownAwarePool([])
+
+    monkeypatch.setattr(llm_pool, "build_paid_review_pool", fake_build)
+    await llm_pool.call_paid_review("x", system="S", model="gemini-3.1-flash-lite")
+    assert seen["env"]["MARVIN_REVIEW_MODEL"] == "gemini-3.1-flash-lite"
+
+
+@pytest.mark.asyncio
+async def test_call_paid_review_no_model_uses_default_env(monkeypatch):
+    import llm_pool
+    seen = {}
+
+    def fake_build(env=None, **kw):
+        seen["env"] = env
+        return llm_pool.CooldownAwarePool([])
+
+    monkeypatch.setattr(llm_pool, "build_paid_review_pool", fake_build)
+    await llm_pool.call_paid_review("x", system="S")
+    assert seen["env"] is None

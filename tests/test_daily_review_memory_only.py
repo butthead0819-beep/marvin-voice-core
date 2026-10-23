@@ -13,6 +13,9 @@ system_suggestions / atmosphere_calibration 不是記憶萃取，砍掉。
      ProactiveTopicAgent 的過期判斷永遠不會擋，會一直重演凍結的舊節目
   5. atmosphere_calibration 既有關鍵字保留、不再更新；wake_words_override 不再被寫
   6. 玩家記憶照常合併、_meta.review_date 照常推進
+
+2026-10-23 補充：SYSTEM_PROMPT 改成只要求輸出「變動」（new_likes 等），不再要求整份
+玩家 schema 重寫（見 scripts/analyze_daily_log.py SYSTEM_PROMPT 與 delta_to_update）。
 """
 from __future__ import annotations
 
@@ -41,9 +44,11 @@ def test_system_prompt_only_asks_for_memory():
     mod = _import_module()
     for key in REMOVED_SECTIONS + ("prompt_suggestions", "problem_patterns", "wake_words"):
         assert key not in mod.SYSTEM_PROMPT, f"SYSTEM_PROMPT 仍要求 {key}"
-    for key in ('"players"', "likes", "taboos", "suki_impression", "emotional_highlights",
-                "speech_dna", "news_queue", "_meta"):
+    for key in ('"players"', "new_likes", "new_taboos", "suki_impression",
+                "emotional_highlights", "highlight_of_the_day"):
         assert key in mod.SYSTEM_PROMPT, f"SYSTEM_PROMPT 漏了記憶欄位 {key}"
+    assert "speech_dna" not in mod.SYSTEM_PROMPT
+    assert "news_queue" not in mod.SYSTEM_PROMPT
 
 
 @pytest.fixture
@@ -85,7 +90,7 @@ def review_env(tmp_path, monkeypatch):
     sent = {}
     # 模擬 LLM 不聽話、還是吐出被砍的區段
     fake_result = {
-        "players": {"狗與露": {"likes": ["周杰倫", "草東沒有派對"], "suki_impression": "新印象"}},
+        "players": {"狗與露": {"new_likes": ["草東沒有派對"], "suki_impression": "新印象"}},
         "proactive_topics": [{"id": "marvin_sing", "title": "即興自彈自唱"}],
         "marvin_performance": {"score": 9.9, "problem_patterns": [{"pattern": "x"}]},
         "wake_analysis": {"suggested_additions": ["馬溫"], "suggested_removals": []},

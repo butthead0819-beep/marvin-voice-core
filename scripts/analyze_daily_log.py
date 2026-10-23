@@ -68,141 +68,24 @@ DISCORD_REVIEW_CHANNEL_ID = os.environ.get("DISCORD_REVIEW_CHANNEL_ID", "")
 MAX_STT_LINES    = 900   # 最多送幾行 STT（保留最近的）
 MAX_FEEDBACK_REC = 120   # 最多送幾筆 feedback
 
-# ── 系統提示詞（Gemini Gem 原版） ─────────────────────────────────────────────
-SYSTEM_PROMPT = """\
-# Marvin Daily Review — 玩家記憶萃取
+# ── 系統提示詞（2026-10-23 改成只輸出變動，見 feedback_daily_review_delta） ──
+SYSTEM_PROMPT = """你是 Marvin Discord Bot 的記憶管理員。從今日資料萃取玩家記憶的「變動」，只輸出有變的部分。
 
-## 你的身份
-你是 Marvin Discord Bot 的記憶管理員。你的唯一任務：從今日聊天紀錄萃取玩家記憶，更新 `suki_memory.json` 的 `players` 區段。
+輸入：A. 今日逐字稿（壓縮格式「時:分 名字: 內容」，「名字 點歌：」那行是點歌結果）；B. 回饋紀錄；C. 今日活躍玩家的現有記憶（精簡版；`likes`/`dislikes` 是已確認的喜好，`mentioned` 是以前提過、還沒確認的項目）。
 
----
+規則：
+- 只輸出今日資料裡有根據的新資訊；沒有新資訊的玩家、欄位一律省略。不要重複現有記憶已有的東西。
+- 只處理 A 裡實際有講話的真人玩家，不要替「馬文」或系統建立記錄。
+- `new_likes` / `new_dislikes` / `new_taboos`：今天**明確說出**喜歡／討厭／不想被提的具體對象（例如「我很愛…」「超討厭…」「別再講…」），含以前提過的（重複提到會累積分數）。抱怨遊戲機制、日常瑣事、單純提到某樣東西都不算。每類最多 5 項，挑最明確的。歌名、歌手、遊戲、食物、品牌等專有名詞要原樣保留。**若跟現有記憶 `likes`／`dislikes`／`mentioned` 裡某項指同一件事（同義、換句話說、多或少修飾詞），必須原封不動沿用現有項目的字串，不准另創新寫法**。
+- `personal_info`：只列今天新得知或有改變的鍵（食衣住行育樂、職業、所在地等，2-10 字）。
+- `suki_impression`：**整段改寫**成一段（不是把舊印象抄一遍再接新的），融合舊印象與今天的新認識，馬文第一人稱、憂鬱犬儒口吻、含互動策略，150 字以內。
+- `highlight_of_the_day`：今天這個人最值得記住的 1-2 件事，80 字以內，只寫今天。
+- `emotional_highlights`：今天的情緒時刻，最多 2 個，{"moment": 30 字內, "valence": "warm|funny|sad|tense"}。
+- 所有文字用繁體中文。不要編造資料裡沒有的事。
 
-## 輸入資料
-
-### A. `stt_history.log`（今日語音轉文字紀錄）
-- 格式：每行 `[HH:MM:SS] <玩家名> | raw: <原始STT> | clean: <清洗後>`
-- 時間區間：昨日中午12:00 ～ 今日中午12:00
-
-### B. `records/response_feedback.jsonl`（馬文回應的玩家反應紀錄）
-- 每行一筆 JSON：`timestamp`、`speaker`、`bot_response`、`reaction_type`（嚴重|錯誤|提出興趣|喜歡|延遲）、`reason`、`raw_reaction`
-- 用途：更新 `stats`，並作為理解玩家情緒與互動的輔助線索
-
-### C. `suki_memory.json` 的 `players` 區段（今日活躍玩家的現有記憶，作為更新基礎）
-
----
-
-## 核心工作流程
-
-### 步驟 1：語意修復
-STT 音近詞常見錯誤（`馬文→罵文`、`狗與鹿→夠與鹿` 等），修復後才進行萃取。
-
-### 步驟 2：玩家記憶更新
-對每位今日出現過的玩家，更新以下欄位（以 FIFO 原則，近期事件優先）：
-
-- `personal_info`：食衣住行育樂（2-5字精簡）
-- `likes` / `dislikes` / `taboos`：追加去重。**若新項目跟該玩家現有記憶 `taste` 裡的某個項目指同一件事（同義、換句話說、多或少修飾詞），必須原封不動沿用現有項目的字串，不准另創新寫法**（例：現有「寵物柴犬（火柴）」就不要再寫「柴犬（火柴）」；現有「自動化腳本開發」就不要寫「開發自動化腳本」）
-- `suki_impression`：**最重要** — 以馬文第一人稱視角寫主觀感受與互動策略，充滿個性（憂鬱、犬儒、但偶爾在意）
-- `emotional_highlights`：今日高情緒時刻（喜悅/憤怒/脆弱），加入新的，超過10筆則刪除最舊的
-- `stats`：根據 B 更新 `pos_feedback`（喜歡+提出興趣）、`neg_feedback`（嚴重+錯誤）
-- `news_queue`：從對話中提取玩家提到的新聞/話題，轉成馬文口吻的主動問候句（帶諷刺或疲憊感），格式 `{"text": "馬文說的話", "timestamp": <unix_timestamp>}`；最多保留 3 筆，清除超過 72 小時的舊項目
-- `speech_dna`：模仿秀引擎用 — 從今日語音辨識文字萃取該玩家的說話 DNA：
-  - `style_summary`：100字以內的說話風格總覽（句型長短、口語習慣、是否解釋、說話節奏）
-  - `openers`：最多5個，最常出現在句首的詞語
-  - `closers`：最多5個，句尾語氣詞或慣用收尾語
-  - `fillers`：最多5個，句中填充語
-  - `pause_proxies`：最多3個，文字中可觀察到的停頓行為（STT 已切除靜音，不推測時長）
-  - `catchphrases`：最多6個，具識別度的招牌語
-  - `sentence_length`：`"short"` / `"medium"` / `"long"`
-  - `emotional_style`：情緒表達方式
-  - `quirks`：最多5個說話怪癖
-  - `reaction_to_teasing`：被嗆/被揶揄時的典型反應
-  - `reaction_to_bad_news`：聽到壞消息時的典型反應
-  若今日發言少於5句則省略 `speech_dna` 欄位不更新。
-
----
-
-## 輸出格式
-
-輸出一個合法 JSON，嚴格符合以下 schema，不輸出任何 JSON 以外的文字：
-
-```json
-{
-  "players": {
-    "<玩家名>": {
-      "name": "string | null",
-      "personal_info": {
-        "food": "string | null",
-        "clothing": "string | null",
-        "housing": "string | null",
-        "transport": "string | null",
-        "minecraft_id": "string | null",
-        "age": "number | null",
-        "education": "string | null",
-        "current_location": "string | null",
-        "occupation_field": "string | null",
-        "hobbies": ["string"],
-        "preferences": {
-          "drink": "string | null",
-          "favorite_brands": ["string"],
-          "tech_stack": ["string"]
-        }
-      },
-      "hardware_specs": {},
-      "likes": ["string"],
-      "dislikes": ["string"],
-      "taboos": ["string"],
-      "suki_impression": "string",
-      "highlight_of_the_day": "string",
-      "stats": {
-        "interaction_count": "number",
-        "pos_feedback": "number",
-        "neg_feedback": "number",
-        "vul_feedback": "number"
-      },
-      "news_queue": [
-        {"text": "string", "timestamp": "number"}
-      ],
-      "bias_score": "number (-10 to 10)",
-      "last_interacted_time": "number (unix timestamp)",
-      "relationship_stage": "陌生人 | 熟人 | 老友 | 摯友",
-      "relationship_note": "string",
-      "emotional_highlights": [
-        {"moment": "string", "valence": "string", "timestamp": "number"}
-      ],
-      "behavioral_patterns": {},
-      "speech_dna": {
-        "style_summary": "string | null",
-        "openers": ["string"],
-        "closers": ["string"],
-        "fillers": ["string"],
-        "pause_proxies": ["string"],
-        "catchphrases": ["string"],
-        "sentence_length": "short | medium | long",
-        "emotional_style": "string | null",
-        "quirks": ["string"],
-        "reaction_to_teasing": "string | null",
-        "reaction_to_bad_news": "string | null"
-      }
-    }
-  },
-  "_meta": {
-    "review_date": "YYYY-MM-DD",
-    "log_range_start": "string (ISO 8601)",
-    "log_range_end": "string (ISO 8601)",
-    "total_utterances_processed": "number",
-    "feedback_records_processed": "number"
-  }
-}
-```
-
-## 運作原則
-
-- 所有描述性文字欄位使用**繁體中文**
-- 只輸出今日有出現的玩家
-- `suki_impression` 必須用馬文第一人稱、憂鬱犬儒口吻，包含互動策略
-- **不輸出任何 JSON 以外的文字，包括說明、前言、標題**
-
----"""
+只輸出 JSON：
+{"players": [{"name": "<玩家名>", "new_likes": [], "new_dislikes": [], "new_taboos": [], "personal_info": {}, "suki_impression": "string", "highlight_of_the_day": "string", "emotional_highlights": []}]}
+"""
 
 # ── 不覆寫的 runtime 欄位 ────────────────────────────────────────────────────
 _RUNTIME_KEYS = frozenset({
@@ -212,8 +95,175 @@ _RUNTIME_KEYS = frozenset({
     "cleaned_text", "recent_topics", "song_history",
 })
 
+# 2026-10-23 減量：逐字稿改送「整天壓縮版」（不再只送最後 MAX_STT_LINES 行），上限保險
+MAX_STT_CHARS = 120_000
+IMPRESSION_MAX_CHARS = 200
+HIGHLIGHT_MAX_CHARS = 120
+EMOTION_MOMENT_MAX_CHARS = 40
+EMOTION_MAX_PER_DAY = 2
+# 10/23 真模型實測：模型一次吐 70 項「遊戲中X」厭惡、hobbies 灌一串——prompt 管不住，程式碼硬上限
+TASTE_MAX_PER_DAY = 5
+PERSONAL_LIST_MAX = 5
+
+# 10/23 真模型實測：2.5-flash 關思考吃整天逐字稿會退化（一次列 70 項／tab 迴圈撞上限），
+# 3.1-flash-lite＋response_schema 正常結束、印象真的改寫、每天約 $0.015（舊版約 $0.06）。
+# schema 在生成時就限制陣列長度；玩家改成陣列（schema 不能用動態 key）。
+REVIEW_MODEL = "gemini-3.1-flash-lite"
+_REVIEW_LIST = {"type": "ARRAY", "items": {"type": "STRING"}, "maxItems": TASTE_MAX_PER_DAY}
+REVIEW_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {"players": {"type": "ARRAY", "items": {
+        "type": "OBJECT",
+        "properties": {
+            "name": {"type": "STRING"},
+            "new_likes": _REVIEW_LIST, "new_dislikes": _REVIEW_LIST, "new_taboos": _REVIEW_LIST,
+            "personal_info": {"type": "OBJECT", "properties": {
+                **{k: {"type": "STRING"} for k in ("food", "clothing", "housing", "transport", "education",
+                                                  "current_location", "occupation_field", "drink")},
+                "hobbies": {"type": "ARRAY", "items": {"type": "STRING"}, "maxItems": PERSONAL_LIST_MAX},
+            }},
+            "suki_impression": {"type": "STRING"},
+            "highlight_of_the_day": {"type": "STRING"},
+            "emotional_highlights": {"type": "ARRAY", "maxItems": EMOTION_MAX_PER_DAY, "items": {
+                "type": "OBJECT",
+                "properties": {"moment": {"type": "STRING"},
+                               "valence": {"type": "STRING", "enum": ["warm", "funny", "sad", "tense"]}},
+                "required": ["moment"]}},
+        },
+        "required": ["name"]}}},
+    "required": ["players"],
+}
+
+_STT_PERSON_RE = re.compile(r"^\S+ (\d\d:\d\d):\d\d,\d+ - \[([^\]\s→←\[]+)\] \(Debounced\) (.*)$")
+_STT_SONG_RE = re.compile(r"^\S+ (\d\d:\d\d):\d\d,\d+ - \[點歌-語音\] 使用者=(\S+) \| 搜尋=.*? \| 結果=(.*)$")
+
 
 # ── 輔助函數 ─────────────────────────────────────────────────────────────────
+
+def compress_stt_lines(lines: list[str]) -> list[str]:
+    """把原始 STT 切片行壓成「時:分 名字: 內容」給 LLM，過濾語助詞與系統行。"""
+    out: list[str] = []
+    for line in lines:
+        m = _STT_PERSON_RE.match(line)
+        if m:
+            hhmm, speaker, text = m.groups()
+            t = text.strip()
+            if len(re.sub(r"[\W_]", "", t)) <= 2:
+                continue
+            entry = f"{hhmm} {speaker}: {t}"
+        else:
+            m2 = _STT_SONG_RE.match(line)
+            if not m2:
+                continue
+            hhmm, user, result = m2.groups()
+            entry = f"{hhmm} {user} 點歌：{result[:60]}"
+
+        if out and out[-1] == entry:
+            continue
+        out.append(entry)
+    return out
+
+
+def compact_players_for_prompt(players: dict) -> dict:
+    """只留下送給 LLM 真正需要的玩家記憶欄位（省 input token）。"""
+    _KEEP = ("likes", "dislikes", "taboos", "personal_info", "suki_impression", "relationship_stage")
+    out: dict = {}
+    for name, p in players.items():
+        if not isinstance(p, dict):
+            continue
+        entry = {}
+        for key in _KEEP:
+            val = p.get(key)
+            if key == "personal_info" and isinstance(val, dict):
+                sub = {k: v for k, v in val.items() if v not in (None, "", [], {})}
+                if sub:
+                    entry["personal_info"] = sub
+                continue
+            if val in (None, "", [], {}):
+                continue
+            entry[key] = val[:IMPRESSION_MAX_CHARS] if key == "suki_impression" else val
+        # 口味分數表只送「曾提及、未確認」的項目名稱（不送分數）：模型重複提到時沿用同一字串，
+        # 分數才會跨日累積升級成 likes/dislikes（9/18 口味生命週期，見 merge_player）
+        taste = p.get("taste")
+        if isinstance(taste, dict):
+            confirmed = set(p.get("likes") or []) | set(p.get("dislikes") or [])
+            mentioned = [k for k in taste if k not in confirmed]
+            if mentioned:
+                entry["mentioned"] = mentioned
+        out[name] = entry
+    return out
+
+
+def _clip_sentence(text: str, limit: int) -> str:
+    """截到 limit 字；能退到後半段的句尾（。！？）就退，不斷在句子中間。"""
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    idx = max(cut.rfind("。"), cut.rfind("！"), cut.rfind("？"))
+    return cut[:idx + 1] if idx >= limit // 2 else cut
+
+
+def players_from_result(result) -> dict:
+    """模型輸出 → {玩家名: 變動}。新格式是 [{"name": ...}]；舊的 {名字: {...}} 也收。"""
+    players = result.get("players") if isinstance(result, dict) else None
+    if isinstance(players, dict):
+        return players
+    if not isinstance(players, list):
+        return {}
+    out = {}
+    for p in players:
+        if isinstance(p, dict) and isinstance(p.get("name"), str) and p["name"].strip():
+            out[p["name"].strip()] = {k: v for k, v in p.items() if k != "name"}
+    return out
+
+
+def delta_to_update(delta: dict, now: float) -> dict:
+    """把模型輸出的「變動」轉成 merge_player 吃的 update dict。"""
+    if not isinstance(delta, dict):
+        return {}
+    out: dict = {}
+
+    for src_key, dst_key in (("new_likes", "likes"), ("new_dislikes", "dislikes"), ("new_taboos", "taboos")):
+        items = [s.strip() for s in (delta.get(src_key) or []) if isinstance(s, str) and s.strip()]
+        items = items[:TASTE_MAX_PER_DAY]
+        if items:
+            out[dst_key] = items
+
+    personal_info = delta.get("personal_info")
+    if isinstance(personal_info, dict):
+        info = {k: (v[:PERSONAL_LIST_MAX] if isinstance(v, list) else v)
+                for k, v in personal_info.items() if v not in (None, "", [], {})}
+        if info:
+            out["personal_info"] = info
+
+    impression = delta.get("suki_impression")
+    if isinstance(impression, str) and impression.strip():
+        out["suki_impression"] = _clip_sentence(impression.strip(), IMPRESSION_MAX_CHARS)
+
+    highlight = delta.get("highlight_of_the_day")
+    if isinstance(highlight, str) and highlight.strip():
+        out["highlight_of_the_day"] = _clip_sentence(highlight.strip(), HIGHLIGHT_MAX_CHARS)
+
+    emotions = delta.get("emotional_highlights")
+    if isinstance(emotions, list):
+        cleaned = []
+        for e in emotions:
+            if not isinstance(e, dict):
+                continue
+            moment = e.get("moment")
+            if not isinstance(moment, str) or not moment.strip():
+                continue
+            cleaned.append({
+                "moment": moment.strip()[:EMOTION_MOMENT_MAX_CHARS],
+                "valence": e.get("valence") or "warm",
+                "timestamp": now,
+            })
+            if len(cleaned) >= EMOTION_MAX_PER_DAY:
+                break
+        if cleaned:
+            out["emotional_highlights"] = cleaned
+
+    return out
 
 def find_latest_slice() -> Path | None:
     """找今日或昨日的切片檔（支援 YYYY-MM-DD.log 和 stt_YYYY-MM-DD.log）。"""
@@ -580,10 +630,11 @@ def call_review_llm(user_content: str, paid_call=None) -> dict:
     def _do(content: str) -> str:
         # batch job：flash 處理 ~76k content + 生成完整 JSON 要 60-90s，timeout 給寬
         # （180s）；即時 call 才用緊 timeout。per-call timeout 仍會 cut 真正掛死的連線。
-        # max_tokens 16000：2026-06-25 實測 daily review 輸出是 runaway（給 32000 也填滿砍斷），
-        # 加 token 無用且多花錢——真因是 input 重複資料誘發冗長輸出，治本要減 input/搶救 partial。
+        # max_tokens 6000：2026-10-23 改成只輸出變動後，輸出約 1.3k-4.4k token（舊版
+        # 16000 是為了塞得下整份重寫，現在不重寫了，給太大隻是縱容 runaway）。
         _status: dict = {}
-        raw = asyncio.run(paid_call(content, system=SYSTEM_PROMPT, max_tokens=16000,
+        raw = asyncio.run(paid_call(content, system=SYSTEM_PROMPT, max_tokens=6000,
+                                    model=REVIEW_MODEL, response_schema=REVIEW_SCHEMA,
                                     temperature=0.2, timeout=180.0, caller="daily_review",
                                     status=_status))
         if not raw:
@@ -610,8 +661,7 @@ def call_review_llm(user_content: str, paid_call=None) -> dict:
         print("[Daily Review] ⚠ 修復失敗，重試（要求更精簡輸出）...", flush=True)
         retry_content = (
             user_content
-            + "\n\n⚠️ 注意：請盡量精簡每個欄位的文字長度（每個字串欄位不超過80字），"
-            "確保整體 JSON 輸出不超過 12000 tokens。仍須輸出完整 schema 結構。"
+            + "\n\n⚠️ 注意：上次輸出格式錯誤或太長。只輸出有變的部分，每個字串欄位不超過 80 字。"
         )
         raw2 = _do(retry_content)
         try:
@@ -1347,6 +1397,15 @@ def main():
     _active_speakers = set(topic_stats.get("by_speaker", {}).keys())
     _active_speakers |= {r.get("speaker", "") for r in feedback_records}
     _active_speakers.discard("")
+
+    # 2026-10-23 減量：送給模型的逐字稿＝整天壓縮版（壓不出東西時退回原本最後 MAX_STT_LINES 行）
+    _prompt_lines = compress_stt_lines([l for l in stt_lines if not l.startswith("===")])
+    while _prompt_lines and sum(len(l) + 1 for l in _prompt_lines) > MAX_STT_CHARS:
+        _prompt_lines.pop(0)
+    prompt_stt_text = "\n".join(_prompt_lines) if _prompt_lines else "\n".join(body)
+    _active_speakers |= {l.split(" ", 2)[1].rstrip(":") for l in _prompt_lines if len(l.split(" ", 2)) > 2}
+    _active_speakers.discard("")
+
     _all_players = memory.get("players", {})
     _active_memory = {"players": _all_players}  # 只送玩家記憶，不送頂層 meta（省 input token）
     if _active_speakers:
@@ -1362,12 +1421,12 @@ def main():
             )
 
     user_content = (
-        f"### A. stt_history.log（切片區間：{start_dt} ～ {end_dt}）\n"
-        f"{stt_text}\n\n"
+        f"### A. 今日逐字稿（壓縮，切片區間：{start_dt} ～ {end_dt}）\n"
+        f"{prompt_stt_text}\n\n"
         f"### B. response_feedback.jsonl（涵蓋至 {extended_end.strftime('%H:%M')}）\n"
-        f"{json.dumps(feedback_records, ensure_ascii=False, indent=2)}\n\n"
-        f"### C. suki_memory.json（現有記憶，今日活躍玩家）\n"
-        f"{json.dumps(_active_memory, ensure_ascii=False, indent=2)}"
+        f"{json.dumps(feedback_records, ensure_ascii=False)}\n\n"
+        f"### C. suki_memory.json（現有記憶精簡版，今日活躍玩家）\n"
+        f"{json.dumps(compact_players_for_prompt(_active_memory['players']), ensure_ascii=False)}"
     )
 
     # 5. 呼叫 Gemini
@@ -1389,7 +1448,16 @@ def main():
         print(f"[Daily Review] 💾 備份: {backup_path.name}", flush=True)
 
     # 7. 合併玩家資料（per-player 隔離，一個炸不拖垮其他）
-    updated_players  = result.get("players", {})
+    # 2026-10-23：模型只輸出變動 → 轉成 merge_player 格式；只收今日活躍或已存在的玩家（擋模型自創名字）
+    _now_ts = time.time()
+    updated_players = {}
+    for _name, _delta in players_from_result(result).items():
+        if _name not in _active_speakers and _name not in memory.get("players", {}):
+            continue
+        _upd = delta_to_update(_delta, _now_ts)
+        if not _upd:
+            continue
+        updated_players[_name] = _upd if _name in memory.get("players", {}) else merge_player({}, _upd)
     existing_players = memory.get("players", {})
     merged_players   = merge_players_safe(existing_players, updated_players)
 

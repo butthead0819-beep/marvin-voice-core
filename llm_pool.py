@@ -496,13 +496,18 @@ async def call_paid_review(
     pool: Optional[CooldownAwarePool] = None,
     caller: str = "paid_review",
     status: Optional[dict] = None,
+    model: Optional[str] = None,
+    response_schema: Optional[dict] = None,
 ) -> Optional[str]:
     """付費 Gemini 大型 batch 呼叫（genai 原生 SDK + thinking_budget=0 + JSON mode）；
     model fallback + cooldown + timeout 走 bus 既有 dispatch。回 raw 字串；全 model 失敗回 None。
     caller：成本記帳標籤（寫 records/llm_paid_usage.jsonl，讓帳單看得見是誰花的）。
     status：可選 out-param dict。全 model 失敗時填 status["reason"]——"budget_cap"（撞付費
-    月度 spending cap = 不夠預算）或 "exhausted"（其他額度/連線失敗），讓 caller 寫清楚原因。"""
-    pool = pool if pool is not None else build_paid_review_pool()
+    月度 spending cap = 不夠預算）或 "exhausted"（其他額度/連線失敗），讓 caller 寫清楚原因。
+    model：這次優先用的 model（其後仍接預設 fallback）；response_schema：生成時就約束 JSON 形狀
+    （例如陣列 maxItems）。兩者不傳＝行為不變（2026-10-23 daily review 改 3.1-flash-lite＋schema 加的）。"""
+    if pool is None:
+        pool = build_paid_review_pool(env={**os.environ, "MARVIN_REVIEW_MODEL": model} if model else None)
     saw_budget_cap = {"v": False}
 
     async def _call(ep: PoolEndpoint):
@@ -518,6 +523,7 @@ async def call_paid_review(
                         response_mime_type="application/json",
                         max_output_tokens=max_tokens,
                         thinking_config=types.ThinkingConfig(thinking_budget=0),
+                        response_schema=response_schema,
                     ),
                 ),
                 timeout=timeout,
