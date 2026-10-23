@@ -35,9 +35,22 @@ def test_estimate_cost_flash_preview_prefix_match():
 
 
 def test_estimate_cost_flash_lite():
-    # Marvin reply paid fallback 用 gemini-3.1-flash-lite-preview；現價約 0.10 / 0.40
-    # 不能套 default (2.0/12.0)，會過度高估 ~20×，導致 allow() 過早拒絕。
-    assert estimate_cost("gemini-3.1-flash-lite-preview", 1_000_000, 1_000_000) == pytest.approx(0.50)
+    # 3.1-flash-lite（含 -preview 後綴）官方價 0.25 / 1.50（2026-10-23 ai.google.dev/pricing）。
+    # 舊表 0.10 / 0.40 低估：DJ 付費口白 1300 筆月額被少算。
+    assert estimate_cost("gemini-3.1-flash-lite-preview", 1_000_000, 1_000_000) == pytest.approx(1.75)
+    assert estimate_cost("gemini-3.1-flash-lite", 1_000_000, 1_000_000) == pytest.approx(1.75)
+
+
+@pytest.mark.parametrize("model", ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.8-flash"])
+def test_estimate_cost_gemini3_flash_not_default(model):
+    # 3.5-flash 不在官方價目表（API 可用），比照 3.6/3.8 的 0.75 / 3.75。
+    # 舊表沒有 → 套 default 2.0/12.0，查詢帳本高估 ~9×（2026-10-23 稽核）。
+    assert estimate_cost(model, 1_000_000, 1_000_000) == pytest.approx(4.50)
+
+
+def test_estimate_cost_3_5_flash_lite_unchanged():
+    # 最長前綴優先：3.5-flash-lite 不能被新加的 3.5-flash 吃掉
+    assert estimate_cost("gemini-3.5-flash-lite", 1_000_000, 1_000_000) == pytest.approx(2.80)
 
 
 # ── record + totals ──────────────────────────────────────────────────────────

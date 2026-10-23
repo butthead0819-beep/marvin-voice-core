@@ -50,8 +50,8 @@ QA_MODEL_CHAIN: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
 QA_TIMEOUT_S = 15.0
 
 # Gemini 3.x grounding 按「模型實際執行的搜尋次數」計費（$14/1000，超過每月免費額度後）；
-# 2.5 按 prompt 計但每天 1500 免費。統一按搜尋次數估，寧可高估。
-GROUNDING_USD_PER_SEARCH = 0.014
+# 2.5 按 prompt 計但每天 1500 免費。免費額度內不計費（見下行）。
+GROUNDING_USD_PER_SEARCH = 0.0  # 2026-10-23：Gemini 3+ 每月前 5000 次搜尋免費（共用），Marvin 月用量 <1000；超過再改回 0.014
 
 # ── 觸發 regex ────────────────────────────────────────────────────────────────
 
