@@ -643,7 +643,9 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     extra_kwargs["model_chain"] = QA_MODEL_CHAIN
     extra_kwargs["timeout"] = QA_TIMEOUT_S
 
-    rewritten = await rewrite_question(
+    # 只整理第一句（10/23 使用者定）：已有前幾輪問答＝追問，存進對談紀錄的第一句已是整理後的問題，
+    # 原句＋上下文給 lite 即可，省約 3.4s。追問被帶偏的風險上線後用重問率量。
+    rewritten = None if session_history else await rewrite_question(
         getattr(router, "google_paid_client", None), guard, topic,
         speaker=speaker, recent_context=recent_context,
         session_history=session_history, games=games,

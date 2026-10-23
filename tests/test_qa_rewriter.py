@@ -284,3 +284,22 @@ async def test_run_grounded_qa_record_ambient_qa_includes_rewritten_field():
 
     rec = mock_record.call_args[0][0]
     assert rec["rewritten"] == "整理後的問題"
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_follow_up_skips_rewrite():
+    """10/23 使用者定：只整理第一句。對談裡已有前幾輪問答（追問）→ 不整理，原句＋上下文給 lite。"""
+    ctrl = _ctrl()
+    ctrl._wake_session_qa_history = MagicMock(return_value=[("Grounded 2 的綠背椿象在哪？", "在橋樑區。")])
+    rw = AsyncMock(return_value="不該被用到")
+    with patch.object(gqa, "rewrite_question", new=rw), \
+         patch.object(gqa, "grounded_answer", new=AsyncMock(return_value=("答案", ["src"]))) as mock_answer, \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=["Grounded 2"]), \
+         patch.object(gqa, "record_ambient_qa"):
+        await gqa.run_grounded_qa(ctrl, "showay", "是二代還是一代", source="session_followup")
+
+    rw.assert_not_awaited()
+    assert mock_answer.call_args.args[3] == "是二代還是一代"
+    assert mock_answer.call_args.kwargs["session_history"] == [("Grounded 2 的綠背椿象在哪？", "在橋樑區。")]
+    assert [c.args[0] for c in ctrl.play_tts.call_args_list] == ["答案"]   # 沒有讀回句
