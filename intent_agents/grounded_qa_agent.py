@@ -41,12 +41,12 @@ logger = logging.getLogger(__name__)
 AMBIENT_QA_LOG = Path("records/ambient_qa.jsonl")
 
 # D3：不硬釘單一 model（feedback_llm_bus_model_staleness — Marmo 撞 Cerebras 全 404）。
-MODEL_CHAIN: tuple[str, ...] = ("gemini-2.5-flash", "gemini-flash-latest")
+MODEL_CHAIN: tuple[str, ...] = ("gemini-2.5-flash", "gemini-3.5-flash-lite")  # 10/23 拿掉 -latest 別名（曾被計成 3.8-flash）
 GROUNDED_TIMEOUT_S = 8.0
 MAX_REPLY_CHARS = 140
 
-# 喚醒查詢一律直走付費 3.5-flash（使用者 10/21：要正確、付費可以；第一句最重要）。預設思考，2.5-flash 付費備援。
-QA_MODEL_CHAIN: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
+# 喚醒查詢：3.5-flash-lite 先上（10/23 實測 14 題 11 題答出、2.1s、成本約 1/18），答不出／被 L1/L2 擋換 3.5-flash（13/14、6.5s），再備援 2.5-flash。
+QA_MODEL_CHAIN: tuple[str, ...] = ("gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash")
 QA_TIMEOUT_S = 15.0
 
 # Gemini 3.x grounding 按「模型實際執行的搜尋次數」計費（$14/1000，超過每月免費額度後）；
@@ -414,12 +414,12 @@ async def grounded_answer(
         # L1：Gemini 自承查不到 / 拒答
         if first.startswith(_REFUSAL_PREFIXES):
             logger.info(f"[AmbientQA] L1 拒（LLM 回 {first[:20]!r}）query={query!r}")
-            return None
+            return _NEXT   # 換下一個模型試（lite 答不出換大模型）；鏈尾仍回 None
         # L2：grounding_chunks 空 → 沒實際搜到網頁，疑似幻覺
         sources = _extract_sources(response)
         if not sources:
             logger.warning(f"[AmbientQA] L2 拒（grounding_chunks 空）query={query!r} ans={first[:40]!r}")
-            return None
+            return _NEXT   # 同上
 
         logger.info(f"[AmbientQA] ✓ query={query!r} src={sources}")
         return _trim(text, max_chars), sources
