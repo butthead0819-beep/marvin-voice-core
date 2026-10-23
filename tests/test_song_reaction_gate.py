@@ -62,14 +62,16 @@ async def test_three_human_lines_with_marmo_calls_llm_and_excludes_marmo():
 
 def test_get_window_items_boundary_inclusive():
     """get_window_items(start, end)：剛好在 start/end 的條目要納入，之外要排除。"""
+    import time
     buf = ConversationBuffer()
-    buf.add_entry("A", "before", timestamp=100.0)
-    buf.add_entry("B", "at_start", timestamp=110.0)
-    buf.add_entry("C", "middle", timestamp=115.0)
-    buf.add_entry("D", "at_end", timestamp=120.0)
-    buf.add_entry("E", "after", timestamp=130.0)
+    t0 = time.time() - 60.0   # add_entry 會剪掉 6 分鐘前的資料，時間戳要用近期的
+    buf.add_entry("A", "before", timestamp=t0)
+    buf.add_entry("B", "at_start", timestamp=t0 + 10.0)
+    buf.add_entry("C", "middle", timestamp=t0 + 15.0)
+    buf.add_entry("D", "at_end", timestamp=t0 + 20.0)
+    buf.add_entry("E", "after", timestamp=t0 + 30.0)
 
-    items = buf.get_window_items(110.0, 120.0)
+    items = buf.get_window_items(t0 + 10.0, t0 + 20.0)
     texts = [i["text"] for i in items]
 
     assert texts == ["at_start", "middle", "at_end"]
