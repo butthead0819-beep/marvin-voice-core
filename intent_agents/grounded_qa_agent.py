@@ -172,6 +172,9 @@ _OPENER_SYSTEM_PROMPT = _SYSTEM_PROMPT + (
     "使用者叫了你的名字說這句話：如果它不是需要查證的事實、知識、時事或攻略問題（閒聊、問你的意見或心情、"
     "開玩笑、在跟旁邊的人講話），不要查、不要回答，只回一個字「略」。"
 )
+# 10/23：來源可能是 Discord 當下或最近 7 天玩過（recent_games）→ 只當參考。13 題實測：攻略題答對版本，
+# 但「是二代還是一代」會被帶成二代；強制／軟性措辭結果相同，選軟性是因為來源不一定是「正在玩」。
+_GAME_HINT_LABEL = "【大家最近常玩的遊戲（僅供參考：問題明顯在講遊戲、對話背景又沒指出別款時才套用；跟遊戲無關就忽略）】"
 NOT_A_QUESTION = object()   # grounded_answer 回這個＝模型判定不是問題（只有 session prompt 會產生）
 
 _NEXT = object()   # _attempt 內部哨兵：這次嘗試失敗（例外/空回應）→ 換下一個
@@ -350,8 +353,7 @@ async def grounded_answer(
     segments: list[str] = []
     if game_context:
         segments.append(
-            f"【語音頻道裡大家正在玩的遊戲（問題跟遊戲有關但沒講是哪款時，就是指這款）】"
-            f"{'、'.join(game_context)}"
+            f"{_GAME_HINT_LABEL}{'、'.join(game_context)}"
         )
     if recent_context and recent_context.strip():
         segments.append(

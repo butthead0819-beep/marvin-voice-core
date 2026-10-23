@@ -594,6 +594,16 @@ def test_current_games_presence_wins_over_recent():
     assert current_games(ctrl, "showay") == ["原神"]
 
 
+@pytest.mark.asyncio
+async def test_game_hint_is_soft_reference_not_directive():
+    """10/23：遊戲可能來自「最近 7 天玩過」→ 只當參考，不能寫成「就是指這款」（追問哪一代時會被帶偏）。"""
+    free = _client(_resp("答案。"))
+    await grounded_answer(free, None, _guard(), "溫室區怎麼過去", game_context=["Grounded 2"])
+    contents = free.aio.models.generate_content.await_args.kwargs["contents"]
+    assert "【大家最近常玩的遊戲（僅供參考" in contents and "Grounded 2" in contents
+    assert "就是指這款" not in contents
+
+
 def test_current_games_excludes_bots():
     members = [
         _member("Marvin", bot=True, activities=[_playing("原神")]),
