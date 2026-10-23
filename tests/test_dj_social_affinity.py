@@ -55,6 +55,30 @@ def test_social_bridge_when_other_present_member_liked_song():
     assert "讚" in affinity or "喜歡" in affinity
 
 
+def test_reactions_feelings_no_longer_produces_social_bridge_hint():
+    """情緒只內化不唸出（CLAUDE.md）：在場成員只有「記錄過感受」、沒讚沒點播時，
+    不該再回『曾記錄對這首歌的感受』這句——該分支已拔除，應落到下一層（久別重逢/歌手偏好）或 None。"""
+    songs = {
+        "https://www.youtube.com/watch?v=song_feel": {
+            "title": "告白氣球",
+            "uploader": "周杰倫",
+            "webpage_url": "https://www.youtube.com/watch?v=song_feel",
+            "total_plays": 2,
+            "plays": [{"by": "Alice", "ts": time.time() - 3600}],
+            "requesters": {"Alice": 2},
+            "likes": {},
+            "reactions": {"Bob": {"feelings": ["感動"], "quotes": ["好聽"]}},
+        }
+    }
+    mm = _make_mm(songs)
+    info = {"title": "告白氣球", "webpage_url": "https://www.youtube.com/watch?v=song_feel"}
+
+    affinity = find_song_social_affinity(
+        mm, info, requester="Alice", present_members={"Alice", "Bob"}
+    )
+    assert affinity is None or "曾記錄對這首歌的感受" not in affinity
+
+
 def test_social_bridge_when_other_present_member_also_requested():
     """在場其他成員之前也點播過這首歌時，應能產生社交提示。"""
     songs = {

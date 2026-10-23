@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -34,6 +35,8 @@ from intent_agents.constants import (
 )
 from intent_bus import IntentContext
 import pipeline_timing
+import recent_games
+import time as _time
 import turn_outcome
 
 logger = logging.getLogger(__name__)
@@ -41,17 +44,35 @@ logger = logging.getLogger(__name__)
 AMBIENT_QA_LOG = Path("records/ambient_qa.jsonl")
 
 # D3：不硬釘單一 model（feedback_llm_bus_model_staleness — Marmo 撞 Cerebras 全 404）。
-MODEL_CHAIN: tuple[str, ...] = ("gemini-2.5-flash", "gemini-flash-latest")
+MODEL_CHAIN: tuple[str, ...] = ("gemini-2.5-flash", "gemini-3.5-flash-lite")  # 10/23 拿掉 -latest 別名（曾被計成 3.8-flash）
 GROUNDED_TIMEOUT_S = 8.0
 MAX_REPLY_CHARS = 140
 
-# 喚醒查詢一律直走付費 3.5-flash（使用者 10/21：要正確、付費可以；第一句最重要）。預設思考，2.5-flash 付費備援。
-QA_MODEL_CHAIN: tuple[str, ...] = ("gemini-3.5-flash", "gemini-2.5-flash")
+# 喚醒查詢：3.5-flash-lite 先上（10/23 實測 14 題 11 題答出、2.1s、成本約 1/18），答不出／被 L1/L2 擋換 3.5-flash（13/14、6.5s），再備援 2.5-flash。
+QA_MODEL_CHAIN: tuple[str, ...] = ("gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash")
 QA_TIMEOUT_S = 15.0
 
 # Gemini 3.x grounding 按「模型實際執行的搜尋次數」計費（$14/1000，超過每月免費額度後）；
-# 2.5 按 prompt 計但每天 1500 免費。統一按搜尋次數估，寧可高估。
-GROUNDING_USD_PER_SEARCH = 0.014
+# 2.5 按 prompt 計但每天 1500 免費。免費額度內不計費（見下行）。
+GROUNDING_USD_PER_SEARCH = 0.0  # 2026-10-23：Gemini 3+ 每月前 5000 次搜尋免費（共用），Marvin 月用量 <1000；超過再改回 0.014
+
+# 對談查詢前先「整理問題」（2026-10-23 拍板）：語音問題常聽糊、省略主詞（「光點二代」＝
+# Grounded 2、「幫註」在聊天背景裡其實是 Brotato、「是二代還是一代」接著前一輪）。
+# 實測：3.5-flash（預設思考）整理成一句獨立明確的問題再查，13 題沒有答錯；思考調低會被
+# 「最近在玩 Grounded 2」帶偏。
+REWRITE_MODEL = "gemini-3.5-flash"
+REWRITE_TIMEOUT_S = 8.0
+READBACK_MAX_CHARS = 40
+_REWRITE_SYSTEM_PROMPT = (
+    "你是馬文的「問題整理」：使用者用語音問問題，語音辨識常把專有名詞、遊戲名、數字聽糊，"
+    "句子也常省略主詞或接著前面的話。你的工作只有一件：根據提供的資料，把【使用者原句】整理"
+    "成一句「不看上下文也看得懂、可以直接拿去 Google 搜尋」的繁體中文問題。規則：1. 只用資料"
+    "裡有根據的資訊補主詞、指稱、遊戲名稱與版本、修正聽糊的詞；沒根據就不要補，不要自己發明。"
+    "2. 保留使用者真正想問的事，不要改成別的問題、不要加問他沒問的事。3. 如果原句其實不是問題"
+    "（感嘆、聊天、在跟別人講話），question 填空字串。4. 只輸出 JSON：{\"question\": \"整理後的"
+    "問題\", \"basis\": \"用了哪些資料（簡短）\"}"
+)
+_READBACK_STRIP_RE = re.compile(r"[，。、？?！!：:「」『』（）() ]")
 
 # ── 觸發 regex ────────────────────────────────────────────────────────────────
 
@@ -170,6 +191,9 @@ _OPENER_SYSTEM_PROMPT = _SYSTEM_PROMPT + (
     "使用者叫了你的名字說這句話：如果它不是需要查證的事實、知識、時事或攻略問題（閒聊、問你的意見或心情、"
     "開玩笑、在跟旁邊的人講話），不要查、不要回答，只回一個字「略」。"
 )
+# 10/23：來源可能是 Discord 當下或最近 7 天玩過（recent_games）→ 只當參考。13 題實測：攻略題答對版本，
+# 但「是二代還是一代」會被帶成二代；強制／軟性措辭結果相同，選軟性是因為來源不一定是「正在玩」。
+_GAME_HINT_LABEL = "【大家最近常玩的遊戲（僅供參考：問題明顯在講遊戲、對話背景又沒指出別款時才套用；跟遊戲無關就忽略）】"
 NOT_A_QUESTION = object()   # grounded_answer 回這個＝模型判定不是問題（只有 session prompt 會產生）
 
 _NEXT = object()   # _attempt 內部哨兵：這次嘗試失敗（例外/空回應）→ 換下一個
@@ -225,6 +249,7 @@ def current_games(ctrl, speaker: str) -> list[str]:
         members = ctrl.voice_client.channel.members
         speaker_games: list[str] = []
         other_games: list[str] = []
+        present: list[str] = []
         for m in members:
             if getattr(m, "bot", False):
                 continue
@@ -238,6 +263,9 @@ def current_games(ctrl, speaker: str) -> list[str]:
                 speaker_games.extend(names)
             else:
                 other_games.extend(names)
+            present.append(getattr(m, "display_name", "") or "")
+            if names:
+                recent_games.note_games(present[-1], names, now=_time.time())
 
         seen: set[str] = set()
         out: list[str] = []
@@ -247,7 +275,8 @@ def current_games(ctrl, speaker: str) -> list[str]:
                 out.append(name)
             if len(out) >= 3:
                 break
-        return out
+        # 當下抓不到（PS 上玩 Discord 不顯示）→ 在場的人最近 7 天玩過的（見 recent_games.py）
+        return out or recent_games.recent_games(present, now=_time.time())
     except Exception:
         return []
 
@@ -311,6 +340,90 @@ async def build_recent_transcript_context(
     return combined
 
 
+def build_rewrite_input(
+    query: str,
+    *,
+    speaker: str,
+    recent_context: str,
+    session_history: list[tuple[str, str]],
+    games: list[str],
+) -> str:
+    """純函式：組「問題整理」送給 Gemini 的 contents 字串。段落順序固定、空段落略過。"""
+    segments: list[str] = []
+    if games:
+        segments.append(f"【大家最近在玩的遊戲】{'、'.join(games)}")
+    if recent_context and recent_context.strip():
+        segments.append(f"【過去 10 分鐘語音對話背景】\n{recent_context.strip()}")
+    if session_history:
+        qa_lines = "\n".join(f"問：{q}\n答：{a}" for q, a in session_history)
+        segments.append(f"【這次對話 Marvin 剛回答過的問答】\n{qa_lines}")
+    segments.append(f"【提問人】{speaker}\n【使用者原句】{query.strip()}")
+    return "\n\n".join(segments)
+
+
+async def rewrite_question(
+    paid_client,
+    guard,
+    query: str,
+    *,
+    speaker: str,
+    recent_context: str,
+    session_history: list[tuple[str, str]],
+    games: list[str],
+) -> str | None:
+    """把語音聽糊、省略主詞的原句整理成一句獨立明確的問題；None＝失敗或關閉（用原句查）。"""
+    if paid_client is None or os.environ.get("MARVIN_QA_REWRITE", "1") == "0":
+        return None
+    from google.genai import types
+    from llm_paid import estimate_cost
+
+    if not guard.allow(estimate_cost(REWRITE_MODEL, 1500, 300)):
+        return None
+
+    t0 = _time.monotonic()
+    contents = build_rewrite_input(
+        query, speaker=speaker, recent_context=recent_context,
+        session_history=session_history, games=games,
+    )
+    try:
+        response = await asyncio.wait_for(
+            paid_client.aio.models.generate_content(
+                model=REWRITE_MODEL, contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=_REWRITE_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                ),
+            ),
+            timeout=REWRITE_TIMEOUT_S,
+        )
+        usage = getattr(response, "usage_metadata", None)
+        in_tok = getattr(usage, "prompt_token_count", 0) or 0
+        out_tok = (getattr(usage, "candidates_token_count", 0) or 0) + (getattr(usage, "thoughts_token_count", 0) or 0)
+        guard.record(
+            caller="qa_rewriter", model=REWRITE_MODEL, tokens=in_tok + out_tok,
+            est_usd=estimate_cost(REWRITE_MODEL, in_tok, out_tok),
+            in_tokens=in_tok, out_tokens=out_tok,
+        )
+        question = json.loads(response.text)["question"].strip()
+    except Exception as e:
+        logger.warning(f"[AmbientQA] 問題整理失敗（用原句查）：{e}")
+        return None
+
+    ms = int((_time.monotonic() - t0) * 1000)
+    logger.info(f"[AmbientQA] 整理 {query!r} ⇒ {question!r}（{ms}ms）")
+    return question
+
+
+def readback_text(query: str, rewritten: str) -> str | None:
+    """整理後的問題讀回句，或 None（不讀回：跟原句沒差、或太長）。"""
+    if _READBACK_STRIP_RE.sub("", query).strip() == _READBACK_STRIP_RE.sub("", rewritten).strip():
+        return None
+    if len(rewritten) > READBACK_MAX_CHARS:
+        return None
+    return f"你是問{rewritten.rstrip('？?。')}嗎？我查一下。"
+
+
 async def grounded_answer(
     free_client,
     paid_client,
@@ -343,8 +456,7 @@ async def grounded_answer(
     segments: list[str] = []
     if game_context:
         segments.append(
-            f"【語音頻道裡大家正在玩的遊戲（問題跟遊戲有關但沒講是哪款時，就是指這款）】"
-            f"{'、'.join(game_context)}"
+            f"{_GAME_HINT_LABEL}{'、'.join(game_context)}"
         )
     if recent_context and recent_context.strip():
         segments.append(
@@ -414,12 +526,12 @@ async def grounded_answer(
         # L1：Gemini 自承查不到 / 拒答
         if first.startswith(_REFUSAL_PREFIXES):
             logger.info(f"[AmbientQA] L1 拒（LLM 回 {first[:20]!r}）query={query!r}")
-            return None
+            return _NEXT   # 換下一個模型試（lite 答不出換大模型）；鏈尾仍回 None
         # L2：grounding_chunks 空 → 沒實際搜到網頁，疑似幻覺
         sources = _extract_sources(response)
         if not sources:
             logger.warning(f"[AmbientQA] L2 拒（grounding_chunks 空）query={query!r} ans={first[:40]!r}")
-            return None
+            return _NEXT   # 同上
 
         logger.info(f"[AmbientQA] ✓ query={query!r} src={sources}")
         return _trim(text, max_chars), sources
@@ -515,6 +627,28 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     extra_kwargs["model_chain"] = QA_MODEL_CHAIN
     extra_kwargs["timeout"] = QA_TIMEOUT_S
 
+    # 只整理第一句（10/23 使用者定）：已有前幾輪問答＝追問，存進對談紀錄的第一句已是整理後的問題，
+    # 原句＋上下文給 lite 即可，省約 3.4s。追問被帶偏的風險上線後用重問率量。
+    rewritten = None if session_history else await rewrite_question(
+        getattr(router, "google_paid_client", None), guard, topic,
+        speaker=speaker, recent_context=recent_context,
+        session_history=session_history, games=games,
+    )
+    if rewritten == "" and source in ("question_opener", "session_followup"):
+        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 整理判定非查詢→交回聊天) {topic}")
+        record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
+                           "query": topic, "answer": None, "reason": "not_question",
+                           "latency_ms": 0, "source": source, "games": games,
+                           "model": None, "rewritten": rewritten})
+        return "not_question"
+
+    query_str = rewritten if rewritten else topic
+    game_context = None if rewritten else games
+    if rewritten:
+        rb = readback_text(topic, rewritten)
+        if rb is not None:
+            asyncio.create_task(ctrl.play_tts(prefix + rb, already_in_channel=True))
+
     meta: dict = {}
     t0 = _time.monotonic()
     res = None
@@ -522,9 +656,9 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         res = await grounded_answer(
             None,
             getattr(router, "google_paid_client", None),
-            guard, topic,
+            guard, query_str,
             recent_context=recent_context,
-            game_context=games,
+            game_context=game_context,
             session_history=session_history,
             meta=meta,
             **extra_kwargs,
@@ -540,7 +674,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "not_question",
                            "latency_ms": latency_ms, "source": source, "games": games,
-                           "model": meta.get("model")})
+                           "model": meta.get("model"), "rewritten": rewritten})
         return "not_question"
 
     if res is None:
@@ -549,7 +683,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
                            "latency_ms": latency_ms, "source": source, "games": games,
-                           "model": meta.get("model")})
+                           "model": meta.get("model"), "rewritten": rewritten})
         # 任何 source 都回報 WakeSession（regex 路徑查不到也要計數，否則 session 停不下來，10/17 事故）
         _report = getattr(ctrl, "_wake_session_on_followup_result", None)
         if callable(_report):
@@ -568,13 +702,13 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                        "query": topic, "answer": answer, "sources": sources,
                        "latency_ms": latency_ms, "downstream": "none", "source": source,
-                       "games": games, "model": meta.get("model")})
+                       "games": games, "model": meta.get("model"), "rewritten": rewritten})
     _report = getattr(ctrl, "_wake_session_on_followup_result", None)
     if callable(_report):
         _report(speaker, True)
     _note_qa = getattr(ctrl, "_wake_session_note_qa", None)
     if callable(_note_qa):
-        _note_qa(speaker, topic, answer)
+        _note_qa(speaker, query_str, answer)
     if source == "question_opener" and callable(_note):
         _note(speaker)
     logger.info(f"[AmbientQA] {speaker} 「{topic}」已回答（{latency_ms}ms, src={sources}）。")

@@ -32,7 +32,6 @@ def _make_fake_router(*, groq_content: str | None):
     fake.is_exhausted = False
     fake.budget.is_circuit_open.return_value = False
     fake._call_cloud = AsyncMock(return_value=None)
-    fake.extract_emotional_moments = AsyncMock(return_value=None)
     return fake
 
 
@@ -133,6 +132,11 @@ async def test_groq_call_omits_reasoning_effort_for_non_gpt_oss_model():
     _, kwargs = fake.groq_dedicated_client.chat.completions.create.call_args
     assert "reasoning_effort" not in kwargs
     assert kwargs.get("max_tokens") == 1500
+
+
+def test_extract_emotional_moments_removed():
+    """情緒記憶抽取已整個拔掉（省免費層額度）：router 不該再有這個方法。"""
+    assert not hasattr(GeminiRouterContentMixin, "extract_emotional_moments")
 
 
 @pytest.mark.asyncio

@@ -114,7 +114,7 @@ class GeminiRouter(GeminiRouterLLMMixin, GeminiRouterContentMixin, GeminiRouterS
 
         # 🚀 [STT Cleaner] Specialized Gemini Flash Lite Client
         self.cleaner_api_key = os.getenv("GEMINI_CLEANER_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        self.cleaner_model = "gemini-3.1-flash-lite-preview"
+        self.cleaner_model = "gemini-3.1-flash-lite"  # 2026-10-23 preview→正式版（官方價目表只列正式版）
         self.google_cleaner_client = genai.Client(api_key=self.cleaner_api_key) if self.cleaner_api_key else None
         if self.google_cleaner_client:
             logger.info(f"✨ 已掛載 STT 專用校正核心: {self.cleaner_model}")

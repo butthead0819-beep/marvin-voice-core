@@ -4,6 +4,13 @@
 
 ## 🔜 接下來做
 
+### TODO: 對談模式極速低延遲通道（追上小智 AI 延遲指標 600~800ms）
+**What:** 當喊了「馬文」喚醒詞或進入 Follow-up 視窗後，建立極速對談通道：(1) Bypass Cleaner LLM；(2) 雙軌 5ms 短指令 Pre-bid 立即分流；(3) LLM 串流輸出改為「首句短前綴切片」優先送 edge-tts 播放；(4) 對談期間動態縮短 VAD silence 至 300ms。
+**Why:** 目前端到端延遲高達 1.6~2.8 秒，語音對談停頓尷尬；小智 AI 實測 700~800ms，優化後能達到隨問隨答的流暢體感。
+**How to start:** 依據 `docs/PLAN_fast_followup_conversation.md`，從 PR① `tests/test_fast_conversation_cleaner_bypass.py` 開始 TDD 實作。
+**Priority:** P1
+**2026-10-22:** 意圖漏斗 eng review 第 2 輪 D3=C：判斷「是否在對談窗」只准用 WakeSessionMixin 唯讀 `in_conversation_window(speaker, now)`（誰先做誰加，含跨執行緒測試），漏斗 3b 換實作時只改這個函式。計劃書本身的延遲基準未經審查（記憶記錄其基準與位置有誤），動工前先跑 eng review。
+
 ### TODO: 事件記憶 — 抽取雜訊（STT 糊句、對馬文的指令）
 **What:** 9/29 重播仍抽到：STT 糊句「下麵一位臺中地方姐姐想借夢工幾人出國弟弟」→ showay 出國；「我老婆 Kimi媽今日生日 Ke以幫我祝她生日快樂」（叫馬文祝賀）→ showay 慶祝。
 **Why:** Phase 2 會拿事件去追問，雜訊事件 = 問莫名其妙的事。
@@ -43,6 +50,7 @@
 **What:** `intent_agents/base.py` 三處 `except (KeyError, IndexError)`（約 :216 / :262 / :296）。reason_template 含無效 format spec → ValueError 未接 → bid 被 bus 的 bare except 吞掉，silent loss。改成也接 ValueError。
 **How to start:** 先寫紅：reason_template="{x!q}" 斷言 reason fallback 到 schema.name。
 **Priority:** P3
+**2026-10-22:** eng review D16 決定併入意圖漏斗步驟 4（新增 agent 那一刀）一起做，完成後刪掉這條。設計見 `docs/designs/intent-funnel-simplification.md`。
 
 ### TODO: IntentBus agents 清掉 voice_controller forwarding stubs
 **What**: intent_agents/ 裡還有 9 處 `self.ctrl.X`（stream / radio / _mixer…）走 VC 的轉發 stub，改成直接拿 MusicCog，清完 VC 的轉發層可以刪。
@@ -80,6 +88,29 @@
 **What:** (a) `wake_detector.temporary_open_window` 加 `speaker_affinity`，只收被問的那個人；(b) `_QUESTION_MARKER_RE`（`wake_detector.py:68`）評估是否加「吧[？?]」。
 **觸發條件:** 觀察到隊友插話吃掉 follow-up 窗口，或漏接真問句的案例。
 **Priority:** P3
+**2026-10-22:** (a) 已併入意圖漏斗步驟 3b（eng review D5：Marvin 回答某人時窗口只給那個人，主動話題問全房間才開全房間窗），做完後這條只剩 (b)。
+
+### TODO: 多人同時對談（意圖漏斗 E4）
+**What:** ConversationState 合併後，允許最多 2 人同時各自有免喚醒對談窗（目前同時只有一個 target，第二人喊馬文會搶走窗口）。
+**Why:** 客廳裡朋友一起問 Marvin 時不用互搶；2026-10-22 CEO review CEO-D6 延後，因為 10/17 群聊誤接剛修好、沒有需求數據。
+**Context:** 設計 `docs/designs/intent-funnel-simplification.md`（CEO ledger E4）。需要 E1 的 gate decision 紀錄才量得到「窗口被他人搶走」。
+**觸發條件:** E1 判斷紀錄一週內「窗口被他人搶走」≥5 次。
+**Priority:** P3
+
+### TODO: 修正延伸成撤銷（意圖漏斗 E5）
+**What:** 「剛剛那個不對／取消」→ 撤回上一個可撤回動作（點歌移出佇列、音量回復、取消進行中查詢），共用步驟 5 的 last_intent。
+**Why:** 修正機制目前只有「改」沒有「撤」；2026-10-22 CEO review CEO-D7 延後，因為兩個月只有 1 次撤回說法（10/15「馬文取消查詢」）。
+**Cons:** 「算了」在閒聊很常見，誤觸會撤掉正常動作。
+**觸發條件:** E3 每日漏斗報表兩週內修正 ≥10 次，且人工抽樣對回 stt_history 確認其中有撤回語意（D12 不存原文，報表本身判斷不了語意）。
+**Priority:** P3
+
+### TODO: ConfirmPolicy 回頭評估（意圖漏斗「確認」階段）
+**What:** 決定要不要做 ConfirmPolicy（依意圖信心分三檔：直接做／邊做邊複述／先問），以及信心來源和門檻。
+**Why:** 2026-10-22 eng review D15 延後：目前沒有可用的意圖信心（IBA 是喚醒信心、IntentBus bid 分數各 agent 自訂未校準），2026-09-25「取消低信心確認」的理由（點歌出錯真因是 autopilot 插隊）也沒被數據反駁。
+**How to start:** 用 `records/turn_outcomes.jsonl` 量兩個數字：判錯後被修正的比率、各 agent winner bid 分佈。比率低就維持 09-25 的決定不做。
+**Context:** 設計 `docs/designs/intent-funnel-simplification.md` §3 ③、ledger R11/T2。
+**觸發條件:** 意圖漏斗步驟 5（修正接 last_intent）上線滿 7 天（CEO-D10：修正率要步驟 5 後才有值；TurnOutcome 另記 winner_agent、winner_bid）。
+**Priority:** P2
 
 ### TODO: PaidUsageGuard 低估 Google Search grounding 成本
 **What**: `llm_paid.estimate_cost` 純 token-based；grounding 另外 per-request 計費，所以帶 grounding 的付費呼叫會 under-count。影響 `grounded_qa_agent`、`lyrics_grounded_search`、`game_knowledge_agent`。

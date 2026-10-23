@@ -331,6 +331,37 @@ async def test_grounded_l1_refusal_rejected():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("first_resp", [
+    _resp("抱歉，我查不到這個資訊。"),          # L1 拒答
+    _resp("看起來很有自信的答案", chunks=0),    # L2 沒搜尋依據
+])
+async def test_grounded_rejection_falls_through_to_next_model(first_resp):
+    """2026-10-23：lite 先上、答不出換大模型——L1/L2 擋下要換下一個模型，不能直接回查不到。"""
+    calls = []
+
+    async def _gen(*, model, contents, config):
+        calls.append(model)
+        return first_resp if len(calls) == 1 else _resp("第二顆 model 答的。")
+
+    paid = MagicMock()
+    paid.aio.models.generate_content = _gen
+    out = await grounded_answer(None, paid, _guard(), "某個問題",
+                                model_chain=("gemini-3.5-flash-lite", "gemini-3.5-flash"))
+    assert out is not None and out[0] == "第二顆 model 答的。"
+    assert calls == ["gemini-3.5-flash-lite", "gemini-3.5-flash"]
+
+
+def test_qa_model_chain_lite_first():
+    # 10/23 14 題實測：3.5-flash-lite 11/14、2.1s；3.5-flash 13/14、6.5s → lite 先上、失敗換 3.5-flash
+    assert gqa.QA_MODEL_CHAIN == ("gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-2.5-flash")
+
+
+def test_model_chains_have_no_latest_alias():
+    # -latest 別名由 Google 自動對到最新版（曾被計成 3.8-flash），付費鏈只准寫死版本
+    assert not any(m.endswith("-latest") for m in gqa.MODEL_CHAIN + gqa.QA_MODEL_CHAIN)
+
+
+@pytest.mark.asyncio
 async def test_grounded_l2_empty_chunks_rejected():
     free = _client(_resp("看起來很有自信的答案", chunks=0))
     out = await grounded_answer(free, None, _guard(), "某個問題")
@@ -547,6 +578,30 @@ def _ctrl_with_members(members):
     ctrl = MagicMock()
     ctrl.voice_client = SimpleNamespace(channel=SimpleNamespace(members=members))
     return ctrl
+
+
+def test_current_games_falls_back_to_recent_when_no_presence():
+    """10/23：Discord 抓不到（PS 上玩）→ 用最近 7 天在場的人玩過的遊戲。"""
+    ctrl = _ctrl_with_members([_member("showay", activities=[_playing("Grounded 2")])])
+    assert current_games(ctrl, "showay") == ["Grounded 2"]          # 抓到時順手記下
+    ctrl2 = _ctrl_with_members([_member("showay"), _member("狗與露")])
+    assert current_games(ctrl2, "狗與露") == ["Grounded 2"]          # 之後抓不到就用記住的
+
+
+def test_current_games_presence_wins_over_recent():
+    _ = current_games(_ctrl_with_members([_member("showay", activities=[_playing("Grounded 2")])]), "showay")
+    ctrl = _ctrl_with_members([_member("showay", activities=[_playing("原神")])])
+    assert current_games(ctrl, "showay") == ["原神"]
+
+
+@pytest.mark.asyncio
+async def test_game_hint_is_soft_reference_not_directive():
+    """10/23：遊戲可能來自「最近 7 天玩過」→ 只當參考，不能寫成「就是指這款」（追問哪一代時會被帶偏）。"""
+    free = _client(_resp("答案。"))
+    await grounded_answer(free, None, _guard(), "溫室區怎麼過去", game_context=["Grounded 2"])
+    contents = free.aio.models.generate_content.await_args.kwargs["contents"]
+    assert "【大家最近常玩的遊戲（僅供參考" in contents and "Grounded 2" in contents
+    assert "就是指這款" not in contents
 
 
 def test_current_games_excludes_bots():

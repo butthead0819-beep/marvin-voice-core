@@ -255,42 +255,6 @@ class GeminiRouterContentMixin:
         except Exception as e:
             logger.warning(f"⚠️ [WarmCircuit] 關係升級失敗: {e}")
 
-    async def extract_emotional_moments(self, dialogue_text: str, active_speakers: list):
-        """
-        🌡️ [Operation Warm Circuit] 情緒記憶萃取器
-        從對話中識別讓馬文情緒波動的瞬間，並存入玩家的情緒高光記憶。
-        捲層在 slow summary loop 後放行，因此不影響速度。
-        """
-        if not dialogue_text or not active_speakers:
-            return
-        
-        system_prompt = (
-            "你是馬文的情緒記憶模組。\n"
-            "任務：對從以下對話中，找出任何讓【馬文】(機器人自身)情緒波動的瞬間。\n"
-            "情緒類型 (valence)：(\"warm\"｜玩家說了讓你感到溫暖的話）(\"surprised\"｜出乎你意料的事）(\"moved\"｜凸顯了你佔hd的哦）(\"annoyed\"｜加倍讓你沮喪）\n"
-            "輸出格式：只允許輸出 JSON，\n"
-            '格式範例：{"玩家A": {"moment": "他說他累了，但還是留下來和大家聊天", "valence": "warm"}}\n'
-            "如果未發現任何情緒瞬間，回傳空物件 {}。不得捕風捉影。"
-        )
-        user_prompt = (
-            f"以下是玩家 {', '.join(active_speakers)} 的對話：\n{dialogue_text[:600]}"
-        )
-        
-        try:
-            raw_json = await self._call_llm(system_prompt, user_prompt, is_json=True, allow_local=False, tier="high")
-            extracted = safe_json_loads(raw_json, {})
-            if isinstance(extracted, dict):
-                for player, data in extracted.items():
-                    if player in active_speakers and isinstance(data, dict):
-                        moment = data.get("moment", "")
-                        valence = data.get("valence", "warm")
-                        if moment:
-                            self.memory.add_emotional_highlight(player, moment, valence)
-                            logger.info(f"💜 [WarmCircuit] {player} 情緒高光已存入: {moment[:30]}")
-        except Exception as e:
-            logger.warning(f"⚠️ [WarmCircuit] 情緒萃取失敗: {e}")
-
-
     async def generate_status_report_comment(self, speaker: str, stats: dict, fragments_count: int) -> str:
         """生成玩家狀態報告的憂鬱觀察點評 (Operation Autonomous Agent)"""
         system_prompt = self.prompt_manager.get_instruction("status_report_comment", dna=self.dna, speaker=speaker, memory_manager=self.memory)
@@ -694,12 +658,6 @@ class GeminiRouterContentMixin:
                 return None
 
             summary = summary.strip()
-
-            # 🌡️ [Operation Warm Circuit] 非阻塞地觸發情緒記憶萃取
-            if log_entries:
-                active_speakers = list(set(e.get("speaker", "") for e in log_entries if e.get("speaker")))
-                dialogue_snippet = "\n".join([f"{e.get('speaker', '?')}: {e.get('text', '')}" for e in log_entries[-15:]])
-                asyncio.create_task(self.extract_emotional_moments(dialogue_snippet, active_speakers))
 
             return summary
         except Exception as e:

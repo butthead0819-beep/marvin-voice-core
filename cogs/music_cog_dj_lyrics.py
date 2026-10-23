@@ -884,21 +884,6 @@ class MusicDJLyricsMixin:
         except Exception:
             pass  # fail-open：語氣注入失敗不影響 DJ 生成
 
-        # 🌤️ 讀空氣（10/18 使用者定）：日記氣氛行只給 LLM 調說話方式，不准講出來（見 dj_mood_hint.py）
-        _mood_hint = ""
-        _mood_names: set[str] = set(present_members or ())
-        try:
-            from dj_mood_hint import build_mood_hint, latest_mood, mood_hint_ctx_lines
-            _latest = latest_mood(await asyncio.to_thread(self._load_summary_entries), time.time())
-            if _latest is not None:
-                _mood_names |= set(_latest[1])
-                _mood_hint = build_mood_hint(_latest[0], _latest[1], present_members)
-            if _mood_hint:
-                ctx.extend(mood_hint_ctx_lines(_mood_hint))
-                logger.info(f"🌤️ [DJ Mood] 注入氣氛：{_mood_hint[:40]}")
-        except Exception:
-            _mood_hint = ""  # fail-open：讀不到氣氛就照舊
-
         text = ''
         _source = ''
         _llm_raw = None
@@ -999,13 +984,10 @@ class MusicDJLyricsMixin:
 
             _is_autopilot = dj_requester.startswith('Marvin')
             _claims = bool(text) and (claims_request(text) if _is_autopilot else claims_frequent_request(text))
-            _names_for_leak = _mood_names | {info.get('_spotlight', '') or ''}
-            from dj_mood_hint import leaks_mood
-            _leak = bool(text) and bool(_mood_hint) and leaks_mood(text, _mood_hint, _names_for_leak)
-            if not text or not _is_qualified_dj_script(text) or _claims or _leak:
+            if not text or not _is_qualified_dj_script(text) or _claims:
                 # 落空原因要留 log：退模板這條原本無聲，近兩天 22% 串場走這裡卻查不出為什麼
                 _why = ("空字串" if not text else f"長度{len(text)}" if len(text) < 10
-                        else "禁詞" if not _is_qualified_dj_script(text) else "點播掛名" if _claims else "露餡")
+                        else "禁詞" if not _is_qualified_dj_script(text) else "點播掛名")
                 _disqualify = _why
                 logger.info(f"🎙️ [DJ Prefetch] LLM 串場不合格({_why}, mode={mode}): {text[:40]!r}")
                 text = ""  # 不合格就丟掉；否則真人點播命中點播掛名時原句照播（下面只有 autopilot 會覆寫 text）
@@ -1066,7 +1048,6 @@ class MusicDJLyricsMixin:
                 "audio_s": await probe_audio_seconds(audio_path),
                 "n_online": _n_online,
                 "heat_mode": _heat_mode,
-                "mood_hint": _mood_hint,
             })
         except Exception as e:
             logger.debug(f"[DJ Narration Log] 寫紀錄失敗: {e}")

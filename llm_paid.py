@@ -23,8 +23,13 @@ _PRICE_PER_1M: dict[str, tuple[float, float]] = {
     "gemini-2.5-pro": (1.25, 10.0),
     "gemini-2.5-flash": (0.30, 2.50),
     "gemini-3.5-flash-lite": (0.30, 2.50),
-    # flash-lite-preview：Marvin reply paid fallback 用。略保守。
-    "gemini-3.1-flash-lite": (0.10, 0.40),
+    # 2026-10-23 對照 ai.google.dev/pricing：3.6/3.8-flash 0.75/3.75（2027-01-01 起加倍）；
+    # 3.5-flash API 可用但官方價目表沒列 → 比照 3.6（後台疑似歸到 3.6 計費）。
+    "gemini-3.5-flash": (0.75, 3.75),
+    "gemini-3.6-flash": (0.75, 3.75),
+    "gemini-3.8-flash": (0.75, 3.75),
+    # 3.1-flash-lite（含 -preview）：主聊天／DJ 付費口白／STT 冷啟動共用。舊值 0.10/0.40 低估。
+    "gemini-3.1-flash-lite": (0.25, 1.50),
     # AudioRescueAgent 預設 model；沒有這條會前綴誤配到較貴的 gemini-2.5-flash。
     "gemini-2.5-flash-lite": (0.10, 0.40),
 }

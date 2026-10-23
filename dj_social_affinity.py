@@ -184,11 +184,6 @@ def find_song_social_affinity(
             # 按讚
             if m in (song.get("likes") or {}):
                 return f"在場的 {m} 也按過這首歌讚"
-            # 記錄過感受
-            rx = (song.get("reactions") or {}).get(m, {})
-            feelings = rx.get("feelings", [])
-            if feelings:
-                return f"在場的 {m} 曾記錄對這首歌的感受：{' / '.join(feelings[:2])}"
 
     # 2. 久別重逢（Recency）
     if song and requester and not is_bot:

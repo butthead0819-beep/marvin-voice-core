@@ -5,6 +5,7 @@ mood_hint_ctx_lines 注入 ctx → LLM 產出後 leaks_mood 檢查，講破就�
 claims_request/_is_qualified_dj_script 那條不合格判斷鏈）。
 
 2026-10-18 使用者定：氣氛只能內化成說話方式，不准講出來。
+2026-10-23：DJ 串場這條拔除注入（換句話露餡攔不住），autopilot 選歌那條不在本檔。
 """
 from __future__ import annotations
 
@@ -73,7 +74,9 @@ def _info(requester="大肚"):
 # ── 1. 氣氛新鮮 → 注入 context ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_fresh_mood_injected_into_context(monkeypatch):
+async def test_fresh_mood_not_injected_into_dj_context(monkeypatch):
+    """10/23 拔除：氣氛基調（「互相較勁」「混亂爭論」）會被 LLM 換句話講出（「看著你們在那邊爭論不休」），
+    leaks_mood 只抓字面攔不住 → DJ 串場不再注入氣氛。"""
     _no_quick(monkeypatch)
     entry = _mood_entry("熱絡｜showay 不爽隊友講不聽", ["showay"], minutes_ago=2)
     cog = _make_cog(online_members=["showay"], life_entries=[entry])
@@ -81,9 +84,8 @@ async def test_fresh_mood_injected_into_context(monkeypatch):
     await cog._fetch_dj_interjection_raw(_info())
     ctx = cog.bot.router.generate_dynamic_system_msg.call_args
     ctx_str = ctx.kwargs.get("context", "") if ctx else ""
-    assert MOOD_HINT_HEADER in ctx_str
-    assert "熱絡" in ctx_str
-    assert "不爽隊友講不聽" not in ctx_str, "事件不准進 LLM context（10/19 live 實測會被換句話講出來）"
+    assert MOOD_HINT_HEADER not in ctx_str
+    assert "熱絡" not in ctx_str
 
 
 # ── 2. 氣氛過期 → 不注入 ──────────────────────────────────────────────────────
@@ -100,18 +102,7 @@ async def test_stale_mood_not_injected(monkeypatch):
     assert MOOD_HINT_HEADER not in ctx_str
 
 
-# ── 3. 講破 → 退模板 ──────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_leaked_mood_falls_back_to_template(monkeypatch):
-    _no_quick(monkeypatch)
-    entry = _mood_entry("戲謔爭執｜showay 不爽隊友講不聽", ["showay"], minutes_ago=2)
-    leak_text = "現場一片戲謔爭執，下一首給大家緩一緩"
-    cog = _make_cog(online_members=["showay"], life_entries=[entry], llm_text=leak_text)
-
-    result = await cog._fetch_dj_interjection_raw(_info(requester="Marvin推薦"))
-    assert result["text"] != leak_text
-
+# ── 3. 對照組 ──────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_unrelated_qualified_text_not_blocked(monkeypatch):

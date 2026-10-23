@@ -645,7 +645,6 @@ class PlaybackMixin:
         self._ensure_mixer_playing(device)
         pushed = await self._stream_tts_to_mixer(text, force_macos=force_macos,
                                                  emotion_tag=emotion_tag, voice=voice)
-        # [Follow-Up] D8: only open window when TTS was actually heard by users
         try:
             pushed_ok = bool(pushed > 0)
         except TypeError:
@@ -655,14 +654,7 @@ class PlaybackMixin:
                 silent_during_stream=silent_during_stream, bypass_stream_mute=bypass_stream_mute,
         )) in _WAKE_SESSION_REPLY_KINDS:
             self._wake_session_on_replied()
-        if pushed_ok and os.getenv("MARVIN_FOLLOWUP_ENABLED", "true").lower() == "true":
-            from wake_detector import _has_question_marker
-            if _has_question_marker(text):
-                if not self.game_mode:
-                    _wd = getattr(getattr(self.bot, "router", None), "wake_fusion", None)
-                    if _wd is not None:
-                        _window = float(os.getenv("MARVIN_FOLLOWUP_WINDOW_SEC", "8.0"))
-                        _wd.temporary_open_window(_window, reason="followup")
+        # 10/23 拔：問號結尾就開全域 8s 追問窗→送客/待辦確認等主動句被頻道任何人的話接走（7/7 全誤觸）。發起者接話交給 WakeSession。
 
     async def _play_dual_interject(self, segments, *, duck=None, step=None, at=None) -> bool:
         """🎭 [打岔] Plan12 mixer 雙層疊播：Marvin 在 layer1，Marmo 在 Marvin 尾段(~80%)
