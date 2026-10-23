@@ -174,7 +174,33 @@ def fetch_car_now_track(timeout: float = 3.0) -> "dict | None":
         "title": title,
         "artist": (data.get("artist") or "").strip(),
         "album": (data.get("album") or "").strip(),
+        "duration_s": _positive_float_or_none(data.get("duration")),
+        "song_start_time": _positive_float_or_none(data.get("song_start_time")),
     }
+
+
+def _positive_float_or_none(value) -> "float | None":
+    """轉成正數 float；None/bool/非數字字串/0/負數全部回 None——AVRCP 這邊
+    duration/start_time 缺值跟「沒有意義的值」要同一種對待（不設上限/不算進度）。"""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
+
+def track_position_s(song_start_time, duration_s, now) -> "float | None":
+    """已播放秒數。song_start_time 為 None → None（不知道何時開始播，無法算）；
+    elapsed = now - song_start_time，負數（時鐘誤差/剛開始）視為 0；
+    duration_s 有值時，進度不超過總長（car_now 輪詢間隙可能算出超過實際長度）。"""
+    if song_start_time is None:
+        return None
+    elapsed = max(0.0, now - song_start_time)
+    if duration_s is not None:
+        elapsed = min(elapsed, duration_s)
+    return elapsed
 
 
 def _process_rss_kb() -> "int | None":
@@ -254,6 +280,7 @@ class PuckMixer:
         # AVRCP metadata 掛勾：title 輪詢到變化時呼叫，None＝不裝。
         self._on_track_change = on_track_change
         self._current_title = None
+        self._last_track_key = None
         self._lock = threading.Lock()
         self._loop_thread = None
         self._stop_flag = threading.Event()
@@ -369,11 +396,19 @@ class PuckMixer:
     def _title_poll_loop(self):
         while not self._title_stop.is_set():
             track = fetch_car_now_track()
-            if track and track["title"] != self._current_title:
-                with self._lock:
-                    self._current_title = track["title"]
-                if self._on_track_change:
-                    self._on_track_change(track["title"], track["artist"], track["album"])
+            if track:
+                key = (track["title"], track.get("song_start_time"))
+                if key != self._last_track_key:
+                    self._last_track_key = key
+                    with self._lock:
+                        self._current_title = track["title"]
+                    if self._on_track_change:
+                        duration_s = track.get("duration_s")
+                        position_s = track_position_s(
+                            track.get("song_start_time"), duration_s, time.time())
+                        self._on_track_change(
+                            track["title"], track["artist"], track["album"],
+                            duration_s, position_s)
             self._title_stop.wait(_TITLE_POLL_INTERVAL_S)
 
     def _open_pcm(self):
