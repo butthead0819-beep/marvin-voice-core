@@ -1,6 +1,6 @@
 """對談查詢前先「整理問題」（design 2026-10-23 拍板）。
 
-語音問題常聽糊、省略主詞：先用 3.5-flash（預設思考）把原句整理成一句獨立明確的問題
+語音問題常聽糊、省略主詞：先用 3.5-flash（LOW 思考）把原句整理成一句獨立明確的問題
 再查，再用整理後的問題讀回給使用者當 ack。見 intent_agents/grounded_qa_agent.py
 build_rewrite_input / rewrite_question / readback_text / run_grounded_qa 接線。
 """
@@ -95,6 +95,17 @@ async def test_rewrite_question_success_records_usage():
     assert guard.record.call_args.kwargs["caller"] == "qa_rewriter"
     assert guard.record.call_args.kwargs["in_tokens"] == 200
     assert guard.record.call_args.kwargs["out_tokens"] == 50
+
+
+@pytest.mark.asyncio
+async def test_rewrite_question_uses_low_thinking():
+    # 10/23 重評：LOW 中位數 1.3s（預設 3.2s），12 題整理結果與預設相當
+    client = _rewrite_client(_rewrite_resp("Grounded 2 的溫室區怎麼過去？"))
+    await rewrite_question(client, _guard(), "溫室區怎麼過去", speaker="showay",
+                           recent_context="", session_history=[], games=[])
+    cfg = client.aio.models.generate_content.call_args.kwargs["config"]
+    assert cfg.thinking_config is not None
+    assert cfg.thinking_config.thinking_level == "LOW"
 
 
 @pytest.mark.asyncio

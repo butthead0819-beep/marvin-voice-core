@@ -57,9 +57,10 @@ QA_TIMEOUT_S = 15.0
 GROUNDING_USD_PER_SEARCH = 0.0  # 2026-10-23：Gemini 3+ 每月前 5000 次搜尋免費（共用），Marvin 月用量 <1000；超過再改回 0.014
 
 # 對談查詢前先「整理問題」（2026-10-23 拍板）：語音問題常聽糊、省略主詞（「光點二代」＝
-# Grounded 2、「幫註」在聊天背景裡其實是 Brotato、「是二代還是一代」接著前一輪）。
-# 實測：3.5-flash（預設思考）整理成一句獨立明確的問題再查，13 題沒有答錯；思考調低會被
-# 「最近在玩 Grounded 2」帶偏。
+# Grounded 2、「是二代還是一代」接著前一輪）。
+# 10/23 重評（正確標準答案：「幫註」也是 Grounded 2，不是 Brotato）：LOW 思考中位數 1.3s／
+# 預設 3.2s，12 題整理結果相當；「幫註」各檔位都猜成 Brotato，要靠誤聽對照表
+# （docs/designs/game-alias-table.md）。
 REWRITE_MODEL = "gemini-3.5-flash"
 REWRITE_TIMEOUT_S = 8.0
 READBACK_MAX_CHARS = 40
@@ -393,6 +394,7 @@ async def rewrite_question(
                     system_instruction=_REWRITE_SYSTEM_PROMPT,
                     response_mime_type="application/json",
                     temperature=0.2,
+                    thinking_config=types.ThinkingConfig(thinking_level="LOW"),
                 ),
             ),
             timeout=REWRITE_TIMEOUT_S,
