@@ -30,19 +30,29 @@ logger = logging.getLogger(__name__)
 _SONG_BPM_STORE = "records/song_bpm.json"
 _BPM_SAMPLE_SR = 11025
 
+_REACTION_MIN_HUMAN_LINES = 3
+_NON_HUMAN_SPEAKERS = frozenset({"Marmo"})
+
 
 class MusicAudioMetaMixin:
     # ── 🎵 Song metadata / fetch helpers（音訊分析/檔案清理子集）───────────────
 
     async def _analyze_song_reactions(self, info: dict, song_start_time: float, lyrics: str):
-        """歌曲結束後掃描對話，分析聆聽反應並寫入音樂記憶。"""
+        """歌曲結束後掃描對話，分析聆聽反應並寫入音樂記憶。只在至少
+        _REACTION_MIN_HUMAN_LINES 句人話時才打 LLM（背景任務省免費層額度）。"""
         if not hasattr(self.bot, 'music_memory'):
             return
         conv = self.bot.engine.conv_buffer
-        elapsed = time.time() - song_start_time
-        harvest = conv.get_harvest(song_start_time, before=5.0, after=elapsed + 2.0)
-        if not harvest.strip():
+        items = conv.get_window_items(song_start_time - 5.0, time.time() + 2.0)
+        human_lines = [
+            item for item in items
+            if item.get("speaker") not in _NON_HUMAN_SPEAKERS and (item.get("text") or "").strip()
+        ]
+        if len(human_lines) < _REACTION_MIN_HUMAN_LINES:
+            logger.debug(f"🎵 [MusicMemory] 對話不足 {_REACTION_MIN_HUMAN_LINES} 句人話，略過反應分析: {info['title']}")
             return
+
+        harvest = "\n".join(f"{item['speaker']}：{item['text']}" for item in human_lines)
 
         lyrics_hint = lyrics[:400] if lyrics else "無歌詞資料"
         prompt = (

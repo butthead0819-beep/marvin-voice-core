@@ -328,6 +328,11 @@ class ConversationBuffer:
         ]
         return " ".join(segments)
 
+    def get_window_items(self, start: float, end: float) -> list[dict]:
+        """[start, end] 內的對話紀錄（{"timestamp","speaker","text"} 的淺拷貝清單），依時間排序。"""
+        self._prune()
+        return [dict(item) for item in self.history if start <= item["timestamp"] <= end]
+
     def get_last_n_utterances(self, n: int = 5) -> list:
         """
         [Fast System History] 獲取最近 N 句對話。
