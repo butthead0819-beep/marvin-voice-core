@@ -345,26 +345,9 @@ class MusicAutopilotMixin:
             for c in fresh
         ]
 
-    async def _llm_coverify(self, cand, exclude_titles: list[str]) -> str:
-        """spotlight lane：請 LLM 推薦選定錨點歌的 cover 版本。回 "" 表示無推薦。"""
-        slot = self.bot.music_memory.time_slot(time.time())
-        prompt = (
-            f"請推薦《{cand.anchor_title}》的【翻唱／cover 版本】（由其他藝人演繹）。\n"
-            f"當前時段：{slot}\n"
-            f"禁止推薦這些版本：{', '.join(exclude_titles[:20]) or '無'}\n"
-            "規則：\n"
-            "1. 優先推薦該歌的知名 cover（指定翻唱者更佳）。\n"
-            "2. 若無合適 cover，推薦相同曲風／相關藝人的歌。\n"
-            "回答格式（一行）：「翻唱藝人 - 歌名 (cover)」或「藝人 - 歌名」。不需要解釋。\n"
-            "若真的沒有合適選擇請回答「無推薦」。"
-        )
-        rec = await self.bot.router._call_llm(
-            system_prompt=f"你是 cover/翻唱推薦助手，聚焦在《{cand.anchor_title}》。",
-            user_prompt=prompt,
-            tier="simple",
-        )
-        rec = (rec or "").strip()
-        return "" if (not rec or "無推薦" in rec) else rec
+    def _cover_search_query(self, cand) -> str:
+        """spotlight lane：直接用「<歌名> 翻唱」當 YouTube 搜尋字串，不打 LLM。"""
+        return f"{cand.anchor_title} 翻唱".strip() if cand.anchor_title else ""
 
     def _recommend_blurb(self, cand, title: str, spotlight: str = "",
                          personal: bool = True) -> str:

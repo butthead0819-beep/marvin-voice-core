@@ -7,12 +7,12 @@ MusicStoryArcMixin — MusicCog 的一般 autopilot 推薦主流程 `_auto_recom
 因此 self 仍是 MusicCog 實例，bot.music_memory / bot.router / bot.tts_engine /
 _resolve_yt_query / _t2_discovery_candidates /
 _t4_fresh_discovery / _current_bpm_filter / _load_taste_fingerprint /
-_attribution_with_suki / _recommend_blurb / _llm_coverify 等全部沿用原本的
+_attribution_with_suki / _recommend_blurb / _cover_search_query 等全部沿用原本的
 self 存取，行為零改動。
 
 `_auto_recommend` 對 MusicAutopilotMixin 的方法有多條呼叫邊（
 _current_bpm_filter/_t2_discovery_candidates/_t4_fresh_discovery/
-_load_taste_fingerprint/_attribution_with_suki/_recommend_blurb/_llm_coverify），
+_load_taste_fingerprint/_attribution_with_suki/_recommend_blurb/_cover_search_query），
 是這批拆解裡耦合最重的一個檔案——但跨 mixin 檔的 self 呼叫本就安全（同一個
 MusicCog 實例）。
 """
@@ -300,7 +300,7 @@ class MusicStoryArcMixin:
             if cand.direct_url:
                 query = cand.direct_url
             elif cand.mode == "cover":
-                query = await self._llm_coverify(cand, exclude_titles)
+                query = self._cover_search_query(cand)
             else:
                 query = f"{cand.anchor_artist} {cand.anchor_title}".strip() or cand.anchor_title
             if not query:

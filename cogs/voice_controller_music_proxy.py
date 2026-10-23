@@ -130,12 +130,6 @@ class MusicProxyMixin:
         if mc is not None:
             await mc._auto_recommend(username, _tier=_tier)
 
-    async def _llm_coverify(self, cand, exclude_titles: list[str]) -> str:
-        mc = self.bot.cogs.get('MusicCog')
-        if mc is not None:
-            return await mc._llm_coverify(cand, exclude_titles)
-        return ""
-
     async def _handle_find_song(self, mode: str, payload: str, speaker: str):
         """[Phase 7G stub] → MusicCog._handle_find_song"""
         mc = self.bot.cogs.get('MusicCog')
