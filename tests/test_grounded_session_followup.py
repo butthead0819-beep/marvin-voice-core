@@ -227,6 +227,28 @@ async def test_run_grounded_qa_answer_prefixes_address_but_not_text_channel():
 
 
 @pytest.mark.asyncio
+async def test_run_grounded_qa_answer_already_starts_with_name_not_doubled():
+    """10/23 review：答案本身以 speaker 開頭時，prefix 要用答案文字算，不能重複念名字。"""
+    from reply_address import address_prefix
+
+    ctrl = MagicMock()
+    ctrl.active_text_channel.send = AsyncMock()
+    ctrl._play_ack = AsyncMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.stt_logger = MagicMock()
+    ctrl._reply_address_prefix = MagicMock(
+        side_effect=lambda spk, text="": address_prefix("showay", ["showay", "B"], text))
+
+    with patch.object(gqa, "grounded_answer", new=AsyncMock(return_value=("showay，答案在這", ["src"]))), \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=[]), \
+         patch.object(gqa, "record_ambient_qa"):
+        await gqa.run_grounded_qa(ctrl, "A", "x")
+
+    assert ctrl.play_tts.call_args.args[0] == "showay，答案在這"
+
+
+@pytest.mark.asyncio
 async def test_run_grounded_qa_plain_mock_ctrl_no_prefix():
     """ctrl 是普通 MagicMock（沒設 _reply_address_prefix）→ 不加前綴。"""
     ctrl = MagicMock()

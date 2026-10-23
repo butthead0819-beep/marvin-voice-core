@@ -35,11 +35,14 @@ def _norm(s: str) -> str:
 
 
 def song_counts(songs: dict, title: str, artist: str, *, display: Callable[[dict], tuple[str, str]]) -> dict[str, int]:
-    """在 songs 裡找「同一首歌」的所有 entry，把 requesters 加總成 {人名: 次數}。"""
-    if not title:
-        return {}
+    """在 songs 裡找「同一首歌」的所有 entry，把 requesters 加總成 {人名: 次數}。
+
+    無法確認藝人一致（任一邊藝人正規化後為空）就不算，說錯不如沒說（10/23 review）。
+    """
     norm_title = _norm(title)
     norm_artist = _norm(artist)
+    if not norm_title or not norm_artist:
+        return {}
     out: dict[str, int] = {}
     for entry in songs.values():
         if not isinstance(entry, dict):
@@ -48,7 +51,7 @@ def song_counts(songs: dict, title: str, artist: str, *, display: Callable[[dict
         if _norm(e_title) != norm_title:
             continue
         norm_e_artist = _norm(e_artist)
-        if norm_artist and norm_e_artist and norm_artist != norm_e_artist:
+        if norm_e_artist != norm_artist:
             continue
         for name, count in (entry.get("requesters") or {}).items():
             name = _listener(name)

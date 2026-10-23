@@ -188,6 +188,39 @@ async def test_stream_mode_speaks_full_text_via_speak(monkeypatch):
     assert vc.speak.call_args.args[0] == "短答。"
 
 
+# ── 6b. 10/23 review：放歌與否在回覆開始時固定，中途翻轉不影響結果 ─────────────
+async def _toggle_mid_stream(vc, items, flip_to):
+    """吐第一句後把 stream_mode 翻到 flip_to，再吐第二句。"""
+    first = True
+    for it in items:
+        yield it
+        if first:
+            vc._stream_mode_local = flip_to
+            first = False
+
+
+@pytest.mark.asyncio
+async def test_music_at_start_true_flips_false_mid_stream_still_speaks_whole(monkeypatch):
+    vc, ph, ch = _make_vc(monkeypatch, [], stream_mode=True)
+    vc._stream_sentence_splitter = lambda _s: _toggle_mid_stream(vc, ["句子一。", "句子二。"], False)
+    await _run(vc)
+    vc.speak.assert_awaited_once()
+    assert "句子一。" in vc.speak.call_args.args[0]
+    assert "句子二。" in vc.speak.call_args.args[0]
+    vc.play_tts.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_music_at_start_false_flips_true_mid_stream_still_speaks_per_sentence(monkeypatch):
+    vc, ph, ch = _make_vc(monkeypatch, [], stream_mode=False)
+    vc._stream_sentence_splitter = lambda _s: _toggle_mid_stream(vc, ["句子一。", "句子二。"], True)
+    await _run(vc)
+    vc.speak.assert_not_awaited()
+    spoken = [c.args[0] for c in vc.play_tts.call_args_list]
+    assert any("句子一。" in s for s in spoken)
+    assert any("句子二。" in s for s in spoken)
+
+
 # ── 7. 整段弱答 → 替換成 in-character 台詞 ────────────────────────────────────
 @pytest.mark.asyncio
 async def test_weak_full_text_replaced_with_in_character(monkeypatch):

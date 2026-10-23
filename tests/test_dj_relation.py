@@ -81,13 +81,25 @@ def test_group_listened_needs_two_people():
 
 def test_anchor_song_hits():
     songs = {
+        "u1": _song("某歌手 - 錨地歌", {"showay": 3}, url="https://www.youtube.com/watch?v=bbbbbbbbbbb"),
+        "u2": _song("周傳雄 - 黃昏", {}, url="https://www.youtube.com/watch?v=aaaaaaaaaaa"),
+    }
+    rel = build_relation(songs=songs, title="黃昏", artist="周傳雄",
+                          present={"showay", "狗與露"}, display=_display,
+                          anchor_title="某歌手 - 錨地歌")
+    assert rel == Relation("anchor_song", "showay", "黃昏", "周傳雄", anchor="錨地歌")
+
+
+def test_anchor_without_artist_not_counted():
+    """10/23 review 嚴格版：錨點歌名解析不出藝人 → 無法確認是同一首，不講 anchor_song。"""
+    songs = {
         "u1": _song("錨地歌", {"showay": 3}, url="https://www.youtube.com/watch?v=bbbbbbbbbbb"),
         "u2": _song("周傳雄 - 黃昏", {}, url="https://www.youtube.com/watch?v=aaaaaaaaaaa"),
     }
     rel = build_relation(songs=songs, title="黃昏", artist="周傳雄",
                           present={"showay", "狗與露"}, display=_display,
                           anchor_title="錨地歌")
-    assert rel == Relation("anchor_song", "showay", "黃昏", "周傳雄", anchor="錨地歌")
+    assert rel is None
 
 
 def test_anchor_song_same_as_main_title_skipped():
@@ -150,6 +162,23 @@ def test_same_title_different_artist_not_counted_as_listens_song():
     songs = {"u1": _song("B - 黃昏", {"showay": 3})}
     counts = song_counts(songs, "黃昏", "A", display=_display)
     assert counts == {}
+
+
+def test_current_artist_empty_does_not_match_entry_with_artist():
+    """10/23 review：當前歌藝人為空（例如 Topic 頻道），同名但有藝人的 entry 不算常聽。"""
+    songs = {"u1": _song("周傳雄 - Hello", {"showay": 3})}
+    rel = build_relation(songs=songs, title="Hello", artist="",
+                          present={"showay", "狗與露"}, display=_display)
+    assert rel is None
+
+
+def test_entry_artist_empty_does_not_match_current_with_artist():
+    """10/23 review：entry 藝人為空（同名不同歌手）不算這首歌常聽。"""
+    songs = {"u1": {**_song("Hello", {"showay": 3}, url="https://www.youtube.com/watch?v=bbbbbbbbbbb"),
+                    "uploader": "Release - Topic"}}   # Topic 頻道 → display 藝人為空
+    rel = build_relation(songs=songs, title="Hello", artist="周傳雄",
+                          present={"showay", "狗與露"}, display=_display)
+    assert rel is None
 
 
 # ── render_relation ──────────────────────────────────────────────────────────

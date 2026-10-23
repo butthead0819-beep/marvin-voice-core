@@ -104,7 +104,7 @@ import pipeline_timing
 from etd_clean_reuse import clean_for_worker, remember_etd
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
-from helper_wake import is_helper_wake, helper_speak_plan
+from helper_wake import is_helper_wake
 from manzai_interject import compute_interject_ratio, interject_diagnostics
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent_v2 import MusicAgentV2
@@ -3136,6 +3136,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         tts_suppressed = wake_intent is not None and wake_intent < _tts_gate_thr
 
         full_text = ""
+        music_at_start = self.stream_mode
         first_sentence_received = False
         respond_time = time.time()
         # 🗣️ [Status ACK] 喚醒成功但 LLM 久候未出聲 → 守候任務雙發安撫；出首句即取消
@@ -3218,7 +3219,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     # helper query：串流期間先不逐句念，收完整段後再決定整段念 or 短通知
                     pass
                 else:
-                    self._speak_reply_sentence(speaker, sentence, first=(full_text == sentence), emotion_tag=emotion_tag)
+                    self._speak_reply_sentence(speaker, sentence, first=(full_text == sentence), emotion_tag=emotion_tag, music=music_at_start)
 
                 if placeholder_msg:
                     try:
@@ -3231,20 +3232,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 logger.info(f"🔕 [Weak Filter] 偵測到弱回應『{full_text}』，替換為 in-character 台詞。")
                 full_text = replacement
 
-            # 🎚️ [Mid-song Answer] 音樂中不逐句念（_speak_reply_sentence 跳過）；收完整段後，
-            # 若整段夠短（≤ STREAM_BUDGET，= B 給 LLM 的音樂字數預算）一次性走熱切換注入發聲，
-            # 過長則維持靜音、只留貼文。短答案才聽得到，避免長答案佔用音樂太久。
-            if self.stream_mode and not tts_suppressed and full_text:
-                asyncio.create_task(self.speak(self._reply_address_prefix(speaker, full_text) + full_text, emotion_tag=emotion_tag))
-
-            # 🔍 [Helper Query] 非串流模式收完整段後：短答案整段念、長答案只念短通知
-            # （完整內容已在文字貼文）。串流期間已 defer，這裡是唯一發聲點。
-            if _is_helper and full_text and not tts_suppressed and not self.stream_mode:
-                _mode, _say = helper_speak_plan(full_text, speaker)
-                if _mode == "notify":
-                    logger.info(f"🔍 [Helper Query] {speaker} 長答案({len(full_text)}字)→貼文＋口播通知")
-                # information 類：唸完不被使用者開口中斷（用戶政策 tier 1）
-                asyncio.create_task(self.play_tts(self._reply_address_prefix(speaker, _say) + _say, already_in_channel=True, emotion_tag=emotion_tag, protected=True))
+            # 🎚️ 收完整段後發聲（放歌中整段念 / helper 短答念；放歌狀態以回覆開始時為準）
+            self._speak_whole_reply(speaker, full_text, music=music_at_start, helper=_is_helper,
+                                     suppressed=tts_suppressed, emotion_tag=emotion_tag)
 
             if placeholder_msg:
                 if full_text:

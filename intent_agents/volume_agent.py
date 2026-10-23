@@ -62,7 +62,7 @@ def sync_tts_gain(ctrl, value: float) -> None:
 # 2026-08-25：使用者反映「小聲一點」原本 10% 降幅無感，改大幅遞減。
 VOICE_VOL_STEP = 0.25
 
-# 平衡（語音:音樂）語音步進 20%；夾在 PlayControlView.BAL_MIN/BAL_MAX 同範圍。
+# 平衡（語音:音樂）語音步進 20%；範圍 0.10~0.90。
 VOICE_BAL_STEP = 0.20
 BAL_MIN = 0.10
 BAL_MAX = 0.90
