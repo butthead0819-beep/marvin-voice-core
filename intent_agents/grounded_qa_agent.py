@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -54,6 +55,26 @@ QA_TIMEOUT_S = 15.0
 # Gemini 3.x grounding 按「模型實際執行的搜尋次數」計費（$14/1000，超過每月免費額度後）；
 # 2.5 按 prompt 計但每天 1500 免費。免費額度內不計費（見下行）。
 GROUNDING_USD_PER_SEARCH = 0.0  # 2026-10-23：Gemini 3+ 每月前 5000 次搜尋免費（共用），Marvin 月用量 <1000；超過再改回 0.014
+
+# 對談查詢前先「整理問題」（2026-10-23 拍板）：語音問題常聽糊、省略主詞（「光點二代」＝
+# Grounded 2、「幫註」在聊天背景裡其實是 Brotato、「是二代還是一代」接著前一輪）。
+# 實測：3.5-flash（預設思考）整理成一句獨立明確的問題再查，13 題沒有答錯；思考調低會被
+# 「最近在玩 Grounded 2」帶偏。
+REWRITE_MODEL = "gemini-3.5-flash"
+REWRITE_TIMEOUT_S = 8.0
+READBACK_MAX_CHARS = 40
+GLOSSARY_DIR = Path("dictionaries")
+GLOSSARY_MAX_CHARS = 600
+_REWRITE_SYSTEM_PROMPT = (
+    "你是馬文的「問題整理」：使用者用語音問問題，語音辨識常把專有名詞、遊戲名、數字聽糊，"
+    "句子也常省略主詞或接著前面的話。你的工作只有一件：根據提供的資料，把【使用者原句】整理"
+    "成一句「不看上下文也看得懂、可以直接拿去 Google 搜尋」的繁體中文問題。規則：1. 只用資料"
+    "裡有根據的資訊補主詞、指稱、遊戲名稱與版本、修正聽糊的詞；沒根據就不要補，不要自己發明。"
+    "2. 保留使用者真正想問的事，不要改成別的問題、不要加問他沒問的事。3. 如果原句其實不是問題"
+    "（感嘆、聊天、在跟別人講話），question 填空字串。4. 只輸出 JSON：{\"question\": \"整理後的"
+    "問題\", \"basis\": \"用了哪些資料（簡短）\"}"
+)
+_READBACK_STRIP_RE = re.compile(r"[，。、？?！!：:「」『』（）() ]")
 
 # ── 觸發 regex ────────────────────────────────────────────────────────────────
 
@@ -321,6 +342,104 @@ async def build_recent_transcript_context(
     return combined
 
 
+def _glossary_for(game: str) -> str:
+    """遊戲名 → dictionaries/<去空白小寫>.txt 的術語表前 GLOSSARY_MAX_CHARS 字，缺就回 ""。"""
+    try:
+        fname = re.sub(r"\s+", "", game).lower() + ".txt"
+        path = GLOSSARY_DIR / fname
+        return path.read_text(encoding="utf-8")[:GLOSSARY_MAX_CHARS]
+    except Exception:
+        return ""
+
+
+def build_rewrite_input(
+    query: str,
+    *,
+    speaker: str,
+    recent_context: str,
+    session_history: list[tuple[str, str]],
+    games: list[str],
+) -> str:
+    """純函式：組「問題整理」送給 Gemini 的 contents 字串。段落順序固定、空段落略過。"""
+    segments: list[str] = []
+    if games:
+        segments.append(f"【大家最近在玩的遊戲】{'、'.join(games)}")
+        for g in games:
+            glossary = _glossary_for(g)
+            if glossary:
+                segments.append(f"【{g} 常見術語（拿來修正聽糊的詞）】{glossary}")
+    if recent_context and recent_context.strip():
+        segments.append(f"【過去 10 分鐘語音對話背景】\n{recent_context.strip()}")
+    if session_history:
+        qa_lines = "\n".join(f"問：{q}\n答：{a}" for q, a in session_history)
+        segments.append(f"【這次對話 Marvin 剛回答過的問答】\n{qa_lines}")
+    segments.append(f"【提問人】{speaker}\n【使用者原句】{query.strip()}")
+    return "\n\n".join(segments)
+
+
+async def rewrite_question(
+    paid_client,
+    guard,
+    query: str,
+    *,
+    speaker: str,
+    recent_context: str,
+    session_history: list[tuple[str, str]],
+    games: list[str],
+) -> str | None:
+    """把語音聽糊、省略主詞的原句整理成一句獨立明確的問題；None＝失敗或關閉（用原句查）。"""
+    if paid_client is None or os.environ.get("MARVIN_QA_REWRITE", "1") == "0":
+        return None
+    from google.genai import types
+    from llm_paid import estimate_cost
+
+    if not guard.allow(estimate_cost(REWRITE_MODEL, 1500, 300)):
+        return None
+
+    t0 = _time.monotonic()
+    contents = build_rewrite_input(
+        query, speaker=speaker, recent_context=recent_context,
+        session_history=session_history, games=games,
+    )
+    try:
+        response = await asyncio.wait_for(
+            paid_client.aio.models.generate_content(
+                model=REWRITE_MODEL, contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=_REWRITE_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.2,
+                ),
+            ),
+            timeout=REWRITE_TIMEOUT_S,
+        )
+        usage = getattr(response, "usage_metadata", None)
+        in_tok = getattr(usage, "prompt_token_count", 0) or 0
+        out_tok = (getattr(usage, "candidates_token_count", 0) or 0) + (getattr(usage, "thoughts_token_count", 0) or 0)
+        guard.record(
+            caller="qa_rewriter", model=REWRITE_MODEL, tokens=in_tok + out_tok,
+            est_usd=estimate_cost(REWRITE_MODEL, in_tok, out_tok),
+            in_tokens=in_tok, out_tokens=out_tok,
+        )
+        question = json.loads(response.text)["question"].strip()
+    except Exception as e:
+        logger.warning(f"[AmbientQA] 問題整理失敗（用原句查）：{e}")
+        return None
+
+    ms = int((_time.monotonic() - t0) * 1000)
+    logger.info(f"[AmbientQA] 整理 {query!r} ⇒ {question!r}（{ms}ms）")
+    return question
+
+
+def readback_text(query: str, rewritten: str) -> str | None:
+    """整理後的問題讀回句，或 None（不讀回：跟原句沒差、或太長）。"""
+    if _READBACK_STRIP_RE.sub("", query).strip() == _READBACK_STRIP_RE.sub("", rewritten).strip():
+        return None
+    if len(rewritten) > READBACK_MAX_CHARS:
+        return None
+    return f"你是問{rewritten.rstrip('？?。')}嗎？我查一下。"
+
+
 async def grounded_answer(
     free_client,
     paid_client,
@@ -524,6 +643,26 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     extra_kwargs["model_chain"] = QA_MODEL_CHAIN
     extra_kwargs["timeout"] = QA_TIMEOUT_S
 
+    rewritten = await rewrite_question(
+        getattr(router, "google_paid_client", None), guard, topic,
+        speaker=speaker, recent_context=recent_context,
+        session_history=session_history, games=games,
+    )
+    if rewritten == "" and source in ("question_opener", "session_followup"):
+        ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 整理判定非查詢→交回聊天) {topic}")
+        record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
+                           "query": topic, "answer": None, "reason": "not_question",
+                           "latency_ms": 0, "source": source, "games": games,
+                           "model": None, "rewritten": rewritten})
+        return "not_question"
+
+    query_str = rewritten if rewritten else topic
+    game_context = None if rewritten else games
+    if rewritten:
+        rb = readback_text(topic, rewritten)
+        if rb is not None:
+            asyncio.create_task(ctrl.play_tts(prefix + rb, already_in_channel=True))
+
     meta: dict = {}
     t0 = _time.monotonic()
     res = None
@@ -531,9 +670,9 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         res = await grounded_answer(
             None,
             getattr(router, "google_paid_client", None),
-            guard, topic,
+            guard, query_str,
             recent_context=recent_context,
-            game_context=games,
+            game_context=game_context,
             session_history=session_history,
             meta=meta,
             **extra_kwargs,
@@ -549,7 +688,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "not_question",
                            "latency_ms": latency_ms, "source": source, "games": games,
-                           "model": meta.get("model")})
+                           "model": meta.get("model"), "rewritten": rewritten})
         return "not_question"
 
     if res is None:
@@ -558,7 +697,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
                            "latency_ms": latency_ms, "source": source, "games": games,
-                           "model": meta.get("model")})
+                           "model": meta.get("model"), "rewritten": rewritten})
         # 任何 source 都回報 WakeSession（regex 路徑查不到也要計數，否則 session 停不下來，10/17 事故）
         _report = getattr(ctrl, "_wake_session_on_followup_result", None)
         if callable(_report):
@@ -577,13 +716,13 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                        "query": topic, "answer": answer, "sources": sources,
                        "latency_ms": latency_ms, "downstream": "none", "source": source,
-                       "games": games, "model": meta.get("model")})
+                       "games": games, "model": meta.get("model"), "rewritten": rewritten})
     _report = getattr(ctrl, "_wake_session_on_followup_result", None)
     if callable(_report):
         _report(speaker, True)
     _note_qa = getattr(ctrl, "_wake_session_note_qa", None)
     if callable(_note_qa):
-        _note_qa(speaker, topic, answer)
+        _note_qa(speaker, query_str, answer)
     if source == "question_opener" and callable(_note):
         _note(speaker)
     logger.info(f"[AmbientQA] {speaker} 「{topic}」已回答（{latency_ms}ms, src={sources}）。")
