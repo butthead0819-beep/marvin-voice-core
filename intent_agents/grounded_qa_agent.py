@@ -36,6 +36,7 @@ from intent_agents.constants import (
 from intent_bus import IntentContext
 import pipeline_timing
 import recent_games
+import game_aliases
 import time as _time
 import turn_outcome
 
@@ -348,9 +349,12 @@ def build_rewrite_input(
     recent_context: str,
     session_history: list[tuple[str, str]],
     games: list[str],
+    alias_hint: str = "",
 ) -> str:
     """純函式：組「問題整理」送給 Gemini 的 contents 字串。段落順序固定、空段落略過。"""
     segments: list[str] = []
+    if alias_hint:
+        segments.append(alias_hint)
     if games:
         segments.append(f"【大家最近在玩的遊戲】{'、'.join(games)}")
     if recent_context and recent_context.strip():
@@ -371,6 +375,7 @@ async def rewrite_question(
     recent_context: str,
     session_history: list[tuple[str, str]],
     games: list[str],
+    alias_hint: str = "",
 ) -> str | None:
     """把語音聽糊、省略主詞的原句整理成一句獨立明確的問題；None＝失敗或關閉（用原句查）。"""
     if paid_client is None or os.environ.get("MARVIN_QA_REWRITE", "1") == "0":
@@ -384,7 +389,7 @@ async def rewrite_question(
     t0 = _time.monotonic()
     contents = build_rewrite_input(
         query, speaker=speaker, recent_context=recent_context,
-        session_history=session_history, games=games,
+        session_history=session_history, games=games, alias_hint=alias_hint,
     )
     try:
         response = await asyncio.wait_for(
@@ -440,6 +445,7 @@ async def grounded_answer(
     system_prompt: str = _SYSTEM_PROMPT,
     caller: str = "ambient_qa",
     max_chars: int = MAX_REPLY_CHARS,
+    alias_hint: str = "",
     meta: dict | None = None,
 ) -> tuple[str, list[str]] | object | None:
     """query → (答案, 來源 host 清單) 或 None（查不到 / 幻覺 guard 擋下 / 全失敗）或 NOT_A_QUESTION
@@ -456,6 +462,8 @@ async def grounded_answer(
     )
 
     segments: list[str] = []
+    if alias_hint:
+        segments.append(alias_hint)
     if game_context:
         segments.append(
             f"{_GAME_HINT_LABEL}{'、'.join(game_context)}"
@@ -619,6 +627,11 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         recent_context = await build_recent_transcript_context(ctrl, minutes=10)
     games = current_games(ctrl, speaker)
 
+    # 10/23 遊戲名誤聽對照表（docs/designs/game-alias-table.md）：原句命中使用者確認過的誤聽說法才加強提示
+    alias_matches = game_aliases.match_games(topic, game_aliases.load_aliases())
+    hint = game_aliases.alias_hint(alias_matches)
+    alias_names = [e["name"] for _, e in alias_matches]
+
     _hist_fn = getattr(ctrl, "_wake_session_qa_history", None)
     session_history = _hist_fn(speaker) if callable(_hist_fn) else []
     if not isinstance(session_history, list):   # MagicMock 回傳不算
@@ -637,13 +650,14 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     rewritten = None if session_history else await rewrite_question(
         getattr(router, "google_paid_client", None), guard, topic,
         speaker=speaker, recent_context=recent_context,
-        session_history=session_history, games=games,
+        session_history=session_history, games=games, alias_hint=hint,
     )
     if rewritten == "" and source in ("question_opener", "session_followup"):
         ctrl.stt_logger.info(f"[BOT→{speaker}] (AmbientQA 整理判定非查詢→交回聊天) {topic}")
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "not_question",
                            "latency_ms": 0, "source": source, "games": games,
+                           "alias": alias_names,
                            "model": None, "rewritten": rewritten})
         return "not_question"
 
@@ -665,6 +679,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
             recent_context=recent_context,
             game_context=game_context,
             session_history=session_history,
+            alias_hint=hint,
             meta=meta,
             **extra_kwargs,
         )
@@ -679,6 +694,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "not_question",
                            "latency_ms": latency_ms, "source": source, "games": games,
+                           "alias": alias_names,
                            "model": meta.get("model"), "rewritten": rewritten})
         return "not_question"
 
@@ -688,6 +704,7 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
         record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                            "query": topic, "answer": None, "reason": "no_answer",
                            "latency_ms": latency_ms, "source": source, "games": games,
+                           "alias": alias_names,
                            "model": meta.get("model"), "rewritten": rewritten})
         # 任何 source 都回報 WakeSession（regex 路徑查不到也要計數，否則 session 停不下來，10/17 事故）
         _report = getattr(ctrl, "_wake_session_on_followup_result", None)
@@ -707,7 +724,8 @@ async def run_grounded_qa(ctrl, speaker: str, topic: str, *, raw: str = "",
     record_ambient_qa({"ts": _time.time(), "speaker": speaker, "raw": raw,
                        "query": topic, "answer": answer, "sources": sources,
                        "latency_ms": latency_ms, "downstream": "none", "source": source,
-                       "games": games, "model": meta.get("model"), "rewritten": rewritten})
+                       "games": games, "alias": alias_names,
+                       "model": meta.get("model"), "rewritten": rewritten})
     _report = getattr(ctrl, "_wake_session_on_followup_result", None)
     if callable(_report):
         _report(speaker, True)

@@ -292,3 +292,90 @@ async def test_run_grounded_qa_follow_up_skips_rewrite():
     assert mock_answer.call_args.args[3] == "是二代還是一代"
     assert mock_answer.call_args.kwargs["session_history"] == [("Grounded 2 的綠背椿象在哪？", "在橋樑區。")]
     assert [c.args[0] for c in ctrl.play_tts.call_args_list] == ["答案"]   # 沒有讀回句
+
+
+# ── 遊戲名誤聽對照表 alias_hint 接線（10/23，docs/designs/game-alias-table.md） ───────
+
+def test_build_rewrite_input_alias_hint_leads():
+    out = build_rewrite_input(
+        "幫註怎麼做", speaker="showay", recent_context="", session_history=[], games=[],
+        alias_hint="【X】",
+    )
+    assert out.startswith("【X】")
+
+
+def test_build_rewrite_input_no_alias_hint_omits_segment():
+    out = build_rewrite_input(
+        "幫註怎麼做", speaker="showay", recent_context="", session_history=[], games=[],
+    )
+    assert "語音辨識常把遊戲名聽糊" not in out
+
+
+@pytest.mark.asyncio
+async def test_rewrite_question_alias_hint_leads_contents():
+    client = _rewrite_client(_rewrite_resp("Grounded 2 的水下武器怎麼做？"))
+    await rewrite_question(client, _guard(), "幫註怎麼做", speaker="showay",
+                           recent_context="", session_history=[], games=[],
+                           alias_hint="【X】")
+    contents = client.aio.models.generate_content.call_args.kwargs["contents"]
+    assert contents.startswith("【X】")
+
+
+@pytest.mark.asyncio
+async def test_grounded_answer_alias_hint_leads_contents():
+    from intent_agents.grounded_qa_agent import grounded_answer
+
+    def _resp(text):
+        return MagicMock(
+            text=text,
+            candidates=[MagicMock(
+                grounding_metadata=MagicMock(grounding_chunks=[MagicMock(web=MagicMock(uri="https://example.com/a"))]),
+                finish_reason="STOP",
+            )],
+            usage_metadata=MagicMock(prompt_token_count=100, candidates_token_count=50),
+        )
+
+    def _client(resp):
+        cli = MagicMock()
+        cli.aio.models.generate_content = AsyncMock(return_value=resp)
+        return cli
+
+    free = _client(_resp("答案"))
+    out = await grounded_answer(free, None, _guard(), "幫註怎麼做", alias_hint="【X】")
+    assert out is not None
+    contents = free.aio.models.generate_content.call_args.kwargs["contents"]
+    assert contents.startswith("【X】")
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_alias_hint_passed_and_recorded():
+    ctrl = _ctrl()
+    rw = AsyncMock(return_value=None)
+    ga = AsyncMock(return_value=("答案", ["src"]))
+    with patch.object(gqa, "rewrite_question", new=rw), \
+         patch.object(gqa, "grounded_answer", new=ga), \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=[]), \
+         patch.object(gqa, "record_ambient_qa") as mock_record:
+        await gqa.run_grounded_qa(ctrl, "showay", "圓地豆怎麼過去")
+
+    assert "Grounded 2" in rw.call_args.kwargs["alias_hint"]
+    assert "Grounded 2" in ga.call_args.kwargs["alias_hint"]
+    assert mock_record.call_args[0][0]["alias"] == ["Grounded 2"]
+
+
+@pytest.mark.asyncio
+async def test_run_grounded_qa_no_alias_match_empty_hint_and_list():
+    ctrl = _ctrl()
+    rw = AsyncMock(return_value=None)
+    ga = AsyncMock(return_value=("答案", ["src"]))
+    with patch.object(gqa, "rewrite_question", new=rw), \
+         patch.object(gqa, "grounded_answer", new=ga), \
+         patch.object(gqa, "build_recent_transcript_context", new=AsyncMock(return_value="")), \
+         patch.object(gqa, "current_games", return_value=[]), \
+         patch.object(gqa, "record_ambient_qa") as mock_record:
+        await gqa.run_grounded_qa(ctrl, "showay", "今天天氣如何")
+
+    assert rw.call_args.kwargs["alias_hint"] == ""
+    assert ga.call_args.kwargs["alias_hint"] == ""
+    assert mock_record.call_args[0][0]["alias"] == []
