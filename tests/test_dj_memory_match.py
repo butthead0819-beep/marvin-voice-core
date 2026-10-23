@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import dj_topic_selector
-from dj_narration_orchestrator import select_narration_mode
+from dj_narration_orchestrator import DJMaterials, choose_mode
 from dj_social_affinity import find_spoken_taste_match
 from dj_topic_selector import TopicCooldownStore
 
@@ -127,7 +127,7 @@ def test_likes_not_a_list_does_not_crash():
     assert find_spoken_taste_match(suki, "任意歌名", "伍佰", ["陳進文"]) is None
 
 
-# ── B2. select_narration_mode(memory_evidence=...) ──────────────────────────
+# ── B2. choose_mode(memory_evidence=...) ──────────────────────────
 
 def _store(tmp_path, now=None):
     kwargs = {"path": str(tmp_path / "cd.json")}
@@ -139,12 +139,11 @@ def _store(tmp_path, now=None):
 def test_memory_evidence_wins_and_does_not_consume_life_cooldown(tmp_path):
     store = _store(tmp_path)
     life = ["今天出去露營了"]
-    topic, mode = select_narration_mode(
+    topic, mode = choose_mode(DJMaterials(
         life=life,
         interests=[],
-        topic_store=store,
         memory_evidence="陳進文 說過喜歡伍佰",
-    )
+    ), store)
     assert (topic, mode) == ("陳進文 說過喜歡伍佰", "memory_match")
     assert store.is_cool("今天出去露營了") is True
 
@@ -155,12 +154,11 @@ def test_memory_evidence_in_cooldown_falls_back_to_normal_flow(tmp_path, monkeyp
     life = ["今天出去露營了"]
     ev = "陳進文 說過喜歡伍佰"
     store.mark_used(ev)
-    topic, mode = select_narration_mode(
+    topic, mode = choose_mode(DJMaterials(
         life=life,
         interests=[],
-        topic_store=store,
         memory_evidence=ev,
-    )
+    ), store)
     assert (topic, mode) == ("今天出去露營了", "life")
 
 
@@ -168,12 +166,12 @@ def test_no_memory_evidence_matches_default_behavior(tmp_path, monkeypatch):
     _only(monkeypatch, "life")
     life = ["今天出去露營了"]
     store_a = TopicCooldownStore(path=str(tmp_path / "cd_a.json"))
-    result_without = select_narration_mode(life=life, interests=[], topic_store=store_a)
+    result_without = choose_mode(DJMaterials(life=life, interests=[]), store_a)
 
     store_b = TopicCooldownStore(path=str(tmp_path / "cd_b.json"))
-    result_with_empty = select_narration_mode(
-        life=life, interests=[], topic_store=store_b, memory_evidence="",
-    )
+    result_with_empty = choose_mode(DJMaterials(
+        life=life, interests=[], memory_evidence="",
+    ), store_b)
     assert result_without == result_with_empty == ("今天出去露營了", "life")
 
 

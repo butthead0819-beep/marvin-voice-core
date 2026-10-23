@@ -23,7 +23,6 @@ DJMaterials ──► forced 層（order）：memory_match → relation → song
 apply_side_effects(plan)  ← 同步 def，緊接 plan_narration，無 await（PR #102）
    ├─ consume_conversation：is_consumed 重查 → 搶光則 downgrade(plan,"quick")（不寫冷卻）
    └─ consume_callback
-select_narration_mode(...) = 薄包裝 → choose_mode → (topic, mode)   [D13]
 加一個扭蛋 mode：MODES 一筆 + DJMaterials 一欄 + cog 收集一行 + select_mode 一個參數。
 ```
 """
@@ -323,7 +322,13 @@ def tts_emotion_for(mode: str) -> str:
 
 
 def choose_mode(materials: DJMaterials, store: TopicCooldownStore, rng=None) -> tuple[str | None, str]:
-    """決策鏈：forced（依 order）→ gacha（委派 select_mode）→ override。"""
+    """決策鏈：forced（依 order）→ gacha（委派 select_mode）→ override。
+
+    memory_match 命中時不呼叫 `select_mode`——否則 life/interest 話題會被白白 mark_used
+    冷卻掉。focus='song'（少播）走 forced 的 song，不進扭蛋池；autopilot_reason 只在
+    扭蛋落在 quick/atmosphere 時覆蓋成 reason，不搶已挑到具體素材的 mode。
+    回傳 (topic_text, mode)。
+    """
     for nm in sorted((x for x in MODES.values() if x.tier == "forced"), key=lambda x: x.order):
         hit = nm.pick(materials, store)
         if hit is not None:
@@ -401,66 +406,6 @@ def apply_side_effects(
                 logger.warning(f"⚠️ [DJ Callback] consume 失敗: {e}")
 
     return plan
-
-
-def select_narration_mode(
-    *,
-    life,
-    interests,
-    topic_store: TopicCooldownStore,
-    present_members=None,
-    has_conversation: bool = False,
-    news_items=None,
-    callbacks=None,
-    activities=None,
-    autopilot_reason: str = "",
-    memory_evidence: str = "",
-    has_guide: bool = False,
-    focus: str = "",
-    exclude_modes: Collection[str] = (),
-) -> tuple[str | None, str]:
-    """[Step 5c] 這輪串場的話題素材從哪來——原樣包
-    `_fetch_dj_interjection_raw` 裡「呼叫 dj_topic_selector.select_mode
-    →autopilot 理由覆蓋 quick/atmosphere」這兩步的固定組合。
-
-    優先序：記憶對歌（memory_evidence，在場者親口說過喜歡這首歌/歌手的
-    具體證據，命中且沒冷卻中就直接勝出，不再進 select_mode）→ 其餘全部交給
-    `dj_topic_selector.select_mode` 的扭蛋池（近期生活主角要在場、在場興趣、
-    新聞、在場者的 Discord 動態、guide/conversation/
-    atmosphere/quick，依各自有沒有素材建池後加權隨機抽一個；真正的挑選邏輯在
-    `select_mode` 裡，這裡不重複實作；has_guide=True 時 guide 才會進這輪的候選）。
-
-    memory_evidence 命中時**不呼叫** `select_mode`——否則 life/interest
-    話題會被白白 `mark_used` 冷卻掉，等於這輪沒講到卻先燒掉了下次的素材。
-
-    autopilot_reason 覆蓋規則原樣照抄 `_fetch_dj_interjection_raw`：只有
-    Marvin 自己選歌才會算出 `_autopilot_pick_reason`；只在 select_mode
-    選到 quick 或 atmosphere 這兩個「沒有具體話題可用」的墊底 fallback
-    時才蓋掉，換成有憑有據的推薦理由（mode="reason"）——不搶 life/interest/
-    news/conversation 這些已經挑到具體
-    素材的 mode。
-
-    回傳 (topic_text, mode)，跟 `select_mode` 的回傳形狀一致，mode
-    多兩種 "memory_match"/"reason" 是這一步疊加上去的，不是 `select_mode`
-    本身會回的值。
-
-    focus（見 `autopilot_narration_focus`，10/4）：memory_match 之後才看。
-    'song'（少播）→ 一律回 (None, "song")，不進扭蛋池（不燒話題冷卻）；歌本身的素材
-    由呼叫端 `pick_song_facet` 抽（10/4 導聆也是其中一個 facet）；'topic'（熟歌）→ 照常扭蛋
-    （10/23 起有導聆也公平進池）；''→ 完全照舊。
-
-    exclude_modes（10/4）：同一首歌最近 2 次用過的 mode，memory_match 與扭蛋池都避開
-    （見 dj_topic_selector.select_mode）。focus='song' 不受影響。
-
-    第 3 刀起為薄包裝：組 DJMaterials → choose_mode；移除見 TODOS.md。
-    """
-    return choose_mode(DJMaterials(
-        life=life, interests=interests, present_members=present_members,
-        has_conversation=has_conversation,
-        news_items=news_items, callbacks=callbacks, activities=activities,
-        autopilot_reason=autopilot_reason, memory_evidence=memory_evidence,
-        has_guide=has_guide, focus=focus, exclude_modes=exclude_modes,
-    ), topic_store)
 
 
 def pick_song_facet(

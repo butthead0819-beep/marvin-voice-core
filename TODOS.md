@@ -30,13 +30,6 @@
 **How to start:** 先量拿掉熟歌擋之後一週 guide 出現率（`records/dj_narration.jsonl` 裡 ctx 含「導聆素材」的比例，10/18–10/23 基準 24/1076≈2.2%）。還是太低再評估：開播前預抓導聆（不等 DJ 當下 10 秒）或付費查證（要先算月預算）。
 **Priority:** P2
 
-### TODO: 移除 select_narration_mode 舊包裝（10/16 起可做）
-**What**: `dj_narration_orchestrator.select_narration_mode` 在第 3 刀改成呼叫 `plan_narration` 的薄包裝；穩定後刪掉它，正式呼叫端改用 `plan_narration`，7 個測試檔約 47 處引用改測 `plan_narration`。
-**Why**: 2026-10-08 eng review D13 刻意保留舊入口當重構護欄；不清掉會兩個決策入口並存，之後有人從舊入口加邏輯就分岔。
-**Cons**: 一次改寫約 47 處測試，要逐一確認斷言語意不變。
-**Context**: 第 3 刀 eb01f5c（10/9）已 land，穩定一週＝10/16。設計見 `docs/designs/dj-narration-mode-registry.md`；eng review 報告 `~/.gstack/projects/butthead0819-beep-marvin-voice-core/main-eng-review-20261008-141758.md`（R3/R5）。從 `grep -rn select_narration_mode tests/` 開始。
-**Priority:** P3
-
 ### TODO: suki 雜訊假 player 清理（待確認）
 **What:** `marvin.db` players 表仍有「測試者 / 未知人 / 會別人怎麼講話 / 修為講話」這些 STT 噪音建的假 player（2026-10-11 確認還在）。「狗與露」有兩列，要先確認是不同 guild 還是重複。
 **How:** 清理 script，**bot 停止時跑**（避免 `_cache` 覆蓋）；深夜做，不在晚間 20-24。

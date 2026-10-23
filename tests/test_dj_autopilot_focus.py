@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import dj_narration_orchestrator
-from dj_narration_orchestrator import RARE_MAX_PLAYS, autopilot_narration_focus, select_narration_mode
+from dj_narration_orchestrator import DJMaterials, RARE_MAX_PLAYS, autopilot_narration_focus, choose_mode
 from dj_topic_selector import TopicCooldownStore
 from tests.test_dj_story_context import _ctx_str, _info, _make_cog
 
@@ -44,7 +44,7 @@ def test_focus_missing_server_plays_is_unchanged():
     assert autopilot_narration_focus({"requested_by": AUTO}) == ""
 
 
-# ── select_narration_mode(focus=...) ─────────────────────────────────────────
+# ── choose_mode(focus=...) ─────────────────────────────────────────
 
 def _spy_select_mode(monkeypatch):
     calls = []
@@ -63,16 +63,16 @@ def _store(tmp_path):
 def test_song_focus_with_guide_still_goes_song_facet(tmp_path, monkeypatch):
     # 10/4 改：導聆變成 song 素材池的一個 facet（pick_song_facet 抽），mode 一律 "song"
     calls = _spy_select_mode(monkeypatch)
-    out = select_narration_mode(life=[], interests=[], topic_store=_store(tmp_path),
-                                has_guide=True, focus="song", autopilot_reason="理由")
+    out = choose_mode(DJMaterials(life=[], interests=[],
+                                   has_guide=True, focus="song", autopilot_reason="理由"), _store(tmp_path))
     assert out == (None, "song")
     assert calls == []
 
 
 def test_song_focus_without_guide_goes_song_without_gacha(tmp_path, monkeypatch):
     calls = _spy_select_mode(monkeypatch)
-    out = select_narration_mode(life=[], interests=[], topic_store=_store(tmp_path),
-                                has_guide=False, focus="song", autopilot_reason="理由")
+    out = choose_mode(DJMaterials(life=[], interests=[],
+                                   has_guide=False, focus="song", autopilot_reason="理由"), _store(tmp_path))
     assert out == (None, "song")
     assert calls == []
 
@@ -80,21 +80,21 @@ def test_song_focus_without_guide_goes_song_without_gacha(tmp_path, monkeypatch)
 def test_topic_focus_keeps_guide_in_gacha(tmp_path, monkeypatch):
     # 10/23 使用者定：熟歌有導聆也要公平進扭蛋池（原本 focus=topic 硬擋，98 次有稿只抽中 1 次）
     calls = _spy_select_mode(monkeypatch)
-    select_narration_mode(life=[], interests=[], topic_store=_store(tmp_path),
-                          has_guide=True, focus="topic")
+    choose_mode(DJMaterials(life=[], interests=[],
+                             has_guide=True, focus="topic"), _store(tmp_path))
     assert calls[0]["has_guide"] is True
 
 
 def test_no_focus_passes_has_guide_through(tmp_path, monkeypatch):
     calls = _spy_select_mode(monkeypatch)
-    select_narration_mode(life=[], interests=[], topic_store=_store(tmp_path), has_guide=True)
+    choose_mode(DJMaterials(life=[], interests=[], has_guide=True), _store(tmp_path))
     assert calls[0]["has_guide"] is True
 
 
 def test_memory_evidence_still_wins_over_song_focus(tmp_path, monkeypatch):
     calls = _spy_select_mode(monkeypatch)
-    out = select_narration_mode(life=[], interests=[], topic_store=_store(tmp_path),
-                                memory_evidence="大肚說過超愛這個歌手", focus="song")
+    out = choose_mode(DJMaterials(life=[], interests=[],
+                                   memory_evidence="大肚說過超愛這個歌手", focus="song"), _store(tmp_path))
     assert out == ("大肚說過超愛這個歌手", "memory_match")
     assert calls == []
 
