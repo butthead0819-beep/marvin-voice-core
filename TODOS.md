@@ -25,10 +25,10 @@
 **Context:** 合併舊的兩項：2026-10-10 eng review（D9）不塞進 Phase 1 的語音撤回，與 2026-05-21 CEO review 的「別記/別說」同意線。意圖辨識照 LLM 優先，別只靠 regex。設計見 `docs/designs/event-memory.md`。
 **Priority:** P2
 
-### TODO: DJ 口白註冊表第 4 刀 — 依 skip 率砍 mode（10/15）
-**What:** 10/15 拿口白 skip 反應訊號（第 1 刀）的資料，砍掉 skip 率明顯偏高的 mode。
-**Context:** `docs/designs/dj-narration-mode-registry.md`；記憶 project_dj_narration_mode_registry。
-**Priority:** P2（有日期）
+### TODO: 導聆免費查證額度早上就用完（第 4 刀副產品，10/23）
+**What:** 第 4 刀結論：skip 訊號量不出口白好壞（10/9 後 2200 播放只有 10 次 30 秒內 skip，整首窗口各 mode 都 ≤ 無口白基準 7.3%），不砍 mode。使用者定 guide 要公平抽到，熟歌硬擋已拿掉。剩下的問題：autopilot 導聆只走免費 gemini-2.5-flash grounded（每天約 20 次，跟其他功能共用），10/23 11:26 起全天 429，少播新歌查不到稿。
+**How to start:** 先量拿掉熟歌擋之後一週 guide 出現率（`records/dj_narration.jsonl` 裡 ctx 含「導聆素材」的比例，10/18–10/23 基準 24/1076≈2.2%）。還是太低再評估：開播前預抓導聆（不等 DJ 當下 10 秒）或付費查證（要先算月預算）。
+**Priority:** P2
 
 ### TODO: 移除 select_narration_mode 舊包裝（10/16 起可做）
 **What**: `dj_narration_orchestrator.select_narration_mode` 在第 3 刀改成呼叫 `plan_narration` 的薄包裝；穩定後刪掉它，正式呼叫端改用 `plan_narration`，7 個測試檔約 47 處引用改測 `plan_narration`。
