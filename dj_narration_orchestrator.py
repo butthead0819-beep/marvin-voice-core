@@ -339,7 +339,7 @@ def choose_mode(materials: DJMaterials, store: TopicCooldownStore, rng=None) -> 
         callbacks=materials.callbacks,
         activities=materials.activities,
         weather_items=materials.weather_items,
-        has_guide=materials.has_guide and materials.focus != "topic",
+        has_guide=materials.has_guide,
         exclude_modes=materials.exclude_modes,
         has_perspective=bool(materials.perspective_topic) and materials.has_conversation,
     )
@@ -447,7 +447,7 @@ def select_narration_mode(
     focus（見 `autopilot_narration_focus`，10/4）：memory_match 之後才看。
     'song'（少播）→ 一律回 (None, "song")，不進扭蛋池（不燒話題冷卻）；歌本身的素材
     由呼叫端 `pick_song_facet` 抽（10/4 導聆也是其中一個 facet）；'topic'（熟歌）→ 照常扭蛋
-    但不放 guide；''→ 完全照舊。
+    （10/23 起有導聆也公平進池）；''→ 完全照舊。
 
     exclude_modes（10/4）：同一首歌最近 2 次用過的 mode，memory_match 與扭蛋池都避開
     （見 dj_topic_selector.select_mode）。focus='song' 不受影響。

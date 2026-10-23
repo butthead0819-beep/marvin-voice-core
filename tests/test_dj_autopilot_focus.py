@@ -77,11 +77,12 @@ def test_song_focus_without_guide_goes_song_without_gacha(tmp_path, monkeypatch)
     assert calls == []
 
 
-def test_topic_focus_excludes_guide_from_gacha(tmp_path, monkeypatch):
+def test_topic_focus_keeps_guide_in_gacha(tmp_path, monkeypatch):
+    # 10/23 使用者定：熟歌有導聆也要公平進扭蛋池（原本 focus=topic 硬擋，98 次有稿只抽中 1 次）
     calls = _spy_select_mode(monkeypatch)
     select_narration_mode(life=[], interests=[], topic_store=_store(tmp_path),
                           has_guide=True, focus="topic")
-    assert calls[0]["has_guide"] is False
+    assert calls[0]["has_guide"] is True
 
 
 def test_no_focus_passes_has_guide_through(tmp_path, monkeypatch):
