@@ -16,7 +16,7 @@ import dj_narration_log
 from dj_gacha_narrator import pick_gacha_motivation
 from dj_lyric_pick import pick_chorus_line, pick_lyric_line
 from dj_narration_log import recent_narrations_for_song, used_materials
-from dj_narration_orchestrator import pick_song_facet, pick_song_material, select_narration_mode
+from dj_narration_orchestrator import DJMaterials, choose_mode, pick_song_facet, pick_song_material
 from dj_topic_selector import TopicCooldownStore, select_mode
 from tests.test_dj_story_context import _ctx_str, _info, _make_cog, _only
 
@@ -172,18 +172,19 @@ def test_select_mode_keeps_original_pool_when_exclusion_empties_it(tmp_path):
     assert seen <= {"interest", "conversation", "atmosphere"} and seen
 
 
-# ── 7. select_narration_mode ─────────────────────────────────────────────────
+# ── 7. choose_mode ─────────────────────────────────────────────────
 
 def test_memory_match_excluded_falls_through(tmp_path):
-    out = select_narration_mode(life=[], interests=[], topic_store=_fresh_store(tmp_path, "m.json"),
-                                memory_evidence="大肚說過超愛這個歌手",
-                                exclude_modes={"memory_match"})
+    out = choose_mode(DJMaterials(life=[], interests=[],
+                                   memory_evidence="大肚說過超愛這個歌手",
+                                   exclude_modes={"memory_match"}), _fresh_store(tmp_path, "m.json"))
     assert out[1] != "memory_match"
 
 
 def test_song_focus_ignores_guide_and_exclusions(tmp_path):
-    out = select_narration_mode(life=[], interests=[], topic_store=_fresh_store(tmp_path, "s.json"),
-                                has_guide=True, focus="song", exclude_modes={"song", "guide"})
+    out = choose_mode(DJMaterials(life=[], interests=[],
+                                   has_guide=True, focus="song", exclude_modes={"song", "guide"}),
+                       _fresh_store(tmp_path, "s.json"))
     assert out == (None, "song")
 
 

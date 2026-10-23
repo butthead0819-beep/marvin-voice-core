@@ -1,6 +1,6 @@
 """TDD: 每段 DJ 串場寫一筆結構化紀錄供一週觀察用 (9/30 使用者定)。
 
-不驗算 clean_dj_script / select_narration_mode 等既有邏輯本身，只驗證
+不驗算 clean_dj_script / choose_mode 等既有邏輯本身，只驗證
 log_dj_narration / probe_audio_seconds 的行為，以及 _fetch_dj_interjection_raw
 有把正確的欄位餵進去記錄。
 """

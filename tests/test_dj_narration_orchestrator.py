@@ -8,7 +8,7 @@ cogs/music_cog_dj_lyrics.py::_fetch_dj_interjection_raw 裡對應那幾行）
 from __future__ import annotations
 
 import dj_topic_selector
-from dj_narration_orchestrator import compute_tail_fire_delay, select_narration_mode
+from dj_narration_orchestrator import DJMaterials, choose_mode, compute_tail_fire_delay
 from dj_tail_schedule import tail_dj_fire_delay
 from dj_topic_selector import TopicCooldownStore, select_mode
 
@@ -59,7 +59,7 @@ def test_tail_fire_delay_accounts_for_highlight_start_offset():
     assert with_highlight < without
 
 
-# ── select_narration_mode vs. _fetch_dj_interjection_raw 舊寫法 ─────────────
+# ── choose_mode vs. _fetch_dj_interjection_raw 舊寫法 ─────────────
 
 def _legacy_select_mode(
     life, interests, store, *,
@@ -84,20 +84,20 @@ def _fresh_store(tmp_path, name: str) -> TopicCooldownStore:
     return TopicCooldownStore(str(tmp_path / name), now=lambda: 1000.0)
 
 
-def test_select_narration_mode_matches_legacy_when_life_available(tmp_path, monkeypatch):
+def test_choose_mode_matches_legacy_when_life_available(tmp_path, monkeypatch):
     _only(monkeypatch, "life")
     kwargs = dict(life=["昨天去爬山"], interests=["喜歡周杰倫"])
-    new = select_narration_mode(topic_store=_fresh_store(tmp_path, "a.json"), **kwargs)
+    new = choose_mode(DJMaterials(**kwargs), _fresh_store(tmp_path, "a.json"))
     old = _legacy_select_mode(kwargs["life"], kwargs["interests"], _fresh_store(tmp_path, "b.json"))
     assert new == old == ("昨天去爬山", "life")
 
 
-def test_select_narration_mode_matches_legacy_fallback_rotation(tmp_path, monkeypatch):
+def test_choose_mode_matches_legacy_fallback_rotation(tmp_path, monkeypatch):
     _only(monkeypatch, "conversation")
     kwargs = dict(
         life=[], interests=[], has_conversation=True,
     )
-    new = select_narration_mode(topic_store=_fresh_store(tmp_path, "a.json"), **kwargs)
+    new = choose_mode(DJMaterials(**kwargs), _fresh_store(tmp_path, "a.json"))
     old = _legacy_select_mode(
         kwargs["life"], kwargs["interests"], _fresh_store(tmp_path, "b.json"),
         has_conversation=kwargs["has_conversation"],
@@ -105,13 +105,13 @@ def test_select_narration_mode_matches_legacy_fallback_rotation(tmp_path, monkey
     assert new == old
 
 
-def test_select_narration_mode_autopilot_reason_overrides_quick(tmp_path, monkeypatch):
+def test_choose_mode_autopilot_reason_overrides_quick(tmp_path, monkeypatch):
     # life/interest/highlight/news 全空、has_conversation 全 False
     # → 池只剩 atmosphere/quick，固定權重讓 select_mode 必落在 quick，autopilot_reason
     # 存在時 orchestrator 該把它蓋成 "reason"，跟舊寫法一致。
     _only(monkeypatch, "quick")
     kwargs = dict(life=[], interests=[], autopilot_reason="照你的口味挖出來的新歌")
-    new = select_narration_mode(topic_store=_fresh_store(tmp_path, "a.json"), **kwargs)
+    new = choose_mode(DJMaterials(**kwargs), _fresh_store(tmp_path, "a.json"))
     old = _legacy_select_mode(
         kwargs["life"], kwargs["interests"], _fresh_store(tmp_path, "b.json"),
         autopilot_reason=kwargs["autopilot_reason"],
@@ -120,63 +120,63 @@ def test_select_narration_mode_autopilot_reason_overrides_quick(tmp_path, monkey
     assert new[1] == "reason"
 
 
-def test_select_narration_mode_has_guide_picks_guide_over_fallback_rotation(tmp_path, monkeypatch):
+def test_choose_mode_has_guide_picks_guide_over_fallback_rotation(tmp_path, monkeypatch):
     # 有歌曲卡導聆可講（has_guide=True）→ 固定權重讓扭蛋池必抽中 guide。
     _only(monkeypatch, "guide")
     kwargs = dict(
         life=[], interests=[], has_conversation=True, has_guide=True,
     )
-    topic, mode = select_narration_mode(topic_store=_fresh_store(tmp_path, "a.json"), **kwargs)
+    topic, mode = choose_mode(DJMaterials(**kwargs), _fresh_store(tmp_path, "a.json"))
     assert mode == "guide"
     assert topic is None  # guide 沒有具體文字素材，caller 自己從 card 讀
 
 
-def test_select_narration_mode_has_guide_false_never_returns_guide(tmp_path):
+def test_choose_mode_has_guide_false_never_returns_guide(tmp_path):
     # has_guide 預設 False（未傳）→ guide 不該出現，跟舊版行為完全一致。
     store = _fresh_store(tmp_path, "a.json")
     for _ in range(6):
-        _, mode = select_narration_mode(
-            life=[], interests=[], topic_store=store,
+        _, mode = choose_mode(DJMaterials(
+            life=[], interests=[],
             has_conversation=True,
-        )
+        ), store)
         assert mode != "guide"
 
 
-def test_select_narration_mode_autopilot_reason_does_not_override_guide(tmp_path, monkeypatch):
+def test_choose_mode_autopilot_reason_does_not_override_guide(tmp_path, monkeypatch):
     # autopilot_reason 只覆蓋 quick/atmosphere，不該搶走 guide（有查證過的真實資料
     # 時優先權比「Marvin 自己編的推薦理由」高）。固定權重讓扭蛋池必抽中 guide。
     _only(monkeypatch, "guide")
     store = _fresh_store(tmp_path, "a.json")
-    topic, mode = select_narration_mode(
-        life=[], interests=[], topic_store=store,
+    topic, mode = choose_mode(DJMaterials(
+        life=[], interests=[],
         has_conversation=True, has_guide=True,
         autopilot_reason="照你的口味挖出來的新歌",
-    )
+    ), store)
     assert mode == "guide"
 
 
-def test_select_narration_mode_autopilot_reason_does_not_override_life(tmp_path, monkeypatch):
+def test_choose_mode_autopilot_reason_does_not_override_life(tmp_path, monkeypatch):
     # 有具體素材（life）時，autopilot_reason 不該蓋掉它——只搶 quick/atmosphere。
     # 固定權重讓扭蛋池必抽中 life。
     _only(monkeypatch, "life")
     store = _fresh_store(tmp_path, "c.json")
-    topic, mode = select_narration_mode(
-        life=["昨天去爬山"], interests=[], topic_store=store,
+    topic, mode = choose_mode(DJMaterials(
+        life=["昨天去爬山"], interests=[],
         autopilot_reason="照你的口味挖出來的新歌",
-    )
+    ), store)
     assert mode == "life"
     assert topic == "昨天去爬山"
 
 
-def test_select_narration_mode_passes_activities_through_to_select_mode(tmp_path):
-    # select_narration_mode 把 activities 原樣轉給 select_mode；固定權重讓扭蛋池
+def test_choose_mode_passes_activities_through_to_select_mode(tmp_path):
+    # choose_mode 把 activities 原樣轉給 select_mode；固定權重讓扭蛋池
     # 必抽中 activity，確認這條 kwarg 真的接到了底層（不是被吞掉）。
     store = _fresh_store(tmp_path, "a.json")
-    topic, mode = select_narration_mode(
-        life=[], interests=[], topic_store=store,
+    topic, mode = choose_mode(DJMaterials(
+        life=[], interests=[],
         activities=["小明 正在玩《Ball X Pit》"],
         exclude_modes=("life", "interest", "news", "callback",
                        "guide", "conversation", "atmosphere", "quick"),
-    )
+    ), store)
     assert mode == "activity"
     assert topic == "小明 正在玩《Ball X Pit》"
