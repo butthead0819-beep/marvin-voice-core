@@ -636,12 +636,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._task_store = TaskStore()
         self._session_summarizer: SessionSummarizer | None = None
         self._recall_handler: RecallHandler | None = None
-        self._pending_confirmations: list = []
-        self._awaiting_confirmation = None
-        self._awaiting_confirmation_speaker: str = ""
-        self._last_speech_time: float = 0.0
         self._last_mentioned_task_id: int | None = None
-        self._confirmation_checker_task: asyncio.Task | None = None
 
         # 環境智能助理 — 話題產生器 + 溫度計
         self.temperature_monitor = None   # DiscordTemperatureMonitor，由 main_discord 注入
@@ -697,13 +692,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 summary_store=self._summary_store,
                 groq_client=_groq,
                 owner_speaker=_owner,
-                on_commitment_detected=self._on_commitment_detected,
                 router=self.bot.router,  # 走 LLM Bus
                 event_store=EventStore(),  # 🗓️ 事件記憶 Phase 1（docs/designs/event-memory.md）
                 members_fn=lambda: [m for m in self.get_online_members() if self.consent.is_consented(m)],
             )
             asyncio.create_task(self._session_summarizer.start(guild_id=_guild_id))
-            self._confirmation_checker_task = asyncio.create_task(self._confirmation_checker_loop())
             logger.info("[VC] Personal assistant recall + summarizer 已啟動")
 
         # 注入回呼 (核心引擎 -> Cog Handlers)
@@ -739,8 +732,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🚀 [Fast System] 停止指令佇列處理器
         if hasattr(self, "query_worker_task") and self.query_worker_task:
             self.query_worker_task.cancel()
-        if self._confirmation_checker_task and not self._confirmation_checker_task.done():
-            self._confirmation_checker_task.cancel()
         if self._session_summarizer:
             await self._session_summarizer.stop()
 
@@ -2019,63 +2010,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if answer:
             await self.play_tts(answer, already_in_channel=True)
 
-    @turn_route("legacy:pa_confirm")
-    async def _handle_confirmation_response(self, speaker: str, query: str):
-        """處理 yes/no 回應，確認或放棄 pending confirmation。"""
-        from recall_handler import is_yes_response, is_no_response
-        conf = self._awaiting_confirmation
-        if conf is None:
-            return
-        if speaker != self._awaiting_confirmation_speaker:
-            return  # 只有觸發者能確認
-        if is_yes_response(query):
-            self._awaiting_confirmation = None
-            self._awaiting_confirmation_speaker = ""
-            if self._recall_handler:
-                answer = await self._recall_handler.handle_confirmation(conf)
-                await self.play_tts(answer, already_in_channel=True)
-        elif is_no_response(query):
-            self._awaiting_confirmation = None
-            self._awaiting_confirmation_speaker = ""
-            await self.play_tts("好，不記了。", already_in_channel=True)
-
-    def _on_commitment_detected(self, conf):
-        """SessionSummarizer 偵測到 commitment 的 hook（sync，從 summarizer loop 呼叫）。
-
-        進 pending-confirmation 佇列（30s 靜默後主動問）。
-        """
-        self._pending_confirmations.append(conf)
-
-    async def _confirmation_checker_loop(self):
-        """靜默 30 秒後從佇列取出一個 pending confirmation，Marvin 主動詢問。"""
-        import time as _time
-        while True:
-            await asyncio.sleep(20)
-            try:
-                if (not self._pending_confirmations
-                        or self._awaiting_confirmation is not None
-                        or self.is_playing_audio):
-                    continue
-                if _time.time() - self._last_speech_time < 30:
-                    continue
-                # 過濾過期
-                self._pending_confirmations = [
-                    c for c in self._pending_confirmations if c.expires_at > _time.time()
-                ]
-                if not self._pending_confirmations:
-                    continue
-                conf = self._pending_confirmations.pop(0)
-                self._awaiting_confirmation = conf
-                self._awaiting_confirmation_speaker = conf.speaker
-                await self.play_tts(
-                    f"剛才說的「{conf.task_text}」，要記成待辦嗎？",
-                    already_in_channel=True,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.error("[VC] _confirmation_checker_loop 意外錯誤: %s", e)
-
     @turn_route("legacy:status_keywords")
     async def _handle_voice_status_query(self, speaker: str):
         """語音觸發系統健康狀態報告，不走 LLM，直接生成回答並 TTS 播放。"""
@@ -2965,18 +2899,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         # 🔍 [Background Intent Enrich] 喚醒後立即啟動背景 DDG，不阻塞本次回應
         asyncio.create_task(self.bot.router._background_intent_enrich(speaker, query))
-
-        # 📅 [Personal Assistant] 更新最近說話時間（供靜默確認檢查器使用）
-        self._last_speech_time = time.time()
-
-        # ✋ [Personal Assistant Confirmation] yes/no 回應 → 優先處理
-        # (low_confidence_wake gate：低信心不該觸發狀態機 confirmation，避免被 cross-talk 污染)
-        if (self._awaiting_confirmation and self._awaiting_confirmation_speaker == speaker
-                and not low_confidence_wake):
-            from recall_handler import is_yes_response, is_no_response
-            if is_yes_response(query) or is_no_response(query):
-                await self._handle_confirmation_response(speaker, query)
-                return
 
         # ── [Personal Assistant Intent Detection] ──
         # 先驗 intent 再驗 handler 存在性，避免 silent failure：

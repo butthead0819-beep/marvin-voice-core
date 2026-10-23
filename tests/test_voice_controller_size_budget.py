@@ -47,9 +47,9 @@ SELF_ATTR_BUDGET = 152
 NEW_METHOD_MAX = 40
 FROZEN_METHODS = {  # 已超過 NEW_METHOD_MAX 的既有大 method：只准縮
     "handle_stt_result": 187,
-    "__init__": 168,
+    "__init__": 160,
     "_stream_response": 151,
-    "_process_queued_query": 119,
+    "_process_queued_query": 114,
     "_apply_wake_guards": 70,
     "process_debounced_speech": 64,
     "handle_raw_speech_start": 58,
