@@ -34,6 +34,8 @@ from intent_agents.constants import (
 )
 from intent_bus import IntentContext
 import pipeline_timing
+import recent_games
+import time as _time
 import turn_outcome
 
 logger = logging.getLogger(__name__)
@@ -225,6 +227,7 @@ def current_games(ctrl, speaker: str) -> list[str]:
         members = ctrl.voice_client.channel.members
         speaker_games: list[str] = []
         other_games: list[str] = []
+        present: list[str] = []
         for m in members:
             if getattr(m, "bot", False):
                 continue
@@ -238,6 +241,9 @@ def current_games(ctrl, speaker: str) -> list[str]:
                 speaker_games.extend(names)
             else:
                 other_games.extend(names)
+            present.append(getattr(m, "display_name", "") or "")
+            if names:
+                recent_games.note_games(present[-1], names, now=_time.time())
 
         seen: set[str] = set()
         out: list[str] = []
@@ -247,7 +253,8 @@ def current_games(ctrl, speaker: str) -> list[str]:
                 out.append(name)
             if len(out) >= 3:
                 break
-        return out
+        # 當下抓不到（PS 上玩 Discord 不顯示）→ 在場的人最近 7 天玩過的（見 recent_games.py）
+        return out or recent_games.recent_games(present, now=_time.time())
     except Exception:
         return []
 

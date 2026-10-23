@@ -171,3 +171,14 @@ def make_music_cog_mock(*, stream_mode: bool = False, radio_mode: bool = False):
     mc.stream_mode = stream_mode
     mc.radio_mode = radio_mode
     return mc
+
+
+@pytest.fixture(autouse=True)
+def _isolate_recent_games(tmp_path, monkeypatch):
+    """recent_games 會「讀」records/recent_games.json；conftest 的寫入攔截不管讀取，
+    主目錄跑測試會讀到 prod 檔 → 一律指到 tmp。"""
+    try:
+        import recent_games
+    except Exception:
+        return
+    monkeypatch.setattr(recent_games, "STORE_PATH", tmp_path / "recent_games.json")

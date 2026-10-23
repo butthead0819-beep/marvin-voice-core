@@ -580,6 +580,20 @@ def _ctrl_with_members(members):
     return ctrl
 
 
+def test_current_games_falls_back_to_recent_when_no_presence():
+    """10/23：Discord 抓不到（PS 上玩）→ 用最近 7 天在場的人玩過的遊戲。"""
+    ctrl = _ctrl_with_members([_member("showay", activities=[_playing("Grounded 2")])])
+    assert current_games(ctrl, "showay") == ["Grounded 2"]          # 抓到時順手記下
+    ctrl2 = _ctrl_with_members([_member("showay"), _member("狗與露")])
+    assert current_games(ctrl2, "狗與露") == ["Grounded 2"]          # 之後抓不到就用記住的
+
+
+def test_current_games_presence_wins_over_recent():
+    _ = current_games(_ctrl_with_members([_member("showay", activities=[_playing("Grounded 2")])]), "showay")
+    ctrl = _ctrl_with_members([_member("showay", activities=[_playing("原神")])])
+    assert current_games(ctrl, "showay") == ["原神"]
+
+
 def test_current_games_excludes_bots():
     members = [
         _member("Marvin", bot=True, activities=[_playing("原神")]),
