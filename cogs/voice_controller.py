@@ -705,7 +705,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.bot.engine.post_summon_callback = self.handle_summon
         self.bot.engine.dismiss_callback = self.handle_dismiss
         self.bot.engine.bias_update_callback = self.handle_bias_update
-        self.bot.engine.game_change_callback = self.handle_game_change
         self.bot.engine.sink_error_callback = self.report_sink_error # 💡 [Sentinel] 串接錯誤回報通道
         
         # 文字頻道追蹤
@@ -3620,12 +3619,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
     async def handle_bias_update(self, username: str, impression: str):
         print(f"👂 [Admin] 指揮官正在耳語：{username} -> {impression}")
         self.bot.router.memory.set_player_impression(username, impression)
-
-    async def handle_game_change(self, game_name: str):
-        print(f"🎮 [系統指令] 切換遊戲背景至: {game_name}")
-        self.current_game = game_name
-        dict_str = await self.bot.router.set_game_async(game_name)
-        self.bot.engine.game_dict_string = dict_str
 
     # --- [Slow System] ---
 

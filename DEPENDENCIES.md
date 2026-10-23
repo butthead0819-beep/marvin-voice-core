@@ -84,9 +84,8 @@
 |---|---|---|---|
 | `edge-tts` | 主力 TTS（微軟 Edge 線上語音，免費） | `tts_engine.py` | ❌ 拿掉只剩 macOS `say` 備援，音質差很多 |
 | `google-genai` | Gemini（主回應備援、音訊救援、情緒分析、`/marvin_talk`、grounded QA） | `gemini_router*.py`、`intent_agents/audio_rescue_*`、`grounded_qa_agent.py`、`marvin_talk.py`、`llm_pool.py` 等 12 個 | ❌ |
-| `google-generativeai` | **已停止維護的舊版** Gemini SDK | 只剩 `game_dict_manager.py` | ✅ 可以拿，但要先把 `game_dict_manager.py` 改用 `google-genai` |
 | `groq` | Groq（串流回應第一順位、摘要/壓縮、Groq Whisper STT 備援） | `discord_voice_engine.py`、`profile_compressor.py` | ⚠️ 不建議；是串流回應主力 |
-| `openai` | **當成 OpenAI 相容 client 用**，打 Groq / Mistral / SambaNova / Together / OpenRouter / Gemini-compat（不是呼叫 OpenAI 本家） | `llm_pool.py`、`gemini_router.py`、`game_dict_manager.py` | ❌ LLM Bus 全靠它 |
+| `openai` | **當成 OpenAI 相容 client 用**，打 Groq / Mistral / SambaNova / Together / OpenRouter / Gemini-compat（不是呼叫 OpenAI 本家） | `llm_pool.py`、`gemini_router.py` | ❌ LLM Bus 全靠它 |
 | `duckduckgo_search` | 需要查網路時的搜尋 | `gemini_router_llm.py`（頂層 import，沒有 try/except） | ⚠️ 拿掉 router 模組會 import 失敗，要先改成可選 |
 
 ### 音樂

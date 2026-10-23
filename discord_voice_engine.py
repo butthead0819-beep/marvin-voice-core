@@ -810,7 +810,6 @@ class DiscordVoiceEngine:
         self.speech_start_callback = None
         self.post_summon_callback = None
         self.text_channel_callback = None
-        self.game_change_callback = None
         self.dismiss_callback = None
         self.bias_update_callback = None
         self.sink_error_callback = None # 💡 [Sentinel] 新增錯誤回報回呼

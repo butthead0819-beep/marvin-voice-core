@@ -24,16 +24,6 @@ _NON_PLAYER_SPEAKERS = frozenset({"系統"})
 def dere_eligible(speaker, system_prompt: str) -> bool:
     return bool(speaker) and speaker not in _NON_PLAYER_SPEAKERS and "dere_persona" not in system_prompt
 
-# /set_game 清空哨兵：代表「沒有在玩遊戲」，將 current_game 清為 None。
-# 用途：current_game 一旦設定就持久化於 DNA，原本無清除路徑，會默默擋掉 5 分鐘日記。
-GAME_CLEAR_SENTINELS = frozenset({"無", "none", "關閉"})
-
-
-def is_clear_game_sentinel(game_name: str) -> bool:
-    """game_name 是否為清空指令（大小寫 / 前後空白不敏感）。"""
-    return game_name.strip().casefold() in {s.casefold() for s in GAME_CLEAR_SENTINELS}
-
-
 class WebSearchError(RuntimeError):
     """自定義的網頁搜尋錯誤，代表實體網路檢索失敗"""
     pass
@@ -99,46 +89,9 @@ class GeminiRouterLLMMixin:
                 logger.error(f"❌ [Heartbeat Logic Error] {e}")
             await asyncio.sleep(60)
 
-    async def set_game_async(self, game_name: str) -> str:
-        # 清空哨兵：把 current_game 清為 None，跳過昂貴的黑話字典載入。
-        if is_clear_game_sentinel(game_name):
-            self.current_game = None
-            self.dna["current_game"] = None
-            self.save_dna(self.dna)
-            self.game_dict_string = ""
-            print("🎮 [Router] 已清除遊戲背景（current_game → None）")
-            return ""
-
-        self.current_game = game_name
-        self.dna["current_game"] = game_name
-        self.save_dna(self.dna)
-        print(f"🎮 [Router] 嘗試切換對話背景為: {game_name}")
-        
-        # 📚 [Operation Jargon Override] 呼叫或生成動態字典
-        if not hasattr(self, 'dict_manager') or self.dict_manager is None:
-            # 2026-05-20 fix: game_dict_manager.py import google.generativeai (deprecated SDK)
-            # 該 import 量測為 53 秒，在 async 主線程跑會卡死 Discord 心跳 → 看似 crash。
-            # 包進 to_thread 讓 import 在 worker thread 跑，event loop 繼續 heartbeat。
-            # 長期該遷 game_dict_manager 到 google.genai 新 SDK。
-            print(f"📦 [Router] 正在掛載 DictManager 模組（後台 import，避免卡心跳）...")
-            def _load_dict_manager():
-                from game_dict_manager import GameDictManager
-                return GameDictManager()
-            self.dict_manager = await asyncio.to_thread(_load_dict_manager)
-            
-        print(f"🔍 [Router] 正在呼叫 DictManager 取得字典: {game_name}")
-        dict_str = await self.dict_manager.get_or_create_dict(game_name)
-        self.game_dict_string = dict_str
-        print(f"✅ [Router] 黑話字典對接完畢 (Size: {len(dict_str)} chars)")
-        return dict_str
-
     def _get_game_context(self) -> str:
         if self.current_game:
-            res = f"[系統提示：玩家們目前正在遊玩《{self.current_game}》。]\n"
-            if hasattr(self, 'game_dict_string') and self.game_dict_string:
-                res += f"[術語參考: {self.game_dict_string}]\n"
-                res += "[糾錯指示: 請根據上述遊戲術語，自動修正 STT 可能產生的同音錯字（如將「踢屁」理解為「TP」），再進行判斷。]\n"
-            return res
+            return f"[系統提示：玩家們目前正在遊玩《{self.current_game}》。]\n"
         return "[系統提示：目前未指定特定遊戲。]\n"
 
     async def _execute_web_search(self, query: str) -> str:
