@@ -17,10 +17,12 @@ int main() {
     SpeakSched s; speak_sched_init(s);
     assert(speak_sched_push(s, 100, true) == true);
     assert(speak_sched_push(s, 200, true) == false);  // 跟上次排的值一樣
-    bool spk = false;
-    assert(speak_sched_apply(s, 1000, &spk) == true);
-    assert(spk == true);
-    assert(speak_sched_apply(s, 2000, &spk) == false);  // 沒有第二筆可消化
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 1000, &out) == true);
+    assert(out.speakApplied == true);
+    assert(out.speaking == true);
+    assert(speak_sched_apply(s, 2000, &out) == false);  // 沒有第二筆可消化
+    assert(out.speakApplied == false);
     printf("T1 ok\n");
   }
 
@@ -28,10 +30,11 @@ int main() {
   {
     SpeakSched s; speak_sched_init(s);
     speak_sched_push(s, 500, true);
-    bool spk = false;
-    assert(speak_sched_apply(s, 499, &spk) == false);
-    assert(speak_sched_apply(s, 500, &spk) == true);
-    assert(spk == true);
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 499, &out) == false);
+    assert(speak_sched_apply(s, 500, &out) == true);
+    assert(out.speakApplied == true);
+    assert(out.speaking == true);
     printf("T2 ok\n");
   }
 
@@ -41,9 +44,9 @@ int main() {
     speak_sched_push(s, 100, true);
     speak_sched_push(s, 200, false);
     speak_sched_push(s, 300, true);
-    bool spk = false;
-    assert(speak_sched_apply(s, 1000, &spk) == true);
-    assert(spk == true);   // 最後一筆（pos=300, true）
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 1000, &out) == true);
+    assert(out.speaking == true);   // 最後一筆（pos=300, true）
     printf("T3 ok\n");
   }
 
@@ -59,9 +62,9 @@ int main() {
     bool lastQueuedVal = ((SpeakSched::N - 1) % 2) == 0;
     assert(speak_sched_push(s, 99999, !lastQueuedVal) == false);
     // 消化全部，驗證第一筆仍是原始第一筆（沒被覆蓋掉）
-    bool spk = false;
-    assert(speak_sched_apply(s, 5, &spk) == true);
-    assert(spk == true);  // i=0 → v=true
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 5, &out) == true);
+    assert(out.speaking == true);  // i=0 → v=true
     printf("T4 ok\n");
   }
 
@@ -71,14 +74,14 @@ int main() {
     uint32_t pos = 0xFFFFFFF0u;
     speak_sched_push(s, pos, true);
     uint32_t readTotal = 0xFFFFFFF0u;
-    bool spk = false;
-    assert(speak_sched_apply(s, readTotal, &spk) == true);
-    assert(spk == true);
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, readTotal, &out) == true);
+    assert(out.speaking == true);
     // 再排一筆繞回後的位置（pos 數值上比上一筆小，但時間上在後面）
     speak_sched_push(s, 5u, false);  // 0xFFFFFFF0 + 0x15 繞回成 5
     readTotal = 20u;  // 已經繞過 0，追過 pos=5
-    assert(speak_sched_apply(s, readTotal, &spk) == true);
-    assert(spk == false);
+    assert(speak_sched_apply(s, readTotal, &out) == true);
+    assert(out.speaking == false);
     printf("T5 ok\n");
   }
 
@@ -86,9 +89,9 @@ int main() {
   {
     SpeakSched s; speak_sched_init(s);
     speak_sched_push(s, 0xFFFFFFF0u, true);
-    bool spk = false;
-    assert(speak_sched_apply(s, 0x10u, &spk) == true);
-    assert(spk == true);
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 0x10u, &out) == true);
+    assert(out.speaking == true);
     printf("T5b ok\n");
   }
 
@@ -99,10 +102,80 @@ int main() {
     assert(speak_sched_push(s, 200, true) == false);  // 同值，不排
     speak_sched_reset_producer(s);
     assert(speak_sched_push(s, 300, true) == true);    // reset 後同值也能排入
-    bool spk = false;
-    assert(speak_sched_apply(s, 1000, &spk) == true);
-    assert(spk == true);
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 1000, &out) == true);
+    assert(out.speaking == true);
     printf("T7 ok\n");
+  }
+
+  // T8: 動作事件不受講話事件的「同值不重排」擋掉
+  {
+    SpeakSched s; speak_sched_init(s);
+    assert(speak_sched_push(s, 100, true) == true);
+    assert(speak_sched_push_gesture(s, 150, 1, 2) == true);
+    assert(speak_sched_push(s, 200, true) == false);  // 講話同值仍被擋
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 1000, &out) == true);
+    assert(out.speakApplied == true);
+    assert(out.speaking == true);
+    assert(out.gesture == 1);
+    assert(out.level == 2);
+    printf("T8 ok\n");
+  }
+
+  // T9: 講話與動作交錯時依位置各自套用
+  {
+    SpeakSched s; speak_sched_init(s);
+    speak_sched_push(s, 100, true);
+    speak_sched_push_gesture(s, 200, 3, 1);
+    speak_sched_push(s, 300, false);
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 150, &out) == true);
+    assert(out.speakApplied == true);
+    assert(out.speaking == true);
+    assert(out.gesture == -1);  // 還沒追到動作事件的位置
+    assert(speak_sched_apply(s, 250, &out) == true);
+    assert(out.speakApplied == false);  // 這一段只追到動作事件
+    assert(out.gesture == 3);
+    assert(out.level == 1);
+    assert(speak_sched_apply(s, 1000, &out) == true);
+    assert(out.speakApplied == true);
+    assert(out.speaking == false);
+    printf("T9 ok\n");
+  }
+
+  // T10: 位置未到的動作事件不套用
+  {
+    SpeakSched s; speak_sched_init(s);
+    speak_sched_push_gesture(s, 500, 2, 3);
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 499, &out) == false);
+    assert(out.gesture == -1);
+    assert(speak_sched_apply(s, 500, &out) == true);
+    assert(out.gesture == 2);
+    assert(out.level == 3);
+    printf("T10 ok\n");
+  }
+
+  // T11: 多個動作事件一次追過取最後一個
+  {
+    SpeakSched s; speak_sched_init(s);
+    speak_sched_push_gesture(s, 100, 0, 1);
+    speak_sched_push_gesture(s, 200, 4, 3);
+    SpeakApplyOut out;
+    assert(speak_sched_apply(s, 1000, &out) == true);
+    assert(out.gesture == 4);
+    assert(out.level == 3);
+    printf("T11 ok\n");
+  }
+
+  // T12: push 動作事件不改 lastQueued（push 動作後再 push 同值講話仍被擋）
+  {
+    SpeakSched s; speak_sched_init(s);
+    assert(speak_sched_push(s, 100, true) == true);
+    assert(speak_sched_push_gesture(s, 150, 1, 2) == true);
+    assert(speak_sched_push(s, 200, true) == false);  // 講話值沒變，仍被同值擋
+    printf("T12 ok\n");
   }
 
   printf("all speak_sched tests passed\n");

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <string>
+#include <tuple>
 #include "../icy_fields.h"
 
 static const uint8_t* U(const char* s) { return (const uint8_t*)s; }
@@ -240,6 +241,83 @@ int main() {
     std::string s = "M1\x1f\x1f""0\x1f""0\x1fS\x1f\x1f\x1f";
     assert(icy_track_cmp_len(U(s.data()), s.size(), 19) == s.size());
     printf("T32 ok\n");
+  }
+
+  // ---- icy_gesture_field ----
+  auto gesture11 = [](const char* gestureField) {
+    std::string first9 = "M1\x1f""abc\x1f""1000\x1f""0\x1f""P\x1f""title\x1f""artist\x1f""album\x1f""120";
+    std::string s = first9 + "\x1f""1\x1f" + gestureField;
+    uint16_t seq = 0; int gesture = -1, level = 0;
+    bool ok = icy_gesture_field(U(s.data()), s.size(), &seq, &gesture, &level);
+    return std::make_tuple(ok, seq, gesture, level);
+  };
+
+  // T33: "12:Y2" -> seq=12 / YES(=1) / level=2
+  {
+    auto [ok, seq, gesture, level] = gesture11("12:Y2");
+    assert(ok);
+    assert(seq == 12);
+    assert(gesture == 1);
+    assert(level == 2);
+    printf("T33 ok\n");
+  }
+
+  // T34: 五個字母各對應正確整數（TILT=0,YES=1,NO=2,GLANCE=3,PONDER=4）
+  {
+    auto [okT, seqT, gT, lT] = gesture11("1:T1"); assert(okT); assert(gT == 0);
+    auto [okY, seqY, gY, lY] = gesture11("1:Y1"); assert(okY); assert(gY == 1);
+    auto [okN, seqN, gN, lN] = gesture11("1:N1"); assert(okN); assert(gN == 2);
+    auto [okG, seqG, gG, lG] = gesture11("1:G1"); assert(okG); assert(gG == 3);
+    auto [okP, seqP, gP, lP] = gesture11("1:P1"); assert(okP); assert(gP == 4);
+    (void)seqT; (void)seqY; (void)seqN; (void)seqG; (void)seqP;
+    printf("T34 ok\n");
+  }
+
+  // T35: seq 邊界 0 / 10000 -> false
+  {
+    auto [ok0, s0_, g0_, l0_] = gesture11("0:Y2"); assert(!ok0);
+    auto [ok1, s1_, g1_, l1_] = gesture11("10000:Y2"); assert(!ok1);
+    (void)s0_; (void)g0_; (void)l0_; (void)s1_; (void)g1_; (void)l1_;
+    printf("T35 ok\n");
+  }
+
+  // T36: 字母不認得 -> false
+  { auto [ok, seq, g, l] = gesture11("12:X2"); assert(!ok); (void)seq; (void)g; (void)l; printf("T36 ok\n"); }
+
+  // T37: level 超界（4 或 0）-> false
+  {
+    auto [ok4, s4_, g4_, l4_] = gesture11("12:Y4"); assert(!ok4);
+    auto [ok0, s0_, g0_, l0_] = gesture11("12:Y0"); assert(!ok0);
+    (void)s4_; (void)g4_; (void)l4_; (void)s0_; (void)g0_; (void)l0_;
+    printf("T37 ok\n");
+  }
+
+  // T38: 缺冒號 -> false
+  { auto [ok, seq, g, l] = gesture11("12Y2"); assert(!ok); (void)seq; (void)g; (void)l; printf("T38 ok\n"); }
+
+  // T39: 冒號後只有一個字元 -> false
+  { auto [ok, seq, g, l] = gesture11("12:Y"); assert(!ok); (void)seq; (void)g; (void)l; printf("T39 ok\n"); }
+
+  // T40: 冒號後超過兩個字元 -> false
+  { auto [ok, seq, g, l] = gesture11("12:Y22"); assert(!ok); (void)seq; (void)g; (void)l; printf("T40 ok\n"); }
+
+  // T41: 缺第 11 欄（只有 10 欄）-> false
+  {
+    std::string first9 = "M1\x1f""abc\x1f""1000\x1f""0\x1f""P\x1f""title\x1f""artist\x1f""album\x1f""120";
+    std::string s = first9 + "\x1f""1";
+    uint16_t seq = 0; int gesture = -1, level = 0;
+    assert(!icy_gesture_field(U(s.data()), s.size(), &seq, &gesture, &level));
+    printf("T41 ok\n");
+  }
+
+  // T42: 第 11 欄後面還有欄位，仍只看第 11 欄本身
+  {
+    auto [ok, seq, gesture, level] = gesture11("12:Y2\x1f""extra");
+    assert(ok);
+    assert(seq == 12);
+    assert(gesture == 1);
+    assert(level == 2);
+    printf("T42 ok\n");
   }
 
   printf("all icy_fields tests passed\n");
