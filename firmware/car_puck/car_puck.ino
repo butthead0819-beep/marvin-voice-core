@@ -56,7 +56,10 @@
 #if FACE_BENCH
 #include <SPI.h>
 #include <esp_timer.h>
+#include <esp_cpu.h>
+#define FACE_RT_CYCLES() esp_cpu_get_cycle_count()
 #include "face_rt.h"
+FaceRtProfile g_face_rt_prof = {};
 #endif
 
 // ========== 你要填的 ==========
@@ -1416,6 +1419,130 @@ static void fbPush(const FaceRect& r) {
   fbSpi.endTransaction();
 }
 
+// ========== FaceProf：單一運算微基準 + 渲染分段計時（只跑一次，印完就丟）==========
+// 跟 face_rt.h 用一樣的編譯選項（O2+fast-math），量出來的 cycles 才跟 render 裡的實際成本可比。
+#pragma GCC push_options
+#pragma GCC optimize("O2", "fast-math")
+
+static void faceProfBenchOps() {
+  const int N = 20000;
+  volatile float acc = 0.0f;
+  uint32_t c0, c1;
+
+  volatile float x = 0.1f;
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { x += 1e-4f; acc = x; }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=base cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  volatile float a = 0.1f, b = 0.2f, cc = 0.3f;
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { a += 1e-4f; acc = a * b + cc; }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=fma cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  a = 0.1f;
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { a += 1e-4f; acc = a / b; }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=div cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  a = 0.1f;
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { a += 1e-4f; acc = sqrtf(a); }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=sqrt cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  a = 0.0f;
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { a += 1e-4f; if (a > 0.9f) a = 0.0f; acc = face_rt_detail::fast_asin(a); }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=fast_asin cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  a = 0.0f;
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { a += 1e-4f; if (a > 0.9f) a = 0.0f; acc = asinf(a); }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=asinf cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  a = 0.1f;
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { a += 1e-4f; acc = sinf(a); }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=sinf cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  volatile uint32_t bacc = 0;
+  const size_t bufSize = (size_t)240 * 240 * 3;
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { bacc += g_fbBase888[i % bufSize]; }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=psram_rd cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { g_fbOut888[i % bufSize] = (uint8_t)i; }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=psram_wr cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  static uint8_t buf[4096];
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) { bacc += buf[i & 4095]; }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=iram_rd cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  const size_t npix = bufSize / 3;
+  c0 = esp_cpu_get_cycle_count();
+  for (int i = 0; i < N; i++) {
+    size_t px = (size_t)(i % npix) * 3;
+    uint8_t r8 = g_fbOut888[px], g8 = g_fbOut888[px + 1], b8 = g_fbOut888[px + 2];
+    g_fbOut888[px] = r8; g_fbOut888[px + 1] = g8; g_fbOut888[px + 2] = b8;
+  }
+  c1 = esp_cpu_get_cycle_count();
+  Serial.printf("[FaceProf] op=psram_px_rmw cycles=%.1f\n", (c1 - c0) / (double)N);
+
+  (void)acc; (void)bacc;
+}
+
+#pragma GCC pop_options
+
+static void faceProfileRender() {
+  memset(&g_face_rt_prof, 0, sizeof(g_face_rt_prof));
+  const int NFRAMES = 250;
+
+  int64_t wallT0 = esp_timer_get_time();
+  for (int i = 0; i < NFRAMES; i++) {
+    float t = i * 0.04f;
+    FacePose p = { 1.2f*sinf(0.7f*t), 0.4f*sinf(1.1f*t+1.0f), 0.3f*sinf(0.9f*t+2.0f), 0.03f*(1.0f+sinf(0.5f*t)), 0.0f };
+    face_rt_render(p, g_fbBase888, g_fbOut888);
+  }
+  int64_t wallT1 = esp_timer_get_time();
+
+  uint32_t frames = g_face_rt_prof.frames ? g_face_rt_prof.frames : 1;
+  double prepareAvg = g_face_rt_prof.prepare / (double)frames;
+  double copyAvg = g_face_rt_prof.copy / (double)frames;
+  double tilesAvg = g_face_rt_prof.tiles / (double)frames;
+  double pixelsAvg = g_face_rt_prof.pixels / (double)frames;
+  double totalAvg = prepareAvg + copyAvg + tilesAvg + pixelsAvg;
+  double tilesTotalAvg = g_face_rt_prof.tiles_total / (double)frames;
+  double tilesMaskedAvg = g_face_rt_prof.tiles_masked / (double)frames;
+  double pxMathAvg = g_face_rt_prof.px_math / (double)frames;
+  double cyclesPerPxMath = g_face_rt_prof.px_math ? g_face_rt_prof.pixels / (double)g_face_rt_prof.px_math : 0;
+  double cyclesPerTile = g_face_rt_prof.tiles_total ? g_face_rt_prof.tiles / (double)g_face_rt_prof.tiles_total : 0;
+
+  Serial.printf("[FaceProf] frames=%u avg_cycles: prepare=%.0f copy=%.0f tiles=%.0f pixels=%.0f total=%.0f\n",
+                (unsigned)frames, prepareAvg, copyAvg, tilesAvg, pixelsAvg, totalAvg);
+  Serial.printf("[FaceProf] avg tiles_total=%.1f tiles_masked=%.1f px_math=%.1f cycles_per_px_math=%.1f cycles_per_tile=%.1f\n",
+                tilesTotalAvg, tilesMaskedAvg, pxMathAvg, cyclesPerPxMath, cyclesPerTile);
+
+  double wallAvgMs = (wallT1 - wallT0) / 1000.0 / NFRAMES;
+  Serial.printf("[FaceProf] render_wall_avg=%.3fms\n", wallAvgMs);
+}
+
+static void faceProfileRun() {
+  faceProfBenchOps();
+  faceProfileRender();
+  Serial.println("[FaceProf] done");
+}
+
 // 固定 24fps 推格；ON/OFF 各 180 秒輪替（偶數 phase=OFF 基準、奇數 phase=ON 真推＋真量）。
 // 優先權 1（低於 audioPlay 的 2）：算不完只會掉格，不會搶解碼。
 static void faceBenchTask(void* pv) {
@@ -1456,6 +1583,8 @@ static void faceBenchTask(void* pv) {
     g_fbConvUs = 0; g_fbSpiUs = 0;
     windowStart = t;
   };
+
+  faceProfileRun();
 
   for (;;) {
     bool on = (phase % 2) == 1;

@@ -27,6 +27,13 @@
 extern uint32_t g_face_rt_full_px;
 #endif
 
+// FACE_RT_CYCLES()：由 include 端定義成讀 CPU cycle 計數器（S3：esp_cpu_get_cycle_count()）。
+// 有定義才編進分段計時；host 測試不定義＝零影響。
+#ifdef FACE_RT_CYCLES
+struct FaceRtProfile { uint32_t prepare, copy, tiles, pixels, frames, tiles_total, tiles_masked, px_math; };
+extern FaceRtProfile g_face_rt_prof;
+#endif
+
 struct FacePose {
   float yaw, pitch, roll, browUp, err;
 };
@@ -237,7 +244,11 @@ inline void face_rt_init() {
   }
 }
 
-inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_t* out888) {
+#ifndef FACE_RT_ATTR
+#define FACE_RT_ATTR
+#endif
+
+FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_t* out888) {
   using namespace face_rt_detail;
 
   float e = clamp01(p.err);
@@ -248,13 +259,26 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
   };
 
   Prepared F;
+#ifdef FACE_RT_CYCLES
+  uint32_t _t0 = FACE_RT_CYCLES();
+#endif
   prepare(p, col, F);
+#ifdef FACE_RT_CYCLES
+  uint32_t _t1 = FACE_RT_CYCLES();
+  g_face_rt_prof.prepare += _t1 - _t0;
+#endif
 
   const int x0 = F.rect.x0, y0 = F.rect.y0, x1 = F.rect.x1, y1 = F.rect.y1;
 
   for (int y = y0; y <= y1; y++) {
     memcpy(out888 + (size_t)(y * W + x0) * 3, base888 + (size_t)(y * W + x0) * 3, (size_t)(x1 - x0 + 1) * 3);
   }
+
+#ifdef FACE_RT_CYCLES
+  uint32_t _t2 = FACE_RT_CYCLES();
+  g_face_rt_prof.copy += _t2 - _t1;
+  g_face_rt_prof.frames++;
+#endif
 
   constexpr float TOL = 1.5f;  // 一階近似誤差餘裕
 
@@ -263,13 +287,23 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
     for (int tilex = x0; tilex <= x1; tilex += 4) {
       int tilex1 = tilex + 3 < x1 ? tilex + 3 : x1;
 
+#ifdef FACE_RT_CYCLES
+      g_face_rt_prof.tiles_total++;
+      uint32_t _tt0 = FACE_RT_CYCLES();
+#endif
+
       float tw = (float)(tilex1 - tilex + 1), th = (float)(tiley1 - tiley + 1);
       float tcx = (tilex + tilex1 + 1) * 0.5f, tcy = (tiley + tiley1 + 1) * 0.5f;
       float hd = 0.5f * sqrtf(tw * tw + th * th);
 
       float cdx = tcx - C, cdy = tcy - C;
       float cux = F.cr * cdx + F.sr * cdy, cuy = -F.sr * cdx + F.cr * cdy;
-      if (hyp(cux, cuy) > R + hd + 1) continue;  // tile 必定在球外，逐像素一定被 clip 掉
+      if (hyp(cux, cuy) > R + hd + 1) {
+#ifdef FACE_RT_CYCLES
+        g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
+#endif
+        continue;  // tile 必定在球外，逐像素一定被 clip 掉
+      }
 
       int mask;
       float csl = cuy / R;
@@ -335,7 +369,16 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
         }
       }
 
+#ifdef FACE_RT_CYCLES
+      g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
+      if (mask != 0) g_face_rt_prof.tiles_masked++;
+#endif
+
       if (mask == 0) continue;  // tile 內所有像素都維持 base
+
+#ifdef FACE_RT_CYCLES
+      uint32_t _tp0 = FACE_RT_CYCLES();
+#endif
 
       for (int y = tiley; y <= tiley1; y++) {
         for (int x = tilex; x <= tilex1; x++) {
@@ -354,6 +397,9 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
 
 #ifdef FACE_RT_STATS
           g_face_rt_full_px++;
+#endif
+#ifdef FACE_RT_CYCLES
+          g_face_rt_prof.px_math++;
 #endif
 
           // 螢幕 → 角度的偏微分（算邊緣平滑用）
@@ -424,6 +470,10 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
           out888[i + 2] = (uint8_t)(int)(c[2] + 0.5f);
         }
       }
+
+#ifdef FACE_RT_CYCLES
+      g_face_rt_prof.pixels += FACE_RT_CYCLES() - _tp0;
+#endif
     }
   }
 
