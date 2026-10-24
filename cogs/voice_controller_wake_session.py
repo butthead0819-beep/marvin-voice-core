@@ -55,17 +55,17 @@ _WAKE_SESSION_REPLY_KINDS = frozenset({
 
 
 def _is_music_action(winner) -> bool:
-    """點播 / 下一首 / 重播被執行＝歌曲對話以指令收尾。"""
+    """點播 / 播放控制 / 音量 / 重播被執行＝對話以指令收尾。
+
+    10/23 實測：音量、繼續播放做完沒收窗，接走朋友互聊 2 分鐘；指令一律要喚醒詞，
+    窗內不叫名字的「再大聲一點」本來就不該接。
+    """
     if winner is None:
         return False
     name = getattr(winner, "name", "")
     if name == "music":
         return not getattr(winner, "missing_slots", None)   # 還在反問哪一首 → 對話繼續
-    if name == "replay":
-        return True
-    if name == "playback_control":
-        return str(getattr(winner, "reason", "")).startswith("skip:")
-    return False
+    return name in ("replay", "playback_control", "volume")
 
 
 class WakeSessionMixin:
@@ -201,14 +201,10 @@ class WakeSessionMixin:
             session.on_ignored(speaker, time.time())
 
     def _wake_session_on_shortcut(self, sc: str) -> None:
-        from music_fastpath import FASTPATH_PLAY_PREFIX
         session = getattr(self, "_wake_session", None)
         if session is None:
             return
-        if sc.startswith(FASTPATH_PLAY_PREFIX) or sc == "下一首":
-            session.on_music_action(time.time())
-            return
-        self._wake_session_on_replied()
+        session.on_music_action(time.time())   # shortcut 只回完整指令（點播／控制）→ 一律收窗
 
     def _wake_session_note_grounded(self, speaker) -> None:
         session = getattr(self, "_wake_session", None)
