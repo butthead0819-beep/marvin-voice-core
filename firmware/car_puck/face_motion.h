@@ -179,7 +179,7 @@ inline void face_mixer_init(FaceMixer& m) {
 
 inline Layer grooveLayer(const FaceInputs& in) {
   if (!in.playing) return LAYER_STILL;
-  if (in.bpm >= 100) return LAYER_NOD;
+  if (in.bpm >= 120) return LAYER_NOD;   // 10/25 使用者定：120 當點頭分界（原 100）
   return LAYER_SWAY;
 }
 

@@ -5,7 +5,7 @@
 // 不得引用其他 HUD 檔（hud_shared.js／hud_performance.js）的任何符號。
 
 const GROOVE_AMP = { pitch:0.16, bob:1.10, tiltNod:4.0, tiltSway:9, gaze:0.24, swayX:0.80 }; // 使用者選的「大」檔
-const GROOVE_NOD_MIN_BPM = 100;   // BPM ≥ 100 點頭，其他（含沒有 BPM）搖擺
+const GROOVE_NOD_MIN_BPM = 120;   // BPM ≥ 120 點頭，其他（含沒有 BPM）搖擺（10/25 原 100）
 const GROOVE_OUTRO_SEC = 15;      // 歌曲最後 15 秒改搖擺並漸弱
 const GROOVE_FADE_SEC = 0.5;      // mood 非 idle / 停歌時淡出的時間尺度
 
