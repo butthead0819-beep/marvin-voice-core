@@ -1368,56 +1368,91 @@ static SPIClass fbSpi(FSPI);
 
 static const uint8_t FB_BAYER[16] = {0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5};
 
-// 把 out888 的 rect 範圍逐列轉 RGB565（4×4 Bayer 抖色，公式照抄
-// tools/puck_face/face_render.js 的 to565(d,true)）推給 SPI——沒接螢幕時指令照常打
-// 時脈，時間/CPU 開銷跟接了螢幕一樣。
-static void fbPush(const FaceRect& r) {
+// 只推「有變動」的範圍：每 4 列（絕對座標）一帶，帶內 x 範圍＝該帶各列 prev（上一格
+// 畫過、已還原成 base）跟 cur（這一格畫到的）範圍的聯集；全空就跳過整帶，不打 SPI。
+// 逐列轉 RGB565（4×4 Bayer 抖色，公式照抄 tools/puck_face/face_render.js 的
+// to565(d,true)）——沒接螢幕時指令照常打時脈，時間/CPU 開銷跟接了螢幕一樣。
+// 回傳值：這次實際推出的像素數（各非空帶寬 × 4 加總），供量測用。
+static uint32_t fbPush() {
   static uint8_t fbRow[240 * 2];
-  int w = r.x1 - r.x0 + 1;
+  int16_t (&curX0)[240] = g_fbWork->curX0;
+  int16_t (&curX1)[240] = g_fbWork->curX1;
+  int16_t (&prevX0)[240] = g_fbWork->prevX0;
+  int16_t (&prevX1)[240] = g_fbWork->prevX1;
 
-  fbSpi.beginTransaction(SPISettings(40000000, MSBFIRST, SPI_MODE0));
-  digitalWrite(FB_PIN_CS, LOW);
+  bool txOpen = false;
+  uint32_t pushPx = 0;
 
-  digitalWrite(FB_PIN_DC, LOW);
-  fbSpi.transfer(0x2A);
-  digitalWrite(FB_PIN_DC, HIGH);
-  uint8_t colBuf[4] = {(uint8_t)(r.x0 >> 8), (uint8_t)(r.x0 & 0xFF), (uint8_t)(r.x1 >> 8), (uint8_t)(r.x1 & 0xFF)};
-  fbSpi.writeBytes(colBuf, 4);
-
-  digitalWrite(FB_PIN_DC, LOW);
-  fbSpi.transfer(0x2B);
-  digitalWrite(FB_PIN_DC, HIGH);
-  uint8_t rowBuf[4] = {(uint8_t)(r.y0 >> 8), (uint8_t)(r.y0 & 0xFF), (uint8_t)(r.y1 >> 8), (uint8_t)(r.y1 & 0xFF)};
-  fbSpi.writeBytes(rowBuf, 4);
-
-  digitalWrite(FB_PIN_DC, LOW);
-  fbSpi.transfer(0x2C);
-  digitalWrite(FB_PIN_DC, HIGH);
-
-  for (int y = r.y0; y <= r.y1; y++) {
-    int64_t _fbConvT0 = esp_timer_get_time();
-    for (int x = r.x0; x <= r.x1; x++) {
-      size_t i = (size_t)(y * 240 + x) * 3;
-      int r8 = g_fbOut888[i], g8 = g_fbOut888[i + 1], b8 = g_fbOut888[i + 2];
-      int k = FB_BAYER[(y & 3) * 4 + (x & 3)];
-      // floor(v/255*31 + k/16 - 0.5 + 0.5) = floor((v*31*16 + k*255)/(255*16))，跟原浮點公式數學上相等
-      int R5 = (r8 * 496 + k * 255) / 4080;
-      int G6 = (g8 * 1008 + k * 255) / 4080;
-      int B5 = (b8 * 496 + k * 255) / 4080;
-      uint16_t v = (uint16_t)((R5 << 11) | (G6 << 5) | B5);
-      int col = x - r.x0;
-      fbRow[col * 2] = (uint8_t)(v >> 8);
-      fbRow[col * 2 + 1] = (uint8_t)(v & 0xFF);
+  for (int by = 0; by < 240; by += 4) {
+    int bandX0 = 240, bandX1 = -1;
+    for (int y = by; y < by + 4; y++) {
+      if (prevX1[y] >= prevX0[y]) {
+        if (prevX0[y] < bandX0) bandX0 = prevX0[y];
+        if (prevX1[y] > bandX1) bandX1 = prevX1[y];
+      }
+      if (curX1[y] >= curX0[y]) {
+        if (curX0[y] < bandX0) bandX0 = curX0[y];
+        if (curX1[y] > bandX1) bandX1 = curX1[y];
+      }
     }
-    int64_t _fbConvT1 = esp_timer_get_time();
-    fbSpi.writeBytes(fbRow, w * 2);
-    int64_t _fbSpiT1 = esp_timer_get_time();
-    g_fbConvUs += (uint32_t)(_fbConvT1 - _fbConvT0);
-    g_fbSpiUs += (uint32_t)(_fbSpiT1 - _fbConvT1);
+    if (bandX1 < bandX0) continue;  // 這帶完全沒變，整帶跳過
+
+    if (!txOpen) {
+      fbSpi.beginTransaction(SPISettings(40000000, MSBFIRST, SPI_MODE0));
+      digitalWrite(FB_PIN_CS, LOW);
+      txOpen = true;
+    }
+
+    int by1 = by + 3;
+
+    digitalWrite(FB_PIN_DC, LOW);
+    fbSpi.transfer(0x2A);
+    digitalWrite(FB_PIN_DC, HIGH);
+    uint8_t colBuf[4] = {(uint8_t)(bandX0 >> 8), (uint8_t)(bandX0 & 0xFF), (uint8_t)(bandX1 >> 8), (uint8_t)(bandX1 & 0xFF)};
+    fbSpi.writeBytes(colBuf, 4);
+
+    digitalWrite(FB_PIN_DC, LOW);
+    fbSpi.transfer(0x2B);
+    digitalWrite(FB_PIN_DC, HIGH);
+    uint8_t rowBuf[4] = {(uint8_t)(by >> 8), (uint8_t)(by & 0xFF), (uint8_t)(by1 >> 8), (uint8_t)(by1 & 0xFF)};
+    fbSpi.writeBytes(rowBuf, 4);
+
+    digitalWrite(FB_PIN_DC, LOW);
+    fbSpi.transfer(0x2C);
+    digitalWrite(FB_PIN_DC, HIGH);
+
+    int w = bandX1 - bandX0 + 1;
+    for (int y = by; y <= by1; y++) {
+      int64_t _fbConvT0 = esp_timer_get_time();
+      for (int x = bandX0; x <= bandX1; x++) {
+        size_t i = (size_t)(y * 240 + x) * 3;
+        int r8 = g_fbOut888[i], g8 = g_fbOut888[i + 1], b8 = g_fbOut888[i + 2];
+        int k = FB_BAYER[(y & 3) * 4 + (x & 3)];
+        // floor(v/255*31 + k/16 - 0.5 + 0.5) = floor((v*31*16 + k*255)/(255*16))，跟原浮點公式數學上相等
+        int R5 = (r8 * 496 + k * 255) / 4080;
+        int G6 = (g8 * 1008 + k * 255) / 4080;
+        int B5 = (b8 * 496 + k * 255) / 4080;
+        uint16_t v = (uint16_t)((R5 << 11) | (G6 << 5) | B5);
+        int col = x - bandX0;
+        fbRow[col * 2] = (uint8_t)(v >> 8);
+        fbRow[col * 2 + 1] = (uint8_t)(v & 0xFF);
+      }
+      int64_t _fbConvT1 = esp_timer_get_time();
+      fbSpi.writeBytes(fbRow, w * 2);
+      int64_t _fbSpiT1 = esp_timer_get_time();
+      g_fbConvUs += (uint32_t)(_fbConvT1 - _fbConvT0);
+      g_fbSpiUs += (uint32_t)(_fbSpiT1 - _fbConvT1);
+    }
+
+    pushPx += (uint32_t)w * 4;
   }
 
-  digitalWrite(FB_PIN_CS, HIGH);
-  fbSpi.endTransaction();
+  if (txOpen) {
+    digitalWrite(FB_PIN_CS, HIGH);
+    fbSpi.endTransaction();
+  }
+
+  return pushPx;
 }
 
 // ========== FaceProf：單一運算微基準 + 渲染分段計時（只跑一次，印完就丟）==========
@@ -1528,11 +1563,18 @@ static void faceProfileRender() {
   double pxMathAvg = g_face_rt_prof.px_math / (double)frames;
   double cyclesPerPxMath = g_face_rt_prof.px_math ? g_face_rt_prof.pixels / (double)g_face_rt_prof.px_math : 0;
   double cyclesPerTile = g_face_rt_prof.tiles_total ? g_face_rt_prof.tiles / (double)g_face_rt_prof.tiles_total : 0;
+  double tileBboxAvg = g_face_rt_prof.tile_bbox / (double)frames;
+  double tileCenterAvg = g_face_rt_prof.tile_center / (double)frames;
+  double tileCornerAvg = g_face_rt_prof.tile_corner / (double)frames;
+  double tilesLinearAvg = g_face_rt_prof.tiles_linear / (double)frames;
+  double tilesExactAvg = g_face_rt_prof.tiles_exact / (double)frames;
 
   Serial.printf("[FaceProf] frames=%u avg_cycles: prepare=%.0f copy=%.0f tiles=%.0f pixels=%.0f total=%.0f\n",
                 (unsigned)frames, prepareAvg, copyAvg, tilesAvg, pixelsAvg, totalAvg);
   Serial.printf("[FaceProf] avg tiles_total=%.1f tiles_masked=%.1f px_math=%.1f cycles_per_px_math=%.1f cycles_per_tile=%.1f\n",
                 tilesTotalAvg, tilesMaskedAvg, pxMathAvg, cyclesPerPxMath, cyclesPerTile);
+  Serial.printf("[FaceProf] avg_cycles tile_bbox=%.0f tile_center=%.0f tile_corner=%.0f  avg tiles_linear=%.1f tiles_exact=%.1f\n",
+                tileBboxAvg, tileCenterAvg, tileCornerAvg, tilesLinearAvg, tilesExactAvg);
 
   double wallAvgMs = (wallT1 - wallT0) / 1000.0 / NFRAMES;
   Serial.printf("[FaceProf] render_wall_avg=%.3fms\n", wallAvgMs);
@@ -1558,11 +1600,11 @@ static void faceBenchTask(void* pv) {
 
   // 10 秒視窗統計
   uint32_t late = 0, frames = 0, renderMax = 0, pushMax = 0;
-  uint64_t renderSum = 0, pushSum = 0, pxSum = 0;
+  uint64_t renderSum = 0, pushSum = 0, pxSum = 0, pushPxSum = 0;
 
   // 180 秒 phase 累計（視窗印完歸零前先併進這裡）
   uint32_t pLate = 0, pFrames = 0, pRenderMax = 0, pPushMax = 0;
-  uint64_t pRenderSum = 0, pPushSum = 0, pPxSum = 0;
+  uint64_t pRenderSum = 0, pPushSum = 0, pPxSum = 0, pPushPxSum = 0;
   uint32_t pDecMax = 0, pRingEmpty = 0, pRingMin = 0xFFFFFFFF;
   uint64_t pDecUs = 0;
   uint64_t pConvUs = 0, pSpiUs = 0;
@@ -1571,6 +1613,7 @@ static void faceBenchTask(void* pv) {
   // 否則 phase 結束時最後一個還沒滿 10 秒的視窗會漏到下一個 phase。
   auto mergeWindowIntoPhase = [&](int64_t t) {
     pLate += late; pFrames += frames; pRenderSum += renderSum; pPushSum += pushSum; pPxSum += pxSum;
+    pPushPxSum += pushPxSum;
     if (renderMax > pRenderMax) pRenderMax = renderMax;
     if (pushMax > pPushMax) pPushMax = pushMax;
     pDecUs += g_fbDecUs;
@@ -1579,7 +1622,7 @@ static void faceBenchTask(void* pv) {
     if (g_fbRingMin < pRingMin) pRingMin = g_fbRingMin;
     pConvUs += g_fbConvUs;
     pSpiUs += g_fbSpiUs;
-    late = 0; frames = 0; renderSum = 0; pushSum = 0; renderMax = 0; pushMax = 0; pxSum = 0;
+    late = 0; frames = 0; renderSum = 0; pushSum = 0; renderMax = 0; pushMax = 0; pxSum = 0; pushPxSum = 0;
     g_fbDecUs = 0; g_fbDecMaxUs = 0; g_fbRingEmpty = 0; g_fbRingMin = 0xFFFFFFFF;
     g_fbConvUs = 0; g_fbSpiUs = 0;
     windowStart = t;
@@ -1596,7 +1639,7 @@ static void faceBenchTask(void* pv) {
       int64_t t0 = esp_timer_get_time();
       FaceRect r = face_rt_render(p, g_fbBase888, g_fbOut888);
       int64_t t1 = esp_timer_get_time();
-      fbPush(r);
+      uint32_t pushPx = fbPush();
       int64_t t2 = esp_timer_get_time();
       uint32_t rUs = (uint32_t)(t1 - t0);
       uint32_t pUs = (uint32_t)(t2 - t1);
@@ -1604,6 +1647,7 @@ static void faceBenchTask(void* pv) {
       if (rUs > renderMax) renderMax = rUs;
       if (pUs > pushMax) pushMax = pUs;
       pxSum += (uint64_t)(r.x1 - r.x0 + 1) * (uint64_t)(r.y1 - r.y0 + 1);
+      pushPxSum += pushPx;
     }
 
     int64_t now = esp_timer_get_time();
@@ -1612,6 +1656,7 @@ static void faceBenchTask(void* pv) {
       double renderAvgMs = frames ? (renderSum / (double)frames) / 1000.0 : 0;
       double pushAvgMs = frames ? (pushSum / (double)frames) / 1000.0 : 0;
       double pxAvg = frames ? (double)pxSum / frames : 0;
+      double pushPxAvg = frames ? (double)pushPxSum / frames : 0;
       double load = winSec > 0 ? (renderSum + pushSum) / 1e6 / winSec * 100.0 : 0;
       double decLoad = winSec > 0 ? g_fbDecUs / 1e6 / winSec * 100.0 : 0;
       double convAvgMs = frames ? (g_fbConvUs / (double)frames) / 1000.0 : 0;
@@ -1622,12 +1667,12 @@ static void faceBenchTask(void* pv) {
       else snprintf(ringMinStr, sizeof(ringMinStr), "%u", (unsigned)g_fbRingMin);
 
       Serial.printf("[FaceBench] phase=%s#%d frames=%u late=%u render_avg=%.2fms render_max=%.2fms "
-                    "push_avg=%.2fms push_max=%.2fms conv_avg=%.2fms spi_avg=%.2fms px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
+                    "push_avg=%.2fms push_max=%.2fms conv_avg=%.2fms spi_avg=%.2fms px_avg=%.0f push_px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
                     "dec_max=%.2fms ring_empty=%u ring_min=%s ifree=%u imin=%u stack_hw=%u\n",
                     on ? "ON" : "OFF", phase, (unsigned)frames, (unsigned)late,
                     renderAvgMs, renderMax / 1000.0, pushAvgMs, pushMax / 1000.0,
                     convAvgMs, spiAvgMs,
-                    pxAvg, load, decLoad, g_fbDecMaxUs / 1000.0,
+                    pxAvg, pushPxAvg, load, decLoad, g_fbDecMaxUs / 1000.0,
                     (unsigned)g_fbRingEmpty, ringMinStr,
                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                     (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -1643,6 +1688,7 @@ static void faceBenchTask(void* pv) {
       double renderAvgMs = pFrames ? (pRenderSum / (double)pFrames) / 1000.0 : 0;
       double pushAvgMs = pFrames ? (pPushSum / (double)pFrames) / 1000.0 : 0;
       double pxAvg = pFrames ? (double)pPxSum / pFrames : 0;
+      double pushPxAvg = pFrames ? (double)pPushPxSum / pFrames : 0;
       double load = phSec > 0 ? (pRenderSum + pPushSum) / 1e6 / phSec * 100.0 : 0;
       double decLoad = phSec > 0 ? pDecUs / 1e6 / phSec * 100.0 : 0;
       double convAvgMs = pFrames ? (pConvUs / (double)pFrames) / 1000.0 : 0;
@@ -1653,12 +1699,12 @@ static void faceBenchTask(void* pv) {
       else snprintf(ringMinStr, sizeof(ringMinStr), "%u", (unsigned)pRingMin);
 
       Serial.printf("[FaceBench] === phase=%s#%d frames=%u late=%u render_avg=%.2fms render_max=%.2fms "
-                    "push_avg=%.2fms push_max=%.2fms conv_avg=%.2fms spi_avg=%.2fms px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
+                    "push_avg=%.2fms push_max=%.2fms conv_avg=%.2fms spi_avg=%.2fms px_avg=%.0f push_px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
                     "dec_max=%.2fms ring_empty=%u ring_min=%s ifree=%u imin=%u stack_hw=%u\n",
                     on ? "ON" : "OFF", phase, (unsigned)pFrames, (unsigned)pLate,
                     renderAvgMs, pRenderMax / 1000.0, pushAvgMs, pPushMax / 1000.0,
                     convAvgMs, spiAvgMs,
-                    pxAvg, load, decLoad, pDecMax / 1000.0,
+                    pxAvg, pushPxAvg, load, decLoad, pDecMax / 1000.0,
                     (unsigned)pRingEmpty, ringMinStr,
                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                     (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
@@ -1666,7 +1712,7 @@ static void faceBenchTask(void* pv) {
 
       phase++;
       phaseStart = now;
-      pLate = 0; pFrames = 0; pRenderSum = 0; pPushSum = 0; pRenderMax = 0; pPushMax = 0; pPxSum = 0;
+      pLate = 0; pFrames = 0; pRenderSum = 0; pPushSum = 0; pRenderMax = 0; pPushMax = 0; pPxSum = 0; pPushPxSum = 0;
       pDecUs = 0; pDecMax = 0; pRingEmpty = 0; pRingMin = 0xFFFFFFFF;
       pConvUs = 0; pSpiUs = 0;
     }

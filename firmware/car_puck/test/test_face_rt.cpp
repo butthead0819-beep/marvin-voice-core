@@ -125,6 +125,7 @@ int main(int argc, char** argv) {
   double worst_same_ratio = 101.0;
   uint32_t max_full_px = 0;
   double sum_full_px = 0;
+  double sum_span_px = 0;
 
   for (size_t pi = 0; pi < poses.size(); pi++) {
     const GoldenPose& gp = poses[pi];
@@ -171,6 +172,21 @@ int main(int argc, char** argv) {
       }
     }
 
+    // 4. 涵蓋：golden 跟 base 不同的每個像素，x 必須落在該列的 curX0..curX1 內
+    //    （否則呼叫端只推 dirty span 會漏畫到這個像素）。
+    for (int y = 0; y < W; y++) {
+      for (int x = 0; x < W; x++) {
+        size_t i = (size_t)(y * W + x) * 3;
+        bool differs = gp.frame[i] != base[i] || gp.frame[i + 1] != base[i + 1] || gp.frame[i + 2] != base[i + 2];
+        if (!differs) continue;
+        assert(x >= work.curX0[y] && x <= work.curX1[y]);
+      }
+    }
+    long span_px = 0;
+    for (int y = 0; y < W; y++) {
+      if (work.curX1[y] >= work.curX0[y]) span_px += work.curX1[y] - work.curX0[y] + 1;
+    }
+
     int rw = rect.x1 - rect.x0 + 1, rh = rect.y1 - rect.y0 + 1;
 #ifdef FACE_RT_STATS
     uint32_t full_px = g_face_rt_full_px;
@@ -179,18 +195,33 @@ int main(int argc, char** argv) {
 #endif
     if (full_px > max_full_px) max_full_px = full_px;
     sum_full_px += full_px;
+    sum_span_px += span_px;
     if (max_diff > worst_max_diff) worst_max_diff = max_diff;
     if (same_ratio < worst_same_ratio) worst_same_ratio = same_ratio;
 
     printf("pose %3zu: yaw=%+.3f pitch=%+.3f roll=%+.3f browUp=%.3f err=%.2f  "
-           "rect=%dx%d@(%d,%d) max_diff=%d same=%.2f%% full_px=%u\n",
+           "rect=%dx%d@(%d,%d) max_diff=%d same=%.2f%% full_px=%u span_px=%ld\n",
            pi, gp.pose.yaw, gp.pose.pitch, gp.pose.roll, gp.pose.browUp, gp.pose.err,
-           rw, rh, rect.x0, rect.y0, max_diff, same_ratio, full_px);
+           rw, rh, rect.x0, rect.y0, max_diff, same_ratio, full_px, span_px);
+  }
+
+  // 4. 連續播放：同一塊 out 依序畫全部姿勢、不清畫面。每畫完一格，整張畫面都必須等於該姿勢的
+  //    golden（容許同樣的 ≤8 級）——驗證「下一格開頭把上一格畫過的範圍還原成 base」沒有留殘影。
+  {
+    memcpy(out.data(), base.data(), FRAME_BYTES);
+    for (size_t pi = 0; pi < poses.size(); pi++) {
+      face_rt_render(poses[pi].pose, base.data(), out.data());
+      for (size_t i = 0; i < FRAME_BYTES; i++) {
+        assert(iabs((int)out[i] - (int)poses[pi].frame[i]) <= 8);
+      }
+    }
+    printf("sequential: %zu poses, whole-frame match OK\n", poses.size());
   }
 
   printf("\nALL OK\n");
-  printf("summary: poses=%zu worst_max_diff=%d worst_same_ratio=%.3f%% full_px_max=%u full_px_avg=%.1f\n",
-         poses.size(), worst_max_diff, worst_same_ratio, max_full_px, sum_full_px / poses.size());
+  printf("summary: poses=%zu worst_max_diff=%d worst_same_ratio=%.3f%% full_px_max=%u full_px_avg=%.1f span_px_avg=%.1f\n",
+         poses.size(), worst_max_diff, worst_same_ratio, max_full_px, sum_full_px / poses.size(),
+         sum_span_px / (double)poses.size());
 
   // 耗時（參考數字，不 assert）
   const int REPEATS = 20;

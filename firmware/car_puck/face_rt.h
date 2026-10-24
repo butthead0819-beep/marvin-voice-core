@@ -16,6 +16,10 @@
 // 使用前必須先呼叫一次 face_rt_init(&work)（填 asin 查表＋記住工作區），否則查表是全 0。
 // work 是一塊 sizeof(FaceRtWork) 大小、生命週期涵蓋所有 face_rt_render() 呼叫的記憶體，
 // 由呼叫端配置（S3 建議 PSRAM；face_rt.h 本身不配置 heap）。
+//
+// work->curX0/curX1/prevX0/prevX1：render 完後，每列實際被畫到的像素範圍（這一格／上一格）。
+// 呼叫端只要推「prev 聯集 cur」每列範圍，就能讓螢幕畫面跟 out888 一致（因為 render 開頭
+// 會把上一格畫過、這一格沒碰到的像素還原成 base，那些還原也要推上螢幕）。
 #ifndef FACE_RT_H
 #define FACE_RT_H
 
@@ -41,7 +45,14 @@ static uint32_t g_face_rt_linear_px = 0;
 // FACE_RT_CYCLES()：由 include 端定義成讀 CPU cycle 計數器（S3：esp_cpu_get_cycle_count()）。
 // 有定義才編進分段計時；host 測試不定義＝零影響。
 #ifdef FACE_RT_CYCLES
-struct FaceRtProfile { uint32_t prepare, copy, tiles, pixels, frames, tiles_total, tiles_masked, px_math; };
+struct FaceRtProfile {
+  uint32_t prepare, copy, tiles, pixels, frames, tiles_total, tiles_masked, px_math;
+  // tile 篩選細分（tiles 的子段，三段加總≈tiles）：
+  uint32_t tile_bbox;    // tile 開始到 bboxMask 判斷完（含 bboxMask==0 直接跳過）
+  uint32_t tile_center;  // bboxMask!=0 之後：球外快篩＋中心點反投影＋三筆畫距離估計（決定 mask）
+  uint32_t tile_corner;  // mask!=0 之後：取 4 角點＋線性路徑每 tile 預算（invgC/rimV/invVV）
+  uint32_t tiles_linear, tiles_exact;  // 走線性/精確路徑的 tile 數（mask!=0 的 tile 才計入）
+};
 extern FaceRtProfile g_face_rt_prof;
 #endif
 
@@ -296,12 +307,18 @@ inline void prepare(const FacePose& p, float col[3], Prepared& F) {
 // face_rt_render() 呼叫，傳給 face_rt_init()。face_rt.h 本身不配置 heap。
 struct FaceRtWork {
   face_rt_detail::Corner cornerBuf[2][MAX_COLS];
+  int16_t curX0[240], curX1[240];    // 這一格每列被畫到的像素範圍（含端點）；沒有則 curX0=240, curX1=-1
+  int16_t prevX0[240], prevX1[240];  // 上一格的
 };
 
 // 用前必須呼叫一次：填 asin 查表，並記住呼叫端提供的工作區（見 FaceRtWork 註解）。
 inline void face_rt_init(FaceRtWork* work) {
   for (int i = 0; i <= 256; i++) {
     face_rt_detail::ASIN_LUT[i] = asinf(i / 256.0f);
+  }
+  for (int y = 0; y < 240; y++) {
+    work->curX0[y] = work->prevX0[y] = 240;
+    work->curX1[y] = work->prevX1[y] = -1;
   }
   face_rt_detail::s_work = work;
 }
@@ -312,6 +329,25 @@ inline void face_rt_init(FaceRtWork* work) {
 
 FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_t* out888) {
   using namespace face_rt_detail;
+
+  // 把上一格的畫過範圍（cur）存成 prev，再用 base 還原那些範圍——這一格的 rect 不一定
+  // 包得到它們，不還原的話舊畫面殘留在 out888 裡。cur 清空，等下面逐 tile 填回。
+  {
+    int16_t (&curX0)[240] = s_work->curX0;
+    int16_t (&curX1)[240] = s_work->curX1;
+    int16_t (&prevX0)[240] = s_work->prevX0;
+    int16_t (&prevX1)[240] = s_work->prevX1;
+    for (int y = 0; y < W; y++) {
+      prevX0[y] = curX0[y];
+      prevX1[y] = curX1[y];
+      if (prevX1[y] >= prevX0[y]) {
+        size_t off = (size_t)(y * W + prevX0[y]) * 3;
+        memcpy(out888 + off, base888 + off, (size_t)(prevX1[y] - prevX0[y] + 1) * 3);
+      }
+      curX0[y] = W;
+      curX1[y] = -1;
+    }
+  }
 
   float e = clamp01(p.err);
   float col[3] = {
@@ -413,6 +449,11 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
       if (bboxHitsTile(F.eyeBox[1], tilex, tiley, tilex1, tiley1)) bboxMask |= 2;
       if (bboxHitsTile(F.browBox, tilex, tiley, tilex1, tiley1)) bboxMask |= 4;
 
+#ifdef FACE_RT_CYCLES
+      uint32_t _tbbox1 = FACE_RT_CYCLES();
+      g_face_rt_prof.tile_bbox += _tbbox1 - _tt0;
+#endif
+
       if (bboxMask == 0) {
 #ifdef FACE_RT_CYCLES
         g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
@@ -428,7 +469,9 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
       float cux = F.cr * cdx + F.sr * cdy, cuy = -F.sr * cdx + F.cr * cdy;
       if (hyp(cux, cuy) > R + hd + 1) {
 #ifdef FACE_RT_CYCLES
-        g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
+        uint32_t _now = FACE_RT_CYCLES();
+        g_face_rt_prof.tile_center += _now - _tbbox1;
+        g_face_rt_prof.tiles += _now - _tt0;
 #endif
         continue;  // tile 必定在球外，逐像素一定被 clip 掉
       }
@@ -510,14 +553,25 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
       }
 
 #ifdef FACE_RT_CYCLES
+      uint32_t _tcenter1 = FACE_RT_CYCLES();
+      g_face_rt_prof.tile_center += _tcenter1 - _tbbox1;
       if (mask != 0) g_face_rt_prof.tiles_masked++;
 #endif
 
       if (mask == 0) {
 #ifdef FACE_RT_CYCLES
-        g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
+        g_face_rt_prof.tiles += _tcenter1 - _tt0;
 #endif
         continue;  // tile 內所有像素都維持 base
+      }
+
+      {
+        int16_t (&curX0)[240] = s_work->curX0;
+        int16_t (&curX1)[240] = s_work->curX1;
+        for (int y = tiley; y <= tiley1; y++) {
+          if (tilex < curX0[y]) curX0[y] = (int16_t)tilex;
+          if (tilex1 > curX1[y]) curX1[y] = (int16_t)tilex1;
+        }
       }
 
       // 決定走精確路徑（逐像素，舊程式碼不變）還是線性路徑（tile 內雙線性內插）。
@@ -563,8 +617,10 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
       }
 
 #ifdef FACE_RT_CYCLES
-      g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
       uint32_t _tp0 = FACE_RT_CYCLES();
+      g_face_rt_prof.tile_corner += _tp0 - _tcenter1;
+      g_face_rt_prof.tiles += _tp0 - _tt0;
+      if (exact) g_face_rt_prof.tiles_exact++; else g_face_rt_prof.tiles_linear++;
 #endif
 
       if (exact) {
