@@ -372,6 +372,51 @@ async def test_discord_car_present_does_not_block_and_triggers_auto_rejoin(monke
 
 
 @pytest.mark.asyncio
+async def test_discord_car_arrive_join_failure_lets_next_heartbeat_retry(monkeypatch):
+    """進頻道失敗（auto_rejoin_on_boot 跑完但 voice_clients 仍空）→ 從在場名單移除，
+    下次心跳（再 present 一次）要重新觸發開場，不能永久漏掉。"""
+    fake = _FakeVoiceControllerForCarMode()
+    fake.auto_rejoin_on_boot = AsyncMock()  # 什麼都不做 → voice_clients 維持空，視為進頻道失敗
+    monkeypatch.setenv("MARVIN_CAR_MODE", "1")
+    monkeypatch.setenv("MARVIN_CLAUDE_STATUS_SCAN", "0")
+    monkeypatch.setattr("car_presence_state.save_car_presence_state", lambda **kw: None)
+
+    class _FakeSite:
+        def __init__(self, *a, **k):
+            pass
+
+        async def start(self):
+            pass
+
+    monkeypatch.setattr("aiohttp.web.TCPSite", _FakeSite)
+
+    before = asyncio.all_tasks()
+    runner = await car_http_app.start_text_http_server(fake, discord_voice=fake)
+    try:
+        car_presence = fake.bot.car_presence
+        assert car_presence is not None
+
+        await car_presence.present("狗與露")
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert car_presence.is_present is False
+        assert fake.auto_rejoin_on_boot.await_count == 1
+        fake.handle_dismiss.assert_not_called()
+
+        # 下次心跳（puck 再送一次 present）要重新觸發開場，不是永久漏掉。
+        await car_presence.present("狗與露")
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        assert fake.auto_rejoin_on_boot.await_count == 2
+    finally:
+        await runner.cleanup()
+        for t in asyncio.all_tasks() - before:
+            t.cancel()
+
+
+@pytest.mark.asyncio
 async def test_discord_car_absent_dismisses_only_when_no_humans_left(monkeypatch):
     fake = _FakeVoiceControllerForCarMode()
     fake.bot.voice_clients = [MagicMock()]  # 已連線

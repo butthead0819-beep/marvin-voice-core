@@ -315,3 +315,44 @@ async def test_absent_unknown_speaker_is_noop():
     await cp.absent("X")        # 不在場的人
     depart.assert_not_awaited()
     assert cp.occupants == ["A"]
+
+
+# ── forget（開場失敗時靜默移除，讓下次心跳重新觸發開場）───────────────────
+@pytest.mark.asyncio
+async def test_forget_removes_occupant_without_depart_then_represent_refires_arrive():
+    from car_presence import CarPresence
+    t, _adv = _clock()
+    arrive, depart = AsyncMock(), AsyncMock()
+    cp = CarPresence(on_arrive=arrive, on_depart=depart, time_fn=t)
+    await cp.present("狗與露")
+    arrive.assert_awaited_once_with("狗與露")
+    cp.forget("狗與露")
+    depart.assert_not_awaited()
+    assert cp.is_present is False
+    await cp.present("狗與露")
+    assert arrive.await_count == 2
+    depart.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_forget_unknown_speaker_is_noop():
+    from car_presence import CarPresence
+    t, _adv = _clock()
+    arrive, depart = AsyncMock(), AsyncMock()
+    cp = CarPresence(on_arrive=arrive, on_depart=depart, time_fn=t)
+    cp.forget("沒在場的人")
+    depart.assert_not_awaited()
+    assert cp.is_present is False
+
+
+@pytest.mark.asyncio
+async def test_forget_one_of_two_keeps_other_present_no_depart():
+    from car_presence import CarPresence
+    t, _adv = _clock()
+    arrive, depart = AsyncMock(), AsyncMock()
+    cp = CarPresence(on_arrive=arrive, on_depart=depart, time_fn=t)
+    await cp.present("A")
+    await cp.present("B")
+    cp.forget("A")
+    depart.assert_not_awaited()
+    assert cp.occupants == ["B"]

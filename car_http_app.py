@@ -1882,7 +1882,8 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
                 if action == "join_and_open":
                     await discord_voice.auto_rejoin_on_boot(car_join=True, resume_music=False)
                     if not discord_voice.bot.voice_clients:
-                        logger.warning("🚗 [CarMode/Discord] 進頻道失敗，略過開場（sentinel 60s 會再試）")
+                        car_presence.forget(speaker)
+                        logger.warning("🚗 [CarMode/Discord] 進頻道失敗，略過開場（移出在場名單，下次心跳重新上車）")
                         return
                 await _execute_car_open(discord_voice, car_open, speaker, lambda: _pool_provider(speaker))
             except Exception:  # noqa: BLE001
