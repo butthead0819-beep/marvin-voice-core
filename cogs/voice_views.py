@@ -140,10 +140,11 @@ class PlayControlView(discord.ui.View):
         """跳歌：先播 quick ack，再委派 MusicCog _safe_music_command 走 Seamless Skip 無縫預載轉場流程。"""
         c = self.controller
         play_tts = getattr(c, "play_tts", None)
-        if play_tts is not None:
-            asyncio.create_task(self._quick_skip_ack(play_tts))
+        ack_task = asyncio.create_task(self._quick_skip_ack(play_tts)) if play_tts is not None else None
         bot = getattr(c, "bot", None)
         mc = bot.cogs.get("MusicCog") if bot else None
+        if mc is not None and ack_task is not None:
+            mc._pending_skip_ack = ack_task
         if mc is not None and hasattr(mc, "_safe_music_command"):
             try:
                 res = mc._safe_music_command("control_panel", "", "skip")
