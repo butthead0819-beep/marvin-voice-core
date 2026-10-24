@@ -82,6 +82,16 @@ int main() {
     printf("T5 ok\n");
   }
 
+  // T5b: 事件在繞回點前、播放位置已繞過 0（數值上 readTotal < pos）仍要套用
+  {
+    SpeakSched s; speak_sched_init(s);
+    speak_sched_push(s, 0xFFFFFFF0u, true);
+    bool spk = false;
+    assert(speak_sched_apply(s, 0x10u, &spk) == true);
+    assert(spk == true);
+    printf("T5b ok\n");
+  }
+
   // T7: reset_producer 後同值也能排入
   {
     SpeakSched s; speak_sched_init(s);
