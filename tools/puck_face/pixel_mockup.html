@@ -1,0 +1,413 @@
+<title>Marvin 頭像逐像素版</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 版面：三格並排（Canvas 現行 / 逐像素 S3 算法 / 差異），下方數據與控制；沿用銜接樣機的儀器面板 */
+:root{
+  --bg:#eceee9; --surface:#f8f9f6; --fg:#1b211c; --muted:#5b655d; --line:#d2d7cf;
+  --accent:#4c7a26; --accent-ink:#ffffff; --screen:#000000; --warn:#b5462a; --ok:#3d7a2a;
+  --f-body:"Noto Sans TC",system-ui,-apple-system,"PingFang TC",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#111411; --surface:#1a1e1a; --fg:#e3e8e1; --muted:#98a399; --line:#2c332c;
+  --accent:#9ccf5c; --accent-ink:#0f1a07; --screen:#000000; --warn:#ef8466; --ok:#9ccf5c; color-scheme:dark }}
+:root[data-theme="dark"]{
+  --bg:#111411; --surface:#1a1e1a; --fg:#e3e8e1; --muted:#98a399; --line:#2c332c;
+  --accent:#9ccf5c; --accent-ink:#0f1a07; --screen:#000000; --warn:#ef8466; --ok:#9ccf5c; color-scheme:dark }
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);line-height:1.6}
+.wrap{max-width:1080px;margin:0 auto;padding-block:28px 48px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:grid;gap:20px}
+h1{font-size:1.6rem;margin:0;text-wrap:balance;letter-spacing:.02em}
+.lede{margin:.3rem 0 0;color:var(--muted);max-width:66ch}
+.views{overflow-x:auto}
+.views-in{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.views.zoom .views-in{grid-template-columns:repeat(3,max-content)}
+.view{margin:0;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px;display:grid;gap:8px;min-width:0;justify-items:center}
+.view figcaption{justify-self:start;display:grid}
+.view figcaption b{font-size:.95rem}
+.view figcaption span{font-size:.78rem;color:var(--muted)}
+.view canvas{width:100%;max-width:240px;aspect-ratio:1;background:var(--screen);display:block;image-rendering:pixelated}
+.views.z2 .view canvas{width:480px;max-width:none}
+.views.z3 .view canvas{width:720px;max-width:none}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:2px}
+.stat span{font-size:.75rem;color:var(--muted)}
+.stat output{font-family:var(--f-mono);font-size:1.15rem;font-weight:600;font-variant-numeric:tabular-nums}
+.stat small{font-size:.72rem;color:var(--muted)}
+.stat output.bad{color:var(--warn)} .stat output.good{color:var(--ok)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;display:grid;gap:18px}
+.grp{display:grid;gap:8px}
+.grp h2{font-size:.72rem;letter-spacing:.12em;color:var(--muted);margin:0;font-weight:500}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;font-size:.88rem;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:7px 12px;cursor:pointer;text-align:left}
+button:hover{border-color:var(--accent)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button small{display:block;font-size:.72rem;color:var(--muted)}
+button[aria-pressed="true"] small{color:inherit;opacity:.8}
+select{font:inherit;font-size:.88rem;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:6px 8px}
+.params{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 20px}
+.params label{display:grid;gap:2px;font-size:.82rem}
+.params label span{display:flex;justify-content:space-between;gap:8px}
+.params output{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--accent)}
+input[type=range]:disabled{opacity:.45}
+.note{font-size:.8rem;color:var(--muted);max-width:72ch;margin:0}
+.note code{font-family:var(--f-mono);font-size:.78rem}
+@media (max-width:560px){ .view{padding:8px;border-radius:10px} .view figcaption span{display:none} }
+</style>
+
+<main class="wrap">
+  <header>
+    <h1>Marvin 頭像逐像素版</h1>
+    <p class="lede">中間這顆完全不用 Canvas 繪圖：每個像素反推回球面角度，判斷在不在眼睛三角形裡、離描邊多遠，自己算顏色和邊緣平滑。這就是要搬到 S3 上的算法。左邊是現在烤畫格用的 Canvas 畫法，右邊是兩者的差異放大 4 倍，越黑越一致。</p>
+  </header>
+
+  <section class="views" id="views" aria-label="畫法比較">
+    <div class="views-in">
+      <figure class="view">
+        <figcaption><b>Canvas（現行烤畫格）</b><span>瀏覽器繪圖，當標準答案</span></figcaption>
+        <canvas id="cvRef" width="240" height="240" aria-label="Canvas 版"></canvas>
+      </figure>
+      <figure class="view">
+        <figcaption><b>逐像素（S3 算法）</b><span>只重算眼睛眉毛那一塊</span></figcaption>
+        <canvas id="cvPix" width="240" height="240" aria-label="逐像素版"></canvas>
+      </figure>
+      <figure class="view">
+        <figcaption><b>差異 ×4</b><span>黃框＝這格要重算的區域</span></figcaption>
+        <canvas id="cvDiff" width="240" height="240" aria-label="差異圖"></canvas>
+      </figure>
+    </div>
+  </section>
+
+  <section class="stats" aria-label="這一格的數據">
+    <div class="stat"><span>最大色差</span><output id="sMax">0</output><small>0–255，單一通道</small></div>
+    <div class="stat"><span>平均色差</span><output id="sMean">0</output><small>重算區域內</small></div>
+    <div class="stat"><span>色差 &gt; 24 的像素</span><output id="sBad">0</output><small>大約是肉眼看得出來的程度</small></div>
+    <div class="stat"><span>這格重算像素</span><output id="sPx">0</output><small id="sRect">—</small></div>
+    <div class="stat"><span>跑到現在最差一格</span><output id="sWorst">0</output><small id="sWorstPose">—</small></div>
+  </section>
+
+  <section class="panel">
+    <div class="grp">
+      <h2>姿勢來源</h2>
+      <div class="row">
+        <button data-src="auto" aria-pressed="true">自動播放<small>律動＋指令流程＋標籤，彈簧銜接</small></button>
+        <button data-src="manual">手動<small>用滑桿擺姿勢，停住細看</small></button>
+        <button id="toWorst">跳到最差那格<small>切到手動，套用最差那格的姿勢</small></button>
+        <button id="resetWorst">重設最差紀錄</button>
+      </div>
+    </div>
+    <div class="grp">
+      <h2>手動姿勢（弧度）</h2>
+      <div class="params">
+        <label for="yaw"><span>轉頭 yaw <output id="yawV"></output></span><input id="yaw" type="range" min="-1.3" max="1.3" step="0.01" value="0"></label>
+        <label for="pitch"><span>點頭 pitch <output id="pitchV"></output></span><input id="pitch" type="range" min="-0.5" max="0.5" step="0.01" value="0"></label>
+        <label for="roll"><span>歪頭 roll <output id="rollV"></output></span><input id="roll" type="range" min="-0.4" max="0.4" step="0.01" value="0"></label>
+        <label for="browUp"><span>挑眉 browUp <output id="browUpV"></output></span><input id="browUp" type="range" min="0" max="0.06" step="0.002" value="0"></label>
+        <label for="err"><span>錯誤色 <output id="errV"></output></span><input id="err" type="range" min="0" max="1" step="0.05" value="0"></label>
+      </div>
+    </div>
+    <div class="grp">
+      <h2>檢視</h2>
+      <div class="row">
+        <label class="row" style="gap:6px;font-size:.85rem" for="zoom">放大
+          <select id="zoom"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option></select></label>
+        <label class="row" style="gap:6px;font-size:.85rem" for="speed">速度
+          <select id="speed"><option value="1">1×</option><option value="0.5">0.5×</option><option value="0.25">0.25×</option><option value="0">暫停</option></select></label>
+      </div>
+    </div>
+    <p class="note">逐像素版只畫眼睛和眉毛。球體漸層和高光每格都一樣，S3 上會是開機時讀進來的一張底圖（這裡用 Canvas 畫一次當底圖），所以兩邊底圖完全相同，差異只會出在眼睛和眉毛。每像素的計算：反轉 roll → <code>asin</code> 反推緯度/經度 → 三角形三條邊的有號距離換成螢幕像素距離（用當地的 Jacobian）當覆蓋率 → 依序疊暗底、放射漸層、頂部陰影、上緣描邊、眉線。S3 上 <code>asin</code> 可以改查表。</p>
+  </section>
+</main>
+
+<script>
+(() => {
+const W=240, C=120, R=108, P2=Math.PI*2, HALF=Math.PI/2;
+const IDLE=[104,158,58], ERR=[230,90,55];
+const N=(n,f)=>Array.from({length:n},(_,i)=>f(i,n));
+const clamp01=x=>x<0?0:(x>1?1:x);
+const ss=x=>{x=clamp01(x);return x*x*(3-2*x);};
+// 臉的幾何常數（同 face_render.js）
+const phiC=0.72, dw=0.27, lamC=0.15, dhA=0.26, BROW_CURVE=0.035, PHI_END=phiC+dw+0.26;
+const RIM_W=Math.max(2,R*0.035), BROW_W=Math.max(1.5,R*0.02), LIMB_MIN=0.15;
+
+// ---------- 1. Canvas 版：照搬 tools/puck_face/face_render.js renderHead ----------
+function drawSphere(r){
+  const cx=C, cy=C;
+  r.setTransform(1,0,0,1,0,0); r.globalAlpha=1; r.lineCap='butt'; r.lineJoin='miter'; r.fillStyle='#000'; r.fillRect(0,0,W,W);
+  const sph=r.createRadialGradient(cx-R*0.34,cy-R*0.42,R*0.05,cx,cy,R*1.07);
+  sph.addColorStop(0,'#ffffff');sph.addColorStop(0.3,'#eef2f4');sph.addColorStop(0.66,'#cfd6dc');sph.addColorStop(0.9,'#b6c0c8');sph.addColorStop(1,'#8b959d');
+  r.fillStyle=sph;r.beginPath();r.arc(cx,cy,R,0,P2);r.fill();
+  r.save();r.beginPath();r.arc(cx,cy,R,0,P2);r.clip();
+  const hot=r.createRadialGradient(cx-R*0.33,cy-R*0.42,0,cx-R*0.33,cy-R*0.42,R*0.5);
+  hot.addColorStop(0,'rgba(255,255,255,0.9)');hot.addColorStop(1,'rgba(255,255,255,0)');
+  r.fillStyle=hot;r.fillRect(cx-R,cy-R,2*R,2*R);
+  r.restore();
+  r.strokeStyle='rgba(255,255,255,.4)';r.lineWidth=1;r.beginPath();r.arc(cx,cy,R,0,P2);r.stroke();
+}
+function renderCanvas(r,p){
+  const col=p.col, alpha=0.98, cx=C, cy=C;
+  drawSphere(r);
+  const dark=k=>`rgba(${col[0]*k|0},${col[1]*k|0},${col[2]*k|0},${alpha})`;
+  const bright=`rgba(${Math.min(255,col[0]+80)|0},${Math.min(255,col[1]+70)|0},${Math.min(255,col[2]+70)|0},${alpha})`;
+  const yaw=p.yaw, pitch=p.pitch, roll=p.roll;
+  const cl=v=>Math.max(-HALF,Math.min(HALF,v));
+  const proj=(phi,lam)=>{ const hid=Math.abs(phi)>HALF-0.02||Math.abs(lam)>HALF-0.02; phi=cl(phi); lam=cl(lam); const q=[cx+R*Math.cos(lam)*Math.sin(phi),cy+R*Math.sin(lam)]; q.hid=hid; return q; };
+  const strokeVisible=pts=>{ r.beginPath(); let pen=false; pts.forEach((q,i)=>{ const prev=pts[i-1]; const ok=!q.hid&&prev&&!prev.hid; if(ok){ if(!pen) r.moveTo(prev[0],prev[1]); r.lineTo(q[0],q[1]); pen=true; } else pen=false; }); r.stroke(); };
+  const seg=(a,b,n)=>N(n+1,(i)=>{const t=i/n;return proj(a[0]+(b[0]-a[0])*t,a[1]+(b[1]-a[1])*t);});
+  r.save(); r.beginPath(); r.arc(cx,cy,R-0.5,0,P2); r.clip();
+  if(roll){ r.translate(cx,cy); r.rotate(roll); r.translate(-cx,-cy); }
+  function eye(sign){
+    const p0=sign*phiC+yaw, lam0=lamC+pitch;
+    const A=[p0+sign*dw,lam0+0.05], B=[p0-sign*dw,lam0], Cc=[p0,lam0+dhA];
+    const poly=[...seg(A,B,8),...seg(B,Cc,8).slice(1),...seg(Cc,A,8).slice(1)];
+    const path=()=>{r.beginPath();poly.forEach((q,i)=>i?r.lineTo(q[0],q[1]):r.moveTo(q[0],q[1]));r.closePath();};
+    path();r.fillStyle=dark(0.45);r.fill();
+    const PB=proj(B[0],B[1]), PC=proj(Cc[0],Cc[1]);
+    r.save();path();r.clip();
+    const sx=(PB[0]+PC[0])/2+Math.sin(cl(yaw))*R*0.5, sy=(PB[1]+PC[1])/2;
+    const g=r.createRadialGradient(sx,sy,0,sx,sy,R*0.46);
+    g.addColorStop(0,bright);g.addColorStop(0.4,dark(1));g.addColorStop(1,dark(0.42));r.fillStyle=g;r.fill();
+    const topY=Math.min(...poly.map(q=>q[1]));
+    const sh=r.createLinearGradient(0,topY-R*0.01,0,topY+R*0.16);sh.addColorStop(0,'rgba(0,0,0,.5)');sh.addColorStop(1,'rgba(0,0,0,0)');
+    r.fillStyle=sh;r.fill();r.restore();
+    r.lineJoin='round';r.lineCap='round';r.lineWidth=RIM_W;r.strokeStyle='rgba(8,10,9,.96)';
+    strokeVisible([...seg(A,Cc,8),...seg(Cc,B,8).slice(1)]);
+  }
+  eye(-1); eye(1);
+  r.strokeStyle='rgba(16,19,17,.92)';r.lineWidth=BROW_W;r.lineCap='round';r.lineJoin='round';
+  strokeVisible(N(49,(i)=>{ const s=-1+i/24; return proj(yaw+s*PHI_END,lamC+pitch-p.browUp+BROW_CURVE*s*s); }));
+  r.restore();
+}
+
+// ---------- 2. 逐像素版：S3 要跑的算法（不呼叫任何 Canvas 繪圖 API） ----------
+// 底圖＝只有球的那張（S3 上是開機讀進來的固定圖）
+const baseCv=document.createElement('canvas'); baseCv.width=baseCv.height=W;
+const baseCtx=baseCv.getContext('2d',{willReadFrequently:true}); drawSphere(baseCtx);
+const BASE=baseCtx.getImageData(0,0,W,W).data;
+
+const clampH=v=>Math.max(-HALF,Math.min(HALF,v));
+const projF=(phi,lam)=>{ phi=clampH(phi); lam=clampH(lam); return [C+R*Math.cos(lam)*Math.sin(phi), C+R*Math.sin(lam)]; };
+
+// 每格先算好的東西（跟像素無關）：三角形邊方程式、漸層中心、陰影位置、重算區域
+function prepare(p){
+  const col=p.col;
+  const dark=k=>[col[0]*k|0,col[1]*k|0,col[2]*k|0];
+  const F={col, dark45:dark(0.45), dark1:dark(1), dark42:dark(0.42),
+    bright:[Math.min(255,col[0]+80)|0,Math.min(255,col[1]+70)|0,Math.min(255,col[2]+70)|0],
+    cr:Math.cos(p.roll), sr:Math.sin(p.roll), eyes:[], yaw:p.yaw,
+    browL0:lamC+p.pitch-p.browUp};
+  const pts=[];   // 未旋轉座標下的可見點，用來算重算區域
+  for(const sign of [-1,1]){
+    const p0=sign*phiC+p.yaw, lam0=lamC+p.pitch;
+    const A=[p0+sign*dw,lam0+0.05], B=[p0-sign*dw,lam0], Cc=[p0,lam0+dhA];
+    const V=[A,B,Cc], ctr=[(A[0]+B[0]+Cc[0])/3,(A[1]+B[1]+Cc[1])/3];
+    // 三條邊：單位法向量朝內，e>0 在裡面
+    const edges=[[A,B],[B,Cc],[Cc,A]].map(([P,Q])=>{
+      let nx=-(Q[1]-P[1]), ny=Q[0]-P[0]; const L=Math.hypot(nx,ny); nx/=L; ny/=L;
+      if(nx*(ctr[0]-P[0])+ny*(ctr[1]-P[1])<0){ nx=-nx; ny=-ny; }
+      return {nx,ny,c:-(nx*P[0]+ny*P[1])};
+    });
+    const PB=projF(B[0],B[1]), PC=projF(Cc[0],Cc[1]);
+    const sx=(PB[0]+PC[0])/2+Math.sin(clampH(p.yaw))*R*0.5, sy=(PB[1]+PC[1])/2;
+    // 陰影的 topY：同 Canvas 版，取細分後多邊形的最高點（未旋轉座標）
+    let topY=Infinity;
+    for(const [P,Q] of [[A,B],[B,Cc],[Cc,A]]) for(let i=0;i<=8;i++){ const t=i/8, q=projF(P[0]+(Q[0]-P[0])*t,P[1]+(Q[1]-P[1])*t); if(q[1]<topY) topY=q[1]; pts.push(q); }
+    F.eyes.push({edges,rim:[[A,Cc],[Cc,B]],sx,sy,topY});
+  }
+  for(let i=0;i<=24;i++){ const s=-1+i/12; pts.push(projF(p.yaw+s*PHI_END,F.browL0+BROW_CURVE*s*s)); }
+  // 未旋轉座標 → 螢幕：轉 roll
+  let x0=W,y0=W,x1=0,y1=0;
+  for(const [ux,uy] of pts){ const dx=ux-C, dy=uy-C, X=C+F.cr*dx-F.sr*dy, Y=C+F.sr*dx+F.cr*dy;
+    if(X<x0)x0=X; if(X>x1)x1=X; if(Y<y0)y0=Y; if(Y>y1)y1=Y; }
+  const pad=4;
+  F.rect={x0:Math.max(0,Math.floor(x0-pad)),y0:Math.max(0,Math.floor(y0-pad)),x1:Math.min(W-1,Math.ceil(x1+pad)),y1:Math.min(W-1,Math.ceil(y1+pad))};
+  return F;
+}
+
+// 線段距離：先用當地 Jacobian 把線段和像素都換到螢幕座標，再在螢幕上找最近點
+// （靠近球邊緣時經度方向被壓扁，在角度空間找最近點會高估距離、描邊變細）
+function segDistPx(phi,lam,P,Q,J){
+  const vx=Q[0]-P[0], vy=Q[1]-P[1], wx=phi-P[0], wy=lam-P[1];
+  const Vx=J.a*vx+J.b*vy, Vy=J.d*vy, Wx=J.a*wx+J.b*wy, Wy=J.d*wy;
+  const t=clamp01((Wx*Vx+Wy*Vy)/(Vx*Vx+Vy*Vy));
+  return Math.hypot(Wx-Vx*t, Wy-Vy*t);
+}
+const mix=(c,col,a)=>{ c[0]+=(col[0]-c[0])*a; c[1]+=(col[1]-c[1])*a; c[2]+=(col[2]-c[2])*a; };
+function gradColor(F,t,out){
+  t=clamp01(t);
+  let a,b,u; if(t<0.4){a=F.bright;b=F.dark1;u=t/0.4;} else {a=F.dark1;b=F.dark42;u=(t-0.4)/0.6;}
+  out[0]=a[0]+(b[0]-a[0])*u; out[1]=a[1]+(b[1]-a[1])*u; out[2]=a[2]+(b[2]-a[2])*u;
+}
+const RIM_COL=[8,10,9], BROW_COL=[16,19,17], BLACK=[0,0,0];
+
+function renderPixel(out,p){
+  out.set(BASE);
+  const F=prepare(p), {x0,y0,x1,y1}=F.rect;
+  const c=[0,0,0], g=[0,0,0], J={a:0,b:0,d:0};
+  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){
+    // 像素中心 → 反轉 roll → 未旋轉座標
+    const dx=x+0.5-C, dy=y+0.5-C;
+    const ux=F.cr*dx+F.sr*dy, uy=-F.sr*dx+F.cr*dy;
+    const clip=clamp01(R-0.5-Math.hypot(ux,uy)+0.5);
+    if(clip<=0) continue;
+    const sl=uy/R; if(sl<=-1||sl>=1) continue;
+    const lam=Math.asin(sl), cl=Math.cos(lam), u=ux/(R*cl);
+    if(u<=-1||u>=1) continue;
+    const phi=Math.asin(u), cp=Math.cos(phi), sp=u;
+    // 螢幕 → 角度的偏微分（算邊緣平滑用）
+    // 球緣 cos→0 時一階近似會失準（遠處的形狀被算成 0 距離，在球緣留下一圈色暈），所以 cos 設下限
+    const clg=Math.max(cl,LIMB_MIN), cpg=Math.max(cp,LIMB_MIN);
+    const dphi_dx=1/(R*clg*cpg), dphi_dy=ux*sl/(R*R*clg*clg*clg*cpg), dlam_dy=1/(R*clg);
+    // 角度 → 螢幕（算描邊距離用）：dX=a·dφ+b·dλ, dY=d·dλ
+    J.a=R*clg*cpg; J.b=-R*sl*sp; J.d=R*clg;
+    const i=(y*W+x)*4;
+    c[0]=out[i]; c[1]=out[i+1]; c[2]=out[i+2];
+    for(const E of F.eyes){
+      let cov=1;
+      for(const e of E.edges){
+        const v=e.nx*phi+e.ny*lam+e.c;
+        const gx=e.nx*dphi_dx, gy=e.nx*dphi_dy+e.ny*dlam_dy;
+        cov=Math.min(cov,clamp01(0.5+v/Math.hypot(gx,gy)));
+        if(cov<=0) break;
+      }
+      if(cov>0){
+        const k=cov*clip;
+        mix(c,F.dark45,0.98*k);
+        gradColor(F,Math.hypot(ux+C-E.sx,uy+C-E.sy)/(R*0.46),g); mix(c,g,0.98*k);
+        const ty=(uy+C-(E.topY-R*0.01))/(R*0.17); mix(c,BLACK,0.5*(1-clamp01(ty))*k);
+      }
+      let dmin=Infinity;
+      for(const [P,Q] of E.rim){ const d=segDistPx(phi,lam,P,Q,J); if(d<dmin) dmin=d; }
+      const rc=clamp01(RIM_W/2-dmin+0.5);
+      if(rc>0) mix(c,RIM_COL,0.96*rc*clip);
+    }
+    // 眉線：角度空間的拋物線 λ = L0 + curve·s²，s=(φ-yaw)/PHI_END
+    const s=(phi-F.yaw)/PHI_END;
+    let bd;
+    if(s<-1||s>1){ const se=s<0?-1:1, dp=phi-(F.yaw+se*PHI_END), dl=lam-(F.browL0+BROW_CURVE); bd=Math.hypot(J.a*dp+J.b*dl, J.d*dl); }
+    else { const m=2*BROW_CURVE*s/PHI_END, dl=lam-(F.browL0+BROW_CURVE*s*s), k=dl/(1+m*m);
+           bd=Math.hypot(J.a*(-m*k)+J.b*k, J.d*k); }
+    const bc=clamp01(BROW_W/2-bd+0.5);
+    if(bc>0) mix(c,BROW_COL,0.92*bc*clip);
+    out[i]=c[0]+0.5|0; out[i+1]=c[1]+0.5|0; out[i+2]=c[2]+0.5|0;
+  }
+  return F.rect;
+}
+
+// ---------- 3. 姿勢來源：沿用銜接樣機的彈簧版（預設參數） ----------
+const DT=1/24, CH=['yaw','pitch','roll','browUp','err'];
+const Z=()=>({yaw:0,pitch:0,roll:0,browUp:0,err:0});
+const add=(p,q,w)=>{ CH.forEach(c=>{ p[c]+=(q[c]||0)*w; }); return p; };
+const tripE=(u,a=.3)=>u<a?ss(u/a):(u>1-a?ss((1-u)/a):1);
+function nodPeriod(bpm){ const beat=60/bpm; return [1,2,4].map(k=>k*beat).reduce((a,b)=>Math.abs(b-1)<Math.abs(a-1)?b:a); }
+const GEN={
+  sway:(t,T)=>{ const s=Math.sin(P2*T/(8*60/71)); return {yaw:.45*s,roll:.3*s,pitch:.06*s*s}; },
+  nod:(t,T)=>{ const per=nodPeriod(158), n=Math.floor(T/per), ph=T/per-n, amp=n%2?0.6:1; const d=ph<.45?ss(ph/.45):1-ss((ph-.45)/.55); return {pitch:.42*amp*d,roll:.06*amp*d}; },
+  listen:t=>{ const c=t%1.8, b=c<.7?Math.sin(Math.PI*c/.7)**2:0; return {roll:.34,yaw:-.35,pitch:-.06+.1*b}; },
+  think:t=>({pitch:-.3,yaw:.45+.06*Math.sin(t*1.3),roll:-.14,browUp:.04}),
+  speak:t=>{ const b=Math.sin(Math.PI*t)**2; return {pitch:.16*b,yaw:.2*b}; },
+  error:t=>({yaw:.7*Math.sin(P2*t/.8)*ss(t/.2),err:1}),
+};
+const LAYERS=Object.keys(GEN);
+const GEST={
+  tilt:  {d:1.8, f:u=>{const e=tripE(u);    return {roll:.32*e,yaw:.35*e,pitch:-.06*e,browUp:.05*e};}},
+  yes:   {d:1.3, f:u=>({pitch:.3*Math.sin(P2*u)**2})},
+  no:    {d:1.5, f:u=>({yaw:.5*Math.sin(P2*2*u)*tripE(u,.2)})},
+  glance:{d:2.4, f:u=>{const e=tripE(u,.3); return {yaw:-1.1*e,roll:-.1*e};}},
+  ponder:{d:2.2, f:u=>{const e=tripE(u,.35);return {pitch:-.45*e,yaw:.4*e,roll:-.16*e,browUp:.04*e};}},
+};
+const OVERLAP=.4, SPRING_T=.25, KEEP=.3;
+let T=0, layer='sway', groove='sway', gestures=[], script=[], si=0, nextAt=1;
+const layerStart=Object.fromEntries(LAYERS.map(k=>[k,0]));
+const lin=Object.fromEntries(LAYERS.map(k=>[k,k==='sway'?1:0]));
+const sx=Z(), sv=Z();
+// 自動播放劇本：循環跑一輪指令流程＋各種標籤＋錯誤＋換律動
+const S=k=>()=>{ layer=k==='none'?groove:k; layerStart[layer]=T; };
+const G=id=>()=>gestures.push({id,start:T});
+const SC=[[1,S('listen')],[2,S('think')],[1.5,S('speak')],[.6,G('tilt')],[1.6,G('yes')],[1.8,S('none')],
+  [2,G('glance')],[3,G('ponder')],[2.6,S('listen')],[1.2,S('think')],[1.4,S('error')],[2.2,S('none')],
+  [1,()=>{groove='nod';layer='nod';}],[3,G('no')],[2.5,S('listen')],[1.5,S('think')],[1,S('speak')],[3,S('none')],
+  [2,()=>{groove='sway';layer='sway';}],[2,()=>{}]];
+function autoPose(){
+  T+=DT; nextAt-=DT;
+  while(nextAt<=0){ SC[si][1](); si=(si+1)%SC.length; nextAt+=SC[si][0]; }
+  gestures=gestures.filter(g=>T-g.start<GEST[g.id].d);
+  let sum=0; const w={};
+  LAYERS.forEach(k=>{ const tg=k===layer?1:0, r=DT/OVERLAP; lin[k]+=Math.max(-r,Math.min(r,tg-lin[k])); w[k]=ss(lin[k]); sum+=w[k]; });
+  const p=Z(), norm=sum>1?1/sum:1;
+  LAYERS.forEach(k=>{ if(w[k]>0) add(p,GEN[k](T-layerStart[k],T),w[k]*norm); });
+  if(gestures.length){ const gp=Z(); let duck=0;
+    gestures.forEach(g=>{ const u=(T-g.start)/GEST[g.id].d; duck=Math.max(duck,tripE(u,.25)); add(gp,GEST[g.id].f(u),1); });
+    const k=1-duck*(1-KEEP); ['yaw','pitch','roll','browUp'].forEach(c=>{ p[c]=p[c]*k+gp[c]; }); }
+  const om=4.7/SPRING_T, h=DT/4;
+  for(let i=0;i<4;i++) CH.forEach(c=>{ const a=om*om*(p[c]-sx[c])-2*om*sv[c]; sv[c]+=a*h; sx[c]+=sv[c]*h; });
+  return {...sx};
+}
+
+// ---------- 4. 比較與畫面 ----------
+const ref=document.getElementById('cvRef').getContext('2d',{willReadFrequently:true});
+const pixCtx=document.getElementById('cvPix').getContext('2d');
+const diffCtx=document.getElementById('cvDiff').getContext('2d');
+const pixImg=pixCtx.createImageData(W,W), diffImg=diffCtx.createImageData(W,W);
+const $=id=>document.getElementById(id);
+let src='auto', worst={v:-1,pose:null};
+const sliders=['yaw','pitch','roll','browUp','err'];
+function manualPose(){ const p={}; sliders.forEach(k=>p[k]=+$(k).value); return p; }
+function syncSliders(p){ sliders.forEach(k=>{ $(k).value=p[k]; $(k+'V').textContent=(+p[k]).toFixed(k==='browUp'?3:2); }); }
+
+function frame(p){
+  const e=clamp01(p.err), col=IDLE.map((v,i)=>v+(ERR[i]-v)*e);
+  const pose={yaw:p.yaw,pitch:p.pitch,roll:p.roll,browUp:p.browUp,col};
+  renderCanvas(ref,pose);
+  const A=ref.getImageData(0,0,W,W).data, B=pixImg.data;
+  const rect=renderPixel(B,pose);
+  for(let i=3;i<B.length;i+=4) B[i]=255;
+  pixCtx.putImageData(pixImg,0,0);
+  const D=diffImg.data; let mx=0, sum=0, n=0, bad=0;
+  for(let i=0;i<A.length;i+=4){
+    const d=Math.max(Math.abs(A[i]-B[i]),Math.abs(A[i+1]-B[i+1]),Math.abs(A[i+2]-B[i+2]));
+    const v=Math.min(255,d*4); D[i]=v; D[i+1]=v*.85; D[i+2]=v*.3; D[i+3]=255;
+    if(d>mx) mx=d; if(d>24) bad++;
+    const px=(i>>2)%W, py=(i>>2)/W|0;
+    if(px>=rect.x0&&px<=rect.x1&&py>=rect.y0&&py<=rect.y1){ sum+=d; n++; }
+  }
+  diffCtx.putImageData(diffImg,0,0);
+  diffCtx.strokeStyle='rgba(255,210,60,.8)'; diffCtx.lineWidth=1;
+  diffCtx.strokeRect(rect.x0+.5,rect.y0+.5,rect.x1-rect.x0,rect.y1-rect.y0);
+  $('sMax').textContent=mx; $('sMax').className=mx>48?'bad':(mx<=24?'good':'');
+  $('sMean').textContent=(n?sum/n:0).toFixed(2);
+  $('sBad').textContent=bad; $('sBad').className=bad>40?'bad':(bad<=5?'good':'');
+  const rw=rect.x1-rect.x0+1, rh=rect.y1-rect.y0+1;
+  $('sPx').textContent=(rw*rh).toLocaleString(); $('sRect').textContent=`${rw}×${rh}，全屏的 ${(rw*rh/W/W*100).toFixed(0)}%`;
+  if(bad>worst.v){ worst={v:bad,pose:{...p}}; }
+  $('sWorst').textContent=worst.v<0?0:worst.v+' 像素';
+  if(worst.pose){ const w=worst.pose; $('sWorstPose').textContent=`yaw ${w.yaw.toFixed(2)} pitch ${w.pitch.toFixed(2)} roll ${w.roll.toFixed(2)}`; }
+}
+
+document.querySelectorAll('[data-src]').forEach(b=>b.addEventListener('click',()=>setSrc(b.dataset.src)));
+function setSrc(s){ src=s; document.querySelectorAll('[data-src]').forEach(x=>x.setAttribute('aria-pressed',x.dataset.src===s));
+  sliders.forEach(k=>$(k).disabled=s==='auto'); if(s==='manual') frame(manualPose()); }
+sliders.forEach(k=>$(k).addEventListener('input',()=>{ $(k+'V').textContent=(+$(k).value).toFixed(k==='browUp'?3:2); if(src==='manual') frame(manualPose()); }));
+$('toWorst').addEventListener('click',()=>{ if(!worst.pose) return; syncSliders(worst.pose); setSrc('manual'); });
+$('resetWorst').addEventListener('click',()=>{ worst={v:-1,pose:null}; $('sWorstPose').textContent='—'; });
+$('zoom').addEventListener('change',()=>{ const v=$('views'); v.classList.remove('zoom','z2','z3'); const z=$('zoom').value; if(z!=='1') v.classList.add('zoom','z'+z); });
+let speed=1; $('speed').addEventListener('change',()=>{ speed=+$('speed').value; });
+
+syncSliders(Z()); setSrc('auto');
+let acc=0, last=performance.now(), cur=null;
+for(let i=0;i<30;i++) cur=autoPose();
+frame(cur);
+function loop(now){
+  acc+=Math.min(.25,(now-last)/1000)*speed; last=now;
+  if(src==='auto'){ let stepped=false; while(acc>=DT){ acc-=DT; cur=autoPose(); stepped=true; } if(stepped){ frame(cur); syncSliders(cur); } }
+  else acc=0;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+})();
+</script>

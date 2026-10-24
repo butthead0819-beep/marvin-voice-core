@@ -111,3 +111,4 @@ firmware/car_puck/secrets.h
 firmware/car_puck/build/
 
 tools/puck_face/out/
+firmware/face_demo/base_sphere.h
