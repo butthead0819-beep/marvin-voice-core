@@ -76,9 +76,12 @@ FaceRtProfile g_face_rt_prof = {};
 // 有登記的那組——在家連家用WiFi（MARVIN_LOCAL_HOST區網明碼路徑成立），出門連iPhone
 // 熱點（區網打不到、走[[Funnel回退]]，見 postAudio()/carHeartbeat()）。
 WiFiMulti wifiMulti;
-#include "secrets.h"   // WiFi/token/區網IP/身分：複製 secrets.h.example 成 secrets.h 填真值（已 gitignore，別 commit 真值）
+#include "secrets.h"   // WiFi/token/區網IP：複製 secrets.h.example 成 secrets.h 填真值（已 gitignore，別 commit 真值）
+#include "device_id.h"   // 身分不在 secrets.h：由晶片 MAC 產生，見下方 setup() 的 format_device_id()
 const char* MARVIN_HOST  = "macbook-air.tail7ba8d0.ts.net";   // 不含 https://
 const int   MARVIN_PORT  = 443;
+
+static char gDeviceId[16] = "";   // setup() 填：由 ESP.getEfuseMac() 產生，見 device_id.h
 
 // TEMP 實驗（2026-07-25）：/audio_stream 實測 sustained throughput 只有目標 187.5KB/s
 // 的 ~55-67%（100-126KB/s），懷疑雙重加密——Tailscale WireGuard 本身已加密，這條又走
@@ -982,7 +985,7 @@ static int postHttp(WiFiClient& client, const char* host, uint16_t port, int32_t
   // 2026-07-26 註解，available() 已經一起上鎖，這裡只是控制輪詢節奏）。
   client.setTimeout(500);
 
-  // path 已含 query（如 /audio?speaker=…）時 token 接在後面用 &t=，否則用 ?t=
+  // path 已含 query（如 /audio?device=…）時 token 接在後面用 &t=，否則用 ?t=
   String header = String("POST ") + path + (strchr(path, '?') ? "&t=" : "?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
                   "Host: " + host + "\r\n" +
                   "Content-Type: " + contentType + "\r\n" +
@@ -1225,12 +1228,12 @@ void carHeartbeat() {
   // 但心跳區網+Funnel兩條路連續 HTTP -1——connect() 前要先搶 LWIP_LOCK，這個 task
   // 優先權=1，跟同核心的 audioNet/deckNet（優先權=2）搶不過，逾時前常常連鎖都還沒搶到
   // 就過期。逾時值加大給排程延遲留餘裕（見下面 carHeartbeatTask 建立時優先權也一併調高）。
-  // body 加大到 1024：除了原本的 state/speaker，還要夾帶 WROOM 遙測（wroom_sum 一筆
+  // body 加大到 1024：除了原本的 state/device，還要夾帶 WROOM 遙測（wroom_sum 一筆
   // ~140 字 + wroom_diag 最多 8 筆 ~64 字），搭這班心跳一起送出，不開新連線（見
   // gWroomLogMutex 前的說明）。
   static char body[1024];
-  size_t len = (size_t)snprintf(body, sizeof(body), "{\"state\":\"present\",\"speaker\":\"%s\"",
-                                 MARVIN_SPEAKER);
+  size_t len = (size_t)snprintf(body, sizeof(body), "{\"state\":\"present\",\"device\":\"%s\"",
+                                 gDeviceId);
   if (xSemaphoreTake(gWroomLogMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     if (gWroomSumNew) {
       char esc[320];
@@ -1573,11 +1576,11 @@ void postAudio(int nSamples, bool viaPause) {
   // socket + lockedReadLine）而非 HTTPClient：HTTPClient 的 POST() 是不可拆的黑盒，鎖
   // 只要包住它就等於持鎖空等到逾時——carHeartbeat() 上面的除錯記錄③已經實測過這個
   // 組合會在 17-20 秒內撞 task watchdog，不要重踩。
-  char audioPath[96];   // 身分走 query：/audio?speaker=showay（Mac 端白名單驗證）
+  char audioPath[96];   // 身分走 query：/audio?device=puck-xxxxxx（Mac 端 MARVIN_CAR_DEVICES 對應）
   if (viaPause) {
-    snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s&trigger=pause", MARVIN_SPEAKER);
+    snprintf(audioPath, sizeof(audioPath), "/audio?device=%s&trigger=pause", gDeviceId);
   } else {
-    snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s", MARVIN_SPEAKER);
+    snprintf(audioPath, sizeof(audioPath), "/audio?device=%s", gDeviceId);
   }
   WiFiClient localClient;
   int code = -1;
@@ -2212,6 +2215,9 @@ void setup() {
   Serial.setTxTimeoutMs(0);   // USB 序列埠沒人讀時不要卡住（同 face_demo.ino，避免每幾秒頓一下）
   delay(500);
   Serial.println("\n=== Marvin car_puck bring-up ===");
+
+  format_device_id(ESP.getEfuseMac(), gDeviceId, sizeof(gDeviceId));
+  Serial.printf("[boot] device id: %s\n", gDeviceId);
 
   // 跟 WROOM 的 UART（曲名送出、方向盤按鍵收回），接線見 PIN_WROOM_UART_* 定義前註解。
   // TX buffer 加大到 1024：一筆 metadata 約 400 bytes，預設 128 會讓 audioNetworkTask

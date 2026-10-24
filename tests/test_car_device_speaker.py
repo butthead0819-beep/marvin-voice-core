@@ -220,3 +220,158 @@ async def test_inject_audio_without_speaker_falls_back_to_env(monkeypatch):
     vc.bot.engine._run_swift_stt = AsyncMock(return_value=("現在幾點", {}))
     await car_http_app.inject_audio(vc, b"RIFFfake")
     assert fake_inject_text.call_args.args[1] == "阿凱"
+
+
+# ── parse_car_devices ────────────────────────────────────────────────────────
+def test_parse_car_devices_two_items():
+    from car_http_app import parse_car_devices
+    out = parse_car_devices("puck-aa1122:狗與露,puck-bb3344:showay")
+    assert out == {"puck-aa1122": "狗與露", "puck-bb3344": "showay"}
+
+
+def test_parse_car_devices_strips_whitespace():
+    from car_http_app import parse_car_devices
+    out = parse_car_devices(" puck-aa1122 : 狗與露 , puck-bb3344 : showay ")
+    assert out == {"puck-aa1122": "狗與露", "puck-bb3344": "showay"}
+
+
+def test_parse_car_devices_id_is_casefolded():
+    from car_http_app import parse_car_devices
+    out = parse_car_devices("PUCK-A1B2C3:狗與露")
+    assert out == {"puck-a1b2c3": "狗與露"}
+
+
+def test_parse_car_devices_skips_missing_colon_or_empty_id_or_name():
+    from car_http_app import parse_car_devices
+    out = parse_car_devices("noColonHere,:showay,puck-x:,puck-ok:name")
+    assert out == {"puck-ok": "name"}
+
+
+def test_parse_car_devices_name_may_contain_colon():
+    from car_http_app import parse_car_devices
+    out = parse_car_devices("p1:a:b")
+    assert out == {"p1": "a:b"}
+
+
+def test_parse_car_devices_duplicate_id_keeps_first():
+    from car_http_app import parse_car_devices
+    out = parse_car_devices("p1:first,p1:second")
+    assert out == {"p1": "first"}
+
+
+def test_parse_car_devices_empty_string():
+    from car_http_app import parse_car_devices
+    assert parse_car_devices("") == {}
+
+
+# ── resolve_car_identity ─────────────────────────────────────────────────────
+def test_resolve_car_identity_registered_device_returns_name():
+    from car_http_app import parse_car_devices, resolve_car_identity
+    devices = parse_car_devices("puck-aa1122:狗與露")
+    assert resolve_car_identity("PUCK-AA1122", None, devices, None, DEFAULT) == ("狗與露", None)
+
+
+def test_resolve_car_identity_registered_device_ignores_speaker():
+    from car_http_app import parse_car_devices, parse_device_speakers, resolve_car_identity
+    devices = parse_car_devices("puck-aa1122:狗與露")
+    allowed = parse_device_speakers("showay", DEFAULT)
+    assert resolve_car_identity("puck-aa1122", "showay", devices, allowed, DEFAULT) == ("狗與露", None)
+
+
+def test_resolve_car_identity_unregistered_device_is_unknown_device():
+    from car_http_app import parse_car_devices, resolve_car_identity
+    devices = parse_car_devices("puck-aa1122:狗與露")
+    assert resolve_car_identity("puck-zzzz", None, devices, None, DEFAULT) == (None, "unknown_device")
+
+
+def test_resolve_car_identity_device_present_but_car_devices_none():
+    from car_http_app import resolve_car_identity
+    assert resolve_car_identity("puck-aa1122", None, None, None, DEFAULT) == (None, "unknown_device")
+
+
+def test_resolve_car_identity_no_device_falls_back_to_speaker_default():
+    from car_http_app import resolve_car_identity
+    assert resolve_car_identity(None, None, {"puck-aa1122": "狗與露"}, None, DEFAULT) == (DEFAULT, None)
+
+
+def test_resolve_car_identity_blank_device_falls_back_to_speaker_logic():
+    from car_http_app import parse_device_speakers, resolve_car_identity
+    allowed = parse_device_speakers("showay", DEFAULT)
+    assert resolve_car_identity("   ", "showay", {"puck-aa1122": "狗與露"}, allowed, DEFAULT) == ("showay", None)
+
+
+def test_resolve_car_identity_no_device_unknown_speaker():
+    from car_http_app import parse_device_speakers, resolve_car_identity
+    allowed = parse_device_speakers("showay", DEFAULT)
+    assert resolve_car_identity(None, "eve", None, allowed, DEFAULT) == (None, "unknown_speaker")
+
+
+# ── POST /car with device ────────────────────────────────────────────────────
+def _car_app_with_devices(cp, car_devices_raw, device_speakers_raw=""):
+    from car_http_app import build_text_app, parse_car_devices, parse_device_speakers
+    car_devices = parse_car_devices(car_devices_raw)
+    allowed = parse_device_speakers(device_speakers_raw, DEFAULT)
+    return build_text_app(_make_vc(), token="s3cret", car_presence=cp,
+                          default_speaker=DEFAULT, device_speakers=allowed,
+                          car_devices=car_devices)
+
+
+@pytest.mark.asyncio
+async def test_car_present_with_registered_device_registers_that_occupant():
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_presence import CarPresence
+    arrive = AsyncMock()
+    cp = CarPresence(on_arrive=arrive, on_depart=AsyncMock())
+    app = _car_app_with_devices(cp, "puck-aa1122:狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/car?t=s3cret",
+                                 json={"state": "present", "device": "puck-aa1122"})
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["occupants"] == ["狗與露"]
+    arrive.assert_awaited_once_with("狗與露")
+
+
+@pytest.mark.asyncio
+async def test_car_present_with_unregistered_device_400_unknown_device():
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_presence import CarPresence
+    arrive = AsyncMock()
+    cp = CarPresence(on_arrive=arrive, on_depart=AsyncMock())
+    app = _car_app_with_devices(cp, "puck-aa1122:狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/car?t=s3cret",
+                                 json={"state": "present", "device": "puck-zzzz"})
+        assert resp.status == 400
+        assert (await resp.json())["error"] == "unknown_device"
+    arrive.assert_not_awaited()
+    assert cp.is_present is False
+
+
+# ── POST /audio with device ──────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_audio_with_registered_device_passes_name(monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+    import car_http_app
+    fake = AsyncMock(return_value=True)
+    monkeypatch.setattr(car_http_app, "inject_audio", fake)
+    app = _car_app_with_devices(None, "puck-aa1122:狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/audio?t=s3cret&device=puck-aa1122", data=b"RIFFfake")
+        assert resp.status == 200
+    fake.assert_awaited_once()
+    assert fake.call_args.kwargs["speaker"] == "狗與露"
+
+
+@pytest.mark.asyncio
+async def test_audio_with_unregistered_device_400_unknown_device(monkeypatch):
+    from aiohttp.test_utils import TestClient, TestServer
+    import car_http_app
+    fake = AsyncMock(return_value=True)
+    monkeypatch.setattr(car_http_app, "inject_audio", fake)
+    app = _car_app_with_devices(None, "puck-aa1122:狗與露")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/audio?t=s3cret&device=puck-zzzz", data=b"RIFFfake")
+        assert resp.status == 400
+        assert (await resp.json())["error"] == "unknown_device"
+    fake.assert_not_awaited()

@@ -1171,6 +1171,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                    now_playing_state_path=None, claude_sessions_state_path=None,
                    gmail_calendar_state_path=None,
                    device_speakers: dict[str, str] | None = None,
+                   car_devices: dict[str, str] | None = None,
                    puck_cover_cache=None):
     """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
 
@@ -1189,6 +1190,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     agent 呼叫）寫、這裡的 /gmail_calendar_status 讀，見該檔開頭說明）。
     device_speakers＝車載裝置身分白名單（parse_device_speakers 的結果）；None＝不驗證、
     裝置送的 speaker 一律當 default_speaker（舊行為）。只影響 /car、/audio，/say 等不動。
+    car_devices＝裝置ID→身分對應（parse_car_devices 的結果）；請求帶 device 時優先看這張表，
+    忽略 speaker；未登記的 device 一律拒收，不退回 default_speaker（隱私：別人的記憶）。
     """
     from aiohttp import web
 
@@ -1392,10 +1395,12 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                    or request.remote or "anon")
             if not audio_rate_limiter.allow(key):
                 return web.json_response({"error": "rate_limited"}, status=429, headers=_CORS)
-        spk = resolve_device_speaker(request.query.get("speaker"), device_speakers, default_speaker)
-        if spk is None:
-            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /audio：speaker={request.query.get('speaker')!r}")
-            return web.json_response({"error": "unknown_speaker"}, status=400, headers=_CORS)
+        raw_device = request.query.get("device")
+        raw_speaker = request.query.get("speaker")
+        spk, err = resolve_car_identity(raw_device, raw_speaker, car_devices, device_speakers, default_speaker)
+        if err is not None:
+            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /audio：device={raw_device!r} speaker={raw_speaker!r}")
+            return web.json_response({"error": err}, status=400, headers=_CORS)
         wav_bytes = await request.read()
         if not wav_bytes:
             return web.json_response({"error": "empty"}, status=400, headers=_CORS)
@@ -1580,16 +1585,18 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             state = (body.get("state") or "").strip()
             lat, lon = body.get("lat"), body.get("lon")
             raw_speaker = body.get("speaker")
+            raw_device = body.get("device")
         else:
             state = (request.query.get("state") or "").strip()
             lat, lon = None, None
             raw_speaker = request.query.get("speaker")
+            raw_device = request.query.get("device")
         if state not in ("present", "absent"):
             return web.json_response({"error": "bad_state"}, status=400, headers=_CORS)
-        spk = resolve_device_speaker(raw_speaker, device_speakers, default_speaker)
-        if spk is None:
-            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /car：speaker={raw_speaker!r}")
-            return web.json_response({"error": "unknown_speaker"}, status=400, headers=_CORS)
+        spk, err = resolve_car_identity(raw_device, raw_speaker, car_devices, device_speakers, default_speaker)
+        if err is not None:
+            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /car：device={raw_device!r} speaker={raw_speaker!r}")
+            return web.json_response({"error": err}, status=400, headers=_CORS)
         if state == "present":
             await car_presence.present(spk)
         else:
@@ -1698,6 +1705,44 @@ def resolve_device_speaker(raw: str | None, allowed: dict[str, str] | None,
     return allowed.get(key)
 
 
+def parse_car_devices(raw: str) -> dict[str, str]:
+    """MARVIN_CAR_DEVICES（逗號分隔的 `裝置ID:名字`）→ {casefold 後的裝置ID: 名字}。
+    每項以第一個冒號切開，ID 與名字都去前後空白；沒有冒號、ID 空、名字空的項略過。
+    同一 ID 重複出現以第一個為準。"""
+    out: dict[str, str] = {}
+    for item in raw.split(","):
+        if ":" not in item:
+            continue
+        device_id, name = item.split(":", 1)
+        device_id, name = device_id.strip(), name.strip()
+        if not device_id or not name:
+            continue
+        out.setdefault(device_id.casefold(), name)
+    return out
+
+
+def resolve_car_identity(device: str | None, speaker: str | None,
+                         car_devices: dict[str, str] | None,
+                         allowed: dict[str, str] | None,
+                         default_speaker: str) -> tuple[str | None, str | None]:
+    """回 (身分, 錯誤碼)。
+    device 非 None 且去空白後非空 → 只看 car_devices：
+        car_devices 有這個 ID（casefold 比對）→ (名字, None)
+        否則（含 car_devices 是 None 或空）→ (None, "unknown_device")
+      此時完全忽略 speaker。
+    否則（沒帶 device）→ 走舊邏輯 resolve_device_speaker(speaker, allowed, default_speaker)：
+        得到名字 → (名字, None)；得到 None → (None, "unknown_speaker")"""
+    if device is not None and device.strip():
+        name = (car_devices or {}).get(device.strip().casefold())
+        if name is not None:
+            return name, None
+        return None, "unknown_device"
+    spk = resolve_device_speaker(speaker, allowed, default_speaker)
+    if spk is None:
+        return None, "unknown_speaker"
+    return spk, None
+
+
 def decide_car_arrive(*, connected: bool, music_active: bool) -> str:
     """單一 mixer 第2刀：car puck 上車（/car present）時，Discord bot 目前狀態決定怎麼開場。
 
@@ -1803,6 +1848,8 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
     default_speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
     # 車載裝置身分白名單（MARVIN_CAR_SPEAKERS）：裝置自己帶 speaker，這裡驗證成正式名字。
     device_speakers = parse_device_speakers(os.getenv("MARVIN_CAR_SPEAKERS", ""), default_speaker)
+    # 新式：裝置ID→身分對應（MARVIN_CAR_DEVICES），韌體只送裝置 ID，不再送 speaker。
+    car_devices = parse_car_devices(os.getenv("MARVIN_CAR_DEVICES", ""))
 
     car_presence = None
     audio_rate_limiter = None
@@ -1867,8 +1914,9 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
     app = build_text_app(vc, token=token, default_speaker=default_speaker,
                          car_presence=car_presence,
                          audio_rate_limiter=audio_rate_limiter, stream_source=stream_source,
-                         device_speakers=device_speakers)
+                         device_speakers=device_speakers, car_devices=car_devices)
     logger.info(f"🚗 [CarMode] 裝置身分白名單：{', '.join(device_speakers.values())}")
+    logger.info(f"🚗 [CarMode] 裝置ID對應：{', '.join(f'{k}→{v}' for k, v in car_devices.items()) or '（無）'}")
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
