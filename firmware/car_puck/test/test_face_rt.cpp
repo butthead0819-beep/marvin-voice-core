@@ -140,7 +140,8 @@ int main(int argc, char** argv) {
     assert(iabs(rect.x1 - gp.rect.x1) <= 1);
     assert(iabs(rect.y1 - gp.rect.y1) <= 1);
 
-    // 2. rect 內像素：|diff| <= 3，相同比例 >= 99%
+    // 2. rect 內像素：|diff| <= 8，相同比例 >= 98%。tile 內換算係數用四角內插（S3 速度需要），
+    //    眼睛描邊邊緣會差到 4-8 級（0-255）；逐像素版跟 Canvas 本來就差幾十級，8 級看不出來。
     int max_diff = 0;
     long same = 0, total = 0;
     for (int y = rect.y0; y <= rect.y1; y++) {
@@ -148,7 +149,7 @@ int main(int argc, char** argv) {
         size_t i = (size_t)(y * W + x) * 3;
         for (int ch = 0; ch < 3; ch++) {
           int d = iabs((int)out[i + ch] - (int)gp.frame[i + ch]);
-          assert(d <= 3);
+          assert(d <= 8);
           if (d > max_diff) max_diff = d;
           if (d == 0) same++;
           total++;
@@ -156,7 +157,7 @@ int main(int argc, char** argv) {
       }
     }
     double same_ratio = total ? (100.0 * same / total) : 100.0;
-    assert(same_ratio >= 99.0);
+    assert(same_ratio >= 98.0);
 
     // 3. rect 外：golden 必須等於 base
     for (int y = 0; y < W; y++) {
