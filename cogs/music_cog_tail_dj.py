@@ -211,11 +211,12 @@ class MusicTailDJMixin:
                 f"用 hardcoded fallback (song={title}, by={requested_by})"
             )
             suffix = self._dj_requester_suffix(self._dj_narration_requester(info))
+            _sp_t, _ = self._dj_spoken_name(info)
             return {
                 "lyrics": None,
                 "comment": None,
                 "dj": {
-                    "text": f"下一首是《{title}》，{suffix}。",
+                    "text": f"下一首是《{_sp_t}》，{suffix}。" if _sp_t else f"下一首，{suffix}。",
                     "audio_path": None,
                 },
             }
@@ -226,8 +227,8 @@ class MusicTailDJMixin:
         歌名走 _dj_clean_name（有正規化用正規化，否則剝 YouTube 雜訊），別唸原標題。
         點歌當下 _canon 還沒掛（DJ 預產才掛），先從曲庫快取補。"""
         self._attach_cached_canon(info)
-        title, _ = self._dj_clean_name(info)
-        ack_text = f"幫你點了《{title}》"
+        title, _ = self._dj_spoken_name(info)
+        ack_text = f"幫你點了《{title}》" if title else "幫你點好了"
         try:
             audio_path = await self.bot.tts_engine.generate_audio(ack_text)
         except Exception as e:
@@ -559,9 +560,11 @@ class MusicTailDJMixin:
                         f"🛡️ [DJ Tail Consistency Guard] 預期上一首《{prev_used}》與實際《{actual_prev}》不符"
                         f"（佇列可能被插播/skip），放棄過期音檔以防報錯歌名"
                     )
-                    clean_title, clean_artist = self._dj_clean_name(next_info)
+                    clean_title, clean_artist = self._dj_spoken_name(next_info)
                     req_suffix = self._dj_requester_suffix(self._dj_narration_requester(next_info))
-                    if clean_artist:
+                    if clean_title is None:
+                        safe_text = f"DJ Marvin為你帶來下一首歌，{req_suffix}"
+                    elif clean_artist:
                         safe_text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{req_suffix}"
                     else:
                         safe_text = f"DJ Marvin為你帶來《{clean_title}》，{req_suffix}"

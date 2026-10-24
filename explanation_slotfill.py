@@ -77,7 +77,10 @@ def _compute_slot_values(evidence: Evidence) -> dict[str, object]:
         if diff >= 0:
             values["weeks_ago"] = int(diff / SECONDS_PER_WEEK)
     if isinstance(evidence.seed_title, str) and evidence.seed_title:
-        values["seed_title"] = evidence.seed_title
+        from song_name_clean import clean_title_regex, speakable_title
+        seed = speakable_title(clean_title_regex(evidence.seed_title))
+        if seed:
+            values["seed_title"] = seed
     return values
 
 

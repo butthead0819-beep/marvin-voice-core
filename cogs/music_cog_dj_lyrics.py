@@ -87,6 +87,20 @@ class MusicDJLyricsMixin:
         from music_memory import extract_video_id
         return dj_display_name(info, extract_vid=extract_video_id)
 
+    def _dj_spoken_name(self, info: dict) -> tuple[str | None, str]:
+        """念出來用：_dj_clean_name 再過「能不能念」閘；歌名念不出口回 (None, "") → 不提歌名。"""
+        from song_name_clean import spoken_name
+        return spoken_name(*self._dj_clean_name(info))
+
+    @staticmethod
+    def _dj_ctx_song_line(title: str, artist: str) -> str:
+        """給 LLM 的「歌曲：」那行；歌名念不出口就明講不准提歌名（否則 LLM 會照抄髒標題）。"""
+        from song_name_clean import spoken_name
+        t, a = spoken_name(title, artist)
+        if t is None:
+            return "歌曲：（這首標題雜亂、沒有乾淨歌名：口白不准提歌名，也不准提歌手）"
+        return f"歌曲：{a} - {t}" if a else f"歌曲：{t}"
+
     async def _fetch_lyrics_synced(self, info: dict) -> str | None:
         """像 _fetch_lyrics_raw 但保留 [mm:ss.xx] timestamp（給 lyrics_seek 用）。"""
         import aiohttp
@@ -267,7 +281,8 @@ class MusicDJLyricsMixin:
             return f"這首是 {who} 常聽的歌"  # 不講多久沒點，但人名要留著（掛名鐵則靠它）
         if lane == 'discovery':
             return f"跟 {who} 平常聽的歌風格相近的新歌"
-        anchor = info.get('_anchor_title', '')
+        from song_name_clean import clean_title_regex, speakable_title
+        anchor = speakable_title(clean_title_regex(info.get('_anchor_title', '') or ''))
         if anchor:
             return f"{who} 常聽《{anchor}》"
         return f"這首是 {who} 平常會聽的歌"
@@ -304,12 +319,14 @@ class MusicDJLyricsMixin:
     _RELATION_LINES = dict(_DJ_TEMPLATES["relation_lines"])
 
     @classmethod
-    def _quick_segue_template(cls, n_online: int = 0, recent=(), need_song: bool = False) -> str:
+    def _quick_segue_template(cls, n_online: int = 0, recent=(), need_song: bool = False,
+                               no_song: bool = False) -> str:
         """沒有任何話題/素材可用時的本地過場模板——純接歌，跳過 LLM。
 
         n_online 決定語氣（跟原本 group-size ctx 提示同一套門檻），quick 模式
         沒有 LLM 可以照 ctx 調語氣，改本地挑模板池達到同樣效果。
         回傳未代入的模板；recent 內的模板這次不選（池全被排除就整池可選）。
+        no_song=True（歌名念不出口）優先於 need_song：挑不含 {song} 的模板。
         """
         import random
         if n_online == 1:
@@ -318,7 +335,9 @@ class MusicDJLyricsMixin:
             pool = cls._QUICK_SEGUE_TEMPLATES_ENERGETIC
         else:
             pool = cls._QUICK_SEGUE_TEMPLATES
-        if need_song:  # LLM 退路：一定要報出歌名
+        if no_song:
+            pool = [t for t in pool if "{song}" not in t] or list(pool)
+        elif need_song:  # LLM 退路：一定要報出歌名
             pool = [t for t in pool if "{song}" in t] or list(pool)
         fresh = [t for t in pool if t not in recent] or list(pool)
         return random.choice(fresh)
@@ -624,7 +643,7 @@ class MusicDJLyricsMixin:
         self._attach_cached_canon(info)
         _clean_t, _clean_a = self._dj_clean_name(info)
         _song_label = f"{_clean_a} - {_clean_t}" if _clean_a else _clean_t
-        ctx = [f"歌曲：{_song_label or title}", self._dj_source_line(dj_requester)]
+        ctx = [self._dj_ctx_song_line(_clean_t, _clean_a), self._dj_source_line(dj_requester)]
         song_candidates: list[str] = []
         lyric_candidates: list[str] = []
         # 串場不提上一首（9/30 使用者定：專注寫下一首）——預抓時的「上一首」常因插播/
@@ -674,7 +693,7 @@ class MusicDJLyricsMixin:
                 # 這輪才正規化完：開頭「歌曲：」那行與後面笑話比對/長度閘門改用正規化名字
                 _clean_t, _clean_a = canon['title'], canon['artist']
                 _song_label = f"{_clean_a} - {_clean_t}"
-                ctx[0] = f"歌曲：{_song_label}"
+                ctx[0] = self._dj_ctx_song_line(_clean_t, _clean_a)
             if canon and canon.get('album'):
                 song_candidates.append(
                     f"歌曲資料：{canon['artist']}《{canon['album']}》"
@@ -901,7 +920,7 @@ class MusicDJLyricsMixin:
             if _relation_tail_material and _heat_mode != "active_chat":
                 try:
                     _tail_ctx = "\n".join([
-                        f"歌曲：{_song_label or title}",
+                        self._dj_ctx_song_line(_clean_t, _clean_a),
                         f"這段口白的前半已經寫好：「{_relation_text}」",
                         "你只寫接在後面的一句（25 字內），只講這首歌本身，素材如下：",
                         _relation_tail_material,
@@ -947,10 +966,11 @@ class MusicDJLyricsMixin:
                 self._recent_dj_jokes = (list(getattr(self, '_recent_dj_jokes', ()))[-4:] + [joke_text])
         if not text and mode == "quick":
             # 沒有任何素材可用 → 本地固定模板直接接歌，跳過 LLM（零出錯風險、零延遲、零花費）。
-            _qt = self._quick_segue_template(_n_online, recent=getattr(self, '_recent_quick_templates', ()))
+            _qc_title, _qc_artist = self._dj_spoken_name(info)
+            _qt = self._quick_segue_template(_n_online, recent=getattr(self, '_recent_quick_templates', ()),
+                                             no_song=_qc_title is None)
             self._recent_quick_templates = (list(getattr(self, '_recent_quick_templates', ()))[-2:] + [_qt])
-            _qc_title, _qc_artist = self._dj_clean_name(info)
-            text = _qt.format(song=self._quick_song_label(_qc_title, _qc_artist))
+            text = _qt.format(song=self._quick_song_label(_qc_title, _qc_artist)) if _qc_title else _qt
             _source = "quick"
         if not text:
             # autopilot 與真人點歌共用這條 LLM 雞湯（走 tier=simple 免費層）。
@@ -993,19 +1013,21 @@ class MusicDJLyricsMixin:
                 text = ""  # 不合格就丟掉；否則真人點播命中點播掛名時原句照播（下面只有 autopilot 會覆寫 text）
                 if dj_requester.startswith('Marvin'):
                     # 10/18：不再用 lane 的空泛模板（「X 會喜歡這首新歌」）；退本地接歌模板（帶歌名）
+                    _qc_title, _qc_artist = self._dj_spoken_name(info)
                     _qt = self._quick_segue_template(_n_online, recent=getattr(self, '_recent_quick_templates', ()),
-                                                     need_song=True)
+                                                     need_song=True, no_song=_qc_title is None)
                     self._recent_quick_templates = (list(getattr(self, '_recent_quick_templates', ()))[-2:] + [_qt])
-                    _qc_title, _qc_artist = self._dj_clean_name(info)
-                    text = _qt.format(song=self._quick_song_label(_qc_title, _qc_artist))
+                    text = _qt.format(song=self._quick_song_label(_qc_title, _qc_artist)) if _qc_title else _qt
                     if text:
                         _source = "quick"
 
                 # 若仍無有效台詞或品質不符，採用 DJ Marvin 經典人設報幕
                 if not text or not _is_qualified_dj_script(text):
-                    clean_title, clean_artist = self._dj_clean_name(info)
+                    clean_title, clean_artist = self._dj_spoken_name(info)
                     suffix = self._dj_requester_suffix(dj_requester)
-                    if clean_artist:
+                    if clean_title is None:
+                        text = f"DJ Marvin為你帶來下一首歌，{suffix}"
+                    elif clean_artist:
                         text = f"DJ Marvin為你帶來{clean_artist}演唱的{clean_title}，{suffix}"
                     else:
                         text = f"DJ Marvin為你帶來《{clean_title}》，{suffix}"

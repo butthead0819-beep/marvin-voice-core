@@ -115,3 +115,57 @@ def dj_display_name(
         artist, title = cleaned.split(" - ", 1)
         return title.strip(), artist.strip()
     return cleaned, _artist_from_uploader(info.get("artist") or info.get("uploader") or "")
+
+
+# TTS 念歌名的最後一道閘（2026-10-24）：清洗後仍像 YouTube 標題就不念。
+_UNSPEAKABLE_TITLE = re.compile(
+    r"[『』【】《》「」\"|｜#@♪♫]|official|music\s*video|lyrics?|動態歌詞|歌詞版|歌词版|高音質|高音质|"
+    r"無損|无损|完整版|官方|\bMV\b|\bHD\b|cover\s+by|pinyin|vietsub|原唱|\bOST\b|"
+    r"片頭曲|片尾曲|插曲|主題曲|主题曲|純享|纯享|現場版|现场版|\btopic\b",
+    re.I,
+)
+_UNSPEAKABLE_ARTIST = re.compile(
+    r"topic|頻道|频道|官方|channel|視頻|视频|小站|資訊站|资讯站|lyric|music|learning|studio|records|"
+    r"唱片|娛樂|娱乐|音樂|音乐|\bTV\b|official|[|｜#@]|^release$",
+    re.I,
+)
+_EMOJI = re.compile(r"[\U0001F000-\U0001FAFF☀-➿]")
+# 尾端括號是劇名/主題曲/feat 註記 → 先剝掉再判（「一念(電視劇《逐玉》插曲)」→「一念」）
+_TAIL_NOTE = re.compile(
+    r"\s*[(（][^()（）]*(?:《|\"|主題曲|主题曲|插曲|片頭曲|片尾曲|慟情曲|OST|feat\.?|ft\.)[^()（）]*[)）]\s*$", re.I)
+_CJK = re.compile(r"[぀-ヿ㐀-鿿豈-﫿가-힯]")
+SPOKEN_TITLE_MAX_CJK = 16   # 中日韓字超過這個數＝標題塞了歌詞
+SPOKEN_TITLE_MAX = 40
+SPOKEN_ARTIST_MAX = 20
+
+
+def speakable_title(title) -> str | None:
+    t = _TAIL_NOTE.sub("", (title or "").strip()).strip()
+    if (not t or len(t) > SPOKEN_TITLE_MAX or len(_CJK.findall(t)) > SPOKEN_TITLE_MAX_CJK
+            or _UNSPEAKABLE_TITLE.search(t) or _EMOJI.search(t)):
+        return None
+    return t
+
+
+def speakable_artist(artist) -> str:
+    a = (artist or "").strip()
+    if not a or len(a) > SPOKEN_ARTIST_MAX or _UNSPEAKABLE_ARTIST.search(a) or _EMOJI.search(a):
+        return ""
+    return a
+
+
+def spoken_name(title, artist) -> tuple[str | None, str]:
+    """(歌名, 歌手) → 念得出口的版本；歌名念不出口回 (None, "")，呼叫端就不提歌名。"""
+    t = speakable_title(title)
+    if t is None:
+        return None, ""
+    return t, speakable_artist(artist)
+
+
+def spoken_song_name(info: dict, *, extract_vid, catalog_index=None) -> tuple[str | None, str]:
+    """info → 念得出口的 (歌名, 歌手)：_canon 正規化優先，否則 dj_display_name，再過閘。
+    與 MusicCog._dj_clean_name 同一優先序（給拿不到 MusicCog 的 voice_controller 用）。"""
+    canon = info.get("_canon") or {}
+    if canon.get("title") and canon.get("artist"):
+        return spoken_name(canon["title"], canon["artist"])
+    return spoken_name(*dj_display_name(info, extract_vid=extract_vid, catalog_index=catalog_index))
