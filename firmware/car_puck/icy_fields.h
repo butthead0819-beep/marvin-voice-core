@@ -23,6 +23,13 @@ inline size_t icy_prefix_len(const uint8_t* p, size_t len, int n_fields) {
   return len;
 }
 
+// 「換歌了沒」比對長度：只看前 8 欄（WROOM 那份），最多 cap bytes。第 9 欄以後（bpm、
+// 講話旗標）會頻繁變動，沒歌時 payload 短於 cap，不截掉就會被誤判成換歌、白抓封面。
+inline size_t icy_track_cmp_len(const uint8_t* p, size_t len, size_t cap) {
+  size_t n = icy_prefix_len(p, len, 8);
+  return n < cap ? n : cap;
+}
+
 // 取第 9 欄（index 8）解析成十進位整數。缺欄位、空字串、含非數字、值 <= 0 或 > 300 → 回 0。
 // 第 9 欄後面如果還有更多欄位，只看第 9 欄本身。
 inline int icy_bpm_field(const uint8_t* p, size_t len) {
