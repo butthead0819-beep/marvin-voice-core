@@ -61,7 +61,7 @@ function buildPoses() {
     ['browUp', 0, 0.06],
     ['err', 0, 1],
   ];
-  for (let n = 0; n < 20; n++) {
+  for (let n = 0; n < 200; n++) {
     const p = {};
     for (const [key, lo, hi] of ranges) {
       const r = rand();
