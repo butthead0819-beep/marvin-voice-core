@@ -130,7 +130,9 @@ int main(int argc, char** argv) {
   for (size_t pi = 0; pi < poses.size(); pi++) {
     const GoldenPose& gp = poses[pi];
 
-    memset(out.data(), 0xAA, FRAME_BYTES);
+    // 新不變式：呼叫前 out 必須整張等於 base；每個姿勢互相獨立，順便重設 span 快取。
+    memcpy(out.data(), base.data(), FRAME_BYTES);
+    face_rt_init(&work);
 #ifdef FACE_RT_STATS
     g_face_rt_full_px = 0;
 #endif
@@ -209,6 +211,7 @@ int main(int argc, char** argv) {
   //    golden（容許同樣的 ≤8 級）——驗證「下一格開頭把上一格畫過的範圍還原成 base」沒有留殘影。
   {
     memcpy(out.data(), base.data(), FRAME_BYTES);
+    face_rt_init(&work);
     for (size_t pi = 0; pi < poses.size(); pi++) {
       face_rt_render(poses[pi].pose, base.data(), out.data());
       for (size_t i = 0; i < FRAME_BYTES; i++) {

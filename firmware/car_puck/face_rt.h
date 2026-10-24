@@ -20,6 +20,11 @@
 // work->curX0/curX1/prevX0/prevX1：render 完後，每列實際被畫到的像素範圍（這一格／上一格）。
 // 呼叫端只要推「prev 聯集 cur」每列範圍，就能讓螢幕畫面跟 out888 一致（因為 render 開頭
 // 會把上一格畫過、這一格沒碰到的像素還原成 base，那些還原也要推上螢幕）。
+//
+// 不變式（呼叫端必須保證）：第一次呼叫 face_rt_render() 之前，out888 整張等於 base888。
+// 之後 face_rt_render() 自己維持「out888 只有 cur 範圍內可能不等於 base，其餘都等於
+// base」：開頭先把 prev 範圍還原成 base，然後只寫被畫到的像素——不再整張 rect 從 base
+// 複製到 out（那段複製在有了 prev 還原之後是多餘的，省下的 PSRAM 流量可觀）。
 #ifndef FACE_RT_H
 #define FACE_RT_H
 
@@ -47,6 +52,7 @@ static uint32_t g_face_rt_linear_px = 0;
 #ifdef FACE_RT_CYCLES
 struct FaceRtProfile {
   uint32_t prepare, copy, tiles, pixels, frames, tiles_total, tiles_masked, px_math;
+  // copy：還原上一格 prev 範圍（memcpy base→out）那段，不再是整張 rect 複製。
   // tile 篩選細分（tiles 的子段，三段加總≈tiles）：
   uint32_t tile_bbox;    // tile 開始到 bboxMask 判斷完（含 bboxMask==0 直接跳過）
   uint32_t tile_center;  // bboxMask!=0 之後：球外快篩＋中心點反投影＋三筆畫距離估計（決定 mask）
@@ -332,6 +338,9 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 
   // 把上一格的畫過範圍（cur）存成 prev，再用 base 還原那些範圍——這一格的 rect 不一定
   // 包得到它們，不還原的話舊畫面殘留在 out888 裡。cur 清空，等下面逐 tile 填回。
+#ifdef FACE_RT_CYCLES
+  uint32_t _tc0 = FACE_RT_CYCLES();
+#endif
   {
     int16_t (&curX0)[240] = s_work->curX0;
     int16_t (&curX1)[240] = s_work->curX1;
@@ -348,6 +357,9 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
       curX1[y] = -1;
     }
   }
+#ifdef FACE_RT_CYCLES
+  g_face_rt_prof.copy += FACE_RT_CYCLES() - _tc0;
+#endif
 
   float e = clamp01(p.err);
   float col[3] = {
@@ -368,13 +380,7 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 
   const int x0 = F.rect.x0, y0 = F.rect.y0, x1 = F.rect.x1, y1 = F.rect.y1;
 
-  for (int y = y0; y <= y1; y++) {
-    memcpy(out888 + (size_t)(y * W + x0) * 3, base888 + (size_t)(y * W + x0) * 3, (size_t)(x1 - x0 + 1) * 3);
-  }
-
 #ifdef FACE_RT_CYCLES
-  uint32_t _t2 = FACE_RT_CYCLES();
-  g_face_rt_prof.copy += _t2 - _t1;
   g_face_rt_prof.frames++;
 #endif
 
@@ -659,7 +665,7 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
             J.d = R * clg;
 
             size_t i = (size_t)(y * W + x) * 3;
-            float c[3] = {(float)out888[i], (float)out888[i + 1], (float)out888[i + 2]};
+            float c[3] = {(float)base888[i], (float)base888[i + 1], (float)base888[i + 2]};
 
             for (int ei = 0; ei < 2; ei++) {
               if (!(mask & (1 << ei))) continue;
@@ -753,7 +759,7 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 #endif
 
             size_t i = (size_t)(y * W + x) * 3;
-            float c[3] = {(float)out888[i], (float)out888[i + 1], (float)out888[i + 2]};
+            float c[3] = {(float)base888[i], (float)base888[i + 1], (float)base888[i + 2]};
 
             for (int ei = 0; ei < 2; ei++) {
               if (!(mask & (1 << ei))) continue;

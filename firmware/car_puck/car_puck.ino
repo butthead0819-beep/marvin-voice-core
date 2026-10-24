@@ -1544,14 +1544,22 @@ static void faceProfileRender() {
   memset(&g_face_rt_prof, 0, sizeof(g_face_rt_prof));
   const int NFRAMES = 250;
 
+  // face_rt_render() 的不變式：呼叫前 out 要整張等於 base；這裡跑完接著讓 faceBenchTask
+  // 用同一塊 out，所以剖析結束後也要再 memcpy 一次並重設 span（見下方）。
+  memcpy(g_fbOut888, g_fbBase888, 240 * 240 * 3);
+  face_rt_init(g_fbWork);
+
   int64_t wallT0 = esp_timer_get_time();
   for (int i = 0; i < NFRAMES; i++) {
     float t = i * 0.04f;
     FacePose p = { 1.2f*sinf(0.7f*t), 0.4f*sinf(1.1f*t+1.0f), 0.3f*sinf(0.9f*t+2.0f), 0.03f*(1.0f+sinf(0.5f*t)), 0.0f };
     face_rt_render(p, g_fbBase888, g_fbOut888);
-    vTaskDelay(1);   // 跑在 core 0 時要讓 IDLE0 餵 task watchdog（連續 250 格約 5s 會觸發重開機）
+    vTaskDelay(1);   // 讓出 1 tick 餵 task watchdog（連續 250 格約 5s 不讓出會觸發重開機）
   }
   int64_t wallT1 = esp_timer_get_time();
+
+  memcpy(g_fbOut888, g_fbBase888, 240 * 240 * 3);
+  face_rt_init(g_fbWork);
 
   uint32_t frames = g_face_rt_prof.frames ? g_face_rt_prof.frames : 1;
   double prepareAvg = g_face_rt_prof.prepare / (double)frames;
@@ -1723,7 +1731,7 @@ static void faceBenchTask(void* pv) {
     if (now >= next) {
       late++;
       next = now;
-      vTaskDelay(1);   // core 0 的 IDLE 受 task watchdog 監看，落後時也至少讓出 1 tick
+      vTaskDelay(1);   // 落後時也至少讓出 1 tick，避免長期不讓出觸發 task watchdog
     } else {
       int64_t waitUs = next - now;
       vTaskDelay(pdMS_TO_TICKS((waitUs + 999) / 1000));
@@ -1808,13 +1816,13 @@ void setup() {
         g_fbBase888[i + 2] = (uint8_t)((x + 2 * y) & 255);
       }
     }
+    memcpy(g_fbOut888, g_fbBase888, 240 * 240 * 3);
     pinMode(FB_PIN_CS, OUTPUT); digitalWrite(FB_PIN_CS, HIGH);
     pinMode(FB_PIN_DC, OUTPUT); digitalWrite(FB_PIN_DC, HIGH);
     fbSpi.begin(FB_PIN_CLK, -1, FB_PIN_MOSI, -1);
     face_rt_init(g_fbWork);
-    // 2026-10-24 實驗：core 1 跟 MP3 解碼擠在一起，有音樂時 render 從 20ms 變 29ms（解碼插隊＋快取被洗）。
-    // 改放 core 0（網路/心跳/WiFi 都是等 I/O 為主）；優先權 1 低於它們，只撿空閒。
-    xTaskCreatePinnedToCore(faceBenchTask, "faceBench", 6144, nullptr, 1, nullptr, 0);
+    // 2026-10-24 實測：core 0 實測無效（共用快取/PSRAM，解碼反而變慢、網路重連時 render 卡 500ms），維持 core 1。
+    xTaskCreatePinnedToCore(faceBenchTask, "faceBench", 6144, nullptr, 1, nullptr, 1);
     Serial.println("[FaceBench] 啟動（24fps，OFF/ON 各180s輪替）");
   }
 #endif
