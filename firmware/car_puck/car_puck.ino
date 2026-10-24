@@ -1760,7 +1760,7 @@ void setup() {
     pinMode(FB_PIN_DC, OUTPUT); digitalWrite(FB_PIN_DC, HIGH);
     fbSpi.begin(FB_PIN_CLK, -1, FB_PIN_MOSI, -1);
     face_rt_init();
-    xTaskCreatePinnedToCore(faceBenchTask, "faceBench", 6144, nullptr, 1, nullptr, 1);
+    xTaskCreatePinnedToCore(faceBenchTask, "faceBench", 12288, nullptr, 1, nullptr, 1);
     Serial.println("[FaceBench] 啟動（24fps，OFF/ON 各180s輪替）");
   }
 #endif

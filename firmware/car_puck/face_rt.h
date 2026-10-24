@@ -6,6 +6,12 @@
 //    距離夠遠就整個 tile 跳過數學；夠近或在球緣（一階近似不可靠）才逐像素算，且只算
 //    mask 裡標到的筆畫。
 // 2. asin 查表＋cos 改 sqrt（數學上等價：cos(asin(x)) = sqrt(1-x^2)）。
+// 3. 每筆畫（左眼/右眼/眉線）各自的螢幕外框（bbox）粗篩——tile 跟哪個筆畫的 bbox
+//    都不相交就直接跳過，不做中心點數學。
+// 4. tile 內線性化——tile 四個角點（連續座標）算一次 phi/lam，格內其餘像素用雙線性
+//    內插取代逐像素 asin/除法；偏微分、Jacobian 用 tile 中心值（格內凍結），只有
+//    真正要填色/描邊時才在該像素上開一次 sqrt。角點落在球緣或算不出來、或中心點本身
+//    落在球緣，則整個 tile 退回逐像素精確路徑（完全不變動的舊程式碼）。
 //
 // 使用前必須先呼叫一次 face_rt_init()（填 asin 查表），否則查表是全 0。
 #ifndef FACE_RT_H
@@ -24,7 +30,10 @@
 
 #ifdef FACE_RT_STATS
 // 測試用：這一輪 render 裡實際做了完整數學（tile mask 非 0、且通過 clip/sl/u 檢查）的像素數。
+// 精確路徑與線性路徑都計入。
 extern uint32_t g_face_rt_full_px;
+// 測試用：這一輪 render 裡走線性路徑（tile 內雙線性內插）的像素數，full_px 的子集。
+static uint32_t g_face_rt_linear_px = 0;
 #endif
 
 // FACE_RT_CYCLES()：由 include 端定義成讀 CPU cycle 計數器（S3：esp_cpu_get_cycle_count()）。
@@ -93,11 +102,33 @@ struct Eye {
   float sx, sy, topY;
 };
 
+// 單個筆畫的螢幕外框（整數，像素座標），給 tile 粗篩用。
+struct BBoxI {
+  int16_t x0, y0, x1, y1;
+};
+
+inline bool bboxHitsTile(const BBoxI& b, int tx0, int ty0, int tx1, int ty1) {
+  return tx0 <= b.x1 && tx1 >= b.x0 && ty0 <= b.y1 && ty1 >= b.y0;
+}
+
+inline BBoxI boxFromExtents(float X0, float Y0, float X1, float Y1, float pad) {
+  int x0 = (int)floorf(X0 - pad), y0 = (int)floorf(Y0 - pad);
+  int x1 = (int)ceilf(X1 + pad), y1 = (int)ceilf(Y1 + pad);
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > W - 1) x1 = W - 1;
+  if (y1 > W - 1) y1 = W - 1;
+  BBoxI b;
+  b.x0 = (int16_t)x0; b.y0 = (int16_t)y0; b.x1 = (int16_t)x1; b.y1 = (int16_t)y1;
+  return b;
+}
+
 struct Prepared {
   float dark45[3], dark1[3], dark42[3], bright[3];
   float cr, sr, yaw, browL0;
   Eye eyes[2];
   FaceRect rect;
+  BBoxI eyeBox[2], browBox;
 };
 
 inline void mix(float* c, const float* col, float a) {
@@ -198,6 +229,7 @@ inline void prepare(const FacePose& p, float col[3], Prepared& F) {
     F.eyes[ei].sy = (PBy + PCy) / 2;
 
     float topY = 1e30f;
+    float eX0 = W, eY0 = W, eX1 = 0, eY1 = 0;
     for (int seg = 0; seg < 3; seg++) {
       for (int i = 0; i <= 8; i++) {
         float t = i / 8.0f;
@@ -207,12 +239,15 @@ inline void prepare(const FacePose& p, float col[3], Prepared& F) {
         float sxp, syp;
         toScreen(F.cr, F.sr, qx, qy, sxp, syp);
         expandBBox(allX0, allY0, allX1, allY1, sxp, syp);
+        expandBBox(eX0, eY0, eX1, eY1, sxp, syp);
       }
     }
     F.eyes[ei].topY = topY;
+    F.eyeBox[ei] = boxFromExtents(eX0, eY0, eX1, eY1, pad);
   }
 
   {
+    float brX0 = W, brY0 = W, brX1 = 0, brY1 = 0;
     for (int i = 0; i <= 24; i++) {
       float s = -1 + i / 12.0f;
       float qx, qy;
@@ -220,7 +255,9 @@ inline void prepare(const FacePose& p, float col[3], Prepared& F) {
       float sxp, syp;
       toScreen(F.cr, F.sr, qx, qy, sxp, syp);
       expandBBox(allX0, allY0, allX1, allY1, sxp, syp);
+      expandBBox(brX0, brY0, brX1, brY1, sxp, syp);
     }
+    F.browBox = boxFromExtents(brX0, brY0, brX1, brY1, pad);
   }
 
   int x0 = (int)floorf(allX0 - pad), y0 = (int)floorf(allY0 - pad);
@@ -282,15 +319,91 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 
   constexpr float TOL = 1.5f;  // 一階近似誤差餘裕
 
+  // tile 邊界角點快取（連續座標，兩排：上排／下排），逐行往下滾動重用。
+  // 每個角點每張畫面只算一次：換到下一列時，舊下排變新上排，只有新下排要重算。
+  constexpr int MAX_COLS = 61;  // (240/4) 個 tile + 1 個角點，足夠覆蓋整個寬度
+  struct Corner {
+    float phi, lam;
+    bool ok;
+    float Ja, Jb, Jd;
+    float dphi_dx, dphi_dy, dlam_dy;
+  };
+  Corner s_cornerBuf[2][MAX_COLS];
+  uint64_t computedBit[2] = {0, 0};
+  int cornerTop = 0, cornerBot = 1;
+  bool firstTileRow = true;
+
+  auto getCorner = [&](int col, int buf, float xc, float yc) -> Corner {
+    uint64_t bit = 1ull << col;
+    if (!(computedBit[buf] & bit)) {
+      computedBit[buf] |= bit;
+      Corner cr;
+      cr.ok = true;
+      cr.phi = 0.0f;
+      cr.lam = 0.0f;
+      cr.Ja = cr.Jb = cr.Jd = 0.0f;
+      cr.dphi_dx = cr.dphi_dy = cr.dlam_dy = 0.0f;
+      float dx = xc - C, dy = yc - C;
+      float ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;
+      float sl = uy / R;
+      if (sl <= -1.0f || sl >= 1.0f) {
+        cr.ok = false;
+      } else {
+        cr.lam = fast_asin(sl);
+        float cl = sqrtf(1 - sl * sl);
+        float u = ux / (R * cl);
+        if (u <= -1.0f || u >= 1.0f) {
+          cr.ok = false;
+        } else {
+          cr.phi = fast_asin(u);
+          float cp = sqrtf(1 - u * u);
+          if (cl < 0.35f || cp < 0.35f) {
+            cr.ok = false;
+          } else {
+            float clg = cl > LIMB_MIN ? cl : LIMB_MIN, cpg = cp > LIMB_MIN ? cp : LIMB_MIN;
+            cr.dphi_dx = 1.0f / (R * clg * cpg);
+            cr.dphi_dy = ux * sl / (R * R * clg * clg * clg * cpg);
+            cr.dlam_dy = 1.0f / (R * clg);
+            cr.Ja = R * clg * cpg;
+            cr.Jb = -R * sl * u;
+            cr.Jd = R * clg;
+          }
+        }
+      }
+      s_cornerBuf[buf][col] = cr;
+    }
+    return s_cornerBuf[buf][col];
+  };
+
   for (int tiley = y0; tiley <= y1; tiley += 4) {
     int tiley1 = tiley + 3 < y1 ? tiley + 3 : y1;
-    for (int tilex = x0; tilex <= x1; tilex += 4) {
+
+    if (!firstTileRow) {
+      int tmp = cornerTop; cornerTop = cornerBot; cornerBot = tmp;
+      computedBit[cornerBot] = 0;
+    }
+    firstTileRow = false;
+
+    int colIdx = 0;
+    for (int tilex = x0; tilex <= x1; tilex += 4, colIdx++) {
       int tilex1 = tilex + 3 < x1 ? tilex + 3 : x1;
 
 #ifdef FACE_RT_CYCLES
       g_face_rt_prof.tiles_total++;
       uint32_t _tt0 = FACE_RT_CYCLES();
 #endif
+
+      int bboxMask = 0;
+      if (bboxHitsTile(F.eyeBox[0], tilex, tiley, tilex1, tiley1)) bboxMask |= 1;
+      if (bboxHitsTile(F.eyeBox[1], tilex, tiley, tilex1, tiley1)) bboxMask |= 2;
+      if (bboxHitsTile(F.browBox, tilex, tiley, tilex1, tiley1)) bboxMask |= 4;
+
+      if (bboxMask == 0) {
+#ifdef FACE_RT_CYCLES
+        g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
+#endif
+        continue;  // tile 跟任何筆畫的螢幕外框都不相交
+      }
 
       float tw = (float)(tilex1 - tilex + 1), th = (float)(tiley1 - tiley + 1);
       float tcx = (tilex + tilex1 + 1) * 0.5f, tcy = (tiley + tiley1 + 1) * 0.5f;
@@ -305,32 +418,42 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
         continue;  // tile 必定在球外，逐像素一定被 clip 掉
       }
 
+      bool centerLimb = false;
+      float cphi = 0.0f, clam = 0.0f;
+      float cdphi_dx = 0.0f, cdphi_dy = 0.0f, cdlam_dy = 0.0f;
+      Jacobian cJ{0.0f, 0.0f, 0.0f};
       int mask;
+
       float csl = cuy / R;
       if (csl <= -1 || csl >= 1) {
-        mask = 7;
+        mask = bboxMask;
+        centerLimb = true;
       } else {
-        float clam = fast_asin(csl), ccl = sqrtf(1 - csl * csl);
+        float clamv = fast_asin(csl), ccl = sqrtf(1 - csl * csl);
         float cu = cux / (R * ccl);
         if (cu <= -1 || cu >= 1) {
-          mask = 7;
+          mask = bboxMask;
+          centerLimb = true;
         } else {
-          float cphi = fast_asin(cu), ccp = sqrtf(1 - cu * cu);
+          float cphiv = fast_asin(cu), ccp = sqrtf(1 - cu * cu);
           if (ccl < 0.35f || ccp < 0.35f) {
-            mask = 7;  // 靠近球緣，一階近似不可靠，不剔除
+            mask = bboxMask;  // 靠近球緣，一階近似不可靠，不剔除
+            centerLimb = true;
           } else {
+            clam = clamv;
+            cphi = cphiv;
             float csp = cu;
             float cclg = ccl > LIMB_MIN ? ccl : LIMB_MIN, ccpg = ccp > LIMB_MIN ? ccp : LIMB_MIN;
-            float cdphi_dx = 1.0f / (R * cclg * ccpg);
-            float cdphi_dy = cux * csl / (R * R * cclg * cclg * cclg * ccpg);
-            float cdlam_dy = 1.0f / (R * cclg);
-            Jacobian cJ;
+            cdphi_dx = 1.0f / (R * cclg * ccpg);
+            cdphi_dy = cux * csl / (R * R * cclg * cclg * cclg * ccpg);
+            cdlam_dy = 1.0f / (R * cclg);
             cJ.a = R * cclg * ccpg;
             cJ.b = -R * csl * csp;
             cJ.d = R * cclg;
 
             mask = 0;
             for (int ei = 0; ei < 2; ei++) {
+              if (!(bboxMask & (1 << ei))) continue;
               const Eye& E = F.eyes[ei];
               float dfill = -1e30f;
               for (int k = 0; k < 3; k++) {
@@ -350,20 +473,75 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
               }
             }
 
-            float cs = (cphi - F.yaw) / PHI_END;
-            float cbd;
-            if (cs < -1 || cs > 1) {
-              float se = cs < 0 ? -1.0f : 1.0f;
-              float dp = cphi - (F.yaw + se * PHI_END), dl = clam - (F.browL0 + BROW_CURVE);
-              cbd = hyp(cJ.a * dp + cJ.b * dl, cJ.d * dl);
-            } else {
-              float m = 2 * BROW_CURVE * cs / PHI_END;
-              float dl = clam - (F.browL0 + BROW_CURVE * cs * cs);
-              float k = dl / (1 + m * m);
-              cbd = hyp(cJ.a * (-m * k) + cJ.b * k, cJ.d * k);
+            if (bboxMask & 4) {
+              float cs = (cphi - F.yaw) / PHI_END;
+              float cbd;
+              if (cs < -1 || cs > 1) {
+                float se = cs < 0 ? -1.0f : 1.0f;
+                float dp = cphi - (F.yaw + se * PHI_END), dl = clam - (F.browL0 + BROW_CURVE);
+                cbd = hyp(cJ.a * dp + cJ.b * dl, cJ.d * dl);
+              } else {
+                float m = 2 * BROW_CURVE * cs / PHI_END;
+                float dl = clam - (F.browL0 + BROW_CURVE * cs * cs);
+                float k = dl / (1 + m * m);
+                cbd = hyp(cJ.a * (-m * k) + cJ.b * k, cJ.d * k);
+              }
+              if (cbd < hd + BROW_W_ / 2 + 0.5f + TOL) {
+                mask |= 4;
+              }
             }
-            if (cbd < hd + BROW_W_ / 2 + 0.5f + TOL) {
-              mask |= 4;
+          }
+        }
+      }
+
+#ifdef FACE_RT_CYCLES
+      if (mask != 0) g_face_rt_prof.tiles_masked++;
+#endif
+
+      if (mask == 0) {
+#ifdef FACE_RT_CYCLES
+        g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
+#endif
+        continue;  // tile 內所有像素都維持 base
+      }
+
+      // 決定走精確路徑（逐像素，舊程式碼不變）還是線性路徑（tile 內雙線性內插）。
+      bool exact = centerLimb;
+
+      Corner cTL{}, cTR{}, cBL{}, cBR{};
+      if (!exact) {
+        cTL = getCorner(colIdx, cornerTop, (float)tilex, (float)tiley);
+        cTR = getCorner(colIdx + 1, cornerTop, (float)(tilex1 + 1), (float)tiley);
+        cBL = getCorner(colIdx, cornerBot, (float)tilex, (float)(tiley1 + 1));
+        cBR = getCorner(colIdx + 1, cornerBot, (float)(tilex1 + 1), (float)(tiley1 + 1));
+        if (!cTL.ok || !cTR.ok || !cBL.ok || !cBR.ok) exact = true;
+      }
+
+      // 四角各自的 invg / rim V,invVV（角點自己的 Jacobian 跟偏微分，非 tile 中心值）。
+      // 角點順序：0=TL 1=TR 2=BL 3=BR，跟 w00/w10/w01/w11 的權重順序對應。
+      float invgC[4][2][3];
+      float rimVxC[4][2][2], rimVyC[4][2][2], rimInvVVC[4][2][2];
+      float invtw = 0.0f, invth = 0.0f;
+      if (!exact) {
+        invtw = 1.0f / tw;
+        invth = 1.0f / th;
+        const Corner* corners[4] = {&cTL, &cTR, &cBL, &cBR};
+        for (int ci = 0; ci < 4; ci++) {
+          const Corner& cc = *corners[ci];
+          for (int ei = 0; ei < 2; ei++) {
+            if (!(mask & (1 << ei))) continue;
+            const Eye& E = F.eyes[ei];
+            for (int k = 0; k < 3; k++) {
+              const Edge& ed = E.edges[k];
+              float gx = ed.nx * cc.dphi_dx, gy = ed.nx * cc.dphi_dy + ed.ny * cc.dlam_dy;
+              invgC[ci][ei][k] = 1.0f / sqrtf(gx * gx + gy * gy);
+            }
+            for (int r = 0; r < 2; r++) {
+              float vx = E.rimQx[r] - E.rimPx[r], vy = E.rimQy[r] - E.rimPy[r];
+              float Vx = cc.Ja * vx + cc.Jb * vy, Vy = cc.Jd * vy;
+              rimVxC[ci][ei][r] = Vx;
+              rimVyC[ci][ei][r] = Vy;
+              rimInvVVC[ci][ei][r] = 1.0f / (Vx * Vx + Vy * Vy);
             }
           }
         }
@@ -371,103 +549,215 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 
 #ifdef FACE_RT_CYCLES
       g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
-      if (mask != 0) g_face_rt_prof.tiles_masked++;
-#endif
-
-      if (mask == 0) continue;  // tile 內所有像素都維持 base
-
-#ifdef FACE_RT_CYCLES
       uint32_t _tp0 = FACE_RT_CYCLES();
 #endif
 
-      for (int y = tiley; y <= tiley1; y++) {
-        for (int x = tilex; x <= tilex1; x++) {
-          float px = x + 0.5f, py = y + 0.5f;
+      if (exact) {
+        for (int y = tiley; y <= tiley1; y++) {
+          for (int x = tilex; x <= tilex1; x++) {
+            float px = x + 0.5f, py = y + 0.5f;
 
-          // 像素中心 → 反轉 roll → 未旋轉座標
-          float dx = px - C, dy = py - C;
-          float ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;
-          float clip = clamp01(R - 0.5f - hyp(ux, uy) + 0.5f);
-          if (clip <= 0) continue;
-          float sl = uy / R;
-          if (sl <= -1 || sl >= 1) continue;
-          float lam = fast_asin(sl), cl = sqrtf(1 - sl * sl), u = ux / (R * cl);
-          if (u <= -1 || u >= 1) continue;
-          float phi = fast_asin(u), cp = sqrtf(1 - u * u), sp = u;
+            // 像素中心 → 反轉 roll → 未旋轉座標
+            float dx = px - C, dy = py - C;
+            float ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;
+            float clip = clamp01(R - 0.5f - hyp(ux, uy) + 0.5f);
+            if (clip <= 0) continue;
+            float sl = uy / R;
+            if (sl <= -1 || sl >= 1) continue;
+            float lam = fast_asin(sl), cl = sqrtf(1 - sl * sl), u = ux / (R * cl);
+            if (u <= -1 || u >= 1) continue;
+            float phi = fast_asin(u), cp = sqrtf(1 - u * u), sp = u;
 
 #ifdef FACE_RT_STATS
-          g_face_rt_full_px++;
+            g_face_rt_full_px++;
 #endif
 #ifdef FACE_RT_CYCLES
-          g_face_rt_prof.px_math++;
+            g_face_rt_prof.px_math++;
 #endif
 
-          // 螢幕 → 角度的偏微分（算邊緣平滑用）
-          // 球緣 cos→0 時一階近似會失準（遠處的形狀被算成 0 距離，在球緣留下一圈色暈），所以 cos 設下限
-          float clg = cl > LIMB_MIN ? cl : LIMB_MIN, cpg = cp > LIMB_MIN ? cp : LIMB_MIN;
-          float dphi_dx = 1.0f / (R * clg * cpg);
-          float dphi_dy = ux * sl / (R * R * clg * clg * clg * cpg);
-          float dlam_dy = 1.0f / (R * clg);
-          // 角度 → 螢幕（算描邊距離用）：dX=a·dφ+b·dλ, dY=d·dλ
-          Jacobian J;
-          J.a = R * clg * cpg;
-          J.b = -R * sl * sp;
-          J.d = R * clg;
+            // 螢幕 → 角度的偏微分（算邊緣平滑用）
+            // 球緣 cos→0 時一階近似會失準（遠處的形狀被算成 0 距離，在球緣留下一圈色暈），所以 cos 設下限
+            float clg = cl > LIMB_MIN ? cl : LIMB_MIN, cpg = cp > LIMB_MIN ? cp : LIMB_MIN;
+            float dphi_dx = 1.0f / (R * clg * cpg);
+            float dphi_dy = ux * sl / (R * R * clg * clg * clg * cpg);
+            float dlam_dy = 1.0f / (R * clg);
+            // 角度 → 螢幕（算描邊距離用）：dX=a·dφ+b·dλ, dY=d·dλ
+            Jacobian J;
+            J.a = R * clg * cpg;
+            J.b = -R * sl * sp;
+            J.d = R * clg;
 
-          size_t i = (size_t)(y * W + x) * 3;
-          float c[3] = {(float)out888[i], (float)out888[i + 1], (float)out888[i + 2]};
+            size_t i = (size_t)(y * W + x) * 3;
+            float c[3] = {(float)out888[i], (float)out888[i + 1], (float)out888[i + 2]};
 
-          for (int ei = 0; ei < 2; ei++) {
-            if (!(mask & (1 << ei))) continue;
-            const Eye& E = F.eyes[ei];
-            float cov = 1;
-            for (int k = 0; k < 3; k++) {
-              const Edge& ed = E.edges[k];
-              float v = ed.nx * phi + ed.ny * lam + ed.c;
-              float gx = ed.nx * dphi_dx, gy = ed.nx * dphi_dy + ed.ny * dlam_dy;
-              float g = clamp01(0.5f + v / hyp(gx, gy));
-              cov = cov < g ? cov : g;
-              if (cov <= 0) break;
+            for (int ei = 0; ei < 2; ei++) {
+              if (!(mask & (1 << ei))) continue;
+              const Eye& E = F.eyes[ei];
+              float cov = 1;
+              for (int k = 0; k < 3; k++) {
+                const Edge& ed = E.edges[k];
+                float v = ed.nx * phi + ed.ny * lam + ed.c;
+                float gx = ed.nx * dphi_dx, gy = ed.nx * dphi_dy + ed.ny * dlam_dy;
+                float g = clamp01(0.5f + v / hyp(gx, gy));
+                cov = cov < g ? cov : g;
+                if (cov <= 0) break;
+              }
+              if (cov > 0) {
+                float k = cov * clip;
+                mix(c, F.dark45, 0.98f * k);
+                float g[3];
+                gradColor(F, hyp(ux + C - E.sx, uy + C - E.sy) / (R * 0.46f), g);
+                mix(c, g, 0.98f * k);
+                float ty = (uy + C - (E.topY - R * 0.01f)) / (R * 0.17f);
+                mix(c, BLACK, 0.5f * (1 - clamp01(ty)) * k);
+              }
+              float dmin = 1e30f;
+              for (int r = 0; r < 2; r++) {
+                float d = segDistPx(phi, lam, E.rimPx[r], E.rimPy[r], E.rimQx[r], E.rimQy[r], J);
+                if (d < dmin) dmin = d;
+              }
+              float rc = clamp01(RIM_W / 2 - dmin + 0.5f);
+              if (rc > 0) mix(c, RIM_COL, 0.96f * rc * clip);
             }
-            if (cov > 0) {
-              float k = cov * clip;
-              mix(c, F.dark45, 0.98f * k);
-              float g[3];
-              gradColor(F, hyp(ux + C - E.sx, uy + C - E.sy) / (R * 0.46f), g);
-              mix(c, g, 0.98f * k);
-              float ty = (uy + C - (E.topY - R * 0.01f)) / (R * 0.17f);
-              mix(c, BLACK, 0.5f * (1 - clamp01(ty)) * k);
+
+            if (mask & 4) {
+              // 眉線：角度空間的拋物線 λ = L0 + curve·s²，s=(φ-yaw)/PHI_END
+              float s = (phi - F.yaw) / PHI_END;
+              float bd;
+              if (s < -1 || s > 1) {
+                float se = s < 0 ? -1.0f : 1.0f;
+                float dp = phi - (F.yaw + se * PHI_END), dl = lam - (F.browL0 + BROW_CURVE);
+                bd = hyp(J.a * dp + J.b * dl, J.d * dl);
+              } else {
+                float m = 2 * BROW_CURVE * s / PHI_END;
+                float dl = lam - (F.browL0 + BROW_CURVE * s * s);
+                float k = dl / (1 + m * m);
+                bd = hyp(J.a * (-m * k) + J.b * k, J.d * k);
+              }
+              float bc = clamp01(BROW_W_ / 2 - bd + 0.5f);
+              if (bc > 0) mix(c, BROW_COL, 0.92f * bc * clip);
             }
-            float dmin = 1e30f;
-            for (int r = 0; r < 2; r++) {
-              float d = segDistPx(phi, lam, E.rimPx[r], E.rimPy[r], E.rimQx[r], E.rimQy[r], J);
-              if (d < dmin) dmin = d;
-            }
-            float rc = clamp01(RIM_W / 2 - dmin + 0.5f);
-            if (rc > 0) mix(c, RIM_COL, 0.96f * rc * clip);
+
+            out888[i] = (uint8_t)(int)(c[0] + 0.5f);
+            out888[i + 1] = (uint8_t)(int)(c[1] + 0.5f);
+            out888[i + 2] = (uint8_t)(int)(c[2] + 0.5f);
           }
+        }
+      } else {
+        for (int y = tiley; y <= tiley1; y++) {
+          float py = y + 0.5f;
+          float fy = (py - tiley) * invth;
+          for (int x = tilex; x <= tilex1; x++) {
+            float px = x + 0.5f;
+            float fx = (px - tilex) * invtw;
 
-          if (mask & 4) {
-            // 眉線：角度空間的拋物線 λ = L0 + curve·s²，s=(φ-yaw)/PHI_END
-            float s = (phi - F.yaw) / PHI_END;
-            float bd;
-            if (s < -1 || s > 1) {
-              float se = s < 0 ? -1.0f : 1.0f;
-              float dp = phi - (F.yaw + se * PHI_END), dl = lam - (F.browL0 + BROW_CURVE);
-              bd = hyp(J.a * dp + J.b * dl, J.d * dl);
+            float w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+            float Ja = cTL.Ja * w00 + cTR.Ja * w10 + cBL.Ja * w01 + cBR.Ja * w11;
+            float Jb = cTL.Jb * w00 + cTR.Jb * w10 + cBL.Jb * w01 + cBR.Jb * w11;
+            float Jd = cTL.Jd * w00 + cTR.Jd * w10 + cBL.Jd * w01 + cBR.Jd * w11;
+
+            float dx = px - C, dy = py - C;
+            float ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;
+            // 角度逐像素精確算：球側邊 phi 曲率大，4px 內插誤差約 0.1px，高對比描邊會差到 20 級以上
+            float sl = uy * (1.0f / R);
+            if (sl <= -1 || sl >= 1) continue;
+            float lam = fast_asin(sl), cl = sqrtf(1 - sl * sl), u = ux / (R * cl);
+            if (u <= -1 || u >= 1) continue;
+            float phi = fast_asin(u);
+            float r2 = ux * ux + uy * uy;
+            float clip;
+            if (r2 <= (R - 1.0f) * (R - 1.0f)) {
+              clip = 1.0f;
             } else {
-              float m = 2 * BROW_CURVE * s / PHI_END;
-              float dl = lam - (F.browL0 + BROW_CURVE * s * s);
-              float k = dl / (1 + m * m);
-              bd = hyp(J.a * (-m * k) + J.b * k, J.d * k);
+              clip = clamp01(R - 0.5f - sqrtf(r2) + 0.5f);
             }
-            float bc = clamp01(BROW_W_ / 2 - bd + 0.5f);
-            if (bc > 0) mix(c, BROW_COL, 0.92f * bc * clip);
-          }
+            if (clip <= 0) continue;
 
-          out888[i] = (uint8_t)(int)(c[0] + 0.5f);
-          out888[i + 1] = (uint8_t)(int)(c[1] + 0.5f);
-          out888[i + 2] = (uint8_t)(int)(c[2] + 0.5f);
+#ifdef FACE_RT_STATS
+            g_face_rt_full_px++;
+            g_face_rt_linear_px++;
+#endif
+#ifdef FACE_RT_CYCLES
+            g_face_rt_prof.px_math++;
+#endif
+
+            size_t i = (size_t)(y * W + x) * 3;
+            float c[3] = {(float)out888[i], (float)out888[i + 1], (float)out888[i + 2]};
+
+            for (int ei = 0; ei < 2; ei++) {
+              if (!(mask & (1 << ei))) continue;
+              const Eye& E = F.eyes[ei];
+              float cov = 1;
+              for (int k = 0; k < 3; k++) {
+                const Edge& ed = E.edges[k];
+                float v = ed.nx * phi + ed.ny * lam + ed.c;
+                float invg = invgC[0][ei][k] * w00 + invgC[1][ei][k] * w10 +
+                             invgC[2][ei][k] * w01 + invgC[3][ei][k] * w11;
+                float g = clamp01(0.5f + v * invg);
+                cov = cov < g ? cov : g;
+                if (cov <= 0) break;
+              }
+              if (cov > 0) {
+                float k = cov * clip;
+                mix(c, F.dark45, 0.98f * k);
+                float g[3];
+                gradColor(F, hyp(ux + C - E.sx, uy + C - E.sy) / (R * 0.46f), g);
+                mix(c, g, 0.98f * k);
+                float ty = (uy + C - (E.topY - R * 0.01f)) / (R * 0.17f);
+                mix(c, BLACK, 0.5f * (1 - clamp01(ty)) * k);
+              }
+
+              float dmin2 = 1e30f;
+              for (int r = 0; r < 2; r++) {
+                float wx = phi - E.rimPx[r], wy = lam - E.rimPy[r];
+                float Wx = Ja * wx + Jb * wy, Wy = Jd * wy;
+                float Vx = rimVxC[0][ei][r] * w00 + rimVxC[1][ei][r] * w10 +
+                           rimVxC[2][ei][r] * w01 + rimVxC[3][ei][r] * w11;
+                float Vy = rimVyC[0][ei][r] * w00 + rimVyC[1][ei][r] * w10 +
+                           rimVyC[2][ei][r] * w01 + rimVyC[3][ei][r] * w11;
+                float invVV = rimInvVVC[0][ei][r] * w00 + rimInvVVC[1][ei][r] * w10 +
+                              rimInvVVC[2][ei][r] * w01 + rimInvVVC[3][ei][r] * w11;
+                float t = clamp01((Wx * Vx + Wy * Vy) * invVV);
+                float ddx = Wx - Vx * t, ddy = Wy - Vy * t;
+                float d2 = ddx * ddx + ddy * ddy;
+                if (d2 < dmin2) dmin2 = d2;
+              }
+              float T = RIM_W / 2 + 0.5f;
+              if (dmin2 < T * T) {
+                float d = sqrtf(dmin2);
+                float rc = clamp01(RIM_W / 2 - d + 0.5f);
+                if (rc > 0) mix(c, RIM_COL, 0.96f * rc * clip);
+              }
+            }
+
+            if (mask & 4) {
+              float s = (phi - F.yaw) / PHI_END;
+              float Wx, Wy;
+              if (s < -1 || s > 1) {
+                float se = s < 0 ? -1.0f : 1.0f;
+                float dp = phi - (F.yaw + se * PHI_END), dl = lam - (F.browL0 + BROW_CURVE);
+                Wx = Ja * dp + Jb * dl;
+                Wy = Jd * dl;
+              } else {
+                float m = 2 * BROW_CURVE * s / PHI_END;
+                float dl = lam - (F.browL0 + BROW_CURVE * s * s);
+                float k = dl / (1 + m * m);
+                Wx = Ja * (-m * k) + Jb * k;
+                Wy = Jd * k;
+              }
+              float d2 = Wx * Wx + Wy * Wy;
+              float TB = BROW_W_ / 2 + 0.5f;
+              if (d2 < TB * TB) {
+                float d = sqrtf(d2);
+                float bc = clamp01(BROW_W_ / 2 - d + 0.5f);
+                if (bc > 0) mix(c, BROW_COL, 0.92f * bc * clip);
+              }
+            }
+
+            out888[i] = (uint8_t)(int)(c[0] + 0.5f);
+            out888[i + 1] = (uint8_t)(int)(c[1] + 0.5f);
+            out888[i + 2] = (uint8_t)(int)(c[2] + 0.5f);
+          }
         }
       }
 
