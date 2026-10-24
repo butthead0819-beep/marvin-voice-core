@@ -535,7 +535,7 @@ static void onIcyMeta(const uint8_t* payload, size_t len, void* /*ctx*/) {
   size_t sendLen = icy_prefix_len(payload, len, 8);
   Serial1.write(payload, sendLen);
   Serial1.write('\n');
-  size_t cmpLen = len < sizeof(g_lastMetaPrefix) ? len : sizeof(g_lastMetaPrefix);
+  size_t cmpLen = icy_track_cmp_len(payload, len, sizeof(g_lastMetaPrefix));
   bool changed = !g_haveLastMeta || cmpLen != g_lastMetaPrefixLen ||
                  memcmp(payload, g_lastMetaPrefix, cmpLen) != 0;
   if (changed) {

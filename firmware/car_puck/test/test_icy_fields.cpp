@@ -218,6 +218,30 @@ int main() {
     printf("T29 ok\n");
   }
 
+  // ---- icy_track_cmp_len（換歌判斷只看前 8 欄，最多 cap bytes）----
+  // T30: 沒歌時第 10 欄 0/1 翻轉，比對長度與內容都不變（不再誤判成換歌）
+  {
+    std::string s0 = std::string("M1\x1f\x1f""0\x1f""0\x1fS\x1f\x1f\x1f\x1f\x1f") + "0";
+    std::string s1 = std::string("M1\x1f\x1f""0\x1f""0\x1fS\x1f\x1f\x1f\x1f\x1f") + "1";
+    size_t n0 = icy_track_cmp_len(U(s0.data()), s0.size(), 19);
+    size_t n1 = icy_track_cmp_len(U(s1.data()), s1.size(), 19);
+    assert(n0 == n1);
+    assert(memcmp(s0.data(), s1.data(), n0) == 0);
+    printf("T30 ok\n");
+  }
+  // T31: 有歌時比對長度封頂在 cap（M1␟ + 16 hex track_id）
+  {
+    std::string s = "M1\x1f""0123456789abcdef\x1f""1000\x1f""0\x1fP\x1ftitle\x1f""artist\x1f""album\x1f\x1f""1";
+    assert(icy_track_cmp_len(U(s.data()), s.size(), 19) == 19);
+    printf("T31 ok\n");
+  }
+  // T32: 舊 8 欄格式、短於 cap → 整段
+  {
+    std::string s = "M1\x1f\x1f""0\x1f""0\x1fS\x1f\x1f\x1f";
+    assert(icy_track_cmp_len(U(s.data()), s.size(), 19) == s.size());
+    printf("T32 ok\n");
+  }
+
   printf("all icy_fields tests passed\n");
   return 0;
 }
