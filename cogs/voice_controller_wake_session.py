@@ -25,6 +25,7 @@ from barge_in import (
     clean_confirm, confirm_step, interrupted_text, user_done,
 )
 from helper_wake import helper_speak_plan
+from intent_bus import WAKE_REQUIRED
 from reply_address import address_prefix
 from tts_speak_policy import SpeakKind
 import turn_outcome
@@ -229,6 +230,11 @@ class WakeSessionMixin:
         session = getattr(self, "_wake_session", None)
         return session is not None and session.wants_grounded_followup(speaker)
 
+    def _wakeless_in_window(self, speaker, text: str) -> bool:
+        """窗內 target 的句子且沒叫名字 → 指令不執行（2026-10-24：可能只是在討論）。"""
+        t = (text or "").lower()
+        return self._wake_session_captured(speaker) and not any(w.lower() in t for w in self._WAKE_PATTERNS)
+
     def _wake_session_captured(self, speaker) -> bool:
         """session 已開窗且是 target 的句子（免喚醒接住的追問）→ 不播 filler ack（提示音已表示在聽）。"""
         session = getattr(self, "_wake_session", None)
@@ -282,6 +288,9 @@ class WakeSessionMixin:
 
     def _wake_session_on_replied(self, winner=None) -> None:
         session = getattr(self, "_wake_session", None)
+        if session is not None and getattr(winner, "name", None) == WAKE_REQUIRED:
+            session.on_ignored(session.target, time.time())   # 窗內沒叫名字的指令：當沒對 Marvin 講
+            return
         if session is not None and _is_music_action(winner):
             session.on_music_action(time.time())
             return

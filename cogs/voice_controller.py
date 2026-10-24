@@ -1256,7 +1256,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 from wake_shortcut import dispatch_with_feedback, shortcut_query
                 _sc_stripped = self._strip_wake_word(raw_text)
                 _sc = shortcut_query(self._get_music_fastpath(), _sc_stripped)
-                if _sc:
+                if _sc and not self._wakeless_in_window(speaker, raw_text):   # 窗內沒叫名字的指令不直派
                     # 已服務標記：debounce 晚關窗的同句，wakeless 救援據此讓路（防重派）
                     if not hasattr(self, "_shortcut_served"):
                         self._shortcut_served = {}
@@ -2870,7 +2870,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 if _intent_name == "recall":
                     await self._handle_recall_query(speaker, query)
                     return
-                if not low_confidence_wake:
+                if not low_confidence_wake and not self._wakeless_in_window(speaker, original_raw or query):
                     if _intent_name == "manual_add":
                         await self._handle_manual_add_query(speaker, query)
                     elif _intent_name == "task_update":
@@ -2901,6 +2901,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             now=time.time(), audio_wav_bytes=_captured_wav_bytes,
             prev_turn_audio_wav_bytes=_prev_turn_wav_bytes, low_confidence_wake=low_confidence_wake,
             in_wake_session=self._wake_session_captured(speaker),
+            wakeless_in_window=self._wakeless_in_window(speaker, original_raw or query),
         )
         pipeline_timing.mark("intent_dispatched")
         pipeline_timing.emit(speaker, _bus_ctx.raw_text or "", suffix=" route=main_bus")

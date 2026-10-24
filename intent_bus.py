@@ -117,6 +117,9 @@ class IntentContext:
     # 10/20：連續對談窗內（WakeSession 已開窗且是 target 的句子）→ _maybe_rescue 跳過。
     # 對談中幾乎都是閒聊，rescue 串行多等 ~2.9s；要救指令以後再另外攔截。
     in_wake_session: bool = False
+    # 10/24 使用者定：窗內 target 沒叫名字的句子「可能只是在討論」→ 只准唯讀 agent 接，
+    # 指令類 winner 不執行（見 IntentBus.dispatch / WAKELESS_WINDOW_AGENTS）。
+    wakeless_in_window: bool = False
     # 相容層：救援專用欄位的結構化鏡像，見 `RescuePayload` docstring。
     # __post_init__ 永遠從上面那組 flat 欄位重建（忽略呼叫端傳入的值），
     # 現有呼叫端（30 個 agent + 既有建構點）完全不用改就能繼續運作。
@@ -158,6 +161,18 @@ class Bid:
     # Alexa CanFulfillIntent 概念：agent 知道自己缺哪些 slot 還能出價但需要 follow-up。
     # 由 agent 自行填；空 list 表示 self-contained 不需追問。observability + handler 路由依據。
     missing_slots: list[str] = field(default_factory=list)
+
+
+# 對談窗內沒叫名字時唯一准接的 agent（唯讀：查詢/問歌名/時間/笑話/回憶/遊戲知識/guard）。
+# 其他 winner 一律不執行，dispatch 回 WAKE_REQUIRED 哨兵（2026-10-24 使用者定：指令要喚醒詞）。
+WAKELESS_WINDOW_AGENTS = frozenset({
+    "grounded_qa", "now_playing", "time_query", "joke_request", "event_recall", "game_knowledge", "guard",
+})
+WAKE_REQUIRED = "wake_required"
+
+
+async def _noop() -> None:
+    return None
 
 
 class IntentAgent(Protocol):
@@ -379,6 +394,13 @@ class IntentBus:
             )
             self._record_nowake(ctx, bids, None)
             return await self._maybe_rescue(ctx)
+
+        if ctx.wakeless_in_window and winner.name not in WAKELESS_WINDOW_AGENTS:
+            self.logger.info(
+                f"🚫 [IntentBus] speaker={ctx.speaker} query='{ctx.query[:50]}' "
+                f"對談窗內沒叫名字 → {winner.name} 指令不執行（可能只是在討論）"
+            )
+            return Bid(name=WAKE_REQUIRED, confidence=0.0, handler=_noop, reason=f"blocked:{winner.name}")
 
         self.logger.info(
             f"📡 [IntentBus] speaker={ctx.speaker} query='{ctx.query[:50]}' "
