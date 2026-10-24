@@ -1391,14 +1391,12 @@ static void fbPush(const FaceRect& r) {
   for (int y = r.y0; y <= r.y1; y++) {
     for (int x = r.x0; x <= r.x1; x++) {
       size_t i = (size_t)(y * 240 + x) * 3;
-      float red = g_fbOut888[i], grn = g_fbOut888[i + 1], blu = g_fbOut888[i + 2];
-      float bay = FB_BAYER[(y & 3) * 4 + (x & 3)] / 16.0f - 0.5f;
-      int R5 = (int)floorf(red / 255.0f * 31 + bay + 0.5f);
-      int G6 = (int)floorf(grn / 255.0f * 63 + bay + 0.5f);
-      int B5 = (int)floorf(blu / 255.0f * 31 + bay + 0.5f);
-      if (R5 < 0) R5 = 0; else if (R5 > 31) R5 = 31;
-      if (G6 < 0) G6 = 0; else if (G6 > 63) G6 = 63;
-      if (B5 < 0) B5 = 0; else if (B5 > 31) B5 = 31;
+      int r8 = g_fbOut888[i], g8 = g_fbOut888[i + 1], b8 = g_fbOut888[i + 2];
+      int k = FB_BAYER[(y & 3) * 4 + (x & 3)];
+      // floor(v/255*31 + k/16 - 0.5 + 0.5) = floor((v*31*16 + k*255)/(255*16))，跟原浮點公式數學上相等
+      int R5 = (r8 * 496 + k * 255) / 4080;
+      int G6 = (g8 * 1008 + k * 255) / 4080;
+      int B5 = (b8 * 496 + k * 255) / 4080;
       uint16_t v = (uint16_t)((R5 << 11) | (G6 << 5) | B5);
       int col = x - r.x0;
       fbRow[col * 2] = (uint8_t)(v >> 8);
@@ -1432,6 +1430,21 @@ static void faceBenchTask(void* pv) {
   uint64_t pRenderSum = 0, pPushSum = 0, pPxSum = 0;
   uint32_t pDecMax = 0, pRingEmpty = 0, pRingMin = 0xFFFFFFFF;
   uint64_t pDecUs = 0;
+
+  // 把目前視窗累計併進 phase 累計再歸零；視窗自然到期、或 phase 提早結束時都要呼叫，
+  // 否則 phase 結束時最後一個還沒滿 10 秒的視窗會漏到下一個 phase。
+  auto mergeWindowIntoPhase = [&](int64_t t) {
+    pLate += late; pFrames += frames; pRenderSum += renderSum; pPushSum += pushSum; pPxSum += pxSum;
+    if (renderMax > pRenderMax) pRenderMax = renderMax;
+    if (pushMax > pPushMax) pPushMax = pushMax;
+    pDecUs += g_fbDecUs;
+    if (g_fbDecMaxUs > pDecMax) pDecMax = g_fbDecMaxUs;
+    pRingEmpty += g_fbRingEmpty;
+    if (g_fbRingMin < pRingMin) pRingMin = g_fbRingMin;
+    late = 0; frames = 0; renderSum = 0; pushSum = 0; renderMax = 0; pushMax = 0; pxSum = 0;
+    g_fbDecUs = 0; g_fbDecMaxUs = 0; g_fbRingEmpty = 0; g_fbRingMin = 0xFFFFFFFF;
+    windowStart = t;
+  };
 
   for (;;) {
     bool on = (phase % 2) == 1;
@@ -1475,20 +1488,12 @@ static void faceBenchTask(void* pv) {
                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                     (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
 
-      pLate += late; pFrames += frames; pRenderSum += renderSum; pPushSum += pushSum; pPxSum += pxSum;
-      if (renderMax > pRenderMax) pRenderMax = renderMax;
-      if (pushMax > pPushMax) pPushMax = pushMax;
-      pDecUs += g_fbDecUs;
-      if (g_fbDecMaxUs > pDecMax) pDecMax = g_fbDecMaxUs;
-      pRingEmpty += g_fbRingEmpty;
-      if (g_fbRingMin < pRingMin) pRingMin = g_fbRingMin;
-
-      late = 0; frames = 0; renderSum = 0; pushSum = 0; renderMax = 0; pushMax = 0; pxSum = 0;
-      g_fbDecUs = 0; g_fbDecMaxUs = 0; g_fbRingEmpty = 0; g_fbRingMin = 0xFFFFFFFF;
-      windowStart = now;
+      mergeWindowIntoPhase(now);
     }
 
     if (now - phaseStart >= PHASE_US) {
+      mergeWindowIntoPhase(now);  // 收尾還沒滿 10 秒的那個視窗，不漏到下一個 phase
+
       double phSec = (now - phaseStart) / 1e6;
       double renderAvgMs = pFrames ? (pRenderSum / (double)pFrames) / 1000.0 : 0;
       double pushAvgMs = pFrames ? (pPushSum / (double)pFrames) / 1000.0 : 0;
@@ -1607,6 +1612,7 @@ void setup() {
     pinMode(FB_PIN_CS, OUTPUT); digitalWrite(FB_PIN_CS, HIGH);
     pinMode(FB_PIN_DC, OUTPUT); digitalWrite(FB_PIN_DC, HIGH);
     fbSpi.begin(FB_PIN_CLK, -1, FB_PIN_MOSI, -1);
+    face_rt_init();
     xTaskCreatePinnedToCore(faceBenchTask, "faceBench", 6144, nullptr, 1, nullptr, 1);
     Serial.println("[FaceBench] 啟動（24fps，OFF/ON 各180s輪替）");
   }

@@ -112,6 +112,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  face_rt_init();
+
   std::vector<uint8_t> base = make_base();
   std::vector<GoldenPose> poses = load_golden(argv[1]);
   printf("loaded %zu poses\n", poses.size());
