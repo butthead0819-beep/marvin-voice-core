@@ -246,6 +246,7 @@ HUD_HTML = """<!DOCTYPE html>
   .vinyl-card{ position:relative; overflow:hidden; }
   .vinyl-card .vwrap{ position:absolute; top:44%; left:41%; height:140%; aspect-ratio:1/1; transform:translate(-50%,-50%); z-index:0; }
   .vinyl-card .vdisc{ position:absolute; inset:0; width:100%; height:100%; border-radius:50%; animation:spin 12s linear infinite; will-change:transform; }
+  .vinyl-card .vdisc.badge{ animation:none; }
   .vinyl-card::after{ content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
     background:linear-gradient(180deg, transparent 52%, rgba(6,10,16,.78) 100%); }
   .vinyl-card .top, .vinyl-card .vmeta, .vinyl-card .vexpand{ position:relative; z-index:3; }
@@ -822,7 +823,20 @@ __SHARED_JS__
     if(!card||!cover) return;
     const disc=card.querySelector('.vdisc');
     const dctx=disc.getContext('2d'); let DPR=1;
-    function drawDisc(){ drawVinylDisc(dctx, cover, DPR, drawDisc); }
+    // 現正播放＝car puck 同一張徽章封面（/car_cover，Mac 端 puck_cover.py 預算）；
+    // 打光固定左上，所以不轉。載入中留白；404（沒 iTunes 封面）退回潑漆黑膠。k＝歌名，換歌就換 URL。
+    const badgeUrl="/car_cover?which=current&size=466&t="+encodeURIComponent(TOKEN)+"&k="+encodeURIComponent(cover.title);
+    function drawDisc(){
+      const badge=getCoverImage(badgeUrl, drawDisc);
+      disc.classList.toggle('badge', !!badge);
+      if(badge){
+        dctx.clearRect(0,0,disc.width,disc.height);
+        dctx.drawImage(badge,0,0,disc.width,disc.height);
+        return;
+      }
+      if(imgCache.get(badgeUrl)!=='error'){ dctx.clearRect(0,0,disc.width,disc.height); return; }
+      drawVinylDisc(dctx, cover, DPR, drawDisc);
+    }
     function size(){ DPR=Math.min(2,window.devicePixelRatio||1);
       const dr=disc.getBoundingClientRect(); disc.width=Math.max(1,dr.width*DPR); disc.height=Math.max(1,dr.height*DPR);
       drawDisc(); }
