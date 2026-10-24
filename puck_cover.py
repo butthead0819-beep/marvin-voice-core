@@ -5,6 +5,7 @@
 捲邊打光：依捲邊法向量算光源（左上）入射角，平頂法向量朝正前方、打光係數恰為 1，
 只有捲邊會因角度變暗/變亮；疊一層高光（只在捲邊，模擬邊緣反光）+ 一層固定位置的
 亮面膜高光（模擬印刷表面膜層）。
+來源可為 iTunes 方圖或 YouTube 縮圖（非正方形 → 切黑邊後裁中央正方形）。
 輸出 baseline（非 progressive）JPEG，給 ESP32-S3 解碼。
 """
 from __future__ import annotations
@@ -40,6 +41,12 @@ def render_puck_cover_image(
     from PIL import Image
 
     cover = Image.open(io.BytesIO(cover_bytes)).convert("RGB")
+    # YouTube 舊影片沒 maxres 時是 hqdefault（4:3 上下夾黑邊）：先切掉上下近黑整列再裁正方形。
+    rows = np.asarray(cover).mean(axis=(1, 2)) >= 16
+    if rows.any():
+        top = int(np.argmax(rows))
+        bottom = len(rows) - int(np.argmax(rows[::-1]))
+        cover = cover.crop((0, top, cover.width, bottom))
     w, h = cover.size
     if w != h:
         n = min(w, h)

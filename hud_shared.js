@@ -127,6 +127,17 @@ function drawVinylDisc(dctx, cover, DPR, onCoverReady){
     dctx.strokeStyle='rgba(0,0,0,.4)'; dctx.lineWidth=DPR*1.5; dctx.beginPath(); dctx.arc(cx,cy,LR,0,PI2); dctx.stroke();
   }
 }
+// 現正播放＝car puck 同一張徽章封面（/car_cover，Mac 端 puck_cover.py 預算）；k＝歌名，換歌就換 URL。
+// 載入中留白；404（沒封面）退回潑漆黑膠。回傳 true＝畫的是徽章（打光固定左上，呼叫端據此停轉）。
+function drawNowPlayingDisc(dctx, cover, DPR, token, onReady){
+  const url="/car_cover?which=current&size=466&t="+encodeURIComponent(token)+"&k="+encodeURIComponent(cover.title);
+  const W=dctx.canvas.width, H=dctx.canvas.height;
+  const badge=getCoverImage(url, onReady);
+  if(badge){ dctx.clearRect(0,0,W,H); dctx.drawImage(badge,0,0,W,H); return true; }
+  if(imgCache.get(url)!=='error'){ dctx.clearRect(0,0,W,H); return false; }
+  drawVinylDisc(dctx, cover, DPR, onReady);
+  return false;
+}
 
 // ---------- live Marvin head (metallic + green triangle eyes) ----------
 // 每個情緒只用三個既有槓桿驅動：眼睛顏色/亮度（col+alpha+pulse）、眨眼節奏（blink）、

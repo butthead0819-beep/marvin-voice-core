@@ -150,6 +150,19 @@ def test_non_square_cover_center_cropped():
     # (26,232) 在左側：沒裁切的話會取到左邊 280px 的綠
 
 
+def test_letterbox_bars_trimmed_before_crop():
+    # YouTube hqdefault：480×360，上下各 45 列黑邊夾 16:9 畫面
+    arr = np.zeros((360, 480, 3), dtype=np.uint8)
+    arr[45:315] = (200, 30, 30)
+    buf = io.BytesIO()
+    Image.fromarray(arr, mode="RGB").save(buf, format="PNG")
+
+    img = render_puck_cover_image(buf.getvalue(), gloss=0, spec=0, ambient=1.0)
+    for x, y in [(233, 6), (233, 460)]:
+        assert img.getpixel((x, y))[0] > 150
+    # 沒切黑邊的話，捲邊最外圈會取到上下 45 列的黑
+
+
 def test_render_puck_cover_returns_baseline_jpeg():
     cover = _png(600, 600, (50, 80, 120))
     out = render_puck_cover(cover)
