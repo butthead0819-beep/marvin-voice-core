@@ -50,6 +50,7 @@ _DJ_TAIL_NEXT_OVERLAP_S = 8.0
 _DJ_TAIL_GAP_MAX_S = 10.0
 _DJ_TAIL_GAP_POLL_S = 0.2
 _DJ_TAIL_SFX_PRELOAD_WAIT_S = 2.0
+_SKIP_ACK_WAIT_S = 3.0  # skip 後口白最多等 ack 這麼久，ack 卡住也不能把口白吞掉
 _AUDIOPHILE_GUIDE_GAP_S = 1.0   # 導聆講完留白，再讓歌從 00:00 爆出來
 _AUDIOPHILE_POLL_S = 0.25       # 導聆等待期間檢查 stop/skip 的間隔
 
@@ -588,6 +589,7 @@ class MusicTailDJMixin:
 
     async def _play_tail_dj_after_skip(self, next_info: dict) -> None:
         """手動 skip 後背景解析/播放 DJ 串場，逾時或出錯都不影響已經生效的 skip。"""
+        ack_task, self._pending_skip_ack = getattr(self, "_pending_skip_ack", None), None
         try:
             timeout_s = self._SEAMLESS_SKIP_TIMEOUT_S
             try:
@@ -600,6 +602,12 @@ class MusicTailDJMixin:
                 return
 
             if dj_meta is not None:
+                # ack（「好，換」）是即時合成，口白是預渲染檔幾乎立刻推上 TTS 層（FIFO）→ 不等就會先唸歌名才 ack
+                if ack_task is not None and not ack_task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(ack_task), timeout=_SKIP_ACK_WAIT_S)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
                 next_info['_dj_played_in_tail'] = True
                 await self._play_and_attach_narration(next_info, dj_meta)
         except Exception as e:

@@ -129,6 +129,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         self._personal_topup_inflight: bool = False     # 單飛守衛：同時只允許一個 topup
         self.stream_task = None
         self._tail_dj_task: Optional[asyncio.Task] = None  # [DJ Tail] 尾段串場排程 task
+        self._pending_skip_ack: Optional[asyncio.Task] = None  # skip 的 quick ack task；skip 後口白要排在它後面
         self._current_stream_info = None
         self.stream_history: list = []      # 已播過的歌曲（用於上一首）
         self.stream_paused: bool = False
