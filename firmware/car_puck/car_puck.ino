@@ -1363,6 +1363,7 @@ void postAudio(int nSamples, bool viaPause) {
 
 static uint8_t* g_fbBase888 = nullptr;
 static uint8_t* g_fbOut888 = nullptr;
+static FaceRtWork* g_fbWork = nullptr;
 static SPIClass fbSpi(FSPI);
 
 static const uint8_t FB_BAYER[16] = {0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5};
@@ -1622,14 +1623,15 @@ static void faceBenchTask(void* pv) {
 
       Serial.printf("[FaceBench] phase=%s#%d frames=%u late=%u render_avg=%.2fms render_max=%.2fms "
                     "push_avg=%.2fms push_max=%.2fms conv_avg=%.2fms spi_avg=%.2fms px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
-                    "dec_max=%.2fms ring_empty=%u ring_min=%s ifree=%u imin=%u\n",
+                    "dec_max=%.2fms ring_empty=%u ring_min=%s ifree=%u imin=%u stack_hw=%u\n",
                     on ? "ON" : "OFF", phase, (unsigned)frames, (unsigned)late,
                     renderAvgMs, renderMax / 1000.0, pushAvgMs, pushMax / 1000.0,
                     convAvgMs, spiAvgMs,
                     pxAvg, load, decLoad, g_fbDecMaxUs / 1000.0,
                     (unsigned)g_fbRingEmpty, ringMinStr,
                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                    (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+                    (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                    (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 
       mergeWindowIntoPhase(now);
     }
@@ -1652,14 +1654,15 @@ static void faceBenchTask(void* pv) {
 
       Serial.printf("[FaceBench] === phase=%s#%d frames=%u late=%u render_avg=%.2fms render_max=%.2fms "
                     "push_avg=%.2fms push_max=%.2fms conv_avg=%.2fms spi_avg=%.2fms px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
-                    "dec_max=%.2fms ring_empty=%u ring_min=%s ifree=%u imin=%u\n",
+                    "dec_max=%.2fms ring_empty=%u ring_min=%s ifree=%u imin=%u stack_hw=%u\n",
                     on ? "ON" : "OFF", phase, (unsigned)pFrames, (unsigned)pLate,
                     renderAvgMs, pRenderMax / 1000.0, pushAvgMs, pPushMax / 1000.0,
                     convAvgMs, spiAvgMs,
                     pxAvg, load, decLoad, pDecMax / 1000.0,
                     (unsigned)pRingEmpty, ringMinStr,
                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                    (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+                    (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                    (unsigned)uxTaskGetStackHighWaterMark(nullptr));
 
       phase++;
       phaseStart = now;
@@ -1745,7 +1748,8 @@ void setup() {
   // faceBenchTask 前的說明）。PSRAM 配置失敗就不建 task，不要半殘跑。
   g_fbBase888 = (uint8_t*)heap_caps_malloc(240 * 240 * 3, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   g_fbOut888 = (uint8_t*)heap_caps_malloc(240 * 240 * 3, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-  if (!g_fbBase888 || !g_fbOut888) {
+  g_fbWork = (FaceRtWork*)heap_caps_malloc(sizeof(FaceRtWork), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!g_fbBase888 || !g_fbOut888 || !g_fbWork) {
     Serial.println("[FaceBench] ❌ PSRAM 配置失敗，不啟動");
   } else {
     for (int y = 0; y < 240; y++) {
@@ -1759,8 +1763,8 @@ void setup() {
     pinMode(FB_PIN_CS, OUTPUT); digitalWrite(FB_PIN_CS, HIGH);
     pinMode(FB_PIN_DC, OUTPUT); digitalWrite(FB_PIN_DC, HIGH);
     fbSpi.begin(FB_PIN_CLK, -1, FB_PIN_MOSI, -1);
-    face_rt_init();
-    xTaskCreatePinnedToCore(faceBenchTask, "faceBench", 12288, nullptr, 1, nullptr, 1);
+    face_rt_init(g_fbWork);
+    xTaskCreatePinnedToCore(faceBenchTask, "faceBench", 6144, nullptr, 1, nullptr, 1);
     Serial.println("[FaceBench] 啟動（24fps，OFF/ON 各180s輪替）");
   }
 #endif

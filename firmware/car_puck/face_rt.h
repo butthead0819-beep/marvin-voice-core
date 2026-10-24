@@ -13,7 +13,9 @@
 //    真正要填色/描邊時才在該像素上開一次 sqrt。角點落在球緣或算不出來、或中心點本身
 //    落在球緣，則整個 tile 退回逐像素精確路徑（完全不變動的舊程式碼）。
 //
-// 使用前必須先呼叫一次 face_rt_init()（填 asin 查表），否則查表是全 0。
+// 使用前必須先呼叫一次 face_rt_init(&work)（填 asin 查表＋記住工作區），否則查表是全 0。
+// work 是一塊 sizeof(FaceRtWork) 大小、生命週期涵蓋所有 face_rt_render() 呼叫的記憶體，
+// 由呼叫端配置（S3 建議 PSRAM；face_rt.h 本身不配置 heap）。
 #ifndef FACE_RT_H
 #define FACE_RT_H
 
@@ -50,6 +52,11 @@ struct FacePose {
 struct FaceRect {
   int16_t x0, y0, x1, y1;  // 含端點
 };
+
+// tile 邊界角點快取的欄數：(240/4) 個 tile + 1 個角點，足夠覆蓋整個寬度。
+constexpr int MAX_COLS = 61;
+
+struct FaceRtWork;  // 定義在 face_rt_detail 之後（要用到 Corner）
 
 namespace face_rt_detail {
 
@@ -154,6 +161,16 @@ inline void gradColor(const Prepared& F, float t, float* out) {
 struct Jacobian {
   float a, b, d;
 };
+
+// tile 邊界角點快取的單個角點（連續座標對應的 Jacobian／偏微分，角度本身用不到就不存）。
+struct Corner {
+  bool ok;
+  float Ja, Jb, Jd;
+  float dphi_dx, dphi_dy, dlam_dy;
+};
+
+// 呼叫端於 face_rt_init() 提供的工作區，render 期間存取。
+static FaceRtWork* s_work = nullptr;
 
 inline float segDistPx(float phi, float lam, float Px, float Py, float Qx, float Qy, const Jacobian& J) {
   float vx = Qx - Px, vy = Qy - Py, wx = phi - Px, wy = lam - Py;
@@ -274,11 +291,19 @@ inline void prepare(const FacePose& p, float col[3], Prepared& F) {
 
 }  // namespace face_rt_detail
 
-// 用前必須呼叫一次：填 asin 查表。
-inline void face_rt_init() {
+// face_rt_render() 用的工作區：tile 邊界角點快取（兩排，逐行往下滾動重用）。
+// 呼叫端配置一塊 sizeof(FaceRtWork) 的記憶體（S3 建議 PSRAM），生命週期要涵蓋所有
+// face_rt_render() 呼叫，傳給 face_rt_init()。face_rt.h 本身不配置 heap。
+struct FaceRtWork {
+  face_rt_detail::Corner cornerBuf[2][MAX_COLS];
+};
+
+// 用前必須呼叫一次：填 asin 查表，並記住呼叫端提供的工作區（見 FaceRtWork 註解）。
+inline void face_rt_init(FaceRtWork* work) {
   for (int i = 0; i <= 256; i++) {
     face_rt_detail::ASIN_LUT[i] = asinf(i / 256.0f);
   }
+  face_rt_detail::s_work = work;
 }
 
 #ifndef FACE_RT_ATTR
@@ -321,14 +346,8 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 
   // tile 邊界角點快取（連續座標，兩排：上排／下排），逐行往下滾動重用。
   // 每個角點每張畫面只算一次：換到下一列時，舊下排變新上排，只有新下排要重算。
-  constexpr int MAX_COLS = 61;  // (240/4) 個 tile + 1 個角點，足夠覆蓋整個寬度
-  struct Corner {
-    float phi, lam;
-    bool ok;
-    float Ja, Jb, Jd;
-    float dphi_dx, dphi_dy, dlam_dy;
-  };
-  Corner s_cornerBuf[2][MAX_COLS];
+  // 快取陣列本身在呼叫端提供的工作區（face_rt_init() 傳入），不佔用這個 task 的 stack。
+  Corner (&s_cornerBuf)[2][MAX_COLS] = s_work->cornerBuf;
   uint64_t computedBit[2] = {0, 0};
   int cornerTop = 0, cornerBot = 1;
   bool firstTileRow = true;
@@ -339,8 +358,6 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
       computedBit[buf] |= bit;
       Corner cr;
       cr.ok = true;
-      cr.phi = 0.0f;
-      cr.lam = 0.0f;
       cr.Ja = cr.Jb = cr.Jd = 0.0f;
       cr.dphi_dx = cr.dphi_dy = cr.dlam_dy = 0.0f;
       float dx = xc - C, dy = yc - C;
@@ -349,13 +366,11 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
       if (sl <= -1.0f || sl >= 1.0f) {
         cr.ok = false;
       } else {
-        cr.lam = fast_asin(sl);
         float cl = sqrtf(1 - sl * sl);
         float u = ux / (R * cl);
         if (u <= -1.0f || u >= 1.0f) {
           cr.ok = false;
         } else {
-          cr.phi = fast_asin(u);
           float cp = sqrtf(1 - u * u);
           if (cl < 0.35f || cp < 0.35f) {
             cr.ok = false;

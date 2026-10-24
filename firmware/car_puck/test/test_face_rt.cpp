@@ -112,7 +112,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  face_rt_init();
+  static FaceRtWork work;
+  face_rt_init(&work);
 
   std::vector<uint8_t> base = make_base();
   std::vector<GoldenPose> poses = load_golden(argv[1]);
