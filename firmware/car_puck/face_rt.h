@@ -15,6 +15,13 @@
 #include <stdint.h>
 #include <string.h>
 
+// S3 上 Arduino 預設 -Os，sqrtf/除法走慢路徑；這個檔案單獨改用 O2＋fast-math
+// （host 測試證實輸出跟 JS 標準答案仍在門檻內）。clang（Mac host 測試）不認這個 pragma，跳過。
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("O2", "fast-math")
+#endif
+
 #ifdef FACE_RT_STATS
 // 測試用：這一輪 render 裡實際做了完整數學（tile mask 非 0、且通過 clip/sl/u 檢查）的像素數。
 extern uint32_t g_face_rt_full_px;
@@ -422,5 +429,9 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
 
   return F.rect;
 }
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
 #endif  // FACE_RT_H
