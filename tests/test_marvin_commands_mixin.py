@@ -60,11 +60,36 @@ async def test_marvin_say_uses_macos_protected_and_restores_flag():
     await VoiceController.marvin_say.callback(vc, interaction, text="哈囉世界")
 
     vc.play_tts.assert_awaited_once()
-    _, kwargs = vc.play_tts.call_args
+    args, kwargs = vc.play_tts.call_args
+    assert args[0] == "陳進文 說：哈囉世界"
     assert kwargs["force_macos"] is True
     assert kwargs["protected"] is True
     assert kwargs["already_in_channel"] is True
     assert vc._tts_protected is False
     assert vc._tts_interrupted is False
+    interaction.followup.send.assert_awaited_once_with("🗣️ 陳進文 說：「哈囉世界」")
+
+
+@pytest.mark.asyncio
+async def test_marvin_say_fallback_to_username():
+    from cogs.voice_controller import VoiceController
+    vc = VoiceController.__new__(VoiceController)
+    vc.play_tts = AsyncMock()
+    vc._tts_protected = False
+    vc._tts_interrupted = False
+    vc.bot = MagicMock()
+    vc.stt_logger = MagicMock()
+
+    interaction = MagicMock()
+    interaction.response.defer = AsyncMock()
+    interaction.followup.send = AsyncMock()
+    interaction.user.display_name = ""
+    interaction.user.name = "jack_user"
+
+    await VoiceController.marvin_say.callback(vc, interaction, text="測試 fallback")
+
+    args, _ = vc.play_tts.call_args
+    assert args[0] == "jack_user 說：測試 fallback"
+    interaction.followup.send.assert_awaited_once_with("🗣️ jack_user 說：「測試 fallback」")
 
 

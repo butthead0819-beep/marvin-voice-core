@@ -29,10 +29,12 @@ class MarvinCommandsMixin:
         # 該不該插嘴），這裡是使用者下的直接命令，沒有「要不要開口」可競標——走 bus
         # 反而可能被 MIN_CONFIDENCE / DuckingAgent 壓制而不發聲，違背指令本意。仍受
         # play_tts 的播放鎖鏈（playback_lock / tts_queue_lock / mixer）正確序列化。
+        speaker_name = getattr(interaction.user, "display_name", None) or interaction.user.name
+        spoken_text = f"{speaker_name} 說：{text}"
         await interaction.response.defer(thinking=True)
-        await interaction.followup.send(f"🗣️ 「{text}」")
-        self.stt_logger.info(f"[MarvinSay←{interaction.user.display_name}] {text}")
+        await interaction.followup.send(f"🗣️ {speaker_name} 說：「{text}」")
+        self.stt_logger.info(f"[MarvinSay←{speaker_name}] {text}")
         self._tts_interrupted = False
         with self._protected_tts_window():
-            await self.play_tts(text, already_in_channel=True, protected=True, force_macos=True)
+            await self.play_tts(spoken_text, already_in_channel=True, protected=True, force_macos=True)
 
