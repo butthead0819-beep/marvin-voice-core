@@ -16,7 +16,7 @@ from aiohttp import web
 from marvin_voice_core.audio_stream_batcher import iter_batched_encoded_frames
 from marvin_voice_core.discord_audio_stream_server import SilenceFillQueue
 from marvin_voice_core.icy_meta import (
-    ICY_METAINT, BpmLookup, IcyInterleaver, build_now_playing_payload)
+    ICY_METAINT, BpmLookup, IcyInterleaver, SpeakTracker, build_now_playing_payload)
 from marvin_voice_core.mp3_stream_encoder import Mp3StreamEncoder
 import bpm_estimate
 import marvin_speech_log
@@ -44,6 +44,9 @@ _CORS = {"Access-Control-Allow-Origin": "*",
 # 規定剛好 8 欄，多一欄整行會被丟棄→車機曲名消失；必須先燒錄會砍第 9 欄的 S3 韌體
 # （icy_fields.h::icy_prefix_len），再開這個旗標。
 _ICY_BPM_ENABLED = os.getenv("MARVIN_ICY_BPM", "0").strip().lower() in ("1", "true", "yes", "on")
+
+# ICY 第 10 欄送「Marvin 正在講話」：預設關。必須先燒錄會依播放位置套用 SPEAK 的 S3 韌體再開。
+_ICY_SPEAK_ENABLED = os.getenv("MARVIN_ICY_SPEAK", "0").strip().lower() in ("1", "true", "yes", "on")
 
 # 跟 cogs/music_cog_audio_meta.py::_SONG_BPM_STORE 同一檔。
 _SONG_BPM_STORE = "records/song_bpm.json"
@@ -1475,6 +1478,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             rate=stream_source.rate, channels=stream_source.channels,
             bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
         interleaver = IcyInterleaver() if icy_enabled else None
+        speak_tracker = SpeakTracker() if (icy_enabled and _ICY_SPEAK_ENABLED) else None
         try:
             # SilenceFillQueue：satellite 的 mixer 本來就一直有幀（跟單一 mixer 第1刀的
             # Discord mixer 不同，那裡才是 on_demand 真正需要補靜音的理由），包了也無害，
@@ -1484,13 +1488,18 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                 if interleaver is not None:
                     now = time.time()
                     info, start_time = _current_now_playing()
+                    speaking = None
+                    if speak_tracker is not None:
+                        mixer = getattr(vc, "_mixer", None)
+                        speaking = speak_tracker.update(getattr(mixer, "tts_frames_total", 0), now)
                     if _ICY_BPM_ENABLED:
                         url = (info or {}).get("webpage_url") or (info or {}).get("original_url") or (info or {}).get("url") or ""
                         vid = music_memory.extract_video_id(url)
                         bpm = _bpm_lookup.get(vid, now)
-                        payload = build_now_playing_payload(info, start_time, now, bpm=bpm, include_bpm=True)
+                        payload = build_now_playing_payload(
+                            info, start_time, now, bpm=bpm, include_bpm=True, speaking=speaking)
                     else:
-                        payload = build_now_playing_payload(info, start_time, now)
+                        payload = build_now_playing_payload(info, start_time, now, speaking=speaking)
                     chunk = interleaver.feed(chunk, payload, now)
                 await resp.write(chunk)
         except (ConnectionError, asyncio.CancelledError):

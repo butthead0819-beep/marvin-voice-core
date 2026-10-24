@@ -113,6 +113,7 @@ const int   MARVIN_LOCAL_PORT = 8790;
 #include <LovyanGFX.hpp>
 #include "face_rt.h"
 #include "face_motion.h"
+#include "speak_sched.h"
 #if __has_include("../face_demo/base_sphere.h")
 #include "../face_demo/base_sphere.h"
 #else
@@ -160,10 +161,12 @@ struct FaceInSnapshot {
   uint32_t trackChangedAtMs;
   uint32_t lastIcyAtMs;    // 最近一次收到 ICY metadata 的 millis()（串流斷了就當沒歌）
   uint32_t coverSeq;
+  bool speaking;           // ICY 第 10 欄依播放位置套用（見 speak_sched.h）
+  uint32_t awaitUntilMs;   // postAudio 送出後等回覆的截止時間；0＝未在等
 };
 static portMUX_TYPE g_faceInMux = portMUX_INITIALIZER_UNLOCKED;
 static FaceInSnapshot g_faceIn = {
-  face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0
+  face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0, false, 0
 };
 #endif  // FACE_DISPLAY
 
@@ -220,7 +223,9 @@ void setLed(LedState s) {
   if (s == ledState) return;
   ledState = s; ledSince = millis();
 #if FACE_DISPLAY
-  // 等回應（LED_PLAYING）跟講話中這一刀合併成 THINK——已定案，下一刀才拆 SPEAK。
+  // THINK＝送出後等回應（LED_PLAYING，10s 逾時）；SPEAK 不在這裡決定——由 ICY 第 10 欄
+  // 依播放位置套用（見 speak_sched.h + resolve_override），faceTask 組 FaceInputs 時
+  // 跟這裡設的 override_ 一起算出最終 override（resolve_override 的優先序見其註解）。
   face_motion::Override ov = face_motion::OVERRIDE_NONE;
   switch (s) {
     case LED_LISTENING: ov = face_motion::OVERRIDE_LISTEN; break;
@@ -454,6 +459,13 @@ static volatile bool streamPrimed = false;           // 是否已蓄滿過一輪
 // 一定要跟 decoder 重置對齊）。改成每次重連無條件清空 ring + 標記需要重置 decoder。
 static volatile bool mp3NeedsReset = false;
 
+#if FACE_DISPLAY
+static volatile uint32_t g_ringWriteTotal = 0;  // producer 專用：累計寫進 ring 的音訊 bytes
+static volatile uint32_t g_ringReadTotal = 0;   // consumer 專用：累計從 ring 讀出的 bytes
+static SpeakSched g_speakSched;
+static volatile int g_icyPendingSpeak = -1;  // onIcyMeta 寫、network loop 讀
+#endif  // FACE_DISPLAY
+
 static inline size_t ringUsed() {
   size_t h = ringHead, t = ringTail;
   return (h >= t) ? (h - t) : (STREAM_RING_SIZE - t + h);
@@ -478,6 +490,9 @@ static void ringWrite(const uint8_t* data, size_t len) {
     ringHead = (ringHead + chunk) % STREAM_RING_SIZE;
     offset += chunk;
   }
+#if FACE_DISPLAY
+  g_ringWriteTotal += len;
+#endif
 }
 
 static size_t ringRead(uint8_t* out, size_t maxLen) {
@@ -489,6 +504,9 @@ static size_t ringRead(uint8_t* out, size_t maxLen) {
   memcpy(out, streamRing + ringTail, firstPart);
   if (want > firstPart) memcpy(out + firstPart, streamRing, want - firstPart);
   ringTail = (ringTail + want) % STREAM_RING_SIZE;
+#if FACE_DISPLAY
+  g_ringReadTotal += want;
+#endif
   return want;
 }
 
@@ -530,6 +548,9 @@ static void onIcyMeta(const uint8_t* payload, size_t len, void* /*ctx*/) {
     Serial.printf("[Meta] %.*s\n", (int)len, payload);
   }
 #if FACE_DISPLAY
+  // 只設值，不做別的——實際排入 speak_sched 交給 audioNetworkTask 自己的迴圈（那裡才
+  // 知道「這批音訊」對應的 g_ringWriteTotal 位置）。
+  g_icyPendingSpeak = icy_speak_field(payload, len);
   // 只寫資料，不呼叫任何顯示函式——顯示交給釘死 core 1 的 faceTask 自己的巡邏節奏讀。
   IcyNow icyNow;
   if (icy_now_fields(payload, len, &icyNow)) {
@@ -680,6 +701,10 @@ void audioNetworkTask(void* pv) {
     // audioPlaybackTask 自己用 ringTail = ringHead 追上。
     streamPrimed = false;
     mp3NeedsReset = true;
+#if FACE_DISPLAY
+    speak_sched_reset_producer(g_speakSched);
+    g_icyPendingSpeak = -1;
+#endif
 
     while (client.connected()) {
       String sizeLine;
@@ -712,6 +737,16 @@ void audioNetworkTask(void* pv) {
         }
         size_t an = icy_feed(demux, buf, n, audioBuf, onIcyMeta, nullptr);
         if (an) ringWrite(audioBuf, an);   // 只塞 buffer，不碰 I2S——播放節奏交給 audioPlaybackTask
+#if FACE_DISPLAY
+        // pos 用寫完這批後的總量，最多比真實位置晚一批（≤4096 bytes ≈0.25s），可接受。
+        {
+          int sp = g_icyPendingSpeak;
+          if (sp >= 0) {
+            g_icyPendingSpeak = -1;
+            speak_sched_push(g_speakSched, g_ringWriteTotal, sp == 1);
+          }
+        }
+#endif
         remain -= (long)n;
 
 #if STREAM_DEBUG_PRINT
@@ -815,6 +850,18 @@ void audioPlaybackTask(void* pv) {
       ringTail = ringHead;
       mp3Decoder.begin();
       mp3NeedsReset = false;
+#if FACE_DISPLAY
+      // 讀取位置跳到寫入端，未套用的事件全部立刻消化＝落到 producer 最新排入的狀態。
+      // 不能清空佇列：network task 可能已經排了新連線的第一筆，producer 記得「已排過」
+      // 就不會再排同值，清掉會讓整段講話期間嘴都不動。
+      g_ringReadTotal = g_ringWriteTotal;
+      bool spk;
+      if (speak_sched_apply(g_speakSched, g_ringReadTotal, &spk)) {
+        portENTER_CRITICAL(&g_faceInMux);
+        g_faceIn.speaking = spk;
+        portEXIT_CRITICAL(&g_faceInMux);
+      }
+#endif
     }
     if (!streamPrimed) {
       if (ringUsed() >= STREAM_PREBUF_BYTES) {
@@ -844,6 +891,16 @@ void audioPlaybackTask(void* pv) {
     }
     size_t want = avail < sizeof(buf) ? avail : sizeof(buf);
     size_t n = ringRead(buf, want);
+#if FACE_DISPLAY
+    {
+      bool spk;
+      if (speak_sched_apply(g_speakSched, g_ringReadTotal, &spk)) {
+        portENTER_CRITICAL(&g_faceInMux);
+        g_faceIn.speaking = spk;
+        portEXIT_CRITICAL(&g_faceInMux);
+      }
+    }
+#endif
 #if FACE_BENCH
     int64_t _fbT0 = esp_timer_get_time();
     uint32_t _fbI2s0 = g_fbI2sUs;
@@ -1112,11 +1169,15 @@ static void faceLogStats() {
   double fps = (frames && elapsedMs) ? frames * 1000.0 / elapsedMs : 0.0;
   double renderMs = frames ? (renderUs / 1000.0) / frames : 0.0;
   double pushMs = frames ? (pushUs / 1000.0) / frames : 0.0;
-  Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u\n",
+  portENTER_CRITICAL(&g_faceInMux);
+  bool spk = g_faceIn.speaking;
+  portEXIT_CRITICAL(&g_faceInMux);
+  Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u spk=%d\n",
                 fps, (unsigned)late, renderMs, pushMs,
                 faceTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(faceTaskHandle) : 0,
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                (int)spk);
 }
 #endif
 
@@ -1524,6 +1585,11 @@ void postAudio(int nSamples, bool viaPause) {
                 (unsigned)uxTaskGetStackHighWaterMark(NULL));
   if (code != 200) { setLed(LED_STANDBY); return; }   // 沒送成功＝沒回覆要播，別卡在青燈
   // 車載常駐串流模式：/reply 已停用，回覆會自動從 audioStreamTask 的 /audio_stream 播出。
+#if FACE_DISPLAY
+  portENTER_CRITICAL(&g_faceInMux);
+  g_faceIn.awaitUntilMs = millis() + 10000;   // 跟 LED_PLAYING 的 10s 逾時一致
+  portEXIT_CRITICAL(&g_faceInMux);
+#endif
   setLed(LED_STANDBY);
 }
 
@@ -1993,10 +2059,19 @@ void faceTask(void* pv) {
     portEXIT_CRITICAL(&g_faceInMux);
 
     uint32_t nowMs = millis();
-    bool playing = snap.playing && (nowMs - snap.lastIcyAtMs <= 15000);
+    bool streamFresh = (nowMs - snap.lastIcyAtMs <= 15000);
+    bool playing = snap.playing && streamFresh;
+    bool speaking = snap.speaking && streamFresh;
+    bool awaiting = snap.awaitUntilMs != 0 && (int32_t)(snap.awaitUntilMs - nowMs) > 0;
+    if (speaking && snap.awaitUntilMs != 0) {
+      // 開始講話就不再等回應——講話本身就是回應已經到了。
+      portENTER_CRITICAL(&g_faceInMux);
+      g_faceIn.awaitUntilMs = 0;
+      portEXIT_CRITICAL(&g_faceInMux);
+    }
 
     FaceInputs in;
-    in.override_ = snap.override_;
+    in.override_ = face_motion::resolve_override(snap.override_, speaking, awaiting);
     in.playing = playing;
     in.bpm = snap.bpm;
     in.dur_s = snap.durMs / 1000.0f;

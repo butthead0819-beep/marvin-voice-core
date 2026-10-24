@@ -326,6 +326,26 @@ int main() {
     printf("T8 ok\n");
   }
 
+  // T10: resolve_override（2a：講話時頭像切 SPEAK）
+  {
+    // ERROR/LISTEN 壓過 speaking
+    assert(resolve_override(OVERRIDE_ERROR, true, true) == OVERRIDE_ERROR);
+    assert(resolve_override(OVERRIDE_LISTEN, true, true) == OVERRIDE_LISTEN);
+    // speaking 壓過 THINK 跟 awaiting
+    assert(resolve_override(OVERRIDE_THINK, true, true) == OVERRIDE_SPEAK);
+    assert(resolve_override(OVERRIDE_NONE, true, true) == OVERRIDE_SPEAK);
+    assert(resolve_override(OVERRIDE_NONE, true, false) == OVERRIDE_SPEAK);
+    // awaiting 單獨 → THINK
+    assert(resolve_override(OVERRIDE_NONE, false, true) == OVERRIDE_THINK);
+    // ledOv==THINK 單獨（無 speaking/awaiting）→ THINK
+    assert(resolve_override(OVERRIDE_THINK, false, false) == OVERRIDE_THINK);
+    // 全無 → NONE
+    assert(resolve_override(OVERRIDE_NONE, false, false) == OVERRIDE_NONE);
+    // overrideLayer(OVERRIDE_SPEAK) == LAYER_SPEAK
+    assert(overrideLayer(OVERRIDE_SPEAK) == LAYER_SPEAK);
+    printf("T10 ok\n");
+  }
+
   printf("all face_motion tests passed\n");
   return 0;
 }

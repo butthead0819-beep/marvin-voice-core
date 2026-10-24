@@ -45,6 +45,24 @@ inline int icy_bpm_field(const uint8_t* p, size_t len) {
   return (v > 0 && v <= 300) ? v : 0;
 }
 
+// 取第 10 欄（index 9）：剛好是 "1" 回 1、剛好是 "0" 回 0、缺欄位或其他內容回 -1。
+inline int icy_speak_field(const uint8_t* p, size_t len) {
+  size_t field_start = 0, start = (size_t)-1, end = (size_t)-1;
+  int field_idx = 0;
+  for (size_t i = 0; i <= len; i++) {
+    if (i == len || p[i] == 0x1f) {
+      if (field_idx == 9) { start = field_start; end = i; break; }
+      field_idx++;
+      field_start = i + 1;
+    }
+  }
+  if (start == (size_t)-1 || end <= start) return -1;
+  if (end - start != 1) return -1;
+  if (p[start] == '1') return 1;
+  if (p[start] == '0') return 0;
+  return -1;
+}
+
 // 第 1–5 欄（M1/track_id/dur_ms/pos_ms/state）解析結果。
 struct IcyNow {
   char trackId[17];   // 最多 16 字元 + 結尾 '\0'

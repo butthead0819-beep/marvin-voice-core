@@ -141,7 +141,7 @@ inline void gestureEval(Gesture g, float u, float* yaw, float* pitch, float* rol
 }
 
 // ---------- Override / Inputs ----------
-enum Override { OVERRIDE_NONE = 0, OVERRIDE_LISTEN, OVERRIDE_THINK, OVERRIDE_ERROR };
+enum Override { OVERRIDE_NONE = 0, OVERRIDE_LISTEN, OVERRIDE_THINK, OVERRIDE_ERROR, OVERRIDE_SPEAK };
 
 struct FaceInputs {
   Override override_;
@@ -188,8 +188,18 @@ inline Layer overrideLayer(Override o) {
     case OVERRIDE_LISTEN: return LAYER_LISTEN;
     case OVERRIDE_THINK: return LAYER_THINK;
     case OVERRIDE_ERROR: return LAYER_ERROR;
+    case OVERRIDE_SPEAK: return LAYER_SPEAK;
     default: return LAYER_STILL;
   }
+}
+
+// LED 來的 override + 講話/等回應狀態 → 最終 override。
+// 優先序：ERROR > LISTEN > SPEAK > THINK（LED_PLAYING 或等回應中）> NONE。
+inline Override resolve_override(Override ledOv, bool speaking, bool awaitingReply) {
+  if (ledOv == OVERRIDE_ERROR || ledOv == OVERRIDE_LISTEN) return ledOv;
+  if (speaking) return OVERRIDE_SPEAK;
+  if (ledOv == OVERRIDE_THINK || awaitingReply) return OVERRIDE_THINK;
+  return OVERRIDE_NONE;
 }
 
 // 外部請求一個新的動作標籤；最多同時 4 個進行中，多的丟掉最舊。
