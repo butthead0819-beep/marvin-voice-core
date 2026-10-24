@@ -635,6 +635,8 @@ static volatile uint32_t g_fbDecMaxUs = 0;   // 本窗口單次 mp3Decoder.write
 static volatile uint32_t g_fbI2sUs = 0;      // mp3DataCallback 內 i2s_write 累積阻塞時間（給上面扣除用）
 static volatile uint32_t g_fbRingEmpty = 0;  // 本窗口播放中 ring 見底次數（avail==0 且 streamPrimed）
 static volatile uint32_t g_fbRingMin = 0xFFFFFFFF;  // 本窗口播放中 ringUsed() 最低值
+static uint32_t g_fbConvUs = 0;  // 本窗口 fbPush 內 RGB565 轉換累積耗時
+static uint32_t g_fbSpiUs = 0;   // 本窗口 fbPush 內 fbSpi.writeBytes 傳輸累積耗時
 #endif
 
 // 解碼出的 PCM 經這裡直接 i2s_write（write() 內部同步呼叫，跟舊版直接 i2s_write 的
@@ -1389,6 +1391,7 @@ static void fbPush(const FaceRect& r) {
   digitalWrite(FB_PIN_DC, HIGH);
 
   for (int y = r.y0; y <= r.y1; y++) {
+    int64_t _fbConvT0 = esp_timer_get_time();
     for (int x = r.x0; x <= r.x1; x++) {
       size_t i = (size_t)(y * 240 + x) * 3;
       int r8 = g_fbOut888[i], g8 = g_fbOut888[i + 1], b8 = g_fbOut888[i + 2];
@@ -1402,7 +1405,11 @@ static void fbPush(const FaceRect& r) {
       fbRow[col * 2] = (uint8_t)(v >> 8);
       fbRow[col * 2 + 1] = (uint8_t)(v & 0xFF);
     }
+    int64_t _fbConvT1 = esp_timer_get_time();
     fbSpi.writeBytes(fbRow, w * 2);
+    int64_t _fbSpiT1 = esp_timer_get_time();
+    g_fbConvUs += (uint32_t)(_fbConvT1 - _fbConvT0);
+    g_fbSpiUs += (uint32_t)(_fbSpiT1 - _fbConvT1);
   }
 
   digitalWrite(FB_PIN_CS, HIGH);
@@ -1430,6 +1437,7 @@ static void faceBenchTask(void* pv) {
   uint64_t pRenderSum = 0, pPushSum = 0, pPxSum = 0;
   uint32_t pDecMax = 0, pRingEmpty = 0, pRingMin = 0xFFFFFFFF;
   uint64_t pDecUs = 0;
+  uint64_t pConvUs = 0, pSpiUs = 0;
 
   // 把目前視窗累計併進 phase 累計再歸零；視窗自然到期、或 phase 提早結束時都要呼叫，
   // 否則 phase 結束時最後一個還沒滿 10 秒的視窗會漏到下一個 phase。
@@ -1441,8 +1449,11 @@ static void faceBenchTask(void* pv) {
     if (g_fbDecMaxUs > pDecMax) pDecMax = g_fbDecMaxUs;
     pRingEmpty += g_fbRingEmpty;
     if (g_fbRingMin < pRingMin) pRingMin = g_fbRingMin;
+    pConvUs += g_fbConvUs;
+    pSpiUs += g_fbSpiUs;
     late = 0; frames = 0; renderSum = 0; pushSum = 0; renderMax = 0; pushMax = 0; pxSum = 0;
     g_fbDecUs = 0; g_fbDecMaxUs = 0; g_fbRingEmpty = 0; g_fbRingMin = 0xFFFFFFFF;
+    g_fbConvUs = 0; g_fbSpiUs = 0;
     windowStart = t;
   };
 
@@ -1473,16 +1484,19 @@ static void faceBenchTask(void* pv) {
       double pxAvg = frames ? (double)pxSum / frames : 0;
       double load = winSec > 0 ? (renderSum + pushSum) / 1e6 / winSec * 100.0 : 0;
       double decLoad = winSec > 0 ? g_fbDecUs / 1e6 / winSec * 100.0 : 0;
+      double convAvgMs = frames ? (g_fbConvUs / (double)frames) / 1000.0 : 0;
+      double spiAvgMs = frames ? (g_fbSpiUs / (double)frames) / 1000.0 : 0;
 
       char ringMinStr[16];
       if (g_fbRingMin == 0xFFFFFFFF) snprintf(ringMinStr, sizeof(ringMinStr), "-");
       else snprintf(ringMinStr, sizeof(ringMinStr), "%u", (unsigned)g_fbRingMin);
 
       Serial.printf("[FaceBench] phase=%s#%d frames=%u late=%u render_avg=%.2fms render_max=%.2fms "
-                    "push_avg=%.2fms push_max=%.2fms px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
+                    "push_avg=%.2fms push_max=%.2fms conv_avg=%.2fms spi_avg=%.2fms px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
                     "dec_max=%.2fms ring_empty=%u ring_min=%s ifree=%u imin=%u\n",
                     on ? "ON" : "OFF", phase, (unsigned)frames, (unsigned)late,
                     renderAvgMs, renderMax / 1000.0, pushAvgMs, pushMax / 1000.0,
+                    convAvgMs, spiAvgMs,
                     pxAvg, load, decLoad, g_fbDecMaxUs / 1000.0,
                     (unsigned)g_fbRingEmpty, ringMinStr,
                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -1500,16 +1514,19 @@ static void faceBenchTask(void* pv) {
       double pxAvg = pFrames ? (double)pPxSum / pFrames : 0;
       double load = phSec > 0 ? (pRenderSum + pPushSum) / 1e6 / phSec * 100.0 : 0;
       double decLoad = phSec > 0 ? pDecUs / 1e6 / phSec * 100.0 : 0;
+      double convAvgMs = pFrames ? (pConvUs / (double)pFrames) / 1000.0 : 0;
+      double spiAvgMs = pFrames ? (pSpiUs / (double)pFrames) / 1000.0 : 0;
 
       char ringMinStr[16];
       if (pRingMin == 0xFFFFFFFF) snprintf(ringMinStr, sizeof(ringMinStr), "-");
       else snprintf(ringMinStr, sizeof(ringMinStr), "%u", (unsigned)pRingMin);
 
       Serial.printf("[FaceBench] === phase=%s#%d frames=%u late=%u render_avg=%.2fms render_max=%.2fms "
-                    "push_avg=%.2fms push_max=%.2fms px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
+                    "push_avg=%.2fms push_max=%.2fms conv_avg=%.2fms spi_avg=%.2fms px_avg=%.0f load=%.1f%% dec_load=%.1f%% "
                     "dec_max=%.2fms ring_empty=%u ring_min=%s ifree=%u imin=%u\n",
                     on ? "ON" : "OFF", phase, (unsigned)pFrames, (unsigned)pLate,
                     renderAvgMs, pRenderMax / 1000.0, pushAvgMs, pPushMax / 1000.0,
+                    convAvgMs, spiAvgMs,
                     pxAvg, load, decLoad, pDecMax / 1000.0,
                     (unsigned)pRingEmpty, ringMinStr,
                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -1519,6 +1536,7 @@ static void faceBenchTask(void* pv) {
       phaseStart = now;
       pLate = 0; pFrames = 0; pRenderSum = 0; pPushSum = 0; pRenderMax = 0; pPushMax = 0; pPxSum = 0;
       pDecUs = 0; pDecMax = 0; pRingEmpty = 0; pRingMin = 0xFFFFFFFF;
+      pConvUs = 0; pSpiUs = 0;
     }
 
     next += PERIOD_US;

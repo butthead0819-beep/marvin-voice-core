@@ -51,9 +51,44 @@ constexpr float RIM_COL[3] = {8, 10, 9};
 constexpr float BROW_COL[3] = {16, 19, 17};
 constexpr float BLACK[3] = {0, 0, 0};
 
+constexpr float INV_R = 1.0f / R;
+constexpr float INV_R2 = 1.0f / ((float)R * (float)R);
+constexpr float INV_PHI_END = 1.0f / PHI_END;
+constexpr float INV_R046 = 1.0f / (R * 0.46f);
+constexpr float INV_R017 = 1.0f / (R * 0.17f);
+constexpr float INV_LIMB_MIN = 1.0f / LIMB_MIN;
+
 inline float clamp01(float x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
 inline float clampH(float v) { return v < -HALF ? -HALF : (v > HALF ? HALF : v); }
 inline float hyp(float a, float b) { return sqrtf(a * a + b * b); }
+
+// 1/sqrt(x)，x > 0。位元技巧初值 + 兩次牛頓迭代（相對誤差約 5e-6）。
+inline float rsqrt_fast(float x) {
+  uint32_t i; float y;
+  memcpy(&i, &x, 4);
+  i = 0x5f3759dfu - (i >> 1);
+  memcpy(&y, &i, 4);
+  float hx = 0.5f * x;
+  y = y * (1.5f - hx * y * y);
+  y = y * (1.5f - hx * y * y);
+  return y;
+}
+// 1/x，x > 0。位元技巧初值 + 三次牛頓迭代。
+inline float recip_fast(float x) {
+  uint32_t i; float y;
+  memcpy(&i, &x, 4);
+  i = 0x7EF311C7u - i;
+  memcpy(&y, &i, 4);
+  y = y * (2.0f - x * y);
+  y = y * (2.0f - x * y);
+  y = y * (2.0f - x * y);
+  return y;
+}
+// hyp 的近似版本：s = a²+b² 的實際長度（sqrtf(s) ≈ s * rsqrt_fast(s)，s=0 時回 0）。
+inline float hypApprox(float a, float b) {
+  float s = a * a + b * b;
+  return s > 0 ? s * rsqrt_fast(s) : 0.0f;
+}
 
 // asin 查表：i/256 → asinf(i/256)，i=0..256。face_rt_init() 填值，用前必須呼叫。
 static float ASIN_LUT[257];
@@ -122,8 +157,8 @@ inline float segDistPx(float phi, float lam, float Px, float Py, float Qx, float
   float Vx = J.a * vx + J.b * vy, Vy = J.d * vy;
   float Wx = J.a * wx + J.b * wy, Wy = J.d * wy;
   float denom = Vx * Vx + Vy * Vy;
-  float t = clamp01((Wx * Vx + Wy * Vy) / denom);
-  return hyp(Wx - Vx * t, Wy - Vy * t);
+  float t = clamp01((Wx * Vx + Wy * Vy) * recip_fast(denom));
+  return hypApprox(Wx - Vx * t, Wy - Vy * t);
 }
 
 // 把未旋轉座標 (ux,uy) 轉成螢幕座標（繞 (C,C) 轉 roll）
@@ -269,27 +304,31 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
 
       float cdx = tcx - C, cdy = tcy - C;
       float cux = F.cr * cdx + F.sr * cdy, cuy = -F.sr * cdx + F.cr * cdy;
-      if (hyp(cux, cuy) > R + hd + 1) continue;  // tile 必定在球外，逐像素一定被 clip 掉
+      if (hypApprox(cux, cuy) > R + hd + 1) continue;  // tile 必定在球外，逐像素一定被 clip 掉
 
       int mask;
-      float csl = cuy / R;
+      float csl = cuy * INV_R;
       if (csl <= -1 || csl >= 1) {
         mask = 7;
       } else {
-        float clam = fast_asin(csl), ccl = sqrtf(1 - csl * csl);
-        float cu = cux / (R * ccl);
+        float clam = fast_asin(csl);
+        float cq = 1 - csl * csl, rccl = rsqrt_fast(cq), ccl = cq * rccl;
+        float cu = cux * rccl * INV_R;
         if (cu <= -1 || cu >= 1) {
           mask = 7;
         } else {
-          float cphi = fast_asin(cu), ccp = sqrtf(1 - cu * cu);
+          float cphi = fast_asin(cu);
+          float cq2 = 1 - cu * cu, rccp = rsqrt_fast(cq2), ccp = cq2 * rccp;
           if (ccl < 0.35f || ccp < 0.35f) {
             mask = 7;  // 靠近球緣，一階近似不可靠，不剔除
           } else {
             float csp = cu;
+            float rclg = ccl > LIMB_MIN ? rccl : INV_LIMB_MIN;
+            float rcpg = ccp > LIMB_MIN ? rccp : INV_LIMB_MIN;
             float cclg = ccl > LIMB_MIN ? ccl : LIMB_MIN, ccpg = ccp > LIMB_MIN ? ccp : LIMB_MIN;
-            float cdphi_dx = 1.0f / (R * cclg * ccpg);
-            float cdphi_dy = cux * csl / (R * R * cclg * cclg * cclg * ccpg);
-            float cdlam_dy = 1.0f / (R * cclg);
+            float cdphi_dx = rclg * rcpg * INV_R;
+            float cdphi_dy = cux * csl * rclg * rclg * rclg * rcpg * INV_R2;
+            float cdlam_dy = rclg * INV_R;
             Jacobian cJ;
             cJ.a = R * cclg * ccpg;
             cJ.b = -R * csl * csp;
@@ -303,7 +342,7 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
                 const Edge& ed = E.edges[k];
                 float v = ed.nx * cphi + ed.ny * clam + ed.c;
                 float gx = ed.nx * cdphi_dx, gy = ed.nx * cdphi_dy + ed.ny * cdlam_dy;
-                float d = -v / hyp(gx, gy);
+                float d = -v * rsqrt_fast(gx * gx + gy * gy);
                 if (d > dfill) dfill = d;
               }
               float drim = 1e30f;
@@ -316,17 +355,17 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
               }
             }
 
-            float cs = (cphi - F.yaw) / PHI_END;
+            float cs = (cphi - F.yaw) * INV_PHI_END;
             float cbd;
             if (cs < -1 || cs > 1) {
               float se = cs < 0 ? -1.0f : 1.0f;
               float dp = cphi - (F.yaw + se * PHI_END), dl = clam - (F.browL0 + BROW_CURVE);
-              cbd = hyp(cJ.a * dp + cJ.b * dl, cJ.d * dl);
+              cbd = hypApprox(cJ.a * dp + cJ.b * dl, cJ.d * dl);
             } else {
-              float m = 2 * BROW_CURVE * cs / PHI_END;
+              float m = 2 * BROW_CURVE * cs * INV_PHI_END;
               float dl = clam - (F.browL0 + BROW_CURVE * cs * cs);
-              float k = dl / (1 + m * m);
-              cbd = hyp(cJ.a * (-m * k) + cJ.b * k, cJ.d * k);
+              float k = dl * recip_fast(1 + m * m);
+              cbd = hypApprox(cJ.a * (-m * k) + cJ.b * k, cJ.d * k);
             }
             if (cbd < hd + BROW_W_ / 2 + 0.5f + TOL) {
               mask |= 4;
@@ -344,13 +383,16 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
           // 像素中心 → 反轉 roll → 未旋轉座標
           float dx = px - C, dy = py - C;
           float ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;
-          float clip = clamp01(R - 0.5f - hyp(ux, uy) + 0.5f);
+          float clip = clamp01(R - 0.5f - hypApprox(ux, uy) + 0.5f);
           if (clip <= 0) continue;
-          float sl = uy / R;
+          float sl = uy * INV_R;
           if (sl <= -1 || sl >= 1) continue;
-          float lam = fast_asin(sl), cl = sqrtf(1 - sl * sl), u = ux / (R * cl);
+          float lam = fast_asin(sl);
+          float q = 1 - sl * sl, rcl = rsqrt_fast(q), cl = q * rcl;
+          float u = ux * rcl * INV_R;
           if (u <= -1 || u >= 1) continue;
-          float phi = fast_asin(u), cp = sqrtf(1 - u * u), sp = u;
+          float phi = fast_asin(u);
+          float q2 = 1 - u * u, rcp = rsqrt_fast(q2), cp = q2 * rcp, sp = u;
 
 #ifdef FACE_RT_STATS
           g_face_rt_full_px++;
@@ -358,10 +400,12 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
 
           // 螢幕 → 角度的偏微分（算邊緣平滑用）
           // 球緣 cos→0 時一階近似會失準（遠處的形狀被算成 0 距離，在球緣留下一圈色暈），所以 cos 設下限
+          float rclg = cl > LIMB_MIN ? rcl : INV_LIMB_MIN;
+          float rcpg = cp > LIMB_MIN ? rcp : INV_LIMB_MIN;
           float clg = cl > LIMB_MIN ? cl : LIMB_MIN, cpg = cp > LIMB_MIN ? cp : LIMB_MIN;
-          float dphi_dx = 1.0f / (R * clg * cpg);
-          float dphi_dy = ux * sl / (R * R * clg * clg * clg * cpg);
-          float dlam_dy = 1.0f / (R * clg);
+          float dphi_dx = rclg * rcpg * INV_R;
+          float dphi_dy = ux * sl * rclg * rclg * rclg * rcpg * INV_R2;
+          float dlam_dy = rclg * INV_R;
           // 角度 → 螢幕（算描邊距離用）：dX=a·dφ+b·dλ, dY=d·dλ
           Jacobian J;
           J.a = R * clg * cpg;
@@ -379,7 +423,7 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
               const Edge& ed = E.edges[k];
               float v = ed.nx * phi + ed.ny * lam + ed.c;
               float gx = ed.nx * dphi_dx, gy = ed.nx * dphi_dy + ed.ny * dlam_dy;
-              float g = clamp01(0.5f + v / hyp(gx, gy));
+              float g = clamp01(0.5f + v * rsqrt_fast(gx * gx + gy * gy));
               cov = cov < g ? cov : g;
               if (cov <= 0) break;
             }
@@ -387,9 +431,9 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
               float k = cov * clip;
               mix(c, F.dark45, 0.98f * k);
               float g[3];
-              gradColor(F, hyp(ux + C - E.sx, uy + C - E.sy) / (R * 0.46f), g);
+              gradColor(F, hypApprox(ux + C - E.sx, uy + C - E.sy) * INV_R046, g);
               mix(c, g, 0.98f * k);
-              float ty = (uy + C - (E.topY - R * 0.01f)) / (R * 0.17f);
+              float ty = (uy + C - (E.topY - R * 0.01f)) * INV_R017;
               mix(c, BLACK, 0.5f * (1 - clamp01(ty)) * k);
             }
             float dmin = 1e30f;
@@ -403,17 +447,17 @@ inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_
 
           if (mask & 4) {
             // 眉線：角度空間的拋物線 λ = L0 + curve·s²，s=(φ-yaw)/PHI_END
-            float s = (phi - F.yaw) / PHI_END;
+            float s = (phi - F.yaw) * INV_PHI_END;
             float bd;
             if (s < -1 || s > 1) {
               float se = s < 0 ? -1.0f : 1.0f;
               float dp = phi - (F.yaw + se * PHI_END), dl = lam - (F.browL0 + BROW_CURVE);
-              bd = hyp(J.a * dp + J.b * dl, J.d * dl);
+              bd = hypApprox(J.a * dp + J.b * dl, J.d * dl);
             } else {
-              float m = 2 * BROW_CURVE * s / PHI_END;
+              float m = 2 * BROW_CURVE * s * INV_PHI_END;
               float dl = lam - (F.browL0 + BROW_CURVE * s * s);
-              float k = dl / (1 + m * m);
-              bd = hyp(J.a * (-m * k) + J.b * k, J.d * k);
+              float k = dl * recip_fast(1 + m * m);
+              bd = hypApprox(J.a * (-m * k) + J.b * k, J.d * k);
             }
             float bc = clamp01(BROW_W_ / 2 - bd + 0.5f);
             if (bc > 0) mix(c, BROW_COL, 0.92f * bc * clip);
