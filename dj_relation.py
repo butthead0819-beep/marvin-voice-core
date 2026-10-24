@@ -96,8 +96,12 @@ def build_relation(
     display: Callable[[dict], tuple[str, str]],
     spotlight: str = "", personal_user: str = "", anchor_title: str = "",
 ) -> Relation | None:
+    from song_name_clean import speakable_artist, speakable_title
+
     humans = {m for m in (present or ()) if m and "Marvin" not in m}
     if not humans:
+        return None
+    if speakable_title(title) is None:
         return None
     prefer = {n for n in (spotlight, personal_user) if n}
 
@@ -113,16 +117,17 @@ def build_relation(
 
     if anchor_title:
         a_t, a_a = display({"title": anchor_title})
-        if _norm(a_t) and _norm(a_t) != _norm(title):
+        if _norm(a_t) and _norm(a_t) != _norm(title) and speakable_title(a_t):
             ac_counts = song_counts(songs, a_t, a_a, display=display)
             ac_ranked = _ranked(ac_counts, humans, prefer=prefer)
             if ac_ranked and ac_ranked[0][1] >= LISTEN_MIN:
                 return Relation("anchor_song", ac_ranked[0][0], title, artist, anchor=a_t)
 
-    artc = artist_counts(songs, artist, display=display)
-    art_ranked = _ranked(artc, humans, prefer=prefer)
-    if art_ranked and art_ranked[0][1] >= LISTEN_MIN:
-        return Relation("same_artist", art_ranked[0][0], title, artist)
+    if speakable_artist(artist):
+        artc = artist_counts(songs, artist, display=display)
+        art_ranked = _ranked(artc, humans, prefer=prefer)
+        if art_ranked and art_ranked[0][1] >= LISTEN_MIN:
+            return Relation("same_artist", art_ranked[0][0], title, artist)
 
     if personal_user and personal_user in humans:
         return Relation("personal_list", personal_user, title, artist)
@@ -131,11 +136,17 @@ def build_relation(
 
 
 def render_relation(rel: Relation, templates: dict[str, list[str]], *, recent: Collection[str] = (), rng=random) -> tuple[str, str]:
+    from song_name_clean import speakable_artist, speakable_title
+
     pool = templates[rel.kind]
     fresh = [t for t in pool if t not in recent] or list(pool)
     tmpl = rng.choice(fresh)
-    song = f"{rel.artist}的《{rel.title}》" if rel.artist else f"《{rel.title}》"
-    text = tmpl.format(who=rel.who, title=rel.title, artist=rel.artist, anchor=rel.anchor, song=song)
+    # build_relation 已確認念得出口；這裡取剝掉尾端註記的版本（「一念(電視劇《逐玉》插曲)」→「一念」）
+    title = speakable_title(rel.title) or rel.title
+    anchor = speakable_title(rel.anchor) or rel.anchor
+    artist = speakable_artist(rel.artist)
+    song = f"{artist}的《{title}》" if artist else f"《{title}》"
+    text = tmpl.format(who=rel.who, title=title, artist=artist, anchor=anchor, song=song)
     return text, tmpl
 
 

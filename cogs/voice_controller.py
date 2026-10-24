@@ -3435,8 +3435,19 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             parts.append(f"（{req_by} 點的）")
         answer = "，".join(parts)
         reply = f"🎵 現在播的是 {answer}。"
+
+        from song_name_clean import spoken_song_name
+        from music_memory import extract_video_id
+        sp_t, sp_a = spoken_song_name(info, extract_vid=extract_video_id)
+        if sp_t and sp_a:
+            spoken = f"現在播的是{sp_a}的《{sp_t}》。"
+        elif sp_t:
+            spoken = f"現在播的是《{sp_t}》。"
+        else:
+            spoken = "這首標題太亂我念不清楚，歌名貼在文字頻道了。"
+
         logger.info(f"🎵 [IBA-T1] {speaker} 問歌名，直接回答: {reply}")
-        self.stt_logger.info(f"[音樂資訊←{speaker}] query='{query[:30]}' | reply={reply}")
+        self.stt_logger.info(f"[音樂資訊←{speaker}] query='{query[:30]}' | reply={reply} | spoken={spoken}")
         if ch:
             await ch.send(f"💬 **【馬文·音樂資訊】** {reply}")
         # 8/9：8/8 補的 TTS 未加 protected，多人語音頻道常有人同時講話，被
@@ -3447,7 +3458,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         _prev_protected = self._tts_protected
         self._tts_protected = True
         try:
-            await self.play_tts(reply, already_in_channel=False, protected=True)
+            await self.play_tts(spoken, already_in_channel=False, protected=True)
         finally:
             self._tts_protected = _prev_protected
 
