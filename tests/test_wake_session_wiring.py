@@ -462,7 +462,7 @@ async def test_process_queued_query_passes_winner_to_session(winner_name, ended)
 
 @pytest.mark.asyncio
 async def test_handle_stt_result_shortcut_skip_ends_session():
-    """session 接住「下一首」→ WakeShortcut 直派 → 走 _wake_session_on_shortcut → 結束。"""
+    """session 接住「馬文下一首」（有叫名字）→ WakeShortcut 直派 → 走 _wake_session_on_shortcut → 結束。"""
     import wake_shortcut
     cog, wf = _make_cog_for_stt()
     wf.is_open.return_value = False
@@ -471,9 +471,26 @@ async def test_handle_stt_result_shortcut_skip_ends_session():
     cog._mixer.tts_load_seconds.return_value = 0.0
     with patch.object(wake_shortcut, "shortcut_query", return_value="下一首"), \
          patch.object(wake_shortcut, "dispatch_with_feedback", AsyncMock()):
-        await cog.handle_stt_result("TestUser", "下一首", time.time(), b"fake_audio", bypass_etd=True)
+        await cog.handle_stt_result("TestUser", "馬文下一首", time.time(), b"fake_audio", bypass_etd=True)
 
     assert cog._wake_session.target is None
+
+
+@pytest.mark.asyncio
+async def test_handle_stt_result_wakeless_shortcut_in_window_not_dispatched():
+    """10/24 使用者定：窗內沒叫名字的「下一首」可能只是在討論 → WakeShortcut 不直派。"""
+    import wake_shortcut
+    cog, wf = _make_cog_for_stt()
+    wf.is_open.return_value = False
+    cog._wake_session = _listening_session("TestUser")
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.return_value = 0.0
+    with patch.object(wake_shortcut, "shortcut_query", return_value="下一首"), \
+         patch.object(wake_shortcut, "dispatch_with_feedback", AsyncMock()) as dispatched:
+        await cog.handle_stt_result("TestUser", "下一首", time.time(), b"fake_audio", bypass_etd=True)
+
+    dispatched.assert_not_called()
+    assert cog._wake_session.target == "TestUser"
 
 
 # ── v3：提示音等「Marvin 開始講 → 講完」才響 ─────────────────────────────────
