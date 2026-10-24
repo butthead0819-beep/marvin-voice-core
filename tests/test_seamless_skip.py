@@ -152,3 +152,97 @@ async def test_voice_view_skip_delegates_to_music_cog_and_triggers_ack():
     args = cog._safe_music_command.call_args[0]
     assert args[2] == "skip"
 
+    # ack task 已掛到 MusicCog，供 skip 後背景 DJ 串場排在它後面
+    assert isinstance(cog._pending_skip_ack, asyncio.Task)
+
+
+@pytest.mark.asyncio
+async def test_skip_dj_waits_for_pending_ack():
+    """skip 後背景 DJ 串場要等 `_pending_skip_ack`（「好，換」）先播完才推口白，
+    否則預渲染口白幾乎立刻推上 TTS 層 FIFO，會先聽到歌名才聽到 ack。"""
+    cog = _make_cog()
+    next_info = {"title": "夜曲", "url": "http://example.com/song2", "duration": 200}
+    cog.stream_queue = [next_info]
+    cog._start_music_preload = MagicMock()
+    cog._resolve_tail_dj_meta = AsyncMock(return_value={"text": "下一首", "audio_path": None})
+    cog._attach_narration = MagicMock()
+
+    order = []
+    release_ack = asyncio.Event()
+
+    async def _ack():
+        await release_ack.wait()
+        order.append("ack")
+
+    cog._pending_skip_ack = asyncio.create_task(_ack())
+
+    async def _dj_side_effect(*args, **kwargs):
+        order.append("dj")
+        return "full"
+
+    cog._maybe_play_dj_interjection = AsyncMock(side_effect=_dj_side_effect)
+
+    await cog._handle_voice_music_command("UserA", "", "skip")
+    await asyncio.sleep(0.05)
+
+    assert order == []  # 口白還在等 ack
+    cog._vc_mock._mixer.clear_music.assert_called_once()  # skip 本身不等 ack
+
+    release_ack.set()
+    await asyncio.sleep(0.05)
+
+    assert order == ["ack", "dj"]
+    assert cog._pending_skip_ack is None
+
+
+@pytest.mark.asyncio
+async def test_skip_dj_ack_timeout_still_plays_dj(monkeypatch):
+    """ack 卡住逾時，口白照常播出（不能被卡住的 ack 吞掉），且 ack task 不被取消。"""
+    monkeypatch.setattr("cogs.music_cog_tail_dj._SKIP_ACK_WAIT_S", 0.05)
+    cog = _make_cog()
+    next_info = {"title": "夜曲", "url": "http://example.com/song2", "duration": 200}
+    cog.stream_queue = [next_info]
+    cog._start_music_preload = MagicMock()
+    cog._resolve_tail_dj_meta = AsyncMock(return_value={"text": "下一首", "audio_path": None})
+    cog._attach_narration = MagicMock()
+    cog._maybe_play_dj_interjection = AsyncMock(return_value="full")
+
+    async def _never():
+        await asyncio.sleep(100)
+
+    ack_task = asyncio.create_task(_never())
+    cog._pending_skip_ack = ack_task
+
+    await cog._handle_voice_music_command("UserA", "", "skip")
+    await asyncio.sleep(0.2)
+
+    cog._maybe_play_dj_interjection.assert_awaited_once()
+    assert not ack_task.cancelled()
+    ack_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_playback_agent_skip_registers_ack_on_music_cog():
+    """PlaybackControlAgent 處理 skip_track 時，要把 ack task 掛到 MusicCog._pending_skip_ack。"""
+    from intent_agents.playback_control_agent import PlaybackControlAgent
+
+    mc = MagicMock()
+    mc._safe_music_command = AsyncMock()
+
+    ctrl = MagicMock()
+    ctrl.play_tts = AsyncMock()
+    ctrl.bot.cogs.get.return_value = mc
+    ctrl._current_stream_info = None
+
+    agent = PlaybackControlAgent(ctrl)
+    schema = [s for s in agent.declare_intents() if s.name == "skip_track"][0]
+
+    ctx = MagicMock()
+    ctx.speaker = "UserA"
+    ctx.query = "下一首"
+
+    handler = agent.make_handler(schema, {}, ctx)
+    await handler()
+
+    assert isinstance(mc._pending_skip_ack, asyncio.Task)
+

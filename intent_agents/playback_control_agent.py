@@ -176,6 +176,11 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
             # Phase 1 M5 P5 簡化版: ack + action 並行
             ack_text = _ACK_TEXT.get(intent, "好")
             ack_task = asyncio.create_task(self._quick_ack(ack_text))
+            if intent == "skip_track":
+                bot = getattr(self.ctrl, "bot", None)
+                mc = bot.cogs.get("MusicCog") if bot else None
+                if mc is not None:
+                    mc._pending_skip_ack = ack_task
             action_task = asyncio.create_task(self._execute(intent, speaker, ctx.query))
             try:
                 await asyncio.gather(ack_task, action_task)
