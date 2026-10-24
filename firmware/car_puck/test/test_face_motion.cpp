@@ -281,6 +281,39 @@ int main() {
     }
   }
 
+  // T9: 死角補測（mutation check 抓出來的三個常數）
+  {
+    // 9a 律動保留 30%：LISTEN 定值 roll=.34，GLANCE 平台段（duck=1、roll -.1）時 roll 應≈ .34*0.3-0.1
+    {
+      FaceMixer m; face_mixer_init(m);
+      FaceInputs in{OVERRIDE_LISTEN, false, 0, 0.0f, 0.0f};
+      runMixer(m, in, 0.0f, 2.0f);
+      face_mixer_trigger_gesture(m, GESTURE_GLANCE, 2.0f);
+      FacePoseOut p = runMixer(m, in, 2.0f, 2.4f * 0.6f);
+      assert(fabsf(p.pose.roll - (0.34f * 0.3f - 0.1f)) < 0.015f);
+      printf("T9a ok (roll=%.4f)\n", p.pose.roll);
+    }
+    // 9b 歌尾 15s 漸弱：剩 7.5s 時搖擺幅度約為正常的一半
+    {
+      FaceMixer m; face_mixer_init(m);
+      FaceInputs in{OVERRIDE_NONE, true, 80, 100.0f, 92.5f};
+      float T = 0; FacePoseOut p{};
+      for (int i = 0; i < (int)(2.0f / DT); i++) { T += DT; p = face_mixer_step(m, in, T, DT); }
+      float mx = 0;
+      for (int i = 0; i < (int)(7.0f / DT); i++) { T += DT; p = face_mixer_step(m, in, T, DT); if (fabsf(p.pose.yaw) > mx) mx = fabsf(p.pose.yaw); }
+      assert(mx > 0.18f && mx < 0.27f);
+      printf("T9b ok (max yaw=%.4f)\n", mx);
+    }
+    // 9c 淡換 0.4s：從靜止切進 LISTEN，0.2s 時還沒到位（roll 遠小於 .34）
+    {
+      FaceMixer m; face_mixer_init(m);
+      FaceInputs in{OVERRIDE_LISTEN, false, 0, 0.0f, 0.0f};
+      FacePoseOut p = runMixer(m, in, 0.0f, 0.2f);
+      assert(p.pose.roll < 0.15f);
+      printf("T9c ok (roll_at_0.2s=%.4f)\n", p.pose.roll);
+    }
+  }
+
   // T8: 背光
   {
     assert(face_backlight(true, 6, 29, 0, false) == 60);
