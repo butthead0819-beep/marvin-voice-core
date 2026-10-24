@@ -347,6 +347,32 @@ int main() {
     printf("T10 ok\n");
   }
 
+  // T11: gesture_level_amp 三檔 + 強度影響動作幅度（2b：puck 每則回覆開口動作）
+  {
+    assert(fabsf(gesture_level_amp(1) - 0.6f) < 1e-6f);
+    assert(fabsf(gesture_level_amp(2) - 1.0f) < 1e-6f);
+    assert(fabsf(gesture_level_amp(3) - 1.3f) < 1e-6f);
+
+    auto maxAbsYawDuringGesture = [](float amp) -> float {
+      FaceMixer m; face_mixer_init(m);
+      FaceInputs in{OVERRIDE_NONE, false, 0, 0.0f, 0.0f};
+      face_mixer_trigger_gesture(m, GESTURE_NO, 0.0f, amp);
+      float T = 0.0f, mx = 0.0f;
+      int steps = (int)(gestureDuration(GESTURE_NO) / DT) + 2;
+      for (int i = 0; i < steps; i++) {
+        T += DT;
+        FacePoseOut p = face_mixer_step(m, in, T, DT);
+        if (fabsf(p.pose.yaw) > mx) mx = fabsf(p.pose.yaw);
+      }
+      return mx;
+    };
+
+    float lo = maxAbsYawDuringGesture(gesture_level_amp(1));
+    float hi = maxAbsYawDuringGesture(gesture_level_amp(3));
+    assert(hi > lo);
+    printf("T11 ok (lo=%.4f hi=%.4f)\n", lo, hi);
+  }
+
   printf("all face_motion tests passed\n");
   return 0;
 }

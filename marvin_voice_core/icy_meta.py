@@ -81,23 +81,27 @@ def display_album(info: dict) -> str:
 def build_now_playing_payload(
     info: dict | None, start_time: float | None, now: float,
     *, bpm: float | None = None, include_bpm: bool = False,
-    speaking: bool | None = None,
+    speaking: bool | None = None, gesture: str | None = None,
 ) -> bytes:
     """組出一行 ICY payload：
-    M1\x1ftrack_id\x1fdur_ms\x1fpos_ms\x1fstate\x1ftitle\x1fartist\x1falbum[\x1fbpm][\x1fspeaking]。
+    M1\x1ftrack_id\x1fdur_ms\x1fpos_ms\x1fstate\x1ftitle\x1fartist\x1falbum[\x1fbpm][\x1fspeaking][\x1fgesture]。
 
     info 為 None/空 → 無歌在播，state=S、其餘欄位空。
     include_bpm=True 才多接第 9 欄 bpm（四捨五入成整數字串；None/非正數/非數字 → 空字串）。
     預設 include_bpm=False，輸出跟原本一樣是 8 欄。
 
-    speaking 為 None → 行為完全不變（8 欄，或 include_bpm 時 9 欄）。speaking 不是 None
-    → 一律輸出 10 欄：第 9 欄是 bpm（include_bpm=False 或沒 bpm 時為空字串），
-    第 10 欄 "1"（True）或 "0"（False）——車機 ICY 判斷「Marvin 正在講話」用。
+    speaking 為 None → 行為完全不變（8 欄，或 include_bpm 時 9 欄），gesture 忽略。
+    speaking 不是 None → 一律輸出至少 10 欄：第 9 欄是 bpm（include_bpm=False 或沒 bpm
+    時為空字串），第 10 欄 "1"（True）或 "0"（False）——車機 ICY 判斷「Marvin 正在講話」用。
+    speaking 不是 None 且 gesture 不是 None → 再多接第 11 欄，原樣輸出 gesture 字串
+    （這則回覆開頭做的頭部動作，格式 "seq:代碼強度"）。
     """
     if speaking is None:
         speak_field = []
     else:
         speak_field = [_format_bpm(bpm) if include_bpm else ""] + ["1" if speaking else "0"]
+        if gesture is not None:
+            speak_field = speak_field + [gesture]
 
     if not info:
         # 沒歌在播：BPM 沒有意義，第 9 欄一律空字串（include_bpm 時仍保持 9 欄）

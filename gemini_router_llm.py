@@ -841,7 +841,7 @@ class GeminiRouterLLMMixin:
         "neutral":    0.75,
     }
 
-    async def stream_fast_response(self, speaker: str, query: str, history: list = None, online_members: list[str] = None, temperature: float = None, emotion_tag: str = "neutral", stream_active: bool = False, game_mode: bool = False, hot_chat: bool = False):
+    async def stream_fast_response(self, speaker: str, query: str, history: list = None, online_members: list[str] = None, temperature: float = None, emotion_tag: str = "neutral", stream_active: bool = False, game_mode: bool = False, hot_chat: bool = False, puck_gesture: bool = False):
         """[Fast System] 極速回應流式版本：專為 TTS 串流橋接設計"""
         pipeline_timing.mark_once("llm_start")
         # 🔒 [防線②] 記憶注入名單唯一建構點——不變量由 test_speaker_isolation 守
@@ -882,6 +882,10 @@ class GeminiRouterLLMMixin:
             "4. 第一個可朗讀句必須是答案本身，不要開場白。\n"
             "5. 最多 3 句。語音用，短而直接。\n"
         )
+
+        if puck_gesture:
+            from puck_gesture import GESTURE_PROMPT_DIRECTIVE
+            base_user_prompt += GESTURE_PROMPT_DIRECTIVE
 
         # 🔍 [Intent Cache] 注入上次背景搜尋結果（5 分鐘內有效），並標記為已消費
         intent_cache = self._intent_search_cache.get(speaker)
