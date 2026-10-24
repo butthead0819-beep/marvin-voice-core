@@ -1549,6 +1549,7 @@ static void faceProfileRender() {
     float t = i * 0.04f;
     FacePose p = { 1.2f*sinf(0.7f*t), 0.4f*sinf(1.1f*t+1.0f), 0.3f*sinf(0.9f*t+2.0f), 0.03f*(1.0f+sinf(0.5f*t)), 0.0f };
     face_rt_render(p, g_fbBase888, g_fbOut888);
+    vTaskDelay(1);   // 跑在 core 0 時要讓 IDLE0 餵 task watchdog（連續 250 格約 5s 會觸發重開機）
   }
   int64_t wallT1 = esp_timer_get_time();
 
