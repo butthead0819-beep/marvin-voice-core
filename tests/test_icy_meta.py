@@ -14,6 +14,7 @@ from marvin_voice_core.icy_meta import (
     ARTIST_MAX_BYTES,
     TITLE_MAX_BYTES,
     IcyInterleaver,
+    SpeakTracker,
     build_now_playing_payload,
     display_album,
     truncate_utf8,
@@ -386,3 +387,90 @@ def test_display_album_generic_recommend_kept_as_is():
 def test_display_album_empty_when_requested_by_missing_or_unknown():
     assert display_album({"title": "T"}) == ""
     assert display_album({"title": "T", "requested_by": "未知"}) == ""
+
+
+# ---------- SpeakTracker ----------
+
+def test_speak_tracker_first_update_returns_false():
+    t = SpeakTracker()
+    assert t.update(0, 100.0) is False
+
+
+def test_speak_tracker_increase_returns_true():
+    t = SpeakTracker()
+    t.update(5, 100.0)
+    assert t.update(6, 100.1) is True
+
+
+def test_speak_tracker_true_within_hold_false_after():
+    t = SpeakTracker(hold_s=1.0)
+    t.update(5, 100.0)
+    t.update(6, 100.0)  # 增加發生在 100.0
+    assert t.update(6, 100.9) is True   # 0.9s 後仍在 hold 內
+    assert t.update(6, 101.1) is False  # 1.1s 後超過 hold
+
+
+def test_speak_tracker_unchanged_count_stays_false():
+    t = SpeakTracker(hold_s=1.0)
+    t.update(5, 100.0)
+    t.update(5, 100.0)  # 沒增加
+    assert t.update(5, 100.1) is False
+
+
+def test_speak_tracker_count_decrease_is_not_increase():
+    t = SpeakTracker(hold_s=1.0)
+    t.update(10, 100.0)
+    t.update(11, 100.0)  # 增加，講話中
+    assert t.update(2, 100.1) is False  # 計數變小（mixer 重建）→ 新基準，不算增加
+    assert t.update(2, 100.2) is False  # 持平也不算增加
+
+
+# ---------- build_now_playing_payload：speaking ----------
+
+def test_payload_speaking_none_matches_no_kwarg_with_info():
+    info = {"title": "Song", "artist": "Artist", "album": "Album", "duration": 200.0}
+    p1 = build_now_playing_payload(info, 1000.0, 1050.0)
+    p2 = build_now_playing_payload(info, 1000.0, 1050.0, speaking=None)
+    assert p1 == p2
+
+
+def test_payload_speaking_none_matches_no_kwarg_no_info():
+    p1 = build_now_playing_payload(None, None, 100.0)
+    p2 = build_now_playing_payload(None, None, 100.0, speaking=None)
+    assert p1 == p2
+
+
+def test_payload_speaking_true_with_info_is_10_fields():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(info, 1000.0, 1050.0, speaking=True)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 10
+    assert parts[9] == "1"
+    assert parts[8] == ""
+
+
+def test_payload_speaking_false_with_bpm_is_10_fields():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(
+        info, 1000.0, 1050.0, speaking=False, include_bpm=True, bpm=120)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 10
+    assert parts[8] == "120"
+    assert parts[9] == "0"
+
+
+def test_payload_speaking_true_no_info_is_10_fields_state_s():
+    payload = build_now_playing_payload(None, None, 100.0, speaking=True)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 10
+    assert parts[4] == "S"
+    assert parts[9] == "1"
+
+
+def test_payload_first_8_fields_unchanged_by_speaking():
+    info = {"title": "Song", "artist": "Artist", "album": "Album", "duration": 200.0}
+    without = build_now_playing_payload(info, 1000.0, 1050.0)
+    with_speak = build_now_playing_payload(info, 1000.0, 1050.0, speaking=True)
+    parts_without = without.decode("utf-8").split("\x1f")
+    parts_with = with_speak.decode("utf-8").split("\x1f")
+    assert parts_without[:8] == parts_with[:8]

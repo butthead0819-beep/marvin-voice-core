@@ -117,6 +117,7 @@ class LocalMixingAudioSource(_BASE):
         self._tts_cur: np.ndarray | None = None  # 當前 TTS buffer（consumer-local）
         self._tts_off = 0
         self.tts_push_count: int = 0  # push_tts() 成功推入次數，供 outcome log 判斷有沒有真的推出去
+        self.tts_frames_total: int = 0  # 混出含 Marvin TTS（layer1）的幀數累計；車機 ICY 判斷「正在講話」用（只看 layer1，不含 Marmo layer2）
 
         # 🎭 [打岔層 layer2] Marmo 在 Marvin 講話尾段「混音疊進來打斷」。獨立佇列，與
         # layer1 並行混音（mix_layers 逐元素相加）、不互相排隊。layer2 活躍時 layer1(Marvin)
@@ -370,6 +371,8 @@ class LocalMixingAudioSource(_BASE):
             # onset 復原：新一段 Marvin TTS 進來、且無人說話（窗已過）→ 把 idle 期間凍結的 duck
             # 復原 1.0（前幀無 TTS＝靜音，直接設不會 click），避免下段 TTS 殘留壓低。
             _tts_now = tts_f is not None
+            if _tts_now:
+                self.tts_frames_total += 1
             if _tts_now and not self._prev_tts_marvin and self._clock() >= self._player_speech_until:
                 self._tts_player_duck_cur = 1.0
             self._prev_tts_marvin = _tts_now

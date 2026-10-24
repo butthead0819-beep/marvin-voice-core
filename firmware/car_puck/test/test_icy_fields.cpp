@@ -174,6 +174,50 @@ int main() {
     printf("T21 ok\n");
   }
 
+  // ---- icy_speak_field ----
+  auto speak10 = [](const char* speakField) {
+    std::string first9 = "M1\x1f""abc\x1f""1000\x1f""0\x1f""P\x1f""title\x1f""artist\x1f""album\x1f""120";
+    std::string s = first9 + "\x1f" + speakField;
+    return icy_speak_field(U(s.data()), s.size());
+  };
+
+  // T22: 10 欄 "1" -> 1
+  { assert(speak10("1") == 1); printf("T22 ok\n"); }
+
+  // T23: 10 欄 "0" -> 0
+  { assert(speak10("0") == 0); printf("T23 ok\n"); }
+
+  // T24: 8 欄（缺第 9/10 欄）-> -1
+  {
+    std::string s = "M1\x1f""abc\x1f""1000\x1f""0\x1f""P\x1f""title\x1f""artist\x1f""album";
+    assert(icy_speak_field(U(s.data()), s.size()) == -1);
+    printf("T24 ok\n");
+  }
+
+  // T25: 9 欄（缺第 10 欄）-> -1
+  {
+    std::string s = "M1\x1f""abc\x1f""1000\x1f""0\x1f""P\x1f""title\x1f""artist\x1f""album\x1f""120";
+    assert(icy_speak_field(U(s.data()), s.size()) == -1);
+    printf("T25 ok\n");
+  }
+
+  // T26: 第 10 欄為空 -> -1
+  { assert(speak10("") == -1); printf("T26 ok\n"); }
+
+  // T27: 第 10 欄為 "2" -> -1
+  { assert(speak10("2") == -1); printf("T27 ok\n"); }
+
+  // T28: 第 10 欄為 "10" -> -1
+  { assert(speak10("10") == -1); printf("T28 ok\n"); }
+
+  // T29: 第 10 欄後面還有欄位，仍只看第 10 欄本身
+  {
+    std::string first9 = "M1\x1f""abc\x1f""1000\x1f""0\x1f""P\x1f""title\x1f""artist\x1f""album\x1f""120";
+    std::string s = first9 + "\x1f""1\x1f""extra";
+    assert(icy_speak_field(U(s.data()), s.size()) == 1);
+    printf("T29 ok\n");
+  }
+
   printf("all icy_fields tests passed\n");
   return 0;
 }

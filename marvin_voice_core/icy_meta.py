@@ -13,6 +13,7 @@ from typing import Callable
 
 ICY_METAINT = 16000          # 每 16000 bytes 音訊插一個 metadata 區塊（128kbps ≈ 1 秒）
 ICY_FULL_REFRESH_S = 5.0     # 內容沒變時，至少每 5 秒重送一次完整 payload（重同步/位置校正）
+ICY_SPEAK_HOLD_S = 1.0  # 講話旗標持有時間；≈ ICY_METAINT 一個區塊的音訊長度，區塊之間短句不會漏掉
 TITLE_MAX_BYTES = 120
 ARTIST_MAX_BYTES = 80
 ALBUM_MAX_BYTES = 120
@@ -80,18 +81,33 @@ def display_album(info: dict) -> str:
 def build_now_playing_payload(
     info: dict | None, start_time: float | None, now: float,
     *, bpm: float | None = None, include_bpm: bool = False,
+    speaking: bool | None = None,
 ) -> bytes:
     """組出一行 ICY payload：
-    M1\x1ftrack_id\x1fdur_ms\x1fpos_ms\x1fstate\x1ftitle\x1fartist\x1falbum[\x1fbpm]。
+    M1\x1ftrack_id\x1fdur_ms\x1fpos_ms\x1fstate\x1ftitle\x1fartist\x1falbum[\x1fbpm][\x1fspeaking]。
 
     info 為 None/空 → 無歌在播，state=S、其餘欄位空。
     include_bpm=True 才多接第 9 欄 bpm（四捨五入成整數字串；None/非正數/非數字 → 空字串）。
     預設 include_bpm=False，輸出跟原本一樣是 8 欄。
+
+    speaking 為 None → 行為完全不變（8 欄，或 include_bpm 時 9 欄）。speaking 不是 None
+    → 一律輸出 10 欄：第 9 欄是 bpm（include_bpm=False 或沒 bpm 時為空字串），
+    第 10 欄 "1"（True）或 "0"（False）——車機 ICY 判斷「Marvin 正在講話」用。
     """
+    if speaking is None:
+        speak_field = []
+    else:
+        speak_field = [_format_bpm(bpm) if include_bpm else ""] + ["1" if speaking else "0"]
+
     if not info:
         # 沒歌在播：BPM 沒有意義，第 9 欄一律空字串（include_bpm 時仍保持 9 欄）
-        return (_SEP.join(["M1", "", "0", "0", "S", "", "", ""] + ([""] if include_bpm else []))).encode("utf-8")
-    bpm_field = [_format_bpm(bpm)] if include_bpm else []
+        fields = ["M1", "", "0", "0", "S", "", "", ""]
+        if speak_field:
+            fields = fields + speak_field
+        elif include_bpm:
+            fields = fields + [""]
+        return (_SEP.join(fields)).encode("utf-8")
+    bpm_field = speak_field if speak_field else ([_format_bpm(bpm)] if include_bpm else [])
 
     title_raw = info.get("title", "")
     artist_raw = info.get("artist") or info.get("uploader", "") or ""
@@ -187,6 +203,30 @@ class IcyInterleaver:
                 out += self._build_block(payload, now)
                 self._until_meta = self._metaint
         return bytes(out)
+
+
+class SpeakTracker:
+    """mixer.tts_frames_total（單調遞增）→ 「現在是否在講話」。
+
+    計數比上次 update 增加 → 記下當時時間；距離最近一次增加 < hold_s 就算在講話。
+    第一次 update 只記基準值、回 False（連線剛建立時不能把過去累計當成正在講話）。"""
+
+    def __init__(self, hold_s: float = ICY_SPEAK_HOLD_S):
+        self._hold_s = hold_s
+        self._last_total: int | None = None
+        self._last_increase_at: float | None = None
+
+    def update(self, frames_total: int, now: float) -> bool:
+        if self._last_total is None:
+            self._last_total = frames_total
+            return False
+        if frames_total > self._last_total:
+            self._last_increase_at = now
+        elif frames_total < self._last_total:
+            # mixer 重建：計數變小，當作新基準，不算增加
+            self._last_increase_at = None
+        self._last_total = frames_total
+        return self._last_increase_at is not None and (now - self._last_increase_at) < self._hold_s
 
 
 class BpmLookup:

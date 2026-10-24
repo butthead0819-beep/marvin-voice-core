@@ -112,6 +112,35 @@ def test_music_and_tts_both_contribute():
     assert mixed.mean() != 0
 
 
+# ── tts_frames_total（車機 ICY 判斷「正在講話」用）──────────────────────────
+
+def test_tts_frames_total_increases_with_tts_playback():
+    mix = LocalMixingAudioSource()
+    mix.push_tts(_f32_frame(0.4, n=FRAME_SAMPLES * 3))  # 三幀 TTS
+    n = 5
+    for _ in range(n):
+        mix.read()
+    assert mix.tts_frames_total > 0
+    assert mix.tts_frames_total <= n
+
+
+def test_tts_frames_total_unchanged_without_tts():
+    mix = LocalMixingAudioSource()
+    mix.set_music_source(_FakeMusic(value=0.2, frames=3))
+    for _ in range(5):
+        mix.read()
+    assert mix.tts_frames_total == 0
+
+
+def test_tts_frames_total_unchanged_by_marmo_layer2_only():
+    """push_tts2（Marmo layer2）不算 Marvin 講話，只有 layer1 push_tts 才算。"""
+    mix = LocalMixingAudioSource()
+    mix.push_tts2(_f32_frame(0.4, n=FRAME_SAMPLES * 3))
+    for _ in range(5):
+        mix.read()
+    assert mix.tts_frames_total == 0
+
+
 # ── TTS 音量（tts_gain）─────────────────────────────────────────────────────
 
 def test_tts_gain_default_is_1_0():
