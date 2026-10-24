@@ -48,16 +48,14 @@ async def strip_gesture_stream(raw):
     tail_buf = ""
 
     def _emit_normal(buf: str) -> tuple[str, str]:
-        idx = buf.rfind("[")
-        if idx != -1:
-            frag = buf[idx:]
-            if "]]" not in frag and len(frag) <= 24:
-                emit_part, remainder = buf[:idx], frag
-            else:
-                emit_part, remainder = buf, ""
-        else:
-            emit_part, remainder = buf, ""
-        return _TAG_RE.sub("", emit_part), remainder
+        # 先剝完整標籤，再把尾端可能是標籤開頭的殘片（未閉合的 "[[…" 或單一 "["）留到下個 chunk。
+        cleaned = _TAG_RE.sub("", buf)
+        idx = cleaned.rfind("[[")
+        if idx != -1 and "]]" not in cleaned[idx:] and len(cleaned) - idx <= 24:
+            return cleaned[:idx], cleaned[idx:]
+        if cleaned.endswith("["):
+            return cleaned[:-1], "["
+        return cleaned, ""
 
     async for chunk in raw:
         if chunk == "__SEARCHING__":

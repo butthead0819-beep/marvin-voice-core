@@ -82,6 +82,15 @@ async def test_strip_gesture_stream_hint_split_across_chunks(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_strip_gesture_stream_midstream_tag_split_across_chunks_removed():
+    out = []
+    async for piece in strip_gesture_stream(_agen(["對，", "然後[[N", "O]]好"])):
+        out.append(piece)
+    joined = "".join(out)
+    assert joined == "對，然後好"
+
+
+@pytest.mark.asyncio
 async def test_strip_gesture_stream_plain_text_concat_unchanged():
     out = []
     async for piece in strip_gesture_stream(_agen(["你好，", "今天", "天氣真好"])):
@@ -163,7 +172,8 @@ def test_rule3_agreement_prefix_is_yes_but_haoxiang_excluded():
 
 
 def test_rule4_question_mark_ending_first_clause_is_tilt():
-    code, _ = choose_reply_gesture("你確定？還是再想想", speaker=None, hint=None, hot_chat=False, recent=[])
+    # recent 含 T：若問號規則沒生效，輪替會給 Y，才分得出是規則命中而非輪替巧合
+    code, _ = choose_reply_gesture("你確定？還是再想想", speaker=None, hint=None, hot_chat=False, recent=["T"])
     assert code == "T"
 
 
