@@ -63,6 +63,18 @@ async def test_hud_includes_shared_drawing_and_performance_script():
 
 
 @pytest.mark.asyncio
+async def test_hud_vinyl_card_uses_car_cover_badge():
+    """現正播放卡改用 car puck 的徽章封面（/car_cover），不轉；潑漆黑膠只在沒封面時當退回。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+    app = build_text_app(_make_vc(), token=None)
+    async with TestClient(TestServer(app)) as client:
+        html = await (await client.get("/hud")).text()
+        assert "/car_cover?which=current&size=466" in html
+        assert ".vdisc.badge{ animation:none; }" in html
+
+
+@pytest.mark.asyncio
 async def test_hud_rejects_missing_token():
     from aiohttp.test_utils import TestClient, TestServer
     from car_http_app import build_text_app

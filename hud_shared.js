@@ -42,7 +42,7 @@ function getCoverImage(url, onReady){
   const img=new Image();
   imgCache.set(url, img);
   img.onload=onReady;
-  img.onerror=()=>imgCache.set(url,'error');
+  img.onerror=()=>{ imgCache.set(url,'error'); if(onReady) onReady(); };
   img.src=url;
   return null;
 }
