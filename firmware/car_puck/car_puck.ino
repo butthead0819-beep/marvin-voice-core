@@ -1722,6 +1722,7 @@ static void faceBenchTask(void* pv) {
     if (now >= next) {
       late++;
       next = now;
+      vTaskDelay(1);   // core 0 的 IDLE 受 task watchdog 監看，落後時也至少讓出 1 tick
     } else {
       int64_t waitUs = next - now;
       vTaskDelay(pdMS_TO_TICKS((waitUs + 999) / 1000));
@@ -1810,7 +1811,9 @@ void setup() {
     pinMode(FB_PIN_DC, OUTPUT); digitalWrite(FB_PIN_DC, HIGH);
     fbSpi.begin(FB_PIN_CLK, -1, FB_PIN_MOSI, -1);
     face_rt_init(g_fbWork);
-    xTaskCreatePinnedToCore(faceBenchTask, "faceBench", 6144, nullptr, 1, nullptr, 1);
+    // 2026-10-24 實驗：core 1 跟 MP3 解碼擠在一起，有音樂時 render 從 20ms 變 29ms（解碼插隊＋快取被洗）。
+    // 改放 core 0（網路/心跳/WiFi 都是等 I/O 為主）；優先權 1 低於它們，只撿空閒。
+    xTaskCreatePinnedToCore(faceBenchTask, "faceBench", 6144, nullptr, 1, nullptr, 0);
     Serial.println("[FaceBench] 啟動（24fps，OFF/ON 各180s輪替）");
   }
 #endif
