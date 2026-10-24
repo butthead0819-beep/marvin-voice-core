@@ -43,6 +43,7 @@ _ACK_MAX_WAIT_S = 60.0
 _ACK_SPEECH_WAIT_S = 15.0   # 等 Marvin 開口的上限；超過視為無語音回應，直接進入等空閒
 _SPEAKING_EPS_S = 0.05
 _BARGE_WATCH_POLL_S = 0.1
+_IBA_WAKE_VOICE_MIN = 0.9   # IBA voice 通道：≥ 這個才算真的叫了名字（一週實測有喚醒詞 0.95/1.0、沒有 0.3）
 
 _BARGE_CONFIRM_SYSTEM = (
     "你是 Marvin。你剛才在回答使用者，講到一半被他打斷。用一句不超過20字的口語確認他現在"
@@ -232,8 +233,24 @@ class WakeSessionMixin:
 
     def _wakeless_in_window(self, speaker, text: str) -> bool:
         """窗內 target 的句子且沒叫名字 → 指令不執行（2026-10-24：可能只是在討論）。"""
+        from wake_detector import has_mangled_wake
         t = (text or "").lower()
-        return self._wake_session_captured(speaker) and not any(w.lower() in t for w in self._WAKE_PATTERNS)
+        return (self._wake_session_captured(speaker) and not any(w.lower() in t for w in self._WAKE_PATTERNS)
+                and not has_mangled_wake(text))
+
+    def _iba_wake_word_ok(self, speaker, raw_text, is_fast, ch) -> bool:
+        """IBA 判喚醒但沒叫名字 → 不放行（2026-10-24：指令一律要喚醒詞）。
+
+        一週實測：v≥0.95 全含喚醒詞、v=0.3 全沒有（誤觸發＋聽錯的喚醒詞）。
+        N-best 救援（alt_wake）與聽錯版喚醒詞（has_mangled_wake）照放；ch=None＝legacy 路徑不動。
+        """
+        if not is_fast or ch is None:
+            return is_fast
+        from wake_detector import has_mangled_wake
+        if (ch.get("voice") or 0) >= _IBA_WAKE_VOICE_MIN or (ch.get("alt_wake") or 0) > 0 or has_mangled_wake(raw_text):
+            return True
+        logger.info(f"🚫 [NoWakeWord] {speaker} IBA 判喚醒但沒叫名字（v={ch.get('voice')}），不放行：'{raw_text[:40]}'")
+        return False
 
     def _wake_session_captured(self, speaker) -> bool:
         """session 已開窗且是 target 的句子（免喚醒接住的追問）→ 不播 filler ack（提示音已表示在聽）。"""
