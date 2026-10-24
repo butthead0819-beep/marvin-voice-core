@@ -1,44 +1,33 @@
-"""TDD：no-wake `_MUSIC_INFO_RE`（IBA Tier 1，voice_controller.py）跟
-NowPlayingAgent（wake 路徑）本該「單一語意源」對齊，但實際兩份 regex 分岔了：
-NowPlayingAgent 第三組（歌名|歌手|藝人|誰唱|誰寫）trailing 是 `(?:...)?`（optional），
-_MUSIC_INFO_RE 少了那個 `?`，導致「誰唱的」「誰寫的」——最口語的問法——wake 路徑接得
-到、no-wake 路徑接不到。
+"""免喚醒問歌名：只接短的完整問句（2026-10-24 使用者定）。
 
-真實後果（8/8 討論發現）：使用者說「誰唱的」通常不會先喊喚醒詞，所以實際上大多數
-這類提問走的正是 no-wake 這條路；這條路的 regex bug 讓這些提問從沒進過
-IntentBus，之前誤判成「使用者根本不太問這個」，其實是「問了但接不到」。
+指令一律要喚醒詞；問歌名是回答不是指令，且使用者問「誰唱的」通常不先叫名字（8/8 回報），
+所以免喚醒保留這一條，但改整句比對：10/17-10/22 三筆誤觸發都是長閒聊句裡碰到
+「歌手/歌名」被舊 _MUSIC_INFO_RE 的 search 接走。
 """
 from __future__ import annotations
 
 import pytest
 
-from cogs.voice_controller import _MUSIC_INFO_RE
+from cogs.voice_controller import is_nowake_song_question
 
 
-@pytest.mark.parametrize("query", [
-    "誰唱的",
-    "誰寫的",
-    "這首歌誰唱的",
-    "這是誰唱的",
+@pytest.mark.parametrize("text", [
+    "這首是誰唱的", "這首歌誰唱的", "這是誰唱的", "誰唱的", "誰寫的",
+    "這是什麼歌", "這是什麼歌？", "這什麼歌", "這首是什麼歌啊",   # 10/18 10/21 10/23 真問
+    "這首歌叫什麼", "現在播的是什麼歌", "這 是什麼歌 呀",
 ])
-def test_bare_who_sings_matches_nowake_path(query):
-    assert _MUSIC_INFO_RE.search(query), f"no-wake _MUSIC_INFO_RE 應該接住 {query!r}"
+def test_short_song_question_matches(text):
+    assert is_nowake_song_question(text)
 
 
-@pytest.mark.parametrize("query", [
-    "播放周杰倫", "下一首", "暫停音樂", "誰知道現在幾點",
-    "這是誰的東西",  # 「這是誰」不該單獨觸發（跟音樂無關的一般代名詞問句）
+@pytest.mark.parametrize("text", [
+    "嗯本版中呢聽過等那你綁迴的歌手綁迴歌去的歌手也來了",   # 10/17 誤觸發
+    "不過現在臺灣街頭藝人要抽稅",                           # 10/19 誤觸發
+    "那講話不是要唱剛好他怎麼，裏麵都是亂搭一些歌名",       # 10/22 誤觸發
+    "他找到那一句歌詞啊嗯",
+    "這是什麼", "這是誰的東西", "誰知道現在幾點",
+    "下一首", "暫停音樂", "播放周杰倫",
+    "馬文這是什麼歌",   # 有喚醒詞走 wake 路徑，免喚醒不重派
 ])
-def test_unrelated_queries_do_not_match(query):
-    assert not _MUSIC_INFO_RE.search(query)
-
-
-# 8/8 使用者回報：實際最常見的兩句是「這是什麼歌？」「這首誰唱的？」——
-# 後者已被上面的 `?` 修法接住，前者少了「首」字這條分支，還是漏接。
-@pytest.mark.parametrize("query", [
-    "這是什麼歌",
-    "這是什麼歌？",
-    "這什麼歌",
-])
-def test_this_what_song_matches_nowake_path(query):
-    assert _MUSIC_INFO_RE.search(query), f"no-wake _MUSIC_INFO_RE 應該接住 {query!r}"
+def test_other_text_does_not_match(text):
+    assert not is_nowake_song_question(text)

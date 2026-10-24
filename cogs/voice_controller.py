@@ -342,13 +342,18 @@ _MUSIC_DIRECT_STOP_KW   = _MUSIC_DIRECT_STOP_KW_SRC
 _MUSIC_DIRECT_PAUSE_KW  = _MUSIC_DIRECT_PAUSE_KW_SRC
 _MUSIC_DIRECT_RESUME_KW = _MUSIC_DIRECT_RESUME_KW_SRC
 
-# 🎵 [IBA Tier 1] 無喚醒詞音樂資訊查詢 — "這首叫什麼?"（8/8 補 `?`／「這什麼歌」對齊 NowPlayingAgent）
-_MUSIC_INFO_RE = re.compile(
-    r'這首(?:歌|曲)?(?:叫什麼|是什麼|是誰|叫做|的名字|哪首|叫|叫啥)|這(?:是)?什麼(?:歌|曲)'
-    r'|(?:現在|剛才|正在)(?:播|放|唱)的(?:是|叫)?'
-    r'|(?:歌名|歌手|藝人|誰唱|誰寫)(?:是什麼|叫什麼|是誰|叫)?',
-    re.IGNORECASE,
+# 🎵 [IBA Tier 1] 無喚醒詞問歌名 — 只接整句就是短問句（2026-10-24）：舊版 search 會在長閒聊
+# 句裡碰到「歌手/歌名/藝人」就接（10/17-10/22 三筆誤觸發），改去標點語助詞後 fullmatch。
+_NOWAKE_SONG_Q_RE = re.compile(
+    r'(?:這首歌?|這|現在(?:播|放)的)?'
+    r'(?:(?:是|叫)?(?:什麼歌|啥歌|哪首歌)|(?:是)?誰(?:唱|寫)的?|叫什麼(?:名字)?)'
 )
+_NOWAKE_SONG_Q_NOISE = re.compile(r'[\s，,。.！!？?～~]+|[啊呀啦呢嗎哦喔欸誒耶阿]+$')
+
+
+def is_nowake_song_question(text: str) -> bool:
+    return bool(_NOWAKE_SONG_Q_RE.fullmatch(_NOWAKE_SONG_Q_NOISE.sub('', text or '')))
+
 
 # 🔎 [Find-Song] no-wake 觸發閘：「找」+ 音樂錨點。與 FindSongAgent 四模式 patterns 對齊
 # （歌詞/專輯/的歌/的歌曲）。對話「找」（找東西/找你/找工會）無錨點 → 不觸發。
@@ -1761,80 +1766,24 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             )
             return
 
-        # 🎵 [IBA-T0/T1/Find-Song] 音樂控制與找歌直達 — 統一由 IntentBus 消化
-        # 🛡️ [Anti-Duplicate] 若 5 秒內已有 fast wake 處理同一發言，跳過此路徑避免雙重處理
-        _last_fast_wake = getattr(self, "last_wake_time", {}).get(speaker, 0)
-        _recently_fast_woken = (time.time() - _last_fast_wake) < 5.0
-        # ⚡ WakeShortcut 已服務讓路：debounce 晚關窗（>5s）同句不重派（7/3 首命中實戰修）
-        from wake_shortcut import served_recently
-        if served_recently(getattr(self, "_shortcut_served", {}).get(speaker),
-                           full_raw_text, now=time.time()):
-            logger.info(f"⚡ [WakeShortcut] {speaker} 同句已服務，wakeless 讓路")
-            _recently_fast_woken = True
-
-        if not _recently_fast_woken:
-            _direct_cmd = self._detect_music_direct_command(full_raw_text, stream_mode=self.stream_mode)
-            _is_find_song = _FIND_SONG_GATE.search(full_raw_text)
-            _is_music_info = self.stream_mode and self._current_stream_info and _MUSIC_INFO_RE.search(full_raw_text)
-
-            if _direct_cmd or _is_find_song or _is_music_info:
-                self.deferred_wakes.pop(speaker, None)
-                
-                # 建立 no-wake 的 IntentContext
-                _nw_ctx = None
-                
-                if _direct_cmd:
-                    _cmd_action = _direct_cmd.get("action", "stop")
-                    if _cmd_action == "play":
-                        from music_fastpath import fastpath_play_query  # no-wake fast-path 接線；邏輯在 music_fastpath.py
-                        _nw_ctx = build_nowake_play_ctx(
-                            speaker, full_raw_text, fastpath_play_query(self._get_music_fastpath(), _direct_cmd.get("query", "")),
-                            stream_active=self.stream_mode,
-                            is_owner=self._is_owner_speaker(speaker),
-                        )
-                    else:
-                        # 將 action 轉譯為標準 command query，供 PlaybackControlAgent 匹配
-                        _action_to_query = {
-                            "skip": "下一首",
-                            "pause": "暫停",
-                            "resume": "繼續播",
-                            "stop": "停止播放"
-                        }
-                        _mapped_query = _action_to_query.get(_cmd_action, "停止播放")
-                        _nw_ctx = IntentContext(
-                            speaker=speaker, raw_text=full_raw_text, query=_mapped_query,
-                            original_raw=full_raw_text, wake_intent=None,
-                            stream_active=self.stream_mode, game_mode=False,
-                            is_owner=self._is_owner_speaker(speaker), now=time.time(),
-                            mode=("stream" if self.stream_mode else "normal"),
-                        )
-                elif _is_find_song:
-                    _nw_ctx = IntentContext(
-                        speaker=speaker, raw_text=full_raw_text, query=full_raw_text,
-                        original_raw=full_raw_text, wake_intent=None,
-                        stream_active=self.stream_mode, game_mode=False,
-                        is_owner=self._is_owner_speaker(speaker), now=time.time(),
-                        mode=("stream" if self.stream_mode else "normal"),
-                    )
-                elif _is_music_info:
-                    _nw_ctx = IntentContext(
-                        speaker=speaker, raw_text=full_raw_text, query=full_raw_text,
-                        original_raw=full_raw_text, wake_intent=None,
-                        stream_active=self.stream_mode, game_mode=False,
-                        is_owner=self._is_owner_speaker(speaker), now=time.time(),
-                        mode=("stream" if self.stream_mode else "normal"),
-                    )
-
-                if _nw_ctx:
-                    # 標記為 nowake，防浪費 LLM cleaner (J3) 資源
-                    from dataclasses import replace
-                    _nw_ctx = replace(_nw_ctx, dispatch_source="nowake")
-                    
-                    logger.info(f"📡 [IBA-T0/T1/Find-Song→Bus] {speaker} no-wake 進 bus | query='{_nw_ctx.query[:40]}'")
-                    pipeline_timing.mark("intent_dispatched")
-                    pipeline_timing.emit(speaker, full_raw_text, suffix=f" route=nowake_bus:{_nw_ctx.query[:15]}")
-                    asyncio.create_task(turn_outcome.run_turn(self._intent_bus.dispatch(_nw_ctx), speaker=speaker, ts=timestamp, discovered_by="wakeless"))
-                    return
+        # 指令一律要喚醒詞（2026-10-24 使用者定）：原 IBA-T0/Find-Song 免喚醒直派已拔——
+        # 10/23「他找到那一句歌詞啊嗯」沒叫馬文就被找歌詞 regex 接走放了一首歌。
+        # 只留 IBA-T1 問歌名（回答不是指令；「誰唱的」通常不先叫名字）。
+        _recently_fast_woken = (time.time() - getattr(self, "last_wake_time", {}).get(speaker, 0)) < 5.0
+        if (not _recently_fast_woken and self.stream_mode and self._current_stream_info
+                and is_nowake_song_question(full_raw_text)):
+            self.deferred_wakes.pop(speaker, None)
+            _nw_ctx = IntentContext(
+                speaker=speaker, raw_text=full_raw_text, query=full_raw_text,
+                original_raw=full_raw_text, wake_intent=None,
+                stream_active=True, game_mode=False,
+                is_owner=self._is_owner_speaker(speaker), now=time.time(),
+                mode="stream", dispatch_source="nowake",
+            )
+            logger.info(f"📡 [IBA-T1→Bus] {speaker} no-wake 問歌名進 bus | query='{full_raw_text[:40]}'")
+            pipeline_timing.mark("intent_dispatched")
+            pipeline_timing.emit(speaker, full_raw_text, suffix=" route=nowake_bus:song_q")
+            asyncio.create_task(turn_outcome.run_turn(self._intent_bus.dispatch(_nw_ctx), speaker=speaker, ts=timestamp, discovered_by="wakeless"))
 
     async def _schedule_reaction_check(self, speaker: str, bot_response: str, respond_time: float,
                                         wake_latency: float = None, atmosphere: dict = None):

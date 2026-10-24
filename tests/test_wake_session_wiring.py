@@ -352,24 +352,27 @@ def test_on_replied_playback_control_skip_reason_ends_session():
     assert cog._wake_session.target is None
 
 
-def test_on_replied_playback_control_pause_reason_does_not_end_session():
+# 10/23 實測：「馬文音樂大聲一點」「法文繼續播放啊」做完窗沒關，接走朋友互聊 2 分鐘
+# （每句播 thinking 提示音）。指令一律要喚醒詞 → 任何指令執行完都收窗。
+@pytest.mark.parametrize("reason", ["pause:暫停", "resume:繼續播", "stop:停止播放"])
+def test_on_replied_playback_control_any_reason_ends_session(reason):
     cog = _FakeCog()
     cog._wake_session = WakeSession()
     cog._wake_session.on_wake_accepted("A", 0.0)
     cog._wake_session.on_replied(0.5)
     with patch("time.time", return_value=1.0):
-        cog._wake_session_on_replied(_bid("playback_control", reason="pause:暫停"))
-    assert cog._wake_session.target == "A"
+        cog._wake_session_on_replied(_bid("playback_control", reason=reason))
+    assert cog._wake_session.target is None
 
 
-def test_on_replied_volume_winner_does_not_end_session():
+def test_on_replied_volume_winner_ends_session():
     cog = _FakeCog()
     cog._wake_session = WakeSession()
     cog._wake_session.on_wake_accepted("A", 0.0)
     cog._wake_session.on_replied(0.5)
     with patch("time.time", return_value=1.0):
         cog._wake_session_on_replied(_bid("volume"))
-    assert cog._wake_session.target == "A"
+    assert cog._wake_session.target is None
 
 
 def test_on_shortcut_play_prefix_ends_session():
@@ -393,17 +396,16 @@ def test_on_shortcut_skip_ends_session():
     assert cog._wake_session.target is None
 
 
-@pytest.mark.asyncio
-async def test_on_shortcut_pause_does_not_end_session_and_opens_listening():
+@pytest.mark.parametrize("sc", ["暫停音樂", "繼續播", "大聲一點"])
+def test_on_shortcut_any_command_ends_session(sc):
     cog = _FakeCog()
     cog._wake_session = WakeSession()
     cog._wake_session.on_wake_accepted("A", 0.0)
     cog._wake_session_play_ack = AsyncMock()
     with patch("time.time", return_value=0.5):
-        cog._wake_session_on_shortcut("暫停音樂")
-    await asyncio.sleep(0)
-    assert cog._wake_session.target == "A"
-    assert cog._wake_session.opened is True
+        cog._wake_session_on_shortcut(sc)
+    assert cog._wake_session.target is None
+    cog._wake_session_play_ack.assert_not_called()
 
 
 def test_followup_override_closing_text_ends_session():
@@ -443,7 +445,7 @@ def _listening_session(speaker):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("winner_name,ended", [("replay", True), ("volume", False)])
+@pytest.mark.parametrize("winner_name,ended", [("replay", True), ("volume", True), ("grounded_qa", False)])
 async def test_process_queued_query_passes_winner_to_session(winner_name, ended):
     from intent_bus import Bid
     from tests.test_process_queued_query_wav_capture import _make_cog as _make_pq_cog
