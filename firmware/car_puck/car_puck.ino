@@ -7,6 +7,7 @@
  *           carHeartbeatTask 每 30s POST /car present（夾帶 WROOM 遙測）
  *   core 1：audioPlaybackTask 解 MP3 → I2S 輸出（給 WROOM bt_bridge 轉 A2DP）
  *           loop()：PTT hold-to-talk 錄 INMP441 → POST /audio、方向盤按鍵/遙測 UART、LED
+ *           faceTask（FACE_DISPLAY）：頭像即時渲染 24fps，優先權 1，算不完只掉格不搶解碼
  *   斷電＝心跳自然停送，由伺服器 TTL(90s) 收尾停播。
  *
 
@@ -96,6 +97,76 @@ const int   MARVIN_LOCAL_PORT = 8790;
 #define COVER_SIZE_PX 240              // mk1 GC9A01 240×240
 #define COVER_BUF_CAP (64 * 1024)      // 240px JPEG 實測約 10–20KB
 
+// 2026-10-24：螢幕已到貨，正式接上 face_rt.h 即時渲染（GC9A01，顯示法照抄
+// firmware/face_demo/face_demo.ino）。跟 FACE_BENCH（壓力測試，不接螢幕）共用同一組 SPI
+// 腳位，兩者不能同時開。
+#ifndef FACE_DISPLAY
+#define FACE_DISPLAY 1
+#endif
+
+#if FACE_DISPLAY && FACE_BENCH
+#error "FACE_DISPLAY 和 FACE_BENCH 共用同一組 SPI 腳位，不能同時開（見各自定義前的註解）"
+#endif
+
+#if FACE_DISPLAY
+#define LGFX_USE_V1
+#include <LovyanGFX.hpp>
+#include "face_rt.h"
+#include "face_motion.h"
+#if __has_include("../face_demo/base_sphere.h")
+#include "../face_demo/base_sphere.h"
+#else
+#error "先跑 python3 tools/puck_face/gen_base_sphere.py 產生 firmware/face_demo/base_sphere.h"
+#endif
+
+// 腳位/初始化照抄 firmware/face_demo/face_demo.ino（已實機測通：10MHz 初始化、40MHz 畫圖）。
+class FaceLGFX : public lgfx::LGFX_Device {
+  lgfx::Panel_GC9A01 _panel;
+  lgfx::Bus_SPI _bus;
+  lgfx::Light_PWM _light;
+public:
+  FaceLGFX() {
+    { auto c = _bus.config();
+      c.spi_host = SPI2_HOST; c.spi_mode = 0; c.freq_write = 10000000; c.freq_read = 16000000;
+      c.pin_sclk = 21; c.pin_mosi = 47; c.pin_miso = -1; c.pin_dc = 40;
+      c.dma_channel = SPI_DMA_CH_AUTO;
+      _bus.config(c); _panel.setBus(&_bus); }
+    { auto c = _panel.config();
+      c.pin_cs = 41; c.pin_rst = 45; c.pin_busy = -1;
+      c.panel_width = 240; c.panel_height = 240;
+      c.invert = true; c.rgb_order = false; c.readable = false; c.bus_shared = false;
+      _panel.config(c); }
+    { auto c = _light.config();
+      c.pin_bl = 42; c.invert = false; c.freq = 44100; c.pwm_channel = 7;
+      _light.config(c); _panel.setLight(&_light); }
+    setPanel(&_panel);
+  }
+  void setFreq(uint32_t f) { _bus.release(); auto c = _bus.config(); c.freq_write = f; _bus.config(c); _bus.init(); }
+};
+static FaceLGFX g_faceTft;
+
+// faceTask 讀、onIcyMeta()/setLed() 寫的輸入快照，用 portMUX_TYPE 包住的臨界區互斥
+// （onIcyMeta 跑在 audioNetworkTask/core 0，setLed 可能從 core 0 或 core 1 呼叫，
+// faceTask 釘 core 1——三方都可能同時碰，不能只用 volatile）。
+struct FaceInSnapshot {
+  face_motion::Override override_;
+  bool playing;
+  bool haveTrack;
+  int bpm;
+  uint32_t durMs;
+  uint32_t posMs;
+  uint32_t posAtMs;        // millis() 時間戳，playing 時用來外插目前 pos
+  uint32_t trackKey;
+  uint32_t trackChangedAtMs;
+  uint32_t lastIcyAtMs;    // 最近一次收到 ICY metadata 的 millis()（串流斷了就當沒歌）
+  uint32_t coverSeq;
+};
+static portMUX_TYPE g_faceInMux = portMUX_INITIALIZER_UNLOCKED;
+static FaceInSnapshot g_faceIn = {
+  face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0
+};
+#endif  // FACE_DISPLAY
+
 // ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
 #define PIN_BTN_PTT    0    // 喚醒/打斷 = 我們的 PTT
 
@@ -148,6 +219,19 @@ static uint32_t ledSince = 0;   // 進入當前狀態的時間
 void setLed(LedState s) {
   if (s == ledState) return;
   ledState = s; ledSince = millis();
+#if FACE_DISPLAY
+  // 等回應（LED_PLAYING）跟講話中這一刀合併成 THINK——已定案，下一刀才拆 SPEAK。
+  face_motion::Override ov = face_motion::OVERRIDE_NONE;
+  switch (s) {
+    case LED_LISTENING: ov = face_motion::OVERRIDE_LISTEN; break;
+    case LED_PLAYING:   ov = face_motion::OVERRIDE_THINK; break;
+    case LED_ERROR:     ov = face_motion::OVERRIDE_ERROR; break;
+    default:            ov = face_motion::OVERRIDE_NONE; break;
+  }
+  portENTER_CRITICAL(&g_faceInMux);
+  g_faceIn.override_ = ov;
+  portEXIT_CRITICAL(&g_faceInMux);
+#endif
 }
 
 // 三角波呼吸：在 lo..hi 之間隨 period 週期起伏，回傳當前亮度
@@ -445,7 +529,47 @@ static void onIcyMeta(const uint8_t* payload, size_t len, void* /*ctx*/) {
 #endif
     Serial.printf("[Meta] %.*s\n", (int)len, payload);
   }
+#if FACE_DISPLAY
+  // 只寫資料，不呼叫任何顯示函式——顯示交給釘死 core 1 的 faceTask 自己的巡邏節奏讀。
+  IcyNow icyNow;
+  if (icy_now_fields(payload, len, &icyNow)) {
+    uint32_t tk = face_motion::fnv1a(icyNow.trackId);
+    uint32_t nowMs = millis();
+    portENTER_CRITICAL(&g_faceInMux);
+    if (!g_faceIn.haveTrack || g_faceIn.trackKey != tk) {
+      g_faceIn.trackChangedAtMs = nowMs;
+      g_faceIn.trackKey = tk;
+      g_faceIn.haveTrack = true;
+    }
+    g_faceIn.playing = (icyNow.state == 'P');
+    g_faceIn.bpm = g_icyBpm;
+    g_faceIn.durMs = icyNow.durMs;
+    g_faceIn.posMs = icyNow.posMs;
+    g_faceIn.posAtMs = nowMs;
+    g_faceIn.lastIcyAtMs = nowMs;
+    portEXIT_CRITICAL(&g_faceInMux);
+  }
+#endif
 }
+
+#if FACE_DISPLAY
+// faceTask（釘 core 1）讀、carHeartbeat()（釘 core 0）每 60s 列印後清零——都是診斷用
+// volatile 計數，偶爾少算一筆可接受，不加鎖。
+static TaskHandle_t faceTaskHandle = nullptr;
+static volatile uint32_t g_faceFrames = 0, g_faceLate = 0;
+static volatile uint64_t g_faceRenderUs = 0, g_facePushUs = 0;
+
+// PSRAM 配置；setup() 失敗時維持 nullptr，不建 faceTask。
+static uint8_t* g_faceBase = nullptr;
+static uint8_t* g_faceOut = nullptr;
+static FaceRtWork* g_faceWork = nullptr;
+
+// coverFetch()（carHeartbeatTask，core 0）寫、faceTask（core 1）讀，用 gCoverMutex 互斥。
+// g_coverBuf 本身（COVER_FETCH 既有下載 buffer）只給 coverFetch() 自己用，不跨 task 共用。
+static SemaphoreHandle_t gCoverMutex = nullptr;
+static uint8_t* g_coverShow = nullptr;
+static size_t g_coverShowLen = 0;
+#endif  // FACE_DISPLAY
 
 void audioNetworkTask(void* pv) {
   Serial.println("[Stream] audioNetworkTask 已啟動");
@@ -963,7 +1087,43 @@ static size_t json_escape(char* dst, size_t cap, const char* src) {
 static bool gHeartbeatTryLan = true;
 static uint8_t gHeartbeatSkipLanRounds = 0;
 
+#if FACE_DISPLAY
+// 只呼叫一次：WiFi 第一次連上後設系統時間（carHeartbeat() 只在 WL_CONNECTED 時被呼叫，
+// 不管是開機首次連上還是斷線重連，天然涵蓋「WiFi 第一次連上後」這個時機）。
+static bool g_ntpStarted = false;
+static void faceEnsureNtp() {
+  if (g_ntpStarted) return;
+  g_ntpStarted = true;
+  LWIP_LOCK();
+  configTzTime("CST-8", "time.google.com", "pool.ntp.org");
+  LWIP_UNLOCK();
+}
+
+// 每 60s（心跳週期的兩倍）印一行頭像渲染健康度，印完歸零。
+static uint32_t g_faceStatsLastMs = 0;
+static void faceLogStats() {
+  uint32_t now = millis();
+  if (g_faceStatsLastMs != 0 && now - g_faceStatsLastMs < 60000) return;
+  g_faceStatsLastMs = now;
+  uint32_t frames = g_faceFrames, late = g_faceLate;
+  uint64_t renderUs = g_faceRenderUs, pushUs = g_facePushUs;
+  g_faceFrames = 0; g_faceLate = 0; g_faceRenderUs = 0; g_facePushUs = 0;
+  double fps = frames ? frames / 60.0 : 0.0;
+  double renderMs = frames ? (renderUs / 1000.0) / frames : 0.0;
+  double pushMs = frames ? (pushUs / 1000.0) / frames : 0.0;
+  Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u\n",
+                fps, (unsigned)late, renderMs, pushMs,
+                faceTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(faceTaskHandle) : 0,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+}
+#endif
+
 void carHeartbeat() {
+#if FACE_DISPLAY
+  faceEnsureNtp();
+  faceLogStats();
+#endif
   // 先試區網明碼（快、家用WiFi成立）；連不到（出門）就退回 Funnel TLS。
   //
   // 2026-08-12：實機用 serial 監控抓到 WiFi 明明還連著（deckB 網路 task 持續在收音訊）
@@ -1169,6 +1329,20 @@ static void coverFetch(bool fromRetry) {
     g_coverLen = n;
     g_coverStats.lastBytes = n;
     g_coverRetries = 0;
+#if FACE_DISPLAY
+    if (g_coverShow) {
+      if (xSemaphoreTake(gCoverMutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+        memcpy(g_coverShow, g_coverBuf, n);
+        g_coverShowLen = n;
+        portENTER_CRITICAL(&g_faceInMux);
+        g_faceIn.coverSeq++;
+        portEXIT_CRITICAL(&g_faceInMux);
+        xSemaphoreGive(gCoverMutex);
+      } else {
+        Serial.println("[Cover] gCoverMutex 忙，這張跳過（faceTask 正在畫）");
+      }
+    }
+#endif
   } else if (ok && code == 404) {
     g_coverStats.none++;
     g_coverRetries = 0;
@@ -1740,13 +1914,180 @@ static void faceBenchTask(void* pv) {
 }
 #endif  // FACE_BENCH
 
+#if FACE_DISPLAY
+// ========== FACE_DISPLAY：頭像即時渲染正式整合 ==========
+// 顯示法（RGB888→RGB565 + 4×4 Bayer 抖色、只推 prev∪cur dirty 範圍）照抄
+// firmware/face_demo/face_demo.ino 的 pushRows/pushDirty，公式不變。
+static uint16_t g_faceRow[240];
+static const uint8_t FACE_BAYER[16] = {0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5};
+
+static inline uint16_t faceTo565(const uint8_t* p, int x, int y) {
+  int k = FACE_BAYER[(y & 3) * 4 + (x & 3)];
+  int R5 = (p[0] * 496 + k * 255) / 4080, G6 = (p[1] * 1008 + k * 255) / 4080, B5 = (p[2] * 496 + k * 255) / 4080;
+  return (uint16_t)((R5 << 11) | (G6 << 5) | B5);
+}
+
+static void facePushRows(int y0, int y1, int x0, int x1) {
+  int w = x1 - x0 + 1;
+  g_faceTft.setAddrWindow(x0, y0, w, y1 - y0 + 1);
+  for (int y = y0; y <= y1; y++) {
+    const uint8_t* src = g_faceOut + (size_t)(y * 240 + x0) * 3;
+    for (int i = 0; i < w; i++) g_faceRow[i] = faceTo565(src + i * 3, x0 + i, y);
+    g_faceTft.writePixels(g_faceRow, w, true);
+  }
+}
+
+static void facePushFull() {
+  g_faceTft.startWrite();
+  facePushRows(0, 239, 0, 239);
+  g_faceTft.endWrite();
+}
+
+static void facePushDirty() {
+  g_faceTft.startWrite();
+  for (int by = 0; by < 240; by += 4) {
+    int bx0 = 240, bx1 = -1;
+    for (int y = by; y < by + 4; y++) {
+      if (g_faceWork->prevX1[y] >= g_faceWork->prevX0[y]) {
+        if (g_faceWork->prevX0[y] < bx0) bx0 = g_faceWork->prevX0[y];
+        if (g_faceWork->prevX1[y] > bx1) bx1 = g_faceWork->prevX1[y];
+      }
+      if (g_faceWork->curX1[y] >= g_faceWork->curX0[y]) {
+        if (g_faceWork->curX0[y] < bx0) bx0 = g_faceWork->curX0[y];
+        if (g_faceWork->curX1[y] > bx1) bx1 = g_faceWork->curX1[y];
+      }
+    }
+    if (bx1 >= bx0) facePushRows(by, by + 3, bx0, bx1);
+  }
+  g_faceTft.endWrite();
+}
+
+// 釘 core 1、優先權 1，41.667ms 固定節拍（24fps）。落後就重新對齊（不追格），同
+// face_demo.ino loop() 的寫法：用 esp_timer 微秒累計，不用 vTaskDelayUntil。
+// task 內絕對不呼叫 Serial（HWCDC 底下可能阻塞，見檔頭 STREAM_DEBUG_PRINT 註解）。
+void faceTask(void* pv) {
+  using namespace face_motion;
+
+  FaceMixer mixer;
+  face_mixer_init(mixer);
+  FaceIdleGestures idle;
+  face_idle_init(idle);
+  FaceCoverState cover;
+  face_cover_init(cover);
+
+  uint32_t lastCoverSeq = 0;
+  float idleSinceSec = 0.0f;
+  uint8_t prevRawBl = 0xFF;   // sentinel：強制第一格走「resume」路徑，先畫一次底圖
+
+  const int64_t PERIOD_US = 41667;
+  const float DT = PERIOD_US / 1e6f;
+  int64_t next = esp_timer_get_time();
+
+  for (;;) {
+    float T = esp_timer_get_time() / 1e6f;
+
+    FaceInSnapshot snap;
+    portENTER_CRITICAL(&g_faceInMux);
+    snap = g_faceIn;
+    portEXIT_CRITICAL(&g_faceInMux);
+
+    uint32_t nowMs = millis();
+    bool playing = snap.playing && (nowMs - snap.lastIcyAtMs <= 15000);
+
+    FaceInputs in;
+    in.override_ = snap.override_;
+    in.playing = playing;
+    in.bpm = snap.bpm;
+    in.dur_s = snap.durMs / 1000.0f;
+    float posMs;
+    if (playing) {
+      posMs = (float)snap.posMs + (float)(nowMs - snap.posAtMs);
+      if (posMs < 0) posMs = 0;
+      if (snap.durMs > 0 && posMs > (float)snap.durMs) posMs = (float)snap.durMs;
+    } else {
+      posMs = (float)snap.posMs;
+    }
+    in.pos_s = posMs / 1000.0f;
+
+    idleSinceSec = playing ? 0.0f : idleSinceSec + DT;
+
+    float rand01 = (float)esp_random() / 4294967295.0f;
+    int gid = face_idle_step(idle, in, snap.trackKey, T, rand01);
+    if (gid >= 0) face_mixer_trigger_gesture(mixer, (Gesture)gid, T);
+
+    FacePoseOut poseOut = face_mixer_step(mixer, in, T, DT);
+
+    bool overridden = (in.override_ != OVERRIDE_NONE);
+    bool coverArrived = (snap.coverSeq != lastCoverSeq);
+    if (coverArrived) lastCoverSeq = snap.coverSeq;
+    float trackChangedAtS = snap.trackChangedAtMs / 1000.0f;
+    FaceCoverOut coverOut = face_cover_step(cover, T, coverArrived, trackChangedAtS, overridden);
+
+    bool timeValid = time(nullptr) > 1700000000;
+    int localHour = 0, localMin = 0;
+    if (timeValid) {
+      time_t tt = time(nullptr);
+      struct tm tmv;
+      localtime_r(&tt, &tmv);
+      localHour = tmv.tm_hour;
+      localMin = tmv.tm_min;
+    }
+    uint8_t rawBl = face_backlight(timeValid, localHour, localMin, idleSinceSec, overridden);
+
+    if (rawBl == 0) {
+      // 背光=0：跳過 render/push，只維持時間與狀態更新（上面已經走完）。
+      g_faceTft.setBrightness(0);
+      prevRawBl = 0;
+    } else {
+      if (prevRawBl == 0) facePushFull();   // 從 0 回到 >0：先整屏重推目前 out，再開背光
+      uint8_t finalBl = (uint8_t)((float)rawBl * coverOut.brightnessScale + 0.5f);
+      bool headVisible = (coverOut.phase != (int)COVER_COVER);
+
+      if (coverOut.drawCoverNow) {
+        if (xSemaphoreTake(gCoverMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+          g_faceTft.drawJpg(g_coverShow, g_coverShowLen, 0, 0);
+          xSemaphoreGive(gCoverMutex);
+        }
+      }
+      if (headVisible) {
+        int64_t rt0 = esp_timer_get_time();
+        face_rt_render(poseOut.pose, g_faceBase, g_faceOut);
+        int64_t rt1 = esp_timer_get_time();
+        if (coverOut.redrawHeadNow) facePushFull();
+        else facePushDirty();
+        int64_t rt2 = esp_timer_get_time();
+        g_faceRenderUs += (uint64_t)(rt1 - rt0);
+        g_facePushUs += (uint64_t)(rt2 - rt1);
+      }
+      g_faceTft.setBrightness(finalBl);
+      prevRawBl = rawBl;
+      g_faceFrames++;
+    }
+
+    next += PERIOD_US;
+    int64_t now = esp_timer_get_time();
+    if (now >= next) {
+      g_faceLate++;
+      next = now;
+      vTaskDelay(1);
+    } else {
+      vTaskDelay(pdMS_TO_TICKS((next - now + 999) / 1000));
+    }
+  }
+}
+#endif  // FACE_DISPLAY
+
 // ------------------------------------------------------------------
 void setup() {
   loopTaskHandle = xTaskGetCurrentTaskHandle();   // setup()/loop() 是同一顆 Arduino loopTask
   lwipMutex = xSemaphoreCreateMutex();            // 必須在 audioNet/carHeartbeat 任務起來前建好
   gFunnelMutex = xSemaphoreCreateMutex();         // 必須在 carHeartbeatTask 起來前建好（見 gFunnelMutex 前的說明）
   gWroomLogMutex = xSemaphoreCreateMutex();       // 必須在 carHeartbeatTask 起來前建好（見 gWroomLogMutex 前的說明）
+#if FACE_DISPLAY
+  gCoverMutex = xSemaphoreCreateMutex();          // 必須在 carHeartbeatTask 起來前建好（coverFetch() 會用）
+#endif
   Serial.begin(115200);
+  Serial.setTxTimeoutMs(0);   // USB 序列埠沒人讀時不要卡住（同 face_demo.ino，避免每幾秒頓一下）
   delay(500);
   Serial.println("\n=== Marvin car_puck bring-up ===");
 
@@ -1764,6 +2105,34 @@ void setup() {
   if (ESP.getPsramSize() < 4*1024*1024)
     Serial.println("[PSRAM] ❌ 沒偵測到大 PSRAM！確認買的是 N16R8 + Arduino 有開 PSRAM");
   recBuf = (int16_t*)ps_malloc(MAX_REC_SAMPLES * sizeof(int16_t));
+
+#if FACE_DISPLAY
+  // 螢幕初始化放在 connectWiFi() 之前（照 face_demo.ino：10MHz 初始化、先關背光、再切
+  // 40MHz 畫圖）。PSRAM 配置任何一塊失敗就不建 faceTask，其餘功能照常跑。
+  {
+    bool tftOk = g_faceTft.init();
+    g_faceTft.setBrightness(0);
+    g_faceTft.setFreq(40000000);
+    g_faceBase = (uint8_t*)ps_malloc(240 * 240 * 3);
+    g_faceOut = (uint8_t*)ps_malloc(240 * 240 * 3);
+    g_faceWork = (FaceRtWork*)ps_malloc(sizeof(FaceRtWork));
+    g_coverShow = (uint8_t*)ps_malloc(COVER_BUF_CAP);
+    Serial.printf("[Face] tft.init=%d base=%p out=%p work=%p coverShow=%p\n",
+                  (int)tftOk, g_faceBase, g_faceOut, g_faceWork, g_coverShow);
+    if (!tftOk || !g_faceBase || !g_faceOut || !g_faceWork || !g_coverShow) {
+      Serial.println("[Face] ❌ 初始化/PSRAM 配置失敗，不啟動頭像顯示");
+    } else {
+      memcpy(g_faceBase, BASE_SPHERE, sizeof(BASE_SPHERE));
+      memcpy(g_faceOut, g_faceBase, 240 * 240 * 3);
+      face_rt_init(g_faceWork);
+      g_faceTft.startWrite();
+      facePushRows(0, 239, 0, 239);   // 底圖整張推一次（滿足 face_rt_render() 的不變式）
+      g_faceTft.endWrite();
+      xTaskCreatePinnedToCore(faceTask, "faceTask", 8192, nullptr, 1, &faceTaskHandle, 1);
+      Serial.println("[Face] faceTask 啟動");
+    }
+  }
+#endif
 
   connectWiFi();
 

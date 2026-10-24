@@ -98,6 +98,82 @@ int main() {
     printf("T13 ok\n");
   }
 
+  // ---- icy_now_fields ----
+  // T14: 正常 8 欄
+  {
+    std::string s = "M1\x1f""abc123\x1f""180000\x1f""5000\x1f""P\x1f""title\x1f""artist\x1f""album";
+    IcyNow now{};
+    bool ok = icy_now_fields(U(s.data()), s.size(), &now);
+    assert(ok);
+    assert(strcmp(now.trackId, "abc123") == 0);
+    assert(now.durMs == 180000);
+    assert(now.posMs == 5000);
+    assert(now.state == 'P');
+    printf("T14 ok\n");
+  }
+
+  // T15: 正常 9 欄（多的 bpm 欄不影響前 5 欄解析）
+  {
+    std::string s = "M1\x1f""abc123\x1f""180000\x1f""5000\x1f""S\x1f""title\x1f""artist\x1f""album\x1f""128";
+    IcyNow now{};
+    bool ok = icy_now_fields(U(s.data()), s.size(), &now);
+    assert(ok);
+    assert(now.state == 'S');
+    printf("T15 ok\n");
+  }
+
+  // T16: magic 錯
+  {
+    std::string s = "X1\x1f""abc\x1f""0\x1f""0\x1f""P\x1f""t\x1f""a\x1f""al";
+    IcyNow now{};
+    assert(!icy_now_fields(U(s.data()), s.size(), &now));
+    printf("T16 ok\n");
+  }
+
+  // T17: state 'X'
+  {
+    std::string s = "M1\x1f""abc\x1f""0\x1f""0\x1f""X\x1f""t\x1f""a\x1f""al";
+    IcyNow now{};
+    assert(!icy_now_fields(U(s.data()), s.size(), &now));
+    printf("T17 ok\n");
+  }
+
+  // T18: dur 非數字
+  {
+    std::string s = "M1\x1f""abc\x1f""18a\x1f""0\x1f""P\x1f""t\x1f""a\x1f""al";
+    IcyNow now{};
+    assert(!icy_now_fields(U(s.data()), s.size(), &now));
+    printf("T18 ok\n");
+  }
+
+  // T19: 欄位不足（只有 4 欄）
+  {
+    std::string s = "M1\x1f""abc\x1f""0\x1f""0";
+    IcyNow now{};
+    assert(!icy_now_fields(U(s.data()), s.size(), &now));
+    printf("T19 ok\n");
+  }
+
+  // T20: track_id 恰 16 字元
+  {
+    std::string id(16, 'a');
+    std::string s = "M1\x1f" + id + "\x1f""0\x1f""0\x1f""P\x1f""t\x1f""a\x1f""al";
+    IcyNow now{};
+    bool ok = icy_now_fields(U(s.data()), s.size(), &now);
+    assert(ok);
+    assert(strcmp(now.trackId, id.c_str()) == 0);
+    printf("T20 ok\n");
+  }
+
+  // T21: track_id 17 字元（超過上限）
+  {
+    std::string id(17, 'a');
+    std::string s = "M1\x1f" + id + "\x1f""0\x1f""0\x1f""P\x1f""t\x1f""a\x1f""al";
+    IcyNow now{};
+    assert(!icy_now_fields(U(s.data()), s.size(), &now));
+    printf("T21 ok\n");
+  }
+
   printf("all icy_fields tests passed\n");
   return 0;
 }

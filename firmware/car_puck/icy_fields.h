@@ -45,4 +45,57 @@ inline int icy_bpm_field(const uint8_t* p, size_t len) {
   return (v > 0 && v <= 300) ? v : 0;
 }
 
+// 第 1–5 欄（M1/track_id/dur_ms/pos_ms/state）解析結果。
+struct IcyNow {
+  char trackId[17];   // 最多 16 字元 + 結尾 '\0'
+  uint32_t durMs;
+  uint32_t posMs;
+  char state;          // 'P' 或 'S'
+};
+
+// 解析 payload 第 1–5 欄到 *out。欄位不足 5 個、magic 不是 "M1"、track_id 超過 16 字元、
+// dur_ms/pos_ms 不是純十進位數字、或 state 不是 'P'/'S' → 回 false（*out 內容不保證）。
+inline bool icy_now_fields(const uint8_t* p, size_t len, IcyNow* out) {
+  size_t starts[6];  // 第 0..4 欄起點 + 第 5 欄起點（= 第 4 欄結尾後一個位置）
+  int field = 0;
+  starts[0] = 0;
+  for (size_t i = 0; i < len && field < 5; i++) {
+    if (p[i] == 0x1f) {
+      field++;
+      starts[field] = i + 1;
+    }
+  }
+  if (field < 5) return false;   // 分隔字元不足 5 個 ⇒ 欄位不足 5 欄
+  size_t ends[5];
+  for (int f = 0; f < 5; f++) ends[f] = starts[f + 1] - 1;
+
+  size_t magicLen = ends[0] - starts[0];
+  if (magicLen != 2 || p[starts[0]] != 'M' || p[starts[0] + 1] != '1') return false;
+
+  size_t idLen = ends[1] - starts[1];
+  if (idLen > 16) return false;
+  for (size_t i = 0; i < idLen; i++) out->trackId[i] = (char)p[starts[1] + i];
+  out->trackId[idLen] = '\0';
+
+  auto parseDec = [&](size_t s, size_t e, uint32_t* v) -> bool {
+    if (e <= s) return false;
+    uint32_t acc = 0;
+    for (size_t i = s; i < e; i++) {
+      if (p[i] < '0' || p[i] > '9') return false;
+      acc = acc * 10 + (uint32_t)(p[i] - '0');
+    }
+    *v = acc;
+    return true;
+  };
+  if (!parseDec(starts[2], ends[2], &out->durMs)) return false;
+  if (!parseDec(starts[3], ends[3], &out->posMs)) return false;
+
+  size_t stateLen = ends[4] - starts[4];
+  if (stateLen != 1) return false;
+  uint8_t s = p[starts[4]];
+  if (s != 'P' && s != 'S') return false;
+  out->state = (char)s;
+  return true;
+}
+
 #endif  // ICY_FIELDS_H
