@@ -823,20 +823,7 @@ __SHARED_JS__
     if(!card||!cover) return;
     const disc=card.querySelector('.vdisc');
     const dctx=disc.getContext('2d'); let DPR=1;
-    // 現正播放＝car puck 同一張徽章封面（/car_cover，Mac 端 puck_cover.py 預算）；
-    // 打光固定左上，所以不轉。載入中留白；404（沒 iTunes 封面）退回潑漆黑膠。k＝歌名，換歌就換 URL。
-    const badgeUrl="/car_cover?which=current&size=466&t="+encodeURIComponent(TOKEN)+"&k="+encodeURIComponent(cover.title);
-    function drawDisc(){
-      const badge=getCoverImage(badgeUrl, drawDisc);
-      disc.classList.toggle('badge', !!badge);
-      if(badge){
-        dctx.clearRect(0,0,disc.width,disc.height);
-        dctx.drawImage(badge,0,0,disc.width,disc.height);
-        return;
-      }
-      if(imgCache.get(badgeUrl)!=='error'){ dctx.clearRect(0,0,disc.width,disc.height); return; }
-      drawVinylDisc(dctx, cover, DPR, drawDisc);
-    }
+    function drawDisc(){ disc.classList.toggle('badge', drawNowPlayingDisc(dctx, cover, DPR, TOKEN, drawDisc)); }
     function size(){ DPR=Math.min(2,window.devicePixelRatio||1);
       const dr=disc.getBoundingClientRect(); disc.width=Math.max(1,dr.width*DPR); disc.height=Math.max(1,dr.height*DPR);
       drawDisc(); }

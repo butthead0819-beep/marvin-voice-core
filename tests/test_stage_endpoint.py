@@ -42,6 +42,20 @@ async def test_stage_serves_iphone_page():
 
 
 @pytest.mark.asyncio
+async def test_stage_disc_uses_car_cover_badge():
+    """手機版現正播放跟 /hud 共用 drawNowPlayingDisc：徽章封面（/car_cover），徽章不轉。"""
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+    app = build_text_app(_make_vc(), token=None)
+    async with TestClient(TestServer(app)) as client:
+        html = await (await client.get("/stage")).text()
+        assert "function drawNowPlayingDisc" in html
+        assert "drawNowPlayingDisc(discCtx" in html
+        assert "/car_cover?which=current&size=466" in html
+        assert ".disc-wrap canvas.badge{ animation:none; }" in html
+
+
+@pytest.mark.asyncio
 async def test_stage_rejects_missing_token():
     from aiohttp.test_utils import TestClient, TestServer
     from car_http_app import build_text_app

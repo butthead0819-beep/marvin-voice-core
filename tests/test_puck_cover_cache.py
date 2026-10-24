@@ -29,14 +29,19 @@ def _make(max_items=4, max_failed=50):
 
 
 @pytest.mark.asyncio
-async def test_non_itunes_cover_returns_none_without_fetch():
+async def test_youtube_thumbnail_also_renders():
     cache, calls = _make()
     result = await cache.get(_info("https://img/a.jpg", itunes=False))
-    assert result is None
-    assert calls["fetch"] == 0
+    assert result == b"JPG:DATA:https://img/a.jpg466"
+    assert calls["fetch"] == 1
 
-    result2 = await cache.get(None)
-    assert result2 is None
+
+@pytest.mark.asyncio
+async def test_no_thumbnail_returns_none_without_fetch():
+    cache, calls = _make()
+    assert await cache.get(None) is None
+    assert await cache.get({"title": "晴天"}) is None
+    assert await cache.get({"title": "晴天", "thumbnail": ""}) is None
     assert calls["fetch"] == 0
 
 

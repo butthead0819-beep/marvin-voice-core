@@ -1,7 +1,7 @@
 """車機封面預算快取。
 
-只處理 iTunes 真的換掉的封面（info 有 `yt_thumbnail` 才代表
-music_cog._apply_itunes_cover 換成功；沒有＝還是 YT 縮圖，不做）。
+info['thumbnail'] 是 iTunes 方圖（_apply_itunes_cover 換成功）或 YT 縮圖都做；
+YT 縮圖的黑邊/裁正方形由 puck_cover 處理。
 單一 URL（含尺寸）單飛：並發只抓一次；LRU 上限；失敗記住不重抓。
 """
 from __future__ import annotations
@@ -15,10 +15,8 @@ logger = logging.getLogger(__name__)
 
 
 def cover_url_for(info) -> str | None:
-    """info 為 dict 且有非空 yt_thumbnail 與非空 thumbnail → 回 thumbnail；否則 None。"""
+    """info 為 dict 且有非空 thumbnail → 回 thumbnail；否則 None。"""
     if not isinstance(info, dict):
-        return None
-    if not info.get("yt_thumbnail"):
         return None
     url = info.get("thumbnail")
     return url or None
