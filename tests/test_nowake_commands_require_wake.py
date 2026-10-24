@@ -2,7 +2,7 @@
 
 10/23 12:51 狗與露跟 showay 聊「他找到那一句歌詞啊嗯」，沒叫馬文，debounce 免喚醒
 路徑的 _FIND_SONG_GATE（找.*歌詞）命中 → find_song 0.90 → 直接放了一首歌。
-process_debounced_speech 的免喚醒直派整條拔掉（問歌名也一起），不叫名字一律不派 bus。
+process_debounced_speech 的免喚醒直派只留「問歌名」短問句（回答不是指令）；播/跳/停/暫停/繼續/找歌一律不派。
 """
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ async def _run(cog, text):
     "暫停",
     "繼續播",
     "我想聽周杰倫的晴天",
-    "這首是什麼歌啊",
+    "不過現在臺灣街頭藝人要抽稅",   # 10/19 舊 regex 碰「藝人」誤接
 ])
 async def test_wakeless_command_not_dispatched(text):
     cog = _cog_with_bus()
@@ -44,3 +44,19 @@ async def test_wakeless_command_not_dispatched(text):
     cog._intent_bus.dispatch.assert_not_called()
 
 
+
+
+@pytest.mark.asyncio
+async def test_wakeless_short_song_question_still_dispatched():
+    cog = _cog_with_bus()
+    await _run(cog, "這首是什麼歌啊")
+    cog._intent_bus.dispatch.assert_called_once()
+    assert cog._intent_bus.dispatch.call_args.args[0].dispatch_source == "nowake"
+
+
+@pytest.mark.asyncio
+async def test_wakeless_song_question_ignored_when_not_streaming():
+    cog = _cog_with_bus()
+    cog.stream_mode = False
+    await _run(cog, "這首是什麼歌啊")
+    cog._intent_bus.dispatch.assert_not_called()
