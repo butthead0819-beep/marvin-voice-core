@@ -13,9 +13,9 @@ test('grooveNodBeats picks beats closest to 1 second, smaller on a tie', () => {
   assert.equal(grooveNodBeats(180), 2);
 });
 
-test('grooveMode: nod needs a finite bpm >= 100 and remainingSec >= 15', () => {
-  assert.equal(grooveMode(99, Infinity), 'sway');
-  assert.equal(grooveMode(100, Infinity), 'nod');
+test('grooveMode: nod needs a finite bpm >= 120 and remainingSec >= 15', () => {
+  assert.equal(grooveMode(119, Infinity), 'sway');
+  assert.equal(grooveMode(120, Infinity), 'nod');
   assert.equal(grooveMode(null, Infinity), 'sway');
   assert.equal(grooveMode(130, 14.9), 'sway');
   assert.equal(grooveMode(130, 15), 'nod');

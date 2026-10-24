@@ -83,21 +83,22 @@ int main() {
 
   // T4: groove 選擇
   {
-    // bpm=99 -> SWAY：yaw 會擺動（取兩個不同時間點比較）
+    // bpm=119 -> SWAY：yaw 會擺動（取兩個不同時間點比較）
     {
       FaceMixer m; face_mixer_init(m);
-      FaceInputs in{OVERRIDE_NONE, true, 99, 180.0f, 10.0f};
+      FaceInputs in{OVERRIDE_NONE, true, 119, 180.0f, 10.0f};
       FacePoseOut a = runMixer(m, in, 0.0f, 2.0f);
       FacePoseOut b = runMixer(m, in, 2.0f, 2.0f);
       assert(fabsf(a.pose.yaw - b.pose.yaw) > 0.05f);
       printf("T4a ok (sway yaw osc a=%.4f b=%.4f)\n", a.pose.yaw, b.pose.yaw);
     }
-    // bpm=100 -> NOD：pitch 擺動、yaw≈0
+    // bpm=120 -> NOD：pitch 擺動、yaw≈0
     {
       FaceMixer m; face_mixer_init(m);
-      FaceInputs in{OVERRIDE_NONE, true, 100, 180.0f, 10.0f};
+      FaceInputs in{OVERRIDE_NONE, true, 120, 180.0f, 10.0f};
       FacePoseOut a = runMixer(m, in, 0.0f, 2.0f);
-      FacePoseOut b = runMixer(m, in, 2.0f, 2.0f);
+      // 120 BPM 一次點頭剛好 1s，取樣點錯開 1/4 週期，避免兩點落在同相位
+      FacePoseOut b = runMixer(m, in, 2.0f, 2.25f);
       assert(fabsf(a.pose.pitch - b.pose.pitch) > 0.05f);
       assert(fabsf(a.pose.yaw) < 0.05f);
       assert(fabsf(b.pose.yaw) < 0.05f);
