@@ -109,6 +109,23 @@ def note_winner(bid) -> None:
     mark_route(f"bus:{bid.name}")
 
 
+def note_gesture_hint(code: str) -> None:
+    """LLM 回覆開頭的動作標籤（只記第一個）。回合外呼叫＝no-op。"""
+    rec = _current.get()
+    if rec is None or rec.get("_gesture_hint") is not None:
+        return
+    rec["_gesture_hint"] = code
+
+
+def claim_first_speech() -> dict | None:
+    """本回合第一句 Marvin TTS 呼叫這個：第一次回 rec（唯讀用），之後同回合都回 None；回合外回 None。"""
+    rec = _current.get()
+    if rec is None or rec.get("_speech_claimed"):
+        return None
+    rec["_speech_claimed"] = True
+    return rec
+
+
 def _finish(rec: dict, *, error: bool = False, cancelled: bool = False) -> None:
     try:
         if rec["route"] is None:
@@ -118,7 +135,7 @@ def _finish(rec: dict, *, error: bool = False, cancelled: bool = False) -> None:
             and rec["route"] != "silent"
             and not rec["route"].startswith("dropped:")
         )
-        _append(OUTCOMES_PATH, rec)
+        _append(OUTCOMES_PATH, {k: v for k, v in rec.items() if not k.startswith("_")})
     except Exception as e:
         logger.debug(f"[TurnOutcome] _finish 失敗（忽略）: {e}")
 

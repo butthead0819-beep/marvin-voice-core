@@ -50,6 +50,7 @@ from cogs.voice_controller_gap_notify import GapNotifyMixin
 from cogs.voice_controller_wake_session import WakeSessionMixin, _STORM_CLEAR_QUIET  # 風暴消散靜默秒數（與接受喚醒計數共用一份）
 from cogs.voice_controller_turn_outcome import TurnOutcomeMixin
 import turn_outcome
+import puck_gesture
 from turn_outcome import gate_reason, discovered_from_reason, turn_route
 from wake_session import WakeSession
 from vector_store import VectorStore
@@ -3074,9 +3075,10 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 stream_active=self.stream_mode,
                 game_mode=self.game_mode,
                 hot_chat=self._room_mood_store.get(0).hot_chat,
+                puck_gesture=bool(getattr(getattr(self.bot, "car_presence", None), "is_present", False)),
             )
         # 🧠 [CoT Router] 過濾 <think>...</think> 內心獨白後再送入句子分割器
-        filtered_stream = self._cot_filter_stream(llm_stream)
+        filtered_stream = puck_gesture.strip_gesture_stream(self._cot_filter_stream(llm_stream))
         sentence_gen = self._stream_sentence_splitter(filtered_stream)
 
         # 🔇 [Low-Confidence Gate] Track B 喚醒信心 < 0.80 → 只貼文字，不播 TTS

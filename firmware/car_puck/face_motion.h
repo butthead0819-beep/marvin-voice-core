@@ -155,7 +155,18 @@ struct ActiveGesture {
   Gesture g;
   float start;   // T 起算
   bool active;
+  float amp;
 };
+
+// 動作強度（ICY 第 11 欄的 level 1-3）→ 振幅倍率。
+inline float gesture_level_amp(int level) {
+  switch (level) {
+    case 1: return 0.6f;
+    case 2: return 1.0f;
+    case 3: return 1.3f;
+    default: return 1.0f;
+  }
+}
 
 // ---------- 混合器 ----------
 struct FaceMixer {
@@ -203,7 +214,7 @@ inline Override resolve_override(Override ledOv, bool speaking, bool awaitingRep
 }
 
 // 外部請求一個新的動作標籤；最多同時 4 個進行中，多的丟掉最舊。
-inline void face_mixer_trigger_gesture(FaceMixer& m, Gesture g, float T) {
+inline void face_mixer_trigger_gesture(FaceMixer& m, Gesture g, float T, float amp = 1.0f) {
   int slot = -1;
   for (int i = 0; i < 4; i++) {
     if (!m.gestures[i].active) { slot = i; break; }
@@ -219,6 +230,7 @@ inline void face_mixer_trigger_gesture(FaceMixer& m, Gesture g, float T) {
   m.gestures[slot].g = g;
   m.gestures[slot].start = T;
   m.gestures[slot].active = true;
+  m.gestures[slot].amp = amp;
 }
 
 struct FacePoseOut {
@@ -279,7 +291,8 @@ inline FacePoseOut face_mixer_step(FaceMixer& m, const FaceInputs& in, float T, 
     if (u >= 1.0f) { m.gestures[i].active = false; continue; }
     float gy, gp, gr, gb;
     gestureEval(m.gestures[i].g, u, &gy, &gp, &gr, &gb);
-    gyaw += gy; gpitch += gp; groll += gr; gbrow += gb;
+    float amp = m.gestures[i].amp;
+    gyaw += gy * amp; gpitch += gp * amp; groll += gr * amp; gbrow += gb * amp;
     float e = tripE(u, 0.25f);
     if (e > duck) duck = e;
   }

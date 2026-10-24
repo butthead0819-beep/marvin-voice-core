@@ -474,3 +474,30 @@ def test_payload_first_8_fields_unchanged_by_speaking():
     parts_without = without.decode("utf-8").split("\x1f")
     parts_with = with_speak.decode("utf-8").split("\x1f")
     assert parts_without[:8] == parts_with[:8]
+
+
+# ---------- build_now_playing_payload：gesture ----------
+
+def test_payload_speaking_and_gesture_is_11_fields_gesture_verbatim():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(
+        info, 1000.0, 1050.0, speaking=True, gesture="12:Y2")
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 11
+    assert parts[10] == "12:Y2"
+
+
+def test_payload_gesture_ignored_when_speaking_none():
+    info = {"title": "Song", "duration": 200.0}
+    without = build_now_playing_payload(info, 1000.0, 1050.0)
+    with_gesture = build_now_playing_payload(
+        info, 1000.0, 1050.0, speaking=None, gesture="12:Y2")
+    assert without == with_gesture
+
+
+def test_payload_speaking_with_gesture_none_stays_10_fields():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(
+        info, 1000.0, 1050.0, speaking=True, gesture=None)
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 10

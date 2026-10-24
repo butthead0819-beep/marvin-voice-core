@@ -163,10 +163,13 @@ struct FaceInSnapshot {
   uint32_t coverSeq;
   bool speaking;           // ICY 第 10 欄依播放位置套用（見 speak_sched.h）
   uint32_t awaitUntilMs;   // postAudio 送出後等回覆的截止時間；0＝未在等
+  int pendingGesture;      // ICY 第 11 欄依播放位置套用後還沒播的動作；-1＝無
+  int pendingLevel;
+  uint32_t pendingAtMs;
 };
 static portMUX_TYPE g_faceInMux = portMUX_INITIALIZER_UNLOCKED;
 static FaceInSnapshot g_faceIn = {
-  face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0, false, 0
+  face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, -1, 0, 0
 };
 #endif  // FACE_DISPLAY
 
@@ -464,6 +467,11 @@ static volatile uint32_t g_ringWriteTotal = 0;  // producer 專用：累計寫�
 static volatile uint32_t g_ringReadTotal = 0;   // consumer 專用：累計從 ring 讀出的 bytes
 static SpeakSched g_speakSched;
 static volatile int g_icyPendingSpeak = -1;  // onIcyMeta 寫、network loop 讀
+static volatile bool g_icyPendingGestureValid = false;
+static volatile uint16_t g_icyPendingGestureSeq = 0;
+static volatile int g_icyPendingGesture = -1, g_icyPendingGestureLevel = 0;
+static uint16_t g_lastGestureSeq = 0;  // network task 專用
+static bool g_gestureSeqBaseline = false;  // network task 專用
 #endif  // FACE_DISPLAY
 
 static inline size_t ringUsed() {
@@ -551,6 +559,13 @@ static void onIcyMeta(const uint8_t* payload, size_t len, void* /*ctx*/) {
   // 只設值，不做別的——實際排入 speak_sched 交給 audioNetworkTask 自己的迴圈（那裡才
   // 知道「這批音訊」對應的 g_ringWriteTotal 位置）。
   g_icyPendingSpeak = icy_speak_field(payload, len);
+  uint16_t gs; int gg, gl;
+  if (icy_gesture_field(payload, len, &gs, &gg, &gl)) {
+    g_icyPendingGestureSeq = gs;
+    g_icyPendingGesture = gg;
+    g_icyPendingGestureLevel = gl;
+    g_icyPendingGestureValid = true;
+  }
   // 只寫資料，不呼叫任何顯示函式——顯示交給釘死 core 1 的 faceTask 自己的巡邏節奏讀。
   IcyNow icyNow;
   if (icy_now_fields(payload, len, &icyNow)) {
@@ -577,7 +592,7 @@ static void onIcyMeta(const uint8_t* payload, size_t len, void* /*ctx*/) {
 // faceTask（釘 core 1）讀、carHeartbeat()（釘 core 0）每 60s 列印後清零——都是診斷用
 // volatile 計數，偶爾少算一筆可接受，不加鎖。
 static TaskHandle_t faceTaskHandle = nullptr;
-static volatile uint32_t g_faceFrames = 0, g_faceLate = 0;
+static volatile uint32_t g_faceFrames = 0, g_faceLate = 0, g_faceGestures = 0;
 static volatile uint64_t g_faceRenderUs = 0, g_facePushUs = 0;
 
 // PSRAM 配置；setup() 失敗時維持 nullptr，不建 faceTask。
@@ -704,6 +719,8 @@ void audioNetworkTask(void* pv) {
 #if FACE_DISPLAY
     speak_sched_reset_producer(g_speakSched);
     g_icyPendingSpeak = -1;
+    g_gestureSeqBaseline = false;
+    g_icyPendingGestureValid = false;
 #endif
 
     while (client.connected()) {
@@ -745,6 +762,12 @@ void audioNetworkTask(void* pv) {
             g_icyPendingSpeak = -1;
             speak_sched_push(g_speakSched, g_ringWriteTotal, sp == 1);
           }
+        }
+        if (g_icyPendingGestureValid) {
+          g_icyPendingGestureValid = false;
+          uint16_t gs = g_icyPendingGestureSeq;
+          if (!g_gestureSeqBaseline) { g_lastGestureSeq = gs; g_gestureSeqBaseline = true; }   // 連線後第一筆只當基準，不重播舊動作
+          else if (gs != g_lastGestureSeq) { g_lastGestureSeq = gs; speak_sched_push_gesture(g_speakSched, g_ringWriteTotal, g_icyPendingGesture, g_icyPendingGestureLevel); }
         }
 #endif
         remain -= (long)n;
@@ -855,10 +878,15 @@ void audioPlaybackTask(void* pv) {
       // 不能清空佇列：network task 可能已經排了新連線的第一筆，producer 記得「已排過」
       // 就不會再排同值，清掉會讓整段講話期間嘴都不動。
       g_ringReadTotal = g_ringWriteTotal;
-      bool spk;
-      if (speak_sched_apply(g_speakSched, g_ringReadTotal, &spk)) {
+      SpeakApplyOut out;
+      if (speak_sched_apply(g_speakSched, g_ringReadTotal, &out)) {
         portENTER_CRITICAL(&g_faceInMux);
-        g_faceIn.speaking = spk;
+        if (out.speakApplied) g_faceIn.speaking = out.speaking;
+        if (out.gesture >= 0) {
+          g_faceIn.pendingGesture = out.gesture;
+          g_faceIn.pendingLevel = out.level;
+          g_faceIn.pendingAtMs = millis();
+        }
         portEXIT_CRITICAL(&g_faceInMux);
       }
 #endif
@@ -893,10 +921,15 @@ void audioPlaybackTask(void* pv) {
     size_t n = ringRead(buf, want);
 #if FACE_DISPLAY
     {
-      bool spk;
-      if (speak_sched_apply(g_speakSched, g_ringReadTotal, &spk)) {
+      SpeakApplyOut out;
+      if (speak_sched_apply(g_speakSched, g_ringReadTotal, &out)) {
         portENTER_CRITICAL(&g_faceInMux);
-        g_faceIn.speaking = spk;
+        if (out.speakApplied) g_faceIn.speaking = out.speaking;
+        if (out.gesture >= 0) {
+          g_faceIn.pendingGesture = out.gesture;
+          g_faceIn.pendingLevel = out.level;
+          g_faceIn.pendingAtMs = millis();
+        }
         portEXIT_CRITICAL(&g_faceInMux);
       }
     }
@@ -1163,21 +1196,21 @@ static void faceLogStats() {
   if (g_faceStatsLastMs != 0 && now - g_faceStatsLastMs < 60000) return;
   uint32_t elapsedMs = now - g_faceStatsLastMs;   // 斷線時心跳會拖過 60s，用實際間隔算 fps
   g_faceStatsLastMs = now;
-  uint32_t frames = g_faceFrames, late = g_faceLate;
+  uint32_t frames = g_faceFrames, late = g_faceLate, gestures = g_faceGestures;
   uint64_t renderUs = g_faceRenderUs, pushUs = g_facePushUs;
-  g_faceFrames = 0; g_faceLate = 0; g_faceRenderUs = 0; g_facePushUs = 0;
+  g_faceFrames = 0; g_faceLate = 0; g_faceRenderUs = 0; g_facePushUs = 0; g_faceGestures = 0;
   double fps = (frames && elapsedMs) ? frames * 1000.0 / elapsedMs : 0.0;
   double renderMs = frames ? (renderUs / 1000.0) / frames : 0.0;
   double pushMs = frames ? (pushUs / 1000.0) / frames : 0.0;
   portENTER_CRITICAL(&g_faceInMux);
   bool spk = g_faceIn.speaking;
   portEXIT_CRITICAL(&g_faceInMux);
-  Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u spk=%d\n",
+  Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u spk=%d gst=%u\n",
                 fps, (unsigned)late, renderMs, pushMs,
                 faceTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(faceTaskHandle) : 0,
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-                (int)spk);
+                (int)spk, (unsigned)gestures);
 }
 #endif
 
@@ -2062,6 +2095,19 @@ void faceTask(void* pv) {
     bool streamFresh = (nowMs - snap.lastIcyAtMs <= 15000);
     bool playing = snap.playing && streamFresh;
     bool speaking = snap.speaking && streamFresh;
+    if (snap.pendingGesture >= 0) {
+      bool expired = (nowMs - snap.pendingAtMs) > 10000;
+      if (speaking || expired) {
+        if (speaking && !expired) {
+          face_mixer_trigger_gesture(mixer, (face_motion::Gesture)snap.pendingGesture, T,
+                                      face_motion::gesture_level_amp(snap.pendingLevel));
+          g_faceGestures++;
+        }
+        portENTER_CRITICAL(&g_faceInMux);
+        if (g_faceIn.pendingAtMs == snap.pendingAtMs) g_faceIn.pendingGesture = -1;   // 期間有新的就不要清掉新的
+        portEXIT_CRITICAL(&g_faceInMux);
+      }
+    }
     bool awaiting = snap.awaitUntilMs != 0 && (int32_t)(snap.awaitUntilMs - nowMs) > 0;
     if (speaking && snap.awaitUntilMs != 0) {
       // 開始講話就不再等回應——講話本身就是回應已經到了。

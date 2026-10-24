@@ -123,4 +123,55 @@ inline bool icy_now_fields(const uint8_t* p, size_t len, IcyNow* out) {
   return true;
 }
 
+// 取第 11 欄（index 10）：這則回覆開頭做的頭部動作，格式必須剛好是
+// "<1-4位十進位seq>:<字母><一位數level>"。seq 1–9999，字母 T/Y/N/G/P 對應
+// GESTURE_TILT=0,YES=1,NO=2,GLANCE=3,PONDER=4（這裡不 include face_motion.h，直接回整數），
+// level 1–3。任何不符（缺欄位、seq 超界、字母不認得、level 不在 1-3、格式不符）→ 回 false。
+inline bool icy_gesture_field(const uint8_t* p, size_t len, uint16_t* seq, int* gesture, int* level) {
+  size_t field_start = 0, start = (size_t)-1, end = (size_t)-1;
+  int field_idx = 0;
+  for (size_t i = 0; i <= len; i++) {
+    if (i == len || p[i] == 0x1f) {
+      if (field_idx == 10) { start = field_start; end = i; break; }
+      field_idx++;
+      field_start = i + 1;
+    }
+  }
+  if (start == (size_t)-1 || end <= start) return false;
+
+  size_t colon = (size_t)-1;
+  for (size_t i = start; i < end; i++) {
+    if (p[i] == ':') { colon = i; break; }
+  }
+  if (colon == (size_t)-1) return false;
+
+  size_t seqLen = colon - start;
+  if (seqLen < 1 || seqLen > 4) return false;
+  uint32_t seqVal = 0;
+  for (size_t i = start; i < colon; i++) {
+    if (p[i] < '0' || p[i] > '9') return false;
+    seqVal = seqVal * 10 + (uint32_t)(p[i] - '0');
+  }
+  if (seqVal < 1 || seqVal > 9999) return false;
+
+  if (end - (colon + 1) != 2) return false;
+  uint8_t letter = p[colon + 1];
+  uint8_t levelCh = p[colon + 2];
+  int g;
+  switch (letter) {
+    case 'T': g = 0; break;
+    case 'Y': g = 1; break;
+    case 'N': g = 2; break;
+    case 'G': g = 3; break;
+    case 'P': g = 4; break;
+    default: return false;
+  }
+  if (levelCh < '1' || levelCh > '3') return false;
+
+  *seq = (uint16_t)seqVal;
+  *gesture = g;
+  *level = levelCh - '0';
+  return true;
+}
+
 #endif  // ICY_FIELDS_H

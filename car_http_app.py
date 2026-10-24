@@ -48,6 +48,9 @@ _ICY_BPM_ENABLED = os.getenv("MARVIN_ICY_BPM", "0").strip().lower() in ("1", "tr
 # ICY 第 10 欄送「Marvin 正在講話」：預設關。必須先燒錄會依播放位置套用 SPEAK 的 S3 韌體再開。
 _ICY_SPEAK_ENABLED = os.getenv("MARVIN_ICY_SPEAK", "0").strip().lower() in ("1", "true", "yes", "on")
 
+# ICY 第 11 欄送「這則回覆的頭部動作」（seq:代碼強度）：預設關。需要先燒錄會解析第 11 欄的 S3 韌體再開，且只在 MARVIN_ICY_SPEAK 開時有效。
+_ICY_GESTURE_ENABLED = os.getenv("MARVIN_ICY_GESTURE", "0").strip().lower() in ("1", "true", "yes", "on")
+
 # 跟 cogs/music_cog_audio_meta.py::_SONG_BPM_STORE 同一檔。
 _SONG_BPM_STORE = "records/song_bpm.json"
 
@@ -1492,14 +1495,17 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                     if speak_tracker is not None:
                         mixer = getattr(vc, "_mixer", None)
                         speaking = speak_tracker.update(getattr(mixer, "tts_frames_total", 0), now)
+                    gesture = None
+                    if speak_tracker is not None and _ICY_GESTURE_ENABLED:
+                        gesture = getattr(getattr(vc, "_puck_gesture_director", None), "field", None)
                     if _ICY_BPM_ENABLED:
                         url = (info or {}).get("webpage_url") or (info or {}).get("original_url") or (info or {}).get("url") or ""
                         vid = music_memory.extract_video_id(url)
                         bpm = _bpm_lookup.get(vid, now)
                         payload = build_now_playing_payload(
-                            info, start_time, now, bpm=bpm, include_bpm=True, speaking=speaking)
+                            info, start_time, now, bpm=bpm, include_bpm=True, speaking=speaking, gesture=gesture)
                     else:
-                        payload = build_now_playing_payload(info, start_time, now, speaking=speaking)
+                        payload = build_now_playing_payload(info, start_time, now, speaking=speaking, gesture=gesture)
                     chunk = interleaver.feed(chunk, payload, now)
                 await resp.write(chunk)
         except (ConnectionError, asyncio.CancelledError):

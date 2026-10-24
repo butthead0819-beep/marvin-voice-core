@@ -26,6 +26,7 @@ import discord
 
 import ack_templates
 import audio_mixing
+import puck_gesture
 from marvin_speech_log import log_marvin_speech
 from loudness_norm import UNMEASURED_GAIN
 from tts_speak_policy import (
@@ -626,6 +627,7 @@ class PlaybackMixin:
         if not text: return
         import re
         text = re.sub(r'<think(?:ing)?>.*?</think(?:ing)?>', '', text, flags=re.DOTALL).strip()
+        text, _ = puck_gesture.extract_gesture_tag(text)
         if not text: return
 
         if await self._tts_suppressed(
@@ -634,6 +636,8 @@ class PlaybackMixin:
             kind=kind,
         ):
             return
+
+        puck_gesture.on_speech(self, text, voice)
 
         # 🎛️ [Plan 12] render → push mixer
         device = self._resolve_playback_device()
