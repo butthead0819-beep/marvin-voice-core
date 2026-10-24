@@ -1188,7 +1188,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 is_fast = False
 
         is_fast, is_echo, _gate_reason = self._apply_wake_guards(
-            speaker, raw_text, timestamp, track, is_fast,
+            speaker, raw_text, timestamp, track,
+            self._iba_wake_word_ok(speaker, raw_text, is_fast, _ch if _fusion is not None else None),
             _fusion, _wake_dom, _confidence, _wake_voice_score,
             is_text_input=is_text_input, is_wake_check=is_wake_check)
         self._note_gate_decision(speaker, timestamp, track, is_wake_check, is_text_input, _gate_reason, _confidence)
