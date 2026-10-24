@@ -1104,11 +1104,12 @@ static uint32_t g_faceStatsLastMs = 0;
 static void faceLogStats() {
   uint32_t now = millis();
   if (g_faceStatsLastMs != 0 && now - g_faceStatsLastMs < 60000) return;
+  uint32_t elapsedMs = now - g_faceStatsLastMs;   // 斷線時心跳會拖過 60s，用實際間隔算 fps
   g_faceStatsLastMs = now;
   uint32_t frames = g_faceFrames, late = g_faceLate;
   uint64_t renderUs = g_faceRenderUs, pushUs = g_facePushUs;
   g_faceFrames = 0; g_faceLate = 0; g_faceRenderUs = 0; g_facePushUs = 0;
-  double fps = frames ? frames / 60.0 : 0.0;
+  double fps = (frames && elapsedMs) ? frames * 1000.0 / elapsedMs : 0.0;
   double renderMs = frames ? (renderUs / 1000.0) / frames : 0.0;
   double pushMs = frames ? (pushUs / 1000.0) / frames : 0.0;
   Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u\n",
@@ -2128,7 +2129,10 @@ void setup() {
       g_faceTft.startWrite();
       facePushRows(0, 239, 0, 239);   // 底圖整張推一次（滿足 face_rt_render() 的不變式）
       g_faceTft.endWrite();
-      xTaskCreatePinnedToCore(faceTask, "faceTask", 8192, nullptr, 1, &faceTaskHandle, 1);
+      // stack 放 PSRAM（2026-10-25 實測：放內部 RAM 會多吃 8K，害 TLS 握手時 imin 掉到 34K）。
+      // 代價：這個 task 不能碰需要關 cache 的操作（寫 flash/NVS）——faceTask 只算圖、推 SPI。
+      xTaskCreatePinnedToCoreWithCaps(faceTask, "faceTask", 8192, nullptr, 1, &faceTaskHandle, 1,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
       Serial.println("[Face] faceTask 啟動");
     }
   }
