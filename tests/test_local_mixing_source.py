@@ -1196,3 +1196,69 @@ def test_balance_slow_ramp_while_playing():
     for _ in range(260):
         mix.read()
     assert mix._balance_cur == pytest.approx(0.90)
+
+
+# ── 🛑 Emergency Stop：mixer 硬閘門 ──────────────────────────────────────────
+
+class _CleanupTrackingMusic:
+    def __init__(self):
+        self.cleaned = False
+
+    def read(self):
+        return np.full(FRAME_SAMPLES, 0.3, dtype=np.float32).tobytes()
+
+    def cleanup(self):
+        self.cleaned = True
+
+
+def test_set_estop_true_clears_existing_tts_and_music():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.push_tts(_f32_frame(0.5))
+    src = _CleanupTrackingMusic()
+    mix.set_music_source(src)
+    mix.set_estop(True)
+    assert mix.tts_load_seconds() == 0
+    assert src.cleaned is True
+    assert mix.has_music() is False
+
+
+def test_estop_rejects_push_tts_and_push_tts2():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_estop(True)
+    assert mix.push_tts(_f32_frame(0.5)) is False
+    assert mix.push_tts2(_f32_frame(0.4)) is False
+
+
+def test_estop_rejects_set_music_source_and_cleans_up():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_estop(True)
+    src = _CleanupTrackingMusic()
+    mix.set_music_source(src)
+    assert src.cleaned is True
+    assert mix.has_music() is False
+
+
+def test_estop_read_returns_silence():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_music_source(_FakeMusic(value=0.6, frames=100))
+    mix.set_estop(True)
+    out = mix.read()
+    assert out == mix._silence_bytes
+    assert len(out) == FRAME_BYTES_S16
+
+
+def test_estop_false_restores_push_tts():
+    mix = LocalMixingAudioSource(seed=1)
+    mix.set_estop(True)
+    mix.set_estop(False)
+    assert mix.push_tts(_f32_frame(0.5)) is True
+
+
+def test_estop_read_silent_even_if_audio_sneaks_in():
+    """read() 閘門是最後防線：就算有東西繞過 set_estop 的清除留在佇列，也只出 silence、不前進來源。"""
+    mix = LocalMixingAudioSource(seed=1)
+    mix.push_tts(_f32_frame(0.5))
+    mix.set_music_source(_FakeMusic(value=0.6, frames=100))
+    mix._estop = True   # 模擬繞過 set_estop 的清除
+    assert mix.read() == mix._silence_bytes
+    assert mix.tts_load_seconds() > 0   # 沒被消耗

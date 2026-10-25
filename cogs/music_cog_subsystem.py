@@ -32,6 +32,8 @@ class MusicSubsystemMixin:
     async def start_radio(self, trigger: str = "未知觸發"):
         """📻 啟動電台：掃描歌單 → shuffle → 開始背景播放 Loop。"""
         import random
+        if self._estop_blocked("電台"):
+            return
         if self.radio_mode:
             logger.warning("⚠️ [Radio] 電台已啟動，跳過重複啟動。")
             return
@@ -83,6 +85,14 @@ class MusicSubsystemMixin:
             guild_vc.stop_playing()
             logger.info("📻 [Radio] 已立即停止當前播放的歌曲。")
 
+    def _estop_blocked(self, what: str) -> bool:
+        """🛑 緊急停止中不啟動任何音樂（只有 /marvin_estop 解除）。"""
+        vc = self._vc()
+        if vc is not None and getattr(vc, "_estop_active", lambda: False)() is True:   # 只認明確 True（MagicMock vc 不算）
+            logger.info(f"🛑 [EStop] 緊急停止中，不啟動{what}")
+            return True
+        return False
+
     def _ensure_stream_loop(self) -> bool:
         """佇列有歌但 stream loop 沒在跑 → 叫醒它。回傳「是否剛叫醒」。
 
@@ -95,6 +105,8 @@ class MusicSubsystemMixin:
         （非 stop_stream 那條）旗標停在 True 但沒人在播，只信旗標會 no-op →
         佇列卡死（2026-07-17 第二次事故）。
         """
+        if self._estop_blocked("串流"):
+            return False
         alive = self.stream_task is not None and not self.stream_task.done()
         if alive and self.stream_mode:
             return False
