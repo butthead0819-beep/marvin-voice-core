@@ -85,6 +85,21 @@ def is_hot(entries, n_online: int, now: float) -> bool:
     return heat_snapshot(entries, n_online, now)[2]
 
 
+CROWDED_OTHERS_WINDOW_S = 60.0   # 看近 60 秒
+CROWDED_OTHERS_MIN = 2           # 除了 target 以外至少這麼多位真人在講
+
+
+def room_crowded(entries, n_online: int, target: str, now: float) -> bool:
+    """多人熱聊：熱聊（is_hot）且近 60 秒除 target 外 ≥2 位真人講話。
+    對談窗據此不接免喚醒句（2026-10-24 五人熱聊 Marvin 連回 9 句事故）。
+    一對一熱聊（只有 target + 偶爾一人）不算。"""
+    if not is_hot(entries, n_online, now):
+        return False
+    others = {e.get("speaker") for e in _human_entries(entries, now, CROWDED_OTHERS_WINDOW_S)
+              if e.get("speaker") != target}
+    return len(others) >= CROWDED_OTHERS_MIN
+
+
 class TopicBank:
     """熱度判斷用的輔助狀態：記錄 conversation mode 已用過的對話原句，避免重複用同一句。"""
 

@@ -427,3 +427,41 @@ async def test_apply_volume_balance_does_not_touch_stream_volume():
     agent = VolumeAgent(ctrl)
     agent._apply_volume("balance_tts_up")
     assert ctrl.stream_volume == pytest.approx(0.50)
+
+
+# ── 「太大聲」是抱怨＝調小（2026-10-24「你講話太大聲」被當 volume_up 事故）────
+
+
+@pytest.mark.parametrize("query", [
+    "你影響音樂播放了你講話太大聲你講話太大聲",
+    "馬文你講話太大聲",
+])
+async def test_too_loud_voice_subject_is_balance_tts_down(query):
+    from intent_agents.volume_agent import VolumeAgent
+    agent = VolumeAgent(_ctrl(stream_mode=True))
+    bid = agent.bid(_ctx(query))
+    assert bid.confidence == 0.92, f"expected 0.92 for {query!r}, got {bid.confidence}"
+    assert bid.reason.startswith("balance_tts_down:")
+
+
+@pytest.mark.parametrize("query", [
+    "音樂太大聲了",
+    "太吵了",
+])
+async def test_too_loud_plain_is_volume_down(query):
+    from intent_agents.volume_agent import VolumeAgent
+    agent = VolumeAgent(_ctrl(stream_mode=True))
+    bid = agent.bid(_ctx(query))
+    assert bid.confidence == 0.90, f"expected 0.90 for {query!r}, got {bid.confidence}"
+    assert bid.reason.startswith("volume_down:")
+
+
+async def test_too_loud_regression_volume_up_and_balance_tts_up_unaffected():
+    from intent_agents.volume_agent import VolumeAgent
+    agent = VolumeAgent(_ctrl(stream_mode=True))
+
+    bid = agent.bid(_ctx("大聲一點"))
+    assert bid.reason.startswith("volume_up:")
+
+    bid = agent.bid(_ctx("你講話大聲一點"))
+    assert bid.reason.startswith("balance_tts_up:")

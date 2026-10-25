@@ -116,6 +116,7 @@ class VolumeAgent(DeclarativeIntentAgent):
                     "balance_tts_down", 0.92,
                     patterns=[
                         rf"{_VOICE_SUBJ}\s*(?:再|調)?\s*(?:小聲|小一?點|小)",
+                        rf"{_VOICE_SUBJ}\s*(?:太|好|很|超|有點)\s*(?:大聲|大|吵)",
                     ],
                     reason_template="balance_tts_down:{matched}",
                     manifest_description=(
@@ -140,6 +141,8 @@ class VolumeAgent(DeclarativeIntentAgent):
                         # 「的」容錯：口語常見「調低的音量」而非「調低音量」（8/18 gap 實測：
                         # 「總動調高的音量」被嚴格 \s* 卡掉，見同款 volume_up 修正）。
                         r"(小聲(\s*一?點)?|音量\s*(調)?(低|小)|調\s*低\s*(的)?\s*音量|volume\s*down)",
+                        # 「太大聲/太吵」是抱怨＝要調小（2026-10-24「你講話太大聲」被當 volume_up 事故）
+                        r"太\s*(?:大聲|吵)",
                     ],
                     reason_template="volume_down:{matched}",
                     manifest_description=(

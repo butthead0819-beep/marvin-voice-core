@@ -126,3 +126,39 @@ def test_consumed_records_pruned_after_max_age():
     later = NOW + CONSUMED_MAX_AGE_S + 1
     bank.mark_consumed([{"timestamp": later, "speaker": "狗與露", "text": "新句"}], later)
     assert bank.is_consumed(old) is False
+
+
+# ── room_crowded（2026-10-24 五人熱聊 Marvin 連回 9 句事故）────────────────
+
+
+def test_room_crowded_three_others_is_crowded():
+    entries = [_entry(["target", "other1", "other2", "other3"][i % 4], f"訊息{i}", age_s=i)
+               for i in range(25)]
+    from dj_heat import room_crowded
+    assert room_crowded(entries, n_online=5, target="target", now=NOW) is True
+
+
+def test_room_crowded_only_one_other_within_60s_not_crowded():
+    # 近 60 秒只有 target + other1；other2/other3 雖然也在但發言在 60~180 秒前。
+    recent = [_entry(["target", "other1"][i % 2], f"近{i}", age_s=i) for i in range(15)]
+    older = [_entry(["other2", "other3"][i % 2], f"遠{i}", age_s=70 + i) for i in range(10)]
+    entries = recent + older
+    from dj_heat import room_crowded
+    assert room_crowded(entries, n_online=5, target="target", now=NOW) is False
+
+
+def test_room_crowded_not_hot_enough_not_crowded():
+    # 近 60 秒有 3 位其他人在講，但 3 分鐘內總共才 8 句，熱度不夠。
+    speakers = ["target", "other1", "other2", "other3"]
+    entries = [_entry(speakers[i % 4], f"訊息{i}", age_s=i) for i in range(8)]
+    from dj_heat import room_crowded
+    assert room_crowded(entries, n_online=5, target="target", now=NOW) is False
+
+
+def test_room_crowded_marvin_speaker_not_counted_as_other():
+    # 2 位其他真人中一位換成 Marvin → 只剩 1 位真人，不算 crowded。
+    entries = [_entry("target", f"t{i}", age_s=i) for i in range(20)]
+    entries += [_entry("other1", f"o{i}", age_s=i) for i in range(5)]
+    entries += [_entry("Marvin", f"m{i}", age_s=i) for i in range(5)]
+    from dj_heat import room_crowded
+    assert room_crowded(entries, n_online=5, target="target", now=NOW) is False
