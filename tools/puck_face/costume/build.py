@@ -96,7 +96,16 @@ function base888(c){const cv=document.createElement('canvas');cv.width=cv.height
   for(let i=0;i<W*W;i++){b[i*3]=d[i*4];b[i*3+1]=d[i*4+1];b[i*3+2]=d[i*4+2];}return b;}
 function pick(ids){if(!ids.length)return COSTUMES;const m=new Map(COSTUMES.map(c=>[c.id,c]));
   return ids.map(i=>{if(!m.has(i))throw new Error('沒有這個服裝：'+i);return m.get(i);});}
+function marbled(list,o){if(!o)return list;const tag=`彈珠 霧${o.frost} 內${o.ri} 糊${o.blur}`;
+  return list.map(c=>({id:c.id,cat:tag,title:c.title,eye:[104,158,58],draw:r=>H.marble(r,c.draw,o)}));}
 """
+
+
+def _marble_js(spec: str | None) -> str:
+    if not spec:
+        return "null"
+    o = dict(kv.split("=") for kv in spec.split(","))
+    return json.dumps({k: float(v) for k, v in o.items()})
 
 
 def cmd_list(_args) -> int:
@@ -117,7 +126,7 @@ const q=(v,b,t)=>{{const L=(1<<b)-1,f=v/255*L,n=Math.floor(f)+((f-Math.floor(f))
 function screen(out,k){{const im=new ImageData(W,W);for(let y=0;y<W;y++)for(let x=0;x<W;x++){{const i=y*W+x,t=(BAYER[(y&3)*4+(x&3)]+0.5)/16;
   const ins=(x+0.5-120)**2+(y+0.5-120)**2<=14400;im.data[i*4]=ins?q(out[i*3]*k,5,t):0;im.data[i*4+1]=ins?q(out[i*3+1]*k,6,t):0;
   im.data[i*4+2]=ins?q(out[i*3+2]*k,5,t):0;im.data[i*4+3]=255;}}return im;}}
-const list=pick({json.dumps(args.ids)}),sheets=[];
+const list=marbled(pick({json.dumps(args.ids)}),{_marble_js(args.marble)}),sheets=[];
 for(let s=0;s<list.length;s+=PER){{const part=list.slice(s,s+PER),LW=150,CW=244,cols=POSES.length+1;
   const cv=document.createElement('canvas');cv.width=LW+CW*cols;cv.height=28+part.length*CW;const r=cv.getContext('2d');
   r.fillStyle='#1d1d1f';r.fillRect(0,0,cv.width,cv.height);r.fillStyle='#bbb';r.font='14px sans-serif';
@@ -142,7 +151,7 @@ document.getElementById('out').textContent=JSON.stringify({{sheets}});
 
 def cmd_header(args) -> int:
     js = _BASE_JS + f"""
-const res={{}};for(const c of pick({json.dumps(args.ids)})){{const b=base888(c);let s='';
+const res={{}};for(const c of marbled(pick({json.dumps(args.ids)}),{_marble_js(args.marble)})){{const b=base888(c);let s='';
   for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);res[c.id]={{b64:btoa(s),eye:c.eye||[104,158,58]}};}}
 document.getElementById('out').textContent=JSON.stringify(res);
 """
@@ -170,9 +179,11 @@ def main() -> int:
     p = sub.add_parser("preview")
     p.add_argument("ids", nargs="*")
     p.add_argument("--out", default="/tmp/puck_costume_preview")
+    p.add_argument("--marble", help='包成磨砂玻璃彈珠，例："frost=0.45,ri=0.8,blur=2.5"')
     h = sub.add_parser("header")
     h.add_argument("ids", nargs="+")
     h.add_argument("--out", required=True)
+    h.add_argument("--marble", help='同 preview --marble')
     args = ap.parse_args()
     return {"list": cmd_list, "preview": cmd_preview, "header": cmd_header}[args.cmd](args)
 

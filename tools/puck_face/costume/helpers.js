@@ -128,3 +128,35 @@ H.decal = (n, center, size, sampler) => {
 
 // 球外的毛邊/光暈只能畫到螢幕圓（半徑 120）裡
 H.inScreen = (r, f) => { r.save(); r.beginPath(); r.arc(C, C, 119.5, 0, P2); r.clip(); f(r); r.restore(); };
+
+// 磨砂玻璃彈珠：外殼＝原版白球的打光（第一層立體感、眼睛畫在殼上永遠看得清楚），
+// 服裝縮成內球（ri×R）、模糊後透過磨砂玻璃看到。
+// o.frost：玻璃霧度 0..1（越大內球越淡）；o.ri：內球半徑比例；o.blur：模糊 px；o.feather：內球邊緣柔化 px；
+// o.base：外殼打光用的畫法（預設原版 drawDefault 的白球）。
+H.marble = (r, innerDraw, o = {}) => {
+  const frost = o.frost ?? 0.45, ri = o.ri ?? 0.8, blur = o.blur ?? 2.5, feather = o.feather ?? 3;
+  const mk = () => { const c = document.createElement('canvas'); c.width = c.height = W; return c; };
+  // 1. 內球：照原樣畫完整服裝，再縮到 ri、模糊
+  const raw = mk(), rr = raw.getContext('2d'); H.bg(rr); innerDraw(rr);
+  const inner = mk(), ir = inner.getContext('2d');
+  ir.filter = `blur(${blur}px)`;
+  ir.save(); ir.beginPath(); ir.arc(C, C, R * ri + 1, 0, P2); ir.clip();
+  ir.drawImage(raw, C - C * ri, C - C * ri, W * ri, W * ri); ir.restore();
+  const id = ir.getImageData(0, 0, W, W).data;
+  // 2. 外殼：原版白球
+  const shell = mk(), sr = shell.getContext('2d'); H.bg(sr); (o.base || drawDefault)(sr);
+  const sd = sr.getImageData(0, 0, W, W).data;
+  // 3. 合成：內球透過磨砂（越靠球緣 Fresnel 越白、越看不到內球），加一點霧面顆粒
+  const img = r.getImageData(0, 0, W, W), d = img.data;
+  for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4, dx = x + 0.5 - C, dy = y + 0.5 - C, dist = Math.hypot(dx, dy);
+    if (dist > R + 0.5) { d[i] = sd[i]; d[i + 1] = sd[i + 1]; d[i + 2] = sd[i + 2]; continue; }
+    const nz = Math.sqrt(Math.max(0, 1 - (dist / R) ** 2)), fres = Math.pow(1 - nz, 2.2);
+    const m = H.clamp01((R * ri - dist) / feather + 0.5);   // 內球遮罩（feather＝邊緣柔化寬度 px）
+    const t = m * (1 - frost) * (1 - 0.85 * fres);
+    const g = (H.hash3(x, y, 5) - 0.5) * 6;
+    for (let k = 0; k < 3; k++) d[i + k] = Math.min(255, Math.max(0, sd[i + k] * (1 - t) + id[i + k] * t + g));
+  }
+  r.putImageData(img, 0, 0);
+  H.gloss(r, 0.35, 0.6);   // 磨砂的高光是散開的
+};
