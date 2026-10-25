@@ -118,7 +118,8 @@ def test_passive_vs_active_classification():
     """被動 = 回應使用者動作；主動 = Marvin 自己冒出來報狀態。"""
     passive = {k for k, c in A.CATEGORIES.items() if c.mode == "passive"}
     active = {k for k, c in A.CATEGORIES.items() if c.mode == "active"}
-    assert passive == {"wake", "music", "music_fail", "nemoclaw"}
+    assert passive == {"wake", "music", "music_fail", "nemoclaw",
+                       "playback_skip", "playback_stop", "playback_pause", "playback_resume"}
     assert active == {"status", "filler"}
 
 
@@ -149,3 +150,16 @@ def test_glob_pattern_plain_pool():
 def test_glob_pattern_variant():
     pat = A.glob_pattern("status", variant="searching_first")
     assert pat == "assets/acks_status/searching_first_*.mp3"
+
+
+# ── playback control acks ────────────────────────────────────────────────
+
+def test_playback_categories_have_own_pool_and_text_fallback():
+    for key in ("playback_skip", "playback_stop", "playback_pause", "playback_resume"):
+        assert A.CATEGORIES[key].text_fallback == (A.POOLS[key].items[0][0],)
+        assert A.CATEGORIES[key].empty_fallback_pool is None
+        assert A.pool_for(key).key == key
+
+
+def test_playback_skip_text_is_hao_huan():
+    assert A.POOLS["playback_skip"].items == (("好，換", "playback_skip.mp3"),)
