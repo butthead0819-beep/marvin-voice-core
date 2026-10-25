@@ -501,3 +501,24 @@ def test_payload_speaking_with_gesture_none_stays_10_fields():
         info, 1000.0, 1050.0, speaking=True, gesture=None)
     parts = payload.decode("utf-8").split("\x1f")
     assert len(parts) == 10
+
+
+# ── 講話旗標時間解析度（10/25：1 秒一格讓頭像動作比聲音晚到最多 1s，講完還多動近 2s）──
+
+def test_icy_block_is_at_most_quarter_second_at_stream_bitrate():
+    from marvin_voice_core.icy_meta import ICY_METAINT
+    from car_http_app import _AUDIO_STREAM_MP3_KBPS
+    block_s = ICY_METAINT * 8 / (_AUDIO_STREAM_MP3_KBPS * 1000)
+    assert block_s <= 0.25
+
+
+def test_speak_hold_covers_one_block_plus_batch_but_stays_short():
+    # hold 必須蓋過「一格 ICY + 一個編碼批次」，否則兩格之間的短句會漏報；
+    # 但也不能太長，否則聲音停了頭還在講。
+    import os
+    from marvin_voice_core.icy_meta import ICY_METAINT, ICY_SPEAK_HOLD_S
+    from car_http_app import _AUDIO_STREAM_MP3_KBPS
+    block_s = ICY_METAINT * 8 / (_AUDIO_STREAM_MP3_KBPS * 1000)
+    batch_s = int(os.getenv("MARVIN_AUDIO_STREAM_BATCH_MS", "100")) / 1000
+    assert ICY_SPEAK_HOLD_S > block_s + batch_s
+    assert ICY_SPEAK_HOLD_S <= 0.5
