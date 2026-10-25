@@ -320,6 +320,39 @@ int main() {
     printf("T42 ok\n");
   }
 
+
+  // T43–T49: 第 12 欄底圖 etag（icy_skin_field）
+  {
+    // 前 11 欄：M1 + 7 欄 + bpm + speaking + gesture
+    const std::string base11 = "M1\x1f" "id\x1f" "0\x1f" "0\x1f" "P\x1f" "t\x1f" "a\x1f" "al\x1f" "\x1f" "1\x1f" "";
+    char out[17];
+    // 只有 11 欄 → 沒資訊
+    assert(!icy_skin_field(U(base11.c_str()), base11.size(), out, sizeof(out)));
+    printf("T43 ok\n");
+    std::string p = base11 + "\x1f";   // 第 12 欄空字串＝預設頭
+    strcpy(out, "zz");
+    assert(icy_skin_field(U(p.c_str()), p.size(), out, sizeof(out)));
+    assert(out[0] == 0);
+    printf("T44 ok\n");
+    p = base11 + "\x1f" "a1b2c3d4";
+    assert(icy_skin_field(U(p.c_str()), p.size(), out, sizeof(out)));
+    assert(strcmp(out, "a1b2c3d4") == 0);
+    printf("T45 ok\n");
+    p = base11 + "\x1f" "A1B2";
+    assert(!icy_skin_field(U(p.c_str()), p.size(), out, sizeof(out)));
+    printf("T46 ok\n");
+    p = base11 + "\x1f" "0123456789abcdef0";   // 17 字
+    assert(!icy_skin_field(U(p.c_str()), p.size(), out, sizeof(out)));
+    printf("T47 ok\n");
+    p = base11 + "\x1f" "zz";
+    assert(!icy_skin_field(U(p.c_str()), p.size(), out, sizeof(out)));
+    printf("T48 ok\n");
+    p = base11 + "\x1f" "beef" "\x1f" "extra";
+    assert(icy_skin_field(U(p.c_str()), p.size(), out, sizeof(out)));
+    assert(strcmp(out, "beef") == 0);
+    printf("T49 ok\n");
+  }
+
   printf("all icy_fields tests passed\n");
   return 0;
 }

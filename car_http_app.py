@@ -51,6 +51,10 @@ _ICY_SPEAK_ENABLED = os.getenv("MARVIN_ICY_SPEAK", "0").strip().lower() in ("1",
 # ICY 第 11 欄送「這則回覆的頭部動作」（seq:代碼強度）：預設關。需要先燒錄會解析第 11 欄的 S3 韌體再開，且只在 MARVIN_ICY_SPEAK 開時有效。
 _ICY_GESTURE_ENABLED = os.getenv("MARVIN_ICY_GESTURE", "0").strip().lower() in ("1", "true", "yes", "on")
 
+# ICY 第 12 欄送「目前底圖 etag」：預設開。需要先燒錄會解析第 12 欄＋下載 /car_skin 的 S3
+# 韌體，且只在 MARVIN_ICY_SPEAK 開時有效（見 build_now_playing_payload）。
+_ICY_SKIN_ENABLED = os.getenv("MARVIN_ICY_SKIN", "1").strip().lower() in ("1", "true", "yes", "on")
+
 # 跟 cogs/music_cog_audio_meta.py::_SONG_BPM_STORE 同一檔。
 _SONG_BPM_STORE = "records/song_bpm.json"
 
@@ -1172,7 +1176,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                    gmail_calendar_state_path=None,
                    device_speakers: dict[str, str] | None = None,
                    car_devices: dict[str, str] | None = None,
-                   puck_cover_cache=None):
+                   puck_cover_cache=None, puck_skin_store=None):
     """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
 
     純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
@@ -1213,6 +1217,9 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
 
     from puck_cover_cache import PuckCoverCache
     _puck_cache = puck_cover_cache if puck_cover_cache is not None else PuckCoverCache()
+
+    from puck_skin import SkinStore
+    _skin_store = puck_skin_store if puck_skin_store is not None else SkinStore()
 
     _CORS = {"Access-Control-Allow-Origin": "*",
              "Access-Control-Allow-Headers": "*",
@@ -1503,14 +1510,20 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                     gesture = None
                     if speak_tracker is not None and _ICY_GESTURE_ENABLED:
                         gesture = getattr(getattr(vc, "_puck_gesture_director", None), "field", None)
+                    skin = None
+                    if speak_tracker is not None and _ICY_SKIN_ENABLED:
+                        cur = _skin_store.current()
+                        skin = cur[1] if cur else ""
                     if _ICY_BPM_ENABLED:
                         url = (info or {}).get("webpage_url") or (info or {}).get("original_url") or (info or {}).get("url") or ""
                         vid = music_memory.extract_video_id(url)
                         bpm = _bpm_lookup.get(vid, now)
                         payload = build_now_playing_payload(
-                            info, start_time, now, bpm=bpm, include_bpm=True, speaking=speaking, gesture=gesture)
+                            info, start_time, now, bpm=bpm, include_bpm=True, speaking=speaking,
+                            gesture=gesture, skin=skin)
                     else:
-                        payload = build_now_playing_payload(info, start_time, now, speaking=speaking, gesture=gesture)
+                        payload = build_now_playing_payload(
+                            info, start_time, now, speaking=speaking, gesture=gesture, skin=skin)
                     chunk = interleaver.feed(chunk, payload, now)
                 await resp.write(chunk)
         except (ConnectionError, asyncio.CancelledError):
@@ -1568,6 +1581,17 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             return web.json_response({"cover": None}, status=404, headers=_CORS)
         return web.Response(body=jpg, content_type="image/jpeg",
                             headers={**_CORS, "Cache-Control": "no-store"})
+
+    async def handle_car_skin(request):
+        """GET /car_skin — 車機圓屏頭像底圖（240x240 RGB888 原始 bytes）。
+
+        沒有設定目前底圖（回到韌體內建預設頭）→ 404。"""
+        current = _skin_store.read_current()
+        if current is None:
+            return web.json_response({"skin": None}, status=404, headers=_CORS)
+        etag, data = current
+        return web.Response(body=data, content_type="application/octet-stream",
+                            headers={**_CORS, "Cache-Control": "no-store", "X-Skin-Etag": etag})
 
     async def handle_car(request):
         """POST /car {"state": "present"|"absent", "lat"?, "lon"?} — ESP32 puck 車載觸發。
@@ -1656,12 +1680,14 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_get("/audio_stream", handle_audio_stream)
     app.router.add_get("/car_now", handle_car_now)
     app.router.add_get("/car_cover", handle_car_cover)
+    app.router.add_get("/car_skin", handle_car_skin)
     app.router.add_get("/hud", handle_hud)
     app.router.add_get("/stage", handle_stage)
     app.router.add_get("/stage_icon.png", handle_stage_icon)
     app.router.add_post("/car", handle_car)
     app.router.add_options("/car", handle_preflight)
     app["puck_cover_cache"] = _puck_cache
+    app["puck_skin_store"] = _skin_store
     return app
 
 

@@ -499,6 +499,37 @@ int main() {
     }
   }
 
+
+  // T13: 換底圖淡出/淡入（face_skin_step）
+  {
+    FaceSkinState st; face_skin_init(st);
+    const float D2 = 1.0f / 100.0f;
+    // 頭像不在畫面上（封面中）→ 不動
+    for (float T = 0; T < 1.0f; T += D2) {
+      FaceSkinOut o = face_skin_step(st, T, true, false);
+      assert(o.brightnessScale == 1.0f && !o.swapNow);
+    }
+    printf("T13a ok (waits for headReady)\n");
+    float T0 = 2.0f, T = T0;
+    face_skin_step(st, T, true, true);   // 進 FADE_OUT
+    int swaps = 0; float swapAt = -1; FaceSkinOut o{};
+    bool checkedMidOut = false, checkedMidIn = false;
+    while (T < T0 + 1.0f) {
+      T += D2;
+      o = face_skin_step(st, T, swapAt < 0, true);   // 換完圖呼叫端就清掉 pending
+      if (o.swapNow) { swaps++; swapAt = T; }
+      if (!checkedMidOut && T >= T0 + 0.15f) { assert(fabsf(o.brightnessScale - 0.5f) < 0.05f); checkedMidOut = true; }
+      if (swapAt > 0 && !checkedMidIn && T >= swapAt + 0.15f) { assert(fabsf(o.brightnessScale - 0.5f) < 0.05f); checkedMidIn = true; }
+      if (swapAt > 0 && T >= swapAt + 0.31f) break;
+    }
+    assert(swaps == 1);
+    assert(fabsf(swapAt - (T0 + 0.3f)) < 0.02f);
+    assert(checkedMidOut && checkedMidIn);
+    o = face_skin_step(st, T + 0.01f, false, true);
+    assert(o.brightnessScale == 1.0f && !o.swapNow && st.phase == SKIN_IDLE);
+    printf("T13b ok (fade out 0.3s → one swap → fade in 0.3s → idle)\n");
+  }
+
   printf("all face_motion tests passed\n");
   return 0;
 }
