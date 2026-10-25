@@ -97,7 +97,10 @@ function base888(c){const cv=document.createElement('canvas');cv.width=cv.height
 function pick(ids){if(!ids.length)return COSTUMES;const m=new Map(COSTUMES.map(c=>[c.id,c]));
   return ids.map(i=>{if(!m.has(i))throw new Error('沒有這個服裝：'+i);return m.get(i);});}
 function marbled(list,o){if(!o)return list;const tag=`彈珠 霧${o.frost} 內${o.ri} 糊${o.blur}`;
-  return list.map(c=>({id:c.id,cat:tag,title:c.title,eye:[104,158,58],draw:r=>H.marble(r,c.draw,o)}));}
+  // 場景類（地區）在水球裡填滿；其他當成水裡的小擺設（scale 沒指定時預設 0.6）
+  return list.map(c=>{if(c.cat==='水晶球')return c;   // 雪花球本身已經是 marble，別包兩層
+    const oc=Object.assign({},o);if(oc.depth!=null&&oc.scale==null)oc.scale=c.cat==='地區'?1:0.6;
+    return {id:c.id,cat:tag,title:c.title,eye:[104,158,58],draw:r=>H.marble(r,c.draw,oc)};});}
 """
 
 

@@ -439,3 +439,100 @@ add('rusty', '變裝', '生鏽 Marvin', r => {
   r.fillStyle = 'rgba(40,40,44,0.7)';
   for (let k = 0; k < 4; k++) for (const s of [-1, 1]) { const [x, y] = H.proj(s * (0.25 + k * 0.33), -0.39); r.beginPath(); r.arc(x, y, 2, 0, P2); r.fill(); }
 }, GREEN);
+
+// ───────────────────────── 雪花水晶球擺設（城市縮影/美食/物件） ─────────────────────────
+// 擺設畫在透明背景上（透明＝水），透過 H.marble 的水球折射＋磨砂外殼看到。
+// 擺設要畫在半徑 ~80 內：折射會放大約 1.3 倍，太外面會被球緣裁掉。
+const GLOBE = { frost: 0.3, ri: 0.97, blur: 1.2, feather: 24, depth: -0.3, snow: 50, transparent: true };
+function globeGround(g) {   // 擺設底下的雪丘
+  const gr = g.createLinearGradient(0, C + 50, 0, C + 95);
+  gr.addColorStop(0, '#ffffff'); gr.addColorStop(1, '#b9c9d8');
+  g.fillStyle = gr; g.beginPath(); g.ellipse(C, C + 72, 88, 24, 0, 0, P2); g.fill();
+}
+// k：擺設整體縮放（以雪丘中心為準），太大的擺設會被折射放大到球緣外
+const addGlobe = (id, title, scene, k = 1) => add(id, '水晶球', title, r => H.marble(r, g => {
+  g.save(); g.translate(C, C + 72); g.scale(k, k); g.translate(-C, -(C + 72)); scene(g); g.restore();
+}, GLOBE), GREEN);
+
+addGlobe('globe_taipei101', '台北 101', g => {
+  g.fillStyle = 'rgba(120,140,170,0.55)';   // 背景小樓
+  for (const [x, w, h] of [[-62, 16, 40], [-44, 14, 58], [40, 16, 50], [58, 14, 34]]) g.fillRect(C + x, C + 62 - h, w, h);
+  globeGround(g);
+  const glass = g.createLinearGradient(C - 20, 0, C + 20, 0);
+  glass.addColorStop(0, '#3d7268'); glass.addColorStop(0.45, '#8cc2b5'); glass.addColorStop(1, '#2a524b');
+  g.fillStyle = glass; g.strokeStyle = '#1f3d38'; g.lineWidth = 1;
+  g.fillRect(C - 17, C + 46, 34, 20); g.strokeRect(C - 17, C + 46, 34, 20);   // 裙樓
+  for (let k = 0; k < 8; k++) {   // 八節竹節，每節上寬下窄
+    const yb = C + 46 - k * 13, yt = yb - 13;
+    g.beginPath(); g.moveTo(C - 12, yb); g.lineTo(C - 16, yt); g.lineTo(C + 16, yt); g.lineTo(C + 12, yb); g.closePath(); g.fill(); g.stroke();
+    g.strokeStyle = 'rgba(220,255,245,0.35)'; g.beginPath(); g.moveTo(C - 13, yb - 6); g.lineTo(C + 13, yb - 6); g.stroke(); g.strokeStyle = '#1f3d38';
+  }
+  g.fillRect(C - 9, C - 66, 18, 8); g.strokeRect(C - 9, C - 66, 18, 8);
+  g.fillRect(C - 6, C - 73, 12, 7); g.strokeRect(C - 6, C - 73, 12, 7);
+  g.strokeStyle = '#2a524b'; g.lineWidth = 2; g.beginPath(); g.moveTo(C, C - 73); g.lineTo(C, C - 98); g.stroke();
+});
+
+addGlobe('globe_eiffel', '艾菲爾鐵塔', g => {
+  globeGround(g);
+  const L = [[-46, 64], [-31, 34], [-19, 6], [-11, -24], [-6, -54], [-3, -82], [0, -100]];
+  g.save(); g.beginPath(); g.moveTo(C + L[0][0], C + L[0][1]);
+  for (const [x, y] of L) g.lineTo(C + x, C + y);
+  for (let k = L.length - 1; k >= 0; k--) g.lineTo(C - L[k][0], C + L[k][1]);
+  g.closePath(); g.clip();
+  g.fillStyle = '#5b4632'; g.fillRect(0, 0, W, W);
+  g.strokeStyle = 'rgba(170,140,100,0.8)'; g.lineWidth = 1;   // 鋼架交叉格
+  for (let k = -140; k < 140; k += 6) { g.beginPath(); g.moveTo(C + k, C - 110); g.lineTo(C + k + 170, C + 70); g.moveTo(C + k, C - 110); g.lineTo(C + k - 170, C + 70); g.stroke(); }
+  g.restore();
+  g.save(); g.globalCompositeOperation = 'destination-out';   // 底下的拱門
+  g.beginPath(); g.ellipse(C, C + 66, 24, 28, 0, Math.PI, P2); g.fill(); g.restore();
+  g.fillStyle = '#3e2f20';
+  g.fillRect(C - 30, C + 22, 60, 5); g.fillRect(C - 17, C - 14, 34, 4); g.fillRect(C - 8, C - 58, 16, 4);
+});
+
+addGlobe('globe_bubbletea', '珍珠奶茶', g => {
+  globeGround(g);
+  const top = C - 48, bot = C + 66;
+  const cup = () => { g.beginPath(); g.moveTo(C - 36, top); g.lineTo(C + 36, top); g.lineTo(C + 27, bot); g.lineTo(C - 27, bot); g.closePath(); };
+  const tea = g.createLinearGradient(0, top, 0, bot); tea.addColorStop(0, '#e2bf93'); tea.addColorStop(1, '#b8875a');
+  g.fillStyle = tea; cup(); g.fill();
+  g.save(); cup(); g.clip();
+  for (let k = 0; k < 30; k++) { g.fillStyle = '#2a170e'; g.beginPath(); g.arc(C - 26 + 52 * H.hash3(k, 1, 9), bot - 6 - 22 * H.hash3(k, 2, 9), 5, 0, P2); g.fill(); }
+  g.fillStyle = 'rgba(255,255,255,0.35)'; g.fillRect(C - 26, top, 7, bot - top);
+  g.restore();
+  g.strokeStyle = 'rgba(80,50,30,0.6)'; g.lineWidth = 1.5; cup(); g.stroke();
+  g.fillStyle = 'rgba(235,240,245,0.85)'; g.beginPath(); g.ellipse(C, top, 38, 7, 0, 0, P2); g.fill();   // 封膜
+  g.strokeStyle = '#e8455a'; g.lineWidth = 8; g.lineCap = 'round';   // 吸管
+  g.beginPath(); g.moveTo(C + 6, top + 30); g.lineTo(C + 18, C - 96); g.stroke();
+});
+
+addGlobe('globe_xiaolongbao', '小籠包', g => {
+  globeGround(g);
+  const bam = g.createLinearGradient(0, C + 10, 0, C + 66); bam.addColorStop(0, '#d9b36f'); bam.addColorStop(1, '#9b7432');
+  g.fillStyle = bam; g.fillRect(C - 70, C + 20, 140, 44);
+  g.beginPath(); g.ellipse(C, C + 64, 70, 14, 0, 0, Math.PI); g.fill();
+  g.strokeStyle = 'rgba(90,60,20,0.5)'; g.lineWidth = 1.5;
+  for (const y of [C + 32, C + 46]) { g.beginPath(); g.moveTo(C - 70, y); g.lineTo(C + 70, y); g.stroke(); }
+  g.fillStyle = '#c69a52'; g.beginPath(); g.ellipse(C, C + 20, 70, 14, 0, 0, P2); g.fill();
+  const bao = (x, y, s) => {
+    const sk = g.createRadialGradient(x - 8 * s, y - 10 * s, 2, x, y, 30 * s); sk.addColorStop(0, '#ffffff'); sk.addColorStop(1, '#e6ddd0');
+    g.fillStyle = sk; g.beginPath(); g.moveTo(x - 28 * s, y + 10 * s);
+    g.quadraticCurveTo(x - 30 * s, y - 14 * s, x, y - 24 * s); g.quadraticCurveTo(x + 30 * s, y - 14 * s, x + 28 * s, y + 10 * s); g.closePath(); g.fill();
+    g.strokeStyle = 'rgba(150,130,100,0.6)'; g.lineWidth = 1;
+    for (let k = -4; k <= 4; k++) { g.beginPath(); g.moveTo(x, y - 22 * s); g.quadraticCurveTo(x + k * 5 * s, y - 10 * s, x + k * 6.5 * s, y + 8 * s); g.stroke(); }
+  };
+  bao(C - 34, C + 8, 0.85); bao(C + 34, C + 8, 0.85); bao(C, C - 2, 1);
+  g.strokeStyle = 'rgba(255,255,255,0.6)'; g.lineWidth = 2;   // 蒸氣
+  for (const x of [C - 20, C + 4, C + 26]) { g.beginPath(); g.moveTo(x, C - 32); g.bezierCurveTo(x - 10, C - 48, x + 10, C - 60, x, C - 78); g.stroke(); }
+}, 0.72);
+
+addGlobe('globe_microphone', '復古麥克風', g => {
+  globeGround(g);
+  g.fillStyle = '#2b2b30'; g.beginPath(); g.ellipse(C, C + 62, 30, 8, 0, 0, P2); g.fill();   // 底座
+  g.fillRect(C - 3, C + 6, 6, 56);
+  const chrome = g.createLinearGradient(C - 30, 0, C + 30, 0);
+  chrome.addColorStop(0, '#6d737a'); chrome.addColorStop(0.35, '#f2f4f6'); chrome.addColorStop(0.7, '#9aa1a8'); chrome.addColorStop(1, '#4b5056');
+  g.fillStyle = chrome; g.beginPath(); g.roundRect(C - 26, C - 82, 52, 90, 26); g.fill();
+  g.strokeStyle = 'rgba(40,44,50,0.55)'; g.lineWidth = 1.4;   // 網罩橫紋
+  for (let y = C - 70; y < C + 2; y += 6) { g.beginPath(); g.moveTo(C - 24, y); g.lineTo(C + 24, y); g.stroke(); }
+  g.fillStyle = '#c9a24a'; g.fillRect(C - 26, C - 30, 52, 8);   // 金色腰帶
+}, 0.85);

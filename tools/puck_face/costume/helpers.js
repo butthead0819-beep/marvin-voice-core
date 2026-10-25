@@ -129,19 +129,64 @@ H.decal = (n, center, size, sampler) => {
 // 球外的毛邊/光暈只能畫到螢幕圓（半徑 120）裡
 H.inScreen = (r, f) => { r.save(); r.beginPath(); r.arc(C, C, 119.5, 0, P2); r.clip(); f(r); r.restore(); };
 
+// 雪花水晶球的水球折射：內容（raw 整張底圖，球半徑 R＝場景單位 1）是放在水裡、球心後方
+// z=depth 的平面場景。正交視線打到半徑 ri·R 的水球表面，依 ior 折射後落到場景平面取色——
+// 中央放大、越靠球緣壓縮越強（魚眼），這是雪花球的視覺特徵。回傳只有水球範圍的 canvas。
+H.globeLens = (raw, ri, depth, ior, scale = 1) => {
+  const src = raw.getContext('2d').getImageData(0, 0, W, W).data;
+  const out = document.createElement('canvas'); out.width = out.height = W;
+  const ox = out.getContext('2d'), img = ox.createImageData(W, W), d = img.data;
+  const Rin = R * ri, eta = 1 / ior;
+  const sample = (fx, fy, k) => {   // 雙線性、夾邊
+    fx = Math.min(W - 1.001, Math.max(0, fx)); fy = Math.min(W - 1.001, Math.max(0, fy));
+    const x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0, i = (y0 * W + x0) * 4 + k;
+    return (src[i] * (1 - tx) + src[i + 4] * tx) * (1 - ty) + (src[i + W * 4] * (1 - tx) + src[i + W * 4 + 4] * tx) * ty;
+  };
+  for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
+    const nx = (x + 0.5 - C) / Rin, ny = (y + 0.5 - C) / Rin, rr = nx * nx + ny * ny;
+    if (rr > 1.02) continue;
+    const nz = Math.sqrt(Math.max(0, 1 - rr)), k = 1 - eta * eta * (1 - nz * nz);
+    const a = eta * nz - Math.sqrt(Math.max(0, k));
+    const tx = a * nx, ty = a * ny, tz = -eta + a * nz;          // 折射方向（視線 = (0,0,-1)）
+    const s = (depth - nz) / tz;                                   // 走到 z=depth 的場景平面
+    const qx = (nx + s * tx) * ri / scale, qy = (ny + s * ty) * ri / scale;   // 換回素材座標（素材半徑 = scale）
+    const i = (y * W + x) * 4, qr = Math.hypot(qx, qy);
+    for (let c = 0; c < 4; c++) d[i + c] = sample(C + qx * R - 0.5, C + qy * R - 0.5, c);
+    if (scale < 1) d[i + 3] *= H.clamp01((1 - qr) * R * scale / 1.5 + 0.5);   // 素材外是水（透明）
+  }
+  ox.putImageData(img, 0, 0);
+  return out;
+};
+
+// 水裡漂浮的雪花（確定性亂數，畫在折射之後、模糊之前）
+H.snow = (g, ri, n) => {
+  for (let k = 0; k < n; k++) {
+    const a = H.hash3(k, 11, 3) * P2, rr = Math.sqrt(H.hash3(k, 12, 4)) * R * ri * 0.95;
+    g.fillStyle = `rgba(255,255,255,${0.6 + 0.4 * H.hash3(k, 13, 5)})`;
+    g.beginPath(); g.arc(C + rr * Math.cos(a), C + rr * Math.sin(a), 0.8 + 1.6 * H.hash3(k, 14, 6), 0, P2); g.fill();
+  }
+};
+
 // 磨砂玻璃彈珠：外殼＝原版白球的打光（第一層立體感、眼睛畫在殼上永遠看得清楚），
 // 服裝縮成內球（ri×R）、模糊後透過磨砂玻璃看到。
 // o.frost：玻璃霧度 0..1（越大內球越淡）；o.ri：內球半徑比例；o.blur：模糊 px；o.feather：內球邊緣柔化 px；
+// o.depth：有給就改成雪花水晶球折射（場景平面 z，負值＝球心後方）；o.ior 折射率；o.snow 雪花數；
+// o.scale：素材在水裡的大小（1＝填滿，物件類建議 0.6，周圍是乳白的水）。
 // o.base：外殼打光用的畫法（預設原版 drawDefault 的白球）。
 H.marble = (r, innerDraw, o = {}) => {
   const frost = o.frost ?? 0.45, ri = o.ri ?? 0.8, blur = o.blur ?? 2.5, feather = o.feather ?? 3;
   const mk = () => { const c = document.createElement('canvas'); c.width = c.height = W; return c; };
   // 1. 內球：照原樣畫完整服裝，再縮到 ri、模糊
-  const raw = mk(), rr = raw.getContext('2d'); H.bg(rr); innerDraw(rr);
+  const raw = mk(), rr = raw.getContext('2d'); if (!o.transparent) H.bg(rr); innerDraw(rr);   // transparent：擺設背景是水
   const inner = mk(), ir = inner.getContext('2d');
   ir.filter = `blur(${blur}px)`;
   ir.save(); ir.beginPath(); ir.arc(C, C, R * ri + 1, 0, P2); ir.clip();
-  ir.drawImage(raw, C - C * ri, C - C * ri, W * ri, W * ri); ir.restore();
+  if (o.depth != null) {   // 雪花水晶球：內容當水裡的場景，透過水球折射看到（見 H.globeLens）
+    const lensed = H.globeLens(raw, ri, o.depth, o.ior ?? 1.33, o.scale ?? 1);
+    if (o.snow) H.snow(lensed.getContext('2d'), ri, o.snow);
+    ir.drawImage(lensed, 0, 0);
+  } else ir.drawImage(raw, C - C * ri, C - C * ri, W * ri, W * ri);
+  ir.restore();
   const id = ir.getImageData(0, 0, W, W).data;
   // 2. 外殼：原版白球
   const shell = mk(), sr = shell.getContext('2d'); H.bg(sr); (o.base || drawDefault)(sr);
@@ -153,7 +198,7 @@ H.marble = (r, innerDraw, o = {}) => {
     if (dist > R + 0.5) { d[i] = sd[i]; d[i + 1] = sd[i + 1]; d[i + 2] = sd[i + 2]; continue; }
     const nz = Math.sqrt(Math.max(0, 1 - (dist / R) ** 2)), fres = Math.pow(1 - nz, 2.2);
     const m = H.clamp01((R * ri - dist) / feather + 0.5);   // 內球遮罩（feather＝邊緣柔化寬度 px）
-    const t = m * (1 - frost) * (1 - 0.85 * fres);
+    const t = m * (id[i + 3] / 255) * (1 - frost) * (1 - 0.85 * fres);
     const g = (H.hash3(x, y, 5) - 0.5) * 6;
     for (let k = 0; k < 3; k++) d[i + k] = Math.min(255, Math.max(0, sd[i + k] * (1 - t) + id[i + k] * t + g));
   }
