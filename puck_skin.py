@@ -6,9 +6,12 @@ payload（見 car_http_app.py）會把目前底圖的 etag 夾進第 12 欄，pu
 
 current()（ICY 高頻呼叫，~每 0.25s 一次）結果快取 1 秒，避免每格都碰磁碟；
 read_current()（/car_skin 下載用）不快取，永遠讀最新。
+
+沒有手動指定底圖時，依 SEASONAL 行事曆（本地日期）挑一張季節底圖。
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -22,11 +25,19 @@ DEFAULT_DIR = Path.home() / "Library/Application Support/Marvin/puck_skins"
 _ID_RE = re.compile(r"^[0-9A-Za-z_-]{1,40}$")
 _CACHE_TTL_S = 1.0
 
+# 季節服裝行事曆：(起 "MM-DD", 迄 "MM-DD"（含）, skin_id)。沒有手動指定底圖時才生效；
+# 底圖檔 <skin_id>.rgb 要先用 puck_skin.py set 或手動放進 root。起 > 迄＝跨年。
+SEASONAL: list[tuple[str, str, str]] = [
+    ("10-01", "10-31", "halloween_pumpkin"),
+]
+
 
 class SkinStore:
-    def __init__(self, root: Path = DEFAULT_DIR, *, clock=time.monotonic):
+    def __init__(self, root: Path = DEFAULT_DIR, *, clock=time.monotonic, today=None, seasonal=None):
         self._root = Path(root)
         self._clock = clock
+        self._today = today if today is not None else datetime.date.today
+        self._seasonal = seasonal if seasonal is not None else SEASONAL
         self._cache: tuple[str, str] | None = None
         self._cache_at: float | None = None
 
@@ -81,10 +92,28 @@ class SkinStore:
             skin_id = data["id"]
             etag = data["etag"]
         except (OSError, ValueError, KeyError):
-            return None
+            return self._seasonal_current()
         if not self._skin_path(skin_id).exists():
-            return None
+            return self._seasonal_current()
         return (skin_id, etag)
+
+    def _seasonal_current(self) -> tuple[str, str] | None:
+        md = self._today().strftime("%m-%d")
+        for start, end, skin_id in self._seasonal:
+            if start <= end:
+                hit = start <= md <= end
+            else:
+                hit = md >= start or md <= end
+            if not hit:
+                continue
+            try:
+                data = self._skin_path(skin_id).read_bytes()
+            except OSError:
+                return None
+            if len(data) != SKIN_BYTES:
+                return None
+            return (skin_id, hashlib.sha1(data).hexdigest()[:8])
+        return None
 
     def read_current(self) -> tuple[str, bytes] | None:
         current = self._read_current_file()
