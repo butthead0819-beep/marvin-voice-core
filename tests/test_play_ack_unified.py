@@ -282,3 +282,35 @@ async def test_play_ack_no_voice_client_returns_without_attributeerror():
     cog = _make_cog()
     cog.bot.voice_clients = []
     await cog._play_ack("wake")  # 不可 raise
+
+
+# ── playback control acks ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_playback_skip_without_file_synthesizes_fallback_text():
+    cog = _make_cog()
+    vc = _idle_vc()
+    cog.voice_client = vc
+    cog.play_tts = AsyncMock()
+
+    with patch("glob.glob", return_value=[]):
+        await cog._play_ack("playback_skip", speaker="阿狗")
+
+    assert cog.play_tts.called
+    assert cog.play_tts.call_args[0][0] == "好，換"
+
+
+@pytest.mark.asyncio
+async def test_playback_skip_plays_prerendered_file():
+    cog = _make_cog()
+    vc = _idle_vc()
+    cog.voice_client = vc
+    cog.play_tts = AsyncMock()
+
+    with patch("glob.glob", return_value=["assets/acks/playback/skip/playback_skip.mp3"]), \
+         patch("discord.FFmpegPCMAudio", return_value=MagicMock()):
+        await cog._play_ack("playback_skip", speaker="阿狗")
+
+    assert not cog.play_tts.called
+    assert cog._mixer.push_tts.called
