@@ -136,12 +136,23 @@ class WakeSessionMixin:
         """取代舊的 follow-up 判斷：WakeSession 對發起者免喚醒（優先）＋ 舊問句窗（D2-A 不變）。"""
         return self._followup_override_kind(speaker, fusion, text, is_wake_check=is_wake_check) is not None
 
+    def _room_crowded(self, speaker) -> bool:
+        """多人熱聊判斷（dj_heat.room_crowded）。拿不到資料一律 False（優雅降級）。"""
+        try:
+            from dj_heat import room_crowded
+            conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
+            entries = conv_buf.get_history() if conv_buf else []
+            return room_crowded(entries, len(self.get_online_members()), speaker, time.time())
+        except Exception:
+            return False
+
     def _followup_override_kind(self, speaker, fusion, text="", is_wake_check=False) -> str | None:
         """同 _followup_override，但回傳命中的窗口種類（給 TurnOutcome 記錄用）。"""
         session = getattr(self, "_wake_session", None)
         if session is not None and session.on_utterance(
                 speaker, time.time(), marvin_speaking=self._marvin_tts_speaking(),
-                text=text, final=not is_wake_check):
+                text=text, final=not is_wake_check,
+                crowded=(session.target == speaker and self._room_crowded(speaker))):
             if session.barge_captured:
                 session.barge_captured = False
                 asyncio.create_task(self._barge_in_confirm(speaker, text))

@@ -77,6 +77,52 @@ def test_followup_override_false_when_no_session_and_no_fusion():
     assert cog._followup_override("A", None) is False
 
 
+# ── _room_crowded 接線（2026-10-24 五人熱聊事故）────────────────────────────
+
+
+def test_followup_override_crowded_true_blocks_target():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.return_value = 0.0
+    cog._room_crowded = MagicMock(return_value=True)
+    with patch("time.time", return_value=1.0):
+        assert cog._followup_override("A", None) is False
+    assert cog._wake_session.target == "A"
+
+
+def test_followup_override_crowded_false_allows_target():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.return_value = 0.0
+    cog._room_crowded = MagicMock(return_value=False)
+    with patch("time.time", return_value=1.0):
+        assert cog._followup_override("A", None) is True
+
+
+def test_followup_override_non_target_does_not_check_crowded():
+    cog = _FakeCog()
+    cog._wake_session = WakeSession()
+    cog._wake_session.on_wake_accepted("A", 0.0)
+    cog._wake_session.on_replied(0.5)
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.return_value = 0.0
+    cog._room_crowded = MagicMock(return_value=True)
+    with patch("time.time", return_value=1.0):
+        assert cog._followup_override("B", None) is False
+    cog._room_crowded.assert_not_called()
+
+
+def test_room_crowded_default_false_without_bot_attribute():
+    cog = _FakeCog()
+    assert cog._room_crowded("A") is False
+
+
 # ── _wake_session_on_replied ──────────────────────────────────────────────────
 
 @pytest.mark.asyncio
