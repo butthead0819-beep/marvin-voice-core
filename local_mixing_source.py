@@ -105,6 +105,7 @@ class LocalMixingAudioSource(_BASE):
         self._silence_bytes = b"\x00" * FRAME_BYTES_S16
 
         self._paused = False                     # 控制台暫停：read() 回 silence、不前進來源
+        self._estop = False                      # 🛑 緊急停止：read() 回 silence、拒收新 TTS/音樂
         self._tap = None                         # [單一 mixer] 輸出旁聽者，見 set_tap
         self._tap_frame = self._silence_bytes    # 車機那份輸出（出口層 car_volume=1.0），_read_impl 每個 return 前設好
         self._music = None                       # 可換 f32le source（atomic ref）
@@ -309,9 +310,16 @@ class LocalMixingAudioSource(_BASE):
         """控制台暫停/續播：暫停時 read() 回 silence 但不前進音樂/TTS 來源（保位置、保 adapter 不停）。"""
         self._paused = bool(paused)
 
+    def set_estop(self, on: bool) -> None:
+        """🛑 緊急停止：on → 立刻丟掉 TTS/音樂、之後拒收新 TTS/音樂、read() 回 silence。"""
+        self._estop = bool(on)
+        if self._estop:
+            self.clear_tts()
+            self.clear_music()
+
     def _read_impl(self) -> bytes:
         try:
-            if self._paused:
+            if self._paused or self._estop:
                 self._tap_frame = self._silence_bytes  # 車機那份跟 Discord 一致
                 return self._silence_bytes  # 持位置、adapter 續活（不進 idle→b"" 邏輯）
             music_f = self._next_music_frame()
@@ -429,6 +437,9 @@ class LocalMixingAudioSource(_BASE):
     def set_music_source(self, source, fade_in_s: float = 0.0) -> None:
         """設音樂層來源（read()→f32le bytes / b"" 表耗盡）。先 atomic swap 再清舊源。
         fade_in_s > 0：新源從 0 線性淡入到滿（接懷舊歌 crossfade 用，見 begin_music_fadeout）。"""
+        if self._estop:   # 緊急停止中：不收新音樂（intro 等），直接收掉
+            self._cleanup_source(source)
+            return
         if fade_in_s > 0:
             self._music_in_gain = 0.0
             self._music_in_step = 1.0 / max(1, int(fade_in_s / 0.02))
@@ -520,6 +531,8 @@ class LocalMixingAudioSource(_BASE):
 
     def push_tts(self, f32_buffer: np.ndarray) -> bool:
         """把預解碼的 TTS f32 buffer 排進 TTS 層。超過 cap → 拒絕回 False（caller 降級貼文）。"""
+        if self._estop:
+            return False
         buf = np.asarray(f32_buffer, dtype=np.float32)
         if self._tts_load_samples() + buf.size > self._tts_cap_samples:
             return False
@@ -529,6 +542,8 @@ class LocalMixingAudioSource(_BASE):
 
     def push_tts2(self, f32_buffer: np.ndarray) -> bool:
         """打岔層（layer2，Marmo）：與 layer1 並行混音、不互相排隊。超過 cap → False。"""
+        if self._estop:
+            return False
         buf = np.asarray(f32_buffer, dtype=np.float32)
         cur2 = (self._tts2_cur.size - self._tts2_off) if self._tts2_cur is not None else 0
         if cur2 + sum(b.size for b in self._tts2_queue) + buf.size > self._tts_cap_samples:
