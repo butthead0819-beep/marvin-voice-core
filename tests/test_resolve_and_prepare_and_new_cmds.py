@@ -7,6 +7,7 @@ tests/test_music_command_dedup.py 只驗證呼叫次數/dedup，沒有任何測�
 """
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -213,3 +214,31 @@ async def test_clear_queue_when_idle_and_empty_says_already_empty():
     texts = [c.args[0] for c in vc.active_text_channel.send.call_args_list if c.args]
     assert any("本來就是空的" in t for t in texts)
     assert cog._pending_stop_after_song is False  # 沒在播，不該誤設
+
+
+# ── play_ack kwarg（car open 開場曲要跳過 music ack，見 car_http_app.py）───────
+
+@pytest.mark.asyncio
+async def test_play_ack_false_skips_music_ack():
+    cog = _make_cog()
+    vc = cog._vc_mock
+    cog._resolve_yt_query = AsyncMock(
+        return_value={"title": "天天", "url": "u", "webpage_url": "w", "duration": 100})
+
+    await cog._handle_voice_music_command("jack", "放陶喆天天", "play", play_ack=False)
+    await asyncio.sleep(0)  # 讓 asyncio.create_task 排進去的呼叫（若有）先跑
+
+    assert not any(c.args[:1] == ("music",) for c in vc._play_ack.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_play_ack_default_true_still_acks():
+    cog = _make_cog()
+    vc = cog._vc_mock
+    cog._resolve_yt_query = AsyncMock(
+        return_value={"title": "天天", "url": "u", "webpage_url": "w", "duration": 100})
+
+    await cog._handle_voice_music_command("jack", "放陶喆天天", "play")
+    await asyncio.sleep(0)
+
+    assert any(c.args[:1] == ("music",) for c in vc._play_ack.call_args_list)

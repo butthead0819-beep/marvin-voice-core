@@ -1069,7 +1069,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
         info['requested_by'] = speaker
         return info, raw_search, search, correction_note
 
-    async def _handle_voice_music_command(self, speaker: str, query: str, cmd: str):
+    async def _handle_voice_music_command(self, speaker: str, query: str, cmd: str, *, play_ack: bool = True):
         """執行語音觸發的音樂指令，回應只貼頻道不走 TTS。
 
         入口 dedup：同 speaker 5s 內重複呼叫直接 silently skip，避免
@@ -1099,7 +1099,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
 
         vc = self._vc()
         if cmd == "play":
-            if vc:
+            if vc and play_ack:
                 asyncio.create_task(vc._play_ack("music", speaker=speaker))
         ch = vc.active_text_channel if vc else None
         # 可播放 = 有輸出裝置（本機 LocalSpeakerDevice 或 Discord 連線中 VC）。

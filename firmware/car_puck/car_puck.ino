@@ -2077,6 +2077,8 @@ void faceTask(void* pv) {
   face_idle_init(idle);
   FaceCoverState cover;
   face_cover_init(cover);
+  FaceWake wake;
+  face_wake_init(wake);
 
   uint32_t lastCoverSeq = 0;
   float idleSinceSec = 0.0f;
@@ -2142,6 +2144,11 @@ void faceTask(void* pv) {
 
     FacePoseOut poseOut = face_mixer_step(mixer, in, T, DT);
 
+    // 開機甦醒：第一個聲音互動（Marvin 講話 / 有歌 / 駕駛按 PTT）才醒，見 face_wake_step。
+    bool wakeTrigger = speaking || playing || snap.override_ == OVERRIDE_LISTEN;
+    FaceWakeOut wakeOut = face_wake_step(wake, wakeTrigger, in.override_ == OVERRIDE_ERROR, poseOut.pose, T);
+    poseOut.pose = wakeOut.pose;
+
     bool overridden = (in.override_ != OVERRIDE_NONE);
     bool coverArrived = (snap.coverSeq != lastCoverSeq);
     if (coverArrived) lastCoverSeq = snap.coverSeq;
@@ -2165,7 +2172,7 @@ void faceTask(void* pv) {
       prevRawBl = 0;
     } else {
       if (prevRawBl == 0) facePushFull();   // 從 0 回到 >0：先整屏重推目前 out，再開背光
-      uint8_t finalBl = (uint8_t)((float)rawBl * coverOut.brightnessScale + 0.5f);
+      uint8_t finalBl = (uint8_t)((float)rawBl * coverOut.brightnessScale * wakeOut.brightnessScale + 0.5f);
       bool headVisible = (coverOut.phase != (int)COVER_COVER);
 
       if (coverOut.drawCoverNow) {

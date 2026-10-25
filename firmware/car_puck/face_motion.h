@@ -476,6 +476,101 @@ inline FaceCoverOut face_cover_step(FaceCoverState& st, float now, bool coverArr
   return out;
 }
 
+// ---------- 開機甦醒（只在通電後一次） ----------
+// 通電後頭低垂、暗光慢呼吸（睡著），直到第一個聲音互動（Marvin 講話 / 有歌 / 駕駛按 PTT）
+// 才演出 2.5s 甦醒：抬頭（0~0.6s）→ 左看（0.6~1.2s）→ 右看（1.2~1.8s）→ 回正（1.8~2.5s），
+// 最後 0.4s 跟 mixer 輸出交叉淡入，之後永遠 AWAKE（不會再睡回去）。
+enum WakePhase { WAKE_ASLEEP = 0, WAKE_WAKING, WAKE_AWAKE };
+struct FaceWake { WakePhase phase; float start; };
+struct FaceWakeOut { FacePose pose; float brightnessScale; };
+
+constexpr float WAKE_SLEEP_PITCH = 0.35f;   // pitch 正值＝低頭，跟 layerNod 同號
+constexpr float WAKE_SLEEP_BREATH = 0.03f;
+constexpr float WAKE_SLEEP_BREATH_PERIOD = 4.0f;
+constexpr float WAKE_SLEEP_BL = 0.3f;
+constexpr float WAKE_LOOK_YAW = 0.5f;
+constexpr float WAKE_BROW = 0.10f;
+constexpr float WAKE_DUR = 2.5f;
+constexpr float WAKE_BLEND = 0.4f;
+
+inline void face_wake_init(FaceWake& w) {
+  w.phase = WAKE_ASLEEP;
+  w.start = 0;
+}
+
+inline FaceWakeOut face_wake_step(FaceWake& w, bool trigger, bool error, const FacePose& mixerPose, float T) {
+  if (w.phase == WAKE_AWAKE) {
+    return {mixerPose, 1.0f};
+  }
+  if (error) {
+    return {mixerPose, 1.0f};
+  }
+  if (w.phase == WAKE_ASLEEP) {
+    if (trigger) {
+      w.phase = WAKE_WAKING;
+      w.start = T;
+    } else {
+      FacePose sleepPose = {0, WAKE_SLEEP_PITCH + WAKE_SLEEP_BREATH * sinf(PI2 * T / WAKE_SLEEP_BREATH_PERIOD),
+                             0, 0, 0};
+      return {sleepPose, WAKE_SLEEP_BL};
+    }
+  }
+
+  // phase == WAKE_WAKING
+  float u = T - w.start;
+  if (u >= WAKE_DUR) {
+    w.phase = WAKE_AWAKE;
+    return {mixerPose, 1.0f};
+  }
+
+  float pitch;
+  if (u < 0.6f) {
+    pitch = WAKE_SLEEP_PITCH + (-0.05f - WAKE_SLEEP_PITCH) * ss(u / 0.6f);
+  } else if (u < 1.8f) {
+    pitch = -0.05f;
+  } else {
+    pitch = -0.05f + (0.0f - (-0.05f)) * ss((u - 1.8f) / 0.7f);
+  }
+
+  float yaw;
+  if (u < 0.6f) {
+    yaw = 0.0f;
+  } else if (u < 1.2f) {
+    yaw = -WAKE_LOOK_YAW * ss((u - 0.6f) / 0.6f);
+  } else if (u < 1.8f) {
+    yaw = -WAKE_LOOK_YAW + (WAKE_LOOK_YAW - (-WAKE_LOOK_YAW)) * ss((u - 1.2f) / 0.6f);
+  } else {
+    yaw = WAKE_LOOK_YAW + (0.0f - WAKE_LOOK_YAW) * ss((u - 1.8f) / 0.7f);
+  }
+
+  float browUp;
+  if (u < 0.6f) {
+    browUp = WAKE_BROW * ss(u / 0.6f);
+  } else if (u < 1.8f) {
+    browUp = WAKE_BROW;
+  } else {
+    browUp = WAKE_BROW * (1.0f - ss((u - 1.8f) / 0.7f));
+  }
+
+  float brightnessScale = WAKE_SLEEP_BL + (1.0f - WAKE_SLEEP_BL) * ss(u / 0.6f);
+
+  FacePose wakePose = {yaw, pitch, 0, browUp, 0};
+
+  if (u >= WAKE_DUR - WAKE_BLEND) {
+    float k = ss((u - (WAKE_DUR - WAKE_BLEND)) / WAKE_BLEND);
+    FacePose blended = {
+      wakePose.yaw + (mixerPose.yaw - wakePose.yaw) * k,
+      wakePose.pitch + (mixerPose.pitch - wakePose.pitch) * k,
+      wakePose.roll + (mixerPose.roll - wakePose.roll) * k,
+      wakePose.browUp + (mixerPose.browUp - wakePose.browUp) * k,
+      wakePose.err + (mixerPose.err - wakePose.err) * k,
+    };
+    return {blended, brightnessScale};
+  }
+
+  return {wakePose, brightnessScale};
+}
+
 // ---------- 背光策略 ----------
 inline uint8_t face_backlight(bool timeValid, int localHour, int localMin, float idleSec, bool overridden) {
   uint8_t dayNight;
