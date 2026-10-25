@@ -88,7 +88,7 @@ class MusicSubsystemMixin:
     def _estop_blocked(self, what: str) -> bool:
         """🛑 緊急停止中不啟動任何音樂（只有 /marvin_estop 解除）。"""
         vc = self._vc()
-        if vc is not None and getattr(vc, "_estop_active", lambda: False)():
+        if vc is not None and getattr(vc, "_estop_active", lambda: False)() is True:   # 只認明確 True（MagicMock vc 不算）
             logger.info(f"🛑 [EStop] 緊急停止中，不啟動{what}")
             return True
         return False
