@@ -1786,11 +1786,25 @@ async def run_puck_cover_prefetch_loop(vc, cache, *, interval: float = 5.0, size
         await asyncio.sleep(interval)
 
 
+async def _speak_car_open_line(vc, line: str) -> None:
+    """上車開場白：比照登場台詞（voice_controller_connection 的 greeting）走 protected TTS。"""
+    try:
+        vc._tts_interrupted = False
+        with vc._protected_tts_window():
+            await vc.play_tts(line, already_in_channel=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[CarMode] 開場白播放失敗（不影響開場曲）")
+
+
 async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
     """車載上車開場的選歌+播放邏輯，satellite/Discord 兩版 _play_open 共用（見
     start_text_http_server 裡的呼叫端）。
 
-    復用 /play 那招 inject_text「放一首X」讓 pipeline 解析+播+DJ；絕不即時付費 LLM。
+    開場白（car_open.line）與選歌並行起跑：開場白走 _speak_car_open_line 的
+    protected TTS 念出來，選歌用 resolve_car_open_query 選出 query；兩者都完成後
+    才送出點歌，避免開場白跟開場曲疊在一起。點歌改直呼 MusicCog（不再走
+    inject_text「放一首X」），因為那條路徑會先播隨機英文 filler + music ack，
+    上車第一個聲音不該是那兩個——開場白已經是登場聲音了。
 
     ⚠️ 2026-08-11 實機踩到：這裡原本無條件用 anchor_title 裸字串搜尋，跟
     music_cog.py 的一般 autopilot enqueue（_auto_recommend 系列）邏輯不一致——
@@ -1802,7 +1816,9 @@ async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
     yt-dlp 用這串裸標題搜不到東西，resolve 靜默失敗、整趟開場沒聲音。
     改成比照 _auto_recommend 的優先序：direct_url > artist+title > title。
     """
+    line_task = asyncio.create_task(_speak_car_open_line(vc, car_open.line)) if car_open.line else None
     try:
+        query = None
         if car_open.song:
             # 車載開場繞過 _auto_recommend 的 enqueue 迴圈、直接走手動點歌路徑，
             # 沒吃到那邊本來就有的 is_non_song_video 品質閘——候選池 build_member_pools
@@ -1821,14 +1837,24 @@ async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
 
             query = await resolve_car_open_query(
                 car_open.song, pool_provider=pool_provider, resolve_fn=_resolve)
-            if query:
-                await inject_text(vc, speaker, f"放一首{query}")
-            else:
+            if not query:
                 logger.warning("🚗 [CarMode] 開場候選池連試多首都沒過品質閘，本次開場靜音")
-        logger.info("🚗 [CarMode] 上車開場（%s）：%s → 放《%s》", speaker,
-                    car_open.line, car_open.song.anchor_title if car_open.song else "—")
+
+        if line_task is not None:
+            await line_task
+
+        if query:
+            mc = vc.bot.cogs.get("MusicCog")
+            if mc is None:
+                logger.warning("🚗 [CarMode] MusicCog 不在，開場曲略過")
+            else:
+                await mc._handle_voice_music_command(speaker, f"放一首{query}", "play", play_ack=False)
+        logger.info("🚗 [CarMode] 上車開場（%s）：%s → 點播 %s", speaker,
+                    car_open.line, query or "—")
     except Exception:  # noqa: BLE001
         logger.exception("[CarMode] play_open 失敗")
+        if line_task is not None and not line_task.done():
+            await line_task
 
 
 async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
