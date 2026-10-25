@@ -66,7 +66,7 @@ def _svgs_js(paths: list[str]) -> str:
     return "const SVG_SRC={" + ",".join(parts) + "};"
 
 
-def _run(main_js: str, svgs: list[str] | None = None) -> dict:
+def _run(main_js: str, svgs: list[str] | None = None, clay: bool = False) -> dict:
     page = "\n".join([
         "<!doctype html><meta charset=utf-8><pre id=out></pre><script>",
         "const W=240,C=120,R=108,P2=Math.PI*2;",
@@ -74,13 +74,13 @@ def _run(main_js: str, svgs: list[str] | None = None) -> dict:
         (HERE / "helpers.js").read_text(encoding="utf-8"),
         _textures_js(),
         "const TEX={};",
-        _svgs_js(svgs or []),
+        _svgs_js(svgs or []) + f"const SVG_CLAY={'true' if clay else 'false'};",
         (HERE / "costumes.js").read_text(encoding="utf-8"),
         "(async()=>{try{",
         "for(const [k,src] of Object.entries(TEX_SRC)){const im=new Image();im.src=src;await im.decode();TEX[k]=im;}",
         # LLM 生成的 SVG 擺設（gen_globe.py）：只當圖片畫，包成 3D 雪花水晶球
         "for(const [k,src] of Object.entries(SVG_SRC)){const im=new Image();im.src=src;await im.decode();"
-        "add('svg:'+k,'水晶球(LLM)',k,r=>H.marble(r,g=>g.drawImage(im,0,0,W,W),GLOBE),GREEN);}",
+        "add('svg:'+k,'水晶球(LLM)',k,r=>H.marble(r,g=>g.drawImage(im,0,0,W,W),Object.assign({},GLOBE,{clay:SVG_CLAY})),GREEN);}",
         main_js,
         "}catch(e){document.getElementById('out').textContent=JSON.stringify({error:String(e&&e.stack||e)});}})();",
         "</script>",
@@ -162,7 +162,7 @@ for(let s=0;s<list.length;s+=PER){{const part=list.slice(s,s+PER),LW=150,CW=244,
   sheets.push(cv.toDataURL('image/png'));}}
 document.getElementById('out').textContent=JSON.stringify({{sheets}});
 """
-    res = _run(js, args.svg)
+    res = _run(js, args.svg, args.clay)
     for i, url in enumerate(res["sheets"], 1):
         p = out / f"costume_sheet_{i}.png"
         p.write_bytes(base64.b64decode(url.split(",", 1)[1]))
@@ -176,7 +176,7 @@ const res={{}};for(const c of marbled(pick({json.dumps(_ids(args))}),{_marble_js
   for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);res[c.id]={{b64:btoa(s),eye:c.eye||[104,158,58]}};}}
 document.getElementById('out').textContent=JSON.stringify(res);
 """
-    res = _run(js, args.svg)
+    res = _run(js, args.svg, args.clay)
     out = Path(args.out)
     with out.open("w", encoding="utf-8") as o:
         o.write("// puck 頭像服裝底圖（tools/puck_face/costume/build.py 產生，RGB888 240x240，不進 git）\n"
@@ -202,11 +202,13 @@ def main() -> int:
     p.add_argument("ids", nargs="*")
     p.add_argument("--out", default="/tmp/puck_costume_preview")
     p.add_argument("--svg", nargs="*", default=[], help="gen_globe.py 產生的 SVG 擺設")
+    p.add_argument("--clay", action="store_true", help="SVG 擺設套黏土質感")
     p.add_argument("--marble", help='包成磨砂玻璃彈珠，例："frost=0.45,ri=0.8,blur=2.5"')
     h = sub.add_parser("header")
     h.add_argument("ids", nargs="+")
     h.add_argument("--out", required=True)
     h.add_argument("--svg", nargs="*", default=[])
+    h.add_argument("--clay", action="store_true")
     h.add_argument("--marble", help='同 preview --marble')
     args = ap.parse_args()
     return {"list": cmd_list, "preview": cmd_preview, "header": cmd_header}[args.cmd](args)

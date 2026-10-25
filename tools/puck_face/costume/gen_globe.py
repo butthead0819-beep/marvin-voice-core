@@ -30,7 +30,18 @@ Hard rules:
 - Horizontally centred on x=120. Max width 150 px. Max height 140 px (top no higher than y=46).
 - Simple, bold, recognisable silhouette; flat shapes with 1-2 linear/radial gradients for volume; dark outline about 1.5 px.
 - 8 to 40 shapes. No text, no <script>, no <image>, no external references, no filters.
-- Make it charming and a little playful; it will be viewed at 240 px on a small round screen."""
+- Make it charming and a little playful; it will be viewed at 240 px on a small round screen.{style}"""
+
+STYLES = {
+    "flat": "",
+    # 使用者 10/25：黏土手作感能把 LLM 容易失焦的畫面限制住
+    "clay": """
+Style: handmade CLAYMATION / plasticine figurine.
+- Build it from a few chunky, rounded, hand-pressed clay blobs (ellipses, rounded rects, fat paths with round joins).
+- NO thin lines, NO outlines, NO tiny details, NO text; smallest part at least 10 px wide.
+- 3 to 5 saturated colours plus white highlights; flat fills are fine (shading is added later).
+- Exaggerated, cute, toy-like proportions; slightly lumpy and imperfect.""",
+}
 
 _BAD = re.compile(r"<\s*script|foreignObject|<\s*image|\son\w+\s*=|(?:xlink:)?href\s*=\s*[\"'](?!#)|@import|url\(\s*[\"']?(?!#)", re.I)
 
@@ -45,9 +56,9 @@ def _sanitize(text: str) -> str | None:
     return svg
 
 
-async def _gen(router, noun: str, tries: int) -> str | None:
+async def _gen(router, noun: str, tries: int, style: str = "flat") -> str | None:
     for _ in range(tries):
-        out = await router.analyze(PROMPT.format(noun=noun), caller="puck_globe_gen", system=SYSTEM,
+        out = await router.analyze(PROMPT.format(noun=noun, style=STYLES[style]), caller="puck_globe_gen", system=SYSTEM,
                                    max_tokens=4000, temperature=0.9, timeout=90)
         svg = _sanitize(out or "")
         if svg:
@@ -68,7 +79,7 @@ async def main_async(args) -> int:
     fails = 0
     for noun in args.nouns:
         for k in range(args.n):
-            svg = await _gen(router, noun, args.tries)
+            svg = await _gen(router, noun, args.tries, args.style)
             name = noun if args.n == 1 else f"{noun}_{k + 1}"
             if svg:
                 (out / f"{name}.svg").write_text(svg, encoding="utf-8")
@@ -86,6 +97,7 @@ def main() -> int:
     ap.add_argument("--out", default="/tmp/puck_globes")
     ap.add_argument("--n", type=int, default=1, help="每個名詞生幾張（不確定性是好處）")
     ap.add_argument("--tries", type=int, default=2)
+    ap.add_argument("--style", choices=sorted(STYLES), default="clay")
     return asyncio.run(main_async(ap.parse_args()))
 
 

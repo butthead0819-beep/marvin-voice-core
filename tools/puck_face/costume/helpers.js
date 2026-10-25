@@ -212,6 +212,25 @@ H.globe3d = (sprite, o = {}) => {
   return out;
 };
 
+// 黏土質感：把擺設 sprite（透明背景）變成手捏黏土——用模糊後的不透明度當高度圖，
+// 算法線打光（左上光、柔和高光），再疊低頻凹凸（手指壓痕）。LLM 畫得再扁平也會變圓鼓鼓。
+H.clay = (sprite, o = {}) => {
+  const rad = o.radius ?? 5, mk = () => { const c = document.createElement('canvas'); c.width = c.height = W; return c; };
+  const hm = mk(), hx = hm.getContext('2d'); hx.filter = `blur(${rad}px)`; hx.drawImage(sprite, 0, 0);
+  const h = hx.getImageData(0, 0, W, W).data, src = sprite.getContext('2d').getImageData(0, 0, W, W);
+  const d = src.data, L = H.norm([-0.5, -0.6, 0.62]), Hv = H.norm([L[0], L[1], L[2] + 1]);
+  const A = (x, y) => h[(Math.min(W - 1, Math.max(0, y)) * W + Math.min(W - 1, Math.max(0, x))) * 4 + 3] / 255;
+  for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
+    const i = (y * W + x) * 4; if (d[i + 3] < 8) continue;
+    const bump = (H.noise3(x * 0.09, y * 0.09, 3) - 0.5) * 0.35;
+    const gx = (A(x + 1, y) - A(x - 1, y)) * 6 + bump, gy = (A(x, y + 1) - A(x, y - 1)) * 6 + bump * 0.6;
+    const n = H.norm([-gx, -gy, 1]);
+    const sh = 0.62 + 0.5 * Math.max(0, H.dot(n, L)), sp = 70 * Math.pow(Math.max(0, H.dot(n, Hv)), 18);
+    for (let k = 0; k < 3; k++) d[i + k] = Math.min(255, d[i + k] * sh + sp);
+  }
+  const out = mk(); out.getContext('2d').putImageData(src, 0, 0); return out;
+};
+
 // 水裡漂浮的雪花（確定性亂數，畫在折射之後、模糊之前）
 H.snow = (g, ri, n) => {
   for (let k = 0; k < n; k++) {
@@ -236,7 +255,7 @@ H.marble = (r, innerDraw, o = {}) => {
   ir.filter = `blur(${blur}px)`;
   ir.save(); ir.beginPath(); ir.arc(C, C, R * ri + 1, 0, P2); ir.clip();
   if (o.tilt != null) {   // 雪花水晶球 3D 版：俯視、擺設站在雪地上（見 H.globe3d）
-    const lensed = H.globe3d(raw, o);
+    const lensed = H.globe3d(o.clay ? H.clay(raw) : raw, o);
     if (o.snow) H.snow(lensed.getContext('2d'), ri, o.snow);
     ir.drawImage(lensed, 0, 0);
   } else if (o.depth != null) {   // 雪花水晶球：內容當水裡的場景，透過水球折射看到（見 H.globeLens）
