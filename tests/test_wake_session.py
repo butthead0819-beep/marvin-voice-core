@@ -171,6 +171,7 @@ def test_on_utterance_false_when_not_opened_even_after_await_window():
     "謝謝", "謝謝馬文", "知道了", "好了啦", "OK", "馬文 謝謝你", "了解！",
     "沒事了謝謝", "好了謝啦", "OK 謝謝馬文",
     "嗯奧克嗯 OK", "不用了謝謝", "先這樣", "嗯，好了", "停", "結束了", "okay", "沒事",
+    "麻煩好了謝謝", "哦好了你可以停下來的馬文你可以閉嘴的", "馬文閉嘴", "不要再講了", "不用回答了",
 ])
 def test_is_closing_phrase_true(text):
     assert is_closing_phrase(text) is True
@@ -181,6 +182,7 @@ def test_is_closing_phrase_true(text):
     "沒事了謝謝你上次推薦的歌", "好了上見",
     "不用等一下啊，那天下禮拜去幹沒有那麼急", "停車場在哪", "OK 那你幫我查一下",
     "可以了嗎", "嗯",
+    "麻煩幫我查天氣", "麻煩", "他很安靜",
 ])
 def test_is_closing_phrase_false(text):
     assert is_closing_phrase(text) is False
@@ -344,3 +346,69 @@ def test_window_query_does_not_mutate_state():
     s.is_window_open("A", 500.0)   # 已逾時：只回 False，不能順手 _end
     s.is_window_open("B", 11.0)
     assert vars(s) == before
+
+
+# ── on_wake_accepted 同句不重複派送（2026-10-24 音量指令被派兩次事故） ─────────
+
+
+def test_on_wake_accepted_same_target_marks_awaiting_blocks_immediate_utterance():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.on_wake_accepted("A", 10.0)
+    assert s.on_utterance("A", 10.005, marvin_speaking=False, text="你講話太大聲") is False
+
+
+def test_on_wake_accepted_same_target_new_utterance_caught_after_reply():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.on_wake_accepted("A", 10.0)
+    assert s.on_utterance("A", 10.005, marvin_speaking=False, text="你講話太大聲") is False
+    s.on_replied(12.0)
+    assert s.on_utterance("A", 13.0, marvin_speaking=False, text="那下一首呢") is True
+
+
+# ── on_utterance crowded（2026-10-24 五人熱聊 Marvin 連回 9 句事故） ──────────
+
+
+def test_on_utterance_crowded_blocks_wakeless_utterance():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    assert s.on_utterance("A", 1.0, marvin_speaking=False, text="那個多少錢", crowded=True) is False
+    assert s.target == "A"
+
+
+def test_on_utterance_not_crowded_still_caught():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    assert s.on_utterance("A", 1.0, marvin_speaking=False, text="那個多少錢", crowded=False) is True
+
+
+def test_on_utterance_crowded_closing_phrase_still_ends_session():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    assert s.on_utterance("A", 1.0, marvin_speaking=False, text="好了謝謝", crowded=True) is False
+    assert s.target is None
+
+
+def test_on_utterance_crowded_repeated_blocks_eventually_idles_out():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    assert s.on_utterance("A", 1.0, marvin_speaking=False, text="那個多少錢", crowded=True) is False
+    assert s.on_utterance("A", 60.0, marvin_speaking=False, text="欸真的假的", crowded=True) is False
+    assert s.on_utterance("A", 125.0, marvin_speaking=False, text="那下一首呢", crowded=False) is False
+    assert s.target is None
+
+
+def test_on_utterance_crowded_barge_in_still_caught():
+    s = WakeSession()
+    s.on_wake_accepted("A", 0.0)
+    s.on_replied(0.5)
+    s.note_barge_in(1.0)
+    assert s.on_utterance("A", 1.1, marvin_speaking=True, text="那個多少錢",
+                           final=True, crowded=True) is True

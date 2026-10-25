@@ -22,8 +22,9 @@ logger = logging.getLogger("wake_session")
 # 結束語（fullmatch——只認整句就是結束語，避免「謝謝你上次推薦的歌那首叫什麼」被吃掉）。
 # 允許串接（「沒事了謝謝」「好了謝啦」，2026-10-15 事故）。
 # 容忍語助詞穿插（2026-10-17 STT 把「OK」聽成「嗯奧克嗯 OK」沒認到）。
+# 「麻煩」= STT 把「馬文」聽錯（2026-10-24「麻煩好了謝謝」沒認到）。
 _CLOSING_RE = re.compile(
-    r"[\s,，、嗯恩啊阿呃欸誒唉哎]*(?:馬文|瑪文)?[\s,，、嗯恩啊阿呃欸誒唉哎]*"
+    r"[\s,，、嗯恩啊阿呃欸誒唉哎]*(?:馬文|瑪文|麻煩)?[\s,，、嗯恩啊阿呃欸誒唉哎]*"
     r"(?:"
     r"(?:謝謝|謝啦|感謝|多謝|3q|thank\s*you|thanks|知道了|了解|瞭解|明白了|懂了|好了|沒事了|沒事|沒問題了"
     r"|不用了|先這樣|就這樣|可以了|夠了|結束|停|okay|OK|ok|奧克|歐克|好喔|好哦)"
@@ -32,9 +33,17 @@ _CLOSING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 明確叫 Marvin 停嘴：出現在句中任何位置都算（2026-10-24「好了你可以停下來的馬文你可以閉嘴的」沒關窗）。
+_DISMISS_RE = re.compile(
+    r"閉嘴|安靜一?點|停下來|(?:別|不要)再?(?:講|說|吵)了|不用再?(?:回答|回|講|說)了"
+)
+
 
 def is_closing_phrase(text: str) -> bool:
-    return bool(text) and _CLOSING_RE.fullmatch(text.strip()) is not None
+    if not text:
+        return False
+    t = text.strip()
+    return _CLOSING_RE.fullmatch(t) is not None or _DISMISS_RE.search(t) is not None
 
 
 class WakeSession:
@@ -65,6 +74,7 @@ class WakeSession:
 
     def on_wake_accepted(self, speaker: str, now: float) -> None:
         if self.target == speaker:
+            self.awaiting_since = now   # 本句已走喚醒路徑受理；同句 5ms 後再走免喚醒路徑時 on_utterance 會判「上一句還在處理」不重複接（10/24 音量指令被派兩次）
             return
         self.target = speaker
         self.opened = False
@@ -125,7 +135,7 @@ class WakeSession:
             self.qa_turns = self.qa_turns[-MAX_QA_TURNS:]
 
     def on_utterance(self, speaker: str, now: float, *, marvin_speaking: bool,
-                      text: str = "", final: bool = True) -> bool:
+                      text: str = "", final: bool = True, crowded: bool = False) -> bool:
         if self.target is None or speaker != self.target:
             return False
         if not self.opened:
@@ -144,6 +154,9 @@ class WakeSession:
             return False
         if now - self.last_speech > IDLE_TIMEOUT_S:
             self._end("idle")
+            return False
+        if crowded and not barge:
+            logger.info(f"🗣️ [WakeSession] 熱聊中不接 {speaker} 免喚醒句（要叫名字）")
             return False
         self.last_speech = now
         if marvin_speaking and not barge:
