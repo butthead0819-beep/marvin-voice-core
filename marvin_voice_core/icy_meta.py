@@ -11,9 +11,9 @@ import hashlib
 import re
 from typing import Callable
 
-ICY_METAINT = 16000          # 每 16000 bytes 音訊插一個 metadata 區塊（128kbps ≈ 1 秒）
+ICY_METAINT = 4000           # 每 4000 bytes 音訊插一個 metadata 區塊（128kbps ≈ 0.25 秒；10/25 從 1 秒縮短，講話旗標/頭部動作跟聲音的落差主要來自這一格）
 ICY_FULL_REFRESH_S = 5.0     # 內容沒變時，至少每 5 秒重送一次完整 payload（重同步/位置校正）
-ICY_SPEAK_HOLD_S = 1.0  # 講話旗標持有時間；≈ ICY_METAINT 一個區塊的音訊長度，區塊之間短句不會漏掉
+ICY_SPEAK_HOLD_S = 0.4  # 講話旗標持有時間；要 > 一個 ICY 區塊（0.25s）+ 一個編碼批次（0.1s），區塊之間短句才不會漏掉
 TITLE_MAX_BYTES = 120
 ARTIST_MAX_BYTES = 80
 ALBUM_MAX_BYTES = 120

@@ -182,7 +182,7 @@ async def test_audio_stream_with_icy_header_embeds_now_playing_payload():
     from car_http_app import build_text_app
     from marvin_voice_core.icy_meta import ICY_METAINT
 
-    # ~1.5s 音訊，128kbps 編碼後遠超過一個 ICY_METAINT（16000 bytes），確保至少跨過一個邊界。
+    # ~1.5s 音訊，128kbps 編碼後遠超過一個 ICY_METAINT（4000 bytes），確保至少跨過一個邊界。
     src = _FakeStreamSource([_sine_pcm_frame(seconds=1.5), None])
     app = build_text_app(_make_vc(), token="s3cret", stream_source=src)
     async with TestClient(TestServer(app)) as client:
