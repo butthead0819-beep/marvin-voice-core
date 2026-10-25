@@ -501,3 +501,52 @@ def test_payload_speaking_with_gesture_none_stays_10_fields():
         info, 1000.0, 1050.0, speaking=True, gesture=None)
     parts = payload.decode("utf-8").split("\x1f")
     assert len(parts) == 10
+
+
+# ---------- build_now_playing_payload：skin ----------
+
+def test_payload_speaking_and_skin_gesture_none_is_12_fields_empty_gesture():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(
+        info, 1000.0, 1050.0, speaking=True, gesture=None, skin="a1b2c3d4")
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 12
+    assert parts[10] == ""
+    assert parts[11] == "a1b2c3d4"
+
+
+def test_payload_speaking_and_skin_with_gesture_is_12_fields():
+    info = {"title": "Song", "duration": 200.0}
+    payload = build_now_playing_payload(
+        info, 1000.0, 1050.0, speaking=True, gesture="12:Y2", skin="a1b2c3d4")
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 12
+    assert parts[10] == "12:Y2"
+    assert parts[11] == "a1b2c3d4"
+
+
+def test_payload_skin_none_matches_output_without_skin_kwarg():
+    info = {"title": "Song", "duration": 200.0}
+    without = build_now_playing_payload(
+        info, 1000.0, 1050.0, speaking=True, gesture="12:Y2")
+    with_skin_none = build_now_playing_payload(
+        info, 1000.0, 1050.0, speaking=True, gesture="12:Y2", skin=None)
+    assert without == with_skin_none
+
+
+def test_payload_skin_ignored_when_speaking_none():
+    info = {"title": "Song", "duration": 200.0}
+    without = build_now_playing_payload(info, 1000.0, 1050.0)
+    with_skin = build_now_playing_payload(
+        info, 1000.0, 1050.0, speaking=None, skin="a1b2c3d4")
+    assert without == with_skin
+
+
+def test_payload_none_info_speaking_and_skin_is_12_fields():
+    payload = build_now_playing_payload(
+        None, None, 100.0, speaking=False, gesture=None, skin="a1b2c3d4")
+    parts = payload.decode("utf-8").split("\x1f")
+    assert len(parts) == 12
+    assert parts[4] == "S"
+    assert parts[10] == ""
+    assert parts[11] == "a1b2c3d4"

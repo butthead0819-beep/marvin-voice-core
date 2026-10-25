@@ -476,6 +476,57 @@ inline FaceCoverOut face_cover_step(FaceCoverState& st, float now, bool coverArr
   return out;
 }
 
+// ---------- 底圖換圖（淡出/淡入） ----------
+enum SkinPhase { SKIN_IDLE = 0, SKIN_FADE_OUT, SKIN_FADE_IN };
+struct FaceSkinState { SkinPhase phase; float phaseStart; };
+struct FaceSkinOut { float brightnessScale; bool swapNow; };
+
+inline void face_skin_init(FaceSkinState& st) {
+  st.phase = SKIN_IDLE;
+  st.phaseStart = 0;
+}
+
+// pending：有一張新底圖等著換；headReady：封面狀態機在 COVER_HEAD（頭像在畫面上、
+// 沒在淡入淡出封面）。只在 IDLE 時才進 FADE_OUT，swapNow 只在 FADE_OUT→FADE_IN 那一格為 true 一次。
+inline FaceSkinOut face_skin_step(FaceSkinState& st, float now, bool pending, bool headReady) {
+  const float D = 0.3f;
+  FaceSkinOut out = {1.0f, false};
+
+  switch (st.phase) {
+    case SKIN_IDLE: {
+      if (pending && headReady) {
+        st.phase = SKIN_FADE_OUT;
+        st.phaseStart = now;
+      }
+      out.brightnessScale = 1.0f;
+      break;
+    }
+    case SKIN_FADE_OUT: {
+      float t = now - st.phaseStart;
+      if (t >= D) {
+        out.swapNow = true;
+        out.brightnessScale = 0.0f;
+        st.phase = SKIN_FADE_IN;
+        st.phaseStart = now;
+      } else {
+        out.brightnessScale = 1.0f - t / D;
+      }
+      break;
+    }
+    case SKIN_FADE_IN: {
+      float t = now - st.phaseStart;
+      if (t >= D) {
+        st.phase = SKIN_IDLE;
+        out.brightnessScale = 1.0f;
+      } else {
+        out.brightnessScale = t / D;
+      }
+      break;
+    }
+  }
+  return out;
+}
+
 // ---------- 開機甦醒（只在通電後一次） ----------
 // 通電後頭低垂、暗光慢呼吸（睡著），直到第一個聲音互動（Marvin 講話 / 有歌 / 駕駛按 PTT）
 // 才演出 2.5s 甦醒：抬頭（0~0.6s）→ 左看（0.6~1.2s）→ 右看（1.2~1.8s）→ 回正（1.8~2.5s），
