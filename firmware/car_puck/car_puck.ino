@@ -1236,11 +1236,14 @@ static void faceLogStats() {
   portENTER_CRITICAL(&g_faceInMux);
   bool spk = g_faceIn.speaking;
   portEXIT_CRITICAL(&g_faceInMux);
-  Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u spk=%d gst=%u\n",
+  // pfree/pmin：PSRAM 剩餘與開機以來最低水位（v2 硬體評估 2MB PSRAM 夠不夠用）
+  Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u pfree=%u pmin=%u spk=%d gst=%u\n",
                 fps, (unsigned)late, renderMs, pushMs,
                 faceTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(faceTaskHandle) : 0,
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM),
                 (int)spk, (unsigned)gestures);
 }
 #endif
