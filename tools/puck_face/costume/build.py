@@ -194,6 +194,20 @@ document.getElementById('out').textContent=JSON.stringify(res);
     return 0
 
 
+def cmd_rgb(args) -> int:
+    """單張服裝輸出成 puck 用的原始 RGB888（172800 bytes），給 puck_skin.py set 推上車。"""
+    js = _BASE_JS + f"""
+const c=marbled(pick({json.dumps(_ids(args))}),{_marble_js(args.marble)})[0];const b=base888(c);let s='';
+for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);
+document.getElementById('out').textContent=JSON.stringify({{b64:btoa(s)}});
+"""
+    b = base64.b64decode(_run(js, args.svg, args.clay)["b64"])
+    assert len(b) == 240 * 240 * 3
+    Path(args.out).write_bytes(b)
+    print(args.out, len(b))
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -210,8 +224,14 @@ def main() -> int:
     h.add_argument("--svg", nargs="*", default=[])
     h.add_argument("--clay", action="store_true")
     h.add_argument("--marble", help='同 preview --marble')
+    g = sub.add_parser("rgb", help="單張輸出 .rgb（給 puck_skin.py set）")
+    g.add_argument("ids", nargs="*")
+    g.add_argument("--out", required=True)
+    g.add_argument("--svg", nargs="*", default=[])
+    g.add_argument("--clay", action="store_true")
+    g.add_argument("--marble")
     args = ap.parse_args()
-    return {"list": cmd_list, "preview": cmd_preview, "header": cmd_header}[args.cmd](args)
+    return {"list": cmd_list, "preview": cmd_preview, "header": cmd_header, "rgb": cmd_rgb}[args.cmd](args)
 
 
 if __name__ == "__main__":
