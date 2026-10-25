@@ -137,15 +137,15 @@ async def test_voice_view_skip_delegates_to_music_cog_and_triggers_ack():
     bot = cog.bot
     controller = MagicMock()
     controller.bot = bot
-    controller.play_tts = AsyncMock()
+    controller._play_ack = AsyncMock()
     view = PlayControlView(controller)
-    
+
     vc = cog._vc_mock
     view._skip_current(vc)
     await asyncio.sleep(0.05)
-    
-    # 驗證叫用了 quick ack TTS
-    controller.play_tts.assert_awaited_once_with("好，換", already_in_channel=False)
+
+    # 驗證叫用了 quick ack
+    controller._play_ack.assert_awaited_once_with("playback_skip")
 
     # 驗證委派了 music_cog._safe_music_command("control_panel", "", "skip")
     cog._safe_music_command.assert_awaited_once()
@@ -230,7 +230,7 @@ async def test_playback_agent_skip_registers_ack_on_music_cog():
     mc._safe_music_command = AsyncMock()
 
     ctrl = MagicMock()
-    ctrl.play_tts = AsyncMock()
+    ctrl._play_ack = AsyncMock()
     ctrl.bot.cogs.get.return_value = mc
     ctrl._current_stream_info = None
 
@@ -245,4 +245,5 @@ async def test_playback_agent_skip_registers_ack_on_music_cog():
     await handler()
 
     assert isinstance(mc._pending_skip_ack, asyncio.Task)
+    ctrl._play_ack.assert_awaited_once_with("playback_skip", speaker="UserA")
 

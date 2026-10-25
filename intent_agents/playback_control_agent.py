@@ -5,11 +5,8 @@
 
 功能：
   - skip/stop/pause/resume 语音命令 → IntentBus 立刻回應（confidence=0.95）
-  - 切歌 quick ack TTS（好，換 / 停了 / 暫停 / 繼續）
+  - 切歌 quick ack（預錄：好，換 / 停了 / 暫停 / 繼續）
   - skip 連 2 不同 speaker 同一 url → 自動加 cover blacklist (D3 A 方案)
-
-Phase 1 簡化: quick ack 用 既有 paid path。
-Phase 1 ack LLM 失敗 fallback 用 hardcoded 字串。
 """
 from __future__ import annotations
 
@@ -26,12 +23,12 @@ from intent_bus import IntentContext
 logger = logging.getLogger(__name__)
 
 
-# Quick ack text per intent（D2=A: TTS gen-on-demand；後續可 prerecord）
-_ACK_TEXT = {
-    "skip_track": "好，換",
-    "stop_playback": "停了",
-    "pause_playback": "暫停",
-    "resume_playback": "繼續",
+# Quick ack 預錄 category（ack_templates.CATEGORIES；沒檔時 _play_ack 自己即時合成 text_fallback）
+_ACK_CATEGORY = {
+    "skip_track": "playback_skip",
+    "stop_playback": "playback_stop",
+    "pause_playback": "playback_pause",
+    "resume_playback": "playback_resume",
 }
 
 # 連續 skip 自動加黑名單 threshold (D3 A 方案)
@@ -174,8 +171,7 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
 
         async def _handler() -> None:
             # Phase 1 M5 P5 簡化版: ack + action 並行
-            ack_text = _ACK_TEXT.get(intent, "好")
-            ack_task = asyncio.create_task(self._quick_ack(ack_text))
+            ack_task = asyncio.create_task(self._quick_ack(_ACK_CATEGORY[intent], speaker))
             if intent == "skip_track":
                 bot = getattr(self.ctrl, "bot", None)
                 mc = bot.cogs.get("MusicCog") if bot else None
@@ -189,18 +185,14 @@ class PlaybackControlAgent(DeclarativeIntentAgent):
 
         return _handler
 
-    async def _quick_ack(self, text: str) -> None:
-        """跑 quick ack TTS。LLM/TTS 失敗 → 既有 play_tts fallback chain 自己處理。"""
+    async def _quick_ack(self, category: str, speaker: str) -> None:
+        """跑 quick ack（_play_ack）；失敗靜默。"""
         try:
-            play_tts = getattr(self.ctrl, "play_tts", None)
-            if play_tts is None:
-                logger.warning("[PlaybackControl] ctrl.play_tts 不存在，skip ack")
+            play_ack = getattr(self.ctrl, "_play_ack", None)
+            if play_ack is None:
+                logger.warning("[PlaybackControl] ctrl._play_ack 不存在，skip ack")
                 return
-            # already_in_channel=False：這是全新獨立的 ack，不是「正在講的話」的延續片段。
-            # 講出切歌指令本身就是 barge-in，會把 _tts_interrupted 設 True；若這裡仍用
-            # already_in_channel=True，[Interrupt Guard] 會看到這個殘留旗標把 ack 整句
-            # 靜默丟棄（2026-07-30 實測：log 只見「中斷後跳過剩餘片段」，完全沒發聲）。
-            await play_tts(text, already_in_channel=False)
+            await play_ack(category, speaker=speaker)
         except Exception:
             logger.exception("[PlaybackControl] quick ack 失敗，靜默")
 

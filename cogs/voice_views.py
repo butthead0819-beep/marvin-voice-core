@@ -127,20 +127,18 @@ class PlayControlView(discord.ui.View):
         self._sync_vol_labels()
         await interaction.response.edit_message(embed=self._build_embed(), view=self)
 
-    async def _quick_skip_ack(self, play_tts) -> None:
-        """跟 playback_control_agent._quick_ack 同款：失敗靜默，不擋跳歌本身。
-        already_in_channel=False：這是全新獨立 ack，不能被殘留的 _tts_interrupted
-        旗標（按鈕點擊當下若馬文正在講話）靜默丟棄。"""
+    async def _quick_skip_ack(self, play_ack) -> None:
+        """跟 playback_control_agent._quick_ack 同款：預錄 ack，失敗靜默，不擋跳歌本身。"""
         try:
-            await play_tts("好，換", already_in_channel=False)
+            await play_ack("playback_skip")
         except Exception:
             pass
 
     def _skip_current(self, vc):
         """跳歌：先播 quick ack，再委派 MusicCog _safe_music_command 走 Seamless Skip 無縫預載轉場流程。"""
         c = self.controller
-        play_tts = getattr(c, "play_tts", None)
-        ack_task = asyncio.create_task(self._quick_skip_ack(play_tts)) if play_tts is not None else None
+        play_ack = getattr(c, "_play_ack", None)
+        ack_task = asyncio.create_task(self._quick_skip_ack(play_ack)) if play_ack is not None else None
         bot = getattr(c, "bot", None)
         mc = bot.cogs.get("MusicCog") if bot else None
         if mc is not None and ack_task is not None:

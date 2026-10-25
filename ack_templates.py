@@ -159,6 +159,19 @@ POOLS: dict[str, AckPool] = {
     "music_fail": AckPool("music_fail", "assets/acks/music_fail", "marvin_zh", (
         ("無法播放", "music_fail.mp3"),
     )),
+    # 播放控制 ack（PlaybackControlAgent / 控制台按鈕）：固定一句，預錄免等 edge-tts
+    "playback_skip": AckPool("playback_skip", "assets/acks/playback/skip", "marvin_zh", (
+        ("好，換", "playback_skip.mp3"),
+    )),
+    "playback_stop": AckPool("playback_stop", "assets/acks/playback/stop", "marvin_zh", (
+        ("停了", "playback_stop.mp3"),
+    )),
+    "playback_pause": AckPool("playback_pause", "assets/acks/playback/pause", "marvin_zh", (
+        ("暫停", "playback_pause.mp3"),
+    )),
+    "playback_resume": AckPool("playback_resume", "assets/acks/playback/resume", "marvin_zh", (
+        ("繼續", "playback_resume.mp3"),
+    )),
     "status": AckPool("status", "assets/acks_status", "marvin_zh", _status_items()),
     "car_puck": AckPool("car_puck", "assets/car_puck", "marvin_zh", _car_puck_items()),
 }
@@ -209,6 +222,11 @@ CATEGORIES: dict[str, AckCategory] = {
         "music_fail", {"*": "music_fail"},
         urgent=False, empty_fallback_pool="wake_zh", wait_if_busy=4.0, await_completion=True,
     ),
+    # 播放控制確認（被動）：音樂中切入；沒檔就即時合成同一句，不退回 wake pool（「嗯。。。」語意不對）
+    "playback_skip": AckCategory("playback_skip", {"*": "playback_skip"}, urgent=True, text_fallback=("好，換",)),
+    "playback_stop": AckCategory("playback_stop", {"*": "playback_stop"}, urgent=True, text_fallback=("停了",)),
+    "playback_pause": AckCategory("playback_pause", {"*": "playback_pause"}, urgent=True, text_fallback=("暫停",)),
+    "playback_resume": AckCategory("playback_resume", {"*": "playback_resume"}, urgent=True, text_fallback=("繼續",)),
     # NemoClaw 處理中 ack：走 lock、播放中跳過，不暖 TTS、不切音樂
     "nemoclaw": AckCategory(
         "nemoclaw", {"zh": "wake_zh", "en": "wake_en"},
