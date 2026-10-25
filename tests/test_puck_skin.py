@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -139,3 +140,97 @@ def test_read_current_not_cached(tmp_path):
     store.put("summer", _data(0x55))
     etag, data = store.read_current()
     assert data == _data(0x55)
+
+
+def test_seasonal_current_when_in_range_and_file_exists(tmp_path):
+    data = _data(0x11)
+    (tmp_path / "x.rgb").write_bytes(data)
+    store = SkinStore(
+        tmp_path,
+        today=lambda: datetime.date(2026, 10, 15),
+        seasonal=[("10-01", "10-31", "x")],
+    )
+    expected_etag = hashlib.sha1(data).hexdigest()[:8]
+    assert store.current() == ("x", expected_etag)
+    assert store.read_current() == (expected_etag, data)
+
+
+def test_seasonal_current_none_when_out_of_range(tmp_path):
+    (tmp_path / "x.rgb").write_bytes(_data(0x11))
+    store = SkinStore(
+        tmp_path,
+        today=lambda: datetime.date(2026, 11, 1),
+        seasonal=[("10-01", "10-31", "x")],
+    )
+    assert store.current() is None
+
+
+def test_seasonal_current_boundary_start_and_end_dates_hit(tmp_path):
+    (tmp_path / "x.rgb").write_bytes(_data(0x11))
+
+    store_start = SkinStore(
+        tmp_path,
+        today=lambda: datetime.date(2026, 10, 1),
+        seasonal=[("10-01", "10-31", "x")],
+    )
+    assert store_start.current() is not None
+
+    store_end = SkinStore(
+        tmp_path,
+        today=lambda: datetime.date(2026, 10, 31),
+        seasonal=[("10-01", "10-31", "x")],
+    )
+    assert store_end.current() is not None
+
+
+def test_manual_skin_takes_priority_over_seasonal_then_clear_falls_back(tmp_path):
+    (tmp_path / "x.rgb").write_bytes(_data(0x11))
+    store = SkinStore(
+        tmp_path,
+        today=lambda: datetime.date(2026, 10, 15),
+        seasonal=[("10-01", "10-31", "x")],
+    )
+    store.put("manual", _data(0x22))
+    assert store.current()[0] == "manual"
+
+    store.clear()
+    assert store.current()[0] == "x"
+
+
+def test_seasonal_current_none_when_skin_file_missing(tmp_path):
+    store = SkinStore(
+        tmp_path,
+        today=lambda: datetime.date(2026, 10, 15),
+        seasonal=[("10-01", "10-31", "x")],
+    )
+    assert store.current() is None
+
+
+def test_seasonal_current_none_when_skin_file_wrong_length(tmp_path):
+    (tmp_path / "x.rgb").write_bytes(b"\x00" * (SKIN_BYTES - 1))
+    store = SkinStore(
+        tmp_path,
+        today=lambda: datetime.date(2026, 10, 15),
+        seasonal=[("10-01", "10-31", "x")],
+    )
+    assert store.current() is None
+
+
+def test_seasonal_current_cross_year_range(tmp_path):
+    (tmp_path / "x.rgb").write_bytes(_data(0x11))
+    seasonal = [("12-25", "01-05", "x")]
+
+    store_jan2 = SkinStore(tmp_path, today=lambda: datetime.date(2027, 1, 2), seasonal=seasonal)
+    assert store_jan2.current() is not None
+
+    store_dec30 = SkinStore(tmp_path, today=lambda: datetime.date(2026, 12, 30), seasonal=seasonal)
+    assert store_dec30.current() is not None
+
+    store_jan6 = SkinStore(tmp_path, today=lambda: datetime.date(2027, 1, 6), seasonal=seasonal)
+    assert store_jan6.current() is None
+
+
+def test_seasonal_current_uses_module_default_when_not_overridden(tmp_path):
+    (tmp_path / "halloween_pumpkin.rgb").write_bytes(_data(0x11))
+    store = SkinStore(tmp_path, today=lambda: datetime.date(2026, 10, 25))
+    assert store.current()[0] == "halloween_pumpkin"
