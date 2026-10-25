@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
+import logging
 import time as _time
 from typing import Awaitable, Callable
 
 from car_open import build_car_open, resolve_time_bucket
 from car_presence import CarPresence
 from music_recommender import Candidate
+
+logger = logging.getLogger(__name__)
 
 # 每 bucket 預生成開場白（免費、離線批次可再擴充；絕不即時付費 LLM）。
 DEFAULT_OPEN_LINES: dict[str, list[str]] = {
@@ -39,11 +42,13 @@ def build_car_presence(
     now_fn: Callable[[], _dt.datetime] | None = None,
     ttl_s: float = 90.0,
     time_fn: Callable[[], float] | None = None,
+    on_trip_end: Callable[[], None] | None = None,
 ) -> CarPresence:
     """組出接好開場/停播的 CarPresence。
 
     now_fn＝取現在時間（決定時段 bucket，牆鐘）；time_fn＝TTL 用的單調時鐘。
     兩者分開：bucket 要時刻、TTL 要經過時間。
+    on_trip_end＝一趟車結束（最後一人離開／TTL 逾時）時的同步 hook，例如清掉話題底圖；丟例外不影響停播。
     """
     lines = open_lines or DEFAULT_OPEN_LINES
     _now = now_fn or _dt.datetime.now
@@ -57,6 +62,11 @@ def build_car_presence(
         await play_open(car_open, speaker)
 
     async def on_depart() -> None:
+        if on_trip_end is not None:
+            try:
+                on_trip_end()
+            except Exception:  # noqa: BLE001 — 清底圖失敗不能擋停播
+                logger.exception("[CarMode] on_trip_end 失敗")
         await stop_playback()
 
     return CarPresence(

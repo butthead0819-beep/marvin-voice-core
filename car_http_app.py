@@ -1903,6 +1903,9 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
     # 新式：裝置ID→身分對應（MARVIN_CAR_DEVICES），韌體只送裝置 ID，不再送 speaker。
     car_devices = parse_car_devices(os.getenv("MARVIN_CAR_DEVICES", ""))
 
+    from puck_skin import SkinStore
+    skin_store = SkinStore()
+
     car_presence = None
     audio_rate_limiter = None
     if discord_voice is not None:
@@ -1958,7 +1961,8 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
                 logger.exception("[CarMode/Discord] stop_playback 失敗")
 
         car_presence = build_car_presence(
-            play_open=_play_open, stop_playback=_stop_playback, pool_provider=_pool_provider)
+            play_open=_play_open, stop_playback=_stop_playback, pool_provider=_pool_provider,
+            on_trip_end=skin_store.clear)
         vc.bot.car_presence = car_presence   # 給 MusicCog 讀在場者（autopilot 續推用）
         # funnel 公開後 /audio per-token 限速：每 token 每分鐘 30 次（架構#2 付費鐵則）。
         audio_rate_limiter = RateLimiter(max_per_window=30, window_s=60.0)
@@ -1967,7 +1971,8 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
     app = build_text_app(vc, token=token, default_speaker=default_speaker,
                          car_presence=car_presence,
                          audio_rate_limiter=audio_rate_limiter, stream_source=stream_source,
-                         device_speakers=device_speakers, car_devices=car_devices)
+                         device_speakers=device_speakers, car_devices=car_devices,
+                         puck_skin_store=skin_store)
     logger.info(f"🚗 [CarMode] 裝置身分白名單：{', '.join(device_speakers.values())}")
     logger.info(f"🚗 [CarMode] 裝置ID對應：{', '.join(f'{k}→{v}' for k, v in car_devices.items()) or '（無）'}")
     runner = web.AppRunner(app)
