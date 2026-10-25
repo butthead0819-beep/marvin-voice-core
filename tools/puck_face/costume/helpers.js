@@ -158,6 +158,60 @@ H.globeLens = (raw, ri, depth, ior, scale = 1) => {
   return out;
 };
 
+// 雪花水晶球（3D 版）：鏡頭從上方 tilt 弧度俯視；水球裡有一片水平雪地（世界 y = ground，
+// 球心往下、y 向下為正），擺設 sprite 是直立在雪地上、通過球心的立牌（世界 z = 0 平面）。
+// 每道視線打到水球表面依 ior 折射，取「立牌／雪地」較近的命中；都沒中＝水（淡藍半透明）。
+// sprite：透明背景 canvas，baseY＝擺設底部在 sprite 上的 y，unit＝sprite 幾 px 等於球半徑 1。
+H.globe3d = (sprite, o = {}) => {
+  const ri = o.ri ?? 0.97, a = o.tilt ?? (35 / 180 * Math.PI), g = o.ground ?? 0.33, eta = 1 / (o.ior ?? 1.33);
+  const baseY = o.baseY ?? (C + 66), unit = o.unit ?? 150;
+  const sp = sprite.getContext('2d').getImageData(0, 0, W, W).data;
+  const spAt = (px, py) => {   // 最近鄰取樣，範圍外透明
+    const x = Math.round(px), y = Math.round(py);
+    if (x < 0 || y < 0 || x >= W || y >= W) return null;
+    const i = (y * W + x) * 4; return sp[i + 3] > 8 ? [sp[i], sp[i + 1], sp[i + 2], sp[i + 3] / 255] : null;
+  };
+  const out = document.createElement('canvas'); out.width = out.height = W;
+  const ox = out.getContext('2d'), img = ox.createImageData(W, W), d = img.data;
+  const Rin = R * ri, ca = Math.cos(a), sa = Math.sin(a), dir = [0, sa, -ca];
+  const water = o.water || [140, 185, 230, 0.6];
+  for (let y = 0; y < W; y++) for (let x = 0; x < W; x++) {
+    const sx = (x + 0.5 - C) / Rin, sy = (y + 0.5 - C) / Rin, rr = sx * sx + sy * sy;
+    if (rr > 1.02) continue;
+    const sz = Math.sqrt(Math.max(0, 1 - rr));
+    const P = [sx, sy * ca - sz * sa, sy * sa + sz * ca];               // 水球表面點（世界座標）＝法向量
+    const cosi = -H.dot(P, dir), k = 1 - eta * eta * (1 - cosi * cosi), m = eta * cosi - Math.sqrt(Math.max(0, k));
+    const t = [eta * dir[0] + m * P[0], eta * dir[1] + m * P[1], eta * dir[2] + m * P[2]];
+    let col = null, alpha = 0;
+    // 雪地
+    let ground = null;
+    if (t[1] > 1e-6) {
+      const s2 = (g - P[1]) / t[1], hx = P[0] + s2 * t[0], hz = P[2] + s2 * t[2];
+      if (s2 > 0 && hx * hx + hz * hz <= 1 - g * g) {
+        const shadow = 1 - 0.28 * Math.exp(-((hx / 0.32) ** 2 + (hz / 0.14) ** 2));
+        const edge = 1 - 0.35 * Math.pow((hx * hx + hz * hz) / (1 - g * g), 2);   // 雪地邊緣壓暗，看得出地平面
+        const v = 248 * shadow * edge, sn = (H.hash3(Math.round(hx * 90), Math.round(hz * 90), 1) - 0.5) * 8;
+        ground = { s: s2, c: [v - 6 + sn, v - 2 + sn, v + 2 + sn] };
+      }
+    }
+    // 立牌
+    let bb = null;
+    if (t[2] < -1e-6) {
+      const s1 = -P[2] / t[2], hx = P[0] + s1 * t[0], hy = P[1] + s1 * t[1];
+      if (s1 > 0 && hy < g) { const c = spAt(C + hx * unit, baseY + (hy - g) * unit); if (c) bb = { s: s1, c }; }
+    }
+    if (bb && (!ground || bb.s < ground.s)) {
+      const behind = ground ? ground.c : water.slice(0, 3), ba = ground ? 1 : water[3];
+      col = [0, 1, 2].map(q => bb.c[q] * bb.c[3] + behind[q] * (1 - bb.c[3])); alpha = bb.c[3] + ba * (1 - bb.c[3]);
+    } else if (ground) { col = ground.c; alpha = 1; }
+    else { col = water.slice(0, 3); alpha = water[3]; }
+    const i = (y * W + x) * 4;
+    d[i] = col[0]; d[i + 1] = col[1]; d[i + 2] = col[2]; d[i + 3] = 255 * alpha;
+  }
+  ox.putImageData(img, 0, 0);
+  return out;
+};
+
 // 水裡漂浮的雪花（確定性亂數，畫在折射之後、模糊之前）
 H.snow = (g, ri, n) => {
   for (let k = 0; k < n; k++) {
@@ -181,7 +235,11 @@ H.marble = (r, innerDraw, o = {}) => {
   const inner = mk(), ir = inner.getContext('2d');
   ir.filter = `blur(${blur}px)`;
   ir.save(); ir.beginPath(); ir.arc(C, C, R * ri + 1, 0, P2); ir.clip();
-  if (o.depth != null) {   // 雪花水晶球：內容當水裡的場景，透過水球折射看到（見 H.globeLens）
+  if (o.tilt != null) {   // 雪花水晶球 3D 版：俯視、擺設站在雪地上（見 H.globe3d）
+    const lensed = H.globe3d(raw, o);
+    if (o.snow) H.snow(lensed.getContext('2d'), ri, o.snow);
+    ir.drawImage(lensed, 0, 0);
+  } else if (o.depth != null) {   // 雪花水晶球：內容當水裡的場景，透過水球折射看到（見 H.globeLens）
     const lensed = H.globeLens(raw, ri, o.depth, o.ior ?? 1.33, o.scale ?? 1);
     if (o.snow) H.snow(lensed.getContext('2d'), ri, o.snow);
     ir.drawImage(lensed, 0, 0);

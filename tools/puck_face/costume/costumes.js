@@ -443,7 +443,8 @@ add('rusty', '變裝', '生鏽 Marvin', r => {
 // ───────────────────────── 雪花水晶球擺設（城市縮影/美食/物件） ─────────────────────────
 // 擺設畫在透明背景上（透明＝水），透過 H.marble 的水球折射＋磨砂外殼看到。
 // 擺設要畫在半徑 ~80 內：折射會放大約 1.3 倍，太外面會被球緣裁掉。
-const GLOBE = { frost: 0.3, ri: 0.97, blur: 1.2, feather: 24, depth: -0.3, snow: 50, transparent: true };
+const GLOBE = { frost: 0.3, ri: 0.97, blur: 1.2, feather: 24, snow: 50, transparent: true,
+                tilt: 35 / 180 * Math.PI, ground: 0.33, baseY: C + 66, unit: 118 };   // 俯視 35°、雪地在球心下 1/3
 function globeGround(g) {   // 擺設底下的雪丘
   const gr = g.createLinearGradient(0, C + 50, 0, C + 95);
   gr.addColorStop(0, '#ffffff'); gr.addColorStop(1, '#b9c9d8');
@@ -457,7 +458,6 @@ const addGlobe = (id, title, scene, k = 1) => add(id, '水晶球', title, r => H
 addGlobe('globe_taipei101', '台北 101', g => {
   g.fillStyle = 'rgba(120,140,170,0.55)';   // 背景小樓
   for (const [x, w, h] of [[-62, 16, 40], [-44, 14, 58], [40, 16, 50], [58, 14, 34]]) g.fillRect(C + x, C + 62 - h, w, h);
-  globeGround(g);
   const glass = g.createLinearGradient(C - 20, 0, C + 20, 0);
   glass.addColorStop(0, '#3d7268'); glass.addColorStop(0.45, '#8cc2b5'); glass.addColorStop(1, '#2a524b');
   g.fillStyle = glass; g.strokeStyle = '#1f3d38'; g.lineWidth = 1;
@@ -470,10 +470,9 @@ addGlobe('globe_taipei101', '台北 101', g => {
   g.fillRect(C - 9, C - 66, 18, 8); g.strokeRect(C - 9, C - 66, 18, 8);
   g.fillRect(C - 6, C - 73, 12, 7); g.strokeRect(C - 6, C - 73, 12, 7);
   g.strokeStyle = '#2a524b'; g.lineWidth = 2; g.beginPath(); g.moveTo(C, C - 73); g.lineTo(C, C - 98); g.stroke();
-});
+}, 0.85);
 
 addGlobe('globe_eiffel', '艾菲爾鐵塔', g => {
-  globeGround(g);
   const L = [[-46, 64], [-31, 34], [-19, 6], [-11, -24], [-6, -54], [-3, -82], [0, -100]];
   g.save(); g.beginPath(); g.moveTo(C + L[0][0], C + L[0][1]);
   for (const [x, y] of L) g.lineTo(C + x, C + y);
@@ -487,10 +486,9 @@ addGlobe('globe_eiffel', '艾菲爾鐵塔', g => {
   g.beginPath(); g.ellipse(C, C + 66, 24, 28, 0, Math.PI, P2); g.fill(); g.restore();
   g.fillStyle = '#3e2f20';
   g.fillRect(C - 30, C + 22, 60, 5); g.fillRect(C - 17, C - 14, 34, 4); g.fillRect(C - 8, C - 58, 16, 4);
-});
+}, 0.85);
 
 addGlobe('globe_bubbletea', '珍珠奶茶', g => {
-  globeGround(g);
   const top = C - 48, bot = C + 66;
   const cup = () => { g.beginPath(); g.moveTo(C - 36, top); g.lineTo(C + 36, top); g.lineTo(C + 27, bot); g.lineTo(C - 27, bot); g.closePath(); };
   const tea = g.createLinearGradient(0, top, 0, bot); tea.addColorStop(0, '#e2bf93'); tea.addColorStop(1, '#b8875a');
@@ -506,7 +504,6 @@ addGlobe('globe_bubbletea', '珍珠奶茶', g => {
 });
 
 addGlobe('globe_xiaolongbao', '小籠包', g => {
-  globeGround(g);
   const bam = g.createLinearGradient(0, C + 10, 0, C + 66); bam.addColorStop(0, '#d9b36f'); bam.addColorStop(1, '#9b7432');
   g.fillStyle = bam; g.fillRect(C - 70, C + 20, 140, 44);
   g.beginPath(); g.ellipse(C, C + 64, 70, 14, 0, 0, Math.PI); g.fill();
@@ -526,7 +523,6 @@ addGlobe('globe_xiaolongbao', '小籠包', g => {
 }, 0.72);
 
 addGlobe('globe_microphone', '復古麥克風', g => {
-  globeGround(g);
   g.fillStyle = '#2b2b30'; g.beginPath(); g.ellipse(C, C + 62, 30, 8, 0, 0, P2); g.fill();   // 底座
   g.fillRect(C - 3, C + 6, 6, 56);
   const chrome = g.createLinearGradient(C - 30, 0, C + 30, 0);
