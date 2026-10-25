@@ -97,6 +97,7 @@ class PlaybackMixin:
         mc = bot.cogs.get("MusicCog")
         base_vol = getattr(mc, "stream_volume", self._stream_volume_local) if mc else self._stream_volume_local
         mixer.set_volume(base_vol, immediate=True)
+        mixer.set_estop(self._estop_active())   # 重啟後維持緊急停止（emergency_stop.json）
         return mixer
 
     @contextlib.contextmanager

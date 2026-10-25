@@ -31,6 +31,8 @@ class MusicPersonalShuffleMixin:
         一次只墊一首待播（見 _personal_shuffle_topup），不塞爆佇列，別人現場點歌照樣
         進得來。池子＝music_memory 裡 requesters 含該使用者的所有歌，純隨機洗牌。
         """
+        if self._estop_blocked("個人歌單"):
+            return (False, "🛑 緊急停止中，用 /marvin_estop 解除後再播。")
         mm = getattr(self.bot, 'music_memory', None)
         if mm is None:
             return (False, "音樂記憶尚未就緒。")

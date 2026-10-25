@@ -48,6 +48,7 @@ departure_stats.json
 departure_cues.json
 bot_main.py.pid
 consent.json
+emergency_stop.json
 data/voice_presence.jsonl
 data/bad_cover_blacklist.json
 location_state.json
