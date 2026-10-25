@@ -130,3 +130,32 @@ async def test_estop_intercept_does_not_raise_when_mixer_none(tmp_path):
     fake._mixer = None
     assert fake._estop_intercept("A", "馬文閉嘴") is True
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intercepted", [True, False])
+async def test_handle_stt_result_intercepts_before_anything_else(intercepted):
+    """接線：喊停語在 consent 之後、其他任何處理（含 mixer duck、喚醒防護）之前就吞掉。"""
+    from cogs.voice_controller import VoiceController
+    fake = MagicMock()
+    fake.consent.is_consented.return_value = True
+    fake._estop_intercept.return_value = intercepted
+    try:
+        await VoiceController.handle_stt_result(fake, "A", "馬文閉嘴", 0.0, b"")
+    except Exception:
+        pass   # 沒攔截時會往下跑進 MagicMock 撐不住的地方，這裡只看有沒有走到 duck
+    fake._estop_intercept.assert_called_once_with("A", "馬文閉嘴")
+    assert fake._mixer.note_player_speech.called is (not intercepted)
+
+
+@pytest.mark.parametrize("active", [True, False])
+def test_initial_mixer_applies_persisted_estop(active):
+    """重啟後 mixer 一建好就套用存檔的緊急停止狀態。"""
+    from cogs.voice_controller_playback import PlaybackMixin
+    fake = MagicMock()
+    fake._estop_active.return_value = active
+    fake._stream_volume_local = 0.5
+    bot = MagicMock()
+    bot.cogs.get.return_value = None
+    mixer = PlaybackMixin._make_initial_mixer(fake, bot)
+    assert mixer._estop is active

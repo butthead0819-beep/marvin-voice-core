@@ -74,3 +74,18 @@ def test_estop_blocked_false_when_vc_missing():
     from cogs.music_cog import MusicCog
     cog = MusicCog(bot)
     assert cog._estop_blocked("串流") is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("estop,expected", [(True, False), (False, True)])
+async def test_start_radio_estop_guard_with_real_songs(tmp_path, monkeypatch, estop, expected):
+    """對照組（未停止）證明 fixture 真的會啟動電台，才不是因為沒歌而提早 return 的空包彈。"""
+    (tmp_path / "assets" / "songs").mkdir(parents=True)
+    (tmp_path / "assets" / "songs" / "a.mp3").write_bytes(b"")
+    monkeypatch.chdir(tmp_path)
+    cog, _vc = _make_cog(estop_active=estop)
+    cog._radio_loop = MagicMock(return_value=_noop())
+    await cog.start_radio("測試")
+    assert cog.radio_mode is expected
+    if cog.radio_task is not None:
+        cog.radio_task.cancel()

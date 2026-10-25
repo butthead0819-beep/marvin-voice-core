@@ -1252,3 +1252,13 @@ def test_estop_false_restores_push_tts():
     mix.set_estop(True)
     mix.set_estop(False)
     assert mix.push_tts(_f32_frame(0.5)) is True
+
+
+def test_estop_read_silent_even_if_audio_sneaks_in():
+    """read() 閘門是最後防線：就算有東西繞過 set_estop 的清除留在佇列，也只出 silence、不前進來源。"""
+    mix = LocalMixingAudioSource(seed=1)
+    mix.push_tts(_f32_frame(0.5))
+    mix.set_music_source(_FakeMusic(value=0.6, frames=100))
+    mix._estop = True   # 模擬繞過 set_estop 的清除
+    assert mix.read() == mix._silence_bytes
+    assert mix.tts_load_seconds() > 0   # 沒被消耗
