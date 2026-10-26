@@ -29,6 +29,7 @@ import audio_mixing
 import puck_gesture
 from marvin_speech_log import log_marvin_speech
 from loudness_norm import UNMEASURED_GAIN
+from quality_metrics import record_metric, speech_requested
 from tts_speak_policy import (
     RoomState, SpeakKind, Verdict, decide as _decide_speak, is_committed as _is_committed,
 )
@@ -37,7 +38,7 @@ from utterance_budget import STREAM_BUDGET
 from manzai_interject import compute_interject_ratio, interject_diagnostics
 from local_mixing_source import (
     LocalMixingAudioSource, MixerPlaybackAdapter,
-    preload_f32_source, ensure_mixer_playing, FRAME_BYTES_F32,
+    preload_f32_source, ensure_mixer_playing, FRAME_BYTES_F32, _SAMPLES_PER_SEC,
 )
 
 logger = logging.getLogger(__name__)
@@ -571,6 +572,36 @@ class PlaybackMixin:
             return SpeakKind.PROACTIVE_TOPIC   # 泛用主動
         return SpeakKind.WAKE_REPLY
 
+    def _speech_context(self) -> tuple[bool | None, int]:
+        """(熱聊中?, 當下 VAD 判定正在講話的人數)。取不到 → (None, 0)。永不 raise。"""
+        try:
+            hot = bool(self._room_mood_store.get(0).hot_chat)
+        except Exception:
+            hot = None
+        try:
+            sink = self.bot.engine.get_active_sink()
+            n = sum(1 for v in getattr(sink, "user_is_speaking", {}).values() if v) if sink else 0
+        except Exception:
+            n = 0
+        return hot, n
+
+    def _record_speech(self, kind: str, *, src: str, dur_s: float | None, chars: int,
+                       verdict: str = "play", kind_inferred: bool = False,
+                       ctx: tuple[bool | None, int] | None = None) -> None:
+        """品質指標：Marvin 每句話一筆 metric=speech（核心規範 G1，見
+        docs/MARVIN_CORE_PRINCIPLES.md）。n_speaking 取代 6/17 被刪的 interruption 指標。
+        ctx＝開口前先拍的 _speech_context()；None → 現在拍。永不 raise。"""
+        try:
+            hot, n = ctx if ctx is not None else self._speech_context()
+            record_metric(
+                "speech", kind=kind, src=src, verdict=verdict,
+                dur_s=(round(dur_s, 2) if dur_s is not None else None), chars=chars,
+                hot_chat=hot, n_speaking=n, requested=speech_requested(kind),
+                kind_inferred=kind_inferred,
+            )
+        except Exception:
+            pass
+
     async def _tts_suppressed(
         self, *, text: str, silent_during_stream: bool, already_in_channel: bool,
         bypass_stream_mute: bool, kind: SpeakKind | None = None,
@@ -584,6 +615,7 @@ class PlaybackMixin:
         ⚠️ 新增任何守則規則請改 tts_speak_policy.POLICY，別加 if 回這裡。
         SpeakBus 是「要不要開口」的仲裁層；這裡是播放層，兩者不同職責。
         """
+        _inferred = kind is None
         kind = kind or self._legacy_speak_kind(
             silent_during_stream=silent_during_stream, bypass_stream_mute=bypass_stream_mute,
         )
@@ -610,9 +642,13 @@ class PlaybackMixin:
             logger.info(f"💬 [TTS→text] {kind.name}/{d.reason}，補文字頻道: '{text[:30]}'")
             if not already_in_channel and self.active_text_channel:
                 asyncio.create_task(self.active_text_channel.send(f"💬 {text}"))
+            self._record_speech(kind.value, src="tts", dur_s=0.0, chars=len(text),
+                                verdict="drop_to_text", kind_inferred=_inferred)
             return True
 
         logger.info(f"🔇 [TTS Drop] {kind.name}/{d.reason}: '{text[:30]}'")
+        self._record_speech(kind.value, src="tts", dur_s=0.0, chars=len(text),
+                            verdict="drop", kind_inferred=_inferred)
         return True
 
     async def play_tts(self, text: str, force_macos: bool = False, already_in_channel: bool = False, silent_during_stream: bool = False, emotion_tag: str = "neutral", voice: str = None, priority: int = 1, allow_hotswap: bool = False, hotswap_max_chars: int = MAX_HOTSWAP_CHARS, protected: bool = False, bypass_stream_mute: bool = False, kind: "SpeakKind | None" = None):
@@ -638,6 +674,11 @@ class PlaybackMixin:
         ):
             return
 
+        _kind_inferred = kind is None
+        _resolved_kind = kind or self._legacy_speak_kind(
+            silent_during_stream=silent_during_stream, bypass_stream_mute=bypass_stream_mute)
+        _speech_ctx = self._speech_context()   # 開口前拍：熱聊/有人在講
+
         puck_gesture.on_speech(self, text, voice)
 
         # 🎛️ [Plan 12] render → push mixer
@@ -654,10 +695,15 @@ class PlaybackMixin:
             pushed_ok = bool(pushed > 0)
         except TypeError:
             pushed_ok = True
+        if pushed_ok:
+            try:
+                _dur = float(pushed) * 0.02   # 每幀 20ms（FRAME_SAMPLES）
+            except (TypeError, ValueError):
+                _dur = None
+            self._record_speech(_resolved_kind.value, src="tts", dur_s=_dur, chars=len(text),
+                                kind_inferred=_kind_inferred, ctx=_speech_ctx)
         # 🗣️ [WakeSession] 回應類 TTS 真的推出去＝Marvin 回應了 session 對象
-        if pushed_ok and (kind or self._legacy_speak_kind(
-                silent_during_stream=silent_during_stream, bypass_stream_mute=bypass_stream_mute,
-        )) in _WAKE_SESSION_REPLY_KINDS:
+        if pushed_ok and _resolved_kind in _WAKE_SESSION_REPLY_KINDS:
             self._wake_session_on_replied()
         # 10/23 拔：問號結尾就開全域 8s 追問窗→送客/待辦確認等主動句被頻道任何人的話接走（7/7 全誤觸）。發起者接話交給 WakeSession。
 
@@ -726,6 +772,8 @@ class PlaybackMixin:
             f"設計at={_at:.2f} est_dur={dur:.1f}s 觸發@{_diag['trigger_s']:.1f}s "
             f"marmo首塊+{_marmo_lat:.2f}s → 實際切入@{_diag['perceived_entry_s']:.1f}s "
             f"={_diag['perceived_ratio']:.0%} 重疊{_diag['overlap_s']:.1f}s")
+        self._record_speech("proactive_manzai", src="tts_interject", dur_s=_m1 * 0.02, chars=len(marvin_text))
+        self._record_speech("proactive_manzai", src="tts_interject", dur_s=_m2 * 0.02, chars=len(marmo_text))
         return True
 
     async def play_dual_dialogue(self, segments, *, interject: bool = False, duck=None, step=None, at=None):
@@ -837,10 +885,13 @@ class PlaybackMixin:
                 ack_templates.text_for_file(ack_file) or f"[{os.path.basename(ack_file)}]",
                 start_ts=time.time(), layer=1, voice=None, src="ack", file=ack_file,
             )
+            self._record_speech("ack", src="ack", dur_s=f32.size / _SAMPLES_PER_SEC,
+                                chars=len(ack_templates.text_for_file(ack_file) or ""))
         return ok
 
     async def play_dj_on_tts_layer(self, file_path: str, *, peak: float | None = None,
-                                    text: str | None = None) -> bool:
+                                    text: str | None = None,
+                                    speech_kind: str = "dj_narration") -> bool:
         """把預渲染 DJ 音檔解碼後推上 **TTS 層**（push_tts），非阻塞、會 duck 音樂、
         且撐過歌1→歌2 的音樂換源（set_music_source 不碰 TTS 層）→ DJ 橫跨切歌點。
 
@@ -853,6 +904,7 @@ class PlaybackMixin:
         caller 傳低一點的 peak（例如 0.1）別讓 SFX 比講話還突兀。
 
         text：這段音檔的台詞原稿，給 marvin_speech.log；SFX 不傳。
+        speech_kind：metric=speech 的 kind（核心規範 G1）；SFX（peak 非 None）不記。
         """
         if not os.path.exists(file_path):
             return False
@@ -872,6 +924,8 @@ class PlaybackMixin:
                 self._tts_barge_shield_until = time.time() + float(self._mixer.tts_load_seconds())
             except Exception:
                 pass
+        if ok and peak is None:
+            self._record_speech(speech_kind, src="dj", dur_s=f32.size / _SAMPLES_PER_SEC, chars=len(text or ""))
         if ok and text:
             log_marvin_speech(text, start_ts=time.time(), layer=1, voice=None, src="dj")
         elif not ok:

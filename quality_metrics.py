@@ -61,6 +61,18 @@ def read_metrics(path: Path = DEFAULT_METRICS_LOG, *, metric: Optional[str] = No
     return rows
 
 
+# 「被請求的發話」：使用者喚醒/指令後的回應。其餘＝Marvin 主動。
+# 見 docs/MARVIN_CORE_PRINCIPLES.md 原則 3/6/7。
+REQUESTED_SPEECH_KINDS = frozenset({
+    "wake_reply", "wake_ack", "result_notice", "recall_confirm", "long_read",
+    "self_say", "ack", "song_ack", "barge_ack", "now_playing_guide",
+})
+
+
+def speech_requested(kind: str) -> bool:
+    return kind in REQUESTED_SPEECH_KINDS
+
+
 def percentile(values, pct: float) -> float:
     """線性插值 percentile（pct 0-100）。空 → 0.0。"""
     xs = sorted(v for v in values if v is not None)
