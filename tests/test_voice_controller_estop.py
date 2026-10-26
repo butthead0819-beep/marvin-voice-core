@@ -140,6 +140,7 @@ async def test_handle_stt_result_intercepts_before_anything_else(intercepted):
     fake = MagicMock()
     fake.consent.is_consented.return_value = True
     fake._estop_intercept.return_value = intercepted
+    fake._memory_check_intercept.return_value = False  # 同一個 if 的記憶確認攔截，與本測試無關
     try:
         await VoiceController.handle_stt_result(fake, "A", "馬文閉嘴", 0.0, b"")
     except Exception:
