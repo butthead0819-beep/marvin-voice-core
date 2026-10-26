@@ -279,14 +279,15 @@ async def test_is_fast_override_when_is_open_d2a():
 async def test_echo_guard_bypassed_when_is_open_d1a():
     """D1-A: is_open()=True with active echo window → Echo Guard bypassed, Marvin responds.
 
-    意圖漏斗步驟 2（CEO-D18）：_tts_echo_cooldown_until 已刪除，echo window 現在
-    只由 is_playing_audio 決定。拿不準是否該改用 is_playing_audio=True 來重建
-    echo window（可能連帶觸發 Strong-Voice/Intent bypass，改變測試語意）——
-    先維持 is_playing_audio=False，等於這個案例目前不再真正測到 D1-A bypass，
-    留給使用者決定要不要補 is_playing_audio=True。
+    意圖漏斗步驟 2（CEO-D18）：_tts_echo_cooldown_until 已刪除，改以「TTS 播放中」
+    建 echo window；_current_tts_text 非空讓 Strong-Voice/Intent bypass 都不放行，
+    放行只能來自 D1-A。
     """
     cog, wf = _make_cog_for_stt()
-    cog.is_playing_audio = False
+
+    # Activate echo window — without D1-A this would suppress the response
+    cog.is_playing_audio = True
+    cog._current_tts_text = "Marvin 正在講話"
 
     await cog.handle_stt_result(
         "TestUser", "要", time.time(), b"fake_audio",
