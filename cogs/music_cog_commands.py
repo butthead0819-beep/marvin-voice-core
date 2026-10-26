@@ -129,7 +129,7 @@ class MusicCommandsMixin:
         history_keywords = ["喜歡的歌", "我的歌單", "曾點過的歌", "曾經點過", "愛歌", "常聽的歌"]
         is_random_history = False
         if any(kw in query for kw in history_keywords):
-            history = self.bot.router.memory.get_song_history(username)
+            history = self.bot.music_memory.get_recent_requested_titles(username)
             if not history:
                 await interaction.followup.send("❌ 你的大腦裡一片空白，我的記憶庫裡也沒有你點過任何歌的紀錄。")
                 return
@@ -144,9 +144,6 @@ class MusicCommandsMixin:
         if not info:
             await msg.edit(content=f"❌ 找不到結果：`{query}`。就跟在宇宙虛空中尋找意義一樣徒勞。")
             return
-
-        if not is_random_history and hasattr(self.bot.router.memory, 'add_song_history'):
-            self.bot.router.memory.add_song_history(username, info['title'])
 
         vc.stt_logger.info(
             f"[點歌-手動] 使用者={username} | 搜尋={query} | 結果={info['title']} / {info.get('uploader', '?')}"

@@ -87,7 +87,6 @@ def test_pseudo_player_writes_do_not_leak_into_list_players(tmp_path):
     j = str(tmp_path / "m.json")
     m = MemoryManager(db_path=db, json_compat_path=j)
 
-    m.add_song_history("系統", "some song")
     m.add_emotional_highlight("系統", "some moment")
 
     assert "系統" not in m.list_players()

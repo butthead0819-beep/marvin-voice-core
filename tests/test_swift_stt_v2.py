@@ -103,15 +103,15 @@ def test_build_stt_context_includes_active_speakers_song_history():
     engine.bot.get_cog.return_value = vc
     engine.conv_buffer = MagicMock()
     engine.conv_buffer.get_active_speakers.return_value = {"狗與露"}
-    engine.bot.router.memory = MagicMock()
-    engine.bot.router.memory.get_song_history.return_value = ["張震嶽 小雨", "李宗盛 山丘"]
+    engine.bot.music_memory = MagicMock()
+    engine.bot.music_memory.get_recent_requested_titles.return_value = ["張震嶽 小雨", "李宗盛 山丘"]
 
     ctx = engine._build_stt_context()
 
     parts = ctx.split(",")
     assert "張震嶽" in parts
     assert "小雨" in parts
-    engine.bot.router.memory.get_song_history.assert_called_with("狗與露")
+    engine.bot.music_memory.get_recent_requested_titles.assert_called_with("狗與露", limit=3)
 
 
 def test_build_stt_context_history_fetch_failure_degrades_gracefully():
@@ -123,8 +123,8 @@ def test_build_stt_context_history_fetch_failure_degrades_gracefully():
     engine.bot.get_cog.return_value = vc
     engine.conv_buffer = MagicMock()
     engine.conv_buffer.get_active_speakers.return_value = {"狗與露"}
-    engine.bot.router.memory = MagicMock()
-    engine.bot.router.memory.get_song_history.side_effect = RuntimeError("boom")
+    engine.bot.music_memory = MagicMock()
+    engine.bot.music_memory.get_recent_requested_titles.side_effect = RuntimeError("boom")
 
     ctx = engine._build_stt_context()
 

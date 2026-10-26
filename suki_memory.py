@@ -169,7 +169,6 @@ _PLAYER_DEFAULTS: dict = {
         "vul_feedback": 0,
     },
     "news_queue": [],
-    "song_history": [],
     "suki_impression": "",
     "bias_score": 0,
     "last_interacted_time": 0.0,
@@ -717,21 +716,6 @@ class MemoryManager:
                     if v1 and v1 == p2.get(k) and v1 not in ("未提及", "未知", "無"):
                         points.append(f"玩家 {u1} 和 {u2} 的『{k}』一樣: {v1}")
         return "\n".join(points) if points else None
-
-    def add_song_history(self, username: str, song_title: str):
-        p = self.get_player_memory(username)
-        history = p.get("song_history", [])
-        if song_title in history:
-            history.remove(song_title)
-        history.append(song_title)
-        p["song_history"] = history[-20:]
-        self._save_player(username)
-
-    def get_song_history(self, username: str) -> list:
-        self._refresh_if_external_write()
-        if username not in self._cache:
-            return []
-        return self._cache[username].get("song_history", [])
 
     def get_proactive_topics(self) -> list:
         """讀 suki_memory.json 頂層 proactive_topics（由 daily review 寫入）。

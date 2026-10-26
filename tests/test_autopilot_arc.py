@@ -197,6 +197,9 @@ class _FakeMM:
     def is_requester(self, info, who):
         return False
 
+    def get_recent_requested_titles(self, username, limit=None):
+        return []
+
 
 class _FakeCog(MusicStoryArcMixin):
     _round_size = 3
@@ -353,6 +356,37 @@ def test_server_play_count_sums_uploads_by_title_or_video_id():
     assert server_play_count(songs, "完全不同", "VID09999999") == 2
     assert server_play_count(songs, "沒聽過的歌") == 0
     assert server_play_count(songs, "", "") == 0
+
+
+# ── 13b. 排除清單納入點播紀錄（單一來源=music_memory，取代舊 suki_memory.song_history）──
+@pytest.mark.asyncio
+async def test_auto_recommend_excludes_recently_requested_titles(monkeypatch):
+    """在場成員最近點過的歌（get_recent_requested_titles）不該被當懷舊候選重播。"""
+    import cogs.music_cog_story_arc as mod
+    import taste_fingerprint
+    import track_quality
+
+    async def _ok(*a, **kw):
+        return True, ""
+    monkeypatch.setattr(track_quality, "assess_track_quality", _ok)
+    monkeypatch.setattr(taste_fingerprint, "explore_matches_floor", lambda t, fp: True)
+    monkeypatch.setattr(mod, "append_recommendation", lambda rec: None)
+    songs = {URL_A: {"title": "老歌甲", "uploader": "歌手", "webpage_url": URL_A,
+                     "plays": [{"ts": NOW - 45 * DAY, "by": "A"}], "requesters": {"A": 9},
+                     "connections": []},
+             URL_B: {"title": "老歌乙", "uploader": "歌手", "webpage_url": URL_B,
+                     "plays": [{"ts": NOW - 40 * DAY, "by": "A"}], "requesters": {"A": 2},
+                     "connections": []}}
+    monkeypatch.setattr(mod.time, "time", lambda: NOW)
+    cog = _FakeCog(songs, radio=[], fresh=[])
+    cog.bot.music_memory.get_recent_requested_titles = lambda username, limit=None: (
+        ["老歌甲"] if username == "A" else []
+    )
+
+    await cog._auto_recommend("A")
+
+    nost = [i for i in cog.stream_queue if i["_arc_role"] == "nostalgia"]
+    assert [i["title"] for i in nost] == ["老歌乙"]
 
 
 @pytest.mark.asyncio

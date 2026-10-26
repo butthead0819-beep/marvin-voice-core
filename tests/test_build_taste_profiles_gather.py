@@ -3,7 +3,7 @@
 優化 #1（[[project_taste_review_explore_loop]] 口味優化順序第一項）：原本 `_gather` 對
 music_memory 的歌一視同仁地照字典順序取前 25 首，聽過 1 次跟愛播 10 次的歌權重相同，
 可能讓 LLM 看到的樣本不代表真正的口味。改成依該使用者的點播次數（`requesters` count）
-降冪排序，song_history（無次數，只有標題）當補充訊號、依最近性（reversed）接在後面。
+降冪排序。song_history 已拔除（點播紀錄單一來源改為 music_memory），`_gather` 不再讀它。
 """
 from __future__ import annotations
 
@@ -39,20 +39,11 @@ def test_gather_excludes_marvin_recommended():
     assert titles == ["真人點的"]
 
 
-def test_gather_song_history_appended_after_weighted_and_recency_reversed():
+def test_gather_ignores_song_history():
     mm = {"songs": {}}
     sk = {"players": {"showay": {"song_history": ["舊歌", "中間歌", "最近歌"]}}}
     titles, _likes = _gather("showay", mm, sk)
-    # add_song_history 只 append 新的到尾巴 → 最近的在最後；取材該優先給最近的
-    assert titles == ["最近歌", "中間歌", "舊歌"]
-
-
-def test_gather_dedup_prefers_weighted_source_position():
-    mm = {"songs": {"u1": _song("重複歌", {"showay": 5})}}
-    sk = {"players": {"showay": {"song_history": ["重複歌", "其他歌"]}}}
-    titles, _likes = _gather("showay", mm, sk)
-    assert titles == ["重複歌", "其他歌"]
-    assert titles.count("重複歌") == 1
+    assert titles == []
 
 
 # ── 優化 #2：skip 訊號 ──
