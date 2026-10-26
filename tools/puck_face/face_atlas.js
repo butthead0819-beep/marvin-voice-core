@@ -292,7 +292,13 @@ function sampleSdf(sp, fx, fy, w, v) {
 
 const BG_ZERO = [0, 0, 0, 0], BG_IDENT = [1, 0, 0, 0];
 
-function recall(out, base, W, pose, ch, atlas, interp) {
+// 混合式（band >= 0，只支援 sdf）：查表把像素分兩類——離任一筆畫邊緣 < band 像素的用精確版（face_3d.js strokeFields）算
+// cov/rc/bc，其餘用查表值；疊色程式碼兩邊共用。band < 0 = 純查表（recall 就是這個）。
+// 「近」的定義（任一成立）：任一眼 |dFill| < band、|dRim - RIM_W/2| < band，或 |dBrow - BROW_W/2| < band
+// （距離都是查表取樣出來的）。stats 非 null 時，stats.exact 累加走精確版的像素數。
+function recallHybrid(out, base, W, pose, ch, atlas, interp, band, stats) {
+  const hybrid = band >= 0;
+  if (hybrid && !isSdf(atlas.mode)) throw new Error('混合式（band >= 0）只支援 sdf 模式');
   out.set(base);
   const C = W / 2, R = W * 0.45, e = ch.eye, weight = atlas.mode === 'weight', sdf = isSdf(atlas.mode), { RIM_W, BROW_W } = strokeW(W);
   const ec = clamp01(pose.err), col = ch.idle.map((v, i) => v + (ch.err[i] - v) * ec);
@@ -313,6 +319,8 @@ function recall(out, base, W, pose, ch, atlas, interp) {
   }
   const bgE = weight ? BG_IDENT : BG_ZERO;
   const c = [0, 0, 0], g = [0, 0, 0], v = [0, 0, 0, 0], vb = [0];
+  const covA = [0, 0], rcA = [0, 0], dFA = [0, 0], dRA = [0, 0];
+  const f = hybrid ? { cov: [0, 0], rc: [0, 0], bc: 0, dFill: [0, 0], dRim: [0, 0], dBrow: 0 } : null;
   for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
     const dx = x + 0.5 - C, dy = y + 0.5 - C;
     const ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;
@@ -321,12 +329,14 @@ function recall(out, base, W, pose, ch, atlas, interp) {
     const nx = ux / R, ny = uy / R; if (nx * nx + ny * ny >= 1) continue;
     const i = (y * W + x) * 3;
     c[0] = out[i]; c[1] = out[i + 1]; c[2] = out[i + 2];
+    // 先取樣（跟 c 無關）：眼睛的 cov/rc、眉線的 bc；weight 的疊色鏈直接在這裡做
     for (let idx = 0; idx < 2; idx++) {
-      const P = eyePlans[idx], E = F.eyes[idx];
+      const P = eyePlans[idx];
       const lx = P.s * (ux - P.ax), ly = uy - P.ay;
       v[0] = v[1] = v[2] = v[3] = 0;
       if (sdf) for (const q of P.plan) sampleSdf(q.sp, (lx - q.sp.ox) / q.sp.s, (ly - q.sp.oy) / q.sp.s, q.w, v);
       else for (const q of P.plan) sampleAdd(q.sp, lx + q.sp.ax + C - 0.5 - q.sp.x0, ly + q.sp.ay + C - 0.5 - q.sp.y0, q.w, v, bgE);
+      covA[idx] = rcA[idx] = 0;
       if (weight) {
         const cp0 = v[0] * c[0] + v[1] * col[0] + v[2] * F.bright[0] + v[3] * RIM_COL[0];
         const cp1 = v[0] * c[1] + v[1] * col[1] + v[2] * F.bright[1] + v[3] * RIM_COL[1];
@@ -334,29 +344,50 @@ function recall(out, base, W, pose, ch, atlas, interp) {
         c[0] += (cp0 - c[0]) * clip; c[1] += (cp1 - c[1]) * clip; c[2] += (cp2 - c[2]) * clip;
       } else {
         // sdf：v 是距離，這裡才轉覆蓋率；之後疊色跟 mask 共用
-        const cov = sdf ? clamp01(0.5 + v[0]) : v[0], rc = sdf ? clamp01(RIM_W / 2 - v[1] + 0.5) : v[1];
-        if (cov > 0) {
-          const k = cov * clip;
-          mix(c, F.dark45, 0.98 * k);
-          gradColor(F, Math.hypot(ux + C - E.sx, uy + C - E.sy) / (R * 0.46), g); mix(c, g, 0.98 * k);
-          const ty = (uy + C - (E.topY - R * 0.01)) / (R * 0.17); mix(c, BLACK, 0.5 * (1 - clamp01(ty)) * k);
-        }
-        if (rc > 0) mix(c, RIM_COL, 0.96 * rc * clip);
+        dFA[idx] = v[0]; dRA[idx] = v[1];
+        covA[idx] = sdf ? clamp01(0.5 + v[0]) : v[0]; rcA[idx] = sdf ? clamp01(RIM_W / 2 - v[1] + 0.5) : v[1];
       }
     }
+    let bc = 0, dB = Infinity;
     if (browPlan) {
       vb[0] = 0;
       const lx = ux - browPlan.ax, ly = uy - browPlan.ay;
       if (sdf) for (const q of browPlan.plan) sampleSdf(q.sp, (lx - q.sp.ox) / q.sp.s, (ly - q.sp.oy) / q.sp.s, q.w, vb);
       else for (const q of browPlan.plan) sampleAdd(q.sp, lx + q.sp.ax + C - 0.5 - q.sp.x0, ly + q.sp.ay + C - 0.5 - q.sp.y0, q.w, vb, BG_ZERO);
-      const bc = sdf ? clamp01(BROW_W / 2 - vb[0] + 0.5) : vb[0];
-      if (bc > 0) mix(c, BROW_COL, 0.92 * bc * clip);
+      dB = vb[0];
+      bc = sdf ? clamp01(BROW_W / 2 - vb[0] + 0.5) : vb[0];
     }
+    if (hybrid) {
+      let near = Math.abs(dB - BROW_W / 2) < band;
+      for (let idx = 0; idx < 2 && !near; idx++) near = Math.abs(dFA[idx]) < band || Math.abs(dRA[idx] - RIM_W / 2) < band;
+      if (near) {
+        strokeFields(F, W, ux, uy, f);
+        covA[0] = f.cov[0]; covA[1] = f.cov[1]; rcA[0] = f.rc[0]; rcA[1] = f.rc[1]; bc = f.bc;
+        if (stats) stats.exact++;
+      }
+    }
+    // 疊色（查表值與精確值共用）；weight 的眼睛已在上面疊完，covA/rcA 是 0
+    for (let idx = 0; idx < 2; idx++) {
+      const E = F.eyes[idx], cov = covA[idx], rc = rcA[idx];
+      if (cov > 0) {
+        const k = cov * clip;
+        mix(c, F.dark45, 0.98 * k);
+        gradColor(F, Math.hypot(ux + C - E.sx, uy + C - E.sy) / (R * 0.46), g); mix(c, g, 0.98 * k);
+        const ty = (uy + C - (E.topY - R * 0.01)) / (R * 0.17); mix(c, BLACK, 0.5 * (1 - clamp01(ty)) * k);
+      }
+      if (rc > 0) mix(c, RIM_COL, 0.96 * rc * clip);
+    }
+    if (bc > 0) mix(c, BROW_COL, 0.92 * bc * clip);
     out[i] = c[0] + 0.5 | 0; out[i + 1] = c[1] + 0.5 | 0; out[i + 2] = c[2] + 0.5 | 0;
   }
   return F.rect;
 }
 
-const API = { bake, createBaker, atlasSize, spriteRaw, recall, chainCoeffs };
+// 純查表（原本的 recall）：band = -1、不統計
+function recall(out, base, W, pose, ch, atlas, interp) {
+  return recallHybrid(out, base, W, pose, ch, atlas, interp, -1, null);
+}
+
+const API = { bake, createBaker, atlasSize, spriteRaw, recall, recallHybrid, chainCoeffs };
 if (typeof module !== 'undefined') module.exports = API; else window.FaceAtlas = API;
 })();

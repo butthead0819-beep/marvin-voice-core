@@ -1,12 +1,16 @@
 // atlas_eval.js — 圖集（face_atlas.js）對精確版（face_3d.js render3D）的誤差與大小比較表。
 //
 // 用法：node tools/puck_face/atlas_eval.js [--char marvin|round] [--W 240,466] [--step 0.2,0.1,0.05] [--mode mask,sdf1,sdf2]
+//                                          [--hybrid 1.5,2.5,3.5]
 //   --mode 可選 mask / weight / sdf1 / sdf2，預設 mask,sdf1,sdf2。
+//   --hybrid 混合式的 band（像素，逗號分隔），預設空 = 不跑；每個 sdf 圖集、每個 band 多跑一列
+//   （mode 欄寫 <mode>+h<band>、interp 固定 bilinear），見 face_atlas.js recallHybrid。
 //
 // 每個 W × step × mode 烤一次，再對 interp（nearest / bilinear）各跑 248 個姿勢，
 // 比 render3D 回傳的 rect 內每通道差。表格欄位：
-//   W step mode interp sprites rawKB deflateKB bakeS max mean bad24_avg bad24_worst recallMs
+//   W step mode interp sprites rawKB deflateKB bakeS max mean bad24_avg bad24_worst recallMs exactPx
 //   bad24 = 單一像素任一通道差 > 24 的像素數（所有姿勢平均／最壞）；recallMs 是 JS 的平均耗時，只供相對比較。
+//   exactPx = 混合式每格平均走精確算法的像素數（非混合列印 -）。
 // 健全性檢查（assert，失敗 exit 1）：姿勢剛好落在眼格點與眉格點上、roll=0、err=0 時，
 // recall 跟 render3D 在 rect 內每通道差 ≤ 3（只剩 u8 量化誤差）。sdf1/sdf2 不斷言：texel 對齊錨點而非螢幕像素，格點上也是次像素取樣，
 // 尖角與眉線中心的距離內插本來就有誤差，只印 max（看主表與歪頭診斷）。
@@ -15,7 +19,7 @@
 
 const zlib = require('zlib');
 const { render3D, MARVIN, ROUND_DEMO } = require('./face_3d.js');
-const { bake, atlasSize, spriteRaw, recall } = require('./face_atlas.js');
+const { bake, atlasSize, spriteRaw, recall, recallHybrid } = require('./face_atlas.js');
 
 const CHARS = { marvin: MARVIN, round: ROUND_DEMO };
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i > 0 ? process.argv[i + 1] : def; };
@@ -24,8 +28,9 @@ const Ws = arg('W', '240,466').split(',').map(Number);
 const steps = arg('step', '0.2,0.1,0.05').split(',').map(Number);
 const MODES = ['mask', 'weight', 'sdf1', 'sdf2'];
 const modes = arg('mode', 'mask,sdf1,sdf2').split(',');
-if (!CHARS[charName] || Ws.some(w => !(w > 0)) || steps.some(s => !(s > 0)) || modes.some(m => !MODES.includes(m))) {
-  console.error('usage: node atlas_eval.js [--char marvin|round] [--W 240,466] [--step 0.2,0.1,0.05] [--mode mask,sdf1,sdf2]');
+const bands = arg('hybrid', '').split(',').filter(s => s !== '').map(Number);
+if (!CHARS[charName] || Ws.some(w => !(w > 0)) || steps.some(s => !(s > 0)) || modes.some(m => !MODES.includes(m)) || bands.some(b => !(b >= 0))) {
+  console.error('usage: node atlas_eval.js [--char marvin|round] [--W 240,466] [--step 0.2,0.1,0.05] [--mode mask,sdf1,sdf2] [--hybrid 1.5,2.5,3.5]');
   process.exit(1);
 }
 const ch = CHARS[charName];
@@ -185,12 +190,25 @@ for (const W of Ws) {
         sum += r.sum; n += r.n; badSum += r.bad; if (r.bad > badWorst) badWorst = r.bad;
       });
       rows.push([W, step, mode, interp, sprites, (rawBytes / 1024).toFixed(1), dKB.toFixed(1), bakeS.toFixed(1),
-        max, (sum / n).toFixed(3), (badSum / poses.length).toFixed(1), badWorst, (ms / poses.length).toFixed(2)]);
+        max, (sum / n).toFixed(3), (badSum / poses.length).toFixed(1), badWorst, (ms / poses.length).toFixed(2), '-']);
+    }
+    if (!mode.startsWith('sdf')) continue;
+    for (const band of bands) {
+      let max = 0, sum = 0, n = 0, badSum = 0, badWorst = 0, ms = 0;
+      const stats = { exact: 0 };
+      poses.forEach((p, k) => {
+        const t0 = performance.now(); recallHybrid(got, base, W, p, ch, atlas, 'bilinear', band, stats); ms += performance.now() - t0;
+        const r = compare(exact[k].o, got, W, exact[k].rect);
+        if (r.max > max) max = r.max;
+        sum += r.sum; n += r.n; badSum += r.bad; if (r.bad > badWorst) badWorst = r.bad;
+      });
+      rows.push([W, step, `${mode}+h${band}`, 'bilinear', sprites, (rawBytes / 1024).toFixed(1), dKB.toFixed(1), bakeS.toFixed(1),
+        max, (sum / n).toFixed(3), (badSum / poses.length).toFixed(1), badWorst, (ms / poses.length).toFixed(2), (stats.exact / poses.length).toFixed(0)]);
     }
   }
 }
 
-const head = ['W', 'step', 'mode', 'interp', 'sprites', 'rawKB', 'deflateKB', 'bakeS', 'max', 'mean', 'bad24_avg', 'bad24_worst', 'recallMs'];
+const head = ['W', 'step', 'mode', 'interp', 'sprites', 'rawKB', 'deflateKB', 'bakeS', 'max', 'mean', 'bad24_avg', 'bad24_worst', 'recallMs', 'exactPx'];
 const table = [head, ...rows].map(r => r.map(String));
 const widths = head.map((_, c) => Math.max(...table.map(r => r[c].length)));
 for (const r of table) console.log(r.map((s, c) => s.padStart(widths[c])).join('  '));

@@ -372,6 +372,72 @@ inline float sdist(const V3& n, float v, float kx, float ky, float R) {
   return v / hyp(gx, gy);
 }
 
+// 每像素的筆畫覆蓋率（跟顏色無關，不含 clip）：兩眼的 cov / 描邊 rc、眉線 bc。
+struct Face3dFields { float cov[2], rc[2], bc; };
+
+// 未旋轉座標 (ux,uy) 這個像素的 Face3dFields（face_3d.js strokeFields 的 C++ 版）。
+// act[3]：哪些筆畫要算（0,1=眼，2=眉線），沒算的筆畫 cov/rc/bc 填 0。r2>=1（球外）回傳 false。
+// face3d_render 與 face_atlas_rt.h（混合式精算）共用。
+inline bool stroke_fields(const Prepared& F, float R, float RIM_W, float BROW_W,
+                          float ux, float uy, const bool act[3], Face3dFields& out) {
+  const float nx = ux / R, ny = uy / R, r2 = nx * nx + ny * ny;
+  if (r2 >= 1) return false;
+  const float nz = sqrtf(1 - r2), nzg = nz > LIMB_MIN ? nz : LIMB_MIN;
+  const float kx = nx / nzg;
+  const float ky = ny / nzg;
+  const V3 p3 = {nx, ny, nz};
+  out.cov[0] = out.cov[1] = 0;
+  out.rc[0] = out.rc[1] = 0;
+  out.bc = 0;
+  for (int k = 0; k < 2; k++) {
+    if (!act[k]) continue;
+    const Eye& E = F.eyes[k];
+    float cov, dmin = BIG;
+    if (E.kind == 0) {
+      cov = 1;
+      for (int q = 0; q < E.nEdges; q++) {
+        const V3& n = E.edges[q];
+        const float v = clamp01(0.5f + sdist(n, dot3(n, p3), kx, ky, R));
+        if (v < cov) cov = v;
+        if (cov <= 0) break;
+      }
+      for (int q = 0; q < E.nRims; q++) {
+        const Rim& m = E.rims[q];
+        float d;
+        if (dot3(m.a, p3) >= 0 && dot3(m.b, p3) >= 0) {
+          d = sdist(m.n, dot3(m.n, p3), kx, ky, R);
+          if (d < 0) d = -d;
+        } else {
+          const float di = m.zi > 0 ? hyp(ux - m.xi, uy - m.yi) : BIG;
+          const float dj = m.zj > 0 ? hyp(ux - m.xj, uy - m.yj) : BIG;
+          d = di < dj ? di : dj;
+        }
+        if (d < dmin) dmin = d;
+      }
+    } else {
+      const float s = sdist(E.c, dot3(E.c, p3) - E.cosr, kx, ky, R);
+      cov = clamp01(0.5f + s);
+      if (E.rim) dmin = s < 0 ? -s : s;
+    }
+    out.cov[k] = cov;
+    out.rc[k] = clamp01(RIM_W / 2 - dmin + 0.5f);
+  }
+  if (F.hasBrow && act[2]) {
+    const Brow& B = F.brow;
+    float bd;
+    if (dot3(B.m1, p3) >= 0 && dot3(B.m3, p3) >= 0) {
+      bd = sdist(B.n, dot3(B.n, p3) + B.d, kx, ky, R);
+      if (bd < 0) bd = -bd;
+    } else {
+      const float d1 = B.z1 > 0 ? hyp(ux - B.x1, uy - B.y1) : BIG;
+      const float d3 = B.z3 > 0 ? hyp(ux - B.x3, uy - B.y3) : BIG;
+      bd = d1 < d3 ? d1 : d3;
+    }
+    out.bc = clamp01(BROW_W / 2 - bd + 0.5f);
+  }
+  return true;
+}
+
 }  // namespace face_rt3d_detail
 
 // 用前必須呼叫一次：記住 W，cur/prev 全設成空（X0=W, X1=-1）。
@@ -417,8 +483,6 @@ inline FaceRect face3d_render(const Face3dChar& ch, const FacePose& p,
   const int x0 = F.rect.x0, y0 = F.rect.y0, x1 = F.rect.x1, y1 = F.rect.y1;
 
   float c[3], g[3];
-  V3 p3;
-  float kx = 0, ky = 0;
   for (int y = y0; y <= y1; y++) {
     // 這一列有哪些筆畫的外框涵蓋（y 範圍），以及它們 x 範圍的聯集
     bool rowAct[3];
@@ -445,45 +509,15 @@ inline FaceRect face3d_render(const Face3dChar& ch, const FacePose& p,
 #ifdef FACE_RT3D_STATS
       ++g_face_rt3d_px;
 #endif
-      const float nx = ux / R, ny = uy / R, r2 = nx * nx + ny * ny;
-      if (r2 >= 1) continue;
-      const float nz = sqrtf(1 - r2), nzg = nz > LIMB_MIN ? nz : LIMB_MIN;
-      kx = nx / nzg;
-      ky = ny / nzg;
-      p3 = {nx, ny, nz};
+      Face3dFields fl;
+      if (!stroke_fields(F, R, RIM_W, BROW_W, ux, uy, act, fl)) continue;
       const size_t i = (size_t)(y * W + x) * 3;
       c[0] = out888[i]; c[1] = out888[i + 1]; c[2] = out888[i + 2];
       bool drew = false;
       for (int k = 0; k < 2; k++) {
         if (!act[k]) continue;
         const Eye& E = F.eyes[k];
-        float cov, dmin = BIG;
-        if (E.kind == 0) {
-          cov = 1;
-          for (int q = 0; q < E.nEdges; q++) {
-            const V3& n = E.edges[q];
-            const float v = clamp01(0.5f + sdist(n, dot3(n, p3), kx, ky, R));
-            if (v < cov) cov = v;
-            if (cov <= 0) break;
-          }
-          for (int q = 0; q < E.nRims; q++) {
-            const Rim& m = E.rims[q];
-            float d;
-            if (dot3(m.a, p3) >= 0 && dot3(m.b, p3) >= 0) {
-              d = sdist(m.n, dot3(m.n, p3), kx, ky, R);
-              if (d < 0) d = -d;
-            } else {
-              const float di = m.zi > 0 ? hyp(ux - m.xi, uy - m.yi) : BIG;
-              const float dj = m.zj > 0 ? hyp(ux - m.xj, uy - m.yj) : BIG;
-              d = di < dj ? di : dj;
-            }
-            if (d < dmin) dmin = d;
-          }
-        } else {
-          const float s = sdist(E.c, dot3(E.c, p3) - E.cosr, kx, ky, R);
-          cov = clamp01(0.5f + s);
-          if (E.rim) dmin = s < 0 ? -s : s;
-        }
+        const float cov = fl.cov[k], rc = fl.rc[k];
         if (cov > 0) {
           drew = true;
           const float kk = cov * clip;
@@ -494,24 +528,13 @@ inline FaceRect face3d_render(const Face3dChar& ch, const FacePose& p,
           static const float BLACK3[3] = {0, 0, 0};
           mix(c, BLACK3, 0.5f * (1 - clamp01(ty)) * kk);
         }
-        const float rc = clamp01(RIM_W / 2 - dmin + 0.5f);
         if (rc > 0) {
           drew = true;
           mix(c, RIM_COL, 0.96f * rc * clip);
         }
       }
       if (F.hasBrow && act[2]) {
-        const Brow& B = F.brow;
-        float bd;
-        if (dot3(B.m1, p3) >= 0 && dot3(B.m3, p3) >= 0) {
-          bd = sdist(B.n, dot3(B.n, p3) + B.d, kx, ky, R);
-          if (bd < 0) bd = -bd;
-        } else {
-          const float d1 = B.z1 > 0 ? hyp(ux - B.x1, uy - B.y1) : BIG;
-          const float d3 = B.z3 > 0 ? hyp(ux - B.x3, uy - B.y3) : BIG;
-          bd = d1 < d3 ? d1 : d3;
-        }
-        const float bc = clamp01(BROW_W / 2 - bd + 0.5f);
+        const float bc = fl.bc;
         if (bc > 0) {
           drew = true;
           mix(c, BROW_COL, 0.92f * bc * clip);
