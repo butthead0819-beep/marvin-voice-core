@@ -8,7 +8,7 @@ design doc AmbientQA-20260830。GameKnowledgeAgent 的 sibling：同款 Declarat
   A. 查詢動詞：馬文(幫我/幫忙/麻煩/請)? 查/查詢/查一下/搜尋/請問/想知道/找一下 X
      （寬版疑問詞 / 句尾嗎呢 9/19 試過又拿掉：「今天晚餐吃什麼」「我帥嗎」全被搶去查）
   B. 事實問句尾：X 是什麼 / 是誰 / 叫什麼 / 什麼意思 / 怎麼做 / 有多少 …
-  兩者都排除：點歌 / 找歌 / 歌詞、音量控制、問 Marvin 自身狀態、low_confidence_wake
+  兩者都排除：點歌 / 找歌 / 歌詞、音量控制、問 Marvin 自身狀態
 
 不做：追問視窗、連續對談、shadow gating（backfill 當 gate）。
 付費鐵則：grounded 呼叫走 free→付費 key 鏈，付費過 PaidUsageGuard cap + 記帳
@@ -147,7 +147,6 @@ def parse_grounded_qa(query: str) -> str | None:
     """喚醒句 → 要查的主題字串，或 None（不是明確問句或被排除）。
 
     純函式，無 I/O。給 GroundedQAAgent、backfill、測試共用。
-    low_confidence_wake 由呼叫端另外擋（見 GroundedQAAgent.gate）。
     """
     q = _WAKE_PREFIX_RE.sub("", (query or "").strip()).strip()
     if not q:
@@ -748,8 +747,6 @@ async def try_question_opener(ctrl, ctx) -> bool:
     """
     pipeline_timing.mark_once("opener_start")
     try:
-        if getattr(ctx, "low_confidence_wake", False) is True:
-            return False
         if getattr(ctx, "mode", "normal") not in GroundedQAAgent.mode_compatible:
             return False
         q = _WAKE_PREFIX_RE.sub("", (getattr(ctx, "query", "") or "").strip()).strip()
@@ -836,14 +833,6 @@ class GroundedQAAgent(DeclarativeIntentAgent):
                 ),
             ]
         return self._cache
-
-    def gate(self, ctx: IntentContext) -> str | None:
-        # audio-rescue：LLM 已聽過音訊才選中這個 intent，比 wake 信心啟發式強，不擋。
-        if is_audio_rescue(ctx):
-            return None
-        if getattr(ctx.rescue, "low_confidence_wake", False):
-            return "low_confidence_wake"
-        return None
 
     def post_match_filter(self, schema, slots, ctx: IntentContext) -> bool:
         # audio-rescue：topic 由 LLM 從音訊填好，ctx.query 是糊掉的 STT，別再 re-parse。

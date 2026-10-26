@@ -4,6 +4,9 @@
 「幫我下一首」、「把我們播放迪拜人」，IBA 都判 wake=True（total 0.557/0.569/0.557，
 dom=task/control/task），但因為 v=0.3 不符合 Strong-Voice Bypass 的門檻，被 Echo
 Guard 全擋。同時段兩句閒聊 total=0.346 dom=task 也被擋——那兩句要繼續擋。
+
+意圖漏斗步驟 2 刪除：test_in_tts_cooldown_no_bypass（CEO-D18，
+_tts_echo_cooldown_until 從未被寫過非 0.0 的值，now/cooldown 參數已拔除）。
 """
 from __future__ import annotations
 
@@ -17,9 +20,9 @@ def _vc_class():
     return VoiceController
 
 
-def _bypass(VC, *, playing=True, tts_text="", now=1000.0, cooldown=0.0,
+def _bypass(VC, *, playing=True, tts_text="",
            dom="task", conf=0.557):
-    return VC._intent_bypass_echo(playing, tts_text, now, cooldown, dom, conf)
+    return VC._intent_bypass_echo(playing, tts_text, dom, conf)
 
 
 def test_real_case_task_dominant_bypasses():
@@ -72,11 +75,6 @@ def test_not_playing_no_bypass():
 def test_tts_active_no_bypass():
     VC = _vc_class()
     assert _bypass(VC, tts_text="馬文正在講話") is False
-
-
-def test_in_tts_cooldown_no_bypass():
-    VC = _vc_class()
-    assert _bypass(VC, now=1000.0, cooldown=1001.5) is False
 
 
 def test_legacy_path_none_confidence_no_bypass():

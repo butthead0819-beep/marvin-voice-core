@@ -113,7 +113,6 @@ def _make_vc_for_guards(**over):
     vc._wake_burst_times = []
     vc._last_global_wake_time = 0.0
     vc._is_playing_audio = False
-    vc._tts_echo_cooldown_until = 0.0
     vc._current_tts_text = ""
     vc.game_mode = False
     vc._nudges = MagicMock()

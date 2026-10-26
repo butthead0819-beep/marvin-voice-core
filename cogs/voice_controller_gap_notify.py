@@ -45,20 +45,19 @@ class GapNotifyMixin:
         except RuntimeError:
             pass  # 無 running loop（理論上不會發生在此 async 路徑）
 
-    async def _route_gap_record(self, gap_rec, speaker: str, query: str,
-                                low_confidence_wake: bool) -> bool:
+    async def _route_gap_record(self, gap_rec, speaker: str, query: str) -> bool:
         """gap classifier 判完之後的分流（10/8 使用者定案：classifier 只做測量，不再否決
         Marvin、不再播「功能開發中」）。回 True = 已處理完，caller 直接 return。
 
         - UNKNOWN → False（caller 照舊走 has_intent_signal gate）
-        - web 類資訊問題（非低信心喚醒）→ grounded 查證回答，True
+        - web 類資訊問題 → grounded 查證回答，True
         - 其餘有意圖的 query → False，caller 跳過 filler gate 交 Marvin 主 LLM 接話
         從 _process_queued_query 抽出（該 method statement 數凍結，見 size budget 測試）。
         """
         if gap_rec.intent_type == "UNKNOWN":
             return False
         self._cancel_stale_prefetch(speaker)
-        if gap_rec.query_domain == "web" and not low_confidence_wake:
+        if gap_rec.query_domain == "web":
             self.stt_logger.info(
                 f"[IntentGap→Grounded] [{speaker}] type={gap_rec.intent_type} | query='{query[:60]}'"
             )

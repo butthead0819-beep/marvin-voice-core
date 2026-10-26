@@ -6,6 +6,9 @@ Follow-up override）抽成方法後固定其契約。
 契約：吃 is_fast（+ wake context），跑完整守衛鏈後回 (is_fast, is_echo)；
 is_duplicate/now/segment_id 純內部；接受喚醒時記錄 segment + 開 Response Lock +
 風暴計數。這段是回授防護的安全核心，行為不變的整體保證另有既有 wake 整合測試。
+
+意圖漏斗步驟 2 刪除：_tts_echo_cooldown_until（CEO-D18，從未被寫過非 0.0 的值）
+已從 Echo Guard 拔除，_make_vc 不再設這個 backing field。
 """
 from __future__ import annotations
 
@@ -27,7 +30,6 @@ def _make_vc(**over):
     vc._wake_burst_times = []
     vc._last_global_wake_time = 0.0
     vc._is_playing_audio = False       # is_playing_audio property 的 backing field
-    vc._tts_echo_cooldown_until = 0.0
     vc._current_tts_text = ""
     vc.game_mode = False
     vc._nudges = MagicMock()

@@ -60,7 +60,6 @@ def _make_cog():
     cog._wake_response_pending = False
 
     cog._ducking_agent = MagicMock()
-    cog._ducking_agent.wake_threshold_boost.return_value = 0.0
 
     cog._handle_nemoclaw_query = AsyncMock()
     cog._handle_marmo_query = AsyncMock()
@@ -153,24 +152,6 @@ async def test_no_speech_buffer_entry_yields_none_audio_without_crash():
     assert ctx.audio_wav_bytes is None
 
 
-@pytest.mark.asyncio
-async def test_low_confidence_wake_flag_passed_through_to_bus_ctx():
-    """wake_intent 低於門檻 → ctx.low_confidence_wake=True，供 rescue 判斷要不要打真的 LLM。"""
-    cog = _make_cog()
-    cog.bot.engine.conv_buffer.get_harvest = MagicMock(return_value="小聲一點")
-
-    await cog._process_queued_query("Alice", wake_time=time.time(), wake_intent=0.5)
-
-    ctx = cog._intent_bus.dispatch.await_args.args[0]
-    assert ctx.low_confidence_wake is True
-
-
-@pytest.mark.asyncio
-async def test_high_confidence_wake_flag_is_false():
-    cog = _make_cog()
-    cog.bot.engine.conv_buffer.get_harvest = MagicMock(return_value="小聲一點")
-
-    await cog._process_queued_query("Alice", wake_time=time.time(), wake_intent=0.95)
-
-    ctx = cog._intent_bus.dispatch.await_args.args[0]
-    assert ctx.low_confidence_wake is False
+# 意圖漏斗步驟 2 刪除：test_low_confidence_wake_flag_passed_through_to_bus_ctx /
+# test_high_confidence_wake_flag_is_false（low_confidence_wake 欄位已從
+# IntentContext 拔除，不再有這個 flag 可驗）。

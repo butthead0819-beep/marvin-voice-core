@@ -1,16 +1,9 @@
 """
-TDD：Issue 2 — wake_intent 必須 gate 副作用 fast-track。
+wake_intent 與副作用 fast-track。
 
-問題：_process_queued_query 的 wake_intent < 0.80 目前只 gate TTS 輸出，
-不 gate 任何 fast-track 路由。低信心喚醒（可能是背景對話被誤判）仍會
-執行 NemoClaw / 音樂播放 / 視覺截圖等副作用，造成誤觸發。
-
-意圖層面的修法：
-- wake_intent < 0.80 → 跳過所有副作用 fast-track（NemoClaw / Marmo /
-  PA 寫入 / Vision / Music / Imitation）
-- 仍允許資訊類路徑：quality gate / status / recall / LLM 純文字回應
-- Track A regex (wake_intent=None) 視為高信心，照常跑（既有行為）
-- Track B wake_intent >= 0.80 也照常跑
+原本測 wake_intent < 0.80 跳過副作用 fast-track 的低信心喚醒閘；意圖漏斗步驟 2
+（2026-10-26）因 wake_intent 在 handle_stt_result 恆為 None 而整條刪除，只留
+「照常執行」與資訊類路徑的案例。
 """
 from __future__ import annotations
 
@@ -101,52 +94,8 @@ def _set_query(cog, query: str):
     cog.bot.engine.conv_buffer.get_harvest = MagicMock(return_value=query)
 
 
-# ── 副作用 fast-track 應被 wake_intent < 0.80 gate ─────────────────────────
-
-@pytest.mark.asyncio
-async def test_low_confidence_skips_music_fast_track():
-    cog = _make_cog()
-    _set_query(cog, "播放陶喆的天天")  # 強訊號 music play
-
-    await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=0.5)
-
-    cog._safe_music_command.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_low_confidence_skips_nemoclaw_regex_fast_track():
-    cog = _make_cog()
-    _set_query(cog, "查一下今天天氣")
-    # original_raw 含「龍蝦」喚醒詞 → 正常應命中 NemoClaw regex fast-track
-    await cog._process_queued_query(
-        "Alice", wake_time=100.0,
-        wake_intent=0.5,
-        original_raw="龍蝦，查一下今天天氣",
-    )
-
-    cog._handle_nemoclaw_query.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_low_confidence_skips_vision_fast_track():
-    cog = _make_cog()
-    _set_query(cog, "看畫面這是什麼")  # 命中 VISION_KEYWORDS
-
-    await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=0.5)
-
-    cog._process_vision_query.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_low_confidence_skips_nemoclaw_smart_router():
-    cog = _make_cog()
-    _set_query(cog, "幫我查一下今天天氣")
-    cog.bot.router.classify_query_route = AsyncMock(return_value="nemoclaw")
-
-    await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=0.5)
-
-    cog._handle_nemoclaw_query.assert_not_awaited()
-
+# 意圖漏斗步驟 2 刪除：test_low_confidence_skips_{music,nemoclaw_regex,vision,nemoclaw_smart_router}
+#（wake_intent 自 2026-06-10 起在 handle_stt_result 恆為 None，低信心喚醒閘整條已拔）。
 
 # ── 既有 high-confidence 行為要保留 ─────────────────────────────────────────
 

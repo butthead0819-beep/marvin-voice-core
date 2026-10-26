@@ -321,23 +321,9 @@ _MARMO_RE = re.compile(
 # @AI Marmo 的 Discord bot user ID
 _MARMO_BOT_ID: int = 1501205008434069676
 
-# 🔍 [Deferred Wake] 追蹤參數
-_DEFERRED_WAKE_MIN_INTENT = 0.40   # LLM intent ≥ 此值才開始追蹤後續語意
-_DEFERRED_WAKE_WINDOW_S   = 4.0    # 追蹤窗口（秒）：超時則放棄
-_DEFERRED_WAKE_MAX_UTTS   = 2      # 最多追蹤幾次發言（超過即放棄）
-
 # 💬 [Followup Pending] Marvin 主動問後等 user 補答的視窗（秒）
 # 10-15s 範圍，取中位 12s — 給 user 思考歌名/答案的時間
 _FOLLOWUP_WINDOW_S = 12.0
-
-# 判斷後續語句是否是「未點名的指令/問題」（可作為 deferred wake 的語意補充）
-_COMMAND_LIKE_RE = re.compile(
-    r'^(?:幫我|幫|查|播|播放|告訴|解釋|說|開|關|停|找|唱|繼續|重複|分析|搜尋|推薦|算|帶|念|翻|轉|發|看)'
-    r'|(?:什麼|哪|怎麼|為什麼|幾點|多少|哪裡|誰|何時|要怎|是什|有什)'
-    r'|[嗎呢？?]\s*$'
-    r'|^(?:我想|我要|我需要|可以|能不能|可不可以|你知道|你可以|你有)',
-    re.IGNORECASE,
-)
 
 # 🎵 [IBA Tier 0] 無喚醒詞音樂控制 — 來源 intent_agents/constants.py (single source of truth)
 _MUSIC_DIRECT_SKIP_KW   = _MUSIC_DIRECT_SKIP_KW_SRC
@@ -483,7 +469,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.last_proactive_time = 0 # 🚀 [Proactive Social] 紀錄最後一次主動發言時間
         self.proactive_silence_threshold = 120  # 🔇 [Freq Adj] 動態調整靜默觸發閾值（秒）— P0: 300→120（calibration p95=37s, p99=218s）
         self.is_playing_audio = False # 防止 TTS 與音樂重疊
-        self._tts_echo_cooldown_until = 0.0  # TTS 結束後的回授冷卻期（秒）
         self._pending_greeting_task: asyncio.Task | None = None  # summon 時與 connect 並行的 LLM 預熱
         
         # 🚀 [Optimization] Debounce 節流系統
@@ -545,8 +530,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self.last_snapshot_time = time.time() # 🧬 [Incremental Summary] 記錄上次摘要時間
         self.processed_wake_segments = {} # 🛡️ [Double Wake Guard] 避免 A、B 兩軌重複喚醒同一段話
         self.slow_loop_accumulator = []  # 🚀 [APM Economy] 緩慢系統的累積器
-        # 🔍 [Deferred Wake] 低信心喚醒追蹤：speaker → {text, intent, ts, utt_count}
-        self.deferred_wakes: dict[str, dict] = {}
         # 💬 [Followup Pending] Marvin 主動問後等同 user 補答：speaker → {type, original_query, ts}
         # 12s 內同 user 有訊號回話 → 合成 wake 句重投，不需重新喊「馬文」
         self._pending_followups: dict[str, dict] = {}
@@ -621,8 +604,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             self._speak_bus,
             mood_store=self._room_mood_store,
             channel_id=0,
-            wake_threshold_boost=0.1,
-        )  # week2: 熱聊偵測 → 壓制 SpeakAgent + 寫 mood_store flag + 提供 wake boost
+        )  # week2: 熱聊偵測 → 壓制 SpeakAgent + 寫 mood_store flag
         self._mood_agent = MoodAgent(mood_store=self._room_mood_store)  # week3: 三軸 mood 合成
         # mood_sensor / temperature_monitor 在 main_discord 注入後由 wire_dependencies() 補齊
         self._speak_bus.register(ProactiveTopicAgent(
@@ -774,12 +756,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
     @staticmethod
     def _strong_voice_bypass_echo(is_playing_audio: bool, current_tts_text: str,
-                                  now: float, tts_cooldown_until: float,
                                   wake_dom, confidence, voice_score) -> bool:
-        """純音樂播放中（非 TTS 回授窗）的強人聲喚醒是否該繞過 Echo Guard。
+        """純音樂播放中的強人聲喚醒是否該繞過 Echo Guard。
 
         零鍵盤點歌核心：放歌時也要能語音點歌。但嚴格防自我觸發——
-        bot 正在講 TTS（current_tts_text 非空）或 TTS 後冷卻窗內一律不繞；
+        bot 正在講 TTS（current_tts_text 非空）一律不繞；
         只在 voice 主導 + voice 分數高 + 總信心高時放行。legacy 路徑
         （無 fusion 分數，confidence=None）不繞。confidence 門檻 8/22 由 0.55 降到
         0.45：實測 total=0.500（voice_score 滿分但其他 IBA 分量掉零）卡在邊緣誤擋。
@@ -788,27 +769,22 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return False
         if current_tts_text:            # bot 正在講話 → 真回授風險
             return False
-        if now < tts_cooldown_until:    # TTS 後冷卻窗
-            return False
         if confidence is None:          # legacy 路徑無 fusion 分數
             return False
         return wake_dom == "voice" and confidence >= 0.45 and (voice_score or 0) >= 0.9
 
     @staticmethod
     def _intent_bypass_echo(is_playing_audio: bool, current_tts_text: str,
-                            now: float, tts_cooldown_until: float,
                             wake_dom, confidence) -> bool:
-        """純音樂播放中（非 TTS 回授窗）意圖明確的指令放行（喚醒詞被 STT 聽糊也能點歌/切歌）。
+        """純音樂播放中意圖明確的指令放行（喚醒詞被 STT 聽糊也能點歌/切歌）。
 
         2026-09-18：「麻煩播放…」「幫我下一首」「把我們播放迪拜人」total≈0.56 dom=control/task
         被 Echo Guard 全擋；同時段閒聊 total=0.346 要繼續擋。安全前提同 _strong_voice_bypass_echo：
-        bot 正在講 TTS / TTS 冷卻窗內 / legacy 路徑（confidence=None）一律不繞。
+        bot 正在講 TTS / legacy 路徑（confidence=None）一律不繞。
         """
         if not is_playing_audio:
             return False
         if current_tts_text:
-            return False
-        if now < tts_cooldown_until:
             return False
         if confidence is None:
             return False
@@ -1184,16 +1160,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     f"thr={_ch['threshold']} dom={_dominant} wake={is_fast}"
                 )
         else:
-            # Fallback: legacy binary decision + LLM Veto
+            # Fallback: legacy binary decision
             is_fast = action in ["fast_intervene", "force_intervene"]
-            # P1: hot_chat 時 DuckingAgent 拉高 LLM veto 門檻 +0.1（不改 0.65 常數）
-            _llm_veto_thr = 0.65 + self._ducking_agent.wake_threshold_boost()
-            if is_fast and track == "B" and wake_intent is not None and wake_intent < _llm_veto_thr:
-                logger.info(
-                    f"🛡️ [LLM Veto] wake_intent={wake_intent:.2f} < {_llm_veto_thr:.2f} override "
-                    f"'{action}' for '{raw_text[:30]}'"
-                )
-                is_fast = False
 
         is_fast, is_echo, _gate_reason = self._apply_wake_guards(
             speaker, raw_text, timestamp, track,
@@ -1245,10 +1213,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if speaker in self.speech_timers and not is_wake_check:
             self.speech_timers[speaker].cancel()
             
-        # 真正喚醒時清除 deferred wake 追蹤（避免舊狀態干擾）
-        if is_fast:
-            self.deferred_wakes.pop(speaker, None)
-
         # 🎭 [Gemini Audio Emotion] 喚醒時以音訊強化情緒標籤（背景執行，不阻塞喚醒路徑）
         if is_fast and wav_bytes and self.bot.router.google_client:
             asyncio.create_task(self._update_emotion_from_audio(speaker, wav_bytes, raw_text))
@@ -1340,7 +1304,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
             # 💬 [Followup Pending] Marvin 剛問過、12s 內同 speaker 有訊號回話
             #    → 合成「馬文，播XX」重投 wake 流程；user 不需重新喊馬文。
-            #    優先於 Deferred Wake（已 engage 比可能 engage 高優先）。
             _pending = self._pending_followups.get(speaker)
             if _pending:
                 _now_fu = time.time()
@@ -1364,49 +1327,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         ))
                         return
                     elif maybe_dispatch_followup_supplement(self, speaker, _pending, raw_text, _now_fu, _FOLLOWUP_WINDOW_S, has_intent_signal): return
-                    # 視窗內但純 filler → 保留 pending，繼續走原路徑（也許 deferred wake 接）
-
-            # 🔍 [Deferred Wake] 人類遲疑模型：
-            # 低信心喚醒（llm_verify + 中等 intent）→ 壓抑，追蹤後續 4s 語意。
-            # 若後續語句是未點名的指令/問題 → 合併原句觸發喚醒。
-            _dw = self.deferred_wakes.get(speaker)
-            _now_dw = time.time()
-            if _dw and (_now_dw - _dw["ts"]) < _DEFERRED_WAKE_WINDOW_S:
-                _dw["utt_count"] = _dw.get("utt_count", 0) + 1
-                if _COMMAND_LIKE_RE.search(raw_text.strip()):
-                    # 語意補足！以「馬文，<後續指令>」組成新句，確保 fast_intervene 正確觸發。
-                    # （原句 pending text 留在 log，不作為 query，避免把閒話也送進去）
-                    synthesized = f"馬文，{raw_text}"
-                    self.deferred_wakes.pop(speaker, None)
-                    self.stt_logger.info(
-                        f"[🔍延遲喚醒] [{speaker}] 語意補足觸發 | "
-                        f"pending='{_dw['text'][:25]}' follow='{raw_text[:25]}'"
-                    )
-                    asyncio.create_task(self.handle_stt_result(
-                        speaker, synthesized, _dw["ts"], wav_bytes,
-                        prosody_data=prosody_data,
-                        is_wake_check=False, track="B",
-                        bypass_etd=True, wake_intent=None,
-                        discovered_by="deferred",
-                    ))
-                    return
-                elif _dw["utt_count"] >= _DEFERRED_WAKE_MAX_UTTS:
-                    # 超過追蹤次數，放棄
-                    logger.debug(f"🔍 [Deferred Wake] {speaker} 超過 {_DEFERRED_WAKE_MAX_UTTS} 次未補足，放棄追蹤")
-                    self.deferred_wakes.pop(speaker, None)
-            elif (not is_wake_check
-                  and action == "llm_verify"
-                  and wake_intent is not None
-                  and wake_intent >= _DEFERRED_WAKE_MIN_INTENT):
-                # 低信心但有意義的喚醒提及 → 開啟追蹤窗口
-                self.deferred_wakes[speaker] = {
-                    "text": raw_text, "ts": _now_dw,
-                    "intent": wake_intent, "utt_count": 0,
-                }
-                logger.info(
-                    f"🔍 [Deferred Wake] {speaker} 開始追蹤 intent={wake_intent:.2f} "
-                    f"'{raw_text[:30]}'"
-                )
+                    # 視窗內但純 filler → 保留 pending，繼續走原路徑
 
             # 已經過 Semantic ETD 驗證，無需再等待 1.2s，以 0 延遲直接處理！
             asyncio.create_task(self.process_debounced_speech(speaker))
@@ -1466,14 +1387,14 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 is_duplicate = True
                 _hits.append("guard_storm")
 
-        # 🛡️ [Echo Guard] 核心防禦：TTS 播放中或 2s 冷卻期內，抑制所有喚醒詞防止回授
-        _in_echo_window = self.is_playing_audio or (now < self._tts_echo_cooldown_until)
+        # 🛡️ [Echo Guard] 核心防禦：TTS/音樂播放中，抑制所有喚醒詞防止回授
+        _in_echo_window = self.is_playing_audio
         is_echo = _in_echo_window and is_fast
-        # 🎙️ [Strong-Voice Bypass] 純音樂播放中（非 TTS 回授窗）的強人聲喚醒放行——
-        # 放歌時也要能語音點歌（零鍵盤核心）。TTS 播放中/冷卻中嚴格不繞，防自我觸發。
+        # 🎙️ [Strong-Voice Bypass] 純音樂播放中的強人聲喚醒放行——
+        # 放歌時也要能語音點歌（零鍵盤核心）。TTS 播放中嚴格不繞，防自我觸發。
         if is_echo and self._strong_voice_bypass_echo(
-                self.is_playing_audio, self._current_tts_text, now,
-                self._tts_echo_cooldown_until, _wake_dom, _confidence, _wake_voice_score):
+                self.is_playing_audio, self._current_tts_text,
+                _wake_dom, _confidence, _wake_voice_score):
             is_echo = False
             _bypass = "bypass_strong_voice"
             logger.info(
@@ -1481,8 +1402,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 f"(total={_confidence:.2f} v={_wake_voice_score} dom={_wake_dom})"
             )
         if is_echo and self._intent_bypass_echo(
-                self.is_playing_audio, self._current_tts_text, now,
-                self._tts_echo_cooldown_until, _wake_dom, _confidence):
+                self.is_playing_audio, self._current_tts_text,
+                _wake_dom, _confidence):
             is_echo = False
             _bypass = "bypass_intent"
             logger.info(
@@ -1490,8 +1411,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 f"(total={_confidence:.2f} dom={_wake_dom}) '{raw_text[:40]}'"
             )
         if is_echo:
-            _reason = "播放中" if self.is_playing_audio else f"TTS冷卻({self._tts_echo_cooldown_until - now:.1f}s)"
-            logger.info(f"⏭️ [Echo Guard] {_reason}，抑制來自 {speaker} 的可能回授觸發：'{raw_text[:60]}'")
+            logger.info(f"⏭️ [Echo Guard] 播放中，抑制來自 {speaker} 的可能回授觸發：'{raw_text[:60]}'")
             is_fast = False
             is_duplicate = True
             _hits.append("guard_echo")
@@ -1781,7 +1701,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         _recently_fast_woken = (time.time() - getattr(self, "last_wake_time", {}).get(speaker, 0)) < 5.0
         if (not _recently_fast_woken and self.stream_mode and self._current_stream_info
                 and is_nowake_song_question(full_raw_text)):
-            self.deferred_wakes.pop(speaker, None)
             _nw_ctx = IntentContext(
                 speaker=speaker, raw_text=full_raw_text, query=full_raw_text,
                 original_raw=full_raw_text, wake_intent=None,
@@ -2328,14 +2247,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         被動 ack 是回應使用者剛做的動作（一定該放）；主動 ack 是 Marvin 自己冒出來。
         判準是「意圖」不是「有沒有出聲」：
-        - echo 冷卻窗內 → 壓（防 TTS 回授，技術必需）
-        - 非 intent_aware（filler）→ echo 過了就放
+        - 非 intent_aware（filler）→ 放
         - intent_aware（status）：近窗沒人講 → 放（安靜等待）；有人講且在問狀態/抱怨
           沒反應 → 立刻放；有人講但在閒聊 → 壓（別插話）。
         （is_playing / is_playing_audio 由 _play_ack 的 skip_if_busy 另外擋。）
         """
-        if time.time() < self._tts_echo_cooldown_until:
-            return False
         if not getattr(cat, "intent_aware", False):
             return True
         recent = self._recent_user_text(self._ACTIVE_ACK_INTENT_WINDOW_S)
@@ -2810,31 +2726,16 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             logger.warning(f"⚠️ [Fast System] 無法為 {speaker} 擷取到任何有效的 Query 內容。")
             return
 
-        # 🛡️ [Low-Confidence Wake Gate] Track B wake_intent < 0.80 → 跳過所有
-        # 有副作用的 fast-track（NemoClaw / Marmo / PA 寫入 / Vision / 音樂播放
-        # / Imitation）。低信心可能是背景對話被誤判為喚醒，不該執行 actions；
-        # 改走資訊類路徑（status / recall / LLM 文字回應 with tts_suppressed），
-        # 讓 LLM 用 context 判斷使用者真實意圖。
-        # Track A regex (wake_intent=None) 視為高信心，不受 gate。
-        # P1: hot_chat 期間 DuckingAgent 拉高 +0.1（不改 0.80 常數）
-        _wake_gate_thr = 0.80 + self._ducking_agent.wake_threshold_boost()
-        low_confidence_wake = wake_intent is not None and wake_intent < _wake_gate_thr
-        if low_confidence_wake:
-            self.stt_logger.info(
-                f"[🛡️低信心 wake gate] [{speaker}] wake_intent={wake_intent:.2f} "
-                f"→ 跳過副作用 fast-track"
-            )
-
         # 🦾 [NemoClaw Fast-Track] 優先於 quality gate，讓「龍蝦」單詞也能觸發「你要問什麼？」
         # 優先檢查 original_raw（喚醒詞尚未被 _strip_wake_word 移除），確保「龍蝦幫我查…」能命中
         _nemo_check_text = original_raw if original_raw else query
-        if _NEMOCLAW_RE.search(_nemo_check_text) and not low_confidence_wake:
+        if _NEMOCLAW_RE.search(_nemo_check_text):
             await self._handle_nemoclaw_query(speaker, _nemo_check_text)
             return
 
         # 🤖 [Marmo Fast-Track] 同上，優先於 quality gate
         _marmo_check_text = original_raw if original_raw else query
-        if _MARMO_RE.search(_marmo_check_text) and not low_confidence_wake:
+        if _MARMO_RE.search(_marmo_check_text):
             await self._handle_marmo_query(speaker, _marmo_check_text)
             return
 
@@ -2875,11 +2776,11 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                         f"_recall_handler 未啟用，意圖未處理：'{query[:60]}'"
                     )
                     break  # 不再檢查其他 PA intent，往下走 LLM
-                # recall 是 read-only（不受 low_confidence_wake gate）；其他寫入動作則受 gate
+                # recall 是 read-only；寫入動作在對談窗內未叫名字時不執行
                 if _intent_name == "recall":
                     await self._handle_recall_query(speaker, query)
                     return
-                if not low_confidence_wake and not self._wakeless_in_window(speaker, original_raw or query):
+                if not self._wakeless_in_window(speaker, original_raw or query):
                     if _intent_name == "manual_add":
                         await self._handle_manual_add_query(speaker, query)
                     elif _intent_name == "task_update":
@@ -2887,7 +2788,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     elif _intent_name == "mark_done":
                         await self._handle_mark_done_query(speaker, query)
                     return
-                break  # low_confidence + 寫入意圖 → 不執行也不再檢查
+                break  # 窗內未叫名字 + 寫入意圖 → 不執行也不再檢查
 
         # 🩺 [System Status Voice Trigger] 偵測系統狀態查詢，直接回答不走 LLM
         _status_keywords = ["系統狀態", "健康狀態", "剩餘額度", "API 用量", "還剩多少", "用了多少",
@@ -2908,7 +2809,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             game_mode=False,  # game_mode 已在 handle_stt_result 提早 return，不會到這
             is_owner=self._is_owner_speaker(speaker),
             now=time.time(), audio_wav_bytes=_captured_wav_bytes,
-            prev_turn_audio_wav_bytes=_prev_turn_wav_bytes, low_confidence_wake=low_confidence_wake,
+            prev_turn_audio_wav_bytes=_prev_turn_wav_bytes,
             in_wake_session=self._wake_session_captured(speaker),
             wakeless_in_window=self._wakeless_in_window(speaker, original_raw or query),
         )
@@ -2944,12 +2845,12 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         # 🎭 [Impression Show Fast-Track] 偵測「模仿 X」指令
         known_players = self.bot.router.memory.list_players()
         _imitate_target = detect_imitation_target(query, known_players)
-        if _imitate_target and not low_confidence_wake:
+        if _imitate_target:
             await self._handle_voice_imitate_command(speaker, _imitate_target)
             return
 
         # 🦞 [NemoClaw Smart Router] 非龍蝦觸發時，由 LLM 判斷是否路由到 NemoClaw
-        if self._is_owner_speaker(speaker) and not low_confidence_wake:
+        if self._is_owner_speaker(speaker):
             try:
                 _nemo_route = await self.bot.router.classify_query_route(query)
                 if _nemo_route == "nemoclaw":
@@ -2995,7 +2896,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     play_ack=False,
                 )
                 self._dm_owner_intent_gap(gap_rec)
-                if await self._route_gap_record(gap_rec, speaker, query, low_confidence_wake):
+                if await self._route_gap_record(gap_rec, speaker, query):
                     return
             except Exception as _gap_exc:
                 logger.warning(f"⚠️ [IntentGap] gap path 炸了，fall through 到 Marvin: {_gap_exc}")
@@ -3088,12 +2989,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         filtered_stream = puck_gesture.strip_gesture_stream(self._cot_filter_stream(llm_stream))
         sentence_gen = self._stream_sentence_splitter(filtered_stream)
 
-        # 🔇 [Low-Confidence Gate] Track B 喚醒信心 < 0.80 → 只貼文字，不播 TTS
-        # Track A (regex) 的 wake_intent=None，視為高信心，照常播音
-        # P1: hot_chat 期間 DuckingAgent 拉高 +0.1
-        _tts_gate_thr = 0.80 + self._ducking_agent.wake_threshold_boost()
-        tts_suppressed = wake_intent is not None and wake_intent < _tts_gate_thr
-
         full_text = ""
         music_at_start = self.stream_mode
         first_sentence_received = False
@@ -3172,9 +3067,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 if not sentence:
                     continue
                 full_text += sentence
-                if tts_suppressed:
-                    logger.info(f"🔇 [Low-Confidence Gate] wake_intent={wake_intent:.2f} < 0.80，靜音貼字: '{sentence[:40]}'")
-                elif _is_helper:
+                if _is_helper:
                     # helper query：串流期間先不逐句念，收完整段後再決定整段念 or 短通知
                     pass
                 else:
@@ -3193,7 +3086,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
             # 🎚️ 收完整段後發聲（放歌中整段念 / helper 短答念；放歌狀態以回覆開始時為準）
             self._speak_whole_reply(speaker, full_text, music=music_at_start, helper=_is_helper,
-                                     suppressed=tts_suppressed, emotion_tag=emotion_tag)
+                                     emotion_tag=emotion_tag)
 
             if placeholder_msg:
                 if full_text:
@@ -3255,7 +3148,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 except Exception as edit_err:
                     logger.warning(f"⚠️ [Fast System] 無法更新 placeholder 訊息: {edit_err}")
 
-            if not tts_suppressed and not first_sentence_received:
+            if not first_sentence_received:
                 await self.play_tts(msg_text, already_in_channel=True, emotion_tag=emotion_tag)
         finally:
             # 🗣️ [Status ACK] 出首句或任何退出路徑都收手安撫守候，避免事後突播 ack

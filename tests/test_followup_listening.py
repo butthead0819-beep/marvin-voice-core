@@ -264,7 +264,6 @@ async def test_is_fast_override_when_is_open_d2a():
     cog, wf = _make_cog_for_stt()
 
     # Ensure no echo window
-    cog._tts_echo_cooldown_until = 0.0
     cog.is_playing_audio = False
 
     await cog.handle_stt_result(
@@ -278,12 +277,17 @@ async def test_is_fast_override_when_is_open_d2a():
 
 @pytest.mark.asyncio
 async def test_echo_guard_bypassed_when_is_open_d1a():
-    """D1-A: is_open()=True with active echo window → Echo Guard bypassed, Marvin responds."""
+    """D1-A: is_open()=True with active echo window → Echo Guard bypassed, Marvin responds.
+
+    意圖漏斗步驟 2（CEO-D18）：_tts_echo_cooldown_until 已刪除，改以「TTS 播放中」
+    建 echo window；_current_tts_text 非空讓 Strong-Voice/Intent bypass 都不放行，
+    放行只能來自 D1-A。
+    """
     cog, wf = _make_cog_for_stt()
 
     # Activate echo window — without D1-A this would suppress the response
-    cog._tts_echo_cooldown_until = time.time() + 10.0
-    cog.is_playing_audio = False
+    cog.is_playing_audio = True
+    cog._current_tts_text = "Marvin 正在講話"
 
     await cog.handle_stt_result(
         "TestUser", "要", time.time(), b"fake_audio",

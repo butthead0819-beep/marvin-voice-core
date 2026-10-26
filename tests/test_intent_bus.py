@@ -207,7 +207,6 @@ def test_rescue_defaults_to_payload_with_matching_defaults():
         resolved_agent=ctx.resolved_agent,
         resolved_intent=ctx.resolved_intent,
         resolved_slots=ctx.resolved_slots,
-        low_confidence_wake=ctx.low_confidence_wake,
     )
 
 
@@ -233,7 +232,6 @@ def test_rescue_mirrors_flat_fields_when_constructed_old_style():
         resolved_agent="music_agent_v2",
         resolved_intent="play_song",
         resolved_slots={"song": "五月天"},
-        low_confidence_wake=True,
     )
     assert ctx.rescue.dispatch_source == "llm_rescue_audio"
     assert ctx.rescue.pragmatic_signal == "positive"
@@ -244,10 +242,8 @@ def test_rescue_mirrors_flat_fields_when_constructed_old_style():
     assert ctx.rescue.resolved_agent == "music_agent_v2"
     assert ctx.rescue.resolved_intent == "play_song"
     assert ctx.rescue.resolved_slots == {"song": "五月天"}
-    assert ctx.rescue.low_confidence_wake is True
     # flat 欄位本身完全不受影響 —— 這次是新增平行路徑，不是取代。
     assert ctx.dispatch_source == "llm_rescue_audio"
-    assert ctx.low_confidence_wake is True
 
 
 def test_rescue_explicit_override_is_ignored():

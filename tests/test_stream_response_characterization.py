@@ -76,7 +76,6 @@ def _make_vc(monkeypatch, sentences, *, wake_intent=None, is_helper=False,
     # mocks
     vc.stt_logger = MagicMock()
     vc._ducking_agent = MagicMock()
-    vc._ducking_agent.wake_threshold_boost.return_value = 0.0
     vc._room_mood_store = MagicMock()
     vc._room_mood_store.get.return_value.hot_chat = False
     vc._latency_marks = MagicMock()
@@ -159,14 +158,8 @@ async def test_low_confidence_first_sentence_posts_text_no_tts(monkeypatch):
     assert "聽不懂" in final
 
 
-# ── 4. tts_suppressed（wake_intent<0.80）→ 不播、但貼字 ──────────────────────
-@pytest.mark.asyncio
-async def test_tts_suppressed_posts_text_but_no_audio(monkeypatch):
-    vc, ph, ch = _make_vc(monkeypatch, ["你好。", "再見。"], wake_intent=0.5)
-    await _run(vc, wake_intent=0.5)
-    vc.play_tts.assert_not_called()
-    final = ph.edit.call_args_list[-1].kwargs.get("content", "")
-    assert "你好。再見。" in final
+# 意圖漏斗步驟 2 刪除：test_tts_suppressed_posts_text_but_no_audio
+# （tts_suppressed / 低信心靜音閘已拔）。
 
 
 # ── 5. helper query → 串流期不逐句念，整段後走 play_tts(protected) ────────────

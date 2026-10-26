@@ -3,9 +3,12 @@
 舊邏輯：is_playing_audio 時所有 fast wake 一律當回授抑制 → 開台持續放歌時
 喚醒點歌沒一次成功（2026-06-04 觀察）。
 
-修法：純音樂播放中（非 TTS 回授窗）的強人聲喚醒放行。嚴格防自我觸發——
-bot 正在講 TTS（_current_tts_text 非空）或 TTS 後冷卻窗內一律不繞；只在
+修法：純音樂播放中的強人聲喚醒放行。嚴格防自我觸發——
+bot 正在講 TTS（_current_tts_text 非空）一律不繞；只在
 voice 主導 + voice 分數高 + 總信心高時放行。legacy 路徑（無 fusion 分數）不繞。
+
+意圖漏斗步驟 2 刪除：test_in_tts_cooldown_no_bypass（CEO-D18，
+_tts_echo_cooldown_until 從未被寫過非 0.0 的值，now/cooldown 參數已拔除）。
 """
 from __future__ import annotations
 
@@ -19,9 +22,9 @@ def _vc_class():
     return VoiceController
 
 
-def _bypass(VC, *, playing=True, tts_text="", now=1000.0, cooldown=0.0,
+def _bypass(VC, *, playing=True, tts_text="",
            dom="voice", conf=0.7, voice=1.0):
-    return VC._strong_voice_bypass_echo(playing, tts_text, now, cooldown, dom, conf, voice)
+    return VC._strong_voice_bypass_echo(playing, tts_text, dom, conf, voice)
 
 
 def test_strong_voice_during_music_bypasses():
@@ -40,12 +43,6 @@ def test_tts_active_no_bypass():
     """bot 正在講 TTS（_current_tts_text 非空）→ 真回授風險，不繞（防自我觸發）。"""
     VC = _vc_class()
     assert _bypass(VC, tts_text="馬文正在講話") is False
-
-
-def test_in_tts_cooldown_no_bypass():
-    """TTS 後 2s 冷卻窗內（now < cooldown）→ 不繞。"""
-    VC = _vc_class()
-    assert _bypass(VC, now=1000.0, cooldown=1001.5) is False
 
 
 def test_weak_confidence_no_bypass():
