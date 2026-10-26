@@ -22,7 +22,9 @@ def test_artist_candidates_dedup_when_title_and_artist_match():
 
 def test_artist_candidates_hits_via_uploader():
     info = {"title": "日不落", "uploader": "JOLIN 蔡依林"}
-    assert artist_candidates(info) == ["JOLIN 蔡依林"]
+    # 標題沒分隔符 → artist_of 回整段標題；只比對既有 taste key，所以無害
+    assert artist_candidates(info) == ["日不落", "JOLIN 蔡依林"]
+    assert keys_to_reinforce({"蔡依林": {"score": 3.0}}, set(), artist_candidates(info), NOW) == ["蔡依林"]
 
 
 def test_keys_to_reinforce_basic_hit():
