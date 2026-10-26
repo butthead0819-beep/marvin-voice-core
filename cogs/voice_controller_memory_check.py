@@ -14,12 +14,16 @@ from pathlib import Path
 
 from memory_check import (
     ANSWER_WINDOW_S,
+    CATEGORY_SYSTEM,
     CONFIRM_DELTA,
     answer_window_open,
     artist_names,
     classify_answer,
+    items_needing_category,
+    parse_categories,
     pick_question,
     question_text,
+    room_ready,
 )
 from suki_memory import is_pseudo_player
 from tts_speak_policy import SpeakKind
@@ -28,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 _LOG_PATH = "records/memory_checks.jsonl"
 _FINGERPRINT_PATH = "records/taste_fingerprint.json"
+_CATEGORY_PATH = "records/taste_categories.json"  # 喜好項目分類快取（LLM 分過一次就不再問）
 
 
 def _append_memory_check_log(row: dict) -> None:
@@ -71,6 +76,23 @@ def _load_artist_names() -> set:
     return artist_names(fingerprint)
 
 
+def _load_categories() -> dict:
+    try:
+        with open(_CATEGORY_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_categories(categories: dict) -> None:
+    try:
+        Path(_CATEGORY_PATH).parent.mkdir(parents=True, exist_ok=True)
+        Path(_CATEGORY_PATH).write_text(json.dumps(categories, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+
+
 class MemoryCheckMixin:
     async def maybe_ask_memory_check(self) -> bool:
         """房間夠安靜時換歌空檔改問一句記憶確認。真的問出口才回 True。"""
@@ -86,9 +108,14 @@ class MemoryCheckMixin:
                     pm = mem.get_player_memory(n)
                     tastes[n] = pm.get("taste", {})
                     taboos[n] = set(pm.get("taboos", []))
+            log_rows = _load_memory_check_log()
+            if not room_ready(log_rows=log_rows, now=time.time(), last_speech_ts=self.last_player_speech_time):
+                return False
+            artists = _load_artist_names()
+            categories = await self._memory_check_categories(present, tastes, artists)
             picked = pick_question(
-                present=present, tastes=tastes, taboos=taboos,
-                artists=_load_artist_names(), log_rows=_load_memory_check_log(),
+                present=present, tastes=tastes, taboos=taboos, artists=artists,
+                categories=categories, log_rows=log_rows,
                 now=time.time(), last_speech_ts=self.last_player_speech_time,
             )
             if picked is None:
@@ -104,6 +131,24 @@ class MemoryCheckMixin:
         except Exception:
             logger.warning("🧠 [MemoryCheck] maybe_ask_memory_check 失敗", exc_info=True)
             return False
+
+    async def _memory_check_categories(self, present, tastes, artists) -> dict:
+        """非歌手的喜好項目送免費池分類（music/game/food/other），結果快取；失敗就用現有快取。"""
+        categories = _load_categories()
+        need = items_needing_category(present, tastes, artists, categories)
+        router = getattr(self, "_shared_tier_router", None)
+        if not need or router is None:
+            return categories
+        try:
+            raw = await router.quick(prompt=json.dumps(need, ensure_ascii=False), caller="memory_check_category",
+                                     system=CATEGORY_SYSTEM, max_tokens=400, temperature=0.0, json=True)
+            got = parse_categories(raw, need)
+            if got:
+                categories.update(got)
+                _save_categories(categories)
+        except Exception:
+            logger.debug("🧠 [MemoryCheck] 喜好分類失敗，沿用快取", exc_info=True)
+        return categories
 
     def _memory_check_expire(self, speaker: str, item: str) -> None:
         window = getattr(self, "_memory_check_window", None)

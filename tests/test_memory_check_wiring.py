@@ -14,6 +14,7 @@ from tests.test_playback_tts_path import _make_cog
 @pytest.fixture(autouse=True)
 def _reset_log_path(tmp_path, monkeypatch):
     monkeypatch.setattr(vcmc, "_LOG_PATH", str(tmp_path / "memory_checks.jsonl"))
+    monkeypatch.setattr(vcmc, "_CATEGORY_PATH", str(tmp_path / "taste_categories.json"))
     yield
 
 
@@ -273,3 +274,53 @@ async def test_tail_dj_memory_check_error_still_plays_narration(tmp_path):
         host, {"text": "口白", "audio_path": str(audio)})
     assert result == "full"
     vc.play_dj_on_tts_layer.assert_awaited_once_with(str(audio), text="口白")
+
+
+
+# ── 10/26 第二版：喜好分類（遊戲/食物可問） ──────────────────────────────────
+
+def _quiet_cog(taste):
+    cog, _ = _make_cog()
+    cog._memory_check_window = None
+    cog.last_player_speech_time = time.time() - 300
+    cog.get_online_members = MagicMock(return_value=["showay"])
+    cog.bot.router.memory.has_player = MagicMock(return_value=True)
+    cog.bot.router.memory.get_player_memory = MagicMock(return_value={"taste": taste, "taboos": []})
+    cog.play_tts = AsyncMock(return_value=True)
+    return cog
+
+
+@pytest.mark.asyncio
+async def test_uncategorized_item_gets_classified_cached_and_asked():
+    cog = _quiet_cog({"魔物獵人": {"score": 5.0, "last_update": time.time() - 100}})
+    cog._shared_tier_router = MagicMock()
+    cog._shared_tier_router.quick = AsyncMock(return_value='{"魔物獵人": "game"}')
+    with patch.object(vcmc, "_load_artist_names", return_value=set()):
+        assert await cog.maybe_ask_memory_check() is True
+    cog._shared_tier_router.quick.assert_awaited_once()
+    assert cog._shared_tier_router.quick.await_args.kwargs["caller"] == "memory_check_category"
+    assert vcmc._load_categories() == {"魔物獵人": "game"}
+    assert cog._memory_check_window["item"] == "魔物獵人"
+
+
+@pytest.mark.asyncio
+async def test_classifier_error_does_not_raise_and_artist_still_asked():
+    cog = _quiet_cog({"張雨生": {"score": 5.0, "last_update": time.time() - 100},
+                      "魔物獵人": {"score": 5.0, "last_update": time.time() - 9000}})
+    cog._shared_tier_router = MagicMock()
+    cog._shared_tier_router.quick = AsyncMock(side_effect=RuntimeError("429"))
+    with patch.object(vcmc, "_load_artist_names", return_value={"張雨生"}):
+        assert await cog.maybe_ask_memory_check() is True
+    assert vcmc._load_categories() == {}
+    assert cog._memory_check_window["item"] == "張雨生"
+
+
+@pytest.mark.asyncio
+async def test_room_not_ready_never_calls_classifier():
+    cog = _quiet_cog({"魔物獵人": {"score": 5.0, "last_update": time.time() - 100}})
+    cog.last_player_speech_time = time.time() - 10
+    cog._shared_tier_router = MagicMock()
+    cog._shared_tier_router.quick = AsyncMock(return_value='{"魔物獵人": "game"}')
+    with patch.object(vcmc, "_load_artist_names", return_value=set()):
+        assert await cog.maybe_ask_memory_check() is False
+    cog._shared_tier_router.quick.assert_not_awaited()
