@@ -324,3 +324,16 @@ async def test_room_not_ready_never_calls_classifier():
     with patch.object(vcmc, "_load_artist_names", return_value=set()):
         assert await cog.maybe_ask_memory_check() is False
     cog._shared_tier_router.quick.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_all_items_known_never_calls_classifier():
+    """歌手或已分類的項目不再送分類（不浪費免費池額度）。"""
+    vcmc._save_categories({"魔物獵人": "game"})
+    cog = _quiet_cog({"張雨生": {"score": 5.0, "last_update": time.time() - 100},
+                      "魔物獵人": {"score": 5.0, "last_update": time.time() - 50}})
+    cog._shared_tier_router = MagicMock()
+    cog._shared_tier_router.quick = AsyncMock(return_value="{}")
+    with patch.object(vcmc, "_load_artist_names", return_value={"張雨生"}):
+        assert await cog.maybe_ask_memory_check() is True
+    cog._shared_tier_router.quick.assert_not_awaited()
