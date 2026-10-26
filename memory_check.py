@@ -2,9 +2,11 @@
 
 接線在 cogs/voice_controller_memory_check.py。2026-10-26 使用者定案：
 房間長時間沒人講話時，Marvin 在換歌空檔改問一句「你還喜歡 X 嗎？」，取代那次 DJ 口白，
-用回答修正記憶。v1 只問口味（歌手類），多人在場也可以問。
+用回答修正記憶。可問歌手、遊戲、食物，輪流問在場者（不要一直問同一個人）。
 """
 from __future__ import annotations
+
+import json
 
 from suki_memory import LIKE_THRESHOLD
 
@@ -14,6 +16,14 @@ GLOBAL_GAP_S = 1800.0        # 全房間兩次提問至少隔 30 分
 ITEM_REASK_S = 30 * 86400.0  # 同一人同一項 30 天內不重問（對齊 taste 衰減寬限）
 ANSWER_WINDOW_S = 15.0       # 問完後收回答的秒數
 CONFIRM_DELTA = 1.5          # 答「對」加的分（同 daily review 單日幅度）
+
+ASKABLE_CATEGORIES = frozenset({"music", "game", "food"})
+_CATEGORIES = ASKABLE_CATEGORIES | {"other"}
+
+CATEGORY_SYSTEM = """把每個「喜好項目」分類成以下其中一類：
+music＝歌手、歌曲、音樂類型；game＝電玩或遊戲名稱；food＝食物、飲料、料理、餐廳；
+other＝其他一切（興趣、工作、交通工具、人際、價值觀、習慣等）。
+只回 JSON 物件，key 是原樣的項目字串，value 是類別。"""
 
 _NO = ("不喜歡", "不太喜歡", "沒有喜歡", "沒在聽", "不聽了", "不是", "沒有", "膩了", "早就不")
 _YES_OVERRIDE = ("還不錯", "不錯", "不會不喜歡")  # 含「不」但意思是肯定
@@ -59,56 +69,87 @@ def matches_artist(item: str, artists: set[str]) -> bool:
     return False
 
 
-def pick_question(*, present: list[str], tastes: dict[str, dict], taboos: dict[str, set],
-                   artists: set[str], log_rows: list[dict], now: float,
-                   last_speech_ts: float) -> tuple[str, str] | None:
+def room_ready(*, log_rows: list[dict], now: float, last_speech_ts: float) -> bool:
+    """房間夠安靜、且距全房間上一次提問夠久。"""
     if now - last_speech_ts < SILENCE_S:
-        return None
+        return False
+    asked = [float(r.get("ts") or 0) for r in log_rows if r.get("event") == "asked"]
+    if asked and now - max(asked) < GLOBAL_GAP_S:
+        return False
+    return True
 
-    asked_rows = [r for r in log_rows if r.get("event") == "asked"]
-    if asked_rows:
-        latest_ts = max(float(r.get("ts") or 0) for r in asked_rows)
-        if now - latest_ts < GLOBAL_GAP_S:
-            return None
 
-    candidates: list[tuple[str, str, float]] = []
+def like_items(taste: dict) -> list[str]:
+    return [k for k, v in taste.items()
+            if isinstance(v, dict) and float(v.get("score") or 0) >= LIKE_THRESHOLD]
+
+
+def item_askable(item: str, artists: set[str], categories: dict[str, str]) -> bool:
+    """歌手（比對歌手清單）或分類為 music/game/food 的項目才問；分類不出來不問（原則 5）。"""
+    return matches_artist(item, artists) or categories.get(item) in ASKABLE_CATEGORIES
+
+
+def items_needing_category(present: list[str], tastes: dict[str, dict], artists: set[str],
+                           categories: dict[str, str]) -> list[str]:
+    out: list[str] = []
     for speaker in present:
+        for item in like_items(tastes.get(speaker) or {}):
+            if item in out or item in categories or matches_artist(item, artists):
+                continue
+            out.append(item)
+    return out
+
+
+def parse_categories(raw: str | None, items: list[str]) -> dict[str, str]:
+    try:
+        data = json.loads(raw) if raw else None
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: (v if v in _CATEGORIES else "other") for k, v in data.items() if k in items}
+
+
+def _last_asked(rows: list[dict]) -> float:
+    return max((float(r.get("ts") or 0) for r in rows), default=0.0)
+
+
+def pick_question(*, present: list[str], tastes: dict[str, dict], taboos: dict[str, set],
+                  artists: set[str], categories: dict[str, str], log_rows: list[dict], now: float,
+                  last_speech_ts: float) -> tuple[str, str] | None:
+    if not room_ready(log_rows=log_rows, now=now, last_speech_ts=last_speech_ts):
+        return None
+    asked_rows = [r for r in log_rows if r.get("event") == "asked"]
+
+    # 每位在場者的候選（輪流：先挑最久沒被問的人，再挑他最快被衰減的項目）
+    per_person: list[tuple[float, float, int, str, str]] = []
+    for order, speaker in enumerate(present):
         taste = tastes.get(speaker)
         if not taste:
             continue
-
         speaker_asked = [r for r in asked_rows if r.get("speaker") == speaker]
-        if speaker_asked:
-            last_speaker_ts = max(float(r.get("ts") or 0) for r in speaker_asked)
-            if now - last_speaker_ts < PER_SPEAKER_GAP_S:
-                continue
-
+        last_asked = _last_asked(speaker_asked)
+        if speaker_asked and now - last_asked < PER_SPEAKER_GAP_S:
+            continue
         speaker_taboos = taboos.get(speaker) or set()
-        for item, entry in taste.items():
-            if not isinstance(entry, dict):
+        best_item = None
+        for item in like_items(taste):
+            if item in speaker_taboos or not item_askable(item, artists, categories):
                 continue
-            score = float(entry.get("score") or 0)
-            if score < LIKE_THRESHOLD:
-                continue
-            if item in speaker_taboos:
-                continue
-            if not matches_artist(item, artists):
-                continue
-
             item_asked = [r for r in speaker_asked if r.get("item") == item]
-            if item_asked:
-                last_item_ts = max(float(r.get("ts") or 0) for r in item_asked)
-                if now - last_item_ts < ITEM_REASK_S:
-                    continue
+            if item_asked and now - _last_asked(item_asked) < ITEM_REASK_S:
+                continue
+            last_update = float(taste[item].get("last_update") or 0)
+            if best_item is None or last_update < best_item[0]:
+                best_item = (last_update, item)
+        if best_item is not None:
+            # 平手：沒人被問過時比誰的項目最快被衰減，再比在場順序
+            per_person.append((last_asked, best_item[0], order, speaker, best_item[1]))
 
-            last_update = float(entry.get("last_update") or 0)
-            candidates.append((speaker, item, last_update))
-
-    if not candidates:
+    if not per_person:
         return None
-
-    best = min(candidates, key=lambda c: c[2])
-    return (best[0], best[1])
+    _, _, _, speaker, item = min(per_person)
+    return (speaker, item)
 
 
 def question_text(speaker: str, item: str) -> str:
