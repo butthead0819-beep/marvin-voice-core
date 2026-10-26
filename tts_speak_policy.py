@@ -41,6 +41,7 @@ class SpeakKind(enum.Enum):
     PROACTIVE_MANZAI = "proactive_manzai"   # 自發雙人吐槽
     PROACTIVE_MOCK = "proactive_mock"       # 延遲嘲諷
     MEMORY_CALLBACK = "memory_callback"     # 「你之前說要 X」
+    MEMORY_CHECK = "memory_check"            # 換歌空檔問記憶確認
     SOCIAL_FILLER = "social_filler"         # 社交補位 / 頻率共鳴
     STANDUP = "standup"                     # 主動脫口秀（原本掛 protected，已降級）
     JOKE = "joke"                           # 主動講笑話（已降級）
@@ -138,6 +139,7 @@ POLICY: dict[SpeakKind, _Policy] = {
     SpeakKind.PROACTIVE_MANZAI: _PROACTIVE,
     SpeakKind.PROACTIVE_MOCK: _PROACTIVE,
     SpeakKind.MEMORY_CALLBACK: _PROACTIVE_PATIENT,
+    SpeakKind.MEMORY_CHECK: _PROACTIVE,
     SpeakKind.SOCIAL_FILLER: _PROACTIVE,
     SpeakKind.STANDUP: _PROACTIVE,
     SpeakKind.JOKE: _PROACTIVE,

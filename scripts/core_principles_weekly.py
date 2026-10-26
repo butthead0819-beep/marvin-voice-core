@@ -156,6 +156,18 @@ def proactive_voice(qm: list[dict], s: float, e: float, *, presence_hours: int) 
     }
 
 
+def memory_checks(rows: list[dict], s: float, e: float) -> dict:
+    in_window = [r for r in rows if _in(r, s, e)]
+    asked = sum(1 for r in in_window if r.get("event") == "asked")
+    answers = [r for r in in_window if r.get("event") == "answer"]
+    yes = sum(1 for r in answers if r.get("answer") == "yes")
+    no = sum(1 for r in answers if r.get("answer") == "no")
+    n = yes + no
+    if n == 0:
+        return {"n": 0, "asked": asked, "answered": 0}
+    return {"n": n, "hit": yes, "rate": yes / n, "asked": asked, "answered": n}
+
+
 def presence_hours(qm: list[dict], s: float, e: float) -> int:
     hours = {datetime.fromtimestamp(r["ts"], TPE).strftime("%Y-%m-%d %H")
              for r in _metric(qm, "stt_confidence", s, e) if r.get("empty") is False}
@@ -174,6 +186,7 @@ def compute(data: dict, s: float, e: float) -> dict:
         "latency": wake_latency(data.get("fb", []), s, e),
         "false": false_responding(qm, s, e),
         "voice": proactive_voice(qm, s, e, presence_hours=ph),
+        "mcheck": memory_checks(data.get("mchecks", []), s, e),
     }
 
 
@@ -194,11 +207,12 @@ def _mark(ok) -> str:
 def _rows(m: dict) -> list[tuple[str, str, object]]:
     """(列名, 顯示值, 是否過門檻 None=不判/無資料)"""
     T = THRESHOLDS
-    r, sk, la, h, lat, fr, v = (m["recall"], m["skip"], m["lanes"], m["hot"],
-                                m["latency"], m["false"], m["voice"])
+    r, sk, la, h, lat, fr, v, mc = (m["recall"], m["skip"], m["lanes"], m["hot"],
+                                    m["latency"], m["false"], m["voice"], m["mcheck"])
     vr = v.get("requested", {"n": 0})
     out = [
         ("1 記憶正確率", _pct(r), (r["rate"] >= T["recall_rate_min"]) if r.get("n") else None),
+        ("1b 現場確認記憶", _pct(mc), (mc["rate"] >= T["recall_rate_min"]) if mc.get("n") else None),
         ("2a Marvin 推薦 skip 率", _pct(sk), (sk["rate"] <= T["marvin_skip_rate_max"]) if sk.get("n") else None),
         ("2b 直接取自記憶的選歌", f"{la['memory_direct_share'] * 100:.1f}% (n={la['n']})" if la.get("n") else "無資料", None),
         ("3 熱聊時主動出聲", f"{h['hot']} 次 / 主動 {h['n']}" if h.get("n") else "無資料",
@@ -246,6 +260,8 @@ def render(cur: dict, prev: dict, start_label: str, end_label: str) -> str:
     v = cur["voice"]
     if v.get("n"):
         lines.append(f"- 6 主動發聲總秒數：{v['total_s']:.1f}s；kind 由舊旗標推測的比例：{v['inferred_share'] * 100:.1f}%")
+    mc = cur["mcheck"]
+    lines.append(f"- 1b 提問 {mc.get('asked', 0)} 次，有明確回答 {mc.get('answered', 0)} 次")
     lines.append("- 連續兩週無資料：" + ("、".join(both_empty) if both_empty else "無"))
     lines.append(f"- 門檻來源：docs/MARVIN_CORE_PRINCIPLES.md（喚醒 p50 ≤ {T['wake_p50_max_s']}s 為階段一）")
     return "\n".join(lines) + "\n"
@@ -261,6 +277,7 @@ def _load(root: Path) -> dict:
         "skips": load_jsonl(rec / "song_skips.jsonl"),
         "recs": load_jsonl(rec / "agent_recommendations.jsonl"),
         "fb": load_jsonl(rec / "response_feedback.jsonl"),
+        "mchecks": load_jsonl(rec / "memory_checks.jsonl"),
     }
 
 

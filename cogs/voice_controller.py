@@ -50,6 +50,7 @@ from cogs.voice_controller_gap_notify import GapNotifyMixin
 from cogs.voice_controller_wake_session import WakeSessionMixin, _STORM_CLEAR_QUIET  # 風暴消散靜默秒數（與接受喚醒計數共用一份）
 from cogs.voice_controller_turn_outcome import TurnOutcomeMixin
 from cogs.voice_controller_estop import EmergencyStopMixin
+from cogs.voice_controller_memory_check import MemoryCheckMixin
 import turn_outcome
 import puck_gesture
 from turn_outcome import gate_reason, discovered_from_reason, turn_route
@@ -365,7 +366,7 @@ _FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGN
 class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixin,
                       ConnectionMixin, PlaybackMixin, SystemLoopsMixin,
                       StateProxyMixin, MusicProxyMixin, GapNotifyMixin, WakeSessionMixin,
-                      EmergencyStopMixin,
+                      EmergencyStopMixin, MemoryCheckMixin,
                       TurnOutcomeMixin, commands.Cog):
     """
     [Operation Paranoid Android] 
@@ -1035,7 +1036,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             return
 
         # 🛑 [EStop] 喊停語最優先：穿透所有喚醒防護（Marvin 講話中也有效）
-        if self._estop_intercept(speaker, raw_text):
+        if self._estop_intercept(speaker, raw_text) or self._memory_check_intercept(speaker, raw_text, is_wake_check):
             return
 
         self.last_player_speech_time = time.time()

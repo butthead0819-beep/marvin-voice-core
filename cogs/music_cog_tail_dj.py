@@ -656,6 +656,9 @@ class MusicTailDJMixin:
         if self._dj_channel_is_hot(vc):
             logger.info("🔥 [DJ Heat] 熱聊中，這輪不講")
             return None
+        # 🧠 [MemoryCheck] 房間夠安靜 → 這次口白換成問一句記憶確認（原則 1，使用者 10/26 定）
+        if await vc.maybe_ask_memory_check():
+            return None
         kind = "full"
         played = False
         with vc._protected_tts_window():

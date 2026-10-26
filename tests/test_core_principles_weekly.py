@@ -128,6 +128,24 @@ def test_presence_hours_distinct_local_hour_and_skips_empty():
     assert w.presence_hours(rows, h, h + 10000) == 2
 
 
+def test_memory_checks_with_data():
+    rows = [
+        {"ts": 1100, "event": "asked", "speaker": "狗與露", "item": "張雨生"},
+        {"ts": 1150, "event": "answer", "speaker": "狗與露", "item": "張雨生", "answer": "yes"},
+        {"ts": 1200, "event": "asked", "speaker": "大肚", "item": "周杰倫"},
+        {"ts": 1250, "event": "answer", "speaker": "大肚", "item": "周杰倫", "answer": "no"},
+        {"ts": 1300, "event": "answer", "speaker": "大肚", "item": "周杰倫", "answer": "unclear"},
+    ]
+    r = w.memory_checks(rows, S, E)
+    assert r == {"n": 2, "hit": 1, "rate": 0.5, "asked": 2, "answered": 2}
+
+
+def test_memory_checks_no_data():
+    assert w.memory_checks([], S, E) == {"n": 0, "asked": 0, "answered": 0}
+    rows = [{"ts": 1100, "event": "asked", "speaker": "狗與露", "item": "張雨生"}]
+    assert w.memory_checks(rows, S, E) == {"n": 0, "asked": 1, "answered": 0}
+
+
 def _empty_week(presence=0):
     return w.compute({}, S, E) | {"presence_hours": presence}
 
@@ -139,6 +157,7 @@ def test_render_small_sample_and_no_data_marks():
     assert "| — |" in md
     assert "連續兩週無資料" in md and "1 記憶正確率" in md.split("連續兩週無資料")[1]
     assert "量測點未接（G3）" in md
+    assert "1b 現場確認記憶" in md
 
 
 def test_render_pass_fail_marks():

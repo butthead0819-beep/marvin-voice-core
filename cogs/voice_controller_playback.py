@@ -660,6 +660,7 @@ class PlaybackMixin:
         silent_during_stream / bypass_stream_mute）推等效 kind（相容墊片）。
         priority / allow_hotswap / hotswap_max_chars / protected / bypass_stream_mute
         都是待退役的舊參數，見 docs/tts_speak_policy_spec.md。
+        回傳 True＝真的推進 mixer；其他早退路徑回 None。
         """
         if not text: return
         import re
@@ -706,6 +707,7 @@ class PlaybackMixin:
         if pushed_ok and _resolved_kind in _WAKE_SESSION_REPLY_KINDS:
             self._wake_session_on_replied()
         # 10/23 拔：問號結尾就開全域 8s 追問窗→送客/待辦確認等主動句被頻道任何人的話接走（7/7 全誤觸）。發起者接話交給 WakeSession。
+        return pushed_ok
 
     async def _play_dual_interject(self, segments, *, duck=None, step=None, at=None) -> bool:
         """🎭 [打岔] Plan12 mixer 雙層疊播：Marvin 在 layer1，Marmo 在 Marvin 尾段(~80%)
