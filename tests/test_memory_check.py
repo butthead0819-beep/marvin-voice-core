@@ -151,3 +151,16 @@ def test_answer_window_open():
     assert mc.answer_window_open(window, "狗與露", NOW + 20) is False
     assert mc.answer_window_open(window, "狗與露", NOW) is True
     assert mc.answer_window_open(None, "狗與露", NOW) is False
+
+
+def test_classify_answer_mixed_yes_no_is_unclear():
+    """正反都有 → 聽不懂，不准刪（原則 5）。「不喜歡」裡的「喜歡」不算正面。"""
+    assert mc.classify_answer("不是啦我還是喜歡") == "unclear"
+    assert mc.classify_answer("對啊沒在聽了") == "unclear"
+    assert mc.classify_answer("不喜歡了") == "no"
+
+
+def test_classify_answer_command_or_long_text_is_unclear():
+    """窗內講指令（含喚醒詞）或長句不是在回答 → 放行給正常流程。"""
+    assert mc.classify_answer("對了馬文幫我放歌") == "unclear"
+    assert mc.classify_answer("對啊我昨天在公司聽了一整天真的很喜歡") == "unclear"

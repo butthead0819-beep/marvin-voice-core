@@ -20,6 +20,7 @@ _YES_OVERRIDE = ("還不錯", "不錯", "不會不喜歡")  # 含「不」但意
 _YES = ("喜歡", "對", "是啊", "是阿", "是的", "有啊", "當然", "沒錯", "還好啦喜歡", "超喜歡", "嗯對")
 
 _STRIP_CHARS = "，。！？、,.!?　 \t\n\r"
+_MAX_ANSWER_CHARS = 12
 
 
 def artist_names(fingerprint: dict) -> set[str]:
@@ -118,11 +119,21 @@ def classify_answer(text: str) -> str:
     t = (text or "")
     for ch in _STRIP_CHARS:
         t = t.replace(ch, "")
+    # 含喚醒詞＝在下指令；太長＝不是在回答是非題 → 放行給正常流程
+    if "馬文" in t or len(t) > _MAX_ANSWER_CHARS:
+        return "unclear"
     if any(k in t for k in _YES_OVERRIDE):
         return "yes"
-    if any(k in t for k in _NO):
+    rest = t
+    for k in _NO:
+        rest = rest.replace(k, "")
+    has_no = rest != t
+    has_yes = any(k in rest for k in _YES)  # 「不喜歡」已先挖掉，裡面的「喜歡」不算正面
+    if has_no and has_yes:
+        return "unclear"  # 正反都有 → 不改記憶（原則 5）
+    if has_no:
         return "no"
-    if any(k in t for k in _YES):
+    if has_yes:
         return "yes"
     return "unclear"
 
