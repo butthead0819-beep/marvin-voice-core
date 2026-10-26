@@ -254,3 +254,22 @@ async def test_tail_dj_memory_check_false_plays_narration_as_usual(tmp_path):
 
     assert result == "full"
     vc.play_dj_on_tts_layer.assert_awaited_once_with(str(original), text=dj["text"])
+
+
+@pytest.mark.asyncio
+async def test_tail_dj_memory_check_error_still_plays_narration(tmp_path):
+    """記憶確認拋例外 → 口白照常播（單一服務失敗不中斷）。"""
+    from cogs.music_cog_tail_dj import MusicTailDJMixin
+    audio = tmp_path / "dj.mp3"
+    audio.write_bytes(b"x")
+    vc = MagicMock()
+    vc._intimate_mode = False
+    vc.maybe_ask_memory_check = AsyncMock(side_effect=RuntimeError("boom"))
+    vc.play_dj_on_tts_layer = AsyncMock(return_value=True)
+    host = MagicMock()
+    host._vc.return_value = vc
+    host._dj_channel_is_hot.return_value = False
+    result = await MusicTailDJMixin._maybe_play_dj_interjection(
+        host, {"text": "口白", "audio_path": str(audio)})
+    assert result == "full"
+    vc.play_dj_on_tts_layer.assert_awaited_once_with(str(audio), text="口白")
