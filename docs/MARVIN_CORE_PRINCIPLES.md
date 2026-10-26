@@ -75,7 +75,7 @@
 | 指標 | 資料源 | 現況（近 7 天） | 門檻 |
 |---|---|---|---|
 | Marvin 推薦歌 skip 率 | `song_plays` × `song_skips`，requested_by 含「Marvin」 | 35 / 1222 = **2.9%** | ≤ 5% |
-| 選歌來自記憶的比例 | `agent_recommendations.jsonl` 的 `lane` | ✅ 有欄位，未統計 | ≥ 50% ⬜ |
+| 選歌來自記憶的比例 | `agent_recommendations.jsonl` 的 `lane` | 近 14 天：discovery 78%、long_tail 18%、spotlight 4%、group_resonance <1% → 直接取自記憶 **22%** | ≥ 50% ⬜（discovery 是用團體歌當種子找新歌，算不算「來自記憶」待定） |
 | 人工點歌 skip 率（對照組） | 同上，非 Marvin | 7 / 43 | 只看趨勢 |
 
 **調整方向**：skip 率升 → 依 lane 拆，看是哪一層候選池出問題（skip 調推薦邏輯，不 blacklist 歌）；記憶比例過低 → 查 T1 候選是否被排除規則吃光。
@@ -256,11 +256,12 @@
 | # | 缺口 | 影響原則 | 建議做法 |
 |---|---|---|---|
 | G1 | 每次 TTS 播出沒有統一記錄 kind / 秒數 / 當下熱度 / 是否被請求 | 3、6、7 | 在 TTS 播出出口加一筆 `records/speech_log.jsonl`（一處接點，不是每個呼叫端各寫） |
-| G2 | `false_responding`、`interruption` 6 月後停止寫入 | 3、5 | 查哪次重構斷掉的，接回去 |
+| G2 | `interruption`、`react` 6/17 後停止寫入；`false_responding` 只記「只有 Track B 中」的喚醒，那條路已很少走 | 3、5 | 根因：MusicCog 重構 1b790f9 換播放路徑時連同舊 `voice_client.play` 一起刪掉。`interruption` 由 G1 的 `n_speaking` 欄位取代；誤回應另找代理指標 |
 | G3 | `turn_outcomes.corrected` / `satisfaction_signal` 從沒接上 | 5、7 | 照原則 7 的正面/負面/中性定義接 |
 | G4 | 喚醒漏接沒有代理指標 | 4 | 統計「N 秒內連續喚醒」 |
 | G5 | `response_feedback` 的反應分類不可信（抽樣預設正常、無反應標嚴重） | 7 | 補 G3 之後退役或重新定義 |
 | G6 | 沒有一支週報腳本把 §4 的表自動產出 | 全部 | `scripts/core_principles_weekly.py`，純讀 records，不打 LLM |
+| G7 | 緊急停止觸發沒寫進 records | 6 | estop 觸發時記一筆 |
 
 ---
 
