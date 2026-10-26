@@ -12,6 +12,8 @@
 
 ## 這個專案
 
+**Marvin 核心規範：[docs/MARVIN_CORE_PRINCIPLES.md](docs/MARVIN_CORE_PRINCIPLES.md)**——七條原則＋量測＋定時審查。改到「Marvin 會出聲、會做事、會記東西」的地方，開工前先過 §3 設計審查清單。
+
 Marvin，分三條分支：
 1. **實體化**（Pi satellite / ESP32 puck satellite / HUD display）：把 Marvin 帶出 Discord，變成實體裝置
 2. **Marvin DJ**：音樂播放分支，主打 autopilot DJ——懂口味、隨氣氛策展播放
