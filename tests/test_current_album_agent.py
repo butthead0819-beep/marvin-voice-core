@@ -17,12 +17,11 @@ from intent_agents.current_album_agent import CurrentAlbumAgent
 from intent_bus import IntentBus, IntentContext
 
 
-def _ctx(raw, speaker="showay", mode="normal", wake_intent=0.9, low_conf=False):
+def _ctx(raw, speaker="showay", mode="normal", wake_intent=0.9):
     return IntentContext(
         speaker=speaker, raw_text=raw, query=raw, original_raw=raw,
         wake_intent=wake_intent, stream_active=(mode == "stream"),
         game_mode=(mode == "game"), is_owner=False, now=0.0, mode=mode,
-        low_confidence_wake=low_conf,
     )
 
 
@@ -58,11 +57,8 @@ def test_bid_misses(raw):
     assert bid.confidence == 0.0
 
 
-def test_low_confidence_wake_gated():
-    agent, _ = _agent()
-    bid = agent.bid(_ctx("馬文播放這張專輯", low_conf=True))
-    assert bid.confidence == 0.0
-    assert bid.reason == "low_confidence_wake"
+# 意圖漏斗步驟 2 刪除：test_low_confidence_wake_gated（low_confidence_wake 全鏈
+# 已拔，CurrentAlbumAgent.gate 不再存在）。
 
 
 def test_game_mode_dense_zero():

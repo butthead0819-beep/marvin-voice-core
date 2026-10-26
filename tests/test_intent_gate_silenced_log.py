@@ -78,7 +78,6 @@ def _make_vc(monkeypatch, *, query_intent_signal: bool, query_text: str):
 
     vc.stt_logger = MagicMock()
     vc._ducking_agent = MagicMock()
-    vc._ducking_agent.wake_threshold_boost.return_value = 0.0
     vc._room_mood_store = MagicMock()
     vc._room_mood_store.get.return_value.hot_chat = False
     vc._latency_marks = MagicMock()
@@ -202,36 +201,8 @@ async def test_gap_web_domain_routes_to_grounded(monkeypatch):
     vc._stream_response.assert_not_awaited()
 
 
-async def test_gap_web_domain_low_confidence_goes_to_marvin(monkeypatch):
-    """同樣是 query_domain="web"，但 low_confidence_wake（可能是背景對話誤判喚醒）
-    → 不該觸發有副作用的 grounded 查詢，照常放行給 Marvin 主 LLM。"""
-    import cogs.voice_controller as vcmod
-    from intent_gap import IntentGapRecord
-
-    monkeypatch.setenv("MARVIN_GAP_CLASSIFIER", "1")
-    query_text = "這禮拜的F1在哪裡比賽"
-    vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text=query_text)
-    vc._shared_tier_router = MagicMock()
-    vc._gap_logger = MagicMock()
-    vc._stream_response = AsyncMock()
-
-    monkeypatch.setattr(vcmod, "make_groq_gap_classifier", lambda router: MagicMock())
-
-    fake_rec = IntentGapRecord(
-        utterance_id="u5", ts=time.time(), speaker="狗與露", mode="normal",
-        raw_query=query_text, cleaned_query=query_text, intent_type="factual_question",
-        slots={}, nearest_agent="grounded_qa", nearest_distance=0.1,
-        ack_text=None, acknowledged=False, query_domain="web",
-    )
-    monkeypatch.setattr(vcmod, "handle_intent_gap", AsyncMock(return_value=fake_rec))
-
-    run_grounded_mock = AsyncMock()
-    monkeypatch.setattr("intent_agents.grounded_qa_agent.run_grounded_qa", run_grounded_mock)
-
-    await vc._process_queued_query("狗與露", time.time(), wake_intent=0.0)
-
-    run_grounded_mock.assert_not_awaited()
-    vc._stream_response.assert_awaited_once()
+# 意圖漏斗步驟 2 刪除：test_gap_web_domain_low_confidence_goes_to_marvin
+# （low_confidence_wake 全鏈已拔，_route_gap_record 不再依此分流）。
 
 
 async def test_gap_record_dms_owner(monkeypatch):

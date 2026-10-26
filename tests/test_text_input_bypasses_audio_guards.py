@@ -26,7 +26,6 @@ def _make_guard_self(*, is_playing_audio=True):
     fake._storm_last_wake_time = 0.0
     fake._wake_burst_times = []
     fake.is_playing_audio = is_playing_audio
-    fake._tts_echo_cooldown_until = 0.0
     fake._current_tts_text = ""
     fake._last_global_wake_time = 0.0
     fake.game_mode = False

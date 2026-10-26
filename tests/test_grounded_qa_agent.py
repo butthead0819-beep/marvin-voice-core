@@ -3,7 +3,6 @@
 驗證（對齊 CLAUDE.md IntentBus 測試骨架）：
   - parse_grounded_qa 純規則：查動詞 / 事實問句尾命中；點歌 / 找歌 / 音量 / 問 Marvin 自身 → None
   - bid：命中 0.75 + handler；未命中 dense 0.0；輸真點歌 / find-song 的 CRITICAL
-  - gate：low_confidence_wake → dense 0.0
   - mode gate：game → mode_mismatch
   - grounded_answer（mock client）：free 先用 / 429→paid + guard.record / guard 到頂→None
     / L1 拒（空、「無」、拒答前綴）/ L2 拒（grounding_chunks 空）/ model chain fallback
@@ -25,13 +24,13 @@ from intent_agents.grounded_qa_agent import (
 from intent_bus import IntentContext
 
 
-def _ctx(raw, speaker="showay", mode="normal", wake_intent=0.9, low_conf=False,
+def _ctx(raw, speaker="showay", mode="normal", wake_intent=0.9,
          dispatch_source="regex"):
     return IntentContext(
         speaker=speaker, raw_text=raw, query=raw, original_raw=raw,
         wake_intent=wake_intent, stream_active=(mode == "stream"),
         game_mode=(mode == "game"), is_owner=False, now=0.0, mode=mode,
-        low_confidence_wake=low_conf, dispatch_source=dispatch_source,
+        dispatch_source=dispatch_source,
     )
 
 
@@ -89,11 +88,8 @@ def test_bid_no_match_dense_zero():
     assert bid.reason == "no_match"
 
 
-def test_bid_low_confidence_wake_gated():
-    agent, _ = _agent()
-    bid = agent.bid(_ctx("馬文 0722 的酒是什麼", low_conf=True))
-    assert bid.confidence == 0.0
-    assert bid.reason == "low_confidence_wake"
+# 意圖漏斗步驟 2 刪除：test_bid_low_confidence_wake_gated（low_confidence_wake 全鏈
+# 已拔，GroundedQAAgent.gate 不再存在）。
 
 
 def test_bid_game_mode_mismatch():
@@ -130,9 +126,9 @@ def test_regex_bid_fills_topic_no_missing_slots():
 # ── audio-rescue 路徑（LLM 聽糊字音訊 → 填 topic slot）──────────────────────
 
 def test_resolve_intent_audio_rescue_uses_llm_topic():
-    """糊掉的 ctx.query + low_confidence_wake，但 LLM 從音訊給了乾淨 topic → 出價。"""
+    """糊掉的 ctx.query，但 LLM 從音訊給了乾淨 topic → 出價。"""
     agent, _ = _agent()
-    ctx = _ctx("馬文 淩淩期 九 三 觀", low_conf=True, dispatch_source="llm_rescue_audio")
+    ctx = _ctx("馬文 淩淩期 九 三 觀", dispatch_source="llm_rescue_audio")
     bid = agent.resolve_intent("factual_question", {"topic": "0722 的酒是什麼"}, ctx)
     assert bid is not None
     assert bid.confidence == 0.75
@@ -155,7 +151,7 @@ async def test_resolve_intent_audio_rescue_handler_uses_llm_topic(monkeypatch):
         seen.update(speaker=speaker, topic=topic, raw=raw)
 
     monkeypatch.setattr(gqa, "run_grounded_qa", _fake)
-    ctx = _ctx("馬文 亂碼 亂碼", speaker="大肚", low_conf=True,
+    ctx = _ctx("馬文 亂碼 亂碼", speaker="大肚",
                dispatch_source="llm_rescue_audio")
     bid = agent.resolve_intent("factual_question", {"topic": "珠穆朗瑪峰多高"}, ctx)
     await bid.handler()

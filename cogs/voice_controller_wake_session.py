@@ -298,16 +298,16 @@ class WakeSessionMixin:
         asyncio.create_task(self.play_tts(prefix + sentence, already_in_channel=True, emotion_tag=emotion_tag))
 
     def _speak_whole_reply(self, speaker, full_text: str, *, music: bool, helper: bool,
-                            suppressed: bool, emotion_tag: str = "neutral") -> None:
+                            emotion_tag: str = "neutral") -> None:
         # 🎚️ [Mid-song Answer] 音樂中不逐句念（_speak_reply_sentence 跳過）；收完整段後，
         # 若整段夠短（≤ STREAM_BUDGET，= B 給 LLM 的音樂字數預算）一次性走熱切換注入發聲，
         # 過長則維持靜音、只留貼文。短答案才聽得到，避免長答案佔用音樂太久。
-        if music and not suppressed and full_text:
+        if music and full_text:
             asyncio.create_task(self.speak(self._reply_address_prefix(speaker, full_text) + full_text, emotion_tag=emotion_tag))
 
         # 🔍 [Helper Query] 非串流模式收完整段後：短答案整段念、長答案只念短通知
         # （完整內容已在文字貼文）。串流期間已 defer，這裡是唯一發聲點。
-        if helper and full_text and not suppressed and not music:
+        if helper and full_text and not music:
             _mode, _say = helper_speak_plan(full_text, speaker)
             if _mode == "notify":
                 logger.info(f"🔍 [Helper Query] {speaker} 長答案({len(full_text)}字)→貼文＋口播通知")

@@ -17,11 +17,11 @@ import intent_agents.grounded_qa_agent as gqa
 from intent_agents.grounded_qa_agent import parse_grounded_qa, try_question_opener
 
 
-def _ctx(query, speaker="A", raw_text=None, low_confidence_wake=False):
+def _ctx(query, speaker="A", raw_text=None, mode="normal"):
     return SimpleNamespace(
         speaker=speaker, query=query,
         raw_text=raw_text if raw_text is not None else query,
-        low_confidence_wake=low_confidence_wake,
+        mode=mode,
     )
 
 
@@ -68,13 +68,13 @@ async def test_opener_not_question_returns_false(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_opener_marks_start_and_done_even_on_early_not_question_exit():
-    """E1 打點：低信心喚醒等早退路徑（不呼叫 run_grounded_qa）也要標 opener_start/opener_done，
+    """E1 打點：mode 不相容等早退路徑（不呼叫 run_grounded_qa）也要標 opener_start/opener_done，
     否則早退佔多數的 not_question case 會在分段時間裡看起來「沒進開場判斷」。"""
     import pipeline_timing
 
     pipeline_timing.start()
     ctrl = MagicMock()
-    result = await try_question_opener(ctrl, _ctx("隨便聊聊", low_confidence_wake=True))
+    result = await try_question_opener(ctrl, _ctx("隨便聊聊", mode="game"))
 
     assert result is False
     snap = pipeline_timing.snapshot()
@@ -98,17 +98,8 @@ async def test_opener_strips_wake_prefix(monkeypatch):
 
 # ── 3. 不呼叫 run_grounded_qa 且回 False ───────────────────────────────────
 
-@pytest.mark.asyncio
-async def test_opener_low_confidence_wake_skips(monkeypatch):
-    mock_rgqa = AsyncMock(return_value="answered")
-    monkeypatch.setattr(gqa, "run_grounded_qa", mock_rgqa)
-
-    ctrl = MagicMock()
-    ctx = _ctx("臺積電今天收盤股價多少", low_confidence_wake=True)
-    result = await try_question_opener(ctrl, ctx)
-
-    assert result is False
-    mock_rgqa.assert_not_awaited()
+# 意圖漏斗步驟 2 刪除：test_opener_low_confidence_wake_skips（low_confidence_wake
+# 全鏈已拔，try_question_opener 不再檢查它）。
 
 
 @pytest.mark.parametrize("query", [

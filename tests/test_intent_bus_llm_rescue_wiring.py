@@ -222,17 +222,5 @@ async def test_bus_without_rescue_agent_behaves_as_before():
     assert await bus.dispatch(_ctx()) is None
 
 
-# ── low_confidence_wake：8/22 曾擋、量到成本無感後拿掉，rescue 一樣會嘗試 ─────────
-
-@pytest.mark.asyncio
-async def test_low_confidence_wake_no_longer_blocks_rescue():
-    """成本量到 $0.00002-0.00003/次後拿掉這道門——low_confidence_wake=True 仍會嘗試 rescue。"""
-    def _zero(ctx):
-        return Bid(name="z", confidence=0.0, handler=AsyncMock(), reason="no_match")
-
-    rescue = _StubRescue(result=None)
-    bus = IntentBus([_StubAgent("z", _zero)], llm_rescue_agent=rescue)
-
-    await bus.dispatch(replace(_ctx(), low_confidence_wake=True))
-
-    assert len(rescue.calls) == 1
+# 意圖漏斗步驟 2 刪除：test_low_confidence_wake_no_longer_blocks_rescue
+# （low_confidence_wake 欄位已從 IntentContext/RescuePayload 拔除）。

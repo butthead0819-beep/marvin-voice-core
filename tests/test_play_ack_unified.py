@@ -173,49 +173,39 @@ def test_is_status_probe_rejects_chitchat():
         assert cog._is_status_probe(t) is False, t
 
 
-def test_gate_blocks_in_echo_cooldown():
-    cog = _make_cog()
-    cog._tts_echo_cooldown_until = _t.time() + 2.0
-    _recent(cog)  # 無近窗文字
-    assert cog._active_ack_allowed(_STATUS) is False
+# 意圖漏斗步驟 2 刪除：test_gate_blocks_in_echo_cooldown（CEO-D18，
+# _tts_echo_cooldown_until 從未被寫過非 0.0 的值，_active_ack_allowed 已不再檢查它）。
 
 
 def test_gate_allows_when_silent():
     cog = _make_cog()
-    cog._tts_echo_cooldown_until = 0.0
     _recent(cog)  # 近窗沒人講 → 安靜等待
     assert cog._active_ack_allowed(_STATUS) is True
 
 
 def test_gate_allows_on_status_probe():
     cog = _make_cog()
-    cog._tts_echo_cooldown_until = 0.0
     _recent(cog, "怎麼都沒反應")   # 在問狀態 → 立刻放
     assert cog._active_ack_allowed(_STATUS) is True
 
 
 def test_gate_suppresses_on_chitchat():
     cog = _make_cog()
-    cog._tts_echo_cooldown_until = 0.0
     _recent(cog, "今天天氣真好")   # 閒聊 → 壓住
     assert cog._active_ack_allowed(_STATUS) is False
 
 
 def test_gate_ignores_stale_text_outside_window():
     cog = _make_cog()
-    cog._tts_echo_cooldown_until = 0.0
     _recent(cog, "今天天氣真好", age_s=99)  # 太舊（窗外）→ 視同沉默 → 放
     assert cog._active_ack_allowed(_STATUS) is True
 
 
 def test_filler_gate_ignores_intent():
-    """filler 非 intent_aware：閒聊也不影響，只看 echo 窗。"""
+    """filler 非 intent_aware：永遠放行。"""
     cog = _make_cog()
-    cog._tts_echo_cooldown_until = 0.0
     _recent(cog, "今天天氣真好")
     assert cog._active_ack_allowed(_FILLER) is True
-    cog._tts_echo_cooldown_until = _t.time() + 2.0
-    assert cog._active_ack_allowed(_FILLER) is False
 
 
 @pytest.mark.asyncio
@@ -224,7 +214,6 @@ async def test_status_suppressed_during_chitchat(tmp_path):
     cog = _make_cog()
     vc = _idle_vc()
     cog.voice_client = vc
-    cog._tts_echo_cooldown_until = 0.0
     _recent(cog, "你昨天看球賽了嗎")
 
     f = tmp_path / "thinking_first_1.mp3"; f.write_bytes(b"x")
@@ -241,7 +230,6 @@ async def test_status_fires_on_probe(tmp_path):
     cog = _make_cog()
     vc = _idle_vc()
     cog.voice_client = vc
-    cog._tts_echo_cooldown_until = 0.0
     _recent(cog, "怎麼都沒反應")
 
     f = tmp_path / "thinking_first_1.mp3"; f.write_bytes(b"x")
@@ -254,11 +242,10 @@ async def test_status_fires_on_probe(tmp_path):
 
 @pytest.mark.asyncio
 async def test_passive_ack_ignores_active_gate(tmp_path):
-    """wake（被動）：即使閒聊 / echo 窗，仍照放（被動一定該確認）。"""
+    """wake（被動）：即使閒聊，仍照放（被動一定該確認）。"""
     cog = _make_cog()
     vc = _idle_vc()
     cog.voice_client = vc
-    cog._tts_echo_cooldown_until = _t.time() + 5.0
     _recent(cog, "今天天氣真好")
 
     f = tmp_path / "ack_1.mp3"; f.write_bytes(b"x")

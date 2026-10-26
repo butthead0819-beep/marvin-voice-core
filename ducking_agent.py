@@ -37,7 +37,6 @@ class DuckingAgent:
         clock: Callable[[], float] = time.time,
         mood_store=None,
         channel_id: int = 0,
-        wake_threshold_boost: float = 0.0,
     ) -> None:
         self._bus = speak_bus
         self._window_s = window_s
@@ -50,7 +49,6 @@ class DuckingAgent:
         self._last_suppress_at: float = float("-inf")  # 確保第一次觸發不被 cooldown 卡
         self._mood_store = mood_store
         self._channel_id = channel_id
-        self._wake_boost = wake_threshold_boost
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -100,12 +98,8 @@ class DuckingAgent:
     # ── inspection ───────────────────────────────────────────────────────────
 
     def is_hot(self) -> bool:
-        """Currently in suppression window? Used by wake_threshold_boost + playback fade."""
+        """Currently in suppression window? Used by playback fade."""
         return (self._clock() - self._last_suppress_at) < self._suppress_ttl_s
-
-    def wake_threshold_boost(self) -> float:
-        """Hot 時回 +N，給 IntentBus ctx hint 拉高 wake 門檻；不改 MIN_CONFIDENCE 常數。"""
-        return self._wake_boost if self.is_hot() else 0.0
 
     # ── manual release ───────────────────────────────────────────────────────
 

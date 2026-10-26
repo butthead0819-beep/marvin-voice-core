@@ -52,7 +52,6 @@ class RescuePayload:
     resolved_agent: str | None = None
     resolved_intent: str | None = None
     resolved_slots: dict | None = None
-    low_confidence_wake: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,10 +109,6 @@ class IntentContext:
     resolved_agent: str | None = None
     resolved_intent: str | None = None
     resolved_slots: dict | None = None
-    # 8/22：voice_controller 算好的「這次喚醒信心夠不夠」（wake_intent < 門檻），
-    # 既有側效分支（NemoClaw/Marmo/Vision/imitation…）都用它擋環境誤拾音；
-    # rescue（尤其音訊版，真的會打付費 API）比照同款守門，見 _maybe_rescue()。
-    low_confidence_wake: bool = False
     # 10/20：連續對談窗內（WakeSession 已開窗且是 target 的句子）→ _maybe_rescue 跳過。
     # 對談中幾乎都是閒聊，rescue 串行多等 ~2.9s；要救指令以後再另外攔截。
     in_wake_session: bool = False
@@ -147,7 +142,6 @@ class IntentContext:
                 resolved_agent=self.resolved_agent,
                 resolved_intent=self.resolved_intent,
                 resolved_slots=self.resolved_slots,
-                low_confidence_wake=self.low_confidence_wake,
             ),
         )
 

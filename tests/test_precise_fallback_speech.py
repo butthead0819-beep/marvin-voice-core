@@ -63,7 +63,6 @@ def _make_cog():
     cog._wake_response_pending = False
     
     cog._ducking_agent = MagicMock()
-    cog._ducking_agent.wake_threshold_boost.return_value = 0.0
 
     # Mock side effect paths to avoid triggers
     cog._handle_nemoclaw_query = AsyncMock()
@@ -173,23 +172,8 @@ async def test_fallback_general_error():
         emotion_tag="neutral"
     )
 
-# ── 測試 5：低信心 (tts_suppressed) 不播報 TTS ──
-@pytest.mark.asyncio
-async def test_fallback_suppressed_on_low_confidence():
-    cog = _make_cog()
-    _set_query(cog, "你好嗎")
-
-    async def _error_stream():
-        if False:
-            yield ""
-        raise ValueError("Some error")
-
-    cog.bot.router.stream_fast_response = MagicMock(return_value=_error_stream())
-    
-    # wake_intent = 0.5 < 0.80 -> tts_suppressed = True
-    await cog._process_queued_query("Alice", wake_time=time.time(), wake_intent=0.5)
-    
-    cog.play_tts.assert_not_awaited()
+# 意圖漏斗步驟 2 刪除：test_fallback_suppressed_on_low_confidence
+# （tts_suppressed / 低信心靜音閘已拔，低信心喚醒現在跟高信心一樣會播報 TTS）。
 
 # ── 測試 6：首句已收到，後續 Exception 不播報 TTS ──
 @pytest.mark.asyncio

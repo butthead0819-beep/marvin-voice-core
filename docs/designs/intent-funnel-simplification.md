@@ -2067,3 +2067,17 @@ Worktree parallelization：依序實作（同定稿）；T2.1 可隨漏斗步驟
 - **VERDICT:** CEO CLEARED；Eng Review 第 2 輪 ISSUES OPEN（6 條皆已處置、0 未決，status 依規則為 issues_open）—— 可依定稿＋第 2 輪修訂動工步驟 1。
 
 NO UNRESOLVED DECISIONS
+
+## 步驟 2 執行紀錄（2026-10-26）
+
+證據：logger 等級——候選路徑都記在 cogs.voice_controller（INFO 放行）或 STTHistory，log 計數可信；PA 處理函式本身無 log，另以 stt_history 兩個月 603 句「Query通過」重播觸發函式。
+
+第一批（本 PR，不靠流量判斷）：
+- 結構性不可達：wake_intent 自 2026-06-10（314870e）起在 handle_stt_result 恆為 None（Track B ingest 不再跑 cleaner）。刪除延遲喚醒（deferred_wakes，理由代碼 window_deferred／discovered_by=deferred 一併作廢）、低信心喚醒閘（low_confidence_wake 全鏈，含 IntentContext／RescuePayload 欄位與 3 個 agent gate）、LLM Veto、_stream_response 低信心靜音閘、DuckingAgent.wake_threshold_boost。
+- CEO-D18：TTS 回授冷卻 _tts_echo_cooldown_until 與其讀取點。
+- 留給步驟 4：agent 內部對 ctx.wake_intent 的數值判斷（nemoclaw / music_agent_v2 / taste_correction / hallucination_guard）、wake_detector 的 wake_intent 通道。
+
+第二批（使用者 2026-10-26 拍板；O8：步驟 1 上線滿 7 天＝2026-10-29 19:00 後 route 計數仍為 0 才刪）：
+NemoClaw 三條入口（fast-track／debounced rescue／smart router）、Marmo（fast-track＋debounced）、系統狀態關鍵字、模仿秀、Presence Gate、Gap Pre-check、gap classifier。
+兩個月 log：以上皆 0；重播 603 句：模仿 1 次誤中（被 bus 先接走），其餘 0。
+保留到步驟 4：PA 記事／回想（兩個月 3 次）、Music Drop（4 次）、_pending_followups（16 天 8 次）。

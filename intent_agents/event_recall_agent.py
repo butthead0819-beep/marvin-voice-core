@@ -23,7 +23,7 @@ from event_memory import (
     render_answer,
     visible_events,
 )
-from intent_agents.base import DeclarativeIntentAgent, IntentSchema, is_audio_rescue
+from intent_agents.base import DeclarativeIntentAgent, IntentSchema
 from intent_bus import IntentContext
 from speaker_isolation import present_speakers
 
@@ -58,13 +58,6 @@ class EventRecallAgent(DeclarativeIntentAgent):
                 ),
             ]
         return self._cache
-
-    def gate(self, ctx: IntentContext) -> str | None:
-        if is_audio_rescue(ctx):
-            return None
-        if getattr(ctx.rescue, "low_confidence_wake", False):
-            return "low_confidence_wake"
-        return None
 
     def make_handler(self, schema, slots, ctx: IntentContext):
         async def _answer():
