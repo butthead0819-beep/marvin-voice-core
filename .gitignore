@@ -114,3 +114,11 @@ firmware/car_puck/build/
 tools/puck_face/out/
 firmware/face_demo/base_sphere.h
 firmware/face_demo/costume_preview.h
+
+# 改資料前留的時間戳備份（.env/.db/memory json）
+*.bak_*
+
+# 渲染/下載產生的音檔（render_acks.py / download_laughter_sfx.py）
+assets/acks/
+assets/fillers/
+assets/sfx/

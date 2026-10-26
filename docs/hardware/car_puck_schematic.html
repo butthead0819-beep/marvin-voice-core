@@ -1,0 +1,1899 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Marvin ESP32 Car Puck — 硬體電路圖與 JLCPCB PCBA 製作全指南</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@400;500;600;700;800&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-primary: #0a0e17;
+      --bg-secondary: #111827;
+      --bg-card: rgba(17, 24, 39, 0.75);
+      --bg-card-hover: rgba(30, 41, 59, 0.85);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-highlight: rgba(56, 189, 248, 0.4);
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --text-muted: #64748b;
+      --accent-cyan: #38bdf8;
+      --accent-blue: #3b82f6;
+      --accent-emerald: #10b981;
+      --accent-amber: #f59e0b;
+      --accent-purple: #a855f7;
+      --accent-rose: #f43f5e;
+      --font-display: 'Outfit', 'Noto Sans TC', sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: var(--font-display);
+      line-height: 1.6;
+      padding: 0;
+      overflow-x: hidden;
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 85% 65%, rgba(168, 85, 247, 0.06) 0%, transparent 40%),
+        linear-gradient(to bottom, rgba(10, 14, 23, 0.95), var(--bg-primary));
+    }
+
+    header {
+      padding: 2.5rem 2rem 1.5rem;
+      max-width: 1400px;
+      margin: 0 auto;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .badge-bar {
+      display: flex;
+      gap: 0.75rem;
+      align-items: center;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.25rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+    }
+
+    .badge-cyan { background: rgba(56, 189, 248, 0.15); color: var(--accent-cyan); border: 1px solid rgba(56, 189, 248, 0.3); }
+    .badge-purple { background: rgba(168, 85, 247, 0.15); color: var(--accent-purple); border: 1px solid rgba(168, 85, 247, 0.3); }
+    .badge-emerald { background: rgba(16, 185, 129, 0.15); color: var(--accent-emerald); border: 1px solid rgba(16, 185, 129, 0.3); }
+
+    h1 {
+      font-size: 2.25rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #38bdf8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      color: var(--text-secondary);
+      font-size: 1.1rem;
+      max-width: 850px;
+    }
+
+    /* Tab Navigation */
+    .nav-tabs {
+      display: flex;
+      gap: 0.5rem;
+      max-width: 1400px;
+      margin: 1.5rem auto 0;
+      padding: 0 2rem;
+      border-bottom: 1px solid var(--border-color);
+      overflow-x: auto;
+    }
+
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-secondary);
+      font-family: var(--font-display);
+      font-size: 1rem;
+      font-weight: 600;
+      padding: 0.85rem 1.25rem;
+      cursor: pointer;
+      position: relative;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .tab-btn:hover {
+      color: var(--text-primary);
+    }
+
+    .tab-btn.active {
+      color: var(--accent-cyan);
+    }
+
+    .tab-btn.active::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--accent-cyan);
+      box-shadow: 0 0 12px var(--accent-cyan);
+    }
+
+    /* Main Container */
+    main {
+      max-width: 1400px;
+      margin: 2rem auto;
+      padding: 0 2rem;
+    }
+
+    .tab-content {
+      display: none;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .tab-content.active {
+      display: block;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Grid & Cards */
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+
+    .card {
+      background: var(--bg-card);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      transition: border-color 0.2s ease, transform 0.2s ease;
+    }
+
+    .card:hover {
+      border-color: var(--border-highlight);
+      transform: translateY(-2px);
+    }
+
+    .card-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .card-title .icon {
+      font-size: 1.4rem;
+    }
+
+    /* Schematic Box */
+    .schematic-box {
+      background: #070a10;
+      border: 1px solid var(--border-color);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      position: relative;
+      margin-bottom: 2rem;
+      box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.8);
+      overflow-x: auto;
+    }
+
+    .schematic-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.25rem;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .signal-filter-bar {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .filter-chip {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+      padding: 0.3rem 0.75rem;
+      border-radius: 0.5rem;
+      font-size: 0.8rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .filter-chip:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text-primary);
+    }
+
+    .filter-chip.active {
+      background: var(--accent-cyan);
+      color: #000;
+      font-weight: 700;
+      border-color: var(--accent-cyan);
+    }
+
+    /* Interactive SVG Styles */
+    svg.schematic-svg {
+      width: 100%;
+      min-width: 1100px;
+      height: 700px;
+      user-select: none;
+    }
+
+    .svg-node {
+      cursor: pointer;
+      transition: opacity 0.2s ease;
+    }
+
+    .svg-node rect {
+      transition: stroke 0.2s ease, filter 0.2s ease;
+    }
+
+    .svg-node:hover rect {
+      stroke: var(--accent-cyan) !important;
+      filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.4));
+    }
+
+    .wire {
+      fill: none;
+      stroke-width: 2.2;
+      transition: stroke 0.2s ease, stroke-width 0.2s ease;
+    }
+
+    .wire.wire-power { stroke: #ef4444; }
+    .wire.wire-gnd { stroke: #475569; stroke-dasharray: 4,4; }
+    .wire.wire-spi { stroke: #f59e0b; }
+    .wire.wire-i2s { stroke: #38bdf8; }
+    .wire.wire-uart { stroke: #10b981; }
+    .wire.wire-gpio { stroke: #a855f7; }
+
+    .wire.highlight {
+      stroke-width: 4.5 !important;
+      filter: drop-shadow(0 0 6px currentColor);
+    }
+
+    .wire.dimmed {
+      opacity: 0.15;
+    }
+
+    /* Tables */
+    .table-container {
+      overflow-x: auto;
+      border-radius: 0.75rem;
+      border: 1px solid var(--border-color);
+      background: var(--bg-card);
+      margin-bottom: 2rem;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+      font-size: 0.9rem;
+    }
+
+    th {
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text-secondary);
+      font-weight: 600;
+      padding: 0.9rem 1rem;
+      border-bottom: 1px solid var(--border-color);
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .mono {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+    }
+
+    .lcsc-link {
+      color: var(--accent-cyan);
+      text-decoration: none;
+      font-weight: 600;
+      background: rgba(56, 189, 248, 0.1);
+      padding: 0.2rem 0.5rem;
+      border-radius: 0.3rem;
+      display: inline-block;
+      transition: all 0.2s ease;
+    }
+
+    .lcsc-link:hover {
+      background: rgba(56, 189, 248, 0.25);
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
+    }
+
+    /* Workflow Steps */
+    .step-list {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      margin: 1.5rem 0;
+    }
+
+    .step-item {
+      display: flex;
+      gap: 1.5rem;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: 1rem;
+      padding: 1.5rem;
+      position: relative;
+    }
+
+    .step-number {
+      width: 2.75rem;
+      height: 2.75rem;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
+      color: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.25rem;
+      flex-shrink: 0;
+      box-shadow: 0 0 15px rgba(56, 189, 248, 0.4);
+    }
+
+    .step-body h3 {
+      font-size: 1.2rem;
+      margin-bottom: 0.4rem;
+      color: var(--text-primary);
+    }
+
+    .step-body p {
+      color: var(--text-secondary);
+      font-size: 0.95rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .callout {
+      background: rgba(56, 189, 248, 0.06);
+      border-left: 4px solid var(--accent-cyan);
+      border-radius: 0.5rem;
+      padding: 1rem 1.25rem;
+      margin: 1rem 0;
+      font-size: 0.9rem;
+      color: #e2e8f0;
+    }
+
+    .callout-amber {
+      background: rgba(245, 158, 11, 0.08);
+      border-left-color: var(--accent-amber);
+    }
+
+    .callout strong {
+      color: #fff;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--accent-cyan);
+      color: #000;
+      padding: 0.6rem 1.2rem;
+      border-radius: 0.5rem;
+      font-weight: 700;
+      font-size: 0.9rem;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn:hover {
+      background: #7dd3fc;
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.4);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+      box-shadow: none;
+    }
+
+    code {
+      font-family: var(--font-mono);
+      background: rgba(255, 255, 255, 0.08);
+      padding: 0.15rem 0.4rem;
+      border-radius: 0.25rem;
+      font-size: 0.85em;
+      color: #38bdf8;
+    }
+
+    footer {
+      max-width: 1400px;
+      margin: 4rem auto 2rem;
+      padding: 1.5rem 2rem;
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      justify-content: space-between;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="badge-bar">
+      <span class="badge badge-cyan">ESP32-S3 + ESP32-WROOM 雙晶片</span>
+      <span class="badge badge-purple">全硬體去杜邦線工程</span>
+      <span class="badge badge-emerald">JLCPCB SMT / PCBA 完整代工</span>
+    </div>
+    <h1>Marvin ESP32 Car Puck 電路規格與 PCBA 製作指引</h1>
+    <p class="subtitle">針對車載環境高震動、高電磁干擾設計：整合 1.28" GC9A01 圓屏、INMP441 I2S 數位麥克風、A2DP 車機藍牙橋接，與大電流 DC-DC 降壓電路。</p>
+  </header>
+
+  <nav class="nav-tabs" id="mainTabs">
+    <button class="tab-btn active" id="tabBtnQuick" onclick="switchTab('quick')">
+      🚀 極簡生產懶人包 (料號+3D檔)
+    </button>
+    <button class="tab-btn" id="tabBtnSchematic" onclick="switchTab('schematic')">
+      ⚡ 互動式電路圖 (Schematic)
+    </button>
+    <button class="tab-btn" id="tabBtnJlcpcb" onclick="switchTab('jlcpcb')">
+      🏭 JLCPCB 代工打件 SOP
+    </button>
+    <button class="tab-btn" id="tabBtnBom" onclick="switchTab('bom')">
+      📋 SMT 零件清單 (BOM & LCSC #)
+    </button>
+    <button class="tab-btn" id="tabBtnFit45" onclick="switchTab('fit45')">
+      📏 Ø45mm 圓形能裝下嗎？(尺寸圖解)
+    </button>
+    <button class="tab-btn" id="tabBtnLayout" onclick="switchTab('layout')">
+      📐 PCB 佈局與車載避坑規則
+    </button>
+    <button class="tab-btn" id="tabBtnEnclosure" onclick="switchTab('enclosure')">
+      📦 JLCPCB 3D列印外殼指南
+    </button>
+  </nav>
+
+    <!-- TAB 0: 極簡生產懶人包 (直奔主題，點擊複製) -->
+    <div id="tabContentQuick" class="tab-content active">
+      <div class="card" style="margin-bottom: 1.5rem; border-left: 4px solid var(--accent-cyan);">
+        <div class="card-title">
+          <span>🚀 Marvin Car Puck 極簡生產直通車 (One-Click Production Kit)</span>
+          <span class="badge badge-emerald">終極微型化 + Qi 無線供電</span>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 0.95rem;">
+          專為快速發包 JLCPCB SMT 貼片與 3D 列印外殼設計。以下所有零件料號已經過物理相容性驗證，在立創商城 (LCSC) 均有現貨，點擊即可複製代碼！
+        </p>
+      </div>
+
+      <!-- 雙板最小化架構定義 -->
+      <div class="grid-2" style="margin-bottom: 1.5rem;">
+        <div class="card" style="border-left: 3px solid var(--accent-cyan);">
+          <div class="card-title">
+            <span style="font-size: 1.1rem; color: var(--accent-cyan);">Board A: 頂層面板 (UI Panel)</span>
+            <span class="mono">直徑 Ø38.0mm</span>
+          </div>
+          <ul style="padding-left: 1.25rem; font-size: 0.88rem; color: var(--text-secondary); display: flex; flex-direction: column; gap: 0.35rem;">
+            <li><strong>正面</strong>：GC9A01 圓屏（0.5mm FPC 座）、INMP441 麥克風孔、WS2812B 狀態燈</li>
+            <li><strong>背面</strong>：1.27mm 雙排母插座（12-Pin）、PTT 微動按鈕（側緣）</li>
+            <li><strong>規格</strong>：2 層板 (2-Layer)，厚度 1.0mm，JLCPCB 打樣 5 片僅 $2 USD</li>
+          </ul>
+        </div>
+
+        <div class="card" style="border-left: 3px solid var(--accent-emerald);">
+          <div class="card-title">
+            <span style="font-size: 1.1rem; color: var(--accent-emerald);">Board B: 底層主板 (Main Core)</span>
+            <span class="mono">直徑 Ø38.0mm</span>
+          </div>
+          <ul style="padding-left: 1.25rem; font-size: 0.88rem; color: var(--text-secondary); display: flex; flex-direction: column; gap: 0.35rem;">
+            <li><strong>正面</strong>：ESP32-S3-MINI-1、ESP32-PICO-V3-02、陶瓷天線、SY8089 降壓電路</li>
+            <li><strong>背面</strong>：6 點鐘正下方 Type-C 沉板座、Qi 線圈 Pogo-pin/焊盤、防倒灌二極體</li>
+            <li><strong>規格</strong>：4 層板 (4-Layer: 完整地平面降噪)，厚度 1.0mm</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- 兩板對接 12-Pin 排針腳位 -->
+      <div class="card" style="margin-bottom: 1.5rem; background: rgba(0,0,0,0.25);">
+        <div class="card-title">
+          <span style="font-size: 1rem;">兩板對接 1.27mm 12-Pin 排針定義 (直接照抄拉線)</span>
+          <span class="mono" style="font-size: 0.8rem; color: var(--text-muted);">板間淨空 4.5mm</span>
+        </div>
+        <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.8rem; font-family: var(--font-mono);">
+          <span class="pin-badge">1: 3V3</span>
+          <span class="pin-badge">2: GND</span>
+          <span class="pin-badge">3: SPI_CLK (IO21)</span>
+          <span class="pin-badge">4: SPI_MOSI (IO47)</span>
+          <span class="pin-badge">5: TFT_DC (IO40)</span>
+          <span class="pin-badge">6: TFT_CS (IO41)</span>
+          <span class="pin-badge">7: TFT_RST (IO45)</span>
+          <span class="pin-badge">8: TFT_BLK (IO42)</span>
+          <span class="pin-badge">9: MIC_SCK (IO5)</span>
+          <span class="pin-badge">10: MIC_WS (IO4)</span>
+          <span class="pin-badge">11: MIC_SD (IO6)</span>
+          <span class="pin-badge">12: PTT_KEY (IO0)</span>
+        </div>
+      </div>
+
+      <!-- 區塊 1: SMT 零件料號速查表 -->
+      <div class="card" style="margin-bottom: 2rem;">
+        <div class="card-title">
+          <span>1. JLCPCB SMT 必備元件料號 (BOM for PCBA)</span>
+          <span style="font-size: 0.85rem; color: var(--text-muted);">雙晶片微型化：S3-MINI + PICO</span>
+        </div>
+        <div class="table-container" style="margin-bottom: 0.5rem;">
+          <table>
+            <thead>
+              <tr>
+                <th>標號</th>
+                <th>元件名稱</th>
+                <th>推薦型號 / 封裝</th>
+                <th>LCSC Part #</th>
+                <th>JLCPCB 零件庫</th>
+                <th>動作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="mono">U1</td>
+                <td>主控 MCU (大腦)</td>
+                <td><strong>ESP32-S3-MINI-1-N8R8</strong> (16.6×13.2mm)</td>
+                <td><code class="mono">C5444315</code></td>
+                <td>Extended</td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C5444315')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">U2</td>
+                <td>藍牙橋接 (A2DP)</td>
+                <td><strong>ESP32-PICO-V3-02</strong> (7.0×7.0mm QFN-48)</td>
+                <td><code class="mono">C711382</code></td>
+                <td>Extended</td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C711382')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">ANT1</td>
+                <td>藍牙陶瓷天線</td>
+                <td>2.4GHz 貼片天線 (3216 封裝 3.2×1.6mm)</td>
+                <td><code class="mono">C96356</code></td>
+                <td>Basic</td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C96356')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">U3</td>
+                <td>5V轉3.3V 降壓IC</td>
+                <td><strong>SY8089AAAC</strong> (SOT-23-5, 2A 大電流)</td>
+                <td><code class="mono">C78990</code></td>
+                <td><strong>Basic (免換料費)</strong></td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C78990')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">J1</td>
+                <td>6點鐘 Type-C 插座</td>
+                <td>TYPE-C 16P (中沉板式 0.8mm Mid-mount)</td>
+                <td><code class="mono">C165948</code></td>
+                <td>Extended</td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C165948')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">J2</td>
+                <td>螢幕 FPC 插座</td>
+                <td>0.5mm 間距 8-Pin 下接臥貼插座</td>
+                <td><code class="mono">C262657</code></td>
+                <td>Extended</td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C262657')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">SW1</td>
+                <td>PTT 喚醒按鈕</td>
+                <td>3×6×2.5mm 貼片微動輕觸按鈕</td>
+                <td><code class="mono">C139797</code></td>
+                <td><strong>Basic (免換料費)</strong></td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C139797')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">LED1</td>
+                <td>RGB 狀態指示燈</td>
+                <td>WS2812B-B (3535 / 2020 貼片 RGB)</td>
+                <td><code class="mono">C114587</code></td>
+                <td>Extended</td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C114587')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">L1</td>
+                <td>DC-DC 功率電感</td>
+                <td>2.2µH 貼片屏蔽電感 (CD32 / 0805)</td>
+                <td><code class="mono">C2932918</code></td>
+                <td><strong>Basic (免換料費)</strong></td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C2932918')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">C1, C2</td>
+                <td>輸入輸出電容</td>
+                <td>10µF 0805 16V X5R (去耦濾波)</td>
+                <td><code class="mono">C15850</code></td>
+                <td><strong>Basic (免換料費)</strong></td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C15850')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">R1, R2</td>
+                <td>Type-C CC 下拉</td>
+                <td>5.1kΩ 0603 1% (讓 PD 充電頭供電)</td>
+                <td><code class="mono">C23186</code></td>
+                <td><strong>Basic (免換料費)</strong></td>
+                <td><button class="btn btn-secondary" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;" onclick="copyText('C23186')">複製料號</button></td>
+              </tr>
+              <tr>
+                <td class="mono">PAD1,2</td>
+                <td>Qi 線圈焊接位</td>
+                <td>Ø2.0mm 鍍金大圓焊盤 (標註 QI_5V / GND)</td>
+                <td>PCB 焊盤</td>
+                <td>-</td>
+                <td>免料號 (自己畫圈)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 區塊 2: 3D 列印外殼極簡參數與一鍵 STL 腳本 -->
+      <div class="card" style="margin-bottom: 2rem;">
+        <div class="card-title">
+          <span>2. 3D 列印外殼檔案指南 (兩件式：前蓋 + 底蓋)</span>
+          <span class="badge badge-purple">JLC3DP - MJF PA12 尼龍染黑</span>
+        </div>
+        <div class="callout callout-amber" style="margin-bottom: 1.25rem;">
+          <strong style="color: #fff;">⚠️ 關鍵幾何校準：54mm MagSafe 磁吸環 vs 微型雙層板 (Ø38mm) 的關係</strong><br>
+          iPhone 標準 MagSafe 磁吸鐵環固定為 <strong>外徑 Ø54.0mm / 內徑 Ø46.0mm</strong>。<br>
+          如果雙層板 PCB 做 Ø38mm，外殼有兩種精確做法：<br>
+          • <strong>方案 A（飛碟倒角款，強烈推薦）</strong>：正面 Ø42mm（包覆螢幕，視覺超小），底蓋以 30° 倒角向後擴至 <strong>Ø55.0mm</strong>，剛好完美內嵌 54mm 磁吸環，100% 相容所有車載 MagSafe 架！<br>
+          • <strong>方案 B（極限直筒款，全段 Ø42mm）</strong>：放棄 54mm 手機環，改用 <strong>Ø36mm 微型磁吸環</strong>，搭配通用型小圓形車用磁吸支架。
+        </div>
+
+        <div class="grid-2">
+          <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-cyan); font-size: 1.05rem;">零件 A：前蓋 (Top Bezel)</strong>
+            <ul style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.88rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.35rem;">
+              <li><strong>外徑</strong>：Ø42.0 mm（極限緊湊貼合螢幕）</li>
+              <li><strong>總高度</strong>：6.5 mm</li>
+              <li><strong>螢幕開窗</strong>：Ø33.0 mm（剛好露出 GC9A01 可視區，遮住黑邊）</li>
+              <li><strong>螢幕沉台</strong>：Ø36.0 mm × 深度 1.6 mm（內側貼螢幕）</li>
+              <li><strong>麥克風拾音孔</strong>：Ø1.5 mm（位於 10 點鐘方向）</li>
+              <li><strong>螺絲孔</strong>：3 個 M2 沉頭螺絲孔（分佈在 Ø38.5mm 圓周上）</li>
+            </ul>
+          </div>
+
+          <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-emerald); font-size: 1.05rem;">零件 B：底蓋 (Bottom Case - 飛碟倒角款)</strong>
+            <ul style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.88rem; margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.35rem;">
+              <li><strong>頂部接合外徑</strong>：Ø42.0 mm / <strong>底盤外徑</strong>：<strong>Ø55.0 mm</strong>（倒角斜面）</li>
+              <li><strong>總高度</strong>：8.5 mm（內部淨空 6.5 mm 放底板與線圈）</li>
+              <li><strong>中心 Qi 沉槽</strong>：<strong>Ø29.0 mm × 深度 0.9 mm</strong>（貼微型線圈）</li>
+              <li><strong>底盤 MagSafe 環槽</strong>：<strong>內徑 Ø45.5 mm、外徑 Ø54.5 mm × 深 1.6 mm</strong>（嚴絲合縫！）</li>
+              <li><strong>6 點鐘 Type-C 口</strong>：寬 12.0 mm × 高 6.5 mm（帶 0.8mm 導角）</li>
+              <li><strong>螺絲固定柱</strong>：3 個 M2 螺紋銅柱槽（Ø3.2mm × 深 4.0mm）</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- 一鍵 OpenSCAD 腳本區塊 -->
+        <div style="margin-top: 1.25rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+            <strong style="color: #fff; font-size: 0.95rem;">💡 懶人福利：一鍵生成 STL 的 OpenSCAD 3D 腳本代碼 (已校準 54mm 磁吸槽)</strong>
+            <button class="btn btn-secondary" onclick="copyOpenScadCode()">複製 3D 建模腳本代碼</button>
+          </div>
+          <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">
+            你甚至不需要會用複雜的 3D 軟體！把以下代碼貼進免費開源的 <a href="https://openscad.org" target="_blank" style="color: var(--accent-cyan);">OpenSCAD</a>，按 <strong>F6 算圖 ➔ 匯出 STL</strong>，就能 1 秒鐘直接生成發給 JLC3DP 列印的 3D 檔案！
+          </p>
+          <pre style="background: #060910; padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color); overflow-x: auto; font-family: var(--font-mono); font-size: 0.8rem; color: #a5b4fc; max-height: 240px;" id="scadCodeBlock">
+// Marvin Car Puck — 雙層板微型 3D 外殼 (OpenSCAD 腳本)
+// 正面極簡 Ø42mm，底盤微擴展至 Ø55mm 完美內嵌 54mm MagSafe 環
+$fn = 100;
+
+module top_bezel() {
+    difference() {
+        cylinder(d=42.0, h=6.5); // 前蓋直徑 Ø42mm
+        translate([0, 0, -1]) cylinder(d=33.0, h=10); // 螢幕視窗 Ø33mm
+        translate([0, 0, 4.9]) cylinder(d=36.0, h=2.0); // 螢幕內沉台
+        translate([-11, 11, -1]) cylinder(d=1.5, h=10); // 麥克風孔
+        for(a=[0, 120, 240]) rotate([0, 0, a]) translate([19.0, 0, -1]) cylinder(d=2.2, h=10); // M2 螺絲孔
+    }
+}
+
+module bottom_case() {
+    difference() {
+        // 純直筒 Ø42.0mm 外殼 (完全不變大，無任何向外擴展)
+        cylinder(d=42.0, h=8.0);
+        translate([0, 0, 2.0]) cylinder(d=38.6, h=8.0); // 內部容納 Ø38mm PCB
+        // 底面 Apple Watch 磁吸充電座凹槽 (Ø28.5mm, 深 1.2mm)
+        translate([0, 0, -0.1]) cylinder(d=28.5, h=1.3);
+        // 6點鐘正下方 Type-C 凹槽
+        translate([-6.0, -22.0, 2.0]) cube([12.0, 10.0, 6.5]);
+    }
+}
+
+// 平鋪預覽
+translate([-25, 0, 0]) top_bezel();
+translate([25, 0, 0]) bottom_case();
+          </pre>
+        </div>
+      </div>
+
+      <!-- 區塊 3: 外部配件一鍵採購速查 -->
+      <div class="card" style="margin-bottom: 2rem;">
+        <div class="card-title">
+          <span>3. 外部現成配件 3 樣必買速查 (淘寶/蝦皮/露天)</span>
+          <span class="icon">🛒</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem;">
+          <div style="background: rgba(0,0,0,0.3); padding: 0.9rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-amber);">① 1.28 吋 GC9A01 圓屏 (240×240)</strong>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.35rem;">
+              搜尋關鍵字：<code>GC9A01 圓形液晶螢幕 8-Pin 軟排版</code><br>
+              價格：約 80 ~ 120 台幣
+            </p>
+          </div>
+          <div style="background: rgba(0,0,0,0.3); padding: 0.9rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-emerald);">② Apple Watch 規格微型無線接收模組 (5V)</strong>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.35rem;">
+              搜尋關鍵字：<code>手錶無線充電接收模組 28mm (或手錶磁吸接收貼片 5V 500mA)</code><br>
+              價格：約 35 ~ 60 台幣
+            </p>
+          </div>
+          <div style="background: rgba(0,0,0,0.3); padding: 0.9rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-cyan);">③ 車載 Apple Watch 磁吸出風口充電座</strong>
+            <p style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.35rem;">
+              搜尋關鍵字：<code>車載 Apple Watch 磁吸充電支架 (出風口球頭夾具)</code><br>
+              價格：約 120 ~ 200 台幣 (發射端直接夾冷氣孔)
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 1: 互動式電路圖 -->
+    <div id="tabContentSchematic" class="tab-content">
+      <div class="schematic-box">
+        <div class="schematic-toolbar">
+          <div>
+            <h2 style="font-size: 1.3rem; font-weight: 700; margin-bottom: 0.25rem;">系統方塊與信號走線圖 (Signal Bus Topology)</h2>
+            <p style="color: var(--text-muted); font-size: 0.85rem;">點選右方信號標籤可高亮對應走線網路（Net）。滑鼠懸停模組可查看引腳。</p>
+          </div>
+          <div class="signal-filter-bar">
+            <button class="filter-chip active" id="filterAll" onclick="filterWires('all')">顯示全部走線</button>
+            <button class="filter-chip" id="filterSpi" onclick="filterWires('spi')">SPI (螢幕 40MHz)</button>
+            <button class="filter-chip" id="filterI2s" onclick="filterWires('i2s')">I2S (音訊 TX/RX)</button>
+            <button class="filter-chip" id="filterUart" onclick="filterWires('uart')">UART (S3↔WROOM)</button>
+            <button class="filter-chip" id="filterPower" onclick="filterWires('power')">Power & GND</button>
+          </div>
+        </div>
+
+        <svg class="schematic-svg" viewBox="0 0 1120 680" id="circuitSvg">
+          <defs>
+            <filter id="glowCyan" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="4" result="blur" />
+              <feMerge>
+                <feMergeNode in="blur" />
+                <feMergeNode in="SourceGraphic" />
+              </feMerge>
+            </filter>
+          </defs>
+
+          <!-- 背景格線裝飾 -->
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="rgba(255,255,255,0.03)" stroke-width="1"/>
+          </pattern>
+          <rect width="1120" height="680" fill="url(#grid)" />
+
+          <!-- ================= 模組節點 ================= -->
+          <!-- 1. 電源與 Type-C -->
+          <g class="svg-node" id="nodePower" transform="translate(40, 60)">
+            <rect width="210" height="170" rx="12" fill="#131d2e" stroke="#3b82f6" stroke-width="1.8" />
+            <text x="105" y="28" fill="#60a5fa" font-weight="700" font-size="14" text-anchor="middle">USB-C & DC-DC 降壓</text>
+            <text x="105" y="46" fill="#94a3b8" font-size="11" text-anchor="middle">Type-C 5V → SY8089 3.3V (2A)</text>
+            <line x1="15" y1="58" x2="195" y2="58" stroke="rgba(255,255,255,0.1)" />
+            <!-- Pin labels -->
+            <text x="25" y="85" fill="#f87171" font-family="monospace" font-size="11">VBUS (+5V In)</text>
+            <text x="25" y="110" fill="#34d399" font-family="monospace" font-size="11">CC1 / CC2 (5.1k)</text>
+            <text x="25" y="135" fill="#f87171" font-family="monospace" font-size="11">VCC3V3 (3.3V 2A Out)</text>
+            <text x="25" y="158" fill="#94a3b8" font-family="monospace" font-size="11">GND (Common Ground)</text>
+          </g>
+
+          <!-- 2. 主控 ESP32-S3-WROOM-1 (N16R8) -->
+          <g class="svg-node" id="nodeS3" transform="translate(340, 60)">
+            <rect width="360" height="440" rx="14" fill="#0f172a" stroke="#38bdf8" stroke-width="2.2" />
+            <rect x="0" y="0" width="360" height="44" rx="14" fill="rgba(56, 189, 248, 0.12)" />
+            <text x="180" y="27" fill="#38bdf8" font-weight="800" font-size="15" text-anchor="middle">MCU 1: ESP32-S3-WROOM-1 (N16R8)</text>
+            <text x="180" y="40" fill="#cbd5e1" font-size="10" text-anchor="middle">WiFi 串流 / MP3 解碼 / 24fps 頭部渲染 / PTT 錄音</text>
+
+            <!-- S3 左側引腳 -->
+            <text x="20" y="80" fill="#f87171" font-family="monospace" font-size="11">3V3 / GND</text>
+            <text x="20" y="110" fill="#38bdf8" font-family="monospace" font-size="11">GPIO 5  (MIC_SCK / BCLK)</text>
+            <text x="20" y="135" fill="#38bdf8" font-family="monospace" font-size="11">GPIO 4  (MIC_WS / LRCLK)</text>
+            <text x="20" y="160" fill="#38bdf8" font-family="monospace" font-size="11">GPIO 6  (MIC_SD / DATA)</text>
+            <text x="20" y="200" fill="#a855f7" font-family="monospace" font-size="11">GPIO 0  (PTT KEY, Pull-up)</text>
+            <text x="20" y="225" fill="#a855f7" font-family="monospace" font-size="11">GPIO 48 (WS2812B RGB)</text>
+
+            <!-- S3 右側引腳 (SPI Display) -->
+            <text x="340" y="80" fill="#f59e0b" font-family="monospace" font-size="11" text-anchor="end">(SPI_CLK) GPIO 21</text>
+            <text x="340" y="105" fill="#f59e0b" font-family="monospace" font-size="11" text-anchor="end">(SPI_MOSI) GPIO 47</text>
+            <text x="340" y="130" fill="#f59e0b" font-family="monospace" font-size="11" text-anchor="end">(TFT_DC) GPIO 40</text>
+            <text x="340" y="155" fill="#f59e0b" font-family="monospace" font-size="11" text-anchor="end">(TFT_CS) GPIO 41</text>
+            <text x="340" y="180" fill="#f59e0b" font-family="monospace" font-size="11" text-anchor="end">(TFT_RST) GPIO 45</text>
+            <text x="340" y="205" fill="#f59e0b" font-family="monospace" font-size="11" text-anchor="end">(TFT_BLK) GPIO 42</text>
+
+            <!-- S3 底部引腳 (Inter-MCU Bus) -->
+            <line x1="20" y1="260" x2="340" y2="260" stroke="rgba(255,255,255,0.08)" />
+            <text x="180" y="280" fill="#94a3b8" font-size="11" text-anchor="middle">▼ Inter-MCU Bridge 匯流排 ▼</text>
+            <text x="20" y="315" fill="#38bdf8" font-family="monospace" font-size="11">GPIO 15 (SPK_BCLK Master)</text>
+            <text x="20" y="340" fill="#38bdf8" font-family="monospace" font-size="11">GPIO 16 (SPK_LRCLK Master)</text>
+            <text x="20" y="365" fill="#38bdf8" font-family="monospace" font-size="11">GPIO 7  (SPK_DIN/DOUT)</text>
+            <text x="20" y="400" fill="#10b981" font-family="monospace" font-size="11">GPIO 17 (UART1_TX → WROOM)</text>
+            <text x="20" y="425" fill="#10b981" font-family="monospace" font-size="11">GPIO 18 (UART1_RX ← WROOM)</text>
+          </g>
+
+          <!-- 3. GC9A01 圓形顯示螢幕 -->
+          <g class="svg-node" id="nodeLcd" transform="translate(830, 60)">
+            <rect width="250" height="230" rx="14" fill="#151b28" stroke="#f59e0b" stroke-width="1.8" />
+            <text x="125" y="28" fill="#fbbf24" font-weight="700" font-size="14" text-anchor="middle">GC9A01 圓屏 (240×240)</text>
+            <text x="125" y="46" fill="#94a3b8" font-size="11" text-anchor="middle">1.28" SPI 4-Wire LCD</text>
+            <line x1="15" y1="58" x2="235" y2="58" stroke="rgba(255,255,255,0.1)" />
+            <text x="25" y="82" fill="#f59e0b" font-family="monospace" font-size="11">SCL / CLK (40MHz SPI)</text>
+            <text x="25" y="107" fill="#f59e0b" font-family="monospace" font-size="11">SDA / MOSI</text>
+            <text x="25" y="132" fill="#f59e0b" font-family="monospace" font-size="11">DC (Data/Command)</text>
+            <text x="25" y="157" fill="#f59e0b" font-family="monospace" font-size="11">CS (Chip Select)</text>
+            <text x="25" y="182" fill="#f59e0b" font-family="monospace" font-size="11">RES / RST (Reset)</text>
+            <text x="25" y="207" fill="#f59e0b" font-family="monospace" font-size="11">BLK (PWM 背光)</text>
+          </g>
+
+          <!-- 4. INMP441 MEMS 麥克風 -->
+          <g class="svg-node" id="nodeMic" transform="translate(40, 270)">
+            <rect width="210" height="150" rx="12" fill="#111d2e" stroke="#38bdf8" stroke-width="1.8" />
+            <text x="105" y="26" fill="#38bdf8" font-weight="700" font-size="13" text-anchor="middle">INMP441 數位麥克風</text>
+            <text x="105" y="42" fill="#94a3b8" font-size="11" text-anchor="middle">I2S 16kHz Mono 語音收音</text>
+            <line x1="15" y1="52" x2="195" y2="52" stroke="rgba(255,255,255,0.1)" />
+            <text x="25" y="75" fill="#38bdf8" font-family="monospace" font-size="11">SCK (BCLK)</text>
+            <text x="25" y="98" fill="#38bdf8" font-family="monospace" font-size="11">WS (LRCLK)</text>
+            <text x="25" y="121" fill="#38bdf8" font-family="monospace" font-size="11">SD (Data Out)</text>
+            <text x="25" y="140" fill="#94a3b8" font-family="monospace" font-size="11">L/R (GND=Left Channel)</text>
+          </g>
+
+          <!-- 5. 藍牙發射副控 ESP32-WROOM-32 -->
+          <g class="svg-node" id="nodeWroom" transform="translate(40, 460)">
+            <rect width="270" height="190" rx="12" fill="#141c2c" stroke="#10b981" stroke-width="1.8" />
+            <text x="135" y="26" fill="#34d399" font-weight="700" font-size="14" text-anchor="middle">MCU 2: ESP32-WROOM-32</text>
+            <text x="135" y="44" fill="#94a3b8" font-size="11" text-anchor="middle">Classic BT A2DP 發射 + AVRCP 曲名</text>
+            <line x1="15" y1="54" x2="255" y2="54" stroke="rgba(255,255,255,0.1)" />
+            <text x="20" y="78" fill="#38bdf8" font-family="monospace" font-size="11">GPIO 26 (I2S BCLK Slave RX)</text>
+            <text x="20" y="100" fill="#38bdf8" font-family="monospace" font-size="11">GPIO 25 (I2S LRCLK Slave RX)</text>
+            <text x="20" y="122" fill="#38bdf8" font-family="monospace" font-size="11">GPIO 22 (I2S DIN Slave RX)</text>
+            <text x="20" y="148" fill="#10b981" font-family="monospace" font-size="11">GPIO 16 (UART2_RX ← S3 TX17)</text>
+            <text x="20" y="170" fill="#10b981" font-family="monospace" font-size="11">GPIO 17 (UART2_TX → S3 RX18)</text>
+          </g>
+
+          <!-- 6. 音訊 DAC / 功放 (PCM5102A / MAX98357A 可選) -->
+          <g class="svg-node" id="nodeSpk" transform="translate(830, 340)">
+            <rect width="250" height="150" rx="12" fill="#171e2e" stroke="#60a5fa" stroke-width="1.6" stroke-dasharray="3,3" />
+            <text x="125" y="26" fill="#93c5fd" font-weight="700" font-size="13" text-anchor="middle">PCM5102A / MAX98357A</text>
+            <text x="125" y="42" fill="#94a3b8" font-size="11" text-anchor="middle">實體音訊 DAC / 功放 (可選/備援)</text>
+            <line x1="15" y1="52" x2="235" y2="52" stroke="rgba(255,255,255,0.1)" />
+            <text x="25" y="75" fill="#38bdf8" font-family="monospace" font-size="11">BCLK (並聯 S3 GPIO 15)</text>
+            <text x="25" y="98" fill="#38bdf8" font-family="monospace" font-size="11">LRCLK (並聯 S3 GPIO 16)</text>
+            <text x="25" y="121" fill="#38bdf8" font-family="monospace" font-size="11">DIN (並聯 S3 GPIO 7)</text>
+            <text x="25" y="140" fill="#94a3b8" font-family="monospace" font-size="11">SCK 接地 (走內部 PLL)</text>
+          </g>
+
+          <!-- 7. PTT 與狀態 LED 實體按鍵模組 -->
+          <g class="svg-node" id="nodeIo" transform="translate(830, 520)">
+            <rect width="250" height="130" rx="12" fill="#1a1829" stroke="#a855f7" stroke-width="1.6" />
+            <text x="125" y="26" fill="#c084fc" font-weight="700" font-size="13" text-anchor="middle">人機互動 (UI & Keys)</text>
+            <text x="125" y="42" fill="#94a3b8" font-size="11" text-anchor="middle">PTT 喚醒鍵 + WS2812B 狀態燈</text>
+            <line x1="15" y1="52" x2="235" y2="52" stroke="rgba(255,255,255,0.1)" />
+            <text x="25" y="78" fill="#a855f7" font-family="monospace" font-size="11">PTT KEY: 接 S3 GPIO 0</text>
+            <text x="25" y="103" fill="#a855f7" font-family="monospace" font-size="11">RGB LED: 接 S3 GPIO 48</text>
+          </g>
+
+          <!-- ================= 訊號走線 (WIRES) ================= -->
+
+          <!-- 1. SPI 走線 (S3 -> GC9A01) -->
+          <path d="M 700 140 L 765 140 L 765 140 L 830 140" class="wire wire-spi" id="wireSpi" />
+          <text x="765" y="132" fill="#f59e0b" font-size="11" font-weight="600">SPI Bus (CLK 21, MOSI 47, DC 40, CS 41, RST 45, BLK 42)</text>
+
+          <!-- 2. MIC I2S 走線 (INMP441 -> S3) -->
+          <path d="M 250 340 L 295 340 L 295 190 L 340 190" class="wire wire-i2s" id="wireMicI2s" />
+          <text x="270" y="240" fill="#38bdf8" font-size="11" font-weight="600" transform="rotate(-90 270 240)">I2S RX (16kHz Mono: SCK 5, WS 4, SD 6)</text>
+
+          <!-- 3. Inter-MCU I2S 走線 (S3 -> WROOM & PCM5102) -->
+          <path d="M 340 400 L 310 400 L 310 535" class="wire wire-i2s" id="wireSpkI2sWroom" />
+          <path d="M 700 390 L 765 390 L 765 390 L 830 390" class="wire wire-i2s" id="wireSpkI2sDac" />
+          <text x="500" y="402" fill="#38bdf8" font-size="11" font-weight="600">I2S TX (48kHz Stereo: BCLK 15, LRCLK 16, DIN 7)</text>
+
+          <!-- 4. Inter-MCU UART 走線 (S3 <-> WROOM) -->
+          <path d="M 340 475 L 325 475 L 325 610 L 310 610" class="wire wire-uart" id="wireUart" />
+          <text x="320" y="560" fill="#10b981" font-size="11" font-weight="600" transform="rotate(-90 320 560)">UART (115200: TX17↔RX16, RX18↔TX17)</text>
+
+          <!-- 5. 電源走線 (SY8089 3.3V -> S3 & WROOM) -->
+          <path d="M 250 195 L 300 195 L 300 120 L 340 120" class="wire wire-power" id="wirePowerS3" />
+          <path d="M 230 230 L 230 460" class="wire wire-power" id="wirePowerWroom" />
+
+          <!-- 6. PTT & LED 走線 (S3 -> UI Keys) -->
+          <path d="M 700 230 L 780 230 L 780 580 L 830 580" class="wire wire-gpio" id="wireGpio" />
+          <text x="760" y="320" fill="#a855f7" font-size="11" font-weight="600">PTT (IO 0) & RGB (IO 48)</text>
+
+        </svg>
+      </div>
+
+      <!-- 架構解析與模組分工 -->
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>為什麼需要「ESP32-S3 + ESP32」雙晶片架構？</span>
+            <span class="icon">💡</span>
+          </div>
+          <p style="color: var(--text-secondary); margin-bottom: 0.75rem;">
+            許多人第一次做 ESP32 專案會問：「為什麼不能單顆晶片全包？」。以下是 Car Puck 核心設計的物理約束：
+          </p>
+          <ul style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.5rem;">
+            <li><strong>ESP32-S3 沒有傳統藍牙 (Classic BT)</strong>：S3 雖然擁有強大雙核、Vector 向量指令集與 8MB Octal PSRAM（能順跑 24fps 3D 面部旋轉渲染與 MP3 軟解碼），但它<strong>只支援 BLE，不支援 A2DP</strong>。車載藍牙主機（如 BMW iDrive）與大部分藍牙音箱強制需要 Classic BT A2DP Profile。</li>
+            <li><strong>Classic ESP32 (D0WD) 記憶體與算力吃緊</strong>：傳統 ESP32 具備 Classic BT，但若同時維持 WiFi 連線、HTTPS TLS 握手、MP3 串流緩衝與 240px 圓屏高頻刷新，內部 RAM 會嚴重匱乏且頻繁與藍牙 Baseband 搶佔 RF。</li>
+            <li><strong>雙晶片職責解耦</strong>：S3 作為主力大腦（WiFi、解碼、螢幕、語音）；WROOM 專職做為<strong>高可靠性的純藍牙音訊 Bridge</strong>，兩者以 I2S 數位音訊與 UART 中繼互連，完全無干擾。</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>客製 PCB 取代杜邦線的四大決定性好處</span>
+            <span class="icon">🚀</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0.75rem; color: var(--text-secondary); font-size: 0.95rem;">
+            <div style="border-left: 3px solid var(--accent-cyan); padding-left: 0.75rem;">
+              <strong style="color: #fff;">1. 徹底消除 40MHz 高頻 SPI 螢幕干擾</strong><br>
+              杜邦線長度常達 10~20cm，分佈電容極高。GC9A01 以 40MHz 傳輸時容易造成時脈波形畸變破圖。PCB 走線可控制在 3cm 以內且匹配地平面。
+            </div>
+            <div style="border-left: 3px solid var(--accent-emerald); padding-left: 0.75rem;">
+              <strong style="color: #fff;">2. 零 Jitter 的 I2S 數位音訊無爆音</strong><br>
+              S3 傳給 WROOM 的 I2S 包含 BCLK、LRCLK、DIN。杜邦線只要稍受車載點火線圈或震動影響就會掉 Frame 產生清脆爆音。
+            </div>
+            <div style="border-left: 3px solid var(--accent-amber); padding-left: 0.75rem;">
+              <strong style="color: #fff;">3. 承受車載震動與溫度循環</strong><br>
+              車載環境夏天暴曬車內可達 60°C~70°C，顛簸路段會使杜邦線端子氧化接觸不良。SMT 表面貼裝具備工業級耐震與可靠度。
+            </div>
+            <div style="border-left: 3px solid var(--accent-purple); padding-left: 0.75rem;">
+              <strong style="color: #fff;">4. 極致微型化可塞入圓形中控出風口</strong><br>
+              杜邦線纏繞體積龐大；客製 PCB 可做成 Ø45mm 圓形板，直接與 1.28 吋 GC9A01 圓屏重疊固定於中控出風口磁吸支架。
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: JLCPCB 代工打件 SOP -->
+    <div id="tabContentJlcpcb" class="tab-content">
+      <div class="card" style="margin-bottom: 2rem;">
+        <h2 style="font-size: 1.4rem; margin-bottom: 0.5rem;">如何請 JLCPCB 連元件都「直接焊上去」(PCBA / SMT 流程)？</h2>
+        <p style="color: var(--text-secondary); font-size: 0.95rem;">
+          在 JLCPCB 製作「洗板 + 打件（SMT Assembly）」其實非常自動化。你不需要自己買零件寄過去，<strong>JLCPCB 擁有立創商城 (LCSC) 的百萬庫存零件庫</strong>，下單時只需上傳設計檔，他們的機械手臂就會自動取料並回流焊接！
+        </p>
+      </div>
+
+      <div class="step-list">
+        <!-- 步驟 1 -->
+        <div class="step-item">
+          <div class="step-number">1</div>
+          <div class="step-body">
+            <h3>使用 EasyEDA (嘉立創 EDA) 或 KiCad 繪製原理圖與 PCB</h3>
+            <p>
+              <strong>最推薦方式：使用「嘉立創 EDA 專業版」(EasyEDA Pro)</strong>。<br>
+              原因：EasyEDA 直接內建立創商城 (LCSC) 的即時庫存與 3D 模型庫。你在放置 ESP32-S3、Type-C、電阻電容時，直接選取帶有 <code>JLCPCB Part # (Cxxxxxx)</code> 的零件，就能保證 100% 有庫存且一鍵導出 SMT 生產檔！
+            </p>
+            <div class="callout">
+              <strong>💡 新手提示：</strong> 如果你對畫板不熟悉，可以直接拿此頁面的「引腳網路圖」與「BOM 清單」，在嘉立創 EDA 裡搜尋料號並拉線連接，完成後點選「檔案 ➔ 導出 ➔ 嘉立創生產檔 (Fabrication Files)」，系統會自動幫你打包好下單所需檔案。
+            </div>
+          </div>
+        </div>
+
+        <!-- 步驟 2 -->
+        <div class="step-item">
+          <div class="step-number">2</div>
+          <div class="step-body">
+            <h3>準備好發包 JLCPCB 的三份核心檔案</h3>
+            <p>要讓 JLCPCB 幫你焊元件，需要上傳以下三份檔案（EasyEDA 可一鍵全部導出）：</p>
+            <div class="grid-3" style="margin-top: 1rem;">
+              <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+                <strong style="color: var(--accent-cyan);">① Gerber 壓縮檔 (.zip)</strong>
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem;">洗電路板專用（包含走線銅皮、絲印、防焊層與鑽孔檔）。</p>
+              </div>
+              <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+                <strong style="color: var(--accent-emerald);">② BOM 表 (.csv / .xlsx)</strong>
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem;">元件料表（記錄 R1、C1、U1 對應哪個 LCSC Part # Cxxxxxx）。</p>
+              </div>
+              <div style="background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+                <strong style="color: var(--accent-purple);">③ CPL / 座標檔 (.csv)</strong>
+                <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem;">元件位置與旋轉角度（讓貼片機知道元件要焊在板子的哪個 X/Y 座標）。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 步驟 3 -->
+        <div class="step-item">
+          <div class="step-number">3</div>
+          <div class="step-body">
+            <h3>在 JLCPCB 官網上傳並啟用 SMT 打件服務</h3>
+            <p>打開 <a href="https://jlcpcb.com" target="_blank" style="color: var(--accent-cyan); text-decoration: underline;">jlcpcb.com</a>，點擊「Order Now / 立即下單」：</p>
+            <ol style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem;">
+              <li>上傳 <strong>Gerber.zip</strong>，系統會自動解析板子尺寸（例如 45mm × 45mm 圓形板）。</li>
+              <li>在下方找到 <strong>「PCB Assembly (SMT)」</strong> 開關，將其打勾啟用。</li>
+              <li>選擇 <strong>Top Side (單面貼片)</strong>：強烈建議將 ESP32、電阻電容全部排在頂層，這樣只需支付一次 SMT 治具費！</li>
+              <li>組裝數量選擇 <strong>2片 或 5片</strong>（JLCPCB 經濟型打樣非常便宜）。</li>
+            </ol>
+          </div>
+        </div>
+
+        <!-- 步驟 4 -->
+        <div class="step-item">
+          <div class="step-number">4</div>
+          <div class="step-body">
+            <h3>上傳 BOM 與 CPL 檔案並確認料件配對</h3>
+            <p>點擊下一步後，系統會提示你上傳剛剛導出的 <strong>BOM.csv</strong> 與 <strong>CPL.csv</strong>：</p>
+            <div class="callout callout-amber">
+              <strong>⚠️ 省錢技巧：注意「基礎庫 (Basic Parts)」vs「擴展庫 (Extended Parts)」</strong><br>
+              • <strong>Basic Parts（基礎庫）</strong>：已經常駐在貼片機飛達上，<strong>換料費 $0 元</strong>！例如 0603/0805 電阻電容、常用三極管。<br>
+              • <strong>Extended Parts（擴展庫）</strong>：工程師需要人工將料盤裝上機器，每種元件收取約 <strong>$3 USD 換料費</strong>。<br>
+              👉 本頁提供的 BOM 表已針對 JLCPCB 優化，被動元件盡可能選用 Basic Parts，整批 5 片打樣含貼片成本約 <strong>$20 ~ $35 USD</strong>！
+            </div>
+          </div>
+        </div>
+
+        <!-- 步驟 5 -->
+        <div class="step-item">
+          <div class="step-number">5</div>
+          <div class="step-body">
+            <h3>線上 DFM 3D 視覺校準（極關鍵！）</h3>
+            <p>JLCPCB 會在網頁上生成 3D 虛擬打件預覽圖。請務必手動檢查：</p>
+            <ul style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.4rem;">
+              <li><strong>Type-C 方向</strong>：Pin 腳有無對齊焊盤。</li>
+              <li><strong>ESP32-S3 / WROOM 模組方向</strong>：確認天線部分朝向板邊外側，沒有旋轉 90° 或 180°。</li>
+              <li><strong>二極體 / IC 第 1 腳 (Pin 1 Dot)</strong>：確認極性圓點與 PCB 絲印圓點一致。</li>
+            </ul>
+            <p style="margin-top: 0.75rem;">確認無誤後點擊送出付款，約 <strong>5~7 個工作天</strong>，焊接完畢的現成電路板就會宅配寄到你家！</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: SMT 零件清單 BOM -->
+    <div id="tabContentBom" class="tab-content">
+      <div class="card" style="margin-bottom: 1.5rem;">
+        <div class="card-title">
+          <span>JLCPCB / LCSC 官方料號速查表 (Bill of Materials)</span>
+          <button class="btn btn-secondary" onclick="exportBomCsv()">匯出 CSV 檔</button>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 0.95rem;">
+          以下為根據 Marvin Car Puck 硬體需求配對的具體 LCSC 料號。你在畫板或上傳 JLCPCB BOM 時，填入這些 <code>Cxxxxxx</code> 料號即可自動完成比對配料：
+        </p>
+      </div>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>標號 (Designator)</th>
+              <th>元件類別</th>
+              <th>型號與封裝</th>
+              <th>LCSC Part #</th>
+              <th>JLCPCB 零件庫</th>
+              <th>用途說明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono">U1</td>
+              <td>主控 MCU</td>
+              <td>ESP32-S3-WROOM-1-N16R8 (SMD)</td>
+              <td><a href="https://www.lcsc.com/product-detail/C2913200.html" target="_blank" class="lcsc-link">C2913200</a></td>
+              <td>Extended</td>
+              <td>WiFi / 8MB PSRAM / 螢幕渲染 / 解碼</td>
+            </tr>
+            <tr>
+              <td class="mono">U2</td>
+              <td>藍牙 MCU</td>
+              <td>ESP32-WROOM-32E (4MB Flash)</td>
+              <td><a href="https://www.lcsc.com/product-detail/C701341.html" target="_blank" class="lcsc-link">C701341</a></td>
+              <td>Extended</td>
+              <td>專職 Classic BT A2DP 發射與 AVRCP</td>
+            </tr>
+            <tr>
+              <td class="mono">U3</td>
+              <td>降壓 DC-DC</td>
+              <td>SY8089AAAC (SOT-23-5, 2A 降壓)</td>
+              <td><a href="https://www.lcsc.com/product-detail/C78990.html" target="_blank" class="lcsc-link">C78990</a></td>
+              <td><strong>Basic (免換料費)</strong></td>
+              <td>5V 轉 3.3V (峰值 2A)，提供雙晶片大電流</td>
+            </tr>
+            <tr>
+              <td class="mono">J1</td>
+              <td>電源插座</td>
+              <td>TYPE-C-16P (沉板/貼片)</td>
+              <td><a href="https://www.lcsc.com/product-detail/C165948.html" target="_blank" class="lcsc-link">C165948</a></td>
+              <td>Extended</td>
+              <td>USB 5V 供電輸入 + S3 燒錄通道</td>
+            </tr>
+            <tr>
+              <td class="mono">MIC1</td>
+              <td>MEMS 麥克風</td>
+              <td>INMP441ACEZ-R0 (QFN-MEMS)</td>
+              <td><a href="https://www.lcsc.com/product-detail/C2683616.html" target="_blank" class="lcsc-link">C2683616</a></td>
+              <td>Extended</td>
+              <td>I2S 數位收音（或做 6-Pin 2.54 排針座插市售小板）</td>
+            </tr>
+            <tr>
+              <td class="mono">J2</td>
+              <td>螢幕介面座</td>
+              <td>FPC-0.5mm-8P 臥貼插座</td>
+              <td><a href="https://www.lcsc.com/product-detail/C262657.html" target="_blank" class="lcsc-link">C262657</a></td>
+              <td>Extended</td>
+              <td>直插 GC9A01 圓屏排線（免手工焊接）</td>
+            </tr>
+            <tr>
+              <td class="mono">SW1, SW2</td>
+              <td>輕觸按鍵</td>
+              <td>3×6×2.5mm SMD 輕觸按鈕</td>
+              <td><a href="https://www.lcsc.com/product-detail/C139797.html" target="_blank" class="lcsc-link">C139797</a></td>
+              <td><strong>Basic (免換料費)</strong></td>
+              <td>SW1=PTT 鍵(IO0)、SW2=WROOM BOOT 配對鍵</td>
+            </tr>
+            <tr>
+              <td class="mono">LED1</td>
+              <td>狀態指示燈</td>
+              <td>WS2812B-B (3535 SMD RGB)</td>
+              <td><a href="https://www.lcsc.com/product-detail/C114587.html" target="_blank" class="lcsc-link">C114587</a></td>
+              <td>Extended</td>
+              <td>Marvin 狀態呼吸指示燈 (接 S3 GPIO 48)</td>
+            </tr>
+            <tr>
+              <td class="mono">L1</td>
+              <td>功率電感</td>
+              <td>2.2µH 貼片功率電感 (0805 / CD32)</td>
+              <td><a href="https://www.lcsc.com/product-detail/C2932918.html" target="_blank" class="lcsc-link">C2932918</a></td>
+              <td><strong>Basic (免換料費)</strong></td>
+              <td>SY8089 DC-DC 儲能電感 (需耐流 >2.5A)</td>
+            </tr>
+            <tr>
+              <td class="mono">C1, C2, C3</td>
+              <td>去耦電容</td>
+              <td>10µF 0805 16V X5R</td>
+              <td><a href="https://www.lcsc.com/product-detail/C15850.html" target="_blank" class="lcsc-link">C15850</a></td>
+              <td><strong>Basic (免換料費)</strong></td>
+              <td>電源穩壓與去耦濾波</td>
+            </tr>
+            <tr>
+              <td class="mono">C4, C5, C6</td>
+              <td>高頻旁路電容</td>
+              <td>100nF (0.1µF) 0603 50V</td>
+              <td><a href="https://www.lcsc.com/product-detail/C14663.html" target="_blank" class="lcsc-link">C14663</a></td>
+              <td><strong>Basic (免換料費)</strong></td>
+              <td>晶片電源引腳高頻去耦</td>
+            </tr>
+            <tr>
+              <td class="mono">R1, R2</td>
+              <td>Type-C 下拉電阻</td>
+              <td>5.1kΩ 0603 1%</td>
+              <td><a href="https://www.lcsc.com/product-detail/C23186.html" target="_blank" class="lcsc-link">C23186</a></td>
+              <td><strong>Basic (免換料費)</strong></td>
+              <td>CC1/CC2 識別電阻，讓 PD 快充頭輸出 5V</td>
+            </tr>
+            <tr>
+              <td class="mono">R3, R4</td>
+              <td>I2C/上拉電阻</td>
+              <td>10kΩ 0603 1%</td>
+              <td><a href="https://www.lcsc.com/product-detail/C25804.html" target="_blank" class="lcsc-link">C25804</a></td>
+              <td><strong>Basic (免換料費)</strong></td>
+              <td>按鈕上拉與重置引腳</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout">
+        <strong>💡 建議組裝策略：</strong><br>
+        如果不想在板上直接焊 QFN 封裝的 INMP441 或 PCM5102，你可以在 PCB 上預留標準 <strong>2.54mm 排母/排針焊盤</strong>。讓 JLCPCB 貼片貼好主晶片、電源與阻容，你收到板子後只需像積木一樣把市售的「紫色 INMP441 小板」插上去，難度與風險降到零！
+      </div>
+    </div>
+
+    <!-- TAB: 45x45 圓形尺寸分析 -->
+    <div id="tabContentFit45" class="tab-content">
+      <div class="card" style="margin-bottom: 2rem;">
+        <div class="card-title">
+          <span>直接回答結論：目前元件「單板 Ø45mm 圓形」在工程上裝得下嗎？</span>
+          <span class="icon">🔍</span>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 1rem; line-height: 1.7;">
+          結論：<strong style="color: var(--accent-rose);">「如果是用目前兩顆標準大模組（ESP32-S3-WROOM + ESP32-WROOM），單面硬塞在 Ø45mm 圓形板上裝不下；即使純幾何勉強卡進去，也會引發嚴重的天線失效與無處放 Type-C 的問題！」</strong><br>
+          但只要做一個微調：<strong style="color: var(--accent-emerald);">稍微放寬到 Ø48mm~Ø50mm（只多 3~5mm，車載出風口完全無感）</strong>，或是採用商業級產品最愛的<strong style="color: var(--accent-cyan);">「雙層夾心板 (Sandwich)」</strong>，就能極其優雅且完美地解決！以下用 1:1 真實尺寸比例畫給你看：
+        </p>
+      </div>
+
+      <!-- 1:1 尺寸對比 SVG 視覺化 -->
+      <div class="schematic-box" style="padding: 1rem;">
+        <h3 style="font-size: 1.15rem; margin-bottom: 0.5rem; color: #fff;">1:1 毫米幾何比例排版視圖 (Scale: 1mm = 6.67px)</h3>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;">真實物理尺寸對比：標示兩顆 18×25.5mm 模組、Type-C 插座、天線禁銅區與圓周邊界。</p>
+
+        <svg viewBox="0 0 1100 560" style="width: 100%; min-width: 1000px; height: 560px; background: #060910; border-radius: 0.75rem;">
+          <!-- 格線 -->
+          <pattern id="gridSub" width="20" height="20" patternUnits="userSpaceOnUse">
+            <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(255,255,255,0.02)" stroke-width="1"/>
+          </pattern>
+          <rect width="1100" height="560" fill="url(#gridSub)" />
+
+          <!-- 左圖：Ø45mm 硬塞方案 -->
+          <g transform="translate(40, 20)">
+            <text x="240" y="30" fill="#f43f5e" font-size="15" font-weight="700" text-anchor="middle">❌ 方案 A：現有兩顆大模組硬塞 Ø45mm 圓形</text>
+            <text x="240" y="50" fill="#94a3b8" font-size="11" text-anchor="middle">四角幾乎切穿邊界、雙天線緊貼互踩、無處放 Type-C</text>
+
+            <!-- Ø45mm 圓形外框 (直徑 300px, 半徑 150px, 中心 240, 250) -->
+            <circle cx="240" cy="250" r="150" fill="rgba(244, 63, 94, 0.04)" stroke="#f43f5e" stroke-width="2.5" stroke-dasharray="6,4" />
+            <text x="240" y="420" fill="#f43f5e" font-family="monospace" font-size="12" text-anchor="middle">PCB 邊界：Ø45.0 mm</text>
+
+            <!-- 兩顆模組組合 (總寬 36mm = 240px, 高 25.5mm = 170px) -->
+            <!-- 模組 1: ESP32-S3 (寬 18mm=120px, 高 25.5mm=170px, 左上 118, 165) -->
+            <rect x="118" y="165" width="120" height="170" rx="4" fill="#1e293b" stroke="#38bdf8" stroke-width="1.8" />
+            <!-- S3 天線 (頂部 6.5mm = 43px) -->
+            <rect x="118" y="165" width="120" height="43" fill="rgba(245, 158, 11, 0.25)" stroke="#f59e0b" stroke-width="1" />
+            <text x="178" y="190" fill="#fbbf24" font-size="10" font-weight="700" text-anchor="middle">S3 WiFi 天線</text>
+            <text x="178" y="245" fill="#e2e8f0" font-size="11" font-weight="700" text-anchor="middle">ESP32-S3</text>
+            <text x="178" y="260" fill="#94a3b8" font-size="9" text-anchor="middle">18 × 25.5 mm</text>
+
+            <!-- 模組 2: ESP32-WROOM (寬 18mm=120px, 高 25.5mm=170px, 左上 242, 165) -->
+            <rect x="242" y="165" width="120" height="170" rx="4" fill="#1e293b" stroke="#10b981" stroke-width="1.8" />
+            <!-- WROOM 天線 -->
+            <rect x="242" y="165" width="120" height="43" fill="rgba(16, 185, 129, 0.25)" stroke="#10b981" stroke-width="1" />
+            <text x="302" y="190" fill="#34d399" font-size="10" font-weight="700" text-anchor="middle">WROOM BT 天線</text>
+            <text x="302" y="245" fill="#e2e8f0" font-size="11" font-weight="700" text-anchor="middle">ESP32-WROOM</text>
+            <text x="302" y="260" fill="#94a3b8" font-size="9" text-anchor="middle">18 × 25.5 mm</text>
+
+            <!-- 衝突標記 1: 角落距離邊緣只剩 0.75mm -->
+            <circle cx="118" cy="165" r="7" fill="none" stroke="#f43f5e" stroke-width="2" />
+            <line x1="118" y1="165" x2="60" y2="140" stroke="#f43f5e" stroke-width="1.2" />
+            <text x="55" y="135" fill="#f43f5e" font-size="10" text-anchor="end">⚠️ 角落距圓邊僅 0.75mm (無焊盤空間)</text>
+
+            <circle cx="362" cy="165" r="7" fill="none" stroke="#f43f5e" stroke-width="2" />
+
+            <!-- 衝突標記 2: 雙天線同頻干涉 -->
+            <line x1="238" y1="180" x2="242" y2="180" stroke="#f43f5e" stroke-width="3" />
+            <text x="240" y="145" fill="#f43f5e" font-size="10" font-weight="700" text-anchor="middle">⚠️ 天線間距 &lt;1mm 嚴重互擾</text>
+
+            <!-- 衝突標記 3: Type-C 無處可放 -->
+            <rect x="210" y="360" width="60" height="50" rx="3" fill="none" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="3,3" />
+            <text x="240" y="388" fill="#ef4444" font-size="9" text-anchor="middle">Type-C 凸出板外！</text>
+          </g>
+
+          <line x1="550" y1="30" x2="550" y2="520" stroke="rgba(255,255,255,0.1)" stroke-dasharray="4,4" />
+
+          <!-- 右圖：推薦工程解法 (Ø48~50mm 或 雙層) -->
+          <g transform="translate(580, 20)">
+            <text x="240" y="30" fill="#10b981" font-size="15" font-weight="700" text-anchor="middle">✅ 推薦解法：微調至 Ø48mm~Ø50mm (雙面反向天線)</text>
+            <text x="240" y="50" fill="#94a3b8" font-size="11" text-anchor="middle">天線相距 >35mm 零干擾、Type-C 完美內嵌、預留 M2 鎖孔</text>
+
+            <!-- Ø48mm 圓形外框 (半徑 160px) -->
+            <circle cx="240" cy="250" r="160" fill="rgba(16, 185, 129, 0.04)" stroke="#10b981" stroke-width="2.5" />
+            <text x="240" y="435" fill="#10b981" font-family="monospace" font-size="12" text-anchor="middle">優化 PCB 邊界：Ø48.0 mm（僅多 3mm）</text>
+
+            <!-- 模組 1: S3 (朝上放左側) -->
+            <rect x="130" y="125" width="110" height="160" rx="4" fill="#132338" stroke="#38bdf8" stroke-width="1.8" />
+            <rect x="130" y="125" width="110" height="40" fill="rgba(56, 189, 248, 0.25)" stroke="#38bdf8" stroke-width="1" />
+            <text x="185" y="150" fill="#38bdf8" font-size="10" font-weight="700" text-anchor="middle">S3 WiFi (朝上)</text>
+            <text x="185" y="215" fill="#e2e8f0" font-size="11" font-weight="700" text-anchor="middle">ESP32-S3</text>
+
+            <!-- 模組 2: WROOM (朝下倒置放右側，天線朝下！) -->
+            <rect x="250" y="215" width="110" height="160" rx="4" fill="#132822" stroke="#10b981" stroke-width="1.8" />
+            <rect x="250" y="335" width="110" height="40" fill="rgba(16, 185, 129, 0.25)" stroke="#10b981" stroke-width="1" />
+            <text x="305" y="360" fill="#34d399" font-size="10" font-weight="700" text-anchor="middle">BT 天線 (朝下)</text>
+            <text x="305" y="275" fill="#e2e8f0" font-size="11" font-weight="700" text-anchor="middle">ESP32-WROOM</text>
+
+            <!-- 雙天線間距綠色標註 -->
+            <path d="M 185 125 L 185 105 L 305 105 L 305 375" fill="none" stroke="#10b981" stroke-width="1.5" stroke-dasharray="3,3" />
+            <text x="245" y="100" fill="#10b981" font-size="10" font-weight="700" text-anchor="middle">✨ 天線間距 > 38mm (訊號極穩無干擾)</text>
+
+            <!-- Type-C 位於底部中心或側邊 -->
+            <rect x="130" y="300" width="55" height="45" rx="3" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5" />
+            <text x="157" y="327" fill="#fbbf24" font-size="9" font-weight="700" text-anchor="middle">Type-C</text>
+
+            <!-- 電源 DC-DC 區域 -->
+            <rect x="250" y="150" width="55" height="45" rx="3" fill="#1e293b" stroke="#a855f7" stroke-width="1.5" />
+            <text x="277" y="177" fill="#c084fc" font-size="9" text-anchor="middle">DC-DC 3V3</text>
+
+            <!-- 螺絲孔 -->
+            <circle cx="100" cy="250" r="12" fill="none" stroke="#64748b" stroke-width="2" />
+            <circle cx="100" cy="250" r="7" fill="#060910" stroke="#64748b" stroke-width="1" />
+            <text x="100" y="275" fill="#94a3b8" font-size="8" text-anchor="middle">M2 螺絲孔</text>
+
+            <circle cx="380" cy="250" r="12" fill="none" stroke="#64748b" stroke-width="2" />
+            <circle cx="380" cy="250" r="7" fill="#060910" stroke="#64748b" stroke-width="1" />
+            <text x="380" y="275" fill="#94a3b8" font-size="8" text-anchor="middle">M2 螺絲孔</text>
+          </g>
+        </svg>
+      </div>
+
+      <!-- 數學與幾何計算證明 -->
+      <div class="grid-2" style="margin-top: 1.5rem;">
+        <div class="card">
+          <div class="card-title">
+            <span>📐 數學幾何嚴密推導（為什麼 Ø45mm 太擠？）</span>
+            <span class="icon">🧮</span>
+          </div>
+          <div style="color: var(--text-secondary); font-size: 0.92rem; display: flex; flex-direction: column; gap: 0.6rem;">
+            <p>1. <strong>圓形半徑與弦長公式</strong>：半徑 $R = 22.5\text{ mm}$。若兩顆模組緊貼並排在中心，總寬度 $W = 18 + 18 = 36\text{ mm}$（左右各半 $X = \pm 18\text{ mm}$）。</p>
+            <p>2. <strong>邊緣允許的最大高度</strong>：$$Y_{max} = 2 \times \sqrt{R^2 - X^2} = 2 \times \sqrt{22.5^2 - 18^2} = 2 \times \sqrt{182.25} = 27.0\text{ mm}$$</p>
+            <p>3. <strong>模組真實物理長度</strong>：ESP32 模組長度為 <strong>25.5 mm</strong>。</p>
+            <div class="callout callout-amber" style="margin: 0.25rem 0;">
+              <strong>致命瓶頸：</strong> 雖然 $25.5\text{ mm} < 27.0\text{ mm}$，理論上只差 $1.5\text{ mm}$（上下各留 0.75mm）。但這<strong>完全沒算外圍焊接焊盤（Pads 需要外擴 1.2mm）</strong>！一旦加上 SMT 焊盤，四個角落會<strong>直接超出 PCB 圓形外弧</strong>，洗板時會被洗刀切斷焊盤！
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>💡 實際落地的 3 種最優工程解決方案</span>
+            <span class="icon">✨</span>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.92rem; color: var(--text-secondary);">
+            <div style="border-left: 3px solid var(--accent-emerald); padding-left: 0.75rem;">
+              <strong style="color: #fff;">方案 1（最簡單／強烈推薦）：直徑改為 Ø48mm 或 Ø50mm</strong><br>
+              直徑只多 3~5mm，在車用出風口（一般直徑 65~75mm）上視覺完全無感！但這多出來的 3mm 讓 S3 與 WROOM 可以一上一下顛倒擺放，天線完全背對背拉開，Type-C 與螺絲柱完全放得下。
+            </div>
+            <div style="border-left: 3px solid var(--accent-cyan); padding-left: 0.75rem;">
+              <strong style="color: #fff;">方案 2（極致小巧）：雙層夾心疊板 (Sandwich Puck) ➜ 可做 Ø40mm！</strong><br>
+              頂板放 GC9A01 圓屏 + 麥克風 + PTT 按鈕；底板放兩顆 ESP32 + 電源 + Type-C。兩片圓板透過 1.27mm 排針對插，直徑可以縮到超小 Ø40mm，厚度僅約 12mm！
+            </div>
+            <div style="border-left: 3px solid var(--accent-purple); padding-left: 0.75rem;">
+              <strong style="color: #fff;">方案 3（晶片選型瘦身）：改用 S3-MINI + PICO 晶片</strong><br>
+              若堅持單板 Ø45mm，將 S3-WROOM 改為 <strong>ESP32-S3-MINI-1</strong>（只有 16.6×13.2mm），藍牙換成 <strong>ESP32-PICO-V3-02</strong>（只有 7×7mm 的 SiP 封裝），面積縮小 60%，就能輕鬆放進 Ø45mm！
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: PCB 佈局與車載避坑規則 -->
+    <div id="tabContentLayout" class="tab-content">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">
+            <span>天線禁銅區 (Antenna Keep-out Zone)</span>
+            <span class="icon">📡</span>
+          </div>
+          <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 0.75rem;">
+            Car Puck 上有兩顆射頻模組（S3 WiFi 天線 + WROOM 藍牙天線）：
+          </p>
+          <ul style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.5rem;">
+            <li><strong>兩顆天線必須朝向板邊邊緣</strong>：絕不能讓天線位於 PCB 正中央或被銅皮包圍。</li>
+            <li><strong>天線正下方嚴禁走線與鋪銅（Top/Bottom 全部挖空 Keep-out）</strong>：PCB 下方的所有層都要挖空，避免信號被地平面吸收造成車內斷線。</li>
+            <li><strong>兩顆天線彼此夾角或相距 >25mm</strong>：降低 WiFi 2.4GHz 與 Bluetooth 2.4GHz 的近場互擾。</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>車載電源突波防護 (Power & Transient)</span>
+            <span class="icon">⚡</span>
+          </div>
+          <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 0.75rem;">
+            車載供電（特別是點煙器轉換過程或引擎點火時）常伴隨高頻尖峰突波：
+          </p>
+          <ul style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.5rem;">
+            <li><strong>Type-C 輸入端放置 TVS 瞬態抑制二極體</strong>（如 USBLC6-2SC6 或 ESD9B5V），防止靜電打穿 S3 的 USB-CDC 通道。</li>
+            <li><strong>5V 輸入端並聯一個 100µF 貼片鉭電容或固態電容</strong>：吸收汽車發電機產生的低頻波動。</li>
+            <li><strong>SY8089 走線原則</strong>：輸入電容、晶片 VIN/GND、電感、輸出電容迴路盡可能縮短且加寬銅箔（寬度 ≥ 1.0mm）。</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 1rem;">
+        <div class="card-title">
+          <span>高頻走線考量（I2S 數位音訊與 40MHz SPI）</span>
+          <span class="icon">〰️</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; color: var(--text-secondary); font-size: 0.95rem;">
+          <div>
+            <strong style="color: var(--accent-amber);">SPI 螢幕線路 (GPIO 21, 47, 40, 41)</strong>
+            <p style="margin-top: 0.25rem;">
+              GC9A01 運作在 40MHz 高速 SPI。走線盡量在 Top 層直達螢幕 FPC 座，避免打過孔 (Via)。周圍盡量鋪地保護，長度不超過 50mm。
+            </p>
+          </div>
+          <div>
+            <strong style="color: var(--accent-cyan);">I2S 時脈與資料線路 (BCLK, LRCLK, DIN)</strong>
+            <p style="margin-top: 0.25rem;">
+              S3 至 WROOM 的三根 I2S 線必須伴隨地線走線，遠離天線與 DC-DC 電感開關節點（SW Pin），避免開關噪聲串入數位音訊。
+            </p>
+          </div>
+          <div>
+            <strong style="color: var(--accent-emerald);">底層完整鋪地 (Solid GND Plane)</strong>
+            <p style="margin-top: 0.25rem;">
+              建議採用 <strong>4 層板 (4-Layer: Signal / GND / Power / Signal)</strong>，JLCPCB 4 層板打樣價格已非常低廉（10x10cm 以內僅 $2 USD），底層有完整 GND 平面能徹底消除底噪。
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 5: JLCPCB 3D列印外殼指南 -->
+    <div id="tabContentEnclosure" class="tab-content">
+      <div class="card" style="margin-bottom: 2rem;">
+        <div class="card-title">
+          <span>JLCPCB 3D 列印服務 (JLC3DP) 快速概覽</span>
+          <span class="icon">🖨️</span>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 0.95rem;">
+          <strong>有的！JLCPCB 有非常成熟且便宜的 3D 列印子品牌「JLC3DP」</strong>。你可以在設計完外殼 3D 檔（<code>.STL</code> 或 <code>.STEP</code>）後直接上傳，系統會秒級報價。最棒的是：<strong>3D 列印外殼可以與你的 PCB/PCBA 電路板合併同一張訂單寄送 (Combine Shipping)</strong>，省下一筆國際運費！
+        </p>
+      </div>
+
+      <!-- 車載材質對比 -->
+      <div class="grid-2">
+        <div class="card" style="border-left: 4px solid var(--accent-emerald);">
+          <div class="card-title">
+            <span style="color: var(--accent-emerald);">✅ 車載環境唯一推薦：MJF / SLS 尼龍 (PA12)</span>
+            <span class="icon">🏆</span>
+          </div>
+          <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 0.75rem;">
+            車載環境夏天車內溫度動輒 <strong>60°C ~ 75°C</strong>（甚至在出風口暴曬下更高）。
+          </p>
+          <ul style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.4rem;">
+            <li><strong>工藝名稱</strong>：HP Multi Jet Fusion (MJF) 或 SLS。</li>
+            <li><strong>材料型號</strong>：<strong>HP PA12 Nylon (尼龍)</strong>。</li>
+            <li><strong>耐溫能力</strong>：熱變形溫度高達 <strong>130°C ~ 175°C</strong>，放車上曬幾年都絕對不會軟化或變形！</li>
+            <li><strong>外觀質感</strong>：表面自帶高級微顆粒磨砂質感（可選原色灰黑或 Dyeing 染黑），跟原廠汽車內裝塑料飾板毫無違和感。</li>
+            <li><strong>預估價格</strong>：直徑 50mm × 厚 20mm 的小圓餅外殼，<strong>單個通常只要 $2 ~ $4 美金（約 70~130 台幣）</strong>，便宜到不可思議！</li>
+          </ul>
+        </div>
+
+        <div class="card" style="border-left: 4px solid var(--accent-rose);">
+          <div class="card-title">
+            <span style="color: var(--accent-rose);">❌ 絕對不要選：標準光敏樹脂 (SLA 9000R / 8000) 或 PLA</span>
+            <span class="icon">⚠️</span>
+          </div>
+          <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 0.75rem;">
+            初學者最常踩的大坑：為了追求便宜或表面光滑而選最便宜的白樹脂。
+          </p>
+          <ul style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.4rem;">
+            <li><strong>標準樹脂 (SLA)</strong>：熱變形溫度僅 <strong>45°C ~ 50°C</strong>。放車上一到中午直接軟掉、卡扣鬆開、外殼發黃龜裂。</li>
+            <li><strong>FDM 常見的 PLA</strong>：耐溫僅 55°C，車內一曬就軟成爛泥。</li>
+            <li><strong>例外情況</strong>：若要用光敏樹脂，必須挑選特別標註的 <strong>High Temp Resin (高溫樹脂，耐溫 100°C+)</strong>，但韌度不如尼龍耐摔。</li>
+          </ul>
+        </div>
+      </div>
+
+      <!-- 外殼機構設計 5 大要點 -->
+      <div class="card" style="margin-top: 1.5rem;">
+        <div class="card-title">
+          <span>Marvin Car Puck 外殼 3D 建模的 5 大關鍵機構細節</span>
+          <span class="icon">📐</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; margin-top: 1rem;">
+          <div style="background: rgba(0,0,0,0.25); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-cyan);">1. 圓屏壓框與固定 (GC9A01 Bezel)</strong>
+            <p style="font-size: 0.88rem; color: var(--text-secondary); margin-top: 0.35rem;">
+              GC9A01 螢幕正面直徑約 35.5mm，顯示可視區為 Ø32.4mm。外殼前蓋做一個 <strong>Ø33.0mm 的圓形視窗邊緣</strong>，背面留 0.8mm 沉台，用少許 B7000 膠或海綿雙面膠從內側將螢幕貼平固定。
+            </p>
+          </div>
+          <div style="background: rgba(0,0,0,0.25); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-emerald);">2. 麥克風拾音聲學孔 (INMP441 Mic Hole)</strong>
+            <p style="font-size: 0.88rem; color: var(--text-secondary); margin-top: 0.35rem;">
+              在前殼或側殼對準 INMP441 麥克風進音孔開一個 <strong>Ø1.5mm ~ Ø2.0mm</strong> 的微孔，內側加貼一片防塵防水聲學透氣膜（防車內灰塵跑進麥克風振膜）。
+            </p>
+          </div>
+          <div style="background: rgba(0,0,0,0.25); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-amber);">3. PTT 按鍵結構 (Compliant Button)</strong>
+            <p style="font-size: 0.88rem; color: var(--text-secondary); margin-top: 0.35rem;">
+              行車時駕駛盲操需要明確段落感！可在側殼設計一體式懸臂按鍵（利用尼龍本身的彈性），或頂部外圈做成可下壓的按壓環，觸發 PCB 上的微動開關。
+            </p>
+          </div>
+          <div style="background: rgba(0,0,0,0.25); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-purple);">4. 正下方 Type-C 開孔與垂直出線</strong>
+            <p style="font-size: 0.88rem; color: var(--text-secondary); margin-top: 0.35rem;">
+              插座置於 6 點鐘正下方。外殼開孔建議做成 <strong>12mm × 6.5mm</strong> 帶深槽導角，讓粗線身能完全插緊，走線順著出風口垂直向下隱藏。
+            </p>
+          </div>
+          <div style="background: rgba(0,0,0,0.25); padding: 1rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-rose);">5. 車載固定方式 (出風口夾 / 磁吸底座)</strong>
+            <p style="font-size: 0.88rem; color: var(--text-secondary); margin-top: 0.35rem;">
+              底蓋背面可以設計兩種方案之一：<br>
+              • <strong>MagSafe 磁吸環槽</strong>：底蓋挖出 Ø54mm 沉槽嵌入標準磁吸環，搭配車用磁吸出風口架。<br>
+              • <strong>17mm 通用球頭座</strong>：直接相容市面上百種汽車手機支架的 17mm 萬向夾具。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 雙層夾心板 + Qi 供電 爆炸圖剖析 -->
+      <div class="schematic-box" style="margin-top: 2rem; padding: 1.5rem;">
+        <h3 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; color: #fff;">雙層夾心板 (Sandwich) + Qi 無線供電 3D 結構剖面圖</h3>
+        <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.5rem;">
+          透過「雙板垂直堆疊」將體積壓縮至極致 Ø45mm × 18mm，同時容納正下方 Type-C 與 MagSafe Qi 無線充電線圈：
+        </p>
+
+        <svg viewBox="0 0 1000 620" style="width: 100%; min-width: 900px; height: 620px; background: #060910; border-radius: 0.75rem;">
+          <!-- 中心對齊線 -->
+          <line x1="500" y1="20" x2="500" y2="600" stroke="rgba(255,255,255,0.05)" stroke-dasharray="4,4" />
+
+          <!-- 層 1: 前面蓋 + 壓圈 -->
+          <g transform="translate(180, 40)">
+            <rect x="0" y="0" width="640" height="45" rx="22" fill="#1e293b" stroke="#38bdf8" stroke-width="2" />
+            <circle cx="320" cy="22" r="18" fill="#0f172a" stroke="#60a5fa" stroke-width="1.5" />
+            <text x="320" y="27" fill="#60a5fa" font-size="12" font-weight="700" text-anchor="middle">GC9A01 圓屏視窗 Ø33mm</text>
+            <circle cx="100" cy="22" r="4" fill="#38bdf8" />
+            <text x="115" y="26" fill="#94a3b8" font-size="10">麥克風拾音孔 Ø1.5mm</text>
+            <text x="660" y="27" fill="#38bdf8" font-size="12" font-weight="700">① 前面蓋 (HP PA12 尼龍)</text>
+          </g>
+
+          <!-- 虛線指示向下 -->
+          <path d="M 500 85 L 500 115" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="3,3" />
+
+          <!-- 層 2: GC9A01 螢幕模組 -->
+          <g transform="translate(260, 115)">
+            <rect x="0" y="0" width="480" height="35" rx="8" fill="#0f172a" stroke="#f59e0b" stroke-width="1.8" />
+            <text x="240" y="22" fill="#fbbf24" font-size="12" font-weight="700" text-anchor="middle">1.28" GC9A01 圓屏 (厚 1.6mm)</text>
+            <text x="500" y="22" fill="#f59e0b" font-size="12" font-weight="700">② 螢幕模組</text>
+          </g>
+
+          <path d="M 500 150 L 500 180" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3,3" />
+
+          <!-- 層 3: 頂板 PCB A (UI & 傳感板) -->
+          <g transform="translate(220, 180)">
+            <rect x="0" y="0" width="560" height="40" rx="8" fill="#064e3b" stroke="#10b981" stroke-width="2" />
+            <text x="280" y="24" fill="#34d399" font-size="13" font-weight="700" text-anchor="middle">頂板 PCB (Board A): INMP441 + PTT 按鈕 + WS2812B 狀態燈</text>
+            <text x="580" y="24" fill="#10b981" font-size="12" font-weight="700">③ 頂層 PCB (Ø43mm)</text>
+          </g>
+
+          <path d="M 500 220 L 500 255" stroke="#10b981" stroke-width="1.5" stroke-dasharray="3,3" />
+
+          <!-- 層 4: 板間排針連接層 (Inter-Board Connectors) -->
+          <g transform="translate(280, 255)">
+            <!-- 左右排針柱 -->
+            <rect x="30" y="0" width="60" height="35" rx="3" fill="#334155" stroke="#94a3b8" stroke-width="1" />
+            <text x="60" y="22" fill="#cbd5e1" font-size="10" text-anchor="middle">1.27mm 排針</text>
+
+            <rect x="350" y="0" width="60" height="35" rx="3" fill="#334155" stroke="#94a3b8" stroke-width="1" />
+            <text x="380" y="22" fill="#cbd5e1" font-size="10" text-anchor="middle">1.27mm 排針</text>
+
+            <text x="220" y="22" fill="#94a3b8" font-size="11" text-anchor="middle">板間淨空 4.5mm (避開底板晶片高度)</text>
+            <text x="520" y="22" fill="#94a3b8" font-size="12" font-weight="700">④ 板間排針 / 中框柱</text>
+          </g>
+
+          <path d="M 500 290 L 500 325" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="3,3" />
+
+          <!-- 層 5: 底板 PCB B (主控與電源) -->
+          <g transform="translate(200, 325)">
+            <rect x="0" y="0" width="600" height="65" rx="8" fill="#1e1b4b" stroke="#818cf8" stroke-width="2" />
+            <rect x="50" y="10" width="160" height="45" rx="4" fill="#312e81" stroke="#a5b4fc" stroke-width="1" />
+            <text x="130" y="37" fill="#e0e7ff" font-size="11" font-weight="700" text-anchor="middle">ESP32-S3 (大腦)</text>
+
+            <rect x="230" y="10" width="160" height="45" rx="4" fill="#312e81" stroke="#a5b4fc" stroke-width="1" />
+            <text x="310" y="37" fill="#e0e7ff" font-size="11" font-weight="700" text-anchor="middle">ESP32-WROOM (BT)</text>
+
+            <!-- 正下方 Type-C -->
+            <rect x="420" y="12" width="75" height="40" rx="3" fill="#d97706" />
+            <text x="457" y="36" fill="#fff" font-size="10" font-weight="700" text-anchor="middle">6點鐘 Type-C</text>
+
+            <text x="620" y="38" fill="#818cf8" font-size="12" font-weight="700">⑤ 底層 PCB (主控+電源)</text>
+          </g>
+
+          <path d="M 500 390 L 500 425" stroke="#818cf8" stroke-width="1.5" stroke-dasharray="3,3" />
+
+          <!-- 層 6: 隔磁片 + Qi 無線接收線圈 -->
+          <g transform="translate(240, 425)">
+            <!-- 鐵氧體隔磁片 -->
+            <rect x="30" y="0" width="460" height="12" rx="3" fill="#475569" stroke="#94a3b8" stroke-width="1" />
+            <text x="260" y="10" fill="#f8fafc" font-size="9" font-weight="700" text-anchor="middle">鐵氧體隔磁片 Ferrite Shield (厚 0.3mm，阻擋磁場干擾底板)</text>
+
+            <!-- Qi 線圈 -->
+            <rect x="50" y="18" width="420" height="24" rx="12" fill="rgba(245, 158, 11, 0.25)" stroke="#f59e0b" stroke-width="2" />
+            <text x="260" y="34" fill="#fbbf24" font-size="11" font-weight="700" text-anchor="middle">Qi 無線充電接收線圈 (Ø38mm，厚 0.7mm，5V/1A 輸出)</text>
+            <text x="540" y="25" fill="#f59e0b" font-size="12" font-weight="700">⑥ Qi 接收模組層</text>
+          </g>
+
+          <path d="M 500 470 L 500 500" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3,3" />
+
+          <!-- 層 7: 底蓋 (帶 MagSafe 磁鐵環與 Type-C 出線槽) -->
+          <g transform="translate(180, 500)">
+            <rect x="0" y="0" width="640" height="60" rx="14" fill="#1e293b" stroke="#38bdf8" stroke-width="2" />
+            <!-- 正下方 6點鐘 Type-C 凹槽 -->
+            <rect x="440" y="20" width="75" height="40" fill="#0f172a" stroke="#f59e0b" stroke-width="1.5" />
+            <text x="477" y="45" fill="#fbbf24" font-size="10" text-anchor="middle">Type-C 出線口</text>
+
+            <!-- 嵌入式 MagSafe 磁吸環 -->
+            <rect x="80" y="15" width="280" height="30" rx="15" fill="none" stroke="#e2e8f0" stroke-width="2" stroke-dasharray="5,3" />
+            <text x="220" y="34" fill="#cbd5e1" font-size="11" font-weight="700" text-anchor="middle">MagSafe 磁吸環 (內嵌吸附車架)</text>
+
+            <text x="660" y="35" fill="#38bdf8" font-size="12" font-weight="700">⑦ 尼龍底蓋 (含磁吸槽)</text>
+          </g>
+        </svg>
+      </div>
+
+      <!-- Qi 無線供電深度剖析與電路設計 -->
+      <div class="grid-2" style="margin-top: 1.5rem;">
+        <div class="card">
+          <div class="card-title">
+            <span>⚡ Qi 無線供電的兩大極致優勢</span>
+            <span class="icon">✨</span>
+          </div>
+          <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 0.75rem;">
+            在車載環境中引入 Qi 無線取電是<strong>體驗升級的「殺手級功能」</strong>：
+          </p>
+          <ul style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.92rem; display: flex; flex-direction: column; gap: 0.5rem;">
+            <li><strong>一靠即上線（Snap-and-Play）</strong>：車載出風口直接裝市售的「MagSafe 車用磁吸無線充電架」。上車時把 Marvin Puck 往架子上一吸，磁鐵自動對齊居中並<strong>同時通電開機</strong>！完全不需要手動插拔任何電線。</li>
+            <li><strong>零裸露線材的美感</strong>：冷氣出風口處完全看不到拖在 Puck 身上的電線，線材全部隱藏在磁吸支架背後。</li>
+            <li><strong>隨手取下免拔線</strong>：如果內部預留一顆超薄 250mAh 鋰電池，下車或停等紅燈時可以直接拔下來拿在手上對話，吸回去又立刻充電！</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>🔌 正下方 Type-C + Qi 雙電源自動切換電路</span>
+            <span class="icon">🔄</span>
+          </div>
+          <p style="color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 0.75rem;">
+            當同時支援「正下方 Type-C」與「Qi 無線供電」時，如何避免電源倒灌？
+          </p>
+          <div style="background: rgba(0,0,0,0.3); padding: 0.85rem; border-radius: 0.5rem; border: 1px solid var(--border-color); font-size: 0.9rem; color: #e2e8f0;">
+            <p><strong>Power Path 自動路徑切換原理：</strong></p>
+            <p style="margin-top: 0.35rem; color: var(--text-secondary);">
+              1. <strong>Type-C 插入時（優先權最高）</strong>：Type-C 的 5V 透過蕭特基二極體（如 SS34 / BAT54C）或 PMOS 理想二極體開關直接給板子供電，同時觸發 Qi 接收晶片的 EN/Disable 引腳，讓無線接收端進入高阻休眠，避免發熱。<br>
+              2. <strong>Type-C 拔出時</strong>：系統瞬間無縫無感切換至底部的 Qi 無線線圈供電（5V 1A），維持 Marvin 不斷電重開。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Qi 接收模組選型指南 -->
+      <div class="card" style="margin-top: 1.5rem;">
+        <div class="card-title">
+          <span>📦 Qi 接收端 (Rx) 實作最推薦選型</span>
+          <span class="icon">🛒</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; color: var(--text-secondary); font-size: 0.92rem;">
+          <div style="border-left: 3px solid var(--accent-emerald); padding-left: 0.75rem;">
+            <strong style="color: #fff;">方案 A（最省事／首選）：市售一體式 Qi 接收貼片</strong><br>
+            直接淘寶或網購「手機外接 Type-C Qi 接收貼片（或 5V 1A 無線充電接收模組）」。線圈直徑約 38mm、厚度僅 0.8mm，自帶隔磁片與微型解碼晶片。只要剪掉多餘軟排，把 +5V 與 GND 兩條線焊到底層 PCB 上，成本不到 50 元台幣！
+          </div>
+          <div style="border-left: 3px solid var(--accent-cyan); padding-left: 0.75rem;">
+            <strong style="color: #fff;">方案 B（純 SMT 全貼片）：整合 TI BQ51013B 晶片</strong><br>
+            若要在底板上完全整合，可使用 <strong>TI BQ51013BRHLR (QFN-20，LCSC 有常備料)</strong>。線圈則選擇圓形自粘接收線圈（帶鐵氧體），底部焊在底板預留的兩個 AC1/AC2 焊盤上。
+          </div>
+      <!-- 微型晶片完全取代性與穿戴級 Qi 尺寸指南 -->
+      <div class="card" style="margin-top: 1.5rem;">
+        <div class="card-title">
+          <span>🔬 微型晶片替代可行性評估 + 穿戴級微型 Qi 線圈指南</span>
+          <span class="icon">📐</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem; margin-top: 1rem;">
+          <div style="background: rgba(0,0,0,0.3); padding: 1.2rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-cyan); font-size: 1.05rem;">1. S3-MINI-1 能完全取代 S3-WROOM 嗎？</strong>
+            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 0.5rem; line-height: 1.6;">
+              <strong>答案：可以，但型號千萬不能買錯！</strong><br>
+              • 核心晶片同樣是雙核 LX7 240MHz，指令集與引腳映射 100% 相同。<br>
+              • ⚠️ <strong style="color: #f43f5e;">致命型號陷阱</strong>：目前韌體解碼與頭部動畫需要 8MB PSRAM。在選購 S3-MINI-1 時，<strong>必須指定選用 <code>ESP32-S3-MINI-1-N8R8</code>（8MB Flash + 8MB Octal PSRAM）</strong>。若買到 N4R2（只有 2MB Quad PSRAM），會因記憶體不足報 OOM 錯誤！只要選對 N8R8，程式碼<strong>完全零修改直接跑</strong>。
+            </p>
+          </div>
+
+          <div style="background: rgba(0,0,0,0.3); padding: 1.2rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-emerald); font-size: 1.05rem;">2. 藍牙端能用 PICO-V3-02 取代 WROOM 嗎？</strong>
+            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 0.5rem; line-height: 1.6;">
+              <strong>答案：完全相容，而且體積從 25.5×18mm 暴降到 7×7mm！</strong><br>
+              • <strong>ESP32-PICO-V3-02</strong> 內部就是原版雙核 ESP32-D0WD-V3 + 8MB Flash，Classic BT A2DP Source 與 AVRCP 韌體 100% 相同。<br>
+              • ⚠️ <strong style="color: #fbbf24;">注意天線設計</strong>：PICO 是 7×7mm QFN 裸晶封裝，不帶板載天線。需要在 PCB 邊緣加上一個微型 <strong>陶瓷貼片天線 (Chip Antenna, 3.2×1.6mm)</strong>，JLCPCB 可直接貼片！
+            </p>
+          </div>
+
+          <div style="background: rgba(0,0,0,0.3); padding: 1.2rem; border-radius: 0.5rem; border: 1px solid var(--border-color);">
+            <strong style="color: var(--accent-amber); font-size: 1.05rem;">3. Qi 充電線圈可以做多小？</strong>
+            <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 0.5rem; line-height: 1.6;">
+              <strong>答案：可以從常規 Ø40mm 縮小到 Ø25mm~Ø28mm！</strong><br>
+              • 車載手機充電盤是 15W 大功率，才需要 Ø40mm 大線圈。<br>
+              • Marvin Puck 雙晶片功耗僅約 <strong>2.5W (5V 0.5A)</strong>，完全可以使用<strong>穿戴式裝置/藍牙耳機盒專用的微型 Qi 線圈（Ø25mm~Ø28mm，厚 0.6mm）</strong>。<br>
+              • 縮小後的線圈只佔據底盤中心，外圍留給 MagSafe 磁吸環（Ø54mm），外觀尺寸可以極度精緻！
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 下單三步圖 -->
+      <div class="card" style="margin-top: 1.5rem;">
+        <div class="card-title">
+          <span>JLC3DP 3D 列印外殼下單 3 步驟</span>
+          <span class="icon">🚀</span>
+        </div>
+        <ol style="padding-left: 1.25rem; color: var(--text-secondary); font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.5rem;">
+          <li>用 Fusion 360 / SolidWorks / Tinkercad 建模，匯出 <strong>上蓋.stl</strong> 與 <strong>下蓋.stl</strong>（或 .step 格式）。</li>
+          <li>進入 <a href="https://jlc3dp.com" target="_blank" style="color: var(--accent-cyan); text-decoration: underline;">jlc3dp.com</a>，直接拖曳上傳 STL 檔。</li>
+          <li>工藝選擇 <strong>MJF</strong>、材料選 <strong>HP PA12 (Black Dyed)</strong> ➔ 點選「加入購物車」➔ 結帳時勾選與剛剛的 PCB 訂單合併發貨！</li>
+        </ol>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div>Marvin Voice Bot — ESP32 Car Puck Hardware Specifications</div>
+    <div>Generated for JLCPCB SMT Production | 2026-10</div>
+  </footer>
+
+  <script>
+    // 頁籤切換邏輯
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+      if (tabId === 'quick') {
+        document.getElementById('tabBtnQuick').classList.add('active');
+        document.getElementById('tabContentQuick').classList.add('active');
+      } else if (tabId === 'schematic') {
+        document.getElementById('tabBtnSchematic').classList.add('active');
+        document.getElementById('tabContentSchematic').classList.add('active');
+      } else if (tabId === 'jlcpcb') {
+        document.getElementById('tabBtnJlcpcb').classList.add('active');
+        document.getElementById('tabContentJlcpcb').classList.add('active');
+      } else if (tabId === 'bom') {
+        document.getElementById('tabBtnBom').classList.add('active');
+        document.getElementById('tabContentBom').classList.add('active');
+      } else if (tabId === 'fit45') {
+        document.getElementById('tabBtnFit45').classList.add('active');
+        document.getElementById('tabContentFit45').classList.add('active');
+      } else if (tabId === 'layout') {
+        document.getElementById('tabBtnLayout').classList.add('active');
+        document.getElementById('tabContentLayout').classList.add('active');
+      } else if (tabId === 'enclosure') {
+        document.getElementById('tabBtnEnclosure').classList.add('active');
+        document.getElementById('tabContentEnclosure').classList.add('active');
+      }
+    }
+
+    // 複製文字功能
+    function copyText(str) {
+      navigator.clipboard.writeText(str).then(() => {
+        alert('已複製 LCSC 料號：' + str);
+      });
+    }
+
+    // 複製 OpenSCAD 代碼
+    function copyOpenScadCode() {
+      const code = document.getElementById('scadCodeBlock').innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        alert('已複製 OpenSCAD 3D 腳本代碼！可直接貼進 OpenSCAD 匯出 STL。');
+      });
+    }
+
+    // 走線高亮過濾邏輯
+    function filterWires(category) {
+      document.querySelectorAll('.filter-chip').forEach(chip => chip.classList.remove('active'));
+      const activeBtn = event ? event.target : document.getElementById('filterAll');
+      if (activeBtn) activeBtn.classList.add('active');
+
+      const allWires = document.querySelectorAll('.wire');
+
+      if (category === 'all') {
+        allWires.forEach(w => {
+          w.classList.remove('dimmed', 'highlight');
+        });
+        return;
+      }
+
+      allWires.forEach(w => {
+        w.classList.add('dimmed');
+        w.classList.remove('highlight');
+      });
+
+      if (category === 'spi') {
+        document.querySelectorAll('.wire-spi').forEach(w => {
+          w.classList.remove('dimmed');
+          w.classList.add('highlight');
+        });
+      } else if (category === 'i2s') {
+        document.querySelectorAll('.wire-i2s').forEach(w => {
+          w.classList.remove('dimmed');
+          w.classList.add('highlight');
+        });
+      } else if (category === 'uart') {
+        document.querySelectorAll('.wire-uart').forEach(w => {
+          w.classList.remove('dimmed');
+          w.classList.add('highlight');
+        });
+      } else if (category === 'power') {
+        document.querySelectorAll('.wire-power, .wire-gnd').forEach(w => {
+          w.classList.remove('dimmed');
+          w.classList.add('highlight');
+        });
+      }
+    }
+
+    // 匯出 BOM CSV
+    function exportBomCsv() {
+      const rows = [
+        ["Designator", "Category", "Package / Value", "LCSC Part #", "Type", "Description"],
+        ["U1", "MCU", "ESP32-S3-WROOM-1-N16R8", "C2913200", "Extended", "WiFi / 8MB PSRAM / Screen / Audio Decode"],
+        ["U2", "BT MCU", "ESP32-WROOM-32E", "C701341", "Extended", "Classic BT A2DP Source & AVRCP"],
+        ["U3", "DC-DC", "SY8089AAAC (SOT-23-5)", "C78990", "Basic", "5V to 3.3V 2A Step-Down Buck"],
+        ["J1", "Connector", "TYPE-C-16P SMD", "C165948", "Extended", "USB 5V Power & CDC Flashing"],
+        ["MIC1", "Mic", "INMP441ACEZ-R0", "C2683616", "Extended", "I2S Digital Microphone"],
+        ["J2", "Connector", "FPC-0.5mm-8P", "C262657", "Extended", "GC9A01 LCD Connector"],
+        ["SW1,SW2", "Switch", "3x6x2.5mm SMD", "C139797", "Basic", "PTT Key & WROOM Boot Key"],
+        ["LED1", "RGB LED", "WS2812B-B 3535", "C114587", "Extended", "Status Indicator"],
+        ["L1", "Inductor", "2.2uH SMD", "C2932918", "Basic", "Power Inductor >2.5A"],
+        ["C1,C2,C3", "Capacitor", "10uF 0805", "C15850", "Basic", "Decoupling Filter"],
+        ["C4,C5,C6", "Capacitor", "100nF 0603", "C14663", "Basic", "High Frequency Bypass"],
+        ["R1,R2", "Resistor", "5.1k 0603", "C23186", "Basic", "Type-C CC Pull-down"],
+        ["R3,R4", "Resistor", "10k 0603", "C25804", "Basic", "Pull-up Resistors"]
+      ];
+
+      let csvContent = "data:text/csv;charset=utf-8," + rows.map(e => e.join(",")).join("\n");
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "marvin_car_puck_bom.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  </script>
+</body>
+</html>
