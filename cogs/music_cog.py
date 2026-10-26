@@ -247,7 +247,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 self.stream_history.append(info)
 
                 if hasattr(self.bot, 'music_memory'):
-                    self.bot.music_memory.record_play(info, info.get('_record_as') or requested_by)
+                    self._record_play(info, info.get('_record_as') or requested_by)
 
                 dj_audio, _dj_played_in_tail = await self._stream_loop_prepare_and_announce(
                     info, vc, title, requested_by)
