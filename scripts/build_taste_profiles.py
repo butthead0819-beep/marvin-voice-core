@@ -60,10 +60,8 @@ def _gather(user: str, mm: dict, sk: dict, core_artists: list[str] | None = None
     """回 (該使用者真人點過/聽過的歌名, 音樂相關興趣標籤)。
 
     music_memory 的歌依該使用者點播次數（`requesters` count）降冪排序——愛播的歌
-    才是真正代表品味的樣本，聽過 1 次跟愛播 10 次不該被同等對待。song_history
-    沒有次數只有標題，當補充訊號接在後面，依最近性排序（`add_song_history` 只
-    append 到尾巴，故 reversed 讓最近聽的排前面）。dedup 保留先出現（權重較高
-    或較新）的位置。
+    才是真正代表品味的樣本，聽過 1 次跟愛播 10 次不該被同等對待。dedup 保留先出現
+    （權重較高）的位置。
     """
     weighted: list[tuple[str, int]] = []
     for _url, s in (mm.get("songs") or {}).items():
@@ -76,7 +74,6 @@ def _gather(user: str, mm: dict, sk: dict, core_artists: list[str] | None = None
     weighted.sort(key=lambda x: x[1], reverse=True)
     titles = [t for t, _c in weighted]
     p = (sk.get("players") or {}).get(user, {})
-    titles += [t for t in reversed(p.get("song_history") or []) if t]
     titles = list(dict.fromkeys(titles))[:_MAX_SONGS]
     likes = _music_related_likes(p.get("likes") or [], core_artists or [])
     return titles, likes

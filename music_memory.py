@@ -22,6 +22,35 @@ def extract_video_id(url: str) -> str | None:
     m = _VIDEO_ID_RE.search(url)
     return m.group(1) if m else None
 
+
+def recent_requested_titles(songs: dict, username: str, limit: int | None = None) -> list[str]:
+    """某人真人點過的歌名，依他最後一次點播時間新→舊。
+
+    點播紀錄的唯一來源（人物記憶不再存歌）。只算 requesters[username] > 0 的歌
+    （歌單匯出檔標 x 拿掉 requesters 後就不會再出現）；名字精確比對，
+    「Marvin推薦（為X）」不算。排序用 plays[] 裡 by == username 的最大 ts，沒有就 0。
+    limit=None 回全部。
+    """
+    entries: list[tuple[float, str]] = []
+    seen: dict[str, float] = {}
+    for s in (songs or {}).values():
+        if (s.get("requesters") or {}).get(username, 0) <= 0:
+            continue
+        title = s.get("title") or ""
+        if not title:
+            continue
+        ts = max(
+            (p.get("ts", 0) for p in (s.get("plays") or []) if p.get("by") == username),
+            default=0,
+        )
+        if title not in seen or ts > seen[title]:
+            seen[title] = ts
+    entries = sorted(seen.items(), key=lambda kv: -kv[1])
+    titles = [title for title, _ in entries]
+    if limit is not None:
+        titles = titles[:limit]
+    return titles
+
 # 5/18 incident — 原本 apply_stt_correction 內 lazy `from rapidfuzz import fuzz`
 # 在 async hot path 跟 ThreadPoolExecutor 第三方 thread 同時 import 同個 module
 # 觸發 macOS Python import lock deadlock (Errno 11 EDEADLK)，user 點歌
@@ -531,6 +560,9 @@ class MusicMemory:
             if len(out) >= limit:
                 break
         return out
+
+    def get_recent_requested_titles(self, username: str, limit: int | None = None) -> list[str]:
+        return recent_requested_titles(self._data.get("songs") or {}, username, limit)
 
     def get_recent_feedback(self, username: str, since_ts: float) -> list[dict]:
         """Read-only: return recommendation feedback entries for user, ts >= since_ts.

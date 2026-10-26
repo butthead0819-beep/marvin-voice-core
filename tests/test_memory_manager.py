@@ -113,14 +113,11 @@ def test_migrates_from_json_on_empty_db(tmp_path):
     assert "Migrated" in mem._cache
 
 
-# ── Song history ──────────────────────────────────────────────────────────────
+# ── Song history removed (single source = music_memory) ───────────────────────
 
-def test_song_history_deduplicates_and_keeps_latest(mem):
-    for song in ["A", "B", "C", "A"]:
-        mem.add_song_history("Alice", song)
-    history = mem.get_song_history("Alice")
-    assert history[-1] == "A"
-    assert history.count("A") == 1
+def test_song_history_methods_removed(mem):
+    assert not hasattr(mem, "get_song_history")
+    assert not hasattr(mem, "add_song_history")
 
 
 # ── flush is a no-op ──────────────────────────────────────────────────────────

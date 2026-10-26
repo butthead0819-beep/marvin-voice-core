@@ -196,12 +196,10 @@ class MusicStoryArcMixin:
         recently = [s['title'] for s in list(self.stream_history)[-15:]]
         recommended = mm.get_recent_recommendation_titles()
         skipped = mm.get_skipped_titles(members)
-        suki_hist: list[str] = []
-        _suki = getattr(self.bot.router, 'memory', None)
-        if _suki is not None:
-            for m in members:
-                suki_hist += (_suki.get_song_history(m) or [])[:10]
-        exclude_titles = list(dict.fromkeys(recently + recommended + skipped + suki_hist))
+        recent_req: list[str] = []
+        for m in members:
+            recent_req += mm.get_recent_requested_titles(m, limit=10)
+        exclude_titles = list(dict.fromkeys(recently + recommended + skipped + recent_req))
 
         if _tier == 1:
             # 🎵 [AssociativeCuration] 嘗試對話關聯與歌詞金句選曲（env-gated + 冷卻，失敗回 0 → 走原 autopilot）

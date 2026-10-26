@@ -1388,14 +1388,14 @@ class DiscordVoiceEngine:
         except Exception as e:
             logger.debug(f"[Core_STT] 動態 context 取材失敗，用基本 context: {e}")
         # 在場講者曾點過的歌被重點機率高（8/8：救拼音同音字撞錯歌，如小雨/小宇）。
-        # 每人只取最近 3 首（get_song_history 已按 recency 排序、最後=最新）。
-        memory = getattr(self.bot.router, "memory", None)
-        if memory is not None:
+        # 每人只取最近 3 首，來源=歌曲記憶 recent_requested_titles（新→舊）。
+        mm = getattr(self.bot, "music_memory", None)
+        if mm is not None:
             for member in members:
                 try:
-                    history_titles.extend((memory.get_song_history(member) or [])[-3:])
+                    history_titles.extend(mm.get_recent_requested_titles(member, limit=3))
                 except Exception as e:
-                    logger.debug(f"[Core_STT] {member} song_history 取材失敗，略過: {e}")
+                    logger.debug(f"[Core_STT] {member} 點播紀錄取材失敗，略過: {e}")
         ctx = build_stt_context(base_context, game_dict, song_pairs, members,
                                 history_titles=history_titles)
         self._last_stt_context = ctx
