@@ -62,3 +62,13 @@ def test_music_memory_method_uses_same_logic(tmp_path):
     }
     assert mm.get_recent_requested_titles("showay") == ["新歌", "舊歌"]
     assert mm.get_recent_requested_titles("showay", limit=1) == ["新歌"]
+
+
+def test_recency_uses_only_this_users_plays():
+    """別人最近播過不算這個人「最近點」——排序只看 by == username 的 plays。"""
+    songs = {
+        "u1": _song("我很久前點的", {"showay": 1, "大肚": 1},
+                    plays=[{"by": "showay", "ts": 100}, {"by": "大肚", "ts": 999}]),
+        "u2": _song("我最近點的", {"showay": 1}, plays=[{"by": "showay", "ts": 500}]),
+    }
+    assert recent_requested_titles(songs, "showay") == ["我最近點的", "我很久前點的"]
