@@ -95,6 +95,105 @@ def test_default_open_lines_cover_all_buckets():
 
 
 @pytest.mark.asyncio
+async def test_on_trip_end_called_on_absent():
+    from car_mode import build_car_presence
+    from unittest.mock import Mock
+    play_open, stop = AsyncMock(), AsyncMock()
+    on_trip_end = Mock()
+    cp = build_car_presence(
+        play_open=play_open, stop_playback=stop,
+        pool_provider=lambda speaker: [_cand("晴天")],
+        now_fn=lambda: _dt.datetime(2026, 7, 15, 8, 0),
+        on_trip_end=on_trip_end,
+    )
+    await cp.present()
+    await cp.absent()
+    on_trip_end.assert_called_once()
+    stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_on_trip_end_called_on_ttl_timeout():
+    from car_mode import build_car_presence, car_ttl_tick
+    from unittest.mock import Mock
+    t, adv = _clock()
+    play_open, stop = AsyncMock(), AsyncMock()
+    on_trip_end = Mock()
+    cp = build_car_presence(
+        play_open=play_open, stop_playback=stop,
+        pool_provider=lambda speaker: [_cand("晴天")],
+        now_fn=lambda: _dt.datetime(2026, 7, 15, 8, 0),
+        ttl_s=90.0, time_fn=t,
+        on_trip_end=on_trip_end,
+    )
+    await cp.present()
+    adv(91.0)
+    fired = await car_ttl_tick(cp)
+    assert fired is True
+    on_trip_end.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_on_trip_end_not_called_while_present():
+    from car_mode import build_car_presence, car_ttl_tick
+    from unittest.mock import Mock
+    t, adv = _clock()
+    play_open, stop = AsyncMock(), AsyncMock()
+    on_trip_end = Mock()
+    cp = build_car_presence(
+        play_open=play_open, stop_playback=stop,
+        pool_provider=lambda speaker: [_cand("晴天")],
+        now_fn=lambda: _dt.datetime(2026, 7, 15, 8, 0),
+        ttl_s=90.0, time_fn=t,
+        on_trip_end=on_trip_end,
+    )
+    await cp.present()
+    adv(30.0)
+    fired = await car_ttl_tick(cp)
+    assert fired is False
+    on_trip_end.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_on_trip_end_exception_still_stops():
+    from car_mode import build_car_presence
+    play_open, stop = AsyncMock(), AsyncMock()
+
+    def on_trip_end():
+        raise RuntimeError("清底圖失敗")
+
+    cp = build_car_presence(
+        play_open=play_open, stop_playback=stop,
+        pool_provider=lambda speaker: [_cand("晴天")],
+        now_fn=lambda: _dt.datetime(2026, 7, 15, 8, 0),
+        on_trip_end=on_trip_end,
+    )
+    await cp.present()
+    await cp.absent()   # 不應往外拋
+    stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_on_trip_end_clears_skin_store(tmp_path):
+    """整合：真的 SkinStore，下車後手動/話題底圖被清掉。"""
+    from car_mode import build_car_presence
+    from puck_skin import SkinStore
+    play_open, stop = AsyncMock(), AsyncMock()
+    store = SkinStore(tmp_path, seasonal=[])
+    store.put("topic", bytes(172800))
+    cp = build_car_presence(
+        play_open=play_open, stop_playback=stop,
+        pool_provider=lambda speaker: [_cand("晴天")],
+        now_fn=lambda: _dt.datetime(2026, 7, 15, 8, 0),
+        on_trip_end=store.clear,
+    )
+    await cp.present()
+    assert store.current() is not None
+    await cp.absent()
+    assert store.current() is None
+
+
+@pytest.mark.asyncio
 async def test_arrive_passes_speaker_to_pool_and_play_open():
     """多人同車：第一個到的人（showay）決定候選池與開場播放的身分。"""
     from car_mode import build_car_presence

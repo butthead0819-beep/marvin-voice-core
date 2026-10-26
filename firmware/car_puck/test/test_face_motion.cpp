@@ -373,6 +373,163 @@ int main() {
     printf("T11 ok (lo=%.4f hi=%.4f)\n", lo, hi);
   }
 
+  // T12: 開機甦醒 face_wake_step（2b：puck 通電後睡著，第一個聲音互動才醒）
+  {
+    FacePose mixerPose{0.2f, 0.16f, 0.05f, 0.02f, 0.0f};
+
+    // T12a: 不觸發 → 一直睡，暗光慢呼吸
+    {
+      FaceWake w; face_wake_init(w);
+      float T = 0.0f;
+      int steps = (int)(10.0f / DT);
+      for (int i = 0; i < steps; i++) {
+        T += DT;
+        FaceWakeOut out = face_wake_step(w, false, false, mixerPose, T);
+        assert(out.pose.pitch >= WAKE_SLEEP_PITCH - WAKE_SLEEP_BREATH - 1e-4f);
+        assert(out.pose.pitch <= WAKE_SLEEP_PITCH + WAKE_SLEEP_BREATH + 1e-4f);
+        assert(fabsf(out.brightnessScale - WAKE_SLEEP_BL) < 1e-6f);
+        assert(w.phase == WAKE_ASLEEP);
+      }
+      printf("T12a ok (asleep stays asleep, breathes)\n");
+    }
+
+    // T12b: 觸發一格後鬆開 → 2.5s 甦醒演出：抬頭/左看/右看/回正，最後 AWAKE
+    {
+      FaceWake w; face_wake_init(w);
+      float T0 = 5.0f;
+      float T = T0;
+      face_wake_step(w, true, false, mixerPose, T);  // T0：觸發這一格
+
+      auto stepTo = [&](float targetT) -> FaceWakeOut {
+        FaceWakeOut out{};
+        while (T < targetT - DT * 0.5f) {
+          T += DT;
+          out = face_wake_step(w, false, false, mixerPose, T);
+        }
+        return out;
+      };
+
+      FaceWakeOut at06 = stepTo(T0 + 0.6f);
+      assert(at06.pose.pitch < 0.0f);
+      assert(fabsf(at06.pose.browUp - WAKE_BROW) < 0.02f);
+      assert(at06.brightnessScale > 1.0f - 1e-3f);
+      printf("T12b-0.6s ok (pitch=%.4f browUp=%.4f bl=%.4f)\n",
+             at06.pose.pitch, at06.pose.browUp, at06.brightnessScale);
+
+      FaceWakeOut at12 = stepTo(T0 + 1.2f);
+      assert(fabsf(at12.pose.yaw - (-WAKE_LOOK_YAW)) < 0.02f);
+      printf("T12b-1.2s ok (yaw=%.4f)\n", at12.pose.yaw);
+
+      FaceWakeOut at18 = stepTo(T0 + 1.8f);
+      assert(fabsf(at18.pose.yaw - WAKE_LOOK_YAW) < 0.02f);
+      printf("T12b-1.8s ok (yaw=%.4f)\n", at18.pose.yaw);
+
+      stepTo(T0 + WAKE_DUR + 0.1f);
+      assert(w.phase == WAKE_AWAKE);
+      FaceWakeOut afterAwake = face_wake_step(w, false, false, mixerPose, T0 + WAKE_DUR + 0.2f);
+      assert(afterAwake.pose.yaw == mixerPose.yaw);
+      assert(afterAwake.pose.pitch == mixerPose.pitch);
+      assert(afterAwake.pose.roll == mixerPose.roll);
+      assert(afterAwake.pose.browUp == mixerPose.browUp);
+      assert(afterAwake.pose.err == mixerPose.err);
+      assert(fabsf(afterAwake.brightnessScale - 1.0f) < 1e-6f);
+
+      // 之後 60 秒不再睡回去（trigger=false）
+      float Tx = T0 + WAKE_DUR + 0.2f;
+      for (int i = 0; i < (int)(60.0f / DT); i++) {
+        Tx += DT;
+        FaceWakeOut o = face_wake_step(w, false, false, mixerPose, Tx);
+        assert(w.phase == WAKE_AWAKE);
+        assert(fabsf(o.brightnessScale - 1.0f) < 1e-6f);
+      }
+      printf("T12b ok (reaches AWAKE, stays AWAKE)\n");
+    }
+
+    // T12c: ASLEEP 時 error=true → 直接輸出 mixerPose/亮度1，phase 仍 ASLEEP；
+    //       error 解除後回到睡姿。
+    {
+      FaceWake w; face_wake_init(w);
+      FaceWakeOut errOut = face_wake_step(w, false, true, mixerPose, 3.0f);
+      assert(errOut.pose.yaw == mixerPose.yaw);
+      assert(errOut.pose.pitch == mixerPose.pitch);
+      assert(fabsf(errOut.brightnessScale - 1.0f) < 1e-6f);
+      assert(w.phase == WAKE_ASLEEP);
+
+      FaceWakeOut backToSleep = face_wake_step(w, false, false, mixerPose, 3.0f + DT);
+      assert(backToSleep.pose.pitch >= WAKE_SLEEP_PITCH - WAKE_SLEEP_BREATH - 1e-4f);
+      assert(backToSleep.pose.pitch <= WAKE_SLEEP_PITCH + WAKE_SLEEP_BREATH + 1e-4f);
+      assert(fabsf(backToSleep.brightnessScale - WAKE_SLEEP_BL) < 1e-6f);
+      printf("T12c ok (error passthrough while asleep, recovers to sleep pose)\n");
+    }
+
+    // T12d: 連續性——從 trigger 到 AWAKE 後 1 秒，每格相鄰差值都 < 0.15（防跳格，
+    // 含交叉淡入接 mixer 那段）。
+    {
+      FaceWake w; face_wake_init(w);
+      float T0 = 1.0f;
+      float T = T0;
+      FaceWakeOut prevOut = face_wake_step(w, true, false, mixerPose, T);
+      float totalDur = WAKE_DUR + 1.0f;
+      int steps = (int)(totalDur / DT);
+      for (int i = 0; i < steps; i++) {
+        T += DT;
+        FaceWakeOut out = face_wake_step(w, false, false, mixerPose, T);
+        assert(fabsf(out.pose.yaw - prevOut.pose.yaw) < 0.15f);
+        assert(fabsf(out.pose.pitch - prevOut.pose.pitch) < 0.15f);
+        assert(fabsf(out.pose.browUp - prevOut.pose.browUp) < 0.15f);
+        prevOut = out;
+      }
+      printf("T12d ok (no frame jumps through wake + blend)\n");
+    }
+
+    // T12e: WAKING 期間反覆 trigger=true 不會重新開始 start
+    {
+      FaceWake w; face_wake_init(w);
+      float T0 = 2.0f;
+      float T = T0;
+      face_wake_step(w, true, false, mixerPose, T);  // 觸發
+
+      FaceWakeOut out{};
+      while (T < T0 + 1.2f - DT * 0.5f) {
+        T += DT;
+        out = face_wake_step(w, true, false, mixerPose, T);  // 持續為 true
+      }
+      assert(fabsf(out.pose.yaw - (-WAKE_LOOK_YAW)) < 0.02f);
+      printf("T12e ok (repeated trigger during WAKING doesn't restart start)\n");
+    }
+  }
+
+
+  // T13: 換底圖淡出/淡入（face_skin_step）
+  {
+    FaceSkinState st; face_skin_init(st);
+    const float D2 = 1.0f / 100.0f;
+    // 頭像不在畫面上（封面中）→ 不動
+    for (float T = 0; T < 1.0f; T += D2) {
+      FaceSkinOut o = face_skin_step(st, T, true, false);
+      assert(o.brightnessScale == 1.0f && !o.swapNow);
+    }
+    printf("T13a ok (waits for headReady)\n");
+    float T0 = 2.0f, T = T0;
+    face_skin_step(st, T, true, true);   // 進 FADE_OUT
+    int swaps = 0; float swapAt = -1; FaceSkinOut o{};
+    bool checkedMidOut = false, checkedMidIn = false;
+    while (T < T0 + 1.0f) {
+      T += D2;
+      o = face_skin_step(st, T, swapAt < 0, true);   // 換完圖呼叫端就清掉 pending
+      if (o.swapNow) { swaps++; swapAt = T; }
+      if (!checkedMidOut && T >= T0 + 0.15f) { assert(fabsf(o.brightnessScale - 0.5f) < 0.05f); checkedMidOut = true; }
+      if (swapAt > 0 && !checkedMidIn && T >= swapAt + 0.15f) { assert(fabsf(o.brightnessScale - 0.5f) < 0.05f); checkedMidIn = true; }
+      if (swapAt > 0 && T >= swapAt + 0.31f) break;
+    }
+    assert(swaps == 1);
+    assert(fabsf(swapAt - (T0 + 0.3f)) < 0.02f);
+    assert(checkedMidOut && checkedMidIn);
+    o = face_skin_step(st, T + 0.01f, false, true);
+    assert(o.brightnessScale == 1.0f && !o.swapNow && st.phase == SKIN_IDLE);
+    printf("T13b ok (fade out 0.3s → one swap → fade in 0.3s → idle)\n");
+  }
+
   printf("all face_motion tests passed\n");
   return 0;
 }

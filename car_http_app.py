@@ -51,6 +51,10 @@ _ICY_SPEAK_ENABLED = os.getenv("MARVIN_ICY_SPEAK", "0").strip().lower() in ("1",
 # ICY 第 11 欄送「這則回覆的頭部動作」（seq:代碼強度）：預設關。需要先燒錄會解析第 11 欄的 S3 韌體再開，且只在 MARVIN_ICY_SPEAK 開時有效。
 _ICY_GESTURE_ENABLED = os.getenv("MARVIN_ICY_GESTURE", "0").strip().lower() in ("1", "true", "yes", "on")
 
+# ICY 第 12 欄送「目前底圖 etag」：預設開。需要先燒錄會解析第 12 欄＋下載 /car_skin 的 S3
+# 韌體，且只在 MARVIN_ICY_SPEAK 開時有效（見 build_now_playing_payload）。
+_ICY_SKIN_ENABLED = os.getenv("MARVIN_ICY_SKIN", "1").strip().lower() in ("1", "true", "yes", "on")
+
 # 跟 cogs/music_cog_audio_meta.py::_SONG_BPM_STORE 同一檔。
 _SONG_BPM_STORE = "records/song_bpm.json"
 
@@ -1171,7 +1175,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                    now_playing_state_path=None, claude_sessions_state_path=None,
                    gmail_calendar_state_path=None,
                    device_speakers: dict[str, str] | None = None,
-                   puck_cover_cache=None):
+                   car_devices: dict[str, str] | None = None,
+                   puck_cover_cache=None, puck_skin_store=None):
     """組 aiohttp Application：POST /say 收文字→注入 pipeline（Siri 捷徑入口）。
 
     純 wiring、無 side effect（不起 server），好測。token=None＝不驗證
@@ -1189,6 +1194,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     agent 呼叫）寫、這裡的 /gmail_calendar_status 讀，見該檔開頭說明）。
     device_speakers＝車載裝置身分白名單（parse_device_speakers 的結果）；None＝不驗證、
     裝置送的 speaker 一律當 default_speaker（舊行為）。只影響 /car、/audio，/say 等不動。
+    car_devices＝裝置ID→身分對應（parse_car_devices 的結果）；請求帶 device 時優先看這張表，
+    忽略 speaker；未登記的 device 一律拒收，不退回 default_speaker（隱私：別人的記憶）。
     """
     from aiohttp import web
 
@@ -1210,6 +1217,9 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
 
     from puck_cover_cache import PuckCoverCache
     _puck_cache = puck_cover_cache if puck_cover_cache is not None else PuckCoverCache()
+
+    from puck_skin import SkinStore
+    _skin_store = puck_skin_store if puck_skin_store is not None else SkinStore()
 
     _CORS = {"Access-Control-Allow-Origin": "*",
              "Access-Control-Allow-Headers": "*",
@@ -1392,10 +1402,12 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                    or request.remote or "anon")
             if not audio_rate_limiter.allow(key):
                 return web.json_response({"error": "rate_limited"}, status=429, headers=_CORS)
-        spk = resolve_device_speaker(request.query.get("speaker"), device_speakers, default_speaker)
-        if spk is None:
-            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /audio：speaker={request.query.get('speaker')!r}")
-            return web.json_response({"error": "unknown_speaker"}, status=400, headers=_CORS)
+        raw_device = request.query.get("device")
+        raw_speaker = request.query.get("speaker")
+        spk, err = resolve_car_identity(raw_device, raw_speaker, car_devices, device_speakers, default_speaker)
+        if err is not None:
+            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /audio：device={raw_device!r} speaker={raw_speaker!r}")
+            return web.json_response({"error": err}, status=400, headers=_CORS)
         wav_bytes = await request.read()
         if not wav_bytes:
             return web.json_response({"error": "empty"}, status=400, headers=_CORS)
@@ -1498,14 +1510,20 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                     gesture = None
                     if speak_tracker is not None and _ICY_GESTURE_ENABLED:
                         gesture = getattr(getattr(vc, "_puck_gesture_director", None), "field", None)
+                    skin = None
+                    if speak_tracker is not None and _ICY_SKIN_ENABLED:
+                        cur = _skin_store.current()
+                        skin = cur[1] if cur else ""
                     if _ICY_BPM_ENABLED:
                         url = (info or {}).get("webpage_url") or (info or {}).get("original_url") or (info or {}).get("url") or ""
                         vid = music_memory.extract_video_id(url)
                         bpm = _bpm_lookup.get(vid, now)
                         payload = build_now_playing_payload(
-                            info, start_time, now, bpm=bpm, include_bpm=True, speaking=speaking, gesture=gesture)
+                            info, start_time, now, bpm=bpm, include_bpm=True, speaking=speaking,
+                            gesture=gesture, skin=skin)
                     else:
-                        payload = build_now_playing_payload(info, start_time, now, speaking=speaking, gesture=gesture)
+                        payload = build_now_playing_payload(
+                            info, start_time, now, speaking=speaking, gesture=gesture, skin=skin)
                     chunk = interleaver.feed(chunk, payload, now)
                 await resp.write(chunk)
         except (ConnectionError, asyncio.CancelledError):
@@ -1564,6 +1582,17 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         return web.Response(body=jpg, content_type="image/jpeg",
                             headers={**_CORS, "Cache-Control": "no-store"})
 
+    async def handle_car_skin(request):
+        """GET /car_skin — 車機圓屏頭像底圖（240x240 RGB888 原始 bytes）。
+
+        沒有設定目前底圖（回到韌體內建預設頭）→ 404。"""
+        current = _skin_store.read_current()
+        if current is None:
+            return web.json_response({"skin": None}, status=404, headers=_CORS)
+        etag, data = current
+        return web.Response(body=data, content_type="application/octet-stream",
+                            headers={**_CORS, "Cache-Control": "no-store", "X-Skin-Etag": etag})
+
     async def handle_car(request):
         """POST /car {"state": "present"|"absent", "lat"?, "lon"?} — ESP32 puck 車載觸發。
 
@@ -1580,16 +1609,18 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             state = (body.get("state") or "").strip()
             lat, lon = body.get("lat"), body.get("lon")
             raw_speaker = body.get("speaker")
+            raw_device = body.get("device")
         else:
             state = (request.query.get("state") or "").strip()
             lat, lon = None, None
             raw_speaker = request.query.get("speaker")
+            raw_device = request.query.get("device")
         if state not in ("present", "absent"):
             return web.json_response({"error": "bad_state"}, status=400, headers=_CORS)
-        spk = resolve_device_speaker(raw_speaker, device_speakers, default_speaker)
-        if spk is None:
-            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /car：speaker={raw_speaker!r}")
-            return web.json_response({"error": "unknown_speaker"}, status=400, headers=_CORS)
+        spk, err = resolve_car_identity(raw_device, raw_speaker, car_devices, device_speakers, default_speaker)
+        if err is not None:
+            logger.warning(f"🚗 [CarMode] 未知裝置身分，拒收 /car：device={raw_device!r} speaker={raw_speaker!r}")
+            return web.json_response({"error": err}, status=400, headers=_CORS)
         if state == "present":
             await car_presence.present(spk)
         else:
@@ -1649,12 +1680,14 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_get("/audio_stream", handle_audio_stream)
     app.router.add_get("/car_now", handle_car_now)
     app.router.add_get("/car_cover", handle_car_cover)
+    app.router.add_get("/car_skin", handle_car_skin)
     app.router.add_get("/hud", handle_hud)
     app.router.add_get("/stage", handle_stage)
     app.router.add_get("/stage_icon.png", handle_stage_icon)
     app.router.add_post("/car", handle_car)
     app.router.add_options("/car", handle_preflight)
     app["puck_cover_cache"] = _puck_cache
+    app["puck_skin_store"] = _skin_store
     return app
 
 
@@ -1696,6 +1729,44 @@ def resolve_device_speaker(raw: str | None, allowed: dict[str, str] | None,
     if not key:
         return default_speaker
     return allowed.get(key)
+
+
+def parse_car_devices(raw: str) -> dict[str, str]:
+    """MARVIN_CAR_DEVICES（逗號分隔的 `裝置ID:名字`）→ {casefold 後的裝置ID: 名字}。
+    每項以第一個冒號切開，ID 與名字都去前後空白；沒有冒號、ID 空、名字空的項略過。
+    同一 ID 重複出現以第一個為準。"""
+    out: dict[str, str] = {}
+    for item in raw.split(","):
+        if ":" not in item:
+            continue
+        device_id, name = item.split(":", 1)
+        device_id, name = device_id.strip(), name.strip()
+        if not device_id or not name:
+            continue
+        out.setdefault(device_id.casefold(), name)
+    return out
+
+
+def resolve_car_identity(device: str | None, speaker: str | None,
+                         car_devices: dict[str, str] | None,
+                         allowed: dict[str, str] | None,
+                         default_speaker: str) -> tuple[str | None, str | None]:
+    """回 (身分, 錯誤碼)。
+    device 非 None 且去空白後非空 → 只看 car_devices：
+        car_devices 有這個 ID（casefold 比對）→ (名字, None)
+        否則（含 car_devices 是 None 或空）→ (None, "unknown_device")
+      此時完全忽略 speaker。
+    否則（沒帶 device）→ 走舊邏輯 resolve_device_speaker(speaker, allowed, default_speaker)：
+        得到名字 → (名字, None)；得到 None → (None, "unknown_speaker")"""
+    if device is not None and device.strip():
+        name = (car_devices or {}).get(device.strip().casefold())
+        if name is not None:
+            return name, None
+        return None, "unknown_device"
+    spk = resolve_device_speaker(speaker, allowed, default_speaker)
+    if spk is None:
+        return None, "unknown_speaker"
+    return spk, None
 
 
 def decide_car_arrive(*, connected: bool, music_active: bool) -> str:
@@ -1741,11 +1812,25 @@ async def run_puck_cover_prefetch_loop(vc, cache, *, interval: float = 5.0, size
         await asyncio.sleep(interval)
 
 
+async def _speak_car_open_line(vc, line: str) -> None:
+    """上車開場白：比照登場台詞（voice_controller_connection 的 greeting）走 protected TTS。"""
+    try:
+        vc._tts_interrupted = False
+        with vc._protected_tts_window():
+            await vc.play_tts(line, already_in_channel=True)
+    except Exception:  # noqa: BLE001
+        logger.exception("[CarMode] 開場白播放失敗（不影響開場曲）")
+
+
 async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
     """車載上車開場的選歌+播放邏輯，satellite/Discord 兩版 _play_open 共用（見
     start_text_http_server 裡的呼叫端）。
 
-    復用 /play 那招 inject_text「放一首X」讓 pipeline 解析+播+DJ；絕不即時付費 LLM。
+    開場白（car_open.line）與選歌並行起跑：開場白走 _speak_car_open_line 的
+    protected TTS 念出來，選歌用 resolve_car_open_query 選出 query；兩者都完成後
+    才送出點歌，避免開場白跟開場曲疊在一起。點歌改直呼 MusicCog（不再走
+    inject_text「放一首X」），因為那條路徑會先播隨機英文 filler + music ack，
+    上車第一個聲音不該是那兩個——開場白已經是登場聲音了。
 
     ⚠️ 2026-08-11 實機踩到：這裡原本無條件用 anchor_title 裸字串搜尋，跟
     music_cog.py 的一般 autopilot enqueue（_auto_recommend 系列）邏輯不一致——
@@ -1757,7 +1842,9 @@ async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
     yt-dlp 用這串裸標題搜不到東西，resolve 靜默失敗、整趟開場沒聲音。
     改成比照 _auto_recommend 的優先序：direct_url > artist+title > title。
     """
+    line_task = asyncio.create_task(_speak_car_open_line(vc, car_open.line)) if car_open.line else None
     try:
+        query = None
         if car_open.song:
             # 車載開場繞過 _auto_recommend 的 enqueue 迴圈、直接走手動點歌路徑，
             # 沒吃到那邊本來就有的 is_non_song_video 品質閘——候選池 build_member_pools
@@ -1776,14 +1863,24 @@ async def _execute_car_open(vc, car_open, speaker: str, pool_provider) -> None:
 
             query = await resolve_car_open_query(
                 car_open.song, pool_provider=pool_provider, resolve_fn=_resolve)
-            if query:
-                await inject_text(vc, speaker, f"放一首{query}")
-            else:
+            if not query:
                 logger.warning("🚗 [CarMode] 開場候選池連試多首都沒過品質閘，本次開場靜音")
-        logger.info("🚗 [CarMode] 上車開場（%s）：%s → 放《%s》", speaker,
-                    car_open.line, car_open.song.anchor_title if car_open.song else "—")
+
+        if line_task is not None:
+            await line_task
+
+        if query:
+            mc = vc.bot.cogs.get("MusicCog")
+            if mc is None:
+                logger.warning("🚗 [CarMode] MusicCog 不在，開場曲略過")
+            else:
+                await mc._handle_voice_music_command(speaker, f"放一首{query}", "play", play_ack=False)
+        logger.info("🚗 [CarMode] 上車開場（%s）：%s → 點播 %s", speaker,
+                    car_open.line, query or "—")
     except Exception:  # noqa: BLE001
         logger.exception("[CarMode] play_open 失敗")
+        if line_task is not None and not line_task.done():
+            await line_task
 
 
 async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
@@ -1803,6 +1900,11 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
     default_speaker = os.getenv("MARVIN_SATELLITE_SPEAKER", "狗與露")
     # 車載裝置身分白名單（MARVIN_CAR_SPEAKERS）：裝置自己帶 speaker，這裡驗證成正式名字。
     device_speakers = parse_device_speakers(os.getenv("MARVIN_CAR_SPEAKERS", ""), default_speaker)
+    # 新式：裝置ID→身分對應（MARVIN_CAR_DEVICES），韌體只送裝置 ID，不再送 speaker。
+    car_devices = parse_car_devices(os.getenv("MARVIN_CAR_DEVICES", ""))
+
+    from puck_skin import SkinStore
+    skin_store = SkinStore()
 
     car_presence = None
     audio_rate_limiter = None
@@ -1835,7 +1937,8 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
                 if action == "join_and_open":
                     await discord_voice.auto_rejoin_on_boot(car_join=True, resume_music=False)
                     if not discord_voice.bot.voice_clients:
-                        logger.warning("🚗 [CarMode/Discord] 進頻道失敗，略過開場（sentinel 60s 會再試）")
+                        car_presence.forget(speaker)
+                        logger.warning("🚗 [CarMode/Discord] 進頻道失敗，略過開場（移出在場名單，下次心跳重新上車）")
                         return
                 await _execute_car_open(discord_voice, car_open, speaker, lambda: _pool_provider(speaker))
             except Exception:  # noqa: BLE001
@@ -1858,7 +1961,8 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
                 logger.exception("[CarMode/Discord] stop_playback 失敗")
 
         car_presence = build_car_presence(
-            play_open=_play_open, stop_playback=_stop_playback, pool_provider=_pool_provider)
+            play_open=_play_open, stop_playback=_stop_playback, pool_provider=_pool_provider,
+            on_trip_end=skin_store.clear)
         vc.bot.car_presence = car_presence   # 給 MusicCog 讀在場者（autopilot 續推用）
         # funnel 公開後 /audio per-token 限速：每 token 每分鐘 30 次（架構#2 付費鐵則）。
         audio_rate_limiter = RateLimiter(max_per_window=30, window_s=60.0)
@@ -1867,8 +1971,10 @@ async def start_text_http_server(vc, stream_source=None, *, discord_voice=None):
     app = build_text_app(vc, token=token, default_speaker=default_speaker,
                          car_presence=car_presence,
                          audio_rate_limiter=audio_rate_limiter, stream_source=stream_source,
-                         device_speakers=device_speakers)
+                         device_speakers=device_speakers, car_devices=car_devices,
+                         puck_skin_store=skin_store)
     logger.info(f"🚗 [CarMode] 裝置身分白名單：{', '.join(device_speakers.values())}")
+    logger.info(f"🚗 [CarMode] 裝置ID對應：{', '.join(f'{k}→{v}' for k, v in car_devices.items()) or '（無）'}")
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)

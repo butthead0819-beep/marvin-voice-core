@@ -174,4 +174,35 @@ inline bool icy_gesture_field(const uint8_t* p, size_t len, uint16_t* seq, int* 
   return true;
 }
 
+// 取第 12 欄（index 11）：目前底圖 etag。欄位不存在 → false（沒有資訊，呼叫端不要動）。
+// 存在：空字串＝回預設頭（out[0]=0, 回 true）；否則必須 1–16 個 [0-9a-f]，複製進 out
+// （cap 至少 17）回 true；其他（大寫、非 hex、太長）→ false。
+inline bool icy_skin_field(const uint8_t* p, size_t len, char* out, size_t cap) {
+  size_t field_start = 0, start = (size_t)-1, end = (size_t)-1;
+  int field_idx = 0;
+  for (size_t i = 0; i <= len; i++) {
+    if (i == len || p[i] == 0x1f) {
+      if (field_idx == 11) { start = field_start; end = i; break; }
+      field_idx++;
+      field_start = i + 1;
+    }
+  }
+  if (start == (size_t)-1) return false;
+
+  size_t fieldLen = end - start;
+  if (fieldLen == 0) {
+    out[0] = '\0';
+    return true;
+  }
+  if (fieldLen > 16 || fieldLen + 1 > cap) return false;
+  for (size_t i = 0; i < fieldLen; i++) {
+    uint8_t c = p[start + i];
+    bool isHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    if (!isHex) return false;
+    out[i] = (char)c;
+  }
+  out[fieldLen] = '\0';
+  return true;
+}
+
 #endif  // ICY_FIELDS_H

@@ -76,9 +76,12 @@ FaceRtProfile g_face_rt_prof = {};
 // 有登記的那組——在家連家用WiFi（MARVIN_LOCAL_HOST區網明碼路徑成立），出門連iPhone
 // 熱點（區網打不到、走[[Funnel回退]]，見 postAudio()/carHeartbeat()）。
 WiFiMulti wifiMulti;
-#include "secrets.h"   // WiFi/token/區網IP/身分：複製 secrets.h.example 成 secrets.h 填真值（已 gitignore，別 commit 真值）
+#include "secrets.h"   // WiFi/token/區網IP：複製 secrets.h.example 成 secrets.h 填真值（已 gitignore，別 commit 真值）
+#include "device_id.h"   // 身分不在 secrets.h：由晶片 MAC 產生，見下方 setup() 的 format_device_id()
 const char* MARVIN_HOST  = "macbook-air.tail7ba8d0.ts.net";   // 不含 https://
 const int   MARVIN_PORT  = 443;
+
+static char gDeviceId[16] = "";   // setup() 填：由 ESP.getEfuseMac() 產生，見 device_id.h
 
 // TEMP 實驗（2026-07-25）：/audio_stream 實測 sustained throughput 只有目標 187.5KB/s
 // 的 ~55-67%（100-126KB/s），懷疑雙重加密——Tailscale WireGuard 本身已加密，這條又走
@@ -166,10 +169,11 @@ struct FaceInSnapshot {
   int pendingGesture;      // ICY 第 11 欄依播放位置套用後還沒播的動作；-1＝無
   int pendingLevel;
   uint32_t pendingAtMs;
+  uint32_t skinSeq;        // skinFetch() 交了一張新底圖（或要換回預設頭）就 +1，faceTask 看到變了才換
 };
 static portMUX_TYPE g_faceInMux = portMUX_INITIALIZER_UNLOCKED;
 static FaceInSnapshot g_faceIn = {
-  face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, -1, 0, 0
+  face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, -1, 0, 0, 0
 };
 #endif  // FACE_DISPLAY
 
@@ -533,6 +537,23 @@ static uint8_t g_coverRetries = 0;
 static uint32_t g_coverRetryAt = 0;    // 0＝沒有排重試
 #endif
 
+#if FACE_DISPLAY && COVER_FETCH
+// 頭像底圖網路換圖（/car_skin）：ICY 第 12 欄帶 Mac 端目前底圖 etag，onIcyMeta 看到變了只設
+// g_skinDirty；carHeartbeatTask 巡邏迴圈呼叫 skinFetch() 下載（跟 coverFetch 同一套連線/鎖），
+// 交到 g_skinShow 後 skinSeq+1，faceTask 淡出→換底圖→淡入（face_motion::face_skin_step）。
+#define SKIN_BYTES (240 * 240 * 3)
+static volatile bool g_skinDirty = false;          // onIcyMeta 設、carHeartbeatTask 清
+static char g_skinWant[17] = {0};                  // ICY 最新 etag（onIcyMeta 寫；空＝預設頭；讀寫包 g_faceInMux）
+static char g_skinHave[17] = {0};                  // 已交給 faceTask 的 etag（carHeartbeatTask 專用）
+static bool g_skinHaveValid = false;               // 開機還沒套用過任何 etag
+static uint8_t* g_skinBuf = nullptr;               // 下載 buffer（PSRAM，carHeartbeatTask 專用）
+static SemaphoreHandle_t gSkinMutex = nullptr;     // 保護 g_skinShow / g_skinShowDefault
+static uint8_t* g_skinShow = nullptr;              // 交給 faceTask 的那張（PSRAM）
+static bool g_skinShowDefault = false;             // true＝換回 BASE_SPHERE
+static uint8_t g_skinRetries = 0;
+static uint32_t g_skinRetryAt = 0;
+#endif
+
 static uint8_t g_lastMetaPrefix[19];
 static size_t g_lastMetaPrefixLen = 0;
 static bool g_haveLastMeta = false;
@@ -566,6 +587,16 @@ static void onIcyMeta(const uint8_t* payload, size_t len, void* /*ctx*/) {
     g_icyPendingGestureLevel = gl;
     g_icyPendingGestureValid = true;
   }
+#if COVER_FETCH
+  char sk[17];
+  if (icy_skin_field(payload, len, sk, sizeof(sk))) {
+    portENTER_CRITICAL(&g_faceInMux);
+    bool diff = strcmp(sk, g_skinWant) != 0;
+    if (diff) strcpy(g_skinWant, sk);
+    portEXIT_CRITICAL(&g_faceInMux);
+    if (diff) g_skinDirty = true;   // 只設旗標，下載交給 carHeartbeatTask（回呼不准做網路）
+  }
+#endif
   // 只寫資料，不呼叫任何顯示函式——顯示交給釘死 core 1 的 faceTask 自己的巡邏節奏讀。
   IcyNow icyNow;
   if (icy_now_fields(payload, len, &icyNow)) {
@@ -982,7 +1013,7 @@ static int postHttp(WiFiClient& client, const char* host, uint16_t port, int32_t
   // 2026-07-26 註解，available() 已經一起上鎖，這裡只是控制輪詢節奏）。
   client.setTimeout(500);
 
-  // path 已含 query（如 /audio?speaker=…）時 token 接在後面用 &t=，否則用 ?t=
+  // path 已含 query（如 /audio?device=…）時 token 接在後面用 &t=，否則用 ?t=
   String header = String("POST ") + path + (strchr(path, '?') ? "&t=" : "?t=") + MARVIN_TOKEN + " HTTP/1.1\r\n" +
                   "Host: " + host + "\r\n" +
                   "Content-Type: " + contentType + "\r\n" +
@@ -1205,11 +1236,14 @@ static void faceLogStats() {
   portENTER_CRITICAL(&g_faceInMux);
   bool spk = g_faceIn.speaking;
   portEXIT_CRITICAL(&g_faceInMux);
-  Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u spk=%d gst=%u\n",
+  // pfree/pmin：PSRAM 剩餘與開機以來最低水位（v2 硬體評估 2MB PSRAM 夠不夠用）
+  Serial.printf("[Face] fps=%.1f late=%u render=%.2fms push=%.2fms stack_hw=%u ifree=%u imin=%u pfree=%u pmin=%u spk=%d gst=%u\n",
                 fps, (unsigned)late, renderMs, pushMs,
                 faceTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(faceTaskHandle) : 0,
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM),
                 (int)spk, (unsigned)gestures);
 }
 #endif
@@ -1225,12 +1259,12 @@ void carHeartbeat() {
   // 但心跳區網+Funnel兩條路連續 HTTP -1——connect() 前要先搶 LWIP_LOCK，這個 task
   // 優先權=1，跟同核心的 audioNet/deckNet（優先權=2）搶不過，逾時前常常連鎖都還沒搶到
   // 就過期。逾時值加大給排程延遲留餘裕（見下面 carHeartbeatTask 建立時優先權也一併調高）。
-  // body 加大到 1024：除了原本的 state/speaker，還要夾帶 WROOM 遙測（wroom_sum 一筆
+  // body 加大到 1024：除了原本的 state/device，還要夾帶 WROOM 遙測（wroom_sum 一筆
   // ~140 字 + wroom_diag 最多 8 筆 ~64 字），搭這班心跳一起送出，不開新連線（見
   // gWroomLogMutex 前的說明）。
   static char body[1024];
-  size_t len = (size_t)snprintf(body, sizeof(body), "{\"state\":\"present\",\"speaker\":\"%s\"",
-                                 MARVIN_SPEAKER);
+  size_t len = (size_t)snprintf(body, sizeof(body), "{\"state\":\"present\",\"device\":\"%s\"",
+                                 gDeviceId);
   if (xSemaphoreTake(gWroomLogMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
     if (gWroomSumNew) {
       char esc[320];
@@ -1465,6 +1499,96 @@ static void coverFetch(bool fromRetry) {
 }
 #endif
 
+#if FACE_DISPLAY && COVER_FETCH
+static void skinScheduleRetry() {
+  if (g_skinRetries < 2) {
+    g_skinRetries++;
+    g_skinRetryAt = millis() + 5000;
+    if (g_skinRetryAt == 0) g_skinRetryAt = 1;
+  } else {
+    g_skinRetries = 0;
+    g_skinRetryAt = 0;
+  }
+}
+
+// 交給 faceTask：data=nullptr＝換回預設頭。拿不到 gSkinMutex 回 false（呼叫端排重試）。
+static bool skinHandOff(const uint8_t* data) {
+  if (xSemaphoreTake(gSkinMutex, pdMS_TO_TICKS(500)) != pdTRUE) return false;
+  if (data) memcpy(g_skinShow, data, SKIN_BYTES);
+  g_skinShowDefault = (data == nullptr);
+  portENTER_CRITICAL(&g_faceInMux);
+  g_faceIn.skinSeq++;
+  portEXIT_CRITICAL(&g_faceInMux);
+  xSemaphoreGive(gSkinMutex);
+  return true;
+}
+
+// 只在 carHeartbeatTask 裡呼叫。結構照 coverFetch：區網優先、Funnel 複用 gHeartbeatFunnelClient＋gFunnelMutex。
+static void skinFetch(bool fromRetry) {
+  g_skinDirty = false;
+  if (!fromRetry) {
+    g_skinRetries = 0;
+    g_skinRetryAt = 0;
+  }
+  if (!g_skinBuf || !g_skinShow || WiFi.status() != WL_CONNECTED) return;
+  char want[17];
+  portENTER_CRITICAL(&g_faceInMux);
+  strcpy(want, g_skinWant);
+  portEXIT_CRITICAL(&g_faceInMux);
+  if (g_skinHaveValid && strcmp(want, g_skinHave) == 0) return;
+
+  uint32_t t0 = millis();
+  int code = -1;
+  size_t n = 0;
+  char via = '-';
+  bool ok = false;
+  if (want[0] != 0) {
+    const char* path = "/car_skin";
+    if (gHeartbeatTryLan && lanEnabled()) {
+      WiFiClient c;
+      LWIP_LOCK();
+      bool con = c.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 800);
+      LWIP_UNLOCK();
+      if (con) {
+        c.setTimeout(500);
+        via = 'L';
+        ok = getHttpToBuf(c, MARVIN_LOCAL_HOST, path, false, g_skinBuf, SKIN_BYTES, &n, &code, 6000);
+        LWIP_LOCK();
+        c.stop();
+        LWIP_UNLOCK();
+      }
+    }
+    if (code <= 0) {
+      if (xSemaphoreTake(gFunnelMutex, pdMS_TO_TICKS(2000)) == pdTRUE) {
+        via = 'F';
+        if (funnelEnsureConnected(8, 8000)) {
+          ok = getHttpToBuf(gHeartbeatFunnelClient, MARVIN_HOST, path, true, g_skinBuf, SKIN_BYTES, &n, &code, 12000);
+          if (!ok) { LWIP_LOCK(); gHeartbeatFunnelClient.stop(); LWIP_UNLOCK(); }
+        }
+        xSemaphoreGive(gFunnelMutex);
+      } else {
+        Serial.println("[Skin] Funnel 鎖忙，稍後重試");
+        skinScheduleRetry();
+        return;
+      }
+    }
+  }
+
+  bool handed = false;
+  if (want[0] == 0 || (ok && code == 404)) handed = skinHandOff(nullptr);   // 回預設頭
+  else if (ok && code == 200 && n == SKIN_BYTES) handed = skinHandOff(g_skinBuf);
+  if (handed) {
+    strcpy(g_skinHave, want);
+    g_skinHaveValid = true;
+    g_skinRetries = 0;
+  } else {
+    skinScheduleRetry();
+  }
+  Serial.printf("[Skin] HTTP %d ok=%d %uB %ums via=%c want=%s handed=%d\n",
+                code, (int)ok, (unsigned)n, (unsigned)(millis() - t0), via, want, (int)handed);
+}
+#endif
+
 // 獨立任務，釘死 core 0（跟 audioNetworkTask 同核，理由見 carHeartbeat() 前的註解）。
 // 開機立刻打一次（不等第一輪 30s），之後每 30s 一次。
 //
@@ -1485,6 +1609,10 @@ void carHeartbeatTask(void* pv) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         if (g_coverDirty) coverFetch(false);
         else if (g_coverRetryAt && (int32_t)(millis() - g_coverRetryAt) >= 0) { g_coverRetryAt = 0; coverFetch(true); }
+#if FACE_DISPLAY
+        if (g_skinDirty) skinFetch(false);
+        else if (g_skinRetryAt && (int32_t)(millis() - g_skinRetryAt) >= 0) { g_skinRetryAt = 0; skinFetch(true); }
+#endif
       }
 #else
       vTaskDelay(pdMS_TO_TICKS(30000));
@@ -1573,11 +1701,11 @@ void postAudio(int nSamples, bool viaPause) {
   // socket + lockedReadLine）而非 HTTPClient：HTTPClient 的 POST() 是不可拆的黑盒，鎖
   // 只要包住它就等於持鎖空等到逾時——carHeartbeat() 上面的除錯記錄③已經實測過這個
   // 組合會在 17-20 秒內撞 task watchdog，不要重踩。
-  char audioPath[96];   // 身分走 query：/audio?speaker=showay（Mac 端白名單驗證）
+  char audioPath[96];   // 身分走 query：/audio?device=puck-xxxxxx（Mac 端 MARVIN_CAR_DEVICES 對應）
   if (viaPause) {
-    snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s&trigger=pause", MARVIN_SPEAKER);
+    snprintf(audioPath, sizeof(audioPath), "/audio?device=%s&trigger=pause", gDeviceId);
   } else {
-    snprintf(audioPath, sizeof(audioPath), "/audio?speaker=%s", MARVIN_SPEAKER);
+    snprintf(audioPath, sizeof(audioPath), "/audio?device=%s", gDeviceId);
   }
   WiFiClient localClient;
   int code = -1;
@@ -2074,6 +2202,14 @@ void faceTask(void* pv) {
   face_idle_init(idle);
   FaceCoverState cover;
   face_cover_init(cover);
+  FaceWake wake;
+  face_wake_init(wake);
+#if COVER_FETCH
+  FaceSkinState skinSt;
+  face_skin_init(skinSt);
+  uint32_t lastSkinSeq = 0;
+  bool skinPending = false;
+#endif
 
   uint32_t lastCoverSeq = 0;
   float idleSinceSec = 0.0f;
@@ -2139,11 +2275,33 @@ void faceTask(void* pv) {
 
     FacePoseOut poseOut = face_mixer_step(mixer, in, T, DT);
 
+    // 開機甦醒：第一個聲音互動（Marvin 講話 / 有歌 / 駕駛按 PTT）才醒，見 face_wake_step。
+    bool wakeTrigger = speaking || playing || snap.override_ == OVERRIDE_LISTEN;
+    FaceWakeOut wakeOut = face_wake_step(wake, wakeTrigger, in.override_ == OVERRIDE_ERROR, poseOut.pose, T);
+    poseOut.pose = wakeOut.pose;
+
     bool overridden = (in.override_ != OVERRIDE_NONE);
     bool coverArrived = (snap.coverSeq != lastCoverSeq);
     if (coverArrived) lastCoverSeq = snap.coverSeq;
     float trackChangedAtS = snap.trackChangedAtMs / 1000.0f;
     FaceCoverOut coverOut = face_cover_step(cover, T, coverArrived, trackChangedAtS, overridden);
+
+    // 網路換底圖：只在頭像在畫面上（COVER_HEAD）時淡出→換→淡入。memcpy 在 render 之前做，
+    // out 整張等於新 base，維持 face_rt_render 的不變式；這格強制整屏重推。
+    float skinBl = 1.0f;
+    bool skinSwapped = false;
+#if COVER_FETCH
+    if (snap.skinSeq != lastSkinSeq) { lastSkinSeq = snap.skinSeq; skinPending = true; }
+    FaceSkinOut skinOut = face_skin_step(skinSt, T, skinPending, coverOut.phase == (int)COVER_HEAD);
+    skinBl = skinOut.brightnessScale;
+    if (skinOut.swapNow && xSemaphoreTake(gSkinMutex, 0) == pdTRUE) {
+      memcpy(g_faceBase, g_skinShowDefault ? BASE_SPHERE : g_skinShow, SKIN_BYTES);
+      memcpy(g_faceOut, g_faceBase, SKIN_BYTES);
+      xSemaphoreGive(gSkinMutex);
+      skinPending = false;
+      skinSwapped = true;
+    }
+#endif
 
     bool timeValid = time(nullptr) > 1700000000;
     int localHour = 0, localMin = 0;
@@ -2162,7 +2320,7 @@ void faceTask(void* pv) {
       prevRawBl = 0;
     } else {
       if (prevRawBl == 0) facePushFull();   // 從 0 回到 >0：先整屏重推目前 out，再開背光
-      uint8_t finalBl = (uint8_t)((float)rawBl * coverOut.brightnessScale + 0.5f);
+      uint8_t finalBl = (uint8_t)((float)rawBl * coverOut.brightnessScale * wakeOut.brightnessScale * skinBl + 0.5f);
       bool headVisible = (coverOut.phase != (int)COVER_COVER);
 
       if (coverOut.drawCoverNow) {
@@ -2175,7 +2333,7 @@ void faceTask(void* pv) {
         int64_t rt0 = esp_timer_get_time();
         face_rt_render(poseOut.pose, g_faceBase, g_faceOut);
         int64_t rt1 = esp_timer_get_time();
-        if (coverOut.redrawHeadNow) facePushFull();
+        if (coverOut.redrawHeadNow || skinSwapped) facePushFull();
         else facePushDirty();
         int64_t rt2 = esp_timer_get_time();
         g_faceRenderUs += (uint64_t)(rt1 - rt0);
@@ -2207,11 +2365,17 @@ void setup() {
   gWroomLogMutex = xSemaphoreCreateMutex();       // 必須在 carHeartbeatTask 起來前建好（見 gWroomLogMutex 前的說明）
 #if FACE_DISPLAY
   gCoverMutex = xSemaphoreCreateMutex();          // 必須在 carHeartbeatTask 起來前建好（coverFetch() 會用）
+#if COVER_FETCH
+  gSkinMutex = xSemaphoreCreateMutex();           // 同上（skinFetch() 會用）
+#endif
 #endif
   Serial.begin(115200);
   Serial.setTxTimeoutMs(0);   // USB 序列埠沒人讀時不要卡住（同 face_demo.ino，避免每幾秒頓一下）
   delay(500);
   Serial.println("\n=== Marvin car_puck bring-up ===");
+
+  format_device_id(ESP.getEfuseMac(), gDeviceId, sizeof(gDeviceId));
+  Serial.printf("[boot] device id: %s\n", gDeviceId);
 
   // 跟 WROOM 的 UART（曲名送出、方向盤按鍵收回），接線見 PIN_WROOM_UART_* 定義前註解。
   // TX buffer 加大到 1024：一筆 metadata 約 400 bytes，預設 128 會讓 audioNetworkTask
@@ -2239,6 +2403,11 @@ void setup() {
     g_faceOut = (uint8_t*)ps_malloc(240 * 240 * 3);
     g_faceWork = (FaceRtWork*)ps_malloc(sizeof(FaceRtWork));
     g_coverShow = (uint8_t*)ps_malloc(COVER_BUF_CAP);
+#if COVER_FETCH
+    g_skinBuf = (uint8_t*)ps_malloc(SKIN_BYTES);
+    g_skinShow = (uint8_t*)ps_malloc(SKIN_BYTES);
+    if (!g_skinBuf || !g_skinShow) Serial.println("[Skin] ⚠️ PSRAM 配置失敗，網路換底圖停用");
+#endif
     Serial.printf("[Face] tft.init=%d base=%p out=%p work=%p coverShow=%p\n",
                   (int)tftOk, g_faceBase, g_faceOut, g_faceWork, g_coverShow);
     if (!tftOk || !g_faceBase || !g_faceOut || !g_faceWork || !g_coverShow) {

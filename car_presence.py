@@ -11,6 +11,7 @@ car_presence.py — 車載 presence 狀態機（ESP32 puck）。
 - 熄火斷電＝puck 停送 heartbeat；check_ttl() 逾 TTL 的人各自移除，名單清空才停播。
   （∴ present 不 sticky——puck 永遠不會主動送 absent，靠 TTL 收尾。）
 - absent(speaker) 主動離開：只移除這個人；名單清空才停播。
+- forget(speaker)：靜默移除、不停播；開場失敗時讓下次 heartbeat 重新觸發開場。
 """
 from __future__ import annotations
 
@@ -57,6 +58,11 @@ class CarPresence:
         del self._occupants[speaker]
         if not self._occupants:
             await self._on_depart()
+
+    def forget(self, speaker: str = "") -> None:
+        """靜默移除（不觸發 on_depart）：開場失敗時用，讓下次 heartbeat 被當成重新上車、
+        再觸發一次 on_arrive。不在名單裡＝no-op。"""
+        self._occupants.pop(speaker, None)
 
     async def check_ttl(self) -> bool:
         """定期由背景驅動：各人 heartbeat 逾 TTL（熄火斷電）→ 移除；名單因此清空→停播。
