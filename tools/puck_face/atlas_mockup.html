@@ -1,0 +1,337 @@
+<title>Marvin 頭像 圖集版</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* 版面：三格並排（精確 / 背答案 / 差異），下方數據與控制；沿用 sphere3d_mockup.html 的儀器面板 */
+:root{
+  --bg:#eceee9; --surface:#f8f9f6; --fg:#1b211c; --muted:#5b655d; --line:#d2d7cf;
+  --accent:#4c7a26; --accent-ink:#ffffff; --screen:#000000; --warn:#b5462a; --ok:#3d7a2a;
+  --f-body:"Noto Sans TC",system-ui,-apple-system,"PingFang TC",sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#111411; --surface:#1a1e1a; --fg:#e3e8e1; --muted:#98a399; --line:#2c332c;
+  --accent:#9ccf5c; --accent-ink:#0f1a07; --screen:#000000; --warn:#ef8466; --ok:#9ccf5c; color-scheme:dark }}
+:root[data-theme="dark"]{
+  --bg:#111411; --surface:#1a1e1a; --fg:#e3e8e1; --muted:#98a399; --line:#2c332c;
+  --accent:#9ccf5c; --accent-ink:#0f1a07; --screen:#000000; --warn:#ef8466; --ok:#9ccf5c; color-scheme:dark }
+body{background:var(--bg);color:var(--fg);font-family:var(--f-body);line-height:1.6}
+.wrap{max-width:1080px;margin:0 auto;padding-block:28px 48px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  display:grid;gap:20px}
+h1{font-size:1.6rem;margin:0;text-wrap:balance;letter-spacing:.02em}
+.lede{margin:.3rem 0 0;color:var(--muted);max-width:66ch}
+.views{overflow-x:auto}
+.views-in{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.views.zoom .views-in{grid-template-columns:repeat(3,max-content)}
+.view{margin:0;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px;display:grid;gap:8px;min-width:0;justify-items:center}
+.view figcaption{justify-self:start;display:grid}
+.view figcaption b{font-size:.95rem}
+.view figcaption span{font-size:.78rem;color:var(--muted)}
+.view canvas{width:100%;max-width:360px;aspect-ratio:1;background:var(--screen);display:block;image-rendering:pixelated}
+.views.z2 .view canvas{width:480px;max-width:none}
+.views.z3 .view canvas{width:720px;max-width:none}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:grid;gap:2px}
+.stat span{font-size:.75rem;color:var(--muted)}
+.stat output{font-family:var(--f-mono);font-size:1.15rem;font-weight:600;font-variant-numeric:tabular-nums}
+.stat small{font-size:.72rem;color:var(--muted)}
+.stat output.bad{color:var(--warn)} .stat output.good{color:var(--ok)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px;display:grid;gap:18px}
+.grp{display:grid;gap:8px}
+.grp h2{font-size:.72rem;letter-spacing:.12em;color:var(--muted);margin:0;font-weight:500}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;font-size:.88rem;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:7px 12px;cursor:pointer;text-align:left}
+button:hover{border-color:var(--accent)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button small{display:block;font-size:.72rem;color:var(--muted)}
+button[aria-pressed="true"] small{color:inherit;opacity:.8}
+select{font:inherit;font-size:.88rem;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:6px 8px}
+.params{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px 20px}
+.params label{display:grid;gap:2px;font-size:.82rem}
+.params label span{display:flex;justify-content:space-between;gap:8px}
+.params output{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+input[type=range]{width:100%;accent-color:var(--accent)}
+input[type=range]:disabled{opacity:.45}
+.note{font-size:.8rem;color:var(--muted);max-width:72ch;margin:0}
+.note code{font-family:var(--f-mono);font-size:.78rem}
+.bakebar{font-family:var(--f-mono);font-size:.85rem;color:var(--muted)}
+.bakebar.busy{color:var(--warn)}
+@media (max-width:560px){ .view{padding:8px;border-radius:10px} .view figcaption span{display:none} }
+</style>
+
+<main class="wrap">
+  <header>
+    <h1>Marvin 頭像 圖集版</h1>
+    <p class="lede">左邊是每像素現算的精確畫法（face_3d），中間是 Mac 先把眼睛、眉線的形狀烤成圖集、S3 只查表貼圖疊色的「背答案」版，右邊是兩者的差異。</p>
+  </header>
+
+  <section class="views" id="views" aria-label="畫法比較">
+    <div class="views-in">
+      <figure class="view">
+        <figcaption><b>精確（face_3d）</b><span>每像素現算幾何</span></figcaption>
+        <canvas id="cvExact" width="240" height="240" aria-label="精確版"></canvas>
+      </figure>
+      <figure class="view">
+        <figcaption><b>背答案（圖集）</b><span>依姿勢挑小圖、貼上、疊色</span></figcaption>
+        <canvas id="cvRecall" width="240" height="240" aria-label="圖集版"></canvas>
+      </figure>
+      <figure class="view">
+        <figcaption><b>差異 ×4</b><span>黃框＝這格重算的區域</span></figcaption>
+        <canvas id="cvDiff" width="240" height="240" aria-label="差異圖"></canvas>
+      </figure>
+    </div>
+  </section>
+
+  <section class="stats" aria-label="這一格的數據">
+    <div class="stat"><span>最大色差</span><output id="sMax">0</output><small>0–255，單一通道（精確 vs 圖集）</small></div>
+    <div class="stat"><span>平均色差</span><output id="sMean">0</output><small>重算區域內</small></div>
+    <div class="stat"><span>色差 &gt; 24 的像素</span><output id="sBad">0</output><small>大約是肉眼看得出來的程度</small></div>
+    <div class="stat"><span>跑到現在最差一格</span><output id="sWorst">0</output><small id="sWorstPose">—</small></div>
+    <div class="stat"><span>圖集張數</span><output id="sSprites">—</output><small>眼睛＋眉線小圖</small></div>
+    <div class="stat"><span>圖集 raw</span><output id="sRaw">—</output><small>每列只存非零跨距，未壓縮</small></div>
+    <div class="stat"><span>烘焙時間</span><output id="sBake">—</output><small>JS，Mac 端一次性</small></div>
+    <div class="stat"><span>recall</span><output id="sRecall">—</output><small>JS（EMA），只供相對比較</small></div>
+    <div class="stat"><span>精確</span><output id="sExact">—</output><small>JS（EMA）</small></div>
+  </section>
+
+  <section class="panel">
+    <div class="grp">
+      <h2>圖集設定（改了就重新烘焙）</h2>
+      <div class="row">
+        <label class="row" style="gap:6px;font-size:.85rem" for="selChar">角色
+          <select id="selChar"><option value="marvin">Marvin</option><option value="round">圓眼</option></select></label>
+        <label class="row" style="gap:6px;font-size:.85rem" for="selW">W
+          <select id="selW"><option value="240">240</option><option value="466">466</option></select></label>
+        <label class="row" style="gap:6px;font-size:.85rem" for="selStep">間距
+          <select id="selStep"><option value="0.2">0.2</option><option value="0.1" selected>0.1</option><option value="0.05">0.05</option></select></label>
+        <label class="row" style="gap:6px;font-size:.85rem" for="selMode">mode
+          <select id="selMode"><option value="mask">mask</option><option value="weight">weight</option></select></label>
+        <label class="row" style="gap:6px;font-size:.85rem" for="selInterp">interp
+          <select id="selInterp"><option value="nearest">nearest</option><option value="bilinear">bilinear</option></select></label>
+        <span class="bakebar" id="bakebar" role="status">—</span>
+      </div>
+    </div>
+    <div class="grp">
+      <h2>姿勢來源</h2>
+      <div class="row">
+        <button data-src="auto" aria-pressed="true">自動播放<small>律動＋指令流程＋標籤，彈簧銜接</small></button>
+        <button data-src="manual">手動<small>用滑桿擺姿勢，停住細看</small></button>
+        <button id="toWorst">跳到最差那格<small>切到手動，套用最差那格的姿勢</small></button>
+        <button id="resetWorst">重設最差紀錄</button>
+      </div>
+    </div>
+    <div class="grp">
+      <h2>手動姿勢（弧度）</h2>
+      <div class="params">
+        <label for="yaw"><span>轉頭 yaw <output id="yawV"></output></span><input id="yaw" type="range" min="-1.3" max="1.3" step="0.01" value="0"></label>
+        <label for="pitch"><span>點頭 pitch <output id="pitchV"></output></span><input id="pitch" type="range" min="-0.5" max="0.5" step="0.01" value="0"></label>
+        <label for="roll"><span>歪頭 roll <output id="rollV"></output></span><input id="roll" type="range" min="-0.4" max="0.4" step="0.01" value="0"></label>
+        <label for="browUp"><span>挑眉 browUp <output id="browUpV"></output></span><input id="browUp" type="range" min="0" max="0.06" step="0.002" value="0"></label>
+        <label for="err"><span>錯誤色 <output id="errV"></output></span><input id="err" type="range" min="0" max="1" step="0.05" value="0"></label>
+      </div>
+    </div>
+    <div class="grp">
+      <h2>檢視</h2>
+      <div class="row">
+        <label class="row" style="gap:6px;font-size:.85rem" for="zoom">放大
+          <select id="zoom"><option value="1">1×</option><option value="2">2×</option><option value="3">3×</option></select></label>
+        <label class="row" style="gap:6px;font-size:.85rem" for="speed">速度
+          <select id="speed"><option value="1">1×</option><option value="0.5">0.5×</option><option value="0.25">0.25×</option><option value="0">暫停</option></select></label>
+      </div>
+    </div>
+    <p class="note"><b>mask</b>：圖集只存形狀（眼睛 [覆蓋率, 描邊]、眉線 [覆蓋率]），顏色、漸層、陰影由 S3 在 recall 時算，圖集小；<b>weight</b>：圖集存疊色係數（眼睛 4 通道 <code>T, sCol, wB, wR</code>，recall 只做 <code>T·底 + sCol·眼色 + wB·亮色 + wR·描邊色</code>），Mac 想怎麼畫都行、S3 只背係數，圖集大約是兩倍。<b>nearest</b>：取最近格點那張小圖貼上，格點之間會有跳動（位置誤差最多半個間距）；<b>bilinear</b>：取相鄰四個格點各自貼上再依權重混合，較平順但每像素多取樣三次。眼睛只烤右眼，左眼用左右鏡像（Marvin、圓眼都對稱）。JS 耗時只供相對比較，不代表 S3 實際毫秒數。</p>
+  </section>
+</main>
+
+<script src="face_3d.js"></script>
+<script src="face_atlas.js"></script>
+<script>
+(() => {
+const { render3D, MARVIN, ROUND_DEMO, clamp01 } = window.Face3D;
+const { createBaker, atlasSize, recall } = window.FaceAtlas;
+const P2=Math.PI*2;
+const CHARS={marvin:MARVIN, round:ROUND_DEMO};
+const $=id=>document.getElementById(id);
+
+// ---------- 1. 球體底圖：照搬 tools/puck_face/face_render.js renderHead 的球體部分（尺寸參數化），轉成 RGB888 ----------
+function drawSphere(r,W){
+  const C=W/2, R=W*0.45;
+  const cx=C, cy=C;
+  r.setTransform(1,0,0,1,0,0); r.globalAlpha=1; r.lineCap='butt'; r.lineJoin='miter'; r.fillStyle='#000'; r.fillRect(0,0,W,W);
+  const sph=r.createRadialGradient(cx-R*0.34,cy-R*0.42,R*0.05,cx,cy,R*1.07);
+  sph.addColorStop(0,'#ffffff');sph.addColorStop(0.3,'#eef2f4');sph.addColorStop(0.66,'#cfd6dc');sph.addColorStop(0.9,'#b6c0c8');sph.addColorStop(1,'#8b959d');
+  r.fillStyle=sph;r.beginPath();r.arc(cx,cy,R,0,P2);r.fill();
+  r.save();r.beginPath();r.arc(cx,cy,R,0,P2);r.clip();
+  const hot=r.createRadialGradient(cx-R*0.33,cy-R*0.42,0,cx-R*0.33,cy-R*0.42,R*0.5);
+  hot.addColorStop(0,'rgba(255,255,255,0.9)');hot.addColorStop(1,'rgba(255,255,255,0)');
+  r.fillStyle=hot;r.fillRect(cx-R,cy-R,2*R,2*R);
+  r.restore();
+  r.strokeStyle='rgba(255,255,255,.4)';r.lineWidth=1;r.beginPath();r.arc(cx,cy,R,0,P2);r.stroke();
+}
+const baseCache={};
+function getBase(W){
+  if(baseCache[W]) return baseCache[W];
+  const cv=document.createElement('canvas'); cv.width=cv.height=W;
+  const cx=cv.getContext('2d',{willReadFrequently:true}); drawSphere(cx,W);
+  const d=cx.getImageData(0,0,W,W).data, rgb=new Uint8Array(W*W*3);
+  for(let i=0,j=0;i<d.length;i+=4,j+=3){ rgb[j]=d[i]; rgb[j+1]=d[i+1]; rgb[j+2]=d[i+2]; }
+  return baseCache[W]={rgb, exact:new Uint8Array(W*W*3), got:new Uint8Array(W*W*3)};
+}
+
+// ---------- 2. 姿勢來源：沿用銜接樣機的彈簧版（預設參數），同 sphere3d_mockup.html 第 3 節 ----------
+const ss=x=>{x=clamp01(x);return x*x*(3-2*x);};
+const DT=1/24, CH=['yaw','pitch','roll','browUp','err'];
+const Z=()=>({yaw:0,pitch:0,roll:0,browUp:0,err:0});
+const add=(p,q,w)=>{ CH.forEach(c=>{ p[c]+=(q[c]||0)*w; }); return p; };
+const tripE=(u,a=.3)=>u<a?ss(u/a):(u>1-a?ss((1-u)/a):1);
+function nodPeriod(bpm){ const beat=60/bpm; return [1,2,4].map(k=>k*beat).reduce((a,b)=>Math.abs(b-1)<Math.abs(a-1)?b:a); }
+const GEN={
+  sway:(t,T)=>{ const s=Math.sin(P2*T/(8*60/71)); return {yaw:.45*s,roll:.3*s,pitch:.06*s*s}; },
+  nod:(t,T)=>{ const per=nodPeriod(158), n=Math.floor(T/per), ph=T/per-n, amp=n%2?0.6:1; const d=ph<.45?ss(ph/.45):1-ss((ph-.45)/.55); return {pitch:.42*amp*d,roll:.06*amp*d}; },
+  listen:t=>{ const c=t%1.8, b=c<.7?Math.sin(Math.PI*c/.7)**2:0; return {roll:.34,yaw:-.35,pitch:-.06+.1*b}; },
+  think:t=>({pitch:-.3,yaw:.45+.06*Math.sin(t*1.3),roll:-.14,browUp:.04}),
+  speak:t=>{ const b=Math.sin(Math.PI*t)**2; return {pitch:.16*b,yaw:.2*b}; },
+  error:t=>({yaw:.7*Math.sin(P2*t/.8)*ss(t/.2),err:1}),
+};
+const LAYERS=Object.keys(GEN);
+const GEST={
+  tilt:  {d:1.8, f:u=>{const e=tripE(u);    return {roll:.32*e,yaw:.35*e,pitch:-.06*e,browUp:.05*e};}},
+  yes:   {d:1.3, f:u=>({pitch:.3*Math.sin(P2*u)**2})},
+  no:    {d:1.5, f:u=>({yaw:.5*Math.sin(P2*2*u)*tripE(u,.2)})},
+  glance:{d:2.4, f:u=>{const e=tripE(u,.3); return {yaw:-1.1*e,roll:-.1*e};}},
+  ponder:{d:2.2, f:u=>{const e=tripE(u,.35);return {pitch:-.45*e,yaw:.4*e,roll:-.16*e,browUp:.04*e};}},
+};
+const OVERLAP=.4, SPRING_T=.25, KEEP=.3;
+let T=0, layer='sway', groove='sway', gestures=[], script=[], si=0, nextAt=1;
+const layerStart=Object.fromEntries(LAYERS.map(k=>[k,0]));
+const lin=Object.fromEntries(LAYERS.map(k=>[k,k==='sway'?1:0]));
+const sx=Z(), sv=Z();
+// 自動播放劇本：循環跑一輪指令流程＋各種標籤＋錯誤＋換律動
+const S=k=>()=>{ layer=k==='none'?groove:k; layerStart[layer]=T; };
+const G=id=>()=>gestures.push({id,start:T});
+const SC=[[1,S('listen')],[2,S('think')],[1.5,S('speak')],[.6,G('tilt')],[1.6,G('yes')],[1.8,S('none')],
+  [2,G('glance')],[3,G('ponder')],[2.6,S('listen')],[1.2,S('think')],[1.4,S('error')],[2.2,S('none')],
+  [1,()=>{groove='nod';layer='nod';}],[3,G('no')],[2.5,S('listen')],[1.5,S('think')],[1,S('speak')],[3,S('none')],
+  [2,()=>{groove='sway';layer='sway';}],[2,()=>{}]];
+function autoPose(){
+  T+=DT; nextAt-=DT;
+  while(nextAt<=0){ SC[si][1](); si=(si+1)%SC.length; nextAt+=SC[si][0]; }
+  gestures=gestures.filter(g=>T-g.start<GEST[g.id].d);
+  let sum=0; const w={};
+  LAYERS.forEach(k=>{ const tg=k===layer?1:0, r=DT/OVERLAP; lin[k]+=Math.max(-r,Math.min(r,tg-lin[k])); w[k]=ss(lin[k]); sum+=w[k]; });
+  const p=Z(), norm=sum>1?1/sum:1;
+  LAYERS.forEach(k=>{ if(w[k]>0) add(p,GEN[k](T-layerStart[k],T),w[k]*norm); });
+  if(gestures.length){ const gp=Z(); let duck=0;
+    gestures.forEach(g=>{ const u=(T-g.start)/GEST[g.id].d; duck=Math.max(duck,tripE(u,.25)); add(gp,GEST[g.id].f(u),1); });
+    const k=1-duck*(1-KEEP); ['yaw','pitch','roll','browUp'].forEach(c=>{ p[c]=p[c]*k+gp[c]; }); }
+  const om=4.7/SPRING_T, h=DT/4;
+  for(let i=0;i<4;i++) CH.forEach(c=>{ const a=om*om*(p[c]-sx[c])-2*om*sv[c]; sv[c]+=a*h; sx[c]+=sv[c]*h; });
+  return {...sx};
+}
+
+// ---------- 3. 圖集設定與烘焙（分批，不卡頁面；同設定快取） ----------
+const cfg={char:'marvin', W:240, step:0.1, mode:'mask', interp:'nearest'};
+const atlasCache={};
+let atlas=null, baking=0;   // baking 是目前這一輪烘焙的編號，設定又變就作廢舊的
+const BATCH=12;
+async function ensureAtlas(){
+  const key=[cfg.char,cfg.W,cfg.step,cfg.mode].join('|'), my=++baking;
+  const bar=$('bakebar');
+  if(atlasCache[key]){ atlas=atlasCache[key]; bar.className='bakebar'; bar.textContent='已烘焙（快取）'; showAtlasStats(); renderNow(); return; }
+  atlas=null;
+  const baker=createBaker(cfg.W,CHARS[cfg.char],cfg.step,cfg.mode);
+  bar.className='bakebar busy';
+  for(;;){
+    bar.textContent=`烘焙中 ${baker.step(0)}/${baker.total}`;
+    await new Promise(r=>setTimeout(r));
+    if(my!==baking) return;
+    if(baker.step(BATCH)>=baker.total) break;
+  }
+  atlasCache[key]=atlas=baker.atlas;
+  bar.className='bakebar'; bar.textContent=`烘焙完成 ${baker.total}/${baker.total}`;
+  showAtlasStats(); renderNow();
+}
+function showAtlasStats(){
+  const s=atlasSize(atlas);
+  $('sSprites').textContent=s.sprites.toLocaleString();
+  $('sRaw').textContent=(s.rawBytes/1024).toFixed(1)+' KB';
+  $('sBake').textContent=(atlas.bakeMs/1000).toFixed(2)+' s';
+}
+
+// ---------- 4. 比較與畫面 ----------
+const cvExact=$('cvExact'), cvRecall=$('cvRecall'), cvDiff=$('cvDiff');
+const ctxE=cvExact.getContext('2d'), ctxR=cvRecall.getContext('2d'), ctxD=cvDiff.getContext('2d');
+let imgE, imgR, imgD;
+function resizeCanvases(){
+  const W=cfg.W;
+  for(const cv of [cvExact,cvRecall,cvDiff]){ cv.width=cv.height=W; }
+  imgE=ctxE.createImageData(W,W); imgR=ctxR.createImageData(W,W); imgD=ctxD.createImageData(W,W);
+}
+const ema={exact:null,recall:null};
+function tick(k,ms,id){ ema[k]=ema[k]===null?ms:ema[k]+0.1*(ms-ema[k]); $(id).textContent=ema[k].toFixed(2)+' ms'; }
+let src='auto', worst={v:-1,pose:null}, lastPose=null;
+const sliders=['yaw','pitch','roll','browUp','err'];
+function manualPose(){ const p={}; sliders.forEach(k=>p[k]=+$(k).value); return p; }
+function syncSliders(p){ sliders.forEach(k=>{ $(k).value=p[k]; $(k+'V').textContent=(+p[k]).toFixed(k==='browUp'?3:2); }); }
+
+function toRGBA(rgb,img){ const d=img.data; for(let i=0,j=0;j<rgb.length;i+=4,j+=3){ d[i]=rgb[j]; d[i+1]=rgb[j+1]; d[i+2]=rgb[j+2]; d[i+3]=255; } }
+
+function frame(p){
+  lastPose=p;
+  if(!atlas) return;
+  const W=cfg.W, ch=CHARS[cfg.char], B=getBase(W);
+  let t0=performance.now();
+  const rect=render3D(B.exact,B.rgb,W,p,ch); tick('exact',performance.now()-t0,'sExact');
+  t0=performance.now();
+  recall(B.got,B.rgb,W,p,ch,atlas,cfg.interp); tick('recall',performance.now()-t0,'sRecall');
+  toRGBA(B.exact,imgE); toRGBA(B.got,imgR); ctxE.putImageData(imgE,0,0); ctxR.putImageData(imgR,0,0);
+  const D=imgD.data, A=B.exact, G=B.got; let mx=0, sum=0, n=0, bad=0;
+  for(let i=0,j=0;j<A.length;i+=4,j+=3){
+    const d=Math.max(Math.abs(A[j]-G[j]),Math.abs(A[j+1]-G[j+1]),Math.abs(A[j+2]-G[j+2]));
+    const v=Math.min(255,d*4); D[i]=v; D[i+1]=v*.85; D[i+2]=v*.3; D[i+3]=255;
+    if(d>mx) mx=d; if(d>24) bad++;
+    const px=(i>>2)%W, py=(i>>2)/W|0;
+    if(px>=rect.x0&&px<=rect.x1&&py>=rect.y0&&py<=rect.y1){ sum+=d; n++; }
+  }
+  ctxD.putImageData(imgD,0,0);
+  ctxD.strokeStyle='rgba(255,210,60,.8)'; ctxD.lineWidth=1;
+  ctxD.strokeRect(rect.x0+.5,rect.y0+.5,rect.x1-rect.x0,rect.y1-rect.y0);
+  $('sMax').textContent=mx; $('sMax').className=mx>48?'bad':(mx<=24?'good':'');
+  $('sMean').textContent=(n?sum/n:0).toFixed(2);
+  $('sBad').textContent=bad; $('sBad').className=bad>40?'bad':(bad<=5?'good':'');
+  if(bad>worst.v){ worst={v:bad,pose:{...p}}; }
+  $('sWorst').textContent=worst.v<0?0:worst.v+' 像素';
+  if(worst.pose){ const w=worst.pose; $('sWorstPose').textContent=`yaw ${w.yaw.toFixed(2)} pitch ${w.pitch.toFixed(2)} roll ${w.roll.toFixed(2)}`; }
+}
+function renderNow(){ frame(lastPose||(src==='manual'?manualPose():Z())); }
+
+document.querySelectorAll('[data-src]').forEach(b=>b.addEventListener('click',()=>setSrc(b.dataset.src)));
+function setSrc(s){ src=s; document.querySelectorAll('[data-src]').forEach(x=>x.setAttribute('aria-pressed',x.dataset.src===s));
+  sliders.forEach(k=>$(k).disabled=s==='auto'); if(s==='manual') frame(manualPose()); }
+sliders.forEach(k=>$(k).addEventListener('input',()=>{ $(k+'V').textContent=(+$(k).value).toFixed(k==='browUp'?3:2); if(src==='manual') frame(manualPose()); }));
+$('toWorst').addEventListener('click',()=>{ if(!worst.pose) return; syncSliders(worst.pose); setSrc('manual'); });
+$('resetWorst').addEventListener('click',()=>{ worst={v:-1,pose:null}; $('sWorstPose').textContent='—'; });
+$('zoom').addEventListener('change',()=>{ const v=$('views'); v.classList.remove('zoom','z2','z3'); const z=$('zoom').value; if(z!=='1') v.classList.add('zoom','z'+z); });
+let speed=1; $('speed').addEventListener('change',()=>{ speed=+$('speed').value; });
+// 角色、W、間距、mode 一變就重新烘焙；interp 只換取樣方式，不用重烤
+for(const [id,key] of [['selChar','char'],['selW','W'],['selStep','step'],['selMode','mode']])
+  $(id).addEventListener('change',()=>{ cfg[key]=key==='W'||key==='step'?+$(id).value:$(id).value; if(key==='W') resizeCanvases(); worst={v:-1,pose:null}; ensureAtlas(); });
+$('selInterp').addEventListener('change',()=>{ cfg.interp=$('selInterp').value; worst={v:-1,pose:null}; renderNow(); });
+
+syncSliders(Z()); setSrc('auto'); resizeCanvases();
+let acc=0, last=performance.now(), cur=null;
+for(let i=0;i<30;i++) cur=autoPose();
+lastPose=cur;
+ensureAtlas();
+function loop(now){
+  acc+=Math.min(.25,(now-last)/1000)*speed; last=now;
+  if(src==='auto'){ let stepped=false; while(acc>=DT){ acc-=DT; cur=autoPose(); stepped=true; } if(stepped){ frame(cur); syncSliders(cur); } }
+  else acc=0;
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+})();
+</script>
