@@ -41,6 +41,7 @@ def _playback_cog(tmp_path, push_ok=True, load_s=12.0):
     cog._mixer = MagicMock()
     cog._mixer.push_tts = MagicMock(return_value=push_ok)
     cog._mixer.tts_load_seconds = MagicMock(return_value=load_s)
+    cog._record_speech = MagicMock()  # 核心規範 G1 指標，與 shield 無關
     return cog, str(f)
 
 

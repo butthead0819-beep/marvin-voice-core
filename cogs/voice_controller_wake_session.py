@@ -439,7 +439,7 @@ class WakeSessionMixin:
                     return
                 await asyncio.sleep(_BARGE_WATCH_POLL_S)
                 waited += _BARGE_WATCH_POLL_S
-            await self.play_dj_on_tts_layer(random.choice(BARGE_ACK_FILES))
+            await self.play_dj_on_tts_layer(random.choice(BARGE_ACK_FILES), speech_kind="barge_ack")
             logger.info(f"🔔 [BargeIn] ack 已播 target={speaker}")
         except Exception as e:
             logger.debug(f"[BargeIn] watcher 失敗（忽略）: {e}", exc_info=True)

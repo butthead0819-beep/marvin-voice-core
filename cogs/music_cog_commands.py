@@ -332,7 +332,7 @@ class MusicCommandsMixin:
             return
 
         with vc._protected_tts_window():
-            ok = await vc.play_dj_on_tts_layer(audio, text=text)
+            ok = await vc.play_dj_on_tts_layer(audio, text=text, speech_kind="now_playing_guide")
 
         ch = getattr(vc, 'active_text_channel', None)
         if ok and ch is not None:

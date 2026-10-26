@@ -181,7 +181,8 @@ async def test_speak_now_playing_guide_strips_cue_and_plays_on_tts_layer():
         await cog.speak_now_playing_guide(info)
 
     cog.bot.tts_engine.generate_audio.assert_awaited_once_with("一句。二句。")
-    vc.play_dj_on_tts_layer.assert_awaited_once_with("/tmp/x.mp3", text="一句。二句。")
+    vc.play_dj_on_tts_layer.assert_awaited_once_with(
+        "/tmp/x.mp3", text="一句。二句。", speech_kind="now_playing_guide")
     vc.active_text_channel.send.assert_awaited_once()
     assert "一句。二句。" in vc.active_text_channel.send.await_args.args[0]
     assert fetch.await_args.kwargs["human"] is True

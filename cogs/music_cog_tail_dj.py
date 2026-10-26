@@ -238,7 +238,7 @@ class MusicTailDJMixin:
         if not audio_path:
             return
         try:
-            await vc.play_dj_on_tts_layer(audio_path, text=ack_text)
+            await vc.play_dj_on_tts_layer(audio_path, text=ack_text, speech_kind="song_ack")
         except Exception as e:
             logger.warning(f"⚠️ [第三個Ack] 推播失敗: {e}")
 
@@ -269,6 +269,9 @@ class MusicTailDJMixin:
                     )
                 ):
                     log_marvin_speech(pre['text'], start_ts=ts, layer=1, voice=None, src="dj")
+                    vc = self._vc()
+                    if vc is not None:
+                        vc._record_speech("dj_intro_mix", src="dj_mix", dur_s=None, chars=len(pre['text']))
             except Exception:
                 logger.debug("[DJ Tail] 開播 speech log 記錄失敗", exc_info=True)
 
@@ -291,7 +294,8 @@ class MusicTailDJMixin:
         # 導聆 20 秒期間背景把整首從 0 秒預解碼好，講完零等待出聲（見 _start_music_preload）
         self._start_music_preload(info)
         with vc._protected_tts_window():
-            await vc.play_dj_on_tts_layer(guide_audio, text=info.get('_audiophile_guide_text'))
+            await vc.play_dj_on_tts_layer(guide_audio, text=info.get('_audiophile_guide_text'),
+                                          speech_kind="audiophile_guide")
             remaining = guide_dur + _AUDIOPHILE_GUIDE_GAP_S
             # 累加 sleep 秒數而非比牆鐘（測試攔 asyncio.sleep；見 flaky_test_pump 教訓）
             while remaining > 0:

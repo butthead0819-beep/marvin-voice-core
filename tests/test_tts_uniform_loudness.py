@@ -182,6 +182,7 @@ def _make_light_dj_cog():
 
     class _Cog:
         play_dj_on_tts_layer = PlaybackMixin.play_dj_on_tts_layer
+        _record_speech = lambda self, *a, **kw: None  # 核心規範 G1 指標，與本測試無關
 
     cog = _Cog()
     cog._ffmpeg_to_f32 = AsyncMock(return_value=np.array([0.1, 0.2], dtype=np.float32))
