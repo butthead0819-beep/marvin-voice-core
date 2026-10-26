@@ -121,7 +121,8 @@ function prepare3D(p, W, ch) {
 }
 
 // 跟顏色無關的幾何：未旋轉座標 (ux,uy) 這個像素，每隻眼的覆蓋率 cov、描邊覆蓋率 rc、眉線覆蓋率 bc，
-// 寫進呼叫端給的 f = {cov:[0,0], rc:[0,0], bc:0}。球外（r2>=1）回傳 false，呼叫端略過這個像素。
+// 寫進呼叫端給的 f = {cov:[0,0], rc:[0,0], bc:0, dFill:[0,0], dRim:[0,0], dBrow:0}。
+// dFill/dRim/dBrow 是 cov/rc/bc 轉換前的原始有號距離（像素；dFill 眼內為正，dRim/dBrow 無描邊/眉線時 Infinity），給 sdf 圖集用。球外（r2>=1）回傳 false，呼叫端略過這個像素。
 // 不含 clip（球緣淡出），clip 由呼叫端乘。
 const _p3 = [0, 0, 0];   // 每像素重用，避免配置
 function strokeFields(F, W, ux, uy, f) {
@@ -135,12 +136,13 @@ function strokeFields(F, W, ux, uy, f) {
   const sdist = (n, v) => { const gx = (n[0] - n[2] * kx) / R, gy = (n[1] - n[2] * ky) / R; return v / Math.hypot(gx, gy); };
   for (let idx = 0; idx < F.eyes.length; idx++) {
     const E = F.eyes[idx];
-    let cov, dmin = Infinity;
+    let cov, dmin = Infinity, dF;
     if (E.kind === 'poly') {
-      cov = 1;
+      cov = 1; dF = Infinity;
       for (const n of E.edges) {
-        cov = Math.min(cov, clamp01(0.5 + sdist(n, dot3(n, p3))));
-        if (cov <= 0) break;
+        const sd = sdist(n, dot3(n, p3));
+        cov = Math.min(cov, clamp01(0.5 + sd));
+        if (sd < dF) dF = sd;
       }
       for (const m of E.rims) {
         let d;
@@ -151,18 +153,20 @@ function strokeFields(F, W, ux, uy, f) {
     } else {
       const s = sdist(E.c, dot3(E.c, p3) - E.cosr);
       cov = clamp01(0.5 + s);
+      dF = s;
       if (E.rim) dmin = Math.abs(s);
     }
     f.cov[idx] = cov;
     f.rc[idx] = clamp01(RIM_W / 2 - dmin + 0.5);
+    f.dFill[idx] = dF; f.dRim[idx] = dmin;
   }
-  f.bc = 0;
+  f.bc = 0; f.dBrow = Infinity;
   if (F.brow) {
     const B = F.brow;
     let bd;
     if (dot3(B.m1, p3) >= 0 && dot3(B.m3, p3) >= 0) bd = Math.abs(sdist(B.n, dot3(B.n, p3) + B.d));
     else bd = Math.min(B.z1 > 0 ? Math.hypot(ux - B.x1, uy - B.y1) : Infinity, B.z3 > 0 ? Math.hypot(ux - B.x3, uy - B.y3) : Infinity);
-    f.bc = clamp01(BROW_W / 2 - bd + 0.5);
+    f.bc = clamp01(BROW_W / 2 - bd + 0.5); f.dBrow = bd;
   }
   return true;
 }
@@ -172,7 +176,7 @@ function render3D(out, base, W, pose, ch) {
   const C = W / 2, R = W * 0.45;
   const e = clamp01(pose.err), col = ch.idle.map((v, i) => v + (ch.err[i] - v) * e);
   const F = prepare3D(Object.assign({}, pose, { col }), W, ch), { x0, y0, x1, y1 } = F.rect;
-  const c = [0, 0, 0], g = [0, 0, 0], f = { cov: [0, 0], rc: [0, 0], bc: 0 };
+  const c = [0, 0, 0], g = [0, 0, 0], f = { cov: [0, 0], rc: [0, 0], bc: 0, dFill: [0, 0], dRim: [0, 0], dBrow: 0 };
   for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
     const dx = x + 0.5 - C, dy = y + 0.5 - C;
     const ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;

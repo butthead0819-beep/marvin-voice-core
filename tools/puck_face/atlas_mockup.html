@@ -108,7 +108,7 @@ input[type=range]:disabled{opacity:.45}
         <label class="row" style="gap:6px;font-size:.85rem" for="selStep">間距
           <select id="selStep"><option value="0.2">0.2</option><option value="0.1" selected>0.1</option><option value="0.05">0.05</option></select></label>
         <label class="row" style="gap:6px;font-size:.85rem" for="selMode">mode
-          <select id="selMode"><option value="mask">mask</option><option value="weight">weight</option></select></label>
+          <select id="selMode"><option value="mask">mask</option><option value="weight">weight</option><option value="sdf1">sdf1</option><option value="sdf2" selected>sdf2</option></select></label>
         <label class="row" style="gap:6px;font-size:.85rem" for="selInterp">interp
           <select id="selInterp"><option value="nearest">nearest</option><option value="bilinear">bilinear</option></select></label>
         <span class="bakebar" id="bakebar" role="status">—</span>
@@ -142,7 +142,7 @@ input[type=range]:disabled{opacity:.45}
           <select id="speed"><option value="1">1×</option><option value="0.5">0.5×</option><option value="0.25">0.25×</option><option value="0">暫停</option></select></label>
       </div>
     </div>
-    <p class="note"><b>mask</b>：圖集只存形狀（眼睛 [覆蓋率, 描邊]、眉線 [覆蓋率]），顏色、漸層、陰影由 S3 在 recall 時算，圖集小；<b>weight</b>：圖集存疊色係數（眼睛 4 通道 <code>T, sCol, wB, wR</code>，recall 只做 <code>T·底 + sCol·眼色 + wB·亮色 + wR·描邊色</code>），Mac 想怎麼畫都行、S3 只背係數，圖集大約是兩倍。<b>nearest</b>：取最近格點那張小圖貼上，格點之間會有跳動（位置誤差最多半個間距）；<b>bilinear</b>：取相鄰四個格點各自貼上再依權重混合，較平順但每像素多取樣三次。眼睛只烤右眼，左眼用左右鏡像（Marvin、圓眼都對稱）。JS 耗時只供相對比較，不代表 S3 實際毫秒數。</p>
+    <p class="note"><b>mask</b>：圖集只存形狀（眼睛 [覆蓋率, 描邊]、眉線 [覆蓋率]），顏色、漸層、陰影由 S3 在 recall 時算，圖集小；<b>weight</b>：圖集存疊色係數（眼睛 4 通道 <code>T, sCol, wB, wR</code>，recall 只做 <code>T·底 + sCol·眼色 + wB·亮色 + wR·描邊色</code>），Mac 想怎麼畫都行、S3 只背係數，圖集大約是兩倍；<b>sdf1 / sdf2</b>：圖集存「到邊緣的距離」而不是覆蓋率，recall 時才轉成覆蓋率，所以邊緣不糊、格點之間是形狀內插（沒有重影）；sdf2 是半解析度存（texel 間距 2 像素），圖集更小。<b>nearest</b>：取最近格點那張小圖貼上，格點之間會有跳動（位置誤差最多半個間距）；<b>bilinear</b>：取相鄰四個格點各自貼上再依權重混合，較平順但每像素多取樣三次。眼睛只烤右眼，左眼用左右鏡像（Marvin、圓眼都對稱）。JS 耗時只供相對比較，不代表 S3 實際毫秒數。</p>
   </section>
 </main>
 
@@ -233,7 +233,7 @@ function autoPose(){
 }
 
 // ---------- 3. 圖集設定與烘焙（分批，不卡頁面；同設定快取） ----------
-const cfg={char:'marvin', W:240, step:0.1, mode:'mask', interp:'nearest'};
+const cfg={char:'marvin', W:240, step:0.1, mode:'sdf2', interp:'nearest'};
 const atlasCache={};
 let atlas=null, baking=0;   // baking 是目前這一輪烘焙的編號，設定又變就作廢舊的
 const BATCH=12;

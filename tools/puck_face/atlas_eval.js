@@ -1,13 +1,17 @@
 // atlas_eval.js — 圖集（face_atlas.js）對精確版（face_3d.js render3D）的誤差與大小比較表。
 //
-// 用法：node tools/puck_face/atlas_eval.js [--char marvin|round] [--W 240,466] [--step 0.2,0.1,0.05]
+// 用法：node tools/puck_face/atlas_eval.js [--char marvin|round] [--W 240,466] [--step 0.2,0.1,0.05] [--mode mask,sdf1,sdf2]
+//   --mode 可選 mask / weight / sdf1 / sdf2，預設 mask,sdf1,sdf2。
 //
 // 每個 W × step × mode 烤一次，再對 interp（nearest / bilinear）各跑 248 個姿勢，
 // 比 render3D 回傳的 rect 內每通道差。表格欄位：
 //   W step mode interp sprites rawKB deflateKB bakeS max mean bad24_avg bad24_worst recallMs
 //   bad24 = 單一像素任一通道差 > 24 的像素數（所有姿勢平均／最壞）；recallMs 是 JS 的平均耗時，只供相對比較。
 // 健全性檢查（assert，失敗 exit 1）：姿勢剛好落在眼格點與眉格點上、roll=0、err=0 時，
-// recall 跟 render3D 在 rect 內每通道差 ≤ 3（只剩 u8 量化誤差）。
+// recall 跟 render3D 在 rect 內每通道差 ≤ 3（只剩 u8 量化誤差）。sdf1/sdf2 不斷言：texel 對齊錨點而非螢幕像素，格點上也是次像素取樣，
+// 尖角與眉線中心的距離內插本來就有誤差，只印 max（看主表與歪頭診斷）。
+// 歪頭診斷（不斷言，只印）：每個 W × mode 用健全性檢查那個格點姿勢（第一個 step 的圖集），roll 取 0、0.013、0.1、0.3，
+// 印 max 與 bad24，用來看次像素取樣誤差有沒有消失。
 
 const zlib = require('zlib');
 const { render3D, MARVIN, ROUND_DEMO } = require('./face_3d.js');
@@ -18,8 +22,10 @@ const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return
 const charName = arg('char', 'marvin');
 const Ws = arg('W', '240,466').split(',').map(Number);
 const steps = arg('step', '0.2,0.1,0.05').split(',').map(Number);
-if (!CHARS[charName] || Ws.some(w => !(w > 0)) || steps.some(s => !(s > 0))) {
-  console.error('usage: node atlas_eval.js [--char marvin|round] [--W 240,466] [--step 0.2,0.1,0.05]');
+const MODES = ['mask', 'weight', 'sdf1', 'sdf2'];
+const modes = arg('mode', 'mask,sdf1,sdf2').split(',');
+if (!CHARS[charName] || Ws.some(w => !(w > 0)) || steps.some(s => !(s > 0)) || modes.some(m => !MODES.includes(m))) {
+  console.error('usage: node atlas_eval.js [--char marvin|round] [--W 240,466] [--step 0.2,0.1,0.05] [--mode mask,sdf1,sdf2]');
   process.exit(1);
 }
 const ch = CHARS[charName];
@@ -109,7 +115,7 @@ function deflateKB(atlas) {
 
 // 健全性檢查：眼、眉線都剛好落在格點上（眉線的 L0 靠 browUp 對到格點，眼睛不受 browUp 影響）。
 // yaw 取偏離 0 的格點（不然左右鏡像寫錯也看不出來）。
-function sanity(atlas, W, base) {
+function sanityPose(atlas) {
   const A = atlas.eye, e = ch.eye;
   const i = Math.min(A.n[0] - 1, Math.floor(A.n[0] / 2) + Math.floor(A.n[0] / 4)), j = Math.floor(A.n[1] / 2);
   const phiR = A.lo[0] + i * (A.hi[0] - A.lo[0]) / (A.n[0] - 1), lamR = A.lo[1] + j * (A.hi[1] - A.lo[1]) / (A.n[1] - 1);
@@ -120,31 +126,55 @@ function sanity(atlas, W, base) {
     const jb = Math.floor(B.n[1] / 2), L0 = B.lo[1] + jb * (B.hi[1] - B.lo[1]) / (B.n[1] - 1);
     pose.browUp = ch.brow.lam + pose.pitch - L0;
   }
+  return pose;
+}
+
+// 回傳 nearest / bilinear 兩種 interp 下的最大 max_diff（sdf 只印不斷言，呼叫端印）
+function sanity(atlas, W, base) {
+  const pose = sanityPose(atlas);
   const exact = new Uint8Array(W * W * 3), got = new Uint8Array(W * W * 3);
   const rect = render3D(exact, base, W, pose, ch);
+  let worst = 0;
   for (const interp of ['nearest', 'bilinear']) {
     recall(got, base, W, pose, ch, atlas, interp);
     // weight 模式的球緣 clip 是近似（c + (c'-c)*clip，精確版是每段疊色的 alpha 都乘 clip），
     // 球緣那圈本來就不是只有量化誤差，健全性檢查跳過；那圈的誤差照樣算進主表。
     const r = compare(exact, got, W, rect, atlas.mode === 'weight');
-    if (r.max > 3) {
+    if (r.max > worst) worst = r.max;
+    if (r.max > 3 && !atlas.mode.startsWith('sdf')) {
       console.error(`健全性檢查失敗：W=${W} step=${atlas.step} mode=${atlas.mode} interp=${interp} 格點上的姿勢 max_diff=${r.max} > 3`);
       process.exit(1);
     }
   }
+  return worst;
+}
+
+// 歪頭診斷：格點姿勢加上 roll，回傳 [{roll, max, bad}]（bilinear；姿勢在格點上，nearest 結果相同）
+const TILTS = [0, 0.013, 0.1, 0.3];
+function tiltDiag(atlas, W, base) {
+  const pose = sanityPose(atlas), exact = new Uint8Array(W * W * 3), got = new Uint8Array(W * W * 3);
+  return TILTS.map(roll => {
+    const p = Object.assign({}, pose, { roll });
+    const rect = render3D(exact, base, W, p, ch);
+    recall(got, base, W, p, ch, atlas, 'bilinear');
+    const r = compare(exact, got, W, rect);
+    return { roll, max: r.max, bad: r.bad };
+  });
 }
 
 const poses = buildPoses();
-const rows = [];
+const rows = [], notes = [], diags = [];
 for (const W of Ws) {
   const base = makeBase(W);
   const exact = poses.map(p => { const o = new Uint8Array(W * W * 3); const rect = render3D(o, base, W, p, ch); return { o, rect }; });
   const got = new Uint8Array(W * W * 3);
-  for (const step of steps) for (const mode of ['mask', 'weight']) {
+  for (const step of steps) for (const mode of modes) {
     const atlas = bake(W, ch, step, mode);
     const bakeS = atlas.bakeMs / 1000;
     console.error(`bake W=${W} step=${step} mode=${mode}: ${bakeS.toFixed(2)} s`);
-    sanity(atlas, W, base);
+    const sMax = sanity(atlas, W, base);
+    if (mode.startsWith('sdf')) notes.push(`${mode} 格點姿勢 W=${W} step=${step} max_diff=${sMax}（不斷言）`);
+    if (step === steps[0]) diags.push(`W=${W} mode=${mode} step=${step}  ` + tiltDiag(atlas, W, base).map(d => `roll=${d.roll} max=${d.max} bad24=${d.bad}`).join('  |  '));
     const { sprites, rawBytes } = atlasSize(atlas), dKB = deflateKB(atlas);
     for (const interp of ['nearest', 'bilinear']) {
       let max = 0, sum = 0, n = 0, badSum = 0, badWorst = 0, ms = 0;
@@ -164,4 +194,7 @@ const head = ['W', 'step', 'mode', 'interp', 'sprites', 'rawKB', 'deflateKB', 'b
 const table = [head, ...rows].map(r => r.map(String));
 const widths = head.map((_, c) => Math.max(...table.map(r => r[c].length)));
 for (const r of table) console.log(r.map((s, c) => s.padStart(widths[c])).join('  '));
-console.log('健全性檢查通過（格點上的姿勢，nearest / bilinear 皆 max_diff ≤ 3）');
+console.log('健全性檢查通過（格點上的姿勢，nearest / bilinear 皆 max_diff ≤ 3；sdf 不斷言）');
+for (const n of notes) console.log(n);
+console.log('歪頭診斷（格點姿勢 + roll，bilinear，不斷言）：');
+for (const d of diags) console.log(d);

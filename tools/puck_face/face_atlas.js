@@ -15,6 +15,15 @@
 //             意義是「Mac 想怎麼畫都行，S3 只背係數」：S3 端不需要知道漸層、陰影怎麼來的，圖集較大。
 //             顏色線性化忽略 dark() 的取整、bright 的 255 上限（誤差 <1 級）。眉線仍存 [bc]。
 //             小圖外的 weight 係數是恆等（T=1、其餘 0），不是 0。
+//   'sdf1' / 'sdf2'：小圖改存「到邊緣的距離（像素）」而不是覆蓋率，數字 = texel 間距 s（像素）。
+//             為什麼：描邊、眉線只有幾像素寬，覆蓋率在小圖非整數位置雙線性取樣時被抹糊（對比掉幾十級，
+//             姿勢剛好在格點上、只歪頭一點點也會壞），兩個格點混合時還變成兩條半透明描邊（重影）。
+//             距離場平滑、內插準；recall 才用 clamp01(0.5+d) 轉覆蓋率，邊緣跟精確版一樣銳利，
+//             格點之間混合變成形狀內插、沒有重影；距離平滑所以可以用較低解析度存（sdf2 = texel 間距 2）。
+//             小圖用錨點局部座標定位：texel (i,j) 中心的局部座標 = (ox + i*s, oy + j*s)（未旋轉座標減錨點，右眼方向）。
+//             通道：眼 [fill, rim]、眉線 [brow]。量化範圍 D = 4*s+2（像素）：
+//               fill 有號：u8 = round(clamp01((d+D)/(2D))*255)；rim / brow 無號：u8 = round(clamp01(d/D)*255)（Infinity → 255）。
+//             「遠」值（小圖外、空 texel）：fill = -D（u8 0）、rim / brow = D（u8 255），存在 sp.far。
 //
 // 座標：未旋轉座標，原點在球心（螢幕像素 (x,y) 中心 = x+0.5-C, y+0.5-C 再依 roll 反轉）。
 //   眼睛錨點 = R*v3(phiE, lamE) 的 [x, y]，眉線錨點 = R*v3(yaw, L0) 的 [x, y]；小圖座標都相對錨點。
@@ -25,7 +34,15 @@ const Face3D = typeof require !== 'undefined' ? require('./face_3d.js') : window
 const { prepare3D, strokeFields, gradColor, mix, clamp01, v3, RIM_COL, BROW_COL, BLACK } = Face3D;
 
 const now = typeof performance !== 'undefined' ? () => performance.now() : () => Date.now();
-const EYE_CH = { mask: 2, weight: 4 };
+const EYE_CH = { mask: 2, weight: 4, sdf1: 2, sdf2: 2 };
+const SDF_S = { sdf1: 1, sdf2: 2 };   // sdf 模式的 texel 間距 s（像素）
+const isSdf = mode => mode in SDF_S;
+const sdfD = s => 4 * s + 2;          // 距離量化範圍（像素）
+// nch===2 是眼：通道 0 是有號 fill，其餘無號
+const sdfEncode = (d, k, nch, D) => Math.round(clamp01(nch === 2 && k === 0 ? (d + D) / (2 * D) : d / D) * 255);
+const sdfDecode = (u, k, nch, D) => nch === 2 && k === 0 ? u / 255 * 2 * D - D : u / 255 * D;
+// 描邊、眉線寬度：同 face_3d.js strokeFields
+const strokeW = W => { const R = W * 0.45; return { RIM_W: Math.max(2, R * 0.035), BROW_W: Math.max(1.5, R * 0.02) }; };
 
 // 格子範圍：眼 phiR ∈ [cx-1.3, cx+1.3]、lamR ∈ [cy-0.5, cy+0.5]；眉線 yaw ∈ [-1.3, 1.3]、L0 ∈ [lam-0.56, lam+0.5]
 function axis(lo, hi, step) {
@@ -65,14 +82,21 @@ function isEmpty(d, p, nch, weight) {
   return true;
 }
 
+// sdf：這個像素的 u8 值是不是跟 far 完全一樣
+function isFar(d, p, far) {
+  for (let k = 0; k < far.length; k++) if (d[p + k] !== far[k]) return false;
+  return true;
+}
+
 // 掃一個烤圖姿勢的 rect，kind 'eye' 取眼 1（右眼）的 cov/rc，'brow' 取 bc；存成裁到外框的小圖
 function bakeSprite(W, ch, pose, anchor, kind, mode) {
+  if (isSdf(mode)) return bakeSdf(W, ch, pose, anchor, kind, SDF_S[mode]);
   const C = W / 2, R = W * 0.45;
   const F = prepare3D(Object.assign({}, pose, { col: ch.idle }), W, ch), r = F.rect;
   const nch = kind === 'eye' ? EYE_CH[mode] : 1, weight = kind === 'eye' && mode === 'weight';
   const rw = r.x1 - r.x0 + 1, rh = r.y1 - r.y0 + 1;
   const tmp = new Uint8Array(rw * rh * nch);
-  const f = { cov: [0, 0], rc: [0, 0], bc: 0 }, o = [1, 0, 0, 0];
+  const f = { cov: [0, 0], rc: [0, 0], bc: 0, dFill: [0, 0], dRim: [0, 0], dBrow: 0 }, o = [1, 0, 0, 0];
   let bx0 = Infinity, by0 = Infinity, bx1 = -1, by1 = -1;
   for (let y = r.y0; y <= r.y1; y++) for (let x = r.x0; x <= r.x1; x++) {
     const dx = x + 0.5 - C, dy = y + 0.5 - C;
@@ -102,6 +126,42 @@ function bakeSprite(W, ch, pose, anchor, kind, mode) {
     data.set(tmp.subarray(s, s + w * nch), j * w * nch);
   }
   return { x0: bx0, y0: by0, w, h, ax: anchor[0], ay: anchor[1], nch, data };
+}
+
+// sdf 版：以錨點局部座標、間距 s 掃一個烤圖姿勢（roll=0）的 rect（外擴 2s），存距離；格式見檔頭
+function bakeSdf(W, ch, pose, anchor, kind, s) {
+  const C = W / 2, R = W * 0.45, { RIM_W, BROW_W } = strokeW(W), [ax, ay] = anchor;
+  const F = prepare3D(Object.assign({}, pose, { col: ch.idle }), W, ch), r = F.rect;
+  const eye = kind === 'eye', nch = eye ? 2 : 1, D = sdfD(s), m = 2 * s;
+  const far = new Uint8Array(nch);
+  for (let k = 0; k < nch; k++) far[k] = sdfEncode(k === 0 && eye ? -D : D, k, nch, D);
+  // rect 四角像素中心轉局部座標，外擴 2s，對齊 s 的格子
+  const gi0 = Math.floor((r.x0 + 0.5 - C - ax - m) / s), gi1 = Math.ceil((r.x1 + 0.5 - C - ax + m) / s);
+  const gj0 = Math.floor((r.y0 + 0.5 - C - ay - m) / s), gj1 = Math.ceil((r.y1 + 0.5 - C - ay + m) / s);
+  const gw = gi1 - gi0 + 1, gh = gj1 - gj0 + 1;
+  const dist = new Float64Array(gw * gh * nch), f = { cov: [0, 0], rc: [0, 0], bc: 0, dFill: [0, 0], dRim: [0, 0], dBrow: 0 };
+  let bi0 = Infinity, bj0 = Infinity, bi1 = -1, bj1 = -1;
+  for (let gj = gj0; gj <= gj1; gj++) for (let gi = gi0; gi <= gi1; gi++) {
+    let ux = ax + gi * s, uy = ay + gj * s;
+    const rr = Math.hypot(ux, uy);
+    if (rr >= R * 0.9999) { ux *= R * 0.9999 / rr; uy *= R * 0.9999 / rr; }   // 球外 texel 用球緣的值延伸
+    strokeFields(F, W, ux, uy, f);
+    const p = ((gj - gj0) * gw + (gi - gi0)) * nch;
+    let valid;
+    if (eye) {
+      dist[p] = f.dFill[1]; dist[p + 1] = f.dRim[1];
+      valid = f.dFill[1] > -m || f.dRim[1] < RIM_W / 2 + 0.5 + m;
+    } else {
+      dist[p] = f.dBrow;
+      valid = f.dBrow < BROW_W / 2 + 0.5 + m;
+    }
+    if (valid) { if (gi < bi0) bi0 = gi; if (gi > bi1) bi1 = gi; if (gj < bj0) bj0 = gj; if (gj > bj1) bj1 = gj; }
+  }
+  if (bi1 < 0) return { ox: 0, oy: 0, s, w: 0, h: 0, nch, data: new Uint8Array(0), far };
+  const w = bi1 - bi0 + 1, h = bj1 - bj0 + 1, data = new Uint8Array(w * h * nch);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) for (let k = 0; k < nch; k++)
+    data[(j * w + i) * nch + k] = sdfEncode(dist[((bj0 - gj0 + j) * gw + (bi0 - gi0 + i)) * nch + k], k, nch, D);
+  return { ox: bi0 * s, oy: bj0 * s, s, w, h, nch, data, far };
 }
 
 // 分批烤圖器：step(n) 烤 n 個格點，回傳已完成數；全部烤完 atlas.bakeMs 才有值。bake() 與 atlas_mockup.html 共用
@@ -147,13 +207,14 @@ function rowSpan(sp, weight, y) {
   const nch = sp.nch, base = y * sp.w * nch;
   let a = -1, b = -1;
   for (let x = 0; x < sp.w; x++) {
-    if (!isEmpty(sp.data, base + x * nch, nch, weight)) { if (a < 0) a = x; b = x + 1; }
+    const empty = sp.far ? isFar(sp.data, base + x * nch, sp.far) : isEmpty(sp.data, base + x * nch, nch, weight);
+    if (!empty) { if (a < 0) a = x; b = x + 1; }
   }
   return a < 0 ? null : [a, b];
 }
 const isWeight = (atlas, sp) => atlas.mode === 'weight' && sp.nch === 4;
 
-// 每張小圖 raw = 16（標頭：x0,y0,w,h 各 u16、ax,ay 各 f32）＋ Σ每列（4 bytes 起訖 ＋ 跨距像素數 × 通道數）
+// 每張小圖 raw = 16（標頭：x0,y0,w,h 各 u16、ax,ay 各 f32；sdf 是 w,h u16、ox,oy f32、s u8、3 bytes 保留）＋ Σ每列（4 bytes 起訖 ＋ 跨距像素數 × 通道數）
 function atlasSize(atlas) {
   let sprites = 0, rawBytes = 0;
   const all = atlas.eye.sprites.concat(atlas.brow ? atlas.brow.sprites : []);
@@ -174,8 +235,13 @@ function spriteRaw(atlas, sp) {
   let len = 16;
   for (let y = 0; y < sp.h; y++) { const s = rowSpan(sp, wt, y); rows.push(s); len += 4 + (s ? (s[1] - s[0]) * sp.nch : 0); }
   const buf = new Uint8Array(len), dv = new DataView(buf.buffer);
-  dv.setUint16(0, sp.x0, true); dv.setUint16(2, sp.y0, true); dv.setUint16(4, sp.w, true); dv.setUint16(6, sp.h, true);
-  dv.setFloat32(8, sp.ax, true); dv.setFloat32(12, sp.ay, true);
+  if (sp.far) {
+    dv.setUint16(0, sp.w, true); dv.setUint16(2, sp.h, true);
+    dv.setFloat32(4, sp.ox, true); dv.setFloat32(8, sp.oy, true); dv.setUint8(12, sp.s);
+  } else {
+    dv.setUint16(0, sp.x0, true); dv.setUint16(2, sp.y0, true); dv.setUint16(4, sp.w, true); dv.setUint16(6, sp.h, true);
+    dv.setFloat32(8, sp.ax, true); dv.setFloat32(12, sp.ay, true);
+  }
   let p = 16;
   for (let y = 0; y < sp.h; y++) {
     const s = rows[y];
@@ -213,11 +279,22 @@ function sampleAdd(sp, fx, fy, w, v, bg) {
   }
 }
 
+// sdf 版：先把 u8 解碼成像素距離再雙線性（fx, fy 是 texel 座標，texel 中心在整數），乘 w 累加進 v；小圖外用 sp.far
+function sampleSdf(sp, fx, fy, w, v) {
+  const nch = sp.nch, D = sdfD(sp.s), x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0;
+  for (let dj = 0; dj < 2; dj++) for (let di = 0; di < 2; di++) {
+    const ww = w * (di ? tx : 1 - tx) * (dj ? ty : 1 - ty);
+    if (ww === 0) continue;
+    const x = x0 + di, y = y0 + dj, inside = x >= 0 && x < sp.w && y >= 0 && y < sp.h, p = (y * sp.w + x) * nch;
+    for (let k = 0; k < nch; k++) v[k] += ww * sdfDecode(inside ? sp.data[p + k] : sp.far[k], k, nch, D);
+  }
+}
+
 const BG_ZERO = [0, 0, 0, 0], BG_IDENT = [1, 0, 0, 0];
 
 function recall(out, base, W, pose, ch, atlas, interp) {
   out.set(base);
-  const C = W / 2, R = W * 0.45, e = ch.eye, weight = atlas.mode === 'weight';
+  const C = W / 2, R = W * 0.45, e = ch.eye, weight = atlas.mode === 'weight', sdf = isSdf(atlas.mode), { RIM_W, BROW_W } = strokeW(W);
   const ec = clamp01(pose.err), col = ch.idle.map((v, i) => v + (ch.err[i] - v) * ec);
   const F = prepare3D(Object.assign({}, pose, { col }), W, ch), { x0, y0, x1, y1 } = F.rect;
   const A = atlas.eye;
@@ -248,14 +325,16 @@ function recall(out, base, W, pose, ch, atlas, interp) {
       const P = eyePlans[idx], E = F.eyes[idx];
       const lx = P.s * (ux - P.ax), ly = uy - P.ay;
       v[0] = v[1] = v[2] = v[3] = 0;
-      for (const q of P.plan) sampleAdd(q.sp, lx + q.sp.ax + C - 0.5 - q.sp.x0, ly + q.sp.ay + C - 0.5 - q.sp.y0, q.w, v, bgE);
+      if (sdf) for (const q of P.plan) sampleSdf(q.sp, (lx - q.sp.ox) / q.sp.s, (ly - q.sp.oy) / q.sp.s, q.w, v);
+      else for (const q of P.plan) sampleAdd(q.sp, lx + q.sp.ax + C - 0.5 - q.sp.x0, ly + q.sp.ay + C - 0.5 - q.sp.y0, q.w, v, bgE);
       if (weight) {
         const cp0 = v[0] * c[0] + v[1] * col[0] + v[2] * F.bright[0] + v[3] * RIM_COL[0];
         const cp1 = v[0] * c[1] + v[1] * col[1] + v[2] * F.bright[1] + v[3] * RIM_COL[1];
         const cp2 = v[0] * c[2] + v[1] * col[2] + v[2] * F.bright[2] + v[3] * RIM_COL[2];
         c[0] += (cp0 - c[0]) * clip; c[1] += (cp1 - c[1]) * clip; c[2] += (cp2 - c[2]) * clip;
       } else {
-        const cov = v[0], rc = v[1];
+        // sdf：v 是距離，這裡才轉覆蓋率；之後疊色跟 mask 共用
+        const cov = sdf ? clamp01(0.5 + v[0]) : v[0], rc = sdf ? clamp01(RIM_W / 2 - v[1] + 0.5) : v[1];
         if (cov > 0) {
           const k = cov * clip;
           mix(c, F.dark45, 0.98 * k);
@@ -268,8 +347,10 @@ function recall(out, base, W, pose, ch, atlas, interp) {
     if (browPlan) {
       vb[0] = 0;
       const lx = ux - browPlan.ax, ly = uy - browPlan.ay;
-      for (const q of browPlan.plan) sampleAdd(q.sp, lx + q.sp.ax + C - 0.5 - q.sp.x0, ly + q.sp.ay + C - 0.5 - q.sp.y0, q.w, vb, BG_ZERO);
-      if (vb[0] > 0) mix(c, BROW_COL, 0.92 * vb[0] * clip);
+      if (sdf) for (const q of browPlan.plan) sampleSdf(q.sp, (lx - q.sp.ox) / q.sp.s, (ly - q.sp.oy) / q.sp.s, q.w, vb);
+      else for (const q of browPlan.plan) sampleAdd(q.sp, lx + q.sp.ax + C - 0.5 - q.sp.x0, ly + q.sp.ay + C - 0.5 - q.sp.y0, q.w, vb, BG_ZERO);
+      const bc = sdf ? clamp01(BROW_W / 2 - vb[0] + 0.5) : vb[0];
+      if (bc > 0) mix(c, BROW_COL, 0.92 * bc * clip);
     }
     out[i] = c[0] + 0.5 | 0; out[i + 1] = c[1] + 0.5 | 0; out[i + 2] = c[2] + 0.5 | 0;
   }
