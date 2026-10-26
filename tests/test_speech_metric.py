@@ -308,3 +308,16 @@ def test_speech_context_no_sink_returns_zero_speaking():
     hot, n = cog._speech_context()
 
     assert n == 0
+
+
+def test_speech_context_counts_users_currently_speaking():
+    """n_speaking 取代 6/17 被刪的 interruption 指標：只數 VAD 判定 True 的人。"""
+    cog, _ = _make_cog()
+    sink = MagicMock()
+    sink.user_is_speaking = {1: True, 2: False, 3: True}
+    cog.bot.engine = MagicMock()
+    cog.bot.engine.get_active_sink.return_value = sink
+
+    _, n = cog._speech_context()
+
+    assert n == 2
