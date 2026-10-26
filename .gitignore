@@ -113,3 +113,4 @@ firmware/car_puck/build/
 
 tools/puck_face/out/
 firmware/face_demo/base_sphere.h
+firmware/face_demo/costume_preview.h
