@@ -24,6 +24,9 @@ import time
 import discord
 
 from music_memory import extract_video_id
+from play_taste import REINFORCE_DELTA, REINFORCE_REASON, artist_candidates, keys_to_reinforce
+from suki_memory import is_pseudo_player
+from taste_fingerprint import _is_human
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,22 @@ _NON_HUMAN_SPEAKERS = frozenset({"Marmo"})
 
 class MusicAudioMetaMixin:
     # ── 🎵 Song metadata / fetch helpers（音訊分析/檔案清理子集）───────────────
+
+    def _record_play(self, info: dict, requested_by: str) -> None:
+        """記播放（music_memory）＋真人點歌強化點歌者既有的歌手口味（play_taste.py）。"""
+        self.bot.music_memory.record_play(info, requested_by)
+        try:
+            if not _is_human(requested_by) or is_pseudo_player(requested_by):
+                return
+            mem = getattr(getattr(self.bot, "router", None), "memory", None)
+            if mem is None or not mem.has_player(requested_by):
+                return
+            player = mem.get_player_memory(requested_by)
+            for key in keys_to_reinforce(player.get("taste") or {}, set(player.get("taboos") or []),
+                                         artist_candidates(info), time.time()):
+                mem.record_taste_signal(requested_by, key, REINFORCE_DELTA, reason=REINFORCE_REASON)
+        except Exception:
+            logger.debug("[PlayTaste] 點歌強化口味失敗（忽略）", exc_info=True)
 
     async def _analyze_song_reactions(self, info: dict, song_start_time: float, lyrics: str):
         """歌曲結束後掃描對話，分析聆聽反應並寫入音樂記憶。只在至少
