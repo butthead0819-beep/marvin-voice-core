@@ -98,6 +98,7 @@ def setup_early_logging():
     logging.getLogger("car_http_app").setLevel(logging.INFO)
     logging.getLogger("puck_cover_cache").setLevel(logging.INFO)  # 2026-10-20 🔘 [PuckCover] 生成/失敗（壓力測試看耗時）
     logging.getLogger("turn_outcome").setLevel(logging.INFO)  # 2026-10-22 🏁 [TurnOutcome] 寫檔失敗節流警告
+    logging.getLogger("theme_link").setLevel(logging.INFO)  # 2026-10-27 🧭 [ThemeLink] 主題連結觸發/閘門 log
 
     stdout_logger = logging.getLogger("MarvinBot.Stdout")
     stdout_logger.setLevel(logging.INFO)
