@@ -68,6 +68,11 @@ HEARD_BY_WINDOW_S = 600.0  # 窗前 10 分鐘（10 分鐘日誌）
 # 限流的 None 被存成 familiarity=低 / sensitive=1 / room_veto=1，且永不重算 → 露營等 tag 永久失效。
 MAX_CONSECUTIVE_LLM_FAILURES = 3
 
+# 免費 gemini_free 的 analyze 預設是 gemini-3.5-flash，免費層一天只有 20 次（2026-10-27 實測 429
+# quotaValue=20），bot 自己的 analyze 也靠它——批次不准碰。用 bus 既有的 env 覆寫機制把 analyze
+# 換成 3.5-flash-lite（盲測歌卡用的就是它）。
+BATCH_MODEL_OVERRIDES = {"GEMINI_FREE_ANALYZE_MODEL": "gemini-3.5-flash-lite"}
+
 
 class LLMCallFailed(Exception):
     """router 回 None/空字串（限流、全 provider 失敗）。"""
@@ -340,7 +345,7 @@ async def main() -> None:
     from llm_pool import build_tiered_router
     from music_memory import MusicMemory
 
-    router = build_tiered_router(env={"GOOGLE_API_KEY": os.environ["GOOGLE_API_KEY"]})
+    router = build_tiered_router(env={"GOOGLE_API_KEY": os.environ["GOOGLE_API_KEY"], **BATCH_MODEL_OVERRIDES})
     con = sqlite3.connect(DB_PATH)
     try:
         init_tables(con)
