@@ -42,7 +42,6 @@ from theme_link import (  # noqa: E402
     build_room_veto_prompt,
     build_theme_match_prompt,
     build_theme_meaning_prompt,
-    build_upgrade_card_prompt,
     collect_tag_occurrences,
     eligible_tags,
     parse_room_veto,
@@ -79,10 +78,11 @@ BATCH_MAX_TOKENS = 800
 
 # 低熟悉歌卡的付費 grounding 升級（2026-10-27 使用者定）：專用額度 $0.05/天 $1/月，不佔一般 $4。
 UPGRADE_CALLER = "theme_link_card_upgrade"
-UPGRADE_BATCH_LIMIT = 10
-UPGRADE_MODEL_CHAIN = ("gemini-3.5-flash",)
-UPGRADE_TIMEOUT_S = 30.0
-UPGRADE_MAX_CHARS = 3000
+# 付費 3.5-flash **不搜尋**、憑知識寫（2026-10-27 實測：grounding 版 3.5-flash 自認知道就不搜尋，
+# 回應被 L2 擋光、白付錢；不搜尋版 4/4 熟悉度高、約 $0.0005/張）。每晚上限實際由 $0.05 日額度決定。
+UPGRADE_BATCH_LIMIT = 100
+UPGRADE_MODEL = "gemini-3.5-flash"
+UPGRADE_MAX_TOKENS = 800
 
 
 class LLMCallFailed(Exception):
@@ -233,7 +233,7 @@ async def run_card_phase(con: sqlite3.Connection, router, songs: dict, *,
 
 # ── 1.5 低熟悉歌卡付費 grounding 升級 ─────────────────────────────────────────
 
-async def run_card_upgrade_phase(con: sqlite3.Connection, songs: dict, *, grounded_fn, guard,
+async def run_card_upgrade_phase(con: sqlite3.Connection, songs: dict, *, card_fn, guard,
                                  now: float | None = None, sleep_fn=asyncio.sleep,
                                  limit: int = UPGRADE_BATCH_LIMIT) -> int:
     now = now if now is not None else time.time()
@@ -261,22 +261,22 @@ async def run_card_upgrade_phase(con: sqlite3.Connection, songs: dict, *, ground
             break
         processed += 1
         try:
-            sys_p, user_p = build_upgrade_card_prompt(artist, title)
-            res = await grounded_fn(user_p, system_prompt=sys_p)
+            sys_p, user_p = build_card_prompt(artist, title)
+            raw = await card_fn(user_p, system_prompt=sys_p)
         except Exception:
             logger.warning(f"🧭 [ThemeLink] 歌卡付費升級失敗（不寫入、下次重試）: {artist} {title}")
             await sleep_fn(LLM_SLEEP_S)
             continue
 
-        if not isinstance(res, tuple):
-            con.execute("UPDATE song_cards SET upgraded_at=? WHERE video_id=?", (now, vid))
-            con.commit()
+        if not raw or not str(raw).strip():
+            # call_paid_review 回 None＝守門擋下或全部失敗，沒有結果：不標記、下次重試
+            logger.warning(f"🧭 [ThemeLink] 歌卡付費升級沒回應（不寫入、下次重試）: {artist} {title}")
             await sleep_fn(LLM_SLEEP_S)
             continue
 
-        text, _sources = res
-        card = parse_song_card(text, now)
+        card = parse_song_card(raw, now)
         if card is None:
+            # 已付費但解析不出來：只標記，避免每晚重打同一首
             con.execute("UPDATE song_cards SET upgraded_at=? WHERE video_id=?", (now, vid))
             con.commit()
             await sleep_fn(LLM_SLEEP_S)
@@ -498,18 +498,17 @@ async def main() -> None:
         elif not os.environ.get("GEMINI_PAID_API_KEY"):
             logger.warning("🧭 [ThemeLink] GEMINI_PAID_API_KEY 未設定，跳過歌卡付費升級")
         else:
-            import functools
-
             import llm_paid
-            from intent_agents.grounded_qa_agent import grounded_answer
+            from llm_pool import call_paid_review
 
-            paid_client = llm_pool._default_genai_client_factory(os.environ["GEMINI_PAID_API_KEY"])
             upgrade_guard = llm_paid.guard_for_caller(UPGRADE_CALLER)
-            grounded_fn = functools.partial(
-                grounded_answer, None, paid_client, upgrade_guard, caller=UPGRADE_CALLER,
-                model_chain=UPGRADE_MODEL_CHAIN, timeout=UPGRADE_TIMEOUT_S, max_chars=UPGRADE_MAX_CHARS,
-            )
-            await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=upgrade_guard)
+
+            async def card_fn(user_p, *, system_prompt):
+                # call_paid_review 自己也會先問 guard_for_caller(caller)；這裡傳同一個 guard 讓兩邊一致
+                return await call_paid_review(user_p, system=system_prompt, max_tokens=UPGRADE_MAX_TOKENS,
+                                              model=UPGRADE_MODEL, caller=UPGRADE_CALLER, guard=upgrade_guard)
+
+            await run_card_upgrade_phase(con, songs, card_fn=card_fn, guard=upgrade_guard)
 
         await run_match_phase(con, router, songs)
     finally:
