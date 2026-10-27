@@ -247,3 +247,73 @@ async def test_run_match_phase_skips_tag_with_existing_picks(con):
 
     assert matched == 0
     assert router.calls == []
+
+
+# ── LLM 呼叫失敗（None/空字串）＝沒有結果，不寫入、下次重試（2026-10-27 首次實跑：限流的 None
+#    被存成 familiarity=低 / sensitive=1 / room_veto=1 且永不重算）──────────────────────────
+
+def _songs(n):
+    return {f"k{i}": {"artist": "A", "title": f"歌{i}", "total_plays": 10 - i,
+                      "webpage_url": f"https://www.youtube.com/watch?v=VID{i:08d}"} for i in range(n)}
+
+
+@pytest.mark.asyncio
+async def test_card_phase_llm_none_writes_nothing_and_stops_after_consecutive_failures(con):
+    router = FakeRouter(responses={"theme_link_card": None})
+    built = await run_card_phase(con, router, _songs(6), sleep_fn=_noop_sleep, now=1000.0)
+    assert built == 0
+    assert con.execute("SELECT COUNT(*) FROM song_cards").fetchone()[0] == 0
+    assert len(router.calls) == 3  # MAX_CONSECUTIVE_LLM_FAILURES
+
+
+@pytest.mark.asyncio
+async def test_card_phase_empty_string_is_failure_not_low_familiarity(con):
+    router = FakeRouter(responses={"theme_link_card": "  "})
+    await run_card_phase(con, router, _songs(1), sleep_fn=_noop_sleep, now=1000.0)
+    assert con.execute("SELECT COUNT(*) FROM song_cards").fetchone()[0] == 0
+
+
+def _two_day_entries(tag="露營"):
+    return [_FakeEntry("2026-10-20 10:00:00", tag), _FakeEntry("2026-10-21 10:00:00", tag)]
+
+
+@pytest.mark.asyncio
+async def test_theme_phase_meaning_none_writes_no_row(con):
+    from theme_link import parse_tpe_timestamp
+    now = parse_tpe_timestamp("2026-10-27 12:00:00")
+    router = FakeRouter(responses={"theme_link_meaning": None})
+    await run_theme_phase(con, router, _two_day_entries(), events=[], now=now,
+                          sleep_fn=_noop_sleep, guild_id=1)
+    assert con.execute("SELECT COUNT(*) FROM theme_tags").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_theme_phase_room_veto_none_writes_no_row(con):
+    from theme_link import parse_tpe_timestamp
+    now = parse_tpe_timestamp("2026-10-27 12:00:00")
+    last = parse_tpe_timestamp("2026-10-21 10:00:00")
+    for i in range(6):
+        con.execute("INSERT INTO transcripts (speaker, guild_id, channel_id, text, timestamp) "
+                    "VALUES ('showay',1,0,?,?)", (f"第{i}句", last - 60 * (i + 1)))
+    con.commit()
+    router = FakeRouter(responses={
+        "theme_link_meaning": json.dumps({"meaning": "戶外過夜", "sensitive": False}),
+        "theme_link_veto": None,
+    })
+    await run_theme_phase(con, router, _two_day_entries(), events=[], now=now,
+                          sleep_fn=_noop_sleep, guild_id=1)
+    assert con.execute("SELECT COUNT(*) FROM theme_tags").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_match_phase_none_writes_no_picks(con):
+    con.execute("INSERT INTO theme_tags (tag, meaning, sensitive, room_veto, heard_by, first_seen, "
+                "last_seen, day_count, updated_at) VALUES ('露營','戶外過夜',0,NULL,'[]',0,0,2,0)")
+    con.execute("INSERT INTO song_cards (video_id, artist, title, imagery, deep_story, relation, weight, "
+                "familiarity, created_at) VALUES ('VID00000000','A','歌','山','露營','朋友','輕','高',0)")
+    con.commit()
+    router = FakeRouter(responses={"theme_link_match": None})
+    matched = await run_match_phase(con, router, _songs(1), sleep_fn=_noop_sleep)
+    assert matched == 0
+    assert con.execute("SELECT COUNT(*) FROM theme_picks").fetchone()[0] == 0
+    assert len(router.calls) == 1
