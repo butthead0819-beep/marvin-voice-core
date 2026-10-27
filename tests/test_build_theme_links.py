@@ -440,10 +440,13 @@ async def test_run_match_phase_skips_llm_when_tag_not_songable(con):
         "INSERT INTO theme_tags (tag, meaning, sensitive, songable, room_veto, heard_by, first_seen, "
         "last_seen, day_count, updated_at) VALUES ('裝備升級','遊戲機制',0,0,NULL,'[]',0,0,2,0)"
     )
+    # 要有合格候選卡，否則「候選為空不呼叫 LLM」會讓這條測試不管有沒有 songable 過濾都過
+    con.execute("INSERT INTO song_cards (video_id, artist, title, imagery, deep_story, relation, weight, "
+                "familiarity, created_at) VALUES ('VID00000000','A','歌','山','露營','朋友','輕','高',0)")
     con.commit()
-    router = FakeRouter()
+    router = FakeRouter(responses={"theme_link_match": '{"picks":[{"index":0,"layer":"意象"}]}'})
 
-    matched = await run_match_phase(con, router, songs={}, sleep_fn=_noop_sleep)
+    matched = await run_match_phase(con, router, songs=_songs(1), sleep_fn=_noop_sleep)
 
     assert matched == 0
     assert router.calls == []
