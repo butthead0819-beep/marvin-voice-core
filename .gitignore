@@ -122,3 +122,4 @@ firmware/face_demo/costume_preview.h
 assets/acks/
 assets/fillers/
 assets/sfx/
+firmware/face3d_bench/atlas_data.h
