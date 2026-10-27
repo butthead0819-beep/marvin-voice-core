@@ -68,7 +68,7 @@ def test_no_filter_counts_everyone_like_before(tmp_path):
 
 def test_guard_for_caller_daily_review_has_dedicated_quota():
     guard = guard_for_caller("daily_review")
-    assert (guard.daily_cap_usd, guard.monthly_cap_usd) == DEDICATED_QUOTAS["daily_review"]
+    assert (guard.daily_cap_usd, guard.monthly_cap_usd) == (0.05, 1.0)  # 寫死：10/27 拍板值，改額度要連測試一起改
     assert guard.only_callers == frozenset({"daily_review"})
 
 
