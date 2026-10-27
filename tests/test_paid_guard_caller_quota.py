@@ -144,3 +144,25 @@ async def test_call_paid_review_allowed_by_guard_proceeds_normally():
     out = await call_paid_review("content", system="sys", pool=CooldownAwarePool([ep]),
                                   guard=_AllowGuard())
     assert out == '{"ok": true}'
+
+
+@pytest.mark.asyncio
+async def test_call_paid_review_without_guard_asks_guard_for_its_own_caller(monkeypatch):
+    """沒帶 guard → 用 caller 名稱向 guard_for_caller 要守門（daily_review 才會拿到專用額度）。"""
+    import llm_paid
+    asked: list[str] = []
+
+    class _DenyGuard:
+        def allow(self, expected_usd=0.0):
+            return False
+
+    def _fake_guard_for_caller(caller):
+        asked.append(caller)
+        return _DenyGuard()
+
+    monkeypatch.setattr(llm_paid, "guard_for_caller", _fake_guard_for_caller)
+    status: dict = {}
+    out = await call_paid_review("content", system="sys", caller="daily_review", status=status)
+    assert out is None
+    assert asked == ["daily_review"]
+    assert status["reason"] == "guard_cap"
