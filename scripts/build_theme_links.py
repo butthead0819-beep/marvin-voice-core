@@ -61,7 +61,7 @@ DB_PATH = str(ROOT / "marvin.db")
 MUSIC_MEMORY_PATH = str(ROOT / "music_memory.json")
 CHAT_LOG_PATH = ROOT / "records" / "chat_summary_log.txt"
 PRESENCE_LOG_PATH = ROOT / "data" / "voice_presence.jsonl"
-LLM_SLEEP_S = 1.0
+LLM_SLEEP_S = 4.0  # 免費 Gemini RPM 低；1.0s 首次實跑一路撞限流
 HEARD_BY_WINDOW_S = 600.0  # 窗前 10 分鐘（10 分鐘日誌）
 # LLM 呼叫失敗（限流等回 None/空字串）＝「沒有結果」，不是「模型說不熟／敏感」：一律不寫入、下次重試。
 # 連續失敗這麼多次就停掉該階段（額度多半已用完，繼續打只是空轉）。2026-10-27 首次實跑：
