@@ -68,10 +68,12 @@ HEARD_BY_WINDOW_S = 600.0  # 窗前 10 分鐘（10 分鐘日誌）
 # 限流的 None 被存成 familiarity=低 / sensitive=1 / room_veto=1，且永不重算 → 露營等 tag 永久失效。
 MAX_CONSECUTIVE_LLM_FAILURES = 3
 
-# 免費 gemini_free 的 analyze 預設是 gemini-3.5-flash，免費層一天只有 20 次（2026-10-27 實測 429
-# quotaValue=20），bot 自己的 analyze 也靠它——批次不准碰。用 bus 既有的 env 覆寫機制把 analyze
-# 換成 3.5-flash-lite（盲測歌卡用的就是它）。
-BATCH_MODEL_OVERRIDES = {"GEMINI_FREE_ANALYZE_MODEL": "gemini-3.5-flash-lite"}
+# 批次走 bus 的 quick tier，並用 bus 既有的 env 覆寫把 gemini_free quick 換成 3.5-flash-lite（盲測歌卡用的就是它）。
+# 為什麼不用 analyze（2026-10-27 實測）：gemini_free 的 analyze 是 gemini-3.5-flash，免費一天只有 20 次、
+# bot 自己要用；gemini_free_25 的 analyze 是 3.5-flash-lite 但帶 reasoning_effort=none → 每次 400。
+# quick tier 不帶 reasoning 參數。quick 預設 max_tokens=200 不夠一張卡，呼叫時給 BATCH_MAX_TOKENS。
+BATCH_MODEL_OVERRIDES = {"GEMINI_FREE_QUICK_MODEL": "gemini-3.5-flash-lite"}
+BATCH_MAX_TOKENS = 800
 
 
 class LLMCallFailed(Exception):
@@ -79,7 +81,8 @@ class LLMCallFailed(Exception):
 
 
 async def _analyze_or_raise(router, user_p: str, *, caller: str, system: str) -> str:
-    raw = await router.analyze(user_p, caller=caller, system=system, json=True)
+    raw = await router.quick(user_p, caller=caller, system=system, json=True,
+                             max_tokens=BATCH_MAX_TOKENS, temperature=0.3)
     if not raw or not str(raw).strip():
         raise LLMCallFailed(caller)
     return raw
