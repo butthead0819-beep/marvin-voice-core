@@ -63,6 +63,21 @@ CHAT_LOG_PATH = ROOT / "records" / "chat_summary_log.txt"
 PRESENCE_LOG_PATH = ROOT / "data" / "voice_presence.jsonl"
 LLM_SLEEP_S = 1.0
 HEARD_BY_WINDOW_S = 600.0  # 窗前 10 分鐘（10 分鐘日誌）
+# LLM 呼叫失敗（限流等回 None/空字串）＝「沒有結果」，不是「模型說不熟／敏感」：一律不寫入、下次重試。
+# 連續失敗這麼多次就停掉該階段（額度多半已用完，繼續打只是空轉）。2026-10-27 首次實跑：
+# 限流的 None 被存成 familiarity=低 / sensitive=1 / room_veto=1，且永不重算 → 露營等 tag 永久失效。
+MAX_CONSECUTIVE_LLM_FAILURES = 3
+
+
+class LLMCallFailed(Exception):
+    """router 回 None/空字串（限流、全 provider 失敗）。"""
+
+
+async def _analyze_or_raise(router, user_p: str, *, caller: str, system: str) -> str:
+    raw = await router.analyze(user_p, caller=caller, system=system, json=True)
+    if not raw or not str(raw).strip():
+        raise LLMCallFailed(caller)
+    return raw
 
 
 def init_tables(con: sqlite3.Connection) -> None:
@@ -118,14 +133,24 @@ async def run_card_phase(con: sqlite3.Connection, router, songs: dict, *,
                          sleep_fn=asyncio.sleep, now: float | None = None) -> int:
     now = now if now is not None else time.time()
     existing = {r[0] for r in con.execute("SELECT video_id FROM song_cards")}
+    from music_memory import extract_video_id
+    from song_name_clean import dj_display_name
+
     queue = select_card_queue(songs, existing, limit=CARD_BATCH_LIMIT)
     built = 0
+    failures = 0
     for vid, entry in queue:
-        artist = str(entry.get("artist", "") or "")
-        title = str(entry.get("title", "") or "")
+        # 乾淨歌名／歌手（同 _try_associative_pick 給 LLM 看的顯示名；原始 title 是 YouTube 標題、帶 MV/HD 雜訊）
+        try:
+            title, artist = dj_display_name(entry, extract_vid=extract_video_id)
+        except Exception:
+            title, artist = "", ""
+        title = title or str(entry.get("title", "") or "")
+        artist = artist or str(entry.get("artist", "") or "")
         try:
             sys_p, user_p = build_card_prompt(artist, title)
-            raw = await router.analyze(user_p, caller="theme_link_card", system=sys_p, json=True)
+            raw = await _analyze_or_raise(router, user_p, caller="theme_link_card", system=sys_p)
+            failures = 0
             card = parse_song_card(raw, now)
             con.execute(
                 "INSERT OR REPLACE INTO song_cards "
@@ -136,6 +161,12 @@ async def run_card_phase(con: sqlite3.Connection, router, songs: dict, *,
             )
             con.commit()
             built += 1
+        except LLMCallFailed:
+            failures += 1
+            logger.warning(f"🧭 [ThemeLink] 建卡 LLM 沒回應（不寫入、下次重試）: {artist} {title}")
+            if failures >= MAX_CONSECUTIVE_LLM_FAILURES:
+                logger.warning(f"🧭 [ThemeLink] 建卡連續 {failures} 次失敗，本次停止建卡")
+                break
         except Exception:
             logger.exception(f"🧭 [ThemeLink] 建卡失敗，跳過: {vid} {artist} {title}")
         await sleep_fn(LLM_SLEEP_S)
@@ -157,7 +188,7 @@ async def _compute_room_veto(con: sqlite3.Connection, router, tag: str, last_see
     if len(lines) < ROOM_VETO_MIN_LINES:
         return None
     sys_p, user_p = build_room_veto_prompt(tag, lines)
-    raw = await router.analyze(user_p, caller="theme_link_veto", system=sys_p, json=True)
+    raw = await _analyze_or_raise(router, user_p, caller="theme_link_veto", system=sys_p)
     await sleep_fn(LLM_SLEEP_S)
     return parse_room_veto(raw)
 
@@ -168,8 +199,12 @@ async def run_theme_phase(con: sqlite3.Connection, router, entries, events: list
     occurrences = collect_tag_occurrences(entries, now)
     eligible = eligible_tags(occurrences)
     updated = 0
+    failures = 0
 
     for tag in sorted(eligible):
+        if failures >= MAX_CONSECUTIVE_LLM_FAILURES:
+            logger.warning(f"🧭 [ThemeLink] tag 階段連續 {failures} 次 LLM 失敗，本次停止")
+            break
         timestamps = occurrences[tag]
         first_seen = min(timestamps)
         last_seen = max(timestamps)
@@ -183,8 +218,14 @@ async def run_theme_phase(con: sqlite3.Connection, router, entries, events: list
         if row is None:
             try:
                 sys_p, user_p = build_theme_meaning_prompt(tag)
-                raw = await router.analyze(user_p, caller="theme_link_meaning", system=sys_p, json=True)
+                raw = await _analyze_or_raise(router, user_p, caller="theme_link_meaning", system=sys_p)
+                failures = 0
                 parsed = parse_theme_meaning(raw)
+            except LLMCallFailed:
+                failures += 1
+                logger.warning(f"🧭 [ThemeLink] 釋義 LLM 沒回應（不寫入、下次重試）: {tag}")
+                await sleep_fn(LLM_SLEEP_S)
+                continue
             except Exception:
                 logger.exception(f"🧭 [ThemeLink] 釋義 LLM 失敗，跳過: {tag}")
                 continue
@@ -199,6 +240,11 @@ async def run_theme_phase(con: sqlite3.Connection, router, entries, events: list
         heard_by = compute_heard_by(timestamps, events)
         try:
             room_veto = await _compute_room_veto(con, router, tag, last_seen, guild_id, sleep_fn=sleep_fn)
+        except LLMCallFailed:
+            # 不寫入整筆 tag：執行時沒有這列＝不合格（一樣安全），下次批次重算
+            failures += 1
+            logger.warning(f"🧭 [ThemeLink] 房間把關 LLM 沒回應（本 tag 不寫入、下次重試）: {tag}")
+            continue
         except Exception:
             logger.exception(f"🧭 [ThemeLink] 房間把關 LLM 失敗，視為擋: {tag}")
             room_veto = True
@@ -259,8 +305,12 @@ async def run_match_phase(con: sqlite3.Connection, router, songs: dict, *, sleep
         numbered = list(enumerate(candidates))
         try:
             sys_p, user_p = build_theme_match_prompt(tag, meaning, numbered)
-            raw = await router.analyze(user_p, caller="theme_link_match", system=sys_p, json=True)
+            raw = await _analyze_or_raise(router, user_p, caller="theme_link_match", system=sys_p)
             picks = parse_theme_picks(raw, n_cards=len(candidates))
+        except LLMCallFailed:
+            logger.warning(f"🧭 [ThemeLink] 配歌 LLM 沒回應（不寫入、下次重試）: {tag}")
+            await sleep_fn(LLM_SLEEP_S)
+            continue
         except Exception:
             logger.exception(f"🧭 [ThemeLink] 配歌 LLM 失敗，跳過: {tag}")
             continue
