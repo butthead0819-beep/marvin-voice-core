@@ -453,7 +453,7 @@ class MusicAutopilotMixin:
             con = sqlite3.connect(f"file:{_THEME_LINK_DB_PATH}?mode=ro", uri=True)
             try:
                 rows = con.execute(
-                    "SELECT tag, meaning, sensitive, room_veto, heard_by, last_seen FROM theme_tags"
+                    "SELECT tag, meaning, sensitive, room_veto, heard_by, last_seen, songable FROM theme_tags"
                 ).fetchall()
             finally:
                 con.close()
@@ -464,13 +464,15 @@ class MusicAutopilotMixin:
         theme_rows = [
             {"tag": r[0], "meaning": r[1], "sensitive": bool(r[2]),
              "room_veto": (None if r[3] is None else bool(r[3])),
-             "heard_by": _json.loads(r[4] or "[]"), "last_seen": r[5]}
+             "heard_by": _json.loads(r[4] or "[]"), "last_seen": r[5],
+             "songable": (None if r[6] is None else bool(r[6]))}
             for r in rows
         ]
 
         cutoff = now - LOOKBACK_DAYS * 86400
         window_ok = [r for r in theme_rows if r["last_seen"] >= cutoff
-                     and r["sensitive"] is False and r["room_veto"] is not True]
+                     and r["sensitive"] is False and r["songable"] is True
+                     and r["room_veto"] is not True]
         blocked_14d = sum(1 for r in window_ok if r["tag"] in used_tags_14d)
         member_set = set(members)
         blocked_presence = sum(

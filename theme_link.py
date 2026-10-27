@@ -155,14 +155,14 @@ def _extract_json_obj(raw_text) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def parse_song_card(raw_text, now: float) -> dict:
-    """解析歌卡 LLM 輸出。解析失敗、或 deep_story 缺漏/「不確定」→
-    familiarity='低'、deep_story=''（避免每晚重打同一首）。"""
-    fallback = {"imagery": "", "deep_story": "", "relation": "", "weight": "輕",
-                "familiarity": "低", "created_at": now}
+def parse_song_card(raw_text, now: float) -> dict | None:
+    """解析歌卡 LLM 輸出。JSON 解析不出來 → None（沒有結果，不寫入）。
+    deep_story 缺漏/「不確定」→ familiarity='低'、deep_story=''（模型真的不熟，避免每晚重打同一首）。"""
     data = _extract_json_obj(raw_text)
     if data is None:
-        return fallback
+        return None
+    fallback = {"imagery": "", "deep_story": "", "relation": "", "weight": "輕",
+                "familiarity": "低", "created_at": now}
     deep_story = str(data.get("deep_story", "")).strip()
     if deep_story in ("", "不確定"):
         return fallback
@@ -178,17 +178,22 @@ def parse_song_card(raw_text, now: float) -> dict:
             "weight": weight, "familiarity": familiarity, "created_at": now}
 
 
-def parse_theme_meaning(raw_text) -> dict:
-    """解析 tag 釋義 LLM 輸出。sensitive 缺漏或非 bool → 視為 True。"""
-    fallback = {"meaning": "", "sensitive": True}
+def parse_theme_meaning(raw_text) -> dict | None:
+    """解析 tag 釋義 LLM 輸出。JSON 解析不出來、或 meaning 空 → None（沒有結果，不寫入）。
+    sensitive 缺漏或非 bool → 視為 True。songable 缺漏或非 bool → 視為 False（保守：不配歌）。"""
     data = _extract_json_obj(raw_text)
     if data is None:
-        return fallback
+        return None
     meaning = str(data.get("meaning", "")).strip()
+    if not meaning:
+        return None
     sensitive = data.get("sensitive")
     if not isinstance(sensitive, bool):
         sensitive = True
-    return {"meaning": meaning, "sensitive": sensitive}
+    songable = data.get("songable")
+    if not isinstance(songable, bool):
+        songable = False
+    return {"meaning": meaning, "sensitive": sensitive, "songable": songable}
 
 
 def parse_room_veto(raw_text) -> bool:
@@ -281,7 +286,7 @@ def qualifying_theme_tags(theme_rows: list[dict], members: list[str], now: float
     """回最多 max_tags 個 (tag, meaning)，依 last_seen 新到舊。
 
     today 已有一筆 source=="tag" → []；members 空 → []；theme_rows 的每一列需
-    last_seen 在 window_days 內、sensitive is False、room_veto 不是 True、
+    last_seen 在 window_days 內、sensitive is False、songable is True、room_veto 不是 True、
     members ⊆ heard_by、tag 不在 used_tags_14d 內。
     """
     if used_tag_today or not members:
@@ -295,6 +300,8 @@ def qualifying_theme_tags(theme_rows: list[dict], members: list[str], now: float
         if row.get("last_seen", 0) < cutoff:
             continue
         if row.get("sensitive") is not False:
+            continue
+        if row.get("songable") is not True:
             continue
         if row.get("room_veto") is True:
             continue
@@ -329,9 +336,13 @@ def build_card_prompt(artist: str, title: str) -> tuple[str, str]:
 
 
 _MEANING_SYS_PROMPT = (
-    "你是語言學助理。針對一個中文詞彙／話題 tag，寫出「字典本義＋延伸義」（一兩句），"
-    "並判斷這個話題是否觸及健康、喪親、感情、衝突、金錢糾紛等敏感事。只回傳 JSON：\n"
-    '{"meaning":"字典本義；延伸：...","sensitive":true或false}'
+    "你是語言學助理。針對一個中文話題 tag：\n"
+    "1. 寫出「字典本義＋延伸義」（一兩句）。\n"
+    "2. 判斷這個話題有沒有生活或情感層面、能用一首歌的故事去呼應（songable）。\n"
+    "   日常生活經驗、人生階段、人際關係、地方與移動 → true（例：露營、搬家、養狗、旅行、宵夜）；\n"
+    "   純遊戲機制、技術故障、軟硬體規格、工作流程細節 → false（例：bug、裝備升級、登入問題、遊戲攻略、開發板）。\n"
+    "3. 判斷是否觸及健康、喪親、感情、衝突、金錢糾紛等敏感事（sensitive）。\n"
+    "只回傳 JSON：{\"meaning\":\"字典本義；延伸：...\",\"songable\":true或false,\"sensitive\":true或false}"
 )
 
 
@@ -353,10 +364,11 @@ def build_room_veto_prompt(tag: str, transcript_lines: list[str]) -> tuple[str, 
 
 
 _MATCH_SYS_PROMPT = (
-    "你是電台選曲者。根據一個話題的釋義，從下面編號過的歌卡清單中選出最多 5 首「故事層」"
-    "呼應這個話題的歌——要看歌卡的意象與深層故事是否呼應話題的延伸義，不准只靠字面。"
+    "你是電台選曲者。根據一個話題的釋義，從下面編號過的歌卡清單中，挑出「故事層」真的呼應這個話題的歌"
+    "（最多 5 首）——看歌卡的意象與深層故事是否呼應話題的本義或延伸義，不准只靠字面，也不准牽強附會。"
+    "寧缺勿濫：沒有真的呼應的歌就回空陣列 {\"picks\":[]}，這是完全正常的結果。"
     "只能用清單裡的編號，絕對不准自己寫歌名。只回傳 JSON：\n"
-    '{"picks":[{"index":編號,"layer":"意象或深層或兩者"}, ...]}（最多 5 個）'
+    '{"picks":[{"index":編號,"layer":"意象或深層或兩者"}, ...]}'
 )
 
 
