@@ -333,3 +333,71 @@ def test_local_associative_candidates_respects_limit():
         songs, members=["showay"], exclude_titles=[], excluded_vids=set(), limit=1,
     )
     assert [display for display, _ in result] == ["artistB - 歌B"]
+
+
+# ── 主題連結 MVP：build_associative_prompt(themes=) 驗收 6 ──────────────────
+
+def _fixed_prompt_inputs():
+    return dict(
+        utterances=[
+            {"speaker": "狗與露", "text": "手機錢包鑰匙煙"},
+            {"speaker": "showay", "text": "還有打火機"},
+        ],
+        core_artists=["美秀集團", "告五人"],
+        exclude_titles=["捲菸"],
+        members=["狗與露", "showay"],
+    )
+
+
+def test_build_associative_prompt_no_themes_is_byte_identical_to_before():
+    inputs = _fixed_prompt_inputs()
+    sys_p, user_p = build_associative_prompt(**inputs)
+    sys_p2, user_p2 = build_associative_prompt(**inputs, themes=None)
+    sys_p3, user_p3 = build_associative_prompt(**inputs, themes=[])
+
+    assert sys_p == _ASSOCIATIVE_SYS_PROMPT
+    assert sys_p2 == _ASSOCIATIVE_SYS_PROMPT
+    assert sys_p3 == _ASSOCIATIVE_SYS_PROMPT
+    assert user_p == user_p2 == user_p3
+    assert "最近大家反覆聊到的話題" not in user_p
+
+
+def test_build_associative_prompt_with_themes_adds_block_and_rule():
+    inputs = _fixed_prompt_inputs()
+    sys_p, user_p = build_associative_prompt(**inputs, themes=[("露營", "戶外過夜；延伸：遠離城市")])
+
+    assert sys_p != _ASSOCIATIVE_SYS_PROMPT
+    assert "source" in sys_p
+    assert "tag:" in sys_p
+    assert "最近大家反覆聊到的話題" in user_p
+    assert "露營：戶外過夜；延伸：遠離城市" in user_p
+
+
+# ── parse_associative_picks(allowed_tags=) 驗收 7 ───────────────────────────
+
+def test_parse_associative_picks_source_tag_kept_when_allowed_and_local():
+    raw = '{"picks": [{"artist": "A", "song": "歌A", "local": 0, "source": "tag:露營", "dj_line": "x"}]}'
+    picks = parse_associative_picks(raw, n_local=1, allowed_tags={"露營"})
+    assert len(picks) == 1
+    assert picks[0].source == "tag"
+    assert picks[0].tag == "露營"
+
+
+def test_parse_associative_picks_source_tag_dropped_when_not_allowed():
+    raw = '{"picks": [{"artist": "A", "song": "歌A", "local": 0, "source": "tag:搬家", "dj_line": "x"}]}'
+    picks = parse_associative_picks(raw, n_local=1, allowed_tags={"露營"})
+    assert picks == []
+
+
+def test_parse_associative_picks_source_tag_dropped_when_no_local():
+    raw = '{"picks": [{"artist": "A", "song": "歌A", "source": "tag:露營", "dj_line": "x"}]}'
+    picks = parse_associative_picks(raw, n_local=0, allowed_tags={"露營"})
+    assert picks == []
+
+
+def test_parse_associative_picks_missing_source_defaults_now():
+    raw = '{"picks": [{"artist": "A", "song": "歌A", "dj_line": "x"}]}'
+    picks = parse_associative_picks(raw, n_local=0, allowed_tags={"露營"})
+    assert len(picks) == 1
+    assert picks[0].source == "now"
+    assert picks[0].tag == ""
