@@ -286,3 +286,31 @@ def test_merge_theme_picks_into_local_truncates_from_tail():
     local_cands = [(f"local{i}", {}) for i in range(5)]
     merged = merge_theme_picks_into_local(theme_entries, local_cands, limit=3)
     assert merged == [("theme", {}), ("local0", {}), ("local1", {})]
+
+
+# ── 補：把敏感 / room_veto 跟在場閘門隔開測（原測試那兩列 heard_by 缺人，靠在場閘門就被擋，
+#    sensitive / room_veto 的判斷本身沒被驗到；10/27 mutation check 抓到）──────────────
+
+def _full_presence_row(tag, **kw):
+    row = {"tag": tag, "meaning": "m", "sensitive": False, "room_veto": None,
+           "heard_by": ["showay", "大肚"], "last_seen": 99000.0}
+    row.update(kw)
+    return row
+
+
+def test_qualifying_theme_tags_sensitive_missing_or_none_is_excluded():
+    rows = [_full_presence_row("缺欄"), _full_presence_row("None", sensitive=None)]
+    del rows[0]["sensitive"]
+    assert qualifying_theme_tags(rows, members=["showay", "大肚"], now=100000.0,
+                                 used_tags_14d=set(), used_tag_today=False) == []
+
+
+def test_qualifying_theme_tags_room_veto_true_is_excluded_even_with_full_presence():
+    rows = [_full_presence_row("被房間擋", room_veto=True), _full_presence_row("合格")]
+    assert qualifying_theme_tags(rows, members=["showay", "大肚"], now=100000.0,
+                                 used_tags_14d=set(), used_tag_today=False) == [("合格", "m")]
+
+
+def test_theme_picks_drops_negative_index():
+    raw = '{"picks": [{"index": -1, "layer": "意象"}, {"index": 1, "layer": "深層"}]}'
+    assert parse_theme_picks(raw, n_cards=3) == [(1, "深層")]
