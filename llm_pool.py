@@ -498,14 +498,24 @@ async def call_paid_review(
     status: Optional[dict] = None,
     model: Optional[str] = None,
     response_schema: Optional[dict] = None,
+    guard: Optional["PaidUsageGuard"] = None,
 ) -> Optional[str]:
     """付費 Gemini 大型 batch 呼叫（genai 原生 SDK + thinking_budget=0 + JSON mode）；
     model fallback + cooldown + timeout 走 bus 既有 dispatch。回 raw 字串；全 model 失敗回 None。
     caller：成本記帳標籤（寫 records/llm_paid_usage.jsonl，讓帳單看得見是誰花的）。
     status：可選 out-param dict。全 model 失敗時填 status["reason"]——"budget_cap"（撞付費
-    月度 spending cap = 不夠預算）或 "exhausted"（其他額度/連線失敗），讓 caller 寫清楚原因。
+    月度 spending cap = 不夠預算）、"guard_cap"（本地守門額度用完，沒有發出呼叫）或
+    "exhausted"（其他額度/連線失敗），讓 caller 寫清楚原因。
     model：這次優先用的 model（其後仍接預設 fallback）；response_schema：生成時就約束 JSON 形狀
-    （例如陣列 maxItems）。兩者不傳＝行為不變（2026-10-23 daily review 改 3.1-flash-lite＋schema 加的）。"""
+    （例如陣列 maxItems）。兩者不傳＝行為不變（2026-10-23 daily review 改 3.1-flash-lite＋schema 加的）。
+    guard：不傳則依 caller 用 llm_paid.guard_for_caller 取得（daily_review 等有專用額度）。"""
+    if guard is None:
+        from llm_paid import guard_for_caller
+        guard = guard_for_caller(caller)
+    if not guard.allow(0.0):  # 0.0＝只問「是否已經超額」；實際花費仍由 _record_paid_usage 事後記
+        if status is not None:
+            status["reason"] = "guard_cap"
+        return None
     if pool is None:
         pool = build_paid_review_pool(env={**os.environ, "MARVIN_REVIEW_MODEL": model} if model else None)
     saw_budget_cap = {"v": False}
