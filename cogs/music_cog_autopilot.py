@@ -31,6 +31,7 @@ _TASTE_PROFILE_CACHE = "records/taste_profiles.json"
 _TASTE_FINGERPRINT_CACHE = "records/taste_fingerprint.json"
 _SONG_BPM_STORE = "records/song_bpm.json"
 _ASSOCIATIVE_LLM_TIMEOUT_S = 20.0  # 關聯選曲 LLM 硬上限：空佇列時跑，不能讓頻道靜音太久
+_THEME_LINK_DB_PATH = "marvin.db"  # 模組常數讓測試可 monkeypatch，正式環境固定 repo 根目錄的 marvin.db
 
 
 class MusicAutopilotMixin:
@@ -427,6 +428,126 @@ class MusicAutopilotMixin:
             return False
         return True
 
+    # ── 🧭 主題連結（docs/designs/theme-link-mvp.md B 段）──────────────────
+
+    def _load_qualifying_theme_tags(self, members: list, now: float) -> list[tuple[str, str]]:
+        """讀 marvin.db theme_tags（唯讀）＋ associative_picks.jsonl 歷史，算出這次能給的
+        合格 tag（最多 3 個）。env THEME_LINK 關掉、讀表失敗（表不存在等）都 fail-open 回 []，
+        行為等同沒有主題連結。"""
+        if os.getenv("THEME_LINK", "on").strip().lower() in ("off", "0", "false", "no"):
+            return []
+
+        import json as _json
+        import sqlite3
+
+        from associative_history import has_tag_pick_today, tags_used_within
+        from theme_link import LOOKBACK_DAYS, qualifying_theme_tags
+
+        used_tag_today = has_tag_pick_today(now)
+        if used_tag_today:
+            logger.info("🧭 [ThemeLink] 今天已有一筆主題連結，這次不給 tag")
+            return []
+        used_tags_14d = tags_used_within(now)
+
+        try:
+            con = sqlite3.connect(f"file:{_THEME_LINK_DB_PATH}?mode=ro", uri=True)
+            try:
+                rows = con.execute(
+                    "SELECT tag, meaning, sensitive, room_veto, heard_by, last_seen FROM theme_tags"
+                ).fetchall()
+            finally:
+                con.close()
+        except Exception:
+            logger.debug("🧭 [ThemeLink] 讀 theme_tags 失敗，當作沒有合格 tag", exc_info=True)
+            return []
+
+        theme_rows = [
+            {"tag": r[0], "meaning": r[1], "sensitive": bool(r[2]),
+             "room_veto": (None if r[3] is None else bool(r[3])),
+             "heard_by": _json.loads(r[4] or "[]"), "last_seen": r[5]}
+            for r in rows
+        ]
+
+        cutoff = now - LOOKBACK_DAYS * 86400
+        window_ok = [r for r in theme_rows if r["last_seen"] >= cutoff
+                     and r["sensitive"] is False and r["room_veto"] is not True]
+        blocked_14d = sum(1 for r in window_ok if r["tag"] in used_tags_14d)
+        member_set = set(members)
+        blocked_presence = sum(
+            1 for r in window_ok
+            if r["tag"] not in used_tags_14d and not member_set.issubset(set(r["heard_by"]))
+        )
+
+        qualifying = qualifying_theme_tags(theme_rows, members, now, used_tags_14d, used_tag_today)
+        logger.info(f"🧭 [ThemeLink] 合格 tag {len(qualifying)} 個")
+        logger.info(f"🧭 [ThemeLink] 在場閘門擋下 {blocked_presence} 個")
+        logger.info(f"🧭 [ThemeLink] 14 天內用過擋下 {blocked_14d} 個")
+        return qualifying
+
+    def _theme_entries_for_tags(self, qualifying: list[tuple[str, str]], mm,
+                                exclude_titles: list, excluded_vids: set) -> list[tuple[str, dict]]:
+        """合格 tag 的 theme_picks（依 rank）解成 music_memory entry，經同一組排除
+        （exclude_titles、skipped、7 天內播過）；有歌卡時顯示行附意象／故事（各截 40 字）。
+        讀表失敗 → fail-open 回 []（跟現有 local_cands 一起走一般流程）。"""
+        if not qualifying or not mm:
+            return []
+
+        import sqlite3
+
+        from song_name_clean import dj_display_name
+
+        songs = mm.all_songs() or {}
+        vid_to_entry: dict[str, dict] = {}
+        for entry in songs.values():
+            if not isinstance(entry, dict):
+                continue
+            vid = extract_video_id(entry.get("webpage_url") or entry.get("url") or "") or ""
+            if vid:
+                vid_to_entry[vid] = entry
+
+        excluded_norm_titles = {normalize_title(t) for t in exclude_titles}
+
+        try:
+            con = sqlite3.connect(f"file:{_THEME_LINK_DB_PATH}?mode=ro", uri=True)
+        except Exception:
+            logger.debug("🧭 [ThemeLink] 開 marvin.db 失敗，theme_picks 跳過", exc_info=True)
+            return []
+
+        entries: list[tuple[str, dict]] = []
+        seen_vid: set[str] = set()
+        try:
+            for tag, _meaning in qualifying:
+                try:
+                    rows = con.execute(
+                        "SELECT video_id FROM theme_picks WHERE tag=? ORDER BY rank", (tag,)
+                    ).fetchall()
+                except Exception:
+                    continue
+                for (vid,) in rows:
+                    if vid in seen_vid or vid in excluded_vids:
+                        continue
+                    entry = vid_to_entry.get(vid)
+                    if entry is None:
+                        continue
+                    if normalize_title(entry.get("title", "")) in excluded_norm_titles:
+                        continue
+                    seen_vid.add(vid)
+
+                    title, artist = dj_display_name(entry, extract_vid=extract_video_id)
+                    display = f"{artist} - {title}" if artist else title
+                    try:
+                        card = con.execute(
+                            "SELECT imagery, deep_story FROM song_cards WHERE video_id=?", (vid,)
+                        ).fetchone()
+                    except Exception:
+                        card = None
+                    if card and (card[0] or card[1]):
+                        display = f"{display}｜意象：{(card[0] or '')[:40]}｜故事：{(card[1] or '')[:40]}"
+                    entries.append((display, entry))
+        finally:
+            con.close()
+        return entries
+
     async def _try_associative_pick(self, members: list, exclude_titles: list,
                                    spotlight: str, mm) -> int:
         """嘗試從近期對話中挑選 1 首關聯神曲入隊。回入隊首數（0 = 沒做 → caller 走一般流程）。"""
@@ -435,11 +556,12 @@ class MusicAutopilotMixin:
             return 0
 
         try:
-            from associative_curation import curate_associative_song, local_associative_candidates
+            from associative_curation import LOCAL_POOL_LIMIT, curate_associative_song, local_associative_candidates
             from associative_history import append_pick, is_repeat, is_resolved_repeat, load_recent_picks
             from music_recommender import is_already_recommended, ring_titles_for
             from track_quality import is_non_song_video
             from llm_pool import call_paid_review
+            from theme_link import merge_theme_picks_into_local
 
             # 1. 抓取近期對話
             utts = []
@@ -452,7 +574,11 @@ class MusicAutopilotMixin:
                     utts = [{'speaker': e.speaker, 'text': e.text} for e in atm._window]
 
             utts = [u for u in utts if u.get('speaker') != 'Marvin' and u.get('text', '').strip()]
-            if len(utts) < 2:
+
+            # 🧭 主題連結（見 docs/designs/theme-link-mvp.md B 段）：合格 tag 存在時，
+            # 對話不足 2 句也可以呼叫（本地歌單已經有話題歌可選）。
+            qualifying_tags = self._load_qualifying_theme_tags(members, now)
+            if len(utts) < 2 and not qualifying_tags:
                 return 0
 
             # 不管 LLM / 搜尋 / 品質閘成敗都先冷卻，避免每輪 refill 重打付費 LLM（同 StatePick）
@@ -471,6 +597,8 @@ class MusicAutopilotMixin:
                 _excl_vids = set()
             local_cands = local_associative_candidates(
                 mm.all_songs() if mm else {}, members, exclude_titles, _excl_vids)
+            theme_entries = self._theme_entries_for_tags(qualifying_tags, mm, exclude_titles, _excl_vids)
+            local_cands = merge_theme_picks_into_local(theme_entries, local_cands, LOCAL_POOL_LIMIT)
             # 日記氣氛只內化（選歌可受影響，dj_line 不准講破，見 dj_mood_hint.py）
             _mood_hint, _mood_names = "", set(members)
             try:
@@ -494,6 +622,8 @@ class MusicAutopilotMixin:
                         recent_picks=recent_picks,
                         local_titles=[d for d, _ in local_cands],
                         mood_hint=_mood_hint,
+                        themes=qualifying_tags or None,
+                        min_utterances=(0 if qualifying_tags else 2),
                     ),
                     timeout=_ASSOCIATIVE_LLM_TIMEOUT_S,
                 )
@@ -555,8 +685,14 @@ class MusicAutopilotMixin:
                 _dj_line = ""
 
             # 6. 標註欄位並入隊
-            info['requested_by'] = "Marvin推薦（對話靈感）"
-            info['_lane'] = 'associative'
+            if pick.source == "tag":
+                info['requested_by'] = "Marvin推薦（點給大家）"
+                info['_lane'] = 'theme'
+                info['_theme_tag'] = pick.tag
+                _dj_line = ""  # 主題連結只放歌不開口
+            else:
+                info['requested_by'] = "Marvin推薦（對話靈感）"
+                info['_lane'] = 'associative'
             info['_spotlight'] = spotlight
             info['_dj_line'] = _dj_line
             info['_target_lyric'] = pick.target_lyric
@@ -564,14 +700,16 @@ class MusicAutopilotMixin:
             info['_round_first'] = True
 
             self.stream_queue.append(info)
-            append_pick(pick.artist, pick.song, now, title=info.get('title', ''), video_id=_vid)
+            append_pick(pick.artist, pick.song, now, title=info.get('title', ''), video_id=_vid,
+                       source=pick.source, tag=pick.tag)
             for _rt in ring_titles_for(info.get('title', ''), 'direct', info.get('title', '')):
                 if mm:
                     mm.add_recent_recommendation(_rt)
             self._republish_queue_snapshot()
+            _src_suffix = f" source=tag:{pick.tag}" if pick.source == "tag" else " source=now"
             logger.info(
                 f"🎵 [AssociativePick] 成功入隊《{info.get('title')}》"
-                f"（{'本地' if pick.local_index is not None else '提名'}，話題: {pick.observed_topic}）"
+                f"（{'本地' if pick.local_index is not None else '提名'}，話題: {pick.observed_topic}）{_src_suffix}"
             )
             return 1
         except Exception:

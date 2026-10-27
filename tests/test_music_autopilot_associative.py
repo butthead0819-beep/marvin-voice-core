@@ -55,6 +55,14 @@ class DummyAutopilotHost(MusicDJLyricsMixin):
         from cogs.music_cog_autopilot import MusicAutopilotMixin
         return await MusicAutopilotMixin._try_associative_pick(self, members, exclude_titles, spotlight, mm)
 
+    def _load_qualifying_theme_tags(self, members, now):
+        from cogs.music_cog_autopilot import MusicAutopilotMixin
+        return MusicAutopilotMixin._load_qualifying_theme_tags(self, members, now)
+
+    def _theme_entries_for_tags(self, qualifying, mm, exclude_titles, excluded_vids):
+        from cogs.music_cog_autopilot import MusicAutopilotMixin
+        return MusicAutopilotMixin._theme_entries_for_tags(self, qualifying, mm, exclude_titles, excluded_vids)
+
 
 @pytest.mark.asyncio
 async def test_associative_gate_cooldown():
@@ -604,3 +612,253 @@ async def test_curate_called_with_local_titles_and_mood_hint_kwargs(monkeypatch)
 
     assert mock_fn.await_args.kwargs["local_titles"] == ["本地歌手 - 本地老歌"]
     assert mock_fn.await_args.kwargs["mood_hint"] == "戲謔爭執"
+
+
+# ── 🧭 主題連結（theme-link-mvp.md B 段）驗收 8/9 ───────────────────────────
+
+import sqlite3
+
+import cogs.music_cog_autopilot as _autopilot_mod
+
+
+def _init_theme_db(path):
+    con = sqlite3.connect(str(path))
+    con.execute("""
+        CREATE TABLE theme_tags (
+            tag TEXT PRIMARY KEY, meaning TEXT, sensitive INTEGER, room_veto INTEGER,
+            heard_by TEXT, first_seen REAL, last_seen REAL, day_count INTEGER, updated_at REAL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE theme_picks (tag TEXT, video_id TEXT, rank INTEGER, layer TEXT,
+                                   PRIMARY KEY (tag, video_id))
+    """)
+    con.execute("""
+        CREATE TABLE song_cards (video_id TEXT PRIMARY KEY, artist TEXT, title TEXT,
+                                  imagery TEXT, deep_story TEXT, relation TEXT, weight TEXT,
+                                  familiarity TEXT, created_at REAL)
+    """)
+    con.commit()
+    return con
+
+
+@pytest.fixture
+def theme_db(tmp_path, monkeypatch):
+    db_path = tmp_path / "theme_marvin.db"
+    con = _init_theme_db(db_path)
+    monkeypatch.setattr(_autopilot_mod, "_THEME_LINK_DB_PATH", str(db_path))
+    yield con
+    con.close()
+
+
+def _insert_theme_tag(con, tag, *, meaning="戶外過夜；延伸：遠離城市", sensitive=0, room_veto=None,
+                      heard_by=None, last_seen=None):
+    con.execute(
+        "INSERT OR REPLACE INTO theme_tags (tag, meaning, sensitive, room_veto, heard_by, "
+        "first_seen, last_seen, day_count, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (tag, meaning, sensitive, room_veto, __import__("json").dumps(heard_by or []),
+         last_seen or time.time(), last_seen or time.time(), 2, time.time()),
+    )
+    con.commit()
+
+
+def test_theme_link_off_skips_db_read(monkeypatch, theme_db):
+    monkeypatch.setenv("THEME_LINK", "off")
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay"])
+    host = DummyAutopilotHost()
+
+    qualifying = host._load_qualifying_theme_tags(["showay"], time.time())
+    assert qualifying == []
+
+
+@pytest.mark.asyncio
+async def test_theme_link_off_prompt_has_no_theme_kwarg(monkeypatch, theme_db):
+    monkeypatch.setenv("THEME_LINK", "off")
+    monkeypatch.setenv("ASSOCIATIVE_CURATION", "on")
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay"])
+    host = DummyAutopilotHost()
+
+    mock_fn = AsyncMock(return_value=[])
+    with patch("associative_curation.curate_associative_song", mock_fn):
+        await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=None)
+
+    assert mock_fn.await_args.kwargs["themes"] is None
+
+
+@pytest.mark.asyncio
+async def test_today_already_used_tag_gives_no_qualifying_tags(theme_db):
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay"])
+    associative_history.append_pick("A", "歌A", time.time(), source="tag", tag="搬家")
+    host = DummyAutopilotHost()
+
+    qualifying = host._load_qualifying_theme_tags(["showay"], time.time())
+    assert qualifying == []
+
+
+@pytest.mark.asyncio
+async def test_tag_used_within_14_days_excluded(theme_db):
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay"])
+    associative_history.append_pick("A", "歌A", time.time() - 86400, source="tag", tag="露營")
+    host = DummyAutopilotHost()
+
+    qualifying = host._load_qualifying_theme_tags(["showay"], time.time())
+    assert qualifying == []
+
+
+@pytest.mark.asyncio
+async def test_member_not_in_heard_by_excludes_tag(theme_db):
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay"])  # 大肚不在 heard_by
+    host = DummyAutopilotHost()
+
+    qualifying = host._load_qualifying_theme_tags(["showay", "大肚"], time.time())
+    assert qualifying == []
+
+
+@pytest.mark.asyncio
+async def test_qualifying_tag_found_when_all_members_in_heard_by(theme_db):
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay", "大肚"])
+    host = DummyAutopilotHost()
+
+    qualifying = host._load_qualifying_theme_tags(["showay", "大肚"], time.time())
+    assert qualifying == [("露營", "戶外過夜；延伸：遠離城市")]
+
+
+@pytest.mark.asyncio
+async def test_zero_utterances_with_qualifying_tag_still_calls_llm(theme_db):
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay"])
+    host = DummyAutopilotHost()
+    host.bot.engine.conv_buffer.get_last_n_utterances.return_value = []  # 0 句對話
+
+    mock_fn = AsyncMock(return_value=[])
+    with patch("associative_curation.curate_associative_song", mock_fn):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                             spotlight="showay", mm=None)
+
+    assert mock_fn.await_count == 1
+    assert mock_fn.await_args.kwargs["min_utterances"] == 0
+    assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_zero_utterances_without_qualifying_tag_returns_zero_without_calling_llm(theme_db):
+    host = DummyAutopilotHost()
+    host.bot.engine.conv_buffer.get_last_n_utterances.return_value = []  # 0 句對話，沒有合格 tag
+
+    mock_fn = AsyncMock(return_value=[])
+    with patch("associative_curation.curate_associative_song", mock_fn):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                             spotlight="showay", mm=None)
+
+    assert n == 0
+    assert mock_fn.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_theme_pick_enqueues_with_no_dj_line_and_group_attribution(theme_db):
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay", "狗與露"])
+    theme_db.execute(
+        "INSERT INTO song_cards (video_id, artist, title, imagery, deep_story, relation, weight, "
+        "familiarity, created_at) VALUES ('AAAAAAAAAAA','美秀集團','手機錢包鑰匙菸','海邊露營','深夜聊天','朋友','中','高',0)"
+    )
+    theme_db.execute("INSERT INTO theme_picks (tag, video_id, rank, layer) VALUES ('露營','AAAAAAAAAAA',0,'深層')")
+    theme_db.commit()
+
+    host = DummyAutopilotHost()
+    mm = MagicMock()
+    mm.get_skipped_video_ids.return_value = set()
+    mm.get_recently_played_video_ids.return_value = set()
+    mm.all_songs.return_value = {
+        "k1": {"title": "手機錢包鑰匙菸", "artist": "美秀集團", "track": "手機錢包鑰匙菸",
+               "requesters": {"showay": 1}, "total_plays": 5,
+               "webpage_url": "https://www.youtube.com/watch?v=AAAAAAAAAAA"},
+    }
+
+    mock_pick = AssociativePick(
+        observed_topic="露營", target_lyric="手機錢包鑰匙菸", artist="美秀集團",
+        song="手機錢包鑰匙菸", reason="呼應露營話題", dj_line="這句不該被講出來",
+        local_index=0, source="tag", tag="露營",
+    )
+
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[mock_pick])):
+        n = await host._try_associative_pick(members=["showay", "狗與露"], exclude_titles=[],
+                                             spotlight="showay", mm=mm)
+
+    assert n == 1
+    info = host.stream_queue[0]
+    assert info["_dj_line"] == ""
+    assert info["requested_by"] == "Marvin推薦（點給大家）"
+    assert info["_lane"] == "theme"
+    assert info["_theme_tag"] == "露營"
+
+    lines = associative_history.HISTORY_PATH.read_text(encoding="utf-8").splitlines()
+    import json as _json
+    rec = _json.loads(lines[-1])
+    assert rec["source"] == "tag"
+    assert rec["tag"] == "露營"
+
+
+@pytest.mark.asyncio
+async def test_now_source_pick_keeps_old_behavior(theme_db):
+    """LLM 回 source=now（即使有合格 tag 在場）→ requested_by/dj_line 跟改動前一樣。"""
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay"])
+    host = DummyAutopilotHost()
+    mm = MagicMock()
+    mm.get_skipped_video_ids.return_value = set()
+    mm.get_recently_played_video_ids.return_value = set()
+
+    mock_pick = AssociativePick(
+        observed_topic="出門口訣被偷", target_lyric="手機錢包鑰匙菸", artist="美秀集團",
+        song="手機錢包鑰匙菸", reason="聊到出門口訣",
+        dj_line="剛才聽showay抱怨出門默念的口訣被樂團偷去寫歌，這首奉上。",
+        source="now",
+    )
+
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[mock_pick])):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                             spotlight="showay", mm=mm)
+
+    assert n == 1
+    info = host.stream_queue[0]
+    assert info["requested_by"] == "Marvin推薦（對話靈感）"
+    assert info["_dj_line"] == mock_pick.dj_line
+    assert info["_lane"] == "associative"
+
+
+@pytest.mark.asyncio
+async def test_theme_entries_prepended_before_local_cands_and_capped(theme_db):
+    from associative_curation import LOCAL_POOL_LIMIT
+
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay"])
+    theme_db.execute(
+        "INSERT INTO song_cards (video_id, artist, title, imagery, deep_story, relation, weight, "
+        "familiarity, created_at) VALUES ('AAAAAAAAAAA','美秀集團','手機錢包鑰匙菸','海邊露營','深夜聊天','朋友','中','高',0)"
+    )
+    theme_db.execute("INSERT INTO theme_picks (tag, video_id, rank, layer) VALUES ('露營','AAAAAAAAAAA',0,'深層')")
+    theme_db.commit()
+
+    host = DummyAutopilotHost()
+    songs = {
+        "k1": {"title": "手機錢包鑰匙菸", "artist": "美秀集團", "track": "手機錢包鑰匙菸",
+               "requesters": {"showay": 1}, "total_plays": 999,
+               "webpage_url": "https://www.youtube.com/watch?v=AAAAAAAAAAA"},
+    }
+    for i in range(50):
+        vid = f"{i:011d}".replace("0", "B")[:11]
+        songs[f"local{i}"] = {
+            "title": f"本地歌{i}", "artist": "本地歌手", "track": f"本地歌{i}",
+            "requesters": {"showay": 1}, "total_plays": 1,
+            "webpage_url": f"https://www.youtube.com/watch?v={vid}",
+        }
+    mm = MagicMock()
+    mm.get_skipped_video_ids.return_value = set()
+    mm.get_recently_played_video_ids.return_value = set()
+    mm.all_songs.return_value = songs
+
+    mock_fn = AsyncMock(return_value=[])
+    with patch("associative_curation.curate_associative_song", mock_fn):
+        await host._try_associative_pick(members=["showay"], exclude_titles=[], spotlight="showay", mm=mm)
+
+    local_titles = mock_fn.await_args.kwargs["local_titles"]
+    assert len(local_titles) <= LOCAL_POOL_LIMIT
+    assert "意象：海邊露營" in local_titles[0]
+    assert local_titles[0].startswith("美秀集團 - 手機錢包鑰匙菸")
