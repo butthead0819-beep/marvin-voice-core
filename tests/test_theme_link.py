@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from theme_link import (
+    build_upgrade_card_prompt,
     collect_tag_occurrences,
     eligible_tags,
     merge_theme_picks_into_local,
@@ -348,3 +349,11 @@ def test_qualifying_theme_tags_songable_missing_or_false_is_excluded():
 def test_theme_picks_drops_negative_index():
     raw = '{"picks": [{"index": -1, "layer": "意象"}, {"index": 1, "layer": "深層"}]}'
     assert parse_theme_picks(raw, n_cards=3) == [(1, "深層")]
+
+
+# ── 付費升級卡 prompt ────────────────────────────────────────────────────────
+
+def test_build_upgrade_card_prompt_system_mentions_search_and_user_has_names():
+    sys_p, user_p = build_upgrade_card_prompt("曹格", "背叛")
+    assert "搜尋" in sys_p
+    assert "曹格" in user_p and "背叛" in user_p

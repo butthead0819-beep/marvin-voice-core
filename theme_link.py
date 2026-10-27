@@ -335,6 +335,22 @@ def build_card_prompt(artist: str, title: str) -> tuple[str, str]:
     return _CARD_SYS_PROMPT, user_prompt
 
 
+_UPGRADE_CARD_SYS_PROMPT = (
+    "你是音樂資料員。用搜尋找這首歌的創作背景、歌詞與可靠解讀，寫這首歌的故事卡——"
+    "只寫搜尋到的內容，查不到的欄位寫「不確定」，不准用自己的印象補。只回傳 JSON：\n"
+    '{"imagery":"意象（地名/場景/動作，20字內）",'
+    '"deep_story":"創作背景或深層故事（一兩句；不確定就填「不確定」）",'
+    '"relation":"這首歌適合呼應的人際/生活關係（10字內）",'
+    '"weight":"情緒重量：重＝死亡、喪親、重病、自殺、戰爭離散等沉重題材；一般失戀、思念、遺憾＝中；輕快日常＝輕。只回 輕|中|重",'
+    '"familiarity":"你對這首歌的熟悉程度，高|中|低"}'
+)
+
+
+def build_upgrade_card_prompt(artist: str, title: str) -> tuple[str, str]:
+    _, user_prompt = build_card_prompt(artist, title)
+    return _UPGRADE_CARD_SYS_PROMPT, user_prompt
+
+
 _MEANING_SYS_PROMPT = (
     "你是語言學助理。針對一個中文話題 tag：\n"
     "1. 寫出「字典本義＋延伸義」（一兩句）。\n"
