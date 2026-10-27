@@ -10,9 +10,12 @@ from dataclasses import dataclass, field
 
 import pytest
 
+import scripts.build_theme_links as build_theme_links
 from scripts.build_theme_links import (
     compute_heard_by,
     init_tables,
+    load_canon_names,
+    load_presence_events,
     run_card_phase,
     run_match_phase,
     run_theme_phase,
@@ -209,8 +212,8 @@ async def test_run_match_phase_skips_llm_when_no_candidates(con):
 @pytest.mark.asyncio
 async def test_run_match_phase_parses_picks_and_stores(con):
     con.execute(
-        "INSERT INTO theme_tags (tag, meaning, sensitive, room_veto, heard_by, first_seen, last_seen, "
-        "day_count, updated_at) VALUES ('旅行','離開熟悉的地方',0,0,'[]',0,0,2,0)"
+        "INSERT INTO theme_tags (tag, meaning, sensitive, songable, room_veto, heard_by, first_seen, "
+        "last_seen, day_count, updated_at) VALUES ('旅行','離開熟悉的地方',0,1,0,'[]',0,0,2,0)"
     )
     con.execute(
         "INSERT INTO song_cards (video_id, artist, title, imagery, deep_story, relation, weight, "
@@ -310,8 +313,8 @@ async def test_theme_phase_room_veto_none_writes_no_row(con):
 
 @pytest.mark.asyncio
 async def test_match_phase_none_writes_no_picks(con):
-    con.execute("INSERT INTO theme_tags (tag, meaning, sensitive, room_veto, heard_by, first_seen, "
-                "last_seen, day_count, updated_at) VALUES ('露營','戶外過夜',0,NULL,'[]',0,0,2,0)")
+    con.execute("INSERT INTO theme_tags (tag, meaning, sensitive, songable, room_veto, heard_by, first_seen, "
+                "last_seen, day_count, updated_at) VALUES ('露營','戶外過夜',0,1,NULL,'[]',0,0,2,0)")
     con.execute("INSERT INTO song_cards (video_id, artist, title, imagery, deep_story, relation, weight, "
                 "familiarity, created_at) VALUES ('VID00000000','A','歌','山','露營','朋友','輕','高',0)")
     con.commit()
@@ -320,6 +323,141 @@ async def test_match_phase_none_writes_no_picks(con):
     assert matched == 0
     assert con.execute("SELECT COUNT(*) FROM theme_picks").fetchone()[0] == 0
     assert len(router.calls) == 1
+
+
+# ── init_tables：舊表（沒有 songable 欄）補欄位 ─────────────────────────────
+
+def test_init_tables_adds_songable_column_to_old_table(tmp_path):
+    c = sqlite3.connect(str(tmp_path / "old.db"))
+    c.execute("""
+        CREATE TABLE theme_tags (
+            tag TEXT PRIMARY KEY, meaning TEXT, sensitive INTEGER, room_veto INTEGER,
+            heard_by TEXT, first_seen REAL, last_seen REAL, day_count INTEGER, updated_at REAL
+        )
+    """)
+    c.commit()
+    init_tables(c)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(theme_tags)")}
+    assert "songable" in cols
+    init_tables(c)  # 重複呼叫不報錯
+    c.close()
+
+
+# ── load_canon_names ─────────────────────────────────────────────────────
+
+def test_load_canon_names_missing_file_returns_empty(tmp_path):
+    assert load_canon_names(tmp_path / "nope.json") == {}
+
+
+def test_load_canon_names_only_canon_prefix_and_nonempty(tmp_path):
+    path = tmp_path / "song_knowledge.json"
+    path.write_text(json.dumps({
+        "canon::AAAAAAAAAAA": {"artist": "陳綺貞", "title": "旅行的意義"},
+        "canon::BBBBBBBBBBB": {"artist": "", "title": "缺歌手"},
+        "not_canon::CCCCCCCCCCC": {"artist": "x", "title": "y"},
+    }), encoding="utf-8")
+    result = load_canon_names(path)
+    assert result == {"AAAAAAAAAAA": ("陳綺貞", "旅行的意義")}
+
+
+def test_load_canon_names_malformed_json_returns_empty(tmp_path):
+    path = tmp_path / "song_knowledge.json"
+    path.write_text("這不是 JSON", encoding="utf-8")
+    assert load_canon_names(path) == {}
+
+
+# ── 歌卡：canon 命中時用正規化歌名歌手 ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_card_phase_uses_canon_name_when_hit(con):
+    songs = {
+        "k1": {"artist": "", "title": "Timeless Music - 陶喆 David Tao – 找自己", "total_plays": 5,
+               "webpage_url": "https://www.youtube.com/watch?v=AAAAAAAAAAA"},
+    }
+    seen_prompts = {}
+
+    def _capture(prompt):
+        seen_prompts["prompt"] = prompt
+        return json.dumps({"imagery": "城市", "deep_story": "找回自己", "relation": "自己",
+                           "weight": "中", "familiarity": "高"})
+
+    router = FakeRouter(responses={"theme_link_card": _capture})
+    canon_names = {"AAAAAAAAAAA": ("陶喆", "找自己")}
+
+    built = await run_card_phase(con, router, songs, sleep_fn=_noop_sleep, now=1000.0,
+                                 canon_names=canon_names)
+
+    assert built == 1
+    assert "陶喆" in seen_prompts["prompt"] and "找自己" in seen_prompts["prompt"]
+    row = con.execute("SELECT artist, title FROM song_cards").fetchone()
+    assert row == ("陶喆", "找自己")
+
+
+@pytest.mark.asyncio
+async def test_run_card_phase_no_canon_hit_uses_existing_display_logic(con):
+    songs = {
+        "k1": {"artist": "陳綺貞", "title": "旅行的意義", "total_plays": 5,
+               "webpage_url": "https://www.youtube.com/watch?v=AAAAAAAAAAA"},
+    }
+    router = FakeRouter(responses={
+        "theme_link_card": json.dumps({"imagery": "海邊", "deep_story": "離別", "relation": "朋友",
+                                       "weight": "中", "familiarity": "高"}),
+    })
+
+    built = await run_card_phase(con, router, songs, sleep_fn=_noop_sleep, now=1000.0, canon_names={})
+
+    assert built == 1
+    row = con.execute("SELECT artist, title FROM song_cards").fetchone()
+    assert row == ("陳綺貞", "旅行的意義")
+
+
+# ── 解析失敗（非 JSON）＝沒有結果，不寫入、連續 3 次停止 ─────────────────────
+
+@pytest.mark.asyncio
+async def test_card_phase_unparseable_text_writes_nothing_and_stops_after_3(con):
+    router = FakeRouter(responses={"theme_link_card": "這不是 JSON"})
+    built = await run_card_phase(con, router, _songs(6), sleep_fn=_noop_sleep, now=1000.0)
+    assert built == 0
+    assert con.execute("SELECT COUNT(*) FROM song_cards").fetchone()[0] == 0
+    assert len(router.calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_theme_phase_unparseable_meaning_writes_no_row(con):
+    from theme_link import parse_tpe_timestamp
+    now = parse_tpe_timestamp("2026-10-27 12:00:00")
+    router = FakeRouter(responses={"theme_link_meaning": "這不是 JSON"})
+    await run_theme_phase(con, router, _two_day_entries(), events=[], now=now,
+                          sleep_fn=_noop_sleep, guild_id=1)
+    assert con.execute("SELECT COUNT(*) FROM theme_tags").fetchone()[0] == 0
+
+
+# ── 配歌：songable=0 不呼叫 LLM ───────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_run_match_phase_skips_llm_when_tag_not_songable(con):
+    con.execute(
+        "INSERT INTO theme_tags (tag, meaning, sensitive, songable, room_veto, heard_by, first_seen, "
+        "last_seen, day_count, updated_at) VALUES ('裝備升級','遊戲機制',0,0,NULL,'[]',0,0,2,0)"
+    )
+    con.commit()
+    router = FakeRouter()
+
+    matched = await run_match_phase(con, router, songs={}, sleep_fn=_noop_sleep)
+
+    assert matched == 0
+    assert router.calls == []
+
+
+# ── load_presence_events：不帶參數時讀呼叫當下的 PRESENCE_LOG_PATH ──────────
+
+def test_load_presence_events_no_arg_reads_current_module_path(tmp_path, monkeypatch):
+    path = tmp_path / "voice_presence.jsonl"
+    path.write_text('{"ts": 1.0, "user_name": "showay", "event": "join", "is_bot": false}\n',
+                    encoding="utf-8")
+    monkeypatch.setattr(build_theme_links, "PRESENCE_LOG_PATH", path)
+    events = load_presence_events()
+    assert events == [{"ts": 1.0, "user_name": "showay", "event": "join", "is_bot": False}]
 
 
 def test_batch_router_quick_pool_uses_35_flash_lite_not_daily_20_flash():

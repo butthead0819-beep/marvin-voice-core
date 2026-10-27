@@ -61,6 +61,7 @@ DB_PATH = str(ROOT / "marvin.db")
 MUSIC_MEMORY_PATH = str(ROOT / "music_memory.json")
 CHAT_LOG_PATH = ROOT / "records" / "chat_summary_log.txt"
 PRESENCE_LOG_PATH = ROOT / "data" / "voice_presence.jsonl"
+SONG_KNOWLEDGE_PATH = ROOT / "records" / "song_knowledge.json"
 LLM_SLEEP_S = 4.0  # 免費 Gemini RPM 低；1.0s 首次實跑一路撞限流
 HEARD_BY_WINDOW_S = 600.0  # 窗前 10 分鐘（10 分鐘日誌）
 # LLM 呼叫失敗（限流等回 None/空字串）＝「沒有結果」，不是「模型說不熟／敏感」：一律不寫入、下次重試。
@@ -97,7 +98,7 @@ def init_tables(con: sqlite3.Connection) -> None:
     """)
     con.execute("""
         CREATE TABLE IF NOT EXISTS theme_tags (
-            tag TEXT PRIMARY KEY, meaning TEXT, sensitive INTEGER, room_veto INTEGER,
+            tag TEXT PRIMARY KEY, meaning TEXT, sensitive INTEGER, songable INTEGER, room_veto INTEGER,
             heard_by TEXT, first_seen REAL, last_seen REAL, day_count INTEGER, updated_at REAL
         )
     """)
@@ -106,10 +107,16 @@ def init_tables(con: sqlite3.Connection) -> None:
             tag TEXT, video_id TEXT, rank INTEGER, layer TEXT, PRIMARY KEY (tag, video_id)
         )
     """)
+    # 舊表（在加 songable 欄之前建的）補欄位
+    cols = {r[1] for r in con.execute("PRAGMA table_info(theme_tags)")}
+    if "songable" not in cols:
+        con.execute("ALTER TABLE theme_tags ADD COLUMN songable INTEGER")
     con.commit()
 
 
-def load_presence_events(path: Path = PRESENCE_LOG_PATH) -> list[dict]:
+def load_presence_events(path: Path | None = None) -> list[dict]:
+    if path is None:
+        path = PRESENCE_LOG_PATH
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -126,6 +133,28 @@ def load_presence_events(path: Path = PRESENCE_LOG_PATH) -> list[dict]:
     return events
 
 
+def load_canon_names(path: Path) -> dict[str, tuple[str, str]]:
+    """讀 song_knowledge.json 的 canon:: 歌名歌手正規化對照表（video_id -> (artist, title)）。
+    key 不是 canon:: 開頭、或 artist/title 有一邊空的都不收。檔案不存在或壞掉 → {}。"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, tuple[str, str]] = {}
+    prefix = "canon::"
+    for key, value in data.items():
+        if not isinstance(key, str) or not key.startswith(prefix) or not isinstance(value, dict):
+            continue
+        artist = str(value.get("artist", "") or "").strip()
+        title = str(value.get("title", "") or "").strip()
+        if not artist or not title:
+            continue
+        out[key[len(prefix):]] = (artist, title)
+    return out
+
+
 def compute_heard_by(occurrence_timestamps: list[float], events: list[dict]) -> list[str]:
     """每個帶 tag 的窗（窗前 10 分鐘～時間戳）在場者聯集；某窗重建不出任何人就不算數
     （對空集合取聯集本就無影響，不需特殊處理）。"""
@@ -138,8 +167,10 @@ def compute_heard_by(occurrence_timestamps: list[float], events: list[dict]) -> 
 # ── 1. 歌卡 ──────────────────────────────────────────────────────────────
 
 async def run_card_phase(con: sqlite3.Connection, router, songs: dict, *,
-                         sleep_fn=asyncio.sleep, now: float | None = None) -> int:
+                         sleep_fn=asyncio.sleep, now: float | None = None,
+                         canon_names: dict[str, tuple[str, str]] | None = None) -> int:
     now = now if now is not None else time.time()
+    canon_names = canon_names or {}
     existing = {r[0] for r in con.execute("SELECT video_id FROM song_cards")}
     from music_memory import extract_video_id
     from song_name_clean import dj_display_name
@@ -148,18 +179,24 @@ async def run_card_phase(con: sqlite3.Connection, router, songs: dict, *,
     built = 0
     failures = 0
     for vid, entry in queue:
-        # 乾淨歌名／歌手（同 _try_associative_pick 給 LLM 看的顯示名；原始 title 是 YouTube 標題、帶 MV/HD 雜訊）
-        try:
-            title, artist = dj_display_name(entry, extract_vid=extract_video_id)
-        except Exception:
-            title, artist = "", ""
-        title = title or str(entry.get("title", "") or "")
-        artist = artist or str(entry.get("artist", "") or "")
+        canon = canon_names.get(vid)
+        if canon:
+            artist, title = canon
+        else:
+            # 乾淨歌名／歌手（同 _try_associative_pick 給 LLM 看的顯示名；原始 title 是 YouTube 標題、帶 MV/HD 雜訊）
+            try:
+                title, artist = dj_display_name(entry, extract_vid=extract_video_id)
+            except Exception:
+                title, artist = "", ""
+            title = title or str(entry.get("title", "") or "")
+            artist = artist or str(entry.get("artist", "") or "")
         try:
             sys_p, user_p = build_card_prompt(artist, title)
             raw = await _analyze_or_raise(router, user_p, caller="theme_link_card", system=sys_p)
-            failures = 0
             card = parse_song_card(raw, now)
+            if card is None:
+                raise LLMCallFailed("theme_link_card_parse")
+            failures = 0
             con.execute(
                 "INSERT OR REPLACE INTO song_cards "
                 "(video_id, artist, title, imagery, deep_story, relation, weight, familiarity, created_at) "
@@ -219,16 +256,18 @@ async def run_theme_phase(con: sqlite3.Connection, router, entries, events: list
         day_count = len({tpe_date_str(ts) for ts in timestamps})
 
         row = con.execute(
-            "SELECT meaning, sensitive, first_seen, last_seen FROM theme_tags WHERE tag=?", (tag,)
+            "SELECT meaning, sensitive, first_seen, last_seen, songable FROM theme_tags WHERE tag=?", (tag,)
         ).fetchone()
 
-        meaning, sensitive = (row[0], bool(row[1])) if row else (None, None)
+        meaning, sensitive, songable = (row[0], bool(row[1]), bool(row[4])) if row else (None, None, None)
         if row is None:
             try:
                 sys_p, user_p = build_theme_meaning_prompt(tag)
                 raw = await _analyze_or_raise(router, user_p, caller="theme_link_meaning", system=sys_p)
-                failures = 0
                 parsed = parse_theme_meaning(raw)
+                if parsed is None:
+                    raise LLMCallFailed("theme_link_meaning_parse")
+                failures = 0
             except LLMCallFailed:
                 failures += 1
                 logger.warning(f"🧭 [ThemeLink] 釋義 LLM 沒回應（不寫入、下次重試）: {tag}")
@@ -237,7 +276,7 @@ async def run_theme_phase(con: sqlite3.Connection, router, entries, events: list
             except Exception:
                 logger.exception(f"🧭 [ThemeLink] 釋義 LLM 失敗，跳過: {tag}")
                 continue
-            meaning, sensitive = parsed["meaning"], parsed["sensitive"]
+            meaning, sensitive, songable = parsed["meaning"], parsed["sensitive"], parsed["songable"]
             await sleep_fn(LLM_SLEEP_S)
             # 新 tag：first_seen 已是本次窗的最早時間，不用再覆寫
         elif last_seen <= row[3]:
@@ -259,9 +298,9 @@ async def run_theme_phase(con: sqlite3.Connection, router, entries, events: list
 
         con.execute(
             "INSERT OR REPLACE INTO theme_tags "
-            "(tag, meaning, sensitive, room_veto, heard_by, first_seen, last_seen, day_count, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (tag, meaning, int(sensitive), (None if room_veto is None else int(room_veto)),
+            "(tag, meaning, sensitive, songable, room_veto, heard_by, first_seen, last_seen, day_count, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (tag, meaning, int(sensitive), int(songable), (None if room_veto is None else int(room_veto)),
              json.dumps(heard_by, ensure_ascii=False), first_seen, last_seen, day_count, now),
         )
         con.commit()
@@ -296,7 +335,8 @@ def _load_cards_with_total_plays(con: sqlite3.Connection, songs: dict) -> dict[s
 
 async def run_match_phase(con: sqlite3.Connection, router, songs: dict, *, sleep_fn=asyncio.sleep) -> int:
     rows = con.execute(
-        "SELECT tag, meaning FROM theme_tags WHERE sensitive=0 AND (room_veto IS NULL OR room_veto=0)"
+        "SELECT tag, meaning FROM theme_tags WHERE songable=1 AND sensitive=0 "
+        "AND (room_veto IS NULL OR room_veto=0)"
     ).fetchall()
     cards_by_vid = _load_cards_with_total_plays(con, songs)
 
@@ -354,12 +394,15 @@ async def main() -> None:
         init_tables(con)
         mm = MusicMemory(MUSIC_MEMORY_PATH)
         songs = mm.all_songs()
+        canon_names = load_canon_names(SONG_KNOWLEDGE_PATH)
 
-        await run_card_phase(con, router, songs)
+        await run_card_phase(con, router, songs, canon_names=canon_names)
 
         text = CHAT_LOG_PATH.read_text(encoding="utf-8") if CHAT_LOG_PATH.exists() else ""
         entries = parse_log(text)
         events = load_presence_events()
+        if not events:
+            logger.warning("🧭 [ThemeLink] voice_presence 讀不到任何事件，所有 tag 的 heard_by 會是空的（不會觸發）")
         guild_id = int(os.environ.get("GUILD_ID") or "0")
         if guild_id == 0:
             # 逐字稿存在真正的 guild id 底下；0 會讓房間把關永遠撈不到內容、等於默默關掉

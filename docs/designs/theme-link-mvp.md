@@ -31,20 +31,22 @@
    - 從 `data/voice_presence.jsonl` 的 join/leave 事件，重建「這段時間內任何時刻在語音頻道的非 bot 使用者」（用 `user_name`）。
    - heard_by = 所有窗的在場者聯集。
    - 窗內重建不出任何人 → 這個窗不算數。
-4. **tag 釋義＋敏感**（表 `theme_tags`；每個 tag 只算一次，`last_seen` 有更新才重算 heard_by）
-   - LLM 輸出：`meaning`（字典本義＋延伸義，一兩句；例如「旅行＝離開熟悉的地方；延伸：異地、出走、告別」）、`sensitive`（bool：健康、喪親、感情、衝突、金錢糾紛）。
-   - `sensitive` 缺漏或非 bool → 視為 True。
+4. **tag 釋義＋敏感＋可唱**（表 `theme_tags`；每個 tag 只算一次，`last_seen` 有更新才重算 heard_by）
+   - LLM 輸出：`meaning`（字典本義＋延伸義，一兩句；例如「旅行＝離開熟悉的地方；延伸：異地、出走、告別」）、`songable`（bool：這個話題有沒有生活或情感層面、能用一首歌的故事去呼應——日常生活/人生階段/人際關係/地方與移動 true，純遊戲機制/技術故障/軟硬體規格 false）、`sensitive`（bool：健康、喪親、感情、衝突、金錢糾紛）。
+   - `sensitive` 缺漏或非 bool → 視為 True。`songable` 缺漏或非 bool → 視為 False（保守：不配歌）。
+   - LLM 沒回應、或 JSON 解析不出來、或 `meaning` 是空字串 → 視為「沒有結果」，不寫入，計入連續失敗次數（不再當成敏感/不熟而誤寫永久擋）。
 5. **房間把關**（同表欄位 `room_veto`）
    - 取該 tag 最近一個窗前 15 分鐘的 `marvin.db transcripts`（排除 speaker=Marvin）。
    - < 5 行 → `room_veto = NULL`（不判斷，不擋）。
    - ≥ 5 行 → LLM 判斷「這段對話是否觸及健康、喪親、感情、衝突等敏感事」→ `room_veto = 1/0`；解析失敗視為 1。
    - 逐字稿只在批次的記憶體中使用，**不存原文，也不存 LLM 的判讀理由**。
 6. **配歌**（表 `theme_picks`）
-   - 只對 `sensitive=0` 且 `room_veto` 不是 1 的 tag 做。
-   - 候選：有卡、`familiarity in ('高','中')`、`weight != '重'` 的歌，依 total_plays 取前 `MATCH_POOL = 120` 張。
+   - 只對 `songable=1` 且 `sensitive=0` 且 `room_veto` 不是 1 的 tag 做（遊戲機制／技術故障類 tag 不會被硬配情歌）。
+   - 候選：有卡、`familiarity in ('高','中')`、`weight != '重'` 的歌，依 total_plays 取前 `MATCH_POOL = 120` 張。歌卡的歌手／歌名：命中 `records/song_knowledge.json` 的 `canon::<video_id>` 正規化對照就用它（YouTube 原始標題常帶雜訊，害熟歌被誤判成不熟），沒命中才用現有的 `dj_display_name` 清洗結果。
    - 候選為空 → 不呼叫 LLM（盲測：空候選會被 LLM 自己編歌）。
-   - LLM 拿 tag 的 meaning 和編號過的歌卡（imagery＋deep_story），回傳最多 5 個**編號**和層別（意象|深層|兩者）。編號超出範圍就丟掉（不准 LLM 自己寫歌名）。
+   - LLM 拿 tag 的 meaning 和編號過的歌卡（imagery＋deep_story），回傳最多 5 個**編號**和層別（意象|深層|兩者）。編號超出範圍就丟掉（不准 LLM 自己寫歌名）。**寧缺勿濫**：沒有真的呼應的歌，LLM 回空陣列是正常結果，不寫入也不報錯。
    - 存 `(tag, video_id, rank, layer)`。tag 的 meaning 變了就重算。
+   - LLM 沒回應、或 JSON 解析不出來 → 視為「沒有結果」，不寫入、計入連續失敗次數。
 
 ### B. 執行時：併進既有的 `_try_associative_pick`（不新增入口）
 2026-10-27 使用者定：不另開 `_try_theme_pick`，避免兩套冷卻／去重／品質閘打地鼠。主題連結是 AssociativeCuration 的**第二種素材**，共用它的冷卻、30 天不重複、解析、品質閘、入隊、`associative_picks.jsonl`。批次第 6 步的 `theme_picks` 改為**粗篩**（每個 tag 預選 5 首），最後由 Associative 那一次 LLM 呼叫決定。
@@ -76,10 +78,11 @@
 ```sql
 song_cards(video_id TEXT PRIMARY KEY, artist TEXT, title TEXT, imagery TEXT, deep_story TEXT,
            relation TEXT, weight TEXT, familiarity TEXT, created_at REAL)
-theme_tags(tag TEXT PRIMARY KEY, meaning TEXT, sensitive INTEGER, room_veto INTEGER,
+theme_tags(tag TEXT PRIMARY KEY, meaning TEXT, sensitive INTEGER, songable INTEGER, room_veto INTEGER,
            heard_by TEXT /* JSON list */, first_seen REAL, last_seen REAL, day_count INTEGER, updated_at REAL)
 theme_picks(tag TEXT, video_id TEXT, rank INTEGER, layer TEXT, PRIMARY KEY(tag, video_id))
 ```
+`songable` 是後加欄位：舊 `theme_tags` 表用 `PRAGMA table_info` 檢查，沒有就 `ALTER TABLE ... ADD COLUMN songable INTEGER`。
 執行時只讀這三張表（唯讀連線），不寫 DB。批次第 6 步產生的 `theme_picks` 是粗篩結果，最後挑哪首由執行時的 Associative 決定。
 
 ## 模組切分
@@ -96,7 +99,7 @@ theme_picks(tag TEXT, video_id TEXT, rank INTEGER, layer TEXT, PRIMARY KEY(tag, 
 2. 合格 tag：同一天出現 3 次 → 不合格；兩個不同日期 → 合格；超過 14 天的不算。
 3. heard_by：join 在窗前、leave 在窗後 → 在場；leave 在窗開始前 → 不在場；窗內 join → 在場；bot 不算。
 4. 在場閘門：members ⊆ heard_by 才過；有人不在 heard_by → 不過；members 空 → 不過。
-5. 批次解析：picks 編號超出範圍會被丟掉；sensitive 缺漏或是字串 → True；card 解析失敗 → familiarity 低；配歌候選為空時，假 LLM 不會被呼叫。
+5. 批次解析：picks 編號超出範圍會被丟掉；sensitive 缺漏或是字串 → True；songable 缺漏或非 bool → False；card／meaning 的 JSON 解析不出來 → None（不寫入）；card 的 deep_story 缺漏/「不確定」→ familiarity 低；配歌候選為空時，假 LLM 不會被呼叫；配歌只處理 songable=1 的 tag。
 6. `build_associative_prompt` 不傳 themes → 輸出與改動前**逐字相同**（用改動前的固定輸入比對字串）。
 7. `parse_associative_picks`：`source=tag:露營` 且在 allowed_tags、有 local → source=tag；不在 allowed_tags 或沒有 local → 該首被丟掉；缺 source → now。
 8. `_try_associative_pick`：

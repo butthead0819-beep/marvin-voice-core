@@ -159,10 +159,35 @@ def test_theme_meaning_sensitive_bool_false_is_kept():
     assert result["sensitive"] is False
 
 
-def test_song_card_parse_failure_gives_low_familiarity():
-    result = parse_song_card("這不是 JSON", now=1000.0)
-    assert result["familiarity"] == "低"
-    assert result["deep_story"] == ""
+def test_theme_meaning_songable_missing_defaults_false():
+    raw = '{"meaning": "旅行：離開熟悉的地方", "sensitive": false}'
+    result = parse_theme_meaning(raw)
+    assert result["songable"] is False
+
+
+def test_theme_meaning_songable_wrong_type_defaults_false():
+    raw = '{"meaning": "旅行", "sensitive": false, "songable": "true"}'
+    result = parse_theme_meaning(raw)
+    assert result["songable"] is False
+
+
+def test_theme_meaning_songable_bool_true_is_kept():
+    raw = '{"meaning": "旅行", "sensitive": false, "songable": true}'
+    result = parse_theme_meaning(raw)
+    assert result["songable"] is True
+
+
+def test_theme_meaning_unparseable_returns_none():
+    assert parse_theme_meaning("不是 JSON") is None
+
+
+def test_theme_meaning_empty_meaning_returns_none():
+    raw = '{"meaning": "", "sensitive": false, "songable": true}'
+    assert parse_theme_meaning(raw) is None
+
+
+def test_song_card_unparseable_returns_none():
+    assert parse_song_card("這不是 JSON", now=1000.0) is None
 
 
 def test_song_card_unsure_deep_story_gives_low_familiarity():
@@ -309,6 +334,15 @@ def test_qualifying_theme_tags_room_veto_true_is_excluded_even_with_full_presenc
     rows = [_full_presence_row("被房間擋", room_veto=True), _full_presence_row("合格")]
     assert qualifying_theme_tags(rows, members=["showay", "大肚"], now=100000.0,
                                  used_tags_14d=set(), used_tag_today=False) == [("合格", "m")]
+
+
+def test_qualifying_theme_tags_songable_missing_or_false_is_excluded():
+    # _full_presence_row 預設不帶 songable 欄 → 視同缺漏
+    rows = [_full_presence_row("缺songable"), _full_presence_row("不可唱", songable=False),
+            _full_presence_row("合格", songable=True)]
+    result = qualifying_theme_tags(rows, members=["showay", "大肚"], now=100000.0,
+                                   used_tags_14d=set(), used_tag_today=False)
+    assert result == [("合格", "m")]
 
 
 def test_theme_picks_drops_negative_index():
