@@ -133,7 +133,11 @@ class PaidUsageGuard:
 
 # 有專用額度的 caller：(daily_cap_usd, monthly_cap_usd)。只算自己的花費，也不佔一般 $4 額度。
 # daily_review：2026-10-23 改 3.1-flash-lite 後實測 $0.007–0.022/天（10/24–27）。
-DEDICATED_QUOTAS: dict[str, tuple[float, float]] = {"daily_review": (0.05, 1.0)}
+# theme_link_card_upgrade：主題連結低熟悉歌卡付費 grounding 升級（2026-10-27 使用者定）。
+DEDICATED_QUOTAS: dict[str, tuple[float, float]] = {
+    "daily_review": (0.05, 1.0),
+    "theme_link_card_upgrade": (0.05, 1.0),
+}
 
 
 def guard_for_caller(caller: str) -> PaidUsageGuard:
