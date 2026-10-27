@@ -346,20 +346,22 @@ _PROVIDERS: list[ProviderSpec] = [
                  "google/gemma-4-31b-it:free", "nvidia/nemotron-3-super-120b-a12b:free"),
     # Gemini free tier（GOOGLE_API_KEY）走官方 OpenAI-compat 端點。獨立每日 quota，
     # 跟 Groq/Cerebras 分攤。2026-08-20 實測：2.0 系列全下架（404），換成 3.1/3.5。
-    # analyze 的 3.5-flash 是 thinking model，同 gemini_free_25 的理由必須 reasoning_effort=none。
+    # analyze 的 3.5-flash 是 thinking model，同 gemini_free_25 的理由要壓 thinking：用 minimal 不用 none
+    # （Gemini 3.x 不能完全關 thinking，none 會回 400——2026-10-27 bus 備援每次 400 的根因）。
     ProviderSpec("gemini_free", "GOOGLE_API_KEY",
                  "https://generativelanguage.googleapis.com/v1beta/openai/",
                  "gemini-3.1-flash-lite", "gemini-3.5-flash",
-                 analyze_extra={"reasoning_effort": "none"}),
+                 analyze_extra={"reasoning_effort": "minimal"}),
     # 2026-06-04：free tier 配額 per-model 各自獨立 → 再掛 2.5 系列疊加免費吞吐。
     # 同 GOOGLE_API_KEY、不同 model = 不同 bucket，一個爆 429 cooldown 自動讓位另一個。
-    # analyze 的 2.5-flash 是 thinking model，OpenAI-compat 下必須 reasoning_effort=none，
+    # analyze（現為 3.5-flash-lite）是 thinking model，OpenAI-compat 下要壓 thinking，
     # 否則 thinking 吃光 max_tokens → 空 content（live 探測 2026-06-04 確認）。
+    # 用 minimal 不用 none：Gemini 3.x 不能完全關 thinking，none 會回 400（2026-10-27）。
     # quick 的 2.5-flash-lite 預設無 thinking 陷阱（mt=20 即回完整 JSON），不需 extra。
     ProviderSpec("gemini_free_25", "GOOGLE_API_KEY",
                  "https://generativelanguage.googleapis.com/v1beta/openai/",
                  "gemini-2.5-flash-lite", "gemini-3.5-flash-lite",
-                 analyze_extra={"reasoning_effort": "none"}),
+                 analyze_extra={"reasoning_effort": "minimal"}),
     # 💰 末位付費兜底（2026-06-30）：免費全爆才輪到它。用獨立帳務 GEMINI_PAID_API_KEY（與免費
     # GOOGLE_API_KEY 不同 key、排最後）→ 接住 14% 硬失敗。quick 用最便宜 2.5-flash-lite
     # ($0.10/$0.40)、analyze 用 2.5-flash。量小估 ~$0.15/月。跟 build_paid_review_pool 共用同把
@@ -367,7 +369,7 @@ _PROVIDERS: list[ProviderSpec] = [
     ProviderSpec("gemini_paid", "GEMINI_PAID_API_KEY",
                  "https://generativelanguage.googleapis.com/v1beta/openai/",
                  "gemini-2.5-flash-lite", "gemini-3.5-flash-lite",
-                 analyze_extra={"reasoning_effort": "none"}),
+                 analyze_extra={"reasoning_effort": "minimal"}),
 ]
 
 
