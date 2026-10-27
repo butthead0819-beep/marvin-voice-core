@@ -475,3 +475,21 @@ def test_batch_router_quick_pool_uses_35_flash_lite_not_daily_20_flash():
     models = [ep.model for ep in quick.endpoints]
     assert models and models[0] == "gemini-3.5-flash-lite"
     assert "gemini-3.5-flash" not in models
+
+
+@pytest.mark.asyncio
+async def test_theme_phase_processes_most_recent_tag_first(con):
+    """額度不夠跑完時，最近出現的 tag 要先處理（不是照字元排序）。"""
+    from theme_link import parse_tpe_timestamp
+    now = parse_tpe_timestamp("2026-10-27 12:00:00")
+    entries = [
+        _FakeEntry("2026-10-14 10:00:00", "bug"), _FakeEntry("2026-10-15 10:00:00", "bug"),
+        _FakeEntry("2026-10-20 10:00:00", "露營"), _FakeEntry("2026-10-26 10:00:00", "露營"),
+    ]
+    router = FakeRouter(responses={
+        "theme_link_meaning": json.dumps({"meaning": "m", "songable": True, "sensitive": False}),
+    })
+    await run_theme_phase(con, router, entries, events=[], now=now, sleep_fn=_noop_sleep, guild_id=1)
+    meaning_calls = [c["prompt"] for c in router.calls if c["caller"] == "theme_link_meaning"]
+    assert "露營" in meaning_calls[0]
+    assert "bug" in meaning_calls[1]

@@ -246,7 +246,9 @@ async def run_theme_phase(con: sqlite3.Connection, router, entries, events: list
     updated = 0
     failures = 0
 
-    for tag in sorted(eligible):
+    # 最近出現的先處理：免費額度一天約 150 次，常不夠跑完全部 tag；照字元排序時露營、搬家、養狗
+    # 排在一堆遊戲 tag 後面，2026-10-27 連兩晚都沒輪到。
+    for tag in sorted(eligible, key=lambda t: (-max(occurrences[t]), t)):
         if failures >= MAX_CONSECUTIVE_LLM_FAILURES:
             logger.warning(f"🧭 [ThemeLink] tag 階段連續 {failures} 次 LLM 失敗，本次停止")
             break
@@ -336,7 +338,7 @@ def _load_cards_with_total_plays(con: sqlite3.Connection, songs: dict) -> dict[s
 async def run_match_phase(con: sqlite3.Connection, router, songs: dict, *, sleep_fn=asyncio.sleep) -> int:
     rows = con.execute(
         "SELECT tag, meaning FROM theme_tags WHERE songable=1 AND sensitive=0 "
-        "AND (room_veto IS NULL OR room_veto=0)"
+        "AND (room_veto IS NULL OR room_veto=0) ORDER BY last_seen DESC"
     ).fetchall()
     cards_by_vid = _load_cards_with_total_plays(con, songs)
 
