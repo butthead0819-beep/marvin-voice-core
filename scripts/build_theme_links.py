@@ -42,6 +42,7 @@ from theme_link import (  # noqa: E402
     build_room_veto_prompt,
     build_theme_match_prompt,
     build_theme_meaning_prompt,
+    build_upgrade_card_prompt,
     collect_tag_occurrences,
     eligible_tags,
     parse_room_veto,
@@ -76,6 +77,13 @@ MAX_CONSECUTIVE_LLM_FAILURES = 3
 BATCH_MODEL_OVERRIDES = {"GEMINI_FREE_QUICK_MODEL": "gemini-3.5-flash-lite"}
 BATCH_MAX_TOKENS = 800
 
+# 低熟悉歌卡的付費 grounding 升級（2026-10-27 使用者定）：專用額度 $0.05/天 $1/月，不佔一般 $4。
+UPGRADE_CALLER = "theme_link_card_upgrade"
+UPGRADE_BATCH_LIMIT = 10
+UPGRADE_MODEL_CHAIN = ("gemini-3.5-flash",)
+UPGRADE_TIMEOUT_S = 30.0
+UPGRADE_MAX_CHARS = 3000
+
 
 class LLMCallFailed(Exception):
     """router 回 None/空字串（限流、全 provider 失敗）。"""
@@ -93,7 +101,7 @@ def init_tables(con: sqlite3.Connection) -> None:
     con.execute("""
         CREATE TABLE IF NOT EXISTS song_cards (
             video_id TEXT PRIMARY KEY, artist TEXT, title TEXT, imagery TEXT, deep_story TEXT,
-            relation TEXT, weight TEXT, familiarity TEXT, created_at REAL
+            relation TEXT, weight TEXT, familiarity TEXT, created_at REAL, upgraded_at REAL
         )
     """)
     con.execute("""
@@ -111,6 +119,10 @@ def init_tables(con: sqlite3.Connection) -> None:
     cols = {r[1] for r in con.execute("PRAGMA table_info(theme_tags)")}
     if "songable" not in cols:
         con.execute("ALTER TABLE theme_tags ADD COLUMN songable INTEGER")
+    # 舊表（在加 upgraded_at 欄之前建的）補欄位
+    card_cols = {r[1] for r in con.execute("PRAGMA table_info(song_cards)")}
+    if "upgraded_at" not in card_cols:
+        con.execute("ALTER TABLE song_cards ADD COLUMN upgraded_at REAL")
     con.commit()
 
 
@@ -217,6 +229,72 @@ async def run_card_phase(con: sqlite3.Connection, router, songs: dict, *,
         await sleep_fn(LLM_SLEEP_S)
     logger.info(f"🧭 [ThemeLink] 歌卡批次完成：新建 {built}/{len(queue)}")
     return built
+
+
+# ── 1.5 低熟悉歌卡付費 grounding 升級 ─────────────────────────────────────────
+
+async def run_card_upgrade_phase(con: sqlite3.Connection, songs: dict, *, grounded_fn, guard,
+                                 now: float | None = None, sleep_fn=asyncio.sleep,
+                                 limit: int = UPGRADE_BATCH_LIMIT) -> int:
+    now = now if now is not None else time.time()
+    from music_memory import extract_video_id
+
+    total_plays: dict[str, float] = {}
+    for entry in songs.values():
+        if not isinstance(entry, dict):
+            continue
+        vid = extract_video_id(entry.get("webpage_url") or entry.get("url") or "") or ""
+        if vid:
+            total_plays[vid] = entry.get("total_plays", 0) or 0
+
+    rows = con.execute(
+        "SELECT video_id, artist, title FROM song_cards WHERE familiarity='低' AND upgraded_at IS NULL"
+    ).fetchall()
+    rows.sort(key=lambda r: total_plays.get(r[0], 0), reverse=True)
+    queue = rows[:limit]
+
+    upgraded = 0
+    processed = 0
+    for vid, artist, title in queue:
+        if not guard.allow(0.0):
+            logger.info(f"🧭 [ThemeLink] 歌卡付費升級額度已滿，本次停止（caller={UPGRADE_CALLER}）")
+            break
+        processed += 1
+        try:
+            sys_p, user_p = build_upgrade_card_prompt(artist, title)
+            res = await grounded_fn(user_p, system_prompt=sys_p)
+        except Exception:
+            logger.warning(f"🧭 [ThemeLink] 歌卡付費升級失敗（不寫入、下次重試）: {artist} {title}")
+            await sleep_fn(LLM_SLEEP_S)
+            continue
+
+        if not isinstance(res, tuple):
+            con.execute("UPDATE song_cards SET upgraded_at=? WHERE video_id=?", (now, vid))
+            con.commit()
+            await sleep_fn(LLM_SLEEP_S)
+            continue
+
+        text, _sources = res
+        card = parse_song_card(text, now)
+        if card is None:
+            con.execute("UPDATE song_cards SET upgraded_at=? WHERE video_id=?", (now, vid))
+            con.commit()
+            await sleep_fn(LLM_SLEEP_S)
+            continue
+
+        con.execute(
+            "UPDATE song_cards SET imagery=?, deep_story=?, relation=?, weight=?, familiarity=?, "
+            "upgraded_at=? WHERE video_id=?",
+            (card["imagery"], card["deep_story"], card["relation"], card["weight"],
+             card["familiarity"], now, vid),
+        )
+        con.commit()
+        if card["familiarity"] in ("高", "中"):
+            upgraded += 1
+        await sleep_fn(LLM_SLEEP_S)
+
+    logger.info(f"🧭 [ThemeLink] 歌卡付費升級完成：{upgraded}/{processed}（額度 {UPGRADE_CALLER}）")
+    return upgraded
 
 
 # ── 2–5. tag 收集／heard_by／釋義＋敏感／房間把關 ───────────────────────────
@@ -386,6 +464,7 @@ async def run_match_phase(con: sqlite3.Connection, router, songs: dict, *, sleep
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
+    import llm_pool
     from chat_summary_parser import parse_log
     from llm_pool import build_tiered_router
     from music_memory import MusicMemory
@@ -413,6 +492,24 @@ async def main() -> None:
             await run_theme_phase(con, router, entries, events, guild_id=guild_id)
 
         await run_card_phase(con, router, songs, canon_names=canon_names)
+
+        if os.getenv("THEME_CARD_UPGRADE", "on").strip().lower() in ("off", "0", "false", "no"):
+            logger.info("🧭 [ThemeLink] THEME_CARD_UPGRADE 關閉，跳過歌卡付費升級")
+        elif not os.environ.get("GEMINI_PAID_API_KEY"):
+            logger.warning("🧭 [ThemeLink] GEMINI_PAID_API_KEY 未設定，跳過歌卡付費升級")
+        else:
+            import functools
+
+            import llm_paid
+            from intent_agents.grounded_qa_agent import grounded_answer
+
+            paid_client = llm_pool._default_genai_client_factory(os.environ["GEMINI_PAID_API_KEY"])
+            upgrade_guard = llm_paid.guard_for_caller(UPGRADE_CALLER)
+            grounded_fn = functools.partial(
+                grounded_answer, None, paid_client, upgrade_guard, caller=UPGRADE_CALLER,
+                model_chain=UPGRADE_MODEL_CHAIN, timeout=UPGRADE_TIMEOUT_S, max_chars=UPGRADE_MAX_CHARS,
+            )
+            await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=upgrade_guard)
 
         await run_match_phase(con, router, songs)
     finally:
