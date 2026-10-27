@@ -22,10 +22,19 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 from pathlib import Path
 
-from theme_link import (
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+# 載 .env 拿 GOOGLE_API_KEY / GUILD_ID；launchd 跑時 env 不會自動帶（同 analyze_daily_feedback.py）
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv(ROOT / ".env")
+
+from theme_link import (  # noqa: E402
     CARD_BATCH_LIMIT,
     ROOM_VETO_LOOKBACK_MIN,
     ROOM_VETO_MIN_LINES,
@@ -47,10 +56,11 @@ from theme_link import (
 
 logger = logging.getLogger("theme_link")
 
-DB_PATH = "marvin.db"
-MUSIC_MEMORY_PATH = "music_memory.json"
-CHAT_LOG_PATH = Path("records/chat_summary_log.txt")
-PRESENCE_LOG_PATH = Path("data/voice_presence.jsonl")
+# 一律以 repo 根目錄為準，不依賴執行時的 cwd
+DB_PATH = str(ROOT / "marvin.db")
+MUSIC_MEMORY_PATH = str(ROOT / "music_memory.json")
+CHAT_LOG_PATH = ROOT / "records" / "chat_summary_log.txt"
+PRESENCE_LOG_PATH = ROOT / "data" / "voice_presence.jsonl"
 LLM_SLEEP_S = 1.0
 HEARD_BY_WINDOW_S = 600.0  # 窗前 10 分鐘（10 分鐘日誌）
 
@@ -293,6 +303,10 @@ async def main() -> None:
         entries = parse_log(text)
         events = load_presence_events()
         guild_id = int(os.environ.get("GUILD_ID") or "0")
+        if guild_id == 0:
+            # 逐字稿存在真正的 guild id 底下；0 會讓房間把關永遠撈不到內容、等於默默關掉
+            logger.warning("🧭 [ThemeLink] GUILD_ID 未設定，房間把關撈不到逐字稿，本次不跑 tag 階段")
+            return
         await run_theme_phase(con, router, entries, events, guild_id=guild_id)
 
         await run_match_phase(con, router, songs)
