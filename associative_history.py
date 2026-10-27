@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -11,6 +12,9 @@ REPO_ROOT = Path(__file__).resolve().parent
 HISTORY_PATH = REPO_ROOT / "records" / "associative_picks.jsonl"
 HISTORY_DAYS = 30
 PROMPT_MAX_PICKS = 150
+
+TPE_TZ = timezone(timedelta(hours=8))
+THEME_TAG_COOLDOWN_DAYS = 14
 
 
 def load_recent_picks(now: float, path: Path | None = None, days: int = HISTORY_DAYS) -> list[str]:
@@ -55,14 +59,20 @@ def load_recent_picks(now: float, path: Path | None = None, days: int = HISTORY_
 
 
 def append_pick(artist: str, song: str, now: float, path: Path | None = None, *,
-                title: str = "", video_id: str = "") -> None:
-    """記錄一筆選曲。title/video_id＝YouTube 實際解析結果（LLM 歌名可能拼錯或搜到別首）。"""
+                title: str = "", video_id: str = "",
+                source: str | None = None, tag: str | None = None) -> None:
+    """記錄一筆選曲。title/video_id＝YouTube 實際解析結果（LLM 歌名可能拼錯或搜到別首）。
+    source/tag：主題連結 MVP 新增，不傳（None）就不寫這兩欄，舊呼叫行為不變。"""
     target_path = path if path is not None else HISTORY_PATH
     rec = {"ts": now, "artist": artist, "song": song}
     if title:
         rec["title"] = title
     if video_id:
         rec["vid"] = video_id
+    if source is not None:
+        rec["source"] = source
+    if tag is not None:
+        rec["tag"] = tag
     try:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         with target_path.open("a", encoding="utf-8") as f:
@@ -108,3 +118,53 @@ def is_resolved_repeat(title: str, video_id: str, now: float, path: Path | None 
             return True
         titles += [t for t in (data.get("title"), data.get("song")) if isinstance(t, str) and t]
     return bool(find_recent_same_song(title, titles))
+
+
+def tags_used_within(now: float, days: int = THEME_TAG_COOLDOWN_DAYS,
+                     path: Path | None = None) -> set[str]:
+    """近 days 天內 source=="tag" 的 tag 集合（主題連結 14 天內不重複用同一個 tag）。"""
+    target_path = path if path is not None else HISTORY_PATH
+    try:
+        lines = target_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+    cutoff = now - days * 86400
+    out: set[str] = set()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            ts = float(data["ts"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if ts < cutoff:
+            continue
+        if data.get("source") == "tag" and data.get("tag"):
+            out.add(str(data["tag"]))
+    return out
+
+
+def has_tag_pick_today(now: float, path: Path | None = None) -> bool:
+    """今天（台灣時間）是否已有一筆 source=="tag" 的紀錄（整個房間每天最多一筆主題連結）。"""
+    target_path = path if path is not None else HISTORY_PATH
+    try:
+        lines = target_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    today_str = datetime.fromtimestamp(now, TPE_TZ).strftime("%Y-%m-%d")
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            data = json.loads(line)
+            ts = float(data["ts"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+        if data.get("source") != "tag":
+            continue
+        if datetime.fromtimestamp(ts, TPE_TZ).strftime("%Y-%m-%d") == today_str:
+            return True
+    return False

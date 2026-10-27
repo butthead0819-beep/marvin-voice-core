@@ -87,3 +87,53 @@ def test_load_recent_picks_uses_module_history_path_when_no_path(tmp_path, monke
 
     picks = load_recent_picks(now)
     assert picks == ["阿杜 - 他一定很愛你"]
+
+
+# ── source/tag 選填欄位（主題連結 MVP）──────────────────────────────────────
+
+def test_append_pick_without_source_tag_omits_fields(tmp_path):
+    path = tmp_path / "picks.jsonl"
+    append_pick("阿杜", "他一定很愛你", time.time(), path=path)
+    rec = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert "source" not in rec
+    assert "tag" not in rec
+
+
+def test_append_pick_with_source_tag_writes_fields(tmp_path):
+    path = tmp_path / "picks.jsonl"
+    append_pick("陳綺貞", "旅行的意義", time.time(), path=path, source="tag", tag="旅行")
+    rec = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    assert rec["source"] == "tag"
+    assert rec["tag"] == "旅行"
+
+
+def test_tags_used_within_collects_recent_tag_sources(tmp_path):
+    from associative_history import tags_used_within
+
+    path = tmp_path / "picks.jsonl"
+    now = time.time()
+    append_pick("A", "歌A", now - 86400, path=path, source="tag", tag="露營")
+    append_pick("B", "歌B", now - 20 * 86400, path=path, source="tag", tag="搬家")  # 超過 14 天
+    append_pick("C", "歌C", now - 3600, path=path, source="now")  # 不是 tag 來源
+
+    assert tags_used_within(now, path=path) == {"露營"}
+
+
+def test_has_tag_pick_today_true_and_false(tmp_path):
+    from associative_history import has_tag_pick_today
+
+    path = tmp_path / "picks.jsonl"
+    now = time.time()
+    assert has_tag_pick_today(now, path=path) is False
+
+    append_pick("A", "歌A", now, path=path, source="tag", tag="露營")
+    assert has_tag_pick_today(now, path=path) is True
+
+
+def test_has_tag_pick_today_false_for_yesterday(tmp_path):
+    from associative_history import has_tag_pick_today
+
+    path = tmp_path / "picks.jsonl"
+    now = time.time()
+    append_pick("A", "歌A", now - 86400, path=path, source="tag", tag="露營")
+    assert has_tag_pick_today(now, path=path) is False

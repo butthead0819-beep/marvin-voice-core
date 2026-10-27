@@ -28,6 +28,8 @@ class AssociativePick:
     reason: str
     dj_line: str
     local_index: int | None = None  # 命中本地歌單時的編號（對應 local_associative_candidates 回傳順序）
+    source: str = "now"  # "now"（一般對話靈感）或 "tag"（主題連結，見 theme_link.py）
+    tag: str = ""        # source=="tag" 時對應的話題
 
 
 _NON_ALNUM_RE = re.compile(r"[^0-9a-z]")
@@ -82,6 +84,14 @@ _ASSOCIATIVE_SYS_PROMPT = (
 )
 
 
+_THEME_RULE_SUFFIX = (
+    "\n5. 每首 pick 加一個 source 欄，值為 \"now\" 或 \"tag:<話題>\"（看下方【最近大家反覆聊到的"
+    "話題】清單裡的話題字面，不是自創）：碰到對話內容本身就選 \"now\"；若是呼應下方話題清單裡某個話題的"
+    "延伸義（不是只看字面）而選的歌，就填 \"tag:<話題>\"。source=\"tag:X\" 的歌必須來自本地歌單"
+    "（local 填編號，不可為 null）。"
+)
+
+
 def build_associative_prompt(
     utterances: list[dict],
     core_artists: list[str],
@@ -90,8 +100,12 @@ def build_associative_prompt(
     recent_picks: list[str] | None = None,
     local_titles: list[str] | None = None,
     mood_hint: str = "",
+    themes: list[tuple[str, str]] | None = None,
 ) -> tuple[str, str]:
-    """組裝關聯選曲的 System 與 User Prompt。"""
+    """組裝關聯選曲的 System 與 User Prompt。
+
+    themes：主題連結 MVP 新增，[(tag, meaning), ...]；不傳或空 → 輸出與改動前逐字相同。
+    """
     dialogue_lines = [
         f"- {u.get('speaker', '有人')}: {u.get('text', '').strip()}"
         for u in utterances
@@ -121,20 +135,37 @@ def build_associative_prompt(
             f"【現場氣氛——只給你選歌和調整語氣用，dj_line 裡絕對不准提到、轉述或暗示你知道這些】：{mood_hint}\n"
         )
 
+    sys_prompt = _ASSOCIATIVE_SYS_PROMPT
+    themes_block = ""
+    if themes:
+        sys_prompt = _ASSOCIATIVE_SYS_PROMPT + _THEME_RULE_SUFFIX
+        themes_lines = "\n".join(f"- {tag}：{meaning}" for tag, meaning in themes)
+        themes_block = (
+            "【最近大家反覆聊到的話題（Marvin 記得的事；選了也不准講出來）】：\n"
+            f"{themes_lines}\n"
+        )
+
     user_prompt = (
         f"【目前在場聽眾】：{members_str}\n"
         f"【聽眾平常的核心喜愛歌手】：{artists_str}\n"
         f"{recent_picks_line}"
         f"【已播過／不要重複的歌曲】：{exclude_str}\n"
-        f"{local_block}{mood_line}\n"
+        f"{local_block}{mood_line}{themes_block}\n"
         f"【剛才頻道的對話片段（按時間序）】：\n{dialogue_block}\n\n"
         "請根據剛才這段對話選歌，回傳 JSON。"
     )
-    return _ASSOCIATIVE_SYS_PROMPT, user_prompt
+    return sys_prompt, user_prompt
 
 
-def parse_associative_picks(raw_text: str, n_local: int = 0) -> list[AssociativePick]:
-    """解析 LLM 輸出的 JSON（1-3 首候選），包含格式清理與邊界防禦。"""
+def parse_associative_picks(
+    raw_text: str, n_local: int = 0, allowed_tags: set[str] | None = None,
+) -> list[AssociativePick]:
+    """解析 LLM 輸出的 JSON（1-3 首候選），包含格式清理與邊界防禦。
+
+    allowed_tags：主題連結 MVP 新增。LLM 回的 source 是 "tag:X" 且 X ∈ allowed_tags
+    且該首有 local_index（命中本地歌單）→ source="tag"、tag=X；"tag:X" 但條件不符 →
+    丟掉整首 pick（不信任自稱呼應話題卻脫離本地歌單、或話題不在允許清單裡的歌）；
+    其他值或缺漏 → source="now"。"""
     if not raw_text or not isinstance(raw_text, str):
         return []
 
@@ -180,6 +211,15 @@ def parse_associative_picks(raw_text: str, n_local: int = 0) -> list[Associative
         if isinstance(local, int) and not isinstance(local, bool) and 0 <= local < n_local:
             local_index = local
 
+        raw_source = str(item.get("source", "")).strip()
+        source, tag = "now", ""
+        if raw_source.startswith("tag:"):
+            candidate_tag = raw_source[len("tag:"):].strip()
+            if allowed_tags and candidate_tag in allowed_tags and local_index is not None:
+                source, tag = "tag", candidate_tag
+            else:
+                continue  # 自稱呼應話題卻不合格 → 整首丟掉，不信任
+
         picks.append(AssociativePick(
             observed_topic=observed_topic,
             target_lyric=target_lyric,
@@ -188,6 +228,8 @@ def parse_associative_picks(raw_text: str, n_local: int = 0) -> list[Associative
             reason=reason,
             dj_line=dj_line,
             local_index=local_index,
+            source=source,
+            tag=tag,
         ))
 
         if len(picks) >= 3:
@@ -263,10 +305,12 @@ async def curate_associative_song(
     recent_picks: list[str] | None = None,
     local_titles: list[str] | None = None,
     mood_hint: str = "",
+    themes: list[tuple[str, str]] | None = None,
 ) -> list[AssociativePick]:
     """動態對話關聯性選曲協調器（非同步）。
 
     對話語句數量不足或 LLM 呼叫失敗時，一律優雅回傳 []，供下游回退一般 autopilot。
+    themes：主題連結 MVP 新增，見 build_associative_prompt/parse_associative_picks。
     """
     valid_utts = [u for u in utterances if u.get("text", "").strip()]
     if len(valid_utts) < min_utterances:
@@ -288,6 +332,7 @@ async def curate_associative_song(
         recent_picks=recent_picks,
         local_titles=local_titles,
         mood_hint=mood_hint,
+        themes=themes,
     )
 
     try:
@@ -299,7 +344,8 @@ async def curate_associative_song(
     if not raw_resp:
         return []
 
-    picks = parse_associative_picks(raw_resp, n_local=len(local_titles or []))
+    allowed_tags = {tag for tag, _ in themes} if themes else None
+    picks = parse_associative_picks(raw_resp, n_local=len(local_titles or []), allowed_tags=allowed_tags)
     for i, pick in enumerate(picks):
         src = f"(本地#{pick.local_index})" if pick.local_index is not None else "(提名)"
         logger.info(
