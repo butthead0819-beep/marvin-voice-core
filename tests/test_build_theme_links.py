@@ -317,3 +317,17 @@ async def test_match_phase_none_writes_no_picks(con):
     assert matched == 0
     assert con.execute("SELECT COUNT(*) FROM theme_picks").fetchone()[0] == 0
     assert len(router.calls) == 1
+
+
+def test_batch_router_never_uses_daily_20_gemini_35_flash():
+    """批次 router 的 analyze 池不准有 gemini-3.5-flash（免費一天 20 次，bot 自己要用）。"""
+    from llm_pool import build_tier_pools
+    from scripts.build_theme_links import BATCH_MODEL_OVERRIDES
+
+    _quick, analyze = build_tier_pools(
+        env={"GOOGLE_API_KEY": "fake-key", **BATCH_MODEL_OVERRIDES},
+        client_factory=lambda base_url, key: object(),
+    )
+    models = [ep.model for ep in analyze.endpoints]
+    assert models, "analyze 池不該是空的"
+    assert "gemini-3.5-flash" not in models
