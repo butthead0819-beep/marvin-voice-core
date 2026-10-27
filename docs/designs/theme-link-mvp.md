@@ -48,6 +48,13 @@
    - 存 `(tag, video_id, rank, layer)`。tag 的 meaning 變了就重算。
    - LLM 沒回應、或 JSON 解析不出來 → 視為「沒有結果」，不寫入、計入連續失敗次數。
 
+6.5. **付費升級低熟悉歌卡**（2026-10-27 使用者定）
+   - 免費建卡（第 1 步）約四成被判「低熟悉」，這些歌不會被拿來配歌（第 6 步候選要求 `familiarity in ('高','中')`）。
+   - 每晚另跑一段：挑 `song_cards` 中 `familiarity='低' AND upgraded_at IS NULL` 的卡，依 total_plays 由高到低，最多 `UPGRADE_BATCH_LIMIT = 10` 張，用付費 grounding（上網查）重寫。
+   - 專用額度 `theme_link_card_upgrade`：$0.05/天、$1/月（`llm_paid.DEDICATED_QUOTAS`），不佔一般 $4 月額度；額度用完當晚就停，下次批次繼續。
+   - 查不到（LLM 拒答/幻覺 guard 擋下）或 JSON 解析不出來，也算已經花了一次付費呼叫：只把 `upgraded_at` 標成這次時間，不改卡內容，避免同一首歌每晚重打；網路等例外則完全不標記，下次照常重試。
+   - env `THEME_CARD_UPGRADE`（預設 on）可關；沒設定 `GEMINI_PAID_API_KEY` 時自動跳過整段。
+
 ### B. 執行時：併進既有的 `_try_associative_pick`（不新增入口）
 2026-10-27 使用者定：不另開 `_try_theme_pick`，避免兩套冷卻／去重／品質閘打地鼠。主題連結是 AssociativeCuration 的**第二種素材**，共用它的冷卻、30 天不重複、解析、品質閘、入隊、`associative_picks.jsonl`。批次第 6 步的 `theme_picks` 改為**粗篩**（每個 tag 預選 5 首），最後由 Associative 那一次 LLM 呼叫決定。
 
