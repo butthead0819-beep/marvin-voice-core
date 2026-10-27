@@ -862,3 +862,25 @@ async def test_theme_entries_prepended_before_local_cands_and_capped(theme_db):
     assert len(local_titles) <= LOCAL_POOL_LIMIT
     assert "意象：海邊露營" in local_titles[0]
     assert local_titles[0].startswith("美秀集團 - 手機錢包鑰匙菸")
+
+
+@pytest.mark.asyncio
+async def test_zero_utterances_drops_now_source_picks(theme_db):
+    """對話 0 句、只因合格 tag 才呼叫 → LLM 回 source=now 的歌不准入隊（沒有對話可呼應）。"""
+    _insert_theme_tag(theme_db, "露營", heard_by=["showay"])
+    host = DummyAutopilotHost()
+    host.bot.engine.conv_buffer.get_last_n_utterances.return_value = []
+    mm = MagicMock()
+    mm.get_skipped_video_ids.return_value = set()
+    mm.get_recently_played_video_ids.return_value = set()
+
+    now_pick = AssociativePick(
+        observed_topic="（無對話）", target_lyric="", artist="美秀集團", song="手機錢包鑰匙菸",
+        reason="", dj_line="剛才大家聊得很熱烈", source="now",
+    )
+    with patch("associative_curation.curate_associative_song", AsyncMock(return_value=[now_pick])):
+        n = await host._try_associative_pick(members=["showay"], exclude_titles=[],
+                                             spotlight="showay", mm=mm)
+
+    assert n == 0
+    assert host.stream_queue == []

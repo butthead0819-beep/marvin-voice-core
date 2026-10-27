@@ -630,6 +630,10 @@ class MusicAutopilotMixin:
             except asyncio.TimeoutError:
                 logger.info(f"🎵 [AssociativePick] LLM 逾時 {_ASSOCIATIVE_LLM_TIMEOUT_S}s，走一般 autopilot")
                 return 0
+            # 🧭 對話不足 2 句時只是因為有合格 tag 才呼叫：source=now 的歌沒有真的對話可呼應
+            # （dj_line 會評論一段不存在的對話），只收 source=tag。
+            if len(utts) < 2:
+                picks = [p for p in picks if p.source == "tag"]
             if not picks:
                 return 0
 
