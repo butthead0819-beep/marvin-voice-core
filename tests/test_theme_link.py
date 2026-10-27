@@ -252,11 +252,11 @@ def test_qualifying_theme_tags_filters_sensitive_and_vetoed_and_absent():
     rows = [
         {"tag": "敏感話題", "meaning": "x", "sensitive": True, "room_veto": None,
          "heard_by": ["showay"], "last_seen": now - 1000},
-        {"tag": "被房間擋", "meaning": "x", "sensitive": False, "room_veto": True,
+        {"tag": "被房間擋", "meaning": "x", "sensitive": False, "songable": True, "room_veto": True,
          "heard_by": ["showay"], "last_seen": now - 1000},
-        {"tag": "有人不在場", "meaning": "x", "sensitive": False, "room_veto": None,
+        {"tag": "有人不在場", "meaning": "x", "sensitive": False, "songable": True, "room_veto": None,
          "heard_by": ["showay"], "last_seen": now - 1000},
-        {"tag": "合格", "meaning": "y", "sensitive": False, "room_veto": None,
+        {"tag": "合格", "meaning": "y", "sensitive": False, "songable": True, "room_veto": None,
          "heard_by": ["showay", "大肚"], "last_seen": now - 500},
     ]
     result = qualifying_theme_tags(rows, members=["showay", "大肚"], now=now,
@@ -265,21 +265,21 @@ def test_qualifying_theme_tags_filters_sensitive_and_vetoed_and_absent():
 
 
 def test_qualifying_theme_tags_empty_members_gives_nothing():
-    rows = [{"tag": "合格", "meaning": "y", "sensitive": False, "room_veto": None,
+    rows = [{"tag": "合格", "meaning": "y", "sensitive": False, "songable": True, "room_veto": None,
              "heard_by": [], "last_seen": 100.0}]
     assert qualifying_theme_tags(rows, members=[], now=100.0,
                                   used_tags_14d=set(), used_tag_today=False) == []
 
 
 def test_qualifying_theme_tags_used_today_gives_nothing():
-    rows = [{"tag": "合格", "meaning": "y", "sensitive": False, "room_veto": None,
+    rows = [{"tag": "合格", "meaning": "y", "sensitive": False, "songable": True, "room_veto": None,
              "heard_by": ["showay"], "last_seen": 100.0}]
     assert qualifying_theme_tags(rows, members=["showay"], now=100.0,
                                   used_tags_14d=set(), used_tag_today=True) == []
 
 
 def test_qualifying_theme_tags_used_within_14d_excluded():
-    rows = [{"tag": "用過", "meaning": "y", "sensitive": False, "room_veto": None,
+    rows = [{"tag": "用過", "meaning": "y", "sensitive": False, "songable": True, "room_veto": None,
              "heard_by": ["showay"], "last_seen": 100.0}]
     assert qualifying_theme_tags(rows, members=["showay"], now=100.0,
                                   used_tags_14d={"用過"}, used_tag_today=False) == []
@@ -287,7 +287,7 @@ def test_qualifying_theme_tags_used_within_14d_excluded():
 
 def test_qualifying_theme_tags_sorted_newest_first_and_capped_at_three():
     rows = [
-        {"tag": f"t{i}", "meaning": "y", "sensitive": False, "room_veto": None,
+        {"tag": f"t{i}", "meaning": "y", "sensitive": False, "songable": True, "room_veto": None,
          "heard_by": ["showay"], "last_seen": float(i)}
         for i in range(5)
     ]
@@ -324,14 +324,14 @@ def _full_presence_row(tag, **kw):
 
 
 def test_qualifying_theme_tags_sensitive_missing_or_none_is_excluded():
-    rows = [_full_presence_row("缺欄"), _full_presence_row("None", sensitive=None)]
+    rows = [_full_presence_row("缺欄", songable=True), _full_presence_row("None", sensitive=None, songable=True)]
     del rows[0]["sensitive"]
     assert qualifying_theme_tags(rows, members=["showay", "大肚"], now=100000.0,
                                  used_tags_14d=set(), used_tag_today=False) == []
 
 
 def test_qualifying_theme_tags_room_veto_true_is_excluded_even_with_full_presence():
-    rows = [_full_presence_row("被房間擋", room_veto=True), _full_presence_row("合格")]
+    rows = [_full_presence_row("被房間擋", room_veto=True, songable=True), _full_presence_row("合格", songable=True)]
     assert qualifying_theme_tags(rows, members=["showay", "大肚"], now=100000.0,
                                  used_tags_14d=set(), used_tag_today=False) == [("合格", "m")]
 
