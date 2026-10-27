@@ -392,11 +392,12 @@ async def test_upgrade_phase_picks_low_familiarity_unupgraded_only(con):
 
 @pytest.mark.asyncio
 async def test_upgrade_phase_respects_total_plays_order_and_limit(con):
-    _insert_song_card(con, "V1", familiarity="低", title="低播放")
-    _insert_song_card(con, "V2", familiarity="低", title="高播放")
+    # video_id 要是 11 碼，extract_video_id 才對得上 music_memory 的 total_plays
+    _insert_song_card(con, "LOWPLAYS001", familiarity="低", title="低播放")
+    _insert_song_card(con, "HIGHPLAYS01", familiarity="低", title="高播放")
     songs = {
-        "k1": {"total_plays": 1, "webpage_url": "https://www.youtube.com/watch?v=V1"},
-        "k2": {"total_plays": 99, "webpage_url": "https://www.youtube.com/watch?v=V2"},
+        "k1": {"total_plays": 1, "webpage_url": "https://www.youtube.com/watch?v=LOWPLAYS001"},
+        "k2": {"total_plays": 99, "webpage_url": "https://www.youtube.com/watch?v=HIGHPLAYS01"},
     }
     grounded_fn = FakeGroundedFn(responses=[None])
 
