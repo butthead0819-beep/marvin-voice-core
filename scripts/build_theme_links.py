@@ -396,8 +396,8 @@ async def main() -> None:
         songs = mm.all_songs()
         canon_names = load_canon_names(SONG_KNOWLEDGE_PATH)
 
-        await run_card_phase(con, router, songs, canon_names=canon_names)
-
+        # tag 階段排最前面：數量少、最重要；2026-10-27 實跑先建 150 張卡把免費 RPM 吃光，
+        # 輪到 tag 時連續限流，26 個只處理 10 個（露營沒輪到）。
         text = CHAT_LOG_PATH.read_text(encoding="utf-8") if CHAT_LOG_PATH.exists() else ""
         entries = parse_log(text)
         events = load_presence_events()
@@ -407,8 +407,10 @@ async def main() -> None:
         if guild_id == 0:
             # 逐字稿存在真正的 guild id 底下；0 會讓房間把關永遠撈不到內容、等於默默關掉
             logger.warning("🧭 [ThemeLink] GUILD_ID 未設定，房間把關撈不到逐字稿，本次不跑 tag 階段")
-            return
-        await run_theme_phase(con, router, entries, events, guild_id=guild_id)
+        else:
+            await run_theme_phase(con, router, entries, events, guild_id=guild_id)
+
+        await run_card_phase(con, router, songs, canon_names=canon_names)
 
         await run_match_phase(con, router, songs)
     finally:
