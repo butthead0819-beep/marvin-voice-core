@@ -17,6 +17,7 @@ round-trip + 拖慢 pipeline。stt_cleaner 已有 per-engine cooldown（proven p
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import time
@@ -25,6 +26,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Optional
 
 from llm_json_compat import ensure_json_in_messages
+
+logger = logging.getLogger(__name__)
 
 _RETRY_AFTER_DEFAULT = 30.0
 
@@ -513,6 +516,7 @@ async def call_paid_review(
         from llm_paid import guard_for_caller
         guard = guard_for_caller(caller)
     if not guard.allow(0.0):  # 0.0＝只問「是否已經超額」；實際花費仍由 _record_paid_usage 事後記
+        logger.warning(f"[PaidReview] {caller} 付費額度已用完（守門擋下），不呼叫")
         if status is not None:
             status["reason"] = "guard_cap"
         return None
