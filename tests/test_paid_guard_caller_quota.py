@@ -72,6 +72,12 @@ def test_guard_for_caller_daily_review_has_dedicated_quota():
     assert guard.only_callers == frozenset({"daily_review"})
 
 
+def test_guard_for_caller_theme_link_card_upgrade_has_dedicated_quota():
+    guard = guard_for_caller("theme_link_card_upgrade")
+    assert (guard.daily_cap_usd, guard.monthly_cap_usd) == (0.05, 1.0)  # 寫死：10/27 拍板值，改額度要連測試一起改
+    assert guard.only_callers == frozenset({"theme_link_card_upgrade"})
+
+
 def test_guard_for_caller_other_caller_gets_default_quota_excluding_dedicated():
     guard = guard_for_caller("associative_curation")
     assert (guard.daily_cap_usd, guard.monthly_cap_usd) == (0.5, 4.0)
