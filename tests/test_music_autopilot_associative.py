@@ -626,7 +626,8 @@ def _init_theme_db(path):
     con.execute("""
         CREATE TABLE theme_tags (
             tag TEXT PRIMARY KEY, meaning TEXT, sensitive INTEGER, room_veto INTEGER,
-            heard_by TEXT, first_seen REAL, last_seen REAL, day_count INTEGER, updated_at REAL
+            heard_by TEXT, first_seen REAL, last_seen REAL, day_count INTEGER, updated_at REAL,
+            songable INTEGER
         )
     """)
     con.execute("""
@@ -652,12 +653,12 @@ def theme_db(tmp_path, monkeypatch):
 
 
 def _insert_theme_tag(con, tag, *, meaning="戶外過夜；延伸：遠離城市", sensitive=0, room_veto=None,
-                      heard_by=None, last_seen=None):
+                      heard_by=None, last_seen=None, songable=1):
     con.execute(
         "INSERT OR REPLACE INTO theme_tags (tag, meaning, sensitive, room_veto, heard_by, "
-        "first_seen, last_seen, day_count, updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        "first_seen, last_seen, day_count, updated_at, songable) VALUES (?,?,?,?,?,?,?,?,?,?)",
         (tag, meaning, sensitive, room_veto, __import__("json").dumps(heard_by or []),
-         last_seen or time.time(), last_seen or time.time(), 2, time.time()),
+         last_seen or time.time(), last_seen or time.time(), 2, time.time(), songable),
     )
     con.commit()
 
@@ -884,3 +885,11 @@ async def test_zero_utterances_drops_now_source_picks(theme_db):
 
     assert n == 0
     assert host.stream_queue == []
+
+
+@pytest.mark.asyncio
+async def test_not_songable_tag_is_not_qualifying(theme_db):
+    """songable=0 的 tag（遊戲／技術話題）即使其他條件都合格也不給。"""
+    _insert_theme_tag(theme_db, "bug", heard_by=["showay"], songable=0)
+    host = DummyAutopilotHost()
+    assert host._load_qualifying_theme_tags(["showay"], time.time()) == []
