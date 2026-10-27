@@ -182,3 +182,23 @@ def _isolate_recent_games(tmp_path, monkeypatch):
     except Exception:
         return
     monkeypatch.setattr(recent_games, "STORE_PATH", tmp_path / "recent_games.json")
+
+
+@pytest.fixture(autouse=True)
+def _default_paid_review_guard_allow(monkeypatch):
+    """llm_pool.call_paid_review 現在會先問 llm_paid.guard_for_caller(caller).allow()，
+    該 guard 預設讀 records/llm_paid_usage.jsonl（唯讀，上面的寫入攔截不管讀取）—— 跟
+    _isolate_recent_games 同款問題。既有測試呼叫 call_paid_review 沒帶 guard，一律
+    monkeypatch 成「永遠放行」，避免跟主目錄真帳本的花費扯上關係。
+
+    只 patch `llm_paid.guard_for_caller` 這個屬性：call_paid_review 是在函式內才
+    `from llm_paid import guard_for_caller`（late binding），所以會吃到這個假版本；
+    測試檔自己在檔頭 `from llm_paid import guard_for_caller` 拿到的是當時已經綁定的
+    真函式物件，不受這裡的 monkeypatch 影響，可以直接測真的 guard_for_caller。"""
+    import llm_paid
+
+    class _AlwaysAllowGuard:
+        def allow(self, expected_usd: float = 0.0) -> bool:
+            return True
+
+    monkeypatch.setattr(llm_paid, "guard_for_caller", lambda caller: _AlwaysAllowGuard())

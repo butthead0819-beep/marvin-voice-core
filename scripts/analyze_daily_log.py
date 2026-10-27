@@ -638,6 +638,8 @@ def call_review_llm(user_content: str, paid_call=None) -> dict:
                                     temperature=0.2, timeout=180.0, caller="daily_review",
                                     status=_status))
         if not raw:
+            if _status.get("reason") == "guard_cap":
+                raise RuntimeError("daily review 專用付費額度用完（llm_paid.DEDICATED_QUOTAS），今天不分析")
             if _status.get("reason") == "budget_cap":
                 raise RuntimeError(
                     "付費 Gemini 月度預算上限耗盡（spending cap — 不夠預算），daily review 無法分析。"

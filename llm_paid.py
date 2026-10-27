@@ -60,6 +60,8 @@ class PaidUsageGuard:
     daily_cap_usd: float = 0.5
     monthly_cap_usd: float = 4.0
     clock: Callable[[], float] = time.time
+    only_callers: frozenset[str] | None = None
+    exclude_callers: frozenset[str] = frozenset()
 
     def _rows(self) -> list[dict]:
         p = Path(self.log_path)
@@ -80,8 +82,14 @@ class PaidUsageGuard:
         return rows
 
     def _spent_since(self, since_ts: float) -> float:
+        if self.only_callers is not None:
+            def _match(r: dict) -> bool:
+                return r.get("caller") in self.only_callers
+        else:
+            def _match(r: dict) -> bool:
+                return r.get("caller") not in self.exclude_callers
         return sum(float(r.get("est_usd", 0) or 0) for r in self._rows()
-                   if float(r.get("ts", 0) or 0) >= since_ts)
+                   if float(r.get("ts", 0) or 0) >= since_ts and _match(r))
 
     def spent_today(self) -> float:
         now = self.clock()
@@ -121,3 +129,17 @@ class PaidUsageGuard:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
         except Exception:
             pass
+
+
+# 有專用額度的 caller：(daily_cap_usd, monthly_cap_usd)。只算自己的花費，也不佔一般 $4 額度。
+# daily_review：2026-10-23 改 3.1-flash-lite 後實測 $0.007–0.022/天（10/24–27）。
+DEDICATED_QUOTAS: dict[str, tuple[float, float]] = {"daily_review": (0.05, 1.0)}
+
+
+def guard_for_caller(caller: str) -> PaidUsageGuard:
+    """caller 有專用額度 → 只算自己；否則一般守門（$0.5/日、$4/月），排除有專用額度的 caller。"""
+    if caller in DEDICATED_QUOTAS:
+        daily, monthly = DEDICATED_QUOTAS[caller]
+        return PaidUsageGuard(daily_cap_usd=daily, monthly_cap_usd=monthly,
+                               only_callers=frozenset({caller}))
+    return PaidUsageGuard(exclude_callers=frozenset(DEDICATED_QUOTAS))
