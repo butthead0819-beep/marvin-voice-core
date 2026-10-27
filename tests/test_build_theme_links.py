@@ -330,7 +330,7 @@ async def test_match_phase_none_writes_no_picks(con):
 # ── 歌卡付費升級 ────────────────────────────────────────────────────────────
 
 @dataclass
-class FakeGroundedFn:
+class FakeGroundedFn:  # 名稱沿用；現在代表 card_fn（付費、不搜尋）
     """記錄每次呼叫；responses 依序彈出（callable 動態算），不足時沿用最後一個。"""
     responses: list = field(default_factory=list)
     calls: list = field(default_factory=list)
@@ -382,7 +382,7 @@ async def test_upgrade_phase_picks_low_familiarity_unupgraded_only(con):
     }
     grounded_fn = FakeGroundedFn(responses=[None])
 
-    await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+    await run_card_upgrade_phase(con, songs, card_fn=grounded_fn, guard=FakeUpgradeGuard(),
                                  sleep_fn=_noop_sleep, now=1000.0, limit=UPGRADE_BATCH_LIMIT)
 
     assert len(grounded_fn.calls) == 2
@@ -401,7 +401,7 @@ async def test_upgrade_phase_respects_total_plays_order_and_limit(con):
     }
     grounded_fn = FakeGroundedFn(responses=[None])
 
-    await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+    await run_card_upgrade_phase(con, songs, card_fn=grounded_fn, guard=FakeUpgradeGuard(),
                                  sleep_fn=_noop_sleep, now=1000.0, limit=1)
 
     assert len(grounded_fn.calls) == 1
@@ -416,7 +416,7 @@ async def test_upgrade_phase_guard_denies_skips_call_and_leaves_card_untouched(c
         "imagery": "新意象", "deep_story": "新故事", "relation": "新關係", "weight": "中", "familiarity": "高",
     })])
 
-    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn,
+    upgraded = await run_card_upgrade_phase(con, songs, card_fn=grounded_fn,
                                             guard=FakeUpgradeGuard(allow_values=[False]),
                                             sleep_fn=_noop_sleep, now=1000.0)
 
@@ -430,11 +430,11 @@ async def test_upgrade_phase_guard_denies_skips_call_and_leaves_card_untouched(c
 async def test_upgrade_phase_success_updates_card_and_sets_upgraded_at(con):
     _insert_song_card(con, "V1", familiarity="低")
     songs = {"k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"}}
-    grounded_fn = FakeGroundedFn(responses=[(json.dumps({
+    grounded_fn = FakeGroundedFn(responses=[json.dumps({
         "imagery": "新意象", "deep_story": "新故事", "relation": "新關係", "weight": "中", "familiarity": "高",
-    }), ["x"])])
+    })])
 
-    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+    upgraded = await run_card_upgrade_phase(con, songs, card_fn=grounded_fn, guard=FakeUpgradeGuard(),
                                             sleep_fn=_noop_sleep, now=1000.0)
 
     assert upgraded == 1
@@ -445,25 +445,26 @@ async def test_upgrade_phase_success_updates_card_and_sets_upgraded_at(con):
 
 
 @pytest.mark.asyncio
-async def test_upgrade_phase_none_result_marks_upgraded_at_without_changing_card(con):
+async def test_upgrade_phase_none_result_leaves_upgraded_at_null_and_retries(con):
+    """call_paid_review 回 None＝守門擋下或全部失敗：沒花到錢也沒結果 → 不標記，下次批次重試。"""
     _insert_song_card(con, "V1", familiarity="低")
     songs = {"k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"}}
     grounded_fn = FakeGroundedFn(responses=[None])
 
-    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+    upgraded = await run_card_upgrade_phase(con, songs, card_fn=grounded_fn, guard=FakeUpgradeGuard(),
                                             sleep_fn=_noop_sleep, now=1000.0)
 
     assert upgraded == 0
     row = con.execute(
         "SELECT familiarity, deep_story, upgraded_at FROM song_cards WHERE video_id='V1'"
     ).fetchone()
-    assert row == ("低", "舊故事", 1000.0)
+    assert row == ("低", "舊故事", None)
 
-    # 下次批次不會再挑到它（upgraded_at 已非 NULL）
+    # 下次批次會再挑到它
     grounded_fn2 = FakeGroundedFn(responses=[None])
-    await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn2, guard=FakeUpgradeGuard(),
+    await run_card_upgrade_phase(con, songs, card_fn=grounded_fn2, guard=FakeUpgradeGuard(),
                                  sleep_fn=_noop_sleep, now=2000.0)
-    assert grounded_fn2.calls == []
+    assert len(grounded_fn2.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -472,7 +473,7 @@ async def test_upgrade_phase_exception_leaves_upgraded_at_null(con):
     songs = {"k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"}}
     grounded_fn = FakeGroundedFn(responses=[RuntimeError("網路逾時")])
 
-    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+    upgraded = await run_card_upgrade_phase(con, songs, card_fn=grounded_fn, guard=FakeUpgradeGuard(),
                                             sleep_fn=_noop_sleep, now=1000.0)
 
     assert upgraded == 0
@@ -486,9 +487,9 @@ async def test_upgrade_phase_exception_leaves_upgraded_at_null(con):
 async def test_upgrade_phase_unparseable_text_marks_upgraded_at_without_changing_card(con):
     _insert_song_card(con, "V1", familiarity="低")
     songs = {"k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"}}
-    grounded_fn = FakeGroundedFn(responses=[("這不是 JSON", ["x"])])
+    grounded_fn = FakeGroundedFn(responses=["這不是 JSON"])
 
-    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+    upgraded = await run_card_upgrade_phase(con, songs, card_fn=grounded_fn, guard=FakeUpgradeGuard(),
                                             sleep_fn=_noop_sleep, now=1000.0)
 
     assert upgraded == 0

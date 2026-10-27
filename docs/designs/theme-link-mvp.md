@@ -50,9 +50,9 @@
 
 6.5. **付費升級低熟悉歌卡**（2026-10-27 使用者定）
    - 免費建卡（第 1 步）約四成被判「低熟悉」，這些歌不會被拿來配歌（第 6 步候選要求 `familiarity in ('高','中')`）。
-   - 每晚另跑一段：挑 `song_cards` 中 `familiarity='低' AND upgraded_at IS NULL` 的卡，依 total_plays 由高到低，最多 `UPGRADE_BATCH_LIMIT = 10` 張，用付費 grounding（上網查）重寫。
-   - 專用額度 `theme_link_card_upgrade`：$0.05/天、$1/月（`llm_paid.DEDICATED_QUOTAS`），不佔一般 $4 月額度；額度用完當晚就停，下次批次繼續。
-   - 查不到（LLM 拒答/幻覺 guard 擋下）或 JSON 解析不出來，也算已經花了一次付費呼叫：只把 `upgraded_at` 標成這次時間，不改卡內容，避免同一首歌每晚重打；網路等例外則完全不標記，下次照常重試。
+   - 每晚另跑一段：挑 `song_cards` 中 `familiarity='低' AND upgraded_at IS NULL` 的卡，依 total_plays 由高到低，最多 `UPGRADE_BATCH_LIMIT = 100` 張，用付費 `gemini-3.5-flash`（走 `call_paid_review`，**不搜尋**、憑知識）重寫。實測 grounding 版的 3.5-flash 自認知道就不搜尋、回應被 L2 擋光白付錢；不搜尋版 4/4 熟悉度高、約 $0.0005/張。事實可能有錯（例：把信樂團〈不會消失的夜晚〉寫成阿信），但歌卡只用來選歌、不唸。
+   - 專用額度 `theme_link_card_upgrade`：$0.05/天、$1/月（`llm_paid.DEDICATED_QUOTAS`），不佔一般 $4 月額度；額度用完當晚就停（每晚約 100 張）。
+   - 回 None（守門擋下或全失敗）或例外：不標記、下次重試。有回應但 JSON 解析不出來：已付費，只把 `upgraded_at` 標成這次時間，不改卡內容，避免每晚重打同一首。
    - env `THEME_CARD_UPGRADE`（預設 on）可關；沒設定 `GEMINI_PAID_API_KEY` 時自動跳過整段。
 
 ### B. 執行時：併進既有的 `_try_associative_pick`（不新增入口）
