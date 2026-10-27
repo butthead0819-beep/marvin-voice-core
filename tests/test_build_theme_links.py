@@ -12,11 +12,13 @@ import pytest
 
 import scripts.build_theme_links as build_theme_links
 from scripts.build_theme_links import (
+    UPGRADE_BATCH_LIMIT,
     compute_heard_by,
     init_tables,
     load_canon_names,
     load_presence_events,
     run_card_phase,
+    run_card_upgrade_phase,
     run_match_phase,
     run_theme_phase,
 )
@@ -323,6 +325,192 @@ async def test_match_phase_none_writes_no_picks(con):
     assert matched == 0
     assert con.execute("SELECT COUNT(*) FROM theme_picks").fetchone()[0] == 0
     assert len(router.calls) == 1
+
+
+# ── 歌卡付費升級 ────────────────────────────────────────────────────────────
+
+@dataclass
+class FakeGroundedFn:
+    """記錄每次呼叫；responses 依序彈出（callable 動態算），不足時沿用最後一個。"""
+    responses: list = field(default_factory=list)
+    calls: list = field(default_factory=list)
+    _i: int = 0
+
+    async def __call__(self, user_p, *, system_prompt):
+        self.calls.append({"user_p": user_p, "system_prompt": system_prompt})
+        if not self.responses:
+            return None
+        idx = min(self._i, len(self.responses) - 1)
+        self._i += 1
+        resp = self.responses[idx]
+        if isinstance(resp, Exception):
+            raise resp
+        return resp
+
+
+@dataclass
+class FakeUpgradeGuard:
+    allow_values: list = field(default_factory=lambda: [True])
+    _i: int = 0
+
+    def allow(self, expected_usd):
+        idx = min(self._i, len(self.allow_values) - 1)
+        self._i += 1
+        return self.allow_values[idx]
+
+
+def _insert_song_card(con, vid, *, familiarity="低", upgraded_at=None, artist="A", title="T"):
+    con.execute(
+        "INSERT INTO song_cards (video_id, artist, title, imagery, deep_story, relation, weight, "
+        "familiarity, created_at, upgraded_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (vid, artist, title, "舊意象", "舊故事", "舊關係", "輕", familiarity, 0.0, upgraded_at),
+    )
+    con.commit()
+
+
+@pytest.mark.asyncio
+async def test_upgrade_phase_picks_low_familiarity_unupgraded_only(con):
+    _insert_song_card(con, "V1", familiarity="低", title="低熟悉A")
+    _insert_song_card(con, "V2", familiarity="低", title="低熟悉B")
+    _insert_song_card(con, "V3", familiarity="高", title="已熟悉")  # 不挑
+    _insert_song_card(con, "V4", familiarity="低", upgraded_at=500.0, title="已升級過")  # 不挑
+    songs = {
+        "k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"},
+        "k2": {"total_plays": 50, "webpage_url": "https://www.youtube.com/watch?v=V2"},
+        "k3": {"total_plays": 50, "webpage_url": "https://www.youtube.com/watch?v=V3"},
+        "k4": {"total_plays": 50, "webpage_url": "https://www.youtube.com/watch?v=V4"},
+    }
+    grounded_fn = FakeGroundedFn(responses=[None])
+
+    await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+                                 sleep_fn=_noop_sleep, now=1000.0, limit=UPGRADE_BATCH_LIMIT)
+
+    assert len(grounded_fn.calls) == 2
+    assert "已熟悉" not in str(grounded_fn.calls)
+    assert "已升級過" not in str(grounded_fn.calls)
+
+
+@pytest.mark.asyncio
+async def test_upgrade_phase_respects_total_plays_order_and_limit(con):
+    _insert_song_card(con, "V1", familiarity="低", title="低播放")
+    _insert_song_card(con, "V2", familiarity="低", title="高播放")
+    songs = {
+        "k1": {"total_plays": 1, "webpage_url": "https://www.youtube.com/watch?v=V1"},
+        "k2": {"total_plays": 99, "webpage_url": "https://www.youtube.com/watch?v=V2"},
+    }
+    grounded_fn = FakeGroundedFn(responses=[None])
+
+    await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+                                 sleep_fn=_noop_sleep, now=1000.0, limit=1)
+
+    assert len(grounded_fn.calls) == 1
+    assert "高播放" in grounded_fn.calls[0]["user_p"]
+
+
+@pytest.mark.asyncio
+async def test_upgrade_phase_guard_denies_skips_call_and_leaves_card_untouched(con):
+    _insert_song_card(con, "V1", familiarity="低")
+    songs = {"k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"}}
+    grounded_fn = FakeGroundedFn(responses=[json.dumps({
+        "imagery": "新意象", "deep_story": "新故事", "relation": "新關係", "weight": "中", "familiarity": "高",
+    })])
+
+    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn,
+                                            guard=FakeUpgradeGuard(allow_values=[False]),
+                                            sleep_fn=_noop_sleep, now=1000.0)
+
+    assert upgraded == 0
+    assert grounded_fn.calls == []
+    row = con.execute("SELECT familiarity, deep_story, upgraded_at FROM song_cards WHERE video_id='V1'").fetchone()
+    assert row == ("低", "舊故事", None)
+
+
+@pytest.mark.asyncio
+async def test_upgrade_phase_success_updates_card_and_sets_upgraded_at(con):
+    _insert_song_card(con, "V1", familiarity="低")
+    songs = {"k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"}}
+    grounded_fn = FakeGroundedFn(responses=[(json.dumps({
+        "imagery": "新意象", "deep_story": "新故事", "relation": "新關係", "weight": "中", "familiarity": "高",
+    }), ["x"])])
+
+    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+                                            sleep_fn=_noop_sleep, now=1000.0)
+
+    assert upgraded == 1
+    row = con.execute(
+        "SELECT familiarity, deep_story, upgraded_at FROM song_cards WHERE video_id='V1'"
+    ).fetchone()
+    assert row == ("高", "新故事", 1000.0)
+
+
+@pytest.mark.asyncio
+async def test_upgrade_phase_none_result_marks_upgraded_at_without_changing_card(con):
+    _insert_song_card(con, "V1", familiarity="低")
+    songs = {"k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"}}
+    grounded_fn = FakeGroundedFn(responses=[None])
+
+    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+                                            sleep_fn=_noop_sleep, now=1000.0)
+
+    assert upgraded == 0
+    row = con.execute(
+        "SELECT familiarity, deep_story, upgraded_at FROM song_cards WHERE video_id='V1'"
+    ).fetchone()
+    assert row == ("低", "舊故事", 1000.0)
+
+    # 下次批次不會再挑到它（upgraded_at 已非 NULL）
+    grounded_fn2 = FakeGroundedFn(responses=[None])
+    await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn2, guard=FakeUpgradeGuard(),
+                                 sleep_fn=_noop_sleep, now=2000.0)
+    assert grounded_fn2.calls == []
+
+
+@pytest.mark.asyncio
+async def test_upgrade_phase_exception_leaves_upgraded_at_null(con):
+    _insert_song_card(con, "V1", familiarity="低")
+    songs = {"k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"}}
+    grounded_fn = FakeGroundedFn(responses=[RuntimeError("網路逾時")])
+
+    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+                                            sleep_fn=_noop_sleep, now=1000.0)
+
+    assert upgraded == 0
+    row = con.execute(
+        "SELECT familiarity, deep_story, upgraded_at FROM song_cards WHERE video_id='V1'"
+    ).fetchone()
+    assert row == ("低", "舊故事", None)
+
+
+@pytest.mark.asyncio
+async def test_upgrade_phase_unparseable_text_marks_upgraded_at_without_changing_card(con):
+    _insert_song_card(con, "V1", familiarity="低")
+    songs = {"k1": {"total_plays": 5, "webpage_url": "https://www.youtube.com/watch?v=V1"}}
+    grounded_fn = FakeGroundedFn(responses=[("這不是 JSON", ["x"])])
+
+    upgraded = await run_card_upgrade_phase(con, songs, grounded_fn=grounded_fn, guard=FakeUpgradeGuard(),
+                                            sleep_fn=_noop_sleep, now=1000.0)
+
+    assert upgraded == 0
+    row = con.execute(
+        "SELECT familiarity, deep_story, upgraded_at FROM song_cards WHERE video_id='V1'"
+    ).fetchone()
+    assert row == ("低", "舊故事", 1000.0)
+
+
+def test_init_tables_adds_upgraded_at_column_to_old_song_cards(tmp_path):
+    c = sqlite3.connect(str(tmp_path / "old2.db"))
+    c.execute("""
+        CREATE TABLE song_cards (
+            video_id TEXT PRIMARY KEY, artist TEXT, title TEXT, imagery TEXT, deep_story TEXT,
+            relation TEXT, weight TEXT, familiarity TEXT, created_at REAL
+        )
+    """)
+    c.commit()
+    init_tables(c)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(song_cards)")}
+    assert "upgraded_at" in cols
+    init_tables(c)  # 重複呼叫不報錯
+    c.close()
 
 
 # ── init_tables：舊表（沒有 songable 欄）補欄位 ─────────────────────────────
