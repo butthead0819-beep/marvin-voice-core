@@ -29,12 +29,6 @@ def test_music_keyword_sends_without_wake():
     assert _send("換一首") is True
 
 
-def test_nemoclaw_lobster_sends():
-    # 龍蝦 = NemoClaw owner trigger，必須送（歷史漏接過）
-    assert _send("龍蝦幫我看明天會下雨嗎") is True
-    assert _send("龍蝦") is True
-
-
 def test_garbled_play_prefix_sends():
     # STT 常把「播放」截成「播」（播蕭煌奇 = 播放蕭煌奇 送予你的歌）。
     # gate 在 raw 上判定，no-wake 点歌靠 cleaner 修回「播放」→ gate 漏接的話 cleaner 沒機會修。

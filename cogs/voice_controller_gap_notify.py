@@ -21,13 +21,13 @@ logger = logging.getLogger(__name__)
 
 class GapNotifyMixin:
     def _dm_owner_intent_gap(self, gap_rec) -> None:
-        from cogs.voice_controller import _NEMOCLAW_OWNER_ID
-        if not _NEMOCLAW_OWNER_ID:
+        from cogs.voice_controller import _OWNER_ID
+        if not _OWNER_ID:
             return
 
         async def _send() -> None:
             try:
-                owner = self.bot.get_user(_NEMOCLAW_OWNER_ID) or await self.bot.fetch_user(_NEMOCLAW_OWNER_ID)
+                owner = self.bot.get_user(_OWNER_ID) or await self.bot.fetch_user(_OWNER_ID)
                 if owner is None:
                     return
                 domain_tag = f" domain={gap_rec.query_domain}" if gap_rec.query_domain else ""

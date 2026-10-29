@@ -333,7 +333,7 @@ class MarvinBot(commands.Bot):
                 from marvin_voice_core.discord_audio_stream_server import maybe_start as _start_stream
                 self.discord_audio_stream_server = await _start_stream(self.loop, vc_cog)
 
-        # 5b. 啟動 ErrorDispatcher — 真錯誤 → openclaw triage → DM owner
+        # 5b. 啟動 ErrorDispatcher — 真錯誤 → DM owner（Claude Code triage）
         await self._install_error_dispatcher(vc_cog)
 
         # 5c. 🫀 [防線①] 心跳信標——外部 probe 靠它偵測 event loop 凍住

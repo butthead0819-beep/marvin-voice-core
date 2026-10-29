@@ -38,9 +38,9 @@ def test_strip_maowen_variant():
 
 
 def test_strip_keeps_local_extras():
-    """voice_controller 本地額外詞（龍蝦/媽問等）不能在重構中丟失。"""
+    """voice_controller 本地額外詞（媽問等）不能在重構中丟失。"""
     VC = _get_vc_class()
-    for extra in ("龍蝦", "媽問", "嗨Mom"):
+    for extra in ("媽問", "嗨Mom"):
         assert extra in VC._WAKE_PATTERNS
 
 

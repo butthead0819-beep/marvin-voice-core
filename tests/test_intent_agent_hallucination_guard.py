@@ -10,8 +10,8 @@
 - 守門員角色 explicit，可獨立 iterate
 
 Bid 規約：
-- 0.96 — 明確幻覺（壓過 music 0.95 / nemoclaw 0.95）
-- 0.85 — 疑似幻覺（讓 music/nemoclaw 可以 override 如果真有點歌意圖）
+- 0.96 — 明確幻覺（壓過 music 0.95）
+- 0.85 — 疑似幻覺（讓 music 可以 override 如果真有點歌意圖）
 - None — 正常 query
 
 Handler: silent swallow (log only)。
@@ -154,16 +154,16 @@ async def test_handler_is_silent_swallow():
 
     # ctrl 上的任何 method 都不該被叫
     for name in ("_safe_music_command", "_ask_music_followup",
-                 "_handle_nemoclaw_query", "stream_fast_response"):
+                 "stream_fast_response"):
         attr = getattr(ctrl, name, None)
         if attr is not None and hasattr(attr, "assert_not_called"):
             attr.assert_not_called()
 
 
-# ── Confidence > music/nemoclaw 0.95（壓過去）─────────────────────────────
+# ── Confidence > music 0.95（壓過去）─────────────────────────────
 
 def test_guard_outranks_music_strong_play():
-    """明確幻覺場景（wake_loop），guard conf 必須 > 0.95（壓過 music/nemoclaw 0.95）。"""
+    """明確幻覺場景（wake_loop），guard conf 必須 > 0.95（壓過 music 0.95）。"""
     agent = _agent()
     bid = agent.bid(_ctx(
         query="馬文，馬文，馬文，馬文",

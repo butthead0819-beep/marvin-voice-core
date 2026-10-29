@@ -72,7 +72,6 @@
 | 功能 | 狀態 | 開關 |
 |---|---|---|
 | Marmo 雙人對白 | 30% 機率 | `MARMO_DUAL_SPEAK=true`、`MARMO_DUAL_CHANCE=0.3` |
-| NemoClaw（龍蝦，openclaw） | 只給 owner | `NVIDIA_API_KEY` |
 | DJ perspective mode | 熱聊命中 `personas/dj_perspectives.yaml` 關鍵詞才進扭蛋；2026-10-11 一天只觸發 1 次，效果待觀察 | — |
 | 主動話題 ProactiveTopicAgent | 會得標，但話題來源 `proactive_topics` 目前是空的 → 實際上不會講 | — |
 | 跨人橋接 BridgeAgent | `bridge_agent.py` 還在，但沒有任何地方 import，實際上沒在跑 | — |

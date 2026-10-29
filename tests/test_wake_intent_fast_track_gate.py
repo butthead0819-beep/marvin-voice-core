@@ -20,7 +20,6 @@ def _make_cog():
     bot.tts_engine.get_estimated_duration.return_value = 2.0
     bot.router = MagicMock()
     bot.router._background_intent_enrich = AsyncMock()
-    bot.router.classify_query_route = AsyncMock(return_value="marvin")
     bot.router.memory = MagicMock()
     bot.router.memory.get_player_data.return_value = {}
     bot.router.memory.list_players = MagicMock(return_value=[])
@@ -59,8 +58,6 @@ def _make_cog():
     cog._wake_response_pending = False
 
     # 把所有副作用 fast-track handler mock 起來，以便 assert 是否被呼叫
-    cog._handle_nemoclaw_query = AsyncMock()
-    cog._handle_marmo_query = AsyncMock()
     cog._safe_music_command = AsyncMock()
     cog._handle_voice_music_command = AsyncMock()
     cog._handle_voice_imitate_command = AsyncMock()
@@ -68,7 +65,7 @@ def _make_cog():
     cog._process_vision_query = AsyncMock()
     cog._handle_recall_query = AsyncMock()
 
-    # owner 判定預設 True，讓 NemoClaw smart router 路徑能進入
+    # owner 判定預設 True
     cog._is_owner_speaker = MagicMock(return_value=True)
 
     # query quality gate 預設通過
