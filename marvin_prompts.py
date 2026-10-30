@@ -27,6 +27,10 @@ MARVIN_CATCHPHRASES = load_catchphrases()
 RELATIONSHIP_TONE_MAP = load_relationship_tone_map()
 
 
+# 進場招呼不用 highlight/impression（萃取會張冠李戴，2026-10-30 大肚債務事故），只用近 3 天原話
+_GREETING_LAYERS_NO_DIGEST = frozenset({"player_greeting", "player_greeting_rhyme"})
+
+
 class PromptManager:
     """
     [Operation Paranoid Android] 
@@ -115,7 +119,6 @@ class PromptManager:
                 "【示範語感（僅供體會二到三句的口語節奏與押韻，切勿照抄字句）】：\n"
                 "- Showay 登場真有一套，拆電路板通靈技術高，今天又要去哪裡鬧？（二到三句口語，押ㄠ韻）\n"
                 "- 通靈大師 Showay 進場，短路修好走路都有光，今天繼續狂！（二到三句口語，押ㄤ韻）\n"
-                "- 大肚來報到，昨晚喝斷片今天頭痛到爆，起床開麥剛剛好！（二到三句口語，押ㄠ韻）\n"
                 "- 阿明終於上線，排位六連敗氣到差點摔筆電，今天帶你上分逆轉天！（二到三句口語，押ㄢ韻）\n\n"
                 "【硬性約束】：\n"
                 "1. 必須自然叫出剛進場玩家的名字！\n"
@@ -332,10 +335,10 @@ class PromptManager:
 
                 # 🏆 [Enhancement #3] 注入上次高光時刻作為自然的回憶勾點
                 highlight = mem.get("highlight_of_the_day", "")
-                if highlight:
+                if highlight and layer not in _GREETING_LAYERS_NO_DIGEST:
                     memory_context += f"\n[🏆 上次值得回憶的時刻 - {s}]：{highlight}（可以此為起點，自然地銜接話題，讓對方感受到被記住的重量）"
 
-                impression = memory_manager.get_player_impression(s)
+                impression = memory_manager.get_player_impression(s) if layer not in _GREETING_LAYERS_NO_DIGEST else ""
                 if impression:
                     impression_context += f"\n[👁️ Marvin 對 {s} 的深層感受]：{impression}"
 

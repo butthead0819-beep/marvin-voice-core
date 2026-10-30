@@ -744,23 +744,20 @@ class GeminiRouterContentMixin:
         except Exception as e:
             logger.debug(f"[Greeting] 取得近期 transcript 失敗: {e}")
 
+        # 進場招呼刻意不用 highlight/impression（萃取會張冠李戴，2026-10-30 大肚債務事故），只用近 3 天原話
         fresh_news = []
-        highlight = ""
         if getattr(self, "memory", None):
             try:
                 mem = self.memory.get_player_memory(player_name)
                 for news in mem.get("news_queue", [])[-2:]:
                     if time.time() - news.get("timestamp", 0) < 86400:
                         fresh_news.append(news.get("text", "").strip())
-                highlight = (mem.get("highlight_of_the_day", "") or "").strip()
             except Exception:
                 pass
 
         # 🎭 [動態押韻招呼生成路徑] 若有近期對話紀錄或新鮮話題，優先創作押韻對句
         if recent_chats or fresh_news:
             extra_context = list(fresh_news)
-            if highlight:
-                extra_context.append(f"印象：{highlight}")
             recent_summary = "、".join(recent_chats[-8:])
             if extra_context:
                 recent_summary += f"；其他近況：{'、'.join(extra_context)}"
