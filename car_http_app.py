@@ -1685,18 +1685,24 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             headers["icy-metaint"] = str(ICY_METAINT)
         resp = web.StreamResponse(status=200, headers=headers)
         await resp.prepare(request)
-        q = stream_source.subscribe()
+        preroll = 75 if request.query.get("icy") == "0" else 0
+        try:
+            q = stream_source.subscribe(preroll_frames=preroll)
+        except TypeError:
+            q = stream_source.subscribe()
         encoder = Mp3StreamEncoder(
             rate=stream_source.rate, channels=stream_source.channels,
             bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
         interleaver = IcyInterleaver() if icy_enabled else None
         speak_tracker = SpeakTracker() if (icy_enabled and _ICY_SPEAK_ENABLED) else None
+        fill_q = (SilenceFillQueue(q, timeout_s=1.0, fill_frames=5)
+                  if request.query.get("icy") == "0" else SilenceFillQueue(q))
         try:
             # SilenceFillQueue：satellite 的 mixer 本來就一直有幀（跟單一 mixer 第1刀的
             # Discord mixer 不同，那裡才是 on_demand 真正需要補靜音的理由），包了也無害，
             # 跟 marvin_voice_core.discord_audio_stream_server.handle_audio_stream 走同一份邏輯。
             async for chunk in iter_batched_encoded_frames(
-                    SilenceFillQueue(q), encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
+                    fill_q, encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
                 if interleaver is not None:
                     now = time.time()
                     info, start_time = _current_now_playing()
