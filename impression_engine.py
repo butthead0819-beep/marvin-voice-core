@@ -11,22 +11,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# 別名對應表：支援暱稱 / 俗稱對應到記憶庫的正式名稱
-_PLAYER_ALIASES: dict[str, str] = {
-    "老大": "showay",
-    "大大": "showay",
-    "showei": "showay",
-    "大肚子": "大肚",
-    "肚子": "大肚",
-    "弱哥": "weakgogo",
-    "弱弱": "weakgogo",
-    "weak": "weakgogo",
-    "狗露": "狗與鹿",
-    "狗與露": "狗與鹿",
-    "狗狗": "狗與鹿",
-    "鹿鹿": "狗與鹿",
-}
-
 # ── 預建說話 DNA ─────────────────────────────────────────────────────────────
 # 根據 STT 日誌與聊天紀錄人工分析的靜態基準值。
 # 系統從 suki_memory.json 動態補充/覆蓋這裡的資料。
