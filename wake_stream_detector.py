@@ -14,6 +14,10 @@ WakeStreamDetector — P3 聲學層實時喚醒詞偵測器。
   push_pcm(user_id, pcm_48k_stereo)          ← 每幀 20ms
   on_speech_end(user_id)                      ← VAD 切斷 / flush
   cleanup()                                   ← Sink 清理
+
+16k mono 用法（puck 全時收音路徑）：
+  建構時傳 input_rate=16000, input_channels=1，push_pcm 直接餵 16k mono
+  PCM bytes 即可，不需降採樣或 reshape。
 """
 
 import asyncio
@@ -42,11 +46,20 @@ class WakeStreamDetector:
     偵測到喚醒詞立刻回呼，完全不等 VAD 靜音。
     """
 
-    def __init__(self, whisper_model, on_wake_callback, loop: asyncio.AbstractEventLoop):
+    def __init__(self, whisper_model, on_wake_callback, loop: asyncio.AbstractEventLoop,
+                 input_rate: int = 48000, input_channels: int = 2):
         self.model = whisper_model
         # async (user_id: int, first_audio_time: float, text: str) -> None
         self.on_wake_callback = on_wake_callback
         self.loop = loop
+
+        if input_rate % 16000 != 0:
+            raise ValueError(f"input_rate 必須是 16000 的整數倍，got {input_rate}")
+        self.input_rate = input_rate
+        self.input_channels = input_channels
+        self._downsample = input_rate // 16000
+        self._window_bytes = int(_WINDOW_S * input_rate * input_channels * 2)
+        self._stride_bytes = int(_STRIDE_S * input_rate * input_channels * 2)
 
         self._buffers: dict[int, bytearray] = {}
         self._first_audio_time: dict[int, float] = {}
@@ -76,10 +89,10 @@ class WakeStreamDetector:
         n = len(buf)
 
         # 等到緩衝達 window 大小，且新累積了 stride 的量才觸發
-        if n >= _WINDOW_BYTES and (n - self._bytes_at_last_infer.get(user_id, 0)) >= _STRIDE_BYTES:
+        if n >= self._window_bytes and (n - self._bytes_at_last_infer.get(user_id, 0)) >= self._stride_bytes:
             self._bytes_at_last_infer[user_id] = n
             self._inflight[user_id] = True
-            snapshot = bytes(buf[-_WINDOW_BYTES:])
+            snapshot = bytes(buf[-self._window_bytes:])
             first_t = self._first_audio_time[user_id]
             self.loop.create_task(self._infer(user_id, snapshot, first_t))
 
@@ -98,10 +111,14 @@ class WakeStreamDetector:
 
     async def _infer(self, user_id: int, pcm_48k_stereo: bytes, first_audio_time: float) -> None:
         try:
-            # 48k stereo int16 → 16k mono float32
-            # reshape → mean across channels → 每 3 個取 1（降採樣 3:1）→ 正規化
-            arr = np.frombuffer(pcm_48k_stereo, dtype=np.int16).reshape(-1, 2)
-            mono_16k = arr.mean(axis=1)[::_DOWNSAMPLE].astype(np.float32) / 32768.0
+            # input_channels>=2：reshape → mean across channels；channels==1：直接用
+            # 再依 self._downsample 抽取 → 16k mono → 正規化
+            arr = np.frombuffer(pcm_48k_stereo, dtype=np.int16)
+            if self.input_channels == 2:
+                mono = arr.reshape(-1, 2).mean(axis=1)
+            else:
+                mono = arr
+            mono_16k = mono[::self._downsample].astype(np.float32) / 32768.0
 
             # faster-whisper.transcribe() 回傳 lazy generator，必須在 thread 內完成
             # iteration，否則 generate_segments() 會在事件迴圈主執行緒跑，阻塞心跳。
