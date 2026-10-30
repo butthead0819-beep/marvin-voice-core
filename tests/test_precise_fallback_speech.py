@@ -66,8 +66,6 @@ def _make_cog():
     # Mock side effect paths to avoid triggers
     cog._safe_music_command = AsyncMock()
     cog._handle_voice_music_command = AsyncMock()
-    cog._handle_voice_imitate_command = AsyncMock()
-    cog._handle_voice_status_query = AsyncMock()
     cog._process_vision_query = AsyncMock()
     cog._handle_recall_query = AsyncMock()
     cog._is_owner_speaker = MagicMock(return_value=True)

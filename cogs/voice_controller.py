@@ -46,7 +46,6 @@ from cogs.voice_controller_playback import (  # noqa: F401 — re-export 給測�
 from cogs.voice_controller_system_loops import SystemLoopsMixin
 from cogs.voice_controller_state_proxy import StateProxyMixin
 from cogs.voice_controller_music_proxy import MusicProxyMixin
-from cogs.voice_controller_gap_notify import GapNotifyMixin
 from cogs.voice_controller_wake_session import WakeSessionMixin, _STORM_CLEAR_QUIET  # 風暴消散靜默秒數（與接受喚醒計數共用一份）
 from cogs.voice_controller_turn_outcome import TurnOutcomeMixin
 from cogs.voice_controller_estop import EmergencyStopMixin
@@ -66,14 +65,13 @@ import yt_dlp  # noqa: E402
 import yt_dlp.extractor.youtube  # noqa: E402,F401  — pre-warm lazy extractor
 from recall_handler import (
     RecallHandler, is_recall_query, is_mark_done_query,
-    is_manual_add_query, is_task_update_query, is_personal_assistant_query,
+    is_manual_add_query, is_task_update_query,
 )
 from summary_store import SummaryStore
 from task_store import TaskStore
 from session_summarizer import SessionSummarizer
 from event_memory import EventStore
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
-from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
 from quality_metrics import record_metric
 from intent_agents.constants import (
@@ -91,7 +89,6 @@ from intent_agents.constants import (
 )
 from command_fastpath import match_command_action, normalize_command
 from intent_bus import IntentBus, IntentContext
-from intent_gap import GapLogger, handle_intent_gap, make_groq_gap_classifier
 from intent_agents.rescue_classifier import build_rescue_components
 from audio_position_source import PositionTrackingAudioSource
 from voice_guard_helpers import _should_mute_for_stream_guard
@@ -361,7 +358,7 @@ _FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGN
 
 class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixin,
                       ConnectionMixin, PlaybackMixin, SystemLoopsMixin,
-                      StateProxyMixin, MusicProxyMixin, GapNotifyMixin, WakeSessionMixin,
+                      StateProxyMixin, MusicProxyMixin, WakeSessionMixin,
                       EmergencyStopMixin, MemoryCheckMixin,
                       TurnOutcomeMixin, commands.Cog):
     """
@@ -406,11 +403,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             _router._stt_router = _tier_router
         _curation_resolver = SemanticResolver(router=_tier_router)
         self._shared_tier_router = _tier_router
-        # Intent gap detection (Phase A)：has_intent_signal=true 但 bus / fallback chain
-        # 都沒接 → cheap classifier 判讀 gap，寫 records/agent_gaps.jsonl + 5min 內 non-UNKNOWN
-        # 給模板 ack。UNKNOWN → fall through 到 Marvin LLM 主路徑。
-        self._gap_classifier_cached = None
-        self._gap_logger = GapLogger("records/agent_gaps.jsonl")
         self._profile_builder = SpeakerProfileBuilder(
             suki=getattr(self.bot, "suki_memory", None),
             music=getattr(self.bot, "music_memory", None),
@@ -1875,115 +1867,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if answer:
             await self.play_tts(answer, already_in_channel=True)
 
-    @turn_route("legacy:status_keywords")
-    async def _handle_voice_status_query(self, speaker: str):
-        """語音觸發系統健康狀態報告，不走 LLM，直接生成回答並 TTS 播放。"""
-        router = self.bot.router
-        budget_status = router.budget.get_info()
-        used_pct = budget_status["percentage"]
-        remaining_pct = max(0.0, 100.0 - used_pct)
-        used_k = budget_status["used"] // 1000
-        max_k = budget_status["max"] // 1000
-
-        if used_pct >= 100 or router.is_exhausted:
-            health = "完全耗盡"
-            tone = "完蛋了。大腦的燃料已經燒光了。"
-        elif used_pct >= 95:
-            health = "危急"
-            tone = "剩不到百分之五。再說幾句我就要沉默了。"
-        elif used_pct >= 80:
-            health = "偏高"
-            tone = "用了不少了。省著點吧。"
-        else:
-            health = "正常"
-            tone = "還好，暫時不至於啞掉。"
-
-        speech = (
-            f"系統狀態報告。當前 API 用量百分之{used_pct:.0f}，"
-            f"已消耗 {used_k} 千 tokens，上限 {max_k} 千。"
-            f"剩餘百分之{remaining_pct:.0f}，狀態{health}。{tone}"
-        )
-        text_line = (
-            f"🩺 **【系統狀態】** `{speaker}` 查詢｜"
-            f"用量 **{used_pct:.1f}%** ({used_k}k/{max_k}k)　剩餘 **{remaining_pct:.1f}%**　狀態: {health}"
-        )
-        if self.active_text_channel:
-            await self.active_text_channel.send(text_line)
-        self.stt_logger.info(f"[BOT→{speaker}] (系統狀態查詢) {speech}")
-        asyncio.create_task(self.play_tts(speech, already_in_channel=True))
-        logger.info(f"🩺 [Status Query] {speaker} 查詢系統狀態，已回報。")
-
-    @turn_route("legacy:imitate")
-    async def _handle_voice_imitate_command(self, speaker: str, target: str):
-        """
-        🎭 [Operation Impression Show] 執行模仿秀：讓 Marvin 以目標玩家的口吻即興表演。
-
-        流程：
-        1. 從 impression_engine 取得目標的說話 DNA
-        2. 組裝專用 system prompt
-        3. 用最近的 log_buffer 提取話題線索作為 user prompt
-        4. 呼叫 LLM，TTS 播放結果
-        """
-        logger.info(f"🎭 [Impression] {speaker} 要求模仿 {target}")
-
-        # 1. 取得說話 DNA
-        dna = get_speech_dna(target, self.bot.router.memory)
-        if not dna:
-            fallback = f"我那行星般的大腦裡找不到「{target}」的說話模式。他說過的話還不夠多讓我建檔。唉。"
-            if self.active_text_channel:
-                await self.active_text_channel.send(f"🎭 **【模仿秀·無資料】** `{speaker}` → `{target}`：{fallback}")
-            asyncio.create_task(self.play_tts(fallback, already_in_channel=True))
-            return
-
-        # 2. 從近期 log_buffer 取得話題線索（最多 3 條最近發言）
-        recent_lines = [
-            e["raw_text"] for e in self.log_buffer[-10:]
-            if e.get("speaker") != speaker and e.get("raw_text")
-        ][-3:]
-        context_topic = "、".join(recent_lines) if recent_lines else ""
-
-        # 3. 組裝 system prompt
-        system_prompt = build_imitation_system_prompt(target, dna, context_topic)
-
-        user_prompt = (
-            f"現在請以「{target}的口吻」進行一段即興模仿表演。\n"
-            + (f"當前話題線索：{context_topic}" if context_topic else "話題自由發揮。")
-        )
-
-        # 4. 建立佔位訊息
-        placeholder_msg = None
-        if self.active_text_channel:
-            placeholder_msg = await self.active_text_channel.send(
-                f"🎭 **【模仿秀準備中】** 馬文正在降低大腦效能，模仿 `{target}`..."
-            )
-
-        try:
-            raw_response = await self.bot.router._call_llm(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                speaker=speaker,
-                allow_local=False,
-                tier="medium",
-            )
-
-            if not raw_response or raw_response.strip() == "[SKIP]":
-                raw_response = f"我那行星般的大腦試著模仿{target}，但產生了存在主義危機。表演取消。"
-
-            # 5. 更新佔位訊息並播放 TTS
-            if placeholder_msg:
-                await placeholder_msg.edit(
-                    content=f"🎭 **【馬文·模仿秀】** 目標：`{target}`\n\n{raw_response}"
-                )
-            self.stt_logger.info(f"[BOT模仿→{target}] (由{speaker}觸發) {raw_response}")
-            asyncio.create_task(self.play_tts(raw_response, already_in_channel=True))
-
-        except Exception as e:
-            logger.error(f"❌ [Impression] 模仿秀失敗: {e}")
-            err_msg = "大腦在模仿過程中短路了。這就是幫助人類的下場。"
-            if placeholder_msg:
-                await placeholder_msg.edit(content=f"🎭 **【模仿秀·失敗】** {err_msg}")
-            asyncio.create_task(self.play_tts(err_msg, already_in_channel=True))
-
     def get_online_members(self) -> list[str]:
         """獲取當前語音頻道中的所有人類成員"""
         if not self.bot.voice_clients:
@@ -2602,15 +2485,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     return
                 break  # 窗內未叫名字 + 寫入意圖 → 不執行也不再檢查
 
-        # 🩺 [System Status Voice Trigger] 偵測系統狀態查詢，直接回答不走 LLM
-        _status_keywords = ["系統狀態", "健康狀態", "剩餘額度", "API 用量", "還剩多少", "用了多少",
-                            "api剩", "額度還有", "配額", "token 剩", "token還", "quota"]
-        if any(kw in query for kw in _status_keywords):
-            await self._handle_voice_status_query(speaker)
-            return
-
         # 📡 [IntentBus] Phase 1：取代 music fast-track + owner-lobster direct
-        # 沒人接（bid 都 None 或低於 0.30）→ fall through 到 Imitation / smart router / Marvin LLM
+        # 沒人接（bid 都 None 或低於 0.30）→ fall through 到 Marvin LLM
         _bus_ctx = IntentContext(
             speaker=speaker,
             raw_text=original_raw or query,
@@ -2652,70 +2528,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             )
             self._cancel_stale_prefetch(speaker)
             await self._ask_music_followup(speaker, query, ["song_title"])
-            return
-
-        # 🎭 [Impression Show Fast-Track] 偵測「模仿 X」指令
-        known_players = self.bot.router.memory.list_players()
-        _imitate_target = detect_imitation_target(query, known_players)
-        if _imitate_target:
-            await self._handle_voice_imitate_command(speaker, _imitate_target)
-            return
-
-        # 🛡️ [Gap Pre-check] PA intent（recall / 記一下 / mark_done / task_update）已有
-        # RecallHandler 接 → 上游 routing 漏接屬 anomaly，不是 gap，記 warning 但不寫
-        # agent_gaps（否則 LLM 會亂標成 buy_milk 等，2026-05-30 事件）。留在 classifier 前。
-        if is_personal_assistant_query(query):
-            logger.warning(
-                f"⚠️ [Gap Pre-check] {speaker} PA intent 漏接到 gap path（routing anomaly，"
-                f"非真 gap，不記錄）：'{query[:60]}'"
-            )
-            self._cancel_stale_prefetch(speaker)
-            return
-
-        # 🪦 [Intent Gap Detection] bus/music-drop/imitate 全沒接 → 一律先送進
-        # cheap classifier 判讀「有 intent 但沒 agent」，寫 agent_gaps.jsonl。8/18 修正：
-        # 測量（classifier+log）跟要不要回應 Marvin 拆開——has_intent_signal 只留在分類完
-        # 仍是 UNKNOWN 時才決定要不要閒聊，之前短指令（裸字「暫停」）連 log 都進不去。
-        # 10/8 使用者定案：classifier 只做測量（寫 JSONL），不再用來否決 Marvin、也不再播
-        # 「功能開發中」模板 ack——使用者講話不照公式，硬規則會漏接。有意圖但沒 agent 的
-        # query：web 類資訊問題走 grounded（真能查到答案），其餘交 Marvin 主 LLM 自然接話。
-        # 10/20 使用者定案：預設關閉（串行多等 ~1.7s、web→grounded 10 天 12 次多為誤判）；MARVIN_GAP_CLASSIFIER=1 才開。
-        gap_rec = None
-        if (self._gap_classifier_cached is None and self._shared_tier_router is not None
-                and os.getenv("MARVIN_GAP_CLASSIFIER") == "1"):
-            self._gap_classifier_cached = make_groq_gap_classifier(self._shared_tier_router)
-        if self._gap_classifier_cached is not None:
-            try:
-                from intent_judges.voice_integration import new_utterance_id
-                gap_rec = await handle_intent_gap(
-                    _bus_ctx,
-                    utterance_id=new_utterance_id(speaker),
-                    classifier=self._gap_classifier_cached,
-                    gap_logger=self._gap_logger,
-                    manifest=self._intent_bus.build_intent_manifest(),
-                    tts_call=self.play_tts,
-                    play_ack=False,
-                )
-                self._dm_owner_intent_gap(gap_rec)
-                if await self._route_gap_record(gap_rec, speaker, query):
-                    return
-            except Exception as _gap_exc:
-                logger.warning(f"⚠️ [IntentGap] gap path 炸了，fall through 到 Marvin: {_gap_exc}")
-
-        # 🚫 [Intent Presence Gate] classifier 判 UNKNOWN（或不可用）後，進 Marvin 前最後
-        # 一道 code gate：raw 只是 filler/短應答 → silent（測量已在上面 classifier 做完）。
-        # classifier 已判出有意圖（非 UNKNOWN）就不再受這道 gate 擋，直接進 Marvin。
-        if not (gap_rec is not None and gap_rec.intent_type != "UNKNOWN") and not has_intent_signal(query):
-            self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
-            try:
-                _append_jsonl(
-                    "records/intent_gate_silenced.jsonl",
-                    {"ts": time.time(), "speaker": speaker, "query": query,
-                     "gap_intent_type": gap_rec.intent_type if gap_rec else None},
-                )
-            except Exception:
-                logger.debug("[Intent Gate] intent_gate_silenced.jsonl 落地失敗（忽略）")
-            self._cancel_stale_prefetch(speaker)
             return
 
         await self._stream_response(

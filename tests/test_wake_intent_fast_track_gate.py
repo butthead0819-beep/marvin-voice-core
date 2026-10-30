@@ -60,8 +60,6 @@ def _make_cog():
     # 把所有副作用 fast-track handler mock 起來，以便 assert 是否被呼叫
     cog._safe_music_command = AsyncMock()
     cog._handle_voice_music_command = AsyncMock()
-    cog._handle_voice_imitate_command = AsyncMock()
-    cog._handle_voice_status_query = AsyncMock()
     cog._process_vision_query = AsyncMock()
     cog._handle_recall_query = AsyncMock()
 
