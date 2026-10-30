@@ -116,6 +116,7 @@ class PuckMicSession:
         self._last_speaking_at: Optional[float] = None
 
         self._suppressed = False
+        self._bad_packets = 0
 
         self._candidates = 0
         self._confirmed = 0
@@ -149,8 +150,12 @@ class PuckMicSession:
 
     async def feed_adpcm(self, data: bytes) -> None:
         if len(data) % BLOCK_BYTES != 0:
-            logger.warning(
-                f"🎙️ [PuckMic] {self.device} 收到非 {BLOCK_BYTES} 倍數長度（{len(data)}），丟棄整包")
+            # 高頻路徑（每秒 ~4 包）：只記第 1 次與之後每 50 次，避免壞串流灌爆 log
+            self._bad_packets += 1
+            if self._bad_packets % 50 == 1:
+                logger.warning(
+                    f"🎙️ [PuckMic] {self.device} 收到非 {BLOCK_BYTES} 倍數長度（{len(data)}），"
+                    f"丟棄整包（累計 {self._bad_packets}）")
             return
 
         n_blocks = len(data) // BLOCK_BYTES
