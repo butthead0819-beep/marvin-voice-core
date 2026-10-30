@@ -186,6 +186,15 @@ class DeclarativeIntentAgent:
 
     # ── Auto-implemented bid() ────────────────────────────────────────────────
 
+    def _get_compiled_intents(self) -> list[tuple[IntentSchema, list[re.Pattern]]]:
+        """預編譯快取：將 declare_intents 的 schema patterns 編譯為 re.Pattern 物件。"""
+        if not hasattr(self, "_compiled_intents_cache"):
+            self._compiled_intents_cache = [
+                (schema, [re.compile(p, re.IGNORECASE) if isinstance(p, str) else p for p in schema.patterns])
+                for schema in self.declare_intents()
+            ]
+        return self._compiled_intents_cache
+
     def bid(self, ctx: IntentContext) -> Bid:
         # Pre-gate: mode compatibility (non-overridable; subclass can't bypass)
         if ctx.mode not in self.mode_compatible:
@@ -200,9 +209,9 @@ class DeclarativeIntentAgent:
         if not text:
             return self._dense_zero("empty_query")
 
-        for schema in self.declare_intents():
-            for pat in schema.patterns:
-                m = re.search(pat, text, re.IGNORECASE)
+        for schema, compiled_patterns in self._get_compiled_intents():
+            for pat in compiled_patterns:
+                m = pat.search(text)
                 if not m:
                     continue
                 slots = {k: (v or "") for k, v in m.groupdict().items()}
@@ -247,7 +256,7 @@ class DeclarativeIntentAgent:
         if self.gate(ctx) is not None:
             return None
 
-        for schema in self.declare_intents():
+        for schema, _ in self._get_compiled_intents():
             if schema.name != intent_name:
                 continue
             filled = {k: (v or "") for k, v in (slots or {}).items()}
@@ -280,7 +289,7 @@ class DeclarativeIntentAgent:
         if not wake_hit:
             return None
 
-        for schema in self.declare_intents():
+        for schema, _ in self._get_compiled_intents():
             if not schema.phonetic_keywords or schema.phonetic_confidence is None:
                 continue
             score = phonetic_best_match(text, schema.phonetic_keywords)

@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 import time
 from dataclasses import replace
 from typing import Any, Awaitable, Callable
@@ -76,6 +78,22 @@ _PROMPT = (
 
 # 唯讀 tool 執行器 contract：async (tool_name: str, args: dict, ctx: IntentContext) -> str | None
 ReadonlyToolExecutor = Callable[[str, dict, IntentContext], Awaitable[str | None]]
+
+
+_WAKE_STRIP_RE = re.compile(r"馬文|瑪文|麻文|媽文|marvin|marvy", re.IGNORECASE)
+_PUNCT_STRIP_RE = re.compile(r"[\s\.,!\?，。！？、~～]+")
+_COMMAND_HINT_RE = re.compile(r"播|放|歌|曲|首|唱|聽|樂|音|聲|停|換|跳|切|暫|繼|大|小|靜|低|高|查|找|搜|問|誰|什|甚|啥|哪|幾|嗎|呢|怎|如|專|輯|詞|\?|？|點|來一")
+
+
+def _has_rescue_command_hint(query: str) -> bool:
+    """判斷使用者語句是否含有指令/音樂/查詢線索。純聊天敘述句回傳 False 以跳過昂貴的音訊救援。"""
+    if not query:
+        return True
+    cleaned = _WAKE_STRIP_RE.sub("", query)
+    compact = _PUNCT_STRIP_RE.sub("", cleaned)
+    if len(compact) <= 3:
+        return True
+    return bool(_COMMAND_HINT_RE.search(query))
 
 
 class AudioRescueAgent:
@@ -133,6 +151,10 @@ class AudioRescueAgent:
         self.last_abandon_reason = None
         if not ctx.rescue.audio_wav_bytes:
             return self._abandon("no_audio")
+
+        if os.environ.get("MARVIN_AUDIO_RESCUE_SKIP_CHAT", "1") != "0" and not _has_rescue_command_hint(ctx.query or ""):
+            print(f"📡 [AudioRescue] 純聊天語句無指令線索，跳過音訊救援: '{(ctx.query or '')[:30]}'")
+            return self._abandon("chat_fastpath")
 
         manifest = self.manifest_provider()
         action_declarations = manifest_to_function_declarations(manifest)

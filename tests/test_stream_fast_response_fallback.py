@@ -155,3 +155,39 @@ async def test_speculative_response_does_not_leak_llm_start_into_caller_dict():
     assert result == "預取內容"
     assert "llm_start" not in caller_dict
     assert "first_chunk" not in caller_dict
+
+
+@pytest.mark.asyncio
+async def test_stream_cloud_first_chunk_ttft_timeout_falls_back_to_stream_llm(monkeypatch):
+    """雲端 stream 物件立即取得，但第一個 chunk 超過 TTFT timeout → 自動 fallback 到 stream_llm。"""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setenv("MARVIN_CLOUD_TTFT_TIMEOUT_S", "0.05")
+
+    async def _slow_generator():
+        await asyncio.sleep(0.2)
+        yield MagicMock(text="慢速 chunk")
+
+    fake = _make_fake_router(None, None)
+    # 使用 mixin 原生的 _stream_cloud
+    fake._stream_cloud = lambda *a, **kw: grl.GeminiRouterLLMMixin._stream_cloud(fake, *a, **kw)
+    fake._cloud_rpm_window = []
+    fake._CLOUD_RPM_LIMIT = 20
+    fake.google_client = MagicMock()
+    fake.google_client.aio.models.generate_content_stream = AsyncMock(return_value=_slow_generator())
+    fake.model_name = "gemini-2.5-flash"
+    fake._supports_thinking = lambda: False
+    fake._try_acquire_chat_rpm_slot = lambda: True
+
+    async def _fallback_llm(*a, **kw):
+        yield "備援成功"
+
+    fake.stream_llm = _fallback_llm
+
+    chunks = []
+    async for chunk in fake.stream_fast_response("Alice", "哈囉"):
+        chunks.append(chunk)
+
+    assert "".join(chunks) == "備援成功"
+

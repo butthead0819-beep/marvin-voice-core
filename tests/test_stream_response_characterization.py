@@ -241,3 +241,38 @@ async def test_generic_error_classified_and_spoken(monkeypatch):
     await _run(vc)
     vc.play_tts.assert_awaited_once()
     assert "大腦" in vc.play_tts.call_args.args[0]
+
+
+# ── 9. 非阻塞 placeholder 發送 ────────────────────────────────────────────────
+@pytest.mark.asyncio
+async def test_placeholder_creation_is_non_blocking_before_llm_stream(monkeypatch):
+    """驗證 channel.send 耗時時，stream_fast_response 會在 send 完成之前就已經被呼叫。"""
+    import asyncio
+    vc, ph, ch = _make_vc(monkeypatch, ["第一句。"])
+
+    send_finished = False
+    llm_called_before_send_finished = False
+
+    async def _slow_send(*args, **kwargs):
+        nonlocal send_finished
+        await asyncio.sleep(0.05)
+        send_finished = True
+        return ph
+
+    ch.send = AsyncMock(side_effect=_slow_send)
+
+    original_stream_fn = vc.bot.router.stream_fast_response
+    def _tracking_stream(*args, **kwargs):
+        nonlocal llm_called_before_send_finished
+        if not send_finished:
+            llm_called_before_send_finished = True
+        return original_stream_fn(*args, **kwargs)
+
+    vc.bot.router.stream_fast_response = MagicMock(side_effect=_tracking_stream)
+
+    await _run(vc)
+
+    assert llm_called_before_send_finished is True
+    assert send_finished is True
+
+

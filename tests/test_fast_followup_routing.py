@@ -147,3 +147,25 @@ async def test_gap_classifier_called_with_env(monkeypatch):
     await vc._process_queued_query("狗與露", time.time(), wake_intent=None)
 
     handle_gap_mock.assert_awaited_once()
+
+
+async def test_speculative_prefetch_threshold_relaxed_to_four_chars():
+    """驗證 4~5 字的 _speculative_query（如 '收到請迴答'）會觸發預熱 LLM。"""
+    from tests.test_followup_listening import _make_cog_for_stt
+    cog, wf = _make_cog_for_stt()
+    cog.bot.router._speculative_response = AsyncMock(return_value="ok")
+    wf.multi_channel_decide.return_value = (
+        True, 0.95,
+        {"voice": 0.95, "task": 0.0, "info": 0.0, "control": 0.0,
+         "threshold": 0.35, "total": 0.95},
+    )
+
+    await cog.handle_stt_result(
+        "TestUser", "馬文收到請迴答", time.time(), b"fake_audio",
+        bypass_etd=True,
+    )
+
+    assert "TestUser" in cog.bot.router._pending_prefetch
+    cog.bot.router._speculative_response.assert_called_once()
+    assert cog.bot.router._speculative_response.call_args[0][1] == "收到請迴答"
+

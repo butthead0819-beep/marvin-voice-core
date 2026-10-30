@@ -104,7 +104,7 @@ from utterance_budget import STREAM_BUDGET
 import audio_mixing
 import ack_templates
 import pipeline_timing
-from etd_clean_reuse import clean_for_worker, remember_etd
+from etd_clean_reuse import clean_for_worker, remember_etd, run_real_cleaner_call
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
 from helper_wake import is_helper_wake
@@ -202,6 +202,38 @@ def build_autopilot_recommendation(
         feedback_window_s=300,
         channel_state=channel_state,
     )
+
+
+class _PlaceholderHandle:
+    __slots__ = ("_task", "_msg")
+
+    def __init__(self, task):
+        self._task = task
+        self._msg = None
+
+    async def _resolve(self):
+        if self._msg is None and self._task is not None:
+            try:
+                self._msg = await self._task
+            except Exception:
+                self._msg = None
+        return self._msg
+
+    async def edit(self, **kwargs):
+        msg = await self._resolve()
+        if msg:
+            await msg.edit(**kwargs)
+
+    async def delete(self):
+        msg = await self._resolve()
+        if msg:
+            await msg.delete()
+
+
+def _make_placeholder_handle(channel, content: str):
+    if not channel:
+        return None
+    return _PlaceholderHandle(asyncio.create_task(channel.send(content)))
 
 
 def build_nowake_play_ctx(speaker, full_raw_text, query, *, stream_active, is_owner):
@@ -336,6 +368,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
     [Operation Paranoid Android] 
     馬文 (Marvin) 的語音控制器：負責語音監聽、社交分析、TTS 廣播與史官系統。
     """
+    _run_real_cleaner_call = staticmethod(run_real_cleaner_call)
+
     def __init__(self, bot):
         self.bot = bot
         # 1. 狀態追蹤
@@ -388,19 +422,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._rescue_agent = _rescue_agent
         # 建立實體 cleaner_call 傳給 IntentBus 競速使用
         async def real_cleaner_call(c: IntentContext) -> str:
-            if not hasattr(self.bot, "router") or not hasattr(self.bot.router, "clean_stt_text"):
-                return c.raw_text or c.query or ""
-            recent_ctx = []
-            if hasattr(self.bot, "engine") and self.bot.engine.conv_buffer:
-                recent_ctx = self.bot.engine.conv_buffer.get_last_n_utterances(5)
-            # 呼叫 clean_stt_text，speaker=None 以隔離 wake side-effect，apply_gate=False
-            res = await self.bot.router.clean_stt_text(
-                c.raw_text or c.query or "",
-                context=recent_ctx,
-                speaker=None,
-                apply_gate=False,
-            )
-            return res.get("text", "")
+            return await run_real_cleaner_call(self, c)
 
         self._intent_bus = IntentBus(
             build_intent_agents(self, self.bot),
@@ -1207,9 +1229,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 _sc = shortcut_query(self._get_music_fastpath(), _sc_stripped)
                 if _sc and not self._wakeless_in_window(speaker, raw_text):   # 窗內沒叫名字的指令不直派
                     # 已服務標記：debounce 晚關窗的同句，wakeless 救援據此讓路（防重派）
-                    if not hasattr(self, "_shortcut_served"):
-                        self._shortcut_served = {}
+                    self._shortcut_served = getattr(self, "_shortcut_served", {})
                     self._shortcut_served[speaker] = (_sc_stripped, time.time())
+                    self.speech_buffers.pop(speaker, None)
                     logger.info(f"⚡ [WakeShortcut] {speaker} '{raw_text[:24]}' → '{_sc[:32]}' 直派跳過佇列")
                     pipeline_timing.mark("intent_dispatched")
                     pipeline_timing.emit(speaker, raw_text, suffix=f" route=wake_shortcut:{_sc[:15]}")
@@ -1258,7 +1280,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             # 🚀 [Phase 3] 投機預取：若喚醒句已含足夠問句內容，立即開始 LLM 預熱
             # 不等 queue worker 處理，爭取 2-8 秒的 LLM 前置時間
             _speculative_query = self._strip_wake_word(raw_text)
-            if len(_speculative_query) >= 6 and hasattr(self.bot, "router"):
+            if len(_speculative_query) >= 4 and hasattr(self.bot, "router"):
                 # 取消同一玩家舊有的預取（若存在）
                 _old = self.bot.router._pending_prefetch.pop(speaker, None)
                 if _old and not _old.done():
@@ -2169,8 +2191,18 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         lower_t = t.lower()
         for w in sorted(self._WAKE_PATTERNS, key=len, reverse=True):
             if lower_t.startswith(w.lower()):
-                t = t[len(w):].lstrip("，,、！!？? ")
-                break
+                return t[len(w):].lstrip("，,、！!？? ").strip()
+
+        # 前 4 個字內若有真實喚醒詞，將喚醒詞及其前面的短贅字一併切掉
+        for w in sorted(self._WAKE_PATTERNS, key=len, reverse=True):
+            idx = lower_t.find(w.lower())
+            if 0 < idx <= 4:
+                return t[idx + len(w):].lstrip("，,、！!？? ").strip()
+
+        from wake_detector import has_mangled_wake, strip_mangled_wake
+        if has_mangled_wake(t):
+            return strip_mangled_wake(t)
+
         return t.strip()
 
     def _detect_text_lang(self, text: str) -> str:
@@ -2700,11 +2732,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         """
         online_members = self.get_online_members()
 
-        # 2. 建立 Discord 佔位訊息
-        placeholder_msg = None
-        if self.active_text_channel:
-            _ph_intro = "想查點東西...(組織措辭中)" if _is_helper else "叫了我...(組織措辭中)"
-            placeholder_msg = await self.active_text_channel.send(f"{_head} `{speaker}` {_ph_intro}")
+        # 2. 建立 Discord 佔位訊息（非阻塞）
+        _ph_intro = "想查點東西...(組織措辭中)" if _is_helper else "叫了我...(組織措辭中)"
+        placeholder_msg = _make_placeholder_handle(self.active_text_channel, f"{_head} `{speaker}` {_ph_intro}")
 
         # 3. 🎭 [Emotion Inference] 取出說話者最新情緒標籤
         emotion_tag = self.user_emotion_cache.get(speaker, "neutral")

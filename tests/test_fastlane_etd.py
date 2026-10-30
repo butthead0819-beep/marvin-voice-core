@@ -128,3 +128,45 @@ async def test_thinking_word_in_window_still_buffers_without_calling_fastlane_ch
     buf = vc.user_sentence_buffer.pop("A")
     if buf.get("task"):
         buf["task"].cancel()
+
+
+# ── 7. 窗外喚醒句：跳過 Groq，直接回合成結果 ─────────────────────────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wake_phrase", [
+    "馬文下一首",
+    "馬文停止播放",
+    "馬文播放陳華的如果我很平庸",
+    "馬文收到請迴答",
+    "法文下一首",
+])
+async def test_out_of_window_wake_phrase_skips_groq(wake_phrase):
+    cog = _FakeCog()
+    with patch("time.time", return_value=1.0):
+        result = await cog._etd_semantic_check("A", wake_phrase)
+    assert result == {"text": wake_phrase, "is_complete": True}
+    cog.bot.router.clean_stt_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_env_disabled_wake_phrase_still_calls_groq(monkeypatch):
+    monkeypatch.setenv("MARVIN_FASTLANE_SKIP_CLEAN", "0")
+    cog = _FakeCog()
+    with patch("time.time", return_value=1.0):
+        result = await cog._etd_semantic_check("A", "馬文下一首")
+    cog.bot.router.clean_stt_text.assert_awaited_once_with("馬文下一首")
+    assert result == {"text": "cleaned", "is_complete": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("non_wake_phrase", [
+    "幫我查明天天氣",
+    "今天天氣真好",
+])
+async def test_out_of_window_non_wake_phrase_calls_groq(non_wake_phrase):
+    cog = _FakeCog()
+    with patch("time.time", return_value=1.0):
+        result = await cog._etd_semantic_check("A", non_wake_phrase)
+    cog.bot.router.clean_stt_text.assert_awaited_once_with(non_wake_phrase)
+    assert result == {"text": "cleaned", "is_complete": True}
+

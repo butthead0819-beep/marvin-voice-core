@@ -615,8 +615,19 @@ class GeminiRouterLLMMixin:
                     timeout=8.0
                 )
                 async with asyncio.timeout(30.0):
-                    async for chunk in stream:
+                    ttft_timeout = float(os.environ.get("MARVIN_CLOUD_TTFT_TIMEOUT_S", "3.5"))
+                    stream_iter = aiter(stream)
+                    got_first_chunk = False
+                    while True:
+                        try:
+                            if not got_first_chunk:
+                                chunk = await asyncio.wait_for(anext(stream_iter), timeout=ttft_timeout)
+                            else:
+                                chunk = await anext(stream_iter)
+                        except StopAsyncIteration:
+                            break
                         if chunk.text:
+                            got_first_chunk = True
                             yield chunk.text
             else:
                 async for chunk in await self.client.chat.completions.create(

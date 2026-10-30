@@ -17,6 +17,7 @@ from wake_detector import has_mangled_wake
 @pytest.mark.parametrize("text", [
     "法文繼續播放啊", "打文播放陶晶瑩的養你一輩子", "保文幫我查遊戲叫做微小生存戰二",
     "南文幫我查光烈兔的綠春", "保溫停止播放", "欸，法文下一首",   # 30 天內實際聽錯的喚醒詞
+    "麻煩下一首", "打完播放左邊的人", "拿我下一首", "老媽播放晴天", "媽我下一首",
 ])
 def test_mangled_wake_at_start_before_command(text):
     assert has_mangled_wake(text)
@@ -25,9 +26,18 @@ def test_mangled_wake_at_start_before_command(text):
 @pytest.mark.parametrize("text", [
     "我最近在學法文", "法文很難念", "保溫杯放哪裡", "冰充電並播放啊", "播放酷狗音樂",
     "你說我一血啊我能幫你查一下", "中文幫我查一下", "",
+    "麻煩你幫我看一下", "我打完了",
 ])
 def test_not_mangled_wake(text):
     assert not has_mangled_wake(text)
+
+
+def test_strip_mangled_wake_helper():
+    from wake_detector import strip_mangled_wake
+    assert strip_mangled_wake("麻煩下一首") == "下一首"
+    assert strip_mangled_wake("打完播放左邊的人") == "播放左邊的人"
+    assert strip_mangled_wake("拿我下一首") == "下一首"
+    assert strip_mangled_wake("今天天氣很好") == "今天天氣很好"
 
 
 # ── WakeSessionMixin._iba_wake_word_ok ──────────────────────────────────────
@@ -55,6 +65,7 @@ def _ch(voice, alt=0.0):
     ("法文繼續播放啊", _ch(0.3), True),           # 聽錯的喚醒詞照放
     ("你說什麼", _ch(0.3, alt=0.8), True),        # N-best 救援（WakeAltRescue）照放
     ("冰充電並播放啊", None, True),               # legacy 無 fusion 路徑不動
+    ("那我把馬文停止播放", _ch(0.3), True),        # 句中真實喚醒詞照放
 ])
 def test_iba_wake_word_ok(text, ch, expected):
     assert _Cog()._iba_wake_word_ok("Alice", text, True, ch) is expected
@@ -93,3 +104,14 @@ async def test_handle_stt_result_requires_wake_word(text, voice, accepted):
     cog._mixer.tts_load_seconds.return_value = 0.0
     await cog.handle_stt_result("Alice", text, time.time(), b"fake_audio", bypass_etd=True)
     assert cog._wake_response_pending is accepted
+
+
+def test_strip_wake_word_mid_sentence_and_mangled():
+    from cogs.voice_controller import VoiceController
+    vc = VoiceController.__new__(VoiceController)
+    assert vc._strip_wake_word("那我把馬文停止播放") == "停止播放"
+    assert vc._strip_wake_word("麻煩下一首") == "下一首"
+    assert vc._strip_wake_word("打完播放左邊的人") == "播放左邊的人"
+    assert vc._strip_wake_word("拿我下一首") == "下一首"
+    assert vc._strip_wake_word("馬文播放晴天") == "播放晴天"
+
