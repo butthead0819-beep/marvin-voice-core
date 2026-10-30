@@ -1073,6 +1073,203 @@ async def inject_audio(vc, wav_bytes: bytes, speaker: str | None = None, *,
     return True
 
 
+async def transcribe_audio_v1(vc, wav_bytes: bytes) -> str:
+    """OpenAI 相容 `/v1/audio/transcriptions` 核心：沿用 `macos_stt_v2_bin`，跟 Discord 共用 `stt_lock` 排隊。"""
+    if not wav_bytes:
+        return ""
+    engine = getattr(getattr(vc, "bot", None), "engine", None)
+    if engine is None:
+        return ""
+    stt_lock = getattr(engine, "stt_lock", None)
+    fd, tmp_path = tempfile.mkstemp(prefix="xiaozhi_asr_", suffix=".wav")
+    os.close(fd)
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(wav_bytes)
+        if stt_lock is not None:
+            async with stt_lock:
+                raw_text, _meta = await engine._run_swift_stt(
+                    tmp_path, is_wake_check=False, v2=True)
+        else:
+            raw_text, _meta = await engine._run_swift_stt(
+                tmp_path, is_wake_check=False, v2=True)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+    return (raw_text or "").strip()
+
+
+async def _filter_cot_stream(raw_stream):
+    """過濾 LLM 串流中的 `<think>...</think>` 與 `<thinking>...</thinking>` 區塊。"""
+    in_think = False
+    pending = ""
+    open_tag = ""
+    open_tags = ("<thinking>", "<think>")
+    async for chunk in raw_stream:
+        if not chunk or chunk == "__SEARCHING__":
+            continue
+        pending += chunk
+        while True:
+            if not in_think:
+                earliest_idx = -1
+                matched_tag = ""
+                for tag in open_tags:
+                    idx = pending.find(tag)
+                    if idx != -1 and (earliest_idx == -1 or idx < earliest_idx):
+                        earliest_idx = idx
+                        matched_tag = tag
+                if earliest_idx == -1:
+                    safe_end = len(pending)
+                    for tag in open_tags:
+                        for plen in range(len(tag) - 1, 0, -1):
+                            if pending.endswith(tag[:plen]):
+                                safe_end = min(safe_end, len(pending) - plen)
+                                break
+                    if safe_end > 0:
+                        yield pending[:safe_end]
+                    pending = pending[safe_end:]
+                    break
+                else:
+                    if earliest_idx > 0:
+                        yield pending[:earliest_idx]
+                    open_tag = matched_tag
+                    pending = pending[earliest_idx + len(matched_tag):]
+                    in_think = True
+            else:
+                close_tag = "</thinking>" if open_tag == "<thinking>" else "</think>"
+                close_idx = pending.find(close_tag)
+                if close_idx == -1:
+                    break
+                pending = pending[close_idx + len(close_tag):]
+                in_think = False
+    if not in_think and pending:
+        yield pending
+
+
+async def generate_xiaozhi_reply_stream(vc, speaker: str, raw_text: str):
+    """OpenAI 相容 `/v1/chat/completions` 串流產生器（供 xinnan 呼叫）。
+
+    1. 剝除開頭喚醒詞（若使用者連喚醒詞一起講）。
+    2. 寫入對話緩衝（conv_buffer / atmosphere_tracker）。
+    3. 若命中音樂控制或點歌指令，委派 MusicCog（play_ack=False 避免電台重複出聲）並回傳簡短確認台詞給小智唸出。
+    4. 一般對話走 router.stream_fast_response，過濾 `<think>` 與 `[[GESTURE]]` 標籤後逐段 yield。
+    """
+    text = (raw_text or "").strip()
+    if not text:
+        return
+
+    if hasattr(vc, "_strip_wake_word") and callable(vc._strip_wake_word):
+        stripped = vc._strip_wake_word(text)
+        query = (stripped if isinstance(stripped, str) and stripped.strip() else text).strip()
+    else:
+        query = re.sub(WAKE_PATTERN, "", text, count=1, flags=re.IGNORECASE).strip(" ，,、！!？?。.") or text
+
+    now = time.time()
+    engine = getattr(getattr(vc, "bot", None), "engine", None)
+    if engine is not None and getattr(engine, "conv_buffer", None) is not None:
+        try:
+            engine.conv_buffer.add_entry(speaker, text, now)
+        except Exception:  # noqa: BLE001
+            pass
+    router = getattr(getattr(vc, "bot", None), "router", None)
+    if router is not None and getattr(router, "atmosphere_tracker", None) is not None:
+        try:
+            router.atmosphere_tracker.add_utterance(speaker, text, now)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 檢查是否為音樂控制／點歌指令
+    mc = getattr(getattr(vc, "bot", None), "cogs", {}).get("MusicCog") if getattr(vc, "bot", None) else None
+    if mc is not None and hasattr(mc, "_handle_voice_music_command"):
+        cmd = None
+        cmd_query = query
+        try:
+            from command_fastpath import normalize_command
+            norm_cmd = normalize_command(query)
+            if norm_cmd:
+                cmd_query = norm_cmd
+        except Exception:  # noqa: BLE001
+            pass
+
+        if hasattr(vc, "_detect_music_command") and callable(vc._detect_music_command):
+            detected = vc._detect_music_command(cmd_query)
+            if isinstance(detected, str) and detected in ("play", "skip", "stop", "pause", "resume"):
+                cmd = detected
+        if cmd is None:
+            if re.search(r"(下一首|切歌|換歌|換一首|跳過)", cmd_query):
+                cmd = "skip"
+            elif re.search(r"^(暫停|先暫停|暫停播放|暫停音樂)[!！。\.，,]*$", cmd_query):
+                cmd = "pause"
+            elif re.search(r"(停止播放|停音樂|關掉音樂|別播了)", cmd_query):
+                cmd = "stop"
+            elif re.search(r"(繼續播放|繼續放|恢復播放)", cmd_query):
+                cmd = "resume"
+            elif re.match(r"^(放一首|播一首|來一首|點一首|播放|放歌|放點)", cmd_query):
+                cmd = "play"
+
+        if cmd is not None:
+            asyncio.create_task(mc._handle_voice_music_command(speaker, cmd_query, cmd, play_ack=False))
+            ack_map = {
+                "skip": "好，換下一首。",
+                "pause": "好，暫停了。",
+                "stop": "好，音樂停了。",
+                "resume": "好，繼續播。",
+                "play": "好，幫你排進去了。",
+            }
+            yield ack_map.get(cmd, "好。")
+            return
+
+    if router is None or not hasattr(router, "stream_fast_response"):
+        yield "我現在連不上大腦，稍後再試。"
+        return
+
+    history = []
+    if engine is not None and getattr(engine, "conv_buffer", None) is not None:
+        try:
+            history = engine.conv_buffer.get_last_n_utterances(n=5)
+        except Exception:  # noqa: BLE001
+            history = []
+    online_members = []
+    if hasattr(vc, "get_online_members") and callable(vc.get_online_members):
+        try:
+            online_members = vc.get_online_members() or []
+        except Exception:  # noqa: BLE001
+            online_members = []
+    emotion_tag = getattr(vc, "user_emotion_cache", {}).get(speaker, "neutral") if isinstance(getattr(vc, "user_emotion_cache", None), dict) else "neutral"
+    stream_active = bool(getattr(vc, "stream_mode", False))
+
+    llm_stream = router.stream_fast_response(
+        speaker,
+        query,
+        history=history,
+        online_members=online_members,
+        emotion_tag=emotion_tag,
+        stream_active=stream_active,
+        game_mode=False,
+        hot_chat=False,
+        puck_gesture=False,
+    )
+    llm_stream = _filter_cot_stream(llm_stream)
+    try:
+        import puck_gesture
+        llm_stream = puck_gesture.strip_gesture_stream(llm_stream)
+    except Exception:  # noqa: BLE001
+        pass
+
+    first_chunk = True
+    async for chunk in llm_stream:
+        if not chunk or chunk == "__SEARCHING__":
+            continue
+        if "[SKIP]" in chunk:
+            continue
+        if first_chunk:
+            chunk = chunk.lstrip()
+            if not chunk:
+                continue
+            first_chunk = False
+        yield chunk
+
+
 def build_marvin_comment_prompt(*, playing: bool, title: str = "", by: str = "",
                                  queue: list | None = None,
                                  other_cards: list[dict] | None = None) -> tuple[str, str]:
@@ -1476,7 +1673,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         """
         if stream_source is None:
             return web.Response(status=404, headers=_CORS)
-        icy_enabled = request.headers.get("Icy-MetaData") == "1"
+        icy_enabled = (request.headers.get("Icy-MetaData") == "1") and (request.query.get("icy") != "0")
         headers = {
             **_CORS, "Content-Type": "audio/mpeg",
             "X-Audio-Codec": "mp3",
@@ -1488,18 +1685,24 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             headers["icy-metaint"] = str(ICY_METAINT)
         resp = web.StreamResponse(status=200, headers=headers)
         await resp.prepare(request)
-        q = stream_source.subscribe()
+        preroll = 75 if request.query.get("icy") == "0" else 0
+        try:
+            q = stream_source.subscribe(preroll_frames=preroll)
+        except TypeError:
+            q = stream_source.subscribe()
         encoder = Mp3StreamEncoder(
             rate=stream_source.rate, channels=stream_source.channels,
             bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
         interleaver = IcyInterleaver() if icy_enabled else None
         speak_tracker = SpeakTracker() if (icy_enabled and _ICY_SPEAK_ENABLED) else None
+        fill_q = (SilenceFillQueue(q, timeout_s=1.0, fill_frames=5)
+                  if request.query.get("icy") == "0" else SilenceFillQueue(q))
         try:
             # SilenceFillQueue：satellite 的 mixer 本來就一直有幀（跟單一 mixer 第1刀的
             # Discord mixer 不同，那裡才是 on_demand 真正需要補靜音的理由），包了也無害，
             # 跟 marvin_voice_core.discord_audio_stream_server.handle_audio_stream 走同一份邏輯。
             async for chunk in iter_batched_encoded_frames(
-                    SilenceFillQueue(q), encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
+                    fill_q, encoder, min_bytes=_AUDIO_STREAM_BATCH_BYTES):
                 if interleaver is not None:
                     now = time.time()
                     info, start_time = _current_now_playing()
@@ -1645,6 +1848,113 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             {"ok": True, "state": state, "present": car_presence.is_present,
              "occupants": car_presence.occupants}, headers=_CORS)
 
+    async def handle_v1_transcriptions(request):
+        """POST /v1/audio/transcriptions — OpenAI Whisper 相容 ASR 端點（供 xinnan 呼叫）。"""
+        wav_bytes = b""
+        ctype = request.headers.get("Content-Type", "")
+        if "multipart/" in ctype:
+            reader = await request.multipart()
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                if part.name == "file":
+                    wav_bytes = await part.read(decode=False)
+                    break
+        else:
+            wav_bytes = await request.read()
+        if not wav_bytes:
+            return web.json_response({"error": "empty_audio"}, status=400, headers=_CORS)
+        text = await transcribe_audio_v1(vc, wav_bytes)
+        logger.info(f"🎙️ [XiaozhiASR] 轉錄結果: {text!r}")
+        return web.json_response({"text": text}, headers=_CORS)
+
+    async def handle_v1_chat_completions(request):
+        """POST /v1/chat/completions — OpenAI Chat Completions 相容端點（供 xinnan 呼叫）。"""
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"error": "invalid_json"}, status=400, headers=_CORS)
+        messages = body.get("messages") or []
+        stream = bool(body.get("stream", False))
+        model_name = body.get("model") or "marvin"
+        speaker = body.get("user") or default_speaker
+
+        user_text = ""
+        for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    user_text = content.strip()
+                    break
+
+        logger.info(f"🤖 [XiaozhiLLM] 收到訊息 ({speaker}, stream={stream}): {user_text!r}")
+        created_ts = int(time.time())
+        comp_id = f"chatcmpl-marvin-{created_ts}"
+
+        if not stream:
+            pieces = []
+            async for chunk in generate_xiaozhi_reply_stream(vc, speaker, user_text):
+                pieces.append(chunk)
+            full_reply = "".join(pieces).strip() or "……"
+            return web.json_response({
+                "id": comp_id,
+                "object": "chat.completion",
+                "created": created_ts,
+                "model": model_name,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": full_reply},
+                    "finish_reason": "stop",
+                }],
+            }, headers=_CORS)
+
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                **_CORS,
+                "Content-Type": "text/event-stream; charset=utf-8",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+        await resp.prepare(request)
+        sent_any = False
+        try:
+            async for chunk in generate_xiaozhi_reply_stream(vc, speaker, user_text):
+                if not chunk:
+                    continue
+                sent_any = True
+                payload = {
+                    "id": comp_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_ts,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {"content": chunk}, "finish_reason": None}],
+                }
+                await resp.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+            if not sent_any:
+                payload = {
+                    "id": comp_id,
+                    "object": "chat.completion.chunk",
+                    "created": created_ts,
+                    "model": model_name,
+                    "choices": [{"index": 0, "delta": {"content": "……"}, "finish_reason": None}],
+                }
+                await resp.write(f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+            stop_payload = {
+                "id": comp_id,
+                "object": "chat.completion.chunk",
+                "created": created_ts,
+                "model": model_name,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            await resp.write(f"data: {json.dumps(stop_payload, ensure_ascii=False)}\n\n".encode("utf-8"))
+            await resp.write(b"data: [DONE]\n\n")
+        except (ConnectionError, asyncio.CancelledError):
+            pass
+        return resp
+
     async def handle_preflight(request):
         return web.Response(status=204, headers=_CORS)
 
@@ -1652,11 +1962,13 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     async def _token_gate(request, handler):
         # eng review 架構#1：Funnel 公開整台 server → 統一 token gate 全端點。
         # token=None＝Tailscale 私網信任、不驗證；OPTIONS preflight 帶不了自訂 auth 故放行。
-        # token 可走 X-Marvin-Token header 或 ?t=（控制台網頁跨網域呼叫方便）。
+        # token 可走 X-Marvin-Token header、?t=（控制台網頁跨網域呼叫方便）或 Authorization: Bearer <token>（OpenAI 相容端點）。
         # /stage_icon.png 額外放行：iOS 抓 apple-touch-icon（加入主畫面）不會帶 query token，
         # 其餘路徑行為完全不變。
         if token and request.method != "OPTIONS" and request.path != "/stage_icon.png":
-            tok = request.headers.get("X-Marvin-Token") or request.query.get("t")
+            auth_hdr = request.headers.get("Authorization", "")
+            bearer = auth_hdr[7:].strip() if auth_hdr.lower().startswith("bearer ") else None
+            tok = request.headers.get("X-Marvin-Token") or request.query.get("t") or bearer
             if tok != token:
                 return web.json_response({"error": "unauthorized"}, status=401, headers=_CORS)
         return await handler(request)
@@ -1678,6 +1990,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_post("/audio", handle_audio)
     app.router.add_options("/audio", handle_preflight)
     app.router.add_get("/audio_stream", handle_audio_stream)
+    app.router.add_get("/audio_stream.mp3", handle_audio_stream)
     app.router.add_get("/car_now", handle_car_now)
     app.router.add_get("/car_cover", handle_car_cover)
     app.router.add_get("/car_skin", handle_car_skin)
@@ -1686,6 +1999,10 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_get("/stage_icon.png", handle_stage_icon)
     app.router.add_post("/car", handle_car)
     app.router.add_options("/car", handle_preflight)
+    app.router.add_post("/v1/audio/transcriptions", handle_v1_transcriptions)
+    app.router.add_options("/v1/audio/transcriptions", handle_preflight)
+    app.router.add_post("/v1/chat/completions", handle_v1_chat_completions)
+    app.router.add_options("/v1/chat/completions", handle_preflight)
     app["puck_cover_cache"] = _puck_cache
     app["puck_skin_store"] = _skin_store
     return app

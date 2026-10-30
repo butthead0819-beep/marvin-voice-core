@@ -9,9 +9,7 @@ Phase B（本檔下半部）補三個 Phase A 刻意跳過的呼叫點，這次�
     1. voice_controller_connection.py::handle_summon 進場招呼
        —— 原本完全沒有 try/finally，play_tts 中途拋例外會讓 _tts_protected
        卡在 True 永遠不還原（之後所有 TTS 都被當成 protected，guard 失效）。
-    2. voice_controller.py::_handle_nemoclaw_query NemoClaw 回應 TTS
-       —— 原本 finally 硬設 False，若外層已在另一個 protected 窗口中（巢狀），
-       會把外層的保護提早清掉。
+    2. （原 voice_controller.py::_handle_nemoclaw_query，2026-10-29 隨 openclaw 移除）
     3. music_cog_tail_dj.py::_maybe_play_dj_interjection DJ 尾段口白
        —— 同上，finally 硬設 False 的巢狀風險。
 """
@@ -97,46 +95,6 @@ async def test_handle_summon_restores_tts_protected_after_play_tts_exception():
         await harness.handle_summon()
 
     assert harness._tts_protected is False
-
-
-class _NemoClawHarness(PlaybackMixin):
-    """_handle_nemoclaw_query 所需的最小依賴：owner 驗證通過、無去重命中、
-    文字頻道略過（無 placeholder）、cover 關閉、_ask_nemoclaw 直接回應。"""
-
-    def __init__(self):
-        self._is_owner_speaker = MagicMock(return_value=True)
-        self._nemo_dedup = {}
-        self._nemo_lock = asyncio.Lock()
-        self._play_ack = AsyncMock()
-        self.active_text_channel = None
-        self._ask_nemoclaw = AsyncMock(return_value="測試回應內容")
-        self.stt_logger = MagicMock()
-        self._plan12 = False
-        self.play_tts = AsyncMock()
-        self._tts_interrupted = False
-        self._tts_protected = True  # 外層已在另一個 protected 窗口中（模擬巢狀）
-        self._storm_active = True
-        self._wake_burst_times = MagicMock()
-        self._storm_last_wake_time = 123.0
-
-
-@pytest.mark.asyncio
-async def test_nemoclaw_tts_restores_outer_nested_protected_window_not_cleared(monkeypatch):
-    """修 bug 2：原本 finally 硬設 self._tts_protected = False，若呼叫前已經處於
-    外層 protected 窗口中（巢狀），會把外層的保護提早清掉。改用
-    _protected_tts_window() 後離開時要還原成呼叫前的值（True），而不是被清成 False。"""
-    monkeypatch.delenv("NEMOCLAW_COVER", raising=False)
-    from cogs.voice_controller import VoiceController
-
-    harness = _NemoClawHarness()
-    await VoiceController._handle_nemoclaw_query(harness, "Jack", "幫我查一下今天天氣")
-
-    assert harness._tts_protected is True
-    harness.play_tts.assert_awaited_once()
-    # 巢狀行為修正之外，原本 finally 裡的 Wake Storm 清除副作用要維持不變。
-    harness._wake_burst_times.clear.assert_called_once()
-    assert harness._storm_active is False
-    assert harness._storm_last_wake_time == 0.0
 
 
 class _DjTailVC(PlaybackMixin):

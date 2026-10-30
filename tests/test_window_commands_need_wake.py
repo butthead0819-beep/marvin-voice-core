@@ -40,7 +40,7 @@ def _bus(agent):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["music", "playback_control", "volume", "replay", "queue_control",
                                   "song_feedback", "current_album", "personal_shuffle", "find_song",
-                                  "taste_correction", "nemoclaw", "frustration"])
+                                  "taste_correction", "frustration"])
 async def test_action_winner_blocked_without_wake_in_window(name):
     agent = _Agent(name)
     winner = await _bus(agent).dispatch(_ctx(True))

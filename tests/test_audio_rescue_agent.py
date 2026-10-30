@@ -331,3 +331,41 @@ def test_default_paid_guard_has_relaxed_caps():
     agent = AudioRescueAgent(google_client=MagicMock(), manifest_provider=_manifest)
     assert agent.paid_guard.daily_cap_usd == 2.0
     assert agent.paid_guard.monthly_cap_usd == 10.0
+
+
+# ── 純聊天語句 Fast-Skip（省 2.8s-3.3s Gemini 呼叫）───────────────────────────
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_query", [
+    "馬文收到請迴答",
+    "馬文還會震懾到你在講話自動迴避耶",
+    "馬文核心裏麵",
+])
+async def test_chatting_queries_skip_gemini_call(chat_query):
+    client = _make_client()
+    agent = _make_agent(client)
+    ctx = _ctx(audio=b"fake-wav", query=chat_query)
+
+    result = await agent.synthesize(ctx)
+
+    assert result is None
+    assert agent.last_abandon_reason == "chat_fastpath"
+    client.aio.models.generate_content.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cmd_query", [
+    "嗯",
+    "小聲一點",
+    "馬文幫我放歌",
+    "馬文現在幾點",
+])
+async def test_command_and_short_queries_still_call_gemini(cmd_query):
+    client = _make_client()
+    agent = _make_agent(client)
+    ctx = _ctx(audio=b"fake-wav", query=cmd_query)
+
+    await agent.synthesize(ctx)
+
+    client.aio.models.generate_content.assert_called_once()
+

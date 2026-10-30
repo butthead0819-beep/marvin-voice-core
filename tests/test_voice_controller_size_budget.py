@@ -53,7 +53,6 @@ FROZEN_METHODS = {  # 已超過 NEW_METHOD_MAX 的既有大 method：只准縮
     "_apply_wake_guards": 68,
     "handle_raw_speech_start": 58,
     "_cot_filter_stream": 57,
-    "_handle_nemoclaw_query": 51,
     "on_voice_state_update": 42,
 }
 

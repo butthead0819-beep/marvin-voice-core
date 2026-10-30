@@ -43,11 +43,6 @@
 - **🎵 音樂 (Music)**: **Google Lyria 3 Pro**
   - 實作 **Operation Idol Debut**。產出帶有宇宙級憂鬱感的 30 秒數位單曲，具備歌詞創作與演唱能力。
 
-- **🦞 語音 AI 代理 (NemoClaw Voice Agent)**: **openclaw CLI (Op 29)**
-  - 三層觸發鏈：Explicit regex（龍蝦/openclaw 前置詞）→ Smart Router（Gemini classify, ~$0.000001/次）→ Debounced Rescue。
-  - Owner-only 限制。`_nemo_lock` 序列化 subprocess + TTS；`_nemo_dedup` 5 秒 hash 防重複觸發。
-  - 回應用 HsiaoChenNeural 女聲播報，不寫入 Marvin 對話歷史（角色獨立）。
-
 - **🌡️ 即時讀空氣 (AtmosphereTracker)**: **`marvin_voice_core/atmosphere_tracker.py`**
   - 從 STT 語料串流提取話題標籤（gaming/work/food 等 8 類）與發言者情緒狀態。
   - 產出 `AtmosphereSnapshot` 供 `GeminiRouter` 注入系統提示，讓馬文感知當前頻道氣氛。
@@ -61,7 +56,7 @@
   - 資料存 `departure_stats.json`，每人保留最多 200 筆，驅動更智慧的送客回應。
 
 - **🔌 Marmo Webhook (MarmoServer)**: **`marvin_voice_core/marmo_server.py`**
-  - Async HTTP webhook server（port 8765），接收 Marmo/NemoClaw job 結果並透過語音頻道播報。
+  - Async HTTP webhook server（port 8765），接收 Marmo job 結果並透過語音頻道播報。
   - 支援主動非同步警報（不需先有語音指令）。有語音 → TTS 播出；無語音 → fallback 到文字頻道。
 
 ---
@@ -152,7 +147,7 @@ Wake 後的意圖派發**唯一入口**是 `intent_bus.py::IntentBus`。所有 a
 | Template | 觸發 | 範例 |
 |---|---|---|
 | **Declarative** | text pattern (regex + named-group slots) | `intent_agents/music_agent_v2.py` |
-| **State-checking** | cog/service state（非 text） | `intent_agents/nemoclaw_agent.py` |
+| **State-checking** | cog/service state（非 text） | `intent_agents/dual_speak_agent.py` |
 
 ### 現有 intent agents
 
@@ -161,7 +156,6 @@ Wake 後的意圖派發**唯一入口**是 `intent_bus.py::IntentBus`。所有 a
 | `MusicAgentV2` | normal, stream | Declarative（3-way: SPECIFIC/CURATION/DIRECTIONAL）| 點歌 / 推薦 / 風格切換 |
 | `PlaybackControlAgent` | normal, stream | Declarative | skip / pause / volume |
 | `FindSongAgent` | normal, stream | Declarative | 不知歌名的歌曲探查 |
-| `NemoClawAgent` | normal, stream | State-checking | NemoClaw（openclaw CLI）路由 |
 | `HallucinationGuardAgent` | normal, stream | Declarative | 阻擋空/重複轉錄 |
 
 ---
@@ -240,7 +234,7 @@ STT 結果在 dispatch 進 IntentBus 之前，會經過**三個 judge 並行賽�
 - [x] **Op 26 Phase 3 投機預取正式啟用**: 在喚醒詞確認後立即啟動 `_speculative_response` 背景任務，填入 `_pending_prefetch`，讓 LLM 預熱與 `_confirmation_flow` 等待時間並行，預計縮短延遲 3-8s。
 - [x] **Op 27 環境陳述句過濾**: `_query_quality_gate` 新增 `ambient_statement` 層，過濾 harvest 窗口抓到的他人陳述句（「我在回家」「我告訴你」「大家」等），防止閒聊觸發錯誤回應。
 - [x] **Op 28 suki_memory 延伸涵蓋**: `analyze_daily_log.py` 補抓 slice 窗口結束後至執行當下的 feedback，填補每日 12:00 以後的學習空窗。
-- [x] **Op 29 NemoClaw 語音 AI 代理**: 三層觸發鏈（Explicit → Smart Router → Debounced Rescue）讓馬文把 `龍蝦查天氣` 等指令路由至 openclaw CLI，以 HsiaoChenNeural 女聲播報，owner-only。
+- [x] ~~**Op 29 NemoClaw 語音 AI 代理**~~（2026-10-29 已移除：openclaw 整套拔掉，省記憶體）
 - [x] **Op 31 Approach B 語意情緒分類**: `_classify_marvin_self_emotion()` 背景任務在 TTS 排隊後，用 Groq flash 對馬文自己的回應做 frustrated/amused/sarcastic/sad/angry/neutral 分類，下次喚醒時用於韻律參數覆寫。
 - [x] **marvin_voice_core 模組解耦**: 語音管線（pipeline, sink, stt_handler, audio_utils, voice_meta_analyzer）完整抽離為獨立模組，STT workflow 完成目標解耦。
 - [x] **AtmosphereTracker 即時讀空氣**: 從 STT 串流提取話題標籤與情緒，注入 GeminiRouter 系統提示。

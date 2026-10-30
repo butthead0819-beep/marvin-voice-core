@@ -2,7 +2,7 @@
 HallucinationGuardAgent — 主動 bid 高分把 STT 幻覺 wake 吞掉。
 
 5/18 audit：24 wake / 8 是「bus no_bids 但 LLM 用 conv_buffer 編 plausible
-答案」噪音回應。讓 guard agent 主動出價 0.96 壓過 music/nemoclaw，handler
+答案」噪音回應。讓 guard agent 主動出價 0.96 壓過 music，handler
 silent swallow — bus 行為不變，零 controller 改動。
 
 偵測 heuristics（任一命中即出價，全是「保守 high-precision」設計）：
@@ -82,7 +82,7 @@ class HallucinationGuardAgent:
     mode_compatible = frozenset({"normal", "stream"})
 
     # bid 等級
-    CONF_HIGH = 0.96   # 明確幻覺，壓過 music 0.95 / nemoclaw 0.95
+    CONF_HIGH = 0.96   # 明確幻覺，壓過 music 0.95
     CONF_MID = 0.92    # 疑似幻覺（multi-script，但 music 強訊號可 override 不到）
 
     def __init__(self, controller):

@@ -25,7 +25,6 @@ def _make_cog():
     bot.tts_engine.get_estimated_duration.return_value = 2.0
     bot.router = MagicMock()
     bot.router._background_intent_enrich = AsyncMock()
-    bot.router.classify_query_route = AsyncMock(return_value="marvin")
     bot.router.memory = MagicMock()
     bot.router.memory.list_players = MagicMock(return_value=[])
     bot.router.VISION_KEYWORDS = ()

@@ -520,6 +520,28 @@ async def test_handle_stt_result_shortcut_skip_ends_session():
         await cog.handle_stt_result("TestUser", "馬文下一首", time.time(), b"fake_audio", bypass_etd=True)
 
     assert cog._wake_session.target is None
+    assert "TestUser" not in cog.speech_buffers
+
+
+@pytest.mark.asyncio
+async def test_handle_stt_result_shortcut_clears_speech_buffers():
+    """WakeShortcut 直派時必須清掉 speech_buffers[speaker]，不讓歌名/指令殘留。"""
+    import wake_shortcut
+    cog, wf = _make_cog_for_stt()
+    wf.is_open.return_value = False
+    wf.multi_channel_decide.return_value = (
+        True, 0.95,
+        {"voice": 0.95, "task": 0.0, "info": 0.0, "control": 0.0,
+         "threshold": 0.35, "total": 0.95},
+    )
+    cog._wake_session = None  # 無 session（首次喚醒）
+    cog._mixer = MagicMock()
+    cog._mixer.tts_load_seconds.return_value = 0.0
+    with patch.object(wake_shortcut, "shortcut_query", return_value="下一首"), \
+         patch.object(wake_shortcut, "dispatch_with_feedback", AsyncMock()):
+        await cog.handle_stt_result("TestUser", "馬文下一首", time.time(), b"fake_audio", bypass_etd=True)
+
+    assert "TestUser" not in cog.speech_buffers
 
 
 @pytest.mark.asyncio

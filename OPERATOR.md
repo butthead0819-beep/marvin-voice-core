@@ -31,7 +31,7 @@
 
 `main_discord.py` 用 `load_dotenv()`（不覆寫已存在的環境變數）。launchd 經 `run_bot.py` 啟動時，它**先**用 `os.environ` 設好一批值，所以：
 - `run_bot.py` 用 `os.environ[...] =` 強制設的（`MARVIN_CAR_MODE=""`、`MARVIN_CAR_HARDWARE=""`）→ **`.env` 裡設 `MARVIN_CAR_MODE=1` 對 Discord bot 無效**。
-- `run_bot.py` 用 `setdefault` 設的（`STT_ENGINE_V2`、`MARVIN_PER_SPEAKER_QUEUE`、`MARVIN_MUSIC_FASTPATH`、`MARVIN_ALT_RESCUE`、`NEMOCLAW_COVER`、`SPONTANEOUS_MANZAI`…）→ shell 沒設時以 `run_bot.py` 為準，`.env` 同名值被忽略。
+- `run_bot.py` 用 `setdefault` 設的（`STT_ENGINE_V2`、`MARVIN_PER_SPEAKER_QUEUE`、`MARVIN_MUSIC_FASTPATH`、`MARVIN_ALT_RESCUE`、`SPONTANEOUS_MANZAI`…）→ shell 沒設時以 `run_bot.py` 為準，`.env` 同名值被忽略。
 - 手動跑 `python main_discord.py` 時沒有這一層 → **手動啟動與 launchd 啟動的行為不同**。
 
 ---
@@ -139,7 +139,6 @@
 
 **沒進帳本、金額待確認**：
 - Suno 生歌（`SUNO_API_KEY`，`cogs/voice_controller_social.py:363` 仍可觸發 `manual_sing_request`）—— 沒有記帳。
-- NVIDIA / openclaw（NemoClaw，owner 專用）—— 計費方式待確認。
 - 免費層每次呼叫的 token 數：`llm_routing.jsonl` 的 `tokens` 一律記 0，**無法從 log 算出「如果全付費要多少錢」**。
 - 硬體：一台 Mac mini M1 8GB（`docs/SPOF.md`）；電費 / 網路：待確認。
 

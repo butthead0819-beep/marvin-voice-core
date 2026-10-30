@@ -139,6 +139,23 @@ async def test_opener_real_openers_trigger_run_grounded_qa(monkeypatch, query):
     mock_rgqa.assert_awaited_once()
 
 
+@pytest.mark.parametrize("query", [
+    "你懂意思嗎馬文在這邊錶錶",
+    "馬文你有聽到嗎",
+    "馬文你聽得懂嗎",
+])
+@pytest.mark.asyncio
+async def test_opener_excludes_second_person_check_phrases(monkeypatch, query):
+    mock_rgqa = AsyncMock(return_value="answered")
+    monkeypatch.setattr(gqa, "run_grounded_qa", mock_rgqa)
+
+    ctrl = MagicMock()
+    result = await try_question_opener(ctrl, _ctx(query))
+
+    assert result is False
+    mock_rgqa.assert_not_called()
+
+
 # ── 5. run_grounded_qa 本體：source="question_opener" 的行為 ───────────────
 
 def _resp(text, *, chunks=1):

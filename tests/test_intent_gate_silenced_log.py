@@ -216,7 +216,7 @@ async def test_gap_record_dms_owner(monkeypatch):
     vc, captured = _make_vc(monkeypatch, query_intent_signal=False, query_text="暫停播放")
     vc._shared_tier_router = MagicMock()
     vc._gap_logger = MagicMock()
-    monkeypatch.setattr(vcmod, "_NEMOCLAW_OWNER_ID", 999)
+    monkeypatch.setattr(vcmod, "_OWNER_ID", 999)
 
     owner = MagicMock()
     owner.send = AsyncMock()

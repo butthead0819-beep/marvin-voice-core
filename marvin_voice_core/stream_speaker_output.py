@@ -15,6 +15,7 @@ client 佇列滿了就丟該 client 的幀（不回壓 mixer 泵執行緒、不�
 from __future__ import annotations
 
 import asyncio
+import collections
 
 import numpy as np
 
@@ -22,7 +23,7 @@ import numpy as np
 class StreamSpeakerOutput:
     def __init__(self, loop: asyncio.AbstractEventLoop, *,
                  rate: int = 48000, channels: int = 2, bits: int = 16,
-                 mono_downmix: bool = False):
+                 mono_downmix: bool = False, preroll_max_frames: int = 75):
         """mono_downmix=True：write() 收到的 stereo s16 frame 先平均左右聲道降成 mono
         再廣播（見 music_request_latency_anatomy 系列 debug——車 puck 只有一顆喇叭，
         傳 stereo 純粹浪費頻寬；離家用 4G 走 Tailscale Funnel 時 CPU 軟體 TLS 解密量
@@ -37,6 +38,7 @@ class StreamSpeakerOutput:
         self.bits = bits
         self._mono_downmix = mono_downmix
         self._subscribers: set[asyncio.Queue] = set()
+        self._preroll: collections.deque[bytes] = collections.deque(maxlen=preroll_max_frames)
 
     def write(self, frame: bytes) -> None:   # 泵執行緒呼叫
         if not frame:
@@ -50,15 +52,32 @@ class StreamSpeakerOutput:
         self._loop.call_soon_threadsafe(self._broadcast, None)
 
     def _broadcast(self, frame) -> None:   # loop 執行緒
+        if frame is not None:
+            self._preroll.append(frame)
+        else:
+            self._preroll.clear()
         for q in list(self._subscribers):
             try:
                 q.put_nowait(frame)
             except asyncio.QueueFull:
                 pass   # 慢訂閱者丟這幀，不堆延遲、不回壓、不影響其他訂閱者
 
-    def subscribe(self) -> asyncio.Queue:
-        """event loop 執行緒呼叫（aiohttp handler）。回傳專屬佇列，讀到 None＝上游關閉。"""
-        q: asyncio.Queue = asyncio.Queue(maxsize=200)
+    def subscribe(self, *, preroll_frames: int = 0) -> asyncio.Queue:
+        """event loop 執行緒呼叫（aiohttp handler）。回傳專屬佇列，讀到 None＝上游關閉。
+        preroll_frames > 0 時，預先塞入最近 N 幀（不足補靜音），讓 iOS AVPlayer 一連線就拿到
+        1.5s 緩衝墊，抵抗後續網路／GC 抖動不斷流。"""
+        q: asyncio.Queue = asyncio.Queue(maxsize=max(200, preroll_frames + 150))
+        if preroll_frames > 0:
+            frames = list(self._preroll)[-preroll_frames:]
+            if len(frames) < preroll_frames:
+                frame_bytes = (self.rate // 50) * self.channels * (self.bits // 8)
+                silence = b"\x00" * frame_bytes
+                frames = [silence] * (preroll_frames - len(frames)) + frames
+            for f in frames:
+                try:
+                    q.put_nowait(f)
+                except asyncio.QueueFull:
+                    break
         self._subscribers.add(q)
         return q
 

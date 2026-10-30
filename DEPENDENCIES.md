@@ -154,7 +154,6 @@
 | **deno** | yt-dlp 解 YouTube 簽章（帶 cookies 時需要 JS runtime，見 `cogs/music_cog.py` 註解） | Homebrew | ✅ 音樂需要 |
 | **YouTube cookies** | 繞過 YouTube 對這台 IP 的節流（`MARVIN_YT_COOKIES_FROM_BROWSER=chrome` 或 `MARVIN_YT_COOKIES_FILE`） | 設定中 | ⚠️ cookies 數週會過期 |
 | **Ollama** | `LLM_PROVIDER=ollama` 時的本地 LLM（`OLLAMA_BASE_URL`，預設 `localhost:11434`） | **沒安裝**；串流路徑的程式碼註解寫「Ollama 已停用」；prod `LLM_PROVIDER=gemini` | ❌ 目前不需要 |
-| **openclaw CLI（Node）** | NemoClaw（「龍蝦」）owner 專用 agent，`cogs/voice_controller.py` 以子程序呼叫 | nvm Node 22 下有安裝 | ❌ 只有 owner 功能用 |
 | **launchd** | 常駐與自動重啟（見 OPERATOR.md） | 有 | ✅ 自架必要 |
 
 ---

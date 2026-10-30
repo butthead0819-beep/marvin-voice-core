@@ -131,13 +131,13 @@ def _revert_injected_wake(cleaned_text: str, raw_text: str | None) -> tuple[str,
 
 # ── Cleaner pre-gate（2026-05-21）──────────────────────────────────────────────
 # 每句 STT 都打 cleaner 是 TPD 大宗。一句話只在「可能對 Marvin 有意圖」時才值得送：
-#   有指令訊號（喚醒音/音樂詞/龍蝦）OR 正在對話中（ctx_active / Marvin 剛說）。
+#   有指令訊號（喚醒音/音樂詞）OR 正在對話中（ctx_active / Marvin 剛說）。
 # 兩者皆無 → 長碎念/短 filler/雜訊，無意圖 → 丟（略過 cleaner）。
 # 安全性：無喚醒詞的真指令只能經對話窗到 cleaner（Injection Guard 擋 Track-B 無詞 wake），
 # 故 ctx/spoke 會放行；歷史 26156 句驗證被丟的長句全是雜訊（true false-neg≈0）。
 _GATE_WAKE_RE = re.compile(
     "|".join(["馬文", "媽文", "麻文", "瑪文", "罵文", "马文", "馬汶", "馬問", "馬紋",
-              "嗎文", "marvin", "marvy", "marvgin", "龍蝦", "龙虾"]), re.IGNORECASE)
+              "嗎文", "marvin", "marvy", "marvgin"]), re.IGNORECASE)
 try:
     from intent_agents.constants import (
         MUSIC_PLAY_KW as _GP, MUSIC_DIRECT_SKIP_KW as _GS,
@@ -269,7 +269,7 @@ class GeminiRouterSTTMixin:
             return _build_res(raw_text)
 
         # 🚪 [Cleaner Gate] 僅 wake-check 路徑 opt-in（apply_gate=True）。無指令訊號(喚醒/
-        # 音樂/龍蝦) + 非對話中 → 無對 Marvin 意圖 → 略過 cleaner（省 TPD）。純文字清洗
+        # 音樂) + 非對話中 → 無對 Marvin 意圖 → 略過 cleaner（省 TPD）。純文字清洗
         # caller（apply_gate=False，如遊戲答案清洗）不 gate，照常 LLM 清。被丟的記 jsonl 供 review。
         if apply_gate:
             _gate_send, _gate_sig = cleaner_gate_decision(

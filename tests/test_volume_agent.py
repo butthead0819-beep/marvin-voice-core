@@ -465,3 +465,29 @@ async def test_too_loud_regression_volume_up_and_balance_tts_up_unaffected():
 
     bid = agent.bid(_ctx("你講話大聲一點"))
     assert bid.reason.startswith("balance_tts_up:")
+
+
+async def test_volume_agent_precompiled_and_bid_fast(monkeypatch):
+    """驗證 VolumeAgent 初始化完成預編譯，第一次 bid 耗時 < 5ms，且不重複呼叫 declare_intents。"""
+    import time
+    from intent_agents.volume_agent import VolumeAgent
+    ctrl = _ctrl(stream_mode=True)
+    agent = VolumeAgent(ctrl)
+
+    call_count = 0
+    orig_declare = agent.declare_intents
+    def _tracking_declare():
+        nonlocal call_count
+        call_count += 1
+        return orig_declare()
+
+    agent.declare_intents = _tracking_declare
+
+    t0 = time.perf_counter()
+    bid = agent.bid(_ctx("小聲一點"))
+    duration_ms = (time.perf_counter() - t0) * 1000
+
+    assert bid.confidence == 0.90
+    assert duration_ms < 5.0, f"bid() took {duration_ms:.2f}ms, expected < 5ms"
+    assert call_count == 0, f"declare_intents called {call_count} times during bid()"
+

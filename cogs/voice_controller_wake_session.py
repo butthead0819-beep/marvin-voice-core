@@ -186,12 +186,16 @@ class WakeSessionMixin:
 
     async def _etd_semantic_check(self, speaker, combined_text):
         """Semantic ETD Track B-2 的呼叫點（對談極速通道 F）。
-        對談窗內：不問 Groq，回合成結果（已講完、文字不改），remember_etd 照存 → worker 必命中重用。
+        對談窗內或命中喚醒詞：不問 Groq，回合成結果（已講完、文字不改），remember_etd 照存 → worker 必命中重用。
         MARVIN_FASTLANE_SKIP_CLEAN=0 時照舊呼叫 clean_stt_text。"""
-        if os.environ.get("MARVIN_FASTLANE_SKIP_CLEAN", "1") != "0" and \
-                self.in_conversation_window(speaker, time.time()):
-            logger.info(f"⚡ [FastLane] {speaker} 對談窗內跳過 Groq ETD")
-            return {"text": combined_text, "is_complete": True}
+        if os.environ.get("MARVIN_FASTLANE_SKIP_CLEAN", "1") != "0":
+            if self.in_conversation_window(speaker, time.time()):
+                logger.info(f"⚡ [FastLane] {speaker} 對談窗內跳過 Groq ETD")
+                return {"text": combined_text, "is_complete": True}
+            from wake_detector import pre_filter_speech, has_mangled_wake
+            if pre_filter_speech(combined_text).get("action") in ("fast_intervene", "force_intervene") or has_mangled_wake(combined_text):
+                logger.info(f"⚡ [FastLane] {speaker} 喚醒句跳過 Groq ETD")
+                return {"text": combined_text, "is_complete": True}
         return await self.bot.router.clean_stt_text(combined_text)
 
     def in_conversation_window(self, speaker, now) -> bool:
@@ -258,7 +262,8 @@ class WakeSessionMixin:
         if not is_fast or ch is None:
             return is_fast
         from wake_detector import has_mangled_wake
-        if (ch.get("voice") or 0) >= _IBA_WAKE_VOICE_MIN or (ch.get("alt_wake") or 0) > 0 or has_mangled_wake(raw_text):
+        if ((ch.get("voice") or 0) >= _IBA_WAKE_VOICE_MIN or (ch.get("alt_wake") or 0) > 0 or
+                has_mangled_wake(raw_text) or any(w.lower() in (raw_text or "").lower() for w in self._WAKE_PATTERNS)):
             return True
         logger.info(f"🚫 [NoWakeWord] {speaker} IBA 判喚醒但沒叫名字（v={ch.get('voice')}），不放行：'{raw_text[:40]}'")
         return False

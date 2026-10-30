@@ -106,10 +106,6 @@ _CTRL_MUSIC_RE = re.compile(
     r'|音量大[一點些]?|音量小[一點些]?|大聲一點|小聲一點',
     re.IGNORECASE,
 )
-_CTRL_MARMO_RE = re.compile(
-    r'(?:問|叫|用|讓|請|call|問問|叫一下)?(?:marmo|馬某|馬摸|馬墨)',
-    re.IGNORECASE,
-)
 # 點歌句型（2026-07-04）：句首 4 字內的點歌動詞（容納「馬文/把我們/幫我」等前綴），
 # 動詞後須帶內容。動詞在句中（>4 字）＝聊天引用（「他昨天播放了影片」），不中。
 # 背景：喚醒詞糊掉（馬文→把我們，v=0.3）時 control 拿 0 分 → total 0.346 差
@@ -135,7 +131,6 @@ def _score_control(text: str) -> float:
     if _CTRL_SILENCE_RE.search(text): return 1.00
     if _CTRL_MUSIC_RE.search(text):   return 0.90
     if _CTRL_MUSIC_REQUEST_RE.search(text): return 0.85  # 點歌句型（句首錨定）
-    if _CTRL_MARMO_RE.search(text):   return 0.75
     return 0.0
 
 
@@ -563,10 +558,21 @@ class WakeDetector:
 # 🗣️ [Mangled Wake] 喚醒詞被 STT 聽錯、但句首緊接指令詞＝真的在叫 Marvin（2026-10-24）。
 # 只收 30 天 log 實際出現過的聽錯版；「法文/保溫」是常用詞，所以只認句首 + 緊接指令。
 _MANGLED_WAKE_RE = re.compile(
-    r"^[\W_]*(?:哎|嘿|欸|誒|嗨|喂)?[\W_]*(?:法文|打文|保文|南文|保溫)[\W_]*"
+    r"^[\W_]*(?:哎|嘿|欸|誒|嗨|喂)?[\W_]*(?:法文|打文|保文|南文|保溫|麻煩|打完|拿我|老媽|媽我)[\W_]*"
     r"(?=播|放|繼續|暫停|停|下一首|上一首|切歌|跳過|大聲|小聲|音量|幫我|查|點|這首|介紹)"
 )
 
 
 def has_mangled_wake(text: str) -> bool:
     return bool(_MANGLED_WAKE_RE.match(text or ""))
+
+
+def strip_mangled_wake(text: str) -> str:
+    """若句首命中諧音喚醒詞，移除前綴並回傳後續指令文字。"""
+    if not text:
+        return ""
+    m = _MANGLED_WAKE_RE.match(text)
+    if m:
+        return text[m.end():].lstrip("，,、！!？? ").strip()
+    return text.strip()
+

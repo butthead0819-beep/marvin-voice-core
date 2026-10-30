@@ -1,30 +1,6 @@
-// face_rt.h — tools/puck_face/face_pixel.js（本身是 tools/puck_face/pixel_mockup.html
-// 「2. 逐像素版」那段的移植）的 C++ 版，S3 跟 host 共用，規格以 JS 為準。
-//
-// 允許的優化（都只是跳過不會畫到東西的計算，不改變任何像素的最終結果）：
-// 1. 4×4 tile 剔除——取代逐像素子框跳過。每個 tile 先用中心點估算到各筆畫的螢幕距離，
-//    距離夠遠就整個 tile 跳過數學；夠近或在球緣（一階近似不可靠）才逐像素算，且只算
-//    mask 裡標到的筆畫。
-// 2. asin 查表＋cos 改 sqrt（數學上等價：cos(asin(x)) = sqrt(1-x^2)）。
-// 3. 每筆畫（左眼/右眼/眉線）各自的螢幕外框（bbox）粗篩——tile 跟哪個筆畫的 bbox
-//    都不相交就直接跳過，不做中心點數學。
-// 4. tile 內線性化——tile 四個角點（連續座標）算一次 phi/lam，格內其餘像素用雙線性
-//    內插取代逐像素 asin/除法；偏微分、Jacobian 用 tile 中心值（格內凍結），只有
-//    真正要填色/描邊時才在該像素上開一次 sqrt。角點落在球緣或算不出來、或中心點本身
-//    落在球緣，則整個 tile 退回逐像素精確路徑（完全不變動的舊程式碼）。
-//
-// 使用前必須先呼叫一次 face_rt_init(&work)（填 asin 查表＋記住工作區），否則查表是全 0。
-// work 是一塊 sizeof(FaceRtWork) 大小、生命週期涵蓋所有 face_rt_render() 呼叫的記憶體，
-// 由呼叫端配置（S3 建議 PSRAM；face_rt.h 本身不配置 heap）。
-//
-// work->curX0/curX1/prevX0/prevX1：render 完後，每列實際被畫到的像素範圍（這一格／上一格）。
-// 呼叫端只要推「prev 聯集 cur」每列範圍，就能讓螢幕畫面跟 out888 一致（因為 render 開頭
-// 會把上一格畫過、這一格沒碰到的像素還原成 base，那些還原也要推上螢幕）。
-//
-// 不變式（呼叫端必須保證）：第一次呼叫 face_rt_render() 之前，out888 整張等於 base888。
-// 之後 face_rt_render() 自己維持「out888 只有 cur 範圍內可能不等於 base，其餘都等於
-// base」：開頭先把 prev 範圍還原成 base，然後只寫被畫到的像素——不再整張 rect 從 base
-// 複製到 out（那段複製在有了 prev 還原之後是多餘的，省下的 PSRAM 流量可觀）。
+// face_rt.h — tools/puck_face/face_pixel.js 的 C++ 版，S3 跟 host 共用。
+// 支援 240×240 (預設) 與 466×466 自適應（可定義 FACE_RT_W 466）
+// 支援 FACE_RT_FAST（預設啟用）：DDA 角度累加 + Tile 中心局部導數凍結 + 座標 DDA
 #ifndef FACE_RT_H
 #define FACE_RT_H
 
@@ -32,32 +8,35 @@
 #include <stdint.h>
 #include <string.h>
 
-// S3 上 Arduino 預設 -Os，sqrtf/除法走慢路徑；這個檔案單獨改用 O2＋fast-math
-// （host 測試證實輸出跟 JS 標準答案仍在門檻內）。clang（Mac host 測試）不認這個 pragma，跳過。
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC push_options
 #pragma GCC optimize("O2", "fast-math")
 #endif
 
+#ifndef FACE_RT_W
+#define FACE_RT_W 240
+#endif
+
+#ifndef FACE_RT_FAST
+#if FACE_RT_W == 466
+#define FACE_RT_FAST 1
+#else
+#define FACE_RT_FAST 0
+#endif
+#endif
+
 #ifdef FACE_RT_STATS
-// 測試用：這一輪 render 裡實際做了完整數學（tile mask 非 0、且通過 clip/sl/u 檢查）的像素數。
-// 精確路徑與線性路徑都計入。
 extern uint32_t g_face_rt_full_px;
-// 測試用：這一輪 render 裡走線性路徑（tile 內雙線性內插）的像素數，full_px 的子集。
 static uint32_t g_face_rt_linear_px = 0;
 #endif
 
-// FACE_RT_CYCLES()：由 include 端定義成讀 CPU cycle 計數器（S3：esp_cpu_get_cycle_count()）。
-// 有定義才編進分段計時；host 測試不定義＝零影響。
 #ifdef FACE_RT_CYCLES
 struct FaceRtProfile {
   uint32_t prepare, copy, tiles, pixels, frames, tiles_total, tiles_masked, px_math;
-  // copy：還原上一格 prev 範圍（memcpy base→out）那段，不再是整張 rect 複製。
-  // tile 篩選細分（tiles 的子段，三段加總≈tiles）：
-  uint32_t tile_bbox;    // tile 開始到 bboxMask 判斷完（含 bboxMask==0 直接跳過）
-  uint32_t tile_center;  // bboxMask!=0 之後：球外快篩＋中心點反投影＋三筆畫距離估計（決定 mask）
-  uint32_t tile_corner;  // mask!=0 之後：取 4 角點＋線性路徑每 tile 預算（invgC/rimV/invVV）
-  uint32_t tiles_linear, tiles_exact;  // 走線性/精確路徑的 tile 數（mask!=0 的 tile 才計入）
+  uint32_t tile_bbox;
+  uint32_t tile_center;
+  uint32_t tile_corner;
+  uint32_t tiles_linear, tiles_exact;
 };
 extern FaceRtProfile g_face_rt_prof;
 #endif
@@ -67,25 +46,39 @@ struct FacePose {
 };
 
 struct FaceRect {
-  int16_t x0, y0, x1, y1;  // 含端點
+  int16_t x0, y0, x1, y1;
 };
 
-// tile 邊界角點快取的欄數：(240/4) 個 tile + 1 個角點，足夠覆蓋整個寬度。
-constexpr int MAX_COLS = 61;
+constexpr int MAX_COLS = 64;
 
-struct FaceRtWork;  // 定義在 face_rt_detail 之後（要用到 Corner）
+struct FaceRtWork;
 
 namespace face_rt_detail {
 
-constexpr int W = 240, C = 120, R = 108;
-constexpr float HALF = 1.5707963267948966f;  // M_PI/2
+#if FACE_RT_W == 466
+constexpr int W = 466, C = 233;
+constexpr float R = 209.7f;
+constexpr int TILE_SZ = 8;
+constexpr float TOL = 2.5f;
+constexpr float RIM_W = 209.7f * 0.035f;
+constexpr float BROW_W_ = 209.7f * 0.02f;
+constexpr float PAD_PX = 8.0f;
+#else
+constexpr int W = 240, C = 120;
+constexpr float R = 108.0f;
+constexpr int TILE_SZ = 4;
+constexpr float TOL = 1.5f;
+constexpr float RIM_W = 108.0f * 0.035f > 2.0f ? 108.0f * 0.035f : 2.0f;
+constexpr float BROW_W_ = 108.0f * 0.02f > 1.5f ? 108.0f * 0.02f : 1.5f;
+constexpr float PAD_PX = 4.0f;
+#endif
+
+constexpr float HALF = 1.5707963267948966f;
 constexpr float IDLE[3] = {104, 158, 58};
 constexpr float ERR_COL[3] = {230, 90, 55};
 constexpr float PHI_C = 0.72f, DW = 0.27f, LAM_C = 0.15f, DH_A = 0.26f;
 constexpr float BROW_CURVE = 0.035f;
 constexpr float PHI_END = PHI_C + DW + 0.26f;
-constexpr float RIM_W = 108 * 0.035f > 2.0f ? 108 * 0.035f : 2.0f;
-constexpr float BROW_W_ = 108 * 0.02f > 1.5f ? 108 * 0.02f : 1.5f;
 constexpr float LIMB_MIN = 0.15f;
 constexpr float RIM_COL[3] = {8, 10, 9};
 constexpr float BROW_COL[3] = {16, 19, 17};
@@ -95,7 +88,6 @@ inline float clamp01(float x) { return x < 0 ? 0 : (x > 1 ? 1 : x); }
 inline float clampH(float v) { return v < -HALF ? -HALF : (v > HALF ? HALF : v); }
 inline float hyp(float a, float b) { return sqrtf(a * a + b * b); }
 
-// asin 查表：i/256 → asinf(i/256)，i=0..256。face_rt_init() 填值，用前必須呼叫。
 static float ASIN_LUT[257];
 
 inline float fast_asin(float x) {
@@ -122,11 +114,10 @@ struct Edge {
 
 struct Eye {
   Edge edges[3];
-  float rimPx[2], rimPy[2], rimQx[2], rimQy[2];  // rim[0]=(A,Cc), rim[1]=(Cc,B)
+  float rimPx[2], rimPy[2], rimQx[2], rimQy[2];
   float sx, sy, topY;
 };
 
-// 單個筆畫的螢幕外框（整數，像素座標），給 tile 粗篩用。
 struct BBoxI {
   int16_t x0, y0, x1, y1;
 };
@@ -179,14 +170,13 @@ struct Jacobian {
   float a, b, d;
 };
 
-// tile 邊界角點快取的單個角點（連續座標對應的 Jacobian／偏微分，角度本身用不到就不存）。
 struct Corner {
   bool ok;
   float Ja, Jb, Jd;
   float dphi_dx, dphi_dy, dlam_dy;
+  float phi, lam;
 };
 
-// 呼叫端於 face_rt_init() 提供的工作區，render 期間存取。
 static FaceRtWork* s_work = nullptr;
 
 inline float segDistPx(float phi, float lam, float Px, float Py, float Qx, float Qy, const Jacobian& J) {
@@ -198,7 +188,6 @@ inline float segDistPx(float phi, float lam, float Px, float Py, float Qx, float
   return hyp(Wx - Vx * t, Wy - Vy * t);
 }
 
-// 把未旋轉座標 (ux,uy) 轉成螢幕座標（繞 (C,C) 轉 roll）
 inline void toScreen(float cr, float sr, float ux, float uy, float& X, float& Y) {
   float dx = ux - C, dy = uy - C;
   X = C + cr * dx - sr * dy;
@@ -229,7 +218,7 @@ inline void prepare(const FacePose& p, float col[3], Prepared& F) {
   F.browL0 = LAM_C + p.pitch - p.browUp;
 
   float allX0 = W, allY0 = W, allX1 = 0, allY1 = 0;
-  const float pad = 4;
+  const float pad = PAD_PX;
 
   for (int ei = 0; ei < 2; ei++) {
     float sign = ei == 0 ? -1.0f : 1.0f;
@@ -250,7 +239,7 @@ inline void prepare(const FacePose& p, float col[3], Prepared& F) {
       F.eyes[ei].edges[k].ny = ny;
       F.eyes[ei].edges[k].c = -(nx * Px[k] + ny * Py[k]);
     }
-    // rim: [A,Cc], [Cc,B]
+
     F.eyes[ei].rimPx[0] = Ax; F.eyes[ei].rimPy[0] = Ay;
     F.eyes[ei].rimQx[0] = Ccx; F.eyes[ei].rimQy[0] = Ccy;
     F.eyes[ei].rimPx[1] = Ccx; F.eyes[ei].rimPy[1] = Ccy;
@@ -308,22 +297,18 @@ inline void prepare(const FacePose& p, float col[3], Prepared& F) {
 
 }  // namespace face_rt_detail
 
-// face_rt_render() 用的工作區：tile 邊界角點快取（兩排，逐行往下滾動重用）。
-// 呼叫端配置一塊 sizeof(FaceRtWork) 的記憶體（S3 建議 PSRAM），生命週期要涵蓋所有
-// face_rt_render() 呼叫，傳給 face_rt_init()。face_rt.h 本身不配置 heap。
 struct FaceRtWork {
   face_rt_detail::Corner cornerBuf[2][MAX_COLS];
-  int16_t curX0[240], curX1[240];    // 這一格每列被畫到的像素範圍（含端點）；沒有則 curX0=240, curX1=-1
-  int16_t prevX0[240], prevX1[240];  // 上一格的
+  int16_t curX0[face_rt_detail::W], curX1[face_rt_detail::W];
+  int16_t prevX0[face_rt_detail::W], prevX1[face_rt_detail::W];
 };
 
-// 用前必須呼叫一次：填 asin 查表，並記住呼叫端提供的工作區（見 FaceRtWork 註解）。
 inline void face_rt_init(FaceRtWork* work) {
   for (int i = 0; i <= 256; i++) {
     face_rt_detail::ASIN_LUT[i] = asinf(i / 256.0f);
   }
-  for (int y = 0; y < 240; y++) {
-    work->curX0[y] = work->prevX0[y] = 240;
+  for (int y = 0; y < face_rt_detail::W; y++) {
+    work->curX0[y] = work->prevX0[y] = face_rt_detail::W;
     work->curX1[y] = work->prevX1[y] = -1;
   }
   face_rt_detail::s_work = work;
@@ -336,16 +321,14 @@ inline void face_rt_init(FaceRtWork* work) {
 FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* base888, uint8_t* out888) {
   using namespace face_rt_detail;
 
-  // 把上一格的畫過範圍（cur）存成 prev，再用 base 還原那些範圍——這一格的 rect 不一定
-  // 包得到它們，不還原的話舊畫面殘留在 out888 裡。cur 清空，等下面逐 tile 填回。
 #ifdef FACE_RT_CYCLES
   uint32_t _tc0 = FACE_RT_CYCLES();
 #endif
   {
-    int16_t (&curX0)[240] = s_work->curX0;
-    int16_t (&curX1)[240] = s_work->curX1;
-    int16_t (&prevX0)[240] = s_work->prevX0;
-    int16_t (&prevX1)[240] = s_work->prevX1;
+    int16_t (&curX0)[W] = s_work->curX0;
+    int16_t (&curX1)[W] = s_work->curX1;
+    int16_t (&prevX0)[W] = s_work->prevX0;
+    int16_t (&prevX1)[W] = s_work->prevX1;
     for (int y = 0; y < W; y++) {
       prevX0[y] = curX0[y];
       prevX1[y] = curX1[y];
@@ -384,11 +367,6 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
   g_face_rt_prof.frames++;
 #endif
 
-  constexpr float TOL = 1.5f;  // 一階近似誤差餘裕
-
-  // tile 邊界角點快取（連續座標，兩排：上排／下排），逐行往下滾動重用。
-  // 每個角點每張畫面只算一次：換到下一列時，舊下排變新上排，只有新下排要重算。
-  // 快取陣列本身在呼叫端提供的工作區（face_rt_init() 傳入），不佔用這個 task 的 stack。
   Corner (&s_cornerBuf)[2][MAX_COLS] = s_work->cornerBuf;
   uint64_t computedBit[2] = {0, 0};
   int cornerTop = 0, cornerBot = 1;
@@ -402,6 +380,7 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
       cr.ok = true;
       cr.Ja = cr.Jb = cr.Jd = 0.0f;
       cr.dphi_dx = cr.dphi_dy = cr.dlam_dy = 0.0f;
+      cr.phi = cr.lam = 0.0f;
       float dx = xc - C, dy = yc - C;
       float ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;
       float sl = uy / R;
@@ -414,7 +393,12 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
           cr.ok = false;
         } else {
           float cp = sqrtf(1 - u * u);
-          if (cl < 0.35f || cp < 0.35f) {
+#if FACE_RT_FAST
+          const float limbThresh = 0.22f;
+#else
+          const float limbThresh = 0.35f;
+#endif
+          if (cl < limbThresh || cp < limbThresh) {
             cr.ok = false;
           } else {
             float clg = cl > LIMB_MIN ? cl : LIMB_MIN, cpg = cp > LIMB_MIN ? cp : LIMB_MIN;
@@ -424,6 +408,8 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
             cr.Ja = R * clg * cpg;
             cr.Jb = -R * sl * u;
             cr.Jd = R * clg;
+            cr.phi = fast_asin(u);
+            cr.lam = fast_asin(sl);
           }
         }
       }
@@ -432,8 +418,8 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
     return s_cornerBuf[buf][col];
   };
 
-  for (int tiley = y0; tiley <= y1; tiley += 4) {
-    int tiley1 = tiley + 3 < y1 ? tiley + 3 : y1;
+  for (int tiley = y0; tiley <= y1; tiley += TILE_SZ) {
+    int tiley1 = tiley + (TILE_SZ - 1) < y1 ? tiley + (TILE_SZ - 1) : y1;
 
     if (!firstTileRow) {
       int tmp = cornerTop; cornerTop = cornerBot; cornerBot = tmp;
@@ -442,8 +428,8 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
     firstTileRow = false;
 
     int colIdx = 0;
-    for (int tilex = x0; tilex <= x1; tilex += 4, colIdx++) {
-      int tilex1 = tilex + 3 < x1 ? tilex + 3 : x1;
+    for (int tilex = x0; tilex <= x1; tilex += TILE_SZ, colIdx++) {
+      int tilex1 = tilex + (TILE_SZ - 1) < x1 ? tilex + (TILE_SZ - 1) : x1;
 
 #ifdef FACE_RT_CYCLES
       g_face_rt_prof.tiles_total++;
@@ -464,7 +450,7 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 #ifdef FACE_RT_CYCLES
         g_face_rt_prof.tiles += FACE_RT_CYCLES() - _tt0;
 #endif
-        continue;  // tile 跟任何筆畫的螢幕外框都不相交
+        continue;
       }
 
       float tw = (float)(tilex1 - tilex + 1), th = (float)(tiley1 - tiley + 1);
@@ -473,13 +459,14 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 
       float cdx = tcx - C, cdy = tcy - C;
       float cux = F.cr * cdx + F.sr * cdy, cuy = -F.sr * cdx + F.cr * cdy;
-      if (hyp(cux, cuy) > R + hd + 1) {
+      float centerDist = hyp(cux, cuy);
+      if (centerDist > R + hd + 1) {
 #ifdef FACE_RT_CYCLES
         uint32_t _now = FACE_RT_CYCLES();
         g_face_rt_prof.tile_center += _now - _tbbox1;
         g_face_rt_prof.tiles += _now - _tt0;
 #endif
-        continue;  // tile 必定在球外，逐像素一定被 clip 掉
+        continue;
       }
 
       bool centerLimb = false;
@@ -500,8 +487,13 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
           centerLimb = true;
         } else {
           float cphiv = fast_asin(cu), ccp = sqrtf(1 - cu * cu);
-          if (ccl < 0.35f || ccp < 0.35f) {
-            mask = bboxMask;  // 靠近球緣，一階近似不可靠，不剔除
+#if FACE_RT_FAST
+          const float limbThresh = 0.22f;
+#else
+          const float limbThresh = 0.35f;
+#endif
+          if (ccl < limbThresh || ccp < limbThresh) {
+            mask = bboxMask;
             centerLimb = true;
           } else {
             clam = clamv;
@@ -568,21 +560,19 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 #ifdef FACE_RT_CYCLES
         g_face_rt_prof.tiles += _tcenter1 - _tt0;
 #endif
-        continue;  // tile 內所有像素都維持 base
+        continue;
       }
 
       {
-        int16_t (&curX0)[240] = s_work->curX0;
-        int16_t (&curX1)[240] = s_work->curX1;
+        int16_t (&curX0)[W] = s_work->curX0;
+        int16_t (&curX1)[W] = s_work->curX1;
         for (int y = tiley; y <= tiley1; y++) {
           if (tilex < curX0[y]) curX0[y] = (int16_t)tilex;
           if (tilex1 > curX1[y]) curX1[y] = (int16_t)tilex1;
         }
       }
 
-      // 決定走精確路徑（逐像素，舊程式碼不變）還是線性路徑（tile 內雙線性內插）。
       bool exact = centerLimb;
-
       Corner cTL{}, cTR{}, cBL{}, cBR{};
       if (!exact) {
         cTL = getCorner(colIdx, cornerTop, (float)tilex, (float)tiley);
@@ -592,11 +582,16 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
         if (!cTL.ok || !cTR.ok || !cBL.ok || !cBR.ok) exact = true;
       }
 
-      // 四角各自的 invg / rim V,invVV（角點自己的 Jacobian 跟偏微分，非 tile 中心值）。
-      // 角點順序：0=TL 1=TR 2=BL 3=BR，跟 w00/w10/w01/w11 的權重順序對應。
       float invgC[4][2][3];
       float rimVxC[4][2][2], rimVyC[4][2][2], rimInvVVC[4][2][2];
       float invtw = 0.0f, invth = 0.0f;
+#if FACE_RT_FAST
+      float Ja_mean = 0, Jb_mean = 0, Jd_mean = 0;
+      float mean_invg[2][3];
+      float mean_Vx[2][2], mean_Vy[2][2], mean_invVV[2][2];
+      bool tileAllInSphere = (centerDist + hd < R - 1.0f);
+#endif
+
       if (!exact) {
         invtw = 1.0f / tw;
         invth = 1.0f / th;
@@ -620,6 +615,23 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
             }
           }
         }
+
+#if FACE_RT_FAST
+        Ja_mean = (cTL.Ja + cTR.Ja + cBL.Ja + cBR.Ja) * 0.25f;
+        Jb_mean = (cTL.Jb + cTR.Jb + cBL.Jb + cBR.Jb) * 0.25f;
+        Jd_mean = (cTL.Jd + cTR.Jd + cBL.Jd + cBR.Jd) * 0.25f;
+        for (int ei = 0; ei < 2; ei++) {
+          if (!(mask & (1 << ei))) continue;
+          for (int k = 0; k < 3; k++) {
+            mean_invg[ei][k] = (invgC[0][ei][k] + invgC[1][ei][k] + invgC[2][ei][k] + invgC[3][ei][k]) * 0.25f;
+          }
+          for (int r = 0; r < 2; r++) {
+            mean_Vx[ei][r] = (rimVxC[0][ei][r] + rimVxC[1][ei][r] + rimVxC[2][ei][r] + rimVxC[3][ei][r]) * 0.25f;
+            mean_Vy[ei][r] = (rimVyC[0][ei][r] + rimVyC[1][ei][r] + rimVyC[2][ei][r] + rimVyC[3][ei][r]) * 0.25f;
+            mean_invVV[ei][r] = (rimInvVVC[0][ei][r] + rimInvVVC[1][ei][r] + rimInvVVC[2][ei][r] + rimInvVVC[3][ei][r]) * 0.25f;
+          }
+        }
+#endif
       }
 
 #ifdef FACE_RT_CYCLES
@@ -633,8 +645,6 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
         for (int y = tiley; y <= tiley1; y++) {
           for (int x = tilex; x <= tilex1; x++) {
             float px = x + 0.5f, py = y + 0.5f;
-
-            // 像素中心 → 反轉 roll → 未旋轉座標
             float dx = px - C, dy = py - C;
             float ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;
             float clip = clamp01(R - 0.5f - hyp(ux, uy) + 0.5f);
@@ -652,13 +662,10 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
             g_face_rt_prof.px_math++;
 #endif
 
-            // 螢幕 → 角度的偏微分（算邊緣平滑用）
-            // 球緣 cos→0 時一階近似會失準（遠處的形狀被算成 0 距離，在球緣留下一圈色暈），所以 cos 設下限
             float clg = cl > LIMB_MIN ? cl : LIMB_MIN, cpg = cp > LIMB_MIN ? cp : LIMB_MIN;
             float dphi_dx = 1.0f / (R * clg * cpg);
             float dphi_dy = ux * sl / (R * R * clg * clg * clg * cpg);
             float dlam_dy = 1.0f / (R * clg);
-            // 角度 → 螢幕（算描邊距離用）：dX=a·dφ+b·dλ, dY=d·dλ
             Jacobian J;
             J.a = R * clg * cpg;
             J.b = -R * sl * sp;
@@ -698,7 +705,6 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
             }
 
             if (mask & 4) {
-              // 眉線：角度空間的拋物線 λ = L0 + curve·s²，s=(φ-yaw)/PHI_END
               float s = (phi - F.yaw) / PHI_END;
               float bd;
               if (s < -1 || s > 1) {
@@ -721,13 +727,47 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
           }
         }
       } else {
+        // 線性路徑
         for (int y = tiley; y <= tiley1; y++) {
           float py = y + 0.5f;
           float fy = (py - tiley) * invth;
+
+#if FACE_RT_FAST
+          float phi_left = cTL.phi + (cBL.phi - cTL.phi) * fy;
+          float phi_right = cTR.phi + (cBR.phi - cTR.phi) * fy;
+          float lam_left = cTL.lam + (cBL.lam - cTL.lam) * fy;
+          float lam_right = cTR.lam + (cBR.lam - cTR.lam) * fy;
+          float dphi_step = (phi_right - phi_left) * invtw;
+          float dlam_step = (lam_right - lam_left) * invtw;
+          float cur_phi = phi_left + (0.5f * invtw) * (phi_right - phi_left);
+          float cur_lam = lam_left + (0.5f * invtw) * (lam_right - lam_left);
+
+          float dx0 = (tilex + 0.5f) - C;
+          float dy0 = py - C;
+          float cur_ux = F.cr * dx0 + F.sr * dy0;
+          float cur_uy = -F.sr * dx0 + F.cr * dy0;
+#endif
+
           for (int x = tilex; x <= tilex1; x++) {
             float px = x + 0.5f;
-            float fx = (px - tilex) * invtw;
 
+#if FACE_RT_FAST
+            float Ja = Ja_mean, Jb = Jb_mean, Jd = Jd_mean;
+            float ux = cur_ux, uy = cur_uy;
+            cur_ux += F.cr; cur_uy -= F.sr;
+            float phi = cur_phi, lam = cur_lam;
+            cur_phi += dphi_step; cur_lam += dlam_step;
+
+            float clip = 1.0f;
+            if (!tileAllInSphere) {
+              float r2 = ux * ux + uy * uy;
+              if (r2 > (R - 1.0f) * (R - 1.0f)) {
+                clip = clamp01(R - 0.5f - sqrtf(r2) + 0.5f);
+                if (clip <= 0) continue;
+              }
+            }
+#else
+            float fx = (px - tilex) * invtw;
             float w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
             float Ja = cTL.Ja * w00 + cTR.Ja * w10 + cBL.Ja * w01 + cBR.Ja * w11;
             float Jb = cTL.Jb * w00 + cTR.Jb * w10 + cBL.Jb * w01 + cBR.Jb * w11;
@@ -735,7 +775,6 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
 
             float dx = px - C, dy = py - C;
             float ux = F.cr * dx + F.sr * dy, uy = -F.sr * dx + F.cr * dy;
-            // 角度逐像素精確算：球側邊 phi 曲率大，4px 內插誤差約 0.1px，高對比描邊會差到 20 級以上
             float sl = uy * (1.0f / R);
             if (sl <= -1 || sl >= 1) continue;
             float lam = fast_asin(sl), cl = sqrtf(1 - sl * sl), u = ux / (R * cl);
@@ -749,6 +788,7 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
               clip = clamp01(R - 0.5f - sqrtf(r2) + 0.5f);
             }
             if (clip <= 0) continue;
+#endif
 
 #ifdef FACE_RT_STATS
             g_face_rt_full_px++;
@@ -768,8 +808,12 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
               for (int k = 0; k < 3; k++) {
                 const Edge& ed = E.edges[k];
                 float v = ed.nx * phi + ed.ny * lam + ed.c;
+#if FACE_RT_FAST
+                float invg = mean_invg[ei][k];
+#else
                 float invg = invgC[0][ei][k] * w00 + invgC[1][ei][k] * w10 +
                              invgC[2][ei][k] * w01 + invgC[3][ei][k] * w11;
+#endif
                 float g = clamp01(0.5f + v * invg);
                 cov = cov < g ? cov : g;
                 if (cov <= 0) break;
@@ -788,12 +832,18 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
               for (int r = 0; r < 2; r++) {
                 float wx = phi - E.rimPx[r], wy = lam - E.rimPy[r];
                 float Wx = Ja * wx + Jb * wy, Wy = Jd * wy;
+#if FACE_RT_FAST
+                float Vx = mean_Vx[ei][r];
+                float Vy = mean_Vy[ei][r];
+                float invVV = mean_invVV[ei][r];
+#else
                 float Vx = rimVxC[0][ei][r] * w00 + rimVxC[1][ei][r] * w10 +
                            rimVxC[2][ei][r] * w01 + rimVxC[3][ei][r] * w11;
                 float Vy = rimVyC[0][ei][r] * w00 + rimVyC[1][ei][r] * w10 +
                            rimVyC[2][ei][r] * w01 + rimVyC[3][ei][r] * w11;
                 float invVV = rimInvVVC[0][ei][r] * w00 + rimInvVVC[1][ei][r] * w10 +
                               rimInvVVC[2][ei][r] * w01 + rimInvVVC[3][ei][r] * w11;
+#endif
                 float t = clamp01((Wx * Vx + Wy * Vy) * invVV);
                 float ddx = Wx - Vx * t, ddy = Wy - Vy * t;
                 float d2 = ddx * ddx + ddy * ddy;
@@ -837,7 +887,6 @@ FACE_RT_ATTR inline FaceRect face_rt_render(const FacePose& p, const uint8_t* ba
           }
         }
       }
-
 #ifdef FACE_RT_CYCLES
       g_face_rt_prof.pixels += FACE_RT_CYCLES() - _tp0;
 #endif

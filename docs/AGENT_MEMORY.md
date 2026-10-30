@@ -1563,3 +1563,15 @@ Discord UDP packet
 - **主聲道現況**：Edge TTS（免費雲端、zh-TW、延遲可接受）已佔滿「主聲道」格、零本地成本；本地 TTS 只在想要「獨特/克隆嗓子」時才有意義，純替換主聲道沒誘因。
 
 **為什麼它 ~10k star / 安裝爆（不可複製到 Marvin）：** 不是某大 Vtuber 在用，而是 README 宗旨明寫「開源復刻閉源的 Neuro-sama」——直接接住 Neuro-sama（Twitch 訂閱前三的現象級 AI VTuber）幾十萬粉「我也想要一個」的現成需求池。增長三引擎＝①蹭 Neuro-sama 狂熱社群 ②本機+免費+隱私的「私密 AI 女友」(用戶見證「被用 10 萬次") ③Live2D waifu 視覺情感投射 + 亞洲二次元伴侶市場(中/日/韓 README+QQ 群)。**這三個引擎 Marvin 全沒踩**：無對標爆紅 IP、多人公共語音(社交非私密陪伴)、純語音無頭像、做工具/DJ/遊戲主持。它賣情感陪伴幻想，我們做多人房間智慧夥伴＝不同物種不同慾望。教訓：追 star=找有狂熱現成社群的 IP 去蹭；我們刻意不蹭走技術深度，star 慢但本就不追 star，印證 `project_devlog_content_roadmap` 路線。
+
+---
+
+### openclaw_removed_2026_10_29
+
+*openclaw / NemoClaw 整套已移除（2026-10-29，使用者要求，省 M1 8GB 記憶體）*
+
+- **系統層**：launchd `ai.openclaw.gateway`（KeepAlive 常駐 node :18789）已 bootout + 刪 plist；`npm uninstall -g nemoclaw openclaw`（~673MB）；`~/.openclaw`、`~/.nemoclaw` 已刪（無備份）；`run_bot.py` 的 `NEMOCLAW_COVER` setdefault 已刪。
+- **Code**：拔掉「龍蝦/openclaw」喚醒、`NemoClawAgent`、`_handle_nemoclaw_query`/`_ask_nemoclaw`、`nemoclaw_cover.py`、`gemini_router_llm.classify_query_route`（owner 每句多打一發 Gemini 分類，順便省掉）、ack `nemoclaw` category、cleaner gate 的 龍蝦 詞、`@AI Marmo` Discord bot 代問路徑（`_handle_marmo_query`/`_MARMO_RE`/`_MARMO_BOT_ID`/wake_detector `_CTRL_MARMO_RE`——那隻 bot 跑在 openclaw gateway 上）。
+- `_NEMOCLAW_OWNER_ID` 改名 `_OWNER_ID`（仍讀 `LOCAL_USER_ID`）。
+- **保留**：Marmo 人格、自發漫才（SpontaneousManzaiAgent）、`marmo_server`（:8765 webhook）+ DualSpeakAgent、TTS `nemo` emotion_tag。注意 marmo_server 唯一外部呼叫者原本就是 openclaw，之後等於沒人 POST——要再瘦身可以一併拔。
+- 上面舊條目（project_mcp_status_and_multiplayer 等）提到的 openclaw 路徑已不存在。
