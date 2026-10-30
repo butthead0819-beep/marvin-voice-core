@@ -20,7 +20,6 @@ def _make_cog():
     bot.tts_engine.get_estimated_duration.return_value = 2.0
     bot.router = MagicMock()
     bot.router._background_intent_enrich = AsyncMock()
-    bot.router.classify_query_route = AsyncMock(return_value="marvin")
     bot.router.memory = MagicMock()
     bot.router.memory.get_player_data.return_value = {}
     bot.router.memory.list_players = MagicMock(return_value=[])
@@ -61,12 +60,8 @@ def _make_cog():
 
     cog._ducking_agent = MagicMock()
 
-    cog._handle_nemoclaw_query = AsyncMock()
-    cog._handle_marmo_query = AsyncMock()
     cog._safe_music_command = AsyncMock()
     cog._handle_voice_music_command = AsyncMock()
-    cog._handle_voice_imitate_command = AsyncMock()
-    cog._handle_voice_status_query = AsyncMock()
     cog._process_vision_query = AsyncMock()
     cog._handle_recall_query = AsyncMock()
     cog._is_owner_speaker = MagicMock(return_value=True)

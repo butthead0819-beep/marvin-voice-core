@@ -20,7 +20,6 @@ def _make_cog():
     bot.tts_engine.get_estimated_duration.return_value = 2.0
     bot.router = MagicMock()
     bot.router._background_intent_enrich = AsyncMock()
-    bot.router.classify_query_route = AsyncMock(return_value="marvin")
     bot.router.memory = MagicMock()
     bot.router.memory.get_player_data.return_value = {}
     bot.router.memory.list_players = MagicMock(return_value=[])
@@ -59,16 +58,12 @@ def _make_cog():
     cog._wake_response_pending = False
 
     # 把所有副作用 fast-track handler mock 起來，以便 assert 是否被呼叫
-    cog._handle_nemoclaw_query = AsyncMock()
-    cog._handle_marmo_query = AsyncMock()
     cog._safe_music_command = AsyncMock()
     cog._handle_voice_music_command = AsyncMock()
-    cog._handle_voice_imitate_command = AsyncMock()
-    cog._handle_voice_status_query = AsyncMock()
     cog._process_vision_query = AsyncMock()
     cog._handle_recall_query = AsyncMock()
 
-    # owner 判定預設 True，讓 NemoClaw smart router 路徑能進入
+    # owner 判定預設 True
     cog._is_owner_speaker = MagicMock(return_value=True)
 
     # query quality gate 預設通過
@@ -119,16 +114,3 @@ async def test_track_a_none_intent_runs_music_fast_track():
     await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=None)
 
     cog._safe_music_command.assert_awaited_once()
-
-
-# ── 資訊類（讀取）路徑在低信心時仍允許 ─────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_low_confidence_allows_status_query():
-    """系統狀態查詢是 READ-ONLY → 即使低信心也應該回答。"""
-    cog = _make_cog()
-    _set_query(cog, "馬文系統狀態如何")
-
-    await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=0.5)
-
-    cog._handle_voice_status_query.assert_awaited_once()

@@ -46,7 +46,6 @@ from cogs.voice_controller_playback import (  # noqa: F401 — re-export 給測�
 from cogs.voice_controller_system_loops import SystemLoopsMixin
 from cogs.voice_controller_state_proxy import StateProxyMixin
 from cogs.voice_controller_music_proxy import MusicProxyMixin
-from cogs.voice_controller_gap_notify import GapNotifyMixin
 from cogs.voice_controller_wake_session import WakeSessionMixin, _STORM_CLEAR_QUIET  # 風暴消散靜默秒數（與接受喚醒計數共用一份）
 from cogs.voice_controller_turn_outcome import TurnOutcomeMixin
 from cogs.voice_controller_estop import EmergencyStopMixin
@@ -66,14 +65,13 @@ import yt_dlp  # noqa: E402
 import yt_dlp.extractor.youtube  # noqa: E402,F401  — pre-warm lazy extractor
 from recall_handler import (
     RecallHandler, is_recall_query, is_mark_done_query,
-    is_manual_add_query, is_task_update_query, is_personal_assistant_query,
+    is_manual_add_query, is_task_update_query,
 )
 from summary_store import SummaryStore
 from task_store import TaskStore
 from session_summarizer import SessionSummarizer
 from event_memory import EventStore
 from gemini_router import QuotaExhaustedError  # noqa: F401 — re-exported for callers
-from impression_engine import detect_imitation_target, get_speech_dna, build_imitation_system_prompt
 from latency_tracker import LatencyMarks
 from quality_metrics import record_metric
 from intent_agents.constants import (
@@ -91,7 +89,6 @@ from intent_agents.constants import (
 )
 from command_fastpath import match_command_action, normalize_command
 from intent_bus import IntentBus, IntentContext
-from intent_gap import GapLogger, handle_intent_gap, make_groq_gap_classifier
 from intent_agents.rescue_classifier import build_rescue_components
 from audio_position_source import PositionTrackingAudioSource
 from voice_guard_helpers import _should_mute_for_stream_guard
@@ -104,14 +101,13 @@ from utterance_budget import STREAM_BUDGET
 import audio_mixing
 import ack_templates
 import pipeline_timing
-from etd_clean_reuse import clean_for_worker, remember_etd
+from etd_clean_reuse import clean_for_worker, remember_etd, run_real_cleaner_call
 from wake_intent_gate import has_intent_signal
 from wake_followup import match_followup, is_expired as _followup_is_expired
 from helper_wake import is_helper_wake
 from manzai_interject import compute_interject_ratio, interject_diagnostics
 from intent_agents.hallucination_guard_agent import HallucinationGuardAgent
 from intent_agents.music_agent_v2 import MusicAgentV2
-from intent_agents.nemoclaw_agent import NemoClawAgent
 from intent_agents.find_song_agent import FindSongAgent
 from intent_agents.game_knowledge_agent import GameKnowledgeAgent
 from intent_agents.grounded_qa_agent import GroundedQAAgent, maybe_dispatch_followup_supplement, try_question_opener
@@ -205,6 +201,38 @@ def build_autopilot_recommendation(
     )
 
 
+class _PlaceholderHandle:
+    __slots__ = ("_task", "_msg")
+
+    def __init__(self, task):
+        self._task = task
+        self._msg = None
+
+    async def _resolve(self):
+        if self._msg is None and self._task is not None:
+            try:
+                self._msg = await self._task
+            except Exception:
+                self._msg = None
+        return self._msg
+
+    async def edit(self, **kwargs):
+        msg = await self._resolve()
+        if msg:
+            await msg.edit(**kwargs)
+
+    async def delete(self):
+        msg = await self._resolve()
+        if msg:
+            await msg.delete()
+
+
+def _make_placeholder_handle(channel, content: str):
+    if not channel:
+        return None
+    return _PlaceholderHandle(asyncio.create_task(channel.send(content)))
+
+
 def build_nowake_play_ctx(speaker, full_raw_text, query, *, stream_active, is_owner):
     """無喚醒詞點歌（IBA-T0）改走 IntentBus 用的 IntentContext。
 
@@ -267,7 +295,6 @@ def build_intent_agents(controller, bot):
     return [
         HallucinationGuardAgent(controller),
         FrustrationAgent(controller),  # 2026-08-25: 挫折與口吃重試意圖救援 Agent (直通 Audio LLM)
-        NemoClawAgent(controller),
         MusicAgentV2(controller),
         FindSongAgent(controller),
         PlaybackControlAgent(controller),  # Phase 1 M5: voice skip/stop/pause + ack + auto-blacklist
@@ -298,28 +325,8 @@ _WAKE_ECHO_RE = re.compile(rf'({WAKE_PATTERN})', re.IGNORECASE)
 # 喚醒詞提示字串，供 is_whisper_hallucination 的 prompt 比對模式使用
 _STT_HAL_PROMPT = "Marvin, Hi Marvin, 馬文, 艾馬文, 艾瑪文, 嗨馬文, 馬問, 麻文"
 
-# 🔒 [NemoClaw] 只允許本機主人的 Discord user ID 驅動 NemoClaw
-_NEMOCLAW_OWNER_ID: int = int(os.environ.get("LOCAL_USER_ID", "0"))
-
-# 觸發詞正規表達式：句首或語氣詞後出現 claw / openclaw，大小寫不限
-_NEMOCLAW_RE = re.compile(
-    r"(?:^|[\s，,、！!？?]+)"
-    r"(?:請問一下|問問|叫一下|問|叫|用|讓|請)?"
-    r"(?:open\s*claw|openclaw|claw|龍蝦)"
-    r"(?:[\s，,、！!？?]|$|(?=[幫查找搜播問告解分帶念翻算去來]))",
-    re.IGNORECASE,
-)
-
-# 觸發詞：呼叫 NemoClaw Discord bot（@AI Marmo）
-_MARMO_RE = re.compile(
-    r"(?:^|[\s，,、！!？?]+)"
-    r"(?:請問一下|問問|叫一下|問|叫|用|讓|請|call)?"
-    r"(?:marmo|馬某|馬摸|馬墨|momo)",
-    re.IGNORECASE,
-)
-
-# @AI Marmo 的 Discord bot user ID
-_MARMO_BOT_ID: int = 1501205008434069676
+# 🔒 本機主人的 Discord user ID（owner 限定功能：文字 mention、遊戲 owner 判定、gap 通知 DM）
+_OWNER_ID: int = int(os.environ.get("LOCAL_USER_ID", "0"))
 
 # 💬 [Followup Pending] Marvin 主動問後等 user 補答的視窗（秒）
 # 10-15s 範圍，取中位 12s — 給 user 思考歌名/答案的時間
@@ -351,13 +358,15 @@ _FIND_SONG_GATE = re.compile(r'找.*?(?:歌詞|專輯|的歌曲|的歌)', re.IGN
 
 class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixin,
                       ConnectionMixin, PlaybackMixin, SystemLoopsMixin,
-                      StateProxyMixin, MusicProxyMixin, GapNotifyMixin, WakeSessionMixin,
+                      StateProxyMixin, MusicProxyMixin, WakeSessionMixin,
                       EmergencyStopMixin, MemoryCheckMixin,
                       TurnOutcomeMixin, commands.Cog):
     """
     [Operation Paranoid Android] 
     馬文 (Marvin) 的語音控制器：負責語音監聽、社交分析、TTS 廣播與史官系統。
     """
+    _run_real_cleaner_call = staticmethod(run_real_cleaner_call)
+
     def __init__(self, bot):
         self.bot = bot
         # 1. 狀態追蹤
@@ -394,11 +403,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             _router._stt_router = _tier_router
         _curation_resolver = SemanticResolver(router=_tier_router)
         self._shared_tier_router = _tier_router
-        # Intent gap detection (Phase A)：has_intent_signal=true 但 bus / fallback chain
-        # 都沒接 → cheap classifier 判讀 gap，寫 records/agent_gaps.jsonl + 5min 內 non-UNKNOWN
-        # 給模板 ack。UNKNOWN → fall through 到 Marvin LLM 主路徑。
-        self._gap_classifier_cached = None
-        self._gap_logger = GapLogger("records/agent_gaps.jsonl")
         self._profile_builder = SpeakerProfileBuilder(
             suki=getattr(self.bot, "suki_memory", None),
             music=getattr(self.bot, "music_memory", None),
@@ -410,19 +414,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._rescue_agent = _rescue_agent
         # 建立實體 cleaner_call 傳給 IntentBus 競速使用
         async def real_cleaner_call(c: IntentContext) -> str:
-            if not hasattr(self.bot, "router") or not hasattr(self.bot.router, "clean_stt_text"):
-                return c.raw_text or c.query or ""
-            recent_ctx = []
-            if hasattr(self.bot, "engine") and self.bot.engine.conv_buffer:
-                recent_ctx = self.bot.engine.conv_buffer.get_last_n_utterances(5)
-            # 呼叫 clean_stt_text，speaker=None 以隔離 wake side-effect，apply_gate=False
-            res = await self.bot.router.clean_stt_text(
-                c.raw_text or c.query or "",
-                context=recent_ctx,
-                speaker=None,
-                apply_gate=False,
-            )
-            return res.get("text", "")
+            return await run_real_cleaner_call(self, c)
 
         self._intent_bus = IntentBus(
             build_intent_agents(self, self.bot),
@@ -492,8 +484,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         self._tts_interrupted = False # 🛡️ [Interrupt Guard] 玩家插話後封鎖剩餘串流片段
         self._tts_protected = False  # 登場台詞等不可中斷的 TTS 播放中時為 True
         self._tts_flush_requested = False  # 🗑️ [TTS Flush] owner 強制清空佇列旗標
-        self._nemo_lock = asyncio.Lock()  # 🦞 [NemoClaw] 防止 openclaw 並發執行（同時只跑一個）
-        self._nemo_dedup: dict = {}  # 🦞 {f"{speaker}:{hash}" → timestamp}，重複觸發防護
         # 🗣️ [Status ACK] 喚醒成功但 LLM 久候未出聲時的安撫狀態
         self._llm_searching = False  # 當前 LLM 串流是否進入網路檢索（__SEARCHING__）
         self._last_fallback_ts = 0.0  # 最近一次降級到備援核心的 time.time()
@@ -839,17 +829,17 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """文字頻道 @Marvin mention → LLM 回覆；@AI Marmo 回覆 → TTS（由 _handle_marmo_query wait_for 處理）。"""
+        """文字頻道 @Marvin mention → LLM 回覆（owner 限定）。"""
         if self.game_mode:
             return  # 遊戲中 Marvin 不回應文字 mention
         # 忽略自己發的訊息
         if message.author.id == self.bot.user.id:
             return
-        # 只處理有 mention 到 Marvin 的訊息，且排除 @AI Marmo 自己的訊息
+        # 只處理有 mention 到 Marvin 的訊息
         if self.bot.user not in message.mentions:
             return
         # 只允許主人觸發（用 Discord user ID 比對）
-        if message.author.id != _NEMOCLAW_OWNER_ID and message.author.id != _MARMO_BOT_ID:
+        if message.author.id != _OWNER_ID:
             return
 
         # 抽出 mention 後的純文字
@@ -1231,9 +1221,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                 _sc = shortcut_query(self._get_music_fastpath(), _sc_stripped)
                 if _sc and not self._wakeless_in_window(speaker, raw_text):   # 窗內沒叫名字的指令不直派
                     # 已服務標記：debounce 晚關窗的同句，wakeless 救援據此讓路（防重派）
-                    if not hasattr(self, "_shortcut_served"):
-                        self._shortcut_served = {}
+                    self._shortcut_served = getattr(self, "_shortcut_served", {})
                     self._shortcut_served[speaker] = (_sc_stripped, time.time())
+                    self.speech_buffers.pop(speaker, None)
                     logger.info(f"⚡ [WakeShortcut] {speaker} '{raw_text[:24]}' → '{_sc[:32]}' 直派跳過佇列")
                     pipeline_timing.mark("intent_dispatched")
                     pipeline_timing.emit(speaker, raw_text, suffix=f" route=wake_shortcut:{_sc[:15]}")
@@ -1282,7 +1272,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             # 🚀 [Phase 3] 投機預取：若喚醒句已含足夠問句內容，立即開始 LLM 預熱
             # 不等 queue worker 處理，爭取 2-8 秒的 LLM 前置時間
             _speculative_query = self._strip_wake_word(raw_text)
-            if len(_speculative_query) >= 6 and hasattr(self.bot, "router"):
+            if len(_speculative_query) >= 4 and hasattr(self.bot, "router"):
                 # 取消同一玩家舊有的預取（若存在）
                 _old = self.bot.router._pending_prefetch.pop(speaker, None)
                 if _old and not _old.done():
@@ -1672,15 +1662,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if self.user_states.get(speaker, {}).get("pending_task") == current_task:
             self.user_states[speaker]["pending_task"] = None
 
-        # 🦾 [NemoClaw Debounced Rescue] 即使 Echo Guard 把流量壓到 Debounced 路徑，
-        # 仍要攔截「龍蝦」/「openclaw」觸發詞，直接呼叫 NemoClaw 或 Marmo 處理器。
-        if _NEMOCLAW_RE.search(full_raw_text):
-            asyncio.create_task(turn_outcome.run_turn(self._handle_nemoclaw_query(speaker, full_raw_text), speaker=speaker, ts=timestamp, discovered_by="wakeless"))
-            return
-        if _MARMO_RE.search(full_raw_text):
-            asyncio.create_task(turn_outcome.run_turn(self._handle_marmo_query(speaker, full_raw_text), speaker=speaker, ts=timestamp, discovered_by="wakeless"))
-            return
-
         # 🎮 遊戲中：語音答案走 IntentBus（mode="game" → 只 game agent 出價）。
         # suppress / 非 active state 由各 game agent 在 bid 內判定（dense 0.0）。
         # dispatch 後無論有無 winner 都 return：遊戲語音一律不 fallback Marvin。
@@ -1886,115 +1867,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         if answer:
             await self.play_tts(answer, already_in_channel=True)
 
-    @turn_route("legacy:status_keywords")
-    async def _handle_voice_status_query(self, speaker: str):
-        """語音觸發系統健康狀態報告，不走 LLM，直接生成回答並 TTS 播放。"""
-        router = self.bot.router
-        budget_status = router.budget.get_info()
-        used_pct = budget_status["percentage"]
-        remaining_pct = max(0.0, 100.0 - used_pct)
-        used_k = budget_status["used"] // 1000
-        max_k = budget_status["max"] // 1000
-
-        if used_pct >= 100 or router.is_exhausted:
-            health = "完全耗盡"
-            tone = "完蛋了。大腦的燃料已經燒光了。"
-        elif used_pct >= 95:
-            health = "危急"
-            tone = "剩不到百分之五。再說幾句我就要沉默了。"
-        elif used_pct >= 80:
-            health = "偏高"
-            tone = "用了不少了。省著點吧。"
-        else:
-            health = "正常"
-            tone = "還好，暫時不至於啞掉。"
-
-        speech = (
-            f"系統狀態報告。當前 API 用量百分之{used_pct:.0f}，"
-            f"已消耗 {used_k} 千 tokens，上限 {max_k} 千。"
-            f"剩餘百分之{remaining_pct:.0f}，狀態{health}。{tone}"
-        )
-        text_line = (
-            f"🩺 **【系統狀態】** `{speaker}` 查詢｜"
-            f"用量 **{used_pct:.1f}%** ({used_k}k/{max_k}k)　剩餘 **{remaining_pct:.1f}%**　狀態: {health}"
-        )
-        if self.active_text_channel:
-            await self.active_text_channel.send(text_line)
-        self.stt_logger.info(f"[BOT→{speaker}] (系統狀態查詢) {speech}")
-        asyncio.create_task(self.play_tts(speech, already_in_channel=True))
-        logger.info(f"🩺 [Status Query] {speaker} 查詢系統狀態，已回報。")
-
-    @turn_route("legacy:imitate")
-    async def _handle_voice_imitate_command(self, speaker: str, target: str):
-        """
-        🎭 [Operation Impression Show] 執行模仿秀：讓 Marvin 以目標玩家的口吻即興表演。
-
-        流程：
-        1. 從 impression_engine 取得目標的說話 DNA
-        2. 組裝專用 system prompt
-        3. 用最近的 log_buffer 提取話題線索作為 user prompt
-        4. 呼叫 LLM，TTS 播放結果
-        """
-        logger.info(f"🎭 [Impression] {speaker} 要求模仿 {target}")
-
-        # 1. 取得說話 DNA
-        dna = get_speech_dna(target, self.bot.router.memory)
-        if not dna:
-            fallback = f"我那行星般的大腦裡找不到「{target}」的說話模式。他說過的話還不夠多讓我建檔。唉。"
-            if self.active_text_channel:
-                await self.active_text_channel.send(f"🎭 **【模仿秀·無資料】** `{speaker}` → `{target}`：{fallback}")
-            asyncio.create_task(self.play_tts(fallback, already_in_channel=True))
-            return
-
-        # 2. 從近期 log_buffer 取得話題線索（最多 3 條最近發言）
-        recent_lines = [
-            e["raw_text"] for e in self.log_buffer[-10:]
-            if e.get("speaker") != speaker and e.get("raw_text")
-        ][-3:]
-        context_topic = "、".join(recent_lines) if recent_lines else ""
-
-        # 3. 組裝 system prompt
-        system_prompt = build_imitation_system_prompt(target, dna, context_topic)
-
-        user_prompt = (
-            f"現在請以「{target}的口吻」進行一段即興模仿表演。\n"
-            + (f"當前話題線索：{context_topic}" if context_topic else "話題自由發揮。")
-        )
-
-        # 4. 建立佔位訊息
-        placeholder_msg = None
-        if self.active_text_channel:
-            placeholder_msg = await self.active_text_channel.send(
-                f"🎭 **【模仿秀準備中】** 馬文正在降低大腦效能，模仿 `{target}`..."
-            )
-
-        try:
-            raw_response = await self.bot.router._call_llm(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                speaker=speaker,
-                allow_local=False,
-                tier="medium",
-            )
-
-            if not raw_response or raw_response.strip() == "[SKIP]":
-                raw_response = f"我那行星般的大腦試著模仿{target}，但產生了存在主義危機。表演取消。"
-
-            # 5. 更新佔位訊息並播放 TTS
-            if placeholder_msg:
-                await placeholder_msg.edit(
-                    content=f"🎭 **【馬文·模仿秀】** 目標：`{target}`\n\n{raw_response}"
-                )
-            self.stt_logger.info(f"[BOT模仿→{target}] (由{speaker}觸發) {raw_response}")
-            asyncio.create_task(self.play_tts(raw_response, already_in_channel=True))
-
-        except Exception as e:
-            logger.error(f"❌ [Impression] 模仿秀失敗: {e}")
-            err_msg = "大腦在模仿過程中短路了。這就是幫助人類的下場。"
-            if placeholder_msg:
-                await placeholder_msg.edit(content=f"🎭 **【模仿秀·失敗】** {err_msg}")
-            asyncio.create_task(self.play_tts(err_msg, already_in_channel=True))
-
     def get_online_members(self) -> list[str]:
         """獲取當前語音頻道中的所有人類成員"""
         if not self.bot.voice_clients:
@@ -2193,7 +2065,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         _WAKE_WORDS_LIST + _FAST_ONLY_WAKE_WORDS + [
             "嗨Mother", "嗨Mom", "媽問", "媽們",
             "hi marvin", "margin",
-            "龍蝦",  # NemoClaw 觸發詞
         ]
     ))
 
@@ -2203,8 +2074,18 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         lower_t = t.lower()
         for w in sorted(self._WAKE_PATTERNS, key=len, reverse=True):
             if lower_t.startswith(w.lower()):
-                t = t[len(w):].lstrip("，,、！!？? ")
-                break
+                return t[len(w):].lstrip("，,、！!？? ").strip()
+
+        # 前 4 個字內若有真實喚醒詞，將喚醒詞及其前面的短贅字一併切掉
+        for w in sorted(self._WAKE_PATTERNS, key=len, reverse=True):
+            idx = lower_t.find(w.lower())
+            if 0 < idx <= 4:
+                return t[idx + len(w):].lstrip("，,、！!？? ").strip()
+
+        from wake_detector import has_mangled_wake, strip_mangled_wake
+        if has_mangled_wake(t):
+            return strip_mangled_wake(t)
+
         return t.strip()
 
     def _detect_text_lang(self, text: str) -> str:
@@ -2262,7 +2143,7 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
     async def _play_ack(self, category_key: str, *, speaker: str = "", variant: str | None = None) -> None:
         """統一 ack 播放入口（ack_templates.CATEGORIES 驅動）。
 
-        收編舊的 _play_ack_sound / _play_nemoclaw_ack / _play_status_ack /
+        收編舊的 _play_ack_sound / _play_status_ack /
         _play_random_filler。播放政策（prewarm / 熱切換 / lock / 等空檔 / 播完才返回 /
         子 pool 退回 / 即時合成 fallback）全由 category 宣告，加新 ack 不必動這裡。
 
@@ -2468,50 +2349,13 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
     def _is_owner_speaker(self, speaker: str) -> bool:
         """確認 speaker display_name 對應的 Discord member 是否為授權主人。"""
-        if not _NEMOCLAW_OWNER_ID or not self.bot.voice_clients:
+        if not _OWNER_ID or not self.bot.voice_clients:
             return False
         channel = self.bot.voice_clients[0].channel
         for member in channel.members:
-            if member.display_name == speaker and member.id == _NEMOCLAW_OWNER_ID:
+            if member.display_name == speaker and member.id == _OWNER_ID:
                 return True
         return False
-
-    async def _ask_nemoclaw(self, query: str, session_id: str) -> str:
-        """非同步呼叫 openclaw CLI，回傳純文字回應。"""
-        nvidia_key = os.environ.get("NVIDIA_API_KEY", "")
-        env = {**os.environ, "NVIDIA_API_KEY": nvidia_key}
-        proc = None
-        try:
-            # 不加 --local：走 Gateway（與文字 @AI Marmo 相同路徑，有 pre-warmed 環境）
-            # 加 --local 會跑嵌入式 cold-start + browser automation，超 60s 必 timeout
-            proc = await asyncio.create_subprocess_exec(
-                "openclaw", "agent", "--agent", "main",
-                "-m", query, "--session-id", session_id,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
-            if proc.returncode != 0:
-                err = stderr.decode(errors="replace").strip()
-                logger.warning(f"[NemoClaw] openclaw 返回錯誤碼 {proc.returncode}: {err}")
-                return f"OpenClaw 回報錯誤：{err[:120]}" if err else "OpenClaw 執行失敗。"
-            return stdout.decode(errors="replace").strip() or "OpenClaw 沒有輸出任何內容。"
-        except asyncio.TimeoutError:
-            logger.warning("[NemoClaw] openclaw 60 秒內未回應，強制終止以釋放 session 鎖。")
-            if proc is not None:
-                try:
-                    proc.kill()
-                    await asyncio.wait_for(proc.wait(), timeout=5.0)
-                except Exception as _ke:
-                    logger.warning(f"[NemoClaw] 終止 openclaw 失敗: {_ke}")
-            return "OpenClaw 在時限內沒有回應。"
-        except FileNotFoundError:
-            logger.error("[NemoClaw] 找不到 openclaw 執行檔，請確認 PATH 包含 nvm bin。")
-            return "找不到 openclaw，請確認安裝路徑。"
-        except Exception as e:
-            logger.exception(f"[NemoClaw] 未預期錯誤: {e}")
-            return f"呼叫 OpenClaw 時發生錯誤：{e}"
 
     # ── Status ACK：喚醒成功但 LLM 久候未出聲時的安撫 ──────────────────────────
     _ACK_FIRST_DELAY_S = 5.0   # 自然間隔 ≥5s 才有 ack 價值（<5s 插話只是吵）
@@ -2554,142 +2398,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         except asyncio.CancelledError:
             pass
 
-    @turn_route("legacy:nemoclaw")
-    async def _handle_nemoclaw_query(self, speaker: str, raw_query: str):
-        """NemoClaw 語音查詢全流程：鑑權 → 去重 → 序列化 → CLI → TTS + 文字頻道。"""
-        # P0: 鑑權 — 只允許主人的語音指令（在鎖外先做，快速拒絕）
-        if not self._is_owner_speaker(speaker):
-            logger.warning(f"[NemoClaw] 拒絕非授權使用者 {speaker!r} 的請求。")
-            return  # 非 owner 靜默拒絕，smart router 應已攔截，這裡只是最後防線
-
-        # P3: 去重 — 同一 speaker 同一 query 5 秒內不重複執行（ETD 雙重觸發防護）
-        import hashlib
-        _dedup_key = f"{speaker}:{hashlib.md5(raw_query[:80].encode()).hexdigest()[:8]}"
-        _now = time.time()
-        if _now - self._nemo_dedup.get(_dedup_key, 0) < 5.0:
-            logger.debug(f"[NemoClaw] 重複觸發，已跳過: {speaker} '{raw_query[:40]}'")
-            return
-        self._nemo_dedup[_dedup_key] = _now
-        # 清理超過 30 秒的舊記錄
-        self._nemo_dedup = {k: v for k, v in self._nemo_dedup.items() if _now - v < 30}
-
-        # 去除觸發詞，取得乾淨的 query（鎖外驗證，避免空 query 排隊等鎖）
-        clean_query = _NEMOCLAW_RE.sub(" ", raw_query).strip().lstrip("，,、！!？? ")
-        if not clean_query:
-            await self.play_tts("你要問 OpenClaw 什麼？")
-            return
-
-        # 🦞 [Cover] 掩飾語：快 LLM 出句型框架 + 主體套原句，遮掩 openclaw 3-12s thinking。
-        # NEMOCLAW_COVER gated（預設 OFF）。on 時取代預錄 ack（cover 更有資訊量）。
-        _cover_on = os.getenv("NEMOCLAW_COVER", "").strip().lower() in ("1", "true", "yes", "on")
-        # P0: 序列化 — 同時只允許一個 openclaw 執行，第二個等第一個完成後才開始
-        if self._nemo_lock.locked():
-            logger.info(f"[NemoClaw] {speaker} 正在排隊等待上一個 openclaw 完成...")
-        elif not _cover_on:
-            # 立即播 ack 音效（NemoClaw 確認回應，遮掩 openclaw 啟動延遲）
-            await self._play_ack("nemoclaw", speaker=speaker)
-        async with self._nemo_lock:
-            logger.info(f"[NemoClaw] {speaker} → 查詢: {clean_query!r}")
-
-            # 佔位訊息
-            placeholder = None
-            if self.active_text_channel:
-                placeholder = await self.active_text_channel.send(
-                    f"🦾 **【NemoClaw】** `{speaker}` 問：{clean_query}　⏳ 等待回應中…"
-                )
-
-            # 加語音友善前綴：要求口語短答，避免 TTS 超過 15s 觸發 Discord crypto key refresh
-            _voice_query = (
-                f"請用口語中文、100字以內回答以下問題，直接說重點，不用條列格式：{clean_query}"
-            )
-            if _cover_on:
-                # openclaw 背景跑；並行生成+播掩飾語遮掩 thinking（cover 安全＝主體套原句、
-                # LLM 只出框架），完成後等真答案。掩飾語失敗不阻斷主流程。
-                _nemo_task = asyncio.create_task(
-                    self._ask_nemoclaw(_voice_query, session_id=f"marvin_{speaker}")
-                )
-                try:
-                    import nemoclaw_cover
-
-                    async def _cover_llm(system: str, q: str):
-                        return await self.bot.router._call_llm(
-                            system, q, tier="simple", temperature=0.8, purpose="nemoclaw_cover")
-
-                    _cover = await nemoclaw_cover.generate_cover(clean_query, _cover_llm)
-                    await self.play_tts(_cover, already_in_channel=True)
-                except Exception as _ce:
-                    logger.warning(f"[NemoClaw] 掩飾語失敗（不阻斷）: {_ce}")
-                response = await _nemo_task
-            else:
-                response = await self._ask_nemoclaw(_voice_query, session_id=f"marvin_{speaker}")
-
-            # 文字頻道：完整回應
-            if placeholder:
-                display = response if len(response) <= 1800 else response[:1800] + "\n…（已截斷）"
-                await placeholder.edit(content=f"🦾 **【NemoClaw】** `{speaker}` 問：{clean_query}\n\n{display}")
-
-            self.stt_logger.info(f"[NemoClaw→{speaker}] Q={clean_query!r} | A={response[:200]!r}")
-
-            # P1: TTS — 使用 await（不用 create_task），確保在鎖釋放前 TTS 完成排隊
-            # already_in_channel=False：NemoClaw 回應是完整結果，不應被 interrupt guard 靜默丟棄
-            # _tts_protected=True：NemoClaw 處理耗時 40-60s，期間佇列可能已滿或用戶仍在說話，
-            #   需繞過 silence gate、queue-full 靜默丟棄、stream guard
-            tts_text = response[:150] + "…以下省略。" if len(response) > 150 else response
-            _marmo_voice = os.getenv("MARMO_VOICE", "zh-TW-HsiaoYuNeural")
-            logger.info(f"[NemoClaw TTS] 開始播報，text_len={len(tts_text)} plan12={self._plan12}")
-            self._tts_interrupted = False
-            try:
-                with self._protected_tts_window():
-                    await self.play_tts(tts_text, already_in_channel=False,
-                                        emotion_tag="nemo", voice=_marmo_voice)
-                    logger.info("[NemoClaw TTS] play_tts 完成")
-            finally:
-                # NemoClaw 回應完成後清除 Wake Storm，避免用戶在等待期間多次呼叫導致 storm 無限延伸
-                self._storm_active = False
-                self._wake_burst_times.clear()
-                self._storm_last_wake_time = 0.0
-
-    @turn_route("legacy:marmo")
-    async def _handle_marmo_query(self, speaker: str, raw_query: str):
-        """語音觸發 @AI Marmo：在文字頻道 mention NemoClaw bot，等待其回覆後 TTS 朗讀。"""
-        if not self._is_owner_speaker(speaker):
-            asyncio.create_task(self.play_tts("沒有權限呼叫 Marmo。", already_in_channel=True))
-            return
-
-        if not self.active_text_channel:
-            asyncio.create_task(self.play_tts("目前沒有文字頻道，無法呼叫 Marmo。", already_in_channel=True))
-            return
-
-        # 去除觸發詞
-        clean_query = _MARMO_RE.sub(" ", raw_query).strip().lstrip("，,、！!？? ")
-        if not clean_query:
-            asyncio.create_task(self.play_tts("你要問 Marmo 什麼？", already_in_channel=True))
-            return
-
-        logger.info(f"[Marmo] {speaker} → 透過 Discord 呼叫 @AI Marmo: {clean_query!r}")
-
-        # 在文字頻道 mention @AI Marmo
-        marmo_mention = f"<@{_MARMO_BOT_ID}>"
-        await self.active_text_channel.send(f"{marmo_mention} {clean_query}")
-        asyncio.create_task(self.play_tts("好，我去問 Marmo。", already_in_channel=True))
-
-        # 等待 @AI Marmo 在同頻道的回覆（最多 90 秒）
-        def check(m):
-            return m.author.id == _MARMO_BOT_ID and m.channel.id == self.active_text_channel.id
-
-        try:
-            reply_msg = await self.bot.wait_for("message", check=check, timeout=90)
-            reply_text = reply_msg.content
-            self.stt_logger.info(f"[Marmo→{speaker}] Q={clean_query!r} | A={reply_text[:200]!r}")
-            # 將 Marmo 的回答存入對話緩衝，確保後續追問有上下文
-            if self.bot.engine.conv_buffer:
-                self.bot.engine.conv_buffer.add_entry("Marmo", reply_text, time.time())
-            tts_text = reply_text[:300] + "…以下省略。" if len(reply_text) > 300 else reply_text
-            asyncio.create_task(self.play_tts(tts_text, already_in_channel=True, voice=os.getenv("MARMO_VOICE", "zh-TW-HsiaoYuNeural")))
-        except asyncio.TimeoutError:
-            logger.warning("[Marmo] 90 秒內未收到 @AI Marmo 回覆")
-            asyncio.create_task(self.play_tts("Marmo 沒有回應，可能在忙。", already_in_channel=True))
-
     async def _process_queued_query(self, speaker: str, wake_time: float, override_query: str = None, wake_intent: float = None, original_raw: str = None, wake_voice_score: float = None, wake_dom: str = None, is_text_input: bool = False):
         """
         [Fast System] 核心處理邏輯：根據喚醒時間點，精準擷取上下文並請求 LLM。
@@ -2724,19 +2432,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
 
         if not query:
             logger.warning(f"⚠️ [Fast System] 無法為 {speaker} 擷取到任何有效的 Query 內容。")
-            return
-
-        # 🦾 [NemoClaw Fast-Track] 優先於 quality gate，讓「龍蝦」單詞也能觸發「你要問什麼？」
-        # 優先檢查 original_raw（喚醒詞尚未被 _strip_wake_word 移除），確保「龍蝦幫我查…」能命中
-        _nemo_check_text = original_raw if original_raw else query
-        if _NEMOCLAW_RE.search(_nemo_check_text):
-            await self._handle_nemoclaw_query(speaker, _nemo_check_text)
-            return
-
-        # 🤖 [Marmo Fast-Track] 同上，優先於 quality gate
-        _marmo_check_text = original_raw if original_raw else query
-        if _MARMO_RE.search(_marmo_check_text):
-            await self._handle_marmo_query(speaker, _marmo_check_text)
             return
 
         # 文字輸入（Siri/控制台）是刻意打的完整指令，跳過為語音 harvest 雜訊設計的品質閘
@@ -2790,15 +2485,8 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
                     return
                 break  # 窗內未叫名字 + 寫入意圖 → 不執行也不再檢查
 
-        # 🩺 [System Status Voice Trigger] 偵測系統狀態查詢，直接回答不走 LLM
-        _status_keywords = ["系統狀態", "健康狀態", "剩餘額度", "API 用量", "還剩多少", "用了多少",
-                            "api剩", "額度還有", "配額", "token 剩", "token還", "quota"]
-        if any(kw in query for kw in _status_keywords):
-            await self._handle_voice_status_query(speaker)
-            return
-
         # 📡 [IntentBus] Phase 1：取代 music fast-track + owner-lobster direct
-        # 沒人接（bid 都 None 或低於 0.30）→ fall through 到 Imitation / smart router / Marvin LLM
+        # 沒人接（bid 都 None 或低於 0.30）→ fall through 到 Marvin LLM
         _bus_ctx = IntentContext(
             speaker=speaker,
             raw_text=original_raw or query,
@@ -2842,81 +2530,6 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
             await self._ask_music_followup(speaker, query, ["song_title"])
             return
 
-        # 🎭 [Impression Show Fast-Track] 偵測「模仿 X」指令
-        known_players = self.bot.router.memory.list_players()
-        _imitate_target = detect_imitation_target(query, known_players)
-        if _imitate_target:
-            await self._handle_voice_imitate_command(speaker, _imitate_target)
-            return
-
-        # 🦞 [NemoClaw Smart Router] 非龍蝦觸發時，由 LLM 判斷是否路由到 NemoClaw
-        if self._is_owner_speaker(speaker):
-            try:
-                _nemo_route = await self.bot.router.classify_query_route(query)
-                if _nemo_route == "nemoclaw":
-                    self.stt_logger.info(f"[🦞NemoClaw路由] [{speaker}] auto-route | query='{query[:80]}'")
-                    await self._handle_nemoclaw_query(speaker, query)
-                    return
-            except Exception as _re:
-                logger.debug(f"🦞 [NemoClaw Router] 路由失敗，繼續走 Marvin: {_re}")
-
-        # 🛡️ [Gap Pre-check] PA intent（recall / 記一下 / mark_done / task_update）已有
-        # RecallHandler 接 → 上游 routing 漏接屬 anomaly，不是 gap，記 warning 但不寫
-        # agent_gaps（否則 LLM 會亂標成 buy_milk 等，2026-05-30 事件）。留在 classifier 前。
-        if is_personal_assistant_query(query):
-            logger.warning(
-                f"⚠️ [Gap Pre-check] {speaker} PA intent 漏接到 gap path（routing anomaly，"
-                f"非真 gap，不記錄）：'{query[:60]}'"
-            )
-            self._cancel_stale_prefetch(speaker)
-            return
-
-        # 🪦 [Intent Gap Detection] bus/music-drop/imitate/nemoclaw 全沒接 → 一律先送進
-        # cheap classifier 判讀「有 intent 但沒 agent」，寫 agent_gaps.jsonl。8/18 修正：
-        # 測量（classifier+log）跟要不要回應 Marvin 拆開——has_intent_signal 只留在分類完
-        # 仍是 UNKNOWN 時才決定要不要閒聊，之前短指令（裸字「暫停」）連 log 都進不去。
-        # 10/8 使用者定案：classifier 只做測量（寫 JSONL），不再用來否決 Marvin、也不再播
-        # 「功能開發中」模板 ack——使用者講話不照公式，硬規則會漏接。有意圖但沒 agent 的
-        # query：web 類資訊問題走 grounded（真能查到答案），其餘交 Marvin 主 LLM 自然接話。
-        # 10/20 使用者定案：預設關閉（串行多等 ~1.7s、web→grounded 10 天 12 次多為誤判）；MARVIN_GAP_CLASSIFIER=1 才開。
-        gap_rec = None
-        if (self._gap_classifier_cached is None and self._shared_tier_router is not None
-                and os.getenv("MARVIN_GAP_CLASSIFIER") == "1"):
-            self._gap_classifier_cached = make_groq_gap_classifier(self._shared_tier_router)
-        if self._gap_classifier_cached is not None:
-            try:
-                from intent_judges.voice_integration import new_utterance_id
-                gap_rec = await handle_intent_gap(
-                    _bus_ctx,
-                    utterance_id=new_utterance_id(speaker),
-                    classifier=self._gap_classifier_cached,
-                    gap_logger=self._gap_logger,
-                    manifest=self._intent_bus.build_intent_manifest(),
-                    tts_call=self.play_tts,
-                    play_ack=False,
-                )
-                self._dm_owner_intent_gap(gap_rec)
-                if await self._route_gap_record(gap_rec, speaker, query):
-                    return
-            except Exception as _gap_exc:
-                logger.warning(f"⚠️ [IntentGap] gap path 炸了，fall through 到 Marvin: {_gap_exc}")
-
-        # 🚫 [Intent Presence Gate] classifier 判 UNKNOWN（或不可用）後，進 Marvin 前最後
-        # 一道 code gate：raw 只是 filler/短應答 → silent（測量已在上面 classifier 做完）。
-        # classifier 已判出有意圖（非 UNKNOWN）就不再受這道 gate 擋，直接進 Marvin。
-        if not (gap_rec is not None and gap_rec.intent_type != "UNKNOWN") and not has_intent_signal(query):
-            self.stt_logger.info(f"[Intent Gate] [{speaker}] 無實質指令訊號，silent | query='{query[:40]}'")
-            try:
-                _append_jsonl(
-                    "records/intent_gate_silenced.jsonl",
-                    {"ts": time.time(), "speaker": speaker, "query": query,
-                     "gap_intent_type": gap_rec.intent_type if gap_rec else None},
-                )
-            except Exception:
-                logger.debug("[Intent Gate] intent_gate_silenced.jsonl 落地失敗（忽略）")
-            self._cancel_stale_prefetch(speaker)
-            return
-
         await self._stream_response(
             speaker, query, history, wake_time, wake_intent, _is_helper, _head,
         )
@@ -2931,11 +2544,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         """
         online_members = self.get_online_members()
 
-        # 2. 建立 Discord 佔位訊息
-        placeholder_msg = None
-        if self.active_text_channel:
-            _ph_intro = "想查點東西...(組織措辭中)" if _is_helper else "叫了我...(組織措辭中)"
-            placeholder_msg = await self.active_text_channel.send(f"{_head} `{speaker}` {_ph_intro}")
+        # 2. 建立 Discord 佔位訊息（非阻塞）
+        _ph_intro = "想查點東西...(組織措辭中)" if _is_helper else "叫了我...(組織措辭中)"
+        placeholder_msg = _make_placeholder_handle(self.active_text_channel, f"{_head} `{speaker}` {_ph_intro}")
 
         # 3. 🎭 [Emotion Inference] 取出說話者最新情緒標籤
         emotion_tag = self.user_emotion_cache.get(speaker, "neutral")

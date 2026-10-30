@@ -39,6 +39,7 @@ from cogs.music_cog_subsystem import MusicSubsystemMixin
 from cogs.music_cog_personal_shuffle import MusicPersonalShuffleMixin
 from cogs.music_cog_audio_meta import MusicAudioMetaMixin
 from cogs.music_cog_autopilot import MusicAutopilotMixin
+from cogs.music_cog_yt_alert import YtBlockAlertMixin
 from cogs.music_cog_story_arc import MusicStoryArcMixin
 from cogs.music_cog_dj_lyrics import MusicDJLyricsMixin
 from cogs.music_cog_tail_dj import MusicTailDJMixin, _XFADE_IN_S
@@ -91,7 +92,7 @@ def _car_occupants(bot) -> list[str] | None:
     return list(cp.occupants)
 
 
-class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixin, MusicAudioMetaMixin, MusicAutopilotMixin, MusicStoryArcMixin, MusicDJLyricsMixin, MusicTailDJMixin, commands.Cog):
+class MusicCog(YtBlockAlertMixin, MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixin, MusicAudioMetaMixin, MusicAutopilotMixin, MusicStoryArcMixin, MusicDJLyricsMixin, MusicTailDJMixin, commands.Cog):
     """音樂子系統（Strangler Fig 遷移中）。"""
 
     _PLAYED_EXCLUDE_TTL_S = 7 * 24 * 3600
@@ -397,7 +398,7 @@ class MusicCog(MusicCommandsMixin, MusicSubsystemMixin, MusicPersonalShuffleMixi
                 skipped=getattr(self, "_current_song_skipped", False),
                 requested_by=requested_by, already_retried=False):
             _wp = info.get('webpage_url') or info.get('url')
-            logger.info(f"🔁 [Stream] 點的歌只播 {_played_s:.1f}s，疑似 403，重抓網址重試：{title}")
+            self._note_instant_eof(title, _played_s)
             # force_fresh：跳過快取，否則命中的是剛 403 的同一份死 URL → 又 403（無意義重試）
             _fresh = await self._resolve_yt_query(_wp, force_fresh=True) if _wp else None
             if _fresh and _fresh.get('url'):

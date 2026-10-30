@@ -3,7 +3,7 @@
 統一前散落 5 支 render 腳本 + 3 個 _play_*ack* 分支；統一後：
 - 加新 ack = registry 加一條，零新程式碼
 - pool（要渲染的音檔）與 category（播放政策）分離：assets/acks 同一 pool
-  被 wake / nemoclaw / filler 三種 category 共用，但播放政策各異
+  被 wake / filler 兩種 category 共用，但播放政策各異
 """
 from __future__ import annotations
 
@@ -78,14 +78,6 @@ def test_music_fail_not_urgent():
     assert c.empty_fallback_pool == "wake_zh"
 
 
-def test_nemoclaw_uses_lock_no_hotswap():
-    c = A.CATEGORIES["nemoclaw"]
-    assert c.urgent is False
-    assert c.use_lock is True
-    assert c.prewarm_tts is False
-    assert A.pool_for("nemoclaw", lang="en").key == "wake_en"
-
-
 def test_status_category_variant_glob():
     c = A.CATEGORIES["status"]
     assert c.urgent is True
@@ -107,7 +99,7 @@ def test_wake_waits_then_awaits_completion():
 
 
 def test_lock_categories_skip_when_busy():
-    for key in ("nemoclaw", "status"):
+    for key in ("status",):
         c = A.CATEGORIES[key]
         assert c.use_lock is True
         assert c.skip_if_busy is True
@@ -118,7 +110,7 @@ def test_passive_vs_active_classification():
     """被動 = 回應使用者動作；主動 = Marvin 自己冒出來報狀態。"""
     passive = {k for k, c in A.CATEGORIES.items() if c.mode == "passive"}
     active = {k for k, c in A.CATEGORIES.items() if c.mode == "active"}
-    assert passive == {"wake", "music", "music_fail", "nemoclaw",
+    assert passive == {"wake", "music", "music_fail",
                        "playback_skip", "playback_stop", "playback_pause", "playback_resume"}
     assert active == {"status", "filler"}
 

@@ -36,7 +36,6 @@ KNOWN_PURPOSES: frozenset[str] = frozenset({
     "generate_status_report_comment", "generate_keyword_cloud", "generate_proactive_question",
     "rephrase_proactive_script", "generate_gap_filling_response", "complete", "handle",
     "recall_5w2h",  # RecallHandler 5W2H（owner 問「我剛說了什麼」— reactive，非背景）
-    "nemoclaw_cover",  # NemoClaw 掩飾語句型（遮掩 openclaw thinking — reactive）
     "_llm_coverify",  # 自動推薦 spotlight lane 的 cover/翻唱覆核（music_cog._llm_coverify）
     # 背景 / 離線分析（見 BACKGROUND_PURPOSES）：
     "extract_memory", "batch_extract_memories", "audit_player_memory",
@@ -290,7 +289,7 @@ class LLMBus:
             return
         self._last_degraded_ts = now
         summary = ", ".join(f"{a.name}={b.reason}" for (a, b, _) in bids) or "no_bids"
-        # ERROR 級 → 掛 root logger 的 ErrorDispatcher 自動接走 → openclaw triage → DM owner
+        # ERROR 級 → 掛 root logger 的 ErrorDispatcher 自動接走 → DM owner（Claude Code triage）
         # （MarvinBot.LLMBus 不在 ErrorDispatcher 黑名單）。300s debounce 防 DM 洗版。
         logger.error(
             f"🚨 [LLMBus DEGRADED] 可用 LLM provider 僅剩 {viable_count} 個（≤{self._DEGRADED_THRESHOLD}）！"

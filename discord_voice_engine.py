@@ -1774,6 +1774,12 @@ class DiscordVoiceEngine:
 
         # 3. 回傳結果
         if self.stt_callback and raw_text:
+            # 🚀 [Prosody] 優先計算精確的 WPS (基於識別後的文字，供 Track A/B 共用)
+            if prosody_data:
+                _text_for_wps = raw_text.replace(" ", "")
+                prosody_data["char_count"] = len(_text_for_wps)
+                prosody_data["wps"] = round(prosody_data["char_count"] / prosody_data["physical_duration"], 2) if prosody_data["physical_duration"] > 0 else 0
+
             # --- [Track A] Immediate Regex Path ---
             # 讓 "馬文" 這種句首喚醒詞不用等到 LLM 清洗完才被識別 (0ms 延遲)
             filter_res = pre_filter_speech(raw_text)
@@ -1806,22 +1812,16 @@ class DiscordVoiceEngine:
             cleaned_text = raw_text
             is_wake_B = False
             clean_res = None
-
-            # 🚀 [Prosody] 最終計算精確的 WPS (基於識別後的文字)
-            if prosody_data:
-                _text_for_wps = cleaned_text.replace(" ", "")
-                prosody_data["char_count"] = len(_text_for_wps)
-                prosody_data["wps"] = round(prosody_data["char_count"] / prosody_data["physical_duration"], 2) if prosody_data["physical_duration"] > 0 else 0
             
             # --- 決定是否再次觸發 STT Callback ---
             # 1. 如果 Track A 沒中，但 Track B 中了 (補漏喚醒)
-            # 2. 如果這不是喚醒檢查 (正常發言/指令，需要 cleaned_text 進記憶體)
+            # 2. 如果這不是喚醒檢查且 Track A 沒觸發 (正常發言/指令，需要 cleaned_text 進記憶體)
             should_callback = False
             if is_wake_B and not is_wake_A:
                 logger.info(f"✨ [Track B] Cleaned Hit! Fallback wake for '{cleaned_text}'...")
                 should_callback = True
-            elif not is_wake_check:
-                # 正常發言流程，不論 Track A 有沒有中，我們最後都要把 cleaned_text 送回 Controller
+            elif not is_wake_check and not is_wake_A:
+                # 正常發言流程，若 Track A 沒中，我們把 cleaned_text 送回 Controller
                 # 🚀 [Optimization] 僅針對有實質內容 (長度 > 3) 的語句進行清洗後的回調與紀錄
                 if len(cleaned_text.strip()) > 3:
                      should_callback = True

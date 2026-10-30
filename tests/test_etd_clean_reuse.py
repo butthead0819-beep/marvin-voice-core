@@ -194,3 +194,60 @@ async def test_apply_semantic_etd_populates_reusable_cache():
 
     assert result is not None
     assert take_etd(ctrl, "alice", "播放音樂吧。") == "播放音樂吧"
+
+
+# ── J3 Cleaner 結果重用 ────────────────────────────────────────────────────────
+
+def test_remember_and_take_j3():
+    from etd_clean_reuse import remember_j3, take_j3
+    ctrl = _make_ctrl()
+    remember_j3(ctrl, "alice", "馬文今天天氣真好", "今天天氣真好", cleaned="今天天氣真好", now=100.0)
+    # raw_text 命中
+    assert take_j3(ctrl, "alice", "馬文今天天氣真好", now=102.0) == "今天天氣真好"
+
+    remember_j3(ctrl, "bob", "馬文今天天氣真好", "今天天氣真好", cleaned="今天天氣真好", now=100.0)
+    # query / stripped 命中
+    assert take_j3(ctrl, "bob", "今天天氣真好", now=102.0) == "今天天氣真好"
+
+    # 超過 TTL (10s) 過期
+    remember_j3(ctrl, "charlie", "馬文今天天氣真好", cleaned="今天天氣真好", now=100.0)
+    assert take_j3(ctrl, "charlie", "馬文今天天氣真好", now=115.0) is None
+
+
+@pytest.mark.asyncio
+async def test_clean_for_worker_populates_j3_cache_for_both_keys():
+    from etd_clean_reuse import take_j3
+    mock = AsyncMock(return_value={"text": "今天天氣很好"})
+    ctrl = _make_ctrl(clean_stt_text=mock)
+
+    # worker 跑 clean_for_worker
+    cleaned = await clean_for_worker(ctrl, "今天天氣很好吧", speaker="alice")
+    assert cleaned == "今天天氣很好"
+    mock.assert_called_once()
+
+    # 隨後的 J3 take_j3 用 stripped 命中，不再需要問 cleaner
+    reused = take_j3(ctrl, "alice", "今天天氣很好吧")
+    assert reused == "今天天氣很好"
+
+
+@pytest.mark.asyncio
+async def test_real_cleaner_call_reuses_j3_cache():
+    from etd_clean_reuse import remember_j3
+    from intent_bus import IntentContext
+
+    clean_mock = AsyncMock(return_value={"text": "SHOULD_NOT_BE_CALLED"})
+    ctrl = _make_ctrl(clean_stt_text=clean_mock)
+    remember_j3(ctrl, "alice", "馬文今天天氣如何", "今天天氣如何", cleaned="今天天氣如何")
+
+    from cogs.voice_controller import VoiceController
+    ctx = IntentContext(
+        speaker="alice", raw_text="馬文今天天氣如何", query="今天天氣如何",
+        original_raw="馬文今天天氣如何", wake_intent=0.9, stream_active=False,
+        game_mode=False, is_owner=False, now=0.0, mode="normal",
+    )
+
+    # 模擬 real_cleaner_call 邏輯（透過 controller 實作）
+    res = await VoiceController._run_real_cleaner_call(ctrl, ctx)
+    assert res == "今天天氣如何"
+    clean_mock.assert_not_called()
+

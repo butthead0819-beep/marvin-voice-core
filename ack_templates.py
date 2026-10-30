@@ -2,7 +2,7 @@
 
 統一前：5 支 render 腳本（generate_acks / _en / _music / _music_fail /
 render_status）各寫一份，外加 voice_controller 內 _play_ack_sound /
-_play_nemoclaw_ack / _play_status_ack / _play_random_filler 各自分支。
+_play_status_ack / _play_random_filler 各自分支。
 維護痛點：每加一類 ack 就要新腳本 + 新播放方法 + 問使用者要台詞。
 
 統一後：
@@ -13,7 +13,7 @@ _play_nemoclaw_ack / _play_status_ack / _play_random_filler 各自分支。
 兩層分離（關鍵）：
 - **AckPool**：要預渲染的一組音檔（一個 asset 目錄 + 台詞清單）。
 - **AckCategory**：一個播放語義（指向 pool + 播放政策）。
-  assets/acks 同一 pool 被 wake / nemoclaw / filler 三 category 共用，
+  assets/acks 同一 pool 被 wake / filler 兩 category 共用，
   但 prewarm / hotswap / lock / barge-in 政策各異 → 必須分離。
 
 ────────────────────────────────────────────────────────────────────────────
@@ -194,7 +194,7 @@ class AckCategory:
     intent_aware: bool = False
     urgent: bool = False                 # True → 音樂中走熱切換注入，不打斷音樂
     prewarm_tts: bool = False            # 播放時並行暖 edge-tts（ack 預告 Marvin 回應）
-    use_lock: bool = False               # True → 走 playback_lock 序列化（nemoclaw / status）
+    use_lock: bool = False               # True → 走 playback_lock 序列化（status）
     skip_if_busy: bool = False           # True → vc 播放中直接跳過（不疊、不等）
     wait_if_busy: float = 0.0            # >0 → 等 vc 空檔最多 N 秒再播（skip_if_busy=False 時）
     await_completion: bool = False       # True → 播完才返回（ack_done event + 5s timeout）
@@ -227,11 +227,6 @@ CATEGORIES: dict[str, AckCategory] = {
     "playback_stop": AckCategory("playback_stop", {"*": "playback_stop"}, urgent=True, text_fallback=("停了",)),
     "playback_pause": AckCategory("playback_pause", {"*": "playback_pause"}, urgent=True, text_fallback=("暫停",)),
     "playback_resume": AckCategory("playback_resume", {"*": "playback_resume"}, urgent=True, text_fallback=("繼續",)),
-    # NemoClaw 處理中 ack：走 lock、播放中跳過，不暖 TTS、不切音樂
-    "nemoclaw": AckCategory(
-        "nemoclaw", {"zh": "wake_zh", "en": "wake_en"},
-        urgent=False, use_lock=True, skip_if_busy=True,
-    ),
     # LLM 久候/降級狀態安撫：主動發聲；音樂中切入；走 lock、播放中跳過；檔名前綴 = {state}_{tier}
     "status": AckCategory(
         "status", {"*": "status"},

@@ -85,6 +85,7 @@ class VolumeAgent(DeclarativeIntentAgent):
     def __init__(self, controller):
         self.ctrl = controller
         self._intents_cache: list[IntentSchema] | None = None
+        self._get_compiled_intents()
 
     def declare_intents(self) -> list[IntentSchema]:
         if self._intents_cache is None:
