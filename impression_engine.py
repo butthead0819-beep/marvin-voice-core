@@ -6,36 +6,10 @@
 """
 from __future__ import annotations
 
-import re
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
-
-# ── 觸發詞正則：偵測「模仿 X」「學 X 說話」「扮演 X」等指令 ──────────────────
-# 格式：（模仿動詞）（可選修飾語）（目標名稱 2-10 字）
-_IMITATE_RE = re.compile(
-    r"(?:模仿|學|扮演|表演|秀|show我|show給我看|做做看|演演看)"
-    r"[\s]*(?:一下|看看|給我看|給大家看|那個|他的)?"
-    r"[\s]*([^\s，,、！!？?.。]{2,10})",
-    re.IGNORECASE,
-)
-
-# 別名對應表：支援暱稱 / 俗稱對應到記憶庫的正式名稱
-_PLAYER_ALIASES: dict[str, str] = {
-    "老大": "showay",
-    "大大": "showay",
-    "showei": "showay",
-    "大肚子": "大肚",
-    "肚子": "大肚",
-    "弱哥": "weakgogo",
-    "弱弱": "weakgogo",
-    "weak": "weakgogo",
-    "狗露": "狗與鹿",
-    "狗與露": "狗與鹿",
-    "狗狗": "狗與鹿",
-    "鹿鹿": "狗與鹿",
-}
 
 # ── 預建說話 DNA ─────────────────────────────────────────────────────────────
 # 根據 STT 日誌與聊天紀錄人工分析的靜態基準值。
@@ -139,41 +113,6 @@ BUILTIN_SPEECH_DNA: dict[str, dict] = {
 }
 
 
-def detect_imitation_target(
-    query: str,
-    known_players: list[str] | None = None,
-) -> Optional[str]:
-    """
-    偵測 query 是否含模仿指令，並返回目標玩家名稱。
-
-    優先嘗試比對 known_players 清單（模糊比對），
-    其次查 _PLAYER_ALIASES，最後直接返回從 regex 擷取的原始詞語。
-    """
-    m = _IMITATE_RE.search(query)
-    if not m:
-        return None
-
-    raw = m.group(1).strip("的了一下啊阿哦喔唷吧嗎喂").strip()
-    if not raw:
-        return None
-
-    # 1. 別名解析
-    canonical = _PLAYER_ALIASES.get(raw, raw)
-
-    # 2. 比對已知玩家清單
-    if known_players:
-        # 精確比對
-        for p in known_players:
-            if p == canonical:
-                return p
-        # 包含比對
-        for p in known_players:
-            if canonical in p or p in canonical:
-                return p
-
-    return canonical
-
-
 def get_speech_dna(
     player_name: str,
     memory_manager=None,
@@ -196,69 +135,6 @@ def get_speech_dna(
     if builtin:
         logger.debug(f"[Impression] 使用內建 DNA: {player_name}")
     return builtin
-
-
-def build_imitation_system_prompt(
-    player_name: str,
-    speech_dna: dict,
-    context_topic: str = "",
-) -> str:
-    """
-    組裝給 LLM 的完整模仿秀 system prompt。
-    包含：說話特徵描述、節奏結構（openers/closers/fillers）、表演規則、字數限制。
-    """
-    style = speech_dna.get("style_summary", "台式口語")
-
-    def _fmt_list(key: str, limit: int = 6) -> str:
-        items = speech_dna.get(key, [])[:limit]
-        return "、".join(items) if items else "無"
-
-    openers      = _fmt_list("openers", 5)
-    closers      = _fmt_list("closers", 5)
-    fillers      = _fmt_list("fillers", 5)
-    pause_list   = speech_dna.get("pause_proxies", [])
-    pauses       = "\n".join(f"  - {p}" for p in pause_list) if pause_list else "  - 無"
-    catchphrases = _fmt_list("catchphrases", 5)
-    quirks_list  = speech_dna.get("quirks", [])
-    quirks       = "\n".join(f"  - {q}" for q in quirks_list) if quirks_list else "  - 無特別標注"
-    emo          = speech_dna.get("emotional_style", "")
-    reaction_tease = speech_dna.get("reaction_to_teasing", "")
-
-    s_len = speech_dna.get("sentence_length", "medium")
-    length_hint = {
-        "short": "每句 5-10 字，多斷句，像在打電報",
-        "medium": "每句 10-20 字，自然口語流動",
-        "long": "每句可達 25 字，有邏輯鋪陳與因果連接",
-    }.get(s_len, "口語自然")
-
-    topic_section = f"\n【當前話題線索】（用來決定模仿的內容方向）：{context_topic}" if context_topic else ""
-
-    return (
-        f"你是馬文，正在用你那行星般的大腦主持一場即興『{player_name}模仿秀』。\n\n"
-        f"【{player_name} 的說話 DNA】\n"
-        f"風格總覽：{style}\n\n"
-        f"【節奏結構】（★ 這是模仿節奏感的核心，必須照用）\n"
-        f"  開場口頭禪（句首）：{openers}\n"
-        f"  收尾慣用語（句末）：{closers}\n"
-        f"  填充語（句中）：{fillers}\n"
-        f"  停頓代理模式：\n{pauses}\n\n"
-        f"招牌用語：{catchphrases}\n\n"
-        f"說話怪癖（必須複製）：\n{quirks}\n\n"
-        f"句型長度參考：{length_hint}\n"
-        f"情緒處理方式：{emo}\n"
-        f"被嗆時的典型反應：{reaction_tease}\n"
-        f"{topic_section}\n\n"
-        f"【表演腳本規則】\n"
-        f"1. 先用 1-2 句馬文語氣宣告登場（語氣沉重、不情願，像在表演節目的主持人被迫出場）。\n"
-        f"   例：「好，我那行星般的大腦決定短暫降低 80% 的運算效能...」\n"
-        f"2. 接著完全切換成『{player_name}的口吻』說 4-6 句。\n"
-        f"   ★ 務必：用上節奏結構中的開場詞、填充語、收尾語，複製停頓感。越誇張越像越好。\n"
-        f"   ★ 禁止：在模仿段落中說出『{player_name}』這個名字。\n"
-        f"3. 最後以馬文語氣收一句點評（帶疲憊的自我嘲諷）。\n"
-        f"   例：「以上是我對人類退化程度的實時模擬。我的大腦為此消耗了半個恆星的能量。」\n\n"
-        f"【字數】模仿段落 40-60 字；馬文開場 + 收尾各 15 字以內；全場合計不超過 100 字。\n"
-        f"【語言】繁體中文，台灣口語。"
-    )
 
 
 def extract_speech_dna_prompt(player_name: str, utterances: list[str]) -> tuple[str, str]:

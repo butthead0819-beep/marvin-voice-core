@@ -317,3 +317,38 @@ async def test_run_grounded_qa_all_sources_use_paid_qa_chain(monkeypatch, source
     kwargs = mock_ga.call_args.kwargs
     assert args[0] is None
     assert kwargs["model_chain"] == gqa.QA_MODEL_CHAIN
+
+
+# ── 問句開場接線（10/21）：bus 沒人接 → try_question_opener；True 就不進主聊天 ──
+# （原在 test_intent_gate_silenced_log.py，意圖漏斗步驟 2 第二批刪檔時搬來）
+
+@pytest.mark.asyncio
+async def test_question_opener_handles_query_skips_marvin_chat(monkeypatch):
+    import time
+    from tests.test_stream_response_characterization import _make_vc
+    vc, _ph, _ch = _make_vc(monkeypatch, [])
+    vc.bot.engine.conv_buffer.get_harvest.return_value = "臺積電今天收盤股價多少"
+    opener = AsyncMock(return_value=True)
+    monkeypatch.setattr("cogs.voice_controller.try_question_opener", opener)
+    await vc._process_queued_query("狗與露", time.time(), wake_intent=None)
+
+    opener.assert_awaited_once()
+    args, _kw = opener.await_args
+    assert args[0] is vc
+    assert args[1].query == "臺積電今天收盤股價多少"
+    vc.bot.router.stream_fast_response.assert_not_called()
+    vc._cancel_stale_prefetch.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_question_opener_declines_falls_through_to_marvin_chat(monkeypatch):
+    import time
+    from tests.test_stream_response_characterization import _make_vc
+    vc, _ph, _ch = _make_vc(monkeypatch, [])
+    vc.bot.engine.conv_buffer.get_harvest.return_value = "今天心情怎麼樣"
+    opener = AsyncMock(return_value=False)
+    monkeypatch.setattr("cogs.voice_controller.try_question_opener", opener)
+    await vc._process_queued_query("狗與露", time.time(), wake_intent=None)
+
+    opener.assert_awaited_once()
+    vc.bot.router.stream_fast_response.assert_called_once()

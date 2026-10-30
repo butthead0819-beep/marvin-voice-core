@@ -38,8 +38,6 @@ def _make_vc(monkeypatch, sentences, *, wake_intent=None, is_helper=False,
     # ── routing 前半：模組級閘函式全部中性化 → fall-through 到渲染 ──
     monkeypatch.setattr(vcmod, "is_helper_wake", lambda *a, **k: is_helper)
     monkeypatch.setattr(vcmod, "has_intent_signal", lambda q: True)
-    monkeypatch.setattr(vcmod, "is_personal_assistant_query", lambda q: False)
-    monkeypatch.setattr(vcmod, "detect_imitation_target", lambda q, players: None)
     monkeypatch.setattr(vcmod, "is_manual_add_query", lambda q: False)
     monkeypatch.setattr(vcmod, "is_task_update_query", lambda q: False)
     monkeypatch.setattr(vcmod, "is_mark_done_query", lambda q: False)
@@ -66,7 +64,6 @@ def _make_vc(monkeypatch, sentences, *, wake_intent=None, is_helper=False,
     vc._wake_response_pending = True
     vc._awaiting_confirmation = False
     vc._recall_handler = None
-    vc._gap_classifier_cached = None
     vc._shared_tier_router = None
     vc.speech_buffers = {}
     vc.user_emotion_cache = {}

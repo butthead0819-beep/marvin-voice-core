@@ -40,16 +40,16 @@ VC = Path(__file__).resolve().parent.parent / "cogs" / "voice_controller.py"
 CLASS = "VoiceController"
 
 # ── 棘輪基準（2026-09-29 改 AST 量測時的實測值）──────────────────────────────
-STATEMENT_BUDGET = 2156
-METHOD_BUDGET = 87
-SELF_ATTR_BUDGET = 150
+STATEMENT_BUDGET = 1717
+METHOD_BUDGET = 72
+SELF_ATTR_BUDGET = 140
 
 NEW_METHOD_MAX = 40
 FROZEN_METHODS = {  # 已超過 NEW_METHOD_MAX 的既有大 method：只准縮
     "handle_stt_result": 164,
-    "__init__": 158,
+    "__init__": 148,
     "_stream_response": 142,
-    "_process_queued_query": 110,
+    "_process_queued_query": 64,
     "_apply_wake_guards": 68,
     "handle_raw_speech_start": 58,
     "_cot_filter_stream": 57,
