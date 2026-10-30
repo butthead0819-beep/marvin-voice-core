@@ -2081,3 +2081,8 @@ NO UNRESOLVED DECISIONS
 NemoClaw 三條入口（fast-track／debounced rescue／smart router）、Marmo（fast-track＋debounced）、系統狀態關鍵字、模仿秀、Presence Gate、Gap Pre-check、gap classifier。
 兩個月 log：以上皆 0；重播 603 句：模仿 1 次誤中（被 bus 先接走），其餘 0。
 保留到步驟 4：PA 記事／回想（兩個月 3 次）、Music Drop（4 次）、_pending_followups（16 天 8 次）。
+
+第二批執行（2026-10-30，分支 refactor/funnel-step2-batch2）：
+- NemoClaw／Marmo 已在 775d547 隨 openclaw 整套移除（Marmo 10/29 10:35 有 1 次 route，已無實作可刪）。
+- 本批刪：系統狀態關鍵字、模仿秀（含 impression_engine 偵測器與 prompt）、Gap Pre-check、gap classifier（含 GapNotifyMixin、handle_intent_gap；保留 IntentGapRecord／GapLogger schema）、Presence Gate（has_intent_signal 本身留給 followup）。
+- 證據：turn_outcomes 10/22–10/30 共 156 輪，legacy:status_keywords／legacy:imitate 皆 0；bot_main.log 10/17–10/30 無 Gap Pre-check／[Intent Gate]／[IntentGap] 行（gap classifier 10/20 起預設關、.env 未設）；5 筆 route=silent 是 IntentBus「窗內沒叫名字」。Presence Gate 的 filler 已由上游 _query_quality_gate（weak_fillers／too_short）涵蓋。
