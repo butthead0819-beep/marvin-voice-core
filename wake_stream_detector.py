@@ -23,6 +23,7 @@ WakeStreamDetector — P3 聲學層實時喚醒詞偵測器。
 import asyncio
 import numpy as np
 import logging
+from typing import Callable, Optional
 from utils import check_cleaned_text_for_wake, is_whisper_hallucination
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,8 @@ _STRIDE_S = 0.25
 _WINDOW_BYTES = int(_WINDOW_S * _DISCORD_RATE * 2 * 2)   # 2ch × 2B = 192000 bytes
 _STRIDE_BYTES = int(_STRIDE_S * _DISCORD_RATE * 2 * 2)   # = 96000 bytes
 
+_WAKE_PROMPT = "嗨馬文,馬文,艾馬文,Marvin,Hi Marvin"
+
 
 class WakeStreamDetector:
     """
@@ -47,19 +50,27 @@ class WakeStreamDetector:
     """
 
     def __init__(self, whisper_model, on_wake_callback, loop: asyncio.AbstractEventLoop,
-                 input_rate: int = 48000, input_channels: int = 2):
+                 input_rate: int = 48000, input_channels: int = 2,
+                 initial_prompt: Optional[str] = _WAKE_PROMPT,
+                 temperature: Optional[float] = None,
+                 window_s: float = _WINDOW_S,
+                 stride_s: float = _STRIDE_S,
+                 wake_matcher: Optional[Callable[[str], bool]] = None):
         self.model = whisper_model
         # async (user_id: int, first_audio_time: float, text: str) -> None
         self.on_wake_callback = on_wake_callback
         self.loop = loop
+        self.initial_prompt = initial_prompt
+        self.temperature = temperature
+        self.wake_matcher = wake_matcher if wake_matcher is not None else check_cleaned_text_for_wake
 
         if input_rate % 16000 != 0:
             raise ValueError(f"input_rate 必須是 16000 的整數倍，got {input_rate}")
         self.input_rate = input_rate
         self.input_channels = input_channels
         self._downsample = input_rate // 16000
-        self._window_bytes = int(_WINDOW_S * input_rate * input_channels * 2)
-        self._stride_bytes = int(_STRIDE_S * input_rate * input_channels * 2)
+        self._window_bytes = int(window_s * input_rate * input_channels * 2)
+        self._stride_bytes = int(stride_s * input_rate * input_channels * 2)
 
         self._buffers: dict[int, bytearray] = {}
         self._first_audio_time: dict[int, float] = {}
@@ -102,6 +113,13 @@ class WakeStreamDetector:
                   self._bytes_at_last_infer, self._fired, self._inflight):
             d.pop(user_id, None)
 
+    def rearm(self, user_id) -> None:
+        """候選喚醒被上層否決後重新武裝，同一段 buffer 繼續偵測下一次候選。"""
+        if user_id not in self._buffers:
+            return
+        self._fired[user_id] = False
+        self._bytes_at_last_infer[user_id] = len(self._buffers[user_id])
+
     def cleanup(self) -> None:
         """Sink 完整清理時呼叫。"""
         for uid in list(self._buffers):
@@ -124,23 +142,24 @@ class WakeStreamDetector:
             # iteration，否則 generate_segments() 會在事件迴圈主執行緒跑，阻塞心跳。
             _model = self.model
             def _transcribe_eager():
-                segs, _ = _model.transcribe(
-                    mono_16k,
+                kwargs = dict(
                     beam_size=1,
                     language="zh",
                     vad_filter=False,
-                    initial_prompt="嗨馬文,馬文,艾馬文,Marvin,Hi Marvin",
+                    initial_prompt=self.initial_prompt,
                 )
+                if self.temperature is not None:
+                    kwargs["temperature"] = self.temperature
+                segs, _ = _model.transcribe(mono_16k, **kwargs)
                 return "".join(s.text for s in segs).strip()
 
             text = await asyncio.to_thread(_transcribe_eager)
 
-            _wake_prompt = "嗨馬文,馬文,艾馬文,Marvin,Hi Marvin"
-            if text and is_whisper_hallucination(text, _wake_prompt):
+            if text and self.initial_prompt is not None and is_whisper_hallucination(text, self.initial_prompt):
                 logger.warning(f"⚠️ [WakeStream] User_{user_id} 幻覺丟棄: '{text[:60]}'")
                 text = ""
 
-            if text and check_cleaned_text_for_wake(text) and not self._fired.get(user_id):
+            if text and self.wake_matcher(text) and not self._fired.get(user_id):
                 self._fired[user_id] = True
                 logger.info(f"🎯 [WakeStream] User_{user_id} → '{text}'")
                 await self.on_wake_callback(user_id, first_audio_time, text)
