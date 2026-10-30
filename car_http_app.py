@@ -1612,6 +1612,65 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         ok = await inject_audio(vc, wav_bytes, speaker=spk, require_wake=require_wake)
         return web.json_response({"ok": ok}, headers=_CORS)
 
+    _mic_sessions: dict[str, "web.WebSocketResponse"] = {}
+
+    async def handle_mic_ws(request):
+        """GET /mic_ws — puck 全時收音 WebSocket：ADPCM binary 上傳 → PuckMicSession 狀態機。
+
+        只在 MARVIN_PUCK_MIC=1 時註冊（見 build_text_app 尾端）。同一 device key
+        若已有舊連線，先關掉舊的再接新的（舊 handler 的 finally 自己收尾）。
+        """
+        from puck_mic_session import PuckMicSession
+
+        raw_device = request.query.get("device")
+        raw_speaker = request.query.get("speaker")
+        spk, err = resolve_car_identity(raw_device, raw_speaker, car_devices, device_speakers, default_speaker)
+        if err is not None:
+            logger.warning(f"🎙️ [PuckMic] 未知裝置身分，拒收 /mic_ws：device={raw_device!r} speaker={raw_speaker!r}")
+            return web.json_response({"error": err}, status=400, headers=_CORS)
+
+        engine = getattr(getattr(vc, "bot", None), "engine", None)
+        model = getattr(engine, "whisper_model", None)
+        if model is None:
+            return web.json_response({"error": "no_whisper"}, status=503, headers=_CORS)
+
+        ws = web.WebSocketResponse(heartbeat=15.0, max_msg_size=1 << 20)
+        await ws.prepare(request)
+
+        key = raw_device or spk
+        old_ws = _mic_sessions.get(key)
+        if old_ws is not None:
+            await old_ws.close()
+        _mic_sessions[key] = ws
+
+        def _tts_frames_total() -> int:
+            mixer = getattr(vc, "_mixer", None)
+            return getattr(mixer, "tts_frames_total", 0)
+
+        session = PuckMicSession(
+            device=key, speaker=spk, whisper_model=model,
+            loop=asyncio.get_running_loop(),
+            send_json=ws.send_json,
+            confirm_stt=lambda wav: transcribe_audio_v1(vc, wav),
+            deliver=lambda s, t: inject_text(vc, s, t),
+            tts_frames_total=_tts_frames_total,
+        )
+        logger.info(f"🎙️ [PuckMic] {key} 連線建立")
+        try:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.BINARY:
+                    await session.feed_adpcm(msg.data)
+                elif msg.type == web.WSMsgType.TEXT:
+                    logger.info(f"🎙️ [PuckMic] {key} TEXT: {msg.data[:200]}")
+                elif msg.type == web.WSMsgType.ERROR:
+                    break
+        finally:
+            await session.close()
+            if _mic_sessions.get(key) is ws:
+                _mic_sessions.pop(key, None)
+            logger.info(f"🎙️ [PuckMic] {key} 連線關閉")
+        return ws
+
     async def handle_hud(request):
         """GET /hud — Marvin HUD v12 寬屏顯示頁（Mac 自服務，比照 /satellite）。
 
@@ -1989,6 +2048,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
     app.router.add_options("/flush", handle_preflight)
     app.router.add_post("/audio", handle_audio)
     app.router.add_options("/audio", handle_preflight)
+    if os.getenv("MARVIN_PUCK_MIC", "0").strip() == "1":
+        app.router.add_get("/mic_ws", handle_mic_ws)
     app.router.add_get("/audio_stream", handle_audio_stream)
     app.router.add_get("/audio_stream.mp3", handle_audio_stream)
     app.router.add_get("/car_now", handle_car_now)

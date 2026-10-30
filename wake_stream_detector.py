@@ -56,7 +56,8 @@ class WakeStreamDetector:
                  window_s: float = _WINDOW_S,
                  stride_s: float = _STRIDE_S,
                  wake_matcher: Optional[Callable[[str], bool]] = None,
-                 contiguous: bool = False):
+                 contiguous: bool = False,
+                 log_text: bool = True):
         self.model = whisper_model
         # async (user_id: int, first_audio_time: float, text: str) -> None
         self.on_wake_callback = on_wake_callback
@@ -67,6 +68,8 @@ class WakeStreamDetector:
         # contiguous=True：推理中照樣累積 PCM（只是不另排推理），窗口才是連續音訊。
         # 推理耗時接近 stride 時（puck 1s 窗 ~0.2s），舊行為會丟掉大半音訊、窗口變拼貼。
         self.contiguous = contiguous
+        # log_text=False：命中時不把辨識文字寫進 log（puck 全時收音：候選可能是車內閒聊）
+        self.log_text = log_text
 
         if input_rate % 16000 != 0:
             raise ValueError(f"input_rate 必須是 16000 的整數倍，got {input_rate}")
@@ -168,7 +171,10 @@ class WakeStreamDetector:
 
             if text and self.wake_matcher(text) and not self._fired.get(user_id):
                 self._fired[user_id] = True
-                logger.info(f"🎯 [WakeStream] User_{user_id} → '{text}'")
+                if self.log_text:
+                    logger.info(f"🎯 [WakeStream] User_{user_id} → '{text}'")
+                else:
+                    logger.info(f"🎯 [WakeStream] User_{user_id} 候選命中")
                 await self.on_wake_callback(user_id, first_audio_time, text)
 
         except Exception as e:
