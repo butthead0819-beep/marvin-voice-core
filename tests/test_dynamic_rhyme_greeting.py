@@ -189,7 +189,7 @@ async def test_stale_highlight_alone_does_not_trigger_rhyme():
 
 
 @pytest.mark.asyncio
-async def test_highlight_included_as_impression_when_recent_chats_exist():
+async def test_highlight_not_injected_into_greeting():
     mixin = _make_mixin()
     mock_store = MagicMock()
     mock_store.get_recent.return_value = [
@@ -201,8 +201,8 @@ async def test_highlight_included_as_impression_when_recent_chats_exist():
         await mixin.generate_player_greeting("showay")
 
     user_prompt = mixin._call_llm.call_args[0][1]
-    assert "印象：打贏魔王" in user_prompt
-    assert "今日高光" not in user_prompt
+    assert "打贏魔王" not in user_prompt
+    assert "印象：" not in user_prompt
 
 
 @pytest.mark.asyncio
