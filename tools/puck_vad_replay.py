@@ -142,6 +142,7 @@ async def main() -> None:
                 model, on_wake_callback, loop, input_rate=16000, input_channels=1,
                 initial_prompt=None, temperature=0.0, window_s=1.0, stride_s=0.25,
                 wake_matcher=lambda t: pinyin_wake_match(t) is not None,
+                contiguous=True,
             )
         else:
             wake = WakeStreamDetector(model, on_wake_callback, loop, input_rate=16000, input_channels=1)

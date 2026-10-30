@@ -204,3 +204,35 @@ def test_rearm_without_prior_fire_also_waits_for_full_stride():
 
     wake.push_pcm(1, b"\x00\x00" * 100)
     assert len(loop.created) == 0
+
+
+def _inflight_scenario(contiguous):
+    """觸發一次推理（inflight=True 不釋放）後再推 0.5s，再釋放 inflight 推一個 stride。"""
+    loop = _FakeLoop()
+    kw = dict(input_rate=16000, input_channels=1)
+    if contiguous is not None:
+        kw["contiguous"] = contiguous
+    wake = WakeStreamDetector(whisper_model=None, on_wake_callback=None, loop=loop, **kw)
+    wake.on_speech_start(user_id=1, first_audio_time=0.0, pre_roll=b"")
+    wake.push_pcm(1, b"\x01\x00" * 8000)          # 0.5s → 第一次推理，inflight
+    assert len(loop.created) == 1
+    wake.push_pcm(1, b"\x02\x00" * 8000)          # 推理中又來 0.5s
+    return wake, loop
+
+
+def test_default_drops_pcm_while_inflight():
+    """Discord 預設行為鎖住：推理中進來的 PCM 不進 buffer、也不建新 task。"""
+    wake, loop = _inflight_scenario(None)
+    assert len(wake._buffers[1]) == 16000
+    assert len(loop.created) == 1
+
+
+def test_contiguous_keeps_pcm_while_inflight_without_new_task():
+    """contiguous=True：推理中照樣累積（窗口才是連續音訊），但不另建 task；釋放後下一幀就能推。"""
+    wake, loop = _inflight_scenario(True)
+    assert len(wake._buffers[1]) == 32000
+    assert len(loop.created) == 1
+    wake._inflight[1] = False
+    wake.push_pcm(1, b"\x03\x00" * 2)
+    assert len(loop.created) == 1 + 1
+    assert len(wake._buffers[1]) == 32004

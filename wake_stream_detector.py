@@ -55,7 +55,8 @@ class WakeStreamDetector:
                  temperature: Optional[float] = None,
                  window_s: float = _WINDOW_S,
                  stride_s: float = _STRIDE_S,
-                 wake_matcher: Optional[Callable[[str], bool]] = None):
+                 wake_matcher: Optional[Callable[[str], bool]] = None,
+                 contiguous: bool = False):
         self.model = whisper_model
         # async (user_id: int, first_audio_time: float, text: str) -> None
         self.on_wake_callback = on_wake_callback
@@ -63,6 +64,9 @@ class WakeStreamDetector:
         self.initial_prompt = initial_prompt
         self.temperature = temperature
         self.wake_matcher = wake_matcher if wake_matcher is not None else check_cleaned_text_for_wake
+        # contiguous=True：推理中照樣累積 PCM（只是不另排推理），窗口才是連續音訊。
+        # 推理耗時接近 stride 時（puck 1s 窗 ~0.2s），舊行為會丟掉大半音訊、窗口變拼貼。
+        self.contiguous = contiguous
 
         if input_rate % 16000 != 0:
             raise ValueError(f"input_rate 必須是 16000 的整數倍，got {input_rate}")
@@ -91,8 +95,11 @@ class WakeStreamDetector:
     def push_pcm(self, user_id: int, pcm_48k_stereo: bytes) -> None:
         """每幀 PCM（20ms）進來時呼叫，負責觸發推理窗口。"""
         if (user_id not in self._buffers
-                or self._fired.get(user_id)
-                or self._inflight.get(user_id)):
+                or self._fired.get(user_id)):
+            return
+        if self._inflight.get(user_id):
+            if self.contiguous:
+                self._buffers[user_id].extend(pcm_48k_stereo)
             return
 
         buf = self._buffers[user_id]
