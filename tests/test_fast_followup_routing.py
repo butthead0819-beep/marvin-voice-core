@@ -5,7 +5,7 @@
 2. （gap classifier 已於意圖漏斗步驟 2 第二批刪除）
 
 A 組測 IntentBus 層（仿 test_intent_bus_audio_rescue_wiring.py 的 stub 寫法）。
-B 組測 VoiceController 層（沿用 test_intent_gate_silenced_log.py 的 _make_vc harness）。
+B 組測 VoiceController 層（沿用 test_stream_response_characterization.py 的 _make_vc harness）。
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import pytest
 
 from intent_bus import Bid, IntentBus, IntentContext
 
-from tests.test_intent_gate_silenced_log import _make_vc
+from tests.test_stream_response_characterization import _make_vc
 
 pytestmark = pytest.mark.asyncio
 
@@ -74,7 +74,8 @@ async def test_not_in_wake_session_still_calls_rescue():
 # --- B: VoiceController 層 ---
 
 async def test_controller_passes_in_wake_session_true_to_bus_ctx(monkeypatch):
-    vc, _captured = _make_vc(monkeypatch, query_intent_signal=True, query_text="隨便聊聊")
+    vc, _ph, _ch = _make_vc(monkeypatch, [])
+    vc.bot.engine.conv_buffer.get_harvest.return_value = "隨便聊聊"
     vc._wake_session = MagicMock(target="狗與露", opened=True)
 
     seen_ctx = {}
@@ -89,7 +90,8 @@ async def test_controller_passes_in_wake_session_true_to_bus_ctx(monkeypatch):
 
 
 async def test_controller_passes_in_wake_session_false_when_no_session(monkeypatch):
-    vc, _captured = _make_vc(monkeypatch, query_intent_signal=True, query_text="隨便聊聊")
+    vc, _ph, _ch = _make_vc(monkeypatch, [])
+    vc.bot.engine.conv_buffer.get_harvest.return_value = "隨便聊聊"
     assert not hasattr(vc, "_wake_session")
 
     seen_ctx = {}

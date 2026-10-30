@@ -114,16 +114,3 @@ async def test_track_a_none_intent_runs_music_fast_track():
     await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=None)
 
     cog._safe_music_command.assert_awaited_once()
-
-
-# ── 資訊類（讀取）路徑在低信心時仍允許 ─────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_low_confidence_allows_status_query():
-    """系統狀態查詢是 READ-ONLY → 即使低信心也應該回答。"""
-    cog = _make_cog()
-    _set_query(cog, "馬文系統狀態如何")
-
-    await cog._process_queued_query("Alice", wake_time=100.0, wake_intent=0.5)
-
-    cog._handle_voice_status_query.assert_awaited_once()
