@@ -182,7 +182,13 @@ class ProactiveSocialMixin:
             return
         conv_buf = getattr(getattr(self.bot, 'engine', None), 'conv_buffer', None)
         entries = conv_buf.get_history() if conv_buf else []
-        n_online = len(self.get_online_members())
+        n_discord = len(self.get_online_members())
+        # 車上（iOS / puck 聽 /audio_stream）頻道裡沒真人，車上在場者也要算使用者，
+        # 否則 n_online=0 → target None → 平衡卡在原值不會回 50/50。取 max 不取聯集：
+        # 車上身分（MARVIN_CAR_DEVICES）跟 Discord display_name 不保證同名，聯集會重複算人。
+        car = getattr(self.bot, 'car_presence', None)
+        n_car = len(car.occupants) if car is not None and car.is_present else 0
+        n_online = max(n_discord, n_car)
         target = target_balance(entries, n_online, time.time())
         state = getattr(self, '_auto_balance_state', None)
         if state is None:  # 狀態放這裡不放 VoiceController.__init__（防胖棘輪）
@@ -192,7 +198,7 @@ class ProactiveSocialMixin:
             return
         self._apply_auto_balance(new)
         tts_pct = int(round(new * 100))
-        logger.info(f"🎚️ [AutoBalance] 在線{n_online}人 → 語音 {tts_pct}% : 音樂 {100 - tts_pct}%")
+        logger.info(f"🎚️ [AutoBalance] 在線{n_online}人（車上{n_car}）→ 語音 {tts_pct}% : 音樂 {100 - tts_pct}%")
 
     @tasks.loop(seconds=5.0)
     async def speak_bus_tick_loop(self):

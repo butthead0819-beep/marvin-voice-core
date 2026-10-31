@@ -172,6 +172,7 @@ def _fake_social_self(entries, n_online, manual_at=float('-inf'), tts_balance=0.
     s = _Fake()
     s.bot = MagicMock()
     s.bot.engine.conv_buffer.get_history.return_value = entries
+    s.bot.car_presence = None
     s.get_online_members = lambda: ["a"] * n_online
     s.tts_balance = tts_balance
     s._auto_balance_state = AutoBalanceState()
@@ -252,3 +253,50 @@ def test_auto_balance_tick_creates_state_lazily(monkeypatch):
     ProactiveSocialMixin._auto_balance_tick(s)
     ProactiveSocialMixin._auto_balance_tick(s)
     s._apply_auto_balance.assert_called_once_with(0.90)
+
+
+# ---------------------------------------------------------------------------
+# 車上（iOS / puck 串流）：Discord 頻道沒真人，車上在場者也算使用者
+# ---------------------------------------------------------------------------
+
+def _car(present: bool, occupants=("狗與露",)):
+    cp = MagicMock()
+    cp.is_present = present
+    cp.occupants = list(occupants) if present else []
+    return cp
+
+
+def test_auto_balance_tick_car_only_quiet_returns_to_50(monkeypatch):
+    """車上一人、頻道無真人、沒人講話 → 從 90/10 回 50/50。"""
+    from cogs.voice_controller_social import ProactiveSocialMixin
+
+    monkeypatch.delenv("MARVIN_AUTO_BALANCE", raising=False)
+    s = _fake_social_self([], n_online=0, tts_balance=0.90)
+    s.bot.car_presence = _car(True)
+    ProactiveSocialMixin._auto_balance_tick(s)
+    ProactiveSocialMixin._auto_balance_tick(s)
+    s._apply_auto_balance.assert_called_once_with(0.50)
+
+
+def test_auto_balance_tick_no_car_no_humans_still_noop(monkeypatch):
+    """對照組：車不在、頻道無真人 → 維持原行為不動。"""
+    from cogs.voice_controller_social import ProactiveSocialMixin
+
+    monkeypatch.delenv("MARVIN_AUTO_BALANCE", raising=False)
+    s = _fake_social_self([], n_online=0, tts_balance=0.90)
+    s.bot.car_presence = _car(False)
+    ProactiveSocialMixin._auto_balance_tick(s)
+    ProactiveSocialMixin._auto_balance_tick(s)
+    s._apply_auto_balance.assert_not_called()
+
+
+def test_auto_balance_tick_car_present_manual_hold_blocks(monkeypatch):
+    from cogs.voice_controller_social import ProactiveSocialMixin
+    import time as time_mod
+
+    monkeypatch.delenv("MARVIN_AUTO_BALANCE", raising=False)
+    s = _fake_social_self([], n_online=0, tts_balance=0.90, manual_at=time_mod.monotonic())
+    s.bot.car_presence = _car(True)
+    ProactiveSocialMixin._auto_balance_tick(s)
+    ProactiveSocialMixin._auto_balance_tick(s)
+    s._apply_auto_balance.assert_not_called()
