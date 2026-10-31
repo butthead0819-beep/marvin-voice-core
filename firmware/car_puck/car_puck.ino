@@ -10,6 +10,15 @@
  *           faceTask（FACE_DISPLAY）：頭像即時渲染 24fps，優先權 1，算不完只掉格不搶解碼
  *   斷電＝心跳自然停送，由伺服器 TTL(90s) 收尾停播。
  *
+ * 2026-10-31 全時收音改版（PUCK_MIC_WS）：/audio_stream 整條關掉（PUCK_AUDIO_STREAM=0，
+ * 函式原地保留、沒被呼叫），讓出的那個 TLS 名額給 /mic_ws 用（常駐 TLS 仍維持最多兩條：
+ * 心跳 gHeartbeatFunnelClient + /mic_ws gMicFunnelClient）。靠 /audio_stream ICY 驅動的
+ * 臉部嘴型/手勢、封面/底圖換圖、WROOM 曲名這批功能這次先放掉，之後再補。新增
+ * micCaptureTask（core 1，讀 I2S 麥→IMA ADPCM→PSRAM ring）+ micWsTask（core 0，常駐
+ * WebSocket 上傳到 /mic_ws，收 duck/unduck 控制、轉送 UDP 給手機 DuckListener）。PTT
+ * （實體鍵/車機暫停鍵）改成「強制喚醒」：按下送 {"type":"ptt"} 文字訊息，不再自己錄音
+ * POST /audio（見 pttEdgeToWake()）。
+ *
 
  * ⚠️ 動手前：cp secrets.h.example secrets.h 並填 WiFi、MARVIN_TOKEN、MARVIN_LOCAL_HOST。（I2S 腳位已實測、不用再查，見下。）
  *
@@ -36,6 +45,7 @@
 #include <WiFi.h>
 #include <WiFiMulti.h>
 #include <WiFiClientSecure.h>
+#include <WiFiUdp.h>
 #include <HTTPClient.h>
 #include <driver/i2s.h>
 #include <freertos/semphr.h>
@@ -47,6 +57,9 @@
 #include "icy_demux.h"         // 車機顯示曲名第一刀：拆 /audio_stream 夾帶的 ICY in-band metadata
 #include "icy_fields.h"        // 轉送給 WROOM 前砍掉第 9 欄（bpm）；WROOM 解析器規定剛好 8 欄
 #include "cover_fetch.h"   // 換歌下載徽章封面（/car_cover）：JPEG 粗驗、HTTP 標頭解析、遙測字串
+#include "ima_adpcm.h"         // /mic_ws 上傳格式：IMA ADPCM 編碼（唯一標準見 ima_adpcm.py）
+#include "ws_frame.h"          // /mic_ws 用的最小 WebSocket client frame 組裝/解析 + base64
+#include <esp_random.h>        // esp_random()：WS frame mask key、Sec-WebSocket-Key
 
 // 2026-10-24：螢幕還沒到貨，先在 S3 上邊播音樂邊實測 face_rt.h 的即時渲染＋RGB565＋SPI
 // 推圖耗時，會不會拖慢 MP3 解碼。SPI 沒接螢幕照樣打時脈，時間/CPU 負擔跟接了一樣。
@@ -176,6 +189,19 @@ static FaceInSnapshot g_faceIn = {
   face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, -1, 0, 0, 0
 };
 #endif  // FACE_DISPLAY
+
+// 2026-10-31：全時收音上傳 /mic_ws 上線。PUCK_AUDIO_STREAM=0 整條關掉（函式原地保留，
+// 只是沒被呼叫）——跟著關掉的有 ICY 驅動的嘴型/手勢、封面/底圖換圖、WROOM 曲名，這次
+// 先放掉，之後再補，不要試圖在這份改動裡順手補。讓出來的那個 TLS 名額給 /mic_ws
+// （常駐 TLS 仍是最多兩條：心跳 + /mic_ws）。
+#ifndef PUCK_AUDIO_STREAM
+#define PUCK_AUDIO_STREAM 0
+#endif
+// PUCK_MIC_WS=1：常駐收音上傳 /mic_ws + PTT 改成「強制喚醒」（不再自己錄音 POST /audio）。
+// =0：維持舊的 PTT hold-to-talk 錄音路徑，行為跟改版前完全相同。
+#ifndef PUCK_MIC_WS
+#define PUCK_MIC_WS 1
+#endif
 
 // ========== 板上按鈕（V1.7；2026-07-17 三顆都實測按過）==========
 #define PIN_BTN_PTT    0    // 喚醒/打斷 = 我們的 PTT
@@ -1754,6 +1780,372 @@ void postAudio(int nSamples, bool viaPause) {
   setLed(LED_STANDBY);
 }
 
+#if PUCK_MIC_WS
+// ========== PUCK_MIC_WS：全時收音上傳 /mic_ws ==========
+//
+// micCaptureTask（core 1）唯一讀 I2S_MIC_PORT，編 IMA ADPCM 進 PSRAM ring；micWsTask
+// （core 0）常駐 WebSocket 連線把 ring 內容送出，並處理 server 送回的 duck/unduck/
+// ping/close。PTT（實體鍵/車機暫停鍵）只負責在 micWsTask 連上時插一筆
+// {"type":"ptt",...} 文字訊息（見 pttEdgeToWake()），不再自己錄音。
+
+#define MIC_RING_BLOCKS 128   // 4 秒 @ 32ms/block（260 bytes/block，PSRAM ~33KB）
+
+static uint8_t* g_micRing = nullptr;             // PSRAM，MIC_RING_BLOCKS * IMA_BLOCK_BYTES
+static volatile uint32_t g_micHead = 0;          // micCaptureTask（producer）專用寫
+static volatile uint32_t g_micTail = 0;          // micWsTask（consumer）專用寫
+static volatile uint32_t g_micDropped = 0;       // ring 滿了丟棄的 block 數（診斷用）
+static volatile bool g_micEncReset = false;      // micWsTask 連線成功時設；micCaptureTask 清
+static volatile bool g_micWsUp = false;          // micWsTask 目前是否已連上（pttEdgeToWake 判斷要不要丟棄按鍵）
+static volatile uint8_t g_pttWakeSrc = 0;        // 0=無 1=button 2=pause；micWsTask 送出後清
+static TaskHandle_t micCaptureTaskHandle = nullptr;
+static TaskHandle_t micWsTaskHandle = nullptr;
+
+static WiFiUDP gDuckUdp;
+static bool gDuckUdpBegun = false;
+static uint32_t gDuckSeq = 0;
+static bool gDucked = false;
+
+// 送 duck/unduck UDP 給手機端 DuckListener（iOS，監聽 47800）。只在 micWsTask 裡呼叫，
+// 不等 ack——手機沒收到最壞情況是這次沒壓低/沒恢復音量，下一次 duck/unduck 事件會
+// 再送一次，不值得為了可靠性加重試邏輯。
+static void duckUdpSend(bool duck) {
+  if (!gDuckUdpBegun) { gDuckUdp.begin(0); gDuckUdpBegun = true; }
+  gDuckSeq++;
+  char body[48];
+  int n = snprintf(body, sizeof(body), "{\"cmd\":\"%s\",\"seq\":%u}", duck ? "duck" : "unduck", (unsigned)gDuckSeq);
+  LWIP_LOCK();
+  gDuckUdp.beginPacket(WiFi.gatewayIP(), 47800);
+  gDuckUdp.write((const uint8_t*)body, (size_t)n);
+  gDuckUdp.endPacket();
+  LWIP_UNLOCK();
+  gDucked = duck;
+  Serial.printf("[Duck] %s seq=%u\n", duck ? "duck" : "unduck", (unsigned)gDuckSeq);
+  setLed(duck ? LED_LISTENING : LED_STANDBY);
+}
+
+// 唯一讀麥克風的 task：讀滿 512 個 32-bit frame（不滿就繼續讀補滿）、轉 int16、編
+// IMA ADPCM 進 ring。ring 滿了（micWsTask 斷線太久追不上）就丟新 block，不覆蓋舊的、
+// 也不阻塞等 consumer。
+void micCaptureTask(void* pv) {
+  Serial.println("[MicWS] micCaptureTask 已啟動");
+  ImaAdpcmState st;
+  ima_adpcm_reset(&st);
+  int32_t raw[IMA_BLOCK_SAMPLES];
+  int16_t pcm[IMA_BLOCK_SAMPLES];
+  for (;;) {
+    if (g_micEncReset) { ima_adpcm_reset(&st); g_micEncReset = false; }
+
+    size_t got = 0;
+    while (got < IMA_BLOCK_SAMPLES) {
+      size_t n = 0;
+      i2s_read(I2S_MIC_PORT, raw + got, (IMA_BLOCK_SAMPLES - got) * sizeof(int32_t), &n, portMAX_DELAY);
+      got += n / sizeof(int32_t);
+    }
+    for (int i = 0; i < IMA_BLOCK_SAMPLES; i++) pcm[i] = (int16_t)(raw[i] >> 16);
+
+    uint32_t head = g_micHead, tail = g_micTail;
+    if (head - tail >= MIC_RING_BLOCKS) {
+      g_micDropped++;
+      continue;   // ring 滿了，丟這個 block（micWsTask 斷線中/追不上）
+    }
+    uint8_t* slot = g_micRing + (size_t)(head % MIC_RING_BLOCKS) * IMA_BLOCK_BYTES;
+    ima_adpcm_encode_block(&st, pcm, slot);
+    g_micHead = head + 1;
+  }
+}
+
+static inline void wsRandomMask(uint8_t mask[4]) {
+  uint32_t r = esp_random();
+  mask[0] = (uint8_t)r; mask[1] = (uint8_t)(r >> 8); mask[2] = (uint8_t)(r >> 16); mask[3] = (uint8_t)(r >> 24);
+}
+
+// 粗判收到的 frame 宣告長度是否超過 limit，不用等完整 frame 到齊才能判斷——
+// ws_parse_header() 要完整 payload 都在 buffer 裡才會回 1，壞資料宣告超大長度時會一直
+// 回 0（資料不夠）等到天荒地老，這裡只看 header 的長度欄位本身提早踩停。
+static bool wsDeclaredTooLarge(const uint8_t* buf, size_t len, size_t limit) {
+  if (len < 2) return false;
+  uint8_t len7 = buf[1] & 0x7F;
+  if (len7 <= 125) return len7 > limit;
+  if (len7 == 126) {
+    if (len < 4) return false;
+    uint16_t l16 = (uint16_t)(((uint16_t)buf[2] << 8) | buf[3]);
+    return (size_t)l16 > limit;
+  }
+  return true;   // 127（64-bit 擴充長度）：puck 不該收到這麼大的控制 frame，直接判過大
+}
+
+// 常駐 WebSocket 上傳任務：連線（區網明碼優先，失敗退回 Funnel TLS，跟
+// audioNetworkTask/carHeartbeat 同一套鎖紀律與 TLS 共用原則）→ 握手 → 串流迴圈（送
+// ring 裡的音訊/PTT，收 duck/unduck/ping/close）→ 斷線重連（backoff）。
+void micWsTask(void* pv) {
+  Serial.println("[MicWS] micWsTask 已啟動");
+  uint32_t backoffMs = 1000;
+  uint32_t sentBlocks = 0, duckCount = 0, unduckCount = 0, pingCount = 0, reconnects = 0;
+  uint32_t lastStatsMs = millis();
+  static WiFiClientSecure gMicFunnelClient;
+
+  for (;;) {
+    if (WiFi.status() != WL_CONNECTED) { vTaskDelay(pdMS_TO_TICKS(500)); continue; }
+
+    WiFiClient localClient;
+    bool useFunnel = false;
+    bool connectOk = false;
+    if (lanEnabled()) {
+      LWIP_LOCK();
+      connectOk = localClient.connect(MARVIN_LOCAL_HOST, MARVIN_LOCAL_PORT, 1200);
+      LWIP_UNLOCK();
+    }
+    if (!connectOk) {
+      useFunnel = true;
+      gMicFunnelClient.setInsecure();
+      gMicFunnelClient.setHandshakeTimeout(5);
+      LWIP_LOCK();
+      connectOk = gMicFunnelClient.connect(MARVIN_HOST, MARVIN_PORT, 5000);
+      LWIP_UNLOCK();
+    }
+    WiFiClient& client = useFunnel ? (WiFiClient&)gMicFunnelClient : localClient;
+    if (!connectOk) {
+      Serial.println("[MicWS] ⚠️ connect() 失敗（區網+Funnel都失敗）");
+      vTaskDelay(pdMS_TO_TICKS(backoffMs));
+      backoffMs = (backoffMs * 2 > 30000) ? 30000 : backoffMs * 2;
+      continue;
+    }
+    client.setTimeout(500);
+    const char* host = useFunnel ? MARVIN_HOST : MARVIN_LOCAL_HOST;
+
+    uint8_t keyRaw[16];
+    for (int i = 0; i < 16; i += 4) {
+      uint32_t r = esp_random();
+      keyRaw[i] = (uint8_t)r; keyRaw[i + 1] = (uint8_t)(r >> 8);
+      keyRaw[i + 2] = (uint8_t)(r >> 16); keyRaw[i + 3] = (uint8_t)(r >> 24);
+    }
+    char keyB64[32];
+    ws_base64_encode(keyRaw, sizeof(keyRaw), keyB64, sizeof(keyB64));
+
+    String req = String("GET /mic_ws?device=") + gDeviceId + "&t=" + MARVIN_TOKEN + " HTTP/1.1\r\n" +
+                 "Host: " + host + "\r\n" +
+                 "Upgrade: websocket\r\n" +
+                 "Connection: Upgrade\r\n" +
+                 "Sec-WebSocket-Key: " + keyB64 + "\r\n" +
+                 "Sec-WebSocket-Version: 13\r\n\r\n";
+    LWIP_LOCK(); client.print(req); LWIP_UNLOCK();
+
+    String status;
+    bool handshakeOk = lockedReadLine(client, status, 3000) && status.indexOf(" 101 ") >= 0;
+    if (handshakeOk) {
+      for (;;) {
+        String h;
+        if (!lockedReadLine(client, h, 3000)) { handshakeOk = false; break; }
+        if (h.length() == 0) break;   // 空行＝標頭結束
+      }
+    }
+    if (!handshakeOk) {
+      Serial.printf("[MicWS] 握手失敗：%s\n", status.c_str());
+      LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
+      vTaskDelay(pdMS_TO_TICKS(backoffMs));
+      backoffMs = (backoffMs * 2 > 30000) ? 30000 : backoffMs * 2;
+      continue;
+    }
+
+    backoffMs = 1000;
+    g_micTail = g_micHead;      // 丟掉斷線期間的舊音
+    g_micEncReset = true;
+    g_micWsUp = true;
+    reconnects++;
+    Serial.printf("[MicWS] 連上（%s）\n", useFunnel ? "Funnel" : "LAN");
+
+    static uint8_t rxBuf[512];
+    static uint8_t txFrame[2080 + 14];
+    static uint8_t txPayload[8 * IMA_BLOCK_BYTES];
+    size_t rxLen = 0;
+    bool connLost = false;
+
+    while (!connLost) {
+      bool didWork = false;
+
+      // 送音訊：ring 裡有 >= 8 個 block 就湊成一則 binary frame。
+      uint32_t head = g_micHead, tail = g_micTail;
+      if (head - tail >= 8) {
+        for (int i = 0; i < 8; i++) {
+          uint8_t* slot = g_micRing + (size_t)((tail + i) % MIC_RING_BLOCKS) * IMA_BLOCK_BYTES;
+          memcpy(txPayload + i * IMA_BLOCK_BYTES, slot, IMA_BLOCK_BYTES);
+        }
+        uint8_t mask[4]; wsRandomMask(mask);
+        size_t frameLen = ws_build_frame(WS_OP_BINARY, txPayload, sizeof(txPayload), mask, txFrame, sizeof(txFrame));
+        if (frameLen > 0) {
+          LWIP_LOCK();
+          size_t written = client.write(txFrame, frameLen);
+          LWIP_UNLOCK();
+          if (written < frameLen) {
+            Serial.println("[MicWS] 送音訊 write 不完整，視為斷線");
+            connLost = true;
+          } else {
+            g_micTail = tail + 8;
+            sentBlocks += 8;
+          }
+        }
+        didWork = true;
+      }
+
+      // 送 PTT：按鍵邊緣在 pttEdgeToWake() 設旗標，這裡才真的碰網路。
+      uint8_t pttSrc = g_pttWakeSrc;
+      if (!connLost && pttSrc != 0) {
+        g_pttWakeSrc = 0;
+        const char* json = (pttSrc == 1) ? "{\"type\":\"ptt\",\"src\":\"button\"}"
+                                          : "{\"type\":\"ptt\",\"src\":\"pause\"}";
+        uint8_t mask[4]; wsRandomMask(mask);
+        size_t frameLen = ws_build_frame(WS_OP_TEXT, (const uint8_t*)json, strlen(json), mask, txFrame, sizeof(txFrame));
+        if (frameLen > 0) {
+          LWIP_LOCK();
+          size_t written = client.write(txFrame, frameLen);
+          LWIP_UNLOCK();
+          if (written < frameLen) connLost = true;
+          else Serial.printf("[MicWS] PTT 送出 src=%s\n", pttSrc == 1 ? "button" : "pause");
+        }
+        didWork = true;
+      }
+
+      // 收：available() 查有無資料，有才進鎖搬（理由見 lockedReadLine 前的 2026-07-26 註解）。
+      if (!connLost) {
+        LWIP_LOCK();
+        int avail = client.available();
+        size_t n = 0;
+        if (avail > 0 && rxLen < sizeof(rxBuf)) {
+          size_t want = sizeof(rxBuf) - rxLen;
+          size_t toRead = (size_t)avail < want ? (size_t)avail : want;
+          n = client.read(rxBuf + rxLen, toRead);
+        }
+        LWIP_UNLOCK();
+        if (n > 0) { rxLen += n; didWork = true; }
+      }
+
+      // 處理 rxBuf 裡湊齊的完整 frame（可能一次收到多個）。
+      while (!connLost) {
+        WsHeader h;
+        int rc = ws_parse_header(rxBuf, rxLen, &h);
+        if (rc == 0) {
+          if (wsDeclaredTooLarge(rxBuf, rxLen, 400)) {
+            Serial.println("[MicWS] frame 宣告長度過大，斷線");
+            connLost = true;
+          }
+          break;
+        }
+        if (rc < 0) {
+          Serial.println("[MicWS] frame 格式錯，斷線");
+          connLost = true;
+          break;
+        }
+
+        size_t frameTotal = h.header_len + (size_t)h.payload_len;
+        const uint8_t* payloadPtr = rxBuf + h.header_len;
+
+        if (h.opcode == WS_OP_TEXT) {
+          int ctl = mic_ctl_parse((const char*)payloadPtr, (size_t)h.payload_len);
+          if (ctl == MIC_CTL_DUCK) { duckUdpSend(true); duckCount++; }
+          else if (ctl == MIC_CTL_UNDUCK) { duckUdpSend(false); unduckCount++; }
+          else {
+            int plen = (int)(h.payload_len < 80 ? h.payload_len : 80);
+            Serial.printf("[MicWS] 未知文字訊息: %.*s\n", plen, (const char*)payloadPtr);
+          }
+        } else if (h.opcode == WS_OP_PING) {
+          uint8_t mask[4]; wsRandomMask(mask);
+          size_t frameLen = ws_build_frame(WS_OP_PONG, payloadPtr, (size_t)h.payload_len, mask, txFrame, sizeof(txFrame));
+          if (frameLen > 0) {
+            LWIP_LOCK();
+            size_t written = client.write(txFrame, frameLen);
+            LWIP_UNLOCK();
+            if (written < frameLen) connLost = true;
+          }
+          pingCount++;
+        } else if (h.opcode == WS_OP_CLOSE) {
+          uint8_t closePayload[2] = {0, 0};
+          size_t closeLen = (h.payload_len >= 2) ? 2 : 0;
+          if (closeLen) memcpy(closePayload, payloadPtr, closeLen);
+          uint8_t mask[4]; wsRandomMask(mask);
+          size_t frameLen = ws_build_frame(WS_OP_CLOSE, closePayload, closeLen, mask, txFrame, sizeof(txFrame));
+          if (frameLen > 0) { LWIP_LOCK(); client.write(txFrame, frameLen); LWIP_UNLOCK(); }
+          connLost = true;
+        }
+        // 其他 opcode（CONT/BINARY，server 不會送）忽略。
+
+        memmove(rxBuf, rxBuf + frameTotal, rxLen - frameTotal);
+        rxLen -= frameTotal;
+      }
+
+      if (!connLost && !client.connected()) connLost = true;
+      if (connLost) break;
+
+      uint32_t now = millis();
+      if (now - lastStatsMs >= 60000) {
+        lastStatsMs = now;
+        Serial.printf("[MicWS] up=1 sent_blocks=%u dropped=%u ring=%u duck=%u unduck=%u ping=%u "
+                      "reconnects=%u ifree=%u imin=%u stack_hw cap=%u ws=%u\n",
+                      (unsigned)sentBlocks, (unsigned)g_micDropped, (unsigned)(g_micHead - g_micTail),
+                      (unsigned)duckCount, (unsigned)unduckCount, (unsigned)pingCount, (unsigned)reconnects,
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                      (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                      micCaptureTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(micCaptureTaskHandle) : 0,
+                      (unsigned)uxTaskGetStackHighWaterMark(NULL));
+      }
+
+      if (!didWork) vTaskDelay(pdMS_TO_TICKS(5));
+    }
+
+    LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
+    g_micWsUp = false;
+    if (gDucked) duckUdpSend(false);   // 別讓手機一直壓低
+    Serial.println("[MicWS] 斷線");
+    vTaskDelay(pdMS_TO_TICKS(backoffMs));
+    backoffMs = (backoffMs * 2 > 30000) ? 30000 : backoffMs * 2;
+  }
+}
+
+// PTT（實體鍵/車機暫停鍵）改成「強制喚醒」：按下的那一刻設旗標，micWsTask 連上時才
+// 真的送 {"type":"ptt",...}；不讀 I2S、不呼叫 postAudio（micCaptureTask 是唯一讀麥的
+// task）。WS 沒連上時按下就直接丟（不排隊——按鍵用意是「現在馬上」，排隊等重連後
+// 才送已經失去時機意義，容易誤觸發跟使用者當下情境無關的喚醒）。
+void pttEdgeToWake() {
+  static uint32_t physLowSinceMs = 0;
+  static bool physDebounced = false;
+  bool physNow = (digitalRead(PIN_BTN_PTT) == LOW);
+  if (physNow) {
+    if (physLowSinceMs == 0) physLowSinceMs = millis();
+    if (!physDebounced && millis() - physLowSinceMs >= 50) {
+      physDebounced = true;
+      if (g_micWsUp) { g_pttWakeSrc = 1; Serial.println("[PTT] ▼ 按鍵（強制喚醒）"); }
+      else Serial.println("[PTT] ▼ 按鍵，但 WS 未連上，丟棄");
+    }
+  } else {
+    physLowSinceMs = 0;
+    physDebounced = false;
+  }
+
+  // g_pausePtt 由 pollWheelFromWroom() 的 PAUSE 按鍵設 true；這裡讀到就立刻清回
+  // false，天然形成「false→true 邊緣」一次性觸發（PLAY 鍵不再有意義，見 g_pausePtt
+  // 定義前的註解）。
+  if (g_pausePtt) {
+    if (g_micWsUp) { g_pttWakeSrc = 2; Serial.println("[PTT] ▼ 車機暫停鍵（強制喚醒）"); }
+    else Serial.println("[PTT] ▼ 車機暫停鍵，但 WS 未連上，丟棄");
+    g_pausePtt = false;
+  }
+}
+
+// setup() 呼叫：配置 mic ring、建 micCaptureTask/micWsTask。PSRAM 配置失敗就不建兩個
+// task，其餘功能照常跑。
+static void micWsSetup() {
+  g_micRing = (uint8_t*)heap_caps_malloc((size_t)MIC_RING_BLOCKS * IMA_BLOCK_BYTES, MALLOC_CAP_SPIRAM);
+  Serial.printf("[MicWS] micRing heap_caps_malloc %s（%u bytes）\n",
+                g_micRing ? "成功" : "❌失敗", (unsigned)((size_t)MIC_RING_BLOCKS * IMA_BLOCK_BYTES));
+  if (!g_micRing) {
+    Serial.println("[MicWS] PSRAM 配置失敗，不啟動收音上傳");
+    return;
+  }
+  // stack 8192：raw[512]×4 + pcm[512]×2 + encode 內的 nibbles[512] 已 ~3.5KB，4096 太緊
+  xTaskCreatePinnedToCore(micCaptureTask, "micCapture", 8192, nullptr, 3, &micCaptureTaskHandle, 1);
+  xTaskCreatePinnedToCore(micWsTask, "micWs", 8192, nullptr, 2, &micWsTaskHandle, 0);
+}
+#endif  // PUCK_MIC_WS
+
 #if FACE_BENCH
 // ========== FACE_BENCH：頭像即時渲染壓力測試 ==========
 // 螢幕還沒到貨，腳位是推定的 GC9A01 座，這裡只當輸出腳打時脈用，不初始化螢幕控制器。
@@ -2433,10 +2825,12 @@ void setup() {
   pinMode(PIN_BTN_PTT, INPUT_PULLUP);
 
   startMic();
+#if PUCK_AUDIO_STREAM
   startSpeaker();
   streamRing = (uint8_t*)ps_malloc(STREAM_RING_SIZE);
   Serial.printf("[Stream] streamRing ps_malloc %s（%u bytes）\n",
                 streamRing ? "成功" : "❌失敗", (unsigned)STREAM_RING_SIZE);
+#endif
 #if COVER_FETCH
   g_coverBuf = (uint8_t*)ps_malloc(COVER_BUF_CAP);
   Serial.printf("[Cover] coverBuf ps_malloc %s（%u bytes）\n", g_coverBuf ? "成功" : "❌失敗", (unsigned)COVER_BUF_CAP);
@@ -2459,9 +2853,14 @@ void setup() {
   // 時間片輪流，playback 不保證每輪都搶到；loop() 裡的 PTT/心跳未來變重時可能偶爾晚一輪
   // 才輪到 playback。實測目前很穩（maxGap 10.7ms）才調的，不是修急迫症狀，是把「贏
   // loopTask」從機率變保證。
+#if PUCK_AUDIO_STREAM
   BaseType_t _rNet = xTaskCreatePinnedToCore(audioNetworkTask, "audioNet", 16384, nullptr, 2, &audioNetTaskHandle, 0);
   BaseType_t _rPlay = xTaskCreatePinnedToCore(audioPlaybackTask, "audioPlay", 8192, nullptr, 2, &audioPlayTaskHandle, 1);
   Serial.printf("[Stream] 任務建立 net=%d play=%d（1=成功）\n", (int)_rNet, (int)_rPlay);
+#endif
+#if PUCK_MIC_WS
+  micWsSetup();
+#endif
 #if FACE_BENCH
   // 螢幕還沒到貨，先量 face_rt_render()/RGB565/SPI 推圖耗時對 MP3 解碼的排擠（見
   // faceBenchTask 前的說明）。PSRAM 配置失敗就不建 task，不要半殘跑。
@@ -2560,7 +2959,11 @@ static void pollWheelFromWroom() {
 }
 
 void loop() {
+#if PUCK_MIC_WS
+  pttEdgeToWake();   // 按鍵/暫停鍵邊緣＝強制喚醒（送 {"type":"ptt"}），不再自己錄音
+#else
   pttHoldToTalk();   // 按住說話、放開送出
+#endif
   pollWheelFromWroom();   // 方向盤按鍵通道（這階段只印 log）
   // 心跳 2026-07-25 起改由 carHeartbeatTask（core 0 專用任務）驅動，不再從這裡呼叫。
   updateLed();       // 狀態燈動畫（非阻塞）
