@@ -19,6 +19,7 @@ _CATALOG = [
     "張惠妹 如果你也聽說", "信樂團 離歌", "曲婉婷 我的歌聲裡", "莫文蔚 慢慢喜歡你",
     "Beyond 海闊天空", "齊秦 火柴天堂", "鄧紫棋 泡沫", "五月天 倔強",
     "盧廣仲 輕輕對你說", "陳華 想和你看五月的晚霞",  # 退化歌名 / 多「的」歌名 回歸用例
+    "黃小琥 現在那邊是幾點",  # 問句撞歌名 回歸用例
 ]
 
 
@@ -223,3 +224,14 @@ def test_to_play_command_without_video_id_returns_name_command():
     cmd = to_play_command("周杰倫 七里香")
     assert cmd == f"{FASTPATH_PLAY_PREFIX}周杰倫 七里香"
     assert "watch?v=" not in cmd
+
+
+def test_bare_question_not_hijacked_by_title_subset(fp):
+    """2026-10-31 live：「馬文，現在幾點」→ xian zai ji dian 四個 token 全在〈現在那邊是幾點〉
+    → token_set 100 + 覆蓋率過關 → 直接放歌。沒有點歌動詞、也沒有「歌手的歌名」時，
+    query 要涵蓋大部分歌名才算點歌；有動詞照舊命中。"""
+    assert fp.match("現在幾點") is None
+    hit = fp.match("播放現在那邊是幾點")
+    assert hit is not None and hit[0] == "黃小琥 現在那邊是幾點"
+    hit = fp.match("現在那邊是幾點")
+    assert hit is not None and hit[0] == "黃小琥 現在那邊是幾點"

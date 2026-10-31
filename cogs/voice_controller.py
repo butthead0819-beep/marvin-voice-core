@@ -3005,6 +3005,9 @@ class VoiceController(MarvinCommandsMixin, ProactiveSocialMixin, EmotionMoodMixi
         for suffix in ["好嗎", "可以嗎", "謝謝", "吧", "呢"]:
             if t.endswith(suffix):
                 t = t[:-len(suffix)]
+        # 書名號/引號換空白（2026-10-31）：YouTube 把《》內當精確片語，STT 同音錯字
+        # 「熊美玲的《鞦韆》」0 筆；拿掉後模糊搜尋第一筆就是〈秋離〉。
+        t = re.sub(r"\s+", " ", re.sub(r"[《》〈〉「」『』“”\"]", " ", t))
         return t.strip()
 
 

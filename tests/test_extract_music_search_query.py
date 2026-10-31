@@ -114,3 +114,17 @@ def test_trailing_particles_still_stripped():
     cog = _make_cog()
     assert cog._extract_music_search_query("麻煩播放陶喆的天天好嗎") == "陶喆的天天"
     assert cog._extract_music_search_query("播放陶喆的天天吧") == "陶喆的天天"
+
+
+# ── 書名號/引號要拿掉（2026-10-31 實測）────────────────────────────────────
+# YouTube 把《》內當精確片語：STT 同音錯字「熊美玲的《鞦韆》」ytsearch5 0 筆 → music_fail；
+# 拿掉書名號「熊美玲的 鞦韆」第一筆就是〈秋離〉。歌名正確時拿掉也不影響結果。
+@pytest.mark.parametrize("query,expected", [
+    ("播放熊美玲的《鞦韆》", "熊美玲的 鞦韆"),
+    ("播放《晴天》", "晴天"),
+    ("我想聽陶喆的「流沙」", "陶喆的 流沙"),
+    ("播放周杰倫〈七里香〉吧", "周杰倫 七里香"),
+])
+def test_strips_title_brackets(query, expected):
+    cog = _make_cog()
+    assert cog._extract_music_search_query(query) == expected

@@ -191,8 +191,22 @@ class MusicFastPath:
             return None
         _pinyin_val, score, idx = res
         if score >= self.threshold and self._title_covered(qpy, _pinyin_val, query_text=stripped):
+            # 沒點歌動詞、也不是「歌手的歌名」→ 可能只是一句話剛好是歌名子集（2026-10-31 live：
+            # 「現在幾點」→〈現在那邊是幾點〉），要求 query 涵蓋大部分歌名才算點歌。
+            if stripped == query and "的" not in stripped and not self._query_covers_title(
+                    qpy, self._names[idx]):
+                return None
             return self._names[idx], float(score), self._video_ids.get(idx, "")
         return None
+
+    @classmethod
+    def _query_covers_title(cls, query_py: str, name: str, bar: float = 0.8) -> bool:
+        """反向覆蓋率：canonical「歌手 歌名」的歌名 token 有多少出現在 query。"""
+        title = name.split(" ", 1)[1] if " " in name else name
+        t = set(to_pinyin(title).split()) - cls._STOP
+        if not t:
+            return True
+        return len(t & set(query_py.split())) / len(t) >= bar
 
     _STOP = {"de", "a", "ya", "ne", "ba", "la"}
 
