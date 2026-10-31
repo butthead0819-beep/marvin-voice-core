@@ -56,6 +56,57 @@ class SilenceFillQueue:
             return self._silence
 
 
+class PacedSilenceFillQueue:
+    """按牆鐘補靜音：實際送出的音訊落後「連線後經過時間＋head_start」超過 max_lag_s，
+    就一次補靜音補到剛好追平；準時供幀時不補，所以不會把 client 緩衝越墊越大。
+
+    為什麼（iOS，icy=0）：換歌空檔約 1.35s，mixer 補 1s 靜音後回 b""、AudioPlayer 停下，
+    剩 ~0.35s 完全沒幀。SilenceFillQueue(timeout_s=1.0) 等不滿 1s 不補 → 每次換歌 iPhone
+    少收 ~0.35s，緩衝一路流失直到斷流（2026-10-31 實測每分鐘流失 ~0.05s）。
+    head_start_frames：subscribe 時預塞的 preroll 幀數（刻意超前的墊，不算追平）。
+    """
+
+    _FRAME_S = 0.02
+    _MAX_FILL_FRAMES = 50   # 單次最多補 1s，大落後分多次回，避免一次吐巨大區塊
+
+    def __init__(self, q, *, frame_bytes: int = _FRAME_BYTES, max_lag_s: float = 0.25,
+                 head_start_frames: int = 0, clock=None):
+        self._q = q
+        self._frame_bytes = frame_bytes
+        self._max_lag_s = max_lag_s
+        self._head_start = head_start_frames
+        self._clock = clock or (lambda: asyncio.get_running_loop().time())
+        self._t0: float | None = None
+        self._sent_frames = 0.0
+
+    def _lag_s(self) -> float:
+        expected = self._head_start + (self._clock() - self._t0) / self._FRAME_S
+        return (expected - self._sent_frames) * self._FRAME_S
+
+    def _take(self, item):
+        if item is not None:
+            self._sent_frames += len(item) / self._frame_bytes
+        return item
+
+    def _silence(self):
+        n = min(self._MAX_FILL_FRAMES, max(1, int(self._lag_s() / self._FRAME_S)))
+        self._sent_frames += n
+        return b"\x00" * (self._frame_bytes * n)
+
+    async def get(self) -> bytes | None:
+        if self._t0 is None:
+            self._t0 = self._clock()
+        if not self._q.empty():
+            return self._take(self._q.get_nowait())
+        lag = self._lag_s()
+        if lag >= self._max_lag_s:
+            return self._silence()
+        try:
+            return self._take(await asyncio.wait_for(self._q.get(), self._max_lag_s - lag))
+        except asyncio.TimeoutError:
+            return self._silence()
+
+
 def build_app(stream_source, *, token: str | None) -> web.Application:
     @web.middleware
     async def _token_gate(request, handler):

@@ -14,7 +14,7 @@ import time
 from aiohttp import web
 
 from marvin_voice_core.audio_stream_batcher import iter_batched_encoded_frames
-from marvin_voice_core.discord_audio_stream_server import SilenceFillQueue
+from marvin_voice_core.discord_audio_stream_server import PacedSilenceFillQueue, SilenceFillQueue
 from marvin_voice_core.icy_meta import (
     ICY_METAINT, BpmLookup, IcyInterleaver, SpeakTracker, build_now_playing_payload)
 from marvin_voice_core.mp3_stream_encoder import Mp3StreamEncoder
@@ -1695,8 +1695,8 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             bitrate_kbps=_AUDIO_STREAM_MP3_KBPS)
         interleaver = IcyInterleaver() if icy_enabled else None
         speak_tracker = SpeakTracker() if (icy_enabled and _ICY_SPEAK_ENABLED) else None
-        fill_q = (SilenceFillQueue(q, timeout_s=1.0, fill_frames=5)
-                  if request.query.get("icy") == "0" else SilenceFillQueue(q))
+        frame_bytes = (stream_source.rate // 50) * stream_source.channels * (stream_source.bits // 8)
+        fill_q = stream_fill_queue(request.query, q, preroll=preroll, frame_bytes=frame_bytes)
         try:
             # SilenceFillQueue：satellite 的 mixer 本來就一直有幀（跟單一 mixer 第1刀的
             # Discord mixer 不同，那裡才是 on_demand 真正需要補靜音的理由），包了也無害，
@@ -2078,6 +2078,14 @@ def stream_preroll_frames(query) -> int:
     except (TypeError, ValueError):
         return STREAM_PREROLL_DEFAULT
     return max(0, min(STREAM_PREROLL_DEFAULT, n))
+
+
+def stream_fill_queue(query, q, *, preroll: int, frame_bytes: int):
+    """iOS（icy=0）按牆鐘補靜音（換歌空檔不讓 iPhone 緩衝流失，見 PacedSilenceFillQueue）；
+    其他 client（puck、Pi ffmpeg）維持原本的 SilenceFillQueue。"""
+    if query.get("icy") == "0":
+        return PacedSilenceFillQueue(q, frame_bytes=frame_bytes, head_start_frames=preroll)
+    return SilenceFillQueue(q)
 
 
 def resolve_car_identity(device: str | None, speaker: str | None,
