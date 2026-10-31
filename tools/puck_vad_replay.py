@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import resource
 import subprocess
 import sys
 import time
@@ -94,6 +95,9 @@ def parse_args() -> argparse.Namespace:
                    help="WAKE callback 後呼叫 wake.rearm(0)，模擬候選被否決後繼續偵測")
     p.add_argument("--start", type=float, default=None, help="起始秒數（切片）")
     p.add_argument("--duration", type=float, default=None, help="長度秒數（切片）")
+    p.add_argument("--engine", choices=["whisper", "swift"], default="whisper",
+                   help="喚醒偵測引擎：whisper（預設，WakeStreamDetector）或 swift（常駐 SpeechAnalyzer）")
+    p.add_argument("--swift-context", default=None, help="--engine swift 時傳給 AnalysisContext 的逗號分隔術語")
     return p.parse_args()
 
 
@@ -107,10 +111,14 @@ async def main() -> None:
     config = PuckVADConfig(start_prob=args.start_prob, end_prob=args.end_prob)
 
     wake = None
+    swift_wake = None
     infer_count = 0
     wake_count = 0
+    infer_elapsed_total = 0.0
 
-    if not args.no_whisper:
+    fed_samples = 0
+
+    if not args.no_whisper and args.engine == "whisper":
         from faster_whisper import WhisperModel
 
         from wake_stream_detector import WakeStreamDetector
@@ -122,7 +130,7 @@ async def main() -> None:
             nonlocal wake_count
             wake_count += 1
             t = fed_samples / 16000.0
-            print(f"[{t:7.2f}s] WAKE text='{text}'")
+            print(f"[{t:7.2f}s] WAKE text='{text}' wake_t=n/a")
             if args.rearm:
                 wake.rearm(0)
 
@@ -148,7 +156,6 @@ async def main() -> None:
             wake = WakeStreamDetector(model, on_wake_callback, loop, input_rate=16000, input_channels=1)
 
         orig_infer = wake._infer
-        infer_elapsed_total = 0.0
 
         async def counted_infer(*a, **kw):
             nonlocal infer_count, infer_elapsed_total
@@ -159,7 +166,33 @@ async def main() -> None:
 
         wake._infer = counted_infer
 
-    fed_samples = 0
+    elif not args.no_whisper and args.engine == "swift":
+        from swift_wake_stream import SwiftWakeStreamDetector
+
+        loop = asyncio.get_running_loop()
+
+        async def on_wake_callback(user_id: int, first_audio_time: float, text: str) -> None:
+            nonlocal wake_count
+            wake_count += 1
+            t = fed_samples / 16000.0
+            wt = swift_wake.last_wake_t
+            wt_str = f"{wt:.2f}" if wt is not None else "n/a"
+            print(f"[{t:7.2f}s] WAKE text='{text}' wake_t={wt_str}")
+            if args.rearm:
+                swift_wake.rearm(0)
+
+        swift_wake = SwiftWakeStreamDetector(
+            on_wake_callback, loop,
+            wake_matcher=pinyin_wake_match,
+            context_strings=args.swift_context,
+        )
+
+        ready_deadline = time.monotonic() + 30.0
+        while not swift_wake.ready and time.monotonic() < ready_deadline:
+            await asyncio.sleep(0.1)
+        if not swift_wake.ready:
+            print("⚠️ swift 子程序 30s 內未 ready", file=sys.stderr)
+        swift_wake.on_speech_start(0, 0.0)
 
     def on_speech_start(pre_roll: bytes) -> None:
         t = fed_samples / 16000.0
@@ -189,6 +222,9 @@ async def main() -> None:
     n_blocks = (total_samples + BLOCK_SAMPLES - 1) // BLOCK_SAMPLES
     vad_elapsed_total = 0.0
 
+    cpu_self_before = resource.getrusage(resource.RUSAGE_SELF)
+    cpu_children_before = resource.getrusage(resource.RUSAGE_CHILDREN)
+
     t_start = time.perf_counter()
     for i in range(n_blocks):
         if args.realtime:
@@ -204,17 +240,27 @@ async def main() -> None:
 
         t0 = time.perf_counter()
         stream.feed(decoded)
+        if swift_wake is not None:
+            # 跟 PuckMicSession swift 路徑一致：全時餵、不經 VAD
+            swift_wake.push_pcm(0, decoded.tobytes())
         vad_elapsed_total += time.perf_counter() - t0
 
         fed_samples += BLOCK_SAMPLES
 
-        if wake is not None:
+        if wake is not None or swift_wake is not None:
             await asyncio.sleep(0)
 
     if wake is not None:
         pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
+
+    if swift_wake is not None:
+        await asyncio.sleep(3.0)
+        await swift_wake.aclose()
+
+    cpu_self_after = resource.getrusage(resource.RUSAGE_SELF)
+    cpu_children_after = resource.getrusage(resource.RUSAGE_CHILDREN)
 
     stats = stream.stats
     duty = stats["speech_windows"] / stats["windows"] if stats["windows"] else 0.0
@@ -229,7 +275,22 @@ async def main() -> None:
         print(f"wake 次數: {wake_count}")
         avg_infer_s = (infer_elapsed_total / infer_count) if infer_count else 0.0
         print(f"Whisper 平均推理耗時: {avg_infer_s:.2f}s")
+    if swift_wake is not None:
+        print(f"wake 次數: {wake_count}")
     print(f"VAD 每 window 平均耗時: {avg_vad_ms:.2f}ms")
+
+    def _cpu_time(r) -> float:
+        return r.ru_utime + r.ru_stime
+
+    self_cpu = _cpu_time(cpu_self_after) - _cpu_time(cpu_self_before)
+    children_cpu = _cpu_time(cpu_children_after) - _cpu_time(cpu_children_before)
+    per_audio_sec = (self_cpu + children_cpu) / total_duration if total_duration else 0.0
+    print(f"CPU self: {self_cpu:.2f}s  children: {children_cpu:.2f}s  per-audio-sec: {per_audio_sec:.3f}")
+
+    if swift_wake is not None:
+        peak_rss_mb = cpu_children_after.ru_maxrss / (1024 * 1024)
+        print(f"swift peak RSS: {peak_rss_mb:.1f}MB")
+        print(f"swift stats: {swift_wake.stats}")
 
 
 if __name__ == "__main__":

@@ -1620,7 +1620,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
         只在 MARVIN_PUCK_MIC=1 時註冊（見 build_text_app 尾端）。同一 device key
         若已有舊連線，先關掉舊的再接新的（舊 handler 的 finally 自己收尾）。
         """
-        from puck_mic_session import PuckMicSession
+        from puck_mic_session import PuckMicSession, _puck_wake_engine
 
         raw_device = request.query.get("device")
         raw_speaker = request.query.get("speaker")
@@ -1631,7 +1631,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
 
         engine = getattr(getattr(vc, "bot", None), "engine", None)
         model = getattr(engine, "whisper_model", None)
-        if model is None:
+        if model is None and _puck_wake_engine() == "whisper":
             return web.json_response({"error": "no_whisper"}, status=503, headers=_CORS)
 
         ws = web.WebSocketResponse(heartbeat=15.0, max_msg_size=1 << 20)
@@ -1661,7 +1661,14 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
                 if msg.type == web.WSMsgType.BINARY:
                     await session.feed_adpcm(msg.data)
                 elif msg.type == web.WSMsgType.TEXT:
-                    logger.info(f"🎙️ [PuckMic] {key} TEXT: {msg.data[:200]}")
+                    try:
+                        ctl = json.loads(msg.data)
+                    except ValueError:
+                        ctl = None
+                    if isinstance(ctl, dict) and ctl.get("type") == "ptt":
+                        await session.force_wake(str(ctl.get("src") or "button"))
+                    else:
+                        logger.info(f"🎙️ [PuckMic] {key} TEXT: {msg.data[:200]}")
                 elif msg.type == web.WSMsgType.ERROR:
                     break
         finally:

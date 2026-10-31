@@ -91,6 +91,7 @@ def _make_session(*, wake_texts, confirm_stt=None, deliver=None, send_json=None,
         clock=clock or (lambda: 0.0),
         vad=FakeVAD([0.9] * 8 + [0.9] * 24 + [0.1] * 22),
         config=config or PuckMicConfig(),
+        wake_engine="whisper",
     )
     return session, model
 
@@ -409,3 +410,112 @@ async def test_close_during_reply_does_not_cancel_deliver():
     await session.close()
     await asyncio.wait_for(finished.wait(), 1.0)
     assert finished.is_set()
+
+
+# ── PTT 強制喚醒（puck 實體鍵 / 車機暫停鍵 → /mic_ws 文字 {"type":"ptt","src":...}） ──
+
+def _make_ptt_session(*, probs, confirm_stt, deliver=None, send_json=None):
+    loop = asyncio.get_event_loop()
+    session = PuckMicSession(
+        device="test_dev", speaker="狗與露", whisper_model=FakeWhisperModel([]), loop=loop,
+        send_json=send_json or AsyncMock(),
+        confirm_stt=confirm_stt,
+        deliver=deliver or AsyncMock(),
+        tts_frames_total=lambda: 0,
+        clock=lambda: 0.0,
+        vad=FakeVAD(probs),
+        config=PuckMicConfig(),
+        wake_engine="whisper",
+    )
+    return session
+
+
+@pytest.mark.asyncio
+async def test_ptt_button_skips_wake_requirement():
+    send_json, deliver = AsyncMock(), AsyncMock()
+    session = _make_ptt_session(probs=[0.9] * 32 + [0.1] * 22,
+                                confirm_stt=AsyncMock(return_value="下一首"),
+                                deliver=deliver, send_json=send_json)
+    encoder = ImaAdpcmEncoder()
+
+    await session.force_wake("button")
+    assert session.state == "capture"
+    send_json.assert_awaited_with({"type": "duck"})
+
+    await _feed_n(session, encoder, 32 + 22)
+    await _flush()
+
+    deliver.assert_awaited_once_with("狗與露", "馬文，下一首")
+    assert session.stats["ptt"] == 1
+    assert session.stats["candidates"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ptt_pause_still_requires_wake_word():
+    send_json, deliver = AsyncMock(), AsyncMock()
+    session = _make_ptt_session(probs=[0.9] * 32 + [0.1] * 22,
+                                confirm_stt=AsyncMock(return_value="下一首"),
+                                deliver=deliver, send_json=send_json)
+    encoder = ImaAdpcmEncoder()
+
+    await session.force_wake("pause")
+    await _feed_n(session, encoder, 32 + 22)
+    await _flush()
+
+    deliver.assert_not_awaited()
+    send_json.assert_awaited_with({"type": "unduck"})
+    assert session.state == "listen"
+
+
+@pytest.mark.asyncio
+async def test_ptt_button_empty_stt_rejected():
+    deliver = AsyncMock()
+    session = _make_ptt_session(probs=[0.9] * 32 + [0.1] * 22,
+                                confirm_stt=AsyncMock(return_value="  "), deliver=deliver)
+    encoder = ImaAdpcmEncoder()
+
+    await session.force_wake("button")
+    await _feed_n(session, encoder, 32 + 22)
+    await _flush()
+
+    deliver.assert_not_awaited()
+    assert session.state == "listen"
+
+
+@pytest.mark.asyncio
+async def test_ptt_during_ongoing_segment_ignores_that_segments_end():
+    confirm_stt = AsyncMock(return_value="下一首")
+    # 先 10 個高機率 window（VAD 已進 speech），按 PTT，再 22 個低機率 → 那段結束
+    session = _make_ptt_session(probs=[0.9] * 10 + [0.1] * 400, confirm_stt=confirm_stt)
+    encoder = ImaAdpcmEncoder()
+
+    await _feed_n(session, encoder, 10)
+    await session.force_wake("button")
+    await _feed_n(session, encoder, 22)
+    await _flush()
+    assert session.state == "capture"      # 按下前就開始的段落，結尾不算指令結尾
+    confirm_stt.assert_not_awaited()
+
+    # 撐到 capture_max_s（6s = 188 個 block）才收尾
+    await _feed_n(session, encoder, 190)
+    await _flush()
+    confirm_stt.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ptt_ignored_when_not_listening():
+    session = _make_ptt_session(probs=[], confirm_stt=AsyncMock(return_value=""))
+    await session.force_wake("button")
+    assert session.state == "capture"
+    await session.force_wake("button")
+    assert session.stats["ptt"] == 1
+
+
+def test_wake_engine_defaults_to_swift(monkeypatch):
+    from puck_mic_session import _puck_wake_engine
+    monkeypatch.delenv("MARVIN_PUCK_WAKE_ENGINE", raising=False)
+    assert _puck_wake_engine() == "swift"
+    monkeypatch.setenv("MARVIN_PUCK_WAKE_ENGINE", "whisper")
+    assert _puck_wake_engine() == "whisper"
+    monkeypatch.setenv("MARVIN_PUCK_WAKE_ENGINE", "bogus")
+    assert _puck_wake_engine() == "swift"

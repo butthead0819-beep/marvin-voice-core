@@ -13,6 +13,7 @@ import asyncio
 import io
 import logging
 import math
+import os
 import time
 import wave
 from collections import deque
@@ -24,11 +25,23 @@ from marvin_voice_core.icy_meta import SpeakTracker
 from puck_vad_stream import PuckVADStream
 from puck_wake import pinyin_wake_match, strip_through_wake
 from silero_stream_vad import SileroStreamVAD
+from swift_wake_stream import SwiftWakeStreamDetector
 from wake_stream_detector import WakeStreamDetector
 
 logger = logging.getLogger(__name__)
 
 _SAMPLE_RATE = 16000
+
+
+def _puck_wake_engine() -> str:
+    """車 HTTP 層（car_http_app.py 的 handle_mic_ws）跟 PuckMicSession 共用同一個
+    判斷，決定要不要擋「whisper_model is None → 503」。"""
+    # 2026-10-31 預設 swift：重播對比 mix 3/3 vs Whisper 2/3、CPU ~2% vs 27–40%
+    engine = os.environ.get("MARVIN_PUCK_WAKE_ENGINE", "swift").strip().lower()
+    if engine not in ("whisper", "swift"):
+        logger.warning(f"🎙️ [PuckMic] 未知 MARVIN_PUCK_WAKE_ENGINE={engine!r}，當作 swift")
+        return "swift"
+    return engine
 
 
 @dataclass
@@ -41,6 +54,7 @@ class PuckMicConfig:
     unduck_cap_s: float = 30.0      # 送出指令後最長壓低時間
     stats_interval_s: float = 60.0
     ring_s: float = 3.0             # 原始 PCM ring buffer 長度（要 >= capture_pre_s）
+    ptt_pre_s: float = 0.3          # PTT 強制喚醒：按下前只取這麼多（按了才開口，前面多半是音樂）
 
 
 def _build_wav(pcm_bytes: bytes) -> bytes:
@@ -61,7 +75,8 @@ class PuckMicSession:
                  tts_frames_total: Callable[[], int],
                  clock=time.monotonic,
                  vad=None,
-                 config: Optional[PuckMicConfig] = None):
+                 config: Optional[PuckMicConfig] = None,
+                 wake_engine: Optional[str] = None):
         self.device = device
         self.speaker = speaker
         self.send_json = send_json
@@ -72,24 +87,39 @@ class PuckMicSession:
         self.config = config or PuckMicConfig()
         self._loop = loop
 
-        self._wake = WakeStreamDetector(
-            whisper_model, self._on_wake, loop,
-            input_rate=_SAMPLE_RATE, input_channels=1,
-            initial_prompt=None, temperature=0.0,
-            window_s=1.0, stride_s=0.25,
-            wake_matcher=lambda t: pinyin_wake_match(t) is not None,
-            contiguous=True,
-            log_text=False,
-        )
-        orig_infer = self._wake._infer
+        self._wake_engine = wake_engine if wake_engine is not None else _puck_wake_engine()
+        if self._wake_engine not in ("whisper", "swift"):
+            logger.warning(f"🎙️ [PuckMic] 未知 wake_engine={self._wake_engine!r}，當作 swift")
+            self._wake_engine = "swift"
 
-        async def _counted_infer(*a, **kw):
-            self._infer_count += 1
-            t0 = self.clock()
-            await orig_infer(*a, **kw)
-            self._infer_elapsed_total += self.clock() - t0
+        if self._wake_engine == "swift":
+            self._wake = SwiftWakeStreamDetector(
+                self._on_wake, loop,
+                wake_matcher=pinyin_wake_match,
+                log_text=False,
+            )
+            # 全時餵（不經 VAD）：CPU ~2%（推論不在 CPU 上），且 VAD 段落開頭的喚醒詞
+            # 不會被切掉（2026-10-31 mix.wav：VAD 閘控 1/3、全時 3/3）。只 arm 一次。
+            self._wake.on_speech_start(0, 0.0)
+        else:
+            self._wake = WakeStreamDetector(
+                whisper_model, self._on_wake, loop,
+                input_rate=_SAMPLE_RATE, input_channels=1,
+                initial_prompt=None, temperature=0.0,
+                window_s=1.0, stride_s=0.25,
+                wake_matcher=lambda t: pinyin_wake_match(t) is not None,
+                contiguous=True,
+                log_text=False,
+            )
+            orig_infer = self._wake._infer
 
-        self._wake._infer = _counted_infer
+            async def _counted_infer(*a, **kw):
+                self._infer_count += 1
+                t0 = self.clock()
+                await orig_infer(*a, **kw)
+                self._infer_elapsed_total += self.clock() - t0
+
+            self._wake._infer = _counted_infer
 
         self._vad_stream = PuckVADStream(
             vad if vad is not None else SileroStreamVAD(),
@@ -121,6 +151,10 @@ class PuckMicSession:
         self._candidates = 0
         self._confirmed = 0
         self._rejected = 0
+        self._ptt = 0
+        self._require_wake = True     # confirm 時 STT 文字必須含喚醒詞（PTT button 例外）
+        self._ptt_capture = False
+        self._ptt_saw_start = False
         self._infer_count = 0
         self._infer_elapsed_total = 0.0
 
@@ -134,16 +168,22 @@ class PuckMicSession:
     def stats(self) -> dict:
         vs = self._vad_stream.stats
         duty = vs["speech_windows"] / vs["windows"] if vs["windows"] else 0.0
-        mean_infer_ms = (self._infer_elapsed_total / self._infer_count * 1000) if self._infer_count else 0.0
+        if self._wake_engine == "swift":
+            infers = self._wake.stats["results"]
+            mean_infer_ms = 0.0
+        else:
+            infers = self._infer_count
+            mean_infer_ms = (self._infer_elapsed_total / self._infer_count * 1000) if self._infer_count else 0.0
         return {
             "windows": vs["windows"],
             "speech_windows": vs["speech_windows"],
             "duty": duty,
-            "infers": self._infer_count,
+            "infers": infers,
             "mean_infer_ms": mean_infer_ms,
             "candidates": self._candidates,
             "confirmed": self._confirmed,
             "rejected": self._rejected,
+            "ptt": self._ptt,
         }
 
     # ── 進音訊 ──────────────────────────────────────────────────────────────
@@ -165,6 +205,8 @@ class PuckMicSession:
             pcm_bytes = pcm.tobytes()
 
             self._ring.append(pcm_bytes)
+            if self._wake_engine == "swift" and not self._suppressed:
+                self._wake.push_pcm(0, pcm_bytes)
             if self._state == "capture":
                 self._capture_buf.append(pcm_bytes)
 
@@ -213,15 +255,23 @@ class PuckMicSession:
     # ── PuckVADStream 回呼 ──────────────────────────────────────────────────
 
     def _vad_on_speech_start(self, pre_roll: bytes) -> None:
+        if self._state == "capture":
+            self._ptt_saw_start = True
+        if self._wake_engine == "swift":
+            return
         audio_time = self._samples_fed / _SAMPLE_RATE
         self._wake.on_speech_start(0, audio_time, pre_roll)
 
     def _vad_on_pcm(self, pcm: bytes) -> None:
-        self._wake.push_pcm(0, pcm)
+        if self._wake_engine == "whisper":
+            self._wake.push_pcm(0, pcm)
 
     def _vad_on_speech_end(self, seg: bytes, reason: str) -> None:
-        self._wake.on_speech_end(0)
-        if self._state == "capture":
+        if self._wake_engine == "whisper":
+            self._wake.on_speech_end(0)
+        # PTT 按下時若 VAD 已在一段話/音樂中，那段的結尾不是使用者指令的結尾：
+        # 要等按下後的新段落開始過，才讓 speech_end 收尾（否則撐到 capture_max_s）
+        if self._state == "capture" and (not self._ptt_capture or self._ptt_saw_start):
             self._finish_capture(reason)
 
     # ── WakeStreamDetector 回呼 ─────────────────────────────────────────────
@@ -231,13 +281,32 @@ class PuckMicSession:
             return
 
         self._candidates += 1
+        self._require_wake = True
+        self._ptt_capture = False
+        logger.info(f"🎙️ [PuckMic] {self.device} 候選喚醒")
+        await self._begin_capture(self.config.capture_pre_s)
+
+    async def force_wake(self, src: str) -> None:
+        """puck PTT 強制喚醒：跳過候選喚醒直接收音。
+
+        src="button"（實體鍵）：confirm 不要求喚醒詞。其他（"pause"＝車機暫停鍵，
+        來電/切音源也會送）：照常要求 STT 文字含喚醒詞，不是喚醒詞就丟棄。
+        """
+        if self._state != "listen":
+            return
+        self._ptt += 1
+        self._require_wake = src != "button"
+        self._ptt_capture = True
+        self._ptt_saw_start = False
+        logger.info(f"🎙️ [PuckMic] {self.device} PTT 強制喚醒（{src}）")
+        await self._begin_capture(self.config.ptt_pre_s)
+
+    async def _begin_capture(self, pre_s: float) -> None:
         self._state = "capture"
 
-        pre_roll_blocks = math.ceil(self.config.capture_pre_s * _SAMPLE_RATE / BLOCK_SAMPLES)
+        pre_roll_blocks = math.ceil(pre_s * _SAMPLE_RATE / BLOCK_SAMPLES)
         self._capture_buf = list(self._ring)[-pre_roll_blocks:] if pre_roll_blocks else []
         self._capture_deadline = self._samples_fed + self.config.capture_max_s * _SAMPLE_RATE
-
-        logger.info(f"🎙️ [PuckMic] {self.device} 候選喚醒")
 
         try:
             await self.send_json({"type": "duck"})
@@ -260,7 +329,8 @@ class PuckMicSession:
             logger.warning(f"🎙️ [PuckMic] {self.device} confirm_stt 失敗: {e}")
             text = ""
 
-        if pinyin_wake_match(text) is None:
+        has_wake = pinyin_wake_match(text) is not None
+        if (self._require_wake and not has_wake) or not text.strip():
             self._rejected += 1
             logger.info(f"🎙️ [PuckMic] {self.device} 否決（STT 無喚醒詞）")
             await self._unduck("rejected")
@@ -313,3 +383,5 @@ class PuckMicSession:
                 pass
             self._ducked = False
         self._wake.cleanup()
+        if hasattr(self._wake, "aclose"):
+            await self._wake.aclose()
