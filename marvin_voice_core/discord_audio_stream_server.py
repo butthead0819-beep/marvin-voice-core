@@ -64,6 +64,10 @@ class PacedSilenceFillQueue:
     剩 ~0.35s 完全沒幀。SilenceFillQueue(timeout_s=1.0) 等不滿 1s 不補 → 每次換歌 iPhone
     少收 ~0.35s，緩衝一路流失直到斷流（2026-10-31 實測每分鐘流失 ~0.05s）。
     head_start_frames：subscribe 時預塞的 preroll 幀數（刻意超前的墊，不算追平）。
+
+    反方向：補了靜音後晚到的幀會讓串流超前牆鐘，且只增不減（手機實測 1.6h 緩衝漲到 2.3s）。
+    超前超過 max_lag_s 時丟掉佇列裡的純靜音幀（換歌空檔的 grace 靜音就夠吸收）；
+    音樂幀再超前也不丟。
     """
 
     _FRAME_S = 0.02
@@ -78,6 +82,7 @@ class PacedSilenceFillQueue:
         self._clock = clock or (lambda: asyncio.get_running_loop().time())
         self._t0: float | None = None
         self._sent_frames = 0.0
+        self._zero_frame = b"\x00" * frame_bytes
 
     def _lag_s(self) -> float:
         expected = self._head_start + (self._clock() - self._t0) / self._FRAME_S
@@ -96,15 +101,20 @@ class PacedSilenceFillQueue:
     async def get(self) -> bytes | None:
         if self._t0 is None:
             self._t0 = self._clock()
-        if not self._q.empty():
-            return self._take(self._q.get_nowait())
-        lag = self._lag_s()
-        if lag >= self._max_lag_s:
-            return self._silence()
-        try:
-            return self._take(await asyncio.wait_for(self._q.get(), self._max_lag_s - lag))
-        except asyncio.TimeoutError:
-            return self._silence()
+        while True:
+            if self._q.empty():
+                lag = self._lag_s()
+                if lag >= self._max_lag_s:
+                    return self._silence()
+                try:
+                    item = await asyncio.wait_for(self._q.get(), self._max_lag_s - lag)
+                except asyncio.TimeoutError:
+                    return self._silence()
+            else:
+                item = self._q.get_nowait()
+            if item == self._zero_frame and -self._lag_s() >= self._max_lag_s:
+                continue   # 超前時丟純靜音幀
+            return self._take(item)
 
 
 def build_app(stream_source, *, token: str | None) -> web.Application:

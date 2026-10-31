@@ -105,3 +105,35 @@ def test_ios_uses_paced_queue_others_unchanged():
     assert isinstance(stream_fill_queue({"icy": "0"}, q, preroll=25, frame_bytes=FRAME), PacedSilenceFillQueue)
     other = stream_fill_queue({}, q, preroll=0, frame_bytes=FRAME)
     assert type(other) is SilenceFillQueue
+
+
+# ---------------------------------------------------------------------------
+# 超前時丟純靜音（補了靜音後晚到的幀會讓串流超前牆鐘；2026-10-31 手機實測 1.6h 緩衝漲到 2.3s）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ahead_drops_silence_frames_only_down_to_tolerance():
+    from marvin_voice_core.discord_audio_stream_server import PacedSilenceFillQueue
+
+    q: asyncio.Queue = asyncio.Queue()
+    for _ in range(40):  # 一次到 0.8s 純靜音（模擬換歌空檔的 grace 靜音晚到成一坨）
+        q.put_nowait(b"\x00" * FRAME)
+    fq = PacedSilenceFillQueue(q, frame_bytes=FRAME, max_lag_s=0.25)
+    t0 = time.monotonic()
+    got = await _drain_for(fq, 0.1)
+    elapsed = time.monotonic() - t0
+    delivered_s = sum(len(b) for b in got) / FRAME * 0.02
+    assert delivered_s <= elapsed + 0.25 + 0.03, "超前超過門檻還在送靜音"
+    assert delivered_s >= 0.2
+
+
+@pytest.mark.asyncio
+async def test_ahead_never_drops_music():
+    from marvin_voice_core.discord_audio_stream_server import PacedSilenceFillQueue
+
+    q: asyncio.Queue = asyncio.Queue()
+    for _ in range(40):  # 0.8s 音樂一次到：再超前也一幀都不能丟
+        q.put_nowait(_frame())
+    fq = PacedSilenceFillQueue(q, frame_bytes=FRAME, max_lag_s=0.25)
+    got = await _drain_for(fq, 0.1)
+    assert got.count(_frame()) == 40
