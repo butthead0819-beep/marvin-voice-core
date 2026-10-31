@@ -14,11 +14,16 @@ WakeStreamDetector — P3 聲學層實時喚醒詞偵測器。
   push_pcm(user_id, pcm_48k_stereo)          ← 每幀 20ms
   on_speech_end(user_id)                      ← VAD 切斷 / flush
   cleanup()                                   ← Sink 清理
+
+16k mono 用法（puck 全時收音路徑）：
+  建構時傳 input_rate=16000, input_channels=1，push_pcm 直接餵 16k mono
+  PCM bytes 即可，不需降採樣或 reshape。
 """
 
 import asyncio
 import numpy as np
 import logging
+from typing import Callable, Optional
 from utils import check_cleaned_text_for_wake, is_whisper_hallucination
 
 logger = logging.getLogger(__name__)
@@ -33,6 +38,8 @@ _STRIDE_S = 0.25
 _WINDOW_BYTES = int(_WINDOW_S * _DISCORD_RATE * 2 * 2)   # 2ch × 2B = 192000 bytes
 _STRIDE_BYTES = int(_STRIDE_S * _DISCORD_RATE * 2 * 2)   # = 96000 bytes
 
+_WAKE_PROMPT = "嗨馬文,馬文,艾馬文,Marvin,Hi Marvin"
+
 
 class WakeStreamDetector:
     """
@@ -42,11 +49,35 @@ class WakeStreamDetector:
     偵測到喚醒詞立刻回呼，完全不等 VAD 靜音。
     """
 
-    def __init__(self, whisper_model, on_wake_callback, loop: asyncio.AbstractEventLoop):
+    def __init__(self, whisper_model, on_wake_callback, loop: asyncio.AbstractEventLoop,
+                 input_rate: int = 48000, input_channels: int = 2,
+                 initial_prompt: Optional[str] = _WAKE_PROMPT,
+                 temperature: Optional[float] = None,
+                 window_s: float = _WINDOW_S,
+                 stride_s: float = _STRIDE_S,
+                 wake_matcher: Optional[Callable[[str], bool]] = None,
+                 contiguous: bool = False,
+                 log_text: bool = True):
         self.model = whisper_model
         # async (user_id: int, first_audio_time: float, text: str) -> None
         self.on_wake_callback = on_wake_callback
         self.loop = loop
+        self.initial_prompt = initial_prompt
+        self.temperature = temperature
+        self.wake_matcher = wake_matcher if wake_matcher is not None else check_cleaned_text_for_wake
+        # contiguous=True：推理中照樣累積 PCM（只是不另排推理），窗口才是連續音訊。
+        # 推理耗時接近 stride 時（puck 1s 窗 ~0.2s），舊行為會丟掉大半音訊、窗口變拼貼。
+        self.contiguous = contiguous
+        # log_text=False：命中時不把辨識文字寫進 log（puck 全時收音：候選可能是車內閒聊）
+        self.log_text = log_text
+
+        if input_rate % 16000 != 0:
+            raise ValueError(f"input_rate 必須是 16000 的整數倍，got {input_rate}")
+        self.input_rate = input_rate
+        self.input_channels = input_channels
+        self._downsample = input_rate // 16000
+        self._window_bytes = int(window_s * input_rate * input_channels * 2)
+        self._stride_bytes = int(stride_s * input_rate * input_channels * 2)
 
         self._buffers: dict[int, bytearray] = {}
         self._first_audio_time: dict[int, float] = {}
@@ -67,8 +98,11 @@ class WakeStreamDetector:
     def push_pcm(self, user_id: int, pcm_48k_stereo: bytes) -> None:
         """每幀 PCM（20ms）進來時呼叫，負責觸發推理窗口。"""
         if (user_id not in self._buffers
-                or self._fired.get(user_id)
-                or self._inflight.get(user_id)):
+                or self._fired.get(user_id)):
+            return
+        if self._inflight.get(user_id):
+            if self.contiguous:
+                self._buffers[user_id].extend(pcm_48k_stereo)
             return
 
         buf = self._buffers[user_id]
@@ -76,10 +110,10 @@ class WakeStreamDetector:
         n = len(buf)
 
         # 等到緩衝達 window 大小，且新累積了 stride 的量才觸發
-        if n >= _WINDOW_BYTES and (n - self._bytes_at_last_infer.get(user_id, 0)) >= _STRIDE_BYTES:
+        if n >= self._window_bytes and (n - self._bytes_at_last_infer.get(user_id, 0)) >= self._stride_bytes:
             self._bytes_at_last_infer[user_id] = n
             self._inflight[user_id] = True
-            snapshot = bytes(buf[-_WINDOW_BYTES:])
+            snapshot = bytes(buf[-self._window_bytes:])
             first_t = self._first_audio_time[user_id]
             self.loop.create_task(self._infer(user_id, snapshot, first_t))
 
@@ -88,6 +122,13 @@ class WakeStreamDetector:
         for d in (self._buffers, self._first_audio_time,
                   self._bytes_at_last_infer, self._fired, self._inflight):
             d.pop(user_id, None)
+
+    def rearm(self, user_id) -> None:
+        """候選喚醒被上層否決後重新武裝，同一段 buffer 繼續偵測下一次候選。"""
+        if user_id not in self._buffers:
+            return
+        self._fired[user_id] = False
+        self._bytes_at_last_infer[user_id] = len(self._buffers[user_id])
 
     def cleanup(self) -> None:
         """Sink 完整清理時呼叫。"""
@@ -98,34 +139,42 @@ class WakeStreamDetector:
 
     async def _infer(self, user_id: int, pcm_48k_stereo: bytes, first_audio_time: float) -> None:
         try:
-            # 48k stereo int16 → 16k mono float32
-            # reshape → mean across channels → 每 3 個取 1（降採樣 3:1）→ 正規化
-            arr = np.frombuffer(pcm_48k_stereo, dtype=np.int16).reshape(-1, 2)
-            mono_16k = arr.mean(axis=1)[::_DOWNSAMPLE].astype(np.float32) / 32768.0
+            # input_channels>=2：reshape → mean across channels；channels==1：直接用
+            # 再依 self._downsample 抽取 → 16k mono → 正規化
+            arr = np.frombuffer(pcm_48k_stereo, dtype=np.int16)
+            if self.input_channels == 2:
+                mono = arr.reshape(-1, 2).mean(axis=1)
+            else:
+                mono = arr
+            mono_16k = mono[::self._downsample].astype(np.float32) / 32768.0
 
             # faster-whisper.transcribe() 回傳 lazy generator，必須在 thread 內完成
             # iteration，否則 generate_segments() 會在事件迴圈主執行緒跑，阻塞心跳。
             _model = self.model
             def _transcribe_eager():
-                segs, _ = _model.transcribe(
-                    mono_16k,
+                kwargs = dict(
                     beam_size=1,
                     language="zh",
                     vad_filter=False,
-                    initial_prompt="嗨馬文,馬文,艾馬文,Marvin,Hi Marvin",
+                    initial_prompt=self.initial_prompt,
                 )
+                if self.temperature is not None:
+                    kwargs["temperature"] = self.temperature
+                segs, _ = _model.transcribe(mono_16k, **kwargs)
                 return "".join(s.text for s in segs).strip()
 
             text = await asyncio.to_thread(_transcribe_eager)
 
-            _wake_prompt = "嗨馬文,馬文,艾馬文,Marvin,Hi Marvin"
-            if text and is_whisper_hallucination(text, _wake_prompt):
+            if text and self.initial_prompt is not None and is_whisper_hallucination(text, self.initial_prompt):
                 logger.warning(f"⚠️ [WakeStream] User_{user_id} 幻覺丟棄: '{text[:60]}'")
                 text = ""
 
-            if text and check_cleaned_text_for_wake(text) and not self._fired.get(user_id):
+            if text and self.wake_matcher(text) and not self._fired.get(user_id):
                 self._fired[user_id] = True
-                logger.info(f"🎯 [WakeStream] User_{user_id} → '{text}'")
+                if self.log_text:
+                    logger.info(f"🎯 [WakeStream] User_{user_id} → '{text}'")
+                else:
+                    logger.info(f"🎯 [WakeStream] User_{user_id} 候選命中")
                 await self.on_wake_callback(user_id, first_audio_time, text)
 
         except Exception as e:
