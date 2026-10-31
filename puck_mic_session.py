@@ -55,6 +55,7 @@ class PuckMicConfig:
     stats_interval_s: float = 60.0
     ring_s: float = 3.0             # 原始 PCM ring buffer 長度（要 >= capture_pre_s）
     ptt_pre_s: float = 0.3          # PTT 強制喚醒：按下前只取這麼多（按了才開口，前面多半是音樂）
+    wake_pause_wait_s: float = 5.0  # 只喊了喚醒詞（停下來等 ack）→ 最多等這麼久讓使用者開口
     face_speak_delay_s: float = 2.5  # 臉部「speak」狀態延後送：iPhone 播放延遲，車上實測再調
 
 
@@ -158,8 +159,10 @@ class PuckMicSession:
         self._rejected = 0
         self._ptt = 0
         self._require_wake = True     # confirm 時 STT 文字必須含喚醒詞（PTT button 例外）
-        self._ptt_capture = False
-        self._ptt_saw_start = False
+        # 收音要等「新的一段話」開始才准 speech_end 收尾（PTT、或喚醒詞後停頓等 ack）
+        self._need_new_segment = False
+        self._saw_new_segment = False
+        self._wait_deadline = 0.0
         self._infer_count = 0
         self._infer_elapsed_total = 0.0
 
@@ -220,6 +223,9 @@ class PuckMicSession:
 
             if self._state == "capture" and self._samples_fed >= self._capture_deadline:
                 self._finish_capture("max")
+            elif (self._state == "capture" and self._need_new_segment and not self._saw_new_segment
+                    and self._samples_fed >= self._wait_deadline):
+                self._finish_capture("no_cmd")
 
         await self._post_block_checks()
 
@@ -289,8 +295,10 @@ class PuckMicSession:
     # ── PuckVADStream 回呼 ──────────────────────────────────────────────────
 
     def _vad_on_speech_start(self, pre_roll: bytes) -> None:
-        if self._state == "capture":
-            self._ptt_saw_start = True
+        if self._state == "capture" and self._need_new_segment and not self._saw_new_segment:
+            self._saw_new_segment = True
+            # 指令從這裡才開始：收音上限從現在重算
+            self._capture_deadline = self._samples_fed + self.config.capture_max_s * _SAMPLE_RATE
         if self._wake_engine == "swift":
             return
         audio_time = self._samples_fed / _SAMPLE_RATE
@@ -303,9 +311,9 @@ class PuckMicSession:
     def _vad_on_speech_end(self, seg: bytes, reason: str) -> None:
         if self._wake_engine == "whisper":
             self._wake.on_speech_end(0)
-        # PTT 按下時若 VAD 已在一段話/音樂中，那段的結尾不是使用者指令的結尾：
-        # 要等按下後的新段落開始過，才讓 speech_end 收尾（否則撐到 capture_max_s）
-        if self._state == "capture" and (not self._ptt_capture or self._ptt_saw_start):
+        # PTT 按下前就開始的段落、或「嘿馬文」喊完那段，結尾都不是指令的結尾：
+        # 要等新段落開始過，才讓 speech_end 收尾（否則等到 _wait_deadline / capture_max_s）
+        if self._state == "capture" and (not self._need_new_segment or self._saw_new_segment):
             self._finish_capture(reason)
 
     # ── WakeStreamDetector 回呼 ─────────────────────────────────────────────
@@ -316,9 +324,12 @@ class PuckMicSession:
 
         self._candidates += 1
         self._require_wake = True
-        self._ptt_capture = False
-        logger.info(f"🎙️ [PuckMic] {self.device} 候選喚醒")
-        await self._begin_capture(self.config.capture_pre_s)
+        # 候選文字喚醒詞後面已經有內容＝一口氣講下去，照常這段結尾就收；
+        # 只有喚醒詞＝使用者停下來等 ack，要等下一段話（最多 wake_pause_wait_s）
+        paused = not strip_through_wake(text)
+        logger.info(f"🎙️ [PuckMic] {self.device} 候選喚醒{'（等指令）' if paused else ''}")
+        await self._begin_capture(self.config.capture_pre_s, need_new_segment=paused,
+                                  wait_s=self.config.wake_pause_wait_s)
 
     async def force_wake(self, src: str) -> None:
         """puck PTT 強制喚醒：跳過候選喚醒直接收音。
@@ -330,13 +341,15 @@ class PuckMicSession:
             return
         self._ptt += 1
         self._require_wake = src != "button"
-        self._ptt_capture = True
-        self._ptt_saw_start = False
         logger.info(f"🎙️ [PuckMic] {self.device} PTT 強制喚醒（{src}）")
-        await self._begin_capture(self.config.ptt_pre_s)
+        await self._begin_capture(self.config.ptt_pre_s, need_new_segment=True,
+                                  wait_s=self.config.capture_max_s)
 
-    async def _begin_capture(self, pre_s: float) -> None:
+    async def _begin_capture(self, pre_s: float, *, need_new_segment: bool, wait_s: float) -> None:
         self._state = "capture"
+        self._need_new_segment = need_new_segment
+        self._saw_new_segment = False
+        self._wait_deadline = self._samples_fed + wait_s * _SAMPLE_RATE
 
         pre_roll_blocks = math.ceil(pre_s * _SAMPLE_RATE / BLOCK_SAMPLES)
         self._capture_buf = list(self._ring)[-pre_roll_blocks:] if pre_roll_blocks else []

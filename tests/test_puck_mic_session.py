@@ -106,7 +106,7 @@ def _make_session(*, wake_texts, confirm_stt=None, deliver=None, send_json=None,
 async def test_candidate_wake_ducks_and_captures_wav():
     send_json = AsyncMock()
     confirm_stt = AsyncMock(return_value="")
-    session, model = _make_session(wake_texts=["馬文"], send_json=send_json, confirm_stt=confirm_stt)
+    session, model = _make_session(wake_texts=["馬文下一首"], send_json=send_json, confirm_stt=confirm_stt)
     encoder = ImaAdpcmEncoder()
 
     # 8 候選 + 24 延續 = 32 個高機率 window 後第一次 Whisper 推理觸發（見檔頭說明）。
@@ -137,7 +137,7 @@ async def test_confirm_hit_delivers_stripped_command():
     deliver = AsyncMock()
     confirm_stt = AsyncMock(return_value="黑馬威下一首")
     session, model = _make_session(
-        wake_texts=["馬文"], confirm_stt=confirm_stt, deliver=deliver)
+        wake_texts=["馬文下一首"], confirm_stt=confirm_stt, deliver=deliver)
     encoder = ImaAdpcmEncoder()
 
     await _feed_n(session, encoder, 32, value=1000)
@@ -163,7 +163,7 @@ async def test_confirm_reject_unducks_and_rearms_same_segment():
     # 才能驗證「同一段語音 rearm 後再出候選」。
     config = PuckMicConfig(capture_max_s=0.1)
     session, model = _make_session(
-        wake_texts=["馬文", "馬文"], send_json=send_json, confirm_stt=confirm_stt,
+        wake_texts=["馬文下一首", "馬文下一首"], send_json=send_json, confirm_stt=confirm_stt,
         deliver=deliver, config=config)
     encoder = ImaAdpcmEncoder()
 
@@ -193,7 +193,7 @@ async def test_confirm_reject_unducks_and_rearms_same_segment():
 async def test_capture_max_deadline_finishes_even_without_vad_silence():
     confirm_stt = AsyncMock(return_value="")
     config = PuckMicConfig(capture_max_s=0.1)
-    session, model = _make_session(wake_texts=["馬文"], confirm_stt=confirm_stt, config=config)
+    session, model = _make_session(wake_texts=["馬文下一首"], confirm_stt=confirm_stt, config=config)
     encoder = ImaAdpcmEncoder()
 
     await _feed_n(session, encoder, 32, value=1000)
@@ -220,7 +220,7 @@ async def test_reply_unducks_after_speak_then_idle(caplog):
     config = PuckMicConfig()
     confirm_stt = AsyncMock(return_value="黑馬威下一首")
     session, model = _make_session(
-        wake_texts=["馬文"], send_json=send_json, confirm_stt=confirm_stt,
+        wake_texts=["馬文下一首"], send_json=send_json, confirm_stt=confirm_stt,
         tts_frames_total=lambda: frames["v"], clock=clock, config=config)
     encoder = ImaAdpcmEncoder()
 
@@ -271,7 +271,7 @@ async def test_reply_unducks_on_no_reply_timeout(caplog):
     config = PuckMicConfig()
     confirm_stt = AsyncMock(return_value="黑馬威下一首")
     session, model = _make_session(
-        wake_texts=["馬文"], send_json=send_json, confirm_stt=confirm_stt,
+        wake_texts=["馬文下一首"], send_json=send_json, confirm_stt=confirm_stt,
         tts_frames_total=lambda: 0, clock=clock, config=config)
     encoder = ImaAdpcmEncoder()
 
@@ -350,7 +350,7 @@ async def test_close_sends_unduck_and_cancels_confirm_task():
 
     config = PuckMicConfig(capture_max_s=0.1)
     session, model = _make_session(
-        wake_texts=["馬文"], send_json=send_json, confirm_stt=_never_returns, config=config)
+        wake_texts=["馬文下一首"], send_json=send_json, confirm_stt=_never_returns, config=config)
     encoder = ImaAdpcmEncoder()
 
     await _feed_n(session, encoder, 32, value=1000)
@@ -403,7 +403,7 @@ async def test_close_during_reply_does_not_cancel_deliver():
 
     confirm_stt = AsyncMock(return_value="黑馬威下一首")
     session, model = _make_session(
-        wake_texts=["馬文"], confirm_stt=confirm_stt, deliver=_slow_deliver)
+        wake_texts=["馬文下一首"], confirm_stt=confirm_stt, deliver=_slow_deliver)
     encoder = ImaAdpcmEncoder()
 
     await _feed_n(session, encoder, 32, value=1000)
@@ -548,7 +548,7 @@ async def test_face_tracks_listen_think_idle_on_reject():
     send_json = AsyncMock()
     confirm_stt = AsyncMock(return_value="大家好")
     session, model = _make_session(
-        wake_texts=["馬文"], send_json=send_json, confirm_stt=confirm_stt)
+        wake_texts=["馬文下一首"], send_json=send_json, confirm_stt=confirm_stt)
     encoder = ImaAdpcmEncoder()
 
     await _feed_n(session, encoder, 32, value=1000)
@@ -578,7 +578,7 @@ async def test_face_reply_delays_speak_then_idle_after_unduck():
     config = PuckMicConfig()
     confirm_stt = AsyncMock(return_value="黑馬威下一首")
     session, model = _make_session(
-        wake_texts=["馬文"], send_json=send_json, confirm_stt=confirm_stt,
+        wake_texts=["馬文下一首"], send_json=send_json, confirm_stt=confirm_stt,
         tts_frames_total=lambda: frames["v"], clock=clock, config=config)
     encoder = ImaAdpcmEncoder()
 
@@ -652,7 +652,7 @@ async def test_face_send_failure_does_not_break_main_flow():
     deliver = AsyncMock()
     confirm_stt = AsyncMock(return_value="黑馬威下一首")
     session, model = _make_session(
-        wake_texts=["馬文"], send_json=send_json, confirm_stt=confirm_stt, deliver=deliver)
+        wake_texts=["馬文下一首"], send_json=send_json, confirm_stt=confirm_stt, deliver=deliver)
     encoder = ImaAdpcmEncoder()
 
     await _feed_n(session, encoder, 32, value=1000)
@@ -665,3 +665,53 @@ async def test_face_send_failure_does_not_break_main_flow():
 
     deliver.assert_awaited_once_with("狗與露", "馬文，下一首")
     assert session.state == "reply"
+
+
+# ── 「嘿馬文」喊完停下來等 ack，再說指令：那段的 speech_end 不能收尾 ─────────────
+
+def _make_paused_session(probs, confirm_stt):
+    loop = asyncio.get_event_loop()
+    return PuckMicSession(
+        device="test_dev", speaker="狗與露", whisper_model=FakeWhisperModel(["黑馬文"]), loop=loop,
+        send_json=AsyncMock(), confirm_stt=confirm_stt, deliver=AsyncMock(),
+        tts_frames_total=lambda: 0, clock=lambda: 0.0,
+        vad=FakeVAD(probs), config=PuckMicConfig(), wake_engine="whisper",
+    )
+
+
+@pytest.mark.asyncio
+async def test_wake_only_waits_for_next_segment():
+    confirm_stt = AsyncMock(return_value="黑馬文下一首")
+    session = _make_paused_session(
+        [0.9] * 32 + [0.1] * 22 + [0.1] * 10 + [0.9] * 40 + [0.1] * 22, confirm_stt)
+    encoder = ImaAdpcmEncoder()
+
+    await _feed_n(session, encoder, 32)
+    await _flush()
+    assert session.state == "capture"
+
+    await _feed_n(session, encoder, 22 + 10)   # 「嘿馬文」那段結束 + 停頓等 ack
+    await _flush()
+    assert session.state == "capture"
+    confirm_stt.assert_not_awaited()
+
+    await _feed_n(session, encoder, 40 + 22)   # 「下一首」這段開始又結束
+    await _flush()
+    confirm_stt.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_wake_only_gives_up_after_wait():
+    confirm_stt = AsyncMock(return_value="黑馬文")
+    session = _make_paused_session([0.9] * 32 + [0.1] * 400, confirm_stt)
+    encoder = ImaAdpcmEncoder()
+
+    await _feed_n(session, encoder, 32)
+    await _flush()
+    await _feed_n(session, encoder, 150)       # 4.8s：還在等
+    await _flush()
+    assert session.state == "capture"
+
+    await _feed_n(session, encoder, 10)        # 過 5s 等待上限 → 收尾送確認
+    await _flush()
+    confirm_stt.assert_awaited_once()
