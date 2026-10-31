@@ -78,6 +78,11 @@ async def _flush() -> None:
         await asyncio.gather(*pending, return_exceptions=True)
 
 
+def _face_states(send_json: AsyncMock) -> list[str]:
+    return [c.args[0]["state"] for c in send_json.await_args_list
+            if c.args[0].get("type") == "face"]
+
+
 def _make_session(*, wake_texts, confirm_stt=None, deliver=None, send_json=None,
                    tts_frames_total=None, clock=None, config=None):
     loop = asyncio.get_event_loop()
@@ -109,7 +114,7 @@ async def test_candidate_wake_ducks_and_captures_wav():
     await _flush()
 
     assert session.state == "capture"
-    send_json.assert_awaited_with({"type": "duck"})
+    send_json.assert_any_await({"type": "duck"})
     assert session.stats["candidates"] == 1
 
     # 22 個低機率 window → VAD 切句結束，state 轉 confirm，confirm_stt 被呼叫。
@@ -440,7 +445,7 @@ async def test_ptt_button_skips_wake_requirement():
 
     await session.force_wake("button")
     assert session.state == "capture"
-    send_json.assert_awaited_with({"type": "duck"})
+    send_json.assert_any_await({"type": "duck"})
 
     await _feed_n(session, encoder, 32 + 22)
     await _flush()
@@ -463,7 +468,7 @@ async def test_ptt_pause_still_requires_wake_word():
     await _flush()
 
     deliver.assert_not_awaited()
-    send_json.assert_awaited_with({"type": "unduck"})
+    send_json.assert_any_await({"type": "unduck"})
     assert session.state == "listen"
 
 
@@ -519,3 +524,144 @@ def test_wake_engine_defaults_to_swift(monkeypatch):
     assert _puck_wake_engine() == "whisper"
     monkeypatch.setenv("MARVIN_PUCK_WAKE_ENGINE", "bogus")
     assert _puck_wake_engine() == "swift"
+
+
+# ── 臉部狀態推送（/mic_ws {"type":"face","state":...}）────────────────────────
+
+# ── 12. 第一包音訊後送出 idle；之後沒狀態變化不重送 ──────────────────────────
+@pytest.mark.asyncio
+async def test_face_idle_on_first_block_no_resend():
+    send_json = AsyncMock()
+    session, model = _make_session(wake_texts=[], send_json=send_json)
+    encoder = ImaAdpcmEncoder()
+
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert _face_states(send_json) == ["idle"]
+
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert _face_states(send_json) == ["idle"]
+
+
+# ── 13. 候選喚醒→listen（在 duck 之後）；VAD 切句進 confirm→think；否決→idle ──
+@pytest.mark.asyncio
+async def test_face_tracks_listen_think_idle_on_reject():
+    send_json = AsyncMock()
+    confirm_stt = AsyncMock(return_value="大家好")
+    session, model = _make_session(
+        wake_texts=["馬文"], send_json=send_json, confirm_stt=confirm_stt)
+    encoder = ImaAdpcmEncoder()
+
+    await _feed_n(session, encoder, 32, value=1000)
+    await _flush()
+    assert session.state == "capture"
+
+    types = [c.args[0] for c in send_json.await_args_list]
+    duck_idx = types.index({"type": "duck"})
+    listen_idx = next(i for i, t in enumerate(types)
+                       if t == {"type": "face", "state": "listen"})
+    assert duck_idx < listen_idx
+
+    await _feed_n(session, encoder, 22, value=1000)
+    await _flush()
+
+    assert session.state == "listen"
+    assert _face_states(send_json) == ["idle", "listen", "think", "idle"]
+
+
+# ── 14. confirm 命中進 reply→think；tts 增加 face_speak_delay_s 前仍 think、
+#       到達後變 speak；講話停止+hold 過後+unduck_idle_s 到→reply_done→idle ──
+@pytest.mark.asyncio
+async def test_face_reply_delays_speak_then_idle_after_unduck():
+    send_json = AsyncMock()
+    clock = FakeClock()
+    frames = {"v": 0}
+    config = PuckMicConfig()
+    confirm_stt = AsyncMock(return_value="黑馬威下一首")
+    session, model = _make_session(
+        wake_texts=["馬文"], send_json=send_json, confirm_stt=confirm_stt,
+        tts_frames_total=lambda: frames["v"], clock=clock, config=config)
+    encoder = ImaAdpcmEncoder()
+
+    await _feed_n(session, encoder, 32, value=1000)
+    await _flush()
+    await _feed_n(session, encoder, 22, value=1000)
+    await _flush()
+    assert session.state == "reply"
+    assert _face_states(send_json)[-1] == "think"
+
+    # 講話開始（clock=0）：speaking=True，但 face_speak_delay_s 還沒到 → think
+    frames["v"] += 1
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert _face_states(send_json)[-1] == "think"
+
+    clock.advance(config.face_speak_delay_s - 0.1)
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert _face_states(send_json)[-1] == "think"
+
+    clock.advance(0.2)  # 跨過 face_speak_delay_s 門檻
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert _face_states(send_json)[-1] == "speak"
+
+    # 講話停止夠久（同時跨過 speak_hold_s 與 unduck_idle_s）→ reply_done → idle
+    clock.advance(max(config.speak_hold_s, config.unduck_idle_s) + 0.1)
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert session.state == "listen"
+    assert _face_states(send_json)[-1] == "idle"
+
+
+# ── 15. listen 狀態下 tts 增加（DJ 口白等非喚醒回合）→ 延遲後 speak、停止後回 idle ──
+@pytest.mark.asyncio
+async def test_face_listen_state_speaks_during_narration():
+    send_json = AsyncMock()
+    clock = FakeClock()
+    frames = {"v": 0}
+    config = PuckMicConfig()
+    session, model = _make_session(
+        wake_texts=[], send_json=send_json, tts_frames_total=lambda: frames["v"],
+        clock=clock, config=config)
+    encoder = ImaAdpcmEncoder()
+
+    await session.feed_adpcm(encoder.encode_block(_block(0)))  # 奠基準
+    assert _face_states(send_json)[-1] == "idle"
+
+    frames["v"] += 1
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert _face_states(send_json)[-1] == "idle"
+
+    clock.advance(config.face_speak_delay_s - 0.1)
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert _face_states(send_json)[-1] == "idle"
+
+    clock.advance(0.2)
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert _face_states(send_json)[-1] == "speak"
+
+    clock.advance(config.speak_hold_s + 0.1)
+    await session.feed_adpcm(encoder.encode_block(_block(0)))
+    assert _face_states(send_json)[-1] == "idle"
+
+
+# ── 16. face 訊息送出丟例外時，主流程（duck/deliver）照常 ───────────────────
+@pytest.mark.asyncio
+async def test_face_send_failure_does_not_break_main_flow():
+    async def _send_json(msg):
+        if msg.get("type") == "face":
+            raise RuntimeError("boom")
+
+    send_json = AsyncMock(side_effect=_send_json)
+    deliver = AsyncMock()
+    confirm_stt = AsyncMock(return_value="黑馬威下一首")
+    session, model = _make_session(
+        wake_texts=["馬文"], send_json=send_json, confirm_stt=confirm_stt, deliver=deliver)
+    encoder = ImaAdpcmEncoder()
+
+    await _feed_n(session, encoder, 32, value=1000)
+    await _flush()
+    assert session.state == "capture"
+    send_json.assert_any_await({"type": "duck"})
+
+    await _feed_n(session, encoder, 22, value=1000)
+    await _flush()
+
+    deliver.assert_awaited_once_with("狗與露", "馬文，下一首")
+    assert session.state == "reply"

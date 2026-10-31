@@ -55,6 +55,7 @@ class PuckMicConfig:
     stats_interval_s: float = 60.0
     ring_s: float = 3.0             # 原始 PCM ring buffer 長度（要 >= capture_pre_s）
     ptt_pre_s: float = 0.3          # PTT 強制喚醒：按下前只取這麼多（按了才開口，前面多半是音樂）
+    face_speak_delay_s: float = 2.5  # 臉部「speak」狀態延後送：iPhone 播放延遲，車上實測再調
 
 
 def _build_wav(pcm_bytes: bytes) -> bytes:
@@ -145,6 +146,10 @@ class PuckMicSession:
         self._reply_spoke = False
         self._last_speaking_at: Optional[float] = None
 
+        self._speak_since: Optional[float] = None
+        self._face_speaking = False
+        self._face_sent: Optional[str] = None
+
         self._suppressed = False
         self._bad_packets = 0
 
@@ -222,6 +227,14 @@ class PuckMicSession:
         now = self.clock()
         speaking = self._speak.update(self.tts_frames_total(), now)
 
+        if speaking and self._speak_since is None:
+            self._speak_since = now
+        elif not speaking:
+            self._speak_since = None
+        self._face_speaking = (
+            speaking and self._speak_since is not None
+            and (now - self._speak_since) >= self.config.face_speak_delay_s)
+
         want_suppressed = speaking and self._state == "listen"
         if want_suppressed != self._suppressed:
             self._vad_stream.set_suppressed(want_suppressed)
@@ -241,9 +254,30 @@ class PuckMicSession:
             elif (now - self._delivered_at) >= cfg.unduck_cap_s:
                 await self._unduck("cap")
 
+        await self._sync_face()
+
         if now - self._last_stats_at >= self.config.stats_interval_s:
             self._last_stats_at = now
             self._log_stats()
+
+    async def _sync_face(self) -> None:
+        if self._state == "capture":
+            want = "listen"
+        elif self._state == "confirm":
+            want = "think"
+        elif self._state == "reply":
+            want = "speak" if self._face_speaking else "think"
+        else:  # listen
+            want = "speak" if self._face_speaking else "idle"
+
+        if want == self._face_sent:
+            return
+        try:
+            await self.send_json({"type": "face", "state": want})
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"🎙️ [PuckMic] {self.device} face 送出失敗: {e}")
+            return
+        self._face_sent = want
 
     def _log_stats(self) -> None:
         s = self.stats
@@ -313,6 +347,7 @@ class PuckMicSession:
             self._ducked = True
         except Exception as e:  # noqa: BLE001
             logger.warning(f"🎙️ [PuckMic] {self.device} duck 送出失敗: {e}")
+        await self._sync_face()
 
     # ── 收音結束 → 確認 ──────────────────────────────────────────────────────
 
@@ -321,6 +356,7 @@ class PuckMicSession:
         wav_bytes = _build_wav(b"".join(self._capture_buf))
         self._capture_buf = []
         self._confirm_task = self._loop.create_task(self._confirm(wav_bytes))
+        self._loop.create_task(self._sync_face())
 
     async def _confirm(self, wav_bytes: bytes) -> None:
         try:
@@ -345,6 +381,7 @@ class PuckMicSession:
         self._delivered_at = self.clock()
         self._reply_spoke = False
         self._last_speaking_at = None
+        await self._sync_face()
 
         try:
             await self.deliver(self.speaker, final)
@@ -362,6 +399,7 @@ class PuckMicSession:
         self._state = "listen"
         self._wake.rearm(0)
         logger.info(f"🎙️ [PuckMic] {self.device} unduck（{reason}）")
+        await self._sync_face()
 
     # ── 關閉 ────────────────────────────────────────────────────────────────
 
