@@ -184,10 +184,11 @@ struct FaceInSnapshot {
   int pendingLevel;
   uint32_t pendingAtMs;
   uint32_t skinSeq;        // skinFetch() 交了一張新底圖（或要換回預設頭）就 +1，faceTask 看到變了才換
+  uint32_t activitySeq;    // /mic_ws 臉部狀態或 duck/unduck 就 +1；faceTask 看到變了就把閒置計時歸零
 };
 static portMUX_TYPE g_faceInMux = portMUX_INITIALIZER_UNLOCKED;
 static FaceInSnapshot g_faceIn = {
-  face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, -1, 0, 0, 0
+  face_motion::OVERRIDE_NONE, false, false, 0, 0, 0, 0, 0, 0, 0, 0, false, 0, -1, 0, 0, 0, 0
 };
 #endif  // FACE_DISPLAY
 
@@ -1821,6 +1822,11 @@ static void duckUdpSend(bool duck) {
   gDuckUdp.endPacket();
   LWIP_UNLOCK();
   gDucked = duck;
+#if FACE_DISPLAY
+  portENTER_CRITICAL(&g_faceInMux);
+  g_faceIn.activitySeq++;
+  portEXIT_CRITICAL(&g_faceInMux);
+#endif
   Serial.printf("[Duck] %s seq=%u\n", duck ? "duck" : "unduck", (unsigned)gDuckSeq);
   setLed(duck ? LED_LISTENING : LED_STANDBY);
 }
@@ -1841,6 +1847,7 @@ static void applyFaceState(int st) {
 #if FACE_DISPLAY
   portENTER_CRITICAL(&g_faceInMux);
   g_faceIn.speaking = speaking;
+  g_faceIn.activitySeq++;
   portEXIT_CRITICAL(&g_faceInMux);
 #endif
   Serial.printf("[Face] state=%s\n", label);
@@ -2727,6 +2734,7 @@ void faceTask(void* pv) {
 
   uint32_t lastCoverSeq = 0;
   float idleSinceSec = 0.0f;
+  uint32_t lastActivitySeq = 0;
   uint8_t prevRawBl = 0xFF;   // sentinel：強制第一格走「resume」路徑，先畫一次底圖
 
   const int64_t PERIOD_US = 41667;
@@ -2744,7 +2752,8 @@ void faceTask(void* pv) {
     uint32_t nowMs = millis();
     bool streamFresh = (nowMs - snap.lastIcyAtMs <= 15000);
     bool playing = snap.playing && streamFresh;
-    bool speaking = snap.speaking && streamFresh;
+    // /audio_stream 關掉時沒有 ICY，speaking 改由 /mic_ws 臉部狀態直接決定，不看 streamFresh。
+    bool speaking = snap.speaking && (streamFresh || !PUCK_AUDIO_STREAM);
     if (snap.pendingGesture >= 0) {
       bool expired = (nowMs - snap.pendingAtMs) > 10000;
       if (speaking || expired) {
@@ -2781,7 +2790,9 @@ void faceTask(void* pv) {
     }
     in.pos_s = posMs / 1000.0f;
 
-    idleSinceSec = playing ? 0.0f : idleSinceSec + DT;
+    bool activity = (snap.activitySeq != lastActivitySeq);
+    lastActivitySeq = snap.activitySeq;
+    idleSinceSec = (playing || activity) ? 0.0f : idleSinceSec + DT;
 
     float rand01 = (float)esp_random() / 4294967295.0f;
     int gid = face_idle_step(idle, in, snap.trackKey, T, rand01);
