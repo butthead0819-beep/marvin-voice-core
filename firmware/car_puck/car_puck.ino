@@ -59,6 +59,7 @@
 #include "cover_fetch.h"   // 換歌下載徽章封面（/car_cover）：JPEG 粗驗、HTTP 標頭解析、遙測字串
 #include "ima_adpcm.h"         // /mic_ws 上傳格式：IMA ADPCM 編碼（唯一標準見 ima_adpcm.py）
 #include "ws_frame.h"          // /mic_ws 用的最小 WebSocket client frame 組裝/解析 + base64
+#include "chime.h"             // 喚醒/PTT ack 提示音產生（喇叭 bench + 本地提示用）
 #include <esp_random.h>        // esp_random()：WS frame mask key、Sec-WebSocket-Key
 
 // 2026-10-24：螢幕還沒到貨，先在 S3 上邊播音樂邊實測 face_rt.h 的即時渲染＋RGB565＋SPI
@@ -1804,6 +1805,7 @@ static WiFiUDP gDuckUdp;
 static bool gDuckUdpBegun = false;
 static uint32_t gDuckSeq = 0;
 static bool gDucked = false;
+static volatile bool g_localDuckReq = false;   // pttEdgeToWake() 設；micWsTask 每圈清並處理（duckUdpSend 只在那裡呼叫）
 
 // 送 duck/unduck UDP 給手機端 DuckListener（iOS，監聽 47800）。只在 micWsTask 裡呼叫，
 // 不等 ack——手機沒收到最壞情況是這次沒壓低/沒恢復音量，下一次 duck/unduck 事件會
@@ -1842,6 +1844,91 @@ static void applyFaceState(int st) {
   portEXIT_CRITICAL(&g_faceInMux);
 #endif
   Serial.printf("[Face] state=%s\n", label);
+}
+
+// ========== 喇叭 ack 提示音（bench 驗證 + 喚醒/PTT 本地提示）==========
+//
+// startSpeakerVoice()：16kHz/16-bit/stereo I2S TX，DMA 4×256（遠比舊 startSpeaker()
+// 的 12×512 小——TLS 心跳+/mic_ws 兩條常駐連線已經把內部 RAM 榨得很緊，imin 曾見過
+// 掉到 34K，喇叭 DMA 不能再搶）。spkTask 收到通知就把 chime_render() 編好的提示音
+// 展成 stereo 送出 I2S；spkPlayChime() 是唯一對外入口，任何 task 都能呼叫、不阻塞
+// （xTaskNotifyGive 設旗標，真正播放在 spkTask 自己的迴圈）。
+#define PUCK_BOOT_CHIME 1   // 喇叭 bench 驗證用：開機響一聲確認喇叭有聲音，確認後可關
+
+#define CHIME_MAX_SAMPLES 3200   // chime_render() 總長（見 chime.h）
+
+static void startSpeakerVoice() {
+  Serial.printf("[SPK] imin before startSpeakerVoice: %u free=%u\n",
+                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+  i2s_config_t cfg = {
+    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+    .sample_rate = 16000,
+    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,   // stereo，左右同值；MAX98357 預設 L+R/2
+    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+    .intr_alloc_flags = 0,
+    .dma_buf_count = 4,
+    .dma_buf_len = 256,
+    .use_apll = true,
+  };
+  i2s_pin_config_t pins = {
+    .mck_io_num = I2S_PIN_NO_CHANGE,   // 腳位同 startSpeaker()：PCM5102 SCK 腳硬體接地走內部 PLL
+    .bck_io_num = I2S_AMP_BCLK, .ws_io_num = I2S_AMP_LRCLK,
+    .data_out_num = I2S_AMP_DIN, .data_in_num = I2S_PIN_NO_CHANGE,
+  };
+  i2s_driver_install(I2S_SPK_PORT, &cfg, 0, NULL);
+  i2s_set_pin(I2S_SPK_PORT, &pins);
+  Serial.printf("[SPK] imin after startSpeakerVoice: %u free=%u\n",
+                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+}
+
+static TaskHandle_t spkTaskHandle = nullptr;
+static volatile uint32_t g_chimeCount = 0;
+static int16_t* g_chimeBuf = nullptr;   // PSRAM，CHIME_MAX_SAMPLES 個 mono 樣本，spkSetup() 配好
+
+void spkTask(void* pv) {
+  static int16_t stereoBuf[256 * 2];   // 單段 ≤256 frame，跟 DMA dma_buf_len 對齊
+  for (;;) {
+    uint32_t notif = 0;
+    xTaskNotifyWait(0, 0xFFFFFFFF, &notif, portMAX_DELAY);
+    size_t n = chime_render(g_chimeBuf, CHIME_MAX_SAMPLES, 3000);
+    g_chimeCount++;
+    size_t off = 0;
+    while (off < n) {
+      size_t chunk = n - off;
+      if (chunk > 256) chunk = 256;
+      for (size_t i = 0; i < chunk; i++) {
+        stereoBuf[i * 2] = g_chimeBuf[off + i];
+        stereoBuf[i * 2 + 1] = g_chimeBuf[off + i];
+      }
+      size_t bytesWritten = 0;
+      i2s_write(I2S_SPK_PORT, stereoBuf, chunk * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+      off += chunk;
+    }
+    i2s_zero_dma_buffer(I2S_SPK_PORT);
+  }
+}
+
+// 對外唯一入口：任何 task 都能呼叫、不阻塞。spkTaskHandle 還沒建好（PSRAM 配置失敗）
+// 時什麼都不做。
+static void spkPlayChime() {
+  if (spkTaskHandle) xTaskNotifyGive(spkTaskHandle);
+}
+
+// setup() 呼叫：配 chime buffer、起喇叭 I2S、建 spkTask。PSRAM 配置失敗就不建 task，
+// spkPlayChime() 之後呼叫會是無操作。
+static void spkSetup() {
+  g_chimeBuf = (int16_t*)heap_caps_malloc(CHIME_MAX_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+  Serial.printf("[SPK] chimeBuf heap_caps_malloc %s（%u bytes）\n",
+                g_chimeBuf ? "成功" : "❌失敗", (unsigned)(CHIME_MAX_SAMPLES * sizeof(int16_t)));
+  if (!g_chimeBuf) {
+    Serial.println("[SPK] PSRAM 配置失敗，不啟動喇叭");
+    return;
+  }
+  startSpeakerVoice();
+  xTaskCreatePinnedToCore(spkTask, "spkTask", 4096, nullptr, 2, &spkTaskHandle, 1);
 }
 
 // 唯一讀麥克風的 task：讀滿 512 個 32-bit frame（不滿就繼續讀補滿）、轉 int16、編
@@ -1984,6 +2071,14 @@ void micWsTask(void* pv) {
     while (!connLost) {
       bool didWork = false;
 
+      // PTT 本地 duck：pttEdgeToWake() 已經在按下當下播過 chime、設了這個旗標；
+      // duckUdpSend 維持只在這裡（micWsTask）呼叫。Mac 稍後送來的 DUCK 控制訊息因
+      // gDucked 已是 true 不會重響 chime，只會重送一次 UDP，無害。
+      if (g_localDuckReq) {
+        g_localDuckReq = false;
+        if (!gDucked) duckUdpSend(true);
+      }
+
       // 送音訊：ring 裡有 >= 8 個 block 就湊成一則 binary frame。
       uint32_t head = g_micHead, tail = g_micTail;
       if (head - tail >= 8) {
@@ -2062,7 +2157,7 @@ void micWsTask(void* pv) {
 
         if (h.opcode == WS_OP_TEXT) {
           int ctl = mic_ctl_parse((const char*)payloadPtr, (size_t)h.payload_len);
-          if (ctl == MIC_CTL_DUCK) { duckUdpSend(true); duckCount++; }
+          if (ctl == MIC_CTL_DUCK) { if (!gDucked) spkPlayChime(); duckUdpSend(true); duckCount++; }
           else if (ctl == MIC_CTL_UNDUCK) { duckUdpSend(false); unduckCount++; }
           else {
             int face = mic_face_parse((const char*)payloadPtr, (size_t)h.payload_len);
@@ -2104,10 +2199,10 @@ void micWsTask(void* pv) {
       if (now - lastStatsMs >= 60000) {
         lastStatsMs = now;
         Serial.printf("[MicWS] up=1 sent_blocks=%u dropped=%u ring=%u duck=%u unduck=%u ping=%u "
-                      "face=%u reconnects=%u ifree=%u imin=%u stack_hw cap=%u ws=%u\n",
+                      "face=%u reconnects=%u chime=%u ifree=%u imin=%u stack_hw cap=%u ws=%u\n",
                       (unsigned)sentBlocks, (unsigned)g_micDropped, (unsigned)(g_micHead - g_micTail),
                       (unsigned)duckCount, (unsigned)unduckCount, (unsigned)pingCount, (unsigned)faceCount,
-                      (unsigned)reconnects,
+                      (unsigned)reconnects, (unsigned)g_chimeCount,
                       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                       (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
                       micCaptureTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(micCaptureTaskHandle) : 0,
@@ -2139,7 +2234,7 @@ void pttEdgeToWake() {
     if (physLowSinceMs == 0) physLowSinceMs = millis();
     if (!physDebounced && millis() - physLowSinceMs >= 50) {
       physDebounced = true;
-      if (g_micWsUp) { g_pttWakeSrc = 1; Serial.println("[PTT] ▼ 按鍵（強制喚醒）"); }
+      if (g_micWsUp) { g_pttWakeSrc = 1; spkPlayChime(); g_localDuckReq = true; Serial.println("[PTT] ▼ 按鍵（強制喚醒）"); }
       else Serial.println("[PTT] ▼ 按鍵，但 WS 未連上，丟棄");
     }
   } else {
@@ -2151,7 +2246,7 @@ void pttEdgeToWake() {
   // false，天然形成「false→true 邊緣」一次性觸發（PLAY 鍵不再有意義，見 g_pausePtt
   // 定義前的註解）。
   if (g_pausePtt) {
-    if (g_micWsUp) { g_pttWakeSrc = 2; Serial.println("[PTT] ▼ 車機暫停鍵（強制喚醒）"); }
+    if (g_micWsUp) { g_pttWakeSrc = 2; spkPlayChime(); g_localDuckReq = true; Serial.println("[PTT] ▼ 車機暫停鍵（強制喚醒）"); }
     else Serial.println("[PTT] ▼ 車機暫停鍵，但 WS 未連上，丟棄");
     g_pausePtt = false;
   }
@@ -2886,6 +2981,10 @@ void setup() {
   Serial.printf("[Stream] 任務建立 net=%d play=%d（1=成功）\n", (int)_rNet, (int)_rPlay);
 #endif
 #if PUCK_MIC_WS
+  spkSetup();
+#if PUCK_BOOT_CHIME
+  spkPlayChime();   // 喇叭 bench 驗證：開機響一聲確認喇叭有聲音
+#endif
   micWsSetup();
 #endif
 #if FACE_BENCH
