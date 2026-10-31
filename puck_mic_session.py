@@ -153,6 +153,9 @@ class PuckMicSession:
 
         self._suppressed = False
         self._bad_packets = 0
+        # 除錯用：MARVIN_PUCK_DUMP_DIR 有設就把收到的 16k PCM 原樣存成 WAV（每條連線一檔），離線重播比對
+        self._dump_dir = os.environ.get("MARVIN_PUCK_DUMP_DIR", "").strip()
+        self._dump: Optional[wave.Wave_write] = None
 
         self._candidates = 0
         self._confirmed = 0
@@ -213,6 +216,8 @@ class PuckMicSession:
             pcm_bytes = pcm.tobytes()
 
             self._ring.append(pcm_bytes)
+            if self._dump_dir:
+                self._dump_write(pcm_bytes)
             if self._wake_engine == "swift" and not self._suppressed:
                 self._wake.push_pcm(0, pcm_bytes)
             if self._state == "capture":
@@ -245,6 +250,7 @@ class PuckMicSession:
         if want_suppressed != self._suppressed:
             self._vad_stream.set_suppressed(want_suppressed)
             self._suppressed = want_suppressed
+            logger.info(f"🎙️ [PuckMic] {self.device} {'Marvin 講話，暫停喚醒' if want_suppressed else '恢復喚醒'}")
 
         if self._state == "reply":
             cfg = self.config
@@ -416,7 +422,26 @@ class PuckMicSession:
 
     # ── 關閉 ────────────────────────────────────────────────────────────────
 
+    def _dump_write(self, pcm_bytes: bytes) -> None:
+        if self._dump is None:
+            try:
+                os.makedirs(self._dump_dir, exist_ok=True)
+                path = os.path.join(self._dump_dir, f"{self.device}_{time.strftime('%Y%m%d_%H%M%S')}.wav")
+                self._dump = wave.open(path, "wb")
+                self._dump.setnchannels(1)
+                self._dump.setsampwidth(2)
+                self._dump.setframerate(_SAMPLE_RATE)
+                logger.info(f"🎙️ [PuckMic] {self.device} 錄音傾印 → {path}")
+            except OSError as e:
+                logger.warning(f"🎙️ [PuckMic] {self.device} 開傾印檔失敗，停用: {e}")
+                self._dump_dir = ""
+                return
+        self._dump.writeframes(pcm_bytes)
+
     async def close(self) -> None:
+        if self._dump is not None:
+            self._dump.close()
+            self._dump = None
         # 只在 STT 確認階段取消；指令已送出（reply）就讓 deliver 跑完，斷線不吃掉使用者的指令
         if (self._state == "confirm" and self._confirm_task is not None
                 and not self._confirm_task.done()):

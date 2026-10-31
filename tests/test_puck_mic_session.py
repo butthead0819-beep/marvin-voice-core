@@ -715,3 +715,22 @@ async def test_wake_only_gives_up_after_wait():
     await _feed_n(session, encoder, 10)        # 過 5s 等待上限 → 收尾送確認
     await _flush()
     confirm_stt.assert_awaited_once()
+
+
+# ── MARVIN_PUCK_DUMP_DIR：收到的 PCM 原樣存成 16k mono WAV，close() 收檔 ──────────
+@pytest.mark.asyncio
+async def test_dump_dir_writes_decoded_pcm_wav(tmp_path, monkeypatch):
+    from ima_adpcm import decode_block
+    monkeypatch.setenv("MARVIN_PUCK_DUMP_DIR", str(tmp_path))
+    session, _ = _make_session(wake_texts=[])
+    enc = ImaAdpcmEncoder()
+    blocks = [enc.encode_block(_block(v)) for v in (500, 1500, -800)]
+    await session.feed_adpcm(b"".join(blocks))
+    await session.close()
+
+    files = list(tmp_path.glob("test_dev_*.wav"))
+    assert len(files) == 1
+    with wave.open(str(files[0]), "rb") as wf:
+        assert (wf.getnchannels(), wf.getsampwidth(), wf.getframerate()) == (1, 2, 16000)
+        got = wf.readframes(wf.getnframes())
+    assert got == b"".join(decode_block(b).tobytes() for b in blocks)
