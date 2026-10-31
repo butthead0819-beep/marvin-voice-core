@@ -223,11 +223,57 @@ static void test_mic_ctl_parse() {
   printf("  test_mic_ctl_parse OK\n");
 }
 
+static void test_mic_face_parse() {
+  {
+    const char* s = "{\"type\":\"face\",\"state\":\"listen\"}";
+    assert(mic_face_parse(s, strlen(s)) == MIC_FACE_LISTEN);
+  }
+  {
+    const char* s = "{\"type\":\"face\",\"state\":\"think\"}";
+    assert(mic_face_parse(s, strlen(s)) == MIC_FACE_THINK);
+  }
+  {
+    const char* s = "{\"type\":\"face\",\"state\":\"speak\"}";
+    assert(mic_face_parse(s, strlen(s)) == MIC_FACE_SPEAK);
+  }
+  {
+    const char* s = "{\"type\":\"face\",\"state\":\"idle\"}";
+    assert(mic_face_parse(s, strlen(s)) == MIC_FACE_IDLE);
+  }
+  // 鍵順序對調
+  {
+    const char* s = "{\"state\":\"listen\",\"type\":\"face\"}";
+    assert(mic_face_parse(s, strlen(s)) == MIC_FACE_LISTEN);
+  }
+  // state 值不是四者之一
+  {
+    const char* s = "{\"type\":\"face\",\"state\":\"speaking\"}";
+    assert(mic_face_parse(s, strlen(s)) == MIC_FACE_NONE);
+  }
+  // type 不是 face
+  {
+    const char* s = "{\"type\":\"duck\"}";
+    assert(mic_face_parse(s, strlen(s)) == MIC_FACE_NONE);
+  }
+  // 只有 type，沒有 state
+  {
+    const char* s = "{\"type\":\"face\"}";
+    assert(mic_face_parse(s, strlen(s)) == MIC_FACE_NONE);
+  }
+  // 既有 mic_ctl_parse 行為不受影響：face/idle 對 mic_ctl_parse 是 UNKNOWN
+  {
+    const char* s = "{\"type\":\"face\",\"state\":\"idle\"}";
+    assert(mic_ctl_parse(s, strlen(s)) == MIC_CTL_UNKNOWN);
+  }
+  printf("  test_mic_face_parse OK\n");
+}
+
 int main() {
   test_build_lengths();
   test_parse();
   test_base64();
   test_mic_ctl_parse();
+  test_mic_face_parse();
   printf("test_ws_frame: all passed\n");
   return 0;
 }

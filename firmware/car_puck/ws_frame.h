@@ -145,35 +145,68 @@ static inline size_t ws_base64_encode(const uint8_t* in, size_t len, char* out, 
 #define MIC_CTL_DUCK 1
 #define MIC_CTL_UNDUCK 2
 
-// 判斷 /mic_ws 收到的文字 frame 是 duck/unduck 控制訊息，不用完整 JSON parser：找
-// `"type"` 鍵，接著（容忍空白）冒號，再接著（容忍空白）引號字串，比對剛好是
-// "duck"/"unduck"（"unduck" 不可被誤判成 duck——比對順序先試較長的 "unduck"）。
-static inline int mic_ctl_parse(const char* s, size_t len) {
-  const char* key = "\"type\"";
+// 找 `"key"` 鍵（key 含兩側引號），接著（容忍空白）冒號，再接著（容忍空白）引號
+// 字串；回傳值字串內容起點，*out_len 填長度（不含引號）。找不到回 (size_t)-1。
+// mic_ctl_parse/mic_face_parse 共用，只在本檔內用。
+static inline size_t ws_find_string_value(const char* s, size_t len, const char* key, size_t* out_len) {
   size_t key_len = strlen(key);
   size_t key_pos = (size_t)-1;
   for (size_t i = 0; i + key_len <= len; i++) {
     if (memcmp(s + i, key, key_len) == 0) { key_pos = i; break; }
   }
-  if (key_pos == (size_t)-1) return MIC_CTL_UNKNOWN;
+  if (key_pos == (size_t)-1) return (size_t)-1;
 
   size_t p = key_pos + key_len;
   while (p < len && (s[p] == ' ' || s[p] == '\t')) p++;
-  if (p >= len || s[p] != ':') return MIC_CTL_UNKNOWN;
+  if (p >= len || s[p] != ':') return (size_t)-1;
   p++;
   while (p < len && (s[p] == ' ' || s[p] == '\t')) p++;
-  if (p >= len || s[p] != '"') return MIC_CTL_UNKNOWN;
+  if (p >= len || s[p] != '"') return (size_t)-1;
   p++;
 
-  const char* unduck = "unduck\"";
-  size_t unduck_len = strlen(unduck);
-  if (p + unduck_len <= len && memcmp(s + p, unduck, unduck_len) == 0) return MIC_CTL_UNDUCK;
+  size_t start = p;
+  while (p < len && s[p] != '"') p++;
+  if (p >= len) return (size_t)-1;
+  *out_len = p - start;
+  return start;
+}
 
-  const char* duck = "duck\"";
-  size_t duck_len = strlen(duck);
-  if (p + duck_len <= len && memcmp(s + p, duck, duck_len) == 0) return MIC_CTL_DUCK;
+// 判斷 /mic_ws 收到的文字 frame 是 duck/unduck 控制訊息：找 `"type"` 鍵的字串值，
+// 比對剛好是 "duck"/"unduck"。
+static inline int mic_ctl_parse(const char* s, size_t len) {
+  size_t vlen;
+  size_t vpos = ws_find_string_value(s, len, "\"type\"", &vlen);
+  if (vpos == (size_t)-1) return MIC_CTL_UNKNOWN;
 
+  if (vlen == 6 && memcmp(s + vpos, "unduck", 6) == 0) return MIC_CTL_UNDUCK;
+  if (vlen == 4 && memcmp(s + vpos, "duck", 4) == 0) return MIC_CTL_DUCK;
   return MIC_CTL_UNKNOWN;
+}
+
+#define MIC_FACE_NONE 0
+#define MIC_FACE_LISTEN 1
+#define MIC_FACE_THINK 2
+#define MIC_FACE_SPEAK 3
+#define MIC_FACE_IDLE 4
+
+// 判斷 /mic_ws 收到的文字 frame 是臉部狀態訊息：`"type"` 鍵的字串值剛好是 "face"，
+// 且 `"state"` 鍵的字串值剛好是 listen/think/speak/idle 之一（鍵順序任意）。其他情況
+// 回 MIC_FACE_NONE。
+static inline int mic_face_parse(const char* s, size_t len) {
+  size_t tlen;
+  size_t tpos = ws_find_string_value(s, len, "\"type\"", &tlen);
+  if (tpos == (size_t)-1) return MIC_FACE_NONE;
+  if (tlen != 4 || memcmp(s + tpos, "face", 4) != 0) return MIC_FACE_NONE;
+
+  size_t slen;
+  size_t spos = ws_find_string_value(s, len, "\"state\"", &slen);
+  if (spos == (size_t)-1) return MIC_FACE_NONE;
+
+  if (slen == 6 && memcmp(s + spos, "listen", 6) == 0) return MIC_FACE_LISTEN;
+  if (slen == 5 && memcmp(s + spos, "think", 5) == 0) return MIC_FACE_THINK;
+  if (slen == 5 && memcmp(s + spos, "speak", 5) == 0) return MIC_FACE_SPEAK;
+  if (slen == 4 && memcmp(s + spos, "idle", 4) == 0) return MIC_FACE_IDLE;
+  return MIC_FACE_NONE;
 }
 
 #endif  // WS_FRAME_H

@@ -1823,6 +1823,27 @@ static void duckUdpSend(bool duck) {
   setLed(duck ? LED_LISTENING : LED_STANDBY);
 }
 
+// 套用 Mac 送來的臉部狀態（{"type":"face","state":...}，見 mic_face_parse）。
+// LED 燈色跟著切；speaking 旗標只在 FACE_DISPLAY 開時才有意義，寫入要包臨界區
+// （g_faceIn 是 faceTask/core 1 跟這裡/core 0 共用的快照，見 g_faceInMux 定義處註解）。
+static void applyFaceState(int st) {
+  const char* label = "idle";
+  bool speaking = false;
+  switch (st) {
+    case MIC_FACE_LISTEN: setLed(LED_LISTENING); label = "listen"; break;
+    case MIC_FACE_THINK:  setLed(LED_PLAYING);   label = "think";  break;
+    case MIC_FACE_SPEAK:  setLed(LED_STANDBY);   label = "speak";  speaking = true; break;
+    case MIC_FACE_IDLE:   setLed(LED_STANDBY);   label = "idle";   break;
+    default: return;
+  }
+#if FACE_DISPLAY
+  portENTER_CRITICAL(&g_faceInMux);
+  g_faceIn.speaking = speaking;
+  portEXIT_CRITICAL(&g_faceInMux);
+#endif
+  Serial.printf("[Face] state=%s\n", label);
+}
+
 // 唯一讀麥克風的 task：讀滿 512 個 32-bit frame（不滿就繼續讀補滿）、轉 int16、編
 // IMA ADPCM 進 ring。ring 滿了（micWsTask 斷線太久追不上）就丟新 block，不覆蓋舊的、
 // 也不阻塞等 consumer。
@@ -1880,7 +1901,7 @@ static bool wsDeclaredTooLarge(const uint8_t* buf, size_t len, size_t limit) {
 void micWsTask(void* pv) {
   Serial.println("[MicWS] micWsTask 已啟動");
   uint32_t backoffMs = 1000;
-  uint32_t sentBlocks = 0, duckCount = 0, unduckCount = 0, pingCount = 0, reconnects = 0;
+  uint32_t sentBlocks = 0, duckCount = 0, unduckCount = 0, pingCount = 0, reconnects = 0, faceCount = 0;
   uint32_t lastStatsMs = millis();
   static WiFiClientSecure gMicFunnelClient;
 
@@ -2044,8 +2065,12 @@ void micWsTask(void* pv) {
           if (ctl == MIC_CTL_DUCK) { duckUdpSend(true); duckCount++; }
           else if (ctl == MIC_CTL_UNDUCK) { duckUdpSend(false); unduckCount++; }
           else {
-            int plen = (int)(h.payload_len < 80 ? h.payload_len : 80);
-            Serial.printf("[MicWS] 未知文字訊息: %.*s\n", plen, (const char*)payloadPtr);
+            int face = mic_face_parse((const char*)payloadPtr, (size_t)h.payload_len);
+            if (face != MIC_FACE_NONE) { applyFaceState(face); faceCount++; }
+            else {
+              int plen = (int)(h.payload_len < 80 ? h.payload_len : 80);
+              Serial.printf("[MicWS] 未知文字訊息: %.*s\n", plen, (const char*)payloadPtr);
+            }
           }
         } else if (h.opcode == WS_OP_PING) {
           uint8_t mask[4]; wsRandomMask(mask);
@@ -2079,9 +2104,10 @@ void micWsTask(void* pv) {
       if (now - lastStatsMs >= 60000) {
         lastStatsMs = now;
         Serial.printf("[MicWS] up=1 sent_blocks=%u dropped=%u ring=%u duck=%u unduck=%u ping=%u "
-                      "reconnects=%u ifree=%u imin=%u stack_hw cap=%u ws=%u\n",
+                      "face=%u reconnects=%u ifree=%u imin=%u stack_hw cap=%u ws=%u\n",
                       (unsigned)sentBlocks, (unsigned)g_micDropped, (unsigned)(g_micHead - g_micTail),
-                      (unsigned)duckCount, (unsigned)unduckCount, (unsigned)pingCount, (unsigned)reconnects,
+                      (unsigned)duckCount, (unsigned)unduckCount, (unsigned)pingCount, (unsigned)faceCount,
+                      (unsigned)reconnects,
                       (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                       (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
                       micCaptureTaskHandle ? (unsigned)uxTaskGetStackHighWaterMark(micCaptureTaskHandle) : 0,
@@ -2094,6 +2120,7 @@ void micWsTask(void* pv) {
     LWIP_LOCK(); client.stop(); LWIP_UNLOCK();
     g_micWsUp = false;
     if (gDucked) duckUdpSend(false);   // 別讓手機一直壓低
+    applyFaceState(MIC_FACE_IDLE);     // 斷線別讓臉卡在 speak/think
     Serial.println("[MicWS] 斷線");
     vTaskDelay(pdMS_TO_TICKS(backoffMs));
     backoffMs = (backoffMs * 2 > 30000) ? 30000 : backoffMs * 2;
