@@ -46,14 +46,16 @@ def _puck_wake_engine() -> str:
 
 @dataclass
 class PuckMicConfig:
-    capture_pre_s: float = 1.5      # 候選喚醒時，往前取這麼多秒原始音訊當指令開頭
+    # 候選喚醒時，往前取這麼多秒原始音訊當指令開頭。Swift 串流喚醒從喚醒詞說完到 fire 要 1.5–2.5s
+    # （音訊時間），1.5s 常把喚醒詞本身切掉 → confirm 否決；傾印重播 1.5s 8/16、4.0s 16/16（2026-10-31）
+    capture_pre_s: float = 4.0
     capture_max_s: float = 6.0      # 候選喚醒後最多再收這麼多秒（音樂中 VAD 常不會停）
     speak_hold_s: float = 3.5       # SpeakTracker hold：0.4s ICY + iPhone 播放延遲 ~3s
     reply_start_timeout_s: float = 12.0  # 送出指令後這麼久 Marvin 都沒開口 → unduck
     unduck_idle_s: float = 3.0      # Marvin 開口後，安靜這麼久 → unduck
     unduck_cap_s: float = 30.0      # 送出指令後最長壓低時間
     stats_interval_s: float = 60.0
-    ring_s: float = 3.0             # 原始 PCM ring buffer 長度（要 >= capture_pre_s）
+    ring_s: float = 4.5             # 原始 PCM ring buffer 長度（要 >= capture_pre_s）
     ptt_pre_s: float = 0.3          # PTT 強制喚醒：按下前只取這麼多（按了才開口，前面多半是音樂）
     wake_pause_wait_s: float = 5.0  # 只喊了喚醒詞（停下來等 ack）→ 最多等這麼久讓使用者開口
     face_speak_delay_s: float = 2.5  # 臉部「speak」狀態延後送：iPhone 播放延遲，車上實測再調

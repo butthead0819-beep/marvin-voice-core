@@ -128,7 +128,8 @@ async def test_candidate_wake_ducks_and_captures_wav():
         assert wf.getframerate() == 16000
         assert wf.getsampwidth() == 2
         n_frames = wf.getnframes()
-    assert n_frames >= PuckMicConfig().capture_pre_s * 16000
+    # 總共只餵 54 block（~1.7s）< capture_pre_s，pre-roll 應把候選前的音訊全部帶進 WAV
+    assert n_frames == (32 + 22) * BLOCK_SAMPLES
 
 
 # ── 2. confirm_stt 命中喚醒詞 → deliver 收到剝除喚醒詞的指令、state=reply ─────
