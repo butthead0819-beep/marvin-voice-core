@@ -210,3 +210,45 @@ async def test_audio_stream_with_icy_header_embeds_now_playing_payload():
             break
     assert found_payload is not None, "沒有找到任何完整 metadata 區塊（音訊量不足一個 metaint？）"
     assert found_payload.startswith(b"M1\x1f")
+
+
+# ---------------------------------------------------------------------------
+# ?preroll=N：iOS 低延遲模式可選較小的預緩衝；沒帶維持 75 幀（1.5s）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("query, expected", [
+    ({"icy": "0"}, 75),                          # 沒帶 → 原行為（回歸）
+    ({"icy": "0", "preroll": "25"}, 25),         # 照用
+    ({"icy": "0", "preroll": "0"}, 0),
+    ({"icy": "0", "preroll": "500"}, 75),        # 超出上限 → 夾到 75
+    ({"icy": "0", "preroll": "-3"}, 0),          # 負數 → 夾到 0
+    ({"icy": "0", "preroll": "abc"}, 75),        # 非整數 → 預設
+    ({"preroll": "25"}, 0),                      # 沒 icy=0（puck / Pi）→ 一律不墊
+    ({}, 0),
+])
+def test_stream_preroll_frames(query, expected):
+    from car_http_app import stream_preroll_frames
+    assert stream_preroll_frames(query) == expected
+
+
+class _RecordingSource(_FakeStreamSource):
+    def __init__(self, frames):
+        super().__init__(frames)
+        self.prerolls = []
+
+    def subscribe(self, *, preroll_frames: int = 0):
+        self.prerolls.append(preroll_frames)
+        return super().subscribe()
+
+
+@pytest.mark.asyncio
+async def test_audio_stream_passes_preroll_param_to_subscribe():
+    from aiohttp.test_utils import TestClient, TestServer
+    from car_http_app import build_text_app
+
+    src = _RecordingSource([_sine_pcm_frame(), None])
+    app = build_text_app(_make_vc(), token="s3cret", stream_source=src)
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/audio_stream.mp3?t=s3cret&icy=0&preroll=25")
+        await resp.read()
+    assert src.prerolls == [25]

@@ -1685,7 +1685,7 @@ def build_text_app(vc, *, token: str | None = None, default_speaker: str = "狗�
             headers["icy-metaint"] = str(ICY_METAINT)
         resp = web.StreamResponse(status=200, headers=headers)
         await resp.prepare(request)
-        preroll = 75 if request.query.get("icy") == "0" else 0
+        preroll = stream_preroll_frames(request.query)
         try:
             q = stream_source.subscribe(preroll_frames=preroll)
         except TypeError:
@@ -2062,6 +2062,22 @@ def parse_car_devices(raw: str) -> dict[str, str]:
             continue
         out.setdefault(device_id.casefold(), name)
     return out
+
+
+STREAM_PREROLL_DEFAULT = 75   # 1.5s：iOS AVPlayer 抗抖動墊（a8a1705）
+
+
+def stream_preroll_frames(query) -> int:
+    """/audio_stream 連線時預塞的幀數（20ms/幀）。只有 iOS（icy=0）墊；其他 client（puck、Pi
+    ffmpeg）一律 0。iOS 低延遲模式可帶 ?preroll=N 縮小（夾在 0..75），非整數走預設——
+    墊越小 iPhone 越跟得上即時（實測預設約落後 2s），但熱點抖動時越容易斷流。"""
+    if query.get("icy") != "0":
+        return 0
+    try:
+        n = int(query.get("preroll", STREAM_PREROLL_DEFAULT))
+    except (TypeError, ValueError):
+        return STREAM_PREROLL_DEFAULT
+    return max(0, min(STREAM_PREROLL_DEFAULT, n))
 
 
 def resolve_car_identity(device: str | None, speaker: str | None,
